@@ -58,8 +58,8 @@ typedef hipStream_t cudaStream_t;
  * 15 from a change of the mma layout (its data, blocks, block_base and tiers[3] as below): the mma packs of 0.27 and before, whose tiers[0] has 0xFF in its
  * top byte, are unpacked (glyd_gpu_mma_unpack) as before and refused by every other function: pack them again;
  * 16 from glyd_gpu_f8_*, the lossless FP8 (e4m3) weights: pack, unpack, unpack of a list of a stack's matrices, and the product of 1 to 64
- *    tokens with the weights as they are held. */
-#define GLYD_GPU_API_VERSION 16
+ *    tokens with the weights as they are held; 17 from glyd_gpu_mma_moe_placed, the experts' product over an expert cache's places. */
+#define GLYD_GPU_API_VERSION 17
 
 #ifdef __cplusplus
 extern "C" {
@@ -358,6 +358,15 @@ int glyd_gpu_mma_moe(const uint8_t* data, const uint8_t* blocks, const int32_t* 
                      const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32,
                      const int64_t* ids, uint16_t* y, void* workspace, size_t workspace_bytes, int* done,
                      cudaStream_t cs);
+/* glyd_gpu_mma_moe over E places of an expert cache (the tiered layout alone; an engine copies an expert of a stack's pack into a place):
+ * place e's O K / 1024 steps of data as the stack's ([E][O K / 1024][1280]), its block entries its own O K / 1024 + 1 (block_base
+ * [E][O K / 1024 + 1], bit 31 the flag as a pack's), offsets from its blocks at blocks + e stride (stride a multiple of 4; a place's
+ * blocks with 128 bytes before its first and 256 after its last, and each block's start as a multiple of 4 where the pack had it so).
+ * The rest, and the workspace, as glyd_gpu_mma_moe's. */
+int glyd_gpu_mma_moe_placed(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t stride,
+                            int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan,
+                            int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace,
+                            size_t workspace_bytes, int* done, cudaStream_t cs);
 int glyd_gpu_mma12_moe_workspace(int64_t E, int64_t O, int64_t K, int64_t T, int64_t k, int64_t act, int64_t weighted,
                                  size_t* bytes);
 int glyd_gpu_mma12_moe(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4],

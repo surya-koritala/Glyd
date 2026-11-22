@@ -205,6 +205,8 @@ fn condor_plan(
             experts_per_layer: experts,
             host_bytes,
             gpu_bytes,
+            dense: 0,
+            dense_bytes: 0,
         }),
     }
 }

@@ -797,7 +797,8 @@ struct Step {
     int64_t blk, end;
 };
 
-__device__ __forceinline__ void load_step(Step& st, const uint8_t* __restrict__ data, const uint8_t* __restrict__ blocks, const int32_t* __restrict__ block_base, int64_t step, int lane) {
+// (off: added to the entries, a multiple of 4: an expert cache's place's blocks, TieredPlaced)
+__device__ __forceinline__ void load_step(Step& st, const uint8_t* __restrict__ data, const uint8_t* __restrict__ blocks, const int32_t* __restrict__ block_base, int64_t step, int lane, int64_t off = 0) {
     const uint32_t* cp = (const uint32_t*)(data + step * STEP_BYTES) + lane;
     st.pd[0] = __ldg(cp);
     st.pd[1] = __ldg(cp + 32);
@@ -805,8 +806,8 @@ __device__ __forceinline__ void load_step(Step& st, const uint8_t* __restrict__ 
     uint4 x0 = __ldg(sp), x1 = __ldg(sp + 32);
     st.sw[0] = x0.x; st.sw[1] = x0.y; st.sw[2] = x0.z; st.sw[3] = x0.w;
     st.sw[4] = x1.x; st.sw[5] = x1.y; st.sw[6] = x1.z; st.sw[7] = x1.w;
-    st.blk = (uint32_t)__ldg(block_base + step) & 0x7FFFFFFFu;  // (bit 31: the step's flag)
-    st.end = (uint32_t)__ldg(block_base + step + 1) & 0x7FFFFFFFu;
+    st.blk = ((uint32_t)__ldg(block_base + step) & 0x7FFFFFFFu) + off;  // (bit 31: the step's flag)
+    st.end = ((uint32_t)__ldg(block_base + step + 1) & 0x7FFFFFFFu) + off;
     const uint32_t* bw = (const uint32_t*)blocks;
     st.win = __ldg(bw + (st.blk >> 2) + lane);
     st.tail = __ldg(bw + (st.end >> 2) - 1 - lane);
@@ -1012,6 +1013,28 @@ struct Tiered {
     __device__ __forceinline__ void load(St& st, int64_t step, int lane) const { load_step(st, data, blocks, block_base, step, lane); }
     __device__ __forceinline__ void decode(const St& st, int lane, uint32_t* s2, const uint32_t* tab, uint32_t R[16]) const { decode_step(st, ts, blocks, lane, s2, tab, R); }
     // Ahead: a step's fixed part (1280 bytes, 10 lines of 128: lane i takes line i) to L2; its block (a few bytes) is read when it is decoded.
+    __device__ __forceinline__ void prefetch(int64_t step, int lane) const {
+        if (lane < (int)(STEP_BYTES / 128)) pf_l2(data + step * STEP_BYTES + lane * 128);
+    }
+    __device__ __forceinline__ void prefetch_exc(int64_t, int64_t, int) const {}
+};
+
+// The tiered layout in an expert cache's places (glyd_gpu_mma_moe_placed): place e's `per` steps are the stack's (data as Tiered's), its
+// block entries its own per + 1 (from block_base + e (per + 1)), offsets from its own blocks, which start `stride` bytes after the place
+// before's (a multiple of 4: a block's word alignment, which the packer's flag depends on, is kept). Its decode is Tiered's.
+struct TieredPlaced {
+    const uint8_t* data;
+    const uint8_t* blocks;
+    const int32_t* block_base;
+    Tiers ts;
+    int64_t per, stride;
+    typedef Step St;
+    static constexpr bool kTable = true;
+    __device__ __forceinline__ void load(St& st, int64_t step, int lane) const {
+        const int64_t e = step / per;
+        load_step(st, data, blocks, block_base + e, step, lane, e * stride);
+    }
+    __device__ __forceinline__ void decode(const St& st, int lane, uint32_t* s2, const uint32_t* tab, uint32_t R[16]) const { decode_step(st, ts, blocks, lane, s2, tab, R); }
     __device__ __forceinline__ void prefetch(int64_t step, int lane) const {
         if (lane < (int)(STEP_BYTES / 128)) pf_l2(data + step * STEP_BYTES + lane * 128);
     }
@@ -11090,6 +11113,12 @@ GLYD_GPU_INTERNAL int glyd_gpu_mma_moe(const uint8_t* data, const uint8_t* block
     if (fp4r_words(tiers, K, data, blocks, bad)) return bad ? cudaErrorInvalidValue : mma_moe_run(fp4r_fmt(data, blocks, K), E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr);
     if (!tiered_words(tiers, ts)) return cudaErrorInvalidValue;
     return mma_moe_run(Tiered{data, blocks, block_base, ts}, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr);
+}
+
+GLYD_GPU_INTERNAL int glyd_gpu_mma_moe_placed(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t stride, int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
+    Tiers ts;
+    if (!tiered_words(tiers, ts) || stride < 0 || stride % 4 || O < 64 || O % 64 || K < 16 || K % 16) return cudaErrorInvalidValue;
+    return mma_moe_run(TieredPlaced{data, blocks, block_base, ts, O * K / 1024, stride}, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr);
 }
 
 GLYD_GPU_INTERNAL int glyd_gpu_mma12_moe_workspace(int64_t E, int64_t O, int64_t K, int64_t T, int64_t k, int64_t act, int64_t weighted, size_t* bytes) {

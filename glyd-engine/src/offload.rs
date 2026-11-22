@@ -37,6 +37,7 @@ use crate::dev::{copy_d2h_async, copy_h2d_async, memset_async, Dev, Ev, EvRef, P
 use crate::disk::{self, Job};
 use crate::ffi::{err, Error, Result, Stream};
 use crate::moe_hb::HbPlace;
+use crate::moe_hbg::{HbgExpert, HbgPlace};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -954,6 +955,30 @@ pub enum HostHalf {
         packed: bool,
         act: (f32, f32),
     },
+    /// Hummingbird's experts of every mixture of experts (src/moe_hbg.rs: a group's places, `HbgPlace`, as the host tier holds them, read in place): each pair's two products with the family's activation `act`, finished as
+    /// `finish` says (src/cpu_hbg.rs `store_pairs`: weighted in the rotated basis, or normed in the model's for Muse Spark).
+    Hbg {
+        place: HbgPlace,
+        act: crate::moe::Act,
+        finish: crate::cpu_hbg::Finish,
+    },
+}
+
+/// The GPU a call of the store runs on: its number in the driver's list and the engine's stream there (what the store needs of a `Dev`; a layer that holds no `Dev`, `moe::MoeLayer`, gives these).
+#[derive(Clone, Copy, Debug)]
+pub struct At {
+    pub ordinal: i32,
+    pub stream: Stream,
+}
+
+impl At {
+    pub fn of(dev: &Dev) -> At {
+        At { ordinal: dev.ordinal, stream: dev.stream }
+    }
+
+    fn sync(&self) -> Result<()> {
+        crate::dev::sync_stream(self.stream)
+    }
 }
 
 /// The host's half of a layer, and the call each expert was last computed in (0: never).
@@ -1366,6 +1391,23 @@ pub struct DiskIn {
     pub read: Reader,
 }
 
+/// `DiskIn` for a group of Hummingbird experts of any mixture of experts (src/moe_hbg.rs, `HbgStack::places`): its place, the family's activation and how the host finishes a pair, the places on the GPU, the slots in memory, the reader.
+pub struct DiskInG {
+    pub place: HbgPlace,
+    pub act: crate::moe::Act,
+    pub finish: crate::cpu_hbg::Finish,
+    pub dev: [u64; 2],
+    pub ram: usize,
+    pub read: Reader,
+}
+
+/// The parts of a group on the disk that `add_on_disk` takes whatever its format.
+struct DiskSlots {
+    dev: [u64; 2],
+    ram: usize,
+    read: Reader,
+}
+
 /// The expert cache of a model: a `LayerCache`, a host tier and a set of places for each mixture-of-experts layer (by its number among them), and one copy stream. The layers' blocks share it (`Rc`); it is not for threads.
 pub struct ExpertStore {
     inner: RefCell<Inner>,
@@ -1459,14 +1501,14 @@ impl Cuda {
 
     /// Room for `pairs` choices in the host buffers the ids come to and the places go from, and for `z` bytes of the experts' input and `part` bytes of the host's sums: each buffer that is too small is made larger (the
     /// engine's stream is waited for before the old ones are freed: a copy queued from them may not have run); none is made smaller.
-    fn reserve(&mut self, pairs: usize, z: usize, part: usize, dev: &Dev) -> Result<()> {
-        self.ordinal = Some(dev.ordinal);
+    fn reserve(&mut self, pairs: usize, z: usize, part: usize, at: At) -> Result<()> {
+        self.ordinal = Some(at.ordinal);
         let short = |b: &Pinned, need: usize| b.bytes < need;
         if short(&self.ids, pairs * 8) || short(&self.way, pairs * 8 * WAYS) || short(&self.wts, pairs * 4) || short(&self.z, z) || short(&self.part, part) {
             if self.fixed {
                 return err(format!("a call of {pairs} pairs, where the host's buffers that graphs name were made for fewer"));
             }
-            dev.sync()?;
+            at.sync()?;
             // (the choices, their weights and the input mapped for the device: a kernel of the step's front writes them there, with no copy: `parts_host`)
             for (b, need, mapped) in [
                 (&mut self.ids, pairs * 8, true),
@@ -1519,6 +1561,7 @@ impl Resident {
             Some(HostHalf::Hb(p)) => p.cols,
             Some(HostHalf::Cb2(_, hidden, _)) => *hidden,
             Some(HostHalf::Fp4 { latent, .. }) => *latent,
+            Some(HostHalf::Hbg { place, .. }) => place.width,
             None => 0,
         }
     }
@@ -1546,6 +1589,19 @@ impl Resident {
         // SAFETY: the host tier holds every expert of the layer end to end, or its slots (`add_layer` and `add_layer_on_disk` checked the sizes), and nothing writes the slot read: a slot is written by `stage` on the thread that
         // calls, before the reads of its call, and the reads of a call are done before the next.
         unsafe { hb_view(place, data.ptr as *const u8, meta.ptr as *const u8, self.host_slot(e)?) }
+    }
+
+    /// Expert `e` of a group of Hummingbird experts of any mixture of experts (`HostHalf::Hbg`) as the host reads it: its place in the host tier, where it is.
+    fn hbg_expert(&self, e: usize) -> Result<HbgExpert<'_>> {
+        let Some(CpuSide { half: HostHalf::Hbg { place, .. }, .. }) = &self.cpu else { return err("a layer without a Hummingbird host half".to_string()) };
+        let (data, meta, at) = (&self.packs[0].host[0], &self.packs[0].host[1], self.host_slot(e)?);
+        // SAFETY: as `hb_expert`'s: the host tier holds the layer's experts end to end, or its slots, and the slot read is not written during the call.
+        unsafe {
+            place.views(
+                std::slice::from_raw_parts((data.ptr as *const u8).add(at * place.data), place.data),
+                std::slice::from_raw_parts((meta.ptr as *const u8).add(at * place.meta), place.meta),
+            )
+        }
     }
 
     /// Expert `e` of a layer of this format as the host's kernels read it: its place in the host tier, where it is (the mapped file's bytes: the codes of its downT then its up, then the codebooks of both), the formats of
@@ -2072,7 +2128,19 @@ impl ExpertStore {
                     ));
                 }
             }
-            Some(HostHalf::Hb(_)) | Some(HostHalf::Cb2(..)) | None => {}
+            Some(HostHalf::Hbg { place, .. }) if packs.len() != 1 || packs[0].stride != [place.data as u64, place.meta as u64] => {
+                return err(format!(
+                    "a host half of experts of {} and {} rows of {} at {} bits ({} + {} bytes an expert), with packs of {:?} bytes",
+                    place.up_rows,
+                    place.down_rows,
+                    place.width,
+                    place.bits,
+                    place.data,
+                    place.meta,
+                    packs.iter().map(|p| p.stride).collect::<Vec<_>>()
+                ));
+            }
+            Some(HostHalf::Hb(_)) | Some(HostHalf::Hbg { .. }) | Some(HostHalf::Cb2(..)) | None => {}
         }
         Ok(())
     }
@@ -2081,10 +2149,36 @@ impl ExpertStore {
     /// read from the packed directory by `disk.read`), the others read into a slot as the router asks for them (see `Tier`). The host's half is the places of the host tier as they are (`HostHalf::Hb`).
     pub fn add_layer_on_disk(&self, layer: usize, experts: usize, slots: usize, disk: DiskIn) -> Result<()> {
         let place = disk.place;
+        let stride = [place.data, place.meta];
+        self.add_on_disk(layer, experts, slots, stride, disk.dev, disk.ram, disk.read, HostHalf::Hb(place))
+    }
+
+    /// `add_layer_on_disk` for a group of Hummingbird experts of any mixture of experts (src/moe_hbg.rs): its place, the family's activation and how the host finishes a pair (`HostHalf::Hbg`).
+    pub fn add_layer_on_disk_g(&self, layer: usize, experts: usize, slots: usize, disk: DiskInG) -> Result<()> {
+        let place = disk.place;
+        let stride = [place.data, place.meta];
+        self.add_on_disk(layer, experts, slots, stride, disk.dev, disk.ram, disk.read, HostHalf::Hbg { place, act: disk.act, finish: disk.finish })
+    }
+
+    /// A group whose experts are not all in the computer's memory: `ram` slots of the host tier of `stride` bytes an expert (its codes; its scales and codebooks), the places at `dev`, the reader, and the host's half.
+    #[allow(clippy::too_many_arguments)]
+    fn add_on_disk(
+        &self,
+        layer: usize,
+        experts: usize,
+        slots: usize,
+        stride: [usize; 2],
+        dev: [u64; 2],
+        ram: usize,
+        read: Reader,
+        half: HostHalf,
+    ) -> Result<()> {
+        let disk = DiskSlots { dev, ram, read };
         if slots == 0 || slots > experts || disk.ram == 0 || disk.ram > experts {
             return err(format!("a cache of {slots} places and room in the computer's memory for {} experts, for {experts} experts", disk.ram));
         }
-        let stride = [place.data as u64, place.meta as u64];
+        let place = (stride[0], stride[1]);
+        let stride = [stride[0] as u64, stride[1] as u64];
         let alloc = |k: usize| {
             Pinned::new(disk.ram * stride[k] as usize).map_err(|e| {
                 Error(format!(
@@ -2095,10 +2189,10 @@ impl ExpertStore {
             })
         };
         let pack = HostPack { stride, dev: disk.dev, host: [alloc(0)?.into(), alloc(1)?.into()], place: None };
-        let mem = Slots { base: [pack.host[0].ptr as *mut u8, pack.host[1].ptr as *mut u8], stride: [place.data, place.meta] };
+        let mem = Slots { base: [pack.host[0].ptr as *mut u8, pack.host[1].ptr as *mut u8], stride: [place.0, place.1] };
         let mut tier = Tier::new(experts, disk.ram, disk.read);
         tier.seed(mem)?;
-        self.install(layer, experts, slots, vec![pack], Some(CpuSide { half: HostHalf::Hb(place), last: vec![0; experts] }), Some(tier))
+        self.install(layer, experts, slots, vec![pack], Some(CpuSide { half, last: vec![0; experts] }), Some(tier))
     }
 
     /// Layer `layer` of `experts` experts with `slots` places on the GPU, whose experts are read from host memory the caller gives (`HostMem`: the codes and the codebooks of every expert end to end, `stride` bytes an
@@ -2311,14 +2405,21 @@ impl ExpertStore {
     /// # Safety
     /// The addresses of `call` are live device buffers of the sizes it names; the engine's stream is `dev`'s, and `body` queues work on it alone.
     pub unsafe fn run(&self, layer: usize, dev: &Dev, call: &Call, body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>) -> Result<()> {
-        self.run_early(layer, dev, call, &mut || Ok(()), body)
+        self.run_early_at(layer, At::of(dev), call, &mut || Ok(()), body)
     }
 
-    /// `run`, with `early` given the engine's stream right after the router's choices have been asked for and before the host waits for them: the GPU work of the layer that does not need the choices (the shared expert)
-    /// is queued there and runs while the host reads the choices and plans, instead of before the host's wait.
+    /// `run` on the GPU `at` (a layer that holds no `Dev`: `moe::MoeLayer`).
     ///
     /// # Safety
-    /// As `run`; `early` queues work on the engine's stream alone and does not use the store.
+    /// As `run`.
+    pub unsafe fn run_at(&self, layer: usize, at: At, call: &Call, body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>) -> Result<()> {
+        self.run_early_at(layer, at, call, &mut || Ok(()), body)
+    }
+
+    /// `run_early_at` on a `Dev`.
+    ///
+    /// # Safety
+    /// As `run`.
     pub unsafe fn run_early(
         &self,
         layer: usize,
@@ -2327,7 +2428,23 @@ impl ExpertStore {
         early: &mut dyn FnMut() -> Result<()>,
         body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>,
     ) -> Result<()> {
-        let s = dev.stream;
+        self.run_early_at(layer, At::of(dev), call, early, body)
+    }
+
+    /// `run`, with `early` given the engine's stream right after the router's choices have been asked for and before the host waits for them: the GPU work of the layer that does not need the choices (the shared expert)
+    /// is queued there and runs while the host reads the choices and plans, instead of before the host's wait.
+    ///
+    /// # Safety
+    /// As `run`; `early` queues work on the engine's stream alone and does not use the store.
+    pub unsafe fn run_early_at(
+        &self,
+        layer: usize,
+        at: At,
+        call: &Call,
+        early: &mut dyn FnMut() -> Result<()>,
+        body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>,
+    ) -> Result<()> {
+        let s = at.stream;
         let pairs = call.pairs;
         let (needed, host_ids, host_wts, hybrid) = {
             let mut guard = self.inner.borrow_mut();
@@ -2341,7 +2458,7 @@ impl ExpertStore {
                 && ly.cpu.as_ref().is_some_and(|c| matches!(c.half, HostHalf::Rows(_) | HostHalf::Cb2(..) | HostHalf::Fp4 { .. }))
                 && (1..=CPU_TOKENS).contains(&call.tokens)
                 && pairs.is_multiple_of(call.tokens);
-            cuda.reserve(pairs, if hybrid { call.tokens * hidden * 2 } else { 0 }, if hybrid { call.tokens * hidden * 4 } else { 0 }, dev)?;
+            cuda.reserve(pairs, if hybrid { call.tokens * hidden * 2 } else { 0 }, if hybrid { call.tokens * hidden * 4 } else { 0 }, at)?;
             crate::tmark!(s, "store: choices requested");
             copy_d2h_async(cuda.ids.ptr, call.ids, pairs * 8, s)?;
             if hybrid {
@@ -2372,9 +2489,9 @@ impl ExpertStore {
                     && matches!(ly.cpu.as_ref().map(|c| &c.half), Some(HostHalf::Cb2(..)))
             };
             if overlap {
-                return self.run_hybrid_overlap(layer, dev, call, &needed, &host_ids, &host_wts, false, body);
+                return self.run_hybrid_overlap(layer, at, call, &needed, &host_ids, &host_wts, false, body);
             }
-            return self.run_hybrid(layer, dev, call, &needed, &host_ids, &host_wts, body);
+            return self.run_hybrid(layer, at, call, &needed, &host_ids, &host_wts, body);
         }
         let waves = self.inner.borrow().layers[layer].as_ref().expect("a layer").cache.waves(&needed);
         for (w, wave) in waves.iter().enumerate() {
@@ -2383,7 +2500,7 @@ impl ExpertStore {
                 let inner = &mut *guard;
                 if w > 0 {
                     // (the last wave's places and the host buffer of its pairs' places are free once the engine's stream has run it)
-                    dev.sync()?;
+                    at.sync()?;
                 }
                 let cuda = inner.cuda.as_mut().expect("the copy stream");
                 let ly = inner.layers[layer].as_mut().expect("a layer");
@@ -2429,7 +2546,7 @@ impl ExpertStore {
     unsafe fn run_hybrid_overlap(
         &self,
         layer: usize,
-        dev: &Dev,
+        at: At,
         call: &Call,
         needed: &[u16],
         host_ids: &[i64],
@@ -2438,7 +2555,7 @@ impl ExpertStore {
         body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>,
     ) -> Result<()> {
         use crate::cpu_cb::{GlmExpert, GlmPair};
-        let s = dev.stream;
+        let s = at.stream;
         let (pairs, k) = (call.pairs, call.pairs / call.tokens);
         let mut guard = self.inner.borrow_mut();
         let inner = &mut *guard;
@@ -2582,7 +2699,7 @@ impl ExpertStore {
         let inner = &mut *guard;
         let cuda = inner.cuda.as_mut().ok_or_else(|| Error("the expert cache has no layers".into()))?;
         let hidden = inner.layers.get(layer).and_then(Option::as_ref).ok_or_else(|| Error(format!("no layer {layer} in the expert cache")))?.hidden();
-        cuda.reserve(pairs, tokens * hidden * 2, tokens * hidden * 4, dev)
+        cuda.reserve(pairs, tokens * hidden * 2, tokens * hidden * 4, At::of(dev))
     }
 
     /// The next `run_parts` waits for the mapped host word at `flag` to read `want` instead of synchronizing the stream (the front's last kernel moves it once the host's buffers are written).
@@ -2662,7 +2779,7 @@ impl ExpertStore {
             (distinct(&host_ids, ly.cache.experts()), host_ids, host_wts)
         };
         early()?;
-        self.run_hybrid_overlap(layer, dev, call, &needed, &host_ids, &host_wts, true, &mut |stage, _, _, hy| match stage {
+        self.run_hybrid_overlap(layer, At::of(dev), call, &needed, &host_ids, &host_wts, true, &mut |stage, _, _, hy| match stage {
             Stage::Products => products(hy),
             Stage::Sum => Ok(()),
         })
@@ -2864,14 +2981,14 @@ impl ExpertStore {
     unsafe fn run_hybrid(
         &self,
         layer: usize,
-        dev: &Dev,
+        at: At,
         call: &Call,
         needed: &[u16],
         host_ids: &[i64],
         host_wts: &[f32],
         body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>,
     ) -> Result<()> {
-        let s = dev.stream;
+        let s = at.stream;
         let (pairs, k) = (call.pairs, call.pairs / call.tokens);
         let dropped;
         // the plan: the experts that get a place (the hits, and the misses `plan` copies), the pairs of the others, the misses worth a place behind the call
@@ -3002,11 +3119,13 @@ impl ExpertStore {
         inner.offload.mode != Mode::Copy
             && (1..=CPU_TOKENS).contains(&tokens)
             && pairs.is_multiple_of(tokens)
-            && groups
-                .layers
-                .iter()
-                .flatten()
-                .all(|&l| inner.layers.get(l).and_then(Option::as_ref).is_some_and(|ly| matches!(ly.cpu.as_ref().map(|c| &c.half), Some(HostHalf::Hb(_)))))
+            && groups.layers.iter().flatten().all(|&l| {
+                inner
+                    .layers
+                    .get(l)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|ly| matches!(ly.cpu.as_ref().map(|c| &c.half), Some(HostHalf::Hb(_) | HostHalf::Hbg { .. })))
+            })
     }
 
     /// One call of a model layer whose experts are in groups (`Groups`), served as `run_hybrid` serves a layer with a host half and with the one wait that a layer has: the router's choices, their weights and the experts'
@@ -3018,7 +3137,15 @@ impl ExpertStore {
     /// # Safety
     /// As `run`; the buffers of `call` are live device buffers of the sizes it names; the call is one for which `serves_groups`.
     pub unsafe fn run_groups(&self, groups: &Groups, dev: &Dev, call: &GroupsCall, body: &mut dyn FnMut(Stage, usize, &Hybrid) -> Result<()>) -> Result<()> {
-        let s = dev.stream;
+        self.run_groups_at(groups, At::of(dev), call, body)
+    }
+
+    /// `run_groups` on the GPU `at`.
+    ///
+    /// # Safety
+    /// As `run_groups`.
+    pub unsafe fn run_groups_at(&self, groups: &Groups, at: At, call: &GroupsCall, body: &mut dyn FnMut(Stage, usize, &Hybrid) -> Result<()>) -> Result<()> {
+        let s = at.stream;
         let (pairs, layers) = (call.pairs, groups.layers);
         if call.tokens == 0 || call.tokens > CPU_TOKENS || !pairs.is_multiple_of(call.tokens) {
             return err(format!("a call of {} tokens and {pairs} pairs is not one for the host's half (1 to {CPU_TOKENS} tokens)", call.tokens));
@@ -3035,12 +3162,12 @@ impl ExpertStore {
                 .find_map(|&l| inner.layers.get(l).and_then(Option::as_ref).map(Resident::hidden))
                 .filter(|&h| h > 0)
                 .ok_or_else(|| Error("no group of the layer is in the expert cache".into()))?;
-            cuda.reserve(pairs, call.tokens * hidden * 4, call.tokens * hidden * 4, dev)?;
+            cuda.reserve(pairs, call.tokens * hidden * 4, call.tokens * hidden * 4, at)?;
             copy_d2h_async(cuda.ids.ptr, call.ids, pairs * 8, s)?;
             copy_d2h_async(cuda.wts.ptr, call.wts, pairs * 4, s)?;
             copy_d2h_async(cuda.z.ptr, call.z, call.tokens * hidden * 4, s)?;
             let t0 = Instant::now();
-            dev.sync()?;
+            at.sync()?;
             inner.stats.wait_ms += t0.elapsed().as_secs_f64() * 1e3;
             // SAFETY: the pinned buffers hold `pairs` int64 and fp32, written by the copies that have completed.
             (
@@ -3145,6 +3272,33 @@ impl ExpertStore {
                         &mut inner.costs,
                         inner.expert_bytes,
                     )?;
+                }
+                // (Hummingbird's experts of any mixture of experts: their pairs' products, the family's activation, weighted or normed, src/cpu_hbg.rs)
+                let generic = placed.mine[start..end].first().and_then(|&(g, _)| {
+                    let ly = inner.layers[layers[g]?].as_ref()?;
+                    match ly.cpu.as_ref().map(|c| &c.half) {
+                        Some(HostHalf::Hbg { act, finish, .. }) => Some((*act, finish.clone())),
+                        _ => None,
+                    }
+                });
+                if let Some((act, finish)) = generic {
+                    let experts: Vec<HbgExpert> = placed.mine[start..end]
+                        .iter()
+                        .map(|&(g, j)| {
+                            inner.layers[layers[g].expect("a group in the store")].as_ref().expect("a layer").hbg_expert(placed.local[g][j] as usize)
+                        })
+                        .collect::<Result<_>>()?;
+                    let tokens: Vec<usize> = placed.mine[start..end].iter().map(|&(_, j)| j / k).collect();
+                    let wts: Vec<f32> = placed.mine[start..end].iter().map(|&(_, j)| host_wts[j]).collect();
+                    let t0 = Instant::now();
+                    crate::cpu_hbg::store_pairs(&experts, z, &tokens, &wts, act, &finish, &mut cuda.out[start * hidden..end * hidden], inner.offload.threads)?;
+                    let round = t0.elapsed().as_secs_f64() * 1e6;
+                    inner.stats.cpu_pairs += experts.len() as u64;
+                    inner.stats.cpu_ms += round / 1e3;
+                    if !inner.frozen {
+                        inner.costs.computed(experts.len(), round);
+                    }
+                    continue;
                 }
                 let experts: Vec<HbExpert> = placed.mine[start..end]
                     .iter()

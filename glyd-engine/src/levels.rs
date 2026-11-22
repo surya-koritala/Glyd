@@ -16,7 +16,8 @@ pub struct Level {
 }
 
 /// The levels a tag on MODEL names (`Qwen/Qwen3.8-27B:swift`). Wren is the four-bit layout with its plain rounding (exact on a
-/// QAT checkpoint); hummingbird is Nemotron 3 Super's routed experts at 3 and 2 bits from a calibration (src/moe_hb.rs; every
+/// QAT checkpoint); hummingbird is a mixture of experts' routed experts at 3 and 2 bits by use (Kimi-K3, DeepSeek-V4, GLM-5.3-Flash and
+/// Muse Spark from `glyd-engine pack --layout hummingbird --usage`, src/hb_pack.rs, the rest as released; Nemotron 3 Super's: src/moe_hb.rs, every
 /// other matrix six-bit), from `glyd-engine pack MODEL OUT --layout hummingbird --codes DIR` or downloaded pre-packed. The
 /// three-bit layout (`--layout i3`) is no level.
 pub static LEVELS: [Level; 5] = [

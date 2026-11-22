@@ -445,8 +445,10 @@ pub(crate) fn size(
 /// ROADMAP P2b); Ok(None) where the headers cannot be had (offline, the Hub does not answer), and the planner's estimate stands.
 fn size_local_dynamic(a: &Args, model: &str, text: &str, family: &'static str, devs: &[Target], reach: &dyn Fn(&[i32]) -> bool) -> Done<Option<LoadPlan>> {
     let Some(table) = crate::sizes::Table::find(model) else { return Ok(None) };
+    // (the files where they are here: a hummingbird directory's experts are not in the table)
+    let dir = if Path::new(model).join("config.json").exists() { Some(PathBuf::from(model)) } else { Source::find(model).ok().map(|s| s.dir) };
     let host = devs.first().and_then(|t| t.host);
-    size_dynamic(a, &short_name(model), &table, text, family, devs, host, reach).map(Some)
+    size_dynamic(a, &short_name(model), &table, dir.as_deref(), text, family, devs, host, reach).map(Some)
 }
 
 /// The model's shape against what the engine's KV cache takes, and its context against what the tables cover: refused before anything is downloaded.
@@ -1728,7 +1730,7 @@ fn load_lossy(
     let model = a.need(1, "MODEL")?.to_string();
     match dynamic_family(&model) {
         Some("Nemotron-H") if layout != Layout::Tiered => {}
-        Some(family) => return load_dynamic(a, &model, family, layout, served, ui),
+        Some(family) => return load_dynamic(a, &model, family, hb_level(&model, layout), served, ui),
         None => {}
     }
     let mut layout = layout_for(&model, layout);
@@ -1948,7 +1950,7 @@ fn kimi_cache(
     ctx: usize,
     twelve: bool,
     host: Option<u64>,
-) -> Done<(Vec<usize>, Vec<i32>, Vec<usize>, u64, u64, usize)> {
+) -> Done<(Vec<usize>, Vec<i32>, Vec<usize>, u64, u64, usize, (usize, u64))> {
     let c = crate::kimi::ConfigKimi::parse(text, "config.json", None).map_err(cannot)?;
     // (its bf16 matrices in the 12-bit layout where `twelve`: an HBM GPU's faster product, a few hundred places fewer)
     let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
@@ -1978,7 +1980,10 @@ fn kimi_cache(
             "A machine with that much memory runs it",
         ));
     }
-    let Some((cuts, devices, places)) = crate::dynamic::split::places_plan(&dense, base, &c.moe, room, expert, e.experts, e.top_k) else {
+    // (no room for a token's experts on one GPU: the last layers' dense matrices in the computer's memory, src/dense_ram.rs)
+    let ram = crate::dynamic::split::ram_bytes_table(table, text, nl, "Kimi-K3", crate::dynamic::split::CODED_PCT, bf16).map_err(cannot)?;
+    let Some((cuts, devices, places, held, freed)) = crate::dynamic::split::places_plan_dense(&dense, base, &c.moe, room, expert, e.experts, e.top_k, &ram)
+    else {
         return Err(Refusal::unsupported(
             format!(
                 "{name}: its weights besides the experts take {}, and the GPUs here leave too little room for its experts",
@@ -1988,10 +1993,135 @@ fn kimi_cache(
         ));
     };
     let bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(nl)).collect();
-    let on_gpus = dense.iter().sum::<u64>()
+    let on_gpus = dense.iter().sum::<u64>() - freed
         + base
         + bounds.windows(2).zip(&places).map(|(w, &p)| c.moe[w[0]..w[1]].iter().filter(|&&m| m).count() as u64 * p as u64 * expert).sum::<u64>();
-    Ok((cuts, devices, places, on_gpus, all, e.experts))
+    Ok((cuts, devices, places, on_gpus, all, e.experts, (held, ram_held(&ram, &dense, held))))
+}
+
+/// The bytes the last `held` layers' dense matrices take in the computer's memory (`split::places_plan_dense`'s layers).
+fn ram_held(ram: &[u64], dense: &[u64], held: usize) -> u64 {
+    let n = ram.len().min(dense.len());
+    (n - held.min(n)..n).map(|l| ram[l].min(dense[l])).sum()
+}
+
+/// A hummingbird directory's expert cache on the dynamic route (src/hbg_store.rs) where its GPUs do not hold all its experts, for any family: each layer's weights besides its experts and its share of the cache for `ctx` tokens
+/// on the GPUs, places for the busiest experts with the room left (`split::places_plan`, at the mean of the experts' bytes), and every expert in the computer's memory (`host` bytes free, less `HOST_MARGIN`) or, where it holds
+/// less, its share there and the rest read from the expert files as the router asks for them (the disk). The cuts, their GPUs, each stage's places a layer, the GPUs' bytes, all the experts' bytes, the experts a layer, and
+/// the bytes of experts the computer's memory holds; or the refusal.
+#[allow(clippy::type_complexity)]
+fn hb_cache(
+    dir: &Path,
+    text: &str,
+    nl: usize,
+    room: &[(i32, u64)],
+    name: &str,
+    ctx: usize,
+    twelve: bool,
+    host: Option<u64>,
+) -> Done<(Vec<usize>, Vec<i32>, Vec<usize>, u64, u64, usize, u64, (usize, u64))> {
+    let hb = crate::hb_pack::HbDir::open(dir).map_err(cannot)?.ok_or_else(|| cannot(format!("{}: not a hummingbird directory", dir.display())))?;
+    let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
+    let (mut dense, base) = crate::dynamic::split::layer_bytes_with(dir, nl, crate::dynamic::split::CODED_PCT, bf16, &|_| true, false).map_err(cannot)?;
+    // (each layer's share of the cache for the context: the model's KV a token and its recurrent state, over its layers)
+    let sh = crate::plan::Shape::from_config(text).map_err(cannot)?;
+    let kv = (sh.kv_full * ctx as f64 + sh.kv_sliding * ctx.min(sh.window.max(1)) as f64 + sh.state) / nl.max(1) as f64;
+    dense.iter_mut().for_each(|d| *d += kv as u64);
+    let mut moe = vec![false; nl];
+    let (mut all, mut experts, mut count) = (0u64, 0usize, 0usize);
+    for r in &hb.layers {
+        if let Some(m) = moe.get_mut(r.block / 2) {
+            *m = true;
+        }
+        all += crate::hbg_store::layer_store_bytes(r).map_err(cannot)?;
+        experts = experts.max(r.bits.len());
+        count += r.bits.len();
+    }
+    let mean = all / count.max(1) as u64;
+    let host = host.unwrap_or(0);
+    // (the computer's memory for the experts: all of them, else what it has less the margin; at least a token's experts in every layer)
+    let ram = all.min(host.saturating_sub(HOST_MARGIN));
+    let token = hb.layers.len() as u64 * sh.topk.max(1) as u64 * mean;
+    if ram < token {
+        return Err(Refusal::unsupported(
+            format!(
+                "{name} at the hummingbird level keeps its experts in the computer's memory and on the disk: they take {}, and {} of memory is free",
+                gib(all),
+                gib(host)
+            ),
+            "A machine with more memory runs it",
+        ));
+    }
+    // (no room for a token's experts on one GPU: the last layers' dense matrices in the computer's memory, src/dense_ram.rs)
+    let family = crate::dynamic::split::family(text).unwrap_or("");
+    let rb = crate::dynamic::split::ram_bytes(dir, nl, family, crate::dynamic::split::CODED_PCT, bf16).map_err(cannot)?;
+    let Some((cuts, devices, places, held, freed)) = crate::dynamic::split::places_plan_dense(&dense, base, &moe, room, mean, experts, sh.topk.max(1), &rb)
+    else {
+        return Err(Refusal::unsupported(
+            format!(
+                "{name}: its weights besides the experts take {}, and the GPUs here leave too little room for its experts",
+                gib(dense.iter().sum::<u64>() + base)
+            ),
+            "A machine whose GPUs have more memory free runs it",
+        ));
+    };
+    let bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(nl)).collect();
+    let on_gpus = dense.iter().sum::<u64>() - freed
+        + base
+        + bounds.windows(2).zip(&places).map(|(w, &p)| moe[w[0]..w[1]].iter().filter(|&&m| m).count() as u64 * p as u64 * mean).sum::<u64>();
+    Ok((cuts, devices, places, on_gpus, all, experts, ram, (held, ram_held(&rb, &dense, held))))
+}
+
+/// A release's expert cache on the dynamic route where its experts are each the same bytes (src/tiering.rs, R12: DeepSeek-V4's FP4 experts; GLM-5.3-Flash's FP8 ones, each packed on its own in places of
+/// the largest's bytes: about 7 bits a value where the release's bytes, which size the places here, are 8; Muse Spark's bf16 ones in the lossless tiered layout, about 11 bits of 16) and its GPUs do not hold them all: each layer's weights besides its experts and
+/// its share of the cache for `ctx` tokens on the GPUs, places for the busiest experts with the room left, and every expert in the computer's memory (`host` bytes free, less `HOST_MARGIN`: the disk holds hummingbird
+/// directories' experts alone). The cuts, their GPUs, each stage's places a layer, the GPUs' bytes, all the experts' bytes and the experts a layer; or the refusal.
+#[allow(clippy::type_complexity)]
+fn release_cache(
+    table: &crate::sizes::Table,
+    text: &str,
+    nl: usize,
+    room: &[(i32, u64)],
+    name: &str,
+    ctx: usize,
+    twelve: bool,
+    host: Option<u64>,
+) -> Done<(Vec<usize>, Vec<i32>, Vec<usize>, u64, u64, usize, (usize, u64))> {
+    let expert = |n: &str| n.contains(".experts.");
+    let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
+    let (mut dense, base) = crate::dynamic::split::layer_bytes_table(table, nl, crate::dynamic::split::CODED_PCT, bf16, &|n| !expert(n));
+    let (per, _) = crate::dynamic::split::layer_bytes_table(table, nl, 100, 100, &expert);
+    let sh = crate::plan::Shape::from_config(text).map_err(cannot)?;
+    let kv = (sh.kv_full * ctx as f64 + sh.kv_sliding * ctx.min(sh.window.max(1)) as f64 + sh.state) / nl.max(1) as f64;
+    dense.iter_mut().for_each(|d| *d += kv as u64);
+    let moe: Vec<bool> = per.iter().map(|&b| b > 0).collect();
+    let (all, layers, experts) = (per.iter().sum::<u64>(), moe.iter().filter(|&&m| m).count(), sh.experts.max(1));
+    let mean = all / (layers * experts).max(1) as u64;
+    let host = host.unwrap_or(0);
+    if all + HOST_MARGIN > host {
+        return Err(Refusal::unsupported(
+            format!("{name} keeps the experts its GPUs do not hold in the computer's memory: they take {}, and {} is free", gib(all), gib(host)),
+            "A machine with that much memory runs it, or its hummingbird level, whose experts the disk holds too",
+        ));
+    }
+    // (no room for a token's experts on one GPU: the last layers' dense matrices in the computer's memory, src/dense_ram.rs)
+    let family = crate::dynamic::split::family(text).unwrap_or("");
+    let rb = crate::dynamic::split::ram_bytes_table(table, text, nl, family, crate::dynamic::split::CODED_PCT, bf16).map_err(cannot)?;
+    let Some((cuts, devices, places, held, freed)) = crate::dynamic::split::places_plan_dense(&dense, base, &moe, room, mean, experts, sh.topk.max(1), &rb)
+    else {
+        return Err(Refusal::unsupported(
+            format!(
+                "{name}: its weights besides the experts take {}, and the GPUs here leave too little room for its experts",
+                gib(dense.iter().sum::<u64>() + base)
+            ),
+            "A machine whose GPUs have more memory free runs it",
+        ));
+    };
+    let bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(nl)).collect();
+    let on_gpus = dense.iter().sum::<u64>() - freed
+        + base
+        + bounds.windows(2).zip(&places).map(|(w, &p)| moe[w[0]..w[1]].iter().filter(|&&m| m).count() as u64 * p as u64 * mean).sum::<u64>();
+    Ok((cuts, devices, places, on_gpus, all, experts, (held, ram_held(&rb, &dense, held))))
 }
 
 /// `kimi_cache` with every layer across all the GPUs of `room` (src/dynamic/tp.rs): each GPU holds its slice of the rows of each big matrix (the embedding
@@ -2083,6 +2213,7 @@ pub(crate) fn size_dynamic(
     a: &Args,
     name: &str,
     table: &crate::sizes::Table,
+    dir: Option<&Path>,
     text: &str,
     family: &'static str,
     devs: &[Target],
@@ -2093,7 +2224,14 @@ pub(crate) fn size_dynamic(
     let room: Vec<(i32, u64)> = devs.iter().map(|t| (t.ordinal, crate::plan::dynamic_room_of(t.free))).collect();
     let hbm = hbm_of(devs);
     let kimi = family == "Kimi-K3";
-    let ((per, base), cut, coded, mut twelve) = crate::dynamic::split::fit_table(table, nl, &room, hbm, kimi);
+    // (a hummingbird directory, src/hb_pack.rs: its routed experts are files of their own, which no table of tensors lists)
+    let hb_dir = dir.filter(|d| matches!(crate::hb_pack::HbDir::open(d), Ok(Some(_))));
+    let hb = hb_dir.is_some();
+    let hb_experts = match hb_dir {
+        Some(d) => crate::dynamic::split::hb_layer_bytes(d, nl).map_err(cannot)?,
+        None => Vec::new(),
+    };
+    let ((per, base), cut, coded, mut twelve) = crate::dynamic::split::fit_table_with(table, nl, &room, hbm, kimi, &hb_experts);
     let mut total = per.iter().sum::<u64>() + base;
     let chosen = a.flag("split").is_some() || a.flag("devices").is_some();
     let model_max = crate::dynamic::split::config_num(text, "max_position_embeddings").unwrap_or(usize::MAX);
@@ -2117,8 +2255,30 @@ pub(crate) fn size_dynamic(
         };
     // Kimi-K3 where the GPUs do not hold its experts: the expert cache (each GPU's room after the other weights as places for its layers' experts, every
     // expert in the computer's memory)
-    let cache = if kimi && cut.is_none() && !chosen {
-        Some(if across { kimi_cache_tp(table, text, &tp_room, name, ctx, hbm, host)? } else { kimi_cache(table, text, nl, &room, name, ctx, hbm, host)? })
+    // (a hummingbird directory's own expert cache for any family, its layers cut over the GPUs, never every layer across them)
+    // (a release whose experts the cache takes, src/tiering.rs: DeepSeek-V4's FP4 experts, GLM-5.3-Flash's FP8 ones, Muse Spark's lossless ones; its cache where its GPUs do not hold it)
+    let release_cached = matches!(family, "DeepSeek-V4" | "GLM-5.3-Flash" | "Muse Spark") && !hb && cut.is_none() && !chosen;
+    let across = across && !hb && !release_cached;
+    let mut ram = None;
+    // (the last layers' dense matrices in the computer's memory where a token's experts do not fit beside them on one GPU: how many, their bytes)
+    let mut dense_ram = (0usize, 0u64);
+    let cache = if let Some(dir) = hb_dir.filter(|_| cut.is_none() && !chosen) {
+        let k = hb_cache(dir, text, nl, &room, name, ctx, hbm, host)?;
+        (ram, dense_ram) = (Some(k.6), k.7);
+        Some((k.0, k.1, k.2, k.3, k.4, k.5))
+    } else if release_cached {
+        // (R12: its experts in the cache, every one in the computer's memory)
+        let k = release_cache(table, text, nl, &room, name, ctx, hbm, host)?;
+        (ram, dense_ram) = (Some(k.4), k.6);
+        Some((k.0, k.1, k.2, k.3, k.4, k.5))
+    } else if kimi && !hb && cut.is_none() && !chosen {
+        Some(if across {
+            kimi_cache_tp(table, text, &tp_room, name, ctx, hbm, host)?
+        } else {
+            let k = kimi_cache(table, text, nl, &room, name, ctx, hbm, host)?;
+            dense_ram = k.6;
+            (k.0, k.1, k.2, k.3, k.4, k.5)
+        })
     } else {
         None
     };
@@ -2151,15 +2311,27 @@ pub(crate) fn size_dynamic(
     let used: Vec<&Target> = devs.iter().filter(|t| devices.contains(&t.ordinal)).collect();
     let (free, work) = (used.iter().map(|t| t.free).sum::<u64>(), used.iter().map(|t| crate::plan::dynamic_work_of(t.free)).sum::<u64>());
     let host_bytes = cache.as_ref().map_or(0, |k| k.4);
+    // (a hummingbird directory's cache: its places, the experts' bytes at their mean, the memory and the disk they take)
+    let experts = cache.as_ref().zip(ram).map(|(k, ram)| {
+        let layers = hb_dir.and_then(|d| crate::hb_pack::HbDir::open(d).ok().flatten()).map_or(0, |d| d.layers.len());
+        crate::offload::CachePlan {
+            layers,
+            experts: k.5,
+            slots: k.2.iter().min().copied().unwrap_or(0),
+            expert_bytes: k.4 / (layers * k.5).max(1) as u64,
+            in_place: true,
+            ram,
+        }
+    });
     Ok(LoadPlan {
         kind: Kind::Dynamic,
         family,
-        level: "penguin",
+        level: if hb { "hummingbird" } else { "penguin" },
         layout: if twelve { Layout::Twelve } else { Layout::Tiered },
         context: ctx,
         users: 1,
         chunk: 256,
-        weights: total + host_bytes,
+        weights: total + host_bytes + dense_ram.1,
         bf16: 0,
         kv: 0,
         work,
@@ -2167,7 +2339,7 @@ pub(crate) fn size_dynamic(
         reserve: used.len() as u64 * crate::plan::CONTEXT_FLOOR,
         free,
         gpu: used.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "),
-        experts: None,
+        experts,
         spread: Some(crate::plan::Spread {
             cuts,
             devices,
@@ -2178,6 +2350,8 @@ pub(crate) fn size_dynamic(
             experts_per_layer: cache.as_ref().map_or(0, |k| k.5),
             host_bytes,
             gpu_bytes: total,
+            dense: dense_ram.0,
+            dense_bytes: dense_ram.1,
         }),
     })
 }
@@ -2188,11 +2362,67 @@ fn penguin_only(name: &str, family: &str, model: &str) -> Refusal {
     Refusal::new(format!("{name} ({family}) runs at the penguin level only: the release's weights exactly"), format!("glyd run {base}"))
 }
 
+/// The hummingbird directory of a model on the dynamic route (src/hb_pack.rs): MODEL itself where it is one, else its pre-packed repo
+/// (`glyd/NAME-hummingbird`) where it is here, else downloaded where `ui` is given and the Hub has it; or the refusal that says how to pack it.
+fn hb_dir_for(model: &str, name: &str, family: &str, ui: Option<&RefCell<Ui>>) -> Done<PathBuf> {
+    let is_hb = |d: &Path| matches!(crate::hb_pack::HbDir::open(d), Ok(Some(_)));
+    if Path::new(model).join("glyd.json").exists() && is_hb(Path::new(model)) {
+        return Ok(PathBuf::from(model));
+    }
+    let repo = packed_repo(model, "hummingbird");
+    let held = |r: &str| Source::find(r).ok().map(|s| s.dir).filter(|d| is_hb(d));
+    if let Some(d) = held(&repo) {
+        return Ok(d);
+    }
+    if let Some(ui) = ui {
+        if let Some((hub, remote, wanted)) = store::hub_plan_packed(&repo, "hummingbird", ui)? {
+            store::download(&hub, &remote, &wanted, &repo, ui)?;
+            if let Some(d) = held(&repo) {
+                return Ok(d);
+            }
+        }
+    }
+    Err(Refusal::unsupported(
+        format!("{name} ({family}) at the hummingbird level is packed ahead, from a count of each expert's use, and there is no pre-packed {repo}"),
+        format!(
+            "Pack it: glyd-engine calibrate-experts {model} usage.json, then glyd-engine pack {model} DIR --layout hummingbird --usage usage.json, and run DIR"
+        ),
+    ))
+}
+
+/// The level a dynamic-route MODEL is run at: a hummingbird directory's own where no other level is asked.
+fn hb_level(model: &str, layout: Layout) -> Layout {
+    if layout == Layout::Tiered && matches!(crate::hb_pack::HbDir::open(Path::new(model)), Ok(Some(_))) {
+        Layout::Hummingbird
+    } else {
+        layout
+    }
+}
+
+/// The words a dynamic-route plan says its level in.
+fn dynamic_level_words(layout: Layout) -> &'static str {
+    if layout == Layout::Hummingbird {
+        "the hummingbird level (the routed experts at 3 and 2 bits by use, the rest the release's weights exactly)"
+    } else {
+        "the penguin level (lossless: the release's weights exactly)"
+    }
+}
+
 /// `preflight` of a model on the dynamic route: whether the GPUs here hold it (the cut `run` makes, where the model is downloaded; its download's
 /// size against all their room, where not) and the disk its download.
 /// What `preflight` says of the plan of a model of the dynamic route: the bytes on the GPUs (and the experts the computer's memory holds).
 fn dynamic_line(name: &str, family: &str, p: &LoadPlan) -> String {
     let sp = p.spread.as_ref().expect("the dynamic route's plan spreads the model");
+    let level = p.level;
+    if sp.host_bytes > 0 && level == "hummingbird" {
+        return format!(
+            "{name} ({family}): about {} on {} GPUs at the hummingbird level, {} of experts in the computer's memory and {} on the disk",
+            gib(p.weights_on_gpu()),
+            sp.devices.len(),
+            gib(p.ram_bytes()),
+            gib(p.disk_bytes())
+        );
+    }
     if sp.host_bytes > 0 {
         return format!(
             "{name} ({family}): about {} on {} GPUs at the penguin level, {} of experts in the computer's memory",
@@ -2202,26 +2432,35 @@ fn dynamic_line(name: &str, family: &str, p: &LoadPlan) -> String {
         );
     }
     let n = sp.devices.len();
-    format!("{name} ({family}): about {} on {} at the penguin level", gib(p.weights_on_gpu()), if n == 1 { "one GPU".to_string() } else { format!("{n} GPUs") })
+    format!("{name} ({family}): about {} on {} at the {level} level", gib(p.weights_on_gpu()), if n == 1 { "one GPU".to_string() } else { format!("{n} GPUs") })
 }
 
 fn check_dynamic(a: &Args, model: &str, family: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<String> {
     let name = short_name(model);
-    if layout != Layout::Tiered {
+    if !matches!(layout, Layout::Tiered | Layout::Hummingbird) {
         return Err(penguin_only(&name, family, model));
     }
+    let hb = layout == Layout::Hummingbird;
+    let level = if hb { "hummingbird" } else { "penguin" };
     let (gpus, _) = dynamic_gpus()?;
     crate::ffi::Lib::find().map_err(cannot)?;
     let room = rooms(&gpus);
     let all = room.iter().map(|r| r.1).sum::<u64>();
-    let local = if Path::new(model).join("config.json").exists() { Some(PathBuf::from(model)) } else { Source::find(model).ok().map(|s| s.dir) };
+    let local = if hb {
+        Some(hb_dir_for(model, &name, family, None)?)
+    } else if Path::new(model).join("config.json").exists() {
+        Some(PathBuf::from(model))
+    } else {
+        Source::find(model).ok().map(|s| s.dir)
+    };
     let (bytes, gpus_used) = match &local {
         Some(dir) => {
             let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| cannot(format!("{}: {e}", dir.display())))?;
             let targets: Vec<Target> = gpus.iter().map(target).collect();
             // (the plan `run` loads, or the refusal it gives, with Kimi-K3's expert cache where the GPUs do not hold its experts)
             let table = crate::sizes::Table::from_dir(dir).map_err(cannot)?;
-            let p = size_dynamic(a, &name, &table, &text, static_family(family), &targets, crate::offload::host_memory(), &crate::dynamic::tp::reach)?;
+            let p =
+                size_dynamic(a, &name, &table, Some(dir), &text, static_family(family), &targets, crate::offload::host_memory(), &crate::dynamic::tp::reach)?;
             return Ok(dynamic_line(&name, family, &p));
         }
         None => {
@@ -2240,7 +2479,8 @@ fn check_dynamic(a: &Args, model: &str, family: &str, layout: Layout, ui: &RefCe
             // the exact plan from the files' headers by ranges, nothing downloaded (src/sizes.rs)
             if let Some(table) = crate::sizes::Table::find(model) {
                 let targets: Vec<Target> = gpus.iter().map(target).collect();
-                let p = size_dynamic(a, &name, &table, &text, static_family(family), &targets, crate::offload::host_memory(), &crate::dynamic::tp::reach)?;
+                let p =
+                    size_dynamic(a, &name, &table, None, &text, static_family(family), &targets, crate::offload::host_memory(), &crate::dynamic::tp::reach)?;
                 return Ok(dynamic_line(&name, family, &p));
             }
             // (headers not to be had: a bf16 release at penguin's 72% at most; an FP8 or FP4 one as it is; the cut is made once it is here)
@@ -2262,11 +2502,11 @@ fn check_dynamic(a: &Args, model: &str, family: &str, layout: Layout, ui: &RefCe
     };
     match gpus_used {
         Some(n) => {
-            Ok(format!("{name} ({family}): about {} on {} at the penguin level", gib(bytes), if n == 1 { "one GPU".to_string() } else { format!("{n} GPUs") }))
+            Ok(format!("{name} ({family}): about {} on {} at the {level} level", gib(bytes), if n == 1 { "one GPU".to_string() } else { format!("{n} GPUs") }))
         }
         None => Err(Refusal::unsupported(
             format!(
-                "{name} needs about {} of GPU memory at penguin, and the {} GPU{} here have {} free",
+                "{name} needs about {} of GPU memory at {level}, and the {} GPU{} here have {} free",
                 gib(bytes),
                 gpus.len(),
                 if gpus.len() == 1 { "" } else { "s" },
@@ -2290,10 +2530,13 @@ fn load_dynamic(
 ) -> Done<(Box<dyn Gen>, Tok, Option<Chat>, Params, usize, String, Option<server::Info>)> {
     let (t0, started) = (Instant::now(), crate::monitor::clock());
     let name = short_name(model);
-    if layout != Layout::Tiered {
+    if !matches!(layout, Layout::Tiered | Layout::Hummingbird) {
         return Err(penguin_only(&name, family, model));
     }
-    let dir = if Path::new(model).join("config.json").exists() {
+    let hb = layout == Layout::Hummingbird;
+    let dir = if hb {
+        hb_dir_for(model, &name, family, Some(ui))?
+    } else if Path::new(model).join("config.json").exists() {
         PathBuf::from(model)
     } else {
         match Source::find(model) {
@@ -2310,7 +2553,7 @@ fn load_dynamic(
     let nl = crate::dynamic::split::config_num(&text, "num_hidden_layers").unwrap_or(0);
     let targets: Vec<Target> = gpus.iter().map(target).collect();
     let table = crate::sizes::Table::from_dir(&dir).map_err(cannot)?;
-    let plan = size_dynamic(a, &name, &table, &text, static_family(family), &targets, crate::offload::host_memory(), &crate::dynamic::tp::reach)?;
+    let plan = size_dynamic(a, &name, &table, Some(&dir), &text, static_family(family), &targets, crate::offload::host_memory(), &crate::dynamic::tp::reach)?;
     let sp = plan.spread.clone().expect("the dynamic route's plan spreads the model");
     let (total, coded, twelve, across, ctx) = (plan.weights_on_gpu(), sp.coded, sp.twelve, sp.across, plan.context);
     let (cuts, devices) = (sp.cuts.clone(), sp.devices.clone());
@@ -2324,19 +2567,30 @@ fn load_dynamic(
         devices.iter().zip(bounds.windows(2)).map(|(&d, w)| format!("layers {}..{} on GPU {d} ({})", w[0], w[1], gpu_name(d))).collect()
     };
     ui.borrow_mut().line(&format!(
-        "{name} ({family}): about {} on the GPU{} at the penguin level (lossless: the release's weights exactly); {}.",
+        "{name} ({family}): about {} on the GPU{} at {}; {}.",
         gib(total),
         if devices.len() == 1 { "" } else { "s" },
+        dynamic_level_words(layout),
         stages.join(", ")
     ));
     ui.borrow_mut().line(&format!("Plan: {}.", plan.text()));
     if let Some(k) = &cache {
         let (lo, hi) = (k.places.iter().min().copied().unwrap_or(0), k.places.iter().max().copied().unwrap_or(0));
         let n = if lo == hi { lo.to_string() } else { format!("{lo} to {hi}") };
+        let held = if plan.disk_bytes() > 0 {
+            format!("{} of them in the computer's memory and {} read from the disk as the router asks for them", gib(plan.ram_bytes()), gib(plan.disk_bytes()))
+        } else {
+            format!("all of them are in the computer's memory ({})", gib(k.host_bytes))
+        };
+        ui.borrow_mut().line(&format!("{n} experts of {} a layer are on the GPUs, chosen as the router asks for them; {held}.", k.experts_per_layer));
+    }
+    if sp.dense > 0 {
+        // (P2d's rung after the experts: every step reads these layers whole over the link)
+        let ms = sp.dense_bytes as f64 / (crate::plan::LINK_GBS * 1e9) * 1e3;
         ui.borrow_mut().line(&format!(
-            "{n} experts of {} a layer are on the GPUs, chosen as the router asks for them; all of them are in the computer's memory ({}).",
-            k.experts_per_layer,
-            gib(k.host_bytes)
+            "The last {} layers' dense matrices ({}) are in the computer's memory too, each copied to the GPU before it runs: about {ms:.0} ms more a token.",
+            sp.dense,
+            gib(sp.dense_bytes)
         ));
     }
     if coded {
@@ -2345,11 +2599,23 @@ fn load_dynamic(
         ui.borrow_mut().line("Its FP8 matrices are held coded (the same values in about 7 bits of 8) for it to fit; as they are, they do not.");
     }
     // (penguin's bf16 matrices in its 12-bit layout where it fits an HBM GPU: lossless as the smallest, a faster one-token product there)
-    let o = crate::dynamic::Opts { ctx, chunk: 256, graph: true, device: devices[0], layout: Some(if twelve { Layout::Twelve } else { layout }) };
+    // (a hummingbird directory holds the rest of the model as released: its matrices are packed as at penguin, and the loader reads the experts' rows itself)
+    let rest = if hb { Layout::Tiered } else { layout };
+    let o = crate::dynamic::Opts { ctx, chunk: 256, graph: true, device: devices[0], layout: Some(if twelve { Layout::Twelve } else { rest }) };
     ui.borrow_mut().status(&format!("Reading {name} and loading it onto the GPU{}...", if devices.len() == 1 { "" } else { "s" }));
+    // (a hummingbird directory's experts in its own cache: each stage its places, the computer's memory for its share of the experts, the copy-or-compute policy of the flags)
+    let offload = crate::offload::offload_args(a).map_err(|e| Refusal::new(e.0, "--cpu-threads takes a number of threads: --cpu-threads 8"))?;
+    let ram = plan.experts.filter(|c| c.ram < c.host_bytes()).map(|c| crate::offload::HostMemory { bytes: c.ram, total: c.host_bytes() });
     let opened = match &cache {
+        Some(k) if hb || matches!(family, "DeepSeek-V4" | "GLM-5.3-Flash" | "Muse Spark") => crate::dynamic::split::open_cached(
+            &dir,
+            &o,
+            &cuts,
+            &devices,
+            k.places.iter().map(|&places| crate::hbg_store::HbCaching { places, ram, offload, dense: sp.dense }).collect(),
+        ),
         Some(k) if across => crate::dynamic::split::open_kimi_tp(&dir, &o, &devices, k.places[0]),
-        Some(k) => crate::dynamic::split::open_kimi(&dir, &o, &cuts, &devices, k.places.clone()),
+        Some(k) => crate::dynamic::split::open_kimi(&dir, &o, &cuts, &devices, k.places.clone(), sp.dense),
         None if across => crate::dynamic::split::open_tp(&dir, &o, &devices),
         None => crate::dynamic::split::open(&dir, &o, &cuts, &devices),
     };
@@ -2388,7 +2654,12 @@ fn load_dynamic(
     let info = (!served.is_empty()).then(|| {
         let held = e.held();
         let gpu = gpus.iter().find(|g| g.ordinal == devices[0]).unwrap_or(&first);
-        let about = about(served, &dir, requested(served, a.has("lossy")), "penguin", true, "penguin level: the release's weights exactly", held.as_ref(), gpu);
+        let (level, exact, words) = if hb {
+            ("hummingbird", false, "hummingbird level: the routed experts at 3 and 2 bits by use, the rest the release's weights exactly")
+        } else {
+            ("penguin", true, "penguin level: the release's weights exactly")
+        };
+        let about = about(served, &dir, requested(served, a.has("lossy")), level, exact, words, held.as_ref(), gpu);
         server::Info { about, gpu: Some(devices[0]), held, concurrency: 1, window: e.capacity(), refused: server::ONE_AT_A_TIME, started }
     });
     let vocab = crate::dynamic::split::config_num(&text, "vocab_size").unwrap_or(0);
@@ -2592,7 +2863,7 @@ fn check(a: &Args, ui: &RefCell<Ui>) -> Done<String> {
 fn check_lossy(a: &Args, model: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<String> {
     match dynamic_family(model) {
         Some("Nemotron-H") if layout != Layout::Tiered => {}
-        Some(family) => return check_dynamic(a, model, family, layout, ui),
+        Some(family) => return check_dynamic(a, model, family, hb_level(model, layout), ui),
         None => {}
     }
     let text = config_text(model)?;
@@ -2836,6 +3107,80 @@ fn h_endpoint() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R12: a release's expert cache on the dynamic route (`release_cache`), a tiny DeepSeek-V4's: with the GPU's room for its weights besides the experts and a third of the experts, places for some of each layer's on one
+    /// GPU and every expert in memory; with less memory than its experts, refused (the disk tier is hummingbird's).
+    #[test]
+    fn a_releases_experts_are_cached_in_memory() {
+        let dir = std::env::temp_dir().join(format!("glyd-cli-relcache-{}", std::process::id()));
+        crate::hb_pack::tests::release(&dir, "dsv4_model");
+        let text = std::fs::read_to_string(dir.join("config.json")).unwrap();
+        let nl = crate::dynamic::split::config_num(&text, "num_hidden_layers").unwrap();
+        let expert = |n: &str| n.contains(".experts.");
+        let (per, _) = crate::dynamic::split::layer_bytes_where(&dir, nl, 100, 100, &expert).unwrap();
+        let (dense, base) =
+            crate::dynamic::split::layer_bytes_where(&dir, nl, crate::dynamic::split::CODED_PCT, crate::dynamic::split::TIERED_PCT, &|n| !expert(n)).unwrap();
+        let all: u64 = per.iter().sum();
+        assert!(all > 0);
+        let sh = crate::plan::Shape::from_config(&text).unwrap();
+        let kv = ((sh.kv_full * 16.0 + sh.kv_sliding * 16f64.min(sh.window.max(1) as f64) + sh.state) / nl as f64) as u64 * nl as u64;
+        let room = vec![(0, dense.iter().sum::<u64>() + base + kv + all / 3)];
+        let table = crate::sizes::Table::from_dir(&dir).unwrap();
+        let (cuts, devices, places, on_gpus, got_all, experts, dense) =
+            release_cache(&table, &text, nl, &room, "tiny", 16, false, Some(all + HOST_MARGIN + (1 << 30))).unwrap();
+        // (room for a token's experts beside the layers' weights: no dense layer in the computer's memory; DeepSeek-V4's loader keeps none there)
+        assert_eq!(dense, (0, 0));
+        assert!(cuts.is_empty() && devices == vec![0] && places[0] > 0 && places[0] < experts, "{places:?} of {experts}");
+        assert_eq!(got_all, all);
+        assert!(on_gpus <= room[0].1);
+        let e = release_cache(&table, &text, nl, &room, "tiny", 16, false, Some(all / 2 + HOST_MARGIN)).unwrap_err();
+        assert!(e.what.contains("keeps the experts its GPUs do not hold in the computer's memory"), "{}", e.what);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A hummingbird directory's expert cache on the dynamic route (`hb_cache`), a tiny GLM-5.3-Flash's: with the GPU's room for its weights besides the experts and a third of the experts, places for some of each layer's
+    /// on one GPU and every expert in memory where the computer has room for them; its memory less than all of them, the rest on the disk; less than a token's experts in every layer, refused.
+    #[test]
+    fn a_hummingbird_directory_is_cached_in_memory_and_on_the_disk() {
+        let dir = std::env::temp_dir().join(format!("glyd-cli-hbcache-{}", std::process::id()));
+        let src = dir.join("src");
+        let d = crate::hb_pack::tests::release(&src, "glm53flash_model");
+        let u = crate::hb_codec::Usage {
+            model: "tiny".into(),
+            tokens: 1,
+            layers: crate::hb_pack::moe_layers(&d)
+                .unwrap()
+                .iter()
+                .map(|m| crate::hb_codec::LayerUse { block: m.block, counts: (0..m.experts as u64).collect() })
+                .collect(),
+        };
+        std::fs::write(dir.join("usage.json"), u.to_json()).unwrap();
+        let out = dir.join("out");
+        crate::hb_pack::run(src.to_str().unwrap(), &out, 2, &dir.join("usage.json")).unwrap();
+        let text = std::fs::read_to_string(out.join("config.json")).unwrap();
+        let nl = crate::dynamic::split::config_num(&text, "num_hidden_layers").unwrap();
+        let hb = crate::hb_pack::HbDir::open(&out).unwrap().unwrap();
+        let all: u64 = hb.layers.iter().map(|r| crate::hbg_store::layer_store_bytes(r).unwrap()).sum();
+        let (dense, base) =
+            crate::dynamic::split::layer_bytes_with(&out, nl, crate::dynamic::split::CODED_PCT, crate::dynamic::split::TIERED_PCT, &|_| true, false).unwrap();
+        let sh = crate::plan::Shape::from_config(&text).unwrap();
+        let kv = ((sh.kv_full * 16.0 + sh.kv_sliding * 16f64.min(sh.window.max(1) as f64) + sh.state) / nl as f64) as u64 * nl as u64;
+        let room = vec![(0, dense.iter().sum::<u64>() + base + kv + all / 3)];
+        let (cuts, devices, places, on_gpus, got_all, experts, ram, dense) =
+            hb_cache(&out, &text, nl, &room, "tiny", 16, false, Some(all + HOST_MARGIN + (1 << 30))).unwrap();
+        assert_eq!(dense, (0, 0));
+        assert!(cuts.is_empty() && devices == vec![0] && places.len() == 1, "{cuts:?} {devices:?} {places:?}");
+        assert!(places[0] > 0 && places[0] < experts, "{places:?} of {experts}");
+        assert_eq!((got_all, ram), (all, all));
+        assert!(on_gpus <= room[0].1);
+        // memory for half of them: the rest on the disk
+        let (.., ram, _) = hb_cache(&out, &text, nl, &room, "tiny", 16, false, Some(all / 2 + HOST_MARGIN)).unwrap();
+        assert_eq!(ram, all / 2);
+        // none to give: refused
+        let e = hb_cache(&out, &text, nl, &room, "tiny", 16, false, Some(HOST_MARGIN)).unwrap_err();
+        assert!(e.what.contains("in the computer's memory and on the disk"), "{}", e.what);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// wren on a QAT checkpoint: the exact four-bit layout, its pre-packed repo by its short name, and a saved i4x directory taken as wren.
 

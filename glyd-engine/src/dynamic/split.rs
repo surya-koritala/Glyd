@@ -454,8 +454,31 @@ pub fn layer_bytes(dir: &Path, nl: usize, f8_pct: u64) -> Result<(Vec<u64>, u64)
 
 /// As `layer_bytes`, of the tensors whose names `keep` keeps.
 pub fn layer_bytes_where(dir: &Path, nl: usize, f8_pct: u64, bf16_pct: u64, keep: &dyn Fn(&str) -> bool) -> Result<(Vec<u64>, u64)> {
+    layer_bytes_with(dir, nl, f8_pct, bf16_pct, keep, true)
+}
+
+/// `layer_bytes_where`, a hummingbird directory's experts (their files of their own) counted in each layer's bytes only where `experts`.
+pub fn layer_bytes_with(dir: &Path, nl: usize, f8_pct: u64, bf16_pct: u64, keep: &dyn Fn(&str) -> bool, experts: bool) -> Result<(Vec<u64>, u64)> {
     let table = crate::sizes::Table::from_dir(dir).map_err(Error)?;
-    Ok(layer_bytes_table(&table, nl, f8_pct, bf16_pct, keep))
+    let (mut per, base) = layer_bytes_table(&table, nl, f8_pct, bf16_pct, keep);
+    if experts {
+        per.iter_mut().zip(hb_layer_bytes(dir, nl)?).for_each(|(p, b)| *p += b);
+    }
+    Ok((per, base))
+}
+
+/// The bytes of routed experts each of the `nl` layers of a hummingbird directory holds in files of its own (src/hb_pack.rs: by the description's block, decoder layer l's are block
+/// 2 l + 1); zeros for any other directory.
+pub fn hb_layer_bytes(dir: &Path, nl: usize) -> Result<Vec<u64>> {
+    let mut per = vec![0u64; nl];
+    if let Some(hb) = crate::hb_pack::HbDir::open(dir)? {
+        for (l, bytes) in hb.layer_bytes() {
+            if l < nl {
+                per[l] += bytes;
+            }
+        }
+    }
+    Ok(per)
 }
 
 /// `layer_bytes_where` of a table of tensors (src/sizes.rs: a directory's, or the Hub's by ranges before the files are here).
@@ -476,7 +499,7 @@ pub fn layer_bytes_table(table: &crate::sizes::Table, nl: usize, f8_pct: u64, bf
 /// `Layout::Twelve` the load's); elsewhere coded and tiered, their only layouts. No cut where nothing fits.
 #[allow(clippy::type_complexity)]
 pub fn fit(dir: &Path, nl: usize, room: &[(i32, u64)], hbm: bool, twelve: bool) -> Result<((Vec<u64>, u64), Option<(Vec<usize>, Vec<i32>)>, bool, bool)> {
-    Ok(fit_table(&crate::sizes::Table::from_dir(dir).map_err(Error)?, nl, room, hbm, twelve))
+    Ok(fit_table_with(&crate::sizes::Table::from_dir(dir).map_err(Error)?, nl, room, hbm, twelve, &hb_layer_bytes(dir, nl)?))
 }
 
 /// `fit` of a table of tensors (src/sizes.rs).
@@ -488,15 +511,33 @@ pub fn fit_table(
     hbm: bool,
     twelve: bool,
 ) -> ((Vec<u64>, u64), Option<(Vec<usize>, Vec<i32>)>, bool, bool) {
+    fit_table_with(table, nl, room, hbm, twelve, &[])
+}
+
+/// `fit_table`, each layer's bytes more by `extra`'s (a hummingbird directory's experts, which no table lists: `hb_layer_bytes`).
+#[allow(clippy::type_complexity)]
+pub fn fit_table_with(
+    table: &crate::sizes::Table,
+    nl: usize,
+    room: &[(i32, u64)],
+    hbm: bool,
+    twelve: bool,
+    extra: &[u64],
+) -> ((Vec<u64>, u64), Option<(Vec<usize>, Vec<i32>)>, bool, bool) {
+    let bytes = |f8: u64, bf16: u64| {
+        let (mut per, base) = layer_bytes_table(table, nl, f8, bf16, &|_| true);
+        per.iter_mut().zip(extra).for_each(|(p, e)| *p += e);
+        (per, base)
+    };
     if hbm {
         for (f8, twelve) in [(PLAIN_PCT, twelve), (PLAIN_PCT, false), (CODED_PCT, twelve)] {
-            let b = layer_bytes_table(table, nl, f8, if twelve { TWELVE_PCT } else { TIERED_PCT }, &|_| true);
+            let b = bytes(f8, if twelve { TWELVE_PCT } else { TIERED_PCT });
             if let Some(c) = plan_cuts(&b.0, b.1, room) {
                 return (b, Some(c), f8 == CODED_PCT, twelve);
             }
         }
     }
-    let coded = layer_bytes_table(table, nl, CODED_PCT, TIERED_PCT, &|_| true);
+    let coded = bytes(CODED_PCT, TIERED_PCT);
     let cut = plan_cuts(&coded.0, coded.1, room);
     let switched = hbm && cut.is_some();
     (coded, cut, switched, false)
@@ -556,7 +597,7 @@ pub fn places_plan(
 }
 
 /// Kimi-K3 in stages (`open`'s) with `places[k]` of a layer's experts on stage k's GPU, the rest in the expert cache's host tier.
-pub fn open_kimi(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], places: Vec<usize>) -> Result<Run> {
+pub fn open_kimi(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], places: Vec<usize>, dense: usize) -> Result<Run> {
     let c = crate::kimi::ConfigKimi::load(dir)?;
     let owned = dir.to_path_buf();
     let firsts: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).collect();
@@ -568,9 +609,123 @@ pub fn open_kimi(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], places: 
         o,
         std::sync::Arc::new(move |st, o: &Opts| {
             let k = firsts.iter().position(|&f| f == st.layers.0).unwrap_or(0);
-            super::kimi::load_with_places(&owned, o, st, places.get(k).copied())
+            // (the stage's last `dense` layers' matrices in the computer's memory, src/dense_ram.rs: one stage alone)
+            let caching =
+                (dense > 0).then(|| crate::hbg_store::HbCaching { places: places.get(k).copied().unwrap_or(1), ram: None, offload: Default::default(), dense });
+            super::kimi::load_with_caching(&owned, o, st, places.get(k).copied(), caching.as_ref())
         }),
     )
+}
+
+/// Each of the model's `nl` layers' bytes that its family's loader can keep in the computer's memory (src/dense_ram.rs: its packed linears there), at the packing `layer_bytes_where` counts: Muse Spark's attention and
+/// latent projections, Kimi-K3's delta attention's three; zeros for the others (their attention is in blocks of their own, or FP8).
+pub fn ram_bytes(dir: &Path, nl: usize, family: &str, f8_pct: u64, bf16_pct: u64) -> Result<Vec<u64>> {
+    if !matches!(family, "Kimi-K3" | "Muse Spark") {
+        return Ok(vec![0; nl]);
+    }
+    let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
+    ram_bytes_table(&crate::sizes::Table::from_dir(dir).map_err(Error)?, &text, nl, family, f8_pct, bf16_pct)
+}
+
+/// `ram_bytes` of a table of tensors and the model's config.json (src/sizes.rs: before the files are here too).
+pub fn ram_bytes_table(table: &crate::sizes::Table, text: &str, nl: usize, family: &str, f8_pct: u64, bf16_pct: u64) -> Result<Vec<u64>> {
+    let kda: Vec<bool> = match family {
+        "Kimi-K3" => crate::kimi::ConfigKimi::parse(text, "config.json", None)?.kinds.iter().map(|k| matches!(k, crate::glm::GlmKind::Kda)).collect(),
+        "Muse Spark" => Vec::new(),
+        _ => return Ok(vec![0; nl]),
+    };
+    Ok(layer_bytes_table(table, nl, f8_pct, bf16_pct, &|n| in_ram(family, &kda, n)).0)
+}
+
+/// Whether the tensor `name` is one of the matrices `family`'s loader keeps in the computer's memory for a layer there (src/dense_ram.rs; `kda`: Kimi-K3's layers of delta attention).
+fn in_ram(family: &str, kda: &[bool], name: &str) -> bool {
+    let layer = name.split("layers.").nth(1).and_then(|r| r.split('.').next()).and_then(|x| x.parse::<usize>().ok());
+    match family {
+        "Muse Spark" => {
+            (name.contains(".self_attn.") && name.ends_with("_proj.weight")) || name.contains(".pre_expert_proj.") || name.contains(".post_expert_proj.")
+        }
+        "Kimi-K3" => {
+            layer.is_some_and(|l| kda.get(l) == Some(&true))
+                && name.contains(".self_attn.")
+                && ["q_proj", "k_proj", "v_proj", "g_proj", "f_a_proj", "b_proj", "o_proj", "f_b_proj"].iter().any(|x| name.ends_with(&format!(".{x}.weight")))
+        }
+        _ => false,
+    }
+}
+
+/// `places_plan`, and where it finds no room on one GPU, the last layers' dense matrices in the computer's memory (src/dense_ram.rs; `ram`: each layer's bytes that can be there), as few layers as fit: their bytes off the GPU,
+/// one slot of the largest of them on it. The cuts, their GPUs, each stage's places, how many layers are in the computer's memory, and the bytes that leaves off the GPU (theirs less the slot).
+#[allow(clippy::type_complexity)]
+pub fn places_plan_dense(
+    dense: &[u64],
+    base: u64,
+    moe: &[bool],
+    room: &[(i32, u64)],
+    expert: u64,
+    experts: usize,
+    least: usize,
+    ram: &[u64],
+) -> Option<(Vec<usize>, Vec<i32>, Vec<usize>, usize, u64)> {
+    if let Some((c, d, p)) = places_plan(dense, base, moe, room, expert, experts, least) {
+        return Some((c, d, p, 0, 0));
+    }
+    if room.len() != 1 || ram.len() != dense.len() {
+        return None;
+    }
+    let n = dense.len();
+    (1..=n).find_map(|k| {
+        let from = n - k;
+        let moved: Vec<u64> = (from..n).map(|l| ram[l].min(dense[l])).collect();
+        let slot = moved.iter().copied().max().unwrap_or(0);
+        if slot == 0 {
+            return None;
+        }
+        let mut d = dense.to_vec();
+        d[from..].iter_mut().zip(&moved).for_each(|(x, m)| *x -= m);
+        places_plan(&d, base + slot, moe, room, expert, experts, least).map(|(c, dv, p)| (c, dv, p, k, moved.iter().sum::<u64>() - slot))
+    })
+}
+
+/// A model of the dynamic route in stages (`open`'s), stage k's layers with their experts in the expert cache as `cachings[k]` says: a hummingbird directory's (src/hbg_store.rs: places on its GPU, the computer's memory, the disk),
+/// or the release's where its experts are each the same bytes (src/tiering.rs, R12: DeepSeek-V4's FP4).
+pub fn open_cached(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], cachings: Vec<crate::hbg_store::HbCaching>) -> Result<Run> {
+    let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
+    let (nl, eos) = match family(&text) {
+        Some("Muse Spark") => {
+            let c = crate::muse::ConfigMuse::load(dir)?;
+            (c.layers, c.eos.clone())
+        }
+        Some("Kimi-K3") => {
+            let c = crate::kimi::ConfigKimi::load(dir)?;
+            (c.layers, c.eos.clone())
+        }
+        Some("GLM-5.3-Flash") => {
+            let c = crate::glm::ConfigGlm::load(dir)?;
+            (c.layers, c.eos.clone())
+        }
+        Some("Nemotron-H") | None => {
+            return err(format!("{}: not a family whose experts the expert cache takes (Kimi-K3, DeepSeek-V4, GLM-5.3-Flash, Muse Spark)", dir.display()))
+        }
+        Some(_) => {
+            let c = crate::deepseek_v4::ConfigV4::load(dir)?;
+            (c.layers, c.eos.clone())
+        }
+    };
+    let fam = family(&text).unwrap_or("");
+    let level = o.layout.unwrap_or(crate::weights::Layout::Tiered);
+    let owned = dir.to_path_buf();
+    let firsts: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).collect();
+    let make: MakeStage = std::sync::Arc::new(move |st, o: &Opts| {
+        let k = firsts.iter().position(|&f| f == st.layers.0).unwrap_or(0);
+        let c = cachings.get(k).or(cachings.last());
+        match fam {
+            "Muse Spark" => super::muse::load_stage_hb(&owned, o, st, c),
+            "Kimi-K3" => super::kimi::load_with_caching(&owned, o, st, None, c),
+            "GLM-5.3-Flash" => super::glm::load_stage_hb(&owned, o, level, st, c),
+            _ => super::deepseek_v4::load_stage_hb(&owned, o, st, c),
+        }
+    });
+    Run::new(nl, eos, cuts, devices, o, make)
 }
 
 /// Kimi-K3 with every layer across `devices` (src/dynamic/tp.rs), `places` of a layer's experts in each GPU's slices of its places, the rest in the expert
@@ -646,10 +801,29 @@ mod tests {
         assert_eq!(layer_of("lm_head.weight"), None);
     }
 
+    /// The matrices a layer in the computer's memory keeps there (src/dense_ram.rs) are the ones its family's loader puts there: Muse Spark's attention and latent projections, Kimi-K3's delta attention's (not its latent
+    /// attention's, whose blocks keep their own), none of DeepSeek-V4's.
+    #[test]
+    fn the_matrices_a_layer_keeps_in_memory_are_its_loaders() {
+        let m = |n: &str| super::in_ram("Muse Spark", &[], n);
+        assert!(m("model.language_model.layers.3.self_attn.q_proj.weight") && m("model.language_model.layers.3.self_attn.o_proj.weight"));
+        assert!(m("model.language_model.layers.0.mlp.pre_expert_proj.weight") && m("model.language_model.layers.0.mlp.post_expert_proj.weight"));
+        assert!(!m("model.language_model.layers.0.self_attn.q_norm.weight") && !m("model.language_model.layers.0.mlp.experts.gate_up_proj"));
+        assert!(!m("model.language_model.layers.0.mlp.gate.weight") && !m("model.language_model.embed_tokens.weight"));
+        let kda = [true, true, true, false];
+        let k = |n: &str| super::in_ram("Kimi-K3", &kda, n);
+        assert!(k("language_model.model.layers.2.self_attn.f_a_proj.weight") && k("language_model.model.layers.0.self_attn.o_proj.weight"));
+        assert!(!k("language_model.model.layers.3.self_attn.o_proj.weight"), "a latent attention layer's block keeps its own");
+        assert!(
+            !k("language_model.model.layers.1.self_attn.q_conv1d.weight") && !k("language_model.model.layers.1.block_sparse_moe.shared_experts.up_proj.weight")
+        );
+        assert!(!super::in_ram("DeepSeek-V4", &[], "model.layers.0.self_attn.wo.weight"));
+    }
+
     /// The expert cache's plan: the dense bytes cut over every GPU (even where one would hold them), each stage's room after them as places for its experts.
     #[test]
     fn places_follow_the_room_left() {
-        use super::places_plan;
+        use super::{places_plan, places_plan_dense};
         // (8 layers of 10 dense bytes, the first with no experts, 4 bytes besides; 2 GPUs of 100: 42 and 42 dense, 58 left each for 3 and 4 expert layers of 2-byte experts)
         let (dense, moe) = (vec![10u64; 8], (0..8).map(|l| l > 0).collect::<Vec<_>>());
         assert_eq!(places_plan(&dense, 4, &moe, &[(0, 100), (1, 100)], 2, 64, 4), Some((vec![4], vec![0, 1], vec![9, 7])));
@@ -659,6 +833,17 @@ mod tests {
         // (the same places for every layer first: 3 GPUs of 100 for 8 layers of 10, 7 of them with experts; 11 places a layer (32 bytes) fit them as 3, 3 and 2
         // layers, 12 do not; then each GPU's room left over: 68 for 2 expert layers, 70 for 3, 78 for 2)
         assert_eq!(places_plan(&dense, 4, &moe, &[(0, 100), (1, 100), (2, 100)], 2, 64, 4), Some((vec![3, 6], vec![0, 1, 2], vec![17, 11, 19])));
+        // (one GPU too small for a token's experts besides the layers' weights: the last layers' dense matrices in the computer's memory, as few as fit, and one slot of the largest on the GPU)
+        let ram = vec![3u64; dense.len()];
+        assert_eq!(
+            places_plan_dense(&dense, 4, &moe, &[(0, 100)], 2, 64, 4, &ram).map(|p| p.3),
+            places_plan(&dense, 4, &moe, &[(0, 100)], 2, 64, 4).map(|_| 0)
+        );
+        let tight = dense.iter().sum::<u64>() + 4 + moe.iter().filter(|&&m| m).count() as u64 * 4 * 2 - 7;
+        let got = places_plan_dense(&dense, 4, &moe, &[(0, tight)], 2, 64, 4, &ram).expect("fits with dense layers in the computer's memory");
+        assert!(places_plan(&dense, 4, &moe, &[(0, tight)], 2, 64, 4).is_none());
+        assert!(got.3 >= 1 && got.4 == 3 * got.3 as u64 - 3, "{got:?}");
+        assert_eq!(places_plan_dense(&dense, 4, &moe, &[(0, 10)], 2, 64, 4, &ram), None);
     }
 
     /// An FP8 release on HBM GPUs: plain where that fits, coded where only that does, no cut where neither; coded alone on other GPUs.

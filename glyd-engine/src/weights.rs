@@ -1229,6 +1229,11 @@ impl PackBuf {
         }
     }
 
+    /// A matrix whose bytes are elsewhere on the GPU (src/dense_ram.rs: the slot a layer in the computer's memory is copied into before it runs): its pack, no buffers of its own, no bytes counted.
+    pub(crate) fn view(pack: Pack) -> Result<PackBuf> {
+        Ok(PackBuf { pack, bytes: 0, tp_rows: 0, _bufs: [Buf::new(16)?, Buf::new(16)?, Buf::new(16)?] })
+    }
+
     /// A matrix's shape and no weights (a matrix held in another format beside it, as `MoeLayer::shared8` holds the shared expert's): never multiplied by.
     pub fn shape_only(rows: usize, cols: usize) -> Result<PackBuf> {
         let bufs = [Buf::new(16)?, Buf::new(16)?, Buf::new(16)?];
