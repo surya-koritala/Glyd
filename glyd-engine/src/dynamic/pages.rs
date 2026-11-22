@@ -261,8 +261,9 @@ impl Pages {
                 }
             }
         }
+        // (the last first, as `release` gives them: of the named ones the end of what was cut off is the first to go)
         for g in 0..self.pools.len() {
-            for b in hi..self.tabs[slot][g].len() {
+            for b in (hi..self.tabs[slot][g].len()).rev() {
                 let blk = std::mem::take(&mut self.tabs[slot][g][b]);
                 if blk != 0 {
                     self.pools[g].give(blk);

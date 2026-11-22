@@ -428,6 +428,8 @@ struct Seq {
     /// Full pages given to the cache (a slot step that finds blocks by name: full blocks told to it), and the name of the last (`kv::block_hash`; the scope's root with none).
     published: usize,
     chain: u128,
+    /// The names of the full blocks its tokens but the last begin with, once a slot step that finds blocks by name has asked for them (worked out once while it waits).
+    head_names: Option<Vec<u128>>,
     prefilling: bool,
     /// Times a step of this sequence was taken back for a lost block, and the sequences that must have ended before it runs again (they were running when it lost one).
     tries: u32,
@@ -640,14 +642,14 @@ impl<B: ModelStep> Sched<B> {
     /// prompt begins with, in its scope: a system prompt another conversation ran, whether that one still runs, is kept, has grown far past it or has ended. Another step
     /// shares from a sequence in a slot (`ModelStep::share`), where the prompt begins with at least KEEP_LEAST tokens of one of its scope, kept or running. None: every slot
     /// is running.
-    fn take_slot(&mut self, tokens: &[u32], salt: u64) -> Result<Option<(i32, usize)>> {
+    fn take_slot(&mut self, tokens: &[u32], salt: u64, keys: &[u128]) -> Result<Option<(i32, usize)>> {
         let head = &tokens[..tokens.len().saturating_sub(1)];
         let best = self.kept.iter().enumerate().filter(|(_, k)| k.salt == salt).map(|(i, k)| (common(&k.tokens, head), i)).max();
-        // where the step finds blocks by name: the names of the prompt's full blocks, and the tokens held by them. A kept sequence is gone on in only where that is no
-        // fewer tokens (its last block, not full, is its own alone): a conversation's next turn; not a prompt whose start is held longer by name than any kept one has it.
+        // where the step finds blocks by name (`keys`: the names of the full blocks `head` begins with): the tokens held by them. A kept sequence is gone on in only where
+        // that is no fewer tokens (its last block, not full, is its own alone): a conversation's next turn; not a prompt whose start is held longer by name than any kept
+        // one has it.
         let names = self.names();
-        let keys = if names { block_names(block_root(salt), head) } else { Vec::new() };
-        let by_name = self.be.held_by_name(&keys);
+        let by_name = self.be.held_by_name(keys);
         if let Some((n, i)) = best.filter(|&(n, i)| n >= KEEP_LEAST && 2 * n >= self.kept[i].tokens.len() && n >= by_name) {
             let slot = self.kept[i].slot;
             let held = self.be.resume(slot, n)?;
@@ -691,7 +693,7 @@ impl<B: ModelStep> Sched<B> {
         };
         let held = match source {
             Some((n, from)) => self.be.share(from, slot, n)?,
-            None if names => self.be.adopt(slot, &keys)?,
+            None if names => self.be.adopt(slot, keys)?,
             None => 0,
         };
         Ok(Some((slot, held)))
@@ -737,6 +739,7 @@ impl<B: ModelStep> Sched<B> {
             done: 0,
             published: 0,
             chain: 0,
+            head_names: None,
             prefilling: true,
             tries: 0,
             after: Vec::new(),
@@ -970,7 +973,13 @@ impl<B: ModelStep> Sched<B> {
             self.pending.push((s.out.clone(), Ev::End(Err(Error::of(Kind::Request, format!("{} tokens, where the context holds {window}", s.tokens.len()))))));
             return Ok(true);
         }
-        let Some((slot, held)) = self.take_slot(&self.waiting[k].tokens.clone(), self.waiting[k].salt)? else { return Ok(false) };
+        if self.names() && self.waiting[k].head_names.is_none() {
+            let s = &self.waiting[k];
+            let v = block_names(block_root(s.salt), &s.tokens[..s.tokens.len().saturating_sub(1)]);
+            self.waiting[k].head_names = Some(v);
+        }
+        let keys = self.waiting[k].head_names.clone().unwrap_or_default();
+        let Some((slot, held)) = self.take_slot(&self.waiting[k].tokens.clone(), self.waiting[k].salt, &keys)? else { return Ok(false) };
         // (room for the whole prompt and a token after it now: an admitted prompt runs; where there is none the kept sequences give theirs up, the oldest first, then it waits for
         // the running ones, and with nothing running it never fits)
         let need = self.waiting[k].tokens.len() + 1;
@@ -999,9 +1008,9 @@ impl<B: ModelStep> Sched<B> {
         s.trace.admit();
         s.pages = vec![slot];
         // (what it holds in full blocks has its names already: they are the names of these tokens)
-        let root = block_root(s.salt);
         s.published = if self.names() { held / PAGE } else { 0 };
-        s.chain = block_names(root, &s.tokens[..s.published * PAGE]).last().copied().unwrap_or(root);
+        s.chain = s.published.checked_sub(1).and_then(|b| keys.get(b)).copied().unwrap_or_else(|| block_root(s.salt));
+        s.head_names = None;
         (s.done, s.prefilling) = (held, true);
         s.found(held);
         s.after.clear();
@@ -1139,6 +1148,8 @@ impl<B: ModelStep> Sched<B> {
         s.done = 0;
         s.published = 0;
         s.chain = block_root(s.salt);
+        // (its tokens are more than they were when it came)
+        s.head_names = None;
         s.prefilling = true;
         s.resumed.fetch_add(1, Relaxed);
         self.stats.preempted += 1;
