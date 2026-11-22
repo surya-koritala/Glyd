@@ -1692,8 +1692,8 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         println!("FAIL no decode step had more than one row");
         fails += 1;
     }
-    // (GLYD_ENGINE_ONE_STEP=1, a round that is one step: the longest prompt is longer than a step holds beside the rows of the ones before it, so some step holds both)
-    if std::env::var_os("GLYD_ENGINE_ONE_STEP").is_some_and(|v| v == "1") {
+    // (a round that is one step, unless GLYD_ENGINE_ONE_STEP=0 or the prompts go one a pass: the longest prompt joins after the first three are decoding, so some step holds both)
+    if std::env::var_os("GLYD_ENGINE_ONE_STEP").is_none_or(|v| v != "0") && !strict && !squeezed {
         let both = s.context().sched[28].load(std::sync::atomic::Ordering::Relaxed);
         println!("steps of rows that decode and a prompt's chunk together: {both}");
         if batchable && k > 1 && both == 0 {

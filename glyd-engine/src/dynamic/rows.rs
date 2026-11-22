@@ -399,23 +399,24 @@ impl Dyn {
         *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_none_or(|v| v != "0"))
     }
 
-    /// GLYD_ENGINE_ONE_STEP=1: a round is one step of the rows that decode and the prompts' chunks (`ModelStep::round`, docs/design/runtime.md section 5), each weight read once for both. Off
-    /// until its speed is on record against the round of two passes (the bench gate, R8): the same replies either way.
+    /// A round is one step of the rows that decode and the prompts' chunks (`ModelStep::round`, docs/design/runtime.md section 5), each weight read once for both: a reply does not stop
+    /// while a prompt that came in is run. GLYD_ENGINE_ONE_STEP=0: the round of two passes, a prompt pass and then a decode step. The record that set it:
+    /// benchmarks/gpu/rtx4080-one-step-round-2026-11-22 (the gap between a reply's tokens, 99th percentile, 289 to 82 ms with 1k prompts coming in, at the same total).
     fn one_step_asked() -> bool {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_ONE_STEP").is_some_and(|v| v == "1"))
+        *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_ONE_STEP").is_none_or(|v| v != "0"))
     }
 
-    /// The rows of a step that holds both rows that decode and a prompt's chunk (GLYD_ENGINE_STEP_TOKENS; 64: up to there every product of the step takes the route each row's own pass
-    /// takes, `decoded_way`, so a reply's bits do not turn on what ran beside it).
-    fn step_tokens() -> usize {
-        static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-        *N.get_or_init(|| std::env::var("GLYD_ENGINE_STEP_TOKENS").ok().and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(STEP_TOKENS))
+    /// The rows of a step that holds both rows that decode and a prompt's chunk, where GLYD_ENGINE_STEP_TOKENS says: by default a step holds what a pass holds (a chunk), which the record
+    /// above found level with the round of two passes for the prompt's first token and the total (at 64 rows the first token was 2 to 3 times later). At 64 or fewer every product of the
+    /// step takes the route each row's own pass takes (`decoded_way`), so a reply's last bits do not turn on what ran beside it; past it they can.
+    fn step_tokens() -> Option<usize> {
+        static N: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+        *N.get_or_init(|| std::env::var("GLYD_ENGINE_STEP_TOKENS").ok().and_then(|v| v.parse().ok()).filter(|&n| n > 0))
     }
 }
 
-/// See `Dyn::step_tokens`; and the prompt tokens a step takes beside any number of rows, so that a prompt moves while many sequences decode.
-const STEP_TOKENS: usize = 64;
+/// The prompt tokens a step takes beside any number of rows, so that a prompt moves while many sequences decode.
 const STEP_LEAST: usize = 16;
 
 impl ModelStep for Dyn {
@@ -473,7 +474,7 @@ impl ModelStep for Dyn {
         Self::one_step_asked() && self.batchable() && Self::batch_prefill()
     }
     fn prompt_budget(&self, rows: usize) -> usize {
-        Self::step_tokens().saturating_sub(rows).max(STEP_LEAST).min(self.chunk.saturating_sub(rows))
+        Self::step_tokens().unwrap_or(self.chunk).saturating_sub(rows).max(STEP_LEAST).min(self.chunk.saturating_sub(rows))
     }
     /// The rows that decode and the prompts' chunks in one pass (`pass`: a row is a chunk of one token whose sample is asked for): the rows' samples, then the samples of the chunks that are
     /// `last`, the head's rows in that order. Rows alone are the decode step as it is (one row: its graph), chunks alone the prompt pass.

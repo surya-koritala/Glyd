@@ -5,8 +5,8 @@ one pass, with a budget of prompt tokens beside the rows (`GLYD_ENGINE_STEP_TOKE
 after another, so that the later prompts come in while the earlier replies are being written (`bench`'s `KIND+GAPms` loads, new with this change).
 
 **Result: at 256 rows a step the one-step round cuts the 99th percentile of the gap between a reply's tokens 3.5 to 5 times (289 to 82 ms with 1k prompts coming in, 478 to 97 ms with 4k) at the
-same total tokens/s, and the first token of those prompts comes 8% to 10% later. At 64 rows a step it is far worse on the first token and on the total. It stays off by default; the default is
-not decided by this record alone (see the end).**
+same total tokens/s, and the first token of those prompts comes 8% to 10% later. At 64 rows a step it is far worse on the first token and on the total. When this was measured it was off by default; it was made the default at a chunk's rows afterwards
+(see the end).**
 
 Machine: a rented RTX 4080 (16 GB, driver 595.91.07, Ryzen 9 3900X), nothing else on the GPU. Engine: main 684fb473 with the changes of M2 batches 5 and 6 (the scheduler's one-step round is this record's own pull request), built by the GPU job's recipe
 (`scripts/ci_gpu_build.sh`, kernels for sm_89). Model: `google/gemma-4-12B-it:wren` (6.75 GB of weights). `glyd-engine bench` started the server itself with 8 users, no draft model;
@@ -65,3 +65,9 @@ One request at a time is the same in every column, as it must be: with nothing e
 So the default is a choice between two properties: the shortest gaps between tokens under load at the same throughput (one step, 256 rows), or replies whose bits do not turn on what ran
 beside them (two passes, or one step held to 64 rows, which costs the first token and the total above). A product route that does not depend on the row count (the deterministic mode, #206)
 would give both.
+
+## Afterwards
+
+The one step at a chunk's rows (256 here) was made the default the same day: it is what the runtime's design asks for (docs/design/runtime.md, "A round is one step"), and on these loads it gives
+up nothing in the total and 8% to 10% of a late prompt's first token for gaps 3.5 to 5 times shorter. `GLYD_ENGINE_ONE_STEP=0` is the round of two passes, and `GLYD_ENGINE_STEP_TOKENS=64` holds a
+step to the rows at which a reply's last bits do not turn on what ran beside it, at the cost in the first token and the total shown above.
