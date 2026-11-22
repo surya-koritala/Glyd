@@ -877,9 +877,9 @@ pub fn bench(a: &Args) -> Result<()> {
     // (the mixer's pending update, as the decode step's Gated Residuals take it)
     let (po, pinj) = (up(&bf(rnd(8 * d * 2)))?, up(&(0..32).flat_map(|j| (0.25 + (j % 4) as f32 / 8.0).to_le_bytes()).collect::<Vec<u8>>())?);
     let post = (po.ptr, pinj.ptr);
-    let names = |b: &str| [format!("{b}_1"), format!("{b}_2"), format!("{b}_4"), format!("{b}_8")];
-    let load = |b: &str| -> Result<Vec<crate::dev::Kernel>> { names(b).iter().map(|n| dev.kernel(n)).collect() };
-    let (sh1, sh2) = (load("qx_sh1")?, load("qx_sh2")?);
+    use crate::kt;
+    let sh1 = [dev.by_args::<kt::qx_sh1_1>()?, dev.by_args::<kt::qx_sh1_2>()?, dev.by_args::<kt::qx_sh1_4>()?, dev.by_args::<kt::qx_sh1_8>()?];
+    let sh2 = [dev.by_args::<kt::qx_sh2_1>()?, dev.by_args::<kt::qx_sh2_2>()?, dev.by_args::<kt::qx_sh2_4>()?, dev.by_args::<kt::qx_sh2_8>()?];
     let pick = |n: usize| match n {
         1 => 0,
         2 => 1,

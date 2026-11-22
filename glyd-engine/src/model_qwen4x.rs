@@ -4,7 +4,7 @@
 //! into the LM head. The embedding and the n-gram table are read on the host from the checkpoint's files mapped (their rows copied up with the step), never loaded to the GPU. The layers' math: transformers 5.19.0's
 //! modeling_qwen4_exp.py (tools/qwen4x_ref.py checks this file against it); the config and tensor names: src/qwen4x.rs; the new kernels: kernels/qwen4x.cu.
 
-use crate::dev::{copy_d2h_async, copy_h2d_async, Buf, Dev, Kernel, Pinned};
+use crate::dev::{copy_d2h_async, copy_h2d_async, Buf, Dev, Pinned};
 use crate::ffi::{err, Error, Lib, Result, Stream};
 use crate::kern::Kern;
 use crate::kern35::{Kern35, Mat};
@@ -22,12 +22,6 @@ use std::cell::{Cell, OnceCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
 
 /// Keys a tile of `qx_attn_sel` and its padded row (kernels/qwen4x.cu), and the parts a decode step's attention over picked tokens is split into.
 const QX_KB: u32 = 32;
@@ -58,25 +52,25 @@ pub struct KernQx {
     attn_sel: crate::kt::qx_attn_sel,
     attn_tc: crate::kt::qx_attn_tc,
     ix_score: crate::kt::qx_ix_score,
-    select: Kernel,
+    select: crate::kt::qx_select,
     /// (the split attention of a decode step's rows with 4 and 8 warps a block)
-    attn_dec: [Kernel; 2],
+    attn_dec: [crate::dev::ByArgs<crate::dev::ArgsOf<crate::kt::qx_attn_dec4>>; 2],
     conv_tok: crate::kt::qx_conv_tok,
     conv_state: crate::kt::qx_conv_state,
-    gdn_prep: Kernel,
-    gdn_scan: Kernel,
+    gdn_prep: crate::kt::qx_gdn_prep,
+    gdn_scan: crate::kt::qx_gdn_scan,
     /// the two-pass delta rule's scratch (`delta2`), made by its first call and grown by a longer one
     gdn_buf: std::cell::RefCell<Option<Buf>>,
     merge: crate::kt::attn256_merge,
     // (the fused Gated Residual's for 1, 2, 4 and 8 rows; its first launch also by streams, `qx_gr1q`, on gr1s's scratch)
-    gr1: [Kernel; 4],
-    gr1q: [Kernel; 3],
-    gr2: [Kernel; 4],
+    gr1: [crate::dev::ByArgs<crate::dev::ArgsOf<crate::kt::qx_gr1_1>>; 4],
+    gr1q: [crate::dev::ByArgs<crate::dev::ArgsOf<crate::kt::qx_gr1q_1>>; 3],
+    gr2: [crate::dev::ByArgs<crate::dev::ArgsOf<crate::kt::qx_gr2_1>>; 4],
     i8bf16: crate::kt::qx_i8_bf16,
 }
 
 /// The kernel of a few-rows family (1, 2, 4 or 8 rows) for n rows (1 to 8).
-pub(crate) fn rows_kernel(k: &[Kernel; 4], n: usize) -> &Kernel {
+pub(crate) fn rows_kernel<A>(k: &[crate::dev::ByArgs<A>; 4], n: usize) -> &crate::dev::ByArgs<A> {
     &k[match n {
         1 => 0,
         2 => 1,
@@ -107,14 +101,14 @@ impl KernQx {
             attn_sel: dev.typed()?,
             ix_score: dev.typed()?,
             attn_dec: {
-                let ks = [dev.kernel(kname!("qx_attn_dec4"))?, dev.kernel(kname!("qx_attn_dec8"))?];
+                let ks = [dev.by_args::<crate::kt::qx_attn_dec4>()?, dev.by_args::<crate::kt::qx_attn_dec8>()?];
                 for (k, w) in ks.iter().zip([4u32, 8]) {
                     k.allow_smem(attn_dec_smem(w))?;
                 }
                 ks
             },
             select: {
-                let k = dev.kernel(kname!("qx_select"))?;
+                let k = dev.typed::<crate::kt::qx_select>()?;
                 k.allow_smem((QX_SEL_CAP * 4) as u32)?;
                 k
             },
@@ -122,20 +116,30 @@ impl KernQx {
             conv_tok: dev.typed()?,
             conv_state: dev.typed()?,
             gdn_prep: {
-                let k = dev.kernel(kname!("qx_gdn_prep"))?;
+                let k = dev.typed::<crate::kt::qx_gdn_prep>()?;
                 k.allow_smem(GDN_PREP_SMEM)?;
                 k
             },
             gdn_scan: {
-                let k = dev.kernel(kname!("qx_gdn_scan"))?;
+                let k = dev.typed::<crate::kt::qx_gdn_scan>()?;
                 k.allow_smem(GDN_SCAN_SMEM)?;
                 k
             },
             gdn_buf: std::cell::RefCell::new(None),
             merge: dev.typed()?,
-            gr1: [dev.kernel(kname!("qx_gr1_1"))?, dev.kernel(kname!("qx_gr1_2"))?, dev.kernel(kname!("qx_gr1_4"))?, dev.kernel(kname!("qx_gr1_8"))?],
-            gr1q: [dev.kernel(kname!("qx_gr1q_1"))?, dev.kernel(kname!("qx_gr1q_2"))?, dev.kernel(kname!("qx_gr1q_4"))?],
-            gr2: [dev.kernel(kname!("qx_gr2_1"))?, dev.kernel(kname!("qx_gr2_2"))?, dev.kernel(kname!("qx_gr2_4"))?, dev.kernel(kname!("qx_gr2_8"))?],
+            gr1: [
+                dev.by_args::<crate::kt::qx_gr1_1>()?,
+                dev.by_args::<crate::kt::qx_gr1_2>()?,
+                dev.by_args::<crate::kt::qx_gr1_4>()?,
+                dev.by_args::<crate::kt::qx_gr1_8>()?,
+            ],
+            gr1q: [dev.by_args::<crate::kt::qx_gr1q_1>()?, dev.by_args::<crate::kt::qx_gr1q_2>()?, dev.by_args::<crate::kt::qx_gr1q_4>()?],
+            gr2: [
+                dev.by_args::<crate::kt::qx_gr2_1>()?,
+                dev.by_args::<crate::kt::qx_gr2_2>()?,
+                dev.by_args::<crate::kt::qx_gr2_4>()?,
+                dev.by_args::<crate::kt::qx_gr2_8>()?,
+            ],
             i8bf16: dev.typed()?,
         })
     }

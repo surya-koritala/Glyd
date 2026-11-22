@@ -6,7 +6,7 @@
 //! the rotary on 64 of 256 dims, the causal attention times sigmoid(gate), the o product. Linear attention: the qkvz and ba products, the causal convolution with SiLU,
 //! the gated delta rule (a recurrence, or in chunks for a prompt), the gated norm, the out product.
 
-use crate::dev::{Buf, Dev, Kernel};
+use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result, Stream};
 use crate::kern::norm_threads;
 use crate::launch;
@@ -20,12 +20,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 // The kernels' names: those the .cu sources give them, in every build (kname!).
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
-
 /// Bytes of dynamic shared memory gdn_chunk takes (kernels/qwen35.cu).
 const GDN_CHUNK_SMEM: u32 = (2 * 64 * 65 + 64 * 64 + 64 * 64 + 128 * 64 + 2 * 64) * 4;
 /// Keys a tile and the padded row of attn256.
@@ -45,14 +39,14 @@ pub struct Kern35 {
     attn_merge: crate::kt::attn256_merge,
     conv: crate::kt::conv_silu,
     rec: crate::kt::gdn_recurrent,
-    chunk: Kernel,
+    chunk: crate::kt::gdn_chunk,
     gnorm: crate::kt::gated_norm,
     small: crate::kt::small_linear,
 }
 
 impl Kern35 {
     pub fn load(dev: &Dev) -> Result<Kern35> {
-        let chunk = dev.kernel(kname!("gdn_chunk"))?;
+        let chunk = dev.typed::<crate::kt::gdn_chunk>()?;
         chunk.allow_smem(GDN_CHUNK_SMEM)?;
         Ok(Kern35 {
             rmsnorm: dev.typed()?,

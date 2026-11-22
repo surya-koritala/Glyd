@@ -8,7 +8,7 @@
 //! carry it.
 
 use super::{Opts, Stage};
-use crate::dev::{Buf, Dev, Kernel};
+use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result, Stream};
 use crate::launch;
 use crate::model::Sample;
@@ -16,12 +16,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
-
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
 
 /// kernels/tp.cu's blocks a gather.
 const BLOCKS: usize = 16;
@@ -128,7 +122,7 @@ pub struct Comm {
     pub n: usize,
     group: Arc<Group>,
     gather: crate::kt::tp_gather,
-    gather_ll: Option<Kernel>,
+    gather_ll: Option<crate::kt::tp_gather_ll>,
     ch: Vec<Chan>,
     streams: RefCell<Vec<Stream>>,
     min_bytes: usize,
@@ -189,7 +183,7 @@ impl Comm {
         let min_bytes = crate::tune!("GLYD_TP_MIN_MB").and_then(|v| v.parse::<usize>().ok()).map_or(MIN_BYTES, |m| m << 20);
         // (GLYD_TP_LL=0 in a development build: every gather the regular kind, to compare)
         let ll = crate::tune!("GLYD_TP_LL").is_none_or(|v| v != "0");
-        let gather_ll = if ll { Some(dev.kernel(kname!("tp_gather_ll"))?) } else { None };
+        let gather_ll = if ll { Some(dev.typed::<crate::kt::tp_gather_ll>()?) } else { None };
         let c = Rc::new(Comm {
             rank,
             n,

@@ -13,7 +13,7 @@
 //! The arithmetic is fp32 with the roundings of vLLM's fused MoE: the router in fp32 (the logits of a bf16 gate rounded to bf16, as its Linear does), the first product stored in bf16 when the activation is not fused
 //! into it (a clamp, relu squared) and the activation rounded once, each pair's down sums times its weight added in fp32 and rounded once.
 
-use crate::dev::{Buf, Dev, Kernel};
+use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Lib, Pack, Result, Stream, Words};
 use crate::launch;
 use crate::moe_hbg::{self, HbgExperts, HbgKern};
@@ -23,12 +23,6 @@ use crate::weights::PackBuf;
 use glyd_gpu::pack::{Tiered, FP4R_TAG, FP4_TAG, INT4_STEP_BYTES, INT4_TAG, INT5_STEP_BYTES, INT5_TAG, INT6_STEP_BYTES, INT6_TAG};
 
 // The kernels' names: those the .cu sources give them, in every build (kname!).
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
-
 /// Experts a router takes (moe_select8, 16 and 32: 256, 512 and 1,024), and choices a token has.
 pub const MAX_EXPERTS: usize = 1024;
 pub const MAX_TOPK: usize = 32;
@@ -474,7 +468,7 @@ pub struct MoeWeights {
 /// The layer's kernels (kernels/moe.cu) with typed launches. Device addresses are `u64`.
 pub struct MoeKern {
     logits: crate::kt::moe_logits,
-    select: [Kernel; 3],
+    select: [crate::dev::ByArgs<crate::dev::ArgsOf<crate::kt::moe_select8>>; 3],
     act: crate::kt::moe_act,
     add: crate::kt::moe_add,
     add_f32: crate::kt::moe_add_f32,
@@ -514,7 +508,7 @@ impl MoeKern {
     pub fn load(dev: &Dev) -> Result<MoeKern> {
         Ok(MoeKern {
             logits: dev.typed()?,
-            select: [dev.kernel(kname!("moe_select8"))?, dev.kernel(kname!("moe_select16"))?, dev.kernel(kname!("moe_select32"))?],
+            select: [dev.by_args::<crate::kt::moe_select8>()?, dev.by_args::<crate::kt::moe_select16>()?, dev.by_args::<crate::kt::moe_select32>()?],
             act: dev.typed()?,
             add: dev.typed()?,
             add_f32: dev.typed()?,

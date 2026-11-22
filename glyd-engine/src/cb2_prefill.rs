@@ -14,7 +14,7 @@
 //! asked for, or a layer of a pack, mapped) and tokens, the time of a call and its sums for a few tokens against src/cpu_cb.rs's.
 
 use crate::cpu_cb::Fmt;
-use crate::dev::{copy_d2h_async, copy_h2d_async, memset_async, Buf, Dev, Ev, EvRef, Kernel, Pinned, Side};
+use crate::dev::{copy_d2h_async, copy_h2d_async, memset_async, ArgsOf, Buf, ByArgs, Dev, Ev, EvRef, Pinned, Side};
 use crate::ffi::{err, Error, Result, Stream};
 use crate::launch;
 use std::cell::RefCell;
@@ -22,12 +22,6 @@ use std::ffi::c_void;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
-
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
 
 const HID: usize = 4096;
 const INTER: usize = 2048;
@@ -373,16 +367,16 @@ pub struct Cb2Kern {
     pub took: std::cell::Cell<HostTook>,
     add: crate::kt::c2_add_f32,
     // the products of two, three and four bits
-    up: [Kernel; 3],
-    down: [Kernel; 3],
+    up: [ByArgs<ArgsOf<crate::kt::c2_up2_2>>; 3],
+    down: [ByArgs<ArgsOf<crate::kt::c2_down2_2>>; 3],
     tern: crate::kt::c2_tern_cb2,
     /// the ternary rows' conversion at any width (Qwen's), and the width and neurons the products are made for
     tern_rows: crate::kt::c2_tern_rows,
     /// the products of every width in one launch (Qwen3.8-Flash-Next's experts: `c2qx_*`), the outputs a block of their second, and the first products with 128 pairs a block
     /// (two stages only)
-    mixed: Option<(Kernel, Kernel)>,
+    mixed: Option<(ByArgs<ArgsOf<crate::kt::c2qx_up_2>>, ByArgs<ArgsOf<crate::kt::c2qx_down_2>>)>,
     dout: usize,
-    up128: Option<Kernel>,
+    up128: Option<crate::kt::c2qx_up128_2>,
     hid: usize,
     inter: usize,
     stages: usize,
@@ -415,23 +409,30 @@ impl Cb2Kern {
             (2560, 640) => true,
             _ => return err(format!("the streaming prefill's kernels are made for experts of 2,048 x 4,096 and 640 x 2,560, not {inter} x {hid}")),
         };
-        let pick = |glm: [&'static str; 2], q: [&'static str; 2]| dev.kernel(if qwen { q[stages - 2] } else { glm[stages - 2] });
-        let up = [
-            pick([kname!("c2_up2_2"), kname!("c2_up2_3")], [kname!("c2q_up2_2"), kname!("c2q_up2_3")])?,
-            pick([kname!("c2_up3_2"), kname!("c2_up3_3")], [kname!("c2q_up3_2"), kname!("c2q_up3_3")])?,
-            pick([kname!("c2_up4_2"), kname!("c2_up4_3")], [kname!("c2q_up4_2"), kname!("c2q_up4_3")])?,
-        ];
+        // (GLM-5.3-Flash's or Condor's experts, in two or three stages: one of four kernels that take the same arguments)
+        macro_rules! pick {
+            ($g2:ident, $g3:ident, $q2:ident, $q3:ident) => {
+                match (qwen, stages) {
+                    (false, 2) => dev.by_args::<crate::kt::$g2>()?,
+                    (false, _) => dev.by_args::<crate::kt::$g3>()?,
+                    (true, 2) => dev.by_args::<crate::kt::$q2>()?,
+                    (true, _) => dev.by_args::<crate::kt::$q3>()?,
+                }
+            };
+        }
+        let up =
+            [pick!(c2_up2_2, c2_up2_3, c2q_up2_2, c2q_up2_3), pick!(c2_up3_2, c2_up3_3, c2q_up3_2, c2q_up3_3), pick!(c2_up4_2, c2_up4_3, c2q_up4_2, c2q_up4_3)];
         let down = [
-            pick([kname!("c2_down2_2"), kname!("c2_down2_3")], [kname!("c2q_down2_2"), kname!("c2q_down2_3")])?,
-            pick([kname!("c2_down3_2"), kname!("c2_down3_3")], [kname!("c2q_down3_2"), kname!("c2q_down3_3")])?,
-            pick([kname!("c2_down4_2"), kname!("c2_down4_3")], [kname!("c2q_down4_2"), kname!("c2q_down4_3")])?,
+            pick!(c2_down2_2, c2_down2_3, c2q_down2_2, c2q_down2_3),
+            pick!(c2_down3_2, c2_down3_3, c2q_down3_2, c2q_down3_3),
+            pick!(c2_down4_2, c2_down4_3, c2q_down4_2, c2q_down4_3),
         ];
-        for k in up.iter().chain(&down) {
+        for k in up.iter().map(|k| &**k).chain(down.iter().map(|k| &**k)) {
             k.allow_smem((stages * 24576) as u32)?;
         }
         // (c2qx_up128_2 takes 70.1 KiB, c2qx_down_2 86.5: not where a block takes 64 KiB at most)
         let up128 = if qwen && stages == 2 && !small {
-            let k = dev.kernel(kname!("c2qx_up128_2"))?;
+            let k = dev.typed::<crate::kt::c2qx_up128_2>()?;
             k.allow_smem((2 * UP128_STAGE) as u32)?;
             Some(k)
         } else {
@@ -440,9 +441,9 @@ impl Cb2Kern {
         let dout = if small { 128 } else { 256 };
         let mixed = if qwen {
             let (u, d) = match (stages, small) {
-                (3, _) => (dev.kernel(kname!("c2qx_up_3"))?, dev.kernel(kname!("c2qx_down_3"))?),
-                (_, true) => (dev.kernel(kname!("c2qx_up_2"))?, dev.kernel(kname!("c2qx_down4w_2"))?),
-                _ => (dev.kernel(kname!("c2qx_up_2"))?, dev.kernel(kname!("c2qx_down_2"))?),
+                (3, _) => (dev.by_args::<crate::kt::c2qx_up_3>()?, dev.by_args::<crate::kt::c2qx_down_3>()?),
+                (_, true) => (dev.by_args::<crate::kt::c2qx_up_2>()?, dev.by_args::<crate::kt::c2qx_down4w_2>()?),
+                _ => (dev.by_args::<crate::kt::c2qx_up_2>()?, dev.by_args::<crate::kt::c2qx_down_2>()?),
             };
             u.allow_smem((stages * 24576) as u32)?;
             d.allow_smem((stages * downx_stage(dout)) as u32)?;
@@ -1459,7 +1460,17 @@ mod bench {
             for part in a.flag("fmts").unwrap_or("cb2:1").split(',') {
                 let (name, share) = part.split_once(':').unwrap_or((part, "1"));
                 let (u, d) = name.split_once('+').unwrap_or((name, name));
-                let f = |x: &str| Fmt::parse(x).ok_or_else(|| Error(format!("--fmts {part}: tern, cb2, cb3 or cb4 (X+Y: the up's and the down's)")));
+                // (the names the help gives, or the pack's own letters)
+                let f = |x: &str| {
+                    let code = match x {
+                        "tern" => "t",
+                        "cb2" => "a",
+                        "cb3" => "b",
+                        "cb4" => "c",
+                        other => other,
+                    };
+                    Fmt::parse(code).ok_or_else(|| Error(format!("--fmts {part}: tern, cb2, cb3 or cb4 (X+Y: the up's and the down's)")))
+                };
                 specs.push((f(u)?, f(d)?, share.parse().map_err(|_| Error(format!("--fmts {part}: a number after the colon")))?));
             }
             let total: f64 = specs.iter().map(|x| x.2).sum();

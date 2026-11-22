@@ -18,8 +18,9 @@
 
 use crate::args::Args;
 use crate::cpu_simd::{tq_state_k, tq_value, Fmt, TQ_A as HASH_A, TQ_B as HASH_B, TQ_K};
-use crate::dev::{Buf, Dev, Kernel};
+use crate::dev::{ArgsOf, Buf, ByArgs, Dev};
 use crate::ffi::{err, Error, Result, Stream};
+use crate::kt;
 use crate::launch;
 use glyd_gpu::json::{self, Value};
 use glyd_gpu::safetensors::{Checkpoint, File};
@@ -68,10 +69,10 @@ impl Shape {
 
 struct Tq {
     sh: Shape,
-    viterbi: Kernel,
-    back: Kernel,
-    dequant: Kernel,
-    rot: Kernel,
+    viterbi: ByArgs<ArgsOf<kt::qx_tq_viterbi>>,
+    back: ByArgs<ArgsOf<kt::qx_tq_back>>,
+    dequant: ByArgs<ArgsOf<kt::qx_tq_dequant>>,
+    rot: kt::qx_cb_rot_in,
     a: u32,
     b: u32,
     gain: f32,
@@ -86,14 +87,15 @@ struct Coded {
 
 impl Tq {
     fn load(dev: &Dev, sh: Shape, a: u32, b: u32, gain: f32) -> Result<Tq> {
-        let names = if sh.k == 2 {
-            ["qx_tq_viterbi".to_string(), "qx_tq_back".to_string(), "qx_tq_dequant".to_string()]
-        } else {
-            ["vit", "back", "deq"].map(|x| format!("qx_tq_{x}{}", sh.k))
+        // (two bits a weight, or the three and four TQ_ENC makes: kernels that take the same arguments)
+        let (viterbi, back, dequant) = match sh.k {
+            2 => (dev.by_args::<kt::qx_tq_viterbi>()?, dev.by_args::<kt::qx_tq_back>()?, dev.by_args::<kt::qx_tq_dequant>()?),
+            3 => (dev.by_args::<kt::qx_tq_vit3>()?, dev.by_args::<kt::qx_tq_back3>()?, dev.by_args::<kt::qx_tq_deq3>()?),
+            4 => (dev.by_args::<kt::qx_tq_vit4>()?, dev.by_args::<kt::qx_tq_back4>()?, dev.by_args::<kt::qx_tq_deq4>()?),
+            k => return err(format!("trellis codes of {k} bits a weight: 2, 3 or 4")),
         };
-        let viterbi = dev.kernel(&names[0])?;
         viterbi.allow_smem(sh.smem())?;
-        Ok(Tq { sh, viterbi, back: dev.kernel(&names[1])?, dequant: dev.kernel(&names[2])?, rot: dev.kernel("qx_cb_rot_in")?, a, b, gain })
+        Ok(Tq { sh, viterbi, back, dequant, rot: dev.typed()?, a, b, gain })
     }
 
     /// The n rows at `rows` (fp32 [n, T], rotated) coded, `BATCH` at a time (`dec`: `dec_buf`).
@@ -650,7 +652,7 @@ fn gpucheck(a: &Args) -> Result<()> {
     books[bstride - 1] = nib | nib << 4;
     let x = gauss(a.num("seed", 7u64)?, T);
     let dev = Dev::new(0)?;
-    let (up, down) = (dev.kernel("qx_cb_up")?, dev.kernel("qx_cb_down")?);
+    let (up, down) = (dev.typed::<kt::qx_cb_up>()?, dev.typed::<kt::qx_cb_down>()?);
     let (cb, bb, way, xr, gu, part) = (Buf::new(codes.len())?, Buf::new(bstride)?, Buf::new(8)?, Buf::new(T * 4)?, Buf::new(UP * 4)?, Buf::new(T * 4)?);
     cb.write(0, &codes)?;
     bb.write(0, &books)?;

@@ -275,6 +275,11 @@ impl Dev {
         self.kernel(T::NAME).map(T::of)
     }
 
+    /// The kernel of type `T`, held by its arguments' types alone (`ByArgs`).
+    pub fn by_args<T: Typed>(&self) -> Result<ByArgs<T::Args>> {
+        self.kernel(T::NAME).map(|k| ByArgs(k, std::marker::PhantomData))
+    }
+
     pub fn kernel(&self, name: &str) -> Result<Kernel> {
         if self.module.is_null() {
             return err("this build has no CUDA kernels (it was built without nvcc: set NVCC or CUDA_HOME and build again)");
@@ -451,6 +456,38 @@ impl<'a, A> Sig<'a, A> {
 impl<A: KernelArgs> Launch<A> for Sig<'_, A> {
     fn kernel_of(&self) -> &Kernel {
         self.0
+    }
+}
+
+/// The arguments' types of a typed kernel (`crate::kt::g4_rmsnorm`'s `(u64, u64, u64, i32, f32)`).
+pub type ArgsOf<T> = <T as Typed>::Args;
+
+/// A typed kernel held by its arguments' types alone (`Dev::by_args`): what an array of kernels that take the same arguments holds (`moe_select8`, `16`, `32`); an
+/// array of kernels that take others does not compile.
+pub struct ByArgs<A>(Kernel, std::marker::PhantomData<fn(A)>);
+
+impl<A> Clone for ByArgs<A> {
+    fn clone(&self) -> Self {
+        ByArgs(self.0, std::marker::PhantomData)
+    }
+}
+
+impl<A: KernelArgs> Launch<A> for ByArgs<A> {
+    fn kernel_of(&self) -> &Kernel {
+        &self.0
+    }
+}
+
+impl<A: KernelArgs> Launch<A> for &ByArgs<A> {
+    fn kernel_of(&self) -> &Kernel {
+        &self.0
+    }
+}
+
+impl<A> std::ops::Deref for ByArgs<A> {
+    type Target = Kernel;
+    fn deref(&self) -> &Kernel {
+        &self.0
     }
 }
 

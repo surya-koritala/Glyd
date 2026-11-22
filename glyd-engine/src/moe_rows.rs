@@ -15,19 +15,13 @@
 //! The CPU kernel (src/cpu_experts.rs) computes the pairs of experts that are not in the cache's places from these bytes: the host tier's own second matrices, and for a pair a first product in full (the first matrices in the
 //! row layout too, a copy the store holds), then the rows of the neurons that are not zero; its 1,024-wide fp32 sums of a token's pairs are `moe_rows_sum`'s `extra`, added before the one rounding to bf16.
 
-use crate::dev::{Buf, Dev, Kernel};
+use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Result, Stream};
 use crate::launch;
 use crate::moe::{Act, ExpertStack, MoeCfg};
 use glyd_gpu::pack::{rows_bits, rows_stride, Tiered};
 
 // The kernels' names: those the .cu sources give them, in every build (kname!).
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
-
 /// Outputs a block of `moe_down_rows` takes, the neurons it lists at most, and the blocks it asks for at most beyond one a pair (kernels/moe_rows.cu defines the first two: a test holds them equal).
 pub const ROWS_OUT: usize = 1024;
 pub const ROWS_MAX_INTER: usize = 4096;
@@ -213,7 +207,7 @@ pub fn rows_fit(experts: usize, rows: usize, cols: usize, cfg: &MoeCfg) -> Resul
 
 /// The sparse product's kernels (kernels/moe_rows.cu) with typed launches.
 pub struct RowsKern {
-    down: [Kernel; 3],
+    down: [crate::dev::ByArgs<crate::dev::ArgsOf<crate::kt::moe_down_rows4>>; 3],
     sum: crate::kt::moe_rows_sum,
     sms: usize,
 }
@@ -221,7 +215,7 @@ pub struct RowsKern {
 impl RowsKern {
     pub fn load(dev: &Dev) -> Result<RowsKern> {
         Ok(RowsKern {
-            down: [dev.kernel(kname!("moe_down_rows4"))?, dev.kernel(kname!("moe_down_rows5"))?, dev.kernel(kname!("moe_down_rows6"))?],
+            down: [dev.by_args::<crate::kt::moe_down_rows4>()?, dev.by_args::<crate::kt::moe_down_rows5>()?, dev.by_args::<crate::kt::moe_down_rows6>()?],
             sum: dev.typed()?,
             sms: dev.sms.max(1) as usize,
         })

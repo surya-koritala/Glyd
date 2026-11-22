@@ -7,7 +7,7 @@
 //! The weights are a glyd-v7 directory's (`glyd-engine pack MODEL OUT --layout i6|i5`) or a Hub-format directory's (FP8 with 128 x 128 block scales or bf16: a matrix is packed as it loads, from the bf16 it dequantises to).
 //! The layers' math: tools/glm_ref.py; the config and tensor names: src/glm.rs.
 
-use crate::dev::{copy_d2d_async, copy_d2h_async, copy_h2d_async, Buf, Dev, Graph, Kernel, Pinned};
+use crate::dev::{copy_d2d_async, copy_d2h_async, copy_h2d_async, Buf, Dev, Graph, Pinned};
 use crate::ffi::{err, Error, Lib, Result, Stream};
 use crate::glm::{ConfigGlm, GlmKind};
 use crate::kern::Kern;
@@ -22,12 +22,6 @@ use std::collections::HashMap;
 use std::path::Path;
 
 // The kernels' names: those the .cu sources give them, in every build (kname!).
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
-
 /// A development build's timeline marker: `mark!(engine, "stage")` records an event on the stream (also while a CUDA graph is captured) when `EngineGlm::prof` is on, so that `glmprof` can say how long each stage of a layer
 /// takes in a graph's replay. Not compiled into a release build.
 macro_rules! mark {
@@ -55,7 +49,7 @@ pub struct KernGlm {
     conv: crate::kt::conv_silu,
     conv_w32: crate::kt::conv_silu_w32,
     rec: crate::kt::glm_kda_rec,
-    chunk: Kernel,
+    chunk: crate::kt::glm_kda_chunk,
     out: crate::kt::glm_kda_out,
     out_w32: crate::kt::glm_kda_out_w32,
     small: crate::kt::small_linear,
@@ -67,7 +61,7 @@ pub struct KernGlm {
     kp_keys: crate::kt::glm_kp_keys,
     idx_score: crate::kt::glm_idx_score,
     select: crate::kt::glm_select,
-    mla_attn: Kernel,
+    mla_attn: crate::kt::glm_mla_attn,
     /// The shared memory a block of `mla_attn` may take here (the GPU's most, opted in to at load).
     mla_smem: u32,
     mla_merge: crate::kt::glm_mla_merge,
@@ -95,10 +89,10 @@ pub fn mla_positions(smem: u32, ks: i32) -> usize {
 
 impl KernGlm {
     pub fn load(dev: &Dev) -> Result<KernGlm> {
-        let chunk = dev.kernel(kname!("glm_kda_chunk"))?;
+        let chunk = dev.typed::<crate::kt::glm_kda_chunk>()?;
         chunk.allow_smem(GM_CHUNK_SMEM)?;
         // (the dense attention's scores, two floats a position, are in shared memory: as much as the GPU gives a block)
-        let (mla_attn, mla_smem) = (dev.kernel(kname!("glm_mla_attn"))?, mla_smem(dev)?);
+        let (mla_attn, mla_smem) = (dev.typed::<crate::kt::glm_mla_attn>()?, mla_smem(dev)?);
         mla_attn.allow_smem(mla_smem)?;
         Ok(KernGlm {
             streams: dev.typed()?,

@@ -3,7 +3,7 @@
 //! its gate. The experts are glyd-hbr-codes/2 rows at 2,560 x 640 (cb2, cb3, cb4 or ternary, an expert's own format; ~/glyd-scratch/qwen/qwen_pack.py writes them), every layer's file mapped as the cache's host tier
 //! (src/offload.rs): the GPU holds `slots` experts of a layer in places, copied in as the router asks for them, and the host computes a miss from its memory (src/cpu_cb.rs) or copies it, as the store plans.
 
-use crate::dev::{Buf, Dev, Kernel};
+use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result, Stream};
 use crate::launch;
 use crate::model_qwen4x::{moe_cfg, EngineQx, MoeBlockQx};
@@ -16,12 +16,6 @@ use glyd_gpu::safetensors::Checkpoint;
 use std::cell::{Cell, OnceCell};
 use std::rc::Rc;
 use std::sync::Arc;
-
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
 
 /// The width and the neurons the kernels are made for.
 const H: usize = 2560;
@@ -66,8 +60,8 @@ pub struct KernQc {
     seen: Cell<u32>,
     /// the host's word for a call in parts whose next graph is queued before the host's sums are made (`QxMoeCb::host_then`): the front's count the sums are for, then whether there are any; qx_cb_back waits for it
     hword: crate::dev::Pinned,
-    sh1: [Kernel; 4],
-    sh2: [Kernel; 4],
+    sh1: [crate::dev::ByArgs<crate::dev::ArgsOf<crate::kt::qx_sh1_1>>; 4],
+    sh2: [crate::dev::ByArgs<crate::dev::ArgsOf<crate::kt::qx_sh2_1>>; 4],
     add: crate::kt::qx_add_bf16,
     swiglu: crate::kt::qx_swiglu,
     gate_rows: crate::kt::qx_gate_rows,
@@ -104,8 +98,18 @@ impl KernQc {
                 unsafe { std::ptr::write_bytes(f.ptr as *mut u8, 0, 64) };
                 f
             },
-            sh1: [dev.kernel(kname!("qx_sh1_1"))?, dev.kernel(kname!("qx_sh1_2"))?, dev.kernel(kname!("qx_sh1_4"))?, dev.kernel(kname!("qx_sh1_8"))?],
-            sh2: [dev.kernel(kname!("qx_sh2_1"))?, dev.kernel(kname!("qx_sh2_2"))?, dev.kernel(kname!("qx_sh2_4"))?, dev.kernel(kname!("qx_sh2_8"))?],
+            sh1: [
+                dev.by_args::<crate::kt::qx_sh1_1>()?,
+                dev.by_args::<crate::kt::qx_sh1_2>()?,
+                dev.by_args::<crate::kt::qx_sh1_4>()?,
+                dev.by_args::<crate::kt::qx_sh1_8>()?,
+            ],
+            sh2: [
+                dev.by_args::<crate::kt::qx_sh2_1>()?,
+                dev.by_args::<crate::kt::qx_sh2_2>()?,
+                dev.by_args::<crate::kt::qx_sh2_4>()?,
+                dev.by_args::<crate::kt::qx_sh2_8>()?,
+            ],
             add: dev.typed()?,
             swiglu: dev.typed()?,
             gate_rows: dev.typed()?,
