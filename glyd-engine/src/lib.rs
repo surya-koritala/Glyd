@@ -93,6 +93,7 @@ pub mod kcheck_nh;
 pub mod kcheck_qwen4x;
 pub mod kern;
 pub mod kern35;
+pub mod kern_nh;
 pub mod kimi;
 #[cfg(feature = "dev")]
 pub mod kimi_ref;
@@ -109,7 +110,6 @@ pub mod mapped;
 pub mod mla_glm;
 pub mod model;
 pub mod model_glm;
-pub mod model_nh;
 pub mod model_qwen4x;
 pub mod models;
 pub mod moe;
