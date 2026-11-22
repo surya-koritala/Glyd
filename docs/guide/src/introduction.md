@@ -68,3 +68,10 @@ This guide has no benchmark tables. Every measurement, with its machine, build a
 ## Versions
 
 This guide at `/guide/` follows main. Each release tag that has the guide also gets its own copy at `/guide/vX.Y.Z/`, built from that tag's text.
+
+## Supporting Glyd
+
+Glyd is open source under Apache-2.0. [GitHub Sponsors](https://github.com/sponsors/surya-koritala) pays for the GPUs it is measured and
+tested on.
+
+<iframe src="https://github.com/sponsors/surya-koritala/button" title="Sponsor surya-koritala" height="32" width="114" style="border: 0; border-radius: 6px;"></iframe>

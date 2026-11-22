@@ -14,6 +14,7 @@
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache_2.0-green.svg"></a>
   <a href="https://pypistats.org/packages/glyd"><img alt="Downloads" src="https://img.shields.io/pypi/dm/glyd?label=Downloads&color=blue"></a>
   <a href="https://huggingface.co/glyd"><img alt="Models on Hugging Face" src="https://img.shields.io/badge/Models-Hugging_Face-yellow"></a>
+  <a href="https://github.com/sponsors/surya-koritala"><img alt="Sponsor" src="https://img.shields.io/badge/Sponsor-GitHub_Sponsors-ea4aaa?logo=githubsponsors&logoColor=white"></a>
 </p>
 
 <p align="center">
@@ -21,7 +22,8 @@
   <a href="https://huggingface.co/glyd">Models</a> ·
   <a href="ROADMAP.md">Roadmap</a> ·
   <a href="https://github.com/surya-koritala/Glyd/discussions">Discussions</a> ·
-  <a href="https://github.com/surya-koritala/Glyd/releases">Releases</a>
+  <a href="https://github.com/surya-koritala/Glyd/releases">Releases</a> ·
+  <a href="https://github.com/sponsors/surya-koritala">Sponsor</a>
 </p>
 
 Glyd is an open-source inference engine for large language models, written in Rust with its own CUDA kernels. It
@@ -138,6 +140,7 @@ Start with [CONTRIBUTING.md](CONTRIBUTING.md) and the
 - **Plans:** the [roadmap](ROADMAP.md), with one GitHub milestone per release.
 - **Security reports:** [SECURITY.md](SECURITY.md).
 - **Governance and the name:** [GOVERNANCE.md](GOVERNANCE.md).
+- **Support the work:** [GitHub Sponsors](https://github.com/sponsors/surya-koritala) funds the GPUs Glyd is measured and tested on.
 
 ## License
 
