@@ -720,14 +720,25 @@ pub fn cgroup_free(limit: u64, current: u64, stat: &str) -> u64 {
     limit.saturating_sub(current.saturating_sub(cache))
 }
 
-/// The host memory a process can still take: what /proc/meminfo says is available, or less where a control group (v2 or v1) limits the container below it (`cgroup_free`). None where the system does not say (not Linux).
+/// The host memory a process can still take: what /proc/meminfo says is available, or less where a control group (v2 or v1) limits it below that (`cgroup_free`). None where the system does not say (not Linux).
+/// The one probe of it (#137: Condor's server had its own): every path that plans memory reads it here. GLYD_MEMAVAIL_GB (a development build's): a test's stand-in for a smaller computer.
 pub fn host_memory() -> Option<u64> {
+    if let Some(g) = crate::tune!("GLYD_MEMAVAIL_GB").and_then(|v| v.parse::<f64>().ok()) {
+        return Some((g * (1u64 << 30) as f64) as u64);
+    }
     let read = |p: &str| std::fs::read_to_string(p).ok();
     let mut free = parse_meminfo(&crate::os::meminfo()?)?;
     let number = |p: &str| read(p).and_then(|t| t.trim().parse::<u64>().ok());
     let (v2, v1) = ("/sys/fs/cgroup", "/sys/fs/cgroup/memory");
-    let group = match (number(&format!("{v2}/memory.max")), number(&format!("{v1}/memory.limit_in_bytes"))) {
-        (Some(l), _) => Some((l, number(&format!("{v2}/memory.current")), read(&format!("{v2}/memory.stat")))),
+    // (v2: this process's own cgroup, /proc/self/cgroup's "0::/path", and its parents, the nearest with a limit: a systemd unit's MemoryMax, a CI runner's, is below the
+    // root; in a container the root is the container's. "max", no limit, does not parse)
+    let own = read("/proc/self/cgroup").and_then(|t| t.lines().find_map(|l| l.strip_prefix("0::").map(str::to_string))).unwrap_or_default();
+    let limited = std::iter::successors(Some(std::path::Path::new(v2).join(own.trim_start_matches('/'))), |d| {
+        d.parent().filter(|p| p.starts_with(v2)).map(std::path::Path::to_path_buf)
+    })
+    .find_map(|d| number(&d.join("memory.max").to_string_lossy()).map(|l| (l, d)));
+    let group = match (limited, number(&format!("{v1}/memory.limit_in_bytes"))) {
+        (Some((l, d)), _) => Some((l, number(&d.join("memory.current").to_string_lossy()), read(&d.join("memory.stat").to_string_lossy()))),
         (None, Some(l)) => Some((l, number(&format!("{v1}/memory.usage_in_bytes")), read(&format!("{v1}/memory.stat")))),
         _ => None,
     };

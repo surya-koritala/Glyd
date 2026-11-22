@@ -191,7 +191,8 @@ impl Facts {
             gpus,
             library: crate::ffi::Lib::find().map(|l| l.path.clone()).map_err(|e| e.0),
             cublas: crate::ffi::Blas::find().map(|b| b.path.clone()),
-            ram: crate::os::meminfo().and_then(|t| parse_ram(&t)),
+            // (the total from /proc/meminfo; what is available from offload::host_memory, the planner's own probe, which a cgroup's limit lowers)
+            ram: crate::os::meminfo().and_then(|t| parse_ram(&t)).map(|(total, avail)| (total, crate::offload::host_memory().unwrap_or(avail))),
             cache: dir_of(&cache),
             models: dir_of(&hub_dir),
             hub_token: h.has_token(),
