@@ -1,0 +1,406 @@
+{
+  "schema": "glyd-bench/1",
+  "label": "",
+  "recorded_unix": 1795344301,
+  "machine": {
+    "gpu": "NVIDIA GeForce RTX 4080",
+    "driver": "595.99.02",
+    "memory_mib": 16376.0,
+    "max_sm_mhz": 3105.0,
+    "max_mem_mhz": 11201.0,
+    "power_limit_w": 320.0,
+    "compute_capability": "8.9",
+    "cpu": "AMD Ryzen Threadripper PRO 3955WX 16-Cores",
+    "cpu_threads": 30,
+    "os": "linux",
+    "arch": "x86_64"
+  },
+  "model": {
+    "id": "google/gemma-4-12B-it:wren",
+    "argument": "google/gemma-4-12B-it:wren",
+    "level": "wren",
+    "weights_bytes": 6745502052.0,
+    "weights_source": "/v1/glyd/info"
+  },
+  "bandwidth": {
+    "gbs": 716.8,
+    "source": "spec sheet"
+  },
+  "versions": {
+    "glyd_engine": "0.34.2",
+    "git": null,
+    "server": "0.34.2"
+  },
+  "server": {
+    "against": null,
+    "started_by_bench": true,
+    "users": 8
+  },
+  "config": {
+    "suite": "loads",
+    "loads": [
+      "1k*4:1",
+      "1k*4:8",
+      "4k*4:1",
+      "4k*4:8"
+    ],
+    "runs": 2,
+    "warmup": 1,
+    "max_tokens": 128
+  },
+  "contention": {
+    "busy_before": false,
+    "utilization_median_pct": 0.0,
+    "before": {
+      "memory_used_mib": 1.0,
+      "utilization_pct": 0.0,
+      "sm_mhz": 2835.0,
+      "mem_mhz": 11201.0,
+      "load_1m": 1.56
+    },
+    "after": {
+      "memory_used_mib": 14461.0,
+      "utilization_pct": 100.0,
+      "sm_mhz": 2820.0,
+      "mem_mhz": 10801.0,
+      "load_1m": 1.29
+    }
+  },
+  "idle_mib": 1.0,
+  "peak_mib": 14461,
+  "quality": null,
+  "cells": [
+    {
+      "prompt": "1k*4",
+      "conc": 1,
+      "prompt_tokens": 1184.25,
+      "errors": 0,
+      "ttft_s": {
+        "mean": 0.263412,
+        "sd": 0.00017,
+        "median": 0.263412,
+        "min": 0.263292,
+        "max": 0.263533,
+        "runs": [
+          0.263292,
+          0.263533
+        ]
+      },
+      "decode_tps_per_user": {
+        "mean": 82.072765,
+        "sd": 0.276428,
+        "median": 82.072765,
+        "min": 81.877301,
+        "max": 82.268229,
+        "runs": [
+          81.877301,
+          82.268229
+        ]
+      },
+      "itl_ms": {
+        "mean": 12.184379,
+        "sd": 0.041038,
+        "median": 12.184379,
+        "min": 12.155361,
+        "max": 12.213397,
+        "runs": [
+          12.213397,
+          12.155361
+        ]
+      },
+      "itl_p99_ms": {
+        "mean": 12.66674,
+        "sd": 0.011271,
+        "median": 12.66674,
+        "min": 12.65877,
+        "max": 12.67471,
+        "runs": [
+          12.67471,
+          12.65877
+        ]
+      },
+      "agg_tps": {
+        "mean": 69.7618,
+        "sd": 0.147035,
+        "median": 69.7618,
+        "min": 69.657831,
+        "max": 69.865769,
+        "runs": [
+          69.865769,
+          69.657831
+        ]
+      },
+      "prefill_tps": {
+        "mean": -0.0,
+        "sd": 0.0,
+        "median": null,
+        "min": null,
+        "max": null,
+        "runs": []
+      },
+      "ttft_later_s": {
+        "mean": 0.340611,
+        "sd": 0.000443,
+        "median": 0.340611,
+        "min": 0.340297,
+        "max": 0.340924,
+        "runs": [
+          0.340297,
+          0.340924
+        ]
+      },
+      "prefix_hit_rate": 0.0,
+      "ceiling_tps_per_user": 106.26,
+      "pct_of_ceiling": 0.7724
+    },
+    {
+      "prompt": "1k*4",
+      "conc": 8,
+      "prompt_tokens": 1176.75,
+      "errors": 0,
+      "ttft_s": {
+        "mean": 1.20556,
+        "sd": 0.00034,
+        "median": 1.20556,
+        "min": 1.205319,
+        "max": 1.2058,
+        "runs": [
+          1.2058,
+          1.205319
+        ]
+      },
+      "decode_tps_per_user": {
+        "mean": 28.029614,
+        "sd": 0.160123,
+        "median": 28.029614,
+        "min": 27.91639,
+        "max": 28.142838,
+        "runs": [
+          27.91639,
+          28.142838
+        ]
+      },
+      "itl_ms": {
+        "mean": 35.677134,
+        "sd": 0.20381,
+        "median": 35.677134,
+        "min": 35.533019,
+        "max": 35.82125,
+        "runs": [
+          35.82125,
+          35.533019
+        ]
+      },
+      "itl_p99_ms": {
+        "mean": 150.145419,
+        "sd": 0.124502,
+        "median": 150.145419,
+        "min": 150.057383,
+        "max": 150.233455,
+        "runs": [
+          150.057383,
+          150.233455
+        ]
+      },
+      "agg_tps": {
+        "mean": 187.515735,
+        "sd": 0.242849,
+        "median": 187.515735,
+        "min": 187.344014,
+        "max": 187.687455,
+        "runs": [
+          187.344014,
+          187.687455
+        ]
+      },
+      "prefill_tps": {
+        "mean": -0.0,
+        "sd": 0.0,
+        "median": null,
+        "min": null,
+        "max": null,
+        "runs": []
+      },
+      "ttft_later_s": {
+        "mean": 0.683251,
+        "sd": 0.075602,
+        "median": 0.683251,
+        "min": 0.629792,
+        "max": 0.73671,
+        "runs": [
+          0.73671,
+          0.629792
+        ]
+      },
+      "prefix_hit_rate": 0.0,
+      "ceiling_tps_per_user": 106.26,
+      "pct_of_ceiling": 0.2638
+    },
+    {
+      "prompt": "4k*4",
+      "conc": 1,
+      "prompt_tokens": 3997.25,
+      "errors": 0,
+      "ttft_s": {
+        "mean": 1.091204,
+        "sd": 0.000154,
+        "median": 1.091204,
+        "min": 1.091095,
+        "max": 1.091313,
+        "runs": [
+          1.091313,
+          1.091095
+        ]
+      },
+      "decode_tps_per_user": {
+        "mean": 79.19689,
+        "sd": 0.011967,
+        "median": 79.19689,
+        "min": 79.188428,
+        "max": 79.205352,
+        "runs": [
+          79.188428,
+          79.205352
+        ]
+      },
+      "itl_ms": {
+        "mean": 12.626759,
+        "sd": 0.001908,
+        "median": 12.626759,
+        "min": 12.625409,
+        "max": 12.628108,
+        "runs": [
+          12.628108,
+          12.625409
+        ]
+      },
+      "itl_p99_ms": {
+        "mean": 12.960542,
+        "sd": 0.036161,
+        "median": 12.960542,
+        "min": 12.934972,
+        "max": 12.986112,
+        "runs": [
+          12.986112,
+          12.934972
+        ]
+      },
+      "agg_tps": {
+        "mean": 49.751055,
+        "sd": 0.211956,
+        "median": 49.751055,
+        "min": 49.60118,
+        "max": 49.900931,
+        "runs": [
+          49.900931,
+          49.60118
+        ]
+      },
+      "prefill_tps": {
+        "mean": -0.0,
+        "sd": 0.0,
+        "median": null,
+        "min": null,
+        "max": null,
+        "runs": []
+      },
+      "ttft_later_s": {
+        "mean": 1.168856,
+        "sd": 0.00025,
+        "median": 1.168856,
+        "min": 1.168679,
+        "max": 1.169033,
+        "runs": [
+          1.169033,
+          1.168679
+        ]
+      },
+      "prefix_hit_rate": 0.0,
+      "ceiling_tps_per_user": 106.26,
+      "pct_of_ceiling": 0.7453
+    },
+    {
+      "prompt": "4k*4",
+      "conc": 8,
+      "prompt_tokens": 3994.5,
+      "errors": 0,
+      "ttft_s": {
+        "mean": 5.040865,
+        "sd": 0.001301,
+        "median": 5.040865,
+        "min": 5.039945,
+        "max": 5.041785,
+        "runs": [
+          5.039945,
+          5.041785
+        ]
+      },
+      "decode_tps_per_user": {
+        "mean": 13.859559,
+        "sd": 0.018733,
+        "median": 13.859559,
+        "min": 13.846313,
+        "max": 13.872805,
+        "runs": [
+          13.872805,
+          13.846313
+        ]
+      },
+      "itl_ms": {
+        "mean": 72.152433,
+        "sd": 0.097521,
+        "median": 72.152433,
+        "min": 72.083475,
+        "max": 72.221391,
+        "runs": [
+          72.083475,
+          72.221391
+        ]
+      },
+      "itl_p99_ms": {
+        "mean": 169.068269,
+        "sd": 0.157898,
+        "median": 169.068269,
+        "min": 168.956618,
+        "max": 169.17992,
+        "runs": [
+          168.956618,
+          169.17992
+        ]
+      },
+      "agg_tps": {
+        "mean": 79.214003,
+        "sd": 0.111974,
+        "median": 79.214003,
+        "min": 79.134825,
+        "max": 79.29318,
+        "runs": [
+          79.29318,
+          79.134825
+        ]
+      },
+      "prefill_tps": {
+        "mean": -0.0,
+        "sd": 0.0,
+        "median": null,
+        "min": null,
+        "max": null,
+        "runs": []
+      },
+      "ttft_later_s": {
+        "mean": 2.949687,
+        "sd": 0.266656,
+        "median": 2.949687,
+        "min": 2.761133,
+        "max": 3.138241,
+        "runs": [
+          3.138241,
+          2.761133
+        ]
+      },
+      "prefix_hit_rate": 0.0,
+      "ceiling_tps_per_user": 106.26,
+      "pct_of_ceiling": 0.1304
+    }
+  ]
+}

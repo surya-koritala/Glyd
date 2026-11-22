@@ -1637,11 +1637,13 @@ fn room(s: &mut dyn crate::sched::ModelStep, slot: i32, upto: usize) -> Result<(
     }
 }
 
-/// Tokens `t` into a step's slot from position `start` on, alone, `by` tokens a pass; the logits after them where `last`.
+/// Tokens `t` into a step's slot from position `start` on, alone, `by` tokens a pass; the logits after them where `last`. Room is asked for before every pass, for the tokens
+/// the sequence holds after it, as the scheduler asks: a sliding layer's blocks are the window behind the newest token, so room for a whole long prompt at once is not room
+/// for its first chunks.
 fn fill_from(s: &mut dyn crate::sched::ModelStep, slot: i32, start: usize, t: &[u32], by: usize, last: bool) -> Result<Option<Vec<f32>>> {
-    room(s, slot, start + t.len() + 1)?;
     let n = t.len().div_ceil(by);
     for (i, part) in t.chunks(by).enumerate() {
+        room(s, slot, start + i * by + part.len() + (i + 1 == n) as usize)?;
         s.prefill(&[slot], start + i * by, part, last && i + 1 == n)?;
     }
     if last {
@@ -1808,10 +1810,10 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
         // the row beside a prompt's chunks, and the prompt's logits after its last
         let beside = |s: &mut dyn ModelStep, prompt: &[u32]| -> Result<(Vec<Vec<f32>>, Vec<f32>)> {
             fill(s, 0, &pa, chunk, false)?;
-            room(s, 1, prompt.len() + 1)?;
             let (mut got, mut after) = (Vec::new(), Vec::new());
             for t in 0..n {
                 room(s, 0, pa.len() + t + 2)?;
+                room(s, 1, (t + 1) * c + (t + 1 == n) as usize)?;
                 let last = t + 1 == n;
                 s.round(
                     &[Row { token: fa[t], pos: pa.len() + t, pages: &[0] }],
