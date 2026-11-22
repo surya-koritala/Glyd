@@ -143,14 +143,20 @@ fn the_current_packer_writes_the_released_files() {
     let source = Source::find(src.to_str().unwrap()).unwrap();
     let mut checked = 0;
     for (name, dir) in fixtures() {
-        let Some(layout) = LAYOUTS.iter().find(|(l, _)| name.starts_with('v') && name.ends_with(&format!("-{l}")) && !name.starts_with("v1-")).map(|(_, l)| *l) else { continue };
+        let Some(layout) = LAYOUTS.iter().find(|(l, _)| name.starts_with('v') && name.ends_with(&format!("-{l}")) && !name.starts_with("v1-")).map(|(_, l)| *l)
+        else {
+            continue;
+        };
         let out = tmp.join(&name);
         save(&source, &out, 2, SHARD_BYTES, true, layout).unwrap_or_else(|e| panic!("{name}: {e}"));
         for f in std::fs::read_dir(&dir).unwrap() {
             let f = f.unwrap();
             let file = f.file_name().to_string_lossy().into_owned();
             if file == "glyd.json" {
-                let (a, b) = (json::parse(&std::fs::read_to_string(f.path()).unwrap()).unwrap(), json::parse(&std::fs::read_to_string(out.join(&file)).unwrap()).unwrap());
+                let (a, b) = (
+                    json::parse(&std::fs::read_to_string(f.path()).unwrap()).unwrap(),
+                    json::parse(&std::fs::read_to_string(out.join(&file)).unwrap()).unwrap(),
+                );
                 for k in ["format", "layout", "level", "packs", "tensors"] {
                     assert_eq!(format!("{:?}", a.get(k)), format!("{:?}", b.get(k)), "{name}: glyd.json's {k} is not what the release wrote");
                 }
