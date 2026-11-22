@@ -473,6 +473,11 @@ impl Dyn {
         Ok(())
     }
 
+    /// Whether the pool of states kept at boundaries is made (boundaries asked for, and copies to keep them in).
+    fn pooled(&self) -> bool {
+        self.named.every > 0 && !self.named.bufs.is_empty()
+    }
+
     /// The copy of the pool that holds the states after the first `j` blocks named `keys`: kept for the block their name finds now.
     fn kept_copy(&self, keys: &[u128], j: usize) -> Option<usize> {
         let pg = self.paged.as_ref()?;
@@ -753,10 +758,10 @@ impl ModelStep for Dyn {
     /// Full blocks are found by name where the keys and values are paged (`Pages::name`, `Pages::adopt`): where nothing of a sequence is a state, a start of any whole
     /// number of blocks; a model with recurrent states and the pool of them (`named`), a start that ends at a boundary whose states are kept.
     fn shares_starts(&self) -> bool {
-        self.paged.is_some() && (self.cuts() || self.named.every > 0)
+        self.paged.is_some() && (self.cuts() || self.pooled())
     }
     fn snap_every(&self) -> usize {
-        if self.shares_starts() && !self.cuts() {
+        if self.paged.is_some() && !self.cuts() && self.pooled() {
             self.named.every
         } else {
             0
@@ -773,7 +778,7 @@ impl ModelStep for Dyn {
         }
         // (a model with recurrent states: the states, where the last block named ends at the sequence's last token and on a boundary, are the states there)
         let end = (first + keys.len()) * BLOCK;
-        if let Some(&key) = keys.last().filter(|_| !self.cuts() && self.named.every > 0 && end == self.seq_n(t) && end % self.named.every == 0) {
+        if let Some(&key) = keys.last().filter(|_| !self.cuts() && self.pooled() && end == self.seq_n(t) && end % self.named.every == 0) {
             self.keep_states_at(t, end / BLOCK - 1, key)?;
         }
         Ok(())
@@ -781,7 +786,7 @@ impl ModelStep for Dyn {
     fn held_by_name(&self, keys: &[u128]) -> usize {
         match &self.paged {
             Some(pg) if self.cuts() => pg.pages.fit(keys, self.chunk) * BLOCK,
-            Some(pg) if self.named.every > 0 => {
+            Some(pg) if self.pooled() => {
                 snaps::hit(keys, self.named.every, BLOCK, |j| self.kept_copy(keys, j).is_some(), |j| pg.pages.fit(&keys[..j], self.chunk))
             }
             _ => 0,
