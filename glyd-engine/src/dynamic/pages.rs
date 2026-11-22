@@ -158,24 +158,29 @@ impl Pages {
         }
     }
 
-    /// Sequence `slot` cut back to go on within its first `upto` tokens, as one that had grown no further: the tokens it then holds, and the blocks past them given up.
-    /// That is `upto`, or the start of the block `upto` is in where others hold that block too (it would be written from `upto` on). 0, and nothing changes, where a group
-    /// no longer holds what a step there reads: a sliding group gives up the blocks behind its window and `slack` tokens (a chunk: what `keep` holds beyond the window) as
-    /// the sequence grows, so one that grew more than `slack` past the place cannot be cut there.
-    pub fn shrink(&mut self, slot: usize, upto: usize, slack: usize) -> usize {
+    /// What sequence `slot` would hold cut back to go on within its first `upto` tokens (`shrink`, which makes the cut): `upto`, or the start of the block `upto` is in
+    /// where others hold that block too (it would be written from `upto` on). 0 where a group no longer holds what a step there reads: a sliding group gives up the
+    /// blocks behind its window and `slack` tokens (a chunk: what `keep` holds beyond the window) as the sequence grows, so one that grew more than `slack` past the place
+    /// cannot be cut there.
+    pub fn cut_len(&self, slot: usize, upto: usize, slack: usize) -> usize {
         let part = upto / BLOCK;
         let shared = !upto.is_multiple_of(BLOCK) && (0..self.pools.len()).any(|g| self.pools[g].refs[self.tabs[slot][g][part] as usize] > 1);
         let upto = if shared { part * BLOCK } else { upto };
+        let hi = upto.div_ceil(BLOCK);
+        if (0..self.pools.len()).any(|g| (self.reach(g, upto, slack).min(hi)..hi).any(|b| self.tabs[slot][g][b] == 0)) {
+            return 0;
+        }
+        upto
+    }
+
+    /// Sequence `slot` cut back to go on within its first `upto` tokens, as one that had grown no further: the tokens it then holds (`cut_len`), and the blocks past
+    /// them given up. 0, and nothing changes, where it cannot be cut there.
+    pub fn shrink(&mut self, slot: usize, upto: usize, slack: usize) -> usize {
+        let upto = self.cut_len(slot, upto, slack);
         if upto == 0 {
-            // (nothing of it its own to go on from)
             return 0;
         }
         let hi = upto.div_ceil(BLOCK);
-        for g in 0..self.pools.len() {
-            if (self.reach(g, upto, slack).min(hi)..hi).any(|b| self.tabs[slot][g][b] == 0) {
-                return 0;
-            }
-        }
         for g in 0..self.pools.len() {
             for b in hi..self.tabs[slot][g].len() {
                 let blk = std::mem::take(&mut self.tabs[slot][g][b]);

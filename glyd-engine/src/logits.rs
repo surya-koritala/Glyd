@@ -1889,7 +1889,7 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         }
         None => random_dyn(case, level, "keepcheck")?,
     };
-    let (vocab, cuts, marks) = (e.desc().vocab as u32, e.cuts(), e.can_mark());
+    let (vocab, cuts, marks, window) = (e.desc().vocab as u32, e.cuts(), e.can_mark(), e.least_window());
     let Some((k, s)) = e.as_step(3)? else { return err(format!("{case}: no scheduler's step")) };
     if k < 3 || !s.keeps() {
         return err(format!("{case}: {k} sequences, a step that keeps: {}", s.keeps()));
@@ -1914,10 +1914,10 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         );
         (differ > 0) as usize
     };
-    // a slot a refused cut left: a prompt begins in it as in any empty one
-    let empty = |s: &mut dyn ModelStep, what: &str, t: &[u32]| -> Result<usize> {
-        let got = fill(s, 0, t, chunk, true)?.expect("the logits");
-        let want = fill(s, 1, t, chunk, true)?.expect("the logits");
+    // a slot that should hold nothing: a prompt begins in it as in another empty one
+    let empty = |s: &mut dyn ModelStep, slot: i32, other: i32, what: &str, t: &[u32]| -> Result<usize> {
+        let got = fill(s, slot, t, chunk, true)?.expect("the logits");
+        let want = fill(s, other, t, chunk, true)?.expect("the logits");
         Ok(same(what, &want, &got))
     };
     let mut fails = 0;
@@ -1963,7 +1963,14 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         let place = if kept == cut { "there".to_string() } else { format!("its prompt's end, {kept}, where its states were kept") };
         fails += same(&format!("a sequence of {n} tokens asked to go on within {cut}: from {place}, then {} others", alt.len()), &want, &got);
     } else {
-        fails += empty(s, &format!("a sequence of {n} tokens asked to go on within {cut}: refused (a latent cache is what it is after the last token), the slot empty; a prompt in it"), &alt)?;
+        // refused, and nothing of it changed: it goes on from its end as one that was never asked
+        let whole = s.resume(0, n)?;
+        let got = fill_from(s, 0, n, &tail, chunk, true)?.expect("the logits");
+        fill(s, 1, &p, chunk, false)?;
+        steps(s, 1, p.len(), &g)?;
+        let want = fill_from(s, 1, n, &tail, chunk, true)?.expect("the logits");
+        let what = format!("a sequence of {n} tokens asked to go on within {cut}: refused (a latent cache is what it is after the last token) and as it was ({whole} held); from its end, {} more", tail.len());
+        fails += same(&what, &want, &got) | (whole != n) as usize;
     }
     s.release(&[0, 1])?;
     // a long sequence: 9 chunks, then 24 steps
@@ -1989,7 +1996,17 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
                 let want = fill_from(s, 1, to, &alt, chunk, true)?.expect("the logits");
                 fails += same(&format!("a sequence of {all} tokens asked to go on within {ask}: from {to}, then {} others", alt.len()), &want, &got);
             } else if kept == 0 && !must {
-                fails += empty(s, &format!("a sequence of {all} tokens asked to go on within {ask}: refused (the sliding layers' blocks behind it were given back), the slot empty; a prompt in it"), &alt)?;
+                // refused, and nothing of it changed: it goes on from its end
+                let whole = s.resume(0, all)?;
+                let got = fill_from(s, 0, all, &alt, chunk, true)?.expect("the logits");
+                fill(s, 1, &long, chunk, false)?;
+                steps(s, 1, long.len(), &g)?;
+                let want = fill_from(s, 1, all, &alt, chunk, true)?.expect("the logits");
+                let what = format!(
+                    "a sequence of {all} tokens asked to go on within {ask}: refused (the sliding layers' blocks behind it were given back) and as it was ({whole} held); from its end, {} more",
+                    alt.len()
+                );
+                fails += same(&what, &want, &got) | (whole != all) as usize;
             } else {
                 println!("FAIL a sequence of {all} tokens asked to go on within {ask}: {kept} kept");
                 fails += 1;
@@ -2017,8 +2034,15 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
             println!("FAIL a start of {cut} tokens shared from a sequence of {n}: {got} shared, where {should} should be");
             fails += 1;
         } else if got == 0 {
-            fails += empty(s, "a start is not shared (a latent cache is one sequence's); the slot it was asked for is empty: a prompt in it", &alt)?;
-            s.release(&[1])?;
+            // nothing shared: the slot it was asked for holds nothing still, and the sequence asked is as it was
+            fails +=
+                empty(s, 1, 2, "a start is not shared (a latent cache is one sequence's); the slot it was asked for is empty still: a prompt in it", &alt)?;
+            s.release(&[1, 2])?;
+            let source = fill_from(s, 0, n, &tail, chunk, true)?.expect("the logits");
+            fill(s, 1, &p, chunk, false)?;
+            steps(s, 1, p.len(), &g)?;
+            let alone = fill_from(s, 1, n, &tail, chunk, true)?.expect("the logits");
+            fails += same(&format!("the sequence the start was asked of, gone on with {} more", tail.len()), &alone, &source);
         } else {
             // the sharer goes on, then the sequence it shared from; each against a slot that ran the same tokens and shared nothing
             let sharer = fill_from(s, 1, got, &alt, chunk, true)?.expect("the logits");
@@ -2040,6 +2064,32 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
             fails += same("the same start, after the sequence it was shared from has ended", &want, &after);
         }
         s.release(&[0, 1, 2])?;
+        // of a long sequence: layers whose attention slides keep a window and a chunk behind the sequence's end and give back the blocks before, so a step at the start
+        // reads blocks it no longer holds, and nothing is shared; a model whose layers all read the whole sequence shares it as before
+        if cuts && all + alt.len() < s.window() {
+            fill(s, 0, &long, chunk, false)?;
+            let got = s.share(0, 1, cut)?;
+            let m = cut / 16 * 16;
+            let held = window.is_none_or(|w| long.len().saturating_sub(w + chunk) / 16 <= m.saturating_sub(w) / 16);
+            let should = if held { m } else { 0 };
+            if got != should {
+                println!("FAIL a start of {cut} tokens shared from a sequence of {}: {got} shared, where {should} should be", long.len());
+                fails += 1;
+            } else if got == 0 {
+                let what = format!("a start of {cut} tokens is not shared from a sequence of {} (its sliding layers gave back the blocks a step there reads); a prompt in the slot asked for", long.len());
+                fails += empty(s, 1, 2, &what, &alt)?;
+            } else {
+                let sharer = fill_from(s, 1, got, &alt, chunk, true)?.expect("the logits");
+                fill(s, 2, &long[..got], chunk, false)?;
+                let want = fill_from(s, 2, got, &alt, chunk, true)?.expect("the logits");
+                fails += same(
+                    &format!("a start of {cut} tokens shared from a sequence of {}: {got} of them, then {} others", long.len(), alt.len()),
+                    &want,
+                    &sharer,
+                );
+            }
+            s.release(&[0, 1, 2])?;
+        }
     }
     // through the scheduler: a conversation's second turn (the prompt, the reply and more), and another's that leaves the reply out
     let reply = Reply {
@@ -2050,7 +2100,9 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         stop_ids: Vec::new(),
     };
     let q = toks(40, 11);
-    let (xs, xa_more, yb_more) = (toks(60, 21), toks(100, 22), toks(30, 23));
+    // (the other conversation is kept no longer than a chunk past the start the two share, so that sliding layers hold it still, and longer than twice the start, so that
+    // it is not gone on in)
+    let (xs, xa_more, yb_more) = (toks(50, 21), toks(40, 22), toks(40, 23));
     let (xa, yb): (Vec<u32>, Vec<u32>) = ([&xs[..], &xa_more[..]].concat(), [&xs[..], &yb_more[..]].concat());
     let (r1, p2, r2, hit, q2, rq, hit_q, rx, ry, hit_y) = {
         // (the step lent for the scheduler's time alone)
@@ -2090,7 +2142,7 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         let q2: Vec<u32> = [&q[..], &toks(20, 12)[..]].concat();
         let rq = ask(&mut sched, &q2)?;
         let hit_q = sched.stats.hit as usize - hit;
-        // a third conversation, then one that begins as it does (60 tokens of the 175 it left): a slot of its own, the start shared
+        // a third conversation, then one that begins as it does (50 tokens of the 105 it left): a slot of its own, the start shared
         let rx = ask(&mut sched, &xa)?;
         let before = sched.stats.hit as usize;
         let ry = ask(&mut sched, &yb)?;

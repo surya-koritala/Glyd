@@ -249,6 +249,11 @@ impl Dyn {
         !d.layers.iter().flatten().any(|op| matches!(op, Op::MuseMoe { .. } | Op::Moe { .. } | Op::V4Moe { .. }))
     }
 
+    /// The least window of the layers whose attention slides (none: every layer reads the whole sequence).
+    pub(crate) fn least_window(&self) -> Option<usize> {
+        self.big.d.rings.iter().map(|r| r.window).filter(|&w| w > 0 && w != usize::MAX).min()
+    }
+
     /// Whether a kept sequence can be cut back before its end (`ModelStep::resume`): no recurrent state and no latent cache, which are what they are after its last token.
     pub(crate) fn cuts(&self) -> bool {
         self.states.is_empty() && self.big.mla.is_empty()
@@ -701,7 +706,8 @@ impl ModelStep for Dyn {
     }
     /// The whole of what the slot holds goes on as it is. Before its end: at `upto` where the description has no recurrent state and no latent cache (those are what they are after
     /// the sequence's last token); else at the sequence's mark, where its states were copied aside, if that is within `upto`. Either way the keys and values a step there reads must
-    /// still be held: paged, the blocks (`Pages::shrink`); a ring of its own, one that has not gone round. Otherwise the slot is emptied.
+    /// still be held: paged, the blocks (`Pages::cut_len`; a cut into a block another sequence holds too is to that block's start, which a state at a mark cannot follow);
+    /// a ring of its own, one that has not gone round. Where it cannot go on from any place nothing changes and the answer is 0.
     fn resume(&mut self, slot: i32, upto: usize) -> Result<usize> {
         let s = slot as usize;
         let n = self.seq_n(s);
@@ -715,20 +721,17 @@ impl ModelStep for Dyn {
             _ => 0,
         };
         let chunk = self.chunk;
-        // (the tokens it holds after the cut: fewer than asked where the block the cut is in is held by another sequence too, `Pages::shrink`)
-        let to = match (&mut self.paged, to) {
+        let kept = match (&self.paged, to) {
             (_, 0) => 0,
-            (Some(pg), _) => match pg.pages.shrink(s, to, chunk) {
-                // (a state is what it was at the mark and nowhere else)
-                kept if kept != to && !self.states.is_empty() => 0,
-                kept => kept,
-            },
+            (Some(pg), _) => pg.pages.cut_len(s, to, chunk),
             (None, _) if self.ring_cap.iter().all(|&cap| cap == 0 || n <= cap) => to,
             (None, _) => 0,
         };
-        if to == 0 {
-            ModelStep::release(self, &[slot])?;
+        if kept == 0 || (kept != to && !self.cuts()) {
             return Ok(0);
+        }
+        if let Some(pg) = &mut self.paged {
+            pg.pages.shrink(s, kept, chunk);
         }
         if !self.cuts() {
             let states = self.part_of(s, 0, 0, 0)?.states;
@@ -737,10 +740,10 @@ impl ModelStep for Dyn {
                 unsafe { copy_d2d_async(dst, self.snaps[s][i].ptr, self.states[i].bytes, self.dev.stream)? };
             }
         }
-        self.set_seq_n(s, to);
+        self.set_seq_n(s, kept);
         self.dev.sync()?;
         self.upload_tables(s)?;
-        Ok(to)
+        Ok(kept)
     }
     fn grow(&mut self, slot: i32, upto: usize) -> Result<bool> {
         let Some(pg) = &mut self.paged else { return Ok(true) };

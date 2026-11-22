@@ -116,9 +116,8 @@ pub trait ModelStep {
     }
     /// The finished sequence in `slot` cut back to go on within its first `upto` tokens, as if it had run no further: the tokens it still holds. That is `upto` where it can be cut
     /// anywhere; a model with a recurrent state (the state after the sequence's last token and no other) goes on from its end or from its mark (`mark`), the nearest before `upto`;
-    /// 0, the slot then being empty, where it cannot go on from any place (no mark within, or blocks a cut needs were given back).
-    fn resume(&mut self, slot: i32, _upto: usize) -> Result<usize> {
-        self.release(&[slot])?;
+    /// 0, the slot as it was, where it cannot go on from any place (no mark within, or blocks a cut needs were given back).
+    fn resume(&mut self, _slot: i32, _upto: usize) -> Result<usize> {
         Ok(0)
     }
     /// The first `upto` tokens of the sequence in slot `from` (running or kept) made the start of the empty slot `to` as well, without running them again: the tokens `to`
@@ -619,8 +618,19 @@ impl<B: ModelStep> Sched<B> {
         let head = &tokens[..tokens.len().saturating_sub(1)];
         let best = self.kept.iter().enumerate().filter(|(_, k)| k.salt == salt).map(|(i, k)| (common(&k.tokens, head), i)).max();
         if let Some((n, i)) = best.filter(|&(n, i)| n >= KEEP_LEAST && 2 * n >= self.kept[i].tokens.len()) {
-            let k = self.kept.remove(i).expect("a kept sequence");
-            return Ok(Some((k.slot, self.be.resume(k.slot, n)?)));
+            let slot = self.kept[i].slot;
+            let held = self.be.resume(slot, n)?;
+            if held > 0 {
+                self.kept.remove(i);
+                return Ok(Some((slot, held)));
+            }
+            // (it cannot be gone on with from there, and for the same cause its start is not shared: it stays as it is, for its own next turn, while a slot is free, and is
+            // the first to give its slot when none is, before another conversation's)
+            if self.free.as_ref().is_some_and(Vec::is_empty) {
+                self.kept.remove(i);
+                self.be.release(&[slot])?;
+                self.free.as_mut().expect("a slot step").push(slot);
+            }
         }
         // the sequence whose start it shares the most of: (tokens, its slot)
         let running =
@@ -640,7 +650,12 @@ impl<B: ModelStep> Sched<B> {
                 // (no slot but the kept source's own: it is gone on in after all, cut back to what the two share)
                 let Some(i) = source.and_then(|(_, from)| self.kept.iter().position(|k| k.slot == from)) else { return Ok(None) };
                 let k = self.kept.remove(i).expect("a kept sequence");
-                return Ok(Some((k.slot, self.be.resume(k.slot, source.expect("a source").0)?)));
+                let held = self.be.resume(k.slot, source.expect("a source").0)?;
+                if held == 0 {
+                    // (nothing of it to go on from: the slot, emptied)
+                    self.be.release(&[k.slot])?;
+                }
+                return Ok(Some((k.slot, held)));
             }
         };
         let held = match source {
@@ -843,8 +858,9 @@ impl<B: ModelStep> Sched<B> {
     }
 
     /// A waiting sequence that lost a block waits until the sequences that were running with it are gone. And one whose start a running sequence of its scope is still
-    /// running as its own prompt waits for that (the two have at least KEEP_LEAST tokens in common, not all of them run yet), to share it (`take_slot`) and not run the
-    /// same tokens beside it; where the step shares starts of any length. It waits no longer than that sequence's prompt takes, which is what its own would.
+    /// running as its own prompt waits for that, to share it (`take_slot`) and not run the same tokens beside it, where the step shares starts of any length: while at
+    /// least a chunk of what the two have in common is not run yet. (A round runs a chunk of the other's prompt, so waiting for less than a chunk costs more than
+    /// running those tokens does; the last of the common start, less than a chunk, the two run side by side.) It waits no longer than its own prompt would take.
     fn held(&self, s: &Seq) -> bool {
         if s.after.iter().any(|&id| self.alive(id)) {
             return true;
@@ -852,10 +868,11 @@ impl<B: ModelStep> Sched<B> {
         if !self.keep || !self.be.shares_starts() {
             return false;
         }
+        let chunk = self.be.chunk().max(KEEP_LEAST);
         let head = &s.tokens[..s.tokens.len().saturating_sub(1)];
         self.active.iter().any(|a| {
-            let both = if a.salt == s.salt && a.prefilling { common(&a.tokens, head) } else { 0 };
-            both >= KEEP_LEAST && a.done < both
+            let upto = a.done + chunk;
+            a.salt == s.salt && a.prefilling && upto <= a.tokens.len().min(head.len()) && a.tokens[..upto] == head[..upto]
         })
     }
 
@@ -2764,11 +2781,8 @@ pub(crate) mod tests {
                 (true, true) => mark,
                 (true, false) => 0,
             };
-            room.truncate(kept);
-            if kept == 0 {
-                self.held[slot as usize] = 0;
-                self.marks[slot as usize] = 0;
-                self.emptied += 1;
+            if kept > 0 {
+                room.truncate(kept);
             }
             self.resumed.push((slot, upto, kept));
             Ok(kept)
@@ -3022,8 +3036,8 @@ pub(crate) mod tests {
         assert_eq!((s.be.resumed.clone(), s.be.shared.len(), s.be.emptied, s.be.begun.len()), (vec![(0, 100, 100)], 0, 0, 1));
     }
 
-    /// Requests that begin alike and come together: the first runs the start, the others wait for it and share it, each running only its own end, where the step shares
-    /// starts of any length; a request with another start is not kept waiting by them. A recurrent model, which shares at a mark alone, holds nothing back.
+    /// Requests that begin alike and come together: the first runs the start, the others wait while at least a chunk of it is left to run and share what is run by
+    /// then, each running only the rest, where the step shares starts of any length; a request with another start is not kept waiting by them. A recurrent model, which shares at a mark alone, holds nothing back.
     #[test]
     fn requests_that_begin_alike_wait_for_the_first_to_run_the_start() {
         let system = prompt(1, 200);
@@ -3038,9 +3052,9 @@ pub(crate) mod tests {
         for (p, r) in ps.iter().chain([&other]).zip(&rx) {
             assert_eq!(collect(r), (reference(p, 8), Finish::Length));
         }
-        // the start was run once: each of the two shared its 12 full pages
-        assert_eq!(s.be.shared.iter().map(|x| (x.2, x.3)).collect::<Vec<_>>(), vec![(200, 192), (200, 192)]);
-        assert_eq!((s.be.begun.len(), s.stats.hit), (2, 2 * 192));
+        // the start was run once but for its end: the two were let in when less than a chunk (32 tokens) of it was left to run, and shared the 176 tokens run by then
+        assert_eq!(s.be.shared.iter().map(|x| (x.2, x.3)).collect::<Vec<_>>(), vec![(176, 176), (176, 176)]);
+        assert_eq!((s.be.begun.len(), s.stats.hit), (2, 2 * 176));
         // a recurrent model: all three begin at their first token, at once
         let mut s = keeping(4);
         (s.be.whole_only, s.be.marking) = (true, true);
@@ -3076,6 +3090,38 @@ pub(crate) mod tests {
         // (the third shares 40 tokens with both the others; either way it is before their mark)
         assert_eq!(s.be.shared, vec![(0, 1, 70, 70), (1, 2, 40, 0)]);
         assert_eq!(s.stats.hit, 70);
+    }
+
+    /// A request that begins as a kept sequence does, with most of it, where the sequence cannot be gone on with from there (here a recurrent model with no mark): the
+    /// kept sequence stays as it is while a slot is free, and its own next turn still goes on in it; when no slot is free it is the one that gives its slot, before
+    /// another conversation's.
+    #[test]
+    fn a_kept_sequence_that_cannot_be_cut_stays_while_a_slot_is_free() {
+        fn ask(s: &mut Sched<SlotFake>, p: &[u32]) -> Vec<u32> {
+            let (rx, _) = add(s, p.to_vec(), 8);
+            run(s);
+            let (out, end) = collect(&rx);
+            assert_eq!((&out, end), (&reference(p, 8), Finish::Length));
+            out
+        }
+        let (pa, pb) = (prompt(1, 60), prompt(2, 60));
+        let mut s = keeping(3);
+        s.be.whole_only = true;
+        let ra = ask(&mut s, &pa);
+        ask(&mut s, &pb);
+        // 50 of the first's 67 tokens and others: refused, a free slot taken, both conversations kept still
+        let edit: Vec<u32> = [&pa[..50], &prompt(3, 20)[..]].concat();
+        ask(&mut s, &edit);
+        assert_eq!((s.be.resumed.clone(), s.be.emptied, s.kept()), (vec![(0, 50, 0)], 0, 3));
+        // the first conversation's next turn goes on in its slot, whole
+        let next: Vec<u32> = [&pa[..], &ra[..], &prompt(4, 5)[..]].concat();
+        ask(&mut s, &next);
+        assert_eq!(s.be.resumed.last(), Some(&(0, 67, 67)));
+        // no slot free now: a request that begins as the second does and cannot go on in it has that one's slot, not the oldest's
+        let edit: Vec<u32> = [&pb[..50], &prompt(5, 20)[..]].concat();
+        ask(&mut s, &edit);
+        assert_eq!((s.be.resumed.last(), s.be.emptied, s.kept()), (Some(&(1, 50, 0)), 1, 3));
+        assert!(s.kept.iter().any(|k| k.slot == 1 && k.tokens[..50] == pb[..50] && k.tokens[50] != pb[50]), "the slot of the sequence that refused, taken");
     }
 
     /// A kept sequence is its scope's (`Submit::salt`): a request of another scope that begins with its very tokens runs from its first token in another slot, and is told
