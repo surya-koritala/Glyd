@@ -60,7 +60,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
         python: ["3.8", "3.14"]
+        exclude:
+          - {os: ubuntu-latest, python: "3.8"}  # (ubuntu-latest is Ubuntu 26.04, which setup-python has no 3.8 for: 3.8 on x86_64 Linux runs on 24.04, below)
         include:
+          - {os: ubuntu-24.04, python: "3.8", name: linux-x86_64}
           - os: ubuntu-latest
             name: linux-x86_64
           - os: ubuntu-24.04-arm
@@ -126,7 +129,7 @@ jobs:
   # entry point of the glyd-gpu wheel it brings, of this version. The plugin's tests run in glyd-gpu's own repository, against
   # its wheels, before they are published.
   vllm:
-    needs: version
+    needs: [version, release-assets]  # (the release's files and wheels take over an hour after the release is published; release-assets waits for them)
     runs-on: ubuntu-latest
     timeout-minutes: 55
     env:
@@ -164,7 +167,7 @@ jobs:
   # needs. Then the program itself: its version, a file through it and back, and the answer of glyd run. The GPU path of the script
   # (uv, glyd[vllm], the compiler stand-in) is run by gpu/vllm/acceptance.sh on a machine with a GPU.
   installer:
-    needs: version
+    needs: [version, release-assets]  # (as vllm: after the release's files are up)
     strategy:
       fail-fast: false
       matrix:
@@ -213,7 +216,7 @@ jobs:
   # machine's state, not the release's.
   installer-gpu:
     name: installer on the GPU runner (Rust only, first token)
-    needs: version
+    needs: [version, release-assets]
     if: vars.GPU_RUNNER != ''
     runs-on: ${{ fromJSON(vars.GPU_RUNNER) }}
     timeout-minutes: 90
@@ -307,7 +310,7 @@ jobs:
   release-assets:
     needs: version
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 130
     env:
       V: ${{ needs.version.outputs.version }}
       TAG: ${{ needs.version.outputs.tag }}
@@ -336,12 +339,12 @@ jobs:
           )
           ok=0
           have=""
-          for i in $(seq 1 100); do
+          for i in $(seq 1 240); do
             have=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
             missing=0
             for f in "${expected[@]}"; do echo "$have" | grep -qxF "$f" || missing=1; done
             [ "$missing" = 0 ] && { ok=1; break; }
-            echo "release ${TAG}: still missing assets (attempt $i/100); retrying in 30s"
+            echo "release ${TAG}: still missing assets (attempt $i/240); retrying in 30s"
             sleep 30
           done
           [ "$ok" = 1 ] || { echo "release $TAG never got all expected assets. It has:"; echo "$have"; exit 1; }
