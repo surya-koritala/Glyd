@@ -1318,6 +1318,7 @@ fn pin_of(v: &Value) -> u32 {
 fn told(sh: &Shared, salt: u64, mut h: Handle) -> Handle {
     if salt == 0 && !sh.rt.tell_cached.load(Ordering::Relaxed) {
         h.cached = Arc::new(AtomicU32::new(0));
+        h.created = Arc::new(AtomicU32::new(0));
     }
     h
 }
@@ -1595,7 +1596,7 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
     let prompt_tokens: usize = prompts.iter().map(|p| p.ids.len()).sum();
     let remote = Remote { tx: tx.clone(), window: sh.window };
     let ident = format!("{}-{}", if chat { "chatcmpl" } else { "cmpl" }, api.request_id.clone().unwrap_or_else(|| id.to_string()));
-    if !track_begin(&ident) {
+    if !track_begin(&sh.rt, &ident) {
         return bad(s, &format!("a request with the id {ident} is running: an id names one request at a time"));
     }
     let created = now();
@@ -1659,7 +1660,7 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
                 if i == 0 {
                     found.push(h.cached.clone());
                 }
-                track_seq(&ident, &h.abort);
+                track_seq(&sh.rt, &ident, &h.abort);
                 let (c, o, whole) = (Choice::new(cfg.clone()), out_tx.clone(), !api.stream);
                 let announce = (i == 0 && api.n > 1).then(|| first_tx.clone());
                 sc.spawn(move || drive(idx, h, c, tok, whole, o, announce));
@@ -1728,7 +1729,7 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
             }
         }
         if gone {
-            track_cancel(&ident, "client gone");
+            track_cancel(&sh.rt, &ident, "client gone");
         }
         if gone || failure.is_some() {
             for a in &aborts {
@@ -1738,7 +1739,7 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
         drop(out_rx);
     });
     // (each choice's thread has seen its sequence end: the engine has let go of them all)
-    track_end(&ident, failure.as_deref());
+    track_end(&sh.rt, &ident, failure.as_deref());
     if let Some(msg) = failure {
         eprintln!("glyd: a request failed: {msg}");
         return if started {
@@ -2026,7 +2027,7 @@ pub fn listen_in(
     rt: Arc<crate::runtime::context::Context>,
 ) -> Result<std::net::SocketAddr> {
     crate::ops::init();
-    crate::otel::set_model(name);
+    let _ = rt.figures.model.set(name.to_string());
     let key = Arc::new(key.map(|k| key_digest(&k)));
     let name = Arc::new(name.to_string());
     // (the connections are the front end's: tasks of its own runtime, with no cap on how many; what answers a request runs on threads, as before)
@@ -2175,8 +2176,8 @@ pub(crate) fn dispatch(mut s: Box<dyn Conn>, mut req: Req, ctx: &Ctx, id: u64) {
         (m @ ("GET" | "POST"), p) if p.starts_with("/v1/glyd/requests/") => {
             let rest = &p["/v1/glyd/requests/".len()..];
             let answer = match (m, rest.strip_suffix("/cancel")) {
-                ("POST", Some(id)) => track_cancel(id, "asked"),
-                ("GET", None) => track_status(rest),
+                ("POST", Some(id)) => track_cancel(&ctx.rt, id, "asked"),
+                ("GET", None) => track_status(&ctx.rt, rest),
                 _ => return respond_with(&mut *s, 405, "application/json", &cors, error_body("method not allowed", 405).as_bytes()),
             };
             match answer {
@@ -2204,6 +2205,21 @@ pub(crate) fn dispatch(mut s: Box<dyn Conn>, mut req: Req, ctx: &Ctx, id: u64) {
             respond_with(&mut *s, 200, crate::ops::CONTENT_TYPE, &cors, text.as_bytes())
         }
         ("GET", "/stats") => respond_with(&mut *s, 200, "application/json", &cors, crate::sched::stats_json_of(&ctx.rt).as_bytes()),
+        // the cache's blocks stored and removed by name (src/kv_events.rs), after batch `after`, waiting up to `wait` seconds (at most 10) for one: off unless the
+        // server's operator turns them on, since they carry every caller's prompt tokens
+        ("GET", "/v1/glyd/kv/events") => match &ctx.rt.kv_events {
+            Some(log) => {
+                let q = req.path.split_once('?').map_or("", |x| x.1);
+                let num = |k: &str| q.split('&').find_map(|kv| kv.strip_prefix(k).and_then(|v| v.strip_prefix('=')).and_then(|v| v.parse::<u64>().ok()));
+                let body = log.json(num("after").unwrap_or(0), std::time::Duration::from_secs(num("wait").unwrap_or(0).min(10)));
+                respond_with(&mut *s, 200, "application/json", &cors, body.as_bytes())
+            }
+            None => {
+                let msg =
+                    "the cache's events are off: the server's operator turns them on with GLYD_ENGINE_KV_EVENTS=1 (they carry every caller's prompt tokens)";
+                respond_with(&mut *s, 404, "application/json", &cors, error_body(msg, 404).as_bytes())
+            }
+        },
         ("GET", "/v1/models") => {
             let body =
                 format!("{{\"object\":\"list\",\"data\":[{}],\"has_more\":false,\"first_id\":{1},\"last_id\":{1}}}", model_json(name, window), jstr(name));
@@ -2302,7 +2318,7 @@ fn info_json(i: &Info, rt: &crate::runtime::context::Context) -> String {
         g
     });
     let failed = rt.failed.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let (running, cancelling) = track_counts();
+    let (running, cancelling) = track_counts(rt);
     let here: Vec<&str> = i.refused.iter().map(|(n, _)| *n).collect();
     let held = |f: fn(&crate::dev::Held) -> u64| i.held.as_ref().map_or(Value::Null, |h| Value::from(f(h)));
     let mut o = vec![("object", Value::from("glyd.info")), ("api", Value::from(API))];
@@ -2373,6 +2389,8 @@ pub struct Handle {
     pub abort: Arc<AtomicBool>,
     /// The prompt tokens the scheduler found in its cache as it let the sequence in (`sched::Submit::cached`): read for the request's usage once the sequence has ended.
     pub cached: Arc<AtomicU32>,
+    /// A request with a cache marker: the prompt tokens it left findable in the cache that it did not find (`sched::Submit::created`), read with `cached`.
+    pub created: Arc<AtomicU32>,
 }
 
 impl Remote {
@@ -2395,7 +2413,7 @@ impl Remote {
             return err(format!("{} tokens, where the context holds {}", prompt.len(), self.window));
         }
         let (out, events) = std::sync::mpsc::channel();
-        let (abort, cached) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU32::new(0)));
+        let (abort, cached, created) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
         self.tx
             .send(Job::Seq(Submit {
                 prompt: prompt.to_vec(),
@@ -2404,12 +2422,13 @@ impl Remote {
                 abort: abort.clone(),
                 resumed: Default::default(),
                 cached: cached.clone(),
+                created: created.clone(),
                 salt,
                 pin,
                 images,
             }))
             .map_err(|_| Error("the engine is not running".into()))?;
-        Ok(Handle { events, abort, cached })
+        Ok(Handle { events, abort, cached, created })
     }
 }
 
@@ -2599,7 +2618,7 @@ pub fn work_with<B: ModelStep>(sched: &mut Sched<B>, shared: Arc<Shared>, rx: &R
 
 /// A completions request by the id its reply carries: its sequences' stop flags, why it was asked to end before its time (a cancel, its client gone), when it began, and when the engine had let go of every
 /// sequence of it and how it ended.
-struct Track {
+pub(crate) struct Track {
     id: String,
     aborts: Vec<Arc<AtomicBool>>,
     cancel: Option<&'static str>,
@@ -2607,18 +2626,16 @@ struct Track {
     ended: Option<(f64, String)>,
 }
 
-/// The requests that run, and the last KEPT that ended. One server a process: the ids are the process's (`listen_loading`'s count).
-static TRACKS: std::sync::Mutex<std::collections::VecDeque<Track>> = std::sync::Mutex::new(std::collections::VecDeque::new());
-// (the tests' servers share the process, so each test's ended requests are kept while the others end theirs)
-const KEPT: usize = if cfg!(test) { 1 << 16 } else { 64 };
+/// The ended requests a served model keeps (`Context::tracks`: the requests that run, and the last KEPT that ended, each model's its own).
+const KEPT: usize = 64;
 
-fn tracks() -> std::sync::MutexGuard<'static, std::collections::VecDeque<Track>> {
-    TRACKS.lock().unwrap_or_else(|e| e.into_inner())
+fn tracks(rt: &crate::runtime::context::Context) -> std::sync::MutexGuard<'_, std::collections::VecDeque<Track>> {
+    rt.tracks.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// A request begun under `id`; false where one of that id runs (an id names one request at a time). One that ended under it is forgotten.
-fn track_begin(id: &str) -> bool {
-    let mut t = tracks();
+fn track_begin(rt: &crate::runtime::context::Context, id: &str) -> bool {
+    let mut t = tracks(rt);
     if t.iter().any(|x| x.id == id && x.ended.is_none()) {
         return false;
     }
@@ -2632,8 +2649,8 @@ fn track_begin(id: &str) -> bool {
 }
 
 /// A sequence of request `id` begun: its stop flag, set at once where the request is asked to end already.
-fn track_seq(id: &str, abort: &Arc<AtomicBool>) {
-    if let Some(x) = tracks().iter_mut().find(|x| x.id == id && x.ended.is_none()) {
+fn track_seq(rt: &crate::runtime::context::Context, id: &str, abort: &Arc<AtomicBool>) {
+    if let Some(x) = tracks(rt).iter_mut().find(|x| x.id == id && x.ended.is_none()) {
         if x.cancel.is_some() {
             abort.store(true, Ordering::Relaxed);
         }
@@ -2642,8 +2659,8 @@ fn track_seq(id: &str, abort: &Arc<AtomicBool>) {
 }
 
 /// Request `id` asked to end before its time, `why`: every sequence of it stops at its next step (or is skipped where its turn has not come). Its status, or None where no request has the id.
-fn track_cancel(id: &str, why: &'static str) -> Option<String> {
-    let mut t = tracks();
+fn track_cancel(rt: &crate::runtime::context::Context, id: &str, why: &'static str) -> Option<String> {
+    let mut t = tracks(rt);
     let x = t.iter_mut().find(|x| x.id == id)?;
     if x.ended.is_none() {
         x.cancel = x.cancel.or(Some(why));
@@ -2655,8 +2672,8 @@ fn track_cancel(id: &str, why: &'static str) -> Option<String> {
 }
 
 /// Request `id` over: the engine has let go of every sequence of it (each choice's thread has seen its end), so what they held is the engine's to use again. `failure`: the error it ended with.
-fn track_end(id: &str, failure: Option<&str>) {
-    if let Some(x) = tracks().iter_mut().find(|x| x.id == id && x.ended.is_none()) {
+fn track_end(rt: &crate::runtime::context::Context, id: &str, failure: Option<&str>) {
+    if let Some(x) = tracks(rt).iter_mut().find(|x| x.id == id && x.ended.is_none()) {
         let how = match (failure, x.cancel) {
             (Some(e), _) => format!("failed: {e}"),
             (None, Some(_)) => "cancelled".to_string(),
@@ -2668,13 +2685,13 @@ fn track_end(id: &str, failure: Option<&str>) {
 }
 
 /// How request `id` stands, or None where no request has the id.
-fn track_status(id: &str) -> Option<String> {
-    tracks().iter().find(|x| x.id == id).map(track_json)
+fn track_status(rt: &crate::runtime::context::Context, id: &str) -> Option<String> {
+    tracks(rt).iter().find(|x| x.id == id).map(track_json)
 }
 
 /// (running, asked to end and not ended yet) of the requests.
-fn track_counts() -> (usize, usize) {
-    let t = tracks();
+fn track_counts(rt: &crate::runtime::context::Context) -> (usize, usize) {
+    let t = tracks(rt);
     let running = t.iter().filter(|x| x.ended.is_none() && x.cancel.is_none()).count();
     (running, t.iter().filter(|x| x.ended.is_none() && x.cancel.is_some()).count())
 }
@@ -2730,6 +2747,25 @@ pub(crate) mod tests {
         let mut out = String::new();
         c.read_to_string(&mut out).unwrap();
         out
+    }
+
+    /// #142: the cache's events (src/kv_events.rs): not found while the operator has not turned them on; on, the batches after `after` (the first: the cache cleared),
+    /// the newest's number, and only with the server's key where it has one.
+    #[test]
+    fn the_cache_events_are_the_operators_alone() {
+        let body = |t: &str| json::parse(t.split_once("\r\n\r\n").map_or(t, |x| x.1)).unwrap();
+        let status = |t: &str| t.split(' ').nth(1).and_then(|c| c.parse::<u16>().ok()).unwrap_or(0);
+        let off = serve_fake_in(Fake::new(64, 32), None, 2, false, None, &[], crate::runtime::context::Context::new());
+        let t = get(off, "/v1/glyd/kv/events", None);
+        assert!(status(&t) == 404 && t.contains("GLYD_ENGINE_KV_EVENTS=1"), "{t}");
+        let rt = crate::runtime::context::Context::with_kv_events();
+        let on = serve_fake_in(Fake::new(64, 32), None, 2, false, Some("k"), &[], rt.clone());
+        assert_eq!(status(&get(on, "/v1/glyd/kv/events", None)), 401);
+        let v = body(&get(on, "/v1/glyd/kv/events?after=0", Some("k")));
+        assert_eq!((f64_of(at(&v, &["next"])), at(&v, &["batches", "0", "events", "0", "type"]).as_str()), (1.0, Some("cleared")));
+        rt.kv_events.as_ref().unwrap().push(vec![crate::kv_events::Event::Removed { blocks: vec![5] }]);
+        let v = body(&get(on, "/v1/glyd/kv/events?after=1&wait=1", Some("k")));
+        assert_eq!((f64_of(at(&v, &["next"])), f64_of(at(&v, &["batches", "0", "seq"])), at(&v, &["gap"]).as_bool()), (2.0, 2.0, Some(false)));
     }
 
     #[test]
@@ -5751,6 +5787,26 @@ pub(crate) mod tests {
         assert_eq!(ask(addr, "GET", "/v1/glyd/requests/nothing/cancel", &[("Host", "x")]).0, 405);
     }
 
+    /// #237: two models' servers in one process keep their requests apart (each its context's tracks): a request's id is found and cancelled on the server that runs it,
+    /// and not on the other, which may run a request of the same id at once.
+    #[test]
+    fn two_models_in_one_process_keep_their_requests_apart() {
+        let a = serve_fake_in(Fake::new(64, 32), None, 2, false, None, &[], crate::runtime::context::Context::new());
+        let b = serve_fake_in(Fake::new(64, 32), None, 2, false, None, &[], crate::runtime::context::Context::new());
+        let body = r#"{"messages":[{"role":"user","content":"hello there"}],"max_tokens":3,"temperature":0,"request_id":"same-1"}"#;
+        let (st, _) = call(a, "/v1/chat/completions", body);
+        assert_eq!(st, 200);
+        let state = |addr| {
+            let (st, _, b) = ask(addr, "GET", "/v1/glyd/requests/chatcmpl-same-1", &[("Host", "x")]);
+            (st, if st == 200 { at(&json::parse(&b).unwrap(), &["state"]).as_str().map(str::to_string) } else { None })
+        };
+        assert_eq!((state(a), state(b)), ((200, Some("ended".to_string())), (404, None)));
+        assert_eq!(ask(b, "POST", "/v1/glyd/requests/chatcmpl-same-1/cancel", &[("Host", "x"), ("Content-Length", "0")]).0, 404);
+        // the same id on the other model's server is its own request
+        let (st, _) = call(b, "/v1/chat/completions", body);
+        assert_eq!((st, state(b).1.as_deref()), (200, Some("ended")));
+    }
+
     /// What a level's engine does not do (ONE_AT_A_TIME: log-probabilities, a least length) is refused in words where it is asked for, and not where its value means it is not; a length the context has no room
     /// for after the prompt is refused, not cut short (one that fits to the last token is served); and /v1/glyd/tokenize counts a prompt as its reply's usage does, a chat's or a plain completion's, and runs nothing.
     #[test]
@@ -5834,6 +5890,7 @@ pub(crate) mod tests {
                 abort: Arc::new(AtomicBool::new(abort)),
                 resumed: Default::default(),
                 cached: Default::default(),
+                created: Default::default(),
                 salt: 0,
                 pin: 0,
                 images: Vec::new(),

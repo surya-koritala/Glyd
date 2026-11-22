@@ -105,6 +105,7 @@ pub mod kimi;
 #[cfg(feature = "dev")]
 pub mod kimi_ref;
 pub mod kv;
+pub mod kv_events;
 pub mod kvcal;
 #[cfg(feature = "dev")]
 pub mod kvshapes;

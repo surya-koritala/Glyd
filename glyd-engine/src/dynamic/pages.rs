@@ -38,6 +38,8 @@ struct Pool {
     idle: BTreeMap<u64, u32>,
     age: Vec<u64>,
     tick: u64,
+    /// Names taken off blocks since `Pages::take_gone` (src/kv_events.rs).
+    gone: Vec<u128>,
 }
 
 impl Pool {
@@ -53,6 +55,7 @@ impl Pool {
             idle: BTreeMap::new(),
             age: vec![0; n as usize],
             tick: 0,
+            gone: Vec::new(),
         }
     }
     /// Blocks that can be had now: the free, and the named ones no sequence holds.
@@ -101,6 +104,7 @@ impl Pool {
         let n = std::mem::take(&mut self.name[b as usize]);
         if n != 0 {
             self.index.remove(&n);
+            self.gone.push(n);
         }
     }
 }
@@ -323,6 +327,15 @@ impl Pages {
         }
     }
 
+    /// The names no block is found by any more since the last call (a block named so was taken for another use), each once: the cache's removed blocks
+    /// (src/kv_events.rs).
+    pub fn take_gone(&mut self) -> Vec<u128> {
+        let mut out: Vec<u128> = self.pools.iter_mut().flat_map(|p| std::mem::take(&mut p.gone)).collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
     /// The block of group `g` that `key` names now, if any.
     pub fn named(&self, g: usize, key: u128) -> Option<u32> {
         self.pools.get(g).and_then(|p| p.index.get(&key).copied())
@@ -394,6 +407,23 @@ impl Pages {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The names taken off blocks that were taken for another use are told once (src/kv_events.rs: the cache's removed blocks); a block given up keeps its name.
+    #[test]
+    fn names_taken_off_reused_blocks_are_told_once() {
+        let mut p = Pages::new(&[4], &[None], 2, 1024);
+        assert!(p.grow(0, 48));
+        for b in 0..3 {
+            p.name(0, b, 100 + b as u128);
+        }
+        p.release(0);
+        assert!(p.take_gone().is_empty(), "blocks given up wait by their names");
+        assert!(p.grow(1, 32));
+        let gone = p.take_gone();
+        assert_eq!(gone.len(), 2);
+        assert!(gone.iter().all(|k| (100..103).contains(k)));
+        assert!(p.take_gone().is_empty());
+    }
 
     /// A full group holds every block up to the newest token; a sliding one only the window and a chunk behind it, the older blocks back in the pool; release gives everything back.
     #[test]

@@ -108,6 +108,7 @@ Every API front end (OpenAI's completions, Anthropic's Messages, OpenAI's Respon
 | `GET /v1/glyd/info` | yes | what the server is and holds |
 | `GET /v1/glyd/requests/ID` | yes | how a request stands |
 | `POST /v1/glyd/requests/ID/cancel` | yes | a request asked to end |
+| `GET /v1/glyd/kv/events` | yes | the cache's blocks stored and removed by name, with their tokens (see below; 404 unless the operator turns them on) |
 | `GET /stats` | no | the lossless engine's scheduler counts (zero at a level) |
 
 A method a path does not take is 405, a path there is not 404.
@@ -174,7 +175,7 @@ request it is the same as and run as any chat request is. Read: `system` (a stri
 `tools` (custom tools; the ones Anthropic runs, `web_search` and the like, are left out), `tool_choice` (`auto`, `any`, `tool`, `none`, `disable_parallel_tool_use`), `thinking` (`enabled` shows the model's thinking in
 a `thinking` block with an empty signature, which this server cannot make; else it is off), `stop_sequences`, `max_tokens` (required), `temperature`, `top_p`, `top_k`, `stream`; `cache_control` does not choose what is cached: a request finds what the
 server holds of its prompt whatever it marks. A request with a marker has what it leaves held before other requests' for the marker's time (5 minutes, an hour with
-`ttl: "1h"`) when the server needs a place; never so long that another request waits. The usage says how many tokens a request found (`cache_read_input_tokens`, with `input_tokens` the rest; in a stream, in `message_delta`). A stream is `message_start`, `ping`, each block's `content_block_start`, `content_block_delta` (`text_delta`, `thinking_delta`, `signature_delta`, `input_json_delta`) and
+`ttl: "1h"`) when the server needs a place; never so long that another request waits. The usage says how many tokens a request found (`cache_read_input_tokens`) and, for a request with a `cache_control` marker, how many more it left that a request with the same start would find (`cache_creation_input_tokens`: the cache keeps every prompt, at no price), with `input_tokens` the rest; in a stream, in `message_delta`. Both are told as the cached count is (below). A stream is `message_start`, `ping`, each block's `content_block_start`, `content_block_delta` (`text_delta`, `thinking_delta`, `signature_delta`, `input_json_delta`) and
 `content_block_stop`, `message_delta` (the `stop_reason`: `end_turn`, `max_tokens`, `stop_sequence` with the string, `tool_use`; the usage) and `message_stop`, with a `ping` while a request waits for its turn. Errors are
 `{"type": "error", "error": {"type", "message"}}` (`invalid_request_error`, `authentication_error`, `not_found_error`, `api_error`). `/v1/models` carries `type`, `display_name` and `created_at` beside OpenAI's fields.
 
@@ -397,6 +398,30 @@ curl -s -X POST -H "Authorization: Bearer $GLYD_API_KEY" http://127.0.0.1:8238/v
   out. On a level's engine nothing is freed then: the KV and the state are made at load and the next request uses them.
 - The last 64 ended requests are kept; an id given again names the new request. Ids are matched as the path has them (no
   percent-decoding): give `request_id`s of letters, digits, `-` and `_`.
+
+## The cache's events
+
+A router that sends a request to the server already holding its start reads what the cache holds by name: each step's blocks
+stored (their names, the name of the block before them, their tokens) and removed. Off unless the server's operator sets
+`GLYD_ENGINE_KV_EVENTS=1`: an event carries a prompt's tokens, and whoever reads the events reads every caller's prompts (with
+no key on the server, whoever reaches its port). The blocks are the description executor's (the families it serves); 16 tokens
+a block.
+
+```
+curl -s -H "Authorization: Bearer $GLYD_API_KEY" 'http://127.0.0.1:8238/v1/glyd/kv/events?after=41&wait=5'
+{"next":43,"oldest":1,"gap":false,"batches":[{"seq":42,"ts":1795366128.125,"events":[
+  {"type":"removed","blocks":["9f2c..."],"medium":"gpu"},
+  {"type":"stored","blocks":["1a7e...","c03b..."],"parent":null,"tokens":[...32 ids...],"block_size":16,"medium":"gpu"}]}]}
+```
+
+- `after`: the newest batch already read (0: all kept); `wait`: seconds to wait for a batch where none is new yet (at most 10).
+  Pass `next` as the next call's `after`.
+- A block's name is 32 hexadecimal digits: the first 16 bytes of SHA-256 over the name of the block before it and its 16 token
+  ids, a request's chain beginning at its scope's root (`cache_salt`). `parent` null: the first stored block is its
+  sequence's first.
+- Batch 1 is `{"type":"cleared"}`: the cache holds nothing when the server starts. The last 1,024 batches are kept; `gap: true`
+  says some after `after` are not, and a reader takes what it knew as cleared.
+- The schema is part of `glyd-serve/1`: a change that breaks it is a new API version.
 
 ## Limits
 

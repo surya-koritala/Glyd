@@ -72,6 +72,8 @@ pub struct Figures {
     pub kv_pages_held: AtomicU64,
     /// The prompt tokens of the requests an engine with no scheduler ran (the scheduler counts its own, the context's `sched`).
     prompt_tokens: AtomicU64,
+    /// The served model's name, which its sequences' spans carry (`otel::record`): set where its server starts.
+    pub model: std::sync::OnceLock<String>,
 }
 
 impl Default for Figures {
@@ -93,6 +95,7 @@ impl Figures {
             kv_pages: AtomicU64::new(0),
             kv_pages_held: AtomicU64::new(0),
             prompt_tokens: AtomicU64::new(0),
+            model: std::sync::OnceLock::new(),
         }
     }
 
@@ -136,7 +139,7 @@ impl Figures {
     /// A sequence ended: counted (`ended`) and, where traces are on, its spans sent (`otel::record`).
     pub fn finished(&self, how: &str, began: Instant, clock: &crate::otel::Clock, generated: usize) {
         self.ended(how, began);
-        crate::otel::record(clock, how, generated);
+        crate::otel::record(clock, how, generated, self.model.get().map_or("", String::as_str));
     }
 }
 

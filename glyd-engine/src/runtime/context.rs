@@ -21,6 +21,12 @@ pub struct Context {
     /// operator says so (GLYD_ENGINE_CACHED_USAGE=1: every caller is one user): the cache is one for all such requests, and a count would let one caller learn how another's
     /// prompt begins. Not decided by the listener's address: a server on a loopback address may answer callers from anywhere, behind `glyd service` or another proxy.
     pub tell_cached: AtomicBool,
+    /// The cache's events (blocks stored and removed by name, with their tokens: src/kv_events.rs), for `/v1/glyd/kv/events`. Off unless the server's operator turns them on
+    /// (GLYD_ENGINE_KV_EVENTS=1): they carry every caller's prompts.
+    pub kv_events: Option<crate::kv_events::Log>,
+    /// The requests that run on the model, and the last that ended, by id (`/v1/glyd/requests/ID`): each model's, so that one model's server neither finds nor
+    /// cancels another's.
+    pub(crate) tracks: Mutex<std::collections::VecDeque<crate::server::Track>>,
 }
 
 impl Context {
@@ -32,7 +38,16 @@ impl Context {
             failed: Mutex::new(None),
             info: OnceLock::new(),
             tell_cached: AtomicBool::new(std::env::var_os("GLYD_ENGINE_CACHED_USAGE").is_some_and(|v| v == "1")),
+            kv_events: std::env::var_os("GLYD_ENGINE_KV_EVENTS").is_some_and(|v| v == "1").then(crate::kv_events::Log::new),
+            tracks: Mutex::new(std::collections::VecDeque::new()),
         })
+    }
+
+    /// A context of its own whose cache's events are kept (`kv_events`), whatever the environment says: a test's, or a program that reads them itself.
+    pub fn with_kv_events() -> Arc<Context> {
+        let mut c = Context::new();
+        Arc::get_mut(&mut c).expect("a new context").kv_events = Some(crate::kv_events::Log::new());
+        c
     }
 
     /// The process's own: what a program that serves one model uses, and every caller that names no other.

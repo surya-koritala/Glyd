@@ -38,6 +38,9 @@ pub struct Submit {
     /// The prompt tokens found in the cache when the sequence was first let in (a kept sequence's, or pages of an earlier prompt), which were not run again: set before
     /// the sequence's first event; the caller may read it (a request's usage).
     pub cached: Arc<AtomicU32>,
+    /// A request with a cache marker (`pin`): the prompt tokens it left findable in the cache that it did not find there (Anthropic's `cache_creation_input_tokens`), set
+    /// once its prompt has run; 0 for any other request, and on a step that does not find blocks by name.
+    pub created: Arc<AtomicU32>,
     /// The request's cache scope (its `cache_salt`'s digest; 0: none): it finds in the cache only what requests of its scope left, and what it leaves is found by them alone.
     /// A server several callers share gives each its own, so that no caller learns from what is found, or how soon its first token comes, how another's prompt begins.
     pub salt: u64,
@@ -150,6 +153,10 @@ pub trait ModelStep {
     /// The tokens `adopt` would find for `keys` now.
     fn held_by_name(&self, _keys: &[u128]) -> usize {
         0
+    }
+    /// The names of blocks the step no longer finds by them, since the last call (each taken for another use): the cache's removed blocks (src/kv_events.rs).
+    fn take_removed(&mut self) -> Vec<u128> {
+        Vec::new()
     }
     /// The sequence in `slot` holds `n` tokens and is at a place a later request may go on from (its prompt's end: a reply asked for again, or a next turn whose template leaves out
     /// part of this reply, begins with these tokens and no more). A step that cannot cut a sequence back anywhere keeps what `resume` needs to go on from here.
@@ -369,6 +376,9 @@ impl ModelStep for &mut dyn ModelStep {
     fn held_by_name(&self, keys: &[u128]) -> usize {
         (**self).held_by_name(keys)
     }
+    fn take_removed(&mut self) -> Vec<u128> {
+        (**self).take_removed()
+    }
     fn eos(&self) -> Vec<i64> {
         (**self).eos()
     }
@@ -422,6 +432,7 @@ struct Seq {
     abort: Arc<AtomicBool>,
     resumed: Arc<AtomicU32>,
     cached: Arc<AtomicU32>,
+    created: Arc<AtomicU32>,
     salt: u64,
     pin: u32,
     reply: Reply,
@@ -503,6 +514,8 @@ pub struct Sched<B: ModelStep> {
     be: B,
     /// The runtime context its figures and its sequences' counts go to (the process's own unless `in_context` gave another).
     rt: Arc<Context>,
+    /// The blocks named in this step, with their tokens, for the cache's events (`Context::kv_events`; empty where they are off).
+    kv_out: Vec<crate::kv_events::Event>,
     pager: Pager,
     users: usize,
     waiting: VecDeque<Seq>,
@@ -553,6 +566,7 @@ impl<B: ModelStep> Sched<B> {
             emit,
             be,
             rt: Context::process().clone(),
+            kv_out: Vec::new(),
             pager,
             users,
             waiting: VecDeque::new(),
@@ -619,6 +633,13 @@ impl<B: ModelStep> Sched<B> {
         if self.keep {
             let s = &self.active[i];
             self.be.mark(s.pages[0], s.done)?;
+        }
+        // (a request with a cache marker: the prompt tokens it left findable by name that it did not find, the first time it runs)
+        let s = &self.active[i];
+        if s.pin > 0 && self.names() && s.resumed.load(Relaxed) == 0 {
+            let keys = block_names(block_root(s.salt), &s.tokens[..s.tokens.len().saturating_sub(1)]);
+            let findable = self.be.held_by_name(&keys);
+            s.created.store(findable.saturating_sub(s.cached.load(Relaxed) as usize) as u32, Relaxed);
         }
         Ok(())
     }
@@ -745,6 +766,7 @@ impl<B: ModelStep> Sched<B> {
             abort: s.abort,
             resumed: s.resumed,
             cached: s.cached,
+            created: s.created,
             salt: s.salt,
             pin: s.pin,
             reply: s.reply,
@@ -822,6 +844,7 @@ impl<B: ModelStep> Sched<B> {
             // (a round is one step: a token for every sequence that is decoding and, beside them, the prompts' chunks; nothing waits for the other's pass)
             self.round_one_step()?;
             self.flush();
+            self.kv_flush();
             self.stats.tick_ns += t.elapsed().as_nanos() as u64;
             self.gauges();
             return Ok(());
@@ -842,6 +865,7 @@ impl<B: ModelStep> Sched<B> {
                 || (more && self.pass_tokens > SHORT_PASS && self.skips < MAX_LONG_SKIPS))
         {
             self.skips += 1;
+            self.kv_flush();
             self.stats.tick_ns += t.elapsed().as_nanos() as u64;
             self.gauges();
             return Ok(());
@@ -849,6 +873,7 @@ impl<B: ModelStep> Sched<B> {
         self.skips = 0;
         self.decode_step()?;
         self.flush();
+        self.kv_flush();
         self.stats.tick_ns += t.elapsed().as_nanos() as u64;
         self.gauges();
         Ok(())
@@ -1178,7 +1203,7 @@ impl<B: ModelStep> Sched<B> {
     fn give_back(&mut self, s: &mut Seq) -> Result<()> {
         if self.names() {
             // (its full blocks stay findable by name when the slot is emptied)
-            Self::name_blocks(&mut self.be, s)?;
+            Self::name_blocks(&mut self.be, s, self.rt.kv_events.as_ref().map(|_| &mut self.kv_out))?;
         }
         if let Some(free) = &mut self.free {
             let slots = std::mem::take(&mut s.pages);
@@ -1208,7 +1233,7 @@ impl<B: ModelStep> Sched<B> {
         if self.keep && s.done >= KEEP_LEAST && s.pages.len() == 1 {
             // (kept in its slot: the conversation's next turn begins with these tokens)
             if self.names() {
-                Self::name_blocks(&mut self.be, &mut s)?;
+                Self::name_blocks(&mut self.be, &mut s, self.rt.kv_events.as_ref().map(|_| &mut self.kv_out))?;
             }
             let slot = s.pages.pop().expect("its slot");
             let pinned = (s.pin > 0).then(|| std::time::Instant::now() + std::time::Duration::from_secs(s.pin as u64));
@@ -1242,8 +1267,10 @@ impl<B: ModelStep> Sched<B> {
     }
 
     /// The full blocks of a slot step's sequence that the step has not been told the names of yet, told (`ModelStep::name`).
-    fn name_blocks(be: &mut B, s: &mut Seq) -> Result<()> {
+    /// With `out` (the cache's events are kept): the blocks told, their parent's name and their tokens, as a stored event.
+    fn name_blocks(be: &mut B, s: &mut Seq, out: Option<&mut Vec<crate::kv_events::Event>>) -> Result<()> {
         let first = s.published;
+        let parent = (first > 0).then_some(s.chain);
         let mut keys = Vec::new();
         while (s.published + 1) * PAGE <= s.done {
             s.chain = block_hash(s.chain, &s.tokens[s.published * PAGE..(s.published + 1) * PAGE]);
@@ -1251,15 +1278,39 @@ impl<B: ModelStep> Sched<B> {
             s.published += 1;
         }
         match (keys.is_empty(), &s.pages[..]) {
-            (false, &[slot]) => be.name(slot, first, &keys),
+            (false, &[slot]) => {
+                be.name(slot, first, &keys)?;
+                if let Some(out) = out {
+                    out.push(crate::kv_events::Event::Stored { blocks: keys, parent, tokens: s.tokens[first * PAGE..s.published * PAGE].to_vec() });
+                }
+                Ok(())
+            }
             _ => Ok(()),
+        }
+    }
+
+    /// The step's events as one batch, where the cache's events are kept: the blocks no longer found by their names first (taken while sequences were let in, before
+    /// the step ran), then those named.
+    fn kv_flush(&mut self) {
+        let removed = self.be.take_removed();
+        if let Some(log) = &self.rt.kv_events {
+            let mut ev = Vec::with_capacity(self.kv_out.len() + 1);
+            if !removed.is_empty() {
+                ev.push(crate::kv_events::Event::Removed { blocks: removed });
+            }
+            ev.append(&mut self.kv_out);
+            log.push(ev);
         }
     }
 
     /// Full pages of the prompt as far as it has run, offered to the cache at once (a request with the same first tokens that comes now finds them).
     fn publish(&mut self, i: usize) -> Result<()> {
         if self.free.is_some() {
-            return if self.names() { Self::name_blocks(&mut self.be, &mut self.active[i]) } else { Ok(()) };
+            return if self.names() {
+                Self::name_blocks(&mut self.be, &mut self.active[i], self.rt.kv_events.as_ref().map(|_| &mut self.kv_out))
+            } else {
+                Ok(())
+            };
         }
         let s = &mut self.active[i];
         while (s.published + 1) * PAGE <= s.done {
@@ -1895,6 +1946,7 @@ pub(crate) mod tests {
             abort: abort.clone(),
             resumed: Default::default(),
             cached: Default::default(),
+            created: Default::default(),
             salt: 0,
             pin: 0,
             images: Vec::new(),
@@ -2068,7 +2120,7 @@ pub(crate) mod tests {
         use crate::otel::{self, Config, Exporter};
         let col = otel::testing::collector();
         otel::install(Exporter::start(Config { url: col.url.clone(), headers: vec![], service: "glyd-sched-test".into() }));
-        otel::set_model("fake/model");
+        let _ = crate::runtime::context::Context::process().figures.model.set("fake/model".into());
         let mut s = Sched::new(Fake::new(64, 32), 4);
         let (rx, _) = add(&mut s, prompt(5, 57), 6);
         run(&mut s);
@@ -2211,6 +2263,7 @@ pub(crate) mod tests {
             abort: Arc::new(AtomicBool::new(false)),
             resumed: Default::default(),
             cached: Default::default(),
+            created: Default::default(),
             salt: 0,
             pin: 0,
             images: Vec::new(),
@@ -2511,6 +2564,7 @@ pub(crate) mod tests {
                     abort: Arc::new(AtomicBool::new(false)),
                     resumed: Default::default(),
                     cached: Default::default(),
+                    created: Default::default(),
                     salt: 0,
                     pin: 0,
                     images: Vec::new(),
@@ -2567,6 +2621,7 @@ pub(crate) mod tests {
                     abort: Arc::new(AtomicBool::new(false)),
                     resumed: Default::default(),
                     cached: Default::default(),
+                    created: Default::default(),
                     salt: 0,
                     pin: 0,
                     images: Vec::new(),
@@ -2618,6 +2673,7 @@ pub(crate) mod tests {
             abort: Arc::new(AtomicBool::new(false)),
             resumed: Default::default(),
             cached: Default::default(),
+            created: Default::default(),
             salt: 0,
             pin: 0,
             images: Vec::new(),
@@ -2648,6 +2704,7 @@ pub(crate) mod tests {
                 abort: Arc::new(AtomicBool::new(false)),
                 resumed: Default::default(),
                 cached: Default::default(),
+                created: Default::default(),
                 salt: 0,
                 pin: 0,
                 images: Vec::new(),
@@ -2713,6 +2770,8 @@ pub(crate) mod tests {
         /// it stands for). No prompt piece may run across a boundary.
         pub snap_every: usize,
         pub snaps: std::collections::HashMap<u128, Vec<u32>>,
+        /// Names the step says it no longer finds blocks by (`take_removed`), as a test sets them.
+        pub removed: Vec<u128>,
     }
 
     impl SlotFake {
@@ -2743,6 +2802,7 @@ pub(crate) mod tests {
                 adopted: Vec::new(),
                 snap_every: 0,
                 snaps: Default::default(),
+                removed: Vec::new(),
             }
         }
         fn put(&mut self, slot: &[i32], start: usize, tokens: &[u32]) -> u32 {
@@ -2873,6 +2933,9 @@ pub(crate) mod tests {
             } else {
                 0
             }
+        }
+        fn take_removed(&mut self) -> Vec<u128> {
+            std::mem::take(&mut self.removed)
         }
         fn name(&mut self, slot: i32, first: usize, keys: &[u128]) -> Result<()> {
             let room = &self.rooms[slot as usize];
@@ -3112,6 +3175,7 @@ pub(crate) mod tests {
                 abort: Arc::new(AtomicBool::new(false)),
                 resumed: Default::default(),
                 cached: cached.clone(),
+                created: Default::default(),
                 salt: 0,
                 pin: 0,
                 images: Vec::new(),
@@ -3172,12 +3236,91 @@ pub(crate) mod tests {
             abort: Arc::new(AtomicBool::new(false)),
             resumed: Default::default(),
             cached: Default::default(),
+            created: Default::default(),
             salt: 5,
             pin: 0,
             images: Vec::new(),
         });
         run(&mut s);
         assert_eq!((collect(&rx).0, s.be.adopted.last().map(|x| x.1), s.be.shared.len()), (reference(&pb, 8), Some(0), 0));
+    }
+
+    /// #241: a request with a cache marker is told the prompt tokens it left findable by name that it did not find (Anthropic's cache creation); the next with the same
+    /// start finds those and is told the rest it left; a request with no marker is told none.
+    #[test]
+    fn a_request_with_a_cache_marker_is_told_what_it_left_findable() {
+        let mut s = keeping(3);
+        let go = |s: &mut Sched<SlotFake>, p: &[u32], pin: u32| -> (u32, u32) {
+            let (tx, rx) = channel();
+            let (cached, created) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
+            s.submit(Submit {
+                prompt: p.to_vec(),
+                reply: reply(8),
+                out: tx,
+                abort: Arc::new(AtomicBool::new(false)),
+                resumed: Default::default(),
+                cached: cached.clone(),
+                created: created.clone(),
+                salt: 0,
+                pin,
+                images: Vec::new(),
+            });
+            run(s);
+            collect(&rx);
+            (cached.load(Relaxed), created.load(Relaxed))
+        };
+        let system = prompt(1, 64);
+        // (94 tokens: the 93 before its last, 5 full blocks)
+        let pa: Vec<u32> = [&system[..], &prompt(2, 30)[..]].concat();
+        assert_eq!(go(&mut s, &pa, 300), (0, 80));
+        let pb: Vec<u32> = [&system[..], &prompt(3, 30)[..]].concat();
+        assert_eq!(go(&mut s, &pb, 300), (64, 16));
+        let pc: Vec<u32> = [&system[..], &prompt(4, 30)[..]].concat();
+        assert_eq!(go(&mut s, &pc, 0).1, 0);
+    }
+
+    /// #142: the cache's events where the context keeps them: a request's full blocks stored as they are named, with their tokens and their names (the chain of its
+    /// scope's), each sequence's first stored block with no parent; a step's removed blocks first in its batch. Where the context does not keep them, nothing is kept.
+    #[test]
+    fn the_cache_tells_its_stored_and_removed_blocks() {
+        use crate::kv_events::Event;
+        let mut f = SlotFake::new(2, 512, 16);
+        f.keeps = true;
+        let rt = Context::with_kv_events();
+        let mut s = Sched::new(f, 2).in_context(rt.clone());
+        let p = prompt(1, 40);
+        let r = turn(&mut s, &p, 8);
+        let log = rt.kv_events.as_ref().unwrap();
+        let (batches, gap, _) = log.since(1, std::time::Duration::ZERO);
+        let stored: Vec<(Vec<u128>, Option<u128>, Vec<u32>)> = batches
+            .iter()
+            .flat_map(|b| b.events.iter())
+            .filter_map(|e| match e {
+                Event::Stored { blocks, parent, tokens } => Some((blocks.clone(), *parent, tokens.clone())),
+                _ => None,
+            })
+            .collect();
+        let tokens: Vec<u32> = stored.iter().flat_map(|x| x.2.iter().copied()).collect();
+        let names: Vec<u128> = stored.iter().flat_map(|x| x.0.iter().copied()).collect();
+        // (the prompt and its reply but the last token: 47 tokens, 2 full blocks)
+        let seq: Vec<u32> = [&p[..], &r[..r.len() - 1]].concat();
+        assert_eq!((gap, tokens.len(), &tokens[..]), (false, 2 * PAGE, &seq[..2 * PAGE]));
+        assert_eq!(names, crate::kv::block_names(crate::kv::block_root(0), &tokens));
+        assert_eq!(stored[0].1, None, "a sequence's first block has no parent");
+        assert!(stored.windows(2).all(|w| w[1].1 == w[0].0.last().copied()), "each later stored run's parent is the block before it");
+        // a step's removed blocks: first in its batch
+        let before = log.since(0, std::time::Duration::ZERO).2;
+        s.be.removed = vec![9, 7];
+        turn(&mut s, &prompt(2, 40), 8);
+        let (batches, _, _) = log.since(before, std::time::Duration::ZERO);
+        let with = batches.iter().find(|b| b.events.iter().any(|e| matches!(e, Event::Removed { .. }))).expect("a batch with the removed blocks");
+        assert_eq!(with.events[0], Event::Removed { blocks: vec![9, 7] });
+        // a context that does not keep them: nothing kept
+        let mut f = SlotFake::new(2, 512, 16);
+        f.keeps = true;
+        let mut s = Sched::new(f, 2).in_context(Context::new());
+        turn(&mut s, &p, 8);
+        assert!(s.kv_out.is_empty() && s.rt.kv_events.is_none());
     }
 
     /// #142: a recurrent model that keeps its states at boundaries (every 32 tokens here, prompts in chunks of 64) has a start another conversation ran found by name to
@@ -3337,6 +3480,7 @@ pub(crate) mod tests {
                 abort: Arc::new(AtomicBool::new(false)),
                 resumed: Default::default(),
                 cached: cached.clone(),
+                created: Default::default(),
                 salt,
                 pin: 0,
                 images: Vec::new(),
@@ -3442,6 +3586,7 @@ pub(crate) mod tests {
                 abort: Arc::new(AtomicBool::new(false)),
                 resumed: Default::default(),
                 cached: Default::default(),
+                created: Default::default(),
                 salt: 0,
                 pin,
                 images: Vec::new(),
@@ -3567,6 +3712,7 @@ pub(crate) mod tests {
                 abort: Arc::new(AtomicBool::new(false)),
                 resumed: resumed.clone(),
                 cached: Default::default(),
+                created: Default::default(),
                 salt: 0,
                 pin: 0,
                 images: Vec::new(),
