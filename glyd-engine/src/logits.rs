@@ -1645,7 +1645,8 @@ fn fill(s: &mut dyn crate::sched::ModelStep, slot: i32, t: &[u32], by: usize, la
 ///     the same prompt alone in chunks of that size against alone in whole chunks.
 ///
 /// Required: in a step of 16 rows or fewer every logit is the reference's, bit for bit (what the kernels give at those sizes on every family); the other sequence's content changes nothing
-/// on a model with no mixture of experts; and every KL within --kl where one is given (a real model: a random model's logits are near ties that last bits move far).
+/// on a model with no mixture of experts; and every KL within --kl where one is given (a real model: a random model's logits are near ties that last bits move far). With
+/// GLYD_ENGINE_BATCH_PREFILL=0 (every reply to be the reply alone) only the decode steps are run, and not a bit may differ at any size.
 pub fn round_check(a: &crate::args::Args) -> Result<()> {
     use crate::conv::Gen;
     use crate::sched::{ModelStep, PrefillJob, Row};
@@ -1678,9 +1679,11 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
         None => None,
     };
     let Some((k, s)) = e.as_step(a.num("users", 64usize)?)? else { return err(format!("{case}: no scheduler's step")) };
-    if k < 2 || !s.one_step() {
-        return err(format!("{case}: {k} sequences, a round that is one step: {}", s.one_step()));
+    if k < 2 {
+        return err(format!("{case}: {k} sequences"));
     }
+    // (GLYD_ENGINE_BATCH_PREFILL=0: the round is two passes and every reply is to be the reply alone, so only the steps of rows that decode are run, and at every size not a bit may differ)
+    let strict = !s.one_step();
     let (chunk, window) = (s.chunk(), s.window());
     let toks = |n: usize, seed: u32| -> Vec<u32> { (0..n as u32).map(|i| 3 + (i * 7919 + seed * 104_729) % (vocab - 3)).collect() };
     let passage = |n: usize, from: usize| -> Option<Vec<u32>> { text.as_ref().map(|t| (0..n).map(|i| t[(from + i) % t.len()]).collect()) };
@@ -1758,7 +1761,11 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
         }
         s.release(&slots.concat())?;
         let pairs: Vec<(&[f32], &[f32])> = reference.iter().zip(&got).map(|(w, g)| (&w[..], &g[..])).collect();
-        report(&format!("{n} rows a step, the row with {} other sequences' rows, against alone", n - 1), n <= 16, &pairs);
+        report(&format!("{n} rows a step, the row with {} other sequences' rows, against alone", n - 1), n <= 16 || strict, &pairs);
+    }
+    if strict {
+        sizes_done(case, fails)?;
+        return Ok(());
     }
     // with another sequence's prompt chunk in the step
     // (62 and 63: either side of the 64 rows at which a product's kernel changes)
@@ -1816,6 +1823,11 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
         s.release(&[1])?;
         report(&format!("(yardstick) that prompt alone in chunks of {c}, against alone in chunks of {chunk}"), false, &[(&whole[..], &alone[..])]);
     }
+    sizes_done(case, fails)
+}
+
+/// roundcheck's last line: its failures, or that it passed.
+fn sizes_done(case: &str, fails: usize) -> Result<()> {
     if fails > 0 {
         return err(format!("roundcheck {case}: {fails} failed"));
     }

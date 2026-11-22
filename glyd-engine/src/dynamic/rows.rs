@@ -6,7 +6,7 @@
 //! those of its own pass; in a larger one (17 to 64 rows another kernel, past 64 `decoded_way`'s) they differ by the rounding of the engine's bf16 values, as the engine differs from an f32
 //! reference. Measured by `glyd-engine roundcheck` (src/logits.rs) on every family and on gemma-4-12B at wren with a text's tokens: a KL of 0.002 to 0.005 from the row alone on average, the
 //! largest logit another token's in 1 or 2 steps of 32 (where the two largest are tied or nearly); benchmarks/gpu/rtx4080-one-step-round-2026-11-22 has the figures. GLYD_ENGINE_BATCH_PREFILL=0 runs prompts one
-//! a pass and the round as two passes: every reply is then the reply alone, bit for bit, while 16 sequences or fewer decode (a dense model; a mixture of experts' rows are stepped one by one).
+//! a pass, the round as two passes and the rows that decode in passes of at most 16 (a mixture of experts' one by one): every reply is then the reply alone, bit for bit.
 //!
 //! A finished sequence stays in its slot (`ModelStep::keeps`), and a request that begins with its tokens goes on from them (`resume`): a conversation's next turn, which sends the turns
 //! before it again. The whole of what a slot holds can always be gone on with. Before its end: anywhere, where the description has no recurrent state and no latent cache (Gemma 4, Muse
@@ -462,6 +462,9 @@ impl Dyn {
 /// The prompt tokens a step takes beside any number of rows, so that a prompt moves while many sequences decode.
 const STEP_LEAST: usize = 16;
 
+/// The most rows of a pass whose products give every row the bits of its own pass (the kernels change past it: `glyd-engine roundcheck` measures it on every family).
+pub(crate) const EXACT_ROWS: usize = 16;
+
 impl ModelStep for Dyn {
     /// The context, or where the pools hold less for one sequence alone, that: a reply that reaches it ends there (its length), and a sequence alone always fits, so one sent back for room
     /// always runs again (an admitted request never fails for the memory).
@@ -567,6 +570,23 @@ impl ModelStep for Dyn {
         }
         let jobs: Vec<(usize, [u32; 1])> = rows.iter().map(|r| (r.pages[0] as usize, [r.token])).collect();
         let jobs: Vec<(usize, &[u32], bool)> = jobs.iter().map(|(s, t)| (*s, &t[..], true)).collect();
+        if !Self::batch_prefill() && rows.len() > EXACT_ROWS {
+            // (GLYD_ENGINE_BATCH_PREFILL=0, where every reply is to be the reply alone bit for bit: passes of at most EXACT_ROWS rows, the last first, each one's logits rows moved to
+            // their place in the head's rows before the next writes its own over the first)
+            let mut out = vec![None; rows.len()];
+            let w = self.big.d.vocab * 2;
+            for (g, part) in jobs.chunks(EXACT_ROWS).enumerate().collect::<Vec<_>>().into_iter().rev() {
+                let at = g * EXACT_ROWS;
+                for (j, s) in self.pass(part)?.into_iter().enumerate() {
+                    out[at + j] = s;
+                }
+                if at > 0 {
+                    // SAFETY: the head's logits hold head_room rows; the pass's are its first rows, and they do not reach their place (a pass is at most EXACT_ROWS rows, `at` at least that).
+                    unsafe { copy_d2d_async(self.big.logits.ptr + (at * w) as u64, self.big.logits.ptr, part.len() * w, self.dev.stream)? };
+                }
+            }
+            return Ok(out.into_iter().map(|s| s.expect("every row samples")).collect());
+        }
         Ok(self.pass(&jobs)?.into_iter().map(|s| s.expect("every row samples")).collect())
     }
     fn logits(&mut self, row: usize) -> Result<Vec<f32>> {
