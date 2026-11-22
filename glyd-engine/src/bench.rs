@@ -805,7 +805,7 @@ fn gsm8k(agent: &ureq::Agent, url: &str, model: &str, n: usize) -> Value {
 // ---- quality: the next token after fixed prefixes of one text
 
 /// A text of about 330 words; its prefixes are the contexts the next-token distributions are taken at.
-const PASSAGE: &str = "The lighthouse keeper climbed the spiral stairs every evening at dusk, a lantern swinging from one hand and a notebook tucked under the other arm. \
+pub(crate) const PASSAGE: &str = "The lighthouse keeper climbed the spiral stairs every evening at dusk, a lantern swinging from one hand and a notebook tucked under the other arm. \
 From the gallery he could see the whole harbour: the fishing boats nosing back to their moorings, the ferry drawing a long white line across the grey water, \
 and beyond the breakwater the open sea, which that night was calm enough to hold the first stars like coins in a dish. He wrote down the wind, the swell and the \
 visibility in a small neat hand, then trimmed the wick, wound the clockwork and listened for the soft click that told him the great lens had begun to turn. \

@@ -177,6 +177,9 @@ jobs:
             "$E" usercheck "$c" --users 4 --level penguin
             GLYD_ENGINE_STEP_TOKENS=64 "$E" usercheck "$c" --users 4 --level penguin
             GLYD_ENGINE_ONE_STEP=0 "$E" usercheck "$c" --users 4 --level penguin
+            # (one sequence's logits by what its step holds beside it, against its row alone: what the other sequences hold changes nothing, and a step of 16 rows or fewer is the row's own
+            # pass bit for bit; the larger steps are counted. logits.rs roundcheck)
+            "$E" roundcheck "$c"
           done
           # (more users than the dense engine's 8 rows: 16 at once, prompts one a pass)
           GLYD_ENGINE_BATCH_PREFILL=0 "$E" usercheck gemma4 --users 16 --level penguin

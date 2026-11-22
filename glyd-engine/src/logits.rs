@@ -1463,35 +1463,36 @@ mod tests {
 }
 
 /// The random model of a case (gemma4, qwen35, muse, kimi, glm) on the description executor at `level`, made in a directory of its own and loaded (the directory is let go).
+/// The case's model in `dir` on the description executor.
+fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Result<Dyn> {
+    Ok(match case {
+        "gemma4" => {
+            let c = crate::gemma4::ConfigG4::load(dir)?;
+            Dyn::new(dir, crate::dynamic::gemma4::describe(&c), None, o)?
+        }
+        "qwen35" => crate::dynamic::qwen35::load(dir, o)?,
+        "muse" => crate::dynamic::muse::load(dir, o)?,
+        "kimi" => crate::dynamic::kimi::load(dir, o)?,
+        // (its experts at a lossy level, as its logits case: kestrel where penguin is asked)
+        "glm" => crate::dynamic::glm::load(dir, &DynOpts { layout: Some(Layout::Tiered), ..o.clone() }, level_layout(level)?.unwrap_or(Layout::Int6))?,
+        other => return err(format!("{other}: gemma4, qwen35, muse, kimi or glm")),
+    })
+}
+
+/// The case's random model, made in a directory of its own and loaded.
 fn random_dyn(case: &str, level: &str, tag: &str) -> Result<Dyn> {
     let dir = std::env::temp_dir().join(format!("glyd-{tag}-{case}-{}", std::process::id()));
     let o = dyn_opts(level_layout(level)?);
     let e: Result<Dyn> = (|| {
-        Ok(match case {
-            "gemma4" => {
-                gemma4_random(&dir)?;
-                let c = crate::gemma4::ConfigG4::load(&dir)?;
-                Dyn::new(&dir, crate::dynamic::gemma4::describe(&c), None, &o)?
-            }
-            "qwen35" => {
-                qwen35_random(&dir)?;
-                crate::dynamic::qwen35::load(&dir, &o)?
-            }
-            "muse" => {
-                crate::muse_ref::random(&dir)?;
-                crate::dynamic::muse::load(&dir, &o)?
-            }
-            "kimi" => {
-                crate::kimi_ref::random(&dir, 1, true, 8)?;
-                crate::dynamic::kimi::load(&dir, &o)?
-            }
-            "glm" => {
-                // (its experts at a lossy level, as its logits case: kestrel where penguin is asked)
-                crate::kcheck_glm::random(&dir, false, None)?;
-                crate::dynamic::glm::load(&dir, &dyn_opts(Some(Layout::Tiered)), level_layout(level)?.unwrap_or(Layout::Int6))?
-            }
+        match case {
+            "gemma4" => gemma4_random(&dir)?,
+            "qwen35" => qwen35_random(&dir)?,
+            "muse" => crate::muse_ref::random(&dir)?,
+            "kimi" => crate::kimi_ref::random(&dir, 1, true, 8)?,
+            "glm" => crate::kcheck_glm::random(&dir, false, None)?,
             other => return err(format!("{other}: gemma4, qwen35, muse, kimi or glm")),
-        })
+        }
+        load_dyn(case, &dir, &o, level)
     })();
     let _ = std::fs::remove_dir_all(&dir);
     e
@@ -1595,10 +1596,230 @@ pub fn two_models_check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
+/// One logits row against the reference's: the logits that differ, the largest difference, KL(reference || this) of their softmaxes, and whether the largest logit is the same token's.
+fn row_diff(want: &[f32], got: &[f32]) -> (usize, f32, f64, bool) {
+    let differ = want.iter().zip(got).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+    let max = want.iter().zip(got).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+    let (lw, lg) = (lse_of(want), lse_of(got));
+    let kl: f64 = want.iter().zip(got).map(|(&a, &b)| ((a as f64 - lw).exp()) * ((a as f64 - lw) - (b as f64 - lg))).sum();
+    let top = |l: &[f32]| l.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).map(|x| x.0);
+    (differ, max, kl.max(0.0), top(want) == top(got))
+}
+
+/// `roundcheck CASE [--level L] [--tokens T] [--users N] [--dir MODEL --ctx N --chunk N [--random-tokens]] [--kl BOUND]` (gemma4, qwen35, muse, kimi, glm; R4a's round that is one step): what a sequence's logits are by
+/// what its step holds beside it. The case's random model (or the model in MODEL, a real one) as a scheduler's step, and one sequence whose tokens are given, not sampled, so that every way
+/// runs the same tokens: its row alone in a step (the reference: a reply alone), with other sequences' rows (decode steps of 2 to 64 rows), and with another sequence's prompt chunk in the
+/// same step (`ModelStep::round`), the step 8, 16, 32, 64 rows and on to a chunk's. For each size:
+///   - the row's logits against the reference's: the logits that differ (their bits), the largest difference, the KL, whether the largest logit is the same token's;
+///   - the row's logits with another prompt of the same length beside it: what a row computes may turn on how many rows its step has (a product's kernel is picked by them), never on what
+///     the other sequence holds, so with no mixture of experts (`rows_exact`) not one bit may differ (a row that read another sequence's keys or state would);
+///   - the prompt's side: the logits after its last chunk run beside the row, against the same chunks alone; and, as a yardstick of what the kernels' choice by rows alone does on this model,
+///     the same prompt alone in chunks of that size against alone in whole chunks.
+///
+/// Required: in a step of 16 rows or fewer every logit is the reference's, bit for bit (what the kernels give at those sizes on every family); the other sequence's content changes nothing
+/// on a model with no mixture of experts; and every KL within --kl where one is given (a real model: a random model's logits are near ties that last bits move far).
+pub fn round_check(a: &crate::args::Args) -> Result<()> {
+    use crate::conv::Gen;
+    use crate::sched::{ModelStep, PrefillJob, Row};
+    let case = a.need(1, "CASE")?;
+    let level = a.flag("level").unwrap_or("penguin");
+    let steps: usize = a.num("tokens", 8usize)?;
+    let bound: Option<f64> = a.flag("kl").map(|b| b.parse().map_err(|_| Error(format!("--kl {b}: a number")))).transpose()?;
+    let mut e: Dyn = match a.flag("dir") {
+        Some(dir) => {
+            let o = DynOpts { ctx: a.num("ctx", 4096usize)?, chunk: a.num("chunk", 512usize)?, graph: true, device: 0, layout: level_layout(level)? };
+            load_dyn(case, Path::new(dir), &o, level)?
+        }
+        None => random_dyn(case, level, "roundcheck")?,
+    };
+    let (vocab, exact) = (e.desc().vocab as u32, e.rows_exact());
+    // (a real model's sequence is a text's tokens, the tokens given after the prompt the text's own next ones: what a reply looks like; the bench's passage, begun again where it ends)
+    let text: Option<Vec<u32>> = match a.flag("dir").filter(|_| !a.has("random-tokens")) {
+        Some(dir) => {
+            let mut t = crate::tok::Tok::load(Path::new(dir))?.encode(crate::bench::PASSAGE)?;
+            // (the model's first token before the text, where its config names one: a text as the model was trained to read it)
+            let cfg: Option<Value> = std::fs::read_to_string(Path::new(dir).join("config.json")).ok().and_then(|c| serde_json::from_str(&c).ok());
+            if let Some(bos) = cfg.as_ref().and_then(|c| c["bos_token_id"].as_u64().or(c["text_config"]["bos_token_id"].as_u64())) {
+                t.insert(0, bos as u32);
+            }
+            if t.len() < 64 {
+                return err(format!("the passage is {} tokens of this model's", t.len()));
+            }
+            Some(t)
+        }
+        None => None,
+    };
+    let Some((k, s)) = e.as_step(a.num("users", 64usize)?)? else { return err(format!("{case}: no scheduler's step")) };
+    if k < 2 || !s.one_step() {
+        return err(format!("{case}: {k} sequences, a round that is one step: {}", s.one_step()));
+    }
+    let (chunk, window) = (s.chunk(), s.window());
+    let toks = |n: usize, seed: u32| -> Vec<u32> { (0..n as u32).map(|i| 3 + (i * 7919 + seed * 104_729) % (vocab - 3)).collect() };
+    let passage = |n: usize, from: usize| -> Option<Vec<u32>> { text.as_ref().map(|t| (0..n).map(|i| t[(from + i) % t.len()]).collect()) };
+    let (pa, fa) = (passage(40, 0).unwrap_or_else(|| toks(40, 1)), passage(steps, 40).unwrap_or_else(|| toks(steps, 2)));
+    fn room(s: &mut dyn ModelStep, slot: i32, upto: usize) -> Result<()> {
+        if s.grow(slot, upto)? {
+            Ok(())
+        } else {
+            err(format!("no room for {upto} tokens in sequence {slot}"))
+        }
+    }
+    // a prompt alone, `by` tokens a pass; the logits after it where `last`
+    fn fill(s: &mut dyn ModelStep, slot: i32, t: &[u32], by: usize, last: bool) -> Result<Option<Vec<f32>>> {
+        room(s, slot, t.len() + 1)?;
+        let n = t.len().div_ceil(by);
+        for (i, part) in t.chunks(by).enumerate() {
+            s.prefill(&[slot], i * by, part, last && i + 1 == n)?;
+        }
+        if last {
+            s.logits(0).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+    // the reference: the sequence alone, a row a step
+    fill(s, 0, &pa, chunk, false)?;
+    let mut reference = Vec::new();
+    for (t, &f) in fa.iter().enumerate() {
+        room(s, 0, pa.len() + t + 2)?;
+        s.decode(&[Row { token: f, pos: pa.len() + t, pages: &[0] }])?;
+        reference.push(s.logits(0)?);
+    }
+    s.release(&[0])?;
+    let margin = reference
+        .iter()
+        .map(|l| {
+            let mut v = l.clone();
+            v.sort_by(|a, b| b.total_cmp(a));
+            v[0] - v[1]
+        })
+        .fold(f32::INFINITY, f32::min);
+    println!(
+        "{case} at {level}: {steps} steps of a sequence after {} prompt tokens ({}); no mixture of experts: {exact}; a chunk {chunk}, a sequence {window}",
+        pa.len(),
+        if text.is_some() { "a text's tokens, the bench's passage" } else { "tokens by a rule, not a text's" }
+    );
+    println!(
+        "the reference (the row alone): its two largest logits are {margin:e} apart at the closest step{}",
+        text.as_ref().map_or(String::new(), |t| format!("; the text is {} tokens", t.len()))
+    );
+    let mut fails = 0;
+    // (`bits`: not one logit may differ; None: counted)
+    let mut report = |what: &str, bits: bool, pairs: &[(&[f32], &[f32])]| {
+        let d: Vec<_> = pairs.iter().map(|(w, g)| row_diff(w, g)).collect();
+        let (differ, max, kl, top) = (
+            d.iter().map(|x| x.0).sum::<usize>(),
+            d.iter().map(|x| x.1).fold(0f32, f32::max),
+            d.iter().map(|x| x.2).fold(0f64, f64::max),
+            d.iter().filter(|x| x.3).count(),
+        );
+        let mean = d.iter().map(|x| x.2).sum::<f64>() / d.len().max(1) as f64;
+        let bad = (bits && differ > 0) || bound.is_some_and(|b| kl > b) || kl.is_nan();
+        fails += bad as usize;
+        println!(
+            "{} {what}: {differ} of {} logits differ, the largest by {max:e}, KL at most {kl:e} (mean {mean:e}), the largest logit the same token's in {top} of {}",
+            if bad {
+                "FAIL"
+            } else if bits || bound.is_some() {
+                "PASS"
+            } else {
+                "    "
+            },
+            pairs.len() * vocab as usize,
+            pairs.len()
+        );
+    };
+    // with other sequences' rows: decode steps of 2, 8, 16, 32 and 64 rows
+    for n in [2usize, 8, 16, 32, 48, 63, 64].into_iter().filter(|&n| n <= k) {
+        fill(s, 0, &pa, chunk, false)?;
+        let others: Vec<(Vec<u32>, Vec<u32>)> = (1..n).map(|j| (toks(9 + j % 5, 50 + j as u32), toks(steps, 100 + j as u32))).collect();
+        for (j, (p, _)) in others.iter().enumerate() {
+            fill(s, j as i32 + 1, p, chunk, false)?;
+        }
+        let slots: Vec<[i32; 1]> = (0..n as i32).map(|j| [j]).collect();
+        let mut got = Vec::new();
+        for t in 0..steps {
+            let mut rows = vec![Row { token: fa[t], pos: pa.len() + t, pages: &slots[0] }];
+            room(s, 0, pa.len() + t + 2)?;
+            for (j, (p, f)) in others.iter().enumerate() {
+                room(s, j as i32 + 1, p.len() + t + 2)?;
+                rows.push(Row { token: f[t], pos: p.len() + t, pages: &slots[j + 1] });
+            }
+            s.decode(&rows)?;
+            got.push(s.logits(0)?);
+        }
+        s.release(&slots.concat())?;
+        let pairs: Vec<(&[f32], &[f32])> = reference.iter().zip(&got).map(|(w, g)| (&w[..], &g[..])).collect();
+        report(&format!("{n} rows a step, the row with {} other sequences' rows, against alone", n - 1), n <= 16, &pairs);
+    }
+    // with another sequence's prompt chunk in the step
+    // (62 and 63: either side of the 64 rows at which a product's kernel changes)
+    let mut sizes: Vec<usize> = [7, 15, 31, 47, 62, 63, 127, 255, 511, 1023].into_iter().filter(|&c| c < chunk && c < window).collect();
+    if sizes.last().is_none_or(|&c| c != chunk - 1) && chunk - 1 < window {
+        sizes.push(chunk - 1);
+    }
+    for c in sizes {
+        // (as many steps as the other sequence's room holds chunks; a real model's other prompt is the text from its first token, as a prompt is, for as many whole chunks as the text has,
+        // and tokens by a rule where it has not two)
+        let n = steps.min((window - 1) / c);
+        let (px, of_text) = match &text {
+            Some(t) if t.len() >= 2 * c => (t[..n.min(t.len() / c) * c].to_vec(), true),
+            _ => (toks(n * c, 5 + c as u32), false),
+        };
+        let n = px.len() / c;
+        let rows = c + 1;
+        // the row beside a prompt's chunks, and the prompt's logits after its last
+        let beside = |s: &mut dyn ModelStep, prompt: &[u32]| -> Result<(Vec<Vec<f32>>, Vec<f32>)> {
+            fill(s, 0, &pa, chunk, false)?;
+            room(s, 1, prompt.len() + 1)?;
+            let (mut got, mut after) = (Vec::new(), Vec::new());
+            for t in 0..n {
+                room(s, 0, pa.len() + t + 2)?;
+                let last = t + 1 == n;
+                s.round(
+                    &[Row { token: fa[t], pos: pa.len() + t, pages: &[0] }],
+                    &[PrefillJob { pages: &[1], start: t * c, tokens: &prompt[t * c..(t + 1) * c], last }],
+                )?;
+                got.push(s.logits(0)?);
+                if last {
+                    after = s.logits(1)?;
+                }
+            }
+            s.release(&[0, 1])?;
+            Ok((got, after))
+        };
+        let py = toks(n * c, 1005 + c as u32);
+        let (gx, after) = beside(s, &px)?;
+        let (gy, _) = beside(s, &py)?;
+        let pairs: Vec<(&[f32], &[f32])> = reference.iter().zip(&gx).map(|(w, g)| (&w[..], &g[..])).collect();
+        report(&format!("{rows} rows a step, the row with a prompt's chunk of {c}, against alone"), rows <= 16, &pairs);
+        let kind = if of_text { "the text's" } else { "tokens by a rule" };
+        let pairs: Vec<(&[f32], &[f32])> = gx.iter().zip(&gy).map(|(w, g)| (&w[..], &g[..])).collect();
+        report(&format!("{rows} rows a step, the row with another prompt of {c} beside it, against the first"), exact, &pairs);
+        // the prompt's side: the same chunks alone, and whole chunks alone
+        let alone = fill(s, 1, &px, c, true)?.expect("the last chunk's logits");
+        s.release(&[1])?;
+        report(
+            &format!("{rows} rows a step, a prompt of {} ({kind}) in chunks of {c} beside the row, against the chunks alone", px.len()),
+            rows <= 16,
+            &[(&alone[..], &after[..])],
+        );
+        let whole = fill(s, 1, &px, chunk, true)?.expect("the last chunk's logits");
+        s.release(&[1])?;
+        report(&format!("(yardstick) that prompt alone in chunks of {c}, against alone in chunks of {chunk}"), false, &[(&whole[..], &alone[..])]);
+    }
+    if fails > 0 {
+        return err(format!("roundcheck {case}: {fails} failed"));
+    }
+    println!("roundcheck {case}: PASS");
+    Ok(())
+}
+
 /// `usercheck CASE [--level L] [--users N] [--tokens T]` (gemma4, qwen35, muse, kimi, glm): the case's random model on the description executor, each of N prompts replied to alone as `run` replies (the reference),
 /// then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts
-/// one a pass, decode steps of up to 8 rows: a step's sums). With prompts run together the replies that differ are counted, not refused (a product of more rows may take another route; a random
-/// model's near ties turn on its last bits). With GLYD_ENGINE_ONE_STEP=1 (a round that is one step of the rows that decode and the prompts' chunks) the same, and some step must have held both.
+/// one a pass, decode steps of the rows that decode: 16 or fewer here, whose bits are each row's own pass's). With prompts run together the replies that differ are counted, not refused (a step
+/// of more than 16 rows is another kernel's; a random model's near ties turn on its last bits: `roundcheck` measures the logits). The round is one step of the rows that decode and the prompts'
+/// chunks unless GLYD_ENGINE_ONE_STEP=0, and some step must then have held both.
 pub fn users_check(a: &crate::args::Args) -> Result<()> {
     use crate::conv::Gen;
     use crate::sched::{Ev, Finish, Reply, Sched, Submit};

@@ -40,6 +40,10 @@
 //!   glyd-engine sampletime DIR PROMPT [--new N] [--ctx N]     a Qwen3.5 or Nemotron-H model's decode speed by greedy steps, by sampled ones from the GPU's candidates and from the row on the host (the same tokens)
 //!   glyd-engine logitscheck [CASE...] [--fixtures DIR] [--cpu-ref] [--level L] [--list-cases]   each model's engine logits against its fixture in tests/logits (src/logits.rs); logitsrecord CASE --from cpu|engine --out FILE: a fixture made; logitsbound FIXTURE LEVEL=BOUND...: its bounds set; logitsmodel CASE DIR: the case's random model made; usercheck CASE [--users 4] [--level L]: the case's random model (gemma4, qwen35) served by the scheduler, each reply alone and at once against the one-at-a-time reply; paritycheck [CASE...] [--level L]: the hand-written Qwen3.5, Gemma 4 and Nemotron-H engines against the description executor on their R7 fixtures' tokens (R3b); levelcheck [CASE...] [--level L]: each lossy level's KL from penguin on the Qwen3.5, Gemma 4 and Nemotron-H random models, against the per-level thresholds
 //!   glyd-engine kcheck IN_DIR OUT_DIR                        the kernels on inputs tools/kcheck.py wrote
+//!   glyd-engine usercheck CASE [--users N] [--tokens T]       a random model of the case (gemma4, qwen35, muse, kimi, glm) on the description executor: each reply through the scheduler alone and all at once, against the reply alone
+//!   glyd-engine roundcheck CASE [--dir MODEL --ctx N --chunk N] [--kl BOUND]   a sequence's logits by what its step holds beside it (other sequences' rows, a prompt's chunk; 2 rows to a chunk's), against its row alone: the bits
+//!                                                             that differ, the largest difference, the KL; and that what the other sequence holds changes nothing (src/logits.rs)
+//!   glyd-engine twomodels [A B]                               two cases' random models in this process, each with a scheduler and a runtime context of its own: each reply beside the other model against alone
 //!   glyd-engine bandwidth [--gib N]                           the GPU's streaming read bandwidth
 //!   glyd-engine rangecheck MODEL[:level] [--prompt 1024] [--new 256] [--cut L | --cuts A,B] [--ctx N] [--chunk N] [--workers [--sessions 2]]   a Qwen3.5 model whole, then as stages of layers chained in this process and (--workers) as worker processes
 //!                                                             through the glyd-range/1 protocol (src/dynamic/range.rs, docs/range-worker.md): every step's logits and token compared bit for bit; "all checks passed"
@@ -155,6 +159,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "logitsmodel" => glyd_engine::logits::make_model(a),
         "usercheck" => glyd_engine::logits::users_check(a),
         "twomodels" => glyd_engine::logits::two_models_check(a),
+        "roundcheck" => glyd_engine::logits::round_check(a),
         "muserandom" => glyd_engine::muse_ref::random(Path::new(a.need(1, "OUT")?)),
         "museref" => glyd_engine::muse_ref::cmd(&a),
         "musecheck" => glyd_engine::muse_ref::check(&a),
