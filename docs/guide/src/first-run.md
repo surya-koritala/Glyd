@@ -51,6 +51,8 @@ memory bandwidth, for a short prompt and one user. `--machine NAME` plans for an
 you can see the plan before you buy or rent. `--context N` and `--users N` change what it plans for.
 `glyd preflight MODEL` says whether the engine will certainly run the model here (exit 0 yes, 3 no with the reason).
 
+When a model does not load at the level asked for, `fit` prints the degrade ladder: a shorter context, experts in the computer's memory, then a lower level, each with its cost in speed. `run` says the same steps in its first lines and asks before one that costs over 30% of the speed or lowers the level (`--yes`, or `GLYD_DEGRADE=yes`, takes them; `GLYD_DEGRADE=no` refuses); `serve` and the service never stop to ask and refuse without `--yes`.
+
 `fit` reads the model's file headers by range requests (two small reads a shard, kept in the cache), so a model's sizes are exact before anything is downloaded; nothing of the weights is fetched to plan. The plan is what loads. For Qwen3 dense, Qwen3.5/3.6/3.8, Nemotron 3 Super, Gemma 4 and (once its files are here) the models that run over several GPUs, `fit` sizes the model with the
 functions `run` and `serve` do, from the same GPU's free memory: the weights, the cache for the context and the users, the engine's work, and a
 small reserve the GPU keeps. Where `run` would refuse, `fit` refuses in the same words and exits 3. `run` prints its plan before it loads

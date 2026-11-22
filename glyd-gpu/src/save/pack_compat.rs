@@ -6,7 +6,8 @@
 //! `the_current_packer_writes_the_released_files` is the other direction: the packer of this glyd, run on the same tiny checkpoint, writes the fixtures' files byte for byte;
 //! a deliberate change of a layout's bytes fails it, and wants a new format version (and a new fixture) rather than an edit of the old.
 //!
-//! The fixtures: `v0.33.1-LAYOUT` was written by the `glyd pack` of release 0.33.1 (the tiny checkpoint `tiny_source` writes, `--layout LAYOUT`); `v1-0.27.0-mma` is a glyd-v1
+//! The fixtures: `main-NAME` hold layouts no release has written yet (the row layouts i6r, i5r and i4r, and a Hummingbird save with its codebook rows c3r and c2r), made by this glyd
+//! (`write_pack_sources`): they say what a decoder must keep reading; the release that first writes each layout replaces them with its own. `v0.33.1-LAYOUT` was written by the `glyd pack` of release 0.33.1 (the tiny checkpoint `tiny_source` writes, `--layout LAYOUT`); `v1-0.27.0-mma` is a glyd-v1
 //! save as glyd 0.27's `pack_mma` made it (the tiered layout of glyd 0.20 to 0.27: the Python packer is the only one that wrote it, so its layout is `crate::v1`'s, held as the
 //! one matrix `legacy` makes). To add the next release's: build it, run `glyd pack` on the checkpoint `GLYD_PACK_SRC=DIR cargo test -p glyd-gpu write_pack_sources -- --ignored`
 //! writes, and put the output in `tests/data/packs/vX.Y.Z-LAYOUT`.
@@ -102,7 +103,7 @@ fn fixtures() -> Vec<(String, PathBuf)> {
 #[test]
 fn committed_packs_verify() {
     let all = fixtures();
-    assert!(all.len() >= 8, "the fixtures of tests/data/packs are missing ({} found)", all.len());
+    assert!(all.len() >= 12, "the fixtures of tests/data/packs are missing ({} found)", all.len());
     for (name, dir) in &all {
         let v = verify(dir, 2, &Decoder::Cpu).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert!(v.packed > 0 && v.unchecked == 0, "{name}: {} packs, {} tensors unchecked", v.packed, v.unchecked);
@@ -170,11 +171,96 @@ fn the_current_packer_writes_the_released_files() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
-/// Writes what the fixtures are made from: the tiny checkpoint to `$GLYD_PACK_SRC/src` (for the release's `glyd pack`), and the glyd-v1 fixture into tests/data/packs.
+/// Writes what the fixtures are made from: the tiny checkpoint to `$GLYD_PACK_SRC/src` (for the release's `glyd pack`), the glyd-v1 fixture and the `main-*` ones into tests/data/packs.
 #[test]
 #[ignore]
 fn write_pack_sources() {
     let dir = PathBuf::from(std::env::var("GLYD_PACK_SRC").expect("GLYD_PACK_SRC: a folder"));
     tiny_source(&dir.join("src"));
     legacy(&Path::new(FIXTURES).join("v1-0.27.0-mma"));
+    main_fixtures(&dir);
+}
+
+/// The plan of the tiny Qwen3 with `layout: ROW` on its one-member linears (o_proj, down_proj): the weight's transpose a row at a time (a merged group cannot be).
+fn row_plan(src: &Path, row: &str) -> String {
+    let config = json::parse(&std::fs::read_to_string(src.join("config.json")).unwrap()).unwrap();
+    let puts = Plan::new(&Checkpoint::open(src).unwrap(), &config, true, true).unwrap().puts;
+    let items: Vec<String> = puts
+        .iter()
+        .map(|p| match p {
+            Put::Linear { members, .. } => {
+                let names = members.iter().map(|m| format!("\"{m}\"")).collect::<Vec<_>>().join(", ");
+                if members.len() == 1 && (members[0].ends_with("o_proj") || members[0].ends_with("down_proj")) {
+                    format!("{{\"linear\": [{names}], \"layout\": \"{row}\"}}")
+                } else {
+                    format!("{{\"linear\": [{names}]}}")
+                }
+            }
+            Put::Copy { name, from, .. } => format!("{{\"copy\": \"{name}\", \"from\": \"{from}\"}}"),
+            Put::Experts { .. } | Put::Codebook { .. } | Put::Signs { .. } => unreachable!(),
+        })
+        .collect();
+    format!("{{\"puts\": [{}]}}", items.join(", "))
+}
+
+/// The glyd.json of a save with the temporary folders' names taken out (`source.repo` and the like name where this ran).
+fn scrub(out: &Path, names: &[&Path]) {
+    let path = out.join("glyd.json");
+    let mut text = std::fs::read_to_string(&path).unwrap();
+    for n in names {
+        text = text.replace(n.to_str().unwrap(), "tmp");
+    }
+    std::fs::write(path, text).unwrap();
+}
+
+/// The `main-*` fixtures: the tiny Qwen3 with its o_proj and down_proj in each row layout (the save at the block layout of the same bits), and a Hummingbird save from a synthetic
+/// export of two experts (one at three bits, c3r; one at two, c2r) beside a dense linear at six bits.
+fn main_fixtures(tmp: &Path) {
+    let src = tmp.join("src");
+    let source = Source::find(src.to_str().unwrap()).unwrap();
+    for (name, block) in [("i6r", Layout::Int6), ("i5r", Layout::Int5), ("i4r", Layout::Int4)] {
+        let out = Path::new(FIXTURES).join(format!("main-{name}"));
+        let _ = std::fs::remove_dir_all(&out);
+        save_planned(&source, &out, 2, SHARD_BYTES, block, &row_plan(&src, name)).unwrap();
+        scrub(&out, &[&src, tmp]);
+    }
+    // the Hummingbird save: what a_save_at_the_hummingbird_level_from_an_export builds
+    let (rows, cols, experts) = (64usize, 128usize, 2usize);
+    let export = tmp.join("export");
+    crate::hbexport::tests::synthetic(&export, 1, experts, rows, cols, &|_l, e| if e == 0 { 3 } else { 2 }, 77);
+    let hsrc = tmp.join("hsrc");
+    std::fs::create_dir_all(&hsrc).unwrap();
+    std::fs::write(hsrc.join("config.json"), "{}").unwrap();
+    let mut x = 99u64;
+    let mut bf = |n: usize| -> Vec<u8> {
+        (0..n)
+            .flat_map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                ((((x >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 0.1).to_bits() >> 16).to_le_bytes()[..2].to_vec()
+            })
+            .collect()
+    };
+    let m = "m.layers.1.mixer";
+    let t = |name: String, shape: Vec<u64>, bytes: Vec<u8>| Saved { name, dtype: "BF16", shape, bytes, sha256: None };
+    let mut ts = vec![t("m.fc.weight".into(), vec![64, 128], bf(64 * 128))];
+    for e in 0..experts {
+        ts.push(t(format!("{m}.experts.{e}.up_proj.weight"), vec![rows as u64, cols as u64], bf(rows * cols)));
+        ts.push(t(format!("{m}.experts.{e}.down_proj.weight"), vec![cols as u64, rows as u64], bf(rows * cols)));
+    }
+    ts.push(t("m.norm.weight".into(), vec![64], bf(64)));
+    write_safetensors(&hsrc.join("model.safetensors"), &mut ts).unwrap();
+    let mut puts = vec!["{\"linear\": [\"m.fc\"], \"layout\": \"i6\"}".to_string()];
+    for e in 0..experts {
+        puts.push(format!("{{\"codebook\": \"{m}.experts.{e}.up_proj\", \"layer\": 0, \"expert\": {e}, \"matrix\": \"up\"}}"));
+        puts.push(format!("{{\"codebook\": \"{m}.experts.{e}.down_proj\", \"layer\": 0, \"expert\": {e}, \"matrix\": \"downT\"}}"));
+    }
+    puts.push(format!("{{\"signs\": \"{m}.glyd_rot_signs\", \"layer\": 0}}"));
+    puts.push("{\"copy\": \"m.norm.weight\"}".to_string());
+    let plan = format!("{{\"puts\": [{}]}}", puts.join(", "));
+    let out = Path::new(FIXTURES).join("main-hb");
+    let _ = std::fs::remove_dir_all(&out);
+    save_hummingbird(&Source::find(hsrc.to_str().unwrap()).unwrap(), &out, 2, SHARD_BYTES, &plan, &export).unwrap();
+    scrub(&out, &[&hsrc, &export, tmp]);
 }
