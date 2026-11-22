@@ -28,7 +28,8 @@ no prefill rate, and its name in the result is the kind as written (`4k+250ms`).
 
 `1k*4:8` is 8 conversations of 4 turns, each begun with a 1k prompt. A later turn sends the conversation so far (the prompts and the replies it got) and a short question more, as a chat client
 does. The load's `ttft_s` is the first turns' first token and `ttft_later_s` the later turns'; `prefix_hit_rate` is the share of the prompt tokens of the measured rounds that a glyd server found
-in its cache (its `/stats`; null for another server). A server that keeps nothing of a prompt it has seen runs every turn from its first token: its later turns' first token grows with the
+in its cache (its `/stats`; the server the bench starts is told its callers are one user, `GLYD_ENGINE_CACHED_USAGE=1`, so it says; null for a server given with
+`--against` that does not). A server that keeps nothing of a prompt it has seen runs every turn from its first token: its later turns' first token grows with the
 conversation and its hit rate is 0. `1k*4+250ms:8` begins the conversations 250 ms apart. The server `bench` starts takes as many users as the heaviest load asks for (at most 8; `--users N` says): `serve` alone takes 4, and 8 requests at once would be 4 and 4 waiting. A load that fails is counted (`errors`), not hidden.
 
 Per load and run: time to first token, decode tokens/s a user (tokens after the first over the time from first to last), the inter-token latency (its mean and the 99th percentile of every gap), decode tokens/s

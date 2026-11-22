@@ -19,7 +19,7 @@ use glyd_gpu::json::{self, Value};
 use std::io::{BufRead, Read, Write};
 #[cfg(test)]
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::Duration;
@@ -746,7 +746,6 @@ const NOT_DONE: &[(&str, &str)] = &[
     ("return_prompt_text", "false"),
     ("return_token_offsets", "false"),
     ("return_assistant_tokens_mask", "false"),
-    ("cache_salt", "null"),
     ("kv_transfer_params", "null"),
     ("ec_transfer_params", "null"),
     ("vllm_xargs", "null"),
@@ -790,6 +789,10 @@ pub fn unsupported(v: &Value) -> Option<String> {
     }
     if let Some((name, _)) = NOT_DONE.iter().find(|(n, d)| asked(v, n, d)) {
         return Some(format!("{name} {yet}"));
+    }
+    // (a cache scope: vLLM's field, a string; one that is not would be no scope without a word)
+    if v.get("cache_salt").is_some_and(|x| *x != Value::Null && x.as_str().is_none_or(str::is_empty)) {
+        return Some("cache_salt must be a string that is not empty".to_string());
     }
     if v.get("best_of").and_then(Value::as_u64).is_some_and(|b| b > num(v, "n").map_or(1, |n| n as u64)) {
         return Some(format!("best_of more than n {yet}"));
@@ -1293,6 +1296,31 @@ fn chat_text_of(sh: &Shared, v: &Value, api: &Api, r: &Request) -> Result<(Strin
     Ok((text, in_thinking, prefix, urls))
 }
 
+/// A request's cache scope: the digest of its `cache_salt` (vLLM's field: a string a caller, or the gateway before the callers, gives; the same string, the same scope), 0
+/// where it has none. Never 0 for a salt, so no salt is the scope of the requests that have none.
+fn salt_of(v: &Value) -> u64 {
+    match v.get("cache_salt").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+        Some(s) => u64::from_le_bytes(key_digest(s)[..8].try_into().expect("8 bytes")) | 1,
+        None => 0,
+    }
+}
+
+/// A sequence's handle as its request may read it: what the sequence found in the cache is told (`Handle::cached`, for the usage) to a request with a cache scope of its
+/// own, which can have found only what its scope left. A request with none is told nothing (0, as before these counts were kept) unless the operator has said that every
+/// caller is one user (`Context::tell_cached`): the cache serves it all the same, from what any such request left, and a count would let one caller learn how another's
+/// prompt begins (docs/serve-api.md).
+fn told(sh: &Shared, salt: u64, mut h: Handle) -> Handle {
+    if salt == 0 && !sh.rt.tell_cached.load(Ordering::Relaxed) {
+        h.cached = Arc::new(AtomicU32::new(0));
+    }
+    h
+}
+
+/// The prompt tokens a request's sequences found in the cache (`Handle::cached` of each prompt's first choice), read when they have ended.
+fn cached_tokens(found: &[Arc<AtomicU32>]) -> usize {
+    found.iter().map(|c| c.load(Ordering::Relaxed) as usize).sum()
+}
+
 /// A choice as a reply that is not streamed has it.
 #[derive(Default)]
 struct Whole {
@@ -1487,8 +1515,9 @@ fn start_as(sh: &Shared, tx: &Sender<Job>, o: &Value, chat: bool, hide_reasoning
         logprobs: None,
         stop_ids: r.stop_ids.clone(),
     };
-    let h = (Remote { tx: tx.clone(), window: sh.window }).start_with(&pr.ids, pr.images.clone(), &reply).map_err(|e| (500, e.to_string()))?;
-    Ok(Started { h, cfg, prompt_tokens: pr.ids.len(), api })
+    let salt = salt_of(o);
+    let h = (Remote { tx: tx.clone(), window: sh.window }).start_in(&pr.ids, pr.images.clone(), &reply, salt).map_err(|e| (500, e.to_string()))?;
+    Ok(Started { h: told(sh, salt, h), cfg, prompt_tokens: pr.ids.len(), api })
 }
 
 /// One completions request on `s`: chat (messages) or plain (a prompt); or, at /v1/glyd/tokenize, the count of its prompt's tokens alone (a chat's where it has messages), made as its reply's would be.
@@ -1566,7 +1595,10 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
     let created = now();
     let (out_tx, out_rx) = std::sync::mpsc::channel::<Out>();
     let (first_tx, first_rx) = std::sync::mpsc::channel::<()>();
+    let salt = salt_of(&v);
     let mut aborts: Vec<Arc<AtomicBool>> = Vec::new();
+    // (each prompt's first choice: what it found in the cache is what the request's prompt tokens did not cost; the other choices of a prompt find the first one's)
+    let mut found: Vec<Arc<AtomicU32>> = Vec::new();
     let mut failure: Option<String> = None;
     // (whether the failure is the server's doing: answered 500, where a request's own is 400)
     let mut server_fault = false;
@@ -1610,14 +1642,17 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
                 let idx = pi * api.n + i;
                 let mut reply = Reply { params: r.params.clone(), max_new, ignore_eos: r.ignore_eos, logprobs: api.logprobs, stop_ids: r.stop_ids.clone() };
                 reply.params.seed = r.params.seed.wrapping_add(i as u64);
-                let h = match remote.start_with(&pr.ids, pr.images.clone(), &reply) {
-                    Ok(h) => h,
+                let h = match remote.start_in(&pr.ids, pr.images.clone(), &reply, salt) {
+                    Ok(h) => told(sh, salt, h),
                     Err(e) => {
                         failure = Some(e.to_string());
                         break 'prompts;
                     }
                 };
                 aborts.push(h.abort.clone());
+                if i == 0 {
+                    found.push(h.cached.clone());
+                }
                 track_seq(&ident, &h.abort);
                 let (c, o, whole) = (Choice::new(cfg.clone()), out_tx.clone(), !api.stream);
                 let announce = (i == 0 && api.n > 1).then(|| first_tx.clone());
@@ -1718,7 +1753,7 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
             start_stream(s, &head, chat, &api, &req.cors);
         }
         if api.include_usage {
-            let _ = sse(s, &format!("{head},\"choices\":[],\"usage\":{}}}", wire::usage(prompt_tokens, completion_tokens)));
+            let _ = sse(s, &format!("{head},\"choices\":[],\"usage\":{}}}", wire::usage_with(prompt_tokens, completion_tokens, cached_tokens(&found))));
         }
         let _ = sse(s, "[DONE]");
         let _ = s.write_all(b"0\r\n\r\n");
@@ -1756,7 +1791,7 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
         "{{\"id\":\"{ident}\",\"object\":\"{kind}\",\"created\":{created},\"model\":{},\"choices\":[{}],\"usage\":{}}}",
         jstr(name),
         choices.join(","),
-        wire::usage(prompt_tokens, completion_tokens)
+        wire::usage_with(prompt_tokens, completion_tokens, cached_tokens(&found))
     );
     respond_with(s, 200, "application/json", &req.cors, body.as_bytes());
 }
@@ -1811,6 +1846,7 @@ const DONE: &[&str] = &[
     "return_tokens_as_token_ids",
     "best_of",
     "suffix",
+    "cache_salt",
 ];
 
 /// The fields that change nothing on a server of one model on this computer.
@@ -2328,6 +2364,8 @@ pub struct Remote {
 pub struct Handle {
     pub events: Receiver<Ev>,
     pub abort: Arc<AtomicBool>,
+    /// The prompt tokens the scheduler found in its cache as it let the sequence in (`sched::Submit::cached`): read for the request's usage once the sequence has ended.
+    pub cached: Arc<AtomicU32>,
 }
 
 impl Remote {
@@ -2338,6 +2376,11 @@ impl Remote {
 
     /// `start` with the prompt's images (their places in it their tokens).
     pub fn start_with(&self, prompt: &[u32], images: Vec<Arc<crate::vision::Image>>, o: &Reply) -> Result<Handle> {
+        self.start_in(prompt, images, o, 0)
+    }
+
+    /// `start_with` in the cache scope `salt` (`sched::Submit::salt`; 0: none).
+    pub fn start_in(&self, prompt: &[u32], images: Vec<Arc<crate::vision::Image>>, o: &Reply, salt: u64) -> Result<Handle> {
         if prompt.is_empty() {
             return err("an empty prompt");
         }
@@ -2345,11 +2388,20 @@ impl Remote {
             return err(format!("{} tokens, where the context holds {}", prompt.len(), self.window));
         }
         let (out, events) = std::sync::mpsc::channel();
-        let abort = Arc::new(AtomicBool::new(false));
+        let (abort, cached) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU32::new(0)));
         self.tx
-            .send(Job::Seq(Submit { prompt: prompt.to_vec(), reply: o.clone(), out, abort: abort.clone(), resumed: Default::default(), images }))
+            .send(Job::Seq(Submit {
+                prompt: prompt.to_vec(),
+                reply: o.clone(),
+                out,
+                abort: abort.clone(),
+                resumed: Default::default(),
+                cached: cached.clone(),
+                salt,
+                images,
+            }))
             .map_err(|_| Error("the engine is not running".into()))?;
-        Ok(Handle { events, abort })
+        Ok(Handle { events, abort, cached })
     }
 }
 
@@ -2802,6 +2854,78 @@ pub(crate) mod tests {
         assert_eq!(request_of(&v, 4096, &Params::default()).params.logit_bias, vec![(15, 5.0), (7, -100.0)]);
         assert_eq!(invalid(&v, true, 100), None);
         assert!(invalid(&json::parse(r#"{"logit_bias":{"500":5}}"#).unwrap(), true, 100).unwrap().contains("out-of-vocab"));
+    }
+
+    /// P5e: the prompt tokens a completion found in the cache are in its usage as OpenAI's API has them (`prompt_tokens_details.cached_tokens`, among `prompt_tokens`), whole
+    /// and streamed, for a request with a cache scope of its own (`cache_salt`); the first time a prompt is seen in a scope there are none and the usage is as it was. A scope
+    /// finds nothing of another's. A request with no scope is served from the cache and told nothing of it.
+    #[test]
+    fn the_usage_counts_the_prompt_tokens_found_in_the_cache() {
+        let rt = crate::runtime::context::Context::new();
+        let addr = serve_fake_in(Fake::new(64, 32), None, 2, false, None, &[], rt.clone());
+        let q = |stream: bool, salt: &str| {
+            format!(
+                r#"{{"model":"m","max_tokens":20,"temperature":0,"stream":{stream},"stream_options":{}{salt},"messages":[{{"role":"user","content":"LONG"}}]}}"#,
+                if stream { r#"{"include_usage":true}"# } else { "null" }
+            )
+            .replace("LONG", "the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills")
+        };
+        let found = |body: &str| -> Option<u64> {
+            at(&json::parse(body).unwrap(), &["usage"]).get("prompt_tokens_details").map(|d| at(d, &["cached_tokens"]).as_u64().unwrap())
+        };
+        // (the server's own count of the prompt tokens found, which /stats and /metrics do not tell either: null, and no such metric)
+        let hits = || rt.sched[1].load(Ordering::Relaxed);
+        // no scope, twice: the second is served from the cache (the server's own count says so) and its usage does not say it
+        let (st, first) = call(addr, "/v1/chat/completions", &q(false, ""));
+        assert_eq!(st, 200, "{first}");
+        let prompt = at(&json::parse(&first).unwrap(), &["usage", "prompt_tokens"]).as_u64().unwrap();
+        let again = call(addr, "/v1/chat/completions", &q(false, "")).1;
+        assert!(hits() >= 32 && found(&first).is_none() && found(&again).is_none(), "{again}");
+        let stats = get(addr, "/stats", None);
+        assert!(
+            stats.contains("\"prefix_hit_tokens\":null,\"prefix_hit_rate_percent\":null")
+                && !get(addr, "/metrics", None).contains("glyd_prefix_cache_hit_tokens_total"),
+            "{stats}"
+        );
+        // a scope: nothing of the requests with none; then its own
+        let a = r#","cache_salt":"tenant-a""#;
+        let before = hits();
+        let first = call(addr, "/v1/chat/completions", &q(false, a)).1;
+        assert!(found(&first).is_none() && hits() == before, "{first}");
+        let again = call(addr, "/v1/chat/completions", &q(false, a)).1;
+        let n = found(&again).expect("cached tokens");
+        assert!(
+            at(&json::parse(&again).unwrap(), &["usage", "prompt_tokens"]).as_u64() == Some(prompt) && n >= 32 && n < prompt && n % crate::kv::PAGE as u64 == 0,
+            "{n} of {prompt}"
+        );
+        // another scope finds nothing of it
+        assert!(found(&call(addr, "/v1/chat/completions", &q(false, r#","cache_salt":"tenant-b""#)).1).is_none());
+        // streamed, with the usage asked for: the last chunk's
+        let (st, body) = call(addr, "/v1/chat/completions", &q(true, a));
+        assert_eq!(st, 200, "{body}");
+        let last = body.lines().filter_map(|l| l.strip_prefix("data: ")).rfind(|d| d.contains("\"usage\":{")).expect("a chunk with the usage");
+        assert_eq!(found(last), Some(n), "{body}");
+    }
+
+    /// A server whose operator has said every caller is one user (GLYD_ENGINE_CACHED_USAGE=1, `Context::tell_cached`) tells a request with no scope what it found. It is
+    /// not the listener's address that decides: this one is on a loopback address like the others, which tell nothing.
+    #[test]
+    fn a_server_told_its_callers_are_one_user_tells_what_was_found_without_a_scope() {
+        let body = format!(r#"{{"model":"fake","max_tokens":8,"temperature":0,"prompt":"{}"}}"#, "the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills");
+        let found = |addr| -> (Option<u64>, Option<u64>) {
+            let ask = || json::parse(&call(addr, "/v1/completions", &body).1).unwrap();
+            let details = |d: &Value| at(d, &["usage"]).get("prompt_tokens_details").map(|x| at(x, &["cached_tokens"]).as_u64().unwrap());
+            (details(&ask()), details(&ask()))
+        };
+        let rt = crate::runtime::context::Context::new();
+        rt.tell_cached.store(true, Ordering::Relaxed);
+        let addr = serve_fake_in(Fake::new(64, 32), None, 2, false, None, &[], rt);
+        let (first, again) = found(addr);
+        assert!(first.is_none() && again.is_some_and(|n| n >= 32), "{first:?} {again:?}");
+        let (stats, metrics) = (get(addr, "/stats", None), get(addr, "/metrics", None));
+        assert!(stats.contains(&format!("\"prefix_hit_tokens\":{}", again.unwrap())) && metrics.contains("glyd_prefix_cache_hit_tokens_total"), "{stats}");
+        // the same server without the operator's word
+        assert_eq!(found(serve_fake_in(Fake::new(64, 32), None, 2, false, None, &[], crate::runtime::context::Context::new())), (None, None));
     }
 
     #[test]
@@ -5326,7 +5450,8 @@ pub(crate) mod tests {
             (",\"best_of\":3", "best_of more than n is not supported"),
             (",\"use_beam_search\":true", "use_beam_search is not supported"),
             (",\"priority\":2", "priority is not supported"),
-            (",\"cache_salt\":\"s\"", "cache_salt is not supported"),
+            (",\"cache_salt\":7", "cache_salt must be a string that is not empty"),
+            (",\"cache_salt\":\"\"", "cache_salt must be a string that is not empty"),
             (",\"logprobs\":1,\"echo\":true", "logprobs with echo"),
         ] {
             let (st, body) = ask(extra);
@@ -5699,6 +5824,8 @@ pub(crate) mod tests {
                 out,
                 abort: Arc::new(AtomicBool::new(abort)),
                 resumed: Default::default(),
+                cached: Default::default(),
+                salt: 0,
                 images: Vec::new(),
             }))
             .unwrap();

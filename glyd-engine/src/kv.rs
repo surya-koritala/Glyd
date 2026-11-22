@@ -449,10 +449,16 @@ impl Pager {
     }
 
     /// The run of cached pages `tokens` begins with (at most `max` of them), each now held by the caller.
-    #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
     pub fn lookup(&mut self, tokens: &[u32], max: usize) -> Vec<i32> {
+        self.lookup_in(0, tokens, max)
+    }
+
+    /// `lookup` among the pages of the scope `from` (a request's `cache_salt`, 0 for none): the key its chains begin with, so a chain of one scope is never found by
+    /// another's tokens (`publish` with `prev` the scope for a sequence's first page).
+    #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
+    pub fn lookup_in(&mut self, from: u64, tokens: &[u32], max: usize) -> Vec<i32> {
         let mut out = Vec::new();
-        let mut prev = 0;
+        let mut prev = from;
         for chunk in tokens.chunks_exact(PAGE).take(max) {
             let key = chain_key(prev, chunk);
             let Some(&p) = self.cache.get(&key) else { break };
@@ -552,6 +558,23 @@ impl Pager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scope's pages are its own: tokens another scope published are not found, by no scope's lookup but its own, though they are the same tokens.
+    #[test]
+    fn a_scopes_pages_are_found_by_that_scope_alone() {
+        let mut g = Pager::new(8);
+        let toks: Vec<u32> = (0..2 * PAGE as u32).collect();
+        let scope = 0x1234_5678_9abc_def1;
+        let (a, b) = (g.alloc().unwrap(), g.alloc().unwrap());
+        let k = g.publish(a, scope, &toks[..PAGE]);
+        g.publish(b, k, &toks[PAGE..]);
+        assert!(g.lookup(&toks, 4).is_empty() && g.lookup_in(7, &toks, 4).is_empty());
+        assert_eq!(g.lookup_in(scope, &toks, 4), vec![a, b]);
+        // the same tokens with no scope: pages of their own
+        let c = g.alloc().unwrap();
+        g.publish(c, 0, &toks[..PAGE]);
+        assert_eq!((g.lookup(&toks, 4), g.lookup_in(scope, &toks, 1)), (vec![c], vec![a]));
+    }
 
     /// The pages lent out, kept and taken back: a run of cached pages is found by the tokens it was written for, shared pages go back when their last holder does, and the oldest idle page is taken first, a chain's end before its start.
     #[test]

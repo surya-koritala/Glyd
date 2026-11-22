@@ -484,6 +484,8 @@ fn start_server(model: &str, a: &Args, users: usize) -> Result<Server> {
     let log = dir.join("server.log");
     let out = std::fs::OpenOptions::new().write(true).create_new(true).open(&log).map_err(|e| Error(format!("{}: {e}", log.display())))?;
     let mut cmd = Command::new(exe);
+    // (the bench is its server's one caller: the server may tell what its prompts found in the cache, for `prefix_hit_rate`)
+    cmd.env("GLYD_ENGINE_CACHED_USAGE", "1");
     cmd.args(["serve", model, "--host", "127.0.0.1", "--port", &port.to_string()]);
     for f in ["ctx", "layout", "chunk"] {
         if let Some(v) = a.flag(f) {
@@ -1356,7 +1358,10 @@ mod tests {
     fn a_conversations_later_turns_send_what_came_before_and_find_it_in_the_cache() {
         let mut f = crate::sched::tests::Fake::new(512, 64);
         f.decode_delay = Duration::from_millis(1);
-        let addr = crate::server::tests::serve_fake(f, None, 4);
+        // (a server that tells what was found, as the one the bench starts is: one caller)
+        let rt = crate::runtime::context::Context::new();
+        rt.tell_cached.store(true, std::sync::atomic::Ordering::Relaxed);
+        let addr = crate::server::tests::serve_fake_in(f, None, 4, false, None, &[], rt);
         let url = format!("http://{addr}");
         let stats = || get_json(&format!("{url}/stats")).map(|v| (v["prompt_tokens"].as_f64().unwrap(), v["prefix_hit_tokens"].as_f64().unwrap())).unwrap();
         let turns = converse(&agent(), &url, "fake", "short", 7, 3, 24);

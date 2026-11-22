@@ -35,6 +35,12 @@ pub struct Submit {
     pub abort: Arc<AtomicBool>,
     /// Counts the times the sequence is sent back to wait and run again (for room, or for a block the cache lost); the caller may read it.
     pub resumed: Arc<AtomicU32>,
+    /// The prompt tokens found in the cache when the sequence was first let in (a kept sequence's, or pages of an earlier prompt), which were not run again: set before
+    /// the sequence's first event; the caller may read it (a request's usage).
+    pub cached: Arc<AtomicU32>,
+    /// The request's cache scope (its `cache_salt`'s digest; 0: none): it finds in the cache only what requests of its scope left, and what it leaves is found by them alone.
+    /// A server several callers share gives each its own, so that no caller learns from what is found, or how soon its first token comes, how another's prompt begins.
+    pub salt: u64,
     /// The prompt's images in order (their places in it their tokens), for an engine that reads images (src/vision.rs); none for the rest.
     pub images: Vec<Arc<crate::vision::Image>>,
 }
@@ -269,15 +275,20 @@ pub fn stats_json() -> String {
 /// `stats_json` of the scheduler of the context `rt`.
 pub fn stats_json_of(rt: &Context) -> String {
     let v: Vec<u64> = rt.sched.iter().map(|a| a.load(Relaxed)).collect();
-    let rate = if v[0] > 0 { 100.0 * v[1] as f64 / v[0] as f64 } else { 0.0 };
+    // (what was found in the cache is told only where the server tells its requests: `Context::tell_cached`. A caller who could read it here before and after a request of
+    // its own would learn what that request found, which its usage does not say; null otherwise)
+    let (hit, rate) = match rt.tell_cached.load(Relaxed) {
+        true => (v[1].to_string(), format!("{:.2}", if v[0] > 0 { 100.0 * v[1] as f64 / v[0] as f64 } else { 0.0 })),
+        false => ("null".to_string(), "null".to_string()),
+    };
     // a development build's figures are all of them; a release build's are the counts a user reads
     if cfg!(feature = "dev") {
         format!(
-            "{{\"prompt_tokens\":{},\"prefix_hit_tokens\":{},\"prefix_hit_rate_percent\":{rate:.2},\"preemptions\":{},\"steps\":{},\"rows\":{},\"running\":{},\"waiting\":{},\"decode_ms\":{},\"prefill_ms\":{},\"rounds_ms\":{},\"release_ms\":{},\"admit_ms\":{},\"after_ms\":{},\"before_ms\":{},\"lost_blocks\":{},\"heavy_blocks\":{},\"taken_back\":{},\"ended_for_loss\":{},\"steps_by_rows\":[{}],\"prefill_rounds\":{},\"decode_prep_ms\":{},\"decode_wait_ms\":{},\"decode_post_ms\":{},\"decode_graph_ms\":{},\"values_checked\":{},\"values_differ\":{},\"values_in_lost_blocks\":{}}}",
-            v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7] / 1_000_000, v[8] / 1_000_000, v[9] / 1_000_000, v[10] / 1_000_000, v[11] / 1_000_000, v[12] / 1_000_000, v[13] / 1_000_000, v[14], v[15], v[16], v[17], v[18..27].iter().map(u64::to_string).collect::<Vec<_>>().join(","), v[27], crate::model::DECODE_PREP_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_WAIT_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_POST_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_GPU_NS.load(Relaxed) / 1_000_000, crate::model::VERIFY_CHECKED.load(Relaxed), crate::model::VERIFY_DIFFER.load(Relaxed), crate::model::VERIFY_LOST.load(Relaxed)
+            "{{\"prompt_tokens\":{},\"prefix_hit_tokens\":{hit},\"prefix_hit_rate_percent\":{rate},\"preemptions\":{},\"steps\":{},\"rows\":{},\"running\":{},\"waiting\":{},\"decode_ms\":{},\"prefill_ms\":{},\"rounds_ms\":{},\"release_ms\":{},\"admit_ms\":{},\"after_ms\":{},\"before_ms\":{},\"lost_blocks\":{},\"heavy_blocks\":{},\"taken_back\":{},\"ended_for_loss\":{},\"steps_by_rows\":[{}],\"prefill_rounds\":{},\"decode_prep_ms\":{},\"decode_wait_ms\":{},\"decode_post_ms\":{},\"decode_graph_ms\":{},\"values_checked\":{},\"values_differ\":{},\"values_in_lost_blocks\":{}}}",
+            v[0], v[2], v[3], v[4], v[5], v[6], v[7] / 1_000_000, v[8] / 1_000_000, v[9] / 1_000_000, v[10] / 1_000_000, v[11] / 1_000_000, v[12] / 1_000_000, v[13] / 1_000_000, v[14], v[15], v[16], v[17], v[18..27].iter().map(u64::to_string).collect::<Vec<_>>().join(","), v[27], crate::model::DECODE_PREP_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_WAIT_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_POST_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_GPU_NS.load(Relaxed) / 1_000_000, crate::model::VERIFY_CHECKED.load(Relaxed), crate::model::VERIFY_DIFFER.load(Relaxed), crate::model::VERIFY_LOST.load(Relaxed)
         )
     } else {
-        format!("{{\"prompt_tokens\":{},\"prefix_hit_tokens\":{},\"prefix_hit_rate_percent\":{rate:.2},\"preemptions\":{},\"steps\":{},\"rows\":{},\"running\":{},\"waiting\":{}}}", v[0], v[1], v[2], v[3], v[4], v[5], v[6])
+        format!("{{\"prompt_tokens\":{},\"prefix_hit_tokens\":{hit},\"prefix_hit_rate_percent\":{rate},\"preemptions\":{},\"steps\":{},\"rows\":{},\"running\":{},\"waiting\":{}}}", v[0], v[2], v[3], v[4], v[5], v[6])
     }
 }
 
@@ -359,6 +370,8 @@ struct Seq {
     out: Sender<Ev>,
     abort: Arc<AtomicBool>,
     resumed: Arc<AtomicU32>,
+    cached: Arc<AtomicU32>,
+    salt: u64,
     reply: Reply,
     greedy: bool,
     sampler: Sampler,
@@ -388,6 +401,8 @@ struct Seq {
 struct Kept {
     slot: i32,
     tokens: Vec<u32>,
+    /// The scope of the request that left it (`Submit::salt`): a request of another scope does not go on in it.
+    salt: u64,
 }
 
 /// The fewest tokens of a kept sequence a request must begin with to go on in its slot. It must also begin with half of what the slot holds: a kept conversation is not cut down for
@@ -397,6 +412,15 @@ const KEEP_LEAST: usize = 32;
 /// The tokens `a` and `b` both begin with.
 fn common(a: &[u32], b: &[u32]) -> usize {
     a.iter().zip(b).take_while(|(x, y)| x == y).count()
+}
+
+impl Seq {
+    /// `n` of its prompt's tokens were in the cache as it is let in: told to the request, the first time (one sent back to wait finds its own tokens again, which it ran).
+    fn found(&self, n: usize) {
+        if self.resumed.load(Relaxed) == 0 {
+            self.cached.store(n as u32, Relaxed);
+        }
+    }
 }
 
 /// The most sequences a slot step runs at once (the rows of a pass's head).
@@ -555,9 +579,9 @@ impl<B: ModelStep> Sched<B> {
 
     /// A slot for a sequence of `tokens`, and the tokens of it the slot already holds: the kept sequence it begins with the most of (at least KEEP_LEAST tokens and half of what is
     /// kept, and never the prompt's last token, which is run for its logits), cut back to those; else a free slot; else the oldest kept one's, emptied. None: every slot is running.
-    fn take_slot(&mut self, tokens: &[u32]) -> Result<Option<(i32, usize)>> {
+    fn take_slot(&mut self, tokens: &[u32], salt: u64) -> Result<Option<(i32, usize)>> {
         let head = &tokens[..tokens.len().saturating_sub(1)];
-        let best = self.kept.iter().enumerate().map(|(i, k)| (common(&k.tokens, head), i)).max();
+        let best = self.kept.iter().enumerate().filter(|(_, k)| k.salt == salt).map(|(i, k)| (common(&k.tokens, head), i)).max();
         if let Some((n, i)) = best.filter(|&(n, i)| n >= KEEP_LEAST && 2 * n >= self.kept[i].tokens.len()) {
             let k = self.kept.remove(i).expect("a kept sequence");
             return Ok(Some((k.slot, self.be.resume(k.slot, n)?)));
@@ -599,6 +623,8 @@ impl<B: ModelStep> Sched<B> {
             out: s.out,
             abort: s.abort,
             resumed: s.resumed,
+            cached: s.cached,
+            salt: s.salt,
             reply: s.reply,
             greedy,
             sampler,
@@ -803,13 +829,14 @@ impl<B: ModelStep> Sched<B> {
             let mut s = self.waiting.remove(k).expect("a waiting sequence");
             s.trace.admit();
             // the pages of an earlier sequence with the same first tokens (at least the last token is run, for the logits)
-            let hit = self.pager.lookup(&s.tokens, s.tokens.len().saturating_sub(1) / PAGE);
-            s.chain = 0;
+            let hit = self.pager.lookup_in(s.salt, &s.tokens, s.tokens.len().saturating_sub(1) / PAGE);
+            s.chain = s.salt;
             for (i, _) in hit.iter().enumerate() {
                 s.chain = chain_key(s.chain, &s.tokens[i * PAGE..(i + 1) * PAGE]);
             }
             s.published = hit.len();
             s.done = hit.len() * PAGE;
+            s.found(s.done);
             s.pages = hit;
             s.prefilling = true;
             s.after.clear();
@@ -828,7 +855,7 @@ impl<B: ModelStep> Sched<B> {
             self.pending.push((s.out.clone(), Ev::End(Err(Error::of(Kind::Request, format!("{} tokens, where the context holds {window}", s.tokens.len()))))));
             return Ok(true);
         }
-        let Some((slot, held)) = self.take_slot(&self.waiting[k].tokens.clone())? else { return Ok(false) };
+        let Some((slot, held)) = self.take_slot(&self.waiting[k].tokens.clone(), self.waiting[k].salt)? else { return Ok(false) };
         // (room for the whole prompt and a token after it now: an admitted prompt runs; where there is none the kept sequences give theirs up, the oldest first, then it waits for
         // the running ones, and with nothing running it never fits)
         let need = self.waiting[k].tokens.len() + 1;
@@ -856,7 +883,8 @@ impl<B: ModelStep> Sched<B> {
         let mut s = self.waiting.remove(k).expect("a waiting sequence");
         s.trace.admit();
         s.pages = vec![slot];
-        (s.done, s.published, s.chain, s.prefilling) = (held, 0, 0, true);
+        (s.done, s.published, s.chain, s.prefilling) = (held, 0, s.salt, true);
+        s.found(held);
         s.after.clear();
         self.stats.prompt += s.tokens.len() as u64;
         self.stats.hit += held as u64;
@@ -991,7 +1019,7 @@ impl<B: ModelStep> Sched<B> {
         self.give_back(&mut s)?;
         s.done = 0;
         s.published = 0;
-        s.chain = 0;
+        s.chain = s.salt;
         s.prefilling = true;
         s.resumed.fetch_add(1, Relaxed);
         self.stats.preempted += 1;
@@ -1029,7 +1057,7 @@ impl<B: ModelStep> Sched<B> {
         if self.keep && s.done >= KEEP_LEAST && s.pages.len() == 1 {
             // (kept in its slot: the conversation's next turn begins with these tokens)
             let slot = s.pages.pop().expect("its slot");
-            self.kept.push_back(Kept { slot, tokens: s.tokens[..s.done].to_vec() });
+            self.kept.push_back(Kept { slot, tokens: s.tokens[..s.done].to_vec(), salt: s.salt });
         } else {
             self.give_back(&mut s)?;
         }
@@ -1669,7 +1697,16 @@ pub(crate) mod tests {
     pub fn add<B: ModelStep>(s: &mut Sched<B>, prompt: Vec<u32>, max_new: usize) -> (Receiver<Ev>, Arc<AtomicBool>) {
         let (tx, rx) = channel();
         let abort = Arc::new(AtomicBool::new(false));
-        s.submit(Submit { prompt, reply: reply(max_new), out: tx, abort: abort.clone(), resumed: Default::default(), images: Vec::new() });
+        s.submit(Submit {
+            prompt,
+            reply: reply(max_new),
+            out: tx,
+            abort: abort.clone(),
+            resumed: Default::default(),
+            cached: Default::default(),
+            salt: 0,
+            images: Vec::new(),
+        });
         (rx, abort)
     }
 
@@ -1981,6 +2018,8 @@ pub(crate) mod tests {
             out: tx,
             abort: Arc::new(AtomicBool::new(false)),
             resumed: Default::default(),
+            cached: Default::default(),
+            salt: 0,
             images: Vec::new(),
         });
         run(&mut s);
@@ -2278,6 +2317,8 @@ pub(crate) mod tests {
                     out: tx,
                     abort: Arc::new(AtomicBool::new(false)),
                     resumed: Default::default(),
+                    cached: Default::default(),
+                    salt: 0,
                     images: Vec::new(),
                 });
                 run(s);
@@ -2331,6 +2372,8 @@ pub(crate) mod tests {
                     out: tx,
                     abort: Arc::new(AtomicBool::new(false)),
                     resumed: Default::default(),
+                    cached: Default::default(),
+                    salt: 0,
                     images: Vec::new(),
                 });
                 run(&mut s);
@@ -2379,6 +2422,8 @@ pub(crate) mod tests {
             out: tx,
             abort: Arc::new(AtomicBool::new(false)),
             resumed: Default::default(),
+            cached: Default::default(),
+            salt: 0,
             images: Vec::new(),
         });
         run(&mut s);
@@ -2406,6 +2451,8 @@ pub(crate) mod tests {
                 out: tx,
                 abort: Arc::new(AtomicBool::new(false)),
                 resumed: Default::default(),
+                cached: Default::default(),
+                salt: 0,
                 images: Vec::new(),
             });
             run(&mut s);
@@ -2771,6 +2818,87 @@ pub(crate) mod tests {
         assert_eq!((s.be.emptied, s.be.begun.len(), s.kept()), (0, 1, 1));
     }
 
+    /// What a request found of its prompt is told to it (`Submit::cached`, for its usage): nothing the first time, the kept tokens on the next turn; and on pages, the full
+    /// pages an earlier prompt left.
+    #[test]
+    fn a_request_is_told_the_prompt_tokens_it_found() {
+        let told = |s: &mut dyn FnMut(Submit), prompt: &[u32]| -> (Receiver<Ev>, Arc<AtomicU32>) {
+            let (tx, rx) = channel();
+            let cached = Arc::new(AtomicU32::new(0));
+            s(Submit {
+                prompt: prompt.to_vec(),
+                reply: reply(8),
+                out: tx,
+                abort: Arc::new(AtomicBool::new(false)),
+                resumed: Default::default(),
+                cached: cached.clone(),
+                salt: 0,
+                images: Vec::new(),
+            });
+            (rx, cached)
+        };
+        // a slot step that keeps
+        let mut s = keeping(2);
+        let p1 = prompt(1, 40);
+        let (rx, c1) = told(&mut |x| s.submit(x), &p1);
+        run(&mut s);
+        let r1 = collect(&rx).0;
+        let p2: Vec<u32> = [&p1[..], &r1[..], &prompt(2, 10)[..]].concat();
+        let (rx, c2) = told(&mut |x| s.submit(x), &p2);
+        run(&mut s);
+        assert_eq!(collect(&rx).0, reference(&p2, 8));
+        assert_eq!((c1.load(Relaxed), c2.load(Relaxed)), (0, 47));
+        // pages: what an earlier prompt left is found a full page at a time
+        let mut s = Sched::new(Fake::new(64, 32), 2);
+        let (rx, c1) = told(&mut |x| s.submit(x), &p1);
+        run(&mut s);
+        collect(&rx);
+        let (rx, c2) = told(&mut |x| s.submit(x), &p2);
+        run(&mut s);
+        assert_eq!(collect(&rx).0, reference(&p2, 8));
+        // (the first left 47 tokens in the cache, the prompt and the reply but its last: 2 full pages, and 15 tokens of a third, which is not kept)
+        assert_eq!((c1.load(Relaxed), c2.load(Relaxed)), (0, 2 * PAGE as u32));
+    }
+
+    /// A kept sequence is its scope's (`Submit::salt`): a request of another scope that begins with its very tokens runs from its first token in another slot, and is told
+    /// it found nothing; the next request of the scope still goes on in it. On pages the same: a scope's pages are not another's.
+    #[test]
+    fn a_kept_sequence_is_found_by_its_scope_alone() {
+        fn ask<B: ModelStep>(s: &mut Sched<B>, prompt: &[u32], salt: u64) -> (Vec<u32>, u32) {
+            let (tx, rx) = channel();
+            let cached = Arc::new(AtomicU32::new(0));
+            s.submit(Submit {
+                prompt: prompt.to_vec(),
+                reply: reply(8),
+                out: tx,
+                abort: Arc::new(AtomicBool::new(false)),
+                resumed: Default::default(),
+                cached: cached.clone(),
+                salt,
+                images: Vec::new(),
+            });
+            run(s);
+            (collect(&rx).0, cached.load(Relaxed))
+        }
+        let p1 = prompt(1, 40);
+        let mut s = keeping(3);
+        let (r1, _) = ask(&mut s, &p1, 7);
+        let p2: Vec<u32> = [&p1[..], &r1[..], &prompt(2, 10)[..]].concat();
+        // another scope, and no scope: the same tokens, nothing found
+        assert_eq!(ask(&mut s, &p2, 9), (reference(&p2, 8), 0));
+        assert_eq!(ask(&mut s, &p2, 0), (reference(&p2, 8), 0));
+        assert_eq!((s.be.resumed.len(), s.be.begun.len(), s.kept()), (0, 3, 3));
+        // its own scope: from what the first left
+        assert_eq!(ask(&mut s, &p2, 7), (reference(&p2, 8), 47));
+        assert_eq!(s.be.resumed, vec![(0, 47, 47)]);
+        // pages
+        let mut s = Sched::new(Fake::new(64, 32), 2);
+        ask(&mut s, &p1, 7);
+        assert_eq!(ask(&mut s, &p2, 9), (reference(&p2, 8), 0));
+        assert_eq!(ask(&mut s, &p2, 7), (reference(&p2, 8), 2 * PAGE as u32));
+        assert_eq!(ask(&mut s, &p2, 0), (reference(&p2, 8), 0));
+    }
+
     /// A request that begins with too little of a kept sequence does not take its slot: fewer than KEEP_LEAST tokens, or less than half of what is kept. It runs in a free slot from
     /// its first token, and the kept conversation's next turn still finds its own.
     #[test]
@@ -2932,6 +3060,8 @@ pub(crate) mod tests {
                 out: tx,
                 abort: Arc::new(AtomicBool::new(false)),
                 resumed: resumed.clone(),
+                cached: Default::default(),
+                salt: 0,
                 images: Vec::new(),
             });
             subs.push((rx, resumed));

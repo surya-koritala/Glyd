@@ -434,7 +434,10 @@ pub fn render_of(rt: &crate::runtime::context::Context, s: &State) -> String {
     }
     let v: Vec<u64> = rt.sched.iter().take(7).map(|a| a.load(Relaxed)).collect();
     family(&mut o, "glyd_prompt_tokens_total", "counter", "Prompt tokens run or found in the prefix cache.", &one(v[0] + f.prompt_tokens.load(Relaxed)));
-    family(&mut o, "glyd_prefix_cache_hit_tokens_total", "counter", "Prompt tokens found in the prefix cache.", &one(v[1]));
+    // (told only where the server tells its requests what they found: `Context::tell_cached`, as /stats)
+    if rt.tell_cached.load(Relaxed) {
+        family(&mut o, "glyd_prefix_cache_hit_tokens_total", "counter", "Prompt tokens found in the prefix cache.", &one(v[1]));
+    }
     family(&mut o, "glyd_generated_tokens_total", "counter", "Tokens written to replies.", &one(f.tokens_out.load(Relaxed)));
     f.ttft.render(
         &mut o,
