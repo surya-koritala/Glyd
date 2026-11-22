@@ -1950,6 +1950,11 @@ impl Dyn {
     unsafe fn op_v4(&self, p: &Part, op: &Op, n: usize, pos: u64) -> Result<()> {
         let v = self.v4.as_ref().ok_or_else(|| Error("a DeepSeek-V4 operation in a model loaded without its buffers".into()))?;
         let (s, nu, eps, hid) = (self.dev.stream, n as u32, p.d.eps, p.d.hidden as i32);
+        // (in a pass over several sequences: the first row of the sequence an operation runs on now, and the pass's rows, which the attention's output is laid out by)
+        let (row0, rows) = match self.at.get() {
+            Some(k) => (self.parts[k].row0, self.parts.iter().map(|q| q.row0 + q.rows).max().unwrap_or(n)),
+            None => (0, n),
+        };
         let k = &v.k;
         let ks = (4 * p.d.hidden / 256) as u32; // (kernels/dsv4.cu V4_HC_CPB)
         let rope = |r: usize| (self.ropes[r].0.ptr, self.ropes[r].1.ptr);
@@ -1985,19 +1990,21 @@ impl Dyn {
             }
             Op::V4Kv { norm, rope: r, ring } => {
                 let (c, sn) = rope(r);
-                launch!(k.kv_prep, [nu, 1, 1], [128, 1, 1], s; p.slot(Slot::Kv), p.small[norm].ptr, c, sn, pos, self.kc.ptr + self.ring_off[ring], self.ring_cap[ring] as i32, eps, v.dims.sim as i32)?;
+                let kv = p.slot(Slot::Kv) + self.rows_before(p.d.width(Slot::Kv));
+                launch!(k.kv_prep, [nu, 1, 1], [128, 1, 1], s; kv, p.small[norm].ptr, c, sn, pos, self.cache(ring).0, self.ring_cap[ring] as i32, eps, v.dims.sim as i32)?;
                 self.mark("attention: kv norm, rotary, cache")
             }
             Op::V4Comp { w, ape, norm, d, ratio, rope: r, cache, state, indexer } => {
                 let wd = if ratio == 4 { 2 * d } else { d };
                 let (c, sn) = rope(r);
+                let (h, cache, st0, st1) = (p.slot(Slot::H) + self.rows_before(p.d.hidden), self.state(cache), self.state(state), self.state(state + 1));
                 if n == 1 && hid % 256 == 0 && hid <= 8192 {
-                    launch!(k.lin32_1, [((2 * wd) as u32).div_ceil(8), 1, 1], [256, 1, 1], s; p.slot(Slot::H), p.small[w].ptr, p.slot(Slot::Cp), hid, (2 * wd) as i32)?;
+                    launch!(k.lin32_1, [((2 * wd) as u32).div_ceil(8), 1, 1], [256, 1, 1], s; h, p.small[w].ptr, p.slot(Slot::Cp), hid, (2 * wd) as i32)?;
                 } else {
-                    launch!(k.lin32, [((2 * wd) as u32).div_ceil(8), nu.div_ceil(8), 1], [256, 1, 1], s; p.slot(Slot::H), p.small[w].ptr, p.slot(Slot::Cp), n as i32, hid, (2 * wd) as i32)?;
+                    launch!(k.lin32, [((2 * wd) as u32).div_ceil(8), nu.div_ceil(8), 1], [256, 1, 1], s; h, p.small[w].ptr, p.slot(Slot::Cp), n as i32, hid, (2 * wd) as i32)?;
                 }
-                launch!(k.comp_pool, [(d as u32).div_ceil(128), 1, 1], [128, 1, 1], s; p.slot(Slot::Cp), p.small[ape].ptr, self.states[state].ptr, self.states[state + 1].ptr, v.pooled.ptr, pos, n as i32, ratio as i32, d as i32, (ratio == 4) as i32)?;
-                launch!(k.comp_out, [(n / ratio + 1) as u32, 1, 1], [128, 1, 1], s; v.pooled.ptr, p.small[norm].ptr, c, sn, pos, n as i32, self.states[cache].ptr, ratio as i32, d as i32, indexer as i32, eps, v.dims.sim as i32)?;
+                launch!(k.comp_pool, [(d as u32).div_ceil(128), 1, 1], [128, 1, 1], s; p.slot(Slot::Cp), p.small[ape].ptr, st0, st1, v.pooled.ptr, pos, n as i32, ratio as i32, d as i32, (ratio == 4) as i32)?;
+                launch!(k.comp_out, [(n / ratio + 1) as u32, 1, 1], [128, 1, 1], s; v.pooled.ptr, p.small[norm].ptr, c, sn, pos, n as i32, cache, ratio as i32, d as i32, indexer as i32, eps, v.dims.sim as i32)?;
                 self.mark(if indexer { "indexer: compressor" } else { "attention: compressor" })
             }
             Op::V4IdxQ { rope: r, heads } => {
@@ -2007,31 +2014,32 @@ impl Dyn {
             }
             Op::V4IdxPick { cache, ratio, heads, topk, wscale } => {
                 let smem = (heads * 129 * 4 + 8 * 64 * 4) as u32; // (the queries and weights, then v4_idx_score's warps' terms: at most 64 heads)
+                let (iq, iw, entries) = (p.slot(Slot::Iq) + self.rows_before(heads * 128), p.slot(Slot::Iw) + self.rows_before(heads), self.state(cache));
                 for r0 in (0..n).step_by(v.ra) {
                     let rn = v.ra.min(n - r0) as u32;
-                    launch!(k.idx_score, [rn, (v.emax as u32).div_ceil(8), 1], [256, 1, 1], smem smem, s; p.slot(Slot::Iq) + (r0 * heads * 128 * 2) as u64, p.slot(Slot::Iw) + (r0 * heads * 2) as u64, wscale, self.states[cache].ptr, pos + (r0 * 4) as u64, v.isc.ptr, heads as i32, ratio as i32, v.emax as i32)?;
-                    launch!(k.topk, [rn, 1, 1], [1024, 1, 1], s; v.isc.ptr, v.emax as i32, pos + (r0 * 4) as u64, ratio as i32, topk as i32, v.sel.ptr + (r0 * topk * 4) as u64, v.cnt.ptr + (r0 * 4) as u64)?;
+                    launch!(k.idx_score, [rn, (v.emax as u32).div_ceil(8), 1], [256, 1, 1], smem smem, s; iq + (r0 * heads * 128 * 2) as u64, iw + (r0 * heads * 2) as u64, wscale, entries, pos + (r0 * 4) as u64, v.isc.ptr, heads as i32, ratio as i32, v.emax as i32)?;
+                    launch!(k.topk, [rn, 1, 1], [1024, 1, 1], s; v.isc.ptr, v.emax as i32, pos + (r0 * 4) as u64, ratio as i32, topk as i32, v.sel.ptr + ((row0 + r0) * topk * 4) as u64, v.cnt.ptr + ((row0 + r0) * 4) as u64)?;
                 }
                 self.mark("indexer: picks")
             }
             Op::V4Attn { ring, cache, ratio, sink, rope: r, heads, hpg } => {
                 let (c, sn) = rope(r);
-                let (kc, cap, window) = (self.kc.ptr + self.ring_off[ring], self.ring_cap[ring] as i32, p.d.rings[ring].window as i32);
-                let cache = cache.map_or(0, |x| self.states[x].ptr);
+                let (kc, cap, window) = (self.cache(ring).0, self.ring_cap[ring] as i32, p.d.rings[ring].window as i32);
+                let cache = cache.map_or(0, |x| self.state(x));
                 let (topk, picked) = (v.dims.topk, ratio == 4);
                 let scale = (512f32).powf(-0.5);
                 for r0 in (0..n).step_by(v.ra) {
                     let rn = v.ra.min(n - r0) as u32;
                     let (pr, sel, cnt) = (
                         pos + (r0 * 4) as u64,
-                        if picked { v.sel.ptr + (r0 * topk * 4) as u64 } else { 0 },
-                        if picked { v.cnt.ptr + (r0 * 4) as u64 } else { 0 },
+                        if picked { v.sel.ptr + ((row0 + r0) * topk * 4) as u64 } else { 0 },
+                        if picked { v.cnt.ptr + ((row0 + r0) * 4) as u64 } else { 0 },
                     );
-                    let q = p.slot(Slot::Qo) + (r0 * heads * 512 * 2) as u64;
+                    let q = p.slot(Slot::Qo) + self.rows_before(heads * 512) + (r0 * heads * 512 * 2) as u64;
                     launch!(k.attn_scores, [rn, (v.lmax as u32).div_ceil(32), (heads as u32).div_ceil(16)], [256, 1, 1], s; q, kc, cap, cache, sel, cnt, topk as i32, pr, v.sc.ptr, heads as i32, v.lmax as i32, window, ratio as i32, scale)?;
                     launch!(k.attn_soft, [rn, (heads as u32).div_ceil(8), 1], [256, 1, 1], s; v.sc.ptr, p.small[sink].ptr, v.den.ptr, pr, cnt, heads as i32, v.lmax as i32, window, ratio as i32)?;
                     // (kernels/dsv4.cu V4_AQ: 8 warps a head, a head a block)
-                    launch!(k.attn_out, [rn, heads as u32, 1], [256, 1, 1], s; v.sc.ptr, v.den.ptr, kc, cap, cache, sel, cnt, topk as i32, pr, c, sn, p.slot(Slot::Att), n as i32, heads as i32, hpg as i32, v.lmax as i32, window, ratio as i32, r0 as i32)?;
+                    launch!(k.attn_out, [rn, heads as u32, 1], [256, 1, 1], s; v.sc.ptr, v.den.ptr, kc, cap, cache, sel, cnt, topk as i32, pr, c, sn, p.slot(Slot::Att), rows as i32, heads as i32, hpg as i32, v.lmax as i32, window, ratio as i32, (row0 + r0) as i32)?;
                 }
                 self.mark("attention: attention")
             }
@@ -2456,9 +2464,12 @@ impl Dyn {
     /// Room for `k` more sequences beside the one in use (each its own keys and values for the context, its states, its graph captured on them; the
     /// activations and workspaces stay shared): `select` picks the one the next passes run on. Qwen3.5's stages; after `set_head_rows`.
     pub fn add_seqs(&mut self, k: usize) -> Result<()> {
-        if k > 0 && (!matches!(self.big.d.family, "Qwen3.5" | "Gemma 4" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash" | "Nemotron-H") || self.draft.is_some()) {
+        if k > 0
+            && (!matches!(self.big.d.family, "Qwen3.5" | "Gemma 4" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash" | "Nemotron-H" | "DeepSeek-V4")
+                || self.draft.is_some())
+        {
             return err(format!(
-                "more sequences than one on {}: Qwen3.5's, Gemma 4's, Muse Spark's, Kimi-K3's, GLM-5.3-Flash's and Nemotron-H's only, with no draft model",
+                "more sequences than one on {}: Qwen3.5's, Gemma 4's, Muse Spark's, Kimi-K3's, GLM-5.3-Flash's, Nemotron-H's and DeepSeek-V4's only, with no draft model",
                 self.big.d.family
             ));
         }
