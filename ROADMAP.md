@@ -33,7 +33,7 @@ Glyd's goal is one unified, zero-Python Rust inference engine from an 8 GB lapto
 - **Real hardware gates only.** Never check off a `needs-gpu` acceptance criterion from a compile-only or mocked test; commit measured results under `benchmarks/`.
 - **Keep docs and GitHub in sync.** When closing an issue, update the epic checklist and this file in the same PR.
 
-## Where it stands (v0.34.1, 2026-11-22)
+## Where it stands (v0.34.2, 2026-11-22)
 
 Released, on main and planned are listed apart.
 

@@ -173,8 +173,10 @@ fn load_level(a: &Args, model: &str, asked: Option<Layout>) -> Done<Option<Layou
                 }
                 // nothing fits this machine at any level the family runs: fit's refusal, before anything is downloaded (on a disk large enough, GLM-5.3-Flash's 328 GB
                 // was downloaded and refused after; on Windows, whose free space was not read, until the disk was full)
+                // (a problem of the machine itself, no GPU or a driver too old, is left to the run's own checks, which name its fix: "no NVIDIA driver", the driver to
+                // install; the planner words them otherwise, and glyd-gpu's install check reads run's)
                 None => {
-                    if let Some(r) = p.refusal {
+                    if let Some(r) = p.refusal.filter(|_| crate::support::machine(&p.machine).is_none()) {
                         return Err(r);
                     }
                 }
@@ -3247,10 +3249,13 @@ mod tests {
         assert!(matches!(l, Some(Layout::Int6 | Layout::Int5 | Layout::Int4)), "{l:?}");
         assert!(table_check(qp, l).is_ok() && table_check(qp, None).is_err());
         assert_eq!(l, planner_level(&onq("rtx4090"), qp));
-        // on an 8 GB card nothing fits: fit's refusal (or the machine's, which comes first: this preset's driver is CUDA 12.7, below a build of CUDA 13's kernels
-        // alone), before anything is downloaded
-        let e = load_level(&onq("rtx4060-laptop"), qp, None).unwrap_err();
-        assert!(e.what.contains("does not fit") || e.what.contains("the driver supports"), "{e:?}");
+        // on a 16 GB card nothing fits: fit's refusal (run's own sizing, in its words), before anything is downloaded
+        let e = load_level(&onq("rtx4080s"), qp, None).unwrap_err();
+        assert!(e.what.contains("does not fit") || e.what.contains("GiB of GPU memory"), "{e:?}");
+        // a machine the planner refuses for itself (this preset's driver is CUDA 12.7) is left to the run's own checks, which say it in their words
+        if crate::support::machine(&crate::plan::Machine::preset("rtx4060-laptop").unwrap()).is_some() {
+            assert!(load_level(&onq("rtx4060-laptop"), qp, None).is_ok());
+        }
         // a Qwen3 dense model the planner keeps lossless stays on its own path
         let q3 = dir_with("load-level-q3", QWEN3);
         let q3p = q3.to_str().unwrap();

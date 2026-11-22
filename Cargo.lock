@@ -995,7 +995,7 @@ checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "glyd"
-version = "0.34.1"
+version = "0.34.2"
 dependencies = [
  "glyd-engine",
  "glyd-preflate",
@@ -1011,7 +1011,7 @@ dependencies = [
 
 [[package]]
 name = "glyd-engine"
-version = "0.34.1"
+version = "0.34.2"
 dependencies = [
  "flate2",
  "glyd-gpu",
@@ -1028,7 +1028,7 @@ dependencies = [
 
 [[package]]
 name = "glyd-gpu"
-version = "0.34.1"
+version = "0.34.2"
 dependencies = [
  "sha2",
 ]
@@ -1049,7 +1049,7 @@ dependencies = [
 
 [[package]]
 name = "glyd-store"
-version = "0.34.1"
+version = "0.34.2"
 dependencies = [
  "glyd",
  "hmac",
