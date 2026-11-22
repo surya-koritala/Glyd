@@ -1,0 +1,292 @@
+{
+  "schema": "glyd-bench/1",
+  "label": "",
+  "recorded_unix": 1795352590,
+  "machine": {
+    "gpu": "NVIDIA GeForce RTX 4080",
+    "driver": "595.99.02",
+    "memory_mib": 16376.0,
+    "max_sm_mhz": 3105.0,
+    "max_mem_mhz": 11201.0,
+    "power_limit_w": 320.0,
+    "compute_capability": "8.9",
+    "cpu": "AMD Ryzen Threadripper PRO 3955WX 16-Cores",
+    "cpu_threads": 30,
+    "os": "linux",
+    "arch": "x86_64"
+  },
+  "model": {
+    "id": "google/gemma-4-12B-it:wren",
+    "argument": null,
+    "level": "wren",
+    "weights_bytes": 6745502052.0,
+    "weights_source": "/v1/glyd/info"
+  },
+  "bandwidth": {
+    "gbs": 716.8,
+    "source": "spec sheet"
+  },
+  "versions": {
+    "glyd_engine": "0.34.2",
+    "git": null,
+    "server": "0.34.2"
+  },
+  "server": {
+    "against": "http://127.0.0.1:8091",
+    "started_by_bench": false,
+    "users": null
+  },
+  "config": {
+    "suite": "loads",
+    "loads": [
+      "same1k+250ms:8",
+      "same4k+250ms:8",
+      "same4k:8"
+    ],
+    "runs": 2,
+    "warmup": 1,
+    "max_tokens": 128
+  },
+  "contention": {
+    "busy_before": true,
+    "utilization_median_pct": 0.0,
+    "before": {
+      "memory_used_mib": 14461.0,
+      "utilization_pct": 0.0,
+      "sm_mhz": 2835.0,
+      "mem_mhz": 10801.0,
+      "load_1m": 1.34
+    },
+    "after": {
+      "memory_used_mib": 14461.0,
+      "utilization_pct": 100.0,
+      "sm_mhz": 2820.0,
+      "mem_mhz": 10801.0,
+      "load_1m": 1.63
+    }
+  },
+  "idle_mib": 14461.0,
+  "peak_mib": 14461,
+  "quality": null,
+  "cells": [
+    {
+      "prompt": "same1k+250ms",
+      "conc": 8,
+      "prompt_tokens": 942.5,
+      "errors": 0,
+      "ttft_s": {
+        "mean": 0.041605,
+        "sd": 0.000262,
+        "median": 0.041605,
+        "min": 0.041419,
+        "max": 0.04179,
+        "runs": [
+          0.041419,
+          0.04179
+        ]
+      },
+      "decode_tps_per_user": {
+        "mean": 58.115962,
+        "sd": 0.058065,
+        "median": 58.115962,
+        "min": 58.074903,
+        "max": 58.15702,
+        "runs": [
+          58.074903,
+          58.15702
+        ]
+      },
+      "itl_ms": {
+        "mean": 17.206985,
+        "sd": 0.017192,
+        "median": 17.206985,
+        "min": 17.194829,
+        "max": 17.219142,
+        "runs": [
+          17.219142,
+          17.194829
+        ]
+      },
+      "itl_p99_ms": {
+        "mean": 35.147325,
+        "sd": 0.014856,
+        "median": 35.147325,
+        "min": 35.13682,
+        "max": 35.15783,
+        "runs": [
+          35.15783,
+          35.13682
+        ]
+      },
+      "agg_tps": {
+        "mean": 267.867401,
+        "sd": 0.009211,
+        "median": 267.867401,
+        "min": 267.860887,
+        "max": 267.873914,
+        "runs": [
+          267.860887,
+          267.873914
+        ]
+      },
+      "prefill_tps": {
+        "mean": -0.0,
+        "sd": 0.0,
+        "median": null,
+        "min": null,
+        "max": null,
+        "runs": []
+      },
+      "prefix_hit_rate": 0.9634,
+      "ceiling_tps_per_user": 106.26,
+      "pct_of_ceiling": 0.5469
+    },
+    {
+      "prompt": "same4k+250ms",
+      "conc": 8,
+      "prompt_tokens": 3760.5,
+      "errors": 0,
+      "ttft_s": {
+        "mean": 0.053486,
+        "sd": 0.004155,
+        "median": 0.053486,
+        "min": 0.050549,
+        "max": 0.056424,
+        "runs": [
+          0.050549,
+          0.056424
+        ]
+      },
+      "decode_tps_per_user": {
+        "mean": 49.690575,
+        "sd": 0.025468,
+        "median": 49.690575,
+        "min": 49.672566,
+        "max": 49.708583,
+        "runs": [
+          49.708583,
+          49.672566
+        ]
+      },
+      "itl_ms": {
+        "mean": 20.124543,
+        "sd": 0.010315,
+        "median": 20.124543,
+        "min": 20.11725,
+        "max": 20.131837,
+        "runs": [
+          20.11725,
+          20.131837
+        ]
+      },
+      "itl_p99_ms": {
+        "mean": 42.606712,
+        "sd": 0.168892,
+        "median": 42.606712,
+        "min": 42.487287,
+        "max": 42.726137,
+        "runs": [
+          42.726137,
+          42.487287
+        ]
+      },
+      "agg_tps": {
+        "mean": 245.986972,
+        "sd": 0.011903,
+        "median": 245.986972,
+        "min": 245.978556,
+        "max": 245.995389,
+        "runs": [
+          245.995389,
+          245.978556
+        ]
+      },
+      "prefill_tps": {
+        "mean": -0.0,
+        "sd": 0.0,
+        "median": null,
+        "min": null,
+        "max": null,
+        "runs": []
+      },
+      "prefix_hit_rate": 0.9908,
+      "ceiling_tps_per_user": 106.26,
+      "pct_of_ceiling": 0.4676
+    },
+    {
+      "prompt": "same4k",
+      "conc": 8,
+      "prompt_tokens": 3760.5,
+      "errors": 0,
+      "ttft_s": {
+        "mean": 0.191637,
+        "sd": 0.00011,
+        "median": 0.191637,
+        "min": 0.191559,
+        "max": 0.191715,
+        "runs": [
+          0.191715,
+          0.191559
+        ]
+      },
+      "decode_tps_per_user": {
+        "mean": 44.655152,
+        "sd": 0.001355,
+        "median": 44.655152,
+        "min": 44.654194,
+        "max": 44.65611,
+        "runs": [
+          44.65611,
+          44.654194
+        ]
+      },
+      "itl_ms": {
+        "mean": 22.393833,
+        "sd": 0.000679,
+        "median": 22.393833,
+        "min": 22.393352,
+        "max": 22.394313,
+        "runs": [
+          22.393352,
+          22.394313
+        ]
+      },
+      "itl_p99_ms": {
+        "mean": 22.713129,
+        "sd": 0.066834,
+        "median": 22.713129,
+        "min": 22.66587,
+        "max": 22.760388,
+        "runs": [
+          22.66587,
+          22.760388
+        ]
+      },
+      "agg_tps": {
+        "mean": 339.717336,
+        "sd": 0.016317,
+        "median": 339.717336,
+        "min": 339.705799,
+        "max": 339.728874,
+        "runs": [
+          339.728874,
+          339.705799
+        ]
+      },
+      "prefill_tps": {
+        "mean": 156901.399265,
+        "sd": 113.693759,
+        "median": 156901.399265,
+        "min": 156821.005637,
+        "max": 156981.792893,
+        "runs": [
+          156821.005637,
+          156981.792893
+        ]
+      },
+      "prefix_hit_rate": 0.9909,
+      "ceiling_tps_per_user": 106.26,
+      "pct_of_ceiling": 0.4202
+    }
+  ]
+}

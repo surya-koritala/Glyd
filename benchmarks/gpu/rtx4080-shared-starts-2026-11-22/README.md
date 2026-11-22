@@ -6,33 +6,38 @@ shares it (R4c; `GLYD_ENGINE_KEEP=0` turns both off, with the kept sequences of 
 request has the same notes (1k or 4k tokens) and its own question after them, as requests with one system prompt do.
 
 **Result: eight requests that begin with the same 4k tokens, arriving together at a server that has never seen them, have their first token in 1.37 s where it took 5.0 s, and make
-298 tokens/s in all where they made 87. Once the start is in the server, a request's first token comes in 0.04 to 0.2 s. With a 1k start, waiting adds nothing to sharing (0.73 s
-to the first token either way, 1.20 s with neither): there is less than two chunks of it to wait for.**
+298 tokens/s in all where they made 95 on main (87 with nothing kept). Once the start is in the server the eight hold it once: main, which keeps each finished sequence whole, cannot
+hold eight of them on this card and sends sequences back to wait 337 times in three rounds, where this batch sends none back and makes 340 tokens/s to main's 213. With a 1k start,
+which main's kept sequences hold eight times over, the two are close; and waiting adds nothing to sharing there (0.73 s to the first token either way, 1.20 s with neither).**
 
 Machine: a rented RTX 4080 (16 GB, driver 595.99.02, Threadripper PRO 3955WX), nothing else on the GPU; the same machine as `../rtx4080-kept-sequences-2026-11-22`. Engine: main
 d47bf927 with M2 batch 11, built by the GPU job's recipe (`scripts/ci_gpu_build.sh`, kernels for sm_89). Model: `google/gemma-4-12B-it:wren`. `bench` started the server itself with
-8 users, no draft model; 128 new tokens a request, temperature 0; no request failed.
+8 users, no draft model; 128 new tokens a request, temperature 0; no request failed. Main (d47bf927: sequences kept, nothing shared) was built beside it on the same machine in a
+second rental the same day and measured by this batch's bench at a server started by hand (`bench --against`: main's bench has no `same` loads; `main/`); this batch measured that
+way gives the figures it gives when the bench starts the server (1.369 s and 297.6 tokens/s; 0.042, 0.053 and 0.192 s).
 
 ## A start the server has never seen, eight requests at once
 
 One round with no warm-up round of the load before it (`--runs 1 --warmup 0`), a new server each time, three times (`new/`). "Shared, not held" is this batch's first commit, which
 shares a start but lets every request in at once; the other two columns are the batch's head.
 
-| load | figure | nothing kept or shared | shared, not held | shared and held (the default) |
-| :--- | :--- | ---: | ---: | ---: |
-| 4k start, 8 at once | first token | 5.018 s | 4.961, 4.886, 4.885 | 1.370, 1.369, 1.369 |
-| | decode tokens/s a user | 20.0 | 23.4, 23.3, 23.3 | 41.2, 41.3, 41.2 |
-| | tokens/s in all | 86.6 | 105.3, 105.5, 105.6 | 297.5, 298.0, 297.7 |
-| | 99th percentile gap between tokens | 167 ms | 165, 164, 165 | 86, 86, 86 |
-| | prompt tokens found | 0% | 52% | 83% |
-| 1k start, 8 at once | first token | 1.201 s | 0.734, 0.733, 0.866 | 0.735, 0.734, 0.734 |
-| | tokens/s in all | 222.5 | 304.7, 294.6, 281.4 | 294.2, 294.4, 329.2 |
-| | prompt tokens found | 0% | 53%, 48%, 41% | 48%, 48%, 63% |
+| load | figure | nothing kept or shared | main: kept, nothing shared | shared, not held | shared and held (the default) |
+| :--- | :--- | ---: | ---: | ---: | ---: |
+| 4k start, 8 at once | first token | 5.018 s | 5.016, 5.016, 5.015 | 4.961, 4.886, 4.885 | 1.370, 1.369, 1.369 |
+| | decode tokens/s a user | 20.0 | 23.7, 23.7, 23.7 | 23.4, 23.3, 23.3 | 41.2, 41.3, 41.2 |
+| | tokens/s in all | 86.6 | 95.2, 95.2, 95.2 | 105.3, 105.5, 105.6 | 297.5, 298.0, 297.7 |
+| | 99th percentile gap between tokens | 167 ms | 164 (the third run) | 165, 164, 165 | 86, 86, 86 |
+| | prompt tokens found | 0% | 1% | 52% | 83% |
+| 1k start, 8 at once | first token | 1.201 s | 1.200, 1.201, 1.198 | 0.734, 0.733, 0.866 | 0.735, 0.734, 0.734 |
+| | tokens/s in all | 222.5 | 222.6, 222.7, 222.8 | 304.7, 294.6, 281.4 | 294.2, 294.4, 329.2 |
+| | prompt tokens found | 0% | 0% | 53%, 48%, 41% | 48%, 48%, 63% |
 
 - Held, the first request runs the start and the other seven wait until less than a chunk of it (512 tokens on this model) is left: they share 3,584 of the 3,760 tokens and run
   the rest, which is the 83% (7 x 3,584 of 8 x 3,760).
 - Not held, the eight are let in as they come: those in the first round each run the whole prompt beside one another, the later ones share what is run by then.
 - A 1k start is less than two chunks: a request waits one round and shares the first 512 tokens either way, so holding changes nothing there.
+- Main's three runs wrote one file a load (the script's slip): the third run's is kept (`main/new-same4k-3.json`, `main/new-same1k-3.json`), the table lines of all three are in
+  `main/runs.txt`.
 - One of the six "not held" servers started while the GPU was still busy with the one before (27% utilized; `new/not-held-same4k-2.json` is marked contended); its figures are the
   other two runs'.
 
@@ -41,25 +46,27 @@ shares a start but lets every request in at once; the other two columns are the 
 Two rounds after a warm-up round of the same load (`shared.json`, `not-shared.json`), the batch's head. The requests of a round have new questions, so each finds the notes and
 not its question.
 
-| load | figure | nothing kept or shared | the default |
-| :--- | :--- | ---: | ---: |
-| 1k start, 8 requests 250 ms apart | first token | 0.327 s | 0.043 |
-| | decode tokens/s a user / in all | 36.1 / 222.6 | 58.1 / 267.6 |
-| | 99th percentile gap between tokens | 144 ms | 35 |
-| | prompt tokens found | 0% | 96% |
-| 4k start, 8 requests 250 ms apart | first token | 4.157 s | 0.053 |
-| | decode tokens/s a user / in all | 20.0 / 86.4 | 49.6 / 245.8 |
-| | 99th percentile gap between tokens | 167 ms | 43 |
-| | prompt tokens found | 0% | 99% |
-| 4k start, 8 at once | first token | 5.039 s | 0.198 |
-| | decode tokens/s a user / in all | 20.0 / 86.3 | 44.6 / 340.3 |
-| | 99th percentile gap between tokens | 167 ms | 23 |
-| | prompt tokens found | 0% | 99% |
+| load | figure | nothing kept or shared | main: kept, nothing shared | the default |
+| :--- | :--- | ---: | ---: | ---: |
+| 1k start, 8 requests 250 ms apart | first token | 0.327 s | 0.046 | 0.043 |
+| | decode tokens/s a user / in all | 36.1 / 222.6 | 52.4 / 253.2 | 58.1 / 267.6 |
+| | 99th percentile gap between tokens | 144 ms | 40 | 35 |
+| | prompt tokens found | 0% | 96% | 96% |
+| 4k start, 8 requests 250 ms apart | first token | 4.157 s | 0.061 | 0.053 |
+| | decode tokens/s a user / in all | 20.0 / 86.4 | 45.5 / 211.3 | 49.6 / 245.8 |
+| | 99th percentile gap between tokens | 167 ms | 49 | 43 |
+| | prompt tokens found | 0% | 18% | 99% |
+| 4k start, 8 at once | first token | 5.039 s | 0.204 | 0.198 |
+| | decode tokens/s a user / in all | 20.0 / 86.3 | 42.2 / 212.7 | 44.6 / 340.3 |
+| | 99th percentile gap between tokens | 167 ms | 24 | 23 |
+| | prompt tokens found | 0% | 6% | 99% |
 
-**These rows are mostly the kept sequences of the record beside this one, not sharing.** After a round of eight requests the server holds eight finished sequences that begin with
-the notes, and by the scheduler's rule each request of the next round goes on in one of them, cut back to the notes. (Main without this batch was not run on these loads, so the
-two are not told apart by a measurement here.) Sharing is what serves a request when there is no kept sequence for it to take: the table above, and a request that comes while the
-others still run.
+- **A 1k start: main's kept sequences serve it already.** After a round the server holds eight finished sequences that begin with the notes, and each request of the next round
+  goes on in one, cut back to the notes. This batch is 6% ahead in tokens/s there.
+- **A 4k start: main cannot hold the eight.** Each kept sequence is 3,888 tokens of its own and this card's cache does not hold eight. Main's first tokens are as quick (the figure
+  is the median of the eight, and a request that goes on in a kept sequence has its first token at once), but sequences are then sent back to wait for room and run again: after a
+  warm-up round and two rounds of the at-once load main had sent sequences back 337 times and let in 1,358,344 prompt tokens for about 90,000 sent; this batch none, and 91,224
+  (each server's own count, `main/runs.txt`). Shared, the eight hold the start once, and make 340 tokens/s where main makes 213.
 
 ## Other loads
 

@@ -1,0 +1,41 @@
+# main (d47bf927), measured by this batch's bench at a server started by hand (bench --against): the table lines of its runs, then this batch's by the same way
+=== main (kept sequences, nothing shared): a start the server holds
+same1k+250ms x8     2       942          0.046             52.4        253.2            -        49%
+             96% of the prompt tokens found in the cache
+same4k+250ms x8     2      3760          0.061             45.5        211.3            -        43%
+             18% of the prompt tokens found in the cache
+same4k x8        2      3760          0.204             42.2        212.7       9357.6        40%
+             6% of the prompt tokens found in the cache
+=== main: a start it has never seen, same4k:8
+same4k x8        1      3760          5.016             23.7         95.2       3053.1        22%
+             1% of the prompt tokens found in the cache
+=== main: a start it has never seen, same1k:8
+same1k x8        1       942          1.200             36.0        222.6       3472.5        34%
+             0% of the prompt tokens found in the cache
+=== main: a start it has never seen, same4k:8
+same4k x8        1      3760          5.016             23.7         95.2       3053.3        22%
+             1% of the prompt tokens found in the cache
+=== main: a start it has never seen, same1k:8
+same1k x8        1       942          1.201             36.1        222.7       3470.3        34%
+             0% of the prompt tokens found in the cache
+=== main: a start it has never seen, same4k:8
+same4k x8        1      3760          5.015             23.7         95.2       3053.5        22%
+             1% of the prompt tokens found in the cache
+=== main: a start it has never seen, same1k:8
+same1k x8        1       942          1.198             36.1        222.8       3476.2        34%
+             0% of the prompt tokens found in the cache
+=== the head by the same way (a server started by hand), to see that the way of measuring changes nothing
+same4k x8        1      3760          1.369             41.2        297.6      18039.3        39%
+             83% of the prompt tokens found in the cache
+same1k+250ms x8     2       942          0.042             58.1        267.9            -        55%
+             96% of the prompt tokens found in the cache
+same4k+250ms x8     2      3760          0.053             49.7        246.0            -        47%
+             99% of the prompt tokens found in the cache
+same4k x8        2      3760          0.192             44.7        339.7     156901.4        42%
+             99% of the prompt tokens found in the cache
+
+# /stats of each server after a warm-up round and two rounds of same4k:8: main (target-main), then this batch (glyd-engine-head)
+=== /root/target-main/release/glyd-engine
+{"prompt_tokens":1358344 "prefix_hit_tokens":63348 "prefix_hit_rate_percent":4.66 "preemptions":337 "waiting":0 "admit_ms":131 "decode_wait_ms":0 
+=== /root/glyd-engine-head
+{"prompt_tokens":91224 "prefix_hit_tokens":84708 "prefix_hit_rate_percent":92.86 "preemptions":0 "waiting":0 "admit_ms":153 "decode_wait_ms":0 
