@@ -32,8 +32,8 @@ HF_HUB_OFFLINE=1 GLYD_API_KEY=... glyd-engine serve /path/to/models--glyd--Qwen3
   Nemotron-H, DeepSeek-V4, and Muse Spark, Kimi-K3 and GLM-5.3-Flash on one GPU, as many as the GPU's memory holds (the server says how many); the other level engines run one
   request at a time (the others wait in order).
 - `--with MODEL2` serves a second model from the same process, on the same GPU: MODEL on its port and MODEL2 on `--with-port N`, else the next
-  free port after MODEL's. Each is a server of its own (its scheduler, its `/v1/glyd/info`, `/metrics` and requests); both load, then the first takes
-  half of the GPU's free memory for its keys and values and the second the rest. Both are models of the level engines (a lossy level, as MODEL:wren).
+  free port after MODEL's. Each is a server of its own (its scheduler, its `/v1/glyd/info`, `/metrics` and requests); the first loads as it would alone and takes
+  up to half of the memory left for its keys and values, then the second loads in what is left and takes the rest. Both are models of the level engines (a lossy level, as MODEL:wren).
   The status file says ready when both serve; a model that fails to load, or whose server does not start, ends the start of both. A GPU error after
   which the GPU cannot be used ends the process, both models with it, as it ends a server of one.
 - A model too big for one GPU (Kimi-K3, DeepSeek-V4, GLM-5.3-Flash, Muse Spark) uses all the GPUs shown. On datacenter

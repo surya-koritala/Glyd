@@ -999,9 +999,9 @@ fn served(a: &Args, ui: &RefCell<Ui>) -> Done<(Args, Option<Layout>)> {
     })
 }
 
-/// The two models of `serve --with`, each on its own thread, in step: each tells the other when its model is loaded, the first when it has made its sequences' memory (the second makes
-/// its own of what is left after), and each when its server listens (its port). A model that fails says so and its thread ends, its end of the pair with it: the other's wait ends there too
-/// (`hear` is None), so neither waits for a model that is not coming.
+/// The two models of `serve --with`, each on its own thread, in step: the first loads and makes its sequences' memory, then tells the second, which loads in what is left (its plan
+/// sees what the first holds) and makes its own of the rest; each tells the other when its server listens (its port). A model that fails says so and its thread ends, its end of the pair
+/// with it: the other's wait ends there too (`hear` is None), so neither waits for a model that is not coming.
 struct Pair {
     first: bool,
     tell: mpsc::Sender<u16>,
@@ -1019,9 +1019,9 @@ impl Pair {
 }
 
 /// `serve MODEL --with MODEL2 [--with-port P]`: two models in one process, each its own server (MODEL on --port, MODEL2 on --with-port, else the first free port after MODEL's),
-/// scheduler and runtime context (its figures, requests, failure and /v1/glyd/info its own) on the one GPU. Both load; the first then takes half the GPU's free memory for its sequences,
-/// the second what is left. Both are models of the description executor (a lossy level, or a family it runs at every level). A sticky device error of either ends the process, as it
-/// ends a server of one model (the service starts the models again).
+/// scheduler and runtime context (its figures, requests, failure and /v1/glyd/info its own) on the one GPU. The first loads, as it would alone, and takes up to half of the memory left
+/// for its sequences; the second then loads in what is left and takes the rest. Both are models of the description executor (a lossy level, or a family it runs at every level). A sticky
+/// device error of either ends the process, as it ends a server of one model (the service starts the models again).
 fn serve_two(a: &Args, with: String) -> i32 {
     let ui = RefCell::new(Ui::new());
     status_file(a);
@@ -1066,6 +1066,13 @@ fn serve_two(a: &Args, with: String) -> i32 {
 /// `serve MODEL:kestrel` (or `:swift`): the lossy level loaded as run loads it, served by the scheduler to up to --users sequences at once where the engine is a step of several (src/dynamic/rows.rs: Gemma 4),
 /// else to one user at a time. `pair`: one of the two models of `serve --with`.
 fn serve_lossy(a: &Args, layout: Layout, name: String, ui: &RefCell<Ui>, pair: Option<&Pair>) -> i32 {
+    let gone = |what: &str| Refusal::new(format!("the other model of serve --with {what}"), "Its own lines say why");
+    // (the second model loads once the first has its memory: its plan sees what the first holds)
+    if let Some(p) = pair.filter(|p| !p.first) {
+        if p.hear().is_none() {
+            return fail(ui, &gone("did not load"));
+        }
+    }
     let (mut e, tok, chat, defaults, vocab, line, mut info) = match load_lossy(a, layout, &name, ui) {
         Ok(x) => x,
         Err(r) => return fail(ui, &r),
@@ -1075,18 +1082,9 @@ fn serve_lossy(a: &Args, layout: Layout, name: String, ui: &RefCell<Ui>, pair: O
         Ok(u) => u,
         Err(r) => return fail(ui, &r),
     };
-    let gone = |what: &str| Refusal::new(format!("the other model of serve --with {what}"), "Its own lines say why");
-    // (both loaded before either makes its sequences' memory: the first then takes half of what is free, the second the rest)
-    if let Some(p) = pair {
-        p.tell(0);
-        if p.hear().is_none() {
-            return fail(ui, &gone("did not load"));
-        }
-        if p.first {
-            e.share_memory(0.5);
-        } else if p.hear().is_none() {
-            return fail(ui, &gone("could not make its sequences' memory"));
-        }
+    // (the first takes up to half of what is free for its sequences, leaving the rest for the second)
+    if pair.is_some_and(|p| p.first) {
+        e.share_memory(0.5);
     }
     // (the step's window: the context, or less where its paged memory holds less for one sequence alone)
     let (several, step_window) = match e.as_step(users) {
@@ -3272,17 +3270,14 @@ mod tests {
         let one = Pair { first: true, tell: to_two, hear: from_two };
         let two = std::thread::spawn(move || {
             let two = Pair { first: false, tell: to_one, hear: from_one };
-            two.tell(0);
-            let heard = (two.hear(), two.hear(), two.hear());
+            let heard = (two.hear(), two.hear());
             two.tell(8001);
             heard
             // (its end of the pair goes with the thread)
         });
         one.tell(0);
-        assert_eq!(one.hear(), Some(0), "loaded");
-        one.tell(0);
         one.tell(8000);
-        assert_eq!(two.join().unwrap(), (Some(0), Some(0), Some(8000)), "loaded, its memory made, its port");
+        assert_eq!(two.join().unwrap(), (Some(0), Some(8000)), "the first's memory made, then its port");
         assert_eq!(one.hear(), Some(8001));
         let t = Instant::now();
         assert_eq!(one.hear(), None, "a partner that is gone ends the wait");
