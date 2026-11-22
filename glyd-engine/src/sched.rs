@@ -124,6 +124,11 @@ pub trait ModelStep {
     fn share(&mut self, _from: i32, _to: i32, _upto: usize) -> Result<usize> {
         Ok(0)
     }
+    /// Whether `share` shares a start of any length (whole blocks of it), so that a request is worth holding back while a running sequence still runs the start the two have
+    /// in common. False: nothing is shared, or only at a place that is not known before (a recurrent model's mark).
+    fn shares_starts(&self) -> bool {
+        false
+    }
     /// The sequence in `slot` holds `n` tokens and is at a place a later request may go on from (its prompt's end: a reply asked for again, or a next turn whose template leaves out
     /// part of this reply, begins with these tokens and no more). A step that cannot cut a sequence back anywhere keeps what `resume` needs to go on from here.
     fn mark(&mut self, _slot: i32, _n: usize) -> Result<()> {
@@ -326,6 +331,9 @@ impl ModelStep for &mut dyn ModelStep {
     }
     fn share(&mut self, from: i32, to: i32, upto: usize) -> Result<usize> {
         (**self).share(from, to, upto)
+    }
+    fn shares_starts(&self) -> bool {
+        (**self).shares_starts()
     }
     fn eos(&self) -> Vec<i64> {
         (**self).eos()
@@ -824,9 +832,21 @@ impl<B: ModelStep> Sched<B> {
         self.active.iter().any(|s| s.id == id) || self.waiting.iter().any(|s| s.id == id)
     }
 
-    /// A waiting sequence that lost a block waits until the sequences that were running with it are gone.
+    /// A waiting sequence that lost a block waits until the sequences that were running with it are gone. And one whose start a running sequence of its scope is still
+    /// running as its own prompt waits for that (the two have at least KEEP_LEAST tokens in common, not all of them run yet), to share it (`take_slot`) and not run the
+    /// same tokens beside it; where the step shares starts of any length. It waits no longer than that sequence's prompt takes, which is what its own would.
     fn held(&self, s: &Seq) -> bool {
-        s.after.iter().any(|&id| self.alive(id))
+        if s.after.iter().any(|&id| self.alive(id)) {
+            return true;
+        }
+        if !self.keep || !self.be.shares_starts() {
+            return false;
+        }
+        let head = &s.tokens[..s.tokens.len().saturating_sub(1)];
+        self.active.iter().any(|a| {
+            let both = if a.salt == s.salt && a.prefilling { common(&a.tokens, head) } else { 0 };
+            both >= KEEP_LEAST && a.done < both
+        })
     }
 
     /// Waiting sequences taken in, the oldest first (those that are not held back), while there are places and pages for the whole prompt and a page for each running sequence to grow into.
@@ -2689,6 +2709,9 @@ pub(crate) mod tests {
             }
             Ok(())
         }
+        fn shares_starts(&self) -> bool {
+            self.keeps && !self.whole_only
+        }
         fn share(&mut self, from: i32, to: i32, upto: usize) -> Result<usize> {
             assert!(from != to && self.rooms[to as usize].is_empty(), "a start shared into slot {to}, which holds {}", self.rooms[to as usize].len());
             assert!(upto <= self.rooms[from as usize].len(), "{upto} tokens shared of a slot that holds {}", self.rooms[from as usize].len());
@@ -2978,6 +3001,38 @@ pub(crate) mod tests {
         turn(&mut s, &long, 8);
         assert_eq!(turn(&mut s, &pb, 8), reference(&pb, 8));
         assert_eq!((s.be.resumed.clone(), s.be.shared.len(), s.be.emptied, s.be.begun.len()), (vec![(0, 100, 100)], 0, 0, 1));
+    }
+
+    /// Requests that begin alike and come together: the first runs the start, the others wait for it and share it, each running only its own end, where the step shares
+    /// starts of any length; a request with another start is not kept waiting by them. A recurrent model, which shares at a mark alone, holds nothing back.
+    #[test]
+    fn requests_that_begin_alike_wait_for_the_first_to_run_the_start() {
+        let system = prompt(1, 200);
+        let ps: Vec<Vec<u32>> = (0..3).map(|k| [&system[..], &prompt(10 + k, 20)[..]].concat()).collect();
+        let other = prompt(50, 60);
+        let mut s = keeping(4);
+        let rx: Vec<_> = ps.iter().chain([&other]).map(|p| add(&mut s, p.clone(), 8).0).collect();
+        // (one round: the first of the three and the other prompt are in; the two that begin as the first wait)
+        s.tick().unwrap();
+        assert_eq!((s.active.len(), s.waiting.len()), (2, 2));
+        run(&mut s);
+        for (p, r) in ps.iter().chain([&other]).zip(&rx) {
+            assert_eq!(collect(r), (reference(p, 8), Finish::Length));
+        }
+        // the start was run once: each of the two shared its 12 full pages
+        assert_eq!(s.be.shared.iter().map(|x| (x.2, x.3)).collect::<Vec<_>>(), vec![(200, 192), (200, 192)]);
+        assert_eq!((s.be.begun.len(), s.stats.hit), (2, 2 * 192));
+        // a recurrent model: all three begin at their first token, at once
+        let mut s = keeping(4);
+        (s.be.whole_only, s.be.marking) = (true, true);
+        let rx: Vec<_> = ps.iter().map(|p| add(&mut s, p.clone(), 8).0).collect();
+        s.tick().unwrap();
+        assert_eq!((s.active.len(), s.waiting.len()), (3, 0));
+        run(&mut s);
+        for (p, r) in ps.iter().zip(&rx) {
+            assert_eq!(collect(r), (reference(p, 8), Finish::Length));
+        }
+        assert_eq!(s.be.begun.len(), 3);
     }
 
     /// A recurrent model shares a start only at a mark (its states as they were at a prompt's end): a request that begins with a running sequence's whole prompt goes

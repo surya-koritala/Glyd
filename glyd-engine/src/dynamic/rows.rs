@@ -617,6 +617,10 @@ impl ModelStep for Dyn {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_KEEP").is_none_or(|v| v != "0")) && Self::batch_prefill()
     }
+    /// Any start's full blocks, where the keys and values are paged and nothing of a sequence is a state.
+    fn shares_starts(&self) -> bool {
+        self.paged.is_some() && self.cuts()
+    }
     /// A start shared with an empty sequence (`Pages::share`; paged keys and values only). With no recurrent state and no latent cache: the full blocks of the first `upto`
     /// tokens. With recurrent states kept at a mark: `from`'s mark, where it is within `upto`: the full blocks before it shared, the block the mark is in copied to one of
     /// `to`'s own (its tokens before the mark are `from`'s; what `to` writes from the mark on is its own), and the states as they were at the mark copied to `to`'s, and to
