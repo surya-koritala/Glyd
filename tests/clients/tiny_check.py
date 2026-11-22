@@ -96,12 +96,14 @@ def main():
         r = c.chat.completions.create(model=model, messages=ask, max_tokens=24)
         m = r.model_dump()["choices"][0]["message"]
         reasoning = m.get("reasoning_content") or m.get("reasoning") or ""
-        # (what it writes first is reasoning; only random weights that close the thinking (or end) at once, about one token in the vocabulary, write none)
-        assert reasoning or r.usage.completion_tokens <= 2, r.model_dump()
+        # (what it writes first is reasoning, and none of it is the answer: with no reasoning there is no answer either. Random weights can close the thinking (or end)
+        # at once, or write only tokens that are no text (spaces trimmed, special tokens): main's GPU job had 24 of those, and nothing in either field)
+        assert reasoning or not (m.get("content") or "").strip() or r.usage.completion_tokens <= 2, r.model_dump()
         assert r.choices[0].finish_reason in ("stop", "length"), r.model_dump()
         chunks = list(c.chat.completions.create(model=model, messages=ask, max_tokens=24, stream=True))
         streamed = "".join((x.choices[0].delta.model_dump().get("reasoning_content") or x.choices[0].delta.model_dump().get("reasoning") or "") for x in chunks if x.choices)
-        assert streamed or (chunks[-1].usage and chunks[-1].usage.completion_tokens <= 2) or len([x for x in chunks if x.choices]) <= 3, chunks
+        answer = "".join((x.choices[0].delta.content or "") for x in chunks if x.choices)
+        assert streamed or not answer.strip() or (chunks[-1].usage and chunks[-1].usage.completion_tokens <= 2) or len([x for x in chunks if x.choices]) <= 3, chunks
 
     @check
     def openai_several_choices_and_a_seed():

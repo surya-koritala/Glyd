@@ -163,10 +163,24 @@ fn join(base: &str, loc: &str) -> String {
     format!("{scheme}://{dir}/{loc}")
 }
 
-/// The free bytes of the filesystem holding `path` (an existing directory), where it can be told (on Linux).
-#[cfg(not(target_os = "linux"))]
+/// The free bytes of the filesystem holding `path` (an existing directory), where it can be told (Linux: statvfs; Windows: GetDiskFreeSpaceExW). Without it a download
+/// larger than the disk is not refused before it starts: on Windows (the M1 gate, an A10G with 250 GB) GLM-5.3-Flash's 328 GB was downloaded until the disk was full.
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn disk_free(_path: &Path) -> Option<u64> {
     None
+}
+
+#[cfg(windows)]
+pub fn disk_free(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetDiskFreeSpaceExW(dir: *const u16, free_to_caller: *mut u64, total: *mut u64, total_free: *mut u64) -> i32;
+    }
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let (mut free, mut total, mut total_free) = (0u64, 0u64, 0u64);
+    // SAFETY: a NUL-ended UTF-16 path and three u64s the call writes (ULARGE_INTEGER is a u64).
+    (unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, &mut total, &mut total_free) } != 0).then_some(free)
 }
 
 #[cfg(target_os = "linux")]
@@ -1216,7 +1230,7 @@ mod tests {
         assert_eq!(join("https://huggingface.co/org/m/resolve/x/f", "/api/resolve-cache/x"), "https://huggingface.co/api/resolve-cache/x");
         assert_eq!(join("https://huggingface.co/org/m/resolve/x/f", "https://cdn.example.com/y?z=1"), "https://cdn.example.com/y?z=1");
         assert_eq!(join("https://h.co/a/b/c", "d"), "https://h.co/a/b/d");
-        if cfg!(target_os = "linux") {
+        if cfg!(any(target_os = "linux", windows)) {
             assert!(disk_free(&std::env::temp_dir()).unwrap() > 1 << 20);
         }
     }
