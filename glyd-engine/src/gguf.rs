@@ -1544,7 +1544,8 @@ mod tests {
         let g = Gguf::parse(&tiny_qwen3(BF16, F32)).unwrap();
         let config: serde_json::Value = serde_json::from_str(&config_json(&g, &g.description().unwrap()).unwrap()).unwrap();
         let d = crate::runtime::describe::describe(&config).unwrap_or_else(|e| panic!("{}", e.msg));
-        let mapped: std::collections::BTreeSet<String> = g.tensors.iter().map(|t| hf_name(&t.name).unwrap_or_else(|| panic!("{} has no Hugging Face name", t.name))).collect();
+        let mapped: std::collections::BTreeSet<String> =
+            g.tensors.iter().map(|t| hf_name(&t.name).unwrap_or_else(|| panic!("{} has no Hugging Face name", t.name))).collect();
         assert_eq!(d.names(), mapped);
         assert_eq!(d.desc.blocks.len(), 2 * config["num_hidden_layers"].as_u64().unwrap() as usize);
     }
