@@ -69,6 +69,12 @@ fn write_kernel_types() {
 }
 
 fn main() {
+    // R9's MLX spike (src/runtime/mlx.rs): mlx-c, where the `mlx` feature is on
+    if env::var_os("CARGO_FEATURE_MLX").is_some() {
+        let prefix = env::var("MLX_PREFIX").unwrap_or_else(|_| "/opt/homebrew".into());
+        println!("cargo:rustc-link-search=native={prefix}/lib");
+        println!("cargo:rerun-if-env-changed=MLX_PREFIX");
+    }
     write_kernel_types();
     println!("cargo:rerun-if-changed=kernels/engine.cu");
     println!("cargo:rerun-if-changed=kernels/qwen35.cu");

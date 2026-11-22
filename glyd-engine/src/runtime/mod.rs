@@ -11,4 +11,6 @@ pub mod describe;
 #[cfg(test)]
 mod describe_tests;
 pub mod kinds;
+#[cfg(all(target_os = "macos", feature = "mlx"))]
+pub mod mlx;
 pub mod reference;
