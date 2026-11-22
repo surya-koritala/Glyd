@@ -377,20 +377,51 @@ pub const ALONE_MESSAGE: &str = "the lossless KV cache cannot hold this request,
 /// Tokens in a page.
 pub const PAGE: usize = 16;
 
-/// A cached page's place in a chain: the key of its tokens after those before it, the key before, and its tokens (to tell a collision).
+/// A cached page's place in a chain: the name of its tokens after those before it, the name before, and its tokens (to tell a collision).
 struct Entry {
-    key: u64,
-    prev: u64,
+    key: u128,
+    prev: u128,
     toks: [u32; PAGE],
 }
 
-/// The key of a page of tokens that follows the pages whose chain ends in `prev` (0 where it is the first).
-pub fn chain_key(prev: u64, toks: &[u32]) -> u64 {
-    let mut h = prev ^ 0x9E37_79B9_7F4A_7C15;
-    for &t in toks {
-        h = (h ^ t as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(29).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+/// A full block's name (R4c; docs/design/runtime.md "Content-addressed blocks and the radix index"): the first 16 bytes, read little-endian, of the SHA-256 of the name of the
+/// block before it (16 bytes little-endian; for a sequence's first block its scope's root, `block_root`) and the block's token ids (4 bytes little-endian each). A block
+/// has this one name whatever holds its keys and values (this cache's 12-bit pages, the description executor's blocks) and whoever is told of it, so the function is part of
+/// what others read: changing it breaks them. A name says what tokens came before as well as the block's own: two blocks of the same name hold the same keys and values (as
+/// far as two runs of the same tokens do), and a prompt's names are found one after another until the first that is not there, which is the longest start that is held.
+pub fn block_hash(parent: u128, toks: &[u32]) -> u128 {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(parent.to_le_bytes());
+    for t in toks {
+        h.update(t.to_le_bytes());
     }
-    h | 1
+    let d: [u8; 32] = h.finalize().into();
+    u128::from_le_bytes(d[..16].try_into().expect("16 bytes"))
+}
+
+/// The name a scope's chains begin with: `block_hash`'s construction over the label "glyd-kv-1" and the scope's key (8 bytes little-endian; a request's `cache_salt` as the
+/// server keys it, 0 for none), so no block of one scope has a name of another's. What else must keep two requests' blocks apart (an adapter, an image's bytes) is to be
+/// hashed in here, or with the block it is in.
+pub fn block_root(scope: u64) -> u128 {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"glyd-kv-1");
+    h.update(scope.to_le_bytes());
+    let d: [u8; 32] = h.finalize().into();
+    u128::from_le_bytes(d[..16].try_into().expect("16 bytes"))
+}
+
+/// The names of the full blocks `tokens` begins with, in the scope whose chains begin at `root` (`block_root`).
+pub fn block_names(root: u128, tokens: &[u32]) -> Vec<u128> {
+    let mut prev = root;
+    tokens
+        .chunks_exact(PAGE)
+        .map(|c| {
+            prev = block_hash(prev, c);
+            prev
+        })
+        .collect()
 }
 
 /// The pages of the cache lent to sequences: a free list, the number of holders of every page, and the full pages of sequences that have ended kept by what their tokens were (a chain of keys), so a
@@ -401,7 +432,7 @@ pub struct Pager {
     refs: Vec<u32>,
     entry: Vec<Option<Entry>>,
     heavy: Vec<bool>,
-    cache: std::collections::HashMap<u64, i32>,
+    cache: std::collections::HashMap<u128, i32>,
     idle: std::collections::BTreeMap<u64, i32>,
     age: Vec<u64>,
     tick: u64,
@@ -456,11 +487,11 @@ impl Pager {
     /// `lookup` among the pages of the scope `from` (a request's `cache_salt`, 0 for none): the key its chains begin with, so a chain of one scope is never found by
     /// another's tokens (`publish` with `prev` the scope for a sequence's first page).
     #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
-    pub fn lookup_in(&mut self, from: u64, tokens: &[u32], max: usize) -> Vec<i32> {
+    pub fn lookup_in(&mut self, from: u128, tokens: &[u32], max: usize) -> Vec<i32> {
         let mut out = Vec::new();
         let mut prev = from;
         for chunk in tokens.chunks_exact(PAGE).take(max) {
-            let key = chain_key(prev, chunk);
+            let key = block_hash(prev, chunk);
             let Some(&p) = self.cache.get(&key) else { break };
             match &self.entry[p as usize] {
                 Some(e) if e.prev == prev && e.toks[..] == *chunk => {}
@@ -477,8 +508,8 @@ impl Pager {
     }
 
     /// A page written in full with `toks`, after the pages whose chain ends in `prev`: kept under its key (unless the same tokens are cached on another page, or the page is lost or heavy). Returns the key, for the next page's chain.
-    pub fn publish(&mut self, page: i32, prev: u64, toks: &[u32]) -> u64 {
-        let key = chain_key(prev, toks);
+    pub fn publish(&mut self, page: i32, prev: u128, toks: &[u32]) -> u128 {
+        let key = block_hash(prev, toks);
         if !self.heavy[page as usize] && !self.cache.contains_key(&key) && self.entry[page as usize].is_none() {
             let mut t = [0u32; PAGE];
             t.copy_from_slice(toks);
@@ -616,7 +647,7 @@ mod tests {
         let q = g.alloc().unwrap();
         assert_eq!(q, p1);
         let k = g.publish(q, 0, &toks[..16]);
-        assert_eq!(k, chain_key(0, &toks[..16]));
+        assert_eq!(k, block_hash(0, &toks[..16]));
         assert_eq!(g.lookup(&toks, 10), vec![held[0], held[1]], "the first page of the run stays the cached one");
     }
 
@@ -636,7 +667,7 @@ mod tests {
         assert_eq!(found, vec![held[0]], "the run of cached pages ends where a page left the cache");
         g.release(&found);
         // a heavy page is not published again
-        g.publish(held[1], chain_key(0, &toks[..16]), &toks[16..32]);
+        g.publish(held[1], block_hash(0, &toks[..16]), &toks[16..32]);
         assert_eq!(g.lookup(&toks, 4), vec![held[0]]);
         g.release(&[held[0]]);
         // its holder gives it back: it goes back to be cleared, the others wait in the cache

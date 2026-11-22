@@ -129,8 +129,10 @@ null, and `/metrics` has no `glyd_prefix_cache_hit_tokens_total`, unless the ser
 
 What a finished request leaves is kept until the server needs its place, the oldest going first. `cache_pin_seconds` (a number up to 3600) asks that what this request leaves
 goes after the others' for that long; it is a preference among what is kept and never makes another request wait. The Anthropic endpoint sets it from `cache_control` (300, or
-3600 with `ttl: "1h"`). A request that begins as another one does shares that start with it where the model allows (Gemma 4 and Muse Spark: any start of at least 32 tokens, from a
-sequence that has grown no more than a chunk past it), and one that comes while another still runs the start waits for it rather than running the same tokens beside it.
+3600 with `ttl: "1h"`). A request that begins as an earlier one did has that start without running it, where the model allows: on Gemma 4 and Muse Spark the server finds the blocks of
+16 tokens a prompt begins with by what they hold, whether the request that ran them is still running, is kept, has grown far past them or has ended, for as long as their memory
+has not been needed for something else; the Qwen3.5 layout shares a prompt another request ran to its end, from a sequence that is still there. A request that comes while another
+still runs the start waits for it rather than running the same tokens beside it.
 
 ## Connecting tools
 

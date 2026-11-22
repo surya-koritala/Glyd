@@ -1656,6 +1656,19 @@ fn fill_from(s: &mut dyn crate::sched::ModelStep, slot: i32, start: usize, t: &[
     }
 }
 
+/// `fill_from` from a sequence's first token with its full blocks named after every pass, as the scheduler names them (`keys`: the names of `t`'s full blocks).
+fn fill_named(s: &mut dyn crate::sched::ModelStep, slot: i32, t: &[u32], by: usize, keys: &[u128]) -> Result<()> {
+    let mut at = 0;
+    for part in t.chunks(by) {
+        room(s, slot, at + part.len())?;
+        s.prefill(&[slot], at, part, false)?;
+        let (lo, hi) = (at / crate::kv::PAGE, (at + part.len()) / crate::kv::PAGE);
+        s.name(slot, lo, &keys[lo..hi])?;
+        at += part.len();
+    }
+    Ok(())
+}
+
 /// A prompt alone in a step's slot from its first token (`fill_from`).
 fn fill(s: &mut dyn crate::sched::ModelStep, slot: i32, t: &[u32], by: usize, last: bool) -> Result<Option<Vec<f32>>> {
     fill_from(s, slot, 0, t, by, last)
@@ -2125,6 +2138,58 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
                     tail.len()
                 );
                 fails += same(&what, &want, &sharer) | (cut != to) as usize;
+            }
+            s.release(&[0, 1, 2])?;
+        }
+    }
+    // blocks found by name (a step that finds them so): tokens a sequence ran are had again whoever holds their blocks, or no one
+    if s.shares_starts() {
+        // (a scope of this check's own: what is named here stays in the pools, and the conversations below, in the scope of requests with no salt, are not to find it)
+        let root = crate::kv::block_root(0x6b65_6570_6368_6563);
+        let both: Vec<u32> = [&p[..], &g[..]].concat();
+        let keys = crate::kv::block_names(root, &both);
+        // a prompt and steps, its blocks named, and the slot emptied: three blocks of it found
+        fill(s, 0, &p, chunk, false)?;
+        steps(s, 0, p.len(), &g)?;
+        s.name(0, 0, &keys)?;
+        s.release(&[0])?;
+        let got = s.adopt(1, &keys[..3])?;
+        if got != 48 {
+            println!("FAIL a start of 48 tokens looked for by name after the sequence that ran it has ended: {got} found");
+            fails += 1;
+        } else {
+            let finder = fill_from(s, 1, got, &alt, chunk, true)?.expect("the logits");
+            fill(s, 2, &p, chunk, false)?;
+            steps(s, 2, p.len(), &g[..got - p.len()])?;
+            let want = fill_from(s, 2, got, &alt, chunk, true)?.expect("the logits");
+            fails += same(&format!("a start of 48 tokens found by name after the sequence that ran it has ended, then {} others", alt.len()), &want, &finder);
+        }
+        s.release(&[0, 1, 2])?;
+        // a long sequence, named as it grows: a start of six chunks is found though the sequence no longer holds all a step there reads (its sliding layers gave blocks
+        // back as it grew: they wait by their names); and the sequence is unharmed
+        if all + alt.len() < s.window() {
+            let keys = crate::kv::block_names(root, &long);
+            let at = 6 * chunk;
+            fill_named(s, 0, &long, chunk, &keys)?;
+            let got = s.adopt(1, &keys[..at / 16])?;
+            if got != at {
+                println!("FAIL a start of {at} tokens looked for by name while the sequence that ran it holds {}: {got} found", long.len());
+                fails += 1;
+            } else {
+                let finder = fill_from(s, 1, at, &alt, chunk, true)?.expect("the logits");
+                fill(s, 2, &long[..at], chunk, false)?;
+                let want = fill_from(s, 2, at, &alt, chunk, true)?.expect("the logits");
+                let what = format!(
+                    "a start of {at} tokens found by name while the sequence that ran it holds {} (it gave back blocks a step there reads; they wait by their names), then {} others",
+                    long.len(),
+                    alt.len()
+                );
+                fails += same(&what, &want, &finder);
+                s.release(&[1, 2])?;
+                let source = fill_from(s, 0, long.len(), &tail, chunk, true)?.expect("the logits");
+                fill(s, 2, &long, chunk, false)?;
+                let alone = fill_from(s, 2, long.len(), &tail, chunk, true)?.expect("the logits");
+                fails += same(&format!("the sequence that ran it, gone on with {} more", tail.len()), &alone, &source);
             }
             s.release(&[0, 1, 2])?;
         }
