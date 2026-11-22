@@ -1,0 +1,1 @@
+{"architectures": ["Qwen3ForCausalLM"], "num_hidden_layers": 1, "tie_word_embeddings": true}
