@@ -2326,7 +2326,7 @@ mod tests {
         let rows = random_layer(&mut rng, 256, 256, 64, true, &[2, 3, 2, 3], 1);
         let host = HbgHost::of(&rows).unwrap();
         let cfg = MoeCfg { experts: 4, router_hidden: 256, hidden: 256, inter: 64, router: Router::softmax(2), act: Act::SwiGlu { limit: None } };
-        let none = || Buf { ptr: 0, bytes: 0 };
+        let none = Buf::none;
         for (c, why) in [
             (MoeCfg { experts: 8, ..cfg }, "4 of width 256"),
             (MoeCfg { hidden: 512, router_hidden: 512, ..cfg }, "width 256"),

@@ -433,7 +433,7 @@ impl HbgExperts {
     /// A value of the layer's shape with no bytes on the device (host tests of the layer's checks).
     #[cfg(test)]
     pub(crate) fn without_device(h: &HbgHost) -> HbgExperts {
-        let none = || Buf { ptr: 0, bytes: 0 };
+        let none = Buf::none;
         HbgExperts {
             shape: h.shape,
             groups: h.groups.each_ref().map(|g| g.as_ref().map(|g| HbgStack { place: g.place, experts: g.experts, bytes: 0, data: none(), meta: none() })),

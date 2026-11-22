@@ -477,10 +477,37 @@ pub unsafe fn read_dev<T: Plain>(src: u64, out: &mut [T]) -> Result<()> {
     unsafe { cu("cuMemcpyDtoH", (driver()?.cuMemcpyDtoH_v2)(out.as_mut_ptr() as *mut c_void, src, n)) }
 }
 
-/// Device memory, freed when dropped.
+/// Device memory, freed when dropped. It belongs to the context it was made in (its GPU's, for a model split over GPUs or a second model of the process): what it
+/// reads, writes and frees, it does in that context, whichever is current on the thread then. `ptr` and `bytes` are for kernels' arguments; what the buffer does is by
+/// its own copies of them, so a buffer is made only here and changing the two does not change what it frees.
 pub struct Buf {
     pub ptr: u64,
     pub bytes: usize,
+    at: u64,
+    len: usize,
+    ctx: usize,
+}
+
+/// The context current on this thread (0: none).
+fn current_ctx() -> Result<usize> {
+    let mut c = std::ptr::null_mut();
+    // SAFETY: a host out-pointer.
+    unsafe { cu("cuCtxGetCurrent", (driver()?.cuCtxGetCurrent)(&mut c))? };
+    Ok(c as usize)
+}
+
+/// `f` run with context `ctx` current (as it was again after; `ctx` 0: as it is).
+fn in_ctx<R>(ctx: usize, f: impl FnOnce() -> Result<R>) -> Result<R> {
+    let now = current_ctx()?;
+    if ctx == 0 || ctx == now {
+        return f();
+    }
+    // SAFETY: a context a Dev retained or made for the process (a buffer's), then the thread's own again.
+    unsafe { cu("cuCtxSetCurrent", (driver()?.cuCtxSetCurrent)(ctx as *mut c_void))? };
+    let r = f();
+    // SAFETY: as above.
+    unsafe { cu("cuCtxSetCurrent", (driver()?.cuCtxSetCurrent)(now as *mut c_void))? };
+    r
 }
 
 /// The bytes the engine's buffers hold on the GPU now, the most they have held since the program started and when (milliseconds since 1970): counted where `Buf` allocates and frees, so what
@@ -506,7 +533,9 @@ pub struct Held {
 }
 
 impl Buf {
+    /// `bytes` bytes of device memory in the context current on this thread.
     pub fn new(bytes: usize) -> Result<Buf> {
+        let ctx = current_ctx()?;
         let mut p = 0u64;
         // SAFETY: a host out-pointer; at least one byte is taken.
         unsafe { cu("cuMemAlloc", (driver()?.cuMemAlloc_v2)(&mut p, bytes.max(1)))? };
@@ -514,7 +543,12 @@ impl Buf {
         if PEAK.fetch_max(now, Relaxed) < now {
             PEAK_AT.store(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64), Relaxed);
         }
-        Ok(Buf { ptr: p, bytes })
+        Ok(Buf { ptr: p, bytes, at: p, len: bytes, ctx })
+    }
+
+    /// A buffer of no bytes that holds nothing (a stand-in where a kernel's argument is not read).
+    pub fn none() -> Buf {
+        Buf { ptr: 0, bytes: 0, at: 0, len: 0, ctx: 0 }
     }
 
     pub fn zeroed(bytes: usize) -> Result<Buf> {
@@ -526,35 +560,47 @@ impl Buf {
     /// `data` copied to the buffer at byte `offset`, complete when this returns.
     pub fn write<T: Plain>(&self, offset: usize, data: &[T]) -> Result<()> {
         let n = std::mem::size_of_val(data);
-        if offset + n > self.bytes {
-            return err(format!("a write of {n} bytes at {offset}, past the buffer's {}", self.bytes));
+        if offset.checked_add(n).is_none_or(|end| end > self.len) {
+            return err(format!("a write of {n} bytes at {offset}, past the buffer's {}", self.len));
         }
-        // SAFETY: n bytes of host memory to n of this buffer's.
-        unsafe { cu("cuMemcpyHtoD", (driver()?.cuMemcpyHtoD_v2)(self.ptr + offset as u64, data.as_ptr() as *const c_void, n))? };
-        settle()
+        in_ctx(self.ctx, || {
+            // SAFETY: n bytes of host memory to n of this buffer's (checked above), in its context.
+            unsafe { cu("cuMemcpyHtoD", (driver()?.cuMemcpyHtoD_v2)(self.at + offset as u64, data.as_ptr() as *const c_void, n))? };
+            settle()
+        })
     }
 
     /// The buffer's bytes at `offset` into `out` (synchronously; the work queued on the stream is waited for by the caller).
     pub fn read<T: Plain>(&self, offset: usize, out: &mut [T]) -> Result<()> {
         let n = std::mem::size_of_val(out);
-        if offset + n > self.bytes {
-            return err(format!("a read of {n} bytes at {offset}, past the buffer's {}", self.bytes));
+        if offset.checked_add(n).is_none_or(|end| end > self.len) {
+            return err(format!("a read of {n} bytes at {offset}, past the buffer's {}", self.len));
         }
-        // SAFETY: n of this buffer's bytes to n of host memory; T is plain data.
-        unsafe { cu("cuMemcpyDtoH", (driver()?.cuMemcpyDtoH_v2)(out.as_mut_ptr() as *mut c_void, self.ptr + offset as u64, n)) }
+        in_ctx(self.ctx, || {
+            // SAFETY: n of this buffer's bytes (checked above) to n of host memory, in its context; T takes any bytes.
+            unsafe { cu("cuMemcpyDtoH", (driver()?.cuMemcpyDtoH_v2)(out.as_mut_ptr() as *mut c_void, self.at + offset as u64, n)) }
+        })
     }
 
     /// Every byte of the buffer set to `v`, queued on `s` (ordered with the work on it).
     pub fn fill_async(&self, v: u8, s: Stream) -> Result<()> {
+        if self.len == 0 {
+            return Ok(());
+        }
         // SAFETY: the buffer's own bytes.
-        unsafe { memset_async(self.ptr, v, self.bytes, s) }
+        unsafe { memset_async(self.at, v, self.len, s) }
     }
 
     /// The buffer's bytes set to zero, complete when this returns.
     pub fn zero(&self) -> Result<()> {
-        // SAFETY: the buffer's own bytes.
-        unsafe { cu("cuMemsetD8", (driver()?.cuMemsetD8_v2)(self.ptr, 0, self.bytes.max(1)))? };
-        settle()
+        if self.at == 0 {
+            return Ok(());
+        }
+        in_ctx(self.ctx, || {
+            // SAFETY: the buffer's own bytes (at least the one byte allocated), in its context.
+            unsafe { cu("cuMemsetD8", (driver()?.cuMemsetD8_v2)(self.at, 0, self.len.max(1)))? };
+            settle()
+        })
     }
 }
 
@@ -567,11 +613,19 @@ fn settle() -> Result<()> {
 
 impl Drop for Buf {
     fn drop(&mut self) {
-        if let Ok(d) = driver() {
-            // SAFETY: allocated by Buf::new, freed once.
-            unsafe { (d.cuMemFree_v2)(self.ptr) };
+        if self.at == 0 {
+            return;
         }
-        LIVE.fetch_sub(self.bytes as u64, Relaxed);
+        let free = || {
+            // SAFETY: allocated by Buf::new, freed once.
+            unsafe { cu("cuMemFree", (driver()?.cuMemFree_v2)(self.at)) }
+        };
+        // (in its context; where the thread's context cannot be read, as it is)
+        let _ = match current_ctx() {
+            Ok(_) => in_ctx(self.ctx, free),
+            Err(_) => free(),
+        };
+        LIVE.fetch_sub(self.len as u64, Relaxed);
     }
 }
 
@@ -933,6 +987,54 @@ impl Drop for Side {
             unsafe { (d.cuStreamDestroy_v2)(self.stream) };
         }
     }
+}
+
+/// `bufcheck` (R1a: a buffer belongs to its context): two contexts on GPU 0, its primary one and one of its own (as the split's check on one GPU makes). A buffer of the
+/// second is written, read, zeroed and freed while the first is current, and the other way round: each does it in its own context, the thread's context is the same
+/// after, and the GPU's free memory comes back when the buffer goes (it was freed, not lost).
+#[cfg(feature = "dev")]
+pub fn buf_check() -> Result<()> {
+    let a = Dev::new(0)?;
+    let b = Dev::new_own(0)?;
+    let ctx = |d: &Dev| d.ctx as usize;
+    let mut fails = 0;
+    let mut say = |ok: bool, what: String| {
+        println!("{} {what}", if ok { "PASS" } else { "FAIL" });
+        fails += !ok as usize;
+    };
+    const MB: usize = 256 << 20;
+    for (made, other, name) in [(&b, &a, "a context of its own"), (&a, &b, "the primary context")] {
+        made.make_current()?;
+        let before = made.mem_info()?.0;
+        let buf = Buf::new(MB)?;
+        let pattern: Vec<u32> = (0..1024u32).map(|i| i.wrapping_mul(2_654_435_761)).collect();
+        other.make_current()?;
+        buf.write(4096, &pattern)?;
+        let mut back = vec![0u32; 1024];
+        buf.read(4096, &mut back)?;
+        say(
+            back == pattern && current_ctx()? == ctx(other),
+            format!("a buffer of {name}, written and read while the other is current: the bytes back, the thread's context the same"),
+        );
+        buf.zero()?;
+        buf.read(4096, &mut back)?;
+        say(back.iter().all(|&x| x == 0), "the same buffer zeroed while the other is current".to_string());
+        let held = other.mem_info()?.0;
+        drop(buf);
+        let after = other.mem_info()?.0;
+        say(
+            current_ctx()? == ctx(other) && after >= held + MB / 2 && after + MB / 2 >= before,
+            format!("the same buffer freed while the other is current: {} MB came back, the thread's context the same", (after.saturating_sub(held)) >> 20),
+        );
+    }
+    drop(Buf::none());
+    say(true, "a buffer of no bytes dropped".to_string());
+    a.make_current()?;
+    if fails > 0 {
+        return err(format!("bufcheck: {fails} failed"));
+    }
+    println!("bufcheck: PASS");
+    Ok(())
 }
 
 #[cfg(test)]
