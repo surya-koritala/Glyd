@@ -153,6 +153,7 @@ pub mod server;
 pub mod service;
 #[cfg(feature = "dev")]
 pub mod ship;
+pub mod sizes;
 pub mod skinny;
 pub mod status;
 pub mod store;

@@ -458,6 +458,21 @@ impl Shape {
         Ok(sh)
     }
 
+    /// The same model with its parameters counted from the checkpoint's own tensors (src/sizes.rs: the headers of its files, a directory's or the Hub's by ranges) in
+    /// place of an estimate from config.json: each part by its tensors' weights (a packed type's at the release's bits), a vision tower left out, and the
+    /// multi-token-prediction head counted only where the model drafts with it. A table with no weights of the parts changes nothing.
+    pub fn with_table(mut self, t: &crate::sizes::Table) -> Shape {
+        use crate::sizes::Part;
+        let p = t.params_by_part(self.layers, self.release_bits.max(1.0));
+        let get = |k: Part| p.get(&k).copied().unwrap_or(0.0);
+        let dense = get(Part::Attention) + get(Part::Mlp) + get(Part::SharedExperts) + get(Part::Other) + if self.mtp { get(Part::Mtp) } else { 0.0 };
+        if get(Part::Embedding) + get(Part::Head) + dense + get(Part::RoutedExperts) <= 0.0 {
+            return self;
+        }
+        (self.embed, self.head, self.dense, self.routed) = (get(Part::Embedding), get(Part::Head), dense, get(Part::RoutedExperts));
+        self
+    }
+
     /// The same model with its parameters scaled to the checkpoint's bytes (model.safetensors.index.json's total_size), where known.
     pub fn scaled_to(mut self, total_bytes: f64) -> Shape {
         let ours = self.release_bytes();
@@ -1348,8 +1363,14 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
         crate::support::check(&config, model, &name, "penguin")?;
     }
     let mut sh = Shape::from_config(&config).map_err(|e| Refusal::unsupported(format!("{name}: {e}"), ""))?;
-    if let Some(total) = index_total(model) {
-        sh = sh.scaled_to(total);
+    // the model's own tensors where its headers can be had (before any download, by ranges), else config.json's estimate scaled to the index's total
+    match crate::sizes::Table::find(model) {
+        Some(t) => sh = sh.with_table(&t),
+        None => {
+            if let Some(total) = index_total(model) {
+                sh = sh.scaled_to(total);
+            }
+        }
     }
     let context: Option<usize> = a.flag("context").map(|c| c.parse()).transpose().map_err(|_| Refusal::new("--context takes a number", "--context 8192"))?;
     crate::support::context_check(&name, fam, sh.max_ctx, context)?;
@@ -1940,9 +1961,11 @@ mod tests {
             let m = Machine::preset(preset).unwrap();
             let f = planned(&args(&["fit", &format!("{}:penguin", dir.to_str().unwrap()), "--machine", preset])).unwrap();
             let devs: Vec<Target> = m.devices.iter().enumerate().map(|(i, d)| Target::of(d, i as i32, Some(m.ram_free))).collect();
+            let table = crate::sizes::Table::from_dir(&dir).unwrap();
             let direct = crate::cli::size_dynamic(
                 &args(&["run", dir.to_str().unwrap()]),
-                &dir,
+                &crate::cli::short_name(dir.to_str().unwrap()),
+                &table,
                 &fixture("glm5_next_config.json"),
                 "GLM-5.3-Flash",
                 &devs,
@@ -2076,8 +2099,12 @@ mod tests {
         let (mut pairs, mut loads, mut refusals) = (0, 0, 0);
         for (name, text) in &configs {
             let dir = model_dir("agree", name, text);
+            // (the dynamic route sizes a model from its files' headers (src/sizes.rs, P2b): a directory with a config alone has none, so these two get a header-only checkpoint)
             if *name == "GLM-5.3-Flash" {
                 header_only_checkpoint(&dir, &fixture("glm5_next_tensors.json"));
+            }
+            if *name == "NVIDIA-Nemotron-H" {
+                header_only_checkpoint(&dir, &fixture("nemotron_h_tensors.json"));
             }
             let model = dir.to_str().unwrap();
             for preset in Machine::PRESETS {
@@ -2169,5 +2196,127 @@ mod tests {
         let before = (p.gpu_total(), p.free);
         crate::cli::calibrated(&mut p, lp.free, 300 << 20);
         assert_eq!((p.gpu_total(), p.free, p.reserve), (before.0 + (300 << 20), before.1, lp.reserve + (300 << 20)));
+    }
+
+    /// A table of the tensors a fixture lists (name -> [type, shape]): the headers a real checkpoint's files have.
+    fn table_of(tensors: &Value) -> crate::sizes::Table {
+        let rows = tensors
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(name, t)| {
+                let (dtype, shape) = (t.as_array().unwrap()[0].as_str().unwrap().to_string(), t.as_array().unwrap()[1].as_u64s().unwrap());
+                let width = match dtype.as_str() {
+                    "F32" => 4,
+                    "F8_E4M3" | "I8" | "U8" => 1,
+                    _ => 2,
+                };
+                crate::sizes::Row { name: name.clone(), dtype, bytes: shape.iter().product::<u64>() * width, shape }
+            })
+            .collect();
+        crate::sizes::Table { rows }
+    }
+
+    /// P2b: a model's parameters counted from its tensors' headers are the checkpoint's (every weight of the parts a plan counts: the vision tower is left out, the
+    /// multi-token-prediction head is counted only where the model drafts with it), where config.json's estimate is not: for the recent families whose headers the
+    /// fixtures hold (GLM-5.3-Flash, Qwen3.5 at 0.8B and 9B, Nemotron 3 Super) within 1%.
+    #[test]
+    fn a_shape_from_the_headers_is_the_checkpoints() {
+        use crate::sizes::{classify, Part};
+        let glm = json::parse(&fixture("glm5_next_tensors.json")).unwrap();
+        let q35 = json::parse(&fixture("qwen35_tensors.json")).unwrap();
+        let q35c = json::parse(&fixture("qwen35_configs.json")).unwrap();
+        let nh = json::parse(&fixture("nemotron_h_tensors.json")).unwrap();
+        let mut cases = vec![
+            ("GLM-5.3-Flash", fixture("glm5_next_config.json"), table_of(glm.get("tensors").unwrap())),
+            ("Nemotron 3 Super", fixture("nemotron_h_config.json"), table_of(nh.get("tensors").unwrap())),
+        ];
+        for m in ["Qwen/Qwen3.5-0.8B", "Qwen/Qwen3.5-9B"] {
+            cases.push((m, json::to_compact(q35c.get(m).unwrap()), table_of(q35.get(m).unwrap())));
+        }
+        for (name, config, table) in &cases {
+            let base = Shape::from_config(config).unwrap();
+            let sh = base.clone().with_table(table);
+            let counted: f64 = table
+                .rows
+                .iter()
+                .filter(|r| match classify(&r.name, sh.layers) {
+                    Part::Vision => false,
+                    Part::Mtp => sh.mtp,
+                    _ => true,
+                })
+                .map(|r| r.params().unwrap_or(0) as f64)
+                .sum();
+            assert!((sh.params() / counted - 1.0).abs() < 0.01, "{name}: {:.4e} parameters from the headers, {:.4e} in the checkpoint", sh.params(), counted);
+            // (a vision tower in the checkpoint is not in the shape: the Qwen3.5 releases have one)
+            if name.starts_with("Qwen/Qwen3.5") {
+                let all: f64 = table.rows.iter().map(|r| r.params().unwrap_or(0) as f64).sum();
+                assert!(table.rows.iter().any(|r| classify(&r.name, sh.layers) == Part::Vision) && sh.params() < all, "{name}");
+            }
+            // (an MoE keeps its experts apart: the routed share is the table's)
+            assert_eq!(sh.is_moe(), base.is_moe(), "{name}");
+            if sh.is_moe() {
+                let routed: f64 =
+                    table.rows.iter().filter(|r| classify(&r.name, sh.layers) == Part::RoutedExperts).map(|r| r.params().unwrap_or(0) as f64).sum();
+                assert!(
+                    (sh.routed - routed).abs() <= 1e-9 * routed.max(1.0),
+                    "{name}: {:.4e} routed from the headers, {routed:.4e} in the checkpoint",
+                    sh.routed
+                );
+            }
+        }
+        // (a table with none of the parts changes nothing)
+        let base = Shape::from_config(&fixture("gemma4_12b_config.json")).unwrap();
+        assert_eq!(base.clone().with_table(&crate::sizes::Table::default()).params(), base.params());
+    }
+
+    /// P2b: a model of the dynamic route is planned before its files are here, from its shards' headers by ranges, and the plan is the one its files give once they
+    /// are: GLM-5.3-Flash's tensors (names, types and shapes of the real header, every large dimension cut by 64 so that the shards are megabytes) on a Hub in
+    /// miniature, against the same shards in a directory, on each machine that holds them.
+    #[test]
+    fn a_model_is_planned_from_the_hubs_headers_as_from_its_files() {
+        let tensors = json::parse(&fixture("glm5_next_tensors.json")).unwrap();
+        let rows: Vec<(String, String, Vec<u64>)> = tensors
+            .get("tensors")
+            .and_then(Value::as_object)
+            .unwrap()
+            .iter()
+            .map(|(n, t)| {
+                let (d, sh) = (t.as_array().unwrap()[0].as_str().unwrap().to_string(), t.as_array().unwrap()[1].as_u64s().unwrap());
+                (n.clone(), d, sh.into_iter().map(|x| if x >= 256 { x / 64 } else { x }).collect())
+            })
+            .collect();
+        let refs: Vec<(&str, &str, &[u64])> = rows.iter().map(|(n, d, s)| (n.as_str(), d.as_str(), s.as_slice())).collect();
+        let file = crate::sizes::tests::safetensors(&refs);
+        let config = fixture("glm5_next_config.json");
+        let (_m, hub, hub_dir) =
+            crate::hub::tests::mock_with(vec![("config.json".into(), config.clone().into_bytes()), ("model.safetensors".into(), file.clone())]);
+        let remote = hub.list("org/model", "main").unwrap();
+        let root = std::env::temp_dir().join(format!("glyd-plan-hub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let remote_table = crate::sizes::Table::from_hub_in(&root, &hub, &remote).unwrap();
+        let dir = model_dir("hubplan", "GLM-5.3-Flash", &config);
+        std::fs::write(dir.join("model.safetensors"), &file).unwrap();
+        let local_table = crate::sizes::Table::from_dir(&dir).unwrap();
+        assert_eq!(remote_table, local_table, "the headers by ranges are the files' headers");
+        let mut planned_on = 0;
+        for preset in ["rtx4080s", "2x3090", "8xh100"] {
+            let m = Machine::preset(preset).unwrap();
+            let devs: Vec<Target> = m.devices.iter().enumerate().map(|(i, d)| Target::of(d, i as i32, Some(m.ram_free))).collect();
+            let plan = |t: &crate::sizes::Table| {
+                crate::cli::size_dynamic(&args(&["run", "GLM-5.3-Flash"]), "GLM-5.3-Flash", t, &config, "GLM-5.3-Flash", &devs, Some(m.ram_free), &|_| false)
+            };
+            match (plan(&remote_table), plan(&local_table)) {
+                (Ok(a), Ok(b)) => {
+                    assert_eq!(a, b, "{preset}");
+                    planned_on += 1;
+                }
+                (Err(a), Err(b)) => assert_eq!((a.what, a.fix), (b.what, b.fix), "{preset}"),
+                _ => panic!("{preset}: a plan from the headers and one from the files disagree"),
+            }
+        }
+        assert!(planned_on >= 2, "{planned_on}");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&hub_dir);
     }
 }
