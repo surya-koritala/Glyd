@@ -2120,7 +2120,7 @@ pub(crate) mod tests {
         use crate::otel::{self, Config, Exporter};
         let col = otel::testing::collector();
         otel::install(Exporter::start(Config { url: col.url.clone(), headers: vec![], service: "glyd-sched-test".into() }));
-        otel::set_model("fake/model");
+        let _ = crate::runtime::context::Context::process().figures.model.set("fake/model".into());
         let mut s = Sched::new(Fake::new(64, 32), 4);
         let (rx, _) = add(&mut s, prompt(5, 57), 6);
         run(&mut s);

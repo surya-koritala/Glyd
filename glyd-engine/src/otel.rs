@@ -11,7 +11,7 @@
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The clock of one sequence: when it began (the scheduler got it), when it was first taken in (its queue ends), when its first token was written, and its prompt's length.
@@ -331,7 +331,6 @@ fn run(cfg: Config, rx: Receiver<Msg>, exported: Arc<AtomicU64>, dropped: Arc<At
 // ---- the process's exporter -------------------------------------------------------------------------------------------------------------------
 
 static EXPORTER: Mutex<Option<Arc<Exporter>>> = Mutex::new(None);
-static MODEL: OnceLock<String> = OnceLock::new();
 
 fn exporter() -> Option<Arc<Exporter>> {
     EXPORTER.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -356,11 +355,6 @@ pub fn install(e: Exporter) {
     *EXPORTER.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(e));
 }
 
-/// The model's name, for the spans' attributes.
-pub fn set_model(name: &str) {
-    let _ = MODEL.set(name.to_string());
-}
-
 /// Whether traces are being sent.
 pub fn on() -> bool {
     exporter().is_some()
@@ -371,10 +365,10 @@ pub fn counts() -> Option<(u64, u64)> {
     exporter().map(|e| (e.exported.load(Relaxed), e.dropped.load(Relaxed)))
 }
 
-/// A sequence ended (`how`: stop, length, stopped or error) after `generated` tokens: its spans go to the collector, where there is one.
-pub fn record(c: &Clock, how: &str, generated: usize) {
+/// A sequence of the served model `model` ended (`how`: stop, length, stopped or error) after `generated` tokens: its spans go to the collector, where there is one.
+pub fn record(c: &Clock, how: &str, generated: usize, model: &str) {
     if let Some(e) = exporter() {
-        e.send(spans_of(c, Instant::now(), how, generated, MODEL.get().map_or("", String::as_str)));
+        e.send(spans_of(c, Instant::now(), how, generated, model));
     }
 }
 

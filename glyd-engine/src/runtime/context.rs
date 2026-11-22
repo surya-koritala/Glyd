@@ -24,6 +24,9 @@ pub struct Context {
     /// The cache's events (blocks stored and removed by name, with their tokens: src/kv_events.rs), for `/v1/glyd/kv/events`. Off unless the server's operator turns them on
     /// (GLYD_ENGINE_KV_EVENTS=1): they carry every caller's prompts.
     pub kv_events: Option<crate::kv_events::Log>,
+    /// The requests that run on the model, and the last that ended, by id (`/v1/glyd/requests/ID`): each model's, so that one model's server neither finds nor
+    /// cancels another's.
+    pub(crate) tracks: Mutex<std::collections::VecDeque<crate::server::Track>>,
 }
 
 impl Context {
@@ -36,6 +39,7 @@ impl Context {
             info: OnceLock::new(),
             tell_cached: AtomicBool::new(std::env::var_os("GLYD_ENGINE_CACHED_USAGE").is_some_and(|v| v == "1")),
             kv_events: std::env::var_os("GLYD_ENGINE_KV_EVENTS").is_some_and(|v| v == "1").then(crate::kv_events::Log::new),
+            tracks: Mutex::new(std::collections::VecDeque::new()),
         })
     }
 
