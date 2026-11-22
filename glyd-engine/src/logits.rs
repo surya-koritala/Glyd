@@ -1465,7 +1465,7 @@ mod tests {
 /// `usercheck CASE [--level L] [--users N] [--tokens T]` (gemma4, qwen35, muse, kimi, glm): the case's random model on the description executor, each of N prompts replied to alone as `run` replies (the reference),
 /// then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts
 /// one a pass, decode steps of up to 8 rows: a step's sums). With prompts run together the replies that differ are counted, not refused (a product of more rows may take another route; a random
-/// model's near ties turn on its last bits).
+/// model's near ties turn on its last bits). With GLYD_ENGINE_ONE_STEP=1 (a round that is one step of the rows that decode and the prompts' chunks) the same, and some step must have held both.
 pub fn users_check(a: &crate::args::Args) -> Result<()> {
     use crate::conv::Gen;
     use crate::sched::{Ev, Finish, Reply, Sched, Submit};
@@ -1585,6 +1585,15 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     if batchable && k > 1 && steps[2..].iter().all(|&x| x == 0) {
         println!("FAIL no decode step had more than one row");
         fails += 1;
+    }
+    // (GLYD_ENGINE_ONE_STEP=1, a round that is one step: the longest prompt is longer than a step holds beside the rows of the ones before it, so some step holds both)
+    if std::env::var_os("GLYD_ENGINE_ONE_STEP").is_some_and(|v| v == "1") {
+        let both = crate::sched::SHARED[28].load(std::sync::atomic::Ordering::Relaxed);
+        println!("steps of rows that decode and a prompt's chunk together: {both}");
+        if batchable && k > 1 && both == 0 {
+            println!("FAIL no step held both rows that decode and a prompt's chunk");
+            fails += 1;
+        }
     }
     if fails > 0 {
         return err(format!("{case}: {fails} failed"));

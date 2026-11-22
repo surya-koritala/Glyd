@@ -398,7 +398,25 @@ impl Dyn {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_none_or(|v| v != "0"))
     }
+
+    /// GLYD_ENGINE_ONE_STEP=1: a round is one step of the rows that decode and the prompts' chunks (`ModelStep::round`, docs/design/runtime.md section 5), each weight read once for both. Off
+    /// until its speed is on record against the round of two passes (the bench gate, R8): the same replies either way.
+    fn one_step_asked() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_ONE_STEP").is_some_and(|v| v == "1"))
+    }
+
+    /// The rows of a step that holds both rows that decode and a prompt's chunk (GLYD_ENGINE_STEP_TOKENS; 64: up to there every product of the step takes the route each row's own pass
+    /// takes, `decoded_way`, so a reply's bits do not turn on what ran beside it).
+    fn step_tokens() -> usize {
+        static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        *N.get_or_init(|| std::env::var("GLYD_ENGINE_STEP_TOKENS").ok().and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(STEP_TOKENS))
+    }
 }
+
+/// See `Dyn::step_tokens`; and the prompt tokens a step takes beside any number of rows, so that a prompt moves while many sequences decode.
+const STEP_TOKENS: usize = 64;
+const STEP_LEAST: usize = 16;
 
 impl ModelStep for Dyn {
     /// The context, or where the pools hold less for one sequence alone, that: a reply that reaches it ends there (its length), and a sequence alone always fits, so one sent back for room
@@ -450,6 +468,33 @@ impl ModelStep for Dyn {
         }
         let jobs: Vec<(usize, &[u32], bool)> = jobs.iter().map(|j| (j.pages[0] as usize, j.tokens, j.last)).collect();
         self.pass(&jobs)
+    }
+    fn one_step(&self) -> bool {
+        Self::one_step_asked() && self.batchable() && Self::batch_prefill()
+    }
+    fn prompt_budget(&self, rows: usize) -> usize {
+        Self::step_tokens().saturating_sub(rows).max(STEP_LEAST).min(self.chunk.saturating_sub(rows))
+    }
+    /// The rows that decode and the prompts' chunks in one pass (`pass`: a row is a chunk of one token whose sample is asked for): the rows' samples, then the samples of the chunks that are
+    /// `last`, the head's rows in that order. Rows alone are the decode step as it is (one row: its graph), chunks alone the prompt pass.
+    fn round(&mut self, rows: &[Row], jobs: &[PrefillJob]) -> Result<(Vec<Sample>, Vec<Option<Sample>>)> {
+        if jobs.is_empty() {
+            return Ok((ModelStep::decode(self, rows)?, Vec::new()));
+        }
+        if rows.is_empty() {
+            return Ok((Vec::new(), ModelStep::prefill_many(self, jobs)?));
+        }
+        for (slot, at) in rows.iter().map(|r| (r.pages[0] as usize, r.pos)).chain(jobs.iter().map(|j| (j.pages[0] as usize, j.start))) {
+            if self.seq_n(slot) != at {
+                return err(format!("tokens at {at} of sequence {slot}, which holds {}", self.seq_n(slot)));
+            }
+        }
+        let ones: Vec<(usize, [u32; 1])> = rows.iter().map(|r| (r.pages[0] as usize, [r.token])).collect();
+        let parts: Vec<(usize, &[u32], bool)> =
+            ones.iter().map(|(s, t)| (*s, &t[..], true)).chain(jobs.iter().map(|j| (j.pages[0] as usize, j.tokens, j.last))).collect();
+        let mut out = self.pass(&parts)?.into_iter();
+        let decoded: Vec<Sample> = out.by_ref().take(rows.len()).map(|s| s.expect("every row samples")).collect();
+        Ok((decoded, out.collect()))
     }
     fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
         for r in rows {
