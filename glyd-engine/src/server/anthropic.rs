@@ -577,6 +577,36 @@ mod tests {
         assert_eq!(at(&evs[0], &["message", "usage", "input_tokens"]).as_u64(), Some(prompt));
     }
 
+    /// P5e: requests as Claude Code sends them: the system prompt in blocks with `cache_control` markers, the same in every request of every session, and the
+    /// conversation after it. A second session's first request finds the system prompt in the cache though its own message is another; the conversation's next turn
+    /// finds the turn before as well; and each usage says what was found (`cache_read_input_tokens`, with `input_tokens` the rest).
+    #[test]
+    fn claude_codes_repeated_system_prompt_is_found_by_the_next_session() {
+        let addr = serve_script("done");
+        let system = r#"[{"type":"text","text":"You are Claude Code, a command line tool for software engineering.","cache_control":{"type":"ephemeral"}},{"type":"text","text":"Follow the conventions of the repository you are in. Read a file before you change it. Run the tests after a change and say plainly what failed. Never commit unless you are asked to.","cache_control":{"type":"ephemeral","ttl":"1h"}}]"#;
+        let q = |messages: &str| {
+            format!(r#"{{"model":"claude-x","max_tokens":12,"temperature":0,"cache_salt":"one-user","system":{system},"messages":{messages}}}"#)
+        };
+        let usage = |d: &Value, k: &str| at(d, &["usage", k]).as_u64().unwrap();
+        let user = |text: &str| format!(r#"{{"role":"user","content":[{{"type":"text","text":"{text}","cache_control":{{"type":"ephemeral"}}}}]}}"#);
+        // the first session's first request: nothing to find
+        let a = parse(&ask(addr, &q(&format!("[{}]", user("list the files in src and tell me which is the largest")))).1);
+        assert_eq!(usage(&a, "cache_read_input_tokens"), 0);
+        // a second session, another question: the system prompt is found, and no more than it (the two part at the question)
+        let first = user(
+            "why does the build fail on the second step when the cache is cold and pass when it is warm and what in the build script decides which of the two it is and where is that written down",
+        );
+        let b = parse(&ask(addr, &q(&format!("[{first}]"))).1);
+        let (found, rest) = (usage(&b, "cache_read_input_tokens"), usage(&b, "input_tokens"));
+        assert!(found >= 48 && found % crate::kv::PAGE as u64 == 0 && rest >= 8, "{found} found, {rest} run");
+        // its next turn: the turn before is found too
+        let reply = at(&b, &["content"]).as_array().and_then(|c| c.iter().find_map(|x| at(x, &["text"]).as_str().map(str::to_string))).expect("a text block");
+        let next = format!(r#"[{first},{{"role":"assistant","content":"{reply}"}},{}]"#, user("and on the third"));
+        let c = parse(&ask(addr, &q(&next)).1);
+        assert!(usage(&c, "cache_read_input_tokens") > found, "{} found at the next turn, {found} at the first", usage(&c, "cache_read_input_tokens"));
+        assert_eq!(usage(&c, "cache_creation_input_tokens"), 0);
+    }
+
     /// `cache_control` asks for what the request leaves to be held: 5 minutes, an hour with `ttl: "1h"`, the longest of a request's markers, wherever they are (a system
     /// block, a tool, a block of a message); a request with none asks for nothing, and a property of a tool's schema that happens to bear the name is no marker.
     #[test]
