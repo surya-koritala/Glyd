@@ -127,6 +127,11 @@ environment, which `glyd service` passes to the models it starts) and then tells
 may answer callers from anywhere, behind a proxy. The same holds for the server's own count of the tokens found: `prefix_hit_tokens` and `prefix_hit_rate_percent` of `/stats` are
 null, and `/metrics` has no `glyd_prefix_cache_hit_tokens_total`, unless the server was told its callers are one user.
 
+What a finished request leaves is kept until the server needs its place, the oldest going first. `cache_pin_seconds` (a number up to 3600) asks that what this request leaves
+goes after the others' for that long; it is a preference among what is kept and never makes another request wait. The Anthropic endpoint sets it from `cache_control` (300, or
+3600 with `ttl: "1h"`). A request that begins as another one does shares that start with it where the model allows (Gemma 4 and Muse Spark: any start of at least 32 tokens, from a
+sequence that has grown no more than a chunk past it), and one that comes while another still runs the start waits for it rather than running the same tokens beside it.
+
 ## Connecting tools
 
 The default address is `http://127.0.0.1:8000` (`--port N` for another; if 8000 is busy and no port was asked for, the server takes the next free one up to 8020 and says which at its start).
