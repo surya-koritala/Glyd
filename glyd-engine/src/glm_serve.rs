@@ -34,9 +34,8 @@ pub fn serve(snap: &Path, pack_dir: &Path, a: &Args) -> Result<()> {
     let dump = a.flag("dump").map(std::path::PathBuf::from);
     // (the experts are read from the page cache and the engine packs the always-on matrices in memory: refuse to start where the computer has less than the headroom to spare)
     let need_gib: f64 = a.num("min-free-gb", 8.0f64)?;
-    let avail_gib = crate::os::meminfo()
-        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("MemAvailable:")?.trim().trim_end_matches("kB").trim().parse::<f64>().ok()))
-        .map(|kb| kb / (1024.0 * 1024.0));
+    // (offload::host_memory: MemAvailable, or less where a cgroup's limit is lower, the planner's own probe)
+    let avail_gib = crate::offload::host_memory().map(|b| b as f64 / (1u64 << 30) as f64);
     match avail_gib {
         Some(g) if g < need_gib => return err(format!("MemAvailable is {g:.1} GiB, where {need_gib:.1} GiB are wanted free to start (--min-free-gb)")),
         Some(g) => stderr_line(&format!("MemAvailable {g:.1} GiB")),

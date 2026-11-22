@@ -37,46 +37,9 @@ fn log(s: &str) {
     eprintln!("[{:7.1} s] {s}", START.get_or_init(Instant::now).elapsed().as_secs_f64());
 }
 
+/// The memory this process can still take, in GiB: `offload::host_memory`, the one probe of it (its cgroup's limit, MemAvailable, GLYD_MEMAVAIL_GB in a development build).
 fn mem_available_gib() -> Option<f64> {
-    // (GLYD_MEMAVAIL_GB: a test's stand-in for a smaller computer's MemAvailable, with a memory cgroup of that size around the process)
-    if let Some(g) = crate::tune!("GLYD_MEMAVAIL_GB").and_then(|v| v.parse::<f64>().ok()) {
-        return Some(g);
-    }
-    // (in a container the memory cgroup's limit can be far below the host's MemAvailable, which the container still shows: a Runpod pod of
-    // 30 GB showed the host's 62; the cgroup counts the page cache, which it can reclaim, so its room is the limit less what is not cache)
-    let cg = cgroup_room_gib();
-    let host = mem_info_available_gib();
-    match (host, cg) {
-        (Some(h), Some(c)) => Some(h.min(c)),
-        (h, c) => h.or(c),
-    }
-}
-
-/// The memory cgroup's room in GiB (v2 `memory.max`, else v1 `memory.limit_in_bytes`, less the usage that is not page cache), if it has a limit.
-fn cgroup_room_gib() -> Option<f64> {
-    let num = |p: &str| std::fs::read_to_string(p).ok()?.trim().parse::<f64>().ok();
-    let stat = |p: &str, key: &str| std::fs::read_to_string(p).ok()?.lines().find_map(|l| l.strip_prefix(key)?.trim().parse::<f64>().ok());
-    // (v2: this process's cgroup, /proc/self/cgroup's "0::/path", and the nearest of it and its parents with a limit; in a container "/")
-    let own =
-        std::fs::read_to_string("/proc/self/cgroup").ok().and_then(|t| t.lines().find_map(|l| l.strip_prefix("0::").map(str::to_string))).unwrap_or_default();
-    let v2 = std::iter::successors(Some(Path::new("/sys/fs/cgroup").join(own.trim_start_matches('/'))), |d| {
-        d.parent().filter(|p| p.starts_with("/sys/fs/cgroup")).map(Path::to_path_buf)
-    })
-    .find_map(|d| num(&d.join("memory.max").to_string_lossy()).map(|m| (m, d)));
-    let (limit, used, cache) = if let Some((max, d)) = v2 {
-        (max, num(&d.join("memory.current").to_string_lossy())?, stat(&d.join("memory.stat").to_string_lossy(), "file ").unwrap_or(0.0))
-    } else {
-        let max = num("/sys/fs/cgroup/memory/memory.limit_in_bytes")?;
-        (max, num("/sys/fs/cgroup/memory/memory.usage_in_bytes")?, stat("/sys/fs/cgroup/memory/memory.stat", "total_cache ").unwrap_or(0.0))
-    };
-    // (no limit: "max" does not parse; v1's is a huge number)
-    (limit < 1e15).then(|| (limit - (used - cache).max(0.0)).max(0.0) / (1u64 << 30) as f64)
-}
-
-fn mem_info_available_gib() -> Option<f64> {
-    crate::os::meminfo()
-        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("MemAvailable:")?.trim().trim_end_matches("kB").trim().parse::<f64>().ok()))
-        .map(|kb| kb / (1024.0 * 1024.0))
+    crate::offload::host_memory().map(|b| b as f64 / (1u64 << 30) as f64)
 }
 
 /// The decode's ceiling on this computer: the bytes a pass reads over the rates they can be read at, the GPU's streaming read for the always-on

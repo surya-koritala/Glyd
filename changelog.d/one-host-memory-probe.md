@@ -1,0 +1,1 @@
+- One probe of the memory a process can still take (`offload::host_memory`): it reads the nearest cgroup limit from the process's own cgroup up, so a systemd unit's MemoryMax (a CI runner's) counts; `fit`, `run`, `glyd doctor` and the GLM server use it, and Condor's server lost its copy. Under a 3 GB limit on glyd-pc `fit` plans with 3.0 GiB, where it took the machine's 55.9.
