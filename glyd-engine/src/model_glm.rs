@@ -48,33 +48,33 @@ pub const GM_NP: usize = 24;
 
 /// GLM's kernels with typed launches.
 pub struct KernGlm {
-    streams: Kernel,
-    mix: Kernel,
-    post: Kernel,
-    head: Kernel,
-    conv: Kernel,
-    conv_w32: Kernel,
-    rec: Kernel,
+    streams: crate::kt::glm_streams,
+    mix: crate::kt::glm_hc_mix,
+    post: crate::kt::glm_hc_post,
+    head: crate::kt::glm_hc_head,
+    conv: crate::kt::conv_silu,
+    conv_w32: crate::kt::conv_silu_w32,
+    rec: crate::kt::glm_kda_rec,
     chunk: Kernel,
-    out: Kernel,
-    out_w32: Kernel,
-    small: Kernel,
+    out: crate::kt::glm_kda_out,
+    out_w32: crate::kt::glm_kda_out_w32,
+    small: crate::kt::small_linear,
     // the latent attention's
-    rms2: Kernel,
-    layernorm: Kernel,
-    scatter: Kernel,
-    absorb: Kernel,
-    kp_keys: Kernel,
-    idx_score: Kernel,
-    select: Kernel,
+    rms2: crate::kt::glm_rms2,
+    layernorm: crate::kt::glm_layernorm,
+    scatter: crate::kt::glm_scatter,
+    absorb: crate::kt::glm_absorb,
+    kp_keys: crate::kt::glm_kp_keys,
+    idx_score: crate::kt::glm_idx_score,
+    select: crate::kt::glm_select,
     mla_attn: Kernel,
     /// The shared memory a block of `mla_attn` may take here (the GPU's most, opted in to at load).
     mla_smem: u32,
-    mla_merge: Kernel,
-    expand_v: Kernel,
+    mla_merge: crate::kt::glm_mla_merge,
+    expand_v: crate::kt::glm_expand_v,
     // the mixing weights for few rows: the split projection and its rest
-    hc_proj: Kernel,
-    hc_fin: Kernel,
+    hc_proj: crate::kt::glm_hc_proj,
+    hc_fin: crate::kt::glm_hc_fin,
     /// The split projection's partial sums, for up to HC_FEW rows.
     hc_part: Buf,
 }
@@ -101,30 +101,30 @@ impl KernGlm {
         let (mla_attn, mla_smem) = (dev.kernel(kname!("glm_mla_attn"))?, mla_smem(dev)?);
         mla_attn.allow_smem(mla_smem)?;
         Ok(KernGlm {
-            streams: dev.kernel(kname!("glm_streams"))?,
-            mix: dev.kernel(kname!("glm_hc_mix"))?,
-            post: dev.kernel(kname!("glm_hc_post"))?,
-            head: dev.kernel(kname!("glm_hc_head"))?,
-            conv: dev.kernel(kname!("conv_silu"))?,
-            conv_w32: dev.kernel(kname!("conv_silu_w32"))?,
-            rec: dev.kernel(kname!("glm_kda_rec"))?,
+            streams: dev.typed()?,
+            mix: dev.typed()?,
+            post: dev.typed()?,
+            head: dev.typed()?,
+            conv: dev.typed()?,
+            conv_w32: dev.typed()?,
+            rec: dev.typed()?,
             chunk,
-            out: dev.kernel(kname!("glm_kda_out"))?,
-            out_w32: dev.kernel(kname!("glm_kda_out_w32"))?,
-            small: dev.kernel(kname!("small_linear"))?,
-            rms2: dev.kernel(kname!("glm_rms2"))?,
-            layernorm: dev.kernel(kname!("glm_layernorm"))?,
-            scatter: dev.kernel(kname!("glm_scatter"))?,
-            absorb: dev.kernel(kname!("glm_absorb"))?,
-            kp_keys: dev.kernel(kname!("glm_kp_keys"))?,
-            idx_score: dev.kernel(kname!("glm_idx_score"))?,
-            select: dev.kernel(kname!("glm_select"))?,
+            out: dev.typed()?,
+            out_w32: dev.typed()?,
+            small: dev.typed()?,
+            rms2: dev.typed()?,
+            layernorm: dev.typed()?,
+            scatter: dev.typed()?,
+            absorb: dev.typed()?,
+            kp_keys: dev.typed()?,
+            idx_score: dev.typed()?,
+            select: dev.typed()?,
             mla_attn,
             mla_smem,
-            mla_merge: dev.kernel(kname!("glm_mla_merge"))?,
-            expand_v: dev.kernel(kname!("glm_expand_v"))?,
-            hc_proj: dev.kernel(kname!("glm_hc_proj"))?,
-            hc_fin: dev.kernel(kname!("glm_hc_fin"))?,
+            mla_merge: dev.typed()?,
+            expand_v: dev.typed()?,
+            hc_proj: dev.typed()?,
+            hc_fin: dev.typed()?,
             hc_part: Buf::zeroed(HC_FEW as usize * 64 * (GM_NP + 1) * 4)?,
         })
     }
@@ -205,7 +205,7 @@ impl KernGlm {
     /// As `streams`.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn conv(&self, s: Stream, x: u64, xs: i32, w: u64, w32: bool, st: u64, y: u64, n: i32, c: i32) -> Result<()> {
-        launch!(if w32 { &self.conv_w32 } else { &self.conv }, [(c as u32).div_ceil(256), 1, 1], [256, 1, 1], s; x, xs, w, st, y, n, c)
+        launch!(if w32 { self.conv_w32.sig() } else { self.conv.sig() }, [(c as u32).div_ceil(256), 1, 1], [256, 1, 1], s; x, xs, w, st, y, n, c)
     }
 
     /// The delta rule of n rows for `heads` heads: token by token (a decode step: n = 1) or, `chunked`, in chunks of GM_L tokens. xc [n, 3 heads 128] the convolution's output, fg [n, heads 128] and bb [n, heads] the gates'
@@ -242,7 +242,7 @@ impl KernGlm {
     /// As `streams`.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn delta_out(&self, s: Stream, core: u64, og: u64, w: u64, w32: bool, att: u64, n: u32, heads: i32, eps: f32) -> Result<()> {
-        launch!(if w32 { &self.out_w32 } else { &self.out }, [n, heads as u32, 1], [128, 1, 1], s; core, og, w, att, heads, eps)
+        launch!(if w32 { self.out_w32.sig() } else { self.out.sig() }, [n, heads as u32, 1], [128, 1, 1], s; core, og, w, att, heads, eps)
     }
 
     /// n rows of x (rows `xs` apart, `k` wide) normed as transformers' RMSNorm does (weight w [k]) into y (rows `ys` apart); with `dst` (the rows' positions, int32 on the device) row i goes to y's row dst[i], else to row i.

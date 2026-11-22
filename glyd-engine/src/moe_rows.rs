@@ -214,7 +214,7 @@ pub fn rows_fit(experts: usize, rows: usize, cols: usize, cfg: &MoeCfg) -> Resul
 /// The sparse product's kernels (kernels/moe_rows.cu) with typed launches.
 pub struct RowsKern {
     down: [Kernel; 3],
-    sum: Kernel,
+    sum: crate::kt::moe_rows_sum,
     sms: usize,
 }
 
@@ -222,7 +222,7 @@ impl RowsKern {
     pub fn load(dev: &Dev) -> Result<RowsKern> {
         Ok(RowsKern {
             down: [dev.kernel(kname!("moe_down_rows4"))?, dev.kernel(kname!("moe_down_rows5"))?, dev.kernel(kname!("moe_down_rows6"))?],
-            sum: dev.kernel(kname!("moe_rows_sum"))?,
+            sum: dev.typed()?,
             sms: dev.sms.max(1) as usize,
         })
     }

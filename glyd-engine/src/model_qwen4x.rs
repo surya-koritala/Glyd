@@ -37,42 +37,42 @@ const SEL_SPLITS: usize = 16;
 /// The kernels of kernels/qwen4x.cu with typed launches.
 pub struct KernQx {
     /// a decode step's GDN mixer in fewer launches: the convolution beside the b and a product, the rule with the gated norm after it
-    gdn_conv_ba: Kernel,
-    gdn_rec_gn: Kernel,
+    gdn_conv_ba: crate::kt::qx_gdn_conv_ba,
+    gdn_rec_gn: crate::kt::qx_gdn_rec_gn,
     /// a row's top token's probability (`qx_top_prob`)
-    top_prob: Kernel,
+    top_prob: crate::kt::qx_top_prob,
     /// the Gated Residual's norm and down for 5 to 8 rows by slices of columns (`qx_gr1s_8`) and its scratch: the slices' sums, their squares, a counter a group of rows
-    gr1s: Kernel,
+    gr1s: crate::kt::qx_gr1s_8,
     gr1s_part: Buf,
     gr1s_sq: Buf,
     gr1s_cnt: Buf,
-    hc_norm: Kernel,
-    silu4: Kernel,
-    hc_mix: Kernel,
-    hc_post: Kernel,
-    gnorm: Kernel,
-    ple_gate: Kernel,
-    ple_conv: Kernel,
-    ix_prep: Kernel,
-    ix_cmp: Kernel,
-    attn_sel: Kernel,
-    attn_tc: Kernel,
-    ix_score: Kernel,
+    hc_norm: crate::kt::qx_hc_norm,
+    silu4: crate::kt::qx_silu4,
+    hc_mix: crate::kt::qx_hc_mix,
+    hc_post: crate::kt::qx_hc_post,
+    gnorm: crate::kt::qx_gnorm_sig,
+    ple_gate: crate::kt::qx_ple_gate,
+    ple_conv: crate::kt::qx_ple_conv,
+    ix_prep: crate::kt::qx_ix_prep,
+    ix_cmp: crate::kt::qx_ix_cmp,
+    attn_sel: crate::kt::qx_attn_sel,
+    attn_tc: crate::kt::qx_attn_tc,
+    ix_score: crate::kt::qx_ix_score,
     select: Kernel,
     /// (the split attention of a decode step's rows with 4 and 8 warps a block)
     attn_dec: [Kernel; 2],
-    conv_tok: Kernel,
-    conv_state: Kernel,
+    conv_tok: crate::kt::qx_conv_tok,
+    conv_state: crate::kt::qx_conv_state,
     gdn_prep: Kernel,
     gdn_scan: Kernel,
     /// the two-pass delta rule's scratch (`delta2`), made by its first call and grown by a longer one
     gdn_buf: std::cell::RefCell<Option<Buf>>,
-    merge: Kernel,
+    merge: crate::kt::attn256_merge,
     // (the fused Gated Residual's for 1, 2, 4 and 8 rows; its first launch also by streams, `qx_gr1q`, on gr1s's scratch)
     gr1: [Kernel; 4],
     gr1q: [Kernel; 3],
     gr2: [Kernel; 4],
-    i8bf16: Kernel,
+    i8bf16: crate::kt::qx_i8_bf16,
 }
 
 /// The kernel of a few-rows family (1, 2, 4 or 8 rows) for n rows (1 to 8).
@@ -88,24 +88,24 @@ pub(crate) fn rows_kernel(k: &[Kernel; 4], n: usize) -> &Kernel {
 impl KernQx {
     pub fn load(dev: &Dev) -> Result<KernQx> {
         Ok(KernQx {
-            gdn_conv_ba: dev.kernel(kname!("qx_gdn_conv_ba"))?,
-            gdn_rec_gn: dev.kernel(kname!("qx_gdn_rec_gn"))?,
-            top_prob: dev.kernel(kname!("qx_top_prob"))?,
-            gr1s: dev.kernel(kname!("qx_gr1s_8"))?,
+            gdn_conv_ba: dev.typed()?,
+            gdn_rec_gn: dev.typed()?,
+            top_prob: dev.typed()?,
+            gr1s: dev.typed()?,
             gr1s_part: Buf::new(GR1S_SLICES * GR1S_GROUPS * 32 * 8 * 4)?,
             gr1s_sq: Buf::new(GR1S_GROUPS * GR1S_SLICES * 8 * 4)?,
             gr1s_cnt: Buf::zeroed(GR1S_GROUPS.max(GR1Q_GROUPS) * 4)?,
-            hc_norm: dev.kernel(kname!("qx_hc_norm"))?,
-            silu4: dev.kernel(kname!("qx_silu4"))?,
-            hc_mix: dev.kernel(kname!("qx_hc_mix"))?,
-            hc_post: dev.kernel(kname!("qx_hc_post"))?,
-            gnorm: dev.kernel(kname!("qx_gnorm_sig"))?,
-            ple_gate: dev.kernel(kname!("qx_ple_gate"))?,
-            ple_conv: dev.kernel(kname!("qx_ple_conv"))?,
-            ix_prep: dev.kernel(kname!("qx_ix_prep"))?,
-            ix_cmp: dev.kernel(kname!("qx_ix_cmp"))?,
-            attn_sel: dev.kernel(kname!("qx_attn_sel"))?,
-            ix_score: dev.kernel(kname!("qx_ix_score"))?,
+            hc_norm: dev.typed()?,
+            silu4: dev.typed()?,
+            hc_mix: dev.typed()?,
+            hc_post: dev.typed()?,
+            gnorm: dev.typed()?,
+            ple_gate: dev.typed()?,
+            ple_conv: dev.typed()?,
+            ix_prep: dev.typed()?,
+            ix_cmp: dev.typed()?,
+            attn_sel: dev.typed()?,
+            ix_score: dev.typed()?,
             attn_dec: {
                 let ks = [dev.kernel(kname!("qx_attn_dec4"))?, dev.kernel(kname!("qx_attn_dec8"))?];
                 for (k, w) in ks.iter().zip([4u32, 8]) {
@@ -118,9 +118,9 @@ impl KernQx {
                 k.allow_smem((QX_SEL_CAP * 4) as u32)?;
                 k
             },
-            attn_tc: dev.kernel(kname!("qx_attn_tc"))?,
-            conv_tok: dev.kernel(kname!("qx_conv_tok"))?,
-            conv_state: dev.kernel(kname!("qx_conv_state"))?,
+            attn_tc: dev.typed()?,
+            conv_tok: dev.typed()?,
+            conv_state: dev.typed()?,
             gdn_prep: {
                 let k = dev.kernel(kname!("qx_gdn_prep"))?;
                 k.allow_smem(GDN_PREP_SMEM)?;
@@ -132,11 +132,11 @@ impl KernQx {
                 k
             },
             gdn_buf: std::cell::RefCell::new(None),
-            merge: dev.kernel(kname!("attn256_merge"))?,
+            merge: dev.typed()?,
             gr1: [dev.kernel(kname!("qx_gr1_1"))?, dev.kernel(kname!("qx_gr1_2"))?, dev.kernel(kname!("qx_gr1_4"))?, dev.kernel(kname!("qx_gr1_8"))?],
             gr1q: [dev.kernel(kname!("qx_gr1q_1"))?, dev.kernel(kname!("qx_gr1q_2"))?, dev.kernel(kname!("qx_gr1q_4"))?],
             gr2: [dev.kernel(kname!("qx_gr2_1"))?, dev.kernel(kname!("qx_gr2_2"))?, dev.kernel(kname!("qx_gr2_4"))?, dev.kernel(kname!("qx_gr2_8"))?],
-            i8bf16: dev.kernel(kname!("qx_i8_bf16"))?,
+            i8bf16: dev.typed()?,
         })
     }
 

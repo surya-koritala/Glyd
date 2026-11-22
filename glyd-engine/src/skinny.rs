@@ -27,15 +27,12 @@ const INT4H: u32 = 13;
 pub struct SkinnyKern {
     // [Int4, Int5, Int6]
     x: [Kernel; 3],
-    x4h: Kernel,
+    x4h: crate::kt::skinnyx4h,
 }
 
 impl SkinnyKern {
     pub fn load(dev: &Dev) -> Result<SkinnyKern> {
-        Ok(SkinnyKern {
-            x: [dev.kernel(kname!("skinnyx4"))?, dev.kernel(kname!("skinnyx5"))?, dev.kernel(kname!("skinnyx6"))?],
-            x4h: dev.kernel(kname!("skinnyx4h"))?,
-        })
+        Ok(SkinnyKern { x: [dev.kernel(kname!("skinnyx4"))?, dev.kernel(kname!("skinnyx5"))?, dev.kernel(kname!("skinnyx6"))?], x4h: dev.typed()? })
     }
 
     /// Whether `w` is a matrix these products take: the Int4, Int5 or Int6 layout (tiered words), rows a multiple of 64, columns of 32.

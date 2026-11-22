@@ -463,25 +463,25 @@ fn rot_grid(width: usize, rot: usize) -> (u32, u32) {
 
 /// The Hummingbird layer's kernels (kernels/moe_hbg.cu) with typed launches. Device addresses are `u64`.
 pub struct HbgKern {
-    tables: Kernel,
-    rot: Kernel,
+    tables: crate::kt::hbg_tables,
+    rot: crate::kt::hbg_rot_in,
     up: [Kernel; 2],
     down: [Kernel; 2],
-    inv: Kernel,
-    sum: Kernel,
-    unrot: Kernel,
+    inv: crate::kt::hbg_inv,
+    sum: crate::kt::hbg_sum_rot,
+    unrot: crate::kt::hbg_unrot,
 }
 
 impl HbgKern {
     pub fn load(dev: &Dev) -> Result<HbgKern> {
         Ok(HbgKern {
-            tables: dev.kernel(kname!("hbg_tables"))?,
-            rot: dev.kernel(kname!("hbg_rot_in"))?,
+            tables: dev.typed()?,
+            rot: dev.typed()?,
             up: [dev.kernel(kname!("hbg_up2"))?, dev.kernel(kname!("hbg_up3"))?],
             down: [dev.kernel(kname!("hbg_down2"))?, dev.kernel(kname!("hbg_down3"))?],
-            inv: dev.kernel(kname!("hbg_inv"))?,
-            sum: dev.kernel(kname!("hbg_sum_rot"))?,
-            unrot: dev.kernel(kname!("hbg_unrot"))?,
+            inv: dev.typed()?,
+            sum: dev.typed()?,
+            unrot: dev.typed()?,
         })
     }
 

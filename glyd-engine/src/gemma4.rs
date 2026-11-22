@@ -6,7 +6,7 @@
 //! Sliding layers (5 of 6): head 256, keys and values of the last `window` positions (a ring), the full rotary at theta 1e4. Global layers: head 512, the keys' projection
 //! as the values too where the config says K = V, the proportional rotary (64 of 256 pairs) at theta 1e6. Attention scale 1. The logits soft-capped (30 tanh(l / 30)).
 
-use crate::dev::{Buf, Dev, Kernel};
+use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result};
 use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload_packed, Item, Layout, PackBuf};
 #[cfg(feature = "dev")]
@@ -14,12 +14,6 @@ use crate::{ffi::Lib, launch, model::Sample};
 use glyd_gpu::json::{self, Value};
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
-
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
 
 /// Keys a tile of the attention kernels (G4_KB in kernels/gemma4.cu).
 pub(crate) const KB: usize = 32;
@@ -449,24 +443,24 @@ impl DraftG4 {
     }
 }
 
-/// kernels/gemma4.cu with typed launches.
+/// kernels/gemma4.cu's kernels, each by its type (`crate::kt`): a launch with arguments of other types than the kernel's does not compile.
 pub struct KernG4 {
-    pub(crate) norm: Kernel,
-    pub(crate) embed_norm: Kernel,
-    pub(crate) add_norm: Kernel,
-    pub(crate) prep256: Kernel,
-    pub(crate) prep512: Kernel,
-    pub(crate) attn256: Kernel,
-    pub(crate) attn512: Kernel,
-    pub(crate) parts256: Kernel,
-    pub(crate) parts512: Kernel,
-    pub(crate) merge: Kernel,
-    pub(crate) gelu: Kernel,
-    pub(crate) softcap: Kernel,
-    pub(crate) draft_in: Kernel,
-    pub(crate) fa256: Kernel,
-    pub(crate) fa512: Kernel,
-    pub(crate) fa512b: Kernel,
+    pub(crate) norm: crate::kt::g4_rmsnorm,
+    pub(crate) embed_norm: crate::kt::g4_embed_norm,
+    pub(crate) add_norm: crate::kt::g4_add_norm,
+    pub(crate) prep256: crate::kt::g4_prep256,
+    pub(crate) prep512: crate::kt::g4_prep512,
+    pub(crate) attn256: crate::kt::g4_attn256,
+    pub(crate) attn512: crate::kt::g4_attn512,
+    pub(crate) parts256: crate::kt::g4_attn256_parts,
+    pub(crate) parts512: crate::kt::g4_attn512_parts,
+    pub(crate) merge: crate::kt::g4_attn_merge,
+    pub(crate) gelu: crate::kt::g4_gelu_mul,
+    pub(crate) softcap: crate::kt::g4_softcap,
+    pub(crate) draft_in: crate::kt::g4_draft_in,
+    pub(crate) fa256: crate::kt::g4_fa256,
+    pub(crate) fa512: crate::kt::g4_fa512,
+    pub(crate) fa512b: crate::kt::g4_fa512b,
     /// Whether prompt chunks take the tensor-core attention (g4_fa256, g4_fa512b; GLYD_G4_FA=0: g4_attn_t).
     pub(crate) fa: bool,
 }
@@ -487,22 +481,22 @@ pub(crate) fn attn_smem(d: usize, rg: usize) -> u32 {
 impl KernG4 {
     pub fn load(dev: &Dev) -> Result<KernG4> {
         let k = KernG4 {
-            norm: dev.kernel(kname!("g4_rmsnorm"))?,
-            embed_norm: dev.kernel(kname!("g4_embed_norm"))?,
-            add_norm: dev.kernel(kname!("g4_add_norm"))?,
-            prep256: dev.kernel(kname!("g4_prep256"))?,
-            prep512: dev.kernel(kname!("g4_prep512"))?,
-            attn256: dev.kernel(kname!("g4_attn256"))?,
-            attn512: dev.kernel(kname!("g4_attn512"))?,
-            parts256: dev.kernel(kname!("g4_attn256_parts"))?,
-            parts512: dev.kernel(kname!("g4_attn512_parts"))?,
-            merge: dev.kernel(kname!("g4_attn_merge"))?,
-            gelu: dev.kernel(kname!("g4_gelu_mul"))?,
-            softcap: dev.kernel(kname!("g4_softcap"))?,
-            draft_in: dev.kernel(kname!("g4_draft_in"))?,
-            fa256: dev.kernel(kname!("g4_fa256"))?,
-            fa512: dev.kernel(kname!("g4_fa512"))?,
-            fa512b: dev.kernel(kname!("g4_fa512b"))?,
+            norm: dev.typed()?,
+            embed_norm: dev.typed()?,
+            add_norm: dev.typed()?,
+            prep256: dev.typed()?,
+            prep512: dev.typed()?,
+            attn256: dev.typed()?,
+            attn512: dev.typed()?,
+            parts256: dev.typed()?,
+            parts512: dev.typed()?,
+            merge: dev.typed()?,
+            gelu: dev.typed()?,
+            softcap: dev.typed()?,
+            draft_in: dev.typed()?,
+            fa256: dev.typed()?,
+            fa512: dev.typed()?,
+            fa512b: dev.typed()?,
             // (on: against transformers bf16 on 31B QAT, wikitext 32 x 512, KLD 0.0192 where g4_attn_t's is 0.0225, and a 28K prompt 2x faster;
             // GLYD_G4_FA=0 for g4_attn_t)
             fa: {
@@ -517,7 +511,7 @@ impl KernG4 {
         k.fa256.allow_smem(fa_smem(256, 256, 64))?;
         k.fa512.allow_smem(fa_smem(512, 256, 32))?;
         k.fa512b.allow_smem(FA512B_SMEM)?;
-        for (kern, d) in [(&k.attn256, 256), (&k.parts256, 256), (&k.attn512, 512), (&k.parts512, 512)] {
+        for (kern, d) in [(&*k.attn256, 256), (&*k.parts256, 256), (&*k.attn512, 512), (&*k.parts512, 512)] {
             kern.allow_smem(attn_smem(d, 16))?;
         }
         Ok(k)
@@ -868,15 +862,15 @@ pub fn fa_test(a: &crate::args::Args) -> Result<()> {
         let (o1, o2) = (Buf::zeroed(n * nq * d * 2)?, Buf::zeroed(n * nq * d * 2)?);
         let g = nq / nk;
         let r = (16 / g).max(1);
-        let (attn, fa, bm) = if d == 256 { (&kg.attn256, &kg.fa256, 64usize) } else { (&kg.attn512, &kg.fa512, 32usize) };
+        let (attn, fa, bm) = if d == 256 { (kg.attn256.sig(), kg.fa256.sig(), 64usize) } else { (kg.attn512.sig(), kg.fa512.sig(), 32usize) };
         let (nqi, nki) = (nq as i32, nk as i32);
         // SAFETY: buffers sized for n rows and cap positions.
         unsafe {
-            launch!(*attn, [((n + r - 1) / r) as u32, nk as u32, 1], [(32 * r * g) as u32, 1, 1], smem attn_smem(d, r * g), s; q.ptr, kc.ptr, vc.ptr, pb.ptr, o1.ptr, n as i32, nqi, nki, r as i32, window, cap as i32, 0u64)?;
+            launch!(attn, [((n + r - 1) / r) as u32, nk as u32, 1], [(32 * r * g) as u32, 1, 1], smem attn_smem(d, r * g), s; q.ptr, kc.ptr, vc.ptr, pb.ptr, o1.ptr, n as i32, nqi, nki, r as i32, window, cap as i32, 0u64)?;
             if d == 512 && a.has("b") {
                 launch!(kg.fa512b, [(n.div_ceil(32)) as u32, nq as u32, 1], [256, 1, 1], smem FA512B_SMEM, s; q.ptr, kc.ptr, vc.ptr, pb.ptr, o2.ptr, n as i32, nqi, nki, window, cap as i32, 0u64)?;
             } else {
-                launch!(*fa, [(n.div_ceil(bm)) as u32, nq as u32, (d / 256) as u32], [(bm / 16 * 32) as u32, 1, 1], smem fa_smem(d, 256, bm), s; q.ptr, kc.ptr, vc.ptr, pb.ptr, o2.ptr, n as i32, nqi, nki, window, cap as i32, 0u64)?;
+                launch!(fa, [(n.div_ceil(bm)) as u32, nq as u32, (d / 256) as u32], [(bm / 16 * 32) as u32, 1, 1], smem fa_smem(d, 256, bm), s; q.ptr, kc.ptr, vc.ptr, pb.ptr, o2.ptr, n as i32, nqi, nki, window, cap as i32, 0u64)?;
             }
         }
         dev.sync()?;

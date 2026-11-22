@@ -1492,7 +1492,7 @@ impl Dyn {
                 self.mark(name)
             }
             Op::QkvPrep { d, nq, nk, has_v, stride, q_norm, k_norm, rope, rot, ring } => {
-                let prep = if d == 256 { &self.kg.prep256 } else { &self.kg.prep512 };
+                let prep = if d == 256 { self.kg.prep256.sig() } else { self.kg.prep512.sig() };
                 let (proj, qo) = (p.slot(Slot::Proj) + self.rows_before(stride), p.slot(Slot::Qo) + self.rows_before(nq * d));
                 let (nq, nki) = (nq as i32, nk as i32);
                 let (kc, vc) = self.cache(ring);
@@ -1500,7 +1500,7 @@ impl Dyn {
                 let (nx, rows) = Self::next_linear(p, l, i, n, head);
                 let (pf, pfb) = self.pf(nx, rows, self.pf_kib[0], (d / 2) as u32);
                 let slice = nu * (nq + nki) as u32;
-                launch!(*prep, [nu, (nq + nki) as u32, 1 + pfb.div_ceil(slice)], [(d / 2) as u32, 1, 1], s; proj, stride as i32, p.small[q_norm].ptr, p.small[k_norm].ptr, cos, sin, rot as i32, pos.0, self.ring_cap[ring] as i32, qo, kc, vc, nq, nki, has_v as i32, eps, pf, self.table(ring))?;
+                launch!(prep, [nu, (nq + nki) as u32, 1 + pfb.div_ceil(slice)], [(d / 2) as u32, 1, 1], s; proj, stride as i32, p.small[q_norm].ptr, p.small[k_norm].ptr, cos, sin, rot as i32, pos.0, self.ring_cap[ring] as i32, qo, kc, vc, nq, nki, has_v as i32, eps, pf, self.table(ring))?;
                 self.mark("prep")
             }
             Op::Attention { d, nq, nk, window, ring } => {
@@ -1510,8 +1510,8 @@ impl Dyn {
                 let (cap, window) = (self.ring_cap[ring] as i32, window as i32);
                 let g = nq / nki;
                 if n <= self.split_rows {
-                    let parts = if d == 256 { &self.kg.parts256 } else { &self.kg.parts512 };
-                    launch!(*parts, [nu, nki as u32, SPLITS as u32], [(32 * g.max(PART_WARPS)) as u32, 1, 1], smem attn_smem(d, g as usize), s; qo, kc, vc, pos.1, n as i32, nq, nki, window, cap, self.part.ptr, SPLITS as i32, self.table(ring))?;
+                    let parts = if d == 256 { self.kg.parts256.sig() } else { self.kg.parts512.sig() };
+                    launch!(parts, [nu, nki as u32, SPLITS as u32], [(32 * g.max(PART_WARPS)) as u32, 1, 1], smem attn_smem(d, g as usize), s; qo, kc, vc, pos.1, n as i32, nq, nki, window, cap, self.part.ptr, SPLITS as i32, self.table(ring))?;
                     launch!(self.kg.merge, [nu, nq as u32, 1], [di as u32, 1, 1], s; self.part.ptr, SPLITS as i32, att, nq, di)?;
                 } else if self.kg.fa {
                     if d == 256 {
@@ -1521,8 +1521,8 @@ impl Dyn {
                     }
                 } else {
                     let r = (16 / g).max(1);
-                    let attn = if d == 256 { &self.kg.attn256 } else { &self.kg.attn512 };
-                    launch!(*attn, [((n as i32 + r - 1) / r) as u32, nki as u32, 1], [(32 * r * g) as u32, 1, 1], smem attn_smem(d, (r * g) as usize), s; qo, kc, vc, pos.1, att, n as i32, nq, nki, r, window, cap, self.table(ring))?;
+                    let attn = if d == 256 { self.kg.attn256.sig() } else { self.kg.attn512.sig() };
+                    launch!(attn, [((n as i32 + r - 1) / r) as u32, nki as u32, 1], [(32 * r * g) as u32, 1, 1], smem attn_smem(d, (r * g) as usize), s; qo, kc, vc, pos.1, att, n as i32, nq, nki, r, window, cap, self.table(ring))?;
                 }
                 self.mark(if window > 0 { "attention (sliding)" } else { "attention (global)" })
             }

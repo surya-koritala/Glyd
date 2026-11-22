@@ -473,24 +473,24 @@ pub struct MoeWeights {
 
 /// The layer's kernels (kernels/moe.cu) with typed launches. Device addresses are `u64`.
 pub struct MoeKern {
-    logits: Kernel,
+    logits: crate::kt::moe_logits,
     select: [Kernel; 3],
-    act: Kernel,
-    add: Kernel,
-    add_f32: Kernel,
+    act: crate::kt::moe_act,
+    add: crate::kt::moe_add,
+    add_f32: crate::kt::moe_add_f32,
     // DeepSeek-V4's (kernels/dsv4.cu): the activation with each pair's weight in it, the routing by token
-    act_w: Kernel,
-    hash: Kernel,
+    act_w: crate::kt::v4_moe_act,
+    hash: crate::kt::v4_hash_select,
     // the FP8 experts' sum (each pair's own row): the pairs' rows, the weighted sum
-    inv: Kernel,
-    wsum: Kernel,
+    inv: crate::kt::moe_inv,
+    wsum: crate::kt::moe_wsum,
     // the FP8 experts' places in the expert cache: their heads made their own (src/f8.rs F8Places)
-    f8_rebase: Kernel,
+    f8_rebase: crate::kt::moe_f8_rebase,
     // Muse Spark's (kernels/muse.cu): the router of fp32 weights, the activation, the pairs' rows, the normed weighted sum
-    mu_router: Kernel,
-    mu_act: Kernel,
-    mu_inv: Kernel,
-    mu_sum: Kernel,
+    mu_router: crate::kt::muse_router,
+    mu_act: crate::kt::muse_act,
+    mu_inv: crate::kt::muse_inv,
+    mu_sum: crate::kt::muse_moe_sum,
 }
 
 /// The select kernel for `experts` (8, 16 or 32 registers a lane: 256, 512 or 1,024 experts).
@@ -513,20 +513,20 @@ fn aligned(p: u64, what: &str) -> Result<()> {
 impl MoeKern {
     pub fn load(dev: &Dev) -> Result<MoeKern> {
         Ok(MoeKern {
-            logits: dev.kernel(kname!("moe_logits"))?,
+            logits: dev.typed()?,
             select: [dev.kernel(kname!("moe_select8"))?, dev.kernel(kname!("moe_select16"))?, dev.kernel(kname!("moe_select32"))?],
-            act: dev.kernel(kname!("moe_act"))?,
-            add: dev.kernel(kname!("moe_add"))?,
-            add_f32: dev.kernel(kname!("moe_add_f32"))?,
-            act_w: dev.kernel(kname!("v4_moe_act"))?,
-            hash: dev.kernel(kname!("v4_hash_select"))?,
-            inv: dev.kernel(kname!("moe_inv"))?,
-            wsum: dev.kernel(kname!("moe_wsum"))?,
-            f8_rebase: dev.kernel(kname!("moe_f8_rebase"))?,
-            mu_router: dev.kernel(kname!("muse_router"))?,
-            mu_act: dev.kernel(kname!("muse_act"))?,
-            mu_inv: dev.kernel(kname!("muse_inv"))?,
-            mu_sum: dev.kernel(kname!("muse_moe_sum"))?,
+            act: dev.typed()?,
+            add: dev.typed()?,
+            add_f32: dev.typed()?,
+            act_w: dev.typed()?,
+            hash: dev.typed()?,
+            inv: dev.typed()?,
+            wsum: dev.typed()?,
+            f8_rebase: dev.typed()?,
+            mu_router: dev.typed()?,
+            mu_act: dev.typed()?,
+            mu_inv: dev.typed()?,
+            mu_sum: dev.typed()?,
         })
     }
 

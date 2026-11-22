@@ -49,7 +49,27 @@ fn find_nvcc() -> Option<PathBuf> {
     env::split_paths(&path).map(|d| d.join(exe)).find(|p| p.exists())
 }
 
+#[path = "build/kernel_types.rs"]
+mod kernel_types;
+
+/// `crate::kt` (src/lib.rs): a type for each kernel of kernels/*.cu, written to OUT_DIR on every build, with or without a CUDA compiler.
+fn write_kernel_types() {
+    println!("cargo:rerun-if-changed=build/kernel_types.rs");
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir("kernels")
+        .expect("kernels/")
+        .map(|e| e.expect("an entry of kernels/").path())
+        .filter(|p| p.extension().is_some_and(|x| x == "cu"))
+        .collect();
+    files.sort();
+    let sources: Vec<(String, String)> =
+        files.iter().map(|p| (p.file_name().expect("a name").to_string_lossy().into_owned(), std::fs::read_to_string(p).expect("a kernel source"))).collect();
+    let out = kernel_types::generate(&sources).unwrap_or_else(|e| panic!("the kernels' types: {e}"));
+    let dir = std::env::var("OUT_DIR").expect("OUT_DIR");
+    std::fs::write(std::path::Path::new(&dir).join("kernel_types.rs"), out).expect("kernel_types.rs written");
+}
+
 fn main() {
+    write_kernel_types();
     println!("cargo:rerun-if-changed=kernels/engine.cu");
     println!("cargo:rerun-if-changed=kernels/qwen35.cu");
     println!("cargo:rerun-if-changed=kernels/moe.cu");

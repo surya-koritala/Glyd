@@ -498,12 +498,12 @@ pub fn rope_rows(theta: f64, half: usize, rows: &[[u32; 3]]) -> (Vec<u16>, Vec<u
 // ---- the tower ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 struct KernVis {
-    ln: Kernel,
-    bias: Kernel,
-    embed: Kernel,
-    rope: Kernel,
+    ln: crate::kt::vis_ln,
+    bias: crate::kt::vis_bias,
+    embed: crate::kt::vis_embed,
+    rope: crate::kt::vis_rope,
     attn: Kernel,
-    pad: Kernel,
+    pad: crate::kt::vis_pad,
 }
 
 /// vis_attn's dynamic shared memory: 320 rows of 88 bf16.
@@ -589,14 +589,7 @@ impl Tower {
         }
         let attn = dev.kernel(kname!("vis_attn"))?;
         attn.allow_smem(ATTN_SMEM)?;
-        let k = KernVis {
-            ln: dev.kernel(kname!("vis_ln"))?,
-            bias: dev.kernel(kname!("vis_bias"))?,
-            embed: dev.kernel(kname!("vis_embed"))?,
-            rope: dev.kernel(kname!("vis_rope"))?,
-            attn,
-            pad: dev.kernel(kname!("vis_pad"))?,
-        };
+        let k = KernVis { ln: dev.typed()?, bias: dev.typed()?, embed: dev.typed()?, rope: dev.typed()?, attn, pad: dev.typed()? };
         Ok(Some(Tower { src, depth: cfg.depth, k }))
     }
 

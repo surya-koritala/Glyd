@@ -146,7 +146,7 @@ impl Cb2Host {
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
-struct Segs {
+pub(crate) struct Segs {
     n: i32,
     begin: [i32; 16],
     rows: [i32; 16],
@@ -371,13 +371,13 @@ pub struct Cb2Kern {
     /// the host's share of the next calls (None: the GPU takes every expert), and what the last call's took
     pub host: std::cell::Cell<Option<HostShare>>,
     pub took: std::cell::Cell<HostTook>,
-    add: Kernel,
+    add: crate::kt::c2_add_f32,
     // the products of two, three and four bits
     up: [Kernel; 3],
     down: [Kernel; 3],
-    tern: Kernel,
+    tern: crate::kt::c2_tern_cb2,
     /// the ternary rows' conversion at any width (Qwen's), and the width and neurons the products are made for
-    tern_rows: Kernel,
+    tern_rows: crate::kt::c2_tern_rows,
     /// the products of every width in one launch (Qwen3.8-Flash-Next's experts: `c2qx_*`), the outputs a block of their second, and the first products with 128 pairs a block
     /// (two stages only)
     mixed: Option<(Kernel, Kernel)>,
@@ -456,11 +456,11 @@ impl Cb2Kern {
         Ok(Cb2Kern {
             host: std::cell::Cell::new(None),
             took: std::cell::Cell::new(HostTook::default()),
-            add: dev.kernel(kname!("c2_add_f32"))?,
+            add: dev.typed()?,
             up,
             down,
-            tern: dev.kernel(kname!("c2_tern_cb2"))?,
-            tern_rows: dev.kernel(kname!("c2_tern_rows"))?,
+            tern: dev.typed()?,
+            tern_rows: dev.typed()?,
             mixed,
             dout,
             up128,

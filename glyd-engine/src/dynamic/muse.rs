@@ -4,7 +4,7 @@
 //! arithmetic is kernels/muse.cu's; src/muse_ref.rs is the CPU reference it is checked against (`musecheck`).
 
 use super::{Dyn, Loaded, ModelDesc, Op, Opts, Ring, Slot, Stage};
-use crate::dev::{Buf, Dev, Kernel};
+use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result};
 use crate::kern35::Mat;
 use crate::kern_nh::{MoeBlock, NhHost};
@@ -15,32 +15,19 @@ use crate::weights::{as_bytes, pack_words, upload_bytes, upload_packed, Layout};
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
-
 /// kernels/muse.cu's kernels the executor launches (the experts' are moe.rs's).
 pub struct KernMuse {
-    pub qk: Kernel,
-    pub attn: Kernel,
-    pub ogate: Kernel,
-    pub rms_in: Kernel,
-    pub rgate: Kernel,
-    pub softcap: Kernel,
+    pub(crate) qk: crate::kt::muse_qk,
+    pub(crate) attn: crate::kt::muse_attn,
+    pub(crate) ogate: crate::kt::muse_ogate,
+    pub(crate) rms_in: crate::kt::muse_rms_in,
+    pub(crate) rgate: crate::kt::muse_rgate,
+    pub(crate) softcap: crate::kt::muse_softcap,
 }
 
 impl KernMuse {
     pub fn load(dev: &Dev) -> Result<KernMuse> {
-        Ok(KernMuse {
-            qk: dev.kernel(kname!("muse_qk"))?,
-            attn: dev.kernel(kname!("muse_attn"))?,
-            ogate: dev.kernel(kname!("muse_ogate"))?,
-            rms_in: dev.kernel(kname!("muse_rms_in"))?,
-            rgate: dev.kernel(kname!("muse_rgate"))?,
-            softcap: dev.kernel(kname!("muse_softcap"))?,
-        })
+        Ok(KernMuse { qk: dev.typed()?, attn: dev.typed()?, ogate: dev.typed()?, rms_in: dev.typed()?, rgate: dev.typed()?, softcap: dev.typed()? })
     }
 }
 

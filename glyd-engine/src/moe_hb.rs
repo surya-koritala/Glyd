@@ -66,22 +66,22 @@ fn group_index(bits: u32) -> usize {
 
 /// The Hummingbird layer's kernels (kernels/moe_hb.cu) with typed launches.
 pub struct HbKern {
-    rot: Kernel,
-    group: Kernel,
+    rot: crate::kt::hb_rot_in,
+    group: crate::kt::hb_group_ids,
     up: [Kernel; 2],
     down: [Kernel; 2],
-    sum: Kernel,
+    sum: crate::kt::hb_sum_rot,
     sms: usize,
 }
 
 impl HbKern {
     pub fn load(dev: &Dev) -> Result<HbKern> {
         Ok(HbKern {
-            rot: dev.kernel(kname!("hb_rot_in"))?,
-            group: dev.kernel(kname!("hb_group_ids"))?,
+            rot: dev.typed()?,
+            group: dev.typed()?,
             up: [dev.kernel(kname!("hb_up2"))?, dev.kernel(kname!("hb_up3"))?],
             down: [dev.kernel(kname!("hb_down2"))?, dev.kernel(kname!("hb_down3"))?],
-            sum: dev.kernel(kname!("hb_sum_rot"))?,
+            sum: dev.typed()?,
             sms: dev.sms.max(1) as usize,
         })
     }

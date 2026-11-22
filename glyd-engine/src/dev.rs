@@ -270,6 +270,11 @@ impl Dev {
     }
 
     /// A kernel of kernels/engine.cu by name.
+    /// A kernel of the engine's by its type (`crate::kt`), which says its arguments' types.
+    pub fn typed<T: Typed>(&self) -> Result<T> {
+        self.kernel(T::NAME).map(T::of)
+    }
+
     pub fn kernel(&self, name: &str) -> Result<Kernel> {
         if self.module.is_null() {
             return err("this build has no CUDA kernels (it was built without nvcc: set NVCC or CUDA_HOME and build again)");
@@ -391,6 +396,69 @@ pub trait KernelArgs {
     fn ptrs(&mut self) -> Vec<*mut c_void>;
 }
 
+impl KernelArgs for () {
+    fn ptrs(&mut self) -> Vec<*mut c_void> {
+        Vec::new()
+    }
+}
+
+/// A kernel of the engine's with its arguments' types (`crate::kt`, made by build.rs from kernels/*.cu): `launch!` with it takes exactly those types, in order, or does not
+/// compile. `Dev::typed` loads one.
+pub trait Typed {
+    const NAME: &'static str;
+    type Args: KernelArgs;
+    fn of(k: Kernel) -> Self;
+    fn kernel(&self) -> &Kernel;
+}
+
+/// What `launch!` launches with arguments `A`: a typed kernel for its own arguments' types only, an untyped `Kernel` for any (as before the types).
+pub trait Launch<A> {
+    fn kernel_of(&self) -> &Kernel;
+}
+
+impl<A: KernelArgs> Launch<A> for Kernel {
+    fn kernel_of(&self) -> &Kernel {
+        self
+    }
+}
+
+impl<A: KernelArgs> Launch<A> for &Kernel {
+    fn kernel_of(&self) -> &Kernel {
+        self
+    }
+}
+
+// (a typed kernel's own `Launch`, for it and for a reference to it, is in `crate::kt`: one impl a kernel, so that the arguments' types follow from it)
+
+/// A typed kernel seen by its arguments' types alone (`crate::kt`'s `sig`): what a choice between kernels that take the same arguments is (`g4_prep256` or `g4_prep512`
+/// by the head's width), still launched with those types only.
+pub struct Sig<'a, A>(&'a Kernel, std::marker::PhantomData<fn(A)>);
+
+impl<A> Clone for Sig<'_, A> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<A> Copy for Sig<'_, A> {}
+
+impl<'a, A> Sig<'a, A> {
+    pub(crate) fn of(k: &'a Kernel) -> Self {
+        Sig(k, std::marker::PhantomData)
+    }
+}
+
+impl<A: KernelArgs> Launch<A> for Sig<'_, A> {
+    fn kernel_of(&self) -> &Kernel {
+        self.0
+    }
+}
+
+/// The kernel `l` is, where `A` are arguments it takes (`launch!`'s check of their types).
+pub fn kernel_for<'a, A: KernelArgs, L: Launch<A>>(l: &'a L, _args: &A) -> &'a Kernel {
+    l.kernel_of()
+}
+
 macro_rules! impl_args {
     ($($t:ident $i:tt),+) => {
         impl<$($t),+> KernelArgs for ($($t,)+) {
@@ -433,13 +501,17 @@ impl_args!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11, M 12, N
 macro_rules! launch {
     ($k:expr, $grid:expr, $block:expr, $s:expr; $($a:expr),+ $(,)?) => {{
         let mut vals = ($($a,)+);
+        let held = &$k;
+        let k = $crate::dev::kernel_for(held, &vals);
         let mut ptrs = $crate::dev::KernelArgs::ptrs(&mut vals);
-        $k.launch($grid, $block, $s, &mut ptrs)
+        k.launch($grid, $block, $s, &mut ptrs)
     }};
     ($k:expr, $grid:expr, $block:expr, smem $smem:expr, $s:expr; $($a:expr),+ $(,)?) => {{
         let mut vals = ($($a,)+);
+        let held = &$k;
+        let k = $crate::dev::kernel_for(held, &vals);
         let mut ptrs = $crate::dev::KernelArgs::ptrs(&mut vals);
-        $k.launch_smem($grid, $block, $smem, $s, &mut ptrs)
+        k.launch_smem($grid, $block, $smem, $s, &mut ptrs)
     }};
 }
 

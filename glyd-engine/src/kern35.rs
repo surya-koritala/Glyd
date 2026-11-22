@@ -37,17 +37,17 @@ pub(crate) const ATTN_PART: usize = 258;
 
 /// Qwen3.5's kernels with typed launches.
 pub struct Kern35 {
-    rmsnorm: Kernel,
-    rmsnorm_add: Kernel,
-    prep: Kernel,
-    attn: Kernel,
-    attn_split: Kernel,
-    attn_merge: Kernel,
-    conv: Kernel,
-    rec: Kernel,
+    rmsnorm: crate::kt::rmsnorm1p,
+    rmsnorm_add: crate::kt::rmsnorm1p_add,
+    prep: crate::kt::q35_prep,
+    attn: crate::kt::attn256,
+    attn_split: crate::kt::attn256_parts,
+    attn_merge: crate::kt::attn256_merge,
+    conv: crate::kt::conv_silu,
+    rec: crate::kt::gdn_recurrent,
     chunk: Kernel,
-    gnorm: Kernel,
-    small: Kernel,
+    gnorm: crate::kt::gated_norm,
+    small: crate::kt::small_linear,
 }
 
 impl Kern35 {
@@ -55,17 +55,17 @@ impl Kern35 {
         let chunk = dev.kernel(kname!("gdn_chunk"))?;
         chunk.allow_smem(GDN_CHUNK_SMEM)?;
         Ok(Kern35 {
-            rmsnorm: dev.kernel(kname!("rmsnorm1p"))?,
-            rmsnorm_add: dev.kernel(kname!("rmsnorm1p_add"))?,
-            prep: dev.kernel(kname!("q35_prep"))?,
-            attn: dev.kernel(kname!("attn256"))?,
-            attn_split: dev.kernel(kname!("attn256_parts"))?,
-            attn_merge: dev.kernel(kname!("attn256_merge"))?,
-            conv: dev.kernel(kname!("conv_silu"))?,
-            rec: dev.kernel(kname!("gdn_recurrent"))?,
+            rmsnorm: dev.typed()?,
+            rmsnorm_add: dev.typed()?,
+            prep: dev.typed()?,
+            attn: dev.typed()?,
+            attn_split: dev.typed()?,
+            attn_merge: dev.typed()?,
+            conv: dev.typed()?,
+            rec: dev.typed()?,
             chunk,
-            gnorm: dev.kernel(kname!("gated_norm"))?,
-            small: dev.kernel(kname!("small_linear"))?,
+            gnorm: dev.typed()?,
+            small: dev.typed()?,
         })
     }
 

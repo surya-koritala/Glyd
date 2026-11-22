@@ -45,21 +45,21 @@ pub(crate) const STREAM_MIN: usize = crate::offload::CPU_TOKENS + 1;
 
 /// The kernels of kernels/qwen4x.cu's codebook rows with typed launches.
 pub struct KernQc {
-    rot_in: Kernel,
-    local: Kernel,
-    up: Kernel,
-    down: Kernel,
+    rot_in: crate::kt::qx_cb_rot_in,
+    local: crate::kt::glm_cb_local,
+    up: crate::kt::qx_cb_up,
+    down: crate::kt::qx_cb_down,
     /// the products with the places' addresses read from the GPU's memory (`products_pp`: a graph's launches)
-    upi: Kernel,
-    downi: Kernel,
-    downti: Kernel,
+    upi: crate::kt::qx_cb_upi,
+    downi: crate::kt::qx_cb_downi,
+    downti: crate::kt::qx_cb_downti,
     /// the second product of a call of a few rows on the tensor cores, a place's pairs together, for calls of `tc` to 8 rows (0: none; GLYD_QX_TC=N in a development build)
-    downt: Kernel,
+    downt: crate::kt::qx_cb_downt,
     pub tc: usize,
-    sum_rot: Kernel,
-    back: Kernel,
+    sum_rot: crate::kt::qx_cb_sum_rot,
+    back: crate::kt::qx_cb_back,
     /// the router and the rotation in one launch (a decode step's front: `qx_router_rot`)
-    router_rot: Kernel,
+    router_rot: crate::kt::qx_router_rot,
     /// its count of finished blocks (the last resets it) and of its calls (the host word's value), the host word its last block moves and the value the host saw last
     counter: Buf,
     flag: crate::dev::Pinned,
@@ -68,28 +68,28 @@ pub struct KernQc {
     hword: crate::dev::Pinned,
     sh1: [Kernel; 4],
     sh2: [Kernel; 4],
-    add: Kernel,
-    swiglu: Kernel,
-    gate_rows: Kernel,
-    i8bf16: Kernel,
-    small: Kernel,
+    add: crate::kt::qx_add_bf16,
+    swiglu: crate::kt::qx_swiglu,
+    gate_rows: crate::kt::qx_gate_rows,
+    i8bf16: crate::kt::qx_i8_bf16,
+    small: crate::kt::small_linear,
 }
 
 impl KernQc {
     pub fn load(dev: &Dev) -> Result<KernQc> {
         Ok(KernQc {
-            rot_in: dev.kernel(kname!("qx_cb_rot_in"))?,
-            local: dev.kernel(kname!("glm_cb_local"))?,
-            up: dev.kernel(kname!("qx_cb_up"))?,
-            down: dev.kernel(kname!("qx_cb_down"))?,
-            upi: dev.kernel(kname!("qx_cb_upi"))?,
-            downi: dev.kernel(kname!("qx_cb_downi"))?,
-            downti: dev.kernel(kname!("qx_cb_downti"))?,
-            downt: dev.kernel(kname!("qx_cb_downt"))?,
+            rot_in: dev.typed()?,
+            local: dev.typed()?,
+            up: dev.typed()?,
+            down: dev.typed()?,
+            upi: dev.typed()?,
+            downi: dev.typed()?,
+            downti: dev.typed()?,
+            downt: dev.typed()?,
             tc: crate::tune!("GLYD_QX_TC").and_then(|v| v.parse().ok()).unwrap_or(2),
-            sum_rot: dev.kernel(kname!("qx_cb_sum_rot"))?,
-            back: dev.kernel(kname!("qx_cb_back"))?,
-            router_rot: dev.kernel(kname!("qx_router_rot"))?,
+            sum_rot: dev.typed()?,
+            back: dev.typed()?,
+            router_rot: dev.typed()?,
             counter: Buf::zeroed(8)?,
             flag: {
                 let f = crate::dev::Pinned::mapped(64)?;
@@ -106,11 +106,11 @@ impl KernQc {
             },
             sh1: [dev.kernel(kname!("qx_sh1_1"))?, dev.kernel(kname!("qx_sh1_2"))?, dev.kernel(kname!("qx_sh1_4"))?, dev.kernel(kname!("qx_sh1_8"))?],
             sh2: [dev.kernel(kname!("qx_sh2_1"))?, dev.kernel(kname!("qx_sh2_2"))?, dev.kernel(kname!("qx_sh2_4"))?, dev.kernel(kname!("qx_sh2_8"))?],
-            add: dev.kernel(kname!("qx_add_bf16"))?,
-            swiglu: dev.kernel(kname!("qx_swiglu"))?,
-            gate_rows: dev.kernel(kname!("qx_gate_rows"))?,
-            i8bf16: dev.kernel(kname!("qx_i8_bf16"))?,
-            small: dev.kernel(kname!("small_linear"))?,
+            add: dev.typed()?,
+            swiglu: dev.typed()?,
+            gate_rows: dev.typed()?,
+            i8bf16: dev.typed()?,
+            small: dev.typed()?,
         })
     }
 
