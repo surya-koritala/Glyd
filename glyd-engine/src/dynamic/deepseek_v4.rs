@@ -7,7 +7,7 @@ use super::{Dyn, ModelDesc, Op, Opts, Ring, Slot, Stage, V4Dims};
 use crate::deepseek_v4::{fp4_runs, fp8_bf16, ConfigV4};
 use crate::dev::{Buf, Dev, Kernel};
 use crate::ffi::{err, Error, Result};
-use crate::model35::Mat;
+use crate::kern35::Mat;
 use crate::model_nh::{MoeBlock, NhHost};
 use crate::moe::{Act, ExpertStack, Joined, MoeCfg, MoeLayer, MoeWeights, Router, Scoring, Shared};
 use crate::moe_rows::Down;

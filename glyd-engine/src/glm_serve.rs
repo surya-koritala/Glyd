@@ -144,7 +144,7 @@ fn top_of(logits: &[f32], k: usize) -> Vec<(u32, f32)> {
 
 /// The engine's packed matrices by shape, with how many there are and their layout (`--inventory`), and the ones it holds as they are.
 fn inventory(e: &EngineGlm) {
-    use crate::model35::Mat;
+    use crate::kern35::Mat;
     let mut packed: std::collections::BTreeMap<(i64, i64, bool), usize> = Default::default();
     let mut dense: std::collections::BTreeMap<(usize, usize), usize> = Default::default();
     for ly in e.w.layers.iter().flatten() {

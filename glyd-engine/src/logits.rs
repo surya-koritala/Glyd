@@ -1045,27 +1045,6 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
 
 // ---- the hand-written engines against the description path (R3b, #137)
 
-/// Qwen3.5's hand-written engine (`model35.rs`).
-struct Legacy35(crate::model35::Engine35);
-
-impl Run for Legacy35 {
-    fn describe(&self) -> String {
-        self.0.describe()
-    }
-    fn reset(&mut self) -> Result<()> {
-        self.0.reset()
-    }
-    fn prefill(&mut self, t: &[u32]) -> Result<()> {
-        self.0.prefill(t, false).map(|_| ())
-    }
-    fn step(&mut self, t: u32) -> Result<()> {
-        self.0.step(t, false).map(|_| ())
-    }
-    fn logits(&mut self) -> Result<Vec<f32>> {
-        self.0.logits()
-    }
-}
-
 /// Nemotron-H's hand-written engine (`model_nh.rs`).
 struct LegacyNh(crate::model_nh::EngineNh);
 
@@ -1087,11 +1066,6 @@ impl Run for LegacyNh {
     }
 }
 
-fn qwen35_legacy(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
-    let o = crate::model35::Opts35 { weight_transform: None, ctx: 1024, chunk: 64, graph: false, device: 0, layout: level_layout(level)?, chunked: true };
-    Ok(Box::new(Legacy35(crate::model35::Engine35::new(dir, &o)?)))
-}
-
 fn nemotron_legacy(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     let layout = level_layout(level)?;
     let o = crate::model_nh::OptsNh { ctx: 1024, chunk: 64, graph: false, device: 0, layout, chunked: true, only: None };
@@ -1110,10 +1084,10 @@ fn gemma4_dyn(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
 type Pair = (&'static str, fn(&Path, &str) -> Result<Box<dyn Run>>, fn(&Path, &str) -> Result<Box<dyn Run>>);
 
 fn legacy_pairs() -> Vec<Pair> {
-    vec![("qwen35", qwen35_legacy, qwen35_engine), ("gemma4", gemma4_engine, gemma4_dyn), ("nemotron-h", nemotron_legacy, nemotron_engine)]
+    vec![("gemma4", gemma4_engine, gemma4_dyn), ("nemotron-h", nemotron_legacy, nemotron_engine)]
 }
 
-/// `paritycheck [CASE...] [--level L] [--scratch DIR]`: each family that still has a hand-written engine (Qwen3.5, Gemma 4, Nemotron-H) on
+/// `paritycheck [CASE...] [--level L] [--scratch DIR]`: each family that still has a hand-written engine (Gemma 4, Nemotron-H; Qwen3.5's went in R3b) on
 /// it and on the description executor, the same random model, prompt and decode tokens as its R7 fixture, at each level the fixture bounds
 /// that the hand-written engine runs: rows with the same bits, the same best token, KL of the description path from the hand-written one.
 /// The record R3b deletes the engines on (docs/design/runtime.md §7: no old path survives its parity record). Exit 1 where a row's best
