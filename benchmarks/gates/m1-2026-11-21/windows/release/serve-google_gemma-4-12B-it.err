@@ -1,0 +1,16 @@
+Downloading gemma-4-12B-penguin: 10% (1.7 GB of 16.9 GB)
+Downloading gemma-4-12B-penguin: 20% (3.4 GB of 16.9 GB)
+Downloading gemma-4-12B-penguin: 30% (5.1 GB of 16.9 GB)
+Downloading gemma-4-12B-penguin: 40% (6.8 GB of 16.9 GB)
+Downloading gemma-4-12B-penguin: 50% (8.6 GB of 16.9 GB)
+Downloading gemma-4-12B-penguin: 60% (10.2 GB of 16.9 GB)
+Downloading gemma-4-12B-penguin: 70% (11.9 GB of 16.9 GB)
+Downloading gemma-4-12B-penguin: 80% (13.6 GB of 16.9 GB)
+Downloading gemma-4-12B-penguin: 90% (15.3 GB of 16.9 GB)
+Downloading gemma-4-12B-penguin: 100% (16.9 GB of 16.9 GB)
+Downloaded gemma-4-12B-penguin (16.9 GB).
+gemma-4-12B-it: about 14.9 GiB on the GPU at the penguin level (about 10.8 bits per weight, lossless: every weight is the original's), in place of 22.2 GiB of bf16.
+Plan: penguin level, 32768 tokens of context: 14.9 GiB of weights on the GPU, 1.0 GiB of cache, 1.2 GiB for the engine's work, 0.6 GiB for the draft model, 0.8 GiB kept free; 18.5 GiB of the NVIDIA A10G's 21.1 GiB free.
+Drafting with C:\Users\Administrator\.cache\huggingface\hub\models--glyd--gemma-4-12B-penguin\snapshots\c334592e69eb175bdcab46f98aae1523e717ca0f\draft (8 tokens a round; --no-draft runs without it).
+Ready in 1m58s: gemma-4-12B-it on the NVIDIA A10G, 14.9 GiB of weights, 32768 tokens of context, one user at a time.
+google/gemma-4-12B-it is served at http://127.0.0.1:18734: the chat page at /, the API at /v1 (OpenAI-compatible). Ctrl-C stops it.

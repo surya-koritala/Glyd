@@ -102,5 +102,15 @@ What run 2 found besides:
 - The first token took 137 and 166 s with the models already downloaded, where run 1 took 10 and 16 s after downloading them; its logs were
   lost with the full disk, so the cause (likely a check of the cached files) is still to find.
 
-The Windows preview is checked again on v0.34.1's own zip.
+**On the release (`release/`).** The same machine type, fresh, installing v0.34.1 as a user does: the tag's `install.ps1` downloading
+the release's own zip from GitHub (with #515's fixes and the script's). 29 PASS, 0 FAIL:
+
+| Model | Plan | First token after the download | Download | Loaded of planned | JSON schema |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| Gemma 4 12B-it | penguin | 11 s | 108 s | 15.26 of 15 GiB | valid |
+| Nemotron 3.5 Lightning | wren | 13 s | 117 s | 17.07 of 17.2 GiB | valid |
+| Qwen3.8-27B | swift | 6 s | 144 s | 17.35 of 17.3 GiB | valid |
+
+Installed in 10 s; Qwen3.8-Flash-Next, Qwen-AgentWorld and Muse Glimmer refused as families this engine does not run, and GLM-5.3-Flash,
+DeepSeek-V4-Flash and Kimi-K3 as fitting nowhere, each in two lines and before any download; nothing called Python.
 
