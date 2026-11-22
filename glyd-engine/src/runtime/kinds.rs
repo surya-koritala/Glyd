@@ -313,6 +313,13 @@ pub struct Linear {
 }
 
 /// Mamba-2 (Nemotron-H, Granite 4). Not in `Ref` yet.
+///
+/// The inner width is `heads head_dim`; the convolution runs over the scan's inputs and the `groups` groups of B and C, `inner + 2
+/// groups state` channels. Roles: `in` [inner + (inner + 2 groups state) + heads, hidden] (the rows of z, then the convolution's
+/// channels x, B, C, then dt, a value a head), `conv` [inner + 2 groups state, conv] (each channel's taps, oldest first) and
+/// `conv_bias` [that width], `a_log`, `d`, `dt_bias` [heads], `norm` [inner] (the gated norm's weight: RMS over each of `groups`
+/// groups of the channels of y silu(z)), `o` [hidden, inner]. The state is [heads, head_dim, state] f32 per sequence, plus the
+/// convolution's last `conv - 1` inputs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mamba2 {
     pub heads: usize,
@@ -320,7 +327,10 @@ pub struct Mamba2 {
     pub state: usize,
     pub groups: usize,
     pub conv: usize,
+    /// The tokens of a chunk of the reference's chunked scan (the same function at any chunk; rounding differs).
     pub chunk: usize,
+    /// The gated norm's eps.
+    pub norm_eps: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]

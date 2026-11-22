@@ -1,0 +1,1 @@
+- Nemotron 3 (`nemotron_h`) has a model description built from its `config.json` like the other recent families: Mamba-2, attention without a position embedding and the latent mixture of experts as layer kinds, and a weight map that names the released checkpoint's tensors exactly (tested against Nemotron 3 Super's tensor list, shapes included).
