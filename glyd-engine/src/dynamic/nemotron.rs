@@ -1,12 +1,12 @@
 //! Nemotron-H (`NemotronHForCausalLM`: Nemotron 3 Super, Nemotron 3.5 Lightning) as a description: Mamba-2 layers, attention layers without a positional encoding,
 //! mixture-of-experts layers (with a latent, Super's; or at the model's width, Lightning's); every layer x + mixer(norm(x)) (the arithmetic is the kernels', as
-//! model_nh.rs runs them). Its weights load by model_nh.rs's loader, the experts by moe_nh.rs's blocks, handed over as they are: a block with all its experts on the GPU
+//! kern_nh.rs runs them). Its weights load by kern_nh.rs's loader, the experts by moe_nh.rs's blocks, handed over as they are: a block with all its experts on the GPU
 //! is run by the executor, one with an expert cache (or at the hummingbird level) runs its own launches over the executor's buffers (`NhHost`).
 
 use super::{Dyn, ModelDesc, Op, Opts, Ring, Slot, Stage};
 use crate::dev::Dev;
 use crate::ffi::{err, Error, Result};
-use crate::model_nh::{MoeFactory, SsdWs, WeightsNh, NH_N, NH_P};
+use crate::kern_nh::{MoeFactory, SsdWs, WeightsNh, NH_N, NH_P};
 use crate::nemotron::NhKind;
 use crate::weights::Layout;
 use std::path::Path;
@@ -127,7 +127,7 @@ pub fn load_with(dir: &Path, o: &Opts, make: MoeFactory<'_>, st: Stage) -> Resul
         eps: c.eps,
         max_pos: c.max_pos,
         widths,
-        // (the loader's own lists: model_nh.rs names and packs the tensors)
+        // (the loader's own lists: kern_nh.rs names and packs the tensors)
         mats: Vec::new(),
         small: Vec::new(),
         ropes: Vec::new(),

@@ -1027,42 +1027,15 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
 
 // ---- the hand-written engines against the description path (R3b, #137)
 
-/// Nemotron-H's hand-written engine (`model_nh.rs`).
-struct LegacyNh(crate::model_nh::EngineNh);
-
-impl Run for LegacyNh {
-    fn describe(&self) -> String {
-        self.0.describe()
-    }
-    fn reset(&mut self) -> Result<()> {
-        self.0.reset()
-    }
-    fn prefill(&mut self, t: &[u32]) -> Result<()> {
-        self.0.prefill(t).map(|_| ())
-    }
-    fn step(&mut self, t: u32) -> Result<()> {
-        self.0.step(t).map(|_| ())
-    }
-    fn logits(&mut self) -> Result<Vec<f32>> {
-        self.0.logits()
-    }
-}
-
-fn nemotron_legacy(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
-    let layout = level_layout(level)?;
-    let o = crate::model_nh::OptsNh { ctx: 1024, chunk: 64, graph: false, device: 0, layout, chunked: true, only: None };
-    let make = crate::moe_nh::factory(layout.unwrap_or(Layout::Tiered));
-    Ok(Box::new(LegacyNh(crate::model_nh::EngineNh::new(dir, &o, Some(&make))?)))
-}
-
 /// The cases whose families still have a hand-written engine: (case, the hand-written engine, the description path).
 type Pair = (&'static str, fn(&Path, &str) -> Result<Box<dyn Run>>, fn(&Path, &str) -> Result<Box<dyn Run>>);
 
 fn legacy_pairs() -> Vec<Pair> {
-    vec![("nemotron-h", nemotron_legacy, nemotron_engine)]
+    // (none: R3b retired Qwen3.5's, Gemma 4's and Nemotron-H's hand-written engines on their parity records, #410 and the R3b pull requests)
+    Vec::new()
 }
 
-/// `paritycheck [CASE...] [--level L] [--scratch DIR]`: each family that still has a hand-written engine (Nemotron-H; Qwen3.5's and Gemma 4's went in R3b) on
+/// `paritycheck [CASE...] [--level L] [--scratch DIR]`: each family that still has a hand-written engine (none since R3b) on
 /// it and on the description executor, the same random model, prompt and decode tokens as its R7 fixture, at each level the fixture bounds
 /// that the hand-written engine runs: rows with the same bits, the same best token, KL of the description path from the hand-written one.
 /// The record R3b deletes the engines on (docs/design/runtime.md §7: no old path survives its parity record). Exit 1 where a row's best
