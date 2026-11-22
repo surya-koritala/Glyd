@@ -425,7 +425,13 @@ Two details the records found that the policy keeps:
 - **The last bits of a batched prompt pass.** A pass of more than 64 rows takes the products' route its row count gives, so a reply's
   last bits can depend on what else ran (140 of 140 sequences gave the same token, 136 within 0.19 of the logits alone). The step
   therefore carries the route choice: in deterministic mode (#206) every product takes the route of a fixed row tile whatever the step's
-  row count.
+  row count. On the description executor the kernels change at 16 rows and at 64 (`glyd-engine roundcheck`, 2026-11-22): in a step of
+  16 rows or fewer each row's logits are its own pass's bit for bit, on every family; in a larger one they differ by the rounding of
+  bf16 values (gemma-4-12B at wren, a text's tokens: a KL of 0.002 to 0.005 from the row alone on average, at most 0.04), whether the
+  other rows are a prompt's chunk or other sequences that decode. What the other sequences hold never changes a row's bits. So the
+  round that is one step re-rolls that rounding for a reply whenever a prompt runs beside it; so does decoding beside more than 16
+  others, and so does cutting a prompt into other chunks (the same 224 to 376 token prompt alone, in chunks of 7 to 127 against one
+  pass: 0.0008 to 0.05, and 0.36 at one place where it ends).
 - **Arrival skew.** Requests of a burst arrive over 40-60 ms (tokenizing one after another). The front end tokenizes on its own threads
   (R11) and the scheduler waits at most one decode step's time for more prompts when the queue is non-empty and no row is decoding.
 

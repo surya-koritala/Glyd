@@ -1,11 +1,12 @@
 //! Model descriptions from `config.json` (R3a, #136): a `ModelDesc` of layer kinds and the weight map that names each block role's
 //! checkpoint tensors, with no per-model code. Families: Qwen3.8 dense and MoE (the Qwen3.5 architecture), gemma-4 text, GLM-5.3 and
-//! GLM-5.3-Flash (transformers' keys or the release's, FP8 block-scaled matrices), Kimi-K3, Muse Spark, and the Llama-style standard
-//! architectures (Llama, Mistral, Qwen2, Qwen3). Weight maps name the released tensors; a format detail such as Kimi-K3's MXFP4
-//! experts (`.weight_packed` for `.weight`) is the loader's.
+//! GLM-5.3-Flash (transformers' keys or the release's, FP8 block-scaled matrices), Kimi-K3, Muse Spark, DeepSeek-V4, Nemotron 3
+//! (`nemotron_h`), and the Llama-style standard architectures (Llama, Mistral, Qwen2, Qwen3). Weight maps name the released tensors;
+//! a format detail such as Kimi-K3's MXFP4 experts (`.weight_packed` for `.weight`) is the loader's.
 //!
 //! A config key the builder does not know fails with the key named; keys that cannot change the math (ids, dtypes, training settings)
-//! are listed in `INERT`. A decoder layer is two blocks: the mixer's, then the feed-forward's.
+//! are listed in `INERT`. A decoder layer is two blocks: the mixer's, then the feed-forward's (a Nemotron layer is one block: its
+//! pattern names a mixer or a feed-forward per layer).
 
 use super::kinds::*;
 use crate::ffi::{err, Error, Result};
@@ -98,6 +99,8 @@ const INERT: &[&str] = &[
     "tie_encoder_decoder",
     "vocab_size_per_layer_input",
     "max_position_embeddings",
+    "auto_map",
+    "hidden_dropout",
 ];
 
 /// A config's keys, each read at most through these getters; `finish` names a key nobody read.
@@ -291,6 +294,7 @@ pub fn describe(cfg: &Value) -> Result<Described> {
         Some("kimi_k3") => return kimi(cfg, tc),
         Some("muse_spark") => return muse(tc, prefix),
         Some("deepseek_v4") => return deepseek_v4(tc),
+        Some("nemotron_h") => return nemotron_h(tc),
         _ => {}
     }
     let mt = tc.get("model_type").and_then(|v| v.as_str()).unwrap_or("");
@@ -1622,5 +1626,229 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
         extra: ["fn", "base", "scale"].iter().map(|x| (format!("out_hc_{x}"), t(format!("{}{x}", names[3])))).collect(),
         mtp_layers,
         scales,
+    })
+}
+
+/// Nemotron 3 (`nemotron_h`, `NemotronHForCausalLM`): a layer is one block, `x + mixer(norm(x))`, its mixer named by the pattern:
+/// Mamba-2 (`M`), attention without any position embedding (`*`), or a mixture of experts (`E`) whose routed experts run in a latent
+/// (two projections around them; none where `moe_latent_size` is null) with a shared expert on the full vector. The router is
+/// DeepSeek-V3's: sigmoid scores, a bias for the choice, the chosen scores normed and times `routed_scaling_factor`. The pattern is
+/// `hybrid_override_pattern`, or a list of types (`layers_block_type`). The draft head (`mtp.*`) is counted and not described yet.
+fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
+    let k = Keys::new(tc, "nemotron_h");
+    let (d, vocab) = (k.usize("hidden_size")?, k.usize("vocab_size")?);
+    let tied = k.bool("tie_word_embeddings", false)?;
+    // (one eps for the layers' norms, the final norm and the Mamba-2 gated norm; a config with two that differ does not say which is whose)
+    let eps = match (k.opt_f64("layer_norm_epsilon")?, k.opt_f64("norm_eps")?) {
+        (Some(a), Some(b)) if a != b => return err(format!("nemotron_h: layer_norm_epsilon {a} and norm_eps {b} differ")),
+        (a, b) => a.or(b).unwrap_or(1e-5) as f32,
+    };
+    let kinds: Vec<char> = if let Some(p) = k.str("hybrid_override_pattern")? {
+        p.chars().collect()
+    } else if let Some(a) = k.raw("layers_block_type").or(k.raw("layer_types")).and_then(|v| v.as_array()) {
+        a.iter()
+            .map(|x| match x.as_str() {
+                Some("mamba" | "linear_attention") => Ok('M'),
+                Some("attention" | "full_attention") => Ok('*'),
+                Some("moe") => Ok('E'),
+                other => err(format!("nemotron_h: a layer of type {other:?} is not supported (mamba, attention, moe)")),
+            })
+            .collect::<Result<_>>()?
+    } else {
+        return err("nemotron_h: no hybrid_override_pattern");
+    };
+    (k.raw("layers_block_type"), k.raw("layer_types"));
+    if let Some(c) = kinds.iter().find(|c| !"M*E".contains(**c)) {
+        return err(format!("nemotron_h: a layer {c:?} in hybrid_override_pattern is not supported (M, * and E)"));
+    }
+    if kinds.is_empty() || k.opt_usize("num_hidden_layers")?.is_some_and(|n| n != kinds.len()) {
+        return err(format!("nemotron_h: {} layers in the pattern, num_hidden_layers {:?}", kinds.len(), tc.get("num_hidden_layers")));
+    }
+    // settings the description does not take otherwise
+    for (key, want) in [
+        ("use_bias", Value::Bool(false)),
+        ("mlp_bias", Value::Bool(false)),
+        ("attention_bias", Value::Bool(false)),
+        ("mamba_proj_bias", Value::Bool(false)),
+        ("use_conv_bias", Value::Bool(true)),
+        ("residual_in_fp32", Value::Bool(false)),
+        ("moe_shared_expert_overlap", Value::Bool(false)),
+        ("mamba_hidden_act", Value::from("silu")),
+        ("mamba_ssm_cache_dtype", Value::from("float32")),
+    ] {
+        k.expect(key, &want)?;
+    }
+    if k.raw("sliding_window").is_some() {
+        return err("nemotron_h: a sliding window is not supported");
+    }
+    // (read and without effect: the attention has no position embedding; the time steps and the rescaling are how the weights were
+    // first set; the kernels and the logits kept are transformers' own choices; no layer of the pattern is a plain MLP)
+    for x in [
+        "rope_theta",
+        "partial_rotary_factor",
+        "time_step_floor",
+        "time_step_max",
+        "time_step_min",
+        "time_step_rank",
+        "time_step_scale",
+        "time_step_limit",
+        "rescale_prenorm_residual",
+        "use_mamba_kernels",
+        "num_logits_to_keep",
+        "intermediate_size",
+        "mtp_hybrid_override_pattern",
+    ] {
+        k.raw(x);
+    }
+    let has = |c: char| kinds.contains(&c);
+    let mamba = if has('M') {
+        let (heads, head_dim, groups) = (k.usize("mamba_num_heads")?, k.usize("mamba_head_dim")?, k.usize("n_groups")?);
+        if heads == 0 || groups == 0 || !heads.is_multiple_of(groups) {
+            return err(format!("nemotron_h: {heads} Mamba-2 heads in {groups} groups"));
+        }
+        // (the inner width is the heads' channels; `expand` is not what sets it: the toy model of the GPU check has 64 heads of 64 on a width of 256)
+        k.raw("expand");
+        Some(Mamba2 {
+            heads,
+            head_dim,
+            state: k.usize("ssm_state_size")?,
+            groups,
+            conv: k.usize("conv_kernel")?,
+            chunk: k.opt_usize("chunk_size")?.unwrap_or(128),
+            norm_eps: eps,
+        })
+    } else {
+        for x in ["mamba_num_heads", "mamba_head_dim", "n_groups", "expand", "ssm_state_size", "conv_kernel", "chunk_size"] {
+            k.raw(x);
+        }
+        None
+    };
+    let attn = {
+        let (heads, kv) = (k.usize("num_attention_heads")?, k.usize("num_key_value_heads")?);
+        if heads == 0 || kv == 0 || !heads.is_multiple_of(kv) {
+            return err(format!("nemotron_h: {heads} query heads to {kv} KV heads"));
+        }
+        let hd = k.opt_usize("head_dim")?.unwrap_or(d / heads);
+        Attn {
+            heads,
+            kv_heads: kv,
+            head_dim: hd,
+            v_head_dim: hd,
+            window: None,
+            sinks: false,
+            rope: None,
+            q_norm: None,
+            k_norm: None,
+            v_norm: None,
+            gate: None,
+            softcap: None,
+            bias: false,
+            scale: (hd as f32).powf(-0.5),
+            k_eq_v: false,
+            indexer: None,
+        }
+    };
+    let moe_keys =
+        ["n_routed_experts", "num_experts_per_tok", "moe_intermediate_size", "moe_shared_expert_intermediate_size", "moe_latent_size", "mlp_hidden_act"];
+    let moe = if has('E') {
+        let (experts, top_k) = (k.usize("n_routed_experts")?, k.usize("num_experts_per_tok")?);
+        if top_k == 0 || top_k > experts {
+            return err(format!("nemotron_h: {top_k} experts a token of {experts}"));
+        }
+        for g in ["n_group", "topk_group", "n_shared_experts"] {
+            k.expect(g, &Value::from(1))?;
+        }
+        (k.usize("moe_intermediate_size")?, k.usize("moe_shared_expert_intermediate_size")?);
+        let mlp = Mlp { act: act(k.str("mlp_hidden_act")?.unwrap_or("relu2"))?, gated: false, bias: false, clamp: None };
+        Some(Moe {
+            router: Router {
+                score: RouterScore::Sigmoid,
+                logit_scale: 1.0,
+                bias: true,
+                groups: None,
+                top_k,
+                renorm: k.bool("norm_topk_prob", true)?,
+                scale: k.opt_f64("routed_scaling_factor")?.unwrap_or(1.0) as f32,
+                hash: false,
+            },
+            experts,
+            expert: mlp,
+            shared: Some(mlp),
+            shared_gate: false,
+            latent: k.opt_usize("moe_latent_size")?.filter(|&l| l > 0).map(|dim| Latent { dim, norm_in: None, expert_norm: None, norm_out: None }),
+        })
+    } else {
+        for x in moe_keys.iter().chain(&["n_group", "topk_group", "n_shared_experts", "norm_topk_prob", "routed_scaling_factor"]) {
+            k.raw(x);
+        }
+        None
+    };
+    let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
+    let n = Norm::rms(eps);
+    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    for (l, c) in kinds.iter().enumerate() {
+        let m = format!("backbone.layers.{l}.mixer");
+        let mut r = vec![("norm_in".to_string(), t(format!("backbone.layers.{l}.norm.weight")))];
+        let mut put = |role: &str, x: &str| r.push((role.to_string(), t(format!("{m}.{x}"))));
+        let body = match (c, &mamba, &moe) {
+            ('M', Some(mb), _) => {
+                for (role, x) in [
+                    ("in", "in_proj.weight"),
+                    ("conv", "conv1d.weight"),
+                    ("conv_bias", "conv1d.bias"),
+                    ("a_log", "A_log"),
+                    ("d", "D"),
+                    ("dt_bias", "dt_bias"),
+                    ("norm", "norm.weight"),
+                    ("o", "out_proj.weight"),
+                ] {
+                    put(role, x);
+                }
+                Body::Mixer(Mixer::Mamba2(mb.clone()))
+            }
+            ('E', _, Some(me)) => {
+                put("router", "gate.weight");
+                put("choice_bias", "gate.e_score_correction_bias");
+                if me.latent.is_some() {
+                    put("latent_down", "fc1_latent_proj.weight");
+                    put("latent_up", "fc2_latent_proj.weight");
+                }
+                put("shared_up", "shared_experts.up_proj.weight");
+                put("shared_down", "shared_experts.down_proj.weight");
+                for x in ["up", "down"] {
+                    r.push((format!("experts_{x}"), Source::Experts((0..me.experts).map(|e| vec![format!("{m}.experts.{e}.{x}_proj.weight")]).collect())));
+                }
+                Body::Ffn(Ffn::Moe(me.clone()))
+            }
+            _ => {
+                for x in ["q", "k", "v", "o"] {
+                    put(x, &format!("{x}_proj.weight"));
+                }
+                Body::Mixer(Mixer::Attention(attn.clone()))
+            }
+        };
+        blocks.push(Block { norm_in: n, body, norm_out: None, residual: Residual::Add });
+        roles.push(r);
+    }
+    k.finish()?;
+    Ok(Described {
+        desc: ModelDesc {
+            hidden: d,
+            vocab,
+            embed: Embed { scale: 1.0, norm: None, streams: 1 },
+            blocks,
+            final_norm: n,
+            head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None },
+            mtp: Vec::new(),
+            vision: None,
+            rope: None,
+        },
+        embed: "backbone.embeddings.weight".into(),
+        final_norm: "backbone.norm_f.weight".into(),
+        head: (!tied).then(|| "lm_head.weight".to_string()),
+        blocks: roles,
+        extra: Vec::new(),
+        mtp_layers,
+        scales: Default::default(),
     })
 }

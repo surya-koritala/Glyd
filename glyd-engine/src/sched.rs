@@ -12,9 +12,10 @@
 use crate::ffi::{Error, Kind, Result};
 use crate::kv::{chain_key, Lost, Pager, ALONE_MESSAGE, PAGE};
 use crate::model::{Engine, FUSED_ROWS, MAX_ROWS};
+use crate::runtime::context::Context;
 use crate::sampler::{logprobs_of, Lp, Sampler};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
@@ -240,11 +241,17 @@ pub struct Stats {
 }
 
 /// The scheduler's figures as the last round left them (one scheduler runs in a process), for the server's /stats.
-pub static SHARED: [AtomicU64; 29] = [const { AtomicU64::new(0) }; 29];
+/// How many figures a scheduler leaves each round (`Sched::gauges`): the length of a context's `sched`.
+pub const FIGURES: usize = 29;
 
 /// The figures as JSON: prompt tokens run or found in the cache, those found, sequences sent back to wait for pages, steps, rows in them, sequences running and waiting.
 pub fn stats_json() -> String {
-    let v: Vec<u64> = SHARED.iter().map(|a| a.load(Relaxed)).collect();
+    stats_json_of(Context::process())
+}
+
+/// `stats_json` of the scheduler of the context `rt`.
+pub fn stats_json_of(rt: &Context) -> String {
+    let v: Vec<u64> = rt.sched.iter().map(|a| a.load(Relaxed)).collect();
     let rate = if v[0] > 0 { 100.0 * v[1] as f64 / v[0] as f64 } else { 0.0 };
     // a development build's figures are all of them; a release build's are the counts a user reads
     if cfg!(feature = "dev") {
@@ -373,6 +380,8 @@ const MAX_LONG_SKIPS: u32 = 2;
 
 pub struct Sched<B: ModelStep> {
     be: B,
+    /// The runtime context its figures and its sequences' counts go to (the process's own unless `in_context` gave another).
+    rt: Arc<Context>,
     pager: Pager,
     users: usize,
     waiting: VecDeque<Seq>,
@@ -416,6 +425,7 @@ impl<B: ModelStep> Sched<B> {
             pending: Vec::new(),
             emit,
             be,
+            rt: Context::process().clone(),
             pager,
             users,
             waiting: VecDeque::new(),
@@ -428,6 +438,22 @@ impl<B: ModelStep> Sched<B> {
             skips: 0,
             free: slots.map(|k| (0..k as i32).rev().collect()),
         }
+    }
+
+    /// The scheduler with `rt` as its runtime context: a model of a process that serves more than one, or a test's.
+    pub fn in_context(mut self, rt: Arc<Context>) -> Sched<B> {
+        self.rt = rt;
+        self
+    }
+
+    /// Its runtime context.
+    pub fn context(&self) -> &Arc<Context> {
+        &self.rt
+    }
+
+    /// `in_context` of a scheduler that is already at work for a server (`server::work_with` gives it the server's).
+    pub fn set_context(&mut self, rt: Arc<Context>) {
+        self.rt = rt;
     }
 
     /// The sequences that run at once at most.
@@ -498,9 +524,9 @@ impl<B: ModelStep> Sched<B> {
         let st = &self.stats;
         // (a slot step's cache is its rooms: their count, and those in use)
         let pages = self.be.slots().unwrap_or_else(|| self.pager.pages());
-        crate::ops::KV_PAGES.store(pages as u64, Relaxed);
-        crate::ops::KV_PAGES_HELD.store(pages.saturating_sub(self.available()) as u64, Relaxed);
-        for (a, v) in SHARED.iter().zip([
+        self.rt.figures.kv_pages.store(pages as u64, Relaxed);
+        self.rt.figures.kv_pages_held.store(pages.saturating_sub(self.available()) as u64, Relaxed);
+        for (a, v) in self.rt.sched.iter().zip([
             st.prompt,
             st.hit,
             st.preempted,
@@ -589,7 +615,7 @@ impl<B: ModelStep> Sched<B> {
     /// Every sequence ended with `msg`, the pages all free again.
     pub fn fail(&mut self, err: &crate::ffi::Error) {
         for s in self.active.drain(..).chain(self.waiting.drain(..)) {
-            crate::ops::finished("error", s.began, &s.trace, s.generated);
+            self.rt.figures.finished("error", s.began, &s.trace, s.generated);
             self.pending.push((s.out.clone(), Ev::End(Err(err.clone()))));
         }
         let _ = self.be.lost();
@@ -622,7 +648,7 @@ impl<B: ModelStep> Sched<B> {
         let gone: Vec<usize> = self.waiting.iter().enumerate().filter(|(_, s)| s.abort.load(Relaxed)).map(|(i, _)| i).collect();
         for i in gone.into_iter().rev() {
             if let Some(s) = self.waiting.remove(i) {
-                crate::ops::finished("stopped", s.began, &s.trace, s.generated);
+                self.rt.figures.finished("stopped", s.began, &s.trace, s.generated);
                 self.pending.push((s.out.clone(), Ev::End(Ok(Finish::Stopped))));
             }
         }
@@ -665,7 +691,7 @@ impl<B: ModelStep> Sched<B> {
                 if self.active.is_empty() {
                     // nothing will free a page: this one never fits
                     let s = self.waiting.remove(k).expect("a waiting sequence");
-                    crate::ops::finished("error", s.began, &s.trace, s.generated);
+                    self.rt.figures.finished("error", s.began, &s.trace, s.generated);
                     self.pending.push((
                         s.out.clone(),
                         Ev::End(Err(Error::of(Kind::Request, format!("{} tokens, where the cache holds {} blocks", s.tokens.len(), self.pager.pages())))),
@@ -708,7 +734,7 @@ impl<B: ModelStep> Sched<B> {
             self.free.as_mut().expect("a slot step").push(slot);
             if self.active.is_empty() {
                 let s = self.waiting.remove(k).expect("a waiting sequence");
-                crate::ops::finished("error", s.began, &s.trace, s.generated);
+                self.rt.figures.finished("error", s.began, &s.trace, s.generated);
                 self.pending.push((
                     s.out.clone(),
                     Ev::End(Err(Error::of(Kind::Request, format!("{} tokens, where the cache holds fewer with nothing else running", s.tokens.len())))),
@@ -830,7 +856,7 @@ impl<B: ModelStep> Sched<B> {
                 self.stats.ended_lost += 1;
                 let mut s = self.active.remove(i);
                 self.give_back(&mut s)?;
-                crate::ops::finished("error", s.began, &s.trace, s.generated);
+                self.rt.figures.finished("error", s.began, &s.trace, s.generated);
                 self.pending.push((s.out.clone(), Ev::End(Err(Error::of(Kind::Request, ALONE_MESSAGE)))));
                 continue;
             }
@@ -886,7 +912,7 @@ impl<B: ModelStep> Sched<B> {
     fn finish(&mut self, i: usize, f: Finish) -> Result<()> {
         let mut s = self.active.remove(i);
         self.give_back(&mut s)?;
-        crate::ops::finished(finish_name(f), s.began, &s.trace, s.generated);
+        self.rt.figures.finished(finish_name(f), s.began, &s.trace, s.generated);
         self.pending.push((s.out.clone(), Ev::End(Ok(f))));
         Ok(())
     }
@@ -937,7 +963,7 @@ impl<B: ModelStep> Sched<B> {
             return Some(Finish::Stopped);
         }
         self.pending.push((s.out.clone(), Ev::Token(tok)));
-        crate::ops::token(s.began, &mut s.last_token);
+        self.rt.figures.token(s.began, &mut s.last_token);
         s.trace.token();
         s.tokens.push(tok);
         s.generated += 1;
@@ -1657,22 +1683,23 @@ pub(crate) mod tests {
     #[test]
     fn a_sequence_is_counted_in_the_metrics() {
         use crate::ops;
-        let (first, gaps, whole) = (ops::TTFT.count(), ops::TOKEN_GAP.count(), ops::REQUEST_TIME.count());
+        let fig = ops::figures();
+        let (first, gaps, whole) = (fig.ttft.count(), fig.token_gap.count(), fig.request_time.count());
         let mut s = Sched::new(Fake::new(64, 32), 4);
         let (rx, _) = add(&mut s, prompt(2, 20), 6);
         s.tick().unwrap();
         // (the gauges are the process's, and the other tests' schedulers write them too: this one's written again just before it is read, until a read sees its own)
         let seen = (0..1000).any(|_| {
             s.gauges();
-            ops::KV_PAGES.load(Relaxed) >= 64 && ops::KV_PAGES_HELD.load(Relaxed) > 0
+            fig.kv_pages.load(Relaxed) >= 64 && fig.kv_pages_held.load(Relaxed) > 0
         });
         assert!(seen, "the sequence holds pages while it runs");
         run(&mut s);
         let (tokens, f) = collect(&rx);
         assert_eq!((tokens.len(), f), (6, Finish::Length));
-        assert!(ops::TTFT.count() > first, "the first token was not counted");
-        assert!(ops::TOKEN_GAP.count() >= gaps + 5, "the gaps of the five tokens after the first were not counted");
-        assert!(ops::REQUEST_TIME.count() > whole, "the end was not counted");
+        assert!(fig.ttft.count() > first, "the first token was not counted");
+        assert!(fig.token_gap.count() >= gaps + 5, "the gaps of the five tokens after the first were not counted");
+        assert!(fig.request_time.count() > whole, "the end was not counted");
         let text = ops::render(&ops::State { model: "m", ready: true, life: &ops::Life::default(), engine: true });
         assert!(text.contains("glyd_sequences_finished_total{reason=\"length\"} "), "{text}");
         // a request that is asked to end before it runs is counted as stopped

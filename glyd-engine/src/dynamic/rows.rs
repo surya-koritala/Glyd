@@ -1,9 +1,12 @@
 //! The description executor as a scheduler's step (`sched::ModelStep`, docs/design/runtime.md section 2): several sequences, each with its own room of the context (`add_seqs`), run by the one
 //! scheduler that runs the dense Qwen3 engine. A step of one sequence is that sequence's pass as a reply alone runs it (its prompt chunk, or its graph's one-token step). A step of several runs their rows
 //! in one pass: the operations that act row by row (the products, norms, activations) on all the rows at once, so each weight is read once for the step, and the operations on a sequence's cache or
-//! states (the attention's cache write and read, the recurrent layers) on each sequence's rows by themselves with the kernels and row counts its own pass has. Every per-row result is then the one
-//! the sequence's own pass gives, except where a product's route depends on its row count (`decoded_way`, past 64 rows; `VERIFY_ROWS`: up to 8 rows the one-row kernel's sums): there the last bits
-//! may differ, as they do for the Qwen3 engine's prompts run together. GLYD_ENGINE_BATCH_PREFILL=0 runs prompts one a pass.
+//! states (the attention's cache write and read, the recurrent layers) on each sequence's rows by themselves with the kernels and row counts its own pass has. What a row computes never turns
+//! on what the other sequences hold. It can turn on how many rows the step has, because a product's kernel is picked by them: in a step of 16 rows or fewer every row's logits are, bit for bit,
+//! those of its own pass; in a larger one (17 to 64 rows another kernel, past 64 `decoded_way`'s) they differ by the rounding of the engine's bf16 values, as the engine differs from an f32
+//! reference. Measured by `glyd-engine roundcheck` (src/logits.rs) on every family and on gemma-4-12B at wren with a text's tokens: a KL of 0.002 to 0.005 from the row alone on average, the
+//! largest logit another token's in 1 or 2 steps of 32 (where the two largest are tied or nearly); benchmarks/gpu/rtx4080-one-step-round-2026-11-22 has the figures. GLYD_ENGINE_BATCH_PREFILL=0 runs prompts one
+//! a pass and the round as two passes: every reply is then the reply alone, bit for bit, while 16 sequences or fewer decode (a dense model; a mixture of experts' rows are stepped one by one).
 //!
 //! What a step of several sequences supports is decided per description (`Dyn::batchable`): every operation must be one that acts row by row, or one of the cache operations below that knows where a
 //! sequence's rows begin. A description with another runs its sequences one pass each, concurrently but not batched.
@@ -233,7 +236,7 @@ impl Dyn {
 
     /// Whether a step of several rows gives each row the sums a one-row step does: not where the description has experts (a product over the experts' rows groups them by the step's rows; the GPU job's
     /// usercheck found 3 of 4 Muse Spark replies the same). With GLYD_ENGINE_BATCH_PREFILL=0 such a description's decode steps run one sequence each, so every reply is the reply alone.
-    fn rows_exact(&self) -> bool {
+    pub(crate) fn rows_exact(&self) -> bool {
         let d = &self.big.d;
         !d.layers.iter().flatten().any(|op| matches!(op, Op::MuseMoe { .. } | Op::Moe { .. } | Op::V4Moe { .. }))
     }
@@ -374,6 +377,8 @@ impl Dyn {
             // (made ready already)
             return Ok(Some(self.seqs.len()));
         }
+        // (a step's sequences begin empty: what a reply before this left in the one sequence is not a scheduler's, which would find its first slot holding tokens)
+        self.reset()?;
         let users = users.clamp(1, self.chunk.min(64));
         if users > 1 {
             self.set_head_rows(users)?;
@@ -399,23 +404,26 @@ impl Dyn {
         *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_none_or(|v| v != "0"))
     }
 
-    /// GLYD_ENGINE_ONE_STEP=1: a round is one step of the rows that decode and the prompts' chunks (`ModelStep::round`, docs/design/runtime.md section 5), each weight read once for both. Off
-    /// until its speed is on record against the round of two passes (the bench gate, R8): the same replies either way.
+    /// A round is one step of the rows that decode and the prompts' chunks (`ModelStep::round`, docs/design/runtime.md section 5), each weight read once for both: a reply does not stop
+    /// while a prompt that came in is run. GLYD_ENGINE_ONE_STEP=0: the round of two passes, a prompt pass and then a decode step. The record that set it:
+    /// benchmarks/gpu/rtx4080-one-step-round-2026-11-22 (gemma-4-12B, 8 requests coming in: the gap between a reply's tokens, 99th percentile, 282 to 144 ms with 1k prompts and 465 to
+    /// 168 ms with 4k, the prompts' first token and the total tokens/s the same or better). What it costs: a row that rides in a prompt's step is computed by the kernel of a step of that
+    /// many rows, not its own pass's (the module's note), so a reply under load is not the reply alone to the last bit, as it already is not when more than 16 sequences decode together.
     fn one_step_asked() -> bool {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_ONE_STEP").is_some_and(|v| v == "1"))
+        *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_ONE_STEP").is_none_or(|v| v != "0"))
     }
 
-    /// The rows of a step that holds both rows that decode and a prompt's chunk (GLYD_ENGINE_STEP_TOKENS; 64: up to there every product of the step takes the route each row's own pass
-    /// takes, `decoded_way`, so a reply's bits do not turn on what ran beside it).
-    fn step_tokens() -> usize {
-        static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-        *N.get_or_init(|| std::env::var("GLYD_ENGINE_STEP_TOKENS").ok().and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(STEP_TOKENS))
+    /// The rows of a step that holds both rows that decode and a prompt's chunk, where GLYD_ENGINE_STEP_TOKENS says: by default a step holds what a pass holds (a chunk: 512 rows for
+    /// Gemma 4), which the record above found level with the round of two passes for the prompt's first token and the total. Fewer rows make the gaps between a reply's tokens shorter and
+    /// the prompts slower: at 256 the gaps were 82 and 97 ms and the prompts' first token 8% to 10% later, at 64 the first token was 2 to 3 times later and the total a fifth to a third less.
+    fn step_tokens() -> Option<usize> {
+        static N: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+        *N.get_or_init(|| std::env::var("GLYD_ENGINE_STEP_TOKENS").ok().and_then(|v| v.parse().ok()).filter(|&n| n > 0))
     }
 }
 
-/// See `Dyn::step_tokens`; and the prompt tokens a step takes beside any number of rows, so that a prompt moves while many sequences decode.
-const STEP_TOKENS: usize = 64;
+/// The prompt tokens a step takes beside any number of rows, so that a prompt moves while many sequences decode.
 const STEP_LEAST: usize = 16;
 
 impl ModelStep for Dyn {
@@ -473,7 +481,7 @@ impl ModelStep for Dyn {
         Self::one_step_asked() && self.batchable() && Self::batch_prefill()
     }
     fn prompt_budget(&self, rows: usize) -> usize {
-        Self::step_tokens().saturating_sub(rows).max(STEP_LEAST).min(self.chunk.saturating_sub(rows))
+        Self::step_tokens().unwrap_or(self.chunk).saturating_sub(rows).max(STEP_LEAST).min(self.chunk.saturating_sub(rows))
     }
     /// The rows that decode and the prompts' chunks in one pass (`pass`: a row is a chunk of one token whose sample is asked for): the rows' samples, then the samples of the chunks that are
     /// `last`, the head's rows in that order. Rows alone are the decode step as it is (one row: its graph), chunks alone the prompt pass.

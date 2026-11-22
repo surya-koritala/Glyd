@@ -20,10 +20,16 @@ Each request is a streamed chat completion at temperature 0 with `--max-tokens` 
 | `bar` | short, 2k and 4k prompts, each at 1, 4 and 8 at once: the speed bar's matrix (docs/adding-a-gpu.md) |
 | `full` | short at 1, 8, 64 and 256 at once; 1k, 4k and 32k at 1: everything R8 lists (64 and 256 at once need the server to take them: R11) |
 | `arrive` | 8 requests one after another: short prompts 100 ms apart, 1k 250 ms apart, 4k 500 ms apart. The later prompts come in while the earlier replies are being written |
+| `chat` | conversations of 4 turns that begin with a 1k and a 4k prompt, 1 and 8 of them at once: each later turn resends the conversation and adds a question |
 
 `--loads short:1,4k:8` names loads by hand. `4k+250ms:8` is 8 requests of 4k prompts, each begun 250 ms after the one before, not all at once: what a server does when a prompt comes in
 while it is writing other replies shows in that load's first-token time and in the 99th percentile of the gaps between tokens (a reply that stops while a prompt runs has a long gap). Such a load has
-no prefill rate, and its name in the result is the kind as written (`4k+250ms`). The server `bench` starts takes as many users as the heaviest load asks for (at most 8; `--users N` says): `serve` alone takes 4, and 8 requests at once would be 4 and 4 waiting. A load that fails is counted (`errors`), not hidden.
+no prefill rate, and its name in the result is the kind as written (`4k+250ms`).
+
+`1k*4:8` is 8 conversations of 4 turns, each begun with a 1k prompt. A later turn sends the conversation so far (the prompts and the replies it got) and a short question more, as a chat client
+does. The load's `ttft_s` is the first turns' first token and `ttft_later_s` the later turns'; `prefix_hit_rate` is the share of the prompt tokens of the measured rounds that a glyd server found
+in its cache (its `/stats`; null for another server). A server that keeps nothing of a prompt it has seen runs every turn from its first token: its later turns' first token grows with the
+conversation and its hit rate is 0. `1k*4+250ms:8` begins the conversations 250 ms apart. The server `bench` starts takes as many users as the heaviest load asks for (at most 8; `--users N` says): `serve` alone takes 4, and 8 requests at once would be 4 and 4 waiting. A load that fails is counted (`errors`), not hidden.
 
 Per load and run: time to first token, decode tokens/s a user (tokens after the first over the time from first to last), the inter-token latency (its mean and the 99th percentile of every gap), decode tokens/s
 in all (every user's tokens after the first over the span from the earliest first token to the last token), and prefill tokens/s (the prompts' tokens over the slowest first token). A user's figure

@@ -604,7 +604,17 @@ pub fn http(snap: &Path, pack_dir: &Path, a: &Args) -> Result<()> {
     let tower = vision(snap, &e, a)?;
     let vocab = e.w.cfg.vocab;
     let eos: Vec<u32> = e.w.cfg.eos.iter().map(|&x| x as u32).collect();
-    let shared = Arc::new(Shared { tok, chat, name, defaults, window, vocab, thinking: Some(false), refused: &[] });
+    let shared = Arc::new(Shared {
+        tok,
+        chat,
+        name,
+        defaults,
+        window,
+        vocab,
+        thinking: Some(false),
+        refused: &[],
+        rt: crate::runtime::context::Context::process().clone(),
+    });
     crate::monitor::ready();
     loading.store(false, Ordering::Relaxed);
     println!("Ready.");

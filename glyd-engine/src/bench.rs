@@ -1,6 +1,6 @@
 //! `glyd bench`: one benchmark harness (R8). It puts fixed prompts at fixed concurrencies on an OpenAI-compatible server over HTTP and writes the speed as JSON, `glyd-bench/1` (docs/bench.md).
 //!
-//!   glyd-engine bench MODEL[:LEVEL] [--suite gate|bar|full|arrive | --loads short:1,4k:8,4k+250ms:8,...] [--runs 5] [--warmup 1] [--max-tokens 128] [--ctx N] [--out FILE] [--label TEXT]
+//!   glyd-engine bench MODEL[:LEVEL] [--suite gate|bar|full|arrive|chat | --loads short:1,4k:8,4k+250ms:8,1k*4:8,...] [--runs 5] [--warmup 1] [--max-tokens 128] [--ctx N] [--out FILE] [--label TEXT]
 //!                     [--against URL] [--weights-gib G] [--bandwidth-gbs B] [--port P] [--no-draft] [--eval gsm8k[:N]] [--quality [--quality-ref RESULT.json]]
 //!       starts `serve MODEL` of this program (or measures the server at --against, whatever program it is: vLLM, llama.cpp, SGLang) and measures each load: per load, one warm-up round and `runs` rounds
 //!       of N simultaneous requests, every prompt different from its first token on (no prefix to share). Time to first token, inter-token latency, decode tokens/s a user and in all, prefill tokens/s,
@@ -66,12 +66,29 @@ fn kind_tokens(kind: &str) -> Result<Option<usize>> {
     })
 }
 
-/// A load's prompt kind and the time between the starts of its requests: `4k+250ms` is 4k prompts, each request begun 250 ms after the one before, so that the later prompts come in while
-/// the earlier replies are being written (what a server's round does with both is in the first-token times and the gaps' 99th percentile); `4k` alone is all of them at once.
-fn kind_parts(kind: &str) -> Result<(&str, Duration)> {
-    let Some((k, gap)) = kind.split_once('+') else { return Ok((kind, Duration::ZERO)) };
-    let ms = gap.strip_suffix("ms").and_then(|g| g.parse::<u64>().ok()).filter(|&g| g > 0);
-    Ok((k, Duration::from_millis(ms.ok_or_else(|| Error(format!("prompt {kind}: KIND+GAPms, as 4k+250ms")))?)))
+/// A load's kind: its prompt, the time between the starts of its requests, and the turns of a conversation. `4k+250ms` is 4k prompts, each request begun 250 ms after the one before, so
+/// that the later prompts come in while the earlier replies are being written (what a server's round does with both is in the first-token times and the gaps' 99th percentile). `1k*4` is a
+/// conversation of 4 turns that begins with the 1k prompt: each later turn sends the conversation so far (the prompts and the replies) and a short question more, as a chat does, so what a
+/// server keeps of a prompt it has seen shows in the later turns' first token (`ttft_later_s`) and in the share of prompt tokens found in its cache (`prefix_hit_rate`, a glyd server's).
+/// `1k*4+250ms` is both; `4k` alone is one request each, all of them at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Kind<'a> {
+    prompt: &'a str,
+    gap: Duration,
+    turns: usize,
+}
+
+fn kind_parts(kind: &str) -> Result<Kind<'_>> {
+    let bad = || Error(format!("prompt {kind}: KIND, KIND+GAPms (as 4k+250ms), KIND*TURNS (as 1k*4) or KIND*TURNS+GAPms"));
+    let (rest, gap) = match kind.split_once('+') {
+        None => (kind, Duration::ZERO),
+        Some((k, gap)) => (k, Duration::from_millis(gap.strip_suffix("ms").and_then(|g| g.parse::<u64>().ok()).filter(|&g| g > 0).ok_or_else(bad)?)),
+    };
+    let (prompt, turns) = match rest.split_once('*') {
+        None => (rest, 1),
+        Some((k, t)) => (k, t.parse::<usize>().ok().filter(|&t| (2..=64).contains(&t)).ok_or_else(bad)?),
+    };
+    Ok(Kind { prompt, gap, turns })
 }
 
 /// A prompt of the kind, different from every other seed's from the first token on. The long ones are random words (about 1.09 tokens a word) and a question that ignores them.
@@ -99,7 +116,9 @@ pub fn suite(name: &str) -> Result<Vec<(String, usize)>> {
         "full" => [mk(&["short"], &[1, 8, 64, 256]), mk(&["1k", "4k", "32k"], &[1])].concat(),
         // prompts that come in while other replies are being written: 8 requests, each begun a while after the one before
         "arrive" => mk(&["short+100ms", "1k+250ms", "4k+500ms"], &[8]),
-        s => return err(format!("--suite {s}: gate, bar, full or arrive")),
+        // conversations: 4 turns each, alone and 8 at once (a prompt cache's work: the later turns resend what the server has seen)
+        "chat" => mk(&["1k*4", "4k*4"], &[1, 8]),
+        s => return err(format!("--suite {s}: gate, bar, full, arrive or chat")),
     })
 }
 
@@ -109,7 +128,7 @@ fn parse_loads(s: &str) -> Result<Vec<(String, usize)>> {
             let (k, c) = l
                 .split_once(':')
                 .ok_or_else(|| Error(format!("--loads {l}: PROMPT:CONCURRENCY, as short:8 (or 4k+250ms:8, each request 250 ms after the one before)")))?;
-            kind_tokens(kind_parts(k)?.0)?;
+            kind_tokens(kind_parts(k)?.prompt)?;
             Ok((k.to_string(), c.parse::<usize>().ok().filter(|&c| c > 0).ok_or_else(|| Error(format!("--loads {l}: {c} is not a number of requests")))?))
         })
         .collect()
@@ -119,6 +138,8 @@ fn parse_loads(s: &str) -> Result<Vec<(String, usize)>> {
 
 #[derive(Default)]
 struct Req {
+    /// Its turn in its conversation (0: the first, or the only one).
+    turn: usize,
     ttft: Option<f64>,
     tokens: u64,
     prompt_tokens: Option<u64>,
@@ -132,24 +153,51 @@ fn agent() -> ureq::Agent {
     ureq::Agent::new_with_config(ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(1800))).build())
 }
 
-/// One streamed chat completion: the time to the first content, each gap between chunks, the tokens (the server's usage, else the chunks).
+/// One streamed chat completion of a prompt of the kind (`send`).
 fn one(agent: &ureq::Agent, url: &str, model: &str, kind: &str, seed: u64, max_tokens: usize) -> Req {
-    let mut out = Req::default();
+    match prompt(kind, seed) {
+        Ok(content) => send(agent, url, model, &json!([{"role": "user", "content": content}]), max_tokens).0,
+        Err(e) => Req { error: Some(e.msg), ..Req::default() },
+    }
+}
+
+/// A conversation of `turns` turns that begins with a prompt of the kind: each turn sends the messages so far and gets a reply, and the next adds that reply and a short question of its
+/// own (different for every seed and turn). The turns' requests in order; a turn that fails ends the conversation there.
+fn converse(agent: &ureq::Agent, url: &str, model: &str, kind: &str, seed: u64, turns: usize, max_tokens: usize) -> Vec<Req> {
     let content = match prompt(kind, seed) {
         Ok(c) => c,
-        Err(e) => {
-            out.error = Some(e.msg);
-            return out;
-        }
+        Err(e) => return vec![Req { error: Some(e.msg), ..Req::default() }],
     };
-    let body = json!({"model": model, "messages": [{"role": "user", "content": content}], "max_tokens": max_tokens, "temperature": 0, "stream": true,
+    let mut messages = vec![json!({"role": "user", "content": content})];
+    let mut out = Vec::new();
+    for turn in 0..turns {
+        let (mut r, reply) = send(agent, url, model, &Value::Array(messages.clone()), max_tokens);
+        r.turn = turn;
+        let failed = r.error.is_some();
+        out.push(r);
+        if failed {
+            break;
+        }
+        messages.push(json!({"role": "assistant", "content": reply}));
+        messages.push(
+            json!({"role": "user", "content": format!("[{seed}.{}] Say more about the part of that which is least obvious, in about 100 words.", turn + 1)}),
+        );
+    }
+    out
+}
+
+/// One streamed chat completion of `messages`: the time to the first content, each gap between chunks, the tokens (the server's usage, else the chunks); and the reply's text.
+fn send(agent: &ureq::Agent, url: &str, model: &str, messages: &Value, max_tokens: usize) -> (Req, String) {
+    let mut out = Req::default();
+    let mut text = String::new();
+    let body = json!({"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": 0, "stream": true,
         "stream_options": {"include_usage": true}, "chat_template_kwargs": {"enable_thinking": false}});
     let t0 = Instant::now();
     let mut resp = match agent.post(&format!("{url}/v1/chat/completions")).header("Content-Type", "application/json").send(body.to_string()) {
         Ok(r) => r,
         Err(e) => {
             out.error = Some(e.to_string());
-            return out;
+            return (out, text);
         }
     };
     let (mut chunks, mut usage_tokens) = (0u64, None);
@@ -169,6 +217,7 @@ fn one(agent: &ureq::Agent, url: &str, model: &str, kind: &str, seed: u64, max_t
             out.prompt_tokens = u["prompt_tokens"].as_u64();
         }
         let delta = &d["choices"][0]["delta"];
+        text.push_str(delta["content"].as_str().unwrap_or(""));
         if ["content", "reasoning_content", "reasoning"].iter().any(|k| delta[*k].as_str().is_some_and(|s| !s.is_empty())) {
             let now = Instant::now();
             if let Some(l) = out.last {
@@ -184,7 +233,12 @@ fn one(agent: &ureq::Agent, url: &str, model: &str, kind: &str, seed: u64, max_t
     if out.first.is_none() && out.error.is_none() {
         out.error = Some("no content came".into());
     }
-    out
+    (out, text)
+}
+
+/// A figure of each round that has it.
+fn col_of(rs: &[Round], f: &dyn Fn(&Round) -> Option<f64>) -> Vec<f64> {
+    rs.iter().filter_map(f).collect()
 }
 
 fn median(xs: &[f64]) -> Option<f64> {
@@ -218,7 +272,9 @@ pub fn stats(runs: &[f64]) -> Value {
 
 /// One round of `n` requests (at once, or one after another: `kind_parts`): (time to first token, decode tokens/s, mean gap in ms, the gaps' 99th percentile in ms, all users' tokens after the first over the span, prompt tokens/s, requests that failed, prompt tokens).
 struct Round {
+    /// The first token of the requests that are a first turn (or the only one), and of the later turns of a conversation (None where the load has none).
     ttft: Option<f64>,
+    ttft_later: Option<f64>,
     decode: Option<f64>,
     itl: Option<f64>,
     itl_p99: Option<f64>,
@@ -236,26 +292,30 @@ fn requests(agent: &ureq::Agent, url: &str, model: &str, kind: &str, n: usize, s
             *seed
         })
         .collect();
-    let (kind, gap) = kind_parts(kind).unwrap_or((kind, Duration::ZERO));
+    let k = kind_parts(kind).unwrap_or(Kind { prompt: kind, gap: Duration::ZERO, turns: 1 });
     std::thread::scope(|s| {
         let hs: Vec<_> = seeds
             .iter()
             .enumerate()
-            .map(|(k, &sd)| {
+            .map(|(i, &sd)| {
                 s.spawn(move || {
-                    std::thread::sleep(gap * k as u32);
-                    one(agent, url, model, kind, sd, max_tokens)
+                    std::thread::sleep(k.gap * i as u32);
+                    if k.turns > 1 {
+                        converse(agent, url, model, k.prompt, sd, k.turns, max_tokens)
+                    } else {
+                        vec![one(agent, url, model, k.prompt, sd, max_tokens)]
+                    }
                 })
             })
             .collect();
-        hs.into_iter().map(|h| h.join().unwrap_or_default()).collect()
+        hs.into_iter().flat_map(|h| h.join().unwrap_or_else(|_| vec![Req { error: Some("the client's thread failed".into()), ..Req::default() }])).collect()
     })
 }
 
 fn round(agent: &ureq::Agent, url: &str, model: &str, kind: &str, n: usize, seed: &mut u64, max_tokens: usize) -> Round {
     let reqs = requests(agent, url, model, kind, n, seed, max_tokens);
     // (requests begun one after another: their prompts are not one pass, and prompt tokens over the slowest first token is no rate)
-    let at_once = kind_parts(kind).is_ok_and(|p| p.1.is_zero());
+    let at_once = kind_parts(kind).is_ok_and(|k| k.gap.is_zero() && k.turns == 1);
     let ok: Vec<&Req> = reqs.iter().filter(|r| r.error.is_none() && r.ttft.is_some()).collect();
     let tps = |r: &Req| match (r.first, r.last) {
         (Some(f), Some(l)) if l > f && r.tokens > 1 => Some((r.tokens - 1) as f64 / l.duration_since(f).as_secs_f64()),
@@ -271,7 +331,8 @@ fn round(agent: &ureq::Agent, url: &str, model: &str, kind: &str, n: usize, seed
     let prompt_total: Option<u64> = ok.iter().map(|r| r.prompt_tokens).sum();
     let slowest_first = ok.iter().filter_map(|r| r.ttft).fold(f64::NEG_INFINITY, f64::max);
     Round {
-        ttft: median(&ok.iter().filter_map(|r| r.ttft).collect::<Vec<_>>()),
+        ttft: median(&ok.iter().filter(|r| r.turn == 0).filter_map(|r| r.ttft).collect::<Vec<_>>()),
+        ttft_later: median(&ok.iter().filter(|r| r.turn > 0).filter_map(|r| r.ttft).collect::<Vec<_>>()),
         decode: median(&decode),
         itl: median(&decode).map(|t| 1000.0 / t),
         itl_p99: percentile(&gaps, 0.99).map(|g| g * 1000.0),
@@ -546,7 +607,12 @@ pub fn measure(a: &Args) -> Result<()> {
         for _ in 0..warmup {
             round(&agent, &url, &model, kind, *n, &mut seed, max_tokens);
         }
+        // (a glyd server's count of prompt tokens run and of those found in its cache, around the measured rounds)
+        let counts = || get_json(&format!("{url}/stats")).and_then(|v| Some((v["prompt_tokens"].as_f64()?, v["prefix_hit_tokens"].as_f64()?)));
+        let before = counts();
         let rs: Vec<Round> = (0..runs).map(|_| round(&agent, &url, &model, kind, *n, &mut seed, max_tokens)).collect();
+        let hit_rate = before.zip(counts()).filter(|(b, a)| a.0 > b.0).map(|(b, a)| (a.1 - b.1) / (a.0 - b.0));
+        let later = col_of(&rs, &|r| r.ttft_later);
         let col = |f: &dyn Fn(&Round) -> Option<f64>| rs.iter().filter_map(f).collect::<Vec<f64>>();
         let (ttft, decode, itl, itl99, agg, prefill) =
             (col(&|r| r.ttft), col(&|r| r.decode), col(&|r| r.itl), col(&|r| r.itl_p99), col(&|r| r.agg), col(&|r| r.prefill));
@@ -571,6 +637,19 @@ pub fn measure(a: &Args) -> Result<()> {
         }
         let mut cell = json!({"prompt": kind, "conc": n, "prompt_tokens": pt, "errors": errors,
             "ttft_s": stats(&ttft), "decode_tps_per_user": stats(&decode), "itl_ms": stats(&itl), "itl_p99_ms": stats(&itl99), "agg_tps": stats(&agg), "prefill_tps": stats(&prefill)});
+        if !later.is_empty() {
+            // (a conversation's later turns, and the share of the prompt tokens the server found in its cache: 0 where every turn is run from its first token)
+            cell["ttft_later_s"] = stats(&later);
+            cell["prefix_hit_rate"] = json!(hit_rate.map(|h| (h * 10000.0).round() / 10000.0));
+            if !quiet {
+                eprintln!(
+                    "{:<12} later turns: first token {} s{}",
+                    "",
+                    median(&later).map_or("-".to_string(), |v| format!("{v:.3}")),
+                    hit_rate.map_or(String::new(), |h| format!("; {:.0}% of the prompt tokens found in the cache", h * 100.0))
+                );
+            }
+        }
         if let (Some(c), Some(p)) = (cell_ceiling, pct(&decode)) {
             cell["ceiling_tps_per_user"] = json!((c * 100.0).round() / 100.0);
             cell["pct_of_ceiling"] = json!((p * 10000.0).round() / 10000.0);
@@ -726,7 +805,7 @@ fn gsm8k(agent: &ureq::Agent, url: &str, model: &str, n: usize) -> Value {
 // ---- quality: the next token after fixed prefixes of one text
 
 /// A text of about 330 words; its prefixes are the contexts the next-token distributions are taken at.
-const PASSAGE: &str = "The lighthouse keeper climbed the spiral stairs every evening at dusk, a lantern swinging from one hand and a notebook tucked under the other arm. \
+pub(crate) const PASSAGE: &str = "The lighthouse keeper climbed the spiral stairs every evening at dusk, a lantern swinging from one hand and a notebook tucked under the other arm. \
 From the gallery he could see the whole harbour: the fishing boats nosing back to their moorings, the ferry drawing a long white line across the grey water, \
 and beyond the breakwater the open sea, which that night was calm enough to hold the first stars like coins in a dish. He wrote down the wind, the swell and the \
 visibility in a small neat hand, then trimmed the wick, wound the clockwork and listened for the soft click that told him the great lens had begun to turn. \
@@ -1248,6 +1327,50 @@ mod tests {
         assert!(r.errors == 0 && r.ttft.is_some());
     }
 
+    /// R11: 256 requests in flight at once through the server's front end (which has no cap on connections) to a scheduler of 8 sequences over the made-up model: every one of them is
+    /// answered whole, the rest waiting their turn in the scheduler's queue, and none is refused. Each begins 2 ms after the one before and the model takes 4 ms a step, so the last has
+    /// begun long before the first hundred are done. (All of them in the same instant is the `full` suite's `short:256`, which a Linux server takes; a Mac's accept queue is 128 connections,
+    /// kern.ipc.somaxconn, and it resets the ones past it, so a test that must pass there cannot open them all at once.)
+    #[test]
+    fn two_hundred_and_fifty_six_requests_in_flight_are_all_answered() {
+        assert!(suite("full").unwrap().contains(&("short".to_string(), 256)));
+        crate::server::tests::raise_fd_limit(4096);
+        let mut f = crate::sched::tests::Fake::new(1024, 64);
+        (f.batch, f.decode_delay) = (8, Duration::from_millis(4));
+        let addr = crate::server::tests::serve_fake(f, None, 8);
+        let url = format!("http://{addr}");
+        let mut seed = 1000;
+        let reqs = requests(&agent(), &url, "fake", "short+2ms", 256, &mut seed, 6);
+        let failed: Vec<_> = reqs.iter().filter_map(|r| r.error.clone()).collect();
+        assert!(failed.is_empty(), "{} of 256 failed: {:?}", failed.len(), &failed[..failed.len().min(3)]);
+        assert!(reqs.iter().all(|r| r.tokens > 0 && r.ttft.is_some()));
+        // (they were in flight together: the last began before most had their last token)
+        let last_begun = reqs.iter().filter_map(|r| r.first).max().unwrap();
+        let done_before = reqs.iter().filter(|r| r.last.is_some_and(|l| l < last_begun)).count();
+        assert!(done_before < 256, "{done_before} were done before the last had its first token");
+    }
+
+    /// A conversation (`short*3`) against the real handler and scheduler over the made-up model, whose cache keeps a prompt's full pages: each turn is answered, the later turns send what
+    /// came before (their prompts are longer each time), and the server finds the earlier turns' pages in its cache. The round has the first turns' first token and the later turns' apart.
+    #[test]
+    fn a_conversations_later_turns_send_what_came_before_and_find_it_in_the_cache() {
+        let mut f = crate::sched::tests::Fake::new(512, 64);
+        f.decode_delay = Duration::from_millis(1);
+        let addr = crate::server::tests::serve_fake(f, None, 4);
+        let url = format!("http://{addr}");
+        let stats = || get_json(&format!("{url}/stats")).map(|v| (v["prompt_tokens"].as_f64().unwrap(), v["prefix_hit_tokens"].as_f64().unwrap())).unwrap();
+        let turns = converse(&agent(), &url, "fake", "short", 7, 3, 24);
+        assert_eq!(turns.iter().map(|r| r.turn).collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert!(turns.iter().all(|r| r.error.is_none() && r.tokens > 0), "{:?}", turns.iter().map(|r| r.error.clone()).collect::<Vec<_>>());
+        let (run, hit) = stats();
+        assert!(hit >= 2.0 * crate::kv::PAGE as f64 && hit < run, "{hit} of {run} prompt tokens found in the cache");
+        let mut seed = 100;
+        let r = round(&agent(), &url, "fake", "short*3", 2, &mut seed, 24);
+        assert!(r.errors == 0 && r.ttft.is_some() && r.ttft_later.is_some() && r.prefill.is_none());
+        // (one request each: no later turns)
+        assert!(round(&agent(), &url, "fake", "short", 2, &mut seed, 8).ttft_later.is_none());
+    }
+
     #[test]
     fn suites_and_loads_are_read() {
         assert_eq!(suite("gate").unwrap().len(), 4);
@@ -1256,10 +1379,16 @@ mod tests {
         assert!(parse_loads("short").is_err() && parse_loads("short:0").is_err());
         // requests one after another: the kind carries the time between them, and is the load's name in the result
         assert_eq!(parse_loads("4k+250ms:8").unwrap(), vec![("4k+250ms".to_string(), 8)]);
-        assert_eq!(kind_parts("4k+250ms").unwrap(), ("4k", Duration::from_millis(250)));
-        assert_eq!(kind_parts("short").unwrap(), ("short", Duration::ZERO));
+        assert_eq!(kind_parts("4k+250ms").unwrap(), Kind { prompt: "4k", gap: Duration::from_millis(250), turns: 1 });
+        assert_eq!(kind_parts("short").unwrap(), Kind { prompt: "short", gap: Duration::ZERO, turns: 1 });
+        // a conversation: the turns, with or without a time between the conversations' starts
+        assert_eq!(kind_parts("1k*4").unwrap(), Kind { prompt: "1k", gap: Duration::ZERO, turns: 4 });
+        assert_eq!(kind_parts("1k*4+250ms").unwrap(), Kind { prompt: "1k", gap: Duration::from_millis(250), turns: 4 });
+        assert_eq!(parse_loads("1k*4:8").unwrap(), vec![("1k*4".to_string(), 8)]);
+        assert!(parse_loads("1k*1:8").is_err() && parse_loads("1k*x:8").is_err() && parse_loads("5k*4:8").is_err());
+        assert!(suite("chat").unwrap().iter().all(|(k, _)| kind_parts(k).unwrap().turns == 4));
         assert!(parse_loads("4k+250:8").is_err() && parse_loads("4k+0ms:8").is_err() && parse_loads("5k+250ms:8").is_err());
-        assert!(suite("arrive").unwrap().iter().all(|(k, n)| *n == 8 && !kind_parts(k).unwrap().1.is_zero()));
+        assert!(suite("arrive").unwrap().iter().all(|(k, n)| *n == 8 && !kind_parts(k).unwrap().gap.is_zero()));
     }
 
     #[test]

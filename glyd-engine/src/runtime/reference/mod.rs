@@ -585,7 +585,7 @@ mod tests {
         assert_close(&ga, &ya, 0.0, "sequence a");
         assert_close(&gb, &yb, 0.0, "sequence b");
         let mamba = Block {
-            body: Body::Mixer(Mixer::Mamba2(crate::runtime::kinds::Mamba2 { heads: 1, head_dim: 1, state: 1, groups: 1, conv: 4, chunk: 1 })),
+            body: Body::Mixer(Mixer::Mamba2(crate::runtime::kinds::Mamba2 { heads: 1, head_dim: 1, state: 1, groups: 1, conv: 4, chunk: 1, norm_eps: 1e-5 })),
             ..block.clone()
         };
         assert!(r.build(&LayerDesc { index: 3, block: &mamba, hidden: 64 }, &p, &Placement::default(), &mut Arenas::default()).is_err());

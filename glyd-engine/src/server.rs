@@ -11,7 +11,7 @@ use crate::conv::{Gen, Outcome, Request, Talk};
 use crate::ffi::{err, Error, Result};
 use crate::model::{Engine, Finish, Reply, MAX_ROWS};
 use crate::sampler::{fresh_seed, Lp, Params};
-use crate::sched::{stats_json, Ev, ModelStep, Sched, Submit};
+use crate::sched::{Ev, ModelStep, Sched, Submit};
 use crate::tok::Tok;
 use crate::tools::{self, Format, ToolChoice, ToolEv, Tools};
 use crate::wire;
@@ -1966,12 +1966,28 @@ pub fn listen_with_life(
     loading: Arc<AtomicBool>,
     life: Arc<crate::ops::Life>,
 ) -> Result<std::net::SocketAddr> {
+    listen_in(addr, name, window, key, local_only, tx, loading, life, crate::runtime::context::Context::process().clone())
+}
+
+/// `listen_with_life` for the model of the runtime context `rt`: the process's own for a server of one model, its own for each model of a process that serves several (and for a test's).
+#[allow(clippy::too_many_arguments)]
+pub fn listen_in(
+    addr: &str,
+    name: &str,
+    window: usize,
+    key: Option<String>,
+    local_only: bool,
+    tx: Sender<Job>,
+    loading: Arc<AtomicBool>,
+    life: Arc<crate::ops::Life>,
+    rt: Arc<crate::runtime::context::Context>,
+) -> Result<std::net::SocketAddr> {
     crate::ops::init();
     crate::otel::set_model(name);
     let key = Arc::new(key.map(|k| key_digest(&k)));
     let name = Arc::new(name.to_string());
     // (the connections are the front end's: tasks of its own runtime, with no cap on how many; what answers a request runs on threads, as before)
-    let bound = frontend::serve(addr, move |port| Ctx { name, window, key, local_only, port, tx, loading, life, times: Times::default() })
+    let bound = frontend::serve(addr, move |port| Ctx { name, window, key, local_only, port, tx, loading, life, times: Times::default(), rt })
         .map_err(|e| Error(format!("{addr}: {e}")))?;
     Ok(bound)
 }
@@ -1995,6 +2011,8 @@ pub(crate) struct Ctx {
     pub loading: Arc<AtomicBool>,
     pub life: Arc<crate::ops::Life>,
     pub times: Times,
+    /// The model's runtime context: what /v1/glyd/info, /metrics and /stats read, and where the requests are counted.
+    pub rt: Arc<crate::runtime::context::Context>,
 }
 
 /// The times the front end gives a connection: for the head of a request (of the whole of it), for its body, and for the next request of a connection that has been answered.
@@ -2025,7 +2043,7 @@ pub(crate) fn dispatch(mut s: Box<dyn Conn>, mut req: Req, ctx: &Ctx, id: u64) {
     let (name, window, key, (local_only, port), tx, loading, life) =
         (ctx.name.as_str(), ctx.window, &*ctx.key, (ctx.local_only, ctx.port), &ctx.tx, &*ctx.loading, &ctx.life);
     if let Some((code, why)) = refusal(&req.host, &req.origin, local_only) {
-        crate::ops::refused(code);
+        ctx.rt.figures.refused(code);
         return respond(&mut *s, code, "application/json", forbidden_body(&why, code).as_bytes());
     }
     if let Some((method, headers)) = &req.preflight {
@@ -2047,7 +2065,7 @@ pub(crate) fn dispatch(mut s: Box<dyn Conn>, mut req: Req, ctx: &Ctx, id: u64) {
         } else {
             error_body("Incorrect API key provided: the server's key is needed as `Authorization: Bearer <key>`.", 401)
         };
-        crate::ops::refused(401);
+        ctx.rt.figures.refused(401);
         return respond_with(&mut *s, 401, "application/json", &format!("{cors}WWW-Authenticate: Bearer\r\n"), body.as_bytes());
     }
     // a request for an API that goes to the engine is counted as in flight until its answer ends, and is not taken while the server drains (a 503 that says so: the load balancer's next try goes elsewhere)
@@ -2055,17 +2073,17 @@ pub(crate) fn dispatch(mut s: Box<dyn Conn>, mut req: Req, ctx: &Ctx, id: u64) {
         && matches!(path.as_str(), "/v1/chat/completions" | "/v1/completions" | "/v1/responses" | "/v1/messages" | "/v1/messages/count_tokens"))
         || path.starts_with("/api/");
     if to_engine {
-        crate::ops::request(&path);
+        ctx.rt.figures.request(&path);
         // (requests being answered are bounded as the connections are: each holds a thread of its own while the engine makes its reply)
         if life.inflight() >= MAX_IN_FLIGHT {
-            crate::ops::refused(503);
+            ctx.rt.figures.refused(503);
             let body = error_body("the server is answering as many requests as it takes: try again", 503);
             return respond_with(&mut *s, 503, "application/json", &format!("{cors}Retry-After: 1\r\n"), body.as_bytes());
         }
         match life.enter() {
             Some(g) => req.inflight = Some(g),
             None => {
-                crate::ops::refused(503);
+                ctx.rt.figures.refused(503);
                 let body = error_body("the server is shutting down: it takes no new requests", 503);
                 return respond_with(&mut *s, 503, "application/json", &format!("{cors}Retry-After: 1\r\n"), body.as_bytes());
             }
@@ -2107,8 +2125,8 @@ pub(crate) fn dispatch(mut s: Box<dyn Conn>, mut req: Req, ctx: &Ctx, id: u64) {
             }
         }
         ("GET", "/v1/glyd/status") if crate::monitor::on() => respond_with(&mut *s, 200, "application/json", &cors, crate::monitor::json(name).as_bytes()),
-        ("GET", "/v1/glyd/info") => match INFO.get() {
-            Some(i) => respond_with(&mut *s, 200, "application/json", &cors, info_json(i).as_bytes()),
+        ("GET", "/v1/glyd/info") => match ctx.rt.info.get() {
+            Some(i) => respond_with(&mut *s, 200, "application/json", &cors, info_json(i, &ctx.rt).as_bytes()),
             None => respond_with(&mut *s, 404, "application/json", &cors, error_body("this server has no description (glyd serve gives one)", 404).as_bytes()),
         },
         (m @ ("GET" | "POST"), p) if p.starts_with("/v1/glyd/requests/") => {
@@ -2139,10 +2157,10 @@ pub(crate) fn dispatch(mut s: Box<dyn Conn>, mut req: Req, ctx: &Ctx, id: u64) {
         ("GET" | "HEAD", "/ready") => respond_with(&mut *s, 200, "application/json", &cors, b"{\"status\":\"ready\"}"),
         ("GET", "/metrics") => {
             let ready = !loading.load(Ordering::Relaxed);
-            let text = crate::ops::render(&crate::ops::State { model: name, ready, life, engine: true });
+            let text = crate::ops::render_of(&ctx.rt, &crate::ops::State { model: name, ready, life, engine: true });
             respond_with(&mut *s, 200, crate::ops::CONTENT_TYPE, &cors, text.as_bytes())
         }
-        ("GET", "/stats") => respond_with(&mut *s, 200, "application/json", &cors, stats_json().as_bytes()),
+        ("GET", "/stats") => respond_with(&mut *s, 200, "application/json", &cors, crate::sched::stats_json_of(&ctx.rt).as_bytes()),
         ("GET", "/v1/models") => {
             let body =
                 format!("{{\"object\":\"list\",\"data\":[{}],\"has_more\":false,\"first_id\":{1},\"last_id\":{1}}}", model_json(name, window), jstr(name));
@@ -2203,6 +2221,8 @@ pub struct Shared {
     pub thinking: Option<bool>,
     /// The fields the engine does not do besides NOT_DONE's (ONE_AT_A_TIME, or none): refused, in words, where a request sets one.
     pub refused: &'static [(&'static str, &'static str)],
+    /// The model's runtime context (src/runtime/context.rs): its figures, its engine's first failure, what /v1/glyd/info says of it. The process's own where one model is served.
+    pub rt: Arc<crate::runtime::context::Context>,
 }
 
 /// The chat page's directory where the server was given one (`chat.html`, and its files in `web/`), in place of the page built in.
@@ -2220,8 +2240,6 @@ pub struct Info {
     pub started: f64,
 }
 
-pub static INFO: std::sync::OnceLock<Info> = std::sync::OnceLock::new();
-
 /// The version of what /v1/glyd/info, /v1/glyd/requests/ID and /v1/glyd/tokenize say (docs/serve-api.md).
 pub const API: &str = "glyd-serve/1";
 
@@ -2231,7 +2249,7 @@ fn names<'a>(l: impl Iterator<Item = &'a str>) -> Value {
 
 /// /v1/glyd/info's answer: `i`, the build, the limits and the fields, and what is so now: whether the engine has failed, the requests, and the memory (the engine's buffers, and the GPU's as the driver has it:
 /// every program's on it).
-fn info_json(i: &Info) -> String {
+fn info_json(i: &Info, rt: &crate::runtime::context::Context) -> String {
     use tools::obj;
     let (num, secs) = (|n: usize| Value::from(n as u64), |t: f64| Value::Number(format!("{t:.3}")));
     let (live, peak, peak_at) = crate::dev::held_now();
@@ -2240,7 +2258,7 @@ fn info_json(i: &Info) -> String {
         crate::dev::Dev::release(o);
         g
     });
-    let failed = FAILED.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let failed = rt.failed.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let (running, cancelling) = track_counts();
     let here: Vec<&str> = i.refused.iter().map(|(n, _)| *n).collect();
     let held = |f: fn(&crate::dev::Held) -> u64| i.held.as_ref().map_or(Value::Null, |h| Value::from(f(h)));
@@ -2438,7 +2456,7 @@ pub fn work_gen(e: &mut dyn Gen, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &S
                     Err(_) => "error",
                 });
                 if let Err(err) = &r {
-                    engine_failed(&err.to_string());
+                    shared.rt.fail(&err.to_string());
                 }
                 let lost = r.as_ref().err().filter(|e| e.sticky()).cloned();
                 let _ = sub.out.send(Ev::End(r.map(|x| x.1)));
@@ -2454,6 +2472,9 @@ pub fn work_gen(e: &mut dyn Gen, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &S
 
 /// `work` on any scheduler (the tests run it on a scheduler of a made-up model).
 pub fn work_with<B: ModelStep>(sched: &mut Sched<B>, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &Sender<Job>) {
+    // (the scheduler's figures and its sequences' counts go where the server's own do: the model's runtime context)
+    let rt = shared.rt.clone();
+    sched.set_context(rt.clone());
     // A thread of its own takes the jobs off the queue as they come: the requests' threads (which parse, tokenize and apply the chat template) start at once, and not at the end of the prompt pass or decode
     // step the scheduler is in (20 ms of every first token with eight requests at once), and the sequences they make are passed on; the scheduler takes them in at its next round.
     let (wtx, wrx) = std::sync::mpsc::channel::<Job>();
@@ -2503,7 +2524,7 @@ pub fn work_with<B: ModelStep>(sched: &mut Sched<B>, shared: Arc<Shared>, rx: &R
             }
             if let Err(err) = sched.tick() {
                 eprintln!("glyd: {err}");
-                engine_failed(&err.to_string());
+                rt.fail(&err.to_string());
                 sched.fail(&err);
                 if err.sticky() {
                     device_lost(&err);
@@ -2612,16 +2633,6 @@ fn track_json(x: &Track) -> String {
         x.cancel.map_or("null".to_string(), jstr),
         x.began
     )
-}
-
-/// The engine's first failure (when, and what): nothing is sure of the GPU after one, so /v1/glyd/info says the server has failed from then on.
-static FAILED: std::sync::Mutex<Option<(f64, String)>> = std::sync::Mutex::new(None);
-
-fn engine_failed(e: &str) {
-    let mut f = FAILED.lock().unwrap_or_else(|e| e.into_inner());
-    if f.is_none() {
-        *f = Some((crate::monitor::clock(), e.to_string()));
-    }
 }
 
 /// The sticky device errors this process's servers ended for (a test's server does not end the process: it says so here).
@@ -2838,6 +2849,19 @@ pub(crate) mod tests {
         key: Option<&str>,
         refused: &'static [(&'static str, &'static str)],
     ) -> std::net::SocketAddr {
+        serve_fake_in(f, template, users, local_only, key, refused, crate::runtime::context::Context::new())
+    }
+
+    /// `serve_fake_with` as the model of the runtime context `rt` (each made-up server has its own: what one counts or fails is not another's).
+    pub(crate) fn serve_fake_in(
+        f: Fake,
+        template: Option<&str>,
+        users: usize,
+        local_only: bool,
+        key: Option<&str>,
+        refused: &'static [(&'static str, &'static str)],
+        rt: Arc<crate::runtime::context::Context>,
+    ) -> std::net::SocketAddr {
         let words: Vec<String> = (1..=1100).map(|i| format!(" w{i}")).collect();
         let refs: Vec<&str> = words.iter().map(String::as_str).collect();
         let window = f.store.len() * crate::kv::PAGE;
@@ -2851,9 +2875,12 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused,
+            rt: rt.clone(),
         });
         let (tx, rx) = std::sync::mpsc::channel();
-        let addr = listen("127.0.0.1:0", "fake", window, key.map(str::to_string), local_only, tx.clone()).unwrap();
+        let life = crate::ops::Life::global();
+        let addr =
+            listen_in("127.0.0.1:0", "fake", window, key.map(str::to_string), local_only, tx.clone(), Arc::new(AtomicBool::new(false)), life, rt).unwrap();
         std::thread::spawn(move || work_with(&mut Sched::new(f, users), shared, &rx, &tx));
         addr
     }
@@ -3376,6 +3403,7 @@ pub(crate) mod tests {
             loading: Arc::new(AtomicBool::new(false)),
             life: Arc::default(),
             times,
+            rt: crate::runtime::context::Context::new(),
         })
         .unwrap()
     }
@@ -3426,6 +3454,64 @@ pub(crate) mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(lost(700), 1, "the server ended itself for the lost context, once");
+    }
+
+    /// Two models in one process (R16): each server has its own runtime context, so its scheduler's figures, its counts and its engine's failure are its own. Three requests to one and a
+    /// request that fails to the other: the first one's /stats and /metrics count its three and not the other's, the second one's /v1/glyd/info says it failed and the first one's that it is
+    /// ready, and the process's own context has seen none of it.
+    #[test]
+    fn two_models_in_one_process_have_their_own_figures_and_failures() {
+        use crate::runtime::context::Context;
+        let ask = |addr: std::net::SocketAddr| {
+            let body = r#"{"messages":[{"role":"user","content":"hello there"}],"max_tokens":6,"temperature":0}"#;
+            let mut c = TcpStream::connect(addr).unwrap();
+            c.write_all(
+                format!(
+                    "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+            raw_status(&mut c).0
+        };
+        let (rt_a, rt_b) = (Context::new(), Context::new());
+        let mut failing = Fake::new(512, 64);
+        failing.fault = Some((2, 1));
+        let a = serve_fake_in(Fake::new(512, 64), None, 4, false, None, &[], rt_a.clone());
+        let b = serve_fake_in(failing, None, 4, false, None, &[], rt_b.clone());
+        for rt in [&rt_a, &rt_b] {
+            assert!(rt
+                .info
+                .set(Info { about: Vec::new(), gpu: None, held: None, concurrency: 4, window: 512 * crate::kv::PAGE, refused: &[], started: 0.0 })
+                .is_ok());
+        }
+        let before = Context::process().sched[0].load(Ordering::Relaxed);
+        assert_eq!((ask(a), ask(a), ask(a)), (200, 200, 200));
+        assert_eq!(ask(b), 500);
+        let num = |text: &str, key: &str| -> f64 {
+            let v = json::parse(text.split_once("\r\n\r\n").map_or(text, |x| x.1)).unwrap();
+            f64_of(at(&v, &[key]))
+        };
+        // the schedulers' figures: prompt tokens run
+        let (sa, sb) = (get(a, "/stats", None), get(b, "/stats", None));
+        let (pa, pb) = (num(&sa, "prompt_tokens"), num(&sb, "prompt_tokens"));
+        assert!(pb > 0.0 && pa == 3.0 * pb, "{pa} prompt tokens of three requests, {pb} of one");
+        // the counts: tokens written to replies (six a reply of the first; the second's reply failed at its second step)
+        let made = |text: &str| -> f64 {
+            text.lines().find_map(|l| l.strip_prefix("glyd_generated_tokens_total ")).and_then(|v| v.trim().parse().ok()).expect("glyd_generated_tokens_total")
+        };
+        let (ma, mb) = (made(&get(a, "/metrics", None)), made(&get(b, "/metrics", None)));
+        assert!(ma == 18.0 && mb < 6.0, "{ma} tokens of the first model's replies, {mb} of the second's");
+        // the failure is the second model's alone
+        let state = |addr| {
+            let t = get(addr, "/v1/glyd/info", None);
+            let v = json::parse(t.split_once("\r\n\r\n").map_or(t.as_str(), |x| x.1)).unwrap();
+            at(&v, &["state"]).as_str().unwrap_or("").to_string()
+        };
+        assert_eq!((state(a), state(b)), ("ready".to_string(), "failed".to_string()));
+        assert!(rt_a.failed.lock().unwrap().is_none() && rt_b.failed.lock().unwrap().is_some());
+        assert_eq!(Context::process().sched[0].load(Ordering::Relaxed), before, "the process's own context counts none of their prompts");
     }
 
     /// A client that sends its request slowly is let wait for the time that is given the whole of it, not for each read: a request that stops, or goes a byte at a time, is answered 408 and its
@@ -3963,6 +4049,7 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
         };
         let mut bytes: Vec<Vec<u8>> = (0..=255u8).map(|b| vec![b]).collect();
         bytes.push([&[toktrie::TokTrie::SPECIAL_TOKEN_MARKER][..], b"<|im_end|>"].concat());
@@ -4003,6 +4090,7 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
         };
         let text = |body: &str| {
             let v = json::parse(body).unwrap();
@@ -4054,6 +4142,7 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
         };
         let text = |body: &str| {
             let v = json::parse(body).unwrap();
@@ -4084,6 +4173,7 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
         };
         let text = |body: &str| {
             let v = json::parse(body).unwrap();
@@ -4135,6 +4225,7 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
         });
         let (tx, rx) = std::sync::mpsc::channel();
         let addr = listen("127.0.0.1:0", "fake", window, None, false, tx.clone()).unwrap();
@@ -4234,6 +4325,7 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
         };
         let ask = |sh: &Shared, body: &str| {
             let v = json::parse(body).unwrap();
@@ -4579,6 +4671,7 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
         };
         let prompt = |extra: &str| {
             let v = json::parse(&chat_body(extra)).unwrap();
@@ -4694,6 +4787,7 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
         };
         let prompt = |extra: &str| {
             let v = json::parse(&chat_body(extra)).unwrap();
@@ -4864,6 +4958,7 @@ pub(crate) mod tests {
             vocab: 4096,
             thinking: None,
             refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
         };
         assert!(sh.chat.is_some());
         // the text: every character known, the markers one token each, the end token the config's
@@ -4903,6 +4998,7 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
         };
         let text = |body: &str| {
             let v = json::parse(body).unwrap();
@@ -5380,6 +5476,7 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
         };
         let prompt_text = |body: &str| {
             let v = json::parse(body).unwrap();
@@ -5406,7 +5503,10 @@ pub(crate) mod tests {
             ("model", tools::obj(vec![("id", Value::from("Qwen/Qwen3.5-9B:swift"))])),
             ("level", tools::obj(vec![("requested", Value::from("swift")), ("effective", Value::from("swift"))])),
         ];
-        assert!(INFO.set(Info { about, gpu: None, held: Some(held), concurrency: 1, window: 4096, refused: ONE_AT_A_TIME, started: 1.5 }).is_ok());
+        assert!(crate::runtime::context::Context::process()
+            .info
+            .set(Info { about, gpu: None, held: Some(held), concurrency: 1, window: 4096, refused: ONE_AT_A_TIME, started: 1.5 })
+            .is_ok());
         let (tx, _rx) = std::sync::mpsc::channel();
         let addr = listen("127.0.0.1:0", "Qwen/Qwen3.5-9B:swift", 4096, Some("k".into()), false, tx).unwrap();
         assert_eq!(ask(addr, "GET", "/v1/glyd/info", &[("Host", "x")]).0, 401);
@@ -5442,7 +5542,7 @@ pub(crate) mod tests {
         assert!(f64_of(at(m, &["peak_bytes"])) >= f64_of(at(m, &["engine_bytes"])) && f64_of(at(m, &["peak_since"])) == 1.5);
         assert_eq!((at(m, &["gpu"]), at(m, &["device_total_bytes"]), at(m, &["device_free_bytes"])), (&Value::Null, &Value::Null, &Value::Null));
         // after a failure of the engine it says so (nothing is sure of the GPU after one), with when and what
-        engine_failed("cuLaunchKernel: an illegal memory access was encountered (700)");
+        crate::runtime::context::Context::process().fail("cuLaunchKernel: an illegal memory access was encountered (700)");
         let d = info();
         assert!(at(&d, &["state"]).as_str() == Some("failed") && at(&d, &["error", "message"]).as_str().is_some(), "{d:?}");
     }
@@ -5587,6 +5687,7 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused: ONE_AT_A_TIME,
+            rt: crate::runtime::context::Context::process().clone(),
         });
         let (tx, rx) = std::sync::mpsc::channel();
         let seq = |abort: bool| {
