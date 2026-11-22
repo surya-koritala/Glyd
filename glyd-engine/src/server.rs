@@ -3618,7 +3618,6 @@ pub(crate) mod tests {
                 .set(Info { about: Vec::new(), gpu: None, held: None, concurrency: 4, window: 512 * crate::kv::PAGE, refused: &[], started: 0.0 })
                 .is_ok());
         }
-        let before = Context::process().sched[0].load(Ordering::Relaxed);
         assert_eq!((ask(a), ask(a), ask(a)), (200, 200, 200));
         assert_eq!(ask(b), 500);
         let num = |text: &str, key: &str| -> f64 {
@@ -3643,7 +3642,9 @@ pub(crate) mod tests {
         };
         assert_eq!((state(a), state(b)), ("ready".to_string(), "failed".to_string()));
         assert!(rt_a.failed.lock().unwrap().is_none() && rt_b.failed.lock().unwrap().is_some());
-        assert_eq!(Context::process().sched[0].load(Ordering::Relaxed), before, "the process's own context counts none of their prompts");
+        // the figures are in the contexts the two were given, read here and not through a server. (That the process's own context counts none of them cannot be read
+        // from it: the tests beside this one run their schedulers in it at the same time, and it failed on a runner where one did.)
+        assert_eq!((rt_a.sched[0].load(Ordering::Relaxed) as f64, rt_b.sched[0].load(Ordering::Relaxed) as f64), (pa, pb));
     }
 
     /// A client that sends its request slowly is let wait for the time that is given the whole of it, not for each read: a request that stops, or goes a byte at a time, is answered 408 and its
