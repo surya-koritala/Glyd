@@ -114,7 +114,21 @@ pub trait ModelStep {
     fn prefill_many(&mut self, jobs: &[PrefillJob]) -> Result<Vec<Option<Sample>>> {
         jobs.iter().map(|j| self.prefill(j.pages, j.start, j.tokens, j.last)).collect()
     }
-    /// The grammar masks of the rows the next `decode`, or `prefill_many`, draws samples from (one for each, in order; None: no grammar), for a backend that makes the sampler's candidates on the GPU to put on the row before its top-k.
+    /// Whether `round` runs a round's decode rows and prompt chunks in one pass, each weight read once for both (docs/design/runtime.md section 5, "A round is one step"). False: a round is a
+    /// prompt pass and then a decode step (`prefill_many`, `decode`).
+    fn one_step(&self) -> bool {
+        false
+    }
+    /// The most prompt tokens a step takes beside `rows` decode rows (`one_step`): what the step's workspace holds after them, or fewer where the rows are not to wait long for the prompts.
+    fn prompt_budget(&self, rows: usize) -> usize {
+        self.chunk().saturating_sub(rows)
+    }
+    /// A round as one step over a flat batch (`one_step`): the decode rows, then the prompt chunks; the sample after each row, and after each chunk that is `last`. The logits and candidates of the
+    /// decode rows are rows 0 on, then those of the chunks that are `last`, in order (the masks given before it are in that order too).
+    fn round(&mut self, _rows: &[Row], _jobs: &[PrefillJob]) -> Result<(Vec<Sample>, Vec<Option<Sample>>)> {
+        Err(crate::ffi::Error("this model's rounds are a prompt pass and a decode step, not one step".into()))
+    }
+    /// The grammar masks of the rows the next `decode`, `prefill_many` or `round` draws samples from (one for each, in order; None: no grammar), for a backend that makes the sampler's candidates on the GPU to put on the row before its top-k.
     fn masks(&mut self, _masks: Vec<Option<crate::constrain::MaskHandle>>) {}
     /// One step of the rows: the sample after each.
     fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>>;
@@ -221,10 +235,12 @@ pub struct Stats {
     /// Decode steps by their rows: 0 to 7, and 8 or more in the last.
     pub by_rows: [u64; MAX_ROWS + 1],
     pub prefill_rounds: u64,
+    /// Steps that held both rows that decode and a prompt's chunk (a round that is one step, `ModelStep::one_step`).
+    pub both: u64,
 }
 
 /// The scheduler's figures as the last round left them (one scheduler runs in a process), for the server's /stats.
-pub static SHARED: [AtomicU64; 28] = [const { AtomicU64::new(0) }; 28];
+pub static SHARED: [AtomicU64; 29] = [const { AtomicU64::new(0) }; 29];
 
 /// The figures as JSON: prompt tokens run or found in the cache, those found, sequences sent back to wait for pages, steps, rows in them, sequences running and waiting.
 pub fn stats_json() -> String {
@@ -272,6 +288,15 @@ impl ModelStep for &mut dyn ModelStep {
     }
     fn prefill_many(&mut self, jobs: &[PrefillJob]) -> Result<Vec<Option<Sample>>> {
         (**self).prefill_many(jobs)
+    }
+    fn one_step(&self) -> bool {
+        (**self).one_step()
+    }
+    fn prompt_budget(&self, rows: usize) -> usize {
+        (**self).prompt_budget(rows)
+    }
+    fn round(&mut self, rows: &[Row], jobs: &[PrefillJob]) -> Result<(Vec<Sample>, Vec<Option<Sample>>)> {
+        (**self).round(rows, jobs)
     }
     fn masks(&mut self, masks: Vec<Option<crate::constrain::MaskHandle>>) {
         (**self).masks(masks)
@@ -504,6 +529,7 @@ impl<B: ModelStep> Sched<B> {
             st.by_rows[7],
             st.by_rows[8],
             st.prefill_rounds,
+            st.both,
         ]) {
             a.store(v, Relaxed);
         }
@@ -518,6 +544,14 @@ impl<B: ModelStep> Sched<B> {
         self.admit()?;
         let admitted = self.stats.prompt != came;
         self.stats.admit_ns += ta.elapsed().as_nanos() as u64;
+        if self.be.one_step() {
+            // (a round is one step: a token for every sequence that is decoding and, beside them, the prompts' chunks; nothing waits for the other's pass)
+            self.round_one_step()?;
+            self.flush();
+            self.stats.tick_ns += t.elapsed().as_nanos() as u64;
+            self.gauges();
+            return Ok(());
+        }
         let passes = self.stats.prefill_rounds;
         self.pass_tokens = 0;
         self.prefill_step()?;
@@ -1001,6 +1035,157 @@ impl<B: ModelStep> Sched<B> {
         Ok(())
     }
 
+    /// A round as one step (`ModelStep::one_step`): a token for every sequence that is decoding and, in the same pass, chunks of the prompts of those still on theirs, the oldest first: as
+    /// many tokens as the backend takes beside those rows (`prompt_budget`; with no row decoding, a chunk's). The first prompt's chunk is cut to that; a later prompt joins only with its whole
+    /// rest, as in `prefill_step`. A sequence that is decoding gets a token every round whatever prompts come in, and a prompt's first token does not wait for a decode step between its chunks.
+    fn round_one_step(&mut self) -> Result<()> {
+        let at = |a: &Vec<Seq>, id: u64| a.iter().position(|s| s.id == id);
+        let tb = std::time::Instant::now();
+        // room for the next token of each sequence that is decoding (the newest give theirs back where there is none)
+        let ids: Vec<u64> = self.active.iter().filter(|s| !s.prefilling).map(|s| s.id).collect();
+        for id in ids {
+            let Some(s) = self.active.iter().find(|s| s.id == id) else { continue };
+            let upto = s.done + 1;
+            self.ensure_pages(id, upto)?;
+        }
+        let decoding = self.active.iter().filter(|s| !s.prefilling).count();
+        // the prompts' chunks beside them
+        let budget = if decoding == 0 { self.be.chunk() } else { self.be.prompt_budget(decoding).min(self.be.chunk().saturating_sub(decoding)) };
+        let together = self.be.prefill_together();
+        // (as many prompts as a pass of prompts takes: with the rows that are decoding they are no more than the sequences the scheduler runs at once, which the step's head holds)
+        let most = self.be.prefill_rows().max(1);
+        let cands: Vec<u64> = self.active.iter().filter(|s| s.prefilling).take(most).map(|s| s.id).collect();
+        let mut picks: Vec<(u64, usize)> = Vec::new();
+        let mut used = 0;
+        for id in cands {
+            let Some(i) = at(&self.active, id) else { continue };
+            let left = self.active[i].tokens.len() - self.active[i].done;
+            let n = if picks.is_empty() { left.min(budget) } else { left };
+            if n == 0 || used + n > budget || (!picks.is_empty() && n > together) {
+                break;
+            }
+            let upto = self.active[i].done + n;
+            if !self.ensure_pages(id, upto)? {
+                continue;
+            }
+            picks.push((id, n));
+            used += n;
+            if n > together {
+                break; // (too long to run with other prompts: the only one of the step)
+            }
+        }
+        // (the room of a later one may have been taken from an earlier one, or from one that was decoding: those went back to wait)
+        let slots = self.free.is_some();
+        picks.retain(|&(id, n)| {
+            at(&self.active, id).is_some_and(|i| self.active[i].prefilling && (slots || self.active[i].pages.len() * PAGE >= self.active[i].done + n))
+        });
+        let rows_of: Vec<u64> = self.active.iter().filter(|s| !s.prefilling).map(|s| s.id).collect();
+        if rows_of.is_empty() && picks.is_empty() {
+            return Ok(());
+        }
+        let last_of = |a: &Vec<Seq>, id: u64, n: usize| at(a, id).is_some_and(|i| a[i].done + n == a[i].tokens.len());
+        let rows: Vec<Row> = rows_of
+            .iter()
+            .map(|&id| {
+                let s = &self.active[at(&self.active, id).expect("a decoding sequence")];
+                Row { token: s.tokens[s.done], pos: s.done, pages: &s.pages }
+            })
+            .collect();
+        let jobs: Vec<PrefillJob> = picks
+            .iter()
+            .map(|&(id, n)| {
+                let s = &self.active[at(&self.active, id).expect("a picked sequence")];
+                PrefillJob { pages: &s.pages, start: s.done, tokens: &s.tokens[s.done..s.done + n], last: s.done + n == s.tokens.len() }
+            })
+            .collect();
+        // (the grammar masks of the rows that are sampled, in the order of their samples: the decode rows, then the prompts that end in this step)
+        let masks: Vec<_> = rows_of
+            .iter()
+            .copied()
+            .chain(picks.iter().filter(|&&(id, n)| last_of(&self.active, id, n)).map(|p| p.0))
+            .filter_map(|id| at(&self.active, id))
+            .map(|i| self.active[i].sampler.mask_handle())
+            .collect();
+        self.stats.before_ns += tb.elapsed().as_nanos() as u64;
+        let t = std::time::Instant::now();
+        let t0 = crate::monitor::clock();
+        self.be.masks(masks);
+        let (decoded, prompted) = self.be.round(&rows, &jobs)?;
+        if self.trace {
+            eprintln!(
+                "sched {:.4} step from {:.4}: {} rows, {} prompts {:?} of {} tokens, {:.1} ms; {} active, {} waiting",
+                crate::monitor::clock(),
+                t0,
+                rows.len(),
+                jobs.len(),
+                picks.iter().map(|p| p.0).collect::<Vec<_>>(),
+                used,
+                t.elapsed().as_secs_f64() * 1e3,
+                self.active.len(),
+                self.waiting.len()
+            );
+        }
+        let n_rows = rows.len();
+        drop((rows, jobs));
+        if n_rows > 0 {
+            self.stats.decode_ns += t.elapsed().as_nanos() as u64;
+            self.stats.steps += 1;
+            self.stats.rows += n_rows as u64;
+            self.stats.by_rows[n_rows.min(MAX_ROWS)] += 1;
+        } else {
+            self.stats.prefill_ns += t.elapsed().as_nanos() as u64;
+        }
+        if !picks.is_empty() {
+            self.stats.prefill_rounds += 1;
+            self.stats.both += (n_rows > 0) as u64;
+        }
+        self.pass_tokens = used;
+        // what the step could not store exactly: the output of the sequences that hold such a block is not used (they are sent back below)
+        let hit = self.after_step()?;
+        let tc = std::time::Instant::now();
+        let mut ended: Vec<(u64, Finish)> = Vec::new();
+        for (row, (&id, sample)) in rows_of.iter().zip(decoded).enumerate() {
+            if hit.contains(&id) {
+                continue;
+            }
+            let Some(i) = at(&self.active, id) else { continue };
+            self.active[i].done += 1;
+            self.publish(i);
+            let (tok, lp) = self.pick(i, sample, row)?;
+            if let Some(f) = self.accept(i, tok, lp) {
+                ended.push((id, f));
+            }
+        }
+        let mut row = n_rows;
+        for (k, &(id, n)) in picks.iter().enumerate() {
+            let sample = prompted.get(k).copied().flatten();
+            let my_row = row;
+            row += sample.is_some() as usize;
+            if hit.contains(&id) {
+                continue;
+            }
+            let Some(i) = at(&self.active, id) else { continue };
+            self.active[i].done += n;
+            self.publish(i);
+            if let Some(sample) = sample {
+                self.active[i].prefilling = false;
+                let (tok, lp) = self.pick(i, sample, my_row)?;
+                if let Some(f) = self.accept(i, tok, lp) {
+                    ended.push((id, f));
+                }
+            }
+        }
+        // (every row's token is chosen before a sequence gives its room back: the step's logits are the backend's until then)
+        for (id, f) in ended {
+            if let Some(i) = at(&self.active, id) {
+                self.finish(i, f)?;
+            }
+        }
+        self.take_back(&hit)?;
+        self.stats.after_ns += tc.elapsed().as_nanos() as u64;
+        Ok(())
+    }
+
     /// One step for every sequence that is decoding (each needs a page for its next token first).
     fn decode_step(&mut self) -> Result<()> {
         let tb = std::time::Instant::now();
@@ -1091,6 +1276,10 @@ pub(crate) mod tests {
         /// How many sequences' prompt chunks `prefill_many` takes in one pass (1: one at a time), and the passes of more than one it has made.
         pub batch: usize,
         pub batches: usize,
+        /// A round is one step (`one_step`): the prompt tokens it takes beside decode rows (None: what a chunk holds after them), and each step's rows and prompt tokens.
+        pub one_step: bool,
+        pub beside: Option<usize>,
+        pub stepped: Vec<(usize, usize)>,
     }
 
     /// A row of logits (2,048 tokens) in which `token` is the largest and the one after it the second.
@@ -1136,6 +1325,9 @@ pub(crate) mod tests {
                 script_from: 0,
                 batch: 1,
                 batches: 0,
+                one_step: false,
+                beside: None,
+                stepped: Vec::new(),
             }
         }
         /// The token after `toks` (`n` of them): the hash, or the script's word for this place.
@@ -1234,6 +1426,28 @@ pub(crate) mod tests {
             }
             self.batches += (jobs.len() > 1) as usize;
             Ok(out)
+        }
+        fn one_step(&self) -> bool {
+            self.one_step
+        }
+        fn prompt_budget(&self, rows: usize) -> usize {
+            self.beside.unwrap_or(self.chunk.saturating_sub(rows))
+        }
+        fn round(&mut self, rows: &[Row], jobs: &[PrefillJob]) -> Result<(Vec<Sample>, Vec<Option<Sample>>)> {
+            assert!(self.one_step, "a step of both, of a model whose rounds are two passes");
+            let tokens: usize = jobs.iter().map(|j| j.tokens.len()).sum();
+            assert!(rows.len() + tokens <= self.chunk, "{} rows and {tokens} prompt tokens in a step that holds {}", rows.len(), self.chunk);
+            self.stepped.push((rows.len(), tokens));
+            let decoded = if rows.is_empty() { Vec::new() } else { self.decode(rows)? };
+            let mut all = if rows.is_empty() { Vec::new() } else { std::mem::take(&mut self.rows) };
+            let mut prompted = Vec::new();
+            for j in jobs {
+                let s = self.prefill(j.pages, j.start, j.tokens, j.last)?;
+                all.extend(s.map(|x| row_of(x.token)));
+                prompted.push(s);
+            }
+            self.rows = all;
+            Ok((decoded, prompted))
         }
         fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
             std::thread::sleep(self.decode_delay);
@@ -1339,6 +1553,88 @@ pub(crate) mod tests {
                 assert_eq!(f, Finish::Length);
             }
             assert!(s.be.batches > 0, "no pass took more than one prompt ({pages} pages, chunk {chunk}, {batch} to a pass)");
+        }
+    }
+
+    /// A round that is one step (`ModelStep::one_step`): every sequence gives the tokens it gives alone, whatever the mix of lengths, a shared start, sampling from the logits' rows and a pool
+    /// too small for all of them; some step held both rows that decode and a prompt's chunk, none held more than a chunk's tokens, and none more prompt tokens beside rows than the budget.
+    #[test]
+    fn a_round_of_one_step_gives_the_tokens_each_sequence_gives_alone() {
+        for (pages, chunk, batch, beside) in [(64, 32, 8, None), (64, 200, 8, Some(24)), (64, 200, 3, Some(1)), (14, 64, 8, None)] {
+            let mut be = Fake::new(pages, chunk);
+            (be.one_step, be.batch, be.beside) = (true, batch, beside);
+            be.gpu_top = batch == 3;
+            let mut s = Sched::new(be, 8);
+            let mut prompts: Vec<Vec<u32>> = (0..8).map(|k| prompt(k, 3 + 11 * k as usize)).collect();
+            prompts.push(prompts[3].clone());
+            prompts.push(prompt(50, 90));
+            let rxs: Vec<_> = prompts.iter().map(|p| add(&mut s, p.clone(), 20).0).collect();
+            run(&mut s);
+            for (p, rx) in prompts.iter().zip(&rxs) {
+                assert_eq!(collect(rx), (reference(p, 20), Finish::Length), "{pages} pages, chunk {chunk}, {batch} to a pass, {beside:?} beside");
+            }
+            let st = &s.be.stepped;
+            assert!(st.iter().any(|&(r, t)| r > 0 && t > 0), "no step held rows and a prompt's chunk ({pages} pages, chunk {chunk})");
+            assert!(st.iter().all(|&(r, t)| r + t <= chunk && r + t > 0));
+            if let Some(b) = beside {
+                assert!(st.iter().all(|&(r, t)| r == 0 || t <= b), "more than {b} prompt tokens beside rows: {st:?}");
+            }
+        }
+    }
+
+    /// The same on a slot step, the description executor's kind of cache: every reply as alone, no two parts of a step in one slot, every slot empty at the end.
+    #[test]
+    fn a_round_of_one_step_on_slots_gives_the_tokens_each_sequence_gives_alone() {
+        for (slots, users, batch, chunk, beside) in
+            [(1, 4, 1, 16, None), (3, 4, 3, 16, Some(5)), (4, 8, 4, 64, None), (8, 8, 8, 7, Some(2)), (24, 64, 24, 512, Some(64))]
+        {
+            let mut f = SlotFake::new(slots, 256, chunk);
+            (f.one_step, f.batch, f.beside) = (true, batch, beside);
+            let mut s = Sched::new(f, users);
+            let reqs: Vec<(Vec<u32>, usize)> = (0..slots.max(9) + 3).map(|k| (prompt(k as u32 + 1, 3 + 11 * (k % 9)), 5 + 3 * (k % 9))).collect();
+            let rx: Vec<_> = reqs.iter().map(|(p, n)| add(&mut s, p.clone(), *n).0).collect();
+            run(&mut s);
+            for ((p, n), rx) in reqs.iter().zip(&rx) {
+                assert_eq!(collect(rx), (reference(p, *n), Finish::Length), "slots {slots}, batch {batch}, chunk {chunk}, {beside:?} beside");
+            }
+            assert!(s.be.most <= slots && s.be.rooms.iter().all(Vec::is_empty) && s.be.emptied == reqs.len());
+            assert_eq!(s.available(), slots);
+            let st = &s.be.stepped;
+            if slots > 1 {
+                assert!(st.iter().any(|&(r, t)| r > 0 && t > 0), "no step held rows and a prompt's chunk (slots {slots}, chunk {chunk})");
+            }
+            if let Some(b) = beside {
+                assert!(st.iter().all(|&(r, t)| r == 0 || t <= b), "more than {b} prompt tokens beside rows: {st:?}");
+            }
+        }
+    }
+
+    /// What the one step is for: while a long prompt comes in, every sequence that is decoding still gets a token every round (the prompt's chunk rides in their step, as many tokens as the
+    /// budget beside them), and the prompt takes the rounds its length over that budget asks, with no decode step between its chunks to wait for.
+    #[test]
+    fn a_prompt_runs_in_the_steps_of_the_sequences_that_decode() {
+        let mut f = SlotFake::new(4, 4096, 64);
+        (f.one_step, f.batch, f.beside) = (true, 4, Some(16));
+        let mut s = Sched::new(f, 4);
+        let rx: Vec<_> = (0..3).map(|k| add(&mut s, prompt(k + 1, 8), 400).0).collect();
+        // (the three prompts in one step of prompts alone, then a few steps of their rows)
+        for _ in 0..4 {
+            s.tick().unwrap();
+        }
+        assert_eq!(s.be.stepped[0], (0, 24));
+        assert!(s.be.stepped[1..].iter().all(|&st| st == (3, 0)), "{:?}", s.be.stepped);
+        let from = s.be.stepped.len();
+        let late = add(&mut s, prompt(9, 100), 5).0;
+        // 100 tokens at 16 a step: 7 steps, each with the three rows; the 8th has its first decode row with theirs
+        for _ in 0..8 {
+            s.tick().unwrap();
+        }
+        assert_eq!(s.be.stepped[from..], [(3, 16), (3, 16), (3, 16), (3, 16), (3, 16), (3, 16), (3, 4), (4, 0)]);
+        assert_eq!(s.stats.both, 7);
+        run(&mut s);
+        assert_eq!(collect(&late), (reference(&prompt(9, 100), 5), Finish::Length));
+        for (k, r) in rx.iter().enumerate() {
+            assert_eq!(collect(r), (reference(&prompt(k as u32 + 1, 8), 400), Finish::Length));
         }
     }
 
@@ -1663,6 +1959,8 @@ pub(crate) mod tests {
             f.heavy = heavy_all;
             f.chunks = 8;
             f.slabs = 0;
+            // (every other seed with a round that is one step of the rows and the prompts' chunks)
+            (f.one_step, f.batch) = (seed % 2 == 0, if seed % 2 == 0 { 4 } else { 1 });
             let users = 2 + (seed % 3) as usize;
             let mut s = Sched::new(f, users);
             // 8 blocks at the most a request (prompt and reply): each fits alone; some begin as an earlier one, so that finished prompts are kept
@@ -1983,6 +2281,10 @@ pub(crate) mod tests {
         pub budget: Option<usize>,
         pub held: Vec<usize>,
         pub rows: Vec<Vec<f32>>,
+        /// A round is one step (`one_step`): the prompt tokens it takes beside decode rows (None: what a chunk holds after them), and each step's rows and prompt tokens.
+        pub one_step: bool,
+        pub beside: Option<usize>,
+        pub stepped: Vec<(usize, usize)>,
     }
 
     impl SlotFake {
@@ -2000,6 +2302,9 @@ pub(crate) mod tests {
                 begun: Vec::new(),
                 budget: None,
                 held: vec![0; slots],
+                one_step: false,
+                beside: None,
+                stepped: Vec::new(),
             }
         }
         fn put(&mut self, slot: &[i32], start: usize, tokens: &[u32]) -> u32 {
@@ -2064,6 +2369,36 @@ pub(crate) mod tests {
                 self.rows = rows;
             }
             Ok(out)
+        }
+        fn one_step(&self) -> bool {
+            self.one_step
+        }
+        fn prompt_budget(&self, rows: usize) -> usize {
+            self.beside.unwrap_or(self.chunk.saturating_sub(rows))
+        }
+        fn round(&mut self, rows: &[Row], jobs: &[PrefillJob]) -> Result<(Vec<Sample>, Vec<Option<Sample>>)> {
+            assert!(self.one_step, "a step of both, of a model whose rounds are two passes");
+            let tokens: usize = jobs.iter().map(|j| j.tokens.len()).sum();
+            assert!(rows.len() + tokens <= self.chunk, "{} rows and {tokens} prompt tokens in a step that holds {}", rows.len(), self.chunk);
+            let mut seen: Vec<i32> = rows.iter().map(|r| r.pages[0]).chain(jobs.iter().map(|j| j.pages[0])).collect();
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(seen.len(), rows.len() + jobs.len(), "two parts of a step in one slot");
+            self.stepped.push((rows.len(), tokens));
+            let decoded = if rows.is_empty() { Vec::new() } else { self.decode(rows)? };
+            let mut all = if rows.is_empty() { Vec::new() } else { std::mem::take(&mut self.rows) };
+            let prompted: Vec<Option<Sample>> = jobs
+                .iter()
+                .map(|j| {
+                    let t = self.put(j.pages, j.start, j.tokens);
+                    j.last.then(|| {
+                        all.push(row_of(t));
+                        Sample { token: t, logit: 0.0, logprob: None }
+                    })
+                })
+                .collect();
+            self.rows = all;
+            Ok((decoded, prompted))
         }
         fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
             let mut seen: Vec<i32> = rows.iter().map(|r| r.pages[0]).collect();

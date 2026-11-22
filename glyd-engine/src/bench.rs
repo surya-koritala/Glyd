@@ -1,6 +1,6 @@
 //! `glyd bench`: one benchmark harness (R8). It puts fixed prompts at fixed concurrencies on an OpenAI-compatible server over HTTP and writes the speed as JSON, `glyd-bench/1` (docs/bench.md).
 //!
-//!   glyd-engine bench MODEL[:LEVEL] [--suite gate|bar|full | --loads short:1,4k:8,...] [--runs 5] [--warmup 1] [--max-tokens 128] [--ctx N] [--out FILE] [--label TEXT]
+//!   glyd-engine bench MODEL[:LEVEL] [--suite gate|bar|full|arrive | --loads short:1,4k:8,4k+250ms:8,...] [--runs 5] [--warmup 1] [--max-tokens 128] [--ctx N] [--out FILE] [--label TEXT]
 //!                     [--against URL] [--weights-gib G] [--bandwidth-gbs B] [--port P] [--no-draft] [--eval gsm8k[:N]] [--quality [--quality-ref RESULT.json]]
 //!       starts `serve MODEL` of this program (or measures the server at --against, whatever program it is: vLLM, llama.cpp, SGLang) and measures each load: per load, one warm-up round and `runs` rounds
 //!       of N simultaneous requests, every prompt different from its first token on (no prefix to share). Time to first token, inter-token latency, decode tokens/s a user and in all, prefill tokens/s,
@@ -66,6 +66,14 @@ fn kind_tokens(kind: &str) -> Result<Option<usize>> {
     })
 }
 
+/// A load's prompt kind and the time between the starts of its requests: `4k+250ms` is 4k prompts, each request begun 250 ms after the one before, so that the later prompts come in while
+/// the earlier replies are being written (what a server's round does with both is in the first-token times and the gaps' 99th percentile); `4k` alone is all of them at once.
+fn kind_parts(kind: &str) -> Result<(&str, Duration)> {
+    let Some((k, gap)) = kind.split_once('+') else { return Ok((kind, Duration::ZERO)) };
+    let ms = gap.strip_suffix("ms").and_then(|g| g.parse::<u64>().ok()).filter(|&g| g > 0);
+    Ok((k, Duration::from_millis(ms.ok_or_else(|| Error(format!("prompt {kind}: KIND+GAPms, as 4k+250ms")))?)))
+}
+
 /// A prompt of the kind, different from every other seed's from the first token on. The long ones are random words (about 1.09 tokens a word) and a question that ignores them.
 pub fn prompt(kind: &str, seed: u64) -> Result<String> {
     Ok(match kind_tokens(kind)? {
@@ -89,15 +97,19 @@ pub fn suite(name: &str) -> Result<Vec<(String, usize)>> {
         "bar" => mk(&["short", "2k", "4k"], &[1, 4, 8]),
         // everything the issue lists: decode at 1, 8, 64 and 256 at once, prefill at 1K, 4K and 32K
         "full" => [mk(&["short"], &[1, 8, 64, 256]), mk(&["1k", "4k", "32k"], &[1])].concat(),
-        s => return err(format!("--suite {s}: gate, bar or full")),
+        // prompts that come in while other replies are being written: 8 requests, each begun a while after the one before
+        "arrive" => mk(&["short+100ms", "1k+250ms", "4k+500ms"], &[8]),
+        s => return err(format!("--suite {s}: gate, bar, full or arrive")),
     })
 }
 
 fn parse_loads(s: &str) -> Result<Vec<(String, usize)>> {
     s.split(',')
         .map(|l| {
-            let (k, c) = l.split_once(':').ok_or_else(|| Error(format!("--loads {l}: PROMPT:CONCURRENCY, as short:8")))?;
-            kind_tokens(k)?;
+            let (k, c) = l
+                .split_once(':')
+                .ok_or_else(|| Error(format!("--loads {l}: PROMPT:CONCURRENCY, as short:8 (or 4k+250ms:8, each request 250 ms after the one before)")))?;
+            kind_tokens(kind_parts(k)?.0)?;
             Ok((k.to_string(), c.parse::<usize>().ok().filter(|&c| c > 0).ok_or_else(|| Error(format!("--loads {l}: {c} is not a number of requests")))?))
         })
         .collect()
@@ -204,7 +216,7 @@ pub fn stats(runs: &[f64]) -> Value {
         "runs": runs.iter().map(|&x| round(x)).collect::<Vec<_>>()})
 }
 
-/// One round of `n` simultaneous requests: (time to first token, decode tokens/s, mean gap in ms, the gaps' 99th percentile in ms, all users' tokens after the first over the span, prompt tokens/s, requests that failed, prompt tokens).
+/// One round of `n` requests (at once, or one after another: `kind_parts`): (time to first token, decode tokens/s, mean gap in ms, the gaps' 99th percentile in ms, all users' tokens after the first over the span, prompt tokens/s, requests that failed, prompt tokens).
 struct Round {
     ttft: Option<f64>,
     decode: Option<f64>,
@@ -216,17 +228,34 @@ struct Round {
     prompt_tokens: Option<f64>,
 }
 
-fn round(agent: &ureq::Agent, url: &str, model: &str, kind: &str, n: usize, seed: &mut u64, max_tokens: usize) -> Round {
+/// The `n` requests of a round, in the order they are begun: at once, or each `gap` after the one before (`kind_parts`).
+fn requests(agent: &ureq::Agent, url: &str, model: &str, kind: &str, n: usize, seed: &mut u64, max_tokens: usize) -> Vec<Req> {
     let seeds: Vec<u64> = (0..n)
         .map(|_| {
             *seed += 1;
             *seed
         })
         .collect();
-    let reqs: Vec<Req> = std::thread::scope(|s| {
-        let hs: Vec<_> = seeds.iter().map(|&sd| s.spawn(move || one(agent, url, model, kind, sd, max_tokens))).collect();
+    let (kind, gap) = kind_parts(kind).unwrap_or((kind, Duration::ZERO));
+    std::thread::scope(|s| {
+        let hs: Vec<_> = seeds
+            .iter()
+            .enumerate()
+            .map(|(k, &sd)| {
+                s.spawn(move || {
+                    std::thread::sleep(gap * k as u32);
+                    one(agent, url, model, kind, sd, max_tokens)
+                })
+            })
+            .collect();
         hs.into_iter().map(|h| h.join().unwrap_or_default()).collect()
-    });
+    })
+}
+
+fn round(agent: &ureq::Agent, url: &str, model: &str, kind: &str, n: usize, seed: &mut u64, max_tokens: usize) -> Round {
+    let reqs = requests(agent, url, model, kind, n, seed, max_tokens);
+    // (requests begun one after another: their prompts are not one pass, and prompt tokens over the slowest first token is no rate)
+    let at_once = kind_parts(kind).is_ok_and(|p| p.1.is_zero());
     let ok: Vec<&Req> = reqs.iter().filter(|r| r.error.is_none() && r.ttft.is_some()).collect();
     let tps = |r: &Req| match (r.first, r.last) {
         (Some(f), Some(l)) if l > f && r.tokens > 1 => Some((r.tokens - 1) as f64 / l.duration_since(f).as_secs_f64()),
@@ -247,7 +276,7 @@ fn round(agent: &ureq::Agent, url: &str, model: &str, kind: &str, n: usize, seed
         itl: median(&decode).map(|t| 1000.0 / t),
         itl_p99: percentile(&gaps, 0.99).map(|g| g * 1000.0),
         agg: span.map(|s| after_first as f64 / s),
-        prefill: prompt_total.filter(|_| slowest_first.is_finite() && slowest_first > 0.0).map(|p| p as f64 / slowest_first),
+        prefill: prompt_total.filter(|_| at_once && slowest_first.is_finite() && slowest_first > 0.0).map(|p| p as f64 / slowest_first),
         errors: reqs.len() - ok.len(),
         prompt_tokens: median(&ok.iter().filter_map(|r| r.prompt_tokens.map(|p| p as f64)).collect::<Vec<_>>()),
     }
@@ -1194,12 +1223,43 @@ mod tests {
         assert!(same_number("18.0", "18") && !same_number("19", "18"));
     }
 
+    /// A load whose requests begin one after another, against the real handler and scheduler over a made-up model: each first token comes after the one before by about the time between the
+    /// requests, every reply is whole, and the round has no prefill rate (the prompts were not one pass).
+    #[test]
+    fn requests_one_after_another_begin_in_order() {
+        let mut f = crate::sched::tests::Fake::new(512, 64);
+        f.decode_delay = Duration::from_millis(2);
+        let addr = crate::server::tests::serve_fake(f, None, 8);
+        let url = format!("http://{addr}");
+        let mut seed = 0;
+        let reqs = requests(&agent(), &url, "fake", "short+150ms", 3, &mut seed, 12);
+        assert!(reqs.iter().all(|r| r.error.is_none() && r.tokens > 0), "{:?}", reqs.iter().map(|r| r.error.clone()).collect::<Vec<_>>());
+        let firsts: Vec<Instant> = reqs.iter().map(|r| r.first.expect("a first token")).collect();
+        for w in firsts.windows(2) {
+            assert!(
+                w[1] > w[0] + Duration::from_millis(40),
+                "a request begun 150 ms after another had its first token {:?} after it",
+                w[1].duration_since(w[0])
+            );
+        }
+        let r = round(&agent(), &url, "fake", "short+20ms", 3, &mut seed, 12);
+        assert!(r.errors == 0 && r.ttft.is_some() && r.prefill.is_none());
+        let r = round(&agent(), &url, "fake", "short", 3, &mut seed, 12);
+        assert!(r.errors == 0 && r.ttft.is_some());
+    }
+
     #[test]
     fn suites_and_loads_are_read() {
         assert_eq!(suite("gate").unwrap().len(), 4);
         assert!(suite("full").unwrap().contains(&("short".to_string(), 256)));
         assert_eq!(parse_loads("short:1,4k:8").unwrap(), vec![("short".to_string(), 1), ("4k".to_string(), 8)]);
         assert!(parse_loads("short").is_err() && parse_loads("short:0").is_err());
+        // requests one after another: the kind carries the time between them, and is the load's name in the result
+        assert_eq!(parse_loads("4k+250ms:8").unwrap(), vec![("4k+250ms".to_string(), 8)]);
+        assert_eq!(kind_parts("4k+250ms").unwrap(), ("4k", Duration::from_millis(250)));
+        assert_eq!(kind_parts("short").unwrap(), ("short", Duration::ZERO));
+        assert!(parse_loads("4k+250:8").is_err() && parse_loads("4k+0ms:8").is_err() && parse_loads("5k+250ms:8").is_err());
+        assert!(suite("arrive").unwrap().iter().all(|(k, n)| *n == 8 && !kind_parts(k).unwrap().1.is_zero()));
     }
 
     #[test]

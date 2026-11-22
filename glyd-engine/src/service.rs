@@ -329,8 +329,8 @@ pub trait Handle: Send {
     fn stop(&mut self);
 }
 
-/// How a model is loaded: the real one starts `glyd serve`; a test's starts a stand-in.
-pub trait Backend: Send + Sync {
+/// How a model is loaded: the real one starts `glyd serve`; a test's starts a stand-in. (Not a `runtime::Backend`, which is a vendor's layer kinds: docs/design/runtime.md, decision 1.)
+pub trait Launcher: Send + Sync {
     fn start(&self, spec: &Spec) -> Result<Box<dyn Handle>, String>;
 }
 
@@ -372,7 +372,7 @@ fn tail(path: &Path, lines: usize) -> String {
     v[v.len().saturating_sub(lines)..].join("\n")
 }
 
-impl Backend for Processes {
+impl Launcher for Processes {
     fn start(&self, spec: &Spec) -> Result<Box<dyn Handle>, String> {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let dir = log_dir();
@@ -493,7 +493,7 @@ pub struct Lease {
 }
 
 pub struct Pool {
-    backend: Box<dyn Backend>,
+    launcher: Box<dyn Launcher>,
     probe: Box<dyn Probe>,
     state: Mutex<State>,
     changed: Condvar,
@@ -507,8 +507,8 @@ fn victim(entries: &[(Instant, usize)]) -> Option<usize> {
 }
 
 impl Pool {
-    pub fn new(backend: Box<dyn Backend>, probe: Box<dyn Probe>, cfg: Config) -> Pool {
-        Pool { backend, probe, state: Mutex::new(State::default()), changed: Condvar::new(), cfg, started: Instant::now() }
+    pub fn new(launcher: Box<dyn Launcher>, probe: Box<dyn Probe>, cfg: Config) -> Pool {
+        Pool { launcher, probe, state: Mutex::new(State::default()), changed: Condvar::new(), cfg, started: Instant::now() }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -576,7 +576,7 @@ impl Pool {
         }
         // (what is free is read after the models that made room have ended: a footprint is the memory a load took)
         let mut free_before = if evicted { self.probe.free_bytes() } else { free_before };
-        let mut result = self.backend.start(spec);
+        let mut result = self.launcher.start(spec);
         if result.is_err() {
             // (a load that fails may be for want of memory: the idle models go, and it is tried once more)
             let idle: Vec<Entry> = {
@@ -592,7 +592,7 @@ impl Pool {
                     e.handle.stop();
                 }
                 free_before = self.probe.free_bytes(); // (the footprint is what the load that worked took)
-                result = self.backend.start(spec);
+                result = self.launcher.start(spec);
             }
         }
         let free_after = self.probe.free_bytes();
@@ -1850,7 +1850,7 @@ mod tests {
         }
     }
 
-    impl Backend for Arc<Fakes> {
+    impl Launcher for Arc<Fakes> {
         fn start(&self, spec: &Spec) -> Result<Box<dyn Handle>, String> {
             std::thread::sleep(self.delay);
             // (a load that would not fit: it fails while more than this many are loaded)
@@ -2299,7 +2299,7 @@ mod tests {
         }
     }
 
-    impl Backend for OnGpu {
+    impl Launcher for OnGpu {
         fn start(&self, spec: &Spec) -> Result<Box<dyn Handle>, String> {
             let size = self.gpu.sizes.iter().find(|(n, _)| *n == spec.arg).map_or(0, |(_, b)| *b);
             if self.gpu.free.load(Ordering::SeqCst) < size {
