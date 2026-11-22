@@ -275,15 +275,20 @@ pub fn stats_json() -> String {
 /// `stats_json` of the scheduler of the context `rt`.
 pub fn stats_json_of(rt: &Context) -> String {
     let v: Vec<u64> = rt.sched.iter().map(|a| a.load(Relaxed)).collect();
-    let rate = if v[0] > 0 { 100.0 * v[1] as f64 / v[0] as f64 } else { 0.0 };
+    // (what was found in the cache is told only where the server tells its requests: `Context::tell_cached`. A caller who could read it here before and after a request of
+    // its own would learn what that request found, which its usage does not say; null otherwise)
+    let (hit, rate) = match rt.tell_cached.load(Relaxed) {
+        true => (v[1].to_string(), format!("{:.2}", if v[0] > 0 { 100.0 * v[1] as f64 / v[0] as f64 } else { 0.0 })),
+        false => ("null".to_string(), "null".to_string()),
+    };
     // a development build's figures are all of them; a release build's are the counts a user reads
     if cfg!(feature = "dev") {
         format!(
-            "{{\"prompt_tokens\":{},\"prefix_hit_tokens\":{},\"prefix_hit_rate_percent\":{rate:.2},\"preemptions\":{},\"steps\":{},\"rows\":{},\"running\":{},\"waiting\":{},\"decode_ms\":{},\"prefill_ms\":{},\"rounds_ms\":{},\"release_ms\":{},\"admit_ms\":{},\"after_ms\":{},\"before_ms\":{},\"lost_blocks\":{},\"heavy_blocks\":{},\"taken_back\":{},\"ended_for_loss\":{},\"steps_by_rows\":[{}],\"prefill_rounds\":{},\"decode_prep_ms\":{},\"decode_wait_ms\":{},\"decode_post_ms\":{},\"decode_graph_ms\":{},\"values_checked\":{},\"values_differ\":{},\"values_in_lost_blocks\":{}}}",
-            v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7] / 1_000_000, v[8] / 1_000_000, v[9] / 1_000_000, v[10] / 1_000_000, v[11] / 1_000_000, v[12] / 1_000_000, v[13] / 1_000_000, v[14], v[15], v[16], v[17], v[18..27].iter().map(u64::to_string).collect::<Vec<_>>().join(","), v[27], crate::model::DECODE_PREP_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_WAIT_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_POST_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_GPU_NS.load(Relaxed) / 1_000_000, crate::model::VERIFY_CHECKED.load(Relaxed), crate::model::VERIFY_DIFFER.load(Relaxed), crate::model::VERIFY_LOST.load(Relaxed)
+            "{{\"prompt_tokens\":{},\"prefix_hit_tokens\":{hit},\"prefix_hit_rate_percent\":{rate},\"preemptions\":{},\"steps\":{},\"rows\":{},\"running\":{},\"waiting\":{},\"decode_ms\":{},\"prefill_ms\":{},\"rounds_ms\":{},\"release_ms\":{},\"admit_ms\":{},\"after_ms\":{},\"before_ms\":{},\"lost_blocks\":{},\"heavy_blocks\":{},\"taken_back\":{},\"ended_for_loss\":{},\"steps_by_rows\":[{}],\"prefill_rounds\":{},\"decode_prep_ms\":{},\"decode_wait_ms\":{},\"decode_post_ms\":{},\"decode_graph_ms\":{},\"values_checked\":{},\"values_differ\":{},\"values_in_lost_blocks\":{}}}",
+            v[0], v[2], v[3], v[4], v[5], v[6], v[7] / 1_000_000, v[8] / 1_000_000, v[9] / 1_000_000, v[10] / 1_000_000, v[11] / 1_000_000, v[12] / 1_000_000, v[13] / 1_000_000, v[14], v[15], v[16], v[17], v[18..27].iter().map(u64::to_string).collect::<Vec<_>>().join(","), v[27], crate::model::DECODE_PREP_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_WAIT_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_POST_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_GPU_NS.load(Relaxed) / 1_000_000, crate::model::VERIFY_CHECKED.load(Relaxed), crate::model::VERIFY_DIFFER.load(Relaxed), crate::model::VERIFY_LOST.load(Relaxed)
         )
     } else {
-        format!("{{\"prompt_tokens\":{},\"prefix_hit_tokens\":{},\"prefix_hit_rate_percent\":{rate:.2},\"preemptions\":{},\"steps\":{},\"rows\":{},\"running\":{},\"waiting\":{}}}", v[0], v[1], v[2], v[3], v[4], v[5], v[6])
+        format!("{{\"prompt_tokens\":{},\"prefix_hit_tokens\":{hit},\"prefix_hit_rate_percent\":{rate},\"preemptions\":{},\"steps\":{},\"rows\":{},\"running\":{},\"waiting\":{}}}", v[0], v[2], v[3], v[4], v[5], v[6])
     }
 }
 

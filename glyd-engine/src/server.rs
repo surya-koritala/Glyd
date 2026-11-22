@@ -2861,7 +2861,8 @@ pub(crate) mod tests {
     /// finds nothing of another's. A request with no scope is served from the cache and told nothing of it.
     #[test]
     fn the_usage_counts_the_prompt_tokens_found_in_the_cache() {
-        let addr = serve_script("the answer");
+        let rt = crate::runtime::context::Context::new();
+        let addr = serve_fake_in(Fake::new(64, 32), None, 2, false, None, &[], rt.clone());
         let q = |stream: bool, salt: &str| {
             format!(
                 r#"{{"model":"m","max_tokens":20,"temperature":0,"stream":{stream},"stream_options":{}{salt},"messages":[{{"role":"user","content":"LONG"}}]}}"#,
@@ -2872,17 +2873,20 @@ pub(crate) mod tests {
         let found = |body: &str| -> Option<u64> {
             at(&json::parse(body).unwrap(), &["usage"]).get("prompt_tokens_details").map(|d| at(d, &["cached_tokens"]).as_u64().unwrap())
         };
-        // (the answer's body, after its headers)
-        let hits = || {
-            let stats = get(addr, "/stats", None);
-            f64_of(at(&json::parse(stats.split_once("\r\n\r\n").expect("a body").1).unwrap(), &["prefix_hit_tokens"])) as u64
-        };
+        // (the server's own count of the prompt tokens found, which /stats and /metrics do not tell either: null, and no such metric)
+        let hits = || rt.sched[1].load(Ordering::Relaxed);
         // no scope, twice: the second is served from the cache (the server's own count says so) and its usage does not say it
         let (st, first) = call(addr, "/v1/chat/completions", &q(false, ""));
         assert_eq!(st, 200, "{first}");
         let prompt = at(&json::parse(&first).unwrap(), &["usage", "prompt_tokens"]).as_u64().unwrap();
         let again = call(addr, "/v1/chat/completions", &q(false, "")).1;
         assert!(hits() >= 32 && found(&first).is_none() && found(&again).is_none(), "{again}");
+        let stats = get(addr, "/stats", None);
+        assert!(
+            stats.contains("\"prefix_hit_tokens\":null,\"prefix_hit_rate_percent\":null")
+                && !get(addr, "/metrics", None).contains("glyd_prefix_cache_hit_tokens_total"),
+            "{stats}"
+        );
         // a scope: nothing of the requests with none; then its own
         let a = r#","cache_salt":"tenant-a""#;
         let before = hits();
@@ -2915,8 +2919,11 @@ pub(crate) mod tests {
         };
         let rt = crate::runtime::context::Context::new();
         rt.tell_cached.store(true, Ordering::Relaxed);
-        let (first, again) = found(serve_fake_in(Fake::new(64, 32), None, 2, false, None, &[], rt));
+        let addr = serve_fake_in(Fake::new(64, 32), None, 2, false, None, &[], rt);
+        let (first, again) = found(addr);
         assert!(first.is_none() && again.is_some_and(|n| n >= 32), "{first:?} {again:?}");
+        let (stats, metrics) = (get(addr, "/stats", None), get(addr, "/metrics", None));
+        assert!(stats.contains(&format!("\"prefix_hit_tokens\":{}", again.unwrap())) && metrics.contains("glyd_prefix_cache_hit_tokens_total"), "{stats}");
         // the same server without the operator's word
         assert_eq!(found(serve_fake_in(Fake::new(64, 32), None, 2, false, None, &[], crate::runtime::context::Context::new())), (None, None));
     }

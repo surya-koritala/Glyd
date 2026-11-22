@@ -124,7 +124,8 @@ finds, or by how soon its first token comes, a caller can tell whether a prompt 
 leaves is found by them alone; requests with none are a scope of their own. The usage tells a request how many tokens it found only where the request has a `cache_salt`:
 the others' usage has no cached tokens, though the cache serves them. A server whose callers are all one user can be told so (`GLYD_ENGINE_CACHED_USAGE=1` in its
 environment, which `glyd service` passes to the models it starts) and then tells every request. The server's address does not decide this: one on this computer's own address
-may answer callers from anywhere, behind a proxy.
+may answer callers from anywhere, behind a proxy. The same holds for the server's own count of the tokens found: `prefix_hit_tokens` and `prefix_hit_rate_percent` of `/stats` are
+null, and `/metrics` has no `glyd_prefix_cache_hit_tokens_total`, unless the server was told its callers are one user.
 
 ## Connecting tools
 
