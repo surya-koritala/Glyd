@@ -568,6 +568,102 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
     })
 }
 
+/// GLM-5.3-Flash: the four streams mixed around each layer's two blocks, Kimi delta attention (its forget gate bounded) or the latent attention (its block's),
+/// a dense MLP (its SwiGLU clamped) in the first layers and a mixture of experts in the rest (its block's), the mean of the streams and the final norm. The
+/// matrices, small tensors and blocks are model_glm.rs's loader's (`dynamic::glm::describe` indexes them in its order).
+pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
+    use super::glm::{dense_ops, glm_desc, kda_ops, per_layer};
+    use crate::glm::GlmKind;
+    use crate::model_glm::GM_D;
+    use crate::runtime::kinds::{Decay, Residual};
+    let m = &d.desc;
+    if m.blocks.len() % 2 != 0 || m.embed.streams != 4 {
+        return err(format!(
+            "GLM-5.3-Flash: {} blocks over {} streams, where each layer is a mixer block and a feed-forward block over 4",
+            m.blocks.len(),
+            m.embed.streams
+        ));
+    }
+    let layers = m.blocks.len() / 2;
+    let hc = match &m.blocks[0].residual {
+        Residual::Streams(s) => (s.eps, s.sinkhorn_iters as i32),
+        r => return err(format!("GLM-5.3-Flash: a residual of {r:?}, not the streams")),
+    };
+    let lin = m.blocks.iter().find_map(|b| match &b.body {
+        Body::Mixer(Mixer::Linear(x)) => Some(x),
+        _ => None,
+    });
+    let (heads, qd, bound) = match lin {
+        Some(x) if x.k_dim != GM_D => return err(format!("Kimi delta heads of {}: this engine runs heads of {GM_D}", x.k_dim)),
+        Some(x) => match x.decay {
+            Decay::Bounded(b) => (x.k_heads, x.k_heads * x.k_dim, b),
+            dc => return err(format!("Kimi delta attention with a forget gate of {dc:?}: this engine runs the bounded gate")),
+        },
+        None => (0, 0, 0.0),
+    };
+    let (mut inter, mut limit) = (0, 0.0);
+    let (mut n_small, mut n_mats, mut n_mla, mut n_moe, mut states, mut ops_all) = (0, 0, 0, 0, Vec::new(), Vec::new());
+    for l in 0..layers {
+        let kind = match &m.blocks[2 * l].body {
+            Body::Mixer(Mixer::Linear(_)) => GlmKind::Kda,
+            Body::Mixer(Mixer::Mla(_)) => GlmKind::Mla,
+            b => return err(format!("GLM-5.3-Flash: layer {l}'s mixer is {b:?}")),
+        };
+        let moe = match &m.blocks[2 * l + 1].body {
+            Body::Ffn(Ffn::Mlp(mlp)) => {
+                let gate = match role(&d.blocks[2 * l + 1], "gate") {
+                    Some(Source::Tensor(n)) => n,
+                    g => return err(format!("GLM-5.3-Flash: layer {l}'s MLP gate is {g:?}")),
+                };
+                inter = d.shapes.get(gate).map(|s| s[0]).ok_or_else(|| Error(format!("GLM-5.3-Flash: no shape for {gate}")))?;
+                limit = mlp.clamp.ok_or_else(|| Error(format!("GLM-5.3-Flash: layer {l}'s MLP has no SwiGLU limit: this engine runs the clamped SwiGLU")))?;
+                false
+            }
+            Body::Ffn(Ffn::Moe(_)) => true,
+            b => return err(format!("GLM-5.3-Flash: layer {l}'s feed-forward is {b:?}")),
+        };
+        if !(st.layers.0..st.layers.1).contains(&l) {
+            ops_all.push(Vec::new());
+            continue;
+        }
+        let s = n_small;
+        n_small += 5;
+        let mut ops = vec![Op::GlmPre { f: s + 2, base: s + 3, scale: s + 4, norm: s }];
+        let m0 = n_mats;
+        let nm = per_layer(kind, moe);
+        n_mats += nm;
+        if kind == GlmKind::Kda {
+            let s0 = n_small;
+            n_small += 4;
+            let (conv, ssm) = (states.len(), states.len() + 1);
+            states.push(3 * 3 * qd * 2);
+            states.push(heads * GM_D * GM_D * 4);
+            ops.extend(kda_ops(m0, s0, conv, ssm, qd, heads, bound));
+        } else {
+            ops.push(Op::Mla { block: n_mla });
+            n_mla += 1;
+        }
+        let h = n_small;
+        n_small += 3;
+        ops.extend([Op::GlmPost, Op::GlmPre { f: h, base: h + 1, scale: h + 2, norm: s + 1 }]);
+        if moe {
+            ops.push(Op::Moe { block: n_moe });
+            n_moe += 1;
+        } else {
+            ops.extend(dense_ops(m0 + nm - 2, inter, limit));
+        }
+        ops.push(Op::GlmPost);
+        ops_all.push(ops);
+    }
+    if st.last {
+        ops_all.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::GlmHead { norm: n_small });
+    }
+    let e = n_mats;
+    let lm = if st.last && d.head.is_some() { e + 1 } else { e };
+    let eps = m.blocks.first().map_or(1e-5, |b| b.norm_in.eps);
+    Ok(glm_desc(m.hidden, qd, heads, inter, m.vocab, eps, max_pos, eos, hc, ops_all, states, e, lm))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -705,6 +801,66 @@ mod tests {
             assert_eq!(format!("{own:#?}"), format!("{lowered:#?}"));
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// GLM-5.3-Flash lowered from its released config and the tiny and toy ones, whole and as a split's stages, is the executor's own description of it; each
+    /// layer's matrices are as many as model_glm.rs's loader packs.
+    #[test]
+    fn glm_lowered_is_the_executors_own_description() {
+        for f in ["glm5_next_config.json", "glm5_next_tiny_config.json", "glm5_next_toy_config.json"] {
+            let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(f);
+            let text = std::fs::read_to_string(p).unwrap();
+            let c = crate::glm::ConfigGlm::parse(&text, f, None).unwrap_or_else(|e| panic!("{f}: {}", e.msg));
+            for l in 0..c.layers {
+                assert_eq!(crate::model_glm::layer_matrices(&c, l).len(), super::super::glm::per_layer(c.kinds[l], c.moe[l]), "{f}: layer {l}");
+            }
+            let kinds = crate::runtime::describe::describe(&serde_json::from_str(&text).unwrap()).unwrap();
+            let half = c.layers / 2;
+            for st in [
+                super::super::Stage::whole(c.layers),
+                super::super::Stage { layers: (0, half), first: true, last: false },
+                super::super::Stage { layers: (half, c.layers), first: false, last: true },
+            ] {
+                let own = match super::super::glm::describe(&c, &st) {
+                    Ok(x) => x,
+                    // (a config the executor does not run: the lowering refuses it too)
+                    Err(e) => {
+                        assert!(glm(&kinds, c.eos.clone(), c.max_pos, &st).is_err(), "{f}: refused by the executor's own reading ({}) alone", e.msg);
+                        continue;
+                    }
+                };
+                let lowered = glm(&kinds, c.eos.clone(), c.max_pos, &st).unwrap_or_else(|e| panic!("{f}: {}", e.msg));
+                let (a, b) = (format!("{own:#?}"), format!("{lowered:#?}"));
+                if a != b {
+                    let first = a.lines().zip(b.lines()).enumerate().find(|(_, (x, y))| x != y);
+                    panic!("{f}: the lowered description differs at line {first:?}");
+                }
+            }
+        }
+    }
+
+    /// The random GLM-5.3-Flash the logits and GPU checks run (bf16, and its experts in FP8), lowered whole and as a split's stages, is the executor's own description of it.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_random_glm_lowers_as_its_own_description() {
+        for fp8 in [false, true] {
+            let dir = std::env::temp_dir().join(format!("glyd-lower-glm-{}-{fp8}", std::process::id()));
+            crate::kcheck_glm::random(&dir, fp8, None).unwrap();
+            let c = crate::glm::ConfigGlm::load(&dir).unwrap();
+            let half = c.layers / 2;
+            for st in [
+                super::super::Stage::whole(c.layers),
+                super::super::Stage { layers: (0, half), first: true, last: false },
+                super::super::Stage { layers: (half, c.layers), first: false, last: true },
+            ] {
+                let (own, lowered) = (
+                    super::super::glm::describe(&c, &st).unwrap(),
+                    super::super::glm::lowered(&dir, &c, &st).unwrap_or_else(|e| panic!("fp8 {fp8}: {}", e.msg)),
+                );
+                assert_eq!(format!("{own:#?}"), format!("{lowered:#?}"));
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// The random Gemma 4 the logits checks run (src/logits.rs, a window of 32, a global layer that shares its keys and values) lowers to the executor's own

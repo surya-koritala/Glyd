@@ -959,7 +959,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
     // the feed-forward
     let first_dense = k.opt_usize("first_k_dense_replace")?;
     let mlp_types: Option<Vec<bool>> = k.raw("mlp_layer_types").and_then(|v| v.as_array()).map(|a| a.iter().map(|x| x.as_str() == Some("sparse")).collect());
-    k.usize("intermediate_size")?;
+    let dense_inter = k.usize("intermediate_size")?;
     k.usize("moe_intermediate_size")?;
     let clamp = if flash { k.opt_f64("swiglu_limit")?.map(|v| v as f32) } else { None };
     let mlp = Mlp { act, gated: true, bias: false, clamp };
@@ -1003,6 +1003,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
         Source::Tensor(w)
     };
     let mut fp8set = BTreeSet::new();
+    let mut dense_shapes = Vec::new();
     let (mut blocks, mut roles) = (Vec::new(), Vec::new());
     for (l, &is_lin) in types.iter().enumerate() {
         let p = format!("{prefix}layers.{l}");
@@ -1124,6 +1125,10 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
             for x in ["gate", "up", "down"] {
                 r.push((x.to_string(), fp8w(format!("{f}.{x}_proj.weight"), &mut fp8set)));
             }
+            // (a dense MLP's shapes, which the lowering to the executor reads its width from)
+            for (x, s) in [("gate", vec![dense_inter, d]), ("up", vec![dense_inter, d]), ("down", vec![d, dense_inter])] {
+                dense_shapes.push((format!("{f}.{x}_proj.weight"), s));
+            }
             Body::Ffn(Ffn::Mlp(mlp))
         };
         let res = residual("ffn", &mut r);
@@ -1143,6 +1148,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
     };
     let mut out = finish(&k, desc, prefix, roles, mtp_layers)?;
     out.scales = fp8set.into_iter().map(|w| (w.clone(), format!("{w}_scale_inv"))).collect();
+    out.shapes = dense_shapes.into_iter().collect();
     let _ = fp8.map(|f| f.block);
     Ok(out)
 }
