@@ -38,6 +38,9 @@ pub struct Submit {
     /// The prompt tokens found in the cache when the sequence was first let in (a kept sequence's, or pages of an earlier prompt), which were not run again: set before
     /// the sequence's first event; the caller may read it (a request's usage).
     pub cached: Arc<AtomicU32>,
+    /// A request with a cache marker (`pin`): the prompt tokens it left findable in the cache that it did not find there (Anthropic's `cache_creation_input_tokens`), set
+    /// once its prompt has run; 0 for any other request, and on a step that does not find blocks by name.
+    pub created: Arc<AtomicU32>,
     /// The request's cache scope (its `cache_salt`'s digest; 0: none): it finds in the cache only what requests of its scope left, and what it leaves is found by them alone.
     /// A server several callers share gives each its own, so that no caller learns from what is found, or how soon its first token comes, how another's prompt begins.
     pub salt: u64,
@@ -429,6 +432,7 @@ struct Seq {
     abort: Arc<AtomicBool>,
     resumed: Arc<AtomicU32>,
     cached: Arc<AtomicU32>,
+    created: Arc<AtomicU32>,
     salt: u64,
     pin: u32,
     reply: Reply,
@@ -630,6 +634,13 @@ impl<B: ModelStep> Sched<B> {
             let s = &self.active[i];
             self.be.mark(s.pages[0], s.done)?;
         }
+        // (a request with a cache marker: the prompt tokens it left findable by name that it did not find, the first time it runs)
+        let s = &self.active[i];
+        if s.pin > 0 && self.names() && s.resumed.load(Relaxed) == 0 {
+            let keys = block_names(block_root(s.salt), &s.tokens[..s.tokens.len().saturating_sub(1)]);
+            let findable = self.be.held_by_name(&keys);
+            s.created.store(findable.saturating_sub(s.cached.load(Relaxed) as usize) as u32, Relaxed);
+        }
         Ok(())
     }
 
@@ -755,6 +766,7 @@ impl<B: ModelStep> Sched<B> {
             abort: s.abort,
             resumed: s.resumed,
             cached: s.cached,
+            created: s.created,
             salt: s.salt,
             pin: s.pin,
             reply: s.reply,
@@ -1934,6 +1946,7 @@ pub(crate) mod tests {
             abort: abort.clone(),
             resumed: Default::default(),
             cached: Default::default(),
+            created: Default::default(),
             salt: 0,
             pin: 0,
             images: Vec::new(),
@@ -2250,6 +2263,7 @@ pub(crate) mod tests {
             abort: Arc::new(AtomicBool::new(false)),
             resumed: Default::default(),
             cached: Default::default(),
+            created: Default::default(),
             salt: 0,
             pin: 0,
             images: Vec::new(),
@@ -2550,6 +2564,7 @@ pub(crate) mod tests {
                     abort: Arc::new(AtomicBool::new(false)),
                     resumed: Default::default(),
                     cached: Default::default(),
+                    created: Default::default(),
                     salt: 0,
                     pin: 0,
                     images: Vec::new(),
@@ -2606,6 +2621,7 @@ pub(crate) mod tests {
                     abort: Arc::new(AtomicBool::new(false)),
                     resumed: Default::default(),
                     cached: Default::default(),
+                    created: Default::default(),
                     salt: 0,
                     pin: 0,
                     images: Vec::new(),
@@ -2657,6 +2673,7 @@ pub(crate) mod tests {
             abort: Arc::new(AtomicBool::new(false)),
             resumed: Default::default(),
             cached: Default::default(),
+            created: Default::default(),
             salt: 0,
             pin: 0,
             images: Vec::new(),
@@ -2687,6 +2704,7 @@ pub(crate) mod tests {
                 abort: Arc::new(AtomicBool::new(false)),
                 resumed: Default::default(),
                 cached: Default::default(),
+                created: Default::default(),
                 salt: 0,
                 pin: 0,
                 images: Vec::new(),
@@ -3157,6 +3175,7 @@ pub(crate) mod tests {
                 abort: Arc::new(AtomicBool::new(false)),
                 resumed: Default::default(),
                 cached: cached.clone(),
+                created: Default::default(),
                 salt: 0,
                 pin: 0,
                 images: Vec::new(),
@@ -3217,12 +3236,47 @@ pub(crate) mod tests {
             abort: Arc::new(AtomicBool::new(false)),
             resumed: Default::default(),
             cached: Default::default(),
+            created: Default::default(),
             salt: 5,
             pin: 0,
             images: Vec::new(),
         });
         run(&mut s);
         assert_eq!((collect(&rx).0, s.be.adopted.last().map(|x| x.1), s.be.shared.len()), (reference(&pb, 8), Some(0), 0));
+    }
+
+    /// #241: a request with a cache marker is told the prompt tokens it left findable by name that it did not find (Anthropic's cache creation); the next with the same
+    /// start finds those and is told the rest it left; a request with no marker is told none.
+    #[test]
+    fn a_request_with_a_cache_marker_is_told_what_it_left_findable() {
+        let mut s = keeping(3);
+        let go = |s: &mut Sched<SlotFake>, p: &[u32], pin: u32| -> (u32, u32) {
+            let (tx, rx) = channel();
+            let (cached, created) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
+            s.submit(Submit {
+                prompt: p.to_vec(),
+                reply: reply(8),
+                out: tx,
+                abort: Arc::new(AtomicBool::new(false)),
+                resumed: Default::default(),
+                cached: cached.clone(),
+                created: created.clone(),
+                salt: 0,
+                pin,
+                images: Vec::new(),
+            });
+            run(s);
+            collect(&rx);
+            (cached.load(Relaxed), created.load(Relaxed))
+        };
+        let system = prompt(1, 64);
+        // (94 tokens: the 93 before its last, 5 full blocks)
+        let pa: Vec<u32> = [&system[..], &prompt(2, 30)[..]].concat();
+        assert_eq!(go(&mut s, &pa, 300), (0, 80));
+        let pb: Vec<u32> = [&system[..], &prompt(3, 30)[..]].concat();
+        assert_eq!(go(&mut s, &pb, 300), (64, 16));
+        let pc: Vec<u32> = [&system[..], &prompt(4, 30)[..]].concat();
+        assert_eq!(go(&mut s, &pc, 0).1, 0);
     }
 
     /// #142: the cache's events where the context keeps them: a request's full blocks stored as they are named, with their tokens and their names (the chain of its
@@ -3426,6 +3480,7 @@ pub(crate) mod tests {
                 abort: Arc::new(AtomicBool::new(false)),
                 resumed: Default::default(),
                 cached: cached.clone(),
+                created: Default::default(),
                 salt,
                 pin: 0,
                 images: Vec::new(),
@@ -3531,6 +3586,7 @@ pub(crate) mod tests {
                 abort: Arc::new(AtomicBool::new(false)),
                 resumed: Default::default(),
                 cached: Default::default(),
+                created: Default::default(),
                 salt: 0,
                 pin,
                 images: Vec::new(),
@@ -3656,6 +3712,7 @@ pub(crate) mod tests {
                 abort: Arc::new(AtomicBool::new(false)),
                 resumed: resumed.clone(),
                 cached: Default::default(),
+                created: Default::default(),
                 salt: 0,
                 pin: 0,
                 images: Vec::new(),

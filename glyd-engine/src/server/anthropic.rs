@@ -295,11 +295,16 @@ fn stop_reason(done: &Done, called: bool) -> &'static str {
     }
 }
 
-/// A usage object as Anthropic's API has it: `cached` of the prompt's `input` tokens were found in the cache and not run again (`cache_read_input_tokens`), and
-/// `input_tokens` is the rest. Nothing is ever written to a cache at a price (`cache_creation_input_tokens` 0).
-fn usage(input: usize, output: usize, cached: usize) -> String {
+/// A usage object as Anthropic's API has it: `cached` of the prompt's `input` tokens were found in the cache and not run again (`cache_read_input_tokens`); a request
+/// with a cache marker left `created` more findable in it (`cache_creation_input_tokens`: the cache keeps every prompt's blocks, at no price; what is reported is what
+/// a request with the same start would find); `input_tokens` is the rest.
+fn usage(input: usize, output: usize, cached: usize, created: usize) -> String {
     let cached = cached.min(input);
-    format!("{{\"input_tokens\":{},\"output_tokens\":{output},\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":{cached}}}", input - cached)
+    let created = created.min(input - cached);
+    format!(
+        "{{\"input_tokens\":{},\"output_tokens\":{output},\"cache_creation_input_tokens\":{created},\"cache_read_input_tokens\":{cached}}}",
+        input - cached - created
+    )
 }
 
 /// `max_tokens` as Anthropic's API wants it: there, and a whole number of at least 1.
@@ -335,7 +340,7 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
         Ok(st) => st,
         Err((code, m)) => return fail(s, cors, code, &m),
     };
-    let (abort, found) = (h.abort.clone(), h.cached.clone());
+    let (abort, found, made) = (h.abort.clone(), h.cached.clone(), h.created.clone());
     let mid = format!("msg_{:016x}{id:08x}", fresh_seed());
     let (name, n_in) = (jstr(&sh.name), prompt_tokens);
     let (out_tx, out_rx) = std::sync::mpsc::channel::<Out>();
@@ -345,7 +350,7 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
         if api.stream {
             let head = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n{cors}Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
             let mut ok = s.write_all(head.as_bytes()).is_ok()
-                && event(s, "message_start", &format!("\"message\":{{\"id\":\"{mid}\",\"type\":\"message\",\"role\":\"assistant\",\"model\":{name},\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{}}}", usage(n_in, 1, 0)))
+                && event(s, "message_start", &format!("\"message\":{{\"id\":\"{mid}\",\"type\":\"message\",\"role\":\"assistant\",\"model\":{name},\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{}}}", usage(n_in, 1, 0, 0)))
                 && event(s, "ping", "");
             let mut blocks = Blocks::default();
             // (a reply to a request for thinking begins with its thinking block, as Anthropic's API has it, empty where the model wrote none: a client reads it
@@ -369,7 +374,7 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
                                     "\"delta\":{{\"stop_reason\":\"{}\",\"stop_sequence\":{}}},\"usage\":{}",
                                     stop_reason(&done, blocks.called),
                                     done.stop.as_deref().map_or("null".to_string(), jstr),
-                                    usage(n_in, done.tokens, found.load(Ordering::Relaxed) as usize)
+                                    usage(n_in, done.tokens, found.load(Ordering::Relaxed) as usize, made.load(Ordering::Relaxed) as usize)
                                 ),
                             )
                             && event(s, "message_stop", "")
@@ -417,7 +422,7 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req,
                         content.join(","),
                         stop_reason(&done, !done.calls.is_empty()),
                         done.stop.as_deref().map_or("null".to_string(), jstr),
-                        usage(n_in, done.tokens, found.load(Ordering::Relaxed) as usize)
+                        usage(n_in, done.tokens, found.load(Ordering::Relaxed) as usize, made.load(Ordering::Relaxed) as usize)
                     );
                     return respond_with(s, 200, "application/json", cors, body.as_bytes());
                 }

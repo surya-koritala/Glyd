@@ -1318,6 +1318,7 @@ fn pin_of(v: &Value) -> u32 {
 fn told(sh: &Shared, salt: u64, mut h: Handle) -> Handle {
     if salt == 0 && !sh.rt.tell_cached.load(Ordering::Relaxed) {
         h.cached = Arc::new(AtomicU32::new(0));
+        h.created = Arc::new(AtomicU32::new(0));
     }
     h
 }
@@ -2388,6 +2389,8 @@ pub struct Handle {
     pub abort: Arc<AtomicBool>,
     /// The prompt tokens the scheduler found in its cache as it let the sequence in (`sched::Submit::cached`): read for the request's usage once the sequence has ended.
     pub cached: Arc<AtomicU32>,
+    /// A request with a cache marker: the prompt tokens it left findable in the cache that it did not find (`sched::Submit::created`), read with `cached`.
+    pub created: Arc<AtomicU32>,
 }
 
 impl Remote {
@@ -2410,7 +2413,7 @@ impl Remote {
             return err(format!("{} tokens, where the context holds {}", prompt.len(), self.window));
         }
         let (out, events) = std::sync::mpsc::channel();
-        let (abort, cached) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU32::new(0)));
+        let (abort, cached, created) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
         self.tx
             .send(Job::Seq(Submit {
                 prompt: prompt.to_vec(),
@@ -2419,12 +2422,13 @@ impl Remote {
                 abort: abort.clone(),
                 resumed: Default::default(),
                 cached: cached.clone(),
+                created: created.clone(),
                 salt,
                 pin,
                 images,
             }))
             .map_err(|_| Error("the engine is not running".into()))?;
-        Ok(Handle { events, abort, cached })
+        Ok(Handle { events, abort, cached, created })
     }
 }
 
@@ -5868,6 +5872,7 @@ pub(crate) mod tests {
                 abort: Arc::new(AtomicBool::new(abort)),
                 resumed: Default::default(),
                 cached: Default::default(),
+                created: Default::default(),
                 salt: 0,
                 pin: 0,
                 images: Vec::new(),

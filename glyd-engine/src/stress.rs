@@ -142,6 +142,7 @@ pub fn drive(sched: &mut Sched<&mut Engine>, reqs: &[Req], concurrency: usize) -
                 abort: abort.clone(),
                 resumed: resumed.clone(),
                 cached: Default::default(),
+                created: Default::default(),
                 salt: 0,
                 pin: 0,
                 images: Vec::new(),
