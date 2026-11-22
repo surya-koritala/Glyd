@@ -1869,8 +1869,11 @@ fn sizes_done(case: &str, fails: usize) -> Result<()> {
 ///     which was marked, where it has recurrent states (their copy put back); refused, the slot left empty, where it has a latent cache;
 ///   - a long sequence (9 chunks and 24 steps) cut back by 10 tokens and to its third chunk's end, or gone on from a mark at its third chunk's end: kept, or refused where the
 ///     sliding layers' blocks behind the place were given back, and where kept the bits too;
-///   - through the scheduler: a conversation's second turn (the first's prompt and reply and more) goes on from all the first left, and another's second turn that leaves the reply
-///     out goes on from the prompt's end where the model can; the prompt tokens found are counted, and each reply is, token for token, what the same passes give by hand.
+///   - a start shared with an empty slot (`share`): the full blocks of what the two have in common, or a recurrent model's mark with its states copied, or nothing with a
+///     latent cache; the sharer and the sequence it shared from both go on as sequences that shared nothing do, and the sharer too after the other has ended;
+///   - through the scheduler: a conversation's second turn (the first's prompt and reply and more) goes on from all the first left, another's second turn that leaves the reply
+///     out goes on from the prompt's end where the model can, and a conversation that begins as another does shares its start; the prompt tokens found are counted, and each
+///     reply is, token for token, what the same passes give by hand.
 pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     use crate::conv::Gen;
     use crate::sched::{Ev, Finish, ModelStep, Reply, Row, Sched, Submit};
@@ -1886,8 +1889,8 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         None => random_dyn(case, level, "keepcheck")?,
     };
     let (vocab, cuts, marks) = (e.desc().vocab as u32, e.cuts(), e.can_mark());
-    let Some((k, s)) = e.as_step(2)? else { return err(format!("{case}: no scheduler's step")) };
-    if k < 2 || !s.keeps() {
+    let Some((k, s)) = e.as_step(3)? else { return err(format!("{case}: no scheduler's step")) };
+    if k < 3 || !s.keeps() {
         return err(format!("{case}: {k} sequences, a step that keeps: {}", s.keeps()));
     }
     let chunk = s.chunk();
@@ -1904,7 +1907,7 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     let same = |what: &str, want: &[f32], got: &[f32]| -> usize {
         let (differ, max, _, _) = row_diff(want, got);
         println!(
-            "{} {what}: {differ} of {} logits differ from the sequence that never ended, the largest by {max:e}",
+            "{} {what}: {differ} of {} logits differ from a sequence that ran the same tokens on its own, the largest by {max:e}",
             if differ == 0 { "PASS" } else { "FAIL" },
             want.len()
         );
@@ -1993,6 +1996,50 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
             s.release(&[0, 1])?;
         }
     }
+    // a start shared with an empty slot: of a sequence of a prompt (marked at its end) and 24 steps, what a request that has its first 50 tokens can have
+    {
+        let should = if cuts {
+            cut / 16 * 16
+        } else if marks {
+            p.len()
+        } else {
+            0
+        };
+        let begin = |s: &mut dyn ModelStep| -> Result<usize> {
+            fill(s, 0, &p, chunk, false)?;
+            s.mark(0, p.len())?;
+            steps(s, 0, p.len(), &g)?;
+            s.share(0, 1, cut)
+        };
+        let got = begin(s)?;
+        if got != should {
+            println!("FAIL a start of {cut} tokens shared from a sequence of {n}: {got} shared, where {should} should be");
+            fails += 1;
+        } else if got == 0 {
+            fails += empty(s, "a start is not shared (a latent cache is one sequence's); the slot it was asked for is empty: a prompt in it", &alt)?;
+            s.release(&[1])?;
+        } else {
+            // the sharer goes on, then the sequence it shared from; each against a slot that ran the same tokens and shared nothing
+            let sharer = fill_from(s, 1, got, &alt, chunk, true)?.expect("the logits");
+            let source = fill_from(s, 0, n, &tail, chunk, true)?.expect("the logits");
+            fill(s, 2, &p, chunk, false)?;
+            steps(s, 2, p.len(), &g[..got - p.len()])?;
+            let want = fill_from(s, 2, got, &alt, chunk, true)?.expect("the logits");
+            fails += same(&format!("a start of {cut} tokens shared from a sequence of {n}: {got} of them, then {} others", alt.len()), &want, &sharer);
+            s.release(&[2])?;
+            fill(s, 2, &p, chunk, false)?;
+            steps(s, 2, p.len(), &g)?;
+            let alone = fill_from(s, 2, n, &tail, chunk, true)?.expect("the logits");
+            fails += same(&format!("the sequence the start was shared from, gone on with {} more", tail.len()), &alone, &source);
+            s.release(&[0, 1, 2])?;
+            // the sequence it shared from ends first: what the two held together stays the sharer's
+            let again = begin(s)?;
+            s.release(&[0])?;
+            let after = fill_from(s, 1, again, &alt, chunk, true)?.expect("the logits");
+            fails += same("the same start, after the sequence it was shared from has ended", &want, &after);
+        }
+        s.release(&[0, 1, 2])?;
+    }
     // through the scheduler: a conversation's second turn (the prompt, the reply and more), and another's that leaves the reply out
     let reply = Reply {
         params: crate::sampler::Params { temperature: 0.0, ..Default::default() },
@@ -2002,7 +2049,9 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         stop_ids: Vec::new(),
     };
     let q = toks(40, 11);
-    let (r1, p2, r2, hit, q2, rq, hit_q) = {
+    let (xs, xa_more, yb_more) = (toks(60, 21), toks(100, 22), toks(30, 23));
+    let (xa, yb): (Vec<u32>, Vec<u32>) = ([&xs[..], &xa_more[..]].concat(), [&xs[..], &yb_more[..]].concat());
+    let (r1, p2, r2, hit, q2, rq, hit_q, rx, ry, hit_y) = {
         // (the step lent for the scheduler's time alone)
         let lent: &mut dyn ModelStep = &mut *s;
         let mut sched = Sched::new(lent, 2);
@@ -2038,25 +2087,31 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         ask(&mut sched, &q)?;
         let q2: Vec<u32> = [&q[..], &toks(20, 12)[..]].concat();
         let rq = ask(&mut sched, &q2)?;
-        (r1, p2, r2, hit, q2, rq, sched.stats.hit as usize - hit)
+        let hit_q = sched.stats.hit as usize - hit;
+        // a third conversation, then one that begins as it does (60 tokens of the 175 it left): a slot of its own, the start shared
+        let rx = ask(&mut sched, &xa)?;
+        let before = sched.stats.hit as usize;
+        let ry = ask(&mut sched, &yb)?;
+        (r1, p2, r2, hit, q2, rq, hit_q, rx, ry, sched.stats.hit as usize - before)
     };
-    s.release(&[0, 1])?;
+    s.release(&[0, 1, 2])?;
     // the same passes by hand, each token the step's own choice (the tokens given are the scheduler's, so one that differs does not move the ones after it): the chunks one after
     // another from `start`, the last one's sample, then the reply's tokens a step at a time
-    let replay = |s: &mut dyn ModelStep, start: usize, chunks: &[&[u32]], reply: &[u32]| -> Result<Vec<u32>> {
+    let replay_in = |s: &mut dyn ModelStep, slot: i32, start: usize, chunks: &[&[u32]], reply: &[u32]| -> Result<Vec<u32>> {
         let (mut at, mut first) = (start, None);
         for (i, c) in chunks.iter().enumerate() {
-            room(s, 0, at + c.len() + 1)?;
-            first = s.prefill(&[0], at, c, i + 1 == chunks.len())?;
+            room(s, slot, at + c.len() + 1)?;
+            first = s.prefill(&[slot], at, c, i + 1 == chunks.len())?;
             at += c.len();
         }
         let mut out = vec![first.ok_or_else(|| Error("no sample after a chunk".into()))?.token];
         for (i, &t) in reply[..reply.len() - 1].iter().enumerate() {
-            room(s, 0, at + i + 2)?;
-            out.push(s.decode(&[Row { token: t, pos: at + i, pages: &[0] }])?[0].token);
+            room(s, slot, at + i + 2)?;
+            out.push(s.decode(&[Row { token: t, pos: at + i, pages: &[slot] }])?[0].token);
         }
         Ok(out)
     };
+    let replay = |s: &mut dyn ModelStep, start: usize, chunks: &[&[u32]], reply: &[u32]| replay_in(s, 0, start, chunks, reply);
     // (the first turn left the prompt and its reply but the last token in the slot)
     let held = p.len() + r1.len() - 1;
     let first = replay(s, 0, &[&p], &r1)? == r1;
@@ -2085,6 +2140,32 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         if ok { "PASS" } else { "FAIL" },
         q2.len(),
         if by_hand == rq { "is the same passes' by hand, token for token".to_string() } else { format!("{rq:?} against {by_hand:?} by hand") }
+    );
+    // the conversation that begins as another does: the start's full blocks shared where the model has no state (a recurrent model's mark is past what the two share, a
+    // latent cache is one sequence's: from its first token there). By hand: the other conversation as the scheduler ran it, the start shared, the rest; or the prompt whole.
+    let should = if cuts { xs.len() / 16 * 16 } else { 0 };
+    let by_hand = if hit_y > 0 {
+        let chunks: Vec<&[u32]> = xa.chunks(chunk).collect();
+        let first = replay(s, 0, &chunks, &rx)? == rx;
+        let got = s.share(0, 1, xs.len())?;
+        let y = replay_in(s, 1, got, &[&yb[got..]], &ry)?;
+        if first && got == hit_y {
+            y
+        } else {
+            Vec::new()
+        }
+    } else {
+        let chunks: Vec<&[u32]> = yb.chunks(chunk).collect();
+        replay(s, 0, &chunks, &ry)?
+    };
+    s.release(&[0, 1])?;
+    let ok = hit_y == should && by_hand == ry;
+    fails += !ok as usize;
+    println!(
+        "{} a conversation that begins as another does, through the scheduler: {hit_y} of its {} prompt tokens shared (it should {should}); its reply {}",
+        if ok { "PASS" } else { "FAIL" },
+        yb.len(),
+        if by_hand == ry { "is the same passes' by hand, token for token".to_string() } else { format!("{ry:?} against {by_hand:?} by hand") }
     );
     if fails > 0 {
         return err(format!("keepcheck {case}: {fails} failed"));
