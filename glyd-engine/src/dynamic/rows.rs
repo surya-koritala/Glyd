@@ -250,6 +250,7 @@ impl Dyn {
     }
 
     /// The least window of the layers whose attention slides (none: every layer reads the whole sequence).
+    #[cfg(feature = "dev")]
     pub(crate) fn least_window(&self) -> Option<usize> {
         self.big.d.rings.iter().map(|r| r.window).filter(|&w| w > 0 && w != usize::MAX).min()
     }
