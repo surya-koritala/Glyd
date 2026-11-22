@@ -1561,6 +1561,7 @@ pub fn two_models_check(a: &crate::args::Args) -> Result<()> {
             resumed: Default::default(),
             cached: Default::default(),
             salt: 0,
+            pin: 0,
             images: Vec::new(),
         });
         rx
@@ -2065,6 +2066,7 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
                 resumed: Default::default(),
                 cached: Default::default(),
                 salt: 0,
+                pin: 0,
                 images: Vec::new(),
             });
             while !sched.idle() {
@@ -2216,6 +2218,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
                     resumed: Default::default(),
                     cached: Default::default(),
                     salt: 0,
+                    pin: 0,
                     images: Vec::new(),
                 });
                 rx

@@ -3,8 +3,9 @@
 //! its refusals, its grammar, its tools, its window), and the reply is written as a message, or as the events of a stream: `message_start`, `ping`, the content blocks (`text`, `tool_use`, `thinking`) with their
 //! `content_block_start`, `content_block_delta` and `content_block_stop`, `message_delta` and `message_stop`. Errors are Anthropic's: `{"type": "error", "error": {"type", "message"}}`.
 //!
-//! Prompt caching (`cache_control`) is read and has no effect (P5e): what a request finds of its prompt in the cache it finds whatever it marks, and the usage says how many tokens
-//! that was (`cache_read_input_tokens`, with `input_tokens` the rest; in a stream, in `message_delta`, since `message_start` is sent before the engine has looked). A thinking block carries no signature (this server cannot make one): it is empty.
+//! Prompt caching (`cache_control`, P5e): what a request finds of its prompt in the cache it finds whatever it marks; a request with a marker has what it leaves held
+//! before others' for the marker's time (5 minutes, an hour with `ttl: "1h"`: `sched::Submit::pin`); and the usage says how many tokens were found
+//! that way (`cache_read_input_tokens`, with `input_tokens` the rest; in a stream, in `message_delta`, since `message_start` is sent before the engine has looked). A thinking block carries no signature (this server cannot make one): it is empty.
 
 use super::*;
 use tools::obj;
@@ -14,6 +15,17 @@ use tools::obj;
 /// enable_thinking (off unless it is enabled).
 pub fn openai_of(v: &Value) -> std::result::Result<Value, String> {
     openai_of_with(v, crate::vision::PREP.get().is_some())
+}
+
+/// The longest time a request's `cache_control` markers ask for (on a system block, a tool, a block of a message): 300 seconds, or 3,600 with `ttl: "1h"`. None: no marker.
+/// The marker's place is not read: the server keeps the whole of what a request leaves, and a later request finds as much of it as it begins with.
+fn cache_pin(v: &Value) -> Option<u64> {
+    let marked = |x: &Value| {
+        x.get("cache_control").filter(|c| c.as_object().is_some()).map(|c| if c.get("ttl").and_then(Value::as_str) == Some("1h") { 3600u64 } else { 300 })
+    };
+    let blocks = |x: Option<&Value>| x.and_then(Value::as_array).into_iter().flatten().filter_map(marked).max();
+    let of_messages = v.get("messages").and_then(Value::as_array).into_iter().flatten().filter_map(|m| blocks(m.get("content"))).max();
+    [blocks(v.get("system")), blocks(v.get("tools")), of_messages].into_iter().flatten().max()
 }
 
 /// `openai_of`, its image blocks image_url parts where `images` (the model reads them), else left out.
@@ -141,6 +153,10 @@ pub fn openai_of_with(v: &Value, images: bool) -> std::result::Result<Value, Str
         if let Some(x) = v.get(k) {
             o.push((k, x.clone()));
         }
+    }
+    // (prompt caching: what this request leaves in the cache is held, before others', for the longest time a `cache_control` of its asks)
+    if let Some(secs) = cache_pin(v) {
+        o.push(("cache_pin_seconds", Value::from(secs)));
     }
     if let Some(x) = v.get("stop_sequences") {
         o.push(("stop", x.clone()));
@@ -559,6 +575,30 @@ mod tests {
         let delta = evs.iter().find(|e| at(e, &["type"]).as_str() == Some("message_delta")).expect("message_delta");
         assert_eq!((usage(delta, "cache_read_input_tokens"), usage(delta, "input_tokens")), (found, prompt - found), "{body}");
         assert_eq!(at(&evs[0], &["message", "usage", "input_tokens"]).as_u64(), Some(prompt));
+    }
+
+    /// `cache_control` asks for what the request leaves to be held: 5 minutes, an hour with `ttl: "1h"`, the longest of a request's markers, wherever they are (a system
+    /// block, a tool, a block of a message); a request with none asks for nothing, and a property of a tool's schema that happens to bear the name is no marker.
+    #[test]
+    fn cache_control_is_a_time_to_hold_what_the_request_leaves() {
+        let pin = |body: &str| openai_of(&parse(body)).unwrap().get("cache_pin_seconds").and_then(Value::as_u64);
+        let msg = r#""max_tokens":5,"messages":[{"role":"user","content":"hi"}]"#;
+        assert_eq!(pin(&format!("{{{msg}}}")), None);
+        assert_eq!(pin(&format!(r#"{{{msg},"system":[{{"type":"text","text":"s","cache_control":{{"type":"ephemeral"}}}}]}}"#)), Some(300));
+        assert_eq!(
+            pin(&format!(r#"{{{msg},"tools":[{{"name":"t","input_schema":{{"type":"object"}},"cache_control":{{"type":"ephemeral","ttl":"1h"}}}}]}}"#)),
+            Some(3600)
+        );
+        assert_eq!(
+            pin(
+                r#"{"max_tokens":5,"system":[{"type":"text","text":"s","cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","ttl":"5m"}}]}]}"#
+            ),
+            Some(3600)
+        );
+        assert_eq!(
+            pin(&format!(r#"{{{msg},"tools":[{{"name":"t","input_schema":{{"type":"object","properties":{{"cache_control":{{"type":"string"}}}}}}}}]}}"#)),
+            None
+        );
     }
 
     /// A message as the SDK parses it: the thinking block only where the request asked for it, the answer's text, the usage, a stop reason by how it ended, and `stop_sequence` the string that did it.

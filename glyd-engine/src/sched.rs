@@ -41,6 +41,9 @@ pub struct Submit {
     /// The request's cache scope (its `cache_salt`'s digest; 0: none): it finds in the cache only what requests of its scope left, and what it leaves is found by them alone.
     /// A server several callers share gives each its own, so that no caller learns from what is found, or how soon its first token comes, how another's prompt begins.
     pub salt: u64,
+    /// Seconds what this request leaves in a slot is held before other kept sequences when a slot or room is wanted (Anthropic's `cache_control`: 300, or 3,600 with
+    /// `ttl: "1h"`; 0: no longer than any other). A preference among kept sequences, never a refusal: a request that needs the slot has it.
+    pub pin: u32,
     /// The prompt's images in order (their places in it their tokens), for an engine that reads images (src/vision.rs); none for the rest.
     pub images: Vec<Arc<crate::vision::Image>>,
 }
@@ -389,6 +392,7 @@ struct Seq {
     resumed: Arc<AtomicU32>,
     cached: Arc<AtomicU32>,
     salt: u64,
+    pin: u32,
     reply: Reply,
     greedy: bool,
     sampler: Sampler,
@@ -420,6 +424,8 @@ struct Kept {
     tokens: Vec<u32>,
     /// The scope of the request that left it (`Submit::salt`): a request of another scope does not go on in it.
     salt: u64,
+    /// Held before the others until then (`Submit::pin`).
+    pinned: Option<std::time::Instant>,
 }
 
 /// The fewest tokens of a kept sequence a request must begin with to go on in its slot. It must also begin with half of what the slot holds: a kept conversation is not cut down for
@@ -589,9 +595,12 @@ impl<B: ModelStep> Sched<B> {
         self.drop_kept_but(None)
     }
 
-    /// `drop_kept`, sparing the kept sequence in slot `spare` (one a request is about to share the start of).
+    /// `drop_kept`, sparing the kept sequence in slot `spare` (one a request is about to share the start of). The oldest that no request asked to be held (`Submit::pin`),
+    /// or whose time is over; with none such, the oldest.
     fn drop_kept_but(&mut self, spare: Option<i32>) -> Result<bool> {
-        let Some(i) = self.kept.iter().position(|k| Some(k.slot) != spare) else { return Ok(false) };
+        let now = std::time::Instant::now();
+        let free = |k: &Kept| Some(k.slot) != spare && k.pinned.is_none_or(|t| t <= now);
+        let Some(i) = self.kept.iter().position(free).or_else(|| self.kept.iter().position(|k| Some(k.slot) != spare)) else { return Ok(false) };
         let k = self.kept.remove(i).expect("a kept sequence");
         self.be.release(&[k.slot])?;
         let free = self.free.as_mut().expect("a slot step");
@@ -671,6 +680,7 @@ impl<B: ModelStep> Sched<B> {
             resumed: s.resumed,
             cached: s.cached,
             salt: s.salt,
+            pin: s.pin,
             reply: s.reply,
             greedy,
             sampler,
@@ -1115,7 +1125,8 @@ impl<B: ModelStep> Sched<B> {
         if self.keep && s.done >= KEEP_LEAST && s.pages.len() == 1 {
             // (kept in its slot: the conversation's next turn begins with these tokens)
             let slot = s.pages.pop().expect("its slot");
-            self.kept.push_back(Kept { slot, tokens: s.tokens[..s.done].to_vec(), salt: s.salt });
+            let pinned = (s.pin > 0).then(|| std::time::Instant::now() + std::time::Duration::from_secs(s.pin as u64));
+            self.kept.push_back(Kept { slot, tokens: s.tokens[..s.done].to_vec(), salt: s.salt, pinned });
         } else {
             self.give_back(&mut s)?;
         }
@@ -1763,6 +1774,7 @@ pub(crate) mod tests {
             resumed: Default::default(),
             cached: Default::default(),
             salt: 0,
+            pin: 0,
             images: Vec::new(),
         });
         (rx, abort)
@@ -2078,6 +2090,7 @@ pub(crate) mod tests {
             resumed: Default::default(),
             cached: Default::default(),
             salt: 0,
+            pin: 0,
             images: Vec::new(),
         });
         run(&mut s);
@@ -2377,6 +2390,7 @@ pub(crate) mod tests {
                     resumed: Default::default(),
                     cached: Default::default(),
                     salt: 0,
+                    pin: 0,
                     images: Vec::new(),
                 });
                 run(s);
@@ -2432,6 +2446,7 @@ pub(crate) mod tests {
                     resumed: Default::default(),
                     cached: Default::default(),
                     salt: 0,
+                    pin: 0,
                     images: Vec::new(),
                 });
                 run(&mut s);
@@ -2482,6 +2497,7 @@ pub(crate) mod tests {
             resumed: Default::default(),
             cached: Default::default(),
             salt: 0,
+            pin: 0,
             images: Vec::new(),
         });
         run(&mut s);
@@ -2511,6 +2527,7 @@ pub(crate) mod tests {
                 resumed: Default::default(),
                 cached: Default::default(),
                 salt: 0,
+                pin: 0,
                 images: Vec::new(),
             });
             run(&mut s);
@@ -2913,6 +2930,7 @@ pub(crate) mod tests {
                 resumed: Default::default(),
                 cached: cached.clone(),
                 salt: 0,
+                pin: 0,
                 images: Vec::new(),
             });
             (rx, cached)
@@ -2972,6 +2990,7 @@ pub(crate) mod tests {
             resumed: Default::default(),
             cached: Default::default(),
             salt: 5,
+            pin: 0,
             images: Vec::new(),
         });
         run(&mut s);
@@ -3074,6 +3093,7 @@ pub(crate) mod tests {
                 resumed: Default::default(),
                 cached: cached.clone(),
                 salt,
+                pin: 0,
                 images: Vec::new(),
             });
             run(s);
@@ -3162,6 +3182,48 @@ pub(crate) mod tests {
         // the same prompt again: the slot holds 65 tokens, the prompt shares 57 of them
         assert_eq!(turn(&mut s, &p2, 8), r2);
         assert_eq!((s.be.resumed[1], s.be.emptied, s.stats.hit, s.be.begun.len()), ((0, 57, 0), 1, 47, 2));
+    }
+
+    /// P5e: what a request with a pin left (`Submit::pin`: Anthropic's `cache_control`) is held before the other kept sequences when a slot is wanted, for the pin's time;
+    /// with only pinned ones kept, the oldest of them gives its slot: a pin never keeps a request waiting.
+    #[test]
+    fn a_pinned_kept_sequence_is_emptied_after_the_others() {
+        fn ask(s: &mut Sched<SlotFake>, prompt: &[u32], pin: u32) -> Vec<u32> {
+            let (tx, rx) = channel();
+            s.submit(Submit {
+                prompt: prompt.to_vec(),
+                reply: reply(8),
+                out: tx,
+                abort: Arc::new(AtomicBool::new(false)),
+                resumed: Default::default(),
+                cached: Default::default(),
+                salt: 0,
+                pin,
+                images: Vec::new(),
+            });
+            run(s);
+            collect(&rx).0
+        }
+        let ps: Vec<Vec<u32>> = (1..=4).map(|k| prompt(k, 50)).collect();
+        let mut s = keeping(2);
+        // the first is pinned, the second is not: a third request takes the second's slot though the first is older
+        let r0 = ask(&mut s, &ps[0], 300);
+        ask(&mut s, &ps[1], 0);
+        assert_eq!(ask(&mut s, &ps[2], 300), reference(&ps[2], 8));
+        assert_eq!((s.kept(), s.be.emptied), (2, 1));
+        let next: Vec<u32> = [&ps[0][..], &r0[..], &prompt(9, 5)[..]].concat();
+        assert_eq!(ask(&mut s, &next, 300), reference(&next, 8));
+        assert_eq!(s.be.resumed, vec![(0, 57, 57)], "the pinned conversation was still there");
+        // both kept are pinned now: a request that needs a slot has the oldest of them
+        assert_eq!(ask(&mut s, &ps[3], 0), reference(&ps[3], 8));
+        assert_eq!((s.kept(), s.be.emptied), (2, 2));
+        // a pin whose time is over is as none
+        let mut s = keeping(2);
+        ask(&mut s, &ps[0], 300);
+        ask(&mut s, &ps[1], 0);
+        s.kept[0].pinned = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        ask(&mut s, &ps[2], 0);
+        assert!(s.kept.iter().all(|k| k.slot != 0 || k.tokens[0] == ps[2][0]), "the oldest, its pin over, gave its slot");
     }
 
     /// A recurrent model that keeps its state at each prompt's end (a mark): a reply asked for again, and a next turn that leaves the reply's first tokens out (a template that
@@ -3261,6 +3323,7 @@ pub(crate) mod tests {
                 resumed: resumed.clone(),
                 cached: Default::default(),
                 salt: 0,
+                pin: 0,
                 images: Vec::new(),
             });
             subs.push((rx, resumed));

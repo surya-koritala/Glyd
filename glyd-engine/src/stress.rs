@@ -143,6 +143,7 @@ pub fn drive(sched: &mut Sched<&mut Engine>, reqs: &[Req], concurrency: usize) -
                 resumed: resumed.clone(),
                 cached: Default::default(),
                 salt: 0,
+                pin: 0,
                 images: Vec::new(),
             });
             live.push(Live { i: next, rx, tokens: Vec::new(), resumed, _abort: abort });
