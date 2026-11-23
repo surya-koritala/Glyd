@@ -67,15 +67,19 @@ fn nq_of(ops: &[Op], ring: usize) -> usize {
     ops.iter().find_map(|op| if let Op::QkvPrep { nq, ring: r, .. } = *op { (r == ring).then_some(nq) } else { None }).unwrap_or(0)
 }
 
-/// The escape chunks a page of a layer is given in the pool: twice what its pages took on the tables' prompts on average (`Tables::chunks`; where
-/// they were not counted, from the share of its values outside their windows as if spread evenly), at least one in eight pages.
+/// The share of a page's values outside their windows its escape room is made for, at the least. Measured on gemma-4-12B: 0.035% in the worst layer
+/// on the calibration's first 1,024 positions, 0.31% at 8,192 tokens (later positions are farther from the windows); room for 0.5% costs a sliding
+/// page five chunks, 1.3% of its bytes.
+const ROOM_SHARE: f64 = 0.005;
+
+/// The escape chunks a page of a layer is given in the pool: twice what its pages took on the tables' prompts on average (`Tables::chunks`), and
+/// at least what ROOM_SHARE of its values outside their windows takes (the pool runs dry where the text is not the calibration's: later positions,
+/// other languages).
 fn chunks_per_page(s: &KvShape, t: &Tables, l: usize) -> f64 {
-    let mean = t.chunks.get(l).map(|c| c.0).unwrap_or_else(|| {
-        let values = 16.0 * (s.heads * s.channels) as f64 * 2.0;
-        let inline = 3.0 * (s.heads * s.channels / 128) as f64 + ARENA as f64;
-        (values * t.outside.get(l).copied().unwrap_or(0.0) - inline).max(0.0) / CHUNK
-    });
-    (mean * 2.0).max(0.125)
+    let values = 16.0 * (s.heads * s.channels) as f64 * 2.0;
+    let inline = 3.0 * (s.heads * s.channels / 128) as f64 + ARENA as f64;
+    let room = ((values * ROOM_SHARE - inline).max(0.0) / CHUNK).ceil();
+    (t.chunks.get(l).map_or(0.0, |c| c.0) * 2.0).max(room).max(0.125)
 }
 
 impl Lossless {
