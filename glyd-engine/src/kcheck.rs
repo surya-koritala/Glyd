@@ -211,7 +211,12 @@ pub fn topk_check(dev: &Dev) -> Result<bool> {
                 ob.read(0, &mut got)?;
                 if let Some(j) = idx.iter().zip(&got).position(|(&t, g)| g.to_bits() != ((row[t as usize] as u32) << 16)) {
                     bad += 1;
-                    println!("DIFFERENT: {name}, {label}: gathered token {} is {:?}, the row has {:?}", idx[j], got[j], f32::from_bits((row[idx[j] as usize] as u32) << 16));
+                    println!(
+                        "DIFFERENT: {name}, {label}: gathered token {} is {:?}, the row has {:?}",
+                        idx[j],
+                        got[j],
+                        f32::from_bits((row[idx[j] as usize] as u32) << 16)
+                    );
                 }
             }
         }

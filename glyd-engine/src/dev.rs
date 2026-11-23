@@ -15,6 +15,11 @@ static FATBIN12: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/engine12.fatb
 #[cfg(no_kernels)]
 static FATBIN12: &[u8] = &[];
 
+/// Whether this build carries the kernels for a driver of CUDA 12 beside its own (a release's, built with NVCC12), which a driver of CUDA 12 runs.
+pub fn has_kernels12() -> bool {
+    !FATBIN12.is_empty()
+}
+
 /// `Dev::wddm` from what is read: `windows` the operating system, `tcc` the TCC attribute (1: the TCC mode, which a datacenter card on Windows can be put in; 0: a display driver, WDDM).
 pub(crate) fn wddm_from(windows: bool, tcc: Option<i32>) -> bool {
     windows && tcc == Some(0)

@@ -30,6 +30,21 @@ pub fn driver_min(cc: (i32, i32)) -> i32 {
     driver_min_for(KERNELS12, cc)
 }
 
+/// What `run`, `serve` and `fit` say on a GPU whose driver reports CUDA `driver` (12090 for 12.9) where the build carries the CUDA 12 kernels beside the CUDA 13 ones
+/// (`both`, a release's): the driver takes the CUDA 12 kernels and GPU library (dev.rs `pick_fatbin`, glyd-gpu's library by the driver's version), and says why and
+/// how fast. Measured 2026-11-23: gemma-4-12B at wren on an RTX 4080 SUPER with the CUDA 12 pair against the CUDA 13 one, every load of the bench's gate suite
+/// within 0.3% (decode and prompt). None on a driver of CUDA 13, or a build with one pair.
+pub fn cuda12_note(driver: i32, both: bool) -> Option<String> {
+    (both && driver > 0 && driver < 13000).then(|| {
+        format!(
+            "this driver (the {} series) reports CUDA {}.{}, not 13, so the engine runs its CUDA 12 kernels and GPU library; they measured as fast as the CUDA 13 ones (gemma-4-12B on an RTX 4080 SUPER, within 0.3%). A driver of 580 or newer runs the CUDA 13 ones.",
+            driver_series(driver),
+            driver / 1000,
+            driver % 1000 / 10
+        )
+    })
+}
+
 /// The driver series that reports CUDA version `cuda` (13000 for 13.0): 580 for CUDA 13.0, 575 for 12.9, 570 for 12.8, 550 for 12.4, 535 for 12.2.
 pub fn driver_series(cuda: i32) -> i32 {
     match cuda {
@@ -373,6 +388,16 @@ pub fn disk_refusal(name: &str, models: Option<u64>, cache: Option<u64>, same: b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #151: a driver of CUDA 12 under a build with both kernels is told why it runs the CUDA 12 ones, how fast they measured, and what runs the CUDA 13 ones;
+    /// a driver of CUDA 13, or a build with one pair, is told nothing.
+    #[test]
+    fn a_fallback_to_the_cuda_12_kernels_is_said_with_its_speed() {
+        let n = cuda12_note(12090, true).unwrap();
+        assert!(n.contains("575 series") && n.contains("CUDA 12.9") && n.contains("as fast as the CUDA 13") && n.contains("580"), "{n}");
+        assert!(cuda12_note(12040, true).unwrap().contains("CUDA 12.4"));
+        assert_eq!((cuda12_note(13000, true), cuda12_note(12090, false), cuda12_note(0, true)), (None, None, None));
+    }
 
     /// Lines of the kind `GPUS` gets once a GPU is measured, to test every rule with: the shipped list is a decision of the measurements (it is empty until they are made).
     const TABLE: &[Entry] = &[("A100", (8, 0), &["Qwen3"]), ("L4", (8, 9), &["Qwen3"]), ("H100", (9, 0), &["Qwen3"]), ("GH200", (9, 0), &["Qwen3"])];
