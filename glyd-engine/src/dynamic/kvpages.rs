@@ -30,6 +30,8 @@ pub(super) struct RingPages {
     pub g: usize,
     /// The bf16 ring a prompt chunk's pages are unpacked into: blocks of it (block b at b modulo this).
     pub stage_blocks: usize,
+    /// Its decode's kind (`Lossless::kinds`: its window and its calls' sequences a row), whose lengths and first tokens a pass makes once.
+    pub kind: usize,
 }
 
 /// The 12-bit pages of every ring that has them, the pools they share, and the step's buffers: the rows' keys and values before they are written,
@@ -43,9 +45,12 @@ pub(super) struct Lossless {
     pub seen: Vec<u32>,
     pub rows_k: Buf,
     pub rows_v: Buf,
-    pub slots: Buf,
-    pub lens: Buf,
-    pub first: Buf,
+    /// A pass's rows' slots in each group's blocks, and for each kind of decode (window, sequences a row) the rows' lengths and first tokens: made
+    /// once a pass (`kv12_prepare`), every layer's write and decode reading its part's rows.
+    pub slots: Vec<Buf>,
+    pub kinds: Vec<(usize, usize)>,
+    pub lens: Vec<Buf>,
+    pub first: Vec<Buf>,
     pub stage_k: Buf,
     pub stage_v: Buf,
     pub ws: Buf,
@@ -152,7 +157,7 @@ impl Lossless {
             raws.push((hp, slabs, Buf::zeroed(lib.kv_raw_bytes(slabs, hp)? as usize)?));
         }
         let mut bytes = escape.bytes + raws.iter().map(|r| r.2.bytes).sum::<usize>();
-        let (mut out, mut widest, mut most_g) = (Vec::new(), 0usize, 1usize);
+        let (mut out, mut widest, mut most_g, mut kinds) = (Vec::new(), 0usize, 1usize, Vec::new());
         for (r, x) in rings.into_iter().enumerate() {
             let Some((l, nq, s, n)) = x else {
                 out.push(None);
@@ -178,12 +183,21 @@ impl Lossless {
             most_g = most_g.max(g / parts);
             widest = widest.max(s.heads * s.channels);
             let stage_blocks = if s.window > 0 { (s.window + chunk).div_ceil(16) + 2 } else { ctx.div_ceil(16) + 1 };
-            out.push(Some(RingPages { geom, pool, kbase, vbase, layer: l as i64, group: group[r], shape: s, parts, g: g / parts, stage_blocks }));
+            let kind = match kinds.iter().position(|&k| k == (s.window, parts)) {
+                Some(i) => i,
+                None => {
+                    kinds.push((s.window, parts));
+                    kinds.len() - 1
+                }
+            };
+            out.push(Some(RingPages { geom, pool, kbase, vbase, layer: l as i64, group: group[r], shape: s, parts, g: g / parts, stage_blocks, kind }));
         }
         let parts = out.iter().flatten().map(|x| x.parts).max().unwrap_or(1);
         let stage = out.iter().flatten().map(|x| x.stage_blocks * 16 * x.shape.heads * x.shape.channels * 2).max().unwrap_or(0);
         let (rows_k, rows_v) = (Buf::new(rows * widest * 2)?, Buf::new(rows * widest * 2)?);
-        let (slots, lens, first) = (Buf::new(8 * rows)?, Buf::new(4 * rows * parts)?, Buf::new(4 * rows * parts)?);
+        let slots: Vec<Buf> = (0..groups).map(|_| Buf::new(8 * rows)).collect::<Result<_>>()?;
+        let lens: Vec<Buf> = kinds.iter().map(|k| Buf::new(4 * rows * k.1)).collect::<Result<_>>()?;
+        let first: Vec<Buf> = kinds.iter().map(|k| Buf::new(4 * rows * k.1)).collect::<Result<_>>()?;
         let (stage_k, stage_v) = (Buf::new(stage)?, Buf::new(stage)?);
         // the decode's plan: the same splits for every call (a sequence's bits depend on them), from one sequence of the longest context
         let heads = out.iter().flatten().map(|x| x.shape.heads).max().unwrap_or(1) as i64;
@@ -193,7 +207,7 @@ impl Lossless {
         let ws = Buf::zeroed(ws_bytes)?;
         // (no lost bitmap: the void ring names a page each time it is made void, which a block reused by another sequence may be again)
         let status: Vec<Buf> = (0..groups).map(|_| Buf::zeroed(4 * (16 + 2 * RING as usize))).collect::<Result<_>>()?;
-        bytes += rows_k.bytes * 2 + slots.bytes + lens.bytes * 2 + stage_k.bytes * 2 + ws.bytes + status.iter().map(|b| b.bytes).sum::<usize>();
+        bytes += rows_k.bytes * 2 + stage_k.bytes * 2 + ws.bytes + slots.iter().chain(&lens).chain(&first).chain(&status).map(|b| b.bytes).sum::<usize>();
         Ok(Lossless {
             rings: out,
             _escape: escape,
@@ -203,6 +217,7 @@ impl Lossless {
             rows_k,
             rows_v,
             slots,
+            kinds,
             lens,
             first,
             stage_k,
@@ -233,12 +248,42 @@ impl Dyn {
         self.lossless.as_ref().filter(|_| std::ptr::eq(p, &self.big)).and_then(|x| x.rings[ring].as_ref())
     }
 
-    /// The step's n rows of ring `ring` (its staging rows, the preparation's output) into their pages, at the positions `pos`.
-    pub(super) unsafe fn kv12_write(&self, ring: usize, n: usize, pos: u64) -> Result<()> {
+    /// A pass's 12-bit arguments, once for every layer (`n` rows at `pos`, their parts where it is over several sequences): each part's rows' slots in
+    /// each group's blocks (its table there), and each kind of decode's lengths and first tokens.
+    pub(super) unsafe fn kv12_prepare(&self, n: usize, pos: (u64, u64)) -> Result<()> {
+        let lx = self.lossless.as_ref().expect("pages");
+        let s = self.dev.stream;
+        // (a ring of each group, whose table is the group's)
+        let of_group: Vec<Option<usize>> = (0..lx.slots.len()).map(|g| lx.rings.iter().position(|r| r.as_ref().is_some_and(|r| r.group == g))).collect();
+        let parts: Vec<(Option<usize>, usize, usize)> =
+            if self.parts.is_empty() { vec![(None, 0, n)] } else { self.parts.iter().enumerate().map(|(k, p)| (Some(k), p.row0, p.rows)).collect() };
+        for (k, row0, rows) in parts {
+            self.at.set(k);
+            let off = 4 * row0 as u64;
+            for (g, r) in of_group.iter().enumerate() {
+                if let Some(r) = *r {
+                    self.kern.kv12_rows(s, pos.0 + off, rows, self.table(r), 0, 1, lx.slots[g].ptr + 8 * row0 as u64, 0, 0)?;
+                }
+            }
+            for (i, &(window, sp)) in lx.kinds.iter().enumerate() {
+                let at = 4 * (row0 * sp) as u64;
+                self.kern.kv12_rows(s, pos.1 + off, rows, 0, window, sp, 0, lx.lens[i].ptr + at, lx.first[i].ptr + at)?;
+            }
+        }
+        self.at.set(None);
+        Ok(())
+    }
+
+    /// The first row of the part an operation runs on now (0 outside a pass over several sequences).
+    fn row0(&self) -> usize {
+        self.at.get().map_or(0, |k| self.parts[k].row0)
+    }
+
+    /// The step's n rows of ring `ring` (its staging rows, the preparation's output) into their pages, at the slots the pass made (`kv12_prepare`).
+    pub(super) unsafe fn kv12_write(&self, ring: usize, n: usize) -> Result<()> {
         let lx = self.lossless.as_ref().expect("a ring with pages");
         let rp = lx.rings[ring].as_ref().expect("a ring with pages");
         let s = self.dev.stream;
-        self.kern.kv12_rows(s, pos, n, self.table(ring), 0, 1, lx.slots.ptr, lx.lens.ptr, lx.first.ptr)?;
         let w = (rp.shape.heads * rp.shape.channels) as i64;
         let g = rp.group;
         self.lib.kv_write(
@@ -251,7 +296,7 @@ impl Dyn {
             w,
             lx.rows_v.ptr,
             w,
-            lx.slots.ptr,
+            lx.slots[g].ptr + 8 * self.row0() as u64,
             n as i64,
             lx.status[g].ptr,
             0,
@@ -261,12 +306,12 @@ impl Dyn {
         )
     }
 
-    /// The decode attention of n rows (queries `q`, out `att`, [n, nq d] each) over ring `ring`'s pages at the positions `pos` (a sliding layer's window from its first token).
-    pub(super) unsafe fn kv12_decode(&self, ring: usize, n: usize, pos: u64, nq: usize, q: u64, att: u64) -> Result<()> {
+    /// The decode attention of n rows (queries `q`, out `att`, [n, nq d] each) over ring `ring`'s pages, at the lengths and first tokens the pass made.
+    pub(super) unsafe fn kv12_decode(&self, ring: usize, n: usize, nq: usize, q: u64, att: u64) -> Result<()> {
         let lx = self.lossless.as_ref().expect("a ring with pages");
         let rp = lx.rings[ring].as_ref().expect("a ring with pages");
         let s = self.dev.stream;
-        self.kern.kv12_rows(s, pos, n, 0, rp.shape.window, rp.parts, lx.slots.ptr, lx.lens.ptr, lx.first.ptr)?;
+        let at = 4 * (self.row0() * rp.parts) as u64;
         let stride = (nq * rp.shape.channels / rp.parts) as i64;
         // (every row a sequence of the decode's, its parts of query heads more; all of them the same sequence's pages: its table, rows 0 apart)
         self.lib.kv_decode_from(
@@ -279,8 +324,8 @@ impl Dyn {
             stride,
             self.table(ring),
             0,
-            lx.lens.ptr,
-            lx.first.ptr,
+            lx.lens[rp.kind].ptr + at,
+            lx.first[rp.kind].ptr + at,
             true,
             (n * rp.parts) as i64,
             lx.splits,
