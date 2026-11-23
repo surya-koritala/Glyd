@@ -59,8 +59,9 @@ typedef hipStream_t cudaStream_t;
  * top byte, are unpacked (glyd_gpu_mma_unpack) as before and refused by every other function: pack them again;
  * 16 from glyd_gpu_f8_*, the lossless FP8 (e4m3) weights: pack, unpack, unpack of a list of a stack's matrices, and the product of 1 to 64
  *    tokens with the weights as they are held; 17 from glyd_gpu_mma_moe_placed, the experts' product over an expert cache's places;
- * 18 from glyd_gpu_kv_decode_from, the decode attention over the tokens from a sequence's first one on (a sliding window's). */
-#define GLYD_GPU_API_VERSION 18
+ * 18 from glyd_gpu_kv_decode_from, the decode attention over the tokens from a sequence's first one on (a sliding window's);
+ * 19 from glyd_gpu_kv_prefill, a prompt chunk's attention over its sequence's pages and its own bf16 rows. */
+#define GLYD_GPU_API_VERSION 19
 
 #ifdef __cplusplus
 extern "C" {
@@ -525,6 +526,28 @@ int glyd_gpu_kv_decode_from(const uint16_t* q, int64_t q_stride, const uint8_t* 
                             const int32_t* first, int64_t round_scores, int64_t B, int64_t splits, int64_t H, int64_t G, int64_t D, int64_t A,
                             const uint8_t* escape, int64_t nchunks, const uint8_t* raw, int64_t nslabs, double scale, uint16_t* out,
                             int64_t out_stride, void* workspace, size_t workspace_bytes, cudaStream_t cs);
+/* The attention of a prompt chunk: n rows (0 to 2^31 - 1 - start) of one sequence at positions start .. start + n - 1, each causal over the keys from
+ * its window's first (position - window + 1; window 0: none, the sequence's first) to itself. The keys before `start` are read from the sequence's
+ * pages (block_table: int32, page j holding its tokens 16 j .. 16 j + 15, the pages from the one of the first key on read; D 128, 256 or 512, not
+ * GLYD_GPU_KV_ONE_STREAM), never unpacked; the chunk's own from its bf16 rows key and value [n][H][D] (row t at key + t * key_stride elements; strides multiples of 8,
+ * at least H D; the pointers 16-byte aligned), which are what glyd_gpu_kv_write was given for them (the caller's staging rows: whether the call is
+ * before or after that write does not matter). key null: the chunk's keys and values are read from the pages too (written before the call;
+ * value is then not read). q and out [n][H G][D] bf16 (row t at q + t * q_stride, out + t * out_stride elements; strides even, at least H G D, the
+ * pointers 4-byte aligned; query head j of kv head h is h G + j; G 1 to 65535 / H: more query heads than the decode takes need no parts here). The
+ * query is used as it is (bf16), never rounded further. A score is the dot product of a query and a key in fp32 (tensor cores), rounded to bf16 where
+ * round_scores is 1 (before the scale, as a bf16 matmul gives it: transformers' attention, Gemma 4's; 0: fp32, the Qwen3.5 layout's), times scale,
+ * then, where softcap > 0, softcap tanh(score / softcap) (transformers' attention soft-capping); sinks: null, or float [H G], each query head's logit
+ * joining the softmax's sum and taking no value (gpt-oss's). fp32 softmax and sums, the probabilities rounded to bf16 for the values, the output
+ * the bf16 of the sum over the sum of the probabilities (as glyd_gpu_kv_decode and FlashAttention do). One launch, no workspace, nothing allocated
+ * or read on the host: a CUDA graph can hold it (the arguments are fixed in it, start too). A void page (glyd_gpu_kv_write's status) reads as
+ * what it holds: the caller fails what was computed from it, as for the decode. cudaErrorNotSupported where the GPU has not the shared memory a
+ * CTA takes (82 KB for D = 512, 50 KB for D = 256, 17 KB for 128). The executor's prompt step: kv_write of the chunk's rows from its staging rows,
+ * then this call with those rows as key and value, in place of unpacking the pages to a bf16 ring for a family's kernel. */
+int glyd_gpu_kv_prefill(const uint16_t* q, int64_t q_stride, const uint16_t* key, int64_t key_stride, const uint16_t* value,
+                        int64_t value_stride, int64_t n, int64_t start, int64_t window, const uint8_t* pool, int64_t page_stride,
+                        const uint8_t* kbase, const uint8_t* vbase, const int32_t* block_table, int64_t H, int64_t G, int64_t D,
+                        int64_t A, const uint8_t* escape, int64_t nchunks, const uint8_t* raw, int64_t nslabs, double scale,
+                        int64_t round_scores, double softcap, const float* sinks, uint16_t* out, int64_t out_stride, cudaStream_t cs);
 
 /* ------------------------------------------------------------------------
  * The lossless FP8 weights: W [O, K] of e4m3 bytes (any byte: NaNs, both zeros) held in about 6.7 bits a value, as
