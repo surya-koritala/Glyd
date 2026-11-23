@@ -52,17 +52,76 @@ pub fn load(src: Tensors, role: &str, s: &Source) -> Result<(Vec<usize>, Vec<f32
     Ok((shape, data))
 }
 
-/// A checkpoint's tensor as f32 (bf16 or f32 as stored; another type: none), for a model whose weights are stored plainly.
+/// A checkpoint's tensor as f32: bf16 and f32 as stored; a hash table's expert ids (int64); and in a development build DeepSeek-V4's FP8
+/// matrices and FP4 experts decoded with their scales, and an MXFP4 matrix (`.weight_packed`, `.weight_scale`: Kimi-K3's experts) decoded
+/// where its `.weight` is asked for. Another type: none.
 pub fn checkpoint_tensor(ck: &glyd_gpu::safetensors::Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
-    let (_, t) = ck.get(name)?;
+    let Some((_, t)) = ck.get(name) else { return mxfp4(ck, name) };
     let shape: Vec<usize> = t.shape.iter().map(|&d| d as usize).collect();
-    let b = ck.read(name).ok()?;
     let v = match t.dtype.as_str() {
-        "BF16" => b.chunks_exact(2).map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)).collect(),
-        "F32" => b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect(),
+        "BF16" => ck.read(name).ok()?.chunks_exact(2).map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)).collect(),
+        "F32" => ck.read(name).ok()?.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect(),
+        "I64" => ck.read(name).ok()?.chunks_exact(8).map(|c| i64::from_le_bytes(c.try_into().unwrap_or_default()) as f32).collect(),
+        #[cfg(feature = "dev")]
+        "F8_E4M3" | "I8" => {
+            let (sh, v) = crate::dsv4_ref::tensor_of(ck, name).ok()?;
+            return Some((sh.iter().map(|&d| d as usize).collect(), v));
+        }
         _ => return None,
     };
     Some((shape, v))
+}
+
+#[cfg(feature = "dev")]
+fn mxfp4(ck: &glyd_gpu::safetensors::Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
+    let base = name.strip_suffix(".weight")?;
+    let (_, t) = ck.get(&format!("{base}.weight_packed"))?;
+    let (rows, cols) = (t.shape[0] as usize, t.shape[1] as usize * 2);
+    let w = crate::kimi_ref::mxfp4(&ck.read(&format!("{base}.weight_packed")).ok()?, &ck.read(&format!("{base}.weight_scale")).ok()?, rows, cols).ok()?;
+    Some((vec![rows, cols], w))
+}
+
+#[cfg(not(feature = "dev"))]
+fn mxfp4(_: &glyd_gpu::safetensors::Checkpoint, _: &str) -> Option<(Vec<usize>, Vec<f32>)> {
+    None
+}
+
+/// Kimi-K3's depth mix for one token: the completed groups' sums (the sources) and the open group's partial sum.
+#[derive(Clone, Debug)]
+pub struct Depth {
+    pub sources: Vec<Vec<f32>>,
+    pub partial: Option<Vec<f32>>,
+}
+
+impl Depth {
+    /// The mix of the sources and the partial sum by the query `wn` * `wp`.
+    pub fn mix(&self, wn: &[f32], wp: &[f32]) -> Vec<f32> {
+        let mut all: Vec<&[f32]> = self.sources.iter().map(|s| &s[..]).collect();
+        all.extend(self.partial.as_deref());
+        depth_mix(&all, wn, wp)
+    }
+
+    /// A block's input: the partial sum itself while there are no sources, else the mix; a block that `starts` a group then closes the
+    /// partial sum into a source.
+    pub fn input(&mut self, starts: bool, wn: &[f32], wp: &[f32]) -> Vec<f32> {
+        let input = match (&self.partial, self.sources.is_empty()) {
+            (Some(p), true) => p.clone(),
+            _ => self.mix(wn, wp),
+        };
+        if starts {
+            let p = self.partial.take();
+            self.sources.extend(p);
+        }
+        input
+    }
+
+    /// The block's output added to the partial sum (the output itself where a group just started).
+    pub fn add(&mut self, o: &[f32]) {
+        self.partial = Some(match self.partial.take() {
+            Some(p) => p.iter().zip(o).map(|(a, b)| a + b).collect(),
+            None => o.to_vec(),
+        });
+    }
 }
 
 pub struct RefModel {
@@ -123,59 +182,23 @@ impl RefModel {
         let pos: Vec<u32> = (0..tokens.len() as u32).map(|i| start + i).collect();
         let seqs = vec![0; tokens.len()];
         // the depth mix's sources per token, and the open group's partial sum (the embedding to begin with)
-        let mut sources: Vec<Vec<Vec<f32>>> = vec![Vec::new(); tokens.len()];
-        let mut partial: Vec<Option<Vec<f32>>> = x.chunks(n * d).map(|r| Some(r[..d].to_vec())).collect();
+        let mut depth: Vec<Depth> = x.chunks(n * d).map(|r| Depth { sources: Vec::new(), partial: Some(r[..d].to_vec()) }).collect();
         for l in &mut self.layers {
             let Residual::DepthMix(dm) = l.block.residual else {
                 l.forward(&pos, &seqs, tokens, &mut x)?;
                 continue;
             };
             let (wn, wp) = (l.p.vec("mix_norm")?.to_vec(), l.p.vec("mix_proj")?.to_vec());
-            for t in 0..tokens.len() {
-                let pv = partial[t].take();
-                let input = match (&pv, sources[t].is_empty()) {
-                    (Some(p), true) => p.clone(),
-                    _ => {
-                        let mut all: Vec<&[f32]> = sources[t].iter().map(|s| &s[..]).collect();
-                        all.extend(pv.as_deref());
-                        depth_mix(&all, &wn, &wp)
-                    }
-                };
-                let pv = if dm.starts {
-                    sources[t].extend(pv);
-                    None
-                } else {
-                    pv
-                };
+            for (t, dt) in depth.iter_mut().enumerate() {
+                let input = dt.input(dm.starts, &wn, &wp);
                 let o = l.output(seqs[t], pos[t], tokens[t], &input)?;
-                partial[t] = Some(match pv {
-                    Some(p) => p.iter().zip(&o).map(|(a, b)| a + b).collect(),
-                    None => o,
-                });
+                dt.add(&o);
             }
         }
         let h = &self.desc.head;
         let mut out = Vec::with_capacity(tokens.len());
         for (t, xt) in x.chunks(n * d).enumerate() {
-            let r: Vec<f32> = match h.collapse {
-                Collapse::None if n == 1 => xt.to_vec(),
-                Collapse::None => return err(format!("{n} residual streams and no collapse into the head")),
-                Collapse::Mean => (0..d).map(|i| (0..n).map(|j| xt[j * d + i]).sum::<f32>() / n as f32).collect(),
-                Collapse::Weighted { eps, norm_eps } => {
-                    let (f, base, sc) = (self.p.vec("out_hc_fn")?, self.p.vec("out_hc_base")?, self.p.vec("out_hc_scale")?[0]);
-                    let r = 1.0 / (xt.iter().map(|v| v * v).sum::<f32>() / xt.len() as f32 + norm_eps).sqrt();
-                    let flat: Vec<f32> = xt.iter().map(|v| v * r).collect();
-                    let mixes = super::matvec(f, flat.len(), &flat);
-                    let pre: Vec<f32> = (0..n).map(|j| super::sigmoid(mixes[j] * sc + base[j]) + eps).collect();
-                    (0..d).map(|i| (0..n).map(|j| pre[j] * xt[j * d + i]).sum()).collect()
-                }
-                Collapse::DepthMix => {
-                    let mut all: Vec<&[f32]> = sources[t].iter().map(|s| &s[..]).collect();
-                    all.extend(partial[t].as_deref());
-                    depth_mix(&all, self.p.vec("out_mix_norm")?, self.p.vec("out_mix_proj")?)
-                }
-            };
-            let y = norm(&self.desc.final_norm, &r, Some(&self.final_norm), None);
+            let y = self.final_h(xt, Some(&depth[t]))?;
             out.push(
                 super::matvec(&self.head, d, &y)
                     .into_iter()
@@ -187,5 +210,29 @@ impl RefModel {
             );
         }
         Ok(out)
+    }
+
+    /// The head's input for one token: its residual `xt` (its streams) collapsed into one (`Head::collapse`; Kimi-K3's from the depth mix's
+    /// state), then the final norm.
+    pub fn final_h(&self, xt: &[f32], depth: Option<&Depth>) -> Result<Vec<f32>> {
+        let (d, n) = (self.desc.hidden, self.desc.embed.streams.max(1));
+        let r: Vec<f32> = match self.desc.head.collapse {
+            Collapse::None if n == 1 => xt.to_vec(),
+            Collapse::None => return err(format!("{n} residual streams and no collapse into the head")),
+            Collapse::Mean => (0..d).map(|i| (0..n).map(|j| xt[j * d + i]).sum::<f32>() / n as f32).collect(),
+            Collapse::Weighted { eps, norm_eps } => {
+                let (f, base, sc) = (self.p.vec("out_hc_fn")?, self.p.vec("out_hc_base")?, self.p.vec("out_hc_scale")?[0]);
+                let r = 1.0 / (xt.iter().map(|v| v * v).sum::<f32>() / xt.len() as f32 + norm_eps).sqrt();
+                let flat: Vec<f32> = xt.iter().map(|v| v * r).collect();
+                let mixes = super::matvec(f, flat.len(), &flat);
+                let pre: Vec<f32> = (0..n).map(|j| super::sigmoid(mixes[j] * sc + base[j]) + eps).collect();
+                (0..d).map(|i| (0..n).map(|j| pre[j] * xt[j * d + i]).sum()).collect()
+            }
+            Collapse::DepthMix => {
+                let dp = depth.ok_or_else(|| Error("the depth mix's collapse without its sources".into()))?;
+                dp.mix(self.p.vec("out_mix_norm")?, self.p.vec("out_mix_proj")?)
+            }
+        };
+        Ok(norm(&self.desc.final_norm, &r, Some(&self.final_norm), None))
     }
 }

@@ -41,7 +41,24 @@ pub fn mlp(m: &Mlp, p: &Params, prefix: &str, x: &[f32]) -> Result<Vec<f32>> {
 
 /// One token's chosen experts (in order) and their weights, from the router's logits.
 pub fn route(r: &Router, logits: &[f32], choice_bias: Option<&[f32]>, hash: Option<&[f32]>) -> Result<(Vec<usize>, Vec<f32>)> {
+    route_margin(r, logits, choice_bias, hash).map(|(ids, w, _)| (ids, w))
+}
+
+/// The gap between the last chosen and the first not chosen of `rank` (largest first), over its largest magnitude: how near a choice of
+/// `k` is to another (infinite where nothing is left out).
+pub fn margin(rank: &[f32], k: usize) -> f32 {
+    let mut v: Vec<f32> = rank.iter().copied().filter(|x| x.is_finite()).collect();
+    v.sort_by(|a, b| b.total_cmp(a));
+    if k == 0 || v.len() <= k {
+        return f32::INFINITY;
+    }
+    (v[k - 1] - v[k]) / v.iter().fold(0f32, |m, x| m.max(x.abs())).max(1e-30)
+}
+
+/// `route`, and the choice's `margin` (a hash table's: infinite).
+pub fn route_margin(r: &Router, logits: &[f32], choice_bias: Option<&[f32]>, hash: Option<&[f32]>) -> Result<(Vec<usize>, Vec<f32>, f32)> {
     let n = logits.len();
+    let mut gap = f32::INFINITY;
     let mut s: Vec<f32> = logits.iter().map(|&l| l * r.logit_scale).collect();
     match r.score {
         RouterScore::Softmax => softmax(&mut s),
@@ -73,6 +90,7 @@ pub fn route(r: &Router, logits: &[f32], choice_bias: Option<&[f32]>, hash: Opti
         let mut ord: Vec<usize> = (0..n).collect();
         ord.sort_by(|&a, &b| rank[b].total_cmp(&rank[a]).then(a.cmp(&b)));
         ord.truncate(r.top_k);
+        gap = margin(&rank, r.top_k);
         ord
     };
     if ids.len() != r.top_k || ids.iter().any(|&e| e >= n) {
@@ -80,7 +98,7 @@ pub fn route(r: &Router, logits: &[f32], choice_bias: Option<&[f32]>, hash: Opti
     }
     let sum: f32 = ids.iter().map(|&e| s[e]).sum();
     let w = ids.iter().map(|&e| if r.renorm { s[e] / (sum + 1e-20) } else { s[e] } * r.scale).collect();
-    Ok((ids, w))
+    Ok((ids, w, gap))
 }
 
 /// One token through the MoE layer (`token`: its id, for hash routing).
@@ -88,8 +106,8 @@ pub fn moe(m: &Moe, p: &Params, x: &[f32], token: u32) -> Result<Vec<f32>> {
     Ok(moe_routed(m, p, x, token)?.0)
 }
 
-/// `moe`, and the experts the router chose (hummingbird's corpus pass counts them: src/hb_usage.rs).
-pub fn moe_routed(m: &Moe, p: &Params, x: &[f32], token: u32) -> Result<(Vec<f32>, Vec<usize>)> {
+/// `moe`, the experts the router chose (hummingbird's corpus pass counts them: src/hb_usage.rs) and the choice's `margin`.
+pub fn moe_routed(m: &Moe, p: &Params, x: &[f32], token: u32) -> Result<(Vec<f32>, Vec<usize>, f32)> {
     let logits = p.prod("router", x)?;
     if logits.len() != m.experts {
         return err(format!("a router of {} logits for {} experts", logits.len(), m.experts));
@@ -106,7 +124,7 @@ pub fn moe_routed(m: &Moe, p: &Params, x: &[f32], token: u32) -> Result<(Vec<f32
         None
     };
     let bias = if m.router.bias { Some(p.vec("choice_bias")?) } else { None };
-    let (ids, w) = route(&m.router, &logits, bias, hash)?;
+    let (ids, w, gap) = route_margin(&m.router, &logits, bias, hash)?;
     // the experts' input: x, or its latent projection
     let z = match &m.latent {
         Some(l) => {
@@ -149,7 +167,7 @@ pub fn moe_routed(m: &Moe, p: &Params, x: &[f32], token: u32) -> Result<(Vec<f32
         }
         y.iter_mut().zip(&so).for_each(|(a, &b)| *a += b);
     }
-    Ok((y, ids))
+    Ok((y, ids, gap))
 }
 
 #[cfg(test)]
@@ -181,6 +199,20 @@ mod tests {
         let (ids, w) = route(&rh, &[0.0, 1.0, 5.0], None, Some(&[0.0, 1.0])).unwrap();
         assert_eq!(ids, [0, 1]);
         assert!((w[0] / w[1] - (softplus(0.0) / softplus(1.0)).sqrt()).abs() < 1e-6);
+    }
+
+    /// A choice's margin: the gap at the cut over the largest magnitude; nothing left out, infinite; a tie, 0. The router's is its rank's
+    /// (the scores and the choice bias), a hash table's infinite.
+    #[test]
+    fn margins() {
+        assert_eq!(margin(&[1.0, 4.0, 2.0], 2), 0.25);
+        assert_eq!(margin(&[1.0, 4.0], 2), f32::INFINITY);
+        assert_eq!(margin(&[3.0, 3.0, 1.0], 1), 0.0);
+        let (_, _, g) = route_margin(&r(RouterScore::Softmax, 1), &[0.0, 1.0], None, None).unwrap();
+        let p = sigmoid(1.0);
+        assert!((g - (2.0 * p - 1.0) / p).abs() < 1e-6);
+        let rh = Router { hash: true, ..r(RouterScore::Softmax, 1) };
+        assert_eq!(route_margin(&rh, &[0.0, 1.0], None, Some(&[0.0])).unwrap().2, f32::INFINITY);
     }
 
     #[test]

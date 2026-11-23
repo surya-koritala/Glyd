@@ -336,7 +336,12 @@ against the per-family reference with a bf16 tolerance and against transformers 
 family's pipeline (`glyd-engine/src/runtime/reference`).
 
 - Per kind: random weights at small shapes, the backend's kind against `Ref`'s, a tolerance per kind and format written next to the
-  kind (bf16 accumulation order differs; lossless formats must match the bf16 kernel bit for bit before the tolerance applies).
+  kind (bf16 accumulation order differs; lossless formats must match the bf16 kernel bit for bit before the tolerance applies). On
+  CUDA this is `glyd-engine kindcheck` (`dynamic/kindcheck.rs`): every layer of each recent family's random model, its bodies on
+  the GPU's own inputs and the residual's operations between them, against `Ref`; the bounds and the worst errors an RTX 4080 SUPER
+  measured are the table in `runtime/reference/mod.rs`. The attention's rounding points are a parameter of the kind
+  (`AttnRounding`: f32, FlashAttention's bf16 probabilities, transformers' eager bf16 scores), so the reference rounds where the
+  family's engine does.
 - Per model: tiny random models built from each family's real `config.json` with reduced widths (the `hubslice` approach), whole
   logits against `Ref` (R7).
 - Per checkpoint: the R7 digest of a real model's logits on fixed prompts, against the previous release and the old pipeline.

@@ -6,6 +6,8 @@ pub mod deepseek_v4;
 pub mod gemma4;
 pub mod glm;
 pub mod kimi;
+#[cfg(feature = "dev")]
+pub mod kindcheck;
 pub mod kv12;
 mod kvpages;
 #[cfg(feature = "dev")]

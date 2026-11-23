@@ -452,6 +452,7 @@ fn llama(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>
             scale: (hd as f32).powf(-0.5),
             k_eq_v: false,
             indexer: None,
+            rounding: AttnRounding::F32,
         };
         let p = names::HF.layer(prefix, l);
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Attention(a)), norm_out: None, residual: Residual::Add });
@@ -582,6 +583,7 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
                     scale: (hd as f32).powf(-0.5),
                     k_eq_v: false,
                     indexer: None,
+                    rounding: AttnRounding::Flash,
                 };
                 let sh = vec![
                     ("q", vec![heads * hd * if gate { 2 } else { 1 }, d]),
@@ -728,6 +730,7 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             scale: 1.0,
             k_eq_v: kev,
             indexer: None,
+            rounding: AttnRounding::Eager,
         };
         let p = names::GEMMA.layer(prefix, l);
         let r = [names::roles(part::ATTN, &p, 0, |r| !r.ends_with("_bias") && !(kev && r == "v")), names::roles(part::GEMMA_ATTN_OUT, &p, 0, all)].concat();
@@ -1412,6 +1415,7 @@ fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
             scale: qk / (hd as f32).sqrt(),
             k_eq_v: false,
             indexer: None,
+            rounding: AttnRounding::Sdpa,
         };
         let p = names::HF.layer(prefix, l);
         blocks.push(Block {
@@ -1761,6 +1765,7 @@ fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
             scale: (hd as f32).powf(-0.5),
             k_eq_v: false,
             indexer: None,
+            rounding: AttnRounding::Flash,
         }
     };
     let moe_keys =

@@ -19,6 +19,8 @@ pub struct CompState {
     pub win: Vec<(u32, Vec<f32>)>,
     pub comp: Pool,
     pub idx: Pool,
+    /// The last query's indexer choice: how near it was to another (`ffn::margin`).
+    pub margin: f32,
 }
 
 /// `x` rotated by `pos` (or back by it) on its trailing `r.dim` values.
@@ -73,6 +75,7 @@ impl Pool {
 
 /// One token's attention output for its input `x` (the block's normed input) at `pos`.
 pub fn step(c: &Comp, p: &Params, st: &mut CompState, x: &[f32], pos: u32) -> Result<Vec<f32>> {
+    st.margin = f32::INFINITY;
     let (nh, hd) = (c.heads, c.head_dim);
     let qr = norm(&Norm::rms(c.norm_eps), &p.prod("q_a", x)?, Some(p.vec("q_a_norm")?), None);
     let mut q = p.prod("q_b", &qr)?;
@@ -107,6 +110,7 @@ pub fn step(c: &Comp, p: &Params, st: &mut CompState, x: &[f32], pos: u32) -> Re
                 let mut ord: Vec<usize> = (0..score.len()).collect();
                 ord.sort_by(|&a, &b| score[b].total_cmp(&score[a]).then(a.cmp(&b)));
                 ord.truncate(ix.top_k);
+                st.margin = super::ffn::margin(&score, ix.top_k);
                 ord.sort();
                 ord
             }
