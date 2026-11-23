@@ -19,7 +19,7 @@ const MAX_G: usize = 8;
 /// The decode attention's least CTAs a sequence (glyd_gpu_kv_floor_set). Measured on an RTX 4080 SUPER, gemma-4-12B, a decode step of one user at
 /// 1,024 tokens: the GPU's own (80 SMs, none) 12.92 ms, 8: 12.79, 16: 12.63, 32: 12.55 (bf16 pages 12.53); at 8,192 tokens 13.28 and 13.06 with 32.
 /// A global layer's one kv head gave the library's plan 8 CTAs of the card's 80 SMs.
-const DECODE_FLOOR: i32 = 32;
+pub(super) const DECODE_FLOOR: i32 = 32;
 
 /// A ring's pages: its geometry and pool, its tables, the layer number its pages carry in the shared pools, its group (block numbering), its
 /// shape, and its decode's split (query heads to a kv head over `parts` calls' sequences, `g` each).
@@ -123,6 +123,7 @@ impl Lossless {
         decode_rows: usize,
         ctx: usize,
         chunk: usize,
+        splits: i64,
     ) -> Result<Lossless> {
         let lay = shapes(d);
         let groups = blocks.len();
@@ -205,9 +206,9 @@ impl Lossless {
         let lens: Vec<Buf> = kinds.iter().map(|k| Buf::new(4 * rows * k.1)).collect::<Result<_>>()?;
         let first: Vec<Buf> = kinds.iter().map(|k| Buf::new(4 * rows * k.1)).collect::<Result<_>>()?;
         let (stage_k, stage_v) = (Buf::new(stage)?, Buf::new(stage)?);
-        // the decode's plan: the same splits for every call (a sequence's bits depend on them), from one sequence of the longest context
+        // the decode's plan: the same splits for every call (a sequence's bits depend on them), the bf16 cache's decode's (attn::LibDecode)
         let heads = out.iter().flatten().map(|x| x.shape.heads).max().unwrap_or(1) as i64;
-        let splits = lib.kv_decode_splits(1, heads, ctx.div_ceil(16) as i64)?;
+        let _ = ctx;
         let dmax = out.iter().flatten().map(|x| x.shape.channels).max().unwrap_or(128) as i64;
         let ws_bytes = lib.kv_decode_workspace((decode_rows * parts) as i64, heads, most_g as i64, dmax, splits)?;
         let ws = Buf::zeroed(ws_bytes)?;
@@ -281,7 +282,7 @@ impl Dyn {
     }
 
     /// The first row of the part an operation runs on now (0 outside a pass over several sequences).
-    fn row0(&self) -> usize {
+    pub(super) fn row0(&self) -> usize {
         self.at.get().map_or(0, |k| self.parts[k].row0)
     }
 
@@ -347,7 +348,7 @@ impl Dyn {
     /// A prompt chunk's attention over ring `ring`'s 12-bit pages (glyd_gpu_kv_prefill, after the step's `kv12_write`): the n rows at `start` (the pass's) .. of the
     /// part an operation runs on now, queries `q` and out `out` [n, nq d]; the keys before `start` read from the pages through the sequence's table, the chunk's own from
     /// the staging rows the preparation wrote; every query head of a kv head in one call (no parts). The bf16 cache's prompt attention is the same kernel
-    /// (glyd_gpu_attn_prefill): the same bits.
+    /// (glyd_gpu_kv_prefill_bf16): the same bits.
     pub(super) unsafe fn kv12_prefill(&self, a: &super::AttnOp, n: usize, q: u64, out: u64) -> Result<()> {
         let lx = self.lossless.as_ref().expect("a ring with pages");
         let rp = lx.rings[a.ring].as_ref().expect("a ring with pages");

@@ -61,7 +61,7 @@ typedef hipStream_t cudaStream_t;
  *    tokens with the weights as they are held; 17 from glyd_gpu_mma_moe_placed, the experts' product over an expert cache's places;
  * 18 from glyd_gpu_kv_decode_from, the decode attention over the tokens from a sequence's first one on (a sliding window's);
  * 19 from glyd_gpu_kv_prefill, a prompt chunk's attention over its sequence's pages and its own bf16 rows;
- * 20 from glyd_gpu_attn_prefill, the same attention over a bf16 cache. */
+ * 20 from glyd_gpu_kv_prefill_bf16 and glyd_gpu_kv_decode_bf16, the same attentions over a bf16 cache. */
 #define GLYD_GPU_API_VERSION 20
 
 #ifdef __cplusplus
@@ -549,11 +549,17 @@ int glyd_gpu_kv_prefill(const uint16_t* q, int64_t q_stride, const uint16_t* key
                         const uint8_t* kbase, const uint8_t* vbase, const int32_t* block_table, int64_t H, int64_t G, int64_t D,
                         int64_t A, const uint8_t* escape, int64_t nchunks, const uint8_t* raw, int64_t nslabs, double scale,
                         int64_t round_scores, double softcap, const float* sinks, uint16_t* out, int64_t out_stride, cudaStream_t cs);
+/* glyd_gpu_kv_decode_from's attention with the keys and values in a bf16 cache in place of the pages: kc and vc [places][H][D] (4-byte aligned), token p of
+ * sequence b at block_table[b bt_stride + p / 16] * 16 + p % 16, or p modulo cap where block_table is null. D 128, 256 or 512. The same kernel, plan and merge
+ * (with the same splits, ppc and floor): where the cache holds the values the pages hold, the outputs are glyd_gpu_kv_decode_from's bit for bit. */
+int glyd_gpu_kv_decode_bf16(const uint16_t* q, int64_t q_stride, const uint16_t* kc, const uint16_t* vc, const int32_t* block_table, int64_t bt_stride, int64_t cap,
+                         const int32_t* seq_lens, const int32_t* first, int64_t round_scores, int64_t B, int64_t splits, int64_t H, int64_t G, int64_t D, double scale,
+                         uint16_t* out, int64_t out_stride, void* workspace, size_t workspace_bytes, cudaStream_t cs);
 /* glyd_gpu_kv_prefill's attention with the keys and values in a bf16 cache in place of the pages: kc and vc [places][H][D] (16-byte aligned), position p's
  * place block_table[p / 16] * 16 + p % 16 (int32, the sequence's row of the table), or p modulo cap where block_table is null; the chunk's own keys and values
  * written there before the call. D 128, 256 or 512. The same kernel, its tiles and its sums in the same order: where the cache holds the values the pages hold
  * (the pages are lossless), the outputs are glyd_gpu_kv_prefill's bit for bit. One launch, no workspace: a CUDA graph can hold it. */
-int glyd_gpu_attn_prefill(const uint16_t* q, int64_t q_stride, const uint16_t* kc, const uint16_t* vc, const int32_t* block_table, int64_t cap, int64_t n, int64_t start,
+int glyd_gpu_kv_prefill_bf16(const uint16_t* q, int64_t q_stride, const uint16_t* kc, const uint16_t* vc, const int32_t* block_table, int64_t cap, int64_t n, int64_t start,
                           int64_t window, int64_t H, int64_t G, int64_t D, double scale, int64_t round_scores, double softcap, const float* sinks, uint16_t* out,
                           int64_t out_stride, cudaStream_t cs);
 
