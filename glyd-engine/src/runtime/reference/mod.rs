@@ -8,9 +8,30 @@
 //! | :--- | :--- | :--- |
 //! | every kind | transformers in float32 on the same weights (`tests/runtime/*.json`) | `HF_TOL` (5e-6 of the output's scale) |
 //! | attention, MLA, linear | the per-family references, which round to bf16 where vLLM or transformers hold bf16 | `BF16_TOL` (2e-2 of the output's scale) |
+//! | each kind below | the engine's CUDA kernels (`glyd-engine kindcheck`, `dynamic/kindcheck.rs`) | the table below |
 //!
-//! A backend's kernels are checked against `Ref` with their own tolerance (bf16 accumulation order differs); a lossless format must first
-//! match its bf16 kernel bit for bit.
+//! The CUDA kernels against `Ref`, kind by kind (`kindcheck`: every layer of the random model of each recent family's logits case, at
+//! the lossless level; a body on the GPU's own input rows, the residual's operations on the GPU's own body outputs; a prompt of 48 rows
+//! and 4 decode steps, each value the largest difference over the reference's largest magnitude on a pass: the prompt's rows together, a
+//! step's row alone). The bound is `kindcheck::bound`; the worst is the largest an RTX 4080 SUPER measured (2026-11-23) in three runs: the
+//! default, a prompt of 60 and 6 steps, and Kimi-K3 and GLM-5.3-Flash at a prompt of 20 and 40 steps (no difference grew with the position).
+//! A lossless format must first match its bf16 kernel bit for bit; the kernels hold bf16 activations, so every row has bf16's 2^-9
+//! of rounding at each point where a value is stored.
+//!
+//! | kind (families measured) | bound | why it is not 0 | worst |
+//! | :--- | :--- | :--- | :--- |
+//! | attention: GQA and MQA, windows, K = V, full, partial, proportional or no rope, an in-query or own gate after a norm, heads of 64 to 512 (Gemma 4, the Qwen3.5 layout, Nemotron-H, Muse Spark) | 2e-2 | `Ref` rounds where the family's engine does (`AttnRounding`: Gemma 4's eager bf16 scores and rope, Muse's SDPA, FlashAttention's bf16 probabilities); left: fp32 sums in another order than f64's, the GPU's exp2 and online softmax, a decode step's keys summed in parts | 5.4e-3 |
+//! | latent attention: Kimi-K3's gated NoPE MLA, GLM-5.3-Flash's with the pooled-key indexer | 2e-2 | the GPU keeps the latents, the absorbed queries and the pooled keys bf16, `Ref` f32; an indexer's choice nearer than 1e-2 to another (`kindcheck::NEAR`) can go the other way, and such a row past the bound is named, not compared (one row in each run, its margin 2.3e-3) | 1.1e-2 |
+//! | compressed attention: DeepSeek-V4's window, ratio 16, ratio 4 with the indexer | 2e-2 | the window's keys and the compressed entries bf16 on the GPU; the indexer's near ties as above (2 rows of 260, 3 of 330; margins 1.2e-4 to 2.2e-3) | 7.3e-3 |
+//! | Gated DeltaNet (the Qwen3.5 layout) | 3e-2 | the state fp32 on both; q, k, v and the gates bf16 on the GPU; the prompt's chunked (WY) form against `Ref`'s token recurrence; the per-head norm after the recurrence divides by the output's RMS, so where a head's sum cancels its error is magnified | 8.6e-3 |
+//! | Kimi delta attention (Kimi-K3, GLM-5.3-Flash) | 3e-2 | as Gated DeltaNet (Kimi-K3's first layer, a step's row alone: single rows to 2.1e-2, most 3-7e-3, none growing with the position) | 2.1e-2 |
+//! | Mamba-2 (Nemotron-H) | 3e-2 | as Gated DeltaNet, the prompt's chunked scan | 5.6e-3 |
+//! | MLP: SwiGLU, its limits, gelu-tanh, situ (Gemma 4, the Qwen3.5 layout, Kimi-K3, GLM-5.3-Flash) | 1e-2 | gate and up rounded before the activation, the activation's product rounded, down's sums in fp32 | 6.1e-3 |
+//! | MoE: sigmoid routers with a choice bias, sqrt-softplus and hash routers, shared and latent experts, expert norms (Nemotron-H, Muse Spark, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4) | 2e-2 | each expert's activations bf16, the weighted sum's order; a router's choice near a tie as above (none past the bound) | 9.9e-3 |
+//! | residual and norms: RMS (w, 1 + w, input-scaled, Kimi's two roundings), sandwich norms and the layer scalar, the gated residual, mHC's streams, the depth mix, each family's final norm and collapse (all seven) | 2e-2 | the residual bf16 after each add, the normed value rounded, mHC's Sinkhorn and the depth mix's softmax in fp32 on the GPU's bf16 inputs | 1.6e-2 |
+//!
+//! Not compared on the GPU: the embedding's scale and norm and the head's soft-cap (each family's logits fixture holds them,
+//! `logitscheck`); the Qwen3.5 layout's mixture of experts (not lowered to the executor yet); MTP heads (their blocks are the kinds above).
 
 pub mod attention;
 pub mod comp;
