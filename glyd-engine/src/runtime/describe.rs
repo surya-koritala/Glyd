@@ -423,6 +423,7 @@ fn llama(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>
             scale: (hd as f32).powf(-0.5),
             k_eq_v: false,
             indexer: None,
+            rounding: AttnRounding::F32,
         };
         let p = format!("{prefix}layers.{l}");
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Attention(a)), norm_out: None, residual: Residual::Add });
@@ -552,6 +553,7 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
                     scale: (hd as f32).powf(-0.5),
                     k_eq_v: false,
                     indexer: None,
+                    rounding: AttnRounding::Flash,
                 };
                 let mut r = attn_roles(&p, false, true);
                 r.remove(0);
@@ -742,6 +744,7 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             scale: 1.0,
             k_eq_v: kev,
             indexer: None,
+            rounding: AttnRounding::Eager,
         };
         let p = format!("{prefix}layers.{l}");
         let mut r = attn_roles(&p, false, true);
@@ -1517,6 +1520,7 @@ fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
             scale: qk / (hd as f32).sqrt(),
             k_eq_v: false,
             indexer: None,
+            rounding: AttnRounding::Sdpa,
         };
         let p = format!("{prefix}layers.{l}");
         let mut r =
@@ -1939,6 +1943,7 @@ fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
             scale: (hd as f32).powf(-0.5),
             k_eq_v: false,
             indexer: None,
+            rounding: AttnRounding::Flash,
         }
     };
     let moe_keys =

@@ -66,8 +66,7 @@ fn tensor(ck: &Checkpoint, name: &str) -> Result<(Vec<u64>, Vec<f32>)> {
     Ok((sh, v))
 }
 
-/// A tensor decoded as the reference reads it (FP8 and FP4 with their scales), for the runtime's tests.
-#[cfg(test)]
+/// A tensor decoded as the reference reads it (FP8 and FP4 with their scales), for the runtime's reference (`runtime::reference::model`).
 pub(crate) fn tensor_of(ck: &Checkpoint, name: &str) -> Result<(Vec<u64>, Vec<f32>)> {
     tensor(ck, name)
 }

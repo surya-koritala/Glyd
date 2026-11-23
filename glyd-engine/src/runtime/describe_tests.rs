@@ -10,9 +10,11 @@ use std::path::PathBuf;
 /// The tiny model's description reads exactly the fixture's tensors, and its logits are transformers'.
 fn model(case: &str, tol: f32) {
     let f = Fixture::load(case);
-    let d = describe(&f.j["config"]).unwrap_or_else(|e| panic!("{case}: {}", e.msg));
+    let mut d = describe(&f.j["config"]).unwrap_or_else(|e| panic!("{case}: {}", e.msg));
     let want: BTreeSet<String> = f.j["tensors"].as_object().unwrap().keys().cloned().collect();
     assert_eq!(d.names(), want, "{case}: the weight map");
+    // (transformers in float32: the attention's bf16 rounding points, which the description gives as the family's engine rounds, off)
+    d.desc.f32_attention();
     let src = |n: &str| f.j["tensors"].get(n).map(|_| f.tensor(n));
     let mut m = RefModel::load(&d, &src).unwrap();
     let toks: Vec<u32> = f.j["token_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();

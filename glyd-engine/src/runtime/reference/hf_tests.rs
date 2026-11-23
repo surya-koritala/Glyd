@@ -43,6 +43,7 @@ fn attn(heads: usize, kv_heads: usize, head_dim: usize, rope: Option<Rope>) -> A
         scale: (head_dim as f32).powf(-0.5),
         k_eq_v: false,
         indexer: None,
+        rounding: AttnRounding::F32,
     }
 }
 
