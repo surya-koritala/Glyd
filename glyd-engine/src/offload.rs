@@ -1751,9 +1751,10 @@ impl Resident {
         self.packs.iter().map(|p| p.bytes_of(slot)).sum()
     }
 
-    /// `host_reads` of the layer's host half: its FP4 kernel takes an expert's pairs together (src/cpu_fp4.rs `by_expert`), the others a pair at a time.
+    /// `host_reads` of the layer's host half: its FP4 kernel and the hummingbird places' of every mixture of experts take an expert's pairs together (src/cpu_fp4.rs `by_expert`, src/cpu_hbg.rs `store_pairs`), the
+    /// others a pair at a time.
     fn host_reads(&self, ids: &[i64], mine: &[usize]) -> (usize, u64) {
-        let grouped = matches!(self.cpu.as_ref().map(|c| &c.half), Some(HostHalf::Fp4 { .. }));
+        let grouped = matches!(self.cpu.as_ref().map(|c| &c.half), Some(HostHalf::Fp4 { .. } | HostHalf::Hbg { .. }));
         host_reads(ids, mine, self.cache.experts(), grouped, |e| self.bytes_of(e))
     }
 
@@ -3468,7 +3469,7 @@ impl ExpertStore {
                 inner.stats.cpu += sv.kept.len() as u64;
                 let bytes = place(cuda, ly, &sv.loads, &mut inner.stats, &mut inner.costs, inner.expert_bytes).inspect_err(|_| ly.forget())?;
                 ly.stats.served(sv, bytes);
-                // (the host's pairs of the group: its kernels read an expert once a pair, `cpu_hb` and `cpu_hbg`)
+                // (the host's pairs of the group: `cpu_hbg` reads an expert once for its pairs, `cpu_hb` once a pair)
                 let mine: Vec<usize> = placed.mine.iter().filter(|&&(h, _)| h == g).map(|&(_, j)| j).collect();
                 let (host_experts, host_bytes) = ly.host_reads(&placed.local[g], &mine);
                 ly.stats.hosted(host_experts, mine.len(), 0, host_bytes, 0.0);
