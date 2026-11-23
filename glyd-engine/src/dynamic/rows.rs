@@ -236,8 +236,19 @@ impl Dyn {
         self.ring_off = ring_off;
         if let Some(t) = self.kv12.as_ref().filter(|_| twelve.iter().any(Option::is_some)) {
             let rows = self.chunk.max(self.split_rows).max(users);
-            self.lossless =
-                Some(super::kvpages::Lossless::new(&self.lib, &self.big.d, t, &group, &blocks, &self.ring_cap, rows, self.split_rows, self.ctx, self.chunk)?);
+            self.lossless = Some(super::kvpages::Lossless::new(
+                &self.lib,
+                &self.big.d,
+                t,
+                &group,
+                &blocks,
+                &self.ring_cap,
+                rows,
+                self.split_rows,
+                self.ctx,
+                self.chunk,
+                self.ldec.as_ref().map(|d| d.splits).ok_or_else(|| crate::ffi::Error("12-bit pages for a model the library's decode does not take".into()))?,
+            )?);
         }
         let tabs = (0..users)
             .map(|_| (0..windows.len()).map(|_| Buf::zeroed(self.ctx.div_ceil(BLOCK) * 4)).collect::<Result<Vec<_>>>())

@@ -757,8 +757,10 @@ pub struct Dyn {
     kg: KernG4,
     k35: Kern35,
     knh: KernNh,
-    /// The attention layer kind's kernels (`Op::Attn`), the latent attention kind's and the indexer's (`Op::Mla`, `Op::IdxPick`).
+    /// The attention layer kind's kernels (`Op::Attn`) and the library's decode where its shapes take it; the latent attention kind's and the
+    /// indexer's (`Op::Mla`, `Op::IdxPick`).
     ka: attn::KernAttn,
+    ldec: Option<attn::LibDecode>,
     km: mla::KernMla,
     skinny: crate::skinny::SkinnyKern,
     skinny_on: bool,
@@ -1039,6 +1041,8 @@ impl Dyn {
         let (pos, st, lse) = (Buf::zeroed(4 * ch)?, Buf::zeroed(16)?, Buf::zeroed(4)?);
         let top = TopGpu::new(d.vocab)?;
         let part = Buf::zeroed(rows_out * heads.max(1) * attn::SPLITS * (dmax + 2) * 4)?;
+        let attns = || ops().filter_map(|op| if let Op::Attn(a) = op { Some(a) } else { None });
+        let ldec = attn::LibDecode::new(&lib, attns(), ch, rows_out.max(VERIFY_ROWS), ctx)?;
         // (the mixture-of-experts layers are alike: one scratch for all, made for the first's shapes and a chunk's rows)
         // (a block that runs its own launches makes it the first time it runs: `NhHost::moe_scratch`)
         let moe_sc = std::cell::OnceCell::new();
@@ -1122,6 +1126,7 @@ impl Dyn {
             k35,
             knh,
             ka,
+            ldec,
             km,
             skinny,
             skinny_on: crate::tune!("GLYD_G4_SKINNY").map_or(big.d.skinny, |v| v != "0"),
@@ -1767,6 +1772,9 @@ impl Dyn {
         // (the 12-bit pages' slots, lengths and first tokens of the pass's rows, once for every layer)
         if self.lossless.is_some() && std::ptr::eq(p, &self.big) {
             self.kv12_prepare(n, pos)?;
+        }
+        if std::ptr::eq(p, &self.big) {
+            self.lib_decode_prepare(n, pos)?;
         }
         let head = if st.last { head } else { 0 };
         if st.first {

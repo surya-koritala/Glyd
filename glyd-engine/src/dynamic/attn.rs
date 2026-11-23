@@ -2,8 +2,10 @@
 //! What a family's layer is, is the operation's parameters (`AttnOp`): its heads and their width, where its q, k, v and gate are in the projection's rows, its norms,
 //! rotary, window, scale, soft-cap and gate, and its ring of keys and values; its rounding points the kind's (`kinds::AttnRounding`). One set of kernels runs them all
 //! (kernels/attn.cu): the preparation, then a decode row's attention (the keys in parts, combined) or a prompt chunk's, and the gate. A prompt chunk of heads of
-//! 128 to 512 takes the GPU library's prompt kernel, one for both caches: over bf16 rings or pages `glyd_gpu_attn_prefill`, over 12-bit pages (src/dynamic/kvpages.rs)
-//! `glyd_gpu_kv_prefill`, the same tiles and sums, so the same bits; heads of 64 take attn_fa64. A decode row over 12-bit pages reads them with `kv_decode_from`.
+//! 128 to 512 takes the GPU library's prompt kernel, one for both caches: over bf16 rings or pages `glyd_gpu_kv_prefill_bf16`, over 12-bit pages (src/dynamic/kvpages.rs)
+//! `glyd_gpu_kv_prefill`, the same tiles and sums, so the same bits; heads of 64 take attn_fa64. A decode row likewise (`LibDecode`): over 12-bit pages
+//! `kv_decode_from`, over a bf16 cache `glyd_gpu_kv_decode_bf16`, one kernel, plan and merge, where the shape is the pages' (heads of 128 to 512, up to 8 query
+//! heads a kv head or one kv head, no soft-cap); others (Muse Spark's heads of 64, Nemotron-H's 16 query heads over 2) the engine's parts kernel.
 //!
 //! The arithmetic of each family is the one its own operations had, bit for bit where the kernel is the same (the preparation, the decode and the gate of Gemma 4,
 //! the Qwen3.5 layout and Nemotron-H); a prompt chunk's is now the library's kernel for all (Gemma 4's g4_fa256, the Qwen3.5 layout's warp a head, Nemotron-H's
@@ -25,6 +27,45 @@ pub const SPLITS: usize = 16;
 const PART_WARPS: usize = 16;
 /// Query heads to a key-value head the warp kernels take (a block of at most 512 threads).
 pub const MAX_G: usize = 16;
+/// Query heads to a key-value head a call of the library's decode takes.
+pub const MAX_DG: usize = 8;
+
+/// The GPU library's decode for the attention layers whose shapes it takes (`AttnOp::lib_decode`), over a bf16 cache (glyd_gpu_kv_decode_bf16) as over 12-bit pages
+/// (kv_decode_from): one kernel, plan and merge, so the two caches give a decode row the same bits. Its splits (the 12-bit pages' too), its workspace, and each kind of
+/// call's (window, calls a row) rows' lengths and first tokens, made once a pass (`prepare`).
+pub(super) struct LibDecode {
+    pub splits: i64,
+    ws: crate::dev::Buf,
+    kinds: Vec<(usize, usize)>,
+    lens: Vec<crate::dev::Buf>,
+    first: Vec<crate::dev::Buf>,
+}
+
+impl LibDecode {
+    /// For the description's attention layers (`ops`) on `rows` rows a pass at most, `drows` a decode call, a context of `ctx`; None where none takes it. The plan's
+    /// floor is set (the 12-bit pages' DECODE_FLOOR) where GLYD_KV_FLOOR does not set it.
+    pub fn new<'a>(lib: &crate::ffi::Lib, ops: impl Iterator<Item = &'a AttnOp>, rows: usize, drows: usize, ctx: usize) -> Result<Option<LibDecode>> {
+        let (mut heads, mut g, mut d, mut parts, mut kinds) = (0, 0, 0, 0, Vec::new());
+        for a in ops.filter(|a| a.lib_decode()) {
+            let p = a.dparts();
+            (heads, g, d, parts) = (heads.max(a.nk), g.max(a.nq / a.nk / p), d.max(a.d), parts.max(p));
+            if !kinds.contains(&(a.window, p)) {
+                kinds.push((a.window, p));
+            }
+        }
+        if kinds.is_empty() {
+            return Ok(None);
+        }
+        if std::env::var_os("GLYD_KV_FLOOR").is_none() {
+            lib.kv_floor_set(super::kvpages::DECODE_FLOOR)?;
+        }
+        let splits = lib.kv_decode_splits(1, heads as i64, ctx.div_ceil(16) as i64)?;
+        let ws = crate::dev::Buf::zeroed(lib.kv_decode_workspace((drows * parts) as i64, heads as i64, g as i64, d as i64, splits)?)?;
+        let lens = kinds.iter().map(|k| crate::dev::Buf::new(4 * rows * k.1)).collect::<Result<_>>()?;
+        let first = kinds.iter().map(|k| crate::dev::Buf::new(4 * rows * k.1)).collect::<Result<_>>()?;
+        Ok(Some(LibDecode { splits, ws, kinds, lens, first }))
+    }
+}
 
 /// Dynamic shared memory of a warp kernel's block of head `d` and `rg` warps that score.
 pub(crate) fn rows_smem(d: usize, rg: usize) -> u32 {
@@ -224,6 +265,18 @@ impl AttnOp {
         }
     }
 
+    /// Whether a decode row of this attention takes the GPU library's decode (`LibDecode`): heads of 128, 256 or 512, up to 8 query heads a kv head or one kv head
+    /// (its query heads in calls of 8), no soft-cap; the shapes the 12-bit pages take.
+    pub(crate) fn lib_decode(&self) -> bool {
+        let g = self.nq / self.nk;
+        self.d % 128 == 0 && self.d <= 512 && self.d != 384 && (g <= MAX_DG || (self.nk == 1 && g % MAX_DG == 0)) && self.softcap == 0.0
+    }
+
+    /// The decode's calls a row's query heads take (8 at most each).
+    pub(crate) fn dparts(&self) -> usize {
+        (self.nq / self.nk).div_ceil(MAX_DG)
+    }
+
     /// The q and k norms' small tensors, where they have weights.
     fn weights(&self) -> Option<(usize, usize)> {
         match self.norm {
@@ -378,7 +431,7 @@ impl KernAttn {
     }
 
     /// A prompt chunk's attention of `a.n` rows into `a.out` over a bf16 cache, then the gate: the GPU library's kernel for heads of 128 to 512 (`lib`'s
-    /// glyd_gpu_attn_prefill, the one its 12-bit pages' prompt attention is: `start` the rows' first position, as it takes them), attn_fa64 for heads of 64, the warp
+    /// glyd_gpu_kv_prefill_bf16, the one its 12-bit pages' prompt attention is: `start` the rows' first position, as it takes them), attn_fa64 for heads of 64, the warp
     /// kernels where the tensor-core ones are off.
     ///
     /// # Safety
@@ -392,7 +445,7 @@ impl KernAttn {
             launch!(self.fa64, [n.div_ceil(64) as u32, nq, 1], [128, 1, 1], smem fa_smem(64), s; *a)?;
         } else {
             let w = (a.nq * a.d) as i64;
-            lib.attn_prefill(
+            lib.kv_prefill_bf16(
                 a.qo,
                 w,
                 (a.kc, a.vc, a.tab, a.cap as i64),
@@ -440,6 +493,41 @@ impl KernAttn {
 }
 
 impl Dyn {
+    /// A pass's rows' lengths and first tokens for each kind of the library's decode calls, once for every layer (`n` rows at `pos`, each part's at its rows).
+    pub(super) unsafe fn lib_decode_prepare(&self, n: usize, pos: (u64, u64)) -> Result<()> {
+        let Some(ld) = &self.ldec else { return Ok(()) };
+        let parts: Vec<(usize, usize)> = if self.parts.is_empty() { vec![(0, n)] } else { self.parts.iter().map(|q| (q.row0, q.rows)).collect() };
+        for (row0, rows) in parts {
+            for (i, &(window, sp)) in ld.kinds.iter().enumerate() {
+                let at = 4 * (row0 * sp) as u64;
+                self.kern.kv12_rows(self.dev.stream, pos.1 + 4 * row0 as u64, rows, 0, window, sp, 0, ld.lens[i].ptr + at, ld.first[i].ptr + at)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// A decode call of the library over the bf16 cache `x` names (its table, or its ring of `x.cap` places): the n rows of the part an operation runs on now, each
+    /// row's query heads in `a.dparts()` calls' sequences.
+    unsafe fn lib_decode(&self, a: &AttnOp, n: usize, x: &AttnArgs) -> Result<()> {
+        let ld = self.ldec.as_ref().expect("a library decode");
+        let sp = a.dparts();
+        let k = ld.kinds.iter().position(|&k| k == (a.window, sp)).expect("a kind of the description's");
+        let at = 4 * (self.row0() * sp) as u64;
+        let stride = (a.nq * a.d / sp) as i64;
+        self.lib.kv_decode_bf16(
+            x.qo,
+            stride,
+            (x.kc, x.vc, x.tab, 0, x.cap as i64),
+            (ld.lens[k].ptr + at, ld.first[k].ptr + at, (n * sp) as i64, ld.splits),
+            (a.nk as i64, (a.nq / a.nk / sp) as i64, a.d as i64),
+            (a.scale as f64, a.sbf16),
+            x.out,
+            stride,
+            (ld.ws.ptr, ld.ws.bytes),
+            self.dev.stream,
+        )
+    }
+
     /// `Op::Attn` (op `i` of layer `l` of part `p`) on n rows at positions `pos`: the preparation (unless the pass made it for every row already: `prepped`), then
     /// the attention.
     #[allow(clippy::too_many_arguments)]
@@ -517,6 +605,12 @@ impl Dyn {
         };
         if decode {
             // (a verify pass's rows by the decode step's kernel, each row at its own position: a step's sums)
+            if self.ldec.is_some() && std::ptr::eq(p, &self.big) && a.lib_decode() {
+                // (the library's decode, the 12-bit pages' too: the same bits over either cache)
+                self.lib_decode(a, n, &x)?;
+                self.ka.gate(s, &x)?;
+                return self.mark(if a.window > 0 { "attention (sliding)" } else { "attention (global)" });
+            }
             x.part = match &self.vpart {
                 Some(v) if self.verifying.get() && n > 1 => v.ptr,
                 _ => self.part.ptr,
@@ -652,7 +746,25 @@ pub fn check() -> Result<bool> {
             if gnorm.is_some() {
                 a.gate = gb.ptr;
             }
-            for how in ["a prompt's rows on the tensor cores", "a prompt's rows, a warp a head", "each row a decode step"] {
+            // (the library's decode where the shape takes it: each row a sequence of its own length and window, its query heads in calls of 8 at most)
+            let g = nq / nk;
+            let lib_dec = d % 128 == 0 && (g <= MAX_DG || nk == 1) && softcap == 0.0;
+            let sp = g.div_ceil(MAX_DG);
+            let lens: Vec<i32> = (0..n).flat_map(|t| std::iter::repeat_n((p0 + t + 1) as i32, sp)).collect();
+            let firsts: Vec<i32> =
+                (0..n).flat_map(|t| std::iter::repeat_n(if window > 0 { (p0 + t + 1).saturating_sub(window) as i32 } else { 0 }, sp)).collect();
+            let (lb, fb) = (Buf::new(4 * lens.len())?, Buf::new(4 * firsts.len())?);
+            lb.write(0, &lens)?;
+            fb.write(0, &firsts)?;
+            let splits = lib.kv_decode_splits(1, nk as i64, cap.div_ceil(16) as i64)?;
+            let ws_bytes = if lib_dec { lib.kv_decode_workspace((n * sp) as i64, nk as i64, (g / sp) as i64, d as i64, splits)? } else { 16 };
+            let ws = Buf::zeroed(ws_bytes)?;
+            let hows: &[&str] = if lib_dec {
+                &["a prompt's rows on the tensor cores", "a prompt's rows, a warp a head", "each row a decode step", "each row a decode step of the library's"]
+            } else {
+                &["a prompt's rows on the tensor cores", "a prompt's rows, a warp a head", "each row a decode step"]
+            };
+            for &how in hows {
                 let out = Buf::zeroed(n * nq * d * 2)?;
                 let x = AttnArgs { out: out.ptr, ..a };
                 // SAFETY: buffers made here of the sizes the kernels read and write; read after a synchronize.
@@ -660,7 +772,23 @@ pub fn check() -> Result<bool> {
                     match how {
                         "a prompt's rows on the tensor cores" => k.prompt(&lib, dev.stream, &x, p0)?,
                         "a prompt's rows, a warp a head" => k.rows(dev.stream, &x)?,
-                        _ => k.decode(dev.stream, &x)?,
+                        "each row a decode step" => k.decode(dev.stream, &x)?,
+                        _ => {
+                            let stride = (nq * d / sp) as i64;
+                            lib.kv_decode_bf16(
+                                x.qo,
+                                stride,
+                                (x.kc, x.vc, x.tab, 0, x.cap as i64),
+                                (lb.ptr, fb.ptr, (n * sp) as i64, splits),
+                                (nk as i64, (g / sp) as i64, d as i64),
+                                (scale as f64, sbf16),
+                                x.out,
+                                stride,
+                                (ws.ptr, ws_bytes),
+                                dev.stream,
+                            )?;
+                            k.gate(dev.stream, &x)?
+                        }
                     }
                 }
                 dev.sync()?;

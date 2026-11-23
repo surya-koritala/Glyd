@@ -62,7 +62,8 @@ _ARGS = {  # each function's arguments before its stream
     "kv_work_put": [_P, _I64, _P, _I64, _P, _I64, _I64, _I64, _P, _I64],
     "kv_decode": [_P, _I64, _P, _I64, _P, _P, _P, _I64, _P, _I64, _I64, _I64, _I64, _I64, _I64, _P, _I64, _P, _I64, ctypes.c_double, _P, _I64, _P, _SZ],
     "kv_decode_from": [_P, _I64, _P, _I64, _P, _P, _P, _I64, _P, _P, _I64, _I64, _I64, _I64, _I64, _I64, _I64, _P, _I64, _P, _I64, ctypes.c_double, _P, _I64, _P, _SZ],
-    "attn_prefill": [_P, _I64, _P, _P, _P, _I64, _I64, _I64, _I64, _I64, _I64, _I64, ctypes.c_double, _I64, ctypes.c_double, _P, _P, _I64],  # q, kc, vc, table, cap, n, start, window, H, G, D, scale, round, softcap, sinks, out
+    "kv_decode_bf16": [_P, _I64, _P, _P, _P, _I64, _I64, _P, _P, _I64, _I64, _I64, _I64, _I64, _I64, ctypes.c_double, _P, _I64, _P, _SZ],  # q, kc, vc, table, its stride, cap, lens, first, round, B, splits, H, G, D, scale, out, workspace
+    "kv_prefill_bf16": [_P, _I64, _P, _P, _P, _I64, _I64, _I64, _I64, _I64, _I64, _I64, ctypes.c_double, _I64, ctypes.c_double, _P, _P, _I64],  # q, kc, vc, table, cap, n, start, window, H, G, D, scale, round, softcap, sinks, out
     "kv_prefill": [_P, _I64, _P, _I64, _P, _I64, _I64, _I64, _I64, _P, _I64, _P, _P, _P, _I64, _I64, _I64, _I64, _P, _I64, _P, _I64, ctypes.c_double, _I64, ctypes.c_double, _P, _P, _I64],  # q, key, value (and strides), n, start, window, pool, bases, table, H, G, D, A, escape pool, raw pool, scale, round, softcap, sinks, out
     "f8_size": [_P, _I64, _I64, _I64, _P, _P, _SZ, _P],  # w, ld, O, K, heads, workspace and its bytes, the words var needs (host)
     "f8_pack": [_P, _I64, _I64, _I64, _P, _P, _P, _I64],  # w, ld, O, K, heads, core, var and its words

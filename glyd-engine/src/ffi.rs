@@ -534,7 +534,8 @@ table! {
         fn glyd_gpu_kv_decode(*const u16, i64, *const u8, i64, *const u8, *const u8, *const i32, i64, *const i32, i64, i64, i64, i64, i64, i64, *const u8, i64, *const u8, i64, f64, *mut u16, i64, *mut c_void, usize, Stream) -> c_int;
         fn glyd_gpu_kv_decode_from(*const u16, i64, *const u8, i64, *const u8, *const u8, *const i32, i64, *const i32, *const i32, i64, i64, i64, i64, i64, i64, i64, *const u8, i64, *const u8, i64, f64, *mut u16, i64, *mut c_void, usize, Stream) -> c_int;
         fn glyd_gpu_kv_prefill(*const u16, i64, *const u16, i64, *const u16, i64, i64, i64, i64, *const u8, i64, *const u8, *const u8, *const i32, i64, i64, i64, i64, *const u8, i64, *const u8, i64, f64, i64, f64, *const f32, *mut u16, i64, Stream) -> c_int;
-        fn glyd_gpu_attn_prefill(*const u16, i64, *const u16, *const u16, *const i32, i64, i64, i64, i64, i64, i64, i64, f64, i64, f64, *const f32, *mut u16, i64, Stream) -> c_int;
+        fn glyd_gpu_kv_decode_bf16(*const u16, i64, *const u16, *const u16, *const i32, i64, i64, *const i32, *const i32, i64, i64, i64, i64, i64, i64, f64, *mut u16, i64, *mut c_void, usize, Stream) -> c_int;
+        fn glyd_gpu_kv_prefill_bf16(*const u16, i64, *const u16, *const u16, *const i32, i64, i64, i64, i64, i64, i64, i64, f64, i64, f64, *const f32, *mut u16, i64, Stream) -> c_int;
     }
 }
 
@@ -1552,14 +1553,60 @@ impl Lib {
         self.ck(call!("kv_prefill"), r)
     }
 
-    /// `kv_prefill`'s attention with the keys and values in a bf16 cache `kc`, `vc` [places, H, D] (glyd_gpu.h's `glyd_gpu_attn_prefill`): position p's place
+    /// `kv_decode_from`'s attention with the keys and values in a bf16 cache `kc`, `vc` [places, H, D] (glyd_gpu.h's `glyd_gpu_kv_decode_bf16`): token p of sequence b at
+    /// `block_table[b bt_stride + p / 16] * 16 + p % 16` (0: p modulo `cap`); `b` sequences of `g` query heads a kv head, their lengths and first tokens on the device.
+    /// The same kernel, plan and merge: with the same splits and floor, `kv_decode_from`'s bits where the cache holds what the pages hold.
+    ///
+    /// # Safety
+    /// As `kv_decode_from`.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn kv_decode_bf16(
+        &self,
+        q: u64,
+        q_stride: i64,
+        (kc, vc, block_table, bt_stride, cap): (u64, u64, u64, i64, i64),
+        (seq_lens, first, b, splits): (u64, u64, i64, i64),
+        (h, g, d): (i64, i64, i64),
+        (scale, round): (f64, bool),
+        out: u64,
+        out_stride: i64,
+        (workspace, workspace_bytes): (u64, usize),
+        cs: Stream,
+    ) -> Result<()> {
+        let r = (self.api.glyd_gpu_kv_decode_bf16)(
+            q as *const u16,
+            q_stride,
+            kc as *const u16,
+            vc as *const u16,
+            block_table as *const i32,
+            bt_stride,
+            cap,
+            seq_lens as *const i32,
+            first as *const i32,
+            round as i64,
+            b,
+            splits,
+            h,
+            g,
+            d,
+            scale,
+            out as *mut u16,
+            out_stride,
+            workspace as *mut c_void,
+            workspace_bytes,
+            cs,
+        );
+        self.ck(call!("kv_decode_bf16"), r)
+    }
+
+    /// `kv_prefill`'s attention with the keys and values in a bf16 cache `kc`, `vc` [places, H, D] (glyd_gpu.h's `glyd_gpu_kv_prefill_bf16`): position p's place
     /// `block_table[p / 16] * 16 + p % 16` (0: p modulo `cap`), the chunk's own written there before the call; `g` query heads a kv head. The same kernel and sums:
     /// where the cache holds what the pages hold, `kv_prefill`'s bits.
     ///
     /// # Safety
     /// Live device buffers: q and out [n, H g, D] (rows `q_stride`, `out_stride` apart), the cache's every place a row reads, the table's blocks.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn attn_prefill(
+    pub unsafe fn kv_prefill_bf16(
         &self,
         q: u64,
         q_stride: i64,
@@ -1571,7 +1618,7 @@ impl Lib {
         out_stride: i64,
         cs: Stream,
     ) -> Result<()> {
-        let r = (self.api.glyd_gpu_attn_prefill)(
+        let r = (self.api.glyd_gpu_kv_prefill_bf16)(
             q as *const u16,
             q_stride,
             kc as *const u16,
@@ -1592,7 +1639,7 @@ impl Lib {
             out_stride,
             cs,
         );
-        self.ck(call!("attn_prefill"), r)
+        self.ck(call!("kv_prefill_bf16"), r)
     }
 }
 

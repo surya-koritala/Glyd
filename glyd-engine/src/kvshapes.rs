@@ -261,6 +261,33 @@ fn shape(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
                 if off != 0 {
                     bad += 1;
                 }
+                // (the same values as a bf16 cache: the attention kind's decode over bf16 pages, glyd_gpu_kv_decode_bf16, held to the pages' bit for bit; the pages are lossless)
+                let o2 = Buf::zeroed(2 * h * g * d)?;
+                // SAFETY: as above; the workspace's counters are zero again after a call.
+                unsafe {
+                    lib.kv_decode_bf16(
+                        qbuf.ptr,
+                        width,
+                        (kbuf.ptr, vbuf.ptr, bt.ptr, blocks as i64, 0),
+                        (sq.ptr, if first == 0 { 0 } else { fb.ptr }, 1, splits),
+                        (h as i64, g as i64, d as i64),
+                        (1.0 / (d as f64).sqrt(), false),
+                        o2.ptr,
+                        width,
+                        (ws.ptr, ws_bytes),
+                        dev.stream,
+                    )?
+                };
+                dev.sync()?;
+                let mut bf = vec![0u16; h * g * d];
+                o2.read(0, &mut bf)?;
+                let differ = bf.iter().zip(&got).filter(|(x, y)| x != y).count();
+                println!(
+                    "{} {h} heads x {d}, {g} queries to a head, {len} tokens from {first}: the same over a bf16 cache (glyd_gpu_kv_decode_bf16), {differ} of {} values not the pages' bits",
+                    if differ == 0 { "ok  " } else { "FAIL" },
+                    bf.len()
+                );
+                bad += (differ != 0) as usize;
             }
         }
     }
@@ -458,7 +485,7 @@ fn prefill(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
         c(37, 1, 0, true, true, 0.0, false),
         c(200, 30, 0, true, true, 0.5, true),
     ];
-    // (the same values as a bf16 cache in the pages' places: the attention kind's prompt attention over bf16 pages, glyd_gpu_attn_prefill)
+    // (the same values as a bf16 cache in the pages' places: the attention kind's prompt attention over bf16 pages, glyd_gpu_kv_prefill_bf16)
     let (mut kp, mut vp) = (vec![0u16; blocks * 16 * w as usize], vec![0u16; blocks * 16 * w as usize]);
     for (t, &sl) in slots.iter().enumerate() {
         let (a, b, wu) = (sl as usize * w as usize, t * w as usize, w as usize);
@@ -516,7 +543,7 @@ fn prefill(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
             let o2 = Buf::zeroed(2 * ch.n * qw)?;
             // SAFETY: as above.
             unsafe {
-                lib.attn_prefill(
+                lib.kv_prefill_bf16(
                     qbuf.ptr + (2 * ch.start * qw) as u64,
                     qw as i64,
                     (kcache.ptr, vcache.ptr, bt.ptr, 0),
@@ -533,7 +560,7 @@ fn prefill(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
             o2.read(0, &mut bf)?;
             let differ = bf.iter().zip(&got).filter(|(x, y)| x != y).count();
             println!(
-                "{} {h} heads x {d}, {g} queries to a head, rows {}..{} (window {}): the same over a bf16 cache (glyd_gpu_attn_prefill), {differ} of {} values not the pages' bits",
+                "{} {h} heads x {d}, {g} queries to a head, rows {}..{} (window {}): the same over a bf16 cache (glyd_gpu_kv_prefill_bf16), {differ} of {} values not the pages' bits",
                 if differ == 0 { "ok  " } else { "FAIL" },
                 ch.start,
                 ch.start + ch.n,
@@ -567,7 +594,7 @@ fn prefill(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
 
 /// `kvprefill [--chunk 256] [--prefixes 0,1024,4096,8192] [--reps 20]`: a chunk's prompt attention at gemma-4-12B's shapes (its sliding layers: 8 kv heads of 256, 16 query
 /// heads, a window of 1,024; its global ones: 1 of 512, 16 query heads), three ways: the pages unpacked to a bf16 ring (`kv12_stage`) and the bf16 kernel
-/// (glyd_gpu_attn_prefill) on it, `glyd_gpu_kv_prefill` on the pages and the chunk's rows (the executor's path), and the bf16 kernel alone on a ring of every token (what bf16
+/// (glyd_gpu_kv_prefill_bf16) on it, `glyd_gpu_kv_prefill` on the pages and the chunk's rows (the executor's path), and the bf16 kernel alone on a ring of every token (what bf16
 /// pages cost); the milliseconds of each, and how many outputs of the other two are not the pages' bits (the kernel is one, the values the same).
 pub fn bench(a: &crate::args::Args) -> Result<()> {
     const A: i64 = 15;
@@ -637,10 +664,10 @@ pub fn bench(a: &crate::args::Args) -> Result<()> {
                 }
                 Ok(())
             };
-            // (the attention kind's prompt attention over a bf16 cache, glyd_gpu_attn_prefill: Gemma 4's arithmetic, scale 1, the scores bf16; a ring of `cap` places)
+            // (the attention kind's prompt attention over a bf16 cache, glyd_gpu_kv_prefill_bf16: Gemma 4's arithmetic, scale 1, the scores bf16; a ring of `cap` places)
             let family = |kc: u64, vc: u64, cap: usize, out: u64| -> Result<()> {
                 unsafe {
-                    lib.attn_prefill(
+                    lib.kv_prefill_bf16(
                         qbuf.ptr,
                         qw as i64,
                         (kc, vc, 0, cap as i64),
