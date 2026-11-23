@@ -633,7 +633,10 @@ impl Run for Qwen4x {
 
 /// The experts of Qwen3.8-Flash-Next are held in six-bit codes at its kestrel level (the random model's are on that grid, as tools/qwen4x_ref.py makes them). At penguin:
 /// the description executor (src/dynamic/qwen4x.rs: the other matrices lossless, the experts at six bits, which hold the random model's exactly); at the other levels
-/// Condor's own engine.
+/// Condor's own engine. The penguin fixture's bound (tests/logits/qwen4x.json.gz: KL mean 1e-4, max 5e-4) is the cost of the routers' near ties: the random model's 16
+/// experts, 4 a token, leave 15 choices in its 12 decode rows within 1e-2 of the next expert (`reference::ffn::margin`), which a bf16 engine may take either way, and
+/// each taken the other way on the reference costs its row a KL of 7.8e-6 to 3.5e-4 (the most: row 7, the fourth layer's experts, margin 3.8e-3; an A100 running the
+/// executor measured 3.52e-4 at that row, 2026-11-23).
 fn qwen4x_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     let Some(experts) = level_layout(level)? else { return boxed(crate::dynamic::qwen4x::load(dir, &dyn_opts(None))) };
     let o = crate::model_qwen4x::OptsQx { ctx: 1024, chunk: 64, layout: Layout::Tiered, chunked: true, ..Default::default() };
