@@ -530,6 +530,7 @@ table! {
         fn glyd_gpu_kv_work_put(*const u16, i64, *const u16, i64, *const i64, i64, i64, i64, *mut u16, i64, Stream) -> c_int;
         fn glyd_gpu_kv_decode_shares(i64, i64, i64, *mut i64) -> c_int;
         fn glyd_gpu_kv_decode_workspace(i64, i64, i64, i64, i64, *mut usize) -> c_int;
+        fn glyd_gpu_kv_floor_set(c_int) -> c_int;
         fn glyd_gpu_kv_decode(*const u16, i64, *const u8, i64, *const u8, *const u8, *const i32, i64, *const i32, i64, i64, i64, i64, i64, i64, *const u8, i64, *const u8, i64, f64, *mut u16, i64, *mut c_void, usize, Stream) -> c_int;
         fn glyd_gpu_kv_decode_from(*const u16, i64, *const u8, i64, *const u8, *const u8, *const i32, i64, *const i32, *const i32, i64, i64, i64, i64, i64, i64, i64, *const u8, i64, *const u8, i64, f64, *mut u16, i64, *mut c_void, usize, Stream) -> c_int;
     }
@@ -1423,6 +1424,13 @@ impl Lib {
         let r = unsafe { (self.api.glyd_gpu_kv_decode_shares)(b, h, max_pages, &mut s) };
         self.ck(call!("kv_decode_shares"), r)?;
         Ok(s)
+    }
+
+    /// The decode attention's least CTAs a sequence (1 to 64; 0: the GPU's own), for the whole process.
+    pub fn kv_floor_set(&self, floor: i32) -> Result<()> {
+        // SAFETY: a plain value.
+        let r = unsafe { (self.api.glyd_gpu_kv_floor_set)(floor) };
+        self.ck(call!("kv_floor_set"), r)
     }
 
     pub fn kv_decode_workspace(&self, b: i64, h: i64, g: i64, d: i64, splits: i64) -> Result<usize> {

@@ -15,6 +15,10 @@ const RING: i64 = 4096;
 const CHUNK: f64 = 64.0;
 /// The decode attention's query heads to a kv head, at most.
 const MAX_G: usize = 8;
+/// The decode attention's least CTAs a sequence (glyd_gpu_kv_floor_set). Measured on an RTX 4080 SUPER, gemma-4-12B, a decode step of one user at
+/// 1,024 tokens: the GPU's own (80 SMs, none) 12.92 ms, 8: 12.79, 16: 12.63, 32: 12.55 (bf16 pages 12.53); at 8,192 tokens 13.28 and 13.06 with 32.
+/// A global layer's one kv head gave the library's plan 8 CTAs of the card's 80 SMs.
+const DECODE_FLOOR: i32 = 32;
 
 /// A ring's pages: its geometry and pool, its tables, the layer number its pages carry in the shared pools, its group (block numbering), its
 /// shape, and its decode's split (query heads to a kv head over `parts` calls' sequences, `g` each).
@@ -149,6 +153,9 @@ impl Lossless {
             Some((c.trim().parse().ok()?, s.trim().parse().ok()?))
         });
         let nchunks = squeeze.map_or((chunks.ceil() as i64).max(1024), |s| s.0.max(1));
+        if std::env::var_os("GLYD_KV_FLOOR").is_none() {
+            lib.kv_floor_set(DECODE_FLOOR)?;
+        }
         let escape = Buf::zeroed(lib.kv_escape_bytes(nchunks)? as usize)?;
         // (a raw slab for one page in a hundred of each head count, at least 64)
         let mut raws = Vec::new();

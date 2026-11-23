@@ -2158,7 +2158,10 @@ impl Dyn {
                 r.fetch(l, s)?;
             }
             for (i, op) in ops.iter().enumerate() {
-                if !self.parts.is_empty() && !rows::row_wise(op) {
+                // (a preparation whose keys and values go to 12-bit pages writes staging rows and no sequence's ring: the pass's rows at once, and one
+                // write of them; the slots of each sequence's rows the pass made)
+                let staged = matches!(*op, Op::QkvPrep { ring, .. } if self.pages12(p, ring).is_some());
+                if !self.parts.is_empty() && !rows::row_wise(op) && !staged {
                     // (an operation on a sequence's cache or state: each sequence's rows by themselves, as a pass of that sequence alone runs them)
                     for (k, part) in self.parts.iter().enumerate() {
                         self.at.set(Some(k));
