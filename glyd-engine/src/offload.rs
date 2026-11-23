@@ -840,6 +840,7 @@ pub struct LayerStats {
     pub waves: u64,
     pub copy_bytes: u64,
     pub host_bytes: u64,
+    pub missed_bytes: u64,
     pub ahead: u64,
     pub ahead_bytes: u64,
     pub copy_ms: f64,
@@ -862,6 +863,7 @@ impl LayerStats {
             waves,
             copy_bytes,
             host_bytes,
+            missed_bytes,
             ahead,
             ahead_bytes,
             copy_ms,
@@ -880,6 +882,7 @@ impl LayerStats {
         self.waves += waves;
         self.copy_bytes += copy_bytes;
         self.host_bytes += host_bytes;
+        self.missed_bytes += missed_bytes;
         self.ahead += ahead;
         self.ahead_bytes += ahead_bytes;
         self.copy_ms += copy_ms;
@@ -901,12 +904,13 @@ impl LayerStats {
         self.ahead_bytes += bytes;
     }
 
-    /// What a call's plan did (`serve`'s): the experts it asked for, those in places, the misses copied before its products (`bytes` of them) and those the host keeps.
-    fn served(&mut self, sv: &Served, bytes: u64) {
+    /// What a call's plan did (`serve`'s): the experts it asked for, those in places, the misses copied before its products (`bytes` of them) and those the host keeps; `missed` the distinct missed experts' own bytes.
+    fn served(&mut self, sv: &Served, bytes: u64, missed: u64) {
         self.reads += (sv.hits + sv.misses) as u64;
         self.hits += sv.hits as u64;
         self.copies += sv.loads.len() as u64;
         self.copy_bytes += bytes;
+        self.missed_bytes += missed;
     }
 
     /// The host's part of a call: `experts` experts for `pairs` pairs (`skipped` left out), `bytes` read by its kernels, in `ms`.
@@ -923,7 +927,7 @@ impl LayerStats {
         self.reads - self.hits
     }
 
-    /// The bytes read from the computer's memory for the calls' misses (copied, or read by the host's kernels).
+    /// The bytes read from the computer's memory for the calls' misses (copied, or read by the host's kernels): `missed_bytes` (the distinct missed experts' own bytes) where each is read once.
     pub fn miss_bytes(&self) -> u64 {
         self.copy_bytes + self.host_bytes
     }
@@ -938,7 +942,7 @@ impl LayerStats {
     /// The stats as a JSON object (the layer's number among the store's first).
     pub fn json(&self, layer: usize) -> String {
         format!(
-            "{{\"layer\":{layer},\"calls\":{},\"rows\":{},\"pairs\":{},\"reads\":{},\"hits\":{},\"copies\":{},\"host\":{},\"host_pairs\":{},\"skipped\":{},\"waves\":{},\"copy_bytes\":{},\"host_bytes\":{},\"ahead\":{},\"ahead_bytes\":{},\"copy_ms\":{:.3},\"host_ms\":{:.3},\"wait_ms\":{:.3}}}",
+            "{{\"layer\":{layer},\"calls\":{},\"rows\":{},\"pairs\":{},\"reads\":{},\"hits\":{},\"copies\":{},\"host\":{},\"host_pairs\":{},\"skipped\":{},\"waves\":{},\"copy_bytes\":{},\"host_bytes\":{},\"missed_bytes\":{},\"ahead\":{},\"ahead_bytes\":{},\"copy_ms\":{:.3},\"host_ms\":{:.3},\"wait_ms\":{:.3}}}",
             self.calls,
             self.rows,
             self.pairs,
@@ -951,6 +955,7 @@ impl LayerStats {
             self.waves,
             self.copy_bytes,
             self.host_bytes,
+            self.missed_bytes,
             self.ahead,
             self.ahead_bytes,
             self.copy_ms,
@@ -1749,6 +1754,11 @@ impl Resident {
     fn bytes_of(&self, e: usize) -> u64 {
         let slot = self.host_slot(e).unwrap_or(e);
         self.packs.iter().map(|p| p.bytes_of(slot)).sum()
+    }
+
+    /// The own bytes of the experts a call missed (`serve`'s: copied, or kept for the host), each once.
+    fn missed_bytes(&self, sv: &Served) -> u64 {
+        sv.loads.iter().map(|l| l.0).chain(sv.kept.iter().copied()).map(|e| self.bytes_of(e as usize)).sum()
     }
 
     /// `host_reads` of the layer's host half: its FP4 kernel and the hummingbird places' of every mixture of experts take an expert's pairs together (src/cpu_fp4.rs `by_expert`, src/cpu_hbg.rs `store_pairs`), the
@@ -2734,13 +2744,16 @@ impl ExpertStore {
                 inner.stats.copied += got.loads.len() as u64;
                 inner.stats.waves += (w > 0) as u64;
                 let bytes = place(cuda, ly, &got.loads, &mut inner.stats, &mut inner.costs, inner.expert_bytes).inspect_err(|_| ly.forget())?;
+                // (a copy mode's misses are the waves' copies, each expert copied once over the waves: `LayerCache::waves`)
+                let missed: u64 = got.loads.iter().map(|l| ly.bytes_of(l.0 as usize)).sum();
                 let st = &mut ly.stats;
-                (st.reads, st.hits, st.copies, st.waves, st.copy_bytes) = (
+                (st.reads, st.hits, st.copies, st.waves, st.copy_bytes, st.missed_bytes) = (
                     st.reads + wave.len() as u64,
                     st.hits + got.hits as u64,
                     st.copies + got.loads.len() as u64,
                     st.waves + (w > 0) as u64,
                     st.copy_bytes + bytes,
+                    st.missed_bytes + missed,
                 );
                 ly.wait_ready(s)?;
                 for &e in wave {
@@ -2805,7 +2818,8 @@ impl ExpertStore {
         inner.stats.misses += served.misses as u64;
         inner.stats.copied += served.loads.len() as u64;
         inner.stats.cpu += served.kept.len() as u64;
-        ly.stats.served(&served, 0);
+        let missed = ly.missed_bytes(&served);
+        ly.stats.served(&served, 0, missed);
         for &e in &served.wanted {
             ly.place[e as usize] = ly.cache.slot_of(e as usize).expect("an expert in a place") as i64;
         }
@@ -3117,7 +3131,8 @@ impl ExpertStore {
             inner.stats.hits += served.hits as u64;
             inner.stats.misses += served.misses as u64;
             inner.stats.cpu += served.kept.len() as u64;
-            ly.stats.served(&served, 0);
+            let missed = ly.missed_bytes(&served);
+            ly.stats.served(&served, 0, missed);
             // the host's pairs: those of the experts without a place in the map (what the GPU left out), less the ones the skips leave out
             let mut mine: Vec<usize> = (0..pairs).filter(|&j| host_ids[j] >= 0 && (host_ids[j] as usize) < experts && map[host_ids[j] as usize] < 0).collect();
             let kept = mine.len();
@@ -3260,7 +3275,8 @@ impl ExpertStore {
             inner.stats.copied += served.loads.len() as u64;
             inner.stats.cpu += served.kept.len() as u64;
             let bytes = fetch(cuda, ly, &served.loads, &mut inner.stats).inspect_err(|_| ly.forget())?;
-            ly.stats.served(&served, bytes);
+            let missed = ly.missed_bytes(&served);
+            ly.stats.served(&served, bytes, missed);
             ly.wait_ready(s)?;
             for &e in &served.wanted {
                 ly.place[e as usize] = ly.cache.slot_of(e as usize).expect("an expert in a place") as i64;
@@ -3468,7 +3484,8 @@ impl ExpertStore {
                 inner.stats.copied += sv.loads.len() as u64;
                 inner.stats.cpu += sv.kept.len() as u64;
                 let bytes = place(cuda, ly, &sv.loads, &mut inner.stats, &mut inner.costs, inner.expert_bytes).inspect_err(|_| ly.forget())?;
-                ly.stats.served(sv, bytes);
+                let missed = ly.missed_bytes(sv);
+                ly.stats.served(sv, bytes, missed);
                 // (the host's pairs of the group: `cpu_hbg` reads an expert once for its pairs, `cpu_hb` once a pair)
                 let mine: Vec<usize> = placed.mine.iter().filter(|&&(h, _)| h == g).map(|&(_, j)| j).collect();
                 let (host_experts, host_bytes) = ly.host_reads(&placed.local[g], &mine);
@@ -4270,13 +4287,14 @@ mod tests {
                 let sv = serve(&mut cache, &needed, &pairs_of, &mut last, step, &off, &Costs::default()).unwrap();
                 let mut st = LayerStats::default();
                 st.called(rows, ids.len(), 0.0);
-                st.served(&sv, sv.loads.len() as u64 * bytes);
+                st.served(&sv, sv.loads.len() as u64 * bytes, (sv.loads.len() + sv.kept.len()) as u64 * bytes);
                 // (the host's pairs: those of the experts left with no place)
                 let mine: Vec<usize> = (0..ids.len()).filter(|&j| cache.slot_of(ids[j] as usize).is_none()).collect();
                 let (n, b) = host_reads(&ids, &mine, experts, true, |_| bytes);
                 st.hosted(n, mine.len(), 0, b, 0.0);
                 assert_eq!(st.copies + st.host, st.misses(), "{mode:?} step {step}: every miss copied or computed, never both");
                 assert_eq!(st.miss_bytes(), st.misses() * bytes, "{mode:?} step {step}: each missed expert's bytes read once");
+                assert_eq!(st.miss_bytes(), st.missed_bytes);
                 assert_eq!((st.reads, st.rows, st.pairs), (needed.len() as u64, rows as u64, (rows * k) as u64));
                 per_pair_more += host_reads(&ids, &mine, experts, false, |_| bytes).1 - b;
             }

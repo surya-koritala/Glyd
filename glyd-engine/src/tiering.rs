@@ -329,7 +329,7 @@ pub fn bench(a: &crate::args::Args) -> Result<()> {
         }
         let t = LayerStats::sum(&layers);
         let per = |x: u64| x as f64 / steps as f64;
-        let missed = t.misses() * eb;
+        let missed = t.missed_bytes;
         let mean = ms.iter().sum::<f64>() / steps as f64;
         ms.sort_by(f64::total_cmp);
         println!(
@@ -368,6 +368,7 @@ pub fn bench(a: &crate::args::Args) -> Result<()> {
                     waves: f(s.waves),
                     copy_bytes: f(s.copy_bytes),
                     host_bytes: f(s.host_bytes),
+                    missed_bytes: f(s.missed_bytes),
                     ahead: f(s.ahead),
                     ahead_bytes: f(s.ahead_bytes),
                     copy_ms: s.copy_ms / steps as f64,

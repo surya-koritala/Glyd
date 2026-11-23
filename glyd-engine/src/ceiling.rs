@@ -395,6 +395,7 @@ impl Run {
                         waves: n(l, "waves")? as u64,
                         copy_bytes: n(l, "copy_bytes")? as u64,
                         host_bytes: n(l, "host_bytes")? as u64,
+                        missed_bytes: l.get("missed_bytes").and_then(num).unwrap_or(0.0) as u64,
                         ahead: n(l, "ahead")? as u64,
                         ahead_bytes: n(l, "ahead_bytes")? as u64,
                         copy_ms: n(l, "copy_ms")?,
