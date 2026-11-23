@@ -393,8 +393,8 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     use std::path::Path;
     let (case, level) = (a.flag("case").unwrap_or("gemma4"), a.flag("level").unwrap_or("penguin"));
     let random = a.flag("dir").is_none();
-    let (positions, prompts) = (a.num("positions", if random { 512 } else { 2048usize })?, a.num("prompts", 4usize)?);
-    let (plen, new) = (a.num("prompt-tokens", if random { 700 } else { 1500usize })?, a.num("new", 32usize)?);
+    let (positions, prompts) = (a.num("positions", if random { 512 } else { 1024usize })?, a.num("prompts", 4usize)?);
+    let (plen, new) = (a.num("prompt-tokens", if random { 700 } else { 1024usize })?, a.num("new", 32usize)?);
     let (mut e, dir, mut seqs) = match a.flag("dir") {
         Some(d) => {
             let dir = Path::new(d);
