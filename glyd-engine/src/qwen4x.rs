@@ -229,6 +229,101 @@ impl ConfigQx {
         Ok(c)
     }
 
+    /// What this engine reads of a model, from the model's description (`runtime::describe`: its layer kinds, and the experts' widths from the
+    /// shapes it says), with what no description holds from `own` (this engine's reading of the same config: the end tokens, with the generation
+    /// config's, the longest context, the tensors' prefix). Held to `own` (`agrees`), it is the check that the description says everything the
+    /// engine runs on, before the engine's work moves onto the description's kinds.
+    pub fn lowered(d: &crate::runtime::describe::Described, own: &ConfigQx) -> Result<ConfigQx> {
+        use crate::runtime::describe::Source;
+        use crate::runtime::kinds::{Body, Ffn, Mixer, Residual};
+        let m = &d.desc;
+        let mixers: Vec<&Body> = m.blocks.iter().map(|b| &b.body).filter(|b| matches!(b, Body::Mixer(_))).collect();
+        let kinds: Vec<QxKind> = mixers
+            .iter()
+            .map(|b| match b {
+                Body::Mixer(Mixer::Linear(_)) => Ok(QxKind::Gdn),
+                Body::Mixer(Mixer::Attention(_)) => Ok(QxKind::Attn),
+                b => err(format!("Qwen3.8-Flash-Next: a {b:?}, where a layer is Gated DeltaNet or attention")),
+            })
+            .collect::<Result<_>>()?;
+        let lin = mixers.iter().find_map(|b| if let Body::Mixer(Mixer::Linear(l)) = b { Some(l) } else { None });
+        let attn = mixers.iter().find_map(|b| if let Body::Mixer(Mixer::Attention(a)) = b { Some(a) } else { None });
+        let (lin, attn) = lin.zip(attn).ok_or_else(|| Error("Qwen3.8-Flash-Next: no Gated DeltaNet layer or no attention layer".into()))?;
+        let (ix, rope) =
+            attn.indexer.as_ref().zip(attn.rope.as_ref()).ok_or_else(|| Error("Qwen3.8-Flash-Next: an attention without its indexer or rotary".into()))?;
+        let moe = m.blocks.iter().find_map(|b| if let Body::Ffn(Ffn::Moe(e)) = &b.body { Some(e) } else { None });
+        let gr = m.blocks.iter().find_map(|b| if let Residual::GatedStreams(g) = b.residual { Some(g) } else { None });
+        let (moe, gr) = moe.zip(gr).ok_or_else(|| Error("Qwen3.8-Flash-Next: no experts or no gated residuals".into()))?;
+        // (the experts' widths: the shapes said of the first layer's tensors of each role)
+        let width = |role: &str, at: usize| -> Result<usize> {
+            d.blocks
+                .iter()
+                .flatten()
+                .find(|(r, _)| r == role)
+                .and_then(|(_, s)| if let Source::Tensor(n) = s { d.shapes.get(n) } else { None })
+                .and_then(|s| s.get(at).copied())
+                .ok_or_else(|| Error(format!("Qwen3.8-Flash-Next: no shape said of {role}")))
+        };
+        let mut layer = 0;
+        let mut ple = None;
+        for b in &m.blocks {
+            match &b.body {
+                Body::Ngram(n) => ple = Some(PleDims { layer, dim: n.dim, kernel: n.conv, ngram: n.order, heads: n.heads }),
+                Body::Mixer(_) => layer += 1,
+                _ => {}
+            }
+        }
+        let ngram = m.blocks.iter().find_map(|b| if let Body::Ngram(n) = &b.body { Some(n.eos) } else { None });
+        Ok(ConfigQx {
+            hidden: m.hidden,
+            layers: kinds.len(),
+            vocab: m.vocab,
+            eps: m.final_norm.eps,
+            max_pos: own.max_pos,
+            eos: own.eos.clone(),
+            eos_ngram: ngram.unwrap_or(own.eos_ngram),
+            kinds,
+            nk: lin.k_heads,
+            nv: lin.v_heads,
+            conv: lin.conv,
+            gate_sigmoid: lin.gate_act == crate::runtime::kinds::Act::Sigmoid,
+            heads: attn.heads,
+            kv_heads: attn.kv_heads,
+            head_dim: attn.head_dim,
+            rotary: rope.dim,
+            theta: rope.theta,
+            ix_heads: ix.heads,
+            ix_dim: ix.head_dim,
+            ix_budget: ix.top_k,
+            ix_block: ix.block,
+            hc: gr.streams,
+            hc_rank: gr.lowrank,
+            experts: moe.experts,
+            top_k: moe.router.top_k,
+            inter: width("experts_down", 2)?,
+            shared_inter: if moe.shared.is_some() { width("shared_down", 1)? } else { 0 },
+            norm_topk: moe.router.renorm,
+            ple,
+            mtp_layers: d.mtp_layers,
+            prefix: own.prefix,
+        })
+    }
+
+    /// `own` where its config's description, lowered (`lowered`), reads the same model: else the first difference named.
+    pub fn agrees(own: ConfigQx, d: &crate::runtime::describe::Described) -> Result<ConfigQx> {
+        let (a, b) = (format!("{own:?}"), format!("{:?}", ConfigQx::lowered(d, &own)?));
+        if a == b {
+            return Ok(own);
+        }
+        let at = a.bytes().zip(b.bytes()).position(|(x, y)| x != y).unwrap_or(a.len().min(b.len()));
+        let near = |s: &str| s.get(at.saturating_sub(40)..(at + 40).min(s.len())).unwrap_or("").to_string();
+        err(format!(
+            "Qwen3.8-Flash-Next: its description and this engine's reading of its config differ (at {:?}, where the engine has {:?})",
+            near(&b),
+            near(&a)
+        ))
+    }
+
     pub fn layers_of(&self, kind: QxKind) -> usize {
         self.kinds.iter().filter(|&&k| k == kind).count()
     }
@@ -373,6 +468,23 @@ mod tests {
         assert_eq!(shapes(3), [(13312, 2560), (2560, 6144), (640, 2560), (1280, 2560), (2560, 640)]);
         assert_eq!(c.layer_name(48), "mtp.layers.0");
         assert_eq!(c.ple_pack().map(|p| (p.rows(), p.cols)), Some((12800, 2560)));
+    }
+
+    /// The released config's description, lowered, is every number this engine reads of the config (R3d): the layers' kinds, the heads, the
+    /// indexer, the streams, the experts and their widths, the n-gram embedding's layer and sizes, the MTP layer; the tiny model's of the
+    /// `qwen4x` logits case too. A description of another model is told apart, the difference named.
+    #[test]
+    fn the_description_lowers_to_this_engines_reading() {
+        let text = include_str!("../tests/fixtures/qwen4x_config.json");
+        let d = crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap();
+        let c = ConfigQx::agrees(real(), &d).unwrap();
+        assert_eq!(c.ple.as_ref().map(|p| p.layer), Some(1));
+        let m: serde_json::Value = serde_json::from_str(include_str!("../tests/fixtures/qwen4x_tiny_manifest.json")).unwrap();
+        let tiny = m["config"].as_str().unwrap();
+        let own = ConfigQx::parse(tiny, "tiny", None).unwrap();
+        assert!(ConfigQx::agrees(own.clone(), &crate::runtime::describe::describe(&serde_json::from_str(tiny).unwrap()).unwrap()).is_ok());
+        let e = ConfigQx::agrees(own, &d).unwrap_err().to_string();
+        assert!(e.contains("differ") && e.contains("hidden"), "{e}");
     }
 
     /// The n-gram embedding's sizes are refused in words where they make no embedding: a size of 0 or 1, no heads, sizes whose product does not fit a word (the fuzzer's

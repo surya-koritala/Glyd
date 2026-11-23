@@ -31,7 +31,10 @@
 //! | residual and norms: RMS (w, 1 + w, input-scaled, Kimi's two roundings), sandwich norms and the layer scalar, the gated residual, mHC's streams, the depth mix, each family's final norm and collapse (all seven) | 2e-2 | the residual bf16 after each add, the normed value rounded, mHC's Sinkhorn and the depth mix's softmax in fp32 on the GPU's bf16 inputs | 1.6e-2 |
 //!
 //! Not compared on the GPU: the embedding's scale and norm and the head's soft-cap (each family's logits fixture holds them,
-//! `logitscheck`); the Qwen3.5 layout's mixture of experts (not lowered to the executor yet); MTP heads (their blocks are the kinds above).
+//! `logitscheck`); the Qwen3.5 layout's mixture of experts (not lowered to the executor yet); MTP heads (their blocks are the kinds above);
+//! Condor's kinds (Qwen3.8-Flash-Next: the gated residuals and the final mixer, the indexer on GQA, the n-gram embedding), which run on
+//! Condor's own engine and not on the executor yet: the whole tiny model on `Ref` against that engine's logits fixture instead
+//! (`describe_tests::condors_model_on_the_reference_against_condors_engine`: KL mean 8.5e-6, max 5.0e-5).
 
 pub mod attention;
 pub mod comp;
@@ -41,6 +44,7 @@ pub mod mamba;
 pub mod mla;
 pub mod model;
 pub mod mtp;
+pub mod ngram;
 pub mod norm;
 pub mod rope;
 
@@ -231,6 +235,7 @@ fn roles(b: &Block) -> Vec<String> {
         Body::Mixer(Mixer::Linear(_)) => &["qkv", "q", "k", "v", "beta", "decay", "gate", "o"],
         Body::Mixer(Mixer::Compressed(_)) => &["q_a", "q_b", "kv", "o_a", "o_b", "comp_kv", "comp_gate", "idx_kv", "idx_gate", "idx_q_b", "idx_weights"],
         Body::Mixer(Mixer::Mamba2(_)) => &["in", "o"],
+        Body::Ngram(_) => &["key", "value"],
         Body::Ffn(_) => &[
             "gate",
             "up",
@@ -267,6 +272,15 @@ fn roles(b: &Block) -> Vec<String> {
         "indexer_k_norm",
         "indexer_k_norm_bias",
         "indexer_pool_ape",
+        "index_qk",
+        "index_q_norm",
+        "index_k_norm",
+        "mix_down",
+        "mix_up",
+        "inject",
+        "ngram",
+        "norm_key",
+        "norm_conv",
     ];
     let mut r: Vec<String> = Vec::new();
     for p in prods {
@@ -287,6 +301,42 @@ pub fn residual_gate(g: &[f32], temperature: f32) -> (Vec<f32>, Vec<f32>) {
             ((sigmoid(-w) * (1.0 + b)).max(1e-3).sqrt(), b)
         })
         .unzip()
+}
+
+/// `n` on each group of `group` values of `x` (a stream at a time), with each group's part of the weight `w`.
+pub fn norm_groups(n: &crate::runtime::kinds::Norm, x: &[f32], w: Option<&[f32]>, group: usize) -> Vec<f32> {
+    x.chunks(group).enumerate().flat_map(|(i, c)| norm::norm(n, c, w.map(|w| &w[i * group..][..group]), None)).collect()
+}
+
+/// Condor's gated residual on one token's `n` streams `xt` [n hidden]: each stream normed by `norm` (its weight `w`) into nx; the mix m =
+/// sigmoid(up silu(down nx / n)); the block's input the mean over the streams of m_s nx_s; and with `inject`, the streams' weights of the
+/// block's output 2 sigmoid(inject nx / n) (the final mixer has none).
+pub fn gated_mix(
+    n: usize,
+    norm: &crate::runtime::kinds::Norm,
+    w: &[f32],
+    down: &[f32],
+    up: &[f32],
+    inject: Option<&[f32]>,
+    xt: &[f32],
+) -> Result<(Vec<f32>, Vec<f32>)> {
+    let (width, d) = (xt.len(), xt.len() / n.max(1));
+    let rank = down.len() / width.max(1);
+    if n * d != width || w.len() != width || rank * width != down.len() || up.len() != down.len() || inject.is_some_and(|i| i.len() != n * width) {
+        return err(format!(
+            "gated residual: weights of {}, {}, {} and {:?} values for {n} streams of {d}",
+            w.len(),
+            down.len(),
+            up.len(),
+            inject.map(<[f32]>::len)
+        ));
+    }
+    let nx = norm_groups(norm, xt, Some(w), d);
+    let mid: Vec<f32> = matvec(down, width, &nx).into_iter().map(|v| silu(v / n as f32)).collect();
+    let m: Vec<f32> = matvec(up, rank, &mid).into_iter().map(sigmoid).collect();
+    let input = (0..d).map(|i| ((0..n).map(|s| m[s * d + i] as f64 * nx[s * d + i] as f64).sum::<f64>() / n as f64) as f32).collect();
+    let inj = inject.map_or(Vec::new(), |i| matvec(i, width, &nx).into_iter().map(|v| 2.0 * sigmoid(v / n as f32)).collect());
+    Ok((input, inj))
 }
 
 /// mHC's weights for one token: the input's weights over the streams (pre), the output's (post) and the streams' mixing comb[j][k]
@@ -352,6 +402,7 @@ pub enum SeqState {
     Linear(linear::LinearState),
     Comp(comp::CompState),
     Mamba(mamba::MambaState),
+    Ngram(ngram::NgramState),
 }
 
 /// One block on the reference backend: its weights, and each sequence's cache or state by slot.
@@ -380,7 +431,9 @@ impl RefLayer {
             Body::Mixer(Mixer::Attention(a)) => {
                 let st = self.seqs.entry(seq).or_insert_with(|| SeqState::Attention(attention::KvCache::default()));
                 let SeqState::Attention(c) = st else { return err("a sequence's state is not an attention cache") };
-                attention::step(a, p, c, h, pos)
+                let y = attention::step(a, p, c, h, pos);
+                self.margin = c.margin;
+                y
             }
             Body::Mixer(Mixer::Mla(m)) => {
                 let st = self.seqs.entry(seq).or_insert_with(|| SeqState::Mla(mla::LatentCache::default()));
@@ -406,6 +459,11 @@ impl RefLayer {
                 let SeqState::Mamba(s) = st else { return err("a sequence's state is not a Mamba-2 state") };
                 mamba::step(m, p, s, h)
             }
+            Body::Ngram(n) => {
+                let st = self.seqs.entry(seq).or_insert_with(|| SeqState::Ngram(ngram::NgramState::new(n, h.len())));
+                let SeqState::Ngram(s) = st else { return err("a sequence's state is not an n-gram embedding's") };
+                ngram::step(n, p, s, h, token)
+            }
             Body::Ffn(Ffn::Mlp(m)) => ffn::mlp(m, p, "", h),
             Body::Ffn(Ffn::Moe(m)) => {
                 let (y, ids, gap) = ffn::moe_routed(m, p, h, token)?;
@@ -418,8 +476,20 @@ impl RefLayer {
         }
     }
 
+    /// A token's residual width: the streams' (mHC's, the gated residuals', an n-gram embedding's), else the hidden width.
+    pub fn width(&self) -> usize {
+        self.hidden
+            * match (&self.block.residual, &self.block.body) {
+                (Residual::Streams(s), _) => s.streams,
+                (Residual::GatedStreams(g), _) => g.streams,
+                (_, Body::Ngram(n)) => n.streams,
+                _ => 1,
+            }
+    }
+
     /// The block's input from one token's residual `xt` (its streams, where the rule has several): mHC's weighted sum of the streams, with the
-    /// weights its output needs (`post`), else the residual itself.
+    /// weights its output needs (`post`); the gated residuals' mix of the normed streams (the block's norm taken here), with the streams' weights
+    /// of its output; else the residual itself.
     pub fn pre(&self, xt: &[f32]) -> Result<(Vec<f32>, Option<Hc>)> {
         let d = self.hidden;
         Ok(match &self.block.residual {
@@ -427,6 +497,12 @@ impl RefLayer {
                 let (pre, post, comb) = hc_weights(s, &self.p, xt)?;
                 let input: Vec<f32> = (0..d).map(|i| (0..s.streams).map(|j| pre[j] * xt[j * d + i]).sum()).collect();
                 (input, Some((post, comb)))
+            }
+            Residual::GatedStreams(g) => {
+                let p = &self.p;
+                let (input, inj) =
+                    gated_mix(g.streams, &self.block.norm_in, p.vec("norm_in")?, p.vec("mix_down")?, p.vec("mix_up")?, Some(p.vec("inject")?), xt)?;
+                (input, Some((inj, Vec::new())))
             }
             _ => (xt.to_vec(), None),
         })
@@ -457,6 +533,12 @@ impl RefLayer {
                     }
                 }
             }
+            Residual::GatedStreams(g) => {
+                let (inj, _) = hc.ok_or_else(|| Error("a gated residual without the weights of its input".into()))?;
+                for (s, w) in inj.iter().enumerate().take(g.streams) {
+                    xt[s * d..][..d].iter_mut().zip(o).for_each(|(x, &o)| *x += w * o);
+                }
+            }
             Residual::DepthMix(_) => return err("a depth-mix block runs in the model's executor (its sources span blocks)"),
         }
         Ok(())
@@ -465,14 +547,10 @@ impl RefLayer {
     /// The block on the tokens of `x` ([tokens, hidden]), in order: pre-norm, body, post-norm, residual. `tokens` (the ids) may be empty
     /// for a block that does not read them.
     pub fn forward(&mut self, positions: &[u32], seqs: &[u32], tokens: &[u32], x: &mut [f32]) -> Result<()> {
-        let d = self.hidden;
         if seqs.len() != positions.len() {
             return err(format!("{} sequence slots for {} tokens", seqs.len(), positions.len()));
         }
-        let width = match &self.block.residual {
-            Residual::Streams(s) => s.streams * d,
-            _ => d,
-        };
+        let width = self.width();
         if x.len() != positions.len() * width {
             return err(format!("a step of {} values for {} tokens of width {width}", x.len(), positions.len()));
         }
@@ -491,9 +569,14 @@ impl RefLayer {
         Ok(self.norm_out(o))
     }
 
-    /// The block's pre-norm of its input.
+    /// The block's pre-norm of its input: each stream on its own where the input is the streams (an n-gram embedding's); none where the gated
+    /// residuals took it (`pre`).
     pub fn norm_in(&self, input: &[f32]) -> Vec<f32> {
-        norm::norm(&self.block.norm_in, input, self.p.opt("norm_in"), self.p.opt("norm_in_bias"))
+        match (&self.block.residual, &self.block.body) {
+            (Residual::GatedStreams(_), _) => input.to_vec(),
+            (_, Body::Ngram(_)) => norm_groups(&self.block.norm_in, input, self.p.opt("norm_in"), self.hidden),
+            _ => norm::norm(&self.block.norm_in, input, self.p.opt("norm_in"), self.p.opt("norm_in_bias")),
+        }
     }
 
     /// The block's post-norm of its body's output, where it has one.
@@ -538,8 +621,9 @@ impl Backend for Ref {
     }
 
     /// Every kind, in any format a source decodes to f32, at the speed of plain Rust (DeepSeek-V4's compressed attention too: `comp.rs`; a latent
-    /// attention's indexer: `mla.rs`). The match names each kind, so that a kind added to `KindRef` is decided here. (An indexer of plain attention, and
-    /// GLM's `shared` indexer that reuses the previous layer's picks, are not in the reference: such a layer says so where it would pick.)
+    /// attention's indexer: `mla.rs`; Condor's on GQA: `attention.rs`; its n-gram embedding: `ngram.rs`). The match names each kind, so that a kind added
+    /// to `KindRef` is decided here. (A gated-form indexer on plain attention, and GLM's `shared` indexer that reuses the previous layer's picks, are not in
+    /// the reference: such a layer says so where it would pick.)
     fn supports(&self, kind: &KindRef, _: &Format) -> Support {
         match kind {
             KindRef::Attention
@@ -551,7 +635,8 @@ impl Backend for Ref {
             | KindRef::KimiDelta
             | KindRef::Mamba2
             | KindRef::Mlp
-            | KindRef::Moe => Support::Slower("the f32 reference".into()),
+            | KindRef::Moe
+            | KindRef::Ngram => Support::Slower("the f32 reference".into()),
         }
     }
 
@@ -594,6 +679,54 @@ mod tests {
     use super::testing::{assert_close, Fixture};
     use super::*;
     use crate::runtime::kinds::{Decay, Linear, LinearKind, Norm};
+
+    /// Condor's gated residual by hand on one token of two streams of 4 (a rank of 3): each stream normed with its own part of the weight, the
+    /// bottleneck's mix, the mean over the streams, the streams' weights of the output; a block between gated residuals takes no other norm and
+    /// adds w_s o to stream s; the final mixer (`Collapse::GatedMix`) is the mix without the weights.
+    #[test]
+    fn a_gated_residual_by_hand() {
+        use super::testing::fill;
+        use crate::runtime::kinds::{GatedStreamsP, Mlp};
+        let (n, d, r) = (2usize, 4usize, 3usize);
+        let mut p = Params::new();
+        p.put("norm_in", &[n * d], fill("gr.norm", n * d, -0.3, 0.3));
+        p.put("mix_down", &[r, n * d], fill("gr.down", r * n * d, -0.5, 0.5));
+        p.put("mix_up", &[n * d, r], fill("gr.up", n * d * r, -0.5, 0.5));
+        p.put("inject", &[n, n * d], fill("gr.inject", n * n * d, -0.5, 0.5));
+        for (role, rows, cols) in [("gate", 6, d), ("up", 6, d), ("down", d, 6)] {
+            p.put(role, &[rows, cols], fill(&format!("gr.{role}"), rows * cols, -0.5, 0.5));
+        }
+        let x = fill("gr.x", n * d, -2.0, 2.0);
+        let nm = Norm::rms_plus_one(1e-6);
+        // by hand
+        let w = p.vec("norm_in").unwrap();
+        let nx: Vec<f32> = (0..n)
+            .flat_map(|s| {
+                let c = &x[s * d..][..d];
+                let rr = 1.0 / (c.iter().map(|v| v * v).sum::<f32>() / d as f32 + 1e-6).sqrt();
+                (0..d).map(move |i| c[i] * rr * (1.0 + w[s * d + i]))
+            })
+            .collect();
+        let mid: Vec<f32> = matvec(p.vec("mix_down").unwrap(), n * d, &nx).iter().map(|v| silu(v / 2.0)).collect();
+        let m: Vec<f32> = matvec(p.vec("mix_up").unwrap(), r, &mid).iter().map(|&v| sigmoid(v)).collect();
+        let input: Vec<f32> = (0..d).map(|i| (m[i] * nx[i] + m[d + i] * nx[d + i]) / 2.0).collect();
+        let inj: Vec<f32> = matvec(p.vec("inject").unwrap(), n * d, &nx).iter().map(|v| 2.0 * sigmoid(v / 2.0)).collect();
+        let (gi, gw) = gated_mix(n, &nm, w, p.vec("mix_down").unwrap(), p.vec("mix_up").unwrap(), Some(p.vec("inject").unwrap()), &x).unwrap();
+        assert_close(&gi, &input, 1e-6, "the block's input");
+        assert_close(&gw, &inj, 1e-6, "the streams' weights");
+        // the block: the MLP on the mix (no second norm), its output into each stream by its weight
+        let mlp = Mlp { act: Act::Silu, gated: true, bias: false, clamp: None };
+        let block =
+            Block { norm_in: nm, body: Body::Ffn(Ffn::Mlp(mlp)), norm_out: None, residual: Residual::GatedStreams(GatedStreamsP { streams: n, lowrank: r }) };
+        let mut layer = RefLayer::new(block, d, p.clone());
+        let mut y = x.clone();
+        layer.forward(&[0], &[0], &[], &mut y).unwrap();
+        let o = ffn::mlp(&mlp, &p, "", &input).unwrap();
+        let want: Vec<f32> = (0..n * d).map(|j| x[j] + inj[j / d] * o[j % d]).collect();
+        assert_close(&y, &want, 1e-6, "the streams after the block");
+        // the final mixer: the mix alone
+        assert_eq!(gated_mix(n, &nm, w, p.vec("mix_down").unwrap(), p.vec("mix_up").unwrap(), None, &x).unwrap(), (gi, Vec::new()));
+    }
 
     /// A block built through the backend seam: two sequences interleaved in one flat batch give what each gives alone, and the backend
     /// refuses a kind it has no reference for.

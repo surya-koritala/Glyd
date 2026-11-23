@@ -100,6 +100,15 @@ pub const DEEPSEEK_HF: Convention = Convention {
     ..DEEPSEEK
 };
 
+/// Qwen3.8-Flash-Next's (Condor's model): Hugging Face's, with no final norm of its own (its final mixer's per-stream norm is the final
+/// norm, the mixer's bottleneck the model's own roles).
+pub const QWEN4X: Convention = Convention {
+    name: "Qwen3.8-Flash-Next",
+    final_norm: "{p}hyper_connection_mixer.hc_norm.weight",
+    extra: &[("out_mix_down", "hyper_connection_mixer.input_mix_weight_down.weight"), ("out_mix_up", "hyper_connection_mixer.input_mix_weight_up.weight")],
+    ..HF
+};
+
 /// Nemotron-H's (`backbone.`).
 pub const NEMOTRON: Convention = Convention {
     name: "Nemotron-H",
@@ -158,6 +167,47 @@ pub mod part {
         ("shared_down", "mlp.shared_expert.down_proj.weight"),
         ("shared_router", "mlp.shared_expert_gate.weight"),
     ];
+
+    // ---- Qwen3.8-Flash-Next (Condor): the gated residuals around each block, the indexer, the experts stacked, the n-gram embedding
+    pub const QX_GR_ATTN: Roles = &[
+        ("norm_in", "attn_hyper_connection.hc_norm.weight"),
+        ("mix_down", "attn_hyper_connection.input_mix_weight_down.weight"),
+        ("mix_up", "attn_hyper_connection.input_mix_weight_up.weight"),
+        ("inject", "attn_hyper_connection.block_inject_weight.weight"),
+    ];
+    pub const QX_GR_MLP: Roles = &[
+        ("norm_in", "mlp_hyper_connection.hc_norm.weight"),
+        ("mix_down", "mlp_hyper_connection.input_mix_weight_down.weight"),
+        ("mix_up", "mlp_hyper_connection.input_mix_weight_up.weight"),
+        ("inject", "mlp_hyper_connection.block_inject_weight.weight"),
+    ];
+    pub const QX_INDEXER: Roles = &[
+        ("index_qk", "self_attn.indexer.index_qk_proj.weight"),
+        ("index_q_norm", "self_attn.indexer.q_layernorm.weight"),
+        ("index_k_norm", "self_attn.indexer.k_layernorm.weight"),
+    ];
+    pub const QX_MOE: Roles = &[
+        ("router", "mlp.gate.weight"),
+        ("experts_gate_up", "mlp.experts.gate_up_proj"),
+        ("experts_down", "mlp.experts.down_proj"),
+        ("shared_gate", "mlp.shared_expert.gate_proj.weight"),
+        ("shared_up", "mlp.shared_expert.up_proj.weight"),
+        ("shared_down", "mlp.shared_expert.down_proj.weight"),
+        ("shared_router", "mlp.shared_expert_gate.weight"),
+    ];
+    /// The n-gram embedding's block; its table's role `ngram` is the shards of `QX_NGRAM_SHARD` stacked (`shards`).
+    pub const QX_NGRAM: Roles = &[
+        ("norm_in", "ple.norm_query.weight"),
+        ("key", "ple.key_proj.weight"),
+        ("value", "ple.value_proj.weight"),
+        ("norm_key", "ple.norm_key.weight"),
+        ("norm_conv", "ple.norm_conv.weight"),
+        ("conv", "ple.conv1d.weight"),
+        ("ngram_mult", "ple.ple_embedding.layer_multipliers"),
+        ("ngram_sizes", "ple.ple_embedding.ngram_heads_vocab_sizes"),
+        ("ngram_offsets", "ple.ple_embedding.ngram_heads_offsets"),
+    ];
+    pub const QX_NGRAM_SHARD: &str = "ple.ple_embedding.ngram_embedding.shard_{S}.weight";
 
     // ---- Gemma 4: sandwich norms and the layer's scalar
     pub const GEMMA_ATTN_OUT: Roles = &[("norm_out", "post_attention_layernorm.weight")];
@@ -354,6 +404,11 @@ pub fn roles(table: Roles, at: &str, experts: usize, keep: impl Fn(&str) -> bool
             (r.to_string(), src)
         })
         .collect()
+}
+
+/// One tensor saved in `n` shards along its rows (`{S}` in `pat` the shard's number), under the path `at`: the shards stacked.
+pub fn shards(pat: &str, at: &str, n: usize) -> Source {
+    Source::Rows((0..n).map(|s| format!("{at}.{}", pat.replace("{S}", &s.to_string()))).collect())
 }
 
 /// Every role of `table`.

@@ -176,20 +176,48 @@ pub struct OutGate {
 
 /// A sparse-attention indexer: per query, a score sum_h w_h relu(q_h . k) of each past key (one key a token, a pooled key a block of
 /// `block` tokens, or a compressed entry), the best kept. Condor's block indexer, GLM's pooled-key indexer and DeepSeek-V4's
-/// compressed-entry indexer are this kind with parameters. In `Ref`: a latent attention's (`reference::mla`, GLM-5.3-Flash) and
-/// DeepSeek-V4's (`reference::comp`).
-#[derive(Clone, Debug, PartialEq)]
+/// compressed-entry indexer are this kind with parameters. In `Ref`: a latent attention's (`reference::mla`, GLM-5.3-Flash),
+/// DeepSeek-V4's (`reference::comp`) and Condor's on a GQA attention (`reference::attention`, `IndexForm::Mean`).
+#[derive(Clone, PartialEq)]
 pub struct Indexer {
     pub heads: usize,
     pub head_dim: usize,
     /// What a query keeps. A latent attention: `top_k` tokens, as the `top_k / block` best complete pools of `block` tokens and the tokens
-    /// of the incomplete last pool (GLM-5.3-Flash's `index_topk`; `block` 1: the best `top_k` tokens). DeepSeek-V4: `top_k` compressed
-    /// entries (`block` is its ratio).
+    /// of the incomplete last pool (GLM-5.3-Flash's `index_topk`; `block` 1: the best `top_k` tokens; Condor's `indexer_budget` in pools of
+    /// `indexer_compress_ratio`). DeepSeek-V4: `top_k` compressed entries (`block` is its ratio).
     pub top_k: usize,
     /// Tokens a pooled key covers (GLM-5.3-Flash's `index_kpool`; 1: a key per token).
     pub block: usize,
     /// The layer reuses the previous indexer layer's choice and has no indexer weights (GLM's `indexer_types` "shared").
     pub shared: bool,
+    pub form: IndexForm,
+}
+
+/// The derived form, with `form` said only where it is not `Gated`: the gated indexers' descriptions read as they did before the field (the
+/// digests of tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for Indexer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("Indexer");
+        s.field("heads", &self.heads).field("head_dim", &self.head_dim).field("top_k", &self.top_k).field("block", &self.block).field("shared", &self.shared);
+        if self.form != IndexForm::Gated {
+            s.field("form", &self.form);
+        }
+        s.finish()
+    }
+}
+
+/// How an indexer makes its queries, its pooled keys and its scores.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum IndexForm {
+    /// Queries and a key a token from their own products, each token's key normed; a pool's key the softmax(gate + ape)-weighted sum of
+    /// its tokens' keys; the heads' scores weighed by a learned product of the block's input (GLM-5.3-Flash, DeepSeek-V4).
+    Gated,
+    /// Condor's Qwen Sparse Attention (Qwen3.8-Flash-Next): the `heads` queries and ONE key from one product of the block's input (role
+    /// `index_qk` [(heads + 1) head_dim, hidden]); each query head normed by `norm` (role `index_q_norm` [head_dim]) and rotated as the
+    /// attention's queries (its rope, on the first `dim` channels of the head); the raw keys cached, a pool's key the mean of its tokens'
+    /// raw keys, normed by `norm` (role `index_k_norm`) and rotated at the pool's first position; a pool's score sum_h relu(q_h . k) /
+    /// sqrt(head_dim), the heads unweighted.
+    Mean { norm: Norm },
 }
 
 /// Where an attention rounds to bf16 inside: the arithmetic of the implementation a family's engine follows.
@@ -438,10 +466,42 @@ pub enum Ffn {
     Moe(Moe),
 }
 
+/// A hashed n-gram embedding added to the residual streams (Condor's per-layer embedding, Qwen3.8-Flash-Next's `ple`).
+///
+/// Per position, for each order n of 2..=`order`, the token and the n - 1 tokens before it inside its segment (a segment ends at the
+/// token `eos`; a token before the segment's start, or before the sequence, reads as `eos`) hashed: mixed = XOR over p < n of
+/// (token_p mult_p), the multipliers from splitmix64 of `seed` + 10007 `index` (`index`: the layer's place among the model's n-gram
+/// layers; `vocab` bounds them so no product overflows); each of the order's `heads` tables takes mixed mod its size at its offset (table g
+/// of the model's: the (g + 1)-th prime past `base` - 1; the offsets cumulative). The tables' rows concatenated are e [dim]. Then, per
+/// stream s of the block's normed input q (the block's `norm_in`, each stream normed on its own): k_s = `norm_key`(`key` e)_s, v =
+/// `value` e, gate_s = <k_s, q_s> / sqrt(hidden), made sign(gate_s) sqrt(max(|gate_s|, 1e-6)), g_s = sigmoid(gate_s) v; the output is g +
+/// silu(conv(`norm_conv`(g))), a depthwise causal convolution over the streams' channels of `conv` taps `dilation` positions apart; the
+/// residual adds it to the streams. Roles: `ngram` [rows, dim / ((order - 1) heads)] (the checkpoint's shards stacked), `key` [streams
+/// hidden, dim], `value` [hidden, dim], `norm_key` and `norm_conv` [streams hidden] (their kind `norm`, a stream at a time), `conv`
+/// [streams hidden, conv]; and the hash's own int64 tensors, what the parameters make: `ngram_mult` [order], `ngram_sizes`,
+/// `ngram_offsets` [(order - 1) heads]. A sequence's state: its last `order` - 1 tokens and the convolution's last (conv - 1) dilation
+/// inputs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ngram {
+    pub order: usize,
+    pub heads: usize,
+    pub dim: usize,
+    pub base: u64,
+    pub vocab: usize,
+    pub seed: u64,
+    pub index: usize,
+    pub eos: u32,
+    pub streams: usize,
+    pub conv: usize,
+    pub dilation: usize,
+    pub norm: Norm,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Body {
     Mixer(Mixer),
     Ffn(Ffn),
+    Ngram(Ngram),
 }
 
 /// Muse's gated residual X = a X + b O, the factors from role `res_gate` [hidden] and the temperature.
@@ -452,7 +512,7 @@ pub struct GateP {
 
 /// n residual streams mixed per block: mHC (GLM-5.3, DeepSeek-V4). The block's input is a weighted sum of the streams; its output is
 /// spread back over them with the Sinkhorn-projected mixing of the streams. Roles `hc_fn` [(2 + n) n, n hidden], `hc_base` [(2 + n) n],
-/// `hc_scale` [3]. Condor's gated residuals are a second form of this rule, not in the reference yet.
+/// `hc_scale` [3]. Condor's gated residuals are the other rule of several streams (`GatedStreamsP`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StreamsP {
     pub streams: usize,
@@ -472,6 +532,17 @@ pub struct DepthMixP {
     pub starts: bool,
 }
 
+/// Condor's gated residuals (Qwen3.8-Flash-Next's `GatedResidual`): `streams` copies of the hidden width, flattened. The block's `norm_in`
+/// (role [streams hidden], a weight a stream) norms each stream on its own (n), and there is no other pre-norm; the block's input is the
+/// mean over the streams of m_s n_s, m = sigmoid(`mix_up` silu(`mix_down` n / streams)) a value per stream and channel; after the block
+/// each stream s adds w_s o, w = 2 sigmoid(`inject` n / streams). No mixing of the streams with each other (mHC's has). Roles `mix_down`
+/// [lowrank, streams hidden], `mix_up` [streams hidden, lowrank], `inject` [streams, streams hidden].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GatedStreamsP {
+    pub streams: usize,
+    pub lowrank: usize,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Residual {
     Add,
@@ -479,6 +550,7 @@ pub enum Residual {
     AddScaled(f32),
     Gated(GateP),
     Streams(StreamsP),
+    GatedStreams(GatedStreamsP),
     DepthMix(DepthMixP),
     /// x = (x + o) s with the scalar of role `res_scale` [1]: gemma-4's per-layer scalar after the feed-forward block.
     AddThenScale,
@@ -526,6 +598,9 @@ pub enum Collapse {
     /// DeepSeek-V4's hyper-head: a weighted sum of the streams, the weights sigmoid(`out_hc_fn` rms(streams) `out_hc_scale` +
     /// `out_hc_base`) + eps (roles [n, n hidden], [1], [n]).
     Weighted { eps: f32, norm_eps: f32 },
+    /// Condor's final mixer: the gated residuals' input mix (`GatedStreamsP`) with the model's roles `out_mix_down`, `out_mix_up`, each stream
+    /// normed by the final norm (its weight [n hidden], a stream's each) before the mix, and no norm after it.
+    GatedMix,
 }
 
 /// A draft head: a few blocks after a projection of [embedding of the next token, the model's last hidden state] (R6).

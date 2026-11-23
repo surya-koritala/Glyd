@@ -420,8 +420,8 @@ fn kimi_k3s_packed_experts_are_named_and_other_packings_refused() {
     refused(&|q| q["ignore"] = serde_json::json!(["re:.*self_attn.*", "re:.*lm_head.*"]), "shared_experts");
 }
 
-/// Every config of tests/fixtures describes from its own file, the toy and tiny ones as the released: all but Condor's (Qwen3.8-Flash-Next, `qwen4_exp_text`), whose
-/// indexer, n-gram embedding and gated residuals are kinds of R3d (#140), and which is refused in words meanwhile.
+/// Every config of tests/fixtures describes from its own file, the toy and tiny ones as the released (Condor's Qwen3.8-Flash-Next too: 48 layers of two blocks, and
+/// the n-gram embedding's block before its second layer).
 #[test]
 fn every_fixture_config_describes() {
     for (f, blocks) in [
@@ -431,6 +431,7 @@ fn every_fixture_config_describes() {
         ("glm5_next_toy_config.json", 16),
         ("nemotron_h_config.json", 88),
         ("nemotron_h_moetoy_config.json", 6),
+        ("qwen4x_config.json", 97),
     ] {
         let d = describe(&fixture(f)).unwrap_or_else(|e| panic!("{f}: {}", e.msg));
         assert_eq!(d.desc.blocks.len(), blocks, "{f}");
@@ -438,8 +439,6 @@ fn every_fixture_config_describes() {
     for (repo, c) in fixture("qwen35_configs.json").as_object().unwrap() {
         describe(c).unwrap_or_else(|e| panic!("{repo}: {}", e.msg));
     }
-    let e = describe(&fixture("qwen4x_config.json")).unwrap_err().msg;
-    assert!(e.contains("qwen4_exp_text"), "{e}");
 }
 
 /// Every model config the fixtures hold, by a name: tests/fixtures' (each entry of qwen35_configs.json apart), the headers' and the tiny models' of
@@ -517,9 +516,9 @@ fn fixture_descriptions_are_unchanged() {
     }
     let gone: Vec<_> = was.keys().filter(|k| !now.contains_key(*k)).collect();
     assert!(gone.is_empty(), "recorded, and no fixture now: {gone:?}");
-    // (every config but Condor's describes: its kinds are R3d's, #140)
+    // (every config describes)
     let refused: Vec<_> = now.iter().filter(|(_, e)| e.get("refused").is_some()).map(|(n, _)| n.as_str()).collect();
-    assert_eq!(refused, ["qwen4x_config.json"]);
+    assert!(refused.is_empty(), "{refused:?}");
 }
 
 /// Nemotron 3's released configs (Nano, 3.5 Lightning) say `moe_shared_expert_overlap: true`, a schedule of the shared experts beside the exchange between GPUs,
@@ -531,4 +530,128 @@ fn nemotron_h_shared_expert_overlap_is_read_either_way() {
     cfg["moe_shared_expert_overlap"] = serde_json::Value::Bool(true);
     let on = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
     assert_eq!(format!("{:#?}", on.desc), off);
+}
+
+/// The tiny Qwen3.8-Flash-Next of tests/fixtures/qwen4x_tiny_manifest.json (the tensors transformers saved for that config: Condor's random model of the `qwen4x`
+/// logits case is made from it): its config describes exactly those tensors, each at its saved shape.
+#[test]
+fn condors_tiny_config_describes_its_tensors() {
+    let m = fixture("qwen4x_tiny_manifest.json");
+    let cfg: serde_json::Value = serde_json::from_str(m["config"].as_str().unwrap()).unwrap();
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    let saved: std::collections::BTreeMap<String, Vec<usize>> = m["tensors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| (t[0].as_str().unwrap().to_string(), t[2].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect()))
+        .collect();
+    assert_eq!(d.names(), saved.keys().cloned().collect::<BTreeSet<_>>());
+    assert_eq!(d.shapes, saved, "each tensor's shape as the config makes it");
+    // (8 layers of two blocks, the n-gram embedding's before the second; four streams; the head's collapse is the final mixer)
+    use super::kinds::*;
+    assert_eq!((d.desc.blocks.len(), d.desc.embed.streams, d.desc.head.collapse, d.mtp_layers), (17, 4, Collapse::GatedMix, 0));
+    let Body::Ngram(n) = &d.desc.blocks[2].body else { panic!("{:?}", d.desc.blocks[2].body) };
+    assert_eq!((n.order, n.heads, n.dim, n.base, n.seed, n.index, n.eos, n.conv, n.dilation), (3, 8, 256, 1000, 1234, 0, 2000, 4, 3));
+    let Body::Mixer(Mixer::Attention(a)) = &d.desc.blocks[7].body else { panic!("{:?}", d.desc.blocks[7].body) };
+    let ix = a.indexer.as_ref().unwrap();
+    assert_eq!((ix.heads, ix.head_dim, ix.top_k, ix.block, a.rope.as_ref().unwrap().dim), (4, 128, 8, 4, 64));
+    assert!(d
+        .desc
+        .blocks
+        .iter()
+        .all(|b| matches!(b.residual, Residual::GatedStreams(GatedStreamsP { streams: 4, lowrank: 64 })) || matches!(b.body, Body::Ngram(_))));
+}
+
+/// Condor's released config (tests/fixtures/qwen4x_config.json) describes every tensor Condor's engine loads (src/qwen4x.rs: each layer's matrices, the gated
+/// residuals' and the final mixer's, the n-gram embedding's products), the vision tower and the MTP layer left; and what it does not take is refused in words.
+#[test]
+fn condors_released_config() {
+    use super::kinds::*;
+    let cfg = fixture("qwen4x_config.json");
+    let d = describe(&cfg).unwrap();
+    let c = crate::qwen4x::ConfigQx::parse(&cfg.to_string(), "x", None).unwrap();
+    let names = d.names();
+    let mut loads: Vec<String> = vec!["lm_head.weight".into(), format!("{}embed_tokens.weight", c.prefix)];
+    let pack = |p: crate::qwen35::Pack35| p.parts.into_iter().map(|x| x.0).collect::<Vec<_>>();
+    for l in 0..c.layers {
+        loads.extend(c.layer_packs(l).into_iter().flat_map(pack));
+        for g in ["attn_hyper_connection", "mlp_hyper_connection"] {
+            let m = format!("{}.{g}", c.layer_name(l));
+            loads.extend(c.gr_packs(&m).into_iter().flat_map(pack));
+            loads.extend([format!("{m}.hc_norm.weight"), format!("{m}.block_inject_weight.weight")]);
+        }
+    }
+    loads.extend(c.gr_packs(&c.mixer_name(false)).into_iter().flat_map(pack));
+    loads.extend(c.ple_pack().into_iter().flat_map(pack));
+    let missing: Vec<&String> = loads.iter().filter(|n| !names.contains(*n)).collect();
+    assert!(missing.is_empty(), "{missing:?}");
+    assert_eq!((d.desc.blocks.len(), d.mtp_layers, d.desc.hidden, d.desc.vocab), (97, 1, 2560, 248320));
+    assert_eq!(d.unread, ["model.visual.", "mtp."]);
+    // (the n-gram table: 128 shards of the 16 tables' rows padded to 128)
+    let shards = names.iter().filter(|n| n.contains("ngram_embedding.shard_")).count();
+    let rows: usize = d.shapes.iter().filter(|(n, _)| n.contains("ngram_embedding.shard_")).map(|(_, s)| s[0]).sum();
+    assert_eq!((shards, rows % 128, d.shapes[&format!("{}layers.1.ple.ple_embedding.ngram_embedding.shard_0.weight", c.prefix)][1]), (128, 0, 160));
+    let refused = |edit: &dyn Fn(&mut serde_json::Value), says: &str| {
+        let mut x = cfg.clone();
+        edit(&mut x["text_config"]);
+        let e = describe(&x).err().unwrap_or_else(|| panic!("{says}: described")).msg;
+        assert!(e.contains(says), "{e}");
+    };
+    refused(&|t| t["indexer_kv_heads"] = 2.into(), "indexer_kv_heads");
+    refused(&|t| t["indexer_budget"] = 2049.into(), "pools of 4");
+    refused(&|t| _ = t.as_object_mut().unwrap().remove("indexer_head_dim"), "some are missing");
+    refused(&|t| t["ple_layer_ids"] = serde_json::json!([4]), "ple_layer_ids 4");
+    refused(&|t| t["hc_count"] = 1.into(), "1 streams");
+    refused(&|t| t["number_of_conv_states"] = 1.into(), "number_of_conv_states");
+    refused(&|t| t["qk_norm_type"] = "layer".into(), "qk_norm_type");
+    refused(&|t| t["ngram_vocab_size_base"] = (1u64 << 50).into(), "an n-gram embedding");
+    refused(&|t| t["heads_per_ngram"] = u64::MAX.into(), "an n-gram embedding");
+    // (no n-gram layer: no eos needed, one conv state)
+    let mut x = cfg.clone();
+    x["text_config"]["ple_layer_ids"] = serde_json::json!([]);
+    let plain = describe(&x).unwrap();
+    assert!(plain.desc.blocks.len() == 96 && !plain.desc.blocks.iter().any(|b| matches!(b.body, Body::Ngram(_))));
+}
+
+/// Condor's model from its config.json alone, on the CPU reference of the layer kinds, against Condor's own engine: the random tiny Qwen3.8-Flash-Next of the `qwen4x`
+/// logits case (src/logits.rs `qwen4x_random`) and the rows its engine recorded on an RTX 4080 SUPER at kestrel (tests/logits/qwen4x.sm89.json.gz), where the random
+/// model's experts are on the six-bit grid kestrel holds them on and the engine's other matrices are lossless: the engine runs this model's weights, its activations
+/// bf16. The two implementations share no code. The prompt of 24 and the 12 decode steps (the prompt of 150 takes 50 s more here): KL mean 8.5e-6, max 5.0e-5, the
+/// best token 6 of 6 where it leads clearly, the largest logit difference 0.097 (measured 2026-11-23). It counts: with the indexer keeping every token the KL mean is
+/// 1.8e-4 and the best token 4 of 6; with the n-gram hash's seed off by one, 1.1e-2 and 0 of 6.
+#[cfg(feature = "dev")]
+#[test]
+fn condors_model_on_the_reference_against_condors_engine() {
+    use super::kinds::{Body, Mixer};
+    use super::reference::model::checkpoint_tensor;
+    use crate::logits::{compare, Bound, Fixture};
+    let dir = std::env::temp_dir().join(format!("glyd-qwen4x-ref-{}", std::process::id()));
+    crate::logits::qwen4x_random(&dir).unwrap();
+    let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
+    let mut fx = Fixture::read(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/logits/qwen4x.sm89.json.gz")).unwrap();
+    // (the long prompt's row left out)
+    fx.rows.pop();
+    fx.long.clear();
+    let src = |n: &str| checkpoint_tensor(&ck, n);
+    let run = |d: &super::describe::Described| {
+        let mut m = RefModel::load(d, &src).unwrap();
+        let mut rows = vec![m.forward(&fx.prompt, 0).unwrap().pop().unwrap()];
+        for (i, &t) in fx.decode.iter().enumerate() {
+            rows.push(m.forward(&[t], (fx.prompt.len() + i) as u32).unwrap().pop().unwrap());
+        }
+        rows
+    };
+    let v = compare(&fx, &Bound::Kl { mean: 5e-5, max: 2e-4, top1: 1.0 }, &run(&d));
+    assert!(v.ok && v.max_dlogit < 0.2, "KL mean {:.3e} max {:.3e}, largest logit difference {:.4}: {:?}", v.mean_kl, v.max_kl, v.max_dlogit, v.notes);
+    let mut every = d.clone();
+    for b in every.desc.blocks.iter_mut() {
+        if let Body::Mixer(Mixer::Attention(a)) = &mut b.body {
+            a.indexer.as_mut().unwrap().top_k = 1 << 20;
+        }
+    }
+    let w = compare(&fx, &Bound::Kl { mean: 5e-5, max: 2e-4, top1: 1.0 }, &run(&every));
+    assert!(w.mean_kl > 1e-4, "the indexer's picks do not show: KL mean {:.3e}", w.mean_kl);
+    let _ = std::fs::remove_dir_all(&dir);
 }
