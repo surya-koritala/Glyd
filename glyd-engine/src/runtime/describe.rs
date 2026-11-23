@@ -968,6 +968,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
             sinkhorn_iters: k.opt_usize("hc_sinkhorn_iters")?.unwrap_or(20),
             eps: k.opt_f64("hc_eps")?.unwrap_or(1e-6) as f32,
             norm_eps: eps,
+            rounding: Rounding::Twice,
         })
     } else {
         None
@@ -1488,6 +1489,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
         sinkhorn_iters: k.opt_usize("hc_sinkhorn_iters")?.unwrap_or(20),
         eps: k.opt_f64("hc_eps")?.unwrap_or(1e-6) as f32,
         norm_eps: eps,
+        rounding: Rounding::Once,
     };
     let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
     // each layer's compression ratio and whether it is CSA (overlap and indexer), its rope, and whether its MoE is hash-routed

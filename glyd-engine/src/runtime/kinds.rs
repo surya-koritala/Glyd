@@ -12,7 +12,8 @@ pub enum Rounding {
     F32,
     /// The kind's result rounded once.
     Once,
-    /// RMSNorm only: the normed value rounded, then times the weight and rounded again (KimiRMSNorm, `research/kimi-k3.md` §2.1).
+    /// RMSNorm: the normed value rounded, then times the weight and rounded again (KimiRMSNorm, `research/kimi-k3.md` §2.1). Residual streams
+    /// (`StreamsP`): transformers' bf16 tensors between operations, the collapse's norm so too.
     Twice,
 }
 
@@ -461,6 +462,11 @@ pub struct StreamsP {
     pub eps: f32,
     /// The weightless RMS norm of the flattened streams before the mixing weights.
     pub norm_eps: f32,
+    /// Where the mixing rounds: `Once`, the release's fp32 mixing projection and update, each result rounded once, the collapse's norm
+    /// the weight times the normed value rounded once (DeepSeek-V4); `Twice`, transformers' bf16 tensors between operations: a bf16
+    /// projection, post and comb rounded before they weigh, each term of the update rounded, the collapse's norm rounding the normed
+    /// value before its weight (GLM-5.3-Flash). The final collapse and norm (`Collapse::Weighted`, `Collapse::Mean`) round as the blocks'.
+    pub rounding: Rounding,
 }
 
 /// Kimi-K3's depth mix: a block's input is a softmax mix of the sources so far (the embedding and each completed group of layers'

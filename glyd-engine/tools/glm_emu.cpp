@@ -131,6 +131,7 @@ static float warp_max(float v) {  // (qwen35.cu's)
     return v;
 }
 
+#include "../kernels/residual.cu"
 #include "../kernels/glm.cu"
 
 // ---- launching -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -230,18 +231,19 @@ static void streams() {
     const float eps = (float)m[2], hc_eps = (float)m[3];
     const auto hx = load<bf16>("hx.bin"), hfn = load<bf16>("hfn.bin"), hnw = load<bf16>("hnw.bin"), ho = load<bf16>("ho.bin");
     const auto hbase = load<float>("hbase.bin"), hscale = load<float>("hscale.bin");
-    std::vector<bf16> h((size_t)n * D), post = hx, head((size_t)n * D), spread((size_t)n * GM_HC * D);
-    std::vector<float> hcp((size_t)n * GM_NP);
-    launch({(unsigned)n, 1, 1}, {512, 1, 1}, [&] { glm_hc_mix(hx.data(), hfn.data(), hbase.data(), hscale.data(), hnw.data(), h.data(), hcp.data(), D, eps, hc_eps, iters); });
-    launch({(unsigned)n, ceil_div(D, 256), 1}, {256, 1, 1}, [&] { glm_hc_post(post.data(), ho.data(), hcp.data(), D); });
-    launch({(unsigned)n, 1, 1}, {512, 1, 1}, [&] { glm_hc_head(hx.data(), hnw.data(), head.data(), D, eps); });
-    launch({(unsigned)n, ceil_div(D, 256), 1}, {256, 1, 1}, [&] { glm_streams(ho.data(), spread.data(), D); });
+    std::vector<bf16> h((size_t)n * D), post = hx, head((size_t)n * D), spread((size_t)n * HC_N * D);
+    std::vector<float> hcp((size_t)n * HC_NP);
+    // (kernels/residual.cu's streams in transformers' bf16 rounding, as GLM runs them)
+    launch({(unsigned)n, 1, 1}, {512, 1, 1}, [&] { hc_mix(hx.data(), hfn.data(), hbase.data(), hscale.data(), hnw.data(), h.data(), hcp.data(), D, eps, hc_eps, iters, 0); });
+    launch({(unsigned)n, ceil_div(D, 256), 1}, {256, 1, 1}, [&] { hc_post(post.data(), ho.data(), hcp.data(), D, 1); });
+    launch({(unsigned)n, 1, 1}, {512, 1, 1}, [&] { hc_head(hx.data(), nullptr, 0, nullptr, nullptr, hnw.data(), head.data(), D, eps, 0.f, 0, 0); });
+    launch({(unsigned)n, ceil_div(D, 256), 1}, {256, 1, 1}, [&] { hc_streams(ho.data(), spread.data(), D); });
     {   // few rows: the split projection and its rest (what a decode step runs)
-        const int m8 = std::min(n, 8), KS = GM_HC * D / GM_HC_CPB;
-        std::vector<float> part((size_t)m8 * KS * (GM_NP + 1)), hcp_s((size_t)m8 * GM_NP);
+        const int m8 = std::min(n, 8), KS = HC_N * D / HC_CPB_BF16;
+        std::vector<float> part((size_t)m8 * KS * (HC_NP + 1)), hcp_s((size_t)m8 * HC_NP);
         std::vector<bf16> h_s((size_t)m8 * D);
-        launch({(unsigned)m8, (unsigned)KS, 1}, {128, 1, 1}, [&] { glm_hc_proj(hx.data(), hfn.data(), part.data(), D); });
-        launch({(unsigned)m8, 1, 1}, {512, 1, 1}, [&] { glm_hc_fin(hx.data(), part.data(), KS, hbase.data(), hscale.data(), hnw.data(), h_s.data(), hcp_s.data(), D, eps, hc_eps, iters); });
+        launch({(unsigned)m8, (unsigned)KS, 1}, {128, 1, 1}, [&] { hc_proj_bf16(hx.data(), hfn.data(), part.data(), D, HC_NP); });
+        launch({(unsigned)m8, 1, 1}, {512, 1, 1}, [&] { hc_fin(hx.data(), part.data(), KS, hbase.data(), hscale.data(), hnw.data(), h_s.data(), hcp_s.data(), D, eps, hc_eps, iters, 0, 0); });
         save("hc_params_s.bin", hcp_s);
         save("hc_h_s.bin", h_s);
     }

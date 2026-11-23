@@ -4,7 +4,7 @@
 //! is run by the executor, one with an expert cache (or at the hummingbird level) runs its own launches over the executor's buffers (`NhHost`).
 
 use super::attn::{AttnOp, QkNorm};
-use super::{Dyn, ModelDesc, Op, Opts, Ring, Slot, Stage};
+use super::{Dyn, ModelDesc, MoeOp, NormW, Op, Opts, Ring, Slot, Stage};
 use crate::dev::Dev;
 use crate::ffi::{err, Result};
 use crate::kern_nh::{MoeFactory, SsdWs, WeightsNh, NH_N, NH_P};
@@ -147,7 +147,7 @@ pub fn describe(c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<Mode
         (n_mats, n_small) = (n_mats + m, n_small + n);
         let mut ops = Vec::new();
         if l == 0 {
-            first = Some(Op::RmsNorm { x: Slot::X, w: s0, y: Slot::H, plus1: false });
+            first = Some(Op::RmsNorm { x: Slot::X, w: s0, y: Slot::H, weight: NormW::Plain, eps: c.eps });
         } else {
             ops.push(Op::NormAdd { y: Slot::O, w: s0, plus1: false });
         }
@@ -174,7 +174,7 @@ pub fn describe(c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<Mode
                 ]);
             }
             NhKind::Moe => {
-                ops.push(Op::Moe { block: n_moe });
+                ops.push(Op::Moe(MoeOp::of(n_moe)));
                 n_moe += 1;
             }
         }
@@ -209,7 +209,7 @@ pub fn describe(c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<Mode
         ropes: Vec::new(),
         rings,
         // (a later stage never runs the first operation)
-        first: first.unwrap_or(Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, plus1: false }),
+        first: first.unwrap_or(Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, weight: NormW::Plain, eps: c.eps }),
         layers,
         states,
         final_norm: Some((n_small, Slot::O, false)),

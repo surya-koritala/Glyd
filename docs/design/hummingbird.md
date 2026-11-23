@@ -37,7 +37,7 @@ authority (a reader never draws them).
 ## Running it: one block for every family
 
 `moe::MoeLayer` already holds its routed experts in one of several formats (the packs, or `f8` as an FP8 release has them). Hummingbird
-is one more, `hb`, and the layer's forwards (`forward`, `forward_muse`, `forward_release` and Kimi-K3's latent path) keep their router,
+is one more, `hb`, and the layer's forwards (`forward`, `forward_normed`, `forward_weighed` and Kimi-K3's latent path) keep their router,
 activation and sum. Only the two products change:
 
 1. x' = R x once a token (a block a run of b values, signs then the butterfly).
