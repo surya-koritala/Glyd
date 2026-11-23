@@ -337,6 +337,30 @@ impl Dyn {
         self.kv12 = t;
     }
 
+    /// Each ring's pages that hold escape chunks, read from their headers (a page's directory words past its heads' headers and its used word): the
+    /// pages, the chunks, and those of block 0 (which a table names where a sequence holds no block: what writes there is no sequence's).
+    #[cfg(feature = "dev")]
+    fn kv12_chunks_held(&self) -> Result<Vec<(usize, usize, usize, usize)>> {
+        let Some(lx) = &self.lossless else { return Ok(Vec::new()) };
+        let mut out = Vec::new();
+        for (r, rp) in lx.rings.iter().enumerate() {
+            let Some(rp) = rp else { continue };
+            let (hp, n) = ((rp.shape.heads * rp.shape.channels / 128) as usize, rp.pool.bytes / rp.geom.page_stride as usize);
+            let (mut pages, mut chunks, mut zero) = (0, 0, 0);
+            for b in 0..n {
+                let mut dir = [0u32; 17];
+                rp.pool.read(b * rp.geom.page_stride as usize + 16 * hp, &mut dir)?;
+                let held = dir[1..].iter().filter(|&&d| d != 0).count();
+                if held > 0 {
+                    (pages, chunks) = (pages + 1, chunks + held);
+                    zero += if b == 0 { held } else { 0 };
+                }
+            }
+            out.push((r, pages, chunks, zero));
+        }
+        Ok(out)
+    }
+
     /// The selected sequence's keys and values of ring `ring` read back from its 12-bit pages at its tokens before n, as `kv_rows` reads the bf16 ring.
     #[cfg(feature = "dev")]
     unsafe fn kv12_back(&self, ring: usize, n: usize) -> Result<(Vec<u16>, Vec<u16>, usize)> {
@@ -495,6 +519,15 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         "{} greedy replies: the first {same} of {new} tokens the same (the prompt's token {}); the decode's tokens' values the plain ones in {later_same} of {later} ring-tokens",
         if want.first() == got.first() { "ok  " } else { "FAIL" },
         if want.first() == got.first() { "the same" } else { "differs" }
+    );
+    let held = e.kv12_chunks_held()?;
+    let (pages, chunks, zero) = held.iter().fold((0, 0, 0), |a, h| (a.0 + h.1, a.1 + h.2, a.2 + h.3));
+    let tables_said: f64 = held
+        .iter()
+        .map(|h| e.kv12.as_ref().and_then(|t| lay.iter().position(|s| s.is_some_and(|s| s.ring == h.0)).and_then(|l| t.chunks.get(l))).map_or(0.0, |c| c.0))
+        .sum();
+    println!(
+        "escape chunks held: {chunks} in {pages} pages ({zero} in block 0, no sequence's); the tables counted {tables_said:.2} a page a ring on their prompts"
     );
     let lx = e.lossless.as_ref().expect("taken above");
     for (g, w) in lx.status()?.iter().enumerate() {
