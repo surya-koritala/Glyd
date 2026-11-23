@@ -29,11 +29,16 @@ const AT_KS: u32 = 129;
 pub const ATTN_SPLITS: usize = 16;
 pub(crate) const ATTN_PART: usize = 258;
 
+/// `Kern35::prep`'s table for a staging buffer of the step's rows (each row at its own index), not a block table (no device pointer is 1).
+pub const ROWS: u64 = 1;
+
 /// Qwen3.5's kernels with typed launches.
 pub struct Kern35 {
     rmsnorm: crate::kt::rmsnorm1p,
     rmsnorm_add: crate::kt::rmsnorm1p_add,
     prep: crate::kt::q35_prep,
+    prep_rows: crate::kt::q35_prep_rows,
+    gate: crate::kt::q35_gate,
     attn: crate::kt::attn256,
     attn_split: crate::kt::attn256_parts,
     attn_merge: crate::kt::attn256_merge,
@@ -52,6 +57,8 @@ impl Kern35 {
             rmsnorm: dev.typed()?,
             rmsnorm_add: dev.typed()?,
             prep: dev.typed()?,
+            prep_rows: dev.typed()?,
+            gate: dev.typed()?,
             attn: dev.typed()?,
             attn_split: dev.typed()?,
             attn_merge: dev.typed()?,
@@ -109,7 +116,20 @@ impl Kern35 {
         if !(1..=64).contains(&half) {
             return err(format!("a rotary of {} dims: not supported", 2 * half));
         }
+        // (a table of 1: kc and vc are a staging buffer of the step's rows, each row's keys and values at its own index: the 12-bit pages')
+        if tab == ROWS {
+            return launch!(self.prep_rows, [n, (nq + 2 * nk) as u32, 1], [128, 1, 1], s; qkv, stride, qw, kw, cos, sin, half, pos, qo, kc, vc, nq, nk, eps, 0u64);
+        }
         launch!(self.prep, [n, (nq + 2 * nk) as u32, 1], [128, 1, 1], s; qkv, stride, qw, kw, cos, sin, half, pos, qo, kc, vc, nq, nk, eps, tab)
+    }
+
+    /// The gate of n rows' attention (`att`, nq heads of 256, rows `as` apart) by their gates (`gate`, rows `gs` apart) into out (rows `os` apart).
+    ///
+    /// # Safety
+    /// As `rmsnorm`.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn gate(&self, s: Stream, att: u64, as_: i32, gate: u64, gs: i32, out: u64, os: i32, n: u32, nq: i32) -> Result<()> {
+        launch!(self.gate, [n, nq as u32, 1], [256, 1, 1], s; att, as_, gate, gs, out, os)
     }
 
     /// The causal attention of n query rows over the cache, times sigmoid(gate), into out.

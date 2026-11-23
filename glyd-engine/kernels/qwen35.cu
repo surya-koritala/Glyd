@@ -56,15 +56,17 @@ extern "C" __global__ void rmsnorm1p_add(bf16* x, const bf16* y, const bf16* w, 
 // A key's place in the cache: through the sequence's block table where it has one (16-token blocks of a pool: src/dynamic/pages.rs), else its position.
 __device__ __forceinline__ size_t q35_place(const int* tab, int p) { return tab ? (size_t)tab[p >> 4] * 16 + (p & 15) : (size_t)p; }
 
-extern "C" __global__ void q35_prep(const bf16* qkv, int stride, const bf16* qw, const bf16* kw, const bf16* cs, const bf16* sn, int half, const int* pos, bf16* qo, bf16* kc, bf16* vc, int nq, int nk,
-                                    float eps, const int* tab) {
+// ROWS: each row's keys and values at its own index of kc and vc (a staging buffer of the step's rows: the 12-bit pages' writes), not its position's place.
+template <bool ROWS>
+__device__ __forceinline__ void q35_prep_t(const bf16* qkv, int stride, const bf16* qw, const bf16* kw, const bf16* cs, const bf16* sn, int half, const int* pos, bf16* qo, bf16* kc,
+                                           bf16* vc, int nq, int nk, float eps, const int* tab) {
     const int t = blockIdx.x, hh = blockIdx.y, i = threadIdx.x;
     const bf16* row = qkv + (size_t)t * stride;
     const int p = pos[t];
     if (hh >= nq + nk) {
         const int j = hh - nq - nk;
         const bf16* x = row + nq * 512 + nk * 256 + j * 256;
-        bf16* o = vc + (q35_place(tab, p) * nk + j) * 256;
+        bf16* o = vc + ((ROWS ? (size_t)t : q35_place(tab, p)) * nk + j) * 256;
         o[i] = x[i];
         o[i + 128] = x[i + 128];
         return;
@@ -84,9 +86,27 @@ extern "C" __global__ void q35_prep(const bf16* qkv, int stride, const bf16* qw,
         const float c = b2f(cs[(size_t)p * half + k]), sv = b2f(sn[(size_t)p * half + k]);
         a = i < half ? nrm[i] * c - nrm[i + half] * sv : nrm[i] * c + nrm[i - half] * sv;
     }
-    bf16* o = isq ? qo + (size_t)t * nq * 256 + hh * 256 : kc + (q35_place(tab, p) * nk + (hh - nq)) * 256;
+    bf16* o = isq ? qo + (size_t)t * nq * 256 + hh * 256 : kc + ((ROWS ? (size_t)t : q35_place(tab, p)) * nk + (hh - nq)) * 256;
     o[i] = f2b(a);
     o[i + 128] = f2b(b);
+}
+
+extern "C" __global__ void q35_prep(const bf16* qkv, int stride, const bf16* qw, const bf16* kw, const bf16* cs, const bf16* sn, int half, const int* pos, bf16* qo, bf16* kc, bf16* vc, int nq, int nk,
+                                    float eps, const int* tab) {
+    q35_prep_t<false>(qkv, stride, qw, kw, cs, sn, half, pos, qo, kc, vc, nq, nk, eps, tab);
+}
+
+extern "C" __global__ void q35_prep_rows(const bf16* qkv, int stride, const bf16* qw, const bf16* kw, const bf16* cs, const bf16* sn, int half, const int* pos, bf16* qo, bf16* kc, bf16* vc,
+                                         int nq, int nk, float eps, const int* tab) {
+    q35_prep_t<true>(qkv, stride, qw, kw, cs, sn, half, pos, qo, kc, vc, nq, nk, eps, tab);
+}
+
+// The gate of n rows' attention (nq heads of 256, as the 12-bit pages' decode gives it, bf16): out = bf16(attention / (1 + exp(-gate))), the gate at
+// gate[t gs + h 512 + 256 ..], as attn256 and attn256_merge gate their own.
+extern "C" __global__ void __launch_bounds__(256) q35_gate(const bf16* att, int as, const bf16* gate, int gs, bf16* out, int os) {
+    const int t = blockIdx.x, h = blockIdx.y, d = threadIdx.x;
+    const float o = b2f(att[(size_t)t * as + h * 256 + d]), g = b2f(gate[(size_t)t * gs + h * 512 + 256 + d]);
+    out[(size_t)t * os + h * 256 + d] = f2b(o / (1.f + expf(-g)));
 }
 
 __device__ __forceinline__ float2 bf2(uint32_t u) { return make_float2(__uint_as_float(u << 16), __uint_as_float(u & 0xffff0000u)); }
