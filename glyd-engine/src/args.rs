@@ -76,6 +76,7 @@ const SWITCHES: &[&str] = &[
     "background",
     "all",
     "insecure-no-auth",
+    "yes",
 ];
 #[cfg(not(feature = "dev"))]
 const SWITCHES: &[&str] = &[
@@ -98,6 +99,7 @@ const SWITCHES: &[&str] = &[
     "quality",
     "no-draft",
     "insecure-no-auth",
+    "yes",
 ];
 
 #[derive(Clone)]
@@ -135,6 +137,14 @@ impl Args {
 
     pub fn flag(&self, name: &str) -> Option<&str> {
         self.flags.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_deref().unwrap_or(""))
+    }
+
+    /// These arguments with `--NAMES[0] VALUE` in place of any of the names given (a flag's other names too).
+    pub fn with(&self, names: &[&str], value: String) -> Args {
+        let mut a = self.clone();
+        a.flags.retain(|(k, _)| !names.contains(&k.as_str()));
+        a.flags.push((names[0].to_string(), Some(value)));
+        a
     }
 
     pub fn has(&self, name: &str) -> bool {
@@ -206,6 +216,9 @@ mod tests {
         assert_eq!(a.opts().unwrap().ctx, 4096);
         assert_eq!(a.num("port", 8000u16).unwrap(), 8001);
         assert_eq!(Args::from(["x", "--ctx", "2048"].map(String::from)).opts().unwrap().ctx, 2048);
+        // (a switch takes no value: `--yes` before `--prompt` took the prompt flag as its value, and the run read none)
+        let y = Args::from(["run", "m:penguin", "--yes", "--prompt", "Hello", "--max-tokens", "4"].map(String::from));
+        assert_eq!((y.pos.len(), y.has("yes"), y.flag("prompt"), y.flag("max-tokens")), (2, true, Some("Hello"), Some("4")));
         assert!(Args::from(["x", "--layout", "tiny"].map(String::from)).opts().is_err());
         // (the layouts by name: the block ones are the lossy levels')
         for (name, layout) in [

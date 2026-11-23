@@ -155,7 +155,10 @@ fn planner(a: &Args, model: &str) -> Option<crate::plan::Planned> {
 /// on its own path (None).
 fn load_level(a: &Args, model: &str, asked: Option<Layout>) -> Done<Option<Layout>> {
     let layout = run_level(model, asked)?;
+    // (a tag is its own level, `:penguin` too, whose layout is the untagged one's: the ladder, not the planner, settles what a tagged model that does not fit loads at)
+    let tagged = a.pos.get(1).is_some_and(|m| levels::split_tag(m).1.is_some());
     if asked.is_none()
+        && !tagged
         && !a.has("lossy")
         && (layout.is_none() || layout == Some(Layout::Tiered))
         && v7_layout(model)?.is_none()
@@ -881,8 +884,10 @@ pub(crate) fn degrade_gate(a: &Args, model: &str, layout: Option<Layout>, intera
     let name = short_name(model);
     let Ok(family) = crate::support::family(&text, &name) else { return same() };
     let row = crate::support::row(family);
-    let machine = crate::plan::Machine::probe();
-    let Ok(sh) = crate::plan::Shape::from_config(&text) else { return same() };
+    // (the machine the planner that picks an untagged run's level plans for: --machine's preset, else this one)
+    let machine = a.flag("machine").and_then(crate::plan::Machine::preset).unwrap_or_else(crate::plan::Machine::probe);
+    // (the shape `fit` prices the steps on: the model's tensors where their headers can be had, so the run asks where fit says it will)
+    let Ok(sh) = crate::plan::shape_of(model, &text) else { return same() };
     let asked = layout.map_or("penguin", level_name);
     if !row.levels_now(model).contains(&asked) {
         return same();
@@ -890,14 +895,20 @@ pub(crate) fn degrade_gate(a: &Args, model: &str, layout: Option<Layout>, intera
     let users = if a.pos.first().is_some_and(|c| c == "serve") { users_of(a).unwrap_or(1) } else { 1 };
     let Some((_, target, devs, reach)) = crate::plan::sizing_inputs(&machine, true) else { return same() };
     let want = a.flag("context").and_then(|c| c.parse().ok()).unwrap_or_else(|| row.default_ctx.unwrap_or(LOSSY_CTX).min(sh.max_ctx));
-    let size = |l: &'static str| size(a, model, &text, l, &devs, &target, &*reach, users);
+    let size = |l: &'static str, ctx: usize| {
+        let q = if ctx == want { a.clone() } else { a.with(&["context", "ctx"], ctx.to_string()) };
+        size(&q, model, &text, l, &devs, &target, &*reach, users)
+    };
     let ladder = crate::plan::ladder(&sh, &machine, row, model, asked, want, &size);
     if ladder.is_as_asked() || ladder.plan.is_none() || ladder.steps.is_empty() {
         return same();
     }
     ui.borrow_mut().line(ladder.report().trim_end());
+    // (the load goes on at the context the ladder found: a shorter one is a step it takes)
+    let at = ladder.plan.as_ref().map_or(want, |p| p.context);
+    let args = if at < want { a.with(&["context", "ctx"], at.to_string()) } else { a.clone() };
     if !ladder.needs_confirmation() {
-        return same();
+        return Ok((args, layout));
     }
     let chosen = ladder.plan.as_ref().map(|p| p.level).unwrap_or(asked);
     let can_ask = interactive && std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
@@ -921,7 +932,7 @@ pub(crate) fn degrade_gate(a: &Args, model: &str, layout: Option<Layout>, intera
         ));
     }
     let layout = if chosen == asked { layout } else { levels::layout_of(chosen).map(|l| layout_for(model, l)) };
-    Ok((a.clone(), layout))
+    Ok((args, layout))
 }
 
 pub fn serve(a: &Args) -> i32 {
@@ -3844,6 +3855,25 @@ mod tests {
         assert_eq!(run_level("Qwen/Qwen3-8B", None).unwrap(), None);
     }
 
+    /// A run whose context does not fit at the level asked loads at the shorter one the ladder takes (on a 16 GB card, gemma-4-12B at kestrel with 262144 tokens loads
+    /// at 131072): the gate's arguments carry it, where the load refused at the context asked for after the ladder said it would not.
+    #[test]
+    fn the_gate_hands_the_ladders_shorter_context_to_the_load() {
+        let dir = std::env::temp_dir().join(format!("glyd-gate-ctx-{}", std::process::id())).join("gemma-4-12B-it");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), include_str!("../tests/fixtures/gemma4_12b_config.json")).unwrap();
+        let m = dir.to_str().unwrap();
+        let tagged = format!("{m}:kestrel");
+        let ui = RefCell::new(Ui::new());
+        let a = Args::from(["run", tagged.as_str(), "--context", "262144", "--machine", "rtx4080s"].iter().map(|s| s.to_string()));
+        let (b, layout) = degrade_gate(&a, m, Some(Layout::Int6), false, &ui).unwrap();
+        assert_eq!((b.flag("context"), layout), (Some("131072"), Some(Layout::Int6)));
+        // (one that fits as asked keeps its arguments)
+        let a = Args::from(["run", tagged.as_str(), "--context", "32768", "--machine", "rtx4080s"].iter().map(|s| s.to_string()));
+        assert_eq!(degrade_gate(&a, m, Some(Layout::Int6), false, &ui).unwrap().0.flag("context"), Some("32768"));
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
     /// Run, serve and preflight without a tag load the level `fit` plans (P16, the M1 gate on an 8 GB card): Gemma 4 12B on a 16 GB card is kestrel, which the card holds,
     /// not penguin, which it does not; on a 24 GB card penguin. A tag is its own level.
     #[test]
@@ -3857,6 +3887,10 @@ mod tests {
         assert_eq!(load_level(&on("rtx4080s"), m, None).unwrap(), Some(Layout::Int6));
         assert_eq!(load_level(&on("rtx4090"), m, None).unwrap(), Some(Layout::Tiered));
         assert_eq!(load_level(&on("rtx4080s"), m, Some(Layout::Int4)).unwrap(), Some(Layout::Int4));
+        // `:penguin` is asked for, not planned (its layout is the untagged one's): the 16 GB card's run goes to the ladder, which asks before kestrel
+        let tagged = format!("{m}:penguin");
+        let on_tag = Args::from(["run", tagged.as_str(), "--machine", "rtx4080s"].iter().map(|s| s.to_string()));
+        assert_eq!(load_level(&on_tag, m, None).unwrap(), Some(Layout::Tiered));
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
         // Qwen3.8-27B runs at its lossy levels alone: untagged, it loads the planner's (swift on a 24 GB card), and the table takes it, where it was refused as penguin
         let q35: Value = json::parse(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/qwen35_configs.json")).unwrap()).unwrap();
