@@ -234,7 +234,7 @@ fn args35(n: usize, nq: usize, nk: usize, half: usize, eps: f32) -> AttnArgs {
 /// Head-256 attention of `n` rows at positions p0 .. over random keys (nq query heads over nk key-value heads), times sigmoid(gate), against a plain fp64 softmax: the prompt's
 /// kernels (on the tensor cores, and a warp a head), and each row as a decode step of its own (the keys in SPLITS parts, then combined).
 #[allow(clippy::too_many_arguments)]
-fn attn_case(t: &mut Tally, k: &KernAttn, dev: &Dev, r: &mut Rng, p0: usize, n: usize, nq: usize, nk: usize, what: &str) -> Result<()> {
+fn attn_case(t: &mut Tally, k: &KernAttn, lib: &crate::ffi::Lib, dev: &Dev, r: &mut Rng, p0: usize, n: usize, nq: usize, nk: usize, what: &str) -> Result<()> {
     let stride = nq * 512 + 2 * nk * 256;
     let (keys, vals) = (r.v((p0 + n) * nk * 256, -2.0, 2.0), r.v((p0 + n) * nk * 256, -2.0, 2.0));
     let q = r.v(n * nq * 256, -2.0, 2.0);
@@ -266,13 +266,13 @@ fn attn_case(t: &mut Tally, k: &KernAttn, dev: &Dev, r: &mut Rng, p0: usize, n: 
     (a.qo, a.kc, a.vc, a.cap, a.kpos, a.gate, a.part) = (qb.ptr, kb.ptr, vb.ptr, (p0 + n) as i32, pb.ptr, gb.ptr + 512, part.ptr);
     // SAFETY: buffers made here of the sizes the kernels read and write; read after a synchronize.
     unsafe {
-        k.prompt(dev.stream, &AttnArgs { out: outs[0].ptr, ..a })?;
+        k.prompt(lib, dev.stream, &AttnArgs { out: outs[0].ptr, ..a }, p0)?;
         k.rows(dev.stream, &AttnArgs { out: outs[1].ptr, ..a })?;
         k.decode(dev.stream, &AttnArgs { out: outs[2].ptr, ..a })?;
     }
     dev.sync()?;
     for (o, how) in outs.iter().zip([
-        "a prompt's rows on the tensor cores".to_string(),
+        "a prompt's rows on the tensor cores (the GPU library's kernel)".to_string(),
         "a prompt's rows, a warp a head".to_string(),
         format!("each row a decode step (the keys in {SPLITS} parts, combined: not the prompt kernels' bits)"),
     ]) {
@@ -304,7 +304,7 @@ fn delta_case(t: &mut Tally, k: &Kern35, dev: &Dev, r: &mut Rng, nk: usize, nv: 
 pub fn run() -> Result<bool> {
     let dev = Dev::new(0)?;
     let k = Kern35::load(&dev)?;
-    let ka = KernAttn::load(&dev)?;
+    let (ka, lib) = (KernAttn::load(&dev)?, crate::ffi::Lib::find()?);
     let s = dev.stream;
     let mut r = Rng(0x2026_1006_0035_0001);
     let mut t = Tally { failed: Vec::new() };
@@ -393,9 +393,9 @@ pub fn run() -> Result<bool> {
     }
 
     // the attention: a short context (the keys in 2 of the 16 parts), then 1,500 positions (every part holds keys), with the 9B's 4 query heads to a key-value head and the 27B's 6
-    attn_case(&mut t, &ka, &dev, &mut r, 40, 7, 16, 4, "(16 over 4 heads, positions 40 to 46)")?;
-    attn_case(&mut t, &ka, &dev, &mut r, 1500, 3, 16, 4, "(16 over 4 heads, positions 1,500 to 1,502)")?;
-    attn_case(&mut t, &ka, &dev, &mut r, 1500, 3, 24, 4, "(24 over 4 heads, positions 1,500 to 1,502)")?;
+    attn_case(&mut t, &ka, &lib, &dev, &mut r, 40, 7, 16, 4, "(16 over 4 heads, positions 40 to 46)")?;
+    attn_case(&mut t, &ka, &lib, &dev, &mut r, 1500, 3, 16, 4, "(16 over 4 heads, positions 1,500 to 1,502)")?;
+    attn_case(&mut t, &ka, &lib, &dev, &mut r, 1500, 3, 24, 4, "(24 over 4 heads, positions 1,500 to 1,502)")?;
 
     // the convolution and SiLU (the 0.8B's channels: 6,144), 37 tokens from a random state; the reference sums in the kernel's order and rounds once, after SiLU (vLLM's)
     {

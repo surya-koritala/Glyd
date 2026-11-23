@@ -151,7 +151,7 @@ pub fn kernels(ind: &Path, outd: &Path) -> Result<()> {
     unsafe {
         ka.prep(s, &at, nq + nk, (crate::gemma4::G4Pf::default(), 0))?;
         ka.decode(s, &crate::dynamic::attn::AttnArgs { out: out.ptr, ..at })?;
-        ka.prompt(s, &crate::dynamic::attn::AttnArgs { out: pre.ptr, ..at })?;
+        ka.prompt(&crate::ffi::Lib::find()?, s, &crate::dynamic::attn::AttnArgs { out: pre.ptr, ..at }, 0)?;
     }
     dev.sync()?;
     let (mut kh, mut vh) = (vec![0u16; na * nk * 128], vec![0u16; na * nk * 128]);

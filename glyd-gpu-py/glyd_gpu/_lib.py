@@ -62,6 +62,7 @@ _ARGS = {  # each function's arguments before its stream
     "kv_work_put": [_P, _I64, _P, _I64, _P, _I64, _I64, _I64, _P, _I64],
     "kv_decode": [_P, _I64, _P, _I64, _P, _P, _P, _I64, _P, _I64, _I64, _I64, _I64, _I64, _I64, _P, _I64, _P, _I64, ctypes.c_double, _P, _I64, _P, _SZ],
     "kv_decode_from": [_P, _I64, _P, _I64, _P, _P, _P, _I64, _P, _P, _I64, _I64, _I64, _I64, _I64, _I64, _I64, _P, _I64, _P, _I64, ctypes.c_double, _P, _I64, _P, _SZ],
+    "attn_prefill": [_P, _I64, _P, _P, _P, _I64, _I64, _I64, _I64, _I64, _I64, _I64, ctypes.c_double, _I64, ctypes.c_double, _P, _P, _I64],  # q, kc, vc, table, cap, n, start, window, H, G, D, scale, round, softcap, sinks, out
     "kv_prefill": [_P, _I64, _P, _I64, _P, _I64, _I64, _I64, _I64, _P, _I64, _P, _P, _P, _I64, _I64, _I64, _I64, _P, _I64, _P, _I64, ctypes.c_double, _I64, ctypes.c_double, _P, _P, _I64],  # q, key, value (and strides), n, start, window, pool, bases, table, H, G, D, A, escape pool, raw pool, scale, round, softcap, sinks, out
     "f8_size": [_P, _I64, _I64, _I64, _P, _P, _SZ, _P],  # w, ld, O, K, heads, workspace and its bytes, the words var needs (host)
     "f8_pack": [_P, _I64, _I64, _I64, _P, _P, _P, _I64],  # w, ld, O, K, heads, core, var and its words
@@ -87,7 +88,7 @@ _AUX = {  # the route SPLIT's ring (glyd_gpu.h), each call's arguments whole (a 
 }
 
 
-API_VERSION = 19  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
+API_VERSION = 20  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
 KV_AUX = 2040  # places of each of the status's two rings, where a caller does not size them
 KV_AUX_AT = 16  # the void ring's first place in the status
 KV_STATUS_WORDS = KV_AUX_AT + 2 * KV_AUX  # a lossless KV cache's status words (glyd_gpu.h) at KV_RING: counters, then the ring of lost blocks and the ring of blocks with a raw page

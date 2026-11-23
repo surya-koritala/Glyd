@@ -6873,6 +6873,9 @@ __global__ void __launch_bounds__(256) combine_kernel(const float* __restrict__ 
 // contiguous; rows 16 bytes apart in the banks, so ldmatrix meets no bank twice). S = Q K^T with the queries' A fragments in registers; a score's shares of the halves summed through
 // shared memory in their order (every warp of a row group the same sums); then rounded to bf16 where asked (before the scale: a bf16 matmul's output), scaled, capped (cap
 // tanh(x / cap), as transformers), masked, the online softmax in fp32 (seeded by the head's sink where there is one), and O += bf16(P) V into the warp's channels.
+// The same kernel reads a bf16 cache in place of the pages (glyd_gpu_attn_prefill: kc and vc [places][H][DO], a position's place through the block table, or modulo
+// cap with none): its tiles are the pages' (the prefix in 32 keys from lo's page on, then the chunk's own from max(start, lo)), each key's values the cache's where it
+// is the call's (lo .. hi) and zeros elsewhere, as the pages' decode gives them; so where the cache holds what the pages hold, the outputs are the same bits.
 constexpr int PKT = 32;  // keys a tile: two pages
 constexpr int PSP = 33;  // a row's floats in the score shares (32 keys and one of padding)
 __host__ __device__ constexpr int pf_shared(int halves, int rg) { return 2 * PKT * (D * halves + 8) * 2 + (halves > 1 ? rg * halves * 16 * PSP * 4 : 0); }
@@ -6895,6 +6898,9 @@ struct PrefillParams {
     const float* sinks;  // [H G] or null
     __nv_bfloat16* out;  // row t's at out + t out_stride: [H G][DO]
     int64_t out_stride;
+    const __nv_bfloat16* kc;  // a bf16 cache in place of the pages (null: the pages): [places][H][DO]
+    const __nv_bfloat16* vc;
+    int cap;  // the cache's places where there is no block table (a position's place: position modulo cap)
     int n, start, window, G, A, hdrb, HP, round;
     float sl2;    // scale * log2(e)
     float icap;   // scale / cap (cap 0: none)
@@ -6931,8 +6937,10 @@ __global__ void __launch_bounds__(32 * RG * HALVES, 1) prefill_kernel(const Pref
     const int n = P.n, start = P.start, W = P.window;
     // the CTA's keys: lo (its first row's window) .. hi (past its last row); from the pages up to end1, then (rows given) from the rows, from p1
     const int lo = W > 0 ? max(0, start + r0 - W + 1) : 0, hi = start + min(n, r0 + BM);
-    const int end1 = P.key ? start : hi, lo16 = lo & ~15, p1 = max(start, lo);
-    const int n0 = lo < end1 ? (end1 - lo16 + PKT - 1) / PKT : 0, n1 = P.key ? (hi - p1 + PKT - 1) / PKT : 0;
+    // (a bf16 cache: the chunk's own keys as rows of their own, read from the cache, so that its tiles are the pages' with the rows given)
+    const bool rows = P.key || P.kc;
+    const int end1 = rows ? start : hi, lo16 = lo & ~15, p1 = max(start, lo);
+    const int n0 = lo < end1 ? (end1 - lo16 + PKT - 1) / PKT : 0, n1 = rows ? (hi - p1 + PKT - 1) / PKT : 0;
 
     // the queries' A fragments: rows ra (g) and rb (g + 8) of the warp's group, its 128 channels, 16 a step (zeros past n)
     const int ra = r0 + rg * 16 + g, rb = ra + 8;
@@ -6954,8 +6962,14 @@ __global__ void __launch_bounds__(32 * RG * HALVES, 1) prefill_kernel(const Pref
     // the warp's part of a page fill: a stream (0 K, 1 V) of a page's head, the pages of the tile from slot warp / (2 HALVES) in steps of RG / 2
     const int task = warp % (2 * HALVES), stream = task / HALVES, hp = task % HALVES, hpg = h * HALVES + hp;
     uint32_t hb[16];
-    if (stream == 0) load_bases<0>(P.kbase + hpg * D, lane, *reinterpret_cast<uint32_t(*)[8]>(hb));
-    else load_bases<1>(P.vbase + hpg * D, lane, hb);
+    if (P.kc) {
+    } else if (stream == 0) {
+        load_bases<0>(P.kbase + hpg * D, lane, *reinterpret_cast<uint32_t(*)[8]>(hb));
+    } else {
+        load_bases<1>(P.vbase + hpg * D, lane, hb);
+    }
+    // a key's row of the bf16 cache: its block's place, else its place in the ring
+    const auto place = [&](int kp) -> int64_t { return P.bt ? (int64_t)__ldg(P.bt + (kp >> 4)) * 16 + (kp & 15) : (int64_t)(kp % P.cap); };
 
     float acc[16][4];  // O: rows ra (acc[j][0], [1]) and rb ([2], [3]), channels 128 hf + 8 j + 2 t4 and the next
 #pragma unroll
@@ -6982,7 +6996,7 @@ __global__ void __launch_bounds__(32 * RG * HALVES, 1) prefill_kernel(const Pref
         a.pgw = reinterpret_cast<const uint32_t*>(page + 16 * P.HP);
         raw_load(a.r, page + P.hdrb + (int64_t)hpg * HEADPAGE + stream * TILE, lane);
     };
-    if (n0 > 0) {
+    if (n0 > 0 && !P.kc) {
 #pragma unroll
         for (int u = 0; u < NPW; u++) {
             const int pg = (lo16 >> 4) + slot + u * (RG / 2);
@@ -6994,7 +7008,16 @@ __global__ void __launch_bounds__(32 * RG * HALVES, 1) prefill_kernel(const Pref
         const bool paged = it < n0;
         const int k0 = paged ? lo16 + PKT * it : p1 + PKT * (it - n0), kend = paged ? end1 : hi;
         __syncthreads();  // (the tile before is read)
-        if (paged) {
+        if (P.kc) {
+            // (the bf16 cache: a key's values where it is the call's, from its window's first key to the tile's end; zeros elsewhere, as the pages give them)
+            constexpr int C8 = DO / 8;
+            for (int c = threadIdx.x; c < 2 * PKT * C8; c += 32 * NWP) {
+                const int isv = c >= PKT * C8, cc = isv ? c - PKT * C8 : c, j = cc / C8, c8 = cc % C8, kp = k0 + j;
+                uint4 v = make_uint4(0, 0, 0, 0);
+                if (kp >= lo && kp < kend) v = __ldg(reinterpret_cast<const uint4*>((isv ? P.vc : P.kc) + (place(kp) * P.HP / HALVES + h) * DO) + c8);
+                *reinterpret_cast<uint4*>((isv ? Vs : Ks) + j * KS + c8 * 8) = v;
+            }
+        } else if (paged) {
 #pragma unroll
             for (int u = 0; u < NPW; u++) {
                 const int p = slot + u * (RG / 2), pg = (k0 >> 4) + p;
@@ -11706,7 +11729,7 @@ GLYD_GPU_INTERNAL int glyd_gpu_kv_prefill(const uint16_t* q, int64_t q_stride, c
     const kvc::EscapePool E = kvc::esc_of((uint8_t*)escape, nchunks);
     const int HP = kv_heads(H, D), halves = (int)(D / kvc::D);
     kvc::PrefillParams P{bf(q), q_stride, bf(key), key_stride, bf(value), value_stride, pool, page_stride, kbase, vbase, block_table, E.ent, E.nc, kvc::raw_of((uint8_t*)raw, nslabs, HP), sinks, bf(out),
-                         out_stride, (int)n, (int)start, (int)std::min<int64_t>(window, INT32_MAX), (int)G, (int)A, kvc::hdr_bytes(HP, (int)A), HP, (int)(round_scores != 0),
+                         out_stride, nullptr, nullptr, 0, (int)n, (int)start, (int)std::min<int64_t>(window, INT32_MAX), (int)G, (int)A, kvc::hdr_bytes(HP, (int)A), HP, (int)(round_scores != 0),
                          (float)(scale * 1.4426950408889634), softcap > 0.0 ? (float)(scale / softcap) : 0.f, (float)(softcap * 1.4426950408889634)};
     // (the CTA's row groups of 16, measured on an RTX 4080 SUPER, gemma-4-12B's shapes, a chunk of 256 rows after 1,024 to 8,192 tokens: heads of 256, 4 (one CTA an SM,
     // 64 of them): 0.186 to 0.189 ms, where 2 (two an SM, 128) took 0.224 to 0.229; heads of 512, 2: 4 would hold more registers than the SM has)
@@ -11714,6 +11737,38 @@ GLYD_GPU_INTERNAL int glyd_gpu_kv_prefill(const uint16_t* q, int64_t q_stride, c
         const int shared = kvc::pf_shared(hv, groups);
         if (shared > 48 * 1024 && cudaFuncSetAttribute((const void*)kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared) != cudaSuccess) {
             cudaGetLastError();  // (the GPU has not the shared memory a CTA takes: an RDNA card's 64 KB for heads of 512)
+            return (int)cudaErrorNotSupported;
+        }
+        kernel<<<dim3((unsigned)((n + 16 * groups - 1) / (16 * groups)), (unsigned)(H * G)), 32 * groups * hv, shared, cs>>>(P);
+        return (int)cudaGetLastError();
+    };
+    if (halves == 1) return launch(kvc::prefill_kernel<1, 4>, 1, 4);
+    if (halves == 2) return launch(kvc::prefill_kernel<2, 4>, 2, 4);
+    return launch(kvc::prefill_kernel<4, 2>, 4, 2);
+}
+
+// glyd_gpu_kv_prefill's attention over a bf16 cache (keys kc, values vc [places][H][D]; a position's place block_table[p / 16] * 16 + p % 16, or p modulo cap
+// where block_table is null), the chunk's own keys and values written there before the call: the same kernel and tiles, so the same bits where the cache holds
+// what the pages hold.
+GLYD_GPU_INTERNAL int glyd_gpu_attn_prefill(const uint16_t* q, int64_t q_stride, const uint16_t* kc, const uint16_t* vc, const int32_t* block_table, int64_t cap, int64_t n, int64_t start,
+                                       int64_t window, int64_t H, int64_t G, int64_t D, double scale, int64_t round_scores, double softcap, const float* sinks, uint16_t* out,
+                                       int64_t out_stride, cudaStream_t cs) {
+    if (D % kvc::D || D < kvc::D || D > 4 * kvc::D || D == 3 * kvc::D || H < 1 || n < 0 || start < 0 || window < 0 || start + n > INT32_MAX || G < 1 || H * G > 65535 || !(softcap >= 0.0) ||
+        !std::isfinite(scale) || !std::isfinite(softcap))
+        return cudaErrorInvalidValue;
+    if (!n) return 0;
+    const int64_t W = H * G * D;
+    if (!q || !out || !kc || !vc || (!block_table && (cap < 1 || cap > INT32_MAX)) || q_stride < W || out_stride < W || q_stride % 2 || out_stride % 2 || (uintptr_t)q % 4 || (uintptr_t)out % 4 ||
+        (uintptr_t)kc % 16 || (uintptr_t)vc % 16)
+        return cudaErrorInvalidValue;
+    const int halves = (int)(D / kvc::D);
+    kvc::PrefillParams P{bf(q), q_stride, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, nullptr, block_table, nullptr, 0, kvc::RawPool{}, sinks, bf(out), out_stride, bf(kc), bf(vc),
+                         (int)std::min<int64_t>(cap, INT32_MAX), (int)n, (int)start, (int)std::min<int64_t>(window, INT32_MAX), (int)G, 0, 0, (int)(H * halves), (int)(round_scores != 0),
+                         (float)(scale * 1.4426950408889634), softcap > 0.0 ? (float)(scale / softcap) : 0.f, (float)(softcap * 1.4426950408889634)};
+    const auto launch = [&](auto kernel, int hv, int groups) {
+        const int shared = kvc::pf_shared(hv, groups);
+        if (shared > 48 * 1024 && cudaFuncSetAttribute((const void*)kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared) != cudaSuccess) {
+            cudaGetLastError();
             return (int)cudaErrorNotSupported;
         }
         kernel<<<dim3((unsigned)((n + 16 * groups - 1) / (16 * groups)), (unsigned)(H * G)), 32 * groups * hv, shared, cs>>>(P);

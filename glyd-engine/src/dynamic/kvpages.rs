@@ -1,7 +1,8 @@
 //! The executor's keys and values in 12-bit lossless pages (R4f #332, R4b #141). A ring whose layer has tables (src/dynamic/kv12.rs) holds its
 //! group's blocks as pages of the GPU library (glyd_gpu_kv_*), every bf16 value in 12 bits and read back bit for bit. A step's new keys and values
 //! go from a staging buffer of its rows into their pages; a decode row's attention reads the pages (`kv_decode_from`: a sliding layer's window
-//! from its first token); a prompt chunk's pages are unpacked into a bf16 ring and the attention kind's prompt kernel runs on it.
+//! from its first token); a prompt chunk's reads them where they are (`kv_prefill`, the kernel the bf16 cache's prompt attention is too). A verify pass's rows and
+//! the warp kernels read them unpacked into a bf16 ring (`kv12_stage`).
 use super::kv12::{shapes, KvShape, Tables};
 use super::{Dyn, Op, Part};
 use crate::dev::Buf;
@@ -340,6 +341,40 @@ impl Dyn {
             lx.ws.ptr,
             lx.ws.bytes,
             s,
+        )
+    }
+
+    /// A prompt chunk's attention over ring `ring`'s 12-bit pages (glyd_gpu_kv_prefill, after the step's `kv12_write`): the n rows at `start` (the pass's) .. of the
+    /// part an operation runs on now, queries `q` and out `out` [n, nq d]; the keys before `start` read from the pages through the sequence's table, the chunk's own from
+    /// the staging rows the preparation wrote; every query head of a kv head in one call (no parts). The bf16 cache's prompt attention is the same kernel
+    /// (glyd_gpu_attn_prefill): the same bits.
+    pub(super) unsafe fn kv12_prefill(&self, a: &super::AttnOp, n: usize, q: u64, out: u64) -> Result<()> {
+        let lx = self.lossless.as_ref().expect("a ring with pages");
+        let rp = lx.rings[a.ring].as_ref().expect("a ring with pages");
+        let w = rp.shape.heads * rp.shape.channels;
+        let at = (self.row0() * w * 2) as u64;
+        let rows = Some((lx.rows_k.ptr + at, w as i64, lx.rows_v.ptr + at, w as i64));
+        let qs = (a.nq * a.d) as i64;
+        self.lib.kv_prefill(
+            &rp.geom,
+            (a.nq / rp.shape.heads) as i64,
+            rp.pool.ptr,
+            rp.kbase.ptr,
+            rp.vbase.ptr,
+            self.table(a.ring),
+            q,
+            qs,
+            rows,
+            n as i64,
+            self.start.get() as i64,
+            rp.shape.window as i64,
+            rp.shape.scale,
+            rp.shape.round,
+            a.softcap as f64,
+            0,
+            out,
+            qs,
+            self.dev.stream,
         )
     }
 

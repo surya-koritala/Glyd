@@ -1,11 +1,10 @@
 //! A known answer for the lossless KV cache of every head dimension the library holds (128, 256 and 512 channels; 256 and 512 are held as two and four of the page's heads of 128): bf16 keys and values made on the host
 //! (in the windows of their channels, and out of them, and with every kind of special value), written through `glyd_gpu_kv_write`, read back through `glyd_gpu_kv_gather` and compared bit for bit with what was written, and
 //! the decode attention (`glyd_gpu_kv_decode`) and the prompt attention (`glyd_gpu_kv_prefill`) against attention computed on the host from the same values. No model: `glyd-engine kvshapes`, in the GPU job.
-//! `glyd-engine kvprefill` times the prompt attention against the unpack of the pages to a bf16 ring and Gemma 4's kernel on it.
+//! `glyd-engine kvprefill` times the prompt attention against the unpack of the pages to a bf16 ring and the bf16 kernel on it.
 
 use crate::dev::{Buf, Dev};
 use crate::ffi::{KvGeom, Lib, Result, KV_ONE_STREAM};
-use crate::launch;
 
 struct Rng(u64);
 
@@ -459,6 +458,16 @@ fn prefill(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
         c(37, 1, 0, true, true, 0.0, false),
         c(200, 30, 0, true, true, 0.5, true),
     ];
+    // (the same values as a bf16 cache in the pages' places: the attention kind's prompt attention over bf16 pages, glyd_gpu_attn_prefill)
+    let (mut kp, mut vp) = (vec![0u16; blocks * 16 * w as usize], vec![0u16; blocks * 16 * w as usize]);
+    for (t, &sl) in slots.iter().enumerate() {
+        let (a, b, wu) = (sl as usize * w as usize, t * w as usize, w as usize);
+        kp[a..a + wu].copy_from_slice(&k[b..b + wu]);
+        vp[a..a + wu].copy_from_slice(&v[b..b + wu]);
+    }
+    let (kcache, vcache) = (Buf::new(2 * kp.len())?, Buf::new(2 * vp.len())?);
+    kcache.write(0, &kp)?;
+    vcache.write(0, &vp)?;
     let mut bad = 0;
     for ch in cases {
         let o = Buf::zeroed(2 * ch.n * qw)?;
@@ -502,6 +511,37 @@ fn prefill(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
         if let Some((t, hq, c, w, x)) = at {
             println!("     the first: row {}, query head {hq}, channel {c}: {x} where the host's is {w:.5}", ch.start + t);
         }
+        // (the chunk's rows given, as the executor gives them, and no sinks: the bf16 cache's prompt attention, held to the pages' bit for bit; the pages are lossless)
+        if ch.rows && !ch.sinks {
+            let o2 = Buf::zeroed(2 * ch.n * qw)?;
+            // SAFETY: as above.
+            unsafe {
+                lib.attn_prefill(
+                    qbuf.ptr + (2 * ch.start * qw) as u64,
+                    qw as i64,
+                    (kcache.ptr, vcache.ptr, bt.ptr, 0),
+                    (ch.n as i64, ch.start as i64, ch.window as i64),
+                    (h as i64, g as i64, d as i64),
+                    (scale, ch.round, ch.cap),
+                    o2.ptr,
+                    qw as i64,
+                    dev.stream,
+                )?
+            };
+            dev.sync()?;
+            let mut bf = vec![0u16; ch.n * qw];
+            o2.read(0, &mut bf)?;
+            let differ = bf.iter().zip(&got).filter(|(x, y)| x != y).count();
+            println!(
+                "{} {h} heads x {d}, {g} queries to a head, rows {}..{} (window {}): the same over a bf16 cache (glyd_gpu_attn_prefill), {differ} of {} values not the pages' bits",
+                if differ == 0 { "ok  " } else { "FAIL" },
+                ch.start,
+                ch.start + ch.n,
+                ch.window,
+                bf.len()
+            );
+            bad += (differ != 0) as usize;
+        }
         println!(
             "{} {h} heads x {d}, {g} queries to a head, rows {}..{} (window {}, keys {}{}{}{}): prompt attention, {off} of {} values past 1.5% + 0.002 + 2^-8 of the terms (worst {worst:.2} of the bound)",
             if off == 0 { "ok  " } else { "FAIL" },
@@ -526,16 +566,13 @@ fn prefill(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
 }
 
 /// `kvprefill [--chunk 256] [--prefixes 0,1024,4096,8192] [--reps 20]`: a chunk's prompt attention at gemma-4-12B's shapes (its sliding layers: 8 kv heads of 256, 16 query
-/// heads, a window of 1,024; its global ones: 1 of 512, 16 query heads), three ways: the pages unpacked to a bf16 ring (`kv12_stage`) and Gemma 4's kernel on it (the executor's
-/// path now), `glyd_gpu_kv_prefill` on the pages and the chunk's rows, and Gemma 4's kernel alone on a bf16 ring (what bf16 pages cost); the milliseconds of each, and the largest
-/// difference of the two outputs over the pages.
+/// heads, a window of 1,024; its global ones: 1 of 512, 16 query heads), three ways: the pages unpacked to a bf16 ring (`kv12_stage`) and the bf16 kernel
+/// (glyd_gpu_attn_prefill) on it, `glyd_gpu_kv_prefill` on the pages and the chunk's rows (the executor's path), and the bf16 kernel alone on a ring of every token (what bf16
+/// pages cost); the milliseconds of each, and how many outputs of the other two are not the pages' bits (the kernel is one, the values the same).
 pub fn bench(a: &crate::args::Args) -> Result<()> {
     const A: i64 = 15;
     let dev = Dev::new(0)?;
     let lib = Lib::find()?;
-    // Gemma 4's prompt kernels by their names (Q [64][264], K and V [32][264] bf16; K and V [32][520] bf16 and the score shares [2][4][16][33] floats), where this build has them
-    let fam = |name: &str, smem: u32| dev.kernel(name).and_then(|k| k.allow_smem(smem).map(|_| (k, smem))).ok();
-    let (fa256, fa512) = (fam("g4_fa256", (64 + 2 * 32) * 264 * 2), fam("g4_fa512b", 2 * 32 * 520 * 2 + 2 * 4 * 16 * 33 * 4));
     let s = dev.stream;
     let (n, reps) = (a.num("chunk", 256usize)?, a.num("reps", 20usize)?);
     let prefixes: Vec<usize> = a.flag("prefixes").unwrap_or("0,1024,4096,8192").split(',').filter_map(|x| x.trim().parse().ok()).collect();
@@ -571,9 +608,6 @@ pub fn bench(a: &crate::args::Args) -> Result<()> {
             let q: Vec<u16> = (0..n * qw).map(|_| bf16_of(((r.below(2000) as f32) - 1000.0) / 5000.0)).collect();
             let qbuf = Buf::new(2 * q.len())?;
             qbuf.write(0, &q)?;
-            let pos: Vec<i32> = (prefix as i32..total as i32).collect();
-            let pb = Buf::new(4 * n)?;
-            pb.write(0, &pos)?;
             // the executor's ring a prompt chunk's pages are unpacked into (kv12_stage), and a bf16 ring of every token (bf16 pages)
             let sb = if window > 0 { (window + n).div_ceil(16) + 2 } else { total.div_ceil(16) + 1 };
             let row = 16 * h * d * 2;
@@ -603,12 +637,20 @@ pub fn bench(a: &crate::args::Args) -> Result<()> {
                 }
                 Ok(())
             };
-            let (kern, bm, threads, kname) = if d == 256 { (&fa256, 64, 128, "g4_fa256") } else { (&fa512, 32, 256, "g4_fa512b") };
+            // (the attention kind's prompt attention over a bf16 cache, glyd_gpu_attn_prefill: Gemma 4's arithmetic, scale 1, the scores bf16; a ring of `cap` places)
             let family = |kc: u64, vc: u64, cap: usize, out: u64| -> Result<()> {
-                let Some((k, smem)) = kern else { return Ok(()) };
-                let (nqi, nki, wi, ci) = (nq as i32, h as i32, window as i32, cap as i32);
                 unsafe {
-                    launch!(k, [n.div_ceil(bm) as u32, nq as u32, 1], [threads, 1, 1], smem *smem, s; qbuf.ptr, kc, vc, pb.ptr, out, n as i32, nqi, nki, wi, ci, 0u64)
+                    lib.attn_prefill(
+                        qbuf.ptr,
+                        qw as i64,
+                        (kc, vc, 0, cap as i64),
+                        (n as i64, prefix as i64, window as i64),
+                        (h as i64, (nq / h) as i64, d as i64),
+                        (1.0, true, 0.0),
+                        out,
+                        qw as i64,
+                        s,
+                    )
                 }
             };
             let pages = || -> Result<()> {
@@ -653,23 +695,14 @@ pub fn bench(a: &crate::args::Args) -> Result<()> {
             let t_pages = time(&pages)?;
             // (the keys of every token in a bf16 ring of the sequence's length: the family's kernel as bf16 pages run it, less their table's reads)
             let t_bf = time(&|| family(kbuf.ptr, vbuf.ptr, total, o_bf.ptr))?;
-            let (mut x, mut y) = (vec![0u16; n * qw], vec![0u16; n * qw]);
+            let (mut x, mut y, mut z) = (vec![0u16; n * qw], vec![0u16; n * qw], vec![0u16; n * qw]);
             o_stage.read(0, &mut x)?;
             o_pages.read(0, &mut y)?;
-            let (mut worst, mut off) = (0f32, 0usize);
-            for (a, b) in x.iter().zip(&y) {
-                let (a, b) = (f32_of(*a), f32_of(*b));
-                let e = (a - b).abs();
-                worst = worst.max(e);
-                off += (e > 0.015 * a.abs() + 2e-3) as usize;
-            }
+            o_bf.read(0, &mut z)?;
+            let (stage_differ, bf_differ) = (x.iter().zip(&y).filter(|(a, b)| a != b).count(), z.iter().zip(&y).filter(|(a, b)| a != b).count());
             let what = format!("{h} x {d} ({nq} query heads{}), prefix {prefix:>5}", if window > 0 { format!(", window {window}") } else { String::new() });
-            if kern.is_none() {
-                println!("{what}: unpack {t_unpack:.3}; kv_prefill {t_pages:.3} (Gemma 4's {kname} is not in this build)");
-                continue;
-            }
             println!(
-                "{what}: unpack {t_unpack:.3} + Gemma 4's kernel {t_fa:.3} = {:.3}; kv_prefill {t_pages:.3} ({:+.1}%); bf16 ring {t_bf:.3}; outputs differ by {worst:.4} at most, {off} of {} past 1.5% + 0.002",
+                "{what}: unpack {t_unpack:.3} + the bf16 kernel {t_fa:.3} = {:.3}; kv_prefill {t_pages:.3} ({:+.1}%); bf16 ring {t_bf:.3}; outputs not the pages' bits: {stage_differ} unpacked, {bf_differ} bf16 ring, of {}",
                 t_unpack + t_fa,
                 100.0 * (t_pages / (t_unpack + t_fa) - 1.0),
                 x.len()

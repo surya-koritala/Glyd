@@ -35,7 +35,7 @@
 //!   glyd-engine rowcheck DIR [--ctx N] [--tables T]          one sequence's logits in a step with 0 to 7 others, at every batch size
 //!   glyd-engine rowprofile DIR [--rows B] [--len N] [--steps N] [--ctx N] [--tables T]   a decode step of B sequences, launch by launch
 //!   glyd-engine kvshapes                                     the lossless KV cache of head dims 128, 256 and 512 (no model): values written, read back bit for bit, and decode and prompt attention against the host's
-//!   glyd-engine kvprefill [--chunk 256] [--prefixes 0,1024,4096,8192] [--reps 20]   the prompt attention over 12-bit pages at gemma-4-12B's shapes against the pages unpacked to a bf16 ring and Gemma 4's kernel on it
+//!   glyd-engine kvprefill [--chunk 256] [--prefixes 0,1024,4096,8192] [--reps 20]   the prompt attention over 12-bit pages at gemma-4-12B's shapes against the pages unpacked to a bf16 ring and the bf16 kernel on it
 //!   glyd-engine kvtest DIR [--ctx N] [--tables T]            a known answer for the KV cache: bf16 values of every kind written through the engine's write path, read back, compared bit for bit
 //!   glyd-engine stress DIR [--users N] [--requests N] [--kind natural|random|mixed] [--seed S] [--text FILE] [--ctx N] [--pool TOKENS] [--ref FILE | --write-ref FILE]   requests at several users on a small cache, against the same requests alone
 //!   glyd-engine recompute DIR [--ctx N] [--tables T]         the keys and values of a sequence made by its steps against those made by running it again as a prompt

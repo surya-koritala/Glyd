@@ -36,9 +36,6 @@ fn fa_smem(d: usize) -> u32 {
     ((64 * (d + 8) + 2 * 32 * (d + 8)) * 2) as u32
 }
 
-/// Dynamic shared memory of attn_fa512: K and V [32][520] bf16 and the score shares [2][4][16][33] floats.
-const FA512_SMEM: u32 = (2 * 32 * 520 * 2 + 2 * 4 * 16 * 33 * 4) as u32;
-
 /// The q and k norms of a layer (their weights' small tensors).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum QkNorm {
@@ -305,10 +302,8 @@ pub(crate) struct KernAttn {
     merge: crate::kt::attn_merge,
     gate: crate::kt::attn_gate,
     fa64: crate::kt::attn_fa64,
-    fa128: crate::kt::attn_fa128,
-    fa256: crate::kt::attn_fa256,
-    fa512: crate::kt::attn_fa512,
-    /// Whether prompt chunks take the tensor-core kernels (a development build's GLYD_ATTN_FA=0: the warp kernels).
+    /// Whether prompt chunks take the tensor-core kernels (the library's for heads of 128 to 512, attn_fa64 for 64; a development build's GLYD_ATTN_FA=0: the warp
+    /// kernels).
     pub fa: bool,
 }
 
@@ -330,9 +325,6 @@ impl KernAttn {
             merge: dev.typed()?,
             gate: dev.typed()?,
             fa64: dev.typed()?,
-            fa128: dev.typed()?,
-            fa256: dev.typed()?,
-            fa512: dev.typed()?,
             // (on: against transformers bf16 on gemma-4-31B QAT, wikitext 32 x 512, KLD 0.0192 where the warp kernels' is 0.0225, and a 28K prompt 2x faster)
             fa: {
                 // (the switch back, a development build's alone: a release build reads no GLYD_ variable it does not list)
@@ -343,8 +335,6 @@ impl KernAttn {
                 on
             },
         };
-        k.fa256.allow_smem(fa_smem(256))?;
-        k.fa512.allow_smem(FA512_SMEM)?;
         for (kern, d) in [(&*k.rows256, 256), (&*k.parts256, 256), (&*k.rows512, 512), (&*k.parts512, 512), (&*k.rows128, 128), (&*k.parts128, 128)] {
             kern.allow_smem(rows_smem(d, MAX_G))?;
         }
@@ -387,21 +377,32 @@ impl KernAttn {
         launch!(self.merge, [n, nq, 1], [d as u32, 1, 1], s; *a)
     }
 
-    /// A prompt chunk's attention of `a.n` rows into `a.out` (the tensor-core kernels, or the warp kernels where they are off), then the gate.
+    /// A prompt chunk's attention of `a.n` rows into `a.out` over a bf16 cache, then the gate: the GPU library's kernel for heads of 128 to 512 (`lib`'s
+    /// glyd_gpu_attn_prefill, the one its 12-bit pages' prompt attention is: `start` the rows' first position, as it takes them), attn_fa64 for heads of 64, the warp
+    /// kernels where the tensor-core ones are off.
     ///
     /// # Safety
-    /// As `prep`.
-    pub(crate) unsafe fn prompt(&self, s: Stream, a: &AttnArgs) -> Result<()> {
-        let (n, d, nq) = (a.n as usize, a.d as usize, a.nq as u32);
+    /// As `prep`; the rows are at positions `start` .. `start + a.n` (`a.kpos` holds them).
+    pub(crate) unsafe fn prompt(&self, lib: &crate::ffi::Lib, s: Stream, a: &AttnArgs, start: usize) -> Result<()> {
+        let (n, d, nq, nk) = (a.n as usize, a.d as usize, a.nq as u32, a.nk as i64);
         if !self.fa {
             return self.rows(s, a);
         }
-        match d {
-            64 => launch!(self.fa64, [n.div_ceil(64) as u32, nq, 1], [128, 1, 1], smem fa_smem(64), s; *a)?,
-            128 => launch!(self.fa128, [n.div_ceil(64) as u32, nq, 1], [128, 1, 1], smem fa_smem(128), s; *a)?,
-            256 => launch!(self.fa256, [n.div_ceil(64) as u32, nq, 1], [128, 1, 1], smem fa_smem(256), s; *a)?,
-            512 => launch!(self.fa512, [n.div_ceil(32) as u32, nq, 1], [256, 1, 1], smem FA512_SMEM, s; *a)?,
-            _ => return err(format!("attention heads of {d}")),
+        if d == 64 {
+            launch!(self.fa64, [n.div_ceil(64) as u32, nq, 1], [128, 1, 1], smem fa_smem(64), s; *a)?;
+        } else {
+            let w = (a.nq * a.d) as i64;
+            lib.attn_prefill(
+                a.qo,
+                w,
+                (a.kc, a.vc, a.tab, a.cap as i64),
+                (n as i64, start as i64, a.window as i64),
+                (nk, (a.nq / a.nk) as i64, d as i64),
+                (a.scale as f64, a.sbf16 != 0, a.softcap as f64),
+                a.out,
+                a.os as i64,
+                s,
+            )?;
         }
         self.gate(s, a)
     }
@@ -499,8 +500,15 @@ impl Dyn {
             self.ka.gate(s, &x)?;
             return self.mark(if a.window > 0 { "attention (sliding, 12-bit pages)" } else { "attention (global, 12-bit pages)" });
         }
+        if twelve && !decode && self.ka.fa {
+            // (a prompt chunk over 12-bit pages: the library's prompt attention reads them where they are, and the chunk's own keys and values from the staging rows the
+            // preparation wrote; the same kernel and sums as over a bf16 cache, so the same bits)
+            self.kv12_prefill(a, n, x.qo, x.out)?;
+            self.ka.gate(s, &x)?;
+            return self.mark(if a.window > 0 { "attention (sliding, 12-bit pages)" } else { "attention (global, 12-bit pages)" });
+        }
         (x.kc, x.vc, x.cap, x.tab) = if twelve {
-            // (agent D's glyd_gpu_kv_prefill, a prompt chunk's attention reading the 12-bit pages, takes this place)
+            // (a verify pass's rows, or the warp kernels: the pages unpacked to a bf16 ring)
             let (kc, vc, cap) = self.kv12_stage(a.ring, self.start.get(), n)?;
             (kc, vc, cap as i32, 0)
         } else {
@@ -515,7 +523,7 @@ impl Dyn {
             };
             self.ka.decode(s, &x)?;
         } else {
-            self.ka.prompt(s, &x)?;
+            self.ka.prompt(&self.lib, s, &x, self.start.get())?;
         }
         self.mark(if a.window > 0 { "attention (sliding)" } else { "attention (global)" })
     }
@@ -529,7 +537,7 @@ impl Dyn {
 pub fn check() -> Result<bool> {
     use crate::dev::Buf;
     let dev = Dev::new(0)?;
-    let k = KernAttn::load(&dev)?;
+    let (k, lib) = (KernAttn::load(&dev)?, crate::ffi::Lib::find()?);
     println!("{} (sm_{}{}): the attention kind's kernels against the CPU", dev.name, dev.cc.0, dev.cc.1);
     let mut seed = 0x2026_1123_0e00_0001u64;
     let mut rnd = |m: usize, lo: f32, hi: f32| -> Vec<f32> {
@@ -650,7 +658,7 @@ pub fn check() -> Result<bool> {
                 // SAFETY: buffers made here of the sizes the kernels read and write; read after a synchronize.
                 unsafe {
                     match how {
-                        "a prompt's rows on the tensor cores" => k.prompt(dev.stream, &x)?,
+                        "a prompt's rows on the tensor cores" => k.prompt(&lib, dev.stream, &x, p0)?,
                         "a prompt's rows, a warp a head" => k.rows(dev.stream, &x)?,
                         _ => k.decode(dev.stream, &x)?,
                     }
