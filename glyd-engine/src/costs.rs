@@ -1272,10 +1272,16 @@ pub fn costs_json(model: &str, a: &crate::args::Args) -> Result<Value> {
 
 /// The GPU's memory, its link and the computer's memory measured now, briefly (256 MiB, 5 passes), for a prediction without a tiers file.
 fn quick_rates() -> Result<Rates> {
+    probe_rates(0)
+}
+
+/// GPU `ordinal`'s memory as a kernel streams it, its link from pinned host memory and the computer's memory as all its threads read it, measured now (256 MiB,
+/// 5 passes each: about a second with the context's creation): the planner's rate probe (src/plan.rs `rates_in`, on a GPU's first use).
+pub fn probe_rates(ordinal: i32) -> Result<Rates> {
     use crate::dev::{copy_h2d_async, Buf, Dev, Pinned};
     let bytes = 256usize << 20;
     let reps = 5;
-    let dev = Dev::new(0)?;
+    let dev = Dev::new(ordinal)?;
     let k = crate::kern::Kern::load(&dev)?;
     let (buf, out) = (Buf::zeroed(bytes)?, Buf::zeroed(4)?);
     let blocks = (dev.sms as u32) * 16;

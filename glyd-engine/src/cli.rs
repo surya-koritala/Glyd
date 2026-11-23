@@ -521,6 +521,10 @@ fn start(a: &Args, ui: &RefCell<Ui>, several: bool) -> Done<Ready> {
 fn loaded_report(model: &str, plan: &LoadPlan, gpus: &[&Gpu], weights: u64) {
     let used = gpus.iter().map(|gpu| Dev::probe(gpu.ordinal).map_or(0, |g| gpu.free.saturating_sub(g.free))).sum::<u64>();
     crate::plan::remember_in(&store::cache_root(), model, plan, weights, used);
+    // (the replies that follow are measured against the plan's prediction and kept with it: src/plan.rs `observe`)
+    if let Some(sh) = config_text(model).ok().and_then(|c| crate::plan::shape_of(model, &c).ok()) {
+        crate::plan::watch_in(&store::cache_root(), model, plan, sh, crate::plan::Machine::probe());
+    }
     if let Some(path) = crate::tune!("GLYD_PLAN_REPORT") {
         let _ = std::fs::write(path, plan.report(model, weights, used));
     }

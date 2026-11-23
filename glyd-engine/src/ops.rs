@@ -187,24 +187,31 @@ pub fn finished(how: &str, began: Instant, clock: &crate::otel::Clock, generated
 /// One request of an engine that has no scheduler (a lossy level's): its tokens, first and gaps, and its end, as the scheduler's sequences have them.
 pub struct Timer {
     began: Instant,
+    first: Option<Instant>,
     last: Option<Instant>,
     clock: crate::otel::Clock,
     made: usize,
+    prompt: usize,
 }
 
 impl Timer {
     /// A request of `prompt` tokens begins.
     pub fn start(prompt: usize) -> Timer {
         figures().prompt_tokens.fetch_add(prompt as u64, Relaxed);
-        Timer { began: Instant::now(), last: None, clock: crate::otel::Clock::new(prompt), made: 0 }
+        Timer { began: Instant::now(), first: None, last: None, clock: crate::otel::Clock::new(prompt), made: 0, prompt }
     }
     pub fn token(&mut self) {
         token(self.began, &mut self.last);
+        self.first.get_or_insert_with(Instant::now);
         self.clock.token();
         self.made += 1;
     }
+    /// The request ended: its figures, and its speed kept with the plan that loaded (src/plan.rs `observe`; a request run alone, the only kind a `Timer` times).
     pub fn end(self, how: &str) {
         finished(how, self.began, &self.clock, self.made);
+        if let (Some(first), Some(last)) = (self.first, self.last) {
+            crate::plan::observe(self.prompt, (first - self.began).as_secs_f64(), self.made, (last - first).as_secs_f64());
+        }
     }
 }
 

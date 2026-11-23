@@ -30,8 +30,18 @@ pub struct Device {
     pub cc: (i32, i32),
     pub total: u64,
     pub free: u64,
-    /// Memory bandwidth, GB/s.
+    /// Memory bandwidth, GB/s: the maker's figure (`BANDWIDTH`), or what a machine's JSON says.
     pub bandwidth: f64,
+    /// What a kernel streaming the GPU's memory reads, GB/s, as the rate probe measured it on this computer (`rates_of`); None for a preset or a GPU not probed,
+    /// whose rate is the maker's figure times `STREAM_OF_SPEC`.
+    pub stream: Option<f64>,
+    /// The dense bf16 tensor rate (fp32 sums), TFLOPS, from the makers' sheets (`TFLOPS`); 0 where the planner does not know it (no prefill prediction).
+    pub tflops: f64,
+    /// What decode reached here against the prediction (observed over predicted: p10, p50, p90), from the runs this computer recorded on this GPU (`observed`);
+    /// None before any.
+    pub observed: Option<[f64; 3]>,
+    /// What prompts reached here against the prefill prediction (the median), from the same runs.
+    pub observed_prefill: Option<f64>,
     /// The CUDA version the driver supports (13000 for 13.0); 0 where none.
     pub driver: i32,
     /// The GPU shares the computer's memory (Apple Silicon, DGX Spark, Jetson, Strix Halo): its memory is not a tier apart
@@ -123,6 +133,83 @@ pub fn bandwidth_of(name: &str) -> Option<f64> {
     BANDWIDTH.iter().find(|(w, _)| name.contains(w)).map(|(_, b)| *b)
 }
 
+/// The dense bf16 tensor rate (fp32 sums) of the GPUs the planner knows, TFLOPS, from the makers' sheets, by the words their names hold (most specific first):
+/// the prefill prediction's (`prefill_of`); a GPU not here has none.
+const TFLOPS: &[(&str, f64)] = &[
+    ("GH200", 989.0),
+    ("H200", 989.0),
+    ("H100 PCIe", 756.0),
+    ("H100", 989.0),
+    ("B200", 2250.0),
+    ("A100", 312.0),
+    ("L40S", 362.0),
+    ("L40", 181.0),
+    ("L4", 121.0),
+    ("A10G", 0.0), // (not known: the A10's figure is not the A10G's)
+    ("A10", 125.0),
+    ("RTX 6000 Ada", 364.0),
+    ("A6000", 154.8),
+    ("5090", 209.5),
+    ("5080", 112.6),
+    ("5070 Ti", 87.9),
+    ("5070", 61.8),
+    ("5060 Ti", 47.4),
+    ("4090", 165.2),
+    ("4080 SUPER", 104.5),
+    ("4080", 97.5),
+    ("4070 Ti SUPER", 88.2),
+    ("4070 Ti", 80.2),
+    ("4070 SUPER", 71.0),
+    ("4070", 58.3),
+    ("4060 Ti", 44.1),
+    ("4060 Laptop", 29.1),
+    ("4060", 30.2),
+    ("3090 Ti", 80.0),
+    ("3090", 71.0),
+    ("3080 Ti", 68.2),
+    ("3080", 59.5),
+    ("3070", 40.6),
+    ("3060", 25.6),
+    ("MI325X", 1307.0),
+    ("MI300X", 1307.0),
+    ("7900 XTX", 123.0),
+];
+
+/// A GPU's dense bf16 tensor rate from its name (`TFLOPS`), None where the planner does not know it.
+pub fn tflops_of(name: &str) -> Option<f64> {
+    TFLOPS.iter().find(|(w, _)| name.contains(w)).map(|(_, t)| *t).filter(|&t| t > 0.0)
+}
+
+impl Device {
+    /// A GPU the driver lists, with the rates its name gives (`BANDWIDTH`, `TFLOPS`); nothing measured or observed yet.
+    pub fn listed(name: String, vendor: Vendor, cc: (i32, i32), total: u64, free: u64, driver: i32) -> Device {
+        Device {
+            bandwidth: bandwidth_of(&name).unwrap_or(300.0),
+            stream: None,
+            tflops: tflops_of(&name).unwrap_or(0.0),
+            observed: None,
+            observed_prefill: None,
+            unified: is_unified(&name, vendor),
+            name,
+            vendor,
+            cc,
+            total,
+            free,
+            driver,
+        }
+    }
+
+    /// Bytes a second decode's reads come at: the rate the probe measured here, else the maker's figure times `STREAM_OF_SPEC`.
+    pub fn rate(&self) -> f64 {
+        self.stream.unwrap_or(self.bandwidth * STREAM_OF_SPEC) * GB
+    }
+
+    /// The decode prediction's factor and band on this GPU: p10, p50 and p90 of what runs here reached against their prediction (`observed`), else `SPREAD`.
+    pub fn band(&self) -> [f64; 3] {
+        self.observed.unwrap_or(SPREAD)
+    }
+}
+
 fn gpu(name: &str, vendor: Vendor, cc: (i32, i32), total_gib: f64, free_gib: f64, driver: i32) -> Device {
     let gib = |g: f64| (g * GIB) as u64;
     Device {
@@ -132,6 +219,10 @@ fn gpu(name: &str, vendor: Vendor, cc: (i32, i32), total_gib: f64, free_gib: f64
         total: gib(total_gib),
         free: gib(free_gib),
         bandwidth: bandwidth_of(name).unwrap_or(300.0),
+        stream: None,
+        tflops: tflops_of(name).unwrap_or(0.0),
+        observed: None,
+        observed_prefill: None,
         driver,
         unified: is_unified(name, vendor),
     }
@@ -200,6 +291,10 @@ impl Machine {
             if let Some(b) = num(g, "bandwidth") {
                 d.bandwidth = b;
             }
+            d.stream = num(g, "stream_gbs");
+            if let Some(t) = num(g, "tflops") {
+                d.tflops = t;
+            }
             if let Some(u) = g.get("unified").and_then(Value::as_bool) {
                 d.unified = u;
             }
@@ -215,21 +310,32 @@ impl Machine {
         })
     }
 
-    /// This computer: its GPUs as the driver reports them, its free memory.
+    /// This computer: its GPUs as the driver reports them, its free memory, the rates a GPU's first use here measured (`rates_in`, kept in the cache; not where
+    /// `GLYD_NO_PROBE` is set), and what the runs here reached against their predictions (`observed_on`).
     pub fn probe() -> Machine {
         let vendor = if cfg!(glyd_hip) { Vendor::Amd } else { Vendor::Nvidia };
+        let root = crate::store::cache_root();
+        let mut ram_bandwidth = None;
         let devices = crate::dev::Dev::probe_all()
             .map(|gs| {
                 gs.into_iter()
-                    .map(|g| Device {
-                        bandwidth: bandwidth_of(&g.name).unwrap_or(300.0),
-                        unified: is_unified(&g.name, vendor),
-                        name: g.name,
-                        vendor,
-                        cc: g.cc,
-                        total: g.total,
-                        free: g.free,
-                        driver: g.driver,
+                    .map(|g| {
+                        let mut d = Device::listed(g.name, vendor, g.cc, g.total, g.free, g.driver);
+                        if std::env::var_os("GLYD_NO_PROBE").is_none() {
+                            let measure = || {
+                                crate::costs::probe_rates(g.ordinal).ok().map(|r| Probed {
+                                    stream_gbs: r.vram / GB,
+                                    link_gbs: r.link / GB,
+                                    ram_gbs: r.ram / GB,
+                                })
+                            };
+                            if let Some(r) = rates_in(&root, &d.name, g.ordinal, &measure) {
+                                d.stream = Some(r.stream_gbs);
+                                ram_bandwidth.get_or_insert(r.ram_gbs);
+                            }
+                        }
+                        (d.observed, d.observed_prefill) = observed_on(&root, &d.name);
+                        d
                     })
                     .collect()
             })
@@ -239,7 +345,7 @@ impl Machine {
             name: "this computer".into(),
             devices,
             ram_free: crate::offload::host_memory().unwrap_or(8 << 30),
-            ram_bandwidth: 50.0,
+            ram_bandwidth: ram_bandwidth.unwrap_or(50.0),
             cores,
             arch: std::env::consts::ARCH.into(),
         }
@@ -522,7 +628,12 @@ pub struct Candidate {
     pub placement: Option<Placement>,
     pub context: usize,
     pub kv: u64,
+    /// Decode tokens/s predicted (one user, about 1,000 positions): the model's (`prior`) times what runs here reached against it (`Device::band`), and the
+    /// band's p10 and p90; prompt tokens/s where every weight is on the GPUs and the GPU's tensor rate is known.
     pub tok_s: f64,
+    pub prior: f64,
+    pub range: (f64, f64),
+    pub prefill: Option<f64>,
     /// Why it does not fit, where it does not.
     pub why: Option<String>,
     /// The plan `run` loads, where this path is sized by the loader's own numbers (`sizing::size`): the figures above are its. None: an
@@ -531,12 +642,40 @@ pub struct Candidate {
 }
 
 impl Candidate {
+    /// The speeds of an option predicted `prior` tokens/s on `d` (refined by what was observed there), with `prefill`.
+    pub fn speeds(prior: f64, d: &Device, prefill: Option<f64>) -> Candidate {
+        let b = d.band();
+        Candidate {
+            level: "",
+            bits: 0.0,
+            weights: 0,
+            placement: None,
+            context: 0,
+            kv: 0,
+            tok_s: prior * b[1],
+            prior,
+            range: (prior * b[0], prior * b[2]),
+            prefill: prefill.map(|p| p * d.observed_prefill.unwrap_or(1.0)),
+            why: None,
+            load: None,
+        }
+    }
+
+    /// The speeds as `fit --json` has them.
+    fn speed_json(&self, v: &mut serde_json::Value) {
+        let r = |x: f64| (x * 10.0).round() / 10.0;
+        v["tokens_per_second"] = serde_json::json!(r(self.tok_s));
+        v["tokens_per_second_p10"] = serde_json::json!(r(self.range.0));
+        v["tokens_per_second_p90"] = serde_json::json!(r(self.range.1));
+        v["prefill_tokens_per_second"] = self.prefill.map_or(serde_json::Value::Null, |p| serde_json::json!(p.round()));
+    }
+
     /// The plan as `fit --json` prints it (`glyd-plan/1`): the loader's own numbers where `load` has them (`exact`), else the planner's estimate.
     pub fn json(&self, model: &str, m: &Machine) -> String {
         if let Some(l) = &self.load {
             let mut v: serde_json::Value = serde_json::from_str(&l.json(model)).unwrap_or_default();
             v["exact"] = true.into();
-            v["tokens_per_second"] = serde_json::json!((self.tok_s * 10.0).round() / 10.0);
+            self.speed_json(&mut v);
             return v.to_string();
         }
         let placement = match &self.placement {
@@ -548,12 +687,12 @@ impl Candidate {
             None => serde_json::Value::Null,
         };
         let gpu = m.devices.iter().map(|d| d.name.as_str()).collect::<Vec<_>>();
-        serde_json::json!({
+        let mut v = serde_json::json!({
             "schema": SCHEMA, "model": model, "exact": false, "level": self.level, "context": self.context,
             "gpus": gpu, "weights_bytes": self.weights, "kv_bytes": self.kv, "placement": placement,
-            "tokens_per_second": (self.tok_s * 10.0).round() / 10.0,
-        })
-        .to_string()
+        });
+        self.speed_json(&mut v);
+        v.to_string()
     }
 }
 
@@ -573,13 +712,28 @@ pub const PREFERRED_CTX: usize = 8192;
 const CONTEXTS: [usize; 8] = [4096, 8192, 16384, 32768, 65536, 131072, 262144, 1048576];
 /// Positions a decode step reads on average in the predictions (a chat with a short prompt).
 const POSITIONS: f64 = 1024.0;
-/// Of a GPU's memory bandwidth, what decode reaches (measured: lossy levels 0.76-0.85, lossless about 0.7; tests below).
-const EFF_LOSSY: f64 = 0.80;
-const EFF_LOSSLESS: f64 = 0.70;
-/// Of the computer's memory bandwidth, what the CPU's expert products reach; the time a mixture-of-experts layer with its
-/// experts in RAM adds for the GPU and host to meet (calibrated on Condor's Qwen3.8-Flash-Next on an RTX 4080 SUPER).
+/// What a kernel streaming the GPU's memory reads of the maker's figure: 697.35 of 736 GB/s, measured on an RTX 4080 SUPER (`glyd-engine rates`, 512 MiB, 10
+/// passes); the rate of a preset or of a GPU the probe has not measured.
+pub const STREAM_OF_SPEC: f64 = 0.9475;
+/// Of the streamed rate, what decode's reads reach: the lossy levels' packs all of it, the lossless layout (decoded in the product) 0.72; and a decode step's time
+/// besides its reads, 35 µs a layer (its kernels' launches and the gaps between them). Measured on an RTX 4080 SUPER at about 1,000 positions: gemma-4-12B at wren
+/// 86.2 tokens/s and kestrel 63.3, Qwen3.5-0.8B at kestrel 561.9 and wren 657.9 (a 35 µs layer and the stream's rate predict them within 4%); the lossless figure from
+/// Qwen3-32B on an RTX A6000 (11.8 tokens/s).
+const EFF_LOSSY: f64 = 1.0;
+const EFF_LOSSLESS: f64 = 0.72;
+const LAYER_S: f64 = 35e-6;
+/// Of the computer's memory bandwidth, what the CPU's expert products reach; the time a mixture-of-experts layer with its experts in RAM adds for the GPU and host
+/// to meet besides `LAYER_S` (calibrated on Condor's Qwen3.8-Flash-Next on an RTX 4080 SUPER, 0.20 ms a layer in all).
 const EFF_CPU: f64 = 0.70;
-const SYNC_PER_MOE_LAYER: f64 = 0.20e-3;
+const SYNC_PER_MOE_LAYER: f64 = 0.165e-3;
+/// A prompt's tokens a second: 2 x the parameters a token multiplies over the GPU's tensor rate (`Device::tflops`) at `PROMPT_EFF` of it, and 1.11 µs a token a
+/// layer besides (attention, norms, the recurrent layers' scans). Both from two prompts of 936 and 1,002 tokens on an RTX 4080 SUPER: gemma-4-12B at wren 3,570
+/// tokens/s, Qwen3.5-0.8B at kestrel 27,073.
+const PROMPT_EFF: f64 = 0.92;
+const PROMPT_LAYER_S: f64 = 1.11e-6;
+/// The band a prediction is given in where no run on the GPU was observed (p10 and p90 against the prediction): the runs these figures are calibrated on (above, and
+/// `predictions_match_what_was_measured`'s) came to 0.91-1.02 of their predictions on the GPUs they were measured on; another GPU's kernels may differ more.
+pub const SPREAD: [f64; 3] = [0.90, 1.0, 1.10];
 /// The share of expert reads a cache holding a share `f` of the experts serves: experts are used unevenly (Condor: 70-76% at about a quarter).
 const HIT_EXPONENT: f64 = 0.23;
 /// The rate an expert's bytes come from an NVMe disk in direct reads of whole experts, 16 in flight (src/disk.rs), GB/s: a planning figure.
@@ -771,9 +925,10 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
     let marked = if sh.state > 0.0 && !sh.latent_kv { sh.state } else { 0.0 };
     let pool = if marked > 0.0 { crate::dynamic::snaps::count(sh.state as usize) as f64 * sh.state } else { 0.0 };
     let kv_at = |ctx: usize| (sh.kv_full * ctx as f64 + sh.kv_sliding * ctx.min(sh.window.max(1)) as f64 + sh.state + marked) * users + pool;
-    let kv_read = sh.kv_full * POSITIONS + sh.kv_sliding * POSITIONS.min(sh.window.max(1) as f64);
     let same: Vec<usize> = (0..m.devices.len()).filter(|&i| m.devices[i].vendor == d0.vendor).collect();
-    let gain = if sh.mtp { MTP_GAIN } else { 1.0 };
+    // (the draft head counts where the family's path drafts with it; a model no path runs yet is taken to)
+    let gain = gain_of(sh, fam.is_none_or(|f| f.drafts));
+    let step = sh.layers as f64 * LAYER_S;
     // (every level the family runs, or the one asked)
     let levels: Vec<&'static str> = levels::LEVELS
         .iter()
@@ -787,8 +942,8 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
         let rest = (sh.embed + sh.head + sh.dense) * bits / 8.0;
         let experts = sh.routed * ebits / 8.0;
         let weights = rest + experts;
-        let eff = if level == "penguin" && sh.release_bits > 8.0 { EFF_LOSSLESS } else { EFF_LOSSY };
-        let read = ((sh.head.max(if sh.head == 0.0 { sh.embed } else { 0.0 }) + sh.dense) * bits + sh.routed_active() * ebits) / 8.0 + kv_read;
+        let eff = eff_of(level, sh);
+        let read = read_of(sh, bits, ebits, POSITIONS);
         // the largest context that fits in `budget` bytes once `fixed` are placed
         let ctx_in = |budget: f64, fixed: f64| -> Option<usize> {
             let fits: Vec<usize> = CONTEXTS.iter().copied().filter(|&c| c <= max_ctx && fixed + kv_at(c) <= budget).collect();
@@ -797,20 +952,23 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
                 .or_else(|| (ask.context.is_none() && fixed + kv_at(MIN_CTX) <= budget).then_some(MIN_CTX))
                 .filter(|&c| c >= MIN_CTX.min(max_ctx))
         };
-        let option = |placement: Option<Placement>, context: usize, tok_s: f64, why: Option<String>| Candidate {
-            level,
-            bits: if experts > 0.0 && ebits != bits { (rest * 8.0 + experts * 8.0) / (sh.params()) } else { bits },
-            weights: weights as u64,
-            placement,
-            context,
-            kv: kv_at(context) as u64,
-            tok_s,
-            why,
-            load: None,
+        let option = |placement: Option<Placement>, context: usize, prior: f64, why: Option<String>| {
+            let in_vram = matches!(placement, Some(Placement::Gpu(_) | Placement::Split(_)));
+            Candidate {
+                level,
+                bits: if experts > 0.0 && ebits != bits { (rest * 8.0 + experts * 8.0) / (sh.params()) } else { bits },
+                weights: weights as u64,
+                placement,
+                context,
+                kv: kv_at(context) as u64,
+                why,
+                load: None,
+                ..Candidate::speeds(prior, d0, if in_vram { prefill_of(sh, d0) } else { None })
+            }
         };
         // one GPU
         if let Some(ctx) = ctx_in(room(d0) as f64, weights) {
-            options.push(option(Some(Placement::Gpu(main)), ctx, gain * d0.bandwidth * GB * eff / read, None));
+            options.push(option(Some(Placement::Gpu(main)), ctx, gain / (read / (d0.rate() * eff) + step), None));
             continue;
         }
         // a split over the GPUs of the vendor (where the family's path splits at this level)
@@ -818,7 +976,8 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
         if same.len() > 1 && fam.is_none_or(|f| f.split_levels.contains(&level)) {
             if let Some(ctx) = ctx_in(total_room, weights) {
                 // (one GPU at a time: each reads its share, in proportion to its room)
-                let t: f64 = same.iter().map(|&i| read * room(&m.devices[i]) as f64 / total_room / (m.devices[i].bandwidth * GB * eff)).sum::<f64>()
+                let t: f64 = same.iter().map(|&i| read * room(&m.devices[i]) as f64 / total_room / (m.devices[i].rate() * eff)).sum::<f64>()
+                    + step
                     + 0.1e-3 * (same.len() - 1) as f64;
                 options.push(option(Some(Placement::Split(same.clone())), ctx, gain / t, None));
                 continue;
@@ -847,7 +1006,7 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
                 let cache = (room(d0) as f64 - rest - kv_at(ctx)).max(min_cache);
                 let hit = (cache / experts).min(1.0).powf(HIT_EXPONENT);
                 let active = sh.routed_active() * ebits / 8.0;
-                let gpu_t = (read - active * (1.0 - hit)) / (d0.bandwidth * GB * eff);
+                let gpu_t = (read - active * (1.0 - hit)) / (d0.rate() * eff) + step;
                 let cpu_t = active * (1.0 - hit) / (m.ram_bandwidth * GB * EFF_CPU);
                 // (the misses the memory does not hold, at the disk's rate: the experts uniformly over the tiers)
                 let disk_t = active * (1.0 - hit) * (disk / experts) / (DISK_GBS * GB);
@@ -1080,19 +1239,41 @@ impl LoadPlan {
     }
 }
 
-/// Decode tokens/s of a plan `run` loads, from the model's parameters and the machine's bandwidths (the planner's model, for a placement the
-/// loader chose).
-fn speed_of(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan) -> f64 {
+/// Bytes a decode step reads at `bits` (`ebits` the routed experts') at `positions` positions: the matrices it reads whole (the head, the embedding where it is
+/// tied, the dense ones), a token's routed experts, and the keys and values.
+fn read_of(sh: &Shape, bits: f64, ebits: f64, positions: f64) -> f64 {
+    ((sh.head.max(if sh.head == 0.0 { sh.embed } else { 0.0 }) + sh.dense) * bits + sh.routed_active() * ebits) / 8.0
+        + sh.kv_full * positions
+        + sh.kv_sliding * positions.min(sh.window.max(1) as f64)
+}
+
+/// Of the streamed rate, what decode's reads reach at `level`.
+fn eff_of(level: &str, sh: &Shape) -> f64 {
+    if level == "penguin" && sh.release_bits > 8.0 {
+        EFF_LOSSLESS
+    } else {
+        EFF_LOSSY
+    }
+}
+
+/// A prompt's tokens a second on `d` with every weight on the GPU (`PROMPT_EFF`, `PROMPT_LAYER_S`): None where the GPU's tensor rate is not known.
+pub fn prefill_of(sh: &Shape, d: &Device) -> Option<f64> {
+    (d.tflops > 0.0).then(|| 1.0 / (2.0 * (sh.dense + sh.routed_active()) / (d.tflops * 1e12 * PROMPT_EFF) + sh.layers as f64 * PROMPT_LAYER_S))
+}
+
+/// Decode tokens/s of a plan `run` loads at `positions` positions, from the model's parameters and the machine's rates (the planner's model, for a placement the
+/// loader chose), before what runs here observed refines it.
+fn speed_at(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan, positions: f64) -> f64 {
     let d0 = &m.devices[main];
     let Some((bits, ebits)) = level_bits(lp.level, sh, d0) else { return 0.0 };
-    let eff = if lp.level == "penguin" && sh.release_bits > 8.0 { EFF_LOSSLESS } else { EFF_LOSSY };
-    let kv_read = sh.kv_full * POSITIONS + sh.kv_sliding * POSITIONS.min(sh.window.max(1) as f64);
-    let read = ((sh.head.max(if sh.head == 0.0 { sh.embed } else { 0.0 }) + sh.dense) * bits + sh.routed_active() * ebits) / 8.0 + kv_read;
-    let gain = if sh.mtp { MTP_GAIN } else { 1.0 };
+    let eff = eff_of(lp.level, sh);
+    let read = read_of(sh, bits, ebits, positions);
+    let gain = gain_of(sh, lp.kind == Kind::Condor);
+    let step = sh.layers as f64 * LAYER_S;
     if let Some(sp) = &lp.spread {
         // (the GPUs it is over: stages read in turn, a layer across them reads on all at once; the experts the GPUs do not hold are the CPU's)
-        let bw: Vec<f64> = sp.devices.iter().filter_map(|&d| m.devices.get(d as usize)).map(|d| d.bandwidth).collect();
-        let n = bw.len().max(1) as f64;
+        let rates: Vec<f64> = sp.devices.iter().filter_map(|&d| m.devices.get(d as usize)).map(Device::rate).collect();
+        let n = rates.len().max(1) as f64;
         let active = sh.routed_active() * ebits / 8.0;
         let hit = if sp.host_bytes > 0 {
             (sp.places.iter().min().copied().unwrap_or(0) as f64 / sp.experts_per_layer.max(1) as f64).min(1.0).powf(HIT_EXPONENT)
@@ -1101,35 +1282,46 @@ fn speed_of(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan) -> f64 {
         };
         let on_gpu = read - active * (1.0 - hit);
         let gpu_t = if sp.across {
-            on_gpu / (n * bw.iter().copied().fold(f64::MAX, f64::min) * GB * eff)
+            on_gpu / (n * rates.iter().copied().fold(f64::MAX, f64::min) * eff)
         } else {
-            bw.iter().map(|b| on_gpu / n / (b * GB * eff)).sum::<f64>()
-        } + 0.1e-3 * (n - 1.0);
+            rates.iter().map(|r| on_gpu / n / (r * eff)).sum::<f64>()
+        } + step
+            + 0.1e-3 * (n - 1.0);
         let cpu_t = active * (1.0 - hit) / (m.ram_bandwidth * GB * EFF_CPU);
         // (the last layers' dense matrices in the computer's memory, src/dense_ram.rs: each copied to the GPU before it runs, every token)
         let link_t = sp.dense_bytes as f64 / (LINK_GBS * GB);
         return gain / (gpu_t.max(cpu_t) + link_t + if sp.host_bytes > 0 { SYNC_PER_MOE_LAYER * sh.moe_layers as f64 } else { 0.0 });
     }
     match &lp.experts {
-        None => gain * d0.bandwidth * GB * eff / read,
+        None => gain / (read / (d0.rate() * eff) + step),
         Some(c) => {
             let hit = (c.slots as f64 / c.experts.max(1) as f64).min(1.0).powf(HIT_EXPONENT);
             let active = sh.routed_active() * ebits / 8.0;
-            let gpu_t = (read - active * (1.0 - hit)) / (d0.bandwidth * GB * eff);
+            let gpu_t = (read - active * (1.0 - hit)) / (d0.rate() * eff) + step;
             let cpu_t = active * (1.0 - hit) / (m.ram_bandwidth * GB * EFF_CPU);
             gain / (gpu_t.max(cpu_t) + SYNC_PER_MOE_LAYER * sh.moe_layers as f64)
         }
     }
 }
 
-/// Decode tokens/s of `level` with every weight on the GPU `main` (the speed a run at that level would have if it fitted).
-fn ideal_speed(sh: &Shape, m: &Machine, main: usize, level: &str) -> f64 {
+fn speed_of(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan) -> f64 {
+    speed_at(sh, m, main, lp, POSITIONS)
+}
+
+/// The tokens a decode step makes: `MTP_GAIN` where the model has a draft head and the path drafts with it (`drafts`), else one.
+fn gain_of(sh: &Shape, drafts: bool) -> f64 {
+    if sh.mtp && drafts {
+        MTP_GAIN
+    } else {
+        1.0
+    }
+}
+
+/// Decode tokens/s of `level` with every weight on the GPU `main` (the speed a run at that level would have if it fitted), on a path that drafts or not.
+fn ideal_speed(sh: &Shape, m: &Machine, main: usize, level: &str, drafts: bool) -> f64 {
     let d0 = &m.devices[main];
     let Some((bits, ebits)) = level_bits(level, sh, d0) else { return 0.0 };
-    let eff = if level == "penguin" && sh.release_bits > 8.0 { EFF_LOSSLESS } else { EFF_LOSSY };
-    let kv_read = sh.kv_full * POSITIONS + sh.kv_sliding * POSITIONS.min(sh.window.max(1) as f64);
-    let read = ((sh.head.max(if sh.head == 0.0 { sh.embed } else { 0.0 }) + sh.dense) * bits + sh.routed_active() * ebits) / 8.0 + kv_read;
-    (if sh.mtp { MTP_GAIN } else { 1.0 }) * d0.bandwidth * GB * eff / read
+    gain_of(sh, drafts) / (read_of(sh, bits, ebits, POSITIONS) / (d0.rate() * eff_of(level, sh)) + sh.layers as f64 * LAYER_S)
 }
 
 // ---- the degrade ladder ----------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -1299,7 +1491,7 @@ pub fn ladder(
                 // (the hummingbird level is made for its experts to be in the computer's memory: that is the level asked for, not a step down from it)
                 let in_memory = lp.experts.is_some() || lp.spread.as_ref().is_some_and(|s| s.host_bytes > 0);
                 if in_memory && level != "hummingbird" && !m.devices.is_empty() {
-                    let (ideal, got) = (ideal_speed(sh, m, main, level), speed_of(sh, m, main, &all_on_gpu));
+                    let (ideal, got) = (ideal_speed(sh, m, main, level, fam.drafts), speed_of(sh, m, main, &all_on_gpu));
                     let cost = if ideal > 0.0 { (1.0 - got / ideal) * 100.0 } else { 0.0 };
                     steps.push(Step {
                         kind: StepKind::ExpertsInRam,
@@ -1325,7 +1517,7 @@ pub fn ladder(
                     });
                 }
                 if level != asked && !m.devices.is_empty() {
-                    let (before, after) = (ideal_speed(sh, m, main, asked), ideal_speed(sh, m, main, level));
+                    let (before, after) = (ideal_speed(sh, m, main, asked, fam.drafts), ideal_speed(sh, m, main, level, fam.drafts));
                     steps.push(Step {
                         kind: StepKind::LowerLevel,
                         what: format!("lower level: {level} where {asked} was asked for (not the level asked for: smaller weights, not lossless)"),
@@ -1361,6 +1553,8 @@ fn candidate_of(lp: LoadPlan, sh: &Shape, m: &Machine, main: usize) -> Candidate
             disk: lp.disk_bytes(),
         },
     };
+    let in_vram = matches!(placement, Placement::Gpu(_) | Placement::Split(_));
+    let d = &m.devices[main];
     Candidate {
         level: lp.level,
         bits: lp.weights as f64 * 8.0 / sh.params().max(1.0),
@@ -1368,9 +1562,9 @@ fn candidate_of(lp: LoadPlan, sh: &Shape, m: &Machine, main: usize) -> Candidate
         placement: Some(placement),
         context: lp.context,
         kv: lp.kv,
-        tok_s,
         why: None,
         load: Some(lp),
+        ..Candidate::speeds(tok_s, d, if in_vram { prefill_of(sh, d) } else { None })
     }
 }
 
@@ -1403,7 +1597,12 @@ pub fn remember_in(root: &std::path::Path, model: &str, plan: &LoadPlan, weights
     if let Some(dir) = file.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let _ = std::fs::write(file, plan.report(crate::levels::split_tag(model).0, weights_loaded, gpu_used));
+    let mut v: serde_json::Value = serde_json::from_str(&plan.report(crate::levels::split_tag(model).0, weights_loaded, gpu_used)).unwrap_or_default();
+    // (the runs observed with the plan before are kept: `observe`'s)
+    if let Some(seen) = recall_in(root, model, plan.level, &plan.gpu).and_then(|b| b.get("observed").cloned()) {
+        v["observed"] = seen;
+    }
+    let _ = std::fs::write(file, v.to_string());
 }
 
 /// The plan that loaded `model` at `level` on `gpu` before (`remember_in`'s), if one did.
@@ -1438,6 +1637,158 @@ fn remembered(root: &std::path::Path, model: &str, c: &Candidate) -> Option<Stri
     ))
 }
 
+// ---- the rates measured here, and the runs observed ------------------------------------------------------------------------------------------------------------
+
+/// The rates the probe measured for a GPU (`glyd-rates/1`, in the cache's `rates/`): what a kernel streaming its memory reads, the link from pinned host memory,
+/// and the computer's memory read by all its threads, GB/s.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Probed {
+    pub stream_gbs: f64,
+    pub link_gbs: f64,
+    pub ram_gbs: f64,
+}
+
+pub const RATES_SCHEMA: &str = "glyd-rates/1";
+
+fn slug(s: &str) -> String {
+    s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' { c } else { '_' }).collect()
+}
+
+/// The rates of GPU `ordinal` (`name`) on this computer: kept in `root` (`rates/NAME-ORDINAL.json`) from the first time they were measured, else measured now by
+/// `measure` (`costs::probe_rates`: about a second) and kept. None where they cannot be measured.
+pub fn rates_in(root: &std::path::Path, name: &str, ordinal: i32, measure: &dyn Fn() -> Option<Probed>) -> Option<Probed> {
+    let file = root.join("rates").join(format!("{}-{ordinal}.json", slug(name)));
+    let kept = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| Some(Probed { stream_gbs: v["stream_gbs"].as_f64()?, link_gbs: v["link_gbs"].as_f64()?, ram_gbs: v["ram_gbs"].as_f64()? }));
+    if kept.is_some() {
+        return kept;
+    }
+    let r = measure().filter(|r| r.stream_gbs > 0.0)?;
+    let _ = std::fs::create_dir_all(root.join("rates"));
+    let v = serde_json::json!({"schema": RATES_SCHEMA, "gpu": name, "ordinal": ordinal, "stream_gbs": r.stream_gbs, "link_gbs": r.link_gbs, "ram_gbs": r.ram_gbs,
+        "measured_unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())});
+    let _ = std::fs::write(file, v.to_string());
+    Some(r)
+}
+
+/// The p10, p50 and p90 of `x` (sorted here), where there are three or more; with one or two, their middle in `SPREAD`'s band around it. None where there are none.
+fn band_of(mut x: Vec<f64>) -> Option<[f64; 3]> {
+    x.retain(|v| v.is_finite() && *v > 0.0);
+    x.sort_by(|a, b| a.total_cmp(b));
+    let q = |f: f64| {
+        let at = f * (x.len() - 1) as f64;
+        let (lo, hi) = (at.floor() as usize, at.ceil() as usize);
+        x[lo] + (x[hi] - x[lo]) * (at - lo as f64)
+    };
+    match x.len() {
+        0 => None,
+        1 | 2 => {
+            let m = q(0.5);
+            Some([m * SPREAD[0], m, m * SPREAD[2]])
+        }
+        _ => Some([q(0.1), q(0.5), q(0.9)]),
+    }
+}
+
+/// The runs observed with the plans kept in `root` that pass `keep` (a plan and its samples): their decode samples' ratios to their prediction, and their prompts'.
+fn ratios_in(root: &std::path::Path, keep: &dyn Fn(&serde_json::Value, &serde_json::Value) -> bool) -> (Vec<f64>, Vec<f64>) {
+    let (mut decode, mut prefill) = (Vec::new(), Vec::new());
+    for e in std::fs::read_dir(root.join("plans")).into_iter().flatten().flatten() {
+        let Some(v) = std::fs::read_to_string(e.path()).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { continue };
+        for s in v["observed"].as_array().into_iter().flatten().filter(|s| keep(&v, s)) {
+            decode.extend(s["decode_ratio"].as_f64());
+            prefill.extend(s["prefill_ratio"].as_f64());
+        }
+    }
+    (decode, prefill)
+}
+
+/// What the runs on the GPU `gpu` reached against their predictions, from every plan that loaded on it here: the decode band (`Device::observed`) and the prompts'
+/// median (`Device::observed_prefill`). Runs with a draft model are left out: their tokens a step are not the planner's.
+pub fn observed_on(root: &std::path::Path, gpu: &str) -> (Option<[f64; 3]>, Option<f64>) {
+    let (d, p) = ratios_in(root, &|v, s| v["plan"]["gpu"].as_str() == Some(gpu) && !s["drafted"].as_bool().unwrap_or(false));
+    (band_of(d), band_of(p).map(|b| b[1]))
+}
+
+/// The decode band of `model` at `level` on `gpu` from its own runs here (its draft model's included), where it has any.
+pub fn observed_for(root: &std::path::Path, model: &str, level: &str, gpu: &str) -> Option<[f64; 3]> {
+    let v = recall_in(root, model, level, gpu)?;
+    band_of(v["observed"].as_array()?.iter().filter_map(|s| s["decode_ratio"].as_f64()).collect())
+}
+
+/// What a run is measured against: the plan's file, its prediction by positions (`speed_at`), its prompts' prediction, and whether a draft model drafts.
+struct Watch {
+    file: std::path::PathBuf,
+    decode: Box<dyn Fn(f64) -> f64 + Send>,
+    prefill: Option<f64>,
+    drafted: bool,
+}
+
+static WATCH: std::sync::Mutex<Option<Watch>> = std::sync::Mutex::new(None);
+
+/// The runs that follow are measured against the plan `plan` of `model` (`sh` on `m`, as `fit` predicts it), and kept with it in `root` (`observe`).
+pub fn watch_in(root: &std::path::Path, model: &str, plan: &LoadPlan, sh: Shape, m: Machine) {
+    if let (Some(w), Ok(mut g)) = (watch_of(root, model, plan, sh, m), WATCH.lock()) {
+        *g = Some(w);
+    }
+}
+
+fn watch_of(root: &std::path::Path, model: &str, plan: &LoadPlan, sh: Shape, m: Machine) -> Option<Watch> {
+    let main = m.devices.iter().position(|d| plan.gpu.split(", ").next() == Some(d.name.as_str()))?;
+    let in_vram = plan.experts.is_none() && plan.spread.as_ref().is_none_or(|s| s.host_bytes == 0 && s.dense == 0);
+    let prefill = if in_vram { prefill_of(&sh, &m.devices[main]) } else { None };
+    let lp = plan.clone();
+    Some(Watch {
+        file: memo_file(root, model, plan.level, &plan.gpu),
+        decode: Box::new(move |positions| speed_at(&sh, &m, main, &lp, positions)),
+        prefill,
+        drafted: plan.draft > 0,
+    })
+}
+
+/// The runs kept with a plan: the last of them.
+const OBSERVED_KEPT: usize = 32;
+
+/// A reply measured: `prompt` tokens read in `first_s` seconds to the first token, then `made` tokens in all, the ones after the first in `decode_s`. Kept with the
+/// plan being watched (`watch_in`), against its prediction at the reply's positions: a decode where 16 tokens or more followed the first, a prompt of 256 tokens or more.
+pub fn observe(prompt: usize, first_s: f64, made: usize, decode_s: f64) {
+    if let Some(w) = WATCH.lock().ok().as_ref().and_then(|g| g.as_ref()) {
+        keep(w, prompt, first_s, made, decode_s);
+    }
+}
+
+/// `observe` against the plan of `w`.
+fn keep(w: &Watch, prompt: usize, first_s: f64, made: usize, decode_s: f64) {
+    let mut s = serde_json::json!({"prompt_tokens": prompt, "made": made, "drafted": w.drafted});
+    if made > 16 && decode_s > 0.0 {
+        let (rate, positions) = ((made - 1) as f64 / decode_s, prompt as f64 + made as f64 / 2.0);
+        let predicted = (w.decode)(positions);
+        s["decode_tok_s"] = serde_json::json!(rate);
+        s["positions"] = serde_json::json!(positions);
+        if predicted > 0.0 {
+            s["decode_ratio"] = serde_json::json!(rate / predicted);
+        }
+    }
+    if prompt >= 256 && first_s > 0.0 {
+        let rate = prompt as f64 / first_s;
+        s["prefill_tok_s"] = serde_json::json!(rate);
+        if let Some(p) = w.prefill {
+            s["prefill_ratio"] = serde_json::json!(rate / p);
+        }
+    }
+    if s.get("decode_tok_s").is_none() && s.get("prefill_tok_s").is_none() {
+        return;
+    }
+    let Some(mut v) = std::fs::read_to_string(&w.file).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { return };
+    let mut seen = v["observed"].as_array().cloned().unwrap_or_default();
+    seen.push(s);
+    let from = seen.len().saturating_sub(OBSERVED_KEPT);
+    v["observed"] = serde_json::Value::Array(seen.split_off(from));
+    let _ = std::fs::write(&w.file, v.to_string());
+}
+
 // ---- the command ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 fn gb(b: u64) -> String {
@@ -1470,18 +1821,22 @@ pub fn text(model: &str, sh: &Shape, m: &Machine, p: &Plan) -> String {
     };
     s += &format!("{model}: {} ({kind}; up to {} tokens of context)\n", sh.arch, sh.max_ctx);
     for (i, d) in m.devices.iter().enumerate() {
-        s += &format!("GPU {i}: {} · {} free of {} · {:.0} GB/s\n", d.name, gb(d.free), gb(d.total), d.bandwidth);
+        let measured = d.stream.map_or(String::new(), |m| format!(" ({m:.0} measured here)"));
+        s += &format!("GPU {i}: {} · {} free of {} · {:.0} GB/s{measured}\n", d.name, gb(d.free), gb(d.total), d.bandwidth);
     }
     s += &format!("RAM: {} free · {} cores · backend: {}\n", gb(m.ram_free), m.cores, p.backend);
     match &p.chosen {
         Some(c) => {
             s += &format!(
-                "Plan: {} ({:.1} bits) · {} · {} tokens of context · ~{:.0} tokens/s\n",
+                "Plan: {} ({:.1} bits) · {} · {} tokens of context · ~{:.0} tokens/s ({:.0}-{:.0}){}\n",
                 c.level,
                 c.bits,
                 where_(c.placement.as_ref().unwrap(), m),
                 c.context,
-                c.tok_s
+                c.tok_s,
+                c.range.0,
+                c.range.1,
+                c.prefill.map_or(String::new(), |p| format!(" · prompts ~{p:.0} tokens/s"))
             );
             if let Some(l) = &c.load {
                 s += &format!("  {}\n", l.text());
@@ -1508,7 +1863,12 @@ pub fn text(model: &str, sh: &Shape, m: &Machine, p: &Plan) -> String {
     for n in &p.notes {
         s += &format!("note: {n}\n");
     }
-    s += "(speeds are estimates from memory bandwidth, for a short prompt and one user)\n";
+    let observed = m.devices.iter().any(|d| d.observed.is_some());
+    s += &format!(
+        "(decode speeds are predictions for one user at about 1,000 positions, from the GPU's memory {}, with the p10-p90 band of {}; prompts' from its tensor rate)\n",
+        if m.devices.iter().any(|d| d.stream.is_some()) { "as measured here" } else { "by the maker's figure" },
+        if observed { "the runs observed here" } else { "the calibration runs (no run observed here yet)" }
+    );
     s
 }
 
@@ -1572,17 +1932,7 @@ pub(crate) fn exact_options(
             Ok(None) => {}
             Err(r) => {
                 sized = true;
-                options.push(Candidate {
-                    level: l,
-                    bits: 0.0,
-                    weights: 0,
-                    placement: None,
-                    context: 0,
-                    kv: 0,
-                    tok_s: 0.0,
-                    why: Some(r.what.clone()),
-                    load: None,
-                });
+                options.push(Candidate { level: l, why: Some(r.what.clone()), ..Candidate::speeds(0.0, &machine.devices[main], None) });
                 refusals.push(r);
             }
         }
@@ -1660,6 +2010,17 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
             p.notes.push("nothing fits this machine: a smaller model, or more memory (or other machines: glyd cluster, ROADMAP M4)".into());
             // (what `run` says of the level it would take: the first one asked, else the lossless one)
             refusal = refusals.into_iter().next();
+        }
+    }
+    // (what this model's own runs here reached at a level, where it ran before: its options' speeds and bands)
+    if probed {
+        let root = crate::store::cache_root();
+        if let Some(d) = machine.devices.iter().max_by_key(|d| d.free) {
+            for o in p.options.iter_mut().chain(p.chosen.as_mut()) {
+                if let Some(b) = observed_for(&root, model, o.level, &d.name) {
+                    (o.tok_s, o.range) = (o.prior * b[1], (o.prior * b[0], o.prior * b[2]));
+                }
+            }
         }
     }
     // (the machine's refusal first: `run` checks the GPU before it sizes anything)
@@ -3580,6 +3941,54 @@ mod tests {
         within(&plan(&Shape::from_config(QWEN3_32B).unwrap(), &Machine::preset("a6000").unwrap(), Ask::default()), 11.8, 0.25);
     }
 
+    /// P2c: decode and prefill predicted from the rates of an RTX 4080 SUPER (the preset's stream is the one `glyd-engine rates` measured there, 697 GB/s) against
+    /// what `glyd-engine bench --loads 1k:1 --no-draft` measured on one (2026-11-23, three runs each, the median): gemma-4-12B at wren 86.2 tokens/s and kestrel 63.3,
+    /// prompts of 936 tokens at 3,570 and 3,580; Qwen3.5-0.8B at kestrel 561.9 and wren 657.9, prompts of 1,002 tokens at 27,073 and 27,372. Each within 15%, with
+    /// the shapes `fit` reads (the checkpoints' own headers) and the family's path (Qwen3.5's does not draft with its head); the measurement in the band.
+    #[test]
+    fn predictions_on_the_4080_super_are_within_15_percent() {
+        let gemma: serde_json::Value = serde_json::from_str(&fixture("headers/gemma-4-12B-it.json")).unwrap();
+        let groups: Vec<crate::sizes::Group> = gemma["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| crate::sizes::Group {
+                mask: g["mask"].as_str().unwrap().to_string(),
+                dtype: g["dtype"].as_str().unwrap().to_string(),
+                shape: g["shape"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap()).collect(),
+                bytes: g["bytes"].as_u64().unwrap(),
+                layers: g["layers"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect(),
+                experts: g["experts"].as_u64().unwrap() as usize,
+            })
+            .collect();
+        let gemma_text = gemma["config"].as_str().unwrap().to_string();
+        let gemma_sh = Shape::from_config(&gemma_text).unwrap().with_table(&crate::sizes::Table::expand(&groups));
+        let q35 = json::parse(&fixture("qwen35_configs.json")).unwrap();
+        let q08_text = json::to_compact(q35.get("Qwen/Qwen3.5-0.8B").unwrap());
+        let q08_sh = Shape::from_config(&q08_text)
+            .unwrap()
+            .with_table(&table_of(json::parse(&fixture("qwen35_tensors.json")).unwrap().get("Qwen/Qwen3.5-0.8B").unwrap()));
+        let m = Machine::preset("rtx4080s").unwrap();
+        assert!((m.devices[0].rate() / GB - 697.35).abs() < 0.5, "the preset's stream is the one measured");
+        for (sh, text, level, decode, prefill) in [
+            (&gemma_sh, &gemma_text, "wren", 86.2, 3570.3),
+            (&gemma_sh, &gemma_text, "kestrel", 63.3, 3579.7),
+            (&q08_sh, &q08_text, "kestrel", 561.9, 27073.4),
+            (&q08_sh, &q08_text, "wren", 657.9, 27372.1),
+        ] {
+            let fam = crate::support::row(crate::support::family(text, "m").unwrap());
+            let c = chosen(&plan(sh, &m, Ask { level: Some(level), family: Some(fam), ..Default::default() })).clone();
+            assert!((c.tok_s / decode - 1.0).abs() < 0.15, "{level}: {:.1} tokens/s predicted, {decode} measured", c.tok_s);
+            assert!(c.range.0 <= decode && decode <= c.range.1, "{level}: {decode} outside {:?}", c.range);
+            let p = c.prefill.unwrap();
+            assert!((p / prefill - 1.0).abs() < 0.15, "{level}: prefill {p:.0} predicted, {prefill} measured");
+        }
+        // (a GPU whose tensor rate the planner does not know has no prefill prediction)
+        let mut odd = m.clone();
+        odd.devices[0].tflops = 0.0;
+        assert!(chosen(&plan(&gemma_sh, &odd, Ask { level: Some("wren"), ..Default::default() })).prefill.is_none());
+    }
+
     #[test]
     fn the_ladder_picks_lossless_then_lossy_then_experts_in_ram() {
         let q9 = qwen35("Qwen/Qwen3.5-9B");
@@ -3827,6 +4236,9 @@ mod tests {
             "experts",
             "exact",
             "tokens_per_second",
+            "tokens_per_second_p10",
+            "tokens_per_second_p90",
+            "prefill_tokens_per_second",
         ] {
             assert!(v.get(k).is_some(), "{k} is in glyd-plan/1: {v}");
         }
@@ -3984,6 +4396,81 @@ mod tests {
             }
         }
         assert!(planned_ok >= 3, "{planned_ok}");
+    }
+
+    /// P2c: a GPU's rates are measured on its first use and kept in the cache by its name and number; later uses read them and measure nothing; where they cannot be
+    /// measured nothing is kept.
+    #[test]
+    fn the_rates_are_probed_once_and_kept() {
+        let root = std::env::temp_dir().join(format!("glyd-plan-rates-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let calls = std::cell::Cell::new(0);
+        let measure = || {
+            calls.set(calls.get() + 1);
+            Some(Probed { stream_gbs: 697.35, link_gbs: 26.9, ram_gbs: 73.9 })
+        };
+        let gpu = "NVIDIA GeForce RTX 4080 SUPER";
+        assert_eq!(rates_in(&root, gpu, 0, &measure).map(|r| r.stream_gbs), Some(697.35));
+        assert_eq!(rates_in(&root, gpu, 0, &measure).map(|r| r.ram_gbs), Some(73.9));
+        assert_eq!(calls.get(), 1, "measured once");
+        let kept: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root.join("rates/NVIDIA_GeForce_RTX_4080_SUPER-0.json")).unwrap()).unwrap();
+        assert_eq!((kept["schema"].as_str(), kept["link_gbs"].as_f64()), (Some(RATES_SCHEMA), Some(26.9)));
+        // (another GPU of the computer is its own; a probe that fails keeps nothing)
+        assert!(rates_in(&root, gpu, 1, &|| None).is_none() && !root.join("rates/NVIDIA_GeForce_RTX_4080_SUPER-1.json").exists());
+        // (a GPU's measured rate is the one its predictions read, not the maker's figure)
+        let mut d = Machine::preset("rtx4080s").unwrap().devices.remove(0);
+        d.stream = Some(600.0);
+        assert!((d.rate() - 600e9).abs() < 1.0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// P2c: a run's replies are kept with its plan against the prediction at their positions; the runs on a GPU then refine every prediction there (the median of what
+    /// they reached against theirs, and their p10-p90 as the band), a model's own runs its own, a run with a draft model only its own; the plan kept anew keeps them.
+    #[test]
+    fn runs_observed_here_refine_the_prediction() {
+        let root = std::env::temp_dir().join(format!("glyd-plan-observed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = model_dir("observed", "gemma-4-12B", &fixture("gemma4_12b_config.json"));
+        let model = format!("{}:kestrel", dir.to_str().unwrap());
+        let f = planned(&args(&["fit", &model, "--machine", "rtx4080s"])).unwrap();
+        // (run with no draft model: --no-draft)
+        let lp = LoadPlan { draft: 0, ..f.plan.chosen.as_ref().unwrap().load.clone().unwrap() };
+        let m = f.machine.clone();
+        remember_in(&root, &model, &lp, lp.weights, 0);
+        let w = watch_of(&root, &model, &lp, f.shape.clone(), m.clone()).unwrap();
+        let predicted = speed_at(&f.shape, &m, 0, &lp, 1000.0 + 64.5);
+        // (four replies of 1,000 prompt tokens and 129 made, at 0.9, 0.95, 1.0 and 1.05 of the prediction; one too short to say anything)
+        for k in [0.9, 0.95, 1.0, 1.05] {
+            keep(&w, 1000, 0.25, 129, 128.0 / (predicted * k));
+        }
+        keep(&w, 10, 0.01, 3, 0.02);
+        let kept = recall_in(&root, &model, lp.level, &lp.gpu).unwrap();
+        let seen = kept["observed"].as_array().unwrap();
+        assert_eq!(seen.len(), 4, "the short reply says nothing");
+        assert!((seen[2]["decode_ratio"].as_f64().unwrap() - 1.0).abs() < 1e-9 && seen[0]["prefill_tok_s"].as_f64() == Some(4000.0));
+        // the GPU's band from them, and a prediction refined by it
+        let (band, prefill) = observed_on(&root, &lp.gpu);
+        let b = band.unwrap();
+        assert!((b[1] - 0.975).abs() < 1e-9 && b[0] < b[1] && b[1] < b[2] && b[2] <= 1.05, "{b:?}");
+        assert!(prefill.is_some());
+        let mut d = m.devices[0].clone();
+        d.observed = band;
+        let c = Candidate::speeds(100.0, &d, None);
+        assert!((c.tok_s - 97.5).abs() < 1e-9 && c.range == (100.0 * b[0], 100.0 * b[2]));
+        // (no run observed: the prediction itself in the calibration's band)
+        assert_eq!(Candidate::speeds(100.0, &m.devices[0], None).range, (100.0 * SPREAD[0], 100.0 * SPREAD[2]));
+        // the model's own runs, and the plan kept anew keeps them
+        assert_eq!(observed_for(&root, &model, lp.level, &lp.gpu), band);
+        remember_in(&root, &model, &lp, lp.weights, 1 << 30);
+        assert_eq!(observed_for(&root, &model, lp.level, &lp.gpu), band);
+        // a run with a draft model is its own model's, not the GPU's
+        let drafted = LoadPlan { level: "wren", draft: 640 << 20, ..lp.clone() };
+        remember_in(&root, &model, &drafted, lp.weights, 0);
+        let at_wren = speed_at(&f.shape, &m, 0, &drafted, 1064.5);
+        keep(&watch_of(&root, &model, &drafted, f.shape.clone(), m.clone()).unwrap(), 1000, 0.25, 129, 128.0 / (at_wren * 1.6));
+        assert_eq!(observed_on(&root, &lp.gpu).0, band);
+        assert!(observed_for(&root, &model, "wren", &lp.gpu).is_some_and(|b| b[1] > 1.5));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The plan that loaded is kept by model, level and GPU, and `fit` says what it took here before and whether the plan it makes now is the same.
