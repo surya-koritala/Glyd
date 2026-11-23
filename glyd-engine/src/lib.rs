@@ -142,6 +142,7 @@ pub mod pack;
 pub mod packcheck;
 pub mod pixels;
 pub mod plan;
+pub mod plancheck;
 pub mod qwen35;
 #[cfg(feature = "dev")]
 pub mod qwen35_ref;
