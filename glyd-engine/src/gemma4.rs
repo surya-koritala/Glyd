@@ -261,7 +261,7 @@ impl ConfigG4 {
             let b = (it.rows * it.cols * 2) as u64;
             bf16 += b;
             let key = it.members[0].trim_end_matches(".weight");
-            w += saved.and_then(|ck| crate::weights::packed_bytes(ck, key)).unwrap_or((b as f64 * crate::fit::bits(layout) / 16.0) as u64);
+            w += saved.and_then(|ck| crate::weights::packed_bytes(ck, key)).unwrap_or((b as f64 * crate::plan::sizing::bits(layout) / 16.0) as u64);
         }
         let small = (self.layers * (4 * self.hidden + 2 * self.global_head_dim + 1) + self.hidden) as u64 * 2;
         (w + small, bf16 + small)

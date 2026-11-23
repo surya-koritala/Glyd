@@ -1,7 +1,7 @@
 //! Exact sizes from the files' headers (ROADMAP P2b): every tensor of a checkpoint, by name, type, shape and bytes, from the safetensors headers of a directory or,
 //! where the model is not here yet, of the Hub's repo by two ranges a shard (its length, then its JSON): nothing of the weights is downloaded. A table is classified
 //! by name into the parts a plan counts (`Part`: the embedding, the head, attention, dense MLPs, routed experts, shared experts, a vision tower, a multi-token-prediction
-//! head), kept in the cache by repo and commit, and sizes the dynamic route's layers before its files are local (src/cli.rs `size_dynamic`) and the planner's shape
+//! head), kept in the cache by repo and commit, and sizes the dynamic route's layers before its files are local (src/plan.rs `sizing::size_dynamic`) and the planner's shape
 //! (`plan::Shape::with_table`) in place of an estimate from config.json.
 
 use crate::hub;
@@ -579,7 +579,7 @@ pub(crate) mod tests {
             let counted: u64 = table.rows.iter().filter(|r| !matches!(classify(&r.name, nl), Part::Vision | Part::Mtp)).map(|r| r.bytes).sum();
             assert_eq!(per.iter().sum::<u64>() + base, counted, "{name}: every layer's bytes and the rest's");
             let args = crate::args::Args::from(["run".to_string(), name.to_string()]);
-            match crate::cli::size_dynamic(&args, name, &table, None, config, family, &devs, Some(m.ram_free), &|_| true) {
+            match crate::plan::sizing::size_dynamic(&args, name, &table, None, config, family, &devs, Some(m.ram_free), &|_| true) {
                 Ok(p) => {
                     assert!(p.gpu_total() <= p.free && p.spread.is_some(), "{name}");
                     planned += 1;

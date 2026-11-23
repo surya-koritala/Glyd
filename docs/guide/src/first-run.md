@@ -35,18 +35,21 @@ Short names offer models released in the last six months. An older model still w
 ## fit
 
 `fit` reads the model's `config.json` from the Hub and prints the plan: the level, where the weights go, the context, and a
-predicted speed. With `--machine rtx4090`, the preset for an RTX 4090 with 23 GiB free:
+predicted speed. For Qwen3.5-9B with `--machine rtx4090`, the preset for an RTX 4090 with 23 GiB free:
 
 ```
-Plan: penguin (10.8 bits) · GPU 0 (NVIDIA GeForce RTX 4090) · 32768 tokens of context · ~43 tokens/s
-  penguin       14.9 GiB    32768 ctx  ~  43 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)  <- chosen
-  kestrel        9.0 GiB    32768 ctx  ~  80 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)
-  swift          7.6 GiB    32768 ctx  ~  94 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)
-  wren           6.2 GiB    32768 ctx  ~ 114 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)
+Plan: kestrel (6.5 bits) · GPU 0 (NVIDIA GeForce RTX 4090) · 32768 tokens of context · ~127 tokens/s (114-139) · prompts ~7906 tokens/s
+  kestrel        6.8 GiB    32768 ctx  ~ 127 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)  <- chosen
+  swift          5.8 GiB    32768 ctx  ~ 146 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)
+  wren           4.7 GiB    32768 ctx  ~ 172 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)
 ```
 
-It lists every level the model runs at with its size on your GPU, and marks the one it chose. The speeds are estimates from
-memory bandwidth, for a short prompt and one user. `--machine NAME` plans for another computer (`rtx4060-laptop`, `rtx4080s`,
+It lists every level the model runs at with its size on your GPU, and marks the one it chose. The speeds are predictions for
+one user at about 1,000 positions, from the rate your GPU reads its memory at. `fit` measures that rate the first time it uses a GPU and
+keeps it in the cache. The plan line also shows a p10-p90 band and the prompts' speed. Each
+reply that runs alone is recorded with the plan that loaded it, and from then on the predictions on that GPU follow what
+those runs reached. `fit --json` has the same figures (`tokens_per_second`, `tokens_per_second_p10`, `tokens_per_second_p90`,
+`prefill_tokens_per_second`). `--machine NAME` plans for another computer (`rtx4060-laptop`, `rtx4080s`,
 `rtx4090`, `2x3090`, `l4`, `a6000`, `a100-80g`, `h100`, `8xh100`, `rx7900xtx`, `m4max-64g`, `dgx-spark`, `strix-halo-128g`), so
 you can see the plan before you buy or rent. `--context N` and `--users N` change what it plans for.
 `glyd preflight MODEL` says whether the engine will certainly run the model here (exit 0 yes, 3 no with the reason).

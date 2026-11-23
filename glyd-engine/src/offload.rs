@@ -731,12 +731,8 @@ impl CachePlan {
     }
 }
 
-/// The places a layer gets out of `budget` bytes of the GPU's memory for the cache: as many as fit, at most all of its experts; None where fewer than `least` fit.
-pub fn places_for(budget: u64, layers: usize, expert_bytes: u64, experts: usize, least: usize) -> Option<usize> {
-    let each = (layers as u64).checked_mul(expert_bytes)?;
-    let n = (budget.checked_div(each)? as usize).min(experts);
-    (n >= least.min(experts)).then_some(n)
-}
+/// The places a layer gets out of a budget: the planner's (src/plan.rs `sizing`).
+pub use crate::plan::sizing::places_for;
 
 /// `MemAvailable` of a /proc/meminfo's text, in bytes.
 pub fn parse_meminfo(text: &str) -> Option<u64> {

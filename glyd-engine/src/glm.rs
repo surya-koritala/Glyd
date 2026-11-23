@@ -1336,7 +1336,7 @@ pub(crate) mod tests {
         assert_eq!(by("embedding"), ("embedding", 634_388_480, 517_918_724, 438_620_164));
         assert_eq!((w, i6, i5), (313_155_649_536, 255_662_327_812, 216_517_871_620));
         assert_eq!((bf16, f32), (341_734_400, 1_180_920));
-        // (the bits a weight of the packed matrices take, all in, are fit::bits's 6.53 and 5.53; the routed experts are 97.1% of the model at either level; an expert's two packs take 20.5 and 17.4 MB)
+        // (the bits a weight of the packed matrices take, all in, are sizing::bits's 6.53 and 5.53; the routed experts are 97.1% of the model at either level; an expert's two packs take 20.5 and 17.4 MB)
         assert_eq!(((i6 as f64 * 8.0 / w as f64 * 100.0).round(), (i5 as f64 * 8.0 / w as f64 * 100.0).round()), (653.0, 553.0));
         let e = by("routed experts");
         assert!((e.2 as f64 / (i6 + bf16 + f32) as f64 - 0.9708).abs() < 1e-4 && (e.3 as f64 / (i5 + bf16 + f32) as f64 - 0.9705).abs() < 1e-4);

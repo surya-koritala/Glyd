@@ -344,6 +344,11 @@ pub trait Gen {
     }
     /// The part (0 to 1) of the GPU's free memory `as_step` makes its keys and values and its sequences' states of (1: all of it; `serve --with` gives the first model half).
     fn share_memory(&mut self, _part: f64) {}
+    /// A reply's speed is this engine's own, for the planner to keep (`plan::observe`): not where the replies are a scheduler's sequences (`server::Remote`), which
+    /// are timed where they run.
+    fn own_speed(&self) -> bool {
+        true
+    }
 }
 
 impl Gen for Engine {
@@ -435,7 +440,16 @@ impl Talk<'_> {
             }
             !stops.hit
         };
-        let (out, mut finish) = self.e.reply(prompt, &opts, &mut each)?;
+        let (t0, first) = (std::time::Instant::now(), std::cell::Cell::new(None));
+        let (out, mut finish) = self.e.reply(prompt, &opts, &mut |t| {
+            if first.get().is_none() {
+                first.set(Some(std::time::Instant::now()));
+            }
+            each(t)
+        })?;
+        if let Some(f) = first.get().filter(|_| self.e.own_speed()) {
+            crate::plan::observe(prompt.len(), (f - t0).as_secs_f64(), out.len(), f.elapsed().as_secs_f64());
+        }
         if let Some(f) = failure {
             return Err(f);
         }

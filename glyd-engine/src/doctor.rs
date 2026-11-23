@@ -211,20 +211,7 @@ impl Facts {
         let devices = self
             .gpus
             .as_ref()
-            .map(|all| {
-                all.iter()
-                    .map(|g| plan::Device {
-                        name: g.name.clone(),
-                        vendor,
-                        cc: g.cc,
-                        total: g.total,
-                        free: g.free,
-                        bandwidth: plan::bandwidth_of(&g.name).unwrap_or(300.0),
-                        driver: g.driver,
-                        unified: plan::is_unified(&g.name, vendor),
-                    })
-                    .collect()
-            })
+            .map(|all| all.iter().map(|g| plan::Device::listed(g.name.clone(), vendor, g.cc, g.total, g.free, g.driver)).collect())
             .unwrap_or_default();
         Machine {
             name: "this computer".into(),
