@@ -560,8 +560,8 @@ mod tests {
             (seed % m as u64) as usize
         };
         let (mut found, mut cuts, mut taken) = (0, 0, 0);
-        // (under Miri, the first 600 of the same steps)
-        let steps = if cfg!(miri) { 600 } else { 30000 };
+        // (under Miri, which hashes each block's name in software a thousand times slower, the first 60 of the same steps)
+        let steps = if cfg!(miri) { 60 } else { 30000 };
         for _ in 0..steps {
             let s = rnd(slots);
             match rnd(10) {
