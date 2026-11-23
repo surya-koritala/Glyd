@@ -209,6 +209,33 @@ impl Pages {
         true
     }
 
+    /// The table entries sequence `slot` holds in each group among the blocks of its first `upto` tokens, and its floor in each (R4d: what a swap copies, and what `restore`
+    /// takes again).
+    pub fn held_entries(&self, slot: usize, upto: usize) -> (Vec<Vec<usize>>, Vec<usize>) {
+        let hi = upto.div_ceil(BLOCK);
+        let entries = (0..self.pools.len()).map(|g| (0..hi.min(self.tabs[slot][g].len())).filter(|&b| self.tabs[slot][g][b] != 0).collect()).collect();
+        (entries, self.floor[slot].clone())
+    }
+
+    /// Empty sequence `slot` given a block of its own for each table entry `entries[g]` in every group, and the floors `floor` (what `held_entries` said of a sequence swapped to the host,
+    /// whose blocks are copied back into these); false where some group has too few (nothing changes).
+    pub fn restore(&mut self, slot: usize, entries: &[Vec<usize>], floor: &[usize]) -> bool {
+        if self.tabs[slot].iter().any(|t| t.iter().any(|&b| b != 0)) || entries.len() != self.pools.len() {
+            return false;
+        }
+        if entries.iter().enumerate().any(|(g, e)| e.len() > self.pools[g].available() || e.iter().any(|&b| b >= self.tabs[slot][g].len())) {
+            return false;
+        }
+        for (g, e) in entries.iter().enumerate() {
+            self.floor[slot][g] = floor.get(g).copied().unwrap_or(0);
+            for &b in e {
+                self.tabs[slot][g][b] = self.pools[g].take().expect("counted above");
+                self.mark(slot, g, b);
+            }
+        }
+        true
+    }
+
     /// Every block of sequence `slot` back in its pool, the last first (of the named ones, which stay until the pool needs them, the sequence's end is then the first to go
     /// and its start the last).
     pub fn release(&mut self, slot: usize) {
@@ -469,6 +496,34 @@ mod tests {
         // a sequence that never gave a block back is cut anywhere
         assert!(p.grow(1, 90) && p.shrink(1, 20, 32) == 20);
         assert_eq!((p.held(0) - 32, p.table(1, 1).iter().filter(|&&b| b != 0).count()), (2, 2));
+    }
+
+    /// A sequence swapped out and back (R4d): `held_entries` lists the entries it holds of its tokens' blocks (a sliding group's window alone, a shared start's floor), and `restore`
+    /// gives an empty slot a block of its own for each of them and the same floors, so a step there reads what it did; where a group has too few blocks nothing changes.
+    #[test]
+    fn a_swapped_sequence_is_restored_to_the_entries_it_held() {
+        let mut p = Pages::new(&[40, 40], &[None, Some(64 + 32)], 3, 1024);
+        assert!(p.grow(0, 170));
+        // (sequence 1 shares sequence 0's first 160 tokens: its sliding group holds from the window before them on)
+        assert_eq!(p.share(0, 1, 160, 32), 160);
+        assert!(p.grow(1, 170));
+        let (entries, floor) = p.held_entries(1, 170);
+        assert_eq!(entries[0], (0..11).collect::<Vec<_>>());
+        assert_eq!((entries[1].clone(), floor.clone()), ((6..11).collect::<Vec<_>>(), vec![0, 6]));
+        // (only the blocks of the tokens it holds: entries grown ahead are not listed)
+        assert_eq!(p.held_entries(0, 160).0[0].len(), 10);
+        p.release(1);
+        assert!(p.restore(2, &entries, &floor));
+        assert_eq!(p.held_entries(2, 170), (entries.clone(), floor.clone()));
+        // its blocks are its own, and it grows as the sequence it was would have (no block before its floor)
+        assert!((0..11).all(|b| p.table(2, 0)[b] != p.table(0, 0)[b]));
+        assert!(p.grow(2, 200) && p.table(2, 1)[..6].iter().all(|&b| b == 0));
+        p.release(2);
+        // a slot that holds blocks, or pools too small, take nothing
+        assert!(!p.restore(0, &entries, &floor));
+        let mut small = Pages::new(&[8, 8], &[None, Some(64 + 32)], 2, 1024);
+        let before = small.free(0);
+        assert!(!small.restore(1, &entries, &floor) && small.free(0) == before && small.held_entries(1, 1024).0.iter().all(Vec::is_empty));
     }
 
     /// The names of the full blocks of `n` tokens of a stream: stream `a` to `fork`, stream `b` after.

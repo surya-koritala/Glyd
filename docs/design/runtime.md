@@ -526,6 +526,19 @@ The scheduler chooses per sequence by cost: 2,000 tokens of gemma-4-12B are ~49 
 of bf16 KV (the sliding layers hold only the last 1,024 tokens; ~14 ms each way at 25 GB/s). For a GDN or KDA model recompute also
 replays the whole prefix through the recurrent layers, so swap wins by more. Swap needs host memory the expert store may want; the plan gives the swap area a size.
 
+Built (R4d, #328): `ModelStep::swap_out` / `swap_in` / `swap_ready` / `swap_drop`, implemented once for the executor's paged sequences
+(`dynamic/swap.rs`). A swap copies what a step of the sequence reads: in every layer group the blocks of its tokens its table holds (a
+sliding group's window, a shared start's floor: `Pages::held_entries`, `restore`), its recurrent states and their copy at its mark. bf16
+rings move as their bytes, by one launch of a copy kernel over the blocks of every layer; 12-bit rings move as the bf16 values the library
+unpacks and are written back by its own write, which takes escape chunks and raw slabs anew (a page's own bytes name chunks lent to its
+old block, which no library call re-lends yet), so their link bytes are bf16's, not 12-bit's. The host end is pinned memory mapped into the
+device's addresses: no GPU staging. Out: the next step waits for the copy. Back: the copy runs on its own stream beside the other
+sequences' steps, and the sequence joins them when it is done. The choice (`Sched::swap_pays`): swap where 2 x bytes / link rate (measured
+on the swaps, `plan::LINK_GBS` before) is less than the sequence's tokens / the measured prompt-pass rate. The area: `plan::swap_area`,
+`SWAP_SHARE` = 2 x the GPU cache it backs (SGLang's `hicache_ratio` default), within the computer's free memory less `HOST_MARGIN`, read
+after the expert store's host tier is pinned; a sequence it has no room for is recomputed. Swapped, a sequence's cache is the same bit for
+bit: with prompts one a pass every reply under preemption is the reply alone (`usercheck` with `GLYD_ENGINE_PAGES`).
+
 ## 6. Expert tiering for every MoE
 
 ### What exists

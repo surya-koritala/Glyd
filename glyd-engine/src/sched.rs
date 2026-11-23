@@ -1,5 +1,7 @@
 //! Several sequences at once on the paged cache: sequences wait, take pages (a prompt that begins as a finished one did finds its pages in the cache), run their prompt a chunk at a time, and decode together, one
 //! step for all of them. Where the pages run out, the newest sequence gives its pages back and goes to the head of the queue with what it has made; it is run again from its tokens (recomputed) and its stream goes on.
+//! A slot step that can swap (`ModelStep::swap_out`, the description executor's) copies such a sequence's blocks and recurrent states to the host instead, where that costs less than its recompute
+//! (`Sched::swap_pays`), and copies them back when there is room again: it goes on from where it was, with the same cache bit for bit (R4d, docs/design/runtime.md section 5, "Preemption").
 //!
 //! The cache's extra memory is shared and finite. After every step the backend says which blocks the step could not store exactly (they are named lost) and which it kept in the scarce second extra memory (heavy). A sequence
 //! that holds a lost block has the step's output taken back, never used or sent: it gives its pages back and waits until the sequences that were running with it have finished, then runs again from its tokens; one that is lost
@@ -112,6 +114,27 @@ pub trait ModelStep {
     fn grow(&mut self, _slot: i32, _upto: usize) -> Result<bool> {
         Ok(true)
     }
+    /// The bytes `swap_out` would move of the sequence in `slot` (its blocks and recurrent states; the same again back), and the link's rate in bytes a second (measured on the swaps so far). None: the
+    /// step cannot swap it (no swap area, nothing held), and a sequence sent back for room is run again from its tokens.
+    fn swap_cost(&self, _slot: i32) -> Option<(usize, f64)> {
+        None
+    }
+    /// The sequence in `slot` copied to the host's swap area on a copy stream and its slot emptied as `release` empties it (the steps after wait for the copy before they write what it read): a ticket
+    /// for `swap_in`. None where the area has no room for it (nothing changes).
+    fn swap_out(&mut self, _slot: i32) -> Result<Option<u64>> {
+        Ok(None)
+    }
+    /// The sequence of `ticket` copied back into the empty slot `slot` on the copy stream, beside the steps that run meanwhile, with room for its first `upto` tokens: the tokens it holds. None where the
+    /// memory has no room for it now (nothing taken, the ticket kept). It steps once `swap_ready` says its copy is done.
+    fn swap_in(&mut self, _slot: i32, _ticket: u64, _upto: usize) -> Result<Option<usize>> {
+        Ok(None)
+    }
+    /// Whether the copy back into `slot` is done; with `wait`, once it is.
+    fn swap_ready(&mut self, _slot: i32, _wait: bool) -> Result<bool> {
+        Ok(true)
+    }
+    /// The host's copy of `ticket` let go: its request ended while it was swapped, or it runs again from its tokens.
+    fn swap_drop(&mut self, _ticket: u64) {}
     /// A slot step that can keep a finished sequence in its slot for a request that begins with its tokens (`resume`): a conversation's next turn, which sends the turns before it again.
     /// False: a finished sequence's slot is emptied at once.
     fn keeps(&self) -> bool {
@@ -312,11 +335,27 @@ pub struct Stats {
     pub prefill_rounds: u64,
     /// Steps that held both rows that decode and a prompt's chunk (a round that is one step, `ModelStep::one_step`).
     pub both: u64,
+    /// Of the sequences sent back for room, those swapped to the host (`ModelStep::swap_out`) and not run again from their tokens.
+    pub swapped: u64,
+    /// The prompt tokens the passes that ran prompts ran, and their time (ns): the rate a recompute is priced at (`Sched::swap_pays`).
+    pub pass_tokens: u64,
+    pub pass_ns: u64,
+}
+
+/// How a sequence sent back for room gives its cache up (docs/design/runtime.md section 5, "Preemption").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwapMode {
+    /// Its blocks are let go and its tokens run again (recompute).
+    Never,
+    /// Swapped to the host where its bytes over the link, out and back, take less time than its tokens' recompute (the default).
+    ByCost,
+    /// Swapped wherever the step can (a check of the swap itself).
+    Always,
 }
 
 /// The scheduler's figures as the last round left them (one scheduler runs in a process), for the server's /stats.
 /// How many figures a scheduler leaves each round (`Sched::gauges`): the length of a context's `sched`.
-pub const FIGURES: usize = 29;
+pub const FIGURES: usize = 30;
 
 /// The figures as JSON: prompt tokens run or found in the cache, those found, sequences sent back to wait for pages, steps, rows in them, sequences running and waiting.
 pub fn stats_json() -> String {
@@ -337,11 +376,14 @@ pub fn stats_json_of(rt: &Context) -> String {
     // a development build's figures are all of them; a release build's are the counts a user reads
     if cfg!(feature = "dev") {
         format!(
-            "{{\"prompt_tokens\":{},\"prefix_hit_tokens\":{hit},\"prefix_hit_rate_percent\":{rate},\"preemptions\":{},\"steps\":{},\"rows\":{},\"running\":{},\"waiting\":{},\"decode_ms\":{},\"prefill_ms\":{},\"rounds_ms\":{},\"release_ms\":{},\"admit_ms\":{},\"after_ms\":{},\"before_ms\":{},\"lost_blocks\":{},\"heavy_blocks\":{},\"taken_back\":{},\"ended_for_loss\":{},\"steps_by_rows\":[{}],\"prefill_rounds\":{},\"decode_prep_ms\":{},\"decode_wait_ms\":{},\"decode_post_ms\":{},\"decode_graph_ms\":{},\"values_checked\":{},\"values_differ\":{},\"values_in_lost_blocks\":{}{experts}}}",
-            v[0], v[2], v[3], v[4], v[5], v[6], v[7] / 1_000_000, v[8] / 1_000_000, v[9] / 1_000_000, v[10] / 1_000_000, v[11] / 1_000_000, v[12] / 1_000_000, v[13] / 1_000_000, v[14], v[15], v[16], v[17], v[18..27].iter().map(u64::to_string).collect::<Vec<_>>().join(","), v[27], crate::model::DECODE_PREP_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_WAIT_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_POST_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_GPU_NS.load(Relaxed) / 1_000_000, crate::model::VERIFY_CHECKED.load(Relaxed), crate::model::VERIFY_DIFFER.load(Relaxed), crate::model::VERIFY_LOST.load(Relaxed)
+            "{{\"prompt_tokens\":{},\"prefix_hit_tokens\":{hit},\"prefix_hit_rate_percent\":{rate},\"preemptions\":{},\"swapped\":{},\"steps\":{},\"rows\":{},\"running\":{},\"waiting\":{},\"decode_ms\":{},\"prefill_ms\":{},\"rounds_ms\":{},\"release_ms\":{},\"admit_ms\":{},\"after_ms\":{},\"before_ms\":{},\"lost_blocks\":{},\"heavy_blocks\":{},\"taken_back\":{},\"ended_for_loss\":{},\"steps_by_rows\":[{}],\"prefill_rounds\":{},\"decode_prep_ms\":{},\"decode_wait_ms\":{},\"decode_post_ms\":{},\"decode_graph_ms\":{},\"values_checked\":{},\"values_differ\":{},\"values_in_lost_blocks\":{}{experts}}}",
+            v[0], v[2], v[29], v[3], v[4], v[5], v[6], v[7] / 1_000_000, v[8] / 1_000_000, v[9] / 1_000_000, v[10] / 1_000_000, v[11] / 1_000_000, v[12] / 1_000_000, v[13] / 1_000_000, v[14], v[15], v[16], v[17], v[18..27].iter().map(u64::to_string).collect::<Vec<_>>().join(","), v[27], crate::model::DECODE_PREP_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_WAIT_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_POST_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_GPU_NS.load(Relaxed) / 1_000_000, crate::model::VERIFY_CHECKED.load(Relaxed), crate::model::VERIFY_DIFFER.load(Relaxed), crate::model::VERIFY_LOST.load(Relaxed)
         )
     } else {
-        format!("{{\"prompt_tokens\":{},\"prefix_hit_tokens\":{hit},\"prefix_hit_rate_percent\":{rate},\"preemptions\":{},\"steps\":{},\"rows\":{},\"running\":{},\"waiting\":{}{experts}}}", v[0], v[2], v[3], v[4], v[5], v[6])
+        format!(
+            "{{\"prompt_tokens\":{},\"prefix_hit_tokens\":{hit},\"prefix_hit_rate_percent\":{rate},\"preemptions\":{},\"swapped\":{},\"steps\":{},\"rows\":{},\"running\":{},\"waiting\":{}{experts}}}",
+            v[0], v[2], v[29], v[3], v[4], v[5], v[6]
+        )
     }
 }
 
@@ -361,6 +403,21 @@ impl ModelStep for &mut dyn ModelStep {
     }
     fn grow(&mut self, slot: i32, upto: usize) -> Result<bool> {
         (**self).grow(slot, upto)
+    }
+    fn swap_cost(&self, slot: i32) -> Option<(usize, f64)> {
+        (**self).swap_cost(slot)
+    }
+    fn swap_out(&mut self, slot: i32) -> Result<Option<u64>> {
+        (**self).swap_out(slot)
+    }
+    fn swap_in(&mut self, slot: i32, ticket: u64, upto: usize) -> Result<Option<usize>> {
+        (**self).swap_in(slot, ticket, upto)
+    }
+    fn swap_ready(&mut self, slot: i32, wait: bool) -> Result<bool> {
+        (**self).swap_ready(slot, wait)
+    }
+    fn swap_drop(&mut self, ticket: u64) {
+        (**self).swap_drop(ticket)
     }
     fn keeps(&self) -> bool {
         (**self).keeps()
@@ -474,6 +531,8 @@ struct Seq {
     after: Vec<u64>,
     /// Hit twice while others ran: it runs alone next (nothing else is let in until it ends).
     solo: bool,
+    /// Sent back for room with its cache copied to the host (`ModelStep::swap_out`): the ticket it is copied back by; its `done`, `published` and `prefilling` are as they were.
+    swapped: Option<u64>,
     /// When it was sent to the scheduler and when its last token was written (the metrics' first-token and between-token times).
     began: std::time::Instant,
     last_token: Option<std::time::Instant>,
@@ -539,6 +598,10 @@ pub struct Sched<B: ModelStep> {
     users: usize,
     waiting: VecDeque<Seq>,
     active: Vec<Seq>,
+    /// Sequences being copied back from the host into their slots (`ModelStep::swap_in`): they join `active` when the copy is done, the steps going on meanwhile.
+    loading: Vec<Seq>,
+    /// How a sequence sent back for room gives its cache up.
+    swap: SwapMode,
     next_id: u64,
     eos: Vec<i64>,
     pub stats: Stats,
@@ -590,6 +653,13 @@ impl<B: ModelStep> Sched<B> {
             users,
             waiting: VecDeque::new(),
             active: Vec::new(),
+            loading: Vec::new(),
+            // (a development build's GLYD_ENGINE_SWAP: 0 recompute only, as before; 1 swap wherever the step can)
+            swap: match crate::tune!("GLYD_ENGINE_SWAP").as_deref() {
+                Some("0") => SwapMode::Never,
+                Some("1") => SwapMode::Always,
+                _ => SwapMode::ByCost,
+            },
             next_id: 0,
             eos,
             stats: Stats::default(),
@@ -607,6 +677,17 @@ impl<B: ModelStep> Sched<B> {
     pub fn keeping(mut self, on: bool) -> Sched<B> {
         self.keep = on && self.free.is_some() && self.be.keeps();
         self
+    }
+
+    /// The scheduler with sequences sent back for room swapped as `mode` says (by cost, unless a development build's GLYD_ENGINE_SWAP says otherwise).
+    pub fn swapping(mut self, mode: SwapMode) -> Sched<B> {
+        self.swap = mode;
+        self
+    }
+
+    /// `swapping` of a scheduler at work (a check that runs the same requests each way).
+    pub fn set_swapping(&mut self, mode: SwapMode) {
+        self.swap = mode;
     }
 
     /// The scheduler with `rt` as its runtime context: a model of a process that serves more than one, or a test's.
@@ -631,7 +712,7 @@ impl<B: ModelStep> Sched<B> {
     }
 
     pub fn idle(&self) -> bool {
-        self.active.is_empty() && self.waiting.is_empty()
+        self.active.is_empty() && self.waiting.is_empty() && self.loading.is_empty()
     }
 
     /// Pages that can be had now (free or only cached); a slot step's slots that are free or only kept.
@@ -802,6 +883,7 @@ impl<B: ModelStep> Sched<B> {
             tries: 0,
             after: Vec::new(),
             solo: false,
+            swapped: None,
             began: std::time::Instant::now(),
             last_token: None,
             trace: crate::otel::Clock::new(prompt_len),
@@ -821,7 +903,7 @@ impl<B: ModelStep> Sched<B> {
             st.preempted,
             st.steps,
             st.rows,
-            self.active.len() as u64,
+            (self.active.len() + self.loading.len()) as u64,
             self.waiting.len() as u64,
             st.decode_ns,
             st.prefill_ns,
@@ -845,6 +927,7 @@ impl<B: ModelStep> Sched<B> {
             st.by_rows[8],
             st.prefill_rounds,
             st.both,
+            st.swapped,
         ]) {
             a.store(v, Relaxed);
         }
@@ -855,8 +938,13 @@ impl<B: ModelStep> Sched<B> {
         let t = std::time::Instant::now();
         let ta = std::time::Instant::now();
         self.reap()?;
+        self.join_loaded(false)?;
         let came = self.stats.prompt;
         self.admit()?;
+        if self.active.is_empty() && !self.loading.is_empty() {
+            // (nothing else to step: the first copy back is waited for)
+            self.join_loaded(true)?;
+        }
         let admitted = self.stats.prompt != came;
         self.stats.admit_ns += ta.elapsed().as_nanos() as u64;
         if self.be.one_step() {
@@ -906,7 +994,11 @@ impl<B: ModelStep> Sched<B> {
 
     /// Every sequence ended with `msg`, the pages all free again.
     pub fn fail(&mut self, err: &crate::ffi::Error) {
-        for s in self.active.drain(..).chain(self.waiting.drain(..)) {
+        let all: Vec<Seq> = self.active.drain(..).chain(self.waiting.drain(..)).chain(self.loading.drain(..)).collect();
+        for s in all {
+            if let Some(t) = s.swapped {
+                self.be.swap_drop(t);
+            }
             self.rt.figures.finished("error", s.began, &s.trace, s.generated);
             self.pending.push((s.out.clone(), Ev::End(Err(err.clone()))));
         }
@@ -938,9 +1030,24 @@ impl<B: ModelStep> Sched<B> {
                 i += 1;
             }
         }
+        let mut i = 0;
+        while i < self.loading.len() {
+            if self.loading[i].abort.load(Relaxed) {
+                let mut s = self.loading.remove(i);
+                self.give_back(&mut s)?;
+                self.rt.figures.finished("stopped", s.began, &s.trace, s.generated);
+                self.pending.push((s.out.clone(), Ev::End(Ok(Finish::Stopped))));
+            } else {
+                i += 1;
+            }
+        }
         let gone: Vec<usize> = self.waiting.iter().enumerate().filter(|(_, s)| s.abort.load(Relaxed)).map(|(i, _)| i).collect();
         for i in gone.into_iter().rev() {
             if let Some(s) = self.waiting.remove(i) {
+                // (one swapped to the host lets its copy go)
+                if let Some(t) = s.swapped {
+                    self.be.swap_drop(t);
+                }
                 self.rt.figures.finished("stopped", s.began, &s.trace, s.generated);
                 self.pending.push((s.out.clone(), Ev::End(Ok(Finish::Stopped))));
             }
@@ -948,9 +1055,23 @@ impl<B: ModelStep> Sched<B> {
         Ok(())
     }
 
-    /// Whether the sequence with this id is still there (running or waiting).
+    /// The sequences whose copy back from the host is done (`ModelStep::swap_ready`) join the running ones, in the order they came back; with `wait`, the first is waited for.
+    fn join_loaded(&mut self, wait: bool) -> Result<()> {
+        let mut i = 0;
+        while i < self.loading.len() {
+            if self.be.swap_ready(self.loading[i].pages[0], wait && i == 0)? {
+                let s = self.loading.remove(i);
+                self.active.push(s);
+            } else {
+                i += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the sequence with this id is still there (running, waiting, or being copied back).
     fn alive(&self, id: u64) -> bool {
-        self.active.iter().any(|s| s.id == id) || self.waiting.iter().any(|s| s.id == id)
+        self.active.iter().chain(&self.loading).any(|s| s.id == id) || self.waiting.iter().any(|s| s.id == id)
     }
 
     /// A waiting sequence that lost a block waits until the sequences that were running with it are gone. And one whose start a running sequence of its scope is still
@@ -961,7 +1082,8 @@ impl<B: ModelStep> Sched<B> {
         if s.after.iter().any(|&id| self.alive(id)) {
             return true;
         }
-        if !self.keep || !self.be.shares_starts() {
+        // (a swapped one has its own cache to copy back: it shares no start)
+        if s.swapped.is_some() || !self.keep || !self.be.shares_starts() {
             return false;
         }
         let chunk = self.be.chunk().max(KEEP_LEAST);
@@ -974,7 +1096,7 @@ impl<B: ModelStep> Sched<B> {
 
     /// Waiting sequences taken in, the oldest first (those that are not held back), while there are places and pages for the whole prompt and a page for each running sequence to grow into.
     fn admit(&mut self) -> Result<()> {
-        while self.active.len() < self.users {
+        while self.active.len() + self.loading.len() < self.users {
             // a sequence that must run alone runs when nothing else does, and nothing else is let in while it waits or runs
             if self.active.iter().any(|s| s.solo) {
                 break;
@@ -1028,6 +1150,9 @@ impl<B: ModelStep> Sched<B> {
 
     /// Waiting sequence `k` given a slot of its own (a slot step); false where none is free. A prompt the slot cannot hold with a token after it ends at once with an error in words.
     fn admit_slot(&mut self, k: usize) -> Result<bool> {
+        if let Some(ticket) = self.waiting[k].swapped {
+            return self.admit_swapped(k, ticket);
+        }
         let window = self.be.window();
         if self.waiting[k].tokens.len() >= window {
             let s = self.waiting.remove(k).expect("a waiting sequence");
@@ -1054,7 +1179,7 @@ impl<B: ModelStep> Sched<B> {
                 self.be.release(&[slot])?;
             }
             self.free.as_mut().expect("a slot step").push(slot);
-            if self.active.is_empty() {
+            if self.active.is_empty() && self.loading.is_empty() {
                 let s = self.waiting.remove(k).expect("a waiting sequence");
                 self.rt.figures.finished("error", s.began, &s.trace, s.generated);
                 self.pending.push((
@@ -1081,6 +1206,47 @@ impl<B: ModelStep> Sched<B> {
         Ok(true)
     }
 
+    /// Waiting sequence `k`, swapped to the host (`ticket`), copied back into an empty slot (a free one, else a kept one's) with room for its next step (its next token, or its prompt's next chunk):
+    /// it waits in `loading` until the copy is done, the steps going on meanwhile. False where there is no slot or no room now. Where nothing runs or comes back that would give memory back, it is
+    /// run again from its tokens instead (its copy let go), as one sent back is without a swap.
+    fn admit_swapped(&mut self, k: usize, ticket: u64) -> Result<bool> {
+        let slot = match self.free.as_mut().and_then(Vec::pop) {
+            Some(slot) => slot,
+            None if self.drop_kept()? => self.free.as_mut().and_then(Vec::pop).expect("the slot just emptied"),
+            None => return Ok(false),
+        };
+        let s = &self.waiting[k];
+        let upto = if s.prefilling { s.done + (s.tokens.len() - s.done).min(self.be.chunk()) } else { s.done + 1 };
+        let held = loop {
+            if let Some(n) = self.be.swap_in(slot, ticket, upto)? {
+                break n;
+            }
+            if self.drop_kept()? {
+                continue;
+            }
+            let free = self.free.as_mut().expect("a slot step");
+            free.push(slot);
+            free.sort_unstable_by(|a, b| b.cmp(a));
+            if !self.active.is_empty() || !self.loading.is_empty() {
+                return Ok(false);
+            }
+            self.be.swap_drop(ticket);
+            let s = &mut self.waiting[k];
+            (s.swapped, s.done, s.published, s.chain, s.head_names, s.prefilling) = (None, 0, 0, block_root(s.salt), None, true);
+            return Ok(true);
+        };
+        let mut s = self.waiting.remove(k).expect("a waiting sequence");
+        if held != s.done {
+            return Err(Error(format!("a sequence of {} tokens came back from the host with {held}", s.done)));
+        }
+        s.trace.admit();
+        s.pages = vec![slot];
+        s.swapped = None;
+        s.after.clear();
+        self.loading.push(s);
+        Ok(true)
+    }
+
     /// Pages for the sequence `id`'s first `upto` tokens, the newest sequences giving theirs back where there are none to take. False where `id` itself was sent back to wait. (A slot step's room grows
     /// the same way, `ModelStep::grow`.)
     fn ensure_pages(&mut self, id: u64, upto: usize) -> Result<bool> {
@@ -1095,7 +1261,7 @@ impl<B: ModelStep> Sched<B> {
                     continue;
                 }
                 let victim = self.active.iter().enumerate().max_by_key(|(_, s)| s.id).map(|(v, _)| v).expect("an active sequence");
-                self.preempt(victim)?;
+                self.preempt(victim, true)?;
             }
         }
         loop {
@@ -1107,7 +1273,7 @@ impl<B: ModelStep> Sched<B> {
                 Some(p) => self.active[i].pages.push(p),
                 None => {
                     let victim = self.active.iter().enumerate().max_by_key(|(_, s)| s.id).map(|(v, _)| v).expect("an active sequence");
-                    self.preempt(victim)?;
+                    self.preempt(victim, true)?;
                 }
             }
         }
@@ -1136,7 +1302,8 @@ impl<B: ModelStep> Sched<B> {
             self.be.release(&clear)?;
         }
         let void: std::collections::HashSet<i32> = l.void.iter().copied().collect();
-        Ok(self.active.iter().filter(|s| l.overflow || s.pages.iter().any(|p| void.contains(p))).map(|s| s.id).collect())
+        // (a sequence being copied back is hit too where a block it is copied into could not be stored exactly)
+        Ok(self.active.iter().chain(&self.loading).filter(|s| l.overflow || s.pages.iter().any(|p| void.contains(p))).map(|s| s.id).collect())
     }
 
     /// The sequences `hit` (the step's output of each is not to be used) given back their pages and sent to wait, to run again from their tokens when the sequences still running that were not hit have ended (and the ones hit
@@ -1149,6 +1316,17 @@ impl<B: ModelStep> Sched<B> {
         }
         let mut hit = hit.to_vec();
         hit.sort_unstable();
+        // (one hit while it was copied back has its copy finished and is taken back as a running one is: its cache is not what it was)
+        let mut i = 0;
+        while i < self.loading.len() {
+            if hit.contains(&self.loading[i].id) {
+                self.be.swap_ready(self.loading[i].pages[0], true)?;
+                let s = self.loading.remove(i);
+                self.active.push(s);
+            } else {
+                i += 1;
+            }
+        }
         let others: Vec<u64> = self.active.iter().map(|s| s.id).filter(|id| !hit.contains(id)).collect();
         let alone = others.is_empty() && hit.len() == 1;
         let mut before: Vec<u64> = Vec::new();
@@ -1193,7 +1371,7 @@ impl<B: ModelStep> Sched<B> {
                 continue;
             }
             let solo = !alone && self.active[i].tries >= 2;
-            self.preempt(i)?;
+            self.preempt(i, false)?;
             let s = self.waiting.front_mut().expect("it was just sent back to wait");
             s.solo |= solo;
             s.after = if s.solo { Vec::new() } else { others.iter().chain(before.iter()).copied().collect() };
@@ -1202,8 +1380,32 @@ impl<B: ModelStep> Sched<B> {
         Ok(())
     }
 
-    /// A sequence sent back to wait: its full pages go to the cache, the rest are cleared, and it is first in the queue, to be run again from its tokens.
-    fn preempt(&mut self, i: usize) -> Result<()> {
+    /// A sequence sent back to wait, first in the queue. With `swap` (sent back for room, its cache whole), where `swap_pays`: its cache copied to the host (`ModelStep::swap_out`; its full blocks
+    /// named first, as `give_back` names them), to be copied back and go on from where it is. Otherwise, or where the host's area has no room: its full pages go to the cache, the rest are cleared,
+    /// and it is run again from its tokens.
+    fn preempt(&mut self, i: usize, swap: bool) -> Result<()> {
+        if swap && self.swap_pays(&self.active[i]) {
+            let slot = self.active[i].pages[0];
+            if self.names() {
+                Self::name_blocks(&mut self.be, &mut self.active[i], self.rt.kv_events.as_ref().map(|_| &mut self.kv_out))?;
+            }
+            let t = std::time::Instant::now();
+            let out = self.be.swap_out(slot)?;
+            self.stats.release_ns += t.elapsed().as_nanos() as u64;
+            if let Some(ticket) = out {
+                let mut s = self.active.remove(i);
+                s.pages.clear();
+                let free = self.free.as_mut().expect("a slot step");
+                free.push(slot);
+                free.sort_unstable_by(|a, b| b.cmp(a));
+                s.swapped = Some(ticket);
+                s.resumed.fetch_add(1, Relaxed);
+                self.stats.preempted += 1;
+                self.stats.swapped += 1;
+                self.waiting.push_front(s);
+                return Ok(());
+            }
+        }
         let mut s = self.active.remove(i);
         self.give_back(&mut s)?;
         s.done = 0;
@@ -1216,6 +1418,22 @@ impl<B: ModelStep> Sched<B> {
         self.stats.preempted += 1;
         self.waiting.push_front(s);
         Ok(())
+    }
+
+    /// Whether sequence `s`, sent back for room, is swapped to the host rather than run again from its tokens (`SwapMode`): a slot step's sequence that holds tokens and that the step can swap
+    /// (`ModelStep::swap_cost`), and by cost where its bytes over the link, out and back, take less time than its tokens' recompute at the rate the prompt passes have run at so far (every token it
+    /// holds: a recurrent model's states are had only by running all of them; no pass run yet: swapped).
+    fn swap_pays(&self, s: &Seq) -> bool {
+        if self.swap == SwapMode::Never || self.free.is_none() || s.pages.len() != 1 || s.done == 0 {
+            return false;
+        }
+        let Some((bytes, rate)) = self.be.swap_cost(s.pages[0]) else { return false };
+        if self.swap == SwapMode::Always {
+            return true;
+        }
+        let st = &self.stats;
+        let again = if st.pass_tokens == 0 { f64::INFINITY } else { s.done as f64 * st.pass_ns as f64 / st.pass_tokens as f64 * 1e-9 };
+        2.0 * bytes as f64 / rate.max(1.0) < again
     }
 
     /// The sequence's full pages given to the cache and all its pages released; those nothing names are cleared on the GPU. A slot step's slot is emptied and free again.
@@ -1456,6 +1674,8 @@ impl<B: ModelStep> Sched<B> {
         }
         drop(jobs);
         self.stats.prefill_ns += t.elapsed().as_nanos() as u64;
+        self.stats.pass_ns += t.elapsed().as_nanos() as u64;
+        self.stats.pass_tokens += used as u64;
         self.stats.prefill_rounds += 1;
         self.pass_tokens = used;
         // what the chunks could not store exactly: not used, whatever they were told (the sequence is sent back, with any other that holds such a block)
@@ -1588,6 +1808,9 @@ impl<B: ModelStep> Sched<B> {
         if !picks.is_empty() {
             self.stats.prefill_rounds += 1;
             self.stats.both += (n_rows > 0) as u64;
+            // (the step's whole time, its rows' share too: a recompute is priced no cheaper than it is)
+            self.stats.pass_ns += t.elapsed().as_nanos() as u64;
+            self.stats.pass_tokens += used as u64;
         }
         self.pass_tokens = used;
         // what the step could not store exactly: the output of the sequences that hold such a block is not used (they are sent back below)
@@ -2836,6 +3059,20 @@ pub(crate) mod tests {
         pub snaps: std::collections::HashMap<u128, Vec<u32>>,
         /// Names the step says it no longer finds blocks by (`take_removed`), as a test sets them.
         pub removed: Vec<u128>,
+        /// Swapping (`swap_out`, `swap_in`): the host's copies by ticket (a room and its mark), the tokens the host's area holds at most (0: the step cannot swap), the bytes a token takes and the
+        /// link's bytes a second (`swap_cost`), the polls a copy back takes before `swap_ready` says it is done, each slot's polls left, the tickets given and those let go (`swap_drop`), and the
+        /// prompt tokens run (a sequence swapped and copied back runs none again).
+        pub host: std::collections::HashMap<u64, (Vec<u32>, usize)>,
+        pub host_room: usize,
+        pub token_bytes: usize,
+        pub link: f64,
+        pub load_polls: usize,
+        pub loading: Vec<usize>,
+        pub tickets: u64,
+        pub dropped: usize,
+        pub ran: usize,
+        /// Steps that ran while a copy back was in flight.
+        pub beside_copies: usize,
     }
 
     impl SlotFake {
@@ -2867,7 +3104,24 @@ pub(crate) mod tests {
                 snap_every: 0,
                 snaps: Default::default(),
                 removed: Vec::new(),
+                host: Default::default(),
+                host_room: 0,
+                token_bytes: 1000,
+                link: 1e15,
+                load_polls: 0,
+                loading: vec![0; slots],
+                tickets: 0,
+                dropped: 0,
+                ran: 0,
+                beside_copies: 0,
             }
+        }
+        /// A step of these slots: none of them is being copied back; counted where another is.
+        fn stepping(&mut self, slots: impl Iterator<Item = i32>) {
+            for s in slots {
+                assert_eq!(self.loading[s as usize], 0, "a step of slot {s}, whose copy back is not done");
+            }
+            self.beside_copies += self.loading.iter().any(|&l| l > 0) as usize;
         }
         fn put(&mut self, slot: &[i32], start: usize, tokens: &[u32]) -> u32 {
             assert_eq!(slot.len(), 1, "a slot step's pages are its slot");
@@ -2908,6 +3162,8 @@ pub(crate) mod tests {
             vec![0]
         }
         fn prefill(&mut self, pages: &[i32], start: usize, tokens: &[u32], last: bool) -> Result<Option<Sample>> {
+            self.stepping(pages.iter().copied());
+            self.ran += tokens.len();
             let t = self.put(pages, start, tokens);
             let s = last.then_some(Sample { token: t, logit: 0.0, logprob: None });
             if let Some(s) = s {
@@ -2919,6 +3175,8 @@ pub(crate) mod tests {
             self.batch
         }
         fn prefill_many(&mut self, jobs: &[PrefillJob]) -> Result<Vec<Option<Sample>>> {
+            self.stepping(jobs.iter().map(|j| j.pages[0]));
+            self.ran += jobs.iter().map(|j| j.tokens.len()).sum::<usize>();
             let mut rows = Vec::new();
             let out: Vec<Option<Sample>> = jobs
                 .iter()
@@ -2951,6 +3209,12 @@ pub(crate) mod tests {
             seen.dedup();
             assert_eq!(seen.len(), rows.len() + jobs.len(), "two parts of a step in one slot");
             self.stepped.push((rows.len(), tokens));
+            self.ran += tokens;
+            // (the rows are checked and counted by `decode`)
+            match rows.is_empty() {
+                true => self.stepping(jobs.iter().map(|j| j.pages[0])),
+                false => assert!(jobs.iter().all(|j| self.loading[j.pages[0] as usize] == 0), "a prompt's chunk in a slot whose copy back is not done"),
+            }
             let decoded = if rows.is_empty() { Vec::new() } else { self.decode(rows)? };
             let mut all = if rows.is_empty() { Vec::new() } else { std::mem::take(&mut self.rows) };
             let prompted: Vec<Option<Sample>> = jobs
@@ -2971,6 +3235,7 @@ pub(crate) mod tests {
             seen.sort_unstable();
             seen.dedup();
             assert_eq!(seen.len(), rows.len(), "two rows of a step in one slot");
+            self.stepping(rows.iter().map(|r| r.pages[0]));
             self.steps.push(rows.len());
             let out: Vec<Sample> = rows.iter().map(|r| Sample { token: self.put(r.pages, r.pos, &[r.token]), logit: 0.0, logprob: None }).collect();
             self.rows = out.iter().map(|s| row_of(s.token)).collect();
@@ -2984,9 +3249,53 @@ pub(crate) mod tests {
                 self.rooms[p as usize].clear();
                 self.held[p as usize] = 0;
                 self.marks[p as usize] = 0;
+                self.loading[p as usize] = 0;
                 self.emptied += 1;
             }
             Ok(())
+        }
+        fn swap_cost(&self, slot: i32) -> Option<(usize, f64)> {
+            (self.host_room > 0 && !self.rooms[slot as usize].is_empty()).then(|| (self.rooms[slot as usize].len() * self.token_bytes, self.link))
+        }
+        fn swap_out(&mut self, slot: i32) -> Result<Option<u64>> {
+            let s = slot as usize;
+            let held: usize = self.host.values().map(|h| h.0.len()).sum();
+            assert_eq!(self.loading[s], 0, "slot {s} swapped out while it was copied back");
+            if self.rooms[s].is_empty() || held + self.rooms[s].len() > self.host_room {
+                return Ok(None);
+            }
+            self.tickets += 1;
+            self.host.insert(self.tickets, (std::mem::take(&mut self.rooms[s]), self.marks[s]));
+            (self.held[s], self.marks[s]) = (0, 0);
+            Ok(Some(self.tickets))
+        }
+        fn swap_in(&mut self, slot: i32, ticket: u64, upto: usize) -> Result<Option<usize>> {
+            let s = slot as usize;
+            assert!(self.rooms[s].is_empty() && self.held[s] == 0, "a copy back into slot {s}, which holds {} tokens", self.rooms[s].len());
+            let n = self.host.get(&ticket).expect("a ticket given").0.len();
+            assert!(upto > n, "room for {upto} tokens asked for a sequence of {n}");
+            if let Some(budget) = self.budget {
+                if self.held.iter().sum::<usize>() + upto.div_ceil(PAGE) * PAGE > budget {
+                    return Ok(None);
+                }
+                self.held[s] = upto.div_ceil(PAGE) * PAGE;
+            }
+            let (room, mark) = self.host.remove(&ticket).expect("a ticket given");
+            (self.rooms[s], self.marks[s], self.loading[s]) = (room, mark, self.load_polls);
+            Ok(Some(n))
+        }
+        fn swap_ready(&mut self, slot: i32, wait: bool) -> Result<bool> {
+            let l = &mut self.loading[slot as usize];
+            if wait || *l == 0 {
+                *l = 0;
+                return Ok(true);
+            }
+            *l -= 1;
+            Ok(false)
+        }
+        fn swap_drop(&mut self, ticket: u64) {
+            self.host.remove(&ticket).expect("a ticket given");
+            self.dropped += 1;
         }
         fn shares_starts(&self) -> bool {
             self.keeps && (!self.whole_only || self.snap_every > 0)
@@ -3820,5 +4129,114 @@ pub(crate) mod tests {
         run(&mut s);
         assert!(outcome(&big).1.is_err_and(|e| e.contains("100 tokens")));
         assert_eq!(collect(&ok), (reference(&prompt(2, 20), 8), Finish::Length));
+    }
+
+    // ---- preemption by swapping (R4d) ----------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+    /// Ten requests on rooms that run out (each fits alone), swapped as `mode` says: the replies, the prompt tokens the model ran, and the scheduler's figures, the slots and the host's area
+    /// checked empty at the end.
+    fn squeezed(slots: usize, budget: usize, mode: SwapMode, set: impl Fn(&mut SlotFake)) -> (Vec<(Vec<u32>, usize)>, Vec<(Vec<u32>, Finish)>, usize, Stats) {
+        let mut f = SlotFake::new(slots, 512, 16);
+        (f.budget, f.host_room) = (Some(budget), 1 << 20);
+        set(&mut f);
+        let mut s = Sched::new(f, slots).swapping(mode);
+        let reqs: Vec<(Vec<u32>, usize)> = (0..10).map(|k| (prompt(k as u32 + 7, 5 + 7 * k), 20 + 3 * k)).collect();
+        assert!(reqs.iter().all(|(p, n)| p.len() + n < budget), "a request that does not fit alone");
+        let rx: Vec<_> = reqs.iter().map(|(p, n)| add(&mut s, p.clone(), *n).0).collect();
+        run(&mut s);
+        let got = rx.iter().map(collect).collect();
+        let f = &s.be;
+        assert!(f.held.iter().all(|&h| h == 0) && f.rooms.iter().all(Vec::is_empty) && f.loading.iter().all(|&l| l == 0));
+        assert!(f.host.is_empty(), "copies left in the host's area");
+        assert_eq!(s.available(), slots);
+        (reqs, got, f.ran, s.stats)
+    }
+
+    /// The acceptance of R4d on the made-up model: where the rooms run out, the sequences sent back are swapped to the host and copied back, and every reply is the reply alone, token for
+    /// token; no prompt token is run twice (recompute-only runs the ones sent back again).
+    #[test]
+    fn swapped_sequences_go_on_with_the_tokens_they_have_alone() {
+        for (slots, budget) in [(4, 160), (8, 256), (8, 128), (2, 128)] {
+            let (reqs, got, ran, st) = squeezed(slots, budget, SwapMode::Always, |_| {});
+            for ((p, n), g) in reqs.iter().zip(&got) {
+                assert_eq!(g, &(reference(p, *n), Finish::Length), "{slots} slots, budget {budget}");
+            }
+            let prompts: usize = reqs.iter().map(|(p, _)| p.len()).sum();
+            // (every one that held tokens: one sent back before its first chunk has nothing to copy, nor to run again)
+            assert!(st.swapped > 0, "{slots} slots, budget {budget}: {} sent back, none swapped", st.preempted);
+            assert_eq!(ran, prompts, "{slots} slots, budget {budget}: prompt tokens run again");
+            let (_, again, ran_again, st_again) = squeezed(slots, budget, SwapMode::Never, |_| {});
+            assert_eq!(again, got);
+            assert!(st_again.preempted > 0 && st_again.swapped == 0 && ran_again > prompts, "recompute ran {ran_again} prompt tokens, swap {ran}");
+        }
+    }
+
+    /// Each sequence sent back is swapped where its bytes over the link, out and back, cost less than its tokens' recompute at the rate the prompt passes ran at, and run again where they cost
+    /// more; every reply whole either way. (The two rates are a million times apart, so the choice does not turn on the test's timings.)
+    #[test]
+    fn the_cheaper_way_back_is_chosen_for_each_sequence() {
+        for (link, swaps) in [(1e15, true), (1.0, false)] {
+            let (reqs, got, _, st) = squeezed(4, 160, SwapMode::ByCost, |f| f.link = link);
+            for ((p, n), g) in reqs.iter().zip(&got) {
+                assert_eq!(g, &(reference(p, *n), Finish::Length));
+            }
+            assert!(st.preempted > 0 && st.pass_tokens > 0 && st.pass_ns > 0);
+            assert_eq!(st.swapped > 0, swaps, "link {link} B/s: {} sent back, {} swapped", st.preempted, st.swapped);
+        }
+    }
+
+    /// A host area too small for every sequence sent back: those it cannot take are run again from their tokens, and every reply is still whole.
+    #[test]
+    fn a_full_swap_area_sends_the_rest_back_to_recompute() {
+        let (reqs, got, ran, st) = squeezed(8, 128, SwapMode::Always, |f| f.host_room = 40);
+        for ((p, n), g) in reqs.iter().zip(&got) {
+            assert_eq!(g, &(reference(p, *n), Finish::Length));
+        }
+        assert!(st.swapped > 0 && st.swapped < st.preempted, "{} sent back, {} swapped", st.preempted, st.swapped);
+        assert!(ran > reqs.iter().map(|(p, _)| p.len()).sum::<usize>());
+    }
+
+    /// A copy back takes a while (`swap_ready` says no for a few polls): the sequence steps only once it is done, and the others' steps go on meanwhile.
+    #[test]
+    fn a_sequence_copied_back_steps_once_its_copy_is_done() {
+        let (reqs, got, _, st) = squeezed(4, 160, SwapMode::Always, |f| f.load_polls = 3);
+        for ((p, n), g) in reqs.iter().zip(&got) {
+            assert_eq!(g, &(reference(p, *n), Finish::Length));
+        }
+        assert!(st.swapped > 0);
+        let mut f = SlotFake::new(4, 512, 16);
+        (f.budget, f.host_room, f.load_polls) = (Some(160), 1 << 20, 3);
+        let mut s = Sched::new(f, 4).swapping(SwapMode::Always);
+        let rx: Vec<_> = (0..6).map(|k| add(&mut s, prompt(k + 3, 30), 40).0).collect();
+        run(&mut s);
+        for (k, r) in rx.iter().enumerate() {
+            assert_eq!(collect(r), (reference(&prompt(k as u32 + 3, 30), 40), Finish::Length));
+        }
+        assert!(s.stats.swapped > 0 && s.be.beside_copies > 0, "no step ran while a copy back was in flight");
+    }
+
+    /// A request stopped while its sequence is swapped (waiting, or being copied back) lets its copy go; the others' replies are whole and the host's area is empty at the end.
+    #[test]
+    fn a_request_stopped_while_swapped_lets_its_copy_go() {
+        for polls in [0, 50] {
+            let mut f = SlotFake::new(2, 512, 16);
+            (f.budget, f.host_room, f.load_polls) = (Some(64), 1 << 20, polls);
+            let mut s = Sched::new(f, 2).swapping(SwapMode::Always);
+            let (ra, _) = add(&mut s, prompt(1, 20), 30);
+            let (rb, stop_b) = add(&mut s, prompt(2, 20), 30);
+            let mut guard = 0;
+            while s.stats.swapped == 0 {
+                s.tick().unwrap();
+                guard += 1;
+                assert!(guard < 1000, "nothing swapped");
+            }
+            stop_b.store(true, Relaxed);
+            run(&mut s);
+            assert_eq!(collect(&ra), (reference(&prompt(1, 20), 30), Finish::Length));
+            let (b, fb) = collect(&rb);
+            assert_eq!(fb, Finish::Stopped);
+            assert!(b.len() < 30 && b[..] == reference(&prompt(2, 20), b.len())[..]);
+            assert!(s.be.host.is_empty() && s.be.loading.iter().all(|&l| l == 0) && s.be.rooms.iter().all(Vec::is_empty));
+        }
     }
 }

@@ -22,6 +22,7 @@ pub mod range;
 mod rows;
 pub(crate) mod snaps;
 pub mod split;
+mod swap;
 pub mod tp;
 pub mod tp_cache;
 
@@ -819,6 +820,8 @@ pub struct Dyn {
     /// The 12-bit KV tables the paged layout uses for the rings they fit (`set_kv12`), and the pages it made of them.
     kv12: Option<kv12::Tables>,
     lossless: Option<kvpages::Lossless>,
+    /// The host's swap area for paged sequences sent back for room, and its copies (R4d: src/dynamic/swap.rs); None: they are run again from their tokens.
+    swap: Option<swap::Swap>,
 }
 
 /// A sequence's own buffers and place, while another is selected (`Dyn::select`): its keys and values, its states, its position, the verify pass it can go back
@@ -1167,6 +1170,7 @@ impl Dyn {
             paged: None,
             kv12: None,
             lossless: None,
+            swap: None,
         };
         // (a group of GPUs: every one's engine made before any one's first pass, src/dynamic/tp.rs)
         if let Some(c) = tp::comm() {
