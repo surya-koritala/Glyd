@@ -1,4 +1,4 @@
-//! `ceiling MODEL [--box B] [--gpus N] [--by-layers] [--pos P] [--hit H] [--fp8 PCT] [--bf16-pct PCT] [--eff E] [--t0-us U] [--t0-moe-us U] [--pair-ms M] [--fixed-us U] [--exchange-us U] [--stats FILE]
+//! `ceiling MODEL [--box B] [--gpus N] [--by-layers] [--pos P] [--hit H] [--fp8 PCT] [--bf16-pct PCT] [--eff E] [--t0-us U] [--t0-moe-us U] [--pair-ms M] [--fixed-us U] [--exchange-us U] [--stats FILE [--calibrate MODEL:FILE]]
 //! [--measured MS]` (development): a
 //! decode step's least time by the formula of docs/ceiling.md, from the checkpoint's own tensors (a directory's safetensors, or a Hub repo's headers
 //! read by ranges: no weights are downloaded), the engine's layouts, cuts and slicing (src/dynamic/split.rs, tp.rs), and a box's spec. Beside each
@@ -401,6 +401,7 @@ impl Run {
                         copy_ms: n(l, "copy_ms")?,
                         host_ms: n(l, "host_ms")?,
                         wait_ms: n(l, "wait_ms")?,
+                        plan_ms: l.get("plan_ms").and_then(num).unwrap_or(0.0),
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
@@ -412,24 +413,53 @@ impl Run {
 
 /// A decode step of `r.rows` rows on one GPU whose experts are in the expert cache, from its layers' statistics (`--stats`, src/tiering.rs storebench): (ceiling, ours) in ms. The dense weights are read once
 /// for the rows; each expert a layer runs on the GPU (the ones asked for less those the host computed) once; the attention once a row. A layer's misses take the longer of its copies and the host's pairs, which
-/// run at once and before its products can end: at the box's link and host memory rates for the ceiling (the host reading each missed expert once), at the run's measured copy rate and the host's measured
-/// time for ours. `fixed`: what ours adds a step (the small kernels and the store's wait and plan a layer), measured as one run's unexplained.
-fn cached_step(s: &Step, b: &Box, shares: (f64, f64, f64), r: &Run, fixed_ms: f64) -> (f64, f64) {
+/// run at once and before its products can end: at the box's link and host memory rates for the ceiling (the host reading each missed expert once), and for ours the copy stream's measured time for the layer's
+/// misses (its share of the layer's copying: the promotions behind the call are not the call's) against the host's measured time, plus each call's own time on the host (`plan_ms`). The copy stream is one queue,
+/// so ours is at least its whole measured time, promotions too. Ours adds `fixed`, the rest of a step (`Fixed`).
+fn cached_step(s: &Step, b: &Box, shares: (f64, f64, f64), r: &Run, fixed: Fixed) -> (f64, f64) {
     let (e_bf, e_f8, e_fp4) = shares;
     let on_gpu: f64 = r.layers.iter().map(|l| (l.reads - l.host) as f64 * r.expert_bytes).sum();
     let attn = r.rows as f64 * s.attn;
-    let (copy_ms, copy_bytes) = r.layers.iter().fold((0.0, 0.0), |(m, by), l| (m + l.copy_ms, by + l.copy_bytes as f64));
-    let link = if copy_ms > 0.0 { copy_bytes / copy_ms / 1e6 } else { b.pcie_alone };
-    let misses =
-        |link: f64, host: &dyn Fn(&crate::offload::LayerStats) -> f64| -> f64 { r.layers.iter().map(|l| ms(l.copy_bytes as f64, link).max(host(l))).sum() };
-    let ceiling = ms(s.dense + on_gpu + attn, b.read) + misses(b.pcie_alone, &|l| ms(l.host_bytes as f64, b.host));
-    let ours = ms(s.dense - s.dense_f8, b.read * e_bf)
+    let ceiling =
+        ms(s.dense + on_gpu + attn, b.read) + r.layers.iter().map(|l| ms(l.copy_bytes as f64, b.pcie_alone).max(ms(l.host_bytes as f64, b.host))).sum::<f64>();
+    let own = |l: &crate::offload::LayerStats| {
+        let all = l.copy_bytes + l.ahead_bytes;
+        if all > 0 {
+            l.copy_ms * l.copy_bytes as f64 / all as f64
+        } else {
+            0.0
+        }
+    };
+    let path = ms(s.dense - s.dense_f8, b.read * e_bf)
         + ms(s.dense_f8, b.read * e_f8)
         + ms(on_gpu, b.read * e_fp4)
         + ms(attn, b.read)
-        + misses(link, &|l| l.host_ms)
-        + fixed_ms;
+        + r.layers.iter().map(|l| own(l).max(l.host_ms) + l.plan_ms).sum::<f64>();
+    let ours = path.max(r.layers.iter().map(|l| l.copy_ms).sum::<f64>()) + fixed.of(r);
     (ceiling, ours)
+}
+
+/// What a cached step takes besides its terms, for each MoE layer: `layer` ms, and `row` ms a row (the work a row adds a layer that the terms do not count: on the PC, the launches of the operations a pass runs
+/// sequence by sequence), measured as runs' unexplained (`fit`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Fixed {
+    layer: f64,
+    row: f64,
+}
+
+impl Fixed {
+    fn of(&self, r: &Run) -> f64 {
+        r.layers.iter().filter(|l| l.calls > 0).count() as f64 * (self.layer + self.row * r.rows as f64)
+    }
+
+    /// The least-squares line through the runs' unexplained a layer by their rows (one run: its unexplained, no time a row).
+    fn fit(runs: &[(usize, f64)]) -> Fixed {
+        let n = runs.len() as f64;
+        let (mx, my) = (runs.iter().map(|r| r.0 as f64).sum::<f64>() / n, runs.iter().map(|r| r.1).sum::<f64>() / n);
+        let sxx: f64 = runs.iter().map(|r| (r.0 as f64 - mx).powi(2)).sum();
+        let row = if sxx > 0.0 { runs.iter().map(|r| (r.0 as f64 - mx) * (r.1 - my)).sum::<f64>() / sxx } else { 0.0 };
+        Fixed { layer: my - row * mx, row }
+    }
 }
 
 pub fn cmd(a: &Args) -> Result<()> {
@@ -454,18 +484,47 @@ pub fn cmd(a: &Args) -> Result<()> {
         let s = step(&cfg, &ts, 1, bf16_share, f8_pct, pos)?;
         let shares = (b.ours.0, b.ours.1, b.ours.2);
         let first = runs.first().ok_or_else(|| Error(format!("{f}: no line")))?;
-        let fixed_ms = match a.flag("fixed-us") {
-            Some(u) => u.parse::<f64>().map_err(|_| Error(format!("--fixed-us {u}: microseconds")))? / 1e3,
-            None => first.step_ms - cached_step(&s, b, shares, first, 0.0).1,
+        // (each line's unexplained a MoE layer, by its rows)
+        let per_layer =
+            |r: &Run| (r.rows, (r.step_ms - cached_step(&s, b, shares, r, Fixed::default()).1) / r.layers.iter().filter(|l| l.calls > 0).count().max(1) as f64);
+        let (fixed, how) = match (a.flag("fixed-us"), a.flag("calibrate")) {
+            (Some(u), _) => {
+                let per = u.parse::<f64>().map_err(|_| Error(format!("--fixed-us {u}: microseconds")))? / 1e3;
+                (Fixed { layer: per, row: 0.0 }, "--fixed-us".to_string())
+            }
+            // (another run of the same box: its lines' unexplained, fitted; it gives its own tensors' terms)
+            (None, Some(c)) => {
+                let (cm, cf) = c.split_once(':').ok_or_else(|| Error(format!("--calibrate {c}: MODEL:FILE")))?;
+                let (ccfg, cts) = tensors(cm)?;
+                let cs = step(
+                    &ccfg,
+                    &cts,
+                    1,
+                    bf16_share,
+                    a.num("fp8", if ccfg.get("model_type").and_then(Value::as_str) == Some("deepseek_v4") { 100 } else { CODED_PCT })?,
+                    pos,
+                )?;
+                let ctext = std::fs::read_to_string(cf).map_err(|e| Error(format!("{cf}: {e}")))?;
+                let cruns: Vec<Run> = ctext.lines().filter(|l| !l.trim().is_empty()).map(Run::parse).collect::<Result<_>>()?;
+                let pts: Vec<(usize, f64)> = cruns
+                    .iter()
+                    .map(|r| {
+                        (
+                            r.rows,
+                            (r.step_ms - cached_step(&cs, b, shares, r, Fixed::default()).1) / r.layers.iter().filter(|l| l.calls > 0).count().max(1) as f64,
+                        )
+                    })
+                    .collect();
+                (Fixed::fit(&pts), format!("fitted to {cf}'s {} lines", pts.len()))
+            }
+            (None, None) => (Fixed::fit(&[per_layer(first)]), "the first line's unexplained".to_string()),
         };
         println!(
-            "{model} on {}, one GPU, the experts in the expert cache (--stats {f}); ours' fixed time {:.2} ms a step ({})",
-            b.name,
-            fixed_ms,
-            if a.flag("fixed-us").is_some() { "--fixed-us" } else { "the first line's unexplained" }
+            "{model} on {}, one GPU, the experts in the expert cache (--stats {f}); ours' fixed time {:.3} ms a MoE layer and {:.4} ms a row a layer ({how})",
+            b.name, fixed.layer, fixed.row
         );
         for r in &runs {
-            let (ceiling, ours) = cached_step(&s, b, shares, r, fixed_ms);
+            let (ceiling, ours) = cached_step(&s, b, shares, r, fixed);
             let t = crate::offload::LayerStats::sum(&r.layers);
             println!(
                 "  {:>3} rows: ceiling {ceiling:8.2} ms, ours {ours:8.2} ms, measured {:8.2} ms: ours {:+.1}% of it ({} experts a step on the GPU, {} copied, {} by the host)",
@@ -641,9 +700,13 @@ mod tests {
         assert_eq!((r.rows, r.layers.len(), r.layers[0].copies, r.layers[0].host_ms), (8, 1, 15, 2.0));
         let b = &BOXES[0];
         let s = Step { dense: 702e6, attn: 0.0, ..Step::default() };
-        let (ceiling, ours) = cached_step(&s, b, (1.0, 1.0, 1.0), &r, 0.5);
-        // (ours: 702 MB and 25 experts of 1 MB at 702 GB/s, then the longer of 15 MB at the run's 20 GB/s (0.75 ms) and the host's 2 ms, and 0.5 fixed)
+        let (ceiling, ours) = cached_step(&s, b, (1.0, 1.0, 1.0), &r, Fixed { layer: 0.1, row: 0.05 });
+        // (ours: 702 MB and 25 experts of 1 MB at 702 GB/s, then the longer of the copy stream's 0.75 ms (no promotions) and the host's 2 ms, and 0.1 + 0.05 a row of 8 for the one layer)
         assert!((ours - (1.0 + 25.0 / 702.0 + 2.0 + 0.5)).abs() < 1e-9, "{ours}");
+        // (the fixed time a layer and a row: a line through runs' unexplained)
+        let f = Fixed::fit(&[(1, 0.15), (8, 0.5), (32, 1.7)]);
+        assert!((f.layer - 0.1).abs() < 1e-9 && (f.row - 0.05).abs() < 1e-9, "{f:?}");
+        assert_eq!(Fixed::fit(&[(4, 0.3)]), Fixed { layer: 0.3, row: 0.0 });
         // (the ceiling: the copies at PCIe 4's 25 GB/s (0.6 ms) against 5 MB at the host memory's 96 GB/s)
         assert!((ceiling - (1.0 + 25.0 / 702.0 + 0.6)).abs() < 1e-9, "{ceiling}");
         assert!(Run::parse(r#"{"rows":1}"#).is_err());

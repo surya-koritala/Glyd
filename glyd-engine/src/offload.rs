@@ -845,7 +845,8 @@ impl Stats {
 /// for (each once a call), those found in a place, the misses copied in before the products (`copies`) and those whose pairs the host computed (`host` experts, `host_pairs` pairs), the pairs left out for their small
 /// weights, the waves past a call's first; the bytes read from the computer's memory for the misses (`copy_bytes` over the link, `host_bytes` by the host's kernels: an expert's bytes once for all its rows where the
 /// kernel groups its pairs by expert, once a pair where it does not), and for the experts copied behind the calls for later ones (promotions, hints: `ahead`, `ahead_bytes`); the copy stream's time for the layer's
-/// copies, the host's for its pairs, and the host's wait for the router's choices.
+/// copies, the host's for its pairs, the host's waits for the GPU (the router's choices, a wave's end), and the call's own time on the host besides (`plan_ms`: the plan, the copies and products queued, the
+/// host's sums sent).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct LayerStats {
     pub calls: u64,
@@ -866,6 +867,7 @@ pub struct LayerStats {
     pub copy_ms: f64,
     pub host_ms: f64,
     pub wait_ms: f64,
+    pub plan_ms: f64,
 }
 
 impl LayerStats {
@@ -889,6 +891,7 @@ impl LayerStats {
             copy_ms,
             host_ms,
             wait_ms,
+            plan_ms,
         } = *o;
         self.calls += calls;
         self.rows += rows;
@@ -908,6 +911,7 @@ impl LayerStats {
         self.copy_ms += copy_ms;
         self.host_ms += host_ms;
         self.wait_ms += wait_ms;
+        self.plan_ms += plan_ms;
     }
 
     /// A call of `tokens` rows and `pairs` pairs, whose choices the host waited `waited` ms for.
@@ -962,7 +966,7 @@ impl LayerStats {
     /// The stats as a JSON object (the layer's number among the store's first).
     pub fn json(&self, layer: usize) -> String {
         format!(
-            "{{\"layer\":{layer},\"calls\":{},\"rows\":{},\"pairs\":{},\"reads\":{},\"hits\":{},\"copies\":{},\"host\":{},\"host_pairs\":{},\"skipped\":{},\"waves\":{},\"copy_bytes\":{},\"host_bytes\":{},\"missed_bytes\":{},\"ahead\":{},\"ahead_bytes\":{},\"copy_ms\":{:.3},\"host_ms\":{:.3},\"wait_ms\":{:.3}}}",
+            "{{\"layer\":{layer},\"calls\":{},\"rows\":{},\"pairs\":{},\"reads\":{},\"hits\":{},\"copies\":{},\"host\":{},\"host_pairs\":{},\"skipped\":{},\"waves\":{},\"copy_bytes\":{},\"host_bytes\":{},\"missed_bytes\":{},\"ahead\":{},\"ahead_bytes\":{},\"copy_ms\":{:.3},\"host_ms\":{:.3},\"wait_ms\":{:.3},\"plan_ms\":{:.3}}}",
             self.calls,
             self.rows,
             self.pairs,
@@ -980,7 +984,8 @@ impl LayerStats {
             self.ahead_bytes,
             self.copy_ms,
             self.host_ms,
-            self.wait_ms
+            self.wait_ms,
+            self.plan_ms
         )
     }
 }
@@ -2695,6 +2700,29 @@ impl ExpertStore {
         early: &mut dyn FnMut() -> Result<()>,
         body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>,
     ) -> Result<()> {
+        // (the call's own time on the host: what it took less its waits for the GPU and the host's pairs: `LayerStats::plan_ms`)
+        let spent = |st: &Self| st.inner.borrow().layers.get(layer).and_then(Option::as_ref).map_or(0.0, |l| l.stats.wait_ms + l.stats.host_ms);
+        let (t0, before) = (Instant::now(), spent(self));
+        let r = self.run_call(layer, at, call, early, body);
+        let own = t0.elapsed().as_secs_f64() * 1e3 - (spent(self) - before);
+        if let Some(ly) = self.inner.borrow_mut().layers.get_mut(layer).and_then(Option::as_mut) {
+            ly.stats.plan_ms += own.max(0.0);
+        }
+        r
+    }
+
+    /// `run_early_at`'s call.
+    ///
+    /// # Safety
+    /// As `run`.
+    unsafe fn run_call(
+        &self,
+        layer: usize,
+        at: At,
+        call: &Call,
+        early: &mut dyn FnMut() -> Result<()>,
+        body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>,
+    ) -> Result<()> {
         let s = at.stream;
         let pairs = call.pairs;
         let (needed, host_ids, host_wts, hybrid) = {
@@ -2766,8 +2794,12 @@ impl ExpertStore {
                 let mut guard = self.inner.borrow_mut();
                 let inner = &mut *guard;
                 if w > 0 {
-                    // (the last wave's places and the host buffer of its pairs' places are free once the engine's stream has run it)
+                    // (the last wave's places and the host buffer of its pairs' places are free once the engine's stream has run it: a wait for the GPU)
+                    let t0 = Instant::now();
                     at.sync()?;
+                    if let Some(ly) = inner.layers[layer].as_mut() {
+                        ly.stats.wait_ms += t0.elapsed().as_secs_f64() * 1e3;
+                    }
                 }
                 let cuda = inner.cuda.as_mut().expect("the copy stream");
                 let ly = inner.layers[layer].as_mut().expect("a layer");

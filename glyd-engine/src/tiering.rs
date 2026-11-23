@@ -374,6 +374,7 @@ pub fn bench(a: &crate::args::Args) -> Result<()> {
                     copy_ms: s.copy_ms / steps as f64,
                     host_ms: s.host_ms / steps as f64,
                     wait_ms: s.wait_ms / steps as f64,
+                    plan_ms: s.plan_ms / steps as f64,
                 };
                 m.json(l)
             })
