@@ -53,6 +53,14 @@ extern "C" __global__ void copy_rows(const bf16* src, const int2* pairs, int K, 
     for (int i = threadIdx.x; i < K / 8; i += blockDim.x) d[i] = s[i];
 }
 
+// dst [n, w] (rows ds apart) = n rows of w values of src (rows ss apart), a value a thread: a prompt's part of a fused product's rows copied out (Op::Parts; one token's are read in place).
+extern "C" __global__ void parts_rows(const bf16* src, long long ss, bf16* dst, long long ds, int w, int n) {
+    const long long e = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (e >= (long long)n * w) return;
+    const long long r = e / w, c = e % w;
+    dst[r * ds + c] = src[r * ss + c];
+}
+
 #define RN_PER_THREAD 8  // elements a thread holds: the norms take K up to RN_PER_THREAD * blockDim.x (8192 with 1024 threads)
 
 // out [M, K] = rmsnorm(x [M, K]) * w, in fp32 with one rounding to bf16, as vLLM's default (compiled) mode computes it: x * rsqrt(mean(x^2) + eps) * w.
@@ -1076,6 +1084,7 @@ extern "C" __global__ void __launch_bounds__(256, 1) gemm3f_128x256_s3(const bf1
 #include "gemma4.cu"   // Gemma 4's kernels (after qwen35.cu: they use its helpers)
 #include "attn.cu"     // the attention layer kind's, every family's (after gemma4.cu and qwen35.cu: they use their helpers)
 #include "glm.cu"  // GLM-5.3-Flash's kernels (after qwen35.cu and moe.cu: they use their helpers)
+#include "mla.cu"  // the latent attention layer kind's and the indexer's (after glm.cu and qwen35.cu: they use their helpers)
 #include "glm_cb.cu"  // GLM-5.3-Flash's routed experts as codebook rows (after glm.cu)
 #include "kimi.cu"  // Kimi-K3's kernels (after glm.cu and moe.cu)
 #include "dsv4.cu"  // DeepSeek-V4's kernels (after glm.cu and moe.cu: they use their helpers)

@@ -3,7 +3,7 @@
 //! The weights load exactly: an FP8 matrix as the bf16 it is (packed at the level asked, lossless by default), the FP4 experts as five-bit runs (their codes and power-of-two scales: the same values),
 //! the rest as the checkpoint holds it. The arithmetic is kernels/dsv4.cu's, the streams' the streams kind's (kernels/residual.cu); src/dsv4_ref.rs is the CPU reference it is checked against (`dsv4check`).
 
-use super::{Dyn, ModelDesc, MoeOp, NormW, Op, Opts, ResidentMoe, Ring, Slot, Stage, V4Dims};
+use super::{Dyn, IdxKeys, IdxPick, IdxScore, ModelDesc, MoeOp, NormW, Op, Opts, ResidentMoe, Ring, Slot, Stage, V4Dims};
 use crate::deepseek_v4::{fp4_runs, fp8_bf16, ConfigV4};
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result};
@@ -27,8 +27,6 @@ pub(crate) struct KernV4 {
     pub(crate) comp_pool: crate::kt::v4_comp_pool,
     pub(crate) comp_out: crate::kt::v4_comp_out,
     pub(crate) idx_q: crate::kt::v4_idx_q,
-    pub(crate) idx_score: crate::kt::v4_idx_score,
-    pub(crate) topk: crate::kt::v4_topk,
     pub(crate) attn_scores: crate::kt::v4_attn_scores,
     pub(crate) attn_soft: crate::kt::v4_attn_soft,
     pub(crate) attn_out: crate::kt::v4_attn_out,
@@ -46,8 +44,6 @@ impl KernV4 {
             comp_pool: dev.typed()?,
             comp_out: dev.typed()?,
             idx_q: dev.typed()?,
-            idx_score: dev.typed()?,
-            topk: dev.typed()?,
             attn_scores: dev.typed()?,
             attn_soft: dev.typed()?,
             attn_out: dev.typed()?,
@@ -69,7 +65,7 @@ pub(crate) struct V4Run {
     /// the grouped low rank's pairs' groups (int64 [chunk, groups]: pair t groups + g is group g) and their plan
     pub gids: Buf,
     pub gplan: Buf,
-    /// a part of a prompt's chunk of more than the grouped product's 64 rows (`Op::V4OLoraStack`): its rows of Att and of Mid, group by group, one after
+    /// a part of a prompt's chunk of more than the grouped product's 64 rows (`Op::OGroupLoraStack`): its rows of Att and of Mid, group by group, one after
     /// another (Att and Mid hold a group's rows of the whole chunk, then the next group's)
     pub ox: Buf,
     pub oy: Buf,
@@ -105,6 +101,12 @@ impl V4Run {
             ra,
         })
     }
+}
+
+/// A ratio-4 layer's indexer's pick: every indexer's (`Op::IdxPick`), its entries the indexer's compressor's (state `cache`), its scores the release's bf16 arithmetic, the
+/// entries kept as they are.
+fn pick(cache: usize, ratio: usize, heads: usize, top_k: usize, wscale: f32) -> Op {
+    Op::IdxPick(IdxPick { heads, ratio, top_k, expand: false, tail: false, wscale, score: IdxScore::Release, keys: IdxKeys::State(cache) })
 }
 
 /// A product's matrix: in the matrices' list, or the FP8 matrices'.
@@ -291,7 +293,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
         };
         let wo_b = fp8_mat(&mut mats, &format!("{a}.wo_b"), None, 1)?;
         let ring = rings.len();
-        rings.push(Ring { d: hd, nk: 1, window: c.window });
+        rings.push(Ring::keys(hd, 1, c.window));
         let mut ops = vec![
             Op::StreamsPre { f: fa, base: ba, scale: sa, norm: attn_norm, round: Rounding::Once },
             Op::Fp8 { x: Slot::H, y: Slot::Hq, block: 128 },
@@ -299,9 +301,9 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
             Op::RmsNorm { x: Slot::Proj, w: q_norm, y: Slot::Qr, weight: NormW::Plain, eps: c.eps },
             Op::Fp8 { x: Slot::Qr, y: Slot::Proj, block: 128 },
             wq_b.op(Slot::Proj, Slot::Qo, "attention: q up"),
-            Op::V4Q { rope, heads: nh },
+            Op::CompQ { rope, heads: nh },
             wkv.op(Slot::Hq, Slot::Kv, "attention: kv"),
-            Op::V4Kv { norm: kv_norm, rope, ring },
+            Op::CompKv { norm: kv_norm, rope, ring },
         ];
         // a compressor: its two products stacked (kv's rows, then the gate's), its pooling's offsets, its norm; its cache and state
         let comp = |sm: &mut Vec<Buf>, states: &mut Vec<usize>, q: &str, dd: usize, indexer: bool| -> Result<Op> {
@@ -315,7 +317,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
             states.push((ctx / ratio + 2) * dd * 2);
             states.push(coff * ratio * coff * dd * 4);
             states.push(coff * ratio * coff * dd * 4);
-            Ok(Op::V4Comp { w, ape, norm, d: dd, ratio, rope, cache, state: cache + 1, indexer })
+            Ok(Op::Compress { w, ape, norm, d: dd, ratio, rope, cache, state: cache + 1, indexer })
         };
         let mut cache = None;
         if ratio == 4 {
@@ -324,29 +326,29 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
             let iw = mats.len();
             mats.push(pack(&wp, c.idx_heads, d, &format!("{a}.indexer.weights_proj"))?);
             let ic = comp(&mut sm, &mut states, &format!("{a}.indexer.compressor"), c.idx_dim, true)?;
-            let Op::V4Comp { cache: icache, .. } = ic else { unreachable!() };
+            let Op::Compress { cache: icache, .. } = ic else { unreachable!() };
             let wscale = (c.idx_dim as f32).powf(-0.5) * (c.idx_heads as f32).powf(-0.5);
             ops.extend([
                 iq.op(Slot::Proj, Slot::Iq, "indexer: q"),
-                Op::V4IdxQ { rope, heads: c.idx_heads },
+                Op::IdxQ { rope, heads: c.idx_heads },
                 ic,
                 Op::Linear { w: iw, x: Slot::H, y: Slot::Iw, name: "indexer: weights" },
-                Op::V4IdxPick { cache: icache, ratio, heads: c.idx_heads, topk: c.idx_topk, wscale },
+                pick(icache, ratio, c.idx_heads, c.idx_topk, wscale),
             ]);
         }
         if ratio > 0 {
             let mc = comp(&mut sm, &mut states, &format!("{a}.compressor"), hd, false)?;
-            if let Op::V4Comp { cache: k, .. } = mc {
+            if let Op::Compress { cache: k, .. } = mc {
                 cache = Some(k);
             }
             ops.push(mc);
         }
         ops.extend([
-            Op::V4Attn { ring, cache, ratio, sink, rope, heads: nh, hpg },
+            Op::CompAttn { ring, cache, ratio, sink, rope, heads: nh, hpg },
             if stack.is_some() {
-                Op::V4OLoraStack { w: wo_a0, groups: c.o_groups, ol, y: Slot::M, fp8: true }
+                Op::OGroupLoraStack { w: wo_a0, groups: c.o_groups, ol, y: Slot::M, fp8: true }
             } else {
-                Op::V4OLora { w: wo_a0, in_f8: wo_a_f8, groups: c.o_groups, hpg, ol, y: Slot::M, fp8: true }
+                Op::OGroupLora { w: wo_a0, in_f8: wo_a_f8, groups: c.o_groups, hpg, ol, y: Slot::M, fp8: true }
             },
             wo_b.op(Slot::M, Slot::O, "attention: o"),
             Op::StreamsPost { round: Rounding::Once },
@@ -798,7 +800,7 @@ pub(crate) fn v4_desc(s: &V4Shape, st: &Stage, vo: &V4Opts) -> Result<ModelDesc>
         };
         let wo_b = lin(&mut n, d, og * ol, 0);
         let ring = rings.len();
-        rings.push(Ring { d: hd, nk: 1, window: s.window });
+        rings.push(Ring::keys(hd, 1, s.window));
         let mut ops = vec![
             Op::StreamsPre { f: fa, base: ba, scale: sa, norm: attn_norm, round: s.round },
             Op::Fp8 { x: Slot::H, y: Slot::Hq, block: 128 },
@@ -806,9 +808,9 @@ pub(crate) fn v4_desc(s: &V4Shape, st: &Stage, vo: &V4Opts) -> Result<ModelDesc>
             Op::RmsNorm { x: Slot::Proj, w: q_norm, y: Slot::Qr, weight: NormW::Plain, eps: s.eps },
             Op::Fp8 { x: Slot::Qr, y: Slot::Proj, block: 128 },
             wq_b.op(Slot::Proj, Slot::Qo, "attention: q up"),
-            Op::V4Q { rope, heads: nh },
+            Op::CompQ { rope, heads: nh },
             wkv.op(Slot::Hq, Slot::Kv, "attention: kv"),
-            Op::V4Kv { norm: kv_norm, rope, ring },
+            Op::CompKv { norm: kv_norm, rope, ring },
         ];
         let comp = |n: &mut Count, states: &mut Vec<usize>, dd: usize, indexer: bool| -> Op {
             let coff = 1 + (ratio == 4) as usize;
@@ -817,7 +819,7 @@ pub(crate) fn v4_desc(s: &V4Shape, st: &Stage, vo: &V4Opts) -> Result<ModelDesc>
             states.push((vo.ctx / ratio + 2) * dd * 2);
             states.push(coff * ratio * coff * dd * 4);
             states.push(coff * ratio * coff * dd * 4);
-            Op::V4Comp { w, ape: w + 1, norm: w + 2, d: dd, ratio, rope, cache, state: cache + 1, indexer }
+            Op::Compress { w, ape: w + 1, norm: w + 2, d: dd, ratio, rope, cache, state: cache + 1, indexer }
         };
         if ratio == 4 {
             let iq = lin(&mut n, ih * idim, s.q_lora, 0);
@@ -828,10 +830,10 @@ pub(crate) fn v4_desc(s: &V4Shape, st: &Stage, vo: &V4Opts) -> Result<ModelDesc>
             let wscale = (idim as f32).powf(-0.5) * (ih as f32).powf(-0.5);
             ops.extend([
                 iq.op(Slot::Proj, Slot::Iq, "indexer: q"),
-                Op::V4IdxQ { rope, heads: ih },
+                Op::IdxQ { rope, heads: ih },
                 ic,
                 Op::Linear { w: iw, x: Slot::H, y: Slot::Iw, name: "indexer: weights" },
-                Op::V4IdxPick { cache: icache, ratio, heads: ih, topk: itop, wscale },
+                pick(icache, ratio, ih, itop, wscale),
             ]);
         }
         let mut cache = None;
@@ -840,11 +842,11 @@ pub(crate) fn v4_desc(s: &V4Shape, st: &Stage, vo: &V4Opts) -> Result<ModelDesc>
             ops.push(comp(&mut n, &mut states, hd, false));
         }
         ops.extend([
-            Op::V4Attn { ring, cache, ratio, sink, rope, heads: nh, hpg },
+            Op::CompAttn { ring, cache, ratio, sink, rope, heads: nh, hpg },
             if stack {
-                Op::V4OLoraStack { w: wo_a0, groups: og, ol, y: Slot::M, fp8: true }
+                Op::OGroupLoraStack { w: wo_a0, groups: og, ol, y: Slot::M, fp8: true }
             } else {
-                Op::V4OLora { w: wo_a0, in_f8: wo_a_f8, groups: og, hpg, ol, y: Slot::M, fp8: true }
+                Op::OGroupLora { w: wo_a0, in_f8: wo_a_f8, groups: og, hpg, ol, y: Slot::M, fp8: true }
             },
             wo_b.op(Slot::M, Slot::O, "attention: o"),
             Op::StreamsPost { round: s.round },

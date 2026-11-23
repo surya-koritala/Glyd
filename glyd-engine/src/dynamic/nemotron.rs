@@ -166,7 +166,7 @@ pub fn describe(c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<Mode
             }
             NhKind::Attention => {
                 let ring = rings.len();
-                rings.push(Ring { d: 128, nk: c.kv_heads, window: 0 });
+                rings.push(Ring::kv(128, c.kv_heads, 0));
                 ops.extend([
                     Op::Linear { w: b, x: Slot::H, y: Slot::Mix, name: "attention: qkv product" },
                     Op::Attn(attention(c.heads, c.kv_heads, ring)),

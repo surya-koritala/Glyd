@@ -383,8 +383,6 @@ pub struct Shape {
     pub window: usize,
     /// Recurrent state per sequence (linear attention, Mamba), bytes.
     pub state: f64,
-    /// Latent attention (MLA: `kv_lora_rank`): its cache is one sequence's, never copied, so no states are kept at a prompt's end or at boundaries.
-    pub latent_kv: bool,
     /// Bits a weight of the release has (16 for bf16; 8 for FP8; about 4.25 for FP4 releases): every part's but the routed experts'.
     pub release_bits: f64,
     /// Bits a routed expert's weight has as released, where it differs from the rest (Kimi-K3's MXFP4, DeepSeek-V4's FP4 experts:
@@ -484,13 +482,15 @@ impl Shape {
         // attention
         let (q_lora, kv_lora) = (f(s.q_lora_rank).unwrap_or(0.0), f(s.kv_lora_rank).unwrap_or(0.0));
         let (nope, rope, v_hd) = (f(s.qk_nope_head_dim).unwrap_or(128.0), f(s.qk_rope_head_dim).unwrap_or(64.0), f(s.v_head_dim).unwrap_or(128.0));
+        // (a latent attention's indexer keeps its normed key and its gate score a token beside the latent: src/dynamic/mla.rs)
+        let indexer = if kv_lora > 0.0 { f(s.index_head_dim).unwrap_or(0.0) } else { 0.0 };
         let gate = if s.attn_output_gate.unwrap_or(false) { 2.0 } else { 1.0 };
         let hq = heads as f64;
         let (g_kv, g_hd) = (f(s.num_global_key_value_heads).unwrap_or(kv_heads), f(s.global_head_dim).unwrap_or(hd));
         let attention = |global: bool| -> (f64, f64) {
             if kv_lora > 0.0 {
                 let q = if q_lora > 0.0 { hf * q_lora + q_lora * hq * (nope + rope) } else { hf * hq * (nope + rope) };
-                (q + hf * (kv_lora + rope) + kv_lora * hq * (nope + v_hd) + hq * v_hd * hf, (kv_lora + rope) * 2.0)
+                (q + hf * (kv_lora + rope) + kv_lora * hq * (nope + v_hd) + hq * v_hd * hf, (kv_lora + rope + 2.0 * indexer) * 2.0)
             } else {
                 let (kv, d) = if global { (g_kv, g_hd) } else { (kv_heads, hd) };
                 (hf * hq * d * gate + 2.0 * hf * kv * d + hq * d * hf, 2.0 * kv * d * 2.0)
@@ -503,7 +503,6 @@ impl Shape {
         let arch = if c.arch.is_empty() { model_type.clone() } else { c.arch.clone() };
         let mut sh = Shape { arch, layers: kinds.len(), hidden: h, experts, topk, ..Default::default() };
         sh.window = s.sliding_window.unwrap_or(0);
-        sh.latent_kv = kv_lora > 0.0;
         for (i, kind) in kinds.iter().enumerate() {
             match kind.as_str() {
                 "linear_attention" => {
@@ -945,9 +944,9 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
     let fam = ask.family;
     let default_ctx = fam.and_then(|f| f.default_ctx).unwrap_or(TARGET_CTX).min(sh.max_ctx);
     let max_ctx = ask.context.unwrap_or(default_ctx).min(fam.and_then(|f| f.max_ctx).unwrap_or(usize::MAX));
-    // (a model with recurrent states and no latent cache keeps a second copy of each sequence's states at its prompt's end, and the pool of them kept at block
-    // boundaries, src/dynamic/snaps.rs: as the loader makes them)
-    let marked = if sh.state > 0.0 && !sh.latent_kv { sh.state } else { 0.0 };
+    // (a model with recurrent states keeps a second copy of each sequence's states at its prompt's end, and the pool of them kept at block boundaries,
+    // src/dynamic/snaps.rs: as the loader makes them; a latent cache is paged as any keys are, so a latent attention's model keeps them too)
+    let marked = if sh.state > 0.0 { sh.state } else { 0.0 };
     let pool = if marked > 0.0 { crate::dynamic::snaps::count(sh.state as usize) as f64 * sh.state } else { 0.0 };
     let kv_at = |ctx: usize| (sh.kv_full * ctx as f64 + sh.kv_sliding * ctx.min(sh.window.max(1)) as f64 + sh.state + marked) * users + pool;
     let same: Vec<usize> = (0..m.devices.len()).filter(|&i| m.devices[i].vendor == d0.vendor).collect();

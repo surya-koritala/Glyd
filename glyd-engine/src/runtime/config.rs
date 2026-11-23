@@ -54,6 +54,8 @@ pub struct Shared {
     pub qk_nope_head_dim: Option<usize>,
     pub qk_rope_head_dim: Option<usize>,
     pub v_head_dim: Option<usize>,
+    /// a sparse attention's indexer (GLM-5.3's, DeepSeek-V4's): its heads' width
+    pub index_head_dim: Option<usize>,
     // linear attention and Mamba-2
     pub linear_num_key_heads: Option<usize>,
     pub linear_key_head_dim: Option<usize>,

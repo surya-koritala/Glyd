@@ -4,7 +4,7 @@
     "tensors": 666,
     "kinds": "24fdf0d566740d1c",
     "weights": "3c9abac351475bc3",
-    "plan": "8eb979fcfb43c027",
+    "plan": "c930fbccb72eaed5",
     "family": "Gemma4"
   },
   "glm5_next_config.json": {
@@ -12,7 +12,7 @@
     "tensors": 74001,
     "kinds": "d22f9b20c676bb3c",
     "weights": "d959d3c88c30f995",
-    "plan": "1ad2ee41717214ea",
+    "plan": "affcfe6d7d263de3",
     "family": "Glm"
   },
   "glm5_next_tiny_config.json": {
@@ -20,7 +20,7 @@
     "tensors": 287,
     "kinds": "0d1648187cbecbdb",
     "weights": "d99404eef9c9fc4c",
-    "plan": "ff058ad5947edc4e",
+    "plan": "94bb4d28491156ee",
     "family": "Glm"
   },
   "glm5_next_toy_config.json": {
@@ -28,7 +28,7 @@
     "tensors": 787,
     "kinds": "4183faaeb2304c38",
     "weights": "2851afdc5a846cfc",
-    "plan": "d107db39df5af55a",
+    "plan": "59e33001b2f26bed",
     "family": "Glm"
   },
   "nemotron_h_config.json": {
@@ -36,7 +36,7 @@
     "tensors": 41643,
     "kinds": "b4abbc3efab21433",
     "weights": "abf622ef7bf7a298",
-    "plan": "84a9fa915baa8b8a",
+    "plan": "3803a8dc59f0de5d",
     "family": "NemotronH"
   },
   "nemotron_h_moetoy_config.json": {
@@ -44,7 +44,7 @@
     "tensors": 143,
     "kinds": "96bd128cb20e3397",
     "weights": "7ff4e55160a62418",
-    "plan": "38244c949bba47d5",
+    "plan": "c56c8ba91bc5385d",
     "family": "NemotronH"
   },
   "qwen35_configs.json:Qwen/Qwen3.5-0.8B": {
@@ -52,7 +52,7 @@
     "tensors": 320,
     "kinds": "bda233415c893067",
     "weights": "c3729361f78b75ae",
-    "plan": "4fa193b092b4f0b2",
+    "plan": "d26b79ba8d893e46",
     "family": "Qwen35"
   },
   "qwen35_configs.json:Qwen/Qwen3.5-2B": {
@@ -60,7 +60,7 @@
     "tensors": 320,
     "kinds": "ee56d6b6b0ad96a5",
     "weights": "f1491fd9db13c7c3",
-    "plan": "3387384cfdc5aae7",
+    "plan": "47859bd4933ce7cc",
     "family": "Qwen35"
   },
   "qwen35_configs.json:Qwen/Qwen3.5-4B": {
@@ -68,7 +68,7 @@
     "tensors": 426,
     "kinds": "691682a083f26cce",
     "weights": "10f702e20466e2f2",
-    "plan": "8417e98a462d8ad7",
+    "plan": "93b54d1bb3143a15",
     "family": "Qwen35"
   },
   "qwen35_configs.json:Qwen/Qwen3.5-9B": {
@@ -76,7 +76,7 @@
     "tensors": 427,
     "kinds": "6ba2bbd047c5f08a",
     "weights": "76ccd88e7379918a",
-    "plan": "f5f156a8f6975142",
+    "plan": "99eb4f41eecd52de",
     "family": "Qwen35"
   },
   "qwen35_configs.json:Qwen/Qwen3.5-27B": {
@@ -84,7 +84,7 @@
     "tensors": 851,
     "kinds": "66fbe26e00878140",
     "weights": "8220db925f51857e",
-    "plan": "add6d8c03918c859",
+    "plan": "f7418bc137c3d044",
     "family": "Qwen35"
   },
   "qwen35_configs.json:Qwen/Qwen3.6-27B": {
@@ -92,7 +92,7 @@
     "tensors": 851,
     "kinds": "66fbe26e00878140",
     "weights": "8220db925f51857e",
-    "plan": "add6d8c03918c859",
+    "plan": "f7418bc137c3d044",
     "family": "Qwen35"
   },
   "qwen35_configs.json:Qwen/Qwen3.5-35B-A3B": {
@@ -100,7 +100,7 @@
     "tensors": 31333,
     "kinds": "c55d2d920f378acb",
     "weights": "0457a868c23e5578",
-    "plan": "aae210954c60575b",
+    "plan": "b9842317da83c841",
     "family": "refused: m is a Qwen3_5MoeForConditionalGeneration model, and this engine runs Qwen3 models so far"
   },
   "qwen35_configs.json:Qwen/Qwen3.8-27B": {
@@ -108,7 +108,7 @@
     "tensors": 851,
     "kinds": "66fbe26e00878140",
     "weights": "8220db925f51857e",
-    "plan": "add6d8c03918c859",
+    "plan": "f7418bc137c3d044",
     "family": "Qwen35"
   },
   "qwen35_configs.json:Qwen/Qwen3.8-2.4T-A95B": {
@@ -116,12 +116,12 @@
     "tensors": 142718,
     "kinds": "0bf40d99f98cab0a",
     "weights": "e35c70dd9f63a246",
-    "plan": "253d70a375de954c",
+    "plan": "e3e006b041b50b55",
     "family": "refused: m is a Qwen3_5MoeForCausalLM model, and this engine runs Qwen3 models so far"
   },
   "qwen4x_config.json": {
     "refused": "model_type qwen4_exp_text has no description builder yet",
-    "plan": "b7f51084d022ff61",
+    "plan": "b62478e70129b924",
     "family": "FlashNext"
   },
   "headers/DeepSeek-V4-Flash-0731.json": {
@@ -129,7 +129,7 @@
     "tensors": 67612,
     "kinds": "86cc30c4a61e8a11",
     "weights": "7b10aca12255bca2",
-    "plan": "fb7e3f5a7d3b0db2",
+    "plan": "501adcefbd0f834c",
     "family": "DeepSeekV4"
   },
   "headers/Kimi-K3.json": {
@@ -137,7 +137,7 @@
     "tensors": 497052,
     "kinds": "6b7fa0b40641a878",
     "weights": "ee4903fdc0c4919e",
-    "plan": "254e9e0601d40b00",
+    "plan": "02a898bbd0cdebb2",
     "family": "Kimi"
   },
   "headers/Qwen3.8-27B.json": {
@@ -145,7 +145,7 @@
     "tensors": 851,
     "kinds": "66fbe26e00878140",
     "weights": "8220db925f51857e",
-    "plan": "add6d8c03918c859",
+    "plan": "f7418bc137c3d044",
     "family": "Qwen35"
   },
   "headers/gemma-4-12B-it.json": {
@@ -153,7 +153,7 @@
     "tensors": 666,
     "kinds": "24fdf0d566740d1c",
     "weights": "3c9abac351475bc3",
-    "plan": "8eb979fcfb43c027",
+    "plan": "c930fbccb72eaed5",
     "family": "Gemma4"
   },
   "runtime/dsv4_model.json": {
@@ -161,7 +161,7 @@
     "tensors": 155,
     "kinds": "0db35d531e310465",
     "weights": "7ac20f6ff49754ff",
-    "plan": "2ab5809ffca270ee",
+    "plan": "0eebf69801bfd149",
     "family": "DeepSeekV4"
   },
   "runtime/gemma4_model.json": {
@@ -169,7 +169,7 @@
     "tensors": 29,
     "kinds": "0f1a8dc5abf3d9d8",
     "weights": "fefa98c6cfe451b2",
-    "plan": "95aa291a172f0cf3",
+    "plan": "4862b905114f1f81",
     "family": "Gemma4"
   },
   "runtime/glm53_model.json": {
@@ -177,7 +177,7 @@
     "tensors": 106,
     "kinds": "8900d3cff626270e",
     "weights": "80edc8fdd35186b0",
-    "plan": "7f9b030bd81cbfd6",
+    "plan": "86e0271d8683bd94",
     "family": "refused: m is a GlmMoeDsaForCausalLM model, and this engine runs Qwen3 models so far"
   },
   "runtime/glm53flash_model.json": {
@@ -185,7 +185,7 @@
     "tensors": 184,
     "kinds": "8e50c90554f0b7be",
     "weights": "6e99b4d27f83c141",
-    "plan": "618d5b0356e046ec",
+    "plan": "c070e5fde167e9d5",
     "family": "Glm"
   },
   "runtime/llama_model.json": {
@@ -193,7 +193,7 @@
     "tensors": 20,
     "kinds": "d5706d8ea5b0856a",
     "weights": "b3f6c6919e016cc3",
-    "plan": "bbbfbb5c524d2ea1",
+    "plan": "c8e44b0ffa87e03e",
     "family": "refused: m: its config.json does not say what kind of model it is"
   },
   "runtime/qwen38_model.json": {
@@ -201,7 +201,7 @@
     "tensors": 56,
     "kinds": "9032ae69dd36362f",
     "weights": "39a8b54ac7630049",
-    "plan": "fae6dada55f5ccb8",
+    "plan": "4ab2a47267827c95",
     "family": "refused: m: its config.json does not say what kind of model it is"
   },
   "runtime/qwen38_moe_model.json": {
@@ -209,7 +209,7 @@
     "tensors": 160,
     "kinds": "aa8ee1ed9b15d5db",
     "weights": "162ec555a54f5720",
-    "plan": "3ff32dc269dd3798",
+    "plan": "27c8b29ad87fb6e0",
     "family": "refused: m: its config.json does not say what kind of model it is"
   }
 }

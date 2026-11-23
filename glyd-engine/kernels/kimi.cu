@@ -1,65 +1,6 @@
-// Kimi-K3's own kernels (included by engine.cu after glm.cu and moe.cu; src/dynamic/kimi.rs describes the model): the latent attention's sigmoid output gate and norms, the expert cache's plan on the GPU.
-// bf16 in memory, fp32 inside; the rounding points are research/kimi-k3.md's (src/kimi_ref.rs: the CPU reference). The depth mix that stands in for the residual stream is the residual kind's (residual.cu),
-// the delta attention glm.cu's, the latent attention's absorbed query and attention glm.cu's with the key's shared part, the experts' situ moe.cu's moe_act.
-
-// o [n, W] = o times sigmoid(g) (g [n, gs] row stride gs), the sigmoid rounded to bf16, the product once: the latent attention's output gate. A thread a value.
-extern "C" __global__ void kimi_gate(bf16* o, const bf16* g, int gs, int W, int n) {
-    const size_t e = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (e >= (size_t)n * W) return;
-    const size_t r = e / W, c = e % W;
-    const float s = b2f(f2b(1.f / (1.f + expf(-b2f(g[r * gs + c])))));
-    o[e] = f2b(b2f(o[e]) * s);
-}
-
-// dst [n, w] (rows ds apart) = n rows of w values of src (rows ss apart), a value a thread: a prompt's part of a fused product's rows copied out
-// (Op::KimiParts; one token's are read in place).
-extern "C" __global__ void kimi_rows(const bf16* src, long long ss, bf16* dst, long long ds, int w, int n) {
-    const long long e = (long long)blockIdx.x * blockDim.x + threadIdx.x;
-    if (e >= (long long)n * w) return;
-    const long long r = e / w, c = e % w;
-    dst[r * ds + c] = src[r * ss + c];
-}
-
-// cnt [n] = pos[i] + 1: a dense attention's token counts (every position up to the row's own; glm_mla_attn without a selection).
-extern "C" __global__ void kimi_dense_cnt(const int* pos, int* cnt, int n) {
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) cnt[i] = pos[i] + 1;
-}
-
-// y row i (rows ys apart) = w * bf16(x row i (rows xs apart) * rsqrt(mean(x^2) + eps)): KimiRMSNorm, the normed value rounded, times the weight, rounded again; any width. A block a row, 512 threads,
-// thread t's columns t, t + 512, ... in that order; for K up to 512 KR_COLS a thread's columns are read into registers once (a column a round had made a decode step's norm 8-15 us on one SM).
-#define KR_COLS 16
-extern "C" __global__ void __launch_bounds__(512) kimi_rms2(const bf16* x, int xs, const bf16* w, bf16* y, int ys, int K, float eps) {
-    const bf16* xr = x + (size_t)blockIdx.x * xs;
-    bf16* yr = y + (size_t)blockIdx.x * ys;
-    const int tid = threadIdx.x;
-    if (blockDim.x == 512 && K <= 512 * KR_COLS) {
-        float v[KR_COLS];
-#pragma unroll
-        for (int k = 0; k < KR_COLS; k++) {
-            const int d = tid + 512 * k;
-            v[k] = d < K ? b2f(xr[d]) : 0.f;
-        }
-        float ss = 0.f;
-#pragma unroll
-        for (int k = 0; k < KR_COLS; k++)
-            if (tid + 512 * k < K) ss = fmaf(v[k], v[k], ss);
-        const float r = rsqrtf(block_sum(ss) / K + eps);
-#pragma unroll
-        for (int k = 0; k < KR_COLS; k++) {
-            const int d = tid + 512 * k;
-            if (d < K) yr[d] = f2b(b2f(w[d]) * b2f(f2b(v[k] * r)));
-        }
-        return;
-    }
-    float ss = 0.f;
-    for (int d = tid; d < K; d += blockDim.x) {
-        const float v = b2f(xr[d]);
-        ss = fmaf(v, v, ss);
-    }
-    const float r = rsqrtf(block_sum(ss) / K + eps);
-    for (int d = tid; d < K; d += blockDim.x) yr[d] = f2b(b2f(w[d]) * b2f(f2b(b2f(xr[d]) * r)));
-}
+// Kimi-K3's own kernels (included by engine.cu after glm.cu and moe.cu; src/dynamic/kimi.rs describes the model): the expert cache's plan on the GPU. bf16 in memory, fp32 inside; the
+// rounding points are research/kimi-k3.md's (src/kimi_ref.rs: the CPU reference). The depth mix that stands in for the residual stream is the residual kind's (residual.cu), the delta
+// attention glm.cu's, the latent attention and KimiRMSNorm (rms2_rows512) mla.cu's, the experts' situ moe.cu's moe_act.
 
 // The expert cache's plan on the GPU (src/dynamic/tp_cache.rs's device path): a decode step's choices looked up in this GPU's table of places, each miss
 // given the place a clock hand comes to first that no choice of this step uses and that was not used since the hand last passed it, the pairs' places (way)

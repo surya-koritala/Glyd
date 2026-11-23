@@ -1863,12 +1863,13 @@ fn sizes_done(case: &str, fails: usize) -> Result<()> {
 /// conversation's next turn does (`ModelStep::resume` and `mark`, src/dynamic/rows.rs), on the case's random model, or the model in MODEL (a real one). Every comparison is of logits, bit for bit, against a second slot that ran the same tokens
 /// in the same passes and was never resumed:
 ///   - the whole of a sequence (a prompt, then tokens a step at a time) gone on with a further chunk: every family;
-///   - the sequence asked to go on from inside the tokens it wrote a step at a time: from there where the model has no recurrent state and no latent cache; from its prompt's end,
-///     which was marked, where it has recurrent states (their copy put back); refused, the slot left empty, where it has a latent cache;
+///   - the sequence asked to go on from inside the tokens it wrote a step at a time: from there where the model has no recurrent state; from its prompt's end, which was
+///     marked, where it has recurrent states (their copy put back; a latent cache is paged as any keys are); refused, the slot left empty, where its states are not kept at a
+///     mark (DeepSeek-V4's compressed entries);
 ///   - a long sequence (9 chunks and 24 steps) cut back by 10 tokens and to its third chunk's end, or gone on from a mark at its third chunk's end: kept, or refused where the
 ///     sliding layers' blocks behind the place were given back, and where kept the bits too;
-///   - a start shared with an empty slot (`share`): the full blocks of what the two have in common, or a recurrent model's mark with its states copied, or nothing with a
-///     latent cache; the sharer and the sequence it shared from both go on as sequences that shared nothing do, and the sharer too after the other has ended;
+///   - a start shared with an empty slot (`share`): the full blocks of what the two have in common, or a recurrent model's mark with its states copied, or nothing where
+///     the states are not kept at a mark; the sharer and the sequence it shared from both go on as sequences that shared nothing do, and the sharer too after the other has ended;
 ///   - through the scheduler: a conversation's second turn (the first's prompt and reply and more) goes on from all the first left, another's second turn that leaves the reply
 ///     out goes on from the prompt's end where the model can, and a conversation that begins as another does shares its start; the prompt tokens found are counted, and each
 ///     reply is, token for token, what the same passes give by hand.
@@ -1985,7 +1986,7 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         fill(s, 1, &p, chunk, false)?;
         steps(s, 1, p.len(), &g)?;
         let want = fill_from(s, 1, n, &tail, chunk, true)?.expect("the logits");
-        let what = format!("a sequence of {n} tokens asked to go on within {cut}: refused (a latent cache is what it is after the last token) and as it was ({whole} held); from its end, {} more", tail.len());
+        let what = format!("a sequence of {n} tokens asked to go on within {cut}: refused (its states are what they are after the last token, and not kept at a mark) and as it was ({whole} held); from its end, {} more", tail.len());
         fails += same(&what, &want, &got) | (whole != n) as usize;
     }
     s.release(&[0, 1])?;
@@ -2052,7 +2053,7 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         } else if got == 0 {
             // nothing shared: the slot it was asked for holds nothing still, and the sequence asked is as it was
             fails +=
-                empty(s, 1, 2, "a start is not shared (a latent cache is one sequence's); the slot it was asked for is empty still: a prompt in it", &alt)?;
+                empty(s, 1, 2, "a start is not shared (its states are not kept at a mark); the slot it was asked for is empty still: a prompt in it", &alt)?;
             s.release(&[1, 2])?;
             let source = fill_from(s, 0, n, &tail, chunk, true)?.expect("the logits");
             fill(s, 1, &p, chunk, false)?;
@@ -2315,7 +2316,7 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         if by_hand == rq { "is the same passes' by hand, token for token".to_string() } else { format!("{rq:?} against {by_hand:?} by hand") }
     );
     // the conversation that begins as another does: the start's full blocks shared where the model has no state; a recurrent model's states kept at the newest boundary
-    // within it (the other's mark is past what the two share); a latent cache is one sequence's: from its first token there. By hand: the other conversation as the
+    // within it (the other's mark is past what the two share); with no states kept (DeepSeek-V4): from its first token there. By hand: the other conversation as the
     // scheduler ran it, the start shared, the rest (a recurrent model: its own pieces from its first token, which give the states the other's kept); or the prompt whole.
     let should = if cuts {
         xs.len() / 16 * 16

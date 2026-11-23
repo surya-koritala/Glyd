@@ -470,6 +470,15 @@ Layers whose blocks have the same bytes share a pool; groups whose block bytes d
 the same tokens in every pool, so a sequence has one block table (vLLM's hybrid KV manager does the same with its KV cache groups). A
 model with only sliding and full layers (Gemma 4) holds per sequence window/16 blocks in the sliding group and context/16 in the full one.
 
+What is built for the latent kind (`Op::Mla`, `dynamic/mla.rs`): a latent attention layer's cache is a ring of keys alone (`Ring::values`
+false: no room in the value pool), kv_lora + rope values a token, and GLM-5.3's indexer a second one of [normed key | gate score] a token.
+A pool of `kpool` tokens is keyed when its last token is written, and its key is written over that token's key (only the pooling read it,
+in the same call), so a block that a name or another sequence holds is never written. Both rings sit in the full group's pools, so these
+models take the same page budget, swap (R4d) and prefix sharing (R4c, at the marks of their delta-attention states) as the dense kinds.
+The indexer's pick is one operation and kernel for GLM-5.3's pools and DeepSeek-V4's compressed entries (`IdxPick`, `idx_pick`).
+DeepSeek-V4's compressed entries are not paged yet: they stay a sequence's states of the whole context (a group of 16 entries a block,
+as the table above says, needs pools whose table entries cover ratio x 16 tokens).
+
 ### Compressed KV
 
 Glyd's lossless KV stores a 12-bit value per bf16 (per-model tables; values outside a layer's windows go to an escape pool, and a page
