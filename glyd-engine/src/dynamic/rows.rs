@@ -123,6 +123,11 @@ fn by_sequence(op: &Op) -> bool {
 }
 
 impl Paged {
+    /// Sequence `slot`'s blocks in group `g`, as the host holds them.
+    pub(super) fn group_table(&self, slot: usize, g: usize) -> &[u32] {
+        self.pages.table(slot, g)
+    }
+
     /// Sequence `slot`'s table in ring `ring`'s group as the GPU holds it (what the kernels read; the host's may have moved on since the last step).
     pub(super) fn gpu_table(&self, slot: usize, ring: usize) -> Result<Vec<u32>> {
         let b = &self.tabs[slot][self.group[ring]];
@@ -764,9 +769,7 @@ impl ModelStep for Dyn {
             }
         }
         let jobs: Vec<(usize, &[u32], bool)> = jobs.iter().map(|j| (j.pages[0] as usize, j.tokens, j.last)).collect();
-        let r = self.pass(&jobs)?;
-        self.kv12_check()?;
-        Ok(r)
+        self.pass(&jobs)
     }
     fn one_step(&self) -> bool {
         Self::one_step_asked() && self.batchable() && Self::batch_prefill()
@@ -783,14 +786,12 @@ impl ModelStep for Dyn {
         let p = StepProf::begin(self.dev.stream);
         let r = self.round_rows(rows, jobs);
         StepProf::end(p, self.dev.stream, rows.len(), jobs.iter().map(|j| j.tokens.len()).sum());
-        self.kv12_check()?;
         r
     }
     fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
         let p = StepProf::begin(self.dev.stream);
         let r = self.decode_rows(rows);
         StepProf::end(p, self.dev.stream, rows.len(), 0);
-        self.kv12_check()?;
         r
     }
     fn logits(&mut self, row: usize) -> Result<Vec<f32>> {
@@ -816,6 +817,10 @@ impl ModelStep for Dyn {
         let mut vals = vec![0f32; idx.len()];
         ob.read(0, &mut vals)?;
         Ok(toks.into_iter().zip(vals).collect())
+    }
+    fn lost(&mut self) -> crate::kv::Lost {
+        // (a status that cannot be read: every running sequence's step taken back)
+        self.kv12_lost().unwrap_or(crate::kv::Lost { overflow: true, ..Default::default() })
     }
     fn release(&mut self, pages: &[i32]) -> Result<()> {
         for &p in pages {

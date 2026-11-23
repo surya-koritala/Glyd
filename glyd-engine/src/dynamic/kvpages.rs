@@ -39,8 +39,8 @@ pub(super) struct Lossless {
     _escape: Buf,
     _raw: Vec<Buf>,
     pub status: Vec<Buf>,
-    pub lost: Vec<Buf>,
-    pub nlost: Vec<i64>,
+    /// Each group's void pages named so far (its status's void ring's head as last read).
+    pub seen: Vec<u32>,
     pub rows_k: Buf,
     pub rows_v: Buf,
     pub slots: Buf,
@@ -134,12 +134,17 @@ impl Lossless {
         if rings.iter().all(Option::is_none) {
             return err("no ring of this model has 12-bit tables it can use");
         }
-        let nchunks = (chunks.ceil() as i64).max(1024);
+        // (a development build's GLYD_KV12_POOL=CHUNKS,SLABS: pools that small, to make pages void on purpose: usercheck --kv12)
+        let squeeze: Option<(i64, i64)> = crate::tune!("GLYD_KV12_POOL").and_then(|v| {
+            let (c, s) = v.split_once(',')?;
+            Some((c.trim().parse().ok()?, s.trim().parse().ok()?))
+        });
+        let nchunks = squeeze.map_or((chunks.ceil() as i64).max(1024), |s| s.0.max(1));
         let escape = Buf::zeroed(lib.kv_escape_bytes(nchunks)? as usize)?;
         // (a raw slab for one page in a hundred of each head count, at least 64)
         let mut raws = Vec::new();
         for &(hp, pages) in &heads_raw {
-            let slabs = (pages / 100).max(64);
+            let slabs = squeeze.map_or((pages / 100).max(64), |s| s.1);
             raws.push((hp, slabs, Buf::zeroed(lib.kv_raw_bytes(slabs, hp)? as usize)?));
         }
         let mut bytes = escape.bytes + raws.iter().map(|r| r.2.bytes).sum::<usize>();
@@ -157,8 +162,12 @@ impl Lossless {
             let geom = KvGeom { heads: h, dim: dd, arena: ARENA, page_stride: page, escape: escape.ptr, nchunks, raw: raw.ptr, nslabs: *slabs };
             let pool = Buf::zeroed(n * page as usize)?;
             let (kbase, vbase) = (Buf::new(lt.k.len())?, Buf::new(lt.v.len())?);
-            kbase.write(0, &lt.k)?;
-            vbase.write(0, &lt.v)?;
+            // (a development build's GLYD_KV12_SHIFT=N: every base moved N, so that nearly every value is outside its window and a page goes raw:
+            // with GLYD_KV12_POOL's few slabs, pages void on purpose)
+            let shift: u8 = crate::tune!("GLYD_KV12_SHIFT").and_then(|v| v.parse().ok()).unwrap_or(0);
+            let moved = |b: &[u8]| b.iter().map(|&x| (x + shift) % 121).collect::<Vec<u8>>();
+            kbase.write(0, &moved(&lt.k))?;
+            vbase.write(0, &moved(&lt.v))?;
             bytes += pool.bytes + kbase.bytes + vbase.bytes;
             let g = nq / s.heads;
             let parts = g.div_ceil(MAX_G);
@@ -178,21 +187,15 @@ impl Lossless {
         let dmax = out.iter().flatten().map(|x| x.shape.channels).max().unwrap_or(128) as i64;
         let ws_bytes = lib.kv_decode_workspace((decode_rows * parts) as i64, heads, most_g as i64, dmax, splits)?;
         let ws = Buf::zeroed(ws_bytes)?;
-        let (mut status, mut lost, mut nlost) = (Vec::new(), Vec::new(), Vec::new());
-        for &b in blocks.iter().take(groups) {
-            status.push(Buf::zeroed(4 * (16 + 2 * RING as usize))?);
-            let nl = 2 * (b as i64 + 1);
-            lost.push(Buf::zeroed(4 * (nl as usize).div_ceil(32).max(1))?);
-            nlost.push(nl);
-        }
-        bytes += rows_k.bytes * 2 + slots.bytes + lens.bytes * 2 + stage_k.bytes * 2 + ws.bytes + status.iter().chain(&lost).map(|b| b.bytes).sum::<usize>();
+        // (no lost bitmap: the void ring names a page each time it is made void, which a block reused by another sequence may be again)
+        let status: Vec<Buf> = (0..groups).map(|_| Buf::zeroed(4 * (16 + 2 * RING as usize))).collect::<Result<_>>()?;
+        bytes += rows_k.bytes * 2 + slots.bytes + lens.bytes * 2 + stage_k.bytes * 2 + ws.bytes + status.iter().map(|b| b.bytes).sum::<usize>();
         Ok(Lossless {
             rings: out,
             _escape: escape,
             _raw: raws.into_iter().map(|r| r.2).collect(),
+            seen: vec![0; status.len()],
             status,
-            lost,
-            nlost,
             rows_k,
             rows_v,
             slots,
@@ -247,8 +250,8 @@ impl Dyn {
             lx.slots.ptr,
             n as i64,
             lx.status[g].ptr,
-            lx.lost[g].ptr,
-            lx.nlost[g],
+            0,
+            0,
             RING,
             s,
         )
@@ -320,6 +323,35 @@ impl Dyn {
 }
 
 impl Dyn {
+    /// The sequences whose blocks had a page made void since the last call (their pools had no room: what the page holds is not what was written), as
+    /// the scheduler's lost blocks of a slot step (`Lost::void` names slots); every sequence where the void ring overflowed. The scheduler takes their
+    /// step back and runs them again from their tokens, alone where they are hit again (src/sched.rs `take_back`).
+    pub(super) fn kv12_lost(&mut self) -> Result<crate::kv::Lost> {
+        let mut lost = crate::kv::Lost::default();
+        let (Some(lx), Some(pg)) = (self.lossless.as_mut(), self.paged.as_ref()) else { return Ok(lost) };
+        let mut blocks: Vec<(usize, u32)> = Vec::new();
+        for (g, b) in lx.status.iter().enumerate() {
+            let mut w = vec![0u32; 16 + RING as usize];
+            b.read(0, &mut w)?;
+            let (head, seen) = (w[12], lx.seen[g]);
+            let n = head.wrapping_sub(seen);
+            lost.overflow |= n as i64 > RING;
+            for j in 0..n.min(RING as u32) {
+                let e = w[16 + (seen.wrapping_add(j) % RING as u32) as usize];
+                if e != 0 {
+                    blocks.push((g, e - 1));
+                }
+            }
+            lx.seen[g] = head;
+        }
+        for slot in 0..self.seqs.len() {
+            if blocks.iter().any(|&(g, b)| pg.group_table(slot, g).contains(&b)) {
+                lost.void.push(slot as i32);
+            }
+        }
+        Ok(lost)
+    }
+
     /// After a step: an error where a page was made void (its pools had no room: what it holds is not what was written), so that no reply goes on
     /// from it. (Until admission reserves the room a sequence may need and pauses one where the spare pool runs out, R4d.)
     pub(super) fn kv12_check(&self) -> Result<()> {

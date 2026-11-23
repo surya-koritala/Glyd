@@ -2408,6 +2408,13 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         stop_ids: Vec::new(),
     };
     let reference: Vec<Vec<u32>> = prompts.iter().map(|p| e.reply(p, &reply, &mut |_| true).map(|r| r.0)).collect::<Result<_>>()?;
+    // (--kv12: the scheduler's cache in 12-bit lossless pages, of tables made on these prompts; with GLYD_KV12_POOL's small pools pages are made void, and the
+    // sequences that hold them are taken back and run again)
+    let kv12 = a.has("kv12");
+    if kv12 {
+        let t = crate::dynamic::kv12::calibrate(&mut e, &prompts, "usercheck")?;
+        e.set_kv12(Some(t));
+    }
     let batchable = e.batchable();
     let Some((k, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
     // (no finished sequence kept: the same prompts come again below, and each is to run from its first token, in passes with the others)
@@ -2477,6 +2484,14 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     if squeezed && resumed == 0 {
         println!("FAIL a page budget of GLYD_ENGINE_PAGES sent no sequence back");
         fails += 1;
+    }
+    if kv12 {
+        let back = s.stats.taken_back;
+        println!("12-bit pages: {back} steps taken back for void pages, {} sequences ended for want of room", s.stats.ended_lost);
+        if std::env::var_os("GLYD_KV12_POOL").is_some() && back == 0 {
+            println!("FAIL small pools (GLYD_KV12_POOL) made no step be taken back");
+            fails += 1;
+        }
     }
     if strict && same < prompts.len() {
         println!("FAIL replies at once differ from alone with prompts one a pass");
