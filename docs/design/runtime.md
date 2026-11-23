@@ -600,9 +600,10 @@ What is built (R12b, #327):
   expert once a pair, and the statistics count their bytes so.
 - **The copy-or-host choice by rows.** `Costs` prices a miss on the host as its expert's first row (`pair`: its bytes read, then a
   row's products) plus each further row (`row`: the products alone), both measured from the host's calls by a least-squares step,
-  so a miss of many rows goes to a copy where its rows' products outweigh one.
+  so a miss of many rows goes to a copy where its rows' products outweigh one. A call whose misses outnumber the places its hits leave is
+  copied whole in waves where the host's share would take longer (`waves_quicker`, `Auto` only).
 - **`storebench`** runs batched decode through the cache and writes each count of rows' statistics; `ceiling --stats` predicts the
-  step from them.
+  step from them (`docs/ceiling.md`: DeepSeek-V4 and Kimi-K3 at the release's widths, 18 GB each on the 4080 SUPER, at 1, 8 and 32 rows).
 - Not built: a device plan that sends misses to the host (Kimi-K3's `dc_plan` copies every miss), so a step with a host half is
   still not one graph.
 

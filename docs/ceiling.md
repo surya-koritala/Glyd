@@ -120,6 +120,37 @@ Kimi-K3 on 8x A100 after it: 699 exchanges a token (882 before). With the 4080's
 Those vary within a run and were logged per 64 steps, not per layer. The next step is per-layer statistics in the engine, so that one run gives the
 inputs and the next is predicted.
 
+## Experts in the expert cache, many rows: the per-layer statistics (2026-11-23, the PC)
+
+`storebench MODEL --places N --rows 1,8,32 --out FILE` runs batched decode through the expert cache and writes each count of rows' per-layer
+statistics (`LayerStats`: experts asked for and found, copies, the host's experts and pairs, the bytes read for the misses, the copy stream's,
+the host's and each call's own time). `ceiling MODEL --box 4080s --stats FILE [--calibrate MODEL:FILE2]` predicts each step from them:
+
+- the dense weights once a step, each expert a layer runs on the GPU once, the attention once a row;
+- a layer's misses: the longer of its own copies' measured time and the host's measured time, plus the call's own time on the host; the step is
+  at least the copy stream's whole time (promotions too: one queue);
+- a fixed time a MoE layer and a row, fitted to FILE2's lines' unexplained (without it, FILE's first line's, and no time a row).
+
+Random models at the release's widths, larger than the GPU's 16 GB (18 GB each), 8 steps after 3, prompts of 16 tokens; the bytes read for a step's
+misses equal the distinct missed experts' bytes in every line (+0.00%: each copied once, or read once by the host for all its rows):
+
+| model, places | mode | rows | measured | ceiling --stats (ours) | calibrated on |
+|---|---|---|---|---|---|
+| DeepSeek-V4, 16 layers of 64 experts, 32 places | copy | 1 / 8 / 32 | 30.75 / 146.06 / 280.21 ms | (fitted) / −2.3% / −7.8% | its 1-row line |
+| | auto | 1 / 8 / 32 | 19.58 / 95.69 / 286.45 ms | −5.5% / −13.4% / −16.3% | the copy run |
+| Kimi-K3, 4 layers (3 of 256 experts), 128 places | copy | 1 / 8 / 32 | 23.47 / 111.60 / 237.68 ms | (fitted) / −0.0% / −1.8% | its 1-row line |
+| | auto | 1 / 8 / 32 | 17.00 / 51.51 / 201.33 ms | −10.1% / +1.0% / +5.2% | the copy run |
+
+- **Auto against copy:** the host's half takes 36% (DeepSeek-V4) and 28% (Kimi-K3) off a step at 1 row and 34% and 54% at 8. At 32 rows a miss has
+  several rows; DeepSeek-V4's misses outnumber the places its hits leave, and a call is copied whole in waves where the host's share would take
+  longer (`waves_quicker`): 286 ms against copy's 280 (334 ms median before that choice).
+- **The time a row:** 45 µs a row and a MoE layer on DeepSeek-V4 and 49 on Kimi-K3, fitted. What it is (the launches of the operations a pass runs
+  sequence by sequence, no graph capturing a step that reads the router's choices on the host) is not measured.
+- **DeepSeek-V4 in auto mode is under-predicted at 8 and 32 rows.** Its per-layer statistics show why: after each layer's host pairs the host waits
+  about as long as that layer's copies took, so its copies do not run while the host computes, as the formula assumes and as Kimi-K3's do (its
+  wait after a layer is 2 ms beside 9-11 ms of copies). Why DeepSeek-V4's do not is not measured (a trace of the copy stream against the host's
+  pairs is the next measurement).
+
 ## What it says
 
 - **One GPU:** our code is near the ceiling: 85-94% of it on the 4080.
