@@ -430,13 +430,22 @@ impl Dyn {
     /// Ready to be a scheduler's step for up to `users` sequences: the head's room for a row each, and as many more sequences as the GPU's free memory holds (the first is this one's). None where this
     /// engine runs one sequence only (a draft model, a stage of a split model, a family `add_seqs` refuses).
     pub fn serve_rows(&mut self, users: usize) -> Result<Option<usize>> {
-        // (Gemma 4, Qwen3.5's layout, which Qwen3.8 dense runs on, Muse Spark, Kimi-K3, GLM-5.3-Flash, Nemotron-H, DeepSeek-V4 and the Llama-style dense models on one GPU)
+        // (Gemma 4, Qwen3.5's layout, which Qwen3.8 dense runs on, Muse Spark, Kimi-K3, GLM-5.3-Flash, Nemotron-H, DeepSeek-V4, Qwen3.8-Flash-Next and the Llama-style dense
+        // models on one GPU)
         if self.draft.is_some()
             || !self.stage.first
             || !self.stage.last
             || !matches!(
                 self.big.d.family,
-                "Gemma 4" | "Qwen3.5" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash" | "Nemotron-H" | "DeepSeek-V4" | super::dense::FAMILY
+                "Gemma 4"
+                    | "Qwen3.5"
+                    | "Muse Spark"
+                    | "Kimi-K3"
+                    | "GLM-5.3-Flash"
+                    | "Nemotron-H"
+                    | "DeepSeek-V4"
+                    | super::dense::FAMILY
+                    | super::qwen4x::FAMILY
             )
         {
             return Ok(None);
