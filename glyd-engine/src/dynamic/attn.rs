@@ -1,13 +1,13 @@
 //! The attention layer kind (`runtime::kinds::Attn`) as one operation of the executor (`Op::Attn`), for every dense-attention layer of every family (#135, #141).
 //! What a family's layer is, is the operation's parameters (`AttnOp`): its heads and their width, where its q, k, v and gate are in the projection's rows, its norms,
 //! rotary, window, scale, soft-cap and gate, and its ring of keys and values; its rounding points the kind's (`kinds::AttnRounding`). One set of kernels runs them all
-//! (kernels/attn.cu): the preparation, then a decode row's attention (the keys in parts, combined) or a prompt chunk's (on the tensor cores), and the gate. Keys
-//! and values are bf16 rings or pages, or 12-bit pages (src/dynamic/kvpages.rs): a decode row reads those through the library's `kv_decode_from`, a prompt chunk
-//! reads them unpacked to bf16 (`kv12_stage`, the one place a 12-bit prompt attention reading the pages would go).
+//! (kernels/attn.cu): the preparation, then a decode row's attention (the keys in parts, combined) or a prompt chunk's, and the gate. A prompt chunk of heads of
+//! 128 to 512 takes the GPU library's prompt kernel, one for both caches: over bf16 rings or pages `glyd_gpu_attn_prefill`, over 12-bit pages (src/dynamic/kvpages.rs)
+//! `glyd_gpu_kv_prefill`, the same tiles and sums, so the same bits; heads of 64 take attn_fa64. A decode row over 12-bit pages reads them with `kv_decode_from`.
 //!
-//! The arithmetic of each family is the one its own operations had, bit for bit where the kernel is the same (Gemma 4's everywhere; the Qwen3.5 layout's
-//! preparation, decode and gate); its prompt chunks now take the tensor-core kernel Gemma 4's did (the Qwen3.5 layout's took a warp a head, Nemotron-H's the dense
-//! engine's prompt kernel, Muse Spark's a key at a time): the same function, sums in another order. Muse Spark's decode is the parts kernel too.
+//! The arithmetic of each family is the one its own operations had, bit for bit where the kernel is the same (the preparation, the decode and the gate of Gemma 4,
+//! the Qwen3.5 layout and Nemotron-H); a prompt chunk's is now the library's kernel for all (Gemma 4's g4_fa256, the Qwen3.5 layout's warp a head, Nemotron-H's
+//! dense-engine kernel and Muse Spark's key at a time before): the same function, sums in another order. Muse Spark's decode is the parts kernel too.
 
 use super::{Dyn, Part, Slot};
 use crate::dev::Dev;

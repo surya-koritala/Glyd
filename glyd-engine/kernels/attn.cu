@@ -1,7 +1,8 @@
 // The attention layer kind's kernels (src/runtime/kinds.rs `Attn`; the description executor's `Op::Attn`, src/dynamic/attn.rs, runs them for every dense-attention layer
 // of every family). One set, its arithmetic and shapes in `AttnArgs`: the preparation (the q and k norms, the rotary, the cache write, the values' norm), the decode
-// step's attention (the keys in parts, then combined), a prompt chunk's attention on the tensor cores (and a warp-per-head kernel for any shape), and the output gate.
-// Head widths 64, 128, 256 and 512 are template instances. Included by engine.cu after gemma4.cu (its G4Pf prefetch) and qwen35.cu (bf2, warp_max).
+// step's attention (the keys in parts, then combined), a prompt chunk's attention for heads of 64 on the tensor cores (heads of 128 to 512: the GPU library's
+// glyd_gpu_attn_prefill, the kernel of its 12-bit pages too), a warp-per-head kernel for any shape, and the output gate. Head widths 64, 128, 256 and 512 are template
+// instances. Included by engine.cu after gemma4.cu (its G4Pf prefetch) and qwen35.cu (bf2, warp_max).
 //
 // Arithmetic (the kind's rounding points, src/runtime/kinds.rs `AttnRounding`): bf16 in memory, fp32 inside. `round` (Eager, Sdpa): transformers' bf16 rounding
 // points in the preparation and the gate (a norm rounds once, the queries' scale rounds, each rotary product and their sum round, the gate's sigmoid rounds before
