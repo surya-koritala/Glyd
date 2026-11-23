@@ -2779,6 +2779,78 @@ mod tests {
         assert!(l.plan.is_none() && l.steps.is_empty() && l.refusal.is_none());
     }
 
+    /// P2f: every plan the per-path planners made (P2a's: src/cli.rs `size`, `lossy_plan_with`, `gemma_plan`, `size_dynamic` and src/fit.rs `plan`, recorded in
+    /// tests/fixtures/plans_p2a.json before they were moved here) is the plan the one planner makes: each family's fixture, on every preset, at every level this
+    /// build has, alone and with --users 4, --context 8192 and 131072, and Nemotron-H's --expert-cache and --host-memory; the plan `run` loads, or its refusal in its
+    /// words. `GLYD_WRITE_P2A=1` writes the file anew (only where a change in a plan is meant).
+    #[test]
+    fn the_plans_are_p2as() {
+        let q35 = json::parse(&fixture("qwen35_configs.json")).unwrap();
+        let llama = r#"{"architectures": ["LlamaForCausalLM"], "model_type": "llama", "hidden_size": 4096, "num_hidden_layers": 32, "num_attention_heads": 32, "num_key_value_heads": 8}"#;
+        let configs = [
+            ("Qwen3-32B", with_rope(QWEN3_32B)),
+            ("Qwen3-8B", QWEN3_8B.to_string()),
+            ("Qwen3.5-0.8B", json::to_compact(q35.get("Qwen/Qwen3.5-0.8B").unwrap())),
+            ("Qwen3.5-9B", json::to_compact(q35.get("Qwen/Qwen3.5-9B").unwrap())),
+            ("Qwen3.8-27B", json::to_compact(q35.get("Qwen/Qwen3.8-27B").unwrap())),
+            ("gemma-4-12B", fixture("gemma4_12b_config.json")),
+            ("NVIDIA-Nemotron-H", fixture("nemotron_h_config.json")),
+            ("GLM-5.3-Flash", fixture("glm5_next_config.json")),
+            ("Qwen3.8-Flash-Next", fixture("qwen4x_config.json")),
+            ("Llama-3.1-8B", llama.to_string()),
+        ];
+        let mut got = serde_json::Map::new();
+        for (name, text) in &configs {
+            let dir = model_dir("p2a", name, text);
+            if *name == "GLM-5.3-Flash" {
+                header_only_checkpoint(&dir, &fixture("glm5_next_tensors.json"));
+            }
+            if *name == "NVIDIA-Nemotron-H" {
+                header_only_checkpoint(&dir, &fixture("nemotron_h_tensors.json"));
+            }
+            let model = dir.to_str().unwrap();
+            let base = dir.parent().unwrap().to_str().unwrap().to_string();
+            let mut variants: Vec<Vec<&str>> = vec![vec![], vec!["--users", "4"], vec!["--context", "8192"], vec!["--context", "131072"]];
+            if *name == "NVIDIA-Nemotron-H" {
+                variants.extend([vec!["--expert-cache", "4"], vec!["--host-memory", "40"]]);
+            }
+            for preset in Machine::PRESETS {
+                let nvidia = Machine::preset(preset).unwrap().devices.iter().all(|d| d.vendor == Vendor::Nvidia);
+                for level in crate::levels::names_now() {
+                    for v in variants.iter().filter(|v| v.is_empty() || nvidia) {
+                        let tag = format!("{model}:{level}");
+                        let mut words = vec!["fit", tag.as_str(), "--machine", preset];
+                        words.extend(v.iter().copied());
+                        let said = match planned(&args(&words)) {
+                            Ok(f) => match (f.refusal, f.plan.chosen.and_then(|c| c.load)) {
+                                (Some(r), _) => serde_json::json!({"refusal": [r.what, r.fix, r.code]}),
+                                (None, Some(lp)) => serde_json::from_str(&lp.json(name)).unwrap(),
+                                (None, None) => serde_json::json!({"estimate": true}),
+                            },
+                            Err(r) => serde_json::json!({"refusal": [r.what, r.fix, r.code]}),
+                        };
+                        let said: serde_json::Value = serde_json::from_str(&said.to_string().replace(&base, "DIR")).unwrap();
+                        got.insert(format!("{name} {preset} {level} {}", v.join(" ")).trim_end().to_string(), said);
+                    }
+                }
+            }
+        }
+        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plans_p2a.json");
+        if std::env::var_os("GLYD_WRITE_P2A").is_some() {
+            // (a case a line)
+            let lines: Vec<String> = got.iter().map(|(k, v)| format!("{}: {v}", serde_json::Value::from(k.as_str()))).collect();
+            std::fs::write(&file, format!("{{\n{}\n}}\n", lines.join(",\n"))).unwrap();
+            return;
+        }
+        let want: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(got.len(), want.len(), "the cases recorded");
+        let plans = want.values().filter(|v| v.get("schema").is_some()).count();
+        assert!(plans > 300, "{plans} plans recorded");
+        for (k, w) in &want {
+            assert_eq!(got.get(k), Some(w), "{k}");
+        }
+    }
+
     /// `fit` prints the ladder from the level asked for: Gemma 4 12B lossless does not fit a 16 GB card, kestrel does, and the step is a lower level that asks; as JSON too.
     #[test]
     fn fit_shows_every_step_and_the_json_has_them() {
