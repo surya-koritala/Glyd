@@ -1,7 +1,7 @@
 //! Preemption by swapping (R4d #328; docs/design/runtime.md section 5, "Preemption"): a sequence the scheduler sends back for room has its cache copied to the host's swap
 //! area and back, rather than being run again from its tokens (`ModelStep::swap_out`, `swap_in`). What is copied is all a step of it reads, for every family the same way:
 //! in each layer group the blocks of its tokens its table holds (a sliding group's from its window on, a shared start's from its floor), each ring's keys and values of
-//! them; its recurrent states (the delta rule's and the convolutions', Mamba's); and their copy at its mark where it has one. A ring in bf16 pages is copied as its bytes.
+//! them (a ring of keys alone, a latent cache's, its keys); its recurrent states (the delta rule's and the convolutions', Mamba's); and their copy at its mark where it has one. A ring in bf16 pages is copied as its bytes.
 //! A ring in 12-bit pages is copied as the bf16 values the library unpacks from them, its escape chunks and raw slabs read with them, and written back into new pages by
 //! the library's own write, which takes new chunks and slabs where they need them: the values come back bit for bit, but the link carries 16 bits a value, not 12. (A
 //! page moved as its own bytes names its chunks of the escape pool by number, lent to its old block by owner: the library has no call that lends them to another.)
@@ -204,10 +204,10 @@ impl Dyn {
         self.kc.bytes + self.vc.bytes + pages + states * self.seqs.len()
     }
 
-    /// Whether a sequence of this engine can be swapped: paged keys and values, an area, and nothing of a sequence's that a swap does not copy (a latent attention's cache,
-    /// DeepSeek-V4's compressed entries).
+    /// Whether a sequence of this engine can be swapped: paged keys and values, an area, and nothing of a sequence's that a swap does not copy (DeepSeek-V4's compressed
+    /// entries).
     fn swaps(&self) -> bool {
-        self.swap.is_some() && self.paged.is_some() && self.big.mla.is_empty() && self.v4.is_none()
+        self.swap.is_some() && self.paged.is_some() && self.v4.is_none()
     }
 
     /// Where the parts of a copy of `counts[g]` blocks of each group go (`Layout`), with the states at a mark where `mark`.
@@ -225,7 +225,8 @@ impl Dyn {
         };
         let blocks = counts.iter().map(|&c| take(4 * c)).collect();
         let slots = (0..counts.len()).map(|g| (0..rings.len()).any(|r| twelve(r).is_some_and(|x| x.group == g)).then(|| take(8 * BLOCK * counts[g]))).collect();
-        let nitems: usize = (0..rings.len()).filter(|&r| self.ring_cap[r] > 0 && twelve(r).is_none()).map(|r| 2 * counts[pg.group[r]]).sum();
+        let nitems: usize =
+            (0..rings.len()).filter(|&r| self.ring_cap[r] > 0 && twelve(r).is_none()).map(|r| (1 + rings[r].values as usize) * counts[pg.group[r]]).sum();
         let items = take(24 * nitems);
         let mut moved = 0;
         let rings = (0..rings.len())
@@ -238,8 +239,10 @@ impl Dyn {
                     None => BLOCK * rings[r].nk * rings[r].d * 2,
                 };
                 let c = counts[pg.group[r]];
-                moved += 2 * per * c;
-                Some((take(per * c), take(per * c), per))
+                // (a ring of keys alone: no values)
+                let v = if rings[r].values || twelve(r).is_some() { per * c } else { 0 };
+                moved += per * c + v;
+                Some((take(per * c), take(v), per))
             })
             .collect();
         let states: Vec<usize> = self.states.iter().map(|b| take(b.bytes)).collect();
@@ -354,9 +357,11 @@ impl Dyn {
             }
             let g = pg.group[r];
             let tab = pg.pages.table(slot, g);
-            for (base, host) in [(self.kc.ptr, k), (self.vc.ptr, v)] {
+            let (ko, vo) = self.ring_off[r];
+            let values = self.big.d.rings[r].values.then_some((self.vc.ptr + vo, v));
+            for (base, host) in std::iter::once((self.kc.ptr + ko, k)).chain(values) {
                 for (j, &b) in entries[g].iter().enumerate() {
-                    let dev = base + self.ring_off[r] + (tab[b] as usize * per) as u64;
+                    let dev = base + (tab[b] as usize * per) as u64;
                     let h = sw.host(at, host + j * per);
                     items.extend(if out { [dev, h, per as u64] } else { [h, dev, per as u64] });
                 }

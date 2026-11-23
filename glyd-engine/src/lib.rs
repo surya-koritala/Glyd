@@ -108,14 +108,12 @@ pub mod kv_events;
 pub mod kvcal;
 #[cfg(feature = "dev")]
 pub mod kvshapes;
-pub mod kvtest;
 pub mod levels;
 #[cfg(feature = "dev")]
 pub mod logits;
 pub mod machine;
 pub mod mapped;
 pub mod mla_glm;
-pub mod model;
 pub mod model_glm;
 pub mod model_qwen4x;
 pub mod models;
@@ -166,8 +164,6 @@ pub mod sizes;
 pub mod skinny;
 pub mod status;
 pub mod store;
-#[cfg(feature = "dev")]
-pub mod stress;
 pub mod support;
 pub mod tiering;
 pub mod tok;

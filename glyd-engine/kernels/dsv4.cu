@@ -1,5 +1,5 @@
-// DeepSeek-V4's own kernels (included by engine.cu after glm.cu and moe.cu: they use their helpers; src/dynamic/deepseek_v4.rs describes the model and src/dynamic/mod.rs runs them): the hyper-connections in the
-// release's arithmetic (fp32 weights, one rounding), the query's and the key's preparation, the compressors (the pooling of every `ratio` tokens into an entry of a cache), the indexer (its queries, its scores and
+// DeepSeek-V4's own kernels (included by engine.cu after glm.cu and moe.cu: they use their helpers; src/dynamic/deepseek_v4.rs describes the model and src/dynamic/mod.rs runs them; its residual streams are
+// the streams kind's, residual.cu): the query's and the key's preparation, the compressors (the pooling of every `ratio` tokens into an entry of a cache), the indexer (its queries, its scores and
 // the entries it picks), the attention over the window and the picked entries with its sink, the grouped low rank's gather, the activations' FP8 that the release's products quantize their inputs to, and the
 // experts' activation with each pair's weight in it (the release weighs an expert's activation before its second product). bf16 in memory, fp32 inside; the rounding points are inference/model.py's and the
 // quantizations kernel.py's (src/dsv4_ref.rs: the CPU reference). Positions are read from the device (`pos`, a row's), so a decode step is captured in the engine's CUDA graph. `sim` 0
@@ -12,8 +12,6 @@
 #define V4_AQ 8       // warps a head's output takes in v4_attn_out (64 channels each, 2 a lane)
 #define V4_SG 16      // heads a block of the attention's scores takes
 #define V4_KC 32      // keys a block of the attention's scores takes
-#define V4_EC 8       // entries a block of the indexer's scores takes (a warp each)
-#define V4_IH 64      // the indexer's heads at most (v4_idx_score's sums)
 
 // kernel.py's power-of-two scale: 2^ceil(log2(amax x inv)), from the f32's bits.
 __device__ __forceinline__ float v4_pow2(float amax, float inv) {
@@ -64,119 +62,6 @@ __device__ __forceinline__ void v4_rot(float& a, float& b, float c, float s) {
     const float x = a * c - b * s, y = a * s + b * c;
     a = b2f(f2b(x));
     b = b2f(f2b(y));
-}
-
-// ---- the hyper-connections -----------------------------------------------------------------------------------------------------------------------------------------------------------------
-// The mixing projection of rows of streams x [n, 4D] (bf16) by fn [NP, 4D] (fp32, as the release keeps it), split over the row's columns as glm_hc_proj: block (row t, split s) of V4_HC_CPB columns writes the NP
-// products' partial sums and the sum of squares of its columns to part [n][4D / V4_HC_CPB][GM_NP + 1]. NP up to GM_NP (24 for a block, 4 for the head). 128 threads (2 columns each); 4D a multiple of V4_HC_CPB.
-#define V4_HC_CPB 256  // (a decode step's row on 64 blocks at 4,096 wide: the 1.5 MB of fn read by more SMs than 512 columns a block gave)
-extern "C" __global__ void __launch_bounds__(128) v4_hc_proj(const bf16* x, const float* fn, float* part, int D, int NP) {
-    const int t = blockIdx.x, s = blockIdx.y, tid = threadIdx.x, lane = tid & 31, w = tid >> 5;
-    const int K = GM_HC * D, KS = K / V4_HC_CPB;
-    const bf16* xr = x + (size_t)t * K + (size_t)s * V4_HC_CPB;
-    const float* fr = fn + (size_t)s * V4_HC_CPB;
-    __shared__ float red[GM_NP + 1][4];
-    float acc[GM_NP], ss = 0.f;
-#pragma unroll
-    for (int r = 0; r < GM_NP; r++) acc[r] = 0.f;
-    for (int e = tid * 2; e < V4_HC_CPB; e += 256) {
-        const float2 xv = bf2(*reinterpret_cast<const uint32_t*>(xr + e));
-        ss = fmaf(xv.x, xv.x, fmaf(xv.y, xv.y, ss));
-        // (all the rows' loads issued before any product: with the check in the products' loop each load waited for the one before, 24 trips to memory in a row)
-        float2 fv[GM_NP];
-#pragma unroll
-        for (int r = 0; r < GM_NP; r++) fv[r] = r < NP ? __ldg(reinterpret_cast<const float2*>(fr + (size_t)r * K + e)) : make_float2(0.f, 0.f);
-#pragma unroll
-        for (int r = 0; r < GM_NP; r++) acc[r] = fmaf(xv.x, fv[r].x, fmaf(xv.y, fv[r].y, acc[r]));
-    }
-#pragma unroll
-    for (int r = 0; r < GM_NP; r++) {
-        const float v = warp_sum(acc[r]);
-        if (lane == 0) red[r][w] = v;
-    }
-    ss = warp_sum(ss);
-    if (lane == 0) red[GM_NP][w] = ss;
-    __syncthreads();
-    if (tid <= GM_NP) part[((size_t)t * KS + s) * (GM_NP + 1) + tid] = (red[tid][0] + red[tid][1]) + (red[tid][2] + red[tid][3]);
-}
-
-// hc_pre's rest for rows whose partial sums v4_hc_proj wrote (KS a row, added in order): the weights, Sinkhorn-Knopp, the collapse (bf16) and the block's norm with the weight nw, the release's (the weight times
-// the normed value, rounded once): glm_hc_fin with that norm. hcp [n, 24] takes pre, post and comb (fp32). A block a row, 512 threads.
-extern "C" __global__ void __launch_bounds__(512) v4_hc_fin(const bf16* x, const float* part, int KS, const float* base, const float* scale, const bf16* nw, bf16* h, float* hcp, int D, float eps, float hc_eps, int iters) {
-    const int t = blockIdx.x, tid = threadIdx.x;
-    __shared__ float tot[GM_NP + 1];
-    __shared__ float pp[GM_NP];
-    // (the parts' sums: a warp each, its lanes a part apiece, then the warp's sum)
-    const int w = tid >> 5, lane = tid & 31;
-    for (int r = w; r <= GM_NP; r += blockDim.x >> 5) {
-        float v = 0.f;
-        for (int k = lane; k < KS; k += 32) v += part[((size_t)t * KS + k) * (GM_NP + 1) + r];
-        v = warp_sum(v);
-        if (lane == 0) tot[r] = v;
-    }
-    __syncthreads();
-    gm_hc_tail(x + (size_t)t * GM_HC * D, base, scale, nw, h, hcp, t, D, eps, hc_eps, iters, tot, pp, 1);
-}
-
-// hc_post: x [n, 4, D] in place, stream i = bf16(post_i o + sum over j of comb[j][i] x_j) in fp32 (the release's weights are fp32, its sum rounded once). A thread a column of a row, all four streams.
-extern "C" __global__ void v4_hc_post(bf16* __restrict__ x, const bf16* __restrict__ o, const float* __restrict__ hcp, int D) {  // (restrict: as glm_hc_post)
-    const int t = blockIdx.x, d = blockIdx.y * blockDim.x + threadIdx.x;
-    if (d >= D) return;
-    const float* p = hcp + (size_t)t * GM_NP;
-    bf16* xr = x + (size_t)t * GM_HC * D;
-    float xv[GM_HC];
-#pragma unroll
-    for (int j = 0; j < GM_HC; j++) xv[j] = b2f(xr[(size_t)j * D + d]);
-    const float ov = b2f(o[(size_t)t * D + d]);
-#pragma unroll
-    for (int i = 0; i < GM_HC; i++) {
-        float m = 0.f;
-#pragma unroll
-        for (int j = 0; j < GM_HC; j++) m += p[2 * GM_HC + GM_HC * j + i] * xv[j];
-        xr[(size_t)i * D + d] = f2b(p[GM_HC + i] * ov + m);
-    }
-}
-
-// hc_head and the final norm, for rows whose partial sums v4_hc_proj wrote with the head's 4 rows: pre = sigmoid(m scale + base) + hc_eps, the collapse (bf16), normed with nw (rounded once) into out [n, D].
-// A block a row, 512 threads.
-extern "C" __global__ void __launch_bounds__(512) v4_hc_head(const bf16* x, const float* part, int KS, const float* base, const float* scale, const bf16* nw, bf16* out, int D, float eps, float hc_eps) {
-    const int t = blockIdx.x, tid = threadIdx.x;
-    __shared__ float tot[GM_NP + 1];
-    __shared__ float pre[GM_HC];
-    if (tid <= GM_NP) {
-        float v = 0.f;
-#pragma unroll 8
-        for (int k = 0; k < KS; k++) v += part[((size_t)t * KS + k) * (GM_NP + 1) + tid];
-        tot[tid] = v;
-    }
-    __syncthreads();
-    if (tid < GM_HC) {
-        const float rs = rsqrtf(tot[GM_NP] / (GM_HC * D) + eps);
-        pre[tid] = gm_sig(tot[tid] * rs * scale[0] + base[tid]) + hc_eps;
-    }
-    __syncthreads();
-    const bf16* xr = x + (size_t)t * GM_HC * D;
-    float cv[GM_PER], ss = 0.f;
-#pragma unroll
-    for (int j = 0; j < GM_PER; j++) {
-        const int d = tid + j * blockDim.x;
-        float c = 0.f;
-        if (d < D) {
-            c = pre[0] * b2f(xr[d]);
-            c += pre[1] * b2f(xr[D + d]);
-            c += pre[2] * b2f(xr[2 * D + d]);
-            c += pre[3] * b2f(xr[3 * D + d]);
-            c = b2f(f2b(c));
-        }
-        cv[j] = c;
-        ss += c * c;
-    }
-    const float r = rsqrtf(block_sum(ss) / D + eps);
-#pragma unroll
-    for (int j = 0; j < GM_PER; j++) {
-        const int d = tid + j * blockDim.x;
-        if (d < D) out[(size_t)t * D + d] = f2b(b2f(nw[d]) * (cv[j] * r));
-    }
 }
 
 // ---- the activations' FP8 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -450,121 +335,7 @@ extern "C" __global__ void __launch_bounds__(128) v4_idx_q(bf16* q, const float*
     qr[c] = f2b(sim ? o[0] : r);
 }
 
-// The indexer's scores: for row t and each entry e of its cache [entries, 128] it may read (e < (pos + 1) / ratio), sum over heads h of bf16(relu(bf16(q_h . k_e)) w_h), each product and the sum rounded to
-// bf16 as the release's bf16 tensors are, with w_h = bf16(wp_h x wscale) (wp [n, IH], the weights' product, bf16); scores [n, emax] fp32 (-inf past the entries). Block (row, V4_EC entries), 8 warps: a warp an
-// entry, a lane 4 of its channels, the queries in shared memory; at most V4_IH heads.
-extern "C" __global__ void __launch_bounds__(256) v4_idx_score(const bf16* q, const bf16* wp, float wscale, const bf16* cache, const int* pos, float* scores, int IH, int ratio, int emax) {
-    const int t = blockIdx.x, w = threadIdx.x >> 5, lane = threadIdx.x & 31;
-    extern __shared__ float qs[];  // [IH][128] then [IH] weights, then the warps' terms [8][V4_IH]
-    const int ne = (pos[t] + 1) / ratio;
-    for (int i = threadIdx.x; i < IH * V4_IDX; i += 256) qs[i] = b2f(q[(size_t)t * IH * V4_IDX + i]);
-    for (int i = threadIdx.x; i < IH; i += 256) qs[IH * V4_IDX + i] = b2f(f2b(b2f(wp[(size_t)t * IH + i]) * wscale));
-    __syncthreads();
-    const int e = blockIdx.y * V4_EC + w;
-    if (e >= emax) return;
-    if (e >= ne) {
-        if (lane == 0) scores[(size_t)t * emax + e] = -INFINITY;
-        return;
-    }
-    const uint2 kv = *reinterpret_cast<const uint2*>(cache + (size_t)e * V4_IDX + lane * 4);
-    const float2 k0 = bf2(kv.x), k1 = bf2(kv.y);
-    // (every head's dot product a lane's 4 channels at once, then summed across the lanes as warp_sum's butterfly pairs them, each lane keeping half of its heads a stage: lane l ends with
-    // heads 2l and 2l + 1, the same additions in the same order, in 62 shuffles where a warp_sum a head took 320, one after another)
-    float v[V4_IH];
-#pragma unroll
-    for (int h = 0; h < V4_IH; h++) {
-        const float* qh = qs + h * V4_IDX + lane * 4;
-        v[h] = h < IH ? qh[0] * k0.x + qh[1] * k0.y + qh[2] * k1.x + qh[3] * k1.y : 0.f;
-    }
-#pragma unroll
-    for (int m = V4_IH, o = 16; m > 2; m >>= 1, o >>= 1) {
-        const bool hi = lane & o;
-#pragma unroll
-        for (int i = 0; i < m / 2; i++) {
-            const float give = hi ? v[i] : v[i + m / 2];
-            const float keep = hi ? v[i + m / 2] : v[i];
-            v[i] = keep + __shfl_xor_sync(0xffffffffu, give, o);
-        }
-    }
-    // (the heads' terms, then their sum in the heads' order, as one thread took them)
-    float* term = qs + IH * V4_IDX + IH + w * V4_IH;
-#pragma unroll
-    for (int u = 0; u < 2; u++) {
-        const int h = 2 * lane + u;
-        if (h < IH) term[h] = b2f(f2b(fmaxf(b2f(f2b(v[u])), 0.f) * qs[IH * V4_IDX + h]));
-    }
-    __syncwarp();
-    if (lane == 0) {
-        float sum = 0.f;
-        for (int h = 0; h < IH; h++) sum += term[h];
-        scores[(size_t)t * emax + e] = b2f(f2b(sum));
-    }
-}
-
-// The order-keeping unsigned key of a float (larger float, larger key).
-__device__ __forceinline__ uint32_t v4_key(float f) {
-    const uint32_t b = __float_as_uint(f);
-    return (b & 0x80000000u) ? ~b : b | 0x80000000u;
-}
-
-// The entries row t's query reads: the k of largest score of its ne = (pos + 1) / ratio (all where ne <= k), equal scores the earlier entry first, into sel [n, k] in the entries' order, their count into cnt
-// [n]. The k-th largest key found bit by bit (32 counts over the row), then the larger ones and the equal ones up to k taken in order by a scan. Block a row, 1,024 threads.
-extern "C" __global__ void __launch_bounds__(1024) v4_topk(const float* scores, int emax, const int* pos, int ratio, int k, int* sel, int* cnt) {
-    const int t = blockIdx.x, tid = threadIdx.x, ne = min((pos[t] + 1) / ratio, emax);
-    const float* sr = scores + (size_t)t * emax;
-    int* out = sel + (size_t)t * k;
-    __shared__ int warp_n[32];
-    __shared__ int base;
-    if (ne <= k) {
-        for (int e = tid; e < ne; e += 1024) out[e] = e;
-        if (tid == 0) cnt[t] = ne;
-        return;
-    }
-    // the k-th largest key: the largest T with at least k keys >= T
-    uint32_t T = 0;
-    for (int b = 31; b >= 0; b--) {
-        const uint32_t try_ = T | (1u << b);
-        int c = 0;
-        for (int e = tid; e < ne; e += 1024) c += v4_key(sr[e]) >= try_;
-        if ((int)block_sum((float)c) >= k) T = try_;
-    }
-    int gt_n = 0;
-    for (int e = tid; e < ne; e += 1024) gt_n += v4_key(sr[e]) > T;
-    const int above = (int)block_sum((float)gt_n);
-    int ties = k - above;  // the equal keys taken, the earliest first
-    if (tid == 0) base = 0;
-    __syncthreads();
-    for (int e0 = 0; e0 < ne; e0 += 1024) {
-        const int e = e0 + tid;
-        const uint32_t key = e < ne ? v4_key(sr[e]) : 0u;
-        const bool gt = e < ne && key > T, eq = e < ne && key == T;
-        // ranks of this chunk's equal keys, then of its taken ones (a scan over the block by warps)
-        const unsigned eqm = __ballot_sync(0xffffffffu, eq);
-        if ((tid & 31) == 0) warp_n[tid >> 5] = __popc(eqm);
-        __syncthreads();
-        int eq_before = 0;
-        for (int i = 0; i < (tid >> 5); i++) eq_before += warp_n[i];
-        eq_before += __popc(eqm & ((1u << (tid & 31)) - 1));
-        int eq_all = 0;
-        for (int i = 0; i < 32; i++) eq_all += warp_n[i];
-        __syncthreads();
-        const bool take = gt || (eq && eq_before < ties);
-        const unsigned tm = __ballot_sync(0xffffffffu, take);
-        if ((tid & 31) == 0) warp_n[tid >> 5] = __popc(tm);
-        __syncthreads();
-        int before = base;
-        for (int i = 0; i < (tid >> 5); i++) before += warp_n[i];
-        before += __popc(tm & ((1u << (tid & 31)) - 1));
-        if (take) out[before] = e;
-        int all = 0;
-        for (int i = 0; i < 32; i++) all += warp_n[i];
-        __syncthreads();
-        if (tid == 0) base += all;
-        ties -= min(ties, eq_all);
-        __syncthreads();
-    }
-    if (tid == 0) cnt[t] = k;
-}
+// (the indexer's scores and its pick of the entries: kernels/mla.cu's `idx_score_bf16` and `idx_pick`, every indexer's)
 
 // ---- the attention ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 // The keys row t reads, in order: the window's (positions max(0, p - window + 1) to p, from the ring [cap, 512]), then the cache's entries: the indexer's picks (sel [n, k] and cnt [n]: ratio 4), or every entry

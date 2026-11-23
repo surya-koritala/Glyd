@@ -28,7 +28,8 @@ the recent families is the first priority.
 
 1. **Names.** `ModelStep` is what the scheduler drives (today's `sched::Backend`, renamed). `Backend` is a vendor (CUDA, HIP,
    Metal through MLX, CPU) and implements layer kinds. `Device` is the CUDA/HIP device layer under those two backends (R1, R15).
-   `Engine` is the request-level interface the API front ends share (R11); `model::Engine` goes away with `model.rs` (R3c).
+   `Engine` is the request-level interface the API front ends share (R11); `model::Engine` went with `model.rs` (R3c, #139: Qwen3 dense is a
+   Llama-style description on the executor, `src/dynamic/dense.rs`).
 2. **One step over a flat batch.** A step takes a list of sequences, each contributing 1 token (decode), 1+k tokens (decode with
    drafts) or a prompt chunk, packed into one token list. There is no prefill or decode mode; a step is the tokens of every row
    the budget admits, decode rows first, then prompt chunks (Sarathi-Serve, vLLM V1).
@@ -77,7 +78,9 @@ Today a model runs on one of two kinds of code:
   `moe_glm*.rs`, `mla_glm.rs`, `mtp_glm.rs`). Each has its own step, cache and sampling.
 - **The description executor** (`dynamic/mod.rs`). A `ModelDesc` (`mod.rs:518-558`) is a list of `Op`s per layer over 25 activation slots;
   `Dyn::op` is a `match` over 60 `Op` variants (`mod.rs:85-482`, `1428-1870`). Ops are named by family more than by kind (`Prep35`,
-  `AttnNh`, `V4Attn`, `GlmPre`, `KimiMixNorm`, `MuseQk`). The executor imports the hand-written engines' kernel tables (`Kern35`,
+  `AttnNh`, `V4Attn`, `GlmPre`, `KimiMixNorm`, `MuseQk`; M2 moves them onto the kinds' operations: the residual streams, the depth mix,
+  the gated residual, the norms, the gated activation and the experts are one operation each, their family differences the kinds'
+  parameters, `StreamsP::rounding` among them). The executor imports the hand-written engines' kernel tables (`Kern35`,
   `KernG4`, `KernNh`, `KernGlm`, `mod.rs:22-24`). Qwen3.5, Gemma 4, Nemotron-H, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark run
   on it. It holds one contiguous bf16 cache per sequence and swaps sequences with `select` (`mod.rs:2383-2399`); more than one sequence
   is refused for every family but Qwen3.5 (`mod.rs:2352`). Multi-GPU runs as a layer split with activations handed over through host
@@ -467,6 +470,15 @@ Layers whose blocks have the same bytes share a pool; groups whose block bytes d
 the same tokens in every pool, so a sequence has one block table (vLLM's hybrid KV manager does the same with its KV cache groups). A
 model with only sliding and full layers (Gemma 4) holds per sequence window/16 blocks in the sliding group and context/16 in the full one.
 
+What is built for the latent kind (`Op::Mla`, `dynamic/mla.rs`): a latent attention layer's cache is a ring of keys alone (`Ring::values`
+false: no room in the value pool), kv_lora + rope values a token, and GLM-5.3's indexer a second one of [normed key | gate score] a token.
+A pool of `kpool` tokens is keyed when its last token is written, and its key is written over that token's key (only the pooling read it,
+in the same call), so a block that a name or another sequence holds is never written. Both rings sit in the full group's pools, so these
+models take the same page budget, swap (R4d) and prefix sharing (R4c, at the marks of their delta-attention states) as the dense kinds.
+The indexer's pick is one operation and kernel for GLM-5.3's pools and DeepSeek-V4's compressed entries (`IdxPick`, `idx_pick`).
+DeepSeek-V4's compressed entries are not paged yet: they stay a sequence's states of the whole context (a group of 16 entries a block,
+as the table above says, needs pools whose table entries cover ratio x 16 tokens).
+
 ### Compressed KV
 
 Glyd's lossless KV stores a 12-bit value per bf16 (per-model tables; values outside a layer's windows go to an escape pool, and a page
@@ -664,9 +676,11 @@ Recent families first; the legacy pipelines move last, at parity, so they can be
 | 11 | the standard families: Llama 3, Mistral, Qwen 2/2.5, Phi-4, Granite, OLMo, SmolLM (the M2 gate's list) | F1a #166, F1b #167, F1d #169, F1e #170, F1h #173 | one GQA + SwiGLU kind with parameters; proves "config only" | the vLLM plugin path for them (F7, later) |
 | 12 | legacy at parity: Qwen3.5/3.6 and gemma-4-31B (same code as step 5), Nemotron-3-Super/Nemotron-H, Qwen3 dense with its lossless paged KV | R3b #137, R3c #139 | pipelines deleted; no optimisation beyond parity | `model35.rs`, `model_gemma4.rs`, `model_nh.rs`, `model.rs` |
 
-Steps 5 and 6 run in parallel once step 4 has landed, and step 7 can start with 5. The legacy Qwen3 path keeps serving until step 12;
+Steps 5 and 6 run in parallel once step 4 has landed, and step 7 can start with 5. The legacy Qwen3 path served until step 12;
 its measured numbers (59.9 tok/s at 1 user, 452.7 at 8 on the 4080 SUPER) are the parity bar there and the reference for what batching
-must give the recent families in step 5.
+must give the recent families in step 5. Step 12's Qwen3 part is R3c (#139): Qwen3 dense, and every config the description builder's
+`llama` reading takes, lowered to the shared operations (`lower::dense`) and served by the scheduler with paged keys and values;
+`model.rs` and what only it used are deleted. Its parity against that bar is the GPU check's to measure.
 
 ## 8. Prior art
 

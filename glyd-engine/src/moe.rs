@@ -36,6 +36,7 @@ const ACT_SILU: i32 = 0;
 const ACT_GELU: i32 = 1;
 const ACT_RELU2: i32 = 2;
 const ACT_SITU: i32 = 3;
+const ACT_SILU_R: i32 = 4;
 
 /// How a router scores the experts of a token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -472,7 +473,7 @@ pub struct MoeKern {
     act: crate::kt::moe_act,
     add: crate::kt::moe_add,
     add_f32: crate::kt::moe_add_f32,
-    // DeepSeek-V4's (kernels/dsv4.cu): the activation with each pair's weight in it, the routing by token
+    // the weighed experts' activation, each pair's weight in it, and the routing by token (kernels/dsv4.cu: the release's, DeepSeek-V4's)
     act_w: crate::kt::v4_moe_act,
     hash: crate::kt::v4_hash_select,
     // the FP8 experts' sum (each pair's own row): the pairs' rows, the weighted sum
@@ -480,11 +481,9 @@ pub struct MoeKern {
     wsum: crate::kt::moe_wsum,
     // the FP8 experts' places in the expert cache: their heads made their own (src/f8.rs F8Places)
     f8_rebase: crate::kt::moe_f8_rebase,
-    // Muse Spark's (kernels/muse.cu): the router of fp32 weights, the activation, the pairs' rows, the normed weighted sum
-    mu_router: crate::kt::muse_router,
-    mu_act: crate::kt::muse_act,
-    mu_inv: crate::kt::muse_inv,
-    mu_sum: crate::kt::muse_moe_sum,
+    // the normed experts' router of fp32 weights and their normed weighted sum (kernels/muse.cu: transformers', Muse Spark's)
+    router_f32: crate::kt::muse_router,
+    norm_sum: crate::kt::muse_moe_sum,
 }
 
 /// The select kernel for `experts` (8, 16 or 32 registers a lane: 256, 512 or 1,024 experts).
@@ -517,10 +516,8 @@ impl MoeKern {
             inv: dev.typed()?,
             wsum: dev.typed()?,
             f8_rebase: dev.typed()?,
-            mu_router: dev.typed()?,
-            mu_act: dev.typed()?,
-            mu_inv: dev.typed()?,
-            mu_sum: dev.typed()?,
+            router_f32: dev.typed()?,
+            norm_sum: dev.typed()?,
         })
     }
 
@@ -572,6 +569,22 @@ impl MoeKern {
         }
         let (mode, lim, lin) = a.kernel();
         launch!(self.act, [rows as u32, (inter as u32 / 8).div_ceil(256), 1], [256, 1, 1], s; gu, out, inter as i32, mode, lim, lin)
+    }
+
+    /// `act`'s SwiGLU as transformers computes it on bf16 tensors: out = bf16(bf16(silu(gate)) up), no clamp (the normed experts').
+    ///
+    /// # Safety
+    /// As `logits`.
+    pub unsafe fn act_rounded(&self, s: Stream, gu: u64, out: u64, rows: usize, inter: usize) -> Result<()> {
+        if !inter.is_multiple_of(8) {
+            return err(format!("intermediate size {inter}: not divisible by 8"));
+        }
+        aligned(gu, "the activation's input")?;
+        aligned(out, "the activation's output")?;
+        if rows == 0 {
+            return Ok(());
+        }
+        launch!(self.act, [rows as u32, (inter as u32 / 8).div_ceil(256), 1], [256, 1, 1], s; gu, out, inter as i32, ACT_SILU_R, f32::INFINITY, 0f32)
     }
 
     /// y [rows, h] += g sh [rows, h], g = sigmoid(gate[row]) for an fp32 `gate` [rows] (0: g = 1).
@@ -665,13 +678,13 @@ pub struct ExpertCache {
     pub ordinal: i32,
 }
 
-/// How a hummingbird layer in the cache sums its pairs (`MoeLayer::hb_cached`): linear in the experts' outputs with the router's weights (the families' `experts_via`), with the weights in the activation (DeepSeek-V4's release, `act_w`:
-/// `ones` fp32 [t k] for the sum), or each expert's output normed before it is weighed (Muse Spark: the input scale `post_w`, `eps`, the pairs' rows `inv`).
+/// How a hummingbird layer in the cache sums its pairs (`MoeLayer::hb_cached`): linear in the experts' outputs with the router's weights (`experts_via`), with the weights in the activation (`forward_weighed`, `act_w`:
+/// `ones` fp32 [t k] for the sum), or each expert's output normed before it is weighed (`forward_normed`: the input scale `post_w`, `eps`, the pairs' rows `inv`).
 #[derive(Clone, Copy, Debug)]
 pub enum HbSum {
     Linear,
-    Release { ones: u64, lim: f32, fp8: bool },
-    Muse { post_w: u64, eps: f32, inv: u64 },
+    Weighed { ones: u64, lim: f32, fp8: bool },
+    Normed { post_w: u64, eps: f32, inv: u64 },
 }
 
 /// A layer: its config, its weights and its shared expert. The buffers its calls work in are the model's (`MoeScratch`, one for all its layers).
@@ -815,7 +828,7 @@ impl MoeLayer {
     }
 
     /// The layer with its routed experts in the hummingbird format (`hb`): the router and its selection bias and per-expert scale where there are any, the shared expert, as `new`'s; the stacks are shapes alone. The experts must be the
-    /// config's (their number, the width they work in, the intermediate size, a gate where the activation has one). The layer's forwards (`experts_products` and `experts_sum`, `forward_muse`, `forward_release`) run `HbgKern`'s products in
+    /// config's (their number, the width they work in, the intermediate size, a gate where the activation has one). The layer's forwards (`experts_products` and `experts_sum`, `forward_normed`, `forward_weighed`) run `HbgKern`'s products in
     /// place of the library's: the router, the activation and the sum of each family as they are, R once a token before the first product, R^T once a token after the weighted sum (once a pair for Muse Spark, whose sum is not linear).
     pub fn new_hb(cfg: MoeCfg, router: Buf, bias: Option<Buf>, escale: Option<Buf>, hb: HbgExperts, shared: Option<Shared>) -> Result<MoeLayer> {
         hb.shape.check(&cfg)?;
@@ -851,7 +864,7 @@ impl MoeLayer {
     }
 
     /// The layer with its experts in the expert cache (R12, #232): its stacks are places (`ExpertStack::pooled`) the store copies the experts the router asks for into, every expert being in the computer's memory (or on
-    /// the disk); each call reads the router's choices on the host, so a step with it is not captured in a graph. The families' forwards (`experts_via`, `forward_release`, `forward_muse`) run their products over the places.
+    /// the disk); each call reads the router's choices on the host, so a step with it is not captured in a graph. The families' forwards (`experts_via`, `forward_weighed`, `forward_normed`) run their products over the places.
     pub fn with_cache(mut self, cache: ExpertCache) -> Result<MoeLayer> {
         // (FP8 experts: their matrices the places, `F8Places::places`)
         let slots = self.f8.as_ref().map_or(self.w.up.slots, |f| f.up.places());
@@ -1178,12 +1191,12 @@ impl MoeLayer {
                     }
                     let rows = match kind {
                         HbSum::Linear => self.hb_act(sc, s, pairs)?,
-                        HbSum::Release { lim, fp8, .. } => {
+                        HbSum::Weighed { lim, fp8, .. } => {
                             launch!(sc.k.act_w, [pairs as u32, (c.inter as u32 / 128).div_ceil(4), 1], [128, 1, 1], s; sc.a.ptr, sc.h.ptr, sc.plan.ptr, wts, e as i32, c.inter as i32, lim, fp8 as i32)?;
                             sc.h.ptr
                         }
-                        HbSum::Muse { .. } => {
-                            launch!(sc.k.mu_act, [pairs as u32, (c.inter as u32).div_ceil(256), 1], [256, 1, 1], s; sc.a.ptr, sc.h.ptr, c.inter as i32)?;
+                        HbSum::Normed { .. } => {
+                            sc.k.act_rounded(s, sc.a.ptr, sc.h.ptr, pairs, c.inter)?;
                             sc.h.ptr
                         }
                     };
@@ -1196,11 +1209,11 @@ impl MoeLayer {
                     let sum_ids = if hy.ids != 0 { hy.ids } else { ids };
                     match kind {
                         HbSum::Linear => self.hb_sum(hb, sc, s, tn, ys, sum_ids, wts, hy.extra),
-                        HbSum::Release { ones, .. } => self.hb_sum(hb, sc, s, tn, ys, sum_ids, ones + (t0 * k * 4) as u64, hy.extra),
-                        HbSum::Muse { post_w, eps, inv } => {
+                        HbSum::Weighed { ones, .. } => self.hb_sum(hb, sc, s, tn, ys, sum_ids, ones + (t0 * k * 4) as u64, hy.extra),
+                        HbSum::Normed { post_w, eps, inv } => {
                             hk.unrotate(s, hb, sc.hb_part.ptr, sc.plan.ptr, sc.hb_rows.ptr, pairs)?;
-                            launch!(sc.k.mu_inv, [(pairs as u32).div_ceil(256), 1, 1], [256, 1, 1], s; sc.plan.ptr, inv, pairs as i32, e as i32)?;
-                            launch!(sc.k.mu_sum, [tn as u32, 1, 1], [256, 1, 1], s; sc.hb_rows.ptr, inv, sum_ids, wts, post_w, ys, k as i32, w as i32, eps)?;
+                            launch!(sc.k.inv, [(pairs as u32).div_ceil(256), 1, 1], [256, 1, 1], s; sc.plan.ptr, inv, pairs as i32, e as i32)?;
+                            launch!(sc.k.norm_sum, [tn as u32, 1, 1], [256, 1, 1], s; sc.hb_rows.ptr, inv, sum_ids, wts, post_w, ys, k as i32, w as i32, eps)?;
                             // (the host's pairs normed and weighed: added after the sum, a second rounding)
                             if hy.extra != 0 {
                                 sc.k.add_f32(s, ys, hy.extra, tn * w)?;
@@ -1296,14 +1309,15 @@ impl MoeLayer {
         self.shared_add(sc, s, t, y)
     }
 
-    /// Muse Spark's experts as transformers computes them, for `t` tokens, in the latent: the router reads h [t, router_hidden] by its fp32 weights `router` (times `mult`; sigmoid scores, `bias` to pick,
-    /// renormalized, times the layer's scale), the experts read x [t, hidden] (the latent, normed); each pair's activation silu(gate) up (each rounded), its second product unweighted, normed (input-scaled with
-    /// `post_w`, eps), times its weight, added in the order of the experts' ids into y [t, hidden]. `inv`: int32 [t k] (the pairs' rows).
+    /// Experts whose outputs are normed before they are weighed (the kind's `Latent::expert_norm`), as transformers computes them on bf16 tensors (Muse Spark's), for `t` tokens: the router reads
+    /// h [t, router_hidden] by its fp32 weights `router` (times `mult`, the kind's `Router::logit_scale`; the layer's scores, `bias` to pick, renormalized, times the layer's scale), the experts read
+    /// x [t, hidden] (a latent's, normed); each pair's activation silu(gate) up (each rounded), its second product unweighted, normed (input-scaled with `post_w`, eps), times its weight, added in the order
+    /// of the experts' ids into y [t, hidden]. `inv`: int32 [t k] (the pairs' rows).
     ///
     /// # Safety
     /// As `route`; `router`, `bias`, `post_w` and `inv` live device buffers of those sizes.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn forward_muse(
+    pub unsafe fn forward_normed(
         &self,
         lib: &Lib,
         sc: &MoeScratch,
@@ -1323,11 +1337,11 @@ impl MoeLayer {
             return Ok(());
         }
         let (c, e, k) = (&self.cfg, self.cfg.experts, self.cfg.router.top_k);
-        let Down::Block(down) = &self.w.down else { return err("Muse Spark's experts' second matrix in a row layout") };
-        launch!(sc.k.mu_router, [t as u32, (e as u32).div_ceil(8), 1], [256, 1, 1], s; h, router, sc.logits.ptr, e as i32, c.router_hidden as i32, mult)?;
+        let Down::Block(down) = &self.w.down else { return err("normed experts' second matrix in a row layout") };
+        launch!(sc.k.router_f32, [t as u32, (e as u32).div_ceil(8), 1], [256, 1, 1], s; h, router, sc.logits.ptr, e as i32, c.router_hidden as i32, mult)?;
         sc.k.select(s, sc.logits.ptr, self.w.bias.as_ref().map_or(0, |b| b.ptr), 0, sc.ids.ptr, sc.wts.ptr, t, e, k, &c.router)?;
         if self.hb_cache.is_some() {
-            return self.hb_cached(lib, sc, s, x, t, y, HbSum::Muse { post_w, eps, inv });
+            return self.hb_cached(lib, sc, s, x, t, y, HbSum::Normed { post_w, eps, inv });
         }
         if let Some(cache) = &self.cache {
             // (in calls whose pairs are no more than the places: each one's experts in one wave, every row of the sum the call's own)
@@ -1344,15 +1358,15 @@ impl MoeLayer {
                         return Ok(());
                     }
                     if waves > 1 || !hy.gpu || hy.ids != 0 {
-                        return err("Muse Spark's experts in the cache: every pair of a call on the GPU in one wave");
+                        return err("normed experts in the cache: every pair of a call on the GPU in one wave");
                     }
                     let (ei, ti, ki) = (e as i64, tn as i64, k as i64);
                     lib.moe_way(sc.way.ptr, pairs as i64, ei, sc.plan.ptr, s)?;
                     moe_tp(lib, &self.w.up, ei, xs, ti, ki, true, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, &sc.ws, s)?;
-                    launch!(sc.k.mu_act, [pairs as u32, (c.inter as u32).div_ceil(256), 1], [256, 1, 1], s; sc.a.ptr, sc.h.ptr, c.inter as i32)?;
+                    sc.k.act_rounded(s, sc.a.ptr, sc.h.ptr, pairs, c.inter)?;
                     moe_tp(lib, down, ei, sc.h.ptr, ti, ki, false, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, &sc.ws, s)?;
-                    launch!(sc.k.mu_inv, [(pairs as u32).div_ceil(256), 1, 1], [256, 1, 1], s; sc.plan.ptr, inv, pairs as i32, e as i32)?;
-                    launch!(sc.k.mu_sum, [tn as u32, 1, 1], [256, 1, 1], s; sc.a.ptr, inv, ids, wts, post_w, ys, k as i32, c.hidden as i32, eps)
+                    launch!(sc.k.inv, [(pairs as u32).div_ceil(256), 1, 1], [256, 1, 1], s; sc.plan.ptr, inv, pairs as i32, e as i32)?;
+                    launch!(sc.k.norm_sum, [tn as u32, 1, 1], [256, 1, 1], s; sc.a.ptr, inv, ids, wts, post_w, ys, k as i32, c.hidden as i32, eps)
                 })?;
             }
             return Ok(());
@@ -1362,29 +1376,30 @@ impl MoeLayer {
         if let Some(hb) = &self.hb {
             // (hummingbird: the first product over the rotated input, the second unweighted in the rotated basis, each pair's row rotated back and rounded to bf16 where the sum norms it)
             self.hb_up(hb, sc, s, x, t, sc.ids.ptr)?;
-            launch!(sc.k.mu_act, [pairs as u32, (c.inter as u32).div_ceil(256), 1], [256, 1, 1], s; sc.a.ptr, sc.h.ptr, c.inter as i32)?;
+            sc.k.act_rounded(s, sc.a.ptr, sc.h.ptr, pairs, c.inter)?;
             self.hb_down(hb, sc, s, sc.h.ptr, t, sc.ids.ptr)?;
             let hk = sc.hbk.as_ref().ok_or_else(|| crate::ffi::Error("the scratch was made without hummingbird layers' room".into()))?;
             hk.unrotate(s, hb, sc.hb_part.ptr, sc.plan.ptr, sc.hb_rows.ptr, pairs)?;
-            launch!(sc.k.mu_inv, [(pairs as u32).div_ceil(256), 1, 1], [256, 1, 1], s; sc.plan.ptr, inv, pairs as i32, e as i32)?;
-            return launch!(sc.k.mu_sum, [t as u32, 1, 1], [256, 1, 1], s; sc.hb_rows.ptr, inv, sc.ids.ptr, sc.wts.ptr, post_w, y, k as i32, c.hidden as i32, eps);
+            launch!(sc.k.inv, [(pairs as u32).div_ceil(256), 1, 1], [256, 1, 1], s; sc.plan.ptr, inv, pairs as i32, e as i32)?;
+            return launch!(sc.k.norm_sum, [t as u32, 1, 1], [256, 1, 1], s; sc.hb_rows.ptr, inv, sc.ids.ptr, sc.wts.ptr, post_w, y, k as i32, c.hidden as i32, eps);
         }
         moe_tp(lib, &self.w.up, ei, x, tt, ki, true, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, &sc.ws, s)?;
-        launch!(sc.k.mu_act, [pairs as u32, (c.inter as u32).div_ceil(256), 1], [256, 1, 1], s; sc.a.ptr, sc.h.ptr, c.inter as i32)?;
+        sc.k.act_rounded(s, sc.a.ptr, sc.h.ptr, pairs, c.inter)?;
         // (the second product unweighted, the pairs' rows in the plan's order: into `a`, free after the activation)
         moe_tp(lib, down, ei, sc.h.ptr, tt, ki, false, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, &sc.ws, s)?;
-        launch!(sc.k.mu_inv, [(pairs as u32).div_ceil(256), 1, 1], [256, 1, 1], s; sc.plan.ptr, inv, pairs as i32, e as i32)?;
-        launch!(sc.k.mu_sum, [t as u32, 1, 1], [256, 1, 1], s; sc.a.ptr, inv, sc.ids.ptr, sc.wts.ptr, post_w, y, k as i32, c.hidden as i32, eps)
+        launch!(sc.k.inv, [(pairs as u32).div_ceil(256), 1, 1], [256, 1, 1], s; sc.plan.ptr, inv, pairs as i32, e as i32)?;
+        launch!(sc.k.norm_sum, [t as u32, 1, 1], [256, 1, 1], s; sc.a.ptr, inv, sc.ids.ptr, sc.wts.ptr, post_w, y, k as i32, c.hidden as i32, eps)
     }
 
-    /// DeepSeek-V4's layer as its release computes it, for `t` tokens: the router reads h [t, hidden] (sqrt-softplus scores and the bias; or, where `hash` is given (tid2eid int64 [vocab, k] and the tokens
-    /// int32 [t] on the device), the token's own experts); the experts and the shared expert read hq (h as the release's products quantize it). Each pair's activation is weighed before its second product and
-    /// rounded to FP8 where `fp8` (kernels/dsv4.cu's v4_moe_act), the second product then summing a token's pairs with weights of one (`ones`, fp32 [t k]); y [t, hidden] = that sum + the shared expert's output.
+    /// Experts whose pairs' weights are applied to their activations before the second product, as a release computes them (DeepSeek-V4's), for `t` tokens: the router reads h [t, hidden] (the layer's
+    /// scores and the bias; or, where `hash` is given (the kind's `Router::hash`: the table int64 [vocab, k] and the tokens int32 [t] on the device), the token's own experts); the experts and the shared expert
+    /// read hq (h as the release's products quantize it). Each pair's activation is weighed and rounded to FP8 where `fp8` (kernels/dsv4.cu's v4_moe_act), the second product then summing a token's pairs
+    /// with weights of one (`ones`, fp32 [t k]); y [t, hidden] = that sum + the shared expert's output.
     ///
     /// # Safety
     /// As `route`; `ones` and `hash`'s buffers live device buffers of those sizes.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn forward_release(
+    pub unsafe fn forward_weighed(
         &self,
         lib: &Lib,
         sc: &MoeScratch,
@@ -1402,8 +1417,8 @@ impl MoeLayer {
             return Ok(());
         }
         let (c, e, k) = (&self.cfg, self.cfg.experts, self.cfg.router.top_k);
-        let Act::SwiGlu { limit } = c.act else { return err("the release's experts are SwiGLU") };
-        let Down::Block(down) = &self.w.down else { return err("the release's experts' second matrix in a row layout") };
+        let Act::SwiGlu { limit } = c.act else { return err("weighed experts are SwiGLU") };
+        let Down::Block(down) = &self.w.down else { return err("weighed experts' second matrix in a row layout") };
         let lim = limit.unwrap_or(f32::INFINITY);
         crate::tmark!(s, "moe: start");
         // (a decode step's shared expert on the scratch's second stream, beside the routed experts: it reads hq alone, and its output is added at the end)
@@ -1426,7 +1441,7 @@ impl MoeLayer {
         }
         crate::tmark!(s, "moe: router");
         if self.hb_cache.is_some() {
-            self.hb_cached(lib, sc, s, hq, t, y, HbSum::Release { ones, lim, fp8 })?;
+            self.hb_cached(lib, sc, s, hq, t, y, HbSum::Weighed { ones, lim, fp8 })?;
         } else if self.cache.is_some() {
             // (the expert cache: the products over the places of each wave, the weights in the activation, the sum's pairs the call's)
             self.cached(sc, s, hq, t, y, &mut |waves| {
@@ -1727,11 +1742,11 @@ pub struct MoeScratch {
     sh: Buf,
     so: Buf,
     gate: Buf,
-    /// the shared expert's products beside the routed experts' (`forward_release`'s calls of up to `BESIDE_TOKENS` tokens), where the layers have one
+    /// the shared expert's products beside the routed experts' (`forward_weighed`'s calls of up to `BESIDE_TOKENS` tokens), where the layers have one
     beside: Option<Beside>,
 }
 
-/// Tokens a call has at most for `forward_release` to run its shared expert beside its routed experts (a decode step's, or a draft's few): past them the GPU is full anyway.
+/// Tokens a call has at most for `forward_weighed` to run its shared expert beside its routed experts (a decode step's, or a draft's few): past them the GPU is full anyway.
 pub const BESIDE_TOKENS: usize = 64;
 
 /// A second stream for the shared expert's products, the events that fork it from the engine's stream and join it back, and its own workspace and counters for the
@@ -1887,7 +1902,7 @@ impl MoeScratch {
                     f8 = f8.max(u.workspace(lib, m)?).max(d.workspace(lib, m)?);
                 }
             }
-            // (the release's layers, `forward_release`'s: their shared expert's products at up to BESIDE_TOKENS tokens)
+            // (the release's layers, `forward_weighed`'s: their shared expert's products at up to BESIDE_TOKENS tokens)
             if let (Some(sx), Act::SwiGlu { limit: Some(_) }, Down::Block(_)) = (&l.shared, l.cfg.act, &l.w.down) {
                 for m in 1..=max_tokens.min(BESIDE_TOKENS) {
                     beside = beside.max(match &l.shared8 {

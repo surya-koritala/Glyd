@@ -5,7 +5,7 @@
 
 use super::{Dyn, ModelDesc, Opts, Stage};
 use crate::ffi::{err, Error, Result};
-use crate::model::Sample;
+use crate::sched::Sample;
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver, Sender};
 
@@ -300,8 +300,8 @@ pub fn split_args(a: &crate::args::Args) -> Result<(Vec<usize>, Vec<i32>)> {
 
 impl Split {
     /// A reply as `Dyn::reply` gives one, without drafting; a sampled token from the last stage's logits row on the host.
-    fn reply(&mut self, prompt: &[u32], o: &crate::model::Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, crate::model::Finish)> {
-        use crate::model::Finish;
+    fn reply(&mut self, prompt: &[u32], o: &crate::sched::Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, crate::sched::Finish)> {
+        use crate::sched::Finish;
         if prompt.is_empty() || prompt.len() + 1 > self.ctx {
             return err(format!("{} prompt tokens, where the context holds {}", prompt.len(), self.ctx));
         }
@@ -335,7 +335,7 @@ impl crate::conv::Gen for Run {
             Run::Tp(e) => e.capacity(),
         }
     }
-    fn reply(&mut self, prompt: &[u32], o: &crate::model::Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, crate::model::Finish)> {
+    fn reply(&mut self, prompt: &[u32], o: &crate::sched::Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, crate::sched::Finish)> {
         match self {
             Run::One(e) => crate::conv::Gen::reply(e, prompt, o, each),
             Run::Split(e) => e.reply(prompt, o, each),

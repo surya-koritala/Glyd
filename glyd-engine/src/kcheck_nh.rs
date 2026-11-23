@@ -696,8 +696,8 @@ type Run<'a> = &'a dyn Fn(&mut dyn Pass, &[u32], &[u32], Option<(&crate::offload
 /// What a pass reads of an engine.
 trait Pass {
     fn reset(&mut self) -> Result<()>;
-    fn prefill(&mut self, t: &[u32]) -> Result<crate::model::Sample>;
-    fn step(&mut self, t: u32) -> Result<crate::model::Sample>;
+    fn prefill(&mut self, t: &[u32]) -> Result<crate::sched::Sample>;
+    fn step(&mut self, t: u32) -> Result<crate::sched::Sample>;
     fn logits(&self) -> Result<Vec<f32>>;
 }
 
@@ -707,10 +707,10 @@ macro_rules! pass_for {
             fn reset(&mut self) -> Result<()> {
                 <$t>::reset(self)
             }
-            fn prefill(&mut self, t: &[u32]) -> Result<crate::model::Sample> {
+            fn prefill(&mut self, t: &[u32]) -> Result<crate::sched::Sample> {
                 <$t>::prefill(self, t)
             }
-            fn step(&mut self, t: u32) -> Result<crate::model::Sample> {
+            fn step(&mut self, t: u32) -> Result<crate::sched::Sample> {
                 <$t>::step(self, t)
             }
             fn logits(&self) -> Result<Vec<f32>> {

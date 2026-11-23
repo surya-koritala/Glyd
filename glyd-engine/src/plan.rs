@@ -383,8 +383,6 @@ pub struct Shape {
     pub window: usize,
     /// Recurrent state per sequence (linear attention, Mamba), bytes.
     pub state: f64,
-    /// Latent attention (MLA: `kv_lora_rank`): its cache is one sequence's, never copied, so no states are kept at a prompt's end or at boundaries.
-    pub latent_kv: bool,
     /// Bits a weight of the release has (16 for bf16; 8 for FP8; about 4.25 for FP4 releases): every part's but the routed experts'.
     pub release_bits: f64,
     /// Bits a routed expert's weight has as released, where it differs from the rest (Kimi-K3's MXFP4, DeepSeek-V4's FP4 experts:
@@ -484,13 +482,15 @@ impl Shape {
         // attention
         let (q_lora, kv_lora) = (f(s.q_lora_rank).unwrap_or(0.0), f(s.kv_lora_rank).unwrap_or(0.0));
         let (nope, rope, v_hd) = (f(s.qk_nope_head_dim).unwrap_or(128.0), f(s.qk_rope_head_dim).unwrap_or(64.0), f(s.v_head_dim).unwrap_or(128.0));
+        // (a latent attention's indexer keeps its normed key and its gate score a token beside the latent: src/dynamic/mla.rs)
+        let indexer = if kv_lora > 0.0 { f(s.index_head_dim).unwrap_or(0.0) } else { 0.0 };
         let gate = if s.attn_output_gate.unwrap_or(false) { 2.0 } else { 1.0 };
         let hq = heads as f64;
         let (g_kv, g_hd) = (f(s.num_global_key_value_heads).unwrap_or(kv_heads), f(s.global_head_dim).unwrap_or(hd));
         let attention = |global: bool| -> (f64, f64) {
             if kv_lora > 0.0 {
                 let q = if q_lora > 0.0 { hf * q_lora + q_lora * hq * (nope + rope) } else { hf * hq * (nope + rope) };
-                (q + hf * (kv_lora + rope) + kv_lora * hq * (nope + v_hd) + hq * v_hd * hf, (kv_lora + rope) * 2.0)
+                (q + hf * (kv_lora + rope) + kv_lora * hq * (nope + v_hd) + hq * v_hd * hf, (kv_lora + rope + 2.0 * indexer) * 2.0)
             } else {
                 let (kv, d) = if global { (g_kv, g_hd) } else { (kv_heads, hd) };
                 (hf * hq * d * gate + 2.0 * hf * kv * d + hq * d * hf, 2.0 * kv * d * 2.0)
@@ -503,7 +503,6 @@ impl Shape {
         let arch = if c.arch.is_empty() { model_type.clone() } else { c.arch.clone() };
         let mut sh = Shape { arch, layers: kinds.len(), hidden: h, experts, topk, ..Default::default() };
         sh.window = s.sliding_window.unwrap_or(0);
-        sh.latent_kv = kv_lora > 0.0;
         for (i, kind) in kinds.iter().enumerate() {
             match kind.as_str() {
                 "linear_attention" => {
@@ -606,6 +605,19 @@ pub struct Ask {
     pub family: Option<&'static crate::support::Support>,
     /// The checkpoint is quantization-aware (`levels::is_qat`): its wren is exact (a pre-packed repo of the release's own four-bit weights).
     pub qat: bool,
+    /// The positions a decode step reads in the prediction (0: `POSITIONS`); a development build's `GLYD_FIT_POSITIONS` sets it for `fit`, to predict a longer
+    /// conversation (the held-out checks of the predictions, scripts in the M2 handoff).
+    pub positions: usize,
+}
+
+impl Ask {
+    fn positions(&self) -> f64 {
+        if self.positions > 0 {
+            self.positions as f64
+        } else {
+            POSITIONS
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -711,14 +723,14 @@ pub const MIN_CTX: usize = 4096;
 pub const PREFERRED_CTX: usize = 8192;
 const CONTEXTS: [usize; 8] = [4096, 8192, 16384, 32768, 65536, 131072, 262144, 1048576];
 /// Positions a decode step reads on average in the predictions (a chat with a short prompt).
-const POSITIONS: f64 = 1024.0;
+pub const POSITIONS: f64 = 1024.0;
 /// What a kernel streaming the GPU's memory reads of the maker's figure: 697.35 of 736 GB/s, measured on an RTX 4080 SUPER (`glyd-engine rates`, 512 MiB, 10
 /// passes); the rate of a preset or of a GPU the probe has not measured.
 pub const STREAM_OF_SPEC: f64 = 0.9475;
 /// Of the streamed rate, what decode's reads reach: the lossy levels' packs all of it, the lossless layout (decoded in the product) 0.72; and a decode step's time
 /// besides its reads, 35 µs a layer (its kernels' launches and the gaps between them). Measured on an RTX 4080 SUPER at about 1,000 positions: gemma-4-12B at wren
-/// 86.2 tokens/s and kestrel 63.3, Qwen3.5-0.8B at kestrel 561.9 and wren 657.9 (a 35 µs layer and the stream's rate predict them within 4%); the lossless figure from
-/// Qwen3-32B on an RTX A6000 (11.8 tokens/s).
+/// 86.2 tokens/s and kestrel 63.3, Qwen3.5-0.8B at kestrel 561.9 and wren 657.9 (a 35 µs layer and the stream's rate predict them within 4%: fitted on them, in-sample); the lossless
+/// figure from Qwen3-32B on an RTX A6000 (11.8 tokens/s, likewise fitted).
 const EFF_LOSSY: f64 = 1.0;
 const EFF_LOSSLESS: f64 = 0.72;
 const LAYER_S: f64 = 35e-6;
@@ -728,7 +740,7 @@ const EFF_CPU: f64 = 0.70;
 const SYNC_PER_MOE_LAYER: f64 = 0.165e-3;
 /// A prompt's tokens a second: 2 x the parameters a token multiplies over the GPU's tensor rate (`Device::tflops`) at `PROMPT_EFF` of it, and 1.11 µs a token a
 /// layer besides (attention, norms, the recurrent layers' scans). Both from two prompts of 936 and 1,002 tokens on an RTX 4080 SUPER: gemma-4-12B at wren 3,570
-/// tokens/s, Qwen3.5-0.8B at kestrel 27,073.
+/// tokens/s, Qwen3.5-0.8B at kestrel 27,073 (two constants from two runs: fitted, in-sample).
 const PROMPT_EFF: f64 = 0.92;
 const PROMPT_LAYER_S: f64 = 1.11e-6;
 /// The band a prediction is given in where no run on the GPU was observed (p10 and p90 against the prediction): the runs these figures are calibrated on (above, and
@@ -932,9 +944,9 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
     let fam = ask.family;
     let default_ctx = fam.and_then(|f| f.default_ctx).unwrap_or(TARGET_CTX).min(sh.max_ctx);
     let max_ctx = ask.context.unwrap_or(default_ctx).min(fam.and_then(|f| f.max_ctx).unwrap_or(usize::MAX));
-    // (a model with recurrent states and no latent cache keeps a second copy of each sequence's states at its prompt's end, and the pool of them kept at block
-    // boundaries, src/dynamic/snaps.rs: as the loader makes them)
-    let marked = if sh.state > 0.0 && !sh.latent_kv { sh.state } else { 0.0 };
+    // (a model with recurrent states keeps a second copy of each sequence's states at its prompt's end, and the pool of them kept at block boundaries,
+    // src/dynamic/snaps.rs: as the loader makes them; a latent cache is paged as any keys are, so a latent attention's model keeps them too)
+    let marked = if sh.state > 0.0 { sh.state } else { 0.0 };
     let pool = if marked > 0.0 { crate::dynamic::snaps::count(sh.state as usize) as f64 * sh.state } else { 0.0 };
     let kv_at = |ctx: usize| (sh.kv_full * ctx as f64 + sh.kv_sliding * ctx.min(sh.window.max(1)) as f64 + sh.state + marked) * users + pool;
     let same: Vec<usize> = (0..m.devices.len()).filter(|&i| m.devices[i].vendor == d0.vendor).collect();
@@ -955,7 +967,7 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
         let experts = sh.routed * ebits / 8.0;
         let weights = rest + experts;
         let eff = eff_of(level, sh);
-        let read = read_of(sh, bits, ebits, POSITIONS);
+        let read = read_of(sh, bits, ebits, ask.positions());
         // the largest context that fits in `budget` bytes once `fixed` are placed
         let ctx_in = |budget: f64, fixed: f64| -> Option<usize> {
             let fits: Vec<usize> = CONTEXTS.iter().copied().filter(|&c| c <= max_ctx && fixed + kv_at(c) <= budget).collect();
@@ -1075,7 +1087,7 @@ pub const SCHEMA: &str = "glyd-plan/1";
 /// The engine path that loads a plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// Qwen3 dense, lossless (src/model.rs).
+    /// Qwen3 dense (and every Llama-style dense model the description builder reads) on the executor: src/dynamic/dense.rs, at penguin, kestrel, swift and wren.
     Qwen3,
     /// Qwen3.5, 3.6 and 3.8 dense at a lossy level.
     Qwen35,
@@ -1546,8 +1558,8 @@ pub fn ladder(
 }
 
 /// An option of the ladder from the plan `run` loads at that level.
-fn candidate_of(lp: LoadPlan, sh: &Shape, m: &Machine, main: usize) -> Candidate {
-    let tok_s = speed_of(sh, m, main, &lp);
+fn candidate_of(lp: LoadPlan, sh: &Shape, m: &Machine, main: usize, positions: f64) -> Candidate {
+    let tok_s = speed_at(sh, m, main, &lp, positions);
     let placement = match (&lp.spread, &lp.experts) {
         (Some(sp), _) if sp.host_bytes > 0 => Placement::ExpertsInRam {
             gpu: sp.devices.first().map_or(main, |&d| d as usize),
@@ -1924,6 +1936,7 @@ pub(crate) fn exact_options(
     machine: &Machine,
     users: usize,
     probed: bool,
+    positions: f64,
 ) -> Option<(Vec<Candidate>, Vec<crate::ui::Refusal>)> {
     let (main, target, devs, reach) = sizing_inputs(machine, probed)?;
     let tries: Vec<&'static str> = match level {
@@ -1936,7 +1949,7 @@ pub(crate) fn exact_options(
             Ok(Some(lp)) => {
                 sized = true;
                 // (a level the model is not had at sizes as the one it is: a local release asked for at hummingbird is its own penguin, listed once)
-                let c = candidate_of(lp, sh, machine, main);
+                let c = candidate_of(lp, sh, machine, main, positions);
                 if !options.iter().any(|o: &Candidate| o.level == c.level) {
                     options.push(c);
                 }
@@ -1976,6 +1989,8 @@ pub struct Planned {
     pub refusal: Option<crate::ui::Refusal>,
     /// The degrade ladder from the level asked for (the family's first where none is): None where no level of the family is sized by its loader.
     pub ladder: Option<Ladder>,
+    /// The positions the decode predictions are for (`Ask::positions`).
+    pub positions: f64,
 }
 
 pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
@@ -2008,12 +2023,13 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
     let context: Option<usize> = a.flag("context").map(|c| c.parse()).transpose().map_err(|_| Refusal::new("--context takes a number", "--context 8192"))?;
     crate::support::context_check(&name, fam, sh.max_ctx, context)?;
     let users: usize = a.num("users", 1usize)?;
-    let ask = Ask { level, context, users, family: Some(fam), qat: levels::is_qat(model) };
+    let positions = crate::tune!("GLYD_FIT_POSITIONS").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let ask = Ask { level, context, users, family: Some(fam), qat: levels::is_qat(model), positions };
     let mut p = plan(&sh, &machine, ask);
     let mut refusal = None;
     // where run's own sizing covers the family: the plan `run` would load at each level, or the refusal it would give (the same functions: `sizing::size`)
     let probed = a.flag("machine").is_none();
-    if let Some((options, refusals)) = exact_options(a, model, &config, level, fam, &sh, &machine, users, probed) {
+    if let Some((options, refusals)) = exact_options(a, model, &config, level, fam, &sh, &machine, users, probed, ask.positions()) {
         let max_ctx = context.unwrap_or(fam.default_ctx.unwrap_or(TARGET_CTX).min(sh.max_ctx)).min(fam.max_ctx.unwrap_or(usize::MAX));
         p.chosen = choose(&options, max_ctx);
         p.options = options;
@@ -2056,7 +2072,7 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
         let lad = ladder(&sh, &machine, fam, model, asked, want, &size);
         (lad.plan.is_some() || lad.refusal.is_some()).then_some(lad)
     });
-    Ok(Planned { model: model.to_string(), name, family: fam, shape: sh, machine, plan: p, refusal, ladder })
+    Ok(Planned { model: model.to_string(), name, family: fam, shape: sh, machine, plan: p, refusal, ladder, positions: ask.positions() })
 }
 
 fn fit(a: &crate::args::Args) -> Result<(), crate::ui::Refusal> {
@@ -2068,6 +2084,7 @@ fn fit(a: &crate::args::Args) -> Result<(), crate::ui::Refusal> {
             None => serde_json::json!({"schema": SCHEMA, "model": model, "plan": null, "notes": p.notes}),
         };
         v["degrade"] = f.ladder.as_ref().map_or(serde_json::Value::Null, Ladder::json);
+        v["positions"] = serde_json::json!(f.positions);
         println!("{v}");
     } else {
         print!("{}", text(model, &f.shape, &f.machine, p));
@@ -2153,9 +2170,9 @@ pub mod sizing {
         (cfg.matrix_bytes() as f64 * bits(layout) / 16.0) as u64 + (cfg.layers * cfg.hidden * 4 * 2) as u64 + (cfg.max_pos * cfg.head_dim * 4) as u64
     }
 
-    /// A token's keys and values in the lossless cache, all layers: 12 bits a value and a page's header.
-    pub fn kv_per_token(cfg: &Config) -> u64 {
-        ((cfg.layers * 2 * cfg.kv_heads * cfg.head_dim) as f64 * 1.5 * 1.06) as u64
+    /// A token's keys and values in the executor's cache, all layers: bf16, or in its 12-bit lossless pages (`twelve`) 12 bits a value and a page's header.
+    pub fn kv_per_token(cfg: &Config, twelve: bool) -> u64 {
+        ((cfg.layers * 2 * cfg.kv_heads * cfg.head_dim) as f64 * if twelve { 1.5 * 1.06 } else { 2.0 }) as u64
     }
 
     /// The activations of a chunk of `chunk` tokens (the buffers of one forward pass), the decoded matrix a cuBLAS product reads, and the fixed workspaces.
@@ -2700,8 +2717,10 @@ pub mod sizing {
         Refusal::unsupported(what, alt.map_or_else(|| format!("C{rest}"), |a| format!("{a}\nOr c{rest}")))
     }
 
-    /// A Qwen3 model's needs at `layout` for `users` sequences: its packed weights, its keys and values (12 bits a value), its chunks' work with cuBLAS (`cublas`) or without.
-    pub(crate) fn qwen3_needs(cfg: &Config, layout: Layout, users: usize, cublas: bool) -> Needs {
+    /// A Qwen3 model's needs on the executor at `layout` for `users` sequences: its packed weights, its keys and values (bf16, or 12 bits a value in its 12-bit pages:
+    /// `twelve`) in pages the sequences share (a sequence takes the blocks its tokens fill, so the context is sized for one), its chunks' work with cuBLAS (`cublas`) or
+    /// without.
+    pub(crate) fn qwen3_needs(cfg: &Config, layout: Layout, users: usize, cublas: bool, twelve: bool) -> Needs {
         let first = if cublas { 4096 } else { 2048 };
         Needs {
             kind: Kind::Qwen3,
@@ -2710,9 +2729,9 @@ pub mod sizing {
             weights: weights(cfg, layout),
             bf16: cfg.matrix_bytes(),
             per_seq: 0,
-            per_token: kv_per_token(cfg),
+            per_token: kv_per_token(cfg, twelve),
             users: users.max(1),
-            fewer: false,
+            fewer: true,
             draft: 0,
             chunks: [first, 2048, 1024, 512].into_iter().filter(|&c| c <= first).map(|c| (c, work(cfg, c, cublas))).collect(),
             want: CTX_WANT.min(cfg.max_pos),
@@ -2724,7 +2743,7 @@ pub mod sizing {
     }
 
     /// The plan of a Qwen3 model on a GPU that has `free` bytes (`gpu` its name), for `users` sequences at once, at the context `asked`, else the model's own up to
-    /// `CTX_WANT`, less where the room is short (not below `CTX_MIN`).
+    /// `CTX_WANT`, less where the room is short (not below `CTX_MIN`); its keys and values bf16.
     #[allow(clippy::too_many_arguments)]
     pub fn qwen3_fit(
         cfg: &Config,
@@ -2736,8 +2755,30 @@ pub mod sizing {
         users: usize,
         cublas: bool,
     ) -> Result<LoadPlan, Refusal> {
-        let n = qwen3_needs(cfg, layout, users, cublas);
+        qwen3_fit_kv(cfg, name, gpu, free, layout, asked, users, cublas, false)
+    }
+
+    /// `qwen3_fit` with the keys and values in the 12-bit pages where `twelve`.
+    #[allow(clippy::too_many_arguments)]
+    fn qwen3_fit_kv(
+        cfg: &Config,
+        name: &str,
+        gpu: &str,
+        free: u64,
+        layout: Layout,
+        asked: Option<usize>,
+        users: usize,
+        cublas: bool,
+        twelve: bool,
+    ) -> Result<LoadPlan, Refusal> {
+        let n = qwen3_needs(cfg, layout, users, cublas, twelve);
         one_gpu(&n, free, asked, gpu).map_err(|s| too_big(name, level_name(layout), gpu, free, n.users, &s, asked, false, None))
+    }
+
+    /// Whether a run of `a` puts its keys and values in the executor's 12-bit lossless pages: a server's (whose scheduler pages the cache) where GLYD_KV=lossless asks for
+    /// them, as Gemma 4's (src/dynamic/kvpages.rs).
+    pub(crate) fn twelve_pages(a: &Args) -> bool {
+        std::env::var("GLYD_KV").as_deref() == Ok("lossless") && a.pos.first().is_some_and(|c| c == "serve")
     }
 
     /// A dense product for the long prompts (cuBLAS where it is, else the engine's own on Ampere, Ada and Hopper): the decoded matrix and the larger chunk that goes with it.
@@ -2765,7 +2806,7 @@ pub mod sizing {
         };
         // (what the last load of this model here took beyond its plan is planned as already taken: `calibrated`)
         let extra = calibration(name, levels::name_of(layout), &t.name);
-        let mut fit = qwen3_fit(cfg, name, &t.name, t.free.saturating_sub(extra), layout, asked, users, dense_product(t.cc))?;
+        let mut fit = qwen3_fit_kv(cfg, name, &t.name, t.free.saturating_sub(extra), layout, asked, users, dense_product(t.cc), twelve_pages(a))?;
         calibrated(&mut fit, t.free, extra);
         Ok((layout, why, fit))
     }
@@ -2801,7 +2842,8 @@ pub mod sizing {
             Family::Qwen3 => {
                 supported(&name, text)?;
                 let cfg = Config::parse(text, "config.json", None).map_err(cannot)?;
-                let (_, _, p) = plan_for(a, &cfg, &name, t, None, users)?;
+                // (penguin at the layout the GPU is fastest in, a lossy level at its own)
+                let (_, _, p) = plan_for(a, &cfg, &name, t, levels::layout_of(level).filter(|l| *l != Layout::Tiered), users)?;
                 shape_checks(&name, &cfg, &p)?;
                 Ok(Some(p))
             }
@@ -3981,6 +4023,9 @@ mod tests {
     /// what `glyd-engine bench --loads 1k:1 --no-draft` measured on one (2026-11-23, three runs each, the median): gemma-4-12B at wren 86.2 tokens/s and kestrel 63.3,
     /// prompts of 936 tokens at 3,570 and 3,580; Qwen3.5-0.8B at kestrel 561.9 and wren 657.9, prompts of 1,002 tokens at 27,073 and 27,372. Each within 15%, with
     /// the shapes `fit` reads (the checkpoints' own headers) and the family's path (Qwen3.5's does not draft with its head); the measurement in the band.
+    /// FITTED, IN-SAMPLE: `EFF_LOSSY`, `LAYER_S`, `PROMPT_EFF` and `PROMPT_LAYER_S` were set from these very runs, so this pins the constants and is no evidence
+    /// that they predict other runs. The held-out check (other levels, 4k and 8k positions, other prompt lengths, each predicted before it is measured) is the M2
+    /// handoff's g3 script on the 4080 SUPER, not run yet.
     #[test]
     fn predictions_on_the_4080_super_are_within_15_percent() {
         let gemma: serde_json::Value = serde_json::from_str(&fixture("headers/gemma-4-12B-it.json")).unwrap();
@@ -4023,6 +4068,19 @@ mod tests {
         let mut odd = m.clone();
         odd.devices[0].tflops = 0.0;
         assert!(chosen(&plan(&gemma_sh, &odd, Ask { level: Some("wren"), ..Default::default() })).prefill.is_none());
+    }
+
+    /// The prediction is for `Ask::positions` positions (fit's `GLYD_FIT_POSITIONS` in a development build): a longer conversation reads more keys and values a step,
+    /// and is predicted slower by exactly their bytes at the GPU's rate (the sliding layers read their window either way).
+    #[test]
+    fn a_longer_conversation_is_predicted_slower() {
+        let g = Shape::from_config(&fixture("gemma4_12b_config.json")).unwrap();
+        let m = Machine::preset("rtx4080s").unwrap();
+        let at = |positions: usize| chosen(&plan(&g, &m, Ask { level: Some("wren"), positions, ..Default::default() })).tok_s;
+        assert_eq!(at(0), at(1024));
+        let (short, long) = (1.0 / at(1024), 1.0 / at(8192));
+        let more = g.kv_full * (8192.0 - 1024.0);
+        assert!(((long - short) - more / (m.devices[0].rate() * EFF_LOSSY)).abs() < 1e-9, "{short} {long}");
     }
 
     #[test]
@@ -4192,7 +4250,8 @@ mod tests {
                     let run = match row.family {
                         crate::support::Family::Qwen3 => {
                             let cfg = crate::weights::Config::parse(text, "config.json", None).unwrap();
-                            sizing::qwen3_plan(&args(&["run", model]), &cfg, &crate::cli::short_name(model), &gpu, None, 1).map(|p| p.2)
+                            let layout = crate::levels::layout_of(level).filter(|l| *l != crate::weights::Layout::Tiered);
+                            sizing::qwen3_plan(&args(&["run", model]), &cfg, &crate::cli::short_name(model), &gpu, layout, 1).map(|p| p.2)
                             // (on Windows the name of a path is the whole path)
                         }
                         _ => {

@@ -7,8 +7,8 @@
 //!   within the bounds, both recorded from the same (`packcheck --record`). On the CPU on every merge (the unit test below,
 //!   which ci.yml's engine tests run) and with the GPU library's decode on the GPU runner (`packcheck --gpu`).
 //! - The formats the engine reads a saved directory in, as the glyd/* repos and the engine's cache hold them (`packcheck --engine`, the GPU job): glyd-v7 at penguin,
-//!   kestrel, swift and wren, glyd-v4 and glyd-v3 with the dense engine's `engine.safetensors`. Each is made here from a logits case's random model of a family published
-//!   in it (Qwen3.5's layout, Gemma 4, Nemotron-H; Qwen3 dense for the engine's cache) by the packer that made those repos (`pack::run`), loaded from the saved directory as
+//!   kestrel, swift and wren (glyd-v4 and glyd-v3 with the dense Qwen3 engine's `engine.safetensors` went with that engine, R3c #139: such a cache is packed again). Each is
+//!   made here from a logits case's random model of a family published in it (Qwen3.5's layout, Gemma 4, Nemotron-H; Qwen3 dense for the engine's cache) by the packer that made those repos (`pack::run`), loaded from the saved directory as
 //!   `run` loads a pre-packed repo, and its rows held to the case's logits fixtures at that level (`tests/logits`, src/logits.rs): the same bits as the engine's own run
 //!   of the model packed as it loads (`CASE.GPU[.LEVEL].json.gz`, on the GPU generation that recorded them) and within the bound of the case's reference. And glyd-v7 at
 //!   hummingbird (glyd/nemotron-3-hummingbird: the experts in codebook rows), from a random Nemotron-H with latent experts and a random export of them: no level packs it as
@@ -349,8 +349,7 @@ fn threads() -> usize {
 /// The formats the engine reads a saved directory in, each as a published repo or the engine's cache holds it: the logits case of a family published in it, the level it
 /// runs at, the layout `pack::run` saves it in, and what it is.
 pub const SAVED: &[(&str, &str, &str, &str)] = &[
-    ("qwen3", "penguin", "mma", "glyd-v4 and engine.safetensors: the dense engine's cache, the tiered layout"),
-    ("qwen3", "penguin", "mma12", "glyd-v3 and engine.safetensors: the dense engine's cache, the 12-bit layout"),
+    ("qwen3", "penguin", "mma", "glyd-v7 at penguin: a Qwen3 model in the engine's cache (the executor's, src/dynamic/dense.rs)"),
     ("qwen35", "kestrel", "i6", "glyd-v7 i6: glyd/Qwen3.5-*, Qwen3.6-27B and Qwen3.8-27B -kestrel"),
     ("qwen35", "swift", "i5", "glyd-v7 i5: the same at swift"),
     ("qwen35", "wren", "i4", "glyd-v7 i4: the same at wren"),

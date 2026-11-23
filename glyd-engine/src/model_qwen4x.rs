@@ -10,12 +10,12 @@ use crate::kern::Kern;
 use crate::kern35::{Kern35, Mat};
 use crate::launch;
 use crate::mapped::Mapping;
-use crate::model::Sample;
 use crate::model_glm::{f32_bytes, KernGlm};
 use crate::moe::{Act, ExpertStack, Joined, MoeCfg, MoeLayer, MoeScratch, MoeWeights, Router, Shared};
 use crate::moe_rows::Down;
 use crate::qwen35::Pack35;
 use crate::qwen4x::{ConfigQx, QxKind};
+use crate::sched::Sample;
 use crate::weights::{ordered, read_pack, rope_tables, upload_bytes, upload_packed, Layout, PackBuf};
 use glyd_gpu::safetensors::{Checkpoint, TensorInfo};
 use std::cell::{Cell, OnceCell};
@@ -1544,7 +1544,7 @@ pub struct EngineQx {
     /// The candidates of up to SPEC_ROWS rows for the sampler: the rows' TOPK largest logits (tokens, values) and their sums, and the host's copy.
     samp: (Buf, Buf, Buf, Pinned),
     /// Where the first row's grammar mask is put on the GPU (the later rows of a step follow tokens that are not chosen yet).
-    maskgpu: Option<crate::model::MaskGpu>,
+    maskgpu: Option<crate::kern::MaskGpu>,
     draft_p: Cell<f32>,
     dpb: std::cell::RefCell<Option<Buf>>,
     ones4: Buf,
@@ -2028,7 +2028,7 @@ impl EngineQx {
                 Buf::zeroed(8 * SPEC_ROWS)?,
                 Pinned::new(8 * crate::kern::TOPK * SPEC_ROWS + 8 * SPEC_ROWS)?,
             ),
-            maskgpu: crate::model::MaskGpu::new(cfg.vocab, 1).ok(),
+            maskgpu: crate::kern::MaskGpu::new(cfg.vocab, 1).ok(),
             draft_p: Cell::new(1.0),
             dpb: std::cell::RefCell::new(None),
             ones4,

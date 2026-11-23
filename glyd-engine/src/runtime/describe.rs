@@ -354,6 +354,9 @@ fn shape_roles(shapes: &mut std::collections::BTreeMap<String, Vec<usize>>, r: &
     }
 }
 
+/// The model types the `llama` builder reads: the pre-norm dense decoders of one attention and one gated MLP a layer.
+pub const LLAMA: &[&str] = &["llama", "mistral", "qwen2", "qwen3"];
+
 /// The description of the model whose `config.json` is `cfg`.
 pub fn describe(cfg: &Value) -> Result<Described> {
     describe_config(&ModelConfig::from_value(cfg)?)
@@ -373,7 +376,7 @@ pub fn describe_config(c: &ModelConfig) -> Result<Described> {
     // (a multimodal config's tie flag can sit at the top)
     let tied_top = c.top.get("tie_word_embeddings").and_then(|v| v.as_bool());
     match mt {
-        "llama" | "mistral" | "qwen2" | "qwen3" => llama(tc, prefix, mt, tied_top),
+        t if LLAMA.contains(&t) => llama(tc, prefix, mt, tied_top),
         "qwen3_5_text" | "qwen3_5_moe_text" | "qwen3_5" | "qwen3_5_moe" => qwen35(tc, prefix, mt, tied_top),
         "qwen4_exp_text" => qwen4x(tc, prefix, mt, tied_top),
         "gemma4_text" | "gemma4_unified_text" => gemma4(tc, prefix, mt, tied_top),
@@ -422,7 +425,7 @@ fn llama(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>
     let bias = k.bool("attention_bias", mt == "qwen2")?;
     k.expect("mlp_bias", &Value::Bool(false))?;
     let act = act(k.str("hidden_act")?.unwrap_or("silu"))?;
-    k.usize("intermediate_size")?;
+    let inter = k.usize("intermediate_size")?;
     // sliding windows: Mistral's `sliding_window` for every layer; Qwen2's past `max_window_layers` when `use_sliding_window`
     let window = k.opt_usize("sliding_window")?;
     let qwen_sliding = k.bool("use_sliding_window", mt == "mistral")?;
@@ -430,8 +433,7 @@ fn llama(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>
     let layer_types: Option<Vec<String>> =
         k.raw("layer_types").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect());
     let qk_norm = mt == "qwen3";
-    let mut blocks = Vec::new();
-    let mut roles = Vec::new();
+    let (mut blocks, mut roles, mut shapes) = (Vec::new(), Vec::new(), std::collections::BTreeMap::new());
     for l in 0..layers {
         let sliding = match &layer_types {
             Some(lt) => lt.get(l).map(|s| s == "sliding_attention").unwrap_or(false),
@@ -457,10 +459,33 @@ fn llama(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>
             rounding: AttnRounding::F32,
         };
         let p = names::HF.layer(prefix, l);
+        let (ar, fr) = (
+            names::roles(part::ATTN, &p, 0, |r| (bias || !r.ends_with("_bias")) && (qk_norm || !matches!(r, "q_norm" | "k_norm"))),
+            names::roles(part::MLP, &p, 0, all),
+        );
+        // (the shapes: each matrix [rows, columns] as the heads and widths make it, each norm and bias its width)
+        let (q, kvw) = (heads * hd, kv * hd);
+        shape_roles(
+            &mut shapes,
+            &ar,
+            &[
+                ("norm_in", vec![d]),
+                ("q", vec![q, d]),
+                ("q_bias", vec![q]),
+                ("k", vec![kvw, d]),
+                ("k_bias", vec![kvw]),
+                ("v", vec![kvw, d]),
+                ("v_bias", vec![kvw]),
+                ("o", vec![d, q]),
+                ("q_norm", vec![hd]),
+                ("k_norm", vec![hd]),
+            ],
+        );
+        shape_roles(&mut shapes, &fr, &[("norm_in", vec![d]), ("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])]);
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Attention(a)), norm_out: None, residual: Residual::Add });
-        roles.push(names::roles(part::ATTN, &p, 0, |r| (bias || !r.ends_with("_bias")) && (qk_norm || !matches!(r, "q_norm" | "k_norm"))));
+        roles.push(ar);
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Ffn(Ffn::Mlp(gated(act))), norm_out: None, residual: Residual::Add });
-        roles.push(names::roles(part::MLP, &p, 0, all));
+        roles.push(fr);
     }
     let desc = ModelDesc {
         hidden: d,
@@ -473,7 +498,14 @@ fn llama(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>
         vision: None,
         rope: Some(rp),
     };
-    finish(&k, desc, &names::HF, prefix, roles, 0)
+    let mut out = finish(&k, desc, &names::HF, prefix, roles, 0)?;
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(h) = &out.head {
+        shapes.insert(h.clone(), vec![vocab, d]);
+    }
+    out.shapes = shapes;
+    Ok(out)
 }
 
 fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {
@@ -1232,6 +1264,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
             sinkhorn_iters: k.opt_usize("hc_sinkhorn_iters")?.unwrap_or(20),
             eps: k.opt_f64("hc_eps")?.unwrap_or(1e-6) as f32,
             norm_eps: eps,
+            rounding: Rounding::Twice,
         })
     } else {
         None
@@ -1752,6 +1785,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
         sinkhorn_iters: k.opt_usize("hc_sinkhorn_iters")?.unwrap_or(20),
         eps: k.opt_f64("hc_eps")?.unwrap_or(1e-6) as f32,
         norm_eps: eps,
+        rounding: Rounding::Once,
     };
     let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
     // each layer's compression ratio and whether it is CSA (overlap and indexer), its rope, and whether its MoE is hash-routed

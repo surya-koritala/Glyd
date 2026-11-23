@@ -1,17 +1,12 @@
-//! A model ready to run, made on first use: the Hub checkpoint packed into the engine's cache (its layout the GPU's), and the KV cache's tables calibrated for it, each once.
+//! A model ready to run, made on first use: the Hub checkpoint packed into the engine's cache (its level's layout), once.
 //!
-//! The cache is `$GLYD_CACHE`, else `$XDG_CACHE_HOME/glyd`, else `~/.cache/glyd`; a packed model lives in `engine/<model>-<revision>-<layout>/` and its tables in that directory
-//! (`kv-tables-<positions>.safetensors`, the least tier that covers the context asked for). Both are made beside the final name and renamed into it, so a run that stops leaves nothing half made.
+//! The cache is `$GLYD_CACHE`, else `$XDG_CACHE_HOME/glyd`, else `~/.cache/glyd`; a packed model lives in `packed/<model>-<revision>-<layout>/`, made beside the final name and
+//! renamed into it, so a run that stops leaves nothing half made. The executor's 12-bit KV tables are kept in `kv12/` (src/dynamic/kv12.rs).
 
-use crate::calib;
-use crate::chat::Chat;
 use crate::ffi::{err, Error, Result};
 use crate::hub::{self, Entry, Hub, HubError, Remote};
-use crate::kvcal;
-use crate::model::{Engine, Opts};
-use crate::tok::Tok;
 use crate::ui::{fmt_time, gb, Bar, Done, Refusal, Ui};
-use crate::weights::{choose_layout, Config, Layout};
+use crate::weights::Layout;
 use glyd_gpu::save::Source;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -26,12 +21,6 @@ pub fn cache_root() -> PathBuf {
     Path::new(&crate::os::home()).join(".cache").join("glyd")
 }
 
-/// A model made ready: its packed directory and its KV tables' file.
-pub struct Prepared {
-    pub dir: PathBuf,
-    pub tables: PathBuf,
-}
-
 fn io<T>(r: std::io::Result<T>) -> Result<T> {
     r.map_err(|e| Error(e.to_string()))
 }
@@ -43,134 +32,10 @@ pub fn packed_name(source: &glyd_gpu::save::Source, layout: Layout) -> String {
     format!("{base}{rev}-{}", if layout == Layout::Compact { "a" } else { layout.name() })
 }
 
-/// The packed directory `dir` of a model, made where it is not there, and made again where it is of the tiered layout of glyd 0.27 and before (which the library no longer reads): `make` packs into the directory it is given,
-/// which is renamed into `dir`; the KV tables of the old directory (made on the engine's own forward pass, and the weights unpack to the same bits in the new layout) are carried over to the new one.
-fn ensure_packed(root: &Path, dir: &Path, model: &str, layout: &str, log: &dyn Fn(&str), make: &dyn Fn(&Path) -> Result<()>) -> Result<()> {
-    let state = |d: &Path| if !d.join("engine.safetensors").exists() { None } else { Some(crate::weights::earlier_format(d).is_some()) };
-    if state(dir) == Some(false) {
-        return Ok(());
-    }
-    // one process makes it at a time
-    let lock = io(std::fs::File::create(root.join(".lock")))?;
-    io(lock.lock())?;
-    let old = match state(dir) {
-        Some(false) => return Ok(()),
-        Some(true) => true,
-        None => false,
-    };
-    if old {
-        log(&format!("glyd: the packed copy of {model} is of the layout of glyd 0.27 and before, which this glyd does not read: packing it again for this GPU ({layout}), once: {}", dir.display()));
-    } else {
-        log(&format!("glyd: packing {model} for this GPU ({layout}), once: {}", dir.display()));
-    }
-    let tmp = root.join(format!(".packing-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
-    make(&tmp)?;
-    if old {
-        replace_old(dir, &tmp)?;
-    } else {
-        io(std::fs::rename(&tmp, dir))?;
-    }
-    Ok(())
-}
-
-/// The new packed directory `tmp` put in the place of the old one `dir`, the old one's KV tables carried over.
+/// The new packed directory `tmp` put in the place of the old one `dir`.
 fn replace_old(dir: &Path, tmp: &Path) -> Result<()> {
-    for e in io(std::fs::read_dir(dir))? {
-        let e = io(e)?;
-        let name = e.file_name().to_string_lossy().into_owned();
-        if name.starts_with("kv-tables-") && name.ends_with(".safetensors") {
-            io(std::fs::copy(e.path(), tmp.join(&name)))?;
-        }
-    }
     io(std::fs::remove_dir_all(dir))?;
     io(std::fs::rename(tmp, dir))
-}
-
-/// The least tables file in `dir` that covers `positions` (kv-tables-<tier>.safetensors), and the tier a new one would be made for.
-pub fn tables_for(dir: &Path, positions: usize) -> Result<(Option<PathBuf>, usize)> {
-    let want = kvcal::check_positions(positions)?;
-    for t in kvcal::TIERS.iter().copied().filter(|&t| t >= want) {
-        let p = dir.join(format!("kv-tables-{t}.safetensors"));
-        if p.exists() {
-            return Ok((Some(p), want));
-        }
-    }
-    Ok((None, want))
-}
-
-/// `tables_for`, but a file of another version of the tables' rule (an earlier engine's) is deleted and not taken: the tables are made again.
-fn current_tables_for(dir: &Path, positions: usize) -> Result<(Option<PathBuf>, usize)> {
-    loop {
-        let (found, tier) = tables_for(dir, positions)?;
-        match found {
-            Some(p) if !crate::kv::KvTables::is_current(&p) => {
-                let _ = std::fs::remove_file(&p);
-            }
-            other => return Ok((other, tier)),
-        }
-    }
-}
-
-/// The model `model` (a packed directory, a Hub-format directory, or a Hub repo id in the local cache) packed and calibrated for contexts of `ctx` tokens: the cache's files where they are,
-/// else made now (`log` says what is happening; a first run of an 8B model takes about two minutes).
-pub fn prepare(model: &str, ctx: usize, layout: Option<Layout>, log: &dyn Fn(&str)) -> Result<Prepared> {
-    let direct = Path::new(model);
-    let packed = if direct.join("glyd.json").exists() {
-        if let Some(why) = crate::weights::earlier_format(direct) {
-            // (a directory the user keeps: not packed over)
-            return err(format!("{model}: {why}: pack the model again (glyd pack MODEL DIR)"));
-        }
-        direct.to_path_buf()
-    } else {
-        let source = glyd_gpu::save::Source::find(model).map_err(|e| Error(e.to_string()))?;
-        let cfg = Config::load(&source.dir)?;
-        let layout = match layout {
-            Some(l) => l,
-            None => {
-                let dev = crate::dev::Dev::new(0)?;
-                let (l, why) = choose_layout(None, dev.cc_pair(), dev.total_mem as u64, cfg.matrix_bytes(), 0);
-                log(&format!("glyd: layout {}: {why}", l.name()));
-                l
-            }
-        };
-        let root = cache_root().join("engine");
-        io(std::fs::create_dir_all(&root))?;
-        let dir = root.join(packed_name(&source, layout));
-        ensure_packed(&root, &dir, model, layout.name(), log, &|tmp| crate::pack::run(model, tmp, 16, layout))?;
-        dir
-    };
-    let (found, tier) = current_tables_for(&packed, ctx)?;
-    let tables = match found {
-        Some(p) => p,
-        None => {
-            let lock = io(std::fs::File::create(packed.join(".lock")))?;
-            io(lock.lock())?;
-            let (found, tier) = current_tables_for(&packed, ctx)?;
-            match found {
-                Some(p) => p,
-                None => {
-                    log(&format!("glyd: the lossless KV cache takes tables for {tier} positions of {model}, made once on the engine itself"));
-                    let out = packed.join(format!("kv-tables-{tier}.safetensors"));
-                    let o = Opts { ctx: tier, chunk: 4096, graph: false, ..Opts::default() };
-                    let e = Engine::for_calibration(&packed, &o)?;
-                    let tok = Tok::load(&packed)?;
-                    let chat = Chat::load(&packed)?;
-                    let t = calib::calibrate(&e, &tok, chat.as_ref(), &calib::Options { positions: tier, model: model.to_string() }, log)?;
-                    let tmp = packed.join(format!(".tables-{}", std::process::id()));
-                    calib::save(&tmp, &t)?;
-                    io(std::fs::rename(&tmp, &out))?;
-                    if let Some(why) = t.refused {
-                        let _ = std::fs::remove_file(&out);
-                        return err(why);
-                    }
-                    out
-                }
-            }
-        }
-    };
-    let _ = tier;
-    Ok(Prepared { dir: packed, tables })
 }
 
 // ---- the pieces of a first run, in the order `glyd run` takes them ------------------------------------------------------------------------------------------
@@ -382,9 +247,10 @@ pub fn pack(source: &Source, model: &str, layout: Layout, expect: u64, ui: &RefC
     };
     io(std::fs::create_dir_all(&root))?;
     let dir = packed_dir(source, layout);
-    // (a packed copy of the layout of glyd 0.27 and before is made again, once; a lossy level's is a glyd-v7 directory, which a rename puts in its place whole)
-    let lossy = matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int3);
-    let have = |d: &Path| if lossy { cached_pack(d, layout) } else { is_packed(d) };
+    // (a packed copy of a format this glyd does not read is made again, once; a level's is a glyd-v7 directory, which a rename puts in its place whole: penguin's too, the
+    // executor's, where the 12-bit layout and the compact one are glyd-v4 saves with the embedding beside them)
+    let v7 = !matches!(layout, Layout::Twelve | Layout::Compact);
+    let have = |d: &Path| if v7 { cached_pack(d, layout) } else { is_packed(d) };
     if have(&dir) {
         return Ok(dir);
     }
@@ -402,11 +268,11 @@ pub fn pack(source: &Source, model: &str, layout: Layout, expect: u64, ui: &RefC
     if have(&dir) {
         return Ok(dir);
     }
-    let old = !lossy && dir.join("engine.safetensors").exists();
+    let old = dir.join("glyd.json").exists();
     let name = model.rsplit('/').next().unwrap_or(model);
     if old {
         ui.borrow_mut().line(&format!(
-            "The packed copy of {name} is of the layout of glyd 0.27 and before, which this glyd does not read: packing it again for this GPU ({}), once: {}",
+            "The packed copy of {name} is of a format this glyd does not read (the dense Qwen3 engine's, or glyd 0.27's): packing it again for this GPU ({}), once: {}",
             layout.name(),
             dir.display()
         ));
@@ -437,57 +303,6 @@ pub fn pack(source: &Source, model: &str, layout: Layout, expect: u64, ui: &RefC
     }
     ui.borrow_mut().line(&format!("Packed in {} ({}).", fmt_time(t0.elapsed().as_secs_f64()), gb(dir_bytes(&dir))));
     Ok(dir)
-}
-
-/// What the tables' rule said of the model packed in `dir`, where it refused it for a context of `tier` positions (its values compress too poorly for the lossless KV cache), as it was written when
-/// the tables were made: the reason. A mark written under another version of the rule is not taken.
-pub fn known_refusal(dir: &Path, tier: usize) -> Option<String> {
-    let text = std::fs::read_to_string(dir.join(format!("kv-refused-{tier}"))).ok()?;
-    let (version, why) = text.split_once('\n')?;
-    (version.trim() == crate::kvcal::VERSION.to_string()).then(|| why.trim().to_string())
-}
-
-pub(crate) fn note_refusal(dir: &Path, tier: usize, why: &str) {
-    let _ = std::fs::write(dir.join(format!("kv-refused-{tier}")), format!("{}\n{why}\n", crate::kvcal::VERSION));
-}
-
-/// The KV cache's tables for `packed` that cover `ctx` positions: the cache's file where there is one, else made now on the engine itself (once), on GPU `device`. Where the rule refuses the model
-/// (its values compress too poorly) that is written down beside the packed copy, so that the next run knows before it loads anything; every failure here is a refusal of status 3, for the engine
-/// is not the only way to run the model.
-pub fn tables(packed: &Path, model: &str, ctx: usize, device: i32, ui: &RefCell<Ui>) -> Done<PathBuf> {
-    let (found, tier) = current_tables_for(packed, ctx).map_err(cannot)?;
-    if let Some(p) = found {
-        return Ok(p);
-    }
-    if let Some(why) = known_refusal(packed, tier) {
-        return Err(cannot(why));
-    }
-    let lock = std::fs::File::create(packed.join(".lock")).map_err(cannot)?;
-    lock.lock().map_err(cannot)?;
-    if let Some(p) = current_tables_for(packed, ctx).map_err(cannot)?.0 {
-        return Ok(p);
-    }
-    let name = model.rsplit('/').next().unwrap_or(model);
-    remove_stale(packed, ".tables-");
-    ui.borrow_mut().line(&format!("Making the lossless KV cache's tables for {name} ({tier} positions), once: a few minutes at most."));
-    let t0 = std::time::Instant::now();
-    let out = packed.join(format!("kv-tables-{tier}.safetensors"));
-    let o = Opts { ctx: tier, chunk: 4096, graph: false, device, ..Opts::default() };
-    let e = Engine::for_calibration(packed, &o).map_err(cannot)?;
-    let tok = Tok::load(packed).map_err(cannot)?;
-    let chat = Chat::load(packed).map_err(cannot)?;
-    let t = calib::calibrate(&e, &tok, chat.as_ref(), &calib::Options { positions: tier, model: model.to_string() }, &|s| ui.borrow_mut().status(s))
-        .map_err(cannot)?;
-    let tmp = packed.join(format!(".tables-{}", std::process::id()));
-    calib::save(&tmp, &t).map_err(cannot)?;
-    if let Some(why) = t.refused {
-        let _ = std::fs::remove_file(&tmp);
-        note_refusal(packed, tier, &why);
-        return Err(cannot(why));
-    }
-    std::fs::rename(&tmp, &out).map_err(cannot)?;
-    ui.borrow_mut().line(&format!("Tables made in {}.", fmt_time(t0.elapsed().as_secs_f64())));
-    Ok(out)
 }
 
 /// The nearest folder of `path` that exists (a disk is asked about that one).
@@ -605,50 +420,6 @@ mod tests {
     }
 
     #[test]
-    fn tiers_found_and_wanted() {
-        let dir = std::env::temp_dir().join(format!("glyd-engine-store-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(tables_for(&dir, 3000).unwrap(), (None, 4096));
-        assert_eq!(tables_for(&dir, 5000).unwrap(), (None, 8192));
-        std::fs::write(dir.join("kv-tables-16384.safetensors"), b"x").unwrap();
-        // a table for more positions serves a smaller context
-        assert_eq!(tables_for(&dir, 5000).unwrap(), (Some(dir.join("kv-tables-16384.safetensors")), 8192));
-        assert!(tables_for(&dir, 99999).is_err());
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    /// A model the tables' rule refused is known so, beside its packed copy, for the context's tier it was refused at, and under the version of the rule that refused it: the next run says so
-    /// before it makes anything, and its status hands the model to vLLM.
-    #[test]
-    fn a_refused_model_is_known_before_its_tables_are_made_again() {
-        let dir = std::env::temp_dir().join(format!("glyd-engine-refused-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(known_refusal(&dir, 4096), None);
-        let why = "the model's values compress too poorly (worst kind of text left out: K 0.210%, V 0.050%, the limit 0.15%)";
-        note_refusal(&dir, 4096, why);
-        assert_eq!(known_refusal(&dir, 4096).as_deref(), Some(why));
-        assert_eq!(known_refusal(&dir, 8192), None); // (another tier is a table of its own)
-                                                     // tables the rule would make now: the model is not known by what an earlier version said
-        std::fs::write(dir.join("kv-refused-16384"), format!("{}\n{why}\n", crate::kvcal::VERSION - 1)).unwrap();
-        assert_eq!(known_refusal(&dir, 16384), None);
-        // asking for the tables: the refusal, with no GPU touched
-        let ui = RefCell::new(Ui::silent());
-        let r = tables(&dir, "org/model", 3000, 0, &ui).unwrap_err();
-        assert!(r.code == crate::ui::CANNOT && r.what == why, "{r}");
-        // where the tables exist, they are the answer
-        std::fs::remove_file(dir.join("kv-refused-4096")).unwrap();
-        std::fs::write(dir.join("kv-tables-4096.safetensors"), b"x").unwrap();
-        crate::pack::write_safetensors(
-            &dir.join("kv-tables-4096.safetensors"),
-            &[("format", "glyd-kv-tables-v0".to_string()), ("meta", format!("{{\"version\":{}}}", crate::kvcal::VERSION))],
-            &[("k", "U8", vec![1, 1, 1], &[0u8][..])],
-        )
-        .unwrap();
-        assert_eq!(tables(&dir, "org/model", 3000, 0, &ui).unwrap(), dir.join("kv-tables-4096.safetensors"));
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
     fn folders_and_filesystems() {
         let dir = std::env::temp_dir().join(format!("glyd-engine-fs-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -669,91 +440,5 @@ mod tests {
         ] {
             assert_eq!(r.code, crate::ui::CANNOT, "{r}");
         }
-    }
-
-    #[test]
-    fn tables_of_another_version_are_made_again() {
-        let dir = std::env::temp_dir().join(format!("glyd-engine-store-v-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let write = |name: &str, version: u32| {
-            let meta = format!("{{\"positions\":4096,\"model\":\"m\",\"version\":{version}}}");
-            crate::pack::write_safetensors(
-                &dir.join(name),
-                &[("format", "glyd-kv-tables-v0".to_string()), ("meta", meta)],
-                &[("k", "U8", vec![1, 1, 1], &[0u8][..])],
-            )
-            .unwrap();
-        };
-        write("kv-tables-4096.safetensors", crate::kvcal::VERSION - 1);
-        write("kv-tables-16384.safetensors", crate::kvcal::VERSION);
-        // the earlier engine's file is deleted, and the one that is current serves the context
-        assert_eq!(current_tables_for(&dir, 3000).unwrap(), (Some(dir.join("kv-tables-16384.safetensors")), 4096));
-        assert!(!dir.join("kv-tables-4096.safetensors").exists());
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    /// A packed directory as a few files hold it: glyd.json (one pack, its tiers' first word as given), the sidecar with the embedding's metadata, and any more files.
-    fn fake_packed(dir: &Path, tiers0: u32, extra: &[(&str, &str)]) {
-        std::fs::create_dir_all(dir).unwrap();
-        let format = if tiers0 >> 24 == 0xFF { "glyd-v1" } else { "glyd-v4" };
-        std::fs::write(dir.join("glyd.json"), format!("{{\"format\": \"{format}\", \"layout\": \"mma\", \"packs\": {{\"model.layers.0.self_attn.q_proj\": {{\"layout\": \"mma\", \"shape\": [64, 16], \"tiers\": [{tiers0}, 0, 0]}}}}}}")).unwrap();
-        let (a, b): (Vec<u8>, Vec<u8>) = (vec![0u8; 4], vec![0u8; 4]);
-        let meta = format!("{{\"shape\":[64,16],\"tiers\":[{tiers0},0,0]}}");
-        crate::pack::write_safetensors(
-            &dir.join("engine.safetensors"),
-            &[("format", "x".to_string()), ("embed", meta)],
-            &[("embed.glyd_data", "U8", vec![4], &a[..]), ("embed.glyd_blocks", "U8", vec![4], &b[..])],
-        )
-        .unwrap();
-        for (name, text) in extra {
-            std::fs::write(dir.join(name), text).unwrap();
-        }
-    }
-
-    /// A model packed in the layout of glyd 0.27 and before is packed again, once, where it was packed for an earlier run: the new directory takes the old one's place, with the old one's KV tables; one that is of the
-    /// layout of this glyd is left as it is, and one that is not there is made.
-    #[test]
-    fn a_packed_copy_of_the_earlier_layout_is_made_again_once_and_keeps_its_tables() {
-        let root = std::env::temp_dir().join(format!("glyd-engine-repack-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let dir = root.join("m-mma");
-        let said = RefCell::new(Vec::<String>::new());
-        let calls = std::cell::Cell::new(0);
-        let make = |tmp: &Path| -> Result<()> {
-            calls.set(calls.get() + 1);
-            fake_packed(tmp, 2 << 24 | 5, &[]);
-            Ok(())
-        };
-        let log = |s: &str| said.borrow_mut().push(s.to_string());
-        // an earlier run's copy, of the earlier layout, with the tables it made
-        fake_packed(
-            &dir,
-            0xFF << 24 | 5,
-            &[("kv-tables-4096.safetensors", "the tables"), ("kv-tables-16384.safetensors", "more tables"), ("notes.txt", "not carried")],
-        );
-        assert!(crate::weights::earlier_format(&dir).is_some());
-        ensure_packed(&root, &dir, "m", "mma", &log, &make).unwrap();
-        assert_eq!(calls.get(), 1);
-        assert!(said.borrow()[0].contains("0.27 and before") && said.borrow()[0].contains("packing it again"), "{:?}", said.borrow());
-        assert_eq!(crate::weights::earlier_format(&dir), None, "the new directory is the one in its place");
-        assert_eq!(std::fs::read_to_string(dir.join("kv-tables-4096.safetensors")).unwrap(), "the tables");
-        assert_eq!(std::fs::read_to_string(dir.join("kv-tables-16384.safetensors")).unwrap(), "more tables");
-        assert!(!dir.join("notes.txt").exists());
-        assert!(!root.join(format!(".packing-{}", std::process::id())).exists());
-        // a second run finds it made
-        ensure_packed(&root, &dir, "m", "mma", &log, &make).unwrap();
-        assert_eq!(calls.get(), 1, "packed once");
-        // a model that was never packed is made, with no tables
-        let fresh = root.join("n-mma");
-        ensure_packed(&root, &fresh, "n", "mma", &log, &make).unwrap();
-        assert_eq!(calls.get(), 2);
-        assert!(said.borrow()[1].contains("packing n for this GPU") && fresh.join("glyd.json").exists());
-        // a failed packing leaves the old directory where it was
-        fake_packed(&root.join("o-mma"), 0xFF << 24 | 5, &[("kv-tables-4096.safetensors", "t")]);
-        let failing = |_: &Path| -> Result<()> { err("the disk is full") };
-        assert!(ensure_packed(&root, &root.join("o-mma"), "o", "mma", &log, &failing).is_err());
-        assert!(crate::weights::earlier_format(&root.join("o-mma")).is_some() && root.join("o-mma").join("kv-tables-4096.safetensors").exists());
-        std::fs::remove_dir_all(&root).unwrap();
     }
 }

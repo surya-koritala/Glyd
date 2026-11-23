@@ -2,7 +2,7 @@
 //! which is its key and, through `kv_b_proj`, its value, so the attention runs in the latent space: the query `q_h` becomes `Wk_h^T q_h`, the scores are its products with the latents, and the weighted sum of the latents is
 //! multiplied by `Wv_h` at the end (the absorbed form: 1 KiB of cache a token and layer instead of 64 heads' keys and values). Each layer's indexer picks the tokens a query attends to: the keys of the complete pools of
 //! `kpool` tokens (a softmax-weighted mean of the pool's normed keys) are scored by `sum_h w_h relu(q_h . k)`, the best `topk / kpool` pools are taken with all their tokens, and the incomplete last pool's tokens too; while
-//! a query has no more pools than that it attends to everything before it. The kernels are kernels/glm.cu's (`glm_rms2` ... `glm_expand_v`), the arithmetic `tools/glm_ref.py`'s `mla_*` functions (the structure checked there
+//! a query has no more pools than that it attends to everything before it. The kernels are kernels/mla.cu's, the latent attention layer kind's (`rms2_rows` ... `mla_expand_v`), the arithmetic `tools/glm_ref.py`'s `mla_*` functions (the structure checked there
 //! against transformers 5.19.0's Glm5NextTextAttention and Glm5NextTextIndexer).
 //!
 //! Every launch reads the rows' positions from the device (`pos`) and none reads a result on the host, so a decode step is captured into the engine's CUDA graph. The caches (the latents, the indexer's keys and gate scores, the
@@ -55,6 +55,26 @@ pub struct MlaScratch {
 const SUB_SCORES: usize = 256 << 20;
 const SUB_OLAT: usize = 64 << 20;
 
+/// A latent attention layer's weights on the GPU: the library's products (q's two, the key-value latent's, o; packed as they load), kv_b_proj as the bf16 it is (the
+/// absorbed form multiplies by its rows), the two norms' weights and the indexer's tensors as the checkpoint has them. The frozen engine's block (`GlmMla`) and the
+/// dynamic engine's latent attention (src/dynamic/glm.rs: `Op::Mla`'s matrices and small tensors) both load them here.
+pub(crate) struct MlaWeights {
+    pub q_a: Mat,
+    pub q_b: Mat,
+    pub kv_a: Mat,
+    pub o: Mat,
+    pub q_a_ln: Buf,
+    pub kv_a_ln: Buf,
+    pub kv_b: Buf,
+    pub wq_b: Buf,
+    pub wk: Buf,
+    pub k_norm_w: Buf,
+    pub k_norm_b: Buf,
+    pub wproj: Buf,
+    pub ape: Buf,
+    pub ix_gate: Buf,
+}
+
 /// A latent attention layer on the GPU.
 pub struct GlmMla {
     nh: usize,
@@ -68,20 +88,7 @@ pub struct GlmMla {
     topk: usize,
     tail: bool,
     eps: f32,
-    q_a: Mat,
-    q_b: Mat,
-    kv_a: Mat,
-    o: Mat,
-    q_a_ln: Buf,
-    kv_a_ln: Buf,
-    kv_b: Buf,
-    wq_b: Buf,
-    wk: Buf,
-    k_norm_w: Buf,
-    k_norm_b: Buf,
-    wproj: Buf,
-    ape: Buf,
-    ix_gate: Buf,
+    w: MlaWeights,
     bytes: usize,
     /// Each sequence's caches (sched::MAX_USERS of them at most; made at its first call).
     cache: Box<[OnceCell<Cache>]>,
@@ -127,26 +134,14 @@ fn tensor(ck: &Checkpoint, name: &str, elements: usize) -> Result<Buf> {
     upload_bytes(&ck.read(name).map_err(|e| Error(format!("{name}: {e}")))?)
 }
 
-impl GlmMla {
-    /// Layer `l` of the model `c` from the checkpoint `ck`, its library matrices packed in `layout`. `kv_b_proj` is the checkpoint's bf16 (from a glyd-v7 directory, which holds it packed, the pack decoded: the layer's
-    /// numbers are then the pack's).
-    pub fn load(l: usize, c: &ConfigGlm, ck: &Checkpoint, layout: Layout) -> Result<GlmMla> {
+impl MlaWeights {
+    /// Layer `l`'s of the model `c` from the checkpoint `ck`, its library matrices packed in `layout`. `kv_b_proj` is the checkpoint's bf16 (from a glyd-v7 directory, which holds it packed, the pack decoded: the
+    /// layer's numbers are then the pack's).
+    pub(crate) fn load(l: usize, c: &ConfigGlm, ck: &Checkpoint, layout: Layout) -> Result<MlaWeights> {
         if !c.has_layer(l) || c.kind_of(l) != crate::glm::GlmKind::Mla {
             return err(format!("layer {l} is not a latent attention layer"));
         }
         let (m, ix) = (&c.mla, &c.indexer);
-        if m.nope > 256 || m.kv_rank > 512 || !m.kv_rank.is_multiple_of(64) || ix.dim > 256 || ix.kpool > 8 || ix.topk / ix.kpool > 1024 || m.q_rank > 4096 {
-            return err(format!(
-                "latent attention of heads of {}, latents of {}, a query latent of {}, an indexer of channels {} picking {} groups of {} keys: this engine runs heads up to 256, latents of 64s up to 512, a query latent up to \
-                 4,096, indexer channels up to 256, groups up to 8 keys and up to 1,024 picked",
-                m.nope, m.kv_rank, m.q_rank, ix.dim, ix.topk / ix.kpool.max(1), ix.kpool
-            ));
-        }
-        // the dynamic shared memory of the attention (kv_rank + 2 tokens) and of the indexer's scores must fit the 48 KiB a launch may take without an opt-in
-        let tmax = ix.topk + ix.kpool - 1;
-        if 4 * (m.kv_rank + 2 * tmax) > 48 << 10 || 4 * (ix.heads * (ix.dim + 1) + ix.heads + 8 * ix.dim) > 48 << 10 {
-            return err(format!("latent attention picking {tmax} keys with latents of {} and an indexer of {} heads of {} channels: its blocks need more than 48 KiB of shared memory, which this engine does not ask for", m.kv_rank, ix.heads, ix.dim));
-        }
         let v7 = v7_manifest(&ck.dir)?;
         if let Some((got, _)) = &v7 {
             if *got != layout {
@@ -175,18 +170,7 @@ impl GlmMla {
         };
         let (h, qr) = (c.hidden, m.q_rank);
         let ixn = format!("{a}.indexer");
-        let me = GlmMla {
-            nh: m.heads,
-            nope: m.nope,
-            vd: m.v,
-            kr: m.kv_rank,
-            qr,
-            ih: ix.heads,
-            id: ix.dim,
-            kp: ix.kpool,
-            topk: ix.topk,
-            tail: ix.tail,
-            eps: c.eps,
+        Ok(MlaWeights {
             q_a,
             q_b,
             kv_a,
@@ -201,16 +185,53 @@ impl GlmMla {
             wproj: tensor(ck, &format!("{ixn}.weights_proj.weight"), ix.heads * h)?,
             ape: tensor(ck, &format!("{ixn}.index_kpool_compress_ape"), ix.kpool * ix.dim)?,
             ix_gate: tensor(ck, &format!("{ixn}.index_kpool_compress_gate"), ix.dim * h)?,
-            bytes: 0,
-            cache: (0..crate::sched::MAX_USERS).map(|_| OnceCell::new()).collect(),
-            dump: RefCell::new(None),
-        };
-        let bytes = [&me.q_a, &me.q_b, &me.kv_a, &me.o].iter().map(|m| m.bytes()).sum::<usize>()
-            + [&me.q_a_ln, &me.kv_a_ln, &me.kv_b, &me.wq_b, &me.wk, &me.k_norm_w, &me.k_norm_b, &me.wproj, &me.ape, &me.ix_gate]
+        })
+    }
+
+    /// Device bytes.
+    pub(crate) fn bytes(&self) -> usize {
+        [&self.q_a, &self.q_b, &self.kv_a, &self.o].iter().map(|m| m.bytes()).sum::<usize>()
+            + [&self.q_a_ln, &self.kv_a_ln, &self.kv_b, &self.wq_b, &self.wk, &self.k_norm_w, &self.k_norm_b, &self.wproj, &self.ape, &self.ix_gate]
                 .iter()
                 .map(|b| b.bytes)
-                .sum::<usize>();
-        Ok(GlmMla { bytes, ..me })
+                .sum::<usize>()
+    }
+}
+
+impl GlmMla {
+    /// Layer `l` of the model `c` from the checkpoint `ck`, its library matrices packed in `layout` (`MlaWeights::load`).
+    pub fn load(l: usize, c: &ConfigGlm, ck: &Checkpoint, layout: Layout) -> Result<GlmMla> {
+        let (m, ix) = (&c.mla, &c.indexer);
+        if m.nope > 256 || m.kv_rank > 512 || !m.kv_rank.is_multiple_of(64) || ix.dim > 256 || ix.kpool > 8 || ix.topk / ix.kpool > 1024 || m.q_rank > 4096 {
+            return err(format!(
+                "latent attention of heads of {}, latents of {}, a query latent of {}, an indexer of channels {} picking {} groups of {} keys: this engine runs heads up to 256, latents of 64s up to 512, a query latent up to \
+                 4,096, indexer channels up to 256, groups up to 8 keys and up to 1,024 picked",
+                m.nope, m.kv_rank, m.q_rank, ix.dim, ix.topk / ix.kpool.max(1), ix.kpool
+            ));
+        }
+        // the dynamic shared memory of the attention (kv_rank + 2 tokens) and of the indexer's scores must fit the 48 KiB a launch may take without an opt-in
+        let tmax = ix.topk + ix.kpool - 1;
+        if 4 * (m.kv_rank + 2 * tmax) > 48 << 10 || 4 * (ix.heads * (ix.dim + 1) + ix.heads + 8 * ix.dim) > 48 << 10 {
+            return err(format!("latent attention picking {tmax} keys with latents of {} and an indexer of {} heads of {} channels: its blocks need more than 48 KiB of shared memory, which this engine does not ask for", m.kv_rank, ix.heads, ix.dim));
+        }
+        let w = MlaWeights::load(l, c, ck, layout)?;
+        Ok(GlmMla {
+            nh: m.heads,
+            nope: m.nope,
+            vd: m.v,
+            kr: m.kv_rank,
+            qr: m.q_rank,
+            ih: ix.heads,
+            id: ix.dim,
+            kp: ix.kpool,
+            topk: ix.topk,
+            tail: ix.tail,
+            eps: c.eps,
+            bytes: w.bytes(),
+            w,
+            cache: (0..crate::sched::MAX_USERS).map(|_| OnceCell::new()).collect(),
+            dump: RefCell::new(None),
+        })
     }
 
     /// The tokens a row attends to at most: the best pools' and the incomplete last pool's.
@@ -322,30 +343,30 @@ impl MlaBlock for GlmMla {
         }
         mark!(e, "mla start");
         // the query's latent, the query
-        e.lin(&self.q_a, h, n, sc.t1.ptr)?;
-        e.kg().rms2(s, sc.t1.ptr, qr, self.q_a_ln.ptr, sc.qr.ptr, qr, 0, qr, self.eps, nr)?;
-        e.lin(&self.q_b, sc.qr.ptr, n, sc.q.ptr)?;
+        e.lin(&self.w.q_a, h, n, sc.t1.ptr)?;
+        e.kg().rms2(s, sc.t1.ptr, qr, self.w.q_a_ln.ptr, sc.qr.ptr, qr, 0, qr, self.eps, nr)?;
+        e.lin(&self.w.q_b, sc.qr.ptr, n, sc.q.ptr)?;
         mark!(e, "mla query (q_a, q_b)");
         // the token's latent into the cache
-        e.lin(&self.kv_a, h, n, sc.t1.ptr)?;
+        e.lin(&self.w.kv_a, h, n, sc.t1.ptr)?;
         for (&(r0, m, _), ca) in seqs.iter().zip(&cas) {
-            e.kg().rms2(s, sc.t1.ptr + (r0 * self.kr * 2) as u64, kr, self.kv_a_ln.ptr, ca.lat.ptr, kr, pos + (r0 * 4) as u64, kr, self.eps, m as u32)?;
+            e.kg().rms2(s, sc.t1.ptr + (r0 * self.kr * 2) as u64, kr, self.w.kv_a_ln.ptr, ca.lat.ptr, kr, pos + (r0 * 4) as u64, kr, self.eps, m as u32)?;
         }
         mark!(e, "mla latent (kv_a)");
         // the indexer: queries and head weights for the rows, keys and gate scores into the caches
-        e.kg().small_linear(s, sc.qr.ptr, qr, self.wq_b.ptr, sc.iq.ptr, ih * id, nr, ih * id, qr)?;
-        e.kg().small_linear(s, h, hid, self.wk.ptr, sc.t1.ptr, id, nr, id, hid)?;
+        e.kg().small_linear(s, sc.qr.ptr, qr, self.w.wq_b.ptr, sc.iq.ptr, ih * id, nr, ih * id, qr)?;
+        e.kg().small_linear(s, h, hid, self.w.wk.ptr, sc.t1.ptr, id, nr, id, hid)?;
         for (&(r0, m, _), ca) in seqs.iter().zip(&cas) {
             let t = sc.t1.ptr + (r0 * self.id * 2) as u64;
-            e.kg().layernorm(s, t, id, self.k_norm_w.ptr, self.k_norm_b.ptr, ca.ikc.ptr, id, pos + (r0 * 4) as u64, id, 1e-6, m as u32)?;
+            e.kg().layernorm(s, t, id, self.w.k_norm_w.ptr, self.w.k_norm_b.ptr, ca.ikc.ptr, id, pos + (r0 * 4) as u64, id, 1e-6, m as u32)?;
         }
-        e.kg().small_linear(s, h, hid, self.ix_gate.ptr, sc.t1.ptr, id, nr, id, hid)?;
+        e.kg().small_linear(s, h, hid, self.w.ix_gate.ptr, sc.t1.ptr, id, nr, id, hid)?;
         for (&(r0, m, _), ca) in seqs.iter().zip(&cas) {
             e.kg().scatter(s, sc.t1.ptr + (r0 * self.id * 2) as u64, id, ca.gsc.ptr, id, pos + (r0 * 4) as u64, id, m as u32)?;
         }
-        e.kg().small_linear(s, h, hid, self.wproj.ptr, sc.wts.ptr, ih, nr, ih, hid)?;
+        e.kg().small_linear(s, h, hid, self.w.wproj.ptr, sc.wts.ptr, ih, nr, ih, hid)?;
         for (&(r0, m, _), ca) in seqs.iter().zip(&cas) {
-            e.kg().kp_keys(s, ca.ikc.ptr, ca.gsc.ptr, self.ape.ptr, ca.pkc.ptr, pos + (r0 * 4) as u64, m as i32, id, kp)?;
+            e.kg().kp_keys(s, ca.ikc.ptr, ca.gsc.ptr, self.w.ape.ptr, ca.pkc.ptr, pos + (r0 * 4) as u64, m as i32, id, kp)?;
         }
         mark!(e, "mla indexer products and key groups");
         // the attention, a block of rows at a time
@@ -357,7 +378,7 @@ impl MlaBlock for GlmMla {
                 let m = sc.sub.min(first + rows - r0);
                 let mr = m as u32;
                 let (p0, q0) = (pos + (r0 * 4) as u64, sc.q.ptr + (r0 * self.nh * self.nope * 2) as u64);
-                e.kg().absorb(s, q0, nh * nope, self.kv_b.ptr, sc.qa.ptr, m as i32, nh, nope, vd, kr)?;
+                e.kg().absorb(s, q0, nh * nope, self.w.kv_b.ptr, sc.qa.ptr, m as i32, nh, nope, vd, kr)?;
                 mark!(e, "mla absorb");
                 e.kg().idx_score(
                     s,
@@ -382,7 +403,7 @@ impl MlaBlock for GlmMla {
                 mark!(e, "mla select");
                 e.kg().mla_attn(s, sc.qa.ptr, ca.lat.ptr, sc.sel.ptr, sc.cnt.ptr, sc.olat.ptr, sc.part.ptr, sc.tmax as i32, nh, kr, scale, mr)?;
                 mark!(e, "mla attention");
-                e.kg().expand_v(s, sc.olat.ptr, self.kv_b.ptr, sc.ov.ptr + (r0 * self.nh * self.vd * 2) as u64, m as i32, nh, nope, vd, kr)?;
+                e.kg().expand_v(s, sc.olat.ptr, self.w.kv_b.ptr, sc.ov.ptr + (r0 * self.nh * self.vd * 2) as u64, m as i32, nh, nope, vd, kr)?;
                 mark!(e, "mla values");
                 if let (true, Some(d)) = (collecting, self.dump.borrow_mut().as_mut()) {
                     e.sync()?;
@@ -393,7 +414,7 @@ impl MlaBlock for GlmMla {
                 r0 += m;
             }
         }
-        e.lin(&self.o, sc.ov.ptr, n, out)
+        e.lin(&self.w.o, sc.ov.ptr, n, out)
     }
 
     fn graphable(&self) -> bool {
@@ -409,7 +430,7 @@ impl MlaBlock for GlmMla {
     }
 
     fn pack_shapes(&self) -> Vec<(i64, i64, bool)> {
-        [&self.q_a, &self.q_b, &self.kv_a, &self.o]
+        [&self.w.q_a, &self.w.q_b, &self.w.kv_a, &self.w.o]
             .iter()
             .filter_map(|m| if let Mat::Packed(p) = m { Some((p.pack.rows, p.pack.cols, p.pack.is_twelve())) } else { None })
             .collect()

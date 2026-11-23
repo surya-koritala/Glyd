@@ -378,28 +378,6 @@ impl Run for Dyn {
     }
 }
 
-/// Qwen3 on the hand-written dense engine.
-struct Dense(crate::model::Engine);
-
-impl Run for Dense {
-    fn describe(&self) -> String {
-        self.0.describe()
-    }
-    fn reset(&mut self) -> Result<()> {
-        self.0.reset();
-        Ok(())
-    }
-    fn prefill(&mut self, t: &[u32]) -> Result<()> {
-        self.0.prefill(t, false).map(|_| ())
-    }
-    fn step(&mut self, t: u32) -> Result<()> {
-        self.0.step(t, false).map(|_| ())
-    }
-    fn logits(&mut self) -> Result<Vec<f32>> {
-        self.0.read_logits()
-    }
-}
-
 /// A CPU reference one token at a time: its `step` is every pass's way in, and a prompt is its tokens one after another.
 struct CpuRef<F: FnMut(u32) -> Vec<f32>> {
     load: Box<dyn Fn() -> Result<F>>,
@@ -667,7 +645,7 @@ pub fn qwen4x_random(out: &Path) -> Result<()> {
     manifest_random(include_str!("../tests/fixtures/qwen4x_tiny_manifest.json"), out, 0x2026_1120_0000_0005, false, "Qwen3.8-Flash-Next of the tiny shape")
 }
 
-/// A small Qwen3 dense model of Qwen3-0.6B's layout (4 layers, 16 query and 8 key-value heads of 128, a vocabulary of 4096): the architecture of the dense engine, not a release (none of the Qwen3 dense releases is recent).
+/// A small Qwen3 dense model of Qwen3-0.6B's layout (4 layers, 16 query and 8 key-value heads of 128, a vocabulary of 4096): a Llama-style dense model, not a release (none of the Qwen3 dense releases is recent).
 pub fn qwen3_random(out: &Path) -> Result<()> {
     manifest_random(include_str!("../tests/fixtures/qwen3_tiny_manifest.json"), out, 0x2026_1120_0000_0006, true, "Qwen3 dense")
 }
@@ -768,7 +746,7 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
     io(std::fs::create_dir_all(out))?;
     io(std::fs::write(out.join("config.json"), m["config"].as_str().unwrap_or_default()))?;
     if dense_norms {
-        // (the dense engine's pack carries the tokenizer: a word-level one over the vocabulary's ids, which no check reads)
+        // (a tokenizer: a word-level one over the vocabulary's ids, which the 12-bit KV tables' calibration reads the corpus through)
         let vocab: serde_json::Map<String, Value> = (0..4096).map(|i| (format!("t{i}"), json!(i))).collect();
         let tok = json!({"version": "1.0", "truncation": null, "padding": null, "added_tokens": [], "normalizer": null, "pre_tokenizer": {"type": "Whitespace"}, "post_processor": null, "decoder": null,
             "model": {"type": "WordLevel", "vocab": vocab, "unk_token": "t0"}});
@@ -784,11 +762,9 @@ fn qwen35_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     boxed(crate::dynamic::qwen35::load(dir, &dyn_opts(level_layout(level)?)))
 }
 
-fn qwen3_engine(model: &Path, level: &str) -> Result<Box<dyn Run>> {
-    let o = crate::model::Opts { ctx: 1024, chunk: 64, layout: level_layout(level)?, ..Default::default() };
-    let p = crate::store::prepare(&model.to_string_lossy(), o.ctx, o.layout, &|s| eprintln!("{s}"))?;
-    let o = crate::model::Opts { tables: Some(p.tables.clone()), ..o };
-    Ok(Box::new(Dense(crate::model::Engine::new(&p.dir, &o)?)))
+/// Qwen3 on the executor (src/dynamic/dense.rs): its description lowered from the config, packed here at the level (penguin: the GPU's lossless layout).
+fn qwen3_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
+    boxed(crate::dynamic::dense::load(dir, &dyn_opts(level_layout(level)?)))
 }
 
 /// Every case: a model of the family's layout with its layer kinds, at random (a fixed seed) and small: only models released in the last six months are tested, and those that are recent are larger than a 16 GB card holds.
@@ -796,7 +772,7 @@ pub fn cases() -> Vec<Case> {
     vec![
         Case {
             id: "qwen3",
-            family: "Qwen3 dense (the dense engine's architecture; no recent release uses it)",
+            family: "Qwen3 dense (a Llama-style dense model on the executor; no recent release uses it)",
             weights: Weights::Random(qwen3_random),
             engine: qwen3_engine,
             cpu: None,
@@ -1484,7 +1460,7 @@ mod tests {
     }
 }
 
-/// The random model of a case (gemma4, qwen35, muse, kimi, glm) on the description executor at `level`, made in a directory of its own and loaded (the directory is let go).
+/// The random model of a case (gemma4, qwen35, qwen3, muse, kimi, glm) on the description executor at `level`, made in a directory of its own and loaded (the directory is let go).
 /// The case's model in `dir` on the description executor.
 pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Result<Dyn> {
     Ok(match case {
@@ -1493,6 +1469,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
             Dyn::new(dir, crate::dynamic::gemma4::lowered(dir, &c)?, None, o)?
         }
         "qwen35" => crate::dynamic::qwen35::load(dir, o)?,
+        "qwen3" => crate::dynamic::dense::load(dir, o)?,
         "muse" => crate::dynamic::muse::load(dir, o)?,
         "kimi" => crate::dynamic::kimi::load(dir, o)?,
         // (its experts at a lossy level, as its logits case: kestrel where penguin is asked)
@@ -1500,7 +1477,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
         // (its experts at the level asked: the lossless one where none is)
         "nemotron" => crate::dynamic::nemotron::load(dir, o, level_layout(level)?.unwrap_or(Layout::Tiered))?,
         "deepseek-v4" => crate::dynamic::deepseek_v4::load(dir, o)?,
-        other => return err(format!("{other}: gemma4, qwen35, muse, kimi, glm, nemotron or deepseek-v4")),
+        other => return err(format!("{other}: gemma4, qwen35, qwen3, muse, kimi, glm, nemotron or deepseek-v4")),
     })
 }
 
@@ -1512,12 +1489,13 @@ pub(crate) fn random_dyn(case: &str, level: &str, tag: &str) -> Result<Dyn> {
         match case {
             "gemma4" => gemma4_random(&dir)?,
             "qwen35" => qwen35_random(&dir)?,
+            "qwen3" => qwen3_random(&dir)?,
             "muse" => crate::muse_ref::random(&dir)?,
             "kimi" => crate::kimi_ref::random(&dir, 1, true, 8)?,
             "glm" => crate::kcheck_glm::random(&dir, false, None)?,
             "nemotron" => crate::kcheck_nh::random(&dir, 0, 16)?,
             "deepseek-v4" => crate::dsv4_ref::random(&dir, None)?,
-            other => return err(format!("{other}: gemma4, qwen35, muse, kimi, glm, nemotron or deepseek-v4")),
+            other => return err(format!("{other}: gemma4, qwen35, qwen3, muse, kimi, glm, nemotron or deepseek-v4")),
         }
         load_dyn(case, &dir, &o, level)
     })();
@@ -1885,12 +1863,13 @@ fn sizes_done(case: &str, fails: usize) -> Result<()> {
 /// conversation's next turn does (`ModelStep::resume` and `mark`, src/dynamic/rows.rs), on the case's random model, or the model in MODEL (a real one). Every comparison is of logits, bit for bit, against a second slot that ran the same tokens
 /// in the same passes and was never resumed:
 ///   - the whole of a sequence (a prompt, then tokens a step at a time) gone on with a further chunk: every family;
-///   - the sequence asked to go on from inside the tokens it wrote a step at a time: from there where the model has no recurrent state and no latent cache; from its prompt's end,
-///     which was marked, where it has recurrent states (their copy put back); refused, the slot left empty, where it has a latent cache;
+///   - the sequence asked to go on from inside the tokens it wrote a step at a time: from there where the model has no recurrent state; from its prompt's end, which was
+///     marked, where it has recurrent states (their copy put back; a latent cache is paged as any keys are); refused, the slot left empty, where its states are not kept at a
+///     mark (DeepSeek-V4's compressed entries);
 ///   - a long sequence (9 chunks and 24 steps) cut back by 10 tokens and to its third chunk's end, or gone on from a mark at its third chunk's end: kept, or refused where the
 ///     sliding layers' blocks behind the place were given back, and where kept the bits too;
-///   - a start shared with an empty slot (`share`): the full blocks of what the two have in common, or a recurrent model's mark with its states copied, or nothing with a
-///     latent cache; the sharer and the sequence it shared from both go on as sequences that shared nothing do, and the sharer too after the other has ended;
+///   - a start shared with an empty slot (`share`): the full blocks of what the two have in common, or a recurrent model's mark with its states copied, or nothing where
+///     the states are not kept at a mark; the sharer and the sequence it shared from both go on as sequences that shared nothing do, and the sharer too after the other has ended;
 ///   - through the scheduler: a conversation's second turn (the first's prompt and reply and more) goes on from all the first left, another's second turn that leaves the reply
 ///     out goes on from the prompt's end where the model can, and a conversation that begins as another does shares its start; the prompt tokens found are counted, and each
 ///     reply is, token for token, what the same passes give by hand.
@@ -2007,7 +1986,7 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         fill(s, 1, &p, chunk, false)?;
         steps(s, 1, p.len(), &g)?;
         let want = fill_from(s, 1, n, &tail, chunk, true)?.expect("the logits");
-        let what = format!("a sequence of {n} tokens asked to go on within {cut}: refused (a latent cache is what it is after the last token) and as it was ({whole} held); from its end, {} more", tail.len());
+        let what = format!("a sequence of {n} tokens asked to go on within {cut}: refused (its states are what they are after the last token, and not kept at a mark) and as it was ({whole} held); from its end, {} more", tail.len());
         fails += same(&what, &want, &got) | (whole != n) as usize;
     }
     s.release(&[0, 1])?;
@@ -2074,7 +2053,7 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         } else if got == 0 {
             // nothing shared: the slot it was asked for holds nothing still, and the sequence asked is as it was
             fails +=
-                empty(s, 1, 2, "a start is not shared (a latent cache is one sequence's); the slot it was asked for is empty still: a prompt in it", &alt)?;
+                empty(s, 1, 2, "a start is not shared (its states are not kept at a mark); the slot it was asked for is empty still: a prompt in it", &alt)?;
             s.release(&[1, 2])?;
             let source = fill_from(s, 0, n, &tail, chunk, true)?.expect("the logits");
             fill(s, 1, &p, chunk, false)?;
@@ -2337,7 +2316,7 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         if by_hand == rq { "is the same passes' by hand, token for token".to_string() } else { format!("{rq:?} against {by_hand:?} by hand") }
     );
     // the conversation that begins as another does: the start's full blocks shared where the model has no state; a recurrent model's states kept at the newest boundary
-    // within it (the other's mark is past what the two share); a latent cache is one sequence's: from its first token there. By hand: the other conversation as the
+    // within it (the other's mark is past what the two share); with no states kept (DeepSeek-V4): from its first token there. By hand: the other conversation as the
     // scheduler ran it, the start shared, the rest (a recurrent model: its own pieces from its first token, which give the states the other's kept); or the prompt whole.
     let should = if cuts {
         xs.len() / 16 * 16

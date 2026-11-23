@@ -10,12 +10,14 @@
 use crate::dev::{copy_d2d_async, copy_d2h_async, copy_h2d_async, Buf, Dev, Graph, Pinned};
 use crate::ffi::{err, Error, Lib, Result, Stream};
 use crate::glm::{ConfigGlm, GlmKind};
+use crate::kern::embed_plan;
 use crate::kern::Kern;
 use crate::kern35::Mat;
 use crate::launch;
-use crate::model::{embed_plan, Sample};
 use crate::moe::{Act, MoeKern, MoeScratch};
 use crate::qwen35::Pack35;
+use crate::runtime::kinds::Rounding;
+use crate::sched::Sample;
 use crate::weights::{choose_layout, ordered, upload_bytes, upload_packed, v7_manifest, Layout, PackBuf};
 use glyd_gpu::safetensors::Checkpoint;
 use std::collections::HashMap;
@@ -32,20 +34,18 @@ macro_rules! mark {
 }
 pub(crate) use mark;
 
-/// A Kimi delta head's channels (and the state's side), the residual streams, the tokens of a chunk of the chunked delta rule and its dynamic shared memory in bytes (kernels/glm.cu).
+/// A Kimi delta head's channels (and the state's side), the residual streams (kernels/residual.cu's), the tokens of a chunk of the chunked delta rule and its dynamic shared memory in bytes (kernels/glm.cu).
 pub const GM_D: usize = 128;
-pub const GM_HC: usize = 4;
+pub const GM_HC: usize = crate::dynamic::residual::HC_N;
 pub const GM_L: usize = 32;
 pub const GM_CHUNK_SMEM: u32 = 99_072;
 /// The floats of a row of the mixing projection's results: the collapse weights, the spreading weights, the mixing matrix (4 + 4 + 16).
-pub const GM_NP: usize = 24;
+pub const GM_NP: usize = crate::dynamic::residual::HC_NP;
 
 /// GLM's kernels with typed launches.
 pub struct KernGlm {
-    streams: crate::kt::glm_streams,
-    mix: crate::kt::glm_hc_mix,
-    post: crate::kt::glm_hc_post,
-    head: crate::kt::glm_hc_head,
+    /// The residual streams' kernels (transformers' bf16 rounding, `Rounding::Twice`).
+    hc: crate::dynamic::residual::KernRes,
     conv: crate::kt::conv_silu,
     conv_w32: crate::kt::conv_silu_w32,
     rec: crate::kt::glm_kda_rec,
@@ -53,30 +53,27 @@ pub struct KernGlm {
     out: crate::kt::glm_kda_out,
     out_w32: crate::kt::glm_kda_out_w32,
     small: crate::kt::small_linear,
-    // the latent attention's
-    rms2: crate::kt::glm_rms2,
-    layernorm: crate::kt::glm_layernorm,
-    scatter: crate::kt::glm_scatter,
-    absorb: crate::kt::glm_absorb,
-    kp_keys: crate::kt::glm_kp_keys,
-    idx_score: crate::kt::glm_idx_score,
-    select: crate::kt::glm_select,
-    mla_attn: crate::kt::glm_mla_attn,
+    // the latent attention's (kernels/mla.cu, the layer kind's: this engine's caches are rooms of their own, read with no block table)
+    rms2: crate::kt::rms2_rows,
+    layernorm: crate::kt::layernorm_rows,
+    scatter: crate::kt::scatter_rows,
+    absorb: crate::kt::mla_absorb,
+    kp_keys: crate::kt::idx_pool,
+    idx_score: crate::kt::idx_score,
+    select: crate::kt::idx_pick,
+    mla_attn: crate::kt::mla_attn,
     /// The shared memory a block of `mla_attn` may take here (the GPU's most, opted in to at load).
     mla_smem: u32,
-    mla_merge: crate::kt::glm_mla_merge,
-    expand_v: crate::kt::glm_expand_v,
-    // the mixing weights for few rows: the split projection and its rest
-    hc_proj: crate::kt::glm_hc_proj,
-    hc_fin: crate::kt::glm_hc_fin,
-    /// The split projection's partial sums, for up to HC_FEW rows.
+    mla_merge: crate::kt::mla_merge,
+    expand_v: crate::kt::mla_expand_v,
+    /// The streams' split projection's partial sums, for up to HC_FEW rows.
     hc_part: Buf,
 }
 
 /// Rows at most that the mixing weights' split projection takes (a decode step, the rows of a verified draft).
-pub const HC_FEW: u32 = 8;
+pub const HC_FEW: u32 = crate::dynamic::residual::HC_FEW;
 
-/// The dynamic shared memory `glm_mla_attn` may take on `dev`: the GPU's most a block, less a KiB for the kernel's own (its block sums' 256 bytes).
+/// The dynamic shared memory `mla_attn` (kernels/mla.cu) may take on `dev`: the GPU's most a block, less a KiB for the kernel's own (its block sums' 256 bytes).
 pub fn mla_smem(dev: &Dev) -> Result<u32> {
     Ok(dev.smem_optin()?.saturating_sub(1 << 10))
 }
@@ -92,13 +89,10 @@ impl KernGlm {
         let chunk = dev.typed::<crate::kt::glm_kda_chunk>()?;
         chunk.allow_smem(GM_CHUNK_SMEM)?;
         // (the dense attention's scores, two floats a position, are in shared memory: as much as the GPU gives a block)
-        let (mla_attn, mla_smem) = (dev.typed::<crate::kt::glm_mla_attn>()?, mla_smem(dev)?);
+        let (mla_attn, mla_smem) = (dev.typed::<crate::kt::mla_attn>()?, mla_smem(dev)?);
         mla_attn.allow_smem(mla_smem)?;
         Ok(KernGlm {
-            streams: dev.typed()?,
-            mix: dev.typed()?,
-            post: dev.typed()?,
-            head: dev.typed()?,
+            hc: crate::dynamic::residual::KernRes::load(dev)?,
             conv: dev.typed()?,
             conv_w32: dev.typed()?,
             rec: dev.typed()?,
@@ -117,18 +111,16 @@ impl KernGlm {
             mla_smem,
             mla_merge: dev.typed()?,
             expand_v: dev.typed()?,
-            hc_proj: dev.typed()?,
-            hc_fin: dev.typed()?,
-            hc_part: Buf::zeroed(HC_FEW as usize * 64 * (GM_NP + 1) * 4)?,
+            hc_part: Buf::zeroed(crate::dynamic::residual::part_words(Rounding::Twice, 0, 0)? * 4)?,
         })
     }
 
     /// x [n, 4, d] <- the embedding rows e [n, d] four times.
     ///
     /// # Safety
-    /// Live device buffers of the sizes the kernels read and write (their comments in kernels/glm.cu).
+    /// Live device buffers of the sizes the kernels read and write (their comments in kernels/glm.cu and kernels/residual.cu).
     pub unsafe fn streams(&self, s: Stream, e: u64, x: u64, n: u32, d: i32) -> Result<()> {
-        launch!(self.streams, [n, (d as u32).div_ceil(256), 1], [256, 1, 1], s; e, x, d)
+        self.hc.streams(s, e, x, n, d)
     }
 
     /// The mixing weights of the streams x [n, 4, d] (fn [24, 4d] bf16, base [24] and scale [3] fp32) into hcp [n, 24] fp32, and the collapse normed with the weight nw [d] into h [n, d].
@@ -137,40 +129,8 @@ impl KernGlm {
     /// As `streams`.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn hc_mix(&self, s: Stream, x: u64, hc: &Hc, nw: u64, h: u64, hcp: u64, n: u32, d: i32, eps: f32, hc_eps: f32, iters: i32) -> Result<()> {
-        self.hc_mix_raw(s, x, hc.proj.ptr, hc.base.ptr, hc.scale.ptr, nw, h, hcp, n, d, eps, hc_eps, iters)
-    }
-
-    /// `hc_mix` with the weights' buffers given one by one (the dynamic engine's small tensors).
-    ///
-    /// # Safety
-    /// As `streams`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn hc_mix_raw(
-        &self,
-        s: Stream,
-        x: u64,
-        proj: u64,
-        base: u64,
-        scale: u64,
-        nw: u64,
-        h: u64,
-        hcp: u64,
-        n: u32,
-        d: i32,
-        eps: f32,
-        hc_eps: f32,
-        iters: i32,
-    ) -> Result<()> {
-        if d <= 0 || d % 2 != 0 || d > 16 * 480 {
-            return err(format!("streams of {d} values: not supported"));
-        }
-        // a few rows (a decode step): the projection split over many blocks (glm_hc_proj) and its rest (glm_hc_fin); more: a block a row
-        let ks = (GM_HC * d as usize) / 512;
-        if n <= HC_FEW && (GM_HC * d as usize).is_multiple_of(512) && ks <= 64 {
-            launch!(self.hc_proj, [n, ks as u32, 1], [128, 1, 1], s; x, proj, self.hc_part.ptr, d)?;
-            return launch!(self.hc_fin, [n, 1, 1], [512, 1, 1], s; x, self.hc_part.ptr, ks as i32, base, scale, nw, h, hcp, d, eps, hc_eps, iters);
-        }
-        launch!(self.mix, [n, 1, 1], [512, 1, 1], s; x, proj, base, scale, nw, h, hcp, d, eps, hc_eps, iters)
+        let w = (hc.proj.ptr, hc.base.ptr, hc.scale.ptr);
+        self.hc.pre(s, x, w, nw, h, hcp, self.hc_part.ptr, n, d, (eps, hc_eps, iters), Rounding::Twice)
     }
 
     /// The streams x [n, 4, d] after a block whose output is o [n, d]: updated in place by the weights hcp [n, 24] holds.
@@ -178,7 +138,7 @@ impl KernGlm {
     /// # Safety
     /// As `streams`.
     pub unsafe fn hc_post(&self, s: Stream, x: u64, o: u64, hcp: u64, n: u32, d: i32) -> Result<()> {
-        launch!(self.post, [n, (d as u32).div_ceil(256), 1], [256, 1, 1], s; x, o, hcp, d)
+        self.hc.post(s, x, o, hcp, n, d, Rounding::Twice)
     }
 
     /// out [rows, d] = the final norm (weight w [d]) of the mean of each row of x [rows, 4, d].
@@ -187,10 +147,7 @@ impl KernGlm {
     /// As `streams`.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn hc_head(&self, s: Stream, x: u64, w: u64, out: u64, rows: u32, d: i32, eps: f32) -> Result<()> {
-        if d <= 0 || d > 16 * 512 {
-            return err(format!("streams of {d} values: not supported"));
-        }
-        launch!(self.head, [rows, 1, 1], [512, 1, 1], s; x, w, out, d, eps)
+        self.hc.head(s, x, None, 0, w, out, rows, d, (eps, 0.0), Rounding::Twice)
     }
 
     /// The causal convolution and SiLU of n rows (the first c channels of rows xs apart), the bf16 state [3, c] read and written (qwen35.cu's `conv_silu`; `w32`: the weights fp32, `conv_silu_w32`).
@@ -248,7 +205,7 @@ impl KernGlm {
         if k <= 0 || k > 4096 {
             return err(format!("a norm of {k} values: not supported"));
         }
-        launch!(self.rms2, [n, 1, 1], [256, 1, 1], s; x, xs, w, y, ys, dst, k, eps)
+        launch!(self.rms2, [n, 1, 1], [256, 1, 1], s; x, xs, w, y, ys, dst, 0u64, k, eps)
     }
 
     /// The same with a LayerNorm (weight w, bias b [k], k at most 256).
@@ -260,7 +217,7 @@ impl KernGlm {
         if k <= 0 || k > 256 {
             return err(format!("a LayerNorm of {k} values: not supported"));
         }
-        launch!(self.layernorm, [n, 1, 1], [128, 1, 1], s; x, xs, w, b, y, ys, dst, k, eps)
+        launch!(self.layernorm, [n, 1, 1], [128, 1, 1], s; x, xs, w, b, y, ys, dst, 0u64, k, eps)
     }
 
     /// Row pos[i] of dst (rows `ds` apart) = row i of src (rows `ss` apart), `k` values each.
@@ -269,7 +226,7 @@ impl KernGlm {
     /// As `streams`.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn scatter(&self, s: Stream, src: u64, ss: i32, dst: u64, ds: i32, pos: u64, k: i32, n: u32) -> Result<()> {
-        launch!(self.scatter, [n, 1, 1], [256, 1, 1], s; src, ss, dst, ds, pos, k)
+        launch!(self.scatter, [n, 1, 1], [256, 1, 1], s; src, ss, dst, ds, pos, 0u64, k)
     }
 
     /// qa [n, heads, kv_rank] fp32 = each head's Wk^T q for q [n, heads nope] (rows `qs` apart), from kv_b_proj `wkv` [heads (nope + vd), kv_rank].
@@ -316,7 +273,7 @@ impl KernGlm {
         if kp <= 0 || kp > 8 {
             return err(format!("key groups of {kp} tokens: this engine runs groups up to 8"));
         }
-        launch!(self.kp_keys, [(n as u32).div_ceil(kp as u32) + 1, 1, 1], [128, 1, 1], s; ik, gs, ape, pk, pos, n, d, kp)
+        launch!(self.kp_keys, [(n as u32).div_ceil(kp as u32) + 1, 1, 1], [128, 1, 1], s; ik, d, gs, d, ape, pk, d, 1i32, 0i32, 0u64, pos, n, d, kp)
     }
 
     /// scores [n, pmax] fp32 for the rows whose pools are more than `ksel`: the indexer's heads (`ih` of `d` channels, queries iq with rows `iqs` apart, head weights wts with rows `wsr` apart) against the pool keys pk.
@@ -344,7 +301,7 @@ impl KernGlm {
         n: u32,
     ) -> Result<()> {
         let smem = ((ih * (d + 1) + ih + 8 * d) * 4) as u32;
-        launch!(self.idx_score, [(pmax as u32).div_ceil(8), n, 1], [256, 1, 1], smem smem, s; iq, iqs, wts, wsr, pk, pos, scores, pmax, ih, d, kp, ksel, scale, wscale)
+        launch!(self.idx_score, [(pmax as u32).div_ceil(8), n, 1], [256, 1, 1], smem smem, s; iq, iqs, wts, wsr, pk, d, 1i32, 0i32, 0u64, pos, scores, pmax, ih, d, kp, ksel, scale, wscale)
     }
 
     /// The tokens each of n rows attends to: sel [n, tmax] int32 (the first cnt[i] of a row), from the scores.
@@ -369,7 +326,7 @@ impl KernGlm {
         if ksel <= 0 || ksel > 1024 {
             return err(format!("an indexer that picks {ksel} groups of keys: this engine runs up to 1,024"));
         }
-        launch!(self.select, [n, 1, 1], [1024, 1, 1], s; scores, pmax, pos, sel, cnt, tmax, kp, ksel, tail as i32)
+        launch!(self.select, [n, 1, 1], [1024, 1, 1], s; scores, pmax, pos, kp, ksel, kp, tail as i32, sel, tmax, cnt)
     }
 
     /// olat [n, heads, kv_rank] fp32: each row's and head's softmax attention over the tokens sel/cnt picked, of the latents lat [., kv_rank]. A few rows (at most `HC_FEW`) cut their tokens into 8 runs over blocks and merge
@@ -434,7 +391,7 @@ impl KernGlm {
             tile = tile.min(t);
         }
         let smem = ((ks + 2 * tile) * 4) as u32;
-        launch!(self.mla_attn, [heads as u32, n, splits as u32], [256, 1, 1], smem smem, s; qa, lat, sel, cnt, olat, part, tmax, heads, kr, ks, scale, splits, tile)?;
+        launch!(self.mla_attn, [heads as u32, n, splits as u32], [256, 1, 1], smem smem, s; qa, lat, 0u64, sel, cnt, olat, part, tmax, heads, kr, ks, scale, splits, tile)?;
         if splits > 1 {
             launch!(self.mla_merge, [heads as u32, n, 1], [256, 1, 1], s; part, olat, heads, kr, splits)?;
         }
@@ -1859,6 +1816,7 @@ mod tests {
     use super::*;
 
     const SRC: &str = include_str!("../kernels/glm.cu");
+    const MLA_SRC: &str = include_str!("../kernels/mla.cu");
 
     /// The stand-ins for the latent attention and the mixture-of-experts layers say what they are; the hooks around them have the shapes a plug-in needs.
     #[test]
@@ -1878,35 +1836,26 @@ mod tests {
         let define = |n: &str| -> Option<usize> {
             SRC.lines().find_map(|l| l.strip_prefix(&format!("#define {n} "))).and_then(|v| v.split_whitespace().next()).and_then(|v| v.parse().ok())
         };
-        assert_eq!((define("GM_D"), define("GM_HC"), define("GM_NP"), define("GM_L")), (Some(GM_D), Some(GM_HC), Some(GM_NP), Some(GM_L)));
+        assert_eq!((define("GM_D"), define("GM_L")), (Some(GM_D), Some(GM_L)));
         let (bv, ks, ls) = (define("GM_BV").unwrap(), define("GM_KS").unwrap(), define("GM_LS").unwrap());
         assert_eq!((3 * GM_L * ks + GM_D * bv + GM_L * bv + 2 * GM_L * ls + GM_L) * 4, GM_CHUNK_SMEM as usize);
         // (it fits the 99 KB a block of an Ampere, Ada or Blackwell consumer card may ask for)
         const { assert!(GM_CHUNK_SMEM <= 101_376) };
-        // the latent attention's: the limits the launches hold to and the rows a block takes are the kernels' defines
+        // the latent attention's (kernels/mla.cu, the layer kind's): the limits the launches hold to and the rows a block takes are the kernels' defines
+        let define_mla = |n: &str| -> Option<usize> {
+            MLA_SRC.lines().find_map(|l| l.strip_prefix(&format!("#define {n} "))).and_then(|v| v.split_whitespace().next()).and_then(|v| v.parse().ok())
+        };
         assert_eq!(
-            (define("GM_NOPE_MAX"), define("GM_KSEL_MAX"), define("GM_IDX_W"), define("GM_RB"), define("GM_VB")),
+            (define_mla("GM_NOPE_MAX"), define_mla("GM_KSEL_MAX"), define_mla("GM_IDX_W"), define_mla("GM_RB"), define_mla("GM_VB")),
             (Some(256), Some(1024), Some(8), Some(8), Some(4))
         );
-        for name in [
-            "glm_streams",
-            "glm_hc_mix",
-            "glm_hc_post",
-            "glm_hc_head",
-            "glm_kda_rec",
-            "glm_kda_chunk",
-            "glm_kda_out",
-            "glm_kda_out_w32",
-            "glm_rms2",
-            "glm_layernorm",
-            "glm_scatter",
-            "glm_absorb",
-            "glm_kp_keys",
-            "glm_idx_score",
-            "glm_select",
-            "glm_mla_attn",
-            "glm_expand_v",
-        ] {
+        for name in ["rms2_rows", "layernorm_rows", "scatter_rows", "mla_absorb", "idx_pool", "idx_score", "idx_pick", "mla_attn", "mla_expand_v"] {
+            assert!(
+                MLA_SRC.contains(&format!("extern \"C\" __global__ void {name}(")) || MLA_SRC.contains(&format!(") {name}(")),
+                "no kernel {name} in kernels/mla.cu"
+            );
+        }
+        for name in ["glm_kda_rec", "glm_kda_chunk", "glm_kda_out", "glm_kda_out_w32"] {
             assert!(
                 SRC.contains(&format!("extern \"C\" __global__ void {name}(")) || SRC.contains(&format!(") {name}(")),
                 "no kernel {name} in kernels/glm.cu"

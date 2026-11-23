@@ -182,12 +182,10 @@ fn residual_label(b: Option<&Block>) -> String {
 /// output in place) and not a body's.
 fn residual_op(op: &Op) -> bool {
     match *op {
-        Op::AddNorm { .. } | Op::NormAdd { .. } | Op::EmbedNorm { .. } | Op::MuseGate { .. } | Op::Nop => true,
-        Op::RmsNorm { x, .. } => x == Slot::X,
-        Op::MuseRms { x, y, .. } | Op::MuseRmsIn { x, y, .. } => x == Slot::X || x == y,
-        Op::GlmStreams | Op::GlmPre { .. } | Op::GlmPost | Op::GlmHead { .. } => true,
-        Op::V4Streams | Op::V4Pre { .. } | Op::V4Post | Op::V4Head { .. } => true,
-        Op::KimiMixNorm { .. } | Op::KimiAdd { .. } | Op::KimiEarly { .. } => true,
+        Op::AddNorm { .. } | Op::NormAdd { .. } | Op::EmbedNorm { .. } | Op::GatedResidual { .. } | Op::Nop => true,
+        Op::RmsNorm { x, y, .. } => x == Slot::X || x == y,
+        Op::Streams | Op::StreamsPre { .. } | Op::StreamsPost { .. } | Op::StreamsHead { .. } => true,
+        Op::DepthMix(_) | Op::Add { .. } | Op::MoeEarly { .. } => true,
         _ => false,
     }
 }
@@ -196,7 +194,8 @@ fn residual_op(op: &Op) -> bool {
 fn out_slot(op: &Op) -> Result<Slot> {
     match *op {
         Op::Linear { y, .. } | Op::F8Lin { y, .. } | Op::LinearAt { y, .. } => Ok(y),
-        Op::Moe { .. } | Op::Mla { .. } | Op::V4Moe { .. } => Ok(Slot::O),
+        Op::Moe(m) => Ok(m.y),
+        Op::Mla { .. } => Ok(Slot::O),
         ref o => err(format!("kindcheck: where {o:?} writes a body's output is not known")),
     }
 }
@@ -258,8 +257,8 @@ impl Dyn {
     fn kc_ops(&self, l: usize, ops: Range<usize>, n: usize, at: usize, tok: &[u32]) -> Result<()> {
         self.dev.sync()?;
         self.pos.write(0, &(0..n).map(|i| (at + i) as i32).collect::<Vec<i32>>())?;
-        if let Some(v) = &self.v4 {
-            v.tok.write(0, &tok.iter().map(|&t| t as i32).collect::<Vec<i32>>())?;
+        if let Some(v) = &self.tok {
+            v.write(0, &tok.iter().map(|&t| t as i32).collect::<Vec<i32>>())?;
         }
         self.start.set(at);
         let pp = self.pos.ptr;

@@ -10,11 +10,11 @@
 //!
 //! A finished sequence stays in its slot (`ModelStep::keeps`), and a request that begins with its tokens goes on from them (`resume`): a conversation's next turn, which sends the turns
 //! before it again. The whole of what a slot holds can always be gone on with. Before its end: anywhere, where the description has no recurrent state and no latent cache (Gemma 4, Muse
-//! Spark: the keys and values past the place are written over); from the prompt's end, where the states were copied aside (`mark`), where it has recurrent states (the Qwen3.5 layout);
-//! not at all where it has a latent cache (Kimi-K3, GLM-5.3-Flash). `glyd-engine keepcheck` compares each against a sequence that never ended, bit for bit.
+//! Spark: the keys and values past the place are written over); from the prompt's end, where the states were copied aside (`mark`), where it has recurrent states (the Qwen3.5 layout,
+//! and Kimi-K3 and GLM-5.3-Flash, whose latent caches are rings like any keys). `glyd-engine keepcheck` compares each against a sequence that never ended, bit for bit.
 //!
 //! A request that begins as another sequence does, kept or running, shares that start (`share`): it names the other's full blocks (each then held by both, and written by
-//! neither: `Pages::share`) and runs only the rest. A model with recurrent states shares at the other's mark, with the states copied; one with a latent cache shares nothing.
+//! neither: `Pages::share`) and runs only the rest. A model with recurrent states shares at the other's mark, with the states copied.
 //!
 //! What a step of several sequences supports is decided per description (`Dyn::batchable`): every operation must be one that acts row by row, or one of the cache operations below that knows where a
 //! sequence's rows begin. A description with another runs its sequences one pass each, concurrently but not batched.
@@ -24,8 +24,7 @@ use super::snaps;
 use super::{Dyn, Op};
 use crate::dev::{copy_d2d_async, Buf};
 use crate::ffi::{err, Result};
-use crate::model::FUSED_ROWS;
-use crate::sched::{ModelStep, PrefillJob, Row, Sample};
+use crate::sched::{ModelStep, PrefillJob, Row, Sample, FUSED_ROWS};
 
 /// Paged keys and values: the blocks every sequence holds, each ring's layer group, and each sequence's block tables on the GPU ([slot][group], int32 a BLOCK of tokens).
 pub(super) struct Paged {
@@ -60,39 +59,37 @@ pub(super) fn row_wise(op: &Op) -> bool {
             | Op::NormAdd { .. }
             | Op::GatedNorm { .. }
             | Op::GateUpSilu { .. }
-            | Op::MuseRms { .. }
-            | Op::MuseRmsIn { .. }
-            | Op::MuseGate { .. }
-            | Op::MuseMoe { .. }
+            | Op::GatedResidual { .. }
             | Op::KdaOut { .. }
             | Op::LinearAt { .. }
-            | Op::KimiParts { .. }
-            | Op::KimiMixNorm { .. }
-            | Op::KimiAdd { .. }
-            | Op::KimiEarly { .. }
-            | Op::Situ { .. }
-            | Op::SwiGluClamp { .. }
-            | Op::Moe { .. }
-            | Op::GlmStreams
-            | Op::GlmPre { .. }
-            | Op::GlmPost
-            | Op::GlmHead { .. }
-            // (a latent attention block runs its products over every row and its caches' parts by sequence itself: `GlmHost::seq_rows`)
-            | Op::Mla { .. }
+            | Op::Parts { .. }
+            | Op::DepthMix(_)
+            | Op::Add { .. }
+            | Op::MoeEarly { .. }
+            | Op::GatedAct { .. }
+            | Op::Moe(_)
+            | Op::Streams
+            | Op::StreamsPre { .. }
+            | Op::StreamsPost { .. }
+            | Op::StreamsHead { .. }
+            // (the latent attention runs its products over every row and its caches' parts by sequence itself: `Dyn::seq_parts`)
+            | Op::Mla(_)
             | Op::MambaNorm { .. }
             // (DeepSeek-V4's: by row, or over the rows as the pass lays them out; its attention's output is laid out by group over the pass's rows, which its low rank reads)
-            | Op::V4Streams
-            | Op::V4Pre { .. }
-            | Op::V4Post
-            | Op::V4Head { .. }
             | Op::Fp8 { .. }
-            | Op::V4Q { .. }
-            | Op::V4IdxQ { .. }
-            | Op::V4OLora { .. }
-            | Op::V4OLoraStack { .. }
-            | Op::V4Moe { .. }
+            | Op::CompQ { .. }
+            | Op::IdxQ { .. }
+            | Op::OGroupLora { .. }
+            | Op::OGroupLoraStack { .. }
             | Op::Nop
     )
+}
+
+/// Whether a description's keys and values can be paged: it has a ring, and every operation that touches one reads it through a block table (the attention layer
+/// kind's, the latent attention kind's).
+pub(super) fn pages_all(d: &super::ModelDesc) -> bool {
+    std::iter::once(&d.first).chain(d.layers.iter().flatten()).all(|op| op.rings().is_empty() || matches!(op, Op::Attn(_) | Op::Mla(_)))
+        && d.layers.iter().flatten().any(|op| !op.rings().is_empty())
 }
 
 /// Whether an operation on a sequence's cache or states takes its rows at an offset in a pass over several sequences (`Dyn::rows_before`, `Dyn::cache`, `Dyn::state`): the attention
@@ -107,10 +104,10 @@ fn by_sequence(op: &Op) -> bool {
             | Op::KdaDelta { .. }
             | Op::MambaConv { .. }
             | Op::MambaScan { .. }
-            | Op::V4Kv { .. }
-            | Op::V4Comp { .. }
-            | Op::V4IdxPick { .. }
-            | Op::V4Attn { .. }
+            | Op::CompKv { .. }
+            | Op::Compress { .. }
+            | Op::IdxPick(_)
+            | Op::CompAttn { .. }
     )
 }
 
@@ -137,30 +134,27 @@ impl Dyn {
 
     /// Ring `ring`'s keys and values: the sequence's an operation runs on now in a pass over several, else the selected sequence's.
     pub(super) fn cache(&self, ring: usize) -> (u64, u64) {
-        let off = self.ring_off[ring];
+        let (ko, vo) = self.ring_off[ring];
         match self.at.get() {
-            Some(k) => (self.parts[k].kc + off, self.parts[k].vc + off),
-            None => (self.kc.ptr + off, self.vc.ptr + off),
+            Some(k) => (self.parts[k].kc + ko, self.parts[k].vc + vo),
+            None => (self.kc.ptr + ko, self.vc.ptr + vo),
         }
     }
 
     /// Ring `ring`'s block table for the sequence an operation runs on now (0: the ring is a room of its own, addressed position modulo its capacity).
     pub(super) fn table(&self, ring: usize) -> u64 {
+        self.table_of(self.at.get().map_or(self.seq, |k| self.parts[k].slot), ring)
+    }
+
+    /// Ring `ring`'s block table for the sequence in `slot` (0: none).
+    pub(super) fn table_of(&self, slot: usize, ring: usize) -> u64 {
         let Some(pg) = &self.paged else { return 0 };
-        let slot = self.at.get().map_or(self.seq, |k| self.parts[k].slot);
         pg.tabs[slot][pg.group[ring]].ptr
     }
 
-    /// Whether this description's keys and values can be paged: every operation that touches a ring reads it through a block table (the attention layer kind's), with no draft
-    /// model, the whole model on one GPU.
+    /// Whether this description's keys and values can be paged (`pages_all`), with no draft model, the whole model on one GPU.
     fn pageable(&self) -> bool {
-        let d = &self.big.d;
-        self.draft.is_none()
-            && self.stage.first
-            && self.stage.last
-            && std::iter::once(&d.first).chain(d.layers.iter().flatten()).all(|op| op.ring().is_none() || matches!(op, Op::Attn(_)))
-            && d.layers.iter().flatten().any(|op| op.ring().is_some())
-            && crate::tune!("GLYD_ENGINE_PAGED").is_none_or(|v| v != "0")
+        self.draft.is_none() && self.stage.first && self.stage.last && pages_all(&self.big.d) && crate::tune!("GLYD_ENGINE_PAGED").is_none_or(|v| v != "0")
     }
 
     /// The rings' keys and values moved to pools of blocks shared by `users` sequences, as large as the GPU's free memory leaves (`keep` of it kept): a sliding group no more than every
@@ -183,7 +177,7 @@ impl Dyn {
         let mut per = vec![0usize; windows.len()];
         for (r, ring) in rings.iter().enumerate() {
             if self.ring_cap[r] > 0 {
-                per[group[r]] += twelve[r].map_or(2 * ring.nk * ring.d * 2, |b| b.ceil() as usize);
+                per[group[r]] += twelve[r].map_or(ring.token_bytes(), |b| b.ceil() as usize);
             }
         }
         // (the 12-bit pages' step buffers: a prompt chunk's pages unpacked to bf16, keys and values, a ring at a time)
@@ -229,14 +223,16 @@ impl Dyn {
         }
         // each ring's room: its group's blocks (one more: block 0, which every entry no sequence holds names), in bf16 or in 12-bit pages
         self.lossless = None;
-        let (mut off, mut ring_off) = (0u64, Vec::with_capacity(rings.len()));
+        let (mut off, mut off_v, mut ring_off) = (0u64, 0u64, Vec::with_capacity(rings.len()));
         for (r, ring) in rings.iter().enumerate() {
-            ring_off.push(off);
+            ring_off.push((off, off_v));
             if self.ring_cap[r] > 0 && twelve[r].is_none() {
-                off += ((blocks[group[r]] + 1) * BLOCK * ring.nk * ring.d * 2) as u64;
+                let room = ((blocks[group[r]] + 1) * BLOCK * ring.nk * ring.d * 2) as u64;
+                off += room;
+                off_v += if ring.values { room } else { 0 };
             }
         }
-        (self.kc, self.vc) = (Buf::zeroed(off.max(4) as usize)?, Buf::zeroed(off.max(4) as usize)?);
+        (self.kc, self.vc) = (Buf::zeroed(off.max(4) as usize)?, Buf::zeroed(off_v.max(4) as usize)?);
         self.ring_off = ring_off;
         if let Some(t) = self.kv12.as_ref().filter(|_| twelve.iter().any(Option::is_some)) {
             let rows = self.chunk.max(self.split_rows).max(users);
@@ -289,7 +285,7 @@ impl Dyn {
     /// usercheck found 3 of 4 Muse Spark replies the same). With GLYD_ENGINE_BATCH_PREFILL=0 such a description's decode steps run one sequence each, so every reply is the reply alone.
     pub(crate) fn rows_exact(&self) -> bool {
         let d = &self.big.d;
-        !d.layers.iter().flatten().any(|op| matches!(op, Op::MuseMoe { .. } | Op::Moe { .. } | Op::V4Moe { .. }))
+        !d.layers.iter().flatten().any(|op| matches!(op, Op::Moe(_)))
     }
 
     /// The least window of the layers whose attention slides (none: every layer reads the whole sequence).
@@ -298,9 +294,10 @@ impl Dyn {
         self.big.d.rings.iter().map(|r| r.window).filter(|&w| w > 0 && w != usize::MAX).min()
     }
 
-    /// Whether a kept sequence can be cut back before its end (`ModelStep::resume`): no recurrent state and no latent cache, which are what they are after its last token.
+    /// Whether a kept sequence can be cut back before its end (`ModelStep::resume`): no recurrent state, which is what it is after its last token. (A latent cache is
+    /// a ring as any keys are.)
     pub(crate) fn cuts(&self) -> bool {
-        self.states.is_empty() && self.big.mla.is_empty()
+        self.states.is_empty()
     }
 
     /// Sequence `slot`'s tokens in its cache.
@@ -430,11 +427,14 @@ impl Dyn {
     /// Ready to be a scheduler's step for up to `users` sequences: the head's room for a row each, and as many more sequences as the GPU's free memory holds (the first is this one's). None where this
     /// engine runs one sequence only (a draft model, a stage of a split model, a family `add_seqs` refuses).
     pub fn serve_rows(&mut self, users: usize) -> Result<Option<usize>> {
-        // (Gemma 4, Qwen3.5's layout, which Qwen3.8 dense runs on, Muse Spark, Kimi-K3, GLM-5.3-Flash, Nemotron-H and DeepSeek-V4 on one GPU)
+        // (Gemma 4, Qwen3.5's layout, which Qwen3.8 dense runs on, Muse Spark, Kimi-K3, GLM-5.3-Flash, Nemotron-H, DeepSeek-V4 and the Llama-style dense models on one GPU)
         if self.draft.is_some()
             || !self.stage.first
             || !self.stage.last
-            || !matches!(self.big.d.family, "Gemma 4" | "Qwen3.5" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash" | "Nemotron-H" | "DeepSeek-V4")
+            || !matches!(
+                self.big.d.family,
+                "Gemma 4" | "Qwen3.5" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash" | "Nemotron-H" | "DeepSeek-V4" | super::dense::FAMILY
+            )
         {
             return Ok(None);
         }
@@ -464,8 +464,7 @@ impl Dyn {
             self.swap_room(crate::plan::swap_area(self.swap_backs() as u64, crate::offload::host_memory()) as usize)?;
             return Ok(Some(users));
         }
-        let mla: usize = self.big.mla.iter().map(|b| b.seq_bytes(self.ctx)).sum();
-        let per = (self.kc.bytes + self.vc.bytes + states * (1 + marks as usize) + mla).max(1);
+        let per = (self.kc.bytes + self.vc.bytes + states * (1 + marks as usize)).max(1);
         let (free, _) = self.dev.mem_info()?;
         // (room kept for the products' workspaces and the driver)
         const KEEP: usize = 512 << 20;
@@ -529,11 +528,11 @@ impl Dyn {
         self.named.lru.find(key, pg.pages.named(0, key)?)
     }
 
-    /// Whether a served model's sequences have their states copied aside at a mark (`ModelStep::mark`), for a kept sequence to go on from: recurrent states, and no latent cache
-    /// (which no copy is made of).
+    /// Whether a served model's sequences have their states copied aside at a mark (`ModelStep::mark`), for a kept sequence to go on from: recurrent states (a latent cache
+    /// is a ring, whose blocks a mark keeps as any keys').
     /// (not DeepSeek-V4's: its compressed entries are states that grow with the sequence, so a copy at each prompt's end would be a second cache)
     pub(crate) fn can_mark(&self) -> bool {
-        !self.states.is_empty() && self.big.mla.is_empty() && self.v4.is_none()
+        !self.states.is_empty() && self.v4.is_none()
     }
 
     fn batch_prefill() -> bool {
@@ -908,10 +907,10 @@ impl ModelStep for Dyn {
         self.upload_tables(t)?;
         Ok(n)
     }
-    /// A start shared with an empty sequence (`Pages::share`; paged keys and values only). With no recurrent state and no latent cache: the full blocks of the first `upto`
+    /// A start shared with an empty sequence (`Pages::share`; paged keys and values only). With no recurrent state: the full blocks of the first `upto`
     /// tokens. With recurrent states kept at a mark: `from`'s mark, where it is within `upto`: the full blocks before it shared, the block the mark is in copied to one of
     /// `to`'s own (its tokens before the mark are `from`'s; what `to` writes from the mark on is its own), and the states as they were at the mark copied to `to`'s, and to
-    /// its mark. A latent cache: nothing.
+    /// its mark.
     fn share(&mut self, from: i32, to: i32, upto: usize) -> Result<usize> {
         let (f, t) = (from as usize, to as usize);
         if self.paged.is_none() || f == t || self.seq_n(t) != 0 || upto > self.seq_n(f) {
@@ -945,8 +944,8 @@ impl ModelStep for Dyn {
                     if self.ring_cap[r] == 0 || src == 0 || dst == 0 {
                         continue;
                     }
-                    for base in [self.kc.ptr, self.vc.ptr] {
-                        let at = base + self.ring_off[r];
+                    let (ko, vo) = self.ring_off[r];
+                    for at in std::iter::once(self.kc.ptr + ko).chain(ring.values.then_some(self.vc.ptr + vo)) {
                         // SAFETY: two blocks of the ring's pool, a block's bytes each.
                         unsafe { copy_d2d_async(at + (dst as usize * bytes) as u64, at + (src as usize * bytes) as u64, bytes, self.dev.stream)? };
                     }

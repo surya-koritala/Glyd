@@ -2,8 +2,8 @@
 
 use crate::chat::{Chat, Message, Options};
 use crate::ffi::{err, Result};
-use crate::model::{Engine, Finish, Reply};
 use crate::sampler::Params;
+use crate::sched::{Finish, Reply};
 use crate::tok::Tok;
 
 /// What a request asks for besides its messages.
@@ -348,15 +348,6 @@ pub trait Gen {
     /// are timed where they run.
     fn own_speed(&self) -> bool {
         true
-    }
-}
-
-impl Gen for Engine {
-    fn capacity(&self) -> usize {
-        Engine::capacity(self)
-    }
-    fn reply(&mut self, prompt: &[u32], o: &Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, Finish)> {
-        Engine::reply(self, prompt, o, each)
     }
 }
 
