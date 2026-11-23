@@ -477,7 +477,7 @@ pub fn cu(call: &str, status: c_int) -> Result<()> {
 }
 
 /// The C API version this binding is written for (glyd_gpu.h's GLYD_GPU_API_VERSION).
-pub const API_VERSION: c_int = 18;
+pub const API_VERSION: c_int = 19;
 
 /// The name a library call goes by in an error: the function's own.
 macro_rules! call {
@@ -533,6 +533,7 @@ table! {
         fn glyd_gpu_kv_floor_set(c_int) -> c_int;
         fn glyd_gpu_kv_decode(*const u16, i64, *const u8, i64, *const u8, *const u8, *const i32, i64, *const i32, i64, i64, i64, i64, i64, i64, *const u8, i64, *const u8, i64, f64, *mut u16, i64, *mut c_void, usize, Stream) -> c_int;
         fn glyd_gpu_kv_decode_from(*const u16, i64, *const u8, i64, *const u8, *const u8, *const i32, i64, *const i32, *const i32, i64, i64, i64, i64, i64, i64, i64, *const u8, i64, *const u8, i64, f64, *mut u16, i64, *mut c_void, usize, Stream) -> c_int;
+        fn glyd_gpu_kv_prefill(*const u16, i64, *const u16, i64, *const u16, i64, i64, i64, i64, *const u8, i64, *const u8, *const u8, *const i32, i64, i64, i64, i64, *const u8, i64, *const u8, i64, f64, i64, f64, *const f32, *mut u16, i64, Stream) -> c_int;
     }
 }
 
@@ -1557,6 +1558,71 @@ impl Lib {
             cs,
         );
         self.ck(call!("kv_decode_from"), r)
+    }
+
+    /// A prompt chunk's attention (glyd_gpu.h's `glyd_gpu_kv_prefill`): `n` rows of one sequence at positions `start` .. `start + n`, queries `q` [n, H G, D] (row t at q + t
+    /// q_stride elements), causal over the keys from each row's window (`window` tokens, 0: none) to itself: those before `start` read from the pages `block_table` (int32: the
+    /// sequence's row of the table) names, the chunk's own from its bf16 rows `key`, `value` [n, H, D] (0: from the pages too, written before); `round`: each score the bf16 of its dot
+    /// product (Gemma 4's), `softcap` 0: none, `sinks` 0 or float [H G] on the device; out [n, H G, D].
+    ///
+    /// # Safety
+    /// As `kv_decode`; `block_table` holds a page for every token before `start + n` that a row's window takes.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn kv_prefill(
+        &self,
+        g: &KvGeom,
+        group: i64,
+        pool: u64,
+        kbase: u64,
+        vbase: u64,
+        block_table: u64,
+        q: u64,
+        q_stride: i64,
+        rows: Option<(u64, i64, u64, i64)>,
+        n: i64,
+        start: i64,
+        window: i64,
+        scale: f64,
+        round: bool,
+        softcap: f64,
+        sinks: u64,
+        out: u64,
+        out_stride: i64,
+        cs: Stream,
+    ) -> Result<()> {
+        let (key, key_stride, value, value_stride) = rows.unwrap_or((0, 0, 0, 0));
+        let r = (self.api.glyd_gpu_kv_prefill)(
+            q as *const u16,
+            q_stride,
+            key as *const u16,
+            key_stride,
+            value as *const u16,
+            value_stride,
+            n,
+            start,
+            window,
+            pool as *const u8,
+            g.page_stride,
+            kbase as *const u8,
+            vbase as *const u8,
+            block_table as *const i32,
+            g.heads,
+            group,
+            g.dim,
+            g.arena,
+            g.escape as *const u8,
+            g.nchunks,
+            g.raw as *const u8,
+            g.nslabs,
+            scale,
+            round as i64,
+            softcap,
+            sinks as *const f32,
+            out as *mut u16,
+            out_stride,
+            cs,
+        );
+        self.ck(call!("kv_prefill"), r)
     }
 }
 

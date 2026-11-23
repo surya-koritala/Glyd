@@ -1,9 +1,11 @@
 //! A known answer for the lossless KV cache of every head dimension the library holds (128, 256 and 512 channels; 256 and 512 are held as two and four of the page's heads of 128): bf16 keys and values made on the host
 //! (in the windows of their channels, and out of them, and with every kind of special value), written through `glyd_gpu_kv_write`, read back through `glyd_gpu_kv_gather` and compared bit for bit with what was written, and
-//! the decode attention (`glyd_gpu_kv_decode`) against attention computed on the host from the same values. No model: `glyd-engine kvshapes`, in the GPU job.
+//! the decode attention (`glyd_gpu_kv_decode`) and the prompt attention (`glyd_gpu_kv_prefill`) against attention computed on the host from the same values. No model: `glyd-engine kvshapes`, in the GPU job.
+//! `glyd-engine kvprefill` times the prompt attention against the unpack of the pages to a bf16 ring and Gemma 4's kernel on it.
 
 use crate::dev::{Buf, Dev};
 use crate::ffi::{KvGeom, Lib, Result, KV_ONE_STREAM};
+use crate::launch;
 
 struct Rng(u64);
 
@@ -338,6 +340,345 @@ fn one_stream(lib: &Lib, dev: &Dev, h: usize, d: usize, pad: usize) -> Result<bo
     Ok(bad == 0)
 }
 
+/// `n` tokens of [h][d] values as `values` makes them, but those out of their channel's window (`far` in a thousand, and 2 in a thousand of the finite specials: zeros and
+/// subnormals) below it only: keys whose scores stay a few units (a softmax over many of them), and values with no term of an output far larger than the output. (Values of
+/// 2^11 to 2^13 among them make terms of hundreds that cancel.)
+fn near(r: &mut Rng, n: usize, h: usize, d: usize, far: usize) -> Vec<u16> {
+    let mut out = Vec::with_capacity(n * h * d);
+    for _ in 0..n {
+        for hh in 0..h {
+            for c in 0..d {
+                let mu = 124 + (hh * 5 + c * 3) % 7;
+                let e = if r.below(1000) < far { mu - 12 - r.below(4) } else { mu + r.below(3) - 1 };
+                let v = ((r.below(2) as u16) << 15) | ((e as u16) << 7) | r.below(128) as u16;
+                out.push(if r.below(1000) < 2 { [0x0000, 0x8000, 0x0001, 0x8001][r.below(4)] } else { v });
+            }
+        }
+    }
+    out
+}
+
+/// One prompt chunk's attention.
+#[derive(Clone, Copy)]
+struct Chunk {
+    start: usize,
+    n: usize,
+    window: usize,
+    rows: bool,
+    round: bool,
+    cap: f64,
+    sinks: bool,
+}
+
+/// What a chunk's rows `q` ([n][h g][d]) give over the sequence's keys `k` and values `v` ([tokens][h][d]), in f64: each row over the keys from its window's first to itself; a
+/// score the dot product (its bf16 where `round`) times `scale`, capped, a sink's logit joining the sum. With each output, the sum of its terms' magnitudes (each probability
+/// times its value's magnitude): the kernel rounds each probability to bf16 for the values, which moves an output by up to 2^-8 of that.
+fn prompt_attention(q: &[u16], k: &[u16], v: &[u16], c: Chunk, h: usize, g: usize, d: usize, scale: f64, sinks: &[f32]) -> (Vec<f64>, Vec<f64>) {
+    let (mut out, mut mag) = (vec![0.0; c.n * h * g * d], vec![0.0; c.n * h * g * d]);
+    for t in 0..c.n {
+        let p = c.start + t;
+        let lo = if c.window > 0 { (p + 1).saturating_sub(c.window) } else { 0 };
+        for hh in 0..h {
+            for j in 0..g {
+                let qh = &q[((t * h + hh) * g + j) * d..][..d];
+                let s: Vec<f64> = (lo..=p)
+                    .map(|u| {
+                        let dot = (0..d).map(|x| f32_of(qh[x]) as f64 * f32_of(k[(u * h + hh) * d + x]) as f64).sum::<f64>();
+                        let dot = if c.round { f32_of(bf16_of(dot as f32)) as f64 } else { dot };
+                        let x = dot * scale;
+                        if c.cap > 0.0 {
+                            c.cap * (x / c.cap).tanh()
+                        } else {
+                            x
+                        }
+                    })
+                    .collect();
+                let sink = if c.sinks { sinks[hh * g + j] as f64 } else { f64::NEG_INFINITY };
+                let m = s.iter().cloned().fold(sink, f64::max);
+                let w: Vec<f64> = s.iter().map(|x| (x - m).exp()).collect();
+                let z: f64 = w.iter().sum::<f64>() + (sink - m).exp();
+                for x in 0..d {
+                    let at = ((t * h + hh) * g + j) * d + x;
+                    out[at] = (lo..=p).map(|u| w[u - lo] * f32_of(v[(u * h + hh) * d + x]) as f64).sum::<f64>() / z;
+                    mag[at] = (lo..=p).map(|u| w[u - lo] * (f32_of(v[(u * h + hh) * d + x]) as f64).abs()).sum::<f64>() / z;
+                }
+            }
+        }
+    }
+    (out, mag)
+}
+
+/// The prompt attention of one shape (`h` kv heads of `d` channels, `g` query heads to each) over a sequence of 230 tokens in pages taken out of order: a chunk at its start,
+/// in its middle (its prefix in pages from a token inside a page), past a sliding window, the chunk's keys from the pages, a window with soft-capping and sinks, a single row;
+/// against the host's attention from the same values. False where a value is past the decode check's bound and the probabilities' rounding to bf16 (2^-8 of the sum of its
+/// terms' magnitudes: over a softmax of tens to hundreds of keys, that rounding alone took 0.3 to 0.7% of the outputs past the decode check's bound, at head 512 too, where the kernel's
+/// outputs are Gemma 4's g4_fa512b's bit for bit).
+fn prefill(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
+    const A: i64 = 15;
+    const RING: i64 = 256;
+    let hp = (h * d / 128) as i64;
+    let total = 16 * 14 + 6;
+    let blocks = 20usize;
+    let table: Vec<i32> = (0..blocks as i32).map(|j| (7 * j + 3) % blocks as i32).collect(); // (the sequence's page j in block 7 j + 3 modulo 20)
+    let page = lib.kv_page_bytes(h as i64, d as i64, A)?;
+    let (nchunks, nslabs) = (4096i64, 64i64);
+    let pool = Buf::zeroed(page as usize * blocks)?;
+    let escape = Buf::zeroed(lib.kv_escape_bytes(nchunks)? as usize)?;
+    let raw = Buf::zeroed(lib.kv_raw_bytes(nslabs, hp)? as usize)?;
+    let status = Buf::zeroed(4 * (16 + 2 * RING) as usize)?;
+    let geom = KvGeom { heads: h as i64, dim: d as i64, arena: A, page_stride: page, escape: escape.ptr, nchunks, raw: raw.ptr, nslabs };
+    let mut r = Rng(0x5EED_0F_C4A7 ^ (h * 1000 + d * 10 + g) as u64);
+    let (k, v) = (near(&mut r, total, h, d, 15), near(&mut r, total, h, d, 15));
+    let (kb, vb) = (bases(&k, total, h, d), bases(&v, total, h, d));
+    let (kbuf, vbuf, kbase, vbase) = (Buf::new(2 * k.len())?, Buf::new(2 * v.len())?, Buf::new(kb.len())?, Buf::new(vb.len())?);
+    kbuf.write(0, &k)?;
+    vbuf.write(0, &v)?;
+    kbase.write(0, &kb)?;
+    vbase.write(0, &vb)?;
+    let slots: Vec<i64> = (0..total).map(|t| table[t / 16] as i64 * 16 + (t % 16) as i64).collect();
+    let (sl, bt) = (Buf::new(8 * total)?, Buf::new(4 * blocks)?);
+    sl.write(0, &slots)?;
+    bt.write(0, &table)?;
+    let w = (h * d) as i64;
+    // SAFETY: live buffers of the sizes the kernels read and write; the stream is synchronized before the results are read.
+    unsafe { lib.kv_write(&geom, pool.ptr, kbase.ptr, vbase.ptr, 0, kbuf.ptr, w, vbuf.ptr, w, sl.ptr, total as i64, status.ptr, 0, 0, RING, dev.stream)? };
+    let qw = h * g * d;
+    let q: Vec<u16> = (0..total * qw).map(|_| bf16_of(((r.below(2000) as f32) - 1000.0) / 5000.0)).collect();
+    let sinks: Vec<f32> = (0..h * g).map(|i| (i % 5) as f32 * 0.5 - 1.0).collect();
+    let (qbuf, sbuf) = (Buf::new(2 * q.len())?, Buf::new(4 * sinks.len())?);
+    qbuf.write(0, &q)?;
+    sbuf.write(0, &sinks)?;
+    let scale = 1.0 / (d as f64).sqrt();
+    let c = |start, n, window, rows, round, cap, sinks| Chunk { start, n, window, rows, round, cap, sinks };
+    let cases = [
+        c(0, 70, 0, true, true, 0.0, false),
+        c(100, 70, 0, true, false, 0.0, false),
+        c(150, 80, 40, true, true, 0.0, false),
+        c(96, 37, 0, false, true, 0.0, false),
+        c(130, 50, 64, false, false, 0.5, true),
+        c(37, 1, 0, true, true, 0.0, false),
+        c(200, 30, 0, true, true, 0.5, true),
+    ];
+    let mut bad = 0;
+    for ch in cases {
+        let o = Buf::zeroed(2 * ch.n * qw)?;
+        let rows = ch.rows.then_some((kbuf.ptr + (2 * ch.start) as u64 * w as u64, w, vbuf.ptr + (2 * ch.start) as u64 * w as u64, w));
+        unsafe {
+            lib.kv_prefill(
+                &geom,
+                g as i64,
+                pool.ptr,
+                kbase.ptr,
+                vbase.ptr,
+                bt.ptr,
+                qbuf.ptr + (2 * ch.start * qw) as u64,
+                qw as i64,
+                rows,
+                ch.n as i64,
+                ch.start as i64,
+                ch.window as i64,
+                scale,
+                ch.round,
+                ch.cap,
+                if ch.sinks { sbuf.ptr } else { 0 },
+                o.ptr,
+                qw as i64,
+                dev.stream,
+            )?
+        };
+        dev.sync()?;
+        let mut got = vec![0u16; ch.n * qw];
+        o.read(0, &mut got)?;
+        let (want, mag) = prompt_attention(&q[ch.start * qw..(ch.start + ch.n) * qw], &k, &v, ch, h, g, d, scale, &sinks);
+        let (mut worst, mut off, mut at) = (0f64, 0usize, None);
+        for (i, ((x, w), m)) in got.iter().zip(&want).zip(&mag).enumerate() {
+            let e = (f32_of(*x) as f64 - w).abs() / (w.abs() * 0.015 + 2e-3 + m / 256.0);
+            worst = worst.max(e);
+            if e > 1.0 || !e.is_finite() {
+                off += 1;
+                at.get_or_insert((i / qw, i % qw / d, i % d, *w, f32_of(*x)));
+            }
+        }
+        if let Some((t, hq, c, w, x)) = at {
+            println!("     the first: row {}, query head {hq}, channel {c}: {x} where the host's is {w:.5}", ch.start + t);
+        }
+        println!(
+            "{} {h} heads x {d}, {g} queries to a head, rows {}..{} (window {}, keys {}{}{}{}): prompt attention, {off} of {} values past 1.5% + 0.002 + 2^-8 of the terms (worst {worst:.2} of the bound)",
+            if off == 0 { "ok  " } else { "FAIL" },
+            ch.start,
+            ch.start + ch.n,
+            ch.window,
+            if ch.rows { "of the chunk from its rows" } else { "all from the pages" },
+            if ch.round { ", scores bf16" } else { ", scores fp32" },
+            if ch.cap > 0.0 { ", soft-capped" } else { "" },
+            if ch.sinks { ", sinks" } else { "" },
+            got.len()
+        );
+        bad += (off != 0) as usize;
+    }
+    let mut head = [0u32; 16];
+    status.read(0, &mut head)?;
+    if head[11] != 0 {
+        println!("FAIL {h} heads x {d}: {} void pages", head[11]);
+        bad += 1;
+    }
+    Ok(bad == 0)
+}
+
+/// `kvprefill [--chunk 256] [--prefixes 0,1024,4096,8192] [--reps 20]`: a chunk's prompt attention at gemma-4-12B's shapes (its sliding layers: 8 kv heads of 256, 16 query
+/// heads, a window of 1,024; its global ones: 1 of 512, 16 query heads), three ways: the pages unpacked to a bf16 ring (`kv12_stage`) and Gemma 4's kernel on it (the executor's
+/// path now), `glyd_gpu_kv_prefill` on the pages and the chunk's rows, and Gemma 4's kernel alone on a bf16 ring (what bf16 pages cost); the milliseconds of each, and the largest
+/// difference of the two outputs over the pages.
+pub fn bench(a: &crate::args::Args) -> Result<()> {
+    const A: i64 = 15;
+    let dev = Dev::new(0)?;
+    let lib = Lib::find()?;
+    // Gemma 4's prompt kernels by their names (Q [64][264], K and V [32][264] bf16; K and V [32][520] bf16 and the score shares [2][4][16][33] floats), where this build has them
+    let fam = |name: &str, smem: u32| dev.kernel(name).and_then(|k| k.allow_smem(smem).map(|_| (k, smem))).ok();
+    let (fa256, fa512) = (fam("g4_fa256", (64 + 2 * 32) * 264 * 2), fam("g4_fa512b", 2 * 32 * 520 * 2 + 2 * 4 * 16 * 33 * 4));
+    let s = dev.stream;
+    let (n, reps) = (a.num("chunk", 256usize)?, a.num("reps", 20usize)?);
+    let prefixes: Vec<usize> = a.flag("prefixes").unwrap_or("0,1024,4096,8192").split(',').filter_map(|x| x.trim().parse().ok()).collect();
+    println!("{}: a chunk of {n} rows, {reps} runs each (ms a call)", dev.name);
+    for (h, d, nq, window) in [(8usize, 256usize, 16usize, 1024usize), (1, 512, 16, 0)] {
+        for &prefix in &prefixes {
+            let total = prefix + n;
+            let blocks = total.div_ceil(16);
+            let mut r = Rng(0xB0A7 ^ (prefix * 7 + d) as u64);
+            let (k, v) = (near(&mut r, total, h, d, 5), near(&mut r, total, h, d, 5));
+            let (kb, vb) = (bases(&k, total, h, d), bases(&v, total, h, d));
+            let page = lib.kv_page_bytes(h as i64, d as i64, A)?;
+            let hp = (h * d / 128) as i64;
+            let (nchunks, nslabs) = ((blocks * 8) as i64, 64i64);
+            let pool = Buf::zeroed(page as usize * blocks)?;
+            let escape = Buf::zeroed(lib.kv_escape_bytes(nchunks)? as usize)?;
+            let raw = Buf::zeroed(lib.kv_raw_bytes(nslabs, hp)? as usize)?;
+            let status = Buf::zeroed(4 * (16 + 2 * 256))?;
+            let geom = KvGeom { heads: h as i64, dim: d as i64, arena: A, page_stride: page, escape: escape.ptr, nchunks, raw: raw.ptr, nslabs };
+            let (kbuf, vbuf, kbase, vbase) = (Buf::new(2 * k.len())?, Buf::new(2 * v.len())?, Buf::new(kb.len())?, Buf::new(vb.len())?);
+            kbuf.write(0, &k)?;
+            vbuf.write(0, &v)?;
+            kbase.write(0, &kb)?;
+            vbase.write(0, &vb)?;
+            let slots: Vec<i64> = (0..total as i64).collect();
+            let table: Vec<i32> = (0..blocks as i32).collect();
+            let (sl, bt) = (Buf::new(8 * total)?, Buf::new(4 * blocks)?);
+            sl.write(0, &slots)?;
+            bt.write(0, &table)?;
+            let w = (h * d) as i64;
+            unsafe { lib.kv_write(&geom, pool.ptr, kbase.ptr, vbase.ptr, 0, kbuf.ptr, w, vbuf.ptr, w, sl.ptr, total as i64, status.ptr, 0, 0, 256, s)? };
+            let qw = nq * d;
+            let q: Vec<u16> = (0..n * qw).map(|_| bf16_of(((r.below(2000) as f32) - 1000.0) / 5000.0)).collect();
+            let qbuf = Buf::new(2 * q.len())?;
+            qbuf.write(0, &q)?;
+            let pos: Vec<i32> = (prefix as i32..total as i32).collect();
+            let pb = Buf::new(4 * n)?;
+            pb.write(0, &pos)?;
+            // the executor's ring a prompt chunk's pages are unpacked into (kv12_stage), and a bf16 ring of every token (bf16 pages)
+            let sb = if window > 0 { (window + n).div_ceil(16) + 2 } else { total.div_ceil(16) + 1 };
+            let row = 16 * h * d * 2;
+            let (stk, stv) = (Buf::zeroed(sb * row)?, Buf::zeroed(sb * row)?);
+            let (o_stage, o_pages, o_bf) = (Buf::zeroed(2 * n * qw)?, Buf::zeroed(2 * n * qw)?, Buf::zeroed(2 * n * qw)?);
+            let lo = if window > 0 { (prefix + 1).saturating_sub(window) } else { 0 };
+            let (b0, b1) = (lo / 16, total.div_ceil(16));
+            let unpack = || -> Result<()> {
+                let mut b = b0;
+                while b < b1 {
+                    let at = b % sb;
+                    let m = (b1 - b).min(sb - at);
+                    unsafe {
+                        lib.kv_unpack(
+                            &geom,
+                            pool.ptr,
+                            kbase.ptr,
+                            vbase.ptr,
+                            bt.ptr + 4 * b as u64,
+                            m as i64,
+                            stk.ptr + (at * row) as u64,
+                            stv.ptr + (at * row) as u64,
+                            s,
+                        )?
+                    };
+                    b += m;
+                }
+                Ok(())
+            };
+            let (kern, bm, threads, kname) = if d == 256 { (&fa256, 64, 128, "g4_fa256") } else { (&fa512, 32, 256, "g4_fa512b") };
+            let family = |kc: u64, vc: u64, cap: usize, out: u64| -> Result<()> {
+                let Some((k, smem)) = kern else { return Ok(()) };
+                let (nqi, nki, wi, ci) = (nq as i32, h as i32, window as i32, cap as i32);
+                unsafe {
+                    launch!(k, [n.div_ceil(bm) as u32, nq as u32, 1], [threads, 1, 1], smem *smem, s; qbuf.ptr, kc, vc, pb.ptr, out, n as i32, nqi, nki, wi, ci, 0u64)
+                }
+            };
+            let pages = || -> Result<()> {
+                let rows = Some((kbuf.ptr + (2 * prefix) as u64 * w as u64, w, vbuf.ptr + (2 * prefix) as u64 * w as u64, w));
+                // (Gemma 4's attention: scale 1, the scores bf16)
+                unsafe {
+                    lib.kv_prefill(
+                        &geom,
+                        (nq / h) as i64,
+                        pool.ptr,
+                        kbase.ptr,
+                        vbase.ptr,
+                        bt.ptr,
+                        qbuf.ptr,
+                        qw as i64,
+                        rows,
+                        n as i64,
+                        prefix as i64,
+                        window as i64,
+                        1.0,
+                        true,
+                        0.0,
+                        0,
+                        o_pages.ptr,
+                        qw as i64,
+                        s,
+                    )
+                }
+            };
+            let time = |f: &dyn Fn() -> Result<()>| -> Result<f64> {
+                f()?;
+                dev.sync()?;
+                let t = crate::dev::Timer::new()?;
+                t.start(s)?;
+                for _ in 0..reps {
+                    f()?;
+                }
+                Ok(t.stop(s)? as f64 / reps as f64)
+            };
+            let t_unpack = time(&unpack)?;
+            let t_fa = time(&|| family(stk.ptr, stv.ptr, sb * 16, o_stage.ptr))?;
+            let t_pages = time(&pages)?;
+            // (the keys of every token in a bf16 ring of the sequence's length: the family's kernel as bf16 pages run it, less their table's reads)
+            let t_bf = time(&|| family(kbuf.ptr, vbuf.ptr, total, o_bf.ptr))?;
+            let (mut x, mut y) = (vec![0u16; n * qw], vec![0u16; n * qw]);
+            o_stage.read(0, &mut x)?;
+            o_pages.read(0, &mut y)?;
+            let (mut worst, mut off) = (0f32, 0usize);
+            for (a, b) in x.iter().zip(&y) {
+                let (a, b) = (f32_of(*a), f32_of(*b));
+                let e = (a - b).abs();
+                worst = worst.max(e);
+                off += (e > 0.015 * a.abs() + 2e-3) as usize;
+            }
+            let what = format!("{h} x {d} ({nq} query heads{}), prefix {prefix:>5}", if window > 0 { format!(", window {window}") } else { String::new() });
+            if kern.is_none() {
+                println!("{what}: unpack {t_unpack:.3}; kv_prefill {t_pages:.3} (Gemma 4's {kname} is not in this build)");
+                continue;
+            }
+            println!(
+                "{what}: unpack {t_unpack:.3} + Gemma 4's kernel {t_fa:.3} = {:.3}; kv_prefill {t_pages:.3} ({:+.1}%); bf16 ring {t_bf:.3}; outputs differ by {worst:.4} at most, {off} of {} past 1.5% + 0.002",
+                t_unpack + t_fa,
+                100.0 * (t_pages / (t_unpack + t_fa) - 1.0),
+                x.len()
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Every shape; false where any differs.
 pub fn run() -> Result<bool> {
     let dev = Dev::new(0)?;
@@ -345,6 +686,10 @@ pub fn run() -> Result<bool> {
     let mut ok = true;
     for (h, d, g) in [(8, 128, 4), (4, 256, 4), (8, 256, 8), (2, 512, 4), (4, 512, 8), (8, 512, 4)] {
         ok &= shape(&lib, &dev, h, d, g)?;
+    }
+    // the prompt attention: gemma-4-12B's sliding (8 x 256, 2 queries a head) and global (1 x 512, 16) layers among them
+    for (h, d, g) in [(8, 128, 4), (4, 256, 4), (8, 256, 2), (1, 512, 16), (2, 512, 4)] {
+        ok &= prefill(&lib, &dev, h, d, g)?;
     }
     // one stream: a 576-value latent in 5 heads of 128 (64 channels of padding), keys that are the values in 2 heads of 512 and one of 256
     for (h, d, pad) in [(5, 128, 64), (2, 512, 0), (1, 256, 0)] {
