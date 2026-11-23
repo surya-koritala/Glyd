@@ -189,7 +189,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "f8stat" => glyd_engine::dsv4_ref::f8_stat(&a),
         "dsv4gen" => glyd_engine::dsv4_ref::gen(&a),
         "kimirandom" if a.has("real") => {
-            glyd_engine::kimi_ref::random_real(Path::new(a.need(1, "OUT")?), a.num("layers", 3usize)?, a.num("experts", 320usize)?)
+            glyd_engine::kimi_ref::random_real(Path::new(a.need(1, "OUT")?), a.num("layers", 4usize)?, a.num("experts", 320usize)?)
         }
         "kimirandom" => glyd_engine::kimi_ref::random(Path::new(a.need(1, "OUT")?), a.num("dense", 1usize)?, !a.has("no-mla"), a.num("layers", 8usize)?),
         "kimiref" => glyd_engine::kimi_ref::cmd(&a),
