@@ -66,8 +66,7 @@ fn tensor(ck: &Checkpoint, name: &str) -> Result<(Vec<u64>, Vec<f32>)> {
     Ok((sh, v))
 }
 
-/// A tensor decoded as the reference reads it (FP8 and FP4 with their scales), for the runtime's tests.
-#[cfg(test)]
+/// A tensor decoded as the reference reads it (FP8 and FP4 with their scales), for the runtime's reference (`runtime::reference::model`).
 pub(crate) fn tensor_of(ck: &Checkpoint, name: &str) -> Result<(Vec<u64>, Vec<f32>)> {
     tensor(ck, name)
 }
@@ -90,20 +89,9 @@ fn rms(x: &[f32], w: &[f32], eps: f32) -> Vec<f32> {
     x.iter().zip(w).map(|(&v, &g)| bf16(g * (v * r))).collect()
 }
 
-/// kernel.py's power-of-two scale: 2^ceil(log2(amax / max)), from the f32 bits.
-fn pow2_scale(amax: f32, inv_max: f32) -> f32 {
-    let b = (amax * inv_max).to_bits();
-    let e = ((b >> 23) & 0xFF) as i32 - 127 + ((b & 0x7F_FFFF) != 0) as i32;
-    f32::from_bits(((e + 127) as u32) << 23)
-}
-
-/// v (at most 448 in size) rounded to E4M3, to nearest and ties to even.
-pub fn e4m3_round(v: f32) -> f32 {
-    let a = v.abs();
-    let e = (((a.to_bits() >> 23) & 0xFF) as i32 - 127).max(-6);
-    let q = f32::from_bits(((e - 3 + 127) as u32) << 23);
-    ((a / q).round_ties_even() * q).copysign(v)
-}
+// (the power-of-two scale, E4M3 and act_quant: src/cpu_fp4.rs's, which the host's FP4 experts round their activations with too)
+use crate::cpu_fp4::pow2_scale;
+pub use crate::cpu_fp4::{e4m3_round, fp8_sim};
 
 /// v (at most 6 in size) rounded to E2M1, to nearest and ties to even.
 pub fn e2m1_round(v: f32) -> f32 {
@@ -116,17 +104,6 @@ pub fn e2m1_round(v: f32) -> f32 {
         2.0
     };
     ((a / q).round_ties_even() * q).copysign(v)
-}
-
-/// kernel.py's act_quant in place (FP8, blocks of `block`, power-of-two scales): each value rounded to E4M3 at its block's scale, back as bf16.
-pub fn fp8_sim(x: &mut [f32], block: usize) {
-    for b in x.chunks_mut(block) {
-        let amax = b.iter().fold(0f32, |m, v| m.max(v.abs())).max(1e-4);
-        let s = pow2_scale(amax, 1.0 / 448.0);
-        for v in b {
-            *v = bf16(e4m3_round((*v / s).clamp(-448.0, 448.0)) * s);
-        }
-    }
 }
 
 /// kernel.py's fp4_act_quant in place (E2M1, blocks of 32, power-of-two scales).

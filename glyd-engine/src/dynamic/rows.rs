@@ -725,7 +725,9 @@ impl ModelStep for Dyn {
         if self.seq_n(slot) != start {
             return err(format!("a chunk at {start} of sequence {slot}, which holds {}", self.seq_n(slot)));
         }
-        self.chunk_alone(slot, tokens, last)
+        let r = self.chunk_alone(slot, tokens, last)?;
+        self.end_expert_step()?;
+        Ok(r)
     }
     fn prefill_rows(&self) -> usize {
         if self.batchable() && Self::batch_prefill() {
@@ -748,7 +750,9 @@ impl ModelStep for Dyn {
             }
         }
         let jobs: Vec<(usize, &[u32], bool)> = jobs.iter().map(|j| (j.pages[0] as usize, j.tokens, j.last)).collect();
-        self.pass(&jobs)
+        let r = self.pass(&jobs)?;
+        self.end_expert_step()?;
+        Ok(r)
     }
     fn one_step(&self) -> bool {
         Self::one_step_asked() && self.batchable() && Self::batch_prefill()
@@ -765,13 +769,18 @@ impl ModelStep for Dyn {
         let p = StepProf::begin(self.dev.stream);
         let r = self.round_rows(rows, jobs);
         StepProf::end(p, self.dev.stream, rows.len(), jobs.iter().map(|j| j.tokens.len()).sum());
+        self.end_expert_step()?;
         r
     }
     fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
         let p = StepProf::begin(self.dev.stream);
         let r = self.decode_rows(rows);
         StepProf::end(p, self.dev.stream, rows.len(), 0);
+        self.end_expert_step()?;
         r
+    }
+    fn expert_stats(&self) -> Vec<crate::offload::LayerStats> {
+        Dyn::expert_stats(self)
     }
     fn logits(&mut self, row: usize) -> Result<Vec<f32>> {
         self.dev.sync()?;

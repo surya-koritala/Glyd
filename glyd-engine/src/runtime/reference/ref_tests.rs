@@ -191,6 +191,7 @@ fn muse_attention_against_muse_ref() {
             scale: c.qk_scale / (hd as f32).sqrt(),
             k_eq_v: false,
             indexer: None,
+            rounding: AttnRounding::Sdpa,
         };
         let mut p = Params::new();
         for (i, (role, shape)) in
@@ -375,30 +376,9 @@ fn depth_mix_against_kimi_ref() {
     }
 }
 
-/// A checkpoint as the reference model's tensor source: bf16 and f32 tensors as f32; an MXFP4 matrix (`.weight_packed`, `.weight_scale`)
-/// decoded where its `.weight` is asked for.
+/// A checkpoint as the reference model's tensor source (`model::checkpoint_tensor`).
 fn checkpoint_source(ck: &Checkpoint) -> impl Fn(&str) -> Option<(Vec<usize>, Vec<f32>)> + '_ {
-    move |name: &str| {
-        if let Some((_, t)) = ck.get(name) {
-            return Some(match t.dtype.as_str() {
-                // (a hash table's expert ids; DeepSeek-V4's FP8 matrices and FP4 experts, decoded with their scales)
-                "I64" => (
-                    t.shape.iter().map(|&d| d as usize).collect(),
-                    ck.read(name).ok()?.chunks(8).map(|c| i64::from_le_bytes(c.try_into().unwrap()) as f32).collect(),
-                ),
-                "F8_E4M3" | "I8" => {
-                    let (sh, v) = crate::dsv4_ref::tensor_of(ck, name).ok()?;
-                    (sh.iter().map(|&d| d as usize).collect(), v)
-                }
-                _ => tensor(ck, name),
-            });
-        }
-        let base = name.strip_suffix(".weight")?;
-        let (_, t) = ck.get(&format!("{base}.weight_packed"))?;
-        let (rows, cols) = (t.shape[0] as usize, t.shape[1] as usize * 2);
-        let w = crate::kimi_ref::mxfp4(&ck.read(&format!("{base}.weight_packed")).ok()?, &ck.read(&format!("{base}.weight_scale")).ok()?, rows, cols).ok()?;
-        Some((vec![rows, cols], w))
-    }
+    move |name: &str| super::model::checkpoint_tensor(ck, name)
 }
 
 /// A whole model from its config.json through the description builder against the per-family reference's logits. Those references

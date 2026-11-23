@@ -359,18 +359,14 @@ impl crate::conv::Gen for Run {
 
 /// The families the dynamic engine runs from their release's directory through `open`, by the config's text (None: another path's model).
 pub fn family(text: &str) -> Option<&'static str> {
-    if crate::muse::is_muse(text) {
-        Some("Muse Spark")
-    } else if crate::kimi::is_kimi(text) {
-        Some("Kimi-K3")
-    } else if crate::glm::is_glm(text) {
-        Some("GLM-5.3-Flash")
-    } else if crate::nemotron::is_nemotron_h(text) {
-        Some("Nemotron-H")
-    } else if glyd_gpu::json::parse(text).ok().and_then(|v| v.get("model_type").and_then(|t| t.as_str()).map(|t| t == "deepseek_v4")).unwrap_or(false) {
-        Some("DeepSeek-V4")
-    } else {
-        None
+    use crate::support::Family;
+    match crate::runtime::config::family_of(text)? {
+        Family::Muse => Some("Muse Spark"),
+        Family::Kimi => Some("Kimi-K3"),
+        Family::Glm => Some("GLM-5.3-Flash"),
+        Family::NemotronH => Some("Nemotron-H"),
+        Family::DeepSeekV4 => Some("DeepSeek-V4"),
+        _ => None,
     }
 }
 
@@ -420,9 +416,8 @@ fn maker(dir: &Path, o: &Opts) -> Result<(usize, Vec<i64>, MakeStage)> {
 
 /// A number of the config (its `text_config`'s for a model that nests one).
 pub fn config_num(text: &str, key: &str) -> Option<usize> {
-    let v = glyd_gpu::json::parse(text).ok()?;
-    let n = v.get(key).or_else(|| v.get("text_config").and_then(|t| t.get(key)))?;
-    n.as_u64().map(|x| x as usize)
+    let c = crate::runtime::config::ModelConfig::parse(text).ok()?;
+    c.top.get(key).or(c.text.get(key))?.as_u64().map(|x| x as usize)
 }
 
 fn config_eos(text: &str) -> Vec<i64> {
@@ -720,7 +715,11 @@ pub fn open_cached(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], cachin
         let c = cachings.get(k).or(cachings.last());
         match fam {
             "Muse Spark" => super::muse::load_stage_hb(&owned, o, st, c),
-            "Kimi-K3" => super::kimi::load_with_caching(&owned, o, st, None, c),
+            // (the release's experts in places of their own where the directory holds no hummingbird experts, which the hummingbird cache takes)
+            "Kimi-K3" => {
+                let places = c.map(|c| c.places).filter(|_| crate::hb_pack::HbDir::open(&owned).is_ok_and(|h| h.is_none()));
+                super::kimi::load_with_caching(&owned, o, st, places, c)
+            }
             "GLM-5.3-Flash" => super::glm::load_stage_hb(&owned, o, level, st, c),
             _ => super::deepseek_v4::load_stage_hb(&owned, o, st, c),
         }

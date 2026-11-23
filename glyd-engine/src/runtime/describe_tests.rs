@@ -10,9 +10,11 @@ use std::path::PathBuf;
 /// The tiny model's description reads exactly the fixture's tensors, and its logits are transformers'.
 fn model(case: &str, tol: f32) {
     let f = Fixture::load(case);
-    let d = describe(&f.j["config"]).unwrap_or_else(|e| panic!("{case}: {}", e.msg));
+    let mut d = describe(&f.j["config"]).unwrap_or_else(|e| panic!("{case}: {}", e.msg));
     let want: BTreeSet<String> = f.j["tensors"].as_object().unwrap().keys().cloned().collect();
     assert_eq!(d.names(), want, "{case}: the weight map");
+    // (transformers in float32: the attention's bf16 rounding points, which the description gives as the family's engine rounds, off)
+    d.desc.f32_attention();
     let src = |n: &str| f.j["tensors"].get(n).map(|_| f.tensor(n));
     let mut m = RefModel::load(&d, &src).unwrap();
     let toks: Vec<u32> = f.j["token_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
@@ -307,22 +309,76 @@ fn nemotron_config_variants() {
 /// model does not run (vision and audio towers, their projectors, the next-token-prediction layers it does not use yet).
 #[test]
 fn released_configs_describe_their_checkpoints_tensors() {
-    for (f, unread, mtp) in [
-        ("gemma-4-12B-it", &["model.embed_audio.", "model.embed_vision.", "model.vision_embedder.", "model.vision_tower.", "model.audio_tower."][..], 0),
-        ("Kimi-K3", &["vision_tower.", "mm_projector."][..], 0),
-        ("DeepSeek-V4-Flash-0731", &["mtp."][..], 1),
-        ("Qwen3.8-27B", &["model.visual.", "mtp."][..], 1),
+    for (f, convention, mtp) in [
+        ("gemma-4-12B-it", "Gemma", 0),
+        ("Kimi-K3", "Kimi linear", 0),
+        ("DeepSeek-V4-Flash-0731", "DeepSeek (release)", 1),
+        ("Qwen3.8-27B", "Hugging Face (Llama-style)", 1),
     ] {
         let h = fixture(&format!("headers/{f}.json"));
         let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
         let d = describe(&cfg).unwrap_or_else(|e| panic!("{f}: {}", e.msg));
-        let (all, got) = (header_names(&h), d.names());
-        let extra: Vec<_> = got.difference(&all).take(6).collect();
-        assert!(extra.is_empty(), "{f}: described but not in the checkpoint: {extra:?}");
-        let missing: Vec<_> = all.difference(&got).filter(|n| !unread.iter().any(|p| n.starts_with(p))).take(6).collect();
-        assert!(missing.is_empty(), "{f}: in the checkpoint but not described: {missing:?}");
-        assert_eq!(d.mtp_layers, mtp, "{f}");
+        d.check(&header_names(&h), true).unwrap_or_else(|e| panic!("{f}: {}", e.msg));
+        assert_eq!((d.convention, d.mtp_layers), (convention, mtp), "{f}");
     }
+}
+
+/// The naming conventions held to every checkpoint index the fixtures have (the Hub's headers above; Qwen3.5 0.8B and 9B, GLM-5.3-Flash and Nemotron 3
+/// Super's tensor lists): each names exactly the checkpoint's tensors, its quantized matrices' scales with them, less the parts it says it leaves. And the
+/// check finds what differs: a tensor the index lacks, and one it has that nothing reads.
+#[test]
+fn conventions_name_the_checkpoints_tensors_exactly() {
+    let q35 = fixture("qwen35_tensors.json");
+    let cfgs = fixture("qwen35_configs.json");
+    let mut cases: Vec<(String, serde_json::Value, BTreeSet<String>)> = ["Qwen/Qwen3.5-0.8B", "Qwen/Qwen3.5-9B"]
+        .iter()
+        .map(|r| (r.to_string(), cfgs[*r].clone(), q35[*r].as_object().unwrap().keys().cloned().collect()))
+        .collect();
+    cases.push(("GLM-5.3-Flash".into(), fixture("glm5_next_config.json"), names_with_runs(&fixture("glm5_next_tensors.json"))));
+    cases.push(("Nemotron 3 Super".into(), fixture("nemotron_h_config.json"), names_with_runs(&fixture("nemotron_h_tensors.json"))));
+    for (what, cfg, have) in &cases {
+        let d = describe(cfg).unwrap();
+        d.check(have, true).unwrap_or_else(|e| panic!("{what}: {}", e.msg));
+        // (a tensor the description reads, gone from the index; a tensor no role reads, added to it)
+        let some = d.names().into_iter().find(|n| n.contains("layers.0.")).unwrap();
+        let mut less = have.clone();
+        less.remove(&some);
+        let e = d.check(&less, true).unwrap_err().msg;
+        assert!(e.contains(&some) && e.contains(d.convention) && e.contains("not in the checkpoint") && e.contains("1 tensor:"), "{what}: {e}");
+        let mut more = have.clone();
+        more.insert(some.replace(".weight", ".bias").replace("layers.0.", "layers.0.extra."));
+        assert!(d.check(&more, true).unwrap_err().msg.contains("not read by its description"), "{what}");
+        assert!(d.check(&more, false).is_ok(), "{what}: a loader's check asks the tensors read alone");
+    }
+}
+
+/// A loader's check (`describe_dir`) reads a Hub directory's index: a tensor the description reads is named where the index lacks it, a matrix is there in
+/// either stored form, and a directory Glyd packed (its glyd.json) is not held to it.
+#[test]
+fn a_loader_names_a_missing_tensor_from_the_index() {
+    let dir = std::env::temp_dir().join(format!("glyd-describe-dir-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = Fixture::load("llama_model").j["config"].clone();
+    std::fs::write(dir.join("config.json"), cfg.to_string()).unwrap();
+    let d = describe(&cfg).unwrap();
+    let mut names: Vec<String> = d.names().into_iter().collect();
+    let index = |names: &[String]| {
+        let map: serde_json::Map<String, serde_json::Value> = names.iter().map(|n| (n.clone(), "model-00001.safetensors".into())).collect();
+        std::fs::write(dir.join("model.safetensors.index.json"), serde_json::json!({ "weight_map": map }).to_string()).unwrap();
+    };
+    index(&names);
+    assert_eq!(super::describe::describe_dir(&dir).unwrap().0.names(), d.names());
+    let gone = names.iter().position(|n| n.ends_with("layers.1.mlp.up_proj.weight")).unwrap();
+    names[gone] = names[gone].replace(".weight", ".weight_packed");
+    index(&names);
+    assert!(super::describe::describe_dir(&dir).is_ok(), "a matrix packed as compressed-tensors packs it is there");
+    names.remove(gone);
+    index(&names);
+    let e = super::describe::describe_dir(&dir).unwrap_err().msg;
+    assert!(e.contains("config.json") && e.contains("layers.1.mlp.up_proj.weight") && e.contains("1 tensor:"), "{e}");
+    std::fs::write(dir.join("glyd.json"), "{}").unwrap();
+    assert!(super::describe::describe_dir(&dir).is_ok(), "a packed directory's names are its manifest's");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Every tensor name of a header fixture: its groups' masks with each of their layers ({L}) and experts ({E}).
@@ -384,6 +440,86 @@ fn every_fixture_config_describes() {
     }
     let e = describe(&fixture("qwen4x_config.json")).unwrap_err().msg;
     assert!(e.contains("qwen4_exp_text"), "{e}");
+}
+
+/// Every model config the fixtures hold, by a name: tests/fixtures' (each entry of qwen35_configs.json apart), the headers' and the tiny models' of
+/// tests/runtime.
+fn fixture_configs() -> Vec<(String, serde_json::Value)> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let files = |dir: &str| -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(root.join(dir)).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        v.sort();
+        v
+    };
+    let mut out = Vec::new();
+    for f in files("fixtures").into_iter().filter(|f| f.ends_with(".json") && f.contains("config") && !f.contains("generation_config")) {
+        let v = fixture(&f);
+        if f == "qwen35_configs.json" {
+            out.extend(v.as_object().unwrap().iter().map(|(repo, c)| (format!("{f}:{repo}"), c.clone())));
+        } else {
+            out.push((f, v));
+        }
+    }
+    for f in files("fixtures/headers") {
+        let h = fixture(&format!("headers/{f}"));
+        out.push((format!("headers/{f}"), serde_json::from_str(h["config"].as_str().unwrap()).unwrap()));
+    }
+    for f in files("runtime").into_iter().filter(|f| f.ends_with("_model.json")) {
+        out.push((format!("runtime/{f}"), Fixture::load(f.trim_end_matches(".json")).j["config"].clone()));
+    }
+    out
+}
+
+/// A description as two digests: its layer kinds (with the draft layers it counts), and its weight map (the tensors, their roles, scales and shapes).
+fn digests(d: &super::describe::Described) -> (String, String) {
+    use sha2::{Digest, Sha256};
+    let h = |s: String| Sha256::digest(s.as_bytes()).iter().take(8).map(|b| format!("{b:02x}")).collect::<String>();
+    (h(format!("{:?} {}", d.desc, d.mtp_layers)), h(format!("{:?}", (&d.embed, &d.final_norm, &d.head, &d.blocks, &d.extra, &d.scales, &d.shapes))))
+}
+
+/// Each fixture config's description, from its config.json alone, is the one recorded in tests/fixtures/descriptions.json (its blocks, its tensors and the
+/// digests of its kinds and weight map), and a config that is refused is refused with the words recorded: a change to the builder that changes any
+/// fixture's description fails here, by name. GLYD_BLESS_DESCRIPTIONS=1 writes the record anew (for a change meant to alter one).
+#[test]
+fn fixture_descriptions_are_unchanged() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/descriptions.json");
+    let mut now = serde_json::Map::new();
+    for (name, cfg) in fixture_configs() {
+        let mut entry = match describe(&cfg) {
+            Ok(d) => {
+                let (kinds, weights) = digests(&d);
+                serde_json::json!({ "blocks": d.desc.blocks.len(), "tensors": d.names().len(), "kinds": kinds, "weights": weights })
+            }
+            Err(e) => serde_json::json!({ "refused": e.msg }),
+        };
+        // (and what the planner and the refusals read of the same file: the shape fit prices, the family run takes it as)
+        let text = cfg.to_string();
+        entry["plan"] = match crate::plan::Shape::from_config(&text) {
+            Ok(s) => {
+                use sha2::{Digest, Sha256};
+                Sha256::digest(format!("{s:?}").as_bytes()).iter().take(8).map(|b| format!("{b:02x}")).collect::<String>().into()
+            }
+            Err(e) => format!("refused: {e}").into(),
+        };
+        entry["family"] = match crate::support::family(&text, "m") {
+            Ok(f) => format!("{f:?}").into(),
+            Err(r) => format!("refused: {}", r.what).into(),
+        };
+        now.insert(name, entry);
+    }
+    if std::env::var_os("GLYD_BLESS_DESCRIPTIONS").is_some() {
+        std::fs::write(&path, serde_json::to_string_pretty(&now).unwrap() + "\n").unwrap();
+        return;
+    }
+    let was: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    for (name, e) in &now {
+        assert_eq!(was.get(name), Some(e), "{name}: its description is not the one recorded (tests/fixtures/descriptions.json)");
+    }
+    let gone: Vec<_> = was.keys().filter(|k| !now.contains_key(*k)).collect();
+    assert!(gone.is_empty(), "recorded, and no fixture now: {gone:?}");
+    // (every config but Condor's describes: its kinds are R3d's, #140)
+    let refused: Vec<_> = now.iter().filter(|(_, e)| e.get("refused").is_some()).map(|(n, _)| n.as_str()).collect();
+    assert_eq!(refused, ["qwen4x_config.json"]);
 }
 
 /// Nemotron 3's released configs (Nano, 3.5 Lightning) say `moe_shared_expert_overlap: true`, a schedule of the shared experts beside the exchange between GPUs,

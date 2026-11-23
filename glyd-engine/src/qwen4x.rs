@@ -70,7 +70,7 @@ pub struct ConfigQx {
 
 /// Whether a config.json is a Qwen3.8-Flash-Next's.
 pub fn is_qx(text: &str) -> bool {
-    json::parse(text).ok().and_then(|v| v.get("model_type").and_then(Value::as_str).map(|s| s == "qwen4_exp")).unwrap_or(false)
+    crate::runtime::config::family_of(text) == Some(crate::support::Family::FlashNext)
 }
 
 impl ConfigQx {

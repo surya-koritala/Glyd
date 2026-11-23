@@ -298,11 +298,18 @@ unsafe fn x_vectors_neon(x: &[f32], ks: usize) -> Vec<[std::arch::aarch64::float
         .collect()
 }
 
-/// A Kimi-K3 expert where the host tier holds it: its first matrix [2 inter, latent] (gate then up) and its second [latent, inter].
+/// An FP4 expert where the host tier holds it (Kimi-K3's, DeepSeek-V4's): its first matrix [2 inter, latent] (gate then up) and its second [latent, inter].
 #[derive(Clone, Copy)]
 pub struct Fp4Expert<'a> {
     pub up: Fp4View<'a>,
     pub down: Fp4View<'a>,
+}
+
+impl Fp4Expert<'_> {
+    /// The expert's bytes in the host tier (both matrices' steps and scales): what a call reads of it.
+    pub fn bytes(&self) -> usize {
+        self.up.data.len() + self.up.blocks.len() + self.down.data.len() + self.down.blocks.len()
+    }
 }
 
 /// A pair of the router's choices the host computes: its expert, its token's row of z, its weight.
@@ -312,13 +319,64 @@ pub struct Fp4Pair<'a> {
     pub weight: f32,
 }
 
-fn bf16(v: f32) -> f32 {
+/// The activation between a pair's two products and where its weight goes, as the GPU's kernel of the layer computes them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Act {
+    /// Kimi-K3's situ (moe.cu's MOE_SITU): the first product rounded to bf16, situ(gate, up) rounded to bf16, the second product rounded to bf16, then times the weight.
+    Situ { beta: f32, linear: f32 },
+    /// DeepSeek-V4's release (kernels/dsv4.cu's v4_moe_act): bf16(weight silu(min(gate, lim)) clamp(up, -lim, lim)) of the first product as bf16, each block of 128 rounded to E4M3 at its power-of-two scale where
+    /// `fp8`; the second product (fp32) is the pair's output, its weight already in it.
+    Release { lim: f32, fp8: bool },
+}
+
+pub(crate) fn bf16(v: f32) -> f32 {
     f32::from_bits((((v.to_bits() as u64 + 0x7FFF + ((v.to_bits() >> 16) & 1) as u64) as u32) >> 16) << 16)
 }
 
 /// situ(a, b) = beta tanh(a / beta) sigmoid(a) x linear tanh(b / linear), in fp32, rounded to bf16 (moe.cu's MOE_SITU, kimi_ref's situ).
 fn situ(a: f32, b: f32, (beta, linear): (f32, f32)) -> f32 {
     bf16(beta * (a / beta).tanh() * (1.0 / (1.0 + (-a).exp())) * linear * (b / linear).tanh())
+}
+
+/// kernel.py's power-of-two scale: 2^ceil(log2(amax / max)), from the f32 bits.
+pub(crate) fn pow2_scale(amax: f32, inv_max: f32) -> f32 {
+    let b = (amax * inv_max).to_bits();
+    let e = ((b >> 23) & 0xFF) as i32 - 127 + ((b & 0x7F_FFFF) != 0) as i32;
+    f32::from_bits(((e + 127) as u32) << 23)
+}
+
+/// v (at most 448 in size) rounded to E4M3, to nearest and ties to even.
+pub fn e4m3_round(v: f32) -> f32 {
+    let a = v.abs();
+    let e = (((a.to_bits() >> 23) & 0xFF) as i32 - 127).max(-6);
+    let q = f32::from_bits(((e - 3 + 127) as u32) << 23);
+    ((a / q).round_ties_even() * q).copysign(v)
+}
+
+/// kernel.py's act_quant in place (FP8, blocks of `block`, power-of-two scales): each value rounded to E4M3 at its block's scale, back as bf16.
+pub fn fp8_sim(x: &mut [f32], block: usize) {
+    for b in x.chunks_mut(block) {
+        let amax = b.iter().fold(0f32, |m, v| m.max(v.abs())).max(1e-4);
+        let s = pow2_scale(amax, 1.0 / 448.0);
+        for v in b {
+            *v = bf16(e4m3_round((*v / s).clamp(-448.0, 448.0)) * s);
+        }
+    }
+}
+
+/// The pairs' numbers by expert (an expert is the address of its first matrix's bytes), each expert's in the pairs' order, the experts in the order they first appear: the host reads each expert's bytes once a
+/// call for all of its pairs.
+pub fn by_expert(pairs: &[Fp4Pair]) -> Vec<Vec<usize>> {
+    let mut at: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for (p, pair) in pairs.iter().enumerate() {
+        let g = *at.entry(pair.expert.up.data.as_ptr() as usize).or_insert_with(|| {
+            groups.push(Vec::new());
+            groups.len() - 1
+        });
+        groups[g].push(p);
+    }
+    groups
 }
 
 /// A raw pointer the crew's items write disjoint parts of.
@@ -337,9 +395,11 @@ impl Out {
     }
 }
 
-/// out[p latent ..] = pair p's output times its weight: the second matrix times situ(gate, up), [gate | up] the first matrix times its token's row of z (bf16),
-/// on `threads` threads (the crew of src/cpu_experts.rs; `pin`: its threads each kept to a core).
-pub fn experts(kernel: Kernel, z: &[u16], pairs: &[Fp4Pair], out: &mut [f32], act: (f32, f32), threads: usize, pin: bool) -> Result<()> {
+/// out[p latent ..] = pair p's output with its weight (`act`): the second matrix times the activation of [gate | up], the first matrix times its token's row of z (bf16),
+/// on `threads` threads (the crew of src/cpu_experts.rs; `pin`: its threads each kept to a core). An item of work is a block of 64 rows of an expert's matrix for every pair of
+/// that expert (`by_expert`), so a call reads each expert's bytes from memory once whatever its pairs (the block stays in the core's cache between them); each pair's sums are
+/// the ones it has alone, to the bit.
+pub fn experts(kernel: Kernel, z: &[u16], pairs: &[Fp4Pair], out: &mut [f32], act: Act, threads: usize, pin: bool) -> Result<()> {
     let Some(first) = pairs.first() else { return Ok(()) };
     let (two, latent) = (first.expert.up.rows, first.expert.up.cols);
     let inter = two / 2;
@@ -360,29 +420,52 @@ pub fn experts(kernel: Kernel, z: &[u16], pairs: &[Fp4Pair], out: &mut [f32], ac
     if out.len() != pairs.len() * latent {
         return err(format!("{} values for the host's sums, where {} pairs of {latent} are wanted", out.len(), pairs.len()));
     }
+    if matches!(act, Act::Release { fp8: true, .. }) && inter % 128 != 0 {
+        return err(format!("experts of {inter} neurons, where the activation's blocks of 128 are rounded to E4M3"));
+    }
     let zf: Vec<Vec<f32>> =
         pairs.iter().map(|p| z[p.token * latent..(p.token + 1) * latent].iter().map(|&h| f32::from_bits((h as u32) << 16)).collect()).collect();
-    // the first products: each pair's rows in blocks of 64
+    let groups = by_expert(pairs);
+    // the first products: an expert's rows in blocks of 64, each block for every pair of the expert
     let mut gu = vec![0f32; pairs.len() * two];
     let (gp, ub) = (Out(gu.as_mut_ptr()), two / 64);
-    crate::cpu_experts::run(threads, pin, pairs.len() * ub, &|item| {
-        let (p, b) = (item / ub, item % ub);
-        // SAFETY: item (p, b) writes rows 64 b .. 64 b + 64 of pair p's part of gu alone, which is live for the call.
-        let y = unsafe { gp.part(p * two + 64 * b, 64) };
-        rows(kernel, &pairs[p].expert.up, &zf[p], 64 * b, 64 * b + 64, y);
+    crate::cpu_experts::run(threads, pin, groups.len() * ub, &|item| {
+        let (g, b) = (item / ub, item % ub);
+        for &p in &groups[g] {
+            // SAFETY: item (g, b) writes rows 64 b .. 64 b + 64 of the parts of gu of its expert's pairs alone, which are live for the call.
+            let y = unsafe { gp.part(p * two + 64 * b, 64) };
+            rows(kernel, &pairs[p].expert.up, &zf[p], 64 * b, 64 * b + 64, y);
+        }
     });
-    let a: Vec<f32> =
-        (0..pairs.len()).flat_map(|p| (0..inter).map(move |i| (p, i))).map(|(p, i)| situ(bf16(gu[p * two + i]), bf16(gu[p * two + inter + i]), act)).collect();
-    // the second products
+    let mut a = vec![0f32; pairs.len() * inter];
+    for (p, h) in a.chunks_exact_mut(inter).enumerate() {
+        let (g, u) = (&gu[p * two..p * two + inter], &gu[p * two + inter..(p + 1) * two]);
+        match act {
+            Act::Situ { beta, linear } => h.iter_mut().enumerate().for_each(|(i, v)| *v = situ(bf16(g[i]), bf16(u[i]), (beta, linear))),
+            Act::Release { lim, fp8 } => {
+                let w = pairs[p].weight;
+                for (i, v) in h.iter_mut().enumerate() {
+                    let (g, u) = (bf16(g[i]).min(lim), bf16(u[i]).clamp(-lim, lim));
+                    *v = bf16(w * (g / (1.0 + (-g).exp()) * u));
+                }
+                if fp8 {
+                    fp8_sim(h, 128);
+                }
+            }
+        }
+    }
+    // the second products, an expert's blocks for every pair of it again
     let (op, db) = (Out(out.as_mut_ptr()), latent / 64);
-    crate::cpu_experts::run(threads, pin, pairs.len() * db, &|item| {
-        let (p, b) = (item / db, item % db);
-        // SAFETY: item (p, b) writes rows 64 b .. 64 b + 64 of pair p's part of out alone, which is live for the call.
-        let y = unsafe { op.part(p * latent + 64 * b, 64) };
-        rows(kernel, &pairs[p].expert.down, &a[p * inter..(p + 1) * inter], 64 * b, 64 * b + 64, y);
-        let w = pairs[p].weight;
-        for v in y.iter_mut() {
-            *v = bf16(*v) * w;
+    crate::cpu_experts::run(threads, pin, groups.len() * db, &|item| {
+        let (g, b) = (item / db, item % db);
+        for &p in &groups[g] {
+            // SAFETY: item (g, b) writes rows 64 b .. 64 b + 64 of the parts of out of its expert's pairs alone, which are live for the call.
+            let y = unsafe { op.part(p * latent + 64 * b, 64) };
+            rows(kernel, &pairs[p].expert.down, &a[p * inter..(p + 1) * inter], 64 * b, 64 * b + 64, y);
+            if let Act::Situ { .. } = act {
+                let w = pairs[p].weight;
+                y.iter_mut().for_each(|v| *v = bf16(*v) * w);
+            }
         }
     });
     Ok(())
@@ -429,7 +512,7 @@ pub fn bench(a: &crate::args::Args) -> Result<()> {
             let mut us: Vec<f64> = (0..reps)
                 .map(|_| {
                     let t0 = std::time::Instant::now();
-                    experts(kernel, &z, &pairs, &mut out, (4.0, 25.0), t, pin).map(|_| t0.elapsed().as_secs_f64() * 1e6)
+                    experts(kernel, &z, &pairs, &mut out, Act::Situ { beta: 4.0, linear: 25.0 }, t, pin).map(|_| t0.elapsed().as_secs_f64() * 1e6)
                 })
                 .collect::<Result<_>>()?;
             us.sort_by(f64::total_cmp);
@@ -501,7 +584,16 @@ mod tests {
             for t in [1, threads] {
                 let mut out = vec![0f32; 16 * latent];
                 let t0 = std::time::Instant::now();
-                experts(k, &z, &pairs[..if t == 1 { 2 } else { 16 }], &mut out[..if t == 1 { 2 } else { 16 } * latent], (4.0, 25.0), t, false).unwrap();
+                experts(
+                    k,
+                    &z,
+                    &pairs[..if t == 1 { 2 } else { 16 }],
+                    &mut out[..if t == 1 { 2 } else { 16 } * latent],
+                    Act::Situ { beta: 4.0, linear: 25.0 },
+                    t,
+                    false,
+                )
+                .unwrap();
                 let s = t0.elapsed().as_secs_f64();
                 let n = if t == 1 { 2 } else { 16 };
                 println!(
@@ -525,14 +617,14 @@ mod tests {
         };
         let z: Vec<u16> = (0..2 * latent).map(|i| (bf16(((i * 13 % 29) as f32 - 14.0) / 64.0).to_bits() >> 16) as u16).collect();
         let pairs = [Fp4Pair { expert: ex, token: 1, weight: 0.25 }, Fp4Pair { expert: ex, token: 0, weight: 0.5 }];
-        let act = (4.0, 25.0);
+        let act = Act::Situ { beta: 4.0, linear: 25.0 };
         let mut one = vec![0f32; 2 * latent];
         experts(Kernel::Scalar, &z, &pairs, &mut one, act, 1, false).unwrap();
         // (by hand, for the first pair: scalar rows of each matrix)
         let zt: Vec<f32> = z[latent..2 * latent].iter().map(|&h| f32::from_bits((h as u32) << 16)).collect();
         let mut gu = vec![0f32; 2 * inter];
         rows(Kernel::Scalar, &ex.up, &zt, 0, 2 * inter, &mut gu);
-        let a: Vec<f32> = (0..inter).map(|i| situ(bf16(gu[i]), bf16(gu[inter + i]), act)).collect();
+        let a: Vec<f32> = (0..inter).map(|i| situ(bf16(gu[i]), bf16(gu[inter + i]), (4.0, 25.0))).collect();
         let mut d = vec![0f32; latent];
         rows(Kernel::Scalar, &ex.down, &a, 0, latent, &mut d);
         let want: Vec<f32> = d.iter().map(|&v| bf16(v) * 0.25).collect();
@@ -540,5 +632,68 @@ mod tests {
         let mut four = vec![0f32; 2 * latent];
         experts(Kernel::Scalar, &z, &pairs, &mut four, act, 4, false).unwrap();
         assert_eq!(one, four);
+    }
+
+    /// A call of eight rows whose pairs share three experts: the pairs are grouped by expert (each expert's bytes read once for its rows, `by_expert`), and every pair's output is the one it has in a call of
+    /// its own, to the bit, with each kernel and with the situ and the release's activations.
+    #[test]
+    fn pairs_of_one_expert_are_computed_together_and_as_alone() {
+        let (latent, inter, rows_n) = (128, 128, 8);
+        let ups: Vec<_> = (0..3).map(|i| random_pack(2 * inter, latent, true, 40 + i)).collect();
+        let downs: Vec<_> = (0..3).map(|i| random_pack(latent, inter, true, 50 + i)).collect();
+        let ex = |e: usize| Fp4Expert {
+            up: Fp4View { data: &ups[e].data, blocks: &ups[e].blocks, rows: 2 * inter, cols: latent, packed: true },
+            down: Fp4View { data: &downs[e].data, blocks: &downs[e].blocks, rows: latent, cols: inter, packed: true },
+        };
+        let z: Vec<u16> = (0..rows_n * latent).map(|i| (bf16(((i * 13 % 31) as f32 - 15.0) / 32.0).to_bits() >> 16) as u16).collect();
+        // (two choices a row among three experts: expert 0 by every row, 1 and 2 by turns)
+        let pairs: Vec<Fp4Pair> =
+            (0..rows_n).flat_map(|t| [(0, t), (1 + t % 2, t)]).map(|(e, t)| Fp4Pair { expert: ex(e), token: t, weight: 0.125 * (1 + t) as f32 }).collect();
+        let groups = by_expert(&pairs);
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0], (0..rows_n).map(|t| 2 * t).collect::<Vec<_>>());
+        assert_eq!(groups.iter().map(Vec::len).sum::<usize>(), pairs.len());
+        assert_eq!(ex(0).bytes(), ups[0].data.len() + ups[0].blocks.len() + downs[0].data.len() + downs[0].blocks.len());
+        for act in [Act::Situ { beta: 4.0, linear: 25.0 }, Act::Release { lim: 10.0, fp8: true }, Act::Release { lim: 10.0, fp8: false }] {
+            for k in Kernel::ALL.into_iter().filter(|k| k.runs_here()) {
+                let mut together = vec![0f32; pairs.len() * latent];
+                experts(k, &z, &pairs, &mut together, act, 3, false).unwrap();
+                for (p, pair) in pairs.iter().enumerate() {
+                    let mut alone = vec![0f32; latent];
+                    experts(k, &z, std::slice::from_ref(pair), &mut alone, act, 1, false).unwrap();
+                    assert_eq!(&together[p * latent..(p + 1) * latent], &alone[..], "{act:?} {k:?} pair {p}");
+                }
+            }
+        }
+    }
+
+    /// The release's activation: the weight inside bf16(w silu(min(g, lim)) clamp(u, +-lim)), each block of 128 rounded to E4M3 at its power-of-two scale, and the second product's fp32 the output.
+    #[test]
+    fn the_release_activation_has_the_weight_inside() {
+        let (latent, inter) = (64, 128);
+        let (up, down) = (random_pack(2 * inter, latent, true, 3), random_pack(latent, inter, true, 5));
+        let ex = Fp4Expert {
+            up: Fp4View { data: &up.data, blocks: &up.blocks, rows: 2 * inter, cols: latent, packed: true },
+            down: Fp4View { data: &down.data, blocks: &down.blocks, rows: latent, cols: inter, packed: true },
+        };
+        let z: Vec<u16> = (0..latent).map(|i| (bf16(((i * 7 % 23) as f32 - 11.0) / 8.0).to_bits() >> 16) as u16).collect();
+        let (lim, w) = (10.0f32, 0.375f32);
+        let mut got = vec![0f32; latent];
+        experts(Kernel::Scalar, &z, &[Fp4Pair { expert: ex, token: 0, weight: w }], &mut got, Act::Release { lim, fp8: true }, 1, false).unwrap();
+        let zf: Vec<f32> = z.iter().map(|&h| f32::from_bits((h as u32) << 16)).collect();
+        let mut gu = vec![0f32; 2 * inter];
+        rows(Kernel::Scalar, &ex.up, &zf, 0, 2 * inter, &mut gu);
+        let mut h: Vec<f32> = (0..inter)
+            .map(|i| {
+                let (g, u) = (bf16(gu[i]).min(lim), bf16(gu[inter + i]).clamp(-lim, lim));
+                bf16(w * (g / (1.0 + (-g).exp()) * u))
+            })
+            .collect();
+        fp8_sim(&mut h, 128);
+        assert!(h.iter().all(|&v| v == bf16(v)));
+        let mut want = vec![0f32; latent];
+        rows(Kernel::Scalar, &ex.down, &h, 0, latent, &mut want);
+        assert_eq!(got, want);
+        assert_eq!((e4m3_round(1.0625), e4m3_round(1.1875), pow2_scale(449.0, 1.0 / 448.0)), (1.0, 1.25, 2.0));
     }
 }

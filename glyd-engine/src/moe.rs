@@ -866,6 +866,11 @@ impl MoeLayer {
         Ok(self)
     }
 
+    /// The expert cache's store the layer's experts are in (none: all on the GPU).
+    pub fn store(&self) -> Option<&std::rc::Rc<crate::offload::ExpertStore>> {
+        self.cache.as_ref().map(|c| &c.store).or(self.hb_cache.as_ref().map(|c| &c.store))
+    }
+
     /// Whether a call reads the router's choices on the host (the experts in the expert cache): no graph captures it.
     pub fn reads_host(&self) -> bool {
         self.hb_cache.is_some() || self.cache.is_some()

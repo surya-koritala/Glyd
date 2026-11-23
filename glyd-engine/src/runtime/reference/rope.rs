@@ -78,31 +78,35 @@ pub fn inv_freq(r: &Rope) -> (Vec<f32>, f32) {
 
 /// Rotates one head `x` (its first `r.dim` values) to position `pos`.
 pub fn apply(r: &Rope, inv: &[f32], af: f32, x: &mut [f32], pos: u32) {
+    turn(r, inv, af, x, pos, |v| v)
+}
+
+/// `apply` in bf16 arithmetic, as transformers' eager rope of bf16 tensors: cos and sin rounded to bf16, each product rounded and their
+/// sum rounded.
+pub fn apply_bf16(r: &Rope, inv: &[f32], af: f32, x: &mut [f32], pos: u32) {
+    turn(r, inv, af, x, pos, super::bf16)
+}
+
+fn turn(r: &Rope, inv: &[f32], af: f32, x: &mut [f32], pos: u32, rd: impl Fn(f32) -> f32) {
     let half = r.dim / 2;
     let cs: Vec<(f32, f32)> = inv
         .iter()
         .map(|&f| {
             let a = pos as f32 * f;
-            (((a as f64).cos() as f32) * af, ((a as f64).sin() as f32) * af)
+            (rd(((a as f64).cos() as f32) * af), rd(((a as f64).sin() as f32) * af))
         })
         .collect();
-    match r.style {
-        RopeStyle::Half => {
-            for i in 0..half {
-                let (c, s) = cs[i];
-                let (a, b) = (x[i], x[i + half]);
-                x[i] = a * c - b * s;
-                x[i + half] = b * c + a * s;
-            }
+    let pair = |i: usize, j: usize| -> (usize, usize) {
+        match r.style {
+            RopeStyle::Half => (i, i + j),
+            RopeStyle::Interleaved => (2 * i, 2 * i + 1),
         }
-        RopeStyle::Interleaved => {
-            for i in 0..half {
-                let (c, s) = cs[i];
-                let (a, b) = (x[2 * i], x[2 * i + 1]);
-                x[2 * i] = a * c - b * s;
-                x[2 * i + 1] = b * c + a * s;
-            }
-        }
+    };
+    for (i, &(c, s)) in cs.iter().enumerate().take(half) {
+        let (ia, ib) = pair(i, half);
+        let (a, b) = (x[ia], x[ib]);
+        x[ia] = rd(rd(a * c) - rd(b * s));
+        x[ib] = rd(rd(b * c) + rd(a * s));
     }
 }
 
@@ -137,5 +141,25 @@ mod tests {
         let (inv, _) = inv_freq(&r);
         assert_eq!((inv.len(), inv.iter().filter(|&&f| f != 0.0).count()), (8, 2));
         assert_eq!(inv[1], 1.0 / 1e6f32.powf(2.0 / 16.0));
+    }
+
+    /// The bf16 form: each pair as bf16(bf16(a c) - bf16(b s)) and bf16(bf16(b c) + bf16(a s)) with bf16 cos and sin, by hand; and not the
+    /// f32 rotation rounded once, on some pair.
+    #[test]
+    fn the_bf16_rotation() {
+        use crate::runtime::reference::bf16;
+        let r = Rope::plain(10_000.0, 8);
+        let (inv, af) = inv_freq(&r);
+        let x: Vec<f32> = (0..8).map(|i| bf16((i as f32 * 0.7).sin() * 3.0)).collect();
+        let (mut y, mut z) = (x.clone(), x.clone());
+        apply_bf16(&r, &inv, af, &mut y, 1234);
+        apply(&r, &inv, af, &mut z, 1234);
+        for i in 0..4 {
+            let a = 1234f32 * inv[i];
+            let (c, s) = (bf16((a as f64).cos() as f32), bf16((a as f64).sin() as f32));
+            assert_eq!(y[i], bf16(bf16(x[i] * c) - bf16(x[i + 4] * s)));
+            assert_eq!(y[i + 4], bf16(bf16(x[i + 4] * c) + bf16(x[i] * s)));
+        }
+        assert!(y.iter().zip(&z).any(|(a, b)| *a != bf16(*b)));
     }
 }

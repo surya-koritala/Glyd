@@ -1,14 +1,17 @@
 //! Model descriptions from `config.json` (R3a, #136): a `ModelDesc` of layer kinds and the weight map that names each block role's
 //! checkpoint tensors, with no per-model code. Families: Qwen3.8 dense and MoE (the Qwen3.5 architecture), gemma-4 text, GLM-5.3 and
 //! GLM-5.3-Flash (transformers' keys or the release's, FP8 block-scaled matrices), Kimi-K3, Muse Spark, DeepSeek-V4, Nemotron 3
-//! (`nemotron_h`), and the Llama-style standard architectures (Llama, Mistral, Qwen2, Qwen3). Weight maps name the released tensors;
-//! a format detail such as Kimi-K3's MXFP4 experts (`.weight_packed` for `.weight`) is the loader's.
+//! (`nemotron_h`), and the Llama-style standard architectures (Llama, Mistral, Qwen2, Qwen3). Weight maps name the released tensors,
+//! through the tables of their naming convention (`names`); a format detail such as Kimi-K3's MXFP4 experts (`.weight_packed` for
+//! `.weight`) is the loader's. The config comes parsed once (`config::ModelConfig`).
 //!
 //! A config key the builder does not know fails with the key named; keys that cannot change the math (ids, dtypes, training settings)
 //! are listed in `INERT`. A decoder layer is two blocks: the mixer's, then the feed-forward's (a Nemotron layer is one block: its
 //! pattern names a mixer or a feed-forward per layer).
 
+use super::config::ModelConfig;
 use super::kinds::*;
+use super::names::{self, all, part, Convention};
 use crate::ffi::{err, Error, Result};
 use serde_json::{Map, Value};
 use std::cell::RefCell;
@@ -54,6 +57,10 @@ pub struct Described {
     /// Each tensor's shape as the config makes it, where the builder says it (Gemma 4's: its matrices, norms and scalars; empty for the builders that do not yet):
     /// what a lowering to the executor sizes its matrices by, for a packed directory too, whose tensors are not stored at their shapes.
     pub shapes: std::collections::BTreeMap<String, Vec<usize>>,
+    /// The naming convention the weight map is in (`names::Convention::name`).
+    pub convention: &'static str,
+    /// Parts of the checkpoint the description does not read: the towers and the draft layers, as prefixes of their tensors' names.
+    pub unread: Vec<String>,
 }
 
 impl Described {
@@ -71,6 +78,44 @@ impl Described {
         }
         s
     }
+
+    /// The weight map against a checkpoint's safetensors index (`have`): every tensor it reads is there; with `all`, as the config says it (a quantized
+    /// matrix with its scales), and every tensor there is read but the parts the description leaves (`unread`). Without `all`, which a loader asks, a
+    /// matrix is there in either stored form (`.weight`, or compressed-tensors' `.weight_packed`) and its scales are not asked: the format is the loader's
+    /// to read from the checkpoint. An error names the convention, how many differ and the first of them.
+    pub fn check(&self, have: &BTreeSet<String>, all: bool) -> Result<()> {
+        let few = |v: &[String]| {
+            let (n, first) = (v.len(), v.iter().take(4).cloned().collect::<Vec<_>>().join(", "));
+            format!("{n} tensor{}: {first}{}", if n == 1 { "" } else { "s" }, if n > 4 { ", ..." } else { "" })
+        };
+        let scales: BTreeSet<&String> = self.scales.values().collect();
+        let stored = |n: &String| {
+            let base = n.strip_suffix(".weight_packed").or(n.strip_suffix(".weight"));
+            have.contains(n) || (!all && base.is_some_and(|b| have.contains(&format!("{b}.weight")) || have.contains(&format!("{b}.weight_packed"))))
+        };
+        let missing: Vec<String> = self.names().into_iter().filter(|n| !stored(n) && (all || !scales.contains(n))).collect();
+        if !missing.is_empty() {
+            return err(format!("the description reads tensors that are not in the checkpoint ({} names), {}", self.convention, few(&missing)));
+        }
+        let names = self.names();
+        let left: Vec<String> = have.iter().filter(|n| !names.contains(*n) && !self.unread.iter().any(|p| n.starts_with(p.as_str()))).cloned().collect();
+        if all && !left.is_empty() {
+            return err(format!("the checkpoint holds tensors not read by its description ({} names), {}", self.convention, few(&left)));
+        }
+        Ok(())
+    }
+}
+
+/// The description of the model in `dir`, from its config.json alone, and the file's path for the words of an error. A directory in the Hub's format (its
+/// safetensors, no glyd.json) is held to its index: a tensor the description reads and the checkpoint lacks is named here, with all of its kind.
+pub fn describe_dir(dir: &std::path::Path) -> Result<(Described, String)> {
+    let label = dir.join("config.json").display().to_string();
+    let d = describe_config(&ModelConfig::load(dir)?)?;
+    let hub = !dir.join("glyd.json").exists() && (dir.join("model.safetensors.index.json").exists() || dir.join("model.safetensors").exists());
+    if hub {
+        d.check(&names::index_names(dir)?, false).map_err(|e| e.context(&label))?;
+    }
+    Ok((d, label))
 }
 
 /// Keys that cannot change what a step computes.
@@ -294,62 +339,43 @@ fn gated(act: Act) -> Mlp {
     Mlp { act, gated: true, bias: false, clamp: None }
 }
 
-fn t(n: String) -> Source {
-    Source::Tensor(n)
+/// The roles of `table` but those in `drop`'s list, under `at` (`experts` of them where a role is each expert's).
+fn but(table: names::Roles, at: &str, experts: usize, drop: &[&str]) -> Vec<(String, Source)> {
+    names::roles(table, at, experts, |r| !drop.contains(&r))
 }
 
-/// The roles of a Llama-style attention and its gated MLP at `p` (`model.layers.N`).
-fn attn_roles(p: &str, bias: bool, qk_norm: bool) -> Vec<(String, Source)> {
-    let mut r = vec![("norm_in".to_string(), t(format!("{p}.input_layernorm.weight")))];
-    for x in ["q", "k", "v", "o"] {
-        r.push((x.to_string(), t(format!("{p}.self_attn.{x}_proj.weight"))));
-        if bias && x != "o" {
-            r.push((format!("{x}_bias"), t(format!("{p}.self_attn.{x}_proj.bias"))));
+/// Shapes by role: each of `want`'s roles that `r` names as one tensor, that tensor's shape.
+fn shape_roles(shapes: &mut std::collections::BTreeMap<String, Vec<usize>>, r: &[(String, Source)], want: &[(&str, Vec<usize>)]) {
+    for (role, s) in want {
+        if let Some((_, Source::Tensor(n))) = r.iter().find(|(x, _)| x == role) {
+            shapes.insert(n.clone(), s.clone());
         }
-    }
-    if qk_norm {
-        r.push(("q_norm".into(), t(format!("{p}.self_attn.q_norm.weight"))));
-        r.push(("k_norm".into(), t(format!("{p}.self_attn.k_norm.weight"))));
-    }
-    r
-}
-
-fn mlp_roles(p: &str, norm: &str) -> Vec<(String, Source)> {
-    let mut r = vec![("norm_in".to_string(), t(format!("{p}.{norm}.weight")))];
-    for x in ["gate", "up", "down"] {
-        r.push((x.to_string(), t(format!("{p}.mlp.{x}_proj.weight"))));
-    }
-    r
-}
-
-/// The text config (`text_config` of a multimodal one) and the prefix of its layers' tensor names.
-fn text(cfg: &Value) -> Result<(&Map<String, Value>, &'static str)> {
-    let top = cfg.as_object().ok_or_else(|| Error("config.json is not an object".into()))?;
-    match top.get("text_config") {
-        Some(Value::Object(t)) => Ok((t, "model.language_model.")),
-        Some(_) => err("text_config is not an object"),
-        None => Ok((top, "model.")),
     }
 }
 
 /// The description of the model whose `config.json` is `cfg`.
 pub fn describe(cfg: &Value) -> Result<Described> {
-    let (tc, prefix) = text(cfg)?;
-    match cfg.get("model_type").and_then(|v| v.as_str()) {
-        Some("kimi_k3") => return kimi(cfg, tc),
-        Some("muse_spark") => return muse(tc, prefix),
-        Some("deepseek_v4") => return deepseek_v4(tc),
-        Some("nemotron_h") => return nemotron_h(tc),
+    describe_config(&ModelConfig::from_value(cfg)?)
+}
+
+/// The description of a config.json parsed once.
+pub fn describe_config(c: &ModelConfig) -> Result<Described> {
+    let (tc, prefix) = (&c.text, c.prefix());
+    match c.model_type.as_str() {
+        "kimi_k3" => return kimi(c),
+        "muse_spark" => return muse(tc, prefix),
+        "deepseek_v4" => return deepseek_v4(tc),
+        "nemotron_h" => return nemotron_h(tc),
         _ => {}
     }
-    let mt = tc.get("model_type").and_then(|v| v.as_str()).unwrap_or("");
+    let mt = c.text_type.as_str();
     // (a multimodal config's tie flag can sit at the top)
-    let tied_top = cfg.get("tie_word_embeddings").and_then(|v| v.as_bool());
+    let tied_top = c.top.get("tie_word_embeddings").and_then(|v| v.as_bool());
     match mt {
         "llama" | "mistral" | "qwen2" | "qwen3" => llama(tc, prefix, mt, tied_top),
         "qwen3_5_text" | "qwen3_5_moe_text" | "qwen3_5" | "qwen3_5_moe" => qwen35(tc, prefix, mt, tied_top),
         "gemma4_text" | "gemma4_unified_text" => gemma4(tc, prefix, mt, tied_top),
-        "glm_moe_dsa" | "glm5_next_text" | "glm5_next" => glm(tc, prefix, mt, tied_top, cfg.get("quantization_config").or(tc.get("quantization_config"))),
+        "glm_moe_dsa" | "glm5_next_text" | "glm5_next" => glm(tc, prefix, mt, tied_top, c.top.get("quantization_config").or(tc.get("quantization_config"))),
         "" => err("config.json names no model_type"),
         m => err(format!("model_type {m} has no description builder yet")),
     }
@@ -362,19 +388,22 @@ fn common(k: &Keys, tied_top: Option<bool>) -> Result<(usize, usize, usize, f32,
     Ok((d, layers, vocab, eps, tied))
 }
 
-fn finish(k: &Keys, desc: ModelDesc, prefix: &str, blocks: Vec<Vec<(String, Source)>>, mtp_layers: usize) -> Result<Described> {
+/// The description, its blocks' roles and its own tensors named by `cv` (the text model's under `prefix`), once every key of `k` is read.
+fn finish(k: &Keys, desc: ModelDesc, cv: &Convention, prefix: &str, blocks: Vec<Vec<(String, Source)>>, mtp_layers: usize) -> Result<Described> {
     k.finish()?;
     let tied = desc.head.tied;
     Ok(Described {
         desc,
-        embed: format!("{prefix}embed_tokens.weight"),
-        final_norm: format!("{prefix}norm.weight"),
-        head: (!tied).then(|| "lm_head.weight".to_string()),
+        embed: cv.embed(prefix),
+        final_norm: cv.final_norm(prefix),
+        head: (!tied).then(|| cv.head(prefix)),
         blocks,
-        extra: Vec::new(),
+        extra: cv.extra(prefix),
         mtp_layers,
         scales: Default::default(),
         shapes: Default::default(),
+        convention: cv.name,
+        unread: cv.unread(),
     })
 }
 
@@ -423,12 +452,13 @@ fn llama(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>
             scale: (hd as f32).powf(-0.5),
             k_eq_v: false,
             indexer: None,
+            rounding: AttnRounding::F32,
         };
-        let p = format!("{prefix}layers.{l}");
+        let p = names::HF.layer(prefix, l);
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Attention(a)), norm_out: None, residual: Residual::Add });
-        roles.push(attn_roles(&p, bias, qk_norm));
+        roles.push(names::roles(part::ATTN, &p, 0, |r| (bias || !r.ends_with("_bias")) && (qk_norm || !matches!(r, "q_norm" | "k_norm"))));
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Ffn(Ffn::Mlp(gated(act))), norm_out: None, residual: Residual::Add });
-        roles.push(mlp_roles(&p, "post_attention_layernorm"));
+        roles.push(names::roles(part::MLP, &p, 0, all));
     }
     let desc = ModelDesc {
         hidden: d,
@@ -441,7 +471,7 @@ fn llama(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>
         vision: None,
         rope: Some(rp),
     };
-    finish(&k, desc, prefix, roles, 0)
+    finish(&k, desc, &names::HF, prefix, roles, 0)
 }
 
 fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {
@@ -513,27 +543,28 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     k.bool("mtp_use_dedicated_embeddings", false)?;
     let pn = Norm::rms_plus_one(eps);
     let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    // (the shapes of a dense model's tensors, as its heads and widths make them; a mixture of experts' are not said yet)
+    let mut shapes = std::collections::BTreeMap::new();
+    let (kh, vh, kd, vd) = (lin.k_heads, lin.v_heads, lin.k_dim, lin.v_dim);
+    let qkv = 2 * kh * kd + vh * vd;
     for (l, ty) in types.iter().enumerate() {
-        let p = format!("{prefix}layers.{l}");
-        let (mixer, mut r) = match ty.as_str() {
-            "linear_attention" => {
-                let a = format!("{p}.linear_attn");
-                let r: Vec<(String, Source)> = [
-                    ("qkv", "in_proj_qkv.weight"),
-                    ("gate", "in_proj_z.weight"),
-                    ("beta", "in_proj_b.weight"),
-                    ("decay", "in_proj_a.weight"),
-                    ("conv", "conv1d.weight"),
-                    ("a_log", "A_log"),
-                    ("dt_bias", "dt_bias"),
-                    ("norm", "norm.weight"),
-                    ("o", "out_proj.weight"),
-                ]
-                .iter()
-                .map(|(role, n)| (role.to_string(), t(format!("{a}.{n}"))))
-                .collect();
-                (Mixer::Linear(lin.clone()), r)
-            }
+        let p = names::HF.layer(prefix, l);
+        let (mixer, r, sh) = match ty.as_str() {
+            "linear_attention" => (
+                Mixer::Linear(lin.clone()),
+                names::roles(part::QWEN_LINEAR, &p, 0, all),
+                vec![
+                    ("qkv", vec![qkv, d]),
+                    ("gate", vec![vh * vd, d]),
+                    ("beta", vec![vh, d]),
+                    ("decay", vec![vh, d]),
+                    ("conv", vec![qkv, 1, lin.conv]),
+                    ("a_log", vec![vh]),
+                    ("dt_bias", vec![vh]),
+                    ("norm", vec![vd]),
+                    ("o", vec![d, vh * vd]),
+                ],
+            ),
             "full_attention" => {
                 let a = Attn {
                     heads,
@@ -552,44 +583,37 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
                     scale: (hd as f32).powf(-0.5),
                     k_eq_v: false,
                     indexer: None,
+                    rounding: AttnRounding::Flash,
                 };
-                let mut r = attn_roles(&p, false, true);
-                r.remove(0);
-                (Mixer::Attention(a), r)
+                let sh = vec![
+                    ("q", vec![heads * hd * if gate { 2 } else { 1 }, d]),
+                    ("k", vec![kv * hd, d]),
+                    ("v", vec![kv * hd, d]),
+                    ("o", vec![d, heads * hd]),
+                    ("q_norm", vec![hd]),
+                    ("k_norm", vec![hd]),
+                ];
+                (Mixer::Attention(a), names::roles(part::ATTN, &p, 0, |r| !r.ends_with("_bias")), sh)
             }
             other => return err(format!("{mt}: layer type {other} at layer {l}")),
         };
-        r.insert(0, ("norm_in".into(), t(format!("{p}.input_layernorm.weight"))));
         blocks.push(Block { norm_in: pn, body: Body::Mixer(mixer), norm_out: None, residual: Residual::Add });
-        roles.push(r);
-        match &moe {
+        let f = match &moe {
             None => {
                 blocks.push(Block { norm_in: pn, body: Body::Ffn(Ffn::Mlp(gated(act))), norm_out: None, residual: Residual::Add });
-                roles.push(mlp_roles(&p, "post_attention_layernorm"));
+                names::roles(part::MLP, &p, 0, all)
             }
             Some(m) => {
-                let f = format!("{p}.mlp");
-                let mut r = vec![
-                    ("norm_in".to_string(), t(format!("{p}.post_attention_layernorm.weight"))),
-                    ("router".into(), t(format!("{f}.gate.weight"))),
-                    (
-                        "experts_gate_up".into(),
-                        Source::Experts(
-                            (0..m.experts).map(|e| vec![format!("{f}.experts.{e}.gate_proj.weight"), format!("{f}.experts.{e}.up_proj.weight")]).collect(),
-                        ),
-                    ),
-                    ("experts_down".into(), Source::Experts((0..m.experts).map(|e| vec![format!("{f}.experts.{e}.down_proj.weight")]).collect())),
-                ];
-                if m.shared.is_some() {
-                    for x in ["gate", "up", "down"] {
-                        r.push((format!("shared_{x}"), t(format!("{f}.shared_expert.{x}_proj.weight"))));
-                    }
-                    r.push(("shared_router".into(), t(format!("{f}.shared_expert_gate.weight"))));
-                }
                 blocks.push(Block { norm_in: pn, body: Body::Ffn(Ffn::Moe(m.clone())), norm_out: None, residual: Residual::Add });
-                roles.push(r);
+                names::roles(part::QWEN_MOE, &p, m.experts, |r| m.shared.is_some() || !r.starts_with("shared_"))
             }
+        };
+        if let Some(inter) = dense_inter {
+            shape_roles(&mut shapes, &r, &[sh, vec![("norm_in", vec![d])]].concat());
+            shape_roles(&mut shapes, &f, &[("norm_in", vec![d]), ("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])]);
         }
+        roles.push(r);
+        roles.push(f);
     }
     let desc = ModelDesc {
         hidden: d,
@@ -602,48 +626,12 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         vision: None,
         rope: Some(rp),
     };
-    let mut out = finish(&k, desc, prefix, roles, mtp_layers)?;
-    // (the shapes of a dense model's tensors, as its heads and widths make them; a mixture of experts' are not said yet)
-    if let Some(inter) = dense_inter {
-        let (kh, vh, kd, vd, conv) = (lin.k_heads, lin.v_heads, lin.k_dim, lin.v_dim, lin.conv);
-        let mut shapes = std::collections::BTreeMap::new();
-        let mut put = |n: String, s: Vec<usize>| {
-            shapes.insert(n, s);
-        };
-        for (l, ty) in types.iter().enumerate() {
-            let p = format!("{prefix}layers.{l}");
-            if ty == "linear_attention" {
-                let a = format!("{p}.linear_attn");
-                let qkv = 2 * kh * kd + vh * vd;
-                put(format!("{a}.in_proj_qkv.weight"), vec![qkv, d]);
-                put(format!("{a}.in_proj_z.weight"), vec![vh * vd, d]);
-                put(format!("{a}.in_proj_b.weight"), vec![vh, d]);
-                put(format!("{a}.in_proj_a.weight"), vec![vh, d]);
-                put(format!("{a}.conv1d.weight"), vec![qkv, 1, conv]);
-                put(format!("{a}.A_log"), vec![vh]);
-                put(format!("{a}.dt_bias"), vec![vh]);
-                put(format!("{a}.norm.weight"), vec![vd]);
-                put(format!("{a}.out_proj.weight"), vec![d, vh * vd]);
-            } else {
-                let a = format!("{p}.self_attn");
-                put(format!("{a}.q_proj.weight"), vec![heads * hd * if gate { 2 } else { 1 }, d]);
-                put(format!("{a}.k_proj.weight"), vec![kv * hd, d]);
-                put(format!("{a}.v_proj.weight"), vec![kv * hd, d]);
-                put(format!("{a}.o_proj.weight"), vec![d, heads * hd]);
-                put(format!("{a}.q_norm.weight"), vec![hd]);
-                put(format!("{a}.k_norm.weight"), vec![hd]);
-            }
-            put(format!("{p}.input_layernorm.weight"), vec![d]);
-            put(format!("{p}.post_attention_layernorm.weight"), vec![d]);
-            put(format!("{p}.mlp.gate_proj.weight"), vec![inter, d]);
-            put(format!("{p}.mlp.up_proj.weight"), vec![inter, d]);
-            put(format!("{p}.mlp.down_proj.weight"), vec![d, inter]);
+    let mut out = finish(&k, desc, &names::HF, prefix, roles, mtp_layers)?;
+    if dense_inter.is_some() {
+        for n in [Some(&out.embed), out.head.as_ref()].into_iter().flatten() {
+            shapes.insert(n.clone(), vec![vocab, d]);
         }
-        put(out.embed.clone(), vec![vocab, d]);
-        put(out.final_norm.clone(), vec![d]);
-        if let Some(h) = out.head.clone() {
-            put(h, vec![vocab, d]);
-        }
+        shapes.insert(out.final_norm.clone(), vec![d]);
         out.shapes = shapes;
     }
     Ok(out)
@@ -717,7 +705,7 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         }
     }
     let n = Norm::rms(eps);
-    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    let (mut blocks, mut roles, mut shapes) = (Vec::new(), Vec::new(), std::collections::BTreeMap::new());
     for (l, ty) in types.iter().enumerate() {
         let sliding = match ty.as_str() {
             "sliding_attention" => true,
@@ -742,20 +730,35 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             scale: 1.0,
             k_eq_v: kev,
             indexer: None,
+            rounding: AttnRounding::Eager,
         };
-        let p = format!("{prefix}layers.{l}");
-        let mut r = attn_roles(&p, false, true);
-        if kev {
-            r.retain(|(role, _)| role != "v");
-        }
-        r.push(("norm_out".into(), t(format!("{p}.post_attention_layernorm.weight"))));
+        let p = names::GEMMA.layer(prefix, l);
+        let r = [names::roles(part::ATTN, &p, 0, |r| !r.ends_with("_bias") && !(kev && r == "v")), names::roles(part::GEMMA_ATTN_OUT, &p, 0, all)].concat();
+        let f = names::roles(part::GEMMA_MLP, &p, 0, all);
+        // (the shapes: each matrix [rows, columns] as the layer's heads and widths make it, each norm and scalar its width)
+        shape_roles(
+            &mut shapes,
+            &r,
+            &[
+                ("norm_in", vec![d]),
+                ("q", vec![heads * h, d]),
+                ("k", vec![kvh * h, d]),
+                ("v", vec![kvh * h, d]),
+                ("o", vec![d, heads * h]),
+                ("q_norm", vec![h]),
+                ("k_norm", vec![h]),
+                ("norm_out", vec![d]),
+            ],
+        );
+        shape_roles(
+            &mut shapes,
+            &f,
+            &[("norm_in", vec![d]), ("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter]), ("norm_out", vec![d]), ("res_scale", vec![1])],
+        );
         blocks.push(Block { norm_in: n, body: Body::Mixer(Mixer::Attention(a)), norm_out: Some(n), residual: Residual::Add });
         roles.push(r);
-        let mut r = mlp_roles(&p, "pre_feedforward_layernorm");
-        r.push(("norm_out".into(), t(format!("{p}.post_feedforward_layernorm.weight"))));
-        r.push(("res_scale".into(), t(format!("{p}.layer_scalar"))));
         blocks.push(Block { norm_in: n, body: Body::Ffn(Ffn::Mlp(gated(act))), norm_out: Some(n), residual: Residual::AddThenScale });
-        roles.push(r);
+        roles.push(f);
     }
     let desc = ModelDesc {
         hidden: d,
@@ -768,35 +771,9 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         vision: None,
         rope: None,
     };
-    let mut out = finish(&k, desc, prefix, roles, 0)?;
-    // (the shapes: each matrix [rows, columns] as the layer's heads and widths make it, each norm and scalar its width)
-    let mut shapes = std::collections::BTreeMap::new();
-    for (l, ty) in types.iter().enumerate() {
-        let (h, kvh) = if ty == "sliding_attention" { (hd, kv) } else { (ghd, gkv) };
-        let p = format!("{prefix}layers.{l}");
-        let a = format!("{p}.self_attn");
-        for (x, s) in [
-            ("q_proj", vec![heads * h, d]),
-            ("k_proj", vec![kvh * h, d]),
-            ("v_proj", vec![kvh * h, d]),
-            ("o_proj", vec![d, heads * h]),
-            ("q_norm", vec![h]),
-            ("k_norm", vec![h]),
-        ] {
-            shapes.insert(format!("{a}.{x}.weight"), s);
-        }
-        for (x, s) in [("gate_proj", vec![inter, d]), ("up_proj", vec![inter, d]), ("down_proj", vec![d, inter])] {
-            shapes.insert(format!("{p}.mlp.{x}.weight"), s);
-        }
-        for x in ["input_layernorm", "post_attention_layernorm", "pre_feedforward_layernorm", "post_feedforward_layernorm"] {
-            shapes.insert(format!("{p}.{x}.weight"), vec![d]);
-        }
-        shapes.insert(format!("{p}.layer_scalar"), vec![1]);
-    }
+    let mut out = finish(&k, desc, &names::GEMMA, prefix, roles, 0)?;
     shapes.insert(out.embed.clone(), vec![vocab, d]);
     shapes.insert(out.final_norm.clone(), vec![d]);
-    let named = out.names();
-    shapes.retain(|n, _| named.contains(n));
     out.shapes = shapes;
     Ok(out)
 }
@@ -997,80 +974,55 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
     };
     let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
     let n = Norm::rms(eps);
-    let fp8w = |w: String, out: &mut BTreeSet<String>| -> Source {
-        if fp8.as_ref().is_some_and(|f| f.holds(&w)) {
-            out.insert(w.clone());
+    // (the matrices a release holds in FP8: those of these roles that its quantization_config does not leave out; a layer's experts as its first expert's)
+    let held = |w: &str| fp8.as_ref().is_some_and(|f| f.holds(w));
+    let mark = |r: &[(String, Source)], out: &mut BTreeSet<String>| {
+        for (role, src) in r {
+            if !FP8_ROLES.contains(&role.as_str()) {
+                continue;
+            }
+            match src {
+                Source::Tensor(w) if held(w) => {
+                    out.insert(w.clone());
+                }
+                Source::Experts(e) => out.extend(e.first().into_iter().flatten().filter(|w| held(w)).cloned()),
+                _ => {}
+            }
         }
-        Source::Tensor(w)
+        let first = r.iter().find_map(|(role, s)| match s {
+            Source::Experts(e) if role == "experts_gate_up" => e.first().and_then(|x| x.first()),
+            _ => None,
+        });
+        if first.is_some_and(|w| held(w)) {
+            out.extend(r.iter().filter(|(role, _)| role.starts_with("experts_")).flat_map(|(_, s)| s.names()));
+        }
     };
     let mut fp8set = BTreeSet::new();
-    let mut dense_shapes = Vec::new();
+    let mut dense_shapes = std::collections::BTreeMap::new();
     let (mut blocks, mut roles) = (Vec::new(), Vec::new());
     for (l, &is_lin) in types.iter().enumerate() {
-        let p = format!("{prefix}layers.{l}");
-        let a = format!("{p}.self_attn");
-        let residual = |sub: &str, r: &mut Vec<(String, Source)>| -> Residual {
+        let p = names::HF.layer(prefix, l);
+        let residual = |table: names::Roles, r: &mut Vec<(String, Source)>| -> Residual {
             match streams {
                 Some(s) => {
-                    for (role, x) in [("hc_fn", "fn"), ("hc_base", "base"), ("hc_scale", "scale")] {
-                        r.push((role.to_string(), t(format!("{p}.hc_{sub}_{x}"))));
-                    }
+                    r.extend(names::roles(table, &p, 0, all));
                     Residual::Streams(s)
                 }
                 None => Residual::Add,
             }
         };
-        let mut r = vec![("norm_in".to_string(), t(format!("{p}.input_layernorm.weight")))];
+        let mut r = names::roles(part::NORM_IN, &p, 0, all);
         let mixer = if is_lin {
-            for (role, x) in [
-                ("q", "q_proj"),
-                ("k", "k_proj"),
-                ("v", "v_proj"),
-                ("beta", "b_proj"),
-                ("decay_a", "f_a_proj"),
-                ("decay_b", "f_b_proj"),
-                ("gate_a", "g_a_proj"),
-                ("gate_b", "g_b_proj"),
-                ("o", "o_proj"),
-            ] {
-                r.push((role.to_string(), fp8w(format!("{a}.{x}.weight"), &mut fp8set)));
-            }
-            r.push(("conv".into(), Source::Rows(["q", "k", "v"].iter().map(|x| format!("{a}.{x}_conv1d.weight")).collect())));
-            for (role, x) in [("a_log", "A_log"), ("dt_bias", "dt_bias"), ("norm", "o_norm.weight")] {
-                r.push((role.to_string(), t(format!("{a}.{x}"))));
-            }
+            r.extend(but(part::KDA, &p, 0, &["gate"]));
             Mixer::Linear(lin.clone())
         } else {
-            match q_lora {
-                Some(_) => {
-                    r.push(("q_a".into(), fp8w(format!("{a}.q_a_proj.weight"), &mut fp8set)));
-                    r.push(("q_a_norm".into(), t(format!("{a}.q_a_layernorm.weight"))));
-                    r.push(("q_b".into(), fp8w(format!("{a}.q_b_proj.weight"), &mut fp8set)));
-                }
-                None => r.push(("q".into(), fp8w(format!("{a}.q_proj.weight"), &mut fp8set))),
-            }
-            r.push(("kv_a".into(), fp8w(format!("{a}.kv_a_proj_with_mqa.weight"), &mut fp8set)));
-            r.push(("kv_a_norm".into(), t(format!("{a}.kv_a_layernorm.weight"))));
-            r.push(("kv_b".into(), fp8w(format!("{a}.kv_b_proj.weight"), &mut fp8set)));
-            r.push(("o".into(), fp8w(format!("{a}.o_proj.weight"), &mut fp8set)));
+            let q = if q_lora.is_some() { "q" } else { "q_a q_a_norm q_b" };
+            r.extend(names::roles(part::MLA, &p, 0, |x| x != "g" && !q.split(' ').any(|y| y == x)));
             let shared = itypes.get(l).is_some_and(|s| s == "shared");
             let indexer = match (ih, idim, itop) {
                 (Some(h), Some(dim), Some(top)) => {
                     if !shared {
-                        let ix = format!("{a}.indexer");
-                        let mut names = vec![
-                            ("indexer_wq_b", "wq_b.weight"),
-                            ("indexer_wk", "wk.weight"),
-                            ("indexer_k_norm", "k_norm.weight"),
-                            ("indexer_k_norm_bias", "k_norm.bias"),
-                            ("indexer_weights", "weights_proj.weight"),
-                        ];
-                        if flash {
-                            names.extend([("indexer_pool_ape", "index_kpool_compress_ape"), ("indexer_pool_gate", "index_kpool_compress_gate")]);
-                        }
-                        for (role, x) in names {
-                            r.push((role.to_string(), t(format!("{ix}.{x}"))));
-                        }
+                        r.extend(names::roles(part::MLA_INDEXER, &p, 0, |x| flash || !x.starts_with("indexer_pool")));
                     }
                     Some(Indexer { heads: h, head_dim: dim, top_k: top, block: pool, shared })
                 }
@@ -1092,7 +1044,8 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
                 indexer,
             })
         };
-        let res = residual("attn", &mut r);
+        mark(&r, &mut fp8set);
+        let res = residual(part::HC_ATTN, &mut r);
         blocks.push(Block { norm_in: n, body: Body::Mixer(mixer), norm_out: None, residual: res });
         roles.push(r);
         let sparse = match (&mlp_types, first_dense) {
@@ -1100,39 +1053,18 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
             (None, Some(f)) => l >= f,
             (None, None) => true,
         };
-        let f = format!("{p}.mlp");
-        let mut r = vec![("norm_in".to_string(), t(format!("{p}.post_attention_layernorm.weight")))];
+        let mut r = names::roles(part::NORM_POST, &p, 0, all);
         let body = if sparse {
-            r.push(("router".into(), t(format!("{f}.gate.weight"))));
-            r.push(("choice_bias".into(), t(format!("{f}.gate.e_score_correction_bias"))));
-            let ex = |x: &str, out: &mut BTreeSet<String>| -> Vec<String> {
-                let w = format!("{f}.experts.0.{x}_proj.weight");
-                let _ = fp8w(w, out);
-                (0..ne).map(|e| format!("{f}.experts.{e}.{x}_proj.weight")).collect()
-            };
-            let (g, u, dn) = (ex("gate", &mut fp8set), ex("up", &mut fp8set), ex("down", &mut fp8set));
-            if fp8set.contains(&format!("{f}.experts.0.gate_proj.weight")) {
-                fp8set.extend(g.iter().chain(&u).chain(&dn).cloned());
-            }
-            r.push(("experts_gate_up".into(), Source::Experts(g.into_iter().zip(u).map(|(a, b)| vec![a, b]).collect())));
-            r.push(("experts_down".into(), Source::Experts(dn.into_iter().map(|x| vec![x]).collect())));
-            if moe.shared.is_some() {
-                for x in ["gate", "up", "down"] {
-                    r.push((format!("shared_{x}"), fp8w(format!("{f}.shared_experts.{x}_proj.weight"), &mut fp8set)));
-                }
-            }
+            r.extend(names::roles(part::MOE, &p, ne, |x| moe.shared.is_some() || !x.starts_with("shared_")));
             Body::Ffn(Ffn::Moe(moe.clone()))
         } else {
-            for x in ["gate", "up", "down"] {
-                r.push((x.to_string(), fp8w(format!("{f}.{x}_proj.weight"), &mut fp8set)));
-            }
+            r.extend(names::roles(part::MLP_BODY, &p, 0, all));
             // (a dense MLP's shapes, which the lowering to the executor reads its width from)
-            for (x, s) in [("gate", vec![dense_inter, d]), ("up", vec![dense_inter, d]), ("down", vec![d, dense_inter])] {
-                dense_shapes.push((format!("{f}.{x}_proj.weight"), s));
-            }
+            shape_roles(&mut dense_shapes, &r, &[("gate", vec![dense_inter, d]), ("up", vec![dense_inter, d]), ("down", vec![d, dense_inter])]);
             Body::Ffn(Ffn::Mlp(mlp))
         };
-        let res = residual("ffn", &mut r);
+        mark(&r, &mut fp8set);
+        let res = residual(part::HC_FFN, &mut r);
         blocks.push(Block { norm_in: n, body, norm_out: None, residual: res });
         roles.push(r);
     }
@@ -1147,16 +1079,44 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
         vision: None,
         rope,
     };
-    let mut out = finish(&k, desc, prefix, roles, mtp_layers)?;
+    let mut out = finish(&k, desc, &names::HF, prefix, roles, mtp_layers)?;
     out.scales = fp8set.into_iter().map(|w| (w.clone(), format!("{w}_scale_inv"))).collect();
-    out.shapes = dense_shapes.into_iter().collect();
+    out.shapes = dense_shapes;
+    // (the draft layers follow the model's, under the same names)
+    out.unread.extend((0..mtp_layers).map(|i| format!("{}.", names::HF.layer(prefix, layers + i))));
     let _ = fp8.map(|f| f.block);
     Ok(out)
 }
 
+/// The roles whose matrices a release may hold in FP8 (GLM's `quantization_config`): the products of the attention and the feed-forward, not the routers,
+/// the norms, the convolutions or the indexer's.
+const FP8_ROLES: &[&str] = &[
+    "q",
+    "k",
+    "v",
+    "beta",
+    "decay_a",
+    "decay_b",
+    "gate_a",
+    "gate_b",
+    "o",
+    "q_a",
+    "q_b",
+    "kv_a",
+    "kv_b",
+    "gate",
+    "up",
+    "down",
+    "shared_gate",
+    "shared_up",
+    "shared_down",
+    "experts_gate_up",
+    "experts_down",
+];
+
 /// The top-level keys of a multimodal config that the text model does not read.
-fn top_keys(cfg: &Value, what: &str, known: &[&str]) -> Result<()> {
-    for k in cfg.as_object().map(|m| m.keys().collect::<Vec<_>>()).unwrap_or_default() {
+fn top_keys(top: &Map<String, Value>, what: &str, known: &[&str]) -> Result<()> {
+    for k in top.keys() {
         if !known.contains(&k.as_str()) && !inert(k) {
             return err(format!("{what}: config key {k} is not understood by the description builder"));
         }
@@ -1166,9 +1126,9 @@ fn top_keys(cfg: &Value, what: &str, known: &[&str]) -> Result<()> {
 
 /// Kimi-K3 (`kimi_k3`, a `kimi_linear` text model): Kimi delta attention and gated NoPE MLA, the depth mix over groups of
 /// `attn_res_block_size` layers, a dense first layer then the latent MoE, situ activations, KimiRMSNorm (two roundings).
-fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
-    let mt = "kimi_linear";
-    top_keys(cfg, "kimi_k3", &["text_config", "vision_config", "quantization_config", "tie_word_embeddings"])?;
+fn kimi(c: &ModelConfig) -> Result<Described> {
+    let (mt, tc) = ("kimi_linear", &c.text);
+    top_keys(&c.top, "kimi_k3", &["text_config", "vision_config", "quantization_config", "tie_word_embeddings"])?;
     let k = Keys::new(tc, mt);
     if tc.get("model_type").and_then(|v| v.as_str()) != Some(mt) {
         return err("kimi_k3: the text model is not kimi_linear");
@@ -1280,91 +1240,40 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
     let group = k.usize("attn_res_block_size")?;
     let prefix = "language_model.model.";
     let n = twice(eps);
-    let (mut blocks, mut roles, mut shapes) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut blocks, mut roles, mut shapes) = (Vec::new(), Vec::new(), std::collections::BTreeMap::new());
     for l in 0..layers {
-        let p = format!("{prefix}layers.{l}");
-        let a = format!("{p}.self_attn");
-        let mut r = vec![
-            ("norm_in".to_string(), t(format!("{p}.input_layernorm.weight"))),
-            ("mix_norm".into(), t(format!("{p}.self_attention_res_norm.weight"))),
-            ("mix_proj".into(), t(format!("{p}.self_attention_res_proj.weight"))),
-        ];
+        let p = names::KIMI.layer(prefix, l);
+        let mut r = names::roles(part::KIMI_ATTN_MIX, &p, 0, all);
         let mixer = if kda_l.contains(&(l as u64 + 1)) {
-            for (role, x) in [
-                ("q", "q_proj"),
-                ("k", "k_proj"),
-                ("v", "v_proj"),
-                ("beta", "b_proj"),
-                ("decay_a", "f_a_proj"),
-                ("decay_b", "f_b_proj"),
-                ("gate", "g_proj"),
-                ("o", "o_proj"),
-            ] {
-                r.push((role.to_string(), t(format!("{a}.{x}.weight"))));
-            }
-            r.push(("conv".into(), Source::Rows(["q", "k", "v"].iter().map(|x| format!("{a}.{x}_conv1d.weight")).collect())));
+            let x = but(part::KDA, &p, 0, &["gate_a", "gate_b"]);
             // (the forget gate's low rank: the delta heads' size, which the lowering to the executor sizes its slot by)
-            shapes.push((format!("{a}.f_a_proj.weight"), vec![kd, d]));
-            for (role, x) in [("a_log", "A_log"), ("dt_bias", "dt_bias"), ("norm", "o_norm.weight")] {
-                r.push((role.to_string(), t(format!("{a}.{x}"))));
-            }
+            shape_roles(&mut shapes, &x, &[("decay_a", vec![kd, d])]);
+            r.extend(x);
             Mixer::Linear(lin.clone())
         } else {
-            for (role, x) in [
-                ("q_a", "q_a_proj.weight"),
-                ("q_a_norm", "q_a_layernorm.weight"),
-                ("q_b", "q_b_proj.weight"),
-                ("kv_a", "kv_a_proj_with_mqa.weight"),
-                ("kv_a_norm", "kv_a_layernorm.weight"),
-                ("kv_b", "kv_b_proj.weight"),
-                ("g", "g_proj.weight"),
-                ("o", "o_proj.weight"),
-            ] {
-                r.push((role.to_string(), t(format!("{a}.{x}"))));
-            }
+            r.extend(but(part::MLA, &p, 0, &["q"]));
             Mixer::Mla(mla.clone())
         };
         blocks.push(Block { norm_in: n, body: Body::Mixer(mixer), norm_out: None, residual: Residual::DepthMix(DepthMixP { starts: l % group == 0 }) });
         roles.push(r);
-        let mut r = vec![
-            ("norm_in".to_string(), t(format!("{p}.post_attention_layernorm.weight"))),
-            ("mix_norm".into(), t(format!("{p}.mlp_res_norm.weight"))),
-            ("mix_proj".into(), t(format!("{p}.mlp_res_proj.weight"))),
-        ];
+        let mut r = names::roles(part::KIMI_FFN_MIX, &p, 0, all);
         let body = if l < dense {
-            for x in ["gate", "up", "down"] {
-                r.push((x.to_string(), t(format!("{p}.mlp.{x}_proj.weight"))));
-            }
-            shapes.push((format!("{p}.mlp.gate_proj.weight"), vec![inter, d]));
+            r.extend(names::roles(part::MLP_BODY, &p, 0, all));
+            shape_roles(&mut shapes, &r, &[("gate", vec![inter, d])]);
             Body::Ffn(Ffn::Mlp(mlp))
         } else {
-            let f = format!("{p}.block_sparse_moe");
-            for (role, x) in [
-                ("router", "gate.weight"),
-                ("choice_bias", "gate.e_score_correction_bias"),
-                ("latent_down", "routed_expert_down_proj.weight"),
-                ("latent_up", "routed_expert_up_proj.weight"),
-                ("latent_norm_out", "routed_expert_norm.weight"),
-            ] {
-                r.push((role.to_string(), t(format!("{f}.{x}"))));
-            }
-            let mut ex = |e: usize, w: &str| {
-                let n = format!("{f}.experts.{e}.{w}.{}", if mxfp4 { "weight_packed" } else { "weight" });
-                if mxfp4 {
-                    scales.insert(n.clone(), n.replace(".weight_packed", ".weight_scale"));
+            let mut x = names::roles(part::KIMI_MOE, &p, ne, |x| shared || !x.starts_with("shared_"));
+            // (MXFP4 experts as released: each matrix its codes, `.weight_packed`, and its scales)
+            for (_, src) in x.iter_mut().filter(|(role, _)| mxfp4 && role.starts_with("experts_")) {
+                if let Source::Experts(e) = src {
+                    for w in e.iter_mut().flatten() {
+                        w.push_str("_packed");
+                        scales.insert(w.clone(), w.replace(".weight_packed", ".weight_scale"));
+                    }
                 }
-                n
-            };
-            let gate_up: Vec<Vec<String>> = (0..ne).map(|e| vec![ex(e, "w1"), ex(e, "w3")]).collect();
-            let down: Vec<Vec<String>> = (0..ne).map(|e| vec![ex(e, "w2")]).collect();
-            r.push(("experts_gate_up".into(), Source::Experts(gate_up)));
-            r.push(("experts_down".into(), Source::Experts(down)));
-            if shared {
-                for x in ["gate", "up", "down"] {
-                    r.push((format!("shared_{x}"), t(format!("{f}.shared_experts.{x}_proj.weight"))));
-                }
-                shapes.push((format!("{f}.shared_experts.gate_proj.weight"), vec![n_shared * moe_inter, d]));
             }
+            shape_roles(&mut shapes, &x, &[("shared_gate", vec![n_shared * moe_inter, d])]);
+            r.extend(x);
             Body::Ffn(Ffn::Moe(moe.clone()))
         };
         blocks.push(Block { norm_in: n, body, norm_out: None, residual: Residual::DepthMix(DepthMixP { starts: false }) });
@@ -1372,31 +1281,20 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
     }
     // (the checkpoint's next-token-prediction layers, which the description does not use yet)
     let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
-    k.finish()?;
-    Ok(Described {
-        desc: ModelDesc {
-            hidden: d,
-            vocab,
-            embed: Embed { scale: 1.0, norm: None, streams: 1 },
-            blocks,
-            final_norm: n,
-            head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::DepthMix },
-            mtp: Vec::new(),
-            vision: None,
-            rope: None,
-        },
-        embed: format!("{prefix}embed_tokens.weight"),
-        final_norm: format!("{prefix}norm.weight"),
-        head: (!tied).then(|| "language_model.lm_head.weight".to_string()),
-        blocks: roles,
-        extra: vec![
-            ("out_mix_norm".into(), t(format!("{prefix}output_attn_res_norm.weight"))),
-            ("out_mix_proj".into(), t(format!("{prefix}output_attn_res_proj.weight"))),
-        ],
-        mtp_layers,
-        scales,
-        shapes: shapes.into_iter().collect(),
-    })
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: 1 },
+        blocks,
+        final_norm: n,
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::DepthMix },
+        mtp: Vec::new(),
+        vision: None,
+        rope: None,
+    };
+    let mut out = finish(&k, desc, &names::KIMI, prefix, roles, mtp_layers)?;
+    (out.scales, out.shapes) = (scales, shapes);
+    Ok(out)
 }
 
 /// Kimi-K3's `quantization_config` as released: compressed-tensors' `mxfp4-pack-quantized`, 4-bit floats in symmetric groups of 32, the attention, the shared experts, the
@@ -1517,45 +1415,23 @@ fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
             scale: qk / (hd as f32).sqrt(),
             k_eq_v: false,
             indexer: None,
+            rounding: AttnRounding::Sdpa,
         };
-        let p = format!("{prefix}layers.{l}");
-        let mut r =
-            vec![("norm_in".to_string(), t(format!("{p}.input_layernorm.weight"))), ("res_gate".into(), t(format!("{p}.post_attention_residual_gate.gate")))];
-        for (role, x) in [("q", "q_proj"), ("k", "k_proj"), ("v", "v_proj"), ("g", "gate_proj"), ("o", "o_proj")] {
-            r.push((role.to_string(), t(format!("{p}.self_attn.{x}.weight"))));
-        }
+        let p = names::HF.layer(prefix, l);
         blocks.push(Block {
             norm_in: Norm::rms_plus_one(eps),
             body: Body::Mixer(Mixer::Attention(a)),
             norm_out: Some(Norm::rms_bare(pe)),
             residual: Residual::Gated(GateP { temperature }),
         });
-        roles.push(r);
-        let m = format!("{p}.mlp");
-        let mut r = vec![
-            ("norm_in".to_string(), t(format!("{p}.pre_feedforward_layernorm.weight"))),
-            ("norm_out".into(), t(format!("{p}.post_feedforward_layernorm.weight"))),
-            ("res_gate".into(), t(format!("{p}.post_feedforward_residual_gate.gate"))),
-        ];
-        for (role, x) in [
-            ("router", "gate.weight"),
-            ("choice_bias", "gate.e_score_correction_bias"),
-            ("latent_down", "pre_expert_proj.weight"),
-            ("latent_norm_in", "pre_expert_norm.weight"),
-            ("experts_gate_up", "experts.gate_up_proj"),
-            ("experts_down", "experts.down_proj"),
-            ("expert_norm", "experts.post_expert_norm.weight"),
-            ("latent_up", "post_expert_proj.weight"),
-        ] {
-            r.push((role.to_string(), t(format!("{m}.{x}"))));
-        }
+        roles.push(names::roles(part::MUSE_ATTN, &p, 0, all));
         blocks.push(Block {
             norm_in: Norm::rms_plus_one(eps),
             body: Body::Ffn(Ffn::Moe(moe.clone())),
             norm_out: Some(Norm { weight: NormWeight::InputPlusOne, ..Norm::rms(pe) }),
             residual: Residual::Gated(GateP { temperature }),
         });
-        roles.push(r);
+        roles.push(names::roles(part::MUSE_MOE, &p, 0, all));
     }
     let desc = ModelDesc {
         hidden: d,
@@ -1568,7 +1444,7 @@ fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
         vision: None,
         rope: None,
     };
-    finish(&k, desc, prefix, roles, 0)
+    finish(&k, desc, &names::HF, prefix, roles, 0)
 }
 
 /// DeepSeek-V4 (`deepseek_v4`): the compressed attention (`kinds::Comp`), MoE with hash routing in the first layers then sqrt-softplus
@@ -1682,48 +1558,33 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
             one("compress")?,
         )
     };
-    let (p0, names): (&str, [&str; 4]) = if released {
-        ("", ["embed.weight", "norm.weight", "head.weight", "hc_head_"])
-    } else {
-        ("model.", ["model.embed_tokens.weight", "model.norm.weight", "head.weight", "model.hc_head.hc_"])
-    };
-    let kv_norm = if released { "kv_norm" } else { "norm" };
+    let cv = if released { &names::DEEPSEEK } else { &names::DEEPSEEK_HF };
+    // (the release's quantized matrices, each with its `.scale`: the FP8 products of the attention and the shared experts, the FP4 routed experts)
     let mut scales = std::collections::BTreeMap::new();
-    let q8 = |w: String, scales: &mut std::collections::BTreeMap<String, String>| -> Source {
-        if fp8 && released {
-            scales.insert(w.clone(), w.replace(".weight", ".scale"));
+    let q8 = ["q_a", "q_b", "kv", "o_a", "o_b", "idx_q_b", "shared_gate", "shared_up", "shared_down"];
+    let mark = |r: &[(String, Source)], scales: &mut std::collections::BTreeMap<String, String>| {
+        for (_, src) in r.iter().filter(|(role, _)| released && if role.starts_with("experts_") { fp4 } else { fp8 && q8.contains(&role.as_str()) }) {
+            for w in src.names() {
+                scales.insert(w.clone(), w.replace(".weight", ".scale"));
+            }
         }
-        t(w)
     };
     let mlp = Mlp { act: Act::Silu, gated: true, bias: false, clamp: limit };
     let (mut blocks, mut roles) = (Vec::new(), Vec::new());
     for l in 0..layers {
-        let p = format!("{p0}layers.{l}");
-        let a = format!("{p}.attn");
+        let p = cv.layer("", l);
         let (ratio, is_csa) = (ratios[l], csa[l]);
-        let mut r = vec![("norm_in".to_string(), t(format!("{p}.attn_norm.weight")))];
-        for (role, x) in [("q_a", "wq_a"), ("q_b", "wq_b"), ("kv", "wkv"), ("o_a", "wo_a"), ("o_b", "wo_b")] {
-            r.push((role.to_string(), q8(format!("{a}.{x}.weight"), &mut scales)));
-        }
-        r.push(("q_a_norm".into(), t(format!("{a}.q_norm.weight"))));
-        r.push(("kv_norm".into(), t(format!("{a}.{kv_norm}.weight"))));
-        r.push(("sinks".into(), t(format!("{a}.attn_sink"))));
-        let pool = |pre: &str, at: &str, r: &mut Vec<(String, Source)>| {
-            for (role, x) in [("kv", "wkv.weight"), ("gate", "wgate.weight"), ("ape", "ape"), ("norm", "norm.weight")] {
-                r.push((format!("{pre}_{role}"), t(format!("{at}.{x}"))));
-            }
-        };
+        let mut r = names::roles(part::V4_ATTN, &p, 0, all);
+        r.extend(names::roles(if released { part::V4_KV_NORM } else { part::V4_KV_NORM_HF }, &p, 0, all));
+        r.extend(names::roles(part::V4_SINKS, &p, 0, all));
         if ratio > 0 {
-            pool("comp", &format!("{a}.compressor"), &mut r);
+            r.extend(names::roles(part::V4_COMP, &p, 0, all));
         }
         if ratio > 0 && is_csa {
-            pool("idx", &format!("{a}.indexer.compressor"), &mut r);
-            r.push(("idx_q_b".into(), q8(format!("{a}.indexer.wq_b.weight"), &mut scales)));
-            r.push(("idx_weights".into(), t(format!("{a}.indexer.weights_proj.weight"))));
+            r.extend(names::roles(part::V4_INDEXER, &p, 0, all));
         }
-        for (role, x) in [("hc_fn", "fn"), ("hc_base", "base"), ("hc_scale", "scale")] {
-            r.push((role.to_string(), t(format!("{p}.hc_attn_{x}"))));
-        }
+        r.extend(names::roles(part::HC_ATTN, &p, 0, all));
+        mark(&r, &mut scales);
         let c = Comp {
             heads,
             head_dim: hd,
@@ -1739,37 +1600,10 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
         };
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Compressed(c)), norm_out: None, residual: Residual::Streams(streams) });
         roles.push(r);
-        let f = format!("{p}.ffn");
-        let mut r = vec![("norm_in".to_string(), t(format!("{p}.ffn_norm.weight"))), ("router".into(), t(format!("{f}.gate.weight")))];
-        if hash[l] {
-            r.push(("hash".into(), t(format!("{f}.gate.tid2eid"))));
-        } else {
-            r.push(("choice_bias".into(), t(format!("{f}.gate.bias"))));
-        }
-        let ex = |w: &str, scales: &mut std::collections::BTreeMap<String, String>| -> Vec<String> {
-            (0..ne)
-                .map(|e| {
-                    let n = format!("{f}.experts.{e}.{w}.weight");
-                    if fp4 && released {
-                        scales.insert(n.clone(), n.replace(".weight", ".scale"));
-                    }
-                    n
-                })
-                .collect()
-        };
-        let (w1, w3, w2) = (ex("w1", &mut scales), ex("w3", &mut scales), ex("w2", &mut scales));
-        r.push(("experts_gate_up".into(), Source::Experts(w1.into_iter().zip(w3).map(|(g, u)| vec![g, u]).collect())));
-        r.push(("experts_down".into(), Source::Experts(w2.into_iter().map(|x| vec![x]).collect())));
-        for (role, x) in [("shared_gate", "w1"), ("shared_up", "w3"), ("shared_down", "w2")] {
-            let w = format!("{f}.shared_experts.{x}.weight");
-            if fp8 && released {
-                scales.insert(w.clone(), w.replace(".weight", ".scale"));
-            }
-            r.push((role.to_string(), t(w)));
-        }
-        for (role, x) in [("hc_fn", "fn"), ("hc_base", "base"), ("hc_scale", "scale")] {
-            r.push((role.to_string(), t(format!("{p}.hc_ffn_{x}"))));
-        }
+        // (a hash-routed layer's table of experts by token, else the choice bias)
+        let mut r = names::roles(part::V4_MOE, &p, ne, |x| x != if hash[l] { "choice_bias" } else { "hash" });
+        r.extend(names::roles(part::HC_FFN, &p, 0, all));
+        mark(&r, &mut scales);
         let moe = Moe {
             router: Router { score: RouterScore::SqrtSoftplus, logit_scale: 1.0, bias: !hash[l], groups: None, top_k, renorm: true, scale, hash: hash[l] },
             experts: ne,
@@ -1796,28 +1630,20 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     ] {
         k.raw(x);
     }
-    k.finish()?;
-    Ok(Described {
-        desc: ModelDesc {
-            hidden: d,
-            vocab,
-            embed: Embed { scale: 1.0, norm: None, streams: streams.streams },
-            blocks,
-            final_norm: Norm::rms(eps),
-            head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::Weighted { eps: streams.eps, norm_eps: eps } },
-            mtp: Vec::new(),
-            vision: None,
-            rope: None,
-        },
-        embed: names[0].to_string(),
-        final_norm: names[1].to_string(),
-        head: (!tied).then(|| names[2].to_string()),
-        blocks: roles,
-        extra: ["fn", "base", "scale"].iter().map(|x| (format!("out_hc_{x}"), t(format!("{}{x}", names[3])))).collect(),
-        mtp_layers,
-        scales,
-        shapes: Default::default(),
-    })
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: streams.streams },
+        blocks,
+        final_norm: Norm::rms(eps),
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::Weighted { eps: streams.eps, norm_eps: eps } },
+        mtp: Vec::new(),
+        vision: None,
+        rope: None,
+    };
+    let mut out = finish(&k, desc, cv, "", roles, mtp_layers)?;
+    out.scales = scales;
+    Ok(out)
 }
 
 /// Nemotron 3 (`nemotron_h`, `NemotronHForCausalLM`): a layer is one block, `x + mixer(norm(x))`, its mixer named by the pattern:
@@ -1939,6 +1765,7 @@ fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
             scale: (hd as f32).powf(-0.5),
             k_eq_v: false,
             indexer: None,
+            rounding: AttnRounding::Flash,
         }
     };
     let moe_keys =
@@ -1980,69 +1807,28 @@ fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
     let n = Norm::rms(eps);
     let (mut blocks, mut roles) = (Vec::new(), Vec::new());
     for (l, c) in kinds.iter().enumerate() {
-        let m = format!("backbone.layers.{l}.mixer");
-        let mut r = vec![("norm_in".to_string(), t(format!("backbone.layers.{l}.norm.weight")))];
-        let mut put = |role: &str, x: &str| r.push((role.to_string(), t(format!("{m}.{x}"))));
-        let body = match (c, &mamba, &moe) {
-            ('M', Some(mb), _) => {
-                for (role, x) in [
-                    ("in", "in_proj.weight"),
-                    ("conv", "conv1d.weight"),
-                    ("conv_bias", "conv1d.bias"),
-                    ("a_log", "A_log"),
-                    ("d", "D"),
-                    ("dt_bias", "dt_bias"),
-                    ("norm", "norm.weight"),
-                    ("o", "out_proj.weight"),
-                ] {
-                    put(role, x);
-                }
-                Body::Mixer(Mixer::Mamba2(mb.clone()))
-            }
+        let p = names::NEMOTRON.layer("", l);
+        let (body, r) = match (c, &mamba, &moe) {
+            ('M', Some(mb), _) => (Body::Mixer(Mixer::Mamba2(mb.clone())), names::roles(part::NH_MAMBA, &p, 0, all)),
+            // (no latent: the experts read the model's width, and there are no projections around them)
             ('E', _, Some(me)) => {
-                put("router", "gate.weight");
-                put("choice_bias", "gate.e_score_correction_bias");
-                if me.latent.is_some() {
-                    put("latent_down", "fc1_latent_proj.weight");
-                    put("latent_up", "fc2_latent_proj.weight");
-                }
-                put("shared_up", "shared_experts.up_proj.weight");
-                put("shared_down", "shared_experts.down_proj.weight");
-                for x in ["up", "down"] {
-                    r.push((format!("experts_{x}"), Source::Experts((0..me.experts).map(|e| vec![format!("{m}.experts.{e}.{x}_proj.weight")]).collect())));
-                }
-                Body::Ffn(Ffn::Moe(me.clone()))
+                (Body::Ffn(Ffn::Moe(me.clone())), names::roles(part::NH_MOE, &p, me.experts, |x| me.latent.is_some() || !x.starts_with("latent_")))
             }
-            _ => {
-                for x in ["q", "k", "v", "o"] {
-                    put(x, &format!("{x}_proj.weight"));
-                }
-                Body::Mixer(Mixer::Attention(attn.clone()))
-            }
+            _ => (Body::Mixer(Mixer::Attention(attn.clone())), names::roles(part::NH_ATTN, &p, 0, all)),
         };
         blocks.push(Block { norm_in: n, body, norm_out: None, residual: Residual::Add });
         roles.push(r);
     }
-    k.finish()?;
-    Ok(Described {
-        desc: ModelDesc {
-            hidden: d,
-            vocab,
-            embed: Embed { scale: 1.0, norm: None, streams: 1 },
-            blocks,
-            final_norm: n,
-            head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None },
-            mtp: Vec::new(),
-            vision: None,
-            rope: None,
-        },
-        embed: "backbone.embeddings.weight".into(),
-        final_norm: "backbone.norm_f.weight".into(),
-        head: (!tied).then(|| "lm_head.weight".to_string()),
-        blocks: roles,
-        extra: Vec::new(),
-        mtp_layers,
-        scales: Default::default(),
-        shapes: Default::default(),
-    })
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: 1 },
+        blocks,
+        final_norm: n,
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None },
+        mtp: Vec::new(),
+        vision: None,
+        rope: None,
+    };
+    finish(&k, desc, &names::NEMOTRON, "", roles, mtp_layers)
 }

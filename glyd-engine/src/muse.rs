@@ -40,12 +40,7 @@ pub struct ConfigMuse {
 }
 
 pub fn is_muse(text: &str) -> bool {
-    json::parse(text)
-        .ok()
-        .and_then(|v| {
-            v.get("architectures").and_then(Value::as_array).and_then(|a| a.first().and_then(Value::as_str).map(|s| s == "MuseSparkForConditionalGeneration"))
-        })
-        .unwrap_or(false)
+    crate::runtime::config::family_of(text) == Some(crate::support::Family::Muse)
 }
 
 impl ConfigMuse {

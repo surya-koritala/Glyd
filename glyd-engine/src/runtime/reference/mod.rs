@@ -1,6 +1,6 @@
 //! `Ref`, the CPU f32 reference backend (`docs/design/runtime.md` §3, decision 6): one plain function per kind, written for clarity,
 //! the formula of the model's reference code. Products sum in f64 and round to f32; everything else is f32, rounded to bf16 only where a
-//! kind's parameters name a rounding point (`kinds::Rounding`).
+//! kind's parameters name a rounding point (`kinds::Rounding` of a norm, `kinds::AttnRounding` of an attention).
 //!
 //! Tolerances, per kind, against what each test compares it to:
 //!
@@ -8,9 +8,30 @@
 //! | :--- | :--- | :--- |
 //! | every kind | transformers in float32 on the same weights (`tests/runtime/*.json`) | `HF_TOL` (5e-6 of the output's scale) |
 //! | attention, MLA, linear | the per-family references, which round to bf16 where vLLM or transformers hold bf16 | `BF16_TOL` (2e-2 of the output's scale) |
+//! | each kind below | the engine's CUDA kernels (`glyd-engine kindcheck`, `dynamic/kindcheck.rs`) | the table below |
 //!
-//! A backend's kernels are checked against `Ref` with their own tolerance (bf16 accumulation order differs); a lossless format must first
-//! match its bf16 kernel bit for bit.
+//! The CUDA kernels against `Ref`, kind by kind (`kindcheck`: every layer of the random model of each recent family's logits case, at
+//! the lossless level; a body on the GPU's own input rows, the residual's operations on the GPU's own body outputs; a prompt of 48 rows
+//! and 4 decode steps, each value the largest difference over the reference's largest magnitude on a pass: the prompt's rows together, a
+//! step's row alone). The bound is `kindcheck::bound`; the worst is the largest an RTX 4080 SUPER measured (2026-11-23) in three runs: the
+//! default, a prompt of 60 and 6 steps, and Kimi-K3 and GLM-5.3-Flash at a prompt of 20 and 40 steps (no difference grew with the position).
+//! A lossless format must first match its bf16 kernel bit for bit; the kernels hold bf16 activations, so every row has bf16's 2^-9
+//! of rounding at each point where a value is stored.
+//!
+//! | kind (families measured) | bound | why it is not 0 | worst |
+//! | :--- | :--- | :--- | :--- |
+//! | attention: GQA and MQA, windows, K = V, full, partial, proportional or no rope, an in-query or own gate after a norm, heads of 64 to 512 (Gemma 4, the Qwen3.5 layout, Nemotron-H, Muse Spark) | 2e-2 | `Ref` rounds where the family's engine does (`AttnRounding`: Gemma 4's eager bf16 scores and rope, Muse's SDPA, FlashAttention's bf16 probabilities); left: fp32 sums in another order than f64's, the GPU's exp2 and online softmax, a decode step's keys summed in parts | 5.4e-3 |
+//! | latent attention: Kimi-K3's gated NoPE MLA, GLM-5.3-Flash's with the pooled-key indexer | 2e-2 | the GPU keeps the latents, the absorbed queries and the pooled keys bf16, `Ref` f32; an indexer's choice nearer than 1e-2 to another (`kindcheck::NEAR`) can go the other way, and such a row past the bound is named, not compared (one row in each run, its margin 2.3e-3) | 1.1e-2 |
+//! | compressed attention: DeepSeek-V4's window, ratio 16, ratio 4 with the indexer | 2e-2 | the window's keys and the compressed entries bf16 on the GPU; the indexer's near ties as above (2 rows of 260, 3 of 330; margins 1.2e-4 to 2.2e-3) | 7.3e-3 |
+//! | Gated DeltaNet (the Qwen3.5 layout) | 3e-2 | the state fp32 on both; q, k, v and the gates bf16 on the GPU; the prompt's chunked (WY) form against `Ref`'s token recurrence; the per-head norm after the recurrence divides by the output's RMS, so where a head's sum cancels its error is magnified | 8.6e-3 |
+//! | Kimi delta attention (Kimi-K3, GLM-5.3-Flash) | 3e-2 | as Gated DeltaNet (Kimi-K3's first layer, a step's row alone: single rows to 2.1e-2, most 3-7e-3, none growing with the position) | 2.1e-2 |
+//! | Mamba-2 (Nemotron-H) | 3e-2 | as Gated DeltaNet, the prompt's chunked scan | 5.6e-3 |
+//! | MLP: SwiGLU, its limits, gelu-tanh, situ (Gemma 4, the Qwen3.5 layout, Kimi-K3, GLM-5.3-Flash) | 1e-2 | gate and up rounded before the activation, the activation's product rounded, down's sums in fp32 | 6.1e-3 |
+//! | MoE: sigmoid routers with a choice bias, sqrt-softplus and hash routers, shared and latent experts, expert norms (Nemotron-H, Muse Spark, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4) | 2e-2 | each expert's activations bf16, the weighted sum's order; a router's choice near a tie as above (none past the bound) | 9.9e-3 |
+//! | residual and norms: RMS (w, 1 + w, input-scaled, Kimi's two roundings), sandwich norms and the layer scalar, the gated residual, mHC's streams, the depth mix, each family's final norm and collapse (all seven) | 2e-2 | the residual bf16 after each add, the normed value rounded, mHC's Sinkhorn and the depth mix's softmax in fp32 on the GPU's bf16 inputs | 1.6e-2 |
+//!
+//! Not compared on the GPU: the embedding's scale and norm and the head's soft-cap (each family's logits fixture holds them,
+//! `logitscheck`); the Qwen3.5 layout's mixture of experts (not lowered to the executor yet); MTP heads (their blocks are the kinds above).
 
 pub mod attention;
 pub mod comp;
@@ -206,7 +227,7 @@ impl WeightSource for Params {
 fn roles(b: &Block) -> Vec<String> {
     let prods: &[&str] = match &b.body {
         Body::Mixer(Mixer::Attention(_)) => &["q", "k", "v", "o", "g"],
-        Body::Mixer(Mixer::Mla(_)) => &["q", "q_a", "q_b", "kv_a", "kv_b", "o", "g"],
+        Body::Mixer(Mixer::Mla(_)) => &["q", "q_a", "q_b", "kv_a", "kv_b", "o", "g", "indexer_wq_b", "indexer_wk", "indexer_weights", "indexer_pool_gate"],
         Body::Mixer(Mixer::Linear(_)) => &["qkv", "q", "k", "v", "beta", "decay", "gate", "o"],
         Body::Mixer(Mixer::Compressed(_)) => &["q_a", "q_b", "kv", "o_a", "o_b", "comp_kv", "comp_gate", "idx_kv", "idx_gate", "idx_q_b", "idx_weights"],
         Body::Mixer(Mixer::Mamba2(_)) => &["in", "o"],
@@ -243,6 +264,9 @@ fn roles(b: &Block) -> Vec<String> {
         "norm_out",
         "norm_out_bias",
         "res_gate",
+        "indexer_k_norm",
+        "indexer_k_norm_bias",
+        "indexer_pool_ape",
     ];
     let mut r: Vec<String> = Vec::new();
     for p in prods {
@@ -318,6 +342,9 @@ pub fn depth_mix(sources: &[&[f32]], w_norm: &[f32], w_proj: &[f32]) -> Vec<f32>
     (0..d).map(|i| sources.iter().zip(&s).map(|(v, &a)| a as f64 * v[i] as f64).sum::<f64>() as f32).collect()
 }
 
+/// mHC's weights of one token's block output: the output's over the streams, and the streams' mixing.
+pub type Hc = (Vec<f32>, Vec<Vec<f32>>);
+
 /// A sequence's state in one layer.
 pub enum SeqState {
     Attention(attention::KvCache),
@@ -335,16 +362,20 @@ pub struct RefLayer {
     pub seqs: HashMap<u32, SeqState>,
     /// A MoE block's choices, each token's in turn, where a pass counts them (`hb_usage::count_on_ref`).
     pub routes: Option<Vec<usize>>,
+    /// How near the last token's choice (a router's experts, an indexer's picks) was to another (`ffn::margin`); infinite where the body chose
+    /// nothing.
+    pub margin: f32,
 }
 
 impl RefLayer {
     pub fn new(block: Block, hidden: usize, p: Params) -> RefLayer {
-        RefLayer { block, hidden, p, seqs: HashMap::new(), routes: None }
+        RefLayer { block, hidden, p, seqs: HashMap::new(), routes: None, margin: f32::INFINITY }
     }
 
     /// The body on the normed inputs of one token (the sequence's state advanced).
-    fn body(&mut self, seq: u32, pos: u32, token: u32, h: &[f32]) -> Result<Vec<f32>> {
+    pub fn body(&mut self, seq: u32, pos: u32, token: u32, h: &[f32]) -> Result<Vec<f32>> {
         let p = &self.p;
+        self.margin = f32::INFINITY;
         match &self.block.body {
             Body::Mixer(Mixer::Attention(a)) => {
                 let st = self.seqs.entry(seq).or_insert_with(|| SeqState::Attention(attention::KvCache::default()));
@@ -354,7 +385,9 @@ impl RefLayer {
             Body::Mixer(Mixer::Mla(m)) => {
                 let st = self.seqs.entry(seq).or_insert_with(|| SeqState::Mla(mla::LatentCache::default()));
                 let SeqState::Mla(c) = st else { return err("a sequence's state is not a latent cache") };
-                mla::step(m, p, c, h, pos)
+                let y = mla::step(m, p, c, h, pos);
+                self.margin = c.margin;
+                y
             }
             Body::Mixer(Mixer::Linear(l)) => {
                 let st = self.seqs.entry(seq).or_insert_with(|| SeqState::Linear(linear::LinearState::new(l)));
@@ -364,7 +397,9 @@ impl RefLayer {
             Body::Mixer(Mixer::Compressed(c)) => {
                 let st = self.seqs.entry(seq).or_insert_with(|| SeqState::Comp(comp::CompState::default()));
                 let SeqState::Comp(s) = st else { return err("a sequence's state is not a compressed attention's") };
-                comp::step(c, p, s, h, pos)
+                let y = comp::step(c, p, s, h, pos);
+                self.margin = s.margin;
+                y
             }
             Body::Mixer(Mixer::Mamba2(m)) => {
                 let st = self.seqs.entry(seq).or_insert_with(|| SeqState::Mamba(mamba::MambaState::new(m)));
@@ -373,13 +408,58 @@ impl RefLayer {
             }
             Body::Ffn(Ffn::Mlp(m)) => ffn::mlp(m, p, "", h),
             Body::Ffn(Ffn::Moe(m)) => {
-                let (y, ids) = ffn::moe_routed(m, p, h, token)?;
+                let (y, ids, gap) = ffn::moe_routed(m, p, h, token)?;
                 if let Some(r) = self.routes.as_mut() {
                     r.extend(ids);
                 }
+                self.margin = gap;
                 Ok(y)
             }
         }
+    }
+
+    /// The block's input from one token's residual `xt` (its streams, where the rule has several): mHC's weighted sum of the streams, with the
+    /// weights its output needs (`post`), else the residual itself.
+    pub fn pre(&self, xt: &[f32]) -> Result<(Vec<f32>, Option<Hc>)> {
+        let d = self.hidden;
+        Ok(match &self.block.residual {
+            Residual::Streams(s) => {
+                let (pre, post, comb) = hc_weights(s, &self.p, xt)?;
+                let input: Vec<f32> = (0..d).map(|i| (0..s.streams).map(|j| pre[j] * xt[j * d + i]).sum()).collect();
+                (input, Some((post, comb)))
+            }
+            _ => (xt.to_vec(), None),
+        })
+    }
+
+    /// The residual rule: the block's output `o` (after its post-norm) into the token's residual `xt`, with what `pre` gave for mHC.
+    pub fn post(&self, xt: &mut [f32], o: &[f32], hc: Option<Hc>) -> Result<()> {
+        let d = self.hidden;
+        match &self.block.residual {
+            Residual::Add => xt.iter_mut().zip(o).for_each(|(x, &o)| *x += o),
+            Residual::AddScaled(s) => xt.iter_mut().zip(o).for_each(|(x, &o)| *x += s * o),
+            Residual::AddThenScale => {
+                let s = self.p.vec("res_scale")?[0];
+                xt.iter_mut().zip(o).for_each(|(x, &o)| *x = (*x + o) * s);
+            }
+            Residual::Gated(g) => {
+                let (a, b) = residual_gate(self.p.vec("res_gate")?, g.temperature);
+                for (i, x) in xt.iter_mut().enumerate() {
+                    *x = a[i] * *x + b[i] * o[i];
+                }
+            }
+            Residual::Streams(s) => {
+                let (post, comb) = hc.ok_or_else(|| Error("mHC's residual without the weights of its input".into()))?;
+                let old = xt.to_vec();
+                for k in 0..s.streams {
+                    for i in 0..d {
+                        xt[k * d + i] = post[k] * o[i] + (0..s.streams).map(|j| comb[j][k] * old[j * d + i]).sum::<f32>();
+                    }
+                }
+            }
+            Residual::DepthMix(_) => return err("a depth-mix block runs in the model's executor (its sources span blocks)"),
+        }
+        Ok(())
     }
 
     /// The block on the tokens of `x` ([tokens, hidden]), in order: pre-norm, body, post-norm, residual. `tokens` (the ids) may be empty
@@ -397,51 +477,31 @@ impl RefLayer {
             return err(format!("a step of {} values for {} tokens of width {width}", x.len(), positions.len()));
         }
         for (t, xt) in x.chunks_mut(width).enumerate() {
-            let (input, hc) = match &self.block.residual {
-                Residual::Streams(s) => {
-                    let (pre, post, comb) = hc_weights(s, &self.p, xt)?;
-                    let input: Vec<f32> = (0..d).map(|i| (0..s.streams).map(|j| pre[j] * xt[j * d + i]).sum()).collect();
-                    (input, Some((post, comb)))
-                }
-                _ => (xt.to_vec(), None),
-            };
+            let (input, hc) = self.pre(xt)?;
             let o = self.output(seqs[t], positions[t], tokens.get(t).copied().unwrap_or(0), &input)?;
-            match &self.block.residual {
-                Residual::Add => xt.iter_mut().zip(&o).for_each(|(x, &o)| *x += o),
-                Residual::AddScaled(s) => xt.iter_mut().zip(&o).for_each(|(x, &o)| *x += s * o),
-                Residual::AddThenScale => {
-                    let s = self.p.vec("res_scale")?[0];
-                    xt.iter_mut().zip(&o).for_each(|(x, &o)| *x = (*x + o) * s);
-                }
-                Residual::Gated(g) => {
-                    let (a, b) = residual_gate(self.p.vec("res_gate")?, g.temperature);
-                    for (i, x) in xt.iter_mut().enumerate() {
-                        *x = a[i] * *x + b[i] * o[i];
-                    }
-                }
-                Residual::Streams(s) => {
-                    let (post, comb) = hc.expect("the streams' weights");
-                    let old = xt.to_vec();
-                    for k in 0..s.streams {
-                        for i in 0..d {
-                            xt[k * d + i] = post[k] * o[i] + (0..s.streams).map(|j| comb[j][k] * old[j * d + i]).sum::<f32>();
-                        }
-                    }
-                }
-                Residual::DepthMix(_) => return err("a depth-mix block runs in the model's executor (its sources span blocks)"),
-            }
+            self.post(xt, &o, hc)?;
         }
         Ok(())
     }
 
     /// The block's output for one token's input (before the residual rule): pre-norm, body, post-norm.
     pub fn output(&mut self, seq: u32, pos: u32, token: u32, input: &[f32]) -> Result<Vec<f32>> {
-        let h = norm::norm(&self.block.norm_in, input, self.p.opt("norm_in"), self.p.opt("norm_in_bias"));
-        let mut o = self.body(seq, pos, token, &h)?;
-        if let Some(n) = self.block.norm_out {
-            o = norm::norm(&n, &o, self.p.opt("norm_out"), self.p.opt("norm_out_bias"));
+        let h = self.norm_in(input);
+        let o = self.body(seq, pos, token, &h)?;
+        Ok(self.norm_out(o))
+    }
+
+    /// The block's pre-norm of its input.
+    pub fn norm_in(&self, input: &[f32]) -> Vec<f32> {
+        norm::norm(&self.block.norm_in, input, self.p.opt("norm_in"), self.p.opt("norm_in_bias"))
+    }
+
+    /// The block's post-norm of its body's output, where it has one.
+    pub fn norm_out(&self, o: Vec<f32>) -> Vec<f32> {
+        match self.block.norm_out {
+            Some(n) => norm::norm(&n, &o, self.p.opt("norm_out"), self.p.opt("norm_out_bias")),
+            None => o,
         }
-        Ok(o)
     }
 }
 
@@ -477,9 +537,9 @@ impl Backend for Ref {
         &self.devices
     }
 
-    /// Every kind, in any format a source decodes to f32, at the speed of plain Rust (DeepSeek-V4's compressed attention too: `comp.rs`). The match
-    /// names each kind, so that a kind added to `KindRef` is decided here. (An indexer of plain or latent attention is not in the reference yet: past
-    /// its `top_k` tokens such a layer says so, `mla.rs`.)
+    /// Every kind, in any format a source decodes to f32, at the speed of plain Rust (DeepSeek-V4's compressed attention too: `comp.rs`; a latent
+    /// attention's indexer: `mla.rs`). The match names each kind, so that a kind added to `KindRef` is decided here. (An indexer of plain attention, and
+    /// GLM's `shared` indexer that reuses the previous layer's picks, are not in the reference: such a layer says so where it would pick.)
     fn supports(&self, kind: &KindRef, _: &Format) -> Support {
         match kind {
             KindRef::Attention

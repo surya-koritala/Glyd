@@ -174,17 +174,40 @@ pub struct OutGate {
     pub norm: Option<Norm>,
 }
 
-/// A sparse-attention indexer: picks `top_k` of the past tokens (or blocks of `block` tokens) per query. Condor's block indexer, GLM's
-/// pooled-key indexer and DeepSeek-V4's compressed-entry indexer are this kind with parameters. Not in `Ref` yet.
+/// A sparse-attention indexer: per query, a score sum_h w_h relu(q_h . k) of each past key (one key a token, a pooled key a block of
+/// `block` tokens, or a compressed entry), the best kept. Condor's block indexer, GLM's pooled-key indexer and DeepSeek-V4's
+/// compressed-entry indexer are this kind with parameters. In `Ref`: a latent attention's (`reference::mla`, GLM-5.3-Flash) and
+/// DeepSeek-V4's (`reference::comp`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Indexer {
     pub heads: usize,
     pub head_dim: usize,
+    /// What a query keeps. A latent attention: `top_k` tokens, as the `top_k / block` best complete pools of `block` tokens and the tokens
+    /// of the incomplete last pool (GLM-5.3-Flash's `index_topk`; `block` 1: the best `top_k` tokens). DeepSeek-V4: `top_k` compressed
+    /// entries (`block` is its ratio).
     pub top_k: usize,
     /// Tokens a pooled key covers (GLM-5.3-Flash's `index_kpool`; 1: a key per token).
     pub block: usize,
     /// The layer reuses the previous indexer layer's choice and has no indexer weights (GLM's `indexer_types` "shared").
     pub shared: bool,
+}
+
+/// Where an attention rounds to bf16 inside: the arithmetic of the implementation a family's engine follows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttnRounding {
+    /// Everything in f32 (transformers in float32).
+    F32,
+    /// FlashAttention's: each product's output, the normed and rotated queries and keys and the values bf16 (as a bf16 cache holds them),
+    /// the scores and their softmax f32, the probabilities rounded to bf16 before they weigh the values, the output rounded, and again after
+    /// its norm and its gate (vLLM's; the Qwen3.5 layout, Nemotron-H).
+    Flash,
+    /// transformers' eager attention in bf16: as `Flash`, the rope in bf16 arithmetic (cos and sin bf16, each product and their sum
+    /// rounded), and each score the bf16 of its dot product, times the scale and rounded again (and so through a soft-cap) (Gemma 4).
+    Eager,
+    /// transformers in bf16 around an attention whose scores and softmax are f32 (SDPA): the queries times the scale before the rope,
+    /// rounded; the rope in bf16 arithmetic; the probabilities f32; the output rounded, its norm rounded, the gate's activation rounded and
+    /// its product rounded (Muse Spark).
+    Sdpa,
 }
 
 /// MHA, GQA, MQA attention.
@@ -216,6 +239,7 @@ pub struct Attn {
     /// Gemma 4's global layers: the values are the keys' projection (before the k norm and rope), through the v norm.
     pub k_eq_v: bool,
     pub indexer: Option<Indexer>,
+    pub rounding: AttnRounding,
 }
 
 /// Multi-head latent attention (DeepSeek-V2/V3 style, Kimi-K3, GLM-5.3).
@@ -530,4 +554,16 @@ pub struct ModelDesc {
     pub vision: Option<VisionDesc>,
     /// The default for kinds that do not set their own.
     pub rope: Option<Rope>,
+}
+
+impl ModelDesc {
+    /// Every attention's arithmetic in f32 (`AttnRounding::F32`): the description as transformers runs it in float32, which the fixtures of
+    /// `tests/runtime` were recorded in.
+    pub fn f32_attention(&mut self) {
+        for b in self.blocks.iter_mut().chain(self.mtp.iter_mut().flat_map(|m| m.blocks.iter_mut())) {
+            if let Body::Mixer(Mixer::Attention(a)) = &mut b.body {
+                a.rounding = AttnRounding::F32;
+            }
+        }
+    }
 }

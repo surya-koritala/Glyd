@@ -498,6 +498,10 @@ impl MoeBlock for KimiMoeCached {
     fn pack_shapes(&self) -> Vec<(i64, i64, bool)> {
         self.moe.pack_shapes()
     }
+
+    fn store(&self) -> Option<Rc<ExpertStore>> {
+        Some(self.store.clone())
+    }
 }
 
 /// A mixture-of-experts layer of the expert cache across a group of GPUs (src/dynamic/tp_cache.rs): `KimiMoeCached`'s, the layer's stacks this GPU's slices
@@ -722,7 +726,12 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
         .unwrap_or_else(|| vec![GUESS_COPIES])
         .into();
     let (guessing, guess_turn) = (guess_copies.iter().any(|&k| k > 0), Rc::new(std::cell::Cell::new(0usize)));
-    let mode = crate::tune!("GLYD_KIMI_HOST").as_deref().and_then(crate::offload::Mode::parse).unwrap_or(crate::offload::Mode::Auto);
+    // (else the caching's mode, where one is given: tiercheck's --mode)
+    let mode = crate::tune!("GLYD_KIMI_HOST")
+        .as_deref()
+        .and_then(crate::offload::Mode::parse)
+        .or(caching.map(|c| c.offload.mode))
+        .unwrap_or(crate::offload::Mode::Auto);
     store.set_offload(crate::offload::Offload { mode, threads: crew, pin: true, ..Default::default() });
     // (the expert cache across a group of GPUs: its host tier and plans shared, this GPU's copies and pinned buffers: src/dynamic/tp_cache.rs)
     let tp_rank = match (&tp, places.filter(|&p| p < c.experts.experts)) {
@@ -1057,7 +1066,12 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
                             PinnedPack { data: c2, scales: d2, stride: [dd, ds], dev: down.buffers() },
                         ];
                         // (the host computes the misses it is better at from the host tier's bytes as they are: src/cpu_fp4.rs)
-                        let half = crate::offload::HostHalf::Fp4 { inter: e.inter, latent: e.latent, packed, act: c.situ };
+                        let half = crate::offload::HostHalf::Fp4 {
+                            inter: e.inter,
+                            latent: e.latent,
+                            packed,
+                            act: crate::cpu_fp4::Act::Situ { beta: c.situ.0, linear: c.situ.1 },
+                        };
                         store.add_layer_pinned(l, e.experts, p, host, Some(half))?;
                         (up, down)
                     }
@@ -1260,11 +1274,9 @@ pub(crate) fn dtypes(ck: &Checkpoint, c: &ConfigKimi) -> Result<Vec<(bool, bool)
 /// Kimi-K3's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::kimi`), held to `describe`. `w32` the delta
 /// layers' dtypes (`dtypes`), `early` whether the cached experts are guessed and copied ahead (the `KimiEarly` step).
 pub fn lowered(dir: &Path, c: &ConfigKimi, st: &Stage, w32: &[(bool, bool)], early: bool) -> Result<ModelDesc> {
-    let p = dir.join("config.json");
-    let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-    let cfg: serde_json::Value = serde_json::from_str(&text).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-    let lowered = super::lower::kimi(&crate::runtime::describe::describe(&cfg)?, c.eos.clone(), c.max_pos, st, w32, early)?;
-    super::lower::agree(lowered, &describe(c, st, w32, early)?, &p.display().to_string())
+    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
+    let lowered = super::lower::kimi(&kinds, c.eos.clone(), c.max_pos, st, w32, early)?;
+    super::lower::agree(lowered, &describe(c, st, w32, early)?, &label)
 }
 
 /// The executor's description of Kimi-K3 for stage `st`, as the loader indexes what it loads. Each layer's small tensors: its input and post-attention norms, the

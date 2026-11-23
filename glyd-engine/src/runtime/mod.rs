@@ -6,6 +6,7 @@
 //! function per kind with its tests against the per-family references (`*_ref.rs`) and against Hugging Face transformers.
 
 pub mod backend;
+pub mod config;
 pub mod context;
 pub mod cuda;
 pub mod describe;
@@ -14,5 +15,6 @@ mod describe_tests;
 pub mod kinds;
 #[cfg(all(target_os = "macos", feature = "mlx"))]
 pub mod mlx;
+pub mod names;
 pub mod reference;
 pub mod seam;

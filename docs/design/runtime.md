@@ -336,7 +336,12 @@ against the per-family reference with a bf16 tolerance and against transformers 
 family's pipeline (`glyd-engine/src/runtime/reference`).
 
 - Per kind: random weights at small shapes, the backend's kind against `Ref`'s, a tolerance per kind and format written next to the
-  kind (bf16 accumulation order differs; lossless formats must match the bf16 kernel bit for bit before the tolerance applies).
+  kind (bf16 accumulation order differs; lossless formats must match the bf16 kernel bit for bit before the tolerance applies). On
+  CUDA this is `glyd-engine kindcheck` (`dynamic/kindcheck.rs`): every layer of each recent family's random model, its bodies on
+  the GPU's own inputs and the residual's operations between them, against `Ref`; the bounds and the worst errors an RTX 4080 SUPER
+  measured are the table in `runtime/reference/mod.rs`. The attention's rounding points are a parameter of the kind
+  (`AttnRounding`: f32, FlashAttention's bf16 probabilities, transformers' eager bf16 scores), so the reference rounds where the
+  family's engine does.
 - Per model: tiny random models built from each family's real `config.json` with reduced widths (the `hubslice` approach), whole
   logits against `Ref` (R7).
 - Per checkpoint: the R7 digest of a real model's logits on fixed prompts, against the previous release and the old pipeline.
@@ -585,6 +590,27 @@ of a level that fits more experts.
 Placement uses per-layer statistics, which the ceiling formula needs (`docs/ceiling.md`: "the per-layer statistics come first"):
 `LayerStats` per step, a hit-rate model in the planner calibrated from them, and `dcreplay` to compare the policy to an ideal one
 offline.
+
+What is built (R12b, #327):
+
+- **`LayerStats`** (`offload.rs`): each store layer's calls, rows, pairs, experts asked for and found, misses copied and computed
+  by the host, the host's pairs, the bytes read for the misses (over the link, by the host's kernels), copies behind the calls, and
+  the copy stream's, the host's and the wait's times. The engine ends a step's statistics after each step (`end_step`);
+  `ModelStep::expert_stats` returns the last step's and `/stats` every layer's since the process started (`"experts"`).
+- **One read per missed expert a step.** A step of B rows is one call a layer; its misses are its distinct experts that have no
+  place, each copied once (waves never copy an expert twice). The host's FP4 kernel (`cpu_fp4.rs`: Kimi-K3's experts and
+  DeepSeek-V4's release experts, which now have a host half) and the hummingbird places' of every mixture of experts (`cpu_hbg.rs`)
+  take an expert's pairs together: its rows are decoded once for every row routed to it, each pair's sums the bits it has alone.
+  The legacy route's host kernels (GLM's codebook rows `cpu_cb.rs`, Nemotron-H's `cpu_hb.rs` and `cpu_experts.rs`) still read an
+  expert once a pair, and the statistics count their bytes so.
+- **The copy-or-host choice by rows.** `Costs` prices a miss on the host as its expert's first row (`pair`: its bytes read, then a
+  row's products) plus each further row (`row`: the products alone), both measured from the host's calls by a least-squares step,
+  so a miss of many rows goes to a copy where its rows' products outweigh one. A call whose misses outnumber the places its hits leave is
+  copied whole in waves where the host's share would take longer (`waves_quicker`, `Auto` only).
+- **`storebench`** runs batched decode through the cache and writes each count of rows' statistics; `ceiling --stats` predicts the
+  step from them (`docs/ceiling.md`: DeepSeek-V4 and Kimi-K3 at the release's widths, 18 GB each on the 4080 SUPER, at 1, 8 and 32 rows).
+- Not built: a device plan that sends misses to the host (Kimi-K3's `dc_plan` copies every miss), so a step with a host half is
+  still not one graph.
 
 Dense layers in RAM (P2d's last rung before refusing) use the same tiers: a dense layer is a single expert every row routes to, so
 the store's copy-or-compute choice applies to it unchanged.
