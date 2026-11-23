@@ -2230,6 +2230,17 @@ pub mod sizing {
         pub experts: usize,
     }
 
+    /// Condor's reserve on one GPU (GiB): the always-on matrices, the first prompt's scratch and a chunk's of `chunk` rows, the keys and values of `ctx` tokens, the
+    /// margin, the streaming prefill's ring and `headroom` asked (`--headroom-gb`); and a part's own of it where the model is split over GPUs (the scratch, the first
+    /// prompt's room, the margin, the ring and the headroom). Measured on an RTX 4080 SUPER (`CONDOR_*`).
+    pub fn condor_reserve(always: f64, chunk: usize, ctx: usize, stream: f64, headroom: f64) -> (f64, f64) {
+        use crate::plan::{
+            CONDOR_CHUNK_GIB_PER_ROW as PER_ROW, CONDOR_FIRST_PROMPT_GIB as FIRST, CONDOR_KV_GIB_PER_TOKEN as PER_TOKEN, CONDOR_MARGIN_GIB as MARGIN,
+        };
+        let fixed = FIRST + chunk as f64 * PER_ROW + MARGIN + stream + headroom;
+        (always + fixed + ctx as f64 * PER_TOKEN, fixed)
+    }
+
     /// Why Condor's parts cannot be made: no split leaves a part a place a layer, or the split asked is not one.
     #[derive(Debug, PartialEq)]
     pub enum CondorShort {

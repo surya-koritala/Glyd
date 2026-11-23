@@ -211,12 +211,6 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
     // (measured on the 4080 at chunk 1024, ctx 33000, i6: 1.5 GiB was left free with 1.2 more reserved than this; chunk 128 against 1024: 0.28 GiB more left free after a prompt, so a row of the chunk
     // holds 0.335 MB and the rest of the old 1.2 GB is the room the first prompt and decode use)
     let headroom = a.num("headroom-gb", 0.0f64)?;
-    use crate::plan::{
-        CONDOR_CHUNK_GIB_PER_ROW as PER_ROW, CONDOR_FIRST_PROMPT_GIB as FIRST, CONDOR_KV_GIB_PER_TOKEN as PER_TOKEN, CONDOR_MARGIN_GIB as MARGIN,
-    };
-    let reserve = always + FIRST + chunk as f64 * PER_ROW + ctx as f64 * PER_TOKEN + MARGIN + stream + headroom;
-    // (a part's own of it, where the model is split over GPUs: the scratch of a chunk and the room the first prompt and decode use)
-    let fixed = FIRST + chunk as f64 * PER_ROW + MARGIN + stream + headroom;
     // (the MTP head by default, --no-mtp for none)
     let mtp = !a.has("no-mtp") && c.mtp_layers > 0 && pack.has(c.layers);
     // the parts of the model: (GPU, its layers, places a layer, GB of places), one a GPU of --gpus (src/plan.rs `sizing::condor_parts`)
@@ -230,6 +224,8 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
         None => None,
     };
     let cache_gb = if a.has("cache-gb") { Some(a.num("cache-gb", 0.0f64)?) } else { None };
+    // (what the GPU keeps beside the places: the always-on matrices, the first prompt's and a chunk's scratch, the context's caches, the margin; src/plan.rs)
+    let (reserve, fixed) = crate::plan::sizing::condor_reserve(always, chunk, ctx, stream, headroom);
     let room = crate::plan::sizing::CondorRoom {
         free,
         frees: &frees,
