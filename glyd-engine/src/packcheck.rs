@@ -3,7 +3,8 @@
 //! - The saved checkpoints of `tests/data/packs` (glyd-gpu's `pack_compat.rs` says what each holds and who wrote it: a tiny Qwen3, one layer of 128, in every format version and layout,
 //!   glyd-v1 to glyd-v7; and matrices alone for the formats no model of it holds). Each is read as a reader of the save reads it (glyd-gpu's `save::decoded`: every check
 //!   `glyd verify` makes, then each pack decoded and cut into its tensors) and run on the CPU reference of the layer kinds (`runtime::reference`, the model's description
-//!   from `TINY_CONFIG`); its rows are held to `tests/packs/NAME.json.gz`, recorded from the same (`packcheck --record`). On the CPU on every merge (the unit test below,
+//!   from `TINY_CONFIG`). Every fixture's tensors are first held bit for bit to their sha256 in `tests/packs/tensors.json`, then a model's rows to `tests/packs/NAME.json.gz`
+//!   within the bounds, both recorded from the same (`packcheck --record`). On the CPU on every merge (the unit test below,
 //!   which ci.yml's engine tests run) and with the GPU library's decode on the GPU runner (`packcheck --gpu`).
 //! - The formats the engine reads a saved directory in, as the glyd/* repos and the engine's cache hold them (`packcheck --engine`, the GPU job): glyd-v7 at penguin,
 //!   kestrel, swift and wren, glyd-v4 and glyd-v3 with the dense engine's `engine.safetensors`. Each is made here from a logits case's random model of a family published
@@ -111,16 +112,94 @@ impl logits::Run for Cpu {
     }
 }
 
-/// The saved checkpoint `dir` read by glyd-gpu's reader (`decoder`: the CPU's, or the GPU library's) and run on the CPU reference over the fixed tokens: each pass's last logits.
-pub fn cpu_rows(dir: &Path, decoder: &Decoder) -> Result<Vec<Vec<f32>>> {
+/// A save's tensors as glyd-gpu's reader gives them (`save::decoded`: every check `glyd verify` makes, then each pack decoded, by `decoder`, and cut into its tensors).
+pub type Decoded = Vec<(String, Vec<u64>, Vec<f32>)>;
+
+pub fn read(dir: &Path, decoder: &Decoder) -> Result<Decoded> {
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
-    let tensors = glyd_gpu::save::decoded(dir, threads, decoder)
-        .map_err(|e| Error(format!("{}: {e}", dir.display())))?
-        .into_iter()
-        .map(|(n, s, v)| (n, (s.iter().map(|&d| d as usize).collect(), v)))
-        .collect();
+    glyd_gpu::save::decoded(dir, threads, decoder).map_err(|e| Error(format!("{}: {e}", dir.display())))
+}
+
+/// The tiny Qwen3 of `t` run on the CPU reference over the fixed tokens: each pass's last logits.
+pub fn rows_of(t: Decoded) -> Result<Vec<Vec<f32>>> {
+    let tensors = t.into_iter().map(|(n, s, v)| (n, (s.iter().map(|&d| d as usize).collect(), v))).collect();
     let (prompt, decode) = tokens();
     logits::drive(&mut Cpu { tensors, m: None, pos: 0, last: Vec::new() }, &prompt, &decode, &[])
+}
+
+/// The saved checkpoint `dir` read by glyd-gpu's reader (`decoder`: the CPU's, or the GPU library's) and run on the CPU reference over the fixed tokens: each pass's last logits.
+pub fn cpu_rows(dir: &Path, decoder: &Decoder) -> Result<Vec<Vec<f32>>> {
+    rows_of(read(dir, decoder)?)
+}
+
+/// Every fixture's tensors as `read` gives them, each its shape and the sha256 of its values (f32, little-endian): the decode is integer and bit operations and exact
+/// products (a scale times a code, rounded to bf16 once), no function of a system's library, so these hold bit for bit on any machine and on the GPU's decode.
+pub const TENSORS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/packs/tensors.json");
+
+/// Each tensor of `t` by name: its shape and the sha256 of its values.
+pub fn tensor_digests(t: &Decoded) -> BTreeMap<String, (Vec<u64>, String)> {
+    use sha2::{Digest, Sha256};
+    t.iter()
+        .map(|(n, s, v)| {
+            let mut h = Sha256::new();
+            v.iter().for_each(|x| h.update(x.to_le_bytes()));
+            (n.clone(), (s.clone(), h.finalize().iter().map(|b| format!("{b:02x}")).collect()))
+        })
+        .collect()
+}
+
+type FixtureDigests = BTreeMap<String, BTreeMap<String, (Vec<u64>, String)>>;
+
+fn read_tensor_digests() -> Result<FixtureDigests> {
+    let text = std::fs::read_to_string(TENSORS).map_err(|e| Error(format!("{TENSORS}: {e} (packcheck --record writes it)")))?;
+    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| Error(format!("{TENSORS}: {e}")))?;
+    let bad = || Error(format!("{TENSORS}: not {{fixture: {{tensor: {{shape, sha256}}}}}}"));
+    v.as_object()
+        .ok_or_else(bad)?
+        .iter()
+        .map(|(f, ts)| {
+            let ts = ts
+                .as_object()
+                .ok_or_else(bad)?
+                .iter()
+                .map(|(n, t)| {
+                    let shape = t["shape"].as_array().ok_or_else(bad)?.iter().map(|d| d.as_u64().ok_or_else(bad)).collect::<Result<Vec<u64>>>()?;
+                    Ok((n.clone(), (shape, t["sha256"].as_str().ok_or_else(bad)?.to_string())))
+                })
+                .collect::<Result<_>>()?;
+            Ok((f.clone(), ts))
+        })
+        .collect()
+}
+
+fn write_tensor_digests(d: &FixtureDigests) -> Result<()> {
+    let v: serde_json::Map<String, serde_json::Value> = d
+        .iter()
+        .map(|(f, ts)| {
+            (
+                f.clone(),
+                serde_json::json!(ts.iter().map(|(n, (s, h))| (n.clone(), serde_json::json!({"shape": s, "sha256": h}))).collect::<serde_json::Map<_, _>>()),
+            )
+        })
+        .collect();
+    let text = serde_json::to_string_pretty(&serde_json::Value::Object(v)).map_err(|e| Error(e.to_string()))? + "\n";
+    std::fs::write(TENSORS, text).map_err(|e| Error(format!("{TENSORS}: {e}")))
+}
+
+/// The first way `got` is not `want`, bit for bit: a tensor missing or not recorded, another shape, other values.
+pub fn tensors_differ(want: &BTreeMap<String, (Vec<u64>, String)>, got: &BTreeMap<String, (Vec<u64>, String)>) -> Option<String> {
+    if let Some(n) = want.keys().find(|n| !got.contains_key(*n)) {
+        return Some(format!("{n}: recorded, not read"));
+    }
+    if let Some(n) = got.keys().find(|n| !want.contains_key(*n)) {
+        return Some(format!("{n}: read, not recorded"));
+    }
+    want.iter().find_map(|(n, (s, h))| {
+        let (gs, gh) = &got[n];
+        (gs != s)
+            .then(|| format!("{n}: shape {gs:?}, recorded {s:?}"))
+            .or_else(|| (gh != h).then(|| format!("{n}: other values than recorded (sha256 {gh}, recorded {h})")))
+    })
 }
 
 /// A fixture's recorded rows.
@@ -148,11 +227,11 @@ fn digest_of(name: &str, rows: &[Vec<f32>], what: &str) -> Result<Fixture> {
     })
 }
 
-/// One fixture's line: PASS or FAIL against its digest, and how near.
-fn line(name: &str, fx: &Fixture, rows: &[Vec<f32>]) -> (bool, String) {
+/// One fixture's line: PASS or FAIL against its digest, and how near (its `n` tensors already bit for bit).
+fn line(name: &str, n: usize, fx: &Fixture, rows: &[Vec<f32>]) -> (bool, String) {
     let v = within(fx, rows);
     let s = format!(
-        "{} {name:16} {} rows: bits-equal {}, KL mean {:.2e} max {:.2e}, best token {}/{}, largest logit difference {:.2e}{}",
+        "{} {name:16} {n} tensors bit for bit; {} rows: bits-equal {}, KL mean {:.2e} max {:.2e}, best token {}/{}, largest logit difference {:.2e}{}",
         if v.ok { "PASS" } else { "FAIL" },
         v.rows,
         v.identical,
@@ -166,19 +245,29 @@ fn line(name: &str, fx: &Fixture, rows: &[Vec<f32>]) -> (bool, String) {
     (v.ok, s)
 }
 
-/// Every saved checkpoint of tests/data/packs against its digest, its packs decoded by `decoder`: the lines, and the names that failed. A checkpoint of matrices alone
-/// (no model: glyd-v1, glyd-v2, the Hummingbird save) is read whole (`save::decoded`, which verify's checks come first in) and named as such.
+/// Every saved checkpoint of tests/data/packs against its digests, its packs decoded by `decoder`: first each tensor bit for bit (`TENSORS`), then, where it holds the tiny
+/// Qwen3, its logits on the CPU reference within the bounds (`within`). The lines, and the names that failed.
 pub fn check_saved(decoder: &Decoder) -> Result<(Vec<String>, Vec<String>)> {
+    let recorded = read_tensor_digests()?;
     let (mut lines, mut failed) = (Vec::new(), Vec::new());
     for (name, dir) in fixtures()? {
-        if !holds_model(&dir) {
-            let n = glyd_gpu::save::decoded(&dir, 2, decoder).map_err(|e| Error(format!("{name}: {e}")))?.len();
-            lines.push(format!("PASS {name:16} matrices alone: {n} tensors read, each at its recorded sha256 (no model to run)"));
+        let t = read(&dir, decoder)?;
+        let got = tensor_digests(&t);
+        let differ = match recorded.get(&name) {
+            None => Some("no tensor digests recorded (packcheck --record)".to_string()),
+            Some(want) => tensors_differ(want, &got),
+        };
+        if let Some(why) = differ {
+            lines.push(format!("FAIL {name:16} its tensors are not the recorded ones, bit for bit: {why}"));
+            failed.push(name);
             continue;
         }
-        let rows = cpu_rows(&dir, decoder)?;
+        if !holds_model(&dir) {
+            lines.push(format!("PASS {name:16} {} tensors bit for bit (matrices alone, no model to run)", got.len()));
+            continue;
+        }
         let fx = Fixture::read(&digest_path(&name)).map_err(|e| Error(format!("{name}: no digest ({}): packcheck --record writes it", e.msg)))?;
-        let (ok, s) = line(&name, &fx, &rows);
+        let (ok, s) = line(&name, got.len(), &fx, &rows_of(t)?);
         lines.push(s);
         if !ok {
             failed.push(name);
@@ -192,12 +281,19 @@ pub fn check_saved(decoder: &Decoder) -> Result<(Vec<String>, Vec<String>)> {
 /// (`check_engine`). --record writes the digests instead (from the CPU's decode; with --engine, the Hummingbird level's from this GPU). Exit 1 where one is not within.
 pub fn check(a: &crate::args::Args) -> Result<()> {
     if a.has("record") {
-        for (name, dir) in fixtures()?.into_iter().filter(|(_, d)| holds_model(d)) {
-            let rows = cpu_rows(&dir, &Decoder::Cpu)?;
-            let fx = digest_of(&name, &rows, "the CPU reference of the layer kinds (src/runtime/reference)")?;
+        let mut all = FixtureDigests::new();
+        for (name, dir) in fixtures()? {
+            let t = read(&dir, &Decoder::Cpu)?;
+            all.insert(name.clone(), tensor_digests(&t));
+            if !holds_model(&dir) {
+                continue;
+            }
+            let fx = digest_of(&name, &rows_of(t)?, "the CPU reference of the layer kinds (src/runtime/reference)")?;
             fx.write(&digest_path(&name))?;
             println!("{}: {} rows", digest_path(&name).display(), fx.rows.len());
         }
+        write_tensor_digests(&all)?;
+        println!("{TENSORS}: the tensors of {} fixtures", all.len());
         if a.has("engine") {
             with_scratch(a, |scratch| hummingbird(scratch, true).map(|_| ()))?;
         }
@@ -439,7 +535,7 @@ mod tests {
     #[test]
     fn every_saved_pack_format_loads_to_its_recorded_logits() {
         let (lines, failed) = check_saved(&Decoder::Cpu).unwrap();
-        let models = lines.iter().filter(|l| !l.contains("matrices alone")).count();
+        let models = lines.iter().filter(|l| l.contains(" rows: ")).count();
         assert!(lines.len() >= 16 && models >= 12, "{} fixtures, {models} of a model:\n{}", lines.len(), lines.join("\n"));
         assert!(failed.is_empty(), "{}", lines.join("\n"));
     }
@@ -475,8 +571,12 @@ mod tests {
         let tr: Vec<f32> = (0..r * c).map(|i| w[(i % c) * c + i / c]).collect();
         t.insert("model.layers.0.self_attn.o_proj.weight".into(), (shape, tr));
         let (prompt, decode) = tokens();
-        let rows = logits::drive(&mut Cpu { tensors: t, m: None, pos: 0, last: Vec::new() }, &prompt, &decode, &[]).unwrap();
+        let rows = logits::drive(&mut Cpu { tensors: t.clone(), m: None, pos: 0, last: Vec::new() }, &prompt, &decode, &[]).unwrap();
         let fx = Fixture::read(&digest_path("main-i6r")).unwrap();
         assert!(!within(&fx, &rows).ok);
+        // and its tensors are not the recorded ones, bit for bit, which the check sees first
+        let d: Decoded = t.into_iter().map(|(n, (s, v))| (n, s.iter().map(|&x| x as u64).collect(), v)).collect();
+        let why = tensors_differ(&read_tensor_digests().unwrap()["main-i6r"], &tensor_digests(&d)).expect("a transposed weight's values differ");
+        assert!(why.contains("o_proj") && why.contains("other values"), "{why}");
     }
 }
