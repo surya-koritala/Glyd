@@ -222,6 +222,39 @@ fn committed_packs_verify() {
     }
 }
 
+/// `decoded` gives every tensor of each fixture once, as the model holds it: a packed one at glyd.json's sha256 (an experts' weight transposed where its entry says so), its
+/// values as many as its shape's; the tensors saved as they are beside them.
+#[test]
+fn decoded_gives_each_tensor_as_the_model_holds_it() {
+    for (name, dir) in fixtures() {
+        let m = json::parse(&std::fs::read_to_string(dir.join("glyd.json")).unwrap()).unwrap();
+        let want: HashMap<String, (Vec<u64>, String)> = m
+            .get("packs")
+            .and_then(Value::as_object)
+            .unwrap()
+            .iter()
+            .flat_map(|(_, e)| e.get("tensors").and_then(Value::as_array).unwrap().iter())
+            .map(|t| {
+                (
+                    t.get("name").and_then(Value::as_str).unwrap().into(),
+                    (u64s(t.get("shape")).unwrap(), t.get("sha256").and_then(Value::as_str).unwrap().into()),
+                )
+            })
+            .collect();
+        let got = decoded(&dir, 2, &Decoder::Cpu).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let mut seen = HashSet::new();
+        for (t, shape, v) in &got {
+            assert!(seen.insert(t.clone()), "{name}: {t} twice");
+            assert_eq!(shape.iter().product::<u64>() as usize, v.len(), "{name}: {t}");
+            if let Some((s, sha)) = want.get(t) {
+                let bf: Vec<u16> = v.iter().map(|x| (x.to_bits() >> 16) as u16).collect();
+                assert_eq!((s, &sha256_u16(&bf)), (shape, sha), "{name}: {t}");
+            }
+        }
+        assert!(want.keys().all(|k| seen.contains(k)), "{name}: a packed tensor missing");
+    }
+}
+
 /// A fixture is refused when a byte of its pack is changed: the check above is not one that passes whatever it reads.
 #[test]
 fn a_changed_byte_of_a_committed_pack_is_refused() {
