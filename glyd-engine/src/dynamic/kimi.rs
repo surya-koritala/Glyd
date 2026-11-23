@@ -1260,11 +1260,9 @@ pub(crate) fn dtypes(ck: &Checkpoint, c: &ConfigKimi) -> Result<Vec<(bool, bool)
 /// Kimi-K3's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::kimi`), held to `describe`. `w32` the delta
 /// layers' dtypes (`dtypes`), `early` whether the cached experts are guessed and copied ahead (the `KimiEarly` step).
 pub fn lowered(dir: &Path, c: &ConfigKimi, st: &Stage, w32: &[(bool, bool)], early: bool) -> Result<ModelDesc> {
-    let p = dir.join("config.json");
-    let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-    let cfg: serde_json::Value = serde_json::from_str(&text).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-    let lowered = super::lower::kimi(&crate::runtime::describe::describe(&cfg)?, c.eos.clone(), c.max_pos, st, w32, early)?;
-    super::lower::agree(lowered, &describe(c, st, w32, early)?, &p.display().to_string())
+    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
+    let lowered = super::lower::kimi(&kinds, c.eos.clone(), c.max_pos, st, w32, early)?;
+    super::lower::agree(lowered, &describe(c, st, w32, early)?, &label)
 }
 
 /// The executor's description of Kimi-K3 for stage `st`, as the loader indexes what it loads. Each layer's small tensors: its input and post-attention norms, the

@@ -236,9 +236,7 @@ pub(crate) fn rotary(theta: f64, dim: usize, pairs: usize, max_pos: usize) -> (V
 
 /// Whether config.json's text is a Gemma 4 model's (its model_type, or its text config's).
 pub fn is_gemma4(text: &str) -> bool {
-    let Ok(v) = json::parse(text) else { return false };
-    let gemma = |c: &Value| c.get("model_type").and_then(Value::as_str).is_some_and(|m| m.starts_with("gemma4"));
-    gemma(&v) || v.get("text_config").is_some_and(gemma)
+    crate::runtime::config::family_of(text) == Some(crate::support::Family::Gemma4)
 }
 
 impl ConfigG4 {

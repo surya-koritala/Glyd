@@ -65,7 +65,7 @@ pub struct ConfigKimi {
 
 /// Whether a config.json is a Kimi-K3's.
 pub fn is_kimi(text: &str) -> bool {
-    json::parse(text).ok().and_then(|v| v.get("model_type").and_then(Value::as_str).map(|t| t == "kimi_k3")).unwrap_or(false)
+    crate::runtime::config::family_of(text) == Some(crate::support::Family::Kimi)
 }
 
 impl ConfigKimi {

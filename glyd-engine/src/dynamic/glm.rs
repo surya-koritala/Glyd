@@ -229,11 +229,9 @@ pub(crate) fn per_layer(kind: GlmKind, moe: bool) -> usize {
 
 /// GLM-5.3-Flash's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::glm`), held to `describe`.
 pub fn lowered(dir: &Path, c: &ConfigGlm, st: &Stage) -> Result<ModelDesc> {
-    let p = dir.join("config.json");
-    let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-    let cfg: serde_json::Value = serde_json::from_str(&text).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-    let lowered = super::lower::glm(&crate::runtime::describe::describe(&cfg)?, c.eos.clone(), c.max_pos, st)?;
-    super::lower::agree(lowered, &describe(c, st)?, &p.display().to_string())
+    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
+    let lowered = super::lower::glm(&kinds, c.eos.clone(), c.max_pos, st)?;
+    super::lower::agree(lowered, &describe(c, st)?, &label)
 }
 
 /// The executor's description of GLM-5.3-Flash for stage `st`, as the loader indexes what it loads. Each layer's small tensors: its two norms, the attention's
