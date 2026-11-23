@@ -1061,6 +1061,7 @@ extern "C" __global__ void __launch_bounds__(256, 1) gemm3f_128x256_s3(const bf1
 #include "moe_hbg.cu"   // the Hummingbird experts' for every mixture of experts (any width, gated or not, a block of 32 to 1,024; after moe_hb.cu: its helpers)
 #include "nemotron.cu"  // Nemotron 3 Super's kernels (after qwen35.cu: they use its helpers)
 #include "gemma4.cu"   // Gemma 4's kernels (after qwen35.cu: they use its helpers)
+#include "attn.cu"     // the attention layer kind's, every family's (after gemma4.cu and qwen35.cu: they use their helpers)
 #include "glm.cu"  // GLM-5.3-Flash's kernels (after qwen35.cu and moe.cu: they use their helpers)
 #include "glm_cb.cu"  // GLM-5.3-Flash's routed experts as codebook rows (after glm.cu)
 #include "kimi.cu"  // Kimi-K3's kernels (after glm.cu and moe.cu)

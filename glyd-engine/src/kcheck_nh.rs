@@ -11,7 +11,6 @@
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result, Words};
 use crate::kcheck::top_vs_row;
-use crate::kern::Kern;
 use crate::kern_nh::{KernNh, SsdWs, NH_N, NH_P};
 use crate::moe_nh::factory;
 use crate::nemotron::{pack_layout, ConfigNemotronH, NhKind};
@@ -75,7 +74,7 @@ fn level_of(bits: Option<usize>) -> Result<Layout> {
 pub fn kernels(ind: &Path, outd: &Path) -> Result<()> {
     io(std::fs::create_dir_all(outd))?;
     let dev = Dev::new(0)?;
-    let (kern, k) = (Kern::load(&dev)?, KernNh::load(&dev)?);
+    let k = KernNh::load(&dev)?;
     let s = dev.stream;
     let m = nums(ind, "mamba.txt")?;
     let (nh, ng, n, eps, dt_min, split) = (m[0] as usize, m[1] as usize, m[2] as usize, m[3] as f32, m[4] as f32, m[5] as usize);
@@ -129,42 +128,37 @@ pub fn kernels(ind: &Path, outd: &Path) -> Result<()> {
         save(outd, &format!("{name}_state.bin"), &state, 0, state.bytes)?;
         save(outd, &format!("{name}_cstate.bin"), &cst, 0, cst.bytes)?;
     }
-    // the attention: keys and values into the cache, a decode step a row, then the engine's prompt kernel
+    // the attention (the attention kind's kernels with Nemotron-H's parameters): keys and values into the cache, a decode step a row, then the prompt kernel; kv.bin as
+    // the tool reads it, [tokens, kv heads, 256] (a head's 128 keys, then its 128 values)
     let a = nums(ind, "attn.txt")?;
     let (nq, nk, na) = (a[0] as usize, a[1] as usize, a[2] as usize);
-    let qs = (nq + 2 * nk) * 128;
     let qkv = load(ind, "qkv.bin")?;
     let pos = Buf::new(na * 4)?;
     pos.write(0, &(0..na as i32).collect::<Vec<_>>())?;
-    let (kv, out, part, pre) = (
-        Buf::zeroed(na * nk * 256 * 2)?,
+    let (qo, kc, vc, out, part, pre) = (
         Buf::zeroed(na * nq * 128 * 2)?,
-        Buf::zeroed(nq * crate::kern_nh::NH_SPLITS * 130 * 4)?,
+        Buf::zeroed(na * nk * 128 * 2)?,
+        Buf::zeroed(na * nk * 128 * 2)?,
+        Buf::zeroed(na * nq * 128 * 2)?,
+        Buf::zeroed(na * nq * crate::dynamic::attn::SPLITS * 130 * 4)?,
         Buf::zeroed(na * nq * 128 * 2)?,
     );
+    let op = crate::dynamic::nemotron::attention(nq, nk, 0);
+    let mut at = op.args(na, 1e-5);
+    (at.src, at.qpos, at.kpos, at.qo, at.kc, at.vc, at.cap, at.part) = (qkv.ptr, pos.ptr, pos.ptr, qo.ptr, kc.ptr, vc.ptr, na as i32, part.ptr);
+    let ka = crate::dynamic::attn::KernAttn::load(&dev)?;
     // SAFETY: as above.
     unsafe {
-        k.kv_write(s, qkv.ptr, qs as i32, pos.ptr, kv.ptr, na as u32, nq as i32, nk as i32, 0)?;
-        for t in 0..na {
-            k.attn_decode(
-                s,
-                qkv.ptr + (t * qs * 2) as u64,
-                qs as i32,
-                kv.ptr,
-                pos.ptr + (t * 4) as u64,
-                1,
-                nq as i32,
-                nk as i32,
-                part.ptr,
-                out.ptr + (t * nq * 128 * 2) as u64,
-                (nq * 128) as i32,
-                0,
-            )?;
-        }
-        kern.prefill_attn(s, qkv.ptr, qs as i32, kv.ptr, pre.ptr, (nq * 128) as i32, na as i32, 0, nq as i32, nk as i32)?;
+        ka.prep(s, &at, nq + nk, (crate::gemma4::G4Pf::default(), 0))?;
+        ka.decode(s, &crate::dynamic::attn::AttnArgs { out: out.ptr, ..at })?;
+        ka.prompt(s, &crate::dynamic::attn::AttnArgs { out: pre.ptr, ..at })?;
     }
     dev.sync()?;
-    save(outd, "kv.bin", &kv, 0, kv.bytes)?;
+    let (mut kh, mut vh) = (vec![0u16; na * nk * 128], vec![0u16; na * nk * 128]);
+    kc.read(0, &mut kh)?;
+    vc.read(0, &mut vh)?;
+    let kv: Vec<u16> = (0..na * nk).flat_map(|r| kh[r * 128..(r + 1) * 128].iter().chain(&vh[r * 128..(r + 1) * 128]).copied().collect::<Vec<u16>>()).collect();
+    io(std::fs::write(outd.join("kv.bin"), kv.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>()))?;
     save(outd, "dec.bin", &out, 0, out.bytes)?;
     save(outd, "pre.bin", &pre, 0, pre.bytes)?;
     println!("attention done");

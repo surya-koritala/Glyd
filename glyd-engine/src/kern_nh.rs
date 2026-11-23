@@ -1,4 +1,4 @@
-//! Nemotron-H's kernel table and weights, what the executor's description (src/dynamic/nemotron.rs) runs the model on: the Mamba-2 and attention kernels (kernels/nemotron.cu) loaded once (`KernNh`), the weights of a glyd-v7 or
+//! Nemotron-H's kernel table and weights, what the executor's description (src/dynamic/nemotron.rs) runs the model on: the Mamba-2 kernels (kernels/nemotron.cu; its attention is the attention kind's, src/dynamic/attn.rs) loaded once (`KernNh`), the weights of a glyd-v7 or
 //! a Hub-format directory (`WeightsNh`: a layer at a time, the embedding, the head; the layers' matrices packed as they load), the interface a block of mixture-of-experts layers plugs in by (`MoeBlock`, `MoeFactory`, with a
 //! stand-in that says so for a model loaded without one; src/moe_nh.rs is the block) and the host hooks the other families' blocks share (`NhHost`). The hand-written engine that used to be here is retired:
 //! its parity record is R7's fixtures and `paritycheck`'s (bits-identical at every level), and its layer-by-layer tools (`nhlayers`, `nhtoy`, `nhoffload`) run on the executor. The layers' math: tools/nemotron_ref.py;
@@ -21,9 +21,6 @@ use std::path::Path;
 pub const NH_P: usize = 64;
 pub const NH_N: usize = 128;
 pub const NH_L: usize = 128;
-/// The parts a decode step's attention splits each row's keys into, and the floats a part's result takes.
-pub const NH_SPLITS: usize = 16;
-pub(crate) const NH_PART: usize = 130;
 
 /// The Mamba-2 chunked scan's buffers for up to `rows` tokens a call: dt and its running sum, C B^T of every chunk and group, every chunk's own state.
 pub struct SsdWs {
@@ -66,9 +63,6 @@ pub struct KernNh {
     pass: crate::kt::nh_ssd_pass,
     scan_y: crate::kt::nh_ssd_y,
     gnorm: crate::kt::nh_gated_norm,
-    kv_write: crate::kt::nh_kv_write,
-    attn: crate::kt::nh_attn_parts,
-    attn_merge: crate::kt::nh_attn_merge,
     small: crate::kt::small_linear,
 }
 
@@ -83,9 +77,6 @@ impl KernNh {
             pass: dev.typed()?,
             scan_y: dev.typed()?,
             gnorm: dev.typed()?,
-            kv_write: dev.typed()?,
-            attn: dev.typed()?,
-            attn_merge: dev.typed()?,
             small: dev.typed()?,
         })
     }
@@ -169,44 +160,6 @@ impl KernNh {
             return err(format!("a gated norm of {di} channels in {ng} groups: not supported"));
         }
         launch!(self.gnorm, [n, ng as u32, 1], [256, 1, 1], s; y, z, zs, w, di, ng, eps)
-    }
-
-    /// The keys and values of n qkv rows into the cache kv [positions, nk, 256] at each row's position (`pos`, int32 on the device).
-    ///
-    /// # Safety
-    /// As `conv`; the cache holds every position in `pos`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn kv_write(&self, s: Stream, qkv: u64, stride: i32, pos: u64, kv: u64, n: u32, nq: i32, nk: i32, table: u64) -> Result<()> {
-        launch!(self.kv_write, [n, nk as u32, 1], [128, 1, 1], s; qkv, stride, pos, kv, nq, nk, table)
-    }
-
-    /// A decode step's attention (n rows, each at its own position, from `pos` on the device): `part` holds n nq NH_SPLITS NH_PART floats.
-    ///
-    /// # Safety
-    /// As `conv`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn attn_decode(
-        &self,
-        s: Stream,
-        q: u64,
-        qs: i32,
-        kv: u64,
-        pos: u64,
-        n: i32,
-        nq: i32,
-        nk: i32,
-        part: u64,
-        out: u64,
-        os: i32,
-        table: u64,
-    ) -> Result<()> {
-        if nk == 0 || nq % nk != 0 || nq / nk > 16 {
-            return err(format!("{nq} query heads over {nk} key-value heads: not supported"));
-        }
-        let sl2 = (1.0f64 / 128.0f64.sqrt() * std::f64::consts::LOG2_E) as f32;
-        let splits = NH_SPLITS as i32;
-        launch!(self.attn, [n as u32, nk as u32, NH_SPLITS as u32], [32 * (nq / nk) as u32, 1, 1], s; q, qs, kv, pos, n, nq, nk, sl2, part, splits, table)?;
-        launch!(self.attn_merge, [n as u32, nq as u32, 1], [128, 1, 1], s; part, splits, out, os, nq)
     }
 
     /// y [m, rows] = x [m, cols] W^T for a bf16 W the library does not pack.

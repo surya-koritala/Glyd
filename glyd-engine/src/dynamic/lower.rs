@@ -2,6 +2,7 @@
 //! its config alone and not from a description written for it (R2, R3a; docs/design/runtime.md section 3). The matrices' shapes come from the checkpoint (`shape`: a
 //! tensor's dims by name), which the kinds do not hold. Each family's lowering is held to the executor's own description of it (the tests below) until that one goes.
 
+use super::attn::{Arith, AttnOp};
 use super::{ModelDesc, Op, Ring, Rope, Slot, SLOTS};
 use crate::ffi::{err, Error, Result};
 use crate::runtime::describe::{Described, Source};
@@ -114,11 +115,14 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
         let (post_attn, pre_ff) = (name(one(ar, "norm_out")?), name(one(fr, "norm_in")?));
         let (post_ff, scalar) = (name(one(fr, "norm_out")?), name(one(fr, "res_scale")?));
         let next = if l + 1 < layers { in_norms[l + 1] } else { final_norm };
-        let window = a.window.unwrap_or(0);
+        // (transformers' bf16 rounding points in the preparation, scores the bf16 of their dot products: Gemma 4's arithmetic, as its tests pin it)
+        let attn = AttnOp::of(a, Slot::Proj, ring, Some(r), Some((q_norm, k_norm)), Arith { round: true, sbf16: true, q_scaled: false })?;
+        if attn.stride != stride {
+            return err(format!("Gemma 4: layer {l}'s q, k and v product is {stride} wide, where its attention reads {}", attn.stride));
+        }
         ops.push(vec![
             Op::Linear { w, x: Slot::H, y: Slot::Proj, name: if sliding { "qkv (sliding)" } else { "qk (global)" } },
-            Op::QkvPrep { d: dh, nq: a.heads, nk, has_v, stride, q_norm, k_norm, rope: r, rot: rope.freqs, ring },
-            Op::Attention { d: dh, nq: a.heads, nk, window, ring },
+            Op::Attn(attn),
             Op::Linear { w: w + 1, x: Slot::Att, y: Slot::O, name: "o" },
             Op::AddNorm { y: Slot::O, post: post_attn, scalar: None, next: pre_ff },
             Op::Linear { w: w + 2, x: Slot::H, y: Slot::Gu, name: "gate_up" },
@@ -261,10 +265,14 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
             Kind::Full => {
                 let ring = rings.len();
                 rings.push(Ring { d: 256, nk, window: 0 });
+                // (one rounding at the end of the preparation and of the gate, scores fp32: the Qwen3.5 layout's arithmetic, as its tests pin it)
+                let a = AttnOp::of(att, Slot::Mix, ring, Some(0), Some((s0 + 2, s0 + 3)), Arith { round: false, sbf16: false, q_scaled: false })?;
+                if a.stride != full_w {
+                    return err(format!("Qwen3.5: an attention product of {full_w} where its attention reads {}", a.stride));
+                }
                 ops.extend([
                     Op::Linear { w: b, x: Slot::H, y: Slot::Mix, name: "attention: qkv product" },
-                    Op::Prep35 { stride: full_w, q_norm: s0 + 2, k_norm: s0 + 3, half: rotary / 2, ring, nq, nk },
-                    Op::Attn35 { stride: full_w, ring, nq, nk },
+                    Op::Attn(a),
                     Op::Linear { w: b + 1, x: Slot::Att, y: Slot::O, name: "attention: o product" },
                 ]);
                 b + 2
@@ -394,11 +402,16 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
             }
             NhKind::Attention => {
                 let ring = rings.len();
-                rings.push(Ring { d: 256, nk, window: 0 });
+                rings.push(Ring { d: hd, nk, window: 0 });
+                let a = att.ok_or_else(|| Error("Nemotron-H: an attention layer of no kind".into()))?;
+                // (one rounding at the end, scores fp32: Nemotron-H's arithmetic)
+                let a = AttnOp::of(a, Slot::Mix, ring, None, None, Arith { round: false, sbf16: false, q_scaled: false })?;
+                if a.stride != qkv_w {
+                    return err(format!("Nemotron-H: an attention product of {qkv_w} where its attention reads {}", a.stride));
+                }
                 ops.extend([
                     Op::Linear { w: b, x: Slot::H, y: Slot::Mix, name: "attention: qkv product" },
-                    Op::KvWrite { ring, stride: qkv_w, nq, nk },
-                    Op::AttnNh { ring, stride: qkv_w, nq, nk },
+                    Op::Attn(a),
                     Op::Linear { w: b + 1, x: Slot::Att, y: Slot::O, name: "attention: o product" },
                 ]);
             }
@@ -419,6 +432,7 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
         (Slot::Mix, row.max(qkv_w)),
         (Slot::Xc, cd),
         (Slot::Core, di),
+        (Slot::Qo, nq * hd),
         (Slot::Att, nq * hd),
         (Slot::Hlast, hid),
     ] {
@@ -475,8 +489,6 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
     let a0 = atts.first().ok_or_else(|| Error("Muse Spark: no layers".into()))?;
     let (nq, nk, hd, lat) = (a0.heads, a0.kv_heads, a0.head_dim, lat.ok_or_else(|| Error("Muse Spark: experts without a latent".into()))?);
     let (eps, post_eps) = (m.blocks[0].norm_in.eps, m.blocks[0].norm_out.map_or(1e-6, |n| n.eps));
-    // (the attention's scale is the config's factor over sqrt(head); the kernel takes the factor)
-    let qk_scale = a0.scale * (hd as f32).sqrt();
     if hd != 64 || m.hidden > 8192 || lat > 4096 {
         return err(format!(
             "heads of {hd}, a width of {}, a latent of {lat}: this engine runs heads of 64, widths up to 8192 and latents up to 4096",
@@ -498,16 +510,17 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
         let block = n_moe;
         n_moe += 1;
         let ring = rings.len();
-        let sliding = a.window.is_some();
-        let window = a.window.unwrap_or(0);
-        rings.push(Ring { d: hd, nk, window });
+        rings.push(Ring { d: hd, nk, window: a.window.unwrap_or(0) });
+        // (transformers' bf16 rounding points in the preparation and the gate, the queries scaled apart, scores fp32: Muse Spark's arithmetic)
+        let attn = AttnOp::of(a, Slot::Mix, ring, Some(0), None, Arith { round: true, sbf16: false, q_scaled: true })?;
+        if attn.stride != row {
+            return err(format!("Muse Spark: an attention product of {row} where its attention reads {}", attn.stride));
+        }
         let mut ops = vec![
             Op::MuseRms { x: Slot::X, w: s0, y: Slot::H, eps },
             Op::Linear { w: m0, x: Slot::H, y: Slot::Mix, name: "attention: q, k, v and gate product" },
-            Op::MuseQk { stride: row, nq, nk, rope: sliding, ring, scale: qk_scale },
-            Op::MuseAttn { ring, nq, nk, window },
-            Op::MuseOGate { stride: row, goff: (nq + 2 * nk) * hd, nq },
-            Op::Linear { w: m0 + 1, x: Slot::Core, y: Slot::O, name: "attention: o product" },
+            Op::Attn(attn),
+            Op::Linear { w: m0 + 1, x: Slot::Att, y: Slot::O, name: "attention: o product" },
             Op::MuseRms { x: Slot::O, w: ones, y: Slot::O, eps: post_eps },
             Op::MuseGate { alpha: s0 + 1, beta: s0 + 2 },
             Op::MuseRms { x: Slot::X, w: s0 + 3, y: Slot::H, eps },
@@ -532,7 +545,6 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
         (Slot::Mix, row),
         (Slot::Qo, nq * hd),
         (Slot::Att, nq * hd),
-        (Slot::Core, nq * hd),
         (Slot::O, d_),
         (Slot::Proj, lat),
         (Slot::Xc, lat),

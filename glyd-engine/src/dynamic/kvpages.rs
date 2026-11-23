@@ -1,7 +1,7 @@
 //! The executor's keys and values in 12-bit lossless pages (R4f #332, R4b #141). A ring whose layer has tables (src/dynamic/kv12.rs) holds its
 //! group's blocks as pages of the GPU library (glyd_gpu_kv_*), every bf16 value in 12 bits and read back bit for bit. A step's new keys and values
 //! go from a staging buffer of its rows into their pages; a decode row's attention reads the pages (`kv_decode_from`: a sliding layer's window
-//! from its first token); a prompt chunk's pages are unpacked into a bf16 ring and the family's own attention kernel runs on it.
+//! from its first token); a prompt chunk's pages are unpacked into a bf16 ring and the attention kind's prompt kernel runs on it.
 use super::kv12::{shapes, KvShape, Tables};
 use super::{Dyn, Op, Part};
 use crate::dev::Buf;
@@ -64,17 +64,14 @@ pub(super) struct Lossless {
     pub bytes: usize,
 }
 
-/// A ring's layer and query heads: the layer whose preparation writes it (Gemma 4's, the Qwen3.5 layout's), and that operation's query heads.
+/// A ring's layer and query heads: the layer whose attention writes it, and its query heads.
 fn writer(d: &super::ModelDesc, ring: usize) -> Option<(usize, usize)> {
-    d.layers.iter().enumerate().find_map(|(l, ops)| ops.iter().find_map(|op| prep_of(op).filter(|&(r, _)| r == ring)).map(|(_, nq)| (l, nq)))
-}
-
-/// A preparation's ring and query heads.
-fn prep_of(op: &Op) -> Option<(usize, usize)> {
-    match *op {
-        Op::QkvPrep { ring, nq, .. } | Op::Prep35 { ring, nq, .. } => Some((ring, nq)),
-        _ => None,
-    }
+    d.layers.iter().enumerate().find_map(|(l, ops)| {
+        ops.iter().find_map(|op| match op {
+            Op::Attn(a) if a.writes && a.ring == ring => Some((l, a.nq)),
+            _ => None,
+        })
+    })
 }
 
 /// The share of a page's values outside their windows its escape room is made for, at the least. Measured on gemma-4-12B: 0.035% in the worst layer
@@ -346,7 +343,7 @@ impl Dyn {
         )
     }
 
-    /// A prompt chunk's keys and values for the family's attention kernel: the pages of its tokens' blocks (from its window's first, `start` and n rows on) unpacked into
+    /// A prompt chunk's keys and values for the attention kind's prompt kernel: the pages of its tokens' blocks (from its window's first, `start` and n rows on) unpacked into
     /// the bf16 ring, block b at b modulo the ring's blocks; returns the ring's keys, values and capacity in tokens (tokens at position modulo it, no table).
     pub(super) unsafe fn kv12_stage(&self, ring: usize, start: usize, n: usize) -> Result<(u64, u64, usize)> {
         let lx = self.lossless.as_ref().expect("a ring with pages");

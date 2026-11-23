@@ -2,6 +2,7 @@
 //! rotary tables, its key/value rings and its layers as lists of operations), and one executor (`Dyn`) runs any description on the shared kernels.
 //! A family adds a description (`gemma4.rs`), not an engine; an operation is added once, when a family needs one no other has.
 
+pub mod attn;
 pub mod deepseek_v4;
 pub mod gemma4;
 pub mod glm;
@@ -24,13 +25,14 @@ pub mod tp_cache;
 
 use crate::dev::{copy_d2d_async, copy_d2h_async, copy_h2d_async, Buf, Dev, Ev, Graph, Pinned};
 use crate::ffi::{err, Error, Lib, Result};
-use crate::gemma4::{attn_smem, fa_smem, pf_kib, rotary, G4Pf, KernG4, EMBED_GROUPS, FA512B_SMEM, PART_WARPS, SPLITS};
+use crate::gemma4::{pf_kib, rotary, G4Pf, KernG4, EMBED_GROUPS};
 use crate::kern::{norm_threads, Kern};
-use crate::kern35::{Kern35, Mat, ATTN_PART, ATTN_SPLITS};
-use crate::kern_nh::{KernNh, MoeBlock, SsdWs, NH_PART, NH_SPLITS};
+use crate::kern35::{Kern35, Mat};
+use crate::kern_nh::{KernNh, MoeBlock, SsdWs};
 use crate::launch;
 use crate::model::{embed_plan, Sample, TopGpu};
 use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload_packed, Item, Layout, PackBuf};
+pub use attn::AttnOp;
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 
@@ -110,28 +112,9 @@ pub enum Op {
         y: Slot,
         name: &'static str,
     },
-    /// The heads of proj (rows `stride` wide: nq query heads, nk key heads, then the values where `has_v`) of width `d`: the q and k norms, the rotary of
-    /// table `rope` on its first `rot` pairs, the queries to qo and the keys and values into ring `ring`.
-    QkvPrep {
-        d: usize,
-        nq: usize,
-        nk: usize,
-        has_v: bool,
-        stride: usize,
-        q_norm: usize,
-        k_norm: usize,
-        rope: usize,
-        rot: usize,
-        ring: usize,
-    },
-    /// Causal attention of qo over ring `ring` (`window` 0: every position), into att.
-    Attention {
-        d: usize,
-        nq: usize,
-        nk: usize,
-        window: usize,
-        ring: usize,
-    },
+    /// The attention layer kind, every family's (src/dynamic/attn.rs): the preparation of the projection's heads (norms, rotary, the keys and values into
+    /// their ring), then the causal attention of the queries over the ring into Att, gated where the kind is.
+    Attn(AttnOp),
     /// The sandwich residual: x = bf16(x + bf16(rmsnorm(y) post)) (then bf16(x scalar) where `scalar`), and h = bf16(rmsnorm(x) next).
     AddNorm {
         y: Slot,
@@ -187,23 +170,6 @@ pub enum Op {
         nv: usize,
         z_off: usize,
     },
-    /// Qwen3.5's full attention (heads of 256): q/k norms, the rotary on the first `half` pairs, the cache write (Mix rows `stride` wide); then the attention
-    /// of qo over ring `ring` times sigmoid of Mix's gate, into att.
-    Prep35 {
-        stride: usize,
-        q_norm: usize,
-        k_norm: usize,
-        half: usize,
-        ring: usize,
-        nq: usize,
-        nk: usize,
-    },
-    Attn35 {
-        stride: usize,
-        ring: usize,
-        nq: usize,
-        nk: usize,
-    },
     /// m = silu(gate) up of matrix `w`'s product (gate and up stacked) of h.
     GateUpSilu {
         w: usize,
@@ -235,20 +201,6 @@ pub enum Op {
         row: usize,
         di: usize,
         ng: usize,
-    },
-    /// Nemotron-H's attention (heads of 128, no positional encoding): the keys and values of Mix (rows `stride` wide) into ring `ring` (k and v of a head in one row of 256), then
-    /// the attention of Mix's queries into Att.
-    KvWrite {
-        ring: usize,
-        stride: usize,
-        nq: usize,
-        nk: usize,
-    },
-    AttnNh {
-        ring: usize,
-        stride: usize,
-        nq: usize,
-        nk: usize,
     },
     /// A mixture-of-experts layer (the part's block `block`) of H into O.
     Moe {
@@ -460,27 +412,6 @@ pub enum Op {
         alpha: usize,
         beta: usize,
     },
-    /// The attention's heads of 64 from Mix (rows `stride` wide: q, k, v, the gate): q and k normed, q times `scale`, the rotary where `rope`, into Qo and ring `ring`; the attention of Qo over the ring
-    /// (`window` 0: every position) into Att; each head of Att normed and gated by Mix's gate (at `goff`) into Core.
-    MuseQk {
-        stride: usize,
-        nq: usize,
-        nk: usize,
-        rope: bool,
-        ring: usize,
-        scale: f32,
-    },
-    MuseAttn {
-        ring: usize,
-        nq: usize,
-        nk: usize,
-        window: usize,
-    },
-    MuseOGate {
-        stride: usize,
-        goff: usize,
-        nq: usize,
-    },
     /// The experts in the latent (block `block`): the router reads H, the experts Xc; each expert's output normed (small `post_w`, eps); their weighted sum into M.
     MuseMoe {
         block: usize,
@@ -574,8 +505,8 @@ impl ModelDesc {
     fn heads(&self) -> (usize, usize) {
         let mut hd = (0, 0);
         for op in self.layers.iter().flatten() {
-            if let Op::Attention { d, nq, .. } = op {
-                hd = (hd.0.max(*nq), hd.1.max(*d));
+            if let Op::Attn(a) = op {
+                hd = (hd.0.max(a.nq), hd.1.max(a.d));
             }
         }
         hd
@@ -617,16 +548,8 @@ impl Op {
 
     fn ring(&self) -> Option<usize> {
         match *self {
-            Op::QkvPrep { ring, .. }
-            | Op::Attention { ring, .. }
-            | Op::Prep35 { ring, .. }
-            | Op::Attn35 { ring, .. }
-            | Op::KvWrite { ring, .. }
-            | Op::AttnNh { ring, .. }
-            | Op::V4Kv { ring, .. }
-            | Op::V4Attn { ring, .. }
-            | Op::MuseQk { ring, .. }
-            | Op::MuseAttn { ring, .. } => Some(ring),
+            Op::Attn(ref a) => Some(a.ring),
+            Op::V4Kv { ring, .. } | Op::V4Attn { ring, .. } => Some(ring),
             _ => None,
         }
     }
@@ -800,6 +723,8 @@ pub struct Dyn {
     kg: KernG4,
     k35: Kern35,
     knh: KernNh,
+    /// The attention layer kind's kernels (`Op::Attn`).
+    ka: attn::KernAttn,
     skinny: crate::skinny::SkinnyKern,
     skinny_on: bool,
     big: Part,
@@ -820,15 +745,15 @@ pub struct Dyn {
     st: Buf,
     lse: Buf,
     pub top: TopGpu,
+    /// A decode row's attention parts (attn::SPLITS a row and query head).
     part: Buf,
-    /// Qwen3.5's and Nemotron-H's decode attention parts.
-    part35: Buf,
-    part_nh: Buf,
     /// Nemotron-H's chunked scan's buffers (its loader's), and the mixture-of-experts layers' scratch.
     pub(crate) ssd: Option<SsdWs>,
     moe_sc: std::cell::OnceCell<crate::moe::MoeScratch>,
     /// The tokens before a prompt chunk's rows (a prompt attention's `start`).
     start: std::cell::Cell<usize>,
+    /// In a pass over several sequences: the attention's preparation made for every row at once (its keys and values to 12-bit pages), its attention by sequence.
+    prepped: std::cell::Cell<bool>,
     ws: Buf,
     done: Buf,
     /// The decoded-then-dense way for long chunks (ModelDesc::decoded): the library's or our own dense product, the decoded matrix's room, the GPU's code.
@@ -1072,6 +997,7 @@ impl Dyn {
         let kg = KernG4::load(&dev)?;
         let k35 = Kern35::load(&dev)?;
         let knh = KernNh::load(&dev)?;
+        let ka = attn::KernAttn::load(&dev)?;
         let skinny = crate::skinny::SkinnyKern::load(&dev)?;
         let ch = o.chunk.max(1);
         let rows_out = draft.as_ref().map_or(1, |x| x.k + 1);
@@ -1098,17 +1024,13 @@ impl Dyn {
         let states: Vec<Buf> =
             d.states.iter().enumerate().map(|(i, &b)| Buf::zeroed(if whole || states_used.contains(&i) { b.max(4) } else { 4 })).collect::<Result<_>>()?;
         let (heads, dmax) = d.heads();
-        let heads35 = d.layers.iter().flatten().filter_map(|op| if let Op::Attn35 { nq, .. } = op { Some(*nq) } else { None }).max().unwrap_or(0);
         let hid = d.hidden;
         let scratch = Buf::new(64 * hid * 2)?;
         let embed_groups = Buf::new(EMBED_GROUPS * 64 * hid * 2)?;
         let embed_pairs = Buf::new(ch * 8)?;
         let (pos, st, lse) = (Buf::zeroed(4 * ch)?, Buf::zeroed(16)?, Buf::zeroed(4)?);
         let top = TopGpu::new(d.vocab)?;
-        let part = Buf::zeroed(rows_out * heads.max(1) * SPLITS * (dmax + 2) * 4)?;
-        let part35 = Buf::zeroed(heads35.max(1) * ATTN_SPLITS * ATTN_PART * 4)?;
-        let heads_nh = d.layers.iter().flatten().filter_map(|op| if let Op::AttnNh { nq, .. } = op { Some(*nq) } else { None }).max().unwrap_or(0);
-        let part_nh = Buf::zeroed(heads_nh.max(1) * NH_SPLITS * NH_PART * 4)?;
+        let part = Buf::zeroed(rows_out * heads.max(1) * attn::SPLITS * (dmax + 2) * 4)?;
         // (the mixture-of-experts layers are alike: one scratch for all, made for the first's shapes and a chunk's rows)
         // (a block that runs its own launches makes it the first time it runs: `NhHost::moe_scratch`)
         let moe_sc = std::cell::OnceCell::new();
@@ -1177,6 +1099,7 @@ impl Dyn {
             kg,
             k35,
             knh,
+            ka,
             skinny,
             skinny_on: crate::tune!("GLYD_G4_SKINNY").map_or(big.d.skinny, |v| v != "0"),
             big,
@@ -1196,11 +1119,10 @@ impl Dyn {
             lse,
             top,
             part,
-            part35,
-            part_nh,
             ssd: None,
             moe_sc,
             start: std::cell::Cell::new(0),
+            prepped: std::cell::Cell::new(false),
             ws,
             done,
             blas,
@@ -1509,64 +1431,7 @@ impl Dyn {
                 p.f8[w].linear(&self.lib, p.slot(x), n, p.slot(y), self.ws.ptr, self.ws.bytes, self.done.ptr, s)?;
                 self.mark(name)
             }
-            Op::QkvPrep { d, nq, nk, has_v, stride, q_norm, k_norm, rope, rot, ring } => {
-                let prep = if d == 256 { self.kg.prep256.sig() } else { self.kg.prep512.sig() };
-                let (proj, qo) = (p.slot(Slot::Proj) + self.rows_before(stride), p.slot(Slot::Qo) + self.rows_before(nq * d));
-                let (nq, nki) = (nq as i32, nk as i32);
-                // (a ring of 12-bit pages: the rows' keys and values to its staging rows, each row at its own place, and from there into the pages)
-                let twelve = self.pages12(p, ring).is_some();
-                let (kc, vc, cap) = match &self.lossless {
-                    Some(lx) if twelve => (lx.rows_k.ptr, lx.rows_v.ptr, -1),
-                    _ => {
-                        let (kc, vc) = self.cache(ring);
-                        (kc, vc, self.ring_cap[ring] as i32)
-                    }
-                };
-                let (cos, sin) = (self.ropes[rope].0.ptr, self.ropes[rope].1.ptr);
-                let (nx, rows) = Self::next_linear(p, l, i, n, head);
-                let (pf, pfb) = self.pf(nx, rows, self.pf_kib[0], (d / 2) as u32);
-                let slice = nu * (nq + nki) as u32;
-                launch!(prep, [nu, (nq + nki) as u32, 1 + pfb.div_ceil(slice)], [(d / 2) as u32, 1, 1], s; proj, stride as i32, p.small[q_norm].ptr, p.small[k_norm].ptr, cos, sin, rot as i32, pos.0, cap, qo, kc, vc, nq, nki, has_v as i32, eps, pf, self.table(ring))?;
-                if twelve {
-                    self.kv12_write(ring, n)?;
-                }
-                self.mark("prep")
-            }
-            Op::Attention { d, nq, nk, window, ring } => {
-                let (qo, att) = (p.slot(Slot::Qo) + self.rows_before(nq * d), p.slot(Slot::Att) + self.rows_before(nq * d));
-                // (a ring of 12-bit pages: decode rows read the pages; a prompt chunk's are unpacked to a bf16 ring the kernels below read, with no table)
-                let twelve = self.pages12(p, ring).is_some();
-                if twelve && n <= self.split_rows {
-                    self.kv12_decode(ring, n, nq, qo, att)?;
-                    return self.mark(if window > 0 { "attention (sliding, 12-bit pages)" } else { "attention (global, 12-bit pages)" });
-                }
-                let (kc, vc, cap, tab) = if twelve {
-                    let (kc, vc, cap) = self.kv12_stage(ring, self.start.get(), n)?;
-                    (kc, vc, cap as i32, 0u64)
-                } else {
-                    let (kc, vc) = self.cache(ring);
-                    (kc, vc, self.ring_cap[ring] as i32, self.table(ring))
-                };
-                let (di, nq, nki) = (d as i32, nq as i32, nk as i32);
-                let window = window as i32;
-                let g = nq / nki;
-                if n <= self.split_rows {
-                    let parts = if d == 256 { self.kg.parts256.sig() } else { self.kg.parts512.sig() };
-                    launch!(parts, [nu, nki as u32, SPLITS as u32], [(32 * g.max(PART_WARPS)) as u32, 1, 1], smem attn_smem(d, g as usize), s; qo, kc, vc, pos.1, n as i32, nq, nki, window, cap, self.part.ptr, SPLITS as i32, tab)?;
-                    launch!(self.kg.merge, [nu, nq as u32, 1], [di as u32, 1, 1], s; self.part.ptr, SPLITS as i32, att, nq, di)?;
-                } else if self.kg.fa {
-                    if d == 256 {
-                        launch!(self.kg.fa256, [(n.div_ceil(64)) as u32, nq as u32, 1], [128, 1, 1], smem fa_smem(256, 256, 64), s; qo, kc, vc, pos.1, att, n as i32, nq, nki, window, cap, tab)?;
-                    } else {
-                        launch!(self.kg.fa512b, [(n.div_ceil(32)) as u32, nq as u32, 1], [256, 1, 1], smem FA512B_SMEM, s; qo, kc, vc, pos.1, att, n as i32, nq, nki, window, cap, tab)?;
-                    }
-                } else {
-                    let r = (16 / g).max(1);
-                    let attn = if d == 256 { self.kg.attn256.sig() } else { self.kg.attn512.sig() };
-                    launch!(attn, [((n as i32 + r - 1) / r) as u32, nki as u32, 1], [(32 * r * g) as u32, 1, 1], smem attn_smem(d, (r * g) as usize), s; qo, kc, vc, pos.1, att, n as i32, nq, nki, r, window, cap, tab)?;
-                }
-                self.mark(if window > 0 { "attention (sliding)" } else { "attention (global)" })
-            }
+            Op::Attn(ref a) => self.attn(p, l, i, a, n, pos, head),
             Op::AddNorm { y, post, scalar, next } => {
                 let (nx, rows) = Self::next_linear(p, l, i, n, head);
                 let (pf, pfb) = self.pf(nx, rows, self.pf_kib[1], nt);
@@ -1640,72 +1505,6 @@ impl Dyn {
                 self.k35.gated_norm(s, p.slot(Slot::Core), p.slot(Slot::Mix) + (z_off * 2) as u64, row as i32, p.small[w].ptr, nu, nv as i32, eps)?;
                 self.mark("linear attention: gated norm")
             }
-            Op::Prep35 { stride, q_norm, k_norm, half, ring, nq, nk } => {
-                // (a ring of 12-bit pages: the rows' keys and values to its staging rows, each at its own index, and from there into the pages)
-                let twelve = self.pages12(p, ring).is_some();
-                let (kc, vc, tab) = match &self.lossless {
-                    Some(lx) if twelve => (lx.rows_k.ptr, lx.rows_v.ptr, crate::kern35::ROWS),
-                    _ => {
-                        let (kc, vc) = self.cache(ring);
-                        (kc, vc, self.table(ring))
-                    }
-                };
-                let qo = p.slot(Slot::Qo) + self.rows_before(nq * 256);
-                self.k35.prep(
-                    s,
-                    p.slot(Slot::Mix) + self.rows_before(stride),
-                    stride as i32,
-                    p.small[q_norm].ptr,
-                    p.small[k_norm].ptr,
-                    self.ropes[0].0.ptr,
-                    self.ropes[0].1.ptr,
-                    half as i32,
-                    pos.0,
-                    qo,
-                    kc,
-                    vc,
-                    nu,
-                    nq as i32,
-                    nk as i32,
-                    eps,
-                    tab,
-                )?;
-                if twelve {
-                    self.kv12_write(ring, n)?;
-                }
-                self.mark("attention: q/k norm, rotary, cache write")
-            }
-            Op::Attn35 { stride, ring, nq, nk } => {
-                let (qo, gate, att) = (
-                    p.slot(Slot::Qo) + self.rows_before(nq * 256),
-                    p.slot(Slot::Mix) + self.rows_before(stride),
-                    p.slot(Slot::Att) + self.rows_before(nq * 256),
-                );
-                // (a ring of 12-bit pages: decode rows read the pages, then the gate; a prompt chunk's pages unpacked to a bf16 ring the kernels below read, with no table)
-                let twelve = self.pages12(p, ring).is_some();
-                if twelve && n <= self.split_rows {
-                    self.kv12_decode(ring, n, nq, qo, att)?;
-                    let w = (nq * 256) as i32;
-                    self.k35.gate(s, att, w, gate, stride as i32, att, w, nu, nq as i32)?;
-                    return self.mark("attention: attention (12-bit pages)");
-                }
-                let (kc, vc, tab) = if twelve {
-                    let (kc, vc, _) = self.kv12_stage(ring, self.start.get(), n)?;
-                    (kc, vc, 0u64)
-                } else {
-                    let (kc, vc) = self.cache(ring);
-                    (kc, vc, self.table(ring))
-                };
-                let (qs, nq, nk) = ((nq * 256) as i32, nq as i32, nk as i32);
-                // (a verify pass's rows by the decode step's kernel, each row at its own position: a step's sums)
-                let vpart = self.vpart.as_ref().filter(|_| self.verifying.get() && n > 1).map(|v| v.ptr);
-                if n == 1 || vpart.is_some() {
-                    self.k35.attn_decode(s, qo, qs, gate, stride as i32, kc, vc, pos.1, att, qs, n as i32, nq, nk, vpart.unwrap_or(self.part35.ptr), tab)?;
-                } else {
-                    self.k35.attn(s, qo, qs, gate, stride as i32, kc, vc, pos.1, att, qs, n as i32, nq, nk, tab)?;
-                }
-                self.mark("attention: attention")
-            }
             Op::GateUpSilu { w, inter } => {
                 // (our own dense product fuses the SiLU where the matrix is decoded first, as Qwen3.5's engine)
                 if let Mat::Packed(pk) = &p.mats[w] {
@@ -1755,24 +1554,6 @@ impl Dyn {
             Op::MambaNorm { w, row, di, ng } => {
                 self.knh.gated_norm(s, p.slot(Slot::Core), p.slot(Slot::Mix), row as i32, p.small[w].ptr, nu, di as i32, ng as i32, eps)?;
                 self.mark("Mamba-2: gated norm")
-            }
-            Op::KvWrite { ring, stride, nq, nk } => {
-                // (the sequence's cache, rows of 256 a position and head: its keys, then its values; through its block table where it is paged)
-                let (kv, table) = (self.cache(ring).0, self.table(ring));
-                self.knh.kv_write(s, p.slot(Slot::Mix) + self.rows_before(stride), stride as i32, pos.0, kv, nu, nq as i32, nk as i32, table)?;
-                self.mark("attention: cache write")
-            }
-            Op::AttnNh { ring, stride, nq, nk } => {
-                let (kv, table) = (self.cache(ring).0, self.table(ring));
-                // (in a pass over several sequences: this sequence's rows)
-                let (q, out) = (p.slot(Slot::Mix) + self.rows_before(stride), p.slot(Slot::Att) + self.rows_before(nq * 128));
-                let (nq, nk, os) = (nq as i32, nk as i32, (nq * 128) as i32);
-                if n == 1 {
-                    self.knh.attn_decode(s, q, stride as i32, kv, pos.1, 1, nq, nk, self.part_nh.ptr, out, os, table)?;
-                } else {
-                    self.kern.prefill_attn_paged(s, q, stride as i32, kv, out, os, n as i32, self.start.get() as i32, nq, nk, table)?;
-                }
-                self.mark("attention: attention")
             }
             Op::Moe { block } => {
                 let Some((layer, fc)) = p.moe[block].resident() else {
@@ -1933,26 +1714,6 @@ impl Dyn {
                 let k = &self.kmuse;
                 launch!(k.rgate, [nu, (hid as u32).div_ceil(256), 1], [256, 1, 1], s; p.slot(Slot::X), p.slot(Slot::O), p.small[alpha].ptr, p.small[beta].ptr, hid)?;
                 self.mark("residual gates")
-            }
-            Op::MuseQk { stride, nq, nk, rope, ring, scale } => {
-                let k = &self.kmuse;
-                let (kc, vc) = self.cache(ring);
-                let (mix, qo) = (p.slot(Slot::Mix) + self.rows_before(stride), p.slot(Slot::Qo) + self.rows_before(nq * 64));
-                let (c, sn) = (self.ropes[0].0.ptr, self.ropes[0].1.ptr);
-                launch!(k.qk, [nu, ((nq + 2 * nk) as u32).div_ceil(8), 1], [256, 1, 1], s; mix, stride as i32, qo, kc, vc, c, sn, pos.0, self.ring_cap[ring] as i32, nq as i32, nk as i32, rope as i32, scale, eps, self.table(ring))?;
-                self.mark("attention: q/k norm, rotary, cache write")
-            }
-            Op::MuseAttn { ring, nq, nk, window } => {
-                let k = &self.kmuse;
-                let (kc, vc) = self.cache(ring);
-                let (qo, att) = (p.slot(Slot::Qo) + self.rows_before(nq * 64), p.slot(Slot::Att) + self.rows_before(nq * 64));
-                launch!(k.attn, [nu, nk as u32, 1], [(32 * (nq / nk)) as u32, 1, 1], s; qo, kc, vc, pos.1, att, self.ring_cap[ring] as i32, nq as i32, nk as i32, window as i32, self.table(ring))?;
-                self.mark(if window > 0 { "attention (sliding)" } else { "attention (global)" })
-            }
-            Op::MuseOGate { stride, goff, nq } => {
-                let k = &self.kmuse;
-                launch!(k.ogate, [nu, (nq as u32).div_ceil(8), 1], [256, 1, 1], s; p.slot(Slot::Att), p.slot(Slot::Mix), stride as i32, goff as i32, p.slot(Slot::Core), nq as i32, eps)?;
-                self.mark("attention: output norm, gate")
             }
             Op::MuseMoe { block, post_w, eps: pe } => {
                 let (layer, _) = p.moe[block].resident().ok_or_else(|| Error("Muse Spark's experts are not on the GPU".into()))?;
@@ -2169,17 +1930,27 @@ impl Dyn {
             for (i, op) in ops.iter().enumerate() {
                 // (a preparation whose keys and values go to 12-bit pages writes staging rows and no sequence's ring: the pass's rows at once, and one
                 // write of them; the slots of each sequence's rows the pass made)
-                let staged = matches!(*op, Op::QkvPrep { ring, .. } | Op::Prep35 { ring, .. } if self.pages12(p, ring).is_some());
-                if !self.parts.is_empty() && !rows::row_wise(op) && !staged {
+                if !self.parts.is_empty() && !rows::row_wise(op) {
+                    if let Op::Attn(a) = op {
+                        if a.writes && self.pages12(p, a.ring).is_some() {
+                            self.attn_prep(p, l, i, a, n, pos, head)?;
+                            self.prepped.set(true);
+                        }
+                    }
                     // (an operation on a sequence's cache or state: each sequence's rows by themselves, as a pass of that sequence alone runs them)
+                    let mut r = Ok(());
                     for (k, part) in self.parts.iter().enumerate() {
                         self.at.set(Some(k));
                         self.start.set(part.start);
                         let off = 4 * part.row0 as u64;
-                        let r = self.op(p, l, i, op, part.rows, (pos.0 + off, pos.1 + off), head);
+                        r = self.op(p, l, i, op, part.rows, (pos.0 + off, pos.1 + off), head);
                         self.at.set(None);
-                        r?;
+                        if r.is_err() {
+                            break;
+                        }
                     }
+                    self.prepped.set(false);
+                    r?;
                     continue;
                 }
                 self.op(p, l, i, op, n, pos, head)?;
@@ -2408,9 +2179,8 @@ impl Dyn {
                 self.verify = Some(self.verify_room()?);
             }
             if self.vpart.is_none() {
-                let heads =
-                    self.big.d.layers.iter().flatten().filter_map(|op| if let Op::Attn35 { nq, .. } = op { Some(*nq) } else { None }).max().unwrap_or(0);
-                self.vpart = Some(Buf::new(VERIFY_ROWS * heads.max(1) * ATTN_SPLITS * ATTN_PART * 4)?);
+                let (heads, d) = self.big.d.heads();
+                self.vpart = Some(Buf::new(VERIFY_ROWS * heads.max(1) * attn::SPLITS * (d + 2) * 4)?);
             }
             self.keep_states()?;
             self.verifying.set(true);

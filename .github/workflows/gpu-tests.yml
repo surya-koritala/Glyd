@@ -63,6 +63,8 @@ jobs:
           "$E" topkcheck
           "$E" kvshapes
           "$E" kcheck35
+          # (the attention kind's kernels, every family's head width and arithmetic, against an fp64 attention: prompt rows on the tensor cores and a warp a head, decode rows in parts)
+          "$E" attncheck
           # (a random Gemma 4 in 12-bit KV pages: the prompt's tokens read back the plain bf16 cache's values bit for bit, the same first token)
           "$E" kv12check --case gemma4
           # (the scheduler on 12-bit pages, then with pools made too small for four at once: void pages taken back and run again, every reply the one alone)

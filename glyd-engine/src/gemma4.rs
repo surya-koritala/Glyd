@@ -10,18 +10,11 @@ use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result};
 use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload_packed, Item, Layout, PackBuf};
 #[cfg(feature = "dev")]
-use crate::{ffi::Lib, launch, model::Sample};
+use crate::{ffi::Lib, model::Sample};
 use glyd_gpu::json::{self, Value};
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 
-/// Keys a tile of the attention kernels (G4_KB in kernels/gemma4.cu).
-pub(crate) const KB: usize = 32;
-/// The parts a decode step's attention splits a row's keys into.
-pub const SPLITS: usize = 16;
-/// The warps of a decode step's attention block (g4_attn*_parts): the G that score its row and more that only load the key and value tiles, so a short context is not
-/// one warp pair's loads in a row (GLY-312: 0.75 ms of a 12B step at 30 tokens with 2 warps).
-pub(crate) const PART_WARPS: i32 = 16;
 /// 64-row groups of the embedding decoded at once for a prompt chunk.
 pub(crate) const EMBED_GROUPS: usize = 32;
 
@@ -214,7 +207,7 @@ pub struct WeightsG4 {
     pub bytes: usize,
 }
 
-fn bf16_bits(x: f32) -> u16 {
+pub(crate) fn bf16_bits(x: f32) -> u16 {
     let b = x.to_bits();
     (b.wrapping_add(0x7fff + ((b >> 16) & 1)) >> 16) as u16
 }
@@ -449,73 +442,14 @@ pub struct KernG4 {
     pub(crate) norm: crate::kt::g4_rmsnorm,
     pub(crate) embed_norm: crate::kt::g4_embed_norm,
     pub(crate) add_norm: crate::kt::g4_add_norm,
-    pub(crate) prep256: crate::kt::g4_prep256,
-    pub(crate) prep512: crate::kt::g4_prep512,
-    pub(crate) attn256: crate::kt::g4_attn256,
-    pub(crate) attn512: crate::kt::g4_attn512,
-    pub(crate) parts256: crate::kt::g4_attn256_parts,
-    pub(crate) parts512: crate::kt::g4_attn512_parts,
-    pub(crate) merge: crate::kt::g4_attn_merge,
     pub(crate) gelu: crate::kt::g4_gelu_mul,
     pub(crate) softcap: crate::kt::g4_softcap,
     pub(crate) draft_in: crate::kt::g4_draft_in,
-    pub(crate) fa256: crate::kt::g4_fa256,
-    pub(crate) fa512: crate::kt::g4_fa512,
-    pub(crate) fa512b: crate::kt::g4_fa512b,
-    /// Whether prompt chunks take the tensor-core attention (g4_fa256, g4_fa512b; GLYD_G4_FA=0: g4_attn_t).
-    pub(crate) fa: bool,
-}
-
-/// Dynamic shared memory of g4_fa512b: K and V [32][520] bf16 and the score shares [2][4][16][33] floats.
-pub(crate) const FA512B_SMEM: u32 = (2 * 32 * 520 * 2 + 2 * 4 * 16 * 33 * 4) as u32;
-
-/// Dynamic shared memory of a tensor-core attention block (g4_fa_t): Q [BM][D + 8], K [32][D + 8], V [32][DV + 8] bf16.
-pub(crate) fn fa_smem(d: usize, dv: usize, bm: usize) -> u32 {
-    ((bm * (d + 8) + 32 * (d + 8) + 32 * (dv + 8)) * 2) as u32
-}
-
-/// Dynamic shared memory of an attention block of head d and r g warps.
-pub(crate) fn attn_smem(d: usize, rg: usize) -> u32 {
-    ((KB * (d / 2 + 1) + KB * d / 2 + rg * d / 2) * 4) as u32
 }
 
 impl KernG4 {
     pub fn load(dev: &Dev) -> Result<KernG4> {
-        let k = KernG4 {
-            norm: dev.typed()?,
-            embed_norm: dev.typed()?,
-            add_norm: dev.typed()?,
-            prep256: dev.typed()?,
-            prep512: dev.typed()?,
-            attn256: dev.typed()?,
-            attn512: dev.typed()?,
-            parts256: dev.typed()?,
-            parts512: dev.typed()?,
-            merge: dev.typed()?,
-            gelu: dev.typed()?,
-            softcap: dev.typed()?,
-            draft_in: dev.typed()?,
-            fa256: dev.typed()?,
-            fa512: dev.typed()?,
-            fa512b: dev.typed()?,
-            // (on: against transformers bf16 on 31B QAT, wikitext 32 x 512, KLD 0.0192 where g4_attn_t's is 0.0225, and a 28K prompt 2x faster;
-            // GLYD_G4_FA=0 for g4_attn_t)
-            fa: {
-                // (the switch back, a development build's alone: a release build reads no GLYD_ variable it does not list)
-                #[cfg(feature = "dev")]
-                let on = std::env::var("GLYD_G4_FA").map_or(true, |v| v != "0");
-                #[cfg(not(feature = "dev"))]
-                let on = true;
-                on
-            },
-        };
-        k.fa256.allow_smem(fa_smem(256, 256, 64))?;
-        k.fa512.allow_smem(fa_smem(512, 256, 32))?;
-        k.fa512b.allow_smem(FA512B_SMEM)?;
-        for (kern, d) in [(&*k.attn256, 256), (&*k.parts256, 256), (&*k.attn512, 512), (&*k.parts512, 512)] {
-            kern.allow_smem(attn_smem(d, 16))?;
-        }
-        Ok(k)
+        Ok(KernG4 { norm: dev.typed()?, embed_norm: dev.typed()?, add_norm: dev.typed()?, gelu: dev.typed()?, softcap: dev.typed()?, draft_in: dev.typed()? })
     }
 }
 
@@ -827,79 +761,6 @@ pub fn prefill_prof(a: &crate::args::Args) -> Result<()> {
             out.push(t);
         }
         println!("greedy after the prompt: {out:?}");
-    }
-    Ok(())
-}
-
-/// `g4fatest [--rows N] [--keys K] [--window W]`: the tensor-core attention (g4_fa256, g4_fa512) against g4_attn_t on random queries, keys and values (Gemma 4 31B's heads:
-/// 32 query heads, 16 key-value heads at 256 and 4 at 512): the largest difference of the outputs and the rows where they differ by more than 0.05.
-#[cfg(feature = "dev")]
-pub fn fa_test(a: &crate::args::Args) -> Result<()> {
-    let dev = Dev::new(0)?;
-    let kg = KernG4::load(&dev)?;
-    let (n, keys, window) = (a.num("rows", 257usize)?, a.num("keys", 0usize)?, a.num("window", 0i32)?);
-    let scale = a.num("scale", 0.5f32)?;
-    let s = dev.stream;
-    let mut seed = 0x9e3779b97f4a7c15u64;
-    let mut rnd = |m: usize| -> Vec<u16> {
-        (0..m)
-            .map(|_| {
-                seed ^= seed << 13;
-                seed ^= seed >> 7;
-                seed ^= seed << 17;
-                bf16_bits(((seed >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * scale)
-            })
-            .collect()
-    };
-    for (d, nk) in [(256usize, 16usize), (512, 4)] {
-        let nq = 32;
-        let cap = (keys + n).max(n) + 16;
-        let q = upload_bytes(crate::weights::as_bytes(&rnd(n * nq * d)))?;
-        let kc = upload_bytes(crate::weights::as_bytes(&rnd(cap * nk * d)))?;
-        let vc = upload_bytes(crate::weights::as_bytes(&rnd(cap * nk * d)))?;
-        let pos: Vec<i32> = (0..n).map(|i| (keys + i) as i32).collect();
-        let pb = Buf::new(4 * n)?;
-        pb.write(0, &pos)?;
-        let (o1, o2) = (Buf::zeroed(n * nq * d * 2)?, Buf::zeroed(n * nq * d * 2)?);
-        let g = nq / nk;
-        let r = (16 / g).max(1);
-        let (attn, fa, bm) = if d == 256 { (kg.attn256.sig(), kg.fa256.sig(), 64usize) } else { (kg.attn512.sig(), kg.fa512.sig(), 32usize) };
-        let (nqi, nki) = (nq as i32, nk as i32);
-        // SAFETY: buffers sized for n rows and cap positions.
-        unsafe {
-            launch!(attn, [((n + r - 1) / r) as u32, nk as u32, 1], [(32 * r * g) as u32, 1, 1], smem attn_smem(d, r * g), s; q.ptr, kc.ptr, vc.ptr, pb.ptr, o1.ptr, n as i32, nqi, nki, r as i32, window, cap as i32, 0u64)?;
-            if d == 512 && a.has("b") {
-                launch!(kg.fa512b, [(n.div_ceil(32)) as u32, nq as u32, 1], [256, 1, 1], smem FA512B_SMEM, s; q.ptr, kc.ptr, vc.ptr, pb.ptr, o2.ptr, n as i32, nqi, nki, window, cap as i32, 0u64)?;
-            } else {
-                launch!(fa, [(n.div_ceil(bm)) as u32, nq as u32, (d / 256) as u32], [(bm / 16 * 32) as u32, 1, 1], smem fa_smem(d, 256, bm), s; q.ptr, kc.ptr, vc.ptr, pb.ptr, o2.ptr, n as i32, nqi, nki, window, cap as i32, 0u64)?;
-            }
-        }
-        dev.sync()?;
-        let (mut x, mut y) = (vec![0u16; n * nq * d], vec![0u16; n * nq * d]);
-        o1.read(0, &mut x)?;
-        o2.read(0, &mut y)?;
-        let f = |w: u16| f32::from_bits((w as u32) << 16);
-        let mut worst = (0f32, 0usize);
-        let mut bad_rows = std::collections::BTreeSet::new();
-        for i in 0..x.len() {
-            let dd = (f(x[i]) - f(y[i])).abs();
-            if dd > worst.0 {
-                worst = (dd, i);
-            }
-            if dd > 0.05 {
-                bad_rows.insert(i / (nq * d));
-            }
-        }
-        let wi = worst.1;
-        println!(
-            "head {d}: largest difference {:.4} (row {}, head {}, dim {}); rows differing by > 0.05: {} of {n} {:?}",
-            worst.0,
-            wi / (nq * d),
-            (wi / d) % nq,
-            wi % d,
-            bad_rows.len(),
-            bad_rows.iter().take(12).collect::<Vec<_>>()
-        );
     }
     Ok(())
 }

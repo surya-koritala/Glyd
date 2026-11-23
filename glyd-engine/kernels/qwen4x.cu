@@ -982,7 +982,7 @@ extern "C" __global__ void __launch_bounds__(128) qx_attn_tc(const bf16* __restr
 
 // The attention of a decode step's few rows over their picked tokens, split for the memory's sake: W warps a block, each one 16-token step of qx_attn_tc's warp (a row's 12 query heads of a key-value head on the
 // tensor cores, the cache straight into the fragments): block b takes the row's tokens 16 W b .. 16 W (b + 1) - 1, its warps' outputs combined in shared memory (each rescaled to the block's maximum, added in
-// pairs), the block's unnormalized outputs, maximum (log2 units) and sum into part [(t nq + h) S + b][258] for attn256_merge, S = gridDim.x. Grid (ceil(tmax / (16 W)), nk, n); nk == 2. Dynamic shared memory
+// pairs), the block's unnormalized outputs, maximum (log2 units) and sum into part [(t nq + h) S + b][258] for attn_merge (kernels/attn.cu), S = gridDim.x. Grid (ceil(tmax / (16 W)), nk, n); nk == 2. Dynamic shared memory
 // (W / 2) 16 KB (the pairs' adds) + W 128 floats (the maxima and sums).
 template <int W>
 __device__ __forceinline__ void qx_attn_dec_t(const bf16* __restrict__ q, int qs, const bf16* __restrict__ kc, const bf16* __restrict__ vc, const int* __restrict__ sel, const int* __restrict__ cnt, int tmax,
@@ -1154,8 +1154,8 @@ extern "C" __global__ void __launch_bounds__(256) qx_attn_dec8(const bf16* q, in
 #define QX_KS 129  // a key's row in shared memory: 128 words and one more
 
 // The attention of each row t of q [n, qs] (query head h at h * 256) over the tokens sel[t][0 .. cnt[t]) (the indexer's picks, ascending) of the cache kc, vc [positions, nk, 256], nq / nk query heads to a key-value
-// head, as attn256 computes it (fp32 scores and sums, the probabilities rounded to bf16 for the values; sl2 = 256^-0.5 log2(e)); then out = bf16(bf16(attention) sigmoid(gate)), the gate at gate[t gs + h 512 + 256 ..].
-// Grid (n, nk, S): with S > 1, block z takes the z-th part of the row's tokens and writes its unnormalized outputs, maximum and sum to part [(t nq + h) S + z][258] for attn256_merge. A block the G query heads of a
+// head, as the attention kind's warp kernel computes it (fp32 scores and sums, the probabilities rounded to bf16 for the values; sl2 = 256^-0.5 log2(e)); then out = bf16(bf16(attention) sigmoid(gate)), the gate at gate[t gs + h 512 + 256 ..].
+// Grid (n, nk, S): with S > 1, block z takes the z-th part of the row's tokens and writes its unnormalized outputs, maximum and sum to part [(t nq + h) S + z][258] for attn_merge. A block the G query heads of a
 // key-value head (a warp each). Dynamic shared memory (QX_KB (QX_KS + 128) + 128 G) * 4 bytes.
 extern "C" __global__ void __launch_bounds__(512) qx_attn_sel(const bf16* q, int qs, const bf16* gate, int gs, const bf16* kc, const bf16* vc, const int* sel, const int* cnt, int tmax, bf16* out, int os, int nq, int nk,
                                                              float sl2, float* part, int S) {

@@ -61,12 +61,30 @@ pub struct KernQx {
     gdn_scan: crate::kt::qx_gdn_scan,
     /// the two-pass delta rule's scratch (`delta2`), made by its first call and grown by a longer one
     gdn_buf: std::cell::RefCell<Option<Buf>>,
-    merge: crate::kt::attn256_merge,
+    /// (the gated merge of a split attention's parts: the attention kind's, src/dynamic/attn.rs)
+    merge: crate::kt::attn_merge,
     // (the fused Gated Residual's for 1, 2, 4 and 8 rows; its first launch also by streams, `qx_gr1q`, on gr1s's scratch)
     gr1: [crate::dev::ByArgs<crate::dev::ArgsOf<crate::kt::qx_gr1_1>>; 4],
     gr1q: [crate::dev::ByArgs<crate::dev::ArgsOf<crate::kt::qx_gr1q_1>>; 3],
     gr2: [crate::dev::ByArgs<crate::dev::ArgsOf<crate::kt::qx_gr2_1>>; 4],
     i8bf16: crate::kt::qx_i8_bf16,
+}
+
+/// The attention kind's merge of `splits` parts of nq heads of 256 into `out` (rows `os` apart), times sigmoid of each query head's gate (`gate`: the rows of q, `gs` apart,
+/// each head's 256 queries then its 256 gates).
+fn merge_args(part: u64, splits: usize, gate: u64, gs: usize, out: u64, os: usize, nq: usize) -> crate::dynamic::attn::AttnArgs {
+    crate::dynamic::attn::AttnArgs {
+        part,
+        S: splits as i32,
+        d: 256,
+        nq: nq as i32,
+        out,
+        os: os as i32,
+        gate: gate + 512,
+        gs: gs as i32,
+        g_step: 512,
+        ..Default::default()
+    }
 }
 
 /// The kernel of a few-rows family (1, 2, 4 or 8 rows) for n rows (1 to 8).
@@ -496,7 +514,7 @@ impl KernQx {
         launch!(self.select, [n as u32, 1, 1], [1024, 1, 1], smem (cap * 4) as u32, s; scores, pmax as i32, pos, sel, cnt, tmax as i32, kp as i32, ksel as i32, cap as i32)
     }
 
-    /// `attn_sel` for a decode step's few rows on the tensor cores, split (`qx_attn_dec*`: `wpb` (4 or 8) warps a block, a 16-token step each, combined in the block; the blocks' parts merged by attn256_merge;
+    /// `attn_sel` for a decode step's few rows on the tensor cores, split (`qx_attn_dec*`: `wpb` (4 or 8) warps a block, a 16-token step each, combined in the block; the blocks' parts merged by attn_merge;
     /// `part` holds n nq ceil(tmax / (16 wpb)) parts of 258 floats); 24 query heads, 2 key-value heads.
     ///
     /// # Safety
@@ -524,10 +542,10 @@ impl KernQx {
         let (k, w) = if wpb == 4 { (&self.attn_dec[0], 4u32) } else { (&self.attn_dec[1], 8) };
         let splits = tmax.div_ceil(16 * w as usize);
         launch!(k, [splits as u32, 2, n as u32], [32 * w, 1, 1], smem attn_dec_smem(w), s; q, qs as i32, kc, vc, sel, cnt, tmax as i32, sl2, part)?;
-        launch!(self.merge, [n as u32, 24, 1], [256, 1, 1], s; part, splits as i32, gate, gs as i32, out, os as i32, 24i32)
+        launch!(self.merge, [n as u32, 24, 1], [256, 1, 1], s; merge_args(part, splits, gate, gs, out, os, 24))
     }
 
-    /// The gated attention of the n rows over the tokens sel/cnt picked (in `splits` parts merged by attn256_merge where more than one: `part` holds n nq splits 258 floats).
+    /// The gated attention of the n rows over the tokens sel/cnt picked (in `splits` parts merged by attn_merge where more than one: `part` holds n nq splits 258 floats).
     ///
     /// # Safety
     /// As `hc_norm`.
@@ -557,7 +575,7 @@ impl KernQx {
         let sl2 = (1.0f64 / 16.0 * std::f64::consts::LOG2_E) as f32;
         launch!(self.attn_sel, [n as u32, nk as u32, splits as u32], [32 * g, 1, 1], smem smem, s; q, qs as i32, gate, gs as i32, kc, vc, sel, cnt, tmax as i32, out, os as i32, nq as i32, nk as i32, sl2, part, splits as i32)?;
         if splits > 1 {
-            launch!(self.merge, [n as u32, nq as u32, 1], [256, 1, 1], s; part, splits as i32, gate, gs as i32, out, os as i32, nq as i32)?;
+            launch!(self.merge, [n as u32, nq as u32, 1], [256, 1, 1], s; merge_args(part, splits, gate, gs, out, os, nq))?;
         }
         Ok(())
     }
@@ -1413,6 +1431,8 @@ pub struct EngineQx {
     pub lib: Lib,
     pub(crate) kern: Kern,
     pub(crate) k35: Kern35,
+    /// The attention layer kind's kernels (the gated attention's, as the Qwen3.5 layout runs them).
+    ka: crate::dynamic::attn::KernAttn,
     pub(crate) kg: KernGlm,
     pub(crate) kq: KernQx,
     skinny: crate::skinny::SkinnyKern,
@@ -1761,6 +1781,7 @@ impl EngineQx {
         let lib = Lib::find()?;
         let (kern, k35, kg, kq, skinny) =
             (Kern::load(&dev)?, Kern35::load(&dev)?, KernGlm::load(&dev)?, KernQx::load(&dev)?, crate::skinny::SkinnyKern::load(&dev)?);
+        let ka = crate::dynamic::attn::KernAttn::load(&dev)?;
         let (free0, _) = dev.mem_info()?;
         let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
         // (a part of a model split over GPUs: its layers; the final mixer, the LM head and the MTP head with the last one; the n-gram embedding's layer on the first part, where the rows are staged)
@@ -1920,6 +1941,7 @@ impl EngineQx {
             lib,
             kern,
             k35,
+            ka,
             kg,
             kq,
             skinny,
@@ -2729,25 +2751,15 @@ impl EngineQx {
         let pk = self.pk.ptr + (ly.idx * (self.ctx / c.ix_block + 1) * c.ix_dim * 2) as u64;
         self.lin(&ly.mats[0], self.h.ptr, n, self.mix.ptr)?;
         crate::tmark!(s, "attn: qkv product");
-        self.k35.prep(
-            s,
-            self.mix.ptr,
-            qd as i32,
-            sm[0].ptr,
-            sm[1].ptr,
-            self.cos.ptr,
-            self.sin.ptr,
-            half as i32,
-            pos,
-            self.qo.ptr,
-            kc,
-            vc,
-            n as u32,
-            nq as i32,
-            nk as i32,
-            c.eps,
-            0u64,
-        )?;
+        // (the Qwen3.5 layout's gated attention, the attention kind's kernels: the preparation; the attention over every token below, its warp kernels as before)
+        let op = crate::dynamic::qwen35::attention(nq, nk, c.rotary, (0, 0), 0);
+        if op.stride != qd || c.head_dim != 256 {
+            return err(format!("attention rows of {qd} with heads of {}: the gated attention's are {} with heads of 256", c.head_dim, op.stride));
+        }
+        let mut at = op.args(n, c.eps);
+        (at.src, at.qw, at.kw, at.cs, at.sn, at.qpos, at.kpos) = (self.mix.ptr, sm[0].ptr, sm[1].ptr, self.cos.ptr, self.sin.ptr, pos, pos);
+        (at.qo, at.kc, at.vc, at.cap, at.out, at.gate) = (self.qo.ptr, kc, vc, self.ctx as i32, self.core.ptr, self.mix.ptr + 512);
+        self.ka.prep(s, &at, nq + nk, (crate::gemma4::G4Pf::default(), 0))?;
         self.lin(&ly.mats[2], self.h.ptr, n, self.ixqk.ptr)?;
         crate::tmark!(s, "attn: indexer product");
         self.kq.ix_prep(s, self.ixqk.ptr, sm[2].ptr, self.cos.ptr, self.sin.ptr, half, pos, self.ixq.ptr, ik, n, c.ix_heads, c.eps)?;
@@ -2756,7 +2768,7 @@ impl EngineQx {
         let qs = nq * c.head_dim;
         // (a few rows, a decode step's or a verification's, always through the picks: the same launches at any position, which a graph replays)
         if n > SPEC_ROWS && start + n <= c.ix_tokens() {
-            self.k35.attn(s, self.qo.ptr, qs as i32, self.mix.ptr, qd as i32, kc, vc, pos, self.core.ptr, qs as i32, n as i32, nq as i32, nk as i32, 0u64)?;
+            self.ka.rows(s, &at)?;
         } else {
             let (pmax, ksel) = (self.ctx / c.ix_block, c.ix_budget / c.ix_block);
             if self.ctx > c.ix_tokens() && c.ix_heads == 4 {
