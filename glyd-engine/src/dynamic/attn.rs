@@ -511,15 +511,12 @@ impl KernAttn {
 }
 
 impl Dyn {
-    /// A pass's rows' lengths and first tokens for each kind of the library's decode calls, once for every layer (`n` rows at `pos`, each part's at its rows).
+    /// A pass's rows' lengths and first tokens for each kind of the library's decode calls, once for every layer (`n` rows at `pos`): one launch a kind for all the
+    /// rows, whatever sequences they are (a row's entries depend on its position alone, and a part's rows are at its row0 in them as in `pos`).
     pub(super) unsafe fn lib_decode_prepare(&self, n: usize, pos: (u64, u64)) -> Result<()> {
         let Some(ld) = &self.ldec else { return Ok(()) };
-        let parts: Vec<(usize, usize)> = if self.parts.is_empty() { vec![(0, n)] } else { self.parts.iter().map(|q| (q.row0, q.rows)).collect() };
-        for (row0, rows) in parts {
-            for (i, &(window, sp)) in ld.kinds.iter().enumerate() {
-                let at = 4 * (row0 * sp) as u64;
-                self.kern.kv12_rows(self.dev.stream, pos.1 + 4 * row0 as u64, rows, 0, window, sp, 0, ld.lens[i].ptr + at, ld.first[i].ptr + at)?;
-            }
+        for (i, &(window, sp)) in ld.kinds.iter().enumerate() {
+            self.kern.kv12_rows(self.dev.stream, pos.1, n, 0, window, sp, 0, ld.lens[i].ptr, ld.first[i].ptr)?;
         }
         Ok(())
     }
@@ -826,6 +823,132 @@ pub fn check() -> Result<bool> {
     }
     println!("{}", if ok { "all of the attention kind's kernels within their bounds" } else { "an attention kernel past its bound" });
     Ok(ok)
+}
+
+/// `glyd-engine attndecode [--lens 64,170,1024,4096,16384] [--ctx 32768] [--reps 200]`: a decode row's attention over bf16 pages, microseconds a call, at gemma-4-12B's sliding
+/// layers (8 kv heads of 256, 16 query heads, a window of 1,024, the scores in bf16) and global ones (1 of 512, 16 query heads in two calls' 8) and the Qwen3.5 layout's (2 of 256,
+/// 8 query heads): the engine's parts kernel and its merge (the decode before the library's took these shapes) and the library's (glyd_gpu_kv_decode_bf16, with the plan the engine
+/// makes for a context of --ctx). Each a CUDA graph of --reps calls, as a step's graph runs them; and how many of the library's outputs are not the parts kernel's bits (their
+/// sums are in another order: some).
+#[cfg(feature = "dev")]
+pub fn time_decode(a: &crate::args::Args) -> Result<()> {
+    use crate::dev::{Buf, Timer};
+    let dev = Dev::new(0)?;
+    let (k, lib) = (KernAttn::load(&dev)?, crate::ffi::Lib::find()?);
+    let s = dev.stream;
+    let (ctx, reps) = (a.num("ctx", 32768usize)?, a.num("reps", 200usize)?);
+    let lens: Vec<usize> = a.flag("lens").unwrap_or("64,170,1024,4096,16384").split(',').filter_map(|x| x.trim().parse().ok()).filter(|&x| x >= 1).collect();
+    if std::env::var_os("GLYD_KV_FLOOR").is_none() {
+        lib.kv_floor_set(super::kvpages::DECODE_FLOOR)?;
+    }
+    println!(
+        "{} (sm_{}{}): a decode row's attention over bf16 pages, a context of {ctx} planned, {reps} calls a graph (us a call)",
+        dev.name, dev.cc.0, dev.cc.1
+    );
+    // (what, kv heads, head, query heads, window, the scores in bf16, the model's most kv heads: the engine plans its splits for them)
+    let shapes: [(&str, usize, usize, usize, usize, bool, usize); 3] = [
+        ("gemma-4-12B sliding (8 x 256, 16 queries, window 1024)", 8, 256, 16, 1024, true, 8),
+        ("gemma-4-12B global (1 x 512, 16 queries)", 1, 512, 16, 0, true, 8),
+        ("the Qwen3.5 layout (2 x 256, 8 queries)", 2, 256, 8, 0, false, 2),
+    ];
+    let mut seed = 0x2026_1123_0d0c_0001u64;
+    let mut bits = |m: usize| -> Vec<u16> {
+        (0..m)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                (0x3C00 | (seed >> 52) as u16 & 0x03FF) ^ ((seed >> 63) as u16) << 15
+                // (a value of 2^-7 to 2, either sign)
+            })
+            .collect()
+    };
+    for (what, nk, d, nq, window, sbf16, heads) in shapes {
+        let (g, sp) = (nq / nk, (nq / nk).div_ceil(MAX_DG));
+        let splits = lib.kv_decode_splits(1, heads as i64, ctx.div_ceil(16) as i64)?;
+        for &len in &lens {
+            let blocks = len.div_ceil(16);
+            // (the pages in reverse order of the table's)
+            let tab: Vec<i32> = (0..blocks).map(|b| (blocks - 1 - b) as i32).collect();
+            let up = |x: &[u16]| -> Result<Buf> {
+                let b = Buf::new(2 * x.len())?;
+                b.write(0, x)?;
+                Ok(b)
+            };
+            let (qb, kb, vb) = (up(&bits(nq * d))?, up(&bits(blocks * 16 * nk * d))?, up(&bits(blocks * 16 * nk * d))?);
+            let (tb, pb) = (Buf::new(4 * blocks)?, Buf::new(4)?);
+            tb.write(0, &tab)?;
+            pb.write(0, &[(len - 1) as i32])?;
+            let first = if window > 0 { len.saturating_sub(window) } else { 0 };
+            let (lb, fb) = (Buf::new(4 * sp)?, Buf::new(4 * sp)?);
+            lb.write(0, &vec![len as i32; sp])?;
+            fb.write(0, &vec![first as i32; sp])?;
+            let part = Buf::zeroed(nq * SPLITS * (d + 2) * 4)?;
+            let ws_bytes = lib.kv_decode_workspace(sp as i64, nk as i64, (g / sp) as i64, d as i64, splits)?;
+            let ws = Buf::zeroed(ws_bytes)?;
+            let (o_old, o_lib) = (Buf::zeroed(2 * nq * d)?, Buf::zeroed(2 * nq * d)?);
+            let scale = 1f32;
+            let x = AttnArgs {
+                qo: qb.ptr,
+                kc: kb.ptr,
+                vc: vb.ptr,
+                tab: tb.ptr,
+                cap: (blocks * 16) as i32,
+                kpos: pb.ptr,
+                part: part.ptr,
+                d: d as i32,
+                n: 1,
+                nq: nq as i32,
+                nk: nk as i32,
+                window: window as i32,
+                os: (nq * d) as i32,
+                sbf16: sbf16 as i32,
+                S: SPLITS as i32,
+                q_scale: 1.0,
+                scale,
+                sl2: sl2(scale),
+                ..AttnArgs::default()
+            };
+            let stride = (nq * d / sp) as i64;
+            // SAFETY: buffers made here of the sizes the kernels read and write, alive while the graphs run; read after a synchronize.
+            let old = || unsafe { k.decode(s, &AttnArgs { out: o_old.ptr, ..x }) };
+            let new = || unsafe {
+                lib.kv_decode_bf16(
+                    qb.ptr,
+                    stride,
+                    (kb.ptr, vb.ptr, tb.ptr, 0, 0),
+                    (lb.ptr, fb.ptr, sp as i64, splits),
+                    (nk as i64, (g / sp) as i64, d as i64),
+                    (scale as f64, sbf16),
+                    o_lib.ptr,
+                    stride,
+                    (ws.ptr, ws_bytes),
+                    s,
+                )
+            };
+            let time = |f: &dyn Fn() -> Result<()>| -> Result<f64> {
+                let graph = dev.capture(|| (0..reps).try_for_each(|_| f()))?;
+                // SAFETY: the graph's buffers are alive (above).
+                unsafe { graph.launch(s)? };
+                dev.sync()?;
+                let t = Timer::new()?;
+                t.start(s)?;
+                unsafe { graph.launch(s)? };
+                Ok(t.stop(s)? as f64 * 1e3 / reps as f64)
+            };
+            let (t_old, t_new) = (time(&old)?, time(&new)?);
+            let (mut y, mut z) = (vec![0u16; nq * d], vec![0u16; nq * d]);
+            o_old.read(0, &mut y)?;
+            o_lib.read(0, &mut z)?;
+            let differ = y.iter().zip(&z).filter(|(p, q)| p != q).count();
+            println!(
+                "{what}, {len:>6} tokens: parts kernel + merge {t_old:>7.2}; library ({splits} splits) {t_new:>7.2} ({:+.0}%); {differ} of {} outputs not the parts kernel's bits",
+                100.0 * (t_new / t_old - 1.0),
+                y.len()
+            );
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

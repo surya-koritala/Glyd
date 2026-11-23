@@ -6656,13 +6656,37 @@ __device__ __forceinline__ void load_buf(Buf& c, const AttnParams& P, int b, int
     c.pg = reinterpret_cast<const uint32_t*>(page + 16 * P.HP);
 }
 
+// A page of a bf16 cache (AttnParams kc, vc; `blk` the page's block where there is a table): the words of the page's tokens g and g + 8, of the warp's head h and half hf, that a lane's
+// fragments take, keys and values alike (words 8 i + q and 8 i + 4 + q of the half's 128 channels). kw is the scores' A fragments as decode_tile<0> gives them; vw holds the values'
+// words in the same places, each an 8 x 8 block of tokens by channels that one transpose makes V^T's fragment (decode_tile<1>'s). Every word is read at once, the tokens outside
+// the ones attended to as well (their places are in the page's block, or the ring, all the same): their scores are masked and their values zeroed after, as the pages' are.
+template <int DO>
+__device__ __forceinline__ void bf16_words(const AttnParams& P, int64_t blk, int pg, int h, int hf, int g, int q, uint4 (&kw)[8], uint4 (&vw)[8]) {
+    const int64_t t0 = 16 * (int64_t)pg + g;
+    const int64_t p0 = P.bt ? blk * 16 + g : t0 % P.cap, p1 = P.bt ? blk * 16 + g + 8 : (t0 + 8) % P.cap;
+    const int64_t at = (int64_t)h * DO + hf * D;
+    const uint32_t* k0 = reinterpret_cast<const uint32_t*>(P.kc + p0 * P.H * DO + at);
+    const uint32_t* k1 = reinterpret_cast<const uint32_t*>(P.kc + p1 * P.H * DO + at);
+    const uint32_t* v0 = reinterpret_cast<const uint32_t*>(P.vc + p0 * P.H * DO + at);
+    const uint32_t* v1 = reinterpret_cast<const uint32_t*>(P.vc + p1 * P.H * DO + at);
+#pragma unroll
+    for (int i = 0; i < 8; i++) {
+        kw[i] = make_uint4(__ldg(k0 + 8 * i + q), __ldg(k1 + 8 * i + q), __ldg(k0 + 8 * i + 4 + q), __ldg(k1 + 8 * i + 4 + q));
+        vw[i] = make_uint4(__ldg(v0 + 8 * i + q), __ldg(v0 + 8 * i + 4 + q), __ldg(v1 + 8 * i + q), __ldg(v1 + 8 * i + 4 + q));
+    }
+}
+
 // PIPE: the next page's loads are issued before the page in hand is computed (two pages of raw data a warp in registers). FUSE: the last CTA of a (sequence, kv head) to write its partial merges
 // them all (the arithmetic of combine_kernel, which a launch of its own does otherwise). HALVES 2 and 4: a head of 256 or 512 channels, a page two or four warps' (AttnParams).
-template <bool PIPE, bool FUSE, int HALVES>
+// BF16: the keys and values in a bf16 cache (kc, vc) in place of the pages: an instance of its own, with no page decode in it, that reads a page's words at once (bf16_words) and its next
+// page's block a page ahead; the same fragments, so the same arithmetic and bits as the pages'.
+// The grid is (H, B, splits): a call's CTAs are dispatched split by split, so those of the first splits (the ones that have pages, where a sequence is short) start before the ones past
+// their sequence's plan, which return at once.
+template <bool PIPE, bool FUSE, int HALVES, bool BF16 = false>
 __global__ void __launch_bounds__(NW * 32, 1) attn_kernel(const AttnParams P) {
     constexpr int DO = D * HALVES;   // a query head's channels
     constexpr int NP = NW / HALVES;  // pages a CTA has in hand at once
-    const int split = blockIdx.x, h = blockIdx.y, b = blockIdx.z;
+    const int split = blockIdx.z, h = blockIdx.x, b = blockIdx.y;
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, q = lane & 3;
     const int hf = warp % HALVES, pw = warp / HALVES;  // the warp's half of the channels, and its page's place among the CTA's
     const int hp = h * HALVES + hf;                    // the page's head the warp reads
@@ -6685,16 +6709,10 @@ __global__ void __launch_bounds__(NW * 32, 1) attn_kernel(const AttnParams P) {
         }
     }
     uint32_t kb[8], vb[16];
-    if (!P.kc) {
+    if constexpr (!BF16) {
         load_bases<0>(P.kbase + hp * D, lane, kb);
         load_bases<1>(P.vbase + hp * D, lane, vb);
     }
-    // (a bf16 cache: token t's channels of the warp's half, its row's place through the sequence's table or modulo cap; the fragments the pages' decode gives, the
-    // tokens outside lo .. valid zero)
-    const auto row = [&](const __nv_bfloat16* c, int t) -> const __nv_bfloat16* {
-        const int64_t pl = P.bt ? (int64_t)__ldg(P.bt + (int64_t)b * P.bt_stride + (t >> 4)) * 16 + (t & 15) : (int64_t)(t % P.cap);
-        return c + (pl * P.H + h) * DO + hf * D;
-    };
     // a lane's softmax state is for heads 2q (index 0) and 2q + 1 (index 1); the lanes of the other g hold the same heads' other tokens
     float m_run0 = -INFINITY, m_run1 = -INFINITY, l_run0 = 0.f, l_run1 = 0.f;
     float o[8][4];  // O^T: channels 16i + g (o[i][0], o[i][1]) and 16i + 8 + g (o[i][2], o[i][3]) of heads 2q, 2q + 1 (of the warp's half)
@@ -6704,24 +6722,21 @@ __global__ void __launch_bounds__(NW * 32, 1) attn_kernel(const AttnParams P) {
     Buf cur, nxt;  // the page in hand, and (PIPE) the next one
     int pg = p0 + pw;
     [[maybe_unused]] int par = 0;  // (HALVES 2: the scores' buffer of this page, one of two in turn)
-    if constexpr (PIPE) {
-        if (pg < p1 && !P.kc) load_buf(cur, P, b, hp, pg, lane);
+    [[maybe_unused]] int64_t blk = 0;  // (BF16 with a table: the block of the page in hand)
+    if constexpr (BF16) {
+        if (P.bt && pg < p1) blk = __ldg(P.bt + (int64_t)b * P.bt_stride + pg);
+    } else if constexpr (PIPE) {
+        if (pg < p1) load_buf(cur, P, b, hp, pg, lane);
     }
     for (; pg < p1; pg += NP) {
         const int valid = len - 16 * pg, lo = fst - 16 * pg;  // the page's tokens attended to: lo .. valid
         uint4 f[8];
-        if (P.kc) {
-            // K's fragments: f[i].x token g, channels 16 i + 2 q, + 1; .y token 8 + g; .z, .w the same tokens 8 channels on
-            const bool ia = g >= lo && g < valid, ib = g + 8 >= lo && g + 8 < valid;
-            const uint32_t* ka = ia ? reinterpret_cast<const uint32_t*>(row(P.kc, 16 * pg + g)) : nullptr;
-            const uint32_t* kb8 = ib ? reinterpret_cast<const uint32_t*>(row(P.kc, 16 * pg + 8 + g)) : nullptr;
-#pragma unroll
-            for (int i = 0; i < 8; i++) {
-                f[i].x = ka ? __ldg(ka + 8 * i + q) : 0u;
-                f[i].y = kb8 ? __ldg(kb8 + 8 * i + q) : 0u;
-                f[i].z = ka ? __ldg(ka + 8 * i + 4 + q) : 0u;
-                f[i].w = kb8 ? __ldg(kb8 + 8 * i + 4 + q) : 0u;
-            }
+        [[maybe_unused]] uint4 vw[8];  // (BF16: the values' words, transposed into V^T's fragments when the values are taken)
+        if constexpr (BF16) {
+            // (the next page's block read first, for the next turn: the page's words then wait on no table read)
+            const int64_t nblk = P.bt && pg + NP < p1 ? (int64_t)__ldg(P.bt + (int64_t)b * P.bt_stride + pg + NP) : 0;
+            bf16_words<DO>(P, blk, pg, h, hf, g, q, f, vw);
+            blk = nblk;
         } else {
             if constexpr (PIPE) {
                 if (pg + NP < p1) load_buf(nxt, P, b, hp, pg + NP, lane);
@@ -6793,19 +6808,11 @@ __global__ void __launch_bounds__(NW * 32, 1) attn_kernel(const AttnParams P) {
         m_run1 = mn1;
         const uint32_t pb0 = transpose8x8(pack_bf16x2(p0f, p1f)), pb1 = transpose8x8(pack_bf16x2(p2f, p3f));  // P^T: tokens 2q, 2q + 1 and 8 + 2q, 9 + 2q of head g
 
-        if (P.kc) {
-            // V^T's fragments: f[i].x channel 16 i + g of tokens 2 q, 2 q + 1 (the first in the low half); .y channel 16 i + 8 + g; .z, .w tokens 8 + 2 q, 9 + 2 q
-            const auto v = [&](int t, int c) -> uint32_t {
-                return t >= lo && t < valid ? (uint32_t)__ldg(reinterpret_cast<const unsigned short*>(row(P.vc, 16 * pg + t)) + c) : 0u;
-            };
+        if constexpr (BF16) {
+            // V^T's fragments: f[i].x channel 16 i + g of tokens 2 q, 2 q + 1 (the first in the low half), the transpose of the block of tokens 0-7 by channels 16 i .. 16 i + 7
+            // whose row g, channels 2 q and 2 q + 1, the lane holds; .y channels 8 on; .z, .w tokens 8 on
 #pragma unroll
-            for (int i = 0; i < 8; i++) {
-                const int c0 = 16 * i + g, c1 = c0 + 8;
-                f[i].x = v(2 * q, c0) | v(2 * q + 1, c0) << 16;
-                f[i].y = v(2 * q, c1) | v(2 * q + 1, c1) << 16;
-                f[i].z = v(8 + 2 * q, c0) | v(9 + 2 * q, c0) << 16;
-                f[i].w = v(8 + 2 * q, c1) | v(9 + 2 * q, c1) << 16;
-            }
+            for (int i = 0; i < 8; i++) f[i] = make_uint4(transpose8x8(vw[i].x), transpose8x8(vw[i].y), transpose8x8(vw[i].z), transpose8x8(vw[i].w));
         } else {
             decode_tile<1>(cur.vr, vb, cur.hd, cur.pg, P.ent, P.nc, P.A, P.raw, hp, lane, f);
         }
@@ -6823,9 +6830,7 @@ __global__ void __launch_bounds__(NW * 32, 1) attn_kernel(const AttnParams P) {
         }
 #pragma unroll
         for (int i = 0; i < 8; i++) mma(o[i], f[i].x, f[i].y, f[i].z, f[i].w, pb0, pb1);
-        if constexpr (PIPE) {
-            if (!P.kc) cur = nxt;
-        }
+        if constexpr (PIPE && !BF16) cur = nxt;
     }
 
     // the sums over the lanes of the same q (the other tokens)
@@ -11714,20 +11719,24 @@ GLYD_GPU_INTERNAL int glyd_gpu_kv_decode_workspace(int64_t B, int64_t H, int64_t
     return 0;
 }
 
-// The decode kernels of a call (glyd_gpu_kv_decode_from's, glyd_gpu_kv_decode_bf16's): the attention, and the merge where it is not fused.
+// The decode kernels of a call (glyd_gpu_kv_decode_from's, glyd_gpu_kv_decode_bf16's): the attention, and the merge where it is not fused. A bf16 cache takes the kernel's
+// instance of its own (no pipeline: it reads a page's words at once).
 static int kv_attn_launch(const kvc::AttnParams& P, int64_t B, int64_t H, int64_t D, int64_t splits, const int32_t* seq_lens, const int32_t* first, uint16_t* out, int64_t out_stride, cudaStream_t cs) {
     const bool pipe = kv_pipe(), fuse = kv_fuse();
-    const dim3 grid((unsigned)splits, (unsigned)H, (unsigned)B);
+    const dim3 grid((unsigned)H, (unsigned)B, (unsigned)splits);  // (attn_kernel's: the splits last)
     const auto launch = [&](auto halves) {
         constexpr int HV = decltype(halves)::value;
-        if (fuse) {
+        if (P.kc) {
+            if (fuse) kvc::attn_kernel<false, true, HV, true><<<grid, kvc::NW * 32, 0, cs>>>(P);
+            else kvc::attn_kernel<false, false, HV, true><<<grid, kvc::NW * 32, 0, cs>>>(P);
+        } else if (fuse) {
             if (pipe) kvc::attn_kernel<true, true, HV><<<grid, kvc::NW * 32, 0, cs>>>(P);
             else kvc::attn_kernel<false, true, HV><<<grid, kvc::NW * 32, 0, cs>>>(P);
         } else {
             if (pipe) kvc::attn_kernel<true, false, HV><<<grid, kvc::NW * 32, 0, cs>>>(P);
             else kvc::attn_kernel<false, false, HV><<<grid, kvc::NW * 32, 0, cs>>>(P);
-            kvc::combine_kernel<HV * kvc::D><<<(unsigned)(B * H), 256, 0, cs>>>(P.ws_ml, P.ws_o, bf(out), out_stride, (int)H, P.G, (int)splits, P.ppc_min, P.pfloor, seq_lens, first);
         }
+        if (!fuse) kvc::combine_kernel<HV * kvc::D><<<(unsigned)(B * H), 256, 0, cs>>>(P.ws_ml, P.ws_o, bf(out), out_stride, (int)H, P.G, (int)splits, P.ppc_min, P.pfloor, seq_lens, first);
     };
     if (D == kvc::D) launch(std::integral_constant<int, 1>{});
     else if (D == 2 * kvc::D) launch(std::integral_constant<int, 2>{});
