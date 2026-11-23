@@ -33,6 +33,24 @@ pub(super) struct Paged {
     tabs: Vec<Vec<Buf>>,
 }
 
+/// The sampler's candidates of a step's rows (`ModelStep::top`): the `kern::TOPK` largest logits of each head row of the last step, made by one launch for all
+/// of them at the first ask after the step and copied to the host, where the scheduler would read the whole row (Qwen3's 151,936 logits, Gemma 4's 262,144) to
+/// copy, widen and draw from on the host. The dense engine had them in its step (its `candidates`). `rows`: the last step's head rows; `made`: whether its
+/// candidates are; `bufs`: the GPU's and the host's room (tokens, logits; for `cap` rows), made at the first ask.
+#[derive(Default)]
+pub(super) struct Cands {
+    bufs: Option<(Buf, Buf, crate::dev::Pinned, usize)>,
+    rows: usize,
+    made: bool,
+}
+
+impl Cands {
+    /// A step that wrote `rows` head rows ran: its candidates are not made yet.
+    fn fresh(&mut self, rows: usize) {
+        (self.rows, self.made) = (rows, false);
+    }
+}
+
 /// One sequence's rows in a pass over several: the first row, how many, where its tokens begin in the sequence, and its caches and recurrent states.
 pub(super) struct Part {
     /// The sequence (its index in `Dyn::seqs`, its latent attention caches' too).
@@ -661,6 +679,35 @@ impl StepProf {
 }
 
 impl Dyn {
+    /// Head row `row`'s candidates of the last step (`Cands`): None where the step wrote no such row, the vocabulary is not one the top-k kernel takes, or
+    /// GLYD_ENGINE_HOST_SAMPLING=1 asks for the row on the host.
+    fn row_top(&mut self, row: usize) -> Result<Option<Vec<(u32, f32)>>> {
+        use crate::kern::TOPK;
+        let v = self.big.d.vocab;
+        if self.top.off || row >= self.cands.rows || !v.is_multiple_of(8) || v < TOPK {
+            return Ok(None);
+        }
+        let cap = self.head_room().max(self.cands.rows);
+        if self.cands.bufs.as_ref().is_none_or(|b| b.3 < cap) {
+            self.cands.bufs = Some((Buf::new(4 * TOPK * cap)?, Buf::new(4 * TOPK * cap)?, crate::dev::Pinned::new(8 * TOPK * cap)?, cap));
+        }
+        let (tok, val, host, cap) = self.cands.bufs.as_ref().expect("made above");
+        if !self.cands.made {
+            let (n, s, h) = (self.cands.rows, self.dev.stream, host.ptr as *mut u8);
+            // SAFETY: the step's head rows of v logits each (n of them, within the head's room); TOPK of each to the buffers made for `cap` rows; the pinned room
+            // holds the tokens, then from 4 TOPK cap on the logits; read after the synchronize.
+            unsafe {
+                self.kern.topk_rows(s, self.big.logits.ptr, v as i32, n as u32, tok.ptr, val.ptr)?;
+                crate::dev::copy_d2h_async(h as *mut _, tok.ptr, 4 * TOPK * n, s)?;
+                crate::dev::copy_d2h_async(h.add(4 * TOPK * cap) as *mut _, val.ptr, 4 * TOPK * n, s)?;
+            }
+            self.dev.sync()?;
+            self.cands.made = true;
+        }
+        // SAFETY: the pinned bytes were copied above (the stream synchronized since), TOPK for each row below `rows`.
+        Ok(Some(unsafe { crate::kern::read_candidates(host.ptr as *const u8, 0, 4 * TOPK * cap, row) }))
+    }
+
     /// `ModelStep::round` with prompt chunks beside the rows.
     fn round_rows(&mut self, rows: &[Row], jobs: &[PrefillJob]) -> Result<(Vec<Sample>, Vec<Option<Sample>>)> {
         if rows.is_empty() {
@@ -755,6 +802,7 @@ impl ModelStep for Dyn {
         }
         let timed = super::prof::begin();
         let r = self.chunk_alone(slot, tokens, last)?;
+        self.cands.fresh(last as usize);
         self.end_expert_step()?;
         super::prof::end(timed, 0, tokens.len());
         Ok(r)
@@ -782,6 +830,7 @@ impl ModelStep for Dyn {
         let jobs: Vec<(usize, &[u32], bool)> = jobs.iter().map(|j| (j.pages[0] as usize, j.tokens, j.last)).collect();
         let timed = super::prof::begin();
         let r = self.pass(&jobs)?;
+        self.cands.fresh(jobs.iter().filter(|j| j.2).count());
         self.end_expert_step()?;
         super::prof::end(timed, 0, jobs.iter().map(|j| j.1.len()).sum());
         Ok(r)
@@ -802,6 +851,7 @@ impl ModelStep for Dyn {
         let r = self.round_rows(rows, jobs);
         let prompt = jobs.iter().map(|j| j.tokens.len()).sum();
         StepProf::end(p, self.dev.stream, rows.len(), prompt);
+        self.cands.fresh(rows.len() + jobs.iter().filter(|j| j.last).count());
         self.end_expert_step()?;
         super::prof::end(timed, rows.len(), prompt);
         r
@@ -810,9 +860,14 @@ impl ModelStep for Dyn {
         let (p, timed) = (StepProf::begin(self.dev.stream), super::prof::begin());
         let r = self.decode_rows(rows);
         StepProf::end(p, self.dev.stream, rows.len(), 0);
+        self.cands.fresh(rows.len());
         self.end_expert_step()?;
         super::prof::end(timed, rows.len(), 0);
         r
+    }
+    /// The candidates the GPU makes of the step's head rows (`Cands`); where it cannot (an error), the row is read as without them.
+    fn top(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
+        self.row_top(row).unwrap_or(None)
     }
     fn expert_stats(&self) -> Vec<crate::offload::LayerStats> {
         Dyn::expert_stats(self)

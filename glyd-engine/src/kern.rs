@@ -443,7 +443,7 @@ impl Kern {
 ///
 /// # Safety
 /// `p` holds TOPK (row + 1) tokens at `tok` and as many logits at `val`, aligned for 4-byte reads.
-unsafe fn read_candidates(p: *const u8, tok: usize, val: usize, row: usize) -> Vec<(u32, f32)> {
+pub(crate) unsafe fn read_candidates(p: *const u8, tok: usize, val: usize, row: usize) -> Vec<(u32, f32)> {
     (0..TOPK).map(|j| (*(p.add(tok + 4 * (row * TOPK + j)) as *const i32) as u32, *(p.add(val + 4 * (row * TOPK + j)) as *const f32))).collect()
 }
 

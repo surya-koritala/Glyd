@@ -1362,6 +1362,15 @@ pub fn record(a: &crate::args::Args) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// The CPU's candidates usercheck holds the step's to: the largest first, equal logits by the smaller token, as the sampler's `sample_top` takes them.
+    #[test]
+    fn host_top_orders_by_logit_then_token() {
+        let row = [0.5f32, 2.0, -1.0, 2.0, 7.0, f32::NEG_INFINITY, 0.5, 2.0];
+        assert_eq!(host_top(&row, 5), vec![(4, 7.0), (1, 2.0), (3, 2.0), (7, 2.0), (0, 0.5)]);
+        assert_eq!(host_top(&row, 64).len(), row.len());
+        assert_eq!(host_top(&row, 64).last(), Some(&(5, f32::NEG_INFINITY)));
+    }
+
     fn logits(n: usize, seed: u32) -> Vec<f32> {
         (0..n).map(|i| (((i as u32).wrapping_mul(2654435761).wrapping_add(seed) >> 8) % 4000) as f32 / 250.0 - 8.0).collect()
     }
@@ -2607,9 +2616,65 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             fails += 1;
         }
     }
+    // (the sampler's candidates the step makes on the GPU (src/dynamic/rows.rs `Cands`), against its rows' logits)
+    drop(s);
+    let Some((_, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
+    let (rows, bad) = cands_check(step, &prompts)?;
+    println!("{} the step's candidates of {rows} rows against their logits' {} largest", if bad == 0 { "PASS" } else { "FAIL" }, crate::kern::TOPK);
+    fails += bad;
     if fails > 0 {
         return err(format!("{case}: {fails} failed"));
     }
     println!("{case}: PASS");
     Ok(())
+}
+
+/// A row's `k` largest logits, largest first, equal ones by the smaller token: the GPU's top-k (kern.rs `topk_rows`) as the CPU makes it.
+pub fn host_top(row: &[f32], k: usize) -> Vec<(u32, f32)> {
+    let mut v: Vec<(u32, f32)> = row.iter().enumerate().map(|(i, &x)| (i as u32, x)).collect();
+    v.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    v.truncate(k);
+    v
+}
+
+/// `ModelStep::top` against the CPU's `host_top` of `ModelStep::logits`: after each prompt's last chunk (its slot's alone, row 0) and after one decode step of
+/// every sequence (each row); empty slots taken and given back. The rows looked at, and those whose candidates differ.
+fn cands_check(step: &mut dyn crate::sched::ModelStep, prompts: &[Vec<u32>]) -> Result<(usize, usize)> {
+    let k = step.slots().unwrap_or(1).min(prompts.len());
+    let (mut rows, mut bad) = (0, 0);
+    // (none where the top-k kernel does not take the vocabulary, or GLYD_ENGINE_HOST_SAMPLING=1 asks for the row on the host)
+    let host = crate::tune!("GLYD_ENGINE_HOST_SAMPLING").is_some();
+    let mut check = |step: &mut dyn crate::sched::ModelStep, row: usize, what: &str| -> Result<()> {
+        let logits = step.logits(row)?;
+        let takes = !host && logits.len().is_multiple_of(8) && logits.len() >= crate::kern::TOPK;
+        let want = takes.then(|| host_top(&logits, crate::kern::TOPK));
+        let got = step.top(row);
+        rows += 1;
+        if got != want {
+            bad += 1;
+            let head = |c: Option<Vec<(u32, f32)>>| c.map(|c| c[..4.min(c.len())].to_vec());
+            println!("FAIL candidates {what}: {:?} against {:?}", head(got), head(want));
+        }
+        Ok(())
+    };
+    let mut next = Vec::new();
+    for (j, p) in prompts.iter().take(k).enumerate() {
+        if !step.grow(j as i32, p.len() + 2)? {
+            break;
+        }
+        let s = step.prefill(&[j as i32], 0, p, true)?.ok_or_else(|| Error("a prompt's last chunk gave no sample".into()))?;
+        check(step, 0, &format!("after prompt {j}"))?;
+        next.push(s.token);
+    }
+    let pages: Vec<[i32; 1]> = (0..next.len()).map(|j| [j as i32]).collect();
+    let decode: Vec<crate::sched::Row> =
+        next.iter().enumerate().map(|(j, &t)| crate::sched::Row { token: t, pos: prompts[j].len(), pages: &pages[j] }).collect();
+    if !decode.is_empty() {
+        step.decode(&decode)?;
+        for r in 0..decode.len() {
+            check(step, r, &format!("decode row {r} of {}", decode.len()))?;
+        }
+    }
+    step.release(&(0..next.len() as i32).collect::<Vec<_>>())?;
+    Ok((rows, bad))
 }

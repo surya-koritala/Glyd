@@ -871,6 +871,8 @@ pub struct Dyn {
     replayed: std::cell::Cell<bool>,
     capturing: std::cell::Cell<bool>,
     queued: std::cell::Cell<f64>,
+    /// A scheduler's step's sampler candidates (`ModelStep::top`, src/dynamic/rows.rs): made on the GPU for the last step's head rows at the first ask.
+    cands: rows::Cands,
     /// The layers this GPU runs (the whole model, or a stage of a split one).
     pub stage: Stage,
     /// DeepSeek-V4's buffers, where the model is one.
@@ -1249,6 +1251,7 @@ impl Dyn {
             replayed: std::cell::Cell::new(false),
             capturing: std::cell::Cell::new(false),
             queued: std::cell::Cell::new(0.0),
+            cands: Default::default(),
             stage,
             v4,
             kglm,
