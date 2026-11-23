@@ -386,6 +386,86 @@ fn every_fixture_config_describes() {
     assert!(e.contains("qwen4_exp_text"), "{e}");
 }
 
+/// Every model config the fixtures hold, by a name: tests/fixtures' (each entry of qwen35_configs.json apart), the headers' and the tiny models' of
+/// tests/runtime.
+fn fixture_configs() -> Vec<(String, serde_json::Value)> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let files = |dir: &str| -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(root.join(dir)).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        v.sort();
+        v
+    };
+    let mut out = Vec::new();
+    for f in files("fixtures").into_iter().filter(|f| f.ends_with(".json") && f.contains("config") && !f.contains("generation_config")) {
+        let v = fixture(&f);
+        if f == "qwen35_configs.json" {
+            out.extend(v.as_object().unwrap().iter().map(|(repo, c)| (format!("{f}:{repo}"), c.clone())));
+        } else {
+            out.push((f, v));
+        }
+    }
+    for f in files("fixtures/headers") {
+        let h = fixture(&format!("headers/{f}"));
+        out.push((format!("headers/{f}"), serde_json::from_str(h["config"].as_str().unwrap()).unwrap()));
+    }
+    for f in files("runtime").into_iter().filter(|f| f.ends_with("_model.json")) {
+        out.push((format!("runtime/{f}"), Fixture::load(f.trim_end_matches(".json")).j["config"].clone()));
+    }
+    out
+}
+
+/// A description as two digests: its layer kinds (with the draft layers it counts), and its weight map (the tensors, their roles, scales and shapes).
+fn digests(d: &super::describe::Described) -> (String, String) {
+    use sha2::{Digest, Sha256};
+    let h = |s: String| Sha256::digest(s.as_bytes()).iter().take(8).map(|b| format!("{b:02x}")).collect::<String>();
+    (h(format!("{:?} {}", d.desc, d.mtp_layers)), h(format!("{:?}", (&d.embed, &d.final_norm, &d.head, &d.blocks, &d.extra, &d.scales, &d.shapes))))
+}
+
+/// Each fixture config's description, from its config.json alone, is the one recorded in tests/fixtures/descriptions.json (its blocks, its tensors and the
+/// digests of its kinds and weight map), and a config that is refused is refused with the words recorded: a change to the builder that changes any
+/// fixture's description fails here, by name. GLYD_BLESS_DESCRIPTIONS=1 writes the record anew (for a change meant to alter one).
+#[test]
+fn fixture_descriptions_are_unchanged() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/descriptions.json");
+    let mut now = serde_json::Map::new();
+    for (name, cfg) in fixture_configs() {
+        let mut entry = match describe(&cfg) {
+            Ok(d) => {
+                let (kinds, weights) = digests(&d);
+                serde_json::json!({ "blocks": d.desc.blocks.len(), "tensors": d.names().len(), "kinds": kinds, "weights": weights })
+            }
+            Err(e) => serde_json::json!({ "refused": e.msg }),
+        };
+        // (and what the planner and the refusals read of the same file: the shape fit prices, the family run takes it as)
+        let text = cfg.to_string();
+        entry["plan"] = match crate::plan::Shape::from_config(&text) {
+            Ok(s) => {
+                use sha2::{Digest, Sha256};
+                Sha256::digest(format!("{s:?}").as_bytes()).iter().take(8).map(|b| format!("{b:02x}")).collect::<String>().into()
+            }
+            Err(e) => format!("refused: {e}").into(),
+        };
+        entry["family"] = match crate::support::family(&text, "m") {
+            Ok(f) => format!("{f:?}").into(),
+            Err(r) => format!("refused: {}", r.what).into(),
+        };
+        now.insert(name, entry);
+    }
+    if std::env::var_os("GLYD_BLESS_DESCRIPTIONS").is_some() {
+        std::fs::write(&path, serde_json::to_string_pretty(&now).unwrap() + "\n").unwrap();
+        return;
+    }
+    let was: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    for (name, e) in &now {
+        assert_eq!(was.get(name), Some(e), "{name}: its description is not the one recorded (tests/fixtures/descriptions.json)");
+    }
+    let gone: Vec<_> = was.keys().filter(|k| !now.contains_key(*k)).collect();
+    assert!(gone.is_empty(), "recorded, and no fixture now: {gone:?}");
+    // (every config but Condor's describes: its kinds are R3d's, #140)
+    let refused: Vec<_> = now.iter().filter(|(_, e)| e.get("refused").is_some()).map(|(n, _)| n.as_str()).collect();
+    assert_eq!(refused, ["qwen4x_config.json"]);
+}
+
 /// Nemotron 3's released configs (Nano, 3.5 Lightning) say `moe_shared_expert_overlap: true`, a schedule of the shared experts beside the exchange between GPUs,
 /// not arithmetic: the description is the same whichever it says.
 #[test]
