@@ -715,7 +715,9 @@ mod tests {
             (seed % m as u64) as usize
         };
         let (mut shares, mut cuts) = (0, 0);
-        for _ in 0..20000 {
+        // (under Miri, which interprets each step a thousand times slower, the first 400 of the same sequence of steps)
+        let steps = if cfg!(miri) { 400 } else { 20000 };
+        for _ in 0..steps {
             let s = rnd(slots);
             let before: Vec<Vec<Vec<u32>>> = (0..slots).map(|s| (0..2).map(|g| p.table(s, g).to_vec()).collect()).collect();
             match rnd(10) {
@@ -779,8 +781,8 @@ mod tests {
                 }
             }
         }
-        // (the run did what it is for)
-        assert!(shares > 100 && cuts > 200, "{shares} shares, {cuts} cuts");
+        // (the run did what it is for: as many shares and cuts for its steps as 100 and 200 in 20,000)
+        assert!(shares * 20000 > 100 * steps && cuts * 20000 > 200 * steps, "{shares} shares, {cuts} cuts in {steps} steps");
     }
 
     /// A sequence that shared a start holds a sliding group's blocks from the window before that start on. As it grows it is given no block for the entries before (they
