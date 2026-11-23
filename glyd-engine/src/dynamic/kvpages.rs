@@ -477,10 +477,22 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     for (_, s) in &rings {
         plain.push(e.kv_rows(s, plain_n)?);
     }
-    // bf16 pages
+    // bf16 pages (--prof: a decode step's stages timed in its graph, here and on the 12-bit pages)
+    let prof = a.has("prof");
+    let stages = |e: &Dyn| -> Result<Vec<(&'static str, f64)>> {
+        if prof {
+            e.prof_take()
+        } else {
+            Ok(Vec::new())
+        }
+    };
     e.set_kv12(None);
     e.serve_rows(1)?;
+    if prof {
+        e.prof_in_graph()?;
+    }
     let (want, _) = e.reply(&prompt, &reply, &mut |_| true)?;
+    let bf_stages = stages(&e)?;
     let n = e.n;
     let mut bf = Vec::new();
     for (_, s) in &rings {
@@ -518,7 +530,22 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     e.serve_rows(1)?;
     let Some(lx) = e.lossless.as_ref() else { return err("no ring took the 12-bit pages") };
     let taken = lx.rings.iter().filter(|r| r.is_some()).count();
+    if prof {
+        e.prof_in_graph()?;
+    }
     let (got, _) = e.reply(&prompt, &reply, &mut |_| true)?;
+    if prof {
+        let tw = stages(&e)?;
+        let total = |v: &[(&str, f64)]| v.iter().map(|x| x.1).sum::<f64>();
+        println!("a decode step's stages (ms, its graph's last replay): bf16 pages {:.3} in all, 12-bit pages {:.3}", total(&bf_stages), total(&tw));
+        let mut names: Vec<&str> = bf_stages.iter().chain(&tw).map(|x| x.0).collect();
+        names.dedup();
+        let mut seen = std::collections::HashSet::new();
+        for n in names.into_iter().filter(|n| seen.insert(*n)) {
+            let (b, t) = (bf_stages.iter().find(|x| x.0 == n).map_or(0.0, |x| x.1), tw.iter().find(|x| x.0 == n).map_or(0.0, |x| x.1));
+            println!("  {n:<36} {b:>8.3} {t:>8.3}");
+        }
+    }
     if e.n != n {
         return err(format!("the 12-bit reply left {} tokens in the cache, the bf16 one {n}", e.n));
     }
