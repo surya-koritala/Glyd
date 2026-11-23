@@ -1,6 +1,6 @@
 //! The attention layer kind (`runtime::kinds::Attn`) as one operation of the executor (`Op::Attn`), for every dense-attention layer of every family (#135, #141).
 //! What a family's layer is, is the operation's parameters (`AttnOp`): its heads and their width, where its q, k, v and gate are in the projection's rows, its norms,
-//! rotary, window, scale, soft-cap and gate, and its ring of keys and values; the arithmetic its tests pin (`Arith`). One set of kernels runs them all
+//! rotary, window, scale, soft-cap and gate, and its ring of keys and values; its rounding points the kind's (`kinds::AttnRounding`). One set of kernels runs them all
 //! (kernels/attn.cu): the preparation, then a decode row's attention (the keys in parts, combined) or a prompt chunk's (on the tensor cores), and the gate. Keys
 //! and values are bf16 rings or pages, or 12-bit pages (src/dynamic/kvpages.rs): a decode row reads those through the library's `kv_decode_from`, a prompt chunk
 //! reads them unpacked to bf16 (`kv12_stage`, the one place a 12-bit prompt attention reading the pages would go).
@@ -74,16 +74,6 @@ pub struct GateAt {
     pub norm: bool,
 }
 
-/// The arithmetic a family's attention keeps: transformers' eager bf16 rounding points in the preparation and the gate (`round`: Gemma 4, Muse Spark; else one
-/// rounding at the end of each, as vLLM's fused kernels: the Qwen3.5 layout, Nemotron-H); scores as the bf16 of their dot products (`sbf16`: Gemma 4's); the
-/// kind's scale as the queries' factor over sqrt(head) and head^-0.5 on the scores (`q_scaled`: Muse Spark's, as its transformers code scales the queries).
-#[derive(Clone, Copy, Debug)]
-pub struct Arith {
-    pub round: bool,
-    pub sbf16: bool,
-    pub q_scaled: bool,
-}
-
 /// `Op::Attn`: the preparation of the projection's rows (slot `src`, rows `stride` wide: query head h at h `q_step`, the key heads from `k_off`, the value heads
 /// from `v_off` or none: K = V, the keys' projection normed without a weight), then the causal attention of the queries over ring `ring` (`window` 0: every
 /// position) into Att, gated where `gate`. `writes`: the layer writes its keys and values (a draft model's layers read the big model's ring and write none).
@@ -113,8 +103,11 @@ pub struct AttnOp {
 
 impl AttnOp {
     /// The operation of layer kind `a` whose projection (queries, an in-query gate interleaved with them, keys, values, an own gate: in that order) is in `src`, its
-    /// keys and values ring `ring`, its rotary table `table`, its q and k norms' weights the small tensors `qk`; arithmetic `ar`.
-    pub fn of(a: &kinds::Attn, src: Slot, ring: usize, table: Option<usize>, qk: Option<(usize, usize)>, ar: Arith) -> Result<AttnOp> {
+    /// keys and values ring `ring`, its rotary table `table`, its q and k norms' weights the small tensors `qk`. Its arithmetic is the kind's rounding points
+    /// (`kinds::AttnRounding`): Eager's and Sdpa's rope, norms, queries' scale and gate in bf16 arithmetic (`round`), Eager's scores the bf16 of their dot
+    /// products and of their scale (`sbf16`), Sdpa's scale on the queries before the rope (the scores then unscaled); Flash's one rounding at the end of each.
+    /// F32 (transformers in float32) runs as Flash: the executor's activations are bf16.
+    pub fn of(a: &kinds::Attn, src: Slot, ring: usize, table: Option<usize>, qk: Option<(usize, usize)>) -> Result<AttnOp> {
         let (d, nq, nk) = (a.head_dim, a.heads, a.kv_heads);
         if ![64, 128, 256, 512].contains(&d) || a.v_head_dim != d {
             return err(format!("attention heads of {d} (values {}): the kernels take 64, 128, 256 or 512, the values as wide", a.v_head_dim));
@@ -163,7 +156,13 @@ impl AttnOp {
             }
             (Some(r), t) => return err(format!("a rotary of {r:?} (table {t:?}): the kernels turn pairs (i, i + dim / 2) of a table's")),
         };
-        let (q_scale, scale) = if ar.q_scaled { (a.scale * (d as f32).sqrt(), (d as f32).powf(-0.5)) } else { (1.0, a.scale) };
+        use kinds::AttnRounding::*;
+        let (round, sbf16, prescale) = match a.rounding {
+            F32 | Flash => (false, false, false),
+            Eager => (true, true, false),
+            Sdpa => (true, false, true),
+        };
+        let (q_scale, scale) = if prescale { (a.scale, 1.0) } else { (1.0, a.scale) };
         Ok(AttnOp {
             src,
             stride,
@@ -183,8 +182,8 @@ impl AttnOp {
             scale,
             softcap: a.softcap.unwrap_or(0.0),
             gate,
-            round: ar.round,
-            sbf16: ar.sbf16,
+            round,
+            sbf16,
         })
     }
 
@@ -574,7 +573,7 @@ pub fn check() -> Result<bool> {
                 let sc: Vec<f64> = (lo..=p)
                     .map(|j| {
                         let dot: f64 = qr.iter().zip(&kk[(j * nk + kv) * d..][..d]).map(|(a, b)| *a as f64 * *b as f64).sum();
-                        let s = if sbf16 { bf(dot) } else { dot } * scale as f64;
+                        let s = if sbf16 { bf(bf(dot) * scale as f64) } else { dot * scale as f64 };
                         if softcap > 0.0 {
                             softcap as f64 * (s / softcap as f64).tanh()
                         } else {
@@ -678,7 +677,7 @@ pub fn check() -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::kinds::{Act, Attn, GateFrom, Norm, OutGate, Rope};
+    use crate::runtime::kinds::{Act, Attn, AttnRounding, GateFrom, Norm, OutGate, Rope};
 
     fn kind(d: usize, gate: Option<GateFrom>) -> Attn {
         Attn {
@@ -698,6 +697,7 @@ mod tests {
             scale: (d as f32).powf(-0.5),
             k_eq_v: false,
             indexer: None,
+            rounding: AttnRounding::Flash,
         }
     }
 
@@ -716,25 +716,27 @@ mod tests {
     /// values (Muse Spark), K = V with no value heads (Gemma 4's global layers).
     #[test]
     fn the_projections_layout_follows_the_kind() {
-        let ar = Arith { round: false, sbf16: false, q_scaled: false };
-        let q = AttnOp::of(&kind(256, Some(GateFrom::InQuery)), Slot::Mix, 0, Some(0), Some((2, 3)), ar).unwrap();
+        let q = AttnOp::of(&kind(256, Some(GateFrom::InQuery)), Slot::Mix, 0, Some(0), Some((2, 3))).unwrap();
         assert_eq!((q.q_step, q.k_off, q.v_off, q.stride), (512, 8 * 512, Some(8 * 512 + 2 * 256), 8 * 512 + 4 * 256));
         assert_eq!(q.gate, Some(GateAt { off: 256, step: 512, norm: false }));
         assert_eq!(q.norm, QkNorm::Plus1 { q: 2, k: 3 });
         assert_eq!(q.rope, Some(RopeAt { table: 0, span: 64, pairs: 32 }));
-        let m = AttnOp::of(&kind(64, Some(GateFrom::Own)), Slot::Mix, 0, Some(0), Some((2, 3)), Arith { q_scaled: true, ..ar }).unwrap();
+        let m = AttnOp::of(&Attn { rounding: AttnRounding::Sdpa, ..kind(64, Some(GateFrom::Own)) }, Slot::Mix, 0, Some(0), Some((2, 3))).unwrap();
         assert_eq!((m.q_step, m.k_off, m.v_off, m.stride), (64, 8 * 64, Some(10 * 64), 20 * 64));
         assert_eq!(m.gate, Some(GateAt { off: 12 * 64, step: 64, norm: false }));
-        assert_eq!((m.q_scale, m.scale), (1.0, 0.125));
+        // (Sdpa: the scale on the queries, before the rope; the scores unscaled)
+        assert_eq!((m.q_scale, m.scale, m.round, m.sbf16), (0.125, 1.0, true, false));
+        assert_eq!((q.q_scale, q.scale, q.round, q.sbf16), (1.0, 1.0 / 16.0, false, false));
         let mut g = kind(512, None);
         g.k_eq_v = true;
-        let g = AttnOp::of(&g, Slot::Proj, 0, Some(1), Some((2, 3)), ar).unwrap();
+        let g = AttnOp::of(&Attn { rounding: AttnRounding::Eager, ..g }, Slot::Proj, 0, Some(1), Some((2, 3))).unwrap();
+        assert_eq!((g.round, g.sbf16), (true, true));
         assert_eq!((g.v_off, g.stride), (None, 10 * 512));
         // (a head the kernels have no instance for, and more query heads to a key-value head than a block takes, are refused)
-        assert!(AttnOp::of(&kind(96, None), Slot::Mix, 0, Some(0), Some((2, 3)), ar).is_err());
+        assert!(AttnOp::of(&kind(96, None), Slot::Mix, 0, Some(0), Some((2, 3))).is_err());
         let mut wide = kind(128, None);
         (wide.heads, wide.kv_heads) = (64, 2);
-        assert!(AttnOp::of(&wide, Slot::Mix, 0, Some(0), Some((2, 3)), ar).is_err());
+        assert!(AttnOp::of(&wide, Slot::Mix, 0, Some(0), Some((2, 3))).is_err());
     }
 
     /// kernels/attn.cu's AttnArgs: 14 pointers, 21 ints, 5 floats, no padding.

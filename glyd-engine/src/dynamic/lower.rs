@@ -2,7 +2,7 @@
 //! its config alone and not from a description written for it (R2, R3a; docs/design/runtime.md section 3). The matrices' shapes come from the checkpoint (`shape`: a
 //! tensor's dims by name), which the kinds do not hold. Each family's lowering is held to the executor's own description of it (the tests below) until that one goes.
 
-use super::attn::{Arith, AttnOp};
+use super::attn::AttnOp;
 use super::{ModelDesc, Op, Ring, Rope, Slot, SLOTS};
 use crate::ffi::{err, Error, Result};
 use crate::runtime::describe::{Described, Source};
@@ -115,8 +115,7 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
         let (post_attn, pre_ff) = (name(one(ar, "norm_out")?), name(one(fr, "norm_in")?));
         let (post_ff, scalar) = (name(one(fr, "norm_out")?), name(one(fr, "res_scale")?));
         let next = if l + 1 < layers { in_norms[l + 1] } else { final_norm };
-        // (transformers' bf16 rounding points in the preparation, scores the bf16 of their dot products: Gemma 4's arithmetic, as its tests pin it)
-        let attn = AttnOp::of(a, Slot::Proj, ring, Some(r), Some((q_norm, k_norm)), Arith { round: true, sbf16: true, q_scaled: false })?;
+        let attn = AttnOp::of(a, Slot::Proj, ring, Some(r), Some((q_norm, k_norm)))?;
         if attn.stride != stride {
             return err(format!("Gemma 4: layer {l}'s q, k and v product is {stride} wide, where its attention reads {}", attn.stride));
         }
@@ -265,8 +264,7 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
             Kind::Full => {
                 let ring = rings.len();
                 rings.push(Ring { d: 256, nk, window: 0 });
-                // (one rounding at the end of the preparation and of the gate, scores fp32: the Qwen3.5 layout's arithmetic, as its tests pin it)
-                let a = AttnOp::of(att, Slot::Mix, ring, Some(0), Some((s0 + 2, s0 + 3)), Arith { round: false, sbf16: false, q_scaled: false })?;
+                let a = AttnOp::of(att, Slot::Mix, ring, Some(0), Some((s0 + 2, s0 + 3)))?;
                 if a.stride != full_w {
                     return err(format!("Qwen3.5: an attention product of {full_w} where its attention reads {}", a.stride));
                 }
@@ -404,8 +402,7 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
                 let ring = rings.len();
                 rings.push(Ring { d: hd, nk, window: 0 });
                 let a = att.ok_or_else(|| Error("Nemotron-H: an attention layer of no kind".into()))?;
-                // (one rounding at the end, scores fp32: Nemotron-H's arithmetic)
-                let a = AttnOp::of(a, Slot::Mix, ring, None, None, Arith { round: false, sbf16: false, q_scaled: false })?;
+                let a = AttnOp::of(a, Slot::Mix, ring, None, None)?;
                 if a.stride != qkv_w {
                     return err(format!("Nemotron-H: an attention product of {qkv_w} where its attention reads {}", a.stride));
                 }
@@ -511,8 +508,7 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
         n_moe += 1;
         let ring = rings.len();
         rings.push(Ring { d: hd, nk, window: a.window.unwrap_or(0) });
-        // (transformers' bf16 rounding points in the preparation and the gate, the queries scaled apart, scores fp32: Muse Spark's arithmetic)
-        let attn = AttnOp::of(a, Slot::Mix, ring, Some(0), None, Arith { round: true, sbf16: false, q_scaled: true })?;
+        let attn = AttnOp::of(a, Slot::Mix, ring, Some(0), None)?;
         if attn.stride != row {
             return err(format!("Muse Spark: an attention product of {row} where its attention reads {}", attn.stride));
         }

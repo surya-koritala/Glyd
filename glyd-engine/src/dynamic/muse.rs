@@ -29,8 +29,9 @@ impl KernMuse {
     }
 }
 
-/// Layer `l`'s attention (heads of 64, ring `ring`): q, k, v and the gate in Mix's rows; q and k normed without a weight, q times the qk scale, the rotary on the
-/// window's layers, each with transformers' bf16 rounding points; scale 64^-1/2, the scores fp32; the output normed without a weight and times sigmoid(gate), in Att.
+/// Layer `l`'s attention (heads of 64, ring `ring`): q, k, v and the gate in Mix's rows; q and k normed without a weight, q times the scale (the qk scale over
+/// 64^1/2) before the rotary on the window's layers, each with transformers' bf16 rounding points (`AttnRounding::Sdpa`); the scores fp32 and not scaled again;
+/// the output normed without a weight and times sigmoid(gate), in Att.
 fn attention(c: &ConfigMuse, l: usize, ring: usize) -> Op {
     let (nq, nk, hd) = (c.heads, c.kv_heads, c.head_dim);
     Op::Attn(AttnOp {
@@ -48,8 +49,8 @@ fn attention(c: &ConfigMuse, l: usize, ring: usize) -> Op {
         norm: QkNorm::Plain,
         v_norm: false,
         rope: c.sliding[l].then_some(RopeAt { table: 0, span: hd, pairs: hd / 2 }),
-        q_scale: c.qk_scale,
-        scale: (hd as f32).powf(-0.5),
+        q_scale: c.qk_scale / (hd as f32).sqrt(),
+        scale: 1.0,
         softcap: 0.0,
         gate: Some(GateAt { off: (nq + 2 * nk) * hd, step: hd, norm: true }),
         round: true,

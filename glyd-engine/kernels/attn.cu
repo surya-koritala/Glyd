@@ -3,10 +3,11 @@
 // step's attention (the keys in parts, then combined), a prompt chunk's attention on the tensor cores (and a warp-per-head kernel for any shape), and the output gate.
 // Head widths 64, 128, 256 and 512 are template instances. Included by engine.cu after gemma4.cu (its G4Pf prefetch) and qwen35.cu (bf2, warp_max).
 //
-// Arithmetic: bf16 in memory, fp32 inside. `round`: the rounding points of transformers' eager bf16 arithmetic in the preparation and the gate (a norm rounds once,
-// the queries' scale rounds, each rotary product and their sum round, the gate's sigmoid rounds before its product; the norm's factor 1 / sqrt(mean + eps) exact);
-// else one rounding at the end of each (the norm's factor rsqrtf). `sbf16`: a score is the bf16 of its dot product. The probabilities are rounded to bf16 for the
-// values (as FlashAttention), their fp32 sum divides at the end.
+// Arithmetic (the kind's rounding points, src/runtime/kinds.rs `AttnRounding`): bf16 in memory, fp32 inside. `round` (Eager, Sdpa): transformers' bf16 rounding
+// points in the preparation and the gate (a norm rounds once, the queries' scale rounds, each rotary product and their sum round, the gate's sigmoid rounds before
+// its product; the norm's factor 1 / sqrt(mean + eps) exact); else (Flash) one rounding at the end of each (the norm's factor rsqrtf). `sbf16` (Eager): a score is
+// the bf16 of its dot product, then of its scale. The probabilities are rounded to bf16 for the values (as FlashAttention; Sdpa's are f32 in the reference), their
+// fp32 sum divides at the end.
 
 // Every argument of the kind's kernels (src/dynamic/attn.rs `AttnArgs`, field for field).
 struct AttnArgs {
@@ -43,9 +44,14 @@ __device__ __forceinline__ float at_r(float x, int round) { return round ? b2f(f
 // A norm's factor over d values whose squares sum to ss.
 __device__ __forceinline__ float at_rs(float ss, int d, float eps, int round) { return round ? 1.f / sqrtf(ss / (float)d + eps) : rsqrtf(ss / (float)d + eps); }
 
-// A score in log2 units: the bf16 of the dot product where the kind's scores are, the soft-cap (cap tanh(s / cap) of the scaled score), the scale.
+// A score in log2 units: the scaled dot product, soft-capped (cap tanh(s / cap)) where the kind is; with `sbf16` (transformers' eager bf16) the dot product,
+// its scale and its cap each rounded to bf16.
 __device__ __forceinline__ float at_score(const AttnArgs& a, float s) {
-    if (a.sbf16) s = b2f(f2b(s));
+    if (a.sbf16) {
+        s = b2f(f2b(b2f(f2b(s)) * a.scale));
+        if (a.softcap > 0.f) s = b2f(f2b(a.softcap * tanhf(s / a.softcap)));
+        return s * 1.4426950408889634f;
+    }
     if (a.softcap > 0.f) return a.softcap * tanhf(s * a.scale / a.softcap) * 1.4426950408889634f;
     return s * a.sl2;
 }
