@@ -2646,6 +2646,8 @@ impl Dyn {
             self.n += n;
             at += n;
         }
+        // (a pass outside the scheduler, which would take a lost step back: an error)
+        self.kv12_check()?;
         self.read_sample()
     }
 

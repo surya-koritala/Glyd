@@ -77,6 +77,7 @@ const SWITCHES: &[&str] = &[
     "all",
     "insecure-no-auth",
     "yes",
+    "kv12",
 ];
 #[cfg(not(feature = "dev"))]
 const SWITCHES: &[&str] = &[
