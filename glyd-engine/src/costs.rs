@@ -1276,7 +1276,7 @@ fn quick_rates() -> Result<Rates> {
 }
 
 /// GPU `ordinal`'s memory as a kernel streams it, its link from pinned host memory and the computer's memory as all its threads read it, measured now (256 MiB,
-/// 5 passes each: about a second with the context's creation): the planner's rate probe (src/plan.rs `rates_in`, on a GPU's first use).
+/// 5 passes each after one more): the planner's rate probe (src/plan.rs `rates_in`, on a GPU's first use).
 pub fn probe_rates(ordinal: i32) -> Result<Rates> {
     use crate::dev::{copy_h2d_async, Buf, Dev, Pinned};
     let bytes = 256usize << 20;

@@ -1655,7 +1655,7 @@ fn slug(s: &str) -> String {
 }
 
 /// The rates of GPU `ordinal` (`name`) on this computer: kept in `root` (`rates/NAME-ORDINAL.json`) from the first time they were measured, else measured now by
-/// `measure` (`costs::probe_rates`: about a second) and kept. None where they cannot be measured.
+/// `measure` (`costs::probe_rates`) and kept. None where they cannot be measured.
 pub fn rates_in(root: &std::path::Path, name: &str, ordinal: i32, measure: &dyn Fn() -> Option<Probed>) -> Option<Probed> {
     let file = root.join("rates").join(format!("{}-{ordinal}.json", slug(name)));
     let kept = std::fs::read_to_string(&file)
