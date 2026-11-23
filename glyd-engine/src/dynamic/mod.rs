@@ -4,6 +4,7 @@
 
 pub mod attn;
 pub mod deepseek_v4;
+pub mod dense;
 pub mod gemma4;
 pub mod glm;
 pub mod kimi;
@@ -2292,11 +2293,11 @@ impl Dyn {
     /// activations and workspaces stay shared): `select` picks the one the next passes run on. Qwen3.5's stages; after `set_head_rows`.
     pub fn add_seqs(&mut self, k: usize) -> Result<()> {
         if k > 0
-            && (!matches!(self.big.d.family, "Qwen3.5" | "Gemma 4" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash" | "Nemotron-H" | "DeepSeek-V4")
+            && (!matches!(self.big.d.family, "Qwen3.5" | "Gemma 4" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash" | "Nemotron-H" | "DeepSeek-V4" | dense::FAMILY)
                 || self.draft.is_some())
         {
             return err(format!(
-                "more sequences than one on {}: Qwen3.5's, Gemma 4's, Muse Spark's, Kimi-K3's, GLM-5.3-Flash's, Nemotron-H's and DeepSeek-V4's only, with no draft model",
+                "more sequences than one on {}: Qwen3.5's, Gemma 4's, Muse Spark's, Kimi-K3's, GLM-5.3-Flash's, Nemotron-H's, DeepSeek-V4's and the Llama-style dense models' only, with no draft model",
                 self.big.d.family
             ));
         }
