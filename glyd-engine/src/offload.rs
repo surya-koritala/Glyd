@@ -512,6 +512,26 @@ pub fn plan_groups(mode: Mode, misses: &[Vec<Miss>], rooms: &[usize], sizes: &[f
     copy
 }
 
+/// Whether a call whose misses are more than the places its hits leave (`room`) is quicker with every miss copied, in waves of as many as the places hold (`LayerCache::waves`), than as `plan` serves it (at most
+/// `room` copies, the host the rest), by the times expected in `costs`. Only `Auto` decides so: with many rows a miss has many pairs, and the host's time for them can pass the copies' (DeepSeek-V4 at 32 rows on the
+/// 4080 SUPER, 32 places for 64 experts: 334 ms a step with the host against 280 copying all, `storebench`).
+pub fn waves_quicker(mode: Mode, misses: &[Miss], room: usize, costs: &Costs) -> bool {
+    if mode != Mode::Auto || misses.len() <= room {
+        return false;
+    }
+    let (mut copying, mut host, mut kept) = (0.0, 0.0, 0usize);
+    for (m, c) in misses.iter().zip(plan(mode, misses, room, costs)) {
+        if c {
+            copying += costs.copy;
+        } else {
+            (host, kept) = (host + costs.host(m.pairs), kept + 1);
+        }
+    }
+    let waiting = if copying > 0.0 { costs.backlog + copying } else { 0.0 };
+    let planned = waiting.max(if kept > 0 { costs.fixed + host } else { 0.0 });
+    costs.backlog + costs.copy * (misses.len() as f64) < planned
+}
+
 /// What a call did with its experts (`serve`): the experts that got a place now in the order the call asked for them, the copies to queue ((expert, place) of the misses `plan` copies), the reads found in a place (`hits`) and
 /// not (`misses`), the misses left to the host (`kept`), and the ones of those worth a place behind the call (`promote`).
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -2710,7 +2730,21 @@ impl ExpertStore {
             // SAFETY: the pinned buffers hold `pairs` int64 and fp32, written by the copies that have completed.
             let host_ids: Vec<i64> = std::slice::from_raw_parts(cuda.ids.ptr as *const i64, pairs).to_vec();
             let host_wts: Vec<f32> = if hybrid { std::slice::from_raw_parts(cuda.wts.ptr as *const f32, pairs).to_vec() } else { Vec::new() };
-            (distinct(&host_ids, ly.cache.experts()), host_ids, host_wts, hybrid)
+            let needed = distinct(&host_ids, ly.cache.experts());
+            // (a call whose misses are more than the places its hits leave, copied whole in waves where that is quicker than the host's share of them)
+            let hybrid = hybrid && {
+                let experts = ly.cache.experts();
+                let mut pairs_of = vec![0usize; experts];
+                host_ids.iter().filter(|&&e| e >= 0 && (e as usize) < experts).for_each(|&e| pairs_of[e as usize] += 1);
+                let misses: Vec<Miss> = needed
+                    .iter()
+                    .filter(|&&e| ly.cache.slot_of(e as usize).is_none())
+                    .map(|&e| Miss { expert: e, pairs: pairs_of[e as usize], hot: false })
+                    .collect();
+                let room = ly.cache.slots() - (needed.len() - misses.len());
+                !waves_quicker(mode, &misses, room, &Costs { backlog: cuda.backlog(inner.expert_bytes, &inner.costs), ..inner.costs })
+            };
+            (needed, host_ids, host_wts, hybrid)
         };
         if hybrid {
             let overlap = {
@@ -4232,6 +4266,24 @@ mod tests {
         let before = c;
         c.computed(4, 2, 900.0);
         assert_eq!(c, before);
+    }
+
+    /// A call whose misses do not fit the places its hits leave is copied whole in waves where the host's share of it would take longer (many rows a miss), and planned with the host where it would not; only `Auto`
+    /// decides so, and a call whose misses fit is never waves.
+    #[test]
+    fn many_rows_of_misses_past_the_places_go_in_waves() {
+        let c = Costs { copy: 480.0, fixed: 100.0, pair: 300.0, row: 250.0, backlog: 0.0 };
+        // (30 misses of 3 rows each, 2 places left: the host's 28 take 22,500 microseconds against 14,400 copying all 30)
+        let heavy: Vec<Miss> = (0..30).map(|e| miss(e, 3, false)).collect();
+        assert!(waves_quicker(Mode::Auto, &heavy, 2, &c));
+        assert!(!waves_quicker(Mode::Cpu, &heavy, 2, &c) && !waves_quicker(Mode::Split, &heavy, 2, &c));
+        // (one row a miss: the host's 28 take 8,500 against 14,400)
+        let light: Vec<Miss> = (0..30).map(|e| miss(e, 1, false)).collect();
+        assert!(!waves_quicker(Mode::Auto, &light, 2, &c));
+        // (room for all: never waves)
+        assert!(!waves_quicker(Mode::Auto, &heavy, 30, &c));
+        // (a long backlog makes the copies dear)
+        assert!(!waves_quicker(Mode::Auto, &heavy, 2, &Costs { backlog: 50_000.0, ..c }));
     }
 
     /// The host's time for a miss is its expert's first row and then its other rows (`Costs::host`): where a row after the first costs the products alone, a miss of many rows is still the host's when a pair-by-pair
