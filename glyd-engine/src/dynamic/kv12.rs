@@ -263,9 +263,8 @@ pub fn calibrate(e: &mut Dyn, prompts: &[Vec<u32>], model: &str) -> Result<Table
         return err(format!("{}: no attention layer whose keys and values this reads (Gemma 4's preparation)", e.big.d.family));
     }
     let mut hists: Vec<Option<Hist>> = shapes.iter().map(|s| s.map(|s| Hist::new(s.heads, s.channels, s.one))).collect();
-    // (the pages' chunks are counted on prompts the windows were not made from: bases from the first half, counted on the second; where there is one
-    // prompt, on it, which counts too few)
-    let half = prompts.len() / 2;
+    // (the pages' chunks are counted on tokens the windows were not made from: windows from each prompt's first half, counted on its second half;
+    // the corpus makes few prompts, whatever their length)
     let mut first: Vec<Option<Hist>> = hists.clone();
     let reply = crate::sched::Reply {
         params: crate::sampler::Params { temperature: 0.0, ..Default::default() },
@@ -275,16 +274,15 @@ pub fn calibrate(e: &mut Dyn, prompts: &[Vec<u32>], model: &str) -> Result<Table
         stop_ids: Vec::new(),
     };
     let mut positions = 0;
-    for (i, p) in prompts.iter().enumerate() {
+    for p in prompts {
         crate::conv::Gen::reply(e, p, &reply, &mut |_| true)?;
         positions = positions.max(p.len());
         for ((s, h), f) in shapes.iter().zip(hists.iter_mut()).zip(first.iter_mut()) {
             if let (Some(s), Some(h), Some(f)) = (s, h, f) {
                 let (k, v, _) = e.kv_rows(s, p.len())?;
                 h.add(&k, &v);
-                if i < half {
-                    f.add(&k, &v);
-                }
+                let cut = (k.len() / (s.heads * s.channels)) / 2 * s.heads * s.channels;
+                f.add(&k[..cut], if v.is_empty() { &v } else { &v[..cut] });
             }
         }
     }
@@ -292,14 +290,17 @@ pub fn calibrate(e: &mut Dyn, prompts: &[Vec<u32>], model: &str) -> Result<Table
     let outside = hists.iter().zip(&layers).map(|(h, t)| h.as_ref().zip(t.as_ref()).map_or(0.0, |(h, t)| h.outside(t))).collect();
     // (the pages' escape chunks with the tables made: the prompts again; values outside their windows gather in a few channels, so a page's need is
     // counted, not taken from the share)
-    let held_out: Vec<Option<LayerTable>> = if half > 0 { first.iter().map(|h| h.as_ref().map(Hist::table)).collect() } else { layers.clone() };
+    let held_out: Vec<Option<LayerTable>> = first.iter().map(|h| h.as_ref().map(Hist::table)).collect();
     let mut taken: Vec<Vec<u32>> = vec![Vec::new(); shapes.len()];
-    for p in &prompts[half..] {
+    for p in prompts {
         crate::conv::Gen::reply(e, p, &reply, &mut |_| true)?;
         for (l, s) in shapes.iter().enumerate() {
             if let (Some(s), Some(t)) = (s, &held_out[l]) {
                 let (k, v, first) = e.kv_rows(s, p.len())?;
-                taken[l].extend(page_chunks(&k, &v, first, t, super::kvpages::ARENA as usize));
+                let w = s.heads * s.channels;
+                let half = k.len() / w / 2;
+                let v2 = if v.is_empty() { &v[..] } else { &v[half * w..] };
+                taken[l].extend(page_chunks(&k[half * w..], v2, first + half, t, super::kvpages::ARENA as usize));
             }
         }
     }
