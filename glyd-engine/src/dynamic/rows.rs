@@ -767,6 +767,23 @@ impl ModelStep for Dyn {
         self.big.logits.read(row * v * 2, &mut words)?;
         Ok(words.into_iter().map(|w| f32::from_bits((w as u32) << 16)).collect())
     }
+    fn gather(&mut self, row: usize, tokens: &[u32]) -> Result<Vec<(u32, f32)>> {
+        let v = self.big.d.vocab;
+        let toks: Vec<u32> = tokens.iter().copied().filter(|&t| (t as usize) < v).collect();
+        if toks.is_empty() {
+            return Ok(Vec::new());
+        }
+        let idx: Vec<i32> = toks.iter().map(|&t| t as i32).collect();
+        let (ib, ob) = (Buf::new(idx.len() * 4)?, Buf::new(idx.len() * 4)?);
+        ib.write(0, &idx)?;
+        // SAFETY: the step's logits rows of v bf16 each (row is one of them, as `logits` reads it); idx holds n tokens below v, out room for n f32; the
+        // stream is synchronized before out is read.
+        unsafe { self.kern.gather_row(self.dev.stream, self.big.logits.ptr, v, row, ib.ptr, idx.len(), ob.ptr)? };
+        self.dev.sync()?;
+        let mut vals = vec![0f32; idx.len()];
+        ob.read(0, &mut vals)?;
+        Ok(toks.into_iter().zip(vals).collect())
+    }
     fn release(&mut self, pages: &[i32]) -> Result<()> {
         for &p in pages {
             self.empty(p as usize)?;

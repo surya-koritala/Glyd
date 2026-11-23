@@ -386,6 +386,13 @@ extern "C" __global__ void __launch_bounds__(1024) topk64_bf16(const bf16* logit
     topk64_impl(logits, V, tok, val, nullptr, 0);
 }
 
+// A row's logits at n tokens, as f32 (exact: a bf16 widened): out[i] = row[idx[i]], each idx below the row's length (the host checks). The sampler's draw from the
+// largest logits where penalties, a bias or suppressed tokens change some logits (src/sampler.rs `sample_adjusted`): those tokens' own logits, not the row.
+extern "C" __global__ void __launch_bounds__(256) gather_bf16(const bf16* row, const int* idx, int n, float* out) {
+    const int i = blockIdx.x * 256 + threadIdx.x;
+    if (i < n) out[i] = __bfloat162float(row[idx[i]]);
+}
+
 // `topk64_bf16` with a mask per row (see `topk64_impl`): `words` is the row's words in `mask`, 1 + (V + 31) / 32.
 extern "C" __global__ void __launch_bounds__(1024) topk64_bf16_masked(const bf16* logits, int V, int* tok, float* val, const unsigned* mask, int words) {
     topk64_impl(logits, V, tok, val, mask, words);

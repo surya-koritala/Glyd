@@ -560,7 +560,9 @@ mod tests {
             (seed % m as u64) as usize
         };
         let (mut found, mut cuts, mut taken) = (0, 0, 0);
-        for _ in 0..30000 {
+        // (under Miri, the first 600 of the same steps)
+        let steps = if cfg!(miri) { 600 } else { 30000 };
+        for _ in 0..steps {
             let s = rnd(slots);
             match rnd(10) {
                 0 => {
@@ -656,8 +658,11 @@ mod tests {
                 assert_eq!(q.free.len() + q.idle.len() + q.refs.iter().filter(|&&r| r > 0).count(), q.blocks as usize - 1, "a block lost");
             }
         }
-        // (the run did what it is for)
-        assert!(found > 300 && cuts > 300 && taken > 300, "{found} found, {cuts} cuts, {taken} growths that took a named block");
+        // (the run did what it is for: as many of each for its steps as 300 in 30,000)
+        assert!(
+            [found, cuts, taken].iter().all(|&x| x * 30000 > 300 * steps),
+            "{found} found, {cuts} cuts, {taken} growths that took a named block in {steps} steps"
+        );
     }
 
     /// Growth takes blocks in every group or in none; a sequence past the context never grows.

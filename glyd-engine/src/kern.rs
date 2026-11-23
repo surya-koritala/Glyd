@@ -94,6 +94,7 @@ pub struct Kern {
     topk: crate::kt::topk64_bf16,
     /// `topk` with a mask per row (a grammar's): None where the kernels have none.
     topk_masked: Option<crate::kt::topk64_bf16_masked>,
+    gather: crate::kt::gather_bf16,
     expsum: crate::kt::expsum_bf16,
     count_diff: crate::kt::count_diff_u16,
     logsumexp: crate::kt::logsumexp_bf16,
@@ -162,6 +163,7 @@ impl Kern {
             argmax: dev.typed()?,
             topk: dev.typed()?,
             topk_masked: dev.typed::<crate::kt::topk64_bf16_masked>().ok(),
+            gather: dev.typed()?,
             expsum: dev.typed()?,
             count_diff: dev.typed()?,
             logsumexp: dev.typed()?,
@@ -446,6 +448,14 @@ impl Kern {
             return crate::ffi::err(format!("vocabulary {v}: not supported"));
         }
         launch!(self.topk, [rows, 1, 1], [1024, 1, 1], s; logits, v, tok, val)
+    }
+
+    /// Row `row`'s (`v` bf16 logits at `logits`) values at the `n` tokens `idx` (int, each below v) into `out` (f32).
+    ///
+    /// # Safety
+    /// As `copy_row`; `idx` holds n ints below v and `out` room for n f32.
+    pub unsafe fn gather_row(&self, s: Stream, logits: u64, v: usize, row: usize, idx: u64, n: usize, out: u64) -> Result<()> {
+        launch!(self.gather, [(n as u32).div_ceil(256), 1, 1], [256, 1, 1], s; logits + (row * v * 2) as u64, idx, n as i32, out)
     }
 
     /// Whether the kernels have `topk_rows_masked`.

@@ -212,6 +212,12 @@ pub trait ModelStep {
     fn top(&mut self, _row: usize) -> Option<Vec<(u32, f32)>> {
         None
     }
+    /// Row `row`'s logits at `tokens` (those in the vocabulary, with them): what a draw from the candidates needs where penalties, a bias or suppressed tokens
+    /// change those tokens' logits (`Sampler::sample_adjusted`). By default from the whole row; a GPU backend reads those tokens alone.
+    fn gather(&mut self, row: usize, tokens: &[u32]) -> Result<Vec<(u32, f32)>> {
+        let l = self.logits(row)?;
+        Ok(tokens.iter().filter_map(|&t| l.get(t as usize).map(|&x| (t, x))).collect())
+    }
 }
 
 impl ModelStep for &mut Engine {
@@ -423,6 +429,9 @@ impl ModelStep for &mut dyn ModelStep {
     }
     fn top(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
         (**self).top(row)
+    }
+    fn gather(&mut self, row: usize, tokens: &[u32]) -> Result<Vec<(u32, f32)>> {
+        (**self).gather(row, tokens)
     }
 }
 
@@ -1334,6 +1343,13 @@ impl<B: ModelStep> Sched<B> {
             if let Some(t) = top.as_deref().and_then(|c| self.active[i].sampler.sample_top(c, None)) {
                 return Ok((t, None));
             }
+            // (penalties, a bias or suppressed tokens: the candidates and those tokens' own logits, changed as the whole row's would be, where that shows the draw)
+            if let (Some(c), Some(ts)) = (top.as_deref(), self.active[i].sampler.adjusts()) {
+                let raw = self.be.gather(row, &ts)?;
+                if let Some(t) = self.active[i].sampler.sample_adjusted(c, &raw) {
+                    return Ok((t, None));
+                }
+            }
         }
         let logits = self.be.logits(row)?;
         let tok = if self.active[i].greedy { sample.token } else { self.active[i].sampler.sample(&logits) };
@@ -1909,6 +1925,11 @@ pub(crate) mod tests {
             let mut by: Vec<u32> = (0..r.len() as u32).collect();
             by.sort_by(|&a, &b| r[b as usize].partial_cmp(&r[a as usize]).unwrap().then(a.cmp(&b)));
             Some(by[..64].iter().map(|&t| (t, r[t as usize])).collect())
+        }
+        // (as a GPU's: those tokens alone, not a read of the row)
+        fn gather(&mut self, row: usize, tokens: &[u32]) -> Result<Vec<(u32, f32)>> {
+            let r = self.rows.get(row).ok_or_else(|| crate::ffi::Error("no logits".into()))?;
+            Ok(tokens.iter().filter_map(|&t| r.get(t as usize).map(|&x| (t, x))).collect())
         }
         fn release(&mut self, pages: &[i32]) -> Result<()> {
             self.released += pages.len();
@@ -2681,6 +2702,39 @@ pub(crate) mod tests {
         run(&mut s);
         let _ = events(&rx);
         assert_eq!(s.be.logit_reads, 0, "a draw from the candidates reads no row");
+        // penalties change some logits: the candidates and those tokens' own give the tokens the whole row gives, and no row is read (a top-k of 2: the made-up
+        // rows tie most tokens at -5, the last candidate's, so a top-k reaching them would be the row's)
+        let penalised = |gpu_top: bool| {
+            let mut f = Fake::new(64, 32);
+            f.gpu_top = gpu_top;
+            let mut s = Sched::new(f, 4);
+            let (tx, rx) = channel();
+            s.submit(Submit {
+                prompt: prompt(2, 20),
+                reply: Reply {
+                    params: Params { temperature: 1.0, top_k: 2, repetition_penalty: 1.3, frequency_penalty: 0.2, seed: 3, ..Params::default() },
+                    max_new: 8,
+                    ignore_eos: true,
+                    logprobs: None,
+                    stop_ids: Vec::new(),
+                },
+                out: tx,
+                abort: Arc::new(AtomicBool::new(false)),
+                resumed: Default::default(),
+                cached: Default::default(),
+                created: Default::default(),
+                salt: 0,
+                pin: 0,
+                images: Vec::new(),
+            });
+            run(&mut s);
+            let toks = events(&rx).1;
+            (toks, s.be.logit_reads)
+        };
+        let ((by_cands, reads), (by_row, _)) = (penalised(true), penalised(false));
+        assert_eq!(by_cands.len(), 8);
+        assert_eq!(by_cands, by_row, "the candidates' draw is the row's");
+        assert_eq!(reads, 0, "penalties drawn from the candidates read no row");
     }
 
     /// vLLM's stop_token_ids and min_tokens in the scheduler: a stop token ends the reply as the end token does (counted, not in the reply), and no end or stop token may be chosen before min_tokens tokens: the reply is
