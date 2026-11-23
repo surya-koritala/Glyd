@@ -63,6 +63,8 @@ jobs:
           "$E" topkcheck
           "$E" kvshapes
           "$E" kcheck35
+          # (the attention kind's kernels, every family's head width and arithmetic, against an fp64 attention: prompt rows on the tensor cores and a warp a head, decode rows in parts)
+          "$E" attncheck
           # (each layer kind of the recent families' random models on this GPU against its CPU f32 reference, kind by kind: runtime/reference/mod.rs's table)
           "$E" kindcheck
           # (a random Gemma 4 in 12-bit KV pages: the prompt's tokens read back the plain bf16 cache's values bit for bit, the same first token)

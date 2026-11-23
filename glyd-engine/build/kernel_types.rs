@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 /// The C types of the kernels' arguments that are not pointers, and the Rust type passed for each.
-const TYPES: [(&str, &str); 19] = [
+const TYPES: [(&str, &str); 20] = [
     ("int", "i32"),
     ("int32_t", "i32"),
     ("unsigned", "u32"),
@@ -26,6 +26,7 @@ const TYPES: [(&str, &str); 19] = [
     ("bool", "bool"),
     ("G4Pf", "crate::gemma4::G4Pf"),
     ("C2Segs", "crate::cb2_prefill::Segs"),
+    ("AttnArgs", "crate::dynamic::attn::AttnArgs"),
 ];
 
 /// The source without comments, its continued lines joined.

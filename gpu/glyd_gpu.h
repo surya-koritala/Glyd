@@ -60,8 +60,9 @@ typedef hipStream_t cudaStream_t;
  * 16 from glyd_gpu_f8_*, the lossless FP8 (e4m3) weights: pack, unpack, unpack of a list of a stack's matrices, and the product of 1 to 64
  *    tokens with the weights as they are held; 17 from glyd_gpu_mma_moe_placed, the experts' product over an expert cache's places;
  * 18 from glyd_gpu_kv_decode_from, the decode attention over the tokens from a sequence's first one on (a sliding window's);
- * 19 from glyd_gpu_kv_prefill, a prompt chunk's attention over its sequence's pages and its own bf16 rows. */
-#define GLYD_GPU_API_VERSION 19
+ * 19 from glyd_gpu_kv_prefill, a prompt chunk's attention over its sequence's pages and its own bf16 rows;
+ * 20 from glyd_gpu_attn_prefill, the same attention over a bf16 cache. */
+#define GLYD_GPU_API_VERSION 20
 
 #ifdef __cplusplus
 extern "C" {
@@ -548,6 +549,13 @@ int glyd_gpu_kv_prefill(const uint16_t* q, int64_t q_stride, const uint16_t* key
                         const uint8_t* kbase, const uint8_t* vbase, const int32_t* block_table, int64_t H, int64_t G, int64_t D,
                         int64_t A, const uint8_t* escape, int64_t nchunks, const uint8_t* raw, int64_t nslabs, double scale,
                         int64_t round_scores, double softcap, const float* sinks, uint16_t* out, int64_t out_stride, cudaStream_t cs);
+/* glyd_gpu_kv_prefill's attention with the keys and values in a bf16 cache in place of the pages: kc and vc [places][H][D] (16-byte aligned), position p's
+ * place block_table[p / 16] * 16 + p % 16 (int32, the sequence's row of the table), or p modulo cap where block_table is null; the chunk's own keys and values
+ * written there before the call. D 128, 256 or 512. The same kernel, its tiles and its sums in the same order: where the cache holds the values the pages hold
+ * (the pages are lossless), the outputs are glyd_gpu_kv_prefill's bit for bit. One launch, no workspace: a CUDA graph can hold it. */
+int glyd_gpu_attn_prefill(const uint16_t* q, int64_t q_stride, const uint16_t* kc, const uint16_t* vc, const int32_t* block_table, int64_t cap, int64_t n, int64_t start,
+                          int64_t window, int64_t H, int64_t G, int64_t D, double scale, int64_t round_scores, double softcap, const float* sinks, uint16_t* out,
+                          int64_t out_stride, cudaStream_t cs);
 
 /* ------------------------------------------------------------------------
  * The lossless FP8 weights: W [O, K] of e4m3 bytes (any byte: NaNs, both zeros) held in about 6.7 bits a value, as

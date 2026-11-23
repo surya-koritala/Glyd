@@ -2,6 +2,7 @@
 //! the SiLU MLP, the final norm on the last row (models/qwen3_5; the arithmetic is the kernels', as src/kern35.rs names them). Its weights load by
 //! src/kern35.rs's loader (the small matrices it keeps dense, the fp32 parameters, the gated norm's weight as vLLM holds it), handed over as they are.
 
+use super::attn::{AttnOp, GateAt, QkNorm, RopeAt};
 use super::{Dyn, ModelDesc, Op, Opts, Ring, Rope, Slot, Stage};
 use crate::dev::Dev;
 use crate::ffi::{err, Result};
@@ -82,6 +83,34 @@ pub fn lowered(dir: &Path, c: &crate::qwen35::Config35, st: &Stage) -> Result<Mo
     super::lower::agree(lowered, &describe(c, st)?, &label)
 }
 
+/// The Qwen3.5 layout's gated attention (Qwen3.5, Qwen3.8 dense; Condor's, src/model_qwen4x.rs): heads of 256, each query head with its gate in Mix's rows; the
+/// (1 + w) q and k norms (small tensors `qk`) and the rotary on the first `rotary` dims in fp32 with one rounding; scale 256^-0.5, the scores fp32; the output times
+/// sigmoid(gate). Ring `ring`.
+pub(crate) fn attention(nq: usize, nk: usize, rotary: usize, qk: (usize, usize), ring: usize) -> AttnOp {
+    AttnOp {
+        src: Slot::Mix,
+        stride: 2 * nq * 256 + 2 * nk * 256,
+        q_step: 512,
+        k_off: nq * 512,
+        v_off: Some(nq * 512 + nk * 256),
+        d: 256,
+        nq,
+        nk,
+        writes: true,
+        ring,
+        window: 0,
+        norm: QkNorm::Plus1 { q: qk.0, k: qk.1 },
+        v_norm: false,
+        rope: Some(RopeAt { table: 0, span: rotary, pairs: rotary / 2 }),
+        q_scale: 1.0,
+        scale: 1.0 / 16.0,
+        softcap: 0.0,
+        gate: Some(GateAt { off: 256, step: 512, norm: false }),
+        round: false,
+        sbf16: false,
+    }
+}
+
 /// The executor's description of Qwen3.5's layout for stage `st` (src/kern35.rs's loader fills its matrices and small tensors; they are indexed here in its order).
 pub fn describe(c: &crate::qwen35::Config35, st: &Stage) -> Result<ModelDesc> {
     if c.head_dim != 256 || c.lin_k_dim != 128 || c.lin_v_dim != 128 || c.conv_kernel != 4 {
@@ -131,8 +160,7 @@ pub fn describe(c: &crate::qwen35::Config35, st: &Stage) -> Result<ModelDesc> {
                 rings.push(Ring { d: 256, nk, window: 0 });
                 ops.extend([
                     Op::Linear { w: b, x: Slot::H, y: Slot::Mix, name: "attention: qkv product" },
-                    Op::Prep35 { stride: full_w, q_norm: s0 + 2, k_norm: s0 + 3, half: c.rotary_dim / 2, ring, nq, nk },
-                    Op::Attn35 { stride: full_w, ring, nq, nk },
+                    Op::Attn(attention(nq, nk, c.rotary_dim, (s0 + 2, s0 + 3), ring)),
                     Op::Linear { w: b + 1, x: Slot::Att, y: Slot::O, name: "attention: o product" },
                 ]);
                 b + 2

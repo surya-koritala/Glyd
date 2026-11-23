@@ -1,8 +1,9 @@
 //! Muse Spark's text model (src/muse.rs) as a description: each layer's attention (q, k, v and the gate in one product; heads of 64 normed, the rotary on the window's layers; the output normed and gated),
 //! its experts in the latent (a projection in, a centered norm, the experts with each output normed, the weighted sum, a projection out), the input-scaled norms and the residual gates; the normed
 //! embedding, the final norm, the soft-cap of the logits times the output multiplier. bf16 as the checkpoint has it, packed at the level asked (lossless by default); the routers fp32, as they are. The
-//! arithmetic is kernels/muse.cu's; src/muse_ref.rs is the CPU reference it is checked against (`musecheck`).
+//! arithmetic is kernels/muse.cu's and the attention kind's (kernels/attn.cu); src/muse_ref.rs is the CPU reference it is checked against (`musecheck`).
 
+use super::attn::{AttnOp, GateAt, QkNorm, RopeAt};
 use super::{Dyn, Loaded, ModelDesc, Op, Opts, Ring, Slot, Stage};
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result};
@@ -15,11 +16,8 @@ use crate::weights::{as_bytes, pack_words, upload_bytes, upload_packed, Layout};
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 
-/// kernels/muse.cu's kernels the executor launches (the experts' are moe.rs's).
+/// kernels/muse.cu's kernels the executor launches (the experts' are moe.rs's, the attention's the attention kind's).
 pub struct KernMuse {
-    pub(crate) qk: crate::kt::muse_qk,
-    pub(crate) attn: crate::kt::muse_attn,
-    pub(crate) ogate: crate::kt::muse_ogate,
     pub(crate) rms_in: crate::kt::muse_rms_in,
     pub(crate) rgate: crate::kt::muse_rgate,
     pub(crate) softcap: crate::kt::muse_softcap,
@@ -27,8 +25,37 @@ pub struct KernMuse {
 
 impl KernMuse {
     pub fn load(dev: &Dev) -> Result<KernMuse> {
-        Ok(KernMuse { qk: dev.typed()?, attn: dev.typed()?, ogate: dev.typed()?, rms_in: dev.typed()?, rgate: dev.typed()?, softcap: dev.typed()? })
+        Ok(KernMuse { rms_in: dev.typed()?, rgate: dev.typed()?, softcap: dev.typed()? })
     }
+}
+
+/// Layer `l`'s attention (heads of 64, ring `ring`): q, k, v and the gate in Mix's rows; q and k normed without a weight, q times the scale (the qk scale over
+/// 64^1/2) before the rotary on the window's layers, each with transformers' bf16 rounding points (`AttnRounding::Sdpa`); the scores fp32 and not scaled again;
+/// the output normed without a weight and times sigmoid(gate), in Att.
+fn attention(c: &ConfigMuse, l: usize, ring: usize) -> Op {
+    let (nq, nk, hd) = (c.heads, c.kv_heads, c.head_dim);
+    Op::Attn(AttnOp {
+        src: Slot::Mix,
+        stride: (2 * nq + 2 * nk) * hd,
+        q_step: hd,
+        k_off: nq * hd,
+        v_off: Some((nq + nk) * hd),
+        d: hd,
+        nq,
+        nk,
+        writes: true,
+        ring,
+        window: if c.sliding[l] { c.window } else { 0 },
+        norm: QkNorm::Plain,
+        v_norm: false,
+        rope: c.sliding[l].then_some(RopeAt { table: 0, span: hd, pairs: hd / 2 }),
+        q_scale: c.qk_scale / (hd as f32).sqrt(),
+        scale: 1.0,
+        softcap: 0.0,
+        gate: Some(GateAt { off: (nq + 2 * nk) * hd, step: hd, norm: true }),
+        round: true,
+        sbf16: false,
+    })
 }
 
 /// A layer's experts on the dynamic engine (`MoeLayer::forward_muse`, its router fp32 in `MoeWeights::router`).
@@ -218,10 +245,8 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_sto
         let mut ops = vec![
             Op::MuseRms { x: Slot::X, w: w_in, y: Slot::H, eps: c.eps },
             Op::Linear { w: m0, x: Slot::H, y: Slot::Mix, name: "attention: q, k, v and gate product" },
-            Op::MuseQk { stride: row, nq, nk, rope: c.sliding[l], ring, scale: c.qk_scale },
-            Op::MuseAttn { ring, nq, nk, window: if c.sliding[l] { c.window } else { 0 } },
-            Op::MuseOGate { stride: row, goff: (nq + 2 * nk) * hd, nq },
-            Op::Linear { w: m0 + 1, x: Slot::Core, y: Slot::O, name: "attention: o product" },
+            attention(&c, l, ring),
+            Op::Linear { w: m0 + 1, x: Slot::Att, y: Slot::O, name: "attention: o product" },
             Op::MuseRms { x: Slot::O, w: ones, y: Slot::O, eps: c.post_eps },
             Op::MuseGate { alpha: aa, beta: ba },
             Op::MuseRms { x: Slot::X, w: w_ff, y: Slot::H, eps: c.eps },
@@ -243,15 +268,16 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_sto
     l_.mats.push(if st.first { pack_as(&words(&read(&format!("{}embed_tokens.weight", c.prefix))?), c.vocab, d, "embed", false)? } else { empty()? });
     let lm = l_.mats.len();
     l_.mats.push(if st.last { pack(&words(&read("lm_head.weight")?), c.vocab, d, "lm_head")? } else { empty()? });
-    // the rotary's tables: cos and sin [positions, 32] fp32, the angle pos x f in fp32, its cosine and sine in f64
+    // the rotary's tables: cos and sin [positions, 32] bf16, the angle pos x f in fp32, its cosine and sine in f64 rounded to fp32 then to bf16 (transformers' cos and
+    // sin in the activations' type)
     let mp = o.ctx.div_ceil(16) * 16 + o.chunk.max(1) + 16;
     let f = c.freqs();
     let (mut cs, mut sn) = (Vec::with_capacity(mp * f.len()), Vec::with_capacity(mp * f.len()));
     for p in 0..mp {
         for &fr in &f {
             let (s_, c_) = ((p as f32 * fr) as f64).sin_cos();
-            cs.push(c_ as f32);
-            sn.push(s_ as f32);
+            cs.push(crate::gemma4::bf16_bits(c_ as f32));
+            sn.push(crate::gemma4::bf16_bits(s_ as f32));
         }
     }
     let ropes = vec![(upload_bytes(as_bytes(&cs))?, upload_bytes(as_bytes(&sn))?)];
@@ -262,7 +288,6 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_sto
         (Slot::Mix, row),
         (Slot::Qo, nq * hd),
         (Slot::Att, nq * hd),
-        (Slot::Core, nq * hd),
         (Slot::O, d),
         (Slot::Proj, lat),
         (Slot::Xc, lat),
@@ -340,10 +365,8 @@ pub fn describe(c: &ConfigMuse, st: &Stage) -> Result<ModelDesc> {
         let mut ops = vec![
             Op::MuseRms { x: Slot::X, w: w_in, y: Slot::H, eps: c.eps },
             Op::Linear { w: m0, x: Slot::H, y: Slot::Mix, name: "attention: q, k, v and gate product" },
-            Op::MuseQk { stride: row, nq, nk, rope: c.sliding[l], ring, scale: c.qk_scale },
-            Op::MuseAttn { ring, nq, nk, window },
-            Op::MuseOGate { stride: row, goff: (nq + 2 * nk) * hd, nq },
-            Op::Linear { w: m0 + 1, x: Slot::Core, y: Slot::O, name: "attention: o product" },
+            attention(c, l, ring),
+            Op::Linear { w: m0 + 1, x: Slot::Att, y: Slot::O, name: "attention: o product" },
             Op::MuseRms { x: Slot::O, w: ones, y: Slot::O, eps: c.post_eps },
             Op::MuseGate { alpha: aa, beta: ba },
             Op::MuseRms { x: Slot::X, w: w_ff, y: Slot::H, eps: c.eps },
@@ -368,7 +391,6 @@ pub fn describe(c: &ConfigMuse, st: &Stage) -> Result<ModelDesc> {
         (Slot::Mix, row),
         (Slot::Qo, nq * hd),
         (Slot::Att, nq * hd),
-        (Slot::Core, nq * hd),
         (Slot::O, d),
         (Slot::Proj, lat),
         (Slot::Xc, lat),

@@ -93,6 +93,7 @@ fn main() {
     println!("cargo:rerun-if-changed=kernels/qwen4x.cu");
     println!("cargo:rerun-if-changed=kernels/vision.cu");
     println!("cargo:rerun-if-changed=kernels/gemma4.cu");
+    println!("cargo:rerun-if-changed=kernels/attn.cu");
     println!("cargo:rerun-if-changed=kernels/tp.cu");
     println!("cargo:rerun-if-changed=kernels/gemm_idx.h");
     println!("cargo:rerun-if-changed=../gpu/hip.h");

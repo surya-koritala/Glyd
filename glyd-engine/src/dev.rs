@@ -444,7 +444,7 @@ impl<A: KernelArgs> Launch<A> for &Kernel {
 
 // (a typed kernel's own `Launch`, for it and for a reference to it, is in `crate::kt`: one impl a kernel, so that the arguments' types follow from it)
 
-/// A typed kernel seen by its arguments' types alone (`crate::kt`'s `sig`): what a choice between kernels that take the same arguments is (`g4_prep256` or `g4_prep512`
+/// A typed kernel seen by its arguments' types alone (`crate::kt`'s `sig`): what a choice between kernels that take the same arguments is (`attn_parts256` or `attn_parts512`
 /// by the head's width), still launched with those types only.
 pub struct Sig<'a, A>(&'a Kernel, std::marker::PhantomData<fn(A)>);
 

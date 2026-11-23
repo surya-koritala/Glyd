@@ -3,7 +3,7 @@
 //! engine that ran them was removed in R3b (#137), after `paritycheck` found the description executor's rows the same bits at every level.
 //!
 //! A layer: x += mixer(norm1(x)); x += mlp(norm2(x)), the norms zero-centered. Full attention (1 in 4): the qkv product (each query head with its gate), the q/k norms and
-//! the rotary on 64 of 256 dims, the causal attention times sigmoid(gate), the o product. Linear attention: the qkvz and ba products, the causal convolution with SiLU,
+//! the rotary on 64 of 256 dims, the causal attention times sigmoid(gate) (the attention kind's kernels, src/dynamic/attn.rs), the o product. Linear attention: the qkvz and ba products, the causal convolution with SiLU,
 //! the gated delta rule (a recurrence, or in chunks for a prompt), the gated norm, the out product.
 
 use crate::dev::{Buf, Dev};
@@ -22,26 +22,10 @@ use std::path::Path;
 // The kernels' names: those the .cu sources give them, in every build (kname!).
 /// Bytes of dynamic shared memory gdn_chunk takes (kernels/qwen35.cu).
 const GDN_CHUNK_SMEM: u32 = (2 * 64 * 65 + 64 * 64 + 64 * 64 + 128 * 64 + 2 * 64) * 4;
-/// Keys a tile and the padded row of attn256.
-const AT_KB: u32 = 32;
-const AT_KS: u32 = 129;
-/// The parts a decode step's attention splits each row's keys into (attn256_split), and the floats a part's result takes.
-pub const ATTN_SPLITS: usize = 16;
-pub(crate) const ATTN_PART: usize = 258;
-
-/// `Kern35::prep`'s table for a staging buffer of the step's rows (each row at its own index), not a block table (no device pointer is 1).
-pub const ROWS: u64 = 1;
-
 /// Qwen3.5's kernels with typed launches.
 pub struct Kern35 {
     rmsnorm: crate::kt::rmsnorm1p,
     rmsnorm_add: crate::kt::rmsnorm1p_add,
-    prep: crate::kt::q35_prep,
-    prep_rows: crate::kt::q35_prep_rows,
-    gate: crate::kt::q35_gate,
-    attn: crate::kt::attn256,
-    attn_split: crate::kt::attn256_parts,
-    attn_merge: crate::kt::attn256_merge,
     conv: crate::kt::conv_silu,
     rec: crate::kt::gdn_recurrent,
     chunk: crate::kt::gdn_chunk,
@@ -53,21 +37,7 @@ impl Kern35 {
     pub fn load(dev: &Dev) -> Result<Kern35> {
         let chunk = dev.typed::<crate::kt::gdn_chunk>()?;
         chunk.allow_smem(GDN_CHUNK_SMEM)?;
-        Ok(Kern35 {
-            rmsnorm: dev.typed()?,
-            rmsnorm_add: dev.typed()?,
-            prep: dev.typed()?,
-            prep_rows: dev.typed()?,
-            gate: dev.typed()?,
-            attn: dev.typed()?,
-            attn_split: dev.typed()?,
-            attn_merge: dev.typed()?,
-            conv: dev.typed()?,
-            rec: dev.typed()?,
-            chunk,
-            gnorm: dev.typed()?,
-            small: dev.typed()?,
-        })
+        Ok(Kern35 { rmsnorm: dev.typed()?, rmsnorm_add: dev.typed()?, conv: dev.typed()?, rec: dev.typed()?, chunk, gnorm: dev.typed()?, small: dev.typed()? })
     }
 
     /// out [rows, k] = rmsnorm(x) * (1 + w).
@@ -86,116 +56,6 @@ impl Kern35 {
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn rmsnorm_add(&self, s: Stream, x: u64, y: u64, w: u64, out: u64, rows: u32, k: i32, eps: f32) -> Result<()> {
         launch!(self.rmsnorm_add, [rows, 1, 1], [norm_threads(k)?, 1, 1], s; x, y, w, out, k, eps)
-    }
-
-    /// The n qkv rows of a full-attention layer: queries normed and turned into qo, keys normed and turned and values copied into the cache at each row's position.
-    ///
-    /// # Safety
-    /// As `rmsnorm`; the cache holds every position in `pos`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn prep(
-        &self,
-        s: Stream,
-        qkv: u64,
-        stride: i32,
-        qw: u64,
-        kw: u64,
-        cos: u64,
-        sin: u64,
-        half: i32,
-        pos: u64,
-        qo: u64,
-        kc: u64,
-        vc: u64,
-        n: u32,
-        nq: i32,
-        nk: i32,
-        eps: f32,
-        tab: u64,
-    ) -> Result<()> {
-        if !(1..=64).contains(&half) {
-            return err(format!("a rotary of {} dims: not supported", 2 * half));
-        }
-        // (a table of 1: kc and vc are a staging buffer of the step's rows, each row's keys and values at its own index: the 12-bit pages')
-        if tab == ROWS {
-            return launch!(self.prep_rows, [n, (nq + 2 * nk) as u32, 1], [128, 1, 1], s; qkv, stride, qw, kw, cos, sin, half, pos, qo, kc, vc, nq, nk, eps, 0u64);
-        }
-        launch!(self.prep, [n, (nq + 2 * nk) as u32, 1], [128, 1, 1], s; qkv, stride, qw, kw, cos, sin, half, pos, qo, kc, vc, nq, nk, eps, tab)
-    }
-
-    /// The gate of n rows' attention (`att`, nq heads of 256, rows `as` apart) by their gates (`gate`, rows `gs` apart) into out (rows `os` apart).
-    ///
-    /// # Safety
-    /// As `rmsnorm`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn gate(&self, s: Stream, att: u64, as_: i32, gate: u64, gs: i32, out: u64, os: i32, n: u32, nq: i32) -> Result<()> {
-        launch!(self.gate, [n, nq as u32, 1], [256, 1, 1], s; att, as_, gate, gs, out, os)
-    }
-
-    /// The causal attention of n query rows over the cache, times sigmoid(gate), into out.
-    ///
-    /// # Safety
-    /// As `rmsnorm`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn attn(
-        &self,
-        s: Stream,
-        q: u64,
-        qs: i32,
-        gate: u64,
-        gs: i32,
-        kc: u64,
-        vc: u64,
-        pos: u64,
-        out: u64,
-        os: i32,
-        n: i32,
-        nq: i32,
-        nk: i32,
-        tab: u64,
-    ) -> Result<()> {
-        if nk == 0 || nq % nk != 0 || nq / nk > 16 {
-            return err(format!("{nq} query heads over {nk} key-value heads: not supported"));
-        }
-        let g = nq / nk;
-        let r = if n == 1 { 1 } else { (16 / g).max(1) };
-        let smem = (AT_KB * (AT_KS + 128) + 128 * (r * g) as u32) * 4;
-        let sl2 = (1.0f64 / 16.0 * std::f64::consts::LOG2_E) as f32;
-        launch!(self.attn, [((n + r - 1) / r) as u32, nk as u32, 1], [(32 * r * g) as u32, 1, 1], smem smem, s; q, qs, gate, gs, kc, vc, pos, out, os, n, nq, nk, r, sl2, tab)
-    }
-
-    /// A decode step's attention (n rows, each its own sequence position), the keys in ATTN_SPLITS parts at once, then combined: `part` holds n nq ATTN_SPLITS ATTN_PART floats.
-    ///
-    /// # Safety
-    /// As `rmsnorm`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn attn_decode(
-        &self,
-        s: Stream,
-        q: u64,
-        qs: i32,
-        gate: u64,
-        gs: i32,
-        kc: u64,
-        vc: u64,
-        pos: u64,
-        out: u64,
-        os: i32,
-        n: i32,
-        nq: i32,
-        nk: i32,
-        part: u64,
-        tab: u64,
-    ) -> Result<()> {
-        if nk == 0 || nq % nk != 0 || nq / nk > 16 {
-            return err(format!("{nq} query heads over {nk} key-value heads: not supported"));
-        }
-        let g = (nq / nk) as u32;
-        let smem = (AT_KB * (AT_KS + 128) + 128 * g) * 4;
-        let sl2 = (1.0f64 / 16.0 * std::f64::consts::LOG2_E) as f32;
-        let splits = ATTN_SPLITS as i32;
-        launch!(self.attn_split, [n as u32, nk as u32, ATTN_SPLITS as u32], [32 * g, 1, 1], smem smem, s; q, qs, kc, vc, pos, n, nq, nk, sl2, part, splits, tab)?;
-        launch!(self.attn_merge, [n as u32, nq as u32, 1], [256, 1, 1], s; part, splits, gate, gs, out, os, nq)
     }
 
     /// The causal convolution and SiLU of n rows (the first c channels of rows xs apart), the state read and written.

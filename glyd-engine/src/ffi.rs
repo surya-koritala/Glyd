@@ -477,7 +477,7 @@ pub fn cu(call: &str, status: c_int) -> Result<()> {
 }
 
 /// The C API version this binding is written for (glyd_gpu.h's GLYD_GPU_API_VERSION).
-pub const API_VERSION: c_int = 19;
+pub const API_VERSION: c_int = 20;
 
 /// The name a library call goes by in an error: the function's own.
 macro_rules! call {
@@ -534,6 +534,7 @@ table! {
         fn glyd_gpu_kv_decode(*const u16, i64, *const u8, i64, *const u8, *const u8, *const i32, i64, *const i32, i64, i64, i64, i64, i64, i64, *const u8, i64, *const u8, i64, f64, *mut u16, i64, *mut c_void, usize, Stream) -> c_int;
         fn glyd_gpu_kv_decode_from(*const u16, i64, *const u8, i64, *const u8, *const u8, *const i32, i64, *const i32, *const i32, i64, i64, i64, i64, i64, i64, i64, *const u8, i64, *const u8, i64, f64, *mut u16, i64, *mut c_void, usize, Stream) -> c_int;
         fn glyd_gpu_kv_prefill(*const u16, i64, *const u16, i64, *const u16, i64, i64, i64, i64, *const u8, i64, *const u8, *const u8, *const i32, i64, i64, i64, i64, *const u8, i64, *const u8, i64, f64, i64, f64, *const f32, *mut u16, i64, Stream) -> c_int;
+        fn glyd_gpu_attn_prefill(*const u16, i64, *const u16, *const u16, *const i32, i64, i64, i64, i64, i64, i64, i64, f64, i64, f64, *const f32, *mut u16, i64, Stream) -> c_int;
     }
 }
 
@@ -1623,6 +1624,49 @@ impl Lib {
             cs,
         );
         self.ck(call!("kv_prefill"), r)
+    }
+
+    /// `kv_prefill`'s attention with the keys and values in a bf16 cache `kc`, `vc` [places, H, D] (glyd_gpu.h's `glyd_gpu_attn_prefill`): position p's place
+    /// `block_table[p / 16] * 16 + p % 16` (0: p modulo `cap`), the chunk's own written there before the call; `g` query heads a kv head. The same kernel and sums:
+    /// where the cache holds what the pages hold, `kv_prefill`'s bits.
+    ///
+    /// # Safety
+    /// Live device buffers: q and out [n, H g, D] (rows `q_stride`, `out_stride` apart), the cache's every place a row reads, the table's blocks.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn attn_prefill(
+        &self,
+        q: u64,
+        q_stride: i64,
+        (kc, vc, block_table, cap): (u64, u64, u64, i64),
+        (n, start, window): (i64, i64, i64),
+        (h, g, d): (i64, i64, i64),
+        (scale, round, softcap): (f64, bool, f64),
+        out: u64,
+        out_stride: i64,
+        cs: Stream,
+    ) -> Result<()> {
+        let r = (self.api.glyd_gpu_attn_prefill)(
+            q as *const u16,
+            q_stride,
+            kc as *const u16,
+            vc as *const u16,
+            block_table as *const i32,
+            cap,
+            n,
+            start,
+            window,
+            h,
+            g,
+            d,
+            scale,
+            round as i64,
+            softcap,
+            std::ptr::null(),
+            out as *mut u16,
+            out_stride,
+            cs,
+        );
+        self.ck(call!("attn_prefill"), r)
     }
 }
 

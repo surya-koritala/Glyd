@@ -4,11 +4,12 @@
 //! bf16 on every value. A bf16 output of a long sum (the delta rule, the attention) is bounded relative to the largest value, its places shown but not bounded: where such a sum
 //! cancels, a small output is many places off while the difference stays small. The attention rounds its probabilities to bf16 for the values (as FlashAttention does), the fp64
 //! CPU does not; a decode step's attention sums its keys in parts, so it is not the prompt kernel's bits. The fp32 states are bounded relative to their largest value. Exit status
-//! 1 where a bound is not kept.
+//! 1 where a bound is not kept. The gated attention is the attention kind's kernels (kernels/attn.cu) with the Qwen3.5 layout's parameters (`dynamic::qwen35::attention`).
 
 use crate::dev::{Buf, Dev};
+use crate::dynamic::attn::{AttnArgs, KernAttn, SPLITS};
 use crate::ffi::Result;
-use crate::kern35::{Kern35, ATTN_SPLITS};
+use crate::kern35::Kern35;
 use crate::qwen35_ref::{bf16, conv_step, delta_step, gated_norm, l2norm, sigmoid, softplus};
 
 struct Rng(u64);
@@ -225,10 +226,15 @@ impl Delta {
     }
 }
 
+/// The Qwen3.5 layout's attention arguments for n rows of nq query heads over nk key-value heads (heads of 256, the rotary on 2 `half` dims), the pointers null.
+fn args35(n: usize, nq: usize, nk: usize, half: usize, eps: f32) -> AttnArgs {
+    crate::dynamic::qwen35::attention(nq, nk, 2 * half, (0, 0), 0).args(n, eps)
+}
+
 /// Head-256 attention of `n` rows at positions p0 .. over random keys (nq query heads over nk key-value heads), times sigmoid(gate), against a plain fp64 softmax: the prompt's
-/// kernel, and each row as a decode step of its own (the keys in ATTN_SPLITS parts, then combined).
+/// kernels (on the tensor cores, and a warp a head), and each row as a decode step of its own (the keys in SPLITS parts, then combined).
 #[allow(clippy::too_many_arguments)]
-fn attn_case(t: &mut Tally, k: &Kern35, dev: &Dev, r: &mut Rng, p0: usize, n: usize, nq: usize, nk: usize, what: &str) -> Result<()> {
+fn attn_case(t: &mut Tally, k: &KernAttn, lib: &crate::ffi::Lib, dev: &Dev, r: &mut Rng, p0: usize, n: usize, nq: usize, nk: usize, what: &str) -> Result<()> {
     let stride = nq * 512 + 2 * nk * 256;
     let (keys, vals) = (r.v((p0 + n) * nk * 256, -2.0, 2.0), r.v((p0 + n) * nk * 256, -2.0, 2.0));
     let q = r.v(n * nq * 256, -2.0, 2.0);
@@ -254,22 +260,24 @@ fn attn_case(t: &mut Tally, k: &Kern35, dev: &Dev, r: &mut Rng, p0: usize, n: us
     }
     let (qb, gb, kb, vb, pb) = (up(&q)?, up(&gate)?, up(&keys)?, up(&vals)?, Buf::new(4 * n)?);
     pb.write(0, &pos)?;
-    let (ob, ob1, part) = (Buf::zeroed(want.len() * 2)?, Buf::zeroed(want.len() * 2)?, Buf::zeroed(n * nq * ATTN_SPLITS * 258 * 4)?);
-    let (nqi, nki, ni) = (nq as i32, nk as i32, n as i32);
+    let outs = [Buf::zeroed(want.len() * 2)?, Buf::zeroed(want.len() * 2)?, Buf::zeroed(want.len() * 2)?];
+    let part = Buf::zeroed(n * nq * SPLITS * 258 * 4)?;
+    let mut a = args35(n, nq, nk, 32, 1e-6);
+    (a.qo, a.kc, a.vc, a.cap, a.kpos, a.gate, a.part) = (qb.ptr, kb.ptr, vb.ptr, (p0 + n) as i32, pb.ptr, gb.ptr + 512, part.ptr);
     // SAFETY: buffers made here of the sizes the kernels read and write; read after a synchronize.
     unsafe {
-        k.attn(dev.stream, qb.ptr, nqi * 256, gb.ptr, stride as i32, kb.ptr, vb.ptr, pb.ptr, ob.ptr, nqi * 256, ni, nqi, nki, 0u64)?;
-        k.attn_decode(dev.stream, qb.ptr, nqi * 256, gb.ptr, stride as i32, kb.ptr, vb.ptr, pb.ptr, ob1.ptr, nqi * 256, ni, nqi, nki, part.ptr, 0u64)?;
+        k.prompt(lib, dev.stream, &AttnArgs { out: outs[0].ptr, ..a }, p0)?;
+        k.rows(dev.stream, &AttnArgs { out: outs[1].ptr, ..a })?;
+        k.decode(dev.stream, &AttnArgs { out: outs[2].ptr, ..a })?;
     }
     dev.sync()?;
-    t.rel(&format!("attention {what}: a prompt's rows, times sigmoid(gate), against the CPU"), &down(&ob, want.len())?, &want, 1e-2, true);
-    t.rel(
-        &format!("attention {what}: each row a decode step (the keys in {ATTN_SPLITS} parts, combined: not the prompt kernel's bits), against the CPU"),
-        &down(&ob1, want.len())?,
-        &want,
-        1e-2,
-        true,
-    );
+    for (o, how) in outs.iter().zip([
+        "a prompt's rows on the tensor cores (the GPU library's kernel)".to_string(),
+        "a prompt's rows, a warp a head".to_string(),
+        format!("each row a decode step (the keys in {SPLITS} parts, combined: not the prompt kernels' bits)"),
+    ]) {
+        t.rel(&format!("attention {what}: {how}, times sigmoid(gate), against the CPU"), &down(o, want.len())?, &want, 1e-2, true);
+    }
     Ok(())
 }
 
@@ -296,6 +304,7 @@ fn delta_case(t: &mut Tally, k: &Kern35, dev: &Dev, r: &mut Rng, nk: usize, nv: 
 pub fn run() -> Result<bool> {
     let dev = Dev::new(0)?;
     let k = Kern35::load(&dev)?;
+    let (ka, lib) = (KernAttn::load(&dev)?, crate::ffi::Lib::find()?);
     let s = dev.stream;
     let mut r = Rng(0x2026_1006_0035_0001);
     let mut t = Tally { failed: Vec::new() };
@@ -372,28 +381,11 @@ pub fn run() -> Result<bool> {
         let pb = Buf::new(4 * n)?;
         pb.write(0, &pos)?;
         let (qo, kc, vc) = (Buf::zeroed(n * nq * 256 * 2)?, Buf::zeroed(wk.len() * 2)?, Buf::zeroed(wv.len() * 2)?);
+        let mut a = args35(n, nq, nk, half, eps);
+        (a.src, a.qw, a.kw, a.cs, a.sn, a.qpos) = (qb.ptr, qwb.ptr, kwb.ptr, cb.ptr, sb.ptr, pb.ptr);
+        (a.qo, a.kc, a.vc, a.cap) = (qo.ptr, kc.ptr, vc.ptr, (p0 + n) as i32);
         // SAFETY: as above.
-        unsafe {
-            k.prep(
-                s,
-                qb.ptr,
-                stride as i32,
-                qwb.ptr,
-                kwb.ptr,
-                cb.ptr,
-                sb.ptr,
-                half as i32,
-                pb.ptr,
-                qo.ptr,
-                kc.ptr,
-                vc.ptr,
-                n as u32,
-                nq as i32,
-                nk as i32,
-                eps,
-                0u64,
-            )?
-        };
+        unsafe { ka.prep(s, &a, nq + nk, (crate::gemma4::G4Pf::default(), 0))? };
         dev.sync()?;
         t.ulp("query norm and rotary (64 of 256 dims)", &down(&qo, wq.len())?, &wq, 1);
         t.ulp("key norm and rotary into the cache", &down(&kc, wk.len())?, &wk, 1);
@@ -401,9 +393,9 @@ pub fn run() -> Result<bool> {
     }
 
     // the attention: a short context (the keys in 2 of the 16 parts), then 1,500 positions (every part holds keys), with the 9B's 4 query heads to a key-value head and the 27B's 6
-    attn_case(&mut t, &k, &dev, &mut r, 40, 7, 16, 4, "(16 over 4 heads, positions 40 to 46)")?;
-    attn_case(&mut t, &k, &dev, &mut r, 1500, 3, 16, 4, "(16 over 4 heads, positions 1,500 to 1,502)")?;
-    attn_case(&mut t, &k, &dev, &mut r, 1500, 3, 24, 4, "(24 over 4 heads, positions 1,500 to 1,502)")?;
+    attn_case(&mut t, &ka, &lib, &dev, &mut r, 40, 7, 16, 4, "(16 over 4 heads, positions 40 to 46)")?;
+    attn_case(&mut t, &ka, &lib, &dev, &mut r, 1500, 3, 16, 4, "(16 over 4 heads, positions 1,500 to 1,502)")?;
+    attn_case(&mut t, &ka, &lib, &dev, &mut r, 1500, 3, 24, 4, "(24 over 4 heads, positions 1,500 to 1,502)")?;
 
     // the convolution and SiLU (the 0.8B's channels: 6,144), 37 tokens from a random state; the reference sums in the kernel's order and rounds once, after SiLU (vLLM's)
     {

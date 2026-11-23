@@ -3,6 +3,7 @@
 //! kern_nh.rs runs them). Its weights load by kern_nh.rs's loader, the experts by moe_nh.rs's blocks, handed over as they are: a block with all its experts on the GPU
 //! is run by the executor, one with an expert cache (or at the hummingbird level) runs its own launches over the executor's buffers (`NhHost`).
 
+use super::attn::{AttnOp, QkNorm};
 use super::{Dyn, ModelDesc, Op, Opts, Ring, Slot, Stage};
 use crate::dev::Dev;
 use crate::ffi::{err, Result};
@@ -99,6 +100,33 @@ pub fn lowered(dir: &Path, c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> 
     super::lower::agree(lowered, &describe(c, st)?, &label)
 }
 
+/// Nemotron-H's attention of heads of 128 (nq query heads over nk key-value heads, ring `ring`): no norms and no positional encoding, the keys and values as the
+/// product gives them, scale 128^-0.5, the scores fp32.
+pub(crate) fn attention(nq: usize, nk: usize, ring: usize) -> AttnOp {
+    AttnOp {
+        src: Slot::Mix,
+        stride: (nq + 2 * nk) * 128,
+        q_step: 128,
+        k_off: nq * 128,
+        v_off: Some((nq + nk) * 128),
+        d: 128,
+        nq,
+        nk,
+        writes: true,
+        ring,
+        window: 0,
+        norm: QkNorm::None,
+        v_norm: false,
+        rope: None,
+        q_scale: 1.0,
+        scale: 128f32.powf(-0.5),
+        softcap: 0.0,
+        gate: None,
+        round: false,
+        sbf16: false,
+    }
+}
+
 /// The executor's description of Nemotron-H for stage `st` (kern_nh.rs's loader fills its matrices, small tensors and blocks of experts; they are indexed here in
 /// its order).
 pub fn describe(c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<ModelDesc> {
@@ -138,12 +166,10 @@ pub fn describe(c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<Mode
             }
             NhKind::Attention => {
                 let ring = rings.len();
-                // ponytail: the ring's vc is made and not read (k and v share kc's rows of 256); a ring of k and v in one buffer if the memory matters
-                rings.push(Ring { d: 256, nk: c.kv_heads, window: 0 });
+                rings.push(Ring { d: 128, nk: c.kv_heads, window: 0 });
                 ops.extend([
                     Op::Linear { w: b, x: Slot::H, y: Slot::Mix, name: "attention: qkv product" },
-                    Op::KvWrite { ring, stride: qkv_w, nq: c.heads, nk: c.kv_heads },
-                    Op::AttnNh { ring, stride: qkv_w, nq: c.heads, nk: c.kv_heads },
+                    Op::Attn(attention(c.heads, c.kv_heads, ring)),
                     Op::Linear { w: b + 1, x: Slot::Att, y: Slot::O, name: "attention: o product" },
                 ]);
             }
@@ -164,6 +190,7 @@ pub fn describe(c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<Mode
         (Slot::Mix, row.max(qkv_w)),
         (Slot::Xc, cd),
         (Slot::Core, di),
+        (Slot::Qo, c.heads * c.head_dim),
         (Slot::Att, c.heads * c.head_dim),
         (Slot::Hlast, hid),
     ] {

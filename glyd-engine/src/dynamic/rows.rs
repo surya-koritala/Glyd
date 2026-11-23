@@ -63,7 +63,6 @@ pub(super) fn row_wise(op: &Op) -> bool {
             | Op::MuseRms { .. }
             | Op::MuseRmsIn { .. }
             | Op::MuseGate { .. }
-            | Op::MuseOGate { .. }
             | Op::MuseMoe { .. }
             | Op::KdaOut { .. }
             | Op::LinearAt { .. }
@@ -96,25 +95,18 @@ pub(super) fn row_wise(op: &Op) -> bool {
     )
 }
 
-/// Whether an operation on a sequence's cache or states takes its rows at an offset in a pass over several sequences (`Dyn::rows_before`, `Dyn::cache`, `Dyn::state`): Gemma 4's attention,
-/// Qwen3.5's (Qwen3.8's) gated attention and gated delta rule, Muse Spark's attention.
+/// Whether an operation on a sequence's cache or states takes its rows at an offset in a pass over several sequences (`Dyn::rows_before`, `Dyn::cache`, `Dyn::state`): the attention
+/// layer kind, the gated delta rule, Kimi delta attention, Mamba-2, DeepSeek-V4's compressed attention.
 fn by_sequence(op: &Op) -> bool {
     matches!(
         op,
-        Op::QkvPrep { .. }
-            | Op::Attention { .. }
-            | Op::Prep35 { .. }
-            | Op::Attn35 { .. }
+        Op::Attn(_)
             | Op::GdnConv { .. }
             | Op::GdnDelta { .. }
-            | Op::MuseQk { .. }
-            | Op::MuseAttn { .. }
             | Op::KdaConv { .. }
             | Op::KdaDelta { .. }
             | Op::MambaConv { .. }
             | Op::MambaScan { .. }
-            | Op::KvWrite { .. }
-            | Op::AttnNh { .. }
             | Op::V4Kv { .. }
             | Op::V4Comp { .. }
             | Op::V4IdxPick { .. }
@@ -159,27 +151,14 @@ impl Dyn {
         pg.tabs[slot][pg.group[ring]].ptr
     }
 
-    /// Whether this description's keys and values can be paged: every operation that touches a ring reads it through a block table (Gemma 4's, the Qwen3.5 layout's, Muse Spark's), with no draft
+    /// Whether this description's keys and values can be paged: every operation that touches a ring reads it through a block table (the attention layer kind's), with no draft
     /// model, the whole model on one GPU.
     fn pageable(&self) -> bool {
         let d = &self.big.d;
         self.draft.is_none()
             && self.stage.first
             && self.stage.last
-            && std::iter::once(&d.first).chain(d.layers.iter().flatten()).all(|op| {
-                op.ring().is_none()
-                    || matches!(
-                        op,
-                        Op::QkvPrep { .. }
-                            | Op::Attention { .. }
-                            | Op::Prep35 { .. }
-                            | Op::Attn35 { .. }
-                            | Op::MuseQk { .. }
-                            | Op::MuseAttn { .. }
-                            | Op::KvWrite { .. }
-                            | Op::AttnNh { .. }
-                    )
-            })
+            && std::iter::once(&d.first).chain(d.layers.iter().flatten()).all(|op| op.ring().is_none() || matches!(op, Op::Attn(_)))
             && d.layers.iter().flatten().any(|op| op.ring().is_some())
             && crate::tune!("GLYD_ENGINE_PAGED").is_none_or(|v| v != "0")
     }

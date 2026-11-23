@@ -35,7 +35,7 @@
 //!   glyd-engine rowcheck DIR [--ctx N] [--tables T]          one sequence's logits in a step with 0 to 7 others, at every batch size
 //!   glyd-engine rowprofile DIR [--rows B] [--len N] [--steps N] [--ctx N] [--tables T]   a decode step of B sequences, launch by launch
 //!   glyd-engine kvshapes                                     the lossless KV cache of head dims 128, 256 and 512 (no model): values written, read back bit for bit, and decode and prompt attention against the host's
-//!   glyd-engine kvprefill [--chunk 256] [--prefixes 0,1024,4096,8192] [--reps 20]   the prompt attention over 12-bit pages at gemma-4-12B's shapes against the pages unpacked to a bf16 ring and Gemma 4's kernel on it
+//!   glyd-engine kvprefill [--chunk 256] [--prefixes 0,1024,4096,8192] [--reps 20]   the prompt attention over 12-bit pages at gemma-4-12B's shapes against the pages unpacked to a bf16 ring and the bf16 kernel on it
 //!   glyd-engine kvtest DIR [--ctx N] [--tables T]            a known answer for the KV cache: bf16 values of every kind written through the engine's write path, read back, compared bit for bit
 //!   glyd-engine stress DIR [--users N] [--requests N] [--kind natural|random|mixed] [--seed S] [--text FILE] [--ctx N] [--pool TOKENS] [--ref FILE | --write-ref FILE]   requests at several users on a small cache, against the same requests alone
 //!   glyd-engine recompute DIR [--ctx N] [--tables T]         the keys and values of a sequence made by its steps against those made by running it again as a prompt
@@ -57,6 +57,7 @@
 //!   glyd-engine chat MODEL [--ctx N] [--temp T] [--no-think]  a chat in the terminal, also from a pipe (run's, with --chat)
 //!   glyd-engine calcheck                                      the calibration's kernels and the prompt attention against the host's reading
 //!   glyd-engine kcheck35                                      Qwen3.5's kernels against the CPU reference (src/kcheck35.rs)
+//!   glyd-engine attncheck                                     the attention kind's kernels against an fp64 CPU attention, each family's head and arithmetic (src/dynamic/attn.rs)
 //!   glyd-engine moecheck [CASE...] [--speed] [--no-check] [--dump DIR | --cpu-dump DIR]   the mixture-of-experts layer (src/moe.rs) against the CPU reference on random routers and Int5, Int6 and Int4 experts, and its speed (src/kcheck_moe.rs)
 //!   glyd-engine cpuexperts [--bits 4|5|6] [--threads N] [--kernel auto|scalar|neon|avx2|avx512] [--experts N] [--pairs N] [--reps N] [--tokens N] [--misses M,M,...]   the CPU half of the sparse experts (src/cpu_experts.rs) timed on this computer: Nemotron 3 Super's experts made at random, pairs a second and GB/s read, a decode token's time for M missed experts
 //!   glyd-engine nhkernels IN_DIR OUT_DIR                      Nemotron's kernels on the inputs tools/nemotron_ref.py wrote (src/kcheck_nh.rs); nhlayers DIR IO_DIR: layers of the real model or of a random tiny one with mixture-of-experts layers; nhtoy DIR IO_DIR [--expert-cache GIB|auto|auto:GIB] [--offload-mode MODE] [--cpu-threads N]: a few of its layers as a model (or the whole model through the expert cache, one eager run); nhdecode DIR OUT_DIR --layers L,L [--tokens N]: some layers of a glyd-v7 directory decoded to bf16; nhrandom OUT [--latent N]: a random model at Nemotron 3.5 Lightning's widths
@@ -131,6 +132,12 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "kcheck" => glyd_engine::kcheck::run(Path::new(a.need(1, "IN_DIR")?), Path::new(a.need(2, "OUT_DIR")?)),
         "kcheck35" => {
             if !glyd_engine::kcheck35::run()? {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        "attncheck" => {
+            if !glyd_engine::dynamic::attn::check()? {
                 std::process::exit(1);
             }
             Ok(())
@@ -307,7 +314,6 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "g4tok" => glyd_engine::gemma4::tok_check(a),
         "g4score" => glyd_engine::gemma4::score(a),
         "g4prefill" => glyd_engine::gemma4::prefill_prof(a),
-        "g4fatest" => glyd_engine::gemma4::fa_test(a),
         "qxbench" => glyd_engine::kcheck_qwen4x::bench(a),
         "qxprod" => glyd_engine::kcheck_qwen4x::bench_products(a),
         "qxtq" => glyd_engine::qx_trellis::cmd(a),
