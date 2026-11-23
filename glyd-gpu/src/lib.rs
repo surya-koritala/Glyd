@@ -38,7 +38,7 @@ pub mod v1;
 /// The C API this crate calls (glyd_gpu.h's `GLYD_GPU_API_VERSION`): a
 /// library of another version is refused, as a C FFI does not see a call's
 /// arguments.
-pub const API_VERSION: i32 = 17;
+pub const API_VERSION: i32 = 18;
 /// A GPU's class by name in its code ([`Library::gpu`]): "GeForce" in its name.
 pub const GEFORCE: i32 = 1000;
 /// A GPU's class by name in its code: "A10" in its name as a word (an A10, not an A10G, A100 or A40).
@@ -264,6 +264,7 @@ api! { Api, DECLARED;
     fn glyd_gpu_kv_decode_workspace(b: i64, h: i64, g: i64, d: i64, splits: i64, bytes: *mut usize) -> c_int;
     fn glyd_gpu_kv_floor_set(floor: c_int) -> c_int;
     fn glyd_gpu_kv_decode(q: *const u16, q_stride: i64, pool: *const u8, page_stride: i64, kbase: *const u8, vbase: *const u8, block_table: *const i32, bt_stride: i64, seq_lens: *const i32, b: i64, splits: i64, h: i64, g: i64, d: i64, a: i64, escape: *const u8, nchunks: i64, raw: *const u8, nslabs: i64, scale: f64, out: *mut u16, out_stride: i64, workspace: *mut c_void, workspace_bytes: usize, cs: Stream) -> c_int;
+    fn glyd_gpu_kv_decode_from(q: *const u16, q_stride: i64, pool: *const u8, page_stride: i64, kbase: *const u8, vbase: *const u8, block_table: *const i32, bt_stride: i64, seq_lens: *const i32, first: *const i32, round_scores: i64, b: i64, splits: i64, h: i64, g: i64, d: i64, a: i64, escape: *const u8, nchunks: i64, raw: *const u8, nslabs: i64, scale: f64, out: *mut u16, out_stride: i64, workspace: *mut c_void, workspace_bytes: usize, cs: Stream) -> c_int;
 
     fn glyd_gpu_fast_gemv(sm: *const u8, planes: *const u32, exc: *const u8, exc_base: *const i32, top: u64, o: i64, k: i64, x: *const u16, bias: *const u16, y: *mut u16, cs: Stream) -> c_int;
     fn glyd_gpu_fast_decode(sm: *const u8, planes: *const u32, exc: *const u8, exc_base: *const i32, top: u64, row0: i64, rows: i64, row_ids: *const i64, n_ids: i64, k: i64, out: *mut u16, cs: Stream) -> c_int;

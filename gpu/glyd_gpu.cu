@@ -6583,7 +6583,14 @@ struct AttnParams {
     uint32_t* cnt;  // [B * H] the CTAs of a (sequence, head) that have written their partials (zero between calls): the last merges them (FUSE)
     __nv_bfloat16* out;
     int64_t out_stride;
+    const int32_t* first;  // [B] or null: the first token a sequence's query attends to (a sliding window's start)
+    int round;             // 1: a score is the bf16 of its dot product, before the scale (a bf16 matmul's output)
 };
+
+// A sequence's tokens attended to: from `first` (0 where there is none, at most the length) to `len`, the page that holds the first one on.
+__device__ __forceinline__ int first_of(const int32_t* first, int b, int len) {
+    return first ? min(max(first[b], 0), len) : 0;
+}
 
 // The plan, from a sequence's own length alone (so a sequence's partition, and its output's bits, do not depend on the batch it is in, nor on a batch padded for a CUDA graph): at
 // least ppc_min pages a CTA (16 by default: 4 a warp), at most `splits` CTAs, each the same share of the pages (ceil); a sequence of no tokens has one CTA, whose partial is empty.
@@ -6657,11 +6664,12 @@ __global__ void __launch_bounds__(NW * 32, 1) attn_kernel(const AttnParams P) {
     const int hf = warp % HALVES, pw = warp / HALVES;  // the warp's half of the channels, and its page's place among the CTA's
     const int hp = h * HALVES + hf;                    // the page's head the warp reads
     const int len = P.slen[b];
-    const int np = (len + 15) >> 4;
+    const int fst = first_of(P.first, b, len), ps = fst >> 4;  // (a window: its first token, and the page that holds it)
+    const int np = fst < len ? ((len + 15) >> 4) - ps : 0;   // the pages attended to
     const int sb = plan_splits(np, P.splits, P.ppc_min, P.pfloor);  // the CTAs this sequence has: past them, no partial (the combine reads sb of them)
     if (split >= sb) return;
     const int ppc = (np + sb - 1) / sb;
-    const int p0 = min(np, split * ppc), p1 = min(np, p0 + ppc);
+    const int p0 = ps + min(np, split * ppc), p1 = ps + min(np, split * ppc + ppc);
     const int G = P.G;
 
     uint32_t qb0[8], qb1[8];  // the B operand of the scores: column g = query head g (zero past G), rows the step's channels 2q, 2q + 1 and 2q + 8, 2q + 9
@@ -6724,13 +6732,17 @@ __global__ void __launch_bounds__(NW * 32, 1) attn_kernel(const AttnParams P) {
             }
             par ^= 1;
         }
+        if (P.round) {
+#pragma unroll
+            for (int i = 0; i < 4; i++) s[i] = __bfloat162float(__float2bfloat16(s[i]));
+        }
         float x0 = s[0] * P.sl2, x1 = s[1] * P.sl2, x2 = s[2] * P.sl2, x3 = s[3] * P.sl2;
-        const int valid = len - 16 * pg;
-        if (valid < 16) {
-            x0 = g < valid ? x0 : -INFINITY;
-            x1 = g < valid ? x1 : -INFINITY;
-            x2 = g + 8 < valid ? x2 : -INFINITY;
-            x3 = g + 8 < valid ? x3 : -INFINITY;
+        const int valid = len - 16 * pg, lo = fst - 16 * pg;  // the page's tokens attended to: lo .. valid
+        if (valid < 16 || lo > 0) {
+            x0 = g >= lo && g < valid ? x0 : -INFINITY;
+            x1 = g >= lo && g < valid ? x1 : -INFINITY;
+            x2 = g + 8 >= lo && g + 8 < valid ? x2 : -INFINITY;
+            x3 = g + 8 >= lo && g + 8 < valid ? x3 : -INFINITY;
         }
         float a0 = fmaxf(x0, x2), a1 = fmaxf(x1, x3);
         a0 = fmaxf(a0, __shfl_xor_sync(FULLM, a0, 4));
@@ -6758,9 +6770,10 @@ __global__ void __launch_bounds__(NW * 32, 1) attn_kernel(const AttnParams P) {
         const uint32_t pb0 = transpose8x8(pack_bf16x2(p0f, p1f)), pb1 = transpose8x8(pack_bf16x2(p2f, p3f));  // P^T: tokens 2q, 2q + 1 and 8 + 2q, 9 + 2q of head g
 
         decode_tile<1>(cur.vr, vb, cur.hd, cur.pg, P.ent, P.nc, P.A, P.raw, hp, lane, f);
-        if (valid < 16) {  // the tokens past the sequence's end zeroed (a recycled page's bytes there can decode to infinity, which times a probability of 0 is NaN)
-            const uint32_t k0 = (2 * q < valid ? 0x0000FFFFu : 0u) | (2 * q + 1 < valid ? 0xFFFF0000u : 0u);
-            const uint32_t k1 = (2 * q + 8 < valid ? 0x0000FFFFu : 0u) | (2 * q + 9 < valid ? 0xFFFF0000u : 0u);
+        if (valid < 16 || lo > 0) {  // the tokens past the sequence's end (and before a window's start) zeroed (a recycled page's bytes there can decode to infinity, which times a probability of 0 is NaN)
+            const auto in = [&](int t) { return t >= lo && t < valid; };
+            const uint32_t k0 = (in(2 * q) ? 0x0000FFFFu : 0u) | (in(2 * q + 1) ? 0xFFFF0000u : 0u);
+            const uint32_t k1 = (in(2 * q + 8) ? 0x0000FFFFu : 0u) | (in(2 * q + 9) ? 0xFFFF0000u : 0u);
 #pragma unroll
             for (int i = 0; i < 8; i++) {
                 f[i].x &= k0;
@@ -6842,11 +6855,12 @@ __global__ void __launch_bounds__(NW * 32, 1) attn_kernel(const AttnParams P) {
 // the partials of a (sequence, kv head) merged: one warp a query head, a lane DO / 32 channels; a sequence of no tokens gives zeros
 template <int DO>
 __global__ void __launch_bounds__(256) combine_kernel(const float* __restrict__ ml, const float* __restrict__ wo, __nv_bfloat16* __restrict__ out, int64_t out_stride, int H, int G, int splits, int ppc_min,
-                                                      int pfloor, const int32_t* __restrict__ slen) {
+                                                      int pfloor, const int32_t* __restrict__ slen, const int32_t* __restrict__ first) {
     const int bh = blockIdx.x, head = threadIdx.x >> 5, lane = threadIdx.x & 31;
     if (head >= G) return;
     const int b = bh / H, h = bh % H;
-    const int nparts = plan_splits((slen[b] + 15) >> 4, splits, ppc_min, pfloor);  // (the partials the sequence's CTAs wrote: the attention kernel's plan)
+    const int len = slen[b], fst = first_of(first, b, len);
+    const int nparts = plan_splits(fst < len ? ((len + 15) >> 4) - (fst >> 4) : 0, splits, ppc_min, pfloor);  // (the partials the sequence's CTAs wrote: the attention kernel's plan)
     merge_head<DO>(ml + (size_t)bh * splits * G * 2, wo + (size_t)bh * splits * G * DO, out + (int64_t)b * out_stride + (int64_t)h * G * DO, G, head, nparts, lane);
 }
 
@@ -11334,9 +11348,10 @@ GLYD_GPU_INTERNAL int glyd_gpu_kv_decode_workspace(int64_t B, int64_t H, int64_t
     return 0;
 }
 
-GLYD_GPU_INTERNAL int glyd_gpu_kv_decode(const uint16_t* q, int64_t q_stride, const uint8_t* pool, int64_t page_stride, const uint8_t* kbase, const uint8_t* vbase, const int32_t* block_table, int64_t bt_stride,
-                                    const int32_t* seq_lens, int64_t B, int64_t splits, int64_t H, int64_t G, int64_t D, int64_t A, const uint8_t* escape, int64_t nchunks, const uint8_t* raw, int64_t nslabs,
-                                    double scale, uint16_t* out, int64_t out_stride, void* workspace, size_t workspace_bytes, cudaStream_t cs) {
+GLYD_GPU_INTERNAL int glyd_gpu_kv_decode_from(const uint16_t* q, int64_t q_stride, const uint8_t* pool, int64_t page_stride, const uint8_t* kbase, const uint8_t* vbase, const int32_t* block_table,
+                                         int64_t bt_stride, const int32_t* seq_lens, const int32_t* first, int64_t round_scores, int64_t B, int64_t splits, int64_t H, int64_t G, int64_t D, int64_t A,
+                                         const uint8_t* escape, int64_t nchunks, const uint8_t* raw, int64_t nslabs, double scale, uint16_t* out, int64_t out_stride, void* workspace,
+                                         size_t workspace_bytes, cudaStream_t cs) {
     int64_t page;
     size_t need;
     if (kv_one(D) || glyd_gpu_kv_leaf_bytes(H, D, A, &page) || B < 0 || B > 65535 || page_stride < page || page_stride % 16 || (uintptr_t)pool % 16 || !kv_escape_ok(escape, nchunks) || !kv_raw_ok(raw, nslabs)) return cudaErrorInvalidValue;
@@ -11349,7 +11364,7 @@ GLYD_GPU_INTERNAL int glyd_gpu_kv_decode(const uint16_t* q, int64_t q_stride, co
     const kvc::EscapePool E = kvc::esc_of((uint8_t*)escape, nchunks);
     const int HP = kv_heads(H, D);
     kvc::AttnParams P{bf(q), q_stride, pool, page_stride, kbase, vbase, block_table, bt_stride, seq_lens, E.ent, E.nc, kvc::raw_of((uint8_t*)raw, nslabs, HP), ws_ml, ws_ml + B * H * splits * G * 2, (int)H, (int)G, (int)A, kvc::hdr_bytes(HP, (int)A), (int)splits,
-                      HP, (float)(scale * 1.4426950408889634), kv_ppc_min(), kv_floor(B, H, current_device()), ws_cnt, bf(out), out_stride};
+                      HP, (float)(scale * 1.4426950408889634), kv_ppc_min(), kv_floor(B, H, current_device()), ws_cnt, bf(out), out_stride, first, (int)(round_scores != 0)};
     const dim3 grid((unsigned)splits, (unsigned)H, (unsigned)B);
     const auto launch = [&](auto halves) {
         constexpr int HV = decltype(halves)::value;
@@ -11359,13 +11374,20 @@ GLYD_GPU_INTERNAL int glyd_gpu_kv_decode(const uint16_t* q, int64_t q_stride, co
         } else {
             if (pipe) kvc::attn_kernel<true, false, HV><<<grid, kvc::NW * 32, 0, cs>>>(P);
             else kvc::attn_kernel<false, false, HV><<<grid, kvc::NW * 32, 0, cs>>>(P);
-            kvc::combine_kernel<HV * kvc::D><<<(unsigned)(B * H), 256, 0, cs>>>(P.ws_ml, P.ws_o, bf(out), out_stride, (int)H, (int)G, (int)splits, P.ppc_min, P.pfloor, seq_lens);
+            kvc::combine_kernel<HV * kvc::D><<<(unsigned)(B * H), 256, 0, cs>>>(P.ws_ml, P.ws_o, bf(out), out_stride, (int)H, (int)G, (int)splits, P.ppc_min, P.pfloor, seq_lens, first);
         }
     };
     if (D == kvc::D) launch(std::integral_constant<int, 1>{});
     else if (D == 2 * kvc::D) launch(std::integral_constant<int, 2>{});
     else launch(std::integral_constant<int, 4>{});
     return cudaGetLastError();
+}
+
+GLYD_GPU_INTERNAL int glyd_gpu_kv_decode(const uint16_t* q, int64_t q_stride, const uint8_t* pool, int64_t page_stride, const uint8_t* kbase, const uint8_t* vbase, const int32_t* block_table, int64_t bt_stride,
+                                    const int32_t* seq_lens, int64_t B, int64_t splits, int64_t H, int64_t G, int64_t D, int64_t A, const uint8_t* escape, int64_t nchunks, const uint8_t* raw, int64_t nslabs,
+                                    double scale, uint16_t* out, int64_t out_stride, void* workspace, size_t workspace_bytes, cudaStream_t cs) {
+    return glyd_gpu_kv_decode_from(q, q_stride, pool, page_stride, kbase, vbase, block_table, bt_stride, seq_lens, nullptr, 0, B, splits, H, G, D, A, escape, nchunks, raw, nslabs, scale, out,
+                                   out_stride, workspace, workspace_bytes, cs);
 }
 
 // The kernels' partition a sequence has at least (glyd_gpu_kv_decode's plan: its CTAs from the sequence's own length, at least
