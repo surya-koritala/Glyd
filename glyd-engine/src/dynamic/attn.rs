@@ -582,7 +582,7 @@ impl Dyn {
         if twelve {
             self.kv12_write(a.ring, n)?;
         }
-        self.mark("prep")
+        self.mark("attention: preparation (norms, rotary, cache write)")
     }
 
     /// The attention of the prepared queries over the ring into Att: a decode row's (n up to the step's rows, or a verify pass's) in parts, a prompt chunk's whole.

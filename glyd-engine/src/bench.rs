@@ -691,7 +691,11 @@ pub fn measure(a: &Args) -> Result<()> {
         // (a glyd server's count of prompt tokens run and of those found in its cache, around the measured rounds)
         let counts = || get_json(&format!("{url}/stats")).and_then(|v| Some((v["prompt_tokens"].as_f64()?, v["prefix_hit_tokens"].as_f64()?)));
         let before = counts();
+        // (GLYD_PROF=1, a development build's: the server's GPU profile of the measured rounds alone, src/dynamic/prof.rs; its server's, which has the variable too)
+        let prof = || crate::dynamic::prof::on().then(|| get_json(&format!("{url}/v1/glyd/prof?reset=1"))).flatten();
+        prof();
         let rs: Vec<Round> = (0..runs).map(|_| round(&agent, &url, &model, kind, *n, &mut seed, max_tokens)).collect();
+        let profile = prof();
         let hit_rate = before.zip(counts()).filter(|(b, a)| a.0 > b.0).map(|(b, a)| (a.1 - b.1) / (a.0 - b.0));
         let later = col_of(&rs, &|r| r.ttft_later);
         let col = |f: &dyn Fn(&Round) -> Option<f64>| rs.iter().filter_map(f).collect::<Vec<f64>>();
@@ -736,6 +740,12 @@ pub fn measure(a: &Args) -> Result<()> {
         if let (Some(c), Some(p)) = (cell_ceiling, pct(&decode)) {
             cell["ceiling_tps_per_user"] = json!((c * 100.0).round() / 100.0);
             cell["pct_of_ceiling"] = json!((p * 10000.0).round() / 10000.0);
+        }
+        if let Some(p) = profile {
+            if !quiet {
+                eprintln!("{}", crate::dynamic::prof::text(&p).lines().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n"));
+            }
+            cell["gpu_profile"] = p;
         }
         cells.push(cell);
     }

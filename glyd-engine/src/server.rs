@@ -2205,6 +2205,11 @@ pub(crate) fn dispatch(mut s: Box<dyn Conn>, mut req: Req, ctx: &Ctx, id: u64) {
             respond_with(&mut *s, 200, crate::ops::CONTENT_TYPE, &cors, text.as_bytes())
         }
         ("GET", "/stats") => respond_with(&mut *s, 200, "application/json", &cors, crate::sched::stats_json_of(&ctx.rt).as_bytes()),
+        // (a development build's GLYD_PROF=1: the executor's GPU time by operation and its steps' host time (src/dynamic/prof.rs); ?reset=1 starts the figures again)
+        ("GET", "/v1/glyd/prof") if crate::dynamic::prof::on() => {
+            let reset = req.path.split_once('?').is_some_and(|(_, q)| q.split('&').any(|kv| kv == "reset=1"));
+            respond_with(&mut *s, 200, "application/json", &cors, crate::dynamic::prof::snapshot(reset).to_string().as_bytes())
+        }
         // the cache's blocks stored and removed by name (src/kv_events.rs), after batch `after`, waiting up to `wait` seconds (at most 10) for one: off unless the
         // server's operator turns them on, since they carry every caller's prompt tokens
         ("GET", "/v1/glyd/kv/events") => match &ctx.rt.kv_events {

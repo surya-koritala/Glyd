@@ -1872,8 +1872,16 @@ fn run_lossy(a: &Args, layout: Layout, ui: &RefCell<Ui>, mut prompt: Option<Stri
         }
         prompt = Some(t);
     }
+    // (a development build's GLYD_PROF=1: the executor's GPU profile of the run, on stderr at its end: src/dynamic/prof.rs)
+    let profile = || {
+        if crate::dynamic::prof::on() {
+            eprint!("{}", crate::dynamic::prof::text(&crate::dynamic::prof::snapshot(false)));
+        }
+    };
     if let Some(p) = prompt {
-        return once(&mut Talk { e: &mut *e, tok: &tok, chat: chat.as_ref() }, &defaults, p.trim(), thinking, ui);
+        let code = once(&mut Talk { e: &mut *e, tok: &tok, chat: chat.as_ref() }, &defaults, p.trim(), thinking, ui);
+        profile();
+        return code;
     }
     ui.borrow_mut().line("Chat here. /bye leaves, /clear starts again, /think turns thinking on or off.");
     let (tx, rx) = mpsc::channel();
@@ -1882,6 +1890,7 @@ fn run_lossy(a: &Args, layout: Layout, ui: &RefCell<Ui>, mut prompt: Option<Stri
     let t = std::thread::spawn(move || chat_loop(tx, chat_defaults, thinking, tty));
     work_lossy(&mut *e, &tok, chat.as_ref(), &rx);
     let _ = t.join();
+    profile();
     0
 }
 
