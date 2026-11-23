@@ -64,16 +64,17 @@ pub(super) struct Lossless {
     pub bytes: usize,
 }
 
-/// A ring's layer and query heads: the layer whose preparation writes it, and that operation's query heads.
+/// A ring's layer and query heads: the layer whose preparation writes it (Gemma 4's, the Qwen3.5 layout's), and that operation's query heads.
 fn writer(d: &super::ModelDesc, ring: usize) -> Option<(usize, usize)> {
-    d.layers
-        .iter()
-        .enumerate()
-        .find_map(|(l, ops)| ops.iter().find_map(|op| matches!(*op, Op::QkvPrep { ring: r, .. } if r == ring).then_some(l)).map(|l| (l, nq_of(&ops[..], ring))))
+    d.layers.iter().enumerate().find_map(|(l, ops)| ops.iter().find_map(|op| prep_of(op).filter(|&(r, _)| r == ring)).map(|(_, nq)| (l, nq)))
 }
 
-fn nq_of(ops: &[Op], ring: usize) -> usize {
-    ops.iter().find_map(|op| if let Op::QkvPrep { nq, ring: r, .. } = *op { (r == ring).then_some(nq) } else { None }).unwrap_or(0)
+/// A preparation's ring and query heads.
+fn prep_of(op: &Op) -> Option<(usize, usize)> {
+    match *op {
+        Op::QkvPrep { ring, nq, .. } | Op::Prep35 { ring, nq, .. } => Some((ring, nq)),
+        _ => None,
+    }
 }
 
 /// The share of a page's values outside their windows its escape room is made for, at the least. Measured on gemma-4-12B: 0.035% in the worst layer
@@ -333,10 +334,10 @@ impl Dyn {
             0,
             lx.lens[rp.kind].ptr + at,
             lx.first[rp.kind].ptr + at,
-            true,
+            rp.shape.round,
             (n * rp.parts) as i64,
             lx.splits,
-            1.0,
+            rp.shape.scale,
             att,
             stride,
             lx.ws.ptr,

@@ -165,7 +165,8 @@ impl Tables {
 }
 
 /// An attention layer's keys and values as the executor writes them: its ring, kv heads, channels, whether it has values of its own, and its
-/// sliding window (0: global).
+/// sliding window (0: global); and its attention's arithmetic as the decode over 12-bit pages is to take it: the scale, and whether a score is the
+/// bf16 of its dot product (Gemma 4's) or fp32 (the Qwen3.5 layout's).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct KvShape {
     pub ring: usize,
@@ -173,9 +174,12 @@ pub struct KvShape {
     pub channels: usize,
     pub one: bool,
     pub window: usize,
+    pub scale: f64,
+    pub round: bool,
 }
 
-/// Each layer's keys and values, where the description writes them in rows of [kv heads][channels] (Gemma 4's preparation; others: None for now).
+/// Each layer's keys and values, where the description writes them in rows of [kv heads][channels] (Gemma 4's preparation, the Qwen3.5 layout's:
+/// Qwen3.5 and Qwen3.8 dense; others: None for now).
 pub fn shapes(d: &super::ModelDesc) -> Vec<Option<KvShape>> {
     d.layers
         .iter()
@@ -184,7 +188,9 @@ pub fn shapes(d: &super::ModelDesc) -> Vec<Option<KvShape>> {
             ops.iter().find_map(|op| match *op {
                 // (both streams always: where a layer has no values of its own (Gemma 4's global layers) they are its keys' projection normed without
                 // a weight and with no rotary, which the cache holds apart from the keys)
-                Op::QkvPrep { d, nk, ring, .. } => Some(KvShape { ring, heads: nk, channels: d, one: false, window }),
+                Op::QkvPrep { d, nk, ring, .. } => Some(KvShape { ring, heads: nk, channels: d, one: false, window, scale: 1.0, round: true }),
+                // (its full-attention layers: heads of 256, scores fp32 at 256^-0.5, the gate after)
+                Op::Prep35 { nk, ring, .. } => Some(KvShape { ring, heads: nk, channels: 256, one: false, window: 0, scale: 1.0 / 16.0, round: false }),
                 _ => None,
             })
         })
@@ -260,7 +266,7 @@ pub fn page_chunks(k: &[u16], v: &[u16], first: usize, t: &LayerTable, arena: us
 pub fn calibrate(e: &mut Dyn, prompts: &[Vec<u32>], model: &str) -> Result<Tables> {
     let shapes = shapes(&e.big.d);
     if shapes.iter().all(Option::is_none) {
-        return err(format!("{}: no attention layer whose keys and values this reads (Gemma 4's preparation)", e.big.d.family));
+        return err(format!("{}: no attention layer whose keys and values this reads (Gemma 4's preparation, the Qwen3.5 layout's)", e.big.d.family));
     }
     let mut hists: Vec<Option<Hist>> = shapes.iter().map(|s| s.map(|s| Hist::new(s.heads, s.channels, s.one))).collect();
     // (the pages' chunks are counted on tokens the windows were not made from: windows from each prompt's first half, counted on its second half;

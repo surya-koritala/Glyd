@@ -1641,7 +1641,15 @@ impl Dyn {
                 self.mark("linear attention: gated norm")
             }
             Op::Prep35 { stride, q_norm, k_norm, half, ring, nq, nk } => {
-                let (kc, vc) = self.cache(ring);
+                // (a ring of 12-bit pages: the rows' keys and values to its staging rows, each at its own index, and from there into the pages)
+                let twelve = self.pages12(p, ring).is_some();
+                let (kc, vc, tab) = match &self.lossless {
+                    Some(lx) if twelve => (lx.rows_k.ptr, lx.rows_v.ptr, crate::kern35::ROWS),
+                    _ => {
+                        let (kc, vc) = self.cache(ring);
+                        (kc, vc, self.table(ring))
+                    }
+                };
                 let qo = p.slot(Slot::Qo) + self.rows_before(nq * 256);
                 self.k35.prep(
                     s,
@@ -1660,40 +1668,41 @@ impl Dyn {
                     nq as i32,
                     nk as i32,
                     eps,
-                    self.table(ring),
+                    tab,
                 )?;
+                if twelve {
+                    self.kv12_write(ring, n)?;
+                }
                 self.mark("attention: q/k norm, rotary, cache write")
             }
             Op::Attn35 { stride, ring, nq, nk } => {
-                let (kc, vc) = self.cache(ring);
                 let (qo, gate, att) = (
                     p.slot(Slot::Qo) + self.rows_before(nq * 256),
                     p.slot(Slot::Mix) + self.rows_before(stride),
                     p.slot(Slot::Att) + self.rows_before(nq * 256),
                 );
+                // (a ring of 12-bit pages: decode rows read the pages, then the gate; a prompt chunk's pages unpacked to a bf16 ring the kernels below read, with no table)
+                let twelve = self.pages12(p, ring).is_some();
+                if twelve && n <= self.split_rows {
+                    self.kv12_decode(ring, n, nq, qo, att)?;
+                    let w = (nq * 256) as i32;
+                    self.k35.gate(s, att, w, gate, stride as i32, att, w, nu, nq as i32)?;
+                    return self.mark("attention: attention (12-bit pages)");
+                }
+                let (kc, vc, tab) = if twelve {
+                    let (kc, vc, _) = self.kv12_stage(ring, self.start.get(), n)?;
+                    (kc, vc, 0u64)
+                } else {
+                    let (kc, vc) = self.cache(ring);
+                    (kc, vc, self.table(ring))
+                };
                 let (qs, nq, nk) = ((nq * 256) as i32, nq as i32, nk as i32);
                 // (a verify pass's rows by the decode step's kernel, each row at its own position: a step's sums)
                 let vpart = self.vpart.as_ref().filter(|_| self.verifying.get() && n > 1).map(|v| v.ptr);
                 if n == 1 || vpart.is_some() {
-                    self.k35.attn_decode(
-                        s,
-                        qo,
-                        qs,
-                        gate,
-                        stride as i32,
-                        kc,
-                        vc,
-                        pos.1,
-                        att,
-                        qs,
-                        n as i32,
-                        nq,
-                        nk,
-                        vpart.unwrap_or(self.part35.ptr),
-                        self.table(ring),
-                    )?;
+                    self.k35.attn_decode(s, qo, qs, gate, stride as i32, kc, vc, pos.1, att, qs, n as i32, nq, nk, vpart.unwrap_or(self.part35.ptr), tab)?;
                 } else {
-                    self.k35.attn(s, qo, qs, gate, stride as i32, kc, vc, pos.1, att, qs, n as i32, nq, nk, self.table(ring))?;
+                    self.k35.attn(s, qo, qs, gate, stride as i32, kc, vc, pos.1, att, qs, n as i32, nq, nk, tab)?;
                 }
                 self.mark("attention: attention")
             }
@@ -2160,7 +2169,7 @@ impl Dyn {
             for (i, op) in ops.iter().enumerate() {
                 // (a preparation whose keys and values go to 12-bit pages writes staging rows and no sequence's ring: the pass's rows at once, and one
                 // write of them; the slots of each sequence's rows the pass made)
-                let staged = matches!(*op, Op::QkvPrep { ring, .. } if self.pages12(p, ring).is_some());
+                let staged = matches!(*op, Op::QkvPrep { ring, .. } | Op::Prep35 { ring, .. } if self.pages12(p, ring).is_some());
                 if !self.parts.is_empty() && !rows::row_wise(op) && !staged {
                     // (an operation on a sequence's cache or state: each sequence's rows by themselves, as a pass of that sequence alone runs them)
                     for (k, part) in self.parts.iter().enumerate() {
