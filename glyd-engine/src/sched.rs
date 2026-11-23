@@ -1211,6 +1211,15 @@ impl<B: ModelStep> Sched<B> {
                 if self.drop_kept()? {
                     continue;
                 }
+                if self.active.len() == 1 && self.loading.is_empty() {
+                    // alone, nothing kept or coming back: no room will come. Sent back, it would be let in again to the same end, without end: it ends with the reason
+                    let mut s = self.active.remove(i);
+                    self.give_back(&mut s)?;
+                    self.rt.figures.finished("error", s.began, &s.trace, s.generated);
+                    let msg = format!("{upto} tokens, where the cache holds fewer with nothing else running");
+                    self.pending.push((s.out.clone(), Ev::End(Err(Error::of(Kind::Request, msg)))));
+                    return Ok(false);
+                }
                 let victim = self.active.iter().enumerate().max_by_key(|(_, s)| s.id).map(|(v, _)| v).expect("an active sequence");
                 self.preempt(victim, true)?;
             }
@@ -3024,6 +3033,13 @@ pub(crate) mod tests {
         pub ran: usize,
         /// Steps that ran while a copy back was in flight.
         pub beside_copies: usize,
+        /// Rooms of the executor's blocks (`dynamic::pages::Pages`, group 0 full, group 1 sliding with a window of `slide` tokens and a chunk) in place of `budget`, grown as `Dyn::grow`
+        /// grows them, or with `jumps` as `Pages::grow` does (to `upto`'s own window: a step whose room for a prompt does not hold its first pass); each group's blocks' tokens, which every
+        /// pass is checked to read.
+        pub paged: Option<crate::dynamic::pages::Pages>,
+        pub slide: usize,
+        pub jumps: bool,
+        pub blocks: [std::collections::HashMap<u32, [u32; PAGE]>; 2],
     }
 
     impl SlotFake {
@@ -3065,6 +3081,39 @@ pub(crate) mod tests {
                 dropped: 0,
                 ran: 0,
                 beside_copies: 0,
+                paged: None,
+                slide: 0,
+                jumps: false,
+                blocks: Default::default(),
+            }
+        }
+        /// `new` on the executor's blocks: pools as `Dyn::page` sizes them for `slots` sequences of `window` tokens, a full group and a sliding one of `slide` tokens.
+        pub fn paged(slots: usize, window: usize, chunk: usize, slide: usize) -> SlotFake {
+            let mut f = SlotFake::new(slots, window, chunk);
+            let most = |keep: usize| (slots * (keep.div_ceil(PAGE) + 1) + 1) as u32;
+            f.paged = Some(crate::dynamic::pages::Pages::new(&[most(window), most(slide + chunk)], &[None, Some(slide + chunk)], slots, window));
+            f.slide = slide;
+            f
+        }
+        /// Paged: the tokens from `start` on of the slot's room written to its blocks, and every token the pass reads (a full group's all, a sliding group's the window before `start`
+        /// on) found in the block its table names.
+        fn write_blocks(&mut self, slot: usize, start: usize) {
+            let Some(p) = &self.paged else { return };
+            let room = &self.rooms[slot];
+            for g in 0..2 {
+                let t = p.table(slot, g);
+                for (i, &tok) in room.iter().enumerate().skip(start) {
+                    assert!(t[i / PAGE] != 0, "token {i} of slot {slot} written to no block of group {g}");
+                    self.blocks[g].entry(t[i / PAGE]).or_default()[i % PAGE] = tok;
+                }
+                let from = if g == 0 { 0 } else { start.saturating_sub(self.slide) };
+                for (i, &tok) in room.iter().enumerate().skip(from) {
+                    let b = t[i / PAGE];
+                    assert!(
+                        b != 0 && self.blocks[g].get(&b).map(|x| x[i % PAGE]) == Some(tok),
+                        "a pass at {start} of slot {slot} reads token {i} from a block of group {g} that does not hold it"
+                    );
+                }
             }
         }
         /// A step of these slots: none of them is being copied back; counted where another is.
@@ -3091,6 +3140,7 @@ pub(crate) mod tests {
             room.extend_from_slice(tokens);
             assert!(room.len() <= self.window, "past the slot's room");
             let next = next_of(room);
+            self.write_blocks(slot[0] as usize, start);
             self.most = self.most.max(self.rooms.iter().filter(|r| !r.is_empty()).count());
             next
         }
@@ -3202,6 +3252,9 @@ pub(crate) mod tests {
                 self.marks[p as usize] = 0;
                 self.loading[p as usize] = 0;
                 self.emptied += 1;
+                if let Some(pg) = &mut self.paged {
+                    pg.release(p as usize);
+                }
             }
             Ok(())
         }
@@ -3249,7 +3302,8 @@ pub(crate) mod tests {
             self.dropped += 1;
         }
         fn shares_starts(&self) -> bool {
-            self.keeps && (!self.whole_only || self.snap_every > 0)
+            // (paged: no start is shared, the rooms are the blocks' alone)
+            self.keeps && self.paged.is_none() && (!self.whole_only || self.snap_every > 0)
         }
         fn snap_every(&self) -> usize {
             if self.whole_only {
@@ -3337,6 +3391,8 @@ pub(crate) mod tests {
                 (true, true) => mark,
                 (true, false) => 0,
             };
+            // (paged: where its blocks hold what a step there reads, as `Dyn::resume`)
+            let kept = self.paged.as_mut().map_or(kept, |p| p.shrink(slot as usize, kept, self.chunk));
             if kept > 0 {
                 room.truncate(kept);
             }
@@ -3344,6 +3400,10 @@ pub(crate) mod tests {
             Ok(kept)
         }
         fn grow(&mut self, slot: i32, upto: usize) -> Result<bool> {
+            if let Some(p) = &mut self.paged {
+                let (s, n) = (slot as usize, self.rooms[slot as usize].len());
+                return Ok(if self.jumps { p.grow(s, upto) } else { p.grow_from(s, n, upto, self.chunk) });
+            }
             let Some(budget) = self.budget else { return Ok(true) };
             let want = upto.div_ceil(PAGE) * PAGE;
             let have = self.held[slot as usize];
@@ -4080,6 +4140,49 @@ pub(crate) mod tests {
         run(&mut s);
         assert!(outcome(&big).1.is_err_and(|e| e.contains("100 tokens")));
         assert_eq!(collect(&ok), (reference(&prompt(2, 20), 8), Finish::Length));
+    }
+
+    /// One sequence alone on the executor's blocks, in pools of one sequence's (a full group of the context, a sliding group of its window and a chunk): a prompt of several windows
+    /// runs to its reply, and so does a conversation's next turn that adds more than a chunk to the kept one, each pass reading every token from the block that holds it. (The room for a
+    /// whole prompt held the sliding group's blocks of the prompt's last window, so its first pass found none: the sequence went back to wait and was let in again, without end. Gemma 4
+    /// served to one user never answered a prompt of 4,000 tokens. In pools of two, the next turn's first pass read the window before it from blocks given back and taken again.)
+    #[test]
+    fn a_prompt_of_several_windows_runs_alone_in_a_pool_of_one_window() {
+        for (slots, one_step) in [(1, false), (1, true), (2, true)] {
+            // (a window of 64 tokens and a chunk of 32, as Gemma 4's 1,024 and 512)
+            let mut f = SlotFake::paged(slots, 512, 32, 64);
+            (f.one_step, f.keeps) = (one_step, true);
+            let mut s = Sched::new(f, slots);
+            let p1 = prompt(1, 300);
+            let r1 = turn(&mut s, &p1, 8);
+            assert_eq!(r1, reference(&p1, 8));
+            let p2: Vec<u32> = [&p1[..], &r1[..], &prompt(2, 100)[..]].concat();
+            assert_eq!(turn(&mut s, &p2, 8), reference(&p2, 8));
+            assert_eq!((s.be.resumed.clone(), s.stats.preempted), (vec![(0, 307, 307)], 0), "the next turn went on in its slot");
+            s.clear_cache().unwrap();
+            let p = s.be.paged.as_ref().expect("paged");
+            assert!((0..2).all(|g| p.free(g).0 == p.free(g).1), "every block back");
+        }
+    }
+
+    /// A sequence alone that its step has no room for, for its next pass, ends at once with an error in words: sent back to wait, it was let in again to the same end, without end.
+    /// (A step whose room for a prompt holds a sliding group's blocks of the prompt's last window, as `Pages::grow` gives them: its first pass has none.) The scheduler is idle then,
+    /// and the next request is answered.
+    #[test]
+    fn a_sequence_that_cannot_grow_alone_ends_with_an_error() {
+        let mut f = SlotFake::paged(1, 512, 32, 64);
+        f.jumps = true;
+        let mut s = Sched::new(f, 1);
+        let (rx, _) = add(&mut s, prompt(1, 300), 8);
+        for _ in 0..3 {
+            if !s.idle() {
+                s.tick().unwrap();
+            }
+        }
+        assert!(s.idle() && s.stats.preempted == 0, "{} preempted", s.stats.preempted);
+        assert!(outcome(&rx).1.is_err_and(|e| e.contains("fewer with nothing else running")));
+        let p = prompt(2, 50);
+        assert_eq!(turn(&mut s, &p, 8), reference(&p, 8));
     }
 
     // ---- preemption by swapping (R4d) ----------------------------------------------------------------------------------------------------------------------------------------------------------------

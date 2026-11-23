@@ -1049,9 +1049,12 @@ impl ModelStep for Dyn {
         self.upload_tables(s)?;
         Ok(kept)
     }
+    /// From the tokens the slot holds: the room for a whole prompt, which the scheduler takes as it lets the prompt in, holds a sliding group's blocks from where its next pass reads
+    /// (`Pages::grow_from`).
     fn grow(&mut self, slot: i32, upto: usize) -> Result<bool> {
+        let (n, chunk) = (self.seq_n(slot as usize), self.chunk);
         let Some(pg) = &mut self.paged else { return Ok(true) };
-        if !pg.pages.grow(slot as usize, upto) {
+        if !pg.pages.grow_from(slot as usize, n, upto, chunk) {
             return Ok(false);
         }
         self.dev.sync()?;

@@ -469,6 +469,11 @@ One block is 16 tokens for every kind. What a block holds depends on the layer g
 Layers whose blocks have the same bytes share a pool; groups whose block bytes differ get pools of their own, and one block id addresses
 the same tokens in every pool, so a sequence has one block table (vLLM's hybrid KV manager does the same with its KV cache groups). A
 model with only sliding and full layers (Gemma 4) holds per sequence window/16 blocks in the sliding group and context/16 in the full one.
+A prompt's room is taken at once as the scheduler lets it in: a full group's blocks to its end and, in a sliding group, the blocks its
+first pass reads, as many as the window and a chunk at its end take; the passes after take theirs as the window moves and give back what
+it leaves (`Pages::grow_from`). So one sequence alone needs no more of a sliding group than its window and a chunk, which is what the pool
+of one user holds. A sequence alone that the step still has no room for ends with an error in words; sent back to wait, it would only be
+let in again to the same end.
 
 What is built for the latent kind (`Op::Mla`, `dynamic/mla.rs`): a latent attention layer's cache is a ring of keys alone (`Ring::values`
 false: no room in the value pool), kv_lora + rope values a token, and GLM-5.3's indexer a second one of [normed key | gate score] a token.

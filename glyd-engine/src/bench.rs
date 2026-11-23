@@ -463,8 +463,70 @@ struct Server {
 impl Drop for Server {
     fn drop(&mut self) {
         self.child.kill().ok();
+        #[cfg(unix)]
+        tie::watch(0);
         self.child.wait().ok();
         std::fs::remove_dir_all(&self.dir).ok();
+    }
+}
+
+/// The server ends with the bench, however the bench ends: a return or an error drops it (`Drop`); SIGINT, SIGTERM or SIGHUP (Ctrl-C, `timeout`, a closed terminal) kill it before the
+/// bench leaves; and on Linux the kernel kills it once the bench's thread that started it is gone, a SIGKILL of the bench too. (Benches ended by `timeout` left their servers running,
+/// holding the GPU's memory.)
+#[cfg(unix)]
+mod tie {
+    use std::sync::atomic::{AtomicI32, Ordering};
+    static SERVER: AtomicI32 = AtomicI32::new(0);
+    extern "C" {
+        fn signal(sig: i32, handler: usize) -> usize;
+        fn kill(pid: i32, sig: i32) -> i32;
+        fn _exit(code: i32) -> !;
+    }
+    extern "C" fn on_signal(sig: i32) {
+        let pid = SERVER.load(Ordering::Relaxed);
+        // SAFETY: async-signal-safe calls only (kill and _exit).
+        unsafe {
+            if pid > 0 {
+                kill(pid, 9);
+            }
+            _exit(128 + sig)
+        }
+    }
+
+    /// The child `cmd` starts is killed when the thread that starts it ends (Linux: its parent-death signal, SIGKILL, set before it runs the program).
+    pub fn on_exit(cmd: &mut std::process::Command) {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt;
+            extern "C" {
+                fn prctl(option: i32, ...) -> i32;
+                fn getppid() -> i32;
+            }
+            let parent = std::process::id() as i32;
+            // SAFETY: between the fork and the exec only async-signal-safe calls: prctl, getppid, _exit.
+            unsafe {
+                cmd.pre_exec(move || {
+                    // (PR_SET_PDEATHSIG; a parent gone before it took hold: the child ends now)
+                    if prctl(1, 9u64, 0u64, 0u64, 0u64) != 0 || getppid() != parent {
+                        _exit(1);
+                    }
+                    Ok(())
+                });
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = cmd;
+    }
+
+    /// The server's process, killed on SIGINT, SIGTERM or SIGHUP of the bench (0: none now).
+    pub fn watch(pid: u32) {
+        SERVER.store(pid as i32, Ordering::Relaxed);
+        if pid > 0 {
+            for sig in [1, 2, 15] {
+                // SAFETY: the handler makes async-signal-safe calls only.
+                unsafe { signal(sig, on_signal as *const () as usize) };
+            }
+        }
     }
 }
 
@@ -511,11 +573,15 @@ fn start_server(model: &str, a: &Args, users: usize) -> Result<Server> {
         // (the draft model's speculative decoding off: the decode rate is then the weights' bytes over the bandwidth, which the ceiling is)
         cmd.arg("--no-draft");
     }
+    #[cfg(unix)]
+    tie::on_exit(&mut cmd);
     let child = cmd
         .stdout(Stdio::from(out.try_clone().map_err(|e| Error(e.to_string()))?))
         .stderr(Stdio::from(out))
         .spawn()
         .map_err(|e| Error(format!("serve: {e}")))?;
+    #[cfg(unix)]
+    tie::watch(child.id());
     let mut server = Server { child, url: format!("http://127.0.0.1:{port}"), dir };
     let up = Instant::now();
     loop {
@@ -1517,6 +1583,55 @@ mod tests {
         assert_eq!(compare(&args(&["--synthetic", "0.999"])).unwrap(), 0);
         for n in ["base", "same"] {
             std::fs::remove_file(std::env::temp_dir().join(format!("glyd-bench-test-{}-{n}.json", std::process::id()))).ok();
+        }
+    }
+
+    /// The server ends with the bench (`tie`): this test run again as the bench, with a `sleep` tied to it as its server, is ended by SIGTERM (as `timeout` ends it), and on Linux by
+    /// SIGKILL too; the server is gone within seconds, not the minute it sleeps. (Its standard output is the pipe this test reads: the pipe's end comes when the bench and the server
+    /// have both ended.)
+    #[cfg(unix)]
+    #[test]
+    fn a_bench_that_is_ended_ends_its_server() {
+        const NAME: &str = "bench::tests::a_bench_that_is_ended_ends_its_server";
+        if std::env::var_os("GLYD_TEST_TIE_BENCH").is_some() {
+            let mut server = Command::new("sleep");
+            server.arg("60").stdin(Stdio::null()).stderr(Stdio::null());
+            tie::on_exit(&mut server);
+            let mut child = server.spawn().expect("sleep");
+            tie::watch(child.id());
+            println!("ready");
+            let _ = child.wait();
+            return;
+        }
+        extern "C" {
+            fn kill(pid: i32, sig: i32) -> i32;
+        }
+        let sigs: &[i32] = if cfg!(target_os = "linux") { &[15, 9] } else { &[15] };
+        for &sig in sigs {
+            let mut bench = Command::new(std::env::current_exe().expect("the test binary"))
+                .args(["--exact", NAME, "--nocapture", "--test-threads", "1"])
+                .env("GLYD_TEST_TIE_BENCH", "1")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("the test binary again");
+            let mut out = BufReader::new(bench.stdout.take().expect("piped"));
+            let mut line = String::new();
+            // (the harness's own line before it: "test NAME ... ready")
+            while !line.trim_end().ends_with("ready") {
+                line.clear();
+                assert!(out.read_line(&mut line).expect("the bench's output") > 0, "the bench ended before its server started");
+            }
+            // SAFETY: a signal to the child this test started.
+            assert_eq!(unsafe { kill(bench.id() as i32, sig) }, 0);
+            bench.wait().expect("the bench ends");
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let mut rest = String::new();
+                let _ = std::io::Read::read_to_string(&mut out, &mut rest);
+                let _ = tx.send(());
+            });
+            assert!(rx.recv_timeout(Duration::from_secs(10)).is_ok(), "signal {sig}: the server outlived the bench");
         }
     }
 }

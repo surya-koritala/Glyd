@@ -168,21 +168,33 @@ impl Pages {
         (lo.min(hi), hi)
     }
 
-    /// `span`, and within it the first entry the sequence is given a block for: none before the first it ever held (`floor`).
-    fn span_of(&self, slot: usize, g: usize, upto: usize) -> (usize, usize, usize) {
+    /// The entries sequence `slot`, which holds its first `n` tokens, holds in group `g` to grow to `upto` in passes of at most `slack` tokens: where one pass gets there, `span`; where it
+    /// takes several, in a sliding group as many entries as `span` has, from the first its next pass reads on (the passes after take theirs as the window moves, giving back what it
+    /// leaves). And within them the first entry the sequence is given a block for: none before the first it ever held (`floor`).
+    fn span_from(&self, slot: usize, g: usize, n: usize, upto: usize, slack: usize) -> (usize, usize, usize) {
         let (lo, hi) = self.span(g, upto);
-        (lo, lo.max(self.floor[slot][g]).min(hi), hi)
+        let (near, _) = self.span(g, upto.min(n + slack));
+        let hi = hi.min(near + (hi - lo));
+        (near, near.max(self.floor[slot][g]).min(hi), hi)
     }
 
     /// Sequence `slot` given the blocks for its first `upto` tokens in every group, and its sliding groups' blocks a step can no longer read given back; false where some group has too
     /// few free (then nothing changes).
     pub fn grow(&mut self, slot: usize, upto: usize) -> bool {
+        self.grow_from(slot, upto, upto, 0)
+    }
+
+    /// `grow` for a sequence that holds its first `n` tokens and goes on to `upto` in passes of at most `slack` tokens (a prompt's room, taken at once as the scheduler lets it in):
+    /// a full group's blocks to `upto`; a sliding group's, where that is more than a pass, from what its next pass reads on, no more of them than `upto`'s window and a chunk.
+    /// (The blocks of `upto`'s own window instead left a pool of one sequence's window and a chunk none for the first pass, whose growth then failed each time the sequence was
+    /// let in again: one-user serve of Gemma 4 never answered a prompt longer than its window and a chunk. And they gave back the window before `n`, which the next pass reads.)
+    pub fn grow_from(&mut self, slot: usize, n: usize, upto: usize, slack: usize) -> bool {
         let max = self.tabs[slot][0].len();
         if upto.div_ceil(BLOCK) > max {
             return false;
         }
         for g in 0..self.pools.len() {
-            let (lo, from, hi) = self.span_of(slot, g, upto);
+            let (lo, from, hi) = self.span_from(slot, g, n, upto, slack);
             let need = (from..hi).filter(|&b| self.tabs[slot][g][b] == 0).count();
             // (blocks this call gives back come first: those it alone holds)
             let back = (0..lo).filter(|&b| self.tabs[slot][g][b] != 0 && self.pools[g].refs[self.tabs[slot][g][b] as usize] == 1).count();
@@ -191,7 +203,7 @@ impl Pages {
             }
         }
         for g in 0..self.pools.len() {
-            let (lo, from, hi) = self.span_of(slot, g, upto);
+            let (lo, from, hi) = self.span_from(slot, g, n, upto, slack);
             for b in 0..lo {
                 let blk = std::mem::take(&mut self.tabs[slot][g][b]);
                 if blk != 0 {
@@ -718,6 +730,27 @@ mod tests {
             [found, cuts, taken].iter().all(|&x| x * 30000 > 300 * steps),
             "{found} found, {cuts} cuts, {taken} growths that took a named block in {steps} steps"
         );
+    }
+
+    /// The room of a prompt of several windows, taken at once (`grow_from`), in pools of one sequence's: the sliding group's blocks are those its first pass reads, and every pass after
+    /// grows into them, holding no more than the pool. A sequence that goes on by more than a chunk keeps the window its next pass reads. `grow` to the prompt's end takes the blocks
+    /// of its last window instead, and its first pass then has none.
+    #[test]
+    fn a_prompt_room_holds_what_its_first_pass_reads() {
+        // (a window of 64 tokens and a chunk of 32: 7 blocks of the sliding group, as `Dyn::page` sizes one sequence's)
+        let pools = || Pages::new(&[34, 8], &[None, Some(64 + 32)], 1, 512);
+        let mut p = pools();
+        assert!(p.grow_from(0, 0, 301, 32));
+        assert!(p.table(0, 1)[..7].iter().all(|&b| b != 0) && p.held(1) == 7);
+        for at in (0..300).step_by(32) {
+            assert!(p.grow_from(0, at, (at + 32).min(300), 32) && p.held(1) <= 7, "the pass at {at}");
+        }
+        // at 300, on to 400 at once: the window before 300 (entries 14 to 18) is in the same blocks
+        let before = p.table(0, 1)[14..19].to_vec();
+        assert!(p.grow_from(0, 300, 400, 32));
+        assert_eq!(p.table(0, 1)[14..19], before[..]);
+        let mut q = pools();
+        assert!(q.grow(0, 301) && !q.grow(0, 32));
     }
 
     /// Growth takes blocks in every group or in none; a sequence past the context never grows.
