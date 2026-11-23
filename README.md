@@ -85,17 +85,20 @@ one with a tag: `glyd run google/gemma-4-12B-it:wren`. The KV cache is lossless 
 
 ## Supported models
 
-| Family | Levels |
-| :--- | :--- |
-| Gemma | penguin, kestrel, swift, wren |
-| Qwen | penguin, kestrel, swift, wren |
-| Nemotron | penguin, kestrel, swift, wren, hummingbird |
-| Kimi | penguin |
-| GLM | penguin |
-| DeepSeek | penguin |
-| Muse | penguin |
+| Family | Levels | Users at once | Experts in the computer's memory |
+| :--- | :--- | :--- | :--- |
+| Gemma 4 | penguin, kestrel, swift, wren | up to 64 | (dense) |
+| Qwen3.5, Qwen3.8 dense | kestrel, swift, wren | up to 64 | (dense) |
+| Qwen3 | penguin | up to 8 | (dense) |
+| Nemotron-H (Nemotron 3) | penguin, kestrel, swift, wren, hummingbird | up to 64 | kestrel, swift, wren, hummingbird |
+| Kimi-K3 | penguin, hummingbird | up to 64 on one GPU | penguin, hummingbird |
+| GLM-5.3-Flash | penguin, hummingbird | up to 64 on one GPU | penguin, hummingbird |
+| DeepSeek-V4 | penguin, hummingbird | up to 64 on one GPU | penguin, hummingbird |
+| Muse Spark | penguin, hummingbird | up to 64 on one GPU | penguin, hummingbird |
 
-Any size or fine-tune of a supported architecture runs, from the Hub or from 16-bit GGUF files. `glyd fit MODEL` says which
+Users at once is as many as the GPU's memory holds, up to that number; a model split over several GPUs, or drafting with a draft model,
+serves one request at a time. A mixture of experts too big for the GPU keeps its experts in the computer's memory with a cache on the GPU
+at the levels listed. Any size or fine-tune of a supported architecture runs, from the Hub or from 16-bit GGUF files. `glyd fit MODEL` says which
 levels a specific model runs at on your machine; `glyd pull`, `glyd ls` and `glyd rm` manage the ones you have.
 
 ## Serving and tools
