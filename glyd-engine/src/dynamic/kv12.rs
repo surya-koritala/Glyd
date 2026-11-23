@@ -34,6 +34,15 @@ pub struct Tables {
     pub chunks: Vec<(f64, u32)>,
 }
 
+/// A 12-bit page's bytes for `heads` kv heads of `channels` (two streams, the arena the executor gives a page), by the GPU library's layout
+/// (glyd_gpu.cu: a header of 16 bytes a head-page of 128 channels, the page's used word, 16 directory words and the arena, up to a multiple of 128;
+/// then 6,144 bytes a head-page). For the planner, which has no library to ask; `Lib::kv_page_bytes` is the same number.
+pub fn page_bytes(heads: usize, channels: usize) -> u64 {
+    let hp = (heads * channels / 128) as u64;
+    let hdr = (16 * hp + 4 * (1 + 16 + super::kvpages::ARENA as u64)).div_ceil(128) * 128;
+    hdr + hp * 6144
+}
+
 /// The bucket of a bf16 value kvcal's windows are over: its exponent halved.
 fn bucket(x: u16) -> usize {
     ((x >> 8) & 127) as usize
@@ -254,6 +263,9 @@ pub fn calibrate(e: &mut Dyn, prompts: &[Vec<u32>], model: &str) -> Result<Table
         return err(format!("{}: no attention layer whose keys and values this reads (Gemma 4's preparation)", e.big.d.family));
     }
     let mut hists: Vec<Option<Hist>> = shapes.iter().map(|s| s.map(|s| Hist::new(s.heads, s.channels, s.one))).collect();
+    // (the pages' chunks are counted on tokens the windows were not made from: windows from each prompt's first half, counted on its second half;
+    // the corpus makes few prompts, whatever their length)
+    let mut first: Vec<Option<Hist>> = hists.clone();
     let reply = crate::sched::Reply {
         params: crate::sampler::Params { temperature: 0.0, ..Default::default() },
         max_new: 1,
@@ -265,10 +277,12 @@ pub fn calibrate(e: &mut Dyn, prompts: &[Vec<u32>], model: &str) -> Result<Table
     for p in prompts {
         crate::conv::Gen::reply(e, p, &reply, &mut |_| true)?;
         positions = positions.max(p.len());
-        for (s, h) in shapes.iter().zip(hists.iter_mut()) {
-            if let (Some(s), Some(h)) = (s, h) {
+        for ((s, h), f) in shapes.iter().zip(hists.iter_mut()).zip(first.iter_mut()) {
+            if let (Some(s), Some(h), Some(f)) = (s, h, f) {
                 let (k, v, _) = e.kv_rows(s, p.len())?;
                 h.add(&k, &v);
+                let cut = (k.len() / (s.heads * s.channels)) / 2 * s.heads * s.channels;
+                f.add(&k[..cut], if v.is_empty() { &v } else { &v[..cut] });
             }
         }
     }
@@ -276,18 +290,56 @@ pub fn calibrate(e: &mut Dyn, prompts: &[Vec<u32>], model: &str) -> Result<Table
     let outside = hists.iter().zip(&layers).map(|(h, t)| h.as_ref().zip(t.as_ref()).map_or(0.0, |(h, t)| h.outside(t))).collect();
     // (the pages' escape chunks with the tables made: the prompts again; values outside their windows gather in a few channels, so a page's need is
     // counted, not taken from the share)
+    let held_out: Vec<Option<LayerTable>> = first.iter().map(|h| h.as_ref().map(Hist::table)).collect();
     let mut taken: Vec<Vec<u32>> = vec![Vec::new(); shapes.len()];
     for p in prompts {
         crate::conv::Gen::reply(e, p, &reply, &mut |_| true)?;
         for (l, s) in shapes.iter().enumerate() {
-            if let (Some(s), Some(t)) = (s, &layers[l]) {
+            if let (Some(s), Some(t)) = (s, &held_out[l]) {
                 let (k, v, first) = e.kv_rows(s, p.len())?;
-                taken[l].extend(page_chunks(&k, &v, first, t, super::kvpages::ARENA as usize));
+                let w = s.heads * s.channels;
+                let half = k.len() / w / 2;
+                let v2 = if v.is_empty() { &v[..] } else { &v[half * w..] };
+                taken[l].extend(page_chunks(&k[half * w..], v2, first + half, t, super::kvpages::ARENA as usize));
             }
         }
     }
     let chunks = taken.iter().map(|c| (c.iter().sum::<u32>() as f64 / c.len().max(1) as f64, c.iter().copied().max().unwrap_or(0))).collect();
     Ok(Tables { layers, positions: positions as u64, model: model.to_string(), outside, chunks })
+}
+
+/// A model's tables, from the cache (made for its directory, version and shapes), else made now from the calibration corpus's first `PROMPTS`
+/// sequences of `POSITIONS` tokens (the context allowing) and kept there: true where they were made.
+pub fn tables_for(e: &mut Dyn, dir: &Path, model: &str) -> Result<(Tables, bool)> {
+    const POSITIONS: usize = 1024;
+    const PROMPTS: usize = 8;
+    let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()).display().to_string();
+    let hash = key.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
+    let path = crate::store::cache_root().join("kv12").join(format!("{}-{hash:016x}.safetensors", model.replace(['/', ':'], "_")));
+    let want = shapes(&e.big.d);
+    let fits = |t: &Tables| {
+        t.layers.len() == want.len()
+            && t.layers.iter().zip(&want).all(|(t, s)| match (t, s) {
+                (Some(t), Some(s)) => (t.heads, t.channels) == (s.heads, s.channels),
+                (None, None) => true,
+                _ => false,
+            })
+    };
+    if let Ok(t) = Tables::load(&path) {
+        if fits(&t) {
+            return Ok((t, false));
+        }
+    }
+    let docs = crate::calib::corpus_docs(&crate::tok::Tok::load(dir)?, None)?;
+    let positions = POSITIONS.min(e.ctx.saturating_sub(64));
+    let seqs: Vec<Vec<u32>> = crate::kvcal::sequences(&docs, positions).into_iter().map(|(s, _)| s).filter(|s| s.len() == positions).take(PROMPTS).collect();
+    if seqs.is_empty() {
+        return err(format!("the calibration corpus makes no sequence of {positions} tokens"));
+    }
+    let t = calibrate(e, &seqs, model)?;
+    std::fs::create_dir_all(path.parent().expect("a file in a directory")).map_err(|e| Error(format!("{}: {e}", path.display())))?;
+    t.save(&path)?;
+    Ok((t, true))
 }
 
 /// `glyd-engine kv12cal --dir DIR [--case gemma4] [--level L] [--positions N] [--prompts K] [--out FILE]`: the tables of a model the executor runs, from K
@@ -372,6 +424,13 @@ mod tests {
         tables.save(&p).unwrap();
         assert_eq!(Tables::load(&p).unwrap(), tables);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The page sizes the GPU library gave on an RTX 4080 SUPER (kvshapes, kv12check): 8 heads of 256 (Gemma 4's sliding layers), one of 512
+    /// (its global ones), two of 512.
+    #[test]
+    fn page_bytes_are_the_librarys() {
+        assert_eq!((page_bytes(8, 256), page_bytes(1, 512), page_bytes(2, 512)), (98_688, 24_832, 49_408));
     }
 
     /// A page's chunks by the library's rule: a head-page's first three entries inline, then the arena, then chunks of 64; past 16 chunks raw (17).

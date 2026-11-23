@@ -208,7 +208,6 @@ impl Lossless {
 
     /// Each group's status words (glyd_gpu.h's kv_write): [0] the exceptions with no place, [4]/[5] the escape chunks taken now and the most at once, [8]/[9] the raw slabs,
     /// [10] the pages made raw, [11] the pages made void.
-    #[cfg(feature = "dev")]
     pub fn status(&self) -> Result<Vec<[u32; 16]>> {
         self.status
             .iter()
@@ -321,9 +320,45 @@ impl Dyn {
 }
 
 impl Dyn {
+    /// After a step: an error where a page was made void (its pools had no room: what it holds is not what was written), so that no reply goes on
+    /// from it. (Until admission reserves the room a sequence may need and pauses one where the spare pool runs out, R4d.)
+    pub(super) fn kv12_check(&self) -> Result<()> {
+        let Some(lx) = &self.lossless else { return Ok(()) };
+        for (g, w) in lx.status()?.iter().enumerate() {
+            if w[11] > 0 {
+                return err(format!("the 12-bit KV pages overflowed their pools: {} pages of group {g} made void ({} exceptions found no place)", w[11], w[0]));
+            }
+        }
+        Ok(())
+    }
+
     /// The 12-bit KV tables the next paged layout (`serve_rows`) uses for the rings they fit; None: bf16 pages.
     pub fn set_kv12(&mut self, t: Option<Tables>) {
         self.kv12 = t;
+    }
+
+    /// Each ring's pages that hold escape chunks, read from their headers (a page's directory words past its heads' headers and its used word): the
+    /// pages, the chunks, and those of block 0 (which a table names where a sequence holds no block: what writes there is no sequence's).
+    #[cfg(feature = "dev")]
+    fn kv12_chunks_held(&self) -> Result<Vec<(usize, usize, usize, usize)>> {
+        let Some(lx) = &self.lossless else { return Ok(Vec::new()) };
+        let mut out = Vec::new();
+        for (r, rp) in lx.rings.iter().enumerate() {
+            let Some(rp) = rp else { continue };
+            let (hp, n) = ((rp.shape.heads * rp.shape.channels / 128) as usize, rp.pool.bytes / rp.geom.page_stride as usize);
+            let (mut pages, mut chunks, mut zero) = (0, 0, 0);
+            for b in 0..n {
+                let mut dir = [0u32; 17];
+                rp.pool.read(b * rp.geom.page_stride as usize + 16 * hp, &mut dir)?;
+                let held = dir[1..].iter().filter(|&&d| d != 0).count();
+                if held > 0 {
+                    (pages, chunks) = (pages + 1, chunks + held);
+                    zero += if b == 0 { held } else { 0 };
+                }
+            }
+            out.push((r, pages, chunks, zero));
+        }
+        Ok(out)
     }
 
     /// The selected sequence's keys and values of ring `ring` read back from its 12-bit pages at its tokens before n, as `kv_rows` reads the bf16 ring.
@@ -358,8 +393,8 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     use std::path::Path;
     let (case, level) = (a.flag("case").unwrap_or("gemma4"), a.flag("level").unwrap_or("penguin"));
     let random = a.flag("dir").is_none();
-    let (positions, prompts) = (a.num("positions", if random { 512 } else { 2048usize })?, a.num("prompts", 4usize)?);
-    let (plen, new) = (a.num("prompt-tokens", if random { 700 } else { 1500usize })?, a.num("new", 32usize)?);
+    let (positions, prompts) = (a.num("positions", if random { 512 } else { 1024usize })?, a.num("prompts", 4usize)?);
+    let (plen, new) = (a.num("prompt-tokens", if random { 700 } else { 1024usize })?, a.num("new", 32usize)?);
     let (mut e, dir, mut seqs) = match a.flag("dir") {
         Some(d) => {
             let dir = Path::new(d);
@@ -484,6 +519,15 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         "{} greedy replies: the first {same} of {new} tokens the same (the prompt's token {}); the decode's tokens' values the plain ones in {later_same} of {later} ring-tokens",
         if want.first() == got.first() { "ok  " } else { "FAIL" },
         if want.first() == got.first() { "the same" } else { "differs" }
+    );
+    let held = e.kv12_chunks_held()?;
+    let (pages, chunks, zero) = held.iter().fold((0, 0, 0), |a, h| (a.0 + h.1, a.1 + h.2, a.2 + h.3));
+    let tables_said: f64 = held
+        .iter()
+        .map(|h| e.kv12.as_ref().and_then(|t| lay.iter().position(|s| s.is_some_and(|s| s.ring == h.0)).and_then(|l| t.chunks.get(l))).map_or(0.0, |c| c.0))
+        .sum();
+    println!(
+        "escape chunks held: {chunks} in {pages} pages ({zero} in block 0, no sequence's); the tables counted {tables_said:.2} a page a ring on their prompts"
     );
     let lx = e.lossless.as_ref().expect("taken above");
     for (g, w) in lx.status()?.iter().enumerate() {

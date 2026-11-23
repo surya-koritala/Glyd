@@ -764,7 +764,9 @@ impl ModelStep for Dyn {
             }
         }
         let jobs: Vec<(usize, &[u32], bool)> = jobs.iter().map(|j| (j.pages[0] as usize, j.tokens, j.last)).collect();
-        self.pass(&jobs)
+        let r = self.pass(&jobs)?;
+        self.kv12_check()?;
+        Ok(r)
     }
     fn one_step(&self) -> bool {
         Self::one_step_asked() && self.batchable() && Self::batch_prefill()
@@ -781,12 +783,14 @@ impl ModelStep for Dyn {
         let p = StepProf::begin(self.dev.stream);
         let r = self.round_rows(rows, jobs);
         StepProf::end(p, self.dev.stream, rows.len(), jobs.iter().map(|j| j.tokens.len()).sum());
+        self.kv12_check()?;
         r
     }
     fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
         let p = StepProf::begin(self.dev.stream);
         let r = self.decode_rows(rows);
         StepProf::end(p, self.dev.stream, rows.len(), 0);
+        self.kv12_check()?;
         r
     }
     fn logits(&mut self, row: usize) -> Result<Vec<f32>> {

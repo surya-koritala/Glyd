@@ -277,12 +277,13 @@ impl ConfigG4 {
     }
 
     /// The keys and values: (the sliding layers' rings, fixed: the window and a chunk each, or the context where it is shorter; a position's bytes in the global layers).
-    pub fn kv_bytes(&self, chunk: usize, ctx: usize) -> (u64, u64) {
+    /// `twelve`: in the executor's 12-bit lossless pages (a sixteenth of a page a token), else bf16.
+    pub fn kv_bytes(&self, chunk: usize, ctx: usize, twelve: bool) -> (u64, u64) {
         let cap_s = (self.window + chunk).min(ctx) as u64;
         let (mut fixed, mut per) = (0u64, 0u64);
         for &k in &self.kinds {
             let (d, nk, _) = self.attn_of(k);
-            let b = (nk * d * 2 * 2) as u64;
+            let b = if twelve { crate::dynamic::kv12::page_bytes(nk, d).div_ceil(16) } else { (nk * d * 2 * 2) as u64 };
             match k {
                 KindG4::Sliding => fixed += cap_s * b,
                 KindG4::Global => per += b,
