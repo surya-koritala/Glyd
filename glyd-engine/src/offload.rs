@@ -4384,6 +4384,13 @@ mod tests {
             }
             assert!(mode == Mode::Copy || per_pair_more > 0, "{mode:?}: no host pairs shared an expert in 40 steps");
         }
+        // (/stats's field: none before a layer has run a call, then a JSON object a layer)
+        TOTALS.lock().unwrap().clear();
+        assert_eq!(stats_field(), "");
+        TOTALS.lock().unwrap().extend([LayerStats::default(), LayerStats { calls: 2, hits: 1, ..LayerStats::default() }]);
+        let f = stats_field();
+        assert!(f.starts_with(",\"experts\":[{\"layer\":0,") && f.contains("{\"layer\":1,\"calls\":2,") && f.ends_with(']'), "{f}");
+        TOTALS.lock().unwrap().clear();
         let one = LayerStats { calls: 1, reads: 3, hits: 1, copy_bytes: 5, host_bytes: 7, copy_ms: 0.5, ..LayerStats::default() };
         let two = LayerStats::sum([&one, &one]);
         assert_eq!((two.calls, two.misses(), two.miss_bytes(), two.copy_ms), (2, 4, 24, 1.0));
