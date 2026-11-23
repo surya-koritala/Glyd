@@ -6,6 +6,8 @@ use crate::weights::Layout;
 /// Flags that take no value.
 #[cfg(feature = "dev")]
 const SWITCHES: &[&str] = &[
+    "predict-only",
+    "score",
     "no-graph",
     "no-draft",
     "compare",
@@ -81,6 +83,8 @@ const SWITCHES: &[&str] = &[
 #[cfg(not(feature = "dev"))]
 const SWITCHES: &[&str] = &[
     "no-think",
+    "predict-only",
+    "score",
     "help",
     "quiet",
     "chat",

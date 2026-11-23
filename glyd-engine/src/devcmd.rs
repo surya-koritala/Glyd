@@ -94,6 +94,8 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
             Ok(())
         }
         "kvprefill" => glyd_engine::kvshapes::bench(a),
+        // the planner's predictions against this machine, gated, and a calibration record a case (src/plancheck.rs)
+        "plancheck" => std::process::exit(glyd_engine::plancheck::cmd(a)),
         "bandwidth" => {
             let dev = glyd_engine::dev::Dev::new(0)?;
             let gbs = report::bandwidth(&dev, a.num("gib", 4usize)?, a.num("reps", 20usize)?)?;

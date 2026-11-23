@@ -62,7 +62,9 @@ fn kind_tokens(kind: &str) -> Result<Option<usize>> {
         "8k" => Some(8192),
         "16k" => Some(16384),
         "32k" => Some(32768),
-        _ => return err(format!("prompt {kind}: short, 1k, 2k, 4k, 8k, 16k or 32k, or same1k to same32k")),
+        // (a prompt of N tokens, as `plancheck` fills the context a plan allows: 27852t)
+        t if t.strip_suffix('t').and_then(|n| n.parse::<usize>().ok()).is_some_and(|n| n >= 64) => t.strip_suffix('t').and_then(|n| n.parse().ok()),
+        _ => return err(format!("prompt {kind}: short, 1k, 2k, 4k, 8k, 16k or 32k, same1k to same32k, or NNNt (NNN tokens, 64 or more)")),
     })
 }
 
@@ -498,7 +500,7 @@ fn start_server(model: &str, a: &Args, users: usize) -> Result<Server> {
     // (the bench is its server's one caller: the server may tell what its prompts found in the cache, for `prefix_hit_rate`)
     cmd.env("GLYD_ENGINE_CACHED_USAGE", "1");
     cmd.args(["serve", model, "--host", "127.0.0.1", "--port", &port.to_string()]);
-    for f in ["ctx", "layout", "chunk"] {
+    for f in ["ctx", "layout", "chunk", "expert-cache", "host-memory"] {
         if let Some(v) = a.flag(f) {
             cmd.args([format!("--{f}"), v.to_string()]);
         }
