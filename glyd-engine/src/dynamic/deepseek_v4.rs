@@ -706,11 +706,9 @@ impl V4Opts {
 
 /// DeepSeek-V4's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::deepseek_v4`), held to `describe`.
 pub fn lowered(dir: &Path, c: &ConfigV4, st: &Stage, vo: &V4Opts) -> Result<ModelDesc> {
-    let p = dir.join("config.json");
-    let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-    let cfg: serde_json::Value = serde_json::from_str(&text).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-    let lowered = super::lower::deepseek_v4(&crate::runtime::describe::describe(&cfg)?, c.eos.clone(), c.max_pos, st, vo)?;
-    super::lower::agree(lowered, &describe(c, st, vo)?, &p.display().to_string())
+    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
+    let lowered = super::lower::deepseek_v4(&kinds, c.eos.clone(), c.max_pos, st, vo)?;
+    super::lower::agree(lowered, &describe(c, st, vo)?, &label)
 }
 
 /// The executor's description of DeepSeek-V4 for stage `st` with the options `vo`, as the loader indexes what it loads (`v4_desc`).

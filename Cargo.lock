@@ -1018,6 +1018,7 @@ dependencies = [
  "llguidance",
  "minijinja",
  "minijinja-contrib",
+ "serde",
  "serde_json",
  "sha2",
  "tokenizers",
