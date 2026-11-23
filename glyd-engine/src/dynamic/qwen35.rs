@@ -157,7 +157,7 @@ pub fn describe(c: &crate::qwen35::Config35, st: &Stage) -> Result<ModelDesc> {
             }
             Kind::Full => {
                 let ring = rings.len();
-                rings.push(Ring { d: 256, nk, window: 0 });
+                rings.push(Ring { d: 256, nk, window: 0, values: true });
                 ops.extend([
                     Op::Linear { w: b, x: Slot::H, y: Slot::Mix, name: "attention: qkv product" },
                     Op::Attn(attention(nq, nk, c.rotary_dim, (s0 + 2, s0 + 3), ring)),

@@ -1,32 +1,8 @@
 // Kimi-K3's own kernels (included by engine.cu after glm.cu and moe.cu; src/dynamic/kimi.rs describes the model): the depth mix that stands in for the residual stream (each block's input a softmax over the
-// embedding and the sums of the blocks of layers before it), the latent attention's sigmoid output gate. bf16 in memory, fp32 inside; the rounding points are research/kimi-k3.md's (src/kimi_ref.rs: the CPU
-// reference). The delta attention is glm.cu's, the latent attention's absorbed query and attention glm.cu's with the key's shared part, the experts' situ moe.cu's moe_act.
+// embedding and the sums of the blocks of layers before it). bf16 in memory, fp32 inside; the rounding points are research/kimi-k3.md's (src/kimi_ref.rs: the CPU
+// reference). The delta attention is glm.cu's, the latent attention mla.cu's (the layer kind's), the experts' situ moe.cu's moe_act.
 
 #define KM_SOURCES 16  // a depth mix's sources at most (Kimi-K3: 9)
-
-// o [n, W] = o times sigmoid(g) (g [n, gs] row stride gs), the sigmoid rounded to bf16, the product once: the latent attention's output gate. A thread a value.
-extern "C" __global__ void kimi_gate(bf16* o, const bf16* g, int gs, int W, int n) {
-    const size_t e = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (e >= (size_t)n * W) return;
-    const size_t r = e / W, c = e % W;
-    const float s = b2f(f2b(1.f / (1.f + expf(-b2f(g[r * gs + c])))));
-    o[e] = f2b(b2f(o[e]) * s);
-}
-
-// dst [n, w] (rows ds apart) = n rows of w values of src (rows ss apart), a value a thread: a prompt's part of a fused product's rows copied out
-// (Op::KimiParts; one token's are read in place).
-extern "C" __global__ void kimi_rows(const bf16* src, long long ss, bf16* dst, long long ds, int w, int n) {
-    const long long e = (long long)blockIdx.x * blockDim.x + threadIdx.x;
-    if (e >= (long long)n * w) return;
-    const long long r = e / w, c = e % w;
-    dst[r * ds + c] = src[r * ss + c];
-}
-
-// cnt [n] = pos[i] + 1: a dense attention's token counts (every position up to the row's own; glm_mla_attn without a selection).
-extern "C" __global__ void kimi_dense_cnt(const int* pos, int* cnt, int n) {
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) cnt[i] = pos[i] + 1;
-}
 
 // y row i (rows ys apart) = w * bf16(x row i (rows xs apart) * rsqrt(mean(x^2) + eps)): KimiRMSNorm, the normed value rounded, times the weight, rounded again; any width. A block a row, 512 threads,
 // thread t's columns t, t + 512, ... in that order; for K up to 512 KR_COLS a thread's columns are read into registers once (a column a round had made a decode step's norm 8-15 us on one SM).

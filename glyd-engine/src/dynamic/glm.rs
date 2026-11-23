@@ -1,8 +1,9 @@
 //! GLM-5.3-Flash (`Glm5NextForConditionalGeneration`) as a description: the four streams mixed around each layer's two blocks (transformers' rounding), Kimi delta attention or the latent attention over the
-//! keys its indexer picks (src/mla_glm.rs's block, run through `GlmHost`), a dense MLP in the first layers and a mixture of experts in the rest, the mean of the streams and the final norm. Its weights load by
-//! model_glm.rs's loader and the blocks by their factories, handed over as they are; the arithmetic is kernels/glm.cu's, as model_glm.rs runs it (`glmdyn` checks the two against each other).
+//! keys its indexer picks (the layer kind's, `Op::Mla`: src/dynamic/mla.rs), a dense MLP in the first layers and a mixture of experts in the rest, the mean of the streams and the final norm. Its weights load by
+//! model_glm.rs's loader (a latent attention's by mla_glm.rs's `MlaWeights`) and the experts' blocks by their factory, handed over as they are; the arithmetic is kernels/glm.cu's and kernels/mla.cu's, as
+//! model_glm.rs runs it (`glmdyn` checks the two against each other).
 
-use super::{Dyn, Loaded, ModelDesc, Op, Opts, Slot, Stage, View};
+use super::{Dyn, IdxKeys, IdxPick, IdxScore, Loaded, MlaIn, MlaIndexer, MlaOp, ModelDesc, Op, Opts, Ring, Slot, Stage, View};
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result};
 use crate::glm::{ConfigGlm, GlmKind};
@@ -46,7 +47,6 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
     let dev = Dev::new(o.device)?;
     let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
     let lib8 = crate::ffi::Lib::find()?;
-    let mla = crate::mla_glm::factory();
     let only: Vec<usize> = (st.layers.0..st.layers.1).collect();
     let whole = st.first && st.last;
     let w = {
@@ -60,9 +60,11 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
             (!whole).then_some(&only[..]),
             Some((st.first, st.last)),
             Some(&moe),
-            Some(&mla),
+            None,
         )?
     };
+    // (the latent attention layers' weights: the kind's operation's matrices and small tensors)
+    let ck = glyd_gpu::safetensors::Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
     let lm = w.lm_head().is_some();
     let WeightsGlm { cfg: c, layout, layers: lys, embed, head, norm_f, .. } = w;
     if c.kda.dim != GM_D || c.hc.mult != 4 {
@@ -70,7 +72,8 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
     }
     let (hid, qd, heads) = (c.hidden, c.qkv(), c.kda.heads);
     let mut l_ = Loaded::default();
-    let (mut states, mut layers, mut dense) = (Vec::new(), Vec::new(), false);
+    let (mut states, mut layers, mut dense, mut rings) = (Vec::new(), Vec::new(), false, Vec::new());
+    let mla = latent(&c);
     let put = |v: &mut Vec<Buf>, b: Buf| {
         v.push(b);
         v.len() - 1
@@ -93,12 +96,18 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
             norm,
         };
         let mut ops = vec![pre(&mut l_.small, ha, na)];
+        // (a latent attention layer's four matrices first, then the loader's: the dense MLP's)
+        let latent_w = if ly.kind == GlmKind::Mla { Some(crate::mla_glm::MlaWeights::load(l, &c, &ck, layout)?) } else { None };
         let m0 = l_.mats.len();
-        let nm = ly.mats.len();
+        let nm = ly.mats.len() + if latent_w.is_some() { 4 } else { 0 };
         let (want_m, want_s) = (per_layer(ly.kind, ly.moe.is_some()), if ly.kind == GlmKind::Kda { 4 } else { 0 });
         if (nm, ly.small.len()) != (want_m, want_s) {
             return err(format!("layer {l}: {nm} matrices and {} small tensors loaded, where its kind has {want_m} and {want_s}", ly.small.len()));
         }
+        let latent_w = latent_w.map(|w| {
+            l_.mats.extend([w.q_a, w.q_b, w.kv_a, w.o]);
+            [w.q_a_ln, w.kv_a_ln, w.kv_b, w.wq_b, w.wk, w.k_norm_w, w.k_norm_b, w.wproj, w.ape, w.ix_gate]
+        });
         l_.mats.extend(ly.mats);
         match ly.kind {
             GlmKind::Kda => {
@@ -122,9 +131,11 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
                 ]);
             }
             GlmKind::Mla => {
-                let b = ly.mla.ok_or_else(|| Error(format!("layer {l}: a latent attention layer with no block")))?;
-                ops.push(Op::Mla { block: l_.mla.len() });
-                l_.mla.push(b);
+                let s0 = l_.small.len();
+                l_.small.extend(latent_w.ok_or_else(|| Error(format!("layer {l}: a latent attention layer with no weights")))?);
+                let op = mla.placed(m0, s0, rings.len());
+                rings.extend(op.rings());
+                ops.push(Op::Mla(op));
             }
         }
         ops.extend([Op::GlmPost, pre(&mut l_.small, hf, nf)]);
@@ -200,7 +211,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
         mats: Vec::new(),
         small: Vec::new(),
         ropes: Vec::new(),
-        rings: Vec::new(),
+        rings,
         first: Op::GlmStreams,
         layers,
         states,
@@ -221,10 +232,56 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
     Dyn::from_parts(dev, d, l_, Vec::new(), layout, st, o)
 }
 
-/// A layer's matrices as the loader holds them: a Kimi delta layer's seven (qkv, o, f_a, f_b, g_a, g_b, b), then a dense MLP's gate and up and its down; a
-/// latent attention layer's and a mixture of experts' are their blocks'.
+/// A layer's matrices as the loader holds them: a Kimi delta layer's seven (qkv, o, f_a, f_b, g_a, g_b, b) or a latent attention layer's four (q_a, q_b, kv_a, o),
+/// then a dense MLP's gate and up and its down; a mixture of experts' are its block's.
 pub(crate) fn per_layer(kind: GlmKind, moe: bool) -> usize {
-    (if kind == GlmKind::Kda { 7 } else { 0 }) + if moe { 0 } else { 2 }
+    (if kind == GlmKind::Kda { 7 } else { 4 }) + if moe { 0 } else { 2 }
+}
+
+/// GLM-5.3-Flash's latent attention as the layer kind's operation (`MlaOp`, its matrices, small tensors and rings at 0: `MlaOp::placed` puts a layer's): q's and the
+/// key-value latent's products apart, no shared key part, the norms' epsilon the config's, and the indexer over pools of its keys (its scores in f32, the picks given
+/// as their tokens and the open pool's).
+pub(crate) fn latent(c: &ConfigGlm) -> MlaOp {
+    let (m, ix) = (&c.mla, &c.indexer);
+    MlaOp {
+        heads: m.heads,
+        nope: m.nope,
+        rope: 0,
+        v: m.v,
+        kv_rank: m.kv_rank,
+        q_rank: m.q_rank,
+        input: MlaIn::Apart { q_a: 0, kv_a: 0 },
+        q_b: 0,
+        o: 0,
+        q_norm: 0,
+        kv_norm: 0,
+        kv_b: 0,
+        q_norm512: false,
+        gate: false,
+        scale: (m.nope as f32).powf(-0.5),
+        eps: c.eps,
+        ring: 0,
+        indexer: Some(MlaIndexer {
+            pick: IdxPick {
+                heads: ix.heads,
+                ratio: ix.kpool,
+                top_k: ix.topk / ix.kpool.max(1),
+                expand: true,
+                tail: ix.tail,
+                wscale: (ix.heads as f32).powf(-0.5),
+                score: IdxScore::F32 { dim: ix.dim, scale: (ix.dim as f32).powf(-0.5) },
+                keys: IdxKeys::Ring(1),
+            },
+            dim: ix.dim,
+            q_b: 0,
+            k: 0,
+            k_norm: 0,
+            k_bias: 0,
+            weights: 0,
+            ape: 0,
+            gate: 0,
+        }),
+    }
 }
 
 /// GLM-5.3-Flash's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::glm`), held to `describe`.
@@ -242,7 +299,8 @@ pub fn describe(c: &ConfigGlm, st: &Stage) -> Result<ModelDesc> {
         return err(format!("Kimi delta heads of {} and {} streams: this engine runs heads of {GM_D} and 4 streams", c.kda.dim, c.hc.mult));
     }
     let (hid, qd, heads) = (c.hidden, c.qkv(), c.kda.heads);
-    let (mut n_small, mut n_mats, mut n_mla, mut n_moe, mut states, mut layers) = (0, 0, 0, 0, Vec::new(), Vec::new());
+    let mla = latent(c);
+    let (mut n_small, mut n_mats, mut n_moe, mut states, mut layers, mut rings) = (0, 0, 0, Vec::new(), Vec::new(), Vec::new());
     for l in 0..c.layers {
         if !(st.layers.0..st.layers.1).contains(&l) {
             layers.push(Vec::new());
@@ -264,8 +322,10 @@ pub fn describe(c: &ConfigGlm, st: &Stage) -> Result<ModelDesc> {
                 ops.extend(kda_ops(m0, s0, conv, ssm, qd, heads, c.kda.bound));
             }
             GlmKind::Mla => {
-                ops.push(Op::Mla { block: n_mla });
-                n_mla += 1;
+                let op = mla.placed(m0, n_small, rings.len());
+                n_small += op.small_count();
+                rings.extend(op.rings());
+                ops.push(Op::Mla(op));
             }
         }
         let h = n_small;
@@ -287,7 +347,7 @@ pub fn describe(c: &ConfigGlm, st: &Stage) -> Result<ModelDesc> {
     let lm = if st.last && !c.tie { e + 1 } else { e };
     // (the dense MLP's width where a layer has one, else none: as the description lowered from the layer kinds sizes its slots)
     let inter = if (0..c.layers).any(|l| !c.moe[l]) { c.inter } else { 0 };
-    Ok(glm_desc(hid, qd, heads, inter, c.vocab, c.eps, c.max_pos, c.eos.clone(), (c.hc.eps, c.hc.iters as i32), layers, states, e, lm))
+    Ok(glm_desc(hid, qd, heads, inter, c.vocab, c.eps, c.max_pos, c.eos.clone(), (c.hc.eps, c.hc.iters as i32), layers, (states, rings), e, lm))
 }
 
 /// A Kimi delta layer's operations: its matrices from `m0`, its small tensors from `s0`, its convolution's and recurrence's states.
@@ -328,7 +388,7 @@ pub(crate) fn glm_desc(
     eos: Vec<i64>,
     hc: (f32, i32),
     layers: Vec<Vec<Op>>,
-    states: Vec<usize>,
+    (states, rings): (Vec<usize>, Vec<Ring>),
     embed: usize,
     lm: usize,
 ) -> ModelDesc {
@@ -361,7 +421,7 @@ pub(crate) fn glm_desc(
         mats: Vec::new(),
         small: Vec::new(),
         ropes: Vec::new(),
-        rings: Vec::new(),
+        rings,
         first: Op::GlmStreams,
         layers,
         states,

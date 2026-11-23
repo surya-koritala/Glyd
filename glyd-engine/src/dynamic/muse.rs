@@ -241,7 +241,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_sto
         };
         l_.moe.push(Box::new(MuseMoe(layer)));
         let ring = rings.len();
-        rings.push(Ring { d: hd, nk, window: if c.sliding[l] { c.window } else { 0 } });
+        rings.push(Ring { d: hd, nk, window: if c.sliding[l] { c.window } else { 0 }, values: true });
         let mut ops = vec![
             Op::MuseRms { x: Slot::X, w: w_in, y: Slot::H, eps: c.eps },
             Op::Linear { w: m0, x: Slot::H, y: Slot::Mix, name: "attention: q, k, v and gate product" },
@@ -361,7 +361,7 @@ pub fn describe(c: &ConfigMuse, st: &Stage) -> Result<ModelDesc> {
         n_moe += 1;
         let ring = rings.len();
         let window = if c.sliding[l] { c.window } else { 0 };
-        rings.push(Ring { d: hd, nk, window });
+        rings.push(Ring { d: hd, nk, window, values: true });
         let mut ops = vec![
             Op::MuseRms { x: Slot::X, w: w_in, y: Slot::H, eps: c.eps },
             Op::Linear { w: m0, x: Slot::H, y: Slot::Mix, name: "attention: q, k, v and gate product" },

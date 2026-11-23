@@ -86,6 +86,7 @@ pub struct Kern {
     fused: Vec<Tile>,
     copy_row: crate::kt::copy_row,
     copy_rows: crate::kt::copy_rows,
+    parts_rows: crate::kt::parts_rows,
     rmsnorm: crate::kt::rmsnorm,
     rmsnorm_add: crate::kt::rmsnorm_add,
     qk_norm_rope: crate::kt::qk_norm_rope,
@@ -158,6 +159,7 @@ impl Kern {
             attn_bn,
             copy_row: dev.typed()?,
             copy_rows: dev.typed()?,
+            parts_rows: dev.typed()?,
             rmsnorm: dev.typed()?,
             rmsnorm_add: dev.typed()?,
             qk_norm_rope: dev.typed()?,
@@ -289,6 +291,15 @@ impl Kern {
         };
         let tiles = (m as u32).div_ceil(t.bm) * (n as u32 / t.bn);
         launch!(t.k, [tiles, 1, 1], [t.threads, 1, 1], smem t.smem, s; x, w, y, m, n, k)
+    }
+
+    /// dst [n, w] (rows ds apart) = n rows of w values of src (rows ss apart): a prompt's part of a fused product's rows copied out (`Op::Parts`).
+    ///
+    /// # Safety
+    /// Live device buffers of those sizes, on stream `s`.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn parts_rows(&self, s: Stream, src: u64, ss: usize, dst: u64, ds: usize, w: usize, n: usize) -> Result<()> {
+        launch!(self.parts_rows, [((n * w) as u32).div_ceil(256), 1, 1], [256, 1, 1], s; src, ss as i64, dst, ds as i64, w as i32, n as i32)
     }
 
     /// For each of the `n` pairs (dst row, src row) at `pairs` (int32 x 2): row `dst` of dst [., k] = row `src` of src [., k]. k a multiple of 8.

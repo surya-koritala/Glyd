@@ -97,7 +97,7 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
         });
         let (dh, nk, has_v) = (a.head_dim, a.kv_heads, !a.k_eq_v);
         let ring = rings.len();
-        rings.push(Ring { d: dh, nk, window: a.window.unwrap_or(0) });
+        rings.push(Ring { d: dh, nk, window: a.window.unwrap_or(0), values: true });
         let mut qkv = vec![one(ar, "q")?, one(ar, "k")?];
         if has_v {
             qkv.push(one(ar, "v")?);
@@ -263,7 +263,7 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
             }
             Kind::Full => {
                 let ring = rings.len();
-                rings.push(Ring { d: 256, nk, window: 0 });
+                rings.push(Ring { d: 256, nk, window: 0, values: true });
                 let a = AttnOp::of(att, Slot::Mix, ring, Some(0), Some((s0 + 2, s0 + 3)))?;
                 if a.stride != full_w {
                     return err(format!("Qwen3.5: an attention product of {full_w} where its attention reads {}", a.stride));
@@ -400,7 +400,7 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
             }
             NhKind::Attention => {
                 let ring = rings.len();
-                rings.push(Ring { d: hd, nk, window: 0 });
+                rings.push(Ring { d: hd, nk, window: 0, values: true });
                 let a = att.ok_or_else(|| Error("Nemotron-H: an attention layer of no kind".into()))?;
                 let a = AttnOp::of(a, Slot::Mix, ring, None, None)?;
                 if a.stride != qkv_w {
@@ -507,7 +507,7 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
         let block = n_moe;
         n_moe += 1;
         let ring = rings.len();
-        rings.push(Ring { d: hd, nk, window: a.window.unwrap_or(0) });
+        rings.push(Ring { d: hd, nk, window: a.window.unwrap_or(0), values: true });
         let attn = AttnOp::of(a, Slot::Mix, ring, Some(0), None)?;
         if attn.stride != row {
             return err(format!("Muse Spark: an attention product of {row} where its attention reads {}", attn.stride));
@@ -610,11 +610,11 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
         None => (0, 0, 0.0),
     };
     let (mut inter, mut limit) = (0, 0.0);
-    let (mut n_small, mut n_mats, mut n_mla, mut n_moe, mut states, mut ops_all) = (0, 0, 0, 0, Vec::new(), Vec::new());
+    let (mut n_small, mut n_mats, mut n_moe, mut states, mut ops_all, mut rings) = (0, 0, 0, Vec::new(), Vec::new(), Vec::new());
     for l in 0..layers {
-        let kind = match &m.blocks[2 * l].body {
-            Body::Mixer(Mixer::Linear(_)) => GlmKind::Kda,
-            Body::Mixer(Mixer::Mla(_)) => GlmKind::Mla,
+        let (kind, mla) = match &m.blocks[2 * l].body {
+            Body::Mixer(Mixer::Linear(_)) => (GlmKind::Kda, None),
+            Body::Mixer(Mixer::Mla(x)) => (GlmKind::Mla, Some(x)),
             b => return err(format!("GLM-5.3-Flash: layer {l}'s mixer is {b:?}")),
         };
         let moe = match &m.blocks[2 * l + 1].body {
@@ -647,9 +647,12 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
             states.push(3 * 3 * qd * 2);
             states.push(heads * GM_D * GM_D * 4);
             ops.extend(kda_ops(m0, s0, conv, ssm, qd, heads, bound));
-        } else {
-            ops.push(Op::Mla { block: n_mla });
-            n_mla += 1;
+        } else if let Some(x) = mla {
+            // (q's and the key-value latent's products apart; the q latent's norm summed as GLM-5.3's engine sums it; the indexer's picks given as their tokens and the open pool's)
+            let op = super::mla::MlaOp::of(x, super::mla::MlaIn::Apart { q_a: m0, kv_a: m0 + 2 }, m0 + 1, m0 + 3, n_small, rings.len(), false, true)?;
+            n_small += op.small_count();
+            rings.extend(op.rings());
+            ops.push(Op::Mla(op));
         }
         let h = n_small;
         n_small += 3;
@@ -669,7 +672,7 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
     let e = n_mats;
     let lm = if st.last && d.head.is_some() { e + 1 } else { e };
     let eps = m.blocks.first().map_or(1e-5, |b| b.norm_in.eps);
-    Ok(glm_desc(m.hidden, qd, heads, inter, m.vocab, eps, max_pos, eos, hc, ops_all, states, e, lm))
+    Ok(glm_desc(m.hidden, qd, heads, inter, m.vocab, eps, max_pos, eos, hc, ops_all, (states, rings), e, lm))
 }
 
 /// Kimi-K3: Kimi delta attention (its forget gate bounded) or gated NoPE latent attention (its block's), a dense MLP in the first layers and latent experts with
@@ -690,7 +693,7 @@ pub fn kimi(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, w32
         x => err(format!("Kimi-K3: block {b}'s {r} is {x:?}")),
     };
     let (mut qd, mut nh, mut kd, mut bound) = (0, 0, 0, 0.0);
-    let (mut inter, mut situ, mut moe_rows) = (0, (0.0, 0.0), 0);
+    let (mut inter, mut situ, mut moe_rows, mut mla) = (0, (0.0, 0.0), 0, None);
     let (mut ls, mut starts) = (Vec::with_capacity(layers), Vec::with_capacity(layers));
     for l in 0..layers {
         let (mx, ff) = (&m.blocks[2 * l], &m.blocks[2 * l + 1]);
@@ -710,7 +713,11 @@ pub fn kimi(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, w32
                 }
                 true
             }
-            Body::Mixer(Mixer::Mla(_)) => false,
+            Body::Mixer(Mixer::Mla(x)) => {
+                // (q_a, the gate and kv_a one product; the q latent's norm summed as Kimi-K3's engine sums it)
+                mla = Some(super::mla::MlaOp::of(x, super::mla::MlaIn::Fused { w: 0 }, 0, 0, 0, 0, true, false)?);
+                false
+            }
             b => return err(format!("Kimi-K3: layer {l}'s mixer is {b:?}")),
         };
         let moe = match &ff.body {
@@ -731,7 +738,7 @@ pub fn kimi(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, w32
         ls.push(KimiLayer { kda, moe, w32: w32.get(l).copied().unwrap_or_default() });
     }
     let eps = m.blocks.first().map_or(1e-6, |b| b.norm_in.eps);
-    Ok(kimi_desc(&KimiDims { h: m.hidden, qd, nh, kd, bound, inter, situ, eps, moe_rows }, &ls, &starts, st, early, m.vocab, max_pos, eos))
+    Ok(kimi_desc(&KimiDims { h: m.hidden, qd, nh, kd, bound, inter, situ, eps, moe_rows, mla }, &ls, &starts, st, early, m.vocab, max_pos, eos))
 }
 
 /// DeepSeek-V4: the compressed attention (the window, and on a compressing layer its compressor's entries; on a ratio-4 layer the overlapping windows and the indexer's
@@ -961,7 +968,9 @@ mod tests {
             let text = if f == "all experts" { all_experts.clone() } else { fixture(f) };
             let c = crate::glm::ConfigGlm::parse(&text, f, None).unwrap_or_else(|e| panic!("{f}: {}", e.msg));
             for l in 0..c.layers {
-                assert_eq!(crate::model_glm::layer_matrices(&c, l).len(), super::super::glm::per_layer(c.kinds[l], c.moe[l]), "{f}: layer {l}");
+                // (a latent attention layer's four more: the kind's operation's, mla_glm.rs's `MlaWeights`)
+                let latent = if c.kinds[l] == crate::glm::GlmKind::Mla { 4 } else { 0 };
+                assert_eq!(crate::model_glm::layer_matrices(&c, l).len() + latent, super::super::glm::per_layer(c.kinds[l], c.moe[l]), "{f}: layer {l}");
             }
             let kinds = crate::runtime::describe::describe(&serde_json::from_str(&text).unwrap()).unwrap();
             let half = c.layers / 2;

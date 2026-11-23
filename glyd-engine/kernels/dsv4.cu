@@ -12,8 +12,6 @@
 #define V4_AQ 8       // warps a head's output takes in v4_attn_out (64 channels each, 2 a lane)
 #define V4_SG 16      // heads a block of the attention's scores takes
 #define V4_KC 32      // keys a block of the attention's scores takes
-#define V4_EC 8       // entries a block of the indexer's scores takes (a warp each)
-#define V4_IH 64      // the indexer's heads at most (v4_idx_score's sums)
 
 // kernel.py's power-of-two scale: 2^ceil(log2(amax x inv)), from the f32's bits.
 __device__ __forceinline__ float v4_pow2(float amax, float inv) {
@@ -450,121 +448,7 @@ extern "C" __global__ void __launch_bounds__(128) v4_idx_q(bf16* q, const float*
     qr[c] = f2b(sim ? o[0] : r);
 }
 
-// The indexer's scores: for row t and each entry e of its cache [entries, 128] it may read (e < (pos + 1) / ratio), sum over heads h of bf16(relu(bf16(q_h . k_e)) w_h), each product and the sum rounded to
-// bf16 as the release's bf16 tensors are, with w_h = bf16(wp_h x wscale) (wp [n, IH], the weights' product, bf16); scores [n, emax] fp32 (-inf past the entries). Block (row, V4_EC entries), 8 warps: a warp an
-// entry, a lane 4 of its channels, the queries in shared memory; at most V4_IH heads.
-extern "C" __global__ void __launch_bounds__(256) v4_idx_score(const bf16* q, const bf16* wp, float wscale, const bf16* cache, const int* pos, float* scores, int IH, int ratio, int emax) {
-    const int t = blockIdx.x, w = threadIdx.x >> 5, lane = threadIdx.x & 31;
-    extern __shared__ float qs[];  // [IH][128] then [IH] weights, then the warps' terms [8][V4_IH]
-    const int ne = (pos[t] + 1) / ratio;
-    for (int i = threadIdx.x; i < IH * V4_IDX; i += 256) qs[i] = b2f(q[(size_t)t * IH * V4_IDX + i]);
-    for (int i = threadIdx.x; i < IH; i += 256) qs[IH * V4_IDX + i] = b2f(f2b(b2f(wp[(size_t)t * IH + i]) * wscale));
-    __syncthreads();
-    const int e = blockIdx.y * V4_EC + w;
-    if (e >= emax) return;
-    if (e >= ne) {
-        if (lane == 0) scores[(size_t)t * emax + e] = -INFINITY;
-        return;
-    }
-    const uint2 kv = *reinterpret_cast<const uint2*>(cache + (size_t)e * V4_IDX + lane * 4);
-    const float2 k0 = bf2(kv.x), k1 = bf2(kv.y);
-    // (every head's dot product a lane's 4 channels at once, then summed across the lanes as warp_sum's butterfly pairs them, each lane keeping half of its heads a stage: lane l ends with
-    // heads 2l and 2l + 1, the same additions in the same order, in 62 shuffles where a warp_sum a head took 320, one after another)
-    float v[V4_IH];
-#pragma unroll
-    for (int h = 0; h < V4_IH; h++) {
-        const float* qh = qs + h * V4_IDX + lane * 4;
-        v[h] = h < IH ? qh[0] * k0.x + qh[1] * k0.y + qh[2] * k1.x + qh[3] * k1.y : 0.f;
-    }
-#pragma unroll
-    for (int m = V4_IH, o = 16; m > 2; m >>= 1, o >>= 1) {
-        const bool hi = lane & o;
-#pragma unroll
-        for (int i = 0; i < m / 2; i++) {
-            const float give = hi ? v[i] : v[i + m / 2];
-            const float keep = hi ? v[i + m / 2] : v[i];
-            v[i] = keep + __shfl_xor_sync(0xffffffffu, give, o);
-        }
-    }
-    // (the heads' terms, then their sum in the heads' order, as one thread took them)
-    float* term = qs + IH * V4_IDX + IH + w * V4_IH;
-#pragma unroll
-    for (int u = 0; u < 2; u++) {
-        const int h = 2 * lane + u;
-        if (h < IH) term[h] = b2f(f2b(fmaxf(b2f(f2b(v[u])), 0.f) * qs[IH * V4_IDX + h]));
-    }
-    __syncwarp();
-    if (lane == 0) {
-        float sum = 0.f;
-        for (int h = 0; h < IH; h++) sum += term[h];
-        scores[(size_t)t * emax + e] = b2f(f2b(sum));
-    }
-}
-
-// The order-keeping unsigned key of a float (larger float, larger key).
-__device__ __forceinline__ uint32_t v4_key(float f) {
-    const uint32_t b = __float_as_uint(f);
-    return (b & 0x80000000u) ? ~b : b | 0x80000000u;
-}
-
-// The entries row t's query reads: the k of largest score of its ne = (pos + 1) / ratio (all where ne <= k), equal scores the earlier entry first, into sel [n, k] in the entries' order, their count into cnt
-// [n]. The k-th largest key found bit by bit (32 counts over the row), then the larger ones and the equal ones up to k taken in order by a scan. Block a row, 1,024 threads.
-extern "C" __global__ void __launch_bounds__(1024) v4_topk(const float* scores, int emax, const int* pos, int ratio, int k, int* sel, int* cnt) {
-    const int t = blockIdx.x, tid = threadIdx.x, ne = min((pos[t] + 1) / ratio, emax);
-    const float* sr = scores + (size_t)t * emax;
-    int* out = sel + (size_t)t * k;
-    __shared__ int warp_n[32];
-    __shared__ int base;
-    if (ne <= k) {
-        for (int e = tid; e < ne; e += 1024) out[e] = e;
-        if (tid == 0) cnt[t] = ne;
-        return;
-    }
-    // the k-th largest key: the largest T with at least k keys >= T
-    uint32_t T = 0;
-    for (int b = 31; b >= 0; b--) {
-        const uint32_t try_ = T | (1u << b);
-        int c = 0;
-        for (int e = tid; e < ne; e += 1024) c += v4_key(sr[e]) >= try_;
-        if ((int)block_sum((float)c) >= k) T = try_;
-    }
-    int gt_n = 0;
-    for (int e = tid; e < ne; e += 1024) gt_n += v4_key(sr[e]) > T;
-    const int above = (int)block_sum((float)gt_n);
-    int ties = k - above;  // the equal keys taken, the earliest first
-    if (tid == 0) base = 0;
-    __syncthreads();
-    for (int e0 = 0; e0 < ne; e0 += 1024) {
-        const int e = e0 + tid;
-        const uint32_t key = e < ne ? v4_key(sr[e]) : 0u;
-        const bool gt = e < ne && key > T, eq = e < ne && key == T;
-        // ranks of this chunk's equal keys, then of its taken ones (a scan over the block by warps)
-        const unsigned eqm = __ballot_sync(0xffffffffu, eq);
-        if ((tid & 31) == 0) warp_n[tid >> 5] = __popc(eqm);
-        __syncthreads();
-        int eq_before = 0;
-        for (int i = 0; i < (tid >> 5); i++) eq_before += warp_n[i];
-        eq_before += __popc(eqm & ((1u << (tid & 31)) - 1));
-        int eq_all = 0;
-        for (int i = 0; i < 32; i++) eq_all += warp_n[i];
-        __syncthreads();
-        const bool take = gt || (eq && eq_before < ties);
-        const unsigned tm = __ballot_sync(0xffffffffu, take);
-        if ((tid & 31) == 0) warp_n[tid >> 5] = __popc(tm);
-        __syncthreads();
-        int before = base;
-        for (int i = 0; i < (tid >> 5); i++) before += warp_n[i];
-        before += __popc(tm & ((1u << (tid & 31)) - 1));
-        if (take) out[before] = e;
-        int all = 0;
-        for (int i = 0; i < 32; i++) all += warp_n[i];
-        __syncthreads();
-        if (tid == 0) base += all;
-        ties -= min(ties, eq_all);
-        __syncthreads();
-    }
-    if (tid == 0) cnt[t] = k;
-}
+// (the indexer's scores and its pick of the entries: kernels/mla.cu's `idx_score_bf16` and `idx_pick`, every indexer's)
 
 // ---- the attention ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 // The keys row t reads, in order: the window's (positions max(0, p - window + 1) to p, from the ring [cap, 512]), then the cache's entries: the indexer's picks (sel [n, k] and cnt [n]: ratio 4), or every entry
