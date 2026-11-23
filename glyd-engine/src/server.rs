@@ -9,9 +9,9 @@ use crate::conn::Conn;
 use crate::constrain::Spec;
 use crate::conv::{Gen, Outcome, Request, Talk};
 use crate::ffi::{err, Error, Result};
-use crate::model::{Engine, Finish, Reply, MAX_ROWS};
 use crate::sampler::{fresh_seed, Lp, Params};
 use crate::sched::{Ev, ModelStep, Sched, Submit};
+use crate::sched::{Finish, Reply, MAX_ROWS};
 use crate::tok::Tok;
 use crate::tools::{self, Format, ToolChoice, ToolEv, Tools};
 use crate::wire;
@@ -2478,12 +2478,6 @@ impl Gen for Remote {
     }
 }
 
-/// The engine's thread: the scheduler's rounds (a step for every sequence that runs, a chunk of a prompt), and between them the jobs that come, until `Job::Stop`. A completions request and the terminal's chat
-/// each run on a thread of their own (their text, their connection) and ask the scheduler for a sequence through `tx`; the engine's thread never waits on a connection.
-pub fn work(e: &mut Engine, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &Sender<Job>, users: usize) {
-    work_with(&mut Sched::new(e, users), shared, rx, tx);
-}
-
 /// A request's thread or the terminal's reply, started for `job` (the engine's thread never waits on a connection); any other job is not one.
 /// A request's handler on a thread of its own, for as long as the request is answered (it waits for the engine's events). Where the system will not give another thread, the client is told so
 /// (503, `Retry-After`) and the engine's own thread goes on: a refused spawn must not take the server down with it.
@@ -2569,7 +2563,8 @@ pub fn work_gen(e: &mut dyn Gen, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &S
     }
 }
 
-/// `work` on any scheduler (the tests run it on a scheduler of a made-up model).
+/// The engine's thread: the scheduler's rounds (a step for every sequence that runs, a chunk of a prompt), and between them the jobs that come, until `Job::Stop`. A completions request and the terminal's chat
+/// each run on a thread of their own (their text, their connection) and ask the scheduler for a sequence through `tx`; the engine's thread never waits on a connection.
 pub fn work_with<B: ModelStep>(sched: &mut Sched<B>, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &Sender<Job>) {
     // (the scheduler's figures and its sequences' counts go where the server's own do: the model's runtime context)
     let rt = shared.rt.clone();

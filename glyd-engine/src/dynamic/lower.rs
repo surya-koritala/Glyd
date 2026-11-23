@@ -181,6 +181,173 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
     })
 }
 
+/// The pre-norm dense decoder (the description builder's `llama` reading: Llama, Mistral, Qwen2, Qwen3): pairs of blocks, an attention of the kind's parameters
+/// (its q and k norms where the kind has them, a window where it slides) and the gated SiLU MLP, each `x + block(rmsnorm(x) w)`; the final norm on the last rows,
+/// the head the embedding's matrix where tied. Each matrix of a layer is its checkpoint tensors stacked (q, k and v; gate and up), sized by the shapes the
+/// description gives. The products are the library's at every row count, a long chunk's decoded and multiplied dense where its route says so: the products,
+/// norms, activation, embedding and head of the dense Qwen3 engine this replaces, kernel for kernel. A kind this lowering does not take (a bias, a rope with
+/// scaling, a norm or activation of another kind) is refused, named.
+pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> {
+    use crate::runtime::kinds::{Act, Collapse, NormKind, NormWeight, Residual, RopeScaling};
+    let m = &d.desc;
+    let what = super::dense::FAMILY;
+    if m.blocks.len() % 2 != 0 || m.blocks.is_empty() {
+        return err(format!("{what}: {} blocks, where each layer is an attention block and an MLP block", m.blocks.len()));
+    }
+    let eps = m.blocks[0].norm_in.eps;
+    let plain = |n: &crate::runtime::kinds::Norm, at: &str| -> Result<()> {
+        if n.kind != NormKind::Rms || n.weight != NormWeight::Plain || n.eps != eps {
+            return err(format!("{what}: {at}'s norm is {n:?}, where the executor's takes an RMS norm times its weight, eps {eps}"));
+        }
+        Ok(())
+    };
+    plain(&m.final_norm, "the final norm")?;
+    if m.embed.scale != 1.0 || m.embed.norm.is_some() || m.embed.streams != 1 {
+        return err(format!("{what}: an embedding of {:?}, where the executor's reads the rows as they are", m.embed));
+    }
+    if m.head.softcap.is_some() || m.head.scale != 1.0 || m.head.collapse != Collapse::None {
+        return err(format!("{what}: a head of {:?}, where the executor's is the product alone", m.head));
+    }
+    let one = |roles: &[(String, Source)], r: &str| -> Result<String> {
+        match role(roles, r) {
+            Some(Source::Tensor(n)) => Ok(n.clone()),
+            other => err(format!("{what}: the role {r} is {other:?}, where one tensor is")),
+        }
+    };
+    let shape = |n: &str| d.shapes.get(n).cloned();
+    let layers = m.blocks.len() / 2;
+    let (mut mats, mut small, mut rings, mut ropes, mut ops) = (Vec::new(), Vec::<String>::new(), Vec::new(), Vec::<Rope>::new(), Vec::with_capacity(layers));
+    let name = |small: &mut Vec<String>, n: String| -> usize {
+        small.push(n);
+        small.len() - 1
+    };
+    let (mut proj_w, mut q_w, mut inter_w, mut first) = (0, 0, 0, None);
+    for l in 0..layers {
+        let (ab, fb) = (&m.blocks[2 * l], &m.blocks[2 * l + 1]);
+        let (ar, fr) = (&d.blocks[2 * l], &d.blocks[2 * l + 1]);
+        let a = match &ab.body {
+            Body::Mixer(Mixer::Attention(a)) => a,
+            b => return err(format!("{what}: layer {l}'s first block is {b:?}, not attention")),
+        };
+        match &fb.body {
+            Body::Ffn(Ffn::Mlp(mlp)) if mlp.act == Act::Silu && mlp.gated && !mlp.bias && mlp.clamp.is_none() => {}
+            b => return err(format!("{what}: layer {l}'s second block is {b:?}, where the executor's is the gated SiLU MLP")),
+        }
+        for b in [ab, fb] {
+            plain(&b.norm_in, &format!("layer {l}"))?;
+            if b.norm_out.is_some() || b.residual != Residual::Add {
+                return err(format!("{what}: layer {l}'s block has a norm after it or a residual of {:?}, where the executor's adds its output", b.residual));
+            }
+        }
+        if a.q_norm.is_some_and(|n| n.eps != eps) {
+            return err(format!("{what}: layer {l}'s q and k norms have eps {:?}, where the model's is {eps}", a.q_norm.map(|n| n.eps)));
+        }
+        let table = match &a.rope {
+            None => None,
+            Some(r) if r.scaling != RopeScaling::None || r.mrope.is_some() || r.freq_dim != r.dim => {
+                return err(format!("{what}: layer {l}'s rope is {r:?}, where the executor's tables are the plain rotary's"));
+            }
+            Some(r) => {
+                let t = Rope { theta: r.theta, dim: r.dim, pairs: r.freqs };
+                Some(match ropes.iter().position(|x| (x.theta, x.dim, x.pairs) == (t.theta, t.dim, t.pairs)) {
+                    Some(i) => i,
+                    None => {
+                        ropes.push(t);
+                        ropes.len() - 1
+                    }
+                })
+            }
+        };
+        let (norm_in, post) = (name(&mut small, one(ar, "norm_in")?), name(&mut small, one(fr, "norm_in")?));
+        let qk = match a.q_norm {
+            Some(_) => Some((name(&mut small, one(ar, "q_norm")?), name(&mut small, one(ar, "k_norm")?))),
+            None => None,
+        };
+        let ring = rings.len();
+        rings.push(Ring { d: a.head_dim, nk: a.kv_heads, window: a.window.unwrap_or(0) });
+        let attn = AttnOp::of(a, Slot::Proj, ring, table, qk)?;
+        let w = mats.len();
+        let qkv = item(vec![one(ar, "q")?, one(ar, "k")?, one(ar, "v")?], &shape)?;
+        let stride = qkv.rows;
+        if stride != attn.stride {
+            return err(format!("{what}: layer {l}'s q, k and v product is {stride} wide, where its attention reads {}", attn.stride));
+        }
+        mats.push(qkv);
+        mats.push(item(vec![one(ar, "o")?], &shape)?);
+        let gate_up = item(vec![one(fr, "gate")?, one(fr, "up")?], &shape)?;
+        let inter = gate_up.rows / 2;
+        mats.push(gate_up);
+        mats.push(item(vec![one(fr, "down")?], &shape)?);
+        let mut layer = Vec::with_capacity(8);
+        match l {
+            0 => first = Some(Op::RmsNorm { x: Slot::X, w: norm_in, y: Slot::H, weight: NormW::Plain, eps }),
+            _ => layer.push(Op::NormAdd { y: Slot::D, w: norm_in, plus1: false }),
+        }
+        layer.extend([
+            Op::Linear { w, x: Slot::H, y: Slot::Proj, name: "attention: qkv product" },
+            Op::Attn(attn),
+            Op::Linear { w: w + 1, x: Slot::Att, y: Slot::O, name: "attention: o product" },
+            Op::NormAdd { y: Slot::O, w: post, plus1: false },
+            Op::GateUpSilu { w: w + 2, inter },
+            Op::Linear { w: w + 3, x: Slot::M, y: Slot::D, name: "MLP: down product" },
+        ]);
+        ops.push(layer);
+        (proj_w, q_w, inter_w) = (proj_w.max(stride), q_w.max(a.heads * a.head_dim), inter_w.max(inter));
+    }
+    let final_norm = name(&mut small, d.final_norm.clone());
+    let embed = mats.len();
+    mats.push(item(vec![d.embed.clone()], &shape)?);
+    let lm = match (&d.head, m.head.tied) {
+        (None, true) => embed,
+        (Some(h), false) => {
+            mats.push(item(vec![h.clone()], &shape)?);
+            embed + 1
+        }
+        (h, tied) => return err(format!("{what}: a head of {h:?} where tied is {tied}")),
+    };
+    let mut widths = [0usize; SLOTS];
+    for (s, w) in [
+        (Slot::X, m.hidden),
+        (Slot::H, m.hidden),
+        (Slot::Proj, proj_w),
+        (Slot::Qo, q_w),
+        (Slot::Att, q_w),
+        (Slot::O, m.hidden),
+        (Slot::Gu, 2 * inter_w),
+        (Slot::M, inter_w),
+        (Slot::D, m.hidden),
+        (Slot::Hlast, m.hidden),
+    ] {
+        widths[s as usize] = w;
+    }
+    Ok(ModelDesc {
+        family: what,
+        hidden: m.hidden,
+        vocab: m.vocab,
+        eps,
+        max_pos,
+        widths,
+        mats,
+        small,
+        ropes,
+        rings,
+        first: first.ok_or_else(|| Error(format!("{what}: no layers")))?,
+        layers: ops,
+        states: Vec::new(),
+        final_norm: Some((final_norm, Slot::D, false)),
+        decoded: true,
+        skinny: false,
+        embed,
+        lm,
+        softcap: 0.0,
+        eos,
+        post: None,
+        v4: None,
+        hc: (0.0, 0),
+        logit_mult: 0.0,
+    })
+}
+
 /// Qwen3.5's layout (dense: Qwen3.5, 3.6 and 3.8 of 256-wide heads): pairs of blocks, a Gated DeltaNet or a gated full attention, then the SiLU MLP, the (1 + w)
 /// norms, the final norm on the last row. The matrices and small tensors are src/kern35.rs's loader's (`dynamic::qwen35::describe` indexes them in its order);
 /// stage `st` of a model split across GPUs.
@@ -1194,6 +1361,125 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A Llama-style config (model_type, the attention's settings) of `layers` layers of hidden 256, 4 query heads over 2 of 64, an MLP of 512, a vocabulary of 1,024:
+    /// test shapes, no release's.
+    fn llama_style(model_type: &str, extra: serde_json::Value) -> serde_json::Value {
+        let mut c = serde_json::json!({"architectures": ["X"], "model_type": model_type, "hidden_size": 256, "intermediate_size": 512, "num_hidden_layers": 3,
+            "num_attention_heads": 4, "num_key_value_heads": 2, "head_dim": 64, "vocab_size": 1024, "rms_norm_eps": 1e-5, "rope_theta": 10000.0,
+            "max_position_embeddings": 4096, "hidden_act": "silu", "tie_word_embeddings": false});
+        c.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        c
+    }
+
+    /// Each Llama-style config of the fixtures (the random Qwen3 the logits checks run, a Mistral-layout one with a window, Qwen3's with its q and k norms
+    /// and a tied head) lowers to the operations the dense Qwen3 engine ran (src/model.rs, removed): the input norm (then its add of the residual), the q, k
+    /// and v product, the attention kind, o, the norm with the residual, gate and up with SiLU, down, the final norm on the last rows; its matrices the
+    /// checkpoint's tensors stacked in that engine's order and sized by the description's shapes, which are the checkpoint's; its widths, heads, rotary and
+    /// norms the config's as that engine read it (`weights::Config`, for Qwen3). Llama 3's scaled rope and Qwen2's biases are refused, named.
+    #[test]
+    fn dense_lowered_from_each_llama_style_config() {
+        use super::super::attn::{QkNorm, RopeAt};
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/qwen3_tiny_manifest.json")).unwrap()).unwrap();
+        let tiny_text = manifest["config"].as_str().unwrap().to_string();
+        let tiny_shapes: std::collections::HashMap<String, Vec<usize>> = manifest["tensors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| (t[0].as_str().unwrap().to_string(), t[2].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect()))
+            .collect();
+        let cases = [
+            ("the random Qwen3 of the logits checks", serde_json::from_str(&tiny_text).unwrap()),
+            ("a Mistral layout, a window on every layer", llama_style("mistral", serde_json::json!({"sliding_window": 128}))),
+            ("a Qwen3 layout, a tied head", llama_style("qwen3", serde_json::json!({"tie_word_embeddings": true, "rms_norm_eps": 1e-6}))),
+            ("a Llama layout", llama_style("llama", serde_json::json!({}))),
+        ];
+        for (what, cfg) in cases {
+            let kinds = crate::runtime::describe::describe(&cfg).unwrap_or_else(|e| panic!("{what}: {}", e.msg));
+            assert_eq!(kinds.shapes.keys().cloned().collect::<std::collections::BTreeSet<_>>(), kinds.names(), "{what}: a shape for every tensor");
+            let d = dense(&kinds, vec![2], 4096).unwrap_or_else(|e| panic!("{what}: {}", e.msg));
+            let n = |k: &str| cfg[k].as_u64().unwrap() as usize;
+            let (hid, heads, kv, hd, inter, layers) =
+                (n("hidden_size"), n("num_attention_heads"), n("num_key_value_heads"), n("head_dim"), n("intermediate_size"), n("num_hidden_layers"));
+            let (qk, tied, window) = (cfg["model_type"] == "qwen3", cfg["tie_word_embeddings"] == true, cfg["sliding_window"].as_u64().unwrap_or(0) as usize);
+            let eps = cfg["rms_norm_eps"].as_f64().unwrap() as f32;
+            assert_eq!((d.family, d.hidden, d.vocab, d.eps, d.layers.len()), (super::super::dense::FAMILY, hid, n("vocab_size"), eps, layers), "{what}");
+            let theta = cfg["rope_theta"].as_f64().unwrap();
+            assert_eq!(format!("{:?}", d.ropes), format!("{:?}", [Rope { theta, dim: hd, pairs: hd / 2 }]), "{what}");
+            // (the small tensors: each layer's two norms, its q and k norms where it has them; then the final norm)
+            let per = if qk { 4 } else { 2 };
+            assert_eq!(d.small.len(), per * layers + 1, "{what}");
+            assert_eq!(d.small.last().unwrap(), "model.norm.weight");
+            assert!(matches!(d.first, Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, weight: NormW::Plain, .. }), "{what}: {:?}", d.first);
+            for (l, ops) in d.layers.iter().enumerate() {
+                let (p, s0, w) = (format!("model.layers.{l}."), per * l, 4 * l);
+                assert_eq!(d.small[s0], format!("{p}input_layernorm.weight"));
+                assert_eq!(d.small[s0 + 1], format!("{p}post_attention_layernorm.weight"));
+                let ops: Vec<&Op> = ops.iter().collect();
+                let ops = if l > 0 {
+                    assert!(matches!(ops[0], Op::NormAdd { y: Slot::D, w, plus1: false } if *w == s0), "{what}: layer {l}: {:?}", ops[0]);
+                    &ops[1..]
+                } else {
+                    &ops[..]
+                };
+                assert_eq!(ops.len(), 6, "{what}: layer {l}");
+                assert!(matches!(ops[0], Op::Linear { w: x, x: Slot::H, y: Slot::Proj, .. } if *x == w));
+                assert!(matches!(ops[2], Op::Linear { w: x, x: Slot::Att, y: Slot::O, .. } if *x == w + 1));
+                assert!(matches!(ops[3], Op::NormAdd { y: Slot::O, w: x, plus1: false } if *x == s0 + 1));
+                assert!(matches!(ops[4], Op::GateUpSilu { w: x, inter: i } if *x == w + 2 && *i == inter));
+                assert!(matches!(ops[5], Op::Linear { w: x, x: Slot::M, y: Slot::D, .. } if *x == w + 3));
+                let Op::Attn(a) = ops[1] else { panic!("{what}: layer {l}: {:?}", ops[1]) };
+                let norm = if qk { QkNorm::Weight { q: s0 + 2, k: s0 + 3 } } else { QkNorm::None };
+                assert_eq!(
+                    (a.d, a.nq, a.nk, a.stride, a.q_step, a.k_off, a.v_off, a.norm, a.ring, a.window, a.writes),
+                    (hd, heads, kv, (heads + 2 * kv) * hd, hd, heads * hd, Some((heads + kv) * hd), norm, l, window, true),
+                    "{what}: layer {l}"
+                );
+                assert_eq!(
+                    (a.rope, a.scale, a.q_scale, a.softcap, a.gate, a.round, a.sbf16),
+                    (Some(RopeAt { table: 0, span: hd, pairs: hd / 2 }), (hd as f32).powf(-0.5), 1.0, 0.0, None, false, false)
+                );
+                assert_eq!((d.rings[l].d, d.rings[l].nk, d.rings[l].window), (hd, kv, window));
+                let at = format!("{p}self_attn.");
+                assert_eq!(d.mats[w].members, [format!("{at}q_proj.weight"), format!("{at}k_proj.weight"), format!("{at}v_proj.weight")]);
+                assert_eq!((d.mats[w].rows, d.mats[w].cols), ((heads + 2 * kv) * hd, hid));
+                assert_eq!((d.mats[w + 1].rows, d.mats[w + 1].cols), (hid, heads * hd));
+                assert_eq!(d.mats[w + 2].members, [format!("{p}mlp.gate_proj.weight"), format!("{p}mlp.up_proj.weight")]);
+                assert_eq!((d.mats[w + 2].rows, d.mats[w + 2].cols, d.mats[w + 3].rows, d.mats[w + 3].cols), (2 * inter, hid, hid, inter));
+            }
+            assert_eq!((d.embed, d.lm), (4 * layers, if tied { 4 * layers } else { 4 * layers + 1 }), "{what}");
+            assert_eq!(d.mats.len(), d.lm + 1);
+            assert_eq!(d.final_norm, Some((d.small.len() - 1, Slot::D, false)));
+            assert!(d.decoded && !d.skinny && d.states.is_empty());
+            for (s, w) in [(Slot::Proj, (heads + 2 * kv) * hd), (Slot::Att, heads * hd), (Slot::Gu, 2 * inter), (Slot::M, inter), (Slot::Hlast, hid)] {
+                assert_eq!(d.width(s), w, "{what}: {s:?}");
+            }
+            if cfg["model_type"] == "qwen3" {
+                // (and the config as the dense Qwen3 engine read it)
+                let mut text = cfg.clone();
+                text["architectures"] = serde_json::json!(["Qwen3ForCausalLM"]);
+                let c = crate::weights::Config::parse(&text.to_string(), what, None).unwrap();
+                assert_eq!(
+                    (c.hidden, c.heads, c.kv_heads, c.head_dim, c.inter, c.layers, c.eps, c.rope_theta, c.tie),
+                    (hid, heads, kv, hd, inter, layers, eps, theta, tied)
+                );
+            }
+        }
+        // (the random Qwen3's shapes are its checkpoint's, every one)
+        let kinds = crate::runtime::describe::describe(&serde_json::from_str(&tiny_text).unwrap()).unwrap();
+        for (name, s) in &kinds.shapes {
+            assert_eq!(Some(s), tiny_shapes.get(name), "{name}");
+        }
+        assert_eq!(kinds.shapes.len(), tiny_shapes.len());
+        // (a kind the executor does not take: Llama 3's scaled rope, Qwen2's biases)
+        let llama3 = crate::runtime::reference::testing::Fixture::load("llama_model").j["config"].clone();
+        let e = dense(&crate::runtime::describe::describe(&llama3).unwrap(), vec![2], 4096).unwrap_err().msg;
+        assert!(e.contains("rope") && e.contains("Llama3"), "{e}");
+        let e = dense(&crate::runtime::describe::describe(&llama_style("qwen2", serde_json::json!({}))).unwrap(), vec![2], 4096).unwrap_err().msg;
+        assert!(e.contains("a bias"), "{e}");
     }
 
     /// The random Gemma 4 the logits checks run (src/logits.rs, a window of 32, a global layer that shares its keys and values) lowers to the executor's own

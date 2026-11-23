@@ -16,12 +16,12 @@
 //!   glyd-engine glmfmtcheck FIXTURE_DIR   the four formats of the pack (tern, cb2, cb3, cb4) against fixtures the pack writer made (tools/fmtfix.py)
 //!   glyd-engine cb2check PACK_DIR [--layer L] [--expert E]   one expert of a glyd-hbr-codes/2 pack (src/cpu_cb.rs) against the pack's testvec.safetensors
 //!   glyd-engine hbcheck [CASE...] [--speed] [--no-check]      the Hummingbird layer's kernels (src/moe_hb.rs, kernels/moe_hb.cu) against the CPU reference on random experts at 3 and 2 bits, all there and through places, and their speed (src/kcheck_hb.rs)
-//!   glyd-engine run MODEL [--prompt TEXT] [--no-think] [--context N] [--port N] [--host H] [--temp T] [--layout auto|mma|mma12]
-//!                                                             what `glyd run` starts: the model made ready on the first run (downloaded, packed for this GPU,
-//!                                                             its KV tables made), then a chat in the terminal and at one URL, or one answer with --prompt
+//!   glyd-engine run MODEL [--prompt TEXT] [--no-think] [--context N] [--port N] [--host H] [--temp T]
+//!                                                             what `glyd run` starts: the model made ready on the first run (downloaded, packed for this GPU
+//!                                                             at its level), then a chat in the terminal, or one answer with --prompt
 //!   glyd-engine serve MODEL [--port N] [--host H] [--context N]   the OpenAI-compatible API and the chat page
 //!   glyd-engine fetch MODEL                                      the model's files downloaded into the Hugging Face cache (no GPU)
-//!   glyd-engine prepare MODEL [--layout ...]                     downloaded and packed for this GPU, the KV tables left for the first run
+//!   glyd-engine prepare MODEL[:LEVEL]                          a Qwen3 model downloaded and packed for this GPU at its level
 //!   glyd-engine doctor | login | supports MODEL                  what this computer has for it; a Hugging Face token saved; whether the engine runs MODEL (exit 3: no)
 //!   glyd-engine generate DIR PROMPT [--new N] [--ctx N] [--no-graph] [--expert-cache GIB|auto|auto:GIB] [--host-memory GIB|auto] [--offload-mode MODE[,MODE...]] [--cpu-threads N] [--cpu-pin]   a raw completion (a Nemotron 3 Super directory `pack` made, or a bf16 one with
 //!                                                             --layout i6|i5|i4; --expert-cache: its experts in the computer's memory and a cache of them in GIB GiB of the GPU's, src/offload.rs); the prefill and the decode steps timed apart, with the cache's
@@ -30,19 +30,13 @@
 //!                                                             experts may take (a Hummingbird directory keeps the rest on the disk and reads them as the router asks, src/offload.rs `Tier`; the counts of reads from the disk, and the
 //!                                                             process's peak resident memory, are in the output)
 //!   glyd-engine check DIR PROMPTS.json OUT.json [--new N] [--ctx N] [--no-graph]
-//!   glyd-engine score DIR REF.json OUT.json [--ctx N]        teacher-forced top-1 and logprobs over REF's "score_ids"
-//!   glyd-engine microbench DIR [--prompt N[,N...]] [--new N] [--ctx N] [--chunk N] [--reps N] [--no-graph] [--profile] [--profile-prefill] [--attn-decode]
-//!   glyd-engine rowcheck DIR [--ctx N] [--tables T]          one sequence's logits in a step with 0 to 7 others, at every batch size
-//!   glyd-engine rowprofile DIR [--rows B] [--len N] [--steps N] [--ctx N] [--tables T]   a decode step of B sequences, launch by launch
+//!   glyd-engine microbench DIR [--prompt N[,N...]] [--new N] [--ctx N] [--chunk N] [--reps N] [--no-graph] [--layout L]
 //!   glyd-engine kvshapes                                     the lossless KV cache of head dims 128, 256 and 512 (no model): values written, read back bit for bit, and decode and prompt attention against the host's
 //!   glyd-engine kvprefill [--chunk 256] [--prefixes 0,1024,4096,8192] [--reps 20]   the prompt attention over 12-bit pages at gemma-4-12B's shapes against the pages unpacked to a bf16 ring and the bf16 kernel on it
-//!   glyd-engine kvtest DIR [--ctx N] [--tables T]            a known answer for the KV cache: bf16 values of every kind written through the engine's write path, read back, compared bit for bit
-//!   glyd-engine stress DIR [--users N] [--requests N] [--kind natural|random|mixed] [--seed S] [--text FILE] [--ctx N] [--pool TOKENS] [--ref FILE | --write-ref FILE]   requests at several users on a small cache, against the same requests alone
-//!   glyd-engine recompute DIR [--ctx N] [--tables T]         the keys and values of a sequence made by its steps against those made by running it again as a prompt
 //!   glyd-engine topkcheck                                     the sampling kernels' 64 largest logits of a row and sum of its exponentials against the host's
 //!   glyd-engine sampletime DIR PROMPT [--new N] [--ctx N]     a Qwen3.5 or Nemotron-H model's decode speed by greedy steps, by sampled ones from the GPU's candidates and from the row on the host (the same tokens)
 //!   glyd-engine logitscheck [CASE...] [--fixtures DIR] [--cpu-ref] [--level L] [--list-cases]   each model's engine logits against its fixture in tests/logits (src/logits.rs); logitsrecord CASE --from cpu|engine --out FILE: a fixture made; logitsbound FIXTURE LEVEL=BOUND...: its bounds set; logitsmodel CASE DIR: the case's random model made; usercheck CASE [--users 4] [--level L]: the case's random model (gemma4, qwen35) served by the scheduler, each reply alone and at once against the one-at-a-time reply; paritycheck [CASE...] [--level L]: the hand-written Qwen3.5, Gemma 4 and Nemotron-H engines against the description executor on their R7 fixtures' tokens (R3b); levelcheck [CASE...] [--level L]: each lossy level's KL from penguin on the Qwen3.5, Gemma 4 and Nemotron-H random models, against the per-level thresholds
-//!   glyd-engine packcheck [--gpu] [--record] [--engine [--scratch DIR]]   every pack format of tests/data/packs read and run on the CPU reference against its digest in tests/packs (--gpu: decoded by the GPU library; --record: the digests written); --engine: the formats the engine reads (glyd-v7 penguin, kestrel, swift, wren; glyd-v4/v3 with engine.safetensors) made from the logits cases' random models, loaded from the saved directory, against the case's fixtures (src/packcheck.rs)
+//!   glyd-engine packcheck [--gpu] [--record] [--engine [--scratch DIR]]   every pack format of tests/data/packs read and run on the CPU reference against its digest in tests/packs (--gpu: decoded by the GPU library; --record: the digests written); --engine: the formats the engine reads (glyd-v7 penguin, kestrel, swift, wren) made from the logits cases' random models, loaded from the saved directory, against the case's fixtures (src/packcheck.rs)
 //!   glyd-engine kcheck IN_DIR OUT_DIR                        the kernels on inputs tools/kcheck.py wrote
 //!   glyd-engine usercheck CASE [--users N] [--tokens T] [--dir DIR --prompt-tokens P]       a random model of the case (gemma4, qwen35, muse, kimi, glm, nemotron), or the model in DIR, on the description executor: each reply through the scheduler alone and all at once, against the reply alone; with GLYD_ENGINE_PAGES too few for all at once, at once again swapping sequences sent back for room always, by cost, and never (R4d), each run's first-token and between-token times
 //!   glyd-engine roundcheck CASE [--dir MODEL --ctx N --chunk N] [--kl BOUND]   a sequence's logits by what its step holds beside it (other sequences' rows, a prompt's chunk; 2 rows to a chunk's), against its row alone: the bits
@@ -53,10 +47,7 @@
 //!   glyd-engine bandwidth [--gib N]                           the GPU's streaming read bandwidth
 //!   glyd-engine rangecheck MODEL[:level] [--prompt 1024] [--new 256] [--cut L | --cuts A,B] [--ctx N] [--chunk N] [--workers [--sessions 2]]   a Qwen3.5 model whole, then as stages of layers chained in this process and (--workers) as worker processes
 //!                                                             through the glyd-range/1 protocol (src/dynamic/range.rs, docs/range-worker.md): every step's logits and token compared bit for bit; "all checks passed"
-//!   glyd-engine info DIR [--util F] [--ctx N]
-//!   glyd-engine kvcal MODEL OUT.safetensors [--positions N]   the KV cache's tables, calibrated on the engine itself
 //!   glyd-engine chat MODEL [--ctx N] [--temp T] [--no-think]  a chat in the terminal, also from a pipe (run's, with --chat)
-//!   glyd-engine calcheck                                      the calibration's kernels and the prompt attention against the host's reading
 //!   glyd-engine kcheck35                                      Qwen3.5's kernels against the CPU reference (src/kcheck35.rs)
 //!   glyd-engine attncheck                                     the attention kind's kernels against an fp64 CPU attention, each family's head and arithmetic (src/dynamic/attn.rs)
 //!   glyd-engine moecheck [CASE...] [--speed] [--no-check] [--dump DIR | --cpu-dump DIR]   the mixture-of-experts layer (src/moe.rs) against the CPU reference on random routers and Int5, Int6 and Int4 experts, and its speed (src/kcheck_moe.rs)
@@ -69,16 +60,14 @@
 //!                                                             memory and with no more than that many GiB of them (the rest read from the directory), every logit the same to the bit in the mode asked for
 //!   glyd-engine glmkernels IN_DIR OUT_DIR                     GLM-5.3-Flash's kernels on the inputs tools/glm_ref.py wrote (src/kcheck_glm.rs); glmlayers DIR IO_DIR: whole layers of the real model or of a random tiny one; glmtoy DIR IO_DIR: the tiny model whole; glmmtpreal SNAPSHOT REF_DIR OUT_DIR --layout i6|i5|i4: the real MTP head on the reference's hidden states; glmreal SNAPSHOT REF_DIR OUT_DIR --layers FIRST:END --layout i6|i5|i4 [--teacher]: the real model's layers one at a time against a reference's streams; glmmtp DIR IO_DIR: the MTP head on the tiny model's hidden states; glmspec DIR IO_DIR: a draft verified in one pass and the delta rules rewound after it, the tokens the same as greedy decode's whatever the drafts; glmprof DIR --layers L,L [--ctx N] [--reps N]: where a decode step of a layer spends its time, stage by stage in a graph's replay; glmdequant DIR OUT_DIR [--match TEXT]: its FP8 matrices as the loader reads them (bf16); glmdecode DIR OUT_DIR --layers L,L --layout i6|i5|i4: the packs of a mixture-of-experts layer's block decoded to bf16
 //!
-//! `generate`, `check` and `bench` run a Qwen3.5 model (its config.json says so: a directory in the Hub's layout, or a Hub id in the cache) on the description executor
-//! (src/dynamic/qwen35.rs), one sequence, packed in memory as it loads (--layout auto|mma|mma12).
-//!
-//! DIR is a directory `pack` made, with kv-tables.safetensors beside it (tools/npz_to_tables.py).
+//! `generate`, `check`, `microbench` and `sampletime` run a Qwen3.5 model or a Llama-style dense one (Qwen3; its config.json says which: a directory in the Hub's layout or a glyd-v7 one, or a Hub
+//! id in the cache) on the description executor (src/dynamic/qwen35.rs, src/dynamic/dense.rs), one sequence, packed in memory as it loads (--layout auto|mma|mma12|i6|i5|i4).
 
 use glyd_engine::args::Args;
 use glyd_engine::conv::Gen;
 use glyd_engine::ffi::{err, Error, Result};
-use glyd_engine::model::{Engine, Opts, Reply};
 use glyd_engine::sampler::Params;
+use glyd_engine::sched::Reply;
 use glyd_engine::tok::Tok;
 use glyd_engine::{pack, report};
 use glyd_gpu::json::{self, Value};
@@ -98,9 +87,6 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "generate" => cmd_run(a),
         "check" => cmd_check(a),
         "microbench" => cmd_bench(a),
-        "score" => cmd_score(a),
-        "rowcheck" => cmd_rowcheck(a),
-        "batchcheck" => cmd_batchcheck(a),
         "kvshapes" => {
             if !glyd_engine::kvshapes::run()? {
                 std::process::exit(1);
@@ -108,10 +94,6 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
             Ok(())
         }
         "kvprefill" => glyd_engine::kvshapes::bench(a),
-        "kvtest" => cmd_kvtest(a),
-        "stress" => cmd_stress(a),
-        "recompute" => cmd_recompute(a),
-        "rowprofile" => cmd_rowprofile(a),
         "bandwidth" => {
             let dev = glyd_engine::dev::Dev::new(0)?;
             let gbs = report::bandwidth(&dev, a.num("gib", 4usize)?, a.num("reps", 20usize)?)?;
@@ -347,9 +329,6 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
             let level = a.layout()?.ok_or_else(|| Error("glmdecode needs --layout i6, i5 or i4".into()))?;
             glyd_engine::kcheck_glm::decode(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "OUT_DIR")?), &layers, level)
         }
-        "info" => cmd_info(a),
-        "calcheck" => glyd_engine::calib::kernel_check(&glyd_engine::dev::Dev::new(0)?),
-        "kvcal" => cmd_kvcal(a),
         _ => err("usage: glyd-engine run|serve|doctor|login|supports|fetch|prepare, or a development command (see the top of src/devcmd.rs)"),
     }
 }
@@ -363,64 +342,11 @@ fn model_dir(a: &Args) -> Result<std::path::PathBuf> {
     glyd_gpu::save::Source::find(m).map(|s| s.dir).map_err(|e| Error(e.to_string()))
 }
 
-/// The engine for the model of the command line: a packed directory with its tables beside it (or `--tables`) as it is, else the model made ready in the cache (store::prepare): packed for
-/// the GPU and its KV tables calibrated, each once. Also the directory the tokenizer is in.
-fn open_dir(a: &Args) -> Result<(Engine, f64, std::path::PathBuf)> {
-    open_dir_with(a, a.opts()?)
-}
-
-/// open_dir with these options in place of the command line's.
-fn open_dir_with(a: &Args, o: Opts) -> Result<(Engine, f64, std::path::PathBuf)> {
-    let t0 = Instant::now();
-    let m = a.need(1, "DIR")?;
-    let direct = Path::new(m);
-    if o.tables.is_some() || (direct.join("glyd.json").exists() && direct.join("kv-tables.safetensors").exists()) {
-        let dir = model_dir(a)?;
-        let e = Engine::new(&dir, &o)?;
-        return Ok((e, t0.elapsed().as_secs_f64(), dir));
-    }
-    let p = glyd_engine::store::prepare(m, o.ctx, o.layout, &|s| eprintln!("{s}"))?;
-    let o = Opts { tables: Some(p.tables.clone()), ..o };
-    let e = Engine::new(&p.dir, &o)?;
-    Ok((e, t0.elapsed().as_secs_f64(), p.dir))
-}
-
-fn open(a: &Args) -> Result<(Engine, f64)> {
-    open_dir(a).map(|(e, t, _)| (e, t))
-}
-
 fn cmd_run(a: &Args) -> Result<()> {
     if let Some(dir) = nemotron_dir(a) {
         return cmd_run_nh(a, &dir);
     }
-    if let Some(dir) = qwen35_dir(a) {
-        return cmd_run35(a, &dir);
-    }
-    use std::io::Write;
-    let prompt = a.need(2, "PROMPT")?;
-    let (mut e, load, dir) = open_dir(a)?;
-    let tok = Tok::load(&dir)?;
-    eprintln!("loaded in {load:.1} s: {}", e.describe());
-    let ids = tok.encode(prompt)?;
-    let t0 = Instant::now();
-    print!("{prompt}");
-    // the text so far is decoded again at every token and what is new is printed, but for a character not yet whole
-    let mut toks: Vec<u32> = Vec::new();
-    let mut shown = 0usize;
-    let mut each = |s: &glyd_engine::model::Sample| {
-        toks.push(s.token);
-        if let Ok(t) = tok.decode(&toks) {
-            if !t.ends_with('\u{FFFD}') && t.len() > shown {
-                print!("{}", &t[shown..]);
-                shown = t.len();
-                std::io::stdout().flush().ok();
-            }
-        }
-    };
-    let out = e.generate_with(&ids, a.num("new", 64usize)?, a.has("ignore-eos"), false, &mut each)?;
-    println!();
-    eprintln!("{} prompt tokens, {} generated in {:.2} s", ids.len(), out.len(), t0.elapsed().as_secs_f64());
-    Ok(())
+    cmd_run35(a, &exec_dir(a)?)
 }
 
 /// PROMPTS.json: {"prompts": [[token ids], ...]}; OUT.json: {"tokens": [[...]], "logprobs": [[...]]}.
@@ -428,81 +354,12 @@ fn cmd_check(a: &Args) -> Result<()> {
     if let Some(dir) = nemotron_dir(a) {
         return cmd_check_nh(a, &dir);
     }
-    if let Some(dir) = qwen35_dir(a) {
-        return cmd_check35(a, &dir);
-    }
-    let pf = a.need(2, "PROMPTS.json")?;
-    let of = a.need(3, "OUT.json")?;
-    let v = json::parse(&std::fs::read_to_string(pf).map_err(|e| Error(format!("{pf}: {e}")))?).map_err(|e| Error(format!("{pf}: {e}")))?;
-    let new = a.num("new", 64usize)?;
-    let (mut e, load) = open(a)?;
-    eprintln!("loaded in {load:.1} s: {}", e.describe());
-    // "prompts" (the short ones) and, where the reference has them, "long_prompts"
-    let mut body = String::from("{");
-    for (key, out_key) in [("prompts", ""), ("long_prompts", "long_")] {
-        let Some(list) = v.get(key).and_then(Value::as_array) else { continue };
-        let prompts: Vec<Vec<u32>> = list
-            .iter()
-            .map(|p| p.as_u64s().map(|v| v.into_iter().map(|x| x as u32).collect()).ok_or_else(|| Error(format!("{pf}: a prompt is not a list of token ids"))))
-            .collect::<Result<_>>()?;
-        let (mut tokens, mut lps) = (Vec::new(), Vec::new());
-        for p in &prompts {
-            let out = e.generate(p, new, a.has("ignore-eos"), true)?;
-            tokens.push(out.iter().map(|s| s.token.to_string()).collect::<Vec<_>>().join(","));
-            lps.push(out.iter().map(|s| format!("{:.6}", s.logprob.unwrap_or(f32::NAN))).collect::<Vec<_>>().join(","));
-        }
-        body.push_str(&format!(
-            "\"{out_key}tokens\":[{}],\"{out_key}logprobs\":[{}],",
-            tokens.iter().map(|t| format!("[{t}]")).collect::<Vec<_>>().join(","),
-            lps.iter().map(|t| format!("[{t}]")).collect::<Vec<_>>().join(",")
-        ));
-        eprintln!("{} {key} of up to {} tokens, {} new tokens each", prompts.len(), prompts.iter().map(Vec::len).max().unwrap_or(0), new);
-    }
-    body.push_str(&format!("\"load_s\":{:.2},\"weights_bytes\":{},\"cache_tokens\":{}}}\n", load, e.w.bytes, e.kv.tokens()));
-    std::fs::write(of, body).map_err(|e| Error(format!("{of}: {e}")))?;
-    eprintln!("{}", report::kv_status(&e));
-    eprintln!("{of}");
-    Ok(())
-}
-
-/// REF.json: {"score_ids": [token ids]}; OUT.json: {"score_top1": [...], "score_lp": [...]} (positions 0 .. n - 2).
-fn cmd_score(a: &Args) -> Result<()> {
-    let pf = a.need(2, "REF.json")?;
-    let of = a.need(3, "OUT.json")?;
-    let v = json::parse(&std::fs::read_to_string(pf).map_err(|e| Error(format!("{pf}: {e}")))?).map_err(|e| Error(format!("{pf}: {e}")))?;
-    let ids: Vec<u32> =
-        v.get("score_ids").and_then(Value::as_u64s).ok_or_else(|| Error(format!("{pf}: no score_ids")))?.into_iter().map(|x| x as u32).collect();
-    let (mut e, load) = open(a)?;
-    eprintln!("loaded in {load:.1} s: {}", e.describe());
-    let t0 = Instant::now();
-    let (top, lp) = e.score(&ids)?;
-    eprintln!("{} positions scored in {:.1} s", top.len(), t0.elapsed().as_secs_f64());
-    let body = format!(
-        "{{\"score_top1\":[{}],\"score_lp\":[{}]}}\n",
-        top.iter().map(u32::to_string).collect::<Vec<_>>().join(","),
-        lp.iter().map(|x| format!("{x:.6}")).collect::<Vec<_>>().join(",")
-    );
-    std::fs::write(of, body).map_err(|e| Error(format!("{of}: {e}")))
+    cmd_check35(a, &exec_dir(a)?)
 }
 
 fn cmd_bench(a: &Args) -> Result<()> {
     nemotron_h_refused(a)?;
-    if let Some(dir) = qwen35_dir(a) {
-        return cmd_bench35(a, &dir);
-    }
-    let ns: Vec<usize> = a
-        .flag("prompt")
-        .unwrap_or("1024")
-        .split(',')
-        .map(|x| x.trim().parse().map_err(|_| Error(format!("--prompt {x}: not a number"))))
-        .collect::<Result<_>>()?;
-    let new = a.num("new", 256usize)?;
-    let (mut e, load) = open(a)?;
-    eprintln!("loaded in {load:.1} s: {}", e.describe());
-    for n in ns {
-        report::bench(&mut e, n, new, load, a.has("profile"), a.has("profile-prefill"), a.num("reps", 5usize)?)?;
-    }
-    Ok(())
+    cmd_bench35(a, &exec_dir(a)?)
 }
 
 /// `--layout auto|mma|mma12`: the GPU's by `best_layout` (the default), the tiered one (10.8 bits a weight) or the 12-bit one.
@@ -517,279 +374,6 @@ fn layout_flag(a: &Args, cfg: Option<&glyd_engine::weights::Config>) -> Result<O
         }
         (asked, _) => Ok(asked),
     }
-}
-
-/// One sequence's logits in a decode step together with up to 7 others, at every number of rows and at the first and the last row: which of them are bit for bit the same. Exit status 1 where two numbers of rows
-/// that round up to the same power of two (3 and 4, 5 to 8) differ.
-fn cmd_rowcheck(a: &Args) -> Result<()> {
-    use glyd_engine::model::Row;
-    let mut o = a.opts()?;
-    o.users = 8;
-    o.pool = o.pool.max(o.ctx);
-    let dir = model_dir(a)?;
-    let mut e = Engine::new(&dir, &o)?;
-    let per = 24usize; // pages a sequence has
-    let lens = [211usize, 97, 150, 33, 264, 180, 120, 75];
-    let seq_tokens = |k: usize| -> Vec<u32> { (0..lens[k]).map(|i| 1 + ((k * 7919 + i * 104_729) % 4000) as u32).collect() };
-    // (rows, the focus sequence's row, its logits' hash, its token)
-    let mut seen: Vec<(usize, usize, u64, u32)> = Vec::new();
-    // --churn N: the cache first used by N rounds of 8 other sequences of random lengths, on the pages the check then rewrites (and every full page of them compared with the bf16 copy where GLYD_ENGINE_VERIFY is set)
-    let churn = a.num("churn", 0usize)?;
-    let mut rng = 0x2545_F491_4F6C_DD1Du64;
-    let mut next = move |m: usize| -> usize {
-        rng ^= rng << 13;
-        rng ^= rng >> 7;
-        rng ^= rng << 17;
-        (rng % m as u64) as usize
-    };
-    for round in 0..churn {
-        let pages: Vec<Vec<i32>> = (0..8).map(|k| (0..per).map(|j| (k * per + j) as i32).collect()).collect();
-        let lens: Vec<usize> = (0..8).map(|_| 20 + next(340)).collect();
-        for k in 0..8 {
-            let t: Vec<u32> = (0..lens[k]).map(|_| 1 + next(4000) as u32).collect();
-            let mut at = 0;
-            while at < t.len() {
-                let n = e.chunk().min(t.len() - at);
-                e.prefill_chunk(&pages[k], at, &t[at..at + n], at + n == t.len())?;
-                at += n;
-            }
-        }
-        let all: Vec<i32> = (0..8usize).flat_map(|k| (0..lens[k] / 16).map(move |j| (k * per + j) as i32)).collect();
-        let count = || {
-            (
-                glyd_engine::model::VERIFY_CHECKED.load(std::sync::atomic::Ordering::Relaxed),
-                glyd_engine::model::VERIFY_DIFFER.load(std::sync::atomic::Ordering::Relaxed),
-            )
-        };
-        let before = count();
-        // (the first rounds: the full pages compared right after the prompts, before any decode step)
-        e.verify_pages(&all)?;
-        let after_prompts = count();
-        if round < 3 {
-            println!("round {round}: right after the prompts {} values checked, {} differing", after_prompts.0 - before.0, after_prompts.1 - before.1);
-        }
-        let rows: Vec<Row> = (0..8).map(|k| Row { token: 1 + next(4000) as u32, pos: lens[k], pages: &pages[k] }).collect();
-        e.decode_batch(&rows)?;
-        e.verify_pages(&all)?;
-        if round < 3 {
-            let c = count();
-            println!("round {round}: after a decode step {} values checked, {} differing", c.0 - after_prompts.0, c.1 - after_prompts.1);
-        }
-    }
-    let (checked, differ) = (
-        glyd_engine::model::VERIFY_CHECKED.load(std::sync::atomic::Ordering::Relaxed),
-        glyd_engine::model::VERIFY_DIFFER.load(std::sync::atomic::Ordering::Relaxed),
-    );
-    if churn > 0 {
-        println!(
-            "differing by head (keys, values): {:?}",
-            glyd_engine::model::VERIFY_BY.iter().map(|a| a.load(std::sync::atomic::Ordering::Relaxed)).collect::<Vec<_>>()
-        );
-    }
-    let lost = glyd_engine::model::VERIFY_LOST.load(std::sync::atomic::Ordering::Relaxed);
-    println!("{churn} rounds of churn first; values checked against the bf16 copy {checked}, differing {differ}, values in blocks the cache had named lost (not compared) {lost}");
-    if churn > 0 {
-        println!("{}; blocks named lost {}", report::kv_status(&e), e.kv.void_named);
-    }
-    for b in 1..=8usize {
-        for row in [0, b - 1] {
-            // the focus sequence is sequence 0; the others fill the other rows
-            let mut order: Vec<usize> = (1..b).collect();
-            order.insert(row, 0);
-            let pages: Vec<Vec<i32>> = (0..8).map(|k| (0..per).map(|j| (k * per + j) as i32).collect()).collect();
-            for &k in &order {
-                let t = seq_tokens(k);
-                let mut at = 0;
-                while at < t.len() {
-                    let n = e.chunk().min(t.len() - at);
-                    e.prefill_chunk(&pages[k], at, &t[at..at + n], at + n == t.len())?;
-                    at += n;
-                }
-            }
-            let rows: Vec<Row> = order.iter().map(|&k| Row { token: 1234 + k as u32, pos: lens[k], pages: &pages[k] }).collect();
-            let s = e.decode_batch(&rows)?;
-            let l = e.read_logits_row(row)?;
-            let h = l.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, x| (h ^ x.to_bits() as u64).wrapping_mul(0x100_0000_01b3));
-            println!("rows {b}, the sequence in row {row}: token {} logits hash {h:016x}", s[row].token);
-            seen.push((b, row, h, s[row].token));
-        }
-    }
-    let mut bad = false;
-    for (i, x) in seen.iter().enumerate() {
-        for y in &seen[i + 1..] {
-            if x.0 != y.0 && x.0.next_power_of_two() == y.0.next_power_of_two() && (x.1 == 0) == (y.1 == 0) && x.2 != y.2 {
-                println!("DIFFERENT: {} and {} rows (both round up to {})", x.0, y.0, x.0.next_power_of_two());
-                bad = true;
-            }
-        }
-    }
-    let all = seen.iter().all(|x| x.2 == seen[0].2);
-    println!(
-        "{}",
-        if all {
-            "the sequence's logits are the same bit for bit at every number of rows and in either row"
-        } else {
-            "the sequence's logits differ between some numbers of rows (see above)"
-        }
-    );
-    if bad {
-        std::process::exit(1);
-    }
-    Ok(())
-}
-
-/// Prompt chunks run several to a pass (`prefill_batch`) against each alone (`prefill_chunk`): the logits of every sequence's last token and its token, bit for bit, for batches of 2 to 8 sequences of up to 64 tokens,
-/// some starting after earlier pages. Exit status 1 where any differs.
-fn cmd_batchcheck(a: &Args) -> Result<()> {
-    use glyd_engine::model::PrefillJob;
-    let mut o = a.opts()?;
-    o.users = 8;
-    o.pool = o.pool.max(o.ctx);
-    let (mut e, _, _) = open_dir_with(a, o)?;
-    let per = 24usize;
-    let lens = [35usize, 20, 48, 33, 64, 18, 50, 27];
-    let starts = [0usize, 0, 0, 0, 0, 0, 0, 0];
-    let with_starts = [0usize, 16, 0, 32, 16, 0, 48, 16];
-    // (passes of at most 64 rows in all take the library's route as each does alone: bit for bit the same; larger ones the route their rows give: the same token, the logits within noise)
-    let (mut exact, mut near, mut bad, mut worst) = (0, 0, 0, 0f32);
-    for (name, st) in [("from the start", starts), ("after earlier pages", with_starts)] {
-        let toks = |k: usize| -> Vec<u32> { (0..st[k] + lens[k]).map(|i| 1 + ((k * 7919 + i * 104_729) % 4000) as u32).collect() };
-        let pages: Vec<Vec<i32>> = (0..8).map(|k| (0..per).map(|j| (k * per + j) as i32).collect()).collect();
-        let mut alone: Vec<(Vec<f32>, u32)> = Vec::new();
-        for k in 0..8 {
-            let t = toks(k);
-            if st[k] > 0 {
-                e.prefill_chunk(&pages[k], 0, &t[..st[k]], false)?;
-            }
-            let s = e.prefill_chunk(&pages[k], st[k], &t[st[k]..], true)?.expect("a sample");
-            alone.push((e.read_logits_row(0)?, s.token));
-        }
-        for b in 2..=8usize {
-            for shift in [0usize, 3] {
-                let ks: Vec<usize> = (0..b).map(|j| (j + shift) % 8).collect();
-                for &k in &ks {
-                    if st[k] > 0 {
-                        e.prefill_chunk(&pages[k], 0, &toks(k)[..st[k]], false)?;
-                    }
-                }
-                let ts: Vec<Vec<u32>> = ks.iter().map(|&k| toks(k)).collect();
-                let jobs: Vec<PrefillJob> =
-                    ks.iter().enumerate().map(|(j, &k)| PrefillJob { pages: &pages[k], start: st[k], tokens: &ts[j][st[k]..], last: true }).collect();
-                let rows: usize = jobs.iter().map(|j| j.tokens.len()).sum();
-                let out = e.prefill_batch(&jobs)?;
-                for (j, &k) in ks.iter().enumerate() {
-                    let l = e.read_logits_row(j)?;
-                    let tok = out[j].expect("a sample").token;
-                    let d = l.iter().zip(&alone[k].0).map(|(x, y)| (x - y).abs()).fold(0f32, f32::max);
-                    if tok != alone[k].1 {
-                        bad += 1;
-                        println!("{name}: {b} in a pass ({rows} rows): sequence {k} in row {j}: token {tok}, alone {}", alone[k].1);
-                    } else if d == 0.0 {
-                        exact += 1;
-                    } else if rows <= 64 {
-                        bad += 1;
-                        println!("{name}: {b} in a pass ({rows} rows, one route): sequence {k}: logits differ by {d}");
-                    } else {
-                        near += 1;
-                        worst = worst.max(d);
-                    }
-                }
-            }
-        }
-    }
-    println!("sequences in passes of 2 to 8: {exact} bit for bit as alone, {near} the same token with logits within {worst} of alone's (passes of more than 64 rows), {bad} wrong");
-    if bad > 0 {
-        std::process::exit(1);
-    }
-    Ok(())
-}
-
-/// A decode step of `--rows` sequences of `--len` tokens, GPU time by kind of work.
-fn cmd_rowprofile(a: &Args) -> Result<()> {
-    let b = a.num("rows", 8usize)?;
-    let len = a.num("len", 1100usize)?;
-    let mut o = a.opts()?;
-    o.users = b;
-    o.pool = o.pool.max(o.ctx);
-    let mut e = Engine::new(&model_dir(a)?, &o)?;
-    let rows = e.profile_rows(b, len, a.num("steps", 20usize)?)?;
-    println!("a step of {b} sequences of {len} tokens, ms by kind of work (launches a step):");
-    for (label, ms, n) in rows {
-        println!("  {ms:8.3}  {label}{}", if n > 0 { format!(" x{n}") } else { String::new() });
-    }
-    Ok(())
-}
-
-/// A known answer for the KV cache (src/kvtest.rs): host-made bf16 values of every kind written into blocks of every layer through the engine's write path, read back, compared bit for bit; written again and compared again;
-/// the extra memory empty after every block is released. Exit status 1 where anything differs or was lost.
-fn cmd_kvtest(a: &Args) -> Result<()> {
-    let mut o = a.opts()?;
-    o.users = 0;
-    o.graph = false;
-    // (as `run`: a repo id is made ready in the cache, its tables with it, not opened from its Hub snapshot)
-    let (mut e, _, _) = open_dir_with(a, o)?;
-    if !glyd_engine::kvtest::run(&mut e)? {
-        std::process::exit(1);
-    }
-    Ok(())
-}
-
-/// The requests of src/stress.rs at several users on a small cache (`--pool` tokens, default a window for each user), against the same requests alone (`--ref FILE` of `--write-ref FILE`); exit status 1 where anything is not as it should be.
-fn cmd_stress(a: &Args) -> Result<()> {
-    let mut o = a.opts()?;
-    o.ctx = a.either("context", "ctx", 2048usize)?;
-    let writing = a.has("write-ref");
-    let users = if writing { 1 } else { a.num("users", 4usize)?.clamp(1, glyd_engine::model::MAX_ROWS) };
-    o.users = users;
-    o.pool = a.num("pool", o.ctx * users)?;
-    let dir = model_dir(a)?;
-    let mut e = Engine::new(&dir, &o)?;
-    let tok = Tok::load(&dir)?;
-    if !glyd_engine::stress::run(&mut e, &tok, a)? {
-        std::process::exit(1);
-    }
-    Ok(())
-}
-
-/// A sequence run by its steps (a prompt, then tokens one at a time) and again as one prompt in other pieces: the keys and values the cache holds for it, compared value for value (src/model.rs `compare_blocks`).
-fn cmd_recompute(a: &Args) -> Result<()> {
-    let mut o = a.opts()?;
-    o.ctx = a.either("context", "ctx", 4096usize)?;
-    o.users = 2;
-    o.pool = o.ctx * 2;
-    let dir = model_dir(a)?;
-    let mut e = Engine::new(&dir, &o)?;
-    let tok = Tok::load(&dir)?;
-    let text = glyd_engine::calib::corpus();
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let prompt_words = a.num("words", 150usize)?;
-    let prompt = tok.encode_with(&words[200..200 + prompt_words].join(" "), false)?;
-    let new = a.num("new", 40usize)?;
-    let (pa, pb) = (glyd_engine::model::first_pages(0, 64), glyd_engine::model::first_pages(64, 64));
-    // A: the whole prompt in one chunk, then `new` tokens a step at a time (greedy)
-    let mut toks = prompt.clone();
-    let mut s = e.prefill_chunk(&pa, 0, &prompt, true)?.expect("a sample");
-    for i in 0..new {
-        toks.push(s.token);
-        let row = glyd_engine::model::Row { token: s.token, pos: prompt.len() + i, pages: &pa };
-        s = e.decode_batch(&[row])?[0];
-    }
-    // the cache holds the prompt and the first `new` tokens' keys and values (the last token chosen has not been run)
-    let held = prompt.len() + new;
-    println!("a sequence of {} prompt tokens (run in one piece) and {new} tokens made by steps, run again as one prompt in pieces of the sizes below: values of the keys and values that differ from those the first run made", prompt.len());
-    // B: the same tokens as one prompt, in pieces of each size
-    for piece in [held, 128, 96, 80, 65, 64, 48, 16] {
-        let mut at = 0;
-        while at < held {
-            let n = piece.min(held - at);
-            e.prefill_chunk(&pb, at, &toks[at..at + n], at + n == held)?;
-            at += n;
-        }
-        let (checked, differ_prompt) = e.compare_blocks(&pa, &pb, 0, prompt.len())?;
-        let (checked2, differ_steps) = e.compare_blocks(&pa, &pb, prompt.len(), new)?;
-        println!("  pieces of {piece:3} tokens: the prompt's {checked} values: {differ_prompt} differ; the {new} tokens made by steps, {checked2} values: {differ_steps} differ");
-    }
-    Ok(())
 }
 
 fn cmd_pack(a: &Args) -> Result<()> {
@@ -856,38 +440,6 @@ fn cmd_hbtoy(a: &Args) -> Result<()> {
     let c = glyd_engine::nemotron::ConfigNemotronH::load(&model_dir(a)?)?;
     glyd_engine::hbpack::toy_export(&c, &out.join("export"), a.num("seed", 1u64)?, a.num("share", 40usize)?)?;
     glyd_engine::hbpack::run(model, &out.join("packed"), a.num("threads", 4usize)?, &out.join("export"))
-}
-
-/// MODEL: a directory or a Hub repo id in the local cache; OUT: the tables' file. The model is loaded as `run` loads it, with no cache, and run over the corpus.
-fn cmd_kvcal(a: &Args) -> Result<()> {
-    let dir = model_dir(a)?;
-    let out = Path::new(a.need(2, "OUT.safetensors")?);
-    let positions = a.num("positions", 4096usize)?;
-    let mut o = a.opts()?;
-    o.ctx = positions;
-    o.chunk = a.num("chunk", 4096usize)?;
-    let t0 = Instant::now();
-    let e = Engine::for_calibration(&dir, &o)?;
-    eprintln!("loaded in {:.1} s", t0.elapsed().as_secs_f64());
-    let tok = Tok::load(&dir)?;
-    let chat = glyd_engine::chat::Chat::load(&dir)?;
-    let name = a.need(1, "MODEL")?.to_string();
-    let t = glyd_engine::calib::calibrate(&e, &tok, chat.as_ref(), &glyd_engine::calib::Options { positions, model: name }, &|s| eprintln!("{s}"))?;
-    glyd_engine::calib::save(out, &t)?;
-    eprintln!("{}", out.display());
-    match t.refused {
-        Some(why) => err(why),
-        None => Ok(()),
-    }
-}
-
-fn cmd_info(a: &Args) -> Result<()> {
-    let (e, load) = open(a)?;
-    println!("{}", e.describe());
-    println!("start {load:.1} s");
-    println!("{}", report::memory(&e));
-    println!("bits a weight: {}", report::bits(&e));
-    Ok(())
 }
 
 /// The model of the command line where it is a Nemotron-H one (its config.json says so: a directory `pack` made or a Hub-format one, or a Hub id in the cache).
@@ -978,12 +530,10 @@ fn cmd_sampletime(a: &Args) -> Result<()> {
         eprintln!("loaded in {load:.1} s: {}", e.describe());
         return time_replies(&mut e, |e, host| e.top.off = host, &Tok::load(&dir)?.encode(prompt)?, &glyd_engine::sampler::generation_defaults(&dir), new);
     }
-    if let Some(dir) = qwen35_dir(a) {
-        let (mut e, load) = open35(a, &dir)?;
-        eprintln!("loaded in {load:.1} s: {}", e.describe());
-        return time_replies(&mut e, |e, host| e.top.off = host, &Tok::load(&dir)?.encode(prompt)?, &glyd_engine::sampler::generation_defaults(&dir), new);
-    }
-    err("sampletime runs a Qwen3.5 or a Nemotron-H model")
+    let dir = exec_dir(a)?;
+    let (mut e, load) = open35(a, &dir)?;
+    eprintln!("loaded in {load:.1} s: {}", e.describe());
+    time_replies(&mut e, |e, host| e.top.off = host, &Tok::load(&dir)?.encode(prompt)?, &glyd_engine::sampler::generation_defaults(&dir), new)
 }
 
 /// `new` tokens after `ids` by `Gen::reply` with `params` (the end token ignored): the tokens and the decode speed from the first token on, tokens a second.
@@ -1183,12 +733,17 @@ fn cmd_run_nh(a: &Args, dir: &Path) -> Result<()> {
 }
 
 /// The model of the command line where it is a Qwen3.5 one (a directory, or a Hub id in the cache, whose config.json parses as Qwen3.5).
-fn qwen35_dir(a: &Args) -> Option<std::path::PathBuf> {
-    let d = model_dir(a).ok()?;
-    glyd_engine::qwen35::Config35::load(&d).ok().map(|_| d)
+/// The model of the command line where the executor runs it one sequence at a time here: a Qwen3.5-family model, or a Llama-style dense one (Qwen3).
+fn exec_dir(a: &Args) -> Result<std::path::PathBuf> {
+    let d = model_dir(a)?;
+    let text = std::fs::read_to_string(d.join("config.json")).map_err(|e| Error(format!("{}: {e}", d.display())))?;
+    if glyd_engine::qwen35::Config35::load(&d).is_ok() || glyd_engine::dynamic::dense::is_dense(&text) {
+        return Ok(d);
+    }
+    err(format!("{}: a Qwen3.5-family, Qwen3 or Nemotron-H model is run here", d.display()))
 }
 
-/// A Qwen3.5-family model on the description executor (the hand-written engine is gone: R3b, #137).
+/// A Qwen3.5-family model, or a Llama-style dense one, on the description executor (their hand-written engines are gone: R3b, #137; R3c, #139).
 fn open35(a: &Args, dir: &Path) -> Result<(glyd_engine::dynamic::Dyn, f64)> {
     let t0 = Instant::now();
     let o = glyd_engine::dynamic::Opts {
@@ -1198,7 +753,8 @@ fn open35(a: &Args, dir: &Path) -> Result<(glyd_engine::dynamic::Dyn, f64)> {
         device: 0,
         layout: a.layout()?,
     };
-    let e = glyd_engine::dynamic::qwen35::load(dir, &o)?;
+    let dense = std::fs::read_to_string(dir.join("config.json")).is_ok_and(|t| glyd_engine::dynamic::dense::is_dense(&t));
+    let e = if dense { glyd_engine::dynamic::dense::load(dir, &o)? } else { glyd_engine::dynamic::qwen35::load(dir, &o)? };
     Ok((e, t0.elapsed().as_secs_f64()))
 }
 
@@ -1244,14 +800,14 @@ impl NhRun {
         }
     }
 
-    fn prefill(&mut self, t: &[u32]) -> Result<glyd_engine::model::Sample> {
+    fn prefill(&mut self, t: &[u32]) -> Result<glyd_engine::sched::Sample> {
         match self {
             NhRun::New(e) => e.prefill(t),
             NhRun::Split(e) => e.prefill(t),
         }
     }
 
-    fn step(&mut self, t: u32) -> Result<glyd_engine::model::Sample> {
+    fn step(&mut self, t: u32) -> Result<glyd_engine::sched::Sample> {
         match self {
             NhRun::New(e) => e.step(t),
             NhRun::Split(e) => e.step(t),
@@ -1340,8 +896,8 @@ fn cmd_check_nh(a: &Args, dir: &Path) -> Result<()> {
 /// The dynamic engine on one GPU or split across several, as check35 --dynamic runs it.
 trait Q35Run {
     fn reset(&mut self) -> Result<()>;
-    fn prefill(&mut self, t: &[u32]) -> Result<glyd_engine::model::Sample>;
-    fn step(&mut self, t: u32) -> Result<glyd_engine::model::Sample>;
+    fn prefill(&mut self, t: &[u32]) -> Result<glyd_engine::sched::Sample>;
+    fn step(&mut self, t: u32) -> Result<glyd_engine::sched::Sample>;
     fn logprob(&self, logit: f32) -> Result<f32>;
     fn describe(&self) -> String;
     fn eos(&self) -> Vec<i64>;
@@ -1352,10 +908,10 @@ impl Q35Run for glyd_engine::dynamic::Dyn {
     fn reset(&mut self) -> Result<()> {
         glyd_engine::dynamic::Dyn::reset(self)
     }
-    fn prefill(&mut self, t: &[u32]) -> Result<glyd_engine::model::Sample> {
+    fn prefill(&mut self, t: &[u32]) -> Result<glyd_engine::sched::Sample> {
         glyd_engine::dynamic::Dyn::prefill(self, t)
     }
-    fn step(&mut self, t: u32) -> Result<glyd_engine::model::Sample> {
+    fn step(&mut self, t: u32) -> Result<glyd_engine::sched::Sample> {
         glyd_engine::dynamic::Dyn::step(self, t)
     }
     fn logprob(&self, logit: f32) -> Result<f32> {
@@ -1376,10 +932,10 @@ impl Q35Run for glyd_engine::dynamic::split::Split {
     fn reset(&mut self) -> Result<()> {
         glyd_engine::dynamic::split::Split::reset(self)
     }
-    fn prefill(&mut self, t: &[u32]) -> Result<glyd_engine::model::Sample> {
+    fn prefill(&mut self, t: &[u32]) -> Result<glyd_engine::sched::Sample> {
         glyd_engine::dynamic::split::Split::prefill(self, t)
     }
-    fn step(&mut self, t: u32) -> Result<glyd_engine::model::Sample> {
+    fn step(&mut self, t: u32) -> Result<glyd_engine::sched::Sample> {
         glyd_engine::dynamic::split::Split::step(self, t)
     }
     fn logprob(&self, logit: f32) -> Result<f32> {
@@ -1425,7 +981,7 @@ fn cmd_check35_dyn(a: &Args, dir: &Path) -> Result<()> {
                 std::sync::Arc::new(move |st: glyd_engine::dynamic::Stage, o: &glyd_engine::dynamic::Opts| glyd_engine::dynamic::qwen35::load_stage(&d, o, st));
             Box::new(glyd_engine::dynamic::split::Split::with(c.layers, c.eos.clone(), &cuts, &devices, &o, make)?)
         }
-        None => Box::new(glyd_engine::dynamic::qwen35::load(dir, &o)?),
+        None => Box::new(open35(a, dir)?.0),
     };
     let load = t0.elapsed().as_secs_f64();
     eprintln!("loaded in {load:.1} s: {}", e.describe());

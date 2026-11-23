@@ -1,7 +1,6 @@
 //! The command line: positional words and `--flag value` pairs (a flag with no value where it is one of the switches below).
 
 use crate::ffi::{Error, Result};
-use crate::model::Opts;
 use crate::weights::Layout;
 
 /// Flags that take no value.
@@ -186,23 +185,6 @@ impl Args {
             Some(other) => Err(Error(format!("--layout {other}: auto, mma, mma12, a, i6, i5, i4, i4x or i3"))),
         }
     }
-
-    pub fn opts(&self) -> Result<Opts> {
-        #[allow(unused_mut)] // (a release build sets nothing more)
-        let mut o = Opts { ctx: self.either("context", "ctx", 8192usize)?, users: self.num("users", 0usize)?, layout: self.layout()?, ..Opts::default() };
-        #[cfg(feature = "dev")]
-        {
-            o.graph = !self.has("no-graph");
-            if let Some(u) = self.flag("util") {
-                o.util = Some(u.parse().map_err(|_| Error(format!("--util {u}: not a number")))?);
-            }
-            o.chunk = self.num("chunk", 0usize)?;
-            o.attn_decode = self.has("attn-decode");
-            o.pool = self.num("pool", 0usize)?;
-            o.tables = self.flag("tables").map(std::path::PathBuf::from);
-        }
-        Ok(o)
-    }
 }
 
 #[cfg(test)]
@@ -214,13 +196,13 @@ mod tests {
         let a = Args::from(["run", "Qwen/Qwen3-8B", "--prompt", "Say hi", "--no-think", "--context=4096", "--port", "8001"].map(String::from));
         assert_eq!(a.pos, ["run", "Qwen/Qwen3-8B"]);
         assert_eq!((a.flag("prompt"), a.has("no-think"), a.flag("no-think")), (Some("Say hi"), true, Some("")));
-        assert_eq!(a.opts().unwrap().ctx, 4096);
+        assert_eq!(a.either("context", "ctx", 8192usize).unwrap(), 4096);
         assert_eq!(a.num("port", 8000u16).unwrap(), 8001);
-        assert_eq!(Args::from(["x", "--ctx", "2048"].map(String::from)).opts().unwrap().ctx, 2048);
+        assert_eq!(Args::from(["x", "--ctx", "2048"].map(String::from)).either("context", "ctx", 8192usize).unwrap(), 2048);
         // (a switch takes no value: `--yes` before `--prompt` took the prompt flag as its value, and the run read none)
         let y = Args::from(["run", "m:penguin", "--yes", "--prompt", "Hello", "--max-tokens", "4"].map(String::from));
         assert_eq!((y.pos.len(), y.has("yes"), y.flag("prompt"), y.flag("max-tokens")), (2, true, Some("Hello"), Some("4")));
-        assert!(Args::from(["x", "--layout", "tiny"].map(String::from)).opts().is_err());
+        assert!(Args::from(["x", "--layout", "tiny"].map(String::from)).layout().is_err());
         // (the layouts by name: the block ones are the lossy levels')
         for (name, layout) in [
             ("mma", Layout::Tiered),

@@ -1291,46 +1291,6 @@ impl Lib {
         self.ck(call!("kv_write"), r)
     }
 
-    /// The pages `blocks` [n] (int32 on the device, block numbers) of the layer's pool cleared: their chunks and slabs back to the extra pools (pages no sequence holds and nothing will read again).
-    ///
-    /// # Safety
-    /// As `kv_write`; `blocks` is an int32 array of n on the device.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn kv_release(
-        &self,
-        g: &KvGeom,
-        pool: u64,
-        nblocks: i64,
-        blocks: u64,
-        n: i64,
-        layer: i64,
-        status: u64,
-        lost: u64,
-        nlost: i64,
-        cs: Stream,
-    ) -> Result<()> {
-        let r = (self.api.glyd_gpu_kv_release)(
-            pool as *mut u8,
-            g.page_stride,
-            nblocks,
-            blocks as *const i32,
-            n,
-            g.heads,
-            g.dim,
-            g.arena,
-            g.escape as *mut u8,
-            g.nchunks,
-            g.raw as *mut u8,
-            g.nslabs,
-            layer,
-            status as *mut u32,
-            lost as *mut u32,
-            nlost,
-            cs,
-        );
-        self.ck(call!("kv_release"), r)
-    }
-
     /// The pages `pages` [n] (int32, block numbers) of the layer's pool decoded into two bf16 tensors, keys `out_k` and values `out_v`, each [n, 16, H, D] (page j's tokens at j * 16 on: NHD, as a paged attention reads a cache of separate keys and values).
     ///
     /// # Safety
@@ -1383,40 +1343,6 @@ impl Lib {
             cs,
         );
         self.ck(call!("kv_gather"), r)
-    }
-
-    /// `n` tokens' keys and values [n, H, D] (token t's row at key + t * key_stride elements) into the staging cache `out` at `slots` [n] (int64: block * 16 + offset, below `blocks` * 16).
-    ///
-    /// # Safety
-    /// As `kv_write`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn kv_stage_put(
-        &self,
-        g: &KvGeom,
-        key: u64,
-        key_stride: i64,
-        value: u64,
-        value_stride: i64,
-        slots: u64,
-        n: i64,
-        out: u64,
-        blocks: i64,
-        cs: Stream,
-    ) -> Result<()> {
-        let r = (self.api.glyd_gpu_kv_work_put)(
-            key as *const u16,
-            key_stride,
-            value as *const u16,
-            value_stride,
-            slots as *const i64,
-            n,
-            g.heads,
-            g.dim,
-            out as *mut u16,
-            blocks,
-            cs,
-        );
-        self.ck(call!("kv_work_put"), r)
     }
 
     /// The most CTAs a (sequence, head) is split over, for `b` sequences of at most `max_pages` pages.

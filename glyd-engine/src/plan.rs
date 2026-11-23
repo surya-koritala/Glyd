@@ -1088,7 +1088,7 @@ pub const SCHEMA: &str = "glyd-plan/1";
 /// The engine path that loads a plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// Qwen3 dense, lossless (src/model.rs).
+    /// Qwen3 dense (and every Llama-style dense model the description builder reads) on the executor: src/dynamic/dense.rs, at penguin, kestrel, swift and wren.
     Qwen3,
     /// Qwen3.5, 3.6 and 3.8 dense at a lossy level.
     Qwen35,
@@ -2171,9 +2171,9 @@ pub mod sizing {
         (cfg.matrix_bytes() as f64 * bits(layout) / 16.0) as u64 + (cfg.layers * cfg.hidden * 4 * 2) as u64 + (cfg.max_pos * cfg.head_dim * 4) as u64
     }
 
-    /// A token's keys and values in the lossless cache, all layers: 12 bits a value and a page's header.
-    pub fn kv_per_token(cfg: &Config) -> u64 {
-        ((cfg.layers * 2 * cfg.kv_heads * cfg.head_dim) as f64 * 1.5 * 1.06) as u64
+    /// A token's keys and values in the executor's cache, all layers: bf16, or in its 12-bit lossless pages (`twelve`) 12 bits a value and a page's header.
+    pub fn kv_per_token(cfg: &Config, twelve: bool) -> u64 {
+        ((cfg.layers * 2 * cfg.kv_heads * cfg.head_dim) as f64 * if twelve { 1.5 * 1.06 } else { 2.0 }) as u64
     }
 
     /// The activations of a chunk of `chunk` tokens (the buffers of one forward pass), the decoded matrix a cuBLAS product reads, and the fixed workspaces.
@@ -2718,8 +2718,10 @@ pub mod sizing {
         Refusal::unsupported(what, alt.map_or_else(|| format!("C{rest}"), |a| format!("{a}\nOr c{rest}")))
     }
 
-    /// A Qwen3 model's needs at `layout` for `users` sequences: its packed weights, its keys and values (12 bits a value), its chunks' work with cuBLAS (`cublas`) or without.
-    pub(crate) fn qwen3_needs(cfg: &Config, layout: Layout, users: usize, cublas: bool) -> Needs {
+    /// A Qwen3 model's needs on the executor at `layout` for `users` sequences: its packed weights, its keys and values (bf16, or 12 bits a value in its 12-bit pages:
+    /// `twelve`) in pages the sequences share (a sequence takes the blocks its tokens fill, so the context is sized for one), its chunks' work with cuBLAS (`cublas`) or
+    /// without.
+    pub(crate) fn qwen3_needs(cfg: &Config, layout: Layout, users: usize, cublas: bool, twelve: bool) -> Needs {
         let first = if cublas { 4096 } else { 2048 };
         Needs {
             kind: Kind::Qwen3,
@@ -2728,9 +2730,9 @@ pub mod sizing {
             weights: weights(cfg, layout),
             bf16: cfg.matrix_bytes(),
             per_seq: 0,
-            per_token: kv_per_token(cfg),
+            per_token: kv_per_token(cfg, twelve),
             users: users.max(1),
-            fewer: false,
+            fewer: true,
             draft: 0,
             chunks: [first, 2048, 1024, 512].into_iter().filter(|&c| c <= first).map(|c| (c, work(cfg, c, cublas))).collect(),
             want: CTX_WANT.min(cfg.max_pos),
@@ -2742,7 +2744,7 @@ pub mod sizing {
     }
 
     /// The plan of a Qwen3 model on a GPU that has `free` bytes (`gpu` its name), for `users` sequences at once, at the context `asked`, else the model's own up to
-    /// `CTX_WANT`, less where the room is short (not below `CTX_MIN`).
+    /// `CTX_WANT`, less where the room is short (not below `CTX_MIN`); its keys and values bf16.
     #[allow(clippy::too_many_arguments)]
     pub fn qwen3_fit(
         cfg: &Config,
@@ -2754,8 +2756,30 @@ pub mod sizing {
         users: usize,
         cublas: bool,
     ) -> Result<LoadPlan, Refusal> {
-        let n = qwen3_needs(cfg, layout, users, cublas);
+        qwen3_fit_kv(cfg, name, gpu, free, layout, asked, users, cublas, false)
+    }
+
+    /// `qwen3_fit` with the keys and values in the 12-bit pages where `twelve`.
+    #[allow(clippy::too_many_arguments)]
+    fn qwen3_fit_kv(
+        cfg: &Config,
+        name: &str,
+        gpu: &str,
+        free: u64,
+        layout: Layout,
+        asked: Option<usize>,
+        users: usize,
+        cublas: bool,
+        twelve: bool,
+    ) -> Result<LoadPlan, Refusal> {
+        let n = qwen3_needs(cfg, layout, users, cublas, twelve);
         one_gpu(&n, free, asked, gpu).map_err(|s| too_big(name, level_name(layout), gpu, free, n.users, &s, asked, false, None))
+    }
+
+    /// Whether a run of `a` puts its keys and values in the executor's 12-bit lossless pages: a server's (whose scheduler pages the cache) where GLYD_KV=lossless asks for
+    /// them, as Gemma 4's (src/dynamic/kvpages.rs).
+    pub(crate) fn twelve_pages(a: &Args) -> bool {
+        std::env::var("GLYD_KV").as_deref() == Ok("lossless") && a.pos.first().is_some_and(|c| c == "serve")
     }
 
     /// A dense product for the long prompts (cuBLAS where it is, else the engine's own on Ampere, Ada and Hopper): the decoded matrix and the larger chunk that goes with it.
@@ -2783,7 +2807,7 @@ pub mod sizing {
         };
         // (what the last load of this model here took beyond its plan is planned as already taken: `calibrated`)
         let extra = calibration(name, levels::name_of(layout), &t.name);
-        let mut fit = qwen3_fit(cfg, name, &t.name, t.free.saturating_sub(extra), layout, asked, users, dense_product(t.cc))?;
+        let mut fit = qwen3_fit_kv(cfg, name, &t.name, t.free.saturating_sub(extra), layout, asked, users, dense_product(t.cc), twelve_pages(a))?;
         calibrated(&mut fit, t.free, extra);
         Ok((layout, why, fit))
     }
@@ -2819,7 +2843,8 @@ pub mod sizing {
             Family::Qwen3 => {
                 supported(&name, text)?;
                 let cfg = Config::parse(text, "config.json", None).map_err(cannot)?;
-                let (_, _, p) = plan_for(a, &cfg, &name, t, None, users)?;
+                // (penguin at the layout the GPU is fastest in, a lossy level at its own)
+                let (_, _, p) = plan_for(a, &cfg, &name, t, levels::layout_of(level).filter(|l| *l != Layout::Tiered), users)?;
                 shape_checks(&name, &cfg, &p)?;
                 Ok(Some(p))
             }
@@ -4226,7 +4251,8 @@ mod tests {
                     let run = match row.family {
                         crate::support::Family::Qwen3 => {
                             let cfg = crate::weights::Config::parse(text, "config.json", None).unwrap();
-                            sizing::qwen3_plan(&args(&["run", model]), &cfg, &crate::cli::short_name(model), &gpu, None, 1).map(|p| p.2)
+                            let layout = crate::levels::layout_of(level).filter(|l| *l != crate::weights::Layout::Tiered);
+                            sizing::qwen3_plan(&args(&["run", model]), &cfg, &crate::cli::short_name(model), &gpu, layout, 1).map(|p| p.2)
                             // (on Windows the name of a path is the whole path)
                         }
                         _ => {

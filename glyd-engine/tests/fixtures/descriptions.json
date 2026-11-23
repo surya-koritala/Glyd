@@ -192,7 +192,7 @@
     "blocks": 4,
     "tensors": 20,
     "kinds": "d5706d8ea5b0856a",
-    "weights": "c30f64de41651856",
+    "weights": "b3f6c6919e016cc3",
     "plan": "bbbfbb5c524d2ea1",
     "family": "refused: m: its config.json does not say what kind of model it is"
   },

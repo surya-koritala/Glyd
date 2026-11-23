@@ -9,7 +9,6 @@ use crate::hub::{self, Hub};
 use crate::levels::{self, is_qat, layout_for, QAT_WREN};
 pub use crate::levels::{packed_repo, ship_layout, short_name};
 use crate::machine;
-use crate::model::{Engine, Opts};
 use crate::offload::ExpertStore;
 use crate::plan::sizing::{bits, lossy_plan, qwen3_plan, rooms, size, size_dynamic, static_family, target};
 use crate::plan::{Kind, LoadPlan, Target, HOST_MARGIN, LOSSY_CTX};
@@ -19,7 +18,7 @@ use crate::status::{Status, STATUS};
 use crate::store;
 use crate::tok::Tok;
 use crate::ui::{fmt_time, gb, gib, Done, Refusal, Ui};
-use crate::weights::{packed_layout, v7_manifest, Config, Layout};
+use crate::weights::{v7_manifest, Config, Layout};
 use glyd_gpu::json::{self, Value};
 use glyd_gpu::save::Source;
 use std::cell::RefCell;
@@ -120,10 +119,31 @@ fn v7_level(model: &str, have: Option<Layout>, asked: Option<Layout>) -> Done<Op
     }
 }
 
-/// The level run, serve and preflight take MODEL at: a glyd-v7 directory's own, else the one asked; a Gemma 4 model without one is penguin (it runs on the engine's Gemma path, its packs lossless:
-/// the levels' route with the lossless layout).
+/// Whether MODEL is a Qwen3 dense model (a Llama-style dense one on the executor: src/dynamic/dense.rs): a directory whose config says so, or a Hub name of one
+/// (Qwen/Qwen3-8B; not Qwen3.5 and later, whose names go on with a point).
+fn is_dense_model(model: &str) -> bool {
+    let qwen3 = |t: &str| crate::runtime::config::family_of(t) == Some(crate::support::Family::Qwen3);
+    match config_text(model) {
+        Ok(text) => qwen3(&text),
+        Err(_) => short_name(model).to_ascii_lowercase().starts_with("qwen3-"),
+    }
+}
+
+/// The level run, serve and preflight take MODEL at: a glyd-v7 directory's own, else the one asked; a Gemma 4 model, a Qwen3 model or a family of the dynamic route without one
+/// is penguin (each runs on the description executor, its packs lossless: the levels' route with the lossless layout).
 fn run_level(model: &str, asked: Option<Layout>) -> Done<Option<Layout>> {
-    Ok(v7_level(model, v7_layout(model)?, asked)?.or_else(|| (is_gemma4_model(model) || dynamic_family(model).is_some()).then_some(Layout::Tiered)))
+    Ok(v7_level(model, v7_layout(model)?, asked)?
+        .or_else(|| (is_gemma4_model(model) || dynamic_family(model).is_some() || is_dense_model(model)).then_some(Layout::Tiered)))
+}
+
+/// The refusal of MODEL where no engine of this build takes it (`run_level` gives it no level): what `supported` says of its config, in the words the program that hands
+/// a model to another runner reads.
+fn unrun(model: &str) -> Refusal {
+    let name = short_name(model);
+    match config_text(model).and_then(|text| supported(&name, &text)) {
+        Err(r) => r,
+        Ok(()) => Refusal::unsupported(format!("{name}: no engine of this build runs it"), unrun_fix()),
+    }
 }
 
 /// The level `fit` plans for MODEL on this machine (plan.rs `planned`, with this command's own flags: --users, --ctx), as a layout: penguin's is the lossless one. None where the planner
@@ -285,13 +305,6 @@ fn engine_refusal(e: crate::ffi::Error, name: &str, fit: &LoadPlan, gpu: &Gpu) -
 
 // ---- a model made ready -------------------------------------------------------------------------------------------------------------------------------
 
-struct Prepared {
-    dir: PathBuf,
-    tables: PathBuf,
-    ctx: usize,
-    fit: LoadPlan,
-}
-
 /// What a Qwen3 config.json sets that the engine does not do (it would run such a model wrongly, and without a word): a sliding window or layers that are not full attention, biases in the attention,
 /// an activation other than silu.
 fn unsupported_setting(c: &crate::runtime::config::ModelConfig) -> Option<&'static str> {
@@ -363,45 +376,40 @@ pub(crate) fn shape_checks(name: &str, cfg: &Config, fit: &LoadPlan) -> Done<()>
     }
 }
 
-/// What a first run writes (the download, and the packed copy) against the disks, and a refusal the tables' rule gave this model before: refused before anything is downloaded. `source`: the model
-/// where it is on this computer already; `download`: the bytes still to fetch.
-fn first_run_checks(name: &str, cfg: &Config, fit: &LoadPlan, layout: Layout, source: Option<&Source>, download: u64) -> Done<()> {
-    let made = source.is_some_and(|s| store::is_packed(&store::packed_dir(s, layout)));
+/// What a first run writes (the download, and the packed copy) against the disks: refused before anything is downloaded. `source`: the model where it is on this computer already;
+/// `download`: the bytes still to fetch.
+fn first_run_checks(name: &str, cfg: &Config, layout: Layout, source: Option<&Source>, download: u64) -> Done<()> {
+    let made = source.is_some_and(|s| store::cached_pack(&store::packed_dir(s, layout), layout));
     let pack = if made { 0 } else { (cfg.matrix_bytes() as f64 * bits(layout) / 16.0) as u64 };
     let (models, cache) = (store::existing_ancestor(&hub::hub_cache()), store::existing_ancestor(&store::cache_root()));
     if let Some(r) = machine::disk_refusal(name, hub::disk_free(&models), hub::disk_free(&cache), store::same_filesystem(&models, &cache), download, pack) {
         return Err(r);
     }
-    if let (Some(s), Ok(tier)) = (source, crate::kvcal::check_positions(fit.context)) {
-        for l in [Layout::Tiered, Layout::Twelve] {
-            if let Some(why) = store::known_refusal(&store::packed_dir(s, l), tier) {
-                return Err(Refusal::unsupported(why, ""));
-            }
-        }
-    }
     Ok(())
 }
 
-fn prepare(a: &Args, gpu: &Gpu, ui: &RefCell<Ui>, with_tables: bool, users: usize) -> Done<Prepared> {
+/// MODEL, a Qwen3 model, made ready for the executor at `layout` (`glyd prepare`): a glyd-v7 directory as it is, else downloaded where it is not here and packed for this
+/// GPU into the cache (once). The directory the engine reads.
+fn prepare(a: &Args, gpu: &Gpu, ui: &RefCell<Ui>, layout: Layout) -> Done<PathBuf> {
     let model = a.need(1, "MODEL")?;
     let name = short_name(model);
     let direct = Path::new(model);
-    // a directory `pack` made
+    let plan_of = |cfg: &Config, layout: Layout| -> Done<LoadPlan> {
+        let (_, _, fit) = qwen3_plan(a, cfg, &name, gpu, Some(layout).filter(|l| *l != Layout::Tiered), 1)?;
+        shape_checks(&name, cfg, &fit)?;
+        Ok(fit)
+    };
+    // a directory `pack` made: a glyd-v7 save, which the executor reads as it is
     if direct.join("glyd.json").exists() {
-        if let Some(why) = crate::weights::earlier_format(direct) {
-            return Err(Refusal::unsupported(format!("{model} is {why}"), "Pack the model again: glyd pack MODEL DIR"));
-        }
-        supported(&name, &std::fs::read_to_string(direct.join("config.json")).map_err(|e| Refusal::unsupported(format!("{model}/config.json: {e}"), ""))?)?;
-        let cfg = Config::load(direct).map_err(cannot)?;
-        let (_, _, fit) = qwen3_plan(a, &cfg, &name, gpu, Some(packed_layout(direct).unwrap_or(Layout::Tiered)), users)?;
-        shape_checks(&name, &cfg, &fit)?;
-        let tables = match a.flag("tables") {
-            Some(t) => PathBuf::from(t),
-            None if direct.join("kv-tables.safetensors").exists() => direct.join("kv-tables.safetensors"),
-            None if !with_tables => PathBuf::new(),
-            None => store::tables(direct, model, fit.context, gpu.ordinal, ui)?,
+        let Some(l) = v7_layout(model)? else {
+            return Err(Refusal::unsupported(
+                format!("{model} is packed in a format the engine no longer reads (the dense Qwen3 engine's, glyd 0.34 and before)"),
+                "Pack the model again: glyd pack MODEL DIR",
+            ));
         };
-        return Ok(Prepared { dir: direct.to_path_buf(), tables, ctx: fit.context, fit });
+        supported(&name, &config_text(model)?)?;
+        plan_of(&Config::load(direct).map_err(cannot)?, l)?;
+        return Ok(direct.to_path_buf());
     }
     // a Hub-format directory, or a repo in the cache, else the Hub
     let source: Source = match Source::find(model) {
@@ -417,9 +425,8 @@ fn prepare(a: &Args, gpu: &Gpu, ui: &RefCell<Ui>, with_tables: bool, users: usiz
             let small: Vec<hub::Entry> = wanted.iter().filter(|e| e.path == "config.json" || e.path == "generation_config.json").cloned().collect();
             hub.fetch(&remote, &small, &|_, _| {})?;
             let cfg = Config::load(&hub.snapshot(&remote)).map_err(cannot)?;
-            let (layout, _, fit) = qwen3_plan(a, &cfg, &name, gpu, None, users)?;
-            shape_checks(&name, &cfg, &fit)?;
-            first_run_checks(&name, &cfg, &fit, layout, None, hub.missing(&remote, &wanted))?;
+            plan_of(&cfg, layout)?;
+            first_run_checks(&name, &cfg, layout, None, hub.missing(&remote, &wanted))?;
             store::download(&hub, &remote, &wanted, model, ui)?;
             Source::find(model).map_err(cannot)?
         }
@@ -429,32 +436,9 @@ fn prepare(a: &Args, gpu: &Gpu, ui: &RefCell<Ui>, with_tables: bool, users: usiz
         &std::fs::read_to_string(source.dir.join("config.json")).map_err(|e| Refusal::unsupported(format!("{}: {e}", source.dir.display()), ""))?,
     )?;
     let cfg = Config::load(&source.dir).map_err(cannot)?;
-    let (layout, why, fit) = qwen3_plan(a, &cfg, &name, gpu, None, users)?;
-    shape_checks(&name, &cfg, &fit)?;
-    first_run_checks(&name, &cfg, &fit, layout, Some(&source), 0)?;
-    ui.borrow_mut().line(&format!(
-        "{name}: {} on the GPU with Glyd, instead of {}; layout {}: {why}.",
-        gib(fit.weights),
-        gib(cfg.matrix_bytes()),
-        layout.name()
-    ));
-    let expect = (cfg.matrix_bytes() as f64 * bits(layout) / 16.0) as u64;
-    let dir = store::pack(&source, model, layout, expect, ui)?;
-    let tables = if with_tables { store::tables(&dir, model, fit.context, gpu.ordinal, ui)? } else { PathBuf::new() };
-    Ok(Prepared { dir, tables, ctx: fit.context, fit })
-}
-
-struct Ready {
-    engine: Engine,
-    tok: Tok,
-    chat: Option<Chat>,
-    defaults: Params,
-    name: String,
-    /// Sequences the engine runs at once (1: the one-reply way).
-    users: usize,
-    /// The directory the model is read from, and the GPU it runs on.
-    dir: PathBuf,
-    gpu: Gpu,
+    let fit = plan_of(&cfg, layout)?;
+    first_run_checks(&name, &cfg, layout, Some(&source), 0)?;
+    store::pack(&source, model, layout, fit.weights, ui)
 }
 
 /// Sequences a server runs at once: --users, else 4 (1 to MAX_USERS; the dense Qwen3 engine takes at most MAX_ROWS of them, a level's engine as many as its memory holds).
@@ -465,55 +449,6 @@ pub(crate) fn users_of(a: &Args) -> Done<usize> {
         return Err(Refusal::new(format!("--users {n}: 1 to {MAX_USERS} sequences at once"), format!("Give a number from 1 to {MAX_USERS}: --users 4")));
     }
     Ok(n)
-}
-
-fn start(a: &Args, ui: &RefCell<Ui>, several: bool) -> Done<Ready> {
-    // (the dense engine's decode step takes at most MAX_ROWS rows)
-    let users = if several { users_of(a)?.min(crate::model::MAX_ROWS) } else { 1 };
-    let t0 = Instant::now();
-    let gpu = gpu_pick()?;
-    // (the machine checks of every other path: the CPU architecture, the driver, a MIG slice)
-    if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, true, machine::ANY_FAMILY) {
-        return Err(r);
-    }
-    let model = a.need(1, "MODEL")?.to_string();
-    let name = short_name(&model);
-    let p = prepare(a, &gpu, ui, true, users)?;
-    ui.borrow_mut().line(&format!("Plan: {}.", p.fit.text()));
-    if let Some(n) = machine::cuda12_note(gpu.driver, crate::dev::has_kernels12()) {
-        ui.borrow_mut().line(&format!("Note: {n}"));
-    }
-    ui.borrow_mut().status(&format!("Loading {name} onto the GPU..."));
-    let o = Opts {
-        ctx: p.ctx,
-        chunk: p.fit.chunk,
-        tables: Some(p.tables.clone()),
-        graph: !(cfg!(feature = "dev") && a.has("no-graph")),
-        pool: if several { crate::tune!("GLYD_ENGINE_POOL").and_then(|v| v.parse().ok()).unwrap_or(p.ctx * users) } else { 0 },
-        users: if several { users } else { 0 },
-        device: gpu.ordinal,
-        ..Opts::default()
-    };
-    let engine = Engine::new(&p.dir, &o).map_err(|e| engine_refusal(e, &name, &p.fit, &gpu))?;
-    loaded_report(&model, &p.fit, &[&gpu], engine.w.bytes as u64);
-    let tok = Tok::load(&p.dir).map_err(cannot)?;
-    let chat = Chat::load(&p.dir).map_err(cannot)?;
-    let mut defaults = sampler::generation_defaults(&p.dir);
-    if let Some(t) = a.flag("temp") {
-        defaults.temperature = t.parse().map_err(|_| Refusal::new(format!("--temp {t}: not a number"), ""))?;
-    }
-    ui.borrow_mut().line(&format!(
-        "Ready in {}: {name} on the {}, {} of weights, {} tokens of context{}.",
-        fmt_time(t0.elapsed().as_secs_f64()),
-        gpu.name,
-        gib(engine.w.bytes as u64),
-        engine.capacity(),
-        if several { format!(", {users} users at once") } else { String::new() }
-    ));
-    if crate::tune!("GLYD_ENGINE_VERBOSE").is_some() {
-        ui.borrow_mut().line(&engine.describe());
-    }
-    Ok(Ready { engine, tok, chat, defaults, name: model, users, dir: p.dir, gpu })
 }
 
 /// What the load took of the GPU against the plan: the weights the engine counts and the memory the GPU lost since the plan was made. A development build
@@ -584,11 +519,8 @@ fn access_check(a: &Args) -> std::result::Result<(), Refusal> {
     Ok(())
 }
 
-fn listen(a: &Args, name: &str, window: usize, tx: mpsc::Sender<Job>) -> Done<std::net::SocketAddr> {
-    listen_after(a, name, window, tx, None)
-}
-
-/// `listen`, where no --port is given, from the port after `after` (the first model's of `serve --with`) instead of 8000.
+/// The server of a model on --port (8000 where none is given, else the first free one after it), or where no --port is given the port after `after` (the first model's of
+/// `serve --with`).
 fn listen_after(a: &Args, name: &str, window: usize, tx: mpsc::Sender<Job>, after: Option<u16>) -> Done<std::net::SocketAddr> {
     access_check(a)?;
     let host = a.flag("host").unwrap_or("127.0.0.1").to_string();
@@ -849,7 +781,6 @@ pub fn serve(a: &Args) -> i32 {
         return serve_two(a, with.to_string());
     }
     let ui = RefCell::new(Ui::new());
-    let started = crate::monitor::clock();
     status_file(a);
     // (before the GPU is looked at and the model is read: an address that may not be served is refused first)
     if let Err(r) = access_check(a) {
@@ -857,64 +788,20 @@ pub fn serve(a: &Args) -> i32 {
     }
     // the level is run's, read before the GPU is looked at; the name served keeps the tag
     let given = a.pos.get(1).cloned().unwrap_or_default();
-    let asked = requested(&given, a.has("lossy"));
     // (a server never stops for an answer: a step it asks about is taken only with --yes)
     let (a, layout) = match served(a, &ui) {
         Ok(x) => x,
         Err(r) => return fail(&ui, &r),
     };
     let a = &a;
-    if let Some(layout) = layout {
-        return serve_lossy(a, layout, given, &ui, None);
+    // (every model this build runs is the description executor's, at a level; one with none is refused in the words the other runner reads)
+    match layout {
+        Some(layout) => serve_lossy(a, layout, given, &ui, None),
+        None => fail(&ui, &unrun(a.pos.get(1).map_or("", String::as_str))),
     }
-    let mut ready = match start(a, &ui, true) {
-        Ok(r) => r,
-        Err(r) => return fail(&ui, &r),
-    };
-    ready.name = given;
-    let (tx, rx) = mpsc::channel();
-    let window = ready.engine.capacity();
-    let addr = match listen(a, &ready.name, window, tx.clone()) {
-        Ok(x) => x,
-        Err(r) => return fail(&ui, &r),
-    };
-    let mut about = about(&ready.name, &ready.dir, asked, "penguin", true, "penguin level: lossless, every weight the original's", None, &ready.gpu);
-    about.push(("costs", crate::costs::served(&ready.dir, &ready.name, asked, window, ready.engine.chunk(), None)));
-    let _ = crate::runtime::context::Context::process().info.set(server::Info {
-        about,
-        gpu: Some(ready.gpu.ordinal),
-        held: None,
-        concurrency: ready.users,
-        window,
-        refused: &[],
-        started,
-    });
-    STATUS.ready(); // (serving: from here a failure is the engine's to say, and nothing is started again)
-    access_notes(&ui, a);
-    ui.borrow_mut().line(&format!("{} is served at http://{addr}: the chat page at /, the API at /v1 (OpenAI-compatible). Ctrl-C stops it.", ready.name));
-    let Ready { mut engine, tok, chat, defaults, name, users, .. } = ready;
-    let vocab = engine.w.cfg.vocab;
-    server::work(
-        &mut engine,
-        Arc::new(server::Shared {
-            vocab,
-            tok,
-            chat,
-            name,
-            defaults,
-            window,
-            thinking: None,
-            refused: &[],
-            rt: crate::runtime::context::Context::process().clone(),
-        }),
-        &rx,
-        &tx,
-        users,
-    );
-    0
 }
 
-/// What `serve` serves: the arguments with the level's tag read and its degrade steps taken, and the lossy level's layout (None: the lossless engine).
+/// What `serve` serves: the arguments with the level's tag read and its degrade steps taken, and the level's layout (None: no engine of this build takes the model).
 fn served(a: &Args, ui: &RefCell<Ui>) -> Done<(Args, Option<Layout>)> {
     tagged(a).and_then(|(a, l)| {
         let model = a.pos.get(1).cloned().unwrap_or_default();
@@ -1121,7 +1008,7 @@ pub fn run(a: &Args) -> i32 {
     let thinking = if a.has("no-think") { Some(false) } else { None };
     // one answer for a prompt given, or piped in: a pipe is read once the engine is up, for where it stops before that the program that runs the model another way finds standard input as it was
     // (a pipe that is known to hold nothing, a file of no bytes or /dev/null, is refused now)
-    let mut prompt = a.flag("prompt").map(str::to_string);
+    let prompt = a.flag("prompt").map(str::to_string);
     let piped = prompt.is_none() && !a.has("chat") && !std::io::stdin().is_terminal();
     if piped && stdin_is_empty() {
         return fail(&ui, &no_prompt());
@@ -1132,67 +1019,10 @@ pub fn run(a: &Args) -> i32 {
         }
     }
     sig::install();
-    if let Some(layout) = layout {
-        return run_lossy(a, layout, &ui, prompt, piped, thinking);
+    match layout {
+        Some(layout) => run_lossy(a, layout, &ui, prompt, piped, thinking),
+        None => fail(&ui, &unrun(a.pos.get(1).map_or("", String::as_str))),
     }
-    let mut ready = match start(a, &ui, prompt.is_none() && !piped) {
-        Ok(r) => r,
-        Err(r) => return fail(&ui, &r),
-    };
-    STATUS.ready(); // (up: from here a failure is the engine's to say, and nothing is started again)
-    if piped {
-        let mut t = String::new();
-        let _ = std::io::stdin().read_to_string(&mut t);
-        if t.trim().is_empty() {
-            return fail(&ui, &no_prompt());
-        }
-        prompt = Some(t);
-    }
-    if let Some(p) = prompt {
-        let defaults = ready.defaults.clone();
-        return once(&mut Talk { e: &mut ready.engine, tok: &ready.tok, chat: ready.chat.as_ref() }, &defaults, p.trim(), thinking, &ui);
-    }
-    let window = ready.engine.capacity();
-    let (tx, rx) = mpsc::channel();
-    let addr = match listen(a, &ready.name, window, tx.clone()) {
-        Ok(x) => Some(x),
-        Err(r) => {
-            ui.borrow_mut().note(&r.to_string());
-            None
-        }
-    };
-    match addr {
-        Some(addr) => {
-            access_notes(&ui, a);
-            ui.borrow_mut().line(&format!("Chat here, or open http://{addr} in a browser. /bye leaves, /clear starts again, /think turns thinking on or off."));
-        }
-        None => ui.borrow_mut().line("Chat here. /bye leaves, /clear starts again, /think turns thinking on or off."),
-    }
-    let defaults = ready.defaults.clone();
-    let chat_tx = tx.clone();
-    let tty = std::io::stdout().is_terminal();
-    let t = std::thread::spawn(move || chat_loop(chat_tx, defaults, thinking, tty));
-    let Ready { mut engine, tok, chat, defaults, name, users, .. } = ready;
-    let vocab = engine.w.cfg.vocab;
-    server::work(
-        &mut engine,
-        Arc::new(server::Shared {
-            vocab,
-            tok,
-            chat,
-            name,
-            defaults,
-            window,
-            thinking: None,
-            refused: &[],
-            rt: crate::runtime::context::Context::process().clone(),
-        }),
-        &rx,
-        &tx,
-        users,
-    );
-    let _ = t.join();
-    0
 }
 
 /// One answer on stdout (the thinking on stderr), and the exit status.
@@ -1231,7 +1061,7 @@ fn once(talk: &mut Talk, defaults: &Params, prompt: &str, thinking: Option<bool>
         Ok(o) => {
             out("\n");
             if !answered {
-                let why = if o.finish == crate::model::Finish::Length && thought {
+                let why = if o.finish == crate::sched::Finish::Length && thought {
                     "The model was still thinking when it ran out of room: ask again with --no-think"
                 } else {
                     "The model sent no answer"
@@ -1359,7 +1189,7 @@ fn chat_loop(tx: mpsc::Sender<Job>, defaults: Params, mut thinking: Option<bool>
                     messages.pop();
                     eprintln!(
                         "{}",
-                        if o.finish == crate::model::Finish::Length {
+                        if o.finish == crate::sched::Finish::Length {
                             "The model was still thinking when it ran out of room: turn thinking off with /think, or start a new chat with /clear"
                         } else {
                             "The model sent no answer"
@@ -1441,7 +1271,23 @@ fn pre_packed(model: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<Option<Path
     Ok(held(&repo))
 }
 
-/// The lossy level's engine as `run` loads it (Qwen3.5's or Nemotron 3 Super's), with its tokenizer, chat template and sampling defaults, the size of its vocabulary, the line that says it is ready, and what
+/// The plan of MODEL (its config.json `text`, its generation_config.json's `gen`) at `layout` on `gpu`, as `load_lossy` and `check_lossy` make it: a Qwen3 model's on the executor
+/// (`qwen3_plan`, as `fit` sizes it: penguin at the layout this GPU is fastest in, a lossy level at its own; a server's sequences in shared pages), else the lossy levels'
+/// (`lossy_plan`; `packed`: the glyd-v7 directory it is).
+fn plan_level(a: &Args, model: &str, layout: Layout, text: &str, gen: Option<&str>, gpu: &Gpu, packed: Option<&Path>) -> Done<LoadPlan> {
+    if crate::runtime::config::family_of(text) != Some(crate::support::Family::Qwen3) {
+        return lossy_plan(a, model, layout, text, gen, gpu.free, &gpu.name, packed);
+    }
+    let name = short_name(model);
+    supported(&name, text)?;
+    let cfg = Config::parse(text, "config.json", gen).map_err(cannot)?;
+    let users = if a.pos.first().is_some_and(|c| c == "serve") { users_of(a)? } else { 1 };
+    let (_, _, p) = qwen3_plan(a, &cfg, &name, gpu, Some(layout).filter(|l| *l != Layout::Tiered), users)?;
+    shape_checks(&name, &cfg, &p)?;
+    Ok(p)
+}
+
+/// The level's engine as `run` loads it (Gemma 4's, Qwen3's, Qwen3.5's or Nemotron 3 Super's), with its tokenizer, chat template and sampling defaults, the size of its vocabulary, the line that says it is ready, and what
 /// /v1/glyd/info says of it served as `served` (MODEL as typed).
 #[allow(clippy::type_complexity)]
 fn load_lossy(
@@ -1465,7 +1311,7 @@ fn load_lossy(
         return Err(r);
     }
     let first = match packed {
-        None => Some(lossy_plan(a, &model, layout, &config_text(&model)?, None, gpu.free, &gpu.name, None)?),
+        None => Some(plan_level(a, &model, layout, &config_text(&model)?, None, &gpu, None)?),
         Some(_) => None,
     };
     if packed.is_none() {
@@ -1501,14 +1347,13 @@ fn load_lossy(
         packed = Some(dir.clone());
     }
     let read = |f: &str| std::fs::read_to_string(dir.join(f)).ok();
-    let plan = lossy_plan(
+    let plan = plan_level(
         a,
         &model,
         layout,
         &read("config.json").ok_or_else(|| cannot(format!("{}: no config.json", dir.display())))?,
         read("generation_config.json").as_deref(),
-        gpu.free,
-        &gpu.name,
+        &gpu,
         packed.as_deref(),
     )?;
     // (a Nemotron-H model's layouts differ by pack: the bits a weight are what its bytes come to)
@@ -1564,7 +1409,7 @@ fn load_lossy(
     Ok((e, tok, chat, defaults, vocab, line, info))
 }
 
-/// The engine of a lossy level's plan (Gemma 4's, Nemotron-H's or Qwen3.5's description on the executor) from the directory `dir`, on `gpu`: everything it holds is the
+/// The engine of a level's plan (Gemma 4's, Qwen3's, Nemotron-H's or Qwen3.5's description on the executor) from the directory `dir`, on `gpu`: everything it holds is the
 /// plan's (its context, its prompt chunk, its layout, its draft model and its expert cache); nothing is sized here. The engine, its weights' bytes and its vocabulary.
 fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: &RefCell<Ui>) -> Done<(Box<dyn Gen>, usize, usize)> {
     let o = crate::dynamic::Opts { ctx: plan.context, chunk: plan.chunk, graph: true, device: gpu.ordinal, layout: Some(plan.layout) };
@@ -1594,16 +1439,15 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: 
             None => None,
         };
         let mut e = crate::dynamic::Dyn::new(dir, crate::dynamic::gemma4::lowered(dir, &c).map_err(cannot)?, spec, &o).map_err(oom)?;
-        // (12-bit lossless KV pages where the scheduler pages the cache, a run with no draft model: GLYD_KV=lossless until admission reserves their room;
-        // the tables made on the model's first run and kept in the cache)
-        if draft.is_none() && std::env::var("GLYD_KV").as_deref() == Ok("lossless") {
-            let t0 = std::time::Instant::now();
-            let (t, made) = crate::dynamic::kv12::tables_for(&mut e, dir, name).map_err(cannot)?;
-            if made {
-                ui.borrow_mut().line(&format!("Made the 12-bit KV tables of {} in {:.0} s (once: kept in the cache).", name, t0.elapsed().as_secs_f64()));
-            }
-            e.set_kv12(Some(t));
+        if draft.is_none() {
+            twelve_bit_pages(&mut e, dir, name, ui)?;
         }
+        let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
+        (Box::new(e), bytes, vocab)
+    } else if plan.kind == Kind::Qwen3 {
+        // the executor (R3c, #139): a Llama-style dense model's description from its config, its products at the plan's level
+        let mut e = crate::dynamic::dense::load(dir, &o).map_err(|e| engine_refusal(e, name, plan, gpu))?;
+        twelve_bit_pages(&mut e, dir, name, ui)?;
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
     } else if plan.kind == Kind::NemotronH {
@@ -1651,6 +1495,21 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: 
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
     })
+}
+
+/// The 12-bit lossless KV pages for `e` where the scheduler pages its cache and GLYD_KV=lossless asks for them (until admission reserves their room): the tables made on
+/// the model's first run and kept in the cache.
+fn twelve_bit_pages(e: &mut crate::dynamic::Dyn, dir: &Path, name: &str, ui: &RefCell<Ui>) -> Done<()> {
+    if std::env::var("GLYD_KV").as_deref() != Ok("lossless") {
+        return Ok(());
+    }
+    let t0 = std::time::Instant::now();
+    let (t, made) = crate::dynamic::kv12::tables_for(e, dir, name).map_err(cannot)?;
+    if made {
+        ui.borrow_mut().line(&format!("Made the 12-bit KV tables of {} in {:.0} s (once: kept in the cache).", name, t0.elapsed().as_secs_f64()));
+    }
+    e.set_kv12(Some(t));
+    Ok(())
 }
 
 /// The GPUs the dynamic route uses (Ampere or newer, as the driver lists them) and the first, which the machine's checks are of.
@@ -2133,55 +1992,18 @@ fn check(a: &Args, ui: &RefCell<Ui>) -> Done<String> {
     if let Some(m) = model {
         table_check(m, layout)?;
     }
-    if let (Some(m), Some(layout)) = (model, layout) {
-        return check_lossy(a, m, layout, ui);
-    }
-    // the kind of model, from its config.json alone
-    let cfg = match model {
-        Some(m) => {
-            let text = config_text(m)?;
-            supported(&short_name(m), &text)?;
-            Some(Config::parse(&text, "config.json", None).map_err(cannot)?)
+    match (model, layout) {
+        (Some(m), Some(layout)) => check_lossy(a, m, layout, ui),
+        (Some(m), None) => Err(unrun(m)),
+        // the GPU a run would use and its driver, with no model
+        (None, _) => {
+            let gpu = gpu_pick()?;
+            if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, true, machine::ANY_FAMILY) {
+                return Err(r);
+            }
+            Ok(format!("{} ({} free)", gpu.name, gib(gpu.free)))
         }
-        None => None,
-    };
-    // the GPU a run would use, its driver, and the engine's own files on it
-    let gpu = gpu_pick()?;
-    // (GLYD_ENGINE=1, passed on by glyd run and glyd serve; or no vLLM here, so nothing for the list to choose)
-    let asked = machine::engine_chosen(std::env::var("GLYD_ENGINE_ASKED").map_or(false, |v| v.trim() == "1"));
-    if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, asked, machine::QWEN3) {
-        return Err(r);
     }
-    let (Some(model), Some(cfg)) = (model, cfg) else {
-        return Ok(format!("{} ({} free)", gpu.name, gib(gpu.free)));
-    };
-    let name = short_name(model);
-    let dir = Path::new(model);
-    let packed = dir.join("glyd.json").exists();
-    if let (true, Some(why)) = (packed, crate::weights::earlier_format(dir)) {
-        return Err(Refusal::unsupported(format!("{model} is {why}"), "Pack the model again: glyd pack MODEL DIR"));
-    }
-    // the model on this GPU: its memory at the context asked for, its shape, the tables' reach
-    let users = a.num("users", 1usize).map_err(|e| Refusal::new(e.msg, "Give a number from 1 to 8: --users 4"))?.clamp(1, crate::model::MAX_ROWS);
-    let (layout, _, fit) = qwen3_plan(a, &cfg, &name, &gpu, packed.then(|| packed_layout(dir).unwrap_or(Layout::Tiered)), users)?;
-    shape_checks(&name, &cfg, &fit)?;
-    crate::ffi::Lib::find().map_err(cannot)?;
-    Dev::new(gpu.ordinal).map_err(|e| engine_refusal(e, &name, &fit, &gpu))?;
-    let line = format!("{}: {name}, {} tokens of context", gpu.name, fit.context);
-    if packed {
-        return Ok(line); // (nothing to download or pack)
-    }
-    // what a first run writes (the Hub says what is still to be downloaded, and refuses a checkpoint that is not bf16 here, before anything is), and a refusal given before
-    let source = Source::find(model).ok();
-    let download = match &source {
-        Some(_) => 0,
-        None => {
-            let (hub, remote, wanted) = store::hub_plan(model, ui)?;
-            hub.missing(&remote, &wanted)
-        }
-    };
-    first_run_checks(&name, &cfg, &fit, layout, source.as_ref(), download)?;
-    Ok(line)
 }
 
 /// `preflight MODEL:kestrel` (or `:swift`, or `--lossy`): the kind of model, the GPU and its driver (the list of GPUs measured against vLLM is not looked at: vLLM has no lossy levels), the memory, the disk a
@@ -2194,10 +2016,17 @@ fn check_lossy(a: &Args, model: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<
     }
     let text = config_text(model)?;
     let gpu = gpu_pick()?;
-    if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, true, machine::ANY_FAMILY) {
+    // (Qwen3 at penguin goes to the engine by the measured list, `machine::GPUS`, where vLLM is here to run it otherwise: GLYD_ENGINE=1, passed on by glyd run and glyd serve,
+    // asks for the engine by name; every other path is the engine's whatever the list)
+    let dense = crate::runtime::config::family_of(&text) == Some(crate::support::Family::Qwen3) && layout == Layout::Tiered;
+    let (asked, family) = match dense {
+        true => (machine::engine_chosen(std::env::var("GLYD_ENGINE_ASKED").is_ok_and(|v| v.trim() == "1")), machine::QWEN3),
+        false => (true, machine::ANY_FAMILY),
+    };
+    if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, asked, family) {
         return Err(r);
     }
-    let plan = lossy_plan(a, model, layout, &text, None, gpu.free, &gpu.name, v7_layout(model)?.map(|_| Path::new(model)))?;
+    let plan = plan_level(a, model, layout, &text, None, &gpu, v7_layout(model)?.map(|_| Path::new(model)))?;
     crate::ffi::Lib::find().map_err(cannot)?;
     Dev::new(gpu.ordinal).map_err(|e| cannot(e.msg))?;
     let (level, repo) = (level_name(layout), packed_repo(model, level_name(layout)));
@@ -2222,13 +2051,20 @@ fn check_lossy(a: &Args, model: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<
     Ok(format!("{}: {}, {} tokens of context, {} level", gpu.name, short_name(model), plan.context, level_name(layout)))
 }
 
-/// MODEL made ready but for the KV tables (downloaded, packed for this GPU), which are the part that needs the GPU's time: what `run` does first.
+/// MODEL, a Qwen3 model, made ready at its level (downloaded, packed for this GPU): what `run` does first.
 pub fn prepare_cmd(a: &Args) -> i32 {
     let ui = RefCell::new(Ui::new());
-    let r = gpu_pick().and_then(|g| prepare(a, &g, &ui, false, 1));
+    let r = gpu_pick().and_then(|g| {
+        let (_, layout) = level(a.need(1, "MODEL")?, a.has("lossy"))?;
+        let mut q = a.clone();
+        if let Some(m) = q.pos.get_mut(1) {
+            *m = level(m, false)?.0.to_string();
+        }
+        prepare(&q, &g, &ui, layout.unwrap_or(Layout::Tiered))
+    });
     match r {
-        Ok(p) => {
-            println!("{}", p.dir.display());
+        Ok(dir) => {
+            println!("{}", dir.display());
             0
         }
         Err(r) => fail(&ui, &r),
@@ -2599,25 +2435,28 @@ mod tests {
             out.split_whitespace().nth(1).unwrap().parse().unwrap()
         };
         let (tx, _rx) = mpsc::channel();
-        let own = listen(&args(&["serve", "m", "--port", "0"]), "m", 4096, tx.clone()).map_err(|r| r.to_string()).unwrap();
+        let own = listen_after(&args(&["serve", "m", "--port", "0"]), "m", 4096, tx.clone(), None).map_err(|r| r.to_string()).unwrap();
         assert!(own.ip().is_loopback(), "the default address is {own}");
         assert_eq!((status(own, "evil.example"), status(own, "localhost:8000"), status(own, "127.0.0.1")), (421, 200, 200));
-        let chosen = listen(&args(&["serve", "m", "--host", "127.0.0.1", "--port", "0"]), "m", 4096, tx.clone()).map_err(|r| r.to_string()).unwrap();
+        let chosen =
+            listen_after(&args(&["serve", "m", "--host", "127.0.0.1", "--port", "0"]), "m", 4096, tx.clone(), None).map_err(|r| r.to_string()).unwrap();
         assert_eq!((status(chosen, "evil.example"), status(chosen, "localhost:8000")), (421, 200));
         // an address that is not this computer's own: refused with no key, answered with one or with the user's word (and then any Host is, there being no list of names)
         for host in ["0.0.0.0", "::", "192.168.1.5"] {
-            let refused = listen(&args(&["serve", "m", "--host", host, "--port", "0"]), "m", 4096, tx.clone()).map(|_| ()).unwrap_err();
+            let refused = listen_after(&args(&["serve", "m", "--host", host, "--port", "0"]), "m", 4096, tx.clone(), None).map(|_| ()).unwrap_err();
             assert!(refused.to_string().contains("--insecure-no-auth") && refused.to_string().contains("GLYD_API_KEY"), "{host}: {refused}");
         }
-        let keyed =
-            listen(&args(&["serve", "m", "--host", "0.0.0.0", "--port", "0", "--api-key", "k"]), "m", 4096, tx.clone()).map_err(|r| r.to_string()).unwrap();
+        let keyed = listen_after(&args(&["serve", "m", "--host", "0.0.0.0", "--port", "0", "--api-key", "k"]), "m", 4096, tx.clone(), None)
+            .map_err(|r| r.to_string())
+            .unwrap();
         assert_eq!((keyed.ip().is_unspecified(), status(keyed, "192.168.1.5:8000")), (true, 200));
-        let said =
-            listen(&args(&["serve", "m", "--host", "0.0.0.0", "--port", "0", "--insecure-no-auth"]), "m", 4096, tx.clone()).map_err(|r| r.to_string()).unwrap();
+        let said = listen_after(&args(&["serve", "m", "--host", "0.0.0.0", "--port", "0", "--insecure-no-auth"]), "m", 4096, tx.clone(), None)
+            .map_err(|r| r.to_string())
+            .unwrap();
         assert_eq!(status(said, "glyd.example.com"), 200);
         // the lists of what the user lets in are checked before the server starts
         for bad in ["*", "localhost:5173", "http://a/b"] {
-            let e = listen(&args(&["serve", "m", "--port", "0", "--allowed-origins", bad]), "m", 4096, tx.clone()).map(|_| ()).unwrap_err();
+            let e = listen_after(&args(&["serve", "m", "--port", "0", "--allowed-origins", bad]), "m", 4096, tx.clone(), None).map(|_| ()).unwrap_err();
             assert!(e.to_string().contains("--allowed-origins"), "{bad}: {e}");
         }
         // the refusal comes before the model is loaded, from `serve` and `run` themselves
@@ -2639,16 +2478,18 @@ mod tests {
         };
         let (tx, _rx) = mpsc::channel();
         let p = free();
-        let own = listen(&args(&["serve", "m", "--port", "0", "--ollama-port", &p.to_string()]), "m", 4096, tx.clone()).map_err(|r| r.to_string()).unwrap();
+        let own = listen_after(&args(&["serve", "m", "--port", "0", "--ollama-port", &p.to_string()]), "m", 4096, tx.clone(), None)
+            .map_err(|r| r.to_string())
+            .unwrap();
         assert_ne!(own.port(), p);
         // (the engine's thread is not running here: a connection that is answered by the listener alone, the Host check, shows the port is the server's)
         assert!(version(p, "evil.example").contains("421"), "the Host check is the server's own");
         // a port in use: the server starts all the same
         let busy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let q = busy.local_addr().unwrap().port();
-        assert!(listen(&args(&["serve", "m", "--port", "0", "--ollama-port", &q.to_string()]), "m", 4096, tx.clone()).is_ok());
+        assert!(listen_after(&args(&["serve", "m", "--port", "0", "--ollama-port", &q.to_string()]), "m", 4096, tx.clone(), None).is_ok());
         // not a port: said, and the server starts
-        assert!(listen(&args(&["serve", "m", "--port", "0", "--ollama-port", "x"]), "m", 4096, tx).is_ok());
+        assert!(listen_after(&args(&["serve", "m", "--port", "0", "--ollama-port", "x"]), "m", 4096, tx, None).is_ok());
     }
 
     #[test]
@@ -2759,12 +2600,12 @@ mod tests {
                 && e.fix == format!("Run it at the kestrel level: glyd run {qp}:kestrel"),
             "{e:?}"
         );
-        // Qwen3 is lossless alone, and keeps its own refusals; another kind of model keeps its words at any level
+        // Qwen3 runs at penguin and the block levels, and keeps its own refusals; another kind of model keeps its words at any level
         let q3 = dir_with("supports-q3", QWEN3);
         let q3p = q3.to_str().unwrap();
-        assert!(supports_check(&format!("{q3p}:penguin"), false).is_ok());
-        let e = supports_check(&format!("{q3p}:swift"), false).unwrap_err();
-        assert!(e.code == 3 && e.what.ends_with("(Qwen3) runs at the penguin level in this engine, not swift"), "{e:?}");
+        assert!(supports_check(&format!("{q3p}:penguin"), false).is_ok() && supports_check(&format!("{q3p}:swift"), false).is_ok());
+        let e = supports_check(&format!("{q3p}:hummingbird"), false).unwrap_err();
+        assert!(e.code == 3 && e.what.ends_with("(Qwen3) runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird"), "{e:?}");
         let scaled = dir_with("supports-scaled", r#"{"architectures": ["Qwen3ForCausalLM"], "rope_scaling": {"type": "yarn"}}"#);
         assert!(supports_check(scaled.to_str().unwrap(), false).unwrap_err().what.contains("rope scaling"));
         let l = dir_with("supports-llama", r#"{"architectures": ["LlamaForCausalLM"]}"#);
@@ -3002,10 +2843,11 @@ mod tests {
         assert_eq!(at(&["serve", model, "--users", "8", "--no-draft", "--ctx", "8192"]).context, 8192);
         // (a draft model to come with the download: drafted, one user at a time, the context of one)
         assert_eq!(at(&["serve", model, "--users", "8"]).users, 1);
-        // (run, serve and preflight alike: Gemma 4 without a tag is penguin, with one the level asked; other models without one take the lossless route of old)
+        // (run, serve and preflight alike: Gemma 4 without a tag is penguin, with one the level asked; so is Qwen3, on the executor too)
         assert_eq!(run_level(model, None).unwrap(), Some(Layout::Tiered));
         assert_eq!(run_level(model, Some(Layout::Int4)).unwrap(), Some(Layout::Int4));
-        assert_eq!(run_level("Qwen/Qwen3-8B", None).unwrap(), None);
+        let q3 = dir_with("run-level-q3", QWEN3);
+        assert_eq!(run_level(q3.to_str().unwrap(), None).unwrap(), Some(Layout::Tiered));
     }
 
     /// A run whose context does not fit at the level asked loads at the shorter one the ladder takes (on a 16 GB card, gemma-4-12B at kestrel with 262144 tokens loads
@@ -3065,10 +2907,10 @@ mod tests {
         if crate::support::machine(&crate::plan::Machine::preset("rtx4060-laptop").unwrap()).is_some() {
             assert!(load_level(&onq("rtx4060-laptop"), qp, None).is_ok());
         }
-        // a Qwen3 dense model the planner keeps lossless stays on its own path
+        // a Qwen3 dense model the planner keeps lossless loads at penguin, on the executor
         let q3 = dir_with("load-level-q3", QWEN3);
         let q3p = q3.to_str().unwrap();
-        assert_eq!(load_level(&Args::from(["serve", q3p, "--machine", "rtx4090"].iter().map(|s| s.to_string())), q3p, None).unwrap(), None);
+        assert_eq!(load_level(&Args::from(["serve", q3p, "--machine", "rtx4090"].iter().map(|s| s.to_string())), q3p, None).unwrap(), Some(Layout::Tiered));
     }
 
     #[test]
@@ -3344,8 +3186,9 @@ mod tests {
         assert!(r.code == CANNOT && r.what.contains("is a LlamaForCausalLM model"), "{r}");
         let qwen3 = model("Qwen3-8B", QWEN3);
         assert!(table_check(&qwen3, None).is_ok() && table_check(&qwen3, Some(Layout::Tiered)).is_ok());
-        let r = table_check(&qwen3, Some(Layout::Int5)).unwrap_err();
-        assert!(r.code == CANNOT && r.what.contains("runs at the penguin level in this engine, not swift"), "{r}");
+        assert!(table_check(&qwen3, Some(Layout::Int5)).is_ok());
+        let r = table_check(&qwen3, Some(Layout::Hummingbird)).unwrap_err();
+        assert!(r.code == CANNOT && r.what.contains("runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird"), "{r}");
         // (a model whose config is not to be had is the paths' own to say)
         assert!(table_check(&dir.join("nowhere").to_string_lossy(), Some(Layout::Int5)).is_ok());
         std::fs::remove_dir_all(&dir).unwrap();
@@ -3392,30 +3235,20 @@ mod tests {
         assert_eq!(qwen3_plan(&args(&["run", "m", "--context", "abc"]), &cfg, "m", &l4, None, 1).unwrap_err().code, 1);
     }
 
-    /// What the cache's tables said of a model the last time is said again before anything is downloaded or made: for the context's tier, under whichever layout the packed copy is in. (This test
-    /// is the only one that reads GLYD_CACHE.)
+    /// What a first run writes is held to the disks before anything is downloaded: a packed copy that is made already (a glyd-v7 save at the level) is not written again.
+    /// (This test is the only one that reads GLYD_CACHE.)
     #[test]
-    fn a_model_the_tables_refused_is_refused_again_before_anything_is_made() {
+    fn a_first_run_counts_the_pack_it_has_not_made() {
         let root = std::env::temp_dir().join(format!("glyd-engine-first-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::env::set_var("GLYD_CACHE", &root);
         let cfg = Config::parse(QWEN3, "config.json", None).unwrap();
         let source = Source { dir: "/x".into(), repo: "org/model".into(), revision: Some("0123456789abcdef0123456789abcdef01234567".into()) };
-        let fit = crate::plan::sizing::qwen3_fit(&cfg, "model", "NVIDIA L4", 22 << 30, Layout::Tiered, None, 1, true).unwrap();
-        // a packed copy that is made already: a first run writes no more than the tables
-        for l in [Layout::Tiered, Layout::Twelve] {
-            let d = store::packed_dir(&source, l);
-            std::fs::create_dir_all(&d).unwrap();
-            std::fs::write(d.join("engine.safetensors"), b"x").unwrap();
-        }
-        assert!(first_run_checks("model", &cfg, &fit, Layout::Tiered, Some(&source), 0).is_ok());
-        let why = "the model's values compress too poorly (worst kind of text left out: K 0.210%, V 0.050%, the limit 0.15%)";
-        // refused at another tier: nothing to say of this context; at this one, under the layout it was packed in, or the other's: refused, with the reason, for the other runner
-        store::note_refusal(&store::packed_dir(&source, Layout::Twelve), 16384, why);
-        assert!(first_run_checks("model", &cfg, &fit, Layout::Tiered, Some(&source), 0).is_ok());
-        store::note_refusal(&store::packed_dir(&source, Layout::Twelve), 8192, why);
-        let r = first_run_checks("model", &cfg, &fit, Layout::Tiered, Some(&source), 0).unwrap_err();
-        assert!(r.code == CANNOT && r.what == why, "{r}");
+        assert!(first_run_checks("model", &cfg, Layout::Tiered, Some(&source), 0).is_ok());
+        let d = store::packed_dir(&source, Layout::Tiered);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("glyd.json"), r#"{"format": "glyd-v7", "layout": "mma", "level": "penguin", "packs": {}}"#).unwrap();
+        assert!(store::cached_pack(&d, Layout::Tiered) && first_run_checks("model", &cfg, Layout::Tiered, Some(&source), 0).is_ok());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

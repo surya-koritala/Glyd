@@ -10,13 +10,14 @@
 use crate::dev::{copy_d2d_async, copy_d2h_async, copy_h2d_async, Buf, Dev, Graph, Pinned};
 use crate::ffi::{err, Error, Lib, Result, Stream};
 use crate::glm::{ConfigGlm, GlmKind};
+use crate::kern::embed_plan;
 use crate::kern::Kern;
 use crate::kern35::Mat;
 use crate::launch;
-use crate::model::{embed_plan, Sample};
 use crate::moe::{Act, MoeKern, MoeScratch};
 use crate::qwen35::Pack35;
 use crate::runtime::kinds::Rounding;
+use crate::sched::Sample;
 use crate::weights::{choose_layout, ordered, upload_bytes, upload_packed, v7_manifest, Layout, PackBuf};
 use glyd_gpu::safetensors::Checkpoint;
 use std::collections::HashMap;

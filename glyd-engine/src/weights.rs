@@ -1,18 +1,15 @@
-//! A Qwen3 checkpoint packed by Glyd, in GPU memory: every matrix a pack in the smaller of Glyd's two layouts (the tiered `mma` one, or the 12-bit
-//! `mma12` one for a matrix that takes fewer bytes in it: each pack has its own, as `glyd-gpu pack`'s glyd-v4 directory says), the embedding too (and
-//! the LM head, the same pack where the model ties them), the norms bf16, the rotary tables. The files are that directory plus `engine.safetensors`,
-//! which `pack.rs` writes: the embedding packed.
+//! Packed matrices on the GPU (`PackBuf`) and how a checkpoint's matrices become them: packed as they load in a level's layout (`pack_item_map`), or read as a glyd-v7
+//! or a lossless glyd-v4 directory saved them (`read_v7`, `read_lossless`); a Qwen3 config as the planner reads it (`Config`), the rotary tables, the layouts' choice.
+//! The dense Qwen3 engine's own loader (its glyd-v4/v3 directories with `engine.safetensors`) went with that engine (R3c, #139).
 
-use crate::dev::{copy_h2d_async, Buf, Pinned};
+use crate::dev::Buf;
 use crate::ffi::Words;
-use crate::ffi::{err, Error, Pack, Result, Stream};
+use crate::ffi::{err, Error, Pack, Result};
 use crate::qwen35::Pack35;
 use glyd_gpu::json::{self, Value};
 use glyd_gpu::safetensors::Checkpoint;
 pub use glyd_gpu::save::Layout;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::path::Path;
 
 fn io<T>(r: std::io::Result<T>) -> Result<T> {
     r.map_err(|e| Error(e.to_string()))
@@ -173,177 +170,6 @@ pub struct PackBuf {
     _bufs: [Buf; 3],
 }
 
-pub struct Layer {
-    pub qkv: PackBuf,
-    pub o: PackBuf,
-    pub gate_up: PackBuf,
-    pub down: PackBuf,
-    pub in_norm: Buf,
-    pub post_norm: Buf,
-    pub q_norm: Buf,
-    pub k_norm: Buf,
-}
-
-pub struct Weights {
-    pub cfg: Config,
-    /// The layout the directory was packed for (the tiered one means each matrix is in the smaller of the two: see each pack's `is_twelve`).
-    pub layout: Layout,
-    pub layers: Vec<Layer>,
-    pub embed: PackBuf,
-    /// The LM head where the model has its own; none where it is the embedding's pack.
-    pub head: Option<PackBuf>,
-    pub norm: Buf,
-    pub cos: Buf,
-    pub sin: Buf,
-    /// Device bytes of every weight buffer (packs, norms, rotary tables).
-    pub bytes: usize,
-    /// Bytes bf16 would take for the same matrices and norms (the checkpoint's own size).
-    pub bf16_bytes: usize,
-    /// Per kind of matrix: (name, packed bytes, weights).
-    pub kinds: Vec<(&'static str, usize, usize)>,
-    pub dir: PathBuf,
-}
-
-impl Weights {
-    pub fn lm_head(&self) -> &PackBuf {
-        self.head.as_ref().unwrap_or(&self.embed)
-    }
-}
-
-/// A tensor to load: its name, and where its bytes are (file, offset, length).
-#[derive(Clone)]
-struct Job {
-    name: String,
-    path: PathBuf,
-    offset: u64,
-    bytes: usize,
-}
-
-/// Bytes a pinned staging buffer holds: a tensor is read and copied in pieces of this size.
-const PIECE: usize = 128 << 20;
-
-struct Raw(*mut u8);
-// SAFETY: a pointer into a pinned buffer that the reader thread alone writes while the main thread does not read it (a buffer is handed over by a channel).
-unsafe impl Send for Raw {}
-
-/// The tensors of `jobs` read from their files and copied to device memory, in order: a reader thread fills pinned buffers while this thread
-/// copies the one before to the GPU, so a load goes at the slower of the file and the bus. Returns each tensor's device buffer, by name.
-fn load_all(jobs: &[Job], stream: Stream) -> Result<std::vec::IntoIter<(String, Buf)>> {
-    const NBUF: usize = 3;
-    let pieces: Vec<(usize, usize, usize)> =
-        jobs.iter().enumerate().flat_map(|(i, j)| (0..j.bytes.div_ceil(PIECE)).map(move |k| (i, k * PIECE, PIECE.min(j.bytes - k * PIECE)))).collect();
-    let mut pins = Vec::new();
-    for _ in 0..NBUF {
-        pins.push(Pinned::new(PIECE)?);
-    }
-    let raw: Vec<Raw> = pins.iter().map(|p| Raw(p.ptr as *mut u8)).collect();
-    let (ready_tx, ready_rx) = mpsc::channel::<std::result::Result<(usize, usize), String>>();
-    let (free_tx, free_rx) = mpsc::channel::<usize>();
-    for b in 0..NBUF {
-        free_tx.send(b).ok();
-    }
-    let (jobs_t, pieces_t) = (jobs.to_vec(), pieces.clone());
-    let reader = std::thread::spawn(move || {
-        use crate::os::FileExt;
-        let raw = raw;
-        let mut files: HashMap<PathBuf, std::fs::File> = HashMap::new();
-        for (pi, &(ji, at, len)) in pieces_t.iter().enumerate() {
-            let Ok(b) = free_rx.recv() else { return };
-            let j = &jobs_t[ji];
-            if !files.contains_key(&j.path) {
-                match std::fs::File::open(&j.path) {
-                    Ok(f) => {
-                        files.insert(j.path.clone(), f);
-                    }
-                    Err(e) => {
-                        ready_tx.send(Err(format!("{}: {e}", j.path.display()))).ok();
-                        return;
-                    }
-                }
-            }
-            // SAFETY: the buffer is PIECE bytes, free (its last copy done), and read by nobody until it is sent.
-            let buf = unsafe { std::slice::from_raw_parts_mut(raw[b].0, len) };
-            if let Err(e) = files[&j.path].read_exact_at(buf, j.offset + at as u64) {
-                ready_tx.send(Err(format!("{} ({}): {e}", j.path.display(), j.name))).ok();
-                return;
-            }
-            if ready_tx.send(Ok((pi, b))).is_err() {
-                return;
-            }
-        }
-    });
-    let mut out: Vec<(String, Buf)> = Vec::with_capacity(jobs.len());
-    let mut cur: Option<(usize, Buf)> = None;
-    let mut result = Ok(());
-    for &(ji, at, len) in &pieces {
-        let (_, b) = match ready_rx.recv() {
-            Ok(Ok(x)) => x,
-            Ok(Err(e)) => {
-                result = err(e);
-                break;
-            }
-            Err(_) => {
-                result = err("the weights' reader stopped");
-                break;
-            }
-        };
-        if at == 0 {
-            if let Some((cj, done)) = cur.take() {
-                out.push((jobs[cj].name.clone(), done));
-            }
-            match Buf::new(jobs[ji].bytes) {
-                Ok(x) => cur = Some((ji, x)),
-                Err(e) => {
-                    result = Err(e);
-                    break;
-                }
-            }
-        }
-        let dst = cur.as_ref().map_or(0, |c| c.1.ptr) + at as u64;
-        // SAFETY: the pinned buffer holds `len` bytes just read; the copy completes at the synchronize, before the buffer is handed back.
-        let r = unsafe { copy_h2d_async(dst, pins[b].ptr, len, stream) }.and_then(|_| crate::dev::sync_stream(stream));
-        if let Err(e) = r {
-            result = Err(e);
-            break;
-        }
-        free_tx.send(b).ok();
-    }
-    drop(free_tx);
-    drop(ready_rx);
-    reader.join().ok();
-    result?;
-    if let Some((cj, done)) = cur.take() {
-        out.push((jobs[cj].name.clone(), done));
-    }
-    // (a tensor of no bytes has no piece: it is an empty buffer)
-    let mut full: Vec<(String, Buf)> = Vec::with_capacity(jobs.len());
-    let mut it = out.into_iter();
-    for j in jobs {
-        if j.bytes == 0 {
-            full.push((j.name.clone(), Buf::new(0)?));
-        } else {
-            match it.next() {
-                Some(x) if x.0 == j.name => full.push(x),
-                _ => return err(format!("{}: not loaded", j.name)),
-            }
-        }
-    }
-    Ok(full.into_iter())
-}
-
-/// The loaded buffers in the order the loader asked for them.
-struct Feed(std::vec::IntoIter<(String, Buf)>);
-
-impl Feed {
-    fn take(&mut self, name: &str) -> Result<Buf> {
-        match self.0.next() {
-            Some((n, b)) if n == name => Ok(b),
-            Some((n, _)) => err(format!("loading {name}, the next loaded is {n}")),
-            None => err(format!("loading {name}: nothing left")),
-        }
-    }
-}
-
 /// The suffixes of a pack's three buffers in a layout.
 fn suffixes(layout: Layout) -> [&'static str; 3] {
     match layout {
@@ -400,140 +226,6 @@ fn words_of(layout: Layout, e: &Value, name: &str) -> Result<([u64; 3], [u32; 4]
     }
 }
 
-/// A layout's name in a manifest.
-fn layout_named(name: Option<&str>, what: &str) -> Result<Layout> {
-    match name {
-        Some("mma") => Ok(Layout::Tiered),
-        Some("mma12") => Ok(Layout::Twelve),
-        other => err(format!("{what}: layout {other:?}, where the engine reads the layouts `mma` and `mma12`")),
-    }
-}
-
-/// One pack of a packed directory as its manifest says it is stored: its key, its own layout, its matrix's shape and its words.
-#[derive(Clone, Debug)]
-pub struct PackPlan {
-    pub key: String,
-    pub layout: Layout,
-    pub rows: i64,
-    pub cols: i64,
-    words: ([u64; 3], [u32; 4]),
-}
-
-/// What a packed directory holds for the engine, read from its manifest and its files' headers alone (no GPU): its packs in the order they load (every layer's q/k/v, o, gate/up and down, then the
-/// embedding and the LM head where the model has its own), each in its own layout, and the tensors that make the load (the packs' three buffers, the norms) in order.
-pub struct Plan {
-    /// The layout the directory was packed for.
-    pub layout: Layout,
-    pub packs: Vec<PackPlan>,
-    jobs: Vec<Job>,
-}
-
-impl Plan {
-    /// The tensors' names in load order.
-    pub fn tensors(&self) -> Vec<String> {
-        self.jobs.iter().map(|j| j.name.clone()).collect()
-    }
-}
-
-/// The directory `dir` as the engine loads it (`Weights::load`): errors where it is not a packed Qwen3 of this engine's formats, or holds packs of the earlier tiered layout.
-pub fn plan(dir: &Path) -> Result<Plan> {
-    let cfg = Config::load(dir)?;
-    let gj = dir.join("glyd.json");
-    let manifest = json::parse(&io(std::fs::read_to_string(&gj))?).map_err(|e| Error(format!("{}: {e}", gj.display())))?;
-    let packs = manifest.get("packs").ok_or_else(|| Error(format!("{}: no packs", gj.display())))?;
-    let ck = io(Checkpoint::open(dir))?;
-    let ep = dir.join("engine.safetensors");
-    let ef = io(glyd_gpu::safetensors::File::open(&ep)).map_err(|e| Error(format!("{e} (run `glyd pack` first)")))?;
-    let (h, kv, d, i) = (cfg.hidden, cfg.kv_heads, cfg.head_dim, cfg.inter);
-    let layout = packed_layout(dir).ok_or_else(|| Error(format!("{}: no layout of the packs", gj.display())))?;
-    let mut jobs: Vec<Job> = Vec::new();
-    let mut plans: Vec<PackPlan> = Vec::new();
-    let mut want = |sidecar: bool, name: String| -> Result<()> {
-        let (path, t) = if sidecar {
-            (ef.path.clone(), ef.get(&name).ok_or_else(|| Error(format!("{}: no tensor {name}", ep.display())))?)
-        } else {
-            let (f, t) = ck.get(&name).ok_or_else(|| Error(format!("{}: no tensor {name}", dir.display())))?;
-            (f.path.clone(), t)
-        };
-        jobs.push(Job { name, path, offset: t.offset, bytes: t.bytes as usize });
-        Ok(())
-    };
-    // a pack of glyd.json: its own layout, its shape and words; its three buffers wanted by that layout's names
-    let pack = |key: &str, want: &mut dyn FnMut(bool, String) -> Result<()>, expect: Option<(usize, usize)>| -> Result<PackPlan> {
-        let e = packs.get(key).ok_or_else(|| Error(format!("{}: no pack {key}", gj.display())))?;
-        let lay = layout_named(e.get("layout").and_then(Value::as_str), &format!("{}: {key}", gj.display()))?;
-        let shape = e.get("shape").and_then(Value::as_u64s).filter(|s| s.len() == 2).ok_or_else(|| Error(format!("{}: {key}: no shape", gj.display())))?;
-        if let Some((rows, cols)) = expect {
-            if shape[0] as usize != rows || shape[1] as usize != cols {
-                return err(format!(
-                    "{key}: a pack of {} x {}, where Qwen3 with this config has {rows} x {cols} (merged q, k, v and gate, up?)",
-                    shape[0], shape[1]
-                ));
-            }
-        }
-        for sf in suffixes(lay) {
-            want(false, format!("{key}.glyd_{sf}"))?;
-        }
-        Ok(PackPlan { key: key.to_string(), layout: lay, rows: shape[0] as i64, cols: shape[1] as i64, words: words_of(lay, e, key)? })
-    };
-    for l in 0..cfg.layers {
-        let p = format!("model.layers.{l}");
-        plans.push(pack(&format!("{p}.self_attn.q_proj"), &mut want, Some(((cfg.heads + 2 * kv) * d, h)))?);
-        plans.push(pack(&format!("{p}.self_attn.o_proj"), &mut want, Some((h, cfg.heads * d)))?);
-        plans.push(pack(&format!("{p}.mlp.gate_proj"), &mut want, Some((2 * i, h)))?);
-        plans.push(pack(&format!("{p}.mlp.down_proj"), &mut want, Some((h, i)))?);
-        for nm in ["input_layernorm", "post_attention_layernorm", "self_attn.q_norm", "self_attn.k_norm"] {
-            want(false, format!("{p}.{nm}.weight"))?;
-        }
-    }
-    want(false, "model.norm.weight".to_string())?;
-    // the embedding: engine.safetensors (its metadata names its layout; an earlier engine's, which does not, is by its words)
-    let meta = ef.metadata.iter().find(|(k, _)| k == "embed").map(|(_, v)| v.clone()).ok_or_else(|| Error(format!("{}: no embed entry", ep.display())))?;
-    let m = json::parse(&meta).map_err(|e| Error(format!("{}: embed: {e}", ep.display())))?;
-    let shape = m.get("shape").and_then(Value::as_u64s).filter(|s| s.len() == 2).ok_or_else(|| Error(format!("{}: embed: no shape", ep.display())))?;
-    if shape[0] as usize != cfg.vocab || shape[1] as usize != h {
-        return err(format!("{}: the embedding is {} x {}, where the config says {} x {h}", ep.display(), shape[0], shape[1], cfg.vocab));
-    }
-    let elay = match m.get("layout").and_then(Value::as_str) {
-        Some(n) => layout_named(Some(n), &format!("{}: embed", ep.display()))?,
-        None if m.get("hb").is_some() => Layout::Twelve,
-        None => Layout::Tiered,
-    };
-    for sf in suffixes(elay) {
-        want(true, format!("embed.glyd_{sf}"))?;
-    }
-    plans.push(PackPlan { key: "embed".to_string(), layout: elay, rows: shape[0] as i64, cols: shape[1] as i64, words: words_of(elay, &m, "embed")? });
-    if !cfg.tie {
-        plans.push(pack("lm_head", &mut want, Some((cfg.vocab, h)))?);
-    }
-    Ok(Plan { layout, packs: plans, jobs })
-}
-
-fn pack_from(feed: &mut Feed, key: &str, rows: i64, cols: i64, layout: Layout, words: ([u64; 3], [u32; 4])) -> Result<PackBuf> {
-    let sfx = suffixes(layout);
-    let (data, b1, b2) =
-        (feed.take(&format!("{key}.glyd_{}", sfx[0]))?, feed.take(&format!("{key}.glyd_{}", sfx[1]))?, feed.take(&format!("{key}.glyd_{}", sfx[2]))?);
-    let bytes = data.bytes + b1.bytes + b2.bytes;
-    let w = match layout {
-        Layout::Tiered
-        | Layout::Compact
-        | Layout::Int6
-        | Layout::Int5
-        | Layout::Int4
-        | Layout::Int4H
-        | Layout::Int3
-        | Layout::Int6Row
-        | Layout::Int5Row
-        | Layout::Int4Row
-        | Layout::Cb3Row
-        | Layout::Cb2Row
-        | Layout::Hummingbird => Words::Tiered { blocks: b1.ptr, block_base: b2.ptr, tiers: [words.0[0] as u32, words.0[1] as u32, words.0[2] as u32] },
-        Layout::Twelve => Words::Twelve { exc: b1.ptr, exc_base: b2.ptr, sym: words.1 },
-    };
-    let pack = Pack { data: data.ptr, words: w, rows, cols };
-    Ok(PackBuf { pack, bytes, tp_rows: 0, _bufs: [data, b1, b2] })
-}
-
 /// The rotary tables as torch computes them, in fp32, then rounded to bf16 as vLLM's cache is: cos and sin [max_pos, dim / 2].
 pub fn rope_tables(theta: f64, dim: usize, max_pos: usize) -> (Vec<u16>, Vec<u16>) {
     let half = dim / 2;
@@ -556,82 +248,6 @@ pub fn rope_tables(theta: f64, dim: usize, max_pos: usize) -> (Vec<u16>, Vec<u16
     (cos, sin)
 }
 
-impl Weights {
-    /// `dir` is a directory `glyd-engine pack` made (`plan` says what it holds). `max_pos` caps the rotary tables (positions served). The weights are read by a
-    /// thread of their own and copied to the GPU on `stream`.
-    pub fn load(dir: &Path, max_pos: Option<usize>, stream: Stream) -> Result<Weights> {
-        let cfg = Config::load(dir)?;
-        let plan = plan(dir)?;
-        let mut feed = Feed(load_all(&plan.jobs, stream)?);
-        let mut packs = plan.packs.iter();
-        let mut next_pack = |feed: &mut Feed| -> Result<PackBuf> {
-            let pp = packs.next().ok_or_else(|| Error("the plan has no pack left".into()))?;
-            pack_from(feed, &pp.key, pp.rows, pp.cols, pp.layout, pp.words)
-        };
-        let mut layers = Vec::with_capacity(cfg.layers);
-        for l in 0..cfg.layers {
-            let p = format!("model.layers.{l}");
-            let qkv = next_pack(&mut feed)?;
-            let o = next_pack(&mut feed)?;
-            let gate_up = next_pack(&mut feed)?;
-            let down = next_pack(&mut feed)?;
-            let (in_norm, post_norm) = (feed.take(&format!("{p}.input_layernorm.weight"))?, feed.take(&format!("{p}.post_attention_layernorm.weight"))?);
-            let (q_norm, k_norm) = (feed.take(&format!("{p}.self_attn.q_norm.weight"))?, feed.take(&format!("{p}.self_attn.k_norm.weight"))?);
-            layers.push(Layer { qkv, o, gate_up, down, in_norm, post_norm, q_norm, k_norm });
-        }
-        let norm = feed.take("model.norm.weight")?;
-        let embed = next_pack(&mut feed)?;
-        let head = if cfg.tie { None } else { Some(next_pack(&mut feed)?) };
-        Weights::finish(cfg, plan.layout, layers, norm, embed, head, max_pos, dir)
-    }
-
-    /// The loaded parts as a `Weights`: the bytes they take (and bf16 would), per kind of matrix, and the rotary tables.
-    #[allow(clippy::too_many_arguments)]
-    fn finish(
-        cfg: Config,
-        layout: Layout,
-        layers: Vec<Layer>,
-        norm: Buf,
-        embed: PackBuf,
-        head: Option<PackBuf>,
-        max_pos: Option<usize>,
-        dir: &Path,
-    ) -> Result<Weights> {
-        let (h, d) = (cfg.hidden, cfg.head_dim);
-        let (mut bytes, mut bf16_bytes) = (0usize, 0usize);
-        let mut kinds: Vec<(&'static str, usize, usize)> = ["qkv", "o", "gate_up", "down", "embed", "lm_head"].iter().map(|&n| (n, 0, 0)).collect();
-        for ly in &layers {
-            for (k, pk) in [&ly.qkv, &ly.o, &ly.gate_up, &ly.down].into_iter().enumerate() {
-                bytes += pk.bytes;
-                bf16_bytes += (pk.pack.rows * pk.pack.cols) as usize * 2;
-                kinds[k].1 += pk.bytes;
-                kinds[k].2 += (pk.pack.rows * pk.pack.cols) as usize;
-            }
-            for n in [&ly.in_norm, &ly.post_norm, &ly.q_norm, &ly.k_norm] {
-                bytes += n.bytes;
-                bf16_bytes += n.bytes;
-            }
-        }
-        bytes += norm.bytes;
-        bf16_bytes += norm.bytes;
-        bytes += embed.bytes;
-        bf16_bytes += cfg.vocab * h * 2;
-        kinds[4].1 += embed.bytes;
-        kinds[4].2 += cfg.vocab * h;
-        if let Some(hp) = &head {
-            bytes += hp.bytes;
-            bf16_bytes += cfg.vocab * h * 2;
-            kinds[5].1 += hp.bytes;
-            kinds[5].2 += cfg.vocab * h;
-        }
-        let mp = max_pos.unwrap_or(cfg.max_pos).min(cfg.max_pos);
-        let (c, s) = rope_tables(cfg.rope_theta, d, mp);
-        let (cos, sin) = (upload_bytes(as_bytes(&c))?, upload_bytes(as_bytes(&s))?);
-        bytes += cos.bytes + sin.bytes;
-        Ok(Weights { cfg, layout, layers, embed, head, norm, cos, sin, bytes, bf16_bytes, kinds, dir: dir.to_path_buf() })
-    }
-}
-
 /// A matrix to pack: the checkpoint's tensors stacked by rows (q, k, v; gate, up; or one).
 #[derive(Clone, Debug)]
 pub(crate) struct Item {
@@ -652,10 +268,6 @@ pub(crate) struct Packed {
 
 fn i32_bytes(v: &[i32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
-}
-
-pub(crate) fn pack_item(ck: &Checkpoint, it: &Item, layout: Layout) -> Result<Packed> {
-    pack_item_map(ck, it, layout, &|_| {})
 }
 
 /// Apply an explicit development study transform before the unchanged checked lossless packer.
@@ -1127,57 +739,6 @@ pub(crate) fn ordered<T: Send>(
     })
 }
 
-impl Weights {
-    /// A Hub-format directory (config.json, the bf16 safetensors): every matrix packed here, in memory, by `threads` workers, each copied to the GPU as it is done, nothing written
-    /// (the same packs `glyd-engine pack` writes; about 20 s for an 8B model on 12 threads).
-    pub fn load_bf16(dir: &Path, max_pos: Option<usize>, threads: usize, layout: Layout) -> Result<Weights> {
-        let cfg = Config::load(dir)?;
-        let ck = io(Checkpoint::open(dir))?;
-        let (h, kv, d, i) = (cfg.hidden, cfg.kv_heads, cfg.head_dim, cfg.inter);
-        let mut items: Vec<Item> = vec![Item { members: vec!["model.embed_tokens.weight".into()], rows: cfg.vocab, cols: h }];
-        if !cfg.tie {
-            items.push(Item { members: vec!["lm_head.weight".into()], rows: cfg.vocab, cols: h });
-        }
-        let first_layer = items.len();
-        for l in 0..cfg.layers {
-            let p = format!("model.layers.{l}");
-            let m = |names: &[&str]| names.iter().map(|n| format!("{p}.{n}.weight")).collect::<Vec<_>>();
-            items.push(Item { members: m(&["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"]), rows: (cfg.heads + 2 * kv) * d, cols: h });
-            items.push(Item { members: m(&["self_attn.o_proj"]), rows: h, cols: cfg.heads * d });
-            items.push(Item { members: m(&["mlp.gate_proj", "mlp.up_proj"]), rows: 2 * i, cols: h });
-            items.push(Item { members: m(&["mlp.down_proj"]), rows: h, cols: i });
-        }
-        let norm_buf = |name: &str| -> Result<Buf> { upload_bytes(&io(ck.read(name))?) };
-        let mut packs: Vec<PackBuf> = Vec::with_capacity(items.len());
-        ordered(items.len(), threads, 2 * threads.max(1), &|k| pack_item(&ck, &items[k], layout), |_, p| {
-            packs.push(upload_packed(p)?);
-            Ok(())
-        })?;
-        let mut it = packs.into_iter();
-        let embed = it.next().ok_or_else(|| Error("no embedding".into()))?;
-        let head = if cfg.tie { None } else { it.next() };
-        debug_assert_eq!(it.len(), 4 * cfg.layers);
-        let _ = first_layer;
-        let mut layers = Vec::with_capacity(cfg.layers);
-        for l in 0..cfg.layers {
-            let p = format!("model.layers.{l}");
-            let (qkv, o, gate_up, down) = (it.next().unwrap(), it.next().unwrap(), it.next().unwrap(), it.next().unwrap());
-            layers.push(Layer {
-                qkv,
-                o,
-                gate_up,
-                down,
-                in_norm: norm_buf(&format!("{p}.input_layernorm.weight"))?,
-                post_norm: norm_buf(&format!("{p}.post_attention_layernorm.weight"))?,
-                q_norm: norm_buf(&format!("{p}.self_attn.q_norm.weight"))?,
-                k_norm: norm_buf(&format!("{p}.self_attn.k_norm.weight"))?,
-            });
-        }
-        let norm = norm_buf("model.norm.weight")?;
-        Weights::finish(cfg, layout, layers, norm, embed, head, max_pos, dir)
-    }
-}
-
 /// A matrix packed in host memory, copied to the GPU.
 pub(crate) fn upload_packed(p: Packed) -> Result<PackBuf> {
     let (data, b1, b2) = (upload_bytes(&p.data)?, upload_bytes(&p.b1)?, upload_bytes(&p.b2)?);
@@ -1349,7 +910,7 @@ mod tests {
 
     /// A small Qwen3 (two layers, tied embedding) as a Hub-format directory of bf16 tensors: every matrix of a trained matrix's spread but the second layer's gate and up, whose bits are any at all (a matrix the 12-bit
     /// layout holds in fewer bytes than the tiered one). Returns the tensors by name, for comparing what comes back.
-    fn tiny_checkpoint(dir: &Path) -> HashMap<String, (Vec<u64>, Vec<u16>)> {
+    fn tiny_checkpoint(dir: &Path) -> std::collections::HashMap<String, (Vec<u64>, Vec<u16>)> {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(
             dir.join("config.json"),
@@ -1455,152 +1016,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A glyd-v4 save that mixes both layouts, as the engine loads it: each pack in the layout its manifest names (the second layer's gate and up in the 12-bit one, the rest in the tiered one, the embedding in the
-    /// sidecar by its own metadata), the tensors to load named by those layouts, and every pack's buffers, read as the plan reads them, decoding to the bits of the checkpoint they came from.
-    #[test]
-    fn a_save_that_mixes_the_two_layouts_loads_each_pack_in_its_own() {
-        let dir = std::env::temp_dir().join(format!("glyd-engine-mix-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let (src, out) = (dir.join("src"), dir.join("packed"));
-        let w = tiny_checkpoint(&src);
-        crate::pack::run_with(src.to_str().unwrap(), &out, 2, Layout::Tiered, true).unwrap();
-        let manifest = json::parse(&std::fs::read_to_string(out.join("glyd.json")).unwrap()).unwrap();
-        assert_eq!(manifest.get("format").and_then(Value::as_str), Some("glyd-v4"));
-        assert_eq!(earlier_format(&out), None);
-        assert_eq!(packed_layout(&out), Some(Layout::Tiered));
-
-        let planned = plan(&out).unwrap();
-        let layout_of = |k: &str| planned.packs.iter().find(|p| p.key == k).unwrap_or_else(|| panic!("no pack {k}")).layout;
-        assert_eq!(layout_of("model.layers.1.mlp.gate_proj"), Layout::Twelve, "the matrix of any bits is held in the 12-bit layout");
-        for k in [
-            "model.layers.0.self_attn.q_proj",
-            "model.layers.0.self_attn.o_proj",
-            "model.layers.0.mlp.gate_proj",
-            "model.layers.0.mlp.down_proj",
-            "model.layers.1.self_attn.q_proj",
-            "model.layers.1.mlp.down_proj",
-            "embed",
-        ] {
-            assert_eq!(layout_of(k), Layout::Tiered, "{k}");
-        }
-        assert_eq!(planned.packs.len(), 9, "two layers of four packs and the embedding (the head is the embedding's)");
-        // the tensors to load: each pack's three buffers by its layout's names, in the order the loader takes them
-        let names = planned.tensors();
-        assert!(
-            names.contains(&"model.layers.1.mlp.gate_proj.glyd_exc_base".to_string())
-                && !names.contains(&"model.layers.1.mlp.gate_proj.glyd_blocks".to_string())
-        );
-        assert!(
-            names.contains(&"model.layers.0.mlp.gate_proj.glyd_blocks".to_string()) && !names.contains(&"model.layers.0.mlp.gate_proj.glyd_exc".to_string())
-        );
-        assert_eq!(names.len(), 9 * 3 + 2 * 4 + 1);
-
-        // every pack as the library holds it, decoded on the CPU, against the weights it was made from
-        let ck = Checkpoint::open(&out).unwrap();
-        let ef = glyd_gpu::safetensors::File::open(&out.join("engine.safetensors")).unwrap();
-        let read = |name: &str, sidecar: bool| if sidecar { ef.read(ef.get(name).unwrap()).unwrap() } else { ck.read(name).unwrap() };
-        let members = |key: &str| -> Vec<u16> {
-            let names: Vec<String> = if key == "embed" {
-                vec!["model.embed_tokens.weight".to_string()]
-            } else {
-                let (module, last) = key.rsplit_once('.').unwrap();
-                match last {
-                    "q_proj" => vec![format!("{module}.q_proj.weight"), format!("{module}.k_proj.weight"), format!("{module}.v_proj.weight")],
-                    "gate_proj" => vec![format!("{module}.gate_proj.weight"), format!("{module}.up_proj.weight")],
-                    _ => vec![format!("{key}.weight")],
-                }
-            };
-            names.iter().flat_map(|n| w[n].1.clone()).collect()
-        };
-        for pp in &planned.packs {
-            let key = pp.key.as_str();
-            let sidecar = key == "embed";
-            let sfx = suffixes(pp.layout);
-            let (rows, cols) = (pp.rows as usize, pp.cols as usize);
-            let buf = |i: usize| read(&format!("{key}.glyd_{}", sfx[i]), sidecar);
-            let mut out = vec![0u16; rows * cols];
-            let ok = match pp.layout {
-                Layout::Tiered
-                | Layout::Compact
-                | Layout::Int6
-                | Layout::Int5
-                | Layout::Int4
-                | Layout::Int4H
-                | Layout::Int3
-                | Layout::Int6Row
-                | Layout::Int5Row
-                | Layout::Int4Row
-                | Layout::Cb3Row
-                | Layout::Cb2Row
-                | Layout::Hummingbird => {
-                    assert_eq!(pp.words.0[0] >> 24, glyd_gpu::pack::TIERED_TAG as u64, "{key}: the new layout's number");
-                    let p = glyd_gpu::pack::Tiered {
-                        rows,
-                        cols,
-                        data: buf(0),
-                        blocks: buf(1),
-                        block_base: le_i32(&buf(2)),
-                        tiers: [pp.words.0[0] as u32, pp.words.0[1] as u32, pp.words.0[2] as u32],
-                    };
-                    glyd_gpu::pack::unpack_tiered(&p, &mut out)
-                }
-                Layout::Twelve => {
-                    let p = glyd_gpu::pack::Twelve { rows, cols, data: buf(0), exc: le_i32(&buf(1)), exc_base: le_i32(&buf(2)), sym: pp.words.1 };
-                    glyd_gpu::pack::unpack_twelve(&p, &mut out)
-                }
-            };
-            assert!(ok, "{key}: its buffers do not decode");
-            assert!(out == members(key), "{key}: decoded to other bits than the checkpoint's");
-        }
-
-        // a directory of the earlier layout (glyd 0.27's: the tiers' top byte 0xFF) is named as such and not loaded
-        let old = dir.join("old");
-        std::fs::create_dir_all(&old).unwrap();
-        for f in std::fs::read_dir(&out).unwrap() {
-            let f = f.unwrap();
-            std::fs::copy(f.path(), old.join(f.file_name())).unwrap();
-        }
-        let text = std::fs::read_to_string(old.join("glyd.json")).unwrap();
-        let mut v = json::parse(&text).unwrap();
-        if let Value::Object(top) = &mut v {
-            for (k, val) in top.iter_mut() {
-                if k == "format" {
-                    *val = Value::from("glyd-v1");
-                }
-                if k == "packs" {
-                    if let Value::Object(packs) = val {
-                        let (_, e) = packs.iter_mut().find(|(k, _)| k == "model.layers.0.self_attn.q_proj").unwrap();
-                        if let Value::Object(fields) = e {
-                            let (_, tiers) = fields.iter_mut().find(|(k, _)| k == "tiers").unwrap();
-                            if let Value::Array(a) = tiers {
-                                let t0 = a[0].as_u64().unwrap();
-                                a[0] = Value::from((t0 & 0xFF_FFFF) | 0xFF << 24);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        std::fs::write(old.join("glyd.json"), json::to_python(&v, 1)).unwrap();
-        assert_eq!(earlier_format(&old).as_deref(), Some(EARLIER_FORMAT));
-        let e = plan_error(&old);
-        assert!(e.contains("glyd 0.27") && e.contains("pack the model again"), "{e}");
-        // `glyd-engine pack` into that directory makes its packs again (its other files stay), and the result loads
-        std::fs::write(old.join("kv-tables-4096.safetensors"), "tables").unwrap();
-        crate::pack::run_with(src.to_str().unwrap(), &old, 2, Layout::Tiered, true).unwrap();
-        assert_eq!(earlier_format(&old), None);
-        assert_eq!(plan(&old).unwrap().packs.len(), 9);
-        assert_eq!(std::fs::read_to_string(old.join("kv-tables-4096.safetensors")).unwrap(), "tables");
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    fn plan_error(dir: &Path) -> String {
-        match plan(dir) {
-            Ok(_) => String::from("loaded"),
-            Err(e) => e.to_string(),
-        }
-    }
-
     /// A matrix of a checkpoint packed as the loader packs it in the four- and three-bit layouts (q, k and v stacked by rows): the packer's own pack, the words its tag.
     #[test]
     fn a_matrix_is_packed_in_a_block_layout_as_it_loads() {
@@ -1614,7 +1029,7 @@ mod tests {
         for (layout, pack, tag) in
             [(Layout::Int4, glyd_gpu::pack::pack_int4 as Pack, glyd_gpu::pack::INT4_TAG), (Layout::Int3, glyd_gpu::pack::pack_int3, glyd_gpu::pack::INT3_TAG)]
         {
-            let got = pack_item(&ck, &item, layout).unwrap();
+            let got = pack_item_map(&ck, &item, layout, &|_| {}).unwrap();
             let want = pack(&stacked, 256, 128).unwrap();
             assert!(
                 got.data == want.data && got.b1 == want.blocks && got.b2 == i32_bytes(&want.block_base) && (got.rows, got.cols) == (256, 128),

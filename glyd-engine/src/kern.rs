@@ -1,8 +1,9 @@
 //! The engine's own kernels (kernels/engine.cu) with typed launches. Device addresses are `u64`.
 
-use crate::dev::{ArgsOf, ByArgs, Dev, Typed};
+use crate::dev::{copy_d2h_async, copy_h2d_async, ArgsOf, Buf, ByArgs, Dev, Pinned, Typed};
 use crate::ffi::{Result, Stream};
 use crate::launch;
+use crate::sampler::{Need, Top};
 
 // The kernels' names: those kernels/engine.cu gives them, in every build.
 macro_rules! kname {
@@ -98,49 +99,12 @@ pub struct Kern {
     kv12_rows: crate::kt::kv12_rows,
     swap_copy: crate::kt::swap_copy,
     expsum: crate::kt::expsum_bf16,
-    count_diff: crate::kt::count_diff_u16,
     logsumexp: crate::kt::logsumexp_bf16,
-    row_stats: crate::kt::row_stats,
     read_stream: crate::kt::read_stream,
-    kv_hist: crate::kt::kv_hist,
-    kv_outside_total: crate::kt::kv_outside_total,
-    kv_leaf_hp: crate::kt::kv_leaf_hp,
-    kv_sweep: crate::kt::kv_sweep,
-    attn_self: crate::kt::attn_self,
-    /// The prompt attention's tile (warps a block, keys a step) and its kernel.
-    attn: ByArgs<ArgsOf<crate::kt::prefill_attn_w4_b64>>,
-    attn_warps: u32,
-    attn_bn: u32,
-}
-
-/// The prompt attention's shape (warps a block, keys a step): w4b64 (an AMD build w4b32, whose 48 KiB fit RDNA's 64 KiB a block); a development build tries another with
-/// GLYD_ENGINE_ATTN_TILE (w8b64, w4b32 or w8b32).
-#[cfg(feature = "dev")]
-fn attn_shape() -> Result<(u32, u32)> {
-    match std::env::var("GLYD_ENGINE_ATTN_TILE").unwrap_or_else(|_| (if cfg!(glyd_hip) { "w4b32" } else { "w4b64" }).to_string()).as_str() {
-        "w4b64" => Ok((4, 64)),
-        "w8b64" => Ok((8, 64)),
-        "w4b32" => Ok((4, 32)),
-        "w8b32" => Ok((8, 32)),
-        t => crate::ffi::err(format!("GLYD_ENGINE_ATTN_TILE={t}: w4b64, w8b64, w4b32 or w8b32")),
-    }
-}
-
-#[cfg(not(feature = "dev"))]
-fn attn_shape() -> Result<(u32, u32)> {
-    Ok(if cfg!(glyd_hip) { (4, 32) } else { (4, 64) })
 }
 
 impl Kern {
     pub fn load(dev: &Dev) -> Result<Kern> {
-        let (attn_warps, attn_bn) = attn_shape()?;
-        let attn = match (attn_warps, attn_bn) {
-            (4, 64) => dev.by_args::<crate::kt::prefill_attn_w4_b64>()?,
-            (8, 64) => dev.by_args::<crate::kt::prefill_attn_w8_b64>()?,
-            (4, 32) => dev.by_args::<crate::kt::prefill_attn_w4_b32>()?,
-            _ => dev.by_args::<crate::kt::prefill_attn_w8_b32>()?,
-        };
-        attn.allow_smem((16 * attn_warps + 4 * attn_bn) * 256)?;
         let small = tiles(dev, &[tile!(gemm3_64x64_b64_s3, 64, 64, 64, 128, 3), tile!(gemm3o_64x64_b64_s3, 64, 64, 64, 128, 3)])?;
         Ok(Kern {
             plain: tiles(dev, &PLAIN)?,
@@ -148,14 +112,6 @@ impl Kern {
             small_f32: small[1].clone(),
             sms: dev.sms.max(1) as u32,
             fused: tiles(dev, &FUSED)?,
-            kv_hist: dev.typed()?,
-            kv_outside_total: dev.typed()?,
-            kv_leaf_hp: dev.typed()?,
-            kv_sweep: dev.typed()?,
-            attn_self: dev.typed()?,
-            attn,
-            attn_warps,
-            attn_bn,
             copy_row: dev.typed()?,
             copy_rows: dev.typed()?,
             rmsnorm: dev.typed()?,
@@ -169,9 +125,7 @@ impl Kern {
             kv12_rows: dev.typed()?,
             swap_copy: dev.typed()?,
             expsum: dev.typed()?,
-            count_diff: dev.typed()?,
             logsumexp: dev.typed()?,
-            row_stats: dev.typed()?,
             read_stream: dev.typed()?,
         })
     }
@@ -369,60 +323,6 @@ impl Kern {
         launch!(self.silu_mul, [rows, (inter as u32 / 8).div_ceil(256), 1], [256, 1, 1], s; gu, out, inter)
     }
 
-    /// Causal attention for the `n` tokens of a chunk after `start` earlier ones over the bf16 staging cache `kv` [tokens, kv_heads, 256] (keys then values of a token's head):
-    /// q [n, heads, 128] (rows q_stride elements apart) to out [n, heads, 128] (rows out_stride apart).
-    ///
-    /// # Safety
-    /// As `copy_row`; `kv` holds start + n tokens.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn prefill_attn(
-        &self,
-        s: Stream,
-        q: u64,
-        q_stride: i32,
-        kv: u64,
-        out: u64,
-        out_stride: i32,
-        n: i32,
-        start: i32,
-        heads: i32,
-        kv_heads: i32,
-    ) -> Result<()> {
-        if heads % kv_heads != 0 {
-            return crate::ffi::err(format!("{heads} query heads over {kv_heads} key-value heads"));
-        }
-        // SAFETY: as this function's own contract; no table (a cache of its own).
-        unsafe { self.prefill_attn_paged(s, q, q_stride, kv, out, out_stride, n, start, heads, kv_heads, 0) }
-    }
-
-    /// `prefill_attn` over a paged cache: token p's row of `kv` is `table[p / 16] * 16 + p % 16` (`table` on the device, a block a 16 tokens; 0: the row is p).
-    ///
-    /// # Safety
-    /// As `prefill_attn`; `table` holds a block for each 16 of the start + n tokens, each within `kv`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn prefill_attn_paged(
-        &self,
-        s: Stream,
-        q: u64,
-        q_stride: i32,
-        kv: u64,
-        out: u64,
-        out_stride: i32,
-        n: i32,
-        start: i32,
-        heads: i32,
-        kv_heads: i32,
-        table: u64,
-    ) -> Result<()> {
-        if heads % kv_heads != 0 {
-            return crate::ffi::err(format!("{heads} query heads over {kv_heads} key-value heads"));
-        }
-        let rows = 16 * self.attn_warps as i32;
-        let scale_log2 = (1.0f64 / (128.0f64).sqrt() * std::f64::consts::LOG2_E) as f32;
-        let smem = (16 * self.attn_warps + 4 * self.attn_bn) * 256;
-        launch!(self.attn, [((n + rows - 1) / rows) as u32, heads as u32, 1], [32 * self.attn_warps, 1, 1], smem smem, s; q, q_stride, kv, out, out_stride, n, start, heads, kv_heads, scale_log2, table)
-    }
-
     /// The first largest of v logits: its index into `token` (int32) and its value into `value` (f32).
     ///
     /// # Safety
@@ -511,30 +411,12 @@ impl Kern {
         launch!(self.expsum, [rows, 1, 1], [1024, 1, 1], s; logits, v, maxv, temperature, out)
     }
 
-    /// How many of the `n` 16-bit values at `a` differ from those at `b`, added to `count` (uint64 [17]: all, then by head and key or value).
-    ///
-    /// # Safety
-    /// As `copy_row`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn count_diff(&self, s: Stream, a: u64, b: u64, n: u64, count: u64, heads: i32, dim: i32) -> Result<()> {
-        launch!(self.count_diff, [n.div_ceil(256).clamp(1, 1024) as u32, 1, 1], [256, 1, 1], s; a, b, n, count, heads, dim)
-    }
-
     /// The log-sum-exp of v logits given their maximum, into `lse` (f32).
     ///
     /// # Safety
     /// As `copy_row`.
     pub unsafe fn logsumexp(&self, s: Stream, logits: u64, v: i32, maxv: f32, lse: u64) -> Result<()> {
         launch!(self.logsumexp, [1, 1, 1], [1024, 1, 1], s; logits, v, maxv, lse)
-    }
-
-    /// Per row of logits [rows, v]: the first largest into `top1` (int32), the log-sum-exp into `lse` and the target's logit into `tlogit` (f32).
-    ///
-    /// # Safety
-    /// As `copy_row`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn row_stats(&self, s: Stream, logits: u64, v: i32, target: u64, top1: u64, lse: u64, tlogit: u64, rows: u32) -> Result<()> {
-        launch!(self.row_stats, [rows, 1, 1], [1024, 1, 1], s; logits, v, target, top1, lse, tlogit)
     }
 
     /// A streaming read of `n` 16-byte words at `p` (the memory bandwidth a read-only kernel gets); `out` is one u32.
@@ -544,86 +426,146 @@ impl Kern {
     pub unsafe fn read_stream(&self, s: Stream, p: u64, n: u64, out: u64, blocks: u32) -> Result<()> {
         launch!(self.read_stream, [blocks, 1, 1], [256, 1, 1], s; p, n, out)
     }
+}
 
-    /// counts [c, 128] (int32) += the exponent bins of the bf16 bits x [t, c] (rows `stride` apart), per channel (c a multiple of 16).
+/// Row `row`'s TOPK candidates (token, logit) from the pinned bytes at `p`: the token indices (int32) from byte `tok` on and the logits (f32) from byte `val` on, each row's TOPK after the row before's.
+///
+/// # Safety
+/// `p` holds TOPK (row + 1) tokens at `tok` and as many logits at `val`, aligned for 4-byte reads.
+unsafe fn read_candidates(p: *const u8, tok: usize, val: usize, row: usize) -> Vec<(u32, f32)> {
+    (0..TOPK).map(|j| (*(p.add(tok + 4 * (row * TOPK + j)) as *const i32) as u32, *(p.add(val + 4 * (row * TOPK + j)) as *const f32))).collect()
+}
+
+/// The grammar masks of a step's rows on the GPU: `apply` waits for each row's mask (the workers make them beside the step), copies them to the device and, behind the step's work on the stream, makes the step's candidates again with
+/// the masked top-k kernel, over the unmasked ones the step made (a graph's, whose kernel is fixed); the host then draws from candidates that hold the allowed tokens (`Sampler::sample_grammar`). No mask for a row: the row is as the step made it.
+pub struct MaskGpu {
+    dev: Buf,
+    stage: Pinned,
+    vocab: usize,
+    /// A row's words: its flag and its V / 32 words of bits.
+    words: usize,
+    rows: usize,
+}
+
+impl MaskGpu {
+    pub fn new(vocab: usize, rows: usize) -> Result<MaskGpu> {
+        let words = 1 + vocab.div_ceil(32);
+        Ok(MaskGpu { dev: Buf::zeroed(4 * words * rows)?, stage: Pinned::new(4 * words * rows)?, vocab, words, rows })
+    }
+
+    /// Whether the masks of rows can be put on the GPU (the kernels have the masked top-k, and take the vocabulary).
+    pub fn can(&self, kern: &Kern) -> bool {
+        kern.has_masked_topk() && self.vocab.is_multiple_of(8) && self.vocab >= TOPK
+    }
+
+    /// For the rows `masks` names (None: no mask): the masked candidates of every row into `tok` and `val` (as many rows as there are masks), after the work queued on the stream. Nothing is done where no row has a mask
+    /// or a row's worker died (that row keeps its unmasked candidates, which the host's draw checks against the mask as it always did). Returns whether it made any.
     ///
     /// # Safety
-    /// As `copy_row`.
-    pub unsafe fn kv_hist(&self, s: Stream, x: u64, stride: i32, t: i32, c: i32, counts: u64) -> Result<()> {
-        if c % 16 != 0 {
-            return crate::ffi::err(format!("{c} channels: not supported"));
+    /// `logits` holds a row of the vocabulary for each of `masks`, `tok` and `val` TOPK of each, all live and on the engine's stream; the stream was synchronized since the last call (the staging bytes are free).
+    pub unsafe fn apply(&self, kern: &Kern, dev: &Dev, masks: &[Option<crate::constrain::MaskHandle>], logits: u64, tok: u64, val: u64) -> Result<bool> {
+        if masks.is_empty() || masks.len() > self.rows || !self.can(kern) {
+            return Ok(false);
         }
-        launch!(self.kv_hist, [(c / 16) as u32, 1, 1], [256, 1, 1], s; x, stride, t, c, counts)
-    }
-
-    /// *total (u64) += the values of x [t, c] outside their channels' windows (base [c], uint8).
-    ///
-    /// # Safety
-    /// As `copy_row`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn kv_outside_total(&self, s: Stream, x: u64, stride: i32, t: i32, c: i32, base: u64, total: u64) -> Result<()> {
-        let n = (t as u64 * c as u64).div_ceil(256).clamp(1, 4096) as u32;
-        launch!(self.kv_outside_total, [n, 1, 1], [256, 1, 1], s; x, stride, t, c, base, total)
-    }
-
-    /// hp [page0 + p, heads] (int32) = the values outside the windows in page p's 16 tokens' keys and values, for `npages` pages from row 0 of k and v.
-    ///
-    /// # Safety
-    /// As `copy_row`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn kv_leaf_hp(
-        &self,
-        s: Stream,
-        k: u64,
-        ks: i32,
-        v: u64,
-        vs: i32,
-        kbase: u64,
-        vbase: u64,
-        heads: i32,
-        npages: u32,
-        page0: i32,
-        hp: u64,
-    ) -> Result<()> {
-        if npages == 0 {
-            return Ok(());
+        let stage = std::slice::from_raw_parts_mut(self.stage.ptr as *mut u32, self.words * masks.len());
+        let mut any = false;
+        for (r, m) in masks.iter().enumerate() {
+            let row = &mut stage[r * self.words..(r + 1) * self.words];
+            row.fill(0);
+            if let Some(vob) = m.as_ref().and_then(|m| m.words()).filter(|v| v.len() == self.vocab) {
+                row[1..1 + vob.as_slice().len().min(self.words - 1)].copy_from_slice(&vob.as_slice()[..vob.as_slice().len().min(self.words - 1)]);
+                row[0] = 1;
+                any = true;
+            }
         }
-        launch!(self.kv_leaf_hp, [npages, heads as u32, 1], [128, 1, 1], s; k, ks, v, vs, kbase, vbase, heads, page0, hp)
+        if !any {
+            return Ok(false);
+        }
+        copy_h2d_async(self.dev.ptr, self.stage.ptr as *const _, 4 * self.words * masks.len(), dev.stream)?;
+        kern.topk_rows_masked(dev.stream, logits, self.vocab as i32, masks.len() as u32, tok, val, self.dev.ptr, self.words as i32)?;
+        Ok(true)
+    }
+}
+
+/// The GPU's side of the sampler's candidates for an engine with one row of logits (Qwen3.5's and Nemotron 3 Super's, whose `Gen::reply` draws on the host): behind a step that `ask` names (`Sampler::top_need`), `queue` makes the row's
+/// 64 largest logits and, for a top-p with no top-k, the sum of its exponentials, and copies them to the host in the step's one synchronize; `read` gives them. A draw then reads 520 bytes in place of the row (131,072 to
+/// 248,000 logits to copy, sort and exponentiate on the host). `off` (GLYD_ENGINE_HOST_SAMPLING=1, to compare): none are made and the row is read.
+pub struct TopGpu {
+    tok: Buf,
+    val: Buf,
+    sum: Buf,
+    stage: Pinned,
+    vocab: usize,
+    /// What the next step is asked for.
+    pub ask: Option<Need>,
+    /// What the last `queue` made.
+    got: Option<Need>,
+    pub off: bool,
+    /// The mask of the next step's grammar (`Sampler::mask_handle`), and where it is put on the GPU.
+    pub mask: Option<crate::constrain::MaskHandle>,
+    masker: Option<MaskGpu>,
+}
+
+impl TopGpu {
+    pub fn new(vocab: usize) -> Result<TopGpu> {
+        Ok(TopGpu {
+            tok: Buf::zeroed(4 * TOPK)?,
+            val: Buf::zeroed(4 * TOPK)?,
+            sum: Buf::zeroed(8)?,
+            stage: Pinned::new(8 * TOPK + 8)?,
+            vocab,
+            ask: None,
+            got: None,
+            off: crate::tune!("GLYD_ENGINE_HOST_SAMPLING").is_some(),
+            mask: None,
+            masker: MaskGpu::new(vocab, 1).ok(),
+        })
     }
 
-    /// The sweep of `m` one-token rows of k and v: into need and exc [rows, layers] at row0 + t, layer.
+    /// Behind the step's work on the stream: the candidates of the row `ask` names, with the copies to the host (the caller synchronizes). The kernels take a vocabulary of a multiple of 8 and at least TOPK; a smaller one has none.
     ///
     /// # Safety
-    /// As `copy_row`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn kv_sweep(
-        &self,
-        s: Stream,
-        k: u64,
-        ks: i32,
-        v: u64,
-        vs: i32,
-        kbase: u64,
-        vbase: u64,
-        heads: i32,
-        layer: i32,
-        layers: i32,
-        row0: i32,
-        m: u32,
-        need: u64,
-        exc: u64,
-    ) -> Result<()> {
-        launch!(self.kv_sweep, [m, 1, 1], [32 * heads as u32, 1, 1], s; k, ks, v, vs, kbase, vbase, heads, layer, layers, row0, need, exc)
+    /// `logits` is a row of the vocabulary's size and `maxv` its largest (f32), both live and made on the engine's stream.
+    pub unsafe fn queue(&mut self, kern: &Kern, dev: &Dev, logits: u64, maxv: u64) -> Result<()> {
+        self.got = self.ask.filter(|_| !self.off && self.vocab.is_multiple_of(8) && self.vocab >= TOPK);
+        let Some(need) = self.got else { return Ok(()) };
+        let (s, host) = (dev.stream, self.stage.ptr as *mut u8);
+        kern.topk_rows(s, logits, self.vocab as i32, 1, self.tok.ptr, self.val.ptr)?;
+        // (a grammar's mask: the candidates made again with it, the mask put on the row before the top-k)
+        if let (Some(m), Some(g)) = (self.mask.take(), &self.masker) {
+            g.apply(kern, dev, &[Some(m)], logits, self.tok.ptr, self.val.ptr)?;
+        }
+        copy_d2h_async(host as *mut _, self.tok.ptr, 4 * TOPK, s)?;
+        copy_d2h_async(host.add(4 * TOPK) as *mut _, self.val.ptr, 4 * TOPK, s)?;
+        if need.mass {
+            kern.exp_sum_rows(s, logits, self.vocab as i32, 1, maxv, need.temperature, self.sum.ptr)?;
+            copy_d2h_async(host.add(8 * TOPK) as *mut _, self.sum.ptr, 8, s)?;
+        }
+        Ok(())
     }
 
-    /// out [m, heads, 128] = the value rows of v [m, kv_heads, 128] (one-token sequences' attention).
-    ///
-    /// # Safety
-    /// As `copy_row`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn attn_self(&self, s: Stream, v: u64, vs: i32, out: u64, os: i32, heads: i32, kv_heads: i32, m: u32) -> Result<()> {
-        launch!(self.attn_self, [m, heads as u32, 1], [128, 1, 1], s; v, vs, out, os, heads, kv_heads)
+    /// What the last `queue` made (the stream synchronized since): None where it made nothing.
+    pub fn read(&self) -> Option<Top> {
+        let need = self.got?;
+        let p = self.stage.ptr as *const u8;
+        // SAFETY: the pinned bytes were copied behind the step (the stream synchronized since): TOPK tokens (int32), TOPK logits (f32), then the sum (f64) where asked.
+        unsafe { Some(Top { cands: read_candidates(p, 0, 4 * TOPK, 0), mass: need.mass.then(|| *(p.add(8 * TOPK) as *const f64)) }) }
     }
+}
+
+/// The 64-row groups of the embedding that `tokens` fall in, each once and in order, and for each batch of `per` groups the pair (destination row, row among the batch's decoded groups) of every token
+/// whose group is in it.
+pub fn embed_plan(tokens: &[u32], per: usize) -> (Vec<i64>, Vec<Vec<(i32, i32)>>) {
+    let mut groups: Vec<i64> = tokens.iter().map(|&t| t as i64 / 64).collect();
+    groups.sort_unstable();
+    groups.dedup();
+    let at: std::collections::HashMap<i64, usize> = groups.iter().enumerate().map(|(i, &g)| (g, i)).collect();
+    let mut by_batch: Vec<Vec<(i32, i32)>> = vec![Vec::new(); groups.len().div_ceil(per)];
+    for (i, &t) in tokens.iter().enumerate() {
+        let g = at[&(t as i64 / 64)];
+        by_batch[g / per].push((i as i32, (g % per * 64) as i32 + (t % 64) as i32));
+    }
+    (groups, by_batch)
 }
 
 #[cfg(test)]
@@ -640,5 +582,45 @@ mod tests {
             assert!(!(n.starts_with("gk_") && n[3..].bytes().all(|b| b.is_ascii_digit())), "{n}");
         }
         assert_eq!(tiles.iter().collect::<std::collections::HashSet<_>>().len(), tiles.len());
+    }
+
+    #[test]
+    fn embedding_groups_once_and_rows_gathered() {
+        // tokens 70 and 71 share group 1; 5 and 130 are groups 0 and 2; with two groups a batch: batch 0 holds groups 0 and 1, batch 1 group 2
+        let (groups, batches) = embed_plan(&[70, 5, 71, 130, 70], 2);
+        assert_eq!(groups, vec![0, 1, 2]);
+        assert_eq!(batches[0], vec![(0, 64 + 6), (1, 5), (2, 64 + 7), (4, 64 + 6)]);
+        assert_eq!(batches[1], vec![(3, 2)]);
+        assert_eq!(embed_plan(&[], 4).1.len(), 0);
+    }
+
+    /// A row's candidates are read from where the copies put them: several rows, a step's TOPK of each one after the other from two places, and the one row of the
+    /// engines' `TopGpu`, its tokens and then its logits from the start.
+    #[test]
+    fn candidates_are_read_where_the_copies_put_them() {
+        const ROWS: usize = 8;
+        const TOK_AT: usize = 2048;
+        const VAL_AT: usize = 4096;
+        let (tok, val) = (TOK_AT / 4, VAL_AT / 4);
+        let mut words = vec![0u32; val + ROWS * TOPK];
+        for row in 0..ROWS {
+            for j in 0..TOPK {
+                words[tok + row * TOPK + j] = (1000 * row + j) as u32;
+                words[val + row * TOPK + j] = (row as f32 - j as f32 / 8.0).to_bits();
+            }
+        }
+        for row in [0, 1, ROWS - 1] {
+            // SAFETY: the buffer holds ROWS rows of TOPK tokens and logits at the offsets, 4-byte aligned.
+            let got = unsafe { read_candidates(words.as_ptr() as *const u8, TOK_AT, VAL_AT, row) };
+            assert_eq!(got, (0..TOPK).map(|j| ((1000 * row + j) as u32, row as f32 - j as f32 / 8.0)).collect::<Vec<_>>(), "row {row}");
+        }
+        let mut one = vec![0u32; 2 * TOPK];
+        for j in 0..TOPK {
+            one[j] = 7 * j as u32;
+            one[TOPK + j] = (-(j as f32)).to_bits();
+        }
+        // SAFETY: as above, one row.
+        let got = unsafe { read_candidates(one.as_ptr() as *const u8, 0, 4 * TOPK, 0) };
+        assert_eq!(got, (0..TOPK).map(|j| (7 * j as u32, -(j as f32))).collect::<Vec<_>>());
     }
 }
