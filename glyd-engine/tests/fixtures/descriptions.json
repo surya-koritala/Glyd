@@ -10,7 +10,7 @@
   "glm5_next_config.json": {
     "blocks": 90,
     "tensors": 74001,
-    "kinds": "3c853ced6638cc00",
+    "kinds": "d22f9b20c676bb3c",
     "weights": "d959d3c88c30f995",
     "plan": "affcfe6d7d263de3",
     "family": "Glm"
@@ -18,7 +18,7 @@
   "glm5_next_tiny_config.json": {
     "blocks": 10,
     "tensors": 287,
-    "kinds": "d98cab68dacde6a9",
+    "kinds": "0d1648187cbecbdb",
     "weights": "d99404eef9c9fc4c",
     "plan": "94bb4d28491156ee",
     "family": "Glm"
@@ -26,7 +26,7 @@
   "glm5_next_toy_config.json": {
     "blocks": 16,
     "tensors": 787,
-    "kinds": "c06e363f49534867",
+    "kinds": "4183faaeb2304c38",
     "weights": "2851afdc5a846cfc",
     "plan": "59e33001b2f26bed",
     "family": "Glm"
@@ -127,7 +127,7 @@
   "headers/DeepSeek-V4-Flash-0731.json": {
     "blocks": 86,
     "tensors": 67612,
-    "kinds": "ab0dc503758d8731",
+    "kinds": "86cc30c4a61e8a11",
     "weights": "7b10aca12255bca2",
     "plan": "501adcefbd0f834c",
     "family": "DeepSeekV4"
@@ -159,7 +159,7 @@
   "runtime/dsv4_model.json": {
     "blocks": 6,
     "tensors": 155,
-    "kinds": "c048a44495aad332",
+    "kinds": "0db35d531e310465",
     "weights": "7ac20f6ff49754ff",
     "plan": "0eebf69801bfd149",
     "family": "DeepSeekV4"
@@ -183,7 +183,7 @@
   "runtime/glm53flash_model.json": {
     "blocks": 8,
     "tensors": 184,
-    "kinds": "e22fc484687f44e1",
+    "kinds": "8e50c90554f0b7be",
     "weights": "6e99b4d27f83c141",
     "plan": "c070e5fde167e9d5",
     "family": "Glm"

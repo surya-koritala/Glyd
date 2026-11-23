@@ -1,32 +1,6 @@
 // Muse Spark's own kernels (included by engine.cu after glm.cu and moe.cu; src/dynamic/muse.rs describes the model and src/dynamic/mod.rs and src/moe.rs run them; its attention is the attention
-// kind's, kernels/attn.cu): the input-scaled norm, the residual gates, the router of fp32 weights, the experts' activation and the norm of each expert's output with the weighted sum, the logits' soft-cap.
-// bf16 in memory, fp32 inside; the rounding points are transformers' modeling_muse_spark.py's (src/muse_ref.rs: the CPU reference).
-
-// The input-scaled norm: y = RMS(bf16(x w)) without a weight (eps), rounded; rows of K. Block a row, 256 threads (K up to 256 x 32).
-extern "C" __global__ void __launch_bounds__(256) muse_rms_in(const bf16* x, const bf16* w, bf16* y, int K, float eps) {
-    const bf16* xr = x + (size_t)blockIdx.x * K;
-    float v[32], ss = 0.f;
-#pragma unroll
-    for (int j = 0; j < 32; j++) {
-        const int i = threadIdx.x + j * 256;
-        v[j] = i < K ? b2f(f2b(b2f(xr[i]) * b2f(w[i]))) : 0.f;
-        ss += v[j] * v[j];
-    }
-    const float r = rsqrtf(block_sum(ss) / K + eps);
-#pragma unroll
-    for (int j = 0; j < 32; j++) {
-        const int i = threadIdx.x + j * 256;
-        if (i < K) y[(size_t)blockIdx.x * K + i] = f2b(v[j] * r);
-    }
-}
-
-// The residual gate, x in place: x = bf16(bf16(alpha x) + bf16(beta h)) (alpha, beta: bf16 [K], the gate's factors). A thread a column.
-extern "C" __global__ void muse_rgate(bf16* x, const bf16* h, const bf16* alpha, const bf16* beta, int K) {
-    const int i = blockIdx.y * blockDim.x + threadIdx.x;
-    if (i >= K) return;
-    const size_t at = (size_t)blockIdx.x * K + i;
-    x[at] = f2b(b2f(f2b(b2f(alpha[i]) * b2f(x[at]))) + b2f(f2b(b2f(beta[i]) * b2f(h[at]))));
-}
+// kind's, kernels/attn.cu; its norms and residual gates residual.cu's, its experts' activation moe.cu's moe_act): the router of fp32 weights, the norm of each expert's output with the weighted sum, the logits'
+// soft-cap. bf16 in memory, fp32 inside; the rounding points are transformers' modeling_muse_spark.py's (src/muse_ref.rs: the CPU reference).
 
 // The router's logits [T, E] (fp32) = x [T, H] (bf16) W^T (fp32 [E, H]) times `mult`. A warp an expert of a token: block (token, 8 experts), 256 threads.
 extern "C" __global__ void muse_router(const bf16* x, const float* W, float* logits, int E, int H, float mult) {
@@ -38,21 +12,6 @@ extern "C" __global__ void muse_router(const bf16* x, const float* W, float* log
     for (int i = lane; i < H; i += 32) s = fmaf(b2f(xr[i]), wr[i], s);
     s = warp_sum(s);
     if (lane == 0) logits[(size_t)t * E + e] = s * mult;
-}
-
-// The experts' activation in the plan's order: out [P, I] = bf16(bf16(silu(gate)) up) of gu [P, 2 I] (transformers' act_fn on a bf16 tensor, then the product). A thread a column of a row.
-extern "C" __global__ void muse_act(const bf16* gu, bf16* out, int I) {
-    const int i = blockIdx.y * blockDim.x + threadIdx.x;
-    if (i >= I) return;
-    const size_t r = blockIdx.x;
-    const float g = b2f(gu[r * 2 * I + i]), u = b2f(gu[r * 2 * I + I + i]);
-    out[r * I + i] = f2b(b2f(f2b(g / (1.f + expf(-g)))) * u);
-}
-
-// inv[pair] = its row in the plan's order (plan [2 + 2E + P]: the pairs by expert, glyd_gpu_moe_way's). A thread a row.
-extern "C" __global__ void muse_inv(const int* plan, int* inv, int P, int E) {
-    const int r = blockIdx.x * blockDim.x + threadIdx.x;
-    if (r < P) inv[plan[2 + 2 * E + r]] = r;
 }
 
 // Each token's weighted sum of its experts' outputs, as transformers adds them: rows [P, L] (each pair's second product, unweighted, in the plan's order), each normed (input-scaled with w, eps), times

@@ -79,6 +79,7 @@ fn main() {
     println!("cargo:rerun-if-changed=kernels/engine.cu");
     println!("cargo:rerun-if-changed=kernels/qwen35.cu");
     println!("cargo:rerun-if-changed=kernels/moe.cu");
+    println!("cargo:rerun-if-changed=kernels/residual.cu");
     println!("cargo:rerun-if-changed=kernels/moe_rows.cu");
     println!("cargo:rerun-if-changed=kernels/moe_hb.cu");
     println!("cargo:rerun-if-changed=kernels/moe_hbg.cu");

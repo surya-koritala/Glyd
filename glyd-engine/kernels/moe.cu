@@ -12,6 +12,7 @@
 #define MOE_GELU 1
 #define MOE_RELU2 2
 #define MOE_SITU 3     // situ: lim tanh(g / lim) sigmoid(g) x lin tanh(u / lin) (Kimi-K3: 4 and 25)
+#define MOE_SILU_R 4   // silu(gate) rounded to bf16, then times up (transformers' act_fn on a bf16 tensor, then the product: Muse Spark's), no clamp
 
 // 8 bf16 of a 16-byte load as floats (exact).
 __device__ __forceinline__ void moe_bf8(const uint4 q, float* f) {
@@ -176,7 +177,8 @@ extern "C" __global__ void __launch_bounds__(128) moe_select32(const float* logi
 
 // ---- between the experts' two products, and after them ------------------------------------------------------------------------------------
 // out [rows, I]: MOE_SILU or MOE_GELU (tanh): act(min(g, lim)) * clamp(u, -lim, lim) of gu [rows, 2 I] (the gate in the first I columns, the up in the next I; lim = INFINITY: no clamp, GLM-5.x's is 10);
-// MOE_SITU: lim tanh(g / lim) sigmoid(g) x lin tanh(u / lin) of the same halves; MOE_RELU2: relu(x)^2 of gu [rows, I] (in place where out = gu). One rounding. I a multiple of 8; a thread takes
+// MOE_SITU: lim tanh(g / lim) sigmoid(g) x lin tanh(u / lin) of the same halves; MOE_RELU2: relu(x)^2 of gu [rows, I] (in place where out = gu). One rounding (MOE_SILU_R: silu(g) rounded before the
+// product too). I a multiple of 8; a thread takes
 // 8 columns, block (row, chunk of 256 threads' columns).
 extern "C" __global__ void moe_act(const bf16* gu, bf16* out, int I, int mode, float lim, float lin) {
     const int i = (blockIdx.y * blockDim.x + threadIdx.x) * 8;
@@ -202,6 +204,11 @@ extern "C" __global__ void moe_act(const bf16* gu, bf16* out, int I, int mode, f
             if (mode == MOE_SITU) {
                 const float g = b2f(gp[k]), u = b2f(up[k]);
                 op[k] = f2b(lim * tanhf(g / lim) / (1.f + expf(-g)) * lin * tanhf(u / lin));
+                continue;
+            }
+            if (mode == MOE_SILU_R) {
+                const float g = b2f(gp[k]), u = b2f(up[k]);
+                op[k] = f2b(b2f(f2b(g / (1.f + expf(-g)))) * u);
                 continue;
             }
             const float g = fminf(b2f(gp[k]), lim), u = fminf(fmaxf(b2f(up[k]), -lim), lim);

@@ -3,7 +3,7 @@
 //! src/kern35.rs's loader (the small matrices it keeps dense, the fp32 parameters, the gated norm's weight as vLLM holds it), handed over as they are.
 
 use super::attn::{AttnOp, GateAt, QkNorm, RopeAt};
-use super::{Dyn, ModelDesc, Op, Opts, Ring, Rope, Slot, Stage};
+use super::{Dyn, ModelDesc, NormW, Op, Opts, Ring, Rope, Slot, Stage};
 use crate::dev::Dev;
 use crate::ffi::{err, Result};
 use crate::kern35::{Mat, Weights35};
@@ -136,7 +136,7 @@ pub fn describe(c: &crate::qwen35::Config35, st: &Stage) -> Result<ModelDesc> {
         (n_mats, n_small) = (n_mats + m, n_small + n);
         let mut ops = Vec::new();
         if l == 0 {
-            first = Some(Op::RmsNorm { x: Slot::X, w: s0, y: Slot::H, plus1: true });
+            first = Some(Op::RmsNorm { x: Slot::X, w: s0, y: Slot::H, weight: NormW::PlusOne, eps: c.eps });
         } else {
             ops.push(Op::NormAdd { y: Slot::D, w: s0, plus1: true });
         }
@@ -208,7 +208,7 @@ pub fn describe(c: &crate::qwen35::Config35, st: &Stage) -> Result<ModelDesc> {
         ropes: vec![Rope { theta: c.rope_theta, dim: c.rotary_dim, pairs: c.rotary_dim / 2 }],
         rings,
         // (a later stage never runs the first operation)
-        first: first.unwrap_or(Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, plus1: true }),
+        first: first.unwrap_or(Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, weight: NormW::PlusOne, eps: c.eps }),
         layers,
         states,
         final_norm: Some((final_norm, Slot::D, true)),

@@ -55,29 +55,39 @@ extern "C" __global__ void __launch_bounds__(256) rms2_rows(const bf16* x, int x
     }
 }
 
-// The same norm summed by 512 threads, a thread's columns t, t + 512, ... (K up to 512 ML_COLS) read into registers once, each square added by an fma: the q latent's norm as Kimi-K3's engine sums it (its
-// kimi_rms2). The same function as rms2_rows, the sums in another order. y row i. A block a row, 512 threads.
+// The same function summed by 512 threads, a thread's columns t, t + 512, ... in that order, each square added by an fma: KimiRMSNorm as Kimi-K3's engine sums it (its q latent's norm, its latent
+// experts' norm); any width, for K up to 512 ML_COLS a thread's columns read into registers once (a column a round had made a decode step's norm 8-15 us on one SM). y row i. A block a row, 512 threads.
 #define ML_COLS 16
 extern "C" __global__ void __launch_bounds__(512) rms2_rows512(const bf16* x, int xs, const bf16* w, bf16* y, int ys, int K, float eps) {
     const bf16* xr = x + (size_t)blockIdx.x * xs;
     bf16* yr = y + (size_t)blockIdx.x * ys;
     const int tid = threadIdx.x;
-    float v[ML_COLS];
+    if (blockDim.x == 512 && K <= 512 * ML_COLS) {
+        float v[ML_COLS];
 #pragma unroll
-    for (int k = 0; k < ML_COLS; k++) {
-        const int d = tid + 512 * k;
-        v[k] = d < K ? b2f(xr[d]) : 0.f;
+        for (int k = 0; k < ML_COLS; k++) {
+            const int d = tid + 512 * k;
+            v[k] = d < K ? b2f(xr[d]) : 0.f;
+        }
+        float ss = 0.f;
+#pragma unroll
+        for (int k = 0; k < ML_COLS; k++)
+            if (tid + 512 * k < K) ss = fmaf(v[k], v[k], ss);
+        const float r = rsqrtf(block_sum(ss) / K + eps);
+#pragma unroll
+        for (int k = 0; k < ML_COLS; k++) {
+            const int d = tid + 512 * k;
+            if (d < K) yr[d] = f2b(b2f(w[d]) * b2f(f2b(v[k] * r)));
+        }
+        return;
     }
     float ss = 0.f;
-#pragma unroll
-    for (int k = 0; k < ML_COLS; k++)
-        if (tid + 512 * k < K) ss = fmaf(v[k], v[k], ss);
-    const float r = rsqrtf(block_sum(ss) / K + eps);
-#pragma unroll
-    for (int k = 0; k < ML_COLS; k++) {
-        const int d = tid + 512 * k;
-        if (d < K) yr[d] = f2b(b2f(w[d]) * b2f(f2b(v[k] * r)));
+    for (int d = tid; d < K; d += blockDim.x) {
+        const float v = b2f(xr[d]);
+        ss = fmaf(v, v, ss);
     }
+    const float r = rsqrtf(block_sum(ss) / K + eps);
+    for (int d = tid; d < K; d += blockDim.x) yr[d] = f2b(b2f(w[d]) * b2f(f2b(b2f(xr[d]) * r)));
 }
 
 // nn.LayerNorm over K (<= 2 blockDim.x) channels: fp32, the mean and the biased variance of the row, (x - mean) * rsqrt(var + eps) * w + b, one rounding; y's row of position dst[i] (through tab) where dst. A block

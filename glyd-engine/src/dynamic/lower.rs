@@ -3,7 +3,7 @@
 //! tensor's dims by name), which the kinds do not hold. Each family's lowering is held to the executor's own description of it (the tests below) until that one goes.
 
 use super::attn::AttnOp;
-use super::{ModelDesc, Op, Ring, Rope, Slot, SLOTS};
+use super::{ModelDesc, MoeOp, NormW, Op, Ring, Rope, Slot, SLOTS};
 use crate::ffi::{err, Error, Result};
 use crate::runtime::describe::{Described, Source};
 use crate::runtime::kinds::{Body, Ffn, Mixer};
@@ -192,6 +192,7 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
         return err(format!("Qwen3.5: {} blocks, where each layer is a mixer block and an MLP block", m.blocks.len()));
     }
     let layers = m.blocks.len() / 2;
+    let eps = m.blocks.first().map_or(1e-6, |b| b.norm_in.eps);
     let (mut lin, mut att) = (None, None);
     let mut kinds = Vec::with_capacity(layers);
     for l in 0..layers {
@@ -242,7 +243,7 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
         (n_mats, n_small) = (n_mats + mm, n_small + nn);
         let mut ops = Vec::new();
         if l == 0 {
-            first = Some(Op::RmsNorm { x: Slot::X, w: s0, y: Slot::H, plus1: true });
+            first = Some(Op::RmsNorm { x: Slot::X, w: s0, y: Slot::H, weight: NormW::PlusOne, eps });
         } else {
             ops.push(Op::NormAdd { y: Slot::D, w: s0, plus1: true });
         }
@@ -308,14 +309,14 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
         family: "Qwen3.5",
         hidden: m.hidden,
         vocab: m.vocab,
-        eps: m.blocks.first().map_or(1e-6, |b| b.norm_in.eps),
+        eps,
         max_pos,
         widths,
         mats: Vec::new(),
         small: Vec::new(),
         ropes: vec![Rope { theta: rope.theta, dim: rotary, pairs: rotary / 2 }],
         rings,
-        first: first.unwrap_or(Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, plus1: true }),
+        first: first.unwrap_or(Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, weight: NormW::PlusOne, eps }),
         layers: ops_all,
         states,
         final_norm: Some((n_small, Slot::D, true)),
@@ -340,6 +341,7 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
     use crate::kern_nh::{NH_N, NH_P};
     use crate::nemotron::NhKind;
     let m = &d.desc;
+    let eps = m.blocks.first().map_or(1e-5, |b| b.norm_in.eps);
     let (mut mamba, mut att) = (None, None);
     let mut kinds = Vec::with_capacity(m.blocks.len());
     for (l, b) in m.blocks.iter().enumerate() {
@@ -381,7 +383,7 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
         (n_mats, n_small) = (n_mats + mm, n_small + nn);
         let mut ops = Vec::new();
         if l == 0 {
-            first = Some(Op::RmsNorm { x: Slot::X, w: s0, y: Slot::H, plus1: false });
+            first = Some(Op::RmsNorm { x: Slot::X, w: s0, y: Slot::H, weight: NormW::Plain, eps });
         } else {
             ops.push(Op::NormAdd { y: Slot::O, w: s0, plus1: false });
         }
@@ -413,7 +415,7 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
                 ]);
             }
             NhKind::Moe => {
-                ops.push(Op::Moe { block: n_moe });
+                ops.push(Op::Moe(MoeOp::of(n_moe)));
                 n_moe += 1;
             }
         }
@@ -439,14 +441,14 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
         family: "Nemotron-H",
         hidden: hid,
         vocab: m.vocab,
-        eps: m.blocks.first().map_or(1e-5, |b| b.norm_in.eps),
+        eps,
         max_pos,
         widths,
         mats: Vec::new(),
         small: Vec::new(),
         ropes: Vec::new(),
         rings,
-        first: first.unwrap_or(Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, plus1: false }),
+        first: first.unwrap_or(Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, weight: NormW::Plain, eps }),
         layers,
         states,
         final_norm: Some((n_small, Slot::O, false)),
@@ -473,12 +475,13 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
     }
     let layers = m.blocks.len() / 2;
     let mut atts = Vec::with_capacity(layers);
-    let mut lat = None;
+    let (mut lat, mut mult) = (None, 1.0);
     for l in 0..layers {
         match (&m.blocks[2 * l].body, &m.blocks[2 * l + 1].body) {
             (Body::Mixer(Mixer::Attention(a)), Body::Ffn(Ffn::Moe(e))) => {
                 atts.push(a);
                 lat = lat.or(e.latent.as_ref().map(|x| x.dim));
+                mult = e.router.logit_scale;
             }
             (a, f) => return err(format!("Muse Spark: layer {l} is {a:?} and {f:?}")),
         }
@@ -513,22 +516,22 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
             return err(format!("Muse Spark: an attention product of {row} where its attention reads {}", attn.stride));
         }
         let mut ops = vec![
-            Op::MuseRms { x: Slot::X, w: s0, y: Slot::H, eps },
+            Op::RmsNorm { x: Slot::X, w: s0, y: Slot::H, weight: NormW::Plain, eps },
             Op::Linear { w: m0, x: Slot::H, y: Slot::Mix, name: "attention: q, k, v and gate product" },
             Op::Attn(attn),
             Op::Linear { w: m0 + 1, x: Slot::Att, y: Slot::O, name: "attention: o product" },
-            Op::MuseRms { x: Slot::O, w: ones, y: Slot::O, eps: post_eps },
-            Op::MuseGate { alpha: s0 + 1, beta: s0 + 2 },
-            Op::MuseRms { x: Slot::X, w: s0 + 3, y: Slot::H, eps },
+            Op::RmsNorm { x: Slot::O, w: ones, y: Slot::O, weight: NormW::Plain, eps: post_eps },
+            Op::GatedResidual { alpha: s0 + 1, beta: s0 + 2 },
+            Op::RmsNorm { x: Slot::X, w: s0 + 3, y: Slot::H, weight: NormW::Plain, eps },
             Op::Linear { w: m0 + 2, x: Slot::H, y: Slot::Proj, name: "experts: latent in" },
-            Op::MuseRms { x: Slot::Proj, w: s0 + 4, y: Slot::Xc, eps },
-            Op::MuseMoe { block, post_w: s0 + 5, eps: post_eps },
+            Op::RmsNorm { x: Slot::Proj, w: s0 + 4, y: Slot::Xc, weight: NormW::Plain, eps },
+            Op::Moe(super::muse::latent_moe(block, s0 + 5, post_eps, mult)),
             Op::Linear { w: m0 + 3, x: Slot::M, y: Slot::O, name: "experts: latent out" },
-            Op::MuseRmsIn { x: Slot::O, w: s0 + 6, y: Slot::O, eps: post_eps },
-            Op::MuseGate { alpha: s0 + 7, beta: s0 + 8 },
+            Op::RmsNorm { x: Slot::O, w: s0 + 6, y: Slot::O, weight: NormW::Input, eps: post_eps },
+            Op::GatedResidual { alpha: s0 + 7, beta: s0 + 8 },
         ];
         if st.last && l + 1 == layers {
-            ops.push(Op::MuseRms { x: Slot::X, w: n_small, y: Slot::H, eps });
+            ops.push(Op::RmsNorm { x: Slot::X, w: n_small, y: Slot::H, weight: NormW::Plain, eps });
             n_small += 1;
         }
         ops_all.push(ops);
@@ -559,7 +562,7 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
         small: Vec::new(),
         ropes: Vec::new(),
         rings,
-        first: Op::MuseRms { x: Slot::X, w: ones, y: Slot::X, eps },
+        first: Op::RmsNorm { x: Slot::X, w: ones, y: Slot::X, weight: NormW::Plain, eps },
         layers: ops_all,
         states: Vec::new(),
         final_norm: None,
@@ -593,8 +596,8 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
         ));
     }
     let layers = m.blocks.len() / 2;
-    let hc = match &m.blocks[0].residual {
-        Residual::Streams(s) => (s.eps, s.sinkhorn_iters as i32),
+    let (hc, round) = match &m.blocks[0].residual {
+        Residual::Streams(s) => ((s.eps, s.sinkhorn_iters as i32), s.rounding),
         r => return err(format!("GLM-5.3-Flash: a residual of {r:?}, not the streams")),
     };
     let lin = m.blocks.iter().find_map(|b| match &b.body {
@@ -636,7 +639,7 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
         }
         let s = n_small;
         n_small += 5;
-        let mut ops = vec![Op::GlmPre { f: s + 2, base: s + 3, scale: s + 4, norm: s }];
+        let mut ops = vec![Op::StreamsPre { f: s + 2, base: s + 3, scale: s + 4, norm: s, round }];
         let m0 = n_mats;
         let nm = per_layer(kind, moe);
         n_mats += nm;
@@ -648,26 +651,26 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
             states.push(heads * GM_D * GM_D * 4);
             ops.extend(kda_ops(m0, s0, conv, ssm, qd, heads, bound));
         } else if let Some(x) = mla {
-            // (q's and the key-value latent's products apart; the q latent's norm summed as GLM-5.3's engine sums it; the indexer's picks given as their tokens and the open pool's)
-            let op = super::mla::MlaOp::of(x, super::mla::MlaIn::Apart { q_a: m0, kv_a: m0 + 2 }, m0 + 1, m0 + 3, n_small, rings.len(), false, true)?;
+            // (q's and the key-value latent's products apart; the indexer's picks given as their tokens and the open pool's)
+            let op = super::mla::MlaOp::of(x, super::mla::MlaIn::Apart { q_a: m0, kv_a: m0 + 2 }, m0 + 1, m0 + 3, n_small, rings.len(), true)?;
             n_small += op.small_count();
             rings.extend(op.rings());
             ops.push(Op::Mla(op));
         }
         let h = n_small;
         n_small += 3;
-        ops.extend([Op::GlmPost, Op::GlmPre { f: h, base: h + 1, scale: h + 2, norm: s + 1 }]);
+        ops.extend([Op::StreamsPost { round }, Op::StreamsPre { f: h, base: h + 1, scale: h + 2, norm: s + 1, round }]);
         if moe {
-            ops.push(Op::Moe { block: n_moe });
+            ops.push(Op::Moe(MoeOp::of(n_moe)));
             n_moe += 1;
         } else {
             ops.extend(dense_ops(m0 + nm - 2, inter, limit));
         }
-        ops.push(Op::GlmPost);
+        ops.push(Op::StreamsPost { round });
         ops_all.push(ops);
     }
     if st.last {
-        ops_all.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::GlmHead { norm: n_small });
+        ops_all.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::StreamsHead { weighted: None, norm: n_small, round });
     }
     let e = n_mats;
     let lm = if st.last && d.head.is_some() { e + 1 } else { e };
@@ -714,8 +717,8 @@ pub fn kimi(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, w32
                 true
             }
             Body::Mixer(Mixer::Mla(x)) => {
-                // (q_a, the gate and kv_a one product; the q latent's norm summed as Kimi-K3's engine sums it)
-                mla = Some(super::mla::MlaOp::of(x, super::mla::MlaIn::Fused { w: 0 }, 0, 0, 0, 0, true, false)?);
+                // (q_a, the gate and kv_a one product)
+                mla = Some(super::mla::MlaOp::of(x, super::mla::MlaIn::Fused { w: 0 }, 0, 0, 0, 0, false)?);
                 false
             }
             b => return err(format!("Kimi-K3: layer {l}'s mixer is {b:?}")),
@@ -754,7 +757,7 @@ pub fn deepseek_v4(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Sta
     }
     let layers = m.blocks.len() / 2;
     let (mut ratios, mut hash) = (Vec::with_capacity(layers), Vec::with_capacity(layers));
-    let (mut first, mut idx, mut top_k, mut hc) = (None, (0, 0, 0), 0, (0.0, 0, 0));
+    let (mut first, mut idx, mut hc) = (None, (0, 0, 0), (0.0, 0, 0, crate::runtime::kinds::Rounding::Once));
     for l in 0..layers {
         let (ab, eb) = (&m.blocks[2 * l], &m.blocks[2 * l + 1]);
         let c = match &ab.body {
@@ -777,13 +780,12 @@ pub fn deepseek_v4(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Sta
         };
         for b in [ab, eb] {
             match &b.residual {
-                Residual::Streams(s) => hc = (s.eps, s.sinkhorn_iters, s.streams),
+                Residual::Streams(s) => hc = (s.eps, s.sinkhorn_iters, s.streams, s.rounding),
                 r => return err(format!("DeepSeek-V4: layer {l}'s residual is {r:?}, not the streams")),
             }
         }
         ratios.push(c.ratio);
         hash.push(e.router.hash);
-        top_k = e.router.top_k;
         first = first.or(Some(c));
     }
     let c = first.ok_or_else(|| Error("DeepSeek-V4: no layers".into()))?;
@@ -804,9 +806,9 @@ pub fn deepseek_v4(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Sta
         window: c.window,
         ratios,
         hash,
-        top_k,
         streams: hc.2,
         hc: (hc.0, hc.1),
+        round: hc.3,
     };
     v4_desc(&s, st, vo)
 }
@@ -1141,6 +1143,40 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The streams' operations round as the kind says (`StreamsP::rounding`): DeepSeek-V4 described with transformers' bf16 rounding lowers to other operations
+    /// than its loader's (the release's), and is not loaded; every stream operation of the release's description carries `Once`.
+    #[test]
+    fn the_streams_round_as_their_kind() {
+        use super::super::deepseek_v4::V4Opts;
+        use crate::runtime::kinds::{Residual, Rounding};
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers/DeepSeek-V4-Flash-0731.json");
+        let h: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+        let text = h["config"].as_str().unwrap();
+        let c = crate::deepseek_v4::ConfigV4::parse(text, "DeepSeek-V4-Flash", None).unwrap_or_else(|e| panic!("{}", e.msg));
+        let mut kinds = crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap();
+        let (vo, st) = (V4Opts { exact8: true, f8_min: 16 << 20, ostack: true, sim: true, ctx: 4096 }, super::super::Stage::whole(c.layers));
+        let own = super::super::deepseek_v4::describe(&c, &st, &vo).unwrap();
+        let rounds: Vec<Rounding> = own
+            .layers
+            .iter()
+            .flatten()
+            .filter_map(|op| match *op {
+                Op::StreamsPre { round, .. } | Op::StreamsPost { round } | Op::StreamsHead { round, .. } => Some(round),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rounds.len(), 4 * c.layers + 1);
+        assert!(rounds.iter().all(|&r| r == Rounding::Once));
+        for b in &mut kinds.desc.blocks {
+            if let Residual::Streams(s) = &mut b.residual {
+                s.rounding = Rounding::Twice;
+            }
+        }
+        let lowered = deepseek_v4(&kinds, c.eos.clone(), c.max_pos, &st, &vo).unwrap();
+        let e = agree(lowered, &own, "the test's config.json").unwrap_err().msg;
+        assert!(e.contains("describe different models") && e.contains("Twice"), "{e}");
     }
 
     /// The random DeepSeek-V4 the logits and GPU checks run, lowered whole and as a split's stages, is the executor's own description of it.

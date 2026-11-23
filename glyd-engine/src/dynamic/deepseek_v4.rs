@@ -1,28 +1,24 @@
 //! DeepSeek-V4 (`DeepseekV4ForCausalLM`, src/deepseek_v4.rs) as a description: the four streams and their mixing around each layer's two blocks, the attention (the query's low rank, the shared key-value
 //! head over the window and the compressed cache, the indexer's picks, the sink, the grouped low rank of its output) and the mixture of experts, each product's input quantized to FP8 as the release's are.
 //! The weights load exactly: an FP8 matrix as the bf16 it is (packed at the level asked, lossless by default), the FP4 experts as five-bit runs (their codes and power-of-two scales: the same values),
-//! the rest as the checkpoint holds it. The arithmetic is kernels/dsv4.cu's; src/dsv4_ref.rs is the CPU reference it is checked against (`dsv4check`).
+//! the rest as the checkpoint holds it. The arithmetic is kernels/dsv4.cu's, the streams' the streams kind's (kernels/residual.cu); src/dsv4_ref.rs is the CPU reference it is checked against (`dsv4check`).
 
-use super::{Dyn, IdxKeys, IdxPick, IdxScore, ModelDesc, Op, Opts, Ring, Slot, Stage, V4Dims};
+use super::{Dyn, IdxKeys, IdxPick, IdxScore, ModelDesc, MoeOp, NormW, Op, Opts, ResidentMoe, Ring, Slot, Stage, V4Dims};
 use crate::deepseek_v4::{fp4_runs, fp8_bf16, ConfigV4};
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result};
 use crate::kern35::Mat;
-use crate::kern_nh::{MoeBlock, NhHost};
+use crate::kern_nh::MoeBlock;
 use crate::moe::{Act, ExpertStack, Joined, MoeCfg, MoeLayer, MoeWeights, Router, Scoring, Shared};
 use crate::moe_rows::Down;
+use crate::runtime::kinds::Rounding;
 use crate::weights::{as_bytes, pack_words, upload_bytes, upload_packed, Layout, PackBuf};
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 
 // The kernels' names: those the .cu sources give them, in every build (kname!).
-/// kernels/dsv4.cu's kernels (and glm.cu's streams).
+/// kernels/dsv4.cu's kernels.
 pub(crate) struct KernV4 {
-    pub(crate) streams: crate::kt::glm_streams,
-    pub(crate) hc_proj: crate::kt::v4_hc_proj,
-    pub(crate) hc_fin: crate::kt::v4_hc_fin,
-    pub(crate) hc_post: crate::kt::v4_hc_post,
-    pub(crate) hc_head: crate::kt::v4_hc_head,
     pub(crate) fp8: crate::kt::v4_fp8,
     pub(crate) q_prep: crate::kt::v4_q_prep,
     pub(crate) kv_prep: crate::kt::v4_kv_prep,
@@ -40,11 +36,6 @@ pub(crate) struct KernV4 {
 impl KernV4 {
     fn load(dev: &Dev) -> Result<KernV4> {
         Ok(KernV4 {
-            streams: dev.typed()?,
-            hc_proj: dev.typed()?,
-            hc_fin: dev.typed()?,
-            hc_post: dev.typed()?,
-            hc_head: dev.typed()?,
             fp8: dev.typed()?,
             q_prep: dev.typed()?,
             kv_prep: dev.typed()?,
@@ -61,21 +52,16 @@ impl KernV4 {
     }
 }
 
-/// The executor's DeepSeek-V4 buffers: the mixing weights a block keeps for its post, the mixing projection's partial sums, the attention's scores and softmax sums (`ra` rows at a time), the indexer's
-/// scores, picks and their counts, a compressor's pooled entries, the tokens (the routing by token), the experts' weights of one.
+/// The executor's DeepSeek-V4 buffers: the attention's scores and softmax sums (`ra` rows at a time), the indexer's scores, picks and their counts, a compressor's pooled entries.
 pub(crate) struct V4Run {
     pub k: KernV4,
     pub dims: V4Dims,
-    pub hcp: Buf,
-    pub part: Buf,
     pub sc: Buf,
     pub den: Buf,
     pub isc: Buf,
     pub sel: Buf,
     pub cnt: Buf,
     pub pooled: Buf,
-    pub tok: Buf,
-    pub ones: Buf,
     /// the grouped low rank's pairs' groups (int64 [chunk, groups]: pair t groups + g is group g) and their plan
     pub gids: Buf,
     pub gplan: Buf,
@@ -94,24 +80,18 @@ impl V4Run {
         let lmax = dims.window + dims.topk.max(if dims.all_ratio > 0 { ctx / dims.all_ratio + 1 } else { 0 });
         let emax = ctx / 4 + 1;
         let ra = ch.min(64);
-        let ones = Buf::new(ch * dims.experts_k * 4)?;
-        ones.write(0, &vec![1f32; ch * dims.experts_k])?;
         let g = dims.o_groups.max(1);
         let gids = Buf::new(ch * g * 8)?;
         gids.write(0, &(0..ch * g).map(|j| (j % g) as i64).collect::<Vec<i64>>())?;
         Ok(V4Run {
             k: KernV4::load(dev)?,
             dims: dims.clone(),
-            hcp: Buf::zeroed(ch * 24 * 4)?,
-            part: Buf::zeroed(ch * (4 * d.hidden / 256).max(1) * 25 * 4)?,
             sc: Buf::zeroed(ra * dims.heads * lmax * 4)?,
             den: Buf::zeroed(ra * dims.heads * 4)?,
             isc: Buf::zeroed(ra * emax * 4)?,
             sel: Buf::zeroed(ch * dims.topk.max(1) * 4)?,
             cnt: Buf::zeroed(ch * 4)?,
             pooled: Buf::zeroed((ch / 4 + 2) * 512 * 4)?,
-            tok: Buf::zeroed(ch * 4)?,
-            ones,
             gids,
             gplan: Buf::zeroed((2 + 2 * g + ch * g) * 4)?,
             ox: Buf::new(if ch > crate::f8::MOE_TOKENS { crate::f8::MOE_TOKENS * dims.heads * 512 * 2 } else { 16 })?,
@@ -127,24 +107,6 @@ impl V4Run {
 /// entries kept as they are.
 fn pick(cache: usize, ratio: usize, heads: usize, top_k: usize, wscale: f32) -> Op {
     Op::IdxPick(IdxPick { heads, ratio, top_k, expand: false, tail: false, wscale, score: IdxScore::Release, keys: IdxKeys::State(cache) })
-}
-
-/// A layer's experts on the dynamic engine: the core's layer, run as the release computes it (`MoeLayer::forward_release`).
-pub struct V4Moe(pub MoeLayer);
-
-impl MoeBlock for V4Moe {
-    unsafe fn forward(&self, _: &dyn NhHost, _: u64, _: usize, _: u64) -> Result<()> {
-        err("DeepSeek-V4's experts run on the dynamic engine")
-    }
-    fn graphable(&self) -> bool {
-        true
-    }
-    fn bytes(&self) -> usize {
-        self.0.weights_bytes()
-    }
-    fn resident(&self) -> Option<(&MoeLayer, Option<(&Mat, &Mat)>)> {
-        Some((&self.0, None))
-    }
 }
 
 /// A product's matrix: in the matrices' list, or the FP8 matrices'.
@@ -333,10 +295,10 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
         let ring = rings.len();
         rings.push(Ring::keys(hd, 1, c.window));
         let mut ops = vec![
-            Op::V4Pre { f: fa, base: ba, scale: sa, norm: attn_norm },
+            Op::StreamsPre { f: fa, base: ba, scale: sa, norm: attn_norm, round: Rounding::Once },
             Op::Fp8 { x: Slot::H, y: Slot::Hq, block: 128 },
             wq_a.op(Slot::Hq, Slot::Proj, "attention: q down"),
-            Op::RmsNorm { x: Slot::Proj, w: q_norm, y: Slot::Qr, plus1: false },
+            Op::RmsNorm { x: Slot::Proj, w: q_norm, y: Slot::Qr, weight: NormW::Plain, eps: c.eps },
             Op::Fp8 { x: Slot::Qr, y: Slot::Proj, block: 128 },
             wq_b.op(Slot::Proj, Slot::Qo, "attention: q up"),
             Op::CompQ { rope, heads: nh },
@@ -389,7 +351,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
                 Op::OGroupLora { w: wo_a0, in_f8: wo_a_f8, groups: c.o_groups, hpg, ol, y: Slot::M, fp8: true }
             },
             wo_b.op(Slot::M, Slot::O, "attention: o"),
-            Op::V4Post,
+            Op::StreamsPost { round: Rounding::Once },
         ]);
         // the mixture of experts
         let [ff, bf, sf] = hc(&mut sm, "ffn")?;
@@ -578,16 +540,16 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
                 None => MoeLayer::new(cfg, w, Some(shared))?,
             },
         };
-        moe.push(Box::new(V4Moe(match shared8 {
+        moe.push(Box::new(ResidentMoe(match shared8 {
             Some((u, dn)) => layer.with_shared8(u, dn)?,
             None => layer,
         })));
         let hash = if hash { Some(put(&mut sm, small(&format!("{f}.gate.tid2eid"))?)) } else { None };
         ops.extend([
-            Op::V4Pre { f: ff, base: bf, scale: sf, norm: ffn_norm },
+            Op::StreamsPre { f: ff, base: bf, scale: sf, norm: ffn_norm, round: Rounding::Once },
             Op::Fp8 { x: Slot::H, y: Slot::Hq, block: 128 },
-            Op::V4Moe { block, hash },
-            Op::V4Post,
+            Op::Moe(v4_moe(block, hash, vo.sim)),
+            Op::StreamsPost { round: Rounding::Once },
         ]);
         layers.push(ops);
     }
@@ -604,7 +566,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
         let b = put(&mut sm, small("hc_head_base")?);
         let s = put(&mut sm, small("hc_head_scale")?);
         let norm = put(&mut sm, small("norm.weight")?);
-        layers[c.layers - 1].push(Op::V4Head { f, base: b, scale: s, norm });
+        layers[c.layers - 1].push(Op::StreamsHead { weighted: Some([f, b, s]), norm, round: Rounding::Once });
     }
     let mp = ctx + ch + 16;
     let ropes = vec![
@@ -644,7 +606,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
         small: Vec::new(),
         ropes: Vec::new(),
         rings,
-        first: Op::V4Streams,
+        first: Op::Streams,
         layers,
         states,
         final_norm: None,
@@ -655,20 +617,9 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
         softcap: 0.0,
         eos: c.eos.clone(),
         post: None,
-        hc: (0.0, 0),
+        hc: (c.hc_eps, c.hc_iters as i32),
         logit_mult: 0.0,
-        v4: Some(V4Dims {
-            hc_eps: c.hc_eps,
-            iters: c.hc_iters as i32,
-            heads: nh,
-            idx_heads: c.idx_heads,
-            topk: c.idx_topk,
-            window: c.window,
-            experts_k: c.top_k,
-            all_ratio,
-            sim: vo.sim,
-            o_groups: c.o_groups,
-        }),
+        v4: Some(V4Dims { heads: nh, idx_heads: c.idx_heads, topk: c.idx_topk, window: c.window, all_ratio, sim: vo.sim, o_groups: c.o_groups }),
     };
     drop(fp8_mat);
     // (the loader's own operations, as it indexed what it loaded, held to the layer kinds' description of the config: one model, or it is not loaded)
@@ -714,6 +665,12 @@ impl V4Opts {
     }
 }
 
+/// A DeepSeek-V4 layer's experts (block `block`; the first layers' table of experts by token, small int64 [vocab, k], `hash`): the router reads H, the experts the FP8-rounded
+/// Hq, each pair's weight in its activation before the second product (rounded to FP8 where `fp8`), into O.
+pub(crate) fn v4_moe(block: usize, hash: Option<usize>, fp8: bool) -> MoeOp {
+    MoeOp { x: Slot::Hq, hash, weigh_act: true, fp8, ..MoeOp::of(block) }
+}
+
 /// DeepSeek-V4's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::deepseek_v4`), held to `describe`.
 pub fn lowered(dir: &Path, c: &ConfigV4, st: &Stage, vo: &V4Opts) -> Result<ModelDesc> {
     let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
@@ -743,16 +700,16 @@ pub fn describe(c: &ConfigV4, st: &Stage, vo: &V4Opts) -> Result<ModelDesc> {
         window: c.window,
         ratios: c.ratios.clone(),
         hash: (0..c.layers).map(|l| l < c.hash_layers).collect(),
-        top_k: c.top_k,
         streams: c.hc_mult,
         hc: (c.hc_eps, c.hc_iters),
+        round: Rounding::Once,
     };
     v4_desc(&s, st, vo)
 }
 
 /// DeepSeek-V4's widths and layers as the executor takes them: the width, vocabulary, norms' epsilon, context and end tokens; the heads, their size and rotary
 /// part; the queries' low rank, the output's groups (rank, count, columns); the indexer's heads, their size and its choices; the window, each layer's compression
-/// ratio and whether its experts are hash-routed; the experts a token, the streams, their mix's epsilon and iterations.
+/// ratio and whether its experts are hash-routed; the streams, their mix's epsilon and iterations.
 pub(crate) struct V4Shape {
     pub d: usize,
     pub vocab: usize,
@@ -770,9 +727,10 @@ pub(crate) struct V4Shape {
     pub window: usize,
     pub ratios: Vec<usize>,
     pub hash: Vec<bool>,
-    pub top_k: usize,
     pub streams: usize,
     pub hc: (f32, usize),
+    /// The streams' arithmetic (`StreamsP::rounding`: the release's, `Once`).
+    pub round: Rounding,
 }
 
 /// The executor's DeepSeek-V4 for stage `st`. Each layer's small tensors: the attention's stream mix (projection, base, scale), its norm, the queries' and keys' norms,
@@ -844,10 +802,10 @@ pub(crate) fn v4_desc(s: &V4Shape, st: &Stage, vo: &V4Opts) -> Result<ModelDesc>
         let ring = rings.len();
         rings.push(Ring::keys(hd, 1, s.window));
         let mut ops = vec![
-            Op::V4Pre { f: fa, base: ba, scale: sa, norm: attn_norm },
+            Op::StreamsPre { f: fa, base: ba, scale: sa, norm: attn_norm, round: s.round },
             Op::Fp8 { x: Slot::H, y: Slot::Hq, block: 128 },
             wq_a.op(Slot::Hq, Slot::Proj, "attention: q down"),
-            Op::RmsNorm { x: Slot::Proj, w: q_norm, y: Slot::Qr, plus1: false },
+            Op::RmsNorm { x: Slot::Proj, w: q_norm, y: Slot::Qr, weight: NormW::Plain, eps: s.eps },
             Op::Fp8 { x: Slot::Qr, y: Slot::Proj, block: 128 },
             wq_b.op(Slot::Proj, Slot::Qo, "attention: q up"),
             Op::CompQ { rope, heads: nh },
@@ -891,24 +849,28 @@ pub(crate) fn v4_desc(s: &V4Shape, st: &Stage, vo: &V4Opts) -> Result<ModelDesc>
                 Op::OGroupLora { w: wo_a0, in_f8: wo_a_f8, groups: og, hpg, ol, y: Slot::M, fp8: true }
             },
             wo_b.op(Slot::M, Slot::O, "attention: o"),
-            Op::V4Post,
+            Op::StreamsPost { round: s.round },
         ]);
         let f = small(&mut n, 4);
         let block = n_moe;
         n_moe += 1;
         let hash = s.hash[l].then(|| small(&mut n, 1));
         ops.extend([
-            Op::V4Pre { f, base: f + 1, scale: f + 2, norm: f + 3 },
+            Op::StreamsPre { f, base: f + 1, scale: f + 2, norm: f + 3, round: s.round },
             Op::Fp8 { x: Slot::H, y: Slot::Hq, block: 128 },
-            Op::V4Moe { block, hash },
-            Op::V4Post,
+            Op::Moe(v4_moe(block, hash, vo.sim)),
+            Op::StreamsPost { round: s.round },
         ]);
         layers.push(ops);
     }
     let (embed, lm) = (n.mats, n.mats + 1);
     if st.last {
         let h = small(&mut n, 4);
-        layers.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::V4Head { f: h, base: h + 1, scale: h + 2, norm: h + 3 });
+        layers.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::StreamsHead {
+            weighted: Some([h, h + 1, h + 2]),
+            norm: h + 3,
+            round: s.round,
+        });
     }
     let mut widths = [0usize; super::SLOTS];
     let wmax = if s.ratios.contains(&4) { 2 * hd } else { hd };
@@ -943,7 +905,7 @@ pub(crate) fn v4_desc(s: &V4Shape, st: &Stage, vo: &V4Opts) -> Result<ModelDesc>
         small: Vec::new(),
         ropes: Vec::new(),
         rings,
-        first: Op::V4Streams,
+        first: Op::Streams,
         layers,
         states,
         final_norm: None,
@@ -954,19 +916,8 @@ pub(crate) fn v4_desc(s: &V4Shape, st: &Stage, vo: &V4Opts) -> Result<ModelDesc>
         softcap: 0.0,
         eos: s.eos.clone(),
         post: None,
-        hc: (0.0, 0),
+        hc: (s.hc.0, s.hc.1 as i32),
         logit_mult: 0.0,
-        v4: Some(V4Dims {
-            hc_eps: s.hc.0,
-            iters: s.hc.1 as i32,
-            heads: nh,
-            idx_heads: ih,
-            topk: itop,
-            window: s.window,
-            experts_k: s.top_k,
-            all_ratio,
-            sim: vo.sim,
-            o_groups: og,
-        }),
+        v4: Some(V4Dims { heads: nh, idx_heads: ih, topk: itop, window: s.window, all_ratio, sim: vo.sim, o_groups: og }),
     })
 }

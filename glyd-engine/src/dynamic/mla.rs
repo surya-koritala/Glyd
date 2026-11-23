@@ -14,7 +14,7 @@
 //! arithmetic is the family's reference's: GLM-5.3's in f32 (transformers'), DeepSeek-V4's each term rounded to bf16 as the release computes it.
 //!
 //! Each family's arithmetic is the one its own block had, bit for bit: the same kernels in the same order on the same rows (the kernels moved to kernels/mla.cu with
-//! the cache's rows read through a block table, their sums as they were). The q latent's norm keeps each family's summation order (`q_norm512`).
+//! the cache's rows read through a block table, their sums as they were). The q latent's norm is the kind's: KimiRMSNorm (`Rounding::Twice`) by its own kernel and order of sums.
 
 use super::{Dyn, ModelDesc, Op, Part, Slot};
 use crate::dev::{Buf, Dev};
@@ -91,8 +91,10 @@ pub struct MlaIndexer {
 /// `Op::Mla`: the latent attention of H into O. Matrices `input`'s, `q_b` [heads (nope + rope), q_rank] and `o` [hidden, heads v]; small tensors the q latent's
 /// norm, the key-value latent's norm and kv_b_proj [heads (nope + v), kv_rank] (the absorbed form multiplies by its rows); the cache ring `ring`, kv_rank + rope a
 /// token. Scores q . k times `scale` over the latent and the shared key part (rope channels as they are: none rotated), values the latent's; sigmoid(gate) on each
-/// head's output where `gate` (its columns after q's latent in a fused product). `q_norm512`: the q latent's norm summed by 512 threads (Kimi-K3's engine's
-/// order) rather than 256 (GLM-5.3's): the same function, kept so that each family's logits stay bit for bit.
+/// head's output where `gate` (its columns after q's latent in a fused product). `q_round`: the q latent's norm's rounding as the kind gives it; KimiRMSNorm's
+/// (`Rounding::Twice`: the normed value rounded, then times the weight) runs its kernel (rms2_rows512: 512 threads, Kimi-K3's order of sums), any other the
+/// transformers RMSNorm's (rms2_rows: 256 threads, which rounds the normed value as transformers in bf16 does: GLM-5.3's). Both are the function their engines had, bit
+/// for bit.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MlaOp {
     pub heads: usize,
@@ -107,7 +109,7 @@ pub struct MlaOp {
     pub q_norm: usize,
     pub kv_norm: usize,
     pub kv_b: usize,
-    pub q_norm512: bool,
+    pub q_round: kinds::Rounding,
     pub gate: bool,
     pub scale: f32,
     pub eps: f32,
@@ -119,7 +121,7 @@ impl MlaOp {
     /// The operation of layer kind `k` whose input products are `input`, its other matrices `q_b` and `o`, its small tensors from `s0` (the q latent's norm, the
     /// key-value latent's, kv_b_proj, then an indexer's seven in `MlaIndexer`'s order), its caches the rings `ring` and `ring + 1`. A gate takes a fused product.
     #[allow(clippy::too_many_arguments)]
-    pub fn of(k: &kinds::Mla, input: MlaIn, q_b: usize, o: usize, s0: usize, ring: usize, q_norm512: bool, tail: bool) -> Result<MlaOp> {
+    pub fn of(k: &kinds::Mla, input: MlaIn, q_b: usize, o: usize, s0: usize, ring: usize, tail: bool) -> Result<MlaOp> {
         let q_rank = k.q_lora.ok_or_else(|| Error("a latent attention whose query has no low rank: not an operation of this executor".into()))?;
         if k.rope.is_some() {
             return err("a latent attention whose shared key part is rotated: not an operation of this executor");
@@ -169,7 +171,7 @@ impl MlaOp {
             q_norm: s0,
             kv_norm: s0 + 1,
             kv_b: s0 + 2,
-            q_norm512,
+            q_round: k.q_norm.rounding,
             gate,
             scale: k.scale,
             eps: k.q_norm.eps,
@@ -473,7 +475,7 @@ impl Dyn {
         self.lin(&p.mats[q_at], h, n, r.x.ptr)?;
         self.mark("latent attention: q latent product")?;
         let (qn, x) = (p.small[a.q_norm].ptr, r.x.ptr);
-        if a.q_norm512 {
+        if a.q_round == kinds::Rounding::Twice {
             launch!(k.rms2_512, [nr, 1, 1], [512, 1, 1], s; x, q_row as i32, qn, r.qr.ptr, a.q_rank as i32, a.q_rank as i32, a.eps)?;
         } else {
             launch!(k.rms2, [nr, 1, 1], [256, 1, 1], s; x, q_row as i32, qn, r.qr.ptr, a.q_rank as i32, 0u64, 0u64, a.q_rank as i32, a.eps)?;
@@ -672,16 +674,19 @@ mod tests {
     /// follow the latent's three and whose cache is the next ring; what the kernels do not take is refused.
     #[test]
     fn the_kind_lowers_to_the_operation() {
-        let k = MlaOp::of(&kind(64, true, false), MlaIn::Fused { w: 5 }, 6, 7, 10, 2, true, false).unwrap();
+        let twice = Norm { rounding: kinds::Rounding::Twice, ..Norm::rms(1e-6) };
+        let k = MlaOp::of(&kinds::Mla { q_norm: twice, ..kind(64, true, false) }, MlaIn::Fused { w: 5 }, 6, 7, 10, 2, false).unwrap();
         assert_eq!((k.gate, k.q_norm, k.kv_norm, k.kv_b, k.small_count(), k.rope, k.q_rank), (true, 10, 11, 12, 3, 64, 128));
-        let g = MlaOp::of(&kind(0, false, true), MlaIn::Apart { q_a: 1, kv_a: 2 }, 3, 4, 20, 6, false, true).unwrap();
+        // (the q latent's norm: KimiRMSNorm's rounding is the kind's, which picks its kernel; GLM-5.3's kind gives its norm in f32)
+        assert_eq!(k.q_round, kinds::Rounding::Twice);
+        let twice_not = kind(0, false, true).q_norm.rounding;
+        let g = MlaOp::of(&kind(0, false, true), MlaIn::Apart { q_a: 1, kv_a: 2 }, 3, 4, 20, 6, true).unwrap();
         let x = g.indexer.as_ref().unwrap();
-        assert_eq!((x.q_b, x.gate, x.pick.top_k, x.pick.keys, g.small_count()), (23, 29, 2, IdxKeys::Ring(7), 10));
+        assert_eq!((x.q_b, x.gate, x.pick.top_k, x.pick.keys, g.small_count(), g.q_round), (23, 29, 2, IdxKeys::Ring(7), 10, twice_not));
         assert_eq!((g.tmax(1024), g.pmax(1024), g.rows_at_once(64, 1024)), (2 * 4 + 3, 257, 64));
         // (a gate with two products, a rotated shared part, a shared key part beside an indexer)
-        assert!(MlaOp::of(&kind(0, true, false), MlaIn::Apart { q_a: 1, kv_a: 2 }, 3, 4, 0, 0, false, false).is_err());
-        assert!(MlaOp::of(&kinds::Mla { rope: Some(kinds::Rope::plain(1e4, 64)), ..kind(64, false, false) }, MlaIn::Fused { w: 0 }, 1, 2, 0, 0, false, false)
-            .is_err());
-        assert!(MlaOp::of(&kind(64, false, true), MlaIn::Fused { w: 0 }, 1, 2, 0, 0, false, false).is_err());
+        assert!(MlaOp::of(&kind(0, true, false), MlaIn::Apart { q_a: 1, kv_a: 2 }, 3, 4, 0, 0, false).is_err());
+        assert!(MlaOp::of(&kinds::Mla { rope: Some(kinds::Rope::plain(1e4, 64)), ..kind(64, false, false) }, MlaIn::Fused { w: 0 }, 1, 2, 0, 0, false).is_err());
+        assert!(MlaOp::of(&kind(64, false, true), MlaIn::Fused { w: 0 }, 1, 2, 0, 0, false).is_err());
     }
 }

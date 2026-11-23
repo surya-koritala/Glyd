@@ -60,37 +60,28 @@ pub(super) fn row_wise(op: &Op) -> bool {
             | Op::NormAdd { .. }
             | Op::GatedNorm { .. }
             | Op::GateUpSilu { .. }
-            | Op::MuseRms { .. }
-            | Op::MuseRmsIn { .. }
-            | Op::MuseGate { .. }
-            | Op::MuseMoe { .. }
+            | Op::GatedResidual { .. }
             | Op::KdaOut { .. }
             | Op::LinearAt { .. }
             | Op::Parts { .. }
-            | Op::KimiMixNorm { .. }
-            | Op::KimiAdd { .. }
-            | Op::KimiEarly { .. }
-            | Op::Situ { .. }
-            | Op::SwiGluClamp { .. }
-            | Op::Moe { .. }
-            | Op::GlmStreams
-            | Op::GlmPre { .. }
-            | Op::GlmPost
-            | Op::GlmHead { .. }
+            | Op::DepthMix(_)
+            | Op::Add { .. }
+            | Op::MoeEarly { .. }
+            | Op::GatedAct { .. }
+            | Op::Moe(_)
+            | Op::Streams
+            | Op::StreamsPre { .. }
+            | Op::StreamsPost { .. }
+            | Op::StreamsHead { .. }
             // (the latent attention runs its products over every row and its caches' parts by sequence itself: `Dyn::seq_parts`)
             | Op::Mla(_)
             | Op::MambaNorm { .. }
             // (DeepSeek-V4's: by row, or over the rows as the pass lays them out; its attention's output is laid out by group over the pass's rows, which its low rank reads)
-            | Op::V4Streams
-            | Op::V4Pre { .. }
-            | Op::V4Post
-            | Op::V4Head { .. }
             | Op::Fp8 { .. }
             | Op::CompQ { .. }
             | Op::IdxQ { .. }
             | Op::OGroupLora { .. }
             | Op::OGroupLoraStack { .. }
-            | Op::V4Moe { .. }
             | Op::Nop
     )
 }
@@ -295,7 +286,7 @@ impl Dyn {
     /// usercheck found 3 of 4 Muse Spark replies the same). With GLYD_ENGINE_BATCH_PREFILL=0 such a description's decode steps run one sequence each, so every reply is the reply alone.
     pub(crate) fn rows_exact(&self) -> bool {
         let d = &self.big.d;
-        !d.layers.iter().flatten().any(|op| matches!(op, Op::MuseMoe { .. } | Op::Moe { .. } | Op::V4Moe { .. }))
+        !d.layers.iter().flatten().any(|op| matches!(op, Op::Moe(_)))
     }
 
     /// The least window of the layers whose attention slides (none: every layer reads the whole sequence).

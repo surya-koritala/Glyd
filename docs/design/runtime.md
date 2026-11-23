@@ -77,7 +77,9 @@ Today a model runs on one of two kinds of code:
   `moe_glm*.rs`, `mla_glm.rs`, `mtp_glm.rs`). Each has its own step, cache and sampling.
 - **The description executor** (`dynamic/mod.rs`). A `ModelDesc` (`mod.rs:518-558`) is a list of `Op`s per layer over 25 activation slots;
   `Dyn::op` is a `match` over 60 `Op` variants (`mod.rs:85-482`, `1428-1870`). Ops are named by family more than by kind (`Prep35`,
-  `AttnNh`, `V4Attn`, `GlmPre`, `KimiMixNorm`, `MuseQk`). The executor imports the hand-written engines' kernel tables (`Kern35`,
+  `AttnNh`, `V4Attn`, `GlmPre`, `KimiMixNorm`, `MuseQk`; M2 moves them onto the kinds' operations: the residual streams, the depth mix,
+  the gated residual, the norms, the gated activation and the experts are one operation each, their family differences the kinds'
+  parameters, `StreamsP::rounding` among them). The executor imports the hand-written engines' kernel tables (`Kern35`,
   `KernG4`, `KernNh`, `KernGlm`, `mod.rs:22-24`). Qwen3.5, Gemma 4, Nemotron-H, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark run
   on it. It holds one contiguous bf16 cache per sequence and swaps sequences with `select` (`mod.rs:2383-2399`); more than one sequence
   is refused for every family but Qwen3.5 (`mod.rs:2352`). Multi-GPU runs as a layer split with activations handed over through host

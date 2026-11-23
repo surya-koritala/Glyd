@@ -21,6 +21,7 @@ pub mod nemotron;
 pub mod pages;
 pub mod qwen35;
 pub mod range;
+pub mod residual;
 mod rows;
 pub(crate) mod snaps;
 pub mod split;
@@ -36,6 +37,7 @@ use crate::kern35::{Kern35, Mat};
 use crate::kern_nh::{KernNh, MoeBlock, SsdWs};
 use crate::launch;
 use crate::model::{embed_plan, Sample, TopGpu};
+use crate::runtime::kinds::Rounding;
 use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload_packed, Item, Layout, PackBuf};
 pub use attn::AttnOp;
 use glyd_gpu::safetensors::Checkpoint;
@@ -142,13 +144,15 @@ pub enum Op {
     DraftIn {
         scale: f32,
     },
-    /// The pre-norm models' norms: y = bf16(rmsnorm(x) w), times (1 + w) where `plus1` (Qwen3.5's); and the pre-norm residual, x += y, h = the norm of x.
+    /// The RMS norm kind (`Norm` with `NormKind::Rms`): y = bf16(rmsnorm(x) w) with its `eps`, the weight `w` where `weight` says (`NormW`; a weightless norm's is ones).
     RmsNorm {
         x: Slot,
         w: usize,
         y: Slot,
-        plus1: bool,
+        weight: NormW,
+        eps: f32,
     },
+    /// The pre-norm residual: x += y, h = bf16(rmsnorm(x) w), times (1 + w) where `plus1` (Qwen3.5's).
     NormAdd {
         y: Slot,
         w: usize,
@@ -208,27 +212,28 @@ pub enum Op {
         di: usize,
         ng: usize,
     },
-    /// A mixture-of-experts layer (the part's block `block`) of H into O.
-    Moe {
-        block: usize,
-    },
-    /// DeepSeek-V4's (src/dynamic/deepseek_v4.rs, kernels/dsv4.cu): the streams S from the embedding row X, four times.
-    V4Streams,
-    /// hc_pre: the mixing weights of S by the fp32 projection `f` (small, [24, 4 hidden]), `base` and `scale`, made doubly stochastic, and the collapse normed by `norm` into H; the weights kept for V4Post.
-    V4Pre {
+    /// The mixture-of-experts kind (`Ffn::Moe`), the part's block's: see `MoeOp`.
+    Moe(MoeOp),
+    /// The residual streams kind (`Residual::Streams`, mHC; src/dynamic/residual.rs, kernels/residual.cu), its arithmetic `round` (`StreamsP::rounding`): the streams S
+    /// from the embedding row X, four times; before a block, the mixing weights of S by the projection `f` (small, [24, 4 hidden]: fp32 where `round` is `Once`, else
+    /// bf16), `base` and `scale`, made doubly stochastic (the model's `hc`), and the collapse normed by `norm` into H, the weights kept for StreamsPost; after it, S from
+    /// its output O and those weights; at the end, the streams collapsed (`Collapse::Weighted`: by the hyper-head's projection, base and scale in `weighted`; else
+    /// `Collapse::Mean`) and the final norm into H (the LM head reads its last rows).
+    Streams,
+    StreamsPre {
         f: usize,
         base: usize,
         scale: usize,
         norm: usize,
+        round: Rounding,
     },
-    /// hc_post: S from the block's output O and the weights V4Pre kept.
-    V4Post,
-    /// hc_head and the final norm into H (the LM head reads its last rows).
-    V4Head {
-        f: usize,
-        base: usize,
-        scale: usize,
+    StreamsPost {
+        round: Rounding,
+    },
+    StreamsHead {
+        weighted: Option<[usize; 3]>,
         norm: usize,
+        round: Rounding,
     },
     /// y = x as the release's products quantize their input: E4M3 in blocks of `block`.
     Fp8 {
@@ -297,24 +302,6 @@ pub enum Op {
         y: Slot,
         fp8: bool,
     },
-    /// The mixture of experts as the release computes it (block `block`; the first layers' table of experts by token, small int64 [vocab, k], `hash`): the router reads H, the experts Hq; into O.
-    V4Moe {
-        block: usize,
-        hash: Option<usize>,
-    },
-    /// GLM-5.3-Flash's (src/dynamic/glm.rs; kernels/glm.cu, transformers' rounding): the streams S from X; a block's mixing weights (the projection `f`, bf16 [24, 4 hidden], `base`, `scale`) and its normed
-    /// collapse into H; the streams updated from O; the mean of the streams normed by `norm` into H.
-    GlmStreams,
-    GlmPre {
-        f: usize,
-        base: usize,
-        scale: usize,
-        norm: usize,
-    },
-    GlmPost,
-    GlmHead {
-        norm: usize,
-    },
     /// Kimi delta attention: the causal convolution of Mix's first `c` channels (q, k and v; Mix's rows `row` apart) with weights `w` and its state into Xc; the delta rule over Xc, the forget gate's product
     /// Qo and the input gate's `ba` (`heads` heads, A_log, dt_bias, the forget gate's lower `bound`) with its state into Core; the gated norm of Core by the output gate's product `iq` into Att.
     KdaConv {
@@ -353,82 +340,108 @@ pub enum Op {
     },
     /// The latent attention layer kind, every family's (src/dynamic/mla.rs): H into O.
     Mla(MlaOp),
-    /// Kimi-K3's half-layer start, one kernel: X = bf16(X + O) where `add`; the depth mix of the first `nb` completed blocks (Blk) and X, by its norm
-    /// weight and projection (`small`'s); X into block `push` of Blk, then X = 0, where given (the next block's partial sum starts empty); KimiRMSNorm (two
-    /// roundings) of the mix by `w` into H
-    KimiMixNorm {
-        add: bool,
-        nb: usize,
-        w_n: usize,
-        w_p: usize,
-        push: Option<usize>,
-        w: usize,
-        eps: f32,
-    },
-    /// X = bf16(X + x)
-    KimiAdd {
+    /// The depth mix kind (`Residual::DepthMix`, `Collapse::DepthMix`): see `DepthMixOp`.
+    DepthMix(DepthMixOp),
+    /// The plain residual (`Residual::Add`): X = bf16(X + x).
+    Add {
         x: Slot,
     },
-    /// Kimi-K3's guess of a cached layer's experts in a decode step: the depth mix and norm of its experts' input (the mix's `nb`, `w_n`, `w_p`, the norm's `w`)
-    /// over X before the layer's attention adds to it, into Att (written before it is read in the layer), and the block's router on that
-    /// (`MoeBlock::early`), so that the copies of the experts it guesses run beside the attention.
-    KimiEarly {
+    /// A cached experts block's guess of its experts in a decode step: its input as `mix` makes it (its add and push left out) over X before the layer's mixer adds
+    /// to it, into Att (written before it is read in the layer), and the block's router on that (`MoeBlock::early`), so that the copies of the experts it guesses run
+    /// beside the mixer.
+    MoeEarly {
         block: usize,
-        nb: usize,
-        w_n: usize,
-        w_p: usize,
-        w: usize,
-        eps: f32,
+        mix: DepthMixOp,
     },
-    /// The MLP's situ (Gu [gate, up] into M)
-    Situ {
+    /// A gated MLP's activation (`Mlp::act`, its `clamp`): M = act(gate, up) of Gu (the gate's `inter` columns, then the up's), rounded once.
+    GatedAct {
         inter: usize,
-        beta: f32,
-        linear: f32,
+        act: crate::moe::Act,
     },
     /// Nothing (a model whose first operation is none)
     Nop,
-    /// M = silu(min(gate, limit)) clamp(up, -limit, limit) of Gu (the gate's `inter` columns, then the up's), rounded once.
-    SwiGluClamp {
-        inter: usize,
-        limit: f32,
-    },
-    /// Muse Spark's (src/dynamic/muse.rs; kernels/muse.cu): an RMS norm with eps (y = bf16(rmsnorm(x) w), the weight a centered norm's bf16(1 + w), or ones for none); the input-scaled norm
-    /// (y = RMS(bf16(x w))); the residual gate (X = alpha X + beta O, small `alpha`, `beta`).
-    MuseRms {
-        x: Slot,
-        w: usize,
-        y: Slot,
-        eps: f32,
-    },
-    MuseRmsIn {
-        x: Slot,
-        w: usize,
-        y: Slot,
-        eps: f32,
-    },
-    MuseGate {
+    /// The gated residual kind (`Residual::Gated`): X = bf16(bf16(alpha X) + bf16(beta O)), the factors small `alpha`, `beta`.
+    GatedResidual {
         alpha: usize,
         beta: usize,
     },
-    /// The experts in the latent (block `block`): the router reads H, the experts Xc; each expert's output normed (small `post_w`, eps); their weighted sum into M.
-    MuseMoe {
-        block: usize,
-        post_w: usize,
-        eps: f32,
-    },
+}
+
+/// Where an RMS norm's weight goes (`kinds::NormWeight` as the loader holds the small tensor: a (1 + w) it may hold already added).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NormW {
+    /// y = bf16(rmsnorm(x) w)
+    Plain,
+    /// y = bf16(rmsnorm(x) (1 + w)), the one added in the kernel (Qwen3.5's)
+    PlusOne,
+    /// y = bf16(rmsnorm(bf16(x w))): the weight scales the input, the norm has none (`NormWeight::InputPlusOne`)
+    Input,
+}
+
+/// A mixture of experts (the part's block `block`): the router reads H, the experts and the shared expert `x` (H; the release's FP8-rounded H, Hq; a latent
+/// MoE's normed latent, Xc), their sum into `y` (O, or the latent's M). The kind's variants: hash routing by the token (`Router::hash`: the table, small
+/// int64 [vocab, k]); the router's logits times `logit_scale` (`Router::logit_scale`; its weights fp32 then); each expert's output normed before it is
+/// weighed (`Latent::expert_norm`: the small input-scaling weight and its eps); each pair's weight applied to its activation before the second product,
+/// which then sums with weights of one, the activation rounded as that product's input (`weigh_act`: the release's arithmetic; `fp8`: rounded to E4M3 in
+/// blocks of 128, as the release's products quantize their inputs).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MoeOp {
+    pub block: usize,
+    pub x: Slot,
+    pub y: Slot,
+    pub hash: Option<usize>,
+    pub logit_scale: f32,
+    pub expert_norm: Option<(usize, f32)>,
+    pub weigh_act: bool,
+    pub fp8: bool,
+}
+
+impl MoeOp {
+    /// The block's experts of H into O, routed by their scores alone.
+    pub const fn of(block: usize) -> MoeOp {
+        MoeOp { block, x: Slot::H, y: Slot::O, hash: None, logit_scale: 1.0, expert_norm: None, weigh_act: false, fp8: false }
+    }
+}
+
+/// A mixture-of-experts block whose experts are all on the GPU: the core's layer, run by `Op::Moe` (its `MoeOp` says how).
+pub struct ResidentMoe(pub crate::moe::MoeLayer);
+
+impl MoeBlock for ResidentMoe {
+    unsafe fn forward(&self, _: &dyn crate::kern_nh::NhHost, _: u64, _: usize, _: u64) -> Result<()> {
+        err("these experts run on the dynamic engine")
+    }
+    fn graphable(&self) -> bool {
+        true
+    }
+    fn bytes(&self) -> usize {
+        self.0.weights_bytes()
+    }
+    fn resident(&self) -> Option<(&crate::moe::MoeLayer, Option<(&Mat, &Mat)>)> {
+        Some((&self.0, None))
+    }
+}
+
+/// A block's start in the depth mix (kernels/residual.cu `depth_mix`, one kernel): X = bf16(X + O) where `add`; the mix of the first `nb` completed sources (Blk)
+/// and X, by its norm weight `w_n` and projection `w_p` (small); X into source `push` of Blk, then X = 0, where given (the next group's partial sum starts empty);
+/// the norm of the mix by `w` (`eps`, the normed value rounded, times the weight, rounded again) into H.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DepthMixOp {
+    pub add: bool,
+    pub nb: usize,
+    pub w_n: usize,
+    pub w_p: usize,
+    pub push: Option<usize>,
+    pub w: usize,
+    pub eps: f32,
 }
 
 /// What DeepSeek-V4's operations need beyond the slots (its scratch is sized from these and the context).
 #[derive(Clone, Debug)]
 pub struct V4Dims {
-    pub hc_eps: f32,
-    pub iters: i32,
     pub heads: usize,
     pub idx_heads: usize,
     pub topk: usize,
     pub window: usize,
-    pub experts_k: usize,
     /// the smallest compression whose entries a query reads all of (0: none)
     pub all_ratio: usize,
     /// the release's quantizations (the products' inputs to FP8, the caches' and the indexer's simulated FP8 and FP4); off: a development check's arithmetic without them
@@ -508,7 +521,7 @@ pub struct ModelDesc {
     pub post: Option<usize>,
     /// DeepSeek-V4's dimensions where the model is one.
     pub v4: Option<V4Dims>,
-    /// The hyper-connections' eps and Sinkhorn rounds (GLM's operations; 0s where none).
+    /// The residual streams' eps and Sinkhorn rounds (`StreamsP::eps`, `sinkhorn_iters`; 0s where none).
     pub hc: (f32, i32),
     /// The logits times this before the soft-cap (Muse Spark's: cap tanh(x mult / cap), each step rounded); 0: the soft-cap alone.
     pub logit_mult: f32,
@@ -801,14 +814,20 @@ pub struct Dyn {
     pub stage: Stage,
     /// DeepSeek-V4's buffers, where the model is one.
     v4: Option<deepseek_v4::V4Run>,
-    /// GLM's kernels, the experts' activation, a block's mixing weights (fp32 [chunk, 24]).
+    /// GLM's kernels and the experts' activation.
     kglm: crate::model_glm::KernGlm,
     kmoe: crate::moe::MoeKern,
+    /// The residual rules' kernels, a block's mixing weights of the streams (fp32 [chunk, 24]) and the split mixing projection's partial sums (`residual::part_words`).
+    kres: residual::KernRes,
     hcp: Buf,
-    /// Muse Spark's kernels and the experts' pairs' rows (int32 [chunk, 32]).
+    hc_part: Buf,
+    /// Muse Spark's kernels.
     kmuse: muse::KernMuse,
-    kkimi: kimi::KernKimi,
-    mu_inv: Buf,
+    /// The mixture-of-experts kind's: the pairs' rows of experts whose outputs are normed (int32 [chunk, 32]); where a block is hash-routed, the pass's tokens
+    /// (int32 [chunk]); where one weighs its activations, the weights of one its second product sums with (fp32 [chunk, k]).
+    moe_inv: Buf,
+    tok: Option<Buf>,
+    ones: Option<Buf>,
     /// The latent attentions' scratch, where the model has one.
     mla: Option<mla::MlaRun>,
     /// A verify pass's room (made at the first one), whether a pass is one, and the last chunk's (start, rows) where it was one (`rewind` goes back in it).
@@ -1072,8 +1091,21 @@ impl Dyn {
         let done = Buf::zeroed(4 << 18)?;
         let host = Pinned::new(4096)?;
         let (kglm, kmoe, hcp) = (crate::model_glm::KernGlm::load(&dev)?, crate::moe::MoeKern::load(&dev)?, Buf::zeroed(ch * 24 * 4)?);
-        let (kmuse, mu_inv) = (muse::KernMuse::load(&dev)?, Buf::zeroed(ch * 32 * 4)?);
-        let kkimi = kimi::KernKimi::load(&dev)?;
+        // (the split mixing projection's sums: as the model's streams round, one buffer for every block's)
+        let round = d.layers.iter().flatten().find_map(|op| if let Op::StreamsPre { round, .. } = *op { Some(round) } else { None });
+        let hc_part = Buf::zeroed(round.map_or(Ok(1), |r| residual::part_words(r, ch, d.hidden))? * 4)?;
+        let kres = residual::KernRes::load(&dev)?;
+        let (kmuse, moe_inv) = (muse::KernMuse::load(&dev)?, Buf::zeroed(ch * 32 * 4)?);
+        let moes = || d.layers.iter().flatten().filter_map(|op| if let Op::Moe(m) = op { Some(m) } else { None });
+        let tok = if moes().any(|m| m.hash.is_some()) { Some(Buf::zeroed(ch * 4)?) } else { None };
+        let ones = if moes().any(|m| m.weigh_act) {
+            let k = big.moe.iter().filter_map(|b| b.resident()).map(|(l, _)| l.cfg.router.top_k).max().unwrap_or(crate::moe::MAX_TOPK);
+            let b = Buf::new(ch * k * 4)?;
+            b.write(0, &vec![1f32; ch * k])?;
+            Some(b)
+        } else {
+            None
+        };
         let (km, mla) = (mla::KernMla::load(&dev)?, mla::MlaRun::new(d, &big.mats, ch, ctx)?);
         let v4 = match &d.v4 {
             Some(v) => Some(deepseek_v4::V4Run::new(&dev, d, v, ch, ctx)?),
@@ -1134,10 +1166,13 @@ impl Dyn {
             v4,
             kglm,
             kmoe,
+            kres,
             hcp,
+            hc_part,
             kmuse,
-            kkimi,
-            mu_inv,
+            moe_inv,
+            tok,
+            ones,
             mla,
             verify: None,
             verifying: std::cell::Cell::new(false),
@@ -1360,8 +1395,8 @@ impl Dyn {
         if let Some(&t) = tokens.iter().find(|&&t| t as usize >= self.big.d.vocab) {
             return err(format!("token {t}: the vocabulary has {}", self.big.d.vocab));
         }
-        if let Some(v) = &self.v4 {
-            v.tok.write(0, &tokens.iter().map(|&t| t as i32).collect::<Vec<i32>>())?;
+        if let Some(v) = &self.tok {
+            v.write(0, &tokens.iter().map(|&t| t as i32).collect::<Vec<i32>>())?;
         }
         if tokens.len() == 1 {
             let t = tokens[0] as i64;
@@ -1391,7 +1426,7 @@ impl Dyn {
     /// layer whose experts are in a cache that routes on its own is said to be missed.
     fn record_routes(&self, p: &Part, l: usize, op: &Op, n: usize) -> Result<()> {
         let block = match *op {
-            Op::Moe { block } | Op::MuseMoe { block, .. } | Op::V4Moe { block, .. } => block,
+            Op::Moe(MoeOp { block, .. }) => block,
             _ => return Ok(()),
         };
         let Some((layer, _)) = p.moe[block].resident() else {
@@ -1441,13 +1476,13 @@ impl Dyn {
                 let bh = self.big.d.hidden as i32;
                 launch!(self.kg.draft_in, [((2 * bh) as u32).div_ceil(256).min(64), 1, 1], [256, 1, 1], s; self.big.slot(Slot::X), scale, p.slot(Slot::Hid), p.slot(Slot::In), bh)
             }
-            Op::RmsNorm { x, w, y, plus1 } => {
+            Op::RmsNorm { x, w, y, weight, eps } => {
                 // (the slot's own width: the hidden size, or a narrower activation's)
-                let k = p.d.width(x) as i32;
-                if plus1 {
-                    self.k35.rmsnorm(s, p.slot(x), p.small[w].ptr, p.slot(y), nu, k, eps)?;
-                } else {
-                    self.kern.rmsnorm(s, p.slot(x), p.small[w].ptr, p.slot(y), nu, k, eps)?;
+                let (k, (x, w, y)) = (p.d.width(x) as i32, (p.slot(x), p.small[w].ptr, p.slot(y)));
+                match weight {
+                    NormW::Plain => self.kern.rmsnorm(s, x, w, y, nu, k, eps)?,
+                    NormW::PlusOne => self.k35.rmsnorm(s, x, w, y, nu, k, eps)?,
+                    NormW::Input => self.kres.rms_in(s, x, w, y, nu, k, eps)?,
                 }
                 self.mark("norms")
             }
@@ -1545,50 +1580,23 @@ impl Dyn {
                 self.knh.gated_norm(s, p.slot(Slot::Core), p.slot(Slot::Mix), row as i32, p.small[w].ptr, nu, di as i32, ng as i32, eps)?;
                 self.mark("Mamba-2: gated norm")
             }
-            Op::Moe { block } => {
-                let Some((layer, fc)) = p.moe[block].resident() else {
-                    // (experts in a cache, or at the hummingbird level: the block's own launches, over this engine's buffers)
-                    p.moe[block].forward(self, p.slot(Slot::H), n, p.slot(Slot::O))?;
-                    return self.mark("mixture of experts");
-                };
-                let sc = self.moe_sc.get().ok_or_else(|| Error("no mixture-of-experts scratch".into()))?;
-                let (h, o) = (p.slot(Slot::H), p.slot(Slot::O));
-                match fc {
-                    None => layer.forward(&self.lib, sc, s, h, n, o)?,
-                    Some((fc1, fc2)) => {
-                        layer.route(sc, s, h, layer.cfg.router_hidden, n)?;
-                        self.lin(fc1, h, n, p.slot(Slot::Mix))?;
-                        layer.experts(&self.lib, sc, s, p.slot(Slot::Mix), n, p.slot(Slot::Xc))?;
-                        self.lin(fc2, p.slot(Slot::Xc), n, o)?;
-                        layer.add_shared(&self.lib, sc, s, h, n, o)?;
-                    }
-                }
-                self.mark("mixture of experts")
-            }
-            Op::GlmStreams => self.kglm.streams(s, p.slot(Slot::X), p.slot(Slot::S), nu, hid),
-            Op::GlmPre { f, base, scale, norm } => {
-                self.kglm.hc_mix_raw(
-                    s,
-                    p.slot(Slot::S),
-                    p.small[f].ptr,
-                    p.small[base].ptr,
-                    p.small[scale].ptr,
-                    p.small[norm].ptr,
-                    p.slot(Slot::H),
-                    self.hcp.ptr,
-                    nu,
-                    hid,
-                    eps,
-                    p.d.hc.0,
-                    p.d.hc.1,
-                )?;
+            Op::Moe(ref m) => self.moe(p, m, n),
+            Op::Streams => self.kres.streams(s, p.slot(Slot::X), p.slot(Slot::S), nu, hid),
+            Op::StreamsPre { f, base, scale, norm, round } => {
+                let (fp, bp, sp) = (p.small[f].ptr, p.small[base].ptr, p.small[scale].ptr);
+                let (h, nw, (hc_eps, iters)) = (p.slot(Slot::H), p.small[norm].ptr, p.d.hc);
+                self.kres.pre(s, p.slot(Slot::S), (fp, bp, sp), nw, h, self.hcp.ptr, self.hc_part.ptr, nu, hid, (eps, hc_eps, iters), round)?;
                 self.mark("hyper-connections")
             }
-            Op::GlmPost => {
-                self.kglm.hc_post(s, p.slot(Slot::S), p.slot(Slot::O), self.hcp.ptr, nu, hid)?;
+            Op::StreamsPost { round } => {
+                self.kres.post(s, p.slot(Slot::S), p.slot(Slot::O), self.hcp.ptr, nu, hid, round)?;
                 self.mark("hyper-connections")
             }
-            Op::GlmHead { norm } => self.kglm.hc_head(s, p.slot(Slot::S), p.small[norm].ptr, p.slot(Slot::H), nu, hid, eps),
+            Op::StreamsHead { weighted, norm, round } => {
+                let w = weighted.map(|[f, b, sc]| (p.small[f].ptr, p.small[b].ptr, p.small[sc].ptr));
+                self.kres.head(s, p.slot(Slot::S), w, self.hc_part.ptr, p.small[norm].ptr, p.slot(Slot::H), nu, hid, (eps, p.d.hc.0), round)?;
+                self.mark("hyper-connections")
+            }
             Op::KdaConv { w, state, c, row, w32 } => {
                 let (x, y) = (p.slot(Slot::Mix) + self.rows_before(row), p.slot(Slot::Xc) + self.rows_before(c));
                 self.kglm.conv(s, x, row as i32, p.small[w].ptr, w32, self.state(state), y, n as i32, c as i32)?;
@@ -1630,98 +1638,50 @@ impl Dyn {
                 Ok(())
             }
             Op::Mla(ref a) => self.mla(p, a, n, pos.0),
-            Op::KimiMixNorm { add, nb, w_n, w_p, push, w, eps } => {
+            Op::DepthMix(m) => {
                 let (blk, hd) = (p.slot(Slot::Blk), hid as usize);
-                let o = if add { p.slot(Slot::O) } else { 0 };
-                let at = push.map_or(0, |b| blk + (b * hd * 2) as u64);
-                self.kkimi.mix_norm(
+                let o = if m.add { p.slot(Slot::O) } else { 0 };
+                let at = m.push.map_or(0, |b| blk + (b * hd * 2) as u64);
+                let (wn, wp, w) = (p.small[m.w_n].ptr, p.small[m.w_p].ptr, p.small[m.w].ptr);
+                self.kres.depth_mix(
                     s,
                     blk,
                     p.d.width(Slot::Blk),
-                    nb,
+                    m.nb,
                     p.slot(Slot::X),
                     o,
-                    p.small[w_n].ptr,
-                    p.small[w_p].ptr,
+                    (wn, wp),
                     at,
-                    p.small[w].ptr,
+                    w,
                     p.slot(Slot::H),
                     p.d.width(Slot::H),
                     hd,
-                    eps,
+                    m.eps,
                     nu,
                 )?;
                 self.mark("depth mix and norm")
             }
-            Op::KimiAdd { x } => self.kkimi.add(s, p.slot(Slot::X), p.slot(x), n * hid as usize),
-            Op::KimiEarly { block, nb, w_n, w_p, w, eps } => {
+            Op::Add { x } => self.kres.add(s, p.slot(Slot::X), p.slot(x), n * hid as usize),
+            Op::MoeEarly { block, mix: m } => {
                 if n != 1 || !p.moe[block].early_wanted() {
                     return Ok(());
                 }
                 let (h, hd) = (p.slot(Slot::Att), hid as usize);
-                self.kkimi.mix_norm(
-                    s,
-                    p.slot(Slot::Blk),
-                    p.d.width(Slot::Blk),
-                    nb,
-                    p.slot(Slot::X),
-                    0,
-                    p.small[w_n].ptr,
-                    p.small[w_p].ptr,
-                    0,
-                    p.small[w].ptr,
-                    h,
-                    hd,
-                    hd,
-                    eps,
-                    1,
-                )?;
+                let (wn, wp, w) = (p.small[m.w_n].ptr, p.small[m.w_p].ptr, p.small[m.w].ptr);
+                self.kres.depth_mix(s, p.slot(Slot::Blk), p.d.width(Slot::Blk), m.nb, p.slot(Slot::X), 0, (wn, wp), 0, w, h, hd, hd, m.eps, 1)?;
                 p.moe[block].early(self, h)?;
                 self.mark("experts: the early guess")
             }
-            Op::Situ { inter, beta, linear } => {
-                self.kmoe.act(s, p.slot(Slot::Gu), p.slot(Slot::M), n, inter, &crate::moe::Act::Situ { beta, linear })?;
+            Op::GatedAct { inter, act } => {
+                self.kmoe.act(s, p.slot(Slot::Gu), p.slot(Slot::M), n, inter, &act)?;
                 self.mark("MLP: activation")
             }
             Op::Nop => Ok(()),
-            Op::SwiGluClamp { inter, limit } => {
-                self.kmoe.act(s, p.slot(Slot::Gu), p.slot(Slot::M), n, inter, &crate::moe::Act::SwiGlu { limit: Some(limit) })?;
-                self.mark("MLP: activation")
-            }
-            Op::MuseRms { x, w, y, eps } => {
-                self.kern.rmsnorm(s, p.slot(x), p.small[w].ptr, p.slot(y), nu, p.d.width(x) as i32, eps)?;
-                self.mark("norms")
-            }
-            Op::MuseRmsIn { x, w, y, eps } => {
-                let k = &self.kmuse;
-                launch!(k.rms_in, [nu, 1, 1], [256, 1, 1], s; p.slot(x), p.small[w].ptr, p.slot(y), p.d.width(x) as i32, eps)?;
-                self.mark("norms")
-            }
-            Op::MuseGate { alpha, beta } => {
-                let k = &self.kmuse;
-                launch!(k.rgate, [nu, (hid as u32).div_ceil(256), 1], [256, 1, 1], s; p.slot(Slot::X), p.slot(Slot::O), p.small[alpha].ptr, p.small[beta].ptr, hid)?;
+            Op::GatedResidual { alpha, beta } => {
+                self.kres.gate(s, p.slot(Slot::X), p.slot(Slot::O), p.small[alpha].ptr, p.small[beta].ptr, nu, hid)?;
                 self.mark("residual gates")
             }
-            Op::MuseMoe { block, post_w, eps: pe } => {
-                let (layer, _) = p.moe[block].resident().ok_or_else(|| Error("Muse Spark's experts are not on the GPU".into()))?;
-                let sc = self.moe_sc.get().ok_or_else(|| Error("no mixture-of-experts scratch".into()))?;
-                layer.forward_muse(
-                    &self.lib,
-                    sc,
-                    s,
-                    p.slot(Slot::H),
-                    p.slot(Slot::Xc),
-                    n,
-                    p.slot(Slot::M),
-                    layer.w.router.ptr,
-                    p.d.logit_mult,
-                    p.small[post_w].ptr,
-                    pe,
-                    self.mu_inv.ptr,
-                )?;
-                self.mark("mixture of experts")
-            }
-            Op::V4Streams | Op::V4Pre { .. } | Op::V4Post | Op::V4Head { .. } | Op::Fp8 { .. } | Op::V4Moe { .. } => self.op_v4(p, op, n),
+            Op::Fp8 { .. } => self.op_v4(p, op, n),
             Op::CompQ { .. }
             | Op::CompKv { .. }
             | Op::Compress { .. }
@@ -1733,28 +1693,56 @@ impl Dyn {
         }
     }
 
-    /// One of DeepSeek-V4's operations (kernels/dsv4.cu) on n rows.
+    /// A mixture of experts (`MoeOp`) on n rows.
+    unsafe fn moe(&self, p: &Part, m: &MoeOp, n: usize) -> Result<()> {
+        let s = self.dev.stream;
+        let b = &p.moe[m.block];
+        let (h, x, y) = (p.slot(Slot::H), p.slot(m.x), p.slot(m.y));
+        let plain = m.expert_norm.is_none() && !m.weigh_act;
+        if (plain && (m.x != Slot::H || m.logit_scale != 1.0)) || (m.hash.is_some() && !m.weigh_act) {
+            return err(format!(
+                "{m:?}: an experts' input apart from the router's, a router's logit scale and hash routing are the normed or the weighed experts'"
+            ));
+        }
+        let Some((layer, fc)) = b.resident() else {
+            if !plain {
+                return err(format!("{m:?}: normed or weighed experts are all on the GPU"));
+            }
+            // (experts in a cache, or at the hummingbird level: the block's own launches, over this engine's buffers)
+            b.forward(self, h, n, y)?;
+            return self.mark("mixture of experts");
+        };
+        let sc = self.moe_sc.get().ok_or_else(|| Error("no mixture-of-experts scratch".into()))?;
+        if let Some((post_w, pe)) = m.expert_norm {
+            layer.forward_normed(&self.lib, sc, s, h, x, n, y, layer.w.router.ptr, m.logit_scale, p.small[post_w].ptr, pe, self.moe_inv.ptr)?;
+        } else if m.weigh_act {
+            let hash = match m.hash {
+                Some(t) => Some((p.small[t].ptr, self.tok.as_ref().ok_or_else(|| Error("hash routing without the tokens' buffer".into()))?.ptr)),
+                None => None,
+            };
+            let ones = self.ones.as_ref().ok_or_else(|| Error("weighed experts without the weights of one".into()))?;
+            layer.forward_weighed(&self.lib, sc, s, h, x, n, y, hash, ones.ptr, m.fp8)?;
+        } else {
+            match fc {
+                None => layer.forward(&self.lib, sc, s, h, n, y)?,
+                Some((fc1, fc2)) => {
+                    layer.route(sc, s, h, layer.cfg.router_hidden, n)?;
+                    self.lin(fc1, h, n, p.slot(Slot::Mix))?;
+                    layer.experts(&self.lib, sc, s, p.slot(Slot::Mix), n, p.slot(Slot::Xc))?;
+                    self.lin(fc2, p.slot(Slot::Xc), n, y)?;
+                    layer.add_shared(&self.lib, sc, s, h, n, y)?;
+                }
+            }
+        }
+        self.mark("mixture of experts")
+    }
+
+    /// DeepSeek-V4's activations to FP8 as the release's products quantize their input (kernels/dsv4.cu) on n rows.
     unsafe fn op_v4(&self, p: &Part, op: &Op, n: usize) -> Result<()> {
         let v = self.v4.as_ref().ok_or_else(|| Error("a DeepSeek-V4 operation in a model loaded without its buffers".into()))?;
-        let (s, nu, eps, hid) = (self.dev.stream, n as u32, p.d.eps, p.d.hidden as i32);
+        let (s, nu) = (self.dev.stream, n as u32);
         let k = &v.k;
-        let ks = (4 * p.d.hidden / 256) as u32; // (kernels/dsv4.cu V4_HC_CPB)
         match *op {
-            Op::V4Streams => launch!(k.streams, [nu, (hid as u32).div_ceil(256), 1], [256, 1, 1], s; p.slot(Slot::X), p.slot(Slot::S), hid),
-            Op::V4Pre { f, base, scale, norm } => {
-                launch!(k.hc_proj, [nu, ks, 1], [128, 1, 1], s; p.slot(Slot::S), p.small[f].ptr, v.part.ptr, hid, 24i32)?;
-                launch!(k.hc_fin, [nu, 1, 1], [512, 1, 1], s; p.slot(Slot::S), v.part.ptr, ks as i32, p.small[base].ptr, p.small[scale].ptr, p.small[norm].ptr, p.slot(Slot::H), v.hcp.ptr, hid, eps, v.dims.hc_eps, v.dims.iters)?;
-                self.mark("hyper-connections")
-            }
-            Op::V4Post => {
-                launch!(k.hc_post, [nu, (hid as u32).div_ceil(256), 1], [256, 1, 1], s; p.slot(Slot::S), p.slot(Slot::O), v.hcp.ptr, hid)?;
-                self.mark("hyper-connections")
-            }
-            Op::V4Head { f, base, scale, norm } => {
-                launch!(k.hc_proj, [nu, ks, 1], [128, 1, 1], s; p.slot(Slot::S), p.small[f].ptr, v.part.ptr, hid, 4i32)?;
-                launch!(k.hc_head, [nu, 1, 1], [512, 1, 1], s; p.slot(Slot::S), v.part.ptr, ks as i32, p.small[base].ptr, p.small[scale].ptr, p.small[norm].ptr, p.slot(Slot::H), hid, eps, v.dims.hc_eps)?;
-                self.mark("hyper-connections")
-            }
             Op::Fp8 { x, y, .. } if !v.dims.sim => {
                 crate::dev::copy_d2d_async(p.slot(y), p.slot(x), n * p.d.width(x) * 2, s)?;
                 self.mark("activations to FP8")
@@ -1763,23 +1751,6 @@ impl Dyn {
                 let w = p.d.width(x);
                 launch!(k.fp8, [nu, ((w / block) as u32).div_ceil(4), 1], [128, 1, 1], s; p.slot(x), p.slot(y), w as i32, block as i32)?;
                 self.mark("activations to FP8")
-            }
-            Op::V4Moe { block, hash } => {
-                let (layer, _) = p.moe[block].resident().ok_or_else(|| Error("DeepSeek-V4's experts are not on the GPU".into()))?;
-                let sc = self.moe_sc.get().ok_or_else(|| Error("no mixture-of-experts scratch".into()))?;
-                layer.forward_release(
-                    &self.lib,
-                    sc,
-                    s,
-                    p.slot(Slot::H),
-                    p.slot(Slot::Hq),
-                    n,
-                    p.slot(Slot::O),
-                    hash.map(|h| (p.small[h].ptr, v.tok.ptr)),
-                    v.ones.ptr,
-                    v.dims.sim,
-                )?;
-                self.mark("mixture of experts")
             }
             _ => unreachable!(),
         }
