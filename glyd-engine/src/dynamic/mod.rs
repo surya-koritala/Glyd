@@ -1528,7 +1528,7 @@ impl Dyn {
                 let slice = nu * (nq + nki) as u32;
                 launch!(prep, [nu, (nq + nki) as u32, 1 + pfb.div_ceil(slice)], [(d / 2) as u32, 1, 1], s; proj, stride as i32, p.small[q_norm].ptr, p.small[k_norm].ptr, cos, sin, rot as i32, pos.0, cap, qo, kc, vc, nq, nki, has_v as i32, eps, pf, self.table(ring))?;
                 if twelve {
-                    self.kv12_write(ring, n, pos.0)?;
+                    self.kv12_write(ring, n)?;
                 }
                 self.mark("prep")
             }
@@ -1537,7 +1537,7 @@ impl Dyn {
                 // (a ring of 12-bit pages: decode rows read the pages; a prompt chunk's are unpacked to a bf16 ring the kernels below read, with no table)
                 let twelve = self.pages12(p, ring).is_some();
                 if twelve && n <= self.split_rows {
-                    self.kv12_decode(ring, n, pos.1, nq, qo, att)?;
+                    self.kv12_decode(ring, n, nq, qo, att)?;
                     return self.mark(if window > 0 { "attention (sliding, 12-bit pages)" } else { "attention (global, 12-bit pages)" });
                 }
                 let (kc, vc, cap, tab) = if twelve {
@@ -2141,6 +2141,10 @@ impl Dyn {
         let s = self.dev.stream;
         self.mark("start")?;
         let st = if std::ptr::eq(p, &self.big) { self.stage } else { Stage::whole(p.d.layers.len()) };
+        // (the 12-bit pages' slots, lengths and first tokens of the pass's rows, once for every layer)
+        if self.lossless.is_some() && std::ptr::eq(p, &self.big) {
+            self.kv12_prepare(n, pos)?;
+        }
         let head = if st.last { head } else { 0 };
         if st.first {
             self.op(p, 0, 0, &p.d.first, n, pos, head)?;
@@ -2154,7 +2158,10 @@ impl Dyn {
                 r.fetch(l, s)?;
             }
             for (i, op) in ops.iter().enumerate() {
-                if !self.parts.is_empty() && !rows::row_wise(op) {
+                // (a preparation whose keys and values go to 12-bit pages writes staging rows and no sequence's ring: the pass's rows at once, and one
+                // write of them; the slots of each sequence's rows the pass made)
+                let staged = matches!(*op, Op::QkvPrep { ring, .. } if self.pages12(p, ring).is_some());
+                if !self.parts.is_empty() && !rows::row_wise(op) && !staged {
                     // (an operation on a sequence's cache or state: each sequence's rows by themselves, as a pass of that sequence alone runs them)
                     for (k, part) in self.parts.iter().enumerate() {
                         self.at.set(Some(k));
