@@ -7,8 +7,12 @@
 
 pub mod backend;
 pub mod context;
+pub mod cuda;
 pub mod describe;
 #[cfg(test)]
 mod describe_tests;
 pub mod kinds;
+#[cfg(all(target_os = "macos", feature = "mlx"))]
+pub mod mlx;
 pub mod reference;
+pub mod seam;

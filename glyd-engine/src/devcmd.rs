@@ -162,6 +162,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "usercheck" => glyd_engine::logits::users_check(a),
         "twomodels" => glyd_engine::logits::two_models_check(a),
         "bufcheck" => glyd_engine::dev::buf_check(),
+        "seamcheck" => glyd_engine::runtime::cuda::check(&a),
         "roundcheck" => glyd_engine::logits::round_check(a),
         "keepcheck" => glyd_engine::logits::keep_check(a),
         "muserandom" => glyd_engine::muse_ref::random(Path::new(a.need(1, "OUT")?)),

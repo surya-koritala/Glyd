@@ -70,7 +70,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
     }
     let (hid, qd, heads) = (c.hidden, c.qkv(), c.kda.heads);
     let mut l_ = Loaded::default();
-    let (mut states, mut layers) = (Vec::new(), Vec::new());
+    let (mut states, mut layers, mut dense) = (Vec::new(), Vec::new(), false);
     let put = |v: &mut Vec<Buf>, b: Buf| {
         v.push(b);
         v.len() - 1
@@ -138,6 +138,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
             }
             None => {
                 // (the dense MLP's gate and up, then its down: the layer's last two matrices)
+                dense = true;
                 let (gu, down) = (m0 + nm - 2, m0 + nm - 1);
                 ops.extend([
                     Op::Linear { w: gu, x: Slot::H, y: Slot::Gu, name: "MLP: gate and up product" },
@@ -183,8 +184,9 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
         (Slot::Ba, heads.max(8)),
         (Slot::Core, qd),
         (Slot::Att, qd),
-        (Slot::Gu, 2 * c.inter),
-        (Slot::M, c.inter),
+        // (the dense MLP's, where a layer has one: as the description lowered from the layer kinds sizes them)
+        (Slot::Gu, if dense { 2 * c.inter } else { 0 }),
+        (Slot::M, if dense { c.inter } else { 0 }),
     ] {
         widths[s as usize] = wd;
     }
@@ -285,7 +287,9 @@ pub fn describe(c: &ConfigGlm, st: &Stage) -> Result<ModelDesc> {
     }
     let e = n_mats;
     let lm = if st.last && !c.tie { e + 1 } else { e };
-    Ok(glm_desc(hid, qd, heads, c.inter, c.vocab, c.eps, c.max_pos, c.eos.clone(), (c.hc.eps, c.hc.iters as i32), layers, states, e, lm))
+    // (the dense MLP's width where a layer has one, else none: as the description lowered from the layer kinds sizes its slots)
+    let inter = if (0..c.layers).any(|l| !c.moe[l]) { c.inter } else { 0 };
+    Ok(glm_desc(hid, qd, heads, inter, c.vocab, c.eps, c.max_pos, c.eos.clone(), (c.hc.eps, c.hc.iters as i32), layers, states, e, lm))
 }
 
 /// A Kimi delta layer's operations: its matrices from `m0`, its small tensors from `s0`, its convolution's and recurrence's states.

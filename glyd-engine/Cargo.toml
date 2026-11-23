@@ -13,6 +13,8 @@ build = "build.rs"
 [features]
 default = ["dev"]
 dev = []
+# R9's MLX spike (src/runtime/mlx.rs): the layer-kind seam through Apple's MLX; macOS, with Homebrew's mlx-c (MLX_PREFIX, else /opt/homebrew)
+mlx = []
 
 [dependencies]
 glyd-gpu = { path = "../glyd-gpu" }

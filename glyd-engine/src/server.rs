@@ -2010,7 +2010,7 @@ pub fn listen_with_life(
     loading: Arc<AtomicBool>,
     life: Arc<crate::ops::Life>,
 ) -> Result<std::net::SocketAddr> {
-    listen_in(addr, name, window, key, local_only, tx, loading, life, crate::runtime::context::Context::process().clone())
+    listen_in(addr, name, window, key, local_only, tx, loading, life, crate::runtime::context::Context::current())
 }
 
 /// `listen_with_life` for the model of the runtime context `rt`: the process's own for a server of one model, its own for each model of a process that serves several (and for a test's).
@@ -3638,6 +3638,42 @@ pub(crate) mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(lost(700), 1, "the server ended itself for the lost context, once");
+    }
+
+    /// Two models in one process (R16), one of which hits a sticky device error: its request is answered with the error at once (no wait on the GPU it lost), the server ends itself
+    /// for it once (a real one ends the process, both models with it: `device_lost`), and the other model's server, whose context is whole, answers its requests as before.
+    #[test]
+    fn two_models_in_one_process_a_sticky_error_of_one_is_no_hang() {
+        use crate::runtime::context::Context;
+        let ask = |addr: std::net::SocketAddr| {
+            let body = r#"{"messages":[{"role":"user","content":"hello there"}],"max_tokens":6,"temperature":0}"#;
+            let mut c = TcpStream::connect(addr).unwrap();
+            c.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+            c.write_all(
+                format!(
+                    "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+            raw_status(&mut c)
+        };
+        // (a status of its own, so that the other tests' sticky errors are not counted here)
+        let lost = || LOST.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|m| m.ends_with("failed (719)")).count();
+        let mut sticky = Fake::new(512, 64);
+        sticky.fault = Some((2, 719));
+        let a = serve_fake_in(Fake::new(512, 64), None, 4, false, None, &[], Context::new());
+        let b = serve_fake_in(sticky, None, 4, false, None, &[], Context::new());
+        assert_eq!(ask(a).0, 200);
+        let t = std::time::Instant::now();
+        let (status, text) = ask(b);
+        assert!(status >= 500 && text.contains("failed (719)") && t.elapsed() < Duration::from_secs(10), "{status} in {:?}: {text}", t.elapsed());
+        while lost() == 0 && t.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(lost(), 1, "the model whose context was lost ended its server, once");
+        assert_eq!((ask(a).0, ask(a).0), (200, 200), "the other model answers on");
     }
 
     /// Two models in one process (R16): each server has its own runtime context, so its scheduler's figures, its counts and its engine's failure are its own. Three requests to one and a

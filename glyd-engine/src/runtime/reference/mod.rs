@@ -27,7 +27,7 @@ pub mod rope;
 mod hf_tests;
 #[cfg(all(test, feature = "dev"))]
 mod ref_tests;
-#[cfg(test)]
+#[cfg(any(test, feature = "dev"))]
 pub(crate) mod testing;
 
 use super::backend::{

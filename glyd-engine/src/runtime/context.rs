@@ -29,6 +29,11 @@ pub struct Context {
     pub(crate) tracks: Mutex<std::collections::VecDeque<crate::server::Track>>,
 }
 
+thread_local! {
+    /// The context `Context::serve_here` gave this thread.
+    static HERE: std::cell::RefCell<Option<Arc<Context>>> = const { std::cell::RefCell::new(None) };
+}
+
 impl Context {
     /// A context of its own: a second model of the process, or a test's server.
     pub fn new() -> Arc<Context> {
@@ -56,11 +61,43 @@ impl Context {
         P.get_or_init(Context::new)
     }
 
+    /// The context of the model this thread serves: the one `serve_here` gave it (the second model of `serve --with`), else the process's.
+    pub fn current() -> Arc<Context> {
+        HERE.with(|h| h.borrow().clone()).unwrap_or_else(|| Context::process().clone())
+    }
+
+    /// This thread serves the model of `c` from now on: its server, scheduler and figures are `c`'s (`current`).
+    pub fn serve_here(c: Arc<Context>) {
+        HERE.with(|h| *h.borrow_mut() = Some(c));
+    }
+
     /// The engine failed (`what`): kept if it is the first.
     pub fn fail(&self, what: &str) {
         let mut f = self.failed.lock().unwrap_or_else(|e| e.into_inner());
         if f.is_none() {
             *f = Some((crate::monitor::clock(), what.to_string()));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A thread that serves a model of its own (`serve_here`) reads that model's context as its current one; another thread reads the process's.
+    #[test]
+    fn the_current_context_is_the_threads_own_or_the_processs() {
+        let own = Context::new();
+        let mine = own.clone();
+        let seen = std::thread::spawn(move || {
+            Context::serve_here(mine.clone());
+            Arc::ptr_eq(&Context::current(), &mine)
+        })
+        .join()
+        .unwrap();
+        assert!(seen, "a thread given a context serves in it");
+        let other = std::thread::spawn(|| Arc::ptr_eq(&Context::current(), Context::process())).join().unwrap();
+        assert!(other, "a thread given none serves in the process's");
+        assert!(!Arc::ptr_eq(&own, Context::process()));
     }
 }
