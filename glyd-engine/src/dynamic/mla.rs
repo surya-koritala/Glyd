@@ -55,6 +55,8 @@ pub enum IdxKeys {
     Ring(usize),
     /// A per-sequence state of the compressed entries' keys, an entry a row (DeepSeek-V4's compressor's cache).
     State(usize),
+    /// A per-sequence state of the pools' keys, a pool a row (`Op::IdxMean`'s, the mean-pooled indexer's), scored in f32 (`IdxScore::F32`).
+    Pools(usize),
 }
 
 /// The sparse-attention indexer's pick (`runtime::kinds::Indexer`), every family's: for each query, the score of each complete entry of `ratio` tokens that it can
@@ -70,6 +72,8 @@ pub struct IdxPick {
     pub wscale: f32,
     pub score: IdxScore,
     pub keys: IdxKeys,
+    /// The heads' scores weighed by the head weights' product (Iw); else summed alone (the mean-pooled indexer's).
+    pub weighted: bool,
 }
 
 /// A latent attention's indexer: its pick, and its small tensors (bf16 as released): the queries' product `q_b` [heads dim, q_rank] (of the normed q latent), the
@@ -146,6 +150,7 @@ impl MlaOp {
                         wscale: (x.heads as f32).powf(-0.5),
                         score: IdxScore::F32 { dim: x.head_dim, scale: (x.head_dim as f32).powf(-0.5) },
                         keys: IdxKeys::Ring(ring + 1),
+                        weighted: true,
                     },
                     dim: x.head_dim,
                     q_b: s,
@@ -442,9 +447,11 @@ impl Dyn {
         match x.score {
             IdxScore::F32 { dim, scale } => {
                 let smem = ((x.heads * (dim + 1) + x.heads + 8 * dim) * 4) as u32;
-                let (pstep, poff) = (x.ratio as i32, x.ratio as i32 - 1);
+                // (a pool's key in its last token's row of a ring, or a row a pool; the head weights a row's, or the same ones for every row where unweighted)
+                let (pstep, poff) = if matches!(x.keys, IdxKeys::Pools(_)) { (1, 0) } else { (x.ratio as i32, x.ratio as i32 - 1) };
+                let wsr = if x.weighted { x.heads as i32 } else { 0 };
                 launch!(k.score, [(at.emax as u32).div_ceil(8), n, 1], [256, 1, 1], smem smem, s;
-                    at.q, (x.heads * dim) as i32, at.w, x.heads as i32, at.keys, at.stride as i32, pstep, poff, at.tab, at.pos, at.scores, at.emax as i32, x.heads as i32,
+                    at.q, (x.heads * dim) as i32, at.w, wsr, at.keys, at.stride as i32, pstep, poff, at.tab, at.pos, at.scores, at.emax as i32, x.heads as i32,
                     dim as i32, x.ratio as i32, x.top_k as i32, scale, x.wscale)?;
             }
             IdxScore::Release => {
@@ -622,7 +629,7 @@ mod tests {
             gate: gate.then_some(OutGate { act: kinds::Act::Sigmoid, from: kinds::GateFrom::Own, norm: None }),
             scale: ((64 + rope) as f32).powf(-0.5),
             absorbed: true,
-            indexer: indexer.then_some(Indexer { heads: 4, head_dim: 32, top_k: 8, block: 4, shared: false }),
+            indexer: indexer.then_some(Indexer { heads: 4, head_dim: 32, top_k: 8, block: 4, shared: false, form: crate::runtime::kinds::IndexForm::Gated }),
         }
     }
 

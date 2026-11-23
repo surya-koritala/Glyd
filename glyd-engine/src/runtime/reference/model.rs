@@ -232,6 +232,11 @@ impl RefModel {
                 let dp = depth.ok_or_else(|| Error("the depth mix's collapse without its sources".into()))?;
                 dp.mix(self.p.vec("out_mix_norm")?, self.p.vec("out_mix_proj")?)
             }
+            // (the streams normed by the final norm before the mix, none after it)
+            Collapse::GatedMix => {
+                let (down, up) = (self.p.vec("out_mix_down")?, self.p.vec("out_mix_up")?);
+                return Ok(super::gated_mix(n, &self.desc.final_norm, &self.final_norm, down, up, None, xt)?.0);
+            }
         };
         Ok(norm(&self.desc.final_norm, &r, Some(&self.final_norm), None))
     }

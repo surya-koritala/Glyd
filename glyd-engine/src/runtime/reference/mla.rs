@@ -153,7 +153,7 @@ mod tests {
 
     /// A GLM-5.3-Flash-shaped latent attention (NoPE, q low rank) with an indexer of `heads` heads of 16 keeping `top_k` tokens in pools of `block`.
     fn layer(top_k: usize, block: usize) -> (Mla, Params) {
-        let ix = Indexer { heads: 2, head_dim: 16, top_k, block, shared: false };
+        let ix = Indexer { heads: 2, head_dim: 16, top_k, block, shared: false, form: crate::runtime::kinds::IndexForm::Gated };
         let m = Mla {
             heads: 2,
             q_lora: Some(24),

@@ -19,8 +19,11 @@ pub mod lower;
 pub mod mla;
 pub mod muse;
 pub mod nemotron;
+pub mod ngram;
 pub mod pages;
+mod picked;
 pub mod qwen35;
+pub mod qwen4x;
 pub mod range;
 pub mod residual;
 mod rows;
@@ -176,11 +179,13 @@ pub enum Op {
         nk: usize,
         nv: usize,
     },
+    /// `sigmoid`: the gate sigmoid(z) (`Linear::gate_act`, Qwen3.8-Flash-Next's; the weight bf16 as saved), else silu(z) (the weight fp32, as Qwen3.5's engine holds it).
     GatedNorm {
         w: usize,
         row: usize,
         nv: usize,
         z_off: usize,
+        sigmoid: bool,
     },
     /// m = silu(gate) up of matrix `w`'s product (gate and up stacked) of h.
     GateUpSilu {
@@ -216,24 +221,22 @@ pub enum Op {
     },
     /// The mixture-of-experts kind (`Ffn::Moe`), the part's block's: see `MoeOp`.
     Moe(MoeOp),
-    /// The residual streams kind (`Residual::Streams`, mHC; src/dynamic/residual.rs, kernels/residual.cu), its arithmetic `round` (`StreamsP::rounding`): the streams S
-    /// from the embedding row X, four times; before a block, the mixing weights of S by the projection `f` (small, [24, 4 hidden]: fp32 where `round` is `Once`, else
-    /// bf16), `base` and `scale`, made doubly stochastic (the model's `hc`), and the collapse normed by `norm` into H, the weights kept for StreamsPost; after it, S from
-    /// its output O and those weights; at the end, the streams collapsed (`Collapse::Weighted`: by the hyper-head's projection, base and scale in `weighted`; else
-    /// `Collapse::Mean`) and the final norm into H (the LM head reads its last rows).
+    /// The residual streams kind (`Residual::Streams`, mHC; `Residual::GatedStreams`, the gated residuals; src/dynamic/residual.rs, kernels/residual.cu), its arithmetic
+    /// `round` (`StreamsP::rounding`): the streams S from the embedding row X, four times; before a block, the block's input H by `mix` (`StreamsMix`), the weights of its
+    /// output over the streams kept for StreamsPost; after it, S from its output O and those weights (`gated`: each stream plus its weight times O, the gated residuals'; else
+    /// mHC's mixing); at the end, the streams collapsed by `mix` (`HeadMix`) into H (the LM head reads its last rows).
     Streams,
     StreamsPre {
-        f: usize,
-        base: usize,
-        scale: usize,
+        mix: StreamsMix,
         norm: usize,
         round: Rounding,
     },
     StreamsPost {
         round: Rounding,
+        gated: bool,
     },
     StreamsHead {
-        weighted: Option<[usize; 3]>,
+        mix: HeadMix,
         norm: usize,
         round: Rounding,
     },
@@ -275,6 +278,21 @@ pub enum Op {
     },
     /// The indexer's pick (src/dynamic/mla.rs, every indexer's): Iq and Iw (its weights' product) scored against its entries, each row's best.
     IdxPick(IdxPick),
+    /// The mean-pooled indexer's queries and keys (`IndexForm::Mean`; src/dynamic/picked.rs, kernels/qwen4x.cu): of the index product in Qr (`heads` + 1 heads of 128 a row),
+    /// each query head normed (`q_norm`, (1 + w)) and rotated by table `rope` into Iq; the raw key into state `keys` [positions, 128] at the row's position; then each pool
+    /// of 4 the call completes: the mean of its raw keys, normed (`k_norm`) and rotated at its first position, into state `pools` [positions / 4, 128] (`IdxKeys::Pools`).
+    IdxMean {
+        heads: usize,
+        q_norm: usize,
+        k_norm: usize,
+        rope: usize,
+        keys: usize,
+        pools: usize,
+    },
+    /// The hashed n-gram embedding kind (`Body::Ngram`; src/dynamic/ngram.rs): its rows of the table into In, then (after In's product into Gu) its gated add into the
+    /// streams S.
+    NgramRows(ngram::NgramRows),
+    NgramAdd(ngram::NgramAdd),
     /// The attention of Qo over the window (ring `ring`) and the compressed entries (state `cache`: ratio 4, the indexer's picks; another, every complete entry) with the sink (small, fp32), the
     /// rotary of `rope` taken off its output; into Att in the grouped low rank's order (`hpg` heads a group).
     CompAttn {
@@ -367,6 +385,29 @@ pub enum Op {
         alpha: usize,
         beta: usize,
     },
+}
+
+/// How a streams kind's block takes its input from the streams (`Op::StreamsPre`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StreamsMix {
+    /// mHC (`Residual::Streams`): the mixing weights of S by the projection `f` (small, [24, 4 hidden]: fp32 where the rounding is `Once`, else bf16), `base` and
+    /// `scale`, made doubly stochastic (the model's `hc`), and the collapse normed by the op's `norm` into H.
+    Hc { f: usize, base: usize, scale: usize },
+    /// The gated residuals (`Residual::GatedStreams`): each stream of S normed by the op's `norm` ((1 + w), a weight a stream) into Hq; the bottleneck's products
+    /// `down` (Hq into Mid), silu of a quarter, `up` (Mid into Cp); H the mean over the streams of sigmoid(Cp) Hq; the streams' weights 2 sigmoid(`inject` Hq / 4)
+    /// (`inject`'s product into Kv) kept for StreamsPost. Four streams (kernels/qwen4x.cu's).
+    Gated { down: usize, up: usize, inject: usize },
+}
+
+/// How a streams kind's streams become the head's input (`Op::StreamsHead`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HeadMix {
+    /// Their mean, then the op's final norm (`Collapse::Mean`).
+    Mean,
+    /// The hyper-head's weights of them (its projection, base and scale), then the final norm (`Collapse::Weighted`).
+    Weighted([usize; 3]),
+    /// The gated residuals' mix of them, normed a stream at a time by the op's `norm` (`Collapse::GatedMix`): `StreamsMix::Gated` with no inject.
+    Gated { down: usize, up: usize },
 }
 
 /// Where an RMS norm's weight goes (`kinds::NormWeight` as the loader holds the small tensor: a (1 + w) it may hold already added).
@@ -575,6 +616,9 @@ impl Op {
     fn mats(&self) -> Vec<usize> {
         match *self {
             Op::Linear { w, .. } | Op::GateUpSilu { w, .. } | Op::OGroupLora { w, in_f8: false, .. } => vec![w],
+            Op::StreamsPre { mix: StreamsMix::Gated { down, up, inject }, .. } => vec![down, up, inject],
+            Op::StreamsHead { mix: HeadMix::Gated { down, up }, .. } => vec![down, up],
+            Op::NgramRows(x) => vec![x.table],
             Op::Mla(ref a) => match a.input {
                 MlaIn::Fused { w } => vec![w, a.q_b, a.o],
                 MlaIn::Apart { q_a, kv_a } => vec![q_a, kv_a, a.q_b, a.o],
@@ -585,7 +629,7 @@ impl Op {
 
     fn rings(&self) -> Vec<usize> {
         match *self {
-            Op::Attn(ref a) => vec![a.ring],
+            Op::Attn(ref a) if a.picked.is_none() => vec![a.ring],
             Op::Mla(ref a) => std::iter::once(a.ring).chain(a.indexer.as_ref().map(|_| a.ring + 1)).collect(),
             Op::CompKv { ring, .. } | Op::CompAttn { ring, .. } => vec![ring],
             _ => Vec::new(),
@@ -597,6 +641,10 @@ impl Op {
             Op::GdnConv { state, .. } | Op::GdnDelta { state, .. } | Op::MambaConv { state, .. } | Op::MambaScan { state, .. } => vec![state],
             Op::Compress { cache, state, .. } => vec![cache, state, state + 1],
             Op::KdaConv { state, .. } | Op::KdaDelta { state, .. } => vec![state],
+            Op::IdxMean { keys, pools, .. } => vec![keys, pools],
+            Op::Attn(ref a) => a.picked.map_or(Vec::new(), |kv| kv.to_vec()),
+            Op::NgramRows(x) => vec![x.hist],
+            Op::NgramAdd(x) => vec![x.conv],
             _ => Vec::new(),
         }
     }
@@ -832,6 +880,9 @@ pub struct Dyn {
     moe_inv: Buf,
     tok: Option<Buf>,
     ones: Option<Buf>,
+    /// kernels/qwen4x.cu's, and the unweighted picks' room, where the description has the gated residuals, the n-gram embedding or the mean-pooled indexer.
+    kqx: Option<crate::model_qwen4x::KernQx>,
+    picks: Option<picked::PickRun>,
     /// The latent attentions' scratch, where the model has one.
     mla: Option<mla::MlaRun>,
     /// A verify pass's room (made at the first one), whether a pass is one, and the last chunk's (start, rows) where it was one (`rewind` goes back in it).
@@ -1103,7 +1154,20 @@ impl Dyn {
         let kres = residual::KernRes::load(&dev)?;
         let (kmuse, moe_inv) = (muse::KernMuse::load(&dev)?, Buf::zeroed(ch * 32 * 4)?);
         let moes = || d.layers.iter().flatten().filter_map(|op| if let Op::Moe(m) = op { Some(m) } else { None });
-        let tok = if moes().any(|m| m.hash.is_some()) { Some(Buf::zeroed(ch * 4)?) } else { None };
+        let ngram = d.layers.iter().flatten().any(|op| matches!(op, Op::NgramRows(_)));
+        let tok = if moes().any(|m| m.hash.is_some()) || ngram { Some(Buf::zeroed(ch * 4)?) } else { None };
+        let qx = d.layers.iter().flatten().any(|op| {
+            matches!(
+                op,
+                Op::StreamsPre { mix: StreamsMix::Gated { .. }, .. }
+                    | Op::GatedNorm { sigmoid: true, .. }
+                    | Op::IdxMean { .. }
+                    | Op::NgramRows(_)
+                    | Op::NgramAdd(_)
+            ) || matches!(op, Op::Attn(a) if a.picked.is_some())
+        });
+        let kqx = if qx { Some(crate::model_qwen4x::KernQx::load(&dev)?) } else { None };
+        let picks = picked::PickRun::new(d, ch)?;
         let ones = if moes().any(|m| m.weigh_act) {
             let k = big.moe.iter().filter_map(|b| b.resident()).map(|(l, _)| l.cfg.router.top_k).max().unwrap_or(crate::moe::MAX_TOPK);
             let b = Buf::new(ch * k * 4)?;
@@ -1180,6 +1244,8 @@ impl Dyn {
             moe_inv,
             tok,
             ones,
+            kqx,
+            picks,
             mla,
             verify: None,
             verifying: std::cell::Cell::new(false),
@@ -1447,6 +1513,30 @@ impl Dyn {
         crate::hb_usage::record(l, layer.cfg.experts, &ids)
     }
 
+    /// The gated residuals', the n-gram embedding's and the mean-pooled indexer's kernels (kernels/qwen4x.cu), where the description has those kinds.
+    fn kqx(&self) -> Result<&crate::model_qwen4x::KernQx> {
+        self.kqx.as_ref().ok_or_else(|| Error("a gated residual, n-gram embedding or mean-pooled indexer in a model loaded without its kernels".into()))
+    }
+
+    /// The gated residuals' mix of the streams S into H on n rows (`StreamsMix::Gated`, `HeadMix::Gated`): each stream normed by `norm` into Hq, `down`'s product into
+    /// Mid and its activation, `up`'s into Cp, the gated mean into H; with `inject`, its product into Kv and the streams' weights into hcp.
+    unsafe fn gated_mix(&self, p: &Part, n: usize, norm: usize, down: usize, up: usize, inject: Option<usize>) -> Result<()> {
+        let (k, s, d) = (self.kqx()?, self.dev.stream, p.d.hidden);
+        let (sn, mid, gw) = (p.slot(Slot::Hq), p.slot(Slot::Mid), p.slot(Slot::Cp));
+        k.hc_norm(s, p.slot(Slot::S), p.small[norm].ptr, sn, n, d, p.d.eps)?;
+        self.lin(&p.mats[down], sn, n, mid)?;
+        k.silu4(s, mid, n * p.d.width(Slot::Mid))?;
+        self.lin(&p.mats[up], mid, n, gw)?;
+        let (il, inj) = match inject {
+            Some(w) => {
+                self.lin(&p.mats[w], sn, n, p.slot(Slot::Kv))?;
+                (p.slot(Slot::Kv), self.hcp.ptr)
+            }
+            None => (0, 0),
+        };
+        k.hc_mix(s, gw, sn, il, p.slot(Slot::H), inj, n, d)
+    }
+
     unsafe fn op(&self, p: &Part, l: usize, i: usize, op: &Op, n: usize, pos: (u64, u64), head: usize) -> Result<()> {
         let s = self.dev.stream;
         let (nu, eps, hid) = (n as u32, p.d.eps, p.d.hidden as i32);
@@ -1463,7 +1553,10 @@ impl Dyn {
                 p.f8[w].linear(&self.lib, p.slot(x), n, p.slot(y), self.ws.ptr, self.ws.bytes, self.done.ptr, s)?;
                 self.mark(name)
             }
-            Op::Attn(ref a) => self.attn(p, l, i, a, n, pos, head),
+            Op::Attn(ref a) => match a.picked {
+                Some(kv) => self.attn_picked(p, a, kv, n, pos.0),
+                None => self.attn(p, l, i, a, n, pos, head),
+            },
             Op::AddNorm { y, post, scalar, next } => {
                 let (nx, rows) = Self::next_linear(p, l, i, n, head);
                 let (pf, pfb) = self.pf(nx, rows, self.pf_kib[1], nt);
@@ -1533,8 +1626,13 @@ impl Dyn {
                 )?;
                 self.mark("linear attention: delta rule")
             }
-            Op::GatedNorm { w, row, nv, z_off } => {
-                self.k35.gated_norm(s, p.slot(Slot::Core), p.slot(Slot::Mix) + (z_off * 2) as u64, row as i32, p.small[w].ptr, nu, nv as i32, eps)?;
+            Op::GatedNorm { w, row, nv, z_off, sigmoid } => {
+                let (core, z) = (p.slot(Slot::Core), p.slot(Slot::Mix) + (z_off * 2) as u64);
+                if sigmoid {
+                    self.kqx()?.gnorm(s, core, z, row, p.small[w].ptr, n, nv, eps)?;
+                } else {
+                    self.k35.gated_norm(s, core, z, row as i32, p.small[w].ptr, nu, nv as i32, eps)?;
+                }
                 self.mark("linear attention: gated norm")
             }
             Op::GateUpSilu { w, inter } => {
@@ -1589,21 +1687,37 @@ impl Dyn {
             }
             Op::Moe(ref m) => self.moe(p, m, n),
             Op::Streams => self.kres.streams(s, p.slot(Slot::X), p.slot(Slot::S), nu, hid),
-            Op::StreamsPre { f, base, scale, norm, round } => {
+            Op::StreamsPre { mix: StreamsMix::Hc { f, base, scale }, norm, round } => {
                 let (fp, bp, sp) = (p.small[f].ptr, p.small[base].ptr, p.small[scale].ptr);
                 let (h, nw, (hc_eps, iters)) = (p.slot(Slot::H), p.small[norm].ptr, p.d.hc);
                 self.kres.pre(s, p.slot(Slot::S), (fp, bp, sp), nw, h, self.hcp.ptr, self.hc_part.ptr, nu, hid, (eps, hc_eps, iters), round)?;
                 self.mark("hyper-connections")
             }
-            Op::StreamsPost { round } => {
+            Op::StreamsPre { mix: StreamsMix::Gated { down, up, inject }, norm, .. } => {
+                self.gated_mix(p, n, norm, down, up, Some(inject))?;
+                self.mark("gated residuals")
+            }
+            Op::StreamsPost { gated: true, .. } => {
+                self.kqx()?.hc_post(s, p.slot(Slot::S), p.slot(Slot::O), self.hcp.ptr, n, p.d.hidden)?;
+                self.mark("gated residuals")
+            }
+            Op::StreamsPost { round, .. } => {
                 self.kres.post(s, p.slot(Slot::S), p.slot(Slot::O), self.hcp.ptr, nu, hid, round)?;
                 self.mark("hyper-connections")
             }
-            Op::StreamsHead { weighted, norm, round } => {
-                let w = weighted.map(|[f, b, sc]| (p.small[f].ptr, p.small[b].ptr, p.small[sc].ptr));
+            Op::StreamsHead { mix: HeadMix::Gated { down, up }, norm, .. } => {
+                self.gated_mix(p, n, norm, down, up, None)?;
+                self.mark("gated residuals")
+            }
+            Op::StreamsHead { mix, norm, round } => {
+                let w = if let HeadMix::Weighted([f, b, sc]) = mix { Some((p.small[f].ptr, p.small[b].ptr, p.small[sc].ptr)) } else { None };
                 self.kres.head(s, p.slot(Slot::S), w, self.hc_part.ptr, p.small[norm].ptr, p.slot(Slot::H), nu, hid, (eps, p.d.hc.0), round)?;
                 self.mark("hyper-connections")
             }
+            Op::IdxMean { heads, q_norm, k_norm, rope, keys, pools } => self.idx_mean(p, heads, q_norm, k_norm, rope, keys, pools, n, pos.0),
+            Op::IdxPick(ref x) if matches!(x.keys, IdxKeys::Pools(_)) => self.idx_pick_pools(p, x, n, pos.0),
+            Op::NgramRows(ref x) => self.ngram_rows(p, x, n),
+            Op::NgramAdd(ref x) => self.ngram_add(p, x, n),
             Op::KdaConv { w, state, c, row, w32 } => {
                 let (x, y) = (p.slot(Slot::Mix) + self.rows_before(row), p.slot(Slot::Xc) + self.rows_before(c));
                 self.kglm.conv(s, x, row as i32, p.small[w].ptr, w32, self.state(state), y, n as i32, c as i32)?;

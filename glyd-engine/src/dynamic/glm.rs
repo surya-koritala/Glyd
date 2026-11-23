@@ -3,7 +3,7 @@
 //! model_glm.rs's loader (a latent attention's by mla_glm.rs's `MlaWeights`) and the experts' blocks by their factory, handed over as they are; the arithmetic is kernels/glm.cu's and kernels/mla.cu's, as
 //! model_glm.rs runs it (`glmdyn` checks the two against each other).
 
-use super::{Dyn, IdxKeys, IdxPick, IdxScore, Loaded, MlaIn, MlaIndexer, MlaOp, ModelDesc, MoeOp, Op, Opts, Ring, Slot, Stage, View};
+use super::{Dyn, HeadMix, IdxKeys, IdxPick, IdxScore, Loaded, MlaIn, MlaIndexer, MlaOp, ModelDesc, MoeOp, Op, Opts, Ring, Slot, Stage, StreamsMix, View};
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result};
 use crate::glm::{ConfigGlm, GlmKind};
@@ -91,9 +91,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
         let [ha, hf] = ly.hc;
         let (na, nf) = (put(&mut l_.small, ly.norm_a), put(&mut l_.small, ly.norm_f));
         let pre = |small: &mut Vec<Buf>, h: crate::model_glm::Hc, norm: usize| Op::StreamsPre {
-            f: put(small, h.proj),
-            base: put(small, h.base),
-            scale: put(small, h.scale),
+            mix: StreamsMix::Hc { f: put(small, h.proj), base: put(small, h.base), scale: put(small, h.scale) },
             norm,
             round: Rounding::Twice,
         };
@@ -140,7 +138,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
                 ops.push(Op::Mla(op));
             }
         }
-        ops.extend([Op::StreamsPost { round: Rounding::Twice }, pre(&mut l_.small, hf, nf)]);
+        ops.extend([Op::StreamsPost { round: Rounding::Twice, gated: false }, pre(&mut l_.small, hf, nf)]);
         match ly.moe {
             Some(b) => {
                 if b.layer().is_none() {
@@ -160,12 +158,12 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
                 ]);
             }
         }
-        ops.push(Op::StreamsPost { round: Rounding::Twice });
+        ops.push(Op::StreamsPost { round: Rounding::Twice, gated: false });
         layers.push(ops);
     }
     if st.last {
         let norm = put(&mut l_.small, norm_f.ok_or_else(|| Error("the final norm is not loaded".into()))?);
-        layers.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::StreamsHead { weighted: None, norm, round: Rounding::Twice });
+        layers.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::StreamsHead { mix: HeadMix::Mean, norm, round: Rounding::Twice });
     }
     // (a stage without the embedding or the head keeps their places, empty, so that their indices hold)
     let empty = || -> Result<Mat> { Ok(Mat::Dense(Buf::new(2)?, 0, 0)) };
@@ -273,6 +271,7 @@ pub(crate) fn latent(c: &ConfigGlm) -> MlaOp {
                 wscale: (ix.heads as f32).powf(-0.5),
                 score: IdxScore::F32 { dim: ix.dim, scale: (ix.dim as f32).powf(-0.5) },
                 keys: IdxKeys::Ring(1),
+                weighted: true,
             },
             dim: ix.dim,
             q_b: 0,
@@ -310,7 +309,7 @@ pub fn describe(c: &ConfigGlm, st: &Stage) -> Result<ModelDesc> {
         }
         let s = n_small;
         n_small += 5;
-        let mut ops = vec![Op::StreamsPre { f: s + 2, base: s + 3, scale: s + 4, norm: s, round: Rounding::Twice }];
+        let mut ops = vec![Op::StreamsPre { mix: StreamsMix::Hc { f: s + 2, base: s + 3, scale: s + 4 }, norm: s, round: Rounding::Twice }];
         let m0 = n_mats;
         let nm = per_layer(c.kinds[l], c.moe[l]);
         n_mats += nm;
@@ -332,18 +331,25 @@ pub fn describe(c: &ConfigGlm, st: &Stage) -> Result<ModelDesc> {
         }
         let h = n_small;
         n_small += 3;
-        ops.extend([Op::StreamsPost { round: Rounding::Twice }, Op::StreamsPre { f: h, base: h + 1, scale: h + 2, norm: s + 1, round: Rounding::Twice }]);
+        ops.extend([
+            Op::StreamsPost { round: Rounding::Twice, gated: false },
+            Op::StreamsPre { mix: StreamsMix::Hc { f: h, base: h + 1, scale: h + 2 }, norm: s + 1, round: Rounding::Twice },
+        ]);
         if c.moe[l] {
             ops.push(Op::Moe(MoeOp::of(n_moe)));
             n_moe += 1;
         } else {
             ops.extend(dense_ops(m0 + nm - 2, c.inter, c.experts.limit));
         }
-        ops.push(Op::StreamsPost { round: Rounding::Twice });
+        ops.push(Op::StreamsPost { round: Rounding::Twice, gated: false });
         layers.push(ops);
     }
     if st.last {
-        layers.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::StreamsHead { weighted: None, norm: n_small, round: Rounding::Twice });
+        layers.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::StreamsHead {
+            mix: HeadMix::Mean,
+            norm: n_small,
+            round: Rounding::Twice,
+        });
     }
     let e = n_mats;
     let lm = if st.last && !c.tie { e + 1 } else { e };

@@ -108,6 +108,9 @@ fn by_sequence(op: &Op) -> bool {
             | Op::Compress { .. }
             | Op::IdxPick(_)
             | Op::CompAttn { .. }
+            | Op::IdxMean { .. }
+            | Op::NgramRows(_)
+            | Op::NgramAdd(_)
     )
 }
 

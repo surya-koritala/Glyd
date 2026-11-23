@@ -1,5 +1,6 @@
 //! Model descriptions from `config.json` (R3a, #136): a `ModelDesc` of layer kinds and the weight map that names each block role's
-//! checkpoint tensors, with no per-model code. Families: Qwen3.8 dense and MoE (the Qwen3.5 architecture), gemma-4 text, GLM-5.3 and
+//! checkpoint tensors, with no per-model code. Families: Qwen3.8 dense and MoE (the Qwen3.5 architecture), Qwen3.8-Flash-Next (Condor's
+//! model: gated residuals, the indexer on GQA, the hashed n-gram embedding), gemma-4 text, GLM-5.3 and
 //! GLM-5.3-Flash (transformers' keys or the release's, FP8 block-scaled matrices), Kimi-K3, Muse Spark, DeepSeek-V4, Nemotron 3
 //! (`nemotron_h`), and the Llama-style standard architectures (Llama, Mistral, Qwen2, Qwen3). Weight maps name the released tensors,
 //! through the tables of their naming convention (`names`); a format detail such as Kimi-K3's MXFP4 experts (`.weight_packed` for
@@ -377,6 +378,7 @@ pub fn describe_config(c: &ModelConfig) -> Result<Described> {
     match mt {
         t if LLAMA.contains(&t) => llama(tc, prefix, mt, tied_top),
         "qwen3_5_text" | "qwen3_5_moe_text" | "qwen3_5" | "qwen3_5_moe" => qwen35(tc, prefix, mt, tied_top),
+        "qwen4_exp_text" => qwen4x(tc, prefix, mt, tied_top),
         "gemma4_text" | "gemma4_unified_text" => gemma4(tc, prefix, mt, tied_top),
         "glm_moe_dsa" | "glm5_next_text" | "glm5_next" => glm(tc, prefix, mt, tied_top, c.top.get("quantization_config").or(tc.get("quantization_config"))),
         "" => err("config.json names no model_type"),
@@ -666,6 +668,268 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         shapes.insert(out.final_norm.clone(), vec![d]);
         out.shapes = shapes;
     }
+    Ok(out)
+}
+
+/// Qwen3.8-Flash-Next (`qwen4_exp_text`, Condor's model): the Qwen3.5 hybrid's Gated DeltaNet and gated attention, the attention's Qwen Sparse
+/// Attention indexer (`IndexForm::Mean`), the softmax-routed experts with the gated shared expert, every block inside gated residuals over
+/// `hc_count` streams (`Residual::GatedStreams`), the final mixer (`Collapse::GatedMix`), and the hashed n-gram embedding (`Body::Ngram`)
+/// before each layer `ple_layer_ids` names. A layer is two blocks, three with the n-gram embedding. Not read: the vision tower and the MTP
+/// layer (counted). The defaults of a key a config leaves out are transformers' (`Qwen4ExpTextConfig`). Each tensor's shape is said.
+fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab, eps, tied) = common(&k, tied_top)?;
+    let (heads, kv, hd) = (k.usize("num_attention_heads")?, k.usize("num_key_value_heads")?, k.usize("head_dim")?);
+    let max_pos = k.opt_usize("max_position_embeddings")?;
+    k.opt_f64("partial_rotary_factor")?;
+    let rp = match k.raw("rope_parameters") {
+        Some(Value::Object(o)) => rope(o, hd, max_pos, &format!("{mt} rope_parameters"))?,
+        _ => legacy_rope(&k, hd, max_pos)?,
+    };
+    k.expect("attention_bias", &Value::Bool(false))?;
+    let gate = k.bool("attn_output_gate", true)?;
+    let act = act(k.str("hidden_act")?.unwrap_or("silu"))?;
+    let lin_gate = match k.str("output_gate_type")? {
+        Some(g) => self::act(g)?,
+        None => act,
+    };
+    k.expect("mamba_ssm_dtype", &Value::from("float32"))?;
+    let interval = k.opt_usize("full_attention_interval")?.unwrap_or(4).max(1);
+    // (the release writes "full_attention" for the layers transformers calls "indexed_attention")
+    let types: Vec<String> = match k.raw("layer_types").and_then(|v| v.as_array()) {
+        Some(a) => a.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect(),
+        None => (0..layers).map(|l| if (l + 1) % interval == 0 { "indexed_attention" } else { "linear_attention" }.to_string()).collect(),
+    };
+    if types.len() != layers {
+        return err(format!("{mt}: {} layer_types for {layers} layers", types.len()));
+    }
+    let lin = Linear {
+        kind: LinearKind::GatedDeltaNet,
+        k_heads: k.usize("linear_num_key_heads")?,
+        v_heads: k.usize("linear_num_value_heads")?,
+        k_dim: k.usize("linear_key_head_dim")?,
+        v_dim: k.usize("linear_value_head_dim")?,
+        conv: k.usize("linear_conv_kernel_dim")?,
+        decay: Decay::Softplus,
+        gate_act: lin_gate,
+        norm_eps: eps,
+        state_f32: true,
+    };
+    let pn = Norm::rms_plus_one(eps);
+    // the indexer: all five keys or none
+    const IX: [&str; 5] = ["indexer_n_heads", "indexer_kv_heads", "indexer_head_dim", "indexer_budget", "indexer_compress_ratio"];
+    let ix: Vec<Option<usize>> = IX.iter().map(|x| k.opt_usize(x)).collect::<Result<_>>()?;
+    let indexer = match ix[..] {
+        [Some(ih), Some(ikv), Some(idim), Some(budget), Some(ratio)] => {
+            if ikv != 1 {
+                return err(format!("{mt}: indexer_kv_heads = {ikv} is not supported (only 1: one key head)"));
+            }
+            if ih == 0 || idim == 0 || ratio == 0 || budget == 0 || budget % ratio != 0 || rp.dim > idim {
+                return err(format!("{mt}: an indexer of {ih} heads of {idim} keeping {budget} tokens in pools of {ratio}, under a rotary of {}", rp.dim));
+            }
+            Some(Indexer { heads: ih, head_dim: idim, top_k: budget, block: ratio, shared: false, form: IndexForm::Mean { norm: pn } })
+        }
+        [None, None, None, None, None] => None,
+        _ => return err(format!("{mt}: the indexer's keys come together ({}), and some are missing", IX.join(", "))),
+    };
+    let ne = k.opt_usize("num_experts")?.unwrap_or(512);
+    let (inter, shared_inter) = (k.usize("moe_intermediate_size")?, k.usize("shared_expert_intermediate_size")?);
+    let moe = Moe {
+        router: Router {
+            score: RouterScore::Softmax,
+            logit_scale: 1.0,
+            bias: false,
+            groups: None,
+            top_k: k.opt_usize("num_experts_per_tok")?.unwrap_or(10),
+            renorm: k.bool("norm_topk_prob", true)?,
+            scale: 1.0,
+            hash: false,
+        },
+        experts: ne,
+        expert: gated(act),
+        shared: (shared_inter > 0).then(|| gated(act)),
+        shared_gate: shared_inter > 0,
+        latent: None,
+    };
+    let (hc, rank) = (k.opt_usize("hc_count")?.unwrap_or(4), k.opt_usize("hc_lowrank")?.unwrap_or(320));
+    if hc < 2 || rank == 0 {
+        return err(format!("{mt}: gated residuals over {hc} streams of a rank of {rank}"));
+    }
+    let gr = Residual::GatedStreams(GatedStreamsP { streams: hc, lowrank: rank });
+    // the n-gram embedding: one-based layer ids, each a linear-attention layer
+    let mut ple: Vec<usize> = match k.raw("ple_layer_ids") {
+        Some(Value::Array(a)) => {
+            a.iter().map(|x| x.as_u64().map(|v| v as usize).ok_or_else(|| Error(format!("{mt}: ple_layer_ids {x}")))).collect::<Result<_>>()?
+        }
+        Some(v) => return err(format!("{mt}: ple_layer_ids {v}")),
+        None => Vec::new(),
+    };
+    ple.sort_unstable();
+    ple.dedup();
+    let (order, per) = (k.opt_usize("ngram_size")?.unwrap_or(3), k.opt_usize("heads_per_ngram")?.unwrap_or(8));
+    let ple_dim = k.opt_usize("ple_embed_dim")?.unwrap_or(d);
+    let base = k.opt_usize("ngram_vocab_size_base")?.unwrap_or(20_000_000) as u64;
+    let pad = k.opt_usize("make_ngram_vocab_size_divisible_by")?.unwrap_or(128);
+    let seed = k.opt_usize("seed")?.unwrap_or(1234) as u64;
+    let parts = k.opt_usize("split_ngram_parts")?.unwrap_or(512);
+    let taps = k.opt_usize("ple_conv_kernel_size")?.unwrap_or(4);
+    let states = if ple.is_empty() { 1 } else { 3 };
+    k.expect("number_of_conv_states", &Value::from(states))?;
+    let eos = match k.raw("eos_token_id") {
+        Some(Value::Array(a)) => a.first().and_then(Value::as_u64),
+        Some(v) => v.as_u64(),
+        None => None,
+    };
+    let tables = (order.max(1) - 1).saturating_mul(per);
+    let ngram = |index: usize| -> Result<Ngram> {
+        let eos = eos.ok_or_else(|| Error(format!("{mt}: an n-gram embedding and no eos_token_id")))? as u32;
+        // (sizes past these are no model's, and would keep the builder finding primes or naming shards for long: 2e7 and 512 are transformers' defaults)
+        let huge = base > 1 << 40 || tables.saturating_mul(index + 1) > 4096 || parts > 1 << 16 || order > 64;
+        if order < 2 || per == 0 || ple_dim == 0 || ple_dim % tables != 0 || taps == 0 || parts == 0 || huge {
+            return err(format!(
+                "{mt}: an n-gram embedding of {ple_dim} over {per} tables for each order up to {order}, a convolution of {taps}, {parts} shards"
+            ));
+        }
+        Ok(Ngram { order, heads: per, dim: ple_dim, base, vocab, seed, index, eos, streams: hc, conv: taps, dilation: order, norm: pn })
+    };
+    for &l in &ple {
+        if l == 0 || l > layers || types[l - 1] != "linear_attention" {
+            return err(format!("{mt}: ple_layer_ids {l} is not a linear_attention layer (one-based)"));
+        }
+    }
+    let mtp = match k.raw("mtp") {
+        Some(Value::Object(o)) => o.get("num_hidden_layers").and_then(Value::as_u64),
+        Some(v) => return err(format!("{mt}: mtp {v}")),
+        None => None,
+    };
+    let mtp_layers = k.opt_usize("mtp_num_hidden_layers")?.or(mtp.map(|n| n as usize)).unwrap_or(0);
+    k.bool("mtp_use_dedicated_embeddings", false)?;
+    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    let mut shapes = std::collections::BTreeMap::new();
+    let w = hc * d;
+    let gr_shapes = vec![("norm_in", vec![w]), ("mix_down", vec![rank, w]), ("mix_up", vec![w, rank]), ("inject", vec![hc, w])];
+    let (kh, vh, kd, vd) = (lin.k_heads, lin.v_heads, lin.k_dim, lin.v_dim);
+    let qkv = 2 * kh * kd + vh * vd;
+    for (l, ty) in types.iter().enumerate() {
+        let p = names::QWEN4X.layer(prefix, l);
+        if let Some(index) = ple.iter().position(|&x| x == l + 1) {
+            let n = ngram(index)?;
+            let rows = super::reference::ngram::rows(&n, pad);
+            if rows % parts != 0 {
+                return err(format!("{mt}: an n-gram table of {rows} rows in {parts} shards"));
+            }
+            let mut r = names::roles(part::QX_NGRAM, &p, 0, all);
+            let sh = vec![
+                ("norm_in", vec![w]),
+                ("key", vec![w, ple_dim]),
+                ("value", vec![d, ple_dim]),
+                ("norm_key", vec![w]),
+                ("norm_conv", vec![w]),
+                ("conv", vec![w, 1, taps]),
+                ("ngram_mult", vec![order]),
+                ("ngram_sizes", vec![tables]),
+                ("ngram_offsets", vec![tables]),
+            ];
+            shape_roles(&mut shapes, &r, &sh);
+            let table = names::shards(part::QX_NGRAM_SHARD, &p, parts);
+            if let Source::Rows(v) = &table {
+                shapes.extend(v.iter().map(|s| (s.clone(), vec![rows / parts, ple_dim / tables])));
+            }
+            r.push(("ngram".into(), table));
+            blocks.push(Block { norm_in: pn, body: Body::Ngram(n), norm_out: None, residual: Residual::Add });
+            roles.push(r);
+        }
+        let (mixer, mut r, sh) = match ty.as_str() {
+            "linear_attention" => (
+                Mixer::Linear(lin.clone()),
+                names::roles(part::QWEN_LINEAR, &p, 0, |r| r != "norm_in"),
+                vec![
+                    ("qkv", vec![qkv, d]),
+                    ("gate", vec![vh * vd, d]),
+                    ("beta", vec![vh, d]),
+                    ("decay", vec![vh, d]),
+                    ("conv", vec![qkv, 1, lin.conv]),
+                    ("a_log", vec![vh]),
+                    ("dt_bias", vec![vh]),
+                    ("norm", vec![vd]),
+                    ("o", vec![d, vh * vd]),
+                ],
+            ),
+            "full_attention" | "indexed_attention" => {
+                let ix = indexer.clone().ok_or_else(|| Error(format!("{mt}: layer {l} is an indexed attention, and the config has no indexer_* keys")))?;
+                let a = Attn {
+                    heads,
+                    kv_heads: kv,
+                    head_dim: hd,
+                    v_head_dim: hd,
+                    window: None,
+                    sinks: false,
+                    rope: Some(rp.clone()),
+                    q_norm: Some(pn),
+                    k_norm: Some(pn),
+                    v_norm: None,
+                    gate: gate.then_some(OutGate { act: Act::Sigmoid, from: GateFrom::InQuery, norm: None }),
+                    softcap: None,
+                    bias: false,
+                    scale: (hd as f32).powf(-0.5),
+                    k_eq_v: false,
+                    rounding: AttnRounding::Flash,
+                    indexer: Some(ix.clone()),
+                };
+                let mut r = names::roles(part::ATTN, &p, 0, |r| r != "norm_in" && !r.ends_with("_bias"));
+                r.extend(names::roles(part::QX_INDEXER, &p, 0, all));
+                let sh = vec![
+                    ("q", vec![heads * hd * if gate { 2 } else { 1 }, d]),
+                    ("k", vec![kv * hd, d]),
+                    ("v", vec![kv * hd, d]),
+                    ("o", vec![d, heads * hd]),
+                    ("q_norm", vec![hd]),
+                    ("k_norm", vec![hd]),
+                    ("index_qk", vec![(ix.heads + 1) * ix.head_dim, d]),
+                    ("index_q_norm", vec![ix.head_dim]),
+                    ("index_k_norm", vec![ix.head_dim]),
+                ];
+                (Mixer::Attention(a), r, sh)
+            }
+            other => return err(format!("{mt}: layer type {other} at layer {l}")),
+        };
+        r.extend(names::roles(part::QX_GR_ATTN, &p, 0, all));
+        shape_roles(&mut shapes, &r, &[sh, gr_shapes.clone()].concat());
+        blocks.push(Block { norm_in: pn, body: Body::Mixer(mixer), norm_out: None, residual: gr.clone() });
+        roles.push(r);
+        let mut f = names::roles(part::QX_MOE, &p, 0, |r| moe.shared.is_some() || !r.starts_with("shared_"));
+        f.extend(names::roles(part::QX_GR_MLP, &p, 0, all));
+        let fs = vec![
+            ("router", vec![ne, d]),
+            ("experts_gate_up", vec![ne, 2 * inter, d]),
+            ("experts_down", vec![ne, d, inter]),
+            ("shared_gate", vec![shared_inter, d]),
+            ("shared_up", vec![shared_inter, d]),
+            ("shared_down", vec![d, shared_inter]),
+            ("shared_router", vec![1, d]),
+        ];
+        shape_roles(&mut shapes, &f, &[fs, gr_shapes.clone()].concat());
+        blocks.push(Block { norm_in: pn, body: Body::Ffn(Ffn::Moe(moe.clone())), norm_out: None, residual: gr.clone() });
+        roles.push(f);
+    }
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: hc },
+        blocks,
+        final_norm: pn,
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::GatedMix },
+        mtp: Vec::new(),
+        vision: None,
+        rope: Some(rp),
+    };
+    let mut out = finish(&k, desc, &names::QWEN4X, prefix, roles, mtp_layers)?;
+    for n in [Some(&out.embed), out.head.as_ref()].into_iter().flatten() {
+        shapes.insert(n.clone(), vec![vocab, d]);
+    }
+    shapes.insert(out.final_norm.clone(), vec![w]);
+    shape_roles(&mut shapes, &out.extra, &[("out_mix_down", vec![rank, w]), ("out_mix_up", vec![w, rank])]);
+    out.shapes = shapes;
     Ok(out)
 }
 
@@ -1057,7 +1321,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
                     if !shared {
                         r.extend(names::roles(part::MLA_INDEXER, &p, 0, |x| flash || !x.starts_with("indexer_pool")));
                     }
-                    Some(Indexer { heads: h, head_dim: dim, top_k: top, block: pool, shared })
+                    Some(Indexer { heads: h, head_dim: dim, top_k: top, block: pool, shared, form: IndexForm::Gated })
                 }
                 _ => None,
             };
@@ -1629,7 +1893,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
             ratio,
             overlap: ratio > 0 && is_csa,
             rope: if ratio > 0 { comp_rope.clone() } else { main_rope.clone() },
-            indexer: (ratio > 0 && is_csa).then_some(Indexer { heads: ih, head_dim: idim, top_k: itop, block: ratio, shared: false }),
+            indexer: (ratio > 0 && is_csa).then_some(Indexer { heads: ih, head_dim: idim, top_k: itop, block: ratio, shared: false, form: IndexForm::Gated }),
             norm_eps: eps,
         };
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Compressed(c)), norm_out: None, residual: Residual::Streams(streams) });

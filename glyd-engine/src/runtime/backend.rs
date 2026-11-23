@@ -21,6 +21,8 @@ pub enum KindRef {
     Mamba2,
     Mlp,
     Moe,
+    /// Condor's hashed n-gram embedding into the residual streams.
+    Ngram,
 }
 
 impl KindRef {
@@ -37,6 +39,7 @@ impl KindRef {
             Body::Mixer(Mixer::Mamba2(_)) => KindRef::Mamba2,
             Body::Ffn(Ffn::Mlp(_)) => KindRef::Mlp,
             Body::Ffn(Ffn::Moe(_)) => KindRef::Moe,
+            Body::Ngram(_) => KindRef::Ngram,
         }
     }
 }

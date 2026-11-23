@@ -278,7 +278,7 @@ pub(crate) fn pack_item_map(ck: &Checkpoint, it: &Item, layout: Layout, transfor
 }
 
 /// An item's members stacked, as bf16 words (an FP8 member as the bf16 it dequantises to).
-fn item_words(ck: &Checkpoint, it: &Item) -> Result<Vec<u16>> {
+pub(crate) fn item_words(ck: &Checkpoint, it: &Item) -> Result<Vec<u16>> {
     let mut w = vec![0u16; it.rows * it.cols];
     let mut at = 0usize;
     for m in &it.members {

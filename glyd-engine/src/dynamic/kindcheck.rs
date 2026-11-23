@@ -151,6 +151,7 @@ fn label(b: &Block) -> (Class, String) {
             s += &format!(", {:?} experts", e.expert.act);
             (Class::Moe, s)
         }
+        Body::Ngram(n) => (Class::Residual, format!("n-gram embedding: orders up to {}, {} tables each, {} streams", n.order, n.heads, n.streams)),
     }
 }
 
@@ -171,6 +172,7 @@ fn residual_label(b: Option<&Block>) -> String {
         Residual::AddThenScale => "add, then the layer's scalar".into(),
         Residual::Gated(_) => "gated".into(),
         Residual::Streams(s) => format!("mHC over {} streams", s.streams),
+        Residual::GatedStreams(g) => format!("gated residuals over {} streams", g.streams),
         Residual::DepthMix(_) => "depth mix".into(),
     };
     format!("residual ({rule}) and the {norm} norm{}", if b.norm_out.is_some() { ", with the block's post-norm" } else { "" })

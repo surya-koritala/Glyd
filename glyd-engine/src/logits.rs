@@ -631,9 +631,11 @@ impl Run for Qwen4x {
     }
 }
 
-/// The experts of Qwen3.8-Flash-Next are held in six-bit codes at its kestrel level (the random model's are on that grid, as tools/qwen4x_ref.py makes them).
+/// The experts of Qwen3.8-Flash-Next are held in six-bit codes at its kestrel level (the random model's are on that grid, as tools/qwen4x_ref.py makes them). At penguin:
+/// the description executor (src/dynamic/qwen4x.rs: the other matrices lossless, the experts at six bits, which hold the random model's exactly); at the other levels
+/// Condor's own engine.
 fn qwen4x_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
-    let Some(experts) = level_layout(level)? else { return err("the tiny Qwen3.8-Flash-Next runs at kestrel, swift or wren") };
+    let Some(experts) = level_layout(level)? else { return boxed(crate::dynamic::qwen4x::load(dir, &dyn_opts(None))) };
     let o = crate::model_qwen4x::OptsQx { ctx: 1024, chunk: 64, layout: Layout::Tiered, chunked: true, ..Default::default() };
     let make = crate::model_qwen4x::gpu_experts(experts);
     Ok(Box::new(Qwen4x { e: crate::model_qwen4x::EngineQx::new(dir, &o, Some(&make))?, chunk: 64, last_chunk: 0 }))
@@ -823,7 +825,7 @@ pub fn cases() -> Vec<Case> {
             family: "Qwen3.8-Flash-Next (Gated DeltaNet, indexed attention, hyper-connections, per-layer embeddings, mixture of experts)",
             weights: Weights::Random(qwen4x_random),
             engine: qwen4x_engine,
-            cpu: None,
+            cpu: Some(described_cpu),
             vocab: 2048,
         },
         Case {
@@ -1307,7 +1309,7 @@ pub fn record(a: &crate::args::Args) -> Result<()> {
         "source".into(),
         match from {
             // (Nemotron-H has no reference of its own: its description on the reference of the layer kinds)
-            "cpu" if c.id == "nemotron-h" => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
+"cpu" if c.id == "nemotron-h" || c.id == "qwen4x" => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
             "cpu" => format!(
                 "the CPU reference of src/{}_ref.rs, fp32 inside, on this case's random model (seed fixed in the generator)",
                 c.id.replace("deepseek-", "ds").replace('-', "")
@@ -1477,7 +1479,8 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
         // (its experts at the level asked: the lossless one where none is)
         "nemotron" => crate::dynamic::nemotron::load(dir, o, level_layout(level)?.unwrap_or(Layout::Tiered))?,
         "deepseek-v4" => crate::dynamic::deepseek_v4::load(dir, o)?,
-        other => return err(format!("{other}: gemma4, qwen35, qwen3, muse, kimi, glm, nemotron or deepseek-v4")),
+        "qwen4x" => crate::dynamic::qwen4x::load(dir, o)?,
+        other => return err(format!("{other}: gemma4, qwen35, qwen3, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
     })
 }
 
@@ -1495,7 +1498,8 @@ pub(crate) fn random_dyn(case: &str, level: &str, tag: &str) -> Result<Dyn> {
             "glm" => crate::kcheck_glm::random(&dir, false, None)?,
             "nemotron" => crate::kcheck_nh::random(&dir, 0, 16)?,
             "deepseek-v4" => crate::dsv4_ref::random(&dir, None)?,
-            other => return err(format!("{other}: gemma4, qwen35, qwen3, muse, kimi, glm, nemotron or deepseek-v4")),
+            "qwen4x" => qwen4x_random(&dir)?,
+            other => return err(format!("{other}: gemma4, qwen35, qwen3, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
         }
         load_dyn(case, &dir, &o, level)
     })();

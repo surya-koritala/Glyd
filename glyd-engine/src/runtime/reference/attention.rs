@@ -1,17 +1,86 @@
 //! MHA, GQA and MQA attention (`kinds::Attn`): full or sliding window, optional q/k/v norms, rope (full, partial, proportional or none),
 //! learned sinks, a score soft-cap, an output gate, and the rounding points of `kinds::AttnRounding`. Query head h reads KV head
-//! h / (heads / kv_heads). One token at a time against the sequence's cache; a prompt is its tokens in order.
+//! h / (heads / kv_heads). One token at a time against the sequence's cache; a prompt is its tokens in order. With Condor's indexer
+//! (`IndexForm::Mean`) a query attends only to the tokens it picks (`mean_picks`).
 
 use super::{act, bf16, dot, norm::norm, rope, softmax, Params};
 use crate::ffi::{err, Result};
-use crate::runtime::kinds::{Attn, AttnRounding, GateFrom};
+use crate::runtime::kinds::{Attn, AttnRounding, GateFrom, IndexForm, Indexer, Norm, Rope};
 
-/// A sequence's keys and values in one layer, each after its norm and rope, with their positions.
+/// A sequence's keys and values in one layer, each after its norm and rope, with their positions; with an indexer, each token's raw
+/// indexer key, and how near the last query's picks were to another (`ffn::margin`).
 #[derive(Default)]
 pub struct KvCache {
     pub pos: Vec<u32>,
     pub k: Vec<Vec<f32>>,
     pub v: Vec<Vec<f32>>,
+    pub ikey: Vec<Vec<f32>>,
+    pub margin: f32,
+}
+
+/// A rope and its angles at a step (`rope::inv_freq_at`).
+type Rot<'a> = Option<(&'a Rope, (Vec<f32>, f32))>;
+
+/// Which of the cache entries `seen` (in order, the sequence's first token first) a query attends to with Condor's indexer: while the complete
+/// pools of `block` tokens number no more than the `top_k / block` it keeps, every one; else the pools of the best scores, each pool's key
+/// the mean of its tokens' raw keys (rounded where the attention rounds), normed by `knorm` (role `index_k_norm`) and rotated at the
+/// pool's first position, a pool's score sum_h relu(q_h . key) / sqrt(head_dim) with `q` the normed and rotated index queries; then the
+/// tokens of the incomplete last pool (transformers' `Qwen4ExpTextQSAIndexer`). Equal scores keep the earlier pool. With the picks, how near
+/// the choice was to another.
+pub fn mean_picks(
+    ix: &Indexer,
+    knorm: &Norm,
+    p: &Params,
+    c: &KvCache,
+    seen: &[usize],
+    q: &[f32],
+    rot: &Rot,
+    r16: &dyn Fn(f32) -> f32,
+    rope16: bool,
+) -> Result<(Vec<usize>, f32)> {
+    let (b, dim) = (ix.block.max(1), ix.head_dim);
+    let (pools, keep) = (seen.len() / b, ix.top_k / b);
+    if pools <= keep {
+        return Ok((seen.to_vec(), f32::INFINITY));
+    }
+    if c.ikey.len() != c.pos.len() || q.len() != ix.heads * dim {
+        return err(format!(
+            "attention: an indexer of {} query values for {} heads of {dim}, {} keys for {} tokens",
+            q.len(),
+            ix.heads,
+            c.ikey.len(),
+            c.pos.len()
+        ));
+    }
+    let wk = p.vec("index_k_norm")?;
+    let score: Vec<f32> = (0..pools)
+        .map(|j| {
+            let toks = &seen[j * b..(j + 1) * b];
+            let mean: Vec<f32> = (0..dim).map(|ch| r16((toks.iter().map(|&t| c.ikey[t][ch] as f64).sum::<f64>() / b as f64) as f32)).collect();
+            let mut key: Vec<f32> = norm(knorm, &mean, Some(wk), None).into_iter().map(r16).collect();
+            if let Some((r, (inv, af))) = rot {
+                turn(r, inv, *af, &mut key, c.pos[toks[0]], r16, rope16);
+            }
+            (0..ix.heads).map(|h| dot(&q[h * dim..][..dim], &key).max(0.0)).sum::<f32>() / (dim as f32).sqrt()
+        })
+        .collect();
+    let mut ord: Vec<usize> = (0..pools).collect();
+    ord.sort_by(|&x, &y| score[y].total_cmp(&score[x]).then(x.cmp(&y)));
+    ord.truncate(keep);
+    ord.sort_unstable();
+    let mut out: Vec<usize> = ord.iter().flat_map(|&j| seen[j * b..(j + 1) * b].iter().copied()).collect();
+    out.extend_from_slice(&seen[pools * b..]);
+    Ok((out, super::ffn::margin(&score, keep)))
+}
+
+/// The rope on `x` at `pos`: in bf16 arithmetic where `rope16`, else in f32 then rounded by `r16`.
+fn turn(r: &Rope, inv: &[f32], af: f32, x: &mut [f32], pos: u32, r16: &dyn Fn(f32) -> f32, rope16: bool) {
+    if rope16 {
+        rope::apply_bf16(r, inv, af, x, pos);
+    } else {
+        rope::apply(r, inv, af, x, pos);
+        x.iter_mut().for_each(|h| *h = r16(*h));
+    }
 }
 
 /// One token's attention output (before nothing: `o` is applied) for the normed input `h` at `pos`; its key and value join the cache.
@@ -74,9 +143,45 @@ pub fn step(a: &Attn, p: &Params, c: &mut KvCache, h: &[f32], pos: u32) -> Resul
     prep(&mut q, &a.q_norm, "q_norm", hd, true, if prescale { a.scale } else { 1.0 });
     prep(&mut k, &a.k_norm, "k_norm", hd, true, 1.0);
     prep(&mut v, &a.v_norm, "v_norm", vd, false, 1.0);
+    // (the indexer's queries, normed and rotated as the attention's, and this token's raw key, from one product)
+    let iq = match &a.indexer {
+        None => None,
+        Some(ix) => {
+            let IndexForm::Mean { norm: inorm } = ix.form else {
+                return err("attention: an indexer of the gated form (GLM-5.3-Flash's, DeepSeek-V4's) is a latent or compressed attention's; on GQA the reference has Condor's");
+            };
+            let qk = prod("index_qk")?;
+            let dim = ix.head_dim;
+            if qk.len() != (ix.heads + 1) * dim {
+                return err(format!("attention: an index product of {} values for {} queries and a key of {dim}", qk.len(), ix.heads));
+            }
+            let mut q = qk[..ix.heads * dim].to_vec();
+            for head in q.chunks_mut(dim) {
+                let y = norm(&inorm, head, Some(p.vec("index_q_norm")?), None);
+                head.iter_mut().zip(y).for_each(|(h, y)| *h = r16(y));
+                if let Some((r, (inv, af))) = &rot {
+                    turn(r, inv, *af, head, pos, &r16, rope16);
+                }
+            }
+            c.ikey.push(qk[ix.heads * dim..].to_vec());
+            Some((ix, inorm, q))
+        }
+    };
     c.pos.push(pos);
     c.k.push(k);
     c.v.push(v);
+    let seen: Vec<usize> = (0..c.pos.len()).filter(|&j| c.pos[j] <= pos && a.window.is_none_or(|w| pos - c.pos[j] < w as u32)).collect();
+    let seen = match iq {
+        Some((ix, inorm, q)) => {
+            let (s, m) = mean_picks(ix, &inorm, p, c, &seen, &q, &rot, &r16, rope16)?;
+            c.margin = m;
+            s
+        }
+        None => {
+            c.margin = f32::INFINITY;
+            seen
+        }
+    };
     let sinks = if a.sinks { Some(p.vec("sinks")?) } else { None };
     // (eager: the score the bf16 of the product, then of its scale, then of the cap)
     let r_score = |v: f32| if score16 { bf16(v) } else { v };
@@ -85,7 +190,6 @@ pub fn step(a: &Attn, p: &Params, c: &mut KvCache, h: &[f32], pos: u32) -> Resul
     for head in 0..nh {
         let kv = head / (nh / nk);
         let qh = &q[head * hd..][..hd];
-        let seen: Vec<usize> = (0..c.pos.len()).filter(|&j| c.pos[j] <= pos && a.window.is_none_or(|w| pos - c.pos[j] < w as u32)).collect();
         let mut s: Vec<f32> = seen
             .iter()
             .map(|&j| {
@@ -123,7 +227,7 @@ pub fn step(a: &Attn, p: &Params, c: &mut KvCache, h: &[f32], pos: u32) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::kinds::{Norm, OutGate, Rope};
+    use crate::runtime::kinds::{OutGate, Rope};
     use crate::runtime::reference::bf16;
     use crate::runtime::reference::testing::{fill, rel};
 
@@ -213,6 +317,76 @@ mod tests {
         let mut f = exact.clone();
         crate::runtime::reference::softmax(&mut f);
         assert_ne!(want, bf16((bf16(f[0]) as f64 + bf16(f[1]) as f64 * 3.0) as f32));
+    }
+
+    /// An attention of 2 query heads over one KV head of 16 (a rotary of 8) with Condor's indexer of 2 heads of 16 keeping 4 tokens in pools of
+    /// 2, its roles from the generator.
+    fn qsa() -> (Attn, Params) {
+        let (mut a, mut p) = layer(2, 1, 16, 32);
+        let n = Norm::rms_plus_one(1e-6);
+        (a.rope, a.q_norm, a.k_norm, a.v_norm) = (Some(Rope::plain(1e4, 8)), Some(n), Some(n), None);
+        a.indexer = Some(Indexer { heads: 2, head_dim: 16, top_k: 4, block: 2, shared: false, form: IndexForm::Mean { norm: n } });
+        p.put("index_qk", &[48, 32], fill("qsa.qk", 48 * 32, -0.5, 0.5));
+        p.put("index_q_norm", &[16], fill("qsa.qn", 16, -0.3, 0.3));
+        p.put("index_k_norm", &[16], fill("qsa.kn", 16, -0.3, 0.3));
+        (a, p)
+    }
+
+    /// While a query sees no more complete pools than the indexer keeps (2 pools: 5 tokens, the fifth a tail), it attends to every token: the
+    /// attention without the indexer, to the bit; past that it does not.
+    #[test]
+    fn condors_indexer_keeps_everything_until_its_pools_run_out() {
+        let (a, p) = qsa();
+        let plain = Attn { indexer: None, ..a.clone() };
+        let (x, y) = (run(&a, &p, 32, 9), run(&plain, &p, 32, 9));
+        for t in 0..9 {
+            let (g, w) = (&x[t * 32..][..32], &y[t * 32..][..32]);
+            if t < 5 {
+                assert_eq!(g, w, "token {t}");
+            } else {
+                assert!(rel(g, w) > 1e-4, "token {t}: the indexer chose everything");
+            }
+        }
+    }
+
+    /// The picks by hand for the ninth token: its queries normed and rotated, the four complete pools' keys (the mean of the raw keys, normed,
+    /// rotated at the pool's first position), their scores, the best two pools' tokens and the tail token 8.
+    #[test]
+    fn condors_indexer_picks_by_hand() {
+        let (a, p) = qsa();
+        let mut c = KvCache::default();
+        let xs = fill("attn.input", 9 * 32, -1.0, 1.0);
+        for t in 0..9 {
+            step(&a, &p, &mut c, &xs[t * 32..][..32], t as u32).unwrap();
+        }
+        let (n, r) = (Norm::rms_plus_one(1e-6), a.rope.clone().unwrap());
+        let (inv, af) = rope::inv_freq_at(&r, 9);
+        let qk = p.prod("index_qk", &xs[8 * 32..]).unwrap();
+        let q: Vec<f32> = qk[..32]
+            .chunks(16)
+            .flat_map(|h| {
+                let mut h = norm(&n, h, p.opt("index_q_norm"), None);
+                rope::apply(&r, &inv, af, &mut h, 8);
+                h
+            })
+            .collect();
+        let score: Vec<f32> = (0..4)
+            .map(|j| {
+                let mean: Vec<f32> = (0..16).map(|ch| (c.ikey[2 * j][ch] + c.ikey[2 * j + 1][ch]) / 2.0).collect();
+                let mut k = norm(&n, &mean, p.opt("index_k_norm"), None);
+                rope::apply(&r, &inv, af, &mut k, 2 * j as u32);
+                (dot(&q[..16], &k).max(0.0) + dot(&q[16..], &k).max(0.0)) / 4.0
+            })
+            .collect();
+        let mut best: Vec<usize> = (0..4).collect();
+        best.sort_by(|&x, &y| score[y].total_cmp(&score[x]));
+        assert!(score[best[1]] - score[best[2]] > 1e-4, "the second and third pools are too near to tell: {score:?}");
+        let mut want: Vec<usize> = best[..2].iter().flat_map(|&j| [2 * j, 2 * j + 1]).collect();
+        want.sort_unstable();
+        want.push(8);
+        let got = mean_picks(a.indexer.as_ref().unwrap(), &n, &p, &c, &(0..9).collect::<Vec<_>>(), &q, &Some((&r, (inv, af))), &|v| v, false).unwrap().0;
+        assert_eq!(got, want);
+        assert!(c.margin.is_finite() && c.margin > 0.0);
     }
 
     /// The output gate's form, its norm and the rounding after each: Muse's own gate with a weightless norm, and Qwen3.5's in-query gate.

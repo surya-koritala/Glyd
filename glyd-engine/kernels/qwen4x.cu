@@ -310,6 +310,35 @@ extern "C" __global__ void qx_ple_conv(const bf16* gvn, const bf16* gv, const bf
     for (int i = 0; i < 9; i++) st[i * C + c] = f2b(h[i]);
 }
 
+// The n-gram embedding's rows of a call's n rows of one sequence (the description executor's `Op::NgramRows`): row t's token tok[t], the token before it and the one before that (the call's earlier rows,
+// else the sequence's state hist [2], oldest first, each token + 1 and 0 before the sequence, which reads as the end token eos; the one before that is eos too where the one before is eos), hashed as
+// transformers' Qwen4ExpTextNGramEmbedding: bigram b = t mult[0] ^ c1 mult[1], trigram b ^ c2 mult[2] (unsigned 64-bit: each product is below 2^63, so as the reference's int64), table h of H (the first `per`
+// bigrams') the row (b or the trigram) mod sizes[h] + offsets[h]; e [n, H row] = those rows of the table [rows, row] bf16. mult [3], sizes [H], offsets [H]: the checkpoint's int64 words. Block a row.
+extern "C" __global__ void qx_ngram_rows(const int* tok, const int* hist, const unsigned long long* mult, const unsigned long long* sizes, const unsigned long long* offsets, const bf16* table, bf16* e, int H,
+                                         int per, int row, int eos) {
+    const int t = blockIdx.x;
+    const int h1 = t >= 1 ? tok[t - 1] : (hist[1] > 0 ? hist[1] - 1 : eos);
+    const int h2 = t >= 2 ? tok[t - 2] : (t == 1 ? (hist[1] > 0 ? hist[1] - 1 : eos) : (hist[0] > 0 ? hist[0] - 1 : eos));
+    const unsigned long long c1 = (unsigned)h1, c2 = h1 == eos ? (unsigned long long)(unsigned)eos : (unsigned)h2;
+    const unsigned long long bi = ((unsigned long long)(unsigned)tok[t] * mult[0]) ^ (c1 * mult[1]), tri = bi ^ (c2 * mult[2]);
+    for (int i = threadIdx.x; i < H * row; i += blockDim.x) {
+        const int h = i / row;
+        const unsigned long long id = (h < per ? bi : tri) % sizes[h] + offsets[h];
+        e[(size_t)t * H * row + i] = table[id * row + i % row];
+    }
+}
+
+// The sequence's state after a call's n rows: the last two tokens (+ 1), oldest first. One thread.
+extern "C" __global__ void qx_ngram_hist(const int* tok, int* hist, int n) {
+    if (n >= 2) {
+        hist[0] = tok[n - 2] + 1;
+        hist[1] = tok[n - 1] + 1;
+    } else if (n == 1) {
+        hist[0] = hist[1];
+        hist[1] = tok[0] + 1;
+    }
+}
+
 // ---- the QSA indexer and attention --------------------------------------------------------------------------------------------------------------------------------------------------------
 // The indexer's rows [n, (IH + 1) 128] (IH query heads, then the token's key): each query head normed (1 + wq) and turned (the rotary on its first 2 half dims, cos and sin bf16 [max_pos, half]) into iq [n, IH 128];
 // the key, raw, into the key cache ik [positions, 128] at the row's position. The norm rounded, the rotary's products and sum each rounded (the reference's bf16 ops). Block (row, head), 128 threads.

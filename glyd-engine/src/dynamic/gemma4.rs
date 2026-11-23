@@ -32,6 +32,7 @@ pub(crate) fn attention(c: &ConfigG4, kind: KindG4, nq: usize, q_norm: usize, k_
         gate: None,
         round: true,
         sbf16: true,
+        picked: None,
     })
 }
 

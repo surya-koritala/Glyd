@@ -124,6 +124,7 @@ pub(crate) fn attention(nq: usize, nk: usize, ring: usize) -> AttnOp {
         gate: None,
         round: false,
         sbf16: false,
+        picked: None,
     }
 }
 

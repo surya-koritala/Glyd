@@ -120,7 +120,10 @@
     "family": "refused: m is a Qwen3_5MoeForCausalLM model, and this engine runs Qwen3 models so far"
   },
   "qwen4x_config.json": {
-    "refused": "model_type qwen4_exp_text has no description builder yet",
+    "blocks": 97,
+    "tensors": 1294,
+    "kinds": "fbeb0733bb4ac279",
+    "weights": "c499d3f53c839e89",
     "plan": "b62478e70129b924",
     "family": "FlashNext"
   },

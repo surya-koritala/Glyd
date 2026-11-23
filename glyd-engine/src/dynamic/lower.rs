@@ -3,7 +3,7 @@
 //! tensor's dims by name), which the kinds do not hold. Each family's lowering is held to the executor's own description of it (the tests below) until that one goes.
 
 use super::attn::AttnOp;
-use super::{ModelDesc, MoeOp, NormW, Op, Ring, Rope, Slot, SLOTS};
+use super::{HeadMix, ModelDesc, MoeOp, NormW, Op, Ring, Rope, Slot, StreamsMix, SLOTS};
 use crate::ffi::{err, Error, Result};
 use crate::runtime::describe::{Described, Source};
 use crate::runtime::kinds::{Body, Ffn, Mixer};
@@ -348,6 +348,280 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
     })
 }
 
+/// Qwen3.8-Flash-Next (`qwen4_exp_text`, Condor's model) on the shared operations, from its layer kinds alone: every block inside the gated residuals (`Op::StreamsPre`
+/// with `StreamsMix::Gated`, `Op::StreamsPost` gated) over the four streams the embedding row becomes (`Op::Streams`), the final mixer (`HeadMix::Gated`); Gated DeltaNet
+/// with the sigmoid gate (`Op::GatedNorm` `sigmoid`); the sparse attention (`Op::IdxMean`, `Op::IdxPick` of `IdxKeys::Pools` unweighted, `Op::Attn` `picked`); the experts
+/// (`Op::Moe`, block k the k-th layer's); the n-gram embedding before its layer (`Op::NgramRows`, its product, `Op::NgramAdd`). The matrices are the checkpoint's by
+/// name (the table of n-grams held as saved); the small tensors as saved (A_log fp32, as the delta rule reads it: `dynamic::qwen4x`). `max_pos`: the positions
+/// each sequence's states hold (the indexer's keys and pools, the sparse attention's keys and values: a row a position).
+pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> {
+    use crate::runtime::kinds::{Act, Collapse, IndexForm, Ngram, NormWeight, Residual, RopeScaling};
+    let m = &d.desc;
+    let what = "Qwen3.8-Flash-Next";
+    let one = |roles: &[(String, Source)], r: &str| -> Result<String> {
+        match role(roles, r) {
+            Some(Source::Tensor(n)) => Ok(n.clone()),
+            other => err(format!("{what}: the role {r} is {other:?}, where one tensor is")),
+        }
+    };
+    let rows_of = |roles: &[(String, Source)], r: &str| -> Result<Vec<String>> {
+        match role(roles, r) {
+            Some(Source::Rows(v)) => Ok(v.clone()),
+            Some(Source::Tensor(n)) => Ok(vec![n.clone()]),
+            other => err(format!("{what}: the role {r} is {other:?}, where tensors stacked by rows are")),
+        }
+    };
+    let shape = |n: &str| d.shapes.get(n).cloned();
+    let (d_, eps) = (m.hidden, m.final_norm.eps);
+    let pn = |n: &crate::runtime::kinds::Norm, at: &str| -> Result<()> {
+        if n.weight != NormWeight::PlusOne || n.eps != eps {
+            return err(format!("{what}: {at}'s norm is {n:?}, where the kernels take a (1 + w) RMS norm, eps {eps}"));
+        }
+        Ok(())
+    };
+    pn(&m.final_norm, "the final mixer")?;
+    if m.embed.streams != 4
+        || m.embed.scale != 1.0
+        || m.embed.norm.is_some()
+        || m.head.collapse != Collapse::GatedMix
+        || m.head.softcap.is_some()
+        || m.head.scale != 1.0
+    {
+        return err(format!("{what}: an embedding of {:?} and a head of {:?}: the kernels take four gated streams and their mixer", m.embed, m.head));
+    }
+    let (mut mats, mut small, mut states, mut ropes) = (Vec::new(), Vec::<String>::new(), Vec::<usize>::new(), Vec::<Rope>::new());
+    let mut ops: Vec<Vec<Op>> = Vec::new();
+    let mut layer: Vec<Op> = Vec::new();
+    let (mut mix_w, mut attn_w, mut rank_w, mut ple_w, mut n_moe) = (0, 0, 0, 0, 0);
+    let (mut cd_w, mut vd_w, mut nv_w, mut ix_w) = (0, 0, 0, 0);
+    let name = |small: &mut Vec<String>, n: String| -> usize {
+        small.push(n);
+        small.len() - 1
+    };
+    let mat = |mats: &mut Vec<crate::weights::Item>, members: Vec<String>| -> Result<usize> {
+        mats.push(item(members, &shape)?);
+        Ok(mats.len() - 1)
+    };
+    let state = |states: &mut Vec<usize>, bytes: usize| -> usize {
+        states.push(bytes);
+        states.len() - 1
+    };
+    // (the gated residuals' ops around a block of `roles`: the norm per stream, the bottleneck, the inject product)
+    let gated =
+        |mats: &mut Vec<crate::weights::Item>, small: &mut Vec<String>, roles: &[(String, Source)], b: &crate::runtime::kinds::Block| -> Result<(Op, usize)> {
+            let Residual::GatedStreams(g) = b.residual else {
+                return err(format!("{what}: a block of residual {:?}, where every block's is the gated residuals", b.residual));
+            };
+            if g.streams != 4 {
+                return err(format!("{what}: gated residuals over {} streams: the kernels take 4", g.streams));
+            }
+            pn(&b.norm_in, "a gated residual")?;
+            let norm = name(small, one(roles, "norm_in")?);
+            let (down, up, inject) =
+                (mat(mats, vec![one(roles, "mix_down")?])?, mat(mats, vec![one(roles, "mix_up")?])?, mat(mats, vec![one(roles, "inject")?])?);
+            Ok((Op::StreamsPre { mix: StreamsMix::Gated { down, up, inject }, norm, round: crate::runtime::kinds::Rounding::Twice }, g.lowrank))
+        };
+    let post = Op::StreamsPost { round: crate::runtime::kinds::Rounding::Twice, gated: true };
+    for (b, roles) in m.blocks.iter().zip(&d.blocks) {
+        match &b.body {
+            Body::Ngram(n) => {
+                let Ngram { order, heads, dim, conv, dilation, streams, eos: end, .. } = *n;
+                if (order, conv, dilation, streams) != (3, 4, 3, 4)
+                    || n.norm.weight != NormWeight::PlusOne
+                    || dim % (2 * heads) != 0
+                    || b.residual != Residual::Add
+                {
+                    return err(format!(
+                        "{what}: an n-gram embedding of {n:?}: the kernels take bigrams and trigrams, a convolution of 4 taps 3 apart, four streams"
+                    ));
+                }
+                pn(&b.norm_in, "the n-gram embedding's query")?;
+                let table = mat(&mut mats, rows_of(roles, "ngram")?)?;
+                let hash =
+                    [name(&mut small, one(roles, "ngram_mult")?), name(&mut small, one(roles, "ngram_sizes")?), name(&mut small, one(roles, "ngram_offsets")?)];
+                let kv = mat(&mut mats, vec![one(roles, "key")?, one(roles, "value")?])?;
+                let norms = [name(&mut small, one(roles, "norm_in")?), name(&mut small, one(roles, "norm_key")?), name(&mut small, one(roles, "norm_conv")?)];
+                let taps = name(&mut small, one(roles, "conv")?);
+                let (hist, cv) = (state(&mut states, 8), state(&mut states, 9 * 4 * d_ * 2));
+                layer.extend([
+                    Op::NgramRows(super::ngram::NgramRows { table, hash, hist, per: heads, row: dim / (2 * heads), eos: end }),
+                    Op::Linear { w: kv, x: Slot::In, y: Slot::Gu, name: "n-gram embedding: key and value product" },
+                    Op::NgramAdd(super::ngram::NgramAdd { norms, taps, conv: cv }),
+                ]);
+                ple_w = ple_w.max(dim);
+            }
+            Body::Mixer(mx) => {
+                let (pre, rank) = gated(&mut mats, &mut small, roles, b)?;
+                rank_w = rank_w.max(rank);
+                layer.push(pre);
+                match mx {
+                    Mixer::Linear(l) => {
+                        if l.gate_act != Act::Sigmoid || l.k_dim != 128 || l.v_dim != 128 || l.conv != 4 || l.norm_eps != eps {
+                            return err(format!("{what}: a linear attention of {l:?}: the kernels take heads of 128, a convolution of 4 and the sigmoid gate"));
+                        }
+                        let (nv, cd) = (l.v_heads, 2 * l.k_heads * 128 + l.v_heads * 128);
+                        let row = cd + nv * 128;
+                        let qkvz = mat(&mut mats, vec![one(roles, "qkv")?, one(roles, "gate")?])?;
+                        let ba = mat(&mut mats, vec![one(roles, "beta")?, one(roles, "decay")?])?;
+                        let o = mat(&mut mats, vec![one(roles, "o")?])?;
+                        let [conv, a_log, dt_bias, gn] = ["conv", "a_log", "dt_bias", "norm"].map(|r| one(roles, r).map(|t| name(&mut small, t)));
+                        let (cs, ss) = (state(&mut states, 3 * cd * 2), state(&mut states, nv * 128 * 128 * 4));
+                        layer.extend([
+                            Op::Linear { w: qkvz, x: Slot::H, y: Slot::Mix, name: "linear attention: qkvz product" },
+                            Op::Linear { w: ba, x: Slot::H, y: Slot::Ba, name: "linear attention: ba product" },
+                            Op::GdnConv { w: conv?, state: cs, cd, row },
+                            Op::GdnDelta { a_log: a_log?, dt_bias: dt_bias?, state: ss, cd, nk: l.k_heads, nv },
+                            Op::GatedNorm { w: gn?, row, nv, z_off: cd, sigmoid: true },
+                            Op::Linear { w: o, x: Slot::Core, y: Slot::O, name: "linear attention: out product" },
+                        ]);
+                        (mix_w, cd_w, vd_w, nv_w) = (mix_w.max(row), cd_w.max(cd), vd_w.max(nv * 128), nv_w.max(nv));
+                    }
+                    Mixer::Attention(a) => {
+                        let ix = a.indexer.as_ref().ok_or_else(|| Error(format!("{what}: an attention with no indexer")))?;
+                        let IndexForm::Mean { norm: inorm } = ix.form else {
+                            return err(format!("{what}: an indexer of {:?}, where the model's pools are mean-pooled", ix.form));
+                        };
+                        pn(&inorm, "the indexer")?;
+                        let r = a.rope.as_ref().ok_or_else(|| Error(format!("{what}: an attention with no rotary")))?;
+                        if r.scaling != RopeScaling::None
+                            || r.freq_dim != r.dim
+                            || ix.head_dim != 128
+                            || ix.block != 4
+                            || r.dim > 128
+                            || ix.top_k % ix.block != 0
+                        {
+                            return err(format!(
+                                "{what}: a rotary of {r:?} and an indexer of {ix:?}: the kernels take the plain rotary, index heads of 128 and pools of 4"
+                            ));
+                        }
+                        let rt = Rope { theta: r.theta, dim: r.dim, pairs: r.freqs };
+                        let table = match ropes.iter().position(|x| (x.theta, x.dim, x.pairs) == (rt.theta, rt.dim, rt.pairs)) {
+                            Some(i) => i,
+                            None => {
+                                ropes.push(rt);
+                                ropes.len() - 1
+                            }
+                        };
+                        let qk = (name(&mut small, one(roles, "q_norm")?), name(&mut small, one(roles, "k_norm")?));
+                        let kvb = max_pos * a.kv_heads * a.head_dim * 2;
+                        let kv = [state(&mut states, kvb), state(&mut states, kvb)];
+                        let att = AttnOp::picked(a, Slot::Mix, kv, Some(table), Some(qk))?;
+                        let stride = att.stride;
+                        let qkv = mat(&mut mats, vec![one(roles, "q")?, one(roles, "k")?, one(roles, "v")?])?;
+                        if mats[qkv].rows != stride {
+                            return err(format!("{what}: a q, k and v product of {} rows, where its attention reads {stride}", mats[qkv].rows));
+                        }
+                        let index = mat(&mut mats, vec![one(roles, "index_qk")?])?;
+                        let o = mat(&mut mats, vec![one(roles, "o")?])?;
+                        let (iqn, ikn) = (name(&mut small, one(roles, "index_q_norm")?), name(&mut small, one(roles, "index_k_norm")?));
+                        let (keys, pools) = (state(&mut states, max_pos * 128 * 2), state(&mut states, (max_pos / 4 + 1) * 128 * 2));
+                        let pick = super::IdxPick {
+                            heads: ix.heads,
+                            ratio: ix.block,
+                            top_k: ix.top_k / ix.block,
+                            expand: true,
+                            tail: true,
+                            wscale: 1.0,
+                            score: super::IdxScore::F32 { dim: 128, scale: (128f32).powf(-0.5) },
+                            keys: super::IdxKeys::Pools(pools),
+                            weighted: false,
+                        };
+                        layer.extend([
+                            Op::Linear { w: qkv, x: Slot::H, y: Slot::Mix, name: "attention: qkv product" },
+                            Op::Linear { w: index, x: Slot::H, y: Slot::Qr, name: "indexer: product" },
+                            Op::IdxMean { heads: ix.heads, q_norm: iqn, k_norm: ikn, rope: table, keys, pools },
+                            Op::IdxPick(pick),
+                            Op::Attn(att),
+                            Op::Linear { w: o, x: Slot::Att, y: Slot::O, name: "attention: o product" },
+                        ]);
+                        (mix_w, attn_w, ix_w) = (mix_w.max(stride), attn_w.max(a.heads * a.head_dim), ix_w.max(ix.heads));
+                    }
+                    mx => return err(format!("{what}: a mixer of {mx:?}")),
+                }
+                layer.push(post.clone());
+            }
+            Body::Ffn(Ffn::Moe(_)) => {
+                let (pre, rank) = gated(&mut mats, &mut small, roles, b)?;
+                rank_w = rank_w.max(rank);
+                layer.extend([pre, Op::Moe(MoeOp::of(n_moe)), post.clone()]);
+                n_moe += 1;
+                ops.push(std::mem::take(&mut layer));
+            }
+            f => return err(format!("{what}: a block of {f:?}")),
+        }
+    }
+    if !layer.is_empty() || ops.is_empty() {
+        return err(format!("{what}: a layer that does not end with its experts"));
+    }
+    let final_norm = name(&mut small, d.final_norm.clone());
+    let xm = |r: &str| d.extra.iter().find(|(n, _)| n == r).and_then(|(_, s)| if let Source::Tensor(t) = s { Some(t.clone()) } else { None });
+    let (down, up) = (
+        xm("out_mix_down").ok_or_else(|| Error(format!("{what}: no final mixer")))?,
+        xm("out_mix_up").ok_or_else(|| Error(format!("{what}: no final mixer")))?,
+    );
+    let (down, up) = (mat(&mut mats, vec![down])?, mat(&mut mats, vec![up])?);
+    if let Some(last) = ops.last_mut() {
+        last.push(Op::StreamsHead { mix: HeadMix::Gated { down, up }, norm: final_norm, round: crate::runtime::kinds::Rounding::Twice });
+    }
+    let embed = mat(&mut mats, vec![d.embed.clone()])?;
+    let lm = match &d.head {
+        Some(h) => mat(&mut mats, vec![h.clone()])?,
+        None => embed,
+    };
+    let w = 4 * d_;
+    let mut widths = [0usize; SLOTS];
+    for (s, x) in [
+        (Slot::X, d_),
+        (Slot::H, d_),
+        (Slot::S, w),
+        (Slot::Hq, w),
+        (Slot::Mid, rank_w),
+        (Slot::Cp, w),
+        (Slot::Kv, 4),
+        (Slot::O, d_),
+        (Slot::Mix, mix_w),
+        (Slot::Ba, 2 * nv_w),
+        (Slot::Xc, cd_w),
+        (Slot::Core, vd_w),
+        (Slot::Qo, attn_w),
+        (Slot::Att, attn_w),
+        (Slot::Qr, (ix_w + 1) * 128),
+        (Slot::Iq, ix_w * 128),
+        (Slot::In, ple_w),
+        (Slot::Gu, if ple_w > 0 { 5 * d_ } else { 0 }),
+        (Slot::D, if ple_w > 0 { w } else { 0 }),
+        (Slot::M, if ple_w > 0 { w } else { 0 }),
+    ] {
+        widths[s as usize] = x;
+    }
+    Ok(ModelDesc {
+        family: what,
+        hidden: d_,
+        vocab: m.vocab,
+        eps,
+        max_pos,
+        widths,
+        mats,
+        small,
+        ropes,
+        rings: Vec::new(),
+        first: Op::Streams,
+        layers: ops,
+        states,
+        final_norm: None,
+        decoded: false,
+        skinny: false,
+        embed,
+        lm,
+        softcap: 0.0,
+        eos,
+        post: None,
+        v4: None,
+        hc: (0.0, 0),
+        logit_mult: 0.0,
+    })
+}
+
 /// Qwen3.5's layout (dense: Qwen3.5, 3.6 and 3.8 of 256-wide heads): pairs of blocks, a Gated DeltaNet or a gated full attention, then the SiLU MLP, the (1 + w)
 /// norms, the final norm on the last row. The matrices and small tensors are src/kern35.rs's loader's (`dynamic::qwen35::describe` indexes them in its order);
 /// stage `st` of a model split across GPUs.
@@ -424,7 +698,7 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
                     Op::Linear { w: b + 1, x: Slot::H, y: Slot::Ba, name: "linear attention: ba product" },
                     Op::GdnConv { w: s0 + 2, state: conv, cd, row },
                     Op::GdnDelta { a_log: s0 + 3, dt_bias: s0 + 4, state: ssm, cd, nk: lin.k_heads, nv },
-                    Op::GatedNorm { w: s0 + 5, row, nv, z_off: cd },
+                    Op::GatedNorm { w: s0 + 5, row, nv, z_off: cd, sigmoid: false },
                     Op::Linear { w: b + 2, x: Slot::Core, y: Slot::O, name: "linear attention: out product" },
                 ]);
                 b + 3
@@ -806,7 +1080,7 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
         }
         let s = n_small;
         n_small += 5;
-        let mut ops = vec![Op::StreamsPre { f: s + 2, base: s + 3, scale: s + 4, norm: s, round }];
+        let mut ops = vec![Op::StreamsPre { mix: StreamsMix::Hc { f: s + 2, base: s + 3, scale: s + 4 }, norm: s, round }];
         let m0 = n_mats;
         let nm = per_layer(kind, moe);
         n_mats += nm;
@@ -826,18 +1100,18 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
         }
         let h = n_small;
         n_small += 3;
-        ops.extend([Op::StreamsPost { round }, Op::StreamsPre { f: h, base: h + 1, scale: h + 2, norm: s + 1, round }]);
+        ops.extend([Op::StreamsPost { round, gated: false }, Op::StreamsPre { mix: StreamsMix::Hc { f: h, base: h + 1, scale: h + 2 }, norm: s + 1, round }]);
         if moe {
             ops.push(Op::Moe(MoeOp::of(n_moe)));
             n_moe += 1;
         } else {
             ops.extend(dense_ops(m0 + nm - 2, inter, limit));
         }
-        ops.push(Op::StreamsPost { round });
+        ops.push(Op::StreamsPost { round, gated: false });
         ops_all.push(ops);
     }
     if st.last {
-        ops_all.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::StreamsHead { weighted: None, norm: n_small, round });
+        ops_all.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::StreamsHead { mix: HeadMix::Mean, norm: n_small, round });
     }
     let e = n_mats;
     let lm = if st.last && d.head.is_some() { e + 1 } else { e };
@@ -1330,7 +1604,7 @@ mod tests {
             .iter()
             .flatten()
             .filter_map(|op| match *op {
-                Op::StreamsPre { round, .. } | Op::StreamsPost { round } | Op::StreamsHead { round, .. } => Some(round),
+                Op::StreamsPre { round, .. } | Op::StreamsPost { round, .. } | Op::StreamsHead { round, .. } => Some(round),
                 _ => None,
             })
             .collect();
