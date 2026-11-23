@@ -49,9 +49,16 @@ jobs:
           ec2-instance-type: ${{ inputs.instance }}
           subnet-id: ${{ vars.AWS_SUBNET_ID }}
           security-group-id: ${{ vars.AWS_SG_ID }}
-          # (a cap whatever happens to the stop job: the instance shuts itself down after 3 hours)
+          # (a cap whatever happens to the stop job: the instance shuts itself down after 3 hours, and the step below makes that shutdown its end)
           pre-runner-script: shutdown -h +180
           aws-resource-tags: '[{"Key": "Project", "Value": "glyd-ci"}, {"Key": "Run", "Value": "${{ github.run_id }}"}]'
+          # (the image's 75 GB is short of its toolkits, the CUDA image, the build and the model)
+          ec2-device-name: /dev/sda1
+          ec2-volume-size: 150
+          ec2-volume-type: gp3
+      # (an instance's own shutdown stops it, holding its volume, unless it is told to end: the cap above then terminates it)
+      - name: The instance ends at its own shutdown
+        run: aws ec2 modify-instance-attribute --instance-id "${{ steps.runner.outputs.ec2-instance-id }}" --instance-initiated-shutdown-behavior Value=terminate
 
   test:
     needs: start

@@ -81,6 +81,17 @@ pub(super) fn row_wise(op: &Op) -> bool {
             // (a latent attention block runs its products over every row and its caches' parts by sequence itself: `GlmHost::seq_rows`)
             | Op::Mla { .. }
             | Op::MambaNorm { .. }
+            // (DeepSeek-V4's: by row, or over the rows as the pass lays them out; its attention's output is laid out by group over the pass's rows, which its low rank reads)
+            | Op::V4Streams
+            | Op::V4Pre { .. }
+            | Op::V4Post
+            | Op::V4Head { .. }
+            | Op::Fp8 { .. }
+            | Op::V4Q { .. }
+            | Op::V4IdxQ { .. }
+            | Op::V4OLora { .. }
+            | Op::V4OLoraStack { .. }
+            | Op::V4Moe { .. }
             | Op::Nop
     )
 }
@@ -104,6 +115,10 @@ fn by_sequence(op: &Op) -> bool {
             | Op::MambaScan { .. }
             | Op::KvWrite { .. }
             | Op::AttnNh { .. }
+            | Op::V4Kv { .. }
+            | Op::V4Comp { .. }
+            | Op::V4IdxPick { .. }
+            | Op::V4Attn { .. }
     )
 }
 
@@ -254,7 +269,6 @@ impl Dyn {
         self.draft.is_none()
             && self.stage.first
             && self.stage.last
-            && self.v4.is_none()
             && std::iter::once(&d.first).chain(d.layers.iter().flatten()).all(|op| row_wise(op) || by_sequence(op))
     }
 
@@ -403,11 +417,11 @@ impl Dyn {
     /// Ready to be a scheduler's step for up to `users` sequences: the head's room for a row each, and as many more sequences as the GPU's free memory holds (the first is this one's). None where this
     /// engine runs one sequence only (a draft model, a stage of a split model, a family `add_seqs` refuses).
     pub fn serve_rows(&mut self, users: usize) -> Result<Option<usize>> {
-        // (Gemma 4, Qwen3.5's layout, which Qwen3.8 dense runs on, and Muse Spark, Kimi-K3 and GLM-5.3-Flash on one GPU; DeepSeek-V4's compressed entries are not by sequence yet)
+        // (Gemma 4, Qwen3.5's layout, which Qwen3.8 dense runs on, Muse Spark, Kimi-K3, GLM-5.3-Flash, Nemotron-H and DeepSeek-V4 on one GPU)
         if self.draft.is_some()
             || !self.stage.first
             || !self.stage.last
-            || !matches!(self.big.d.family, "Gemma 4" | "Qwen3.5" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash" | "Nemotron-H")
+            || !matches!(self.big.d.family, "Gemma 4" | "Qwen3.5" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash" | "Nemotron-H" | "DeepSeek-V4")
         {
             return Ok(None);
         }
@@ -502,8 +516,9 @@ impl Dyn {
 
     /// Whether a served model's sequences have their states copied aside at a mark (`ModelStep::mark`), for a kept sequence to go on from: recurrent states, and no latent cache
     /// (which no copy is made of).
+    /// (not DeepSeek-V4's: its compressed entries are states that grow with the sequence, so a copy at each prompt's end would be a second cache)
     pub(crate) fn can_mark(&self) -> bool {
-        !self.states.is_empty() && self.big.mla.is_empty()
+        !self.states.is_empty() && self.big.mla.is_empty() && self.v4.is_none()
     }
 
     fn batch_prefill() -> bool {

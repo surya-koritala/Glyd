@@ -252,6 +252,8 @@ From the record (served by its Hub name; the file list cut to two of sixteen):
 - `fields`: `read` are the request fields this server reads (some values of some are refused, below), `no_effect` change
   nothing here, `refused` are refused when set to anything but null or the value that means "not asked" (false, 0, []).
 - Times are Unix seconds, to the millisecond.
+- `memory.devices` (not in the record above, added after it): the engine's buffers by GPU, one entry a CUDA context the engine opened or held a buffer
+  in (`gpu`, `engine_bytes`, `peak_bytes`, `peak_at`); `engine_bytes` and `peak_bytes` above are every GPU's together.
 - `costs` (not in the record above, added after it): the model's cost profile at the level, as `glyd-engine costs DIR` prints it, with `allocated` (the
   engine's counters at load) beside the sizes from the files: what each layer holds by component, the bytes a decoded token reads, the KV and state
   bytes a token and a session. The fields are in [docs/cost-profile.md](cost-profile.md). Where the profile cannot be made (a family it does not
