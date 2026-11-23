@@ -40,6 +40,26 @@ is the median over the requests of the round; each file keeps, for each figure, 
 The peak GPU memory is sampled every 100 ms from `nvidia-smi` while everything runs. Before the server starts the harness looks at the GPU five times 0.3 s apart: if its median utilization is past 10% or
 more than 2,500 MiB are in use, the result says `contention.busy_before: true` and the gate will not decide on it.
 
+## Where the time goes: `GLYD_PROF=1`
+
+A development build (the default features) set `GLYD_PROF=1` times the description executor's passes by operation on the GPU itself, with no external profiler
+(`glyd-engine/src/dynamic/prof.rs`): a CUDA event after each operation of every pass, inside the step's graph where a decode step replays one (each sequence's graph
+holds its own events). `bench` starts its server with the variable, reads the server's figures of each load's measured rounds (`GET /v1/glyd/prof?reset=1`), prints them
+under the load's line and keeps them in the load's cell (`gpu_profile`); `glyd-engine run` prints them when it ends.
+
+```bash
+GLYD_PROF=1 glyd-engine bench Qwen/Qwen3-8B --loads short:1,short:8,1k:1,4k:1 --runs 3 --no-draft --out prof.json
+```
+
+For each kind of pass (decode rows alone, a prompt's chunk alone, or both in one pass; prompts grouped by the power of two above their tokens) it gives the passes, how many
+were a graph's replay, the GPU time a pass and each operation's share (`norms`, `attention: qkv product`, `attention: preparation (norms, rotary, cache write)`,
+`attention (global)`, `attention: o product`, `MLP: gate and up product, SiLU`, `MLP: down product`, `head`, ...). An eager pass's operation is timed from the event of the
+one before it, so a host slower than the GPU shows as GPU time: `queued_ms`, the host's time to queue the pass, close to its GPU time says the pass waits on the host.
+For each kind of step (a call of the scheduler's step) it gives the wall time, the GPU time of its passes, the rest (the host's work, the copies and the waits around the
+passes) and the time from one call's end to the next one's start (the scheduler, the sampler, the server; for prompts it holds the time no request was waiting). The
+events cost a little (about 2 µs each in a graph on an RTX 4080 SUPER, docs/ceiling.md): read the speeds from a run without the variable. Operations an executor family runs with no event of their own are
+counted in the next operation that has one.
+
 ## The ceiling
 
 `pct_of_ceiling` of a load is its decode tokens/s a user over the ceiling: the memory's bandwidth over the weights' bytes a token. The bandwidth is the spec sheet's for the GPU's name (`bench::spec_bandwidth`:
@@ -61,6 +81,8 @@ contention   busy_before, utilization_median_pct, before, after (memory, utiliza
 idle_mib, peak_mib
 cells[]      prompt, conc, prompt_tokens, errors, ceiling_tps_per_user, pct_of_ceiling,
              ttft_s, decode_tps_per_user, itl_ms, itl_p99_ms, agg_tps, prefill_tps: each {mean, sd, median, min, max, runs[]}
+             gpu_profile (GLYD_PROF=1 only): passes[] {kind, rows, prompt_tokens, passes, graphs, gpu_ms, queued_ms, ops[] {op, ms, share}},
+                                             steps[] {kind, calls, wall_ms, gpu_ms, host_ms, between_ms}
 ```
 
 ## The gate

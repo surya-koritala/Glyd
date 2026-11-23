@@ -393,6 +393,7 @@ impl Dyn {
             self.forward(&self.big, n, (pp, pp), last as usize)?;
         }
         self.n += n;
+        self.prof_pass(0, n)?;
         if last {
             self.read_sample().map(Some)
         } else {
@@ -434,6 +435,9 @@ impl Dyn {
             self.set_seq_n(slot, to);
         }
         let (heads, _) = self.head_out(asked, false)?;
+        // (GLYD_PROF=1: the rows that decode, a token each with its sample, and the prompts' tokens)
+        let rows = jobs.iter().filter(|j| j.1.len() == 1 && j.2).count();
+        self.prof_pass(rows, n - rows)?;
         let mut heads = heads.into_iter();
         Ok(jobs.iter().map(|j| j.2.then(|| heads.next().map(|(token, logit)| Sample { token, logit, logprob: None })).flatten()).collect())
     }
@@ -749,8 +753,10 @@ impl ModelStep for Dyn {
         if self.seq_n(slot) != start {
             return err(format!("a chunk at {start} of sequence {slot}, which holds {}", self.seq_n(slot)));
         }
+        let timed = super::prof::begin();
         let r = self.chunk_alone(slot, tokens, last)?;
         self.end_expert_step()?;
+        super::prof::end(timed, 0, tokens.len());
         Ok(r)
     }
     fn prefill_rows(&self) -> usize {
@@ -774,8 +780,10 @@ impl ModelStep for Dyn {
             }
         }
         let jobs: Vec<(usize, &[u32], bool)> = jobs.iter().map(|j| (j.pages[0] as usize, j.tokens, j.last)).collect();
+        let timed = super::prof::begin();
         let r = self.pass(&jobs)?;
         self.end_expert_step()?;
+        super::prof::end(timed, 0, jobs.iter().map(|j| j.1.len()).sum());
         Ok(r)
     }
     fn one_step(&self) -> bool {
@@ -790,17 +798,20 @@ impl ModelStep for Dyn {
         if jobs.is_empty() {
             return Ok((ModelStep::decode(self, rows)?, Vec::new()));
         }
-        let p = StepProf::begin(self.dev.stream);
+        let (p, timed) = (StepProf::begin(self.dev.stream), super::prof::begin());
         let r = self.round_rows(rows, jobs);
-        StepProf::end(p, self.dev.stream, rows.len(), jobs.iter().map(|j| j.tokens.len()).sum());
+        let prompt = jobs.iter().map(|j| j.tokens.len()).sum();
+        StepProf::end(p, self.dev.stream, rows.len(), prompt);
         self.end_expert_step()?;
+        super::prof::end(timed, rows.len(), prompt);
         r
     }
     fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
-        let p = StepProf::begin(self.dev.stream);
+        let (p, timed) = (StepProf::begin(self.dev.stream), super::prof::begin());
         let r = self.decode_rows(rows);
         StepProf::end(p, self.dev.stream, rows.len(), 0);
         self.end_expert_step()?;
+        super::prof::end(timed, rows.len(), 0);
         r
     }
     fn expert_stats(&self) -> Vec<crate::offload::LayerStats> {

@@ -22,6 +22,7 @@ pub mod nemotron;
 pub mod ngram;
 pub mod pages;
 mod picked;
+pub mod prof;
 pub mod qwen35;
 pub mod qwen4x;
 pub mod range;
@@ -860,8 +861,16 @@ pub struct Dyn {
     pf_kib: [usize; 3],
     pf_shift: i32,
     pub bytes: usize,
-    /// `--prof`: an event after each stage of a pass (`prof_take`); with the step graph (`prof_in_graph`), the graph's own, recorded by each replay.
+    /// `--prof` (and GLYD_PROF=1, src/dynamic/prof.rs): an event after each stage of an eager pass (`prof_take`); the step graph's own (`gmarks`), captured with it
+    /// where it was captured with these on, recorded by each replay. The events of eager passes taken are kept for the next (`spare`).
     pub prof: Option<std::cell::RefCell<Vec<(&'static str, Ev)>>>,
+    gmarks: Vec<(&'static str, Ev)>,
+    spare: std::cell::RefCell<Vec<Ev>>,
+    /// Whether the last pass was the step graph's replay (its events are then `gmarks`), whether the step graph is being captured, and the host's time to queue
+    /// the last eager pass (ms).
+    replayed: std::cell::Cell<bool>,
+    capturing: std::cell::Cell<bool>,
+    queued: std::cell::Cell<f64>,
     /// The layers this GPU runs (the whole model, or a stage of a split one).
     pub stage: Stage,
     /// DeepSeek-V4's buffers, where the model is one.
@@ -926,6 +935,7 @@ struct Seq {
     pending: Option<(usize, usize)>,
     verify: Option<Verify>,
     graph: Option<Graph>,
+    gmarks: Vec<(&'static str, Ev)>,
 }
 
 /// The most rows a verify pass takes (`Dyn::verify_rows`): a product of up to 8 rows runs the kernel a one-row step's does (the library's one m-tile product; the
@@ -1232,7 +1242,13 @@ impl Dyn {
             pf_kib: pf_kib(crate::tune!("GLYD_G4_PF").as_deref())?,
             pf_shift: crate::tune!("GLYD_G4_PF_SHIFT").and_then(|v| v.parse().ok()).filter(|v| (5..=7).contains(v)).unwrap_or(7),
             bytes,
-            prof: None,
+            // (GLYD_PROF=1: every pass's operations timed, the step graph's inside it)
+            prof: prof::on().then(Default::default),
+            gmarks: Vec::new(),
+            spare: Default::default(),
+            replayed: std::cell::Cell::new(false),
+            capturing: std::cell::Cell::new(false),
+            queued: std::cell::Cell::new(0.0),
             stage,
             v4,
             kglm,
@@ -1345,13 +1361,15 @@ impl Dyn {
 
     fn mark(&self, what: &'static str) -> Result<()> {
         if let Some(p) = &self.prof {
-            let e = Ev::new()?;
-            // (a node of the graph where one is being captured; outside a capture the driver refuses that: an event of a pass without the graph, where
-            // there is none, else (a prompt's pass beside the graph's) none)
-            if e.record_in_graph(self.dev.stream).is_err() {
-                if self.graph.is_some() {
-                    return Ok(());
-                }
+            // (an event of the passes taken before where there is one: a pass of a thousand operations makes none)
+            let e = match self.spare.borrow_mut().pop() {
+                Some(e) => e,
+                None => Ev::new()?,
+            };
+            // (a node of the graph where one is being captured, which `capture_graph` keeps with it; else recorded now)
+            if self.capturing.get() {
+                e.record_in_graph(self.dev.stream)?;
+            } else {
                 e.record(self.dev.stream)?;
             }
             p.borrow_mut().push((what, e));
@@ -1369,23 +1387,28 @@ impl Dyn {
         Ok(())
     }
 
-    /// The stages' times since the last call (ms, summed by stage, in the order first seen), the events cleared; with the step graph, its last replay's,
-    /// the graph's events kept.
+    /// The stages' times since the last call (ms, summed by stage, in the order first seen), the eager passes' events cleared; where the last pass was the step
+    /// graph's replay, its last replay's (the graph's events kept).
     pub fn prof_take(&self) -> Result<Vec<(&'static str, f64)>> {
+        let replayed = self.replayed.replace(false);
         let Some(p) = &self.prof else { return Ok(Vec::new()) };
         self.dev.sync()?;
-        let evs = if self.graph.is_some() { Vec::new() } else { std::mem::take(&mut *p.borrow_mut()) };
-        let kept = p.borrow();
-        let evs = if self.graph.is_some() { &kept[..] } else { &evs[..] };
-        let mut out: Vec<(&'static str, f64)> = Vec::new();
-        for w in evs.windows(2) {
-            let ms = w[1].1.since(&w[0].1)? as f64;
-            match out.iter_mut().find(|(k, _)| *k == w[1].0) {
-                Some(x) => x.1 += ms,
-                None => out.push((w[1].0, ms)),
-            }
-        }
+        let evs = std::mem::take(&mut *p.borrow_mut());
+        let out = if replayed { prof::between(&self.gmarks)? } else { prof::between(&evs)? };
+        self.spare.borrow_mut().extend(evs.into_iter().map(|x| x.1));
         Ok(out)
+    }
+
+    /// GLYD_PROF=1 (src/dynamic/prof.rs): the pass just run, of `rows` decode rows and `prompt` prompt tokens, added to the profile (its operations' times, the
+    /// stream synchronized for them).
+    fn prof_pass(&self, rows: usize, prompt: usize) -> Result<()> {
+        if !prof::on() || self.prof.is_none() {
+            return Ok(());
+        }
+        let graph = self.replayed.get();
+        let ops = self.prof_take()?;
+        prof::pass(rows, prompt, &ops, graph, (!graph).then(|| self.queued.get()));
+        Ok(())
     }
 
     fn skinny_takes(&self, p: &PackBuf, m: usize) -> bool {
@@ -1461,6 +1484,8 @@ impl Dyn {
 
     /// The tokens' raw embedding rows into the big model's X.
     unsafe fn embed(&self, tokens: &[u32]) -> Result<()> {
+        // (a profile's first event: the embedding is timed by the pass's own first, `forward`'s)
+        self.mark("start")?;
         let hid = self.big.d.hidden;
         let s = self.dev.stream;
         let Some(e) = self.big.mats[self.big.d.embed].packed_opt().map(|p| &p.pack) else { return err("the embedding is not packed") };
@@ -1543,7 +1568,8 @@ impl Dyn {
         let nt = norm_threads(hid)?;
         match *op {
             Op::EmbedNorm { scale, norm } => {
-                launch!(self.kg.embed_norm, [nu, 1, 1], [nt, 1, 1], s; p.slot(Slot::X), scale, p.small[norm].ptr, p.slot(Slot::H), hid, eps)
+                launch!(self.kg.embed_norm, [nu, 1, 1], [nt, 1, 1], s; p.slot(Slot::X), scale, p.small[norm].ptr, p.slot(Slot::H), hid, eps)?;
+                self.mark("norms")
             }
             Op::Linear { w, x, y, name } => {
                 self.lin(&p.mats[w], p.slot(x), n, p.slot(y))?;
@@ -1571,7 +1597,10 @@ impl Dyn {
                 launch!(self.kg.gelu, [gx, nu, 1 + pfb.div_ceil(gx * nu)], [256, 1, 1], s; p.slot(Slot::Gu), p.slot(Slot::M), inter as i32, pf)?;
                 self.mark("gelu")
             }
-            Op::Norm { x, w, y } => launch!(self.kg.norm, [nu, 1, 1], [nt, 1, 1], s; p.slot(x), p.small[w].ptr, p.slot(y), hid, eps),
+            Op::Norm { x, w, y } => {
+                launch!(self.kg.norm, [nu, 1, 1], [nt, 1, 1], s; p.slot(x), p.small[w].ptr, p.slot(y), hid, eps)?;
+                self.mark("norms")
+            }
             Op::DraftIn { scale } => {
                 let bh = self.big.d.hidden as i32;
                 launch!(self.kg.draft_in, [((2 * bh) as u32).div_ceil(256).min(64), 1, 1], [256, 1, 1], s; self.big.slot(Slot::X), scale, p.slot(Slot::Hid), p.slot(Slot::In), bh)
@@ -1782,7 +1811,10 @@ impl Dyn {
                 )?;
                 self.mark("depth mix and norm")
             }
-            Op::Add { x } => self.kres.add(s, p.slot(Slot::X), p.slot(x), n * hid as usize),
+            Op::Add { x } => {
+                self.kres.add(s, p.slot(Slot::X), p.slot(x), n * hid as usize)?;
+                self.mark("residual add")
+            }
             Op::MoeEarly { block, mix: m } => {
                 if n != 1 || !p.moe[block].early_wanted() {
                     return Ok(());
@@ -1880,8 +1912,8 @@ impl Dyn {
     /// Part `p`'s layers on the n rows (positions `pos`), then on the last `head` rows its post projection (a draft model's, into Hid), its LM head, the
     /// soft-cap and the argmax (its logits, tok, val a row each).
     unsafe fn forward(&self, p: &Part, n: usize, pos: (u64, u64), head: usize) -> Result<()> {
-        let s = self.dev.stream;
-        self.mark("start")?;
+        let (s, queue) = (self.dev.stream, std::time::Instant::now());
+        self.mark("embedding")?;
         let st = if std::ptr::eq(p, &self.big) { self.stage } else { Stage::whole(p.d.layers.len()) };
         // (the 12-bit pages' slots, lengths and first tokens of the pass's rows, once for every layer)
         if self.lossless.is_some() && std::ptr::eq(p, &self.big) {
@@ -1889,6 +1921,7 @@ impl Dyn {
         }
         if std::ptr::eq(p, &self.big) {
             self.lib_decode_prepare(n, pos)?;
+            self.mark("attention: the rows' lengths")?;
         }
         let head = if st.last { head } else { 0 };
         if st.first {
@@ -1985,6 +2018,7 @@ impl Dyn {
             self.kern.argmax_rows(s, p.logits.ptr, p.d.vocab as i32, head as u32, p.tok.ptr, p.val.ptr)?;
             self.mark("head")?;
         }
+        self.queued.set(queue.elapsed().as_secs_f64() * 1e3);
         Ok(())
     }
 
@@ -1999,15 +2033,22 @@ impl Dyn {
             self.forward(&self.big, 1, (st, st), 1)?;
         }
         self.dev.sync()?;
-        // (--prof: the graph's events alone kept)
+        // (--prof: the warm-up's events given back; the capture's, nodes of the graph, kept with it, the old graph's after it is gone)
         if let Some(p) = &self.prof {
-            p.borrow_mut().clear();
+            let evs = std::mem::take(&mut *p.borrow_mut());
+            self.spare.borrow_mut().extend(evs.into_iter().map(|x| x.1));
         }
+        self.capturing.set(true);
         let g = self.dev.capture(|| {
             // SAFETY: as above.
             unsafe { self.forward(&self.big, 1, (st, st), 1) }
-        })?;
-        self.graph = Some(g);
+        });
+        self.capturing.set(false);
+        self.graph = Some(g?);
+        if let Some(p) = &self.prof {
+            self.gmarks = std::mem::take(&mut *p.borrow_mut());
+        }
+        self.replayed.set(false);
         self.reset()
     }
 
@@ -2113,7 +2154,10 @@ impl Dyn {
                 }
             }
             match &self.graph {
-                Some(g) if one => g.launch(self.dev.stream)?,
+                Some(g) if one => {
+                    g.launch(self.dev.stream)?;
+                    self.replayed.set(true);
+                }
                 _ => self.forward(&self.big, n, (pp, pp), head)?,
             }
             // (a development build's GLYD_STAGE_DUMP: the last stage's boundary slots too, as they are before the head)
@@ -2133,7 +2177,8 @@ impl Dyn {
         }
         self.dev.sync()?;
         self.n = at + n;
-        Ok(())
+        // (GLYD_PROF=1: a stage's pass, a decode row or a chunk's rows; a verify pass's rows as a chunk's)
+        self.prof_pass((n == 1) as usize, if n == 1 { 0 } else { n })
     }
 
     /// A verify pass (drafted tokens checked, docs/range-worker.md): `stage_rows` on 1 to VERIFY_ROWS rows, each row as a decode step runs it (the delta rule one row
@@ -2273,7 +2318,16 @@ impl Dyn {
             let states = self.states.iter().map(|b| Buf::zeroed(b.bytes)).collect::<Result<_>>()?;
             // (paged: every sequence's keys and values are in the pools, kc and vc; its own are its block tables)
             let (room, room_v) = if self.paged.is_some() { (4, 4) } else { (self.kc.bytes, self.vc.bytes) };
-            self.seqs.push(Some(Seq { kc: Buf::zeroed(room)?, vc: Buf::zeroed(room_v)?, states, n: 0, pending: None, verify: None, graph: None }));
+            self.seqs.push(Some(Seq {
+                kc: Buf::zeroed(room)?,
+                vc: Buf::zeroed(room_v)?,
+                states,
+                n: 0,
+                pending: None,
+                verify: None,
+                graph: None,
+                gmarks: Vec::new(),
+            }));
             let (back, graph) = (self.seq, self.graph.is_some());
             if graph {
                 // (its own graph: the one-row step captured on its buffers)
@@ -2306,6 +2360,7 @@ impl Dyn {
         std::mem::swap(&mut self.pending, &mut s.pending);
         std::mem::swap(&mut self.verify, &mut s.verify);
         std::mem::swap(&mut self.graph, &mut s.graph);
+        std::mem::swap(&mut self.gmarks, &mut s.gmarks);
         self.seqs[self.seq] = Some(s);
         self.seq = i;
         Ok(())
@@ -2385,7 +2440,7 @@ impl Dyn {
         if self.n + tokens.len() + 1 > self.ctx {
             return err(format!("{} tokens and {} more, where the cache holds {}", self.n, tokens.len(), self.ctx));
         }
-        let mut at = 0;
+        let (mut at, timed) = (0, prof::begin());
         while at < tokens.len() {
             let n = self.chunk.min(tokens.len() - at);
             self.hold_blocks(self.n + n)?;
@@ -2406,11 +2461,13 @@ impl Dyn {
             }
             self.n += n;
             at += n;
+            self.prof_pass(0, n)?;
         }
         // (a pass outside the scheduler, which would take a lost step back: an error)
         self.kv12_check()?;
         let s = self.read_sample()?;
         self.end_expert_step()?;
+        prof::end(timed, 0, tokens.len());
         Ok(s)
     }
 
@@ -2449,6 +2506,7 @@ impl Dyn {
         if self.n + 1 > self.ctx {
             return err("the cache is full");
         }
+        let timed = prof::begin();
         self.hold_blocks(self.n + 1)?;
         self.dev.sync()?;
         self.st.write(0, &[self.n as i32])?;
@@ -2457,13 +2515,18 @@ impl Dyn {
         unsafe {
             self.embed(&[token])?;
             match &self.graph {
-                Some(g) => g.launch(self.dev.stream)?,
+                Some(g) => {
+                    g.launch(self.dev.stream)?;
+                    self.replayed.set(true);
+                }
                 None => self.forward(&self.big, 1, (st, st), 1)?,
             }
         }
         self.n += 1;
         let s = self.read_sample()?;
         self.end_expert_step()?;
+        self.prof_pass(1, 0)?;
+        prof::end(timed, 1, 0);
         Ok(s)
     }
 
@@ -2540,6 +2603,8 @@ impl Dyn {
         // SAFETY: h holds the n rows' final hidden states.
         unsafe { self.kern.copy_row(self.dev.stream, self.big.slot(Slot::H), kept as i32, self.big.d.hidden as i32, dr.p.slot(Slot::Hid))? };
         self.n = n0 + kept + 1;
+        // (GLYD_PROF=1: a drafting round as a pass of its rows, the draft model's passes in it)
+        self.prof_pass(n, 0)?;
         Ok(out)
     }
 }
