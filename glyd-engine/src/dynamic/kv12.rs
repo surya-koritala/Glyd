@@ -34,6 +34,15 @@ pub struct Tables {
     pub chunks: Vec<(f64, u32)>,
 }
 
+/// A 12-bit page's bytes for `heads` kv heads of `channels` (two streams, the arena the executor gives a page), by the GPU library's layout
+/// (glyd_gpu.cu: a header of 16 bytes a head-page of 128 channels, the page's used word, 16 directory words and the arena, up to a multiple of 128;
+/// then 6,144 bytes a head-page). For the planner, which has no library to ask; `Lib::kv_page_bytes` is the same number.
+pub fn page_bytes(heads: usize, channels: usize) -> u64 {
+    let hp = (heads * channels / 128) as u64;
+    let hdr = (16 * hp + 4 * (1 + 16 + super::kvpages::ARENA as u64)).div_ceil(128) * 128;
+    hdr + hp * 6144
+}
+
 /// The bucket of a bf16 value kvcal's windows are over: its exponent halved.
 fn bucket(x: u16) -> usize {
     ((x >> 8) & 127) as usize
@@ -406,6 +415,13 @@ mod tests {
         tables.save(&p).unwrap();
         assert_eq!(Tables::load(&p).unwrap(), tables);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The page sizes the GPU library gave on an RTX 4080 SUPER (kvshapes, kv12check): 8 heads of 256 (Gemma 4's sliding layers), one of 512
+    /// (its global ones), two of 512.
+    #[test]
+    fn page_bytes_are_the_librarys() {
+        assert_eq!((page_bytes(8, 256), page_bytes(1, 512), page_bytes(2, 512)), (98_688, 24_832, 49_408));
     }
 
     /// A page's chunks by the library's rule: a head-page's first three entries inline, then the arena, then chunks of 64; past 16 chunks raw (17).

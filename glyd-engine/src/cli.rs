@@ -1786,7 +1786,9 @@ fn gemma_plan(a: &Args, name: &str, tag: &str, layout: Layout, text: &str, gen: 
     let draft = if gemma_draft(a, packed).is_some() || draft_to_come { GEMMA_DRAFT_BYTES } else { 0 };
     let asked = if a.has("context") || a.has("ctx") { Some(a.either("context", "ctx", 0usize)?) } else { None };
     crate::support::context_check(name, crate::support::row(crate::support::Family::Gemma4), cfg.max_pos, asked)?;
-    let (rings, per) = cfg.kv_bytes(GEMMA_CHUNK, asked.unwrap_or(LOSSY_CTX).max(LOSSY_MIN_CTX));
+    // (12-bit lossless pages where the run asks for them and has no draft model, whose executor then pages its cache: src/dynamic/kvpages.rs)
+    let twelve = std::env::var("GLYD_KV").as_deref() == Ok("lossless") && a.has("no-draft");
+    let (rings, per) = cfg.kv_bytes(GEMMA_CHUNK, asked.unwrap_or(LOSSY_CTX).max(LOSSY_MIN_CTX), twelve);
     let reserve = reserve_of(free);
     let fixed = weights + rings + draft + LOSSY_WORK + reserve;
     let room = (free.saturating_sub(fixed) / per.max(1)) as usize;
@@ -3856,7 +3858,7 @@ mod tests {
         let (one, eight) = (at(&["run", model, "--no-draft"]), at(&["serve", model, "--users", "8", "--no-draft"]));
         assert_eq!((one.context, one.users), (LOSSY_CTX, 1));
         assert!(eight.context >= LOSSY_MIN_CTX && eight.context < one.context && eight.users == 8, "{}", eight.context);
-        let (rings, per) = cfg.kv_bytes(GEMMA_CHUNK, eight.context);
+        let (rings, per) = cfg.kv_bytes(GEMMA_CHUNK, eight.context, false);
         assert_eq!(eight.kv, 8 * (rings + eight.context as u64 * per));
         assert!(eight.weights + LOSSY_WORK + eight.reserve + eight.kv <= free, "8 users at {} tokens", eight.context);
         assert_eq!(at(&["serve", model, "--users", "1", "--no-draft"]).context, LOSSY_CTX);
