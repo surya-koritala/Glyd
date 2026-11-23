@@ -161,35 +161,8 @@ pub fn smallest_is_fastest(cc: (i32, i32)) -> bool {
     cc == (8, 9)
 }
 
-/// The layout for this GPU, and why: the plugin's `best_layout` for a dense model. The tiered layout where it is the fastest (`smallest_is_fastest`) or the only one that fits (2 GiB of the GPU kept
-/// for activations and the cache), else the 12-bit one.
-pub fn best_layout(cc: (i32, i32), total_mem: u64, matrix_bytes: u64, other_bytes: u64) -> (Layout, String) {
-    let room = total_mem.saturating_sub(2 << 30);
-    let (tiered, twelve) = ((matrix_bytes as f64 * 10.80 / 16.0) as u64 + other_bytes, (matrix_bytes as f64 * 12.04 / 16.0) as u64 + other_bytes);
-    if twelve > room && room >= tiered {
-        return (
-            Layout::Tiered,
-            format!(
-                "only the mma layout fits (the smallest: {:.1} GB; mma12 {:.1} GB, room {:.1} GB)",
-                tiered as f64 / 1e9,
-                twelve as f64 / 1e9,
-                room as f64 / 1e9
-            ),
-        );
-    }
-    if smallest_is_fastest(cc) {
-        return (Layout::Tiered, "Ada: mma, the smallest layout, is as fast as mma12 (measured)".to_string());
-    }
-    (Layout::Twelve, "mma12, the faster layout, on this GPU (measured)".to_string())
-}
-
-/// The layout of a run: the one asked for with `--layout` (what the user wants wins, whether or not it fits: the caller's fit check says so), else this GPU's.
-pub fn choose_layout(asked: Option<Layout>, cc: (i32, i32), total_mem: u64, matrix_bytes: u64, other_bytes: u64) -> (Layout, String) {
-    match asked {
-        Some(l) => (l, "as asked".to_string()),
-        None => best_layout(cc, total_mem, matrix_bytes, other_bytes),
-    }
-}
+/// The layout for a GPU, chosen by the planner (src/plan.rs `sizing`).
+pub use crate::plan::sizing::{best_layout, choose_layout};
 
 /// A pack and the device buffers it points into.
 pub struct PackBuf {
@@ -1317,45 +1290,6 @@ mod tests {
     }
 
     /// The layout a GPU is given (the plugin's best_layout): Ada the tiered one, every other GPU the 12-bit one, the tiered one where only it fits; `--layout` wins.
-    #[test]
-    fn layout_by_gpu() {
-        let gib = 1u64 << 30;
-        let m = 16_380_000_000u64; // Qwen3-8B's matrices in bf16
-        let (t, w) = (Layout::Tiered, Layout::Twelve);
-        // (the GPU, its class, its memory, the layout it is given for an 8B model)
-        for (gpu, cc, mem, want) in [
-            ("L4", (8, 9), 22, t),
-            ("RTX 4090", (8, 9), 24, t),
-            ("L40S", (8, 9), 48, t),
-            ("A10", (8, 6), 24, w),
-            ("RTX 3090", (8, 6), 24, w),
-            ("A100 40 GB", (8, 0), 40, w),
-            ("A100 80 GB", (8, 0), 80, w),
-            ("H100", (9, 0), 80, w),
-            ("GH200", (9, 0), 96, w),
-            ("B200", (10, 0), 180, w),
-            ("RTX 5090", (12, 0), 32, w),
-        ] {
-            assert_eq!(best_layout(cc, mem * gib, m, 1_000_000).0, want, "{gpu}");
-            assert_eq!(choose_layout(None, cc, mem * gib, m, 1_000_000).0, want, "{gpu} with no flag");
-            // --layout wins on every GPU, either way
-            assert_eq!(
-                choose_layout(Some(Layout::Tiered), cc, mem * gib, m, 1_000_000),
-                (Layout::Tiered, "as asked".to_string()),
-                "{gpu} asked for the tiered layout"
-            );
-            assert_eq!(choose_layout(Some(Layout::Twelve), cc, mem * gib, m, 1_000_000).0, Layout::Twelve, "{gpu} asked for the 12-bit layout");
-        }
-        // a 24 GiB A10 for a 14B-class model: 12.04 bits do not fit, 10.8 do
-        let (l, why) = best_layout((8, 6), 24 * gib, 33_000_000_000, 1_000_000);
-        assert_eq!(l, Layout::Tiered);
-        assert!(why.contains("only the mma layout fits"), "{why}");
-        // neither fits (a 32B model on that A10): the GPU's own layout, and the fit check refuses the model
-        assert_eq!(best_layout((8, 6), 24 * gib, 64_000_000_000, 1_000_000).0, Layout::Twelve);
-        // the knob: only Ada has the smallest layout as the fastest
-        assert!(smallest_is_fastest((8, 9)) && !smallest_is_fastest((8, 0)) && !smallest_is_fastest((9, 0)) && !smallest_is_fastest((8, 6)));
-    }
-
     #[test]
     fn config_of_a_qwen3() {
         let dir = std::env::temp_dir().join(format!("glyd-engine-cfg-{}", std::process::id()));

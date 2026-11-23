@@ -12,7 +12,7 @@ use crate::machine;
 use crate::model::{Engine, Opts};
 use crate::offload::ExpertStore;
 use crate::plan::sizing::{bits, lossy_plan, qwen3_plan, rooms, size, size_dynamic, static_family, target};
-use crate::plan::{Kind, LoadPlan, Target, GEMMA_CHUNK, HOST_MARGIN, LOSSY_CTX};
+use crate::plan::{Kind, LoadPlan, Target, HOST_MARGIN, LOSSY_CTX};
 use crate::sampler::{self, Params};
 use crate::server::{self, Job, Piece};
 use crate::status::{Status, STATUS};
@@ -292,28 +292,22 @@ struct Prepared {
     fit: LoadPlan,
 }
 
-fn architecture(cfg_text: &str) -> Option<(String, bool)> {
-    let v = json::parse(cfg_text).ok()?;
-    let arch = v.get("architectures")?.as_array()?.first()?.as_str()?.to_string();
-    let scaled = v.get("rope_scaling").is_some_and(|r| *r != Value::Null);
-    Some((arch, scaled))
-}
-
 /// What a Qwen3 config.json sets that the engine does not do (it would run such a model wrongly, and without a word): a sliding window or layers that are not full attention, biases in the attention,
 /// an activation other than silu.
-fn unsupported_setting(cfg_text: &str) -> Option<&'static str> {
-    let v = json::parse(cfg_text).ok()?;
-    let on = |k: &str| v.get(k).is_some_and(|x| !matches!(x, Value::Null | Value::Bool(false)));
-    if on("sliding_window") && v.get("use_sliding_window").is_some_and(|x| *x != Value::Bool(false)) {
+fn unsupported_setting(c: &crate::runtime::config::ModelConfig) -> Option<&'static str> {
+    use serde_json::Value as J;
+    let v = &c.text;
+    let on = |k: &str| v.get(k).is_some_and(|x| !matches!(x, J::Null | J::Bool(false)));
+    if on("sliding_window") && v.get("use_sliding_window").is_some_and(|x| *x != J::Bool(false)) {
         return Some("a sliding window");
     }
-    if v.get("layer_types").and_then(Value::as_array).is_some_and(|t| t.iter().any(|l| l.as_str().is_some_and(|l| l != "full_attention"))) {
+    if c.shared.layer_types.as_ref().is_some_and(|t| t.iter().any(|l| l != "full_attention")) {
         return Some("layers that are not full attention");
     }
-    if v.get("attention_bias") == Some(&Value::Bool(true)) {
+    if v.get("attention_bias") == Some(&J::Bool(true)) {
         return Some("biases in the attention");
     }
-    if v.get("hidden_act").and_then(Value::as_str).is_some_and(|a| a != "silu") {
+    if v.get("hidden_act").and_then(J::as_str).is_some_and(|a| a != "silu") {
         return Some("an activation other than silu");
     }
     None
@@ -326,10 +320,15 @@ pub(crate) fn unrun_fix() -> String {
 
 /// The engine runs Qwen3 dense models (Qwen3ForCausalLM) with no rope scaling: a Refusal (exit 3) for the rest.
 pub(crate) fn supported(name: &str, cfg_text: &str) -> Done<()> {
-    let Some((arch, scaled)) = architecture(cfg_text) else {
+    // (config.json parsed once: src/runtime/config.rs)
+    let c = crate::runtime::config::ModelConfig::parse(cfg_text)
+        .map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), "The engine runs Qwen3 models so far"))?;
+    let arch = c.arch.as_str();
+    if arch.is_empty() {
         return Err(Refusal::unsupported(format!("{name}: its config.json does not say what kind of model it is"), "The engine runs Qwen3 models so far"));
-    };
-    if crate::nemotron::is_nemotron_h(cfg_text) {
+    }
+    let scaled = c.text.get("rope_scaling").is_some_and(|r| !r.is_null());
+    if c.family() == Some(crate::support::Family::NemotronH) {
         return Err(Refusal::unsupported(
             format!("{name} is a Nemotron-H model: this engine runs it at the hummingbird, swift and kestrel levels, not lossless"),
             machine::instead(
@@ -350,7 +349,7 @@ pub(crate) fn supported(name: &str, cfg_text: &str) -> Done<()> {
     if scaled {
         return Err(Refusal::unsupported(format!("{name} uses rope scaling, which this engine does not run yet"), unrun_fix()));
     }
-    if let Some(what) = unsupported_setting(cfg_text) {
+    if let Some(what) = unsupported_setting(&c) {
         return Err(Refusal::unsupported(format!("{name} has {what}, which this engine does not run yet"), unrun_fix()));
     }
     Ok(())
@@ -1535,6 +1534,36 @@ fn load_lossy(
         ui.borrow_mut().line(&format!("Note: {n}"));
     }
     ui.borrow_mut().status(&format!("{} {name} and loading it onto the GPU...", if packed.is_some() { "Reading" } else { "Packing" }));
+    let (e, bytes, vocab) = open_lossy(a, &plan, &dir, &gpu, &name, ui)?;
+    loaded_report(&model, &plan, &[&gpu], bytes as u64);
+    let tok = Tok::load(&dir).map_err(cannot)?;
+    let chat = Chat::load(&dir).map_err(cannot)?;
+    let mut defaults = sampler::generation_defaults(&dir);
+    if let Some(t) = a.flag("temp") {
+        defaults.temperature = t.parse().map_err(|_| Refusal::new(format!("--temp {t}: not a number"), ""))?;
+    }
+    let line = format!(
+        "Ready in {}: {name} on the {}, {} of weights, {} tokens of context, one user at a time.",
+        fmt_time(t0.elapsed().as_secs_f64()),
+        gpu.name,
+        gib(bytes as u64),
+        plan.context
+    );
+    // (what /v1/glyd/info says of it, where it is served)
+    let info = (!served.is_empty()).then(|| {
+        let (held, lossless) = (e.held(), matches!(layout, Layout::Tiered | Layout::Int4H));
+        let weights = format!("{} level: about {bits:.1} bits per weight, {exact}", level_name(layout));
+        let mut about = about(served, &dir, requested(served, a.has("lossy")), level_name(layout), lossless, &weights, held.as_ref(), &gpu);
+        about.push(("costs", crate::costs::served(&dir, served, requested(served, a.has("lossy")), e.capacity(), plan.chunk, held)));
+        server::Info { about, gpu: Some(gpu.ordinal), held, concurrency: 1, window: e.capacity(), refused: server::ONE_AT_A_TIME, started }
+    });
+    Ok((e, tok, chat, defaults, vocab, line, info))
+}
+
+/// The engine of a lossy level's plan (Gemma 4's, Nemotron-H's or Qwen3.5's description on the executor) from the directory `dir`, on `gpu`: everything it holds is the
+/// plan's (its context, its prompt chunk, its layout, its draft model and its expert cache); nothing is sized here. The engine, its weights' bytes and its vocabulary.
+fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: &RefCell<Ui>) -> Done<(Box<dyn Gen>, usize, usize)> {
+    let o = crate::dynamic::Opts { ctx: plan.context, chunk: plan.chunk, graph: true, device: gpu.ordinal, layout: Some(plan.layout) };
     let oom = |e: crate::ffi::Error| {
         if e.out_of_memory() {
             Refusal::unsupported(
@@ -1545,14 +1574,14 @@ fn load_lossy(
             cannot(e.msg)
         }
     };
-    let (e, bytes, vocab): (Box<dyn Gen>, usize, usize) = if plan.kind == Kind::Gemma4 {
+    Ok(if plan.kind == Kind::Gemma4 {
         // (drafted where a draft model is found: the big model checks every draft token, so the tokens are its own; greedy replies draft, sampled ones step)
-        let draft = gemma_draft(a, Some(&dir)).map(|d| (d, a.num("draft-tokens", 8usize).unwrap_or(8).clamp(1, GEMMA_CHUNK - 1)));
+        let draft = gemma_draft(a, Some(dir)).filter(|_| plan.draft > 0).map(|d| (d, a.num("draft-tokens", 8usize).unwrap_or(8).clamp(1, plan.chunk - 1)));
         if let Some((d, k)) = &draft {
             ui.borrow_mut().line(&format!("Drafting with {} ({k} tokens a round; --no-draft runs without it).", d.display()));
         }
         // the dynamic engine (GLY-326): Gemma 4's description and, where one is found, its draft model's
-        let c = crate::gemma4::ConfigG4::load(&dir).map_err(cannot)?;
+        let c = crate::gemma4::ConfigG4::load(dir).map_err(cannot)?;
         let spec = match &draft {
             Some((d, k)) => {
                 let dc = crate::gemma4::ConfigG4::load_for(d, true).map_err(cannot)?;
@@ -1560,26 +1589,20 @@ fn load_lossy(
             }
             None => None,
         };
-        let o = crate::dynamic::Opts { ctx: plan.context, chunk: GEMMA_CHUNK, graph: true, device: gpu.ordinal, layout: Some(layout) };
-        let mut e = crate::dynamic::Dyn::new(&dir, crate::dynamic::gemma4::lowered(&dir, &c).map_err(cannot)?, spec, &o).map_err(oom)?;
+        let mut e = crate::dynamic::Dyn::new(dir, crate::dynamic::gemma4::lowered(dir, &c).map_err(cannot)?, spec, &o).map_err(oom)?;
         // (12-bit lossless KV pages where the scheduler pages the cache, a run with no draft model: GLYD_KV=lossless until admission reserves their room;
         // the tables made on the model's first run and kept in the cache)
         if draft.is_none() && std::env::var("GLYD_KV").as_deref() == Ok("lossless") {
             let t0 = std::time::Instant::now();
-            let (t, made) = crate::dynamic::kv12::tables_for(&mut e, &dir, &short_name(&model)).map_err(cannot)?;
+            let (t, made) = crate::dynamic::kv12::tables_for(&mut e, dir, name).map_err(cannot)?;
             if made {
-                ui.borrow_mut().line(&format!(
-                    "Made the 12-bit KV tables of {} in {:.0} s (once: kept in the cache).",
-                    short_name(&model),
-                    t0.elapsed().as_secs_f64()
-                ));
+                ui.borrow_mut().line(&format!("Made the 12-bit KV tables of {} in {:.0} s (once: kept in the cache).", name, t0.elapsed().as_secs_f64()));
             }
             e.set_kv12(Some(t));
         }
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
     } else if plan.kind == Kind::NemotronH {
-        let o = crate::dynamic::Opts { ctx: plan.context, chunk: 2048, graph: true, device: gpu.ordinal, layout: Some(layout) };
         let store = ExpertStore::new();
         // (the experts the computer's memory does not hold stay in the packed directory: src/offload.rs `Tier`)
         if let Some(c) = plan.experts.filter(|c| c.ram < c.host_bytes()) {
@@ -1608,56 +1631,22 @@ fn load_lossy(
             }
         }
         store.set_offload(offload);
-        let (plain, cached) = (crate::moe_nh::factory(layout), plan.experts.map(|c| crate::moe_nh::factory_cached(layout, c.slots, &store)));
+        let (plain, cached) = (crate::moe_nh::factory(plan.layout), plan.experts.map(|c| crate::moe_nh::factory_cached(plan.layout, c.slots, &store)));
         let make: crate::kern_nh::MoeFactory<'_> = match &cached {
             Some(f) => f,
             None => &plain,
         };
         // the executor (GLY-354): Nemotron-H's description, its blocks of experts (an expert cache's) as `make` makes them
-        let layers = crate::nemotron::ConfigNemotronH::load(&dir).map_err(cannot)?.layers;
-        let e = crate::dynamic::nemotron::load_with(&dir, &o, make, crate::dynamic::Stage::whole(layers)).map_err(oom)?;
+        let layers = crate::nemotron::ConfigNemotronH::load(dir).map_err(cannot)?.layers;
+        let e = crate::dynamic::nemotron::load_with(dir, &o, make, crate::dynamic::Stage::whole(layers)).map_err(oom)?;
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
     } else {
         // the dynamic engine (GLY-326): Qwen3.5's description
-        let o = crate::dynamic::Opts { ctx: plan.context, chunk: 2048, graph: true, device: gpu.ordinal, layout: Some(layout) };
-        let e = crate::dynamic::qwen35::load(&dir, &o).map_err(oom)?;
+        let e = crate::dynamic::qwen35::load(dir, &o).map_err(oom)?;
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
-    };
-    loaded_report(&model, &plan, &[&gpu], bytes as u64);
-    let tok = Tok::load(&dir).map_err(cannot)?;
-    let chat = Chat::load(&dir).map_err(cannot)?;
-    let mut defaults = sampler::generation_defaults(&dir);
-    if let Some(t) = a.flag("temp") {
-        defaults.temperature = t.parse().map_err(|_| Refusal::new(format!("--temp {t}: not a number"), ""))?;
-    }
-    let line = format!(
-        "Ready in {}: {name} on the {}, {} of weights, {} tokens of context, one user at a time.",
-        fmt_time(t0.elapsed().as_secs_f64()),
-        gpu.name,
-        gib(bytes as u64),
-        plan.context
-    );
-    // (what /v1/glyd/info says of it, where it is served)
-    let info = (!served.is_empty()).then(|| {
-        let (held, lossless) = (e.held(), matches!(layout, Layout::Tiered | Layout::Int4H));
-        let weights = format!("{} level: about {bits:.1} bits per weight, {exact}", level_name(layout));
-        let mut about = about(served, &dir, requested(served, a.has("lossy")), level_name(layout), lossless, &weights, held.as_ref(), &gpu);
-        about.push((
-            "costs",
-            crate::costs::served(
-                &dir,
-                served,
-                requested(served, a.has("lossy")),
-                e.capacity(),
-                if plan.kind == Kind::Gemma4 { GEMMA_CHUNK } else { 2048 },
-                held,
-            ),
-        ));
-        server::Info { about, gpu: Some(gpu.ordinal), held, concurrency: 1, window: e.capacity(), refused: server::ONE_AT_A_TIME, started }
-    });
-    Ok((e, tok, chat, defaults, vocab, line, info))
+    })
 }
 
 /// The GPUs the dynamic route uses (Ampere or newer, as the driver lists them) and the first, which the machine's checks are of.
@@ -1876,7 +1865,7 @@ fn load_dynamic(
     let table = crate::sizes::Table::from_dir(&dir).map_err(cannot)?;
     let plan = size_dynamic(a, &name, &table, Some(&dir), &text, static_family(family), &targets, crate::offload::host_memory(), &crate::dynamic::tp::reach)?;
     let sp = plan.spread.clone().expect("the dynamic route's plan spreads the model");
-    let (total, coded, twelve, across, ctx) = (plan.weights_on_gpu(), sp.coded, sp.twelve, sp.across, plan.context);
+    let (total, coded, across) = (plan.weights_on_gpu(), sp.coded, sp.across);
     let (cuts, devices) = (sp.cuts.clone(), sp.devices.clone());
     let cache = (sp.host_bytes > 0).then_some(&sp);
     let gpu_name = |d: i32| gpus.iter().find(|g| g.ordinal == d).map_or_else(|| format!("GPU {d}"), |g| g.name.clone());
@@ -1922,28 +1911,8 @@ fn load_dynamic(
         crate::ffi::Lib::find().and_then(|l| l.f8h_plain(Some(false))).map_err(cannot)?;
         ui.borrow_mut().line("Its FP8 matrices are held coded (the same values in about 7 bits of 8) for it to fit; as they are, they do not.");
     }
-    // (penguin's bf16 matrices in its 12-bit layout where it fits an HBM GPU: lossless as the smallest, a faster one-token product there)
-    // (a hummingbird directory holds the rest of the model as released: its matrices are packed as at penguin, and the loader reads the experts' rows itself)
-    let rest = if hb { Layout::Tiered } else { layout };
-    let o = crate::dynamic::Opts { ctx, chunk: 256, graph: true, device: devices[0], layout: Some(if twelve { Layout::Twelve } else { rest }) };
     ui.borrow_mut().status(&format!("Reading {name} and loading it onto the GPU{}...", if devices.len() == 1 { "" } else { "s" }));
-    // (a hummingbird directory's experts in its own cache: each stage its places, the computer's memory for its share of the experts, the copy-or-compute policy of the flags)
-    let offload = crate::offload::offload_args(a).map_err(|e| Refusal::new(e.msg, "--cpu-threads takes a number of threads: --cpu-threads 8"))?;
-    let ram = plan.experts.filter(|c| c.ram < c.host_bytes()).map(|c| crate::offload::HostMemory { bytes: c.ram, total: c.host_bytes() });
-    let opened = match &cache {
-        Some(k) if hb || matches!(family, "DeepSeek-V4" | "GLM-5.3-Flash" | "Muse Spark") => crate::dynamic::split::open_cached(
-            &dir,
-            &o,
-            &cuts,
-            &devices,
-            k.places.iter().map(|&places| crate::hbg_store::HbCaching { places, ram, offload, dense: sp.dense }).collect(),
-        ),
-        Some(k) if across => crate::dynamic::split::open_kimi_tp(&dir, &o, &devices, k.places[0]),
-        Some(k) => crate::dynamic::split::open_kimi(&dir, &o, &cuts, &devices, k.places.clone(), sp.dense),
-        None if across => crate::dynamic::split::open_tp(&dir, &o, &devices),
-        None => crate::dynamic::split::open(&dir, &o, &cuts, &devices),
-    };
-    let e = opened.map_err(|e| {
+    let e = open_dynamic(a, &plan, &dir, family)?.map_err(|e| {
         if e.out_of_memory() {
             Refusal::unsupported(
                 format!("a GPU ran out of memory loading {name} ({})", stages.join(", ")),
@@ -1989,6 +1958,34 @@ fn load_dynamic(
     });
     let vocab = crate::dynamic::split::config_num(&text, "vocab_size").unwrap_or(0);
     Ok((Box::new(e), tok, chat, defaults, vocab, line, info))
+}
+
+/// The engine of a dynamic-route plan from the directory `dir`: its layers cut over the plan's GPUs or across them, its expert cache's places, the computer's memory for
+/// its experts and the last layers' dense matrices, its context, prompt chunk and layout; nothing is sized here.
+fn open_dynamic(a: &Args, plan: &LoadPlan, dir: &Path, family: &str) -> Done<std::result::Result<crate::dynamic::split::Run, crate::ffi::Error>> {
+    let sp = plan.spread.as_ref().expect("the dynamic route's plan spreads the model");
+    // (penguin's bf16 matrices in its 12-bit layout where it fits an HBM GPU: lossless as the smallest, a faster one-token product there)
+    // (a hummingbird directory holds the rest of the model as released: its matrices are packed as at penguin, and the loader reads the experts' rows itself)
+    let hb = plan.level == "hummingbird";
+    let layout = if sp.twelve { Layout::Twelve } else { Layout::Tiered };
+    let o = crate::dynamic::Opts { ctx: plan.context, chunk: plan.chunk, graph: true, device: sp.devices[0], layout: Some(layout) };
+    // (a hummingbird directory's experts in its own cache: each stage its places, the computer's memory for its share of the experts, the copy-or-compute policy of the flags)
+    let offload = crate::offload::offload_args(a).map_err(|e| Refusal::new(e.msg, "--cpu-threads takes a number of threads: --cpu-threads 8"))?;
+    let ram = plan.experts.filter(|c| c.ram < c.host_bytes()).map(|c| crate::offload::HostMemory { bytes: c.ram, total: c.host_bytes() });
+    let (cuts, devices) = (&sp.cuts, &sp.devices);
+    Ok(match (sp.host_bytes > 0).then_some(sp) {
+        Some(k) if hb || matches!(family, "DeepSeek-V4" | "GLM-5.3-Flash" | "Muse Spark") => crate::dynamic::split::open_cached(
+            dir,
+            &o,
+            cuts,
+            devices,
+            k.places.iter().map(|&places| crate::hbg_store::HbCaching { places, ram, offload, dense: sp.dense }).collect(),
+        ),
+        Some(k) if sp.across => crate::dynamic::split::open_kimi_tp(dir, &o, devices, k.places[0]),
+        Some(k) => crate::dynamic::split::open_kimi(dir, &o, cuts, devices, k.places.clone(), sp.dense),
+        None if sp.across => crate::dynamic::split::open_tp(dir, &o, devices),
+        None => crate::dynamic::split::open(dir, &o, cuts, devices),
+    })
 }
 
 /// `run MODEL:kestrel` (or `:swift`, or `--lossy`): the model (a directory in the Hub's layout, the cache's copy, else downloaded), every weight rounded and packed in `layout` once into the cache and read from there (a glyd-v7 directory: read
@@ -2433,7 +2430,7 @@ fn h_endpoint() -> String {
 mod tests {
     use super::*;
     use crate::plan::sizing::{expert_cache_for, hb_cache, held_in_memory, lossy_plan_with, release_cache};
-    use crate::plan::{LOSSY_MIN_CTX, LOSSY_WORK};
+    use crate::plan::{GEMMA_CHUNK, LOSSY_MIN_CTX, LOSSY_WORK};
 
     /// `serve --with`'s two models in step: what one tells the other arrives in order, and a model that fails (its thread ended, its end of the pair gone) ends the other's wait at
     /// once (None) instead of leaving it waiting for a model that is not coming.
@@ -2927,7 +2924,7 @@ mod tests {
         assert!(r.code == 1 && r.what == "/models/q-wren is packed at the wren level, not :swift", "{r}");
     }
 
-    /// A lossy level's plan sizes the weights in its layout (fit::bits), and its refusals name the level.
+    /// A lossy level's plan sizes the weights in its layout (plan.rs `sizing::bits`), and its refusals name the level.
     #[test]
     fn a_lossy_plan_is_sized_in_its_levels_layout() {
         let text = include_str!("../../research/lossy-2026/qwen38-config.json");
@@ -3374,7 +3371,7 @@ mod tests {
         assert!(fit.context == 8192 && layout == Layout::Tiered && shape_checks("Qwen3-8B", &cfg, &fit).is_ok());
         // a card with too little room: the vLLM way, with the numbers
         let small = qwen3_plan(&args(&["run", "Qwen/Qwen3-8B"]), &cfg, "Qwen3-8B", &gpu("NVIDIA L4", (8, 9), 8), None, 1).unwrap_err();
-        assert!(small.code == CANNOT && small.what.contains("does not fit this GPU"), "{small}");
+        assert!(small.code == CANNOT && small.what.contains("takes about") && small.what.contains("has 8.0 GiB free"), "{small}");
         // a context that does not fit
         let big = qwen3_plan(&args(&["run", "Qwen/Qwen3-8B", "--context", "40960"]), &cfg, "Qwen3-8B", &gpu("NVIDIA L4", (8, 9), 13), None, 1).unwrap_err();
         assert!(big.code == CANNOT && big.fix.contains("--context"), "{big}");

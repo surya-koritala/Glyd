@@ -207,7 +207,7 @@ impl Family {
         }
     }
 
-    /// The bytes a pack takes at `level` where the files do not say (packed as the loader would pack it: fit::bits a weight in its layout).
+    /// The bytes a pack takes at `level` where the files do not say (packed as the loader would pack it: plan.rs `sizing::bits` a weight in its layout).
     fn estimate(&self, level: Layout, p: &Pack35) -> Result<u64> {
         let weights = (p.rows() * p.cols) as u64;
         match self {

@@ -525,7 +525,7 @@ pub struct Candidate {
     pub tok_s: f64,
     /// Why it does not fit, where it does not.
     pub why: Option<String>,
-    /// The plan `run` loads, where this path is sized by the loader's own numbers (src/cli.rs `size`): the figures above are its. None: an
+    /// The plan `run` loads, where this path is sized by the loader's own numbers (`sizing::size`): the figures above are its. None: an
     /// estimate from the model's parameters (a path not yet sized by its loader).
     pub load: Option<LoadPlan>,
 }
@@ -628,7 +628,7 @@ pub fn room_of(free: u64) -> u64 {
 /// Qwen3.8-27B with prompts in chunks of 2,048, about 1 GiB for Nemotron 3 Super by the sizes of its buffers (not yet measured).
 pub const LOSSY_WORK: u64 = 1280 << 20;
 /// The Qwen3 path's fixed workspaces: the CUDA context and the library's own buffers, cuBLAS's and the pool's, 1,400 MiB (600 + 400 + 400) measured
-/// as the path's total before the reserve was one model, less that reserve; a prompt chunk's activations are on top (src/fit.rs `work`).
+/// as the path's total before the reserve was one model, less that reserve; a prompt chunk's activations are on top (`sizing::work`).
 pub const QWEN3_WORK: u64 = (1400 << 20) - CONTEXT_FLOOR;
 /// The dynamic route's work on each GPU: the activations, the scratch, the graphs and the KV cache of its context together, which this route has not
 /// split apart yet (3 GiB and 5% of the GPU's free memory in all with the reserve, as it kept before the planner drove it).
@@ -1538,7 +1538,7 @@ pub(crate) fn sizing_inputs(machine: &Machine, probed: bool) -> Option<(usize, T
     Some((main, target, devs, Box::new(move |g: &[i32]| if probed { crate::dynamic::tp::reach(g) } else { linked })))
 }
 
-/// Each level's plan `run` would load for MODEL on `machine`, or the reason it would not (the same functions: src/cli.rs `size`), in the family's order of
+/// Each level's plan `run` would load for MODEL on `machine`, or the reason it would not (the same functions: `sizing::size`), in the family's order of
 /// levels: None where no level of this family is sized by its loader yet, or the machine has no GPU. `probed`: the machine is this computer (its GPUs'
 /// reach of each other is asked of the driver), else a datacenter machine's is taken as NVLink's.
 #[allow(clippy::too_many_arguments)]
@@ -1649,7 +1649,7 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
     let ask = Ask { level, context, users, family: Some(fam), qat: levels::is_qat(model) };
     let mut p = plan(&sh, &machine, ask);
     let mut refusal = None;
-    // where run's own sizing covers the family: the plan `run` would load at each level, or the refusal it would give (the same functions: src/cli.rs `size`)
+    // where run's own sizing covers the family: the plan `run` would load at each level, or the refusal it would give (the same functions: `sizing::size`)
     let probed = a.flag("machine").is_none();
     if let Some((options, refusals)) = exact_options(a, model, &config, level, fam, &sh, &machine, users, probed) {
         let max_ctx = context.unwrap_or(fam.default_ctx.unwrap_or(TARGET_CTX).min(sh.max_ctx)).min(fam.max_ctx.unwrap_or(usize::MAX));
@@ -1739,7 +1739,7 @@ fn index_total(model: &str) -> Option<f64> {
 // ---- the plan each path loads ------------------------------------------------------------------------------------------------------------------------------------------------------
 
 /// The loaders' sizing, moved here from src/cli.rs and src/fit.rs (P2f): the plan `run`, `serve`, `preflight` and `fit` load and print.
-pub(crate) mod sizing {
+pub mod sizing {
     use super::{reserve_of, Kind, LoadPlan, Target, GEMMA_CHUNK, GEMMA_DRAFT_BYTES, HOST_MARGIN, LOSSY_CTX, LOSSY_MIN_CTX, LOSSY_WORK, QWEN3_WORK};
     use crate::args::Args;
     use crate::cli::{cannot, gemma_draft, gemma_wren, level, level_name, shape_checks, short_name, supported, unrun_fix, users_of};
@@ -1751,7 +1751,7 @@ pub(crate) mod sizing {
     use crate::qwen35::{Config35, Pack35};
     use crate::store;
     use crate::ui::{gib, Done, Refusal};
-    use crate::weights::{choose_layout, packed_bytes, Config, Layout};
+    use crate::weights::{packed_bytes, Config, Layout};
     use glyd_gpu::save::Source;
     use std::path::{Path, PathBuf};
 
@@ -1794,15 +1794,553 @@ pub(crate) mod sizing {
         chunk as u64 * per_token + decoded + QWEN3_WORK
     }
 
-    /// The chunk of prompt tokens the engine runs at a time where `free` bytes are left after the weights and the cache: 4096 where cuBLAS is (it decodes a matrix once a chunk), else 2048, smaller where
-    /// the room is short.
-    pub fn chunk_for(cfg: &Config, room: u64, cublas: bool) -> usize {
-        let first = if cublas { 4096 } else { 2048 };
-        [first, 2048, 1024, 512].into_iter().filter(|&c| c <= first).find(|&c| work(cfg, c, cublas) <= room).unwrap_or(512)
+    /// The layout for this GPU, and why: the plugin's `best_layout` for a dense model. The tiered layout where it is the fastest (`smallest_is_fastest`) or the only one that fits (2 GiB of the GPU kept
+    /// for activations and the cache), else the 12-bit one.
+    pub fn best_layout(cc: (i32, i32), total_mem: u64, matrix_bytes: u64, other_bytes: u64) -> (Layout, String) {
+        let room = total_mem.saturating_sub(2 << 30);
+        let (tiered, twelve) = ((matrix_bytes as f64 * 10.80 / 16.0) as u64 + other_bytes, (matrix_bytes as f64 * 12.04 / 16.0) as u64 + other_bytes);
+        if twelve > room && room >= tiered {
+            return (
+                Layout::Tiered,
+                format!(
+                    "only the mma layout fits (the smallest: {:.1} GB; mma12 {:.1} GB, room {:.1} GB)",
+                    tiered as f64 / 1e9,
+                    twelve as f64 / 1e9,
+                    room as f64 / 1e9
+                ),
+            );
+        }
+        if crate::weights::smallest_is_fastest(cc) {
+            return (Layout::Tiered, "Ada: mma, the smallest layout, is as fast as mma12 (measured)".to_string());
+        }
+        (Layout::Twelve, "mma12, the faster layout, on this GPU (measured)".to_string())
     }
 
-    /// The context a model runs with on a GPU that has `free` bytes (`gpu` its name), for `users` sequences at once (the cache holds `users` of the context): `asked` where the user gave one (refused if it does not fit),
-    /// else the model's own up to `CTX_WANT`, less where the room is short (not below `CTX_MIN`). The plan the engine loads: `chunk` is the prompt chunk of the memory left.
+    /// The layout of a run: the one asked for with `--layout` (what the user wants wins, whether or not it fits: the caller's fit check says so), else this GPU's.
+    pub fn choose_layout(asked: Option<Layout>, cc: (i32, i32), total_mem: u64, matrix_bytes: u64, other_bytes: u64) -> (Layout, String) {
+        match asked {
+            Some(l) => (l, "as asked".to_string()),
+            None => best_layout(cc, total_mem, matrix_bytes, other_bytes),
+        }
+    }
+
+    /// The parts of a model of `layers` layers split over GPUs (`free`: the GiB free of each part's GPU, a GPU's own shared among the parts on it): each part's first layer after the first part's (`cuts`) as `--split` gives
+    /// them, else the split that leaves the most places a layer on the part with the fewest (`room(part, layers)`: the places a layer part `part` has room for with that many layers; the first part holds `least` layers at
+    /// least, the n-gram embedding's being there). None where no split leaves a part a place a layer.
+    pub fn split_layers(layers: usize, parts: usize, least: usize, room: &dyn Fn(usize, usize) -> f64) -> Option<Vec<usize>> {
+        // (at least `s` places a layer on every part: each part takes as many layers as leave it that, the last part the rest)
+        let fit = |s: f64| -> Option<Vec<usize>> {
+            let (mut cuts, mut at) = (Vec::new(), 0);
+            for p in 0..parts - 1 {
+                let k = (1..=layers - at - (parts - 1 - p)).rev().find(|&k| room(p, k) >= s)?;
+                if p == 0 && k < least {
+                    return None;
+                }
+                at += k;
+                cuts.push(at);
+            }
+            (room(parts - 1, layers - at) >= s).then_some(cuts)
+        };
+        let (mut lo, mut hi) = (1.0, 1e5);
+        fit(lo)?;
+        for _ in 0..40 {
+            let mid = (lo + hi) / 2.0;
+            if fit(mid).is_some() {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        fit(lo)
+    }
+
+    /// What Condor's parts are sized from (`qwenserve`, src/qwen4x_serve.rs): the GiB free on its one GPU (`free`) or on each part's (`frees`, a GPU's own shared among the
+    /// parts on it), the always-on matrices, a part's own scratch (`fixed`) and the whole reserve of one GPU (`reserve`), the context, the LM head (GiB), the bytes of an
+    /// expert's place, and the experts a layer.
+    pub struct CondorRoom<'a> {
+        pub free: f64,
+        pub frees: &'a [f64],
+        pub always: f64,
+        pub fixed: f64,
+        pub reserve: f64,
+        pub ctx: usize,
+        pub head: f64,
+        pub place: usize,
+        pub experts: usize,
+    }
+
+    /// Why Condor's parts cannot be made: no split leaves a part a place a layer, or the split asked is not one.
+    #[derive(Debug, PartialEq)]
+    pub enum CondorShort {
+        NoSplit,
+        BadSplit(Vec<usize>),
+    }
+
+    /// Condor's parts over `gpus`: (GPU, its layers, places a layer, GB of places), the first part's first. One GPU: the places take what the reserve leaves (`cache_gb` at
+    /// most); several: the layers split as `cuts` gives them, else as `split_layers` evens the places, each part's room its GPU's free memory less its scratch (a context of
+    /// its own more where it shares the GPU), its layers' share of the always-on matrices and of the context's caches, and the head on the last.
+    #[allow(clippy::too_many_arguments)]
+    pub fn condor_parts(
+        gpus: &[i32],
+        r: &CondorRoom,
+        layers: usize,
+        with_experts: usize,
+        mtp: bool,
+        least: usize,
+        cuts: Option<Vec<usize>>,
+        cache_gb: Option<f64>,
+    ) -> Result<Vec<(i32, (usize, usize), usize, f64)>, CondorShort> {
+        use crate::plan::CONDOR_KV_GIB_PER_TOKEN as PER_TOKEN;
+        let gib = (1u64 << 30) as f64;
+        let per_gb = |gb: f64, n: usize| ((gb * 1e9) / (n as f64 * r.place as f64)) as usize;
+        if gpus.len() == 1 {
+            let fit = (r.free - r.reserve).max(0.5) * gib / 1e9;
+            let gb = cache_gb.unwrap_or(fit).min(fit);
+            return Ok(vec![(gpus[0], (0, layers), per_gb(gb, with_experts + mtp as usize), gb)]);
+        }
+        let last = gpus.len() - 1;
+        let room_gib = |p: usize, n: usize| {
+            r.frees[p]
+                - r.fixed
+                - if gpus[..p].contains(&gpus[p]) { 0.25 } else { 0.0 }
+                - (r.always - r.head + r.ctx as f64 * PER_TOKEN) * n as f64 / layers as f64
+                - if p == last { r.head } else { 0.0 }
+        };
+        let places = |p: usize, n: usize| room_gib(p, n).max(0.5) * gib / ((n + (p == last && mtp) as usize) as f64 * r.place as f64);
+        let cuts = match cuts {
+            Some(c) => c,
+            None => split_layers(layers, gpus.len(), least, &places).ok_or(CondorShort::NoSplit)?,
+        };
+        let bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(layers)).collect();
+        if cuts.len() != last || bounds.windows(2).any(|w| w[0] >= w[1]) || bounds[1] < least {
+            return Err(CondorShort::BadSplit(cuts));
+        }
+        Ok((0..gpus.len())
+            .map(|p| {
+                let (lo, hi) = (bounds[p], bounds[p + 1]);
+                let held = hi - lo + (p == last && mtp) as usize;
+                let fit = (places(p, hi - lo) as usize).min(r.experts);
+                let slots = match cache_gb.filter(|&g| g > 0.0) {
+                    Some(all) => per_gb(all, with_experts + mtp as usize).min(fit),
+                    None => fit,
+                };
+                (gpus[p], (lo, hi), slots, (slots * held * r.place) as f64 / 1e9)
+            })
+            .collect())
+    }
+
+    /// The plan of a Condor load: the always-on matrices and the places of each part's cache are the weights on the GPUs, the context's keys and values, the first prompt's
+    /// and a chunk's scratch are the cache and the work, and what is kept free is the reserve (`plan::CONDOR_*`; the pack's experts are in the computer's memory).
+    #[allow(clippy::too_many_arguments)]
+    pub fn condor_plan(
+        layout: Layout,
+        always_gib: f64,
+        parts: &[(i32, (usize, usize), usize, f64)],
+        ctx: usize,
+        chunk: usize,
+        stream_gib: f64,
+        headroom_gib: f64,
+        free: f64,
+        host_bytes: u64,
+        experts: usize,
+    ) -> LoadPlan {
+        use crate::plan::{CONDOR_CHUNK_GIB_PER_ROW, CONDOR_FIRST_PROMPT_GIB, CONDOR_KV_GIB_PER_TOKEN, CONDOR_MARGIN_GIB};
+        let gib = (1u64 << 30) as f64;
+        let places: u64 = parts.iter().map(|p| (p.3 * 1e9) as u64).sum();
+        let gpu_bytes = (always_gib * gib) as u64 + places;
+        let names: Vec<String> = parts.iter().map(|p| crate::dev::Dev::probe(p.0).map_or_else(|_| format!("GPU {}", p.0), |g| g.name)).collect();
+        LoadPlan {
+            kind: Kind::Condor,
+            family: "Qwen3.8-Flash-Next",
+            level: crate::levels::name_of(layout),
+            layout,
+            context: ctx,
+            users: 1,
+            chunk,
+            weights: gpu_bytes + host_bytes,
+            bf16: 0,
+            kv: (ctx as f64 * CONDOR_KV_GIB_PER_TOKEN * gib) as u64,
+            work: ((CONDOR_FIRST_PROMPT_GIB + chunk as f64 * CONDOR_CHUNK_GIB_PER_ROW + stream_gib) * gib) as u64,
+            draft: 0,
+            reserve: ((CONDOR_MARGIN_GIB + headroom_gib) * gib) as u64,
+            free: free as u64,
+            gpu: names.join(", "),
+            experts: None,
+            spread: Some(super::Spread {
+                cuts: parts.iter().skip(1).map(|p| (p.1).0).collect(),
+                devices: parts.iter().map(|p| p.0).collect(),
+                across: false,
+                coded: false,
+                twelve: false,
+                places: parts.iter().map(|p| p.2).collect(),
+                experts_per_layer: experts,
+                host_bytes,
+                gpu_bytes,
+                dense: 0,
+                dense_bytes: 0,
+            }),
+        }
+    }
+
+    /// (the dynamic route's cuts and places, moved from src/dynamic/split.rs, which re-exports them)
+    use crate::dynamic::split;
+
+    /// The bytes `layer_bytes` gives and the cut `plan_cuts` makes over `room`: on HBM GPUs (`hbm`) the FP8 matrices in layout H's plain packs and, for a loader
+    /// that takes it (`twelve`: Kimi-K3's, whose `Opts::layout` is its bf16 matrices' alone), the bf16 ones in the 12-bit layout where they fit (their faster
+    /// products), else the bf16 ones tiered, then the FP8 ones coded too (coded: true third, `Lib::f8h_plain(Some(false))` before the load; 12-bit: true fourth,
+    /// `Layout::Twelve` the load's); elsewhere coded and tiered, their only layouts. No cut where nothing fits.
+    #[allow(clippy::type_complexity)]
+    pub fn fit(
+        dir: &Path,
+        nl: usize,
+        room: &[(i32, u64)],
+        hbm: bool,
+        twelve: bool,
+    ) -> crate::ffi::Result<((Vec<u64>, u64), Option<(Vec<usize>, Vec<i32>)>, bool, bool)> {
+        Ok(fit_table_with(&crate::sizes::Table::from_dir(dir).map_err(crate::ffi::Error)?, nl, room, hbm, twelve, &split::hb_layer_bytes(dir, nl)?))
+    }
+
+    /// `fit` of a table of tensors (src/sizes.rs).
+    #[allow(clippy::type_complexity)]
+    pub fn fit_table(
+        table: &crate::sizes::Table,
+        nl: usize,
+        room: &[(i32, u64)],
+        hbm: bool,
+        twelve: bool,
+    ) -> ((Vec<u64>, u64), Option<(Vec<usize>, Vec<i32>)>, bool, bool) {
+        fit_table_with(table, nl, room, hbm, twelve, &[])
+    }
+
+    /// `fit_table`, each layer's bytes more by `extra`'s (a hummingbird directory's experts, which no table lists: `split::hb_layer_bytes`).
+    #[allow(clippy::type_complexity)]
+    pub fn fit_table_with(
+        table: &crate::sizes::Table,
+        nl: usize,
+        room: &[(i32, u64)],
+        hbm: bool,
+        twelve: bool,
+        extra: &[u64],
+    ) -> ((Vec<u64>, u64), Option<(Vec<usize>, Vec<i32>)>, bool, bool) {
+        let bytes = |f8: u64, bf16: u64| {
+            let (mut per, base) = split::layer_bytes_table(table, nl, f8, bf16, &|_| true);
+            per.iter_mut().zip(extra).for_each(|(p, e)| *p += e);
+            (per, base)
+        };
+        if hbm {
+            for (f8, twelve) in [(split::PLAIN_PCT, twelve), (split::PLAIN_PCT, false), (split::CODED_PCT, twelve)] {
+                let b = bytes(f8, if twelve { split::TWELVE_PCT } else { split::TIERED_PCT });
+                if let Some(c) = plan_cuts(&b.0, b.1, room) {
+                    return (b, Some(c), f8 == split::CODED_PCT, twelve);
+                }
+            }
+        }
+        let coded = bytes(split::CODED_PCT, split::TIERED_PCT);
+        let cut = plan_cuts(&coded.0, coded.1, room);
+        let switched = hbm && cut.is_some();
+        (coded, cut, switched, false)
+    }
+
+    /// A model whose experts the GPUs do not all hold (Kimi-K3's 1.4 TB on 8x 80 GB): its layers over the GPUs of `room` in order, each layer taking its bytes
+    /// besides its routed experts (`dense`) and, where it has experts (`moe`), places for the same number of them, `expert` bytes each, the most that lets every
+    /// layer fit (`base`, the rest, half on the first GPU and half on the last); then each GPU's room left over as more places for its own layers, as many as a
+    /// layer has at most. The cuts, their GPUs and each stage's places a layer; None where fewer than `least` a layer fit.
+    pub fn places_plan(
+        dense: &[u64],
+        base: u64,
+        moe: &[bool],
+        room: &[(i32, u64)],
+        expert: u64,
+        experts: usize,
+        least: usize,
+    ) -> Option<(Vec<usize>, Vec<i32>, Vec<usize>)> {
+        let n = dense.len();
+        let foot = |l: usize, p: u64| dense[l] + if moe[l] { p * expert } else { 0 };
+        // (the layers in order, each GPU filled to its room, with p places a layer: where each stage starts; None where the GPUs do not hold them)
+        let assign = |p: u64| -> Option<Vec<usize>> {
+            let (mut starts, mut g, mut used) = (vec![0usize], 0usize, base / 2);
+            for l in 0..n {
+                if used + foot(l, p) > room.get(g)?.1 {
+                    g += 1;
+                    starts.push(l);
+                    used = 0;
+                }
+                used += foot(l, p);
+                if used > room.get(g)?.1 {
+                    return None;
+                }
+            }
+            (used + base - base / 2 <= room[g].1).then_some(starts)
+        };
+        let (mut lo, mut hi) = (least as u64, experts as u64);
+        assign(lo)?;
+        while lo < hi {
+            let mid = (lo + hi).div_ceil(2);
+            if assign(mid).is_some() {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        let starts = assign(lo)?;
+        let bounds: Vec<usize> = starts.iter().copied().chain(std::iter::once(n)).collect();
+        let stages = starts.len();
+        let mut places = Vec::new();
+        for (k, w) in bounds.windows(2).enumerate() {
+            let held = dense[w[0]..w[1]].iter().sum::<u64>() + if k == 0 { base / 2 } else { 0 } + if k + 1 == stages { base - base / 2 } else { 0 };
+            let layers = moe[w[0]..w[1]].iter().filter(|&&m| m).count().max(1) as u64;
+            places.push(((room[k].1.saturating_sub(held) / (layers * expert.max(1))) as usize).clamp(lo as usize, experts));
+        }
+        Some((starts[1..].to_vec(), room[..stages].iter().map(|r| r.0).collect(), places))
+    }
+
+    /// `places_plan`, and where it finds no room on one GPU, the last layers' dense matrices in the computer's memory (src/dense_ram.rs; `ram`: each layer's bytes that can be there), as few layers as fit: their bytes off the GPU,
+    /// one slot of the largest of them on it. The cuts, their GPUs, each stage's places, how many layers are in the computer's memory, and the bytes that leaves off the GPU (theirs less the slot).
+    #[allow(clippy::type_complexity)]
+    pub fn places_plan_dense(
+        dense: &[u64],
+        base: u64,
+        moe: &[bool],
+        room: &[(i32, u64)],
+        expert: u64,
+        experts: usize,
+        least: usize,
+        ram: &[u64],
+    ) -> Option<(Vec<usize>, Vec<i32>, Vec<usize>, usize, u64)> {
+        if let Some((c, d, p)) = places_plan(dense, base, moe, room, expert, experts, least) {
+            return Some((c, d, p, 0, 0));
+        }
+        if room.len() != 1 || ram.len() != dense.len() {
+            return None;
+        }
+        let n = dense.len();
+        (1..=n).find_map(|k| {
+            let from = n - k;
+            let moved: Vec<u64> = (from..n).map(|l| ram[l].min(dense[l])).collect();
+            let slot = moved.iter().copied().max().unwrap_or(0);
+            if slot == 0 {
+                return None;
+            }
+            let mut d = dense.to_vec();
+            d[from..].iter_mut().zip(&moved).for_each(|(x, m)| *x -= m);
+            places_plan(&d, base + slot, moe, room, expert, experts, least).map(|(c, dv, p)| (c, dv, p, k, moved.iter().sum::<u64>() - slot))
+        })
+    }
+
+    /// Where to cut layers of `per` bytes (the rest, `base`, half with the first stage and half with the last) over GPUs with `room` bytes each (ordinal, room):
+    /// the one with the most room where it holds the whole model, else consecutive layers over the GPUs in order, each GPU's share of the bytes as its
+    /// share of the room. None: they do not hold it.
+    pub fn plan_cuts(per: &[u64], base: u64, room: &[(i32, u64)]) -> Option<(Vec<usize>, Vec<i32>)> {
+        let total = per.iter().sum::<u64>() + base;
+        let best = room.iter().max_by_key(|r| r.1)?;
+        if total <= best.1 {
+            return Some((Vec::new(), vec![best.0]));
+        }
+        cut_by_share(per, base, room)
+    }
+
+    /// The layers over every GPU of `room`, in order, each GPU's share of the bytes as its share of the room (`plan_cuts` where one GPU does not hold them).
+    pub(crate) fn cut_by_share(per: &[u64], base: u64, room: &[(i32, u64)]) -> Option<(Vec<usize>, Vec<i32>)> {
+        let total = per.iter().sum::<u64>() + base;
+        let all = room.iter().map(|r| r.1).sum::<u64>().max(1);
+        let (head, tail) = (base / 2, base - base / 2);
+        let (mut cuts, mut devices, mut l) = (Vec::new(), Vec::new(), 0usize);
+        for (k, &(dev, cap)) in room.iter().enumerate() {
+            if l == per.len() {
+                break;
+            }
+            let (start, last) = (l, k + 1 == room.len());
+            let target = (total as u128 * cap as u128 / all as u128) as u64;
+            let mut held = if devices.is_empty() { head } else { 0 };
+            while l < per.len() {
+                let add = per[l] + if l + 1 == per.len() { tail } else { 0 };
+                if held + add > cap || (!last && held >= target) {
+                    break;
+                }
+                held += add;
+                l += 1;
+            }
+            if l > start {
+                if !devices.is_empty() {
+                    cuts.push(start);
+                }
+                devices.push(dev);
+            }
+        }
+        (l == per.len()).then_some((cuts, devices))
+    }
+
+    /// The places a layer gets out of `budget` bytes of the GPU's memory for the cache: as many as fit, at most all of its experts; None where fewer than `least` fit.
+    pub fn places_for(budget: u64, layers: usize, expert_bytes: u64, experts: usize, least: usize) -> Option<usize> {
+        let each = (layers as u64).checked_mul(expert_bytes)?;
+        let n = (budget.checked_div(each)? as usize).min(experts);
+        (n >= least.min(experts)).then_some(n)
+    }
+
+    /// The expert cache that `budget` bytes of the GPU's memory buy for the model `c` at `level`: places a layer for each of its mixture-of-experts layers, as many as fit (all of a layer's experts at most); None where
+    /// fewer than `least` fit.
+    pub fn cache_plan(c: &ConfigNemotronH, level: Layout, budget: u64, least: usize) -> crate::ffi::Result<Option<CachePlan>> {
+        let (layers, experts, expert_bytes) = (c.layers_of(NhKind::Moe), c.moe.experts, crate::moe_nh::expert_bytes(c, level)?);
+        Ok(places_for(budget, layers, expert_bytes, experts, least).map(|slots| CachePlan {
+            layers,
+            experts,
+            slots,
+            expert_bytes,
+            in_place: level == Layout::Hummingbird,
+            ram: (layers * experts) as u64 * expert_bytes,
+        }))
+    }
+
+    /// What a model takes of one GPU at a level, read from its description: every path that holds a model on one GPU is sized from this by `one_gpu`, one rule for all
+    /// of them (the weights, a draft model and the engine's work fixed; each sequence's states or rings and its context's keys and values; the reserve).
+    pub(crate) struct Needs {
+        pub kind: Kind,
+        pub family: &'static str,
+        pub layout: Layout,
+        pub weights: u64,
+        pub bf16: u64,
+        /// A sequence's bytes besides its tokens' (recurrent states, sliding layers' rings), and a token's keys and values in one sequence.
+        pub per_seq: u64,
+        pub per_token: u64,
+        pub users: usize,
+        /// The engine takes fewer sequences where the room holds fewer than `users` of the context (rooms its scheduler gives out), so a context is sized for one;
+        /// else every one of them holds it.
+        pub fewer: bool,
+        pub draft: u64,
+        /// The prompt chunks the engine runs, each with its work (activations and workspaces), the first preferred: the plan takes the first the room left holds, else
+        /// the last, whose work every plan keeps room for.
+        pub chunks: Vec<(usize, u64)>,
+        /// The context where none is asked, the least a plan takes and the most; a context the room gives is cut to a multiple of `grain`, every context to whole
+        /// pages of `page` tokens.
+        pub want: usize,
+        pub least: usize,
+        pub cap: usize,
+        pub grain: usize,
+        pub page: usize,
+    }
+
+    /// Why a model does not fit one GPU: the bytes it needs at `at` tokens of context (the context asked, else the least), and the longest context that fits (0: none).
+    #[derive(Debug)]
+    pub(crate) struct Short {
+        pub need: u64,
+        pub at: usize,
+        pub most: usize,
+    }
+
+    /// The plan of a model on one GPU with `free` bytes free (`gpu` its name), at the context `asked` (refused where it does not fit), else the most the room holds up
+    /// to `want`, not below `least`.
+    pub(crate) fn one_gpu(n: &Needs, free: u64, asked: Option<usize>, gpu: &str) -> Result<LoadPlan, Short> {
+        let (users, per) = (n.users.max(1) as u64, n.per_token.max(1));
+        let reserve = reserve_of(free);
+        let fixed = n.weights + n.draft + n.chunks.last().map_or(0, |c| c.1) + reserve;
+        // (the tokens each sequence has room for where all `users` hold the context, and where one does)
+        let all = (free.saturating_sub(fixed + n.per_seq * users) / (per * users)) as usize;
+        let one = (free.saturating_sub(fixed + n.per_seq) / per) as usize;
+        let room = if n.fewer { one } else { all };
+        let want = n.want.min(n.cap);
+        let ctx = match asked {
+            Some(a) => a,
+            None if n.fewer && all.max(n.least).min(one) >= want => want,
+            None if n.fewer => all.max(n.least).min(one) / n.grain * n.grain,
+            None if room >= want => want,
+            None => room / n.grain * n.grain,
+        } / n.page
+            * n.page;
+        let at = asked.unwrap_or(n.least.min(want));
+        if asked.is_some_and(|a| a > n.cap) || ctx < at.min(n.least) || ctx > room {
+            let at = if asked.is_some() { at } else { ctx.max(n.least) };
+            let most = (room.min(n.cap) / n.page * n.page).min(asked.unwrap_or(usize::MAX));
+            // (a scheduler of rooms is refused where one sequence does not fit: its need is one's)
+            let seqs = if n.fewer { 1 } else { users };
+            return Err(Short { need: fixed + seqs * (n.per_seq + at as u64 * per), at, most });
+        }
+        let left = free.saturating_sub(n.weights + n.draft + reserve + users * (n.per_seq + ctx as u64 * per));
+        let chunk = n.chunks.iter().copied().find(|c| c.1 <= left).or(n.chunks.last().copied()).unwrap_or((512, 0));
+        Ok(n.plan_at(ctx, chunk, free, gpu))
+    }
+
+    impl Needs {
+        /// The plan at `ctx` tokens of context and the prompt chunk `chunk` (its tokens, its work).
+        pub(crate) fn plan_at(&self, ctx: usize, chunk: (usize, u64), free: u64, gpu: &str) -> LoadPlan {
+            let users = self.users.max(1) as u64;
+            LoadPlan {
+                kind: self.kind,
+                family: self.family,
+                level: level_name(self.layout),
+                layout: self.layout,
+                context: ctx,
+                users: users as usize,
+                chunk: chunk.0,
+                weights: self.weights,
+                bf16: self.bf16,
+                kv: users * (self.per_seq + ctx as u64 * self.per_token.max(1)),
+                work: chunk.1,
+                draft: self.draft,
+                reserve: reserve_of(free),
+                free,
+                gpu: gpu.to_string(),
+                experts: None,
+                spread: None,
+            }
+        }
+    }
+
+    /// The refusal of a model that does not fit one GPU (`one_gpu`'s `Short`), in one form for every path: what it needs at what context against what is free, and
+    /// what to do: a shorter context where one fits the context asked, else the ways to more room (`alt` first where the caller has one: a smaller download).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn too_big(
+        name: &str,
+        level: &str,
+        gpu: &str,
+        free: u64,
+        users: usize,
+        s: &Short,
+        asked: Option<usize>,
+        draft: bool,
+        alt: Option<String>,
+    ) -> Refusal {
+        let what = format!(
+            "{name} at the {level} level takes about {} of GPU memory at {} tokens of context{}, and the {gpu} has {} free",
+            gib(s.need),
+            s.at,
+            if users > 1 { format!(" for each of {users} users") } else { String::new() },
+            gib(free)
+        );
+        if asked.is_some() && s.most >= 1024 {
+            return Refusal::unsupported(what, format!("Ask for less: --context {}", s.most / 256 * 256));
+        }
+        let rest = format!(
+            "lose programs that use the GPU (nvidia-smi lists them), ask for less context (--context 4096), {}or use a GPU with more memory",
+            if draft { "run without the draft model (--no-draft), " } else { "" }
+        );
+        Refusal::unsupported(what, alt.map_or_else(|| format!("C{rest}"), |a| format!("{a}\nOr c{rest}")))
+    }
+
+    /// A Qwen3 model's needs at `layout` for `users` sequences: its packed weights, its keys and values (12 bits a value), its chunks' work with cuBLAS (`cublas`) or without.
+    pub(crate) fn qwen3_needs(cfg: &Config, layout: Layout, users: usize, cublas: bool) -> Needs {
+        let first = if cublas { 4096 } else { 2048 };
+        Needs {
+            kind: Kind::Qwen3,
+            family: "Qwen3",
+            layout,
+            weights: weights(cfg, layout),
+            bf16: cfg.matrix_bytes(),
+            per_seq: 0,
+            per_token: kv_per_token(cfg),
+            users: users.max(1),
+            fewer: false,
+            draft: 0,
+            chunks: [first, 2048, 1024, 512].into_iter().filter(|&c| c <= first).map(|c| (c, work(cfg, c, cublas))).collect(),
+            want: CTX_WANT.min(cfg.max_pos),
+            least: CTX_MIN,
+            cap: cfg.max_pos,
+            grain: 256,
+            page: 1,
+        }
+    }
+
+    /// The plan of a Qwen3 model on a GPU that has `free` bytes (`gpu` its name), for `users` sequences at once, at the context `asked`, else the model's own up to
+    /// `CTX_WANT`, less where the room is short (not below `CTX_MIN`).
     #[allow(clippy::too_many_arguments)]
     pub fn qwen3_fit(
         cfg: &Config,
@@ -1814,77 +2352,8 @@ pub(crate) mod sizing {
         users: usize,
         cublas: bool,
     ) -> Result<LoadPlan, Refusal> {
-        let users = users.max(1);
-        let w = weights(cfg, layout);
-        let per = kv_per_token(cfg).saturating_mul(users as u64);
-        let reserve = reserve_of(free);
-        let room_after_weights = free.saturating_sub(w + reserve);
-        let want = asked.unwrap_or(CTX_WANT.min(cfg.max_pos)).min(cfg.max_pos);
-        let min_work = work(cfg, 512, cublas);
-        let fits = |ctx: usize| -> bool { room_after_weights >= ctx as u64 * per + min_work };
-        let max_ctx = (room_after_weights.saturating_sub(min_work) / per.max(1)) as usize / 256 * 256;
-        let ctx = match asked {
-            Some(a) if a > cfg.max_pos => {
-                return Err(Refusal::new(
-                    format!("{name} has a context of {} tokens at most, and {a} were asked for", cfg.max_pos),
-                    format!("Ask for up to {}: --context {}", cfg.max_pos, cfg.max_pos),
-                ));
-            }
-            Some(a) if !fits(a) => {
-                return Err(if max_ctx >= 1024 {
-                    Refusal::unsupported(
-                        format!(
-                            "{a} tokens of context{} do not fit this GPU with {name} ({} free; the weights take {})",
-                            if users > 1 { format!(" for each of {users} users") } else { String::new() },
-                            gib(free),
-                            gib(w)
-                        ),
-                        format!("Ask for less: --context {}", max_ctx.min(a).max(1024) / 256 * 256),
-                    )
-                } else {
-                    too_big(name, free, w, per)
-                });
-            }
-            Some(a) => a,
-            None if fits(want) => want,
-            None if max_ctx >= CTX_MIN => max_ctx.min(want),
-            None => return Err(too_big(name, free, w, per)),
-        };
-        let room = room_after_weights.saturating_sub(ctx as u64 * per);
-        let chunk = chunk_for(cfg, room, cublas);
-        Ok(LoadPlan {
-            kind: Kind::Qwen3,
-            family: "Qwen3",
-            level: crate::levels::name_of(layout),
-            layout,
-            context: ctx,
-            users,
-            chunk,
-            weights: w,
-            bf16: cfg.matrix_bytes(),
-            kv: ctx as u64 * per,
-            work: work(cfg, chunk, cublas),
-            draft: 0,
-            reserve,
-            free,
-            gpu: gpu.to_string(),
-            experts: None,
-            spread: None,
-        })
-    }
-
-    pub(crate) fn too_big(name: &str, free: u64, w: u64, per: u64) -> Refusal {
-        let need = w + reserve_of(free) + CTX_MIN as u64 * per + (500 << 20);
-        Refusal::unsupported(
-            format!(
-                "{name} does not fit this GPU: it needs about {} (the weights {} with Glyd, {} of context and the runtime), and {} are free",
-                gib(need),
-                gib(w),
-                CTX_MIN,
-                gib(free)
-            ),
-            "Close programs that use the GPU (nvidia-smi lists them), or run a smaller model",
-        )
+        let n = qwen3_needs(cfg, layout, users, cublas);
+        one_gpu(&n, free, asked, gpu).map_err(|s| too_big(name, level_name(layout), gpu, free, n.users, &s, asked, false, None))
     }
 
     /// A dense product for the long prompts (cuBLAS where it is, else the engine's own on Ampere, Ada and Hopper): the decoded matrix and the larger chunk that goes with it.
@@ -2050,7 +2519,7 @@ pub(crate) mod sizing {
         let each = crate::moe_nh::expert_bytes(cfg, layout).map_err(|e| e.msg)?;
         let experts_bytes = (layers * experts) as u64 * each;
         let ctx = ctx.unwrap_or(LOSSY_CTX).min(cfg.max_pos.max(LOSSY_MIN_CTX));
-        // (the plan's weights are at fit::bits a weight, a little over the experts' exact bytes: the rest of the model is taken as what is left)
+        // (the plan's weights are at `bits` a weight, a little over the experts' exact bytes: the rest of the model is taken as what is left)
         let rest = weights.saturating_sub(experts_bytes) + state + LOSSY_WORK + reserve_of(free) + ctx as u64 * per.max(1);
         let least = if asked.is_some() { k } else { 2 * k };
         let need = rest + (layers * least) as u64 * each;
@@ -2201,36 +2670,28 @@ pub(crate) mod sizing {
             bf16 += b;
             weights += b;
         }
-        let reserve = reserve_of(free);
-        let fixed = weights + state + LOSSY_WORK + reserve;
-        let per = per.max(1);
-        let family = if nemotron { "Nemotron-H" } else { "Qwen3.5" };
-        let kind = if nemotron { Kind::NemotronH } else { Kind::Qwen35 };
-        let mk = |ctx: usize, cache: Option<CachePlan>| LoadPlan {
-            kind,
-            family,
-            level: level_name(layout),
-            layout,
-            context: ctx,
-            users: 1,
-            chunk: 2048,
-            weights,
-            bf16,
-            kv: ctx as u64 * per + state,
-            work: LOSSY_WORK,
-            draft: 0,
-            reserve,
-            free,
-            gpu: gpu.to_string(),
-            experts: cache,
-            spread: None,
-        };
-        let room = (free.saturating_sub(fixed) / per) as usize;
         let asked = if a.has("context") || a.has("ctx") { Some(a.either("context", "ctx", 0usize)?) } else { None };
         let fam = if nemotron { crate::support::Family::NemotronH } else { crate::support::Family::Qwen35 };
         crate::support::context_check(&name, crate::support::row(fam), max_pos, asked)?;
-        let ctx = asked.unwrap_or_else(|| room.min(LOSSY_CTX)).min(max_pos.max(LOSSY_MIN_CTX));
-        let fits = !(ctx < LOSSY_MIN_CTX.min(asked.unwrap_or(LOSSY_MIN_CTX)) || ctx > room);
+        let n = Needs {
+            kind: if nemotron { Kind::NemotronH } else { Kind::Qwen35 },
+            family: if nemotron { "Nemotron-H" } else { "Qwen3.5" },
+            layout,
+            weights,
+            bf16,
+            per_seq: state,
+            per_token: per.max(1),
+            users: 1,
+            fewer: false,
+            draft: 0,
+            chunks: vec![(2048, LOSSY_WORK)],
+            want: LOSSY_CTX,
+            least: LOSSY_MIN_CTX,
+            cap: max_pos.max(LOSSY_MIN_CTX),
+            grain: 1,
+            page: 1,
+        };
+        let fitted = one_gpu(&n, free, asked, gpu);
         let cache = cache_flag(a)?;
         if cache.is_some() && !nemotron {
             return Err(Refusal::new(format!("--expert-cache: {name} has no experts to keep in the computer's memory"), "It is for Nemotron 3 Super"));
@@ -2240,10 +2701,10 @@ pub(crate) mod sizing {
             return Err(Refusal::new(format!("--host-memory: {name} has no experts to keep in the computer's memory"), "It is for Nemotron 3 Super"));
         }
         let mut also = String::new();
-        if nemotron && (!fits || cache.is_some()) {
+        if nemotron && (fitted.is_err() || cache.is_some()) {
             let cfg = ConfigNemotronH::parse(text, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
-            match offloaded(&cfg, layout, weights, state, per, free, host, asked, cache, host_asked, gpu) {
-                Ok((ctx, plan)) => return Ok(mk(ctx, Some(plan))),
+            match offloaded(&cfg, layout, weights, state, n.per_token, free, host, asked, cache, host_asked, gpu) {
+                Ok((ctx, plan)) => return Ok(LoadPlan { experts: Some(plan), ..n.plan_at(ctx, n.chunks[0], free, gpu) }),
                 Err(why) if cache.is_some() => {
                     return Err(Refusal::unsupported(
                         format!("{name} at the {tag} level with --expert-cache: {why}"),
@@ -2253,22 +2714,14 @@ pub(crate) mod sizing {
                 Err(why) => also = format!("; {why}"),
             }
         }
-        if !fits {
-            return Err(Refusal::unsupported(
-                format!(
-                    "{name} at the {tag} level takes about {} of GPU memory at {} tokens of context, and the {gpu} has {} free{also}",
-                    gib(fixed + ctx.max(LOSSY_MIN_CTX) as u64 * per),
-                    ctx.max(LOSSY_MIN_CTX),
-                    gib(free)
-                ),
-                if also.is_empty() {
-                    "Close programs that use the GPU (nvidia-smi lists them), ask for less context (--context 4096), or use a GPU with more memory"
-                } else {
-                    "Close programs that use the GPU (nvidia-smi lists them) or the computer's memory, or use a GPU or a computer with more memory"
-                },
-            ));
-        }
-        Ok(mk(ctx, None))
+        fitted.map_err(|s| {
+            let mut r = too_big(&name, tag, gpu, free, 1, &s, asked, false, None);
+            if !also.is_empty() {
+                r.what += &also;
+                r.fix = "Close programs that use the GPU (nvidia-smi lists them) or the computer's memory, or use a GPU or a computer with more memory".into();
+            }
+            r
+        })
     }
 
     /// `lossy_plan` for a Gemma 4 dense model: its packed weights (as a glyd-v7 directory holds them, else at `layout`), the sliding layers' rings, a draft model where one is found, and the
@@ -2303,54 +2756,40 @@ pub(crate) mod sizing {
         // (12-bit lossless pages where the run asks for them and has no draft model, whose executor then pages its cache: src/dynamic/kvpages.rs)
         let twelve = std::env::var("GLYD_KV").as_deref() == Ok("lossless") && a.has("no-draft");
         let (rings, per) = cfg.kv_bytes(GEMMA_CHUNK, asked.unwrap_or(LOSSY_CTX).max(LOSSY_MIN_CTX), twelve);
-        let reserve = reserve_of(free);
-        let fixed = weights + rings + draft + LOSSY_WORK + reserve;
-        let room = (free.saturating_sub(fixed) / per.max(1)) as usize;
         // (served with no draft model, the scheduler gives each of --users a room of its own, its sliding layers' rings and its context (src/dynamic/rows.rs): the context not asked for is what the room gives
         // each of them, at least LOSSY_MIN_CTX (where that leaves room for fewer, the server takes fewer))
-        let users = if draft == 0 && a.pos.first().is_some_and(|c| c == "serve") { users_of(a)? as u64 } else { 1 };
-        let each = (free.saturating_sub(fixed + rings * (users - 1)) / (per.max(1) * users)) as usize;
-        let ctx = asked.unwrap_or_else(|| each.max(LOSSY_MIN_CTX).min(room).min(LOSSY_CTX)).min(cfg.max_pos.max(LOSSY_MIN_CTX)) / 16 * 16;
-        if ctx < LOSSY_MIN_CTX.min(asked.unwrap_or(LOSSY_MIN_CTX)) || ctx > room {
-            let fix = "lose programs that use the GPU (nvidia-smi lists them), ask for less context (--context 4096), run without the draft model (--no-draft), or use a GPU with more memory";
+        let users = if draft == 0 && a.pos.first().is_some_and(|c| c == "serve") { users_of(a)? } else { 1 };
+        let n = Needs {
+            kind: Kind::Gemma4,
+            family: "Gemma 4",
+            layout,
+            weights,
+            bf16,
+            per_seq: rings,
+            per_token: per.max(1),
+            users,
+            fewer: true,
+            draft,
+            chunks: vec![(GEMMA_CHUNK, LOSSY_WORK)],
+            want: LOSSY_CTX,
+            least: LOSSY_MIN_CTX,
+            cap: cfg.max_pos.max(LOSSY_MIN_CTX),
+            grain: 1,
+            page: 16,
+        };
+        one_gpu(&n, free, asked, gpu).map_err(|s| {
             // (penguin that does not fit, of a model with a wren repo that does: that repo first, with its draft model, at the shortest context a plan takes)
             let wren = gemma_wren(typed).filter(|_| layout == Layout::Tiered).and_then(|repo| {
-                let need = cfg.weight_bytes(Layout::Int4H, None).0 + rings + GEMMA_DRAFT_BYTES + LOSSY_WORK + reserve + LOSSY_MIN_CTX as u64 * per;
+                let need =
+                    cfg.weight_bytes(Layout::Int4H, None).0 + rings + GEMMA_DRAFT_BYTES + LOSSY_WORK + reserve_of(free) + LOSSY_MIN_CTX as u64 * n.per_token;
                 (need <= free).then(|| {
                     format!(
-                        "glyd run {repo} fits: the wren level, about {} at {LOSSY_MIN_CTX} tokens of context (Google's QAT checkpoint, bit for bit)\nOr c{fix}",
+                        "glyd run {repo} fits: the wren level, about {} at {LOSSY_MIN_CTX} tokens of context (Google's QAT checkpoint, bit for bit)",
                         gib(need)
                     )
                 })
             });
-            return Err(Refusal::unsupported(
-                format!(
-                    "{name} at the {tag} level takes about {} of GPU memory at {} tokens of context, and the {gpu} has {} free",
-                    gib(fixed + ctx.max(LOSSY_MIN_CTX) as u64 * per),
-                    ctx.max(LOSSY_MIN_CTX),
-                    gib(free)
-                ),
-                wren.unwrap_or_else(|| format!("C{fix}")),
-            ));
-        }
-        Ok(LoadPlan {
-            kind: Kind::Gemma4,
-            family: "Gemma 4",
-            level: level_name(layout),
-            layout,
-            context: ctx,
-            users: users as usize,
-            chunk: GEMMA_CHUNK,
-            weights,
-            bf16,
-            kv: users * (rings + ctx as u64 * per),
-            work: LOSSY_WORK,
-            draft,
-            reserve,
-            free,
-            gpu: gpu.to_string(),
-            experts: None,
-            spread: None,
+            too_big(name, tag, gpu, free, 1, &s, asked, draft > 0, wren)
         })
     }
 
@@ -2798,6 +3237,46 @@ pub(crate) mod sizing {
         }
 
         #[test]
+        fn layout_by_gpu() {
+            use crate::weights::smallest_is_fastest;
+            let gib = 1u64 << 30;
+            let m = 16_380_000_000u64; // Qwen3-8B's matrices in bf16
+            let (t, w) = (Layout::Tiered, Layout::Twelve);
+            // (the GPU, its class, its memory, the layout it is given for an 8B model)
+            for (gpu, cc, mem, want) in [
+                ("L4", (8, 9), 22, t),
+                ("RTX 4090", (8, 9), 24, t),
+                ("L40S", (8, 9), 48, t),
+                ("A10", (8, 6), 24, w),
+                ("RTX 3090", (8, 6), 24, w),
+                ("A100 40 GB", (8, 0), 40, w),
+                ("A100 80 GB", (8, 0), 80, w),
+                ("H100", (9, 0), 80, w),
+                ("GH200", (9, 0), 96, w),
+                ("B200", (10, 0), 180, w),
+                ("RTX 5090", (12, 0), 32, w),
+            ] {
+                assert_eq!(best_layout(cc, mem * gib, m, 1_000_000).0, want, "{gpu}");
+                assert_eq!(choose_layout(None, cc, mem * gib, m, 1_000_000).0, want, "{gpu} with no flag");
+                // --layout wins on every GPU, either way
+                assert_eq!(
+                    choose_layout(Some(Layout::Tiered), cc, mem * gib, m, 1_000_000),
+                    (Layout::Tiered, "as asked".to_string()),
+                    "{gpu} asked for the tiered layout"
+                );
+                assert_eq!(choose_layout(Some(Layout::Twelve), cc, mem * gib, m, 1_000_000).0, Layout::Twelve, "{gpu} asked for the 12-bit layout");
+            }
+            // a 24 GiB A10 for a 14B-class model: 12.04 bits do not fit, 10.8 do
+            let (l, why) = best_layout((8, 6), 24 * gib, 33_000_000_000, 1_000_000);
+            assert_eq!(l, Layout::Tiered);
+            assert!(why.contains("only the mma layout fits"), "{why}");
+            // neither fits (a 32B model on that A10): the GPU's own layout, and the fit check refuses the model
+            assert_eq!(best_layout((8, 6), 24 * gib, 64_000_000_000, 1_000_000).0, Layout::Twelve);
+            // the knob: only Ada has the smallest layout as the fastest
+            assert!(smallest_is_fastest((8, 9)) && !smallest_is_fastest((8, 0)) && !smallest_is_fastest((9, 0)) && !smallest_is_fastest((8, 6)));
+        }
+
+        #[test]
         fn qwen3_8b_on_the_gpus() {
             let c = qwen3_8b();
             // weights near the measured 10.2 GiB of the engine's record
@@ -2820,6 +3299,51 @@ pub(crate) mod sizing {
             assert_eq!(qwen3_fit(&c, "Qwen3-8B", "NVIDIA L4", 8 << 30, Layout::Tiered, None, 1, true).unwrap_err().code, crate::ui::CANNOT);
             // more than the model's own context
             assert!(qwen3_fit(&Config { max_pos: 2048, ..qwen3_8b() }, "tiny", "NVIDIA L4", 22 << 30, Layout::Tiered, Some(4096), 1, true).is_err());
+        }
+
+        /// One rule sizes every one-GPU path (P2f): a context asked that does not fit is refused, at any level, with the longest that does, and that one loads; where
+        /// none is asked, the most the room holds (cut to the path's grain and page), and a scheduler of rooms (`fewer`) sizes one sequence's where several do not fit.
+        #[test]
+        fn one_rule_sizes_every_one_gpu_path() {
+            let q35 = crate::runtime::config::ModelConfig::parse(
+                &std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/qwen35_configs.json")).unwrap(),
+            )
+            .unwrap();
+            let text = serde_json::Value::Object(q35.top["Qwen/Qwen3.8-27B"].as_object().unwrap().clone()).to_string();
+            let a = |ctx: &str| crate::args::Args::from(["run", "Qwen/Qwen3.8-27B", "--context", ctx].iter().map(|s| s.to_string()));
+            let free = 23u64 << 30;
+            let r = lossy_plan_with(&a("131072"), "Qwen/Qwen3.8-27B", Layout::Int4, &text, None, free, "NVIDIA GeForce RTX 4090", None, None).unwrap_err();
+            let most = r.fix.strip_prefix("Ask for less: --context ").unwrap_or_else(|| panic!("{r}")).to_string();
+            assert!(r.what.contains("at 131072 tokens of context"), "{r}");
+            let p = lossy_plan_with(&a(&most), "Qwen/Qwen3.8-27B", Layout::Int4, &text, None, free, "NVIDIA GeForce RTX 4090", None, None).unwrap();
+            assert!(p.context.to_string() == most && p.gpu_total() <= free, "{p:?}");
+            // the rule itself: grain and page, and one sequence's room where `fewer`
+            let n = |users: usize, fewer: bool, grain: usize, page: usize| Needs {
+                kind: Kind::Qwen35,
+                family: "Qwen3.5",
+                layout: Layout::Int4,
+                weights: 1000,
+                bf16: 0,
+                per_seq: 100,
+                per_token: 10,
+                users,
+                fewer,
+                draft: 0,
+                chunks: vec![(2048, 0)],
+                want: 1 << 20,
+                least: 16,
+                cap: 1 << 20,
+                grain,
+                page,
+            };
+            let free = reserve_of(0) + 1000 + 100 + 10 * 1000 + 5;
+            assert_eq!(one_gpu(&n(1, false, 1, 1), free, None, "g").unwrap().context, 1000);
+            assert_eq!(one_gpu(&n(1, false, 256, 1), free, None, "g").unwrap().context, 768);
+            assert_eq!(one_gpu(&n(1, false, 1, 16), free, None, "g").unwrap().context, 992);
+            // (four users: each a quarter of the room, or, where the engine takes fewer, the least context for one at least)
+            assert_eq!(one_gpu(&n(4, false, 1, 1), free, None, "g").unwrap().context, (10_000 + 100 + 5 - 400) / 40);
+            assert!(one_gpu(&n(4, false, 1, 1), free, Some(1000), "g").is_err());
+            assert_eq!(one_gpu(&n(4, true, 1, 1), free, Some(1000), "g").unwrap().context, 1000);
         }
     }
 }
@@ -3194,7 +3718,7 @@ mod tests {
     }
 
     /// What `fit` prints for each family at each level it runs at, on each NVIDIA preset, is the plan `run` builds from the same GPU (the functions
-    /// `run` calls: src/cli.rs `plan` for Qwen3, `lossy_plan_with` for the lossy families), or the refusal `run` gives; and what it plans fits the GPU.
+    /// `run` calls: `sizing::qwen3_plan` for Qwen3, `sizing::lossy_plan_with` for the lossy families), or the refusal `run` gives; and what it plans fits the GPU.
     #[test]
     fn fit_is_the_plan_run_builds() {
         let q35 = json::parse(&fixture("qwen35_configs.json")).unwrap();

@@ -47,7 +47,7 @@ pub struct Support {
 
 /// The most context the lossy paths take where none is asked (one constant: the planner's, src/plan.rs).
 pub use crate::plan::LOSSY_CTX;
-/// The context the Qwen3 path and the dynamic engine take where none is asked (src/fit.rs `CTX_WANT`, src/cli.rs `size_dynamic`).
+/// The context the Qwen3 path and the dynamic engine take where none is asked (src/plan.rs `sizing::CTX_WANT`, `sizing::size_dynamic`).
 pub const DEFAULT_CTX: usize = 8192;
 
 const LOSSY: &[&str] = &["kestrel", "swift", "wren"];
