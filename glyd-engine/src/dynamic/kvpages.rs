@@ -208,7 +208,6 @@ impl Lossless {
 
     /// Each group's status words (glyd_gpu.h's kv_write): [0] the exceptions with no place, [4]/[5] the escape chunks taken now and the most at once, [8]/[9] the raw slabs,
     /// [10] the pages made raw, [11] the pages made void.
-    #[cfg(feature = "dev")]
     pub fn status(&self) -> Result<Vec<[u32; 16]>> {
         self.status
             .iter()
@@ -321,6 +320,18 @@ impl Dyn {
 }
 
 impl Dyn {
+    /// After a step: an error where a page was made void (its pools had no room: what it holds is not what was written), so that no reply goes on
+    /// from it. (Until admission reserves the room a sequence may need and pauses one where the spare pool runs out, R4d.)
+    pub(super) fn kv12_check(&self) -> Result<()> {
+        let Some(lx) = &self.lossless else { return Ok(()) };
+        for (g, w) in lx.status()?.iter().enumerate() {
+            if w[11] > 0 {
+                return err(format!("the 12-bit KV pages overflowed their pools: {} pages of group {g} made void ({} exceptions found no place)", w[11], w[0]));
+            }
+        }
+        Ok(())
+    }
+
     /// The 12-bit KV tables the next paged layout (`serve_rows`) uses for the rings they fit; None: bf16 pages.
     pub fn set_kv12(&mut self, t: Option<Tables>) {
         self.kv12 = t;

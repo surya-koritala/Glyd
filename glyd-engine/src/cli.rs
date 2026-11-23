@@ -2004,7 +2004,21 @@ fn load_lossy(
             None => None,
         };
         let o = crate::dynamic::Opts { ctx: plan.context, chunk: GEMMA_CHUNK, graph: true, device: gpu.ordinal, layout: Some(layout) };
-        let e = crate::dynamic::Dyn::new(&dir, crate::dynamic::gemma4::lowered(&dir, &c).map_err(cannot)?, spec, &o).map_err(oom)?;
+        let mut e = crate::dynamic::Dyn::new(&dir, crate::dynamic::gemma4::lowered(&dir, &c).map_err(cannot)?, spec, &o).map_err(oom)?;
+        // (12-bit lossless KV pages where the scheduler pages the cache, a run with no draft model: GLYD_KV=lossless until admission reserves their room;
+        // the tables made on the model's first run and kept in the cache)
+        if draft.is_none() && std::env::var("GLYD_KV").as_deref() == Ok("lossless") {
+            let t0 = std::time::Instant::now();
+            let (t, made) = crate::dynamic::kv12::tables_for(&mut e, &dir, &short_name(&model)).map_err(cannot)?;
+            if made {
+                ui.borrow_mut().line(&format!(
+                    "Made the 12-bit KV tables of {} in {:.0} s (once: kept in the cache).",
+                    short_name(&model),
+                    t0.elapsed().as_secs_f64()
+                ));
+            }
+            e.set_kv12(Some(t));
+        }
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
     } else if plan.kind == Kind::NemotronH {

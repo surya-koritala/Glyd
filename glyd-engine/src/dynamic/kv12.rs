@@ -290,6 +290,40 @@ pub fn calibrate(e: &mut Dyn, prompts: &[Vec<u32>], model: &str) -> Result<Table
     Ok(Tables { layers, positions: positions as u64, model: model.to_string(), outside, chunks })
 }
 
+/// A model's tables, from the cache (made for its directory, version and shapes), else made now from the calibration corpus's first `PROMPTS`
+/// sequences of `POSITIONS` tokens (the context allowing) and kept there: true where they were made.
+pub fn tables_for(e: &mut Dyn, dir: &Path, model: &str) -> Result<(Tables, bool)> {
+    const POSITIONS: usize = 2048;
+    const PROMPTS: usize = 8;
+    let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()).display().to_string();
+    let hash = key.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
+    let path = crate::store::cache_root().join("kv12").join(format!("{}-{hash:016x}.safetensors", model.replace(['/', ':'], "_")));
+    let want = shapes(&e.big.d);
+    let fits = |t: &Tables| {
+        t.layers.len() == want.len()
+            && t.layers.iter().zip(&want).all(|(t, s)| match (t, s) {
+                (Some(t), Some(s)) => (t.heads, t.channels) == (s.heads, s.channels),
+                (None, None) => true,
+                _ => false,
+            })
+    };
+    if let Ok(t) = Tables::load(&path) {
+        if fits(&t) {
+            return Ok((t, false));
+        }
+    }
+    let docs = crate::calib::corpus_docs(&crate::tok::Tok::load(dir)?, None)?;
+    let positions = POSITIONS.min(e.ctx.saturating_sub(64));
+    let seqs: Vec<Vec<u32>> = crate::kvcal::sequences(&docs, positions).into_iter().map(|(s, _)| s).filter(|s| s.len() == positions).take(PROMPTS).collect();
+    if seqs.is_empty() {
+        return err(format!("the calibration corpus makes no sequence of {positions} tokens"));
+    }
+    let t = calibrate(e, &seqs, model)?;
+    std::fs::create_dir_all(path.parent().expect("a file in a directory")).map_err(|e| Error(format!("{}: {e}", path.display())))?;
+    t.save(&path)?;
+    Ok((t, true))
+}
+
 /// `glyd-engine kv12cal --dir DIR [--case gemma4] [--level L] [--positions N] [--prompts K] [--out FILE]`: the tables of a model the executor runs, from K
 /// sequences of N tokens of the calibration corpus, and each layer's share of values outside its windows (what the 12-bit pages' escape pool holds).
 #[cfg(feature = "dev")]
