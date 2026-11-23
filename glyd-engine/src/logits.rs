@@ -1486,7 +1486,7 @@ mod tests {
 
 /// The random model of a case (gemma4, qwen35, muse, kimi, glm) on the description executor at `level`, made in a directory of its own and loaded (the directory is let go).
 /// The case's model in `dir` on the description executor.
-fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Result<Dyn> {
+pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Result<Dyn> {
     Ok(match case {
         "gemma4" => {
             let c = crate::gemma4::ConfigG4::load(dir)?;
@@ -1505,7 +1505,7 @@ fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Result<Dyn> {
 }
 
 /// The case's random model, made in a directory of its own and loaded.
-fn random_dyn(case: &str, level: &str, tag: &str) -> Result<Dyn> {
+pub(crate) fn random_dyn(case: &str, level: &str, tag: &str) -> Result<Dyn> {
     let dir = std::env::temp_dir().join(format!("glyd-{tag}-{case}-{}", std::process::id()));
     let o = dyn_opts(level_layout(level)?);
     let e: Result<Dyn> = (|| {

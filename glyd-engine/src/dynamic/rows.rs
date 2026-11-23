@@ -122,6 +122,16 @@ fn by_sequence(op: &Op) -> bool {
     )
 }
 
+impl Paged {
+    /// Sequence `slot`'s table in ring `ring`'s group as the GPU holds it (what the kernels read; the host's may have moved on since the last step).
+    pub(super) fn gpu_table(&self, slot: usize, ring: usize) -> Result<Vec<u32>> {
+        let b = &self.tabs[slot][self.group[ring]];
+        let mut t = vec![0i32; b.bytes / 4];
+        b.read(0, &mut t)?;
+        Ok(t.into_iter().map(|x| x as u32).collect())
+    }
+}
+
 impl Dyn {
     /// Bytes before the rows of the sequence an operation runs on now, in a slot of `width` values a row (0 outside a pass over several sequences).
     pub(super) fn rows_before(&self, width: usize) -> u64 {
@@ -182,13 +192,26 @@ impl Dyn {
             }
             group.push(windows.iter().position(|&x| x == w).expect("just added"));
         }
-        // a token's bytes in each group (its keys or its values, every ring of the group)
+        // a token's bytes in each group (its keys and values, every ring of the group: bf16, or 12-bit pages where the model has tables a ring takes)
+        let twelve: Vec<Option<f64>> = (0..rings.len())
+            .map(|r| self.kv12.as_ref().filter(|_| self.ring_cap[r] > 0).and_then(|t| super::kvpages::Lossless::token_bytes(&self.lib, &self.big.d, t, r)))
+            .collect();
         let mut per = vec![0usize; windows.len()];
         for (r, ring) in rings.iter().enumerate() {
             if self.ring_cap[r] > 0 {
-                per[group[r]] += ring.nk * ring.d * 2;
+                per[group[r]] += twelve[r].map_or(2 * ring.nk * ring.d * 2, |b| b.ceil() as usize);
             }
         }
+        // (the 12-bit pages' step buffers: a prompt chunk's pages unpacked to bf16, keys and values, a ring at a time)
+        let unpacked: usize = rings
+            .iter()
+            .zip(&twelve)
+            .filter(|(_, t)| t.is_some())
+            .map(|(ring, _)| {
+                2 * if ring.window > 0 { (ring.window + self.chunk).div_ceil(BLOCK) + 2 } else { self.ctx.div_ceil(BLOCK) + 1 } * BLOCK * ring.nk * ring.d * 2
+            })
+            .max()
+            .unwrap_or(0);
         let keep: Vec<Option<usize>> = windows.iter().map(|&w| (w > 0 && w != usize::MAX).then_some(w + self.chunk)).collect();
         let most: Vec<usize> = keep.iter().map(|k| users * (k.map_or(self.ctx, |k| k.min(self.ctx)).div_ceil(BLOCK) + 1)).collect();
         // the old rooms given back first
@@ -198,7 +221,7 @@ impl Dyn {
         let tab_bytes = users * windows.len() * self.ctx.div_ceil(BLOCK) * 4;
         let (free, _) = self.dev.mem_info()?;
         const KEEP: usize = 512 << 20;
-        let budget = (free.saturating_sub(KEEP + tab_bytes) as f64 * self.share) as usize / 2;
+        let budget = (free.saturating_sub(KEEP + tab_bytes + unpacked) as f64 * self.share) as usize;
         // as many blocks in every group (a block of a group is BLOCK tokens of every layer in it), the sliding groups capped and what they leave to the full ones
         let all: usize = per.iter().sum::<usize>().max(1) * BLOCK;
         let even = budget / all;
@@ -220,16 +243,22 @@ impl Dyn {
         if blocks.iter().any(|&b| b < 2) {
             return err(format!("paged keys and values: {:.1} GiB of GPU memory free leave too few blocks ({blocks:?})", free as f64 / (1u64 << 30) as f64));
         }
-        // each ring's room: its group's blocks (one more: block 0, which every entry no sequence holds names)
+        // each ring's room: its group's blocks (one more: block 0, which every entry no sequence holds names), in bf16 or in 12-bit pages
+        self.lossless = None;
         let (mut off, mut ring_off) = (0u64, Vec::with_capacity(rings.len()));
         for (r, ring) in rings.iter().enumerate() {
             ring_off.push(off);
-            if self.ring_cap[r] > 0 {
+            if self.ring_cap[r] > 0 && twelve[r].is_none() {
                 off += ((blocks[group[r]] + 1) * BLOCK * ring.nk * ring.d * 2) as u64;
             }
         }
-        (self.kc, self.vc) = (Buf::zeroed(off as usize)?, Buf::zeroed(off as usize)?);
+        (self.kc, self.vc) = (Buf::zeroed(off.max(4) as usize)?, Buf::zeroed(off.max(4) as usize)?);
         self.ring_off = ring_off;
+        if let Some(t) = self.kv12.as_ref().filter(|_| twelve.iter().any(Option::is_some)) {
+            let rows = self.chunk.max(self.split_rows).max(users);
+            self.lossless =
+                Some(super::kvpages::Lossless::new(&self.lib, &self.big.d, t, &group, &blocks, &self.ring_cap, rows, self.split_rows, self.ctx, self.chunk)?);
+        }
         let tabs = (0..users)
             .map(|_| (0..windows.len()).map(|_| Buf::zeroed(self.ctx.div_ceil(BLOCK) * 4)).collect::<Result<Vec<_>>>())
             .collect::<Result<Vec<_>>>()?;

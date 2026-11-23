@@ -6,6 +6,10 @@ pub mod deepseek_v4;
 pub mod gemma4;
 pub mod glm;
 pub mod kimi;
+pub mod kv12;
+mod kvpages;
+#[cfg(feature = "dev")]
+pub use kvpages::check as kvpages_check;
 pub mod lower;
 pub mod muse;
 pub mod nemotron;
@@ -885,6 +889,9 @@ pub struct Dyn {
     /// Paged keys and values (R4b: src/dynamic/pages.rs): kc and vc are then the pools every sequence's blocks are in, and each sequence has a block table a layer group. None: each sequence a
     /// room of its own.
     paged: Option<rows::Paged>,
+    /// The 12-bit KV tables the paged layout uses for the rings they fit (`set_kv12`), and the pages it made of them.
+    kv12: Option<kv12::Tables>,
+    lossless: Option<kvpages::Lossless>,
 }
 
 /// A sequence's own buffers and place, while another is selected (`Dyn::select`): its keys and values, its states, its position, the verify pass it can go back
@@ -1234,6 +1241,8 @@ impl Dyn {
             at: std::cell::Cell::new(None),
             head_rows: Vec::new(),
             paged: None,
+            kv12: None,
+            lossless: None,
         };
         // (a group of GPUs: every one's engine made before any one's first pass, src/dynamic/tp.rs)
         if let Some(c) = tp::comm() {
@@ -1504,34 +1513,57 @@ impl Dyn {
                 let prep = if d == 256 { self.kg.prep256.sig() } else { self.kg.prep512.sig() };
                 let (proj, qo) = (p.slot(Slot::Proj) + self.rows_before(stride), p.slot(Slot::Qo) + self.rows_before(nq * d));
                 let (nq, nki) = (nq as i32, nk as i32);
-                let (kc, vc) = self.cache(ring);
+                // (a ring of 12-bit pages: the rows' keys and values to its staging rows, each row at its own place, and from there into the pages)
+                let twelve = self.pages12(p, ring).is_some();
+                let (kc, vc, cap) = match &self.lossless {
+                    Some(lx) if twelve => (lx.rows_k.ptr, lx.rows_v.ptr, -1),
+                    _ => {
+                        let (kc, vc) = self.cache(ring);
+                        (kc, vc, self.ring_cap[ring] as i32)
+                    }
+                };
                 let (cos, sin) = (self.ropes[rope].0.ptr, self.ropes[rope].1.ptr);
                 let (nx, rows) = Self::next_linear(p, l, i, n, head);
                 let (pf, pfb) = self.pf(nx, rows, self.pf_kib[0], (d / 2) as u32);
                 let slice = nu * (nq + nki) as u32;
-                launch!(prep, [nu, (nq + nki) as u32, 1 + pfb.div_ceil(slice)], [(d / 2) as u32, 1, 1], s; proj, stride as i32, p.small[q_norm].ptr, p.small[k_norm].ptr, cos, sin, rot as i32, pos.0, self.ring_cap[ring] as i32, qo, kc, vc, nq, nki, has_v as i32, eps, pf, self.table(ring))?;
+                launch!(prep, [nu, (nq + nki) as u32, 1 + pfb.div_ceil(slice)], [(d / 2) as u32, 1, 1], s; proj, stride as i32, p.small[q_norm].ptr, p.small[k_norm].ptr, cos, sin, rot as i32, pos.0, cap, qo, kc, vc, nq, nki, has_v as i32, eps, pf, self.table(ring))?;
+                if twelve {
+                    self.kv12_write(ring, n, pos.0)?;
+                }
                 self.mark("prep")
             }
             Op::Attention { d, nq, nk, window, ring } => {
                 let (qo, att) = (p.slot(Slot::Qo) + self.rows_before(nq * d), p.slot(Slot::Att) + self.rows_before(nq * d));
+                // (a ring of 12-bit pages: decode rows read the pages; a prompt chunk's are unpacked to a bf16 ring the kernels below read, with no table)
+                let twelve = self.pages12(p, ring).is_some();
+                if twelve && n <= self.split_rows {
+                    self.kv12_decode(ring, n, pos.1, nq, qo, att)?;
+                    return self.mark(if window > 0 { "attention (sliding, 12-bit pages)" } else { "attention (global, 12-bit pages)" });
+                }
+                let (kc, vc, cap, tab) = if twelve {
+                    let (kc, vc, cap) = self.kv12_stage(ring, self.start.get(), n)?;
+                    (kc, vc, cap as i32, 0u64)
+                } else {
+                    let (kc, vc) = self.cache(ring);
+                    (kc, vc, self.ring_cap[ring] as i32, self.table(ring))
+                };
                 let (di, nq, nki) = (d as i32, nq as i32, nk as i32);
-                let (kc, vc) = self.cache(ring);
-                let (cap, window) = (self.ring_cap[ring] as i32, window as i32);
+                let window = window as i32;
                 let g = nq / nki;
                 if n <= self.split_rows {
                     let parts = if d == 256 { self.kg.parts256.sig() } else { self.kg.parts512.sig() };
-                    launch!(parts, [nu, nki as u32, SPLITS as u32], [(32 * g.max(PART_WARPS)) as u32, 1, 1], smem attn_smem(d, g as usize), s; qo, kc, vc, pos.1, n as i32, nq, nki, window, cap, self.part.ptr, SPLITS as i32, self.table(ring))?;
+                    launch!(parts, [nu, nki as u32, SPLITS as u32], [(32 * g.max(PART_WARPS)) as u32, 1, 1], smem attn_smem(d, g as usize), s; qo, kc, vc, pos.1, n as i32, nq, nki, window, cap, self.part.ptr, SPLITS as i32, tab)?;
                     launch!(self.kg.merge, [nu, nq as u32, 1], [di as u32, 1, 1], s; self.part.ptr, SPLITS as i32, att, nq, di)?;
                 } else if self.kg.fa {
                     if d == 256 {
-                        launch!(self.kg.fa256, [(n.div_ceil(64)) as u32, nq as u32, 1], [128, 1, 1], smem fa_smem(256, 256, 64), s; qo, kc, vc, pos.1, att, n as i32, nq, nki, window, cap, self.table(ring))?;
+                        launch!(self.kg.fa256, [(n.div_ceil(64)) as u32, nq as u32, 1], [128, 1, 1], smem fa_smem(256, 256, 64), s; qo, kc, vc, pos.1, att, n as i32, nq, nki, window, cap, tab)?;
                     } else {
-                        launch!(self.kg.fa512b, [(n.div_ceil(32)) as u32, nq as u32, 1], [256, 1, 1], smem FA512B_SMEM, s; qo, kc, vc, pos.1, att, n as i32, nq, nki, window, cap, self.table(ring))?;
+                        launch!(self.kg.fa512b, [(n.div_ceil(32)) as u32, nq as u32, 1], [256, 1, 1], smem FA512B_SMEM, s; qo, kc, vc, pos.1, att, n as i32, nq, nki, window, cap, tab)?;
                     }
                 } else {
                     let r = (16 / g).max(1);
                     let attn = if d == 256 { self.kg.attn256.sig() } else { self.kg.attn512.sig() };
-                    launch!(attn, [((n as i32 + r - 1) / r) as u32, nki as u32, 1], [(32 * r * g) as u32, 1, 1], smem attn_smem(d, (r * g) as usize), s; qo, kc, vc, pos.1, att, n as i32, nq, nki, r, window, cap, self.table(ring))?;
+                    launch!(attn, [((n as i32 + r - 1) / r) as u32, nki as u32, 1], [(32 * r * g) as u32, 1, 1], smem attn_smem(d, (r * g) as usize), s; qo, kc, vc, pos.1, att, n as i32, nq, nki, r, window, cap, tab)?;
                 }
                 self.mark(if window > 0 { "attention (sliding)" } else { "attention (global)" })
             }
@@ -2595,6 +2627,7 @@ impl Dyn {
         let mut at = 0;
         while at < tokens.len() {
             let n = self.chunk.min(tokens.len() - at);
+            self.hold_blocks(self.n + n)?;
             let pos: Vec<i32> = (0..n).map(|i| (self.n + i) as i32).collect();
             self.dev.sync()?;
             self.pos.write(0, &pos)?;
@@ -2616,11 +2649,21 @@ impl Dyn {
         self.read_sample()
     }
 
+    /// The selected sequence's blocks grown to hold its tokens before `upto`, where its keys and values are paged: a pass outside the scheduler (`reply`,
+    /// `prefill`, `step`) wrote every token to block 0, which a table names until it grows, so a paged executor's replies were not the model's.
+    fn hold_blocks(&mut self, upto: usize) -> Result<()> {
+        if self.paged.is_some() && !crate::sched::ModelStep::grow(self, self.seq as i32, upto)? {
+            return err(format!("the paged cache has no block left for token {upto} of the sequence"));
+        }
+        Ok(())
+    }
+
     /// One token through the model (the graph where there is one); the token after it.
     pub fn step(&mut self, token: u32) -> Result<Sample> {
         if self.n + 1 > self.ctx {
             return err("the cache is full");
         }
+        self.hold_blocks(self.n + 1)?;
         self.dev.sync()?;
         self.st.write(0, &[self.n as i32])?;
         let st = self.st.ptr;
