@@ -477,7 +477,7 @@ pub fn cu(call: &str, status: c_int) -> Result<()> {
 }
 
 /// The C API version this binding is written for (glyd_gpu.h's GLYD_GPU_API_VERSION).
-pub const API_VERSION: c_int = 17;
+pub const API_VERSION: c_int = 18;
 
 /// The name a library call goes by in an error: the function's own.
 macro_rules! call {
@@ -531,6 +531,7 @@ table! {
         fn glyd_gpu_kv_decode_shares(i64, i64, i64, *mut i64) -> c_int;
         fn glyd_gpu_kv_decode_workspace(i64, i64, i64, i64, i64, *mut usize) -> c_int;
         fn glyd_gpu_kv_decode(*const u16, i64, *const u8, i64, *const u8, *const u8, *const i32, i64, *const i32, i64, i64, i64, i64, i64, i64, *const u8, i64, *const u8, i64, f64, *mut u16, i64, *mut c_void, usize, Stream) -> c_int;
+        fn glyd_gpu_kv_decode_from(*const u16, i64, *const u8, i64, *const u8, *const u8, *const i32, i64, *const i32, *const i32, i64, i64, i64, i64, i64, i64, i64, *const u8, i64, *const u8, i64, f64, *mut u16, i64, *mut c_void, usize, Stream) -> c_int;
     }
 }
 
@@ -1487,6 +1488,67 @@ impl Lib {
             cs,
         );
         self.ck(call!("kv_decode"), r)
+    }
+
+    /// `kv_decode` over each sequence's tokens from `first` (int32 [b], a sliding window's start; 0: none, the whole sequence) to its length; `round`: each
+    /// score the bf16 of its dot product (a bf16 matmul's, Gemma 4's attention).
+    ///
+    /// # Safety
+    /// As `kv_decode`; `first`, where not 0, holds b int32.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn kv_decode_from(
+        &self,
+        g: &KvGeom,
+        group: i64,
+        pool: u64,
+        kbase: u64,
+        vbase: u64,
+        q: u64,
+        q_stride: i64,
+        block_table: u64,
+        bt_stride: i64,
+        seq_lens: u64,
+        first: u64,
+        round: bool,
+        b: i64,
+        splits: i64,
+        scale: f64,
+        out: u64,
+        out_stride: i64,
+        ws: u64,
+        ws_bytes: usize,
+        cs: Stream,
+    ) -> Result<()> {
+        let r = (self.api.glyd_gpu_kv_decode_from)(
+            q as *const u16,
+            q_stride,
+            pool as *const u8,
+            g.page_stride,
+            kbase as *const u8,
+            vbase as *const u8,
+            block_table as *const i32,
+            bt_stride,
+            seq_lens as *const i32,
+            first as *const i32,
+            round as i64,
+            b,
+            splits,
+            g.heads,
+            group,
+            g.dim,
+            g.arena,
+            g.escape as *const u8,
+            g.nchunks,
+            g.raw as *const u8,
+            g.nslabs,
+            scale,
+            out as *mut u16,
+            out_stride,
+            ws as *mut c_void,
+            ws_bytes,
+            cs,
+        );
+        self.ck(call!("kv_decode_from"), r)
     }
 }
 

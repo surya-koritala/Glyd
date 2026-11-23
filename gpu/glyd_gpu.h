@@ -58,8 +58,9 @@ typedef hipStream_t cudaStream_t;
  * 15 from a change of the mma layout (its data, blocks, block_base and tiers[3] as below): the mma packs of 0.27 and before, whose tiers[0] has 0xFF in its
  * top byte, are unpacked (glyd_gpu_mma_unpack) as before and refused by every other function: pack them again;
  * 16 from glyd_gpu_f8_*, the lossless FP8 (e4m3) weights: pack, unpack, unpack of a list of a stack's matrices, and the product of 1 to 64
- *    tokens with the weights as they are held; 17 from glyd_gpu_mma_moe_placed, the experts' product over an expert cache's places. */
-#define GLYD_GPU_API_VERSION 17
+ *    tokens with the weights as they are held; 17 from glyd_gpu_mma_moe_placed, the experts' product over an expert cache's places;
+ * 18 from glyd_gpu_kv_decode_from, the decode attention over the tokens from a sequence's first one on (a sliding window's). */
+#define GLYD_GPU_API_VERSION 18
 
 #ifdef __cplusplus
 extern "C" {
@@ -492,7 +493,7 @@ int glyd_gpu_kv_gather(const uint8_t* pool, int64_t page_stride, const int32_t* 
 int glyd_gpu_kv_work_put(const uint16_t* key, int64_t key_stride, const uint16_t* value, int64_t value_stride, const int64_t* slots,
                           int64_t n, int64_t H, int64_t D, uint16_t* out, int64_t blocks, cudaStream_t cs);
 
-/* Attention for one new token a sequence over its pages (D 128 or 256): B sequences, each its query q [H G, D] (sequence b's at q +
+/* Attention for one new token a sequence over its pages (D 128, 256 or 512): B sequences, each its query q [H G, D] (sequence b's at q +
  * b * q_stride elements; G, 1 to 8, the query heads a kv head serves), its seq_lens[b] tokens (int32; 0: a zero output)
  * in the pages block_table[b] names (int32, rows bt_stride apart; the last page may be partly written, its
  * bytes past the length anything), softmax scale; out [H G, D] at out + b * out_stride. fp32 softmax and sums, the
@@ -514,6 +515,16 @@ int glyd_gpu_kv_decode(const uint16_t* q, int64_t q_stride, const uint8_t* pool,
                        int64_t splits, int64_t H, int64_t G, int64_t D, int64_t A, const uint8_t* escape,
                        int64_t nchunks, const uint8_t* raw, int64_t nslabs, double scale, uint16_t* out, int64_t out_stride,
                        void* workspace, size_t workspace_bytes, cudaStream_t cs);
+/* glyd_gpu_kv_decode over the tokens from first[b] (int32: a sliding window's start, 0 the whole sequence) to seq_lens[b] alone: the pages before
+ * the one that holds token first[b] are not read, and that page's tokens before it count for nothing (their scores are -inf); a first at or past
+ * the length gives a zero output. The plan is from the tokens attended to, so a sequence's output's bits depend on its first and its length (with
+ * `splits` and the floor, as above). round_scores 1: each score is the bf16 of its dot product before the scale, as a bf16 matmul gives it (transformers'
+ * attention, Gemma 4's); 0: fp32. first null and round 0: glyd_gpu_kv_decode. */
+int glyd_gpu_kv_decode_from(const uint16_t* q, int64_t q_stride, const uint8_t* pool, int64_t page_stride, const uint8_t* kbase,
+                            const uint8_t* vbase, const int32_t* block_table, int64_t bt_stride, const int32_t* seq_lens,
+                            const int32_t* first, int64_t round_scores, int64_t B, int64_t splits, int64_t H, int64_t G, int64_t D, int64_t A,
+                            const uint8_t* escape, int64_t nchunks, const uint8_t* raw, int64_t nslabs, double scale, uint16_t* out,
+                            int64_t out_stride, void* workspace, size_t workspace_bytes, cudaStream_t cs);
 
 /* ------------------------------------------------------------------------
  * The lossless FP8 weights: W [O, K] of e4m3 bytes (any byte: NaNs, both zeros) held in about 6.7 bits a value, as

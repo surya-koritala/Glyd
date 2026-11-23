@@ -1257,19 +1257,32 @@ pub fn ladder(
     model: &str,
     asked: &'static str,
     want_ctx: usize,
-    size: &dyn Fn(&'static str) -> Result<Option<LoadPlan>, crate::ui::Refusal>,
+    size: &dyn Fn(&'static str, usize) -> Result<Option<LoadPlan>, crate::ui::Refusal>,
 ) -> Ladder {
     let levels: Vec<&'static str> = fam.levels_now(model);
     let from = levels.iter().position(|l| *l == asked).unwrap_or(0);
     let main = (0..m.devices.len()).min_by_key(|&i| (std::cmp::Reverse(m.devices[i].free), i)).unwrap_or(0);
     let mut refusal = None;
+    // (each level at the context wanted, then shorter ones down to the floor, before the next level: a loader that does not shorten the context itself, Gemma 4's, is
+    // taken at the longest that fits)
+    let tries: Vec<usize> = std::iter::once(want_ctx).chain(CONTEXTS.iter().rev().copied().filter(|&c| c < want_ctx && c >= PREFERRED_CTX)).collect();
     for &level in &levels[from..] {
-        match size(level) {
-            Ok(None) => return Ladder { asked, context: want_ctx, steps: vec![], plan: None, refusal },
-            Err(r) => {
-                refusal.get_or_insert(r);
+        let mut sized = None;
+        for &ctx in &tries {
+            match size(level, ctx) {
+                Ok(None) => return Ladder { asked, context: want_ctx, steps: vec![], plan: None, refusal },
+                Err(r) => {
+                    refusal.get_or_insert(r);
+                }
+                Ok(Some(lp)) => {
+                    sized = Some(lp);
+                    break;
+                }
             }
-            Ok(Some(lp)) => {
+        }
+        match sized {
+            None => {}
+            Some(lp) => {
                 let mut steps = Vec::new();
                 if lp.context < want_ctx {
                     steps.push(Step {
@@ -1552,7 +1565,11 @@ pub(crate) fn exact_options(
         match crate::cli::size(a, model, config, l, &devs, &target, &reach, users) {
             Ok(Some(lp)) => {
                 sized = true;
-                options.push(candidate_of(lp, sh, machine, main));
+                // (a level the model is not had at sizes as the one it is: a local release asked for at hummingbird is its own penguin, listed once)
+                let c = candidate_of(lp, sh, machine, main);
+                if !options.iter().any(|o: &Candidate| o.level == c.level) {
+                    options.push(c);
+                }
             }
             Ok(None) => {}
             Err(r) => {
@@ -1573,6 +1590,19 @@ pub(crate) fn exact_options(
         }
     }
     sized.then_some((options, refusals))
+}
+
+/// A model's shape: its config's, with its own tensors where its headers can be had (before any download, by ranges), else config.json's estimate scaled to the
+/// index's total. `fit` and `run`'s degrade gate both price the ladder's steps on it.
+pub fn shape_of(model: &str, config: &str) -> Result<Shape, String> {
+    let sh = Shape::from_config(config)?;
+    Ok(match crate::sizes::Table::find(model) {
+        Some(t) => sh.with_table(&t),
+        None => match index_total(model) {
+            Some(total) => sh.scaled_to(total),
+            None => sh,
+        },
+    })
 }
 
 /// What `fit` works out of its arguments: the model, the machine, the plan, and the refusal `run` would give (its reason, after the plan is printed).
@@ -1614,16 +1644,7 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
     if fam.levels_now(model).is_empty() {
         crate::support::check(&config, model, &name, "penguin")?;
     }
-    let mut sh = Shape::from_config(&config).map_err(|e| Refusal::unsupported(format!("{name}: {e}"), ""))?;
-    // the model's own tensors where its headers can be had (before any download, by ranges), else config.json's estimate scaled to the index's total
-    match crate::sizes::Table::find(model) {
-        Some(t) => sh = sh.with_table(&t),
-        None => {
-            if let Some(total) = index_total(model) {
-                sh = sh.scaled_to(total);
-            }
-        }
-    }
+    let sh = shape_of(model, &config).map_err(|e| Refusal::unsupported(format!("{name}: {e}"), ""))?;
     let context: Option<usize> = a.flag("context").map(|c| c.parse()).transpose().map_err(|_| Refusal::new("--context takes a number", "--context 8192"))?;
     crate::support::context_check(&name, fam, sh.max_ctx, context)?;
     let users: usize = a.num("users", 1usize)?;
@@ -1657,7 +1678,10 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
     let ladder = asked.and_then(|asked| {
         let (_, target, devs, reach) = sizing_inputs(&machine, probed)?;
         let want = context.unwrap_or_else(|| fam.default_ctx.unwrap_or(LOSSY_CTX).min(sh.max_ctx));
-        let size = |l: &'static str| crate::cli::size(a, model, &config, l, &devs, &target, &*reach, users);
+        let size = |l: &'static str, ctx: usize| {
+            let q = if ctx == want { a.clone() } else { a.with(&["context", "ctx"], ctx.to_string()) };
+            crate::cli::size(&q, model, &config, l, &devs, &target, &*reach, users)
+        };
         let lad = ladder(&sh, &machine, fam, model, asked, want, &size);
         (lad.plan.is_some() || lad.refusal.is_some()).then_some(lad)
     });
@@ -2674,7 +2698,7 @@ mod tests {
         let base = LoadPlan { experts: None, ..f.plan.chosen.as_ref().and_then(|c| c.load.clone()).expect("swift loads on 80 GB") };
         let name = dir.to_str().unwrap();
         let go = |asked: &'static str, want: usize, answers: Vec<(&'static str, Result<Option<LoadPlan>, String>)>| {
-            let size = |l: &'static str| match answers.iter().find(|a| a.0 == l) {
+            let size = |l: &'static str, _ctx: usize| match answers.iter().find(|a| a.0 == l) {
                 Some((_, Ok(p))) => Ok(p.clone()),
                 Some((_, Err(w))) => Err(crate::ui::Refusal::unsupported(w.clone(), "")),
                 None => Err(crate::ui::Refusal::unsupported(format!("no answer for {l}"), "")),
@@ -2711,6 +2735,21 @@ mod tests {
         assert_eq!(l.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), vec![StepKind::ShorterContext, StepKind::ExpertsInRam, StepKind::LowerLevel]);
         assert!(l.steps[2].confirm && l.needs_confirmation() && l.plan.as_ref().unwrap().level == "wren");
         assert!(l.report().contains("it loads at the wren level") && l.report().contains("not available: the KV cache's type"), "{}", l.report());
+        // a shorter context before a lower level: a loader that refuses the context wanted and takes a shorter one (Gemma 4's, which does not shorten it itself) is taken at
+        // the longest that fits, and below the floor the lower level is
+        let at = |most: usize| {
+            let b = base.clone();
+            move |l: &'static str, ctx: usize| match l {
+                "swift" if ctx <= most => Ok(Some(LoadPlan { context: ctx, ..b.clone() })),
+                "wren" => Ok(Some(LoadPlan { level: "wren", ..b.clone() })),
+                _ => Err(crate::ui::Refusal::unsupported(format!("{l} at {ctx} tokens"), "")),
+            }
+        };
+        let l = ladder(sh, m, fam, name, "swift", 262144, &at(65536));
+        assert_eq!(l.plan.as_ref().map(|p| (p.level, p.context)), Some(("swift", 65536)));
+        assert_eq!(l.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), vec![StepKind::ShorterContext]);
+        let l = ladder(sh, m, fam, name, "swift", 262144, &at(4096));
+        assert_eq!(l.plan.as_ref().map(|p| p.level), Some("wren"), "4096 is below the floor of {PREFERRED_CTX}");
         // dense layers in the computer's memory (the dynamic route's plan, src/dense_ram.rs): a step after the experts, priced by itself (their bytes over the link, every token)
         let spread = |dense: usize, dense_bytes: u64| Spread {
             cuts: vec![],

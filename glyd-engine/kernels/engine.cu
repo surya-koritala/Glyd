@@ -393,6 +393,20 @@ extern "C" __global__ void __launch_bounds__(256) gather_bf16(const bf16* row, c
     if (i < n) out[i] = __bfloat162float(row[idx[i]]);
 }
 
+// The 12-bit KV pages' arguments of n rows from their positions (src/dynamic/kvpages.rs): row r's slot, its block's page (tab[p / 16], or p / 16 where there is no table) times 16 plus p % 16;
+// its length p + 1 and its window's first token (p + 1 - window, at least 0; window 0: 0) for each of its S parts of query heads (entries r S .. r S + S - 1: the decode attention's
+// sequences). A padding row (a negative position) has slot -1 (not written) and length 0 (a zero output).
+extern "C" __global__ void __launch_bounds__(256) kv12_rows(const int* pos, int n, const int* tab, int window, int S, long long* slots, int* lens, int* first) {
+    const int r = blockIdx.x * 256 + threadIdx.x;
+    if (r >= n) return;
+    const int p = pos[r];
+    slots[r] = p < 0 ? -1 : (long long)(tab ? tab[p >> 4] : p >> 4) * 16 + (p & 15);
+    for (int s = 0; s < S; s++) {
+        lens[r * S + s] = p < 0 ? 0 : p + 1;
+        first[r * S + s] = p < 0 || window <= 0 ? 0 : max(0, p + 1 - window);
+    }
+}
+
 // `topk64_bf16` with a mask per row (see `topk64_impl`): `words` is the row's words in `mask`, 1 + (V + 31) / 32.
 extern "C" __global__ void __launch_bounds__(1024) topk64_bf16_masked(const bf16* logits, int V, int* tok, float* val, const unsigned* mask, int words) {
     topk64_impl(logits, V, tok, val, mask, words);

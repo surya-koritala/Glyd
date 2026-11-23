@@ -73,18 +73,21 @@ fn bases(v: &[u16], n: usize, h: usize, d: usize) -> Vec<u8> {
 }
 
 /// What `n` tokens of keys `k` and values `v` ([n][h][d]) give for queries `q` ([h g][d]): the attention of each query head over its kv head's tokens, in f64.
-fn attention(q: &[u16], k: &[u16], v: &[u16], n: usize, h: usize, g: usize, d: usize) -> Vec<f64> {
+fn attention(q: &[u16], k: &[u16], v: &[u16], first: usize, n: usize, h: usize, g: usize, d: usize) -> Vec<f64> {
     let scale = 1.0 / (d as f64).sqrt();
     let mut out = vec![0.0; h * g * d];
     for hh in 0..h {
         for j in 0..g {
             let qh = &q[(hh * g + j) * d..(hh * g + j + 1) * d];
-            let s: Vec<f64> = (0..n).map(|t| scale * (0..d).map(|c| f32_of(qh[c]) as f64 * f32_of(k[(t * h + hh) * d + c]) as f64).sum::<f64>()).collect();
+            if first >= n {
+                continue; // (no token: a zero output)
+            }
+            let s: Vec<f64> = (first..n).map(|t| scale * (0..d).map(|c| f32_of(qh[c]) as f64 * f32_of(k[(t * h + hh) * d + c]) as f64).sum::<f64>()).collect();
             let m = s.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
             let w: Vec<f64> = s.iter().map(|x| (x - m).exp()).collect();
             let z: f64 = w.iter().sum();
             for c in 0..d {
-                out[(hh * g + j) * d + c] = (0..n).map(|t| w[t] * f32_of(v[(t * h + hh) * d + c]) as f64).sum::<f64>() / z;
+                out[(hh * g + j) * d + c] = (first..n).map(|t| w[t - first] * f32_of(v[(t * h + hh) * d + c]) as f64).sum::<f64>() / z;
             }
         }
     }
@@ -184,7 +187,8 @@ fn shape(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
             let qbuf = Buf::new(2 * q.len())?;
             qbuf.write(0, &q)?;
             let width = (h * g * d) as i64;
-            for len in [n, 16 * 2 + 3] {
+            // (and windows, `kv_decode_from`: from a token inside a page, from a page's first token, the last token alone, and none: a zero output)
+            for (len, first) in [(n, 0), (16 * 2 + 3, 0), (n, 21), (n, 48), (n, n - 1), (n, n)] {
                 let table: Vec<i32> = (0..blocks as i32).collect();
                 let (bt, sq) = (Buf::new(4 * blocks)?, Buf::new(4)?);
                 bt.write(0, &table)?;
@@ -193,39 +197,66 @@ fn shape(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
                 let ws_bytes = lib.kv_decode_workspace(1, h as i64, g as i64, d as i64, splits)?;
                 let ws = Buf::zeroed(ws_bytes)?;
                 let o = Buf::zeroed(2 * h * g * d)?;
+                let fb = Buf::new(4)?;
+                fb.write(0, &[first as i32])?;
                 unsafe {
-                    lib.kv_decode(
-                        &geom,
-                        g as i64,
-                        pool.ptr,
-                        kbase.ptr,
-                        vbase.ptr,
-                        qbuf.ptr,
-                        width,
-                        bt.ptr,
-                        blocks as i64,
-                        sq.ptr,
-                        1,
-                        splits,
-                        1.0 / (d as f64).sqrt(),
-                        o.ptr,
-                        width,
-                        ws.ptr,
-                        ws_bytes,
-                        dev.stream,
-                    )?
+                    if first == 0 {
+                        lib.kv_decode(
+                            &geom,
+                            g as i64,
+                            pool.ptr,
+                            kbase.ptr,
+                            vbase.ptr,
+                            qbuf.ptr,
+                            width,
+                            bt.ptr,
+                            blocks as i64,
+                            sq.ptr,
+                            1,
+                            splits,
+                            1.0 / (d as f64).sqrt(),
+                            o.ptr,
+                            width,
+                            ws.ptr,
+                            ws_bytes,
+                            dev.stream,
+                        )?
+                    } else {
+                        lib.kv_decode_from(
+                            &geom,
+                            g as i64,
+                            pool.ptr,
+                            kbase.ptr,
+                            vbase.ptr,
+                            qbuf.ptr,
+                            width,
+                            bt.ptr,
+                            blocks as i64,
+                            sq.ptr,
+                            fb.ptr,
+                            false,
+                            1,
+                            splits,
+                            1.0 / (d as f64).sqrt(),
+                            o.ptr,
+                            width,
+                            ws.ptr,
+                            ws_bytes,
+                            dev.stream,
+                        )?
+                    }
                 };
                 dev.sync()?;
                 let mut got = vec![0u16; h * g * d];
                 o.read(0, &mut got)?;
-                let want = attention(&q, &k, &v, len, h, g, d);
+                let want = attention(&q, &k, &v, first, len, h, g, d);
                 let (mut worst, mut off) = (0f64, 0usize);
                 for (x, w) in got.iter().zip(&want) {
                     let e = (f32_of(*x) as f64 - w).abs() / (w.abs() * 0.015 + 2e-3);
                     worst = worst.max(e);
                     off += (e > 1.0 || !e.is_finite()) as usize;
                 }
-                println!("{} {h} heads x {d}, {g} queries to a head, {len} tokens: decode attention, {off} of {} values past 1.5% + 0.002 (worst {worst:.2} of the bound)", if off == 0 { "ok  " } else { "FAIL" }, got.len());
+                println!("{} {h} heads x {d}, {g} queries to a head, {len} tokens from {first}: decode attention, {off} of {} values past 1.5% + 0.002 (worst {worst:.2} of the bound)", if off == 0 { "ok  " } else { "FAIL" }, got.len());
                 if off != 0 {
                     bad += 1;
                 }

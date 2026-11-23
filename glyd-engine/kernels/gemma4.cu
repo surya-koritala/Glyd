@@ -154,7 +154,7 @@ __device__ __forceinline__ void g4_prep_t(const bf16* qkv, int stride, const bf1
         oa = b2f(f2b(b2f(f2b(na * c)) - b2f(f2b(nb * sv))));
         ob = b2f(f2b(b2f(f2b(nb * c)) + b2f(f2b(na * sv))));
     }
-    const size_t slot = g4_place(tab, p, cap);
+    const size_t slot = cap < 0 ? (size_t)r : g4_place(tab, p, cap);  // (cap < 0: row r's own place, a staging buffer of the step's rows: the 12-bit pages' writes)
     bf16* o = isq ? qo + (size_t)r * nq * D + hh * D : kc + (slot * nk + kh) * D;
     o[t] = f2b(oa);
     o[t + H] = f2b(ob);
