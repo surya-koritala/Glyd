@@ -317,9 +317,17 @@ impl Leader {
             mine.iter().map(|&j| crate::cpu_fp4::Fp4Pair { expert: host.view(ids[j] as usize), token: j / k, weight: wts[j] }).collect();
         let mut out = vec![0f32; mine.len() * latent];
         let t0 = Instant::now();
-        crate::cpu_fp4::experts(self.kernel, z, &pairs, &mut out, host.act, self.off.threads, self.off.pin)?;
+        crate::cpu_fp4::experts(
+            self.kernel,
+            z,
+            &pairs,
+            &mut out,
+            crate::cpu_fp4::Act::Situ { beta: host.act.0, linear: host.act.1 },
+            self.off.threads,
+            self.off.pin,
+        )?;
         let us = t0.elapsed().as_secs_f64() * 1e6;
-        self.costs.computed(mine.len(), us);
+        self.costs.computed(crate::cpu_fp4::by_expert(&pairs).len(), mine.len(), us);
         self.cpu_ms += us / 1e3;
         let mut sums = vec![0f32; tokens * latent];
         for (row, &j) in out.chunks_exact(latent).zip(mine) {

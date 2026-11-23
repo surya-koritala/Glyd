@@ -196,6 +196,11 @@ pub trait ModelStep {
     fn masks(&mut self, _masks: Vec<Option<crate::constrain::MaskHandle>>) {}
     /// One step of the rows: the sample after each.
     fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>>;
+    /// What the last step's mixture-of-experts layers did with the expert cache, layer by layer (src/offload.rs `LayerStats`: hits, copies, the host's pairs, bytes, waits); none where no layer's experts
+    /// are in a cache.
+    fn expert_stats(&self) -> Vec<crate::offload::LayerStats> {
+        Vec::new()
+    }
     /// The logits behind the last sample of row `row`.
     fn logits(&mut self, row: usize) -> Result<Vec<f32>>;
     /// Pages no sequence holds and nothing names, cleared.
@@ -327,14 +332,16 @@ pub fn stats_json_of(rt: &Context) -> String {
         true => (v[1].to_string(), format!("{:.2}", if v[0] > 0 { 100.0 * v[1] as f64 / v[0] as f64 } else { 0.0 })),
         false => ("null".to_string(), "null".to_string()),
     };
+    // (the expert cache's layers since the process started, where a model has experts in one: src/offload.rs `stats_field`)
+    let experts = crate::offload::stats_field();
     // a development build's figures are all of them; a release build's are the counts a user reads
     if cfg!(feature = "dev") {
         format!(
-            "{{\"prompt_tokens\":{},\"prefix_hit_tokens\":{hit},\"prefix_hit_rate_percent\":{rate},\"preemptions\":{},\"steps\":{},\"rows\":{},\"running\":{},\"waiting\":{},\"decode_ms\":{},\"prefill_ms\":{},\"rounds_ms\":{},\"release_ms\":{},\"admit_ms\":{},\"after_ms\":{},\"before_ms\":{},\"lost_blocks\":{},\"heavy_blocks\":{},\"taken_back\":{},\"ended_for_loss\":{},\"steps_by_rows\":[{}],\"prefill_rounds\":{},\"decode_prep_ms\":{},\"decode_wait_ms\":{},\"decode_post_ms\":{},\"decode_graph_ms\":{},\"values_checked\":{},\"values_differ\":{},\"values_in_lost_blocks\":{}}}",
+            "{{\"prompt_tokens\":{},\"prefix_hit_tokens\":{hit},\"prefix_hit_rate_percent\":{rate},\"preemptions\":{},\"steps\":{},\"rows\":{},\"running\":{},\"waiting\":{},\"decode_ms\":{},\"prefill_ms\":{},\"rounds_ms\":{},\"release_ms\":{},\"admit_ms\":{},\"after_ms\":{},\"before_ms\":{},\"lost_blocks\":{},\"heavy_blocks\":{},\"taken_back\":{},\"ended_for_loss\":{},\"steps_by_rows\":[{}],\"prefill_rounds\":{},\"decode_prep_ms\":{},\"decode_wait_ms\":{},\"decode_post_ms\":{},\"decode_graph_ms\":{},\"values_checked\":{},\"values_differ\":{},\"values_in_lost_blocks\":{}{experts}}}",
             v[0], v[2], v[3], v[4], v[5], v[6], v[7] / 1_000_000, v[8] / 1_000_000, v[9] / 1_000_000, v[10] / 1_000_000, v[11] / 1_000_000, v[12] / 1_000_000, v[13] / 1_000_000, v[14], v[15], v[16], v[17], v[18..27].iter().map(u64::to_string).collect::<Vec<_>>().join(","), v[27], crate::model::DECODE_PREP_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_WAIT_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_POST_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_GPU_NS.load(Relaxed) / 1_000_000, crate::model::VERIFY_CHECKED.load(Relaxed), crate::model::VERIFY_DIFFER.load(Relaxed), crate::model::VERIFY_LOST.load(Relaxed)
         )
     } else {
-        format!("{{\"prompt_tokens\":{},\"prefix_hit_tokens\":{hit},\"prefix_hit_rate_percent\":{rate},\"preemptions\":{},\"steps\":{},\"rows\":{},\"running\":{},\"waiting\":{}}}", v[0], v[2], v[3], v[4], v[5], v[6])
+        format!("{{\"prompt_tokens\":{},\"prefix_hit_tokens\":{hit},\"prefix_hit_rate_percent\":{rate},\"preemptions\":{},\"steps\":{},\"rows\":{},\"running\":{},\"waiting\":{}{experts}}}", v[0], v[2], v[3], v[4], v[5], v[6])
     }
 }
 
@@ -414,6 +421,9 @@ impl ModelStep for &mut dyn ModelStep {
     }
     fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
         (**self).decode(rows)
+    }
+    fn expert_stats(&self) -> Vec<crate::offload::LayerStats> {
+        (**self).expert_stats()
     }
     fn logits(&mut self, row: usize) -> Result<Vec<f32>> {
         (**self).logits(row)

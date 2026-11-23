@@ -1,4 +1,4 @@
-//! `ceiling MODEL [--box B] [--gpus N] [--by-layers] [--pos P] [--hit H] [--fp8 PCT] [--bf16-pct PCT] [--eff E] [--t0-us U] [--t0-moe-us U] [--pair-ms M] [--fixed-us U] [--exchange-us U]
+//! `ceiling MODEL [--box B] [--gpus N] [--by-layers] [--pos P] [--hit H] [--fp8 PCT] [--bf16-pct PCT] [--eff E] [--t0-us U] [--t0-moe-us U] [--pair-ms M] [--fixed-us U] [--exchange-us U] [--stats FILE [--calibrate MODEL:FILE]]
 //! [--measured MS]` (development): a
 //! decode step's least time by the formula of docs/ceiling.md, from the checkpoint's own tensors (a directory's safetensors, or a Hub repo's headers
 //! read by ranges: no weights are downloaded), the engine's layouts, cuts and slicing (src/dynamic/split.rs, tp.rs), and a box's spec. Beside each
@@ -366,6 +366,102 @@ fn ms(bytes: f64, gbs: f64) -> f64 {
     }
 }
 
+/// One count of rows of a run through the expert cache (`storebench --out`'s line): the rows, the measured step, an expert's bytes as the cache holds it, and each MoE layer's statistics a step on average.
+struct Run {
+    rows: usize,
+    step_ms: f64,
+    expert_bytes: f64,
+    layers: Vec<crate::offload::LayerStats>,
+}
+
+impl Run {
+    fn parse(line: &str) -> Result<Run> {
+        let v = json::parse(line).map_err(|e| Error(format!("a line of --stats: {e}")))?;
+        let n = |o: &Value, k: &str| o.get(k).and_then(num).ok_or_else(|| Error(format!("a line of --stats without {k}")));
+        let layers = match v.get("layers") {
+            Some(Value::Array(ls)) => ls
+                .iter()
+                .map(|l| {
+                    Ok(crate::offload::LayerStats {
+                        calls: n(l, "calls")? as u64,
+                        rows: n(l, "rows")? as u64,
+                        pairs: n(l, "pairs")? as u64,
+                        reads: n(l, "reads")? as u64,
+                        hits: n(l, "hits")? as u64,
+                        copies: n(l, "copies")? as u64,
+                        host: n(l, "host")? as u64,
+                        host_pairs: n(l, "host_pairs")? as u64,
+                        skipped: n(l, "skipped")? as u64,
+                        waves: n(l, "waves")? as u64,
+                        copy_bytes: n(l, "copy_bytes")? as u64,
+                        host_bytes: n(l, "host_bytes")? as u64,
+                        missed_bytes: l.get("missed_bytes").and_then(num).unwrap_or(0.0) as u64,
+                        ahead: n(l, "ahead")? as u64,
+                        ahead_bytes: n(l, "ahead_bytes")? as u64,
+                        copy_ms: n(l, "copy_ms")?,
+                        host_ms: n(l, "host_ms")?,
+                        wait_ms: n(l, "wait_ms")?,
+                        plan_ms: l.get("plan_ms").and_then(num).unwrap_or(0.0),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+            _ => return err("a line of --stats without its layers"),
+        };
+        Ok(Run { rows: n(&v, "rows")? as usize, step_ms: n(&v, "step_ms")?, expert_bytes: n(&v, "expert_bytes")?, layers })
+    }
+}
+
+/// A decode step of `r.rows` rows on one GPU whose experts are in the expert cache, from its layers' statistics (`--stats`, src/tiering.rs storebench): (ceiling, ours) in ms. The dense weights are read once
+/// for the rows; each expert a layer runs on the GPU (the ones asked for less those the host computed) once; the attention once a row. A layer's misses take the longer of its copies and the host's pairs, which
+/// run at once and before its products can end: at the box's link and host memory rates for the ceiling (the host reading each missed expert once), and for ours the copy stream's measured time for the layer's
+/// misses (its share of the layer's copying: the promotions behind the call are not the call's) against the host's measured time, plus each call's own time on the host (`plan_ms`). The copy stream is one queue,
+/// so ours is at least its whole measured time, promotions too. Ours adds `fixed`, the rest of a step (`Fixed`).
+fn cached_step(s: &Step, b: &Box, shares: (f64, f64, f64), r: &Run, fixed: Fixed) -> (f64, f64) {
+    let (e_bf, e_f8, e_fp4) = shares;
+    let on_gpu: f64 = r.layers.iter().map(|l| (l.reads - l.host) as f64 * r.expert_bytes).sum();
+    let attn = r.rows as f64 * s.attn;
+    let ceiling =
+        ms(s.dense + on_gpu + attn, b.read) + r.layers.iter().map(|l| ms(l.copy_bytes as f64, b.pcie_alone).max(ms(l.host_bytes as f64, b.host))).sum::<f64>();
+    let own = |l: &crate::offload::LayerStats| {
+        let all = l.copy_bytes + l.ahead_bytes;
+        if all > 0 {
+            l.copy_ms * l.copy_bytes as f64 / all as f64
+        } else {
+            0.0
+        }
+    };
+    let path = ms(s.dense - s.dense_f8, b.read * e_bf)
+        + ms(s.dense_f8, b.read * e_f8)
+        + ms(on_gpu, b.read * e_fp4)
+        + ms(attn, b.read)
+        + r.layers.iter().map(|l| own(l).max(l.host_ms) + l.plan_ms).sum::<f64>();
+    let ours = path.max(r.layers.iter().map(|l| l.copy_ms).sum::<f64>()) + fixed.of(r);
+    (ceiling, ours)
+}
+
+/// What a cached step takes besides its terms, for each MoE layer: `layer` ms, and `row` ms a row (the work a row adds a layer that the terms do not count: on the PC, the launches of the operations a pass runs
+/// sequence by sequence), measured as runs' unexplained (`fit`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Fixed {
+    layer: f64,
+    row: f64,
+}
+
+impl Fixed {
+    fn of(&self, r: &Run) -> f64 {
+        r.layers.iter().filter(|l| l.calls > 0).count() as f64 * (self.layer + self.row * r.rows as f64)
+    }
+
+    /// The least-squares line through the runs' unexplained a layer by their rows (one run: its unexplained, no time a row).
+    fn fit(runs: &[(usize, f64)]) -> Fixed {
+        let n = runs.len() as f64;
+        let (mx, my) = (runs.iter().map(|r| r.0 as f64).sum::<f64>() / n, runs.iter().map(|r| r.1).sum::<f64>() / n);
+        let sxx: f64 = runs.iter().map(|r| (r.0 as f64 - mx).powi(2)).sum();
+        let row = if sxx > 0.0 { runs.iter().map(|r| (r.0 as f64 - mx) * (r.1 - my)).sum::<f64>() / sxx } else { 0.0 };
+        Fixed { layer: my - row * mx, row }
+    }
+}
+
 pub fn cmd(a: &Args) -> Result<()> {
     let model = a.need(1, "MODEL")?;
     let name = a.flag("box").unwrap_or("a100x8");
@@ -378,6 +474,70 @@ pub fn cmd(a: &Args) -> Result<()> {
     let pos: usize = a.num("pos", 512)?;
     let (cfg, ts) = tensors(model)?;
     let mt = cfg.get("model_type").and_then(Value::as_str).unwrap_or("");
+    // (--stats FILE: decode steps through the expert cache on one GPU, each line a count of rows' layer statistics and measured step (storebench --out); --fixed-us: ours' fixed time a step, else the
+    // first line's unexplained, and the others predicted from it)
+    if let Some(f) = a.flag("stats") {
+        let text = std::fs::read_to_string(f).map_err(|e| Error(format!("{f}: {e}")))?;
+        let runs: Vec<Run> = text.lines().filter(|l| !l.trim().is_empty()).map(Run::parse).collect::<Result<_>>()?;
+        let f8_pct: u64 = a.num("fp8", if mt == "deepseek_v4" { 100 } else { CODED_PCT })?;
+        let bf16_share: f64 = a.num("bf16-pct", 100.0 * if b.hbm { TWELVE_ACTUAL } else { TIERED_ACTUAL })? / 100.0;
+        let s = step(&cfg, &ts, 1, bf16_share, f8_pct, pos)?;
+        let shares = (b.ours.0, b.ours.1, b.ours.2);
+        let first = runs.first().ok_or_else(|| Error(format!("{f}: no line")))?;
+        // (each line's unexplained a MoE layer, by its rows)
+        let per_layer =
+            |r: &Run| (r.rows, (r.step_ms - cached_step(&s, b, shares, r, Fixed::default()).1) / r.layers.iter().filter(|l| l.calls > 0).count().max(1) as f64);
+        let (fixed, how) = match (a.flag("fixed-us"), a.flag("calibrate")) {
+            (Some(u), _) => {
+                let per = u.parse::<f64>().map_err(|_| Error(format!("--fixed-us {u}: microseconds")))? / 1e3;
+                (Fixed { layer: per, row: 0.0 }, "--fixed-us".to_string())
+            }
+            // (another run of the same box: its lines' unexplained, fitted; it gives its own tensors' terms)
+            (None, Some(c)) => {
+                let (cm, cf) = c.split_once(':').ok_or_else(|| Error(format!("--calibrate {c}: MODEL:FILE")))?;
+                let (ccfg, cts) = tensors(cm)?;
+                let cs = step(
+                    &ccfg,
+                    &cts,
+                    1,
+                    bf16_share,
+                    a.num("fp8", if ccfg.get("model_type").and_then(Value::as_str) == Some("deepseek_v4") { 100 } else { CODED_PCT })?,
+                    pos,
+                )?;
+                let ctext = std::fs::read_to_string(cf).map_err(|e| Error(format!("{cf}: {e}")))?;
+                let cruns: Vec<Run> = ctext.lines().filter(|l| !l.trim().is_empty()).map(Run::parse).collect::<Result<_>>()?;
+                let pts: Vec<(usize, f64)> = cruns
+                    .iter()
+                    .map(|r| {
+                        (
+                            r.rows,
+                            (r.step_ms - cached_step(&cs, b, shares, r, Fixed::default()).1) / r.layers.iter().filter(|l| l.calls > 0).count().max(1) as f64,
+                        )
+                    })
+                    .collect();
+                (Fixed::fit(&pts), format!("fitted to {cf}'s {} lines", pts.len()))
+            }
+            (None, None) => (Fixed::fit(&[per_layer(first)]), "the first line's unexplained".to_string()),
+        };
+        println!(
+            "{model} on {}, one GPU, the experts in the expert cache (--stats {f}); ours' fixed time {:.3} ms a MoE layer and {:.4} ms a row a layer ({how})",
+            b.name, fixed.layer, fixed.row
+        );
+        for r in &runs {
+            let (ceiling, ours) = cached_step(&s, b, shares, r, fixed);
+            let t = crate::offload::LayerStats::sum(&r.layers);
+            println!(
+                "  {:>3} rows: ceiling {ceiling:8.2} ms, ours {ours:8.2} ms, measured {:8.2} ms: ours {:+.1}% of it ({} experts a step on the GPU, {} copied, {} by the host)",
+                r.rows,
+                r.step_ms,
+                100.0 * (ours / r.step_ms - 1.0),
+                t.reads - t.host,
+                t.copies,
+                t.host
+            );
+        }
+        return Ok(());
+    }
     // (DeepSeek-V4's FP8 matrices are held exact, as released; elsewhere layout H's plain packs on HBM, coded on the others)
     let f8_pct: u64 = a.num(
         "fp8",
@@ -529,6 +689,27 @@ mod tests {
         // (two experts a token of 1 MiB each, over the two GPUs; the layer past the model's left out)
         assert!((s.expert - 2.0 * (512.0 * 2048.0) / 2.0).abs() < 1.0 && (s.per_expert - 512.0 * 2048.0).abs() < 1.0, "{s:?}");
         assert_eq!(step(&cfg, &ts, 1, TWELVE_ACTUAL, 100, 512).unwrap().exchanges, 0);
+    }
+
+    /// A line of storebench --out read back, and a cached step's terms: the dense bytes once, the experts the GPU ran once each, the attention a row, and each layer's misses the longer of its copies (at the run's
+    /// measured rate) and the host's time; the fixed time added as given.
+    #[test]
+    fn a_cached_step_from_its_layer_statistics() {
+        let line = r#"{"rows":8,"steps":4,"step_ms":30.0,"expert_bytes":1000000,"layers":[{"layer":0,"calls":1,"rows":8,"pairs":48,"reads":30,"hits":10,"copies":15,"host":5,"host_pairs":6,"skipped":0,"waves":0,"copy_bytes":15000000,"host_bytes":5000000,"ahead":0,"ahead_bytes":0,"copy_ms":0.75,"host_ms":2.0,"wait_ms":0.1}]}"#;
+        let r = Run::parse(line).unwrap();
+        assert_eq!((r.rows, r.layers.len(), r.layers[0].copies, r.layers[0].host_ms), (8, 1, 15, 2.0));
+        let b = &BOXES[0];
+        let s = Step { dense: 702e6, attn: 0.0, ..Step::default() };
+        let (ceiling, ours) = cached_step(&s, b, (1.0, 1.0, 1.0), &r, Fixed { layer: 0.1, row: 0.05 });
+        // (ours: 702 MB and 25 experts of 1 MB at 702 GB/s, then the longer of the copy stream's 0.75 ms (no promotions) and the host's 2 ms, and 0.1 + 0.05 a row of 8 for the one layer)
+        assert!((ours - (1.0 + 25.0 / 702.0 + 2.0 + 0.5)).abs() < 1e-9, "{ours}");
+        // (the fixed time a layer and a row: a line through runs' unexplained)
+        let f = Fixed::fit(&[(1, 0.15), (8, 0.5), (32, 1.7)]);
+        assert!((f.layer - 0.1).abs() < 1e-9 && (f.row - 0.05).abs() < 1e-9, "{f:?}");
+        assert_eq!(Fixed::fit(&[(4, 0.3)]), Fixed { layer: 0.3, row: 0.0 });
+        // (the ceiling: the copies at PCIe 4's 25 GB/s (0.6 ms) against 5 MB at the host memory's 96 GB/s)
+        assert!((ceiling - (1.0 + 25.0 / 702.0 + 0.6)).abs() < 1e-9, "{ceiling}");
+        assert!(Run::parse(r#"{"rows":1}"#).is_err());
     }
 
     /// Kimi-K3's packs as one product each, sliced as one whatever each tensor's size: a delta attention layer's q, k, v, gate, f_a and beta, a latent
