@@ -1,6 +1,7 @@
 //! A known answer for the lossless KV cache of every head dimension the library holds (128, 256 and 512 channels; 256 and 512 are held as two and four of the page's heads of 128): bf16 keys and values made on the host
 //! (in the windows of their channels, and out of them, and with every kind of special value), written through `glyd_gpu_kv_write`, read back through `glyd_gpu_kv_gather` and compared bit for bit with what was written, and
-//! the decode attention (`glyd_gpu_kv_decode`) and the prompt attention (`glyd_gpu_kv_prefill`) against attention computed on the host from the same values. No model: `glyd-engine kvshapes`, in the GPU job.
+//! the decode attention (`glyd_gpu_kv_decode`) and the prompt attention (`glyd_gpu_kv_prefill`) against attention computed on the host from the same values; a batch of sequences in one decode
+//! call against each alone and against a bf16 cache (`decode_batch`). No model: `glyd-engine kvshapes`, in the GPU job.
 //! `glyd-engine kvprefill` times the prompt attention against the unpack of the pages to a bf16 ring and the bf16 kernel on it.
 
 use crate::dev::{Buf, Dev};
@@ -291,6 +292,203 @@ fn shape(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
             }
         }
     }
+    Ok(bad == 0)
+}
+
+/// The sequences (length, window's first token) of `decode_batch`'s call: one token, a page, a page and one, a short reply's, a context over several CTAs, and windows that
+/// begin inside a page.
+const BATCH: [(usize, usize); 7] = [(1, 0), (16, 0), (17, 0), (170, 0), (645, 0), (645, 600), (300, 289)];
+
+/// Several sequences in one decode call, as a batch of the engine's has them (`BATCH`), each in its own blocks of one pool (a table of rows, the blocks in a shuffled order), with
+/// `h` kv heads of `d` channels and `g` query heads to each. Bit for bit: each sequence's outputs in the call are its outputs in a call of its own (its bits do not depend on the
+/// batch); and over a bf16 cache (`glyd_gpu_kv_decode_bf16`) they are the pages', through the same table (the places no token was written to hold infinities and not-a-numbers:
+/// the bf16 decode reads a page's every token and masks them after) and through a ring of `CAP` places, a token at its position modulo the ring, where the window fits in it.
+/// The plan is the engine's (dynamic::attn::LibDecode): its splits for a 32,768-token context, which leave most of a short sequence's CTAs without a page, and its floor of 32.
+fn decode_batch(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize, round: bool) -> Result<bool> {
+    const A: i64 = 15;
+    const CAP: usize = 200; // (not a multiple of 16: a page's tokens wrap inside it)
+    let nb = BATCH.len();
+    let pages_of: Vec<usize> = BATCH.iter().map(|s| s.0.div_ceil(16)).collect();
+    let (stride, blocks) = (*pages_of.iter().max().unwrap_or(&1), pages_of.iter().sum::<usize>());
+    let mut r = Rng(0xD3C0_DE00 ^ (h * 1000 + d * 10 + g) as u64);
+    let mut order: Vec<usize> = (0..blocks).collect();
+    for i in (1..blocks).rev() {
+        order.swap(i, r.below(i + 1));
+    }
+    let mut table = vec![0i32; nb * stride];
+    let mut next = order.into_iter();
+    for (b, &np) in pages_of.iter().enumerate() {
+        for p in 0..np {
+            table[b * stride + p] = next.next().expect("a block a page") as i32;
+        }
+    }
+    // (each sequence's keys and values; the pages written through the table; a bf16 cache of the pool's places, the places past a sequence's end infinities and not-a-numbers)
+    let w = h * d;
+    let kv: Vec<(Vec<u16>, Vec<u16>)> = BATCH.iter().map(|s| (values(&mut r, s.0, h, d, 15, 0), values(&mut r, s.0, h, d, 15, 0))).collect();
+    let (mut kc, mut vc) = (vec![0u16; blocks * 16 * w], vec![0u16; blocks * 16 * w]);
+    for (i, x) in kc.iter_mut().chain(vc.iter_mut()).enumerate() {
+        *x = [0x7FC0, 0x7F80, 0xFF80, 0xFFC1][i % 4];
+    }
+    let (mut ks, mut vs, mut slots) = (Vec::new(), Vec::new(), Vec::new());
+    for (b, (k, v)) in kv.iter().enumerate() {
+        for t in 0..BATCH[b].0 {
+            let place = table[b * stride + t / 16] as usize * 16 + t % 16;
+            kc[place * w..(place + 1) * w].copy_from_slice(&k[t * w..(t + 1) * w]);
+            vc[place * w..(place + 1) * w].copy_from_slice(&v[t * w..(t + 1) * w]);
+            slots.push(place as i64);
+        }
+        ks.extend_from_slice(k);
+        vs.extend_from_slice(v);
+    }
+    let n = slots.len();
+    let (kb, vb) = (bases(&ks, n, h, d), bases(&vs, n, h, d));
+    let up16 = |x: &[u16]| -> Result<Buf> {
+        let b = Buf::new(2 * x.len())?;
+        b.write(0, x)?;
+        Ok(b)
+    };
+    let up32 = |x: &[i32]| -> Result<Buf> {
+        let b = Buf::new(4 * x.len().max(1))?;
+        b.write(0, x)?;
+        Ok(b)
+    };
+    let (kbuf, vbuf, kcb, vcb) = (up16(&ks)?, up16(&vs)?, up16(&kc)?, up16(&vc)?);
+    let (kbase, vbase) = (Buf::new(kb.len())?, Buf::new(vb.len())?);
+    kbase.write(0, &kb)?;
+    vbase.write(0, &vb)?;
+    let sl = Buf::new(8 * n)?;
+    sl.write(0, &slots)?;
+    let page = lib.kv_page_bytes(h as i64, d as i64, A)?;
+    let (nchunks, nslabs) = (4096i64, 64i64);
+    let pool = Buf::zeroed(page as usize * blocks)?;
+    let escape = Buf::zeroed(lib.kv_escape_bytes(nchunks)? as usize)?;
+    let raw = Buf::zeroed(lib.kv_raw_bytes(nslabs, (w / 128) as i64)? as usize)?;
+    let status = Buf::zeroed(4 * (16 + 2 * 256))?;
+    let geom = KvGeom { heads: h as i64, dim: d as i64, arena: A, page_stride: page, escape: escape.ptr, nchunks, raw: raw.ptr, nslabs };
+    // SAFETY: live buffers of the sizes the kernels read and write; the stream is synchronized before the results are read.
+    unsafe {
+        lib.kv_write(&geom, pool.ptr, kbase.ptr, vbase.ptr, 0, kbuf.ptr, w as i64, vbuf.ptr, w as i64, sl.ptr, n as i64, status.ptr, 0, 0, 256, dev.stream)?
+    };
+    let width = h * g * d;
+    let q: Vec<u16> = (0..nb * width).map(|_| bf16_of(((r.below(2000) as f32) - 1000.0) / 5000.0)).collect();
+    let (qbuf, tb) = (up16(&q)?, up32(&table)?);
+    let (lens, firsts): (Vec<i32>, Vec<i32>) = BATCH.iter().map(|&(l, f)| (l as i32, f as i32)).unzip();
+    let (lb, fb) = (up32(&lens)?, up32(&firsts)?);
+    // (the engine's plan: its floor, and the splits of its default context)
+    lib.kv_floor_set(32)?;
+    let splits = lib.kv_decode_splits(1, h as i64, 32768 / 16)?;
+    let ws_bytes = lib.kv_decode_workspace(nb as i64, h as i64, g as i64, d as i64, splits)?;
+    let ws = Buf::zeroed(ws_bytes)?;
+    let scale = 1.0 / (d as f64).sqrt();
+    let (wb, wi) = ((2 * width) as u64, 4u64);
+    // one call: the pages (bf16 false) or the bf16 cache (with the table, or a ring of `cap` places where `ring`), of `count` sequences from sequence `b0`
+    let call = |bf16: bool, ring: Option<(u64, u64, usize)>, b0: usize, count: usize, out: u64| -> Result<()> {
+        let (q, t, l, f) = (qbuf.ptr + b0 as u64 * wb, tb.ptr + (b0 * stride) as u64 * wi, lb.ptr + b0 as u64 * wi, fb.ptr + b0 as u64 * wi);
+        // SAFETY: as above; the workspace's counters are zero again after a call.
+        unsafe {
+            match (bf16, ring) {
+                (false, _) => lib.kv_decode_from(
+                    &geom,
+                    g as i64,
+                    pool.ptr,
+                    kbase.ptr,
+                    vbase.ptr,
+                    q,
+                    width as i64,
+                    t,
+                    stride as i64,
+                    l,
+                    f,
+                    round,
+                    count as i64,
+                    splits,
+                    scale,
+                    out,
+                    width as i64,
+                    ws.ptr,
+                    ws_bytes,
+                    dev.stream,
+                ),
+                (true, None) => lib.kv_decode_bf16(
+                    q,
+                    width as i64,
+                    (kcb.ptr, vcb.ptr, t, stride as i64, 0),
+                    (l, f, count as i64, splits),
+                    (h as i64, g as i64, d as i64),
+                    (scale, round),
+                    out,
+                    width as i64,
+                    (ws.ptr, ws_bytes),
+                    dev.stream,
+                ),
+                (true, Some((rk, rv, cap))) => lib.kv_decode_bf16(
+                    q,
+                    width as i64,
+                    (rk, rv, 0, 0, cap as i64),
+                    (l, f, count as i64, splits),
+                    (h as i64, g as i64, d as i64),
+                    (scale, round),
+                    out,
+                    width as i64,
+                    (ws.ptr, ws_bytes),
+                    dev.stream,
+                ),
+            }
+        }
+    };
+    let read = |o: &Buf| -> Result<Vec<u16>> {
+        dev.sync()?;
+        let mut x = vec![0u16; o.bytes / 2];
+        o.read(0, &mut x)?;
+        Ok(x)
+    };
+    let (o_pages, o_bf) = (Buf::zeroed(2 * nb * width)?, Buf::zeroed(2 * nb * width)?);
+    call(false, None, 0, nb, o_pages.ptr)?;
+    call(true, None, 0, nb, o_bf.ptr)?;
+    let (pages, bf) = (read(&o_pages)?, read(&o_bf)?);
+    let mut bad = 0;
+    let mut say = |ok: bool, what: String| {
+        println!(
+            "{} {h} heads x {d}, {g} queries to a head{}, {nb} sequences in one call: {what}",
+            if ok { "ok  " } else { "FAIL" },
+            if round { ", scores in bf16" } else { "" }
+        );
+        bad += (!ok) as usize;
+    };
+    let differ = |a: &[u16], b: &[u16]| a.iter().zip(b).filter(|(x, y)| x != y).count();
+    let n_bf = differ(&bf, &pages);
+    say(n_bf == 0, format!("over a bf16 cache through the table, {n_bf} of {} values not the pages' bits", pages.len()));
+    let o1 = Buf::zeroed(2 * width)?;
+    for (b, &(len, first)) in BATCH.iter().enumerate() {
+        let mine = &pages[b * width..(b + 1) * width];
+        call(false, None, b, 1, o1.ptr)?;
+        let alone = read(&o1)?;
+        call(true, None, b, 1, o1.ptr)?;
+        let alone_bf = read(&o1)?;
+        let (x, y) = (differ(&alone, mine), differ(&alone_bf, mine));
+        say(x == 0 && y == 0, format!("{len} tokens from {first} alone, {x} values of the pages' and {y} of the bf16 cache's not its bits in the call"));
+        if !round {
+            let (k, v) = &kv[b];
+            let want = attention(&q[b * width..(b + 1) * width], k, v, first, len, h, g, d);
+            let off = mine.iter().zip(&want).filter(|(x, w)| !((f32_of(**x) as f64 - **w).abs() <= w.abs() * 0.015 + 2e-3)).count();
+            say(off == 0, format!("{len} tokens from {first}, {off} values past 1.5% + 0.002 of the host's attention"));
+        }
+        if len - first <= CAP {
+            // (a ring: token t at t modulo CAP, the later over the earlier)
+            let (mut rk, mut rv) = (vec![0u16; CAP * w], vec![0u16; CAP * w]);
+            for t in 0..len {
+                let p = t % CAP;
+                rk[p * w..(p + 1) * w].copy_from_slice(&kv[b].0[t * w..(t + 1) * w]);
+                rv[p * w..(p + 1) * w].copy_from_slice(&kv[b].1[t * w..(t + 1) * w]);
+            }
+            let (rkb, rvb) = (up16(&rk)?, up16(&rv)?);
+            call(true, Some((rkb.ptr, rvb.ptr, CAP)), b, 1, o1.ptr)?;
+            let ring = read(&o1)?;
+            let z = differ(&ring, mine);
+            say(z == 0, format!("{len} tokens from {first} over a bf16 ring of {CAP} places, {z} values not the pages' bits"));
+        }
+    }
+    lib.kv_floor_set(0)?;
     Ok(bad == 0)
 }
 
@@ -747,6 +945,11 @@ pub fn run() -> Result<bool> {
     for (h, d, g) in [(8, 128, 4), (4, 256, 4), (8, 256, 8), (2, 512, 4), (4, 512, 8), (8, 512, 4)] {
         ok &= shape(&lib, &dev, h, d, g)?;
     }
+    // a batch of sequences in one decode call, at gemma-4-12B's sliding (8 x 256, 2 queries a head) and global (1 x 512, 16 queries as two calls' 8) layers, the Qwen3.5
+    // layout's (2 x 256, 4) and heads of 128
+    for (h, d, g, round) in [(8, 256, 2, true), (1, 512, 8, true), (2, 256, 4, false), (4, 128, 8, false)] {
+        ok &= decode_batch(&lib, &dev, h, d, g, round)?;
+    }
     // the prompt attention: gemma-4-12B's sliding (8 x 256, 2 queries a head) and global (1 x 512, 16) layers among them
     for (h, d, g) in [(8, 128, 4), (4, 256, 4), (8, 256, 2), (1, 512, 16), (2, 512, 4)] {
         ok &= prefill(&lib, &dev, h, d, g)?;
@@ -757,4 +960,33 @@ pub fn run() -> Result<bool> {
     }
     println!("{}", if ok { "the lossless KV cache of every head dimension reads back bit for bit and decodes" } else { "FAILED" });
     Ok(ok)
+}
+
+#[cfg(test)]
+mod tests {
+    /// The bf16 decode's values (gpu/glyd_gpu.cu `bf16_words`, then `transpose8x8` in attn_kernel): a lane reads words 8 i + q and 8 i + 4 + q of the page's tokens g and g + 8, as
+    /// it reads the keys, and one 8 x 8 transpose (movmatrix .trans: lane l holds row l / 4, columns 2 (l % 4) and the next, the first in the low half, before and after) makes each
+    /// of V^T's fragments, which the kernel read a value at a time before: f[i].x channel 16 i + g of tokens 2 q and 2 q + 1, .y the channel 8 on, .z and .w the tokens 8 on.
+    #[test]
+    fn the_values_words_transposed_are_the_gathered_fragments() {
+        let v = |t: usize, c: usize| (t * 128 + c) as u32; // (a page's values [16 tokens][128 channels], each its own)
+        let word = |t: usize, w: usize| v(t, 2 * w) | v(t, 2 * w + 1) << 16;
+        let trans = |w: [u32; 32]| -> [u32; 32] {
+            let m = |r: usize, c: usize| (w[4 * r + c / 2] >> (16 * (c % 2))) & 0xFFFF;
+            std::array::from_fn(|l| m(2 * (l % 4), l / 4) | m(2 * (l % 4) + 1, l / 4) << 16)
+        };
+        for i in 0..8 {
+            // (the words bf16_words gives a lane (g, q) = (l / 4, l % 4): .x row g word 8 i + q, .y word 8 i + 4 + q, .z and .w row g + 8)
+            let read = |row8: usize, w4: usize| trans(std::array::from_fn(|l| word(l / 4 + row8, 8 * i + w4 + l % 4)));
+            let (x, y, z, w) = (read(0, 0), read(0, 4), read(8, 0), read(8, 4));
+            for l in 0..32 {
+                let (g, q) = (l / 4, l % 4);
+                let gathered = |t: usize, c: usize| v(t, c) | v(t + 1, c) << 16;
+                assert_eq!(x[l], gathered(2 * q, 16 * i + g), "x, step {i}, lane {l}");
+                assert_eq!(y[l], gathered(2 * q, 16 * i + 8 + g), "y, step {i}, lane {l}");
+                assert_eq!(z[l], gathered(8 + 2 * q, 16 * i + g), "z, step {i}, lane {l}");
+                assert_eq!(w[l], gathered(8 + 2 * q, 16 * i + 8 + g), "w, step {i}, lane {l}");
+            }
+        }
+    }
 }

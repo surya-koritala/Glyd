@@ -50,6 +50,7 @@
 //!   glyd-engine chat MODEL [--ctx N] [--temp T] [--no-think]  a chat in the terminal, also from a pipe (run's, with --chat)
 //!   glyd-engine kcheck35                                      Qwen3.5's kernels against the CPU reference (src/kcheck35.rs)
 //!   glyd-engine attncheck                                     the attention kind's kernels against an fp64 CPU attention, each family's head and arithmetic (src/dynamic/attn.rs)
+//!   glyd-engine attndecode [--lens 64,170,1024,4096,16384] [--ctx 32768] [--reps 200]   a decode row's attention over bf16 pages at gemma-4-12B's and the Qwen3.5 layout's shapes, us a call in a graph: the parts kernel against the library's (src/dynamic/attn.rs)
 //!   glyd-engine moecheck [CASE...] [--speed] [--no-check] [--dump DIR | --cpu-dump DIR]   the mixture-of-experts layer (src/moe.rs) against the CPU reference on random routers and Int5, Int6 and Int4 experts, and its speed (src/kcheck_moe.rs)
 //!   glyd-engine cpuexperts [--bits 4|5|6] [--threads N] [--kernel auto|scalar|neon|avx2|avx512] [--experts N] [--pairs N] [--reps N] [--tokens N] [--misses M,M,...]   the CPU half of the sparse experts (src/cpu_experts.rs) timed on this computer: Nemotron 3 Super's experts made at random, pairs a second and GB/s read, a decode token's time for M missed experts
 //!   glyd-engine nhkernels IN_DIR OUT_DIR                      Nemotron's kernels on the inputs tools/nemotron_ref.py wrote (src/kcheck_nh.rs); nhlayers DIR IO_DIR: layers of the real model or of a random tiny one with mixture-of-experts layers; nhtoy DIR IO_DIR [--expert-cache GIB|auto|auto:GIB] [--offload-mode MODE] [--cpu-threads N]: a few of its layers as a model (or the whole model through the expert cache, one eager run); nhdecode DIR OUT_DIR --layers L,L [--tokens N]: some layers of a glyd-v7 directory decoded to bf16; nhrandom OUT [--latent N]: a random model at Nemotron 3.5 Lightning's widths
@@ -127,6 +128,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
             }
             Ok(())
         }
+        "attndecode" => glyd_engine::dynamic::attn::time_decode(a),
         "moecheck" => {
             if !glyd_engine::kcheck_moe::run(a)? {
                 std::process::exit(1);
