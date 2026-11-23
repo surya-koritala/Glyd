@@ -6864,6 +6864,308 @@ __global__ void __launch_bounds__(256) combine_kernel(const float* __restrict__ 
     merge_head<DO>(ml + (size_t)bh * splits * G * 2, wo + (size_t)bh * splits * G * DO, out + (int64_t)b * out_stride + (int64_t)h * G * DO, G, head, nparts, lane);
 }
 
+// ---- prompt attention over the pages ----------------------------------------------------------------------------------------------
+// The n rows of a prompt chunk of one sequence (positions start .. start + n - 1), each over the keys from its window's first (pos - window + 1; 0 where there is no window) to
+// itself: those before `start` read from the sequence's pages (its block table), the chunk's own from its bf16 rows (with no rows, from the pages too: written before the call).
+// FlashAttention-2's loop on the tensor cores: a CTA is BM = 16 RG rows of one query head, RG row groups of HALVES warps, warp (rg, hf) its group's 16 rows and the head's channels
+// 128 hf .. 128 hf + 127 (the page's head h HALVES + hf). Keys 32 a tile: two pages decoded by the CTA's warps into shared memory (a warp a stream and a page's head, its bases in
+// registers for the whole call; K's words as the decode gives them, V's through movmatrix) or 32 of the bf16 rows, both into K and V [32][DO + 8] bf16 (a key's channels
+// contiguous; rows 16 bytes apart in the banks, so ldmatrix meets no bank twice). S = Q K^T with the queries' A fragments in registers; a score's shares of the halves summed through
+// shared memory in their order (every warp of a row group the same sums); then rounded to bf16 where asked (before the scale: a bf16 matmul's output), scaled, capped (cap
+// tanh(x / cap), as transformers), masked, the online softmax in fp32 (seeded by the head's sink where there is one), and O += bf16(P) V into the warp's channels.
+constexpr int PKT = 32;  // keys a tile: two pages
+constexpr int PSP = 33;  // a row's floats in the score shares (32 keys and one of padding)
+__host__ __device__ constexpr int pf_shared(int halves, int rg) { return 2 * PKT * (D * halves + 8) * 2 + (halves > 1 ? rg * halves * 16 * PSP * 4 : 0); }
+
+struct PrefillParams {
+    const __nv_bfloat16* q;  // row t's query heads at q + t q_stride: [H G][DO]
+    int64_t q_stride;
+    const __nv_bfloat16* key;  // row t's keys at key + t key_stride: [H][DO] (null: the chunk's keys and values are in the pages)
+    int64_t key_stride;
+    const __nv_bfloat16* value;
+    int64_t value_stride;
+    const uint8_t* pool;
+    int64_t page_stride;
+    const uint8_t* kbase;  // [HP][D]
+    const uint8_t* vbase;
+    const int32_t* bt;  // the sequence's pages: tokens 16 j .. 16 j + 15 in page bt[j]
+    const uint32_t* ent;
+    int nc;
+    RawPool raw;
+    const float* sinks;  // [H G] or null
+    __nv_bfloat16* out;  // row t's at out + t out_stride: [H G][DO]
+    int64_t out_stride;
+    int n, start, window, G, A, hdrb, HP, round;
+    float sl2;    // scale * log2(e)
+    float icap;   // scale / cap (cap 0: none)
+    float capl2;  // cap * log2(e)
+};
+
+__device__ __forceinline__ void ldsm4(uint32_t (&r)[4], const void* p) { ldmatrix_x4(r, (uint32_t)__cvta_generic_to_shared(p)); }
+__device__ __forceinline__ void ldsm4t(uint32_t (&r)[4], const void* p) {
+#if defined(__HIP_PLATFORM_AMD__)
+    glyd_ldsm4t(r, (uint32_t)__cvta_generic_to_shared(p));
+#else
+    asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];\n" : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]) : "r"((uint32_t)__cvta_generic_to_shared(p)));
+#endif
+}
+
+// A score of a tile: its dot product (bf16 where asked), scaled and capped, in log2 units; -infinity where the key is not the row's.
+__device__ __forceinline__ float pf_score(const PrefillParams& P, float x, bool in) {
+    if (P.round) x = __bfloat162float(__float2bfloat16(x));
+    const float y = P.icap > 0.f ? P.capl2 * tanhf(x * P.icap) : x * P.sl2;
+    return in ? y : -INFINITY;
+}
+
+template <int HALVES, int RG>
+__global__ void __launch_bounds__(32 * RG * HALVES, 1) prefill_kernel(const PrefillParams P) {
+    constexpr int DO = D * HALVES, KS = DO + 8, NWP = RG * HALVES, BM = 16 * RG;
+    static_assert(RG % 2 == 0, "the fill: a tile's two pages over the warps of a task in steps of RG / 2");
+    extern __shared__ __align__(16) unsigned char pf_sm[];
+    __nv_bfloat16* Ks = reinterpret_cast<__nv_bfloat16*>(pf_sm);
+    __nv_bfloat16* Vs = Ks + PKT * KS;
+    [[maybe_unused]] float* Sp = reinterpret_cast<float*>(Vs + PKT * KS);
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, t4 = lane & 3, m4 = lane >> 3;
+    const int rg = warp / HALVES, hf = warp % HALVES;
+    const int head = blockIdx.y, h = head / P.G, r0 = blockIdx.x * BM;
+    const int n = P.n, start = P.start, W = P.window;
+    // the CTA's keys: lo (its first row's window) .. hi (past its last row); from the pages up to end1, then (rows given) from the rows, from p1
+    const int lo = W > 0 ? max(0, start + r0 - W + 1) : 0, hi = start + min(n, r0 + BM);
+    const int end1 = P.key ? start : hi, lo16 = lo & ~15, p1 = max(start, lo);
+    const int n0 = lo < end1 ? (end1 - lo16 + PKT - 1) / PKT : 0, n1 = P.key ? (hi - p1 + PKT - 1) / PKT : 0;
+
+    // the queries' A fragments: rows ra (g) and rb (g + 8) of the warp's group, its 128 channels, 16 a step (zeros past n)
+    const int ra = r0 + rg * 16 + g, rb = ra + 8;
+    uint32_t qa[8][4];
+    {
+        const uint32_t* qx = reinterpret_cast<const uint32_t*>(P.q + (int64_t)min(ra, n - 1) * P.q_stride + (int64_t)head * DO + hf * D);
+        const uint32_t* qy = reinterpret_cast<const uint32_t*>(P.q + (int64_t)min(rb, n - 1) * P.q_stride + (int64_t)head * DO + hf * D);
+#pragma unroll
+        for (int ks = 0; ks < 8; ks++) {
+            qa[ks][0] = ra < n ? qx[8 * ks + t4] : 0u;
+            qa[ks][1] = rb < n ? qy[8 * ks + t4] : 0u;
+            qa[ks][2] = ra < n ? qx[8 * ks + 4 + t4] : 0u;
+            qa[ks][3] = rb < n ? qy[8 * ks + 4 + t4] : 0u;
+        }
+    }
+    const int pa = ra < n ? start + ra : -1, pb = rb < n ? start + rb : -1;  // (a row past n takes no key)
+    const int la = W > 0 ? pa - W + 1 : 0, lb = W > 0 ? pb - W + 1 : 0;
+
+    // the warp's part of a page fill: a stream (0 K, 1 V) of a page's head, the pages of the tile from slot warp / (2 HALVES) in steps of RG / 2
+    const int task = warp % (2 * HALVES), stream = task / HALVES, hp = task % HALVES, hpg = h * HALVES + hp;
+    uint32_t hb[16];
+    if (stream == 0) load_bases<0>(P.kbase + hpg * D, lane, *reinterpret_cast<uint32_t(*)[8]>(hb));
+    else load_bases<1>(P.vbase + hpg * D, lane, hb);
+
+    float acc[16][4];  // O: rows ra (acc[j][0], [1]) and rb ([2], [3]), channels 128 hf + 8 j + 2 t4 and the next
+#pragma unroll
+    for (int j = 0; j < 16; j++) acc[j][0] = acc[j][1] = acc[j][2] = acc[j][3] = 0.f;
+    float ma = -INFINITY, mb = -INFINITY, sa = 0.f, sb = 0.f;
+    if (P.sinks) {  // (the sink's logit in the softmax's sum: the state as if a key of that score had been seen, with no value)
+        ma = mb = P.sinks[head] * 1.4426950408889634f;
+        sa = sb = ma == -INFINITY ? 0.f : 1.f;
+    }
+
+    // a page's raw reads for the warp's task: the next tile's, made while this one is computed (on an RTX 4080 SUPER, gemma-4-12B's global layer at a prefix of 8,192: 3.47 ms
+    // a chunk of 256 rows where reading each page as it is decoded takes 3.64)
+    struct Ahead {
+        Raw r;
+        uint4 hd;
+        const uint32_t* pgw;  // the page's `used` word, directory and arena
+    };
+    constexpr int NPW = 4 / RG;            // a tile's pages a warp fills
+    const int slot = warp / (2 * HALVES);  // its first
+    Ahead nx[NPW];
+    const auto load_page = [&](Ahead& a, int pg) {
+        const uint8_t* page = P.pool + (int64_t)__ldg(P.bt + pg) * P.page_stride;
+        a.hd = ldg_stream<0>(page + 16 * hpg);
+        a.pgw = reinterpret_cast<const uint32_t*>(page + 16 * P.HP);
+        raw_load(a.r, page + P.hdrb + (int64_t)hpg * HEADPAGE + stream * TILE, lane);
+    };
+    if (n0 > 0) {
+#pragma unroll
+        for (int u = 0; u < NPW; u++) {
+            const int pg = (lo16 >> 4) + slot + u * (RG / 2);
+            if (16 * pg < end1) load_page(nx[u], pg);
+        }
+    }
+
+    for (int it = 0; it < n0 + n1; it++) {
+        const bool paged = it < n0;
+        const int k0 = paged ? lo16 + PKT * it : p1 + PKT * (it - n0), kend = paged ? end1 : hi;
+        __syncthreads();  // (the tile before is read)
+        if (paged) {
+#pragma unroll
+            for (int u = 0; u < NPW; u++) {
+                const int p = slot + u * (RG / 2), pg = (k0 >> 4) + p;
+                __nv_bfloat16* rows = (stream == 0 ? Ks : Vs) + 16 * p * KS + hp * D;  // the page's 16 keys, the task's 128 channels
+                if (16 * pg >= end1) {  // (past the keys the pages hold for this call: zeros)
+#pragma unroll
+                    for (int i = lane; i < 16 * 16; i += 32) *reinterpret_cast<uint4*>(rows + (i >> 4) * KS + (i & 15) * 8) = make_uint4(0, 0, 0, 0);
+                    continue;
+                }
+                uint4 f[8];
+                if (stream == 0) {
+                    decode_tile<0>(nx[u].r, hb, nx[u].hd, nx[u].pgw, P.ent, P.nc, P.A, P.raw, hpg, lane, f);
+#pragma unroll
+                    for (int i = 0; i < 16; i++) {  // group i: key 8 (i & 1) + g, channels 16 (i >> 1) + 2 t4 + {0, 1} and + {8, 9}
+                        const uint4& c = f[i >> 1];
+                        uint32_t* w = reinterpret_cast<uint32_t*>(rows + (8 * (i & 1) + g) * KS + 16 * (i >> 1) + 2 * t4);
+                        w[0] = (i & 1) ? c.y : c.x;
+                        w[4] = (i & 1) ? c.w : c.z;
+                    }
+                } else {
+                    decode_tile<1>(nx[u].r, hb, nx[u].hd, nx[u].pgw, P.ent, P.nc, P.A, P.raw, hpg, lane, f);
+                    const int tlo = lo - 16 * pg, thi = end1 - 16 * pg;  // the page's keys of this call: tlo .. thi (the others' values zero: a recycled page's bytes can be infinities)
+                    if (tlo > 0 || thi < 16) {
+                        const auto in = [&](int t) { return t >= tlo && t < thi; };
+                        const uint32_t k0m = (in(2 * t4) ? 0x0000FFFFu : 0u) | (in(2 * t4 + 1) ? 0xFFFF0000u : 0u);
+                        const uint32_t k1m = (in(2 * t4 + 8) ? 0x0000FFFFu : 0u) | (in(2 * t4 + 9) ? 0xFFFF0000u : 0u);
+#pragma unroll
+                        for (int i = 0; i < 8; i++) {
+                            f[i].x &= k0m;
+                            f[i].y &= k0m;
+                            f[i].z &= k1m;
+                            f[i].w &= k1m;
+                        }
+                    }
+                    // f[i]: channels 16 i + g (x: keys 2 t4, + 1; z: 8 + 2 t4, + 1) and 16 i + 8 + g (y, w); transposed, a word is two channels of one key
+                    uint32_t* w0 = reinterpret_cast<uint32_t*>(rows + g * KS + 2 * t4);
+                    uint32_t* w8 = reinterpret_cast<uint32_t*>(rows + (8 + g) * KS + 2 * t4);
+#pragma unroll
+                    for (int i = 0; i < 8; i++) {
+                        w0[8 * i] = transpose8x8(f[i].x);
+                        w0[8 * i + 4] = transpose8x8(f[i].y);
+                        w8[8 * i] = transpose8x8(f[i].z);
+                        w8[8 * i + 4] = transpose8x8(f[i].w);
+                    }
+                }
+            }
+            if (it + 1 < n0) {  // the next tile's pages on their way while this one is computed
+#pragma unroll
+                for (int u = 0; u < NPW; u++) {
+                    const int pg = ((k0 + PKT) >> 4) + slot + u * (RG / 2);
+                    if (16 * pg < end1) load_page(nx[u], pg);
+                }
+            }
+        } else {
+            constexpr int C8 = DO / 8;  // a row's 16-byte chunks
+            for (int c = threadIdx.x; c < 2 * PKT * C8; c += 32 * NWP) {
+                const int isv = c >= PKT * C8, cc = isv ? c - PKT * C8 : c, j = cc / C8, c8 = cc % C8, kp = k0 + j;
+                uint4 v = make_uint4(0, 0, 0, 0);
+                if (kp < hi) v = __ldg(reinterpret_cast<const uint4*>((isv ? P.value : P.key) + (int64_t)(kp - start) * (isv ? P.value_stride : P.key_stride) + (int64_t)h * DO) + c8);
+                *reinterpret_cast<uint4*>((isv ? Vs : Ks) + j * KS + c8 * 8) = v;
+            }
+        }
+        __syncthreads();
+
+        // S [16 rows][32 keys] = Q K^T over the warp's 128 channels: 4 n-tiles of 8 keys
+        float s[4][4];
+#pragma unroll
+        for (int j = 0; j < 4; j++) s[j][0] = s[j][1] = s[j][2] = s[j][3] = 0.f;
+#pragma unroll
+        for (int ks = 0; ks < 8; ks++) {
+#pragma unroll
+            for (int np = 0; np < 2; np++) {
+                uint32_t b[4];
+                ldsm4(b, Ks + (np * 16 + (m4 >> 1) * 8 + (lane & 7)) * KS + hf * D + ks * 16 + (m4 & 1) * 8);
+                mma(s[2 * np], qa[ks][0], qa[ks][1], qa[ks][2], qa[ks][3], b[0], b[1]);
+                mma(s[2 * np + 1], qa[ks][0], qa[ks][1], qa[ks][2], qa[ks][3], b[2], b[3]);
+            }
+        }
+        if constexpr (HALVES > 1) {  // the halves' shares summed in their order
+            float* myS = Sp + (rg * HALVES + hf) * 16 * PSP;
+#pragma unroll
+            for (int j = 0; j < 4; j++) {
+                myS[g * PSP + j * 8 + 2 * t4] = s[j][0];
+                myS[g * PSP + j * 8 + 2 * t4 + 1] = s[j][1];
+                myS[(g + 8) * PSP + j * 8 + 2 * t4] = s[j][2];
+                myS[(g + 8) * PSP + j * 8 + 2 * t4 + 1] = s[j][3];
+            }
+            __syncthreads();
+            const float* gS = Sp + rg * HALVES * 16 * PSP;
+#pragma unroll
+            for (int j = 0; j < 4; j++) {
+#pragma unroll
+                for (int e = 0; e < 2; e++) {
+                    const int col = j * 8 + 2 * t4 + e;
+                    float xa = gS[g * PSP + col], xb = gS[(g + 8) * PSP + col];
+#pragma unroll
+                    for (int d = 1; d < HALVES; d++) {
+                        xa += gS[(d * 16 + g) * PSP + col];
+                        xb += gS[(d * 16 + g + 8) * PSP + col];
+                    }
+                    s[j][e] = xa;
+                    s[j][2 + e] = xb;
+                }
+            }
+        }
+        // the scores in log2 units, masked; the running maxima and sums (a row's 4 lanes share g)
+        float mxa = ma, mxb = mb;
+#pragma unroll
+        for (int j = 0; j < 4; j++) {
+#pragma unroll
+            for (int e = 0; e < 2; e++) {
+                const int kp = k0 + j * 8 + 2 * t4 + e;
+                s[j][e] = pf_score(P, s[j][e], kp >= la && kp <= pa && kp < kend);
+                s[j][2 + e] = pf_score(P, s[j][2 + e], kp >= lb && kp <= pb && kp < kend);
+                mxa = fmaxf(mxa, s[j][e]);
+                mxb = fmaxf(mxb, s[j][2 + e]);
+            }
+        }
+        mxa = fmaxf(mxa, __shfl_xor_sync(FULLM, mxa, 1));
+        mxa = fmaxf(mxa, __shfl_xor_sync(FULLM, mxa, 2));
+        mxb = fmaxf(mxb, __shfl_xor_sync(FULLM, mxb, 1));
+        mxb = fmaxf(mxb, __shfl_xor_sync(FULLM, mxb, 2));
+        const float ca = mxa == -INFINITY ? 1.f : ex2(ma - mxa), cb = mxb == -INFINITY ? 1.f : ex2(mb - mxb);
+        float ta = 0.f, tb = 0.f;
+#pragma unroll
+        for (int j = 0; j < 4; j++) {
+#pragma unroll
+            for (int e = 0; e < 2; e++) {
+                s[j][e] = mxa == -INFINITY ? 0.f : ex2(s[j][e] - mxa);
+                s[j][2 + e] = mxb == -INFINITY ? 0.f : ex2(s[j][2 + e] - mxb);
+                ta += s[j][e];
+                tb += s[j][2 + e];
+            }
+        }
+        ta += __shfl_xor_sync(FULLM, ta, 1);
+        ta += __shfl_xor_sync(FULLM, ta, 2);
+        tb += __shfl_xor_sync(FULLM, tb, 1);
+        tb += __shfl_xor_sync(FULLM, tb, 2);
+        sa = sa * ca + ta;
+        sb = sb * cb + tb;
+        ma = mxa;
+        mb = mxb;
+#pragma unroll
+        for (int j = 0; j < 16; j++) {
+            acc[j][0] *= ca;
+            acc[j][1] *= ca;
+            acc[j][2] *= cb;
+            acc[j][3] *= cb;
+        }
+        // O += bf16(P) V: the probabilities as the A operand, 16 keys a step; V's rows through ldmatrix.trans
+#pragma unroll
+        for (int kk = 0; kk < 2; kk++) {
+            const uint32_t a0 = pack_bf16x2(s[2 * kk][0], s[2 * kk][1]), a1 = pack_bf16x2(s[2 * kk][2], s[2 * kk][3]);
+            const uint32_t a2 = pack_bf16x2(s[2 * kk + 1][0], s[2 * kk + 1][1]), a3 = pack_bf16x2(s[2 * kk + 1][2], s[2 * kk + 1][3]);
+#pragma unroll
+            for (int np = 0; np < 8; np++) {
+                uint32_t b[4];
+                ldsm4t(b, Vs + (kk * 16 + (m4 & 1) * 8 + (lane & 7)) * KS + hf * D + np * 16 + (m4 >> 1) * 8);
+                mma(acc[2 * np], a0, a1, a2, a3, b[0], b[1]);
+                mma(acc[2 * np + 1], a0, a1, a2, a3, b[2], b[3]);
+            }
+        }
+    }
+#pragma unroll
+    for (int j = 0; j < 16; j++) {
+        const int c = head * DO + hf * D + j * 8 + 2 * t4;
+        if (ra < n) *reinterpret_cast<__nv_bfloat162*>(P.out + (int64_t)ra * P.out_stride + c) = __floats2bfloat162_rn(sa > 0.f ? acc[j][0] / sa : 0.f, sa > 0.f ? acc[j][1] / sa : 0.f);
+        if (rb < n) *reinterpret_cast<__nv_bfloat162*>(P.out + (int64_t)rb * P.out_stride + c) = __floats2bfloat162_rn(sb > 0.f ? acc[j][2] / sb : 0.f, sb > 0.f ? acc[j][3] / sb : 0.f);
+    }
+}
+
 }  // namespace kvc
 
 // ---------------------------------------------------------------------------
@@ -11388,6 +11690,38 @@ GLYD_GPU_INTERNAL int glyd_gpu_kv_decode(const uint16_t* q, int64_t q_stride, co
                                     double scale, uint16_t* out, int64_t out_stride, void* workspace, size_t workspace_bytes, cudaStream_t cs) {
     return glyd_gpu_kv_decode_from(q, q_stride, pool, page_stride, kbase, vbase, block_table, bt_stride, seq_lens, nullptr, 0, B, splits, H, G, D, A, escape, nchunks, raw, nslabs, scale, out,
                                    out_stride, workspace, workspace_bytes, cs);
+}
+
+GLYD_GPU_INTERNAL int glyd_gpu_kv_prefill(const uint16_t* q, int64_t q_stride, const uint16_t* key, int64_t key_stride, const uint16_t* value, int64_t value_stride, int64_t n, int64_t start,
+                                     int64_t window, const uint8_t* pool, int64_t page_stride, const uint8_t* kbase, const uint8_t* vbase, const int32_t* block_table, int64_t H, int64_t G,
+                                     int64_t D, int64_t A, const uint8_t* escape, int64_t nchunks, const uint8_t* raw, int64_t nslabs, double scale, int64_t round_scores, double softcap,
+                                     const float* sinks, uint16_t* out, int64_t out_stride, cudaStream_t cs) {
+    int64_t page;
+    if (kv_one(D) || glyd_gpu_kv_leaf_bytes(H, D, A, &page) || page_stride < page || page_stride % 16 || (uintptr_t)pool % 16 || !kv_escape_ok(escape, nchunks) || !kv_raw_ok(raw, nslabs)) return cudaErrorInvalidValue;
+    if (n < 0 || start < 0 || window < 0 || start + n > INT32_MAX || G < 1 || H * G > 65535 || !(softcap >= 0.0) || !std::isfinite(scale) || !std::isfinite(softcap)) return cudaErrorInvalidValue;
+    if (!n) return 0;
+    const int64_t W = H * G * D;  // a row's query heads (and its output's)
+    if (!q || !out || !kbase || !vbase || (start > 0 && !block_table) || (!key && !block_table) || q_stride < W || out_stride < W || q_stride % 2 || out_stride % 2 || (uintptr_t)q % 4 || (uintptr_t)out % 4) return cudaErrorInvalidValue;
+    if (key && (!value || key_stride < H * D || value_stride < H * D || key_stride % 8 || value_stride % 8 || (uintptr_t)key % 16 || (uintptr_t)value % 16)) return cudaErrorInvalidValue;
+    const kvc::EscapePool E = kvc::esc_of((uint8_t*)escape, nchunks);
+    const int HP = kv_heads(H, D), halves = (int)(D / kvc::D);
+    kvc::PrefillParams P{bf(q), q_stride, bf(key), key_stride, bf(value), value_stride, pool, page_stride, kbase, vbase, block_table, E.ent, E.nc, kvc::raw_of((uint8_t*)raw, nslabs, HP), sinks, bf(out),
+                         out_stride, (int)n, (int)start, (int)std::min<int64_t>(window, INT32_MAX), (int)G, (int)A, kvc::hdr_bytes(HP, (int)A), HP, (int)(round_scores != 0),
+                         (float)(scale * 1.4426950408889634), softcap > 0.0 ? (float)(scale / softcap) : 0.f, (float)(softcap * 1.4426950408889634)};
+    // (the CTA's row groups of 16, measured on an RTX 4080 SUPER, gemma-4-12B's shapes, a chunk of 256 rows after 1,024 to 8,192 tokens: heads of 256, 4 (one CTA an SM,
+    // 64 of them): 0.186 to 0.189 ms, where 2 (two an SM, 128) took 0.224 to 0.229; heads of 512, 2: 4 would hold more registers than the SM has)
+    const auto launch = [&](auto kernel, int hv, int groups) {
+        const int shared = kvc::pf_shared(hv, groups);
+        if (shared > 48 * 1024 && cudaFuncSetAttribute((const void*)kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared) != cudaSuccess) {
+            cudaGetLastError();  // (the GPU has not the shared memory a CTA takes: an RDNA card's 64 KB for heads of 512)
+            return (int)cudaErrorNotSupported;
+        }
+        kernel<<<dim3((unsigned)((n + 16 * groups - 1) / (16 * groups)), (unsigned)(H * G)), 32 * groups * hv, shared, cs>>>(P);
+        return (int)cudaGetLastError();
+    };
+    if (halves == 1) return launch(kvc::prefill_kernel<1, 4>, 1, 4);
+    if (halves == 2) return launch(kvc::prefill_kernel<2, 4>, 2, 4);
+    return launch(kvc::prefill_kernel<4, 2>, 4, 2);
 }
 
 // The kernels' partition a sequence has at least (glyd_gpu_kv_decode's plan: its CTAs from the sequence's own length, at least
