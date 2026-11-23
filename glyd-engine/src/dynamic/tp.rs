@@ -11,7 +11,7 @@ use super::{Opts, Stage};
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result, Stream};
 use crate::launch;
-use crate::model::Sample;
+use crate::sched::Sample;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -548,8 +548,8 @@ impl Tp {
     }
 
     /// A reply as `Split::reply` gives one.
-    pub fn reply(&mut self, prompt: &[u32], o: &crate::model::Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, crate::model::Finish)> {
-        use crate::model::Finish;
+    pub fn reply(&mut self, prompt: &[u32], o: &crate::sched::Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, crate::sched::Finish)> {
+        use crate::sched::Finish;
         if prompt.is_empty() || prompt.len() + 1 > self.ctx {
             return err(format!("{} prompt tokens, where the context holds {}", prompt.len(), self.ctx));
         }

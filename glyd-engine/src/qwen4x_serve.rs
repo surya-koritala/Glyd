@@ -7,13 +7,13 @@
 
 use crate::args::Args;
 use crate::ffi::{err, Error, Result};
-use crate::model::{Finish, Reply};
 use crate::model_qwen4x::{EngineQx, MtpRun, OptsQx, SeqQx, SPEC_ROWS};
 use crate::moe_glm_cb::CbPack;
 use crate::moe_qwen4x::{factory, QxCbShared};
 use crate::offload::{ExpertStore, Mode, Offload, Stats};
 use crate::qwen4x::ConfigQx;
 use crate::sched::{Ev, Submit};
+use crate::sched::{Finish, Reply};
 use crate::server::{self, Job, Shared};
 use crate::weights::Layout;
 use glyd_gpu::json::{self, Value};
@@ -460,8 +460,8 @@ pub fn http(snap: &Path, pack_dir: &Path, a: &Args) -> Result<()> {
     let name = a.flag("name").unwrap_or("qwen3.8-flash-next").to_string();
     let ctx = a.num("ctx", 33536usize)?;
     let users = a.num("users", 4usize)?;
-    if !(1..=crate::model::MAX_ROWS).contains(&users) {
-        return err(format!("--users {users}: 1 to {} requests at once", crate::model::MAX_ROWS));
+    if !(1..=crate::sched::MAX_ROWS).contains(&users) {
+        return err(format!("--users {users}: 1 to {} requests at once", crate::sched::MAX_ROWS));
     }
     let window = ctx - 2;
     // (the mode the Monitor and qwenbench name: best's experts are the folder qwenget --best makes)

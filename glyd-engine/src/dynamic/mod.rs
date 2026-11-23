@@ -30,11 +30,12 @@ pub mod tp_cache;
 use crate::dev::{copy_d2d_async, copy_d2h_async, copy_h2d_async, Buf, Dev, Ev, Graph, Pinned};
 use crate::ffi::{err, Error, Lib, Result};
 use crate::gemma4::{pf_kib, rotary, G4Pf, KernG4, EMBED_GROUPS};
+use crate::kern::{embed_plan, TopGpu};
 use crate::kern::{norm_threads, Kern};
 use crate::kern35::{Kern35, Mat};
 use crate::kern_nh::{KernNh, MoeBlock, SsdWs};
 use crate::launch;
-use crate::model::{embed_plan, Sample, TopGpu};
+use crate::sched::Sample;
 use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload_packed, Item, Layout, PackBuf};
 pub use attn::AttnOp;
 use glyd_gpu::safetensors::Checkpoint;
@@ -2608,8 +2609,8 @@ impl crate::conv::Gen for Dyn {
         })
     }
 
-    fn reply(&mut self, prompt: &[u32], o: &crate::model::Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, crate::model::Finish)> {
-        use crate::model::Finish;
+    fn reply(&mut self, prompt: &[u32], o: &crate::sched::Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, crate::sched::Finish)> {
+        use crate::sched::Finish;
         if prompt.is_empty() || prompt.len() + 1 > self.ctx {
             return err(format!("{} prompt tokens, where the context holds {}", prompt.len(), self.ctx));
         }

@@ -4,9 +4,9 @@
 //! (`mtp_request`); drafting from the text before was taken out (it followed another project's code, and Glyd's code is its own). `glm_serve.rs` calls `decode` and `mtp_request` and nothing else of them.
 
 use crate::ffi::Result;
-use crate::model::Sample;
 use crate::model_glm::EngineGlm;
 use crate::offload::ExpertStore;
+use crate::sched::Sample;
 use std::rc::Rc;
 use std::time::Instant;
 

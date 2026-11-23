@@ -7,19 +7,25 @@
 //! that holds a lost block has the step's output taken back, never used or sent: it gives its pages back and waits until the sequences that were running with it have finished, then runs again from its tokens; one that is lost
 //! alone twice, or six times, ends with an error in words. Lost and heavy blocks are never kept in the prefix cache.
 //!
-//! The scheduler is the same for every model: it drives a `ModelStep` (docs/design/runtime.md, section 2). A step keeps its cache one of two ways: pages shared by every sequence (the dense Qwen3 engine's,
-//! with the prefix cache and preemption above), or a room of the whole context for each of a few sequences (`ModelStep::slots`: the description executor, `src/dynamic`), where a sequence holds one slot from
+//! The scheduler is the same for every model: it drives a `ModelStep` (docs/design/runtime.md, section 2). A step keeps its cache one of two ways: pages shared by every sequence (with the prefix cache and
+//! preemption above: the scheduler's own tests' steps, since the dense Qwen3 engine went onto the executor), or a room of the whole context for each of a few sequences (`ModelStep::slots`: the description executor, `src/dynamic`), where a sequence holds one slot from
 //! its admission to its end, nothing is shared and nothing is preempted for room.
 
 use crate::ffi::{Error, Kind, Result};
 use crate::kv::{block_hash, block_names, block_root, Lost, Pager, ALONE_MESSAGE, PAGE};
-use crate::model::{Engine, FUSED_ROWS, MAX_ROWS};
 use crate::runtime::context::Context;
 use crate::sampler::{logprobs_of, Lp, Sampler};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
+
+/// Rows a step on pages takes at most, and the steps counted by their rows (`Stats::by_rows`: 0 to 7, and 8 or more in the last).
+pub const MAX_ROWS: usize = 8;
+
+/// The most rows of a product the library's own route takes whatever the GPU (`decoded_way`: past it a product may take the decoded matrix's way): a prompt chunk of at most this many
+/// tokens is run with others in one pass (a longer one is its own: it is compute-bound, and the weights are read once for it).
+pub const FUSED_ROWS: usize = 64;
 
 /// What a request is sent when its sequence runs: each token as it is chosen, and last how the sequence ended. Where the request asks for log-probabilities, an `Lp` of a token comes before the token
 /// (the end-of-sequence token's, which is no token of the reply, before the end).
@@ -248,61 +254,6 @@ pub trait ModelStep {
     }
 }
 
-impl ModelStep for &mut Engine {
-    fn window(&self) -> usize {
-        self.capacity()
-    }
-    fn chunk(&self) -> usize {
-        Engine::chunk(self)
-    }
-    fn pages(&self) -> usize {
-        self.pool_pages()
-    }
-    fn eos(&self) -> Vec<i64> {
-        self.w.cfg.eos.clone()
-    }
-    fn prefill(&mut self, pages: &[i32], start: usize, tokens: &[u32], last: bool) -> Result<Option<Sample>> {
-        self.prefill_chunk(pages, start, tokens, last)
-    }
-    fn prefill_rows(&self) -> usize {
-        // (the prompts of up to 8 sequences in a pass; GLYD_ENGINE_BATCH_PREFILL=0: one prompt a pass, as before. A pass of more than 64 rows takes the products' route its rows give, so with several prompts at
-        // once a reply's last bits can differ from the same prompt's alone (the same token in nearly every case: `glyd-engine batchcheck`); =0 keeps every reply identical to solo)
-        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_none_or(|v| v != "0")) {
-            MAX_ROWS
-        } else {
-            1
-        }
-    }
-    fn prefill_together(&self) -> usize {
-        FUSED_ROWS
-    }
-    fn prefill_many(&mut self, jobs: &[PrefillJob]) -> Result<Vec<Option<Sample>>> {
-        self.prefill_batch(jobs)
-    }
-    fn masks(&mut self, masks: Vec<Option<crate::constrain::MaskHandle>>) {
-        self.set_masks(masks)
-    }
-    fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
-        self.decode_batch(rows)
-    }
-    fn logits(&mut self, row: usize) -> Result<Vec<f32>> {
-        self.read_logits_row(row)
-    }
-    fn release(&mut self, pages: &[i32]) -> Result<()> {
-        self.release_pages(pages)
-    }
-    fn verify(&mut self, pages: &[i32]) -> Result<()> {
-        self.verify_pages(pages)
-    }
-    fn lost(&mut self) -> Lost {
-        self.take_lost()
-    }
-    fn top(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
-        self.candidates(row)
-    }
-}
-
 /// What the scheduler has done (read by the server's /stats): prompt tokens run or found in the cache, sequences sent back to wait for pages, steps and the rows in them.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct Stats {
@@ -376,8 +327,8 @@ pub fn stats_json_of(rt: &Context) -> String {
     // a development build's figures are all of them; a release build's are the counts a user reads
     if cfg!(feature = "dev") {
         format!(
-            "{{\"prompt_tokens\":{},\"prefix_hit_tokens\":{hit},\"prefix_hit_rate_percent\":{rate},\"preemptions\":{},\"swapped\":{},\"steps\":{},\"rows\":{},\"running\":{},\"waiting\":{},\"decode_ms\":{},\"prefill_ms\":{},\"rounds_ms\":{},\"release_ms\":{},\"admit_ms\":{},\"after_ms\":{},\"before_ms\":{},\"lost_blocks\":{},\"heavy_blocks\":{},\"taken_back\":{},\"ended_for_loss\":{},\"steps_by_rows\":[{}],\"prefill_rounds\":{},\"decode_prep_ms\":{},\"decode_wait_ms\":{},\"decode_post_ms\":{},\"decode_graph_ms\":{},\"values_checked\":{},\"values_differ\":{},\"values_in_lost_blocks\":{}{experts}}}",
-            v[0], v[2], v[29], v[3], v[4], v[5], v[6], v[7] / 1_000_000, v[8] / 1_000_000, v[9] / 1_000_000, v[10] / 1_000_000, v[11] / 1_000_000, v[12] / 1_000_000, v[13] / 1_000_000, v[14], v[15], v[16], v[17], v[18..27].iter().map(u64::to_string).collect::<Vec<_>>().join(","), v[27], crate::model::DECODE_PREP_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_WAIT_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_POST_NS.load(Relaxed) / 1_000_000, crate::model::DECODE_GPU_NS.load(Relaxed) / 1_000_000, crate::model::VERIFY_CHECKED.load(Relaxed), crate::model::VERIFY_DIFFER.load(Relaxed), crate::model::VERIFY_LOST.load(Relaxed)
+            "{{\"prompt_tokens\":{},\"prefix_hit_tokens\":{hit},\"prefix_hit_rate_percent\":{rate},\"preemptions\":{},\"swapped\":{},\"steps\":{},\"rows\":{},\"running\":{},\"waiting\":{},\"decode_ms\":{},\"prefill_ms\":{},\"rounds_ms\":{},\"release_ms\":{},\"admit_ms\":{},\"after_ms\":{},\"before_ms\":{},\"lost_blocks\":{},\"heavy_blocks\":{},\"taken_back\":{},\"ended_for_loss\":{},\"steps_by_rows\":[{}],\"prefill_rounds\":{}{experts}}}",
+            v[0], v[2], v[29], v[3], v[4], v[5], v[6], v[7] / 1_000_000, v[8] / 1_000_000, v[9] / 1_000_000, v[10] / 1_000_000, v[11] / 1_000_000, v[12] / 1_000_000, v[13] / 1_000_000, v[14], v[15], v[16], v[17], v[18..27].iter().map(u64::to_string).collect::<Vec<_>>().join(","), v[27]
         )
     } else {
         format!(
@@ -624,7 +575,7 @@ pub struct Sched<B: ModelStep> {
 }
 
 impl<B: ModelStep> Sched<B> {
-    /// A scheduler for up to `users` sequences at a step: 1 to MAX_ROWS on pages (the dense engine's decode step), at most a slot step's slots and MAX_USERS on slots (their rooms are what the
+    /// A scheduler for up to `users` sequences at a step: 1 to MAX_ROWS on pages, at most a slot step's slots and MAX_USERS on slots (their rooms are what the
     /// memory holds).
     pub fn new(be: B, users: usize) -> Sched<B> {
         let slots = be.slots();
@@ -2541,7 +2492,7 @@ pub(crate) mod tests {
     fn stats_are_json_with_the_losses() {
         let v = glyd_gpu::json::parse(&stats_json()).expect("valid JSON");
         let user = ["prompt_tokens", "prefix_hit_tokens", "prefix_hit_rate_percent", "preemptions", "steps", "rows", "running", "waiting"];
-        let dev = ["before_ms", "lost_blocks", "heavy_blocks", "taken_back", "ended_for_loss", "values_checked", "values_differ", "values_in_lost_blocks"];
+        let dev = ["before_ms", "lost_blocks", "heavy_blocks", "taken_back", "ended_for_loss", "prefill_rounds"];
         for k in user {
             assert!(v.get(k).is_some(), "no {k}");
         }

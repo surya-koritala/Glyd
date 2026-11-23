@@ -28,7 +28,8 @@ the recent families is the first priority.
 
 1. **Names.** `ModelStep` is what the scheduler drives (today's `sched::Backend`, renamed). `Backend` is a vendor (CUDA, HIP,
    Metal through MLX, CPU) and implements layer kinds. `Device` is the CUDA/HIP device layer under those two backends (R1, R15).
-   `Engine` is the request-level interface the API front ends share (R11); `model::Engine` goes away with `model.rs` (R3c).
+   `Engine` is the request-level interface the API front ends share (R11); `model::Engine` went with `model.rs` (R3c, #139: Qwen3 dense is a
+   Llama-style description on the executor, `src/dynamic/dense.rs`).
 2. **One step over a flat batch.** A step takes a list of sequences, each contributing 1 token (decode), 1+k tokens (decode with
    drafts) or a prompt chunk, packed into one token list. There is no prefill or decode mode; a step is the tokens of every row
    the budget admits, decode rows first, then prompt chunks (Sarathi-Serve, vLLM V1).
@@ -664,9 +665,11 @@ Recent families first; the legacy pipelines move last, at parity, so they can be
 | 11 | the standard families: Llama 3, Mistral, Qwen 2/2.5, Phi-4, Granite, OLMo, SmolLM (the M2 gate's list) | F1a #166, F1b #167, F1d #169, F1e #170, F1h #173 | one GQA + SwiGLU kind with parameters; proves "config only" | the vLLM plugin path for them (F7, later) |
 | 12 | legacy at parity: Qwen3.5/3.6 and gemma-4-31B (same code as step 5), Nemotron-3-Super/Nemotron-H, Qwen3 dense with its lossless paged KV | R3b #137, R3c #139 | pipelines deleted; no optimisation beyond parity | `model35.rs`, `model_gemma4.rs`, `model_nh.rs`, `model.rs` |
 
-Steps 5 and 6 run in parallel once step 4 has landed, and step 7 can start with 5. The legacy Qwen3 path keeps serving until step 12;
+Steps 5 and 6 run in parallel once step 4 has landed, and step 7 can start with 5. The legacy Qwen3 path served until step 12;
 its measured numbers (59.9 tok/s at 1 user, 452.7 at 8 on the 4080 SUPER) are the parity bar there and the reference for what batching
-must give the recent families in step 5.
+must give the recent families in step 5. Step 12's Qwen3 part is R3c (#139): Qwen3 dense, and every config the description builder's
+`llama` reading takes, lowered to the shared operations (`lower::dense`) and served by the scheduler with paged keys and values;
+`model.rs` and what only it used are deleted. Its parity against that bar is the GPU check's to measure.
 
 ## 8. Prior art
 

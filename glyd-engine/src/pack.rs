@@ -132,11 +132,31 @@ pub fn gemma4_plan(c: &crate::gemma4::ConfigG4) -> String {
     format!("{{\"puts\": [{}]}}", puts.join(", "))
 }
 
-/// The save plan of the lossy level `level` for the model in `dir` where it is a dense Qwen3.5, a NemotronH or a GLM-5.3-Flash one (`qwen35_plan`, `nemotron_plan`, `glm_plan`), else none. A config of GLM-5.3-Flash that the
-/// engine does not run is an error that says why, not a model of no known kind.
+/// The plan of a model the executor loads by its description alone (`dynamic::ModelDesc`: the Llama-style dense ones, src/dynamic/dense.rs): each matrix packed, its members fused
+/// under the first one's name as the loader reads it back (`dynamic::load_part`), each small tensor copied (one the checkpoint holds as F32, `f32`, cast to bf16).
+pub fn desc_plan(d: &crate::dynamic::ModelDesc, f32: &dyn Fn(&str) -> bool) -> String {
+    let q = |n: &str| format!("\"{n}\"");
+    let mut puts: Vec<String> = d
+        .mats
+        .iter()
+        .map(|it| {
+            let n = it.members.iter().map(|m| q(m.trim_end_matches(".weight"))).collect::<Vec<_>>().join(", ");
+            format!("{{\"linear\": [{n}], \"from\": [{n}]}}")
+        })
+        .collect();
+    puts.extend(d.small.iter().map(|t| format!("{{\"copy\": {}{}}}", q(t), if f32(t) { ", \"cast\": \"BF16\"" } else { "" })));
+    format!("{{\"puts\": [{}]}}", puts.join(", "))
+}
+
+/// The save plan of the level `level` for the model in `dir` where it is a Gemma 4, a Llama-style dense, a dense Qwen3.5, a NemotronH or a GLM-5.3-Flash one (`gemma4_plan`, `desc_plan`,
+/// `qwen35_plan`, `nemotron_plan`, `glm_plan`), else none. A config of GLM-5.3-Flash that the engine does not run is an error that says why, not a model of no known kind.
 fn level_plan(dir: &Path, level: Layout) -> Result<Option<String>> {
     if let Ok(g) = crate::gemma4::ConfigG4::load(dir) {
         return Ok(Some(gemma4_plan(&g)));
+    }
+    if std::fs::read_to_string(dir.join("config.json")).is_ok_and(|t| crate::dynamic::dense::is_dense(&t)) {
+        let ck = io(Checkpoint::open(dir))?;
+        return Ok(Some(desc_plan(&crate::dynamic::dense::lowered(dir)?, &|n: &str| ck.get(n).is_some_and(|(_, t)| t.dtype == "F32"))));
     }
     let glm = if std::fs::read_to_string(dir.join("config.json")).is_ok_and(|t| crate::glm::is_glm(&t)) { Some(ConfigGlm::load(dir)?) } else { None };
     let (qwen35, nemotron) = (Config35::load(dir).ok(), ConfigNemotronH::load(dir).ok());
@@ -159,7 +179,9 @@ pub fn run(model: &str, out: &Path, threads: usize, layout: Layout) -> Result<()
 /// `run`, saying nothing where `quiet` (a caller with a bar of its own).
 pub fn run_with(model: &str, out: &Path, threads: usize, layout: Layout, quiet: bool) -> Result<()> {
     let source = io(Source::find(model))?;
-    let gemma = crate::gemma4::ConfigG4::load(&source.dir).is_ok();
+    // (a Gemma 4 model's and a Llama-style dense one's penguin is a glyd-v7 save too: the executor reads its packs as saved)
+    let gemma = crate::gemma4::ConfigG4::load(&source.dir).is_ok()
+        || std::fs::read_to_string(source.dir.join("config.json")).is_ok_and(|t| crate::dynamic::dense::is_dense(&t));
     let t0 = Instant::now();
     let mut have = out.join("glyd.json").exists();
     if have && crate::weights::earlier_format(out).is_some() {
@@ -185,7 +207,7 @@ pub fn run_with(model: &str, out: &Path, threads: usize, layout: Layout, quiet: 
         }
     } else {
         // (a lossy level of a dense Qwen3.5, a NemotronH or a GLM-5.3-Flash model: the loader's own packs and tensors, in the checkpoint's names)
-        // (and penguin of a Gemma 4 model: its engine reads the packs as saved, a glyd-v7 directory of level penguin)
+        // (and penguin of a Gemma 4 model or a Llama-style dense one: the executor reads the packs as saved, a glyd-v7 directory of level penguin)
         let planned = if matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3) || (layout == Layout::Tiered && gemma) {
             level_plan(&source.dir, layout)?
         } else {
@@ -854,6 +876,33 @@ mod tests {
                     "{key}"
                 );
             }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A Llama-style dense model (the logits checks' random Qwen3) packed at penguin is a glyd-v7 save the executor reads as saved: each matrix of its lowered description (q, k
+    /// and v under q's name; gate and up under gate's; the embedding, the head) a lossless pack under its first member's name at the description's rows and columns, each small
+    /// tensor copied as bf16, and no sidecar of the dense Qwen3 engine's.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_dense_model_at_penguin_is_a_glyd_v7_save_of_its_description() {
+        let dir = std::env::temp_dir().join(format!("glyd-pack-dense-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (src, out) = (dir.join("src"), dir.join("out"));
+        crate::logits::qwen3_random(&src).unwrap();
+        run_with(src.to_str().unwrap(), &out, 2, Layout::Tiered, true).unwrap();
+        let (layout, m) = crate::weights::v7_manifest(&out).unwrap().expect("a glyd-v7 save");
+        assert_eq!(layout, Layout::Tiered);
+        assert!(!out.join("engine.safetensors").exists());
+        let d = crate::dynamic::dense::lowered(&out).unwrap();
+        assert_eq!(d.mats.len(), 4 * 4 + 2, "four matrices a layer, the embedding and the head");
+        let ck = Checkpoint::open(&out).unwrap();
+        for it in &d.mats {
+            let key = it.members[0].trim_end_matches(".weight");
+            crate::weights::read_lossless(&ck, &m, key, it.rows, it.cols).unwrap_or_else(|e| panic!("{key}: {}", e.msg));
+        }
+        for n in &d.small {
+            assert_eq!(ck.get(n).unwrap_or_else(|| panic!("no {n}")).1.dtype, "BF16", "{n}");
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }

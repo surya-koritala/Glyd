@@ -24,8 +24,7 @@ use super::snaps;
 use super::{Dyn, Op};
 use crate::dev::{copy_d2d_async, Buf};
 use crate::ffi::{err, Result};
-use crate::model::FUSED_ROWS;
-use crate::sched::{ModelStep, PrefillJob, Row, Sample};
+use crate::sched::{ModelStep, PrefillJob, Row, Sample, FUSED_ROWS};
 
 /// Paged keys and values: the blocks every sequence holds, each ring's layer group, and each sequence's block tables on the GPU ([slot][group], int32 a BLOCK of tokens).
 pub(super) struct Paged {

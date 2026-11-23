@@ -10,7 +10,7 @@ use crate::ui::Refusal;
 /// A family of models the engine tells apart by its config.json.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Family {
-    /// Qwen3 dense (Qwen3ForCausalLM): lossless, on the Qwen3 path.
+    /// Qwen3 dense (Qwen3ForCausalLM): on the executor as a Llama-style dense model (src/dynamic/dense.rs), lossless or at the lossy levels.
     Qwen3,
     /// Qwen3.5, 3.6 and 3.8 dense (Qwen3_5ForCausalLM, Qwen3_5ForConditionalGeneration): the lossy levels.
     Qwen35,
@@ -62,7 +62,7 @@ pub static TABLE: [Support; 9] = [
     Support {
         family: Family::Qwen3,
         name: "Qwen3",
-        levels: PENGUIN,
+        levels: &["penguin", "kestrel", "swift", "wren"],
         hummingbird_packed_only: false,
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: Some(MAX_CONTEXT),
@@ -330,10 +330,11 @@ mod tests {
     #[test]
     fn levels_follow_the_table() {
         assert!(check(QWEN3, "Qwen/Qwen3-8B", "Qwen3-8B", "penguin").is_ok());
-        let r = check(QWEN3, "Qwen/Qwen3-8B", "Qwen3-8B", "swift").unwrap_err();
+        assert!(check(QWEN3, "Qwen/Qwen3-8B", "Qwen3-8B", "swift").is_ok(), "Qwen3 runs on the executor at the lossy levels too");
+        let r = check(QWEN3, "Qwen/Qwen3-8B", "Qwen3-8B", "hummingbird").unwrap_err();
         assert_eq!(
             (r.what.as_str(), r.fix.as_str()),
-            ("Qwen3-8B (Qwen3) runs at the penguin level in this engine, not swift", "Run it lossless: glyd run Qwen/Qwen3-8B")
+            ("Qwen3-8B (Qwen3) runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird", "Run it lossless: glyd run Qwen/Qwen3-8B")
         );
         let n = fixture("nemotron_h_config.json");
         for l in ["penguin", "kestrel", "swift", "hummingbird"] {
