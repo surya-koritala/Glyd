@@ -377,7 +377,7 @@ pub fn cache_for(spec: Option<&str>, dir: &Path, level: Layout, cfg: &ConfigNemo
                     (p.free, p.name)
                 }
             };
-            crate::cli::expert_cache_for(dir, level, free, &gpu, crate::offload::host_memory()).map_err(|r| Error(r.to_string()))
+            crate::plan::sizing::expert_cache_for(dir, level, free, &gpu, crate::offload::host_memory()).map_err(|r| Error(r.to_string()))
         }
         Some(g) => {
             let gib: f64 =
@@ -391,9 +391,9 @@ pub fn cache_for(spec: Option<&str>, dir: &Path, level: Layout, cfg: &ConfigNemo
 /// `--host-memory` (src/cli.rs) applied to the plan of `generate`: the bytes of the experts the computer's memory holds (`plan.ram`), what was asked for or else what the computer has free less the reserve; only the Hummingbird
 /// level keeps experts on the disk, and the others are refused less than all of them.
 pub fn host_budget(a: &crate::args::Args, plan: &mut CachePlan) -> Result<()> {
-    let asked = crate::cli::host_flag(a).map_err(|r| Error(r.to_string()))?;
+    let asked = crate::plan::sizing::host_flag(a).map_err(|r| Error(r.to_string()))?;
     if plan.in_place {
-        plan.ram = crate::cli::held_in_memory(plan.host_bytes(), asked, crate::offload::host_memory());
+        plan.ram = crate::plan::sizing::held_in_memory(plan.host_bytes(), asked, crate::offload::host_memory());
     } else if asked.is_some_and(|b| b < plan.host_bytes()) {
         return err("--host-memory: only the Hummingbird level keeps experts on the disk");
     }

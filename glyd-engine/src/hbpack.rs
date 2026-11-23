@@ -241,9 +241,9 @@ pub(crate) mod tests {
         assert!(e.contains("c3r") || e.contains("c2r"), "{e}");
         // the plan of `run` for this directory is sized by its own bytes at the level: a GPU with a megabyte more than the engine's 2 GiB of work has no room for the tiny model (the level is named in the refusal), one with 64 holds it whole
         let gib = 1u64 << 30;
-        let said = crate::cli::expert_cache_for(&out, L::Hummingbird, 2 * gib + (1 << 20), "a GPU", Some(64 * gib)).unwrap_err().to_string();
+        let said = crate::plan::sizing::expert_cache_for(&out, L::Hummingbird, 2 * gib + (1 << 20), "a GPU", Some(64 * gib)).unwrap_err().to_string();
         assert!(said.contains("at the hummingbird level takes about"), "{said}");
-        assert!(crate::cli::expert_cache_for(&out, L::Hummingbird, 2 * gib + (64 << 20), "a GPU", Some(64 * gib)).unwrap().is_none());
+        assert!(crate::plan::sizing::expert_cache_for(&out, L::Hummingbird, 2 * gib + (64 << 20), "a GPU", Some(64 * gib)).unwrap().is_none());
         // a directory already packed is left as it is
         let before = std::fs::metadata(out.join("glyd.json")).unwrap().modified().unwrap();
         run(src.to_str().unwrap(), &out, 2, &export).unwrap();

@@ -212,8 +212,8 @@ impl Family {
         let weights = (p.rows() * p.cols) as u64;
         match self {
             Family::Nemotron(c) if level == Layout::Hummingbird && p.key.contains(".mixer.experts.") => Ok(crate::moe_hb::expert_bytes_mean(c)? / 2),
-            Family::Nemotron(_) => Ok((weights as f64 * crate::fit::bits(crate::nemotron::pack_layout(level, &p.key)) / 8.0) as u64),
-            Family::Qwen(_) => Ok((weights as f64 * crate::fit::bits(level) / 8.0) as u64),
+            Family::Nemotron(_) => Ok((weights as f64 * crate::plan::sizing::bits(crate::nemotron::pack_layout(level, &p.key)) / 8.0) as u64),
+            Family::Qwen(_) => Ok((weights as f64 * crate::plan::sizing::bits(level) / 8.0) as u64),
         }
     }
 
