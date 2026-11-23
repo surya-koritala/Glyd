@@ -264,6 +264,10 @@ pub trait MoeBlock {
     fn reads_host(&self) -> bool {
         self.resident().is_some_and(|(l, _)| l.reads_host())
     }
+    /// The expert cache's store its experts are in (none: all on the GPU): the engine ends each step's statistics there (`ExpertStore::end_step`).
+    fn store(&self) -> Option<std::rc::Rc<crate::offload::ExpertStore>> {
+        self.resident().and_then(|(l, _)| l.store().cloned())
+    }
 }
 
 /// What a block of experts asks of the engine it runs in (this one, or the dynamic engine): the GPU, the library, two buffers a mixture-of-experts layer leaves free (`mix` and `xc`, a chunk's rows at the

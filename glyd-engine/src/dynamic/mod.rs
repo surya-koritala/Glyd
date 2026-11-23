@@ -2664,7 +2664,9 @@ impl Dyn {
         }
         // (a pass outside the scheduler, which would take a lost step back: an error)
         self.kv12_check()?;
-        self.read_sample()
+        let s = self.read_sample()?;
+        self.end_expert_step()?;
+        Ok(s)
     }
 
     /// The selected sequence's blocks grown to hold its tokens before `upto`, where its keys and values are paged: a pass outside the scheduler (`reply`,
@@ -2674,6 +2676,27 @@ impl Dyn {
             return err(format!("the paged cache has no block left for token {upto} of the sequence"));
         }
         Ok(())
+    }
+
+    /// The expert caches' stores the engine's layers have experts in (src/offload.rs `ExpertStore`), each once.
+    pub fn stores(&self) -> Vec<std::rc::Rc<crate::offload::ExpertStore>> {
+        let mut out: Vec<std::rc::Rc<crate::offload::ExpertStore>> = Vec::new();
+        for s in self.big.moe.iter().filter_map(|b| b.store()) {
+            if !out.iter().any(|o| std::rc::Rc::ptr_eq(o, &s)) {
+                out.push(s);
+            }
+        }
+        out
+    }
+
+    /// A step's end for the stores' statistics (`ExpertStore::end_step`; the step's results read): nothing where no layer has experts in a cache.
+    pub(crate) fn end_expert_step(&self) -> Result<()> {
+        self.stores().iter().try_for_each(|s| s.end_step().map(|_| ()))
+    }
+
+    /// The last step's statistics of the layers whose experts are in a cache, a store's layers after another's (`ExpertStore::last_step`): what a step returns beside its samples.
+    pub fn expert_stats(&self) -> Vec<crate::offload::LayerStats> {
+        self.stores().iter().flat_map(|s| s.last_step()).collect()
     }
 
     /// One token through the model (the graph where there is one); the token after it.
@@ -2694,7 +2717,9 @@ impl Dyn {
             }
         }
         self.n += 1;
-        self.read_sample()
+        let s = self.read_sample()?;
+        self.end_expert_step()?;
+        Ok(s)
     }
 
     /// One round of drafting: from `last` (the token after the cache's, not in it yet) the draft model proposes k tokens, then the big model reads `last` and

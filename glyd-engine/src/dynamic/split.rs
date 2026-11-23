@@ -720,7 +720,11 @@ pub fn open_cached(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], cachin
         let c = cachings.get(k).or(cachings.last());
         match fam {
             "Muse Spark" => super::muse::load_stage_hb(&owned, o, st, c),
-            "Kimi-K3" => super::kimi::load_with_caching(&owned, o, st, None, c),
+            // (the release's experts in places of their own where the directory holds no hummingbird experts, which the hummingbird cache takes)
+            "Kimi-K3" => {
+                let places = c.map(|c| c.places).filter(|_| crate::hb_pack::HbDir::open(&owned).is_ok_and(|h| h.is_none()));
+                super::kimi::load_with_caching(&owned, o, st, places, c)
+            }
             "GLM-5.3-Flash" => super::glm::load_stage_hb(&owned, o, level, st, c),
             _ => super::deepseek_v4::load_stage_hb(&owned, o, st, c),
         }

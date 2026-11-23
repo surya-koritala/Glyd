@@ -254,6 +254,137 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
+/// `glyd-engine storebench MODEL [--places N] [--rows 1,8,32] [--steps 8] [--warm 3] [--prompt 16] [--mode copy|cpu|split|auto] [--out FILE]` (development): batched decode through the expert cache on GPU 0
+/// (the dynamic route's model, `--places` of a layer's experts on the GPU and every expert in the computer's memory, as `tiercheck` opens it): for each count of rows, that many sequences of `--prompt` tokens each,
+/// `--warm` decode steps of all of them together, then `--steps` timed steps, each step's layer statistics (`ModelStep::expert_stats`). Prints a line for each count: the step's time, the experts asked for, found,
+/// copied and computed by the host a step, the bytes read from the computer's memory for the misses against the distinct missed experts' bytes, and the rates the copies and the host ran at. `--out`: a JSON line
+/// for each count (the rows, the mean step, an expert's bytes, each layer's statistics a step on average) for `ceiling --stats`.
+#[cfg(feature = "dev")]
+pub fn bench(a: &crate::args::Args) -> Result<()> {
+    use crate::ffi::Error;
+    use crate::offload::LayerStats;
+    use crate::sched::{ModelStep, Row};
+    let dir = std::path::Path::new(a.need(1, "MODEL")?);
+    let places = a.num("places", 16usize)?;
+    let rows_l: Vec<usize> = a
+        .flag("rows")
+        .unwrap_or("1,8,32")
+        .split(',')
+        .map(|x| x.trim().parse::<usize>().map_err(|_| Error(format!("--rows {x}: a number"))))
+        .collect::<Result<_>>()?;
+    let (steps, warm, plen) = (a.num("steps", 8usize)?.max(1), a.num("warm", 3usize)?, a.num("prompt", 16usize)?.max(1));
+    let mode = a.flag("mode").map(|m| crate::offload::Mode::parse(m).ok_or_else(|| Error(format!("--mode {m}: copy, cpu, split or auto")))).transpose()?;
+    let most = rows_l.iter().copied().max().unwrap_or(1);
+    let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
+    let vocab = crate::dynamic::split::config_num(&text, "vocab_size").unwrap_or(1000).max(16);
+    let o = crate::dynamic::Opts { ctx: plen + warm + steps + 64, chunk: plen.max(64), graph: false, device: 0, layout: a.layout()? };
+    let offload = crate::offload::Offload { mode: mode.unwrap_or(crate::offload::Mode::Auto), ..Default::default() };
+    let caching = crate::hbg_store::HbCaching { places, ram: None, offload, dense: 0 };
+    let crate::dynamic::split::Run::One(mut e) = crate::dynamic::split::open_cached(dir, &o, &[], &[0], vec![caching])? else {
+        return err("the model on one GPU was asked for");
+    };
+    let stores = e.stores();
+    if stores.is_empty() {
+        return err(format!("{}: no layer's experts are in the expert cache ({places} places a layer)", dir.display()));
+    }
+    if let Some(m) = mode {
+        stores.iter().for_each(|s| s.set_offload(crate::offload::Offload { mode: m, ..s.offload() }));
+    }
+    let eb = stores[0].expert_bytes();
+    let mut out = String::new();
+    let (k, step) = crate::conv::Gen::as_step(&mut e, most)?.ok_or_else(|| Error("no scheduler's step for this model".into()))?;
+    if k < most {
+        return err(format!("{most} rows asked for, where the memory holds {k} sequences"));
+    }
+    println!(
+        "{}: {places} places a layer, an expert {:.2} MB, mode {}, {steps} steps after {warm}, prompts of {plen} tokens",
+        dir.display(),
+        eb as f64 / 1e6,
+        stores[0].offload().mode.name()
+    );
+    for &n in &rows_l {
+        let pages: Vec<[i32; 1]> = (0..n).map(|r| [r as i32]).collect();
+        let mut at: Vec<(u32, usize)> = Vec::with_capacity(n);
+        for (r, p) in pages.iter().enumerate() {
+            let prompt: Vec<u32> = (0..plen).map(|i| ((i * 7919 + r * 104_729 + n * 31) % (vocab - 4) + 2) as u32).collect();
+            let s = step.prefill(p, 0, &prompt, true)?.ok_or_else(|| Error("a prompt's last chunk gave no sample".into()))?;
+            at.push((s.token, plen));
+        }
+        let (mut ms, mut layers): (Vec<f64>, Vec<LayerStats>) = (Vec::new(), Vec::new());
+        for i in 0..warm + steps {
+            let rows: Vec<Row> = at.iter().zip(&pages).map(|(&(token, pos), p)| Row { token, pos, pages: p }).collect();
+            let t0 = std::time::Instant::now();
+            let got = step.decode(&rows)?;
+            let t = t0.elapsed().as_secs_f64() * 1e3;
+            at.iter_mut().zip(&got).for_each(|(a, s)| *a = (s.token, a.1 + 1));
+            if i >= warm {
+                ms.push(t);
+                let st = step.expert_stats();
+                layers.resize(layers.len().max(st.len()), LayerStats::default());
+                layers.iter_mut().zip(&st).for_each(|(a, b)| a.add(b));
+            }
+        }
+        for p in &pages {
+            step.release(p)?;
+        }
+        let t = LayerStats::sum(&layers);
+        let per = |x: u64| x as f64 / steps as f64;
+        let missed = t.misses() * eb;
+        let mean = ms.iter().sum::<f64>() / steps as f64;
+        ms.sort_by(f64::total_cmp);
+        println!(
+            "  {n:>3} rows: {mean:8.2} ms a step (median {:.2}); a step {:.1} experts asked for, {:.1} found ({:.1}%), {:.1} copied, {:.1} by the host ({:.1} pairs), {:.1} copied behind; read for the misses {:.1} MB, the distinct missed experts' {:.1} MB ({:+.2}%); copies {:.1} GB/s ({:.2} ms a step), the host {:.2} ms a step ({:.1} GB/s)",
+            ms[steps / 2],
+            per(t.reads),
+            per(t.hits),
+            100.0 * t.hits as f64 / t.reads.max(1) as f64,
+            per(t.copies),
+            per(t.host),
+            per(t.host_pairs),
+            per(t.ahead),
+            per(t.miss_bytes()) / 1e6,
+            per(missed) / 1e6,
+            if missed > 0 { 100.0 * (t.miss_bytes() as f64 / missed as f64 - 1.0) } else { 0.0 },
+            if t.copy_ms > 0.0 { t.copy_bytes as f64 / t.copy_ms / 1e6 } else { 0.0 },
+            t.copy_ms / steps as f64,
+            t.host_ms / steps as f64,
+            if t.host_ms > 0.0 { t.host_bytes as f64 / t.host_ms / 1e6 } else { 0.0 }
+        );
+        let avg: Vec<String> = layers
+            .iter()
+            .enumerate()
+            .map(|(l, s)| {
+                let f = |x: u64| (x as f64 / steps as f64).round() as u64;
+                let m = LayerStats {
+                    calls: f(s.calls),
+                    rows: f(s.rows),
+                    pairs: f(s.pairs),
+                    reads: f(s.reads),
+                    hits: f(s.hits),
+                    copies: f(s.copies),
+                    host: f(s.host),
+                    host_pairs: f(s.host_pairs),
+                    skipped: f(s.skipped),
+                    waves: f(s.waves),
+                    copy_bytes: f(s.copy_bytes),
+                    host_bytes: f(s.host_bytes),
+                    ahead: f(s.ahead),
+                    ahead_bytes: f(s.ahead_bytes),
+                    copy_ms: s.copy_ms / steps as f64,
+                    host_ms: s.host_ms / steps as f64,
+                    wait_ms: s.wait_ms / steps as f64,
+                };
+                m.json(l)
+            })
+            .collect();
+        out += &format!("{{\"rows\":{n},\"steps\":{steps},\"step_ms\":{mean:.4},\"expert_bytes\":{eb},\"layers\":[{}]}}\n", avg.join(","));
+    }
+    if let Some(f) = a.flag("out") {
+        std::fs::write(f, out).map_err(|e| Error(format!("{f}: {e}")))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

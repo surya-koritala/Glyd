@@ -5,6 +5,8 @@
 //!                                                             calibration corpus, each MoE layer's router choices counted per expert into the usage file OUT
 //!   glyd-engine tiercheck MODEL [--places 2] [--tokens 24] [--mode copy] [--layout i6] [--dense N]   the dynamic route's model with every expert on GPU 0, then in the expert cache (src/tiering.rs; --dense: its last N layers'
 //!                                                             dense matrices in the computer's memory too, src/dense_ram.rs): every position's logits compared, the same bits in copy mode
+//!   glyd-engine storebench MODEL [--places 16] [--rows 1,8,32] [--steps 8] [--mode auto] [--out FILE]   batched decode through the expert cache: each count of rows' step time and layer statistics (bytes read for
+//!                                                             the misses against the distinct missed experts'), FILE's JSON lines for ceiling --stats (src/tiering.rs)
 //!   glyd-engine pack MODEL OUT --layout hummingbird --usage FILE [--threads N]   a mixture of experts the description builder maps (Kimi-K3, DeepSeek-V4, GLM-5.3, Muse Spark, Qwen3.5/3.8 MoE) at the
 //!                                                             hummingbird level (src/hb_pack.rs): each expert's bits from FILE's counts (calibrate-experts), its rows coded in Rust, the rest copied
 //!   glyd-engine pack MODEL OUT --layout hummingbird --codes DIR [--threads N]   Nemotron 3 Super at the Hummingbird level (src/hbpack.rs): its routed experts' neuron rows from the export in DIR (nemotron_hbr.py --export) in codebook rows of 3 and 2 bits,
@@ -88,6 +90,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "hbtoy" => cmd_hbtoy(a),
         "calibrate-experts" => cmd_calibrate_experts(a),
         "tiercheck" => glyd_engine::tiering::check(a),
+        "storebench" => glyd_engine::tiering::bench(&a),
         "chat" => std::process::exit(glyd_engine::cli::run(&Args::from(std::env::args().skip(1).chain(["--chat".to_string()])))),
         "generate" => cmd_run(a),
         "check" => cmd_check(a),

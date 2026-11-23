@@ -481,7 +481,15 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
                     if tpr.is_some() || cg.ram.is_some() {
                         return err("DeepSeek-V4's experts in the expert cache: on one GPU a stage, every expert in the computer's memory (the disk holds hummingbird directories' experts alone)");
                     }
-                    let (u, d, cache) = crate::tiering::cached_stacks(&ju, &jd, cg.places, st, l, dev.ordinal, None)?;
+                    // (the host computes the misses the plan gives it where the experts are in an exact FP4 layout, as the GPU's act_w does: src/cpu_fp4.rs)
+                    let fp4 = [glyd_gpu::pack::FP4_TAG, glyd_gpu::pack::FP4R_TAG].contains(&ju.tag);
+                    let half = (fp4 && st.wants_cpu()).then_some(crate::offload::HostHalf::Fp4 {
+                        inter: i,
+                        latent: d,
+                        packed: ju.tag == glyd_gpu::pack::FP4R_TAG,
+                        act: crate::cpu_fp4::Act::Release { lim: if c.swiglu_limit > 0.0 { c.swiglu_limit } else { f32::INFINITY }, fp8: vo.sim },
+                    });
+                    let (u, d, cache) = crate::tiering::cached_stacks(&ju, &jd, cg.places, st, l, dev.ordinal, half)?;
                     tiered = Some(cache);
                     (u, d)
                 }
