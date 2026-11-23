@@ -477,19 +477,21 @@ impl Backend for Ref {
         &self.devices
     }
 
-    /// Every implemented kind in any format a source decodes to f32, at the speed of plain Rust.
+    /// Every kind, in any format a source decodes to f32, at the speed of plain Rust (DeepSeek-V4's compressed attention too: `comp.rs`). The match
+    /// names each kind, so that a kind added to `KindRef` is decided here. (An indexer of plain or latent attention is not in the reference yet: past
+    /// its `top_k` tokens such a layer says so, `mla.rs`.)
     fn supports(&self, kind: &KindRef, _: &Format) -> Support {
         match kind {
             KindRef::Attention
             | KindRef::SlidingAttention
             | KindRef::SparseAttention
             | KindRef::Mla
+            | KindRef::Compressed
             | KindRef::GatedDeltaNet
             | KindRef::KimiDelta
             | KindRef::Mamba2
             | KindRef::Mlp
             | KindRef::Moe => Support::Slower("the f32 reference".into()),
-            k => Support::No(format!("no reference for {k:?} yet")),
         }
     }
 
@@ -593,10 +595,11 @@ mod tests {
         }
         assert_close(&ga, &ya, 0.0, "sequence a");
         assert_close(&gb, &yb, 0.0, "sequence b");
-        // (the seam's `supports` has no compressed attention yet: `RefModel` runs it, a backend's `build` does not)
+        // (DeepSeek-V4's compressed attention through the seam too, as `RefModel` runs it)
         let f = Fixture::load("dsv4_model");
         let d = crate::runtime::describe::describe(&f.j["config"]).unwrap();
         let comp = d.desc.blocks.iter().find(|b| matches!(b.body, Body::Mixer(Mixer::Compressed(_)))).expect("a compressed attention block");
-        assert!(r.build(&LayerDesc { index: 3, block: comp, hidden: 64 }, &p, &Placement::default(), &mut Arenas::default()).is_err());
+        assert!(matches!(r.supports(&KindRef::of(comp), &Format::F32), Support::Slower(_)));
+        assert!(r.build(&LayerDesc { index: 3, block: comp, hidden: 64 }, &p, &Placement::default(), &mut Arenas::default()).is_ok());
     }
 }

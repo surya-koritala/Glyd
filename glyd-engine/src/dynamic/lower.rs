@@ -939,9 +939,18 @@ mod tests {
     /// layer's matrices are as many as model_glm.rs's loader packs.
     #[test]
     fn glm_lowered_is_the_executors_own_description() {
-        for f in ["glm5_next_config.json", "glm5_next_tiny_config.json", "glm5_next_toy_config.json"] {
-            let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(f);
-            let text = std::fs::read_to_string(p).unwrap();
+        // (and the released one with every layer's feed-forward its experts, as glmrandom --real makes it: no dense MLP, so neither description sizes its slots)
+        let fixture = |f: &str| std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(f)).unwrap();
+        let all_experts = {
+            let mut v: serde_json::Value = serde_json::from_str(&fixture("glm5_next_config.json")).unwrap();
+            let t = if v.get("text_config").is_some() { &mut v["text_config"] } else { &mut v };
+            let n = t["num_hidden_layers"].as_u64().unwrap() as usize;
+            t["first_k_dense_replace"] = 0.into();
+            t["mlp_layer_types"] = serde_json::Value::Array(vec!["sparse".into(); n]);
+            v.to_string()
+        };
+        for f in ["glm5_next_config.json", "glm5_next_tiny_config.json", "glm5_next_toy_config.json", "all experts"] {
+            let text = if f == "all experts" { all_experts.clone() } else { fixture(f) };
             let c = crate::glm::ConfigGlm::parse(&text, f, None).unwrap_or_else(|e| panic!("{f}: {}", e.msg));
             for l in 0..c.layers {
                 assert_eq!(crate::model_glm::layer_matrices(&c, l).len(), super::super::glm::per_layer(c.kinds[l], c.moe[l]), "{f}: layer {l}");

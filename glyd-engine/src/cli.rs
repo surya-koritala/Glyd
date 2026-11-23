@@ -572,6 +572,9 @@ fn start(a: &Args, ui: &RefCell<Ui>, several: bool) -> Done<Ready> {
     let name = short_name(&model);
     let p = prepare(a, &gpu, ui, true, users)?;
     ui.borrow_mut().line(&format!("Plan: {}.", p.fit.text()));
+    if let Some(n) = machine::cuda12_note(gpu.driver, crate::dev::has_kernels12()) {
+        ui.borrow_mut().line(&format!("Note: {n}"));
+    }
     ui.borrow_mut().status(&format!("Loading {name} onto the GPU..."));
     let o = Opts {
         ctx: p.ctx,
@@ -1960,6 +1963,9 @@ fn load_lossy(
         ui.borrow_mut().line(&format!("{} experts of {} a layer are on the GPU, chosen as the router asks for them; {held}.", c.slots, c.experts));
     }
     ui.borrow_mut().line(&format!("Plan: {}.", plan.text()));
+    if let Some(n) = machine::cuda12_note(gpu.driver, crate::dev::has_kernels12()) {
+        ui.borrow_mut().line(&format!("Note: {n}"));
+    }
     ui.borrow_mut().status(&format!("{} {name} and loading it onto the GPU...", if packed.is_some() { "Reading" } else { "Packing" }));
     let oom = |e: crate::ffi::Error| {
         if e.out_of_memory() {
@@ -2728,6 +2734,9 @@ fn load_dynamic(
         stages.join(", ")
     ));
     ui.borrow_mut().line(&format!("Plan: {}.", plan.text()));
+    if let Some(n) = machine::cuda12_note(first.driver, crate::dev::has_kernels12()) {
+        ui.borrow_mut().line(&format!("Note: {n}"));
+    }
     if let Some(k) = &cache {
         let (lo, hi) = (k.places.iter().min().copied().unwrap_or(0), k.places.iter().max().copied().unwrap_or(0));
         let n = if lo == hi { lo.to_string() } else { format!("{lo} to {hi}") };

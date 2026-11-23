@@ -195,6 +195,31 @@ pub fn topk_check(dev: &Dev) -> Result<bool> {
                 println!("DIFFERENT: {name}, {label}: first at {at}: host {:?}, kernel {:?}", want[at], got[at]);
             }
         }
+        // the gather (`Kern::gather_row`: the sampler's changed tokens' own logits): on every row above, the first, the last and 100 tokens of the generator's
+        // places, each the row's own value bit for bit (a bf16 widened: the zeros' signs and the infinities too)
+        {
+            let mut idx: Vec<i32> = vec![0, v as i32 - 1];
+            idx.extend((0..100).map(|_| (rnd() % v as u64) as i32));
+            let (ib, ob) = (Buf::new(4 * idx.len())?, Buf::zeroed(4 * idx.len())?);
+            ib.write(0, &idx)?;
+            for (i, (label, row)) in rows.iter().enumerate() {
+                checked += 1;
+                // SAFETY: row i of the n rows of v bf16 values; idx holds its tokens below v and out room for as many f32; synchronized before out is read.
+                unsafe { k.gather_row(dev.stream, logits.ptr, v, i, ib.ptr, idx.len(), ob.ptr)? };
+                dev.sync()?;
+                let mut got = vec![0f32; idx.len()];
+                ob.read(0, &mut got)?;
+                if let Some(j) = idx.iter().zip(&got).position(|(&t, g)| g.to_bits() != ((row[t as usize] as u32) << 16)) {
+                    bad += 1;
+                    println!(
+                        "DIFFERENT: {name}, {label}: gathered token {} is {:?}, the row has {:?}",
+                        idx[j],
+                        got[j],
+                        f32::from_bits((row[idx[j] as usize] as u32) << 16)
+                    );
+                }
+            }
+        }
         // the masked top-k (a grammar's mask put on each row before the cut): on every row above, with masks of every density, against the host's order of the row with the tokens the mask does not allow put last (as the
         // sampler's mask puts -inf on them), token and logit bit for bit; and the unmasked candidates' allowed tokens, which are the first of the allowed ones (what the sampler draws from where it has no masked ones)
         if k.has_masked_topk() {

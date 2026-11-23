@@ -560,7 +560,9 @@ mod tests {
             (seed % m as u64) as usize
         };
         let (mut found, mut cuts, mut taken) = (0, 0, 0);
-        for _ in 0..30000 {
+        // (under Miri, which hashes each block's name in software a thousand times slower, the first 60 of the same steps)
+        let steps = if cfg!(miri) { 60 } else { 30000 };
+        for _ in 0..steps {
             let s = rnd(slots);
             match rnd(10) {
                 0 => {
@@ -656,8 +658,11 @@ mod tests {
                 assert_eq!(q.free.len() + q.idle.len() + q.refs.iter().filter(|&&r| r > 0).count(), q.blocks as usize - 1, "a block lost");
             }
         }
-        // (the run did what it is for)
-        assert!(found > 300 && cuts > 300 && taken > 300, "{found} found, {cuts} cuts, {taken} growths that took a named block");
+        // (the run did what it is for: as many of each for its steps as 300 in 30,000)
+        assert!(
+            [found, cuts, taken].iter().all(|&x| x * 30000 > 300 * steps),
+            "{found} found, {cuts} cuts, {taken} growths that took a named block in {steps} steps"
+        );
     }
 
     /// Growth takes blocks in every group or in none; a sequence past the context never grows.
@@ -715,7 +720,9 @@ mod tests {
             (seed % m as u64) as usize
         };
         let (mut shares, mut cuts) = (0, 0);
-        for _ in 0..20000 {
+        // (under Miri, which interprets each step a thousand times slower, the first 400 of the same sequence of steps)
+        let steps = if cfg!(miri) { 400 } else { 20000 };
+        for _ in 0..steps {
             let s = rnd(slots);
             let before: Vec<Vec<Vec<u32>>> = (0..slots).map(|s| (0..2).map(|g| p.table(s, g).to_vec()).collect()).collect();
             match rnd(10) {
@@ -779,8 +786,8 @@ mod tests {
                 }
             }
         }
-        // (the run did what it is for)
-        assert!(shares > 100 && cuts > 200, "{shares} shares, {cuts} cuts");
+        // (the run did what it is for: as many shares and cuts for its steps as 100 and 200 in 20,000)
+        assert!(shares * 20000 > 100 * steps && cuts * 20000 > 200 * steps, "{shares} shares, {cuts} cuts in {steps} steps");
     }
 
     /// A sequence that shared a start holds a sliding group's blocks from the window before that start on. As it grows it is given no block for the entries before (they

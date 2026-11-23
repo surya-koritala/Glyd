@@ -59,6 +59,10 @@ small reserve the GPU keeps. Where `run` would refuse, `fit` refuses in the same
 (`Plan: ...`). `fit --json` prints the plan as `glyd-plan/1` for scripts: `level`, `context`, `users`, the bytes of each part, and `experts`
 (places a layer on the GPU, bytes in the computer's memory and on the disk) where a mixture of experts keeps them off the GPU.
 
+The one size `fit` estimates is the lossless level's (penguin), which depends on how well the weights compress: 10.75 bits a weight
+(12.04 on A100, H100 and B200). Measured on an RTX 4080 SUPER, Qwen3-8B loaded 0.2% above that and Qwen3-0.6B 2.3% below it. After a
+model's first load, `fit` and `run` plan the GPU's memory with what that load took beyond its plan (up to 1 GiB).
+
 ## run
 
 The first run downloads the model into the Hugging Face cache, packs it for this GPU and makes the KV tables. Later runs start

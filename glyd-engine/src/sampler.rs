@@ -370,6 +370,83 @@ impl Sampler {
         Some(tok)
     }
 
+    /// The tokens whose logits the next draw changes (the repetition penalty's, the presence and frequency penalties', the bias's, the suppressed ones), each once,
+    /// in order, for a draw from the row's largest logits with those changes put on them (`sample_adjusted`). None where the draw changes none (`sample_top` then),
+    /// or looks at more than the candidates can show: a grammar, allowed tokens, a top-k past the candidates or none (a top-p over the whole row).
+    pub fn adjusts(&self) -> Option<Vec<u32>> {
+        let p = &self.p;
+        let k = if p.temperature <= 0.0 { 1 } else { p.top_k };
+        if self.gram.is_some() || !p.allowed.is_empty() || !(1..=crate::kern::TOPK).contains(&k) {
+            return None;
+        }
+        let mut t: Vec<u32> = Vec::new();
+        if p.repetition_penalty != 1.0 {
+            t.extend(self.seen.keys());
+        }
+        if p.presence_penalty != 0.0 || p.frequency_penalty != 0.0 {
+            t.extend(self.said.keys());
+        }
+        t.extend(p.logit_bias.iter().map(|b| b.0));
+        if self.suppressing() {
+            t.extend(&self.suppress);
+        }
+        if t.is_empty() {
+            return None;
+        }
+        t.sort_unstable();
+        t.dedup();
+        Some(t)
+    }
+
+    /// Token `t`'s logit `x` as `processed` changes it, in its order: the bias, the suppression, the repetition penalty, the presence and frequency penalties.
+    fn changed(&self, t: u32, mut x: f32) -> f32 {
+        for &(b, v) in &self.p.logit_bias {
+            if b == t {
+                x += v;
+            }
+        }
+        if self.suppressing() && self.suppress.contains(&t) {
+            x = f32::NEG_INFINITY;
+        }
+        if self.p.repetition_penalty != 1.0 && self.seen.contains_key(&t) {
+            x = if x > 0.0 { x / self.p.repetition_penalty } else { x * self.p.repetition_penalty };
+        }
+        if self.p.presence_penalty != 0.0 || self.p.frequency_penalty != 0.0 {
+            if let Some(&n) = self.said.get(&t) {
+                x -= self.p.presence_penalty + self.p.frequency_penalty * n as f32;
+            }
+        }
+        x
+    }
+
+    /// The next token from the row's largest logits `cands` (largest first, equal logits by the smaller token: the GPU's `kern::TOPK`) and the row's own logits
+    /// `raw` at the tokens `adjusts` named (those in the vocabulary): each changed as `processed` changes the whole row, and the draw's top-k taken from the
+    /// candidates and those tokens together. Every other token's logit is unchanged and no larger than the last candidate's, so where the k-th of them is larger
+    /// than that the top-k is the whole row's, and the token is the one `sample` gives. None where it is not (the whole row is then read), the generator untouched.
+    pub fn sample_adjusted(&mut self, cands: &[(u32, f32)], raw: &[(u32, f32)]) -> Option<u32> {
+        self.adjusts()?;
+        let k = if self.p.temperature <= 0.0 { 1 } else { self.p.top_k };
+        let floor = if cands.len() >= crate::kern::TOPK { cands[crate::kern::TOPK - 1].1 } else { f32::NEG_INFINITY };
+        let mut pool: Vec<(u32, f32)> = cands.iter().map(|&(t, x)| (t, self.changed(t, x))).collect();
+        for &(t, x) in raw {
+            if !cands.iter().any(|c| c.0 == t) {
+                pool.push((t, self.changed(t, x)));
+            }
+        }
+        // (the whole row's order: the larger logit first, equal ones (0 and -0 too) by the smaller token)
+        pool.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+        if pool.len() < k || !(pool[k - 1].1 > floor) {
+            return None;
+        }
+        let tok = if self.p.temperature <= 0.0 {
+            pool[0].0
+        } else {
+            self.finish_draw(pool[..k].iter().map(|c| c.0).collect(), pool[..k].iter().map(|c| c.1).collect())
+        };
+        self.note(tok);
+        Some(tok)
+    }
+
     /// The next token for an engine that makes the row's largest logits on the GPU (`top`, as `top_need` asked): drawn from them where that is all the draw looks at (`sample_top`), else from the whole row, which `row`
     /// reads then and not before. The same token either way.
     pub fn sample_with(&mut self, top: Option<&Top>, row: impl FnOnce() -> crate::ffi::Result<Vec<f32>>) -> crate::ffi::Result<u32> {
@@ -585,6 +662,72 @@ pub fn argmax(l: &[f32]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A draw from the row's 64 largest logits and the changed tokens' own (`sample_adjusted`) is the whole row's (`sample`), step by step, for penalties, a bias,
+    /// suppressed tokens and greedy: two samplers of the same request, one given each, choose the same tokens; and most steps need no row.
+    #[test]
+    fn a_draw_from_the_candidates_and_the_changed_tokens_is_the_whole_rows() {
+        let v = 3000usize;
+        let mut seed = 0x51ed_270b_27c3_b1a5u64;
+        let mut unit = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f32 / (1u64 << 53) as f32
+        };
+        let cases = [
+            Params { temperature: 0.8, top_k: 20, top_p: 0.9, repetition_penalty: 1.3, seed: 7, ..Params::default() },
+            Params {
+                temperature: 1.0,
+                top_k: 40,
+                presence_penalty: 0.6,
+                frequency_penalty: 0.4,
+                logit_bias: vec![(5, 3.0), (2999, -2.0), (17, 9.0)],
+                seed: 9,
+                ..Params::default()
+            },
+            Params { temperature: 0.0, repetition_penalty: 1.2, frequency_penalty: 0.5, seed: 1, ..Params::default() },
+            // (a top-k of 32: at 64, every candidate is in it, so one changed below the last makes the draw the row's)
+            Params { temperature: 0.7, top_k: 32, min_p: 0.05, repetition_penalty: 1.1, min_tokens: 8, seed: 3, ..Params::default() },
+        ];
+        for (n, p) in cases.into_iter().enumerate() {
+            let prompt: Vec<u32> = (0..40).map(|i| (i * 37 % v) as u32).collect();
+            let (mut whole, mut part) = (Sampler::new(p.clone(), &prompt), Sampler::new(p.clone(), &prompt));
+            for s in [&mut whole, &mut part] {
+                s.set_suppress(vec![0, 1]);
+            }
+            let mut used = 0;
+            for step in 0..120 {
+                // a row of bf16 values (as the GPU's logits are), a few tokens tied, the ones the answer holds among the largest
+                let mut row: Vec<f32> = (0..v).map(|_| f32::from_bits(((unit() * 16.0 - 8.0).to_bits()) & 0xffff_0000)).collect();
+                for t in (0..v).step_by(97) {
+                    row[t] = row[(t + 1) % v];
+                }
+                for (&t, _) in whole.said.iter().take(6) {
+                    row[t as usize] = 7.5;
+                }
+                let mut cands: Vec<(u32, f32)> = row.iter().enumerate().map(|(i, &x)| (i as u32, x)).collect();
+                cands.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then(a.0.cmp(&b.0)));
+                cands.truncate(crate::kern::TOPK);
+                let want = whole.sample(&row);
+                let got = match part.adjusts() {
+                    Some(ts) => {
+                        let raw: Vec<(u32, f32)> = ts.iter().filter(|&&t| (t as usize) < v).map(|&t| (t, row[t as usize])).collect();
+                        match part.sample_adjusted(&cands, &raw) {
+                            Some(t) => {
+                                used += 1;
+                                t
+                            }
+                            None => part.sample(&row),
+                        }
+                    }
+                    None => part.sample(&row),
+                };
+                assert_eq!(got, want, "case {n}, step {step}");
+            }
+            assert!(used > 60, "case {n}: {used} of 120 draws from the candidates");
+        }
+    }
 
     fn logits() -> Vec<f32> {
         // token 3 the largest, then 1, then 7, the rest low

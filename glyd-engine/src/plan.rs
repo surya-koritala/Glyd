@@ -1682,6 +1682,9 @@ fn fit(a: &crate::args::Args) -> Result<(), crate::ui::Refusal> {
         if let Some(n) = p.chosen.as_ref().and_then(|c| remembered(&crate::store::cache_root(), model, c)) {
             println!("note: {n}");
         }
+        if let Some(n) = f.machine.devices.iter().find_map(|d| crate::machine::cuda12_note(d.driver, crate::dev::has_kernels12())) {
+            println!("note: {n}");
+        }
         if f.family.hummingbird_packed_only && p.chosen.as_ref().is_some_and(|c| c.level == "hummingbird") {
             if f.family.family == crate::support::Family::NemotronH {
                 println!("note: the hummingbird level comes as a pre-packed download: glyd/{}-hummingbird", f.name);
