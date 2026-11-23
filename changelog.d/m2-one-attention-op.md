@@ -1,0 +1,3 @@
+- One attention operation for every dense-attention model on the description executor (Gemma 4, Qwen3.5 and Qwen3.8 dense, Nemotron-H, Muse Spark): its head width, heads, norms, rotary, window, scale, soft-cap and output gate come from the model's layer kinds, and one set of kernels (heads of 64, 128, 256 and 512) runs it. Gemma 4's outputs are unchanged to the bit.
+- Prompt chunks of the Qwen3.5 layout, Nemotron-H and Muse Spark now take the tensor-core attention Gemma 4's took; their logits move in the last bits (the same function, sums in another order), within the reference's bounds.
+- Nemotron-H's attention layers keep half the GPU memory a token they did: their keys and values are held apart, where a second buffer of the same size was made and never read.
