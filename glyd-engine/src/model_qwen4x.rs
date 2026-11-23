@@ -47,6 +47,9 @@ pub struct KernQx {
     gnorm: crate::kt::qx_gnorm_sig,
     ple_gate: crate::kt::qx_ple_gate,
     ple_conv: crate::kt::qx_ple_conv,
+    /// (the description executor's n-gram embedding: its rows from the tokens, and the sequence's last tokens after a call)
+    ngram_rows: crate::kt::qx_ngram_rows,
+    ngram_hist: crate::kt::qx_ngram_hist,
     ix_prep: crate::kt::qx_ix_prep,
     ix_cmp: crate::kt::qx_ix_cmp,
     attn_sel: crate::kt::qx_attn_sel,
@@ -114,6 +117,8 @@ impl KernQx {
             gnorm: dev.typed()?,
             ple_gate: dev.typed()?,
             ple_conv: dev.typed()?,
+            ngram_rows: dev.typed()?,
+            ngram_hist: dev.typed()?,
             ix_prep: dev.typed()?,
             ix_cmp: dev.typed()?,
             attn_sel: dev.typed()?,
@@ -431,6 +436,32 @@ impl KernQx {
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn ple_conv(&self, s: Stream, gvn: u64, gv: u64, w: u64, st: u64, x: u64, n: usize, c: usize) -> Result<()> {
         launch!(self.ple_conv, [(c as u32).div_ceil(256), 1, 1], [256, 1, 1], s; gvn, gv, w, st, x, n as i32, c as i32)
+    }
+
+    /// The n-gram embedding's rows e [n, H row] of a call's n rows of one sequence: their tokens tok (int32), the sequence's two tokens before them hist (int32, + 1; 0:
+    /// none), the hash's numbers (`hash`: its 3 multipliers, H sizes and H offsets, int64 as the checkpoint holds them), the table [rows, row] bf16; then hist moved on
+    /// past the call (`qx_ngram_rows`, `qx_ngram_hist`).
+    ///
+    /// # Safety
+    /// As `hc_norm`.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn ngram_rows(
+        &self,
+        s: Stream,
+        tok: u64,
+        hist: u64,
+        hash: [u64; 3],
+        table: u64,
+        e: u64,
+        n: usize,
+        h: usize,
+        per: usize,
+        row: usize,
+        eos: u32,
+    ) -> Result<()> {
+        let [mult, sizes, offsets] = hash;
+        launch!(self.ngram_rows, [n as u32, 1, 1], [256, 1, 1], s; tok, hist, mult, sizes, offsets, table, e, h as i32, per as i32, row as i32, eos as i32)?;
+        launch!(self.ngram_hist, [1, 1, 1], [1, 1, 1], s; tok, hist, n as i32)
     }
 
     /// The indexer's queries (normed, turned) into iq [n, ih 128] and its raw keys into the cache ik at the rows' positions.
@@ -4199,6 +4230,11 @@ impl QxMoe {
         let (ju, jd) = (Joined::of(&up.iter().collect::<Vec<_>>())?, Joined::of(&down.iter().collect::<Vec<_>>())?);
         let w = MoeWeights { router, bias: None, escale: None, up: ExpertStack::upload(&ju)?, down: Down::Block(ExpertStack::upload(&jd)?) };
         Ok(QxMoe { layer: MoeLayer::new(moe_cfg(c), w, Some(shared))? })
+    }
+
+    /// The block's layer, for the description executor (`dynamic::ResidentMoe`).
+    pub fn into_layer(self) -> MoeLayer {
+        self.layer
     }
 
     /// The router's choices of the last call of `n` rows (ids int64, weights fp32, [n, k] each), from the shared scratch.

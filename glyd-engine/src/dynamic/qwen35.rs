@@ -108,6 +108,7 @@ pub(crate) fn attention(nq: usize, nk: usize, rotary: usize, qk: (usize, usize),
         gate: Some(GateAt { off: 256, step: 512, norm: false }),
         round: false,
         sbf16: false,
+        picked: None,
     }
 }
 
@@ -150,7 +151,7 @@ pub fn describe(c: &crate::qwen35::Config35, st: &Stage) -> Result<ModelDesc> {
                     Op::Linear { w: b + 1, x: Slot::H, y: Slot::Ba, name: "linear attention: ba product" },
                     Op::GdnConv { w: s0 + 2, state: conv, cd, row },
                     Op::GdnDelta { a_log: s0 + 3, dt_bias: s0 + 4, state: ssm, cd, nk: c.lin_k_heads, nv },
-                    Op::GatedNorm { w: s0 + 5, row, nv, z_off: cd },
+                    Op::GatedNorm { w: s0 + 5, row, nv, z_off: cd, sigmoid: false },
                     Op::Linear { w: b + 2, x: Slot::Core, y: Slot::O, name: "linear attention: out product" },
                 ]);
                 b + 3

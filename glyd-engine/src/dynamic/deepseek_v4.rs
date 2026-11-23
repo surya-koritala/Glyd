@@ -3,7 +3,7 @@
 //! The weights load exactly: an FP8 matrix as the bf16 it is (packed at the level asked, lossless by default), the FP4 experts as five-bit runs (their codes and power-of-two scales: the same values),
 //! the rest as the checkpoint holds it. The arithmetic is kernels/dsv4.cu's, the streams' the streams kind's (kernels/residual.cu); src/dsv4_ref.rs is the CPU reference it is checked against (`dsv4check`).
 
-use super::{Dyn, IdxKeys, IdxPick, IdxScore, ModelDesc, MoeOp, NormW, Op, Opts, ResidentMoe, Ring, Slot, Stage, V4Dims};
+use super::{Dyn, HeadMix, IdxKeys, IdxPick, IdxScore, ModelDesc, MoeOp, NormW, Op, Opts, ResidentMoe, Ring, Slot, Stage, StreamsMix, V4Dims};
 use crate::deepseek_v4::{fp4_runs, fp8_bf16, ConfigV4};
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result};
@@ -106,7 +106,7 @@ impl V4Run {
 /// A ratio-4 layer's indexer's pick: every indexer's (`Op::IdxPick`), its entries the indexer's compressor's (state `cache`), its scores the release's bf16 arithmetic, the
 /// entries kept as they are.
 fn pick(cache: usize, ratio: usize, heads: usize, top_k: usize, wscale: f32) -> Op {
-    Op::IdxPick(IdxPick { heads, ratio, top_k, expand: false, tail: false, wscale, score: IdxScore::Release, keys: IdxKeys::State(cache) })
+    Op::IdxPick(IdxPick { heads, ratio, top_k, expand: false, tail: false, wscale, score: IdxScore::Release, keys: IdxKeys::State(cache), weighted: true })
 }
 
 /// A product's matrix: in the matrices' list, or the FP8 matrices'.
@@ -295,7 +295,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
         let ring = rings.len();
         rings.push(Ring::keys(hd, 1, c.window));
         let mut ops = vec![
-            Op::StreamsPre { f: fa, base: ba, scale: sa, norm: attn_norm, round: Rounding::Once },
+            Op::StreamsPre { mix: StreamsMix::Hc { f: fa, base: ba, scale: sa }, norm: attn_norm, round: Rounding::Once },
             Op::Fp8 { x: Slot::H, y: Slot::Hq, block: 128 },
             wq_a.op(Slot::Hq, Slot::Proj, "attention: q down"),
             Op::RmsNorm { x: Slot::Proj, w: q_norm, y: Slot::Qr, weight: NormW::Plain, eps: c.eps },
@@ -351,7 +351,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
                 Op::OGroupLora { w: wo_a0, in_f8: wo_a_f8, groups: c.o_groups, hpg, ol, y: Slot::M, fp8: true }
             },
             wo_b.op(Slot::M, Slot::O, "attention: o"),
-            Op::StreamsPost { round: Rounding::Once },
+            Op::StreamsPost { round: Rounding::Once, gated: false },
         ]);
         // the mixture of experts
         let [ff, bf, sf] = hc(&mut sm, "ffn")?;
@@ -546,10 +546,10 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
         })));
         let hash = if hash { Some(put(&mut sm, small(&format!("{f}.gate.tid2eid"))?)) } else { None };
         ops.extend([
-            Op::StreamsPre { f: ff, base: bf, scale: sf, norm: ffn_norm, round: Rounding::Once },
+            Op::StreamsPre { mix: StreamsMix::Hc { f: ff, base: bf, scale: sf }, norm: ffn_norm, round: Rounding::Once },
             Op::Fp8 { x: Slot::H, y: Slot::Hq, block: 128 },
             Op::Moe(v4_moe(block, hash, vo.sim)),
-            Op::StreamsPost { round: Rounding::Once },
+            Op::StreamsPost { round: Rounding::Once, gated: false },
         ]);
         layers.push(ops);
     }
@@ -566,7 +566,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
         let b = put(&mut sm, small("hc_head_base")?);
         let s = put(&mut sm, small("hc_head_scale")?);
         let norm = put(&mut sm, small("norm.weight")?);
-        layers[c.layers - 1].push(Op::StreamsHead { weighted: Some([f, b, s]), norm, round: Rounding::Once });
+        layers[c.layers - 1].push(Op::StreamsHead { mix: HeadMix::Weighted([f, b, s]), norm, round: Rounding::Once });
     }
     let mp = ctx + ch + 16;
     let ropes = vec![
@@ -802,7 +802,7 @@ pub(crate) fn v4_desc(s: &V4Shape, st: &Stage, vo: &V4Opts) -> Result<ModelDesc>
         let ring = rings.len();
         rings.push(Ring::keys(hd, 1, s.window));
         let mut ops = vec![
-            Op::StreamsPre { f: fa, base: ba, scale: sa, norm: attn_norm, round: s.round },
+            Op::StreamsPre { mix: StreamsMix::Hc { f: fa, base: ba, scale: sa }, norm: attn_norm, round: s.round },
             Op::Fp8 { x: Slot::H, y: Slot::Hq, block: 128 },
             wq_a.op(Slot::Hq, Slot::Proj, "attention: q down"),
             Op::RmsNorm { x: Slot::Proj, w: q_norm, y: Slot::Qr, weight: NormW::Plain, eps: s.eps },
@@ -849,17 +849,17 @@ pub(crate) fn v4_desc(s: &V4Shape, st: &Stage, vo: &V4Opts) -> Result<ModelDesc>
                 Op::OGroupLora { w: wo_a0, in_f8: wo_a_f8, groups: og, hpg, ol, y: Slot::M, fp8: true }
             },
             wo_b.op(Slot::M, Slot::O, "attention: o"),
-            Op::StreamsPost { round: s.round },
+            Op::StreamsPost { round: s.round, gated: false },
         ]);
         let f = small(&mut n, 4);
         let block = n_moe;
         n_moe += 1;
         let hash = s.hash[l].then(|| small(&mut n, 1));
         ops.extend([
-            Op::StreamsPre { f, base: f + 1, scale: f + 2, norm: f + 3, round: s.round },
+            Op::StreamsPre { mix: StreamsMix::Hc { f, base: f + 1, scale: f + 2 }, norm: f + 3, round: s.round },
             Op::Fp8 { x: Slot::H, y: Slot::Hq, block: 128 },
             Op::Moe(v4_moe(block, hash, vo.sim)),
-            Op::StreamsPost { round: s.round },
+            Op::StreamsPost { round: s.round, gated: false },
         ]);
         layers.push(ops);
     }
@@ -867,7 +867,7 @@ pub(crate) fn v4_desc(s: &V4Shape, st: &Stage, vo: &V4Opts) -> Result<ModelDesc>
     if st.last {
         let h = small(&mut n, 4);
         layers.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::StreamsHead {
-            weighted: Some([h, h + 1, h + 2]),
+            mix: HeadMix::Weighted([h, h + 1, h + 2]),
             norm: h + 3,
             round: s.round,
         });
