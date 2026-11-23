@@ -8,6 +8,7 @@
 //! CPU computing the ones the GPU does not hold, else a refusal with the numbers. One GPU is preferred to a split.
 
 use crate::levels;
+use crate::runtime::config::{ModelConfig, Width};
 use glyd_gpu::json::{self, Value};
 
 const GIB: f64 = (1u64 << 30) as f64;
@@ -326,14 +327,15 @@ impl Shape {
 
     /// From config.json's text (the text model's keys where it has a `text_config`).
     pub fn from_config(text: &str) -> Result<Shape, String> {
-        let root = json::parse(text)?;
-        let t = root.get("text_config").filter(|v| v.as_object().is_some()).unwrap_or(&root);
-        let n = |k: &str| num(t, k).or_else(|| num(&root, k));
-        let u = |k: &str| n(k).unwrap_or(0.0) as usize;
-        let s = |k: &str| t.get(k).or_else(|| root.get(k)).and_then(Value::as_str).map(str::to_string);
-        let arch = root.get("architectures").and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_str).unwrap_or("").to_string();
-        let model_type = s("model_type").unwrap_or_default();
-        let (h, layers, heads) = (u("hidden_size"), u("num_hidden_layers"), u("num_attention_heads"));
+        Shape::from_model(&ModelConfig::parse(text).map_err(|e| e.msg)?)
+    }
+
+    /// From a config.json parsed once: its shared keys, typed (`runtime::config::Shared`), the families' names for one thing read as one.
+    pub fn from_model(c: &ModelConfig) -> Result<Shape, String> {
+        let s = &c.shared;
+        let f = |x: Option<usize>| x.map(|v| v as f64);
+        let model_type = s.model_type.clone().unwrap_or_default();
+        let (h, layers, heads) = (s.hidden_size.unwrap_or(0), s.num_hidden_layers.unwrap_or(0), s.num_attention_heads.unwrap_or(0));
         if h == 0 || layers == 0 || heads == 0 {
             return Err("config.json has no hidden_size, num_hidden_layers or num_attention_heads".into());
         }
@@ -341,12 +343,12 @@ impl Shape {
         if layers > MAX_LAYERS {
             return Err(format!("config.json: num_hidden_layers {layers}, where no model has more than {MAX_LAYERS}"));
         }
-        let (hf, kv_heads) = (h as f64, n("num_key_value_heads").unwrap_or(heads as f64));
-        let hd = n("head_dim").filter(|&d| d > 0.0).unwrap_or(hf / heads as f64);
-        let vocab = n("vocab_size").unwrap_or(32000.0);
-        let tied = t.get("tie_word_embeddings").or_else(|| root.get("tie_word_embeddings")).and_then(Value::as_bool).unwrap_or(false);
+        let (hf, kv_heads) = (h as f64, f(s.num_key_value_heads).unwrap_or(heads as f64));
+        let hd = f(s.head_dim).filter(|&d| d > 0.0).unwrap_or(hf / heads as f64);
+        let vocab = f(s.vocab_size).unwrap_or(32000.0);
+        let tied = s.tie_word_embeddings.unwrap_or(false);
         // the layers' kinds: layer_types, Nemotron-H's pattern, else every layer full attention
-        let pattern = s("hybrid_override_pattern");
+        let pattern = s.hybrid_override_pattern.clone();
         let kinds: Vec<String> = if let Some(p) = &pattern {
             p.chars()
                 .map(|c| {
@@ -359,29 +361,26 @@ impl Shape {
                     .to_string()
                 })
                 .collect()
-        } else if let Some(a) = t.get("layer_types").and_then(Value::as_array) {
-            a.iter().map(|x| x.as_str().unwrap_or("full_attention").to_string()).collect()
+        } else if let Some(a) = &s.layer_types {
+            a.clone()
         } else {
             vec!["full_attention".to_string(); layers]
         };
-        let experts = u("num_experts").max(u("num_local_experts")).max(u("n_routed_experts"));
-        let topk = u("num_experts_per_tok").max(u("num_experts_per_token"));
-        let moe_inter = n("moe_intermediate_size").unwrap_or(0.0);
-        let shared_inter = n("shared_expert_intermediate_size")
-            .or_else(|| n("moe_shared_expert_intermediate_size"))
-            .unwrap_or(moe_inter * n("n_shared_experts").unwrap_or(0.0));
+        let (experts, topk) = (s.experts(), s.top_k());
+        let moe_inter = f(s.moe_intermediate_size).unwrap_or(0.0);
+        let shared_inter =
+            f(s.shared_expert_intermediate_size).or(f(s.moe_shared_expert_intermediate_size)).unwrap_or(moe_inter * f(s.n_shared_experts).unwrap_or(0.0));
         let gated = if model_type.contains("nemotron") { 2.0 } else { 3.0 }; // (Nemotron-H's MLPs are relu²: two matrices)
-                                                                             // (a latent mixture of experts, Nemotron 3 Super's: the experts work on a narrower vector, projected down and up around them)
-                                                                             // (Kimi-K3's `routed_expert_hidden_size` and Muse Spark's `moe_hidden_size` are the same: the experts' width)
-        let latent = n("moe_latent_size").or_else(|| n("routed_expert_hidden_size")).or_else(|| n("moe_hidden_size")).unwrap_or(0.0);
+                                                                             // (a latent mixture of experts: the experts work on a narrower vector, projected down and up around them)
+        let latent = f(s.latent()).unwrap_or(0.0);
         let expert_width = if latent > 0.0 { latent } else { hf };
-        let first_dense = u("first_k_dense_replace");
+        let first_dense = s.first_k_dense_replace.unwrap_or(0);
         // attention
-        let (q_lora, kv_lora) = (n("q_lora_rank").unwrap_or(0.0), n("kv_lora_rank").unwrap_or(0.0));
-        let (nope, rope, v_hd) = (n("qk_nope_head_dim").unwrap_or(128.0), n("qk_rope_head_dim").unwrap_or(64.0), n("v_head_dim").unwrap_or(128.0));
-        let gate = if t.get("attn_output_gate").and_then(Value::as_bool).unwrap_or(false) { 2.0 } else { 1.0 };
+        let (q_lora, kv_lora) = (f(s.q_lora_rank).unwrap_or(0.0), f(s.kv_lora_rank).unwrap_or(0.0));
+        let (nope, rope, v_hd) = (f(s.qk_nope_head_dim).unwrap_or(128.0), f(s.qk_rope_head_dim).unwrap_or(64.0), f(s.v_head_dim).unwrap_or(128.0));
+        let gate = if s.attn_output_gate.unwrap_or(false) { 2.0 } else { 1.0 };
         let hq = heads as f64;
-        let (g_kv, g_hd) = (n("num_global_key_value_heads").unwrap_or(kv_heads), n("global_head_dim").unwrap_or(hd));
+        let (g_kv, g_hd) = (f(s.num_global_key_value_heads).unwrap_or(kv_heads), f(s.global_head_dim).unwrap_or(hd));
         let attention = |global: bool| -> (f64, f64) {
             if kv_lora > 0.0 {
                 let q = if q_lora > 0.0 { hf * q_lora + q_lora * hq * (nope + rope) } else { hf * hq * (nope + rope) };
@@ -391,24 +390,19 @@ impl Shape {
                 (hf * hq * d * gate + 2.0 * hf * kv * d + hq * d * hf, 2.0 * kv * d * 2.0)
             }
         };
-        let (lk, lv) = (
-            n("linear_num_key_heads").unwrap_or(16.0) * n("linear_key_head_dim").unwrap_or(128.0),
-            n("linear_num_value_heads").unwrap_or(32.0) * n("linear_value_head_dim").or_else(|| n("linear_key_head_dim")).unwrap_or(128.0),
-        );
+        let (lk_heads, lk_dim, lv_heads) = (f(s.linear_num_key_heads).unwrap_or(16.0), f(s.linear_key_head_dim), f(s.linear_num_value_heads).unwrap_or(32.0));
+        let (lk, lv) = (lk_heads * lk_dim.unwrap_or(128.0), lv_heads * f(s.linear_value_head_dim).or(lk_dim).unwrap_or(128.0));
         let (m_heads, m_hd, m_state, m_groups) =
-            (n("mamba_num_heads").unwrap_or(0.0), n("mamba_head_dim").unwrap_or(64.0), n("ssm_state_size").unwrap_or(128.0), n("n_groups").unwrap_or(8.0));
-        let mut sh =
-            Shape { arch: if arch.is_empty() { model_type.clone() } else { arch }, layers: kinds.len(), hidden: h, experts, topk, ..Default::default() };
-        sh.window = u("sliding_window");
+            (f(s.mamba_num_heads).unwrap_or(0.0), f(s.mamba_head_dim).unwrap_or(64.0), f(s.ssm_state_size).unwrap_or(128.0), f(s.n_groups).unwrap_or(8.0));
+        let arch = if c.arch.is_empty() { model_type.clone() } else { c.arch.clone() };
+        let mut sh = Shape { arch, layers: kinds.len(), hidden: h, experts, topk, ..Default::default() };
+        sh.window = s.sliding_window.unwrap_or(0);
         sh.latent_kv = kv_lora > 0.0;
         for (i, kind) in kinds.iter().enumerate() {
             match kind.as_str() {
                 "linear_attention" => {
                     sh.dense += hf * 2.0 * lk + hf * 2.0 * lv + lv * hf;
-                    sh.state += n("linear_num_value_heads").unwrap_or(32.0)
-                        * n("linear_key_head_dim").unwrap_or(128.0)
-                        * n("linear_value_head_dim").unwrap_or(128.0)
-                        * 4.0;
+                    sh.state += lv_heads * lk_dim.unwrap_or(128.0) * f(s.linear_value_head_dim).unwrap_or(128.0) * 4.0;
                 }
                 "mamba" => {
                     let inner = m_heads * m_hd;
@@ -417,7 +411,7 @@ impl Shape {
                 }
                 k if k.contains("attention") => {
                     let sliding = k.contains("sliding") && sh.window > 0;
-                    let (p, kv) = attention(!sliding && pattern.is_none() && t.get("global_head_dim").is_some());
+                    let (p, kv) = attention(!sliding && pattern.is_none() && s.global_head_dim.is_some());
                     sh.dense += p;
                     if sliding {
                         sh.kv_sliding += kv
@@ -436,15 +430,19 @@ impl Shape {
                 sh.routed += experts as f64 * gated * expert_width * moe_inter;
                 sh.dense += gated * hf * shared_inter + hf * experts as f64 + if latent > 0.0 { 2.0 * hf * latent } else { 0.0 };
             } else if mlp {
-                sh.dense += gated * hf * n("intermediate_size").unwrap_or(4.0 * hf);
+                let inter = match s.intermediate_size {
+                    Some(Width::One(w)) => w as f64,
+                    _ => 4.0 * hf,
+                };
+                sh.dense += gated * hf * inter;
             }
         }
         sh.embed = vocab * hf;
         sh.head = if tied { 0.0 } else { vocab * hf };
-        sh.max_ctx = u("max_position_embeddings").max(4096);
+        sh.max_ctx = s.max_position_embeddings.unwrap_or(0).max(4096);
         // (the release's quantization: the config's, or its text model's, where Kimi-K3 keeps it)
-        let qc = root.get("quantization_config").or_else(|| t.get("quantization_config"));
-        let quant = qc.and_then(|q| q.get("quant_method")).and_then(Value::as_str).unwrap_or("");
+        let qc = s.quantization_config.as_ref();
+        let quant = qc.and_then(|q| q.quant_method.as_deref()).unwrap_or("");
         sh.release_bits = match quant {
             "fp8" => 8.0,
             "mxfp4" | "nvfp4" => 4.25,
@@ -452,12 +450,12 @@ impl Shape {
         };
         // (FP4 experts beside the rest: DeepSeek-V4's `expert_dtype`, and compressed-tensors' MXFP4 or NVFP4 groups, which Kimi-K3 puts on its
         // routed experts alone and the rest left bf16)
-        let format = qc.and_then(|q| q.get("format")).and_then(Value::as_str).unwrap_or("");
-        if s("expert_dtype").as_deref() == Some("fp4") || (quant == "compressed-tensors" && format.contains("fp4")) {
+        let format = qc.and_then(|q| q.format.as_deref()).unwrap_or("");
+        if s.expert_dtype.as_deref() == Some("fp4") || (quant == "compressed-tensors" && format.contains("fp4")) {
             sh.expert_release_bits = 4.25;
         }
         sh.expert_width = expert_width as usize;
-        sh.mtp = n("mtp_num_hidden_layers").or_else(|| n("num_nextn_predict_layers")).unwrap_or(0.0) > 0.0;
+        sh.mtp = s.mtp_layers() > 0;
         Ok(sh)
     }
 
