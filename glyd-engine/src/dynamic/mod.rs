@@ -1682,22 +1682,24 @@ impl Dyn {
                 self.mark("MLP: gate and up product, SiLU")
             }
             Op::MambaConv { w, bias, state, cd, row, x_off } => {
+                // (in a pass over several sequences: this sequence's rows and its state)
                 self.knh.conv(
                     s,
-                    p.slot(Slot::Mix) + (x_off * 2) as u64,
+                    p.slot(Slot::Mix) + self.rows_before(row) + (x_off * 2) as u64,
                     row as i32,
                     p.small[w].ptr,
                     p.small[bias].ptr,
-                    self.states[state].ptr,
-                    p.slot(Slot::Xc),
+                    self.state(state),
+                    p.slot(Slot::Xc) + self.rows_before(cd),
                     n as i32,
                     cd as i32,
                 )?;
                 self.mark("Mamba-2: convolution")
             }
             Op::MambaScan { dt_bias, a_log, d, state, cd, row, dt_off, nh, ng } => {
-                let (dtr, st) = (p.slot(Slot::Mix) + (dt_off * 2) as u64, self.states[state].ptr);
-                let (dtb, al, dd, core, xc) = (p.small[dt_bias].ptr, p.small[a_log].ptr, p.small[d].ptr, p.slot(Slot::Core), p.slot(Slot::Xc));
+                let (dtr, st) = (p.slot(Slot::Mix) + self.rows_before(row) + (dt_off * 2) as u64, self.state(state));
+                let (dtb, al, dd) = (p.small[dt_bias].ptr, p.small[a_log].ptr, p.small[d].ptr);
+                let (core, xc) = (p.slot(Slot::Core) + self.rows_before(nh * crate::kern_nh::NH_P), p.slot(Slot::Xc) + self.rows_before(cd));
                 match &self.ssd {
                     Some(ws) if self.chunked && n > 1 => {
                         self.knh.ssd(s, ws, xc, cd as i32, dtr, row as i32, dtb, al, dd, st, core, n as i32, nh as i32, ng as i32, 0.0)?
@@ -1711,16 +1713,20 @@ impl Dyn {
                 self.mark("Mamba-2: gated norm")
             }
             Op::KvWrite { ring, stride, nq, nk } => {
-                self.knh.kv_write(s, p.slot(Slot::Mix), stride as i32, pos.0, self.kc.ptr + self.ring_off[ring], nu, nq as i32, nk as i32)?;
+                // (the sequence's cache, rows of 256 a position and head: its keys, then its values; through its block table where it is paged)
+                let (kv, table) = (self.cache(ring).0, self.table(ring));
+                self.knh.kv_write(s, p.slot(Slot::Mix) + self.rows_before(stride), stride as i32, pos.0, kv, nu, nq as i32, nk as i32, table)?;
                 self.mark("attention: cache write")
             }
             Op::AttnNh { ring, stride, nq, nk } => {
-                let kv = self.kc.ptr + self.ring_off[ring];
+                let (kv, table) = (self.cache(ring).0, self.table(ring));
+                // (in a pass over several sequences: this sequence's rows)
+                let (q, out) = (p.slot(Slot::Mix) + self.rows_before(stride), p.slot(Slot::Att) + self.rows_before(nq * 128));
                 let (nq, nk, os) = (nq as i32, nk as i32, (nq * 128) as i32);
                 if n == 1 {
-                    self.knh.attn_decode(s, p.slot(Slot::Mix), stride as i32, kv, pos.1, 1, nq, nk, self.part_nh.ptr, p.slot(Slot::Att), os)?;
+                    self.knh.attn_decode(s, q, stride as i32, kv, pos.1, 1, nq, nk, self.part_nh.ptr, out, os, table)?;
                 } else {
-                    self.kern.prefill_attn(s, p.slot(Slot::Mix), stride as i32, kv, p.slot(Slot::Att), os, n as i32, self.start.get() as i32, nq, nk)?;
+                    self.kern.prefill_attn_paged(s, q, stride as i32, kv, out, os, n as i32, self.start.get() as i32, nq, nk, table)?;
                 }
                 self.mark("attention: attention")
             }
@@ -2450,9 +2456,9 @@ impl Dyn {
     /// Room for `k` more sequences beside the one in use (each its own keys and values for the context, its states, its graph captured on them; the
     /// activations and workspaces stay shared): `select` picks the one the next passes run on. Qwen3.5's stages; after `set_head_rows`.
     pub fn add_seqs(&mut self, k: usize) -> Result<()> {
-        if k > 0 && (!matches!(self.big.d.family, "Qwen3.5" | "Gemma 4" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash") || self.draft.is_some()) {
+        if k > 0 && (!matches!(self.big.d.family, "Qwen3.5" | "Gemma 4" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash" | "Nemotron-H") || self.draft.is_some()) {
             return err(format!(
-                "more sequences than one on {}: Qwen3.5's, Gemma 4's, Muse Spark's, Kimi-K3's and GLM-5.3-Flash's only, with no draft model",
+                "more sequences than one on {}: Qwen3.5's, Gemma 4's, Muse Spark's, Kimi-K3's, GLM-5.3-Flash's and Nemotron-H's only, with no draft model",
                 self.big.d.family
             ));
         }

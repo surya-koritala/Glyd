@@ -1497,7 +1497,9 @@ fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Result<Dyn> {
         "kimi" => crate::dynamic::kimi::load(dir, o)?,
         // (its experts at a lossy level, as its logits case: kestrel where penguin is asked)
         "glm" => crate::dynamic::glm::load(dir, &DynOpts { layout: Some(Layout::Tiered), ..o.clone() }, level_layout(level)?.unwrap_or(Layout::Int6))?,
-        other => return err(format!("{other}: gemma4, qwen35, muse, kimi or glm")),
+        // (its experts at the level asked: the lossless one where none is)
+        "nemotron" => crate::dynamic::nemotron::load(dir, o, level_layout(level)?.unwrap_or(Layout::Tiered))?,
+        other => return err(format!("{other}: gemma4, qwen35, muse, kimi, glm or nemotron")),
     })
 }
 
@@ -1512,7 +1514,8 @@ fn random_dyn(case: &str, level: &str, tag: &str) -> Result<Dyn> {
             "muse" => crate::muse_ref::random(&dir)?,
             "kimi" => crate::kimi_ref::random(&dir, 1, true, 8)?,
             "glm" => crate::kcheck_glm::random(&dir, false, None)?,
-            other => return err(format!("{other}: gemma4, qwen35, muse, kimi or glm")),
+            "nemotron" => crate::kcheck_nh::random(&dir, 0, 16)?,
+            other => return err(format!("{other}: gemma4, qwen35, muse, kimi, glm or nemotron")),
         }
         load_dyn(case, &dir, &o, level)
     })();

@@ -80,6 +80,7 @@ pub(super) fn row_wise(op: &Op) -> bool {
             | Op::GlmHead { .. }
             // (a latent attention block runs its products over every row and its caches' parts by sequence itself: `GlmHost::seq_rows`)
             | Op::Mla { .. }
+            | Op::MambaNorm { .. }
             | Op::Nop
     )
 }
@@ -99,6 +100,10 @@ fn by_sequence(op: &Op) -> bool {
             | Op::MuseAttn { .. }
             | Op::KdaConv { .. }
             | Op::KdaDelta { .. }
+            | Op::MambaConv { .. }
+            | Op::MambaScan { .. }
+            | Op::KvWrite { .. }
+            | Op::AttnNh { .. }
     )
 }
 
@@ -133,7 +138,17 @@ impl Dyn {
             && self.stage.last
             && std::iter::once(&d.first).chain(d.layers.iter().flatten()).all(|op| {
                 op.ring().is_none()
-                    || matches!(op, Op::QkvPrep { .. } | Op::Attention { .. } | Op::Prep35 { .. } | Op::Attn35 { .. } | Op::MuseQk { .. } | Op::MuseAttn { .. })
+                    || matches!(
+                        op,
+                        Op::QkvPrep { .. }
+                            | Op::Attention { .. }
+                            | Op::Prep35 { .. }
+                            | Op::Attn35 { .. }
+                            | Op::MuseQk { .. }
+                            | Op::MuseAttn { .. }
+                            | Op::KvWrite { .. }
+                            | Op::AttnNh { .. }
+                    )
             })
             && d.layers.iter().flatten().any(|op| op.ring().is_some())
             && crate::tune!("GLYD_ENGINE_PAGED").is_none_or(|v| v != "0")
@@ -392,7 +407,7 @@ impl Dyn {
         if self.draft.is_some()
             || !self.stage.first
             || !self.stage.last
-            || !matches!(self.big.d.family, "Gemma 4" | "Qwen3.5" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash")
+            || !matches!(self.big.d.family, "Gemma 4" | "Qwen3.5" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash" | "Nemotron-H")
         {
             return Ok(None);
         }

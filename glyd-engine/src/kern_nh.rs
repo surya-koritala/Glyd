@@ -176,8 +176,8 @@ impl KernNh {
     /// # Safety
     /// As `conv`; the cache holds every position in `pos`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn kv_write(&self, s: Stream, qkv: u64, stride: i32, pos: u64, kv: u64, n: u32, nq: i32, nk: i32) -> Result<()> {
-        launch!(self.kv_write, [n, nk as u32, 1], [128, 1, 1], s; qkv, stride, pos, kv, nq, nk)
+    pub unsafe fn kv_write(&self, s: Stream, qkv: u64, stride: i32, pos: u64, kv: u64, n: u32, nq: i32, nk: i32, table: u64) -> Result<()> {
+        launch!(self.kv_write, [n, nk as u32, 1], [128, 1, 1], s; qkv, stride, pos, kv, nq, nk, table)
     }
 
     /// A decode step's attention (n rows, each at its own position, from `pos` on the device): `part` holds n nq NH_SPLITS NH_PART floats.
@@ -185,13 +185,27 @@ impl KernNh {
     /// # Safety
     /// As `conv`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn attn_decode(&self, s: Stream, q: u64, qs: i32, kv: u64, pos: u64, n: i32, nq: i32, nk: i32, part: u64, out: u64, os: i32) -> Result<()> {
+    pub unsafe fn attn_decode(
+        &self,
+        s: Stream,
+        q: u64,
+        qs: i32,
+        kv: u64,
+        pos: u64,
+        n: i32,
+        nq: i32,
+        nk: i32,
+        part: u64,
+        out: u64,
+        os: i32,
+        table: u64,
+    ) -> Result<()> {
         if nk == 0 || nq % nk != 0 || nq / nk > 16 {
             return err(format!("{nq} query heads over {nk} key-value heads: not supported"));
         }
         let sl2 = (1.0f64 / 128.0f64.sqrt() * std::f64::consts::LOG2_E) as f32;
         let splits = NH_SPLITS as i32;
-        launch!(self.attn, [n as u32, nk as u32, NH_SPLITS as u32], [32 * (nq / nk) as u32, 1, 1], s; q, qs, kv, pos, n, nq, nk, sl2, part, splits)?;
+        launch!(self.attn, [n as u32, nk as u32, NH_SPLITS as u32], [32 * (nq / nk) as u32, 1, 1], s; q, qs, kv, pos, n, nq, nk, sl2, part, splits, table)?;
         launch!(self.attn_merge, [n as u32, nq as u32, 1], [128, 1, 1], s; part, splits, out, os, nq)
     }
 

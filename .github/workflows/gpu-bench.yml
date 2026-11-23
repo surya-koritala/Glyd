@@ -71,6 +71,15 @@ jobs:
           gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 | tr -c 'A-Za-z0-9\n' '-' | sed 's/-*$//')
           echo "GPU=$gpu" >> "$GITHUB_ENV"
           for attempt in $(seq 1 20); do
+            # a quiet machine first: the runners beside this one compile on the same CPU (PR #539's two runs had three or four jobs building beside
+            # them and measured 2-3% slow with bands of 1.2-3.9%; on the machine with nothing else running the same two builds were within 0.1%,
+            # bands 0.3%). The container's /proc/loadavg is the machine's; the bench alone keeps it near one. Up to 20 minutes, then on, said.
+            for wait in $(seq 1 80); do
+              python3 -c 'import sys; sys.exit(0 if float(open("/proc/loadavg").read().split()[0]) < 4 else 1)' && break
+              [ "$wait" = 1 ] && echo "the machine is busy (load $(cut -d' ' -f1-3 /proc/loadavg)): waiting for its other jobs to end"
+              sleep 15
+            done
+            echo "load before attempt $attempt: $(cut -d' ' -f1-3 /proc/loadavg)"
             "$E" bench "$BENCH_MODEL" --suite gate --runs 5 --no-draft --weights-gib "$BENCH_WEIGHTS_GIB" --label "${GITHUB_REPOSITORY}@${GITHUB_SHA::10} ${GITHUB_EVENT_NAME}" --out result.json
             busy=$(python3 -c 'import json;print(json.load(open("result.json"))["contention"]["busy_before"])')
             [ "$busy" = "False" ] && break

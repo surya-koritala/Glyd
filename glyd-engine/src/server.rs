@@ -3770,13 +3770,27 @@ pub(crate) mod tests {
                     for i in (w..N).step_by(WORKERS) {
                         // (made in waves: a burst of a thousand SYNs is longer than a system's listen queue, which is no concern of the server's; once made, all are held open together)
                         std::thread::sleep(Duration::from_millis((i / 50) as u64 * 40 / WORKERS as u64));
-                        let connected = TcpStream::connect(addr).and_then(|mut c| {
-                            c.write_all(
-                                format!("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes(),
-                            )?;
-                            c.set_nonblocking(true)?;
-                            Ok(c)
-                        });
+                        let ask = || {
+                            TcpStream::connect(addr).and_then(|mut c| {
+                                c.write_all(
+                                    format!("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes(),
+                                )?;
+                                c.set_nonblocking(true)?;
+                                Ok(c)
+                            })
+                        };
+                        // (a connection the client's own system has no room for yet is made again after a pause: Windows' WSAENOBUFS, 10055, on a runner holding a thousand sockets of
+                        // the test's beside the server's; the server never saw it)
+                        let mut connected = ask();
+                        for _ in 0..40 {
+                            match &connected {
+                                Err(e) if e.raw_os_error() == Some(10055) || e.kind() == std::io::ErrorKind::OutOfMemory => {
+                                    std::thread::sleep(Duration::from_millis(50));
+                                    connected = ask();
+                                }
+                                _ => break,
+                            }
+                        }
                         match connected {
                             Ok(c) => open.push((i, c, Vec::new())),
                             Err(e) => errors.push(format!("{i}: {e}")),
