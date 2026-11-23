@@ -551,13 +551,14 @@ pub fn check() -> Result<bool> {
     let bf = |x: f64| crate::muse::bf(x as f32) as f64;
     // (what, head, query heads, kv heads, window, the scores in bf16, scale, soft-cap, gate (normed), round, first position, rows)
     type Case = (&'static str, usize, usize, usize, usize, bool, f32, f32, Option<bool>, bool, usize, usize);
-    let cases: [Case; 6] = [
+    let cases: [Case; 7] = [
         ("Gemma 4's sliding layers (head 256, window 64, scores in bf16)", 256, 16, 8, 64, true, 1.0, 0.0, None, true, 100, 70),
         ("Gemma 4's global layers (head 512, scores in bf16)", 512, 16, 2, 0, true, 1.0, 0.0, None, true, 40, 37),
-        ("Nemotron-H's (head 128)", 128, 16, 2, 0, false, 128f32.powf(-0.5), 0.0, None, false, 300, 65),
+        ("Nemotron-H's (head 128)", 128, 32, 2, 0, false, 128f32.powf(-0.5), 0.0, None, false, 124, 62),
         ("the Qwen3.5 layout's (head 256, gated)", 256, 16, 4, 0, false, 1.0 / 16.0, 0.0, Some(false), false, 50, 20),
         ("Muse Spark's (head 64, window 32, the gate normed)", 64, 8, 2, 32, false, 0.125, 0.0, Some(true), true, 90, 40),
         ("a soft-capped head of 128 (cap 5)", 128, 8, 2, 0, false, 128f32.powf(-0.5), 5.0, None, false, 60, 33),
+        ("Nemotron-H's (head 128), a whole chunk", 128, 32, 2, 0, false, 128f32.powf(-0.5), 0.0, None, false, 128, 64),
     ];
     let mut ok = true;
     for (what, d, nq, nk, window, sbf16, scale, softcap, gnorm, round, p0, n) in cases {
@@ -598,56 +599,76 @@ pub fn check() -> Result<bool> {
                 want[(t * nq + h) * d..][..d].copy_from_slice(&o);
             }
         }
-        let (qb, kb, vb, gb, pb) = (up(&q)?, up(&kk)?, up(&vv)?, up(&g)?, Buf::new(4 * n)?);
-        pb.write(0, &(0..n).map(|t| (p0 + t) as i32).collect::<Vec<i32>>())?;
-        let part = Buf::zeroed(n * nq * SPLITS * (d + 2) * 4)?;
-        let mut a = AttnArgs {
-            d: d as i32,
-            n: n as i32,
-            nq: nq as i32,
-            nk: nk as i32,
-            window: window as i32,
-            os: (nq * d) as i32,
-            gs: (nq * d) as i32,
-            g_step: d as i32,
-            round: round as i32,
-            sbf16: sbf16 as i32,
-            S: SPLITS as i32,
-            q_scale: 1.0,
-            eps: 1e-6,
-            scale,
-            sl2: sl2(scale),
-            softcap,
-            ..AttnArgs::default()
-        };
-        a.gnorm = (gnorm == Some(true)) as i32;
-        (a.qo, a.kc, a.vc, a.cap, a.kpos, a.part) = (qb.ptr, kb.ptr, vb.ptr, cap as i32, pb.ptr, part.ptr);
-        if gnorm.is_some() {
-            a.gate = gb.ptr;
-        }
-        let peak = want.iter().fold(0f64, |m, x| m.max(x.abs()));
-        for how in ["a prompt's rows on the tensor cores", "a prompt's rows, a warp a head", "each row a decode step"] {
-            let out = Buf::zeroed(n * nq * d * 2)?;
-            let x = AttnArgs { out: out.ptr, ..a };
-            // SAFETY: buffers made here of the sizes the kernels read and write; read after a synchronize.
-            unsafe {
-                match how {
-                    "a prompt's rows on the tensor cores" => k.prompt(dev.stream, &x)?,
-                    "a prompt's rows, a warp a head" => k.rows(dev.stream, &x)?,
-                    _ => k.decode(dev.stream, &x)?,
-                }
+        // (the keys and values as a ring, position p at p, and as pages: block b of the positions in the table's block nb - 1 - b)
+        let nb = cap.div_ceil(16);
+        let tab: Vec<i32> = (0..nb).map(|b| (nb - 1 - b) as i32).collect();
+        let paged = |x: &[f32]| -> Vec<f32> {
+            let w = nk * d;
+            let mut o = vec![0f32; nb * 16 * w];
+            for p in 0..cap {
+                let r = tab[p / 16] as usize * 16 + p % 16;
+                o[r * w..(r + 1) * w].copy_from_slice(&x[p * w..(p + 1) * w]);
             }
-            dev.sync()?;
-            let mut got = vec![0u16; n * nq * d];
-            out.read(0, &mut got)?;
-            let worst = got.iter().zip(&want).map(|(g, w)| (f32::from_bits((*g as u32) << 16) as f64 - w).abs()).fold(0f64, f64::max) / peak.max(1e-30);
-            let pass = worst <= 1e-2;
-            ok &= pass;
-            println!(
-                "{} {what}: {how}, {} values, largest difference {worst:.2e} of the largest value (bound 1.0e-2)",
-                if pass { "ok  " } else { "FAIL" },
-                got.len()
-            );
+            o
+        };
+        let (qb, gb, pb, tb) = (up(&q)?, up(&g)?, Buf::new(4 * n)?, Buf::new(4 * nb)?);
+        pb.write(0, &(0..n).map(|t| (p0 + t) as i32).collect::<Vec<i32>>())?;
+        tb.write(0, &tab)?;
+        let part = Buf::zeroed(n * nq * SPLITS * (d + 2) * 4)?;
+        let peak = want.iter().fold(0f64, |m, x| m.max(x.abs()));
+        for pages in [false, true] {
+            let (kb, vb) = if pages { (up(&paged(&kk))?, up(&paged(&vv))?) } else { (up(&kk)?, up(&vv)?) };
+            let mut a = AttnArgs {
+                d: d as i32,
+                n: n as i32,
+                nq: nq as i32,
+                nk: nk as i32,
+                window: window as i32,
+                os: (nq * d) as i32,
+                gs: (nq * d) as i32,
+                g_step: d as i32,
+                gnorm: (gnorm == Some(true)) as i32,
+                round: round as i32,
+                sbf16: sbf16 as i32,
+                S: SPLITS as i32,
+                q_scale: 1.0,
+                eps: 1e-6,
+                scale,
+                sl2: sl2(scale),
+                softcap,
+                ..AttnArgs::default()
+            };
+            (a.qo, a.kc, a.vc, a.cap, a.kpos, a.part) = (qb.ptr, kb.ptr, vb.ptr, cap as i32, pb.ptr, part.ptr);
+            if pages {
+                a.tab = tb.ptr;
+            }
+            if gnorm.is_some() {
+                a.gate = gb.ptr;
+            }
+            for how in ["a prompt's rows on the tensor cores", "a prompt's rows, a warp a head", "each row a decode step"] {
+                let out = Buf::zeroed(n * nq * d * 2)?;
+                let x = AttnArgs { out: out.ptr, ..a };
+                // SAFETY: buffers made here of the sizes the kernels read and write; read after a synchronize.
+                unsafe {
+                    match how {
+                        "a prompt's rows on the tensor cores" => k.prompt(dev.stream, &x)?,
+                        "a prompt's rows, a warp a head" => k.rows(dev.stream, &x)?,
+                        _ => k.decode(dev.stream, &x)?,
+                    }
+                }
+                dev.sync()?;
+                let mut got = vec![0u16; n * nq * d];
+                out.read(0, &mut got)?;
+                let worst = got.iter().zip(&want).map(|(g, w)| (f32::from_bits((*g as u32) << 16) as f64 - w).abs()).fold(0f64, f64::max) / peak.max(1e-30);
+                let pass = worst <= 1e-2;
+                ok &= pass;
+                println!(
+                    "{} {what}: {how}{}, {} values, largest difference {worst:.2e} of the largest value (bound 1.0e-2)",
+                    if pass { "ok  " } else { "FAIL" },
+                    if pages { ", the keys in pages" } else { "" },
+                    got.len()
+                );
+            }
         }
     }
     println!("{}", if ok { "all of the attention kind's kernels within their bounds" } else { "an attention kernel past its bound" });
