@@ -606,6 +606,19 @@ pub struct Ask {
     pub family: Option<&'static crate::support::Support>,
     /// The checkpoint is quantization-aware (`levels::is_qat`): its wren is exact (a pre-packed repo of the release's own four-bit weights).
     pub qat: bool,
+    /// The positions a decode step reads in the prediction (0: `POSITIONS`); a development build's `GLYD_FIT_POSITIONS` sets it for `fit`, to predict a longer
+    /// conversation (the held-out checks of the predictions, scripts in the M2 handoff).
+    pub positions: usize,
+}
+
+impl Ask {
+    fn positions(&self) -> f64 {
+        if self.positions > 0 {
+            self.positions as f64
+        } else {
+            POSITIONS
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -711,14 +724,14 @@ pub const MIN_CTX: usize = 4096;
 pub const PREFERRED_CTX: usize = 8192;
 const CONTEXTS: [usize; 8] = [4096, 8192, 16384, 32768, 65536, 131072, 262144, 1048576];
 /// Positions a decode step reads on average in the predictions (a chat with a short prompt).
-const POSITIONS: f64 = 1024.0;
+pub const POSITIONS: f64 = 1024.0;
 /// What a kernel streaming the GPU's memory reads of the maker's figure: 697.35 of 736 GB/s, measured on an RTX 4080 SUPER (`glyd-engine rates`, 512 MiB, 10
 /// passes); the rate of a preset or of a GPU the probe has not measured.
 pub const STREAM_OF_SPEC: f64 = 0.9475;
 /// Of the streamed rate, what decode's reads reach: the lossy levels' packs all of it, the lossless layout (decoded in the product) 0.72; and a decode step's time
 /// besides its reads, 35 µs a layer (its kernels' launches and the gaps between them). Measured on an RTX 4080 SUPER at about 1,000 positions: gemma-4-12B at wren
-/// 86.2 tokens/s and kestrel 63.3, Qwen3.5-0.8B at kestrel 561.9 and wren 657.9 (a 35 µs layer and the stream's rate predict them within 4%); the lossless figure from
-/// Qwen3-32B on an RTX A6000 (11.8 tokens/s).
+/// 86.2 tokens/s and kestrel 63.3, Qwen3.5-0.8B at kestrel 561.9 and wren 657.9 (a 35 µs layer and the stream's rate predict them within 4%: fitted on them, in-sample); the lossless
+/// figure from Qwen3-32B on an RTX A6000 (11.8 tokens/s, likewise fitted).
 const EFF_LOSSY: f64 = 1.0;
 const EFF_LOSSLESS: f64 = 0.72;
 const LAYER_S: f64 = 35e-6;
@@ -728,7 +741,7 @@ const EFF_CPU: f64 = 0.70;
 const SYNC_PER_MOE_LAYER: f64 = 0.165e-3;
 /// A prompt's tokens a second: 2 x the parameters a token multiplies over the GPU's tensor rate (`Device::tflops`) at `PROMPT_EFF` of it, and 1.11 µs a token a
 /// layer besides (attention, norms, the recurrent layers' scans). Both from two prompts of 936 and 1,002 tokens on an RTX 4080 SUPER: gemma-4-12B at wren 3,570
-/// tokens/s, Qwen3.5-0.8B at kestrel 27,073.
+/// tokens/s, Qwen3.5-0.8B at kestrel 27,073 (two constants from two runs: fitted, in-sample).
 const PROMPT_EFF: f64 = 0.92;
 const PROMPT_LAYER_S: f64 = 1.11e-6;
 /// The band a prediction is given in where no run on the GPU was observed (p10 and p90 against the prediction): the runs these figures are calibrated on (above, and
@@ -955,7 +968,7 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
         let experts = sh.routed * ebits / 8.0;
         let weights = rest + experts;
         let eff = eff_of(level, sh);
-        let read = read_of(sh, bits, ebits, POSITIONS);
+        let read = read_of(sh, bits, ebits, ask.positions());
         // the largest context that fits in `budget` bytes once `fixed` are placed
         let ctx_in = |budget: f64, fixed: f64| -> Option<usize> {
             let fits: Vec<usize> = CONTEXTS.iter().copied().filter(|&c| c <= max_ctx && fixed + kv_at(c) <= budget).collect();
@@ -1546,8 +1559,8 @@ pub fn ladder(
 }
 
 /// An option of the ladder from the plan `run` loads at that level.
-fn candidate_of(lp: LoadPlan, sh: &Shape, m: &Machine, main: usize) -> Candidate {
-    let tok_s = speed_of(sh, m, main, &lp);
+fn candidate_of(lp: LoadPlan, sh: &Shape, m: &Machine, main: usize, positions: f64) -> Candidate {
+    let tok_s = speed_at(sh, m, main, &lp, positions);
     let placement = match (&lp.spread, &lp.experts) {
         (Some(sp), _) if sp.host_bytes > 0 => Placement::ExpertsInRam {
             gpu: sp.devices.first().map_or(main, |&d| d as usize),
@@ -1924,6 +1937,7 @@ pub(crate) fn exact_options(
     machine: &Machine,
     users: usize,
     probed: bool,
+    positions: f64,
 ) -> Option<(Vec<Candidate>, Vec<crate::ui::Refusal>)> {
     let (main, target, devs, reach) = sizing_inputs(machine, probed)?;
     let tries: Vec<&'static str> = match level {
@@ -1936,7 +1950,7 @@ pub(crate) fn exact_options(
             Ok(Some(lp)) => {
                 sized = true;
                 // (a level the model is not had at sizes as the one it is: a local release asked for at hummingbird is its own penguin, listed once)
-                let c = candidate_of(lp, sh, machine, main);
+                let c = candidate_of(lp, sh, machine, main, positions);
                 if !options.iter().any(|o: &Candidate| o.level == c.level) {
                     options.push(c);
                 }
@@ -1976,6 +1990,8 @@ pub struct Planned {
     pub refusal: Option<crate::ui::Refusal>,
     /// The degrade ladder from the level asked for (the family's first where none is): None where no level of the family is sized by its loader.
     pub ladder: Option<Ladder>,
+    /// The positions the decode predictions are for (`Ask::positions`).
+    pub positions: f64,
 }
 
 pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
@@ -2008,12 +2024,13 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
     let context: Option<usize> = a.flag("context").map(|c| c.parse()).transpose().map_err(|_| Refusal::new("--context takes a number", "--context 8192"))?;
     crate::support::context_check(&name, fam, sh.max_ctx, context)?;
     let users: usize = a.num("users", 1usize)?;
-    let ask = Ask { level, context, users, family: Some(fam), qat: levels::is_qat(model) };
+    let positions = crate::tune!("GLYD_FIT_POSITIONS").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let ask = Ask { level, context, users, family: Some(fam), qat: levels::is_qat(model), positions };
     let mut p = plan(&sh, &machine, ask);
     let mut refusal = None;
     // where run's own sizing covers the family: the plan `run` would load at each level, or the refusal it would give (the same functions: `sizing::size`)
     let probed = a.flag("machine").is_none();
-    if let Some((options, refusals)) = exact_options(a, model, &config, level, fam, &sh, &machine, users, probed) {
+    if let Some((options, refusals)) = exact_options(a, model, &config, level, fam, &sh, &machine, users, probed, ask.positions()) {
         let max_ctx = context.unwrap_or(fam.default_ctx.unwrap_or(TARGET_CTX).min(sh.max_ctx)).min(fam.max_ctx.unwrap_or(usize::MAX));
         p.chosen = choose(&options, max_ctx);
         p.options = options;
@@ -2056,7 +2073,7 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
         let lad = ladder(&sh, &machine, fam, model, asked, want, &size);
         (lad.plan.is_some() || lad.refusal.is_some()).then_some(lad)
     });
-    Ok(Planned { model: model.to_string(), name, family: fam, shape: sh, machine, plan: p, refusal, ladder })
+    Ok(Planned { model: model.to_string(), name, family: fam, shape: sh, machine, plan: p, refusal, ladder, positions: ask.positions() })
 }
 
 fn fit(a: &crate::args::Args) -> Result<(), crate::ui::Refusal> {
@@ -2068,6 +2085,7 @@ fn fit(a: &crate::args::Args) -> Result<(), crate::ui::Refusal> {
             None => serde_json::json!({"schema": SCHEMA, "model": model, "plan": null, "notes": p.notes}),
         };
         v["degrade"] = f.ladder.as_ref().map_or(serde_json::Value::Null, Ladder::json);
+        v["positions"] = serde_json::json!(f.positions);
         println!("{v}");
     } else {
         print!("{}", text(model, &f.shape, &f.machine, p));
@@ -3981,6 +3999,9 @@ mod tests {
     /// what `glyd-engine bench --loads 1k:1 --no-draft` measured on one (2026-11-23, three runs each, the median): gemma-4-12B at wren 86.2 tokens/s and kestrel 63.3,
     /// prompts of 936 tokens at 3,570 and 3,580; Qwen3.5-0.8B at kestrel 561.9 and wren 657.9, prompts of 1,002 tokens at 27,073 and 27,372. Each within 15%, with
     /// the shapes `fit` reads (the checkpoints' own headers) and the family's path (Qwen3.5's does not draft with its head); the measurement in the band.
+    /// FITTED, IN-SAMPLE: `EFF_LOSSY`, `LAYER_S`, `PROMPT_EFF` and `PROMPT_LAYER_S` were set from these very runs, so this pins the constants and is no evidence
+    /// that they predict other runs. The held-out check (other levels, 4k and 8k positions, other prompt lengths, each predicted before it is measured) is the M2
+    /// handoff's g3 script on the 4080 SUPER, not run yet.
     #[test]
     fn predictions_on_the_4080_super_are_within_15_percent() {
         let gemma: serde_json::Value = serde_json::from_str(&fixture("headers/gemma-4-12B-it.json")).unwrap();
@@ -4023,6 +4044,19 @@ mod tests {
         let mut odd = m.clone();
         odd.devices[0].tflops = 0.0;
         assert!(chosen(&plan(&gemma_sh, &odd, Ask { level: Some("wren"), ..Default::default() })).prefill.is_none());
+    }
+
+    /// The prediction is for `Ask::positions` positions (fit's `GLYD_FIT_POSITIONS` in a development build): a longer conversation reads more keys and values a step,
+    /// and is predicted slower by exactly their bytes at the GPU's rate (the sliding layers read their window either way).
+    #[test]
+    fn a_longer_conversation_is_predicted_slower() {
+        let g = Shape::from_config(&fixture("gemma4_12b_config.json")).unwrap();
+        let m = Machine::preset("rtx4080s").unwrap();
+        let at = |positions: usize| chosen(&plan(&g, &m, Ask { level: Some("wren"), positions, ..Default::default() })).tok_s;
+        assert_eq!(at(0), at(1024));
+        let (short, long) = (1.0 / at(1024), 1.0 / at(8192));
+        let more = g.kv_full * (8192.0 - 1024.0);
+        assert!(((long - short) - more / (m.devices[0].rate() * EFF_LOSSY)).abs() < 1e-9, "{short} {long}");
     }
 
     #[test]
