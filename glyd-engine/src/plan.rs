@@ -666,6 +666,18 @@ pub const LOSSY_CTX: usize = 32768;
 pub const LOSSY_MIN_CTX: usize = 4096;
 /// The computer's memory kept for the system and the engine's own besides the experts pinned in it.
 pub const HOST_MARGIN: u64 = 6 << 30;
+/// The swap area for sequences sent back for room (R4d), in times the GPU's keys, values and states it backs: SGLang's host cache is 2 times its device pool by default
+/// (`hicache_ratio`), which lets every sequence that runs be swapped out once while as many run again.
+pub const SWAP_SHARE: f64 = 2.0;
+
+/// The bytes of the computer's memory the swap area may pin (R4d, docs/design/runtime.md section 5): SWAP_SHARE times the GPU's `cache` bytes (its pools of keys and values and
+/// its sequences' states), and no more than the computer has free less HOST_MARGIN. `host` is the computer's free memory read after the expert store's host tier was
+/// pinned (src/offload.rs `host_memory`), so what the experts hold is spent already: the area takes what they left. None: the computer does not say, and only the share
+/// bounds it.
+pub fn swap_area(cache: u64, host: Option<u64>) -> u64 {
+    let share = (cache as f64 * SWAP_SHARE) as u64;
+    host.map_or(share, |h| share.min(h.saturating_sub(HOST_MARGIN)))
+}
 /// GPU memory kept for a Gemma 4 draft model (an "-assistant" model at six bits, about 0.36 GiB for 31B, and its buffers).
 pub const GEMMA_DRAFT_BYTES: u64 = 640 << 20;
 /// A Gemma 4 prompt's chunk (rows a pass reads at once; a drafted round's k + 1 rows fit in it).
@@ -1748,6 +1760,19 @@ mod tests {
         let all = json::parse(&fixture("qwen35_configs.json")).unwrap();
         let c = all.get(name).unwrap();
         Shape::from_config(&json::to_compact(c)).unwrap()
+    }
+
+    /// The swap area (R4d) is twice the GPU cache it backs, no more than the computer has free less its margin (what the expert store's host tier pinned is not free), and none
+    /// where that margin is all there is.
+    #[test]
+    fn the_swap_area_is_twice_the_cache_within_what_the_host_left() {
+        let gib = 1u64 << 30;
+        assert_eq!(swap_area(4 * gib, Some(64 * gib)), 8 * gib);
+        assert_eq!(swap_area(4 * gib, Some(10 * gib)), 4 * gib, "10 GiB free, 6 kept");
+        // (32 GiB free before 20 GiB of experts were pinned: 12 left, 6 kept)
+        assert_eq!(swap_area(8 * gib, Some(12 * gib)), 6 * gib);
+        assert_eq!(swap_area(4 * gib, Some(5 * gib)), 0);
+        assert_eq!(swap_area(3 * gib, None), 6 * gib);
     }
 
     /// Qwen3-32B's config (Qwen3ForCausalLM), as the Hub has it.

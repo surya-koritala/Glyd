@@ -2383,23 +2383,35 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
-/// `usercheck CASE [--level L] [--users N] [--tokens T]` (gemma4, qwen35, muse, kimi, glm): the case's random model on the description executor, each of N prompts replied to alone as `run` replies (the reference),
-/// then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts
-/// one a pass, decode steps of the rows that decode: 16 or fewer here, whose bits are each row's own pass's). With prompts run together the replies that differ are counted, not refused (a step
-/// of more than 16 rows is another kernel's; a random model's near ties turn on its last bits: `roundcheck` measures the logits). The round is one step of the rows that decode and the prompts'
-/// chunks unless GLYD_ENGINE_ONE_STEP=0, and some step must then have held both.
+/// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR --prompt-tokens P]` (gemma4, qwen35, muse, kimi, glm, nemotron): the case's random model on the description executor (or the model
+/// in DIR, its prompts of P (k + 1) / N tokens), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
+/// the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts one a pass, decode steps of the rows that decode: 16 or fewer here, whose bits
+/// are each row's own pass's). With prompts run together the replies that differ are counted, not refused (a step of more than 16 rows is another kernel's; a random model's near ties turn on its last
+/// bits: `roundcheck` measures the logits). The round is one step of the rows that decode and the prompts' chunks unless GLYD_ENGINE_ONE_STEP=0, and some step must then have held both.
+///
+/// With a page budget too small for all of them at once (GLYD_ENGINE_PAGES, R4d) the prompts are run at once three more times: sequences sent back for room swapped to the host wherever they can be,
+/// swapped where that costs less than their recompute (the default), and run again from their tokens only; each run's replies against the references, its sequences sent back and swapped, and each
+/// request's first token and the mean time between its tokens. Swapped sequences go on with the cache they had, bit for bit: with prompts one a pass their replies must be the references.
 pub fn users_check(a: &crate::args::Args) -> Result<()> {
     use crate::conv::Gen;
-    use crate::sched::{Ev, Finish, Reply, Sched, Submit};
+    use crate::sched::{Ev, Finish, Reply, Sched, Submit, SwapMode};
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
     let case = a.need(1, "CASE")?;
     let level = a.flag("level").unwrap_or("penguin");
     let users: usize = a.num("users", 4usize)?;
     let tokens: usize = a.num("tokens", 24usize)?;
-    let mut e: Dyn = random_dyn(case, level, "usercheck")?;
+    let long: Option<usize> = a.flag("prompt-tokens").map(|v| v.parse().map_err(|_| Error(format!("--prompt-tokens {v}: not a number")))).transpose()?;
+    let len = |k: usize| long.map_or(5 + 29 * k, |p| (p * (k + 1) / users).max(1));
+    let mut e: Dyn = match a.flag("dir") {
+        Some(d) => {
+            let o = DynOpts { ctx: (len(users - 1) + tokens + 64).next_multiple_of(256), chunk: 256, graph: true, device: 0, layout: level_layout(level)? };
+            load_dyn(case, Path::new(d), &o, level)?
+        }
+        None => random_dyn(case, level, "usercheck")?,
+    };
     let vocab = e.desc().vocab as u32;
-    let prompts: Vec<Vec<u32>> = (0..users).map(|k| (0..5 + 29 * k as u32).map(|i| 3 + (i * 7919 + k as u32 * 104_729) % (vocab - 3)).collect()).collect();
+    let prompts: Vec<Vec<u32>> = (0..users).map(|k| (0..len(k) as u32).map(|i| 3 + (i * 7919 + k as u32 * 104_729) % (vocab - 3)).collect()).collect();
     let reply = Reply {
         params: crate::sampler::Params { temperature: 0.0, ..Default::default() },
         max_new: tokens,
@@ -2473,7 +2485,8 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     // (with a page budget too small for all of them at once (GLYD_ENGINE_PAGES), sequences give their blocks back and run again from their tokens, the generated ones as a prompt: the
     // replies are then counted, not required to be the same)
     let squeezed = std::env::var_os("GLYD_ENGINE_PAGES").is_some();
-    let strict = std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_some_and(|v| v == "0") && !squeezed;
+    let one_a_pass = std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_some_and(|v| v == "0");
+    let strict = one_a_pass && !squeezed;
     let steps: Vec<u64> = s.context().sched[18..27].iter().map(|x| x.load(std::sync::atomic::Ordering::Relaxed)).collect();
     let resumed = s.context().sched[2].load(std::sync::atomic::Ordering::Relaxed);
     println!(
@@ -2484,6 +2497,104 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     if squeezed && resumed == 0 {
         println!("FAIL a page budget of GLYD_ENGINE_PAGES sent no sequence back");
         fails += 1;
+    }
+    if squeezed {
+        // (R4d: the prompts at once again, swapped wherever they can be, by cost, and recomputed only; each request's first token and the time between its tokens, as the request
+        // sees them come)
+        let timed = |s: &mut Sched<&mut dyn crate::sched::ModelStep>, ps: &[Vec<u32>]| -> Result<(Vec<Vec<u32>>, Vec<f64>, Vec<f64>, f64)> {
+            let t0 = std::time::Instant::now();
+            let mut seen = Vec::new();
+            for p in ps {
+                let (tx, rx) = std::sync::mpsc::channel();
+                s.submit(Submit {
+                    prompt: p.clone(),
+                    reply: reply.clone(),
+                    out: tx,
+                    abort: Arc::new(AtomicBool::new(false)),
+                    resumed: Default::default(),
+                    cached: Default::default(),
+                    created: Default::default(),
+                    salt: 0,
+                    pin: 0,
+                    images: Vec::new(),
+                });
+                let at = std::time::Instant::now();
+                seen.push(std::thread::spawn(move || {
+                    let (mut out, mut when) = (Vec::new(), Vec::new());
+                    loop {
+                        match rx.recv() {
+                            Ok(Ev::Token(t)) => {
+                                out.push(t);
+                                when.push(at.elapsed().as_secs_f64() * 1e3);
+                            }
+                            Ok(Ev::Lp(_)) => {}
+                            Ok(Ev::End(f)) => return (out, when, f.map_err(|e| e.msg)),
+                            Err(_) => return (out, when, Err("the scheduler dropped it".into())),
+                        }
+                    }
+                }));
+            }
+            while !s.idle() {
+                s.tick()?;
+            }
+            let wall = t0.elapsed().as_secs_f64();
+            let (mut got, mut first, mut gap) = (Vec::new(), Vec::new(), Vec::new());
+            for h in seen {
+                let (out, when, f) = h.join().map_err(|_| Error("a request's thread panicked".into()))?;
+                if f != Ok(Finish::Length) {
+                    return err(format!("a sequence ended {f:?} after {} of its {tokens} tokens", out.len()));
+                }
+                first.push(when[0]);
+                gap.push(if when.len() > 1 { (when[when.len() - 1] - when[0]) / (when.len() - 1) as f64 } else { 0.0 });
+                got.push(out);
+            }
+            Ok((got, first, gap, wall))
+        };
+        let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
+        let most = |v: &[f64]| v.iter().cloned().fold(0f64, f64::max);
+        let mut times = Vec::new();
+        for (mode, name) in [(SwapMode::Always, "swap always"), (SwapMode::ByCost, "swap by cost"), (SwapMode::Never, "recompute only")] {
+            s.set_swapping(mode);
+            let (back, swapped) = (s.stats.preempted, s.stats.swapped);
+            let (got, first, gap, wall) = timed(&mut s, &prompts)?;
+            let (back, swapped) = (s.stats.preempted - back, s.stats.swapped - swapped);
+            let same = got.iter().zip(&reference).filter(|(a, b)| a == b).count();
+            println!(
+                "{name}: {same} of {} replies the reply alone; {back} sequences sent back for room, {swapped} of them swapped; first token {:.1} ms on average ({:.1} at most), {:.2} ms between tokens on average ({:.2} at most); {:.3} s in all",
+                prompts.len(),
+                mean(&first),
+                most(&first),
+                mean(&gap),
+                most(&gap),
+                wall
+            );
+            if back == 0 {
+                println!("FAIL {name}: a page budget of GLYD_ENGINE_PAGES sent no sequence back");
+                fails += 1;
+            }
+            if mode == SwapMode::Always && swapped == 0 {
+                println!("FAIL swap always: no sequence was swapped");
+                fails += 1;
+            }
+            // (swapped, a sequence goes on from the cache it had; recomputed, its generated tokens run again as a prompt, whose kernels round them otherwise)
+            if mode == SwapMode::Always && one_a_pass && same < prompts.len() {
+                println!("FAIL swap always: replies differ from alone with prompts one a pass");
+                fails += 1;
+            }
+            times.push((name, mean(&first), mean(&gap), wall));
+        }
+        let (sw, re) = (times[1], times[2]);
+        println!(
+            "swap by cost against recompute only: first token {:.1} against {:.1} ms ({:+.1}%), between tokens {:.2} against {:.2} ms ({:+.1}%), in all {:.3} against {:.3} s",
+            sw.1,
+            re.1,
+            100.0 * (sw.1 / re.1 - 1.0),
+            sw.2,
+            re.2,
+            100.0 * (sw.2 / re.2 - 1.0),
+            sw.3,
+            re.3
+        );
     }
     if kv12 {
         let back = s.stats.taken_back;

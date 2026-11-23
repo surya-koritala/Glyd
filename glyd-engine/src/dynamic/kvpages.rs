@@ -10,7 +10,7 @@ use crate::ffi::{err, KvGeom, Lib, Result};
 /// A page's entries in its own arena, past its heads' inline ones.
 pub const ARENA: i64 = 15;
 /// The places of each of a status's two rings (void and raw pages).
-const RING: i64 = 4096;
+pub(super) const RING: i64 = 4096;
 /// The values of a chunk of the escape pool.
 const CHUNK: f64 = 64.0;
 /// The decode attention's query heads to a kv head, at most.

@@ -408,6 +408,18 @@ extern "C" __global__ void __launch_bounds__(256) kv12_rows(const int* pos, int 
     }
 }
 
+// A swap's copies (src/dynamic/swap.rs, R4d): item i is three words at items + 3 i, (source, destination, bytes), the bytes a multiple of 16 and both addresses 16-byte aligned;
+// either side may be pinned host memory mapped into the device's addresses (the swap area), which the kernel then reads or writes over the link itself. A block an item at a time,
+// its threads 16 bytes each: one launch moves a sequence's blocks of every layer, however scattered in their pools.
+extern "C" __global__ void __launch_bounds__(256) swap_copy(const unsigned long long* items, int n) {
+    for (int i = blockIdx.x; i < n; i += gridDim.x) {
+        const uint4* src = reinterpret_cast<const uint4*>(items[3 * i]);
+        uint4* dst = reinterpret_cast<uint4*>(items[3 * i + 1]);
+        const unsigned long long words = items[3 * i + 2] >> 4;
+        for (unsigned long long w = threadIdx.x; w < words; w += 256) dst[w] = src[w];
+    }
+}
+
 // `topk64_bf16` with a mask per row (see `topk64_impl`): `words` is the row's words in `mask`, 1 + (V + 31) / 32.
 extern "C" __global__ void __launch_bounds__(1024) topk64_bf16_masked(const bf16* logits, int V, int* tok, float* val, const unsigned* mask, int words) {
     topk64_impl(logits, V, tok, val, mask, words);

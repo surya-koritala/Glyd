@@ -29,8 +29,8 @@ use crate::sched::{ModelStep, PrefillJob, Row, Sample};
 
 /// Paged keys and values: the blocks every sequence holds, each ring's layer group, and each sequence's block tables on the GPU ([slot][group], int32 a BLOCK of tokens).
 pub(super) struct Paged {
-    pages: Pages,
-    group: Vec<usize>,
+    pub(super) pages: Pages,
+    pub(super) group: Vec<usize>,
     tabs: Vec<Vec<Buf>>,
 }
 
@@ -277,7 +277,7 @@ impl Dyn {
     }
 
     /// The entries of sequence `slot`'s tables changed since they were last copied, copied to the GPU (nothing runs on them then: the steps before have been waited for).
-    fn upload_tables(&mut self, slot: usize) -> Result<()> {
+    pub(super) fn upload_tables(&mut self, slot: usize) -> Result<()> {
         let Some(pg) = &mut self.paged else { return Ok(()) };
         for g in 0..pg.pages.groups() {
             if let Some((lo, hi)) = pg.pages.take_dirty(slot, g) {
@@ -325,7 +325,7 @@ impl Dyn {
     }
 
     /// Sequence `slot`'s tokens in its cache.
-    fn seq_n(&self, slot: usize) -> usize {
+    pub(super) fn seq_n(&self, slot: usize) -> usize {
         if slot == self.seq {
             self.n
         } else {
@@ -333,7 +333,7 @@ impl Dyn {
         }
     }
 
-    fn set_seq_n(&mut self, slot: usize, n: usize) {
+    pub(super) fn set_seq_n(&mut self, slot: usize, n: usize) {
         if slot == self.seq {
             self.n = n;
         } else if let Some(s) = self.seqs[slot].as_mut() {
@@ -342,7 +342,7 @@ impl Dyn {
     }
 
     /// Sequence `slot`'s caches and states (none of them copied).
-    fn part_of(&self, slot: usize, row0: usize, rows: usize, start: usize) -> Result<Part> {
+    pub(super) fn part_of(&self, slot: usize, row0: usize, rows: usize, start: usize) -> Result<Part> {
         let (kc, vc, states) = if slot == self.seq {
             (self.kc.ptr, self.vc.ptr, self.states.iter().map(|b| b.ptr).collect())
         } else if self.paged.is_some() {
@@ -365,7 +365,7 @@ impl Dyn {
     }
 
     /// Sequence `slot` empty again: no tokens, its states zeroed (its cache is overwritten as it runs).
-    fn empty(&mut self, slot: usize) -> Result<()> {
+    pub(super) fn empty(&mut self, slot: usize) -> Result<()> {
         if let Some(m) = self.snap_n.get_mut(slot) {
             *m = 0;
         }
@@ -481,6 +481,8 @@ impl Dyn {
             }
             self.page(users)?;
             self.add_seqs(users - 1)?;
+            // (the host's swap area for the sequences sent back for room: as the plan sizes it, from what the computer has free now that the experts' host tier is in it)
+            self.swap_room(crate::plan::swap_area(self.swap_backs() as u64, crate::offload::host_memory()) as usize)?;
             return Ok(Some(users));
         }
         let mla: usize = self.big.mla.iter().map(|b| b.seq_bytes(self.ctx)).sum();
@@ -833,6 +835,8 @@ impl ModelStep for Dyn {
     }
     fn release(&mut self, pages: &[i32]) -> Result<()> {
         for &p in pages {
+            // (a slot being copied back from the host: the copy done first)
+            self.swap_settle(p as usize)?;
             self.empty(p as usize)?;
             if let Some(pg) = &mut self.paged {
                 pg.pages.release(p as usize);
@@ -1052,5 +1056,21 @@ impl ModelStep for Dyn {
         self.dev.sync()?;
         self.upload_tables(slot as usize)?;
         Ok(true)
+    }
+    /// Paged sequences are swapped to the host's area and back (src/dynamic/swap.rs), every family's the same way: their blocks in every group and their states.
+    fn swap_cost(&self, slot: i32) -> Option<(usize, f64)> {
+        self.swap_cost_of(slot as usize)
+    }
+    fn swap_out(&mut self, slot: i32) -> Result<Option<u64>> {
+        self.swap_out_of(slot as usize)
+    }
+    fn swap_in(&mut self, slot: i32, ticket: u64, upto: usize) -> Result<Option<usize>> {
+        self.swap_in_of(slot as usize, ticket, upto)
+    }
+    fn swap_ready(&mut self, slot: i32, wait: bool) -> Result<bool> {
+        self.swap_ready_of(slot as usize, wait)
+    }
+    fn swap_drop(&mut self, ticket: u64) {
+        self.swap_drop_of(ticket)
     }
 }

@@ -96,6 +96,7 @@ pub struct Kern {
     topk_masked: Option<crate::kt::topk64_bf16_masked>,
     gather: crate::kt::gather_bf16,
     kv12_rows: crate::kt::kv12_rows,
+    swap_copy: crate::kt::swap_copy,
     expsum: crate::kt::expsum_bf16,
     count_diff: crate::kt::count_diff_u16,
     logsumexp: crate::kt::logsumexp_bf16,
@@ -166,6 +167,7 @@ impl Kern {
             topk_masked: dev.typed::<crate::kt::topk64_bf16_masked>().ok(),
             gather: dev.typed()?,
             kv12_rows: dev.typed()?,
+            swap_copy: dev.typed()?,
             expsum: dev.typed()?,
             count_diff: dev.typed()?,
             logsumexp: dev.typed()?,
@@ -461,6 +463,15 @@ impl Kern {
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn kv12_rows(&self, s: Stream, pos: u64, n: usize, tab: u64, window: usize, parts: usize, slots: u64, lens: u64, first: u64) -> Result<()> {
         launch!(self.kv12_rows, [(n as u32).div_ceil(256), 1, 1], [256, 1, 1], s; pos, n as i32, tab, window as i32, parts as i32, slots, lens, first)
+    }
+
+    /// The `n` copies listed at `items` (three u64 a copy: source, destination, bytes, a multiple of 16 with both ends 16-byte aligned), by `blocks` blocks of 256 threads: a swap's
+    /// (src/dynamic/swap.rs), whose host side is pinned memory mapped into the device's addresses.
+    ///
+    /// # Safety
+    /// `items` and every range it lists are live for the kernel's run, device memory or mapped pinned host memory, and no two destinations overlap.
+    pub unsafe fn swap_copy(&self, s: Stream, items: u64, n: usize, blocks: u32) -> Result<()> {
+        launch!(self.swap_copy, [blocks.max(1), 1, 1], [256, 1, 1], s; items, n as i32)
     }
 
     pub unsafe fn gather_row(&self, s: Stream, logits: u64, v: usize, row: usize, idx: u64, n: usize, out: u64) -> Result<()> {
