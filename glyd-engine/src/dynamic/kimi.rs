@@ -1,12 +1,12 @@
 //! Kimi-K3 (src/kimi.rs; the math: research/kimi-k3.md) as a description. No residual stream: the partial sum of the current block of layers is X, the completed
-//! blocks (the embedding first) are Blk's, and every block's input is their depth mix and norm (`Op::KimiMixNorm`, the layer before's add in it). The delta
+//! blocks (the embedding first) are Blk's, and every block's input is their depth mix and norm (`Op::DepthMix`, the layer before's add in it). The delta
 //! attention is GLM's operations (q, k, v, the full-rank output gate, the forget gate's first product and beta one product of the layer's input, read where it
 //! leaves them: `View`); the latent attention a block of its own on GLM's kernels (q_a, the gate and kv_a one product; the absorbed query with the key part the
 //! heads share, a dense attention, the sigmoid output gate); the experts a block on the mixture-of-experts core (MXFP4 as released, packed exactly as DeepSeek-V4's
 //! FP4, situ, on the latent, its sum normed before the up projection), the shared experts the core's shared MLP; layer 0's dense MLP with situ. Norms are
 //! KimiRMSNorm's (two roundings). The CPU reference (src/kimi_ref.rs) checks it (`kimicheck`).
 
-use super::{Dyn, Loaded, ModelDesc, Op, Opts, Slot, Stage, View};
+use super::{DepthMixOp, Dyn, Loaded, ModelDesc, MoeOp, Op, Opts, Slot, Stage, View};
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result, Stream};
 use crate::glm::GlmKind;
@@ -30,8 +30,6 @@ pub struct KernKimi {
     gate: crate::kt::kimi_gate,
     dense_cnt: crate::kt::kimi_dense_cnt,
     rms2: crate::kt::kimi_rms2,
-    add: crate::kt::kimi_add,
-    mix_norm: crate::kt::kimi_mix_norm,
     rows: crate::kt::kimi_rows,
     /// the expert cache's plan and copies on the GPU (src/dynamic/tp_cache.rs's device path)
     pub(crate) dc_plan: crate::kt::dc_plan,
@@ -40,16 +38,7 @@ pub struct KernKimi {
 
 impl KernKimi {
     pub fn load(dev: &Dev) -> Result<KernKimi> {
-        Ok(KernKimi {
-            gate: dev.typed()?,
-            dense_cnt: dev.typed()?,
-            rms2: dev.typed()?,
-            add: dev.typed()?,
-            mix_norm: dev.typed()?,
-            rows: dev.typed()?,
-            dc_plan: dev.typed()?,
-            dc_fill: dev.typed()?,
-        })
+        Ok(KernKimi { gate: dev.typed()?, dense_cnt: dev.typed()?, rms2: dev.typed()?, rows: dev.typed()?, dc_plan: dev.typed()?, dc_fill: dev.typed()? })
     }
 
     /// o [n, w] *= sigmoid(g) (g's rows gs apart).
@@ -84,47 +73,6 @@ impl KernKimi {
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn rows(&self, s: Stream, src: u64, ss: usize, dst: u64, ds: usize, w: usize, n: usize) -> Result<()> {
         launch!(self.rows, [((n * w) as u32).div_ceil(256), 1, 1], [256, 1, 1], s; src, ss as i64, dst, ds as i64, w as i32, n as i32)
-    }
-
-    /// x = bf16(x + a), e values.
-    ///
-    /// # Safety
-    /// As `gate`.
-    pub unsafe fn add(&self, s: Stream, x: u64, a: u64, e: usize) -> Result<()> {
-        launch!(self.add, [(e as u32).div_ceil(256), 1, 1], [256, 1, 1], s; x, a, e as i64)
-    }
-
-    /// A half-layer's start: x [n, d] = bf16(x + o) where o is given (0: none); the depth mix of the `nb` blocks at blk (a row's blocks side by side, rows
-    /// `rs` values apart) and x; x made the block at `push` (blk's place for it; 0: none) and then zeros; y (rows ys apart) = KimiRMSNorm of the mix by w.
-    ///
-    /// # Safety
-    /// As `gate`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn mix_norm(
-        &self,
-        s: Stream,
-        blk: u64,
-        rs: usize,
-        nb: usize,
-        x: u64,
-        o: u64,
-        wn: u64,
-        wp: u64,
-        push: u64,
-        w: u64,
-        y: u64,
-        ys: usize,
-        d: usize,
-        eps: f32,
-        n: u32,
-    ) -> Result<()> {
-        if nb + 1 > 16 || d > 8192 || d % 8 != 0 || rs % 8 != 0 || ys % 8 != 0 {
-            return err(format!(
-                "a depth mix of {} sources over {d} values (rows {rs} and {ys} apart): the kernel takes 16 sources and up to 8,192 values, in 8s",
-                nb + 1
-            ));
-        }
-        launch!(self.mix_norm, [n, 1, 1], [512, 1, 1], s; blk, rs as i64, nb as i32, x, o, wn, wp, push, w, y, ys as i32, d as i32, eps)
     }
 }
 
@@ -390,7 +338,7 @@ struct KimiMoeCached {
     moe: KimiMoe,
     store: Rc<ExpertStore>,
     index: usize,
-    /// (a decode step's guess of the experts, `Op::KimiEarly`: none where no copies are made for it)
+    /// (a decode step's guess of the experts, `Op::MoeEarly`: none where no copies are made for it)
     guess: Option<Guess>,
     /// (a development build's GLYD_KIMI_STATS: the stage's first cached layer reports its store every 64 one-token calls; their count and the time of the last report)
     report: Option<(std::cell::Cell<u32>, std::cell::Cell<std::time::Instant>)>,
@@ -844,10 +792,20 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
         let (an, ap) = res(&mut l_.small, "self_attention")?;
         let (mn, mp) = res(&mut l_.small, "mlp")?;
         // (the layer before's output added here where that layer is this stage's: its add is this mix's; a block's first layer makes X a block)
-        let mut ops =
-            vec![Op::KimiMixNorm { add: l > st.layers.0, nb: before, w_n: an, w_p: ap, push: (l % c.res_block == 0).then_some(before), w: in_n, eps: c.eps }];
+        let mut ops = vec![Op::DepthMix(DepthMixOp {
+            add: l > st.layers.0,
+            nb: before,
+            w_n: an,
+            w_p: ap,
+            push: (l % c.res_block == 0).then_some(before),
+            w: in_n,
+            eps: c.eps,
+        })];
         if c.moe[l] && early {
-            ops.push(Op::KimiEarly { block: l_.moe.len(), nb: before + usize::from(l % c.res_block == 0), w_n: mn, w_p: mp, w: post_n, eps: c.eps });
+            ops.push(Op::MoeEarly {
+                block: l_.moe.len(),
+                mix: DepthMixOp { add: false, nb: before + usize::from(l % c.res_block == 0), w_n: mn, w_p: mp, push: None, w: post_n, eps: c.eps },
+            });
         }
         match c.kinds[l] {
             GlmKind::Kda => {
@@ -928,7 +886,7 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
                 l_.mla.push(Box::new(b));
             }
         }
-        ops.push(Op::KimiMixNorm { add: true, nb: before + usize::from(l % c.res_block == 0), w_n: mn, w_p: mp, push: None, w: post_n, eps: c.eps });
+        ops.push(Op::DepthMix(DepthMixOp { add: true, nb: before + usize::from(l % c.res_block == 0), w_n: mn, w_p: mp, push: None, w: post_n, eps: c.eps }));
         if c.moe[l] {
             let f = format!("{q}.block_sparse_moe");
             let cfg = MoeCfg {
@@ -1104,7 +1062,7 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
                 eps: c.eps,
                 k: shared.clone(),
             };
-            ops.push(Op::Moe { block: l_.moe.len() });
+            ops.push(Op::Moe(MoeOp::of(l_.moe.len())));
             match slots {
                 None => l_.moe.push(Box::new(b)),
                 Some(_) if tp_places.is_some() => {
@@ -1146,13 +1104,13 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
             let down = put_m(&mut l_.mats, one(format!("{q}.mlp.down_proj"))?);
             ops.extend([
                 Op::Linear { w: gu, x: Slot::H, y: Slot::Gu, name: "MLP: gate and up product" },
-                Op::Situ { inter: c.inter, beta: c.situ.0, linear: c.situ.1 },
+                Op::GatedAct { inter: c.inter, act: Act::Situ { beta: c.situ.0, linear: c.situ.1 } },
                 Op::Linear { w: down, x: Slot::M, y: Slot::O, name: "MLP: down product" },
             ]);
         }
         // (added by the next layer's mix, or the head's, where that is this stage's; X whole at a stage's end)
         if l + 1 == st.layers.1 && !st.last {
-            ops.push(Op::KimiAdd { x: Slot::O });
+            ops.push(Op::Add { x: Slot::O });
         }
         layers.push(ops);
     }
@@ -1164,7 +1122,7 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
             put(&mut l_.small, small(&format!("{p}norm.weight"))?),
         );
         let all = c.layers.div_ceil(c.res_block);
-        layers.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::KimiMixNorm {
+        layers.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::DepthMix(DepthMixOp {
             add: st.layers.1 > st.layers.0,
             nb: all,
             w_n: on,
@@ -1172,7 +1130,7 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
             push: None,
             w: norm,
             eps: c.eps,
-        });
+        }));
     }
     // (a stage without the embedding or the head keeps their places, empty, so that their indices hold)
     let empty = || -> Result<Mat> { Ok(Mat::Dense(Buf::new(2)?, 0, 0)) };
@@ -1272,7 +1230,7 @@ pub(crate) fn dtypes(ck: &Checkpoint, c: &ConfigKimi) -> Result<Vec<(bool, bool)
 }
 
 /// Kimi-K3's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::kimi`), held to `describe`. `w32` the delta
-/// layers' dtypes (`dtypes`), `early` whether the cached experts are guessed and copied ahead (the `KimiEarly` step).
+/// layers' dtypes (`dtypes`), `early` whether the cached experts are guessed and copied ahead (the `MoeEarly` step).
 pub fn lowered(dir: &Path, c: &ConfigKimi, st: &Stage, w32: &[(bool, bool)], early: bool) -> Result<ModelDesc> {
     let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
     let lowered = super::lower::kimi(&kinds, c.eos.clone(), c.max_pos, st, w32, early)?;
@@ -1343,9 +1301,9 @@ pub(crate) fn kimi_desc(k: &KimiDims, ls: &[KimiLayer], starts: &[bool], st: &St
         let (in_n, post_n, an, ap, mn, mp) = (s, s + 1, s + 2, s + 3, s + 4, s + 5);
         n_small += 6;
         let nb = before + usize::from(starts[l]);
-        let mut ops = vec![Op::KimiMixNorm { add: l > st.layers.0, nb: before, w_n: an, w_p: ap, push: starts[l].then_some(before), w: in_n, eps }];
+        let mut ops = vec![Op::DepthMix(DepthMixOp { add: l > st.layers.0, nb: before, w_n: an, w_p: ap, push: starts[l].then_some(before), w: in_n, eps })];
         if ly.moe && early {
-            ops.push(Op::KimiEarly { block: n_moe, nb, w_n: mn, w_p: mp, w: post_n, eps });
+            ops.push(Op::MoeEarly { block: n_moe, mix: DepthMixOp { add: false, nb, w_n: mn, w_p: mp, push: None, w: post_n, eps } });
         }
         if ly.kda {
             let m0 = n_mats;
@@ -1369,29 +1327,29 @@ pub(crate) fn kimi_desc(k: &KimiDims, ls: &[KimiLayer], starts: &[bool], st: &St
             ops.push(Op::Mla { block: n_mla });
             n_mla += 1;
         }
-        ops.push(Op::KimiMixNorm { add: true, nb, w_n: mn, w_p: mp, push: None, w: post_n, eps });
+        ops.push(Op::DepthMix(DepthMixOp { add: true, nb, w_n: mn, w_p: mp, push: None, w: post_n, eps }));
         if ly.moe {
             mix_w = mix_w.max(fused(k.moe_rows));
-            ops.push(Op::Moe { block: n_moe });
+            ops.push(Op::Moe(MoeOp::of(n_moe)));
             n_moe += 1;
         } else {
             let (gu, down) = (n_mats, n_mats + 1);
             n_mats += 2;
             ops.extend([
                 Op::Linear { w: gu, x: Slot::H, y: Slot::Gu, name: "MLP: gate and up product" },
-                Op::Situ { inter: k.inter, beta: k.situ.0, linear: k.situ.1 },
+                Op::GatedAct { inter: k.inter, act: Act::Situ { beta: k.situ.0, linear: k.situ.1 } },
                 Op::Linear { w: down, x: Slot::M, y: Slot::O, name: "MLP: down product" },
             ]);
         }
         if l + 1 == st.layers.1 && !st.last {
-            ops.push(Op::KimiAdd { x: Slot::O });
+            ops.push(Op::Add { x: Slot::O });
         }
         layers.push(ops);
     }
     if st.last {
         let all = starts.iter().filter(|&&s| s).count();
         if let Some(last) = layers.last_mut() {
-            last.push(Op::KimiMixNorm { add: st.layers.1 > st.layers.0, nb: all, w_n: n_small, w_p: n_small + 1, push: None, w: n_small + 2, eps });
+            last.push(Op::DepthMix(DepthMixOp { add: st.layers.1 > st.layers.0, nb: all, w_n: n_small, w_p: n_small + 1, push: None, w: n_small + 2, eps }));
         }
     }
     let blocks = starts.iter().filter(|&&s| s).count();

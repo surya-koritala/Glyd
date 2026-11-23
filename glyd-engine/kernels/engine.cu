@@ -1068,6 +1068,7 @@ extern "C" __global__ void __launch_bounds__(256, 1) gemm3f_128x256_s3(const bf1
 
 #include "qwen35.cu"  // Qwen3.5's kernels
 #include "moe.cu"     // the mixture-of-experts layer's (the router, the activations between the experts' products)
+#include "residual.cu"  // the residual rules' and the input-scaled norm's, every family's (after qwen35.cu: its helpers)
 #include "moe_rows.cu"  // the sparse experts' (the second product for the neurons that are not zero)
 #include "moe_hb.cu"    // the Hummingbird experts' (codebook rows: the rotation, the two products, the weighted sum and the rotation back)
 #include "moe_hbg.cu"   // the Hummingbird experts' for every mixture of experts (any width, gated or not, a block of 32 to 1,024; after moe_hb.cu: its helpers)

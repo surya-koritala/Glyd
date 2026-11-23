@@ -2,14 +2,15 @@
 //! keys its indexer picks (src/mla_glm.rs's block, run through `GlmHost`), a dense MLP in the first layers and a mixture of experts in the rest, the mean of the streams and the final norm. Its weights load by
 //! model_glm.rs's loader and the blocks by their factories, handed over as they are; the arithmetic is kernels/glm.cu's, as model_glm.rs runs it (`glmdyn` checks the two against each other).
 
-use super::{Dyn, Loaded, ModelDesc, Op, Opts, Slot, Stage, View};
+use super::{Dyn, Loaded, ModelDesc, MoeOp, Op, Opts, Slot, Stage, View};
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result};
 use crate::glm::{ConfigGlm, GlmKind};
 use crate::kern35::Mat;
 use crate::kern_nh::{MoeBlock, NhHost};
 use crate::model_glm::{WeightsGlm, GM_D};
-use crate::moe::MoeLayer;
+use crate::moe::{Act, MoeLayer};
+use crate::runtime::kinds::Rounding;
 use crate::weights::Layout;
 use std::path::Path;
 
@@ -86,11 +87,12 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
         };
         let [ha, hf] = ly.hc;
         let (na, nf) = (put(&mut l_.small, ly.norm_a), put(&mut l_.small, ly.norm_f));
-        let pre = |small: &mut Vec<Buf>, h: crate::model_glm::Hc, norm: usize| Op::GlmPre {
+        let pre = |small: &mut Vec<Buf>, h: crate::model_glm::Hc, norm: usize| Op::StreamsPre {
             f: put(small, h.proj),
             base: put(small, h.base),
             scale: put(small, h.scale),
             norm,
+            round: Rounding::Twice,
         };
         let mut ops = vec![pre(&mut l_.small, ha, na)];
         let m0 = l_.mats.len();
@@ -127,13 +129,13 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
                 l_.mla.push(b);
             }
         }
-        ops.extend([Op::GlmPost, pre(&mut l_.small, hf, nf)]);
+        ops.extend([Op::StreamsPost { round: Rounding::Twice }, pre(&mut l_.small, hf, nf)]);
         match ly.moe {
             Some(b) => {
                 if b.layer().is_none() {
                     return err(format!("layer {l}: a block of experts that is not all on the GPU: the dynamic engine runs those alone"));
                 }
-                ops.push(Op::Moe { block: l_.moe.len() });
+                ops.push(Op::Moe(MoeOp::of(l_.moe.len())));
                 l_.moe.push(Box::new(GlmMoeIn(b)));
             }
             None => {
@@ -142,17 +144,17 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
                 let (gu, down) = (m0 + nm - 2, m0 + nm - 1);
                 ops.extend([
                     Op::Linear { w: gu, x: Slot::H, y: Slot::Gu, name: "MLP: gate and up product" },
-                    Op::SwiGluClamp { inter: c.inter, limit: c.experts.limit },
+                    Op::GatedAct { inter: c.inter, act: Act::SwiGlu { limit: Some(c.experts.limit) } },
                     Op::Linear { w: down, x: Slot::M, y: Slot::O, name: "MLP: down product" },
                 ]);
             }
         }
-        ops.push(Op::GlmPost);
+        ops.push(Op::StreamsPost { round: Rounding::Twice });
         layers.push(ops);
     }
     if st.last {
         let norm = put(&mut l_.small, norm_f.ok_or_else(|| Error("the final norm is not loaded".into()))?);
-        layers.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::GlmHead { norm });
+        layers.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::StreamsHead { weighted: None, norm, round: Rounding::Twice });
     }
     // (a stage without the embedding or the head keeps their places, empty, so that their indices hold)
     let empty = || -> Result<Mat> { Ok(Mat::Dense(Buf::new(2)?, 0, 0)) };
@@ -201,7 +203,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
         small: Vec::new(),
         ropes: Vec::new(),
         rings: Vec::new(),
-        first: Op::GlmStreams,
+        first: Op::Streams,
         layers,
         states,
         final_norm: None,
@@ -250,7 +252,7 @@ pub fn describe(c: &ConfigGlm, st: &Stage) -> Result<ModelDesc> {
         }
         let s = n_small;
         n_small += 5;
-        let mut ops = vec![Op::GlmPre { f: s + 2, base: s + 3, scale: s + 4, norm: s }];
+        let mut ops = vec![Op::StreamsPre { f: s + 2, base: s + 3, scale: s + 4, norm: s, round: Rounding::Twice }];
         let m0 = n_mats;
         let nm = per_layer(c.kinds[l], c.moe[l]);
         n_mats += nm;
@@ -270,18 +272,18 @@ pub fn describe(c: &ConfigGlm, st: &Stage) -> Result<ModelDesc> {
         }
         let h = n_small;
         n_small += 3;
-        ops.extend([Op::GlmPost, Op::GlmPre { f: h, base: h + 1, scale: h + 2, norm: s + 1 }]);
+        ops.extend([Op::StreamsPost { round: Rounding::Twice }, Op::StreamsPre { f: h, base: h + 1, scale: h + 2, norm: s + 1, round: Rounding::Twice }]);
         if c.moe[l] {
-            ops.push(Op::Moe { block: n_moe });
+            ops.push(Op::Moe(MoeOp::of(n_moe)));
             n_moe += 1;
         } else {
             ops.extend(dense_ops(m0 + nm - 2, c.inter, c.experts.limit));
         }
-        ops.push(Op::GlmPost);
+        ops.push(Op::StreamsPost { round: Rounding::Twice });
         layers.push(ops);
     }
     if st.last {
-        layers.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::GlmHead { norm: n_small });
+        layers.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::StreamsHead { weighted: None, norm: n_small, round: Rounding::Twice });
     }
     let e = n_mats;
     let lm = if st.last && !c.tie { e + 1 } else { e };
@@ -310,7 +312,7 @@ pub(crate) fn kda_ops(m0: usize, s0: usize, conv: usize, ssm: usize, qd: usize, 
 pub(crate) fn dense_ops(gu: usize, inter: usize, limit: f32) -> Vec<Op> {
     vec![
         Op::Linear { w: gu, x: Slot::H, y: Slot::Gu, name: "MLP: gate and up product" },
-        Op::SwiGluClamp { inter, limit },
+        Op::GatedAct { inter, act: Act::SwiGlu { limit: Some(limit) } },
         Op::Linear { w: gu + 1, x: Slot::M, y: Slot::O, name: "MLP: down product" },
     ]
 }
@@ -362,7 +364,7 @@ pub(crate) fn glm_desc(
         small: Vec::new(),
         ropes: Vec::new(),
         rings: Vec::new(),
-        first: Op::GlmStreams,
+        first: Op::Streams,
         layers,
         states,
         final_norm: None,

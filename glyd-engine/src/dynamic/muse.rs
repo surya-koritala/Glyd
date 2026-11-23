@@ -1,14 +1,13 @@
 //! Muse Spark's text model (src/muse.rs) as a description: each layer's attention (q, k, v and the gate in one product; heads of 64 normed, the rotary on the window's layers; the output normed and gated),
 //! its experts in the latent (a projection in, a centered norm, the experts with each output normed, the weighted sum, a projection out), the input-scaled norms and the residual gates; the normed
 //! embedding, the final norm, the soft-cap of the logits times the output multiplier. bf16 as the checkpoint has it, packed at the level asked (lossless by default); the routers fp32, as they are. The
-//! arithmetic is kernels/muse.cu's and the attention kind's (kernels/attn.cu); src/muse_ref.rs is the CPU reference it is checked against (`musecheck`).
+//! arithmetic is the kinds' (the attention's kernels/attn.cu, the norms' and residual gates' kernels/residual.cu, the experts' moe.rs) and kernels/muse.cu's; src/muse_ref.rs is the CPU reference it is checked against (`musecheck`).
 
 use super::attn::{AttnOp, GateAt, QkNorm, RopeAt};
-use super::{Dyn, Loaded, ModelDesc, Op, Opts, Ring, Slot, Stage};
+use super::{Dyn, Loaded, ModelDesc, MoeOp, NormW, Op, Opts, ResidentMoe, Ring, Slot, Stage};
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result};
 use crate::kern35::Mat;
-use crate::kern_nh::{MoeBlock, NhHost};
 use crate::moe::{Act, ExpertStack, MoeCfg, MoeLayer, MoeWeights, Router};
 use crate::moe_rows::Down;
 use crate::muse::{plus_one, residual_gate, ConfigMuse};
@@ -16,16 +15,14 @@ use crate::weights::{as_bytes, pack_words, upload_bytes, upload_packed, Layout};
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 
-/// kernels/muse.cu's kernels the executor launches (the experts' are moe.rs's, the attention's the attention kind's).
+/// kernels/muse.cu's kernel the executor launches for the head (the experts' are moe.rs's, the attention's the attention kind's, the norms' and residual gates' the residual kinds').
 pub struct KernMuse {
-    pub(crate) rms_in: crate::kt::muse_rms_in,
-    pub(crate) rgate: crate::kt::muse_rgate,
     pub(crate) softcap: crate::kt::muse_softcap,
 }
 
 impl KernMuse {
     pub fn load(dev: &Dev) -> Result<KernMuse> {
-        Ok(KernMuse { rms_in: dev.typed()?, rgate: dev.typed()?, softcap: dev.typed()? })
+        Ok(KernMuse { softcap: dev.typed()? })
     }
 }
 
@@ -58,22 +55,10 @@ fn attention(c: &ConfigMuse, l: usize, ring: usize) -> Op {
     })
 }
 
-/// A layer's experts on the dynamic engine (`MoeLayer::forward_muse`, its router fp32 in `MoeWeights::router`).
-struct MuseMoe(MoeLayer);
-
-impl MoeBlock for MuseMoe {
-    unsafe fn forward(&self, _: &dyn NhHost, _: u64, _: usize, _: u64) -> Result<()> {
-        err("Muse Spark's experts run on the dynamic engine")
-    }
-    fn graphable(&self) -> bool {
-        true
-    }
-    fn bytes(&self) -> usize {
-        self.0.weights_bytes()
-    }
-    fn resident(&self) -> Option<(&MoeLayer, Option<(&Mat, &Mat)>)> {
-        Some((&self.0, None))
-    }
+/// A layer's experts in the latent (block `block`): the router reads H by its fp32 weights, its logits times `mult` (the output multiplier), the experts the normed latent
+/// Xc, each expert's output normed (input-scaled by the small `post_w`, eps) before it is weighed, their sum into M (`MoeLayer::forward_normed`).
+pub(crate) fn latent_moe(block: usize, post_w: usize, eps: f32, mult: f32) -> MoeOp {
+    MoeOp { x: Slot::Xc, y: Slot::M, logit_scale: mult, expert_norm: Some((post_w, eps)), ..MoeOp::of(block) }
 }
 
 fn io<T>(r: std::io::Result<T>) -> Result<T> {
@@ -239,27 +224,27 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_sto
                 MoeLayer::new(cfg, MoeWeights { router, bias: Some(bias), escale: None, up, down: Down::Block(down) }, None)?
             }
         };
-        l_.moe.push(Box::new(MuseMoe(layer)));
+        l_.moe.push(Box::new(ResidentMoe(layer)));
         let ring = rings.len();
         rings.push(Ring { d: hd, nk, window: if c.sliding[l] { c.window } else { 0 } });
         let mut ops = vec![
-            Op::MuseRms { x: Slot::X, w: w_in, y: Slot::H, eps: c.eps },
+            Op::RmsNorm { x: Slot::X, w: w_in, y: Slot::H, weight: NormW::Plain, eps: c.eps },
             Op::Linear { w: m0, x: Slot::H, y: Slot::Mix, name: "attention: q, k, v and gate product" },
             attention(&c, l, ring),
             Op::Linear { w: m0 + 1, x: Slot::Att, y: Slot::O, name: "attention: o product" },
-            Op::MuseRms { x: Slot::O, w: ones, y: Slot::O, eps: c.post_eps },
-            Op::MuseGate { alpha: aa, beta: ba },
-            Op::MuseRms { x: Slot::X, w: w_ff, y: Slot::H, eps: c.eps },
+            Op::RmsNorm { x: Slot::O, w: ones, y: Slot::O, weight: NormW::Plain, eps: c.post_eps },
+            Op::GatedResidual { alpha: aa, beta: ba },
+            Op::RmsNorm { x: Slot::X, w: w_ff, y: Slot::H, weight: NormW::Plain, eps: c.eps },
             Op::Linear { w: m0 + 2, x: Slot::H, y: Slot::Proj, name: "experts: latent in" },
-            Op::MuseRms { x: Slot::Proj, w: w_pre, y: Slot::Xc, eps: c.eps },
-            Op::MuseMoe { block, post_w: w_post_e, eps: c.post_eps },
+            Op::RmsNorm { x: Slot::Proj, w: w_pre, y: Slot::Xc, weight: NormW::Plain, eps: c.eps },
+            Op::Moe(latent_moe(block, w_post_e, c.post_eps, c.out_mult)),
             Op::Linear { w: m0 + 3, x: Slot::M, y: Slot::O, name: "experts: latent out" },
-            Op::MuseRmsIn { x: Slot::O, w: w_post_ff, y: Slot::O, eps: c.post_eps },
-            Op::MuseGate { alpha: af, beta: bfg },
+            Op::RmsNorm { x: Slot::O, w: w_post_ff, y: Slot::O, weight: NormW::Input, eps: c.post_eps },
+            Op::GatedResidual { alpha: af, beta: bfg },
         ];
         if st.last && l + 1 == c.layers {
             let norm = put(&mut l_.small, upload_bytes(&read(&format!("{}norm.weight", c.prefix))?)?);
-            ops.push(Op::MuseRms { x: Slot::X, w: norm, y: Slot::H, eps: c.eps });
+            ops.push(Op::RmsNorm { x: Slot::X, w: norm, y: Slot::H, weight: NormW::Plain, eps: c.eps });
         }
         layers.push(ops);
     }
@@ -307,7 +292,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_sto
         ropes: Vec::new(),
         rings,
         // (the embedding's row normed without a weight, in place)
-        first: Op::MuseRms { x: Slot::X, w: ones, y: Slot::X, eps: c.eps },
+        first: Op::RmsNorm { x: Slot::X, w: ones, y: Slot::X, weight: NormW::Plain, eps: c.eps },
         layers,
         states: Vec::new(),
         final_norm: None,
@@ -363,22 +348,22 @@ pub fn describe(c: &ConfigMuse, st: &Stage) -> Result<ModelDesc> {
         let window = if c.sliding[l] { c.window } else { 0 };
         rings.push(Ring { d: hd, nk, window });
         let mut ops = vec![
-            Op::MuseRms { x: Slot::X, w: w_in, y: Slot::H, eps: c.eps },
+            Op::RmsNorm { x: Slot::X, w: w_in, y: Slot::H, weight: NormW::Plain, eps: c.eps },
             Op::Linear { w: m0, x: Slot::H, y: Slot::Mix, name: "attention: q, k, v and gate product" },
             attention(c, l, ring),
             Op::Linear { w: m0 + 1, x: Slot::Att, y: Slot::O, name: "attention: o product" },
-            Op::MuseRms { x: Slot::O, w: ones, y: Slot::O, eps: c.post_eps },
-            Op::MuseGate { alpha: aa, beta: ba },
-            Op::MuseRms { x: Slot::X, w: w_ff, y: Slot::H, eps: c.eps },
+            Op::RmsNorm { x: Slot::O, w: ones, y: Slot::O, weight: NormW::Plain, eps: c.post_eps },
+            Op::GatedResidual { alpha: aa, beta: ba },
+            Op::RmsNorm { x: Slot::X, w: w_ff, y: Slot::H, weight: NormW::Plain, eps: c.eps },
             Op::Linear { w: m0 + 2, x: Slot::H, y: Slot::Proj, name: "experts: latent in" },
-            Op::MuseRms { x: Slot::Proj, w: w_pre, y: Slot::Xc, eps: c.eps },
-            Op::MuseMoe { block, post_w: w_post_e, eps: c.post_eps },
+            Op::RmsNorm { x: Slot::Proj, w: w_pre, y: Slot::Xc, weight: NormW::Plain, eps: c.eps },
+            Op::Moe(latent_moe(block, w_post_e, c.post_eps, c.out_mult)),
             Op::Linear { w: m0 + 3, x: Slot::M, y: Slot::O, name: "experts: latent out" },
-            Op::MuseRmsIn { x: Slot::O, w: w_post_ff, y: Slot::O, eps: c.post_eps },
-            Op::MuseGate { alpha: af, beta: bfg },
+            Op::RmsNorm { x: Slot::O, w: w_post_ff, y: Slot::O, weight: NormW::Input, eps: c.post_eps },
+            Op::GatedResidual { alpha: af, beta: bfg },
         ];
         if st.last && l + 1 == c.layers {
-            ops.push(Op::MuseRms { x: Slot::X, w: n_small, y: Slot::H, eps: c.eps });
+            ops.push(Op::RmsNorm { x: Slot::X, w: n_small, y: Slot::H, weight: NormW::Plain, eps: c.eps });
             n_small += 1;
         }
         layers.push(ops);
@@ -409,7 +394,7 @@ pub fn describe(c: &ConfigMuse, st: &Stage) -> Result<ModelDesc> {
         small: Vec::new(),
         ropes: Vec::new(),
         rings,
-        first: Op::MuseRms { x: Slot::X, w: ones, y: Slot::X, eps: c.eps },
+        first: Op::RmsNorm { x: Slot::X, w: ones, y: Slot::X, weight: NormW::Plain, eps: c.eps },
         layers,
         states: Vec::new(),
         final_norm: None,
