@@ -2453,6 +2453,10 @@ impl Gen for Remote {
         self.window
     }
 
+    fn own_speed(&self) -> bool {
+        false
+    }
+
     fn reply(&mut self, prompt: &[u32], o: &Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, Finish)> {
         let h = self.start(prompt, o)?;
         let mut tokens = Vec::new();

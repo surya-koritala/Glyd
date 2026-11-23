@@ -16,7 +16,7 @@ use crate::kern_nh::{MoeBlock, NhHost};
 use crate::moe::{Act, ExpertStack, Joined, MoeCfg, MoeLayer, MoeScratch, MoeWeights, Router, Shared};
 use crate::moe_rows::{Down, RowStack, RowsJoined};
 use crate::nemotron::{pack_layout, ConfigNemotronH, NhKind};
-use crate::offload::{places_for, CachePlan, Call, CpuRows, ExpertStore, HostHalf, PackIn, Stage};
+use crate::offload::{Call, CpuRows, ExpertStore, HostHalf, PackIn, Stage};
 use crate::weights::{ordered, pack_item_map, read_pack, upload_bytes, upload_packed, v7_manifest, Item, Layout, Packed};
 use glyd_gpu::json::Value;
 use glyd_gpu::pack::{rows_bits, Tiered};
@@ -363,19 +363,8 @@ pub fn expert_bytes(c: &ConfigNemotronH, level: Layout) -> Result<u64> {
     Ok(ud + us + dd + ds)
 }
 
-/// The expert cache that `budget` bytes of the GPU's memory buy for the model `c` at `level`: places a layer for each of its mixture-of-experts layers, as many as fit (all of a layer's experts at most); None where
-/// fewer than `least` fit.
-pub fn cache_plan(c: &ConfigNemotronH, level: Layout, budget: u64, least: usize) -> Result<Option<CachePlan>> {
-    let (layers, experts, expert_bytes) = (c.layers_of(NhKind::Moe), c.moe.experts, expert_bytes(c, level)?);
-    Ok(places_for(budget, layers, expert_bytes, experts, least).map(|slots| CachePlan {
-        layers,
-        experts,
-        slots,
-        expert_bytes,
-        in_place: level == Layout::Hummingbird,
-        ram: (layers * experts) as u64 * expert_bytes,
-    }))
-}
+/// The expert cache a budget buys: the planner's (src/plan.rs `sizing`).
+pub use crate::plan::sizing::cache_plan;
 
 impl MoeBlock for NhMoeCached {
     /// `NhMoe::forward`'s launches, with the experts' products over the places the router's choices were put in (`ExpertStore::run`: the choices, their weights and z are read on the host, the missing experts copied or

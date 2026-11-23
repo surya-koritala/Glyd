@@ -760,7 +760,7 @@ pub(crate) mod tests {
         }
         assert_eq!((packs["i4"], packs["i6"]), (40_960, 80 + 16 + 160 + 2));
         assert_eq!((weights["i4"], weights["i6"]), (112_742_891_520, 7_839_154_176));
-        // (bits a weight as fit.rs has them: the experts 4.53, the rest 6.53, and the small tensors as they are)
+        // (bits a weight as the planner has them (plan.rs `sizing::bits`): the experts 4.53, the rest 6.53, and the small tensors as they are)
         let gb = (weights["i4"] as f64 * 4.53 + weights["i6"] as f64 * 6.53) / 8.0 / 1e9;
         assert!((70.0..70.5).contains(&(gb + 86_662_144.0 * 2.0 / 1e9)), "{gb} GB of packs");
     }

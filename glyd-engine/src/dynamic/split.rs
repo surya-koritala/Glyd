@@ -488,108 +488,8 @@ pub fn layer_bytes_table(table: &crate::sizes::Table, nl: usize, f8_pct: u64, bf
     })
 }
 
-/// The bytes `layer_bytes` gives and the cut `plan_cuts` makes over `room`: on HBM GPUs (`hbm`) the FP8 matrices in layout H's plain packs and, for a loader
-/// that takes it (`twelve`: Kimi-K3's, whose `Opts::layout` is its bf16 matrices' alone), the bf16 ones in the 12-bit layout where they fit (their faster
-/// products), else the bf16 ones tiered, then the FP8 ones coded too (coded: true third, `Lib::f8h_plain(Some(false))` before the load; 12-bit: true fourth,
-/// `Layout::Twelve` the load's); elsewhere coded and tiered, their only layouts. No cut where nothing fits.
-#[allow(clippy::type_complexity)]
-pub fn fit(dir: &Path, nl: usize, room: &[(i32, u64)], hbm: bool, twelve: bool) -> Result<((Vec<u64>, u64), Option<(Vec<usize>, Vec<i32>)>, bool, bool)> {
-    Ok(fit_table_with(&crate::sizes::Table::from_dir(dir).map_err(Error)?, nl, room, hbm, twelve, &hb_layer_bytes(dir, nl)?))
-}
-
-/// `fit` of a table of tensors (src/sizes.rs).
-#[allow(clippy::type_complexity)]
-pub fn fit_table(
-    table: &crate::sizes::Table,
-    nl: usize,
-    room: &[(i32, u64)],
-    hbm: bool,
-    twelve: bool,
-) -> ((Vec<u64>, u64), Option<(Vec<usize>, Vec<i32>)>, bool, bool) {
-    fit_table_with(table, nl, room, hbm, twelve, &[])
-}
-
-/// `fit_table`, each layer's bytes more by `extra`'s (a hummingbird directory's experts, which no table lists: `hb_layer_bytes`).
-#[allow(clippy::type_complexity)]
-pub fn fit_table_with(
-    table: &crate::sizes::Table,
-    nl: usize,
-    room: &[(i32, u64)],
-    hbm: bool,
-    twelve: bool,
-    extra: &[u64],
-) -> ((Vec<u64>, u64), Option<(Vec<usize>, Vec<i32>)>, bool, bool) {
-    let bytes = |f8: u64, bf16: u64| {
-        let (mut per, base) = layer_bytes_table(table, nl, f8, bf16, &|_| true);
-        per.iter_mut().zip(extra).for_each(|(p, e)| *p += e);
-        (per, base)
-    };
-    if hbm {
-        for (f8, twelve) in [(PLAIN_PCT, twelve), (PLAIN_PCT, false), (CODED_PCT, twelve)] {
-            let b = bytes(f8, if twelve { TWELVE_PCT } else { TIERED_PCT });
-            if let Some(c) = plan_cuts(&b.0, b.1, room) {
-                return (b, Some(c), f8 == CODED_PCT, twelve);
-            }
-        }
-    }
-    let coded = bytes(CODED_PCT, TIERED_PCT);
-    let cut = plan_cuts(&coded.0, coded.1, room);
-    let switched = hbm && cut.is_some();
-    (coded, cut, switched, false)
-}
-
-/// A model whose experts the GPUs do not all hold (Kimi-K3's 1.4 TB on 8x 80 GB): its layers over the GPUs of `room` in order, each layer taking its bytes
-/// besides its routed experts (`dense`) and, where it has experts (`moe`), places for the same number of them, `expert` bytes each, the most that lets every
-/// layer fit (`base`, the rest, half on the first GPU and half on the last); then each GPU's room left over as more places for its own layers, as many as a
-/// layer has at most. The cuts, their GPUs and each stage's places a layer; None where fewer than `least` a layer fit.
-pub fn places_plan(
-    dense: &[u64],
-    base: u64,
-    moe: &[bool],
-    room: &[(i32, u64)],
-    expert: u64,
-    experts: usize,
-    least: usize,
-) -> Option<(Vec<usize>, Vec<i32>, Vec<usize>)> {
-    let n = dense.len();
-    let foot = |l: usize, p: u64| dense[l] + if moe[l] { p * expert } else { 0 };
-    // (the layers in order, each GPU filled to its room, with p places a layer: where each stage starts; None where the GPUs do not hold them)
-    let assign = |p: u64| -> Option<Vec<usize>> {
-        let (mut starts, mut g, mut used) = (vec![0usize], 0usize, base / 2);
-        for l in 0..n {
-            if used + foot(l, p) > room.get(g)?.1 {
-                g += 1;
-                starts.push(l);
-                used = 0;
-            }
-            used += foot(l, p);
-            if used > room.get(g)?.1 {
-                return None;
-            }
-        }
-        (used + base - base / 2 <= room[g].1).then_some(starts)
-    };
-    let (mut lo, mut hi) = (least as u64, experts as u64);
-    assign(lo)?;
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        if assign(mid).is_some() {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    let starts = assign(lo)?;
-    let bounds: Vec<usize> = starts.iter().copied().chain(std::iter::once(n)).collect();
-    let stages = starts.len();
-    let mut places = Vec::new();
-    for (k, w) in bounds.windows(2).enumerate() {
-        let held = dense[w[0]..w[1]].iter().sum::<u64>() + if k == 0 { base / 2 } else { 0 } + if k + 1 == stages { base - base / 2 } else { 0 };
-        let layers = moe[w[0]..w[1]].iter().filter(|&&m| m).count().max(1) as u64;
-        places.push(((room[k].1.saturating_sub(held) / (layers * expert.max(1))) as usize).clamp(lo as usize, experts));
-    }
-    Some((starts[1..].to_vec(), room[..stages].iter().map(|r| r.0).collect(), places))
-}
+/// Where the dynamic route's layers go and how many of their experts each GPU holds: the planner's (src/plan.rs `sizing`).
+pub use crate::plan::sizing::{fit, fit_table, fit_table_with, places_plan, places_plan_dense, plan_cuts};
 
 /// Kimi-K3 in stages (`open`'s) with `places[k]` of a layer's experts on stage k's GPU, the rest in the expert cache's host tier.
 pub fn open_kimi(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], places: Vec<usize>, dense: usize) -> Result<Run> {
@@ -646,39 +546,6 @@ fn in_ram(family: &str, kda: &[bool], name: &str) -> bool {
         }
         _ => false,
     }
-}
-
-/// `places_plan`, and where it finds no room on one GPU, the last layers' dense matrices in the computer's memory (src/dense_ram.rs; `ram`: each layer's bytes that can be there), as few layers as fit: their bytes off the GPU,
-/// one slot of the largest of them on it. The cuts, their GPUs, each stage's places, how many layers are in the computer's memory, and the bytes that leaves off the GPU (theirs less the slot).
-#[allow(clippy::type_complexity)]
-pub fn places_plan_dense(
-    dense: &[u64],
-    base: u64,
-    moe: &[bool],
-    room: &[(i32, u64)],
-    expert: u64,
-    experts: usize,
-    least: usize,
-    ram: &[u64],
-) -> Option<(Vec<usize>, Vec<i32>, Vec<usize>, usize, u64)> {
-    if let Some((c, d, p)) = places_plan(dense, base, moe, room, expert, experts, least) {
-        return Some((c, d, p, 0, 0));
-    }
-    if room.len() != 1 || ram.len() != dense.len() {
-        return None;
-    }
-    let n = dense.len();
-    (1..=n).find_map(|k| {
-        let from = n - k;
-        let moved: Vec<u64> = (from..n).map(|l| ram[l].min(dense[l])).collect();
-        let slot = moved.iter().copied().max().unwrap_or(0);
-        if slot == 0 {
-            return None;
-        }
-        let mut d = dense.to_vec();
-        d[from..].iter_mut().zip(&moved).for_each(|(x, m)| *x -= m);
-        places_plan(&d, base + slot, moe, room, expert, experts, least).map(|(c, dv, p)| (c, dv, p, k, moved.iter().sum::<u64>() - slot))
-    })
 }
 
 /// A model of the dynamic route in stages (`open`'s), stage k's layers with their experts in the expert cache as `cachings[k]` says: a hummingbird directory's (src/hbg_store.rs: places on its GPU, the computer's memory, the disk),
@@ -739,49 +606,6 @@ pub fn open_kimi_tp(dir: &Path, o: &Opts, devices: &[i32], places: usize) -> Res
         o,
         std::sync::Arc::new(move |st, o: &Opts| super::kimi::load_with_places(&owned, o, st, Some(places))),
     )?))
-}
-
-/// Where to cut layers of `per` bytes (the rest, `base`, half with the first stage and half with the last) over GPUs with `room` bytes each (ordinal, room):
-/// the one with the most room where it holds the whole model, else consecutive layers over the GPUs in order, each GPU's share of the bytes as its
-/// share of the room. None: they do not hold it.
-pub fn plan_cuts(per: &[u64], base: u64, room: &[(i32, u64)]) -> Option<(Vec<usize>, Vec<i32>)> {
-    let total = per.iter().sum::<u64>() + base;
-    let best = room.iter().max_by_key(|r| r.1)?;
-    if total <= best.1 {
-        return Some((Vec::new(), vec![best.0]));
-    }
-    cut_by_share(per, base, room)
-}
-
-/// The layers over every GPU of `room`, in order, each GPU's share of the bytes as its share of the room (`plan_cuts` where one GPU does not hold them).
-fn cut_by_share(per: &[u64], base: u64, room: &[(i32, u64)]) -> Option<(Vec<usize>, Vec<i32>)> {
-    let total = per.iter().sum::<u64>() + base;
-    let all = room.iter().map(|r| r.1).sum::<u64>().max(1);
-    let (head, tail) = (base / 2, base - base / 2);
-    let (mut cuts, mut devices, mut l) = (Vec::new(), Vec::new(), 0usize);
-    for (k, &(dev, cap)) in room.iter().enumerate() {
-        if l == per.len() {
-            break;
-        }
-        let (start, last) = (l, k + 1 == room.len());
-        let target = (total as u128 * cap as u128 / all as u128) as u64;
-        let mut held = if devices.is_empty() { head } else { 0 };
-        while l < per.len() {
-            let add = per[l] + if l + 1 == per.len() { tail } else { 0 };
-            if held + add > cap || (!last && held >= target) {
-                break;
-            }
-            held += add;
-            l += 1;
-        }
-        if l > start {
-            if !devices.is_empty() {
-                cuts.push(start);
-            }
-            devices.push(dev);
-        }
-    }
-    (l == per.len()).then_some((cuts, devices))
 }
 
 #[cfg(test)]

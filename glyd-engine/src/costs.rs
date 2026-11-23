@@ -207,13 +207,13 @@ impl Family {
         }
     }
 
-    /// The bytes a pack takes at `level` where the files do not say (packed as the loader would pack it: fit::bits a weight in its layout).
+    /// The bytes a pack takes at `level` where the files do not say (packed as the loader would pack it: plan.rs `sizing::bits` a weight in its layout).
     fn estimate(&self, level: Layout, p: &Pack35) -> Result<u64> {
         let weights = (p.rows() * p.cols) as u64;
         match self {
             Family::Nemotron(c) if level == Layout::Hummingbird && p.key.contains(".mixer.experts.") => Ok(crate::moe_hb::expert_bytes_mean(c)? / 2),
-            Family::Nemotron(_) => Ok((weights as f64 * crate::fit::bits(crate::nemotron::pack_layout(level, &p.key)) / 8.0) as u64),
-            Family::Qwen(_) => Ok((weights as f64 * crate::fit::bits(level) / 8.0) as u64),
+            Family::Nemotron(_) => Ok((weights as f64 * crate::plan::sizing::bits(crate::nemotron::pack_layout(level, &p.key)) / 8.0) as u64),
+            Family::Qwen(_) => Ok((weights as f64 * crate::plan::sizing::bits(level) / 8.0) as u64),
         }
     }
 
@@ -1272,10 +1272,16 @@ pub fn costs_json(model: &str, a: &crate::args::Args) -> Result<Value> {
 
 /// The GPU's memory, its link and the computer's memory measured now, briefly (256 MiB, 5 passes), for a prediction without a tiers file.
 fn quick_rates() -> Result<Rates> {
+    probe_rates(0)
+}
+
+/// GPU `ordinal`'s memory as a kernel streams it, its link from pinned host memory and the computer's memory as all its threads read it, measured now (256 MiB,
+/// 5 passes each after one more): the planner's rate probe (src/plan.rs `rates_in`, on a GPU's first use).
+pub fn probe_rates(ordinal: i32) -> Result<Rates> {
     use crate::dev::{copy_h2d_async, Buf, Dev, Pinned};
     let bytes = 256usize << 20;
     let reps = 5;
-    let dev = Dev::new(0)?;
+    let dev = Dev::new(ordinal)?;
     let k = crate::kern::Kern::load(&dev)?;
     let (buf, out) = (Buf::zeroed(bytes)?, Buf::zeroed(4)?);
     let blocks = (dev.sms as u32) * 16;

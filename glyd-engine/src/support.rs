@@ -43,11 +43,13 @@ pub struct Support {
     pub split_levels: &'static [&'static str],
     /// The levels at which a mixture of experts may keep its experts in the computer's memory.
     pub experts_in_ram_levels: &'static [&'static str],
+    /// The path drafts with the model's own multi-token-prediction head (Condor's): a decode step makes more than one token. No other path loads that head yet.
+    pub drafts: bool,
 }
 
 /// The most context the lossy paths take where none is asked (one constant: the planner's, src/plan.rs).
 pub use crate::plan::LOSSY_CTX;
-/// The context the Qwen3 path and the dynamic engine take where none is asked (src/fit.rs `CTX_WANT`, src/cli.rs `size_dynamic`).
+/// The context the Qwen3 path and the dynamic engine take where none is asked (src/plan.rs `sizing::CTX_WANT`, `sizing::size_dynamic`).
 pub const DEFAULT_CTX: usize = 8192;
 
 const LOSSY: &[&str] = &["kestrel", "swift", "wren"];
@@ -66,6 +68,7 @@ pub static TABLE: [Support; 9] = [
         max_ctx: Some(MAX_CONTEXT),
         split_levels: NONE,
         experts_in_ram_levels: NONE,
+        drafts: false,
     },
     Support {
         family: Family::Qwen35,
@@ -76,6 +79,7 @@ pub static TABLE: [Support; 9] = [
         max_ctx: None,
         split_levels: NONE,
         experts_in_ram_levels: NONE,
+        drafts: false,
     },
     Support {
         family: Family::NemotronH,
@@ -86,6 +90,7 @@ pub static TABLE: [Support; 9] = [
         max_ctx: None,
         split_levels: PENGUIN,
         experts_in_ram_levels: &["kestrel", "swift", "wren", "hummingbird"],
+        drafts: false,
     },
     Support {
         family: Family::Gemma4,
@@ -96,6 +101,7 @@ pub static TABLE: [Support; 9] = [
         max_ctx: None,
         split_levels: NONE,
         experts_in_ram_levels: NONE,
+        drafts: false,
     },
     Support {
         family: Family::Kimi,
@@ -106,6 +112,7 @@ pub static TABLE: [Support; 9] = [
         max_ctx: None,
         split_levels: PENGUIN_HB,
         experts_in_ram_levels: PENGUIN_HB,
+        drafts: false,
     },
     Support {
         family: Family::Glm,
@@ -116,6 +123,7 @@ pub static TABLE: [Support; 9] = [
         max_ctx: None,
         split_levels: PENGUIN_HB,
         experts_in_ram_levels: PENGUIN_HB,
+        drafts: false,
     },
     Support {
         family: Family::DeepSeekV4,
@@ -126,6 +134,7 @@ pub static TABLE: [Support; 9] = [
         max_ctx: None,
         split_levels: PENGUIN_HB,
         experts_in_ram_levels: PENGUIN_HB,
+        drafts: false,
     },
     Support {
         family: Family::Muse,
@@ -136,6 +145,7 @@ pub static TABLE: [Support; 9] = [
         max_ctx: None,
         split_levels: PENGUIN_HB,
         experts_in_ram_levels: PENGUIN_HB,
+        drafts: false,
     },
     Support {
         family: Family::FlashNext,
@@ -146,6 +156,7 @@ pub static TABLE: [Support; 9] = [
         max_ctx: None,
         split_levels: NONE,
         experts_in_ram_levels: NONE,
+        drafts: true,
     },
 ];
 
