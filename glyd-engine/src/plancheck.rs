@@ -9,9 +9,10 @@
 //!       3. prints and saves each case's errors (DIR/results.json) and the gate: decode and prompt speed within 15% of the prediction, the GPU memory the server took
 //!          never above the plan's, and no failed request (an out-of-memory) at the plan's context; exit 0 where every case passes, 1 where one fails;
 //!       4. appends a calibration record a case (`glyd-calib/1`: the GPU, its class, its driver and rates, the case, predicted and measured) to DIR/records.jsonl and
-//!          FILE (the cache's calibration/records.jsonl): collected from machines, they set each class's figures (`plan::fit_consts`, leave-one-class-out).
+//!          FILE (the cache's calibration/records.jsonl): collected from machines and shipped, a class's own records fit its figures (`plan::prior_from`).
 //!   glyd-engine plancheck --score [FILE ...]
-//!       each class's cases (the shipped records and FILEs') predicted from the figures the other classes' records fit: the errors class by class.
+//!       each class's cases (the shipped records and FILEs') predicted from the other classes' figures (leave-one-class-out: the error of a class with no
+//!       records) and from its own less the one predicted: the errors class by class.
 
 use crate::args::Args;
 use crate::plan::{self, Machine};
@@ -90,7 +91,6 @@ fn predict(model: &str, a: &Args, users: usize, loads: &[(String, usize)]) -> Re
     let d = &f.machine.devices[main];
     let band = d.band();
     let in_vram = lp.experts.is_none() && lp.spread.as_ref().is_none_or(|s| s.host_bytes == 0 && s.dense == 0);
-    let prefill = if in_vram { plan::prefill_of(&f.shape, d).map(|p| p * d.observed_prefill.unwrap_or(1.0)) } else { None };
     // (the context the plan allows, filled to 85%: no request may fail there)
     let fill = format!("{}t", lp.context * 85 / 100);
     let placement = match &c.placement {
@@ -102,8 +102,7 @@ fn predict(model: &str, a: &Args, users: usize, loads: &[(String, usize)]) -> Re
     let head = json!({
         "model": model, "level": lp.level, "placement": placement, "context": lp.context, "plan_users": lp.users, "chunk": lp.chunk,
         "planned_use_mib": mib(lp.gpu_total() - lp.reserve), "planned_total_mib": mib(lp.gpu_total()), "gpu": d.name, "rate_gbs": d.rate() / 1e9,
-        "measured_rate": d.stream.is_some(), "tflops": d.tflops, "consts": {"eff": d.consts.eff, "layer_s": d.consts.layer_s, "prompt_eff": d.consts.prompt_eff,
-        "prompt_layer_s": d.consts.prompt_layer_s}, "band": band,
+        "measured_rate": d.stream.is_some(), "tflops": d.tflops, "consts": format!("{:?}", d.consts), "prior": format!("{:?} on {} records", d.prior.source, d.prior.records), "band": band,
     });
     // (a load whose prompt and reply the plan's context does not hold is not a case of this plan: said, not measured)
     let (cases, beyond): (Vec<(String, usize)>, Vec<(String, usize)>) =
@@ -117,6 +116,7 @@ fn predict(model: &str, a: &Args, users: usize, loads: &[(String, usize)]) -> Re
             let prompt = nominal(&kind);
             let positions = (prompt + MADE / 2) as f64;
             let prior = plan::speed_users(&f.shape, &f.machine, main, &lp, positions, n);
+            let prefill = if in_vram { plan::prefill_at(&f.shape, d, prompt as f64).map(|p| p * d.observed_prefill.unwrap_or(1.0)) } else { None };
             let decode = prior * band[1];
             json!({
                 "model": model, "load": format!("{kind}:{n}"), "kind": kind, "users": n, "prompt_tokens": prompt, "positions": positions,
@@ -292,7 +292,7 @@ fn score(a: &Args) -> Result<(), String> {
         text += &std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?;
     }
     let records = plan::records_of(&text);
-    println!("{} records; each class predicted from the figures the other classes' records fit (leave-one-class-out)", records.len());
+    println!("{} records; each class predicted from the figures the other classes' records fit (leave-one-class-out: what a class with no records may expect), and from its own less the one predicted", records.len());
     let line = |v: &[f64]| {
         if v.is_empty() {
             return "-".to_string();
@@ -301,8 +301,8 @@ fn score(a: &Args) -> Result<(), String> {
         let worst = v.iter().copied().fold(0.0f64, |w, e| if e.abs() > w.abs() { e } else { w });
         format!("{} cases, mean |error| {:.1}%, worst {:+.1}%", v.len(), mean * 100.0, worst * 100.0)
     };
-    for (class, dec, pre) in plan::score_classes(&records) {
-        println!("{class}: decode {}; prompts {}", line(&dec), line(&pre));
+    for (class, dec, pre, loo) in plan::score_classes(&records) {
+        println!("{class}: from the other classes: decode {}; prompts {}. From its own, less the one: decode {}", line(&dec), line(&pre), line(&loo));
     }
     Ok(())
 }

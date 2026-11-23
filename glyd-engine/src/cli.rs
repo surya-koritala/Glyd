@@ -1383,8 +1383,10 @@ fn load_lossy(
         ui.borrow_mut().line(&format!("Note: {n}"));
     }
     ui.borrow_mut().status(&format!("{} {name} and loading it onto the GPU...", if packed.is_some() { "Reading" } else { "Packing" }));
-    let (e, bytes, vocab) = open_lossy(a, &plan, &dir, &gpu, &name, ui)?;
+    let (mut e, bytes, vocab) = open_lossy(a, &plan, &dir, &gpu, &name, ui)?;
     loaded_report(&model, &plan, &[&gpu], bytes as u64);
+    // (the model's first load on this GPU: a reply timed, its speeds measured here from then on)
+    crate::plan::first_use(&mut *e, vocab);
     let tok = Tok::load(&dir).map_err(cannot)?;
     let chat = Chat::load(&dir).map_err(cannot)?;
     let mut defaults = sampler::generation_defaults(&dir);
@@ -1775,7 +1777,7 @@ fn load_dynamic(
         ui.borrow_mut().line("Its FP8 matrices are held coded (the same values in about 7 bits of 8) for it to fit; as they are, they do not.");
     }
     ui.borrow_mut().status(&format!("Reading {name} and loading it onto the GPU{}...", if devices.len() == 1 { "" } else { "s" }));
-    let e = open_dynamic(a, &plan, &dir, family)?.map_err(|e| {
+    let mut e = open_dynamic(a, &plan, &dir, family)?.map_err(|e| {
         if e.out_of_memory() {
             Refusal::unsupported(
                 format!("a GPU ran out of memory loading {name} ({})", stages.join(", ")),
@@ -1788,6 +1790,7 @@ fn load_dynamic(
     // (the weights the engine holds on one GPU; stages and layers across GPUs hold theirs on their own threads and say none: 0)
     let weights = crate::conv::Gen::held(&e).map_or(0, |h| h.weights);
     loaded_report(model, &plan, &gpus.iter().filter(|g| devices.contains(&g.ordinal)).collect::<Vec<_>>(), weights);
+    crate::plan::first_use(&mut e, crate::dynamic::split::config_num(&text, "vocab_size").unwrap_or(0));
     let tok = Tok::load(&dir).map_err(cannot)?;
     // (DeepSeek-V4's and Kimi-K3's releases have their chat formats in Python alone: ours as templates)
     let own = match family {
