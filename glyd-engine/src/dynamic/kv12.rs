@@ -263,6 +263,10 @@ pub fn calibrate(e: &mut Dyn, prompts: &[Vec<u32>], model: &str) -> Result<Table
         return err(format!("{}: no attention layer whose keys and values this reads (Gemma 4's preparation)", e.big.d.family));
     }
     let mut hists: Vec<Option<Hist>> = shapes.iter().map(|s| s.map(|s| Hist::new(s.heads, s.channels, s.one))).collect();
+    // (the pages' chunks are counted on prompts the windows were not made from: bases from the first half, counted on the second; where there is one
+    // prompt, on it, which counts too few)
+    let half = prompts.len() / 2;
+    let mut first: Vec<Option<Hist>> = hists.clone();
     let reply = crate::sched::Reply {
         params: crate::sampler::Params { temperature: 0.0, ..Default::default() },
         max_new: 1,
@@ -271,13 +275,16 @@ pub fn calibrate(e: &mut Dyn, prompts: &[Vec<u32>], model: &str) -> Result<Table
         stop_ids: Vec::new(),
     };
     let mut positions = 0;
-    for p in prompts {
+    for (i, p) in prompts.iter().enumerate() {
         crate::conv::Gen::reply(e, p, &reply, &mut |_| true)?;
         positions = positions.max(p.len());
-        for (s, h) in shapes.iter().zip(hists.iter_mut()) {
-            if let (Some(s), Some(h)) = (s, h) {
+        for ((s, h), f) in shapes.iter().zip(hists.iter_mut()).zip(first.iter_mut()) {
+            if let (Some(s), Some(h), Some(f)) = (s, h, f) {
                 let (k, v, _) = e.kv_rows(s, p.len())?;
                 h.add(&k, &v);
+                if i < half {
+                    f.add(&k, &v);
+                }
             }
         }
     }
@@ -285,11 +292,12 @@ pub fn calibrate(e: &mut Dyn, prompts: &[Vec<u32>], model: &str) -> Result<Table
     let outside = hists.iter().zip(&layers).map(|(h, t)| h.as_ref().zip(t.as_ref()).map_or(0.0, |(h, t)| h.outside(t))).collect();
     // (the pages' escape chunks with the tables made: the prompts again; values outside their windows gather in a few channels, so a page's need is
     // counted, not taken from the share)
+    let held_out: Vec<Option<LayerTable>> = if half > 0 { first.iter().map(|h| h.as_ref().map(Hist::table)).collect() } else { layers.clone() };
     let mut taken: Vec<Vec<u32>> = vec![Vec::new(); shapes.len()];
-    for p in prompts {
+    for p in &prompts[half..] {
         crate::conv::Gen::reply(e, p, &reply, &mut |_| true)?;
         for (l, s) in shapes.iter().enumerate() {
-            if let (Some(s), Some(t)) = (s, &layers[l]) {
+            if let (Some(s), Some(t)) = (s, &held_out[l]) {
                 let (k, v, first) = e.kv_rows(s, p.len())?;
                 taken[l].extend(page_chunks(&k, &v, first, t, super::kvpages::ARENA as usize));
             }
@@ -302,7 +310,7 @@ pub fn calibrate(e: &mut Dyn, prompts: &[Vec<u32>], model: &str) -> Result<Table
 /// A model's tables, from the cache (made for its directory, version and shapes), else made now from the calibration corpus's first `PROMPTS`
 /// sequences of `POSITIONS` tokens (the context allowing) and kept there: true where they were made.
 pub fn tables_for(e: &mut Dyn, dir: &Path, model: &str) -> Result<(Tables, bool)> {
-    const POSITIONS: usize = 2048;
+    const POSITIONS: usize = 1024;
     const PROMPTS: usize = 8;
     let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()).display().to_string();
     let hash = key.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
