@@ -6,11 +6,14 @@
 //! `the_current_packer_writes_the_released_files` is the other direction: the packer of this glyd, run on the same tiny checkpoint, writes the fixtures' files byte for byte;
 //! a deliberate change of a layout's bytes fails it, and wants a new format version (and a new fixture) rather than an edit of the old.
 //!
-//! The fixtures: `main-NAME` hold layouts no release has written yet (the row layouts i6r, i5r and i4r, and a Hummingbird save with its codebook rows c3r and c2r), made by this glyd
-//! (`write_pack_sources`): they say what a decoder must keep reading; the release that first writes each layout replaces them with its own. `v0.33.1-LAYOUT` was written by the `glyd pack` of release 0.33.1 (the tiny checkpoint `tiny_source` writes, `--layout LAYOUT`); `v1-0.27.0-mma` is a glyd-v1
-//! save as glyd 0.27's `pack_mma` made it (the tiered layout of glyd 0.20 to 0.27: the Python packer is the only one that wrote it, so its layout is `crate::v1`'s, held as the
-//! one matrix `legacy` makes). To add the next release's: build it, run `glyd pack` on the checkpoint `GLYD_PACK_SRC=DIR cargo test -p glyd-gpu write_pack_sources -- --ignored`
-//! writes, and put the output in `tests/data/packs/vX.Y.Z-LAYOUT`.
+//! The fixtures: `main-NAME` hold what no release's `glyd pack` writes of the tiny Qwen3 (the row layouts i6r, i5r and i4r; a Hummingbird save with its codebook rows c3r and c2r;
+//! glyd-v7 at penguin and the exact four-bit i4x, which `glyd-engine pack` writes for Gemma 4 alone, the second from the tiny Qwen3 trained to four bits, `tiny_source_as`), made
+//! by this glyd (`write_pack_sources`): they say what a decoder must keep reading; the release that first writes each replaces them with its own. `v0.33.1-LAYOUT` was written
+//! by the `glyd pack` of release 0.33.1 (the tiny checkpoint `tiny_source` writes, `--layout LAYOUT`). `v1-0.27.0-mma` and `v2-0.27.0-mma` are a glyd-v1 save of one matrix
+//! and a glyd-v2 save of a layer's experts as glyd 0.27's `save_pretrained` made them (the tiered layout of glyd 0.20 to 0.27: the Python packer is the only one that wrote
+//! it, so its layout is `crate::v1`'s); `v5-0.29.1-mma` the glyd-v5 save of the tiny Qwen3 as 0.29.1's `save_pretrained(tables=True)` made it (the embedding packed as a
+//! table). To add the next release's: build it, run `glyd pack` on the checkpoint `GLYD_PACK_SRC=DIR cargo test -p glyd-gpu write_pack_sources -- --ignored` writes, and
+//! put the output in `tests/data/packs/vX.Y.Z-LAYOUT`. glyd-engine's `packcheck.rs` runs each that holds the tiny Qwen3 on its CPU reference against a recorded digest.
 use super::*;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/data/packs");
@@ -25,25 +28,9 @@ const LAYOUTS: &[(&str, Layout)] = &[
     ("i3", Layout::Int3),
 ];
 
-/// The tiny Qwen3 the fixtures hold the packs of: one layer, 128-wide, random bf16 weights from a fixed seed, the output layer tied.
-fn tiny_source(src: &Path) {
-    std::fs::create_dir_all(src).unwrap();
-    std::fs::write(src.join("config.json"), r#"{"architectures": ["Qwen3ForCausalLM"], "num_hidden_layers": 1, "tie_word_embeddings": true}"#).unwrap();
-    std::fs::write(src.join("tokenizer.json"), "{}").unwrap();
-    let mut seed = 7u64;
-    let mut t = |name: &str, shape: &[u64]| {
-        let n: u64 = shape.iter().product();
-        let w: Vec<u16> = (0..n)
-            .map(|_| {
-                seed ^= seed << 13;
-                seed ^= seed >> 7;
-                seed ^= seed << 17;
-                ((seed >> 20) as u16 & 0x807F) | ((116 + (seed >> 40) % 14) as u16) << 7
-            })
-            .collect();
-        Saved { name: name.into(), dtype: "BF16", shape: shape.to_vec(), bytes: u16_bytes(&w), sha256: None }
-    };
-    let mut ts = vec![t("model.embed_tokens.weight", &[128, 128]), t("model.norm.weight", &[128])];
+/// The tiny Qwen3's tensors in the order their values are drawn: one layer, 128-wide (4 query heads and 2 key-value heads of 32), a vocabulary of 128, the output layer tied.
+fn tiny_tensors() -> Vec<(String, Vec<u64>)> {
+    let mut ts = vec![("model.embed_tokens.weight".to_string(), vec![128, 128]), ("model.norm.weight".to_string(), vec![128])];
     for (n, s) in [
         ("self_attn.q_proj.weight", &[128, 128][..]),
         ("self_attn.k_proj.weight", &[64, 128]),
@@ -57,9 +44,53 @@ fn tiny_source(src: &Path) {
         ("input_layernorm.weight", &[128]),
         ("post_attention_layernorm.weight", &[128]),
     ] {
-        ts.push(t(&format!("model.layers.0.{n}"), s));
+        ts.push((format!("model.layers.0.{n}"), s.to_vec()));
     }
+    ts
+}
+
+/// The tiny Qwen3 the fixtures hold the packs of: random bf16 weights from a fixed seed. `qat`: its matrices as a checkpoint trained to four bits holds them
+/// (each run of 32 of a row a code from -8 to 7 times one scale of a 12-bit significand, rounded to bf16 once: what the exact four-bit layout, i4x, holds bit
+/// for bit), its norms as the other's.
+fn tiny_source_as(src: &Path, qat: bool) {
+    std::fs::create_dir_all(src).unwrap();
+    std::fs::write(src.join("config.json"), r#"{"architectures": ["Qwen3ForCausalLM"], "num_hidden_layers": 1, "tie_word_embeddings": true}"#).unwrap();
+    std::fs::write(src.join("tokenizer.json"), "{}").unwrap();
+    let mut seed = 7u64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let bf16 = |x: f32| (x.to_bits().wrapping_add(0x7fff + ((x.to_bits() >> 16) & 1)) >> 16) as u16;
+    let mut ts: Vec<Saved> = tiny_tensors()
+        .into_iter()
+        .map(|(name, shape)| {
+            let n = shape.iter().product::<u64>() as usize;
+            let w: Vec<u16> = if qat && shape.len() == 2 {
+                let mut w = Vec::with_capacity(n);
+                while w.len() < n {
+                    let s = (2048 + next() % 2048) as f32 * 2f32.powi(-17 - (next() % 3) as i32);
+                    w.extend((0..32).map(|_| bf16(((next() % 16) as f32 - 8.0) * s)));
+                }
+                w
+            } else {
+                (0..n)
+                    .map(|_| {
+                        let x = next();
+                        ((x >> 20) as u16 & 0x807F) | ((116 + (x >> 40) % 14) as u16) << 7
+                    })
+                    .collect()
+            };
+            Saved { name, dtype: "BF16", shape, bytes: u16_bytes(&w), sha256: None }
+        })
+        .collect();
     write_safetensors(&src.join("model.safetensors"), &mut ts).unwrap();
+}
+
+fn tiny_source(src: &Path) {
+    tiny_source_as(src, false)
 }
 
 /// The glyd-v1 save of one matrix, as glyd 0.27 saved it (`v1::pack`; its tiers and its sha256 in glyd.json).
@@ -87,6 +118,87 @@ fn legacy(dir: &Path) {
     .unwrap();
 }
 
+/// The glyd-v2 save of a layer's experts, as glyd 0.27's save_pretrained (format.py) made one: a mixture of experts' weight (its experts' matrices stacked, [E out, in]) as
+/// one pack in the tiered layout of glyd 0.20 to 0.27 (`v1::pack`) under the module that holds it (`MODULE.glyd_WEIGHT_data`), its entry naming its experts and whether the model
+/// holds their matrices transposed ([E, in, out]: gate_up_proj here; down_proj as [E, out, in]); the sha256 of each weight as the model holds it.
+fn legacy_experts(dir: &Path) {
+    std::fs::create_dir_all(dir).unwrap();
+    let (e, out, inn) = (2usize, 64usize, 128usize);
+    let m = "model.layers.0.mlp.experts";
+    let (mut ts, mut packs) = (Vec::new(), Vec::new());
+    for (weight, transposed, seed) in [("gate_up_proj", true, 19u64), ("down_proj", false, 23)] {
+        // the pack's matrix: each expert's [out, in] by rows; the weight as the model holds it, each expert's transposed where it says so
+        let w = pack::tests::weights(e * out * inn, 0.01, seed);
+        let held: Vec<u16> = if transposed {
+            (0..e).flat_map(|x| (0..inn).flat_map(move |c| (0..out).map(move |r| (x, r, c)))).map(|(x, r, c)| w[x * out * inn + r * inn + c]).collect()
+        } else {
+            w.clone()
+        };
+        let p = crate::v1::pack(&w, e * out, inn);
+        let steps = (e * out * inn / pack::STEP) as u64;
+        let key = format!("{m}.glyd_{weight}_");
+        ts.push(Saved { name: format!("{key}data"), dtype: "U8", shape: vec![steps * 1280], bytes: p.data.clone(), sha256: None });
+        ts.push(Saved { name: format!("{key}blocks"), dtype: "U8", shape: vec![p.blocks.len() as u64], bytes: p.blocks.clone(), sha256: None });
+        ts.push(Saved {
+            name: format!("{key}block_base"),
+            dtype: "I32",
+            shape: vec![steps + 1],
+            bytes: le_bytes(&p.block_base, i32::to_le_bytes),
+            sha256: None,
+        });
+        let shape = if transposed { [e, inn, out] } else { [e, out, inn] };
+        let tiers = p.tiers.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
+        packs.push(format!(
+            "\"{m}.{weight}\": {{\"layout\": \"mma\", \"shape\": [{}, {inn}], \"tiers\": [{tiers}], \"tensors\": [{{\"name\": \"{m}.{weight}\", \"shape\": [{}, {}, {}], \"sha256\": \"{}\"}}], \"experts\": {e}, \"transposed\": {transposed}}}",
+            e * out,
+            shape[0],
+            shape[1],
+            shape[2],
+            sha256_u16(&held)
+        ));
+    }
+    write_safetensors(&dir.join("model.safetensors"), &mut ts).unwrap();
+    std::fs::write(
+        dir.join("glyd.json"),
+        format!(
+            "{{\"format\": \"glyd-v2\", \"glyd\": \"0.27.0\", \"source\": {{\"repo\": null, \"revision\": null}}, \"layout\": \"mma\", \"packs\": {{{}}}, \"tensors\": {{}}}}",
+            packs.join(", ")
+        ),
+    )
+    .unwrap();
+}
+
+/// glyd.json's top-level `key` set to `v` (added where it has none).
+fn set(m: &mut Value, key: &str, v: Value) {
+    let Value::Object(o) = m else { panic!("glyd.json is not an object") };
+    match o.iter_mut().find(|(k, _)| k == key) {
+        Some((_, x)) => *x = v,
+        None => o.push((key.into(), v)),
+    }
+}
+
+/// The glyd-v5 save of the tiny Qwen3, as glyd 0.29.1's save_pretrained(tables=True) made one: the save of glyd-v4 with the embedding (the table the output layer is
+/// tied to) packed as a Linear is, its entry marked "table". (format.py packs a table of 2^20 weights or more; the tiny model's 16,384 are packed to hold the same entry.)
+fn tables(tmp: &Path) {
+    let out = Path::new(FIXTURES).join("v5-0.29.1-mma");
+    let src = tmp.join("src");
+    save_planned(&Source::find(src.to_str().unwrap()).unwrap(), &out, 2, SHARD_BYTES, Layout::Tiered, &plan_of(&src, None)).unwrap();
+    let path = out.join("glyd.json");
+    let mut m = json::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    set(&mut m, "format", Value::from("glyd-v5"));
+    set(&mut m, "glyd", Value::from("0.29.1"));
+    set(&mut m, "source", Value::Object(vec![("repo".into(), Value::from("tiny-qwen3")), ("revision".into(), Value::Null)]));
+    let Some(Value::Object(packs)) = (match &mut m {
+        Value::Object(o) => o.iter_mut().find(|(k, _)| k == "packs").map(|(_, v)| v),
+        _ => None,
+    }) else {
+        panic!("no packs")
+    };
+    let (_, Value::Object(embed)) = packs.iter_mut().find(|(k, _)| k == "model.embed_tokens").expect("the embedding packed") else { panic!("an entry") };
+    embed.push(("table".into(), Value::Bool(true)));
+    std::fs::write(&path, json::to_python(&m, 1)).unwrap();
+}
+
 /// Every fixture directory, by name.
 fn fixtures() -> Vec<(String, PathBuf)> {
     let mut v: Vec<(String, PathBuf)> = std::fs::read_dir(FIXTURES)
@@ -103,7 +215,7 @@ fn fixtures() -> Vec<(String, PathBuf)> {
 #[test]
 fn committed_packs_verify() {
     let all = fixtures();
-    assert!(all.len() >= 12, "the fixtures of tests/data/packs are missing ({} found)", all.len());
+    assert!(all.len() >= 16, "the fixtures of tests/data/packs are missing ({} found)", all.len());
     for (name, dir) in &all {
         let v = verify(dir, 2, &Decoder::Cpu).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert!(v.packed > 0 && v.unchecked == 0, "{name}: {} packs, {} tensors unchecked", v.packed, v.unchecked);
@@ -123,7 +235,7 @@ fn a_changed_byte_of_a_committed_pack_is_refused() {
             std::fs::copy(f.path(), copy.join(f.file_name())).unwrap();
         }
         let c = Checkpoint::open(&copy).unwrap();
-        let first = c.names().find(|n| n.contains("glyd_data")).unwrap_or_else(|| panic!("{name}: no pack")).to_string();
+        let first = c.names().find(|n| n.contains(".glyd_") && n.ends_with("data")).unwrap_or_else(|| panic!("{name}: no pack")).to_string();
         let (f, info) = c.get(&first).unwrap();
         let mut bytes = std::fs::read(&f.path).unwrap();
         bytes[info.offset as usize + 5] ^= 0x10;
@@ -144,8 +256,9 @@ fn the_current_packer_writes_the_released_files() {
     let source = Source::find(src.to_str().unwrap()).unwrap();
     let mut checked = 0;
     for (name, dir) in fixtures() {
-        let Some(layout) = LAYOUTS.iter().find(|(l, _)| name.starts_with('v') && name.ends_with(&format!("-{l}")) && !name.starts_with("v1-")).map(|(_, l)| *l)
-        else {
+        // (a release's: vX.Y.Z-LAYOUT; v1-, v2- and v5- name the format of an earlier glyd's save, made by this one as that glyd wrote it)
+        let release = name.split_once('-').is_some_and(|(v, _)| v.starts_with('v') && v.matches('.').count() == 2);
+        let Some(layout) = LAYOUTS.iter().find(|(l, _)| release && name.ends_with(&format!("-{l}"))).map(|(_, l)| *l) else {
             continue;
         };
         let out = tmp.join(&name);
@@ -171,18 +284,30 @@ fn the_current_packer_writes_the_released_files() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
-/// Writes what the fixtures are made from: the tiny checkpoint to `$GLYD_PACK_SRC/src` (for the release's `glyd pack`), the glyd-v1 fixture and the `main-*` ones into tests/data/packs.
+/// Writes what the fixtures are made from: the tiny checkpoint to `$GLYD_PACK_SRC/src` (for the release's `glyd pack`; its four-bit-trained form to `qat`), and into tests/data/packs
+/// the fixtures this glyd makes (glyd-v1, glyd-v2, glyd-v5 and the `main-*` ones) that are not there yet: a fixture is never written over.
 #[test]
 #[ignore]
 fn write_pack_sources() {
     let dir = PathBuf::from(std::env::var("GLYD_PACK_SRC").expect("GLYD_PACK_SRC: a folder"));
     tiny_source(&dir.join("src"));
-    legacy(&Path::new(FIXTURES).join("v1-0.27.0-mma"));
-    main_fixtures(&dir);
+    tiny_source_as(&dir.join("qat"), true);
+    let new = |name: &str| !Path::new(FIXTURES).join(name).join("glyd.json").exists();
+    if new("v1-0.27.0-mma") {
+        legacy(&Path::new(FIXTURES).join("v1-0.27.0-mma"));
+    }
+    if new("v2-0.27.0-mma") {
+        legacy_experts(&Path::new(FIXTURES).join("v2-0.27.0-mma"));
+    }
+    if new("v5-0.29.1-mma") {
+        tables(&dir);
+    }
+    main_fixtures(&dir, &new);
 }
 
-/// The plan of the tiny Qwen3 with `layout: ROW` on its one-member linears (o_proj, down_proj): the weight's transpose a row at a time (a merged group cannot be).
-fn row_plan(src: &Path, row: &str) -> String {
+/// The plan of the tiny Qwen3 as the block layouts' (q, k, v and gate, up merged, the embedding a linear too), with `layout: ROW` on its one-member linears (o_proj, down_proj) where
+/// `row` names one: the weight's transpose a row at a time (a merged group cannot be).
+fn plan_of(src: &Path, row: Option<&str>) -> String {
     let config = json::parse(&std::fs::read_to_string(src.join("config.json")).unwrap()).unwrap();
     let puts = Plan::new(&Checkpoint::open(src).unwrap(), &config, true, true).unwrap().puts;
     let items: Vec<String> = puts
@@ -190,7 +315,7 @@ fn row_plan(src: &Path, row: &str) -> String {
         .map(|p| match p {
             Put::Linear { members, .. } => {
                 let names = members.iter().map(|m| format!("\"{m}\"")).collect::<Vec<_>>().join(", ");
-                if members.len() == 1 && (members[0].ends_with("o_proj") || members[0].ends_with("down_proj")) {
+                if let Some(row) = row.filter(|_| members.len() == 1 && (members[0].ends_with("o_proj") || members[0].ends_with("down_proj"))) {
                     format!("{{\"linear\": [{names}], \"layout\": \"{row}\"}}")
                 } else {
                     format!("{{\"linear\": [{names}]}}")
@@ -213,16 +338,33 @@ fn scrub(out: &Path, names: &[&Path]) {
     std::fs::write(path, text).unwrap();
 }
 
-/// The `main-*` fixtures: the tiny Qwen3 with its o_proj and down_proj in each row layout (the save at the block layout of the same bits), and a Hummingbird save from a synthetic
-/// export of two experts (one at three bits, c3r; one at two, c2r) beside a dense linear at six bits.
-fn main_fixtures(tmp: &Path) {
+/// The `main-*` fixtures (each where `new` says it is not there yet): the tiny Qwen3 with its o_proj and down_proj in each row layout (the save at the block layout of the same bits); a
+/// Hummingbird save from a synthetic export of two experts (one at three bits, c3r; one at two, c2r) beside a dense linear at six bits; the tiny Qwen3 at penguin as Gemma 4's
+/// lossless repos are saved (glyd-v7 at `mma`, every pack read as saved: `save_penguin`); and its four-bit-trained form at the exact four-bit layout, as Gemma 4's
+/// quantization-aware checkpoints are saved at wren (glyd-v7, `i4x`).
+fn main_fixtures(tmp: &Path, new: &dyn Fn(&str) -> bool) {
     let src = tmp.join("src");
     let source = Source::find(src.to_str().unwrap()).unwrap();
     for (name, block) in [("i6r", Layout::Int6), ("i5r", Layout::Int5), ("i4r", Layout::Int4)] {
         let out = Path::new(FIXTURES).join(format!("main-{name}"));
-        let _ = std::fs::remove_dir_all(&out);
-        save_planned(&source, &out, 2, SHARD_BYTES, block, &row_plan(&src, name)).unwrap();
+        if !new(&format!("main-{name}")) {
+            continue;
+        }
+        save_planned(&source, &out, 2, SHARD_BYTES, block, &plan_of(&src, Some(name))).unwrap();
         scrub(&out, &[&src, tmp]);
+    }
+    if new("main-penguin") {
+        let out = Path::new(FIXTURES).join("main-penguin");
+        save_penguin(&source, &out, 2, SHARD_BYTES, &plan_of(&src, None)).unwrap();
+        scrub(&out, &[&src, tmp]);
+    }
+    if new("main-i4x") {
+        let (qat, out) = (tmp.join("qat"), Path::new(FIXTURES).join("main-i4x"));
+        save(&Source::find(qat.to_str().unwrap()).unwrap(), &out, 2, SHARD_BYTES, true, Layout::Int4H).unwrap();
+        scrub(&out, &[&qat, tmp]);
+    }
+    if !new("main-hb") {
+        return;
     }
     // the Hummingbird save: what a_save_at_the_hummingbird_level_from_an_export builds
     let (rows, cols, experts) = (64usize, 128usize, 2usize);
@@ -260,7 +402,6 @@ fn main_fixtures(tmp: &Path) {
     puts.push("{\"copy\": \"m.norm.weight\"}".to_string());
     let plan = format!("{{\"puts\": [{}]}}", puts.join(", "));
     let out = Path::new(FIXTURES).join("main-hb");
-    let _ = std::fs::remove_dir_all(&out);
     save_hummingbird(&Source::find(hsrc.to_str().unwrap()).unwrap(), &out, 2, SHARD_BYTES, &plan, &export).unwrap();
     scrub(&out, &[&hsrc, &export, tmp]);
 }
