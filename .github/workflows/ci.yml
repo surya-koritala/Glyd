@@ -485,6 +485,10 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: The engine's tests (the development build)
         run: cargo test --profile ci -p glyd-engine
+      # (R10: each saved checkpoint of tests/data/packs, every pack format Glyd has written, read as its readers read it and run on the CPU reference of the layer kinds, its
+      # logits against the digest recorded for it in glyd-engine/tests/packs; the unit test above holds the same, this prints a line for each format)
+      - name: Every pack format loads to its recorded logits on the CPU (src/packcheck.rs)
+        run: cargo run --profile ci -q -p glyd-engine -- packcheck
       - name: The Rust glyd's hand-off (the engine, the Python tool, GLYD_ENGINE=0)
         run: cargo test --profile ci -p glyd --test cli_python_tool
 

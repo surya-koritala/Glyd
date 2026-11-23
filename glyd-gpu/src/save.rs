@@ -1695,16 +1695,25 @@ fn decode_cb(dir: &Checkpoint, name: &str, e: &Value, bits: u32, shape: &[u64]) 
     }
 }
 
-/// A pack's tensors against glyd.json's sha256 (a merged pack's in their rows' order; an experts' weight as the
-/// model holds it, [E, out, in]): how many.
-fn hashes_match(name: &str, e: &Value, rows: usize, cols: usize, w: &[u16]) -> io::Result<usize> {
+/// A tensor a pack holds, as the model holds it: its name, its shape and sha256 in glyd.json, its bf16.
+struct Held<'a> {
+    name: &'a str,
+    shape: Vec<u64>,
+    sha256: &'a str,
+    w: std::borrow::Cow<'a, [u16]>,
+}
+
+/// The tensors of a pack whose matrix decoded to `w` [rows, cols]: a merged pack's in their rows' order, an experts' weight as the model holds
+/// it ([E, out, in], or [E, in, out] where the entry says "transposed").
+fn held<'a>(name: &'a str, e: &'a Value, rows: usize, cols: usize, w: &'a [u16]) -> io::Result<Vec<Held<'a>>> {
     let tensors = e.get("tensors").and_then(Value::as_array).filter(|t| !t.is_empty()).ok_or_else(|| bad(format!("{name}: no tensors in glyd.json")))?;
     let mut row = 0;
+    let mut out = Vec::with_capacity(tensors.len());
     for t in tensors {
         let tn = t.get("name").and_then(Value::as_str).unwrap_or(name);
-        let want = t.get("sha256").and_then(Value::as_str).ok_or_else(|| bad(format!("{tn}: no sha256 in glyd.json")))?;
+        let sha256 = t.get("sha256").and_then(Value::as_str).ok_or_else(|| bad(format!("{tn}: no sha256 in glyd.json")))?;
         let shape = u64s(t.get("shape")).ok_or_else(|| bad(format!("{tn}: no shape in glyd.json")))?;
-        let got = match (e.get("experts").and_then(Value::as_u64), shape.as_slice()) {
+        let got: std::borrow::Cow<[u16]> = match (e.get("experts").and_then(Value::as_u64), shape.as_slice()) {
             (Some(n), &[en, a, b]) if en == n && n.checked_mul(a).and_then(|x| x.checked_mul(b)) == Some((rows * cols) as u64) => {
                 if e.get("transposed").and_then(Value::as_bool).unwrap_or(false) {
                     // held [E, in, out]: each expert's [out, in] matrix transposed
@@ -1717,25 +1726,67 @@ fn hashes_match(name: &str, e: &Value, rows: usize, cols: usize, w: &[u16]) -> i
                             }
                         }
                     }
-                    sha256_u16(&held)
+                    held.into()
                 } else {
-                    sha256_u16(w)
+                    w.into()
                 }
             }
             (None, &[r, c]) if c as usize == cols && r <= (rows - row) as u64 => {
                 row += r as usize;
-                sha256_u16(&w[(row - r as usize) * cols..row * cols])
+                w[(row - r as usize) * cols..row * cols].into()
             }
             _ => return Err(bad(format!("{tn}: its shape {shape:?} in glyd.json is not its pack's"))),
         };
-        if got != want {
-            return Err(bad(format!("{tn} decodes to other bytes than glyd.json's sha256")));
-        }
+        out.push(Held { name: tn, shape, sha256, w: got });
     }
     if e.get("experts").is_none() && row != rows {
         return Err(bad(format!("{name}: its tensors' rows are not its own")));
     }
-    Ok(tensors.len())
+    Ok(out)
+}
+
+/// A pack's tensors against glyd.json's sha256: how many.
+fn hashes_match(name: &str, e: &Value, rows: usize, cols: usize, w: &[u16]) -> io::Result<usize> {
+    let ts = held(name, e, rows, cols, w)?;
+    if let Some(t) = ts.iter().find(|t| sha256_u16(&t.w) != t.sha256) {
+        return Err(bad(format!("{} decodes to other bytes than glyd.json's sha256", t.name)));
+    }
+    Ok(ts.len())
+}
+
+/// Every tensor of the saved checkpoint `dir` as the model holds it, in f32, once [`verify`] has held the whole save to its glyd.json: each pack decoded (on the
+/// CPU, or by the library on a GPU; a row or codebook layout's on the CPU, as verify does) and cut into the tensors it holds, and each tensor saved as it is (BF16, F32
+/// or I64). The weights a reader of the save multiplies by: what a CPU reference runs a saved model on. Tensors of another type (a Hummingbird layer's I8 signs) are
+/// left out.
+pub fn decoded(dir: &Path, threads: usize, decoder: &Decoder) -> io::Result<Vec<(String, Vec<u64>, Vec<f32>)>> {
+    verify(dir, threads, decoder)?;
+    let m = json::parse(&std::fs::read_to_string(dir.join("glyd.json"))?).map_err(bad)?;
+    let old = OLD_FORMATS.contains(&m.get("format").and_then(Value::as_str).unwrap_or(""));
+    let saved = Checkpoint::open(dir)?;
+    let f32_of = |w: &[u16]| w.iter().map(|&x| f32::from_bits((x as u32) << 16)).collect::<Vec<f32>>();
+    let mut out = Vec::new();
+    let mut buffers = HashSet::new();
+    for (name, e) in m.get("packs").and_then(Value::as_object).unwrap_or(&[]) {
+        let layout =
+            e.get("layout").and_then(Value::as_str).and_then(Layout::by_name).ok_or_else(|| bad(format!("{name}: a layout this glyd does not read")))?;
+        let key = pack_key(name, e);
+        buffers.extend(layout.buffers().0.iter().map(|(b, _)| format!("{key}{b}")));
+        let on = if is_rows(e) { &Decoder::Cpu } else { decoder };
+        let (rows, cols, w) = decode(&saved, name, e, old, on)?;
+        out.extend(held(name, e, rows, cols, &w)?.into_iter().map(|t| (t.name.to_string(), t.shape, f32_of(&t.w))));
+    }
+    for name in saved.names().filter(|n| !buffers.contains(*n)) {
+        let (f, t) = saved.get(name).ok_or_else(|| bad(format!("{name}: not in the safetensors")))?;
+        let b = f.read(t)?;
+        let v: Vec<f32> = match t.dtype.as_str() {
+            "BF16" => b.chunks_exact(2).map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)).collect(),
+            "F32" => b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect(),
+            "I64" => b.chunks_exact(8).map(|c| i64::from_le_bytes(c.try_into().unwrap_or_default()) as f32).collect(),
+            _ => continue,
+        };
+        out.push((name.to_string(), t.shape.clone(), v));
+    }
+    Ok(out)
 }
 
 /// What a verify found.
