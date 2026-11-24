@@ -57,6 +57,7 @@ pub mod dev;
 pub(crate) mod kt {
     include!(concat!(env!("OUT_DIR"), "/kernel_types.rs"));
 }
+pub mod device;
 pub mod disk;
 pub mod doctor;
 pub mod draft_loop;
