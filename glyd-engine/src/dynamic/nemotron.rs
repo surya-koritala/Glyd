@@ -1,15 +1,15 @@
 //! Nemotron-H (`NemotronHForCausalLM`: Nemotron 3 Super, Nemotron 3.5 Lightning) as a description: Mamba-2 layers, attention layers without a positional encoding,
 //! mixture-of-experts layers (with a latent, Super's; or at the model's width, Lightning's); every layer x + mixer(norm(x)) (the arithmetic is the kernels', as
-//! kern_nh.rs runs them). Its weights load by the executor's loader, the experts by moe_nh.rs's blocks: a block with all its experts on the GPU
+//! kern_nh.rs runs them). Its weights load by kern_nh.rs's loader, the experts by moe_nh.rs's blocks, handed over as they are: a block with all its experts on the GPU
 //! is run by the executor, one with an expert cache (or at the hummingbird level) runs its own launches over the executor's buffers (`NhHost`).
 
 use super::attn::{AttnOp, QkNorm};
 use super::{Dyn, ModelDesc, MoeOp, NormW, Op, Opts, Ring, Slot, Stage};
+use crate::dev::Dev;
 use crate::ffi::{err, Result};
-use crate::kern_nh::{MoeBlock, MoeFactory, NH_N, NH_P};
+use crate::kern_nh::{MoeFactory, SsdWs, WeightsNh, NH_N, NH_P};
 use crate::nemotron::NhKind;
 use crate::weights::Layout;
-use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 
 /// The model in `dir` with its matrices at `layout` and its experts at `level` (the experts all on the GPU).
@@ -24,16 +24,62 @@ pub fn load_stage(dir: &Path, o: &Opts, level: Layout, st: Stage) -> Result<Dyn>
     load_with(dir, o, &crate::moe_nh::factory(level), st)
 }
 
-/// Stage `st` with the blocks of experts `make` makes (moe_nh.rs's factories: the experts all on the GPU, or an expert cache's places for them, src/offload.rs), on the
-/// executor's loader (`Dyn::new_with`); the always-on matrices at the level's own layout for them (`pack_layout`: kestrel's where the experts are at wren or hummingbird).
+/// Stage `st` with the blocks of experts `make` makes (moe_nh.rs's factories: the experts all on the GPU, or an expert cache's places for them, src/offload.rs).
 pub fn load_with(dir: &Path, o: &Opts, make: MoeFactory<'_>, st: Stage) -> Result<Dyn> {
-    let c = crate::nemotron::ConfigNemotronH::load(dir)?;
+    let dev = Dev::new(o.device)?;
+    let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
+    let only: Vec<usize> = (st.layers.0..st.layers.1).collect();
+    let whole = st.first && st.last;
+    let w = WeightsNh::load_ends(dir, threads, o.layout, dev.cc_pair(), dev.total_mem as u64, (!whole).then_some(&only[..]), (st.first, st.last), Some(make))?;
+    let WeightsNh { cfg: c, layout, layers: lys, embed, head, norm_f, .. } = w;
     let d = lowered(dir, &c, &st)?;
-    let o = Opts { layout: o.layout.map(|l| crate::nemotron::pack_layout(l, "")), ..o.clone() };
-    let blocks = |ck: &Checkpoint, layout: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
-        (st.layers.0..st.layers.1).filter(|&l| c.kinds[l] == NhKind::Moe).map(|l| make(l, &c, ck, layout)).collect()
-    };
-    Dyn::new_with(dir, d, None, st, &o, &blocks)
+    // (the loader's matrices, small tensors and blocks of experts in the order `describe` indexes them: a layer's, then the final norm, the embedding and the head)
+    let (mut mats, mut small, mut moe) = (Vec::new(), Vec::new(), Vec::new());
+    for (l, ly) in lys.into_iter().enumerate() {
+        let Some(ly) = ly else { continue };
+        let (m, n) = per_layer(ly.kind);
+        if ly.mats.len() != m || ly.small.len() + 1 != n || ly.moe.is_some() != (ly.kind == NhKind::Moe) {
+            return err(format!(
+                "layer {l}: {} matrices, {} small tensors and a block of experts {} loaded, where its kind has {m} and {n}",
+                ly.mats.len(),
+                ly.small.len() + 1,
+                ly.moe.is_some()
+            ));
+        }
+        mats.extend(ly.mats);
+        small.push(ly.norm);
+        small.extend(ly.small);
+        if let Some(b) = ly.moe {
+            moe.push(b);
+        }
+    }
+    // (a stage without the head or the embedding keeps their places, empty, so that their indices hold)
+    small.push(match norm_f {
+        Some(b) => b,
+        None if !st.last => crate::dev::Buf::new(4)?,
+        None => return err("the final norm is not loaded"),
+    });
+    mats.push(match embed {
+        Some(p) => crate::kern35::Mat::Packed(p),
+        None if !st.first && !(st.last && c.tie) => crate::kern35::Mat::Dense(crate::dev::Buf::new(2)?, 0, 0),
+        None => return err("the embedding is not loaded"),
+    });
+    if let Some(h) = head {
+        mats.push(crate::kern35::Mat::Packed(h));
+    }
+    if (mats.len(), small.len()) != (d.lm + 1, d.final_norm.map_or(0, |f| f.0 + 1)) {
+        return err(format!(
+            "{} matrices and {} small tensors loaded, where the description indexes {} and {}",
+            mats.len(),
+            small.len(),
+            d.lm + 1,
+            d.final_norm.map_or(0, |f| f.0 + 1)
+        ));
+    }
+    let ch = o.chunk.max(1);
+    let mut dy = Dyn::from_loaded(dev, d, mats, small, moe, Vec::new(), layout, st, o)?;
+    dy.ssd = Some(SsdWs::new(&c, ch)?);
+    Ok(dy)
 }
 
 /// A layer's matrices and small tensors as the loader holds them: a Mamba-2 layer's in and out products, its norm, conv1d's weight and bias, A_log, D, dt_bias

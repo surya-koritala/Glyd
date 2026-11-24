@@ -1905,16 +1905,39 @@ mod tests {
         }
     }
 
-    /// The executor's loader holds the random Qwen3.5 as Qwen3.5's own loader (src/kern35.rs) did: the same matrices dense (the b and a gates' parts under 64
-    /// rows), the same small tensors in fp32 (A_log; the gated norm's weight, its values bf16's), the same rotary tables.
+    /// The executor's loader's rules, on the random Qwen3.5's tensors named in its own loader's order (src/kern35.rs), make that loader's choices: the same
+    /// matrices dense (the b and a gates' parts under 64 rows), the same small tensors in fp32 (A_log; the gated norm's weight, its values bf16's), the same rotary
+    /// tables. Its description names no tensor yet (its loader fills them by index), so it loads by its own loader still, and the executor's refuses it.
     #[cfg(feature = "dev")]
     #[test]
-    fn the_executors_loader_holds_qwen35_as_its_own_loader_did() {
+    fn the_executors_rules_on_qwen35_make_its_own_loaders_choices() {
         use super::super::{held_as_saved, read_f32, read_f32_as_bf16};
         let dir = std::env::temp_dir().join(format!("glyd-q35-loader-{}", std::process::id()));
         crate::logits::qwen35_random(&dir).unwrap();
         let c = crate::qwen35::Config35::load(&dir).unwrap();
-        let d = super::super::qwen35::lowered(&dir, &c, &super::super::Stage::whole(c.layers)).unwrap();
+        let mut d = super::super::qwen35::lowered(&dir, &c, &super::super::Stage::whole(c.layers)).unwrap();
+        // (its description names none of its tensors: kern35's loader fills them by index; named here in that loader's order, the rules are checked on them)
+        assert_eq!(super::super::unnamed(&d), Some(0), "the description names its matrices: Qwen3.5 can load through the executor's loader");
+        let packs: std::collections::HashMap<String, crate::qwen35::Pack35> = c.packs().into_iter().map(|p| (p.key.clone(), p)).collect();
+        let item = |src: &crate::kern35::Src| match src {
+            crate::kern35::Src::Pack(k) => Item { members: packs[k].parts.iter().map(|x| x.0.clone()).collect(), rows: packs[k].rows(), cols: packs[k].cols },
+            crate::kern35::Src::Dense(p, r, cl) => Item { members: p.clone(), rows: *r, cols: *cl },
+        };
+        d.mats = crate::kern35::layer_mats(&c).iter().flatten().map(item).collect();
+        d.mats.push(item(&crate::kern35::Src::Pack("embed".into())));
+        if !c.tie {
+            d.mats.push(item(&crate::kern35::Src::Pack("lm_head".into())));
+        }
+        for (l, k) in c.kinds.iter().enumerate() {
+            let p = format!("{}layers.{l}", c.prefix);
+            d.small.extend([format!("{p}.input_layernorm.weight"), format!("{p}.post_attention_layernorm.weight")]);
+            d.small.extend(match k {
+                crate::qwen35::Kind::Full => ["q_norm", "k_norm"].map(|x| format!("{p}.self_attn.{x}.weight")).to_vec(),
+                crate::qwen35::Kind::Linear => ["conv1d.weight", "A_log", "dt_bias", "norm.weight"].map(|x| format!("{p}.linear_attn.{x}")).to_vec(),
+            });
+        }
+        d.small.push(format!("{}norm.weight", c.prefix));
+        assert_eq!((super::super::unnamed(&d), d.small.len()), (None, d.final_norm.unwrap().0 + 1));
         let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
         let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
         let dense: std::collections::HashSet<String> = crate::kern35::layer_mats(&c)
@@ -1939,24 +1962,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The executor's loader holds the random Nemotron-H as its own loader (src/kern_nh.rs) did: the same matrices dense (the parts the packer does not take), every
-    /// small tensor as saved in bf16 (none read wider); the Mamba-2 scan's chunked workspace comes from its operations.
+    /// The executor's loader's rules, on the random Nemotron-H's tensors named in its own loader's order (src/kern_nh.rs), make that loader's choices: the same
+    /// matrices dense (the parts the packer does not take), every small tensor as saved in bf16 (none read wider). Its description names no tensor yet, so it
+    /// loads by its own loader still, and the executor's refuses it.
     #[cfg(feature = "dev")]
     #[test]
-    fn the_executors_loader_holds_nemotron_as_its_own_loader_did() {
+    fn the_executors_rules_on_nemotron_make_its_own_loaders_choices() {
         use super::super::{held_as_saved, read_f32, read_f32_as_bf16};
         let dir = std::env::temp_dir().join(format!("glyd-nh-loader-{}", std::process::id()));
         crate::kcheck_nh::random(&dir, 0, 16).unwrap();
         let c = crate::nemotron::ConfigNemotronH::load(&dir).unwrap();
-        let d = super::super::nemotron::lowered(&dir, &c, &super::super::Stage::whole(c.layers)).unwrap();
+        let mut d = super::super::nemotron::lowered(&dir, &c, &super::super::Stage::whole(c.layers)).unwrap();
+        // (its description names none of its tensors: kern_nh's loader fills them by index; named here in that loader's order, the rules are checked on them)
+        assert_eq!(super::super::unnamed(&d), Some(0), "the description names its matrices: Nemotron-H can load through the executor's loader");
+        let packs: Vec<crate::qwen35::Pack35> = (0..c.layers).filter(|&l| c.kinds[l] != crate::nemotron::NhKind::Moe).flat_map(|l| c.layer_packs(l)).collect();
+        let it = |p: &crate::qwen35::Pack35| Item { members: p.parts.iter().map(|x| x.0.clone()).collect(), rows: p.rows(), cols: p.cols };
+        d.mats = packs.iter().map(it).collect();
+        d.mats.push(Item { members: vec![format!("{}embeddings.weight", c.prefix)], rows: c.vocab, cols: c.hidden });
+        if !c.tie {
+            d.mats.push(Item { members: vec!["lm_head.weight".into()], rows: c.vocab, cols: c.hidden });
+        }
+        for l in 0..c.layers {
+            let kept = c.layer_kept(l);
+            let n = if c.kinds[l] == crate::nemotron::NhKind::Mamba { kept.len() } else { 1 };
+            d.small.extend(kept.into_iter().take(n).map(|t| t.name));
+        }
+        d.small.push(format!("{}norm_f.weight", c.prefix));
+        assert_eq!((super::super::unnamed(&d), d.small.len()), (None, d.final_norm.unwrap().0 + 1));
         let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
         let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
-        let packs: Vec<crate::qwen35::Pack35> = (0..c.layers).filter(|&l| c.kinds[l] != crate::nemotron::NhKind::Moe).flat_map(|l| c.layer_packs(l)).collect();
         let dense: std::collections::HashSet<String> = packs.iter().filter(|p| !p.packable()).flat_map(|p| p.parts.iter().map(|x| x.0.clone())).collect();
         for (k, it) in d.mats.iter().enumerate() {
             assert_eq!(held_as_saved(&d, k, &rows_of), it.members.iter().all(|m| dense.contains(m)), "{:?}", it.members);
         }
         let kept: std::collections::HashMap<String, &str> = (0..c.layers).flat_map(|l| c.layer_kept(l)).map(|t| (t.name, t.dtype)).collect();
+        assert!(d.small.iter().filter(|n| kept.contains_key(*n)).count() + 1 == d.small.len());
         let (f32s, as_bf16) = (read_f32(&d), read_f32_as_bf16(&d));
         for (i, n) in d.small.iter().enumerate() {
             assert!(!f32s.contains(&i) && !as_bf16.contains(&i), "{n}");
@@ -1964,5 +2004,17 @@ mod tests {
         }
         assert!(d.layers.iter().flatten().any(|op| matches!(op, Op::MambaScan { .. })));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The descriptions the executor's loader reads (`Dyn::new_with`: Gemma 4, its draft, the Llama-style dense models, Qwen3.8-Flash-Next) name every matrix
+    /// their operations use; the others name none yet, their families' loaders filling them by index, and the executor's loader refuses them in words.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_executors_loader_reads_only_descriptions_that_name_their_tensors() {
+        use super::super::{dense::FAMILY as DENSE, qwen4x::FAMILY as QX, unnamed};
+        for d in every_family("named") {
+            let named = matches!(d.family, "Gemma 4" | "Gemma 4 draft" | DENSE | QX);
+            assert_eq!(unnamed(&d).is_none(), named, "{}: {:?} of {} matrices named", d.family, unnamed(&d), d.mats.len());
+        }
     }
 }

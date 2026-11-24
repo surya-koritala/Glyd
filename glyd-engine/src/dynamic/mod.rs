@@ -739,6 +739,11 @@ impl Part {
 /// What reads a description's blocks of experts (`Op::Moe`'s, in its order) from its checkpoint, the matrices' layout given.
 pub type Experts<'a> = dyn Fn(&Checkpoint, Layout) -> Result<Vec<Box<dyn MoeBlock>>> + 'a;
 
+/// The first matrix the description's operations, embedding or head use that it does not name (None: the executor's loader can read every one).
+fn unnamed(d: &ModelDesc) -> Option<usize> {
+    std::iter::once(&d.first).chain(d.layers.iter().flatten()).flat_map(Op::mats).chain([d.embed, d.lm]).find(|&k| k >= d.mats.len())
+}
+
 /// Whether matrix `k` of `d` is held as saved (bf16), not packed: a table an operation reads by row (`Op::NgramRows`), or a shape the library does not pack
 /// (columns not a multiple of 16, or a member's rows, `rows_of` it where the checkpoint holds it, not a multiple of 64: a save keeps such a merge as its parts).
 fn held_as_saved(d: &ModelDesc, k: usize, rows_of: &dyn Fn(&str) -> Option<usize>) -> bool {
@@ -1112,6 +1117,13 @@ impl Dyn {
     pub fn new_with(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts, experts: &Experts) -> Result<Dyn> {
         if draft.is_some() && !(st.first && st.last) {
             return err("drafting with a model split across GPUs: not yet");
+        }
+        if let Some(k) = unnamed(&d) {
+            return err(format!(
+                "{}: matrix {k} is used and the description names {} (a description its family's loader fills by index)",
+                d.family,
+                d.mats.len()
+            ));
         }
         let dev = Dev::new(o.device)?;
         let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
