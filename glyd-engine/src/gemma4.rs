@@ -12,6 +12,7 @@ use crate::runtime::config::ModelConfig;
 use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload_packed, Item, Layout, PackBuf};
 #[cfg(feature = "dev")]
 use crate::{ffi::Lib, sched::Sample};
+#[cfg(feature = "dev")]
 use glyd_gpu::json::{self, Value};
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;

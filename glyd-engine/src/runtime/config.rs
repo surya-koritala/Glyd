@@ -303,6 +303,7 @@ mod tests {
             |t| crate::deepseek_v4::ConfigV4::parse(t, "c", None),
             |c| crate::deepseek_v4::ConfigV4::of(c, "c", None),
         );
+        #[cfg(feature = "dev")]
         same("Muse Spark", crate::muse_ref::RANDOM_CONFIG, |t| crate::muse::ConfigMuse::parse(t, "c", None), |c| crate::muse::ConfigMuse::of(c, "c", None));
         same(
             "Qwen3.8-Flash-Next",
