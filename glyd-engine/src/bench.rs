@@ -131,8 +131,7 @@ pub fn suite(name: &str) -> Result<Vec<(String, usize)>> {
         // requests that begin alike (one long start, each its own question), 8 of them 250 ms apart, and 8 conversations of 4 turns that begin so: what a server shares of
         // a start it has run, and whether it holds eight conversations that have 4k tokens in common where it does not hold eight of 4k apart
         "shared" => mk(&["same1k+250ms", "same4k+250ms", "same4k*4"], &[8]),
-        // P20's occupancy check (a datacenter GPU's, 1x H100): one-token decode and batched decode, each load's decode as a share of the ceiling (`pct_of_ceiling`).
-        // The server must take 64 at once: --users 64
+        // P20's occupancy check (a datacenter GPU's, 1x H100): one-token decode and batched decode, each load's decode as a share of the ceiling (`pct_of_ceiling`)
         "occupancy" => mk(&["short"], &[1, 8, 32, 64]),
         s => return err(format!("--suite {s}: gate, bar, full, arrive, chat, shared or occupancy")),
     })
@@ -666,6 +665,24 @@ pub(crate) fn git_sha() -> Option<String> {
     })
 }
 
+/// The users the server this program starts is asked to take: `--users N`, else the most a load sends at once, up to the scheduler's own limit (`sched::MAX_USERS`,
+/// which `serve` refuses past). What its plan holds of them is the server's to say (/v1/glyd/info `limits.concurrency`: `held_note`). (It was the most a load sends
+/// up to 8, the old limit of a step's rows: 64 at once ran 8 and queued the rest.)
+fn users_asked(a: &Args, loads: &[(String, usize)]) -> Result<usize> {
+    let most = loads.iter().map(|l| l.1).max().unwrap_or(1).min(crate::sched::MAX_USERS);
+    match a.flag("users") {
+        Some(u) => u.parse::<usize>().ok().filter(|&u| u > 0).ok_or_else(|| Error(format!("--users {u}: a number of sequences at once"))),
+        None => Ok(most),
+    }
+}
+
+/// Where the server runs fewer at once than a load sends (`concurrency`, its /v1/glyd/info `limits.concurrency`): what to say, as the rest wait in its queue.
+fn held_note(most: usize, concurrency: Option<usize>) -> Option<String> {
+    concurrency.filter(|&c| c < most).map(|c| {
+        format!("the server runs {c} requests at once (what its plan holds), and a load sends up to {most}: the others wait in its queue, and their first token with them")
+    })
+}
+
 /// `bench MODEL ...`: see the top of this file. Prints the table, writes --out.
 pub fn measure(a: &Args) -> Result<()> {
     let against = a.flag("against").map(|u| u.trim_end_matches('/').to_string());
@@ -695,9 +712,10 @@ pub fn measure(a: &Args) -> Result<()> {
     let idle = before["memory_used_mib"].as_f64().unwrap_or(0.0);
     let busy = util.is_some_and(|u| u > 10.0) || idle > 2500.0;
     let peak = Peak::start();
+    let users = users_asked(a, &loads)?;
     let server = match &against {
         Some(_) => None,
-        None => Some(start_server(model_arg.unwrap_or(""), a, loads.iter().map(|l| l.1).max().unwrap_or(1).min(8))?),
+        None => Some(start_server(model_arg.unwrap_or(""), a, users)?),
     };
     let url = against.clone().unwrap_or_else(|| server.as_ref().map(|s| s.url.clone()).unwrap_or_default());
     let models = get_json(&format!("{url}/v1/models")).ok_or_else(|| Error(format!("{url}/v1/models: no answer")))?;
@@ -720,6 +738,11 @@ pub fn measure(a: &Args) -> Result<()> {
     let ceiling = weights.zip(bandwidth).map(|(w, b)| b * 1e9 / w);
     let agent = agent();
     let quiet = a.has("quiet");
+    // (what the server runs at once, as its plan holds it: fewer than a load sends, and the rest wait in its queue)
+    let concurrency = info.as_ref().and_then(|i| i["limits"]["concurrency"].as_u64()).map(|c| c as usize);
+    if let Some(n) = held_note(loads.iter().map(|l| l.1).max().unwrap_or(1), concurrency) {
+        eprintln!("bench: {n}");
+    }
     let mut seed = 1000u64;
     // (a warm-up that is not a load of the matrix: kernels, graphs and the server's own caches)
     let _ = one(&agent, &url, &model, "short", 0, 16);
@@ -847,7 +870,8 @@ pub fn measure(a: &Args) -> Result<()> {
             "params_b": a.flag("params").and_then(num_of)},
         "bandwidth": {"gbs": bandwidth, "source": if a.flag("bandwidth-gbs").is_some() { "flag" } else if bandwidth.is_some() { "spec sheet" } else { "unknown" }},
         "versions": {"glyd_engine": env!("CARGO_PKG_VERSION"), "git": git_sha(), "server": info.as_ref().and_then(|i| i["build"]["version"].as_str())},
-        "server": {"against": against, "engine": a.flag("engine").unwrap_or(if server.is_some() { "glyd" } else { "" }), "started_by_bench": server.is_some(), "users": server.as_ref().map(|_| a.flag("users").and_then(|u| u.parse::<usize>().ok()).unwrap_or_else(|| loads.iter().map(|l| l.1).max().unwrap_or(1).min(8)))},
+        "server": {"against": against, "engine": a.flag("engine").unwrap_or(if server.is_some() { "glyd" } else { "" }), "started_by_bench": server.is_some(), "users": server.as_ref().map(|_| users),
+            "concurrency": concurrency},
         "config": {"suite": a.flag("suite").unwrap_or(if a.flag("loads").is_some() { "loads" } else { "gate" }), "loads": loads.iter().map(|(k, n)| format!("{k}:{n}")).collect::<Vec<_>>(),
             "runs": runs, "warmup": warmup, "max_tokens": max_tokens},
         "contention": {"busy_before": busy, "utilization_median_pct": util, "before": before, "after": after},
@@ -1797,6 +1821,21 @@ mod tests {
             "{}",
             v["model"]
         );
+    }
+
+    /// The server the bench starts is asked for as many users as the heaviest load sends, up to the scheduler's limit: not 8 (64 at once ran 8 and queued 56);
+    /// `--users` says otherwise, and a server that holds fewer is said to.
+    #[test]
+    fn the_server_takes_as_many_users_as_the_loads_send() {
+        let args = |extra: &[&str]| Args::from(["bench", "m"].iter().chain(extra).map(|s| s.to_string()));
+        assert_eq!(users_asked(&args(&[]), &parse_loads("short:1,short:64").unwrap()).unwrap(), 64);
+        assert_eq!(users_asked(&args(&[]), &suite("gate").unwrap()).unwrap(), 8);
+        assert_eq!(users_asked(&args(&[]), &suite("occupancy").unwrap()).unwrap(), 64);
+        // (the full suite's 256 at once: the most `serve` takes, the rest queued)
+        assert_eq!(users_asked(&args(&[]), &suite("full").unwrap()).unwrap(), crate::sched::MAX_USERS);
+        assert_eq!(users_asked(&args(&["--users", "12"]), &suite("occupancy").unwrap()).unwrap(), 12);
+        assert!(users_asked(&args(&["--users", "0"]), &suite("gate").unwrap()).is_err());
+        assert!(held_note(64, Some(24)).unwrap().contains("runs 24 requests at once") && held_note(64, Some(64)).is_none() && held_note(8, None).is_none());
     }
 
     #[test]

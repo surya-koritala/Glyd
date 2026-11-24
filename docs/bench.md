@@ -22,7 +22,7 @@ Each request is a streamed chat completion at temperature 0 with `--max-tokens` 
 | `arrive` | 8 requests one after another: short prompts 100 ms apart, 1k 250 ms apart, 4k 500 ms apart. The later prompts come in while the earlier replies are being written |
 | `chat` | conversations of 4 turns that begin with a 1k and a 4k prompt, 1 and 8 of them at once: each later turn resends the conversation and adds a question |
 | `shared` | 8 requests 250 ms apart whose 1k or 4k of notes are the same and whose questions differ (`same1k`, `same4k`), and 8 conversations of 4 turns that begin with the same 4k (`same4k*4`): what a server shares of a start it has run |
-| `occupancy` | short at 1, 8, 32 and 64 at once (`--users 64`): one-token and batched decode as shares of the ceiling, the datacenter occupancy check of P20 (benchmarks/consumer/README.md) |
+| `occupancy` | short at 1, 8, 32 and 64 at once: one-token and batched decode as shares of the ceiling, the datacenter occupancy check of P20 (benchmarks/consumer/README.md) |
 
 `--loads short:1,4k:8` names loads by hand. `4k+250ms:8` is 8 requests of 4k prompts, each begun 250 ms after the one before, not all at once: what a server does when a prompt comes in
 while it is writing other replies shows in that load's first-token time and in the 99th percentile of the gaps between tokens (a reply that stops while a prompt runs has a long gap). Such a load has
@@ -32,7 +32,7 @@ no prefill rate, and its name in the result is the kind as written (`4k+250ms`).
 does. The load's `ttft_s` is the first turns' first token and `ttft_later_s` the later turns'; `prefix_hit_rate` is the share of the prompt tokens of the measured rounds that a glyd server found
 in its cache (its `/stats`; the server the bench starts is told its callers are one user, `GLYD_ENGINE_CACHED_USAGE=1`, so it says; null for a server given with
 `--against` that does not). A server that keeps nothing of a prompt it has seen runs every turn from its first token: its later turns' first token grows with the
-conversation and its hit rate is 0. `1k*4+250ms:8` begins the conversations 250 ms apart. The server `bench` starts takes as many users as the heaviest load asks for (at most 8; `--users N` says): `serve` alone takes 4, and 8 requests at once would be 4 and 4 waiting. A load that fails is counted (`errors`), not hidden.
+conversation and its hit rate is 0. `1k*4+250ms:8` begins the conversations 250 ms apart. The server `bench` starts is asked for as many users as the heaviest load sends (up to the scheduler's 64; `--users N` says otherwise): `serve` alone takes 4, and 8 requests at once would be 4 and 4 waiting. Where the server's plan holds fewer (its `/v1/glyd/info` `limits.concurrency`), the bench says so before it measures and the result keeps it as `server.concurrency` beside `server.users`. A load that fails is counted (`errors`), not hidden.
 
 Per load and run: time to first token, decode tokens/s a user (tokens after the first over the time from first to last), the inter-token latency (its mean and the 99th percentile of every gap), decode tokens/s
 in all (every user's tokens after the first over the span from the earliest first token to the last token), and prefill tokens/s (the prompts' tokens over the slowest first token). A user's figure
@@ -91,7 +91,7 @@ machine      gpu, driver, memory_mib, max_sm_mhz, max_mem_mhz, power_limit_w, co
 model        id, argument, level, weights_bytes, weights_source, source, bits, params_b
 bandwidth    gbs, source
 versions     glyd_engine, git, server
-server       against (the URL, or null), engine, started_by_bench
+server       against (the URL, or null), engine, started_by_bench, users (asked of a server the bench starts), concurrency (what the server says it runs at once)
 config       suite, loads, runs, warmup, max_tokens
 contention   busy_before, utilization_median_pct, before, after (memory, utilization, clocks, the computer's load)
 idle_mib, peak_mib
