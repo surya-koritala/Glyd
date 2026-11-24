@@ -161,20 +161,9 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
     if layers.len() != c.layers {
         return err(format!("{}: {} of the model's {} layers of experts", pack_dir.display(), layers.len(), c.layers));
     }
-    // (what the GPU keeps beside the places: the always-on matrices at the layout, the caches of the context and the scratch of a chunk; the places take the rest)
     let gib = (1u64 << 30) as f64;
-    // (--gpus 0,1: the layers split over those GPUs, each with its layers' matrices, states, caches and places, the streams of each pass going from one to the next through pinned host memory (--p2p: GPU to GPU); a GPU named
-    // twice: the split's check on one GPU, each part after the first in a context of its own)
-    let gpus: Vec<i32> = a
-        .flag("gpus")
-        .unwrap_or("0")
-        .split(',')
-        .map(|x| x.trim().parse::<i32>())
-        .collect::<std::result::Result<_, _>>()
-        .map_err(|_| Error("--gpus: GPU numbers, comma-separated (0,1)".into()))?;
-    if gpus.is_empty() || gpus.len() > c.layers / 2 {
-        return err("--gpus: one GPU or more, at most one for every two layers");
-    }
+    // (the GPUs and their free memory, read before anything here takes some)
+    let gpus = crate::plan::sizing::condor_gpus(a, c.layers)?;
     let free = if gpus.len() == 1 { crate::dev::Dev::new(gpus[0]).and_then(|d| d.mem_info()).map(|(f, _)| f as f64 / gib).unwrap_or(15.0) } else { 0.0 };
     let frees: Vec<f64> = if gpus.len() > 1 {
         gpus.iter().map(|&g| crate::dev::Dev::probe(g).map(|p| p.free as f64 / gib / gpus.iter().filter(|&&h| h == g).count() as f64)).collect::<Result<_>>()?
@@ -195,57 +184,15 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
         None => (layout == Layout::Int4).then_some(Layout::Int5),
         Some(x) => return err(format!("--hi {x}: i6, i5, i4 or none")),
     };
-    // (the always-on matrices at the layout and what the first calls make: measured at i6 with 0.28 GiB left free after the load, i5 and i4 short of that; i6 0.15 more since the drafts' graphs
-    // ran out at 0.11-0.15 GiB free on the 4080 (2026-10-19: a trellis pack's two more places a layer were enough to fail cuGraphInstantiate))
-    let always = crate::plan::condor_always_gib(layout, hi.is_some_and(|h| h != layout));
     let place = layers.iter().map(|&l| pack.place_bytes(l)).max().unwrap_or(1);
-    // (a prompt layer by layer, `--whole` rows at most (0: in chunks through all the layers): each row's streams, position, n-gram row and stream weights, and the experts' set; the streaming prefill's ring and buffers)
     // (a prompt layer by layer by default, up to 32,768 rows a part: 32K tokens in under 10 s; --whole 0 for chunks through all the layers)
     let whole = a.num("whole", 32768usize)?.min(ctx);
-    let whole_gb =
-        (whole * (c.hc * c.hidden * 2 + 4 + c.ple.as_ref().map_or(8, |p| p.dim) * 2 + c.hc * 4) + crate::moe_qwen4x::whole_bytes(whole, c.top_k)) as f64 / gib;
-    // (a prompt's buffers taken layer by layer, and the streaming prefill's, are made for the prompt and freed after it, the last layers' places lent to them where the GPU has not the room: no reserve; a chunk's
-    // streamed call (--whole 0) keeps its ring)
-    let _ = whole_gb;
-    let stream = if !a.has("no-stream") && whole == 0 { crate::cb2_prefill::Cb2Kern::device_bytes(chunk * c.top_k, place) as f64 / gib } else { 0.0 };
-    // (measured on the 4080 at chunk 1024, ctx 33000, i6: 1.5 GiB was left free with 1.2 more reserved than this; chunk 128 against 1024: 0.28 GiB more left free after a prompt, so a row of the chunk
-    // holds 0.335 MB and the rest of the old 1.2 GB is the room the first prompt and decode use)
-    let headroom = a.num("headroom-gb", 0.0f64)?;
     // (the MTP head by default, --no-mtp for none)
     let mtp = !a.has("no-mtp") && c.mtp_layers > 0 && pack.has(c.layers);
-    // the parts of the model: (GPU, its layers, places a layer, GB of places), one a GPU of --gpus (src/plan.rs `sizing::condor_parts`)
-    let cuts = match a.flag("split") {
-        Some(s) => Some(
-            s.split(',')
-                .map(|x| x.trim().parse::<usize>())
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|_| Error("--split: the first layer of each GPU's part after the first, comma-separated".into()))?,
-        ),
-        None => None,
-    };
-    let cache_gb = if a.has("cache-gb") { Some(a.num("cache-gb", 0.0f64)?) } else { None };
-    // (what the GPU keeps beside the places: the always-on matrices, the first prompt's and a chunk's scratch, the context's caches, the margin; src/plan.rs)
-    let (reserve, fixed) = crate::plan::sizing::condor_reserve(always, chunk, ctx, stream, headroom);
-    let room = crate::plan::sizing::CondorRoom {
-        free,
-        frees: &frees,
-        always,
-        fixed,
-        reserve,
-        ctx,
-        head: c.vocab as f64 * c.hidden as f64 * 0.75 / gib,
-        place,
-        experts: c.experts,
-    };
-    let least = c.ple.as_ref().map_or(1, |x| x.layer + 1);
-    let parts = crate::plan::sizing::condor_parts(&gpus, &room, c.layers, layers.len(), mtp, least, cuts, cache_gb).map_err(|e| match e {
-        crate::plan::sizing::CondorShort::NoSplit => {
-            Error(format!("--gpus {}: no split of the {} layers leaves every GPU a place a layer", a.flag("gpus").unwrap_or(""), c.layers))
-        }
-        crate::plan::sizing::CondorShort::BadSplit(cuts) => {
-            Error(format!("--split {cuts:?}: {} first layers in order between {least} and {}", gpus.len() - 1, c.layers - 1))
-        }
-    })?;
+    // the parts of the model over the GPUs ((GPU, its layers, places a layer, GB of places), one a GPU of --gpus) and their plan: src/plan.rs alone sizes them
+    let sized =
+        crate::plan::sizing::condor_load(a, &c, (gpus, free, frees), layout, hi, (chunk, ctx, whole), mtp, (place, layers.len(), pack.expert_bytes() as u64))?;
+    let (gpus, parts, plan, start_free) = (sized.gpus, sized.parts, sized.plan, sized.free);
     if gpus.len() == 1 {
         log(&format!(
             "the pack: {:.1} GiB in {} layers; the GPU's places: {:.2} GB, {} a layer of {:.2} MB",
@@ -267,9 +214,6 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
     }
     let (gb, slots) = (parts.iter().map(|p| p.3).sum::<f64>(), parts.iter().map(|p| p.2).min().unwrap_or(0));
     crate::monitor::places(gb, slots);
-    // the plan this load takes, in the one plan type (src/plan.rs): what the formulas above left each GPU for places, with their terms as the plan's parts
-    let start_free = if gpus.len() == 1 { free * gib } else { frees.iter().sum::<f64>() * gib };
-    let plan = crate::plan::sizing::condor_plan(layout, always, &parts, ctx, chunk, stream, headroom, start_free, pack.expert_bytes() as u64, c.experts);
     log(&format!("Plan: {}", plan.text()));
     // (the host's experts for the misses by default, the copies on a thread of their own: --mode, --no-async-copies)
     let mode = a.flag("mode").map_or(Some(Mode::Cpu), Mode::parse).ok_or_else(|| Error("--mode: copy, cpu, split or auto".into()))?;
@@ -371,7 +315,7 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
     distinct.sort_unstable();
     distinct.dedup();
     let after: u64 = distinct.iter().filter_map(|&g| crate::dev::Dev::probe(g).ok()).map(|g| g.free).sum();
-    let used = (start_free as u64).saturating_sub(after);
+    let used = start_free.saturating_sub(after);
     crate::plan::remember_in(&crate::store::cache_root(), &snap.to_string_lossy(), &plan, weights as u64, used);
     if let Some(path) = crate::tune!("GLYD_PLAN_REPORT") {
         let _ = std::fs::write(path, plan.report(&snap.to_string_lossy(), weights as u64, used));

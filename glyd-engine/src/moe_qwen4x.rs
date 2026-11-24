@@ -375,11 +375,6 @@ impl Whole {
     }
 }
 
-/// Device bytes the layer-by-layer prefill holds for `rows` rows beside the engine's (`Whole`).
-pub fn whole_bytes(rows: usize, k: usize) -> usize {
-    Whole::bytes(rows, k)
-}
-
 /// Device bytes a call of the layer-by-layer prefill makes for `rows` rows beside the engine's: the experts' set, and the streaming prefill's ring (sixteen slots of eight experts of up to 2.6 MB), plan and activations
 /// and its host share's rows (fp32 in and out).
 pub fn whole_call_bytes(rows: usize, k: usize) -> usize {

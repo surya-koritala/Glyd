@@ -231,17 +231,6 @@ impl Config35 {
     pub fn conv_dim(&self) -> usize {
         2 * self.key_dim() + self.value_dim()
     }
-
-    /// What one sequence holds besides its KV: every linear layer's fp32 state and bf16 convolution state.
-    pub fn state_bytes(&self) -> u64 {
-        let per = self.lin_v_heads * self.lin_k_dim * self.lin_v_dim * 4 + self.conv_dim() * (self.conv_kernel - 1) * 2;
-        (self.linear_layers() * per) as u64
-    }
-
-    /// A token's keys and values in bf16, over the full-attention layers.
-    pub fn kv_bytes_per_token(&self) -> u64 {
-        (self.full_layers() * 2 * self.kv_heads * self.head_dim * 2) as u64
-    }
 }
 
 /// One packed matrix: its parts (tensor names and rows) stacked in order, all of `cols` columns. `key` names it (the module of its first part).

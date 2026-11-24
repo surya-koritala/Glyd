@@ -253,35 +253,6 @@ impl ConfigG4 {
         items.push(Item { members: vec![format!("{p}embed_tokens.weight")], rows: self.vocab, cols: h });
         items
     }
-
-    /// The bytes on the GPU of the weights at `layout` (`saved`: a glyd-v7 directory's, read as saved) and of the bf16 model: the matrices and the small tensors (norms, scalars).
-    pub fn weight_bytes(&self, layout: Layout, saved: Option<&Checkpoint>) -> (u64, u64) {
-        let (mut w, mut bf16) = (0u64, 0u64);
-        for it in self.items() {
-            let b = (it.rows * it.cols * 2) as u64;
-            bf16 += b;
-            let key = it.members[0].trim_end_matches(".weight");
-            w += saved.and_then(|ck| crate::weights::packed_bytes(ck, key)).unwrap_or((b as f64 * crate::plan::sizing::bits(layout) / 16.0) as u64);
-        }
-        let small = (self.layers * (4 * self.hidden + 2 * self.global_head_dim + 1) + self.hidden) as u64 * 2;
-        (w + small, bf16 + small)
-    }
-
-    /// The keys and values: (the sliding layers' rings, fixed: the window and a chunk each, or the context where it is shorter; a position's bytes in the global layers).
-    /// `twelve`: in the executor's 12-bit lossless pages (a sixteenth of a page a token), else bf16.
-    pub fn kv_bytes(&self, chunk: usize, ctx: usize, twelve: bool) -> (u64, u64) {
-        let cap_s = (self.window + chunk).min(ctx) as u64;
-        let (mut fixed, mut per) = (0u64, 0u64);
-        for &k in &self.kinds {
-            let (d, nk, _) = self.attn_of(k);
-            let b = if twelve { crate::dynamic::kv12::page_bytes(nk, d).div_ceil(16) } else { (nk * d * 2 * 2) as u64 };
-            match k {
-                KindG4::Sliding => fixed += cap_s * b,
-                KindG4::Global => per += b,
-            }
-        }
-        (fixed, per)
-    }
 }
 
 impl WeightsG4 {

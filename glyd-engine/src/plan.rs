@@ -2874,6 +2874,261 @@ pub mod sizing {
         }
     }
 
+    /// Condor's load as the plan makes it (`qwenserve`, src/qwen4x_serve.rs `load`, which allocates what it says): the GPUs (`--gpus`) and the parts over them
+    /// (`--split`, `--cache-gb`), the plan of them, and the free bytes it was made from (every part's GPU together).
+    pub struct CondorLoad {
+        pub gpus: Vec<i32>,
+        pub parts: Vec<(i32, (usize, usize), usize, f64)>,
+        pub plan: LoadPlan,
+        pub free: u64,
+    }
+
+    /// Condor's GPUs (`--gpus 0,1`: the layers split over those GPUs, each with its layers' matrices, states, caches and places; a GPU named twice: the split's
+    /// check on one GPU, each part after the first in a context of its own), for a model of `layers` layers.
+    pub fn condor_gpus(a: &Args, layers: usize) -> crate::ffi::Result<Vec<i32>> {
+        let gpus: Vec<i32> = a
+            .flag("gpus")
+            .unwrap_or("0")
+            .split(',')
+            .map(|x| x.trim().parse::<i32>())
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|_| crate::ffi::Error("--gpus: GPU numbers, comma-separated (0,1)".into()))?;
+        if gpus.is_empty() || gpus.len() > layers / 2 {
+            return crate::ffi::err("--gpus: one GPU or more, at most one for every two layers");
+        }
+        Ok(gpus)
+    }
+
+    /// `CondorLoad` of the model `c` on `gpus` (`free` GiB free on the one, or `frees` on each part's: a GPU's own shared among the parts on it) at `layout`
+    /// (`hi`: the attention layers' and the head's where they differ), prompts in chunks of `chunk` rows (`whole` rows layer by layer at most; 0: every prompt in
+    /// chunks, its experts streamed through a ring unless `--no-stream`), `ctx` tokens of context, the MTP head's layer where `mtp`; the pack's places of `place`
+    /// bytes, `held` layers of experts, `host` bytes of experts in the computer's memory; `--headroom-gb` more kept free.
+    #[allow(clippy::too_many_arguments)]
+    pub fn condor_load(
+        a: &Args,
+        c: &crate::qwen4x::ConfigQx,
+        (gpus, free, frees): (Vec<i32>, f64, Vec<f64>),
+        layout: Layout,
+        hi: Option<Layout>,
+        (chunk, ctx, whole): (usize, usize, usize),
+        mtp: bool,
+        (place, held, host): (usize, usize, u64),
+    ) -> crate::ffi::Result<CondorLoad> {
+        use crate::ffi::Error;
+        let gib = (1u64 << 30) as f64;
+        // (the always-on matrices at the layout and what the first calls make: measured at i6 with 0.28 GiB left free after the load, i5 and i4 short of that; i6
+        // 0.15 more since the drafts' graphs ran out at 0.11-0.15 GiB free on the 4080 (2026-10-19: a trellis pack's two more places a layer were enough to fail
+        // cuGraphInstantiate))
+        let always = super::condor_always_gib(layout, hi.is_some_and(|h| h != layout));
+        // (a prompt's buffers taken layer by layer, and the streaming prefill's, are made for the prompt and freed after it, the last layers' places lent to them
+        // where the GPU has not the room: no reserve; a chunk's streamed call (whole 0) keeps its ring)
+        let stream = if !a.has("no-stream") && whole == 0 { crate::cb2_prefill::Cb2Kern::device_bytes(chunk * c.top_k, place) as f64 / gib } else { 0.0 };
+        // (measured on the 4080 at chunk 1024, ctx 33000, i6: 1.5 GiB was left free with 1.2 more reserved than this; chunk 128 against 1024: 0.28 GiB more left
+        // free after a prompt, so a row of the chunk holds 0.335 MB and the rest of the old 1.2 GB is the room the first prompt and decode use)
+        let headroom = a.num("headroom-gb", 0.0f64)?;
+        let cuts = match a.flag("split") {
+            Some(s) => Some(
+                s.split(',')
+                    .map(|x| x.trim().parse::<usize>())
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(|_| Error("--split: the first layer of each GPU's part after the first, comma-separated".into()))?,
+            ),
+            None => None,
+        };
+        let cache_gb = if a.has("cache-gb") { Some(a.num("cache-gb", 0.0f64)?) } else { None };
+        let (reserve, fixed) = condor_reserve(always, chunk, ctx, stream, headroom);
+        let room = CondorRoom {
+            free,
+            frees: &frees,
+            always,
+            fixed,
+            reserve,
+            ctx,
+            // (the LM head at six bits a weight)
+            head: c.vocab as f64 * c.hidden as f64 * 0.75 / gib,
+            place,
+            experts: c.experts,
+        };
+        // (the n-gram embedding's layer and those before it on the first part)
+        let least = c.ple.as_ref().map_or(1, |x| x.layer + 1);
+        let parts = condor_parts(&gpus, &room, c.layers, held, mtp, least, cuts, cache_gb).map_err(|e| match e {
+            CondorShort::NoSplit => {
+                Error(format!("--gpus {}: no split of the {} layers leaves every GPU a place a layer", a.flag("gpus").unwrap_or(""), c.layers))
+            }
+            CondorShort::BadSplit(cuts) => Error(format!("--split {cuts:?}: {} first layers in order between {least} and {}", gpus.len() - 1, c.layers - 1)),
+        })?;
+        let start = if gpus.len() == 1 { free * gib } else { frees.iter().sum::<f64>() * gib };
+        let plan = condor_plan(layout, always, &parts, ctx, chunk, stream, headroom, start, host, c.experts);
+        Ok(CondorLoad { gpus, parts, plan, free: start as u64 })
+    }
+
+    // ---- what each family's tensors take: the bytes the plans count (the loaders' lists of tensors are the families') ----
+
+    impl crate::qwen35::Config35 {
+        /// What one sequence holds besides its KV: every linear layer's fp32 state and bf16 convolution state.
+        pub fn state_bytes(&self) -> u64 {
+            let per = self.lin_v_heads * self.lin_k_dim * self.lin_v_dim * 4 + self.conv_dim() * (self.conv_kernel - 1) * 2;
+            (self.linear_layers() * per) as u64
+        }
+
+        /// A token's keys and values in bf16, over the full-attention layers.
+        pub fn kv_bytes_per_token(&self) -> u64 {
+            (self.full_layers() * 2 * self.kv_heads * self.head_dim * 2) as u64
+        }
+    }
+
+    impl ConfigNemotronH {
+        /// What one sequence holds besides its KV: every Mamba-2 layer's fp32 state and bf16 convolution state.
+        pub fn state_bytes(&self) -> u64 {
+            let per = self.m_heads * self.m_head_dim * self.m_state * 4 + self.conv_dim() * (self.conv_kernel - 1) * 2;
+            (self.layers_of(NhKind::Mamba) * per) as u64
+        }
+
+        /// A token's keys and values in bf16, over the attention layers.
+        pub fn kv_bytes_per_token(&self) -> u64 {
+            (self.layers_of(NhKind::Attention) * 2 * self.kv_heads * self.head_dim * 2) as u64
+        }
+    }
+
+    impl crate::gemma4::ConfigG4 {
+        /// The bytes on the GPU of the weights at `layout` (`saved`: a glyd-v7 directory's, read as saved) and of the bf16 model: the matrices and the small tensors
+        /// (norms, scalars).
+        pub fn weight_bytes(&self, layout: Layout, saved: Option<&glyd_gpu::safetensors::Checkpoint>) -> (u64, u64) {
+            let (mut w, mut bf16) = (0u64, 0u64);
+            for it in self.items() {
+                let b = (it.rows * it.cols * 2) as u64;
+                bf16 += b;
+                let key = it.members[0].trim_end_matches(".weight");
+                w += saved.and_then(|ck| packed_bytes(ck, key)).unwrap_or((b as f64 * bits(layout) / 16.0) as u64);
+            }
+            let small = (self.layers * (4 * self.hidden + 2 * self.global_head_dim + 1) + self.hidden) as u64 * 2;
+            (w + small, bf16 + small)
+        }
+
+        /// The keys and values: (the sliding layers' rings, fixed: the window and a chunk each, or the context where it is shorter; a position's bytes in the global
+        /// layers). `twelve`: in the executor's 12-bit lossless pages (a sixteenth of a page a token), else bf16.
+        pub fn kv_bytes(&self, chunk: usize, ctx: usize, twelve: bool) -> (u64, u64) {
+            use crate::gemma4::KindG4;
+            let cap_s = (self.window + chunk).min(ctx) as u64;
+            let (mut fixed, mut per) = (0u64, 0u64);
+            for &k in &self.kinds {
+                let (d, nk, _) = self.attn_of(k);
+                let b = if twelve { crate::dynamic::kv12::page_bytes(nk, d).div_ceil(16) } else { (nk * d * 2 * 2) as u64 };
+                match k {
+                    KindG4::Sliding => fixed += cap_s * b,
+                    KindG4::Global => per += b,
+                }
+            }
+            (fixed, per)
+        }
+    }
+
+    // ---- the dynamic route's layers' bytes (moved from src/dynamic/split.rs, which re-exports them) ----
+
+    /// An FP8 matrix's bytes on the GPU, in hundredths of the release's: layout H's plain packs (an HBM GPU's default) 9 bits a value (a patch's row blocks 0-2
+    /// in its 7-bit core, the 4th in var: 112.5%); coded packs about 7.1 bits (layout H; layout c 6.75), 90 a bound. ponytail: fixed shares; the matrices' own
+    /// sizes (`f8_size`) where a release codes worse.
+    pub const PLAIN_PCT: u64 = 113;
+    pub const CODED_PCT: u64 = 90;
+    /// A bf16 matrix's bytes on the GPU at the penguin level, in hundredths of the release's: the smallest lossless layout (tiered, about 10.8 bits a value)
+    /// 72, the 12-bit one (about 12.0 and its exceptions) 78. The 12-bit layout's one-token product reads at about 80% of an H100's rate where the tiered
+    /// one's reads at 30-45% (research/fp4-one-h100-2026-10-22), so an HBM GPU holds bf16 matrices in it where they fit.
+    pub const TIERED_PCT: u64 = 72;
+    pub const TWELVE_PCT: u64 = 78;
+
+    /// The bytes each of the `nl` layers holds on a GPU, and the rest's (embedding, head, final norm): the release's tensors as they are, an FP8 matrix at
+    /// `f8_pct` hundredths of its bytes, a bf16 matrix at penguin's 72% (about 11.5 bits a weight, an upper bound). Not counted: the tensors no description
+    /// loads (a multi-token-prediction layer, a vision or audio tower).
+    pub fn layer_bytes(dir: &Path, nl: usize, f8_pct: u64) -> crate::ffi::Result<(Vec<u64>, u64)> {
+        layer_bytes_where(dir, nl, f8_pct, TIERED_PCT, &|_| true)
+    }
+
+    /// As `layer_bytes`, of the tensors whose names `keep` keeps.
+    pub fn layer_bytes_where(dir: &Path, nl: usize, f8_pct: u64, bf16_pct: u64, keep: &dyn Fn(&str) -> bool) -> crate::ffi::Result<(Vec<u64>, u64)> {
+        layer_bytes_with(dir, nl, f8_pct, bf16_pct, keep, true)
+    }
+
+    /// `layer_bytes_where`, a hummingbird directory's experts (their files of their own) counted in each layer's bytes only where `experts`.
+    pub fn layer_bytes_with(
+        dir: &Path,
+        nl: usize,
+        f8_pct: u64,
+        bf16_pct: u64,
+        keep: &dyn Fn(&str) -> bool,
+        experts: bool,
+    ) -> crate::ffi::Result<(Vec<u64>, u64)> {
+        let table = crate::sizes::Table::from_dir(dir).map_err(crate::ffi::Error)?;
+        let (mut per, base) = layer_bytes_table(&table, nl, f8_pct, bf16_pct, keep);
+        if experts {
+            per.iter_mut().zip(hb_layer_bytes(dir, nl)?).for_each(|(p, b)| *p += b);
+        }
+        Ok((per, base))
+    }
+
+    /// The bytes of routed experts each of the `nl` layers of a hummingbird directory holds in files of its own (src/hb_pack.rs: by the description's block, decoder layer l's are block
+    /// 2 l + 1); zeros for any other directory.
+    pub fn hb_layer_bytes(dir: &Path, nl: usize) -> crate::ffi::Result<Vec<u64>> {
+        let mut per = vec![0u64; nl];
+        if let Some(hb) = crate::hb_pack::HbDir::open(dir)? {
+            for (l, bytes) in hb.layer_bytes() {
+                if l < nl {
+                    per[l] += bytes;
+                }
+            }
+        }
+        Ok(per)
+    }
+
+    /// `layer_bytes_where` of a table of tensors (src/sizes.rs: a directory's, or the Hub's by ranges before the files are here).
+    pub fn layer_bytes_table(table: &crate::sizes::Table, nl: usize, f8_pct: u64, bf16_pct: u64, keep: &dyn Fn(&str) -> bool) -> (Vec<u64>, u64) {
+        table.per_layer(nl, &|r| keep(&r.name), &|r| {
+            let matrix = r.shape.len() == 2 && r.shape.iter().all(|&d| d >= 256);
+            match r.dtype.as_str() {
+                "BF16" if matrix => r.bytes * bf16_pct / 100,
+                "F8_E4M3" if matrix => r.bytes * f8_pct / 100,
+                _ => r.bytes,
+            }
+        })
+    }
+
+    /// Each of the model's `nl` layers' bytes that its family's loader can keep in the computer's memory (src/dense_ram.rs: its packed linears there), at the packing `layer_bytes_where` counts: Muse Spark's attention and
+    /// latent projections, Kimi-K3's delta attention's three; zeros for the others (their attention is in blocks of their own, or FP8).
+    pub fn ram_bytes(dir: &Path, nl: usize, family: &str, f8_pct: u64, bf16_pct: u64) -> crate::ffi::Result<Vec<u64>> {
+        if !matches!(family, "Kimi-K3" | "Muse Spark") {
+            return Ok(vec![0; nl]);
+        }
+        let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| crate::ffi::Error(format!("{}: {e}", dir.display())))?;
+        ram_bytes_table(&crate::sizes::Table::from_dir(dir).map_err(crate::ffi::Error)?, &text, nl, family, f8_pct, bf16_pct)
+    }
+
+    /// `ram_bytes` of a table of tensors and the model's config.json (src/sizes.rs: before the files are here too).
+    pub fn ram_bytes_table(table: &crate::sizes::Table, text: &str, nl: usize, family: &str, f8_pct: u64, bf16_pct: u64) -> crate::ffi::Result<Vec<u64>> {
+        let kda: Vec<bool> = match family {
+            "Kimi-K3" => crate::kimi::ConfigKimi::parse(text, "config.json", None)?.kinds.iter().map(|k| matches!(k, crate::glm::GlmKind::Kda)).collect(),
+            "Muse Spark" => Vec::new(),
+            _ => return Ok(vec![0; nl]),
+        };
+        Ok(layer_bytes_table(table, nl, f8_pct, bf16_pct, &|n| in_ram(family, &kda, n)).0)
+    }
+
+    /// Whether the tensor `name` is one of the matrices `family`'s loader keeps in the computer's memory for a layer there (src/dense_ram.rs; `kda`: Kimi-K3's layers of delta attention).
+    pub(crate) fn in_ram(family: &str, kda: &[bool], name: &str) -> bool {
+        let layer = name.split("layers.").nth(1).and_then(|r| r.split('.').next()).and_then(|x| x.parse::<usize>().ok());
+        match family {
+            "Muse Spark" => {
+                (name.contains(".self_attn.") && name.ends_with("_proj.weight")) || name.contains(".pre_expert_proj.") || name.contains(".post_expert_proj.")
+            }
+            "Kimi-K3" => {
+                layer.is_some_and(|l| kda.get(l) == Some(&true))
+                    && name.contains(".self_attn.")
+                    && ["q_proj", "k_proj", "v_proj", "g_proj", "f_a_proj", "b_proj", "o_proj", "f_b_proj"]
+                        .iter()
+                        .any(|x| name.ends_with(&format!(".{x}.weight")))
+            }
+            _ => false,
+        }
+    }
+
     /// (the dynamic route's cuts and places, moved from src/dynamic/split.rs, which re-exports them)
     use crate::dynamic::split;
 
@@ -4789,6 +5044,35 @@ mod tests {
         for (r, e) in sm80.iter().zip(&a100.1) {
             assert!(r["features"]["lossless"] == true || *e > 0.3, "the 4080 SUPER's figures predict the A100's packs too fast: {} {e}", r["load"]);
         }
+    }
+
+    /// Condor's load is sized here alone (`sizing::condor_load`, what src/qwen4x_serve.rs `load` allocates): on one GPU the places take what the reserve leaves
+    /// (the always-on matrices, the first prompt's and a chunk's scratch, the context's cache, the margin), so the plan adds up to the free memory; `--cache-gb`
+    /// caps them; over two GPUs (one named twice: the split's check) each part has places, and a split that is not one, or more GPUs than half the layers, is
+    /// refused in words.
+    #[test]
+    fn condor_is_sized_by_the_plan() {
+        use crate::weights::Layout;
+        let c = crate::qwen4x::ConfigQx::parse(&fixture("qwen4x_config.json"), "config.json", None).unwrap();
+        let (free, ctx, chunk, place) = (15.2f64, 33536usize, 128usize, 2_000_000usize);
+        let load = |words: &[&str], gpus: Vec<i32>, frees: Vec<f64>| {
+            sizing::condor_load(&args(words), &c, (gpus, free, frees), Layout::Int4, Some(Layout::Int5), (chunk, ctx, 32768), true, (place, c.layers, 60 << 30))
+        };
+        let one = load(&["qwenserve"], vec![0], vec![]).unwrap();
+        let always = condor_always_gib(Layout::Int4, true);
+        let (reserve, _) = sizing::condor_reserve(always, chunk, ctx, 0.0, 0.0);
+        let gb = (free - reserve) * GIB / 1e9;
+        assert_eq!(one.parts, vec![(0, (0, c.layers), (gb * 1e9 / ((c.layers + 1) * place) as f64) as usize, gb)]);
+        assert!((one.plan.gpu_total() as f64 - free * GIB).abs() < (1 << 20) as f64, "{}", one.plan.text());
+        assert_eq!((one.plan.kind, one.plan.context, one.plan.chunk, one.free), (Kind::Condor, ctx, chunk, (free * GIB) as u64));
+        assert_eq!(load(&["qwenserve", "--cache-gb", "4"], vec![0], vec![]).unwrap().parts[0].3, 4.0);
+        let two = load(&["qwenserve", "--gpus", "0,0"], vec![0, 0], vec![free / 2.0; 2]).unwrap();
+        assert!(two.parts.len() == 2 && two.parts.iter().all(|p| p.2 > 0) && two.plan.spread.as_ref().unwrap().cuts.len() == 1, "{:?}", two.parts);
+        let e = load(&["qwenserve", "--gpus", "0,0", "--split", "0"], vec![0, 0], vec![free / 2.0; 2]).err().unwrap();
+        assert!(e.msg.starts_with("--split [0]"), "{}", e.msg);
+        let many = (0..c.layers).map(|g| g.to_string()).collect::<Vec<_>>().join(",");
+        assert!(sizing::condor_gpus(&args(&["qwenserve", "--gpus", &many]), c.layers).is_err());
+        assert_eq!(sizing::condor_gpus(&args(&["qwenserve"]), c.layers).unwrap(), vec![0]);
     }
 
     /// A step of several rows reads the weights once for all of them: each row past the first adds its keys' and values' reads and its class's time a layer, no

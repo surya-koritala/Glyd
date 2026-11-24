@@ -264,17 +264,6 @@ impl ConfigNemotronH {
         self.inner() + self.conv_dim() + self.m_heads
     }
 
-    /// What one sequence holds besides its KV: every Mamba-2 layer's fp32 state and bf16 convolution state.
-    pub fn state_bytes(&self) -> u64 {
-        let per = self.m_heads * self.m_head_dim * self.m_state * 4 + self.conv_dim() * (self.conv_kernel - 1) * 2;
-        (self.layers_of(NhKind::Mamba) * per) as u64
-    }
-
-    /// A token's keys and values in bf16, over the attention layers.
-    pub fn kv_bytes_per_token(&self) -> u64 {
-        (self.layers_of(NhKind::Attention) * 2 * self.kv_heads * self.head_dim * 2) as u64
-    }
-
     fn layer_name(&self, l: usize) -> String {
         format!("{}layers.{l}", self.prefix)
     }
