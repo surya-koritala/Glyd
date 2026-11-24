@@ -3687,7 +3687,7 @@ __device__ __forceinline__ float gelu_tanh(float x) { return 0.5f * x * (1.f + t
 // the last of a unit's to finish (last_of; done: a counter a unit) adds them in order and writes the unit out: the
 // same result every run.
 template <class Fmt, int MT, int ACT, int V = 0>  // V: the step loop's variants, bit 0 Nib::patch_b, bit 1 the m-tiles with pairs alone, bit 2 the L2 prefetch
-__global__ void __launch_bounds__(256, MT == 1 ? ((V & 32) ? 3 : 2) : 1) mma_moe_kernel(Fmt f, int64_t O, int64_t K, const int* __restrict__ plan, int E, int64_t k, int gather, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, const void* __restrict__ w, int wf32, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32, int64_t P, float* __restrict__ parts, int* __restrict__ done, int pf) {
+__device__ __forceinline__ void mma_moe_body(Fmt f, int64_t O, int64_t K, const int* __restrict__ plan, int E, int64_t k, int gather, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, const void* __restrict__ w, int wf32, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32, int64_t P, float* __restrict__ parts, int* __restrict__ done, int pf) {
     extern __shared__ __align__(128) float red[];  // [4 warps][16 MT rows][65], then the warps' scratch [8][S2_BYTES]
     __shared__ uint32_t tab[Fmt::kTable ? 256 : 1];
     __shared__ int last;
@@ -3787,6 +3787,11 @@ __global__ void __launch_bounds__(256, MT == 1 ? ((V & 32) ? 3 : 2) : 1) mma_moe
         }
 }
 
+template <class Fmt, int MT, int ACT, int V = 0>  // V: the step loop's variants, bit 0 Nib::patch_b, bit 1 the m-tiles with pairs alone, bit 2 the L2 prefetch
+__global__ void __launch_bounds__(256, MT == 1 ? ((V & 32) ? 3 : 2) : 1) mma_moe_kernel(Fmt f, int64_t O, int64_t K, const int* __restrict__ plan, int E, int64_t k, int gather, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, const void* __restrict__ w, int wf32, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32, int64_t P, float* __restrict__ parts, int* __restrict__ done, int pf) {
+    mma_moe_body<Fmt, MT, ACT, V>(f, O, K, plan, E, k, gather, X, bias, w, wf32, Y, Y32, P, parts, done, pf);
+}
+
 // The experts' product with no gate (the down), a warp a row block over the whole of K: a block 8 row blocks of a hit
 // expert (blockIdx.x, blockIdx.y the hit), the warps' sums not added across warps (none in shared memory, no barrier
 // but the tiered layout's table), each thread writing its own, 16 MT pairs at a time as mma_moe_kernel does. K = 768 is
@@ -3794,7 +3799,7 @@ __global__ void __launch_bounds__(256, MT == 1 ? ((V & 32) ? 3 : 2) : 1) mma_moe
 // as much as its steps: 512 blocks of a long loop instead of 4,096 of a short one (Qwen3-30B-A3B's down, 32 row blocks).
 // Y [pairs, O] in the plan's order (+ bias [E, O]), or (Y32) times the pair's weight w to row j of Y32 [P, O] for pair j.
 template <class Fmt, int MT, int V>
-__global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_moe_rows_kernel(Fmt f, int64_t O, int64_t K, const int* __restrict__ plan, int E, int64_t k, int gather, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, const void* __restrict__ w, int wf32, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32, int pf) {
+__device__ __forceinline__ void mma_moe_rows_body(Fmt f, int64_t O, int64_t K, const int* __restrict__ plan, int E, int64_t k, int gather, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, const void* __restrict__ w, int wf32, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32, int pf) {
     extern __shared__ __align__(128) uint32_t rows_scratch[];  // the warps' scratch [8][S2_BYTES]
     __shared__ uint32_t tab[Fmt::kTable ? 256 : 1];
     if ((int)blockIdx.y >= __ldg(plan)) return;  // the whole block: no expert this far down the hits
@@ -3852,9 +3857,14 @@ __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_moe_rows_kernel(Fmt 
     }
 }
 
+template <class Fmt, int MT, int V>
+__global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_moe_rows_kernel(Fmt f, int64_t O, int64_t K, const int* __restrict__ plan, int E, int64_t k, int gather, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, const void* __restrict__ w, int wf32, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32, int pf) {
+    mma_moe_rows_body<Fmt, MT, V>(f, O, K, plan, E, k, gather, X, bias, w, wf32, Y, Y32, pf);
+}
+
 // A weighted product's sum: y [T, O] = each token's k rows of y32 [T k, O] added in order, in fp32 (a pair
 // routed nowhere adds nothing); 4 columns a thread.
-__global__ void moe_sum_kernel(const float* __restrict__ y32, const int64_t* __restrict__ ids, int E, int64_t T, int64_t k, int64_t O, __nv_bfloat16* __restrict__ y) {
+__device__ __forceinline__ void moe_sum_body(const float* __restrict__ y32, const int64_t* __restrict__ ids, int E, int64_t T, int64_t k, int64_t O, __nv_bfloat16* __restrict__ y) {
     int64_t i = (blockIdx.x * (int64_t)blockDim.x + threadIdx.x) * 4;
     if (i >= T * O) return;
     int64_t tok = i / O, c = i - tok * O;
@@ -3870,4 +3880,8 @@ __global__ void moe_sum_kernel(const float* __restrict__ y32, const int64_t* __r
     }
     __nv_bfloat162 lo = __floats2bfloat162_rn(v.x, v.y), hi = __floats2bfloat162_rn(v.z, v.w);
     *(uint2*)(y + i) = make_uint2(*(uint32_t*)&lo, *(uint32_t*)&hi);
+}
+
+__global__ void moe_sum_kernel(const float* __restrict__ y32, const int64_t* __restrict__ ids, int E, int64_t T, int64_t k, int64_t O, __nv_bfloat16* __restrict__ y) {
+    moe_sum_body(y32, ids, E, T, k, O, y);
 }
