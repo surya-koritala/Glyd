@@ -83,6 +83,9 @@ jobs:
           done
           # (each save that holds the tiny Qwen3, its packs decoded by the GPU library, on the CPU reference against its digest in glyd-engine/tests/packs)
           "$E" packcheck --gpu
+          # (the formats the engine loads a saved directory in, as the glyd/* repos are saved: glyd-v7 at penguin, kestrel, swift, wren and hummingbird, each made from a logits
+          # case's random model by the repos' packer, loaded from the directory and held to the case's fixtures in tests/logits and the Hummingbird digest in tests/packs)
+          "$E" packcheck --engine --scratch "$RUNNER_TEMP/packcheck"
       - name: MoE kernel checks (blocking; the peak GPU memory is printed and held under 12,000 MiB)
         run: |
           base=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1)
