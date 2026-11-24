@@ -2,9 +2,9 @@
 //! area and back, rather than being run again from its tokens (`ModelStep::swap_out`, `swap_in`). What is copied is all a step of it reads, for every family the same way:
 //! in each layer group the blocks of its tokens its table holds (a sliding group's from its window on, a shared start's from its floor), each ring's keys and values of
 //! them (a ring of keys alone, a latent cache's or compressed entries', its keys); its recurrent states (the delta rule's and the convolutions', Mamba's); and their copy at its mark where it has one. A ring in bf16 pages is copied as its bytes.
-//! A ring in 12-bit pages is copied as the bf16 values the library unpacks from them, its escape chunks and raw slabs read with them, and written back into new pages by
-//! the library's own write, which takes new chunks and slabs where they need them: the values come back bit for bit, but the link carries 16 bits a value, not 12. (A
-//! page moved as its own bytes names its chunks of the escape pool by number, lent to its old block by owner: the library has no call that lends them to another.)
+//! A ring in 12-bit pages is copied as its pages are, in their 12 bits: each page's bytes, the escape chunks it holds and its raw slab, in an image of the page
+//! (`Lib::kv_save`), and loaded into new pages with chunks and slabs lent to their new blocks (`Lib::kv_load`, the directory naming them): the values come back bit for
+//! bit, and the link carries a page's bytes and what it holds, not 16 bits a value. A page that finds no chunk or slab when it is loaded is void, as one written is.
 //!
 //! The copies run on a stream of their own, their host end pinned memory mapped into the device's addresses: one launch of `swap_copy` moves every bf16 block however
 //! scattered its pools are, and the library's unpack and write read and write the host's memory themselves, with no staging buffer on the GPU, whose memory is what ran
@@ -55,12 +55,12 @@ impl Ranges {
     }
 }
 
-/// Where the parts of a sequence's copy are, as offsets from its start: each group's blocks (int32, the library's unpack and write read them) and its tokens' slots (int64, the
-/// library's write; groups with a ring in 12-bit pages), the copy kernel's items, each ring's keys and values (its group's entries in order, `per` bytes a block each), each
-/// state, and each state at the mark (none where there is none). `moved`: the bytes over the link one way.
+/// Where the parts of a sequence's copy are, as offsets from its start: each group's blocks (int32, the library's save and load read them), the copy kernel's items, each
+/// ring's keys and values (its group's entries in order, `per` bytes a block each; a ring in 12-bit pages: its pages' images, `per` bytes each, and the bytes each took, uint32),
+/// each state, and each state at the mark (none where there is none). `moved`: the bytes over the link one way (a 12-bit ring's pages' own: what their chunks and slabs add
+/// is known once they are saved, `exact`); `fixed`: those of the bf16 rings and the states.
 struct Layout {
     blocks: Vec<usize>,
-    slots: Vec<Option<usize>>,
     items: usize,
     nitems: usize,
     rings: Vec<Option<(usize, usize, usize)>>,
@@ -68,6 +68,7 @@ struct Layout {
     marks: Vec<usize>,
     total: usize,
     moved: usize,
+    fixed: usize,
 }
 
 /// A sequence swapped out: its range in the area, its tokens, the table entries and floors it held (`Pages::held_entries`), its mark, its layout, and events before and after
@@ -249,31 +250,32 @@ impl Dyn {
             a
         };
         let blocks = counts.iter().map(|&c| take(4 * c)).collect();
-        let slots = (0..counts.len()).map(|g| (0..rings.len()).any(|r| twelve(r).is_some_and(|x| x.group == g)).then(|| take(8 * BLOCK * counts[g]))).collect();
         let nitems: usize =
             (0..rings.len()).filter(|&r| self.ring_cap[r] > 0 && twelve(r).is_none()).map(|r| (1 + rings[r].values as usize) * counts[pg.group[r]]).sum();
         let items = take(24 * nitems);
-        let mut moved = 0;
+        let (mut moved, mut fixed) = (0, 0);
         let rings = (0..rings.len())
             .map(|r| {
                 if self.ring_cap[r] == 0 {
                     return None;
                 }
-                let per = match twelve(r) {
-                    Some(x) => BLOCK * x.shape.heads * x.shape.channels * 2,
-                    None => BLOCK * rings[r].nk * rings[r].d * 2,
-                };
                 let c = counts[pg.group[r]];
+                if let Some(x) = twelve(r) {
+                    // (its pages' images, and the bytes each took)
+                    moved += c * x.geom.page_stride as usize;
+                    return Some((take(x.image * c), take(4 * c), x.image));
+                }
+                let per = BLOCK * rings[r].nk * rings[r].d * 2;
                 // (a ring of keys alone: no values)
-                let v = if rings[r].values || twelve(r).is_some() { per * c } else { 0 };
-                moved += per * c + v;
+                let v = if rings[r].values { per * c } else { 0 };
+                fixed += per * c + v;
                 Some((take(per * c), take(v), per))
             })
             .collect();
         let states: Vec<usize> = self.states.iter().map(|b| take(b.bytes)).collect();
         let marks: Vec<usize> = if mark { self.states.iter().map(|b| take(b.bytes)).collect() } else { Vec::new() };
-        moved += self.states.iter().map(|b| b.bytes).sum::<usize>() * (1 + mark as usize);
-        Layout { blocks, slots, items, nitems, rings, states, marks, total: at, moved }
+        fixed += self.states.iter().map(|b| b.bytes).sum::<usize>() * (1 + mark as usize);
+        Layout { blocks, items, nitems, rings, states, marks, total: at, moved: moved + fixed, fixed }
     }
 
     /// The states at sequence `slot`'s mark, where it has one: the tokens there (0: none).
@@ -338,21 +340,12 @@ impl Dyn {
                 }
                 if let Some(lx) = &self.lossless {
                     for (r, rp) in lx.rings.iter().enumerate() {
-                        let (Some(rp), Some((k, v, per))) = (rp, lay.rings[r]) else { continue };
+                        let (Some(rp), Some((im, mv, per))) = (rp, lay.rings[r]) else { continue };
                         let (g, h) = (rp.group, head.min(counts[rp.group]));
                         let (j0, j1) = if part == 0 { (0, h) } else { (h, counts[g]) };
                         if j1 > j0 {
-                            self.lib.kv_unpack(
-                                &rp.geom,
-                                rp.pool.ptr,
-                                rp.kbase.ptr,
-                                rp.vbase.ptr,
-                                sw.host(at, lay.blocks[g] + 4 * j0),
-                                (j1 - j0) as i64,
-                                sw.host(at, k + j0 * per),
-                                sw.host(at, v + j0 * per),
-                                s,
-                            )?;
+                            let (pages, out, moved) = (sw.host(at, lay.blocks[g] + 4 * j0), sw.host(at, im + j0 * per), sw.host(at, mv + 4 * j0));
+                            self.lib.kv_save(&rp.geom, rp.pool.ptr, rp.blocks as i64, pages, (j1 - j0) as i64, rp.layer, out, moved, s)?;
                         }
                     }
                 }
@@ -390,7 +383,6 @@ impl Dyn {
         });
         self.upload_tables(slot)?;
         sw.next = ticket;
-        sw.moved.0 += lay.moved;
         sw.images.insert(ticket, Image { at, n, entries, floor, mark, lay, began, out });
         Ok(Some(ticket))
     }
@@ -466,22 +458,15 @@ impl Dyn {
         let img = sw.images.remove(&ticket).expect("found above");
         // (its copy out read the lists this one writes over: done first, and counted)
         img.out.wait_host()?;
-        sw.count(img.lay.moved, &img.began, &img.out);
+        let moved = Self::exact(self.lossless.as_ref(), sw, img.at, &img.lay, &img.entries);
+        sw.count(moved, &img.began, &img.out);
+        sw.moved.0 += moved;
         let (at, lay) = (img.at, &img.lay);
         let pg = self.paged.as_ref().expect("paged");
         for (g, e) in img.entries.iter().enumerate() {
             let tab = pg.pages.table(slot, g);
             let blocks: Vec<i32> = e.iter().map(|&b| tab[b] as i32).collect();
             sw.slice::<i32>(at, lay.blocks[g], blocks.len()).copy_from_slice(&blocks);
-            if let Some(off) = lay.slots[g] {
-                // (a 12-bit page's tokens past the sequence's last are not written: its page holds what they were, anything)
-                let slots: Vec<i64> = e
-                    .iter()
-                    .flat_map(|&b| (0..BLOCK).map(move |t| (b * BLOCK + t, tab[b] as i64 * BLOCK as i64 + t as i64)))
-                    .map(|(p, s)| if p < img.n { s } else { -1 })
-                    .collect();
-                sw.slice::<i64>(at, off, slots.len()).copy_from_slice(&slots);
-            }
         }
         let (items, _) = self.swap_items(sw, at, lay, &img.entries, slot, false, usize::MAX);
         sw.slice::<u64>(at, lay.items, items.len()).copy_from_slice(&items);
@@ -499,29 +484,20 @@ impl Dyn {
             }
             if let Some(lx) = &self.lossless {
                 for (r, rp) in lx.rings.iter().enumerate() {
-                    let (Some(rp), Some((k, v, _))) = (rp, lay.rings[r]) else { continue };
-                    let g = rp.group;
-                    let (n, Some(slots)) = (img.entries[g].len(), lay.slots[g]) else { continue };
+                    let (Some(rp), Some((im, _, _))) = (rp, lay.rings[r]) else { continue };
+                    let (g, n) = (rp.group, img.entries[rp.group].len());
                     if n > 0 {
-                        let w = (rp.shape.heads * rp.shape.channels) as i64;
-                        let ring = super::kvpages::RING;
-                        let (kh, vh, sl) = (sw.host(at, k), sw.host(at, v), sw.host(at, slots));
-                        self.lib.kv_write(
+                        let (images, dst) = (sw.host(at, im), sw.host(at, lay.blocks[g]));
+                        self.lib.kv_load(
                             &rp.geom,
+                            images,
+                            dst,
+                            n as i64,
                             rp.pool.ptr,
-                            rp.kbase.ptr,
-                            rp.vbase.ptr,
+                            rp.blocks as i64,
                             rp.layer,
-                            kh,
-                            w,
-                            vh,
-                            w,
-                            sl,
-                            (n * BLOCK) as i64,
                             lx.status[g].ptr,
-                            0,
-                            0,
-                            ring,
+                            super::kvpages::RING,
                             s,
                         )?;
                     }
@@ -541,8 +517,8 @@ impl Dyn {
             self.snap_n[slot] = img.mark;
         }
         self.upload_tables(slot)?;
-        sw.moved.1 += lay.moved;
-        sw.loading.push(Loading { slot, at, began, done, moved: lay.moved });
+        sw.moved.1 += moved;
+        sw.loading.push(Loading { slot, at, began, done, moved });
         Ok(Some(img.n))
     }
 
@@ -567,8 +543,20 @@ impl Dyn {
         let Some(sw) = self.swap.as_mut() else { return };
         if let Some(img) = sw.images.remove(&ticket) {
             let _ = img.out.wait_host();
+            sw.moved.0 += Self::exact(self.lossless.as_ref(), sw, img.at, &img.lay, &img.entries);
             sw.ranges.give(img.at.0, img.at.1, img.at.2);
         }
+    }
+
+    /// The bytes a copy out moved one way, once it is done: the bf16 rings' and the states', and what each 12-bit page's image took (its bytes, its chunks, its slab).
+    fn exact(lx: Option<&super::kvpages::Lossless>, sw: &mut Swap, at: (usize, usize, usize), lay: &Layout, entries: &[Vec<usize>]) -> usize {
+        let mut m = lay.fixed;
+        for (r, rp) in lx.iter().flat_map(|x| x.rings.iter().enumerate()) {
+            if let (Some(rp), Some((_, mv, _))) = (rp, lay.rings[r]) {
+                m += sw.slice::<u32>(at, mv, entries[rp.group].len()).iter().map(|&b| b as usize).sum::<usize>();
+            }
+        }
+        m
     }
 
     /// A slot about to be emptied: its copy back, where one is in flight, finished first.

@@ -481,8 +481,19 @@ A pool of `kpool` tokens is keyed when its last token is written, and its key is
 in the same call), so a block that a name or another sequence holds is never written. Both rings sit in the full group's pools, so these
 models take the same page budget, swap (R4d) and prefix sharing (R4c, at the marks of their delta-attention states) as the dense kinds.
 The indexer's pick is one operation and kernel for GLM-5.3's pools and DeepSeek-V4's compressed entries (`IdxPick`, `idx_pick`).
-DeepSeek-V4's compressed entries are not paged yet: they stay a sequence's states of the whole context (a group of 16 entries a block,
-as the table above says, needs pools whose table entries cover ratio x 16 tokens).
+
+What is built for the compressed kind (`Op::CompKv`, `Compress`, `IdxPick`, `CompAttn`, `dynamic/comp.rs`): DeepSeek-V4's window is a
+ring of keys alone in the window's sliding group, and its compressed entries, the attention's and the indexer's, are rings too
+(`Ring::entries`: a row an entry of `ratio` tokens). A group is the rings of one window and one ratio; a compressed group's blocks are
+16 entries, so a block covers 16 x ratio tokens (64 for the ratio-4 layers, 2,048 for the ratio-128 ones), and its table entry b holds
+the entries of tokens 16 ratio b on (`Pages::covering`). The allocator asks every question in tokens and each group answers it in its
+own blocks: a sequence of n tokens holds a compressed group's blocks to the one its last token is in; a cut into a block another
+sequence holds goes to that block's start; a start is found by name in whole blocks of every group (a compressed block is named for
+the 16-token block that ends it), so DeepSeek-V4's starts are found in steps of 2,048 tokens; a share at a mark inside a compressed
+block copies that block. The pools' budget gives every group as many tokens (`pool_blocks`). The kernels read and write the window and
+the entries through the sequence's block table (`v4_kv_prep`, `v4_comp_out`, `v4_attn_scores`, `v4_attn_out`, `idx_score_bf16`). Its
+states are its compressors' open windows alone (fp32 rows and scores of one or two windows a layer), so it keeps marks too, and the page
+budget, preemption, swap and prefix sharing apply to it as to every paged model.
 
 ### Compressed KV
 
@@ -546,11 +557,15 @@ replays the whole prefix through the recurrent layers, so swap wins by more. Swa
 Built (R4d, #328): `ModelStep::swap_out` / `swap_in` / `swap_ready` / `swap_drop`, implemented once for the executor's paged sequences
 (`dynamic/swap.rs`). A swap copies what a step of the sequence reads: in every layer group the blocks of its tokens its table holds (a
 sliding group's window, a shared start's floor: `Pages::held_entries`, `restore`), its recurrent states and their copy at its mark. bf16
-rings move as their bytes, by one launch of a copy kernel over the blocks of every layer; 12-bit rings move as the bf16 values the library
-unpacks and are written back by its own write, which takes escape chunks and raw slabs anew (a page's own bytes name chunks lent to its
-old block, which no library call re-lends yet), so their link bytes are bf16's, not 12-bit's. The host end is pinned memory mapped into the
-device's addresses: no GPU staging. Out: the next step waits for the copy. Back: the copy runs on its own stream beside the other
-sequences' steps, and the sequence joins them when it is done. The choice (`Sched::swap_pays`): swap where 2 x bytes / link rate (measured
+rings move as their bytes, by one launch of a copy kernel over the blocks of every layer; 12-bit rings move as their pages are, in their 12
+bits: an image of each page (its bytes, the escape chunks it holds, its raw slab: `glyd_gpu_kv_save`), loaded into new pages with chunks
+and slabs lent to their new blocks, the directory naming them (`glyd_gpu_kv_load`, C API 21); a page that finds none is void, as one
+written is. The host end is pinned memory mapped into the device's addresses: no GPU staging. Out: the copy runs beside the next steps in
+two parts, the first `head` blocks of each group (the sequences: the most blocks a decode step takes of a group), then the rest and the
+states. The blocks given back keep the part that reads them as a fence (`Pages::release_fenced`); a fenced block is taken after every
+free block without one, a swapped sequence's first entries first, and the step that takes one waits for that part alone
+(`Dyn::fence_wait`); the slot's states are filled when the slot is used again, after the copy. Back: the copy runs on its own stream
+beside the other sequences' steps, and the sequence joins them when it is done. The choice (`Sched::swap_pays`): swap where 2 x bytes / link rate (measured
 on the swaps, `plan::LINK_GBS` before) is less than the sequence's tokens / the measured prompt-pass rate. The area: `plan::swap_area`,
 `SWAP_SHARE` = 2 x the GPU cache it backs (SGLang's `hicache_ratio` default), within the computer's free memory less `HOST_MARGIN`, read
 after the expert store's host tier is pinned; a sequence it has no room for is recomputed. Swapped, a sequence's cache is the same bit for

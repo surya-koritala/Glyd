@@ -37,6 +37,9 @@ pub(super) struct RingPages {
     pub stage_blocks: usize,
     /// Its decode's kind (`Lossless::kinds`: its window and its calls' sequences a row), whose lengths and first tokens a pass makes once.
     pub kind: usize,
+    /// A page's image moved whole (`Lib::kv_save`: R4d's swap) and the blocks of its pool (block 0 among them).
+    pub image: usize,
+    pub blocks: usize,
 }
 
 /// The 12-bit pages of every ring that has them, the pools they share, and the step's buffers: the rows' keys and values before they are written,
@@ -197,7 +200,22 @@ impl Lossless {
                     kinds.len() - 1
                 }
             };
-            out.push(Some(RingPages { geom, pool, kbase, vbase, layer: l as i64, group: group[r], shape: s, parts, g: g / parts, stage_blocks, kind }));
+            let image = lib.kv_image_bytes(&geom)? as usize;
+            out.push(Some(RingPages {
+                geom,
+                pool,
+                kbase,
+                vbase,
+                layer: l as i64,
+                group: group[r],
+                shape: s,
+                parts,
+                g: g / parts,
+                stage_blocks,
+                kind,
+                image,
+                blocks: n,
+            }));
         }
         let parts = out.iter().flatten().map(|x| x.parts).max().unwrap_or(1);
         let stage = out.iter().flatten().map(|x| x.stage_blocks * 16 * x.shape.heads * x.shape.channels * 2).max().unwrap_or(0);
@@ -483,6 +501,50 @@ impl Dyn {
         Ok(out)
     }
 
+    /// R4d's pages moved whole: each 12-bit ring's pages of the selected sequence's first `n` tokens saved (`Lib::kv_save`) and loaded into as many free blocks of its pool
+    /// (`Lib::kv_load`), both unpacked: the pages, the values that differ between them, the bytes the images took, and those of the pages' values in bf16.
+    #[cfg(feature = "dev")]
+    fn kv12_move_check(&self, n: usize) -> Result<(usize, usize, usize, usize)> {
+        let (Some(lx), Some(pg)) = (self.lossless.as_ref(), self.paged.as_ref()) else { return Ok((0, 0, 0, 0)) };
+        let s = self.dev.stream;
+        let (mut pages, mut differ, mut moved, mut bf16) = (0, 0, 0, 0);
+        for rp in lx.rings.iter().flatten() {
+            let tab = pg.group_table(self.seq, rp.group);
+            let src: Vec<i32> = tab[..n.div_ceil(16).min(tab.len())].iter().filter(|&&b| b != 0).map(|&b| b as i32).collect();
+            // (the pool's last blocks that no table entry of this sequence names)
+            let dst: Vec<i32> = (1..rp.blocks as i32).rev().filter(|b| !src.contains(b)).take(src.len()).collect();
+            let k = src.len();
+            if k == 0 || dst.len() < k {
+                continue;
+            }
+            let per = 16 * rp.shape.heads * rp.shape.channels * 2;
+            let (sb, db, img, mv) = (Buf::new(4 * k)?, Buf::new(4 * k)?, Buf::zeroed(k * rp.image)?, Buf::zeroed(4 * k)?);
+            let outs = [Buf::new(k * per)?, Buf::new(k * per)?, Buf::new(k * per)?, Buf::new(k * per)?];
+            sb.write(0, &src)?;
+            db.write(0, &dst)?;
+            // SAFETY: the ring's pool and its pools; the lists, images and outputs of k pages each, sized above; the stream is synchronized before they are read.
+            unsafe {
+                self.lib.kv_save(&rp.geom, rp.pool.ptr, rp.blocks as i64, sb.ptr, k as i64, rp.layer, img.ptr, mv.ptr, s)?;
+                self.lib.kv_load(&rp.geom, img.ptr, db.ptr, k as i64, rp.pool.ptr, rp.blocks as i64, rp.layer, lx.status[rp.group].ptr, RING, s)?;
+                self.lib.kv_unpack(&rp.geom, rp.pool.ptr, rp.kbase.ptr, rp.vbase.ptr, sb.ptr, k as i64, outs[0].ptr, outs[1].ptr, s)?;
+                self.lib.kv_unpack(&rp.geom, rp.pool.ptr, rp.kbase.ptr, rp.vbase.ptr, db.ptr, k as i64, outs[2].ptr, outs[3].ptr, s)?;
+            }
+            self.dev.sync()?;
+            let read = |b: &Buf| -> Result<Vec<u16>> {
+                let mut v = vec![0u16; k * per / 2];
+                b.read(0, &mut v)?;
+                Ok(v)
+            };
+            for (a, b) in [(0, 2), (1, 3)] {
+                differ += read(&outs[a])?.iter().zip(read(&outs[b])?).filter(|(x, y)| **x != *y).count();
+            }
+            let mut m = vec![0u32; k];
+            mv.read(0, &mut m)?;
+            (pages, moved, bf16) = (pages + k, moved + m.iter().map(|&x| x as usize).sum::<usize>(), bf16 + 2 * k * per);
+        }
+        Ok((pages, differ, moved, bf16))
+    }
+
     /// The selected sequence's keys and values of ring `ring` read back from its 12-bit pages at its tokens before n, as `kv_rows` reads the bf16 ring.
     #[cfg(feature = "dev")]
     unsafe fn kv12_back(&self, ring: usize, n: usize) -> Result<(Vec<u16>, Vec<u16>, usize)> {
@@ -678,6 +740,15 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     println!(
         "escape chunks held: {chunks} in {pages} pages ({zero} in block 0, no sequence's); the tables counted {tables_said:.2} a page a ring on their prompts"
     );
+    // (R4d: the sequence's pages moved whole to other blocks, as a swap moves them, and read back against where they were)
+    let (moved_pages, moved_differ, moved, bf16_moved) = e.kv12_move_check(n)?;
+    println!(
+        "{} pages moved whole: {moved_differ} values of {moved_pages} pages differ from where they were; {:.0} bytes a page over the link, {:.0} in bf16 ({:.1}%)",
+        if moved_differ == 0 && moved_pages > 0 { "ok  " } else { "FAIL" },
+        moved as f64 / moved_pages.max(1) as f64,
+        bf16_moved as f64 / moved_pages.max(1) as f64,
+        100.0 * moved as f64 / bf16_moved.max(1) as f64
+    );
     let lx = e.lossless.as_ref().expect("taken above");
     for (g, w) in lx.status()?.iter().enumerate() {
         println!(
@@ -697,6 +768,9 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     );
     if differ != 0 || want.first() != got.first() || lx.status()?.iter().any(|w| w[11] != 0) {
         return err("the 12-bit pages do not hold what the bf16 ones do");
+    }
+    if moved_differ != 0 || moved_pages == 0 {
+        return err("the 12-bit pages moved whole do not hold what they held");
     }
     Ok(())
 }
