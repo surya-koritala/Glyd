@@ -19,6 +19,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 pub const FORMAT: &str = "glyd-logits/1";
+/// The words of a case's engine that is not built yet (its fixture the CPU reference's): logitscheck skips its levels.
+pub const NOT_ON_EXECUTOR: &str = "not on the executor yet";
 /// The largest logits a row keeps.
 pub const TOPK: usize = 64;
 /// A reference's lead of its best logit over its second that counts for the greedy-token check (the bf16 roundings of two near ties decide those).
@@ -507,6 +509,16 @@ fn described_cpu(dir: &Path) -> Result<Box<dyn Run>> {
         let desc = crate::runtime::describe::describe(&cfg)?;
         let ck = io(glyd_gpu::safetensors::Checkpoint::open(&d))?;
         let mut m = RefModel::load(&desc, &|n: &str| checkpoint_tensor(&ck, n))?;
+        // (Engram's compressed vocabulary, where the model has Engram layers)
+        if let Some(map) = engram_token_map(&d)? {
+            for l in m
+                .layers
+                .iter_mut()
+                .filter(|l| matches!(l.block.body, crate::runtime::kinds::Body::Ngram(g) if g.form == crate::runtime::kinds::NgramForm::Engram))
+            {
+                l.p.put("ngram_map", &[map.len()], map.clone());
+            }
+        }
         let mut pos = 0u32;
         Ok(move |t: u32| {
             let l = m.forward(&[t], pos).unwrap_or_else(|e| panic!("the reference at position {pos}: {}", e.msg)).pop().expect("a token's logits");
@@ -763,6 +775,69 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
     Ok(())
 }
 
+/// A small DeepSeek-V4.1 (tests/fixtures/deepseek_v41_tiny_config.json: six layers at DeepSeek-V4's kernels' widths, ratios 0, 2, 2, 1, 1, 1 sharing their
+/// compressors, indexers and candidate blocks, Engram before layers 1 and 4, lagged mHC over four streams, one DSpark layer): every tensor of its description at
+/// its shape, at random from a fixed seed (the matrices about U(-a, a), a = sqrt(3 / cols); the norms' weights about 1; the mixing projections small), bf16 but
+/// the mixers' and the sinks' and choice biases' fp32 as released; and the compressed vocabulary Engram hashes (`engram_token_map.json`: a token's id mod its size).
+pub fn deepseek_v41_random(out: &Path) -> Result<()> {
+    let text = include_str!("../tests/fixtures/deepseek_v41_tiny_config.json");
+    let cfg: Value = serde_json::from_str(text).map_err(|e| Error(e.to_string()))?;
+    let d = crate::runtime::describe::describe(&cfg)?;
+    let mut r = 0x2026_1124_0000_0041u64;
+    let mut uni = move |a: f32, b: f32| {
+        r ^= r << 13;
+        r ^= r >> 7;
+        r ^= r << 17;
+        a + (b - a) * ((r >> 40) as f32 / (1u64 << 24) as f32)
+    };
+    let bf = |x: f32| -> u16 {
+        let b = x.to_bits();
+        ((b.wrapping_add(0x7fff + ((b >> 16) & 1))) >> 16) as u16
+    };
+    let mut tensors: Vec<(String, &str, Vec<u64>, Vec<u8>)> = Vec::new();
+    for name in d.names() {
+        let shape = d.shapes.get(&name).cloned().ok_or_else(|| Error(format!("DeepSeek-V4.1's description has no shape for {name}")))?;
+        let n: usize = shape.iter().product();
+        let cols = *shape.last().unwrap_or(&1) as f32;
+        let leaf = name.rsplit('.').next().unwrap_or("");
+        let (lo, hi) = if name.contains("hc_") && name.ends_with("_fn") {
+            (-0.02, 0.02)
+        } else if name.contains("hc_") && name.ends_with("_scale") {
+            (0.5, 1.5)
+        } else if name.contains("hc_") || name.ends_with("attn_sink") || name.ends_with("gate.bias") {
+            (-0.5, 0.5)
+        } else if name.contains("norm") || name.ends_with("q_weight") || name.ends_with("k_weight") {
+            (0.9, 1.1)
+        } else if name == d.embed || name.ends_with("engram.embed.weight") {
+            (-1.0, 1.0)
+        } else {
+            let a = (3.0 / cols).sqrt();
+            (-a, a)
+        };
+        let vals: Vec<f32> = (0..n).map(|_| uni(lo, hi)).collect();
+        let f32s = name.contains("hc_") || name.ends_with("attn_sink") || name.ends_with("gate.bias") || leaf == "q_weight" || leaf == "k_weight";
+        let bytes = if f32s { vals.iter().flat_map(|x| x.to_le_bytes()).collect() } else { vals.iter().flat_map(|&x| bf(x).to_le_bytes()).collect() };
+        tensors.push((name, if f32s { "F32" } else { "BF16" }, shape.iter().map(|&x| x as u64).collect(), bytes));
+    }
+    io(std::fs::create_dir_all(out))?;
+    io(std::fs::write(out.join("config.json"), text))?;
+    let (vocab, map) = (d.desc.vocab, cfg["text_config"]["engram_compressed_vocab_size"].as_u64().unwrap_or(1) as usize);
+    io(std::fs::write(out.join("engram_token_map.json"), serde_json::to_string(&(0..vocab).map(|t| t % map).collect::<Vec<_>>()).unwrap_or_default()))?;
+    let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = tensors.iter().map(|(n, t, s, b)| (n.as_str(), *t, s.clone(), &b[..])).collect();
+    crate::pack::write_safetensors(&out.join("model.safetensors"), &[("format", "pt".to_string())], &refs)?;
+    println!("{}: a random DeepSeek-V4.1, {} tensors, {:.0} MB", out.display(), tensors.len(), tensors.iter().map(|t| t.3.len()).sum::<usize>() as f64 / 1e6);
+    Ok(())
+}
+
+/// The compressed vocabulary DeepSeek-V4.1's Engram hashes (`kinds::NgramForm::Engram`): the model directory's `engram_token_map.json` (a list, the compressed id of
+/// each token), which the loader makes from the tokenizer; None where the directory has none.
+pub fn engram_token_map(dir: &Path) -> Result<Option<Vec<f32>>> {
+    let p = dir.join("engram_token_map.json");
+    let Ok(text) = std::fs::read_to_string(&p) else { return Ok(None) };
+    let v: Vec<u32> = serde_json::from_str(&text).map_err(|e| Error(format!("{}: {e}", p.display())))?;
+    Ok(Some(v.into_iter().map(|x| x as f32).collect()))
+}
+
 fn qwen35_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     boxed(crate::dynamic::qwen35::load(dir, &dyn_opts(level_layout(level)?)))
 }
@@ -836,6 +911,14 @@ pub fn cases() -> Vec<Case> {
             family: "Nemotron-H (Mamba-2, attention, mixture of experts)",
             weights: Weights::Random(|d| crate::kcheck_nh::random(d, 0, 16)),
             engine: nemotron_engine,
+            cpu: Some(described_cpu),
+            vocab: 4096,
+        },
+        Case {
+            id: "deepseek-v41",
+            family: "DeepSeek-V4.1 (CSA2's shared compressed attention, lagged mHC, Engram, mixture of experts)",
+            weights: Weights::Random(deepseek_v41_random),
+            engine: |_, _| err(format!("DeepSeek-V4.1 is {NOT_ON_EXECUTOR}: its CPU reference alone (logitscheck --cpu-ref)")),
             cpu: Some(described_cpu),
             vocab: 4096,
         },
@@ -981,7 +1064,14 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                         None => continue,
                     }
                 } else {
-                    (c.engine)(&dir, &lb.level)?
+                    match (c.engine)(&dir, &lb.level) {
+                        // (a family whose CPU reference stands before its engine: its fixture is the reference's, checked with --cpu-ref)
+                        Err(e) if e.msg.contains(NOT_ON_EXECUTOR) => {
+                            println!("SKIP {:12} {}: {}", c.id, lb.level, e.msg);
+                            continue;
+                        }
+                        r => r?,
+                    }
                 };
                 let load = t0.elapsed().as_secs_f64();
                 let got = drive(run.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
@@ -1312,7 +1402,7 @@ pub fn record(a: &crate::args::Args) -> Result<()> {
         "source".into(),
         match from {
             // (Nemotron-H has no reference of its own: its description on the reference of the layer kinds)
-"cpu" if c.id == "nemotron-h" || c.id == "qwen4x" => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
+"cpu" if matches!(c.id, "nemotron-h" | "qwen4x" | "deepseek-v41") => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
             "cpu" => format!(
                 "the CPU reference of src/{}_ref.rs, fp32 inside, on this case's random model (seed fixed in the generator)",
                 c.id.replace("deepseek-", "ds").replace('-', "")

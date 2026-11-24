@@ -2258,7 +2258,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
     let mut scales = std::collections::BTreeMap::new();
     let q8 = ["q_a", "q_b", "kv", "o_a", "o_b", "idx_q_b", "shared_gate", "shared_up", "shared_down", "ngram", "main_proj"];
     let mark = |r: &[(String, Source)], scales: &mut std::collections::BTreeMap<String, String>| {
-        for (_, src) in r.iter().filter(|(role, _)| if role.starts_with("experts_") { fp4 } else { (fp8 && q8.contains(&role.as_str())) || role == "ngram" }) {
+        for (_, src) in r.iter().filter(|(role, _)| if role.starts_with("experts_") { fp4 } else { fp8 && q8.contains(&role.as_str()) }) {
             for w in src.names() {
                 scales.insert(w.clone(), w.replace(".weight", ".scale"));
             }
@@ -2389,7 +2389,90 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
         out.mtp = vec![(blocks, own)];
     }
     out.scales = scales;
+    out.shapes = v41_shapes(&out, k.usize("moe_intermediate_size")?);
     Ok(out)
+}
+
+/// Each tensor's shape in a DeepSeek-V4.1 description (its blocks', its drafter's), from the kinds' widths and the experts' `inter`: what a lowering sizes
+/// its matrices by and what a random model of the config is made at.
+fn v41_shapes(out: &Described, inter: usize) -> std::collections::BTreeMap<String, Vec<usize>> {
+    let (d, v) = (out.desc.hidden, out.desc.vocab);
+    let mut sh = std::collections::BTreeMap::new();
+    let mut put = |b: &Block, r: &[(String, Source)]| {
+        let n = match b.residual {
+            Residual::Streams(s) => s.streams,
+            _ => 1,
+        };
+        let hc = [("hc_fn", vec![(2 + n) * n, n * d]), ("hc_base", vec![(2 + n) * n]), ("hc_scale", vec![3])];
+        let want: Vec<(&str, Vec<usize>)> = match &b.body {
+            Body::Mixer(Mixer::Compressed(c)) => {
+                let (q, hd, (ih, idim)) = (c.q_lora, c.head_dim, c.indexer.as_ref().map_or((0, 0), |x| (x.heads, x.head_dim)));
+                vec![
+                    ("norm_in", vec![d]),
+                    ("q_a", vec![q, d]),
+                    ("q_a_norm", vec![q]),
+                    ("q_b", vec![c.heads * hd, q]),
+                    ("kv", vec![hd, d]),
+                    ("kv_norm", vec![hd]),
+                    ("o_a", vec![c.o_groups * c.o_lora, c.heads * hd / c.o_groups.max(1)]),
+                    ("o_b", vec![d, c.o_groups * c.o_lora]),
+                    ("sinks", vec![c.heads]),
+                    ("comp_kv", vec![hd, d]),
+                    ("comp_gate", vec![hd, d]),
+                    ("comp_norm", vec![hd]),
+                    ("idx_q_b", vec![ih * idim, q]),
+                    ("idx_weights", vec![ih, d]),
+                    ("idx_k", vec![idim, hd]),
+                    ("idx_k_norm", vec![idim]),
+                ]
+            }
+            Body::Ffn(Ffn::Moe(m)) => vec![
+                ("norm_in", vec![d]),
+                ("router", vec![m.experts, d]),
+                ("choice_bias", vec![m.experts]),
+                ("experts_gate_up", vec![inter, d]),
+                ("experts_down", vec![d, inter]),
+                ("shared_gate", vec![inter, d]),
+                ("shared_up", vec![inter, d]),
+                ("shared_down", vec![d, inter]),
+            ],
+            Body::Ngram(g) => {
+                let rows = super::reference::ngram::tables(g).0.iter().sum::<u64>() as usize;
+                vec![
+                    ("ngram", vec![rows, g.dim / ((g.order - 1) * g.heads)]),
+                    ("kv", vec![(g.streams + 1) * d, g.dim]),
+                    ("norm_in", vec![g.streams, d]),
+                    ("norm_key", vec![g.streams, d]),
+                ]
+            }
+            _ => Vec::new(),
+        };
+        shape_roles(&mut sh, r, &[want, hc.to_vec()].concat());
+    };
+    for (b, r) in out.desc.blocks.iter().zip(&out.blocks) {
+        put(b, r);
+    }
+    if let (Some(h), Some((blocks, own))) = (out.desc.mtp.first(), out.mtp.first()) {
+        for (b, r) in h.blocks.iter().zip(blocks) {
+            put(b, r);
+        }
+        if let Some(ds) = &h.dspark {
+            let own_shapes = [
+                ("main_proj", vec![d, ds.targets.len() * d]),
+                ("main_norm", vec![d]),
+                ("markov_embed", vec![v, ds.markov_rank]),
+                ("markov_head", vec![v, ds.markov_rank]),
+                ("confidence", vec![1, d + ds.markov_rank]),
+                ("final_norm", vec![d]),
+            ];
+            shape_roles(&mut sh, own, &own_shapes);
+        }
+    }
+    for n in [Some(&out.embed), out.head.as_ref()].into_iter().flatten() {
+        sh.insert(n.clone(), vec![v, d]);
+    }
+    sh.insert(out.final_norm.clone(), vec![d]);
+    sh
 }
 
 /// Nemotron 3 (`nemotron_h`, `NemotronHForCausalLM`): a layer is one block, `x + mixer(norm(x))`, its mixer named by the pattern:

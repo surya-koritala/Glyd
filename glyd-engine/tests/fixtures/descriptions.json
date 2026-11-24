@@ -3,8 +3,16 @@
     "blocks": 82,
     "tensors": 95776,
     "kinds": "044b67799952d235",
-    "weights": "dafdfd784881208d",
+    "weights": "6632c8ed94397f3f",
     "plan": "91334ef4fb4cb111",
+    "family": "refused: m is a DeepseekV41ForCausalLM model, and this engine runs Qwen3 models so far"
+  },
+  "deepseek_v41_tiny_config.json": {
+    "blocks": 14,
+    "tensors": 495,
+    "kinds": "a87ae48a5e8c7e9a",
+    "weights": "1d8cfb81bf165049",
+    "plan": "18df70ff8acbf70c",
     "family": "refused: m is a DeepseekV41ForCausalLM model, and this engine runs Qwen3 models so far"
   },
   "gemma4_12b_config.json": {
