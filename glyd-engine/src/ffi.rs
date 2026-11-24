@@ -766,6 +766,15 @@ impl Lib {
         Err(Error::of(Kind::of_status(status), format!("{call}: {t} ({status})")))
     }
 
+    /// `GpuOps::moe_way` by the library's own kernels (glyd_gpu_moe_way): the oracle of the engine's (`fold::moe_way`).
+    ///
+    /// # Safety
+    /// As `GpuOps::moe_way`.
+    pub(crate) unsafe fn library_moe_way(&self, ids: u64, pairs: i64, experts: i64, plan: u64, cs: Stream) -> Result<()> {
+        let r = (self.api.glyd_gpu_moe_way)(ids as *const i64, pairs, experts, plan as *mut i32, cs);
+        self.ck(call!("moe_way"), r)
+    }
+
     /// `GpuOps::unpack` by the library's own kernels (glyd_gpu_mma_unpack, glyd_gpu_mma12_unpack): the oracle of the engine's (`fold::unpack`).
     ///
     /// # Safety
@@ -1015,8 +1024,11 @@ impl GpuOps for Lib {
     }
 
     unsafe fn moe_way(&self, ids: u64, pairs: i64, experts: i64, plan: u64, cs: Stream) -> Result<()> {
-        let r = (self.api.glyd_gpu_moe_way)(ids as *const i64, pairs, experts, plan as *mut i32, cs);
-        self.ck(call!("moe_way"), r)
+        // (the engine's own kernels, from the library's source: R17's `fold`)
+        if crate::fold::on() {
+            return crate::fold::moe_way(ids, pairs, experts, plan, cs);
+        }
+        self.library_moe_way(ids, pairs, experts, plan, cs)
     }
 
     fn moe_workspace(&self, twelve: bool, experts: i64, o: i64, cols: i64, t: i64, k: i64, act: i64, weighted: bool) -> Result<usize> {

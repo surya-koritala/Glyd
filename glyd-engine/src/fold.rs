@@ -465,6 +465,29 @@ pub unsafe fn unpack(u: Unpacker, w: &Pack, row0: i64, rows: i64, out: u64, cs: 
     }
 }
 
+/// The plan of `pairs` pairs sorted by their experts' ids (glyd_gpu_moe_way, `GpuOps::moe_way`) by the engine's kernels, as the library launches its own: from
+/// GLYD_GPU_ROUTE_MIN pairs (512; a development build reads it, 0 or less: never) one block of up to 32 warps, its counts a warp an expert in 48 KiB of
+/// shared memory (at least 8 warps), else the one warp.
+///
+/// # Safety
+/// As `GpuOps::moe_way`; a context with the engine's module is current.
+pub unsafe fn moe_way(ids: u64, pairs: i64, experts: i64, plan: u64, cs: Stream) -> Result<()> {
+    use crate::dev::here;
+    use crate::kt;
+    use crate::launch;
+    let (p, e) = (pairs, experts);
+    if p < 0 || p >= (1i64 << 31) - 2 * e || !(1..=12288).contains(&e) {
+        return Err(invalid("moe_way"));
+    }
+    let min_pairs = crate::tune!("GLYD_GPU_ROUTE_MIN").map_or(512, |v| atoll(&v));
+    let nw = 32.min((48 * 1024 / 4) / e - 1).min((p + 31) / 32);
+    if min_pairs > 0 && p >= min_pairs && nw >= 8 {
+        launch!(here::<kt::fold_moe_route_block>()?, [1, 1, 1], [(32 * nw) as u32, 1, 1], smem ((nw * e + e) * 4) as u32, cs; ids, p, e as i32, plan)
+    } else {
+        launch!(here::<kt::fold_moe_route>()?, [1, 1, 1], [32, 1, 1], smem (e * 4) as u32, cs; ids, p, e as i32, plan)
+    }
+}
+
 /// `foldcheck` (R17): each folded piece against the library's on this GPU, the library the oracle: the GPU's code; the way of every GPU code the
 /// library knows (with and without SPLIT), both layouts, matrices of every kind of K and size, at token counts on each side of every threshold;
 /// the KV cache's sizes and decode workspace over valid and refused shapes. Every answer the same, refusals included.
@@ -576,6 +599,8 @@ pub fn check() -> Result<()> {
         }
     }
     say("the KV cache's sizes and the decode's workspace", n, bad);
+    let (n, bad) = route_check(&dev, &lib)?;
+    say("the experts' plan (moe_way), the engine's kernels against the library's (one warp and one block, ids out of range among them)", n, bad);
     let (n, bad) = unpack_check(&dev, &lib)?;
     say("the mma layouts' unpacking, the engine's kernels against the library's (every bf16 of each layout, whole and a row block)", n, bad);
     if fails > 0 {
@@ -583,6 +608,62 @@ pub fn check() -> Result<()> {
     }
     println!("foldcheck: PASS");
     Ok(())
+}
+
+/// `foldcheck`'s experts' plan: random ids (some outside 0 to E - 1: routed nowhere) for pair counts on both sides of the block kernel's 512 and experts from 8
+/// to 12,288, the plan [2 + 2E + P] by the library and by the engine, every int32 compared; refused arguments refused by both. (compared, differences)
+#[cfg(feature = "dev")]
+fn route_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
+    use crate::dev::Buf;
+    let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let (mut n, mut bad) = (0, Vec::new());
+    for e in [8i64, 64, 128, 512, 1364, 4096, 12288] {
+        for p in [0i64, 1, 31, 33, 511, 512, 1856, 8192, 65536] {
+            let ids: Vec<i64> = (0..p).map(|_| if next() % 50 == 0 { [-1, e, e + 7][(next() % 3) as usize] } else { (next() % e as u64) as i64 }).collect();
+            let idb = Buf::new((p as usize).max(1) * 8)?;
+            if p > 0 {
+                idb.write(0, &ids)?;
+            }
+            let words = (2 + 2 * e + p) as usize;
+            let (a, b) = (Buf::new(words * 4)?, Buf::new(words * 4)?);
+            a.fill_async(0, dev.stream)?;
+            b.fill_async(0, dev.stream)?;
+            // SAFETY: ids [p] and two plans of 2 + 2e + p int32, live; one stream.
+            let (ra, rb) = unsafe { (lib.library_moe_way(idb.ptr, p, e, a.ptr, dev.stream), moe_way(idb.ptr, p, e, b.ptr, dev.stream)) };
+            dev.sync()?;
+            n += 1;
+            if let (Err(x), _) | (_, Err(x)) = (&ra, &rb) {
+                bad.push(format!("{p} pairs of {e} experts: {x}"));
+                continue;
+            }
+            let (mut va, mut vb) = (vec![0i32; words], vec![0i32; words]);
+            a.read(0, &mut va)?;
+            b.read(0, &mut vb)?;
+            let differ = va.iter().zip(&vb).filter(|(x, y)| x != y).count();
+            if differ > 0 && bad.len() < 8 {
+                bad.push(format!("{p} pairs of {e} experts: {differ} of {words} words of the plan differ"));
+            }
+        }
+    }
+    for (p, e) in [(-1i64, 8i64), (8, 0), (8, 12289), ((1 << 31) - 16, 8)] {
+        n += 1;
+        // SAFETY: refused before anything is launched.
+        let (ra, rb) = unsafe { (lib.library_moe_way(0, p, e, 0, dev.stream), moe_way(0, p, e, 0, dev.stream)) };
+        if ra.is_ok() || rb.is_ok() {
+            bad.push(format!(
+                "{p} pairs of {e} experts: the library {}, the engine {}",
+                if ra.is_ok() { "took it" } else { "refused" },
+                if rb.is_ok() { "took it" } else { "refused" }
+            ));
+        }
+    }
+    Ok((n, bad))
 }
 
 /// `foldcheck`'s unpacking: random weights of each layout packed by glyd-gpu's packers, unpacked by the library's kernel and by the engine's, whole and

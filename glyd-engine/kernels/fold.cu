@@ -53,3 +53,13 @@ extern "C" __global__ void fold_unpack_twelve(const uint8_t* data, const uint32_
                                               int64_t rows, uint16_t* out) {
     glib::mma_unpack_body<glib::Nib>(glib::Nib{data, exc, exc_base, hb4, xmax}, K, row0, rows, out, nullptr);
 }
+
+// glyd_gpu_moe_way: the plan of a mixture of experts' pairs sorted by expert (moe_route_body: one warp; moe_route_block_body: one block of up to 32
+// warps for a prompt's thousands of pairs, the same plan bit for bit). Which one, and its shared memory, as the library chooses (src/fold.rs).
+extern "C" __global__ void fold_moe_route(const int64_t* ids, int64_t P, int E, int* plan) {
+    glib::moe_route_body(ids, P, E, plan);
+}
+
+extern "C" __global__ void __launch_bounds__(1024) fold_moe_route_block(const int64_t* ids, int64_t P, int E, int* plan) {
+    glib::moe_route_block_body(ids, P, E, plan);
+}
