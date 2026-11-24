@@ -4017,7 +4017,7 @@ __device__ __forceinline__ void f8_load(const F8Pk& P, int64_t patch, int tid, u
 
 // Pass 1 of the pack: each patch's head (heads[8 p], its words of var in the first, its base to come from the scan) from the counts of its values'
 // exponents, a row block's apart (warps 2 mb and 2 mb + 1 hold row block mb's rows).
-__global__ void __launch_bounds__(NT) f8_head_kernel(const F8Pk P, uint32_t* heads) {
+__device__ __forceinline__ void f8_head_body(const F8Pk P, uint32_t* heads) {
     __shared__ uint32_t s_cnt[NT / 32][16];
     __shared__ uint32_t s_sum[16];
     __shared__ uint8_t s_sym[16], s_rank[16];
@@ -4070,8 +4070,12 @@ __global__ void __launch_bounds__(NT) f8_head_kernel(const F8Pk P, uint32_t* hea
     }
 }
 
+__global__ void __launch_bounds__(NT) f8_head_kernel(const F8Pk P, uint32_t* heads) {
+    f8_head_body(P, heads);
+}
+
 // Pass 2: heads[8 p] the words of each patch's part of var, to the sum of those before it; the total to *total. One CTA.
-__global__ void __launch_bounds__(SCAN_NT) f8_scan_kernel(uint32_t* heads, int64_t patches, uint64_t* total) {
+__device__ __forceinline__ void f8_scan_body(uint32_t* heads, int64_t patches, uint64_t* total) {
     __shared__ uint32_t s_tot[SCAN_NT / 32];
     const int tid = threadIdx.x, lane = tid & 31, w = tid >> 5;
     uint64_t carry = 0;
@@ -4099,6 +4103,10 @@ __global__ void __launch_bounds__(SCAN_NT) f8_scan_kernel(uint32_t* heads, int64
     if (tid == 0) *total = carry;
 }
 
+__global__ void __launch_bounds__(SCAN_NT) f8_scan_kernel(uint32_t* heads, int64_t patches, uint64_t* total) {
+    f8_scan_body(heads, patches, total);
+}
+
 // A value's place in its lane's core words: its d1 digit's bit (j: 0 to 15), its sign's and its mantissa's in the word of values 8 (j >> 3) on.
 __device__ __forceinline__ int f8_d1_bit(int j) { return 4 * (j & 7) + 2 * (j >> 3); }
 __device__ __forceinline__ int f8_s_bit(int j) { return (j & 4) ? 8 * (j & 3) + 3 : 8 * (j & 3) + 7; }
@@ -4106,7 +4114,7 @@ __device__ __forceinline__ int f8_m_bit(int j) { return (j & 4) ? 8 * ((j + 3) &
 
 // Pass 3: each patch's core and part of var (heads from passes 1 and 2). Thread tid: row block mb = tid / 64, lane l = (tid / 2) % 32, units 4 mb + 2 (tid % 2)
 // and the next (its 32 stream bytes, 32 tid on).
-__global__ void __launch_bounds__(NT) f8_pack_kernel(const F8Pk P, const uint32_t* heads, uint8_t* core_out, uint32_t* var, int64_t var_words) {
+__device__ __forceinline__ void f8_pack_body(const F8Pk P, const uint32_t* heads, uint8_t* core_out, uint32_t* var, int64_t var_words) {
     __shared__ __align__(16) uint32_t s_tile[VALUES / 4];
     __shared__ uint32_t s_var[TAIL + 8];
     __shared__ uint32_t s_tot[2][NT / 32];
@@ -4204,6 +4212,10 @@ __global__ void __launch_bounds__(NT) f8_pack_kernel(const F8Pk P, const uint32_
     for (uint32_t i = tid; i < words; i += NT) var[base + i] = s_var[i];
 }
 
+__global__ void __launch_bounds__(NT) f8_pack_kernel(const F8Pk P, const uint32_t* heads, uint8_t* core_out, uint32_t* var, int64_t var_words) {
+    f8_pack_body(P, heads, core_out, var, var_words);
+}
+
 // ---- the decode of a lane of a unit (the unpack's and the fused product's) ----
 
 // The patch's exponents as bytes (exponent e: the byte e << 3): ranks 0-2 and a 0 (lo), 3-5 and the mark 0x80 (l2), 6-9 (l3a), 10-12 and the mark (l3b).
@@ -4286,7 +4298,7 @@ __device__ __forceinline__ void f8_lane_unit(const F8Tab& T, uint32_t dw, uint32
 }
 
 // The unpack: each patch, or (ids) each patch of the stacked matrices ids[blockIdx.y], into out. Thread tid as the pack's: two lanes of units, its 32 stream bytes.
-__global__ void __launch_bounds__(NT) f8_unpack_kernel(const F8Un P) {
+__device__ __forceinline__ void f8_unpack_body(const F8Un P) {
     __shared__ __align__(16) uint32_t s_tile[VALUES / 4];
     __shared__ uint32_t s_var[TAIL + 8];
     __shared__ uint32_t s_tot[3][NT / 32];
@@ -4370,6 +4382,10 @@ __global__ void __launch_bounds__(NT) f8_unpack_kernel(const F8Un P) {
                 if (col0 + g8 * 16 + k < P.K) d[k] = (uint8_t)(b[k >> 2] >> (8 * (k & 3)));
         }
     }
+}
+
+__global__ void __launch_bounds__(NT) f8_unpack_kernel(const F8Un P) {
+    f8_unpack_body(P);
 }
 
 // ---- the fused product: Y [M, N] = X [M, K] W^T for 1 to 64 tokens, W [N, K] in this layout and its scales, W never written out ----
@@ -4796,7 +4812,7 @@ constexpr int HMAXE = 1024;        // a patch with more escapes is plain
 static_assert(HCORE == 7168 && 3 * 2048 <= HCORE && TAIL * 4 == 2048, "a plain patch: row blocks 0-2 in core, 3 in var");
 
 // H's pass 1: a patch's head (its words of var first, for f8_scan_kernel) from the counts of its exponents (warps 2 mb and 2 mb + 1: row block mb's rows).
-__global__ void __launch_bounds__(NT) f8h_head_kernel(const F8Pk P, uint32_t* heads) {
+__device__ __forceinline__ void f8h_head_body(const F8Pk P, uint32_t* heads) {
     __shared__ __align__(16) uint32_t s_tile[VALUES / 4];
     __shared__ uint32_t s_cnt[NT / 32][16];
     __shared__ uint32_t s_sum[16];
@@ -4859,9 +4875,13 @@ __global__ void __launch_bounds__(NT) f8h_head_kernel(const F8Pk P, uint32_t* he
     }
 }
 
+__global__ void __launch_bounds__(NT) f8h_head_kernel(const F8Pk P, uint32_t* heads) {
+    f8h_head_body(P, heads);
+}
+
 // H's pass 3: a patch's core and literals (heads from passes 1 and 2). Thread tid as the pack above: row block mb = tid / 64, lane l = (tid / 2) % 32, units
 // 2 (tid % 2) and the next: the lane's values 32 (tid % 2) to 32 (tid % 2) + 31, its 3 words of codes 3 (tid % 2) on.
-__global__ void __launch_bounds__(NT) f8h_pack_kernel(const F8Pk P, const uint32_t* heads, uint8_t* core_out, uint32_t* var, int64_t var_words) {
+__device__ __forceinline__ void f8h_pack_body(const F8Pk P, const uint32_t* heads, uint8_t* core_out, uint32_t* var, int64_t var_words) {
     __shared__ __align__(16) uint32_t s_tile[VALUES / 4];
     __shared__ uint32_t s_var[HMAXE / 8 + 8];
     __shared__ uint32_t s_tot[NT / 32];
@@ -4945,6 +4965,10 @@ __global__ void __launch_bounds__(NT) f8h_pack_kernel(const F8Pk P, const uint32
     for (int i = 0; i < 3; i++) cw[(8 + 3 * hh + i) * 32 + l] = cd[i];
     __syncthreads();
     for (uint32_t i = tid; i < words; i += NT) var[base + i] = s_var[i];
+}
+
+__global__ void __launch_bounds__(NT) f8h_pack_kernel(const F8Pk P, const uint32_t* heads, uint8_t* core_out, uint32_t* var, int64_t var_words) {
+    f8h_pack_body(P, heads, core_out, var, var_words);
 }
 
 // Row block mb's literals in its patch's (head hB): its first and the next row block's first.
@@ -5073,7 +5097,7 @@ static_assert(HCSL == f8_csl<2, true>(), "the product's slots of layout H's core
 
 // H's unpack: a patch (or, ids, a patch of the stacked matrices ids[blockIdx.y]) into out; warp mb row block mb, decoded as the product does from core and var.
 constexpr int HUNT = 128;
-__global__ void __launch_bounds__(HUNT) f8h_unpack_kernel(const F8Un P) {
+__device__ __forceinline__ void f8h_unpack_body(const F8Un P) {
     __shared__ __align__(16) uint32_t s_tile[VALUES / 4];
     const int tid = threadIdx.x, mb = tid >> 5, lane = tid & 31, g = lane >> 2, t = lane & 3;
     const int pl = blockIdx.x;
@@ -5118,6 +5142,10 @@ __global__ void __launch_bounds__(HUNT) f8h_unpack_kernel(const F8Un P) {
                 if (col0 + g8 * 16 + k < P.K) d[k] = (uint8_t)(b[k >> 2] >> (8 * (k & 3)));
         }
     }
+}
+
+__global__ void __launch_bounds__(HUNT) f8h_unpack_kernel(const F8Un P) {
+    f8h_unpack_body(P);
 }
 
 // The experts' product's slot blockIdx.y as one matrix's product (P0's pointers at its expert and its rows; done and parts: the slot's own), or false where the plan has no such slot.
