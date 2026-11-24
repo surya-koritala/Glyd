@@ -131,3 +131,17 @@ FOLD_GEMM_12(4, 1)
     }
 FOLD_STEP(w, true)
 FOLD_STEP(x, false)
+
+// glyd_gpu_kv_decode, _decode_from and _decode_bf16 (kv_attn_launch with the merge in the attention kernel, no page loaded ahead: the defaults) and the occupancy
+// glyd_gpu_kv_decode_shares plans by (the kernel that loads a page ahead, heads of 128): kvc::attn_body, its AttnParams built in Rust (fold::KvAttnParams).
+#define FOLD_KV_ATTN(NAME, PIPE, HV, BF16) \
+    extern "C" __global__ void __launch_bounds__(glib::kvc::NW * 32, 1) fold_kv_attn_##NAME(const glib::kvc::AttnParams P) { \
+        glib::kvc::attn_body<PIPE, true, HV, BF16>(P); \
+    }
+FOLD_KV_ATTN(1, false, 1, false)
+FOLD_KV_ATTN(2, false, 2, false)
+FOLD_KV_ATTN(4, false, 4, false)
+FOLD_KV_ATTN(bf16_1, false, 1, true)
+FOLD_KV_ATTN(bf16_2, false, 2, true)
+FOLD_KV_ATTN(bf16_4, false, 4, true)
+FOLD_KV_ATTN(pipe_1, true, 1, false)

@@ -695,6 +695,317 @@ pub unsafe fn linear(w: &Pack, x: u64, m: i64, y: u64, ws: u64, ws_bytes: usize,
     Ok(true)
 }
 
+/// kvc::RawPool (gpu/glyd_gpu_kernels.h), field for field: the raw-slab pool as a kernel takes it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KvRawPool {
+    pub bits: u64,
+    pub owner: u64,
+    pub data: u64,
+    pub ns: i32,
+    pub plane: i64,
+}
+
+/// kvc::AttnParams (gpu/glyd_gpu_kernels.h), field for field: the decode attention's parameters, built as glyd_gpu_kv_decode_from and _decode_bf16 build them.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct KvAttnParams {
+    pub q: u64,
+    pub q_stride: i64,
+    pub pool: u64,
+    pub page_stride: i64,
+    pub kbase: u64,
+    pub vbase: u64,
+    pub bt: u64,
+    pub bt_stride: i64,
+    pub slen: u64,
+    pub ent: u64,
+    pub nc: i32,
+    pub raw: KvRawPool,
+    pub ws_ml: u64,
+    pub ws_o: u64,
+    pub h: i32,
+    pub g: i32,
+    pub a: i32,
+    pub hdrb: i32,
+    pub splits: i32,
+    pub hp: i32,
+    pub sl2: f32,
+    pub ppc_min: i32,
+    pub pfloor: i32,
+    pub cnt: u64,
+    pub out: u64,
+    pub out_stride: i64,
+    pub first: u64,
+    pub round: i32,
+    pub kc: u64,
+    pub vc: u64,
+    pub cap: i32,
+}
+
+/// The decode attention's CTA: kvc::NW warps.
+const KV_NW: i64 = 4;
+
+/// C's atoi of a development build's variable (TUNING_ENV: none in a release build).
+fn atoi(v: Option<String>) -> Option<i32> {
+    v.map(|v| atoll(&v) as i32)
+}
+
+/// The plan's least pages a CTA (GLYD_KV_PPC_MIN: 4 to 64, else 16), read at each call.
+fn kv_ppc_min() -> i32 {
+    atoi(crate::tune!("GLYD_KV_PPC_MIN")).filter(|v| (KV_NW as i32..=64).contains(v)).unwrap_or(4 * KV_NW as i32)
+}
+
+/// `GpuOps::kv_floor_set`'s floor (0: the GPU's own), the library's g_kv_floor.
+static KV_FLOOR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// The floor the decode's plan takes (`kv_floor_set`, the library's glyd_gpu_kv_floor_set): 1 to 64; 0 the GPU's own.
+pub fn kv_floor_set(floor: i32) -> Result<()> {
+    if !(0..=64).contains(&floor) {
+        return Err(invalid("kv_floor_set"));
+    }
+    KV_FLOOR.store(floor, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+/// The plan's CTAs a sequence has at least (kv_floor): GLYD_KV_FLOOR (1 to 64), else `kv_floor_set`'s, else on a GPU of 100 SMs or more 16 where the batch's
+/// (sequence, kv head) pairs, 4 to an SM, are fewer than the SMs, else 1. The batch's size is B rounded up to a power of two.
+fn kv_floor(b: i64, h: i64, sms: i64) -> i32 {
+    let v = atoi(crate::tune!("GLYD_KV_FLOOR")).unwrap_or_else(|| KV_FLOOR.load(std::sync::atomic::Ordering::Relaxed));
+    if (1..=64).contains(&v) {
+        return v;
+    }
+    let bb = (b.max(1) as u64).next_power_of_two() as i64;
+    if sms >= 100 && bb * h * 4 <= sms {
+        16
+    } else {
+        1
+    }
+}
+
+/// The GPU's SMs (the library's sm_count).
+fn sm_count() -> Result<i64> {
+    Ok((D::attribute(D::current_device()?, Attr::Sms)? as i64).max(1))
+}
+
+/// The most CTAs a (sequence, head) is split over (glyd_gpu_kv_decode_shares, kv_splits): enough for GLYD_KV_WAVES (6) waves of the machine of the kernel that
+/// loads a page ahead with the merge in it, at the batch rounded up to a power of two, capped by the longest sequence's pages (ppc_min a CTA, or the floor at 4 a
+/// warp).
+pub fn kv_decode_splits(b: i64, h: i64, max_pages: i64) -> Result<Option<i64>> {
+    if cfg!(glyd_hip) {
+        return Ok(None);
+    }
+    if b < 1 || !(1..=32).contains(&h) || max_pages < 1 {
+        return Err(invalid("kv_decode_shares"));
+    }
+    let (ctas, sms) = per_sm("fold_kv_attn_pipe_1", 32 * KV_NW as u32, 0)?;
+    let waves = atoi(crate::tune!("GLYD_KV_WAVES")).filter(|w| (1..=64).contains(w)).unwrap_or(6) as i64;
+    let bb = (b as u64).next_power_of_two() as i64;
+    let ppc = kv_ppc_min() as i64;
+    let want = ((sms * ctas * waves + bb * h - 1) / (bb * h)).max(1);
+    let cap = ((max_pages + ppc - 1) / ppc).max((kv_floor(b, h, sms) as i64).min((max_pages + KV_NW - 1) / KV_NW)).max(1);
+    Ok(Some(want.min(cap)))
+}
+
+/// Whether a development build asks for a decode kernel that is not folded (GLYD_KV_PIPE=1: the next page loaded ahead; GLYD_KV_FUSE=0: the merge a kernel of its own).
+fn kv_variant() -> bool {
+    crate::tune!("GLYD_KV_PIPE").is_some_and(|v| v.starts_with('1')) || crate::tune!("GLYD_KV_FUSE").is_some_and(|v| v.starts_with('0'))
+}
+
+/// The escape pool's entries (esc_of's `ent`) and its chunks, from the pool's base.
+fn kv_escape(base: u64, nc: i64) -> (u64, i32) {
+    if nc == 0 || base == 0 {
+        return (0, 0);
+    }
+    (base + pool_head_bytes(nc) as u64, nc as i32)
+}
+
+/// The raw-slab pool as raw_of makes it, for pages of `hp` head-pages.
+fn kv_raw(base: u64, ns: i64, hp: i64) -> KvRawPool {
+    if ns == 0 || base == 0 {
+        return KvRawPool::default();
+    }
+    let bits = ((ns + 31) / 32 + 3) / 4 * 16;
+    KvRawPool { bits: base, owner: base + bits as u64, data: base + (bits + (ns + 3) / 4 * 16) as u64, ns: ns as i32, plane: hp * 2048 }
+}
+
+/// The decode attention over 12-bit pages by the engine's kernel (glyd_gpu_kv_decode_from: `first` 0 and `round` false is glyd_gpu_kv_decode), its
+/// parameters as the library builds them. False where the library takes the call (arguments it refuses, with its own words for them; a variant's kernel).
+///
+/// # Safety
+/// As `GpuOps::kv_decode_from`; a context with the engine's module is current.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn kv_decode(
+    g: &crate::ffi::KvGeom,
+    group: i64,
+    (pool, kbase, vbase): (u64, u64, u64),
+    (q, q_stride): (u64, i64),
+    (block_table, bt_stride, seq_lens, first, round): (u64, i64, u64, u64, bool),
+    b: i64,
+    splits: i64,
+    scale: f64,
+    (out, out_stride): (u64, i64),
+    (ws, ws_bytes): (u64, usize),
+    cs: Stream,
+) -> Result<bool> {
+    let (h, d, a) = (g.heads, g.dim, g.arena);
+    let esc_ok = (0..=1 << 30).contains(&g.nchunks) && (g.nchunks == 0 || (g.escape != 0 && g.escape % 16 == 0));
+    let raw_ok = (0..=1 << 30).contains(&g.nslabs) && (g.nslabs == 0 || (g.raw != 0 && g.raw % 16 == 0));
+    let Ok(page) = kv_page_bytes(h, d, a) else { return Ok(false) };
+    if cfg!(glyd_hip)
+        || kv_variant()
+        || d & KV_ONE != 0
+        || !(0..=65535).contains(&b)
+        || g.page_stride < page
+        || g.page_stride % 16 != 0
+        || pool % 16 != 0
+        || !esc_ok
+        || !raw_ok
+    {
+        return Ok(false);
+    }
+    if b == 0 {
+        return Ok(true);
+    }
+    let Ok(need) = kv_decode_workspace(b, h, group, d, splits) else { return Ok(false) };
+    let w = h * group * d;
+    if (need > 0 && (ws == 0 || ws_bytes < need))
+        || q == 0
+        || kbase == 0
+        || vbase == 0
+        || block_table == 0
+        || seq_lens == 0
+        || out == 0
+        || q_stride < w
+        || out_stride < w
+        || q_stride % 2 != 0
+        || q % 4 != 0
+    {
+        return Ok(false);
+    }
+    let hp = h * (d / KV_D);
+    let (ent, nc) = kv_escape(g.escape, g.nchunks);
+    let ws_ml = ws + KV_CNT_BYTES as u64;
+    let p = KvAttnParams {
+        q,
+        q_stride,
+        pool,
+        page_stride: g.page_stride,
+        kbase,
+        vbase,
+        bt: block_table,
+        bt_stride,
+        slen: seq_lens,
+        ent,
+        nc,
+        raw: kv_raw(g.raw, g.nslabs, hp),
+        ws_ml,
+        ws_o: ws_ml + (b * h * splits * group * 2 * 4) as u64,
+        h: h as i32,
+        g: group as i32,
+        a: a as i32,
+        hdrb: ((16 * hp + 4 * (1 + KV_ND + a) + 127) & !127) as i32,
+        splits: splits as i32,
+        hp: hp as i32,
+        sl2: (scale * std::f64::consts::LOG2_E) as f32,
+        ppc_min: kv_ppc_min(),
+        pfloor: kv_floor(b, h, sm_count()?),
+        cnt: ws,
+        out,
+        out_stride,
+        first,
+        round: round as i32,
+        ..KvAttnParams::default()
+    };
+    kv_attn(p, b, d, splits, cs)?;
+    Ok(true)
+}
+
+/// `kv_decode` over a bf16 cache (glyd_gpu_kv_decode_bf16): the same kernel's instance of its own, its parameters as the library builds them.
+///
+/// # Safety
+/// As `GpuOps::kv_decode_bf16`; a context with the engine's module is current.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn kv_decode_bf16(
+    (q, q_stride): (u64, i64),
+    (kc, vc, block_table, bt_stride, cap): (u64, u64, u64, i64, i64),
+    (seq_lens, first, b, splits): (u64, u64, i64, i64),
+    (h, group, d): (i64, i64, i64),
+    (scale, round): (f64, bool),
+    (out, out_stride): (u64, i64),
+    (ws, ws_bytes): (u64, usize),
+    cs: Stream,
+) -> Result<bool> {
+    if cfg!(glyd_hip) || kv_variant() || d % KV_D != 0 || d < KV_D || d > 4 * KV_D || d == 3 * KV_D || !(0..=65535).contains(&b) {
+        return Ok(false);
+    }
+    if b == 0 {
+        return Ok(true);
+    }
+    let Ok(need) = kv_decode_workspace(b, h, group, d, splits) else { return Ok(false) };
+    let w = h * group * d;
+    if (need > 0 && (ws == 0 || ws_bytes < need))
+        || q == 0
+        || kc == 0
+        || vc == 0
+        || seq_lens == 0
+        || out == 0
+        || (block_table == 0 && !(1..=i32::MAX as i64).contains(&cap))
+        || q_stride < w
+        || out_stride < w
+        || q_stride % 2 != 0
+        || q % 4 != 0
+        || kc % 4 != 0
+        || vc % 4 != 0
+    {
+        return Ok(false);
+    }
+    let ws_ml = ws + KV_CNT_BYTES as u64;
+    let p = KvAttnParams {
+        q,
+        q_stride,
+        bt: block_table,
+        bt_stride,
+        slen: seq_lens,
+        ws_ml,
+        ws_o: ws_ml + (b * h * splits * group * 2 * 4) as u64,
+        h: h as i32,
+        g: group as i32,
+        splits: splits as i32,
+        hp: (h * (d / KV_D)) as i32,
+        sl2: (scale * std::f64::consts::LOG2_E) as f32,
+        ppc_min: kv_ppc_min(),
+        pfloor: kv_floor(b, h, sm_count()?),
+        cnt: ws,
+        out,
+        out_stride,
+        first,
+        round: round as i32,
+        kc,
+        vc,
+        cap: cap.min(i32::MAX as i64) as i32,
+        ..KvAttnParams::default()
+    };
+    kv_attn(p, b, d, splits, cs)?;
+    Ok(true)
+}
+
+/// kv_attn_launch's default kernel (the merge in it, no page ahead): grid (H, B, splits), 4 warps, by the head's width and the cache's kind.
+unsafe fn kv_attn(p: KvAttnParams, b: i64, d: i64, splits: i64, cs: Stream) -> Result<()> {
+    use crate::dev::here;
+    use crate::kt;
+    use crate::launch;
+    let (g, blk) = ([p.h as u32, b as u32, splits as u32], [32 * KV_NW as u32, 1, 1]);
+    match (p.kc != 0, d / KV_D) {
+        (false, 1) => launch!(here::<kt::fold_kv_attn_1>()?, g, blk, cs; p),
+        (false, 2) => launch!(here::<kt::fold_kv_attn_2>()?, g, blk, cs; p),
+        (false, _) => launch!(here::<kt::fold_kv_attn_4>()?, g, blk, cs; p),
+        (true, 1) => launch!(here::<kt::fold_kv_attn_bf16_1>()?, g, blk, cs; p),
+        (true, 2) => launch!(here::<kt::fold_kv_attn_bf16_2>()?, g, blk, cs; p),
+        (true, _) => launch!(here::<kt::fold_kv_attn_bf16_4>()?, g, blk, cs; p),
+    }
+}
+
 /// `foldcheck` (R17): each folded piece against the library's on this GPU, the library the oracle: the GPU's code; the way of every GPU code the
 /// library knows (with and without SPLIT), both layouts, matrices of every kind of K and size, at token counts on each side of every threshold;
 /// the KV cache's sizes and decode workspace over valid and refused shapes; the experts' plan and the unpacking of every layout by the engine's own
@@ -809,6 +1120,8 @@ pub fn check() -> Result<()> {
     say("the KV cache's sizes and the decode's workspace", n, bad);
     let (n, bad) = route_check(&dev, &lib)?;
     say("the experts' plan (moe_way), the engine's kernels against the library's (one warp and one block, ids out of range among them)", n, bad);
+    let (n, bad) = kv_check(&dev, &lib)?;
+    say("the decode attention over 12-bit pages and a bf16 cache, the engine's kernel against the library's, and its plan", n, bad);
     let (n, bad) = linear_check(&dev, &lib)?;
     say("the step product (route GEMM, 1 to 64 tokens), the engine's kernels against the library's, and its workspace", n, bad);
     let (n, bad) = unpack_check(&dev, &lib)?;
@@ -994,6 +1307,178 @@ fn linear_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, 
         }
     }
     println!("  (the step product: {folded} products by the engine's kernels, the rest the library's route on this GPU)");
+    Ok((n, bad))
+}
+
+/// `foldcheck`'s decode attention: 12-bit pages written by the library (random values around each channel's exponent, some far), then the decode of 1 and 3
+/// sequences (and from a first token, with bf16 scores) by the library's kernel and by the engine's, and the same over a bf16 cache; every output bf16, the
+/// plan's splits and the workspace compared. (compared, differences)
+#[cfg(feature = "dev")]
+fn kv_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
+    use crate::dev::Buf;
+    use crate::ffi::KvGeom;
+    use crate::gpu_ops::GpuOps;
+    let mut seed = 0x94D0_49BB_1331_11EBu64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let (mut n, mut bad) = (0, Vec::new());
+    const A: i64 = 15;
+    const RING: i64 = 256;
+    for (h, d, g) in [(8usize, 128usize, 4usize), (4, 256, 2), (2, 512, 8), (1, 128, 1)] {
+        let tokens: usize = 16 * 9 + 5;
+        let blocks = tokens.div_ceil(16);
+        let hp = (h * d / 128) as i64;
+        let page = kv_page_bytes(h as i64, d as i64, A)?;
+        let (nchunks, nslabs) = (4096i64, 64i64);
+        let pool = Buf::zeroed(page as usize * blocks)?;
+        let escape = Buf::zeroed(kv_escape_bytes(nchunks)? as usize)?;
+        let raw = Buf::zeroed(kv_raw_bytes(nslabs, hp)? as usize)?;
+        let status = Buf::zeroed(4 * (16 + 2 * RING) as usize)?;
+        let geom = KvGeom { heads: h as i64, dim: d as i64, arena: A, page_stride: page, escape: escape.ptr, nchunks, raw: raw.ptr, nslabs };
+        // values [tokens][h][d] around an exponent a channel, 1% far from it; each channel's window base the one that holds most of them
+        let mut vals = || -> Vec<u16> {
+            (0..tokens * h * d)
+                .map(|i| {
+                    let mu = 124 + (i % (h * d)) as u64 % 7;
+                    let e = if next() % 100 == 0 { 3 + next() % 240 } else { mu + next() % 3 - 1 };
+                    (((next() & 1) << 15) | (e << 7) | (next() % 128)) as u16
+                })
+                .collect()
+        };
+        let (k, v) = (vals(), vals());
+        let bases = |x: &[u16]| -> Vec<u8> {
+            (0..h * d)
+                .map(|c| {
+                    let mut hist = [0u32; 128];
+                    for t in 0..tokens {
+                        let b = x[t * h * d + c];
+                        if (b >> 7) & 0xFF != 0xFF {
+                            hist[((b >> 8) & 0x7F) as usize] += 1;
+                        }
+                    }
+                    (0..=120usize).max_by_key(|&s| hist[s..s + 8].iter().sum::<u32>()).unwrap_or(0) as u8
+                })
+                .collect()
+        };
+        let (kb, vb) = (Buf::new(h * d)?, Buf::new(h * d)?);
+        kb.write(0, &bases(&k))?;
+        vb.write(0, &bases(&v))?;
+        let (kbuf, vbuf, sl) = (Buf::new(2 * k.len())?, Buf::new(2 * v.len())?, Buf::new(8 * tokens)?);
+        kbuf.write(0, &k)?;
+        vbuf.write(0, &v)?;
+        sl.write(0, &(0..tokens as i64).collect::<Vec<i64>>())?;
+        let stride = (h * d) as i64;
+        // SAFETY: the pool and its tables, the tokens' rows and slots, live; one stream.
+        unsafe {
+            lib.kv_write(&geom, pool.ptr, kb.ptr, vb.ptr, 0, kbuf.ptr, stride, vbuf.ptr, stride, sl.ptr, tokens as i64, status.ptr, 0, 0, RING, dev.stream)?
+        };
+        // the same values as a bf16 cache [places][h][d], the places the pages' tokens
+        let (kc, vc) = (Buf::new(2 * k.len())?, Buf::new(2 * v.len())?);
+        kc.write(0, &k)?;
+        vc.write(0, &v)?;
+        dev.sync()?;
+        for (lens, first, round) in [(vec![tokens as i32], 0, false), (vec![tokens as i32, 37, 16 * 4], 0, false), (vec![tokens as i32, 70], 21, true)] {
+            let b = lens.len();
+            let table: Vec<i32> = (0..b).flat_map(|_| 0..blocks as i32).collect();
+            let (bt, sq, fb) = (Buf::new(4 * table.len())?, Buf::new(4 * b)?, Buf::new(4 * b)?);
+            bt.write(0, &table)?;
+            sq.write(0, &lens)?;
+            fb.write(0, &vec![first; b])?;
+            let q: Vec<u16> = (0..b * h * g * d).map(|_| (((next() % 2000) as f32 - 1000.0) / 5000.0).to_bits().wrapping_shr(16) as u16).collect();
+            let qb = Buf::new(2 * q.len())?;
+            qb.write(0, &q)?;
+            let splits = lib.library_kv_decode_splits(b as i64, h as i64, blocks as i64)?;
+            n += 1;
+            match kv_decode_splits(b as i64, h as i64, blocks as i64)? {
+                Some(s) if s != splits => bad.push(format!("{h} x {d}, {b} sequences: the plan's splits {splits} (library) against {s}")),
+                _ => {}
+            }
+            let ws_bytes = kv_decode_workspace(b as i64, h as i64, g as i64, d as i64, splits)?;
+            let w = (h * g * d) as i64;
+            for bf16 in [false, true] {
+                let (wa, wb, oa, ob) = (Buf::zeroed(ws_bytes)?, Buf::zeroed(ws_bytes)?, Buf::new(2 * b * h * g * d)?, Buf::new(2 * b * h * g * d)?);
+                oa.fill_async(0xA5, dev.stream)?;
+                ob.fill_async(0x5A, dev.stream)?;
+                let fp = if first > 0 { fb.ptr } else { 0 };
+                // SAFETY: the pool (or the cache), its tables, queries [b][h g d], outputs and zeroed workspaces of the plan's size, live; one stream.
+                let (ra, rb) = unsafe {
+                    if bf16 {
+                        let cache = (kc.ptr, vc.ptr, bt.ptr, blocks as i64, 0);
+                        let seqs = (sq.ptr, fp, b as i64, splits);
+                        let heads = (h as i64, g as i64, d as i64);
+                        let ra = lib.library_kv_decode_bf16(qb.ptr, w, cache, seqs, heads, (0.0883883, round), oa.ptr, w, (wa.ptr, ws_bytes), dev.stream);
+                        (ra, kv_decode_bf16((qb.ptr, w), cache, seqs, heads, (0.0883883, round), (ob.ptr, w), (wb.ptr, ws_bytes), dev.stream))
+                    } else {
+                        let ra = lib.library_kv_decode_from(
+                            &geom,
+                            g as i64,
+                            pool.ptr,
+                            kb.ptr,
+                            vb.ptr,
+                            qb.ptr,
+                            w,
+                            bt.ptr,
+                            blocks as i64,
+                            sq.ptr,
+                            fp,
+                            round,
+                            b as i64,
+                            splits,
+                            0.0883883,
+                            oa.ptr,
+                            w,
+                            wa.ptr,
+                            ws_bytes,
+                            dev.stream,
+                        );
+                        let tables = (bt.ptr, blocks as i64, sq.ptr, fp, round);
+                        (
+                            ra,
+                            kv_decode(
+                                &geom,
+                                g as i64,
+                                (pool.ptr, kb.ptr, vb.ptr),
+                                (qb.ptr, w),
+                                tables,
+                                b as i64,
+                                splits,
+                                0.0883883,
+                                (ob.ptr, w),
+                                (wb.ptr, ws_bytes),
+                                dev.stream,
+                            ),
+                        )
+                    }
+                };
+                dev.sync()?;
+                n += 1;
+                let what =
+                    format!("{h} x {d}, {g} queries a head, {b} sequences (first {first}, bf16 scores {round}){}", if bf16 { ", a bf16 cache" } else { "" });
+                match (&ra, &rb) {
+                    (Err(e), _) | (_, Err(e)) => {
+                        bad.push(format!("{what}: {e}"));
+                        continue;
+                    }
+                    (_, Ok(false)) => {
+                        bad.push(format!("{what}: the engine's kernel did not take it"));
+                        continue;
+                    }
+                    _ => {}
+                }
+                let (mut va, mut vb2) = (vec![0u16; b * h * g * d], vec![0u16; b * h * g * d]);
+                oa.read(0, &mut va)?;
+                ob.read(0, &mut vb2)?;
+                let differ = va.iter().zip(&vb2).filter(|(x, y)| x != y).count();
+                if differ > 0 {
+                    bad.push(format!("{what}: {differ} of {} bf16 differ", va.len()));
+                }
+            }
+        }
+    }
     Ok((n, bad))
 }
 
@@ -1209,6 +1694,27 @@ mod tests {
                 assert_eq!((t + (n - t) / 2) >> sh, n / ks, "K {k}, n {n}");
             }
         }
+    }
+
+    /// KvAttnParams is kvc::AttnParams byte for byte (the C struct's offsets on LP64: pointers and int64 at 8, int and float at 4).
+    #[test]
+    fn the_attention_params_are_the_kernels() {
+        use std::mem::{offset_of, size_of};
+        assert_eq!(size_of::<KvRawPool>(), 40);
+        assert_eq!((offset_of!(KvRawPool, ns), offset_of!(KvRawPool, plane)), (24, 32));
+        assert_eq!(size_of::<KvAttnParams>(), 248);
+        let at = [
+            offset_of!(KvAttnParams, nc),
+            offset_of!(KvAttnParams, raw),
+            offset_of!(KvAttnParams, ws_ml),
+            offset_of!(KvAttnParams, h),
+            offset_of!(KvAttnParams, pfloor),
+            offset_of!(KvAttnParams, cnt),
+            offset_of!(KvAttnParams, round),
+            offset_of!(KvAttnParams, kc),
+            offset_of!(KvAttnParams, cap),
+        ];
+        assert_eq!(at, [80, 88, 128, 144, 176, 184, 216, 224, 240]);
     }
 
     #[test]

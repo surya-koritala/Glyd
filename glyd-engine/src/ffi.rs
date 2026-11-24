@@ -828,6 +828,182 @@ impl Lib {
         self.ck(call!("linear"), r)
     }
 
+    /// `GpuOps::kv_decode_splits` by the library's own kernels and plan: the oracle of the engine's (`fold`).
+    pub(crate) fn library_kv_decode_splits(&self, b: i64, h: i64, max_pages: i64) -> Result<i64> {
+        let mut s = 0;
+        // SAFETY: a host out-pointer.
+        let r = unsafe { (self.api.glyd_gpu_kv_decode_shares)(b, h, max_pages, &mut s) };
+        self.ck(call!("kv_decode_shares"), r)?;
+        Ok(s)
+    }
+
+    /// `GpuOps::kv_floor_set` by the library's own kernels and plan: the oracle of the engine's (`fold`).
+    pub(crate) fn library_kv_floor_set(&self, floor: i32) -> Result<()> {
+        // SAFETY: a plain value.
+        let r = unsafe { (self.api.glyd_gpu_kv_floor_set)(floor) };
+        self.ck(call!("kv_floor_set"), r)
+    }
+
+    /// `GpuOps::kv_decode` by the library's own kernels and plan: the oracle of the engine's (`fold`).
+    ///
+    /// # Safety
+    /// As `GpuOps::kv_decode`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn library_kv_decode(
+        &self,
+        g: &KvGeom,
+        group: i64,
+        pool: u64,
+        kbase: u64,
+        vbase: u64,
+        q: u64,
+        q_stride: i64,
+        block_table: u64,
+        bt_stride: i64,
+        seq_lens: u64,
+        b: i64,
+        splits: i64,
+        scale: f64,
+        out: u64,
+        out_stride: i64,
+        ws: u64,
+        ws_bytes: usize,
+        cs: Stream,
+    ) -> Result<()> {
+        let r = (self.api.glyd_gpu_kv_decode)(
+            q as *const u16,
+            q_stride,
+            pool as *const u8,
+            g.page_stride,
+            kbase as *const u8,
+            vbase as *const u8,
+            block_table as *const i32,
+            bt_stride,
+            seq_lens as *const i32,
+            b,
+            splits,
+            g.heads,
+            group,
+            g.dim,
+            g.arena,
+            g.escape as *const u8,
+            g.nchunks,
+            g.raw as *const u8,
+            g.nslabs,
+            scale,
+            out as *mut u16,
+            out_stride,
+            ws as *mut c_void,
+            ws_bytes,
+            cs,
+        );
+        self.ck(call!("kv_decode"), r)
+    }
+
+    /// `GpuOps::kv_decode_from` by the library's own kernels and plan: the oracle of the engine's (`fold`).
+    ///
+    /// # Safety
+    /// As `GpuOps::kv_decode_from`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn library_kv_decode_from(
+        &self,
+        g: &KvGeom,
+        group: i64,
+        pool: u64,
+        kbase: u64,
+        vbase: u64,
+        q: u64,
+        q_stride: i64,
+        block_table: u64,
+        bt_stride: i64,
+        seq_lens: u64,
+        first: u64,
+        round: bool,
+        b: i64,
+        splits: i64,
+        scale: f64,
+        out: u64,
+        out_stride: i64,
+        ws: u64,
+        ws_bytes: usize,
+        cs: Stream,
+    ) -> Result<()> {
+        let r = (self.api.glyd_gpu_kv_decode_from)(
+            q as *const u16,
+            q_stride,
+            pool as *const u8,
+            g.page_stride,
+            kbase as *const u8,
+            vbase as *const u8,
+            block_table as *const i32,
+            bt_stride,
+            seq_lens as *const i32,
+            first as *const i32,
+            round as i64,
+            b,
+            splits,
+            g.heads,
+            group,
+            g.dim,
+            g.arena,
+            g.escape as *const u8,
+            g.nchunks,
+            g.raw as *const u8,
+            g.nslabs,
+            scale,
+            out as *mut u16,
+            out_stride,
+            ws as *mut c_void,
+            ws_bytes,
+            cs,
+        );
+        self.ck(call!("kv_decode_from"), r)
+    }
+
+    /// `GpuOps::kv_decode_bf16` by the library's own kernels and plan: the oracle of the engine's (`fold`).
+    ///
+    /// # Safety
+    /// As `GpuOps::kv_decode_bf16`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn library_kv_decode_bf16(
+        &self,
+        q: u64,
+        q_stride: i64,
+        (kc, vc, block_table, bt_stride, cap): (u64, u64, u64, i64, i64),
+        (seq_lens, first, b, splits): (u64, u64, i64, i64),
+        (h, g, d): (i64, i64, i64),
+        (scale, round): (f64, bool),
+        out: u64,
+        out_stride: i64,
+        (workspace, workspace_bytes): (u64, usize),
+        cs: Stream,
+    ) -> Result<()> {
+        let r = (self.api.glyd_gpu_kv_decode_bf16)(
+            q as *const u16,
+            q_stride,
+            kc as *const u16,
+            vc as *const u16,
+            block_table as *const i32,
+            bt_stride,
+            cap,
+            seq_lens as *const i32,
+            first as *const i32,
+            round as i64,
+            b,
+            splits,
+            h,
+            g,
+            d,
+            scale,
+            out as *mut u16,
+            out_stride,
+            workspace as *mut c_void,
+            workspace_bytes,
+            cs,
+        );
+        self.ck(call!("kv_decode_bf16"), r)
+    }
+
     /// `GpuOps::moe_way` by the library's own kernels (glyd_gpu_moe_way): the oracle of the engine's (`fold::moe_way`).
     ///
     /// # Safety
@@ -1298,17 +1474,19 @@ impl GpuOps for Lib {
     }
 
     fn kv_decode_splits(&self, b: i64, h: i64, max_pages: i64) -> Result<i64> {
-        let mut s = 0;
-        // SAFETY: a host out-pointer.
-        let r = unsafe { (self.api.glyd_gpu_kv_decode_shares)(b, h, max_pages, &mut s) };
-        self.ck(call!("kv_decode_shares"), r)?;
-        Ok(s)
+        // (the engine's plan, by its own kernel's occupancy: R17's `fold`)
+        if crate::fold::on() {
+            if let Some(s) = crate::fold::kv_decode_splits(b, h, max_pages)? {
+                return Ok(s);
+            }
+        }
+        self.library_kv_decode_splits(b, h, max_pages)
     }
 
     fn kv_floor_set(&self, floor: i32) -> Result<()> {
-        // SAFETY: a plain value.
-        let r = unsafe { (self.api.glyd_gpu_kv_floor_set)(floor) };
-        self.ck(call!("kv_floor_set"), r)
+        // (both: the engine's decode plans by it, and the library's, which the engine's is held to)
+        crate::fold::kv_floor_set(floor)?;
+        self.library_kv_floor_set(floor)
     }
 
     fn kv_decode_workspace(&self, b: i64, h: i64, g: i64, d: i64, splits: i64) -> Result<usize> {
@@ -1336,34 +1514,14 @@ impl GpuOps for Lib {
         ws_bytes: usize,
         cs: Stream,
     ) -> Result<()> {
-        let r = (self.api.glyd_gpu_kv_decode)(
-            q as *const u16,
-            q_stride,
-            pool as *const u8,
-            g.page_stride,
-            kbase as *const u8,
-            vbase as *const u8,
-            block_table as *const i32,
-            bt_stride,
-            seq_lens as *const i32,
-            b,
-            splits,
-            g.heads,
-            group,
-            g.dim,
-            g.arena,
-            g.escape as *const u8,
-            g.nchunks,
-            g.raw as *const u8,
-            g.nslabs,
-            scale,
-            out as *mut u16,
-            out_stride,
-            ws as *mut c_void,
-            ws_bytes,
-            cs,
-        );
-        self.ck(call!("kv_decode"), r)
+        // (the engine's own kernel, from the library's source: R17's `fold`)
+        let tables = (block_table, bt_stride, seq_lens, 0, false);
+        if crate::fold::on()
+            && crate::fold::kv_decode(g, group, (pool, kbase, vbase), (q, q_stride), tables, b, splits, scale, (out, out_stride), (ws, ws_bytes), cs)?
+        {
+            return Ok(());
+        }
+        self.library_kv_decode(g, group, pool, kbase, vbase, q, q_stride, block_table, bt_stride, seq_lens, b, splits, scale, out, out_stride, ws, ws_bytes, cs)
     }
 
     unsafe fn kv_decode_from(
@@ -1389,36 +1547,35 @@ impl GpuOps for Lib {
         ws_bytes: usize,
         cs: Stream,
     ) -> Result<()> {
-        let r = (self.api.glyd_gpu_kv_decode_from)(
-            q as *const u16,
+        // (the engine's own kernel, from the library's source: R17's `fold`)
+        let tables = (block_table, bt_stride, seq_lens, first, round);
+        if crate::fold::on()
+            && crate::fold::kv_decode(g, group, (pool, kbase, vbase), (q, q_stride), tables, b, splits, scale, (out, out_stride), (ws, ws_bytes), cs)?
+        {
+            return Ok(());
+        }
+        self.library_kv_decode_from(
+            g,
+            group,
+            pool,
+            kbase,
+            vbase,
+            q,
             q_stride,
-            pool as *const u8,
-            g.page_stride,
-            kbase as *const u8,
-            vbase as *const u8,
-            block_table as *const i32,
+            block_table,
             bt_stride,
-            seq_lens as *const i32,
-            first as *const i32,
-            round as i64,
+            seq_lens,
+            first,
+            round,
             b,
             splits,
-            g.heads,
-            group,
-            g.dim,
-            g.arena,
-            g.escape as *const u8,
-            g.nchunks,
-            g.raw as *const u8,
-            g.nslabs,
             scale,
-            out as *mut u16,
+            out,
             out_stride,
-            ws as *mut c_void,
+            ws,
             ws_bytes,
             cs,
-        );
-        self.ck(call!("kv_decode_from"), r)
+        )
     }
 
     unsafe fn kv_prefill(
@@ -1482,39 +1639,20 @@ impl GpuOps for Lib {
         &self,
         q: u64,
         q_stride: i64,
-        (kc, vc, block_table, bt_stride, cap): (u64, u64, u64, i64, i64),
-        (seq_lens, first, b, splits): (u64, u64, i64, i64),
-        (h, g, d): (i64, i64, i64),
-        (scale, round): (f64, bool),
+        cache: (u64, u64, u64, i64, i64),
+        seqs: (u64, u64, i64, i64),
+        heads: (i64, i64, i64),
+        scores: (f64, bool),
         out: u64,
         out_stride: i64,
-        (workspace, workspace_bytes): (u64, usize),
+        workspace: (u64, usize),
         cs: Stream,
     ) -> Result<()> {
-        let r = (self.api.glyd_gpu_kv_decode_bf16)(
-            q as *const u16,
-            q_stride,
-            kc as *const u16,
-            vc as *const u16,
-            block_table as *const i32,
-            bt_stride,
-            cap,
-            seq_lens as *const i32,
-            first as *const i32,
-            round as i64,
-            b,
-            splits,
-            h,
-            g,
-            d,
-            scale,
-            out as *mut u16,
-            out_stride,
-            workspace as *mut c_void,
-            workspace_bytes,
-            cs,
-        );
-        self.ck(call!("kv_decode_bf16"), r)
+        // (the engine's own kernel, from the library's source: R17's `fold`)
+        if crate::fold::on() && crate::fold::kv_decode_bf16((q, q_stride), cache, seqs, heads, scores, (out, out_stride), workspace, cs)? {
+            return Ok(());
+        }
+        self.library_kv_decode_bf16(q, q_stride, cache, seqs, heads, scores, out, out_stride, workspace, cs)
     }
 
     unsafe fn kv_prefill_bf16(
