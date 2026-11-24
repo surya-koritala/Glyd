@@ -776,7 +776,7 @@ const PROMPT_LAYER_S: f64 = 1.11e-6;
 /// The same products' time said against the GPU's streamed memory rate, as the figures are fitted (`Consts::f`): the RTX 4080 SUPER's 104.5 TFLOPS at
 /// `PROMPT_EFF` over its 697.35 GB/s. Across classes the engine's prompt products follow the memory rate more closely than the tensor rate a maker gives:
 /// each class's prompt runs predicted from the other classes' records came to a mean 18-25% off said against the stream (RTX 4080 SUPER, A100 SXM4 40GB,
-/// A10), 27-42% against the tensor rate.
+/// A10, with Qwen3-8B's runs among them), 27-42% against the tensor rate.
 const PROMPT_F: f64 = 697.35e9 / (PROMPT_EFF * 104.5e12);
 /// The band a prediction is given in where no run on the GPU was observed (p10 and p90 against the prediction): the runs these figures are calibrated on (above, and
 /// `predictions_match_what_was_measured`'s) came to 0.91-1.02 of their predictions on the GPUs they were measured on; another GPU's kernels may differ more.
@@ -798,7 +798,8 @@ pub struct Consts {
     pub layer_s: f64,
     pub width_s: f64,
     pub row_s: f64,
-    /// the 12-bit lossless layout's weights (a layout and kernels of their own: the A100's and the A10's Qwen3-8B read a byte faster than their packs)
+    /// the 12-bit lossless layout's weights (a layout and kernels of their own: Qwen3-8B on the A100 and the A10 read a byte faster than their packs; no shipped
+    /// record has it, so it is the packs' share until a recent release's penguin run is recorded)
     pub w12: f64,
     pub f: f64,
     pub prompt_layer_s: f64,
@@ -1095,7 +1096,7 @@ pub fn prior_from(records: &[serde_json::Value], class: &str) -> Prior {
 /// The figures a class starts from before its own records: the decode figures the classes `others_of` gives it fit (from the defaults), and the prompt figures
 /// every other class's records fit (a kin's few prompts leave its three figures loose: the A10's prompts from the RTX 4080 SUPER's four came out 120% off on
 /// the mean, from every other class's 19%; its decode from the kin 17.6%, from every other class 10.8%, but the 4080 SUPER's from every other 23.9% against
-/// 14.5% from its kin: decode keeps the kin). Where none of the kin ran a step of several rows, a row's time is the one every other class's records fit.
+/// 14.5% from its kin: decode keeps the kin. Those with Qwen3-8B's runs among the records; without them, prompts 17.7%). Where none of the kin ran a step of several rows, a row's time is the one every other class's records fit.
 fn base_of(records: &[serde_json::Value], class: &str) -> Consts {
     let kin = others_of(records, class);
     if kin.is_empty() {
@@ -4939,17 +4940,16 @@ mod tests {
 
     /// The shipped calibration records (calibration/records.jsonl), with the features the planner reads of them: the RTX 4080 SUPER's runs (g1 and g2 of
     /// 2026-11-23, bench --loads 1k:1 --no-draft, the median of 3; prompts of 936 and 1,002 tokens, 128 made) and the A100 SXM4 40GB's runs of m2-stage3 63bdcdcb
-    /// (session 3, 2026-11-24, bench's gate suite with GLYD_KV=bf16, the median of 3, 128 made: one user and eight on short prompts, one at 1k and 4k; Qwen3-8B at
-    /// penguin, its 12-bit layout there; the prompts of the short loads too short to time a prompt, so their prompt rates are not kept; the rate the A100's probe
-    /// measured in session 2), and the A10's plancheck runs of session 5 (20: 8 users, Qwen3.5-0.8B kestrel, gemma-4-12B wren and swift, Qwen3-8B penguin at
-    /// 1k, 4k, 8k, 1k for eight and 85% of the context; the features made anew here, with penguin's 12-bit layout the A10 loads). `GLYD_WRITE_CALIB=1` writes the
-    /// file anew; the other machines' `plancheck` records are added to it.
+    /// (session 3, 2026-11-24, bench's gate suite with GLYD_KV=bf16, the median of 3, 128 made: one user and eight on short prompts, one at 1k and 4k; the
+    /// prompts of the short loads too short to time a prompt, so their prompt rates are not kept; the rate the A100's probe measured in session 2), and the A10's
+    /// plancheck runs of session 5 (15: 8 users, Qwen3.5-0.8B kestrel, gemma-4-12B wren and swift at 1k, 4k, 8k, 1k for eight and 85% of the context). Only
+    /// releases of the last six months: the Qwen3-8B runs measured beside them are not kept. `GLYD_WRITE_CALIB=1` writes the file anew; the other machines'
+    /// `plancheck` records are added to it.
     #[test]
     fn the_shipped_records_are_the_measured_runs() {
         let (gemma_sh, q08_sh) = measured_shapes();
-        let q3_sh = Shape::from_config(QWEN3_8B).unwrap();
         let mut lines = String::new();
-        let (g, q, q3) = ("google/gemma-4-12B-it", "Qwen/Qwen3.5-0.8B", "Qwen/Qwen3-8B");
+        let (g, q) = ("google/gemma-4-12B-it", "Qwen/Qwen3.5-0.8B");
         type Run<'a> = (&'a str, &'a Shape, Kind, &'static str, &'a str, f64, usize, f64, Option<f64>);
         let a100: Vec<Run> = vec![
             (g, &gemma_sh, Kind::Gemma4, "wren", "short:1", 38.0, 1, 86.972518, None),
@@ -4960,10 +4960,6 @@ mod tests {
             (q, &q08_sh, Kind::Qwen35, "kestrel", "short:8", 36.0, 8, 189.34745, None),
             (q, &q08_sh, Kind::Qwen35, "kestrel", "1k:1", 1005.0, 1, 451.127571, Some(20317.583028)),
             (q, &q08_sh, Kind::Qwen35, "kestrel", "4k:1", 4012.0, 1, 439.503543, Some(19963.700121)),
-            (q3, &q3_sh, Kind::Qwen3, "penguin", "short:1", 37.0, 1, 86.268436, None),
-            (q3, &q3_sh, Kind::Qwen3, "penguin", "short:8", 36.0, 8, 58.552967, None),
-            (q3, &q3_sh, Kind::Qwen3, "penguin", "1k:1", 1004.0, 1, 85.335093, Some(6524.891519)),
-            (q3, &q3_sh, Kind::Qwen3, "penguin", "4k:1", 4011.0, 1, 82.163506, Some(6219.405672)),
         ];
         let a10: Vec<Run> = vec![
             (q, &q08_sh, Kind::Qwen35, "kestrel", "1k:1", 995.0, 1, 399.443361, Some(17034.02874)),
@@ -4981,11 +4977,6 @@ mod tests {
             (g, &gemma_sh, Kind::Gemma4, "swift", "8k:1", 7511.0, 1, 48.866016, Some(1883.56461)),
             (g, &gemma_sh, Kind::Gemma4, "swift", "1k:8", 935.0, 8, 22.060678, Some(2095.481739)),
             (g, &gemma_sh, Kind::Gemma4, "swift", "27852t:1", 25548.0, 1, 46.112267, Some(1340.026958)),
-            (q3, &q3_sh, Kind::Qwen3, "penguin", "1k:1", 994.0, 1, 40.510675, Some(3008.344429)),
-            (q3, &q3_sh, Kind::Qwen3, "penguin", "4k:1", 4009.0, 1, 38.559368, Some(2672.899762)),
-            (q3, &q3_sh, Kind::Qwen3, "penguin", "8k:1", 8004.0, 1, 36.602973, Some(2340.115244)),
-            (q3, &q3_sh, Kind::Qwen3, "penguin", "1k:8", 993.5, 8, 25.055144, Some(2906.641869)),
-            (q3, &q3_sh, Kind::Qwen3, "penguin", "13926t:1", 13576.0, 1, 34.105781, Some(1991.869116)),
         ];
         for (at, gpu, preset, class, cc, sms, stream, ram, tflops, source, runs) in [
             (
@@ -5029,7 +5020,7 @@ mod tests {
                 518.53,
                 116.68,
                 125.0,
-                "Lambda A10, session 5: plancheck at m2-y 87023bbc, 8 users, the median of 3 (Qwen3-8B at --ctx 16384)",
+                "Lambda A10, session 5: plancheck at m2-y 87023bbc, 8 users, the median of 3",
                 a10,
             ),
         ] {
