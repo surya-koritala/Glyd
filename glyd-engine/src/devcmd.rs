@@ -3,9 +3,10 @@
 //!   glyd-engine pack MODEL OUT [--threads N] [--layout auto|mma|mma12|i6|i5|i4]   pack a checkpoint (every matrix, the embedding too); i6, i5 and i4: a lossy level's glyd-v7 directory (Qwen3.5, Nemotron 3 Super: at i4 its experts in four-bit codes, every other matrix in six-bit ones; GLM-5.3-Flash)
 //!   glyd-engine calibrate-experts MODEL OUT [--tokens 32768] [--devices 0,1 --split CUTS] [--context 4096] [--synthetic]   hummingbird's corpus pass (src/hb_usage.rs): the model on the engine over the
 //!                                                             calibration corpus, each MoE layer's router choices counted per expert into the usage file OUT
-//!   glyd-engine tiercheck MODEL [--places 2] [--tokens 24] [--mode copy] [--layout i6] [--dense N]   the dynamic route's model with every expert on GPU 0, then in the expert cache (src/tiering.rs; --dense: its last N layers'
+//!   glyd-engine tiercheck MODEL [--places 2] [--tokens 24] [--mode copy] [--layout i6] [--dense N] [--device]   the dynamic route's model with every expert on GPU 0, then in the expert cache (src/tiering.rs; --dense: its last N layers'
 //!                                                             dense matrices in the computer's memory too, src/dense_ram.rs): every position's logits compared, the same bits in copy mode
-//!   glyd-engine storebench MODEL [--places 16] [--rows 1,8,32] [--steps 8] [--mode auto] [--out FILE]   batched decode through the expert cache: each count of rows' step time and layer statistics (bytes read for
+//!                                                             (--device: the decode calls planned on the GPU, src/devplan.rs, and the decode step one graph, checked)
+//!   glyd-engine storebench MODEL [--places 16] [--rows 1,8,32] [--steps 8] [--mode auto] [--device] [--out FILE]   batched decode through the expert cache: each count of rows' step time and layer statistics (bytes read for
 //!                                                             the misses against the distinct missed experts'), FILE's JSON lines for ceiling --stats (src/tiering.rs)
 //!   glyd-engine pack MODEL OUT --layout hummingbird --usage FILE [--threads N]   a mixture of experts the description builder maps (Kimi-K3, DeepSeek-V4, GLM-5.3, Muse Spark, Qwen3.5/3.8 MoE) at the
 //!                                                             hummingbird level (src/hb_pack.rs): each expert's bits from FILE's counts (calibrate-experts), its rows coded in Rust, the rest copied

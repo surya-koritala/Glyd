@@ -461,7 +461,8 @@ fn cached_step(s: &Step, b: &Box, shares: (f64, f64, f64), r: &Run, fixed: Fixed
         }
         for l in &layers {
             let all = x(l.copy_bytes) + x(l.ahead_bytes);
-            let per_byte = if all > 0.0 { x_ms(l.copy_ms, r.per) / all } else { 0.0 };
+            // (the copy stream's measured time a byte; copies the GPU's own kernels made, the plan on the GPU's, have none: the box's link rate)
+            let per_byte = if all > 0.0 && l.copy_ms > 0.0 { x_ms(l.copy_ms, r.per) / all } else { 1.0 / (b.pcie_alone * 1e6) };
             // (a step's calls of the layer, those copied whole a share `w` of them; each kind's own figures a call)
             let m = x(l.calls).round().max(1.0);
             let w = (l.whole as f64 / l.calls as f64).clamp(0.0, 1.0);

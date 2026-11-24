@@ -207,15 +207,21 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     let vocab = crate::dynamic::split::config_num(&text, "vocab_size").unwrap_or(1000).max(16);
     let n = a.num("tokens", 24usize)?.max(6);
     let tokens: Vec<u32> = (0..n).map(|i| ((i * 7919 + 13) % (vocab - 4) + 2) as u32).collect();
+    // (`--device`: the decode calls planned on the GPU, src/devplan.rs, and the decode step captured in a graph, which it must be)
+    let device = a.has("device");
     // (`--layout`: the level a family's loader packs at, GLM's experts at a block level among them)
-    let o = crate::dynamic::Opts { ctx: n + 64, chunk: 256, graph: false, device: 0, layout: a.layout()? };
+    let o = crate::dynamic::Opts { ctx: n + 64, chunk: 256, graph: device, device: 0, layout: a.layout()? };
+    let graphed = std::cell::Cell::new(false);
     let run = |cached: bool| -> Result<Vec<Vec<f32>>> {
         let mut e = if cached {
-            let caching = crate::hbg_store::HbCaching { places, ram: None, offload: crate::offload::Offload { mode, ..Default::default() }, dense };
+            let caching = crate::hbg_store::HbCaching { places, ram: None, offload: crate::offload::Offload { mode, device, ..Default::default() }, dense };
             crate::dynamic::split::open_cached(dir, &o, &[], &[0], vec![caching])?
         } else {
             crate::dynamic::split::open(dir, &o, &[], &[0])?
         };
+        if cached {
+            graphed.set(matches!(&e, crate::dynamic::split::Run::One(d) if d.has_graph()));
+        }
         let mut out = Vec::new();
         e.prefill(&tokens[..n - 4])?;
         out.push(e.logits()?);
@@ -248,13 +254,19 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         total,
         resident.len()
     );
-    if mode == crate::offload::Mode::Copy && differ > 0 && !report {
+    if device {
+        println!("  the decode calls planned on the GPU: the decode step {} one graph", if graphed.get() { "is" } else { "is not" });
+        if !graphed.get() {
+            return err("--device: the cached model's decode step was not captured in a graph");
+        }
+    }
+    if mode == crate::offload::Mode::Copy && differ > 0 && !report && !device {
         return err(format!("{differ} logits differ in copy mode, where the products over the places are the resident layer's"));
     }
     Ok(())
 }
 
-/// `glyd-engine storebench MODEL [--places N] [--rows 1,8,32] [--steps 8] [--warm 3] [--prompt 16] [--mode copy|cpu|split|auto] [--out FILE]` (development): batched decode through the expert cache on GPU 0
+/// `glyd-engine storebench MODEL [--places N] [--rows 1,8,32] [--steps 8] [--warm 3] [--prompt 16] [--mode copy|cpu|split|auto] [--device] [--plan] [--out FILE]` (development): batched decode through the expert cache on GPU 0
 /// (the dynamic route's model, `--places` of a layer's experts on the GPU and every expert in the computer's memory, as `tiercheck` opens it): for each count of rows, that many sequences of `--prompt` tokens each,
 /// `--warm` decode steps of all of them together, then `--steps` timed steps, each step's layer statistics (`ModelStep::expert_stats`). Prints a line for each count: the step's time, the experts asked for, found,
 /// copied and computed by the host a step, the bytes read from the computer's memory for the misses against the distinct missed experts' bytes, and the rates the copies and the host ran at. `--out`: a JSON line
@@ -278,7 +290,8 @@ pub fn bench(a: &crate::args::Args) -> Result<()> {
     let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
     let vocab = crate::dynamic::split::config_num(&text, "vocab_size").unwrap_or(1000).max(16);
     let o = crate::dynamic::Opts { ctx: plen + warm + steps + 64, chunk: plen.max(64), graph: false, device: 0, layout: a.layout()? };
-    let offload = crate::offload::Offload { mode: mode.unwrap_or(crate::offload::Mode::Auto), ..Default::default() };
+    // (`--device`: the decode calls planned on the GPU, src/devplan.rs)
+    let offload = crate::offload::Offload { mode: mode.unwrap_or(crate::offload::Mode::Auto), device: a.has("device"), ..Default::default() };
     let caching = crate::hbg_store::HbCaching { places, ram: None, offload, dense: 0 };
     let crate::dynamic::split::Run::One(mut e) = crate::dynamic::split::open_cached(dir, &o, &[], &[0], vec![caching])? else {
         return err("the model on one GPU was asked for");
@@ -297,10 +310,11 @@ pub fn bench(a: &crate::args::Args) -> Result<()> {
         return err(format!("{most} rows asked for, where the memory holds {k} sequences"));
     }
     println!(
-        "{}: {places} places a layer, an expert {:.2} MB, mode {}, {steps} steps after {warm}, prompts of {plen} tokens",
+        "{}: {places} places a layer, an expert {:.2} MB, mode {}{}, {steps} steps after {warm}, prompts of {plen} tokens",
         dir.display(),
         eb as f64 / 1e6,
-        stores[0].offload().mode.name()
+        stores[0].offload().mode.name(),
+        if stores.iter().any(|s| s.device_layers() > 0) { ", decode calls planned on the GPU" } else { "" }
     );
     for &n in &rows_l {
         let pages: Vec<[i32; 1]> = (0..n).map(|r| [r as i32]).collect();
@@ -329,6 +343,14 @@ pub fn bench(a: &crate::args::Args) -> Result<()> {
         }
         let t = LayerStats::sum(&layers);
         let per = |x: u64| x as f64 / steps as f64;
+        // (`--plan`: the planner's step for these rows on this machine with these places, its router taken as uniform, as a random model's is)
+        if a.has("plan") {
+            let mean = ms.iter().sum::<f64>() / steps as f64;
+            match planned_step(dir, places, n, (plen + warm + steps / 2) as f64) {
+                Ok(p) => println!("  {n:>3} rows: the planner's step {p:8.2} ms against {mean:.2} measured ({:+.1}%)", 100.0 * (p / mean - 1.0)),
+                Err(e) => println!("  {n:>3} rows: no planner's step: {e}"),
+            }
+        }
         let missed = t.missed_bytes;
         let mean = ms.iter().sum::<f64>() / steps as f64;
         ms.sort_by(f64::total_cmp);
@@ -358,6 +380,28 @@ pub fn bench(a: &crate::args::Args) -> Result<()> {
         std::fs::write(f, out).map_err(|e| Error(format!("{f}: {e}")))?;
     }
     Ok(())
+}
+
+/// The planner's decode step for `rows` rows of the model at `dir` on this machine, `places` of each layer's experts on the GPU and every expert in the computer's memory (src/plan.rs `speed_routed`, the
+/// router's choices taken as uniform: a random model's), in ms; or why the planner gives none (`serve`'s plan for the rows, its places made `places`).
+#[cfg(feature = "dev")]
+fn planned_step(dir: &std::path::Path, places: usize, rows: usize, positions: f64) -> std::result::Result<f64, String> {
+    let words = ["serve".to_string(), dir.display().to_string(), "--users".into(), rows.to_string(), "--no-draft".into()];
+    let f = crate::plan::planned(&crate::args::Args::from(words)).map_err(|r| r.what)?;
+    let c = f.plan.chosen.as_ref().ok_or("no plan")?;
+    let mut lp = c.load.clone().ok_or("no plan to load")?;
+    let sp = lp.spread.as_mut().ok_or("the plan is not the dynamic route's")?;
+    if sp.host_bytes == 0 {
+        return Err("the plan holds every expert on the GPU".into());
+    }
+    sp.places.iter_mut().for_each(|p| *p = places);
+    let main = (0..f.machine.devices.len()).min_by_key(|&i| (std::cmp::Reverse(f.machine.devices[i].free), i)).ok_or("no GPU")?;
+    let s = crate::plan::speed_routed(&f.shape, &f.machine, main, &lp, positions, rows, 1.0);
+    if s > 0.0 {
+        Ok(1e3 / s)
+    } else {
+        Err("the planner's speed is 0".into())
+    }
 }
 
 #[cfg(test)]

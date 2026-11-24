@@ -106,6 +106,11 @@ impl LayerCache {
         self.slot_of.get(e).copied().filter(|&s| s != NONE).map(|s| s as usize)
     }
 
+    /// Each place's expert (-1 where free): what `set_places` takes.
+    pub fn expert_in(&self) -> Vec<i32> {
+        self.expert_in.iter().map(|&e| if e == NONE { -1 } else { e as i32 }).collect()
+    }
+
     /// The experts in places now.
     pub fn resident(&self) -> usize {
         self.expert_in.len() - self.free.len()
@@ -333,6 +338,8 @@ pub struct Offload {
     /// Whether the copies of experts into places are made by a thread of their own: a copy from memory that is not pinned (a mapped file's pages) holds the thread that makes it for the time of the transfer, which is the
     /// time of the call's host work; with a copy thread the call goes on to the host's pairs at once, and a promotion's copies cost the call nothing.
     pub async_copies: bool,
+    /// Whether a layer whose host half the plan on the GPU computes (FP4 experts) plans its decode calls on the GPU (src/devplan.rs): no host waits inside such a call, and a step of them is one graph.
+    pub device: bool,
 }
 
 impl Default for Offload {
@@ -347,6 +354,7 @@ impl Default for Offload {
             skip_rank: 0,
             skip_rank_later: 0,
             async_copies: false,
+            device: false,
         }
     }
 }
@@ -383,6 +391,7 @@ pub fn offload_args(a: &crate::args::Args) -> Result<Offload> {
         o.pin = a.has("cpu-pin");
         o.window = a.num("offload-window", o.window)?;
         o.promote = a.num("offload-promote", o.promote)?;
+        o.device = a.has("device-plan");
     }
     Ok(o)
 }
@@ -1358,6 +1367,8 @@ struct Resident {
     // the layer's number in the store, and what it has done since the step began (`ExpertStore::end_step`)
     index: usize,
     stats: LayerStats,
+    // the layer's places as the GPU plans its decode calls (src/devplan.rs; `Offload::device`), None where the host plans every call
+    dplan: Option<crate::devplan::DevPlan>,
 }
 
 struct Cuda {
@@ -1568,6 +1579,8 @@ impl Drop for Worker {
 pub type Predictor = Box<dyn FnMut(usize, &[u16]) -> Vec<(usize, Vec<u16>)>>;
 
 struct Inner {
+    // the plan on the GPU's host thread and buffers (src/devplan.rs), dropped first: its thread reads the layers' host tiers
+    mail: Option<crate::devplan::DevMail>,
     cuda: Option<Cuda>,
     layers: Vec<Option<Resident>>,
     stats: Stats,
@@ -1896,6 +1909,30 @@ impl Resident {
         };
         crate::cpu_fp4::Fp4Expert { up: view(&self.packs[0], 2 * inter, *latent), down: view(&self.packs[1], *latent, *inter) }
     }
+
+    /// The layer's FP4 experts as the plan on the GPU's host thread reads them (src/devplan.rs), where its host half is FP4 experts, every one of them in the host tier, in two packs the kernels copy in
+    /// 16-byte pieces; None for any other layer (the host plans its calls).
+    fn host_fp4(&self) -> Option<crate::devplan::HostFp4> {
+        let Some(CpuSide { half: HostHalf::Fp4 { inter, latent, packed, act }, .. }) = &self.cpu else { return None };
+        let fits = self.tier.is_none()
+            && self.packs.len() == 2
+            && self
+                .packs
+                .iter()
+                .all(|p| p.place.is_none() && (0..2).all(|k| p.stride[k] % 16 == 0 && p.dev[k] % 16 == 0 && (p.host[k].ptr as usize) % 16 == 0))
+            && *latent <= crate::devplan::XP_WIDTH
+            && self.cache.experts() <= crate::devplan::XP_MAX;
+        let m = |p: &HostPack| [(p.host[0].ptr as usize, p.stride[0] as usize), (p.host[1].ptr as usize, p.stride[1] as usize)];
+        fits.then(|| crate::devplan::HostFp4 {
+            up: m(&self.packs[0]),
+            down: m(&self.packs[1]),
+            inter: *inter,
+            latent: *latent,
+            packed: *packed,
+            act: *act,
+            experts: self.cache.experts(),
+        })
+    }
 }
 
 /// Expert (or slot) number `at` of a Hummingbird group's host tier as the host's kernels read it: `place`'s view over its `data` and `meta` bytes where they are.
@@ -2203,6 +2240,7 @@ impl ExpertStore {
     pub fn new() -> Rc<ExpertStore> {
         Rc::new(ExpertStore {
             inner: RefCell::new(Inner {
+                mail: None,
                 cuda: None,
                 layers: Vec::new(),
                 stats: Stats::default(),
@@ -2515,8 +2553,42 @@ impl ExpertStore {
             tier,
             index: layer,
             stats: LayerStats::default(),
+            dplan: None,
         });
+        let inner = &mut *inner;
+        if inner.offload.device {
+            if let Some(h) = inner.layers[layer].as_ref().and_then(Resident::host_fp4) {
+                let ly = inner.layers[layer].as_mut().expect("installed above");
+                let regions: Vec<[u64; 4]> =
+                    ly.packs.iter().flat_map(|p| (0..2).map(move |k| [p.host[k].ptr as u64, p.stride[k], p.dev[k], p.stride[k]])).collect();
+                ly.dplan = Some(crate::devplan::DevPlan::new(experts, slots, &regions)?);
+                if inner.mail.is_none() {
+                    let params = crate::devplan::Params::of(&inner.offload, &inner.costs, slots);
+                    inner.mail = Some(crate::devplan::DevMail::new(inner.offload.threads, inner.offload.pin, params)?);
+                }
+                inner.mail.as_ref().expect("made above").add_layer(layer, h);
+            }
+        }
         Ok(())
+    }
+
+    /// Whether layer `layer`'s decode calls are planned on the GPU (`Offload::device`, a host half of FP4 experts with every expert in the computer's memory): a step of them needs no host and is one graph.
+    pub fn device_on(&self, layer: usize) -> bool {
+        self.inner.borrow().layers.get(layer).and_then(Option::as_ref).is_some_and(|l| l.dplan.is_some())
+    }
+
+    /// The layers whose decode calls are planned on the GPU.
+    pub fn device_layers(&self) -> usize {
+        self.inner.borrow().layers.iter().flatten().filter(|l| l.dplan.is_some()).count()
+    }
+
+    /// What a call of `tokens` tokens and `pairs` pairs of layer `layer` hands kernels/moe.cu's plan on the GPU (src/devplan.rs), where the layer is planned there and the call is one of a decode's
+    /// (`CPU_TOKENS` tokens at most); None: the store plans it on the host (`run`).
+    pub fn device_args(&self, layer: usize, tokens: usize, pairs: usize) -> Option<crate::devplan::DevArgs> {
+        let inner = self.inner.borrow();
+        let (ly, mail) = (inner.layers.get(layer)?.as_ref()?, inner.mail.as_ref()?);
+        let dp = ly.dplan.as_ref()?;
+        ((1..=CPU_TOKENS).contains(&tokens) && pairs <= crate::devplan::XP_PAIRS && pairs.is_multiple_of(tokens)).then(|| dp.args(mail, layer))
     }
 
     /// Layer `layer`'s places emptied and their copies done (the copy thread's batch joined and the copy stream past it), so that their memory can be freed (`QxMoeCb::release_places`); the places at `dev` from now on
@@ -2537,6 +2609,9 @@ impl ExpertStore {
         let mut guard = self.inner.borrow_mut();
         let inner = &mut *guard;
         let ly = inner.layers.get_mut(layer).and_then(Option::as_mut).ok_or_else(|| Error(format!("no layer {layer} in the expert cache")))?;
+        if ly.dplan.is_some() {
+            return err(format!("layer {layer}'s places are planned on the GPU, whose copies name them: they are not moved"));
+        }
         ly.join_job()?;
         if ly.pending {
             ly.ready.wait_host()?;
@@ -2554,6 +2629,9 @@ impl ExpertStore {
     pub fn resize_places(&self, layer: usize, slots: usize, dev: [u64; 2]) -> Result<()> {
         let mut guard = self.inner.borrow_mut();
         let ly = guard.layers.get_mut(layer).and_then(Option::as_mut).ok_or_else(|| Error(format!("no layer {layer} in the expert cache")))?;
+        if ly.dplan.is_some() {
+            return err(format!("layer {layer}'s places are planned on the GPU, whose copies name them: they are not moved"));
+        }
         ly.join_job()?;
         if ly.pending {
             ly.ready.wait_host()?;
@@ -2586,6 +2664,10 @@ impl ExpertStore {
         for ly in inner.layers.iter_mut().flatten() {
             ly.forget();
             ly.calls = 0;
+            if let Some(dp) = ly.dplan.as_mut() {
+                dp.upload(&ly.cache.expert_in())?;
+                dp.counters()?;
+            }
             if let Some(c) = ly.cpu.as_mut() {
                 c.last.fill(0);
             }
@@ -2615,6 +2697,10 @@ impl ExpertStore {
         let inner = &mut *guard;
         let cuda = inner.cuda.as_mut().ok_or_else(|| Error("the expert cache has no layers".into()))?;
         let ly = inner.layers.get_mut(layer).and_then(Option::as_mut).ok_or_else(|| Error(format!("no layer {layer} in the expert cache")))?;
+        // (a layer the GPU plans keeps its places in the GPU's table: a hint between its calls is not taken)
+        if ly.dplan.is_some() {
+            return Ok(());
+        }
         let got = ly.cache.hint(experts)?;
         inner.stats.hinted += got.loads.len() as u64;
         let bytes = place(cuda, ly, &got.loads, &mut inner.stats, &mut inner.costs, inner.expert_bytes).inspect_err(|_| ly.forget())?;
@@ -2718,7 +2804,21 @@ impl ExpertStore {
         // (the call's own time on the host: what it took less its waits for the GPU and the host's pairs: `LayerStats::plan_ms`)
         let spent = |st: &Self| st.inner.borrow().layers.get(layer).and_then(Option::as_ref).map_or(0.0, |l| l.stats.wait_ms + l.stats.host_ms);
         let (t0, before) = (Instant::now(), spent(self));
-        let r = self.run_call(layer, at, call, early, body);
+        // (a layer the GPU plans decode calls of: its places as the GPU has them before the host plans this call, and the host's after it, once the copies it queued have run for the engine's stream)
+        let dev = self.device_on(layer);
+        if dev {
+            at.sync()?;
+            let mut inner = self.inner.borrow_mut();
+            let ly = inner.layers[layer].as_mut().expect("a layer");
+            let places = ly.dplan.as_ref().expect("planned on the GPU").download()?;
+            ly.cache.set_places(&places);
+        }
+        let mut r = self.run_call(layer, at, call, early, body);
+        if dev && r.is_ok() {
+            let mut inner = self.inner.borrow_mut();
+            let ly = inner.layers[layer].as_mut().expect("a layer");
+            r = ly.wait_ready(at.stream).and_then(|_| ly.dplan.as_ref().expect("planned on the GPU").upload(&ly.cache.expert_in()));
+        }
         let own = t0.elapsed().as_secs_f64() * 1e3 - (spent(self) - before);
         if let Some(ly) = self.inner.borrow_mut().layers.get_mut(layer).and_then(Option::as_mut) {
             ly.stats.plan_ms += own.max(0.0);
@@ -3710,6 +3810,27 @@ impl ExpertStore {
         let Some(cuda) = inner.cuda.as_mut() else { return Ok(Vec::new()) };
         cuda.count(&mut inner.stats, &mut inner.costs, inner.expert_bytes, false)?;
         let ms = std::mem::take(&mut cuda.layer_ms);
+        // (the calls the GPU planned since the last step: its counters, the experts' bytes, the host thread's time; the plan's settings from the costs measured so far)
+        for ly in inner.layers.iter_mut().flatten() {
+            let Some(dp) = ly.dplan.as_mut() else { continue };
+            let [calls, _, reads, hits, fills, host, host_pairs, promos] = dp.counters()?.map(u64::from);
+            let b = ly.packs.iter().map(|p| p.stride[0] + p.stride[1]).sum::<u64>();
+            let st = &mut ly.stats;
+            (st.calls, st.reads, st.hits, st.copies, st.host, st.host_pairs, st.ahead) =
+                (st.calls + calls, st.reads + reads, st.hits + hits, st.copies + fills, st.host + host, st.host_pairs + host_pairs, st.ahead + promos);
+            (st.copy_bytes, st.host_bytes, st.missed_bytes, st.ahead_bytes) =
+                (st.copy_bytes + fills * b, st.host_bytes + host * b, st.missed_bytes + (fills + host) * b, st.ahead_bytes + promos * b);
+            let ms = inner.mail.as_ref().map_or(0.0, |m| m.host_ms(ly.index));
+            st.host_ms += ms;
+            // (the host's time for the GPU's requests prices its next misses as a call of the host's own does)
+            if host > 0 && ms > 0.0 && !inner.frozen {
+                inner.costs.computed(host as usize, host_pairs as usize, ms * 1e3);
+            }
+        }
+        if let Some(m) = inner.mail.as_mut() {
+            let slots = inner.layers.iter().flatten().filter(|l| l.dplan.is_some()).map(|l| l.cache.slots()).max().unwrap_or(1);
+            m.set_params(crate::devplan::Params::of(&inner.offload, &inner.costs, slots))?;
+        }
         let step: Vec<LayerStats> = inner
             .layers
             .iter_mut()
@@ -5482,6 +5603,42 @@ mod tests {
             assert_eq!(at, pairs, "trial {trial}: every pair is in a round");
         }
         assert!(host_rounds(&[], &[Vec::new(), Vec::new()], [1, 1]).is_empty());
+    }
+
+    /// The plan on the GPU (src/devplan.rs, kernels/moe.cu xp_plan: a clock over the places) over the record's decode traces, every miss copied: the share of pairs it finds in places against the
+    /// store's least-recently-used cache's, a row a step and 8 rows a step (generations side by side, as `replay_rows`). The clock finds 0.5 to 0.6 points fewer at one row (60.7, 72.8 and 79.4%
+    /// against 61.3, 73.3 and 79.9), within 2.5 points as checked; at 8 rows 5.1 points more to 0.6 fewer (printed).
+    #[test]
+    fn the_plan_on_the_gpu_over_the_traces() {
+        let &(_, layers, k, ref ids) = trace();
+        let copy_all = |slots: usize| crate::devplan::Params { copy_rows: 0, max_fills: slots as i32, window: 0, max_promote: 0 };
+        for cap in [87usize, 164, 236] {
+            for rows in [1usize, 8] {
+                let (mut found, mut pairs) = (0usize, 0usize);
+                for g0 in (0..20).step_by(rows).filter(|g| g + rows <= 20) {
+                    for l in 0..layers {
+                        let mut pl = crate::devplan::Policy::new(512, cap);
+                        for t in 0..127 {
+                            let step: Vec<i64> = (g0..g0 + rows).flat_map(|g| ids[((g * 127 + t) * layers + l) * k..][..k].iter().map(|&e| e as i64)).collect();
+                            found += step.iter().filter(|&&e| pl.place_of[e as usize] >= 0).count();
+                            pairs += step.len();
+                            // (a call's distinct experts past the places: the rest the host's, as the plan on the GPU sends them)
+                            pl.call(&step, &copy_all(cap));
+                        }
+                    }
+                }
+                let clock = found as f64 / pairs as f64;
+                let lru = replay_rows(cap, rows, false).2;
+                eprintln!(
+                    "{cap} places, {rows} rows: the plan on the GPU finds {:.1}% of pairs in places, the store's cache {:.1}%",
+                    100.0 * clock,
+                    100.0 * lru
+                );
+                if rows == 1 {
+                    assert!((clock - lru).abs() < 0.025, "{cap} places: {clock:.3} against {lru:.3}");
+                }
+            }
+        }
     }
 }
 
