@@ -1860,6 +1860,13 @@ pub unsafe fn f8_unpack(h: bool, (core, heads, var): (u64, u64, u64), o: i64, k:
     Ok(true)
 }
 
+/// foldcheck's wait for a check's launches: a fault comes back named by the launches it follows (so the failing kernel, the library's or the engine's,
+/// is the one named).
+#[cfg(feature = "dev")]
+fn synced(dev: &crate::dev::Dev, what: impl FnOnce() -> String) -> Result<()> {
+    dev.sync().map_err(|e| crate::ffi::Error { msg: format!("{}: {}", what(), e.msg), kind: e.kind })
+}
+
 /// `foldcheck` (R17): each folded piece against the library's on this GPU, the library the oracle: the GPU's code; the way of every GPU code the
 /// library knows (with and without SPLIT), both layouts, matrices of every kind of K and size, at token counts on each side of every threshold;
 /// the KV cache's sizes and decode workspace over valid and refused shapes; the experts' plan and the unpacking of every layout by the engine's own
@@ -1972,18 +1979,24 @@ pub fn check() -> Result<()> {
         }
     }
     say("the KV cache's sizes and the decode's workspace", n, bad);
-    let (n, bad) = route_check(&dev, &lib)?;
-    say("the experts' plan (moe_way), the engine's kernels against the library's (one warp and one block, ids out of range among them)", n, bad);
-    let (n, bad) = kv_check(&dev, &lib)?;
-    say("the 12-bit pages' write, unpack and gather, and the decode and prompt attention over them and over a bf16 cache: the engine's kernels against the library's", n, bad);
-    let (n, bad) = f8_check(&dev, &lib)?;
-    say("the lossless FP8 format's size, pack and unpack (both layouts), the engine's kernels against the library's", n, bad);
-    let (n, bad) = moe_check(&dev, &lib)?;
-    say("the grouped experts' step products (no activation, SiLU, GELU, gathered, weighted), the engine's kernels against the library's", n, bad);
-    let (n, bad) = linear_check(&dev, &lib)?;
-    say("the step product (route GEMM, 1 to 64 tokens), the engine's kernels against the library's, and its workspace", n, bad);
-    let (n, bad) = unpack_check(&dev, &lib)?;
-    say("the mma layouts' unpacking, the engine's kernels against the library's (every bf16 of each layout, whole and a row block)", n, bad);
+    type Check = fn(&crate::dev::Dev, &crate::ffi::Lib) -> Result<(usize, Vec<String>)>;
+    let checks: [(&str, Check); 6] = [
+        ("the experts' plan (moe_way), the engine's kernels against the library's (one warp and one block, ids out of range among them)", route_check),
+        (
+            "the 12-bit pages' write, unpack and gather, and the decode and prompt attention over them and over a bf16 cache: the engine's kernels against the library's",
+            kv_check,
+        ),
+        ("the lossless FP8 format's size, pack and unpack (both layouts), the engine's kernels against the library's", f8_check),
+        ("the grouped experts' step products (no activation, SiLU, GELU, gathered, weighted), the engine's kernels against the library's", moe_check),
+        ("the step product (route GEMM, 1 to 64 tokens), the engine's kernels against the library's, and its workspace", linear_check),
+        ("the mma layouts' unpacking, the engine's kernels against the library's (every bf16 of each layout, whole and a row block)", unpack_check),
+    ];
+    for (what, run) in checks {
+        println!("foldcheck: starting {what}");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+        let (n, bad) = run(&dev, &lib)?;
+        say(what, n, bad);
+    }
     if fails > 0 {
         return crate::ffi::err(format!("foldcheck: {fails} failed"));
     }
@@ -2016,8 +2029,11 @@ fn route_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, V
             a.fill_async(0, dev.stream)?;
             b.fill_async(0, dev.stream)?;
             // SAFETY: ids [p] and two plans of 2 + 2e + p int32, live; one stream.
-            let (ra, rb) = unsafe { (lib.library_moe_way(idb.ptr, p, e, a.ptr, dev.stream), moe_way(idb.ptr, p, e, b.ptr, dev.stream)) };
-            dev.sync()?;
+            let ra = unsafe { lib.library_moe_way(idb.ptr, p, e, a.ptr, dev.stream) };
+            synced(dev, || format!("the library's moe_way, {e} experts, {p} pairs"))?;
+            // SAFETY: as above.
+            let rb = unsafe { moe_way(idb.ptr, p, e, b.ptr, dev.stream) };
+            synced(dev, || format!("the engine's moe_way, {e} experts, {p} pairs"))?;
             n += 1;
             if let (Err(x), _) | (_, Err(x)) = (&ra, &rb) {
                 bad.push(format!("{p} pairs of {e} experts: {x}"));
@@ -2141,10 +2157,10 @@ fn linear_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, 
                 // counters of each, Y [m, rows] each; one stream.
                 let (ra, rb) = unsafe {
                     let ra = lib.library_linear(&pb.pack, xb.ptr, m, ya.ptr, ws.ptr, ws_bytes, da.ptr, dev.stream);
-                    dev.sync()?;
+                    synced(dev, || format!("the library's step product, {name} {rows} x {cols}, {m} tokens"))?;
                     (ra, linear(&pb.pack, xb.ptr, m, yb.ptr, ws.ptr, ws_bytes, db.ptr, dev.stream))
                 };
-                dev.sync()?;
+                synced(dev, || format!("the engine's step product, {name} {rows} x {cols}, {m} tokens"))?;
                 n += 1;
                 match (&ra, &rb) {
                     (Err(e), _) | (_, Err(e)) => {
@@ -2250,6 +2266,7 @@ fn kv_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<
                 dev.stream,
             )?
         };
+        synced(dev, || format!("the library's KV write, {h} x {d}"))?;
         // the pages back by both kernels, unpacked (NHD keys and values) and gathered (the staging cache): every bf16 the same; then the same tokens written by the
         // engine's kernel into pools of their own, read back by the library's: every value the one written (the pools' bytes are not compared: the escape chunks a
         // page takes are found by atomics, in any order)
@@ -2263,12 +2280,15 @@ fn kv_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<
         // SAFETY: the pool and its tables, the pages' and destinations' lists, outputs of `blocks` pages each; one stream.
         let r = unsafe {
             lib.library_kv_unpack(&geom, pool.ptr, kb.ptr, vb.ptr, pages.ptr, blocks as i64, uka.ptr, uva.ptr, dev.stream)?;
+            synced(dev, || format!("the library's KV unpack, {h} x {d}"))?;
             lib.library_kv_gather(&geom, pool.ptr, kb.ptr, vb.ptr, pages.ptr, dst.ptr, blocks as i64, gka.ptr, dev.stream)?;
+            synced(dev, || format!("the library's KV gather, {h} x {d}"))?;
             let u = kv_unpack(&geom, (pool.ptr, kb.ptr, vb.ptr), pages.ptr, blocks as i64, (ukb.ptr, uvb.ptr), dev.stream)?;
+            synced(dev, || format!("the engine's KV unpack, {h} x {d}"))?;
             let gt = kv_gather(&geom, (pool.ptr, kb.ptr, vb.ptr), (pages.ptr, dst.ptr, blocks as i64), gkb.ptr, dev.stream)?;
+            synced(dev, || format!("the engine's KV gather, {h} x {d}"))?;
             (u, gt)
         };
-        dev.sync()?;
         let same = |a: &Buf, b: &Buf, len: usize| -> Result<usize> {
             let (mut x, mut y) = (vec![0u16; len], vec![0u16; len]);
             a.read(0, &mut x)?;
@@ -2301,10 +2321,11 @@ fn kv_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<
                 (status2.ptr, 0, 0, RING),
                 dev.stream,
             )?;
+            synced(dev, || format!("the engine's KV write, {h} x {d}"))?;
             lib.library_kv_unpack(&geom2, pool2.ptr, kb.ptr, vb.ptr, pages.ptr, blocks as i64, uk2.ptr, uv2.ptr, dev.stream)?;
+            synced(dev, || format!("the library's KV unpack of the engine's write, {h} x {d}"))?;
             ok
         };
-        dev.sync()?;
         n += 1;
         if !w2 {
             bad.push(format!("{h} x {d}: the engine's write did not take the call"));
@@ -2342,6 +2363,8 @@ fn kv_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<
                 oa.fill_async(0xA5, dev.stream)?;
                 ob.fill_async(0x5A, dev.stream)?;
                 let fp = if first > 0 { fb.ptr } else { 0 };
+                let what =
+                    format!("{h} x {d}, {g} queries a head, {b} sequences (first {first}, bf16 scores {round}){}", if bf16 { ", a bf16 cache" } else { "" });
                 // SAFETY: the pool (or the cache), its tables, queries [b][h g d], outputs and zeroed workspaces of the plan's size, live; one stream.
                 let (ra, rb) = unsafe {
                     if bf16 {
@@ -2349,6 +2372,7 @@ fn kv_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<
                         let seqs = (sq.ptr, fp, b as i64, splits);
                         let heads = (h as i64, g as i64, d as i64);
                         let ra = lib.library_kv_decode_bf16(qb.ptr, w, cache, seqs, heads, (0.0883883, round), oa.ptr, w, (wa.ptr, ws_bytes), dev.stream);
+                        synced(dev, || format!("the library's decode attention, {what}"))?;
                         (ra, kv_decode_bf16((qb.ptr, w), cache, seqs, heads, (0.0883883, round), (ob.ptr, w), (wb.ptr, ws_bytes), dev.stream))
                     } else {
                         let ra = lib.library_kv_decode_from(
@@ -2373,6 +2397,7 @@ fn kv_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<
                             ws_bytes,
                             dev.stream,
                         );
+                        synced(dev, || format!("the library's decode attention, {what}"))?;
                         let tables = (bt.ptr, blocks as i64, sq.ptr, fp, round);
                         (
                             ra,
@@ -2392,10 +2417,8 @@ fn kv_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<
                         )
                     }
                 };
-                dev.sync()?;
+                synced(dev, || format!("the engine's decode attention, {what}"))?;
                 n += 1;
-                let what =
-                    format!("{h} x {d}, {g} queries a head, {b} sequences (first {first}, bf16 scores {round}){}", if bf16 { ", a bf16 cache" } else { "" });
                 match (&ra, &rb) {
                     (Err(e), _) | (_, Err(e)) => {
                         bad.push(format!("{what}: {e}"));
@@ -2432,18 +2455,24 @@ fn kv_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<
                 oa.fill_async(0xA5, dev.stream)?;
                 ob.fill_async(0x5A, dev.stream)?;
                 let (sc, scores) = ((0.0883883, round, softcap, 0u64), (0.0883883, round, softcap));
+                let what = format!(
+                    "{h} x {d}, {g} queries a head: a prompt's {rows} rows from {start} (window {window}, bf16 scores {round}, soft cap {softcap}){}",
+                    if bf16 { ", a bf16 cache" } else { "" }
+                );
                 // SAFETY: the pages (or the cache), the table, queries and outputs [rows][h g d], live; one stream.
                 let (ra, rb) = unsafe {
                     if bf16 {
                         let cache = (kc.ptr, vc.ptr, bt.ptr, 0);
                         let heads = (h as i64, g as i64, d as i64);
                         let ra = lib.library_kv_prefill_bf16(qb.ptr, w, cache, (rows, start, window), heads, scores, oa.ptr, w, dev.stream);
+                        synced(dev, || format!("the library's prompt attention, {what}"))?;
                         (ra, kv_prefill_bf16((qb.ptr, w), cache, (rows, start, window), heads, scores, (ob.ptr, w), dev.stream))
                     } else {
                         let ra = lib.library_kv_prefill(
                             &geom, g as i64, pool.ptr, kb.ptr, vb.ptr, bt.ptr, qb.ptr, w, None, rows, start, window, 0.0883883, round, softcap, 0, oa.ptr, w,
                             dev.stream,
                         );
+                        synced(dev, || format!("the library's prompt attention, {what}"))?;
                         (
                             ra,
                             kv_prefill(
@@ -2460,12 +2489,8 @@ fn kv_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<
                         )
                     }
                 };
-                dev.sync()?;
+                synced(dev, || format!("the engine's prompt attention, {what}"))?;
                 n += 1;
-                let what = format!(
-                    "{h} x {d}, {g} queries a head: a prompt's {rows} rows from {start} (window {window}, bf16 scores {round}, soft cap {softcap}){}",
-                    if bf16 { ", a bf16 cache" } else { "" }
-                );
                 match (&ra, &rb) {
                     (Err(e), _) | (_, Err(e)) => {
                         bad.push(format!("{what}: {e}"));
@@ -2528,6 +2553,7 @@ fn moe_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec
             for (act, gather, weighted) in [(0i64, true, false), (0, false, false), (0, true, true), (1, true, false), (2, false, false)] {
                 let twelve = pb.pack.is_twelve();
                 let ws_bytes = lib.library_moe_workspace(twelve, e, o, kk as i64, t, k, act, weighted)?.max(16);
+                let what = format!("{name}, {t} tokens, act {act}, gather {gather}, weighted {weighted}");
                 let rows_out = if weighted { t } else { t * k };
                 let width = if act != 0 { o / 2 } else { o };
                 let len = (rows_out * width) as usize;
@@ -2545,12 +2571,11 @@ fn moe_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec
                 // SAFETY: the stack, X [64 2, K], the plan, the weights and ids, a workspace of the library's size, zeroed counters each, Y each; one stream.
                 let (ra, rb) = unsafe {
                     let ra = lib.library_moe(&pb.pack, e, xb.ptr, t, k, gather, plan.ptr, act, wp, ip, ya.ptr, ws.ptr, ws_bytes, da.ptr, dev.stream);
-                    dev.sync()?;
+                    synced(dev, || format!("the library's experts, {what}"))?;
                     (ra, moe(&pb.pack, None, e, (xb.ptr, t, k, gather), (plan.ptr, act, wp, ip), yb.ptr, (ws.ptr, ws_bytes, db.ptr), dev.stream))
                 };
-                dev.sync()?;
+                synced(dev, || format!("the engine's experts, {what}"))?;
                 n += 1;
-                let what = format!("{name}, {t} tokens, act {act}, gather {gather}, weighted {weighted}");
                 match (&ra, &rb) {
                     (Err(x), _) | (_, Err(x)) => {
                         bad.push(format!("{what}: {x}"));
@@ -2600,10 +2625,10 @@ fn moe_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec
             // SAFETY: the places, X, the plan, a workspace of the library's size, zeroed counters each, Y each; one stream.
             let (ra, rb) = unsafe {
                 let ra = lib.library_moe_placed(&pb.pack, stride, e, xb.ptr, t, k, true, plan.ptr, act, 0, 0, ya.ptr, ws.ptr, ws_bytes, da.ptr, dev.stream);
-                dev.sync()?;
+                synced(dev, || format!("the library's expert cache's places, {t} tokens, act {act}"))?;
                 (ra, moe(&pb.pack, Some(stride as i64), e, (xb.ptr, t, k, true), (plan.ptr, act, 0, 0), yb.ptr, (ws.ptr, ws_bytes, db.ptr), dev.stream))
             };
-            dev.sync()?;
+            synced(dev, || format!("the engine's expert cache's places, {t} tokens, act {act}"))?;
             n += 1;
             let what = format!("the expert cache's places, {t} tokens, act {act}");
             match (&ra, &rb) {
@@ -2677,12 +2702,15 @@ fn f8_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<
             // SAFETY: the heads, cores of 6,144 (layout H 7,168) bytes a patch, var of the size's words, outputs [o, k]; one stream.
             let r = unsafe {
                 lib.library_f8_pack(h, wb.ptr, k, o, k, ha.ptr, ca.ptr, xa.ptr, va, dev.stream)?;
+                synced(dev, || format!("the library's FP8 pack, {name}"))?;
                 let p = f8_pack(h, wb.ptr, k, o, k, hb.ptr, (cb.ptr, xb.ptr, vb), dev.stream)?;
+                synced(dev, || format!("the engine's FP8 pack, {name}"))?;
                 lib.library_f8_unpack(h, ca.ptr, ha.ptr, xa.ptr, o, k, oa.ptr, k, dev.stream)?;
+                synced(dev, || format!("the library's FP8 unpack, {name}"))?;
                 let u = f8_unpack(h, (cb.ptr, hb.ptr, xb.ptr), o, k, (ob.ptr, k), dev.stream)?;
+                synced(dev, || format!("the engine's FP8 unpack, {name}"))?;
                 (p, u)
             };
-            dev.sync()?;
             n += 1;
             if r != (true, true) {
                 bad.push(format!("{name}: the engine's pack or unpack did not take it ({r:?})"));
@@ -2732,13 +2760,11 @@ fn unpack_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, 
                 a.fill_async(0xA5, dev.stream)?;
                 b.fill_async(0x5A, dev.stream)?;
                 // SAFETY: the pack's buffers and two of rows x cols bf16, live; the same stream.
-                let (ra, rb) = unsafe {
-                    (
-                        lib.library_unpack(&pb.pack, row0, nr, a.ptr, dev.stream),
-                        unpacker(&pb.pack).and_then(|u| unpack(u, &pb.pack, row0, nr, b.ptr, dev.stream)),
-                    )
-                };
-                dev.sync()?;
+                let ra = unsafe { lib.library_unpack(&pb.pack, row0, nr, a.ptr, dev.stream) };
+                synced(dev, || format!("the library's unpack, {name} {rows} x {cols} rows {row0}+{nr}"))?;
+                // SAFETY: as above.
+                let rb = unsafe { unpacker(&pb.pack).and_then(|u| unpack(u, &pb.pack, row0, nr, b.ptr, dev.stream)) };
+                synced(dev, || format!("the engine's unpack, {name} {rows} x {cols} rows {row0}+{nr}"))?;
                 n += 1;
                 if let (Err(x), _) | (_, Err(x)) = (&ra, &rb) {
                     bad.push(format!("{name} {rows} x {cols} rows {row0}+{nr}: {x}"));
