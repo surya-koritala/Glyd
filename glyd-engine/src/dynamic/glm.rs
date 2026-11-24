@@ -272,6 +272,7 @@ pub(crate) fn latent(c: &ConfigGlm) -> MlaOp {
                 score: IdxScore::F32 { dim: ix.dim, scale: (ix.dim as f32).powf(-0.5) },
                 keys: IdxKeys::Ring(1),
                 weighted: true,
+                cand: None,
             },
             dim: ix.dim,
             q_b: 0,

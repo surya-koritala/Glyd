@@ -444,10 +444,21 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                 let norms = [name(&mut small, one(roles, "norm_in")?), name(&mut small, one(roles, "norm_key")?), name(&mut small, one(roles, "norm_conv")?)];
                 let taps = name(&mut small, one(roles, "conv")?);
                 let (hist, cv) = (state(&mut states, 8), state(&mut states, 9 * 4 * d_ * 2));
+                let conv = super::ngram::NgramConv { norm: norms[2], taps, state: cv, taps_n: conv, dilation };
                 layer.extend([
-                    Op::NgramRows(super::ngram::NgramRows { table, hash, hist, per: heads, row: dim / (2 * heads), eos: end }),
+                    Op::NgramRows(super::ngram::NgramRows {
+                        table,
+                        hash,
+                        hist,
+                        per: heads,
+                        row: dim / (2 * heads),
+                        eos: end,
+                        order,
+                        map: None,
+                        segments: true,
+                    }),
                     Op::Linear { w: kv, x: Slot::In, y: Slot::Gu, name: "n-gram embedding: key and value product" },
-                    Op::NgramAdd(super::ngram::NgramAdd { norms, taps, conv: cv }),
+                    Op::NgramAdd(super::ngram::NgramAdd { q: norms[0], k: norms[1], conv: Some(conv), plus_one: true, eps: n.norm.eps }),
                 ]);
                 ple_w = ple_w.max(dim);
             }
@@ -526,6 +537,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                             score: super::IdxScore::F32 { dim: 128, scale: (128f32).powf(-0.5) },
                             keys: super::IdxKeys::Pools(pools),
                             weighted: false,
+                            cand: None,
                         };
                         layer.extend([
                             Op::Linear { w: qkv, x: Slot::H, y: Slot::Mix, name: "attention: qkv product" },
@@ -1186,78 +1198,10 @@ pub fn kimi(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, w32
     Ok(kimi_desc(&KimiDims { h: m.hidden, qd, nh, kd, bound, inter, situ, eps, moe_rows, mla }, &ls, &starts, st, early, m.vocab, max_pos, eos))
 }
 
-/// DeepSeek-V4: the compressed attention (the window, and on a compressing layer its compressor's entries; on a ratio-4 layer the overlapping windows and the indexer's
-/// choice of them), the queries' and the output's low ranks in groups, then the experts (their block's; hash-routed in the first layers), around each block the four
-/// streams' mix; the weighted hyper-head. `vo` what the level and the switches make of its products and caches. The matrices, small tensors and blocks are
-/// dynamic/deepseek_v4.rs's loader's (`dynamic::deepseek_v4::describe` indexes them in its order).
+/// A model of compressed attention layers (DeepSeek-V4's and V4.1's forms of the kind; `lower_comp::lower`, which gives its loader's plan too). `vo` what the level and
+/// the switches make of its products and caches.
 pub fn deepseek_v4(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, vo: &super::deepseek_v4::V4Opts) -> Result<ModelDesc> {
-    use super::deepseek_v4::{v4_desc, V4Shape};
-    use crate::runtime::kinds::Residual;
-    let m = &d.desc;
-    if m.blocks.len() % 2 != 0 {
-        return err(format!("DeepSeek-V4: {} blocks, where each layer is an attention block and an experts block", m.blocks.len()));
-    }
-    let layers = m.blocks.len() / 2;
-    let (mut ratios, mut hash) = (Vec::with_capacity(layers), Vec::with_capacity(layers));
-    let (mut first, mut idx, mut hc) = (None, (0, 0, 0), (0.0, 0, 0, crate::runtime::kinds::Rounding::Once));
-    for l in 0..layers {
-        let (ab, eb) = (&m.blocks[2 * l], &m.blocks[2 * l + 1]);
-        let c = match &ab.body {
-            Body::Mixer(Mixer::Compressed(c)) => c,
-            b => return err(format!("DeepSeek-V4: layer {l}'s mixer is {b:?}")),
-        };
-        if !c.ape || !c.q_head_norm || c.share.is_some() {
-            return err(format!(
-                "DeepSeek-V4: layer {l} is V4.1's compressed sparse attention (no window bias, parts shared across layers): no operation of this executor yet"
-            ));
-        }
-        if c.indexer.is_some() != (c.ratio == 4) {
-            return err(format!(
-                "DeepSeek-V4: layer {l} compresses by {} with{} an indexer: this engine runs the indexer on the layers of ratio 4 alone",
-                c.ratio,
-                if c.indexer.is_some() { "" } else { "out" }
-            ));
-        }
-        if let Some(x) = &c.indexer {
-            idx = (x.heads, x.head_dim, x.top_k);
-        }
-        let e = match &eb.body {
-            Body::Ffn(Ffn::Moe(e)) => e,
-            b => return err(format!("DeepSeek-V4: layer {l}'s feed-forward is {b:?}")),
-        };
-        for b in [ab, eb] {
-            match &b.residual {
-                Residual::Streams(s) if !s.lagged => hc = (s.eps, s.sinkhorn_iters, s.streams, s.rounding),
-                r => return err(format!("DeepSeek-V4: layer {l}'s residual is {r:?}, not mHC's streams (lagged mHC has no operation yet)")),
-            }
-        }
-        ratios.push(c.ratio);
-        hash.push(e.router.hash);
-        first = first.or(Some(c));
-    }
-    let c = first.ok_or_else(|| Error("DeepSeek-V4: no layers".into()))?;
-    let s = V4Shape {
-        d: m.hidden,
-        vocab: m.vocab,
-        eps: m.blocks[0].norm_in.eps,
-        max_pos,
-        eos,
-        nh: c.heads,
-        hd: c.head_dim,
-        rope_dim: c.rope.dim,
-        q_lora: c.q_lora,
-        ol: c.o_lora,
-        og: c.o_groups,
-        wo_cols: c.heads * c.head_dim / c.o_groups.max(1),
-        idx,
-        window: c.window,
-        ratios,
-        hash,
-        streams: hc.2,
-        hc: (hc.0, hc.1),
-        round: hc.3,
-    };
-    v4_desc(&s, st, vo)
+    super::lower_comp::lower(d, eos, max_pos, st, vo).map(|x| x.0)
 }
 
 #[cfg(test)]

@@ -326,7 +326,7 @@ impl KernGlm {
         if ksel <= 0 || ksel > 1024 {
             return err(format!("an indexer that picks {ksel} groups of keys: this engine runs up to 1,024"));
         }
-        launch!(self.select, [n, 1, 1], [1024, 1, 1], s; scores, pmax, pos, kp, ksel, kp, tail as i32, sel, tmax, cnt)
+        launch!(self.select, [n, 1, 1], [1024, 1, 1], s; scores, pmax, pos, kp, ksel, kp, tail as i32, sel, tmax, cnt, 0u64, 0i32)
     }
 
     /// olat [n, heads, kv_rank] fp32: each row's and head's softmax attention over the tokens sel/cnt picked, of the latents lat [., kv_rank]. A few rows (at most `HC_FEW`) cut their tokens into 8 runs over blocks and merge

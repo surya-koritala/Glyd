@@ -3,7 +3,7 @@
 //! The weights load exactly: an FP8 matrix as the bf16 it is (packed at the level asked, lossless by default), the FP4 experts as five-bit runs (their codes and power-of-two scales: the same values),
 //! the rest as the checkpoint holds it. The arithmetic is kernels/dsv4.cu's, the streams' the streams kind's (kernels/residual.cu); src/dsv4_ref.rs is the CPU reference it is checked against (`dsv4check`).
 
-use super::{Dyn, HeadMix, IdxKeys, IdxPick, IdxScore, ModelDesc, MoeOp, NormW, Op, Opts, ResidentMoe, Ring, Slot, Stage, StreamsMix, V4Dims};
+use super::{Cand, Dyn, HeadMix, IdxKeys, IdxPick, IdxScore, ModelDesc, MoeOp, NormW, Op, Opts, ResidentMoe, Ring, Slot, Stage, StreamsMix, V4Dims};
 use crate::deepseek_v4::{fp4_runs, fp8_bf16, ConfigV4};
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result};
@@ -31,6 +31,7 @@ pub(crate) struct KernV4 {
     pub(crate) attn_soft: crate::kt::v4_attn_soft,
     pub(crate) attn_out: crate::kt::v4_attn_out,
     pub(crate) ogather: crate::kt::v4_ogather,
+    pub(crate) idx_keys: crate::kt::v4_idx_keys,
 }
 
 impl KernV4 {
@@ -48,6 +49,7 @@ impl KernV4 {
             attn_soft: dev.typed()?,
             attn_out: dev.typed()?,
             ogather: dev.typed()?,
+            idx_keys: dev.typed()?,
         })
     }
 }
@@ -69,6 +71,13 @@ pub(crate) struct V4Run {
     /// another (Att and Mid hold a group's rows of the whole chunk, then the next group's)
     pub ox: Buf,
     pub oy: Buf,
+    /// the candidate blocks (`IdxPick::cand`): each row's published blocks (`ctop` a row) and their counts, the blocks' scores (`bmax` a row, `ra` rows) and their counts
+    pub cand: Buf,
+    pub ncand: Buf,
+    pub bsc: Buf,
+    pub nent: Buf,
+    pub ctop: usize,
+    pub bmax: usize,
     /// keys a query reads at most, the indexer's entries at most, rows the attention takes at a time
     pub lmax: usize,
     pub emax: usize,
@@ -78,8 +87,21 @@ pub(crate) struct V4Run {
 impl V4Run {
     pub fn new(dev: &Dev, d: &ModelDesc, dims: &V4Dims, ch: usize, ctx: usize) -> Result<V4Run> {
         let lmax = dims.window + dims.topk.max(if dims.all_ratio > 0 { ctx / dims.all_ratio + 1 } else { 0 });
-        let emax = ctx / 4 + 1;
+        // (the entries an indexer scores, a chunk's compressors make: the smallest ratio's; 4 where there is none, as before the ratios of DeepSeek-V4.1)
+        let emax = ctx / if dims.idx_ratio > 0 { dims.idx_ratio } else { 4 } + 1;
+        let minr = [dims.idx_ratio, dims.all_ratio, 4].into_iter().filter(|&r| r > 0).min().unwrap_or(4);
         let ra = ch.min(64);
+        let cands: Vec<(usize, usize)> = d
+            .layers
+            .iter()
+            .flatten()
+            .filter_map(|op| match op {
+                Op::IdxPick(IdxPick { cand: Some(Cand::Publish { block, top } | Cand::Inside { block, top }), .. }) => Some((*block, *top)),
+                _ => None,
+            })
+            .collect();
+        let ctop = cands.iter().map(|c| c.1).max().unwrap_or(0);
+        let bmax = cands.iter().map(|c| c.0).min().map_or(0, |b| emax / b + 1);
         let g = dims.o_groups.max(1);
         let gids = Buf::new(ch * g * 8)?;
         gids.write(0, &(0..ch * g).map(|j| (j % g) as i64).collect::<Vec<i64>>())?;
@@ -91,11 +113,17 @@ impl V4Run {
             isc: Buf::zeroed(ra * emax * 4)?,
             sel: Buf::zeroed(ch * dims.topk.max(1) * 4)?,
             cnt: Buf::zeroed(ch * 4)?,
-            pooled: Buf::zeroed((ch / 4 + 2) * 512 * 4)?,
+            pooled: Buf::zeroed((ch / minr + 2) * 512 * 4)?,
             gids,
             gplan: Buf::zeroed((2 + 2 * g + ch * g) * 4)?,
             ox: Buf::new(if ch > crate::f8::MOE_TOKENS { crate::f8::MOE_TOKENS * dims.heads * 512 * 2 } else { 16 })?,
             oy: Buf::new(if ch > crate::f8::MOE_TOKENS { crate::f8::MOE_TOKENS * d.width(crate::dynamic::Slot::Mid) * 2 } else { 16 })?,
+            cand: Buf::zeroed((ch * ctop * 4).max(4))?,
+            ncand: Buf::zeroed(ch * 4)?,
+            bsc: Buf::zeroed((ra * bmax * 4).max(4))?,
+            nent: Buf::zeroed(ra * 4)?,
+            ctop,
+            bmax,
             lmax,
             emax,
             ra,
@@ -106,7 +134,18 @@ impl V4Run {
 /// A ratio-4 layer's indexer's pick: every indexer's (`Op::IdxPick`), its entries the indexer's compressor's (state `cache`), its scores the release's bf16 arithmetic, the
 /// entries kept as they are.
 fn pick(cache: usize, ratio: usize, heads: usize, top_k: usize, wscale: f32) -> Op {
-    Op::IdxPick(IdxPick { heads, ratio, top_k, expand: false, tail: false, wscale, score: IdxScore::Release, keys: IdxKeys::State(cache), weighted: true })
+    Op::IdxPick(IdxPick {
+        heads,
+        ratio,
+        top_k,
+        expand: false,
+        tail: false,
+        wscale,
+        score: IdxScore::Release,
+        keys: IdxKeys::State(cache),
+        weighted: true,
+        cand: None,
+    })
 }
 
 /// A product's matrix: in the matrices' list, or the FP8 matrices'.
@@ -301,7 +340,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
             Op::RmsNorm { x: Slot::Proj, w: q_norm, y: Slot::Qr, weight: NormW::Plain, eps: c.eps },
             Op::Fp8 { x: Slot::Qr, y: Slot::Proj, block: 128 },
             wq_b.op(Slot::Proj, Slot::Qo, "attention: q up"),
-            Op::CompQ { rope, heads: nh },
+            Op::CompQ { rope, heads: nh, norm: true },
             wkv.op(Slot::Hq, Slot::Kv, "attention: kv"),
             Op::CompKv { norm: kv_norm, rope, ring },
         ];
@@ -317,7 +356,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
             states.push((ctx / ratio + 2) * dd * 2);
             states.push(coff * ratio * coff * dd * 4);
             states.push(coff * ratio * coff * dd * 4);
-            Ok(Op::Compress { w, ape, norm, d: dd, ratio, rope, cache, state: cache + 1, indexer })
+            Ok(Op::Compress { w, ape, norm, d: dd, ratio, overlap: ratio == 4, rope, cache, state: cache + 1, indexer, raw: None })
         };
         let mut cache = None;
         if ratio == 4 {
@@ -344,7 +383,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
             ops.push(mc);
         }
         ops.extend([
-            Op::CompAttn { ring, cache, ratio, sink, rope, heads: nh, hpg },
+            Op::CompAttn { ring, cache, ratio, picked: ratio == 4, sink, rope, heads: nh, hpg },
             if stack.is_some() {
                 Op::OGroupLoraStack { w: wo_a0, groups: c.o_groups, ol, y: Slot::M, fp8: true }
             } else {
@@ -619,7 +658,16 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
         post: None,
         hc: (c.hc_eps, c.hc_iters as i32),
         logit_mult: 0.0,
-        v4: Some(V4Dims { heads: nh, idx_heads: c.idx_heads, topk: c.idx_topk, window: c.window, all_ratio, sim: vo.sim, o_groups: c.o_groups }),
+        v4: Some(V4Dims {
+            heads: nh,
+            idx_heads: c.idx_heads,
+            topk: c.idx_topk,
+            window: c.window,
+            all_ratio,
+            sim: vo.sim,
+            o_groups: c.o_groups,
+            idx_ratio: if c.ratios.contains(&4) { 4 } else { 0 },
+        }),
     };
     drop(fp8_mat);
     // (the loader's own operations, as it indexed what it loaded, held to the layer kinds' description of the config: one model, or it is not loaded)
@@ -808,7 +856,7 @@ pub(crate) fn v4_desc(s: &V4Shape, st: &Stage, vo: &V4Opts) -> Result<ModelDesc>
             Op::RmsNorm { x: Slot::Proj, w: q_norm, y: Slot::Qr, weight: NormW::Plain, eps: s.eps },
             Op::Fp8 { x: Slot::Qr, y: Slot::Proj, block: 128 },
             wq_b.op(Slot::Proj, Slot::Qo, "attention: q up"),
-            Op::CompQ { rope, heads: nh },
+            Op::CompQ { rope, heads: nh, norm: true },
             wkv.op(Slot::Hq, Slot::Kv, "attention: kv"),
             Op::CompKv { norm: kv_norm, rope, ring },
         ];
@@ -819,7 +867,7 @@ pub(crate) fn v4_desc(s: &V4Shape, st: &Stage, vo: &V4Opts) -> Result<ModelDesc>
             states.push((vo.ctx / ratio + 2) * dd * 2);
             states.push(coff * ratio * coff * dd * 4);
             states.push(coff * ratio * coff * dd * 4);
-            Op::Compress { w, ape: w + 1, norm: w + 2, d: dd, ratio, rope, cache, state: cache + 1, indexer }
+            Op::Compress { w, ape: w + 1, norm: w + 2, d: dd, ratio, overlap: ratio == 4, rope, cache, state: cache + 1, indexer, raw: None }
         };
         if ratio == 4 {
             let iq = lin(&mut n, ih * idim, s.q_lora, 0);
@@ -842,7 +890,7 @@ pub(crate) fn v4_desc(s: &V4Shape, st: &Stage, vo: &V4Opts) -> Result<ModelDesc>
             ops.push(comp(&mut n, &mut states, hd, false));
         }
         ops.extend([
-            Op::CompAttn { ring, cache, ratio, sink, rope, heads: nh, hpg },
+            Op::CompAttn { ring, cache, ratio, picked: ratio == 4, sink, rope, heads: nh, hpg },
             if stack {
                 Op::OGroupLoraStack { w: wo_a0, groups: og, ol, y: Slot::M, fp8: true }
             } else {
@@ -918,6 +966,15 @@ pub(crate) fn v4_desc(s: &V4Shape, st: &Stage, vo: &V4Opts) -> Result<ModelDesc>
         post: None,
         hc: (s.hc.0, s.hc.1 as i32),
         logit_mult: 0.0,
-        v4: Some(V4Dims { heads: nh, idx_heads: ih, topk: itop, window: s.window, all_ratio, sim: vo.sim, o_groups: og }),
+        v4: Some(V4Dims {
+            heads: nh,
+            idx_heads: ih,
+            topk: itop,
+            window: s.window,
+            all_ratio,
+            sim: vo.sim,
+            o_groups: og,
+            idx_ratio: if s.ratios.contains(&4) { 4 } else { 0 },
+        }),
     })
 }

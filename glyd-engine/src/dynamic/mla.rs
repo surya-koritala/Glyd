@@ -74,6 +74,17 @@ pub struct IdxPick {
     pub keys: IdxKeys,
     /// The heads' scores weighed by the head weights' product (Iw); else summed alone (the mean-pooled indexer's).
     pub weighted: bool,
+    /// A shared compressed attention's candidate blocks (`kinds::CompShare`); None: every visible entry is a candidate.
+    pub cand: Option<Cand>,
+}
+
+/// Candidate blocks (`kinds::CompShare::publish`, `candidates`): the candidate source's pick publishes, for each query, the best `top` blocks of `block` entries (a
+/// block's score its best entry's; the block of the query's newest visible entry kept whatever its score), in order; an index source after it (`Inside`) scores the
+/// entries inside the blocks its query was published alone, the rest out of its top-k.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Cand {
+    Publish { block: usize, top: usize },
+    Inside { block: usize, top: usize },
 }
 
 /// A latent attention's indexer: its pick, and its small tensors (bf16 as released): the queries' product `q_b` [heads dim, q_rank] (of the normed q latent), the
@@ -155,6 +166,7 @@ impl MlaOp {
                         score: IdxScore::F32 { dim: x.head_dim, scale: (x.head_dim as f32).powf(-0.5) },
                         keys: IdxKeys::Ring(ring + 1),
                         weighted: true,
+                        cand: None,
                     },
                     dim: x.head_dim,
                     q_b: s,
@@ -311,6 +323,8 @@ pub(crate) struct KernMla {
     score: crate::kt::idx_score,
     score_bf16: crate::kt::idx_score_bf16,
     pick: crate::kt::idx_pick,
+    blocks: crate::kt::idx_blocks,
+    inside: crate::kt::idx_inside,
     attn: crate::kt::mla_attn,
     /// The shared memory a block of `attn` may take here (the GPU's most, opted in to at load).
     smem: u32,
@@ -336,6 +350,8 @@ impl KernMla {
             score: dev.typed()?,
             score_bf16: dev.typed()?,
             pick: dev.typed()?,
+            blocks: dev.typed()?,
+            inside: dev.typed()?,
             attn,
             smem,
             merge: dev.typed()?,
@@ -425,6 +441,18 @@ pub(crate) struct PickAt {
     pub sel: u64,
     pub sk: usize,
     pub cnt: u64,
+    /// The candidate blocks' room (`IdxPick::cand`): the rows' published blocks and their counts, the blocks' scores (`bmax` a row) and their counts.
+    pub cand: CandAt,
+}
+
+/// Where a pick's candidate blocks are (`IdxPick::cand`; all 0 without them).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CandAt {
+    pub blocks: u64,
+    pub nblocks: u64,
+    pub bsc: u64,
+    pub bmax: usize,
+    pub nent: u64,
 }
 
 impl Dyn {
@@ -465,8 +493,21 @@ impl Dyn {
                     at.q, at.w, x.wscale, at.keys, at.pos, at.scores, x.heads as i32, x.ratio as i32, at.emax as i32)?;
             }
         }
+        // (the candidate source: the best blocks of its scores published; an index source after it: its scores outside them out of its candidates)
+        let c = &at.cand;
+        match x.cand {
+            Some(Cand::Publish { block, top }) => {
+                launch!(k.blocks, [n, 1, 1], [256, 1, 1], s; at.scores, at.emax as i32, at.pos, x.ratio as i32, block as i32, c.bsc, c.bmax as i32, c.nent)?;
+                launch!(k.pick, [n, 1, 1], [1024, 1, 1], s; c.bsc, c.bmax as i32, at.pos, 1i32, top as i32, 1i32, 0i32, c.blocks, top as i32, c.nblocks, c.nent, 0i32)?;
+            }
+            Some(Cand::Inside { block, top }) => {
+                launch!(k.inside, [n, 1, 1], [256, 1, 1], s; at.scores, at.emax as i32, at.pos, x.ratio as i32, block as i32, c.blocks, top as i32, c.nblocks)?;
+            }
+            None => {}
+        }
+        let masked = matches!(x.cand, Some(Cand::Inside { .. })) as i32;
         let expand = if x.expand { x.ratio } else { 1 } as i32;
-        launch!(k.pick, [n, 1, 1], [1024, 1, 1], s; at.scores, at.emax as i32, at.pos, x.ratio as i32, x.top_k as i32, expand, x.tail as i32, at.sel, at.sk as i32, at.cnt)
+        launch!(k.pick, [n, 1, 1], [1024, 1, 1], s; at.scores, at.emax as i32, at.pos, x.ratio as i32, x.top_k as i32, expand, x.tail as i32, at.sel, at.sk as i32, at.cnt, 0u64, masked)
     }
 
     /// `Op::Mla` (of part `p`) on n rows at positions `pos`: the input products, the q latent's norm and q's product; each sequence's key-value latents normed into its
@@ -563,6 +604,7 @@ impl Dyn {
                             sel: r.sel.ptr,
                             sk: tmax,
                             cnt: r.cnt.ptr,
+                            cand: CandAt::default(),
                         };
                         self.idx_pick(&ix.pick, &at)?;
                         r.sel.ptr

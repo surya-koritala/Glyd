@@ -3,7 +3,7 @@
 //! (`Op::IdxPick`, every indexer's: src/dynamic/mla.rs), the attention over the window and the compressed entries (`Op::CompAttn`), and the output's grouped low rank
 //! (`Op::OGroupLora`, `Op::OGroupLoraStack`). The arithmetic is kernels/dsv4.cu's (the release's), its buffers `V4Run`'s.
 
-use super::mla::PickAt;
+use super::mla::{CandAt, PickAt};
 use super::{Dyn, IdxKeys, Op, Part, Slot};
 use crate::ffi::{err, Error, Result};
 use crate::launch;
@@ -21,9 +21,9 @@ impl Dyn {
         let k = &v.k;
         let rope = |r: usize| (self.ropes[r].0.ptr, self.ropes[r].1.ptr);
         match *op {
-            Op::CompQ { rope: r, heads } => {
+            Op::CompQ { rope: r, heads, norm } => {
                 let (c, sn) = rope(r);
-                launch!(k.q_prep, [nu, heads as u32, 1], [128, 1, 1], s; p.slot(Slot::Qo), c, sn, pos, eps)?;
+                launch!(k.q_prep, [nu, heads as u32, 1], [128, 1, 1], s; p.slot(Slot::Qo), c, sn, pos, eps, norm as i32)?;
                 self.mark("attention: q norm, rotary")
             }
             Op::CompKv { norm, rope: r, ring } => {
@@ -32,8 +32,9 @@ impl Dyn {
                 launch!(k.kv_prep, [nu, 1, 1], [128, 1, 1], s; kv, p.small[norm].ptr, c, sn, pos, self.cache(ring).0, self.ring_cap[ring] as i32, eps, v.dims.sim as i32)?;
                 self.mark("attention: kv norm, rotary, cache")
             }
-            Op::Compress { w, ape, norm, d, ratio, rope: r, cache, state, indexer } => {
-                let wd = if ratio == 4 { 2 * d } else { d };
+            Op::Compress { w, ape, norm, d, ratio, overlap, rope: r, cache, state, indexer, raw } => {
+                let wd = if overlap { 2 * d } else { d };
+                let raw = raw.map_or(0, |x| self.state(x));
                 let (c, sn) = rope(r);
                 let (h, cache, st0, st1) = (p.slot(Slot::H) + self.rows_before(p.d.hidden), self.state(cache), self.state(state), self.state(state + 1));
                 if n == 1 && hid % 256 == 0 && hid <= 8192 {
@@ -41,9 +42,14 @@ impl Dyn {
                 } else {
                     launch!(k.lin32, [((2 * wd) as u32).div_ceil(8), nu.div_ceil(8), 1], [256, 1, 1], s; h, p.small[w].ptr, p.slot(Slot::Cp), n as i32, hid, (2 * wd) as i32)?;
                 }
-                launch!(k.comp_pool, [(d as u32).div_ceil(128), 1, 1], [128, 1, 1], s; p.slot(Slot::Cp), p.small[ape].ptr, st0, st1, v.pooled.ptr, pos, n as i32, ratio as i32, d as i32, (ratio == 4) as i32)?;
-                launch!(k.comp_out, [(n / ratio + 1) as u32, 1, 1], [128, 1, 1], s; v.pooled.ptr, p.small[norm].ptr, c, sn, pos, n as i32, cache, ratio as i32, d as i32, indexer as i32, eps, v.dims.sim as i32)?;
+                launch!(k.comp_pool, [(d as u32).div_ceil(128), 1, 1], [128, 1, 1], s; p.slot(Slot::Cp), p.small[ape].ptr, st0, st1, v.pooled.ptr, pos, n as i32, ratio as i32, d as i32, overlap as i32)?;
+                launch!(k.comp_out, [(n / ratio + 1) as u32, 1, 1], [128, 1, 1], s; v.pooled.ptr, p.small[norm].ptr, c, sn, pos, n as i32, cache, ratio as i32, d as i32, indexer as i32, eps, v.dims.sim as i32, raw)?;
                 self.mark(if indexer { "indexer: compressor" } else { "attention: compressor" })
+            }
+            Op::IdxKeys { w, norm, rope: r, ratio, raw, keys } => {
+                let (c, sn) = rope(r);
+                launch!(k.idx_keys, [(n / ratio + 1) as u32, 1, 1], [128, 1, 1], s; self.state(raw), p.small[w].ptr, p.small[norm].ptr, c, sn, pos, n as i32, self.state(keys), ratio as i32, eps, v.dims.sim as i32)?;
+                self.mark("indexer: keys")
             }
             Op::IdxQ { rope: r, heads } => {
                 let (c, sn) = rope(r);
@@ -67,16 +73,23 @@ impl Dyn {
                         sel: v.sel.ptr + ((row0 + r0) * x.top_k * 4) as u64,
                         sk: x.top_k,
                         cnt: v.cnt.ptr + ((row0 + r0) * 4) as u64,
+                        cand: CandAt {
+                            blocks: v.cand.ptr + ((row0 + r0) * v.ctop * 4) as u64,
+                            nblocks: v.ncand.ptr + ((row0 + r0) * 4) as u64,
+                            bsc: v.bsc.ptr,
+                            bmax: v.bmax,
+                            nent: v.nent.ptr,
+                        },
                     };
                     self.idx_pick(x, &at)?;
                 }
                 self.mark("indexer: picks")
             }
-            Op::CompAttn { ring, cache, ratio, sink, rope: r, heads, hpg } => {
+            Op::CompAttn { ring, cache, ratio, picked, sink, rope: r, heads, hpg } => {
                 let (c, sn) = rope(r);
                 let (kc, cap, window) = (self.cache(ring).0, self.ring_cap[ring] as i32, p.d.rings[ring].window as i32);
                 let cache = cache.map_or(0, |x| self.state(x));
-                let (topk, picked) = (v.dims.topk, ratio == 4);
+                let topk = v.dims.topk;
                 let scale = (512f32).powf(-0.5);
                 for r0 in (0..n).step_by(v.ra) {
                     let rn = v.ra.min(n - r0) as u32;
