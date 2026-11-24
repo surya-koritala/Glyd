@@ -306,8 +306,10 @@ pub fn bench(a: &crate::args::Args) -> Result<()> {
     let eb = stores[0].expert_bytes();
     let mut out = String::new();
     let (k, step) = crate::conv::Gen::as_step(&mut e, most)?.ok_or_else(|| Error("no scheduler's step for this model".into()))?;
-    if k < most {
-        return err(format!("{most} rows asked for, where the memory holds {k} sequences"));
+    // (the counts of rows the memory holds are run; the others are said and skipped)
+    let (rows_l, beyond): (Vec<usize>, Vec<usize>) = rows_l.into_iter().partition(|&n| n <= k);
+    if rows_l.is_empty() {
+        return err(format!("{beyond:?} rows asked for, where the memory holds {k} sequences"));
     }
     println!(
         "{}: {places} places a layer, an expert {:.2} MB, mode {}{}, {steps} steps after {warm}, prompts of {plen} tokens",
@@ -316,6 +318,9 @@ pub fn bench(a: &crate::args::Args) -> Result<()> {
         stores[0].offload().mode.name(),
         if stores.iter().any(|s| s.device_layers() > 0) { ", decode calls planned on the GPU" } else { "" }
     );
+    for &n in &beyond {
+        println!("  {n:>3} rows: skipped: the memory holds {k} sequences");
+    }
     for &n in &rows_l {
         let pages: Vec<[i32; 1]> = (0..n).map(|r| [r as i32]).collect();
         let mut at: Vec<(u32, usize)> = Vec::with_capacity(n);
