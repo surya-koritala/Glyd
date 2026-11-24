@@ -24,38 +24,48 @@ pub const XP_WIDTH: usize = 8192;
 /// The GPU's clock cycles `xp_wait` waits for the host's answer before it traps (10 s at 4 GHz).
 pub const XP_LIMIT: i64 = 40_000_000_000;
 
-/// When `xp_plan` copies a miss and promotes one (kernels/moe.cu's params): a miss with `copy_rows` pairs or more is copied while the call has copied fewer than `max_fills`; one the host computed within
-/// `window` calls of the layer before is given a place behind the products, `max_promote` a call.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The most rows a call the GPU plans has: a decode step of up to eight sequences (the one-row step is the graph). A call of more rows is the store's plan on the host, whose waves copy every miss where the
+/// misses outnumber the places (`waves_quicker`), which the plan on the GPU does not do.
+pub const DEV_ROWS: usize = 8;
+
+/// What `xp_plan` decides a call's misses by (kernels/moe.cu's params): the store's times (`Costs`: a copy, the host call's fixed part, a miss's first row and each further row, microseconds) and mode, as its
+/// `plan` decides them (the misses with the most pairs copied, as many as make the longer of the copies and the host's pairs shortest in auto, the two the same in split; all that find a place in copy, none in
+/// cpu); a miss the host computed within `window` calls of the layer before that stays the host's is given a place behind the products while the copies leave the host's time room for its copy, `max_promote`
+/// a call.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Params {
-    pub copy_rows: i32,
-    pub max_fills: i32,
+    pub copy: f32,
+    pub fixed: f32,
+    pub pair: f32,
+    pub row: f32,
+    pub mode: crate::offload::Mode,
     pub window: i32,
     pub max_promote: i32,
 }
 
 impl Params {
-    /// The store's settings as the plan on the GPU takes them: in copy mode every miss that finds a place is copied, in cpu mode none, else a miss is copied where the host's time for its pairs (`costs`:
-    /// its first row's, then each further row's) is at least a copy's.
-    pub fn of(off: &crate::offload::Offload, costs: &crate::offload::Costs, slots: usize) -> Params {
-        use crate::offload::Mode;
-        let copy_rows = match off.mode {
-            Mode::Copy => 0,
-            Mode::Cpu => i32::MAX,
-            Mode::Split | Mode::Auto => {
-                if costs.pair >= costs.copy {
-                    1
-                } else {
-                    (1.0 + ((costs.copy - costs.pair) / costs.row.max(1e-3)).ceil()).min(1e6) as i32
-                }
-            }
-        };
-        let max_fills = if off.mode == Mode::Cpu { 0 } else { slots as i32 };
-        Params { copy_rows, max_fills, window: off.window.min(i32::MAX as u64) as i32, max_promote: off.promote.min(i32::MAX as usize) as i32 }
+    /// The store's settings and times as the plan on the GPU takes them.
+    pub fn of(off: &crate::offload::Offload, costs: &crate::offload::Costs) -> Params {
+        Params {
+            copy: costs.copy as f32,
+            fixed: costs.fixed as f32,
+            pair: costs.pair as f32,
+            row: costs.row as f32,
+            mode: off.mode,
+            window: off.window.min(i32::MAX as u64) as i32,
+            max_promote: off.promote.min(i32::MAX as usize) as i32,
+        }
     }
 
-    fn words(&self) -> [i32; 4] {
-        [self.copy_rows, self.max_fills, self.window, self.max_promote]
+    fn words(&self) -> [u32; 8] {
+        use crate::offload::Mode;
+        let mode = match self.mode {
+            Mode::Copy => 0,
+            Mode::Cpu => 1,
+            Mode::Split => 2,
+            Mode::Auto => 3,
+        };
+        [self.copy.to_bits(), self.fixed.to_bits(), self.pair.to_bits(), self.row.to_bits(), mode, self.window as u32, self.max_promote as u32, 0]
     }
 }
 
@@ -243,7 +253,7 @@ impl DevMail {
             std::ptr::write_bytes(req.ptr as *mut u8, 0, 4 * XP_HDR);
             std::ptr::write_bytes(ans.ptr as *mut u8, 0, 64);
         }
-        let (seq, pb) = (Buf::zeroed(4)?, Buf::new(16)?);
+        let (seq, pb) = (Buf::zeroed(4)?, Buf::new(32)?);
         pb.write(0, &params.words())?;
         let (stop, layers, times) = (Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(Vec::new())));
         let (r, a, s, l, t) = (req.ptr as usize, ans.ptr as usize, stop.clone(), layers.clone(), times.clone());
@@ -442,8 +452,10 @@ impl Policy {
         None
     }
 
-    /// One call of `ids` planned with `p`, as xp_plan plans it.
+    /// One call of `ids` planned with `p`, as xp_plan plans it (in f32, as the kernel adds its times).
     pub fn call(&mut self, ids: &[i64], p: &Params) -> Planned {
+        use crate::offload::Mode;
+        const CMAX: usize = 2048;
         let experts = self.place_of.len();
         self.step += 1;
         let step = self.step;
@@ -464,19 +476,63 @@ impl Policy {
                 Err(_) => st[e] = 4,
             }
         }
+        let hot = |hl: &[u32], e: usize| hl[e] > 0 && step - hl[e] <= p.window as u32;
+        let (mut nb, mut nhot) = (vec![0usize; CMAX + 1], vec![0usize; CMAX + 1]);
+        let (mut nmiss, mut cmax, mut left) = (0usize, 0usize, 0f32);
         for &e in ids.iter().filter(|&&e| e >= 0) {
             let e = e as usize;
             if st[e] != 4 {
                 continue;
             }
-            let q = if cnt[e] as i64 >= p.copy_rows as i64 && (out.fills.len() as i64) < p.max_fills as i64 { self.place(e) } else { None };
-            if let Some(q) = q {
+            st[e] = 5;
+            let c = cnt[e].min(CMAX);
+            nb[c] += 1;
+            nhot[c] += hot(&self.hostlast, e) as usize;
+            (nmiss, cmax, left) = (nmiss + 1, cmax.max(c), left + p.pair + p.row * (c as f32 - 1.0));
+        }
+        let room = self.expert_of.len() - out.hits;
+        let (mut cstar, mut mstar) = (CMAX + 1, 0usize);
+        let (mut copying, mut computing) = (0f32, if nmiss > 0 { p.fixed + left } else { 0.0 });
+        let score = |cpy: f32, cmp: f32| if p.mode == Mode::Split { (cpy - cmp).abs() } else { cpy.max(cmp) };
+        if p.mode == Mode::Copy {
+            cstar = 0;
+        } else if p.mode != Mode::Cpu && nmiss > 0 {
+            let (mut best, mut taken, mut kept, mut l) = (score(0.0, computing), 0usize, nmiss, left);
+            'levels: for c in (1..=cmax).rev() {
+                for j in 0..nb[c] {
+                    if taken >= room {
+                        break 'levels;
+                    }
+                    (taken, kept, l) = (taken + 1, kept - 1, l - (p.pair + p.row * (c as f32 - 1.0)));
+                    let (cpy, cmp) = (p.copy * taken as f32, if kept > 0 { p.fixed + l } else { 0.0 });
+                    let now = score(cpy, cmp);
+                    if now < best - 1e-3 {
+                        (best, cstar, mstar, copying, computing) = (now, c, j + 1, cpy, cmp);
+                    }
+                }
+            }
+        }
+        let np_max =
+            if p.mode == Mode::Copy || computing <= copying || p.copy <= 0.0 { 0 } else { (p.max_promote as i64).min(((computing - copying) / p.copy) as i64) };
+        let mut left_at = if cstar <= CMAX { [mstar.min(nhot[cstar]), mstar - mstar.min(nhot[cstar])] } else { [0, 0] };
+        for &e in ids.iter().filter(|&&e| e >= 0) {
+            let e = e as usize;
+            if st[e] != 5 {
+                continue;
+            }
+            let (c, h) = (cnt[e].min(CMAX), hot(&self.hostlast, e));
+            let mut want = p.mode == Mode::Copy || c > cstar;
+            if !want && c == cstar && left_at[!h as usize] > 0 {
+                left_at[!h as usize] -= 1;
+                want = true;
+            }
+            if let Some(q) = want.then(|| self.place(e)).flatten() {
                 st[e] = 2;
                 out.fills.push((e as u16, q as u32));
                 continue;
             }
             st[e] = 3;
-            if self.hostlast[e] > 0 && step - self.hostlast[e] <= p.window as u32 && (out.promos.len() as i64) < p.max_promote as i64 {
+            if h && (out.promos.len() as i64) < np_max {
                 if let Some(q) = self.place(e) {
                     out.promos.push((e as u16, q as u32));
                 }
@@ -573,25 +629,24 @@ mod tests {
         }
     }
 
-    /// The plan's settings: copy mode copies every miss that finds a place, cpu mode none, auto a miss whose pairs cost the host at least a copy (the costs' first row and further rows).
+    /// The plan's settings are the store's times and mode as the kernel reads them: four floats, the mode, the window, the most promotions.
     #[test]
     fn the_settings_from_the_mode_and_the_costs() {
         use crate::offload::{Costs, Mode, Offload};
-        let c = Costs { copy: 500.0, fixed: 0.0, pair: 200.0, row: 100.0, backlog: 0.0 };
-        let p = |mode| Params::of(&Offload { mode, ..Offload::default() }, &c, 32);
-        assert_eq!((p(Mode::Copy).copy_rows, p(Mode::Copy).max_fills), (0, 32));
-        assert_eq!(p(Mode::Cpu).max_fills, 0);
-        // (the host's time for r rows: 200 + 100 (r - 1); at least a copy's 500 from 4 rows)
-        assert_eq!((p(Mode::Auto).copy_rows, p(Mode::Auto).max_fills, p(Mode::Auto).window, p(Mode::Auto).max_promote), (4, 32, 16, 4));
-        assert_eq!(Params::of(&Offload::default(), &Costs { pair: 600.0, ..c }, 8).copy_rows, 1);
+        let c = Costs { copy: 500.0, fixed: 100.0, pair: 200.0, row: 25.0, backlog: 0.0 };
+        let p = Params::of(&Offload { mode: Mode::Split, window: 8, promote: 3, ..Offload::default() }, &c);
+        assert_eq!(p.words(), [500f32.to_bits(), 100f32.to_bits(), 200f32.to_bits(), 25f32.to_bits(), 2, 8, 3, 0]);
+        assert_eq!(Params::of(&Offload::default(), &c).words()[4], 3, "auto");
     }
 
-    /// Over calls of random choices with every setting, the plan keeps its table whole and its decisions what xp_plan's are: each pair's place holds its expert; copies and promotions take places no
-    /// choice of the call found or took before; a miss is copied only with pairs enough and within the call's most; the host's pairs are the ones with no place; a promotion is of an expert the host had
-    /// within the window, and its pairs stay the host's.
+    /// Over calls of random choices in every mode, the plan keeps its table whole and decides what the store's `plan` decides: each pair's place holds its expert, the host's pairs are the ones with
+    /// no place, copies and promotions take places no choice of the call found or took; in auto and split the misses copied are the ones `offload::plan` copies (by their pairs and whether hot), in copy
+    /// mode every miss the places hold, in cpu mode none; a promotion is of a hot miss the host keeps, at most the most a call.
     #[test]
-    fn the_plan_keeps_its_table_whole() {
+    fn the_plan_decides_as_the_stores_plan() {
+        use crate::offload::{Costs, Miss, Mode};
         let (experts, slots) = (40usize, 9usize);
+        let costs = Costs { copy: 600.0, fixed: 100.0, pair: 400.0, row: 30.0, backlog: 0.0 };
         let mut x = 0x9E37_79B9_7F4A_7C15u64;
         let mut next = move |n: usize| {
             x ^= x << 13;
@@ -599,49 +654,65 @@ mod tests {
             x ^= x << 17;
             (x % n as u64) as usize
         };
-        for set in [
-            Params { copy_rows: 0, max_fills: 9, window: 0, max_promote: 0 },
-            Params { copy_rows: 2, max_fills: 3, window: 4, max_promote: 2 },
-            Params { copy_rows: i32::MAX, max_fills: 0, window: 8, max_promote: 4 },
-        ] {
+        for mode in [Mode::Auto, Mode::Split, Mode::Copy, Mode::Cpu] {
+            let p = Params { copy: 600.0, fixed: 100.0, pair: 400.0, row: 30.0, mode, window: 4, max_promote: 2 };
             let mut pl = Policy::new(experts, slots);
             let mut hostlast = vec![0u32; experts];
-            for step in 1..=300u32 {
-                let tokens = 1 + next(4);
+            let (mut copied, mut hosted) = (0usize, 0usize);
+            for step in 1..=400u32 {
+                let tokens = 1 + next(6);
                 let ids: Vec<i64> = (0..tokens * 2).map(|_| next(experts) as i64).collect();
                 let before = pl.place_of.clone();
-                let got = pl.call(&ids, &set);
-                let rows = |e: usize| ids.iter().filter(|&&i| i as usize == e).count();
-                assert!(got.fills.len() <= set.max_fills.max(0) as usize && got.promos.len() <= set.max_promote.max(0) as usize);
-                let mut taken = std::collections::HashSet::new();
-                for (j, &w) in got.way.iter().enumerate() {
-                    let e = ids[j] as usize;
-                    if w >= 0 {
-                        assert_eq!(pl.expert_of[w as usize], e as i32, "step {step}: pair {j}'s place holds its expert");
-                        taken.insert(w);
-                    } else {
-                        assert!(got.host.contains(&j), "step {step}: a pair with no place is the host's");
+                let got = pl.call(&ids, &p);
+                // (the store's plan of the same misses: distinct, in the order of the choices, with their pairs and whether hot)
+                let mut misses: Vec<Miss> = Vec::new();
+                for &e in &ids {
+                    let e = e as usize;
+                    if before[e] < 0 && !misses.iter().any(|m| m.expert as usize == e) {
+                        let hot = hostlast[e] > 0 && step - hostlast[e] <= p.window as u32;
+                        misses.push(Miss { expert: e as u16, pairs: ids.iter().filter(|&&i| i as usize == e).count(), hot });
                     }
                 }
-                for &(e, q) in &got.fills {
-                    assert!(before[e as usize] < 0 && rows(e as usize) as i64 >= set.copy_rows as i64, "step {step}: a copy of a miss with pairs enough");
-                    assert_eq!(pl.place_of[e as usize], q as i32);
+                let room = slots - got.hits;
+                let mut want: Vec<(usize, bool)> = match mode {
+                    Mode::Auto | Mode::Split => {
+                        crate::offload::plan(mode, &misses, room, &costs).iter().zip(&misses).filter(|(c, _)| **c).map(|(_, m)| (m.pairs, m.hot)).collect()
+                    }
+                    Mode::Copy => misses.iter().take(room).map(|m| (m.pairs, m.hot)).collect(),
+                    Mode::Cpu => Vec::new(),
+                };
+                let mut have: Vec<(usize, bool)> =
+                    got.fills.iter().map(|&(e, _)| misses.iter().find(|m| m.expert == e).map(|m| (m.pairs, m.hot)).expect("a copy of a miss")).collect();
+                (want.sort(), have.sort());
+                assert_eq!(have, want, "{mode:?} step {step}: the misses copied");
+                let mut taken = std::collections::HashSet::new();
+                for (j, &w) in got.way.iter().enumerate() {
+                    if w >= 0 {
+                        assert_eq!(pl.expert_of[w as usize], ids[j] as i32, "{mode:?} step {step}: pair {j}'s place holds its expert");
+                        taken.insert(w);
+                    } else {
+                        assert!(got.host.contains(&j), "{mode:?} step {step}: a pair with no place is the host's");
+                    }
                 }
+                assert!(got.promos.len() <= p.max_promote as usize);
                 for &(e, q) in &got.promos {
-                    assert!(!taken.contains(&(q as i64)), "step {step}: a promotion takes no place the call uses");
+                    assert!(!taken.contains(&(q as i64)), "{mode:?} step {step}: a promotion takes no place the call uses");
                     assert!(
-                        hostlast[e as usize] > 0 && step - hostlast[e as usize] <= set.window as u32,
-                        "step {step}: a promotion of an expert the host had within the window"
+                        misses.iter().any(|m| m.expert == e && m.hot) && got.host.iter().any(|&j| ids[j] as u16 == e),
+                        "{mode:?} step {step}: a promotion of a hot miss the host keeps"
                     );
-                    assert!(got.host.iter().any(|&j| ids[j] as usize == e as usize), "step {step}: a promoted expert's pairs stay the host's");
                 }
                 for &j in &got.host {
                     hostlast[ids[j] as usize] = step;
                 }
-                for (p, &e) in pl.expert_of.iter().enumerate() {
-                    assert!(e < 0 || pl.place_of[e as usize] == p as i32, "step {step}: the table is whole");
+                for (q, &e) in pl.expert_of.iter().enumerate() {
+                    assert!(e < 0 || pl.place_of[e as usize] == q as i32, "{mode:?} step {step}: the table is whole");
                 }
+                (copied, hosted) = (copied + got.fills.len(), hosted + got.host.len());
             }
+            eprintln!("{mode:?}: {copied} copies, {hosted} host pairs over 400 calls");
+            assert!(mode == Mode::Cpu || copied > 0, "{mode:?} copies some misses");
+            assert!(mode == Mode::Copy || hosted > 0, "{mode:?} leaves some to the host");
         }
     }
 }

@@ -1943,6 +1943,24 @@ unsafe fn hb_view<'a>(place: &HbPlace, data: *const u8, meta: *const u8, at: usi
     place.expert(std::slice::from_raw_parts(data.add(at * place.data), place.data), std::slice::from_raw_parts(meta.add(at * place.meta), place.meta))
 }
 
+/// The link's time for one expert of layer `ly` (its bytes in the host tier copied into its first place, which is free: the plan on the GPU has placed nothing yet), the least of three, microseconds.
+fn link_us(cuda: &Cuda, ly: &Resident) -> Result<f64> {
+    let s = cuda.copy.stream;
+    let mut best = f64::MAX;
+    for _ in 0..3 {
+        let t0 = Instant::now();
+        for p in &ly.packs {
+            for k in 0..2 {
+                // SAFETY: the host tier holds expert 0 (its first `stride` bytes) and place 0 has room for an expert; no call has run, so nothing reads the place.
+                unsafe { copy_h2d_async(p.dev[k], p.host[k].ptr as *const _, p.stride[k] as usize, s)? };
+            }
+        }
+        cuda.copy.sync()?;
+        best = best.min(t0.elapsed().as_secs_f64() * 1e6);
+    }
+    Ok(best)
+}
+
 /// The copies of `loads` ((expert, place)) queued on the copy stream, behind the engine's stream's last use of the layer's places; the layer's `ready` is recorded after them. Returns the bytes queued.
 fn fetch(cuda: &mut Cuda, ly: &mut Resident, loads: &[(u16, u32)], stats: &mut Stats) -> Result<u64> {
     if loads.is_empty() {
@@ -2563,7 +2581,13 @@ impl ExpertStore {
                     ly.packs.iter().flat_map(|p| (0..2).map(move |k| [p.host[k].ptr as u64, p.stride[k], p.dev[k], p.stride[k]])).collect();
                 ly.dplan = Some(crate::devplan::DevPlan::new(experts, slots, &regions)?);
                 if inner.mail.is_none() {
-                    let params = crate::devplan::Params::of(&inner.offload, &inner.costs, slots);
+                    // (the plan on the GPU weighs a copy at the link's time for an expert, measured here once: its copies are the GPU's own, which the copy stream does not time)
+                    let cuda = inner.cuda.as_mut().expect("made above");
+                    let us = link_us(cuda, ly)?;
+                    if !inner.frozen && us > 0.0 {
+                        inner.costs.copy = us;
+                    }
+                    let params = crate::devplan::Params::of(&inner.offload, &inner.costs);
                     inner.mail = Some(crate::devplan::DevMail::new(inner.offload.threads, inner.offload.pin, params)?);
                 }
                 inner.mail.as_ref().expect("made above").add_layer(layer, h);
@@ -2583,12 +2607,12 @@ impl ExpertStore {
     }
 
     /// What a call of `tokens` tokens and `pairs` pairs of layer `layer` hands kernels/moe.cu's plan on the GPU (src/devplan.rs), where the layer is planned there and the call is one of a decode's
-    /// (`CPU_TOKENS` tokens at most); None: the store plans it on the host (`run`).
+    /// (`devplan::DEV_ROWS` rows at most); None: the store plans it on the host (`run`).
     pub fn device_args(&self, layer: usize, tokens: usize, pairs: usize) -> Option<crate::devplan::DevArgs> {
         let inner = self.inner.borrow();
         let (ly, mail) = (inner.layers.get(layer)?.as_ref()?, inner.mail.as_ref()?);
         let dp = ly.dplan.as_ref()?;
-        ((1..=CPU_TOKENS).contains(&tokens) && pairs <= crate::devplan::XP_PAIRS && pairs.is_multiple_of(tokens)).then(|| dp.args(mail, layer))
+        ((1..=crate::devplan::DEV_ROWS).contains(&tokens) && pairs <= crate::devplan::XP_PAIRS && pairs.is_multiple_of(tokens)).then(|| dp.args(mail, layer))
     }
 
     /// Layer `layer`'s places emptied and their copies done (the copy thread's batch joined and the copy stream past it), so that their memory can be freed (`QxMoeCb::release_places`); the places at `dev` from now on
@@ -3828,8 +3852,7 @@ impl ExpertStore {
             }
         }
         if let Some(m) = inner.mail.as_mut() {
-            let slots = inner.layers.iter().flatten().filter(|l| l.dplan.is_some()).map(|l| l.cache.slots()).max().unwrap_or(1);
-            m.set_params(crate::devplan::Params::of(&inner.offload, &inner.costs, slots))?;
+            m.set_params(crate::devplan::Params::of(&inner.offload, &inner.costs))?;
         }
         let step: Vec<LayerStats> = inner
             .layers
@@ -5611,7 +5634,7 @@ mod tests {
     #[test]
     fn the_plan_on_the_gpu_over_the_traces() {
         let &(_, layers, k, ref ids) = trace();
-        let copy_all = |slots: usize| crate::devplan::Params { copy_rows: 0, max_fills: slots as i32, window: 0, max_promote: 0 };
+        let copy_all = |_: usize| crate::devplan::Params { copy: 1.0, fixed: 0.0, pair: 1.0, row: 1.0, mode: Mode::Copy, window: 0, max_promote: 0 };
         for cap in [87usize, 164, 236] {
             for rows in [1usize, 8] {
                 let (mut found, mut pairs) = (0usize, 0usize);

@@ -393,7 +393,12 @@ pub fn bench(a: &crate::args::Args) -> Result<()> {
 fn planned_step(dir: &std::path::Path, places: usize, rows: usize, positions: f64) -> std::result::Result<f64, String> {
     let words = ["serve".to_string(), dir.display().to_string(), "--users".into(), rows.to_string(), "--no-draft".into()];
     let f = crate::plan::planned(&crate::args::Args::from(words)).map_err(|r| r.what)?;
-    let c = f.plan.chosen.as_ref().ok_or("no plan")?;
+    // (the planner refusing every option: the reasons it gives)
+    let c = f.plan.chosen.as_ref().ok_or_else(|| {
+        let why: Vec<String> =
+            f.plan.options.iter().filter_map(|o| o.why.as_ref().map(|w| format!("{}: {w}", o.level))).chain(f.plan.notes.iter().cloned()).collect();
+        format!("the planner has no plan ({})", if why.is_empty() { "it gives no reason".to_string() } else { why.join("; ") })
+    })?;
     let mut lp = c.load.clone().ok_or("no plan to load")?;
     let sp = lp.spread.as_mut().ok_or("the plan is not the dynamic route's")?;
     if sp.host_bytes == 0 {

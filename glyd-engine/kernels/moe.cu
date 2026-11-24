@@ -277,12 +277,15 @@ extern "C" __global__ void moe_wsum(const bf16* rows, const int* inv, const floa
 // the host's thread, so that no host waits inside a call and a step of such calls is one graph. One block: the tables in shared memory while the first thread decides, then written back.
 // A layer's table: place_of [experts] int, expert_of [slots] int, last [slots] uint (the step a place was last used in), hostlast [experts] uint (the step the host last computed an expert), refb [slots]
 // uchar; meta [16] uint: 0 step, 1 hand, 2 experts asked for, 3 found, 4 copied, 5 the host's experts, 6 the host's pairs, 7 promoted (counted over the calls), 8 this call's copies, 9 its promotions,
-// 10 its host pairs, 11 its request's number (0: none). params [4] int: a miss is copied where it has `copy_rows` pairs or more and the call has copied fewer than `max_fills`; a miss the host computed
-// within `window` steps before is promoted (a place found for it, filled behind the call's products; its pairs this call still the host's), `max_promote` a call.
+// 10 its host pairs, 11 its request's number (0: none). params [8] words: the times of a copy, of the host's call's fixed part, of a miss's first row and of each further row (float, microseconds: the
+// store's `Costs`), the mode (0 copy, 1 cpu, 2 split, 3 auto), the window, the most promotions a call. The misses are copied as the store's `plan` copies them: the ones with the most pairs (the hot ones first
+// among equals), as many as make the longer of the copies and the host's pairs shortest (auto; split: the two the same), within the places the call's hits leave; a hot miss (the host computed it within
+// `window` calls before) that stays the host's is promoted (a place found for it, filled behind the call's products) while the copies so far leave the host's time room for its copy.
 // The request (mapped host memory the host's thread reads, src/offload.rs `DevMail`): words 0 its number (written last), 1 the layer, 2 tokens, 3 pairs, 4 z's width, 5 choices a token; from word XP_HDR
 // the host's pairs (expert, token, weight's bits), `max_pairs` of room; after them the tokens' rows of z (bf16 [tokens, width]).
 #define XP_MAX 1024
 #define XP_HDR 16
+#define XP_CMAX 2048
 
 // A place for expert e: the first the clock hand comes to that no choice of this step uses and that was not used since the hand last passed it (its reference cleared as it passes); -1 where none is.
 __device__ __forceinline__ int xp_place(int* sp, int* se, unsigned* sl, unsigned char* sr, int slots, unsigned* hand, unsigned step, int e) {
@@ -306,15 +309,18 @@ __device__ __forceinline__ int xp_place(int* sp, int* se, unsigned* sl, unsigned
 }
 
 extern "C" __global__ void __launch_bounds__(256) xp_plan(const long long* ids, const float* wts, const bf16* z, int tokens, int k, int width, int* place_of, int* expert_of, unsigned* last,
-                                                          unsigned* hostlast, unsigned char* refb, unsigned* meta, const int* params, int experts, int slots, long long* way, int2* fills, int2* promos,
-                                                          unsigned* mail, unsigned* seq, int layer, int max_pairs) {
+                                                          unsigned* hostlast, unsigned char* refb, unsigned* meta, const unsigned* params, int experts, int slots, long long* way, int2* fills,
+                                                          int2* promos, unsigned* mail, unsigned* seq, int layer, int max_pairs) {
     __shared__ int sp[XP_MAX];
     __shared__ int se[XP_MAX];
     __shared__ unsigned sl[XP_MAX];
     __shared__ unsigned char sr[XP_MAX];
     __shared__ unsigned short cnt[XP_MAX];
-    // (each expert's state this call: 0 not asked for, 1 found, 2 copied, 3 the host's, 4 a miss not yet decided)
+    // (each expert's state this call: 0 not asked for, 1 found, 2 copied, 3 the host's, 4 a miss, 5 a miss counted)
     __shared__ unsigned char st[XP_MAX];
+    // (the misses by their pairs, and the hot ones among them)
+    __shared__ unsigned short nb[XP_CMAX + 1];
+    __shared__ unsigned short nhot[XP_CMAX + 1];
     __shared__ int nh_s;
     const int pairs = tokens * k;
     for (int i = threadIdx.x; i < experts; i += blockDim.x) {
@@ -327,10 +333,15 @@ extern "C" __global__ void __launch_bounds__(256) xp_plan(const long long* ids, 
         sl[i] = last[i];
         sr[i] = refb[i];
     }
+    for (int i = threadIdx.x; i <= XP_CMAX; i += blockDim.x) {
+        nb[i] = 0;
+        nhot[i] = 0;
+    }
     __syncthreads();
     if (threadIdx.x == 0) {
         const unsigned step = meta[0] + 1;
-        const int copy_rows = params[0], max_fills = params[1], window = params[2], max_promote = params[3];
+        const float cp = __uint_as_float(params[0]), fx = __uint_as_float(params[1]), pr = __uint_as_float(params[2]), rw = __uint_as_float(params[3]);
+        const int mode = (int)params[4], window = (int)params[5], max_promote = (int)params[6];
         unsigned hand = meta[1], reads = 0, hits = 0, nf = 0, np = 0, hx = 0, nh = 0;
         for (int p = 0; p < pairs; p++) {
             const long long e = ids[p];
@@ -355,12 +366,66 @@ extern "C" __global__ void __launch_bounds__(256) xp_plan(const long long* ids, 
                 st[e] = 4;
             }
         }
-        // the misses: copied where they have pairs enough and the call copies fewer than its most, else the host's (and promoted where the host had them a short while before)
+        // the misses by their pairs, the host's time for all of them
+        unsigned nmiss = 0;
+        int cmax = 0;
+        float left = 0.f;
         for (int p = 0; p < pairs; p++) {
             const long long e = ids[p];
             if (e < 0 || st[e] != 4) continue;
-            int q = -1;
-            if ((int)cnt[e] >= copy_rows && (int)nf < max_fills) q = xp_place(sp, se, sl, sr, slots, &hand, step, (int)e);
+            st[e] = 5;
+            const int c = min((int)cnt[e], XP_CMAX);
+            nb[c]++;
+            if (hostlast[e] && step - hostlast[e] <= (unsigned)window) nhot[c]++;
+            nmiss++;
+            cmax = max(cmax, c);
+            left += pr + rw * (float)(c - 1);
+        }
+        // how many to copy: the misses with the most pairs first, as many as the mode's score is best for (the store's `plan`); copied: more pairs than `cstar`, or `cstar` and among its first `mstar`
+        const unsigned room = (unsigned)slots - hits;
+        int cstar = XP_CMAX + 1, mstar = 0;
+        float copying = 0.f, computing = nmiss ? fx + left : 0.f;
+        if (mode == 0) {
+            cstar = 0;
+        } else if (mode != 1 && nmiss) {
+            float best = mode == 2 ? fabsf(0.f - computing) : computing;
+            unsigned taken = 0, kept = nmiss;
+            float l = left;
+            for (int c = cmax; c >= 1 && taken < room; c--) {
+                for (int j = 0; j < (int)nb[c] && taken < room; j++) {
+                    taken++;
+                    kept--;
+                    l -= pr + rw * (float)(c - 1);
+                    const float cpy = cp * (float)taken, cmp = kept ? fx + l : 0.f;
+                    const float now = mode == 2 ? fabsf(cpy - cmp) : fmaxf(cpy, cmp);
+                    if (now < best - 1e-3f) {
+                        best = now;
+                        cstar = c;
+                        mstar = j + 1;
+                        copying = cpy;
+                        computing = cmp;
+                    }
+                }
+            }
+        }
+        // (promotions while the host's time leaves room for their copies beside the call's)
+        const int np_max = mode == 0 ? 0 : min(max_promote, computing > copying && cp > 0.f ? (int)((computing - copying) / cp) : 0);
+        int hot_left = cstar <= XP_CMAX ? min(mstar, (int)nhot[cstar]) : 0;
+        int cold_left = cstar <= XP_CMAX ? mstar - hot_left : 0;
+        for (int p = 0; p < pairs; p++) {
+            const long long e = ids[p];
+            if (e < 0 || st[e] != 5) continue;
+            const int c = min((int)cnt[e], XP_CMAX);
+            const bool hot = hostlast[e] && step - hostlast[e] <= (unsigned)window;
+            bool want = mode == 0 || c > cstar;
+            if (!want && c == cstar) {
+                int& n = hot ? hot_left : cold_left;
+                if (n > 0) {
+                    n--;
+                    want = true;
+                }
+            }
+            const int q = want ? xp_place(sp, se, sl, sr, slots, &hand, step, (int)e) : -1;
             if (q >= 0) {
                 st[e] = 2;
                 fills[nf++] = make_int2((int)e, q);
@@ -368,7 +433,7 @@ extern "C" __global__ void __launch_bounds__(256) xp_plan(const long long* ids, 
             }
             st[e] = 3;
             hx++;
-            if (hostlast[e] && step - hostlast[e] <= (unsigned)window && (int)np < max_promote) {
+            if (hot && (int)np < np_max) {
                 const int qp = xp_place(sp, se, sl, sr, slots, &hand, step, (int)e);
                 if (qp >= 0) promos[np++] = make_int2((int)e, qp);
             }

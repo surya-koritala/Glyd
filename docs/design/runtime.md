@@ -645,8 +645,13 @@ What is built (R12b, #327):
   products, the promotions behind them and the wait for the host's pairs are kernels on the engine's stream, and the host's pairs
   are a thread of the store's that answers the GPU's requests through mapped host memory (a request's number written last, its
   answer's number read back by `xp_wait`). No host waits inside such a call, so a decode step of them is one graph
-  (`MoeLayer::reads_host` is false, and the one-row step is captured). A miss is copied where its pairs cost the host at least a
-  copy (`Params::of`, from `Costs`), else the host's; one the host had within the window is promoted. The store's own plan
+  (`MoeLayer::reads_host` is false, and the one-row step is captured). The misses are split as the store's `plan` splits them
+  (`Params`: the store's `Costs` and mode): the ones with the most pairs copied, as many as make the longer of the copies and the
+  host's pairs shortest, the rest the host's; a hot miss the host keeps is promoted while the host's time leaves room for its copy.
+  A copy is priced at the link's time for an expert, measured once at load (the GPU's own copies are not timed). Calls of up to
+  `DEV_ROWS` (8) rows are planned on the GPU; more rows are the host's plan, whose waves copy every miss where the misses
+  outnumber the places. (The first rule, a miss copied wherever a copy cost less than the host's pairs, ignored that the two run
+  at once and copied every miss at 1 and 8 rows: 62-80% slower than the host's plan on an A10, session 5z2.) The store's own plan
   (`LayerCache`) still plans a prompt's chunks: before such a call the GPU's table is read into it, after it written back.
   On the Nemotron 3 Super decode traces its clock finds 0.5 to 0.6 points fewer of the pairs in places than the least-recently-used
   cache at one row (60.7, 72.8 and 79.4% at 17, 32 and 46% of the experts), and at 8 rows 5.1 more to 0.6 fewer.
