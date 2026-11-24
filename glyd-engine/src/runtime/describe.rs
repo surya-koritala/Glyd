@@ -348,8 +348,13 @@ fn but(table: names::Roles, at: &str, experts: usize, drop: &[&str]) -> Vec<(Str
 /// Shapes by role: each of `want`'s roles that `r` names as one tensor, that tensor's shape.
 fn shape_roles(shapes: &mut std::collections::BTreeMap<String, Vec<usize>>, r: &[(String, Source)], want: &[(&str, Vec<usize>)]) {
     for (role, s) in want {
-        if let Some((_, Source::Tensor(n))) = r.iter().find(|(x, _)| x == role) {
-            shapes.insert(n.clone(), s.clone());
+        match r.iter().find(|(x, _)| x == role) {
+            Some((_, Source::Tensor(n))) => {
+                shapes.insert(n.clone(), s.clone());
+            }
+            // (an expert's matrices, each its own tensor of the shape given: a gate and an up projection alike)
+            Some((_, Source::Experts(e))) => shapes.extend(e.iter().flatten().map(|n| (n.clone(), s.clone()))),
+            _ => {}
         }
     }
 }
@@ -547,10 +552,12 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         state_f32: true,
     };
     let mut dense_inter = None;
+    let (mut moe_inter, mut shared_inter) = (0, 0);
     let moe = if k.raw("num_experts").is_some() {
         let ne = k.usize("num_experts")?;
-        k.usize("moe_intermediate_size")?;
-        let shared = k.opt_usize("shared_expert_intermediate_size")?.is_some_and(|s| s > 0);
+        moe_inter = k.usize("moe_intermediate_size")?;
+        shared_inter = k.opt_usize("shared_expert_intermediate_size")?.unwrap_or(0);
+        let shared = shared_inter > 0;
         Some(Moe {
             router: Router {
                 score: RouterScore::Softmax,
@@ -577,7 +584,7 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     k.bool("mtp_use_dedicated_embeddings", false)?;
     let pn = Norm::rms_plus_one(eps);
     let (mut blocks, mut roles) = (Vec::new(), Vec::new());
-    // (the shapes of a dense model's tensors, as its heads and widths make them; a mixture of experts' are not said yet)
+    // (the shapes of the tensors, as the heads and widths make them: a mixture of experts' each expert's, the router's and the gated shared expert's too)
     let mut shapes = std::collections::BTreeMap::new();
     let (kh, vh, kd, vd) = (lin.k_heads, lin.v_heads, lin.k_dim, lin.v_dim);
     let qkv = 2 * kh * kd + vh * vd;
@@ -642,9 +649,26 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
                 names::roles(part::QWEN_MOE, &p, m.experts, |r| m.shared.is_some() || !r.starts_with("shared_"))
             }
         };
-        if let Some(inter) = dense_inter {
-            shape_roles(&mut shapes, &r, &[sh, vec![("norm_in", vec![d])]].concat());
-            shape_roles(&mut shapes, &f, &[("norm_in", vec![d]), ("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])]);
+        shape_roles(&mut shapes, &r, &[sh, vec![("norm_in", vec![d])]].concat());
+        match (dense_inter, &moe) {
+            (Some(inter), _) => {
+                shape_roles(&mut shapes, &f, &[("norm_in", vec![d]), ("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])])
+            }
+            (None, Some(m)) => shape_roles(
+                &mut shapes,
+                &f,
+                &[
+                    ("norm_in", vec![d]),
+                    ("router", vec![m.experts, d]),
+                    ("experts_gate_up", vec![moe_inter, d]),
+                    ("experts_down", vec![d, moe_inter]),
+                    ("shared_gate", vec![shared_inter, d]),
+                    ("shared_up", vec![shared_inter, d]),
+                    ("shared_down", vec![d, shared_inter]),
+                    ("shared_router", vec![1, d]),
+                ],
+            ),
+            (None, None) => unreachable!("a dense width or experts"),
         }
         roles.push(r);
         roles.push(f);
@@ -661,13 +685,11 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         rope: Some(rp),
     };
     let mut out = finish(&k, desc, &names::HF, prefix, roles, mtp_layers)?;
-    if dense_inter.is_some() {
-        for n in [Some(&out.embed), out.head.as_ref()].into_iter().flatten() {
-            shapes.insert(n.clone(), vec![vocab, d]);
-        }
-        shapes.insert(out.final_norm.clone(), vec![d]);
-        out.shapes = shapes;
+    for n in [Some(&out.embed), out.head.as_ref()].into_iter().flatten() {
+        shapes.insert(n.clone(), vec![vocab, d]);
     }
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    out.shapes = shapes;
     Ok(out)
 }
 
@@ -1321,7 +1343,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
                     if !shared {
                         r.extend(names::roles(part::MLA_INDEXER, &p, 0, |x| flash || !x.starts_with("indexer_pool")));
                     }
-                    Some(Indexer { heads: h, head_dim: dim, top_k: top, block: pool, shared, form: IndexForm::Gated })
+                    Some(Indexer { heads: h, head_dim: dim, top_k: top, block: pool, shared, form: IndexForm::LAYER_KEYS })
                 }
                 _ => None,
             };
@@ -1501,6 +1523,44 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
         absorbed: true,
         indexer: None,
     };
+    // Kimi-K3.1's sparse attention (`dsa_config`): on the latent attention layers it names (1-based), DeepSeek-V3.2's indexer of a key a token, the
+    // gated form, its keys RMS-normed at the model's eps or LayerNorm-ed with a bias (`index_k_norm_type`); the indexer's query from the q latent
+    let dsa = match k.raw("dsa_config") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(o)) => {
+            let dk = Keys::new(o, "kimi_linear: dsa_config");
+            let named = if dk.raw("dsa_layers").is_some() { "dsa_layers" } else { "layers" };
+            let on: BTreeSet<u64> = dk
+                .raw(named)
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(Value::as_u64).collect())
+                .ok_or_else(|| Error(format!("{mt}: dsa_config names no layers")))?;
+            if let Some(l) = on.iter().find(|&&l| l == 0 || l > layers as u64 || kda_l.contains(&l)) {
+                return err(format!("{mt}: dsa_config names layer {l}, which is not one of the latent attention's (1-based)"));
+            }
+            let key = match dk.str("index_k_norm_type")?.unwrap_or("rmsnorm") {
+                "rmsnorm" => Norm::rms(eps),
+                "layernorm" => Norm { kind: NormKind::Layer, ..Norm::rms(eps) },
+                other => return err(format!("{mt}: dsa_config.index_k_norm_type {other}: rmsnorm or layernorm")),
+            };
+            // (a rotary on the indexer's first dims, picks shared across layers and an FP8 indexer are not described)
+            for (x, want) in [("index_rope_dim", 0), ("index_topk_freq", 1), ("index_skip_topk_offset", 1)] {
+                dk.expect(x, &Value::from(want))?;
+            }
+            dk.expect("indexer_use_fp8", &Value::Bool(false))?;
+            let ix = Indexer {
+                heads: dk.usize("index_num_heads")?,
+                head_dim: dk.usize("index_head_dim")?,
+                top_k: dk.usize("index_topk")?,
+                block: 1,
+                shared: false,
+                form: IndexForm::Gated { key },
+            };
+            dk.finish()?;
+            Some((on, ix))
+        }
+        Some(v) => return err(format!("{mt}: dsa_config {v}: an object")),
+    };
     let dense = k.usize("first_k_dense_replace")?;
     let inter = k.usize("intermediate_size")?;
     let moe_inter = k.usize("moe_intermediate_size")?;
@@ -1549,7 +1609,13 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
             Mixer::Linear(lin.clone())
         } else {
             r.extend(but(part::MLA, &p, 0, &["q"]));
-            Mixer::Mla(mla.clone())
+            let indexer = dsa.as_ref().filter(|(on, _)| on.contains(&(l as u64 + 1))).map(|(_, ix)| ix.clone());
+            if let Some(IndexForm::Gated { key }) = indexer.as_ref().map(|ix| ix.form) {
+                r.extend(names::roles(part::MLA_INDEXER, &p, 0, |x| {
+                    !x.starts_with("indexer_pool") && (key.kind == NormKind::Layer || x != "indexer_k_norm_bias")
+                }));
+            }
+            Mixer::Mla(Mla { indexer, ..mla.clone() })
         };
         blocks.push(Block { norm_in: n, body: Body::Mixer(mixer), norm_out: None, residual: Residual::DepthMix(DepthMixP { starts: l % group == 0 }) });
         roles.push(r);
@@ -1893,7 +1959,15 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
             ratio,
             overlap: ratio > 0 && is_csa,
             rope: if ratio > 0 { comp_rope.clone() } else { main_rope.clone() },
-            indexer: (ratio > 0 && is_csa).then_some(Indexer { heads: ih, head_dim: idim, top_k: itop, block: ratio, shared: false, form: IndexForm::Gated }),
+            // (its compressed entries' keys normed by the compressor's RMS norm, `idx_norm`)
+            indexer: (ratio > 0 && is_csa).then_some(Indexer {
+                heads: ih,
+                head_dim: idim,
+                top_k: itop,
+                block: ratio,
+                shared: false,
+                form: IndexForm::Gated { key: Norm::rms(eps) },
+            }),
             norm_eps: eps,
         };
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Compressed(c)), norm_out: None, residual: Residual::Streams(streams) });

@@ -99,7 +99,7 @@
     "blocks": 80,
     "tensors": 31333,
     "kinds": "c55d2d920f378acb",
-    "weights": "0457a868c23e5578",
+    "weights": "50315f61daf3a38b",
     "plan": "b9842317da83c841",
     "family": "refused: m is a Qwen3_5MoeForConditionalGeneration model, and this engine runs Qwen3 models so far"
   },
@@ -115,7 +115,7 @@
     "blocks": 184,
     "tensors": 142718,
     "kinds": "0bf40d99f98cab0a",
-    "weights": "e35c70dd9f63a246",
+    "weights": "c71d637d2707d4a0",
     "plan": "e3e006b041b50b55",
     "family": "refused: m is a Qwen3_5MoeForCausalLM model, and this engine runs Qwen3 models so far"
   },
@@ -130,7 +130,7 @@
   "headers/DeepSeek-V4-Flash-0731.json": {
     "blocks": 86,
     "tensors": 67612,
-    "kinds": "86cc30c4a61e8a11",
+    "kinds": "37c1bee10db5834c",
     "weights": "7b10aca12255bca2",
     "plan": "501adcefbd0f834c",
     "family": "DeepSeekV4"
@@ -162,7 +162,7 @@
   "runtime/dsv4_model.json": {
     "blocks": 6,
     "tensors": 155,
-    "kinds": "0db35d531e310465",
+    "kinds": "5320e56af13369fc",
     "weights": "7ac20f6ff49754ff",
     "plan": "0eebf69801bfd149",
     "family": "DeepSeekV4"
@@ -211,7 +211,7 @@
     "blocks": 8,
     "tensors": 160,
     "kinds": "aa8ee1ed9b15d5db",
-    "weights": "162ec555a54f5720",
+    "weights": "46676f3f04f562d2",
     "plan": "27c8b29ad87fb6e0",
     "family": "refused: m: its config.json does not say what kind of model it is"
   }

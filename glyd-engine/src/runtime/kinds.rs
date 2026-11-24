@@ -194,13 +194,13 @@ pub struct Indexer {
     pub form: IndexForm,
 }
 
-/// The derived form, with `form` said only where it is not `Gated`: the gated indexers' descriptions read as they did before the field (the
-/// digests of tests/fixtures/descriptions.json are of this text).
+/// The derived form, with `form` said only where it is not the gated form with LayerNorm-ed keys (`IndexForm::LAYER_KEYS`): those indexers'
+/// descriptions read as they did before the field (the digests of tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for Indexer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Indexer");
         s.field("heads", &self.heads).field("head_dim", &self.head_dim).field("top_k", &self.top_k).field("block", &self.block).field("shared", &self.shared);
-        if self.form != IndexForm::Gated {
+        if self.form != IndexForm::LAYER_KEYS {
             s.field("form", &self.form);
         }
         s.finish()
@@ -210,15 +210,23 @@ impl std::fmt::Debug for Indexer {
 /// How an indexer makes its queries, its pooled keys and its scores.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IndexForm {
-    /// Queries and a key a token from their own products, each token's key normed; a pool's key the softmax(gate + ape)-weighted sum of
-    /// its tokens' keys; the heads' scores weighed by a learned product of the block's input (GLM-5.3-Flash, DeepSeek-V4).
-    Gated,
+    /// Queries and a key a token from their own products, each token's key normed by `key` (role `indexer_k_norm`, and with a LayerNorm its
+    /// bias `indexer_k_norm_bias`); a pool's key the softmax(gate + ape)-weighted sum of its tokens' keys; the heads' scores weighed by a learned
+    /// product of the block's input. The key's norm: a LayerNorm at 1e-6 (GLM-5.3-Flash, GLM-5, DeepSeek-V3.2: `LAYER_KEYS`), an RMS norm at the
+    /// model's eps (Kimi-K3.1's `dsa_config.index_k_norm_type` rmsnorm, its LayerNorm otherwise; DeepSeek-V4's compressed entries, normed by
+    /// their compressor's `idx_norm`).
+    Gated { key: Norm },
     /// Condor's Qwen Sparse Attention (Qwen3.8-Flash-Next): the `heads` queries and ONE key from one product of the block's input (role
     /// `index_qk` [(heads + 1) head_dim, hidden]); each query head normed by `norm` (role `index_q_norm` [head_dim]) and rotated as the
     /// attention's queries (its rope, on the first `dim` channels of the head); the raw keys cached, a pool's key the mean of its tokens'
     /// raw keys, normed by `norm` (role `index_k_norm`) and rotated at the pool's first position; a pool's score sum_h relu(q_h . k) /
     /// sqrt(head_dim), the heads unweighted.
     Mean { norm: Norm },
+}
+
+impl IndexForm {
+    /// The gated form whose keys are LayerNorm-ed with a bias at 1e-6 (GLM-5.3-Flash's, GLM-5's, DeepSeek-V3.2's).
+    pub const LAYER_KEYS: IndexForm = IndexForm::Gated { key: Norm { kind: NormKind::Layer, weight: NormWeight::Plain, eps: 1e-6, rounding: Rounding::F32 } };
 }
 
 /// Where an attention rounds to bf16 inside: the arithmetic of the implementation a family's engine follows.

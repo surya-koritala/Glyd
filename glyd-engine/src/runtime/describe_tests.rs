@@ -75,6 +75,42 @@ fn released_qwen_configs() {
     }
 }
 
+/// #333: Qwen3.8-2.4T-A95B (`Qwen3_5MoeForCausalLM`, its released config.json in tests/fixtures/qwen35_configs.json) describes with the kinds the library has:
+/// the Gated DeltaNet and gated attention of the Qwen3.5 layout, and on every layer a mixture of 512 softmax-routed experts (top 10, renormalised) with the
+/// shared expert gated by sigmoid(shared_router x); each tensor's shape said, each expert's matrices and the shared expert's included. It has no other
+/// mechanism: what it lacks to run is the Qwen3.5 layout's experts on the executor (its weights, 4.6 TB of bf16, are for a machine of many GPUs).
+#[test]
+fn qwen38_2_4t_describes_with_the_existing_kinds() {
+    use super::kinds::*;
+    let cfgs = fixture("qwen35_configs.json");
+    let c = &cfgs["Qwen/Qwen3.8-2.4T-A95B"];
+    let d = describe(c).unwrap_or_else(|e| panic!("{}", e.msg));
+    let n = |k: &str| c[k].as_u64().unwrap() as usize;
+    let (layers, hidden) = (n("num_hidden_layers"), n("hidden_size"));
+    assert_eq!(d.desc.blocks.len(), 2 * layers);
+    for (l, ty) in c["layer_types"].as_array().unwrap().iter().enumerate() {
+        match (&d.desc.blocks[2 * l].body, ty.as_str().unwrap()) {
+            (Body::Mixer(Mixer::Linear(x)), "linear_attention") => assert_eq!(x.kind, LinearKind::GatedDeltaNet),
+            (Body::Mixer(Mixer::Attention(a)), "full_attention") => assert_eq!(a.gate.map(|g| g.from), Some(GateFrom::InQuery)),
+            (b, t) => panic!("layer {l} ({t}): {b:?}"),
+        }
+        let Body::Ffn(Ffn::Moe(m)) = &d.desc.blocks[2 * l + 1].body else { panic!("layer {l}: {:?}", d.desc.blocks[2 * l + 1].body) };
+        assert_eq!((m.experts, m.router.top_k, m.router.score, m.router.renorm, m.shared_gate), (512, 10, RouterScore::Softmax, true, true));
+    }
+    assert_eq!(d.shapes.keys().cloned().collect::<BTreeSet<_>>(), d.names(), "a shape for every tensor described");
+    let (mi, si) = (n("moe_intermediate_size"), n("shared_expert_intermediate_size"));
+    let p = "model.layers.3.mlp.";
+    for (t, want) in [
+        ("experts.511.gate_proj.weight", vec![mi, hidden]),
+        ("experts.0.down_proj.weight", vec![hidden, mi]),
+        ("gate.weight", vec![512, hidden]),
+        ("shared_expert.up_proj.weight", vec![si, hidden]),
+        ("shared_expert_gate.weight", vec![1, hidden]),
+    ] {
+        assert_eq!(d.shapes.get(&format!("{p}{t}")), Some(&want), "{t}");
+    }
+}
+
 #[test]
 fn released_gemma4_config() {
     use super::kinds::*;
@@ -352,6 +388,30 @@ fn conventions_name_the_checkpoints_tensors_exactly() {
     }
 }
 
+/// #333: every header fixture there is (tests/fixtures/headers; `sizes::record_header_fixtures` records the recent releases', #333's among them) describes
+/// from its config.json alone a weight map its checkpoint holds and reads it whole but the parts the language model does not run, or is refused in the words
+/// `LACKS` gives: the releases whose mechanisms the layer kinds do not have yet (DeepSeek-V4.1's compressed sparse attention of ratios 1 and 2 with caches
+/// shared across layers, its Engram n-gram memory and its lagged hyper-connections: no deepseek_v41 builder).
+#[test]
+fn every_recorded_release_describes_or_says_what_it_lacks() {
+    const LACKS: &[(&str, &str)] = &[("DeepSeek-V4.1-Flash", "model_type deepseek_v41 has no description builder yet")];
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers");
+    let mut files: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    files.sort();
+    assert!(files.len() >= 4, "{files:?}");
+    for f in files {
+        let name = f.trim_end_matches(".json");
+        let h = fixture(&format!("headers/{f}"));
+        let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap_or_else(|e| panic!("{f}: its config: {e}"));
+        match (describe(&cfg), LACKS.iter().find(|l| l.0 == name)) {
+            (Ok(d), None) => d.check(&header_names(&h), true).unwrap_or_else(|e| panic!("{f}: {}", e.msg)),
+            (Err(e), Some((_, why))) => assert!(e.msg.contains(why), "{f}: {}", e.msg),
+            (Ok(_), Some(_)) => panic!("{f} describes now: take it out of LACKS"),
+            (Err(e), None) => panic!("{f}: {}", e.msg),
+        }
+    }
+}
+
 /// A loader's check (`describe_dir`) reads a Hub directory's index: a tensor the description reads is named where the index lacks it, a matrix is there in
 /// either stored form, and a directory Glyd packed (its glyd.json) is not held to it.
 #[test]
@@ -397,6 +457,61 @@ fn header_names(h: &serde_json::Value) -> BTreeSet<String> {
         }
     }
     out
+}
+
+/// #333, Kimi-K3.1: its sparse attention (`text_config.dsa_config`, the keys of vLLM's `KimiLinearDSAConfig`; the release's own config.json is not in the
+/// fixtures yet) on Kimi-K3's released config: each latent attention layer it names takes DeepSeek-V3.2's indexer of a key a token in the gated form, its
+/// keys RMS-normed at the model's eps (LayerNorm-ed with a bias where `index_k_norm_type` says so), and reads the indexer's tensors; the delta attention layers
+/// are as they were. What is not described is refused: an indexer rotary, picks shared across layers, a layer that is no latent attention.
+#[test]
+fn kimi_k31s_sparse_attention_is_the_gated_indexer_with_its_key_norm() {
+    use super::kinds::*;
+    let h = fixture("headers/Kimi-K3.json");
+    let base: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    let full: Vec<u64> = base["text_config"]["linear_attn_config"]["full_attn_layers"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap()).collect();
+    let eps = base["text_config"]["rms_norm_eps"].as_f64().unwrap() as f32;
+    let with = |edit: &dyn Fn(&mut serde_json::Value)| {
+        let mut c = base.clone();
+        c["text_config"]["dsa_config"] = serde_json::json!({"dsa_layers": full, "index_topk": 2048, "index_head_dim": 64, "index_num_heads": 16,
+            "index_rope_dim": 0, "index_k_norm_type": "rmsnorm", "indexer_use_fp8": false, "index_topk_freq": 1, "index_skip_topk_offset": 1});
+        edit(&mut c["text_config"]["dsa_config"]);
+        describe(&c)
+    };
+    let plain = describe(&base).unwrap();
+    for (norm, kind) in [("rmsnorm", NormKind::Rms), ("layernorm", NormKind::Layer)] {
+        let d = with(&|x| x["index_k_norm_type"] = norm.into()).unwrap_or_else(|e| panic!("{norm}: {}", e.msg));
+        let mut latent = 0;
+        for (b, was) in d.desc.blocks.iter().zip(&plain.desc.blocks) {
+            match (&b.body, &was.body) {
+                (Body::Mixer(Mixer::Mla(m)), Body::Mixer(Mixer::Mla(w))) => {
+                    let ix = m.indexer.as_ref().unwrap();
+                    assert_eq!((ix.heads, ix.head_dim, ix.top_k, ix.block, ix.shared), (16, 64, 2048, 1, false));
+                    assert_eq!(ix.form, IndexForm::Gated { key: Norm { kind, ..Norm::rms(eps) } }, "{norm}");
+                    assert_eq!(Mla { indexer: None, ..m.clone() }, *w, "the latent attention otherwise as Kimi-K3's");
+                    latent += 1;
+                }
+                (x, y) => assert_eq!(x, y),
+            }
+        }
+        assert_eq!(latent, full.len());
+        let names = d.names();
+        let l = full[0] - 1;
+        for t in ["wq_b.weight", "wk.weight", "weights_proj.weight", "k_norm.weight"] {
+            assert!(names.contains(&format!("language_model.model.layers.{l}.self_attn.indexer.{t}")), "{norm}: {t}");
+        }
+        assert_eq!(names.contains(&format!("language_model.model.layers.{l}.self_attn.indexer.k_norm.bias")), kind == NormKind::Layer, "{norm}");
+        assert_eq!(names.len(), plain.names().len() + full.len() * if kind == NormKind::Layer { 5 } else { 4 }, "{norm}");
+    }
+    for (edit, want) in [
+        (&(|x: &mut serde_json::Value| x["index_rope_dim"] = 64.into()) as &dyn Fn(&mut serde_json::Value), "index_rope_dim"),
+        (&|x: &mut serde_json::Value| x["index_topk_freq"] = 2.into(), "index_topk_freq"),
+        (&|x: &mut serde_json::Value| x["dsa_layers"] = serde_json::json!([1]), "layer 1"),
+        (&|x: &mut serde_json::Value| x["index_k_norm_type"] = "l2".into(), "rmsnorm or layernorm"),
+        (&|x: &mut serde_json::Value| x["index_share"] = true.into(), "index_share"),
+    ] {
+        let e = with(edit).unwrap_err().msg;
+        assert!(e.contains(want), "{want}: {e}");
+    }
 }
 
 /// Kimi-K3's experts as released (MXFP4 in groups of 32): each expert matrix is its packed codes and its scales; a quantization the description does not read is

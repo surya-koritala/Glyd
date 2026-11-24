@@ -138,6 +138,10 @@ impl MlaOp {
         let indexer = match &k.indexer {
             None => None,
             Some(x) if x.shared => return err("a latent attention that reuses another layer's picks: not an operation of this executor"),
+            // (the key kernel LayerNorms each key with its bias at 1e-6: an RMS-normed key, Kimi-K3.1's, is not its operation yet)
+            Some(x) if x.form != kinds::IndexForm::LAYER_KEYS => {
+                return err(format!("a latent attention's indexer of {:?}: the kernels take keys LayerNorm-ed with a bias at 1e-6", x.form))
+            }
             Some(x) => {
                 let s = s0 + 3;
                 Some(MlaIndexer {
@@ -629,7 +633,14 @@ mod tests {
             gate: gate.then_some(OutGate { act: kinds::Act::Sigmoid, from: kinds::GateFrom::Own, norm: None }),
             scale: ((64 + rope) as f32).powf(-0.5),
             absorbed: true,
-            indexer: indexer.then_some(Indexer { heads: 4, head_dim: 32, top_k: 8, block: 4, shared: false, form: crate::runtime::kinds::IndexForm::Gated }),
+            indexer: indexer.then_some(Indexer {
+                heads: 4,
+                head_dim: 32,
+                top_k: 8,
+                block: 4,
+                shared: false,
+                form: crate::runtime::kinds::IndexForm::LAYER_KEYS,
+            }),
         }
     }
 

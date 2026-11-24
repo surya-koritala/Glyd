@@ -4,7 +4,7 @@
 
 use super::{dot, norm::norm, rope, softmax, Params};
 use crate::ffi::{err, Result};
-use crate::runtime::kinds::{Comp, Norm, Rope};
+use crate::runtime::kinds::{Comp, IndexForm, Indexer, Norm, Rope};
 
 /// One compressor's tokens (each its projection and its gate plus the position bias) and the entries of its closed windows.
 #[derive(Default)]
@@ -66,7 +66,12 @@ impl Pool {
             softmax(&mut s);
             *e = cand.iter().zip(&s).map(|(c, &a)| c.0 * a).sum();
         }
-        let mut entry = norm(&Norm::rms(c.norm_eps), &entry, Some(p.vec(&format!("{pre}_norm"))?), None);
+        // (the indexer's entries normed as its gated form's keys are, `idx_norm`; the attention's by `comp_norm`)
+        let n = match (&c.indexer, pre) {
+            (Some(Indexer { form: IndexForm::Gated { key }, .. }), "idx") => *key,
+            _ => Norm::rms(c.norm_eps),
+        };
+        let mut entry = norm(&n, &entry, Some(p.vec(&format!("{pre}_norm"))?), None);
         turn(&c.rope, &mut entry, (i * r) as u32, false);
         self.entries.push(entry);
         Ok(())
