@@ -1,7 +1,7 @@
 //! `glyd-engine plancheck`: the planner (src/plan.rs) against what this machine measures, as a gate, and the records that set each GPU class's figures.
 //!
-//!   glyd-engine plancheck [--models M,M,...] [--moe MODEL [--expert-cache GIB]] [--loads 1k:1,4k:1,8k:1,1k:8] [--users 8] [--runs 3] [--out DIR] [--records FILE]
-//!                         [--predict-only]
+//!   glyd-engine plancheck [--models M,M,...] [--moe MODEL [--expert-cache GIB]] [--loads 1k:1,4k:1,8k:1,1k:8] [--users 8] [--ctx N] [--runs 3] [--out DIR]
+//!                         [--records FILE] [--predict-only]
 //!       1. predicts every case before anything is measured and saves it (DIR/predictions.json): for each model the plan `serve MODEL --users N --no-draft` loads
 //!          (level, placement, context), and for each load decode tokens/s a user (at its users and positions), prompt tokens/s, the first token's time, and the
 //!          GPU memory the plan takes; and a case at 85% of the plan's context (the context it allows, filled);
@@ -75,8 +75,8 @@ struct Predicted {
 /// The predictions of one model's cases, from the plan `serve` would load.
 fn predict(model: &str, a: &Args, users: usize, loads: &[(String, usize)]) -> Result<Predicted, String> {
     let mut words = vec!["serve".to_string(), model.to_string(), "--users".to_string(), users.to_string(), "--no-draft".to_string()];
-    // (`--machine PRESET` with --predict-only: the predictions for a machine one does not have)
-    for f in ["expert-cache", "host-memory", "machine"] {
+    // (`--machine PRESET` with --predict-only: the predictions for a machine one does not have; `--ctx N`: the context the server is asked for)
+    for f in ["expert-cache", "host-memory", "machine", "ctx"] {
         if let Some(v) = a.flag(f) {
             words.extend([format!("--{f}"), v.to_string()]);
         }
@@ -117,17 +117,25 @@ fn predict(model: &str, a: &Args, users: usize, loads: &[(String, usize)]) -> Re
             let positions = (prompt + MADE / 2) as f64;
             let prior = plan::speed_users(&f.shape, &f.machine, main, &lp, positions, n);
             let prefill = if in_vram { plan::prefill_at(&f.shape, d, prompt as f64).map(|p| p * d.observed_prefill.unwrap_or(1.0)) } else { None };
-            let decode = prior * band[1];
+            let wait = prefill.map_or(0.0, |p| plan::prompt_wait(n, prompt as f64, p));
+            let at = |tok_s: f64| at_once(tok_s, wait);
+            let decode = at(prior * band[1]);
             json!({
                 "model": model, "load": format!("{kind}:{n}"), "kind": kind, "users": n, "prompt_tokens": prompt, "positions": positions,
-                "decode": decode, "decode_p10": prior * band[0], "decode_p90": prior * band[2], "prefill": prefill,
-                // (the prompts of `n` users at once are read before the first of them has its first token; then one step)
-                "ttft": prefill.map(|p| (n * prompt) as f64 / p + 1.0 / decode),
+                "decode": decode, "decode_p10": at(prior * band[0]), "decode_p90": at(prior * band[2]), "prefill": prefill, "step_decode": prior * band[1],
+                // (the median user's first token: the prompts read before it, half of them and its own; then one step)
+                "ttft": prefill.map(|p| (n + 1) as f64 / 2.0 * prompt as f64 / p + 1.0 / (prior * band[1])),
                 "features": plan::features(&f.shape, &f.machine, main, &lp, positions, n),
             })
         })
         .collect();
     Ok(Predicted { head, cases, sh: f.shape, machine: f.machine, main, lp })
+}
+
+/// A user's decode tokens/s over a reply of `MADE` tokens whose steps run at `tok_s` and that waits `wait` seconds for other users' prompts.
+fn at_once(tok_s: f64, wait: f64) -> f64 {
+    let made = (MADE - 1) as f64;
+    made / (made / tok_s + wait)
 }
 
 /// The bench file's cell of a load, where it ran.
@@ -217,7 +225,7 @@ fn run(a: &Args) -> Result<bool, String> {
         let mut cmd = std::process::Command::new(&exe);
         cmd.args(["bench", m, "--loads", &all.join(","), "--runs", &runs.to_string(), "--warmup", "1", "--no-draft", "--users", &users.to_string()]);
         cmd.args(["--max-tokens", &MADE.to_string(), "--out"]).arg(&file);
-        for f in ["expert-cache", "host-memory"] {
+        for f in ["expert-cache", "host-memory", "ctx"] {
             if let Some(v) = a.flag(f) {
                 cmd.args([format!("--{f}"), v.to_string()]);
             }
@@ -262,7 +270,7 @@ fn run(a: &Args) -> Result<bool, String> {
             records.push(json!({
                 "schema": plan::CALIB_SCHEMA, "at": predictions["at"], "gpu": gpu_json["gpu"], "cc": gpu_json["cc"], "class": gpu_json["class"], "driver": gpu_json["driver"],
                 "sms": gpu_json["sms"], "stream_gbs": h["rate_gbs"], "measured_rate": h["measured_rate"], "ram_gbs": gpu_json["ram_gbs"], "tflops": h["tflops"],
-                "model": m, "level": h["level"], "load": c["load"], "users": n, "positions": positions, "features": features,
+                "model": m, "level": h["level"], "load": c["load"], "users": n, "positions": positions, "made": MADE, "features": features,
                 "predicted": r["predicted"], "measured": r["measured"], "error": r["error"],
             }));
             results.push(r);
@@ -350,10 +358,13 @@ mod tests {
             assert!(plan["planned_total_mib"].as_u64().unwrap() > 0 && plan["level"].is_string() && plan["placement"].is_string(), "{plan}");
             assert!(cases.iter().all(|c| c["decode"].as_f64().unwrap() > 0.0 && c["prompt_tokens"].as_u64().unwrap() as usize + MADE <= ctx), "{m}");
             assert!(cases.iter().any(|c| c["kind"].as_str().unwrap().ends_with('t')), "the context filled is a case: {m}");
-            // (eight users at once: each slower than one alone, their first token later)
+            // (eight users at once: each slower than one alone, their first token later; each reply waits for the prompts after its own, beside its steps)
             let at = |l: &str| cases.iter().find(|c| c["load"] == l);
             if let (Some(one), Some(eight)) = (at("1k:1"), at("1k:8")) {
                 assert!(eight["decode"].as_f64() < one["decode"].as_f64() && eight["ttft"].as_f64() > one["ttft"].as_f64(), "{m}");
+                let f = |k: &str| eight[k].as_f64().unwrap();
+                let wait = plan::prompt_wait(8, f("prompt_tokens"), f("prefill"));
+                assert!(f("decode") < f("step_decode") && (127.0 / f("decode") - 127.0 / f("step_decode") - wait).abs() < 1e-9, "{eight}");
             }
         }
         // (gemma-4-12B at kestrel with eight users holds 4,096 tokens each: its 4k and 8k loads are not cases)
