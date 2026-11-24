@@ -131,10 +131,11 @@ struct VisionCfg {
 }
 
 fn vision_config(dir: &Path) -> Result<Option<VisionCfg>> {
+    use serde_json::Value;
     let p = dir.join("config.json");
-    let t = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-    let c = json::parse(&t).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-    let Some(v) = c.get("vision_config").filter(|v| matches!(v, Value::Object(_))) else { return Ok(None) };
+    // (config.json parsed once, src/runtime/config.rs: the tower's keys are the top level's)
+    let c = crate::runtime::config::ModelConfig::load(dir)?.top;
+    let Some(v) = c.get("vision_config").filter(|v| v.is_object()) else { return Ok(None) };
     if c.get("language_model_only").and_then(Value::as_bool) == Some(true) {
         return Ok(None);
     }
