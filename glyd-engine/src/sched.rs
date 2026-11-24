@@ -1720,6 +1720,11 @@ impl<B: ModelStep> Sched<B> {
                 tok = self.active[i].sampler.sample_adjusted(c, &raw);
             }
         }
+        // (an allowed list: the draw over those tokens' own logits, gathered where the logits are)
+        if let (None, Some(ts), Some(_)) = (tok, self.active[i].sampler.listed(), top.as_deref()) {
+            let raw = self.be.gather(row, &ts)?;
+            tok = self.active[i].sampler.sample_listed(&raw);
+        }
         // (log-probabilities: the token's logit and the k likeliest from the candidates, the log-sum-exp from the row's sum at temperature 1 about its largest logit, the first's; not where a
         // grammar's mask made the candidates, which are then the allowed tokens', not the row's likeliest)
         let lp = match (want, tok, top.as_deref()) {
