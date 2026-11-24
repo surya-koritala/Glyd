@@ -3518,6 +3518,9 @@ pub mod sizing {
         let asked = if a.has("context") || a.has("ctx") { Some(a.either("context", "ctx", 0usize)?) } else { None };
         let fam = if nemotron { crate::support::Family::NemotronH } else { crate::support::Family::Qwen35 };
         crate::support::context_check(&name, crate::support::row(fam), max_pos, asked)?;
+        // (served, the executor gives each of --users a sequence of its own in pools of blocks that hold up to the context of each (src/dynamic/rows.rs `page`): the
+        // plan counts them, as Gemma 4's does; neither path drafts. Measured on an A100: Qwen3.5-0.8B served to 8 took 5,054 MiB, planned for one at 3,037)
+        let users = if a.pos.first().is_some_and(|c| c == "serve") { users_of(a)? } else { 1 };
         let n = Needs {
             kind: if nemotron { Kind::NemotronH } else { Kind::Qwen35 },
             family: if nemotron { "Nemotron-H" } else { "Qwen3.5" },
@@ -3526,8 +3529,8 @@ pub mod sizing {
             bf16,
             per_seq: state,
             per_token: per.max(1),
-            users: 1,
-            fewer: false,
+            users,
+            fewer: true,
             draft: 0,
             chunks: vec![(2048, LOSSY_WORK)],
             want: LOSSY_CTX,
@@ -3549,7 +3552,11 @@ pub mod sizing {
         if nemotron && (fitted.is_err() || cache.is_some()) {
             let cfg = ConfigNemotronH::parse(text, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
             match offloaded(&cfg, layout, weights, state, n.per_token, free, host, asked, cache, host_asked, gpu) {
-                Ok((ctx, plan)) => return Ok(LoadPlan { experts: Some(plan), ..n.plan_at(ctx, n.chunks[0], free, gpu) }),
+                // (its context sized for one sequence: `offloaded`'s)
+                Ok((ctx, plan)) => {
+                    let one = n.per_seq + ctx as u64 * n.per_token;
+                    return Ok(LoadPlan { experts: Some(plan), users: 1, kv: one, ..n.plan_at(ctx, n.chunks[0], free, gpu) });
+                }
                 Err(why) if cache.is_some() => {
                     return Err(Refusal::unsupported(
                         format!("{name} at the {tag} level with --expert-cache: {why}"),
@@ -4844,6 +4851,30 @@ mod tests {
 
     fn gpu_of(d: &Device, ordinal: i32) -> crate::dev::Gpu {
         crate::dev::Gpu { name: d.name.clone(), cc: d.cc, sms: 0, total: d.total, free: d.free, driver: d.driver, count: 1, ordinal }
+    }
+
+    /// A Qwen3.5 model served to --users N is planned with N sequences, each up to the context (the executor's pools hold up to that, src/dynamic/rows.rs `page`):
+    /// on an A100 40GB Qwen3.5-0.8B served to 8 took 5,054 MiB where its plan for one said 3,037. Run, and serve to one, plan one sequence as before; a GPU too small
+    /// for N at the full context gives each the context the room leaves them.
+    #[test]
+    fn a_qwen35_server_is_planned_for_its_users() {
+        let q35: serde_json::Value = serde_json::from_str(&fixture("qwen35_configs.json")).unwrap();
+        let dir = model_dir("q35users", "Qwen3.5-0.8B", &q35["Qwen/Qwen3.5-0.8B"].to_string());
+        let m = dir.to_str().unwrap();
+        let plan_of = |words: &[&str]| planned(&args(words)).unwrap().plan.chosen.and_then(|c| c.load).unwrap();
+        let tag = format!("{m}:kestrel");
+        let one = plan_of(&["run", &tag, "--machine", "a100-80g"]);
+        let eight = plan_of(&["serve", &tag, "--users", "8", "--machine", "a100-80g"]);
+        assert_eq!((one.users, eight.users, eight.context), (1, 8, one.context));
+        assert_eq!(eight.kv, 8 * one.kv, "each of the eight's states and context");
+        assert_eq!(eight.gpu_total() - eight.kv, one.gpu_total() - one.kv);
+        assert_eq!(plan_of(&["serve", &tag, "--users", "1", "--machine", "a100-80g"]).kv, one.kv);
+        // (Qwen3.5-9B to 64 users on a 24 GB card: the context the room gives each, within what is free)
+        let dir9 = model_dir("q35users", "Qwen3.5-9B", &q35["Qwen/Qwen3.5-9B"].to_string());
+        let tag9 = format!("{}:wren", dir9.to_str().unwrap());
+        let many = plan_of(&["serve", &tag9, "--users", "64", "--machine", "rtx4090"]);
+        assert!(many.users == 64 && many.context < LOSSY_CTX && many.context >= LOSSY_MIN_CTX && many.gpu_total() <= many.free, "{}", many.text());
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
     /// What `fit` prints for each family at each level it runs at, on each NVIDIA preset, is the plan `run` builds from the same GPU (the functions

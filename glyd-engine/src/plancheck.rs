@@ -135,6 +135,15 @@ fn cell<'a>(bench: &'a Value, kind: &str, n: usize) -> Option<&'a Value> {
     bench["cells"].as_array()?.iter().find(|c| c["prompt"] == kind && c["conc"].as_u64() == Some(n as u64))
 }
 
+/// The GPU memory a bench's server took (MiB): the driver's peak during the loads less what was used before it started. bench writes them as `nvidia-smi` prints
+/// them, a number with or without a fraction (`"idle_mib": 473.0`): read as numbers either way.
+fn used_mib(bench: &Value) -> Option<u64> {
+    match (bench["peak_mib"].as_f64(), bench["idle_mib"].as_f64()) {
+        (Some(p), Some(i)) if p > 0.0 => Some((p - i).max(0.0) as u64),
+        _ => None,
+    }
+}
+
 fn err_of(pred: Option<f64>, meas: Option<f64>) -> Option<f64> {
     match (pred, meas) {
         (Some(p), Some(m)) if m > 0.0 => Some(p / m - 1.0),
@@ -215,11 +224,7 @@ fn run(a: &Args) -> Result<bool, String> {
         }
         let status = cmd.status().map_err(|e| format!("bench: {e}"))?;
         let bench: Value = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
-        // (the GPU memory the server took: the driver's peak during the loads less what was used before it started)
-        let used = match (bench["peak_mib"].as_u64(), bench["idle_mib"].as_u64()) {
-            (Some(p), Some(i)) if p > 0 => Some(p.saturating_sub(i)),
-            _ => None,
-        };
+        let used = used_mib(&bench);
         let memory_ok = used.is_some_and(|u| u <= h["planned_total_mib"].as_u64().unwrap_or(0));
         for c in cases {
             let (kind, n) = (c["kind"].as_str().unwrap_or(""), c["users"].as_u64().unwrap_or(1) as usize);
@@ -356,6 +361,15 @@ mod tests {
         assert!(kestrel["cases"].as_array().unwrap().iter().all(|c| !["4k:1", "8k:1"].contains(&c["load"].as_str().unwrap())), "{kestrel}");
         assert!(!out.join("results.json").exists(), "nothing measured");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The memory a bench's server took, as the A100's bench wrote it (`idle_mib` 473.0, a number with a fraction): read, not "not measured".
+    #[test]
+    fn the_memory_a_server_took_is_read_as_bench_writes_it() {
+        assert_eq!(used_mib(&json!({"idle_mib": 473.0, "peak_mib": 5527})), Some(5054));
+        assert_eq!(used_mib(&json!({"idle_mib": 0, "peak_mib": 15697.0})), Some(15697));
+        assert_eq!(used_mib(&json!({"idle_mib": 473.0, "peak_mib": 0})), None, "no sample of the driver: not measured");
+        assert_eq!(used_mib(&json!({})), None);
     }
 
     #[test]
