@@ -261,6 +261,16 @@ pub fn distinct(ids: &[i64], experts: usize) -> Vec<u16> {
     out
 }
 
+/// A call's distinct experts (`needed`) in the order of their pairs among `ids`, the fewest first (the order given among equals): asked for in this order, the busiest are the most recently used, and where a call
+/// is computed in waves (`LayerCache::waves`) its last wave, whose experts stay in places for the next call, holds the busiest of its misses. On the Nemotron 3 Super decode traces at 16 and 20 rows a step this
+/// finds 1 to 7 points more of the pairs in places than the order the experts first appear in, and never fewer (the test below).
+pub fn by_rows(mut needed: Vec<u16>, ids: &[i64], experts: usize) -> Vec<u16> {
+    let mut n = vec![0u32; experts];
+    ids.iter().filter(|&&e| e >= 0 && (e as usize) < experts).for_each(|&e| n[e as usize] += 1);
+    needed.sort_by_key(|&e| n[e as usize]);
+    needed
+}
+
 /// A layer's experts ranked by routing counts, the most used first and the lower expert first among equals (numpy's stable argsort of the negated counts): the first `k` are a static profile of the layer.
 pub fn profile(counts: &[u64], k: usize) -> Vec<u16> {
     let mut ranked: Vec<u16> = (0..counts.len() as u16).collect();
@@ -842,10 +852,13 @@ impl Stats {
 /// weights, the waves past a call's first; the bytes read from the computer's memory for the misses (`copy_bytes` over the link, `host_bytes` by the host's kernels: an expert's bytes once for all its rows where the
 /// kernel groups its pairs by expert, once a pair where it does not), and for the experts copied behind the calls for later ones (promotions, hints: `ahead`, `ahead_bytes`); the copy stream's time for the layer's
 /// copies, the host's for its pairs, the host's waits for the GPU (the router's choices, a wave's end), and the call's own time on the host besides (`plan_ms`: the plan, the copies and products queued, the
-/// host's sums sent).
+/// host's sums sent). `whole` of the calls had no host half (every miss copied before the products, in waves where they outnumber the places: copy mode, or `waves_quicker`'s choice) and `whole_bytes` of the copies
+/// were theirs: a layer whose calls are some of each is not their average (`ceiling --stats`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct LayerStats {
     pub calls: u64,
+    pub whole: u64,
+    pub whole_bytes: u64,
     pub rows: u64,
     pub pairs: u64,
     pub reads: u64,
@@ -870,6 +883,8 @@ impl LayerStats {
     pub fn add(&mut self, o: &LayerStats) {
         let LayerStats {
             calls,
+            whole,
+            whole_bytes,
             rows,
             pairs,
             reads,
@@ -890,6 +905,8 @@ impl LayerStats {
             plan_ms,
         } = *o;
         self.calls += calls;
+        self.whole += whole;
+        self.whole_bytes += whole_bytes;
         self.rows += rows;
         self.pairs += pairs;
         self.reads += reads;
@@ -962,8 +979,10 @@ impl LayerStats {
     /// The stats as a JSON object (the layer's number among the store's first).
     pub fn json(&self, layer: usize) -> String {
         format!(
-            "{{\"layer\":{layer},\"calls\":{},\"rows\":{},\"pairs\":{},\"reads\":{},\"hits\":{},\"copies\":{},\"host\":{},\"host_pairs\":{},\"skipped\":{},\"waves\":{},\"copy_bytes\":{},\"host_bytes\":{},\"missed_bytes\":{},\"ahead\":{},\"ahead_bytes\":{},\"copy_ms\":{:.3},\"host_ms\":{:.3},\"wait_ms\":{:.3},\"plan_ms\":{:.3}}}",
+            "{{\"layer\":{layer},\"calls\":{},\"whole\":{},\"whole_bytes\":{},\"rows\":{},\"pairs\":{},\"reads\":{},\"hits\":{},\"copies\":{},\"host\":{},\"host_pairs\":{},\"skipped\":{},\"waves\":{},\"copy_bytes\":{},\"host_bytes\":{},\"missed_bytes\":{},\"ahead\":{},\"ahead_bytes\":{},\"copy_ms\":{:.3},\"host_ms\":{:.3},\"wait_ms\":{:.3},\"plan_ms\":{:.3}}}",
             self.calls,
+            self.whole,
+            self.whole_bytes,
             self.rows,
             self.pairs,
             self.reads,
@@ -2754,7 +2773,7 @@ impl ExpertStore {
             // SAFETY: the pinned buffers hold `pairs` int64 and fp32, written by the copies that have completed.
             let host_ids: Vec<i64> = std::slice::from_raw_parts(cuda.ids.ptr as *const i64, pairs).to_vec();
             let host_wts: Vec<f32> = if hybrid { std::slice::from_raw_parts(cuda.wts.ptr as *const f32, pairs).to_vec() } else { Vec::new() };
-            let needed = distinct(&host_ids, ly.cache.experts());
+            let needed = by_rows(distinct(&host_ids, ly.cache.experts()), &host_ids, ly.cache.experts());
             // (a call whose misses are more than the places its hits leave, copied whole in waves where that is quicker than the host's share of them)
             let hybrid = hybrid && {
                 let experts = ly.cache.experts();
@@ -2809,13 +2828,15 @@ impl ExpertStore {
                 // (a copy mode's misses are the waves' copies, each expert copied once over the waves: `LayerCache::waves`)
                 let missed: u64 = got.loads.iter().map(|l| ly.bytes_of(l.0 as usize)).sum();
                 let st = &mut ly.stats;
-                (st.reads, st.hits, st.copies, st.waves, st.copy_bytes, st.missed_bytes) = (
+                (st.reads, st.hits, st.copies, st.waves, st.copy_bytes, st.missed_bytes, st.whole, st.whole_bytes) = (
                     st.reads + wave.len() as u64,
                     st.hits + got.hits as u64,
                     st.copies + got.loads.len() as u64,
                     st.waves + (w > 0) as u64,
                     st.copy_bytes + bytes,
                     st.missed_bytes + missed,
+                    st.whole + (w == 0) as u64,
+                    st.whole_bytes + bytes,
                 );
                 ly.wait_ready(s)?;
                 for &e in wave {
@@ -4671,6 +4692,68 @@ mod tests {
             eprintln!("{cap} places seeded: the record's replay {got:.3}");
             assert!((got - seeded).abs() <= 0.05, "{cap} places seeded: {got:.3}, the record's {seeded}");
         }
+    }
+
+    /// The record's 20 generations (127 decode steps each) decoded `rows` at a time (generations g to g + rows side by side, each group once), each layer's cache of `cap` places asked for a step's experts as a call
+    /// of the store asks in copy mode (one request, or waves of as many as fit where there are more): the step's distinct experts, the distinct missed ones (each copied once) and the share of pairs found in a place,
+    /// a layer and step on average. `first`: the experts in the order they first appear, as calls asked before `by_rows`.
+    fn replay_rows(cap: usize, rows: usize, first: bool) -> (f64, f64, f64) {
+        let &(_, layers, k, ref ids) = trace();
+        let (gens, steps) = (20usize, 127usize);
+        let (mut distinct_n, mut missed, mut found, mut pairs, mut calls) = (0usize, 0usize, 0usize, 0usize, 0usize);
+        for g0 in (0..gens).step_by(rows).filter(|g| g + rows <= gens) {
+            for l in 0..layers {
+                let mut c = LayerCache::new(512, cap);
+                for t in 0..steps {
+                    let step: Vec<i64> = (g0..g0 + rows).flat_map(|g| ids[((g * steps + t) * layers + l) * k..][..k].iter().map(|&e| e as i64)).collect();
+                    let mut needed = distinct(&step, 512);
+                    if !first {
+                        needed = by_rows(needed, &step, 512);
+                    }
+                    found += step.iter().filter(|&&e| c.slot_of(e as usize).is_some()).count();
+                    for wave in c.waves(&needed) {
+                        missed += c.request(&wave).unwrap().loads.len();
+                    }
+                    (distinct_n, pairs, calls) = (distinct_n + needed.len(), pairs + step.len(), calls + 1);
+                }
+            }
+        }
+        (distinct_n as f64 / calls as f64, missed as f64 / calls as f64, found as f64 / pairs as f64)
+    }
+
+    /// The slot policy and the planner's model of it over the record's decode traces at 1 to 20 rows a step (Nemotron 3 Super, 512 experts, 22 chosen; places for 17, 32 and 46% of them):
+    /// - asking for a step's experts by their rows, fewest first (`by_rows`), never finds fewer pairs in places than in the order they first appear, and more at 16 and 20 rows;
+    /// - the planner's distinct missed experts a step (`plan::step_misses` with `HIT_EXPONENT`: the reads from the computer's memory a step) are within 20% of the cache's at every point; at one row its
+    ///   f^0.23 is 61, 73 and 80% where the cache finds 61, 73 and 80... (printed), the misses' error the largest there, and at many rows the places' reuse between steps goes as the rows' experts fill them.
+    #[test]
+    fn the_slot_policy_and_the_planners_model_over_the_traces_at_many_rows() {
+        let mut worst = 0f64;
+        for cap in [87usize, 164, 236] {
+            for rows in [1usize, 4, 8, 16, 20] {
+                let (d, missed, found) = replay_rows(cap, rows, false);
+                let (_, missed0, found0) = replay_rows(cap, rows, true);
+                let model = 22.0 * crate::plan::step_misses(512, 22, cap, rows, crate::plan::HIT_EXPONENT);
+                let e = model / missed - 1.0;
+                worst = worst.max(e.abs());
+                eprintln!(
+                    "{cap} places, {rows:>2} rows: {d:.1} experts a step, {missed:.1} missed ({missed0:.1} in the order they first appear), {:.1}% of pairs found ({:.1}%); the planner's {model:.1} missed ({:+.1}%)",
+                    100.0 * found,
+                    100.0 * found0,
+                    100.0 * e
+                );
+                assert!(found >= found0 - 1e-9, "{cap} places, {rows} rows: by rows {found} against {found0}");
+                if rows >= 16 {
+                    assert!(found > found0, "{cap} places, {rows} rows: by rows finds more ({found} against {found0})");
+                }
+                assert!(e.abs() < 0.20, "{cap} places, {rows} rows: the planner's {model:.1} missed experts a step against the cache's {missed:.1}");
+            }
+        }
+        eprintln!("the planner's distinct missed experts a step: the largest error {:.1}%", 100.0 * worst);
+        // (a uniform router's share is the places' share at any rows; at one row the model is the old one, f^s)
+        for rows in [1usize, 8, 32] {
+            assert!((crate::plan::step_hit(64, 6, 32, rows, 1.0) - 0.5).abs() < 1e-12);
+        }
+        assert_eq!(crate::plan::step_hit(512, 22, 164, 1, crate::plan::HIT_EXPONENT), (164.0f64 / 512.0).powf(crate::plan::HIT_EXPONENT));
     }
 
     // ---- the places hold the bytes of the experts the cache says they do ----------------------------------------------------------------------------------------------------------------------------

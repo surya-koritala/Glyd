@@ -350,36 +350,9 @@ pub fn bench(a: &crate::args::Args) -> Result<()> {
             t.host_ms / steps as f64,
             if t.host_ms > 0.0 { t.host_bytes as f64 / t.host_ms / 1e6 } else { 0.0 }
         );
-        let avg: Vec<String> = layers
-            .iter()
-            .enumerate()
-            .map(|(l, s)| {
-                let f = |x: u64| (x as f64 / steps as f64).round() as u64;
-                let m = LayerStats {
-                    calls: f(s.calls),
-                    rows: f(s.rows),
-                    pairs: f(s.pairs),
-                    reads: f(s.reads),
-                    hits: f(s.hits),
-                    copies: f(s.copies),
-                    host: f(s.host),
-                    host_pairs: f(s.host_pairs),
-                    skipped: f(s.skipped),
-                    waves: f(s.waves),
-                    copy_bytes: f(s.copy_bytes),
-                    host_bytes: f(s.host_bytes),
-                    missed_bytes: f(s.missed_bytes),
-                    ahead: f(s.ahead),
-                    ahead_bytes: f(s.ahead_bytes),
-                    copy_ms: s.copy_ms / steps as f64,
-                    host_ms: s.host_ms / steps as f64,
-                    wait_ms: s.wait_ms / steps as f64,
-                    plan_ms: s.plan_ms / steps as f64,
-                };
-                m.json(l)
-            })
-            .collect();
-        out += &format!("{{\"rows\":{n},\"steps\":{steps},\"step_ms\":{mean:.4},\"expert_bytes\":{eb},\"layers\":[{}]}}\n", avg.join(","));
+        // (each layer's totals over the timed steps: a share of calls, of those copied whole among them, is kept as it is)
+        let all: Vec<String> = layers.iter().enumerate().map(|(l, s)| s.json(l)).collect();
+        out += &format!("{{\"rows\":{n},\"steps\":{steps},\"totals\":true,\"step_ms\":{mean:.4},\"expert_bytes\":{eb},\"layers\":[{}]}}\n", all.join(","));
     }
     if let Some(f) = a.flag("out") {
         std::fs::write(f, out).map_err(|e| Error(format!("{f}: {e}")))?;

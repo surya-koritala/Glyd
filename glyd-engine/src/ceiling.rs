@@ -88,6 +88,23 @@ const BOXES: &[Box] = &[
         t0_us: (0.0, 0.0),
     },
     Box {
+        name: "a100",
+        gpus: 1,
+        read: 1555.0,
+        read_src: "spec sheet (A100 SXM4 40 GB)",
+        mem: 40.0,
+        pcie: 23.3,
+        pcie_alone: 23.3,
+        pcie_src: "measured: one A100 SXM4 copying alone (a100x8's)",
+        host: 204.8,
+        hbm: true,
+        ours: (0.80, 0.57, 0.57, "a100x8's (the same GPU)"),
+        gather_us: [0.0; 3],
+        gathers: &[],
+        pair_ms: 0.0,
+        t0_us: (0.0, 0.0),
+    },
+    Box {
         name: "a100x8",
         gpus: 8,
         read: 2039.0,
@@ -366,11 +383,13 @@ fn ms(bytes: f64, gbs: f64) -> f64 {
     }
 }
 
-/// One count of rows of a run through the expert cache (`storebench --out`'s line): the rows, the measured step, an expert's bytes as the cache holds it, and each MoE layer's statistics a step on average.
+/// One count of rows of a run through the expert cache (`storebench --out`'s line): the rows, the measured step, an expert's bytes as the cache holds it, and each MoE layer's statistics over `per` steps (a line
+/// marked `totals` holds the timed steps' sums, `steps` of them; an older line their averages, rounded: `per` 1).
 struct Run {
     rows: usize,
     step_ms: f64,
     expert_bytes: f64,
+    per: f64,
     layers: Vec<crate::offload::LayerStats>,
 }
 
@@ -384,6 +403,8 @@ impl Run {
                 .map(|l| {
                     Ok(crate::offload::LayerStats {
                         calls: n(l, "calls")? as u64,
+                        whole: l.get("whole").and_then(num).unwrap_or(0.0) as u64,
+                        whole_bytes: l.get("whole_bytes").and_then(num).unwrap_or(0.0) as u64,
                         rows: n(l, "rows")? as u64,
                         pairs: n(l, "pairs")? as u64,
                         reads: n(l, "reads")? as u64,
@@ -407,40 +428,73 @@ impl Run {
                 .collect::<Result<Vec<_>>>()?,
             _ => return err("a line of --stats without its layers"),
         };
-        Ok(Run { rows: n(&v, "rows")? as usize, step_ms: n(&v, "step_ms")?, expert_bytes: n(&v, "expert_bytes")?, layers })
+        let per = if v.get("totals") == Some(&Value::Bool(true)) { n(&v, "steps")?.max(1.0) } else { 1.0 };
+        Ok(Run { rows: n(&v, "rows")? as usize, step_ms: n(&v, "step_ms")?, expert_bytes: n(&v, "expert_bytes")?, per, layers })
     }
 }
 
 /// A decode step of `r.rows` rows on one GPU whose experts are in the expert cache, from its layers' statistics (`--stats`, src/tiering.rs storebench): (ceiling, ours) in ms. The dense weights are read once
-/// for the rows; each expert a layer runs on the GPU (the ones asked for less those the host computed) once; the attention once a row. A layer's misses take the longer of its copies and the host's pairs, which
-/// run at once and before its products can end: at the box's link and host memory rates for the ceiling (the host reading each missed expert once), and for ours the copy stream's measured time for the layer's
-/// misses (its share of the layer's copying: the promotions behind the call are not the call's) against the host's measured time, plus each call's own time on the host (`plan_ms`). The copy stream is one queue,
-/// so ours is at least its whole measured time, promotions too. Ours adds `fixed`, the rest of a step (`Fixed`).
+/// for the rows; each expert a layer runs on the GPU (the ones asked for less those the host computed) once; the attention once a row.
+///
+/// The ceiling: a layer's misses take the longer of their copies at the box's link rate and the host's reads at its memory rate (each missed expert read once), beside each other.
+///
+/// Ours follows the layers in order on the host, the copy stream and the GPU, at the rates the run measured (the layer's copy stream time a byte, the host's time): a call plans (`plan_ms`), then its copies start once
+/// the copy stream has run what was queued before them (the last layer's promotions, which wait for that layer's products); its products run once its copies have, and its promotions (`ahead`) after them; the host's
+/// pairs run from the plan on; the next layer starts once the products and the host's pairs are done and the rest of the layer has run (the dense weights and the attention, a layer's share, and `fixed`). A call
+/// copied whole (`whole`: no host half, its misses in waves where they outnumber the places) runs its copies and products with the host waiting; a layer's calls of each kind are counted by their share. The step is
+/// the second of two in a row (the copies a step leaves queued delay the next one's first).
 fn cached_step(s: &Step, b: &Box, shares: (f64, f64, f64), r: &Run, fixed: Fixed) -> (f64, f64) {
     let (e_bf, e_f8, e_fp4) = shares;
-    let on_gpu: f64 = r.layers.iter().map(|l| (l.reads - l.host) as f64 * r.expert_bytes).sum();
+    let x = |v: u64| v as f64 / r.per;
+    let layers: Vec<&crate::offload::LayerStats> = r.layers.iter().filter(|l| l.calls > 0).collect();
+    let on_gpu: f64 = layers.iter().map(|l| (x(l.reads) - x(l.host)) * r.expert_bytes).sum();
     let attn = r.rows as f64 * s.attn;
-    let ceiling =
-        ms(s.dense + on_gpu + attn, b.read) + r.layers.iter().map(|l| ms(l.copy_bytes as f64, b.pcie_alone).max(ms(l.host_bytes as f64, b.host))).sum::<f64>();
-    let own = |l: &crate::offload::LayerStats| {
-        let all = l.copy_bytes + l.ahead_bytes;
-        if all > 0 {
-            l.copy_ms * l.copy_bytes as f64 / all as f64
-        } else {
-            0.0
+    let ceiling = ms(s.dense + on_gpu + attn, b.read) + layers.iter().map(|l| ms(x(l.copy_bytes), b.pcie_alone).max(ms(x(l.host_bytes), b.host))).sum::<f64>();
+    let n = layers.len().max(1) as f64;
+    // (the fixed time a layer goes with its products, which the copies behind them wait for; the time a row with the rest of the layer, the attention sequence by sequence)
+    let rest = (ms(s.dense - s.dense_f8, b.read * e_bf) + ms(s.dense_f8, b.read * e_f8) + ms(attn, b.read)) / n + fixed.row * r.rows as f64;
+    // (t: the host's clock at a call's start; pend: the copy stream's end of what is queued on it)
+    let (mut t, mut pend, mut first) = (0.0f64, 0.0f64, 0.0f64);
+    for step in 0..2 {
+        if step == 1 {
+            first = t;
         }
-    };
-    let path = ms(s.dense - s.dense_f8, b.read * e_bf)
-        + ms(s.dense_f8, b.read * e_f8)
-        + ms(on_gpu, b.read * e_fp4)
-        + ms(attn, b.read)
-        + r.layers.iter().map(|l| own(l).max(l.host_ms) + l.plan_ms).sum::<f64>();
-    let ours = path.max(r.layers.iter().map(|l| l.copy_ms).sum::<f64>()) + fixed.of(r);
-    (ceiling, ours)
+        for l in &layers {
+            let all = x(l.copy_bytes) + x(l.ahead_bytes);
+            let per_byte = if all > 0.0 { x_ms(l.copy_ms, r.per) / all } else { 0.0 };
+            // (a step's calls of the layer, those copied whole a share `w` of them; each kind's own figures a call)
+            let m = x(l.calls).round().max(1.0);
+            let w = (l.whole as f64 / l.calls as f64).clamp(0.0, 1.0);
+            let (nw, nh) = (w * m, (1.0 - w) * m);
+            let of = |v: f64, k: f64| if k > 0.0 { v / k } else { 0.0 };
+            let (reads, plan) = (x(l.reads) / m, x_ms(l.plan_ms, r.per) / m);
+            let cw = of(x(l.whole_bytes), nw) * per_byte;
+            let ch = of((x(l.copy_bytes) - x(l.whole_bytes)).max(0.0), nh) * per_byte;
+            let (host, prom) = (of(x_ms(l.host_ms, r.per), nh), of(x(l.ahead_bytes), nh) * per_byte);
+            let gw = ms(reads * r.expert_bytes, b.read * e_fp4) + fixed.layer / m;
+            let gh = ms((reads - of(x(l.host), nh)).max(0.0) * r.expert_bytes, b.read * e_fp4) + fixed.layer / m;
+            for _ in 0..m as usize {
+                // a call copied whole: its copies behind the queue, then its products, the host waiting
+                let ew = (t + plan).max(pend) + cw;
+                // a call with a host half: its copies, its products after them and its promotions after those, beside the host's pairs
+                let q = t + plan;
+                let ph = q.max(pend) + ch + gh;
+                t = w * (ew + gw) + (1.0 - w) * ph.max(q + host);
+                pend = w * ew + (1.0 - w) * (ph + prom);
+            }
+            t += rest;
+        }
+    }
+    (ceiling, t - first)
 }
 
-/// What a cached step takes besides its terms, for each MoE layer: `layer` ms, and `row` ms a row (the work a row adds a layer that the terms do not count: on the PC, the launches of the operations a pass runs
-/// sequence by sequence), measured as runs' unexplained (`fit`).
+/// A run's milliseconds over its `per` steps, a step's.
+fn x_ms(v: f64, per: f64) -> f64 {
+    v / per
+}
+
+/// What a cached step takes besides its terms, for each MoE layer: `layer` ms, which goes with the layer's products (the copies queued behind them wait for it), and `row` ms a row, which goes with the rest of the
+/// layer (the work a row adds a layer that the terms do not count: on the PC, the launches of the operations a pass runs sequence by sequence), measured as runs' unexplained (`fit`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Fixed {
     layer: f64,
@@ -448,10 +502,6 @@ struct Fixed {
 }
 
 impl Fixed {
-    fn of(&self, r: &Run) -> f64 {
-        r.layers.iter().filter(|l| l.calls > 0).count() as f64 * (self.layer + self.row * r.rows as f64)
-    }
-
     /// The least-squares line through the runs' unexplained a layer by their rows (one run: its unexplained, no time a row).
     fn fit(runs: &[(usize, f64)]) -> Fixed {
         let n = runs.len() as f64;
@@ -460,6 +510,22 @@ impl Fixed {
         let row = if sxx > 0.0 { runs.iter().map(|r| (r.0 as f64 - mx) * (r.1 - my)).sum::<f64>() / sxx } else { 0.0 };
         Fixed { layer: my - row * mx, row }
     }
+}
+
+/// A line's unexplained a MoE layer: the fixed time a layer that makes ours its measured step (ours grows with it, so it is found by halving).
+fn unexplained(s: &Step, b: &Box, shares: (f64, f64, f64), r: &Run) -> f64 {
+    let at = |f: f64| cached_step(s, b, shares, r, Fixed { layer: f, row: 0.0 }).1;
+    let span = r.step_ms.max(1e-3);
+    let (mut lo, mut hi) = (-span, span);
+    for _ in 0..80 {
+        let mid = 0.5 * (lo + hi);
+        if at(mid) < r.step_ms {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
 }
 
 pub fn cmd(a: &Args) -> Result<()> {
@@ -484,9 +550,6 @@ pub fn cmd(a: &Args) -> Result<()> {
         let s = step(&cfg, &ts, 1, bf16_share, f8_pct, pos)?;
         let shares = (b.ours.0, b.ours.1, b.ours.2);
         let first = runs.first().ok_or_else(|| Error(format!("{f}: no line")))?;
-        // (each line's unexplained a MoE layer, by its rows)
-        let per_layer =
-            |r: &Run| (r.rows, (r.step_ms - cached_step(&s, b, shares, r, Fixed::default()).1) / r.layers.iter().filter(|l| l.calls > 0).count().max(1) as f64);
         let (fixed, how) = match (a.flag("fixed-us"), a.flag("calibrate")) {
             (Some(u), _) => {
                 let per = u.parse::<f64>().map_err(|_| Error(format!("--fixed-us {u}: microseconds")))? / 1e3;
@@ -506,18 +569,10 @@ pub fn cmd(a: &Args) -> Result<()> {
                 )?;
                 let ctext = std::fs::read_to_string(cf).map_err(|e| Error(format!("{cf}: {e}")))?;
                 let cruns: Vec<Run> = ctext.lines().filter(|l| !l.trim().is_empty()).map(Run::parse).collect::<Result<_>>()?;
-                let pts: Vec<(usize, f64)> = cruns
-                    .iter()
-                    .map(|r| {
-                        (
-                            r.rows,
-                            (r.step_ms - cached_step(&cs, b, shares, r, Fixed::default()).1) / r.layers.iter().filter(|l| l.calls > 0).count().max(1) as f64,
-                        )
-                    })
-                    .collect();
+                let pts: Vec<(usize, f64)> = cruns.iter().map(|r| (r.rows, unexplained(&cs, b, shares, r))).collect();
                 (Fixed::fit(&pts), format!("fitted to {cf}'s {} lines", pts.len()))
             }
-            (None, None) => (Fixed::fit(&[per_layer(first)]), "the first line's unexplained".to_string()),
+            (None, None) => (Fixed::fit(&[(first.rows, unexplained(&s, b, shares, first))]), "the first line's unexplained".to_string()),
         };
         println!(
             "{model} on {}, one GPU, the experts in the expert cache (--stats {f}); ours' fixed time {:.3} ms a MoE layer and {:.4} ms a row a layer ({how})",
@@ -701,8 +756,21 @@ mod tests {
         let b = &BOXES[0];
         let s = Step { dense: 702e6, attn: 0.0, ..Step::default() };
         let (ceiling, ours) = cached_step(&s, b, (1.0, 1.0, 1.0), &r, Fixed { layer: 0.1, row: 0.05 });
-        // (ours: 702 MB and 25 experts of 1 MB at 702 GB/s, then the longer of the copy stream's 0.75 ms (no promotions) and the host's 2 ms, and 0.1 + 0.05 a row of 8 for the one layer)
-        assert!((ours - (1.0 + 25.0 / 702.0 + 2.0 + 0.5)).abs() < 1e-9, "{ours}");
+        // (ours: the copies (0.75 ms), the products of 25 experts of 1 MB at 702 GB/s and the fixed 0.1 ms a layer run beside the host's 2 ms; then the 702 MB at 702 GB/s and 0.05 a row of 8)
+        assert!((ours - (2.0 + 1.0 + 0.4)).abs() < 1e-9, "{ours}");
+        // (a line of totals over 4 steps is the same step; promotions behind the call hold the next one's copies; a call copied whole has the host wait for its copies and products)
+        let totals = line.replace(r#""steps":4,"#, r#""steps":4,"totals":true,"#).replace(r#""calls":1,"#, r#""calls":4,"#);
+        let totals = totals
+            .replace("\"reads\":30,", "\"reads\":120,")
+            .replace("\"host\":5,", "\"host\":20,")
+            .replace("15000000", "60000000")
+            .replace("5000000,", "20000000,");
+        let totals = totals.replace("\"copy_ms\":0.75", "\"copy_ms\":3.0").replace("\"host_ms\":2.0", "\"host_ms\":8.0");
+        let t = Run::parse(&totals).unwrap();
+        assert!((cached_step(&s, b, (1.0, 1.0, 1.0), &t, Fixed { layer: 0.1, row: 0.05 }).1 - ours).abs() < 1e-9);
+        let whole = r#"{"rows":8,"steps":1,"totals":true,"step_ms":30.0,"expert_bytes":1000000,"layers":[{"layer":0,"calls":1,"whole":1,"whole_bytes":15000000,"rows":8,"pairs":48,"reads":30,"hits":10,"copies":15,"host":0,"host_pairs":0,"skipped":0,"waves":0,"copy_bytes":15000000,"host_bytes":0,"ahead":0,"ahead_bytes":0,"copy_ms":0.75,"host_ms":0.0,"wait_ms":0.1}]}"#;
+        let w = cached_step(&s, b, (1.0, 1.0, 1.0), &Run::parse(whole).unwrap(), Fixed::default()).1;
+        assert!((w - (0.75 + 30.0 / 702.0 + 1.0)).abs() < 1e-9, "{w}");
         // (the fixed time a layer and a row: a line through runs' unexplained)
         let f = Fixed::fit(&[(1, 0.15), (8, 0.5), (32, 1.7)]);
         assert!((f.layer - 0.1).abs() < 1e-9 && (f.row - 0.05).abs() < 1e-9, "{f:?}");
@@ -710,6 +778,33 @@ mod tests {
         // (the ceiling: the copies at PCIe 4's 25 GB/s (0.6 ms) against 5 MB at the host memory's 96 GB/s)
         assert!((ceiling - (1.0 + 25.0 / 702.0 + 0.6)).abs() < 1e-9, "{ceiling}");
         assert!(Run::parse(r#"{"rows":1}"#).is_err());
+    }
+
+    /// The cached step against the 4080 SUPER's measured runs (storebench, 2026-11-23: random DeepSeek-V4 of 16 layers of 64 experts with 32 places, Kimi-K3 of 3 layers of 256 with 128, 18 GB each), its fixed
+    /// time fitted to each model's copy run and its auto run predicted: within 10% at 1 and 8 rows (the auto runs' copies queue behind the promotions of the layer before, which wait for its products; the formula
+    /// before counted the copy stream's whole time once and was 13.4% under DeepSeek-V4's 8 rows). These lines are averages without `whole`: at 32 rows a DeepSeek-V4 layer copied some of its calls whole in waves and
+    /// computed others on the host, which their average does not say (storebench's lines of totals do).
+    #[test]
+    fn the_cached_step_predicts_the_measured_auto_runs() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/storebench");
+        let b = BOXES.iter().find(|b| b.name == "4080s").unwrap();
+        let shares = (b.ours.0, b.ours.1, b.ours.2);
+        let runs = |f: &str| -> Vec<Run> { std::fs::read_to_string(format!("{dir}/{f}")).unwrap().lines().map(|l| Run::parse(l).unwrap()).collect() };
+        let s = Step::default();
+        let mut bad = Vec::new();
+        for m in ["dsv4", "kimi"] {
+            let pts: Vec<(usize, f64)> = runs(&format!("{m}-4080s-copy.jsonl")).iter().map(|r| (r.rows, unexplained(&s, b, shares, r))).collect();
+            let fixed = Fixed::fit(&pts);
+            for r in runs(&format!("{m}-4080s-auto.jsonl")) {
+                let ours = cached_step(&s, b, shares, &r, fixed).1;
+                let e = ours / r.step_ms - 1.0;
+                eprintln!("{m} auto {} rows: ours {ours:.2} ms, measured {:.2} ms ({:+.1}%), fixed {fixed:?}", r.rows, r.step_ms, 100.0 * e);
+                if r.rows <= 8 {
+                    bad.extend((e.abs() >= 0.10).then(|| format!("{m} at {} rows: {:+.1}%", r.rows, 100.0 * e)));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{bad:?}");
     }
 
     /// Kimi-K3's packs as one product each, sliced as one whatever each tensor's size: a delta attention layer's q, k, v, gate, f_a and beta, a latent
