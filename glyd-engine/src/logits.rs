@@ -1555,8 +1555,13 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
 
 /// The case's random model, made in a directory of its own and loaded.
 pub(crate) fn random_dyn(case: &str, level: &str, tag: &str) -> Result<Dyn> {
+    random_dyn_at(case, level, level_layout(level)?, tag)
+}
+
+/// `random_dyn` with its packs in `layout` (None: the GPU's choice).
+pub(crate) fn random_dyn_at(case: &str, level: &str, layout: Option<Layout>, tag: &str) -> Result<Dyn> {
     let dir = std::env::temp_dir().join(format!("glyd-{tag}-{case}-{}", std::process::id()));
-    let o = dyn_opts(level_layout(level)?);
+    let o = dyn_opts(layout);
     let e: Result<Dyn> = (|| {
         match case {
             "gemma4" => gemma4_random(&dir)?,
@@ -2511,13 +2516,16 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let tokens: usize = a.num("tokens", 24usize)?;
     let long: Option<usize> = a.flag("prompt-tokens").map(|v| v.parse().map_err(|_| Error(format!("--prompt-tokens {v}: not a number")))).transpose()?;
     let len = |k: usize| long.map_or(5 + 29 * k, |p| (p * (k + 1) / users).max(1));
+    // (--layout mma|mma12: penguin's packs in that layout, where the GPU's choice is another)
+    let layout = a.layout()?.or(level_layout(level)?);
     let mut e: Dyn = match a.flag("dir") {
         Some(d) => {
-            let o = DynOpts { ctx: (len(users - 1) + tokens + 64).next_multiple_of(256), chunk: 256, graph: true, device: 0, layout: level_layout(level)? };
+            let o = DynOpts { ctx: (len(users - 1) + tokens + 64).next_multiple_of(256), chunk: 256, graph: true, device: 0, layout };
             load_dyn(case, Path::new(d), &o, level)?
         }
-        None => random_dyn(case, level, "usercheck")?,
+        None => random_dyn_at(case, level, layout, "usercheck")?,
     };
+    println!("{case} at {level}: layout {:?}", e.layout);
     let vocab = e.desc().vocab as u32;
     let prompts: Vec<Vec<u32>> = (0..users).map(|k| (0..len(k) as u32).map(|i| 3 + (i * 7919 + k as u32 * 104_729) % (vocab - 3)).collect()).collect();
     let reply = Reply {

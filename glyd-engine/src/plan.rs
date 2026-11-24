@@ -3932,9 +3932,13 @@ pub mod sizing {
             Some(d) => crate::dynamic::split::hb_layer_bytes(d, nl).map_err(cannot)?,
             None => Vec::new(),
         };
-        // (the loaders that take penguin's 12-bit layout for their bf16 matrices, which an HBM GPU reads faster where it fits: Kimi-K3's, the Qwen3.5 layout's)
+        // (the loaders that take penguin's 12-bit layout for their bf16 matrices, which an HBM GPU reads faster where it fits: Kimi-K3's, the Qwen3.5 layout's;
+        // a release with no FP8 matrices takes it on every GPU but Ada's where it fits, as the one-GPU paths choose it (`best_layout`) and as their checks
+        // of several sequences at once ran)
         let takes_twelve = kimi || family == "Qwen3.5";
-        let ((per, base), cut, coded, mut twelve) = crate::dynamic::split::fit_table_with(table, nl, &room, hbm, takes_twelve, &hb_experts);
+        let no_f8 = !table.rows.iter().any(|r| r.dtype == "F8_E4M3");
+        let twelve_faster = hbm || (no_f8 && !devs.is_empty() && devs.iter().all(|t| !crate::weights::smallest_is_fastest(t.cc)));
+        let ((per, base), cut, coded, mut twelve) = crate::dynamic::split::fit_table_with(table, nl, &room, twelve_faster, takes_twelve, &hb_experts);
         let mut total = per.iter().sum::<u64>() + base;
         let chosen = a.flag("split").is_some() || a.flag("devices").is_some();
         let model_max = crate::dynamic::split::config_num(text, "max_position_embeddings").unwrap_or(usize::MAX);
@@ -5172,8 +5176,9 @@ mod tests {
             planned(&args(&w)).unwrap()
         };
         let penguin = format!("{model}:penguin");
-        // (an A100's bf16 matrices in penguin's 12-bit layout, which its one-token product reads faster; an RTX 3090's in the smallest)
-        for (machine, stages, twelve) in [(a100s, 2, true), ("2x3090", 2, false), ("a100-80g", 1, true)] {
+        // (an A100's bf16 matrices in penguin's 12-bit layout, which its one-token product reads faster, as an RTX A6000's (Ampere, not Ada: the one-GPU
+        // paths' choice); two RTX 3090s' in the smallest, the 12-bit one not fitting)
+        for (machine, stages, twelve) in [(a100s, 2, true), ("2x3090", 2, false), ("a100-80g", 1, true), ("a6000", 1, true)] {
             let f = fit(&penguin, machine, &[]);
             let p = f.plan.chosen.as_ref().and_then(|c| c.load.clone()).unwrap_or_else(|| panic!("{machine}: {:?}", f.refusal));
             let sp = p.spread.as_ref().unwrap();
