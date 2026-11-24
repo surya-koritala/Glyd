@@ -1,5 +1,5 @@
-"""glyd_gpu.cu's FP8 kernels on the CPU (emu_f8.cpp: thread for thread, no GPU), as the backend of check_f8.py's --emu: the kernels' layout and
-logic checked against fp8ref.py on a machine with no GPU. `Emu()` builds the library into a temporary directory from the text of glyd_gpu.cu
+"""The FP8 kernels (gpu/glyd_gpu_kernels.h, which glyd_gpu.cu includes) on the CPU (emu_f8.cpp: thread for thread, no GPU), as the backend of check_f8.py's --emu: the kernels' layout and
+logic checked against fp8ref.py on a machine with no GPU. `Emu()` builds the library into a temporary directory from the text of glyd_gpu_kernels.h
 between its `f8c begin` and `f8c end` lines, and `pack`, `unpack` and `experts` run the kernels' threads.
 
     python3 emu.py      the cases of check_f8.py's smoke test through it"""
@@ -14,7 +14,7 @@ import tempfile
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CU = os.path.join(HERE, "..", "glyd_gpu.cu")
+CU = os.path.join(HERE, "..", "glyd_gpu_kernels.h")  # (the kernels' source the library and the engine both compile: R17)
 GUARD = 8
 HEAD = 8
 
@@ -30,7 +30,7 @@ class Emu:
     def __init__(self, build=None):
         text = open(CU).read()
         m = re.search(r"^// f8c begin\n(.*?)^// f8c end\n", text, flags=re.S | re.M)
-        assert m, "glyd_gpu.cu has no f8c block"
+        assert m, "glyd_gpu_kernels.h has no f8c block"
         self.dir = build or tempfile.mkdtemp(prefix="f8emu")
         open(os.path.join(self.dir, "f8_block.inc"), "w").write(m.group(1))
         so = os.path.join(self.dir, "libemu.so")
