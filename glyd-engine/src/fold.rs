@@ -1437,6 +1437,240 @@ pub unsafe fn kv_gather(g: &crate::ffi::KvGeom, (pool, kbase, vbase): (u64, u64,
     Ok(true)
 }
 
+/// A kernel's arguments by value, each in an 8-byte slot (a 4-byte one in the slot's low bytes: little-endian), for kernels picked by name at run time (the
+/// experts' many instances); `the_experts_arguments_are_the_kernels` holds the order and types to the kernels' own (crate::kt).
+#[derive(Default)]
+struct Slots(Vec<u64>, String);
+
+impl Slots {
+    fn p(mut self, v: u64) -> Self {
+        self.0.push(v);
+        self.1.push_str("u64, ");
+        self
+    }
+    fn i64(mut self, v: i64) -> Self {
+        self.0.push(v as u64);
+        self.1.push_str("i64, ");
+        self
+    }
+    fn i32(mut self, v: i32) -> Self {
+        self.0.push(v as u32 as u64);
+        self.1.push_str("i32, ");
+        self
+    }
+    fn u32(mut self, v: u32) -> Self {
+        self.0.push(v as u64);
+        self.1.push_str("u32, ");
+        self
+    }
+}
+
+impl crate::dev::KernelArgs for Slots {
+    fn ptrs(&mut self) -> Vec<*mut std::ffi::c_void> {
+        self.0.iter_mut().map(|v| v as *mut u64 as *mut std::ffi::c_void).collect()
+    }
+}
+
+/// The experts' layouts the grouped products take, by the name their kernels carry (glyd_gpu_mma_moe reads Int6, Int5, Int4, Int4H, Fp4, Fp4R and the tiered
+/// layout's words, glyd_gpu_mma12_moe the 12-bit layout's, glyd_gpu_mma_moe_placed the tiered layout's places).
+fn moe_name(u: Unpacker) -> Option<&'static str> {
+    Some(match u {
+        Unpacker::Tiered => "tiered",
+        Unpacker::Int6 => "int6",
+        Unpacker::Int5 => "int5",
+        Unpacker::Int4 => "int4",
+        Unpacker::Int4H(_) => "int4h",
+        Unpacker::Fp4 => "fp4",
+        Unpacker::Fp4R { .. } => "fp4r",
+        Unpacker::Twelve { .. } => "twelve",
+        _ => return None,
+    })
+}
+
+/// A layout's words, the first arguments of its experts' kernels (`placed`: a tiered stack's places, their steps an expert and their blocks' stride).
+fn layout_args(u: Unpacker, w: &Pack, placed: Option<(i64, i64)>) -> Option<Slots> {
+    let s = Slots::default().p(w.data);
+    Some(match (u, w.words) {
+        (Unpacker::Tiered, Words::Tiered { blocks, block_base, tiers: t }) => {
+            let s = s.p(blocks).p(block_base).u32(t[0]).u32(t[1]).u32(t[2]);
+            match placed {
+                Some((per, stride)) => s.i64(per).i64(stride),
+                None => s,
+            }
+        }
+        (Unpacker::Int6 | Unpacker::Int5 | Unpacker::Int4 | Unpacker::Fp4, Words::Tiered { blocks, .. }) => s.p(blocks),
+        (Unpacker::Int4H(base), Words::Tiered { blocks, .. }) => s.p(blocks).u32(base),
+        (Unpacker::Fp4R { ks, mg, sh }, Words::Tiered { blocks, .. }) => s.p(blocks).u32(ks).u32(mg).u32(sh),
+        (Unpacker::Twelve { hb4, xmax }, Words::Twelve { exc, exc_base, .. }) => s.p(exc).p(exc_base).u32(hb4).i32(xmax),
+        _ => return None,
+    })
+}
+
+/// A kernel name made at run time, kept for the process (the experts' instances: a few hundred names at most).
+fn leaked(name: String) -> &'static str {
+    static NAMES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(n) = names.iter().find(|n| **n == name) {
+        return n;
+    }
+    let n: &'static str = Box::leak(name.into_boxed_str());
+    names.push(n);
+    n
+}
+
+/// The GPU's kind as the experts' plans read it: an HBM part (hbm_gpu: compute capability 8.0, 9.0 or 10.0), an H100 (9.0 and "H100" in its name), the A100's
+/// architecture (8.0).
+fn moe_gpu() -> Result<(bool, bool, bool)> {
+    let dev = D::current_device()?;
+    let (major, minor) = (D::attribute(dev, Attr::CcMajor)?, D::attribute(dev, Attr::CcMinor)?);
+    let hbm = minor == 0 && (8..=10).contains(&major);
+    let h100 = (major, minor) == (9, 0) && has_word(&D::name(dev)?, "H100");
+    Ok((hbm, h100, (major, minor) == (8, 0)))
+}
+
+/// The blocks splitting K for the experts' products (moe_splits): up to the blocks the GPU holds at once (an SM's one, an HBM part's two; GLYD_GPU_MOE_SLOTS),
+/// at least 256 columns each.
+fn moe_splits(units: i64, k: i64, hbm: bool) -> Result<i64> {
+    let forced = tuned(crate::tune!("GLYD_GPU_MOE_SLOTS"), 0);
+    let slots = if forced != 0 { forced } else { sm_count()? * if hbm { 2 } else { 1 } };
+    Ok((slots / units).min(k / 256).max(1))
+}
+
+/// `GpuOps::moe_workspace` by the library's plan (mma_moe_run's need: the weighted sums' Y32 and the splits' parts, [P][O] floats each), where the 12-bit
+/// layout's wgmma route cannot be taken (a GPU of compute capability 9.0 keeps the library's: the route's tail); None: the library's.
+pub fn moe_workspace(twelve: bool, experts: i64, o: i64, cols: i64, t: i64, k: i64, act: i64, weighted: bool) -> Result<Option<usize>> {
+    if cfg!(glyd_hip) || !(1..=12288).contains(&experts) || o < 64 || o % 64 != 0 || cols < 16 || cols % 16 != 0 || t < 0 || k < 1 || !(0..=2).contains(&act) {
+        return Ok(None);
+    }
+    if act != 0 && (o % 128 != 0 || weighted) {
+        return Ok(None);
+    }
+    let dev = D::current_device()?;
+    if twelve && (D::attribute(dev, Attr::CcMajor)?, D::attribute(dev, Attr::CcMinor)?) == (9, 0) {
+        return Ok(None);
+    }
+    let (hbm, ..) = moe_gpu()?;
+    let p = t * k;
+    let units = if act != 0 { o / 128 } else { o / 64 };
+    let splits = if p > 0 { moe_splits(units * experts.min(p), cols, hbm)? } else { 1 };
+    Ok(Some(((weighted as i64 + if splits > 1 { splits } else { 0 }) * p * o * 4) as usize))
+}
+
+/// `GpuOps::moe` and `moe_placed` (y = the experts' products of the plan's pairs, act 0, 1 SiLU or 2 GELU, weighted sums by `weights` and `ids`) by the
+/// engine's kernels where the library's plan takes its step products (mma_moe_kernel, mma_moe_rows_kernel) in their default variants; false where the
+/// library takes it (the prompt kernel past GLYD_GPU_MOE_BIG pairs an expert, the 12-bit layout's wgmma route on Hopper, a tuning variable's variant,
+/// arguments it refuses).
+///
+/// # Safety
+/// As `GpuOps::moe`; a context with the engine's module is current.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn moe(
+    w: &Pack,
+    placed: Option<i64>,
+    experts: i64,
+    (x, t, k, gather): (u64, i64, i64, bool),
+    (plan, act, weights, ids): (u64, i64, u64, u64),
+    y: u64,
+    (ws, ws_bytes, done): (u64, usize, u64),
+    cs: Stream,
+) -> Result<bool> {
+    let Ok(u) = unpacker(w) else { return Ok(false) };
+    let Some(name) = moe_name(u) else { return Ok(false) };
+    if placed.is_some_and(|stride| u != Unpacker::Tiered || stride < 0 || stride % 4 != 0) {
+        return Ok(false);
+    }
+    let (o, kk) = (w.rows / experts.max(1), w.cols);
+    let twelve = w.is_twelve();
+    let Some(need) = moe_workspace(twelve, experts, o, kk, t, k, act, weights != 0)? else { return Ok(false) };
+    let p = t * k;
+    let units = if act != 0 { o / 128 } else { o / 64 };
+    let hits = experts.min(p);
+    let (hbm, h100, a100) = moe_gpu()?;
+    let splits = if p > 0 { moe_splits(units * hits, kk, hbm)? } else { 1 };
+    if (need > 0 && (ws == 0 || ws_bytes < need)) || (weights != 0 && ids == 0) || (splits > 1 && done == 0) {
+        return Ok(false);
+    }
+    if p == 0 {
+        return Ok(true);
+    }
+    // the plan's choices as mma_moe_run makes them, the variables at their defaults
+    let mt = if t <= 16 {
+        1
+    } else if t <= 32 {
+        2
+    } else {
+        4
+    };
+    let big_set = tuned(crate::tune!("GLYD_GPU_MOE_BIG"), -1);
+    let big_default = if big_set >= 0 {
+        big_set
+    } else if a100 {
+        64
+    } else if h100 {
+        96
+    } else {
+        48
+    };
+    let big = if act != 0 { tuned(crate::tune!("GLYD_GPU_MOE_BIG_GU"), big_default) } else { tuned(crate::tune!("GLYD_GPU_MOE_BIG_DN"), big_default) };
+    if p >= big * experts && kk % 64 == 0 && x % 16 == 0 {
+        return Ok(false);
+    }
+    let pf = tuned(crate::tune!("GLYD_GPU_PF"), 0).clamp(0, 16);
+    let patch_b = tuned(crate::tune!("GLYD_GPU_PATCH_B"), 0) != 0;
+    let skip = tuned(crate::tune!("GLYD_GPU_NA"), (h100 || a100) as i64) != 0;
+    let stages = tuned(crate::tune!("GLYD_GPU_STAGES"), 0);
+    let table = !twelve;
+    let depth = tuned(crate::tune!("GLYD_GPU_DEPTH"), if hbm && !matches!(u, Unpacker::Fp4R { .. }) { 2 } else { 1 });
+    if pf > 0 || (!table && patch_b) || stages == 4 || stages == 8 {
+        return Ok(false);
+    }
+    let v = (skip as i64 * 2) | if table && mt == 1 && depth == 2 { 8 } else { 0 };
+    let rows_set = tuned(crate::tune!("GLYD_GPU_MOE_ROWS"), 1);
+    let rows_from = match rows_set {
+        0 => i64::MAX,
+        r if r >= 2 => r,
+        _ if h100 || a100 => 17,
+        _ if hbm => i64::MAX,
+        _ => 33,
+    };
+    let rows = act == 0 && mt >= 2 && t >= rows_from;
+    let o_args =
+        |s: Slots| s.i64(o).i64(kk).p(plan).i32(experts as i32).i64(k).i32(gather as i32).p(x).p(0).p(weights).i32(1).p(y).p(if weights != 0 { ws } else { 0 });
+    let lname = if placed.is_some() { "placed" } else { name };
+    let per_stride = placed.map(|stride| (o * kk / 1024, stride));
+    let Some(lead) = layout_args(u, w, per_stride) else { return Ok(false) };
+    if rows {
+        let kname = leaked(format!("fold_moe_rows_{lname}_{mt}_{v}"));
+        let mut a = o_args(lead).i32(pf as i32);
+        crate::dev::here_named(kname)?.launch_smem(
+            [((o / 64 + 7) / 8) as u32, hits as u32, 1],
+            [256, 1, 1],
+            8 * 1040,
+            cs,
+            &mut crate::dev::KernelArgs::ptrs(&mut a),
+        )?;
+    } else {
+        let kname = leaked(format!("fold_moe_{lname}_{mt}_{act}_{v}"));
+        let shared = (4 * mt * 16 * 65 * 4 + 8 * 1040) as u32;
+        per_sm(kname, 256, shared)?;
+        let parts = if splits > 1 { ws + if weights != 0 { (p * o * 4) as u64 } else { 0 } } else { 0 };
+        let mut a = o_args(lead).i64(p).p(parts).p(done).i32(pf as i32);
+        crate::dev::here_named(kname)?.launch_smem(
+            [units as u32, hits as u32, splits as u32],
+            [256, 1, 1],
+            shared,
+            cs,
+            &mut crate::dev::KernelArgs::ptrs(&mut a),
+        )?;
+    }
+    if weights != 0 {
+        use crate::kt;
+        use crate::launch;
+        launch!(crate::dev::here::<kt::fold_moe_sum>()?, [((t * o / 4 + 255) / 256) as u32, 1, 1], [256, 1, 1], cs; ws, ids, experts as i32, t, k, o, y)?;
+    }
+    Ok(true)
+}
+
 /// `foldcheck` (R17): each folded piece against the library's on this GPU, the library the oracle: the GPU's code; the way of every GPU code the
 /// library knows (with and without SPLIT), both layouts, matrices of every kind of K and size, at token counts on each side of every threshold;
 /// the KV cache's sizes and decode workspace over valid and refused shapes; the experts' plan and the unpacking of every layout by the engine's own
@@ -1553,6 +1787,8 @@ pub fn check() -> Result<()> {
     say("the experts' plan (moe_way), the engine's kernels against the library's (one warp and one block, ids out of range among them)", n, bad);
     let (n, bad) = kv_check(&dev, &lib)?;
     say("the 12-bit pages' write, unpack and gather, and the decode and prompt attention over them and over a bf16 cache: the engine's kernels against the library's", n, bad);
+    let (n, bad) = moe_check(&dev, &lib)?;
+    say("the grouped experts' step products (no activation, SiLU, GELU, gathered, weighted), the engine's kernels against the library's", n, bad);
     let (n, bad) = linear_check(&dev, &lib)?;
     say("the step product (route GEMM, 1 to 64 tokens), the engine's kernels against the library's, and its workspace", n, bad);
     let (n, bad) = unpack_check(&dev, &lib)?;
@@ -2063,6 +2299,89 @@ fn kv_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<
     Ok((n, bad))
 }
 
+/// `foldcheck`'s grouped experts: 8 experts of 128 x 1024 in each layout the products take, a plan of random choices (2 a token) for 1 to 64 tokens, the
+/// products with no activation, SiLU and GELU, gathered and not, and weighted sums: by the library's kernels and by the engine's where the plan takes the
+/// step products (the prompt kernel and the wgmma route are the library's still), every bf16 compared. The expert cache's places (moe_placed) are
+/// tiercheck's (the GPU job). (compared, differences)
+#[cfg(feature = "dev")]
+fn moe_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
+    use crate::dev::Buf;
+    use crate::weights::upload_packed;
+    let mut seed = 0xA076_1D64_78BD_642Fu64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let (e, o, kk) = (8i64, 128i64, 1024usize);
+    let (mut n, mut bad, mut folded) = (0, Vec::new(), 0);
+    let x: Vec<u16> = (0..64 * 2 * kk).map(|_| (((next() >> 40) as f32 / (1u64 << 24) as f32 - 0.5).to_bits() >> 16) as u16).collect();
+    let xb = Buf::new(2 * x.len())?;
+    xb.write(0, &x)?;
+    for (name, p) in test_packs((e * o) as usize, kk, &mut next) {
+        let Some(p) = p else { continue };
+        if matches!(name, "compact" | "int3") {
+            continue;
+        }
+        let pb = upload_packed(p)?;
+        for t in [1i64, 4, 16, 17, 32, 33, 64] {
+            let k = 2i64;
+            let ids: Vec<i64> = (0..t * k).map(|_| (next() % e as u64) as i64).collect();
+            let wts: Vec<f32> = (0..t * k).map(|_| (next() % 1000) as f32 / 1000.0).collect();
+            let (idb, wb, plan) = (Buf::new(8 * ids.len())?, Buf::new(4 * wts.len())?, Buf::new(4 * (2 + 2 * e + t * k) as usize)?);
+            idb.write(0, &ids)?;
+            wb.write(0, &wts)?;
+            // SAFETY: the ids and the plan's room; one stream.
+            unsafe { lib.library_moe_way(idb.ptr, t * k, e, plan.ptr, dev.stream)? };
+            for (act, gather, weighted) in [(0i64, true, false), (0, false, false), (0, true, true), (1, true, false), (2, false, false)] {
+                let twelve = pb.pack.is_twelve();
+                let ws_bytes = lib.library_moe_workspace(twelve, e, o, kk as i64, t, k, act, weighted)?.max(16);
+                let rows_out = if weighted { t } else { t * k };
+                let width = if act != 0 { o / 2 } else { o };
+                let len = (rows_out * width) as usize;
+                let units = (if act != 0 { o / 128 } else { o / 64 }) * e.min(t * k);
+                let (ws, da, db, ya, yb) = (
+                    Buf::zeroed(ws_bytes)?,
+                    Buf::zeroed(4 * units as usize + 64)?,
+                    Buf::zeroed(4 * units as usize + 64)?,
+                    Buf::new(2 * len)?,
+                    Buf::new(2 * len)?,
+                );
+                ya.fill_async(0xA5, dev.stream)?;
+                yb.fill_async(0x5A, dev.stream)?;
+                let (wp, ip) = if weighted { (wb.ptr, idb.ptr) } else { (0, 0) };
+                // SAFETY: the stack, X [64 2, K], the plan, the weights and ids, a workspace of the library's size, zeroed counters each, Y each; one stream.
+                let (ra, rb) = unsafe {
+                    let ra = lib.library_moe(&pb.pack, e, xb.ptr, t, k, gather, plan.ptr, act, wp, ip, ya.ptr, ws.ptr, ws_bytes, da.ptr, dev.stream);
+                    dev.sync()?;
+                    (ra, moe(&pb.pack, None, e, (xb.ptr, t, k, gather), (plan.ptr, act, wp, ip), yb.ptr, (ws.ptr, ws_bytes, db.ptr), dev.stream))
+                };
+                dev.sync()?;
+                n += 1;
+                let what = format!("{name}, {t} tokens, act {act}, gather {gather}, weighted {weighted}");
+                match (&ra, &rb) {
+                    (Err(x), _) | (_, Err(x)) => {
+                        bad.push(format!("{what}: {x}"));
+                        continue;
+                    }
+                    (_, Ok(false)) => continue,
+                    _ => folded += 1,
+                }
+                let (mut va, mut vb) = (vec![0u16; len], vec![0u16; len]);
+                ya.read(0, &mut va)?;
+                yb.read(0, &mut vb)?;
+                let differ = va.iter().zip(&vb).filter(|(p, q)| p != q).count();
+                if differ > 0 && bad.len() < 12 {
+                    bad.push(format!("{what}: {differ} of {len} bf16 differ"));
+                }
+            }
+        }
+    }
+    println!("  (the experts: {folded} products by the engine's kernels, the rest the library's on this GPU)");
+    Ok((n, bad))
+}
+
 /// `foldcheck`'s unpacking: random weights of each layout packed by glyd-gpu's packers, unpacked by the library's kernel and by the engine's, whole and
 /// rows 64-127, every bf16 compared; a pack of a layout number neither knows refused by both. (compared, differences)
 #[cfg(feature = "dev")]
@@ -2314,6 +2633,31 @@ mod tests {
             offset_of!(KvWriteParams, one),
         ];
         assert_eq!(wp, [80, 112, 152, 168, 192]);
+    }
+
+    /// The arguments the experts' launches build by name are, in order and type, the kernels' own (crate::kt, read from kernels/fold.cu).
+    #[test]
+    fn the_experts_arguments_are_the_kernels() {
+        use crate::dev::Typed;
+        use crate::kt;
+        fn args_of<T: Typed>() -> String {
+            std::any::type_name::<T::Args>().replace(' ', "")
+        }
+        let pack = |words| Pack { data: 0, words, rows: 128, cols: 64 };
+        let tiers = Words::Tiered { blocks: 0, block_base: 0, tiers: [0; 3] };
+        let common = |s: Slots| s.i64(0).i64(0).p(0).i32(0).i64(0).i32(0).p(0).p(0).p(0).i32(0).p(0).p(0);
+        let full = |s: Slots| common(s).i64(0).p(0).p(0).i32(0);
+        let built = |s: Slots| format!("({})", s.1.trim_end_matches(", ")).replace(' ', "");
+        let lead = |u, w, placed| layout_args(u, &pack(w), placed).unwrap();
+        assert_eq!(built(full(lead(Unpacker::Tiered, tiers, None))), args_of::<kt::fold_moe_tiered_1_1_0>());
+        assert_eq!(built(full(lead(Unpacker::Tiered, tiers, Some((1, 2))))), args_of::<kt::fold_moe_placed_4_0_2>());
+        assert_eq!(built(full(lead(Unpacker::Int6, tiers, None))), args_of::<kt::fold_moe_int6_2_2_0>());
+        assert_eq!(built(full(lead(Unpacker::Int4H(110), tiers, None))), args_of::<kt::fold_moe_int4h_1_0_10>());
+        assert_eq!(built(full(lead(Unpacker::Fp4R { ks: 4, mg: 1, sh: 1 }, tiers, None))), args_of::<kt::fold_moe_fp4r_1_1_8>());
+        let twelve = Words::Twelve { exc: 0, exc_base: 0, sym: [0; 4] };
+        assert_eq!(built(full(lead(Unpacker::Twelve { hb4: 0, xmax: 4 }, twelve, None))), args_of::<kt::fold_moe_twelve_4_2_2>());
+        assert_eq!(built(common(lead(Unpacker::Fp4, tiers, None)).i32(0)), args_of::<kt::fold_moe_rows_fp4_2_0>());
+        assert_eq!(built(common(lead(Unpacker::Twelve { hb4: 0, xmax: 4 }, twelve, None)).i32(0)), args_of::<kt::fold_moe_rows_twelve_4_2>());
     }
 
     #[test]

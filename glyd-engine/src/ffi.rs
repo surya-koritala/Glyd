@@ -1235,6 +1235,155 @@ impl Lib {
         self.ck(call!("kv_gather"), r)
     }
 
+    /// `GpuOps::moe_workspace` by the library's own kernels and plan: the oracle of the engine's (`fold`), and the routes it has not folded.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn library_moe_workspace(&self, twelve: bool, experts: i64, o: i64, cols: i64, t: i64, k: i64, act: i64, weighted: bool) -> Result<usize> {
+        let mut b = 0usize;
+        // SAFETY: a host out-pointer.
+        let r = unsafe {
+            if twelve {
+                (self.api.glyd_gpu_mma12_moe_workspace)(experts, o, cols, t, k, act, weighted as i64, &mut b)
+            } else {
+                (self.api.glyd_gpu_mma_moe_workspace)(experts, o, cols, t, k, act, weighted as i64, &mut b)
+            }
+        };
+        self.ck(call!("moe_workspace"), r)?;
+        Ok(b)
+    }
+
+    /// `GpuOps::moe` by the library's own kernels and plan: the oracle of the engine's (`fold`), and the routes it has not folded.
+    ///
+    /// # Safety
+    /// As `GpuOps::moe`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn library_moe(
+        &self,
+        w: &Pack,
+        experts: i64,
+        x: u64,
+        t: i64,
+        k: i64,
+        gather: bool,
+        plan: u64,
+        act: i64,
+        weights: u64,
+        ids: u64,
+        y: u64,
+        ws: u64,
+        ws_bytes: usize,
+        done: u64,
+        cs: Stream,
+    ) -> Result<()> {
+        let o = w.rows / experts;
+        let (wf, nul) = (weights as *const c_void, std::ptr::null());
+        let r = match w.words {
+            Words::Tiered { blocks, block_base, tiers } => (self.api.glyd_gpu_mma_moe)(
+                w.data as *const u8,
+                blocks as *const u8,
+                block_base as *const i32,
+                tiers.as_ptr(),
+                experts,
+                o,
+                w.cols,
+                x as *const u16,
+                t,
+                k,
+                gather as i64,
+                plan as *const i32,
+                act,
+                nul,
+                wf,
+                1,
+                ids as *const i64,
+                y as *mut u16,
+                ws as *mut c_void,
+                ws_bytes,
+                done as *mut c_int,
+                cs,
+            ),
+            Words::Twelve { exc, exc_base, sym } => (self.api.glyd_gpu_mma12_moe)(
+                w.data as *const u8,
+                exc as *const u32,
+                exc_base as *const i32,
+                sym.as_ptr(),
+                experts,
+                o,
+                w.cols,
+                x as *const u16,
+                t,
+                k,
+                gather as i64,
+                plan as *const i32,
+                act,
+                nul,
+                wf,
+                1,
+                ids as *const i64,
+                y as *mut u16,
+                ws as *mut c_void,
+                ws_bytes,
+                done as *mut c_int,
+                cs,
+            ),
+        };
+        self.ck(call!("moe"), r)
+    }
+
+    /// `GpuOps::moe_placed` by the library's own kernels and plan: the oracle of the engine's (`fold`), and the routes it has not folded.
+    ///
+    /// # Safety
+    /// As `GpuOps::moe_placed`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn library_moe_placed(
+        &self,
+        w: &Pack,
+        stride: u64,
+        experts: i64,
+        x: u64,
+        t: i64,
+        k: i64,
+        gather: bool,
+        plan: u64,
+        act: i64,
+        weights: u64,
+        ids: u64,
+        y: u64,
+        ws: u64,
+        ws_bytes: usize,
+        done: u64,
+        cs: Stream,
+    ) -> Result<()> {
+        let Words::Tiered { blocks, block_base, tiers } = w.words else {
+            return err("an expert cache's places of a 12-bit pack: the tiered layout alone is placed");
+        };
+        let r = (self.api.glyd_gpu_mma_moe_placed)(
+            w.data as *const u8,
+            blocks as *const u8,
+            block_base as *const i32,
+            tiers.as_ptr(),
+            stride as i64,
+            experts,
+            w.rows / experts,
+            w.cols,
+            x as *const u16,
+            t,
+            k,
+            gather as i64,
+            plan as *const i32,
+            act,
+            std::ptr::null(),
+            weights as *const c_void,
+            1,
+            ids as *const i64,
+            y as *mut u16,
+            ws as *mut c_void,
+            ws_bytes,
+            done as *mut c_int,
+            cs,
+        );
+        self.ck(call!("moe_placed"), r)
+    }
+
     /// `GpuOps::moe_way` by the library's own kernels (glyd_gpu_moe_way): the oracle of the engine's (`fold::moe_way`).
     ///
     /// # Safety
@@ -1465,17 +1614,13 @@ impl GpuOps for Lib {
     }
 
     fn moe_workspace(&self, twelve: bool, experts: i64, o: i64, cols: i64, t: i64, k: i64, act: i64, weighted: bool) -> Result<usize> {
-        let mut b = 0usize;
-        // SAFETY: a host out-pointer.
-        let r = unsafe {
-            if twelve {
-                (self.api.glyd_gpu_mma12_moe_workspace)(experts, o, cols, t, k, act, weighted as i64, &mut b)
-            } else {
-                (self.api.glyd_gpu_mma_moe_workspace)(experts, o, cols, t, k, act, weighted as i64, &mut b)
+        // (the engine's plan where its kernels may take the product: R17's `fold`)
+        if crate::fold::on() {
+            if let Some(b) = crate::fold::moe_workspace(twelve, experts, o, cols, t, k, act, weighted)? {
+                return Ok(b);
             }
-        };
-        self.ck(call!("moe_workspace"), r)?;
-        Ok(b)
+        }
+        self.library_moe_workspace(twelve, experts, o, cols, t, k, act, weighted)
     }
 
     unsafe fn moe(
@@ -1496,59 +1641,11 @@ impl GpuOps for Lib {
         done: u64,
         cs: Stream,
     ) -> Result<()> {
-        let o = w.rows / experts;
-        let (wf, nul) = (weights as *const c_void, std::ptr::null());
-        let r = match w.words {
-            Words::Tiered { blocks, block_base, tiers } => (self.api.glyd_gpu_mma_moe)(
-                w.data as *const u8,
-                blocks as *const u8,
-                block_base as *const i32,
-                tiers.as_ptr(),
-                experts,
-                o,
-                w.cols,
-                x as *const u16,
-                t,
-                k,
-                gather as i64,
-                plan as *const i32,
-                act,
-                nul,
-                wf,
-                1,
-                ids as *const i64,
-                y as *mut u16,
-                ws as *mut c_void,
-                ws_bytes,
-                done as *mut c_int,
-                cs,
-            ),
-            Words::Twelve { exc, exc_base, sym } => (self.api.glyd_gpu_mma12_moe)(
-                w.data as *const u8,
-                exc as *const u32,
-                exc_base as *const i32,
-                sym.as_ptr(),
-                experts,
-                o,
-                w.cols,
-                x as *const u16,
-                t,
-                k,
-                gather as i64,
-                plan as *const i32,
-                act,
-                nul,
-                wf,
-                1,
-                ids as *const i64,
-                y as *mut u16,
-                ws as *mut c_void,
-                ws_bytes,
-                done as *mut c_int,
-                cs,
-            ),
-        };
-        self.ck(call!("moe"), r)
+        // (the engine's own kernels, from the library's source, at a step's sizes: R17's `fold`)
+        if crate::fold::on() && crate::fold::moe(w, None, experts, (x, t, k, gather), (plan, act, weights, ids), y, (ws, ws_bytes, done), cs)? {
+            return Ok(());
+        }
+        self.library_moe(w, experts, x, t, k, gather, plan, act, weights, ids, y, ws, ws_bytes, done, cs)
     }
 
     unsafe fn moe_placed(
@@ -1570,35 +1667,12 @@ impl GpuOps for Lib {
         done: u64,
         cs: Stream,
     ) -> Result<()> {
-        let Words::Tiered { blocks, block_base, tiers } = w.words else {
-            return err("an expert cache's places of a 12-bit pack: the tiered layout alone is placed");
-        };
-        let r = (self.api.glyd_gpu_mma_moe_placed)(
-            w.data as *const u8,
-            blocks as *const u8,
-            block_base as *const i32,
-            tiers.as_ptr(),
-            stride as i64,
-            experts,
-            w.rows / experts,
-            w.cols,
-            x as *const u16,
-            t,
-            k,
-            gather as i64,
-            plan as *const i32,
-            act,
-            std::ptr::null(),
-            weights as *const c_void,
-            1,
-            ids as *const i64,
-            y as *mut u16,
-            ws as *mut c_void,
-            ws_bytes,
-            done as *mut c_int,
-            cs,
-        );
-        self.ck(call!("moe_placed"), r)
+        // (the engine's own kernels, from the library's source, at a step's sizes: R17's `fold`)
+        let placed = Some(stride as i64);
+        if crate::fold::on() && crate::fold::moe(w, placed, experts, (x, t, k, gather), (plan, act, weights, ids), y, (ws, ws_bytes, done), cs)? {
+            return Ok(());
+        }
+        self.library_moe_placed(w, stride, experts, x, t, k, gather, plan, act, weights, ids, y, ws, ws_bytes, done, cs)
     }
 
     fn kv_page_bytes(&self, h: i64, d: i64, a: i64) -> Result<i64> {
