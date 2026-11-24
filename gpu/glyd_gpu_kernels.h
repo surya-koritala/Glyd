@@ -6177,12 +6177,16 @@ __global__ void __launch_bounds__(LNT, C) f8h_lin3_kernel(const F8Lin P) {
 
 // Split-K's parts (one [M, O] slice each) added in a fixed order, so the
 // result is the same every run, to bf16 with the bias.
-__global__ void finish_kernel(const float* __restrict__ y32, int64_t split, const __nv_bfloat16* __restrict__ bias, int64_t M, int64_t O, __nv_bfloat16* __restrict__ y) {
+__device__ __forceinline__ void finish_body(const float* __restrict__ y32, int64_t split, const __nv_bfloat16* __restrict__ bias, int64_t M, int64_t O, __nv_bfloat16* __restrict__ y) {
     int64_t i = blockIdx.x * (int64_t)blockDim.x + threadIdx.x;
     if (i >= M * O) return;
     float t = 0.f;
     for (int64_t z = 0; z < split; z++) t += y32[z * M * O + i];
     y[i] = __float2bfloat16(t + (bias ? __bfloat162float(bias[i % O]) : 0.f));
+}
+
+__global__ void finish_kernel(const float* __restrict__ y32, int64_t split, const __nv_bfloat16* __restrict__ bias, int64_t M, int64_t O, __nv_bfloat16* __restrict__ y) {
+    finish_body(y32, split, bias, M, O, y);
 }
 
 // Y = X W^T for many tokens from the mma layout (a prompt), as a tiled
@@ -6234,8 +6238,8 @@ struct MoePairs {
     int skip = 1;    // the consumers multiply the m-tiles of 16 tokens that have pairs alone (an expert with 72 pairs has 8 in its tile's second 64: one m-tile of four)
 };
 
-template <class Fmt, int CW, int PW, int NB, int RBB, bool MOE = false>
-__global__ void __launch_bounds__((Big<CW, PW, NB, RBB>::THREADS), 1) mma_gemm_big_kernel(Fmt f, int64_t O, int64_t K, int64_t M, int64_t stages_per_split, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32, MoePairs moe) {
+template <class Fmt, int CW, int PW, int NB, int RBB, bool MOE>
+__device__ __forceinline__ void mma_gemm_big_body(Fmt f, int64_t O, int64_t K, int64_t M, int64_t stages_per_split, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32, MoePairs moe) {
     using C = Big<CW, PW, NB, RBB>;
     int64_t e = 0, p0 = 0;  // MOE: the expert (its rows e O on of W's), its first pair in the plan's order
     const int* order = nullptr;
@@ -6546,6 +6550,11 @@ __global__ void __launch_bounds__((Big<CW, PW, NB, RBB>::THREADS), 1) mma_gemm_b
     }
 }
 
+template <class Fmt, int CW, int PW, int NB, int RBB, bool MOE = false>
+__global__ void __launch_bounds__((Big<CW, PW, NB, RBB>::THREADS), 1) mma_gemm_big_kernel(Fmt f, int64_t O, int64_t K, int64_t M, int64_t stages_per_split, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32, MoePairs moe) {
+    mma_gemm_big_body<Fmt, CW, PW, NB, RBB, MOE>(f, O, K, M, stages_per_split, X, bias, Y, Y32, moe);
+}
+
 // A prompt's product on GeForce Ada (not a mixture of experts'): mma_gemm_big_kernel's blocks, TM tokens by RBB row blocks, and its
 // producer and consumer warps, as many blocks as the GPU holds at once, each taking an equal share of the units'
 // stages in turn (a unit: a tile of tokens by a pair of row blocks; units by pair, then tile), its stages kept in
@@ -6558,8 +6567,8 @@ __global__ void __launch_bounds__((Big<CW, PW, NB, RBB>::THREADS), 1) mma_gemm_b
 // scheduler, not one, each as lean: 2.2 instructions a product, and a weight still decoded once for TM tokens). The
 // sums' order is a unit's stages', whatever CR: the same bits for the same TM and RBB. LIVE: the consumers multiply only
 // the m-tiles that hold tokens (tiered_mid_run's shape, where it was measured; GeForce Ada's prompts as before, until measured there).
-template <class Fmt, int CW, int PW, int NB, int RBB, int CR = 64, bool LIVE = false>
-__global__ void __launch_bounds__((Big<CW, PW, NB, RBB, CR>::THREADS), 1) mma_gemm_sk_kernel(Fmt f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
+template <class Fmt, int CW, int PW, int NB, int RBB, int CR, bool LIVE>
+__device__ __forceinline__ void mma_gemm_sk_body(Fmt f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
     using C = Big<CW, PW, NB, RBB, CR>;
     constexpr int NN = CR / 8, TW = C::TM / 64, HR = 64 / CR;  // a consumer's n-tiles; consumers along the tokens; a row block's
     constexpr int64_t SLOT = C::TM * 64 * RBB;
@@ -6747,6 +6756,11 @@ __global__ void __launch_bounds__((Big<CW, PW, NB, RBB, CR>::THREADS), 1) mma_ge
                 for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
         u++;
     }
+}
+
+template <class Fmt, int CW, int PW, int NB, int RBB, int CR = 64, bool LIVE = false>
+__global__ void __launch_bounds__((Big<CW, PW, NB, RBB, CR>::THREADS), 1) mma_gemm_sk_kernel(Fmt f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
+    mma_gemm_sk_body<Fmt, CW, PW, NB, RBB, CR, LIVE>(f, O, K, M, X, bias, Y, parts, done);
 }
 
 // Many tokens on Hopper (sm_90a), the 12-bit layout: wgmma, Hopper's
@@ -7056,7 +7070,7 @@ template <int NT, int WG> struct Tma12 {
 };
 
 template <int NT, int WG>
-__global__ void __launch_bounds__((Tma12<NT, WG>::THREADS), 1) mma12_tma_kernel(const __grid_constant__ CUtensorMap xmap, Nib f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
+__device__ __forceinline__ void mma12_tma_body(const CUtensorMap& xmap, Nib f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
 #if defined(__CUDA_ARCH_FEAT_SM90_ALL)
     using C = Tma12<NT, WG>;
     extern __shared__ __align__(1024) uint8_t smem_raw[];  // NS slots [X tile | a row block's steps, exceptions, bounds | the other's], the barriers
@@ -7203,6 +7217,11 @@ __global__ void __launch_bounds__((Tma12<NT, WG>::THREADS), 1) mma12_tma_kernel(
 #endif
 }
 
+template <int NT, int WG>
+__global__ void __launch_bounds__((Tma12<NT, WG>::THREADS), 1) mma12_tma_kernel(const __grid_constant__ CUtensorMap xmap, Nib f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
+    mma12_tma_body<NT, WG>(xmap, f, O, K, M, bias, Y, parts, done);
+}
+
 // The tiered layout's products of 1 to 64 tokens on Hopper (sm_90a), by the TMA kernel's plan (mma12_tma_kernel). A
 // TMA warp copies each stage (64 columns) into a ring of NS slots, landing on an mbarrier: X's tile of NT tokens by its
 // tensor map (128-byte swizzle) and, for each of the WG row blocks, its 4 steps' fixed parts (5,120 bytes), the bytes of
@@ -7276,7 +7295,7 @@ __device__ __forceinline__ void tiered_step_smem(const Tiered& f, const uint8_t*
 }
 
 template <int NT, int WG, int BPS, bool SS>
-__global__ void __launch_bounds__((TmaT<NT, WG, BPS>::THREADS), BPS) tiered_tma_kernel(const __grid_constant__ CUtensorMap xmap, Tiered f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done, int bb) {
+__device__ __forceinline__ void tiered_tma_body(const CUtensorMap& xmap, Tiered f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done, int bb) {
 #if defined(__CUDA_ARCH_FEAT_SM90_ALL)
     using C = TmaT<NT, WG, BPS>;
     extern __shared__ __align__(1024) uint8_t smem_raw[];  // NS slots [X tile | a row block's steps, blocks' bytes, bounds | the others'], the trade buffers, the barriers, the scratch
@@ -7462,6 +7481,11 @@ __global__ void __launch_bounds__((TmaT<NT, WG, BPS>::THREADS), BPS) tiered_tma_
 #endif
 }
 
+template <int NT, int WG, int BPS, bool SS>
+__global__ void __launch_bounds__((TmaT<NT, WG, BPS>::THREADS), BPS) tiered_tma_kernel(const __grid_constant__ CUtensorMap xmap, Tiered f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done, int bb) {
+    tiered_tma_body<NT, WG, BPS, SS>(xmap, f, O, K, M, bias, Y, parts, done, bb);
+}
+
 // Prompts on Hopper (sm_90a) past 128 tokens, the 12-bit layout: blocks that stay (one an SM, taking tile after tile),
 // warp-specialized as the mixed-input GEMMs for Hopper are (CUTLASS 3.x's, Machete's). Lane 0 of a warp of its own
 // copies each stage (64 columns) by TMA into a ring of NS stages, each landing on an mbarrier: X's tile of NT tokens
@@ -7633,7 +7657,7 @@ __device__ __forceinline__ void tma_2d_mc(uint32_t dst, const CUtensorMap* map, 
 // share of the split tiles' stages ([z0, z1) of the (T - D) S from tile D on: tile D + z / S, stage z mod S); a block
 // its row unit of each.
 template <int NT, int CL>
-__global__ void __launch_bounds__((Wgp12<NT, CL>::THREADS), 1) mma12_wgp_kernel(const __grid_constant__ CUtensorMap xmap, Nib f, int64_t O, int64_t K, int64_t M, int64_t D, int ncs, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
+__device__ __forceinline__ void mma12_wgp_body(const CUtensorMap& xmap, Nib f, int64_t O, int64_t K, int64_t M, int64_t D, int ncs, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
 #if defined(__CUDA_ARCH_FEAT_SM90_ALL)
     using C = Wgp12<NT, CL>;
     // NS X tiles, NS W slots [a row block's steps, exceptions, bounds | the other's], the full and empty barriers, the
@@ -7782,6 +7806,11 @@ __global__ void __launch_bounds__((Wgp12<NT, CL>::THREADS), 1) mma12_wgp_kernel(
 #endif
 }
 
+template <int NT, int CL>
+__global__ void __launch_bounds__((Wgp12<NT, CL>::THREADS), 1) mma12_wgp_kernel(const __grid_constant__ CUtensorMap xmap, Nib f, int64_t O, int64_t K, int64_t M, int64_t D, int ncs, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
+    mma12_wgp_body<NT, CL>(xmap, f, O, K, M, D, ncs, bias, Y, parts, done);
+}
+
 // Many tokens on Ampere and Ada (sm_86 to sm_89; the A100 its own kernel), the 12-bit layout: mma12_tma_kernel's plan with this
 // generation's instructions. A producer warp copies each stage with cp.async, 16 bytes a thread, and the
 // stage's mbarrier completes once every lane's copies have landed (cp.async.mbarrier.arrive) and lane 0
@@ -7801,7 +7830,7 @@ template <int NT, int WG> struct Mid12 {
 };
 
 template <int NT, int WG>
-__global__ void __launch_bounds__((Mid12<NT, WG>::THREADS), 1) mma12_mid_kernel(Nib f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
+__device__ __forceinline__ void mma12_mid_body(Nib f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
     using C = Mid12<NT, WG>;
     extern __shared__ __align__(128) uint8_t smem_raw[];  // NS slots [X tile | a row block's steps, exceptions, bounds | ...], the barriers
@@ -7909,6 +7938,11 @@ __global__ void __launch_bounds__((Mid12<NT, WG>::THREADS), 1) mma12_mid_kernel(
 #endif
 }
 
+template <int NT, int WG>
+__global__ void __launch_bounds__((Mid12<NT, WG>::THREADS), 1) mma12_mid_kernel(Nib f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
+    mma12_mid_body<NT, WG>(f, O, K, M, X, bias, Y, parts, done);
+}
+
 // A 16-byte copy of data read once (W's steps): evicted from L2 first.
 __device__ __forceinline__ void cp_async16_once(uint32_t dst, const void* src, uint64_t pol) {
 #if defined(__HIP_PLATFORM_AMD__)
@@ -7944,7 +7978,7 @@ template <int CW, int NB, int NW, int RBB, int MT> struct Ws12 {
 };
 
 template <int CW, int NB, int NW, int RBB, int MT>
-__global__ void __launch_bounds__((Ws12<CW, NB, NW, RBB, MT>::THREADS), 1) mma12_ws_kernel(Nib f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
+__device__ __forceinline__ void mma12_ws_body(Nib f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
     using C = Ws12<CW, NB, NW, RBB, MT>;
     constexpr int FULL0 = 1, EMPTY0 = 1 + NB, CBAR = 1 + 2 * NB;  // named barriers
@@ -8182,6 +8216,11 @@ __global__ void __launch_bounds__((Ws12<CW, NB, NW, RBB, MT>::THREADS), 1) mma12
 #endif
 }
 
+template <int CW, int NB, int NW, int RBB, int MT>
+__global__ void __launch_bounds__((Ws12<CW, NB, NW, RBB, MT>::THREADS), 1) mma12_ws_kernel(Nib f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
+    mma12_ws_body<CW, NB, NW, RBB, MT>(f, O, K, M, X, bias, Y, parts, done);
+}
+
 // The experts' products on Hopper (sm_90a), the 12-bit layout, by wgmma: mma12_tma_kernel's plan (W decoded into wgmma's A registers
 // a stage of 4 steps, the pairs as B through a tensor map, a TMA warp feeding a ring of stages) over the tiles of a plan. A tile is a
 // hit expert's chunk of NT pairs (moe_wg_tiles_kernel's record: the expert, the chunk's first row of the order, its pairs); a unit a
@@ -8194,7 +8233,7 @@ __global__ void __launch_bounds__((Ws12<CW, NB, NW, RBB, MT>::THREADS), 1) mma12
 //
 // moe_wg_tiles_kernel: one block, the tiles' records after a header {the records, 0, 0, 0}: a record is {expert, first row of
 // the order, pairs (at most NT), 1 where the expert's pairs are one chunk}. The hits are scanned 1,024 at a time.
-__global__ void __launch_bounds__(1024) moe_wg_tiles_kernel(const int* __restrict__ plan, int E, int NT, int4* __restrict__ tiles) {
+__device__ __forceinline__ void moe_wg_tiles_body(const int* __restrict__ plan, int E, int NT, int4* __restrict__ tiles) {
     __shared__ int wsum[32];
     const int h = __ldg(plan), lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
     int base = 0;
@@ -8233,14 +8272,22 @@ __global__ void __launch_bounds__(1024) moe_wg_tiles_kernel(const int* __restric
     if (threadIdx.x == 0) tiles[0] = make_int4(base, 0, 0, 0);
 }
 
+__global__ void __launch_bounds__(1024) moe_wg_tiles_kernel(const int* __restrict__ plan, int E, int NT, int4* __restrict__ tiles) {
+    moe_wg_tiles_body(plan, E, NT, tiles);
+}
+
 // X's rows in the order's: out [pairs, K] row i = x row order[i] / k (the pairs the plan routes: start[h] of them), 16 bytes a thread.
-__global__ void moe_wg_gather_kernel(const uint4* __restrict__ x, const int* __restrict__ plan, int E, int64_t k, int64_t K8, uint4* __restrict__ out) {
+__device__ __forceinline__ void moe_wg_gather_body(const uint4* __restrict__ x, const int* __restrict__ plan, int E, int64_t k, int64_t K8, uint4* __restrict__ out) {
     const int* order = plan + 2 + 2 * E;
     const int64_t pairs = __ldg(plan + 1 + E + __ldg(plan));
     for (int64_t i = blockIdx.x; i < pairs; i += gridDim.x) {
         const uint4* src = x + (int64_t)(__ldg(order + i) / k) * K8;
         for (int64_t c = threadIdx.x; c < K8; c += blockDim.x) out[i * K8 + c] = __ldg(src + c);
     }
+}
+
+__global__ void moe_wg_gather_kernel(const uint4* __restrict__ x, const int* __restrict__ plan, int E, int64_t k, int64_t K8, uint4* __restrict__ out) {
+    moe_wg_gather_body(x, plan, E, k, K8, out);
 }
 
 template <int NT, int ACT> struct Wm12 {
@@ -8403,7 +8450,7 @@ __device__ __forceinline__ void wm_consume(int my, int S, StageA stage_a, StageB
 }
 
 template <int NT, int ACT>
-__global__ void __launch_bounds__((Wm12<NT, ACT>::THREADS), 1) mma12_moe_wg_kernel(const __grid_constant__ CUtensorMap xmap, Nib f, int64_t O, int64_t K, int E, const int* __restrict__ plan, const int4* __restrict__ tiles, int RU, const __nv_bfloat16* __restrict__ bias, const void* __restrict__ wts, int wf32, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32) {
+__device__ __forceinline__ void mma12_moe_wg_body(const CUtensorMap& xmap, Nib f, int64_t O, int64_t K, int E, const int* __restrict__ plan, const int4* __restrict__ tiles, int RU, const __nv_bfloat16* __restrict__ bias, const void* __restrict__ wts, int wf32, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32) {
 #if defined(__CUDA_ARCH_FEAT_SM90_ALL)
     using C = Wm12<NT, ACT>;
     extern __shared__ __align__(1024) uint8_t smem_raw[];  // NS slots [X tile | a row block's steps, exceptions, bounds and record | the other's], the barriers, the scratch, the exchange
@@ -8513,4 +8560,9 @@ __global__ void __launch_bounds__((Wm12<NT, ACT>::THREADS), 1) mma12_moe_wg_kern
 #elif defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     __trap();  // sm_90a code, launched from a build without it (or on AMD)
 #endif
+}
+
+template <int NT, int ACT>
+__global__ void __launch_bounds__((Wm12<NT, ACT>::THREADS), 1) mma12_moe_wg_kernel(const __grid_constant__ CUtensorMap xmap, Nib f, int64_t O, int64_t K, int E, const int* __restrict__ plan, const int4* __restrict__ tiles, int RU, const __nv_bfloat16* __restrict__ bias, const void* __restrict__ wts, int wf32, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32) {
+    mma12_moe_wg_body<NT, ACT>(xmap, f, O, K, E, plan, tiles, RU, bias, wts, wf32, Y, Y32);
 }
