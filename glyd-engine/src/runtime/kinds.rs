@@ -732,13 +732,33 @@ pub enum Collapse {
     LastPre,
 }
 
-/// A draft head: a few blocks after a projection of [embedding of the next token, the model's last hidden state] (R6).
+/// A draft head: a few blocks after a projection of [embedding of the next token, the model's last hidden state] (R6); or DSpark's form
+/// (`dspark`), whose blocks draft a block of tokens in one pass.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MtpHead {
     pub blocks: Vec<Block>,
     pub norm_embed: Norm,
     pub norm_hidden: Norm,
     pub final_norm: Norm,
+    pub dspark: Option<DSpark>,
+}
+
+/// DSpark (DeepSeek-V4's 0731 release, DeepSeek-V4.1): `block` tokens drafted in one pass, the anchor (the last token the target chose) then
+/// `block` - 1 `noise` tokens, each position predicting the next. The context: main_x = `main_norm`(`main_proj` [hidden, targets hidden] of the
+/// target's attention inputs at the layers `targets`, concatenated) at each position before the anchor; each draft layer's keys (= values) of
+/// the context are its own `kv` product of main_x, normed and rotated at the position. The head's blocks are the model's decoder layers with
+/// the window alone (`Comp` of ratio 0), their queries attending to the context keys in the window and to every token of the block (not
+/// causal inside it); then the streams' collapse (the model's: a hyper-head of the head's own `out_hc_*` roles, or lagged mHC's last weights),
+/// `final_norm`, the model's head: the base logits. Sequentially, position j's logits add `markov_head` [vocab, rank] `markov_embed`[prev]
+/// ([vocab, rank]: the Markov embedding of the token before it, the anchor at j = 0) and the token is chosen; with `confidence`,
+/// sigmoid(`confidence` [1, hidden + rank] [pre-norm hidden, Markov embedding]) estimates its acceptance.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DSpark {
+    pub block: usize,
+    pub noise: u32,
+    pub targets: Vec<usize>,
+    pub markov_rank: usize,
+    pub confidence: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

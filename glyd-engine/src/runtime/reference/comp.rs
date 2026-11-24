@@ -140,9 +140,8 @@ fn shared_picks(c: &Comp, ix: &Indexer, sh: &CompShare, p: &Params, st: &mut Com
     Ok(ord)
 }
 
-/// One token's attention output for its input `x` (the block's normed input) at `pos`.
-pub fn step(c: &Comp, p: &Params, st: &mut CompState, x: &[f32], pos: u32) -> Result<Vec<f32>> {
-    st.margin = f32::INFINITY;
+/// The q latent of `x` (the block's normed input) and its query heads at `pos`, each normed (where the kind says) and rotated.
+pub fn queries(c: &Comp, p: &Params, x: &[f32], pos: u32) -> Result<(Vec<f32>, Vec<f32>)> {
     let (nh, hd) = (c.heads, c.head_dim);
     let qr = norm(&Norm::rms(c.norm_eps), &p.prod("q_a", x)?, Some(p.vec("q_a_norm")?), None);
     let mut q = p.prod("q_b", &qr)?;
@@ -156,14 +155,57 @@ pub fn step(c: &Comp, p: &Params, st: &mut CompState, x: &[f32], pos: u32) -> Re
         }
         turn(&c.rope, h, pos, false);
     }
+    Ok((qr, q))
+}
+
+/// The key (= value) of `x` at `pos`: its `kv` product normed and rotated.
+pub fn key(c: &Comp, p: &Params, x: &[f32], pos: u32) -> Result<Vec<f32>> {
     let mut kv = norm(&Norm::rms(c.norm_eps), &p.prod("kv", x)?, Some(p.vec("kv_norm")?), None);
     turn(&c.rope, &mut kv, pos, false);
-    st.win.push((pos, kv));
+    Ok(kv)
+}
+
+/// The queries `q` at `pos` over `keys` (each its value too) with the sinks: each head's output rotated back at `pos`, then the grouped low-rank
+/// products.
+pub fn attend(c: &Comp, p: &Params, q: &[f32], keys: &[&[f32]], pos: u32) -> Result<Vec<f32>> {
+    let (nh, hd) = (c.heads, c.head_dim);
+    let sinks = p.vec("sinks")?;
+    let mut out = Vec::with_capacity(nh * hd);
+    for h in 0..nh {
+        let qh = &q[h * hd..][..hd];
+        let mut s: Vec<f32> = keys.iter().map(|k| dot(qh, k) * (hd as f32).powf(-0.5)).collect();
+        s.push(sinks[h]);
+        softmax(&mut s);
+        let mut o = vec![0f32; hd];
+        for (k, &a) in keys.iter().zip(&s) {
+            o.iter_mut().zip(k.iter()).for_each(|(v, &kv)| *v += a * kv);
+        }
+        turn(&c.rope, &mut o, pos, true);
+        out.extend(o);
+    }
+    // the grouped low-rank output: group g's heads through its rows of o_a
+    let (oa, gs) = (p.vec("o_a")?, nh * hd / c.o_groups);
+    if oa.len() != c.o_groups * c.o_lora * gs {
+        return err(format!("DeepSeek-V4 attention: o_a of {} values for {} groups of {} to {}", oa.len(), c.o_groups, gs, c.o_lora));
+    }
+    let mut y = Vec::with_capacity(c.o_groups * c.o_lora);
+    for g in 0..c.o_groups {
+        let xg = &out[g * gs..][..gs];
+        y.extend((0..c.o_lora).map(|r| dot(&oa[(g * c.o_lora + r) * gs..][..gs], xg)));
+    }
+    p.prod("o_b", &y)
+}
+
+/// One token's attention output for its input `x` (the block's normed input) at `pos`.
+pub fn step(c: &Comp, p: &Params, st: &mut CompState, x: &[f32], pos: u32) -> Result<Vec<f32>> {
+    st.margin = f32::INFINITY;
+    let (qr, q) = queries(c, p, x, pos)?;
+    st.win.push((pos, key(c, p, x, pos)?));
     // the compressed entries this query may read
     let mut chosen = Vec::new();
     if c.ratio > 0 {
         if c.share.is_none_or(|s| s.entries.is_none()) {
-            st.comp.step(c, p, "comp", hd, x, pos)?;
+            st.comp.step(c, p, "comp", c.head_dim, x, pos)?;
         }
         // (V4.1: the indexer's keys of the new entries, where this source has their product)
         if let (Some(ix), true) = (&c.indexer, c.share.is_some() && p.has("idx_k")) {
@@ -203,31 +245,7 @@ pub fn step(c: &Comp, p: &Params, st: &mut CompState, x: &[f32], pos: u32) -> Re
     }
     let mut keys: Vec<&[f32]> = st.win.iter().filter(|(pj, _)| *pj <= pos && pos - pj < c.window as u32).map(|(_, k)| &k[..]).collect();
     keys.extend(chosen.iter().map(|&e| &st.comp.entries[e][..]));
-    let sinks = p.vec("sinks")?;
-    let mut out = Vec::with_capacity(nh * hd);
-    for h in 0..nh {
-        let qh = &q[h * hd..][..hd];
-        let mut s: Vec<f32> = keys.iter().map(|k| dot(qh, k) * (hd as f32).powf(-0.5)).collect();
-        s.push(sinks[h]);
-        softmax(&mut s);
-        let mut o = vec![0f32; hd];
-        for (k, &a) in keys.iter().zip(&s) {
-            o.iter_mut().zip(k.iter()).for_each(|(v, &kv)| *v += a * kv);
-        }
-        turn(&c.rope, &mut o, pos, true);
-        out.extend(o);
-    }
-    // the grouped low-rank output: group g's heads through its rows of o_a
-    let (oa, gs) = (p.vec("o_a")?, nh * hd / c.o_groups);
-    if oa.len() != c.o_groups * c.o_lora * gs {
-        return err(format!("DeepSeek-V4 attention: o_a of {} values for {} groups of {} to {}", oa.len(), c.o_groups, gs, c.o_lora));
-    }
-    let mut y = Vec::with_capacity(c.o_groups * c.o_lora);
-    for g in 0..c.o_groups {
-        let xg = &out[g * gs..][..gs];
-        y.extend((0..c.o_lora).map(|r| dot(&oa[(g * c.o_lora + r) * gs..][..gs], xg)));
-    }
-    p.prod("o_b", &y)
+    attend(c, p, &q, &keys, pos)
 }
 
 #[cfg(test)]

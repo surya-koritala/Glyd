@@ -130,7 +130,7 @@
   "headers/DeepSeek-V4-Flash-0731.json": {
     "blocks": 86,
     "tensors": 67612,
-    "kinds": "37c1bee10db5834c",
+    "kinds": "cf796315f77d38a2",
     "weights": "7b10aca12255bca2",
     "plan": "501adcefbd0f834c",
     "family": "DeepSeekV4"

@@ -440,6 +440,22 @@ fn a_loader_names_a_missing_tensor_from_the_index() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// #333, DSpark: DeepSeek-V4-Flash-0731's released config describes its drafter (`kinds::DSpark`): three of the decoder's layers with the window alone
+/// (`n_mtp_layers` unsaid: 3, as its checkpoint's mtp.0 to mtp.2), drafting blocks of 5 from main_x of layers 40 to 42, a Markov head of rank 256 and
+/// the noise token 128799; its streams mHC's own (V4's, not lagged).
+#[test]
+fn deepseek_v4_0731s_dspark_drafter_is_described() {
+    use super::kinds::*;
+    let h = fixture("headers/DeepSeek-V4-Flash-0731.json");
+    let d = describe(&serde_json::from_str(h["config"].as_str().unwrap()).unwrap()).unwrap();
+    let [head] = &d.desc.mtp[..] else { panic!("{:?}", d.desc.mtp.len()) };
+    let ds = head.dspark.as_ref().unwrap();
+    assert_eq!((ds.block, ds.noise, ds.targets.clone(), ds.markov_rank, head.blocks.len()), (5, 128_799, vec![40, 41, 42], 256, 6));
+    let Body::Mixer(Mixer::Compressed(c)) = &head.blocks[0].body else { panic!() };
+    assert_eq!((c.ratio, c.window, c.indexer.is_some(), c.ape, c.q_head_norm), (0, 128, false, true, true));
+    assert!(head.blocks.iter().all(|b| matches!(b.residual, Residual::Streams(StreamsP { lagged: false, .. }))));
+}
+
 /// Every tensor name of a header fixture: its groups' masks with each of their layers ({L}) and experts ({E}).
 fn header_names(h: &serde_json::Value) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
@@ -809,7 +825,7 @@ fn v41_config() -> serde_json::Value {
             "engram_layer_ids": [1, 5], "engram_max_ngram_size": 3, "engram_n_heads": 1, "engram_head_dim": 4, "engram_vocab_size": 11,
             "engram_compressed_vocab_size": 24, "engram_pad_token_id": 0,
             "num_nextn_predict_layers": 1, "dspark_block_size": 5, "dspark_noise_token_id": 31, "dspark_target_layer_ids": [5, 6, 7],
-            "dspark_markov_rank": 4}}"#,
+            "dspark_markov_rank": 4, "dspark_n_routed_experts": 3, "dspark_num_experts_per_tok": 1}}"#,
     )
     .unwrap();
     c["text_config"]["engram_num_embeddings"] = serde_json::json!(rows);
@@ -867,6 +883,13 @@ fn deepseek_v41_describes_with_csa2_lagged_mhc_and_engram() {
         let e = describe(&c).unwrap_err().msg;
         assert!(e.contains(want), "{want}: {e}");
     };
+    // (its DSpark drafter: one layer of the window's attention and its own experts, on the lagged streams)
+    let [h] = &d.desc.mtp[..] else { panic!("{:?}", d.desc.mtp) };
+    let ds = h.dspark.as_ref().unwrap();
+    assert_eq!((ds.block, ds.noise, ds.targets.clone(), ds.markov_rank, h.blocks.len()), (5, 31, vec![5, 6, 7], 4, 2));
+    let (Body::Mixer(Mixer::Compressed(c)), Body::Ffn(Ffn::Moe(m))) = (&h.blocks[0].body, &h.blocks[1].body) else { panic!("{:?}", h.blocks) };
+    assert_eq!((c.ratio, c.indexer.is_some(), c.share, m.experts, m.router.top_k), (0, false, None, 3, 1));
+    assert!(matches!(h.blocks[0].residual, Residual::Streams(StreamsP { lagged: true, .. })));
     refused(&|t| t["compress_ratios"][2] = 4.into(), "compress_ratios");
     refused(&|t| t["gate_temp"] = 2.0.into(), "gate_temp");
     refused(&|t| t["kv_source_layer_ids"] = serde_json::json!([2, 6]), "layer 4");

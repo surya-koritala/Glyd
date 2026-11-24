@@ -1849,10 +1849,6 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     k.raw("architectures");
     let released = k.m.contains_key("compress_ratios");
     let fp4 = k.str("expert_dtype")? == Some("fp4");
-    // (the DSpark drafter's settings: its block of draft tokens, its noise token, the layers it reads and its rank. A drafter, not this model's computation; drafters are #333's)
-    for x in ["dspark_block_size", "dspark_noise_token_id", "dspark_target_layer_ids", "dspark_markov_rank"] {
-        let _ = k.raw(x);
-    }
     let fp8 = Fp8::parse(k.raw("quantization_config"), mt)?.is_some();
     let (heads, hd, rd) = (k.usize("num_attention_heads")?, k.usize("head_dim")?, k.usize("qk_rope_head_dim")?);
     k.opt_f64("partial_rotary_factor")?;
@@ -1953,6 +1949,8 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     };
     let mlp = Mlp { act: Act::Silu, gated: true, bias: false, clamp: limit };
     let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    // (the last layer's attention and feed-forward, of which a DSpark drafter's are made)
+    let (mut comp_template, mut moe_template) = (None, None);
     for l in 0..layers {
         let p = cv.layer("", l);
         let (ratio, is_csa) = (ratios[l], csa[l]);
@@ -1991,6 +1989,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
             q_head_norm: true,
             share: None,
         };
+        comp_template = Some(c.clone());
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Compressed(c)), norm_out: None, residual: Residual::Streams(streams) });
         roles.push(r);
         // (a hash-routed layer's table of experts by token, else the choice bias)
@@ -2005,6 +2004,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
             shared_gate: false,
             latent: None,
         };
+        moe_template = Some(moe.clone());
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Ffn(Ffn::Moe(moe)), norm_out: None, residual: Residual::Streams(streams) });
         roles.push(r);
     }
@@ -2023,6 +2023,15 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     ] {
         k.raw(x);
     }
+    // (the 0731 release's DSpark drafter: n_mtp_layers of the decoder's layers with the window alone, 3 where the config does not say)
+    let draft = match (comp_template, moe_template) {
+        (Some(c), Some(mut m)) => {
+            let window = Comp { ratio: 0, overlap: false, rope: main_rope.clone(), indexer: None, ..c };
+            (m.router.hash, m.router.bias) = (false, true);
+            dspark_head(&k, k.opt_usize("n_mtp_layers")?.unwrap_or(3), window, m, Residual::Streams(streams), eps)?
+        }
+        _ => None,
+    };
     let desc = ModelDesc {
         hidden: d,
         vocab,
@@ -2030,13 +2039,29 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
         blocks,
         final_norm: Norm::rms(eps),
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::Weighted { eps: streams.eps, norm_eps: eps } },
-        mtp: Vec::new(),
+        mtp: draft.into_iter().collect(),
         vision: None,
         rope: None,
     };
     let mut out = finish(&k, desc, cv, "", roles, mtp_layers)?;
     out.scales = scales;
     Ok(out)
+}
+
+/// A DeepSeek release's DSpark drafter (`dspark_*` keys; `kinds::DSpark`), where the config has one: `layers` draft layers, each the model's
+/// decoder layer with the window alone (the attention `window` with the model's own form, the feed-forward `moe`) on the model's residual rule,
+/// drafting `dspark_block_size` tokens from main_x of `dspark_target_layer_ids`; a Markov head of `dspark_markov_rank` and a confidence head.
+fn dspark_head(k: &Keys, layers: usize, window: Comp, moe: Moe, residual: Residual, eps: f32) -> Result<Option<MtpHead>> {
+    let Some(block) = k.opt_usize("dspark_block_size")? else { return Ok(None) };
+    let targets: Vec<usize> = k
+        .raw("dspark_target_layer_ids")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as usize)).collect())
+        .ok_or_else(|| Error("dspark_target_layer_ids: a list of layers".into()))?;
+    let dspark = DSpark { block, noise: k.usize("dspark_noise_token_id")? as u32, targets, markov_rank: k.usize("dspark_markov_rank")?, confidence: true };
+    let b = |body: Body| Block { norm_in: Norm::rms(eps), body, norm_out: None, residual: residual.clone() };
+    let blocks = (0..layers).flat_map(|_| [b(Body::Mixer(Mixer::Compressed(window.clone()))), b(Body::Ffn(Ffn::Moe(moe.clone())))]).collect();
+    Ok(Some(MtpHead { blocks, norm_embed: Norm::rms(eps), norm_hidden: Norm::rms(eps), final_norm: Norm::rms(eps), dspark: Some(dspark) }))
 }
 
 /// DeepSeek-V4.1 (`deepseek_v41`, its text model `deepseek_v41_text`, a vision tower beside it): V4's decoder with V4.1's three mechanisms, each a
@@ -2090,12 +2115,6 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
         lagged: true,
     };
     let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
-    // (the DSpark drafter's settings, and the vision tower's tokens: not this model's computation)
-    for x in
-        ["dspark_block_size", "dspark_noise_token_id", "dspark_target_layer_ids", "dspark_markov_rank", "dspark_n_routed_experts", "dspark_num_experts_per_tok"]
-    {
-        k.raw(x);
-    }
     let list = |x: &str| -> Result<Vec<usize>> {
         k.raw(x)
             .and_then(|v| v.as_array())
@@ -2172,6 +2191,8 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
     };
     let mlp = Mlp { act: Act::Silu, gated: true, bias: false, clamp: limit };
     let (mut blocks, mut roles, mut attn_block) = (Vec::new(), Vec::new(), vec![0usize; layers]);
+    // (the last layer's attention and feed-forward, of which the drafter's are made)
+    let (mut comp_template, mut moe_template) = (None, None);
     for l in 0..layers {
         let p = cv.layer("", l);
         if let Some(place) = engram.iter().position(|&e| e == l) {
@@ -2223,6 +2244,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
             q_head_norm: false,
             share,
         };
+        comp_template = Some(comp.clone());
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Compressed(comp)), norm_out: None, residual: Residual::Streams(streams) });
         roles.push(r);
         let mut r = names::roles(part::V4_MOE, &p, ne, |x| x != "hash");
@@ -2236,6 +2258,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
             shared_gate: false,
             latent: None,
         };
+        moe_template = Some(moe.clone());
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Ffn(Ffn::Moe(moe)), norm_out: None, residual: Residual::Streams(streams) });
         roles.push(r);
     }
@@ -2254,6 +2277,13 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
     ] {
         k.raw(x);
     }
+    // (the DSpark drafter: its layers the decoder's with the window alone, their experts its own count)
+    let window_attn = Comp { ratio: 0, rope: main.clone(), indexer: None, share: None, ..comp_template.ok_or_else(|| Error(format!("{mt}: no layers")))? };
+    let mut dmoe = moe_template.ok_or_else(|| Error(format!("{mt}: no layers")))?;
+    dmoe.router.top_k = k.opt_usize("dspark_num_experts_per_tok")?.unwrap_or(top_k);
+    dmoe.experts = k.opt_usize("dspark_n_routed_experts")?.unwrap_or(ne);
+    let n_draft = k.opt_usize("n_mtp_layers")?.unwrap_or(mtp_layers);
+    let draft = dspark_head(&k, n_draft, window_attn, dmoe, Residual::Streams(streams), eps)?;
     let desc = ModelDesc {
         hidden: d,
         vocab,
@@ -2261,7 +2291,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
         blocks,
         final_norm: Norm::rms(eps),
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::LastPre },
-        mtp: Vec::new(),
+        mtp: draft.into_iter().collect(),
         vision: None,
         rope: None,
     };
