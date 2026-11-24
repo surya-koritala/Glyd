@@ -97,7 +97,7 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
         });
         let (dh, nk, has_v) = (a.head_dim, a.kv_heads, !a.k_eq_v);
         let ring = rings.len();
-        rings.push(Ring { d: dh, nk, window: a.window.unwrap_or(0), values: true });
+        rings.push(Ring::kv(dh, nk, a.window.unwrap_or(0)));
         let mut qkv = vec![one(ar, "q")?, one(ar, "k")?];
         if has_v {
             qkv.push(one(ar, "v")?);
@@ -264,7 +264,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
             None => None,
         };
         let ring = rings.len();
-        rings.push(Ring { d: a.head_dim, nk: a.kv_heads, window: a.window.unwrap_or(0), values: true });
+        rings.push(Ring::kv(a.head_dim, a.kv_heads, a.window.unwrap_or(0)));
         let attn = AttnOp::of(a, Slot::Proj, ring, table, qk)?;
         let w = mats.len();
         let qkv = item(vec![one(ar, "q")?, one(ar, "k")?, one(ar, "v")?], &shape)?;
@@ -705,7 +705,7 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
             }
             Kind::Full => {
                 let ring = rings.len();
-                rings.push(Ring { d: 256, nk, window: 0, values: true });
+                rings.push(Ring::kv(256, nk, 0));
                 let a = AttnOp::of(att, Slot::Mix, ring, Some(0), Some((s0 + 2, s0 + 3)))?;
                 if a.stride != full_w {
                     return err(format!("Qwen3.5: an attention product of {full_w} where its attention reads {}", a.stride));
@@ -843,7 +843,7 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
             }
             NhKind::Attention => {
                 let ring = rings.len();
-                rings.push(Ring { d: hd, nk, window: 0, values: true });
+                rings.push(Ring::kv(hd, nk, 0));
                 let a = att.ok_or_else(|| Error("Nemotron-H: an attention layer of no kind".into()))?;
                 let a = AttnOp::of(a, Slot::Mix, ring, None, None)?;
                 if a.stride != qkv_w {
@@ -951,7 +951,7 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
         let block = n_moe;
         n_moe += 1;
         let ring = rings.len();
-        rings.push(Ring { d: hd, nk, window: a.window.unwrap_or(0), values: true });
+        rings.push(Ring::kv(hd, nk, a.window.unwrap_or(0)));
         let attn = AttnOp::of(a, Slot::Mix, ring, Some(0), None)?;
         if attn.stride != row {
             return err(format!("Muse Spark: an attention product of {row} where its attention reads {}", attn.stride));

@@ -243,10 +243,10 @@ extern "C" __global__ void __launch_bounds__(256) idx_score(const bf16* iq, int 
     if (lane == 0) scores[(size_t)i * Pmax + p] = s;
 }
 
-// The indexer's scores in the release's bf16 arithmetic (DeepSeek-V4's): for row t and each entry e of its cache [entries, 128] it may read (e < (pos + 1) / ratio), sum over heads h of bf16(relu(bf16(q_h . k_e)) w_h), each product and the sum rounded to
+// The indexer's scores in the release's bf16 arithmetic (DeepSeek-V4's): for row t and each entry e of its cache [entries, 128] (entry e's row through tab) it may read (e < (pos + 1) / ratio), sum over heads h of bf16(relu(bf16(q_h . k_e)) w_h), each product and the sum rounded to
 // bf16 as the release's bf16 tensors are, with w_h = bf16(wp_h x wscale) (wp [n, IH], the weights' product, bf16); scores [n, emax] fp32 (-inf past the entries). Block (row, ML_EC entries), 8 warps: a warp an
 // entry, a lane 4 of its channels, the queries in shared memory; at most ML_IH heads.
-extern "C" __global__ void __launch_bounds__(256) idx_score_bf16(const bf16* q, const bf16* wp, float wscale, const bf16* cache, const int* pos, float* scores, int IH, int ratio, int emax) {
+extern "C" __global__ void __launch_bounds__(256) idx_score_bf16(const bf16* q, const bf16* wp, float wscale, const bf16* cache, const int* tab, const int* pos, float* scores, int IH, int ratio, int emax) {
     const int t = blockIdx.x, w = threadIdx.x >> 5, lane = threadIdx.x & 31;
     extern __shared__ float qs[];  // [IH][128] then [IH] weights, then the warps' terms [8][ML_IH]
     const int ne = (pos[t] + 1) / ratio;
@@ -259,7 +259,7 @@ extern "C" __global__ void __launch_bounds__(256) idx_score_bf16(const bf16* q, 
         if (lane == 0) scores[(size_t)t * emax + e] = -INFINITY;
         return;
     }
-    const uint2 kv = *reinterpret_cast<const uint2*>(cache + (size_t)e * ML_IDX + lane * 4);
+    const uint2 kv = *reinterpret_cast<const uint2*>(cache + ml_place(tab, e) * ML_IDX + lane * 4);
     const float2 k0 = bf2(kv.x), k1 = bf2(kv.y);
     // (every head's dot product a lane's 4 channels at once, then summed across the lanes as warp_sum's butterfly pairs them, each lane keeping half of its heads a stage: lane l ends with
     // heads 2l and 2l + 1, the same additions in the same order, in 62 shuffles where a warp_sum a head took 320, one after another)

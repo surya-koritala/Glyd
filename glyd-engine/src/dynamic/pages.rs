@@ -13,6 +13,12 @@
 //! system prompt after that conversation has grown past it (a sliding group gave those blocks up long ago) or has ended. A named block is never written: a cut back into
 //! one that the sequence alone holds takes its name away first.
 //!
+//! A pool's block may cover more tokens than BLOCK (`covers`): DeepSeek-V4's compressed entries, one for every `ratio` tokens, are BLOCK entries a block, so a block of theirs covers
+//! BLOCK `ratio` tokens (R4b, #141). Every question below is asked in tokens and each group answers it in its own blocks: a sequence of n tokens holds a compressed group's
+//! blocks 0 .. n / covers (rounded up), the block that holds its tokens past the last full one too. Such a block is named for the block of BLOCK tokens that ends it (its entries
+//! are of every token before), so a start is found by name in whole blocks of every group (`fit`), and a start shared at a place within one of them leaves that block to the
+//! caller (`share`: rows.rs copies it).
+//!
 //! Block 0 of every pool is never given out: every entry a sequence does not hold names it, so a write the engine makes there (a graph's capture runs a step at position 0 of a sequence
 //! that holds nothing) lands where no one reads. The kernels read a position through the table (`g4_place` in kernels/gemma4.cu); this file is the host's side: which blocks a sequence
 //! holds, and which entries changed since the tables were last copied to the GPU.
@@ -26,6 +32,8 @@ pub const BLOCK: usize = 16;
 struct Pool {
     /// Tokens behind the newest a step may read (the window and a chunk); None: every token (full attention).
     keep: Option<usize>,
+    /// Tokens a block covers: BLOCK, or BLOCK compressed entries' (DeepSeek-V4's: BLOCK `ratio`).
+    covers: usize,
     /// Blocks not held, the lowest last (so the first given out are the lowest).
     free: Vec<u32>,
     blocks: u32,
@@ -43,10 +51,11 @@ struct Pool {
 }
 
 impl Pool {
-    fn new(blocks: u32, keep: Option<usize>) -> Pool {
+    fn new(blocks: u32, keep: Option<usize>, covers: usize) -> Pool {
         let n = blocks.max(1);
         Pool {
             keep,
+            covers,
             free: (1..n).rev().collect(),
             blocks: n,
             refs: vec![0; n as usize],
@@ -120,17 +129,35 @@ pub struct Pages {
     /// the window before that start on, and the entries before were never its own: `grow` gives it no block there (an empty block is not the tokens' keys and values, and a
     /// later cut back to before the start's end would read it as if it were).
     floor: Vec<Vec<usize>>,
+    /// The most tokens a sequence holds, in blocks of BLOCK.
+    most: usize,
 }
 
 impl Pages {
     /// Pools of `blocks[g]` blocks (block 0 among them) for the groups, each keeping `keep[g]` tokens behind (None: all), for `slots` sequences of at most `ctx` tokens.
     pub fn new(blocks: &[u32], keep: &[Option<usize>], slots: usize, ctx: usize) -> Pages {
-        let pools = blocks.iter().zip(keep).map(|(&b, &k)| Pool::new(b, k)).collect::<Vec<_>>();
-        let n = ctx.div_ceil(BLOCK);
-        let tabs = (0..slots).map(|_| (0..pools.len()).map(|_| vec![0u32; n]).collect()).collect();
+        Pages::covering(blocks, keep, &vec![BLOCK; blocks.len()], slots, ctx)
+    }
+
+    /// `new` with group g's blocks covering `covers[g]` tokens each (a multiple of BLOCK; more than BLOCK only for a full group: compressed entries').
+    pub fn covering(blocks: &[u32], keep: &[Option<usize>], covers: &[usize], slots: usize, ctx: usize) -> Pages {
+        debug_assert!(covers.iter().zip(keep).all(|(&c, k)| c % BLOCK == 0 && c > 0 && (c == BLOCK || k.is_none())));
+        let pools = blocks.iter().zip(keep).zip(covers).map(|((&b, &k), &c)| Pool::new(b, k, c)).collect::<Vec<_>>();
+        let tabs = (0..slots).map(|_| pools.iter().map(|p| vec![0u32; ctx.div_ceil(p.covers)]).collect()).collect();
         let dirty = (0..slots).map(|_| vec![None; pools.len()]).collect();
         let floor = vec![vec![0; pools.len()]; slots];
-        Pages { pools, tabs, dirty, floor }
+        Pages { pools, tabs, dirty, floor, most: ctx.div_ceil(BLOCK) }
+    }
+
+    /// Tokens a block of group `g` covers.
+    pub fn covers(&self, g: usize) -> usize {
+        self.pools[g].covers
+    }
+
+    /// Group `g`'s table entry that holds the tokens from `at` on where it is not a whole block (a block of `covers` tokens a sequence of `at` tokens holds part of).
+    pub fn partial(&self, g: usize, at: usize) -> Option<usize> {
+        let c = self.pools[g].covers;
+        (!at.is_multiple_of(c)).then_some(at / c)
     }
 
     pub fn groups(&self) -> usize {
@@ -150,7 +177,7 @@ impl Pages {
             .filter_map(|p| {
                 let usable = p.blocks as usize - 1;
                 match p.keep {
-                    None => Some(usable * BLOCK),
+                    None => Some(usable * p.covers),
                     Some(k) if usable >= k.div_ceil(BLOCK) + 1 => None,
                     Some(_) => Some(usable.saturating_sub(1) * BLOCK),
                 }
@@ -160,9 +187,10 @@ impl Pages {
 
     /// The table entries sequence `slot` needs to hold its first `upto` tokens in group `g`: from the first a step may still read to the last.
     fn span(&self, g: usize, upto: usize) -> (usize, usize) {
-        let hi = upto.div_ceil(BLOCK);
+        let c = self.pools[g].covers;
+        let hi = upto.div_ceil(c);
         let lo = match self.pools[g].keep {
-            Some(k) => upto.saturating_sub(k) / BLOCK,
+            Some(k) => upto.saturating_sub(k) / c,
             None => 0,
         };
         (lo.min(hi), hi)
@@ -189,8 +217,7 @@ impl Pages {
     /// (The blocks of `upto`'s own window instead left a pool of one sequence's window and a chunk none for the first pass, whose growth then failed each time the sequence was
     /// let in again: one-user serve of Gemma 4 never answered a prompt longer than its window and a chunk. And they gave back the window before `n`, which the next pass reads.)
     pub fn grow_from(&mut self, slot: usize, n: usize, upto: usize, slack: usize) -> bool {
-        let max = self.tabs[slot][0].len();
-        if upto.div_ceil(BLOCK) > max {
+        if upto.div_ceil(BLOCK) > self.most {
             return false;
         }
         for g in 0..self.pools.len() {
@@ -224,8 +251,9 @@ impl Pages {
     /// The table entries sequence `slot` holds in each group among the blocks of its first `upto` tokens, and its floor in each (R4d: what a swap copies, and what `restore`
     /// takes again).
     pub fn held_entries(&self, slot: usize, upto: usize) -> (Vec<Vec<usize>>, Vec<usize>) {
-        let hi = upto.div_ceil(BLOCK);
-        let entries = (0..self.pools.len()).map(|g| (0..hi.min(self.tabs[slot][g].len())).filter(|&b| self.tabs[slot][g][b] != 0).collect()).collect();
+        let entries = (0..self.pools.len())
+            .map(|g| (0..upto.div_ceil(self.pools[g].covers).min(self.tabs[slot][g].len())).filter(|&b| self.tabs[slot][g][b] != 0).collect())
+            .collect();
         (entries, self.floor[slot].clone())
     }
 
@@ -267,9 +295,17 @@ impl Pages {
     /// a full group's first.
     fn reach(&self, g: usize, upto: usize, slack: usize) -> usize {
         match self.pools[g].keep {
-            Some(k) => upto.saturating_sub(k.saturating_sub(slack)) / BLOCK,
+            Some(k) => upto.saturating_sub(k.saturating_sub(slack)) / self.pools[g].covers,
             None => 0,
         }
+    }
+
+    /// Whether sequence `slot` holds, in every group, the blocks a step at `upto` reads (a sliding group's from its window on; `slack` as `shrink`'s).
+    fn reads_held(&self, slot: usize, upto: usize, slack: usize) -> bool {
+        (0..self.pools.len()).all(|g| {
+            let hi = upto.div_ceil(self.pools[g].covers);
+            (self.reach(g, upto, slack).min(hi)..hi).all(|b| self.tabs[slot][g][b] != 0)
+        })
     }
 
     /// What sequence `slot` would hold cut back to go on within its first `upto` tokens (`shrink`, which makes the cut): `upto`, or the start of the block `upto` is in
@@ -277,11 +313,15 @@ impl Pages {
     /// blocks behind its window and `slack` tokens (a chunk: what `keep` holds beyond the window) as the sequence grows, so one that grew more than `slack` past the place
     /// cannot be cut there.
     pub fn cut_len(&self, slot: usize, upto: usize, slack: usize) -> usize {
-        let part = upto / BLOCK;
-        let shared = !upto.is_multiple_of(BLOCK) && (0..self.pools.len()).any(|g| self.pools[g].refs[self.tabs[slot][g][part] as usize] > 1);
-        let upto = if shared { part * BLOCK } else { upto };
-        let hi = upto.div_ceil(BLOCK);
-        if (0..self.pools.len()).any(|g| (self.reach(g, upto, slack).min(hi)..hi).any(|b| self.tabs[slot][g][b] == 0)) {
+        // (each group's block the place is in, where others hold it too: to its start; a group of larger blocks may move the place to before another's)
+        let mut upto = upto;
+        while let Some(at) = (0..self.pools.len())
+            .filter_map(|g| self.partial(g, upto).filter(|&b| self.pools[g].refs[self.tabs[slot][g][b] as usize] > 1).map(|b| b * self.pools[g].covers))
+            .min()
+        {
+            upto = at;
+        }
+        if !self.reads_held(slot, upto, slack) {
             return 0;
         }
         upto
@@ -294,11 +334,10 @@ impl Pages {
         if upto == 0 {
             return 0;
         }
-        let hi = upto.div_ceil(BLOCK);
-        if !upto.is_multiple_of(BLOCK) {
-            // (the block the cut is in is written from there on: it is no longer the tokens its name says)
-            for g in 0..self.pools.len() {
-                let blk = self.tabs[slot][g][upto / BLOCK];
+        // (the block the cut is in is written from there on: it is no longer the tokens its name says)
+        for g in 0..self.pools.len() {
+            if let Some(b) = self.partial(g, upto) {
+                let blk = self.tabs[slot][g][b];
                 if blk != 0 {
                     self.pools[g].unname(blk);
                 }
@@ -306,6 +345,7 @@ impl Pages {
         }
         // (the last first, as `release` gives them: of the named ones the end of what was cut off is the first to go)
         for g in 0..self.pools.len() {
+            let hi = upto.div_ceil(self.pools[g].covers);
             for b in (hi..self.tabs[slot][g].len()).rev() {
                 let blk = std::mem::take(&mut self.tabs[slot][g][b]);
                 if blk != 0 {
@@ -319,44 +359,49 @@ impl Pages {
 
     /// Whether sequence `slot` holds every block a step at `upto` reads of its first `upto` tokens (a sliding group's from its window on; `slack` as `shrink`'s).
     pub fn holds(&self, slot: usize, upto: usize, slack: usize) -> bool {
-        let hi = upto.div_ceil(BLOCK);
-        (0..self.pools.len()).all(|g| (self.reach(g, upto, slack).min(hi)..hi).all(|b| self.tabs[slot][g][b] != 0))
+        self.reads_held(slot, upto, slack)
     }
 
     /// The full blocks of the first `upto` tokens of sequence `from` named by sequence `to` as well, which must hold nothing: the tokens `to` then holds (a whole number of
     /// blocks), each of those blocks with one holder more. 0, and nothing changes, where `upto` is less than a block or `from` no longer holds what a step there reads (a
     /// sliding group's blocks behind its window; `slack` as `shrink`'s). Neither writes what the other reads: `to` goes on from the end of those blocks, `from` from its own
-    /// length, which is past them.
+    /// length, which is past them. A group of larger blocks (`covers`) shares the whole ones; its block that holds the tokens past them (`partial`) is not shared, and `to`
+    /// lacks it until it is given one with those tokens' entries (rows.rs copies them).
     pub fn share(&mut self, from: usize, to: usize, upto: usize, slack: usize) -> usize {
-        let nb = upto / BLOCK;
-        if nb == 0 || from == to || self.tabs[to].iter().any(|t| t.iter().any(|&b| b != 0)) {
+        let n = upto / BLOCK * BLOCK;
+        if n == 0 || from == to || self.tabs[to].iter().any(|t| t.iter().any(|&b| b != 0)) {
             return 0;
         }
+        let whole = |p: &Pages, g: usize| (p.reach(g, n, slack).min(n / p.pools[g].covers), n / p.pools[g].covers);
         for g in 0..self.pools.len() {
-            if (self.reach(g, nb * BLOCK, slack).min(nb)..nb).any(|b| self.tabs[from][g][b] == 0) {
+            let (lo, nb) = whole(self, g);
+            if (lo..nb).any(|b| self.tabs[from][g][b] == 0) {
                 return 0;
             }
         }
         for g in 0..self.pools.len() {
-            self.floor[to][g] = self.reach(g, nb * BLOCK, slack).min(nb);
-            for b in self.floor[to][g]..nb {
+            let (lo, nb) = whole(self, g);
+            self.floor[to][g] = lo;
+            for b in lo..nb {
                 let blk = self.tabs[from][g][b];
                 self.pools[g].refs[blk as usize] += 1;
                 self.tabs[to][g][b] = blk;
                 self.mark(to, g, b);
             }
         }
-        nb * BLOCK
+        n
     }
 
     /// Sequence `slot`'s block `b` is full, and `key` is its name (`kv::block_hash`): in every group that holds it, the block is found by that name from now on, unless
     /// another block of the group has the name already (two sequences that ran the same tokens side by side: the first stays the one that is found).
     pub fn name(&mut self, slot: usize, b: usize, key: u128) {
-        if key == 0 || b >= self.tabs[slot][0].len() {
+        if key == 0 || b >= self.most {
             return;
         }
         for g in 0..self.pools.len() {
-            let blk = self.tabs[slot][g][b] as usize;
+            // (a group of larger blocks: its block that this one ends)
+            let Some(e) = self.entry_ending(g, b) else { continue };
+            let blk = self.tabs[slot][g][e] as usize;
             let p = &mut self.pools[g];
             debug_assert!(blk == 0 || p.name[blk] == 0 || p.name[blk] == key, "block {blk} named twice");
             if blk != 0 && p.name[blk] == 0 && !p.index.contains_key(&key) {
@@ -375,6 +420,12 @@ impl Pages {
         out
     }
 
+    /// Group `g`'s table entry whose block ends where block `b` of BLOCK tokens does (None: none ends there).
+    fn entry_ending(&self, g: usize, b: usize) -> Option<usize> {
+        let r = self.pools[g].covers / BLOCK;
+        (b + 1).is_multiple_of(r).then(|| (b + 1) / r - 1)
+    }
+
     /// The block of group `g` that `key` names now, if any.
     pub fn named(&self, g: usize, key: u128) -> Option<u32> {
         self.pools.get(g).and_then(|p| p.index.get(&key).copied())
@@ -389,10 +440,11 @@ impl Pages {
         }
         let n = self.fit(keys, slack);
         for g in 0..self.pools.len() {
-            let lo = self.reach(g, n * BLOCK, slack).min(n);
+            let r = self.pools[g].covers / BLOCK;
+            let lo = self.reach(g, n * BLOCK, slack).min(n / r);
             self.floor[to][g] = lo;
-            for b in lo..n {
-                let blk = self.pools[g].index[&keys[b]];
+            for b in lo..n / r {
+                let blk = self.pools[g].index[&keys[(b + 1) * r - 1]];
                 self.pools[g].hold(blk);
                 self.tabs[to][g][b] = blk;
                 self.mark(to, g, b);
@@ -401,24 +453,33 @@ impl Pages {
         n * BLOCK
     }
 
-    /// The blocks `adopt` would give a sequence whose full blocks are named `keys`: the most n such that every block a step at n blocks reads is held by name.
+    /// The blocks `adopt` would give a sequence whose full blocks are named `keys`: the most n such that every block a step at n blocks reads is held by name. (A group of
+    /// larger blocks holds by name only its whole ones: n is a whole number of them.)
     pub fn fit(&self, keys: &[u128], slack: usize) -> usize {
-        let mut n = keys.len().min(self.tabs[0][0].len());
-        for p in self.pools.iter().filter(|p| p.keep.is_none()) {
-            n = keys[..n].iter().position(|k| !p.index.contains_key(k)).unwrap_or(n);
-        }
-        // (a sliding group that lacks block b of the window behind n lacks it for every length from b + 1 to n: those windows hold b too)
-        'fit: while n > 0 {
-            for g in (0..self.pools.len()).filter(|&g| self.pools[g].keep.is_some()) {
-                let lo = self.reach(g, n * BLOCK, slack).min(n);
-                if let Some(b) = (lo..n).rev().find(|&b| !self.pools[g].index.contains_key(&keys[b])) {
-                    n = b;
-                    continue 'fit;
-                }
+        let mut n = keys.len().min(self.most);
+        loop {
+            let was = n;
+            for p in self.pools.iter().filter(|p| p.keep.is_none()) {
+                // (its blocks named by the names of the blocks of BLOCK tokens that end them: its first block it lacks, or its last whole one, ends the start)
+                let r = p.covers / BLOCK;
+                let have = (0..n / r).position(|b| !p.index.contains_key(&keys[(b + 1) * r - 1])).unwrap_or(n / r);
+                n = if have < n / r || r > 1 { have * r } else { n };
             }
-            break;
+            // (a sliding group that lacks block b of the window behind n lacks it for every length from b + 1 to n: those windows hold b too)
+            'fit: while n > 0 {
+                for g in (0..self.pools.len()).filter(|&g| self.pools[g].keep.is_some()) {
+                    let lo = self.reach(g, n * BLOCK, slack).min(n);
+                    if let Some(b) = (lo..n).rev().find(|&b| !self.pools[g].index.contains_key(&keys[b])) {
+                        n = b;
+                        continue 'fit;
+                    }
+                }
+                break;
+            }
+            if n == was {
+                return n;
+            }
         }
-        n
     }
 
     fn mark(&mut self, slot: usize, g: usize, b: usize) {
@@ -538,6 +599,43 @@ mod tests {
         assert!(!small.restore(1, &entries, &floor) && small.free(0) == before && small.held_entries(1, 1024).0.iter().all(Vec::is_empty));
     }
 
+    /// A group whose blocks cover 64 tokens (compressed entries of 4 tokens each: BLOCK of them a block) beside a full and a sliding group of BLOCK tokens: a sequence holds its
+    /// blocks to the one its last token is in; its blocks are named for the blocks of BLOCK tokens that end them, so a start is found by name in whole ones of them; a start
+    /// shared within one leaves that block to the caller; a cut into one another sequence holds is to its start.
+    #[test]
+    fn a_group_of_larger_blocks_holds_and_shares_them_whole() {
+        // (a window of 256 tokens and a chunk of 32)
+        let mut p = Pages::covering(&[60, 60, 9], &[None, Some(256 + 32), None], &[BLOCK, BLOCK, 4 * BLOCK], 3, 1024);
+        assert_eq!(p.capacity(), Some(8 * 4 * BLOCK), "the compressed group's 8 blocks of 64 tokens bound one sequence");
+        assert!(p.grow(0, 65));
+        assert_eq!((p.held(0), p.held(2)), (5, 2));
+        assert_eq!(p.held_entries(0, 65).0[2], vec![0, 1]);
+        let keys = names(1, 1, 0, 1024);
+        // (its full blocks named after each pass, as the scheduler does)
+        for to in (80..=200).step_by(20) {
+            assert!(p.grow(0, to));
+            for b in 0..to / BLOCK {
+                p.name(0, b, keys[b]);
+            }
+        }
+        // (12 blocks of BLOCK tokens named: the compressed group's first three, which they end, too)
+        assert_eq!(p.pools[2].index.len(), 3);
+        assert_eq!(p.fit(&keys[..12], 32), 12);
+        assert_eq!(p.fit(&keys[..11], 32), 8, "a start in whole blocks of 64 tokens");
+        assert_eq!(p.adopt(1, &keys[..12], 32), 192);
+        assert_eq!(p.table(1, 2)[..4], [p.table(0, 2)[0], p.table(0, 2)[1], p.table(0, 2)[2], 0]);
+        // a cut of the first into the compressed block both hold: to its start, though the blocks of BLOCK tokens there are its own
+        assert_eq!(p.cut_len(0, 150, 32), 128);
+        assert_eq!(p.shrink(0, 150, 32), 128);
+        assert!(p.grow(0, 150) && p.table(0, 2)[2] != p.table(1, 2)[2]);
+        p.release(1);
+        // a start shared at 100 tokens: the compressed group's whole block; its block of tokens 64 to 99 is the caller's to give
+        assert_eq!(p.share(0, 1, 100, 32), 96);
+        assert_eq!((p.partial(2, 96), p.partial(0, 96)), (Some(1), None));
+        assert!(p.table(1, 2)[0] == p.table(0, 2)[0] && p.table(1, 2)[1] == 0);
+        assert!(p.grow(1, 96) && p.table(1, 2)[1] != 0 && p.table(1, 2)[1] != p.table(0, 2)[1]);
+    }
+
     /// The names of the full blocks of `n` tokens of a stream: stream `a` to `fork`, stream `b` after.
     fn names(a: u32, b: u32, fork: usize, n: usize) -> Vec<u128> {
         let toks: Vec<u32> = (0..n).map(|i| (if i < fork { a } else { b }) * 100_003 + i as u32).collect();
@@ -608,17 +706,21 @@ mod tests {
     }
 
     /// Sequences of a few token streams growing, being found by name, cut back and ending at random, with a record of what each block holds: a named block holds the tokens
-    /// its name says and is never written; a block is free, or waits by its name, or is held, and never two of these; what is found by name is what was asked for.
+    /// its name says and is never written; a block is free, or waits by its name, or is held, and never two of these; what is found by name is what was asked for. Group 2's
+    /// blocks cover 64 tokens (compressed entries of 4 tokens each).
     #[test]
     fn named_blocks_hold_what_their_names_say() {
         let (slots, ctx, slack) = (6, 640, 32);
-        let mut p = Pages::new(&[70, 40], &[None, Some(48 + slack)], slots, ctx);
+        let mut p = Pages::covering(&[70, 40, 30], &[None, Some(48 + slack), None], &[BLOCK, BLOCK, 4 * BLOCK], slots, ctx);
+        let (groups, covers) = (3, [BLOCK, BLOCK, 4 * BLOCK]);
+        // (a block's name: that of the block of BLOCK tokens that ends it)
+        let last = |g: usize, b: usize| (b + 1) * covers[g] / BLOCK - 1;
         // each sequence: (stream to its fork, stream after, the fork), its length, and its blocks' names
         let mut id = vec![(0u32, 0u32, 0usize); slots];
         let mut len = vec![0usize; slots];
         let mut keys: Vec<Vec<u128>> = vec![Vec::new(); slots];
         // what each block holds: the name of the full block of tokens written there (None: not a full block's)
-        let mut holds: Vec<Vec<Option<u128>>> = (0..2).map(|g| vec![None; p.pools[g].blocks as usize]).collect();
+        let mut holds: Vec<Vec<Option<u128>>> = (0..groups).map(|g| vec![None; p.pools[g].blocks as usize]).collect();
         let (mut seed, mut next) = (0x9e37_79b9_7f4a_7c15u64, 10u32);
         let mut rnd = |m: usize| {
             seed ^= seed << 13;
@@ -643,10 +745,10 @@ mod tests {
                     keys[s] = names(id[s].0, id[s].1, id[s].2, ctx);
                     let got = p.adopt(s, &keys[s][..rnd(ctx / BLOCK)], slack);
                     assert!(got % BLOCK == 0);
-                    for g in 0..2 {
+                    for g in 0..groups {
                         for (b, &blk) in p.table(s, g).iter().enumerate() {
                             assert!(
-                                blk == 0 || (b * BLOCK < got && holds[g][blk as usize] == Some(keys[s][b])),
+                                blk == 0 || (b * covers[g] < got && holds[g][blk as usize] == Some(keys[s][last(g, b)])),
                                 "entry {b} of group {g} is not the block asked for"
                             );
                         }
@@ -682,14 +784,15 @@ mod tests {
                     if p.grow(s, to) {
                         taken += (p.pools.iter().map(|q| q.idle.len()).sum::<usize>() < idle) as usize;
                         // the tokens from its length to `to` are written: no block with a name among them
-                        for g in 0..2 {
-                            for b in len[s] / BLOCK..to.div_ceil(BLOCK) {
+                        for g in 0..groups {
+                            let c = covers[g];
+                            for b in len[s] / c..to.div_ceil(c) {
                                 let blk = p.table(s, g)[b] as usize;
                                 assert!(
                                     blk != 0 && p.pools[g].name[blk] == 0 && p.pools[g].refs[blk] == 1,
                                     "a block written that has a name or another holder"
                                 );
-                                holds[g][blk] = (to >= (b + 1) * BLOCK && keys[s][b] != 0).then_some(keys[s][b]);
+                                holds[g][blk] = (to >= (b + 1) * c && keys[s][last(g, b)] != 0).then_some(keys[s][last(g, b)]);
                             }
                         }
                         for b in len[s] / BLOCK..to / BLOCK {
@@ -700,13 +803,13 @@ mod tests {
                 }
                 _ => {}
             }
-            for g in 0..2 {
+            for g in 0..groups {
                 let q = &p.pools[g];
                 let mut count = vec![0u32; q.blocks as usize];
                 for x in 0..slots {
                     for (b, &blk) in p.table(x, g).iter().enumerate() {
                         count[blk as usize] += (blk != 0) as u32;
-                        assert!(blk == 0 || b * BLOCK < len[x], "sequence {x} of {} tokens holds entry {b}", len[x]);
+                        assert!(blk == 0 || b * covers[g] < len[x], "sequence {x} of {} tokens holds entry {b}", len[x]);
                     }
                 }
                 assert_eq!(count, q.refs, "a block's count is not its holders");
@@ -798,7 +901,9 @@ mod tests {
     #[test]
     fn blocks_are_counted_and_never_lost() {
         let (slots, ctx, slack) = (6, 640, 32);
-        let mut p = Pages::new(&[60, 30], &[None, Some(48 + slack)], slots, ctx);
+        // (group 2: blocks of 64 tokens, compressed entries')
+        let mut p = Pages::covering(&[60, 30, 20], &[None, Some(48 + slack), None], &[BLOCK, BLOCK, 4 * BLOCK], slots, ctx);
+        let (groups, covers) = (3, [BLOCK, BLOCK, 4 * BLOCK]);
         let mut len = vec![0usize; slots];
         let mut seed = 0x2545_f491_4f6c_dd1du64;
         let mut rnd = |m: usize| {
@@ -812,7 +917,7 @@ mod tests {
         let steps = if cfg!(miri) { 400 } else { 20000 };
         for _ in 0..steps {
             let s = rnd(slots);
-            let before: Vec<Vec<Vec<u32>>> = (0..slots).map(|s| (0..2).map(|g| p.table(s, g).to_vec()).collect()).collect();
+            let before: Vec<Vec<Vec<u32>>> = (0..slots).map(|s| (0..groups).map(|g| p.table(s, g).to_vec()).collect()).collect();
             match rnd(10) {
                 0 => {
                     p.release(s);
@@ -824,7 +929,7 @@ mod tests {
                     let got = p.share(from, s, rnd(len[from] + 1), slack);
                     assert!(got % BLOCK == 0 && got <= len[from]);
                     if got == 0 {
-                        assert!((0..slots).all(|x| (0..2).all(|g| p.table(x, g) == &before[x][g][..])));
+                        assert!((0..slots).all(|x| (0..groups).all(|g| p.table(x, g) == &before[x][g][..])));
                     }
                     shares += (got > 0) as usize;
                     len[s] = got;
@@ -832,9 +937,10 @@ mod tests {
                 3 if len[s] > 0 => {
                     let to = 1 + rnd(len[s]);
                     let got = p.shrink(s, to, slack);
-                    assert!(got == 0 || got == to || got == to / BLOCK * BLOCK, "{got} for {to}");
+                    // (to the start of a block others hold too, of BLOCK tokens or of 64)
+                    assert!(got == 0 || got == to || got == to / BLOCK * BLOCK || got == to / 64 * 64, "{got} for {to}");
                     if got == 0 {
-                        assert!((0..2).all(|g| p.table(s, g) == &before[s][g][..]));
+                        assert!((0..groups).all(|g| p.table(s, g) == &before[s][g][..]));
                     } else {
                         len[s] = got;
                         cuts += 1;
@@ -845,17 +951,17 @@ mod tests {
                     if p.grow(s, to) {
                         len[s] = to;
                     } else {
-                        assert!((0..2).all(|g| p.table(s, g) == &before[s][g][..]));
+                        assert!((0..groups).all(|g| p.table(s, g) == &before[s][g][..]));
                     }
                 }
             }
-            for g in 0..2 {
+            for g in 0..groups {
                 let mut named = vec![0u32; p.pools[g].blocks as usize];
                 for x in 0..slots {
                     for (b, &blk) in p.table(x, g).iter().enumerate() {
                         if blk != 0 {
                             named[blk as usize] += 1;
-                            assert!(b * BLOCK < len[x], "sequence {x} of {} tokens holds entry {b}", len[x]);
+                            assert!(b * covers[g] < len[x], "sequence {x} of {} tokens holds entry {b}", len[x]);
                         }
                     }
                 }
@@ -867,9 +973,12 @@ mod tests {
             }
             // a block held by several is full and below the length of each: no one writes it
             for x in 0..slots {
-                for g in 0..2 {
+                for g in 0..groups {
                     for (b, &blk) in p.table(x, g).iter().enumerate() {
-                        assert!(blk == 0 || p.pools[g].refs[blk as usize] == 1 || (b + 1) * BLOCK <= len[x], "sequence {x} would write a block others hold");
+                        assert!(
+                            blk == 0 || p.pools[g].refs[blk as usize] == 1 || (b + 1) * covers[g] <= len[x],
+                            "sequence {x} would write a block others hold"
+                        );
                     }
                 }
             }

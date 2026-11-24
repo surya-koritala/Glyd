@@ -1961,9 +1961,11 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         None => random_dyn(case, level, "keepcheck")?,
     };
     let (vocab, cuts, marks, window) = (e.desc().vocab as u32, e.cuts(), e.can_mark(), e.least_window());
-    // (a model with recurrent states keeps them at boundaries (src/dynamic/snaps.rs); this check's prompts are short, so at boundaries 32 tokens apart)
+    // (a model with recurrent states keeps them at boundaries (src/dynamic/snaps.rs); this check's prompts are short, so at boundaries 32 tokens apart, or as far apart as the
+    // largest blocks: DeepSeek-V4's compressed entries' are found by name whole)
     if !cuts && marks {
-        e.ask_state_every(32);
+        let unit = e.whole_start();
+        e.ask_state_every(if unit % 32 == 0 { unit } else { 2 * unit });
     }
     let Some((k, s)) = e.as_step(3)? else { return err(format!("{case}: no scheduler's step")) };
     if k < 3 || !s.keeps() {
@@ -2254,7 +2256,8 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         // back as it grew: they wait by their names); and the sequence is unharmed
         if all + alt.len() < s.window() {
             let keys = crate::kv::block_names(root, &long);
-            let at = 6 * chunk;
+            // (a recurrent model's start is found at a boundary)
+            let at = (6 * chunk).next_multiple_of(every.max(1));
             fill_named(s, 0, &long, chunk, &keys)?;
             let got = s.adopt(1, &keys[..at / 16])?;
             if got != at {

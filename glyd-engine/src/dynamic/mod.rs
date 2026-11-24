@@ -260,7 +260,7 @@ pub enum Op {
     },
     /// Compressed keys and values: a compressor of H, its two products by `w` (small: [2 W, hidden] bf16, kv's rows then the gate's) in fp32 into Cp, the pooling of every `ratio` rows with `ape` (small,
     /// fp32) and its state (states `state` and `state` + 1: the kv rows and the scores), each completed window's entry normed by `norm`, the rotary of `rope`, quantized (`indexer`: rotated, E2M1; else
-    /// E4M3) into state `cache` [entries, d].
+    /// E4M3) into ring `cache` (`Ring::entries`: an entry a row).
     Compress {
         w: usize,
         ape: usize,
@@ -294,7 +294,7 @@ pub enum Op {
     /// streams S.
     NgramRows(ngram::NgramRows),
     NgramAdd(ngram::NgramAdd),
-    /// The attention of Qo over the window (ring `ring`) and the compressed entries (state `cache`: ratio 4, the indexer's picks; another, every complete entry) with the sink (small, fp32), the
+    /// The attention of Qo over the window (ring `ring`) and the compressed entries (ring `cache`: ratio 4, the indexer's picks; another, every complete entry) with the sink (small, fp32), the
     /// rotary of `rope` taken off its output; into Att in the grouped low rank's order (`hpg` heads a group).
     CompAttn {
         ring: usize,
@@ -503,29 +503,48 @@ pub struct Rope {
 }
 
 /// A layer's keys and values, `nk` heads of `d`: a ring of the window and a chunk where `window` > 0, else the whole context. `values` false: keys alone, in kc
-/// (a latent cache, an indexer's keys, DeepSeek-V4's window whose keys are its values), no room in vc.
+/// (a latent cache, an indexer's keys, DeepSeek-V4's window whose keys are its values), no room in vc. `ratio` > 1: a row an entry of `ratio` tokens, not a token
+/// (DeepSeek-V4's compressed entries, the attention's and the indexer's: entry e at row e), whose blocks then cover BLOCK `ratio` tokens.
 #[derive(Clone, Debug)]
 pub struct Ring {
     pub d: usize,
     pub nk: usize,
     pub window: usize,
     pub values: bool,
+    pub ratio: usize,
 }
 
 impl Ring {
     /// A ring of keys and values.
     pub const fn kv(d: usize, nk: usize, window: usize) -> Ring {
-        Ring { d, nk, window, values: true }
+        Ring { d, nk, window, values: true, ratio: 1 }
     }
 
     /// A ring of keys alone.
     pub const fn keys(d: usize, nk: usize, window: usize) -> Ring {
-        Ring { d, nk, window, values: false }
+        Ring { d, nk, window, values: false, ratio: 1 }
     }
 
-    /// Bytes a token takes in it (bf16).
+    /// The compressed entries of every `ratio` tokens, `d` wide (keys alone, the whole context).
+    pub const fn entries(d: usize, ratio: usize) -> Ring {
+        Ring { d, nk: 1, window: 0, values: false, ratio }
+    }
+
+    /// Bytes a token takes in it (bf16; an entry's over its tokens, rounded up).
     pub fn token_bytes(&self) -> usize {
-        (1 + self.values as usize) * self.nk * self.d * 2
+        ((1 + self.values as usize) * self.nk * self.d * 2).div_ceil(self.ratio.max(1))
+    }
+
+    /// Rows it holds for a context of `ctx` tokens: a window's ring the window and a chunk of `chunk`, compressed entries one for every `ratio` tokens (and two more:
+    /// a pass's last entry is written past its last complete one), else a row a token.
+    pub fn rows(&self, ctx: usize, chunk: usize) -> usize {
+        if self.ratio > 1 {
+            ctx / self.ratio + 2
+        } else if self.window > 0 {
+            (self.window + chunk).min(ctx)
+        } else {
+            ctx
+        }
     }
 }
 
@@ -632,7 +651,10 @@ impl Op {
         match *self {
             Op::Attn(ref a) if a.picked.is_none() => vec![a.ring],
             Op::Mla(ref a) => std::iter::once(a.ring).chain(a.indexer.as_ref().map(|_| a.ring + 1)).collect(),
-            Op::CompKv { ring, .. } | Op::CompAttn { ring, .. } => vec![ring],
+            Op::CompKv { ring, .. } => vec![ring],
+            Op::CompAttn { ring, cache, .. } => std::iter::once(ring).chain(cache).collect(),
+            Op::Compress { cache, .. } => vec![cache],
+            Op::IdxPick(IdxPick { keys: IdxKeys::Entries(r), .. }) => vec![r],
             _ => Vec::new(),
         }
     }
@@ -640,7 +662,7 @@ impl Op {
     fn states(&self) -> Vec<usize> {
         match *self {
             Op::GdnConv { state, .. } | Op::GdnDelta { state, .. } | Op::MambaConv { state, .. } | Op::MambaScan { state, .. } => vec![state],
-            Op::Compress { cache, state, .. } => vec![cache, state, state + 1],
+            Op::Compress { state, .. } => vec![state, state + 1],
             Op::KdaConv { state, .. } | Op::KdaDelta { state, .. } => vec![state],
             Op::IdxMean { keys, pools, .. } => vec![keys, pools],
             Op::Attn(ref a) => a.picked.map_or(Vec::new(), |kv| kv.to_vec()),
@@ -1080,13 +1102,7 @@ impl Dyn {
         let whole = stage.first && stage.last;
         let (mut ring_off, mut ring_cap, mut at, mut at_v) = (Vec::new(), Vec::new(), 0u64, 0u64);
         for (i, r) in d.rings.iter().enumerate() {
-            let cap = if !whole && !rings_used.contains(&i) {
-                0
-            } else if r.window > 0 {
-                (r.window + ch).min(ctx)
-            } else {
-                ctx
-            };
+            let cap = if !whole && !rings_used.contains(&i) { 0 } else { r.rows(ctx, ch) };
             ring_off.push((at, at_v));
             ring_cap.push(cap);
             at += (cap * r.nk * r.d * 2) as u64;
