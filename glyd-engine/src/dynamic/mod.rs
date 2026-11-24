@@ -280,8 +280,9 @@ pub enum Op {
     /// The indexer's pick (src/dynamic/mla.rs, every indexer's): Iq and Iw (its weights' product) scored against its entries, each row's best.
     IdxPick(IdxPick),
     /// The mean-pooled indexer's queries and keys (`IndexForm::Mean`; src/dynamic/picked.rs, kernels/qwen4x.cu): of the index product in Qr (`heads` + 1 heads of 128 a row),
-    /// each query head normed (`q_norm`, (1 + w)) and rotated by table `rope` into Iq; the raw key into state `keys` [positions, 128] at the row's position; then each pool
-    /// of 4 the call completes: the mean of its raw keys, normed (`k_norm`) and rotated at its first position, into state `pools` [positions / 4, 128] (`IdxKeys::Pools`).
+    /// each query head normed (`q_norm`, (1 + w)) and rotated by table `rope` into Iq; the raw key into ring `keys` at the row's position; then each pool
+    /// of 4 the call completes: the mean of its raw keys, normed (`k_norm`) and rotated at its first position, into ring `pools` (`Ring::entries`, a pool a row:
+    /// `IdxKeys::Pools`). The raw keys are ring `keys` [positions, 128]: both paged as any keys.
     IdxMean {
         heads: usize,
         q_norm: usize,
@@ -649,12 +650,13 @@ impl Op {
 
     fn rings(&self) -> Vec<usize> {
         match *self {
-            Op::Attn(ref a) if a.picked.is_none() => vec![a.ring],
+            Op::Attn(ref a) => vec![a.ring],
+            Op::IdxMean { keys, pools, .. } => vec![keys, pools],
             Op::Mla(ref a) => std::iter::once(a.ring).chain(a.indexer.as_ref().map(|_| a.ring + 1)).collect(),
             Op::CompKv { ring, .. } => vec![ring],
             Op::CompAttn { ring, cache, .. } => std::iter::once(ring).chain(cache).collect(),
             Op::Compress { cache, .. } => vec![cache],
-            Op::IdxPick(IdxPick { keys: IdxKeys::Entries(r), .. }) => vec![r],
+            Op::IdxPick(IdxPick { keys: IdxKeys::Entries(r) | IdxKeys::Pools(r), .. }) => vec![r],
             _ => Vec::new(),
         }
     }
@@ -664,8 +666,6 @@ impl Op {
             Op::GdnConv { state, .. } | Op::GdnDelta { state, .. } | Op::MambaConv { state, .. } | Op::MambaScan { state, .. } => vec![state],
             Op::Compress { state, .. } => vec![state, state + 1],
             Op::KdaConv { state, .. } | Op::KdaDelta { state, .. } => vec![state],
-            Op::IdxMean { keys, pools, .. } => vec![keys, pools],
-            Op::Attn(ref a) => a.picked.map_or(Vec::new(), |kv| kv.to_vec()),
             Op::NgramRows(x) => vec![x.hist],
             Op::NgramAdd(x) => vec![x.conv],
             _ => Vec::new(),
@@ -1192,7 +1192,7 @@ impl Dyn {
                     | Op::IdxMean { .. }
                     | Op::NgramRows(_)
                     | Op::NgramAdd(_)
-            ) || matches!(op, Op::Attn(a) if a.picked.is_some())
+            ) || matches!(op, Op::Attn(a) if a.picked)
         });
         let kqx = if qx { Some(crate::model_qwen4x::KernQx::load(&dev)?) } else { None };
         let picks = picked::PickRun::new(d, ch)?;
@@ -1599,8 +1599,8 @@ impl Dyn {
                 self.mark(name)
             }
             Op::Attn(ref a) => match a.picked {
-                Some(kv) => self.attn_picked(p, a, kv, n, pos.0),
-                None => self.attn(p, l, i, a, n, pos, head),
+                true => self.attn_picked(p, a, n, pos.0),
+                false => self.attn(p, l, i, a, n, pos, head),
             },
             Op::AddNorm { y, post, scalar, next } => {
                 let (nx, rows) = Self::next_linear(p, l, i, n, head);

@@ -55,7 +55,7 @@ pub enum IdxKeys {
     Ring(usize),
     /// A ring of the compressed entries' keys, an entry a row (`Ring::entries`: DeepSeek-V4's compressor's cache).
     Entries(usize),
-    /// A per-sequence state of the pools' keys, a pool a row (`Op::IdxMean`'s, the mean-pooled indexer's), scored in f32 (`IdxScore::F32`).
+    /// A ring of the pools' keys, a pool a row (`Ring::entries` of 4 tokens: `Op::IdxMean`'s, the mean-pooled indexer's), scored in f32 (`IdxScore::F32`).
     Pools(usize),
 }
 

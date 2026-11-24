@@ -52,7 +52,7 @@ fn attention(c: &ConfigMuse, l: usize, ring: usize) -> Op {
         gate: Some(GateAt { off: (nq + 2 * nk) * hd, step: hd, norm: true }),
         round: true,
         sbf16: false,
-        picked: None,
+        picked: false,
     })
 }
 

@@ -108,7 +108,7 @@ pub(crate) fn attention(nq: usize, nk: usize, rotary: usize, qk: (usize, usize),
         gate: Some(GateAt { off: 256, step: 512, norm: false }),
         round: false,
         sbf16: false,
-        picked: None,
+        picked: false,
     }
 }
 

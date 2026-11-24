@@ -389,7 +389,8 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
     {
         return err(format!("{what}: an embedding of {:?} and a head of {:?}: the kernels take four gated streams and their mixer", m.embed, m.head));
     }
-    let (mut mats, mut small, mut states, mut ropes) = (Vec::new(), Vec::<String>::new(), Vec::<usize>::new(), Vec::<Rope>::new());
+    let (mut mats, mut small, mut states, mut ropes, mut rings) =
+        (Vec::new(), Vec::<String>::new(), Vec::<usize>::new(), Vec::<Rope>::new(), Vec::<Ring>::new());
     let mut ops: Vec<Vec<Op>> = Vec::new();
     let mut layer: Vec<Op> = Vec::new();
     let (mut mix_w, mut attn_w, mut rank_w, mut ple_w, mut n_moe) = (0, 0, 0, 0, 0);
@@ -503,9 +504,10 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                             }
                         };
                         let qk = (name(&mut small, one(roles, "q_norm")?), name(&mut small, one(roles, "k_norm")?));
-                        let kvb = max_pos * a.kv_heads * a.head_dim * 2;
-                        let kv = [state(&mut states, kvb), state(&mut states, kvb)];
-                        let att = AttnOp::picked(a, Slot::Mix, kv, Some(table), Some(qk))?;
+                        // (its keys and values, the indexer's raw keys and its pools' keys: rings of the executor's pages, as every attention kind's; the pools an entry of 4 tokens a row)
+                        let ring = rings.len();
+                        rings.extend([Ring::kv(a.head_dim, a.kv_heads, 0), Ring::keys(128, 1, 0), Ring::entries(128, 4)]);
+                        let att = AttnOp::picked(a, Slot::Mix, ring, Some(table), Some(qk))?;
                         let stride = att.stride;
                         let qkv = mat(&mut mats, vec![one(roles, "q")?, one(roles, "k")?, one(roles, "v")?])?;
                         if mats[qkv].rows != stride {
@@ -514,7 +516,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                         let index = mat(&mut mats, vec![one(roles, "index_qk")?])?;
                         let o = mat(&mut mats, vec![one(roles, "o")?])?;
                         let (iqn, ikn) = (name(&mut small, one(roles, "index_q_norm")?), name(&mut small, one(roles, "index_k_norm")?));
-                        let (keys, pools) = (state(&mut states, max_pos * 128 * 2), state(&mut states, (max_pos / 4 + 1) * 128 * 2));
+                        let (keys, pools) = (ring + 1, ring + 2);
                         let pick = super::IdxPick {
                             heads: ix.heads,
                             ratio: ix.block,
@@ -604,7 +606,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
         mats,
         small,
         ropes,
-        rings: Vec::new(),
+        rings,
         first: Op::Streams,
         layers: ops,
         states,

@@ -341,12 +341,13 @@ extern "C" __global__ void qx_ngram_hist(const int* tok, int* hist, int n) {
 
 // ---- the QSA indexer and attention --------------------------------------------------------------------------------------------------------------------------------------------------------
 // The indexer's rows [n, (IH + 1) 128] (IH query heads, then the token's key): each query head normed (1 + wq) and turned (the rotary on its first 2 half dims, cos and sin bf16 [max_pos, half]) into iq [n, IH 128];
-// the key, raw, into the key cache ik [positions, 128] at the row's position. The norm rounded, the rotary's products and sum each rounded (the reference's bf16 ops). Block (row, head), 128 threads.
-extern "C" __global__ void qx_ix_prep(const bf16* qk, const bf16* wq, const bf16* cs, const bf16* sn, int half, const int* pos, bf16* iq, bf16* ik, int IH, float eps) {
+// the key, raw, into the key cache ik [positions, 128] at the row's position (through its block table ktab where it has one: kernels/mla.cu's ml_place). The norm rounded, the rotary's
+// products and sum each rounded (the reference's bf16 ops). Block (row, head), 128 threads.
+extern "C" __global__ void qx_ix_prep(const bf16* qk, const bf16* wq, const bf16* cs, const bf16* sn, int half, const int* pos, bf16* iq, bf16* ik, const int* ktab, int IH, float eps) {
     const int t = blockIdx.x, hh = blockIdx.y, i = threadIdx.x, p = pos[t];
     const bf16* x = qk + (size_t)t * (IH + 1) * 128 + hh * 128;
     if (hh == IH) {
-        ik[(size_t)p * 128 + i] = x[i];
+        ik[ml_place(ktab, p) * 128 + i] = x[i];
         return;
     }
     __shared__ float nrm[128];
@@ -364,11 +365,13 @@ extern "C" __global__ void qx_ix_prep(const bf16* qk, const bf16* wq, const bf16
 }
 
 // The keys of the blocks of 4 tokens that the call's rows (at pos[0] .. pos[n-1], consecutive) complete: pk[b] = rotary(bf16(norm(bf16(mean of ik[4b .. 4b+3])) (1 + wk)), position 4b), the mean in fp32. A block a
-// key block from pos[0] / 4 on (grid ceil(n / 4) + 1); one whose last token is past the call's last row is left to the call that completes it. 128 threads.
-extern "C" __global__ void qx_ix_cmp(const bf16* ik, const bf16* wk, const bf16* cs, const bf16* sn, int half, const int* pos, bf16* pk, int n, float eps) {
+// key block from pos[0] / 4 on (grid ceil(n / 4) + 1); one whose last token is past the call's last row is left to the call that completes it. ik's rows through ktab, pk's (a pool a row) through ptab, where
+// the sequence has block tables. 128 threads.
+extern "C" __global__ void qx_ix_cmp(const bf16* ik, const int* ktab, const bf16* wk, const bf16* cs, const bf16* sn, int half, const int* pos, bf16* pk, const int* ptab, int n, float eps) {
     const int b = pos[0] / 4 + blockIdx.x, i = threadIdx.x;
     if (4 * b + 3 > pos[n - 1]) return;
-    const float m = qx_r((((b2f(ik[(size_t)(4 * b) * 128 + i]) + b2f(ik[(size_t)(4 * b + 1) * 128 + i])) + b2f(ik[(size_t)(4 * b + 2) * 128 + i])) + b2f(ik[(size_t)(4 * b + 3) * 128 + i])) * 0.25f);
+    const auto k = [&](int p) { return b2f(ik[ml_place(ktab, p) * 128 + i]); };
+    const float m = qx_r((((k(4 * b) + k(4 * b + 1)) + k(4 * b + 2)) + k(4 * b + 3)) * 0.25f);
     const float s = rsqrtf(block_sum(m * m) / 128.f + eps);
     __shared__ float nrm[128];
     nrm[i] = qx_r(m * s * (1.f + b2f(wk[i])));
@@ -379,7 +382,7 @@ extern "C" __global__ void qx_ix_cmp(const bf16* ik, const bf16* wk, const bf16*
         const float c = b2f(cs[(size_t)p * half + k]), sv = b2f(sn[(size_t)p * half + k]);
         o = i < half ? qx_r(qx_r(nrm[i] * c) - qx_r(nrm[i + half] * sv)) : qx_r(qx_r(nrm[i] * c) + qx_r(nrm[i - half] * sv));
     }
-    pk[(size_t)b * 128 + i] = f2b(o);
+    pk[ml_place(ptab, b) * 128 + i] = f2b(o);
 }
 
 // conv_silu (qwen35.cu) for a prompt chunk with a thread a channel and QX_CT of the rows (grid (ceil(C / 256), ceil(n / QX_CT))), the same arithmetic for each output: conv_silu's single pass over the rows with a
@@ -1182,11 +1185,12 @@ extern "C" __global__ void __launch_bounds__(256) qx_attn_dec8(const bf16* q, in
 #define QX_KB 32   // tokens a tile of the attention over picked tokens
 #define QX_KS 129  // a key's row in shared memory: 128 words and one more
 
-// The attention of each row t of q [n, qs] (query head h at h * 256) over the tokens sel[t][0 .. cnt[t]) (the indexer's picks, ascending) of the cache kc, vc [positions, nk, 256], nq / nk query heads to a key-value
+// The attention of each row t of q [n, qs] (query head h at h * 256) over the tokens sel[t][0 .. cnt[t]) (the indexer's picks, ascending) of the cache kc, vc [positions, nk, 256] (a position's row through tab
+// where the sequence has a block table), nq / nk query heads to a key-value
 // head, as the attention kind's warp kernel computes it (fp32 scores and sums, the probabilities rounded to bf16 for the values; sl2 = 256^-0.5 log2(e)); then out = bf16(bf16(attention) sigmoid(gate)), the gate at gate[t gs + h 512 + 256 ..].
 // Grid (n, nk, S): with S > 1, block z takes the z-th part of the row's tokens and writes its unnormalized outputs, maximum and sum to part [(t nq + h) S + z][258] for attn_merge. A block the G query heads of a
 // key-value head (a warp each). Dynamic shared memory (QX_KB (QX_KS + 128) + 128 G) * 4 bytes.
-extern "C" __global__ void __launch_bounds__(512) qx_attn_sel(const bf16* q, int qs, const bf16* gate, int gs, const bf16* kc, const bf16* vc, const int* sel, const int* cnt, int tmax, bf16* out, int os, int nq, int nk,
+extern "C" __global__ void __launch_bounds__(512) qx_attn_sel(const bf16* q, int qs, const bf16* gate, int gs, const bf16* kc, const bf16* vc, const int* tab, const int* sel, const int* cnt, int tmax, bf16* out, int os, int nq, int nk,
                                                              float sl2, float* part, int S) {
     extern __shared__ uint32_t sm[];
     uint32_t* Ks = sm;
@@ -1208,7 +1212,7 @@ extern "C" __global__ void __launch_bounds__(512) qx_attn_sel(const bf16* q, int
             const bool isv = c >= QX_KB * 32;
             const int cc = isv ? c - QX_KB * 32 : c, j = cc >> 5, pp = cc & 31;
             uint4 v = make_uint4(0, 0, 0, 0);
-            if (k0 + j < j1) v = reinterpret_cast<const uint4*>((isv ? vc : kc) + ((size_t)tok[k0 + j] * nk + kvh) * 256)[pp];
+            if (k0 + j < j1) v = reinterpret_cast<const uint4*>((isv ? vc : kc) + (ml_place(tab, tok[k0 + j]) * nk + kvh) * 256)[pp];
             if (isv) {
                 *reinterpret_cast<uint4*>(Vs + j * 128 + pp * 4) = v;
             } else {
