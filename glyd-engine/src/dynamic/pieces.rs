@@ -11,7 +11,8 @@
 //! budget fills it to the chunk (`ModelStep::prompt_budget`), so the prompt and mixed steps of long prompts are of that size; a pass of any other size runs eager. A size captured
 //! in a request's step made that step and the prompts behind it wait (the A10's short x8 first token, 0.073 to 0.090 and 0.113 s on Qwen3-8B, with sizes captured the second
 //! time they were met), and a pass of a few hundred tokens of short prompts is rarely met twice. usercheck captures every size the first time (`Pieces::first`) to hold the
-//! replays to the eager passes. GLYD_ENGINE_PIECES=0 (a development build's) runs every pass eager, to compare.
+//! replays to the eager passes. Where cuBLAS takes a pass's products (`Dyn::pieces_take`) the pass runs eager. GLYD_ENGINE_PIECES=0 (a development build's) runs every
+//! pass eager, to compare; =1 takes pieces with cuBLAS too.
 
 use super::Op;
 use crate::dev::{Ev, Graph};
@@ -152,6 +153,15 @@ impl super::Dyn {
             && !crate::hb_usage::recording()
     }
 
+    /// Whether a pass of `n` rows runs in pieces where pieces are on: not where its products take cuBLAS (more than 64 rows, the decoded way, with cuBLAS found: the A10's
+    /// and A100's prompt passes). Measured on the A10 (gemma-4-12B at wren, 1k x8, full passes of 512 rows in pieces against eager): the GPU's time a pass 0.7% more
+    /// (208.4 against 207.0 ms, 212.7 against 211.1 with decode rows), the host's time to queue one 18 against 26 ms, which a pass of 200 ms of the GPU's does not
+    /// wait on. Whether cuBLAS takes its eager algorithm in a capture is not measured, so a replay's bits are not shown to be the eager pass's there (usercheck's random
+    /// models have passes of 64 rows at most, which never take cuBLAS). GLYD_ENGINE_PIECES=1 (a development build's) takes them anyway, to measure.
+    fn pieces_take(&self, n: usize) -> bool {
+        takes(self.blas.is_some(), n, crate::tune!("GLYD_ENGINE_PIECES").is_some_and(|v| v == "1"))
+    }
+
     /// usercheck's switches, the sets kept dropped: every pass eager (`off`), or in pieces captured the first time a size is met (`first`). Whether passes may run in pieces
     /// at all here (`pieces_on` with the switches set so).
     #[cfg(feature = "dev")]
@@ -167,7 +177,7 @@ impl super::Dyn {
     /// pieces' operations alone over zeroed rows (no preparation, no attention or recurrent operation, no head: no cache, state or sequence touched), which makes every buffer
     /// their kernels take. A capture that fails leaves every pass eager.
     pub(super) fn capture_pieces(&mut self) -> crate::ffi::Result<()> {
-        if !self.pieces_on() || self.pieces.sets.iter().any(|s| s.rows == self.chunk) {
+        if !self.pieces_on() || !self.pieces_take(self.chunk) || self.pieces.sets.iter().any(|s| s.rows == self.chunk) {
             return Ok(());
         }
         let n = self.chunk;
@@ -205,7 +215,7 @@ impl super::Dyn {
     /// A pass of the big model on its `n` rows (the embedding queued), which no whole graph takes: its pieces' replay where its size's set was captured (`Pieces::meet`;
     /// in a check, captured first where none is); else eager.
     pub(super) unsafe fn pieces_pass(&mut self, n: usize, pos: (u64, u64), head: usize) -> crate::ffi::Result<()> {
-        if !self.pieces_on() {
+        if !self.pieces_on() || !self.pieces_take(n) {
             return self.forward(&self.big, n, pos, head);
         }
         let i = match self.pieces.meet(n) {
@@ -331,6 +341,11 @@ impl super::Dyn {
     }
 }
 
+/// `Dyn::pieces_take`: a pass of `n` rows in pieces unless cuBLAS is found and it has more than 64 rows (`Dyn::decoded_way`'s products), or where `forced`.
+fn takes(blas: bool, n: usize, forced: bool) -> bool {
+    !blas || n <= 64 || forced
+}
+
 /// A replayed pass's events in the order the stream recorded them: the eager ones (`evs`), and before the eager event at `at` of each `(at, k)` of `put`, piece k's (`piece`).
 pub(super) fn splice<'a, T>(
     evs: &'a [(&'static str, T)],
@@ -412,6 +427,13 @@ mod tests {
         p.clear();
         p.first = false;
         assert_eq!(p.meet(512), Meet::Eager);
+    }
+
+    /// A pass whose products take cuBLAS (more than 64 rows, cuBLAS found) runs eager unless forced; one of 64 rows or fewer, or with no cuBLAS, in pieces.
+    #[test]
+    fn passes_whose_products_take_cublas_run_eager() {
+        assert!(!takes(true, 512, false) && !takes(true, 65, false));
+        assert!(takes(true, 64, false) && takes(false, 512, false) && takes(true, 512, true));
     }
 
     /// The pieces' events go before the eager event recorded after their launch: eager e0, piece 0's (a, b), eager e1, e2, piece 1's (c), and a piece after the last eager one.

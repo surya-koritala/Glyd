@@ -252,8 +252,8 @@ no whole graph) runs in pieces (`dynamic/pieces.rs`): the runs of row-wise opera
 graphs, the rest eager between them. Pieces are captured for a pass's exact row count, not a padded bucket, because a product's kernel
 (the library's route, cuBLAS's algorithm) turns on its rows: a replay is the eager pass bit for bit. The one size captured is a full
 pass's (the chunk's rows: the prompt budget fills a mixed step to it), when the scheduler's step is made, as the decode graphs are; a pass
-of another size runs eager. Captured in a request's step (the second time a size was met), they made the A10's short x8 first token worse
-(Qwen3-8B 0.073 to 0.090 and 0.113 s).
+of another size runs eager, and so does a pass whose products take cuBLAS (on the A10, full gemma-4-12B passes in pieces took 0.7% more
+GPU time than eager, and whether cuBLAS keeps its eager algorithm in a capture is not measured).
 
 ## 3. The layer-kind interface
 
