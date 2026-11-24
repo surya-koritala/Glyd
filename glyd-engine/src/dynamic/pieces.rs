@@ -9,8 +9,7 @@
 //!
 //! The one size captured is a full pass's, the chunk's rows (`Dyn::capture_pieces`), when the scheduler's step is made, as vLLM captures its graphs at start: a step's prompt
 //! budget fills it to the chunk (`ModelStep::prompt_budget`), so the prompt and mixed steps of long prompts are of that size; a pass of any other size runs eager. A size captured
-//! in a request's step made that step and the prompts behind it wait (the A10's short x8 first token, 0.073 to 0.090 and 0.113 s on Qwen3-8B, with sizes captured the second
-//! time they were met), and a pass of a few hundred tokens of short prompts is rarely met twice. usercheck captures every size the first time (`Pieces::first`) to hold the
+//! in a request's step made that step and the prompts behind it wait, and a pass of a few hundred tokens of short prompts is rarely met twice. usercheck captures every size the first time (`Pieces::first`) to hold the
 //! replays to the eager passes. Where cuBLAS takes a pass's products (`Dyn::pieces_take`) the pass runs eager. GLYD_ENGINE_PIECES=0 (a development build's) runs every
 //! pass eager, to compare; =1 takes pieces with cuBLAS too.
 
