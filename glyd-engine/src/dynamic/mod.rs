@@ -963,6 +963,21 @@ fn state_type(d: &ModelDesc) -> &'static str {
     }
 }
 
+/// The slots a cut between two layers hands the next layer: the ones its first operation reads before any operation writes them, with their widths. A layer
+/// that begins with the depth mix (`Op::DepthMix`) reads the residual X and the completed blocks Blk; one whose residual add waits for the next layer (the
+/// description's `final_norm` adds that slot on the last rows; each layer's first operation is `Op::NormAdd` of it) reads X and that slot; another hands X, H,
+/// D, O and S where the model has them (what a layer may read first: its own first operation reads one of them).
+fn handed_over(d: &ModelDesc) -> Vec<(Slot, usize)> {
+    let slots: Vec<Slot> = if d.layers.iter().flatten().any(|op| matches!(op, Op::DepthMix(_))) {
+        vec![Slot::X, Slot::Blk]
+    } else if let Some((_, y, _)) = d.final_norm {
+        vec![Slot::X, y]
+    } else {
+        vec![Slot::X, Slot::H, Slot::D, Slot::O, Slot::S]
+    };
+    slots.into_iter().map(|s| (s, d.widths[s as usize])).filter(|&(_, w)| w > 0).collect()
+}
+
 /// The most rows a verify pass takes (`Dyn::verify_rows`): a product of up to 8 rows runs the kernel a one-row step's does (the library's one m-tile product; the
 /// tiered layout's step kernel to 8 rows), so each row's sums are a step's. Checked bit for bit on swift only; the range worker refuses verify on other levels.
 pub const VERIFY_ROWS: usize = 8;
@@ -2091,21 +2106,9 @@ impl Dyn {
         Ok(Sample { token: token as u32, logit, logprob: None })
     }
 
-    /// The slots a stage hands the next (the residual and what the next layer's first operation reads: H, D or O), in this order where the model has them.
-    const IO_SLOTS: [Slot; 5] = [Slot::X, Slot::H, Slot::D, Slot::O, Slot::S];
-
-    /// What a cut between two layers carries (docs/range-worker.md): the slots the next layer reads before it writes them, in this order, each `[rows, width]` bf16, one after the other. Qwen3.5's
-    /// layers end with the MLP's down product into D and begin by adding it to the residual X (NormAdd; the final norm adds it the same way): the pair X, D, and nothing else is live. The other
-    /// families' stages hand over IO_SLOTS, as the split across GPUs has (its proofs are on it).
+    /// What a cut between two layers carries (docs/range-worker.md): `handed_over` of the description, each `[rows, width]` bf16, one after the other.
     pub fn boundary(&self) -> Vec<(Slot, usize)> {
-        let d = &self.big.d;
-        // (Kimi-K3's layers begin with the depth mix of the completed blocks and the partial sum: those two, nothing else, are live)
-        let slots: &[Slot] = match d.family {
-            "Qwen3.5" => &[Slot::X, Slot::D],
-            "Kimi-K3" => &[Slot::X, Slot::Blk],
-            _ => &Self::IO_SLOTS,
-        };
-        slots.iter().map(|&s| (s, d.widths[s as usize])).filter(|&(_, w)| w > 0).collect()
+        handed_over(&self.big.d)
     }
 
     fn io_words(&self, n: usize) -> usize {

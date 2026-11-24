@@ -1800,9 +1800,10 @@ mod tests {
 
     /// Each family's executor description: the random models' of the logits checks, the fixtures' configs (Nemotron-H), a Llama-style config, Gemma 4's draft.
     #[cfg(feature = "dev")]
-    fn every_family() -> Vec<ModelDesc> {
+    fn every_family(tag: &str) -> Vec<ModelDesc> {
         use super::super::{deepseek_v4, gemma4, glm, kimi, muse, nemotron, qwen35, qwen4x, Stage};
-        let dir = |x: &str| std::env::temp_dir().join(format!("glyd-by-op-{x}-{}", std::process::id()));
+        // (a directory of each caller's own: the tests run at once)
+        let dir = |x: &str| std::env::temp_dir().join(format!("glyd-by-op-{tag}-{x}-{}", std::process::id()));
         let mut v = Vec::new();
         let d = dir("q35");
         crate::logits::qwen35_random(&d).unwrap();
@@ -1853,7 +1854,7 @@ mod tests {
     #[test]
     fn decisions_by_operation_give_the_family_lists_answers() {
         use super::super::{dense::FAMILY as DENSE, qwen4x::FAMILY as QX, rows, state_type, unverifiable_op};
-        let all = every_family();
+        let all = every_family("decide");
         let families: std::collections::BTreeSet<&str> = all.iter().map(|d| d.family).collect();
         assert_eq!(families.len(), 10, "{families:?}");
         for d in &all {
@@ -1872,5 +1873,35 @@ mod tests {
             }
         }
         assert_eq!(all.iter().find(|d| d.family == "Gemma 4 draft").and_then(rows::one_sequence_op).map(rows::op_name).as_deref(), Some("DraftIn"));
+    }
+
+    /// A cut between layers hands over what each family's stages handed by name (Qwen3.5 X and D, Kimi-K3 X and Blk, the rest X, H, D, O and S where they are),
+    /// but where named: Nemotron-H and the Llama-style dense models, whose layers begin by adding the last one's output (O, D) to X, now hand X and that alone
+    /// (H, which that add writes, no more). Every layer after the first begins with an operation that reads those slots.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_cut_hands_over_what_the_next_layer_reads_first() {
+        use super::super::{dense::FAMILY as DENSE, handed_over, Slot::*};
+        for d in every_family("cut") {
+            let named: &[Slot] = match d.family {
+                "Qwen3.5" => &[X, D],
+                "Kimi-K3" => &[X, Blk],
+                _ => &[X, H, D, O, S],
+            };
+            let want: Vec<Slot> = match d.family {
+                "Nemotron-H" => vec![X, O],
+                DENSE => vec![X, D],
+                _ => named.iter().copied().filter(|&s| d.widths[s as usize] > 0).collect(),
+            };
+            let got: Vec<Slot> = handed_over(&d).into_iter().map(|x| x.0).collect();
+            assert_eq!(got, want, "{}", d.family);
+            for (l, ops) in d.layers.iter().enumerate().skip(1).filter(|(_, o)| !o.is_empty()) {
+                match ops[0] {
+                    Op::NormAdd { y, .. } => assert_eq!(got, [X, y], "{} layer {l}", d.family),
+                    Op::DepthMix(_) => assert_eq!(got, [X, Blk], "{} layer {l}", d.family),
+                    ref op => assert_eq!(got.len(), named.iter().filter(|&&s| d.widths[s as usize] > 0).count(), "{} layer {l} begins with {op:?}", d.family),
+                }
+            }
+        }
     }
 }
