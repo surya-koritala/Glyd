@@ -43,7 +43,7 @@
 //!                                                             that differ, the largest difference, the KL; and that what the other sequence holds changes nothing (src/logits.rs)
 //!   glyd-engine keepcheck CASE                                a finished sequence kept in its slot and gone on with (a conversation's next turn): against a sequence that ran the same tokens without ending, bit for bit
 //!   glyd-engine twomodels [A B]                               two cases' random models in this process, each with a scheduler and a runtime context of its own: each reply beside the other model against alone
-//!   glyd-engine foldcheck                                 R17: the host side the engine folded from the GPU library (ways, the GPU's class, KV sizes) against the library's own
+//!   glyd-engine foldcheck                                 R17: what the engine folded from the GPU library (ways, the GPU's class, KV sizes; the unpacking and the experts' plan by its own kernels) against the library's own
 //!   glyd-engine bufcheck                                  a buffer belongs to its context: one of a second context on GPU 0 written, read, zeroed and freed while the first is current
 //!   glyd-engine bandwidth [--gib N]                           the GPU's streaming read bandwidth
 //!   glyd-engine rangecheck MODEL[:level] [--prompt 1024] [--new 256] [--cut L | --cuts A,B] [--ctx N] [--chunk N] [--workers [--sessions 2]]   a Qwen3.5 model whole, then as stages of layers chained in this process and (--workers) as worker processes

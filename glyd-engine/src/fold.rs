@@ -490,7 +490,8 @@ pub unsafe fn moe_way(ids: u64, pairs: i64, experts: i64, plan: u64, cs: Stream)
 
 /// `foldcheck` (R17): each folded piece against the library's on this GPU, the library the oracle: the GPU's code; the way of every GPU code the
 /// library knows (with and without SPLIT), both layouts, matrices of every kind of K and size, at token counts on each side of every threshold;
-/// the KV cache's sizes and decode workspace over valid and refused shapes. Every answer the same, refusals included.
+/// the KV cache's sizes and decode workspace over valid and refused shapes; the experts' plan and the unpacking of every layout by the engine's own
+/// kernels (`route_check`, `unpack_check`). Every answer the same, refusals included.
 #[cfg(feature = "dev")]
 pub fn check() -> Result<()> {
     use crate::gpu_ops::GpuOps;
