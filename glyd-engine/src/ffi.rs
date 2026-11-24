@@ -1004,6 +1004,109 @@ impl Lib {
         self.ck(call!("kv_decode_bf16"), r)
     }
 
+    /// `GpuOps::kv_prefill` by the library's own kernel: the oracle of the engine's (`fold`).
+    ///
+    /// # Safety
+    /// As `GpuOps::kv_prefill`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn library_kv_prefill(
+        &self,
+        g: &KvGeom,
+        group: i64,
+        pool: u64,
+        kbase: u64,
+        vbase: u64,
+        block_table: u64,
+        q: u64,
+        q_stride: i64,
+        rows: Option<(u64, i64, u64, i64)>,
+        n: i64,
+        start: i64,
+        window: i64,
+        scale: f64,
+        round: bool,
+        softcap: f64,
+        sinks: u64,
+        out: u64,
+        out_stride: i64,
+        cs: Stream,
+    ) -> Result<()> {
+        let (key, key_stride, value, value_stride) = rows.unwrap_or((0, 0, 0, 0));
+        let r = (self.api.glyd_gpu_kv_prefill)(
+            q as *const u16,
+            q_stride,
+            key as *const u16,
+            key_stride,
+            value as *const u16,
+            value_stride,
+            n,
+            start,
+            window,
+            pool as *const u8,
+            g.page_stride,
+            kbase as *const u8,
+            vbase as *const u8,
+            block_table as *const i32,
+            g.heads,
+            group,
+            g.dim,
+            g.arena,
+            g.escape as *const u8,
+            g.nchunks,
+            g.raw as *const u8,
+            g.nslabs,
+            scale,
+            round as i64,
+            softcap,
+            sinks as *const f32,
+            out as *mut u16,
+            out_stride,
+            cs,
+        );
+        self.ck(call!("kv_prefill"), r)
+    }
+
+    /// `GpuOps::kv_prefill_bf16` by the library's own kernel: the oracle of the engine's (`fold`).
+    ///
+    /// # Safety
+    /// As `GpuOps::kv_prefill_bf16`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn library_kv_prefill_bf16(
+        &self,
+        q: u64,
+        q_stride: i64,
+        (kc, vc, block_table, cap): (u64, u64, u64, i64),
+        (n, start, window): (i64, i64, i64),
+        (h, g, d): (i64, i64, i64),
+        (scale, round, softcap): (f64, bool, f64),
+        out: u64,
+        out_stride: i64,
+        cs: Stream,
+    ) -> Result<()> {
+        let r = (self.api.glyd_gpu_kv_prefill_bf16)(
+            q as *const u16,
+            q_stride,
+            kc as *const u16,
+            vc as *const u16,
+            block_table as *const i32,
+            cap,
+            n,
+            start,
+            window,
+            h,
+            g,
+            d,
+            scale,
+            round as i64,
+            softcap,
+            std::ptr::null(),
+            out as *mut u16,
+            out_stride,
+            cs,
+        );
+        self.ck(call!("kv_prefill_bf16"), r)
+    }
+
     /// `GpuOps::moe_way` by the library's own kernels (glyd_gpu_moe_way): the oracle of the engine's (`fold::moe_way`).
     ///
     /// # Safety
@@ -1600,39 +1703,34 @@ impl GpuOps for Lib {
         out_stride: i64,
         cs: Stream,
     ) -> Result<()> {
-        let (key, key_stride, value, value_stride) = rows.unwrap_or((0, 0, 0, 0));
-        let r = (self.api.glyd_gpu_kv_prefill)(
-            q as *const u16,
+        // (the engine's own kernel, from the library's source: R17's `fold`)
+        let pages = (pool, kbase, vbase, block_table);
+        if crate::fold::on()
+            && crate::fold::kv_prefill(g, group, pages, (q, q_stride), rows, (n, start, window), (scale, round, softcap, sinks), (out, out_stride), cs)?
+        {
+            return Ok(());
+        }
+        self.library_kv_prefill(
+            g,
+            group,
+            pool,
+            kbase,
+            vbase,
+            block_table,
+            q,
             q_stride,
-            key as *const u16,
-            key_stride,
-            value as *const u16,
-            value_stride,
+            rows,
             n,
             start,
             window,
-            pool as *const u8,
-            g.page_stride,
-            kbase as *const u8,
-            vbase as *const u8,
-            block_table as *const i32,
-            g.heads,
-            group,
-            g.dim,
-            g.arena,
-            g.escape as *const u8,
-            g.nchunks,
-            g.raw as *const u8,
-            g.nslabs,
             scale,
-            round as i64,
+            round,
             softcap,
-            sinks as *const f32,
-            out as *mut u16,
+            sinks,
+            out,
             out_stride,
             cs,
-        );
-        self.ck(call!("kv_prefill"), r)
+        )
     }
 
     unsafe fn kv_decode_bf16(
@@ -1659,36 +1757,19 @@ impl GpuOps for Lib {
         &self,
         q: u64,
         q_stride: i64,
-        (kc, vc, block_table, cap): (u64, u64, u64, i64),
-        (n, start, window): (i64, i64, i64),
-        (h, g, d): (i64, i64, i64),
-        (scale, round, softcap): (f64, bool, f64),
+        cache: (u64, u64, u64, i64),
+        rows: (i64, i64, i64),
+        heads: (i64, i64, i64),
+        scores: (f64, bool, f64),
         out: u64,
         out_stride: i64,
         cs: Stream,
     ) -> Result<()> {
-        let r = (self.api.glyd_gpu_kv_prefill_bf16)(
-            q as *const u16,
-            q_stride,
-            kc as *const u16,
-            vc as *const u16,
-            block_table as *const i32,
-            cap,
-            n,
-            start,
-            window,
-            h,
-            g,
-            d,
-            scale,
-            round as i64,
-            softcap,
-            std::ptr::null(),
-            out as *mut u16,
-            out_stride,
-            cs,
-        );
-        self.ck(call!("kv_prefill_bf16"), r)
+        // (the engine's own kernel, from the library's source: R17's `fold`)
+        if crate::fold::on() && crate::fold::kv_prefill_bf16((q, q_stride), cache, rows, heads, scores, (out, out_stride), cs)? {
+            return Ok(());
+        }
+        self.library_kv_prefill_bf16(q, q_stride, cache, rows, heads, scores, out, out_stride, cs)
     }
 }
 

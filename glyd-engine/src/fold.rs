@@ -1006,6 +1006,252 @@ unsafe fn kv_attn(p: KvAttnParams, b: i64, d: i64, splits: i64, cs: Stream) -> R
     }
 }
 
+/// kvc::PrefillParams (gpu/glyd_gpu_kernels.h), field for field: the prompt attention's parameters.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct KvPrefillParams {
+    pub q: u64,
+    pub q_stride: i64,
+    pub key: u64,
+    pub key_stride: i64,
+    pub value: u64,
+    pub value_stride: i64,
+    pub pool: u64,
+    pub page_stride: i64,
+    pub kbase: u64,
+    pub vbase: u64,
+    pub bt: u64,
+    pub ent: u64,
+    pub nc: i32,
+    pub raw: KvRawPool,
+    pub sinks: u64,
+    pub out: u64,
+    pub out_stride: i64,
+    pub kc: u64,
+    pub vc: u64,
+    pub cap: i32,
+    pub n: i32,
+    pub start: i32,
+    pub window: i32,
+    pub g: i32,
+    pub a: i32,
+    pub hdrb: i32,
+    pub hp: i32,
+    pub round: i32,
+    pub sl2: f32,
+    pub icap: f32,
+    pub capl2: f32,
+}
+
+/// The rows and scores' arguments both prompt attentions share, as the library checks them; false where it refuses them.
+fn kv_rows_ok(h: i64, g: i64, n: i64, start: i64, window: i64, scale: f64, softcap: f64) -> bool {
+    n >= 0
+        && start >= 0
+        && window >= 0
+        && start + n <= i32::MAX as i64
+        && g >= 1
+        && h * g <= 65535
+        && softcap >= 0.0
+        && scale.is_finite()
+        && softcap.is_finite()
+}
+
+/// The scores' three numbers of PrefillParams: scale log2 e, scale / softcap (0: none), softcap log2 e.
+fn kv_scores(scale: f64, softcap: f64) -> (f32, f32, f32) {
+    let l2 = std::f64::consts::LOG2_E;
+    ((scale * l2) as f32, if softcap > 0.0 { (scale / softcap) as f32 } else { 0.0 }, (softcap * l2) as f32)
+}
+
+/// glyd_gpu_kv_prefill's and _prefill_bf16's launch: rows of 16 by the CTA's groups (4 for heads of 128 and 256, 2 for 512), a CTA a query head, the shared
+/// memory kvc::pf_shared takes (allowed first where past 48 KiB; refused as the library refuses where the GPU has not that much: CUDA_ERROR_NOT_SUPPORTED).
+unsafe fn kv_prefill_launch(p: KvPrefillParams, hg: i64, hv: i64, cs: Stream) -> Result<()> {
+    use crate::dev::here;
+    use crate::kt;
+    use crate::launch;
+    const PKT: i64 = 32;
+    const PSP: i64 = 33;
+    let groups = if hv == 4 { 2 } else { 4 };
+    let shared = (2 * PKT * (KV_D * hv + 8) * 2 + if hv > 1 { groups * hv * 16 * PSP * 4 } else { 0 }) as u32;
+    let (g, b) = ([((p.n as i64 + 16 * groups - 1) / (16 * groups)) as u32, hg as u32, 1], [(32 * groups * hv) as u32, 1, 1]);
+    let allow = |k: &crate::dev::Kernel| {
+        if shared > 48 * 1024 && k.allow_smem(shared).is_err() {
+            return Err(Error::of(Kind::of_status(801), "kv_prefill: operation not supported (801)"));
+        }
+        Ok(())
+    };
+    match hv {
+        1 => {
+            let k = here::<kt::fold_kv_prefill_1>()?;
+            allow(&k)?;
+            launch!(k, g, b, smem shared, cs; p)
+        }
+        2 => {
+            let k = here::<kt::fold_kv_prefill_2>()?;
+            allow(&k)?;
+            launch!(k, g, b, smem shared, cs; p)
+        }
+        _ => {
+            let k = here::<kt::fold_kv_prefill_4>()?;
+            allow(&k)?;
+            launch!(k, g, b, smem shared, cs; p)
+        }
+    }
+}
+
+/// A prompt chunk's attention over 12-bit pages by the engine's kernel (glyd_gpu_kv_prefill), its parameters as the library builds them; false where the
+/// library takes the call (arguments it refuses, with its own words).
+///
+/// # Safety
+/// As `GpuOps::kv_prefill`; a context with the engine's module is current.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn kv_prefill(
+    g: &crate::ffi::KvGeom,
+    group: i64,
+    (pool, kbase, vbase, block_table): (u64, u64, u64, u64),
+    (q, q_stride): (u64, i64),
+    rows: Option<(u64, i64, u64, i64)>,
+    (n, start, window): (i64, i64, i64),
+    (scale, round, softcap, sinks): (f64, bool, f64, u64),
+    (out, out_stride): (u64, i64),
+    cs: Stream,
+) -> Result<bool> {
+    let (h, d, a) = (g.heads, g.dim, g.arena);
+    let (key, key_stride, value, value_stride) = rows.unwrap_or((0, 0, 0, 0));
+    let esc_ok = (0..=1 << 30).contains(&g.nchunks) && (g.nchunks == 0 || (g.escape != 0 && g.escape % 16 == 0));
+    let raw_ok = (0..=1 << 30).contains(&g.nslabs) && (g.nslabs == 0 || (g.raw != 0 && g.raw % 16 == 0));
+    let Ok(page) = kv_page_bytes(h, d, a) else { return Ok(false) };
+    if cfg!(glyd_hip)
+        || d & KV_ONE != 0
+        || g.page_stride < page
+        || g.page_stride % 16 != 0
+        || pool % 16 != 0
+        || !esc_ok
+        || !raw_ok
+        || !kv_rows_ok(h, group, n, start, window, scale, softcap)
+    {
+        return Ok(false);
+    }
+    if n == 0 {
+        return Ok(true);
+    }
+    let w = h * group * d;
+    let refused = q == 0
+        || out == 0
+        || kbase == 0
+        || vbase == 0
+        || (start > 0 && block_table == 0)
+        || (key == 0 && block_table == 0)
+        || q_stride < w
+        || out_stride < w
+        || q_stride % 2 != 0
+        || out_stride % 2 != 0
+        || q % 4 != 0
+        || out % 4 != 0
+        || (key != 0
+            && (value == 0 || key_stride < h * d || value_stride < h * d || key_stride % 8 != 0 || value_stride % 8 != 0 || key % 16 != 0 || value % 16 != 0));
+    if refused {
+        return Ok(false);
+    }
+    let hp = h * (d / KV_D);
+    let (ent, nc) = kv_escape(g.escape, g.nchunks);
+    let (sl2, icap, capl2) = kv_scores(scale, softcap);
+    let p = KvPrefillParams {
+        q,
+        q_stride,
+        key,
+        key_stride,
+        value,
+        value_stride,
+        pool,
+        page_stride: g.page_stride,
+        kbase,
+        vbase,
+        bt: block_table,
+        ent,
+        nc,
+        raw: kv_raw(g.raw, g.nslabs, hp),
+        sinks,
+        out,
+        out_stride,
+        n: n as i32,
+        start: start as i32,
+        window: window.min(i32::MAX as i64) as i32,
+        g: group as i32,
+        a: a as i32,
+        hdrb: ((16 * hp + 4 * (1 + KV_ND + a) + 127) & !127) as i32,
+        hp: hp as i32,
+        round: round as i32,
+        sl2,
+        icap,
+        capl2,
+        ..KvPrefillParams::default()
+    };
+    kv_prefill_launch(p, h * group, d / KV_D, cs)?;
+    Ok(true)
+}
+
+/// `kv_prefill` over a bf16 cache (glyd_gpu_kv_prefill_bf16; no sinks, as the engine calls it).
+///
+/// # Safety
+/// As `GpuOps::kv_prefill_bf16`; a context with the engine's module is current.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn kv_prefill_bf16(
+    (q, q_stride): (u64, i64),
+    (kc, vc, block_table, cap): (u64, u64, u64, i64),
+    (n, start, window): (i64, i64, i64),
+    (h, group, d): (i64, i64, i64),
+    (scale, round, softcap): (f64, bool, f64),
+    (out, out_stride): (u64, i64),
+    cs: Stream,
+) -> Result<bool> {
+    if cfg!(glyd_hip) || d % KV_D != 0 || d < KV_D || d > 4 * KV_D || d == 3 * KV_D || h < 1 || !kv_rows_ok(h, group, n, start, window, scale, softcap) {
+        return Ok(false);
+    }
+    if n == 0 {
+        return Ok(true);
+    }
+    let w = h * group * d;
+    let refused = q == 0
+        || out == 0
+        || kc == 0
+        || vc == 0
+        || (block_table == 0 && !(1..=i32::MAX as i64).contains(&cap))
+        || q_stride < w
+        || out_stride < w
+        || q_stride % 2 != 0
+        || out_stride % 2 != 0
+        || q % 4 != 0
+        || out % 4 != 0
+        || kc % 16 != 0
+        || vc % 16 != 0;
+    if refused {
+        return Ok(false);
+    }
+    let (sl2, icap, capl2) = kv_scores(scale, softcap);
+    let p = KvPrefillParams {
+        q,
+        q_stride,
+        bt: block_table,
+        out,
+        out_stride,
+        kc,
+        vc,
+        cap: cap.min(i32::MAX as i64) as i32,
+        n: n as i32,
+        start: start as i32,
+        window: window.min(i32::MAX as i64) as i32,
+        g: group as i32,
+        hp: (h * (d / KV_D)) as i32,
+        round: round as i32,
+        sl2,
+        icap,
+        capl2,
+        ..KvPrefillParams::default()
+    };
+    kv_prefill_launch(p, h * group, d / KV_D, cs)?;
+    Ok(true)
+}
+
 /// `foldcheck` (R17): each folded piece against the library's on this GPU, the library the oracle: the GPU's code; the way of every GPU code the
 /// library knows (with and without SPLIT), both layouts, matrices of every kind of K and size, at token counts on each side of every threshold;
 /// the KV cache's sizes and decode workspace over valid and refused shapes; the experts' plan and the unpacking of every layout by the engine's own
@@ -1121,7 +1367,7 @@ pub fn check() -> Result<()> {
     let (n, bad) = route_check(&dev, &lib)?;
     say("the experts' plan (moe_way), the engine's kernels against the library's (one warp and one block, ids out of range among them)", n, bad);
     let (n, bad) = kv_check(&dev, &lib)?;
-    say("the decode attention over 12-bit pages and a bf16 cache, the engine's kernel against the library's, and its plan", n, bad);
+    say("the decode and prompt attention over 12-bit pages and a bf16 cache, the engine's kernels against the library's, and the decode's plan", n, bad);
     let (n, bad) = linear_check(&dev, &lib)?;
     say("the step product (route GEMM, 1 to 64 tokens), the engine's kernels against the library's, and its workspace", n, bad);
     let (n, bad) = unpack_check(&dev, &lib)?;
@@ -1478,6 +1724,76 @@ fn kv_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<
                 }
             }
         }
+        // a prompt chunk's attention: rows from `start`, over the pages written (and over the bf16 cache), a window, bf16 scores, a soft cap
+        let table: Vec<i32> = (0..blocks as i32).collect();
+        let bt = Buf::new(4 * blocks)?;
+        bt.write(0, &table)?;
+        for (start, rows, window, round, softcap) in
+            [(0i64, tokens as i64, 0i64, false, 0.0), (64, 40, 0, true, 0.0), (80, tokens as i64 - 80, 48, false, 30.0)]
+        {
+            let w = (h * g * d) as i64;
+            let q: Vec<u16> = (0..rows as usize * h * g * d).map(|_| (((next() % 2000) as f32 - 1000.0) / 5000.0).to_bits().wrapping_shr(16) as u16).collect();
+            let qb = Buf::new(2 * q.len())?;
+            qb.write(0, &q)?;
+            for bf16 in [false, true] {
+                let (oa, ob) = (Buf::new(2 * q.len())?, Buf::new(2 * q.len())?);
+                oa.fill_async(0xA5, dev.stream)?;
+                ob.fill_async(0x5A, dev.stream)?;
+                let (sc, scores) = ((0.0883883, round, softcap, 0u64), (0.0883883, round, softcap));
+                // SAFETY: the pages (or the cache), the table, queries and outputs [rows][h g d], live; one stream.
+                let (ra, rb) = unsafe {
+                    if bf16 {
+                        let cache = (kc.ptr, vc.ptr, bt.ptr, 0);
+                        let heads = (h as i64, g as i64, d as i64);
+                        let ra = lib.library_kv_prefill_bf16(qb.ptr, w, cache, (rows, start, window), heads, scores, oa.ptr, w, dev.stream);
+                        (ra, kv_prefill_bf16((qb.ptr, w), cache, (rows, start, window), heads, scores, (ob.ptr, w), dev.stream))
+                    } else {
+                        let ra = lib.library_kv_prefill(
+                            &geom, g as i64, pool.ptr, kb.ptr, vb.ptr, bt.ptr, qb.ptr, w, None, rows, start, window, 0.0883883, round, softcap, 0, oa.ptr, w,
+                            dev.stream,
+                        );
+                        (
+                            ra,
+                            kv_prefill(
+                                &geom,
+                                g as i64,
+                                (pool.ptr, kb.ptr, vb.ptr, bt.ptr),
+                                (qb.ptr, w),
+                                None,
+                                (rows, start, window),
+                                sc,
+                                (ob.ptr, w),
+                                dev.stream,
+                            ),
+                        )
+                    }
+                };
+                dev.sync()?;
+                n += 1;
+                let what = format!(
+                    "{h} x {d}, {g} queries a head: a prompt's {rows} rows from {start} (window {window}, bf16 scores {round}, soft cap {softcap}){}",
+                    if bf16 { ", a bf16 cache" } else { "" }
+                );
+                match (&ra, &rb) {
+                    (Err(e), _) | (_, Err(e)) => {
+                        bad.push(format!("{what}: {e}"));
+                        continue;
+                    }
+                    (_, Ok(false)) => {
+                        bad.push(format!("{what}: the engine's kernel did not take it"));
+                        continue;
+                    }
+                    _ => {}
+                }
+                let (mut va, mut vb2) = (vec![0u16; q.len()], vec![0u16; q.len()]);
+                oa.read(0, &mut va)?;
+                ob.read(0, &mut vb2)?;
+                let differ = va.iter().zip(&vb2).filter(|(x, y)| x != y).count();
+                if differ > 0 {
+                    bad.push(format!("{what}: {differ} of {} bf16 differ", va.len()));
+                }
+            }
+        }
     }
     Ok((n, bad))
 }
@@ -1715,6 +2031,15 @@ mod tests {
             offset_of!(KvAttnParams, cap),
         ];
         assert_eq!(at, [80, 88, 128, 144, 176, 184, 216, 224, 240]);
+        assert_eq!(size_of::<KvPrefillParams>(), 232);
+        let pf = [
+            offset_of!(KvPrefillParams, nc),
+            offset_of!(KvPrefillParams, raw),
+            offset_of!(KvPrefillParams, sinks),
+            offset_of!(KvPrefillParams, cap),
+            offset_of!(KvPrefillParams, capl2),
+        ];
+        assert_eq!(pf, [96, 104, 144, 184, 228]);
     }
 
     #[test]

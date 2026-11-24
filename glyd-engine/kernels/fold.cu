@@ -145,3 +145,12 @@ FOLD_KV_ATTN(bf16_1, false, 1, true)
 FOLD_KV_ATTN(bf16_2, false, 2, true)
 FOLD_KV_ATTN(bf16_4, false, 4, true)
 FOLD_KV_ATTN(pipe_1, true, 1, false)
+
+// glyd_gpu_kv_prefill and _prefill_bf16: kvc::prefill_body for heads of 128 and 256 (4 groups of 16 rows a CTA) and 512 (2), as the library launches it.
+#define FOLD_KV_PREFILL(HV, RG) \
+    extern "C" __global__ void __launch_bounds__(32 * RG * HV, 1) fold_kv_prefill_##HV(const glib::kvc::PrefillParams P) { \
+        glib::kvc::prefill_body<HV, RG>(P); \
+    }
+FOLD_KV_PREFILL(1, 4)
+FOLD_KV_PREFILL(2, 4)
+FOLD_KV_PREFILL(4, 2)
