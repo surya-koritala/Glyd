@@ -1371,6 +1371,63 @@ mod tests {
         assert_eq!(host_top(&row, 64).last(), Some(&(5, f32::NEG_INFINITY)));
     }
 
+    /// A step that refuses a chunk past its `chunk` tokens or not at the slot's place, as the executor's does, and makes its candidates from its rows' logits.
+    struct ChunkedStep {
+        chunk: usize,
+        held: Vec<usize>,
+        rows: usize,
+    }
+
+    impl crate::sched::ModelStep for ChunkedStep {
+        fn window(&self) -> usize {
+            1024
+        }
+        fn chunk(&self) -> usize {
+            self.chunk
+        }
+        fn pages(&self) -> usize {
+            0
+        }
+        fn slots(&self) -> Option<usize> {
+            Some(self.held.len())
+        }
+        fn eos(&self) -> Vec<i64> {
+            Vec::new()
+        }
+        fn prefill(&mut self, pages: &[i32], start: usize, tokens: &[u32], last: bool) -> Result<Option<crate::sched::Sample>> {
+            let s = pages[0] as usize;
+            if tokens.len() > self.chunk || start != self.held[s] {
+                return err(format!("a chunk of {} tokens after {start}, where a chunk holds {} and the slot {}", tokens.len(), self.chunk, self.held[s]));
+            }
+            self.held[s] += tokens.len();
+            self.rows = 1;
+            Ok(last.then_some(crate::sched::Sample { token: 7, logit: 0.0, logprob: None }))
+        }
+        fn decode(&mut self, rows: &[crate::sched::Row]) -> Result<Vec<crate::sched::Sample>> {
+            self.rows = rows.len();
+            Ok(rows.iter().map(|_| crate::sched::Sample { token: 7, logit: 0.0, logprob: None }).collect())
+        }
+        fn logits(&mut self, row: usize) -> Result<Vec<f32>> {
+            Ok(logits(128, row as u32))
+        }
+        fn top(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
+            (row < self.rows).then(|| host_top(&logits(128, row as u32), crate::kern::TOPK))
+        }
+        fn release(&mut self, pages: &[i32]) -> Result<()> {
+            pages.iter().for_each(|&p| self.held[p as usize] = 0);
+            Ok(())
+        }
+    }
+
+    /// usercheck's candidates' check runs each prompt in the step's chunks (a 92-token prompt where a chunk holds 64 was one pass, which the executor refuses).
+    #[test]
+    fn the_candidates_check_runs_prompts_in_chunks() {
+        let mut step = ChunkedStep { chunk: 64, held: vec![0; 4], rows: 0 };
+        let prompts: Vec<Vec<u32>> = [5usize, 64, 92, 200].iter().map(|&n| (0..n as u32).collect()).collect();
+        assert_eq!(cands_check(&mut step, &prompts).unwrap(), (8, 0));
+        assert!(step.held.iter().all(|&h| h == 0), "the slots given back");
+    }
+
     fn logits(n: usize, seed: u32) -> Vec<f32> {
         (0..n).map(|i| (((i as u32).wrapping_mul(2654435761).wrapping_add(seed) >> 8) % 4000) as f32 / 250.0 - 8.0).collect()
     }
@@ -2662,7 +2719,12 @@ fn cands_check(step: &mut dyn crate::sched::ModelStep, prompts: &[Vec<u32>]) -> 
         if !step.grow(j as i32, p.len() + 2)? {
             break;
         }
-        let s = step.prefill(&[j as i32], 0, p, true)?.ok_or_else(|| Error("a prompt's last chunk gave no sample".into()))?;
+        // (in the step's chunks, as the scheduler runs a prompt: a pass holds `chunk` tokens at most)
+        let mut s = None;
+        for (i, c) in p.chunks(step.chunk().max(1)).enumerate() {
+            s = step.prefill(&[j as i32], i * step.chunk().max(1), c, (i + 1) * step.chunk().max(1) >= p.len())?;
+        }
+        let s = s.ok_or_else(|| Error("a prompt's last chunk gave no sample".into()))?;
         check(step, 0, &format!("after prompt {j}"))?;
         next.push(s.token);
     }
