@@ -244,6 +244,15 @@ eagerly or piecewise (attention outside the graph, products inside), as vLLM's p
 choices on the host (an expert store without a device path) splits the graph at that layer; `dynamic/mod.rs:1201` already refuses to
 capture such a step.
 
+Built (#329): a decode-only step's rows are padded to 2, 4, 8, ... and replay one graph where every operation acts row by row, is an
+attention layer, or is a recurrent layer's convolution or recurrence (Gated DeltaNet, Mamba-2), each row through its own block table and
+its own state (a table of the rows' state addresses the host writes per step, as vLLM's state indices; a padding row's entry is 0 and
+touches no state). Every other pass (a prompt's chunk, prompts together, decode rows with prompt chunks, decode rows of a description with
+no whole graph) runs in pieces (`dynamic/pieces.rs`): the runs of row-wise operations between the attention and recurrent operations are
+graphs, the rest eager between them. Pieces are captured for a pass's exact row count, not a padded bucket, because a product's kernel
+(the library's route, cuBLAS's algorithm) turns on its rows: a replay is the eager pass bit for bit. A size is captured the second time it
+is met and the 16 sets last used are kept; a scheduler's mixed steps are mostly one size (the prompt budget fills a step to a chunk).
+
 ## 3. The layer-kind interface
 
 ### Kinds are data

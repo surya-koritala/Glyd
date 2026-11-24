@@ -320,18 +320,33 @@ impl Dev {
 
     /// The work queued on the stream captured into a graph: `body` runs with the stream capturing, nothing in it executes.
     pub fn capture(&self, body: impl FnOnce() -> Result<()>) -> Result<Graph> {
-        let d = driver()?;
-        // SAFETY: the stream is this Dev's; 2: CU_STREAM_CAPTURE_MODE_RELAXED.
-        unsafe { cu("cuStreamBeginCapture", (d.cuStreamBeginCapture_v2)(self.stream, 2))? };
+        self.begin_capture()?;
         let r = body();
-        let mut g: CuGraph = std::ptr::null_mut();
-        // SAFETY: ends the capture begun above, whether the body worked or not.
-        let e = unsafe { (d.cuStreamEndCapture)(self.stream, &mut g) };
+        // (ended whether the body worked or not)
+        let g = self.end_capture();
         r?;
-        cu("cuStreamEndCapture", e)?;
+        g
+    }
+
+    /// The work queued on this stream from now on captured, not run, until `end_capture` (relaxed mode: other threads' calls are not refused).
+    pub fn begin_capture(&self) -> Result<()> {
+        // SAFETY: the stream is this Dev's; 2: CU_STREAM_CAPTURE_MODE_RELAXED.
+        unsafe { cu("cuStreamBeginCapture", (driver()?.cuStreamBeginCapture_v2)(self.stream, 2)) }
+    }
+
+    /// The work captured since `begin_capture`, as a graph to launch; the stream runs what is queued again (also where the capture failed: an error then).
+    pub fn end_capture(&self) -> Result<Graph> {
+        let d = driver()?;
+        let mut g: CuGraph = std::ptr::null_mut();
+        // SAFETY: ends the capture `begin_capture` began on this stream.
+        cu("cuStreamEndCapture", unsafe { (d.cuStreamEndCapture)(self.stream, &mut g) })?;
         let mut x: CuGraphExec = std::ptr::null_mut();
         // SAFETY: a captured graph.
-        unsafe { cu("cuGraphInstantiate", (d.cuGraphInstantiateWithFlags)(&mut x, g, 0))? };
+        if let Err(e) = cu("cuGraphInstantiate", unsafe { (d.cuGraphInstantiateWithFlags)(&mut x, g, 0) }) {
+            // SAFETY: the graph just captured, which nothing else holds.
+            unsafe { (d.cuGraphDestroy)(g) };
+            return Err(e);
+        }
         Ok(Graph { graph: g, exec: x })
     }
 }

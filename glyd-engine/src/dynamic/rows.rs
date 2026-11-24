@@ -3,8 +3,9 @@
 //! in one pass: the operations that act row by row (the products, norms, activations) on all the rows at once, so each weight is read once for the step, and the operations on a sequence's cache or
 //! states (the attention's cache write and read, the recurrent layers) on each sequence's rows by themselves with the kernels and row counts its own pass has; the pass's rows that decode, a token
 //! of a sequence each, take an attention layer in one launch of each kernel (one call of the library's decode), each row through its own block table (`RowTabs`), which is each row's own pass's
-//! arithmetic. A step of nothing but such rows replays a CUDA graph of its rows padded to a ladder of sizes (`rows_bucket`), where the description is one of attention layers and operations that
-//! act row by row (no recurrent state): its padding rows read and write no key. What a row computes never turns
+//! arithmetic; so do the recurrent layers' operations (the gated delta rule's and Mamba-2's convolution and recurrence: `rows_state`), each row through its own state (`RowTabs::states`). A
+//! step of nothing but such rows replays a CUDA graph of its rows padded to a ladder of sizes (`rows_bucket`), where the description is one of attention layers, such recurrent layers and
+//! operations that act row by row: its padding rows read and write no key and no state. What a row computes never turns
 //! on what the other sequences hold. It can turn on how many rows the step has, because a product's kernel is picked by them: in a step of 16 rows or fewer every row's logits are, bit for bit,
 //! those of its own pass; in a larger one (17 to 64 rows another kernel, past 64 `decoded_way`'s) they differ by the rounding of the engine's bf16 values, as the engine differs from an f32
 //! reference. Measured by `glyd-engine roundcheck` (src/logits.rs) on every family and on gemma-4-12B at wren with a text's tokens: a KL of 0.002 to 0.005 from the row alone on average, the
@@ -43,15 +44,45 @@ pub(super) struct Paged {
 /// call through its own block table): row r of group g's `tab` holds `dup[g]` copies of row r's sequence's table, made on the GPU at the pass's start (`Dyn::row_tables`, from the
 /// slots the host writes to `slot`, -1 a padding row) so that one launch of the preparation and one call of the decode take a layer's every such row; a call of the library's
 /// decode whose rows' query heads are `sp` sequences finds row r's j-th at stride `dup / sp` tables (every `sp` of the group's divides `dup`). `win`: each group's window (0: none).
-/// `graphs`: whether a step of such rows alone may replay a CUDA graph of its padded rows (`Dyn::rows_bucket`): every operation of the description acts row by row or is an
-/// attention layer, and no sequence has recurrent states.
+/// `states`: the addresses of each row's recurrent states (row r's state i at entry r `nst` + i, as vLLM's state indices pick a request's slot of the state pools:
+/// f:recurrent-state:kv_cache:8), which the host writes for the pass's rows (0 for a padding row), read by the recurrent layers' kernels of such rows (`Dyn::state_lead`).
+/// `graphs`: whether a step of such rows alone may replay a CUDA graph of its padded rows (`Dyn::rows_bucket`): every operation of the description acts row by row, is an
+/// attention layer or is a recurrent layer's operation that takes such rows (`rows_state`).
 pub(super) struct RowTabs {
     pub(super) tab: Vec<Buf>,
     pub(super) dup: Vec<usize>,
     pub(super) win: Vec<usize>,
     pub(super) slot: Buf,
+    pub(super) states: Buf,
+    pub(super) nst: usize,
     pub(super) rows: usize,
     pub(super) graphs: bool,
+}
+
+/// Whether an operation on a sequence's recurrent state has a kernel that takes a step's rows that decode, a token of a sequence each, each through its own state
+/// (`Dyn::state_lead`): the gated delta rule's and Mamba-2's convolution and recurrence.
+pub(super) fn rows_state(op: &Op) -> bool {
+    matches!(op, Op::GdnConv { .. } | Op::GdnDelta { .. } | Op::MambaConv { .. } | Op::MambaScan { .. })
+}
+
+/// Whether a step of rows that decode alone, padded, can be one CUDA graph (`RowTabs::graphs`): every operation acts row by row, is an attention layer, or is a recurrent
+/// layer's that takes such rows; the latent attention runs its sequences by their own pointers, so not it.
+pub(super) fn rows_graphable<'a>(mut ops: impl Iterator<Item = &'a Op>) -> bool {
+    ops.all(|op| match op {
+        Op::Attn(_) => true,
+        Op::Mla(_) => false,
+        op => row_wise(op) || rows_state(op),
+    })
+}
+
+/// The entries of the rows' state table (`RowTabs::states`) for a pass whose first rows decode, each with its sequence's states `lead[r]` (`Part::states`), the rest of `rows`
+/// padding (0): row r's state i at r nst + i.
+pub(super) fn state_table(lead: &[&[u64]], rows: usize, nst: usize) -> Vec<u64> {
+    let mut t = vec![0u64; rows * nst];
+    for (r, st) in lead.iter().enumerate() {
+        t[r * nst..(r + 1) * nst].copy_from_slice(st);
+    }
+    t
 }
 
 /// The least common multiple of a and b (both at least 1).
@@ -240,6 +271,52 @@ impl Dyn {
         Ok(())
     }
 
+    /// A recurrent layer's operation (`rows_state`) on the pass's first `rows` rows, a token of a sequence each: one launch, each row through its own state (`RowTabs::states`),
+    /// which is each row's own pass's arithmetic (the kernels are the one-sequence ones' on a token).
+    pub(super) unsafe fn state_lead(&self, p: &super::Part, op: &Op, rows: usize) -> Result<()> {
+        use super::Slot;
+        let rt = self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).expect("a pass's decode rows have their tables");
+        let (s, ss, ru) = (self.dev.stream, rt.nst as i32, rows as u32);
+        let sts = |i: usize| rt.states.ptr + 8 * i as u64;
+        match *op {
+            Op::GdnConv { w, state, cd, row } => {
+                self.k35.conv_rows(s, p.slot(Slot::Mix), row as i32, p.small[w].ptr, sts(state), ss, p.slot(Slot::Xc), ru, cd as i32)?;
+                self.mark("linear attention: convolution")
+            }
+            Op::GdnDelta { a_log, dt_bias, state, cd, nk, nv } => {
+                let (xc, ba, core) = (p.slot(Slot::Xc), p.slot(Slot::Ba), p.slot(Slot::Core));
+                self.k35.delta_rows(
+                    s,
+                    xc,
+                    cd as i32,
+                    ba,
+                    2 * nv as i32,
+                    p.small[a_log].ptr,
+                    p.small[dt_bias].ptr,
+                    sts(state),
+                    ss,
+                    core,
+                    ru,
+                    nk as i32,
+                    nv as i32,
+                )?;
+                self.mark("linear attention: delta rule")
+            }
+            Op::MambaConv { w, bias, state, cd, row, x_off } => {
+                let x = p.slot(Slot::Mix) + (x_off * 2) as u64;
+                self.knh.conv_rows(s, x, row as i32, p.small[w].ptr, p.small[bias].ptr, sts(state), ss, p.slot(Slot::Xc), ru, cd as i32)?;
+                self.mark("Mamba-2: convolution")
+            }
+            Op::MambaScan { dt_bias, a_log, d, state, cd, row, dt_off, nh, ng } => {
+                let (xc, dtr, core) = (p.slot(Slot::Xc), p.slot(Slot::Mix) + (dt_off * 2) as u64, p.slot(Slot::Core));
+                let (dtb, al, dd) = (p.small[dt_bias].ptr, p.small[a_log].ptr, p.small[d].ptr);
+                self.knh.ssm_rows(s, xc, cd as i32, dtr, row as i32, dtb, al, dd, sts(state), ss, core, ru, nh as i32, ng as i32, 0.0)?;
+                self.mark("Mamba-2: scan")
+            }
+            _ => err(format!("{op:?}: no kernel takes a step's rows that decode, each through its own state")),
+        }
+    }
+
     /// Whether this description's keys and values can be paged (`pages_all`), with no draft model, the whole model on one GPU.
     fn pageable(&self) -> bool {
         self.draft.is_none() && self.stage.first && self.stage.last && pages_all(&self.big.d) && crate::tune!("GLYD_ENGINE_PAGED").is_none_or(|v| v != "0")
@@ -344,6 +421,7 @@ impl Dyn {
         let counts: Vec<u32> = blocks.iter().map(|&b| (b + 1) as u32).collect();
         self.paged = Some(Paged { pages: Pages::new(&counts, &keep, users, self.ctx), group, tabs, tlen, rows });
         self.rgraphs.clear();
+        self.pieces.clear();
         // (sequence 0's graph again, on the pools and its tables)
         if graphed {
             self.capture_graph()?;
@@ -377,14 +455,10 @@ impl Dyn {
         let tab = dup.iter().map(|&k| Buf::zeroed((users * k * tlen * 4).max(4))).collect::<Result<Vec<_>>>()?;
         // (a step of such rows alone in a graph: every operation one that acts row by row or an attention layer, no recurrent state; the latent attention runs its sequences by
         // their own pointers, so not it)
-        let graphs = self.rgraph_on
-            && self.states.is_empty()
-            && std::iter::once(&d.first).chain(d.layers.iter().flatten()).all(|op| match op {
-                Op::Attn(_) => true,
-                Op::Mla(_) => false,
-                op => row_wise(op),
-            });
-        Ok(Some(RowTabs { tab, dup, win, slot: Buf::zeroed(4 * users)?, rows: users, graphs }))
+        // (a step of such rows alone in a graph: `rows_graphable`; each row's recurrent states through the table of their addresses)
+        let graphs = self.rgraph_on && rows_graphable(std::iter::once(&d.first).chain(d.layers.iter().flatten()));
+        let nst = self.states.len();
+        Ok(Some(RowTabs { tab, dup, win, slot: Buf::zeroed(4 * users)?, states: Buf::zeroed((8 * users * nst).max(8))?, nst, rows: users, graphs }))
     }
 
     /// The entries of sequence `slot`'s tables changed since they were last copied, copied to the GPU (nothing runs on them then: the steps before have been waited for).
@@ -512,7 +586,7 @@ impl Dyn {
         // SAFETY: live buffers of the engine, sized for a chunk.
         unsafe {
             self.embed(tokens)?;
-            self.forward(&self.big, n, (pp, pp), last as usize)?;
+            self.pieces_pass(n, (pp, pp), last as usize)?;
         }
         self.n += n;
         self.prof_pass(0, n)?;
@@ -557,18 +631,29 @@ impl Dyn {
         self.dev.sync()?;
         self.pos.write(0, &pos)?;
         if lead > 0 {
-            // (a graph's padding rows -1; the rows past the lead, a prompt's, have no entry)
+            // (a graph's padding rows -1; the rows past the lead, a prompt's, have no entry; each row's recurrent states' addresses, a padding row's 0)
             let mut slots: Vec<i32> = jobs[..lead].iter().map(|j| j.0 as i32).collect();
-            slots.resize(if graph.is_some() { rows } else { lead }, -1);
-            self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).expect("room for the rows' tables").slot.write(0, &slots)?;
+            let height = if graph.is_some() { rows } else { lead };
+            slots.resize(height, -1);
+            let rt = self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).expect("room for the rows' tables");
+            rt.slot.write(0, &slots)?;
+            if rt.nst > 0 {
+                let lead_states: Vec<&[u64]> = parts[..lead].iter().map(|p| &p.states[..]).collect();
+                rt.states.write(0, &state_table(&lead_states, height, rt.nst))?;
+            }
         }
         let pp = self.pos.ptr;
         (self.parts, self.head_rows) = (parts, head_rows);
         self.lead.set(if graph.is_some() { rows } else { lead });
+        // (a pass that is no whole graph's in pieces (src/dynamic/pieces.rs): one that holds a prompt's tokens, or rows that decode of a description that takes no whole graph of
+        // them; such rows of one that does run eager where its graph is not taken (GLYD_ENGINE_ROWS_GRAPH=0))
+        let whole = self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).is_some_and(|rt| rt.graphs);
+        let pieces = !whole || jobs.iter().any(|j| j.1.len() > 1 || !j.2);
         // SAFETY: live buffers of the engine and of each sequence, the pass's rows within a chunk's (a graph's padded rows within the head's).
         let r = unsafe {
             self.embed(&tokens).and_then(|_| match graph {
                 Some(k) => self.rows_replay(k),
+                None if pieces => self.pieces_pass(n, (pp, pp), asked),
                 None => self.forward(&self.big, n, (pp, pp), asked),
             })
         };
@@ -1343,6 +1428,34 @@ mod tests {
         // (a head of rows that is no power of two: the ladder ends at it)
         assert_eq!((bucket(5, 6), bucket(6, 6), bucket(3, 6)), (Some(6), Some(6), Some(4)));
         assert_eq!((bucket(33, 64), bucket(64, 64), bucket(17, 20)), (Some(64), Some(64), Some(20)));
+    }
+
+    /// A step of rows that decode alone is one graph where every operation acts row by row, is an attention layer, or is a recurrent layer's that takes such rows, each
+    /// through its own state (the gated delta rule's and Mamba-2's: Qwen3.5's and Nemotron-H's layers); Kimi delta attention's operations and the latent attention keep it eager.
+    #[test]
+    fn steps_of_recurrent_layers_take_graphs() {
+        use super::super::Slot;
+        let lin = Op::Linear { w: 0, x: Slot::H, y: Slot::O, name: "product" };
+        let gdn =
+            [lin.clone(), Op::GdnConv { w: 0, state: 0, cd: 8, row: 8 }, Op::GdnDelta { a_log: 0, dt_bias: 0, state: 1, cd: 8, nk: 1, nv: 1 }, lin.clone()];
+        assert!(rows_graphable(gdn.iter()));
+        let mamba = [
+            Op::MambaConv { w: 0, bias: 0, state: 0, cd: 8, row: 8, x_off: 0 },
+            Op::MambaScan { dt_bias: 0, a_log: 0, d: 0, state: 1, cd: 8, row: 8, dt_off: 0, nh: 1, ng: 1 },
+            Op::MambaNorm { w: 0, row: 8, di: 8, ng: 1 },
+        ];
+        assert!(rows_graphable(mamba.iter()));
+        assert!(gdn.iter().chain(&mamba).filter(|op| rows_state(op)).count() == 4);
+        let kda = Op::KdaConv { w: 0, state: 0, c: 8, row: 8, w32: false };
+        assert!(!rows_state(&kda) && !rows_graphable([lin.clone(), kda].iter()));
+    }
+
+    /// The rows' state table: row r's sequence's states at r nst .. r nst + nst, padding rows 0 (their kernels then write zeros and touch no state).
+    #[test]
+    fn each_rows_states_are_at_its_entries_and_padding_rows_have_none() {
+        let (a, b) = ([10u64, 11, 12], [20u64, 21, 22]);
+        assert_eq!(state_table(&[&a, &b], 4, 3), [10, 11, 12, 20, 21, 22, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(state_table(&[&a], 1, 3), [10, 11, 12]);
     }
 
     /// A row's table is copied as many times as the decode's calls on the group make sequences of a row, every count of them dividing it: the stride `dup / sp` tables
