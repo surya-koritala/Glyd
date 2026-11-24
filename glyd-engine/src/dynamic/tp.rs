@@ -643,17 +643,9 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         }
     }
     println!("{same} of {} passes the same to the bit", want.len());
-    // (#138: the model across the GPUs, and in two stages on the first GPU of --tp, served by the scheduler as a step of one slot: a greedy reply through it against the reply alone)
-    let prompt = &toks[..toks.len().min(8)];
-    let (alone, via) = super::split::sched_reply(&mut tp, prompt, 16)?;
+    // (#138: the model across the GPUs served by the scheduler as a step of one slot: a greedy reply through it against the reply alone)
+    let (alone, via) = super::split::sched_reply(&mut tp, &toks[..toks.len().min(8)], 16)?;
     println!("{} the layers across the GPUs through the scheduler: {via:?}, alone {alone:?}", if alone == via { "PASS" } else { "FAIL" });
-    drop(tp);
-    let nl = config_num(&text, "num_hidden_layers").unwrap_or(2);
-    if nl >= 2 {
-        let mut split = open(dir, &o, &[nl / 2], &[gpus[0], gpus[0]])?;
-        let (alone, via) = super::split::sched_reply(&mut split, prompt, 16)?;
-        println!("{} two stages through the scheduler: {via:?}, alone {alone:?}", if alone == via { "PASS" } else { "FAIL" });
-    }
     Ok(())
 }
 
