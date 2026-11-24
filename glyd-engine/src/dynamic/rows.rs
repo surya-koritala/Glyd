@@ -89,11 +89,13 @@ struct Lane {
     evs: Vec<(&'static str, crate::dev::Ev)>,
     /// Whether the step's candidates were queued with it (`ModelStep::draws`).
     drawn: bool,
+    /// The 12-bit pages' status words of each group after the step (its void pages' ring, `kv12_lost`), copied with its samples.
+    status: crate::dev::Pinned,
 }
 
 impl Lanes {
-    /// Room for steps of up to `chunk` rows and `head` sampled rows, with tables of `tab_words` entries in all.
-    fn new(chunk: usize, head: usize, tab_words: usize) -> Result<Lanes> {
+    /// Room for steps of up to `chunk` rows and `head` sampled rows, with tables of `tab_words` entries in all and `status_words` of the 12-bit pages' status.
+    fn new(chunk: usize, head: usize, tab_words: usize, status_words: usize) -> Result<Lanes> {
         let lane = (0..LANES)
             .map(|_| {
                 Ok(Lane {
@@ -108,6 +110,7 @@ impl Lanes {
                     queue_ms: 0.0,
                     evs: Vec::new(),
                     drawn: false,
+                    status: crate::dev::Pinned::new(4 * status_words)?,
                 })
             })
             .collect::<Result<_>>()?;
@@ -859,17 +862,16 @@ impl Dyn {
         let Some(e) = self.big.mats[self.big.d.embed].packed_opt().map(|p| p.pack) else { return Ok(()) };
         if !crate::sched::overlap_asked()
             || !ModelStep::one_step(self)
-            || !self.cuts()
-            || self.lossless.is_some()
-            || self.tok.is_some()
             || !self.stores().is_empty()
             || self.big.ram.is_some()
             || !self.kern.has_step_ids()
+            || self.tok.as_ref().is_some_and(|b| b.bytes < 4 * self.chunk)
         {
             return Ok(());
         }
         let tab_words = self.paged.as_ref().map_or(0, |pg| self.seqs.len() * pg.pages.groups() * self.ctx.div_ceil(BLOCK));
-        let lanes = Lanes::new(self.chunk, self.head_room(), tab_words)?;
+        let status_words = self.lossless.as_ref().map_or(0, |lx| lx.status.len() * super::kvpages::VOID_WORDS);
+        let lanes = Lanes::new(self.chunk, self.head_room(), tab_words, status_words)?;
         lanes.ids.write(0, &[0i64])?;
         // SAFETY: the embedding's pack; ids holds one id (0, a row of it), the scratch room a chunk's rows of the hidden width.
         let ok = unsafe { self.lib.rows(&e, lanes.ids.ptr, 1, self.big.slot(super::Slot::X), self.dev.stream) }.is_ok() && self.dev.sync().is_ok();
@@ -974,7 +976,7 @@ impl Dyn {
             crate::dev::copy_h2d_async(pp, ins as *const _, 4 * n, s)?;
             crate::dev::copy_h2d_async(src_dev, ins.add(chunk) as *const _, 4 * n, s)?;
             Dyn::mark(self, "start")?;
-            self.kern.step_ids(s, src_dev, self.big.tok.ptr, ids, n)?;
+            self.kern.step_ids(s, src_dev, self.big.tok.ptr, ids, self.tok.as_ref().map_or(0, |b| b.ptr), n)?;
             self.lib.rows(&e, ids, n as i64, self.big.slot(super::Slot::X), s)?;
         }
         let mut lasts = Vec::with_capacity(jobs.len());
@@ -1031,6 +1033,14 @@ impl Dyn {
         }
         let lanes = self.lanes.as_mut().expect("lanes");
         let lane = &mut lanes.lane[k];
+        if let Some(lx) = &self.lossless {
+            // (the 12-bit pages' status after the step: its void ring, read when it lands, not as the next step writes it)
+            for (g, b) in lx.status.iter().enumerate() {
+                let w = super::kvpages::VOID_WORDS;
+                // SAFETY: the group's status holds at least VOID_WORDS words; the lane's pinned room VOID_WORDS a group, read after its event.
+                unsafe { crate::dev::copy_d2h_async((lane.status.ptr as *mut u32).add(g * w) as *mut _, b.ptr, 4 * w, s)? };
+            }
+        }
         if let (Some(g), Some(k)) = (&self.gaps, gap) {
             g.end(k, s)?;
         }
@@ -1074,6 +1084,8 @@ impl Dyn {
             self.replayed.set(false);
         }
         let drawn = lane.drawn;
+        // (the step's own status for the lost blocks the scheduler asks for next, `kv12_lost`)
+        self.status_from = Some(lane.status.ptr as *const u32);
         self.cands.fresh(asked);
         // (made with the step where it draws: its event covers their copy)
         self.cands.made = drawn;
@@ -1294,9 +1306,9 @@ impl ModelStep for Dyn {
         super::prof::end(timed, rows.len(), 0);
         r
     }
-    /// A served model whose description runs the round as one step on one GPU, with every row's cache its keys and values alone (no recurrent state, whose copies at a mark
-    /// or a boundary are of the state after the sequence's last landed token), bf16 pages, the tokens read only by the embedding (no n-gram embedding, no routing by token),
-    /// no expert cache and no layer in the computer's memory (their host work is in the pass): `Lanes`, made by `serve_rows`. GLYD_ENGINE_OVERLAP=0: none.
+    /// A served model whose description runs the round as one step on one GPU, bf16 pages, no expert cache and no layer in the computer's memory (their host work is in the
+    /// pass): `Lanes`, made by `serve_rows`. A recurrent model's states are copied at a mark or a boundary as the next step is launched (the scheduler asks then: `launch`),
+    /// and the operations that read the tokens (an n-gram embedding, routing by token) read the ids `step_ids` makes. GLYD_ENGINE_OVERLAP=0: none.
     fn overlaps(&self) -> bool {
         self.lanes.is_some()
     }

@@ -931,6 +931,8 @@ pub struct Dyn {
     gaps: Option<rows::Gaps>,
     /// Whether a row of the next launched step draws from its candidates (`ModelStep::draws`): they are queued with the step.
     draws: bool,
+    /// The 12-bit pages' status as the lane of the step landed last copied it (src/dynamic/kvpages.rs `kv12_lost` reads it once); None: the GPU's own.
+    status_from: Option<*const u32>,
 }
 
 /// A sequence's own buffers and place, while another is selected (`Dyn::select`): its keys and values, its states, its position, the verify pass it can go back
@@ -1291,6 +1293,7 @@ impl Dyn {
             lanes: None,
             gaps: None,
             draws: false,
+            status_from: None,
         };
         // (a group of GPUs: every one's engine made before any one's first pass, src/dynamic/tp.rs)
         if let Some(c) = tp::comm() {

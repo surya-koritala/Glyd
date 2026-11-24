@@ -429,12 +429,15 @@ extern "C" __global__ void __launch_bounds__(256) swap_copy(const unsigned long 
 }
 
 // A step's token ids for the embedding's lookup (src/dynamic/rows.rs: a step launched before the step before it has been read): row i's id is src[i] where that is a token
-// (0 or more), else the token the step before chose in its head row -1 - src[i] (tok: the head's argmax, an int a row).
-extern "C" __global__ void __launch_bounds__(256) step_ids(const int* src, const int* tok, long long* ids, int n) {
+// (0 or more), else the token the step before chose in its head row -1 - src[i] (tok: the head's argmax, an int a row); and, where ids32 is not null, the same as ints for
+// the operations that read the tokens (an n-gram embedding, routing by token).
+extern "C" __global__ void __launch_bounds__(256) step_ids(const int* src, const int* tok, long long* ids, int* ids32, int n) {
     const int i = blockIdx.x * 256 + threadIdx.x;
     if (i >= n) return;
     const int s = src[i];
-    ids[i] = s >= 0 ? (long long)s : (long long)tok[-1 - s];
+    const int t = s >= 0 ? s : tok[-1 - s];
+    ids[i] = (long long)t;
+    if (ids32) ids32[i] = t;
 }
 
 // `topk64_bf16` with a mask per row (see `topk64_impl`): `words` is the row's words in `mask`, 1 + (V + 31) / 32.

@@ -460,10 +460,13 @@ On the executor (`src/dynamic/rows.rs` `Lanes`) a step's inputs are copied on th
 running, the next queued, and the one before for its timings), its samples copied back into the lane, and `finish` waits on the lane's
 event, not the stream. A block table a step changes is copied on the stream from the lane too (`upload_tables_queued`): a step in flight
 reads the tables as they were, and a block given back is written only by the steps after it. No other wait is left in a decode step
-that keeps its blocks; a step that grows a sequence's blocks queues the copy and does not wait either. The executor overlaps where the
-description has no recurrent state (whose copies at a mark or a boundary are of the state after the last landed token), the pages are
-bf16, no operation reads the tokens but the embedding (no n-gram embedding, no routing by token), no layer's experts are in a cache and
-no layer's matrices are in the computer's memory; `GLYD_ENGINE_OVERLAP=0` turns it off. `GLYD_PROF=1` and `GLYD_ENGINE_STEP_PROF=1` time
+that keeps its blocks; a step that grows a sequence's blocks queues the copy and does not wait either. A recurrent model's states at a
+prompt's end (`mark`) and at a block boundary (`name`) are copied as the next step is launched, before its work: the scheduler asks then
+for the step in flight's sequences (`Sched::launch`), so the copies are of the states after that step's tokens. The 12-bit pages' status
+(the void pages a step made) is copied into the lane with the samples and read from there (`kv12_lost`). The operations that read the
+tokens (an n-gram embedding, routing by token) read the int32 ids `step_ids` writes beside the embedding's. The executor overlaps on one
+GPU where no layer's experts are in a cache and no layer's matrices are in the computer's memory (both do host work inside the pass);
+`GLYD_ENGINE_OVERLAP=0` turns it off. `GLYD_PROF=1` and `GLYD_ENGINE_STEP_PROF=1` time
 each step's GPU work and the GPU's idle time before it from events at its first and last work (`Gaps`).
 
 The models that ran one request at a time through a loop of their own (`server::work_gen`) are the scheduler's steps of one slot: stages

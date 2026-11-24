@@ -242,8 +242,8 @@ pub trait ModelStep {
     }
     /// Whether `launch` returns with the step queued on the GPU and not run, so that the host's work between steps (the scheduler's, the sampler's, the server's) runs while the
     /// GPU runs the step, and the next step may be launched before this one's `finish`, its rows reading this step's greedy tokens on the GPU (`Row::after`). SGLang's overlap
-    /// loop and vLLM's async scheduling (KB f:overlap:serving:3). Such a step can cut a kept sequence back anywhere (`resume`) and keeps nothing at a mark: `mark` is not asked of
-    /// a sequence with tokens in a step launched since. False: `launch` runs `round` to its end.
+    /// loop and vLLM's async scheduling (KB f:overlap:serving:3). A sequence's blocks are named (`name`) and its prompt's end marked (`mark`) when the next step is launched
+    /// (before its work), for the step in flight's tokens, never after a later step was launched over it. False: `launch` runs `round` to its end.
     fn overlaps(&self) -> bool {
         false
     }
@@ -833,7 +833,7 @@ impl<B: ModelStep> Sched<B> {
 
     /// A slot step that keeps: sequence `i`'s prompt is all in its slot, a place a later request may go on from.
     fn mark_prompt(&mut self, i: usize) -> Result<()> {
-        // (not where its next tokens are in a step launched since: a step that overlaps is cut anywhere, and keeps nothing at a mark)
+        // (not where its next tokens are in a step launched since: it was marked as that step was launched, `launch`)
         if self.keep && !self.flying(self.active[i].id) {
             let s = &self.active[i];
             self.be.mark(s.pages[0], s.done)?;
@@ -1632,10 +1632,16 @@ impl<B: ModelStep> Sched<B> {
     /// The full blocks of a slot step's sequence that the step has not been told the names of yet, told (`ModelStep::name`).
     /// With `out` (the cache's events are kept): the blocks told, their parent's name and their tokens, as a stored event.
     fn name_blocks(be: &mut B, s: &mut Seq, out: Option<&mut Vec<crate::kv_events::Event>>) -> Result<()> {
+        let done = s.done;
+        Self::name_blocks_to(be, s, done, out)
+    }
+
+    /// `name_blocks` of the blocks of its first `upto` tokens (more than it has done where the step in flight writes the rest: `launch`).
+    fn name_blocks_to(be: &mut B, s: &mut Seq, upto: usize, out: Option<&mut Vec<crate::kv_events::Event>>) -> Result<()> {
         let first = s.published;
         let parent = (first > 0).then_some(s.chain);
         let mut keys = Vec::new();
-        while (s.published + 1) * PAGE <= s.done {
+        while (s.published + 1) * PAGE <= upto {
             s.chain = block_hash(s.chain, &s.tokens[s.published * PAGE..(s.published + 1) * PAGE]);
             keys.push(s.chain);
             s.published += 1;
@@ -1922,8 +1928,26 @@ impl<B: ModelStep> Sched<B> {
     }
 
     /// The planned step launched (`ModelStep::launch`), with the grammar masks of the rows that are sampled (the decode rows, then the prompts that end in it).
+    ///
+    /// Where the step in flight lands after it, what landing would ask of the step for that one's sequences is asked first, so that it is queued before this step's work:
+    /// the blocks that step fills named (a model that keeps states at boundaries copies the states there), and each prompt that ends in it marked (a recurrent model's states
+    /// at the prompt's end copied aside). Those are the states after that step's tokens, which this step's rows go on from.
     fn launch(&mut self, plan: Plan) -> Result<Flight> {
         let at = |a: &Vec<Seq>, id: u64| a.iter().position(|s| s.id == id);
+        if let Some(f) = &self.flight {
+            let ahead: Vec<(u64, usize, bool)> = f.rows.iter().map(|&id| (id, 1, false)).chain(f.picks.iter().copied()).collect();
+            for (id, n, last) in ahead {
+                let Some(i) = at(&self.active, id) else { continue };
+                let upto = self.active[i].done + n;
+                if self.names() {
+                    Self::name_blocks_to(&mut self.be, &mut self.active[i], upto, self.rt.kv_events.as_ref().map(|_| &mut self.kv_out))?;
+                }
+                if last && self.keep {
+                    let slot = self.active[i].pages[0];
+                    self.be.mark(slot, upto)?;
+                }
+            }
+        }
         let ahead = |f: &Option<Flight>, id: u64| f.as_ref().map_or(0, |f| f.of(id).0);
         let picks: Vec<(u64, usize, bool)> = plan
             .picks
@@ -3667,7 +3691,7 @@ pub(crate) mod tests {
             self.rows.get(row).cloned().ok_or_else(|| crate::ffi::Error("no logits".into()))
         }
         fn overlaps(&self) -> bool {
-            self.overlap && !self.whole_only && !self.marking
+            self.overlap
         }
         fn launch(&mut self, rows: &[Row], jobs: &[PrefillJob]) -> Result<Launched> {
             if !self.overlap {
@@ -4180,8 +4204,17 @@ pub(crate) mod tests {
     /// conversation still goes on from all it left at its next turn. Every reply is the one the whole prompt gives from its first token.
     #[test]
     fn a_recurrent_model_finds_a_start_at_its_newest_kept_boundary() {
+        for ahead in [false, true] {
+            recurrent_starts(ahead);
+        }
+    }
+
+    /// `a_recurrent_model_finds_a_start_at_its_newest_kept_boundary`, with steps launched before the one before lands (`ahead`): the states at a boundary and at a prompt's
+    /// end are copied as the next step is launched, and are the same states.
+    fn recurrent_starts(ahead: bool) {
         let mut f = SlotFake::new(3, 512, 64);
         (f.keeps, f.whole_only, f.marking, f.snap_every) = (true, true, true, 32);
+        (f.one_step, f.batch, f.overlap) = (ahead, 3, ahead);
         let mut s = Sched::new(f, 3);
         let system = prompt(1, 70);
         let pa: Vec<u32> = [&system[..], &prompt(2, 100)[..]].concat();
@@ -4199,6 +4232,7 @@ pub(crate) mod tests {
         let pc: Vec<u32> = [&system[..20], &prompt(5, 10)[..]].concat();
         assert_eq!(turn(&mut s, &pc, 8), reference(&pc, 8));
         assert_eq!(s.be.adopted.last().map(|a| a.1), Some(0));
+        assert_eq!(s.be.ahead > 0, ahead, "steps launched ahead");
     }
 
     /// A request that comes while another with the same start still runs finds what that one has run; and where the only slot holds a kept conversation whose start it
@@ -4472,8 +4506,20 @@ pub(crate) mod tests {
     /// drops the thinking), go on from the mark, the prompt's end; the turn that sends the whole reply goes on from the slot's end.
     #[test]
     fn a_recurrent_models_kept_sequence_goes_on_from_its_prompts_end() {
+        for ahead in [false, true] {
+            from_the_prompts_end(ahead);
+        }
+    }
+
+    /// `a_recurrent_models_kept_sequence_goes_on_from_its_prompts_end`, with steps launched ahead or not: a prompt that ends in the step in flight is marked as the next step
+    /// is launched, at the same place.
+    fn from_the_prompts_end(ahead: bool) {
         let mut s = keeping(1);
         (s.be.whole_only, s.be.marking) = (true, true);
+        if ahead {
+            (s.be.one_step, s.be.overlap) = (true, true);
+            s = s.overlapping(true);
+        }
         let p1 = prompt(1, 40);
         assert_eq!(turn(&mut s, &p1, 12), reference(&p1, 12));
         assert_eq!(s.be.marks, vec![40], "the prompt's end is marked");
@@ -4491,6 +4537,7 @@ pub(crate) mod tests {
         let early = [&next[..50], &prompt(9, 40)[..]].concat();
         assert_eq!(turn(&mut s, &early, 4), reference(&early, 4));
         assert_eq!((s.be.resumed[2], s.be.emptied, s.be.begun.len()), ((0, 50, 0), 1, 2));
+        assert_eq!(s.be.ahead > 0, ahead, "steps launched ahead");
     }
 
     /// Rooms that take memory as they fill: a kept sequence's room is given up before a request waits for room or a running sequence is sent back.
