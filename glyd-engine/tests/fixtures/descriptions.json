@@ -1,9 +1,9 @@
 {
   "deepseek_v41_config.json": {
     "blocks": 82,
-    "tensors": 93378,
+    "tensors": 95776,
     "kinds": "044b67799952d235",
-    "weights": "5254b70528876890",
+    "weights": "dafdfd784881208d",
     "plan": "91334ef4fb4cb111",
     "family": "refused: m is a DeepseekV41ForCausalLM model, and this engine runs Qwen3 models so far"
   },
@@ -137,9 +137,9 @@
   },
   "headers/DeepSeek-V4-Flash-0731.json": {
     "blocks": 86,
-    "tensors": 67612,
+    "tensors": 72317,
     "kinds": "cf796315f77d38a2",
-    "weights": "7b10aca12255bca2",
+    "weights": "dcc4ccb3b29d9720",
     "plan": "501adcefbd0f834c",
     "family": "DeepSeekV4"
   },

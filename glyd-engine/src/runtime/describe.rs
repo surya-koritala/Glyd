@@ -62,6 +62,8 @@ pub struct Described {
     pub convention: &'static str,
     /// Parts of the checkpoint the description does not read: the towers and the draft layers, as prefixes of their tensors' names.
     pub unread: Vec<String>,
+    /// Per draft head of `desc.mtp` whose tensors are mapped: its blocks' roles' sources, and its own roles' (DSpark's `main_proj`, `markov_embed`, ...).
+    pub mtp: Vec<(Vec<Vec<(String, Source)>>, Vec<(String, Source)>)>,
 }
 
 impl Described {
@@ -74,6 +76,11 @@ impl Described {
         s.extend(self.scales.values().cloned());
         for b in &self.blocks {
             for (_, src) in b {
+                s.extend(src.names());
+            }
+        }
+        for (blocks, own) in &self.mtp {
+            for (_, src) in blocks.iter().flatten().chain(own) {
                 s.extend(src.names());
             }
         }
@@ -416,6 +423,7 @@ fn finish(k: &Keys, desc: ModelDesc, cv: &Convention, prefix: &str, blocks: Vec<
         shapes: Default::default(),
         convention: cv.name,
         unread: cv.unread(),
+        mtp: Vec::new(),
     })
 }
 
@@ -1939,7 +1947,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     let cv = if released { &names::DEEPSEEK } else { &names::DEEPSEEK_HF };
     // (the release's quantized matrices, each with its `.scale`: the FP8 products of the attention and the shared experts, the FP4 routed experts)
     let mut scales = std::collections::BTreeMap::new();
-    let q8 = ["q_a", "q_b", "kv", "o_a", "o_b", "idx_q_b", "shared_gate", "shared_up", "shared_down"];
+    let q8 = ["q_a", "q_b", "kv", "o_a", "o_b", "idx_q_b", "shared_gate", "shared_up", "shared_down", "main_proj"];
     let mark = |r: &[(String, Source)], scales: &mut std::collections::BTreeMap<String, String>| {
         for (_, src) in r.iter().filter(|(role, _)| released && if role.starts_with("experts_") { fp4 } else { fp8 && q8.contains(&role.as_str()) }) {
             for w in src.names() {
@@ -2044,6 +2052,14 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
         rope: None,
     };
     let mut out = finish(&k, desc, cv, "", roles, mtp_layers)?;
+    // (the 0731 release's drafter's tensors, under DeepSeek's names)
+    if let (Some(h), true) = (out.desc.mtp.first(), released) {
+        let (blocks, own) = dspark_roles(h.blocks.len() / 2, ne, false);
+        for r in blocks.iter().chain(std::iter::once(&own)) {
+            mark(r, &mut scales);
+        }
+        out.mtp = vec![(blocks, own)];
+    }
     out.scales = scales;
     Ok(out)
 }
@@ -2062,6 +2078,41 @@ fn dspark_head(k: &Keys, layers: usize, window: Comp, moe: Moe, residual: Residu
     let b = |body: Body| Block { norm_in: Norm::rms(eps), body, norm_out: None, residual: residual.clone() };
     let blocks = (0..layers).flat_map(|_| [b(Body::Mixer(Mixer::Compressed(window.clone()))), b(Body::Ffn(Ffn::Moe(moe.clone())))]).collect();
     Ok(Some(MtpHead { blocks, norm_embed: Norm::rms(eps), norm_hidden: Norm::rms(eps), final_norm: Norm::rms(eps), dspark: Some(dspark) }))
+}
+
+/// A DSpark drafter's tensors as DeepSeek releases name them (`mtp.{i}.`): each draft layer's attention (the window's: no compressor) and its
+/// experts as the model's layers name them; the head's own on its first module (`main_proj`, `main_norm`) and its last (the Markov head's two factors,
+/// `markov_w1` and `markov_w2`, V4.1's `embed` and `head`; the confidence head, the final norm, and V4's hyper-head `hc_head_*`).
+fn dspark_roles(layers: usize, experts: usize, v41: bool) -> (Vec<Vec<(String, Source)>>, Vec<(String, Source)>) {
+    let mut blocks = Vec::new();
+    for i in 0..layers {
+        let p = format!("mtp.{i}");
+        let mut r = names::roles(part::V4_ATTN, &p, 0, all);
+        for t in [part::V4_KV_NORM, part::V4_SINKS, part::HC_ATTN] {
+            r.extend(names::roles(t, &p, 0, all));
+        }
+        blocks.push(r);
+        let mut r = names::roles(part::V4_MOE, &p, experts, |x| x != "hash");
+        r.extend(names::roles(part::HC_FFN, &p, 0, all));
+        blocks.push(r);
+    }
+    let (first, last) = ("mtp.0".to_string(), format!("mtp.{}", layers.saturating_sub(1)));
+    let t = |at: &str, n: &str| Source::Tensor(format!("{at}.{n}"));
+    let (w1, w2) = if v41 { ("markov_head.embed.weight", "markov_head.head.weight") } else { ("markov_head.markov_w1.weight", "markov_head.markov_w2.weight") };
+    let mut own = vec![
+        ("main_proj".to_string(), t(&first, "main_proj.weight")),
+        ("main_norm".to_string(), t(&first, "main_norm.weight")),
+        ("markov_embed".to_string(), t(&last, w1)),
+        ("markov_head".to_string(), t(&last, w2)),
+        ("confidence".to_string(), t(&last, "confidence_head.proj.weight")),
+        ("final_norm".to_string(), t(&last, "norm.weight")),
+    ];
+    if !v41 {
+        own.extend(
+            [("out_hc_fn", "hc_head_fn"), ("out_hc_base", "hc_head_base"), ("out_hc_scale", "hc_head_scale")].map(|(r, n)| (r.to_string(), t(&last, n))),
+        );
+    }
+    (blocks, own)
 }
 
 /// DeepSeek-V4.1 (`deepseek_v41`, its text model `deepseek_v41_text`, a vision tower beside it): V4's decoder with V4.1's three mechanisms, each a
@@ -2205,7 +2256,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
     };
     let cv = &names::DEEPSEEK_V41;
     let mut scales = std::collections::BTreeMap::new();
-    let q8 = ["q_a", "q_b", "kv", "o_a", "o_b", "idx_q_b", "shared_gate", "shared_up", "shared_down", "ngram"];
+    let q8 = ["q_a", "q_b", "kv", "o_a", "o_b", "idx_q_b", "shared_gate", "shared_up", "shared_down", "ngram", "main_proj"];
     let mark = |r: &[(String, Source)], scales: &mut std::collections::BTreeMap<String, String>| {
         for (_, src) in r.iter().filter(|(role, _)| if role.starts_with("experts_") { fp4 } else { (fp8 && q8.contains(&role.as_str())) || role == "ngram" }) {
             for w in src.names() {
@@ -2329,6 +2380,14 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
         rope: None,
     };
     let mut out = finish(&k, desc, cv, "", roles, mtp_layers)?;
+    if let Some(h) = out.desc.mtp.first() {
+        let experts = h.blocks.iter().find_map(|b| if let Body::Ffn(Ffn::Moe(m)) = &b.body { Some(m.experts) } else { None }).unwrap_or(0);
+        let (blocks, own) = dspark_roles(h.blocks.len() / 2, experts, true);
+        for r in blocks.iter().chain(std::iter::once(&own)) {
+            mark(r, &mut scales);
+        }
+        out.mtp = vec![(blocks, own)];
+    }
     out.scales = scales;
     Ok(out)
 }

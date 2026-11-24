@@ -454,6 +454,14 @@ fn deepseek_v4_0731s_dspark_drafter_is_described() {
     let Body::Mixer(Mixer::Compressed(c)) = &head.blocks[0].body else { panic!() };
     assert_eq!((c.ratio, c.window, c.indexer.is_some(), c.ape, c.q_head_norm), (0, 128, false, true, true));
     assert!(head.blocks.iter().all(|b| matches!(b.residual, Residual::Streams(StreamsP { lagged: false, .. }))));
+    // (its tensors mapped: every mtp.* tensor of the checkpoint is a role's or a role's scale, and every role's is in the checkpoint)
+    let (names, have) = (d.names(), header_names(&h));
+    let drafter: BTreeSet<&String> = have.iter().filter(|n| n.starts_with("mtp.")).collect();
+    assert_eq!(drafter.len(), 3 * (29 + 6 * 256) + 10, "three layers of 29 tensors and 256 experts of six, ten of the head");
+    assert!(drafter.iter().all(|n| names.contains(*n)), "{:?}", drafter.iter().find(|n| !names.contains(**n)));
+    d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+    let [(blocks, own)] = &d.mtp[..] else { panic!() };
+    assert_eq!((blocks.len(), own.len()), (6, 9));
 }
 
 /// Every tensor name of a header fixture: its groups' masks with each of their layers ({L}) and experts ({E}).
