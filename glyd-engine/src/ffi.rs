@@ -765,6 +765,40 @@ impl Lib {
         };
         Err(Error::of(Kind::of_status(status), format!("{call}: {t} ({status})")))
     }
+
+    /// `GpuOps::unpack` by the library's own kernels (glyd_gpu_mma_unpack, glyd_gpu_mma12_unpack): the oracle of the engine's (`fold::unpack`).
+    ///
+    /// # Safety
+    /// As `GpuOps::unpack`.
+    pub(crate) unsafe fn library_unpack(&self, w: &Pack, row0: i64, rows: i64, out: u64, cs: Stream) -> Result<()> {
+        let r = match w.words {
+            Words::Tiered { blocks, block_base, tiers } => (self.api.glyd_gpu_mma_unpack)(
+                w.data as *const u8,
+                blocks as *const u8,
+                block_base as *const i32,
+                tiers.as_ptr(),
+                w.cols,
+                row0,
+                rows,
+                out as *mut u16,
+                0,
+                cs,
+            ),
+            Words::Twelve { exc, exc_base, sym } => (self.api.glyd_gpu_mma12_unpack)(
+                w.data as *const u8,
+                exc as *const u32,
+                exc_base as *const i32,
+                sym.as_ptr(),
+                w.cols,
+                row0,
+                rows,
+                out as *mut u16,
+                0,
+                cs,
+            ),
+        };
+        self.ck(call!("unpack"), r)
+    }
 }
 
 impl GpuOps for Lib {
@@ -972,33 +1006,12 @@ impl GpuOps for Lib {
     }
 
     unsafe fn unpack(&self, w: &Pack, row0: i64, rows: i64, out: u64, cs: Stream) -> Result<()> {
-        let r = match w.words {
-            Words::Tiered { blocks, block_base, tiers } => (self.api.glyd_gpu_mma_unpack)(
-                w.data as *const u8,
-                blocks as *const u8,
-                block_base as *const i32,
-                tiers.as_ptr(),
-                w.cols,
-                row0,
-                rows,
-                out as *mut u16,
-                0,
-                cs,
-            ),
-            Words::Twelve { exc, exc_base, sym } => (self.api.glyd_gpu_mma12_unpack)(
-                w.data as *const u8,
-                exc as *const u32,
-                exc_base as *const i32,
-                sym.as_ptr(),
-                w.cols,
-                row0,
-                rows,
-                out as *mut u16,
-                0,
-                cs,
-            ),
-        };
-        self.ck(call!("unpack"), r)
+        // (the engine's own kernels, from the library's source: R17's `fold`; the library's for the layout of v0.27 and before, which no product reads)
+        match crate::fold::unpacker(w)? {
+            crate::fold::Unpacker::V1 => self.library_unpack(w, row0, rows, out, cs),
+            u if crate::fold::on() => crate::fold::unpack(u, w, row0, rows, out, cs),
+            _ => self.library_unpack(w, row0, rows, out, cs),
+        }
     }
 
     unsafe fn moe_way(&self, ids: u64, pairs: i64, experts: i64, plan: u64, cs: Stream) -> Result<()> {

@@ -8,10 +8,11 @@
 //! - the paged KV cache's sizes (glyd_gpu_kv_leaf_bytes, _extra_bytes, _second_bytes) and its decode's workspace
 //!   (glyd_gpu_kv_decode_workspace).
 //!
-//! The kernels these plan for are still the library's; their launches come with the kernels (step 1).
+//! Kernels (step 1): the mma layouts' unpacking (glyd_gpu_mma_unpack, glyd_gpu_mma12_unpack), from the library's own source
+//! (gpu/glyd_gpu_kernels.h) in the engine's fatbin (kernels/fold.cu), launched here as the library launches it.
 
 use crate::device::{Attr, CudaDevice as D, Device};
-use crate::ffi::{Error, Kind, Result};
+use crate::ffi::{Error, Kind, Pack, Result, Stream, Words};
 
 /// The routes (glyd_gpu.h's GLYD_GPU_ROUTE_*): W decoded for the caller's dense product; the step product (to 64 tokens); the 12-bit layout's
 /// staged product (cp.async, mma.sync); Hopper's TMA and wgmma product; the prompt kernel; DECODE with W decoded ahead beside the products
@@ -331,13 +332,146 @@ pub fn kv_decode_workspace(b: i64, h: i64, g: i64, d: i64, splits: i64) -> Resul
     Ok((KV_CNT_BYTES + b * h * splits * g * (2 + d) * 4) as usize)
 }
 
+/// The layouts' numbers in a pack's first tier word's top byte (glyd_gpu.cu).
+const TIERED_TAG: u32 = 2;
+const TIERED_V1_TAG: u32 = 0xFF;
+const COMPACT_TAG: u32 = 3;
+const INT6_TAG: u32 = 4;
+const INT5_TAG: u32 = 5;
+const INT4_TAG: u32 = 6;
+const INT3_TAG: u32 = 7;
+const INT4H_TAG: u32 = 13;
+const FP4_TAG: u32 = 14;
+const FP4R_TAG: u32 = 15;
+
+/// A pack's layout as the library's unpack reads its words (glyd_gpu_mma_unpack: TieredV1's number first, then int6_words ... tiered_words in that
+/// order; glyd_gpu_mma12_unpack: nib12), with what the engine's kernel of it takes besides the pointers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unpacker {
+    /// The layout of v0.27 and before (no product reads it; the engine refuses such a pack at load): the library's kernel.
+    V1,
+    Int6,
+    Int5,
+    Int4,
+    Int4H(u32),
+    Fp4,
+    Fp4R {
+        ks: u32,
+        mg: u32,
+        sh: u32,
+    },
+    Int3,
+    Compact,
+    Tiered,
+    /// The 12-bit layout: its high bytes' base in each byte, and the exceptions a step decodes in registers (GLYD_GPU_XMAX).
+    Twelve {
+        hb4: u32,
+        xmax: i32,
+    },
+}
+
+/// Fp4R's division by the steps of a row block as a multiply-high (glyd_gpu.cu fp4r_fmt): l = ceil(log2 ks) (1 at least), mg = 2^32 (2^l - ks) / ks + 1,
+/// sh = l - 1.
+fn fp4r(k: i64) -> Unpacker {
+    let ks = (k / 16) as u64;
+    let mut l = 1u32;
+    while (1u64 << l) < ks {
+        l += 1;
+    }
+    Unpacker::Fp4R { ks: ks as u32, mg: ((((1u64 << l) - ks) << 32) / ks + 1) as u32, sh: l - 1 }
+}
+
+/// The words of a pack as the library reads them for its unpack; refused where it refuses them (a block layout whose K is not a multiple of 32 or whose
+/// buffers are not aligned, an Int4H base outside 1-239, a 12-bit base past 120, a layout number it does not know).
+pub fn unpacker(w: &Pack) -> Result<Unpacker> {
+    let k = w.cols;
+    match w.words {
+        Words::Tiered { blocks, tiers, .. } => {
+            let (d16, s16) = (w.data % 16 == 0, blocks % 16 == 0);
+            let block = |ok: bool, u: Unpacker| if k % 32 != 0 || !ok { Err(invalid("unpack")) } else { Ok(u) };
+            match tiers[0] >> 24 {
+                TIERED_V1_TAG => Ok(Unpacker::V1),
+                INT6_TAG => block(d16 && s16, Unpacker::Int6),
+                INT5_TAG => block(d16 && s16, Unpacker::Int5),
+                INT4_TAG => block(d16 && s16, Unpacker::Int4),
+                INT4H_TAG => block(d16 && s16 && (1..=239).contains(&tiers[1]), Unpacker::Int4H(tiers[1])),
+                FP4_TAG => block(d16 && blocks % 8 == 0, Unpacker::Fp4),
+                FP4R_TAG => block(d16 && s16 && k / 16 <= 0x7FFF_FFFF, fp4r(k)),
+                INT3_TAG => block(d16 && s16, Unpacker::Int3),
+                COMPACT_TAG => Ok(Unpacker::Compact),
+                TIERED_TAG => Ok(Unpacker::Tiered),
+                _ => Err(invalid("unpack")),
+            }
+        }
+        Words::Twelve { sym, .. } => {
+            let xmax = crate::tune!("GLYD_GPU_XMAX").map_or(4, |v| atoll(&v)).clamp(0, 64) as i32;
+            if sym[0] <= 120 {
+                return Ok(Unpacker::Twelve { hb4: sym[0] * 0x0101_0101, xmax });
+            }
+            let hb = sym[0] & 0xFF;
+            if sym[0] != hb * 0x0101_0101 || hb > 120 || sym[1..] != [0, 0, 0] {
+                return Err(invalid("unpack"));
+            }
+            Ok(Unpacker::Twelve { hb4: sym[0], xmax })
+        }
+    }
+}
+
+/// Whether the engine runs its own kernels for the operations folded so far: a build with kernels, unless a development build's GLYD_ENGINE_FOLD=lib
+/// asks for the library's (the old path, for a comparison).
+pub fn on() -> bool {
+    !cfg!(no_kernels) && crate::tune!("GLYD_ENGINE_FOLD").as_deref() != Some("lib")
+}
+
+/// Rows [row0, row0 + rows) of W back to bf16 into `out` [rows, cols] (both multiples of 64) by the engine's kernel of W's layout (`unpacker`), on `cs`: a
+/// warp a step, blocks of 256 threads, as glyd_gpu_mma_unpack launches its own (mma_unpack_run, no warps given).
+///
+/// # Safety
+/// As `GpuOps::unpack`; a context with the engine's module is current (a `Dev` opened it).
+pub unsafe fn unpack(u: Unpacker, w: &Pack, row0: i64, rows: i64, out: u64, cs: Stream) -> Result<()> {
+    use crate::dev::here;
+    use crate::kt;
+    use crate::launch;
+    if row0 % 64 != 0 || rows % 64 != 0 {
+        return Err(invalid("unpack"));
+    }
+    let grid = (rows / 64 * (w.cols / 16) * 32 + 255) / 256;
+    if grid < 1 || grid > u32::MAX as i64 {
+        return Err(Error::of(Kind::of_status(9), "unpack: invalid configuration argument (9)"));
+    }
+    let (g, b, k) = ([grid as u32, 1, 1], [256u32, 1, 1], w.cols);
+    match (u, w.words) {
+        (Unpacker::Tiered, Words::Tiered { blocks, block_base, tiers: t }) => {
+            launch!(here::<kt::fold_unpack_tiered>()?, g, b, cs; w.data, blocks, block_base, t[0], t[1], t[2], k, row0, rows, out)
+        }
+        (Unpacker::Compact, Words::Tiered { blocks, block_base, tiers: t }) => {
+            launch!(here::<kt::fold_unpack_compact>()?, g, b, cs; w.data, blocks, block_base, t[0], t[1], t[2], k, row0, rows, out)
+        }
+        (Unpacker::Int6, Words::Tiered { blocks, .. }) => launch!(here::<kt::fold_unpack_int6>()?, g, b, cs; w.data, blocks, k, row0, rows, out),
+        (Unpacker::Int5, Words::Tiered { blocks, .. }) => launch!(here::<kt::fold_unpack_int5>()?, g, b, cs; w.data, blocks, k, row0, rows, out),
+        (Unpacker::Int4, Words::Tiered { blocks, .. }) => launch!(here::<kt::fold_unpack_int4>()?, g, b, cs; w.data, blocks, k, row0, rows, out),
+        (Unpacker::Int4H(base), Words::Tiered { blocks, .. }) => {
+            launch!(here::<kt::fold_unpack_int4h>()?, g, b, cs; w.data, blocks, base, k, row0, rows, out)
+        }
+        (Unpacker::Fp4, Words::Tiered { blocks, .. }) => launch!(here::<kt::fold_unpack_fp4>()?, g, b, cs; w.data, blocks, k, row0, rows, out),
+        (Unpacker::Fp4R { ks, mg, sh }, Words::Tiered { blocks, .. }) => {
+            launch!(here::<kt::fold_unpack_fp4r>()?, g, b, cs; w.data, blocks, ks, mg, sh, k, row0, rows, out)
+        }
+        (Unpacker::Int3, Words::Tiered { blocks, .. }) => launch!(here::<kt::fold_unpack_int3>()?, g, b, cs; w.data, blocks, k, row0, rows, out),
+        (Unpacker::Twelve { hb4, xmax }, Words::Twelve { exc, exc_base, .. }) => {
+            launch!(here::<kt::fold_unpack_twelve>()?, g, b, cs; w.data, exc, exc_base, hb4, xmax, k, row0, rows, out)
+        }
+        (u, _) => crate::ffi::err(format!("unpack: {u:?} has no kernel of the engine's for these words")),
+    }
+}
+
 /// `foldcheck` (R17): each folded piece against the library's on this GPU, the library the oracle: the GPU's code; the way of every GPU code the
 /// library knows (with and without SPLIT), both layouts, matrices of every kind of K and size, at token counts on each side of every threshold;
 /// the KV cache's sizes and decode workspace over valid and refused shapes. Every answer the same, refusals included.
 #[cfg(feature = "dev")]
 pub fn check() -> Result<()> {
     use crate::gpu_ops::GpuOps;
-    let _dev = crate::dev::Dev::new(0)?;
+    let dev = crate::dev::Dev::new(0)?;
     let lib = crate::ffi::Lib::find()?;
     let mut fails = 0;
     let mut say = |what: &str, n: usize, bad: Vec<String>| {
@@ -442,11 +576,117 @@ pub fn check() -> Result<()> {
         }
     }
     say("the KV cache's sizes and the decode's workspace", n, bad);
+    let (n, bad) = unpack_check(&dev, &lib)?;
+    say("the mma layouts' unpacking, the engine's kernels against the library's (every bf16 of each layout, whole and a row block)", n, bad);
     if fails > 0 {
         return crate::ffi::err(format!("foldcheck: {fails} failed"));
     }
     println!("foldcheck: PASS");
     Ok(())
+}
+
+/// `foldcheck`'s unpacking: random weights of each layout packed by glyd-gpu's packers, unpacked by the library's kernel and by the engine's, whole and
+/// rows 64-127, every bf16 compared; a pack of a layout number neither knows refused by both. (compared, differences)
+#[cfg(feature = "dev")]
+fn unpack_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
+    use crate::dev::Buf;
+    use crate::weights::{upload_packed, Packed};
+    use glyd_gpu::pack as gp;
+    let mut seed = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let (mut n, mut bad) = (0, Vec::new());
+    for (rows, cols) in [(256usize, 1024usize), (128, 4096)] {
+        // bf16 weights about N(0, 0.05): a sum of four uniforms
+        let w: Vec<u16> = (0..rows * cols)
+            .map(|_| {
+                let u: f32 = (0..4).map(|_| (next() >> 40) as f32 / (1u64 << 24) as f32 - 0.5).sum();
+                ((u * 0.087).to_bits() >> 16) as u16
+            })
+            .collect();
+        let rounded: Vec<u16> = w.iter().map(|&x| gp::round_a(x)).collect();
+        let h4: Vec<u16> = (0..rows * cols / 32).map(|_| ((next() >> 40) as u16 & 0x07FF) | ((5 + (next() % 4) as u16) << 11)).collect();
+        let w4h: Vec<u16> = (0..rows * cols).map(|i| gp::int4h_value((next() % 16) as u8, h4[i / 32], 110)).collect();
+        let q: Vec<u8> = (0..rows * cols / 2).map(|_| next() as u8).collect();
+        let (e, er): (Vec<u8>, Vec<u8>) = (0..rows * cols / 32).map(|_| (120 + (next() % 7) as u8, 121 + (next() % 4) as u8)).unzip();
+        let tiered = |p: gp::Tiered| Packed {
+            data: p.data,
+            b1: p.blocks,
+            b2: p.block_base.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            words: Words::Tiered { blocks: 0, block_base: 0, tiers: p.tiers },
+            rows,
+            cols,
+        };
+        let t12 = gp::pack_twelve(&w, rows, cols);
+        let twelve = Packed {
+            data: t12.data,
+            b1: t12.exc.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            b2: t12.exc_base.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            words: Words::Twelve { exc: 0, exc_base: 0, sym: t12.sym },
+            rows,
+            cols,
+        };
+        let packs: Vec<(&str, Option<Packed>)> = vec![
+            ("tiered", Some(tiered(gp::pack_tiered(&w, rows, cols)))),
+            ("compact", gp::pack_compact_checked(&rounded, rows, cols).map(tiered)),
+            ("int6", gp::pack_int6(&w, rows, cols).map(tiered)),
+            ("int5", gp::pack_int5(&w, rows, cols).map(tiered)),
+            ("int4", gp::pack_int4(&w, rows, cols).map(tiered)),
+            ("int4h", gp::pack_int4h(&w4h, rows, cols).map(tiered)),
+            ("fp4", gp::pack_fp4_checked(&q, &e, rows, cols).map(tiered)),
+            ("fp4r", gp::pack_fp4r_checked(&q, &er, rows, cols).map(tiered)),
+            ("int3", gp::pack_int3(&w, rows, cols).map(tiered)),
+            ("12-bit", Some(twelve)),
+        ];
+        for (name, p) in packs {
+            let Some(p) = p else {
+                bad.push(format!("{name} {rows} x {cols}: glyd-gpu's packer did not pack the random weights"));
+                continue;
+            };
+            let pb = upload_packed(p)?;
+            let (a, b) = (Buf::new(rows * cols * 2)?, Buf::new(rows * cols * 2)?);
+            for (row0, nr) in [(0i64, rows as i64), (64, 64)] {
+                a.fill_async(0xA5, dev.stream)?;
+                b.fill_async(0x5A, dev.stream)?;
+                // SAFETY: the pack's buffers and two of rows x cols bf16, live; the same stream.
+                let (ra, rb) = unsafe {
+                    (
+                        lib.library_unpack(&pb.pack, row0, nr, a.ptr, dev.stream),
+                        unpacker(&pb.pack).and_then(|u| unpack(u, &pb.pack, row0, nr, b.ptr, dev.stream)),
+                    )
+                };
+                dev.sync()?;
+                n += 1;
+                if let (Err(x), _) | (_, Err(x)) = (&ra, &rb) {
+                    bad.push(format!("{name} {rows} x {cols} rows {row0}+{nr}: {x}"));
+                    continue;
+                }
+                let (mut va, mut vb) = (vec![0u16; nr as usize * cols], vec![0u16; nr as usize * cols]);
+                a.read(0, &mut va)?;
+                b.read(0, &mut vb)?;
+                let differ = va.iter().zip(&vb).filter(|(x, y)| x != y).count();
+                if differ > 0 {
+                    bad.push(format!("{name} {rows} x {cols} rows {row0}+{nr}: {differ} of {} bf16 differ", va.len()));
+                }
+            }
+            // a layout number neither knows: both refuse
+            let mut odd = pb.pack;
+            if let Words::Tiered { ref mut tiers, .. } = odd.words {
+                tiers[0] = (99 << 24) | (tiers[0] & 0xFF_FFFF);
+                n += 1;
+                // SAFETY: refused before anything is launched.
+                let (ra, rb) = unsafe { (lib.library_unpack(&odd, 0, 64, a.ptr, dev.stream), unpacker(&odd).map(|_| ())) };
+                if ra.is_ok() || rb.is_ok() {
+                    bad.push(format!("{name}: an unknown layout number: the library {}, the engine {}", ra.is_ok(), rb.is_ok()));
+                }
+            }
+        }
+    }
+    Ok((n, bad))
 }
 
 #[cfg(test)]
@@ -551,6 +791,52 @@ mod tests {
             [(0, 8, 4, 128, 1), (1, 8, 9, 128, 1), (1, 8, 4, 128 | KV_ONE, 1), (1, 8, 4, 128, 0), (1, 8, 4, 128, 65536), (32769, 8, 1, 128, 1)]
         {
             assert!(kv_decode_workspace(b, h, g, d, s).is_err(), "{b} {h} {g} {d} {s}");
+        }
+    }
+
+    /// A pack's words read as the library's unpack reads them: the layout by its number, a block layout refused where K is not a multiple of 32 or a
+    /// buffer is not aligned, Int4H's base kept, the layout of v0.27 and before left to the library, a 12-bit base as either form the library takes.
+    #[test]
+    fn a_packs_words_are_read_as_the_library_reads_them() {
+        let pack = |data: u64, blocks: u64, cols: i64, t0: u32, t1: u32| Pack {
+            data,
+            words: Words::Tiered { blocks, block_base: 0, tiers: [t0, t1, 0] },
+            rows: 64,
+            cols,
+        };
+        let read = |p: Pack| unpacker(&p);
+        assert_eq!(read(pack(0x1000, 0x2000, 1024, TIERED_TAG << 24, 0)).unwrap(), Unpacker::Tiered);
+        assert_eq!(read(pack(0x1000, 0x2000, 1000, COMPACT_TAG << 24, 0)).unwrap(), Unpacker::Compact);
+        assert_eq!(read(pack(0x1000, 0x2000, 1024, TIERED_V1_TAG << 24, 0)).unwrap(), Unpacker::V1);
+        assert_eq!(read(pack(0x1000, 0x2000, 1024, INT4H_TAG << 24, 110)).unwrap(), Unpacker::Int4H(110));
+        assert_eq!(read(pack(0x1000, 0x2008, 1024, FP4_TAG << 24, 0)).unwrap(), Unpacker::Fp4);
+        for bad in [
+            pack(0x1000, 0x2000, 1008, INT6_TAG << 24, 0),
+            pack(0x1008, 0x2000, 1024, INT5_TAG << 24, 0),
+            pack(0x1000, 0x2008, 1024, INT4_TAG << 24, 0),
+            pack(0x1000, 0x2000, 1024, INT4H_TAG << 24, 0),
+            pack(0x1000, 0x2000, 1024, INT4H_TAG << 24, 240),
+            pack(0x1000, 0x2004, 1024, FP4_TAG << 24, 0),
+            pack(0x1000, 0x2000, 1024, 99 << 24, 0),
+        ] {
+            assert_eq!(read(bad).unwrap_err().kind, Kind::of_status(1), "{bad:?}");
+        }
+        let twelve = |sym: [u32; 4]| unpacker(&Pack { data: 0, words: Words::Twelve { exc: 0, exc_base: 0, sym }, rows: 64, cols: 1024 });
+        assert_eq!(twelve([37, 0, 0, 0]).unwrap(), Unpacker::Twelve { hb4: 0x2525_2525, xmax: 4 });
+        assert_eq!(twelve([0x2525_2525, 0, 0, 0]).unwrap(), Unpacker::Twelve { hb4: 0x2525_2525, xmax: 4 });
+        assert!(twelve([0x2525_2526, 0, 0, 0]).is_err() && twelve([0x2525_2525, 1, 0, 0]).is_err() && twelve([0x7979_7979, 0, 0, 0]).is_err());
+    }
+
+    /// Fp4R's step / ks by a multiply-high (fp4r_fmt): (t + (n - t) / 2) >> sh with t = umulhi(n, mg) is n / ks for any 32-bit n.
+    #[test]
+    fn fp4rs_division_is_exact() {
+        for k in [32i64, 64, 96, 1024, 1056, 2880, 4096, 7168, 18432, 1 << 20] {
+            let Unpacker::Fp4R { ks, mg, sh } = fp4r(k) else { unreachable!() };
+            assert_eq!(ks as i64, k / 16);
+            for n in (0..2000u32).chain([u32::MAX, u32::MAX - 1, 1 << 31, 123_456_789, ks * 1000 - 1, ks * 1000]) {
+                let t = ((n as u64 * mg as u64) >> 32) as u32;
+                assert_eq!((t + (n - t) / 2) >> sh, n / ks, "K {k}, n {n}");
+            }
         }
     }
 

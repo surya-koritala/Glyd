@@ -99,6 +99,8 @@ fn main() {
     println!("cargo:rerun-if-changed=kernels/gemm_idx.h");
     println!("cargo:rerun-if-changed=../gpu/hip.h");
     println!("cargo:rerun-if-changed=../gpu/warp_emu.h");
+    println!("cargo:rerun-if-changed=../gpu/glyd_gpu_kernels.h");
+    println!("cargo:rerun-if-changed=kernels/fold.cu");
     println!("cargo:rerun-if-env-changed=GLYD_HIP");
     println!("cargo:rerun-if-env-changed=GLYD_HIP_ARCHS");
     println!("cargo:rerun-if-env-changed=HIPCC");

@@ -208,6 +208,7 @@ impl Dev {
         if !fatbin.is_empty() {
             // SAFETY: the fatbin nvcc made, which lives for the process.
             module = unsafe { D::module_load(fatbin.as_ptr() as *const c_void)? };
+            MODULES.lock().unwrap_or_else(|e| e.into_inner()).push((ctx as usize, module as usize));
         }
         Ok(Dev { ordinal, name, cc: (major, minor), sms, total_mem: total, stream: s, module, ctx })
     }
@@ -228,13 +229,7 @@ impl Dev {
             return err("this build has no CUDA kernels (it was built without nvcc: set NVCC or CUDA_HOME and build again)");
         }
         // SAFETY: the module this Dev loaded, for the process.
-        let f = unsafe { D::function(self.module, name)? };
-        kprof_table()
-            .lock()
-            .map_err(|_| crate::ffi::Error("the kernel census is poisoned".into()))?
-            .entry(f as usize)
-            .or_insert_with(|| (name.to_string(), 0, 0.0));
-        Ok(Kernel(f))
+        unsafe { function_in(self.module, name) }
     }
 
     pub fn sync(&self) -> Result<()> {
@@ -258,6 +253,43 @@ impl Dev {
         let x = unsafe { D::instantiate(g)? };
         Ok(Graph { graph: g, exec: x })
     }
+}
+
+/// Kernel `name` of `module`, counted in the census.
+///
+/// # Safety
+/// `module` is a module a `Dev` loaded, for the process.
+unsafe fn function_in(module: CuModule, name: &str) -> Result<Kernel> {
+    // SAFETY: the caller's module.
+    let f = unsafe { D::function(module, name)? };
+    kprof_table()
+        .lock()
+        .map_err(|_| crate::ffi::Error("the kernel census is poisoned".into()))?
+        .entry(f as usize)
+        .or_insert_with(|| (name.to_string(), 0, 0.0));
+    Ok(Kernel(f))
+}
+
+/// The engine's modules by context, as the Devs loaded them (a module is kept for the process).
+static MODULES: std::sync::Mutex<Vec<(usize, usize)>> = std::sync::Mutex::new(Vec::new());
+
+type Found = std::sync::Mutex<std::collections::HashMap<(usize, &'static str), usize>>;
+
+/// A kernel of the engine's by its type, in a module of the context current on this thread: what code with no `Dev` at hand launches (the library's
+/// operations the engine runs from its own fatbin, `fold.rs`). Looked up once a context and kept.
+pub fn here<T: Typed>() -> Result<T> {
+    static FOUND: std::sync::OnceLock<Found> = std::sync::OnceLock::new();
+    let ctx = current_ctx()?;
+    let found = FOUND.get_or_init(Default::default);
+    if let Some(&f) = found.lock().unwrap_or_else(|e| e.into_inner()).get(&(ctx, T::NAME)) {
+        return Ok(T::of(Kernel(f as CuFunction)));
+    }
+    let module = MODULES.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|m| m.0 == ctx).map(|m| m.1);
+    let Some(module) = module else { return err(format!("{}: no engine module in this context (no Dev opened it, or a build without kernels)", T::NAME)) };
+    // SAFETY: a module a Dev loaded in this context, kept for the process.
+    let k = unsafe { function_in(module as CuModule, T::NAME)? };
+    found.lock().unwrap_or_else(|e| e.into_inner()).insert((ctx, T::NAME), k.0 as usize);
+    Ok(T::of(k))
 }
 
 /// A kernel of the engine's module.
