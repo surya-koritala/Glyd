@@ -508,6 +508,18 @@ design keeps it, with two changes:
 - **Lost blocks become impossible, not rare.** With reservations, `Lost` remains only as a checked invariant: the kernel still writes the
   status word, and a lost block is a bug reported as an error, not a retry.
 
+Built (R4b, the owner's choice of 2026-11-23: reserve the calibrated need, pause the newest request when the spare pool runs out): the
+escape pool is made for the calibrated chunks of every block, so a sequence's blocks reserve its calibrated need as it takes them. Values
+that compress worse make a page raw where the chunks run out (a slab of the raw pool for the page), and a page is void only where no slab
+is free. So a pass may begin only where every raw pool has a slab for every page it writes, beside what the step's growths and the copies
+back in flight have promised (`Dyn::kv12_room`, from the pools' status counts); where not, the named blocks no one holds are dropped, and
+then `ModelStep::grow` says no and the scheduler pauses the newest sequence (swapped or recomputed), whose pages are cleared as it gives
+them up (`glyd_gpu_kv_release`: its chunks and slabs back). Each raw pool holds at least one sequence's pages and a pass more
+(`Lossless::alone_slabs`, counted in the pools' budget), so a sequence alone is never refused for its values. Checked by
+`incompressible_values_pause_the_newest_and_fail_no_request` (the scheduler on the made-up model, every page raw) and on the GPU by
+`usercheck --kv12` with `GLYD_KV12_SHIFT=60 GLYD_KV12_POOL=1,0` (no step taken back, no request ended). Left: a copy back's pages take
+their chunks beside the steps that run meanwhile, which may take them first; such a page is void and its sequence taken back as before.
+
 Today's kernels take head dim 128 and GQA groups of at most 8 (`kv.rs:224-230`), which covers no recent family; widening them to head
 dims 256 and 512 and to MLA latents (576 values a token for Kimi-K3) is its own piece of work (#332), and until it lands those families
 use bf16 pages. Models without tables get bf16 pages; FP8 KV (as released or as a lossy level) is a third page format. The page format is a property of

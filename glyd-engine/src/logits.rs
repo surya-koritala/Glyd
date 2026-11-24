@@ -2475,8 +2475,8 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         stop_ids: Vec::new(),
     };
     let reference: Vec<Vec<u32>> = prompts.iter().map(|p| e.reply(p, &reply, &mut |_| true).map(|r| r.0)).collect::<Result<_>>()?;
-    // (--kv12: the scheduler's cache in 12-bit lossless pages, of tables made on these prompts; with GLYD_KV12_POOL's small pools pages are made void, and the
-    // sequences that hold them are taken back and run again)
+    // (--kv12: the scheduler's cache in 12-bit lossless pages, of tables made on these prompts; with GLYD_KV12_POOL's small pools the newest sequence is paused where the
+    // raw slabs run short, and no page is made void)
     let kv12 = a.has("kv12");
     if kv12 {
         let t = crate::dynamic::kv12::calibrate(&mut e, &prompts, "usercheck")?;
@@ -2653,9 +2653,11 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     }
     if kv12 {
         let back = s.stats.taken_back;
-        println!("12-bit pages: {back} steps taken back for void pages, {} sequences ended for want of room", s.stats.ended_lost);
-        if std::env::var_os("GLYD_KV12_POOL").is_some() && back == 0 {
-            println!("FAIL small pools (GLYD_KV12_POOL) made no step be taken back");
+        println!("12-bit pages: {back} steps taken back for void pages, {} sequences ended for want of room, {resumed} sent back for room", s.stats.ended_lost);
+        // (R4b's deterministic capacity: small pools (GLYD_KV12_POOL), values that do not compress (GLYD_KV12_SHIFT): the newest sequence is paused where the raw slabs
+        // run short, no page is made void and no request fails)
+        if std::env::var_os("GLYD_KV12_POOL").is_some() && (back > 0 || s.stats.ended_lost > 0) {
+            println!("FAIL small pools (GLYD_KV12_POOL): a step taken back for a void page, or a request ended, where the newest sequence is to be paused");
             fails += 1;
         }
     }

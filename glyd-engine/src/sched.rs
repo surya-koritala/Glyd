@@ -3040,6 +3040,12 @@ pub(crate) mod tests {
         pub slide: usize,
         pub jumps: bool,
         pub blocks: [std::collections::HashMap<u32, [u32; PAGE]>; 2],
+        /// R4b's deterministic capacity on values that never compress: every page written is raw and takes a slab of a pool of `slabs` (None: no such pool), each slot's
+        /// raw pages, the slabs this step's growths promised (`Dyn::kv12_room`'s rule), and the pages written with no slab free (void: what the rule is to make none).
+        pub slabs: Option<usize>,
+        pub raw: Vec<usize>,
+        pub promised: usize,
+        pub voided: usize,
     }
 
     impl SlotFake {
@@ -3085,6 +3091,10 @@ pub(crate) mod tests {
                 slide: 0,
                 jumps: false,
                 blocks: Default::default(),
+                slabs: None,
+                raw: vec![0; slots],
+                promised: 0,
+                voided: 0,
             }
         }
         /// `new` on the executor's blocks: pools as `Dyn::page` sizes them for `slots` sequences of `window` tokens, a full group and a sliding one of `slide` tokens.
@@ -3134,6 +3144,18 @@ pub(crate) mod tests {
             if self.whole_only && self.snap_every > 0 {
                 let next = (start / self.snap_every + 1) * self.snap_every;
                 assert!(start + tokens.len() <= next, "{} tokens from {start}, past the boundary at {next}", tokens.len());
+            }
+            if let Some(slabs) = self.slabs {
+                // (every page the tokens are in raw: a slab for each the slot has none for yet, where one is free; else void)
+                let s = slot[0] as usize;
+                for _ in self.raw[s]..(start + tokens.len()).div_ceil(PAGE) {
+                    if self.raw.iter().sum::<usize>() < slabs {
+                        self.raw[s] += 1;
+                    } else {
+                        self.voided += 1;
+                    }
+                }
+                self.promised = 0;
             }
             let room = &mut self.rooms[slot[0] as usize];
             assert_eq!(room.len(), start, "tokens at {start} where the slot holds {}", room.len());
@@ -3251,6 +3273,8 @@ pub(crate) mod tests {
                 self.held[p as usize] = 0;
                 self.marks[p as usize] = 0;
                 self.loading[p as usize] = 0;
+                // (its pages cleared: their slabs back, `kv12_release_blocks`)
+                self.raw[p as usize] = 0;
                 self.emptied += 1;
                 if let Some(pg) = &mut self.paged {
                     pg.release(p as usize);
@@ -3270,7 +3294,7 @@ pub(crate) mod tests {
             }
             self.tickets += 1;
             self.host.insert(self.tickets, (std::mem::take(&mut self.rooms[s]), self.marks[s]));
-            (self.held[s], self.marks[s]) = (0, 0);
+            (self.held[s], self.marks[s], self.raw[s]) = (0, 0, 0);
             Ok(Some(self.tickets))
         }
         fn swap_in(&mut self, slot: i32, ticket: u64, upto: usize) -> Result<Option<usize>> {
@@ -3278,6 +3302,14 @@ pub(crate) mod tests {
             assert!(self.rooms[s].is_empty() && self.held[s] == 0, "a copy back into slot {s}, which holds {} tokens", self.rooms[s].len());
             let n = self.host.get(&ticket).expect("a ticket given").0.len();
             assert!(upto > n, "room for {upto} tokens asked for a sequence of {n}");
+            // (its raw pages take their slabs as they load: not now where the pool has too few)
+            if let Some(slabs) = self.slabs {
+                let have = slabs as i64 - self.raw.iter().sum::<usize>() as i64;
+                if !crate::dynamic::pages::room(&[n.div_ceil(PAGE) as i64], &[have], &[self.promised as i64]) {
+                    return Ok(None);
+                }
+                self.raw[s] = n.div_ceil(PAGE);
+            }
             if let Some(budget) = self.budget {
                 if self.held.iter().sum::<usize>() + upto.div_ceil(PAGE) * PAGE > budget {
                     return Ok(None);
@@ -3400,6 +3432,16 @@ pub(crate) mod tests {
             Ok(kept)
         }
         fn grow(&mut self, slot: i32, upto: usize) -> Result<bool> {
+            if let Some(slabs) = self.slabs {
+                // (`Dyn::kv12_room`: a slab for every page the next pass writes, beside what this step promised; else the newest is paused)
+                let n = self.rooms[slot as usize].len();
+                let need = crate::dynamic::pages::pages_written(n, upto.min(n + self.chunk)) as i64;
+                let have = slabs as i64 - self.raw.iter().sum::<usize>() as i64;
+                if !crate::dynamic::pages::room(&[need], &[have], &[self.promised as i64]) {
+                    return Ok(false);
+                }
+                self.promised += need as usize;
+            }
             if let Some(p) = &mut self.paged {
                 let (s, n) = (slot as usize, self.rooms[slot as usize].len());
                 return Ok(if self.jumps { p.grow(s, upto) } else { p.grow_from(s, n, upto, self.chunk) });
@@ -4204,6 +4246,28 @@ pub(crate) mod tests {
         assert!(f.host.is_empty(), "copies left in the host's area");
         assert_eq!(s.available(), slots);
         (reqs, got, f.ran, s.stats)
+    }
+
+    /// R4b's deterministic capacity on the made-up model, with values that never compress (every page raw, a slab each) and slabs for one sequence's pages and a pass
+    /// more: an admitted request is never refused for its values. Where the slabs run short the newest sequence is paused (swapped, or run again from its tokens), no page
+    /// is written without a slab, and every reply is the reply alone, token for token.
+    #[test]
+    fn incompressible_values_pause_the_newest_and_fail_no_request() {
+        for (slots, mode) in [(8, SwapMode::Always), (8, SwapMode::Never), (4, SwapMode::ByCost), (3, SwapMode::Always)] {
+            let (window, chunk) = (512usize, 16usize);
+            let mut f = SlotFake::new(slots, window, chunk);
+            (f.slabs, f.host_room) = (Some(window / PAGE + crate::dynamic::pages::pages_written(0, chunk) + 1), 1 << 20);
+            let mut s = Sched::new(f, slots).swapping(mode);
+            let reqs: Vec<(Vec<u32>, usize)> = (0..10).map(|k| (prompt(k as u32 + 3, 30 + 9 * k), 60 + 11 * k)).collect();
+            let rx: Vec<_> = reqs.iter().map(|(p, n)| add(&mut s, p.clone(), *n).0).collect();
+            run(&mut s);
+            for ((p, n), r) in reqs.iter().zip(&rx) {
+                assert_eq!(collect(r), (reference(p, *n), Finish::Length), "{slots} slots, {mode:?}");
+            }
+            assert_eq!(s.be.voided, 0, "{slots} slots, {mode:?}: pages written with no slab");
+            assert!(s.stats.preempted > 0, "{slots} slots, {mode:?}: no sequence paused for the slabs");
+            assert!(s.be.raw.iter().all(|&r| r == 0), "slabs left held");
+        }
     }
 
     /// The acceptance of R4d on the made-up model: where the rooms run out, the sequences sent back are swapped to the host and copied back, and every reply is the reply alone, token for

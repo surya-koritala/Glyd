@@ -61,6 +61,8 @@ impl Ranges {
 /// is known once they are saved, `exact`); `fixed`: those of the bf16 rings and the states.
 struct Layout {
     blocks: Vec<usize>,
+    /// each group's blocks the sequence alone holds with no name (int32: their 12-bit pages are cleared after their part of the copy), the first part's first
+    rel: Vec<usize>,
     items: usize,
     nitems: usize,
     rings: Vec<Option<(usize, usize, usize)>>,
@@ -250,6 +252,7 @@ impl Dyn {
             a
         };
         let blocks = counts.iter().map(|&c| take(4 * c)).collect();
+        let rel = counts.iter().map(|&c| take(4 * c)).collect();
         let nitems: usize =
             (0..rings.len()).filter(|&r| self.ring_cap[r] > 0 && twelve(r).is_none()).map(|r| (1 + rings[r].values as usize) * counts[pg.group[r]]).sum();
         let items = take(24 * nitems);
@@ -275,7 +278,7 @@ impl Dyn {
         let states: Vec<usize> = self.states.iter().map(|b| take(b.bytes)).collect();
         let marks: Vec<usize> = if mark { self.states.iter().map(|b| take(b.bytes)).collect() } else { Vec::new() };
         fixed += self.states.iter().map(|b| b.bytes).sum::<usize>() * (1 + mark as usize);
-        Layout { blocks, items, nitems, rings, states, marks, total: at, moved: moved + fixed, fixed }
+        Layout { blocks, rel, items, nitems, rings, states, marks, total: at, moved: moved + fixed, fixed }
     }
 
     /// The states at sequence `slot`'s mark, where it has one: the tokens there (0: none).
@@ -327,6 +330,17 @@ impl Dyn {
         }
         // (the first part: the first `head` blocks of each group, those a decode step of every sequence takes first)
         let head = self.seqs.len().max(1);
+        // (12-bit pages: those of the blocks it alone holds with no name are cleared after their part is saved, so that their chunks and slabs go back to the pools
+        // for the sequences that go on: R4b's deterministic capacity; by part, the first's first)
+        let mut rel = vec![(0usize, 0usize); entries.len()];
+        if self.lossless.is_some() {
+            for (g, sole) in pg.pages.sole_unnamed(slot).into_iter().enumerate() {
+                let (a, b): (Vec<_>, Vec<_>) = sole.into_iter().partition(|(e, _)| entries[g].binary_search(e).is_ok_and(|j| j < head));
+                let list: Vec<i32> = a.iter().chain(&b).map(|x| x.1 as i32).collect();
+                sw.slice::<i32>(at, lay.rel[g], list.len()).copy_from_slice(&list);
+                rel[g] = (a.len(), b.len());
+            }
+        }
         let (items, first) = self.swap_items(sw, at, &lay, &entries, slot, true, head);
         sw.slice::<u64>(at, lay.items, items.len()).copy_from_slice(&items);
         let (began, mid, end, out) = (Ev::new()?, Ev::untimed()?, Ev::untimed()?, Ev::new()?);
@@ -346,6 +360,19 @@ impl Dyn {
                         if j1 > j0 {
                             let (pages, out, moved) = (sw.host(at, lay.blocks[g] + 4 * j0), sw.host(at, im + j0 * per), sw.host(at, mv + 4 * j0));
                             self.lib.kv_save(&rp.geom, rp.pool.ptr, rp.blocks as i64, pages, (j1 - j0) as i64, rp.layer, out, moved, s)?;
+                        }
+                        let (r0, rn) = if part == 0 { (0, rel[g].0) } else { (rel[g].0, rel[g].1) };
+                        if rn > 0 {
+                            self.lib.kv_release(
+                                &rp.geom,
+                                rp.pool.ptr,
+                                rp.blocks as i64,
+                                sw.host(at, lay.rel[g] + 4 * r0),
+                                rn as i64,
+                                rp.layer,
+                                lx.status[g].ptr,
+                                s,
+                            )?;
                         }
                     }
                 }
@@ -443,6 +470,20 @@ impl Dyn {
         if self.seq_n(slot) != 0 {
             return Err(Error(format!("a sequence copied back into slot {slot}, which holds {} tokens", self.seq_n(slot))));
         }
+        // (its copy out wrote the images read below and the lists this one writes over: done first)
+        img.out.wait_host()?;
+        // (12-bit pages: a slab for each raw page and a chunk for each a page holds, beside what the steps and the copies back in flight have promised; else not now)
+        let (at, rings, entries) = (img.at, img.lay.rings.clone(), img.entries.clone());
+        let load = self.load_need(sw, at, &rings, &entries);
+        let Some(img) = sw.images.get(&ticket) else { return Err(Error(format!("ticket {ticket}: no sequence is swapped by it"))) };
+        if let (Some(lx), Some((slabs, chunks))) = (self.lossless.as_ref(), load.as_ref()) {
+            self.dev.sync()?;
+            let (free, cfree) = lx.spare()?;
+            let taken = |c: usize| lx.promised[c] + lx.loading.iter().map(|l| l.1[c]).sum::<i64>();
+            if (0..slabs.len()).any(|c| slabs[c] > free[c] - taken(c)) || *chunks > cfree - lx.loading.iter().map(|l| l.2).sum::<i64>() {
+                return Ok(None);
+            }
+        }
         let pg = self.paged.as_mut().expect("paged");
         if !pg.pages.restore(slot, &img.entries, &img.floor) {
             return Ok(None);
@@ -456,8 +497,9 @@ impl Dyn {
         // (and the slot's states, where it was swapped out itself and not used since: this copy writes them, after that copy)
         sw.unsettled.retain(|u| u.0 != slot);
         let img = sw.images.remove(&ticket).expect("found above");
-        // (its copy out read the lists this one writes over: done first, and counted)
-        img.out.wait_host()?;
+        if let (Some(lx), Some((slabs, chunks))) = (self.lossless.as_mut(), load) {
+            lx.loading.push((slot, slabs, chunks));
+        }
         let moved = Self::exact(self.lossless.as_ref(), sw, img.at, &img.lay, &img.entries);
         sw.count(moved, &img.began, &img.out);
         sw.moved.0 += moved;
@@ -535,6 +577,10 @@ impl Dyn {
         l.done.wait(self.dev.stream)?;
         sw.count(l.moved, &l.began, &l.done);
         sw.ranges.give(l.at.0, l.at.1, l.at.2);
+        // (what its pages took is in the pools' counts now)
+        if let Some(lx) = self.lossless.as_mut() {
+            lx.loading.retain(|x| x.0 != slot);
+        }
         Ok(true)
     }
 
@@ -561,10 +607,36 @@ impl Dyn {
 
     /// A slot about to be emptied: its copy back, where one is in flight, finished first.
     pub(super) fn swap_settle(&mut self, slot: usize) -> Result<()> {
-        match self.swap.as_mut() {
-            Some(sw) => sw.settle(slot),
-            None => Ok(()),
+        if let Some(sw) = self.swap.as_mut() {
+            sw.settle(slot)?;
         }
+        if let Some(lx) = self.lossless.as_mut() {
+            lx.loading.retain(|x| x.0 != slot);
+        }
+        Ok(())
+    }
+
+    /// The slabs (of each raw pool) and the chunks a copy back's 12-bit pages take as they load, read from their images: a slab for each raw page, a chunk for each
+    /// its directory names. None: no 12-bit ring.
+    fn load_need(&self, sw: &mut Swap, at: (usize, usize, usize), rings: &[Option<(usize, usize, usize)>], entries: &[Vec<usize>]) -> Option<(Vec<i64>, i64)> {
+        let lx = self.lossless.as_ref()?;
+        let (mut slabs, mut chunks) = (vec![0i64; lx.raw_pools.len()], 0i64);
+        for (r, rp) in lx.rings.iter().enumerate() {
+            let (Some(rp), Some((im, _, per)), Some(c)) = (rp, rings[r], lx.ring_raw[r]) else { continue };
+            let hp = rp.shape.heads * rp.shape.channels / 128;
+            for j in 0..entries[rp.group].len() {
+                let w = sw.slice::<u32>(at, im + j * per + 16 * hp, 17);
+                if w[0] & (1 << 30) != 0 {
+                    continue;
+                }
+                if w[0] & (1 << 31) != 0 {
+                    slabs[c] += 1;
+                } else {
+                    chunks += w[1..].iter().filter(|&&d| d != 0).count() as i64;
+                }
+            }
+        }
+        Some((slabs, chunks))
     }
 
     /// The engine's stream made to wait for the copies out that still read the blocks taken since the last call (`Pages::take_fence`): before the step that writes them.
@@ -593,6 +665,11 @@ impl Dyn {
             self.empty(slot)?;
         }
         Ok(())
+    }
+
+    /// The swap's copies done (its stream waited for): what they give back to the pools is counted.
+    pub(super) fn swap_sync(&self) -> Result<()> {
+        self.swap.as_ref().map_or(Ok(()), |sw| sw.side.sync())
     }
 
     /// The bytes swapped out and back so far.

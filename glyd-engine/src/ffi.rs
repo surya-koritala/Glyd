@@ -1322,6 +1322,35 @@ impl Lib {
         self.ck(call!("kv_unpack"), r)
     }
 
+    /// The pages of the blocks `blocks` [n] (int32, below `nblocks`) of layer `layer`'s pool cleared as a page's first token clears them: the escape chunks or the
+    /// raw slab each holds back to their pools (by owner), counted in `status`. For blocks no sequence holds and whose content is not read again.
+    ///
+    /// # Safety
+    /// As `kv_write`; `blocks` an int32 array of n the device reads, no step's.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn kv_release(&self, g: &KvGeom, pool: u64, nblocks: i64, blocks: u64, n: i64, layer: i64, status: u64, cs: Stream) -> Result<()> {
+        let r = (self.api.glyd_gpu_kv_release)(
+            pool as *mut u8,
+            g.page_stride,
+            nblocks,
+            blocks as *const i32,
+            n,
+            g.heads,
+            g.dim,
+            g.arena,
+            g.escape as *mut u8,
+            g.nchunks,
+            g.raw as *mut u8,
+            g.nslabs,
+            layer,
+            status as *mut u32,
+            std::ptr::null_mut(),
+            0,
+            cs,
+        );
+        self.ck(call!("kv_release"), r)
+    }
+
     /// A page's image (`kv_save`): its bytes, its escape chunks' entries and its raw slab's places.
     pub fn kv_image_bytes(&self, g: &KvGeom) -> Result<i64> {
         let mut b = 0;

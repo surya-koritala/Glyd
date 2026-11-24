@@ -237,9 +237,17 @@ impl Dyn {
         let graphed = self.graph.take().is_some();
         (self.kc, self.vc) = (Buf::zeroed(4)?, Buf::zeroed(4)?);
         let tab_bytes = users * windows.len() * self.ctx.div_ceil(BLOCK) * 4;
+        // (12-bit pages: the raw slabs one sequence alone may take, every page of it raw: `Lossless::alone_slabs`, which the raw pools hold at the least)
+        let alone: usize = match self.kv12.as_ref().filter(|_| twelve.iter().any(Option::is_some)) {
+            Some(t) => super::kvpages::Lossless::alone_slabs(&self.lib, &self.big.d, t, &self.ring_cap, self.ctx, self.chunk)
+                .iter()
+                .map(|&(hp, n)| self.lib.kv_raw_bytes(n, hp).unwrap_or(0) as usize)
+                .sum(),
+            None => 0,
+        };
         let (free, _) = self.dev.mem_info()?;
         const KEEP: usize = 512 << 20;
-        let budget = (free.saturating_sub(KEEP + tab_bytes + unpacked) as f64 * self.share) as usize;
+        let budget = (free.saturating_sub(KEEP + tab_bytes + unpacked + alone) as f64 * self.share) as usize;
         // as many tokens' blocks in every group (a block of a group is its `covers` tokens of every layer in it), the sliding groups capped and what they leave to the full ones
         let mut blocks = pool_blocks(budget, &per, &covers, &keep, &most);
         // (a development build's GLYD_ENGINE_PAGES: at most that many blocks a group, to run the memory out on purpose)
@@ -825,6 +833,7 @@ impl ModelStep for Dyn {
         }
         let timed = super::prof::begin();
         let r = self.chunk_alone(slot, tokens, last)?;
+        self.kv12_stepped();
         self.cands.fresh(last as usize);
         self.end_expert_step()?;
         super::prof::end(timed, 0, tokens.len());
@@ -853,6 +862,7 @@ impl ModelStep for Dyn {
         let jobs: Vec<(usize, &[u32], bool)> = jobs.iter().map(|j| (j.pages[0] as usize, j.tokens, j.last)).collect();
         let timed = super::prof::begin();
         let r = self.pass(&jobs)?;
+        self.kv12_stepped();
         self.cands.fresh(jobs.iter().filter(|j| j.2).count());
         self.end_expert_step()?;
         super::prof::end(timed, 0, jobs.iter().map(|j| j.1.len()).sum());
@@ -872,6 +882,7 @@ impl ModelStep for Dyn {
         }
         let (p, timed) = (StepProf::begin(self.dev.stream), super::prof::begin());
         let r = self.round_rows(rows, jobs);
+        self.kv12_stepped();
         let prompt = jobs.iter().map(|j| j.tokens.len()).sum();
         StepProf::end(p, self.dev.stream, rows.len(), prompt);
         self.cands.fresh(rows.len() + jobs.iter().filter(|j| j.last).count());
@@ -882,6 +893,7 @@ impl ModelStep for Dyn {
     fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
         let (p, timed) = (StepProf::begin(self.dev.stream), super::prof::begin());
         let r = self.decode_rows(rows);
+        self.kv12_stepped();
         StepProf::end(p, self.dev.stream, rows.len(), 0);
         self.cands.fresh(rows.len());
         self.end_expert_step()?;
@@ -929,9 +941,14 @@ impl ModelStep for Dyn {
             self.swap_settle(p as usize)?;
             self.empty(p as usize)?;
             if let Some(pg) = &mut self.paged {
+                // (its 12-bit pages that no one reads again cleared: their chunks and slabs back to the pools, for the sequences that go on)
+                let freed = if self.lossless.is_some() { pg.pages.sole_unnamed(p as usize) } else { Vec::new() };
                 pg.pages.release(p as usize);
                 self.dev.sync()?;
                 self.upload_tables(p as usize)?;
+                for (g, f) in freed.iter().enumerate() {
+                    self.kv12_release_blocks(g, &f.iter().map(|x| x.1).collect::<Vec<u32>>())?;
+                }
             }
         }
         Ok(())
@@ -1147,6 +1164,10 @@ impl ModelStep for Dyn {
     fn grow(&mut self, slot: i32, upto: usize) -> Result<bool> {
         self.settle_slot(slot as usize)?;
         let (n, chunk) = (self.seq_n(slot as usize), self.chunk);
+        // (12-bit pages: a slab for every page its next pass writes, else the newest sequence is paused: `kv12_room`)
+        if !self.kv12_room(n, upto)? {
+            return Ok(false);
+        }
         let Some(pg) = &mut self.paged else { return Ok(true) };
         if !pg.pages.grow_from(slot as usize, n, upto, chunk) {
             return Ok(false);

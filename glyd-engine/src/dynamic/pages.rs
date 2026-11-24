@@ -28,6 +28,21 @@ use std::collections::{BTreeMap, HashMap};
 /// Tokens a block.
 pub const BLOCK: usize = 16;
 
+/// R4b's deterministic capacity: the pages a pass that writes tokens `n` to `upto` of a sequence writes in a ring (each may be made raw by values that do not
+/// compress, and take a slab of its raw pool: `Dyn::kv12_room`).
+pub fn pages_written(n: usize, upto: usize) -> usize {
+    if upto > n {
+        (upto - 1) / BLOCK - n / BLOCK + 1
+    } else {
+        0
+    }
+}
+
+/// Whether a pass whose pages need `need` slabs of each raw pool may begin: every pool has them free (`spare`) beside what is promised already (`taken`).
+pub fn room(need: &[i64], spare: &[i64], taken: &[i64]) -> bool {
+    need.iter().zip(spare).zip(taken).all(|((n, s), t)| *n <= s - t)
+}
+
 /// One layer group's pool.
 struct Pool {
     /// Tokens behind the newest a step may read (the window and a chunk); None: every token (full attention).
@@ -312,6 +327,36 @@ impl Pages {
                 }
             }
         }
+    }
+
+    /// The blocks sequence `slot` alone holds in each group that have no name (`release` gives them back free, their content read by no one again), with their entries.
+    pub fn sole_unnamed(&self, slot: usize) -> Vec<Vec<(usize, u32)>> {
+        (0..self.pools.len())
+            .map(|g| {
+                let p = &self.pools[g];
+                self.tabs[slot][g]
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &b)| b != 0 && p.refs[b as usize] == 1 && p.name[b as usize] == 0)
+                    .map(|(e, &b)| (e, b))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Every named block of group `g` that no sequence holds given its name up and freed (the start it held is not found again): the blocks, whose content no one reads.
+    pub fn drop_idle(&mut self, g: usize) -> Vec<u32> {
+        let p = &mut self.pools[g];
+        let blocks: Vec<u32> = std::mem::take(&mut p.idle).into_values().collect();
+        for &b in &blocks {
+            p.unname(b);
+            if p.fence[b as usize] > 0 {
+                p.cooling.push(b);
+            } else {
+                p.free.push(b);
+            }
+        }
+        blocks
     }
 
     /// The largest fence of the blocks taken since the last call (0: none): the copy a step that writes them waits for first.
