@@ -2,10 +2,12 @@
 //! What a family's layer is, is the operation's parameters (`AttnOp`): its heads and their width, where its q, k, v and gate are in the projection's rows, its norms,
 //! rotary, window, scale, soft-cap and gate, and its ring of keys and values; its rounding points the kind's (`kinds::AttnRounding`). One set of kernels runs them all
 //! (kernels/attn.cu): the preparation, then a decode row's attention (the keys in parts, combined) or a prompt chunk's, and the gate. A prompt chunk of heads of
-//! 128 to 512 takes the GPU library's prompt kernel, one for both caches: over bf16 rings or pages `glyd_gpu_kv_prefill_bf16`, over 12-bit pages (src/dynamic/kvpages.rs)
-//! `glyd_gpu_kv_prefill`, the same tiles and sums, so the same bits; heads of 64 take attn_fa64. A decode row likewise (`LibDecode`): over 12-bit pages
-//! `kv_decode_from`, over a bf16 cache `glyd_gpu_kv_decode_bf16`, one kernel, plan and merge, where the shape is the pages' (heads of 128 to 512, up to 8 query
-//! heads a kv head or one kv head, no soft-cap); others (Muse Spark's heads of 64, Nemotron-H's 16 query heads over 2) the engine's parts kernel.
+//! 64 and 128 takes the kind's own FlashAttention-2 kernel (attn_pf64, attn_pf128: a token's query heads in one block, tiles of 64 keys), over 12-bit pages
+//! (src/dynamic/kvpages.rs) on the pages unpacked to a bf16 ring, so the same bits as over a bf16 cache; heads of 256 and 512 the GPU library's prompt kernel,
+//! one for both caches: over bf16 rings or pages `glyd_gpu_kv_prefill_bf16`, over 12-bit pages `glyd_gpu_kv_prefill`, the same tiles and sums, so the same
+//! bits. A decode row likewise (`LibDecode`): over 12-bit pages `kv_decode_from`, over a bf16 cache `glyd_gpu_kv_decode_bf16`, one kernel, plan and merge, where
+//! the shape is the pages' (heads of 128 to 512, up to 8 query heads a kv head or one kv head, no soft-cap); others (Muse Spark's heads of 64, Nemotron-H's 16
+//! query heads over 2) the engine's parts kernel.
 //!
 //! The arithmetic of each family is the one its own operations had, bit for bit where the kernel is the same (the preparation, the decode and the gate of Gemma 4,
 //! the Qwen3.5 layout and Nemotron-H); a prompt chunk's is now the library's kernel for all (Gemma 4's g4_fa256, the Qwen3.5 layout's warp a head, Nemotron-H's
@@ -72,9 +74,13 @@ pub(crate) fn rows_smem(d: usize, rg: usize) -> u32 {
     ((KB * (d / 2 + 1) + KB * d / 2 + rg * d / 2) * 4) as u32
 }
 
-/// Dynamic shared memory of a tensor-core block (attn_fa_t): Q [64][d + 8], K and V [32][d + 8] bf16.
-fn fa_smem(d: usize) -> u32 {
-    ((64 * (d + 8) + 2 * 32 * (d + 8)) * 2) as u32
+/// A prompt block's rows of the kind's own prompt kernel (kernels/attn.cu PF_ROWS: a key-value head's query heads, token by token) and its keys a tile (PF_KT).
+const PF_ROWS: usize = 64;
+const PF_KT: usize = 64;
+
+/// Dynamic shared memory of a block of the kind's own prompt kernel (attn_pf_t): K and V [PF_KT][d + 8] bf16.
+fn pf_smem(d: usize) -> u32 {
+    (2 * PF_KT * (d + 8) * 2) as u32
 }
 
 /// The q and k norms of a layer (their weights' small tensors).
@@ -372,9 +378,10 @@ pub(crate) struct KernAttn {
     parts512: crate::kt::attn_parts512,
     merge: crate::kt::attn_merge,
     gate: crate::kt::attn_gate,
-    fa64: crate::kt::attn_fa64,
-    /// Whether prompt chunks take the tensor-core kernels (the library's for heads of 128 to 512, attn_fa64 for 64; a development build's GLYD_ATTN_FA=0: the warp
-    /// kernels).
+    pf64: crate::kt::attn_pf64,
+    pf128: crate::kt::attn_pf128,
+    /// Whether prompt chunks take the tensor-core kernels (the kind's own for heads of 64 and 128, the library's for 256 and 512; a development build's GLYD_ATTN_FA=0:
+    /// the warp kernels).
     pub fa: bool,
 }
 
@@ -395,7 +402,8 @@ impl KernAttn {
             parts512: dev.typed()?,
             merge: dev.typed()?,
             gate: dev.typed()?,
-            fa64: dev.typed()?,
+            pf64: dev.typed()?,
+            pf128: dev.typed()?,
             // (on: against transformers bf16 on gemma-4-31B QAT, wikitext 32 x 512, KLD 0.0192 where the warp kernels' is 0.0225, and a 28K prompt 2x faster)
             fa: {
                 // (the switch back, a development build's alone: a release build reads no GLYD_ variable it does not list)
@@ -448,19 +456,26 @@ impl KernAttn {
         launch!(self.merge, [n, nq, 1], [d as u32, 1, 1], s; *a)
     }
 
-    /// A prompt chunk's attention of `a.n` rows into `a.out` over a bf16 cache, then the gate: the GPU library's kernel for heads of 128 to 512 (`lib`'s
-    /// glyd_gpu_kv_prefill_bf16, the one its 12-bit pages' prompt attention is: `start` the rows' first position, as it takes them), attn_fa64 for heads of 64, the warp
-    /// kernels where the tensor-core ones are off.
+    /// Whether a prompt chunk of heads of `d` takes the kind's own prompt kernel (attn_pf_t), else the GPU library's.
+    pub(crate) fn own_prompt(d: usize) -> bool {
+        d <= 128
+    }
+
+    /// A prompt chunk's attention of `a.n` rows into `a.out` over a bf16 cache, then the gate: the kind's own kernel for heads of 64 and 128 (a block of PF_ROWS
+    /// rows of a key-value head's query heads), the GPU library's for heads of 256 and 512 (`lib`'s glyd_gpu_kv_prefill_bf16, the one its 12-bit pages' prompt
+    /// attention is: `start` the rows' first position, as it takes them), the warp kernels where the tensor-core ones are off.
     ///
     /// # Safety
     /// As `prep`; the rows are at positions `start` .. `start + a.n` (`a.kpos` holds them).
     pub(crate) unsafe fn prompt(&self, lib: &crate::ffi::Lib, s: Stream, a: &AttnArgs, start: usize) -> Result<()> {
-        let (n, d, nq, nk) = (a.n as usize, a.d as usize, a.nq as u32, a.nk as i64);
+        let (n, d, g, nk) = (a.n as usize, a.d as usize, (a.nq / a.nk) as usize, a.nk as i64);
         if !self.fa {
             return self.rows(s, a);
         }
-        if d == 64 {
-            launch!(self.fa64, [n.div_ceil(64) as u32, nq, 1], [128, 1, 1], smem fa_smem(64), s; *a)?;
+        if KernAttn::own_prompt(d) {
+            let grid = [(n * g).div_ceil(PF_ROWS) as u32, nk as u32, 1];
+            let pf = if d == 64 { self.pf64.sig() } else { self.pf128.sig() };
+            launch!(pf, grid, [(32 * PF_ROWS / 16) as u32, 1, 1], smem pf_smem(d), s; *a)?;
         } else {
             let w = (a.nq * a.d) as i64;
             lib.kv_prefill_bf16(
@@ -603,16 +618,18 @@ impl Dyn {
             self.ka.gate(s, &x)?;
             return self.mark(if a.window > 0 { "attention (sliding, 12-bit pages)" } else { "attention (global, 12-bit pages)" });
         }
-        if twelve && !decode && self.ka.fa {
-            // (a prompt chunk over 12-bit pages: the library's prompt attention reads them where they are, and the chunk's own keys and values from the staging rows the
-            // preparation wrote; the same kernel and sums as over a bf16 cache, so the same bits)
+        if twelve && !decode && self.ka.fa && !KernAttn::own_prompt(a.d) {
+            // (a prompt chunk of heads of 256 or 512 over 12-bit pages: the library's prompt attention reads them where they are, and the chunk's own keys and values
+            // from the staging rows the preparation wrote; the same kernel and sums as over a bf16 cache, so the same bits)
             self.kv12_prefill(a, n, x.qo, x.out)?;
             self.ka.gate(s, &x)?;
             return self.mark(if a.window > 0 { "attention (sliding, 12-bit pages)" } else { "attention (global, 12-bit pages)" });
         }
         (x.kc, x.vc, x.cap, x.tab) = if twelve {
-            // (a verify pass's rows, or the warp kernels: the pages unpacked to a bf16 ring)
+            // (a verify pass's rows, the warp kernels, or the kind's own prompt kernel: the pages unpacked to a bf16 ring, whose values are the bf16 cache's, so the
+            // same bits)
             let (kc, vc, cap) = self.kv12_stage(a.ring, self.start.get(), n)?;
+            self.mark("attention: 12-bit pages unpacked to bf16")?;
             (kc, vc, cap as i32, 0)
         } else {
             let (kc, vc) = self.cache(a.ring);
@@ -637,6 +654,10 @@ impl Dyn {
         self.mark(if a.window > 0 { "attention (sliding)" } else { "attention (global)" })
     }
 }
+
+/// attncheck's prompt rows in two calls (the kind's own prompt kernel: a row's bits are its position's and window's alone).
+#[cfg(feature = "dev")]
+const SPLIT: &str = "the same rows in two calls (the one call's bits)";
 
 /// `glyd-engine attncheck`: the attention kind's kernels against an fp64 attention on the CPU, on random queries, keys, values and gates, with each family's head width
 /// and arithmetic (Gemma 4's sliding and global heads with their scores in bf16, Nemotron-H's heads of 128, Muse Spark's window and normed gate, a soft-capped head):
@@ -667,7 +688,7 @@ pub fn check() -> Result<bool> {
     let bf = |x: f64| crate::muse::bf(x as f32) as f64;
     // (what, head, query heads, kv heads, window, the scores in bf16, scale, soft-cap, gate (normed), round, first position, rows)
     type Case = (&'static str, usize, usize, usize, usize, bool, f32, f32, Option<bool>, bool, usize, usize);
-    let cases: [Case; 7] = [
+    let cases: [Case; 8] = [
         ("Gemma 4's sliding layers (head 256, window 64, scores in bf16)", 256, 16, 8, 64, true, 1.0, 0.0, None, true, 100, 70),
         ("Gemma 4's global layers (head 512, scores in bf16)", 512, 16, 2, 0, true, 1.0, 0.0, None, true, 40, 37),
         ("Nemotron-H's (head 128)", 128, 32, 2, 0, false, 128f32.powf(-0.5), 0.0, None, false, 124, 62),
@@ -675,6 +696,7 @@ pub fn check() -> Result<bool> {
         ("Muse Spark's (head 64, window 32, the gate normed)", 64, 8, 2, 32, false, 0.125, 0.0, Some(true), true, 90, 40),
         ("a soft-capped head of 128 (cap 5)", 128, 8, 2, 0, false, 128f32.powf(-0.5), 5.0, None, false, 60, 33),
         ("Nemotron-H's (head 128), a whole chunk", 128, 32, 2, 0, false, 128f32.powf(-0.5), 0.0, None, false, 128, 64),
+        ("Qwen3-8B's (head 128, 32 query heads over 8)", 128, 32, 8, 0, false, 128f32.powf(-0.5), 0.0, None, false, 150, 100),
     ];
     let mut ok = true;
     for (what, d, nq, nk, window, sbf16, scale, softcap, gnorm, round, p0, n) in cases {
@@ -774,18 +796,37 @@ pub fn check() -> Result<bool> {
             let splits = lib.kv_decode_splits(1, nk as i64, cap.div_ceil(16) as i64)?;
             let ws_bytes = if lib_dec { lib.kv_decode_workspace((n * sp) as i64, nk as i64, (g / sp) as i64, d as i64, splits)? } else { 16 };
             let ws = Buf::zeroed(ws_bytes)?;
-            let hows: &[&str] = if lib_dec {
-                &["a prompt's rows on the tensor cores", "a prompt's rows, a warp a head", "each row a decode step", "each row a decode step of the library's"]
-            } else {
-                &["a prompt's rows on the tensor cores", "a prompt's rows, a warp a head", "each row a decode step"]
-            };
-            for &how in hows {
+            let mut hows = vec!["a prompt's rows on the tensor cores", "a prompt's rows, a warp a head", "each row a decode step"];
+            if lib_dec {
+                hows.push("each row a decode step of the library's");
+            }
+            // (the kind's own prompt kernel: the same rows in two calls, the second's first row not at a tile's, give the one call's bits)
+            let split = KernAttn::own_prompt(d).then_some(n / 2 - 3);
+            if split.is_some() {
+                hows.push(SPLIT);
+            }
+            let mut whole: Vec<u16> = Vec::new();
+            for &how in &hows {
                 let out = Buf::zeroed(n * nq * d * 2)?;
                 let x = AttnArgs { out: out.ptr, ..a };
                 // SAFETY: buffers made here of the sizes the kernels read and write; read after a synchronize.
                 unsafe {
                     match how {
                         "a prompt's rows on the tensor cores" => k.prompt(&lib, dev.stream, &x, p0)?,
+                        SPLIT => {
+                            let h = split.unwrap_or(0);
+                            let row = (h * nq * d * 2) as u64;
+                            k.prompt(&lib, dev.stream, &AttnArgs { n: h as i32, ..x }, p0)?;
+                            let rest = AttnArgs {
+                                n: (n - h) as i32,
+                                qo: x.qo + row,
+                                out: x.out + row,
+                                kpos: x.kpos + 4 * h as u64,
+                                gate: if x.gate == 0 { 0 } else { x.gate + row },
+                                ..x
+                            };
+                            k.prompt(&lib, dev.stream, &rest, p0 + h)?
+                        }
                         "a prompt's rows, a warp a head" => k.rows(dev.stream, &x)?,
                         "each row a decode step" => k.decode(dev.stream, &x)?,
                         _ => {
@@ -810,13 +851,19 @@ pub fn check() -> Result<bool> {
                 let mut got = vec![0u16; n * nq * d];
                 out.read(0, &mut got)?;
                 let worst = got.iter().zip(&want).map(|(g, w)| (f32::from_bits((*g as u32) << 16) as f64 - w).abs()).fold(0f64, f64::max) / peak.max(1e-30);
-                let pass = worst <= 1e-2;
+                // (the two calls: the one call's bits, every value)
+                let differ = if how == SPLIT { got.iter().zip(&whole).filter(|(g, w)| g != w).count() } else { 0 };
+                if how == "a prompt's rows on the tensor cores" {
+                    whole = got.clone();
+                }
+                let pass = worst <= 1e-2 && differ == 0;
                 ok &= pass;
                 println!(
-                    "{} {what}: {how}{}, {} values, largest difference {worst:.2e} of the largest value (bound 1.0e-2)",
+                    "{} {what}: {how}{}, {} values, largest difference {worst:.2e} of the largest value (bound 1.0e-2){}",
                     if pass { "ok  " } else { "FAIL" },
                     if pages { ", the keys in pages" } else { "" },
-                    got.len()
+                    got.len(),
+                    if how == SPLIT { format!(", {differ} not the one call's bits") } else { String::new() }
                 );
             }
         }

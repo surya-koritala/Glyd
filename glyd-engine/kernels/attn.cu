@@ -1,6 +1,6 @@
 // The attention layer kind's kernels (src/runtime/kinds.rs `Attn`; the description executor's `Op::Attn`, src/dynamic/attn.rs, runs them for every dense-attention layer
 // of every family). One set, its arithmetic and shapes in `AttnArgs`: the preparation (the q and k norms, the rotary, the cache write, the values' norm), the decode
-// step's attention (the keys in parts, then combined), a prompt chunk's attention for heads of 64 on the tensor cores (heads of 128 to 512: the GPU library's
+// step's attention (the keys in parts, then combined), a prompt chunk's attention for heads of 64 and 128 on the tensor cores (heads of 256 and 512: the GPU library's
 // glyd_gpu_kv_prefill_bf16, the kernel of its 12-bit pages too), a warp-per-head kernel for any shape, and the output gate. Head widths 64, 128, 256 and 512 are template
 // instances. Included by engine.cu after gemma4.cu (its G4Pf prefetch) and qwen35.cu (bf2, warp_max).
 //
@@ -304,91 +304,125 @@ extern "C" __global__ void attn_gate(AttnArgs a) {
 }
 
 // ---- a prompt chunk's attention on the tensor cores -------------------------------------------------------------------------------------------------------------------
-// attn_rows_t's arithmetic (at_score, exp2 of the score less the running maximum, the probabilities rounded to bf16 for the values, their fp32 sum dividing at the end)
-// with Q K^T and P V as mma.sync m16n8k16 bf16 products. A block takes BM rows of one query head h and the value columns z DV .. z DV + DV - 1; 16 rows a warp, the
-// keys 32 a tile from the ring, each row's keys lo_t .. kpos[t]. Shared memory: Q [BM][D + 8], K [32][D + 8], V [32][DV + 8] bf16 (rows padded by 16 bytes so ldmatrix
-// meets no bank twice). Grid (ceil(n / BM), nq, D / DV).
+// FlashAttention-2's loop (the knowledge base's l:fa2-prefill:attention:8, l:llamacpp-fattn:attention:11) with attn_rows_t's arithmetic (at_score, exp2 of the score less the
+// running maximum, the probabilities rounded to bf16 for the values, their fp32 sum dividing at the end), Q K^T and P V as mma.sync m16n8k16 bf16 products. A block takes
+// one key-value head and PF_ROWS of the chunk's rows of its query heads, packed token by token (row r: token r / G, query head kvh G + r % G), so that a token's G query
+// heads share every tile of keys and values the block reads; 4 warps of 16 rows, the queries' A fragments in registers. The keys PF_KT a tile at positions that are multiples
+// of PF_KT, from the tile of the block's first key (its first row's window) to its last row's: a tile no key of which is a row's leaves that row's sums as they were (its
+// probabilities 0, its rescale 1), so a row's sums are those of its own position and window alone, the same bits in any chunk, at any start, beside any rows. K and V
+// each one tile in shared memory, filled by cp.async as FlashAttention-2 orders it: V(j)'s copy runs while S = Q K(j)^T and its softmax are made, K(j + 1)'s while
+// P V(j) is. Only a tile that holds a key outside some row's window (the diagonal's, a window's first) is masked; a key outside the block's is read as zeros (a recycled
+// place's bytes can be infinities, and zero times infinity is not zero), and such a tile is always masked. Shared memory: K and V [PF_KT][D + 8] bf16 (rows 16 bytes apart
+// in the banks, so ldmatrix meets no bank twice). Grid (ceil(n G / PF_ROWS), nk), PF_ROWS / 16 warps.
 __device__ __forceinline__ uint32_t at_pk(float x, float y) {
     __nv_bfloat162 v = __floats2bfloat162_rn(x, y);
     return *reinterpret_cast<uint32_t*>(&v);
 }
 
-template <int D, int DV, int BM>
-__device__ __forceinline__ void attn_fa_t(const AttnArgs& a) {
-    constexpr int KT = 32, QS = D + 8, VS = DV + 8, NT = DV / 8, W = BM / 16;
-    (void)W;
-    extern __shared__ __align__(16) unsigned char at_fa_sm[];
-    bf16* Qs = reinterpret_cast<bf16*>(at_fa_sm);
-    bf16* Ks = Qs + BM * QS;
-    bf16* Vs = Ks + KT * QS;
-    __shared__ int s_lo, s_hi;
-    const int n = a.n, nq = a.nq, nk = a.nk, window = a.window;
-    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, t4 = lane & 3;
-    const int h = blockIdx.y, kvh = h / (nq / nk), r0 = blockIdx.x * BM, v0 = blockIdx.z * DV;
-    for (int c = threadIdx.x; c < BM * (D / 8); c += blockDim.x) {
-        const int r = c / (D / 8), q8 = c % (D / 8);
-        uint4 v = make_uint4(0, 0, 0, 0);
-        if (r0 + r < n) v = reinterpret_cast<const uint4*>(a.qo + (size_t)(r0 + r) * nq * D + h * D)[q8];
-        *reinterpret_cast<uint4*>(Qs + r * QS + q8 * 8) = v;
-    }
-    if (threadIdx.x == 0) {
-        int lo = 1 << 30, hi = 0;
-        for (int r = r0; r < min(n, r0 + BM); r++) {
-            hi = max(hi, a.kpos[r] + 1);
-            lo = min(lo, window > 0 ? max(0, a.kpos[r] - window + 1) : 0);
+constexpr int PF_KT = 64;    // keys a tile
+constexpr int PF_ROWS = 64;  // packed rows a block
+
+template <int D>
+__device__ __forceinline__ void attn_pf_t(const AttnArgs& a) {
+    constexpr int KS = D + 8, C8 = D / 8, NK = PF_KT / 8, NT = 32 * PF_ROWS / 16;
+    extern __shared__ __align__(16) unsigned char at_pf_sm[];
+    bf16* Ks = reinterpret_cast<bf16*>(at_pf_sm);
+    bf16* Vs = Ks + PF_KT * KS;
+    __shared__ int s_lo, s_hi, s_in0, s_in1;
+    const int n = a.n, nq = a.nq, nk = a.nk, G = nq / nk, W = a.window;
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, t4 = lane & 3, m8 = lane >> 3;
+    const int kvh = blockIdx.y, r0 = (gridDim.x - 1 - blockIdx.x) * PF_ROWS;  // (the blocks with the most keys first)
+    if (warp == 0) {
+        // the block's keys lo (its first window's first) .. hi (past its last row's); in0 .. in1: the keys every one of its rows takes (its tokens a lane each)
+        int lo = 1 << 30, hi = 0, in0 = 0, in1 = 1 << 30;
+        for (int t = r0 / G + lane; t < n && t * G < r0 + PF_ROWS; t += 32) {
+            const int p = a.kpos[t], l = W > 0 ? max(0, p - W + 1) : 0;
+            lo = min(lo, l);
+            hi = max(hi, p + 1);
+            in0 = max(in0, l);
+            in1 = min(in1, p + 1);
         }
-        s_lo = min(lo, hi);
-        s_hi = hi;
+#pragma unroll
+        for (int o = 16; o > 0; o >>= 1) {
+            lo = min(lo, __shfl_xor_sync(0xffffffffu, lo, o));
+            hi = max(hi, __shfl_xor_sync(0xffffffffu, hi, o));
+            in0 = max(in0, __shfl_xor_sync(0xffffffffu, in0, o));
+            in1 = min(in1, __shfl_xor_sync(0xffffffffu, in1, o));
+        }
+        if (lane == 0) {
+            s_lo = min(lo, hi);
+            s_hi = hi;
+            s_in0 = in0;
+            s_in1 = in1;
+        }
+    }
+    // the warp's rows ra (g) and rb (g + 8): their tokens, query heads, positions and windows' first keys (a row past the chunk's takes no key)
+    const int ra = r0 + warp * 16 + g, rb = ra + 8;
+    const bool ia = ra < n * G, ib = rb < n * G;
+    const int ta = ia ? ra / G : 0, tb = ib ? rb / G : 0, ha = kvh * G + ra % G, hb = kvh * G + rb % G;
+    const int pa = ia ? a.kpos[ta] : -1, pb = ib ? a.kpos[tb] : -1;
+    const int la = W > 0 ? pa - W + 1 : 0, lb = W > 0 ? pb - W + 1 : 0;
+    // the queries' A fragments: rows ra and rb, 16 channels a step
+    uint32_t qa[D / 16][4];
+    {
+        const uint32_t* qx = reinterpret_cast<const uint32_t*>(a.qo + ((size_t)ta * nq + ha) * D);
+        const uint32_t* qy = reinterpret_cast<const uint32_t*>(a.qo + ((size_t)tb * nq + hb) * D);
+#pragma unroll
+        for (int ks = 0; ks < D / 16; ks++) {
+            qa[ks][0] = ia ? qx[8 * ks + t4] : 0u;
+            qa[ks][1] = ib ? qy[8 * ks + t4] : 0u;
+            qa[ks][2] = ia ? qx[8 * ks + 4 + t4] : 0u;
+            qa[ks][3] = ib ? qy[8 * ks + 4 + t4] : 0u;
+        }
     }
     __syncthreads();
-    const int ra = r0 + warp * 16 + g, rb = ra + 8;
-    const int pa = ra < n ? a.kpos[ra] : -1, pb = rb < n ? a.kpos[rb] : -1;
-    const int la = window > 0 ? pa - window + 1 : 0, lb = window > 0 ? pb - window + 1 : 0;
-    float acc[NT][4];
+    const int lo = s_lo, hi = s_hi, in0 = s_in0, in1 = s_in1;
+    // a tile of keys (src a.kc) or values (a.vc) from position k0 into dst: thread i the 16-byte chunks i, i + NT, ... (chunk c: key c / C8, its channels 8 (c % C8) on)
+    const auto fill = [&](bf16* dst, const bf16* src, int k0) {
 #pragma unroll
-    for (int j = 0; j < NT; j++) acc[j][0] = acc[j][1] = acc[j][2] = acc[j][3] = 0.f;
+        for (int i = 0; i < PF_KT * C8 / NT; i++) {
+            const int c = threadIdx.x + i * NT, j = c / C8, c8 = c % C8, kp = k0 + j;
+            const bool ok = kp >= lo && kp < hi;
+            cp16(s_addr(dst + j * KS + c8 * 8), src + (ok ? (at_place(a.tab, kp, a.cap) * nk + kvh) * D + c8 * 8 : 0), ok);
+        }
+    };
+    float acc[D / 8][4];
+#pragma unroll
+    for (int j = 0; j < D / 8; j++) acc[j][0] = acc[j][1] = acc[j][2] = acc[j][3] = 0.f;
     float ma = -INFINITY, mb = -INFINITY, sa = 0.f, sb = 0.f;
-    for (int k0 = s_lo; k0 < s_hi; k0 += KT) {
-        __syncthreads();  // (the tiles before are read)
-        for (int c = threadIdx.x; c < KT * (D / 8); c += blockDim.x) {
-            const int j = c / (D / 8), q8 = c % (D / 8);
-            uint4 v = make_uint4(0, 0, 0, 0);
-            if (k0 + j < s_hi) v = reinterpret_cast<const uint4*>(a.kc + (at_place(a.tab, k0 + j, a.cap) * nk + kvh) * D)[q8];
-            *reinterpret_cast<uint4*>(Ks + j * QS + q8 * 8) = v;
-        }
-        for (int c = threadIdx.x; c < KT * (DV / 8); c += blockDim.x) {
-            const int j = c / (DV / 8), q8 = c % (DV / 8);
-            uint4 v = make_uint4(0, 0, 0, 0);
-            if (k0 + j < s_hi) v = reinterpret_cast<const uint4*>(a.vc + (at_place(a.tab, k0 + j, a.cap) * nk + kvh) * D + v0)[q8];
-            *reinterpret_cast<uint4*>(Vs + j * VS + q8 * 8) = v;
-        }
-        __syncthreads();
-        // S [16 rows][32 keys] = Q K^T: 4 n-tiles of 8 keys
-        float s[4][4];
+    const int j0 = lo / PF_KT, j1 = (hi + PF_KT - 1) / PF_KT;
+    if (j0 < j1) fill(Ks, a.kc, j0 * PF_KT);
+    cp_commit();
+    for (int jt = j0; jt < j1; jt++) {
+        const int k0 = jt * PF_KT;
+        cp_wait<0>();
+        __syncthreads();  // K(jt) is in; every warp is done with V(jt - 1)
+        fill(Vs, a.vc, k0);
+        cp_commit();
+        // S [16 rows][PF_KT keys] = Q K^T: NK n-tiles of 8 keys
+        float s[NK][4];
 #pragma unroll
-        for (int j = 0; j < 4; j++) s[j][0] = s[j][1] = s[j][2] = s[j][3] = 0.f;
-#pragma unroll 4
+        for (int j = 0; j < NK; j++) s[j][0] = s[j][1] = s[j][2] = s[j][3] = 0.f;
+#pragma unroll
         for (int ks = 0; ks < D / 16; ks++) {
-            uint32_t qa[4];
-            ldsm4(qa, s_addr(Qs + (warp * 16 + (lane & 15)) * QS + ks * 16 + (lane >> 4) * 8));
 #pragma unroll
-            for (int np = 0; np < 2; np++) {
+            for (int np = 0; np < NK / 2; np++) {
                 uint32_t b[4];
-                const int m = lane >> 3;
-                ldsm4(b, s_addr(Ks + (np * 16 + (m >> 1) * 8 + (lane & 7)) * QS + ks * 16 + (m & 1) * 8));
-                mma16816(s[2 * np], qa, b[0], b[1]);
-                mma16816(s[2 * np + 1], qa, b[2], b[3]);
+                ldsm4(b, s_addr(Ks + (np * 16 + (m8 >> 1) * 8 + (lane & 7)) * KS + ks * 16 + (m8 & 1) * 8));
+                mma16816(s[2 * np], qa[ks], b[0], b[1]);
+                mma16816(s[2 * np + 1], qa[ks], b[2], b[3]);
             }
         }
-        // the scores (at_score), masked; the running maxima and sums (a row's 4 lanes share g)
+        // the scores (at_score), masked where the tile is not every row's whole; the running maxima and sums (a row's 4 lanes share g)
+        const bool edge = k0 < in0 || k0 + PF_KT > in1;
         float mxa = ma, mxb = mb;
 #pragma unroll
-        for (int j = 0; j < 4; j++) {
+        for (int j = 0; j < NK; j++) {
 #pragma unroll
             for (int e = 0; e < 2; e++) {
                 const int kp = k0 + j * 8 + 2 * t4 + e;
-                s[j][e] = kp >= la && kp <= pa ? at_score(a, s[j][e]) : -INFINITY;
-                s[j][2 + e] = kp >= lb && kp <= pb ? at_score(a, s[j][2 + e]) : -INFINITY;
+                s[j][e] = !edge || (kp >= la && kp <= pa) ? at_score(a, s[j][e]) : -INFINITY;
+                s[j][2 + e] = !edge || (kp >= lb && kp <= pb) ? at_score(a, s[j][2 + e]) : -INFINITY;
                 mxa = fmaxf(mxa, s[j][e]);
                 mxb = fmaxf(mxb, s[j][2 + e]);
             }
@@ -398,53 +432,58 @@ __device__ __forceinline__ void attn_fa_t(const AttnArgs& a) {
         mxb = fmaxf(mxb, __shfl_xor_sync(0xffffffffu, mxb, 1));
         mxb = fmaxf(mxb, __shfl_xor_sync(0xffffffffu, mxb, 2));
         const float ca = mxa == -INFINITY ? 1.f : exp2f(ma - mxa), cb = mxb == -INFINITY ? 1.f : exp2f(mb - mxb);
-        float ta = 0.f, tb = 0.f;
+        float ta_ = 0.f, tb_ = 0.f;
 #pragma unroll
-        for (int j = 0; j < 4; j++) {
+        for (int j = 0; j < NK; j++) {
 #pragma unroll
             for (int e = 0; e < 2; e++) {
                 s[j][e] = mxa == -INFINITY ? 0.f : exp2f(s[j][e] - mxa);
                 s[j][2 + e] = mxb == -INFINITY ? 0.f : exp2f(s[j][2 + e] - mxb);
-                ta += s[j][e];
-                tb += s[j][2 + e];
+                ta_ += s[j][e];
+                tb_ += s[j][2 + e];
             }
         }
-        ta += __shfl_xor_sync(0xffffffffu, ta, 1);
-        ta += __shfl_xor_sync(0xffffffffu, ta, 2);
-        tb += __shfl_xor_sync(0xffffffffu, tb, 1);
-        tb += __shfl_xor_sync(0xffffffffu, tb, 2);
-        sa = sa * ca + ta;
-        sb = sb * cb + tb;
+        ta_ += __shfl_xor_sync(0xffffffffu, ta_, 1);
+        ta_ += __shfl_xor_sync(0xffffffffu, ta_, 2);
+        tb_ += __shfl_xor_sync(0xffffffffu, tb_, 1);
+        tb_ += __shfl_xor_sync(0xffffffffu, tb_, 2);
+        sa = sa * ca + ta_;
+        sb = sb * cb + tb_;
         ma = mxa;
         mb = mxb;
 #pragma unroll
-        for (int j = 0; j < NT; j++) {
+        for (int j = 0; j < D / 8; j++) {
             acc[j][0] *= ca;
             acc[j][1] *= ca;
             acc[j][2] *= cb;
             acc[j][3] *= cb;
         }
-        // O += bf16(P) V: the score tiles as the A operand, 16 keys a k-step
+        cp_wait<0>();
+        __syncthreads();  // V(jt) is in; every warp is done with K(jt)
+        if (jt + 1 < j1) fill(Ks, a.kc, k0 + PF_KT);
+        cp_commit();
+        // O += bf16(P) V: the score tiles as the A operand, 16 keys a k-step; V's rows through ldmatrix.trans
 #pragma unroll
-        for (int kk = 0; kk < 2; kk++) {
-            const uint32_t pa4[4] = {at_pk(s[2 * kk][0], s[2 * kk][1]), at_pk(s[2 * kk][2], s[2 * kk][3]), at_pk(s[2 * kk + 1][0], s[2 * kk + 1][1]), at_pk(s[2 * kk + 1][2], s[2 * kk + 1][3])};
+        for (int kk = 0; kk < PF_KT / 16; kk++) {
+            const uint32_t p4[4] = {at_pk(s[2 * kk][0], s[2 * kk][1]), at_pk(s[2 * kk][2], s[2 * kk][3]), at_pk(s[2 * kk + 1][0], s[2 * kk + 1][1]), at_pk(s[2 * kk + 1][2], s[2 * kk + 1][3])};
 #pragma unroll
-            for (int np = 0; np < NT / 2; np++) {
+            for (int np = 0; np < D / 16; np++) {
                 uint32_t b[4];
-                const int m = lane >> 3;
-                ldsm4t(b, s_addr(Vs + (kk * 16 + (m & 1) * 8 + (lane & 7)) * VS + np * 16 + (m >> 1) * 8));
-                mma16816(acc[2 * np], pa4, b[0], b[1]);
-                mma16816(acc[2 * np + 1], pa4, b[2], b[3]);
+                ldsm4t(b, s_addr(Vs + (kk * 16 + (m8 & 1) * 8 + (lane & 7)) * KS + np * 16 + (m8 >> 1) * 8));
+                mma16816(acc[2 * np], p4, b[0], b[1]);
+                mma16816(acc[2 * np + 1], p4, b[2], b[3]);
             }
         }
     }
 #pragma unroll
-    for (int j = 0; j < NT; j++) {
-        const int c = v0 + j * 8 + 2 * t4;
-        if (ra < n) *reinterpret_cast<__nv_bfloat162*>(a.out + (size_t)ra * a.os + h * D + c) = __floats2bfloat162_rn(acc[j][0] / sa, acc[j][1] / sa);
-        if (rb < n) *reinterpret_cast<__nv_bfloat162*>(a.out + (size_t)rb * a.os + h * D + c) = __floats2bfloat162_rn(acc[j][2] / sb, acc[j][3] / sb);
+    for (int j = 0; j < D / 8; j++) {
+        const int c = j * 8 + 2 * t4;
+        if (ia) *reinterpret_cast<__nv_bfloat162*>(a.out + (size_t)ta * a.os + ha * D + c) = __floats2bfloat162_rn(acc[j][0] / sa, acc[j][1] / sa);
+        if (ib) *reinterpret_cast<__nv_bfloat162*>(a.out + (size_t)tb * a.os + hb * D + c) = __floats2bfloat162_rn(acc[j][2] / sb, acc[j][3] / sb);
     }
 }
 
-// (heads of 128, 256 and 512 take the GPU library's prompt kernel, glyd_gpu_kv_prefill_bf16: one kernel for a bf16 cache and the 12-bit pages; heads of 64 this one)
-extern "C" __global__ void __launch_bounds__(128, 1) attn_fa64(AttnArgs a) { attn_fa_t<64, 64, 64>(a); }
+// (heads of 256 and 512 take the GPU library's prompt kernel, glyd_gpu_kv_prefill_bf16, and over 12-bit pages glyd_gpu_kv_prefill: the same tiles, so the same bits; heads
+// of 64 and 128 these, over 12-bit pages as over bf16 ones: the pages unpacked to a bf16 ring first, src/dynamic/attn.rs `attn_read`)
+extern "C" __global__ void __launch_bounds__(128, 2) attn_pf64(AttnArgs a) { attn_pf_t<64>(a); }
+extern "C" __global__ void __launch_bounds__(128, 2) attn_pf128(AttnArgs a) { attn_pf_t<128>(a); }

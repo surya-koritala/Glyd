@@ -842,11 +842,13 @@ pub struct Dyn {
     prepped: std::cell::Cell<bool>,
     ws: Buf,
     done: Buf,
-    /// The decoded-then-dense way for long chunks (ModelDesc::decoded): the library's or our own dense product, the decoded matrix's room, the GPU's code.
+    /// The decoded-then-dense way for long chunks (ModelDesc::decoded): the library's or our own dense product, the decoded matrix's room, the GPU's code, and
+    /// a development build's GLYD_ENGINE_DECODE_FROM (`decodes`).
     blas: Option<crate::ffi::Blas>,
     own: bool,
     scratch_w: Buf,
     gpu_code: i64,
+    decode_from: Option<usize>,
     /// A prompt's delta rule in chunks of 64 (else one token after another).
     chunked: bool,
     graph: Option<Graph>,
@@ -943,6 +945,33 @@ struct Seq {
 /// The most rows a verify pass takes (`Dyn::verify_rows`): a product of up to 8 rows runs the kernel a one-row step's does (the library's one m-tile product; the
 /// tiered layout's step kernel to 8 rows), so each row's sums are a step's. Checked bit for bit on swift only; the range worker refuses verify on other levels.
 pub const VERIFY_ROWS: usize = 8;
+
+/// The library's routes (glyd_gpu.h GLYD_GPU_ROUTE_*) `Dyn::decodes` reads: W decoded for the caller's dense product, the prompt kernel, W decoded ahead.
+const ROUTE_DECODE: i32 = 0;
+const ROUTE_BIG: i32 = 4;
+const ROUTE_AHEAD: i32 = 5;
+
+/// Rows from which a prompt's product of a layout the route table has no crossover for on the GPU (an A100's tiered layout: the fused prompt kernel at any length)
+/// is decoded and multiplied dense: the lowest crossover measured for the tiered layout elsewhere (an A10's 512, GeForce Ada's 513: gpu/glyd_gpu.cu `ahead_min`).
+/// Not measured on those GPUs: by the arithmetic of the knowledge base's l:wq-decode-budget:kernel:7, a weight's tiered decode at the A100's prompt tile of 256
+/// tokens uses most of the SM's issue slots, where unpacking W once and cuBLAS's product cost about 2.5 ps a weight plus the product at about 70% of peak.
+const DECODE_FROM: usize = 512;
+
+/// The profile's stage for a matrix unpacked to bf16 before its dense product (GLYD_PROF=1: the product's own stage then is the dense product alone).
+const DECODED: &str = "products: a matrix decoded to bf16 for the dense product";
+
+/// `Dyn::decodes` for a product of `m` rows (more than 64) of a matrix in the 12-bit layout or not (`twelve`), `route` the library's route for a row count.
+fn decodes_by(m: usize, twelve: bool, from: Option<usize>, route: &dyn Fn(i64) -> Result<i32>) -> Result<bool> {
+    if let Some(f) = from {
+        return Ok(m >= f);
+    }
+    match route(m as i64)? {
+        ROUTE_DECODE | ROUTE_AHEAD => Ok(true),
+        // (the prompt kernel past any length here: the table measured no crossover for this layout on this GPU)
+        ROUTE_BIG => Ok(!twelve && m >= DECODE_FROM && route(1 << 40)? == ROUTE_BIG),
+        _ => Ok(false),
+    }
+}
 
 /// What `Dyn::rewind` needs of a verify pass: the per-sequence states as they were before it (`states`' sizes), each linear-attention layer's b, a rows then its
 /// convolution's input rows (Mix's whole rows) of the pass (VERIFY_ROWS rows of each; None for another kind of layer or another stage's).
@@ -1112,12 +1141,20 @@ impl Dyn {
         if let Some((layer, _)) = big.moe.first().and_then(|b| b.resident()) {
             let _ = moe_sc.set(crate::moe::MoeScratch::new(&dev, &lib, &[layer], ch)?);
         }
-        // the decoded-then-dense way, as Qwen3.5's engine chooses it: the library's dense product off Ada, our own on Ampere and Ada
+        // the decoded-then-dense way, as Qwen3.5's engine chooses it: the library's dense product off Ada, our own on Ampere and Ada; made where a matrix takes it at a
+        // chunk's rows (`decodes`: the most rows a product has; past its first row count a matrix keeps that way)
         let want = crate::tune!("GLYD_ENGINE_GEMM").unwrap_or_default();
-        let blas = if d.decoded && ch > 64 && (want == "blas" || (want.is_empty() && dev.cc != (8, 9))) { crate::ffi::Blas::find() } else { None };
-        let own = d.decoded && (want == "own" || (want.is_empty() && blas.is_none() && matches!(dev.cc.0, 8 | 9)));
         let gpu_code = lib.gpu()? as i64;
+        let decode_from = crate::tune!("GLYD_ENGINE_DECODE_FROM").and_then(|v| v.parse().ok());
         let packed: Vec<&PackBuf> = (0..big.mats.len()).filter(|&k| k != d.lm && k != d.embed).filter_map(|k| big.mats[k].packed_opt()).collect();
+        let mut decoding = false;
+        if d.decoded {
+            for p in &packed {
+                decoding |= Dyn::decodes(&lib, gpu_code, decode_from, p, ch)?;
+            }
+        }
+        let blas = if decoding && (want == "blas" || (want.is_empty() && dev.cc != (8, 9))) { crate::ffi::Blas::find() } else { None };
+        let own = decoding && (want == "own" || (want.is_empty() && blas.is_none() && matches!(dev.cc.0, 8 | 9)));
         // (the blocks' own matrices too: the experts')
         let block_shapes: Vec<(i64, i64, bool)> = big.moe.iter().flat_map(|b| b.pack_shapes()).collect();
         let biggest = packed.iter().map(|p| (p.pack.rows * p.pack.cols) as usize).chain(block_shapes.iter().map(|s| (s.0 * s.1) as usize)).max().unwrap_or(8);
@@ -1233,6 +1270,7 @@ impl Dyn {
             own,
             scratch_w,
             gpu_code,
+            decode_from,
             chunked: crate::tune!("GLYD_ENGINE_GDN").as_deref() != Some("recurrent"),
             graph: None,
             host,
@@ -1456,6 +1494,7 @@ impl Dyn {
         }
         if self.decoded_way(p, m)? {
             self.lib.unpack(&p.pack, 0, p.pack.rows, self.scratch_w.ptr, s)?;
+            self.mark(DECODED)?;
             if let Some(b) = &self.blas {
                 return b.gemm_nt(s, self.scratch_w.ptr, x, y, p.pack.rows as i32, p.pack.cols as i32, m as i32);
             }
@@ -1465,13 +1504,25 @@ impl Dyn {
         self.lib.linear(&p.pack, x, m as i64, y, self.ws.ptr, self.ws.bytes, self.done.ptr, s)
     }
 
-    /// Whether a product of `m` rows decodes the matrix and multiplies dense (ModelDesc::decoded, the library's route DECODE or AHEAD), as Qwen3.5's engine.
-    unsafe fn decoded_way(&self, p: &PackBuf, m: usize) -> Result<bool> {
-        if (self.blas.is_none() && !self.own) || m <= 64 || p.pack.cols % 64 != 0 || p.pack.rows % 128 != 0 {
+    /// Whether a product of `m` rows decodes the matrix and multiplies dense (ModelDesc::decoded, where the model has that way: `decodes`), as Qwen3.5's engine.
+    fn decoded_way(&self, p: &PackBuf, m: usize) -> Result<bool> {
+        if self.blas.is_none() && !self.own {
             return Ok(false);
         }
-        let route = self.lib.route(self.gpu_code, p.pack.is_twelve(), p.pack.rows, p.pack.cols, m as i64)?;
-        Ok(route == 0 || route == 5)
+        Dyn::decodes(&self.lib, self.gpu_code, self.decode_from, p, m)
+    }
+
+    /// Whether a product of `m` rows by `p` on the GPU of code `gpu` is the decoded matrix's (W unpacked to bf16 once, then a dense product): the library's route
+    /// DECODE or AHEAD where its table has a crossover for the pack's layout on that GPU (as measured there: an A100's 12-bit layout from 769 rows, an L4's,
+    /// GeForce Ada's, an A10's, an L40S's, every Hopper's); where it has none (the prompt kernel at any length: an A100's tiered and lossy layouts, Ampere GeForce,
+    /// Blackwell), from DECODE_FROM rows for a layout that is not the 12-bit one. A development build's GLYD_ENGINE_DECODE_FROM=N replaces both: from N rows
+    /// decoded, below them the library's kernels (a large N: never). K a multiple of 64 and the rows of 128 (the dense products' tiles), more than 64 rows.
+    fn decodes(lib: &crate::ffi::Lib, gpu: i64, from: Option<usize>, p: &PackBuf, m: usize) -> Result<bool> {
+        let (o, k, twelve) = (p.pack.rows, p.pack.cols, p.pack.is_twelve());
+        if m <= 64 || k % 64 != 0 || o % 128 != 0 {
+            return Ok(false);
+        }
+        decodes_by(m, twelve, from, &|rows| lib.route(gpu, twelve, o, k, rows))
     }
 
     /// The matrix the next product after op `i` of layer `l` of `p` reads, and its rows (the LM head's after the last layer: `head`).
@@ -1678,6 +1729,7 @@ impl Dyn {
                         && inter.is_multiple_of(128)
                     {
                         self.lib.unpack(&pk.pack, 0, pk.pack.rows, self.scratch_w.ptr, s)?;
+                        self.mark(DECODED)?;
                         self.kern.gemm_silu(s, p.slot(Slot::H), self.scratch_w.ptr, p.slot(Slot::M), nu as i32, pk.pack.rows as i32, pk.pack.cols as i32)?;
                         return self.mark("MLP: gate and up product, SiLU");
                     }
@@ -2819,4 +2871,34 @@ pub fn prodbench(a: &crate::args::Args) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A route table as glyd_gpu.cu's `route_for` gives it past 64 rows: the prompt kernel, and from `dec` rows the decoded way (None: never).
+    fn table(dec: Option<(i64, i32)>) -> impl Fn(i64) -> Result<i32> {
+        move |m| Ok(dec.filter(|&(from, _)| m >= from).map_or(ROUTE_BIG, |(_, r)| r))
+    }
+
+    /// A prompt's product of the tiered layout where the table has no crossover for it (an A100's: the prompt kernel at any length) is decoded and multiplied
+    /// dense from DECODE_FROM rows; the 12-bit layout there, and either layout where the table has one, keep the table's; GLYD_ENGINE_DECODE_FROM replaces both.
+    #[test]
+    fn a_prompt_of_a_layout_the_table_never_decodes_is_decoded_from_512_rows() {
+        let a100_tiered = table(None);
+        assert!(!decodes_by(511, false, None, &a100_tiered).unwrap());
+        assert!(decodes_by(512, false, None, &a100_tiered).unwrap());
+        assert!(decodes_by(4096, false, None, &a100_tiered).unwrap());
+        // (the 12-bit layout where the table never decodes it: the table's way, the prompt kernel)
+        assert!(!decodes_by(4096, true, None, &a100_tiered).unwrap());
+        // (an A100's 12-bit layout: from 769, as measured; GeForce Ada's tiered layout decoded ahead from 513, the prompt kernel at 512)
+        let a100_twelve = table(Some((769, ROUTE_DECODE)));
+        assert!(!decodes_by(768, true, None, &a100_twelve).unwrap() && decodes_by(769, true, None, &a100_twelve).unwrap());
+        let ada_tiered = table(Some((513, ROUTE_AHEAD)));
+        assert!(!decodes_by(512, false, None, &ada_tiered).unwrap() && decodes_by(513, false, None, &ada_tiered).unwrap());
+        // (GLYD_ENGINE_DECODE_FROM: from its rows whatever the table, and never below them)
+        assert!(decodes_by(300, true, Some(256), &a100_tiered).unwrap());
+        assert!(!decodes_by(4096, false, Some(1 << 30), &a100_twelve).unwrap());
+    }
 }
