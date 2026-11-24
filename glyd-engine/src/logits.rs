@@ -2435,8 +2435,8 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
-/// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR --prompt-tokens P]` (gemma4, qwen35, muse, kimi, glm, nemotron): the case's random model on the description executor (or the model
-/// in DIR, its prompts of P (k + 1) / N tokens), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
+/// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR --prompt-tokens P [--places N [--mode M] [--device]]]` (gemma4, qwen35, muse, kimi, glm, nemotron): the case's random model on the
+/// description executor (or the model in DIR, its prompts of P (k + 1) / N tokens; with `--places`, its experts in the expert cache), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
 /// the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts one a pass, decode steps of the rows that decode: 16 or fewer here, whose bits
 /// are each row's own pass's). With prompts run together the replies that differ are counted, not refused (a step of more than 16 rows is another kernel's; a random model's near ties turn on its last
 /// bits: `roundcheck` measures the logits). The round is one step of the rows that decode and the prompts' chunks unless GLYD_ENGINE_ONE_STEP=0, and some step must then have held both.
@@ -2455,12 +2455,34 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let tokens: usize = a.num("tokens", 24usize)?;
     let long: Option<usize> = a.flag("prompt-tokens").map(|v| v.parse().map_err(|_| Error(format!("--prompt-tokens {v}: not a number")))).transpose()?;
     let len = |k: usize| long.map_or(5 + 29 * k, |p| (p * (k + 1) / users).max(1));
-    let mut e: Dyn = match a.flag("dir") {
-        Some(d) => {
+    let mut e: Dyn = match (a.flag("dir"), a.num("places", 0usize)?) {
+        // (`--places N`: the model in DIR with its experts in the expert cache, N places a layer and every expert in the computer's memory (src/offload.rs; `--mode`, copy by default, `--device`: the
+        // decode calls planned on the GPU, src/devplan.rs): a model larger than the GPU, its replies alone against its replies at once)
+        (Some(d), places) if places > 0 => {
+            let mode = match a.flag("mode") {
+                Some(m) => crate::offload::Mode::parse(m).ok_or_else(|| Error(format!("--mode {m}: copy, cpu, split or auto")))?,
+                None => crate::offload::Mode::Copy,
+            };
+            let o = DynOpts { ctx: (len(users - 1) + tokens + 64).next_multiple_of(256), chunk: 256, graph: true, device: 0, layout: level_layout(level)? };
+            let offload = crate::offload::Offload { mode, device: a.has("device"), ..Default::default() };
+            let caching = crate::hbg_store::HbCaching { places, ram: None, offload, dense: 0 };
+            match crate::dynamic::split::open_cached(Path::new(d), &o, &[], &[0], vec![caching])? {
+                crate::dynamic::split::Run::One(e) => {
+                    println!(
+                        "{d}: its experts in the expert cache, {places} places a layer, mode {}{}",
+                        mode.name(),
+                        if e.has_graph() { ", the decode step one graph" } else { "" }
+                    );
+                    e
+                }
+                _ => return err("the model on one GPU was asked for"),
+            }
+        }
+        (Some(d), _) => {
             let o = DynOpts { ctx: (len(users - 1) + tokens + 64).next_multiple_of(256), chunk: 256, graph: true, device: 0, layout: level_layout(level)? };
             load_dyn(case, Path::new(d), &o, level)?
         }
-        None => random_dyn(case, level, "usercheck")?,
+        (None, _) => random_dyn(case, level, "usercheck")?,
     };
     let vocab = e.desc().vocab as u32;
     let prompts: Vec<Vec<u32>> = (0..users).map(|k| (0..len(k) as u32).map(|i| 3 + (i * 7919 + k as u32 * 104_729) % (vocab - 3)).collect()).collect();
