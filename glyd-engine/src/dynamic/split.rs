@@ -348,11 +348,15 @@ impl crate::conv::Gen for Run {
             Run::Split(_) | Run::Tp(_) => None,
         }
     }
-    /// One GPU: the engine's own step (src/dynamic/rows.rs); stages and layers across GPUs: a step of one sequence at a time (`ModelStep for Run`).
+    /// One GPU: the engine's own step (src/dynamic/rows.rs); stages and layers across GPUs: a step of one sequence at a time (`ModelStep for Run`), its slot empty (what a
+    /// reply before this left in the cache is not a scheduler's sequence, which begins at its first token: `serve_rows` empties the executor's the same way).
     fn as_step(&mut self, users: usize) -> Result<Option<(usize, &mut dyn crate::sched::ModelStep)>> {
         match self {
             Run::One(e) => crate::conv::Gen::as_step(e, users),
-            Run::Split(_) | Run::Tp(_) => Ok(Some((1, self as &mut dyn crate::sched::ModelStep))),
+            Run::Split(_) | Run::Tp(_) => {
+                self.reset()?;
+                Ok(Some((1, self as &mut dyn crate::sched::ModelStep)))
+            }
         }
     }
 }

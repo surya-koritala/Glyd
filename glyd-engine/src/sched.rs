@@ -682,9 +682,11 @@ pub struct Sched<B: ModelStep> {
     kept: VecDeque<Kept>,
     /// Whether finished sequences are kept (a slot step that `keeps`, unless `keeping(false)`).
     keep: bool,
-    /// The step launched and not landed (a step that `overlaps`), and whether the next may be launched before it lands.
+    /// The step launched and not landed (a step that `overlaps`), and whether the next may be launched before it lands; whether it landed while the next step was planned
+    /// (a sequence of it swapped for room: `ensure_pages`), which then plans again.
     flight: Option<Flight>,
     overlap: bool,
+    relanded: bool,
 }
 
 impl<B: ModelStep> Sched<B> {
@@ -736,6 +738,7 @@ impl<B: ModelStep> Sched<B> {
             keep,
             flight: None,
             overlap,
+            relanded: false,
         }
     }
 
@@ -1362,6 +1365,14 @@ impl<B: ModelStep> Sched<B> {
                     return Ok(false);
                 }
                 let victim = self.active.iter().enumerate().max_by_key(|(_, s)| s.id).map(|(v, _)| v).expect("an active sequence");
+                // (one with tokens in the step in flight that would be swapped: that step lands first, so that its cache is what its tokens say when it is copied; then the room is
+                // asked for again, the step's own having ended or grown)
+                if self.flying(self.active[victim].id) && self.swap_pays(&self.active[victim]) {
+                    let f = self.flight.take().expect("a step in flight");
+                    self.land(f)?;
+                    self.relanded = true;
+                    continue;
+                }
                 self.preempt(victim, true)?;
             }
         }
@@ -1485,7 +1496,7 @@ impl<B: ModelStep> Sched<B> {
     /// named first, as `give_back` names them), to be copied back and go on from where it is. Otherwise, or where the host's area has no room: its full pages go to the cache, the rest are cleared,
     /// and it is run again from its tokens.
     fn preempt(&mut self, i: usize, swap: bool) -> Result<()> {
-        // (not one with tokens in the step in flight: its cache is not what its tokens say until that step lands)
+        // (not one with tokens in the step in flight, whose cache is not what its tokens say until that step lands: `ensure_pages` lands it first where a swap would pay)
         if swap && !self.flying(self.active[i].id) && self.swap_pays(&self.active[i]) {
             let slot = self.active[i].pages[0];
             if self.names() {
@@ -1890,6 +1901,10 @@ impl<B: ModelStep> Sched<B> {
         });
         let rows: Vec<(u64, Option<usize>)> = rows.into_iter().filter(|r| at(&self.active, r.0).is_some()).collect();
         self.stats.before_ns += tb.elapsed().as_nanos() as u64;
+        if std::mem::take(&mut self.relanded) {
+            // (the step in flight landed on the way: its tokens are the host's now, and what ended in it has gone; the room taken stays taken)
+            return self.plan();
+        }
         Ok((!rows.is_empty() || !picks.is_empty()).then_some(Plan { rows, picks, used }))
     }
 
@@ -4644,16 +4659,22 @@ pub(crate) mod tests {
     /// token; no prompt token is run twice (recompute-only runs the ones sent back again).
     #[test]
     fn swapped_sequences_go_on_with_the_tokens_they_have_alone() {
-        for (slots, budget) in [(4, 160), (8, 256), (8, 128), (2, 128)] {
-            let (reqs, got, ran, st) = squeezed(slots, budget, SwapMode::Always, |_| {});
+        // (and where steps are launched before the one before lands: a sequence of the step in flight that is swapped has that step land first)
+        for (slots, budget, ahead) in [(4, 160, false), (8, 256, false), (8, 128, false), (2, 128, false), (4, 160, true), (8, 128, true), (2, 128, true)] {
+            let launched = |f: &mut SlotFake| {
+                if ahead {
+                    (f.one_step, f.batch, f.overlap) = (true, slots, true);
+                }
+            };
+            let (reqs, got, ran, st) = squeezed(slots, budget, SwapMode::Always, launched);
             for ((p, n), g) in reqs.iter().zip(&got) {
-                assert_eq!(g, &(reference(p, *n), Finish::Length), "{slots} slots, budget {budget}");
+                assert_eq!(g, &(reference(p, *n), Finish::Length), "{slots} slots, budget {budget}, launched ahead {ahead}");
             }
             let prompts: usize = reqs.iter().map(|(p, _)| p.len()).sum();
             // (every one that held tokens: one sent back before its first chunk has nothing to copy, nor to run again)
-            assert!(st.swapped > 0, "{slots} slots, budget {budget}: {} sent back, none swapped", st.preempted);
-            assert_eq!(ran, prompts, "{slots} slots, budget {budget}: prompt tokens run again");
-            let (_, again, ran_again, st_again) = squeezed(slots, budget, SwapMode::Never, |_| {});
+            assert!(st.swapped > 0, "{slots} slots, budget {budget}, launched ahead {ahead}: {} sent back, none swapped", st.preempted);
+            assert_eq!(ran, prompts, "{slots} slots, budget {budget}, launched ahead {ahead}: prompt tokens run again");
+            let (_, again, ran_again, st_again) = squeezed(slots, budget, SwapMode::Never, launched);
             assert_eq!(again, got);
             assert!(st_again.preempted > 0 && st_again.swapped == 0 && ran_again > prompts, "recompute ran {ran_again} prompt tokens, swap {ran}");
         }
