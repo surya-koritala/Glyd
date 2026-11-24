@@ -290,6 +290,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_sto
         widths,
         mats: Vec::new(),
         small: Vec::new(),
+        forms: Vec::new(),
         ropes: Vec::new(),
         rings,
         // (the embedding's row normed without a weight, in place)
@@ -393,6 +394,7 @@ pub fn describe(c: &ConfigMuse, st: &Stage) -> Result<ModelDesc> {
         widths,
         mats: Vec::new(),
         small: Vec::new(),
+        forms: Vec::new(),
         ropes: Vec::new(),
         rings,
         first: Op::RmsNorm { x: Slot::X, w: ones, y: Slot::X, weight: NormW::Plain, eps: c.eps },

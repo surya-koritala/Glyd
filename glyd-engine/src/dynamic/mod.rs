@@ -543,6 +543,8 @@ pub struct ModelDesc {
     pub(crate) mats: Vec<Item>,
     /// The small tensors (norms, scalars), bf16 as saved.
     pub small: Vec<String>,
+    /// The small tensors made from their tensor's values rather than read as saved (`SmallForm`), by index into `small`.
+    pub forms: Vec<(usize, SmallForm)>,
     pub ropes: Vec<Rope>,
     pub rings: Vec<Ring>,
     pub first: Op,
@@ -595,6 +597,18 @@ pub struct Opts {
     pub graph: bool,
     pub device: i32,
     pub layout: Option<Layout>,
+}
+
+/// How a small tensor is made from the values its checkpoint holds (bf16), as the operation reading it takes it: each result rounded to bf16.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SmallForm {
+    /// `n` ones, no tensor read (a weightless norm's weight).
+    Ones(usize),
+    /// 1 + w (a centered norm's factors, as transformers adds them: `muse::plus_one`).
+    PlusOne,
+    /// A residual gate's two factors of its parameter at temperature T (`muse::residual_gate`): alpha, and beta.
+    GateAlpha(f32),
+    GateBeta(f32),
 }
 
 /// The layers one GPU runs of a model split across several (`split::Split`): layers `layers.0..layers.1`, the embedding where `first`, the final norm
@@ -764,6 +778,25 @@ fn read_f32_as_bf16(d: &ModelDesc) -> Vec<usize> {
     d.layers.iter().flatten().filter_map(|op| if let Op::GatedNorm { w, sigmoid: false, .. } = op { Some(*w) } else { None }).collect()
 }
 
+/// Small tensor `name` made in form `f` from its checkpoint's bf16 values: bf16 words.
+fn small_of(ck: &Checkpoint, name: &str, f: SmallForm) -> Result<Vec<u16>> {
+    let vals = || -> Result<Vec<f32>> {
+        let (_, t) = ck.get(name).ok_or_else(|| Error(format!("no tensor {name}")))?;
+        if t.dtype != "BF16" {
+            return err(format!("{name}: {}, where bf16 is read", t.dtype));
+        }
+        let b = ck.read(name).map_err(|e| Error(format!("{name}: {e}")))?;
+        Ok(b.as_chunks::<2>().0.iter().map(|x| f32::from_bits((u16::from_le_bytes(*x) as u32) << 16)).collect())
+    };
+    let v = match f {
+        SmallForm::Ones(n) => vec![1.0; n],
+        SmallForm::PlusOne => crate::muse::plus_one(&vals()?),
+        SmallForm::GateAlpha(t) => crate::muse::residual_gate(&vals()?, t).0,
+        SmallForm::GateBeta(t) => crate::muse::residual_gate(&vals()?, t).1,
+    };
+    Ok(v.into_iter().map(crate::gemma4::bf16_bits).collect())
+}
+
 /// Bytes a value of small tensor `i` takes on the GPU, stored as `dtype`.
 fn small_width(d: &ModelDesc, i: usize, dtype: &str) -> u64 {
     if read_f32(d).contains(&i) || read_f32_as_bf16(d).contains(&i) {
@@ -843,6 +876,9 @@ fn load_part(dir: &Path, d: ModelDesc, layout: Layout, threads: usize, rows: usi
         .iter()
         .enumerate()
         .map(|(i, name)| {
+            if let Some(&(_, f)) = d.forms.iter().find(|x| x.0 == i) {
+                return upload_bytes(crate::weights::as_bytes(&small_of(&ck, name, f)?));
+            }
             let (_, t) = ck.get(name).ok_or_else(|| Error(format!("no tensor {name}")))?;
             let b = ck.read(name).map_err(|e| Error(format!("{name}: {e}")))?;
             let wide = f32s.contains(&i) || as_bf16.contains(&i);

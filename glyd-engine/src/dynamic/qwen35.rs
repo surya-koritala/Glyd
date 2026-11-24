@@ -176,6 +176,7 @@ pub fn describe(c: &crate::qwen35::Config35, st: &Stage) -> Result<ModelDesc> {
         widths,
         mats,
         small,
+        forms: Vec::new(),
         ropes: vec![Rope { theta: c.rope_theta, dim: c.rotary_dim, pairs: c.rotary_dim / 2 }],
         rings,
         // (a later stage never runs the first operation)
