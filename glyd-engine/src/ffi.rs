@@ -1384,6 +1384,71 @@ impl Lib {
         self.ck(call!("moe_placed"), r)
     }
 
+    /// `GpuOps::f8_size` by the library's own kernels: the oracle of the engine's (`fold`).
+    ///
+    /// # Safety
+    /// As `GpuOps::f8_size`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn library_f8_size(&self, h: bool, w: u64, ld: i64, o: i64, k: i64, heads: u64, ws: u64, ws_bytes: usize, cs: Stream) -> Result<i64> {
+        let mut words = 0i64;
+        let f = if h { self.api.glyd_gpu_f8h_size } else { self.api.glyd_gpu_f8_size };
+        let r = f(w as *const u8, ld, o, k, heads as *mut u32, ws as *mut c_void, ws_bytes, &mut words, cs);
+        self.ck(call!("f8_size"), r)?;
+        Ok(words)
+    }
+
+    /// `GpuOps::f8h_plain` by the library's own kernels: the oracle of the engine's (`fold`).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn library_f8h_plain(&self, plain: Option<bool>) -> Result<()> {
+        // SAFETY: a value argument.
+        let r = unsafe { (self.api.glyd_gpu_f8h_plain)(plain.map_or(-1, |p| p as c_int)) };
+        self.ck(call!("f8h_plain"), r)
+    }
+
+    /// `GpuOps::f8_size_workspace` by the library's own kernels: the oracle of the engine's (`fold`).
+    #[cfg(feature = "dev")]
+    pub(crate) fn library_f8_size_workspace(&self, o: i64, k: i64) -> Result<usize> {
+        let mut b = 0usize;
+        // SAFETY: a host out-pointer.
+        let r = unsafe { (self.api.glyd_gpu_f8_size_workspace)(o, k, &mut b) };
+        self.ck(call!("f8_size_workspace"), r)?;
+        Ok(b)
+    }
+
+    /// `GpuOps::f8_pack` by the library's own kernels: the oracle of the engine's (`fold`).
+    ///
+    /// # Safety
+    /// As `GpuOps::f8_pack`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn library_f8_pack(
+        &self,
+        h: bool,
+        w: u64,
+        ld: i64,
+        o: i64,
+        k: i64,
+        heads: u64,
+        core: u64,
+        var: u64,
+        var_words: i64,
+        cs: Stream,
+    ) -> Result<()> {
+        let f = if h { self.api.glyd_gpu_f8h_pack } else { self.api.glyd_gpu_f8_pack };
+        let r = f(w as *const u8, ld, o, k, heads as *const u32, core as *mut u8, var as *mut u32, var_words, cs);
+        self.ck(call!("f8_pack"), r)
+    }
+
+    /// `GpuOps::f8_unpack` by the library's own kernels: the oracle of the engine's (`fold`).
+    ///
+    /// # Safety
+    /// As `GpuOps::f8_unpack`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn library_f8_unpack(&self, h: bool, core: u64, heads: u64, var: u64, o: i64, k: i64, out: u64, ld: i64, cs: Stream) -> Result<()> {
+        let f = if h { self.api.glyd_gpu_f8h_unpack } else { self.api.glyd_gpu_f8_unpack };
+        let r = f(core as *const u8, heads as *const u32, var as *const u32, o, k, out as *mut u8, ld, cs);
+        self.ck(call!("f8_unpack"), r)
+    }
+
     /// `GpuOps::moe_way` by the library's own kernels (glyd_gpu_moe_way): the oracle of the engine's (`fold::moe_way`).
     ///
     /// # Safety
@@ -1456,37 +1521,39 @@ impl GpuOps for Lib {
     }
 
     unsafe fn f8_size(&self, h: bool, w: u64, ld: i64, o: i64, k: i64, heads: u64, ws: u64, ws_bytes: usize, cs: Stream) -> Result<i64> {
-        let mut words = 0i64;
-        let f = if h { self.api.glyd_gpu_f8h_size } else { self.api.glyd_gpu_f8_size };
-        let r = f(w as *const u8, ld, o, k, heads as *mut u32, ws as *mut c_void, ws_bytes, &mut words, cs);
-        self.ck(call!("f8_size"), r)?;
-        Ok(words)
+        // (the engine's own kernels, from the library's source: R17's `fold`)
+        if crate::fold::on() {
+            if let Some(words) = crate::fold::f8_size(h, w, ld, o, k, heads, (ws, ws_bytes), cs)? {
+                return Ok(words);
+            }
+        }
+        self.library_f8_size(h, w, ld, o, k, heads, ws, ws_bytes, cs)
     }
 
     fn f8h_plain(&self, plain: Option<bool>) -> Result<()> {
-        // SAFETY: a value argument.
-        let r = unsafe { (self.api.glyd_gpu_f8h_plain)(plain.map_or(-1, |p| p as c_int)) };
-        self.ck(call!("f8h_plain"), r)
+        // (both: the engine's packs read it, and the library's, which they are held to)
+        crate::fold::f8h_plain_set(plain);
+        self.library_f8h_plain(plain)
     }
 
     fn f8_size_workspace(&self, o: i64, k: i64) -> Result<usize> {
-        let mut b = 0usize;
-        // SAFETY: a host out-pointer.
-        let r = unsafe { (self.api.glyd_gpu_f8_size_workspace)(o, k, &mut b) };
-        self.ck(call!("f8_size_workspace"), r)?;
-        Ok(b)
+        crate::fold::f8_size_workspace(o, k)
     }
 
     unsafe fn f8_pack(&self, h: bool, w: u64, ld: i64, o: i64, k: i64, heads: u64, core: u64, var: u64, var_words: i64, cs: Stream) -> Result<()> {
-        let f = if h { self.api.glyd_gpu_f8h_pack } else { self.api.glyd_gpu_f8_pack };
-        let r = f(w as *const u8, ld, o, k, heads as *const u32, core as *mut u8, var as *mut u32, var_words, cs);
-        self.ck(call!("f8_pack"), r)
+        // (the engine's own kernels, from the library's source: R17's `fold`)
+        if crate::fold::on() && crate::fold::f8_pack(h, w, ld, o, k, heads, (core, var, var_words), cs)? {
+            return Ok(());
+        }
+        self.library_f8_pack(h, w, ld, o, k, heads, core, var, var_words, cs)
     }
 
     unsafe fn f8_unpack(&self, h: bool, core: u64, heads: u64, var: u64, o: i64, k: i64, out: u64, ld: i64, cs: Stream) -> Result<()> {
-        let f = if h { self.api.glyd_gpu_f8h_unpack } else { self.api.glyd_gpu_f8_unpack };
-        let r = f(core as *const u8, heads as *const u32, var as *const u32, o, k, out as *mut u8, ld, cs);
-        self.ck(call!("f8_unpack"), r)
+        // (the engine's own kernels, from the library's source: R17's `fold`)
+        if crate::fold::on() && crate::fold::f8_unpack(h, (core, heads, var), o, k, (out, ld), cs)? {
+            return Ok(());
+        }
+        self.library_f8_unpack(h, core, heads, var, o, k, out, ld, cs)
     }
 
     fn f8_linear_workspace(&self, n: i64, k: i64, m: i64) -> Result<usize> {

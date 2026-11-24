@@ -500,3 +500,27 @@ FOLD_MOE_ROWS_TWELVE(4, 2)
 extern "C" __global__ void fold_moe_sum(const float* y32, const int64_t* ids, int E, int64_t T, int64_t k, int64_t O, __nv_bfloat16* y) {
     glib::moe_sum_body(y32, ids, E, T, k, O, y);
 }
+
+// glyd_gpu_f8_size, _f8_pack, _f8_unpack and layout H's (f8h_*): the lossless FP8 format's heads, the scan of their var words, the pack and the unpack, a CTA a
+// patch, as the library launches them (f8c's *_body).
+extern "C" __global__ void __launch_bounds__(glib::f8c::NT) fold_f8_head(const glib::f8c::F8Pk P, uint32_t* heads) {
+    glib::f8c::f8_head_body(P, heads);
+}
+extern "C" __global__ void __launch_bounds__(glib::f8c::NT) fold_f8h_head(const glib::f8c::F8Pk P, uint32_t* heads) {
+    glib::f8c::f8h_head_body(P, heads);
+}
+extern "C" __global__ void __launch_bounds__(glib::f8c::SCAN_NT) fold_f8_scan(uint32_t* heads, int64_t patches, uint64_t* total) {
+    glib::f8c::f8_scan_body(heads, patches, total);
+}
+extern "C" __global__ void __launch_bounds__(glib::f8c::NT) fold_f8_pack(const glib::f8c::F8Pk P, const uint32_t* heads, uint8_t* core_out, uint32_t* var, int64_t var_words) {
+    glib::f8c::f8_pack_body(P, heads, core_out, var, var_words);
+}
+extern "C" __global__ void __launch_bounds__(glib::f8c::NT) fold_f8h_pack(const glib::f8c::F8Pk P, const uint32_t* heads, uint8_t* core_out, uint32_t* var, int64_t var_words) {
+    glib::f8c::f8h_pack_body(P, heads, core_out, var, var_words);
+}
+extern "C" __global__ void __launch_bounds__(glib::f8c::NT) fold_f8_unpack(const glib::f8c::F8Un P) {
+    glib::f8c::f8_unpack_body(P);
+}
+extern "C" __global__ void __launch_bounds__(glib::f8c::HUNT) fold_f8h_unpack(const glib::f8c::F8Un P) {
+    glib::f8c::f8h_unpack_body(P);
+}

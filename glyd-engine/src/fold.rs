@@ -1671,6 +1671,189 @@ pub unsafe fn moe(
     Ok(true)
 }
 
+/// f8c::F8Pk (gpu/glyd_gpu_kernels.h), field for field: the FP8 pack's matrix.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct F8Pk {
+    pub w: u64,
+    pub ld: i64,
+    pub o: i32,
+    pub k: i32,
+    pub kt: i32,
+    pub vec: i32,
+    pub plain: i32,
+}
+
+/// f8c::F8Un (gpu/glyd_gpu_kernels.h), field for field: the FP8 unpack's pack and output.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct F8Un {
+    pub core: u64,
+    pub heads: u64,
+    pub var: u64,
+    pub out: u64,
+    pub ids: u64,
+    pub ld: i64,
+    pub item: i64,
+    pub o: i32,
+    pub k: i32,
+    pub kt: i32,
+    pub per: i32,
+    pub e: i32,
+    pub vec: i32,
+}
+
+/// The FP8 format's patches of a matrix [o, k] (f8_shape: 64 rows by 128 columns, at most i32::MAX of them); None where the library refuses the shape.
+fn f8_patches(o: i64, k: i64) -> Option<i64> {
+    if o < 1 || k < 1 || o > i32::MAX as i64 - 64 || k > i32::MAX as i64 - 128 {
+        return None;
+    }
+    let n = ((o + 63) / 64) * ((k + 127) / 128);
+    (n <= i32::MAX as i64).then_some(n)
+}
+
+/// The FP8 format's zero words after the last patch's part of var (f8c::GUARD).
+const F8_GUARD: i64 = 8;
+
+/// `GpuOps::f8h_plain`'s choice (the library's g_f8h_plain: -1 the GPU's own).
+static F8H_PLAIN: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+/// Layout H's packs plain or coded (glyd_gpu_f8h_plain): Some(true) plain, Some(false) coded, None the GPU's own.
+pub fn f8h_plain_set(plain: Option<bool>) {
+    F8H_PLAIN.store(plain.map_or(-1, |p| p as i32), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether layout H's packs are plain (f8h_plain): GLYD_F8H_PLAIN (development builds), else `f8h_plain_set`'s, else an HBM GPU's own (plain).
+fn f8h_plain() -> Result<bool> {
+    let set = F8H_PLAIN.load(std::sync::atomic::Ordering::Relaxed);
+    let fallback = if set >= 0 { set as i64 } else { moe_gpu()?.0 as i64 };
+    Ok(tuned(crate::tune!("GLYD_F8H_PLAIN"), fallback) != 0)
+}
+
+/// `GpuOps::f8_size_workspace` (glyd_gpu_f8_size_workspace): 16 bytes for a shape the format takes.
+pub fn f8_size_workspace(o: i64, k: i64) -> Result<usize> {
+    match f8_patches(o, k) {
+        Some(_) => Ok(16),
+        None => Err(invalid("f8_size_workspace")),
+    }
+}
+
+/// The lossless FP8 format's heads of W [o, k] and the var words its pack takes, by the engine's kernels (glyd_gpu_f8_size, layout H's f8h_size: a CTA a
+/// patch, then the scan of the heads, its total read back: the stream is waited for). None where the library takes it.
+///
+/// # Safety
+/// As `GpuOps::f8_size`; a context with the engine's module is current.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn f8_size(h: bool, w: u64, ld: i64, o: i64, k: i64, heads: u64, (ws, ws_bytes): (u64, usize), cs: Stream) -> Result<Option<i64>> {
+    use crate::dev::here;
+    use crate::kt;
+    use crate::launch;
+    let Some(patches) = f8_patches(o, k) else { return Ok(None) };
+    if cfg!(glyd_hip) || w == 0 || heads == 0 || ld < k || heads % 16 != 0 || ws == 0 || ws % 8 != 0 || ws_bytes < 16 {
+        return Ok(None);
+    }
+    let p = F8Pk {
+        w,
+        ld,
+        o: o as i32,
+        k: k as i32,
+        kt: ((k + 127) / 128) as i32,
+        vec: (w % 16 == 0 && ld % 16 == 0) as i32,
+        plain: if h { f8h_plain()? as i32 } else { 0 },
+    };
+    let grid = [patches as u32, 1, 1];
+    if h {
+        launch!(here::<kt::fold_f8h_head>()?, grid, [256, 1, 1], cs; p, heads)?;
+    } else {
+        launch!(here::<kt::fold_f8_head>()?, grid, [256, 1, 1], cs; p, heads)?;
+    }
+    launch!(here::<kt::fold_f8_scan>()?, [1, 1, 1], [1024, 1, 1], cs; heads, patches, ws)?;
+    let mut total = 0u64;
+    D::d2h_async(&mut total as *mut u64 as *mut std::ffi::c_void, ws, 8, cs)?;
+    D::stream_sync(cs)?;
+    if total + F8_GUARD as u64 >= 1 << 32 {
+        return Err(invalid("f8_size"));
+    }
+    Ok(Some(total as i64 + F8_GUARD))
+}
+
+/// W's patches into `core` and `var` from the heads `f8_size` made, by the engine's kernel (glyd_gpu_f8_pack, f8h_pack). False where the library takes it.
+///
+/// # Safety
+/// As `GpuOps::f8_pack`; a context with the engine's module is current.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn f8_pack(h: bool, w: u64, ld: i64, o: i64, k: i64, heads: u64, (core, var, var_words): (u64, u64, i64), cs: Stream) -> Result<bool> {
+    use crate::dev::here;
+    use crate::kt;
+    use crate::launch;
+    let Some(patches) = f8_patches(o, k) else { return Ok(false) };
+    if cfg!(glyd_hip)
+        || w == 0
+        || heads == 0
+        || core == 0
+        || var == 0
+        || ld < k
+        || !(F8_GUARD..1 << 32).contains(&var_words)
+        || heads % 16 != 0
+        || core % 16 != 0
+    {
+        return Ok(false);
+    }
+    let p = F8Pk {
+        w,
+        ld,
+        o: o as i32,
+        k: k as i32,
+        kt: ((k + 127) / 128) as i32,
+        vec: (w % 16 == 0 && ld % 16 == 0) as i32,
+        plain: if h { f8h_plain()? as i32 } else { 0 },
+    };
+    let grid = [patches as u32, 1, 1];
+    if h {
+        launch!(here::<kt::fold_f8h_pack>()?, grid, [256, 1, 1], cs; p, heads, core, var, var_words)?;
+    } else {
+        launch!(here::<kt::fold_f8_pack>()?, grid, [256, 1, 1], cs; p, heads, core, var, var_words)?;
+    }
+    Ok(true)
+}
+
+/// W back, bit for bit, into `out` [o, k] (rows `ld` bytes apart) by the engine's kernel (glyd_gpu_f8_unpack: a CTA a patch; layout H's f8h_unpack, its CTAs
+/// of 128). False where the library takes it.
+///
+/// # Safety
+/// As `GpuOps::f8_unpack`; a context with the engine's module is current.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn f8_unpack(h: bool, (core, heads, var): (u64, u64, u64), o: i64, k: i64, (out, ld): (u64, i64), cs: Stream) -> Result<bool> {
+    use crate::dev::here;
+    use crate::kt;
+    use crate::launch;
+    let Some(patches) = f8_patches(o, k) else { return Ok(false) };
+    if cfg!(glyd_hip) || core == 0 || heads == 0 || var == 0 || out == 0 || ld < k || core % 16 != 0 || heads % 16 != 0 {
+        return Ok(false);
+    }
+    let p = F8Un {
+        core,
+        heads,
+        var,
+        out,
+        ids: 0,
+        ld,
+        item: o * ld,
+        o: o as i32,
+        k: k as i32,
+        kt: ((k + 127) / 128) as i32,
+        per: patches as i32,
+        e: 1,
+        vec: (out % 16 == 0 && ld % 16 == 0) as i32,
+    };
+    if h {
+        launch!(here::<kt::fold_f8h_unpack>()?, [patches as u32, 1, 1], [128, 1, 1], cs; p)?;
+    } else {
+        launch!(here::<kt::fold_f8_unpack>()?, [patches as u32, 1, 1], [256, 1, 1], cs; p)?;
+    }
+    Ok(true)
+}
+
 /// `foldcheck` (R17): each folded piece against the library's on this GPU, the library the oracle: the GPU's code; the way of every GPU code the
 /// library knows (with and without SPLIT), both layouts, matrices of every kind of K and size, at token counts on each side of every threshold;
 /// the KV cache's sizes and decode workspace over valid and refused shapes; the experts' plan and the unpacking of every layout by the engine's own
@@ -1787,6 +1970,8 @@ pub fn check() -> Result<()> {
     say("the experts' plan (moe_way), the engine's kernels against the library's (one warp and one block, ids out of range among them)", n, bad);
     let (n, bad) = kv_check(&dev, &lib)?;
     say("the 12-bit pages' write, unpack and gather, and the decode and prompt attention over them and over a bf16 cache: the engine's kernels against the library's", n, bad);
+    let (n, bad) = f8_check(&dev, &lib)?;
+    say("the lossless FP8 format's size, pack and unpack (both layouts), the engine's kernels against the library's", n, bad);
     let (n, bad) = moe_check(&dev, &lib)?;
     say("the grouped experts' step products (no activation, SiLU, GELU, gathered, weighted), the engine's kernels against the library's", n, bad);
     let (n, bad) = linear_check(&dev, &lib)?;
@@ -2436,6 +2621,84 @@ fn moe_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec
     Ok((n, bad))
 }
 
+/// `foldcheck`'s lossless FP8 format, both layouts: random e4m3 bytes (every byte a value) of three shapes packed by the library's kernels and by the engine's (the
+/// size's words, the heads, the cores and var compared byte for byte), and unpacked by both (the bytes back, and the same). (compared, differences)
+#[cfg(feature = "dev")]
+fn f8_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
+    use crate::dev::Buf;
+    let mut seed = 0xBF58_476D_1CE4_E5B9u64;
+    let (mut n, mut bad) = (0, Vec::new());
+    for (o, k) in [(64i64, 128i64), (200, 300), (512, 1024)] {
+        let bytes: Vec<u8> = (0..o * k)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                // (mostly small exponents, as weights have, and every byte now and then)
+                if seed % 16 == 0 {
+                    (seed >> 8) as u8
+                } else {
+                    (((seed >> 8) as u8) & 0x87) | 0x30
+                }
+            })
+            .collect();
+        let wb = Buf::new(bytes.len())?;
+        wb.write(0, &bytes)?;
+        let patches = f8_patches(o, k).unwrap_or(0);
+        n += 1;
+        if lib.library_f8_size_workspace(o, k)? != f8_size_workspace(o, k)? {
+            bad.push(format!("{o} x {k}: the size's workspace differs"));
+        }
+        for h in [false, true] {
+            let name = format!("{o} x {k}{}", if h { ", layout H" } else { "" });
+            let (ha, hb, ws) = (Buf::zeroed((patches * 32) as usize)?, Buf::zeroed((patches * 32) as usize)?, Buf::zeroed(16)?);
+            // SAFETY: W [o, k] bytes, heads of 8 words a patch, a workspace of 16 bytes; the stream is waited for by the size.
+            let (va, vb) = unsafe {
+                (lib.library_f8_size(h, wb.ptr, k, o, k, ha.ptr, ws.ptr, 16, dev.stream)?, f8_size(h, wb.ptr, k, o, k, hb.ptr, (ws.ptr, 16), dev.stream)?)
+            };
+            n += 1;
+            let Some(vb) = vb else {
+                bad.push(format!("{name}: the engine's size did not take it"));
+                continue;
+            };
+            if va != vb {
+                bad.push(format!("{name}: var words {va} (library) against {vb}"));
+                continue;
+            }
+            let core_bytes = (patches * if h { 7168 } else { 6144 }) as usize;
+            let (ca, cb, xa, xb) = (Buf::zeroed(core_bytes)?, Buf::zeroed(core_bytes)?, Buf::zeroed(va as usize * 4)?, Buf::zeroed(va as usize * 4)?);
+            let (oa, ob) = (Buf::zeroed(bytes.len())?, Buf::zeroed(bytes.len())?);
+            // SAFETY: the heads, cores of 6,144 (layout H 7,168) bytes a patch, var of the size's words, outputs [o, k]; one stream.
+            let r = unsafe {
+                lib.library_f8_pack(h, wb.ptr, k, o, k, ha.ptr, ca.ptr, xa.ptr, va, dev.stream)?;
+                let p = f8_pack(h, wb.ptr, k, o, k, hb.ptr, (cb.ptr, xb.ptr, vb), dev.stream)?;
+                lib.library_f8_unpack(h, ca.ptr, ha.ptr, xa.ptr, o, k, oa.ptr, k, dev.stream)?;
+                let u = f8_unpack(h, (cb.ptr, hb.ptr, xb.ptr), o, k, (ob.ptr, k), dev.stream)?;
+                (p, u)
+            };
+            dev.sync()?;
+            n += 1;
+            if r != (true, true) {
+                bad.push(format!("{name}: the engine's pack or unpack did not take it ({r:?})"));
+                continue;
+            }
+            let read = |b: &Buf, len: usize| -> Result<Vec<u8>> {
+                let mut v = vec![0u8; len];
+                b.read(0, &mut v)?;
+                Ok(v)
+            };
+            let same = read(&ha, (patches * 32) as usize)? == read(&hb, (patches * 32) as usize)?
+                && read(&ca, core_bytes)? == read(&cb, core_bytes)?
+                && read(&xa, va as usize * 4)? == read(&xb, va as usize * 4)?;
+            let (ua, ub) = (read(&oa, bytes.len())?, read(&ob, bytes.len())?);
+            if !same || ua != ub || ua != bytes {
+                bad.push(format!("{name}: the packs the same {same}, the unpacks the same {}, the library's unpack the bytes {}", ua == ub, ua == bytes));
+            }
+        }
+    }
+    Ok((n, bad))
+}
+
 /// `foldcheck`'s unpacking: random weights of each layout packed by glyd-gpu's packers, unpacked by the library's kernel and by the engine's, whole and
 /// rows 64-127, every bf16 compared; a pack of a layout number neither knows refused by both. (compared, differences)
 #[cfg(feature = "dev")]
@@ -2687,6 +2950,8 @@ mod tests {
             offset_of!(KvWriteParams, one),
         ];
         assert_eq!(wp, [80, 112, 152, 168, 192]);
+        assert_eq!((size_of::<F8Pk>(), size_of::<F8Un>()), (40, 80));
+        assert_eq!((offset_of!(F8Pk, plain), offset_of!(F8Un, o), offset_of!(F8Un, vec)), (32, 56, 76));
     }
 
     /// The arguments the experts' launches build by name are, in order and type, the kernels' own (crate::kt, read from kernels/fold.cu).
