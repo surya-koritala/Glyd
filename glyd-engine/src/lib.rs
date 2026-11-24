@@ -70,6 +70,7 @@ pub mod f8;
 #[cfg(test)]
 mod families;
 pub mod ffi;
+pub mod fold;
 pub mod gemma4;
 pub mod gguf;
 pub mod gguf_pre;

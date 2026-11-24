@@ -257,6 +257,7 @@ table! {
         fn cuDevicePrimaryCtxRelease_v2(c_int) -> c_int;
         fn cuCtxSetCurrent(*mut c_void) -> c_int;
         fn cuCtxGetCurrent(*mut *mut c_void) -> c_int;
+        fn cuCtxGetDevice(*mut c_int) -> c_int;
         fn cuCtxCreate_v2(*mut *mut c_void, c_uint, c_int) -> c_int;
         fn cuCtxSynchronize() -> c_int;
         fn cuDeviceCanAccessPeer(*mut c_int, c_int, c_int) -> c_int;
@@ -317,7 +318,7 @@ mod hip {
     const LIBS: [&str; 2] = ["amdhip64_7.dll", "amdhip64_6.dll"];
 
     /// The driver table's functions by HIP's names (ROCm 6.4 on: hipEventRecordWithFlags), all but the two adapters' below.
-    const NAMES: [(&str, &str); 49] = [
+    const NAMES: [(&str, &str); 50] = [
         ("cuInit", "hipInit"),
         ("cuDriverGetVersion", "hipDriverGetVersion"),
         ("cuDeviceGet", "hipDeviceGet"),
@@ -329,6 +330,7 @@ mod hip {
         ("cuDevicePrimaryCtxRelease_v2", "hipDevicePrimaryCtxRelease"),
         ("cuCtxSetCurrent", "hipCtxSetCurrent"),
         ("cuCtxGetCurrent", "hipCtxGetCurrent"),
+        ("cuCtxGetDevice", "hipGetDevice"),
         ("cuCtxSynchronize", "hipDeviceSynchronize"),
         ("cuDeviceCanAccessPeer", "hipDeviceCanAccessPeer"),
         ("cuCtxEnablePeerAccess", "hipCtxEnablePeerAccess"),
@@ -767,25 +769,11 @@ impl Lib {
 
 impl GpuOps for Lib {
     fn gpu(&self) -> Result<i32> {
-        let mut g = 0;
-        // SAFETY: a host out-pointer.
-        let r = unsafe { (self.api.glyd_gpu_gpu)(&mut g) };
-        self.ck(call!("gpu"), r)?;
-        Ok(g)
+        crate::fold::current_gpu()
     }
 
     fn route(&self, gpu: i64, twelve: bool, o: i64, k: i64, m: i64) -> Result<i32> {
-        let (mut r, mut last) = (0, 0i64);
-        // SAFETY: host out-pointers.
-        let s = unsafe {
-            if twelve {
-                (self.api.glyd_gpu_mma12_way)(gpu, o, k, m, &mut r, &mut last)
-            } else {
-                (self.api.glyd_gpu_mma_way)(gpu, o, k, m, &mut r, &mut last)
-            }
-        };
-        self.ck(call!("way"), s)?;
-        Ok(r)
+        crate::fold::route(gpu, twelve, o, k, m)
     }
 
     fn linear_workspace(&self, twelve: bool, o: i64, k: i64, m: i64) -> Result<usize> {
@@ -1156,27 +1144,15 @@ impl GpuOps for Lib {
     }
 
     fn kv_page_bytes(&self, h: i64, d: i64, a: i64) -> Result<i64> {
-        let mut b = 0;
-        // SAFETY: a host out-pointer.
-        let r = unsafe { (self.api.glyd_gpu_kv_leaf_bytes)(h, d, a, &mut b) };
-        self.ck(call!("kv_leaf_bytes"), r)?;
-        Ok(b)
+        crate::fold::kv_page_bytes(h, d, a)
     }
 
     fn kv_escape_bytes(&self, nchunks: i64) -> Result<i64> {
-        let mut b = 0;
-        // SAFETY: a host out-pointer.
-        let r = unsafe { (self.api.glyd_gpu_kv_extra_bytes)(nchunks, &mut b) };
-        self.ck(call!("kv_extra_bytes"), r)?;
-        Ok(b)
+        crate::fold::kv_escape_bytes(nchunks)
     }
 
     fn kv_raw_bytes(&self, nslabs: i64, h: i64) -> Result<i64> {
-        let mut b = 0;
-        // SAFETY: a host out-pointer.
-        let r = unsafe { (self.api.glyd_gpu_kv_second_bytes)(nslabs, h, &mut b) };
-        self.ck(call!("kv_second_bytes"), r)?;
-        Ok(b)
+        crate::fold::kv_raw_bytes(nslabs, h)
     }
 
     unsafe fn kv_write(
@@ -1285,11 +1261,7 @@ impl GpuOps for Lib {
     }
 
     fn kv_decode_workspace(&self, b: i64, h: i64, g: i64, d: i64, splits: i64) -> Result<usize> {
-        let mut n = 0usize;
-        // SAFETY: a host out-pointer.
-        let r = unsafe { (self.api.glyd_gpu_kv_decode_workspace)(b, h, g, d, splits, &mut n) };
-        self.ck(call!("kv_decode_workspace"), r)?;
-        Ok(n)
+        crate::fold::kv_decode_workspace(b, h, g, d, splits)
     }
 
     unsafe fn kv_decode(
@@ -1528,6 +1500,65 @@ impl GpuOps for Lib {
             cs,
         );
         self.ck(call!("kv_prefill_bf16"), r)
+    }
+}
+
+/// The library's own answers for the operations the engine has folded (`fold`, R17), for `foldcheck` to hold the engine's to; they go with the
+/// library's table (R17 step 4).
+#[cfg(feature = "dev")]
+impl Lib {
+    pub fn oracle_gpu(&self) -> Result<i32> {
+        let mut g = 0;
+        // SAFETY: a host out-pointer.
+        let r = unsafe { (self.api.glyd_gpu_gpu)(&mut g) };
+        self.ck(call!("gpu"), r)?;
+        Ok(g)
+    }
+
+    pub fn oracle_route(&self, gpu: i64, twelve: bool, o: i64, k: i64, m: i64) -> Result<i32> {
+        let (mut r, mut last) = (0, 0i64);
+        // SAFETY: host out-pointers.
+        let s = unsafe {
+            if twelve {
+                (self.api.glyd_gpu_mma12_way)(gpu, o, k, m, &mut r, &mut last)
+            } else {
+                (self.api.glyd_gpu_mma_way)(gpu, o, k, m, &mut r, &mut last)
+            }
+        };
+        self.ck(call!("way"), s)?;
+        Ok(r)
+    }
+
+    pub fn oracle_kv_page_bytes(&self, h: i64, d: i64, a: i64) -> Result<i64> {
+        let mut b = 0;
+        // SAFETY: a host out-pointer.
+        let r = unsafe { (self.api.glyd_gpu_kv_leaf_bytes)(h, d, a, &mut b) };
+        self.ck(call!("kv_leaf_bytes"), r)?;
+        Ok(b)
+    }
+
+    pub fn oracle_kv_escape_bytes(&self, nchunks: i64) -> Result<i64> {
+        let mut b = 0;
+        // SAFETY: a host out-pointer.
+        let r = unsafe { (self.api.glyd_gpu_kv_extra_bytes)(nchunks, &mut b) };
+        self.ck(call!("kv_extra_bytes"), r)?;
+        Ok(b)
+    }
+
+    pub fn oracle_kv_raw_bytes(&self, nslabs: i64, h: i64) -> Result<i64> {
+        let mut b = 0;
+        // SAFETY: a host out-pointer.
+        let r = unsafe { (self.api.glyd_gpu_kv_second_bytes)(nslabs, h, &mut b) };
+        self.ck(call!("kv_second_bytes"), r)?;
+        Ok(b)
+    }
+
+    pub fn oracle_kv_decode_workspace(&self, b: i64, h: i64, g: i64, d: i64, splits: i64) -> Result<usize> {
+        let mut n = 0usize;
+        // SAFETY: a host out-pointer.
+        let r = unsafe { (self.api.glyd_gpu_kv_decode_workspace)(b, h, g, d, splits, &mut n) };
+        self.ck(call!("kv_decode_workspace"), r)?;
+        Ok(n)
     }
 }
 

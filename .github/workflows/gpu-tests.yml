@@ -62,6 +62,8 @@ jobs:
           "$E" bandwidth
           "$E" topkcheck
           "$E" kvshapes
+          # (R17: what the engine folded from the GPU library's host side, the packed products' ways for every GPU code, the GPU's class and the KV cache's sizes, against the library's own)
+          "$E" foldcheck
           "$E" kcheck35
           # (the attention kind's kernels, every family's head width and arithmetic, against an fp64 attention: prompt rows on the tensor cores and a warp a head, decode rows in parts)
           "$E" attncheck

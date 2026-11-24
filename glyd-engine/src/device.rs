@@ -76,6 +76,8 @@ pub trait Device {
     unsafe fn set_current(ctx: Self::Ctx) -> Result<()>;
     /// The context current on this thread (null where there is none).
     fn current() -> Result<Self::Ctx>;
+    /// The device of the context current on this thread.
+    fn current_device() -> Result<i32>;
     /// The current context's GPU may reach `peer`'s memory (the peer GPU's context) from now on; already on is no error.
     ///
     /// # Safety
@@ -310,6 +312,13 @@ impl Device for CudaDevice {
         // SAFETY: a host out-pointer.
         unsafe { cu("cuCtxGetCurrent", (driver()?.cuCtxGetCurrent)(&mut c))? };
         Ok(c)
+    }
+
+    fn current_device() -> Result<i32> {
+        let mut dev = 0;
+        // SAFETY: a host out-pointer.
+        unsafe { cu("cuCtxGetDevice", (driver()?.cuCtxGetDevice)(&mut dev))? };
+        Ok(dev)
     }
 
     unsafe fn enable_peer(peer: *mut c_void) -> Result<()> {
