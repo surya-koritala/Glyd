@@ -1449,6 +1449,125 @@ impl Lib {
         self.ck(call!("f8_unpack"), r)
     }
 
+    /// `GpuOps::f8_linear_workspace` by the library (glyd_gpu_f8_linear_workspace): the oracle of the engine's (`fold::f8_linear_workspace`).
+    pub(crate) fn library_f8_linear_workspace(&self, n: i64, k: i64, m: i64) -> Result<usize> {
+        let mut b = 0usize;
+        // SAFETY: a host out-pointer.
+        let r = unsafe { (self.api.glyd_gpu_f8_linear_workspace)(n, k, m, &mut b) };
+        self.ck(call!("f8_linear_workspace"), r)?;
+        Ok(b)
+    }
+
+    /// `GpuOps::f8_linear` by the library's own kernels (glyd_gpu_f8_linear, glyd_gpu_f8h_linear): the oracle of the engine's (`fold::f8_linear`).
+    ///
+    /// # Safety
+    /// As `GpuOps::f8_linear`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn library_f8_linear(
+        &self,
+        h: bool,
+        core: u64,
+        heads: u64,
+        var: u64,
+        n: i64,
+        k: i64,
+        kind: i64,
+        scale: u64,
+        lds: i64,
+        x: u64,
+        m: i64,
+        y: u64,
+        ws: u64,
+        ws_bytes: usize,
+        done: u64,
+        cs: Stream,
+    ) -> Result<()> {
+        let f = if h { self.api.glyd_gpu_f8h_linear } else { self.api.glyd_gpu_f8_linear };
+        let r = f(
+            core as *const u8,
+            heads as *const u32,
+            var as *const u32,
+            n,
+            k,
+            kind,
+            scale as *const c_void,
+            lds,
+            x as *const u16,
+            k,
+            m,
+            y as *mut u16,
+            n,
+            ws as *mut c_void,
+            ws_bytes,
+            done as *mut c_int,
+            cs,
+        );
+        self.ck(call!("f8_linear"), r)
+    }
+
+    /// `GpuOps::f8_moe_workspace` by the library (glyd_gpu_f8_moe_workspace): the oracle of the engine's (`fold::f8_moe_workspace`).
+    pub(crate) fn library_f8_moe_workspace(&self, n: i64, k: i64, m: i64, slots: i64) -> Result<usize> {
+        let mut b = 0usize;
+        // SAFETY: a host out-pointer.
+        let r = unsafe { (self.api.glyd_gpu_f8_moe_workspace)(n, k, m, slots, &mut b) };
+        self.ck(call!("f8_moe_workspace"), r)?;
+        Ok(b)
+    }
+
+    /// `GpuOps::f8_moe` by the library's own kernels (glyd_gpu_f8_moe, glyd_gpu_f8h_moe): the oracle of the engine's (`fold::f8_moe`).
+    ///
+    /// # Safety
+    /// As `GpuOps::f8_moe`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn library_f8_moe(
+        &self,
+        h: bool,
+        core: u64,
+        heads: u64,
+        var: u64,
+        experts: i64,
+        n: i64,
+        k: i64,
+        scale: u64,
+        x: u64,
+        plan: u64,
+        k_: i64,
+        gather: bool,
+        m: i64,
+        slots: i64,
+        y: u64,
+        ws: u64,
+        ws_bytes: usize,
+        done: u64,
+        cs: Stream,
+    ) -> Result<()> {
+        let f = if h { self.api.glyd_gpu_f8h_moe } else { self.api.glyd_gpu_f8_moe };
+        let r = f(
+            core as *const u8,
+            heads as *const u32,
+            var as *const u32,
+            experts,
+            n,
+            k,
+            scale as *const f32,
+            (k + 127) / 128,
+            x as *const u16,
+            k,
+            plan as *const i32,
+            k_,
+            gather as i64,
+            m,
+            slots,
+            y as *mut u16,
+            n,
+            ws as *mut c_void,
+            ws_bytes,
+            done as *mut c_int,
+            cs,
+        );
+        self.ck(call!("f8_moe"), r)
+    }
+
     /// `GpuOps::moe_way` by the library's own kernels (glyd_gpu_moe_way): the oracle of the engine's (`fold::moe_way`).
     ///
     /// # Safety
@@ -1557,11 +1676,12 @@ impl GpuOps for Lib {
     }
 
     fn f8_linear_workspace(&self, n: i64, k: i64, m: i64) -> Result<usize> {
-        let mut b = 0usize;
-        // SAFETY: a host out-pointer.
-        let r = unsafe { (self.api.glyd_gpu_f8_linear_workspace)(n, k, m, &mut b) };
-        self.ck(call!("f8_linear_workspace"), r)?;
-        Ok(b)
+        if crate::fold::on() {
+            if let Some(b) = crate::fold::f8_linear_workspace(n, k, m)? {
+                return Ok(b);
+            }
+        }
+        self.library_f8_linear_workspace(n, k, m)
     }
 
     unsafe fn f8_linear(
@@ -1583,35 +1703,20 @@ impl GpuOps for Lib {
         done: u64,
         cs: Stream,
     ) -> Result<()> {
-        let f = if h { self.api.glyd_gpu_f8h_linear } else { self.api.glyd_gpu_f8_linear };
-        let r = f(
-            core as *const u8,
-            heads as *const u32,
-            var as *const u32,
-            n,
-            k,
-            kind,
-            scale as *const c_void,
-            lds,
-            x as *const u16,
-            k,
-            m,
-            y as *mut u16,
-            n,
-            ws as *mut c_void,
-            ws_bytes,
-            done as *mut c_int,
-            cs,
-        );
-        self.ck(call!("f8_linear"), r)
+        // (the engine's own kernels, from the library's source, at the library's default plans: R17's `fold`)
+        if crate::fold::on() && crate::fold::f8_linear(h, (core, heads, var), (n, k, kind, scale, lds), (x, m, y), (ws, ws_bytes, done), cs)? {
+            return Ok(());
+        }
+        self.library_f8_linear(h, core, heads, var, n, k, kind, scale, lds, x, m, y, ws, ws_bytes, done, cs)
     }
 
     fn f8_moe_workspace(&self, n: i64, k: i64, m: i64, slots: i64) -> Result<usize> {
-        let mut b = 0usize;
-        // SAFETY: a host out-pointer.
-        let r = unsafe { (self.api.glyd_gpu_f8_moe_workspace)(n, k, m, slots, &mut b) };
-        self.ck(call!("f8_moe_workspace"), r)?;
-        Ok(b)
+        if crate::fold::on() {
+            if let Some(b) = crate::fold::f8_moe_workspace(n, k, m, slots)? {
+                return Ok(b);
+            }
+        }
+        self.library_f8_moe_workspace(n, k, m, slots)
     }
 
     unsafe fn f8_moe(
@@ -1636,31 +1741,12 @@ impl GpuOps for Lib {
         done: u64,
         cs: Stream,
     ) -> Result<()> {
-        let f = if h { self.api.glyd_gpu_f8h_moe } else { self.api.glyd_gpu_f8_moe };
-        let r = f(
-            core as *const u8,
-            heads as *const u32,
-            var as *const u32,
-            experts,
-            n,
-            k,
-            scale as *const f32,
-            (k + 127) / 128,
-            x as *const u16,
-            k,
-            plan as *const i32,
-            k_,
-            gather as i64,
-            m,
-            slots,
-            y as *mut u16,
-            n,
-            ws as *mut c_void,
-            ws_bytes,
-            done as *mut c_int,
-            cs,
-        );
-        self.ck(call!("f8_moe"), r)
+        // (the engine's own kernels, from the library's source, at the library's default plans: R17's `fold`)
+        let f8 = (core, heads, var, experts, n, k, scale);
+        if crate::fold::on() && crate::fold::f8_moe(h, f8, (x, plan, k_, gather), (m, slots, y), (ws, ws_bytes, done), cs)? {
+            return Ok(());
+        }
+        self.library_f8_moe(h, core, heads, var, experts, n, k, scale, x, plan, k_, gather, m, slots, y, ws, ws_bytes, done, cs)
     }
 
     unsafe fn unpack(&self, w: &Pack, row0: i64, rows: i64, out: u64, cs: Stream) -> Result<()> {

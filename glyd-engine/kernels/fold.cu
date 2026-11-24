@@ -524,3 +524,53 @@ extern "C" __global__ void __launch_bounds__(glib::f8c::NT) fold_f8_unpack(const
 extern "C" __global__ void __launch_bounds__(glib::f8c::HUNT) fold_f8h_unpack(const glib::f8c::F8Un P) {
     glib::f8c::f8h_unpack_body(P);
 }
+
+// glyd_gpu_f8_linear, _f8_moe, _f8h_linear and _f8h_moe (the FP8 products, Y = X W^T for 1 to 64 tokens, W in the lossless format) at the library's default plan:
+// f8_linear_body with no decode ahead, no spills' pass, bf16 X and two slots, for 8-token tiles a warp of 1, 2, 4 and 8 (NTL), each kind of scales
+// (block, tensor, mx, ds32, channel), the experts' product (block scales, a plan's slot a blockIdx.y) and layout H's (block scales, G 0 and 1); and layout H's
+// one-token kernels (f8h_lin1_body, and f8b_lin1_body for plain packs) as the library launches them by default (3 CTAs an SM). The plans a development build's
+// variable asks for (GLYD_F8_LIN_A8, _AHEAD, _DENSE, GLYD_F8_SLOTS=3, GLYD_F8H_ONE=2 or 4, GLYD_F8H_CTAS=2) are the library's still.
+#define FOLD_F8_LIN(NAME, NTL, KIND, G) \
+    extern "C" __global__ void __launch_bounds__(glib::f8c::LNT, 1) fold_f8_##NAME##_##NTL(const glib::f8c::F8Lin P) { \
+        glib::f8c::f8_linear_body<NTL, KIND, 0, 0, G, 2>(P); \
+    }
+FOLD_F8_LIN(block, 1, glib::f8c::F8_BLOCK, 0)
+FOLD_F8_LIN(block, 2, glib::f8c::F8_BLOCK, 0)
+FOLD_F8_LIN(block, 4, glib::f8c::F8_BLOCK, 0)
+FOLD_F8_LIN(block, 8, glib::f8c::F8_BLOCK, 0)
+FOLD_F8_LIN(tensor, 1, glib::f8c::F8_TENSOR, 0)
+FOLD_F8_LIN(tensor, 2, glib::f8c::F8_TENSOR, 0)
+FOLD_F8_LIN(tensor, 4, glib::f8c::F8_TENSOR, 0)
+FOLD_F8_LIN(tensor, 8, glib::f8c::F8_TENSOR, 0)
+FOLD_F8_LIN(mx, 1, glib::f8c::F8_MX, 0)
+FOLD_F8_LIN(mx, 2, glib::f8c::F8_MX, 0)
+FOLD_F8_LIN(mx, 4, glib::f8c::F8_MX, 0)
+FOLD_F8_LIN(mx, 8, glib::f8c::F8_MX, 0)
+FOLD_F8_LIN(ds32, 1, glib::f8c::F8_DS32, 0)
+FOLD_F8_LIN(ds32, 2, glib::f8c::F8_DS32, 0)
+FOLD_F8_LIN(ds32, 4, glib::f8c::F8_DS32, 0)
+FOLD_F8_LIN(ds32, 8, glib::f8c::F8_DS32, 0)
+FOLD_F8_LIN(channel, 1, glib::f8c::F8_CHANNEL, 0)
+FOLD_F8_LIN(channel, 2, glib::f8c::F8_CHANNEL, 0)
+FOLD_F8_LIN(channel, 4, glib::f8c::F8_CHANNEL, 0)
+FOLD_F8_LIN(channel, 8, glib::f8c::F8_CHANNEL, 0)
+FOLD_F8_LIN(moe, 1, glib::f8c::F8_BLOCK, 1)
+FOLD_F8_LIN(moe, 2, glib::f8c::F8_BLOCK, 1)
+FOLD_F8_LIN(moe, 4, glib::f8c::F8_BLOCK, 1)
+FOLD_F8_LIN(moe, 8, glib::f8c::F8_BLOCK, 1)
+FOLD_F8_LIN(h, 1, glib::f8c::F8_BLOCK | glib::f8c::F8_H, 0)
+FOLD_F8_LIN(h, 2, glib::f8c::F8_BLOCK | glib::f8c::F8_H, 0)
+FOLD_F8_LIN(h, 4, glib::f8c::F8_BLOCK | glib::f8c::F8_H, 0)
+FOLD_F8_LIN(h, 8, glib::f8c::F8_BLOCK | glib::f8c::F8_H, 0)
+FOLD_F8_LIN(hmoe, 1, glib::f8c::F8_BLOCK | glib::f8c::F8_H, 1)
+FOLD_F8_LIN(hmoe, 2, glib::f8c::F8_BLOCK | glib::f8c::F8_H, 1)
+FOLD_F8_LIN(hmoe, 4, glib::f8c::F8_BLOCK | glib::f8c::F8_H, 1)
+FOLD_F8_LIN(hmoe, 8, glib::f8c::F8_BLOCK | glib::f8c::F8_H, 1)
+#define FOLD_F8H_ONE(NAME, BODY, G) \
+    extern "C" __global__ void __launch_bounds__(glib::f8c::LNT, 3) fold_f8h_one_##NAME##_##G(const glib::f8c::F8Lin P) { \
+        glib::f8c::BODY<G, 3>(P); \
+    }
+FOLD_F8H_ONE(coded, f8h_lin1_body, 0)
+FOLD_F8H_ONE(coded, f8h_lin1_body, 1)
+FOLD_F8H_ONE(plain, f8b_lin1_body, 0)
+FOLD_F8H_ONE(plain, f8b_lin1_body, 1)

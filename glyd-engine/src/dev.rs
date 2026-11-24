@@ -348,6 +348,11 @@ impl Kernel {
     /// least 1): what the GPU library's `per_sm` asks of the runtime, for the plans folded from it (`fold`).
     pub fn blocks_per_sm(&self, threads: u32, smem: u32) -> Result<i64> {
         self.allow_smem(smem)?;
+        self.blocks_per_sm_allowed(threads, smem)
+    }
+
+    /// `blocks_per_sm` where the kernel's shared memory is already allowed (`allow_smem`) to `smem` bytes or more.
+    pub fn blocks_per_sm_allowed(&self, threads: u32, smem: u32) -> Result<i64> {
         // SAFETY: a function of the loaded module.
         Ok(unsafe { D::occupancy(self.0, threads, smem)? }.max(1) as i64)
     }

@@ -573,15 +573,23 @@ fn step_kernel(u: Unpacker, p: StepK) -> Option<(&'static str, u32, u32)> {
 /// The blocks an SM holds of an engine kernel at `threads` and `smem` in the current context, and the GPU's SMs (the library's per_sm and sm_count),
 /// asked once a context.
 fn per_sm(name: &'static str, threads: u32, smem: u32) -> Result<(i64, i64)> {
-    type Seen = std::sync::Mutex<std::collections::HashMap<(usize, &'static str), (i64, i64)>>;
+    per_sm_most(name, threads, smem, smem)
+}
+
+/// `per_sm` with the kernel's shared memory allowed to `most` bytes first (the FP8 products: their 64 tokens' size, asked at each count's), asked once a
+/// context and size.
+fn per_sm_most(name: &'static str, threads: u32, smem: u32, most: u32) -> Result<(i64, i64)> {
+    type Seen = std::sync::Mutex<std::collections::HashMap<(usize, &'static str, u32), (i64, i64)>>;
     static SEEN: std::sync::OnceLock<Seen> = std::sync::OnceLock::new();
     let ctx = D::current()? as usize;
     let seen = SEEN.get_or_init(Default::default);
-    if let Some(&v) = seen.lock().unwrap_or_else(|e| e.into_inner()).get(&(ctx, name)) {
+    if let Some(&v) = seen.lock().unwrap_or_else(|e| e.into_inner()).get(&(ctx, name, smem)) {
         return Ok(v);
     }
-    let v = (crate::dev::here_named(name)?.blocks_per_sm(threads, smem)?, (D::attribute(D::current_device()?, Attr::Sms)? as i64).max(1));
-    seen.lock().unwrap_or_else(|e| e.into_inner()).insert((ctx, name), v);
+    let k = crate::dev::here_named(name)?;
+    k.allow_smem(most.max(smem))?;
+    let v = (k.blocks_per_sm_allowed(threads, smem)?, (D::attribute(D::current_device()?, Attr::Sms)? as i64).max(1));
+    seen.lock().unwrap_or_else(|e| e.into_inner()).insert((ctx, name, smem), v);
     Ok(v)
 }
 
@@ -1860,6 +1868,353 @@ pub unsafe fn f8_unpack(h: bool, (core, heads, var): (u64, u64, u64), o: i64, k:
     Ok(true)
 }
 
+/// f8c::F8Lin (gpu/glyd_gpu_kernels.h), field for field: the FP8 products' parameters, built as glyd_gpu_f8_linear and _f8_moe build them.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct F8Lin {
+    pub core: u64,
+    pub heads: u64,
+    pub var: u64,
+    pub scale: u64,
+    pub x: u64,
+    pub y: u64,
+    pub xq: u64,
+    pub sx: u64,
+    pub parts: u64,
+    pub done: u64,
+    pub lds: i64,
+    pub ldx: i64,
+    pub ldy: i64,
+    pub m: i32,
+    pub n: i32,
+    pub k: i32,
+    pub kt: i32,
+    pub rg: i32,
+    pub ctas: i32,
+    pub xvec: i32,
+    pub plan: u64,
+    pub order: u64,
+    pub e: i32,
+    pub gk: i32,
+    pub gather: i32,
+}
+
+/// The FP8 product's threads a CTA (f8c::LNT, 8 warps), its shared memory before the X slots (f8_lsmem<2>: three slots of heads, a warp's two of core and two
+/// of the variable part; layout H's f8_lsmem<2, true>, its cores of 448 words), and layout H's one-token kernels' (8 warps of L1W words, f8b_lin1's BW).
+const F8_LNT: u32 = 256;
+const F8_LSMEM: u32 = 4 * (3 * 16 + 8 * (2 * 384 + 2 * 80));
+const F8H_LSMEM: u32 = 4 * (3 * 16 + 8 * (2 * 448 + 2 * 80));
+const F8H_ONE_CODED: u32 = 8 * (2 * 448 + 2 * 80 + 2 * 64) * 4;
+const F8H_ONE_PLAIN: u32 = 8 * (2 * 512 + 2 * 64) * 4;
+
+/// The product's shared memory for `m` tokens (f8_lin_shared at the default plan: the two X slots of m rows of 256 bytes after the rest).
+fn f8_shared(m: i64, h: bool) -> u32 {
+    (if h { F8H_LSMEM } else { F8_LSMEM }) + 2 * 256 * m as u32
+}
+
+/// The 8-token tiles a warp for `m` tokens (f8_lin_ntl).
+fn f8_ntl(m: i64) -> u32 {
+    match m {
+        ..=8 => 1,
+        9..=16 => 2,
+        17..=32 => 4,
+        _ => 8,
+    }
+}
+
+/// The product's work for W [n, k]: its row groups of 128 rows times its patches across K (W in f8_lin_ctas), the most CTAs it is split over.
+fn f8_work(n: i64, k: i64) -> i64 {
+    ((n + 63) / 64 * 4 + 7) / 8 * ((k + 127) / 128)
+}
+
+/// The sums of a CTA's first and last row group where the grid splits the work (f8_lin_parts): bytes for `ctas` CTAs and `m` tokens.
+fn f8_parts(ctas: i64, m: i64) -> i64 {
+    if ctas > 1 {
+        ctas * 2 * m * 128 * 4
+    } else {
+        0
+    }
+}
+
+/// Layout H's one-token kernel (f8h_one: GLYD_F8H_ONE in a development build, else 3, f8b_lin1, for plain packs and 1, f8h_lin1, for coded ones; 0 none).
+fn f8h_one() -> Result<i64> {
+    let m = tuned(crate::tune!("GLYD_F8H_ONE"), if f8h_plain()? { 3 } else { 1 });
+    Ok(if (0..=4).contains(&m) { m } else { 1 })
+}
+
+/// Whether the library's FP8 products are at their default plans, which the engine's kernels are: no development build's variable asks for X as e4m3
+/// (GLYD_F8_LIN_A8), a decode ahead (_AHEAD), a spills' pass (_DENSE), three slots (GLYD_F8_SLOTS), 2 CTAs an SM of layout H's one-token kernel
+/// (GLYD_F8H_CTAS) or its research kernels (GLYD_F8H_ONE 2 and 4); a CUDA build.
+fn f8_default() -> Result<bool> {
+    Ok(!cfg!(glyd_hip)
+        && tuned(crate::tune!("GLYD_F8_LIN_A8"), 0) != 1
+        && tuned(crate::tune!("GLYD_F8_LIN_AHEAD"), 0) != 1
+        && tuned(crate::tune!("GLYD_F8_LIN_DENSE"), 0) != 1
+        && tuned(crate::tune!("GLYD_F8_SLOTS"), 2) != 3
+        && tuned(crate::tune!("GLYD_F8H_CTAS"), 3) != 2
+        && !matches!(f8h_one()?, 2 | 4))
+}
+
+/// The FP8 products' kernels in the engine's module (kernels/fold.cu): `which` 0-4 one matrix's for its kind of scales (block, tensor, mx, ds32, channel),
+/// 5 the experts', 6 and 7 layout H's one matrix and experts; `ntl` 8-token tiles a warp.
+fn f8_name(which: usize, ntl: u32) -> &'static str {
+    const TAGS: [&str; 8] = ["block", "tensor", "mx", "ds32", "channel", "moe", "h", "hmoe"];
+    leaked(format!("fold_f8_{}_{ntl}", TAGS[which]))
+}
+
+/// Layout H's one-token kernel in the engine's module: f8b_lin1 (plain packs) or f8h_lin1, of one matrix or the experts' (`g`).
+fn f8h_one_name(plain: bool, g: bool) -> &'static str {
+    leaked(format!("fold_f8h_one_{}_{}", if plain { "plain" } else { "coded" }, g as u8))
+}
+
+/// The blocks an SM holds of kernel `which` for `m` tokens, its shared memory allowed to 64 tokens' first (f8_lin_allow, f8h_resident), and the SMs.
+fn f8_resident(which: usize, m: i64) -> Result<(i64, i64)> {
+    let h = which >= 6;
+    per_sm_most(f8_name(which, f8_ntl(m)), F8_LNT, f8_shared(m, h), f8_shared(64, h))
+}
+
+/// The grid of one matrix's product for kind `kind` (f8_lin_ctas: as many CTAs as the GPU holds at once, at most the work over GLYD_F8_LIN_MIN; GLYD_F8_LIN_GRID's
+/// in a development build; None: the most of the five kinds').
+fn f8_lin_ctas(n: i64, k: i64, m: i64, kind: Option<i64>) -> Result<i64> {
+    let w = f8_work(n, k);
+    let c = tuned(crate::tune!("GLYD_F8_LIN_GRID"), 0);
+    if c > 0 {
+        return Ok(c.min(w));
+    }
+    let Some(kind) = kind else {
+        let mut most = 1;
+        for kd in 0..5 {
+            most = most.max(f8_lin_ctas(n, k, m, Some(kd))?);
+        }
+        return Ok(most);
+    };
+    let (r, sms) = f8_resident(kind as usize, m)?;
+    let least = tuned(crate::tune!("GLYD_F8_LIN_MIN"), 1).max(1);
+    Ok((sms * r).min(w / least).max(1))
+}
+
+/// The experts' product's CTAs a slot (f8_moe_ctas: the GPU's at once shared among the slots, at most the work; GLYD_F8_MOE_GRID's in a development build).
+fn f8_moe_ctas(n: i64, k: i64, m: i64, slots: i64) -> Result<i64> {
+    let w = f8_work(n, k);
+    let c = tuned(crate::tune!("GLYD_F8_MOE_GRID"), 0);
+    if c > 0 {
+        return Ok(c.min(w));
+    }
+    let (r, sms) = f8_resident(5, m)?;
+    Ok((sms * r / slots.max(1)).min(w).max(1))
+}
+
+/// Layout H's grid at most (glyd_gpu_f8h_linear, _f8h_moe: the CTAs an SM of its own kernel, shared among the slots of the experts' product).
+fn f8h_ctas(n: i64, k: i64, m: i64, slots: Option<i64>) -> Result<i64> {
+    let (r, sms) = f8_resident(if slots.is_some() { 7 } else { 6 }, m)?;
+    Ok((sms * r / slots.unwrap_or(1)).min(f8_work(n, k)).max(1))
+}
+
+/// Layout H's one-token kernel's CTAs a slot (f8h_one_ctas; `slots` 0: one matrix).
+fn f8h_one_ctas(n: i64, k: i64, slots: i64) -> Result<i64> {
+    let plain = f8h_one()? == 3;
+    let smem = if plain { F8H_ONE_PLAIN } else { F8H_ONE_CODED };
+    let (r, sms) = per_sm_most(f8h_one_name(plain, slots > 0), F8_LNT, smem, smem)?;
+    Ok((sms * r / slots.max(1)).min(f8_work(n, k)).max(1))
+}
+
+/// `GpuOps::f8_linear_workspace` by the engine's plans (glyd_gpu_f8_linear_workspace: the sums of the grid of the most CTAs of the five kinds and of the
+/// one-token kernel); None: the library's (a shape or count it refuses, or a plan a variable asks for).
+pub fn f8_linear_workspace(n: i64, k: i64, m: i64) -> Result<Option<usize>> {
+    if !(1..=64).contains(&m) || f8_patches(n, k).is_none() || !f8_default()? {
+        return Ok(None);
+    }
+    let one = if m == 1 { f8h_one_ctas(n, k, 0)? } else { 1 };
+    Ok(Some(((f8_parts(f8_lin_ctas(n, k, m, None)?.max(one), m) + 15) / 16 * 16) as usize))
+}
+
+/// `GpuOps::f8_moe_workspace` by the engine's plans (glyd_gpu_f8_moe_workspace: the sums of each slot's grid); None: the library's.
+pub fn f8_moe_workspace(n: i64, k: i64, m: i64, slots: i64) -> Result<Option<usize>> {
+    if !(1..=64).contains(&m) || !(1..=65535).contains(&slots) || f8_patches(n, k).is_none() || !f8_default()? {
+        return Ok(None);
+    }
+    let one = if m == 1 { f8h_one_ctas(n, k, slots)? } else { 1 };
+    Ok(Some((slots * f8_parts(f8_moe_ctas(n, k, m, slots)?.max(one), m)) as usize))
+}
+
+/// A launch of an FP8 product's kernel with its parameters, its shared memory allowed to `most` first (the library's cudaFuncSetAttribute at each launch).
+///
+/// # Safety
+/// `p` names live buffers of the product's sizes; a context with the engine's module is current.
+unsafe fn f8_launch(name: &'static str, grid: [u32; 3], (smem, most): (u32, u32), mut p: F8Lin, cs: Stream) -> Result<()> {
+    let k = crate::dev::here_named(name)?;
+    k.allow_smem(most)?;
+    k.launch_smem(grid, [F8_LNT, 1, 1], smem, cs, &mut [&mut p as *mut F8Lin as *mut std::ffi::c_void])
+}
+
+/// Whether a workspace of `have` bytes at `ws` holds `need` (the library's fits; none needed: any).
+fn fits(ws: u64, have: usize, need: i64) -> bool {
+    need == 0 || (ws != 0 && have as i64 >= need)
+}
+
+/// `GpuOps::f8_linear` (Y [m, n] = X [m, k] W^T, X and Y rows k and n apart) by the engine's kernels at the library's default plan (glyd_gpu_f8_linear, layout H's
+/// glyd_gpu_f8h_linear and its one-token kernel); false where the library takes it (arguments it refuses: its own error then; a plan a variable asks for).
+///
+/// # Safety
+/// As `GpuOps::f8_linear`; a context with the engine's module is current.
+pub unsafe fn f8_linear(
+    h: bool,
+    (core, heads, var): (u64, u64, u64),
+    (n, k, kind, scale, lds): (i64, i64, i64, u64, i64),
+    (x, m, y): (u64, i64, u64),
+    (ws, ws_bytes, done): (u64, usize, u64),
+    cs: Stream,
+) -> Result<bool> {
+    let (ldx, ldy) = (k, n);
+    if f8_patches(n, k).is_none()
+        || [core, heads, var, scale, x, y].contains(&0)
+        || !(1..=64).contains(&m)
+        || core % 16 != 0
+        || heads % 16 != 0
+        || var % 4 != 0
+        || x % 2 != 0
+        || y % 2 != 0
+    {
+        return Ok(false);
+    }
+    let (k128, k32) = ((k + 127) / 128, (k + 31) / 32);
+    let scales_ok = if h {
+        kind == 0 && lds >= k128 && scale % 4 == 0
+    } else {
+        match kind {
+            0 => lds >= k128 && scale % 4 == 0,
+            1 | 4 => scale % 4 == 0,
+            2 | 3 => lds >= k32,
+            _ => false,
+        }
+    };
+    if !scales_ok || !f8_default()? {
+        return Ok(false);
+    }
+    let mut ctas = f8_lin_ctas(n, k, m, Some(kind))?;
+    if h {
+        ctas = ctas.min(f8h_ctas(n, k, m, None)?);
+    }
+    let need = (f8_parts(ctas, m) + 15) / 16 * 16;
+    if (ctas > 1 && done == 0) || !fits(ws, ws_bytes, need) || (need > 0 && ws % 16 != 0) {
+        return Ok(false);
+    }
+    let mut p = F8Lin {
+        core,
+        heads,
+        var,
+        scale,
+        x,
+        y,
+        parts: ws,
+        done,
+        lds,
+        ldx,
+        ldy,
+        m: m as i32,
+        n: n as i32,
+        k: k as i32,
+        kt: k128 as i32,
+        rg: (((n + 63) / 64 * 4 + 7) / 8) as i32,
+        ctas: ctas as i32,
+        xvec: (x % 16 == 0 && ldx % 8 == 0) as i32,
+        ..Default::default()
+    };
+    if h && m == 1 && f8h_one()? != 0 {
+        let plain = f8h_one()? == 3;
+        let one = f8h_one_ctas(n, k, 0)?;
+        if (one > 1 && done == 0) || !fits(ws, ws_bytes, (f8_parts(one, 1) + 15) / 16 * 16) {
+            return Ok(false);
+        }
+        p.ctas = one as i32;
+        let smem = if plain { F8H_ONE_PLAIN } else { F8H_ONE_CODED };
+        f8_launch(f8h_one_name(plain, false), [one as u32, 1, 1], (smem, smem), p, cs)?;
+        return Ok(true);
+    }
+    let which = if h { 6 } else { kind as usize };
+    f8_launch(f8_name(which, f8_ntl(m)), [ctas as u32, 1, 1], (f8_shared(m, h), f8_shared(64, h)), p, cs)?;
+    Ok(true)
+}
+
+/// `GpuOps::f8_moe` (each pair of `plan` times its expert's matrix [n, k], block scales ceil(k / 128) a row group's, into its row of Y) by the engine's
+/// kernels at the library's default plan (glyd_gpu_f8_moe, layout H's glyd_gpu_f8h_moe and its one-token kernel); false where the library takes it.
+///
+/// # Safety
+/// As `GpuOps::f8_moe`; a context with the engine's module is current.
+pub unsafe fn f8_moe(
+    h: bool,
+    (core, heads, var, experts, n, k, scale): (u64, u64, u64, i64, i64, i64, u64),
+    (x, plan, k_, gather): (u64, u64, i64, bool),
+    (m, slots, y): (i64, i64, u64),
+    (ws, ws_bytes, done): (u64, usize, u64),
+    cs: Stream,
+) -> Result<bool> {
+    let (ldx, ldy, lds) = (k, n, (k + 127) / 128);
+    if [core, heads, var, scale, x, y, plan].contains(&0)
+        || !(1..=i32::MAX as i64).contains(&experts)
+        || n % 64 != 0
+        || f8_patches(n, k).is_none()
+        || !(1..=64).contains(&m)
+        || !(1..=65535).contains(&slots)
+        || !(1..=i32::MAX as i64).contains(&k_)
+        || core % 16 != 0
+        || heads % 16 != 0
+        || var % 4 != 0
+        || scale % 4 != 0
+        || x % 2 != 0
+        || y % 2 != 0
+        || !f8_default()?
+    {
+        return Ok(false);
+    }
+    let mut ctas = f8_moe_ctas(n, k, m, slots)?;
+    if h {
+        ctas = ctas.min(f8h_ctas(n, k, m, Some(slots))?);
+    }
+    let need = slots * f8_parts(ctas, m);
+    if (ctas > 1 && done == 0) || !fits(ws, ws_bytes, need) || (need > 0 && ws % 16 != 0) {
+        return Ok(false);
+    }
+    let mut p = F8Lin {
+        core,
+        heads,
+        var,
+        scale,
+        x,
+        y,
+        parts: ws,
+        done,
+        lds,
+        ldx,
+        ldy,
+        m: m as i32,
+        n: n as i32,
+        k: k as i32,
+        kt: lds as i32,
+        rg: (((n + 63) / 64 * 4 + 7) / 8) as i32,
+        ctas: ctas as i32,
+        xvec: (x % 16 == 0 && ldx % 8 == 0) as i32,
+        plan,
+        e: experts as i32,
+        gk: k_ as i32,
+        gather: gather as i32,
+        ..Default::default()
+    };
+    if h && m == 1 && f8h_one()? != 0 {
+        let plain = f8h_one()? == 3;
+        let one = f8h_one_ctas(n, k, slots)?;
+        if (one > 1 && done == 0) || !fits(ws, ws_bytes, slots * f8_parts(one, 1)) {
+            return Ok(false);
+        }
+        p.ctas = one as i32;
+        let smem = if plain { F8H_ONE_PLAIN } else { F8H_ONE_CODED };
+        f8_launch(f8h_one_name(plain, true), [one as u32, slots as u32, 1], (smem, smem), p, cs)?;
+        return Ok(true);
+    }
+    f8_launch(f8_name(if h { 7 } else { 5 }, f8_ntl(m)), [ctas as u32, slots as u32, 1], (f8_shared(m, h), f8_shared(64, h)), p, cs)?;
+    Ok(true)
+}
+
 /// foldcheck's wait for a check's launches: a fault comes back named by the launches it follows (so the failing kernel, the library's or the engine's,
 /// is the one named).
 #[cfg(feature = "dev")]
@@ -1980,13 +2335,14 @@ pub fn check() -> Result<()> {
     }
     say("the KV cache's sizes and the decode's workspace", n, bad);
     type Check = fn(&crate::dev::Dev, &crate::ffi::Lib) -> Result<(usize, Vec<String>)>;
-    let checks: [(&str, Check); 6] = [
+    let checks: [(&str, Check); 7] = [
         ("the experts' plan (moe_way), the engine's kernels against the library's (one warp and one block, ids out of range among them)", route_check),
         (
             "the 12-bit pages' write, unpack and gather, and the decode and prompt attention over them and over a bf16 cache: the engine's kernels against the library's",
             kv_check,
         ),
         ("the lossless FP8 format's size, pack and unpack (both layouts), the engine's kernels against the library's", f8_check),
+        ("the FP8 products (each kind of scales, both layouts, 1 to 64 tokens, the experts'), the engine's kernels against the library's", f8_product_check),
         ("the grouped experts' step products (no activation, SiLU, GELU, gathered, weighted), the engine's kernels against the library's", moe_check),
         ("the step product (route GEMM, 1 to 64 tokens), the engine's kernels against the library's, and its workspace", linear_check),
         ("the mma layouts' unpacking, the engine's kernels against the library's (every bf16 of each layout, whole and a row block)", unpack_check),
@@ -2733,6 +3089,167 @@ fn f8_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<
     Ok((n, bad))
 }
 
+/// `foldcheck`'s FP8 products: random e4m3 weights packed by the library (both layouts), each kind of scales (layout H: block), 1 to 64 tokens on each side
+/// of the tiles' sizes (layout H's one token its own kernel), and the experts' product over a plan of 2 choices a token, gathered and not: by the library's
+/// kernels and by the engine's, the workspaces' sizes and every bf16 compared. (compared, differences)
+#[cfg(feature = "dev")]
+fn f8_product_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
+    use crate::dev::Buf;
+    let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let (mut n, mut bad) = (0, Vec::new());
+    let bf = |v: f32| (v.to_bits() >> 16) as u16;
+    // W [o, k] packed by the library in layout `h`: (core, heads, var)
+    let pack = |o: i64, k: i64, h: bool| -> Result<(Buf, Buf, Buf)> {
+        let mut r = 0xD1B5_4A32_D192_ED03u64 ^ (o * 65_537 + k) as u64;
+        let w: Vec<u8> = (0..o * k)
+            .map(|_| {
+                r ^= r << 13;
+                r ^= r >> 7;
+                r ^= r << 17;
+                (((r >> 8) as u8) & 0x87) | 0x30
+            })
+            .collect();
+        let wb = Buf::new(w.len())?;
+        wb.write(0, &w)?;
+        let patches = f8_patches(o, k).unwrap_or(0) as usize;
+        let (heads, ws) = (Buf::zeroed(patches * 32)?, Buf::zeroed(16)?);
+        // SAFETY: W [o, k], heads of 8 words a patch, the size's workspace, the core and var of its sizes; one stream (the size waits for it).
+        unsafe {
+            let words = lib.library_f8_size(h, wb.ptr, k, o, k, heads.ptr, ws.ptr, 16, dev.stream)?;
+            let (core, var) = (Buf::zeroed(patches * if h { 7168 } else { 6144 })?, Buf::zeroed(words as usize * 4)?);
+            lib.library_f8_pack(h, wb.ptr, k, o, k, heads.ptr, core.ptr, var.ptr, words, dev.stream)?;
+            synced(dev, || format!("the library's FP8 pack of {o} x {k}"))?;
+            Ok((core, heads, var))
+        }
+    };
+    let xs: Vec<u16> = (0..64 * 4096).map(|i| bf(((i * 7919 % 2001) as f32 - 1000.0) / 4000.0)).collect();
+    let xb = Buf::new(2 * xs.len())?;
+    xb.write(0, &xs)?;
+    for (o, k) in [(128i64, 256i64), (320, 1000), (512, 4096)] {
+        for h in [false, true] {
+            let (core, heads, var) = pack(o, k, h)?;
+            let (k128, k32) = ((k + 127) / 128, (k + 31) / 32);
+            for kind in if h { 0..1 } else { 0..5 } {
+                // the scales: fp32 a 128 x 128 block, one fp32, e8m0 a 1 x 32 and a 32 x 32 block, fp32 a row
+                let (rows, lds, f32s) = match kind {
+                    0 => ((o + 127) / 128, k128, true),
+                    1 => (1, 1, true),
+                    2 => (o, k32, false),
+                    3 => ((o + 31) / 32, k32, false),
+                    _ => (o, 1, true),
+                };
+                let sb = Buf::new((rows * lds * 4) as usize)?;
+                if f32s {
+                    sb.write(0, &(0..rows * lds).map(|i| 0.5 + (i % 5) as f32 / 8.0).collect::<Vec<f32>>())?;
+                } else {
+                    sb.write(0, &(0..rows * lds).map(|i| 124 + (i % 6) as u8).collect::<Vec<u8>>())?;
+                }
+                for m in [1i64, 2, 8, 9, 16, 17, 33, 64] {
+                    let what = format!("{o} x {k}{}, kind {kind}, {m} tokens", if h { ", layout H" } else { "" });
+                    let ws_bytes = lib.library_f8_linear_workspace(o, k, m)?;
+                    n += 1;
+                    match f8_linear_workspace(o, k, m)? {
+                        Some(b) if b != ws_bytes => bad.push(format!("{what}: workspace {ws_bytes} (library) against {b}")),
+                        _ => {}
+                    }
+                    let ws = Buf::zeroed(ws_bytes.max(16))?;
+                    let (da, db) = (Buf::zeroed((4 * (o / 128 + 1) + 64) as usize)?, Buf::zeroed((4 * (o / 128 + 1) + 64) as usize)?);
+                    let (ya, yb) = (Buf::new((2 * m * o) as usize)?, Buf::new((2 * m * o) as usize)?);
+                    ya.fill_async(0xA5, dev.stream)?;
+                    yb.fill_async(0x5A, dev.stream)?;
+                    let w = (core.ptr, heads.ptr, var.ptr);
+                    // SAFETY: the pack, its scales, X [64, 4096] (rows k apart: within it), Y [m, o] each, the library's workspace, zeroed counters each; one stream.
+                    let rb = unsafe {
+                        lib.library_f8_linear(h, w.0, w.1, w.2, o, k, kind, sb.ptr, lds, xb.ptr, m, ya.ptr, ws.ptr, ws_bytes, da.ptr, dev.stream)?;
+                        synced(dev, || format!("the library's FP8 product, {what}"))?;
+                        let r = f8_linear(h, w, (o, k, kind, sb.ptr, lds), (xb.ptr, m, yb.ptr), (ws.ptr, ws_bytes, db.ptr), dev.stream)?;
+                        synced(dev, || format!("the engine's FP8 product, {what}"))?;
+                        r
+                    };
+                    n += 1;
+                    if !rb {
+                        bad.push(format!("{what}: the engine's kernel did not take it"));
+                        continue;
+                    }
+                    let (mut va, mut vb) = (vec![0u16; (m * o) as usize], vec![0u16; (m * o) as usize]);
+                    ya.read(0, &mut va)?;
+                    yb.read(0, &mut vb)?;
+                    let differ = va.iter().zip(&vb).filter(|(p, q)| p != q).count();
+                    if differ > 0 {
+                        bad.push(format!("{what}: {differ} of {} bf16 differ", va.len()));
+                    }
+                }
+            }
+        }
+    }
+    // the experts' product: 4 experts of [128, 256] as one [512, 256], block scales [4][1][2], 2 choices a token
+    let (e, o, k) = (4i64, 128i64, 256i64);
+    let sb = Buf::new((e * 2 * 4) as usize)?;
+    sb.write(0, &(0..e * 2).map(|i| 0.25 + i as f32 / 16.0).collect::<Vec<f32>>())?;
+    for h in [false, true] {
+        let (core, heads, var) = pack(e * o, k, h)?;
+        for t in [1i64, 3, 17, 40] {
+            let ids: Vec<i64> = (0..t)
+                .flat_map(|_| {
+                    let a = (next() % e as u64) as i64;
+                    [a, (a + 1 + (next() % (e as u64 - 1)) as i64) % e]
+                })
+                .collect();
+            let most = (0..e).map(|x| ids.iter().filter(|&&i| i == x).count() as i64).max().unwrap_or(1).max(1);
+            let (idb, plan) = (Buf::new(8 * ids.len())?, Buf::new(4 * (2 + 2 * e + 2 * t) as usize)?);
+            idb.write(0, &ids)?;
+            // SAFETY: the ids and the plan's room; one stream.
+            unsafe { lib.library_moe_way(idb.ptr, 2 * t, e, plan.ptr, dev.stream)? };
+            for gather in [true, false] {
+                let what = format!("the experts' product{}, {t} tokens, gather {gather}", if h { ", layout H" } else { "" });
+                let ws_bytes = lib.library_f8_moe_workspace(o, k, most, e)?;
+                n += 1;
+                match f8_moe_workspace(o, k, most, e)? {
+                    Some(b) if b != ws_bytes => bad.push(format!("{what}: workspace {ws_bytes} (library) against {b}")),
+                    _ => {}
+                }
+                let ws = Buf::zeroed(ws_bytes.max(16))?;
+                let (da, db) = (Buf::zeroed((4 * e + 64) as usize)?, Buf::zeroed((4 * e + 64) as usize)?);
+                let len = (2 * t * o) as usize;
+                let (ya, yb) = (Buf::new(2 * len)?, Buf::new(2 * len)?);
+                ya.fill_async(0xA5, dev.stream)?;
+                yb.fill_async(0x5A, dev.stream)?;
+                let f8 = (core.ptr, heads.ptr, var.ptr, e, o, k, sb.ptr);
+                // SAFETY: the stack and its scales, X [64, 4096] (2t rows k apart: within it), the plan, Y [2t, o] each, the library's workspace, zeroed
+                // counters each; one stream.
+                let rb = unsafe {
+                    lib.library_f8_moe(
+                        h, f8.0, f8.1, f8.2, e, o, k, sb.ptr, xb.ptr, plan.ptr, 2, gather, most, e, ya.ptr, ws.ptr, ws_bytes, da.ptr, dev.stream,
+                    )?;
+                    synced(dev, || format!("the library's {what}"))?;
+                    let r = f8_moe(h, f8, (xb.ptr, plan.ptr, 2, gather), (most, e, yb.ptr), (ws.ptr, ws_bytes, db.ptr), dev.stream)?;
+                    synced(dev, || format!("the engine's {what}"))?;
+                    r
+                };
+                n += 1;
+                if !rb {
+                    bad.push(format!("{what}: the engine's kernel did not take it"));
+                    continue;
+                }
+                let (mut va, mut vb) = (vec![0u16; len], vec![0u16; len]);
+                ya.read(0, &mut va)?;
+                yb.read(0, &mut vb)?;
+                let differ = va.iter().zip(&vb).filter(|(p, q)| p != q).count();
+                if differ > 0 {
+                    bad.push(format!("{what}: {differ} of {len} bf16 differ"));
+                }
+            }
+        }
+    }
+    Ok((n, bad))
+}
+
 /// `foldcheck`'s unpacking: random weights of each layout packed by glyd-gpu's packers, unpacked by the library's kernel and by the engine's, whole and
 /// rows 64-127, every bf16 compared; a pack of a layout number neither knows refused by both. (compared, differences)
 #[cfg(feature = "dev")]
@@ -2987,6 +3504,29 @@ mod tests {
         assert_eq!(wp, [80, 112, 152, 168, 192]);
         assert_eq!((size_of::<F8Pk>(), size_of::<F8Un>()), (40, 80));
         assert_eq!((offset_of!(F8Pk, plain), offset_of!(F8Un, o), offset_of!(F8Un, vec)), (32, 56, 76));
+        // f8c::F8Lin's offsets as a host compiler lays it out (gpu/fp8/emu_f8.cpp's build of the f8c block, 2026-11-23): 168 bytes
+        assert_eq!(size_of::<F8Lin>(), 168);
+        let at =
+            [offset_of!(F8Lin, lds), offset_of!(F8Lin, m), offset_of!(F8Lin, xvec), offset_of!(F8Lin, plan), offset_of!(F8Lin, e), offset_of!(F8Lin, gather)];
+        assert_eq!(at, [80, 104, 128, 136, 152, 160]);
+        // the products' shared memory as f8_lin_shared and f8h_one_shared give it (f8_lsmem<2> 29,888, layout H's 33,984; L1W 1,184, BW 1,152 words a warp)
+        assert_eq!((F8_LSMEM, F8H_LSMEM, F8H_ONE_CODED, F8H_ONE_PLAIN), (29_888, 33_984, 37_888, 36_864));
+        assert_eq!((f8_shared(1, false), f8_shared(64, false), f8_shared(64, true)), (30_400, 62_656, 66_752));
+        assert_eq!([1, 8, 9, 16, 17, 32, 33, 64].map(f8_ntl), [1, 1, 2, 2, 4, 4, 8, 8]);
+        assert_eq!((f8_work(4096, 4096), f8_work(64, 128), f8_work(65, 129)), (32 * 32, 1, 2));
+    }
+
+    #[test]
+    fn the_fp8_products_names_are_the_kernels() {
+        use crate::dev::Typed;
+        use crate::kt;
+        assert_eq!(f8_name(0, 1), kt::fold_f8_block_1::NAME);
+        assert_eq!(f8_name(4, 8), kt::fold_f8_channel_8::NAME);
+        assert_eq!(f8_name(5, 4), kt::fold_f8_moe_4::NAME);
+        assert_eq!(f8_name(7, 2), kt::fold_f8_hmoe_2::NAME);
+        assert_eq!(f8h_one_name(true, true), kt::fold_f8h_one_plain_1::NAME);
+        assert_eq!(f8h_one_name(false, false), kt::fold_f8h_one_coded_0::NAME);
+        assert_eq!(std::any::type_name::<<kt::fold_f8_h_8 as Typed>::Args>(), std::any::type_name::<(F8Lin,)>());
     }
 
     /// The arguments the experts' launches build by name are, in order and type, the kernels' own (crate::kt, read from kernels/fold.cu).
