@@ -1,10 +1,10 @@
 //! A whole model on the reference backend: a description (`describe::Described`) loaded from a tensor source, one sequence's tokens to
 //! logits. The per-model check of the design (§3): tiny models built from a family's real config, logits against transformers.
 
-use super::{depth_mix, norm::norm, Params, RefLayer};
+use super::{depth_mix, norm::norm, Params, RefLayer, SeqState};
 use crate::ffi::{err, Error, Result};
 use crate::runtime::describe::{Described, Source};
-use crate::runtime::kinds::{Collapse, ModelDesc, Residual, StreamsP};
+use crate::runtime::kinds::{Body, Collapse, Comp, Mixer, ModelDesc, Residual, StreamsP};
 
 /// A checkpoint's tensors by name: (shape, values as f32).
 pub type Tensors<'a> = &'a dyn Fn(&str) -> Option<(Vec<usize>, Vec<f32>)>;
@@ -185,7 +185,9 @@ impl RefModel {
         let mut depth: Vec<Depth> = x.chunks(n * d).map(|r| Depth { sources: Vec::new(), partial: Some(r[..d].to_vec()) }).collect();
         // (lagged mHC: each token's input weights from the last lagged block; one-hot on stream 0 before the first)
         let mut lag: Vec<Vec<f32>> = vec![(0..n).map(|j| (j == 0) as u32 as f32).collect(); tokens.len()];
-        for l in &mut self.layers {
+        for b in 0..self.layers.len() {
+            self.share_into(b, 0)?;
+            let l = &mut self.layers[b];
             if let Residual::Streams(s @ StreamsP { lagged: true, .. }) = l.block.residual {
                 for (t, xt) in x.chunks_mut(n * d).enumerate() {
                     let (pre, post, comb) = super::hc_weights(&s, &l.p, xt)?;
@@ -222,6 +224,38 @@ impl RefModel {
             );
         }
         Ok(out)
+    }
+
+    /// V4.1's compressed attention of block `b` reading other blocks' parts (`kinds::CompShare`): sequence `seq`'s entries (and their indexer
+    /// keys), picks and candidate blocks copied from the blocks that make them, which ran before it. A query reads only what its position sees.
+    fn share_into(&mut self, b: usize, seq: u32) -> Result<()> {
+        let Body::Mixer(Mixer::Compressed(Comp { share: Some(sh), .. })) = &self.layers[b].block.body else { return Ok(()) };
+        let sh = *sh;
+        let entries = sh.entries.map(|e| self.comp_state(b, e, seq).map(|c| c.map(|c| (c.comp.clone(), c.ikeys.clone())))).transpose()?.flatten();
+        let picks = sh.picks.map(|e| self.comp_state(b, e, seq).map(|c| c.map(|c| c.picks.clone()))).transpose()?.flatten();
+        let cands = sh.candidates.map(|e| self.comp_state(b, e, seq).map(|c| c.map(|c| c.cands.clone()))).transpose()?.flatten();
+        let st = self.layers[b].seqs.entry(seq).or_insert_with(|| SeqState::Comp(super::comp::CompState::default()));
+        let SeqState::Comp(st) = st else { return err(format!("block {b}: a sequence's state is not a compressed attention's")) };
+        if let Some((pool, keys)) = entries {
+            (st.comp, st.ikeys) = (pool, keys);
+        }
+        if let Some(p) = picks {
+            st.picks = p;
+        }
+        if let Some(c) = cands {
+            st.cands = c;
+        }
+        Ok(())
+    }
+
+    /// Block `src`'s compressed attention state of sequence `seq`, which block `b` reads (None before the sequence reached it).
+    fn comp_state(&self, b: usize, src: usize, seq: u32) -> Result<Option<&super::comp::CompState>> {
+        match self.layers.get(src).map(|l| l.seqs.get(&seq)) {
+            None => err(format!("block {b} reads block {src}'s compressed attention, which the model has not")),
+            Some(None) => Ok(None),
+            Some(Some(SeqState::Comp(c))) => Ok(Some(c)),
+            Some(Some(_)) => err(format!("block {b} reads block {src}, which is no compressed attention")),
+        }
     }
 
     /// The head's input for one token: its residual `xt` (its streams) collapsed into one (`Head::collapse`; Kimi-K3's from the depth mix's

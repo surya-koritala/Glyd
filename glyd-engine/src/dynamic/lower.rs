@@ -1206,6 +1206,11 @@ pub fn deepseek_v4(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Sta
             Body::Mixer(Mixer::Compressed(c)) => c,
             b => return err(format!("DeepSeek-V4: layer {l}'s mixer is {b:?}")),
         };
+        if !c.ape || !c.q_head_norm || c.share.is_some() {
+            return err(format!(
+                "DeepSeek-V4: layer {l} is V4.1's compressed sparse attention (no window bias, parts shared across layers): no operation of this executor yet"
+            ));
+        }
         if c.indexer.is_some() != (c.ratio == 4) {
             return err(format!(
                 "DeepSeek-V4: layer {l} compresses by {} with{} an indexer: this engine runs the indexer on the layers of ratio 4 alone",

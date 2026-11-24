@@ -315,7 +315,11 @@ pub struct Mla {
 /// `comp_gate` [(1 + overlap) head_dim, hidden], `comp_ape` [ratio, (1 + overlap) head_dim], `comp_norm` [head_dim]; with an indexer
 /// the same four as `idx_kv`, `idx_gate`, `idx_ape`, `idx_norm` at the indexer's head dim, `idx_q_b` [heads head_dim, q_lora] and
 /// `idx_weights` [heads, hidden]. The query's per-head norm has no weight.
-#[derive(Clone, Debug, PartialEq)]
+///
+/// DeepSeek-V4.1's form of it (CSA2): ratio 1 (each token its own entry, no gate) or 2 (windows of 2, no overlap), no position bias (`ape`
+/// false: no `comp_ape`), no per-head query norm (`q_head_norm` false), and the entries, the indexer's keys and its picks shared across
+/// layers (`share`). A query reads entry j only once its window has closed: j < (pos + 1) / ratio.
+#[derive(Clone, PartialEq)]
 pub struct Comp {
     pub heads: usize,
     pub head_dim: usize,
@@ -331,6 +335,55 @@ pub struct Comp {
     pub rope: Rope,
     pub indexer: Option<Indexer>,
     pub norm_eps: f32,
+    /// The compressed windows' learned position bias (`comp_ape`, `idx_ape`): DeepSeek-V4's; V4.1's have none.
+    pub ape: bool,
+    /// The query's per-head weightless RMS norm: DeepSeek-V4's; V4.1 has none.
+    pub q_head_norm: bool,
+    /// V4.1's sharing across layers; None: every part the layer's own (V4).
+    pub share: Option<CompShare>,
+}
+
+/// Where a V4.1 compressed attention's parts come from: None, the layer's own; Some(b), block b's of the description (the most recent source
+/// at or below the layer).
+///
+/// The entries: a kv source's compressor (`comp_kv`, `comp_gate` with ratio 2, `comp_norm`: `kv_source_layer_ids`), each entry normed, then
+/// rotated at its window's first position; and, where the source has the indexer's key product, the indexer's keys: `idx_k` [index head_dim,
+/// head_dim] of each entry before its rotation, normed by the indexer's key norm (`idx_k_norm`), rotated as the entry. The picks: an index
+/// source's (`index_source_layer_ids`), whose queries are its own (`idx_q_b` of the q latent, rotated at the query's position; `idx_weights`):
+/// score(j) = sum_h w_h relu(q_h . k_j) / sqrt(index head_dim) / sqrt(heads) over the visible entries, the best `top_k` kept in order; a layer
+/// that is no index source reads that source's picks of the same position. `candidates`: the candidate source's block, inside whose published
+/// blocks an index source after it scores (the rest masked before its top-k).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CompShare {
+    pub entries: Option<usize>,
+    pub picks: Option<usize>,
+    pub candidates: Option<usize>,
+    /// On the candidate source (`candidate_source_layer_id`): each query's visible scores max-pooled over blocks of `block` entries, the block
+    /// of its newest visible entry kept whatever its score, the best `top` blocks published (`candidate_block_size`, `candidate_topk_blocks`).
+    pub publish: Option<(usize, usize)>,
+}
+
+/// The derived form, with V4.1's fields said only where they differ from DeepSeek-V4's: V4's descriptions read as they did before them (the
+/// digests of tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for Comp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("Comp");
+        s.field("heads", &self.heads)
+            .field("head_dim", &self.head_dim)
+            .field("q_lora", &self.q_lora)
+            .field("o_groups", &self.o_groups)
+            .field("o_lora", &self.o_lora)
+            .field("window", &self.window)
+            .field("ratio", &self.ratio)
+            .field("overlap", &self.overlap)
+            .field("rope", &self.rope)
+            .field("indexer", &self.indexer)
+            .field("norm_eps", &self.norm_eps);
+        if !self.ape || !self.q_head_norm || self.share.is_some() {
+            s.field("ape", &self.ape).field("q_head_norm", &self.q_head_norm).field("share", &self.share);
+        }
+        s.finish()
+    }
 }
 
 /// Which delta rule a linear-attention layer runs.

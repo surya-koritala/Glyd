@@ -1985,6 +1985,9 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
                 form: IndexForm::Gated { key: Norm::rms(eps) },
             }),
             norm_eps: eps,
+            ape: true,
+            q_head_norm: true,
+            share: None,
         };
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Compressed(c)), norm_out: None, residual: Residual::Streams(streams) });
         roles.push(r);
