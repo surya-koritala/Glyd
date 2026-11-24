@@ -637,6 +637,9 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         }
     }
     println!("{same} of {} passes the same to the bit", want.len());
+    if same < want.len() {
+        return err(format!("{} of {} passes differ from the model on one GPU", want.len() - same, want.len()));
+    }
     Ok(())
 }
 

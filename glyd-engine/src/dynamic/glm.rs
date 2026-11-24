@@ -73,7 +73,9 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
     }
     let (hid, qd, heads) = (c.hidden, c.qkv(), c.kda.heads);
     let mut l_ = Loaded::default();
-    let (mut states, mut layers, mut dense, mut rings) = (Vec::new(), Vec::new(), false, Vec::new());
+    // (the dense MLP's slots where any layer of the model has one, a stage's or not: as its description sizes them)
+    let dense = (0..c.layers).any(|l| !c.moe[l]);
+    let (mut states, mut layers, mut rings) = (Vec::new(), Vec::new(), Vec::new());
     let mla = latent(&c);
     let put = |v: &mut Vec<Buf>, b: Buf| {
         v.push(b);
@@ -149,7 +151,6 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
             }
             None => {
                 // (the dense MLP's gate and up, then its down: the layer's last two matrices)
-                dense = true;
                 let (gu, down) = (m0 + nm - 2, m0 + nm - 1);
                 ops.extend([
                     Op::Linear { w: gu, x: Slot::H, y: Slot::Gu, name: "MLP: gate and up product" },
