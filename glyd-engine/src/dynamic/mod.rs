@@ -736,8 +736,27 @@ impl Part {
     }
 }
 
-/// `d`'s weights from `dir`: a glyd-v7 directory's packs as saved (each under its first member's name), else packed here at `layout`.
-fn load_part(dir: &Path, d: ModelDesc, layout: Layout, threads: usize, rows: usize, out: usize, want: Option<&[bool]>) -> Result<Part> {
+/// What reads a description's blocks of experts (`Op::Moe`'s, in its order) from its checkpoint.
+pub type Experts<'a> = dyn Fn(&Checkpoint) -> Result<Vec<Box<dyn MoeBlock>>> + 'a;
+
+/// A matrix whose rows or columns are not a multiple of this is held as saved (bf16) and multiplied by the small product: the library packs those that are.
+const PACKED_BY: usize = 64;
+
+/// Whether matrix `k` of `d` is held as saved (bf16), not packed: a table an operation reads by row (`Op::NgramRows`), or a shape the library does not pack.
+fn held_as_saved(d: &ModelDesc, k: usize) -> bool {
+    let it = &d.mats[k];
+    it.rows % PACKED_BY != 0 || it.cols % PACKED_BY != 0 || d.layers.iter().flatten().any(|op| matches!(op, Op::NgramRows(x) if x.table == k))
+}
+
+/// The small tensors an operation reads in fp32 (the delta rule's A_log): a bf16 one is widened.
+fn read_f32(d: &ModelDesc) -> Vec<usize> {
+    d.layers.iter().flatten().filter_map(|op| if let Op::GdnDelta { a_log, .. } = op { Some(*a_log) } else { None }).collect()
+}
+
+/// `d`'s weights from `dir`: a glyd-v7 directory's packs as saved (each under its first member's name), else packed here at `layout`; the matrices
+/// `held_as_saved` names as saved; the small tensors in the type their operations read (`read_f32`; int64 as saved, a hash's numbers); the experts by `experts`.
+#[allow(clippy::too_many_arguments)]
+fn load_part(dir: &Path, d: ModelDesc, layout: Layout, threads: usize, rows: usize, out: usize, want: Option<&[bool]>, experts: &Experts) -> Result<Part> {
     let ck = Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
     let v7 = crate::weights::v7_manifest(dir)?;
     let one = |k: usize| -> Result<crate::weights::Packed> {
@@ -750,7 +769,7 @@ fn load_part(dir: &Path, d: ModelDesc, layout: Layout, threads: usize, rows: usi
     };
     let mut packed: Vec<Option<PackBuf>> = (0..d.mats.len()).map(|_| None).collect();
     // (a stage of a split model loads only the matrices its layers multiply by)
-    let ks: Vec<usize> = (0..d.mats.len()).filter(|&k| want.is_none_or(|w| w[k])).collect();
+    let ks: Vec<usize> = (0..d.mats.len()).filter(|&k| want.is_none_or(|w| w[k]) && !held_as_saved(&d, k)).collect();
     ordered(ks.len(), threads, 2 * threads.max(1), &|i| one(ks[i]), |i, pk| {
         crate::status::STATUS.beat();
         packed[ks[i]] = Some(upload_packed(pk)?);
@@ -759,25 +778,38 @@ fn load_part(dir: &Path, d: ModelDesc, layout: Layout, threads: usize, rows: usi
     // ponytail: a matrix another stage holds is an empty dense one here (never multiplied by); a Mat variant of its own if one is ever read by mistake
     let mats: Vec<Mat> = packed
         .into_iter()
-        .map(|x| {
+        .enumerate()
+        .map(|(k, x)| {
             Ok(match x {
                 Some(p) => Mat::Packed(p),
+                None if want.is_none_or(|w| w[k]) && held_as_saved(&d, k) => {
+                    let it = &d.mats[k];
+                    Mat::Dense(upload_bytes(crate::weights::as_bytes(&crate::weights::item_words(&ck, it)?))?, it.rows, it.cols)
+                }
                 None => Mat::Dense(Buf::new(2)?, 0, 0),
             })
         })
         .collect::<Result<_>>()?;
+    let f32s = read_f32(&d);
     let small: Vec<Buf> = d
         .small
         .iter()
-        .map(|name| {
+        .enumerate()
+        .map(|(i, name)| {
             let (_, t) = ck.get(name).ok_or_else(|| Error(format!("no tensor {name}")))?;
-            if t.dtype != "BF16" {
-                return err(format!("{name}: {} where bf16 is wanted", t.dtype));
+            let b = ck.read(name).map_err(|e| Error(format!("{name}: {e}")))?;
+            match (t.dtype.as_str(), f32s.contains(&i)) {
+                ("BF16", true) => {
+                    let v: Vec<f32> = b.chunks_exact(2).map(|x| f32::from_bits((u16::from_le_bytes([x[0], x[1]]) as u32) << 16)).collect();
+                    upload_bytes(crate::weights::as_bytes(&v))
+                }
+                ("F32", true) | ("BF16", false) | ("I64", false) => upload_bytes(&b),
+                (dt, f) => err(format!("{name}: {dt}, where {} is read", if f { "bf16 or fp32" } else { "bf16, or int64 for a hash's numbers" })),
             }
-            upload_bytes(&ck.read(name).map_err(|e| Error(e.to_string()))?)
         })
         .collect::<Result<_>>()?;
-    Part::from_loaded(d, Loaded { mats, small, ..Loaded::default() }, rows, out)
+    let moe = experts(&ck)?;
+    Part::from_loaded(d, Loaded { mats, small, moe, ..Loaded::default() }, rows, out)
 }
 
 /// What a family's loader puts on the GPU for its description: the matrices, the FP8 ones, the small tensors, the blocks of experts.
@@ -1026,6 +1058,11 @@ impl Dyn {
 
     /// Stage `st` of the model of `dir` (its layers, and the embedding or the head where it holds them), on `o.device`: a split model's part.
     pub fn new_stage(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts) -> Result<Dyn> {
+        Dyn::new_with(dir, d, draft, st, o, &|_| Ok(Vec::new()))
+    }
+
+    /// `new_stage` of a description with experts: `experts` reads its blocks of experts (`Op::Moe`'s, in its order) from the checkpoint.
+    pub fn new_with(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts, experts: &Experts) -> Result<Dyn> {
         if draft.is_some() && !(st.first && st.last) {
             return err("drafting with a model split across GPUs: not yet");
         }
@@ -1051,11 +1088,11 @@ impl Dyn {
             })
             .collect::<Result<_>>()?;
         let want = d.wanted(&st);
-        let big = load_part(dir, d, layout, threads, ch, rows_out, Some(&want))?;
+        let big = load_part(dir, d, layout, threads, ch, rows_out, Some(&want), experts)?;
         // (a draft model is packed lossy here: the big model checks every draft token, so its precision moves only how many are kept)
         let draft = match draft {
             None => None,
-            Some(x) => Some(Draft { p: load_part(x.dir, x.desc, Layout::Int6, threads, 1, 1, None)?, k: x.k, pos: Buf::zeroed(8)? }),
+            Some(x) => Some(Draft { p: load_part(x.dir, x.desc, Layout::Int6, threads, 1, 1, None, &|_| Ok(Vec::new()))?, k: x.k, pos: Buf::zeroed(8)? }),
         };
         Dyn::build(dev, big, draft, ropes, layout, st, o)
     }

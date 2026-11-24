@@ -4,21 +4,16 @@
 //! block, `QxMoe`, handed over as a `ResidentMoe`). Condor's engine (src/model_qwen4x.rs) keeps serving the release: its experts in the computer's memory and their
 //! cache, its draft head and the table of n-grams read from the disk are not on the executor yet, so a model whose experts or table do not fit this GPU is refused.
 
-use super::{Dyn, Loaded, ModelDesc, Op, Opts, ResidentMoe, Stage};
-use crate::dev::{Buf, Dev};
-use crate::ffi::{err, Error, Result};
-use crate::kern35::Mat;
+use super::{Dyn, ModelDesc, Op, Opts, ResidentMoe, Stage};
+use crate::dev::Dev;
+use crate::ffi::{err, Result};
 use crate::kern_nh::MoeBlock;
-use crate::weights::{pack_item_map, upload_bytes, upload_packed, Layout};
+use crate::weights::Layout;
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 
 /// The executor description's family name.
 pub const FAMILY: &str = "Qwen3.8-Flash-Next";
-
-/// A matrix whose rows or columns are not a multiple of this is held as saved and multiplied by the small product (the library packs those that are): the inject
-/// weights' 4 rows, the b and a gates' 2 value heads.
-const PACKED_BY: usize = 64;
 
 /// The executor's description of the model in `dir` for sequences of up to `ctx` positions: its kinds lowered (`lower::qwen4x`), held to Condor's own reading of
 /// the config (`ConfigQx::agrees`).
@@ -28,18 +23,15 @@ pub fn lowered(dir: &Path, ctx: usize) -> Result<ModelDesc> {
     super::lower::qwen4x(&kinds, c.eos.clone(), ctx.min(c.max_pos)).map_err(|e| e.context(&label))
 }
 
-/// The model in `dir` on the executor, its always-on matrices at `o.layout` (lossless where none), its experts at kestrel's six bits.
+/// The model in `dir` on the executor's loader (`Dyn::new_with`: its matrices at the level asked or this GPU's, the table of n-grams and the shapes the library
+/// does not pack as saved, A_log in fp32), its experts at kestrel's six bits (Condor's block, `QxMoe`, handed over as a `ResidentMoe`).
 pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
     let c = crate::qwen4x::ConfigQx::load(dir)?;
-    let ctx = o.ctx + o.chunk + 16;
-    let d = lowered(dir, ctx)?;
-    let dev = Dev::new(o.device)?;
-    let ck = Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
-    let layout = o.layout.unwrap_or(Layout::Tiered);
+    let d = lowered(dir, o.ctx + o.chunk + 16)?;
     // (what the GPU would hold: the experts at six bits and the table of n-grams as saved; Condor's engine serves a model past that)
     let experts = (c.layers * c.experts * 3 * c.inter * c.hidden) as u64 * 3 / 4;
     let table: u64 = held_as_saved(&d).iter().map(|&k| (d.mats[k].rows * d.mats[k].cols * 2) as u64).sum();
-    let free = dev.mem_info().map(|(f, _)| f as u64).unwrap_or(0);
+    let free = Dev::new(o.device)?.mem_info().map(|(f, _)| f as u64).unwrap_or(0);
     if experts + table > free {
         return err(format!(
             "{FAMILY}: its experts ({:.1} GB at six bits) and its table of n-grams ({:.1} GB) do not fit this GPU's {:.1} GB free: Condor's engine serves it (condor/README.md)",
@@ -48,60 +40,16 @@ pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
             free as f64 / 1e9
         ));
     }
-    let saved = held_as_saved(&d);
-    let mats: Vec<Mat> = (0..d.mats.len())
-        .map(|k| {
-            let it = &d.mats[k];
-            if saved.contains(&k) || it.rows % PACKED_BY != 0 || it.cols % PACKED_BY != 0 {
-                let w = crate::weights::item_words(&ck, it)?;
-                return Ok(Mat::Dense(upload_bytes(crate::weights::as_bytes(&w))?, it.rows, it.cols));
-            }
-            Ok(Mat::Packed(upload_packed(pack_item_map(&ck, it, layout, &|_| {})?)?))
-        })
-        .collect::<Result<_>>()?;
-    let fp32 = a_logs(&d);
-    let small: Vec<Buf> = d
-        .small
-        .iter()
-        .enumerate()
-        .map(|(i, name)| {
-            let (_, t) = ck.get(name).ok_or_else(|| Error(format!("no tensor {name}")))?;
-            let b = ck.read(name).map_err(|e| Error(format!("{name}: {e}")))?;
-            match (t.dtype.as_str(), fp32.contains(&i)) {
-                ("BF16", true) => {
-                    let v: Vec<f32> = b.chunks_exact(2).map(|x| f32::from_bits((u16::from_le_bytes([x[0], x[1]]) as u32) << 16)).collect();
-                    upload_bytes(crate::weights::as_bytes(&v))
-                }
-                ("F32", true) | ("BF16", false) | ("I64", false) => upload_bytes(&b),
-                (dt, _) => {
-                    err(format!("{name}: {dt}, where {} is read", if fp32.contains(&i) { "bf16 or fp32" } else { "bf16, or int64 for the hash's numbers" }))
-                }
-            }
-        })
-        .collect::<Result<_>>()?;
-    let moe: Vec<Box<dyn MoeBlock>> = (0..c.layers)
-        .map(|l| Ok(Box::new(ResidentMoe(crate::model_qwen4x::QxMoe::load(l, &c, &ck, Layout::Int6)?.into_layer())) as Box<dyn MoeBlock>))
-        .collect::<Result<_>>()?;
-    let ropes = d
-        .ropes
-        .iter()
-        .map(|r| {
-            let (cs, sn) = crate::gemma4::rotary(r.theta, r.dim, r.pairs, d.max_pos);
-            Ok((upload_bytes(crate::weights::as_bytes(&cs))?, upload_bytes(crate::weights::as_bytes(&sn))?))
-        })
-        .collect::<Result<_>>()?;
     let st = Stage::whole(d.layers.len());
-    Dyn::from_parts(dev, d, Loaded { mats, small, moe, ..Loaded::default() }, ropes, layout, st, o)
+    let blocks = |ck: &Checkpoint| -> Result<Vec<Box<dyn MoeBlock>>> {
+        (0..c.layers).map(|l| Ok(Box::new(ResidentMoe(crate::model_qwen4x::QxMoe::load(l, &c, ck, Layout::Int6)?.into_layer())) as Box<dyn MoeBlock>)).collect()
+    };
+    Dyn::new_with(dir, d, None, st, o, &blocks)
 }
 
 /// The matrices held as saved: the tables of n-grams (`Op::NgramRows` reads their rows).
 fn held_as_saved(d: &ModelDesc) -> Vec<usize> {
     d.layers.iter().flatten().filter_map(|op| if let Op::NgramRows(x) = op { Some(x.table) } else { None }).collect()
-}
-
-/// The small tensors the delta rule reads in fp32 (`Op::GdnDelta`'s A_log).
-fn a_logs(d: &ModelDesc) -> Vec<usize> {
-    d.layers.iter().flatten().filter_map(|op| if let Op::GdnDelta { a_log, .. } = op { Some(*a_log) } else { None }).collect()
 }
 
 #[cfg(test)]
@@ -112,6 +60,24 @@ mod tests {
     fn tiny() -> serde_json::Value {
         let m: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/qwen4x_tiny_manifest.json")).unwrap();
         serde_json::from_str(m["config"].as_str().unwrap()).unwrap()
+    }
+
+    /// The executor's loader takes every matrix of the tiny model (a whole model's stage wants each one), holds as saved the table of n-grams and the shapes the
+    /// library does not pack (the inject weights' 4 rows, the b and a gates' 2 value heads), packs the rest, and widens A_log alone to fp32.
+    #[test]
+    fn the_loader_holds_each_matrix_and_small_tensor_as_its_operations_read_it() {
+        let m = super::super::lower::qwen4x(&describe(&tiny()).unwrap(), vec![2000], 1100).unwrap();
+        assert!(m.wanted(&super::super::Stage::whole(m.layers.len())).iter().all(|&w| w), "a matrix no operation multiplies by");
+        let saved: Vec<usize> = (0..m.mats.len()).filter(|&k| super::super::held_as_saved(&m, k)).collect();
+        let table = super::held_as_saved(&m);
+        assert!(!table.is_empty() && table.iter().all(|k| saved.contains(k)), "{table:?} of {saved:?}");
+        for &k in &saved {
+            let it = &m.mats[k];
+            assert!(table.contains(&k) || it.rows % 64 != 0 || it.cols % 64 != 0, "{}: {}x{}", it.members[0], it.rows, it.cols);
+        }
+        assert!(saved.len() > table.len(), "the unpacked shapes");
+        let f32s = super::super::read_f32(&m);
+        assert!(!f32s.is_empty() && f32s.iter().all(|&i| m.small[i].ends_with("A_log")), "{:?}", f32s.iter().map(|&i| &m.small[i]).collect::<Vec<_>>());
     }
 
     /// The tiny model of the `qwen4x` logits case, lowered: eight layers of gated residuals around each block (a gated mix before it, the gated update after),
@@ -173,8 +139,8 @@ mod tests {
             assert_eq!(m.width(s), w, "{s:?}");
         }
         // (A_log the delta rule's, read in fp32)
-        assert_eq!(super::a_logs(&m).len(), 6);
-        assert!(super::a_logs(&m).iter().all(|&i| m.small[i].ends_with("linear_attn.A_log")));
+        assert_eq!(super::super::read_f32(&m).len(), 6);
+        assert!(super::super::read_f32(&m).iter().all(|&i| m.small[i].ends_with("linear_attn.A_log")));
     }
 
     /// What the shared operations do not take is refused in words: a linear attention's silu gate, gated residuals over another count of streams.
