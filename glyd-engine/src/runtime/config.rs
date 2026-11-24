@@ -212,6 +212,40 @@ pub fn family_of(text: &str) -> Option<Family> {
     family_by(arch, &s(&v, "model_type"), nested.as_deref())
 }
 
+/// A key's number (an integer or not), else an error that names it: the families' parsers' reading of a float (`rms_norm_eps`, `rope_theta`).
+pub fn num(v: &Value, what: &str) -> Result<f64> {
+    v.as_f64().ok_or_else(|| Error(format!("config.json: {what}: not a number")))
+}
+
+/// An array of unsigned integers, else None.
+pub fn u64s(v: &Value) -> Option<Vec<u64>> {
+    v.as_array()?.iter().map(Value::as_u64).collect()
+}
+
+/// The end-of-sequence ids: generation_config.json's (a number or a list) where it gives any, else the config object's (`config`: the top level, or the text
+/// model's).
+pub fn eos_ids(config: &Map<String, Value>, generation: Option<&str>) -> Vec<i64> {
+    let of = |v: Option<&Value>| match v {
+        Some(Value::Array(a)) => a.iter().filter_map(Value::as_i64).collect(),
+        Some(x) => x.as_i64().into_iter().collect(),
+        None => Vec::new(),
+    };
+    let g: Option<Value> = generation.and_then(|g| serde_json::from_str(g).ok());
+    let eos: Vec<i64> = of(g.as_ref().and_then(|g| g.get("eos_token_id")));
+    if eos.is_empty() {
+        of(config.get("eos_token_id"))
+    } else {
+        eos
+    }
+}
+
+impl ModelConfig {
+    /// The text model's key `k`, else the top level's (where a multimodal release keeps it).
+    pub fn key(&self, k: &str) -> Option<&Value> {
+        self.text.get(k).filter(|v| !v.is_null()).or_else(|| self.top.get(k))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,6 +266,57 @@ mod tests {
         // (a null in the text model does not hide the top level's value)
         let c = ModelConfig::parse(r#"{"tie_word_embeddings": true, "text_config": {"tie_word_embeddings": null, "hidden_size": 8}}"#).unwrap();
         assert_eq!((c.shared.tie_word_embeddings, c.shared.hidden_size), (Some(true), Some(8)));
+    }
+
+    /// Every family's own reader takes the one parse (R3a, #136): from a `ModelConfig` each reads what it reads from the text, and a shared key of another type
+    /// that the family does not read itself (`n_groups`, Mamba-2's, set to a word) is refused by each, named with its value, where all but Nemotron-H's reader
+    /// once passed it by.
+    #[test]
+    fn every_family_reads_the_one_parse() {
+        use std::fmt::Debug;
+        fn same<T: Debug>(name: &str, text: &str, parse: fn(&str) -> Result<T>, of: fn(&ModelConfig) -> Result<T>) {
+            let a = format!("{:?}", parse(text).unwrap_or_else(|e| panic!("{name}: {}", e.msg)));
+            assert_eq!(a, format!("{:?}", of(&ModelConfig::parse(text).unwrap()).unwrap()), "{name}");
+            let mut v: Value = serde_json::from_str(text).unwrap();
+            v["n_groups"] = "eight".into();
+            let e = parse(&v.to_string()).err().unwrap_or_else(|| panic!("{name}: n_groups \"eight\" passed by")).msg;
+            assert!(e.contains("n_groups = \"eight\""), "{name}: {e}");
+        }
+        let header = |f: &str| serde_json::from_str::<Value>(&fixture(&format!("headers/{f}"))).unwrap()["config"].as_str().unwrap().to_string();
+        let q35 = serde_json::from_str::<Value>(&fixture("qwen35_configs.json")).unwrap()["Qwen/Qwen3.5-0.8B"].to_string();
+        let qwen3 = r#"{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "hidden_size": 4096, "intermediate_size": 12288, "num_hidden_layers": 36,
+            "num_attention_heads": 32, "num_key_value_heads": 8, "head_dim": 128, "vocab_size": 151936, "max_position_embeddings": 40960, "rms_norm_eps": 1e-6,
+            "rope_theta": 1000000, "eos_token_id": 151645}"#;
+        same("Qwen3", qwen3, |t| crate::weights::Config::parse(t, "c", None), |c| crate::weights::Config::of(c, "c", None));
+        same("Qwen3.5", &q35, |t| crate::qwen35::Config35::parse(t, "c", None), |c| crate::qwen35::Config35::of(c, "c", None));
+        same(
+            "Gemma 4",
+            &fixture("gemma4_12b_config.json"),
+            |t| crate::gemma4::ConfigG4::parse(t, None, false),
+            |c| crate::gemma4::ConfigG4::of(c, None, false),
+        );
+        same("GLM-5.3-Flash", &fixture("glm5_next_config.json"), |t| crate::glm::ConfigGlm::parse(t, "c", None), |c| crate::glm::ConfigGlm::of(c, "c", None));
+        same("Kimi-K3", &header("Kimi-K3.json"), |t| crate::kimi::ConfigKimi::parse(t, "c", None), |c| crate::kimi::ConfigKimi::of(c, "c", None));
+        same(
+            "DeepSeek-V4",
+            &header("DeepSeek-V4-Flash-0731.json"),
+            |t| crate::deepseek_v4::ConfigV4::parse(t, "c", None),
+            |c| crate::deepseek_v4::ConfigV4::of(c, "c", None),
+        );
+        same("Muse Spark", crate::muse_ref::RANDOM_CONFIG, |t| crate::muse::ConfigMuse::parse(t, "c", None), |c| crate::muse::ConfigMuse::of(c, "c", None));
+        same(
+            "Qwen3.8-Flash-Next",
+            &fixture("qwen4x_config.json"),
+            |t| crate::qwen4x::ConfigQx::parse(t, "c", None),
+            |c| crate::qwen4x::ConfigQx::of(c, "c", None),
+        );
+        // (Nemotron-H reads n_groups itself: refused before as now)
+        same(
+            "Nemotron-H",
+            &fixture("nemotron_h_config.json"),
+            |t| crate::nemotron::ConfigNemotronH::parse(t, "c", None),
+            |c| crate::nemotron::ConfigNemotronH::of(c, "c", None),
+        );
     }
 
     /// A shared key of another type is an error that names the key; a config that is not an object is refused.

@@ -2630,6 +2630,7 @@ pub mod sizing {
     use crate::nemotron::{pack_layout, ConfigNemotronH, NhKind};
     use crate::offload::CachePlan;
     use crate::qwen35::{Config35, Pack35};
+    use crate::runtime::config::ModelConfig;
     use crate::store;
     use crate::ui::{gib, Done, Refusal};
     use crate::weights::{packed_bytes, Config, Layout};
@@ -3785,13 +3786,14 @@ pub mod sizing {
         if crate::gemma4::is_gemma4(text) {
             return gemma_plan(a, &name, tag, layout, text, gen, free, gpu, packed);
         }
-        // the matrices and the tensors kept as they are, what a sequence holds (its states, a token's KV) and the longest context
-        let nemotron = crate::nemotron::is_nemotron_h(text);
+        // the matrices and the tensors kept as they are, what a sequence holds (its states, a token's KV) and the longest context (config.json parsed once)
+        let m = ModelConfig::parse(text).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
+        let nemotron = m.family() == Some(crate::support::Family::NemotronH);
         let (packs, kept, state, per, max_pos) = if nemotron {
             if !matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Hummingbird) {
                 return Err(Refusal::unsupported(format!("{name}: the {tag} level is not built for Nemotron 3 Super, whose experts are held at the kestrel, swift and wren levels, or at the hummingbird level"), format!("Run it at the wren, swift or kestrel level: glyd run {model}:wren")));
             }
-            let cfg = ConfigNemotronH::parse(text, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
+            let cfg = ConfigNemotronH::of(&m, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
             // (the hummingbird kernels take experts on a latent that is a power of two from 128 to 1,024, Nemotron 3 Super's: src/moe_hb.rs; the
             // experts of a model with no latent, Nemotron 3.5 Lightning's, read its width)
             let l = cfg.moe.latent;
@@ -3809,7 +3811,7 @@ pub mod sizing {
                     "Run it at the kestrel, swift or wren level: glyd run MODEL:swift",
                 ));
             }
-            let cfg = Config35::parse(text, "config.json", gen).map_err(|e| {
+            let cfg = Config35::of(&m, "config.json", gen).map_err(|e| {
                 Refusal::unsupported(
                     format!("{name}: the {tag} level runs {} models so far ({})", "Qwen3.5, Qwen3.6, Qwen3.8 and Nemotron 3 Super", e.msg),
                     format!("Run it lossless: glyd run {model}"),
@@ -3877,7 +3879,7 @@ pub mod sizing {
         }
         let mut also = String::new();
         if nemotron && (fitted.is_err() || cache.is_some()) {
-            let cfg = ConfigNemotronH::parse(text, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
+            let cfg = ConfigNemotronH::of(&m, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
             match offloaded(&cfg, layout, weights, state, n.per_token, free, host, asked, cache, host_asked, gpu) {
                 // (its context sized for one sequence: `offloaded`'s)
                 Ok((ctx, plan)) => {

@@ -8,6 +8,7 @@
 
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result};
+use crate::runtime::config::ModelConfig;
 use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload_packed, Item, Layout, PackBuf};
 #[cfg(feature = "dev")]
 use crate::{ffi::Lib, sched::Sample};
@@ -64,8 +65,14 @@ impl ConfigG4 {
 
     /// `load_for` from the texts of config.json and generation_config.json.
     pub fn parse(text: &str, gen: Option<&str>, draft: bool) -> Result<ConfigG4> {
-        let top = json::parse(text).map_err(|e| Error(format!("config.json: {e}")))?;
-        let c = top.get("text_config").unwrap_or(&top);
+        ConfigG4::of(&ModelConfig::parse(text).map_err(|e| e.context("config.json"))?, gen, draft)
+    }
+
+    /// `parse` of a config.json parsed once (`ModelConfig`).
+    pub fn of(m: &ModelConfig, gen: Option<&str>, draft: bool) -> Result<ConfigG4> {
+        use serde_json::Value;
+        let top = &m.top;
+        let c = &m.text;
         let num = |k: &str| c.get(k).and_then(Value::as_u64).map(|x| x as usize);
         let need = |k: &str| num(k).ok_or_else(|| Error(format!("config.json: no {k}")));
         let mt = c.get("model_type").and_then(Value::as_str).unwrap_or("");
@@ -90,10 +97,7 @@ impl ConfigG4 {
             })
             .collect::<Result<_>>()?;
         let rope = c.get("rope_parameters").ok_or_else(|| Error("config.json: no rope_parameters".into()))?;
-        let f = |v: Option<&Value>| match v {
-            Some(Value::Number(n)) => n.parse::<f64>().ok(),
-            _ => None,
-        };
+        let f = |v: Option<&Value>| v.and_then(Value::as_f64);
         let sliding_theta = f(rope.get("sliding_attention").and_then(|r| r.get("rope_theta"))).unwrap_or(10_000.0);
         let g = rope.get("full_attention");
         let global_theta = f(g.and_then(|r| r.get("rope_theta"))).unwrap_or(1_000_000.0);
@@ -118,7 +122,7 @@ impl ConfigG4 {
         let mut eos = eos;
         // (generation_config adds <|tool_response> (50): the model hands a tool call back to its caller)
         if let Some(gtext) = gen {
-            if let Ok(gc) = json::parse(gtext) {
+            if let Ok(gc) = serde_json::from_str::<Value>(gtext) {
                 if let Some(Value::Array(a)) = gc.get("eos_token_id") {
                     for x in a.iter().filter_map(Value::as_u64) {
                         if !eos.contains(&(x as i64)) {

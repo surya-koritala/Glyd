@@ -4,8 +4,8 @@
 //! modeling_muse_spark.py (the arithmetic and where it rounds; src/muse_ref.rs is ours).
 
 use crate::ffi::{err, Error, Result};
+use crate::runtime::config::ModelConfig;
 use crate::weights::{eos_ids, num};
-use glyd_gpu::json::{self, Value};
 use std::path::Path;
 
 #[derive(Clone, Debug)]
@@ -52,11 +52,17 @@ impl ConfigMuse {
     }
 
     pub fn parse(text: &str, label: &str, generation: Option<&str>) -> Result<ConfigMuse> {
-        let v = json::parse(text).map_err(|e| Error(format!("{label}: {e}")))?;
-        if !is_muse(text) {
+        ConfigMuse::of(&ModelConfig::parse(text).map_err(|e| e.context(label))?, label, generation)
+    }
+
+    /// `parse` of a config.json parsed once (`ModelConfig`).
+    pub fn of(c: &ModelConfig, label: &str, generation: Option<&str>) -> Result<ConfigMuse> {
+        use serde_json::Value;
+        let v = &c.top;
+        if c.family() != Some(crate::support::Family::Muse) {
             return err(format!("{label}: not a Muse Spark model"));
         }
-        let t = v.get("text_config").ok_or_else(|| Error(format!("{label}: no text_config")))?;
+        let t = v.get("text_config").and_then(Value::as_object).ok_or_else(|| Error(format!("{label}: no text_config")))?;
         let get = |k: &str| t.get(k).ok_or_else(|| Error(format!("{label}: no {k}")));
         let u = |k: &str| -> Result<usize> { get(k)?.as_u64().map(|x| x as usize).ok_or_else(|| Error(format!("{label}: {k}: not an integer"))) };
         let f = |k: &str| -> Result<f64> { num(get(k)?, k) };
