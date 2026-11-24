@@ -857,6 +857,155 @@ fn prefill(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
     Ok(bad == 0)
 }
 
+/// `kvdecode [--lens 40,1024,4096] [--ctx 32768] [--reps 100]`: a decode step's attention of one sequence and the write of its token, microseconds a call in a CUDA graph of --reps,
+/// at Qwen3-8B's shapes (8 kv heads of 128, 32 query heads), gemma-4-12B's sliding (8 of 256, 16, a window of 1,024) and global (1 of 512, 16 query heads in two calls' 8) layers
+/// and the Qwen3.5 layout's (2 of 256, 8): over 12-bit pages (glyd_gpu_kv_decode_from), over a bf16 cache of the same values (glyd_gpu_kv_decode_bf16), and the token's write
+/// into the pages (glyd_gpu_kv_write of one token, as a decode step's); with the engine's plan for a context of --ctx (its floor of 32), the outputs of the two decodes compared
+/// bit for bit, and the pages' escape chunks and raw pages after the writes.
+pub fn decode_bench(a: &crate::args::Args) -> Result<()> {
+    const A: i64 = 15;
+    let dev = Dev::new(0)?;
+    let lib = Lib::find()?;
+    let s = dev.stream;
+    let (ctx, reps) = (a.num("ctx", 32768usize)?, a.num("reps", 100usize)?);
+    let lens: Vec<usize> = a.flag("lens").unwrap_or("40,1024,4096").split(',').filter_map(|x| x.trim().parse().ok()).filter(|&x| x >= 1).collect();
+    if std::env::var_os("GLYD_KV_FLOOR").is_none() {
+        lib.kv_floor_set(32)?;
+    }
+    println!(
+        "{} (sm_{}{}): a decode row's attention and its token's write, a context of {ctx} planned, {reps} calls a graph (us a call)",
+        dev.name, dev.cc.0, dev.cc.1
+    );
+    // (what, kv heads, head, query heads, window, the scores in bf16, the model's most kv heads: the engine plans its splits for them)
+    let shapes: [(&str, usize, usize, usize, usize, bool, usize); 4] = [
+        ("Qwen3-8B (8 x 128, 32 queries)", 8, 128, 32, 0, false, 8),
+        ("gemma-4-12B sliding (8 x 256, 16 queries, window 1024)", 8, 256, 16, 1024, true, 8),
+        ("gemma-4-12B global (1 x 512, 16 queries)", 1, 512, 16, 0, true, 8),
+        ("the Qwen3.5 layout (2 x 256, 8 queries)", 2, 256, 8, 0, false, 2),
+    ];
+    let time = |f: &dyn Fn() -> Result<()>| -> Result<f64> {
+        let graph = dev.capture(|| (0..reps).try_for_each(|_| f()))?;
+        // SAFETY: the graph's buffers are alive while it runs (the caller's).
+        unsafe { graph.launch(s)? };
+        dev.sync()?;
+        let t = crate::dev::Timer::new()?;
+        t.start(s)?;
+        unsafe { graph.launch(s)? };
+        Ok(t.stop(s)? as f64 * 1e3 / reps as f64)
+    };
+    for (what, h, d, nq, window, round, heads) in shapes {
+        let (g, sp) = (nq / h, (nq / h).div_ceil(8));
+        let splits = lib.kv_decode_splits(1, heads as i64, ctx.div_ceil(16) as i64)?;
+        for &len in &lens {
+            let blocks = len.div_ceil(16);
+            let mut r = Rng(0xDEC0 ^ (len * 7 + d + h) as u64);
+            let (k, v) = (near(&mut r, len, h, d, 5), near(&mut r, len, h, d, 5));
+            let (kb, vb) = (bases(&k, len, h, d), bases(&v, len, h, d));
+            let w = h * d;
+            // (the bf16 cache: the same values, token t at place t, the last block's other places zero)
+            let (mut kp, mut vp) = (k.clone(), v.clone());
+            kp.resize(blocks * 16 * w, 0);
+            vp.resize(blocks * 16 * w, 0);
+            let up16 = |x: &[u16]| -> Result<Buf> {
+                let b = Buf::new(2 * x.len())?;
+                b.write(0, x)?;
+                Ok(b)
+            };
+            let up32 = |x: &[i32]| -> Result<Buf> {
+                let b = Buf::new(4 * x.len())?;
+                b.write(0, x)?;
+                Ok(b)
+            };
+            let (kc, vc) = (up16(&kp)?, up16(&vp)?);
+            let (kbase, vbase) = (Buf::new(kb.len())?, Buf::new(vb.len())?);
+            kbase.write(0, &kb)?;
+            vbase.write(0, &vb)?;
+            let page = lib.kv_page_bytes(h as i64, d as i64, A)?;
+            let (nchunks, nslabs) = ((blocks * 8).max(1024) as i64, 64i64);
+            let pool = Buf::zeroed(page as usize * blocks)?;
+            let escape = Buf::zeroed(lib.kv_escape_bytes(nchunks)? as usize)?;
+            let raw = Buf::zeroed(lib.kv_raw_bytes(nslabs, (w / 128) as i64)? as usize)?;
+            let status = Buf::zeroed(4 * (16 + 2 * 256))?;
+            let geom = KvGeom { heads: h as i64, dim: d as i64, arena: A, page_stride: page, escape: escape.ptr, nchunks, raw: raw.ptr, nslabs };
+            let slots: Vec<i64> = (0..len as i64).collect();
+            let sl = Buf::new(8 * len)?;
+            sl.write(0, &slots)?;
+            // SAFETY: live buffers of the sizes the kernels read and write; the stream is synchronized before anything is read back.
+            unsafe {
+                lib.kv_write(&geom, pool.ptr, kbase.ptr, vbase.ptr, 0, kc.ptr, w as i64, vc.ptr, w as i64, sl.ptr, len as i64, status.ptr, 0, 0, 256, s)?
+            };
+            let bt = up32(&(0..blocks as i32).collect::<Vec<i32>>())?;
+            let first = if window > 0 { len.saturating_sub(window) } else { 0 };
+            let (lb, fb) = (up32(&vec![len as i32; sp])?, up32(&vec![first as i32; sp])?);
+            let q = up16(&(0..nq * d).map(|_| bf16_of(((r.below(2000) as f32) - 1000.0) / 5000.0)).collect::<Vec<u16>>())?;
+            let (gs, qs) = ((g / sp) as i64, (nq * d / sp) as i64);
+            let ws_bytes = lib.kv_decode_workspace(sp as i64, h as i64, gs, d as i64, splits)?;
+            let ws = Buf::zeroed(ws_bytes)?;
+            let (op, ob) = (Buf::zeroed(2 * nq * d)?, Buf::zeroed(2 * nq * d)?);
+            let scale = 1.0 / (d as f64).sqrt();
+            // (a call's sequences are the row's parts of query heads, all through the table's one row, as the executor makes them)
+            let pages = || unsafe {
+                lib.kv_decode_from(
+                    &geom, gs, pool.ptr, kbase.ptr, vbase.ptr, q.ptr, qs, bt.ptr, 0, lb.ptr, fb.ptr, round, sp as i64, splits, scale, op.ptr, qs, ws.ptr,
+                    ws_bytes, s,
+                )
+            };
+            let bf16 = || unsafe {
+                lib.kv_decode_bf16(
+                    q.ptr,
+                    qs,
+                    (kc.ptr, vc.ptr, bt.ptr, 0, 0),
+                    (lb.ptr, fb.ptr, sp as i64, splits),
+                    (h as i64, gs, d as i64),
+                    (scale, round),
+                    ob.ptr,
+                    qs,
+                    (ws.ptr, ws_bytes),
+                    s,
+                )
+            };
+            // (the last token written again, as a decode step writes its own: its old entries killed first, the same bytes after)
+            let at = ((len - 1) * w * 2) as u64;
+            let write = || unsafe {
+                lib.kv_write(
+                    &geom,
+                    pool.ptr,
+                    kbase.ptr,
+                    vbase.ptr,
+                    0,
+                    kc.ptr + at,
+                    w as i64,
+                    vc.ptr + at,
+                    w as i64,
+                    sl.ptr + 8 * (len - 1) as u64,
+                    1,
+                    status.ptr,
+                    0,
+                    0,
+                    256,
+                    s,
+                )
+            };
+            let (t_pages, t_bf16, t_write) = (time(&pages)?, time(&bf16)?, time(&write)?);
+            dev.sync()?;
+            let (mut x, mut y, mut st) = (vec![0u16; nq * d], vec![0u16; nq * d], [0u32; 16]);
+            op.read(0, &mut x)?;
+            ob.read(0, &mut y)?;
+            status.read(0, &mut st)?;
+            let differ = x.iter().zip(&y).filter(|(p, q)| p != q).count();
+            println!(
+                "{what}, {len:>5} tokens ({splits} splits): 12-bit pages {t_pages:>7.2}, bf16 {t_bf16:>7.2} ({:+.0}%), the token's 12-bit write {t_write:>7.2}; {differ} of {} outputs not the pages' bits; escape chunks at most {}, raw pages {}, void pages {}",
+                100.0 * (t_pages / t_bf16 - 1.0),
+                x.len(),
+                st[5],
+                st[10],
+                st[11]
+            );
+        }
+    }
+    Ok(())
+}
+
 /// `kvprefill [--chunk 256] [--prefixes 0,1024,4096,8192] [--reps 20]`: a chunk's prompt attention at gemma-4-12B's shapes (its sliding layers: 8 kv heads of 256, 16 query
 /// heads, a window of 1,024; its global ones: 1 of 512, 16 query heads), three ways: the pages unpacked to a bf16 ring (`kv12_stage`) and the bf16 kernel
 /// (glyd_gpu_kv_prefill_bf16) on it, `glyd_gpu_kv_prefill` on the pages and the chunk's rows (the executor's path), and the bf16 kernel alone on a ring of every token (what bf16
