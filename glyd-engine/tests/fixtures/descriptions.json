@@ -1,4 +1,12 @@
 {
+  "deepseek_v41_config.json": {
+    "blocks": 82,
+    "tensors": 93378,
+    "kinds": "044b67799952d235",
+    "weights": "5254b70528876890",
+    "plan": "91334ef4fb4cb111",
+    "family": "refused: m is a DeepseekV41ForCausalLM model, and this engine runs Qwen3 models so far"
+  },
   "gemma4_12b_config.json": {
     "blocks": 96,
     "tensors": 666,

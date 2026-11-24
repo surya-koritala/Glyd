@@ -2080,10 +2080,20 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
     let max_pos = k.opt_usize("max_position_embeddings")?;
     k.expect("hidden_act", &Value::from("silu"))?;
     k.expect("scoring_func", &Value::from("sqrtsoftplus"))?;
+    k.expect("topk_method", &Value::from("noaux_tc"))?;
     k.expect("num_key_value_heads", &Value::from(1))?;
     k.expect("n_shared_experts", &Value::from(1))?;
     k.expect("norm_topk_prob", &Value::Bool(true))?;
-    k.expect("gate_temp", &Value::from(1.0))?;
+    // (the router's logits divided by the gate temperature before the score: as their factor 1 / it, the same at the release's 1)
+    let temperature = match (k.opt_f64("gate_temperature")?, k.opt_f64("gate_temp")?) {
+        (Some(a), Some(b)) if a != b => return err(format!("{mt}: gate_temperature {a} and gate_temp {b} differ")),
+        (a, b) => a.or(b).unwrap_or(1.0),
+    };
+    if temperature <= 0.0 {
+        return err(format!("{mt}: a gate temperature of {temperature}"));
+    }
+    // (the Engram tables' scale blocks: one a 32 values, which the scales' shapes say)
+    k.expect("engram_block_size", &Value::from(32))?;
     k.expect("num_hash_layers", &Value::from(0))?;
     let q = c.top.get("quantization_config").or(k.raw("quantization_config"));
     let fp8 = Fp8::parse(
@@ -2144,9 +2154,23 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
     }
     let mut main = Rope::plain(k.opt_f64("rope_theta")?.unwrap_or(10_000.0), rd);
     main.style = RopeStyle::Interleaved;
+    // (the compressing layers' YaRN: rope_scaling, else the rope_yarn_* keys, else the release's defaults: 16, 65,536, 32, 1)
     let mut comp_m = match k.raw("rope_scaling") {
         Some(Value::Object(o)) => o.clone(),
-        _ => Map::new(),
+        _ => {
+            let mut o = Map::new();
+            o.insert("type".into(), Value::from("yarn"));
+            for (key, own, dflt) in [
+                ("factor", "rope_yarn_factor", 16.0),
+                ("original_max_position_embeddings", "rope_yarn_original_max_position_embeddings", 65536.0),
+                ("beta_fast", "rope_yarn_beta_fast", 32.0),
+                ("beta_slow", "rope_yarn_beta_slow", 1.0),
+            ] {
+                let v = k.opt_f64(own)?.unwrap_or(dflt);
+                o.insert(key.into(), if key == "original_max_position_embeddings" { Value::from(v as u64) } else { Value::from(v) });
+            }
+            o
+        }
     };
     comp_m.insert("rope_theta".into(), Value::from(k.opt_f64("compress_rope_theta")?.unwrap_or(160_000.0)));
     if comp_m.contains_key("factor") && !comp_m.contains_key("attention_factor") {
@@ -2251,7 +2275,16 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
         r.extend(names::roles(part::HC_FFN, &p, 0, all));
         mark(&r, &mut scales);
         let moe = Moe {
-            router: Router { score: RouterScore::SqrtSoftplus, logit_scale: 1.0, bias: true, groups: None, top_k, renorm: true, scale, hash: false },
+            router: Router {
+                score: RouterScore::SqrtSoftplus,
+                logit_scale: (1.0 / temperature) as f32,
+                bias: true,
+                groups: None,
+                top_k,
+                renorm: true,
+                scale,
+                hash: false,
+            },
             experts: ne,
             expert: mlp,
             shared: Some(mlp),

@@ -891,10 +891,47 @@ fn deepseek_v41_describes_with_csa2_lagged_mhc_and_engram() {
     assert_eq!((c.ratio, c.indexer.is_some(), c.share, m.experts, m.router.top_k), (0, false, None, 3, 1));
     assert!(matches!(h.blocks[0].residual, Residual::Streams(StreamsP { lagged: true, .. })));
     refused(&|t| t["compress_ratios"][2] = 4.into(), "compress_ratios");
-    refused(&|t| t["gate_temp"] = 2.0.into(), "gate_temp");
+    refused(&|t| t["gate_temp"] = 0.0.into(), "gate temperature");
+    let mut hot = cfg.clone();
+    hot["text_config"]["gate_temp"] = 2.0.into();
+    let Body::Ffn(Ffn::Moe(m)) = &describe(&hot).unwrap().desc.blocks[1].body else { panic!() };
+    assert_eq!(m.router.logit_scale, 0.5, "the logits over the gate temperature");
     refused(&|t| t["kv_source_layer_ids"] = serde_json::json!([2, 6]), "layer 4");
     refused(&|t| t["candidate_source_layer_id"] = 2.into(), "the candidate source 2");
     refused(&|t| t["engram_num_embeddings"][1] = 7.into(), "engram_num_embeddings");
+}
+
+/// DeepSeek-V4.1-Flash's configuration as published (tests/fixtures/deepseek_v41_config.json: the keys and defaults of the released configuration
+/// class, read by vLLM and by unsloth; rms_norm_eps, whose class default is a placeholder, V4's release's): 40 layers (2 window-only, 18 of ratio 2,
+/// 20 of ratio 1), kv sources 2, 8, 14 and 20, index sources those and 24 to 36, the candidate source 20; Engram before layers 1 and 14, whose
+/// tables are the primes past 16,000,000 that engram_num_embeddings counts (384,006,168 and 384,016,682 rows); three DSpark layers of 128 experts.
+#[test]
+fn deepseek_v41_flashs_published_config_describes() {
+    use super::kinds::*;
+    let d = describe(&fixture("deepseek_v41_config.json")).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!(d.desc.blocks.len(), 2 * 40 + 2);
+    // (the block of each layer's attention: two blocks a layer, Engram's before layers 1 and 14)
+    let attn = |l: usize| 2 * l + (l >= 1) as usize + (l >= 14) as usize;
+    let comp = |l: usize| match &d.desc.blocks[attn(l)].body {
+        Body::Mixer(Mixer::Compressed(c)) => c.clone(),
+        x => panic!("layer {l}: {x:?}"),
+    };
+    let sh = |l: usize| comp(l).share.unwrap();
+    assert_eq!(comp(0).share, None);
+    assert_eq!((sh(2).entries, sh(2).picks), (None, None));
+    assert_eq!((sh(13).entries, sh(13).picks, comp(13).ratio), (Some(attn(8)), Some(attn(8)), 2));
+    assert_eq!((sh(20).entries, sh(20).picks, sh(20).publish, comp(20).ratio), (None, None, Some((8, 2048)), 1));
+    assert_eq!((sh(24).entries, sh(24).picks, sh(24).candidates), (Some(attn(20)), None, Some(attn(20))));
+    assert_eq!((sh(39).entries, sh(39).picks, sh(39).candidates), (Some(attn(20)), Some(attn(36)), None));
+    for (l, place) in [(1usize, 0usize), (14, 1)] {
+        let Body::Ngram(n) = &d.desc.blocks[attn(l) - 1].body else { panic!("layer {l}") };
+        assert_eq!((n.order, n.heads, n.dim, n.vocab, n.seed, n.index, n.eos), (4, 8, 3 * 8 * 256, 99_092, 10007 * l as u64, place, 2));
+    }
+    let [h] = &d.desc.mtp[..] else { panic!() };
+    let Body::Ffn(Ffn::Moe(m)) = &h.blocks[1].body else { panic!() };
+    assert_eq!((h.blocks.len(), m.experts, m.router.top_k, h.dspark.as_ref().unwrap().targets.clone()), (6, 128, 3, vec![37, 38, 39]));
+    let Body::Ffn(Ffn::Moe(m)) = &d.desc.blocks[1].body else { panic!() };
+    assert_eq!((m.experts, m.router.top_k, m.router.logit_scale, m.router.scale, m.expert.clamp), (384, 6, 1.0, 1.5, Some(10.0)));
 }
 
 /// The tiny DeepSeek-V4.1 of `v41_config`, its tensors made at random by role, on the CPU reference: its description runs as a model, CSA2's parts
