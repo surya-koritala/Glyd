@@ -5,6 +5,7 @@
 //! prints the profile; `glyd serve` puts it in /v1/glyd/info as `costs`.
 
 use crate::ffi::{err, Error, Result};
+use crate::gpu_ops::GpuOps;
 use crate::nemotron::{ConfigNemotronH, NhKind};
 use crate::qwen35::{Config35, Kind, Pack35, Tensor35};
 use crate::tools::obj;

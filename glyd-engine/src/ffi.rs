@@ -6,6 +6,7 @@
 //! Device memory is a `u64` address (the driver's CUdeviceptr); the library takes it as a pointer. Every call returns
 //! a `Result` with the status text of the driver or the library.
 
+use crate::gpu_ops::{Gemm, GpuOps};
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
 use std::fmt;
 use std::sync::OnceLock;
@@ -598,13 +599,10 @@ impl Blas {
         }
         None
     }
+}
 
-    /// Y [m, o] (row-major bf16) = X [m, k] (row-major bf16) W^T, W [o, k] row-major bf16: bf16 in and out, fp32 sums.
-    ///
-    /// # Safety
-    /// Device addresses of live buffers of those sizes.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn gemm_nt(&self, s: Stream, w: u64, x: u64, y: u64, o: i32, k: i32, m: i32) -> Result<()> {
+impl Gemm for Blas {
+    unsafe fn gemm_nt(&self, s: Stream, w: u64, x: u64, y: u64, o: i32, k: i32, m: i32) -> Result<()> {
         let (alpha, beta) = (1.0f32, 0.0f32);
         let r = (self.api.cublasSetStream_v2)(self.handle, s);
         if r != 0 {
@@ -750,15 +748,6 @@ impl Lib {
         unsafe { (self.api.glyd_gpu_cuda_version)() }
     }
 
-    /// The current device's class code (compute capability and class by name, glyd_gpu.h's routes).
-    pub fn gpu(&self) -> Result<i32> {
-        let mut g = 0;
-        // SAFETY: a host out-pointer.
-        let r = unsafe { (self.api.glyd_gpu_gpu)(&mut g) };
-        self.ck(call!("gpu"), r)?;
-        Ok(g)
-    }
-
     fn ck(&self, call: &str, status: c_int) -> Result<()> {
         if status == 0 {
             return Ok(());
@@ -774,9 +763,18 @@ impl Lib {
         };
         Err(Error::of(Kind::of_status(status), format!("{call}: {t} ({status})")))
     }
+}
 
-    /// The route the library takes W [o, k] for `m` tokens on `gpu` (glyd_gpu.h's GLYD_GPU_ROUTE_*), in the 12-bit layout or the tiered one.
-    pub fn route(&self, gpu: i64, twelve: bool, o: i64, k: i64, m: i64) -> Result<i32> {
+impl GpuOps for Lib {
+    fn gpu(&self) -> Result<i32> {
+        let mut g = 0;
+        // SAFETY: a host out-pointer.
+        let r = unsafe { (self.api.glyd_gpu_gpu)(&mut g) };
+        self.ck(call!("gpu"), r)?;
+        Ok(g)
+    }
+
+    fn route(&self, gpu: i64, twelve: bool, o: i64, k: i64, m: i64) -> Result<i32> {
         let (mut r, mut last) = (0, 0i64);
         // SAFETY: host out-pointers.
         let s = unsafe {
@@ -790,8 +788,7 @@ impl Lib {
         Ok(r)
     }
 
-    /// The workspace bytes of Y [m, o] = X W^T by the current GPU's route for m.
-    pub fn linear_workspace(&self, twelve: bool, o: i64, k: i64, m: i64) -> Result<usize> {
+    fn linear_workspace(&self, twelve: bool, o: i64, k: i64, m: i64) -> Result<usize> {
         let mut b = 0usize;
         // SAFETY: a host out-pointer.
         let r = unsafe {
@@ -805,12 +802,7 @@ impl Lib {
         Ok(b)
     }
 
-    /// Y [m, rows] = X [m, cols] W^T on `cs` (route: the current GPU's for m). `done`: int32 counters, zero before the first call.
-    ///
-    /// # Safety
-    /// Device addresses of live buffers of the sizes the C API asks for (glyd_gpu.h); `done` and the workspace serve one stream at a time.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn linear(&self, w: &Pack, x: u64, m: i64, y: u64, ws: u64, ws_bytes: usize, done: u64, cs: Stream) -> Result<()> {
+    unsafe fn linear(&self, w: &Pack, x: u64, m: i64, y: u64, ws: u64, ws_bytes: usize, done: u64, cs: Stream) -> Result<()> {
         let r = match w.words {
             Words::Tiered { blocks, block_base, tiers } => (self.api.glyd_gpu_mma_linear)(
                 w.data as *const u8,
@@ -850,13 +842,7 @@ impl Lib {
         self.ck(call!("linear"), r)
     }
 
-    /// The lossless FP8 format's size for W [o, k] of E4M3 bytes on the device (rows `ld` bytes apart): its heads into `heads` [patches x 8] and the words its variable part takes (glyd_gpu.h's f8 functions;
-    /// waits for the stream). `h`: layout H (glyd_gpu.h's f8h functions, for HBM GPUs) here and in the calls below.
-    ///
-    /// # Safety
-    /// Live device buffers of those sizes; `ws` holds `f8_size_workspace` bytes.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn f8_size(&self, h: bool, w: u64, ld: i64, o: i64, k: i64, heads: u64, ws: u64, ws_bytes: usize, cs: Stream) -> Result<i64> {
+    unsafe fn f8_size(&self, h: bool, w: u64, ld: i64, o: i64, k: i64, heads: u64, ws: u64, ws_bytes: usize, cs: Stream) -> Result<i64> {
         let mut words = 0i64;
         let f = if h { self.api.glyd_gpu_f8h_size } else { self.api.glyd_gpu_f8_size };
         let r = f(w as *const u8, ld, o, k, heads as *mut u32, ws as *mut c_void, ws_bytes, &mut words, cs);
@@ -864,14 +850,13 @@ impl Lib {
         Ok(words)
     }
 
-    /// Layout H's packs for the process: plain (Some(true)), coded (Some(false)) or the GPU's own (None: plain on an HBM GPU); before any pack.
-    pub fn f8h_plain(&self, plain: Option<bool>) -> Result<()> {
+    fn f8h_plain(&self, plain: Option<bool>) -> Result<()> {
         // SAFETY: a value argument.
         let r = unsafe { (self.api.glyd_gpu_f8h_plain)(plain.map_or(-1, |p| p as c_int)) };
         self.ck(call!("f8h_plain"), r)
     }
 
-    pub fn f8_size_workspace(&self, o: i64, k: i64) -> Result<usize> {
+    fn f8_size_workspace(&self, o: i64, k: i64) -> Result<usize> {
         let mut b = 0usize;
         // SAFETY: a host out-pointer.
         let r = unsafe { (self.api.glyd_gpu_f8_size_workspace)(o, k, &mut b) };
@@ -879,29 +864,19 @@ impl Lib {
         Ok(b)
     }
 
-    /// W's patches into `core` and `var` from the heads `f8_size` made.
-    ///
-    /// # Safety
-    /// Live device buffers of those sizes.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn f8_pack(&self, h: bool, w: u64, ld: i64, o: i64, k: i64, heads: u64, core: u64, var: u64, var_words: i64, cs: Stream) -> Result<()> {
+    unsafe fn f8_pack(&self, h: bool, w: u64, ld: i64, o: i64, k: i64, heads: u64, core: u64, var: u64, var_words: i64, cs: Stream) -> Result<()> {
         let f = if h { self.api.glyd_gpu_f8h_pack } else { self.api.glyd_gpu_f8_pack };
         let r = f(w as *const u8, ld, o, k, heads as *const u32, core as *mut u8, var as *mut u32, var_words, cs);
         self.ck(call!("f8_pack"), r)
     }
 
-    /// W back, bit for bit, into `out` [o, k] (rows `ld` bytes apart).
-    ///
-    /// # Safety
-    /// Live device buffers of those sizes.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn f8_unpack(&self, h: bool, core: u64, heads: u64, var: u64, o: i64, k: i64, out: u64, ld: i64, cs: Stream) -> Result<()> {
+    unsafe fn f8_unpack(&self, h: bool, core: u64, heads: u64, var: u64, o: i64, k: i64, out: u64, ld: i64, cs: Stream) -> Result<()> {
         let f = if h { self.api.glyd_gpu_f8h_unpack } else { self.api.glyd_gpu_f8_unpack };
         let r = f(core as *const u8, heads as *const u32, var as *const u32, o, k, out as *mut u8, ld, cs);
         self.ck(call!("f8_unpack"), r)
     }
 
-    pub fn f8_linear_workspace(&self, n: i64, k: i64, m: i64) -> Result<usize> {
+    fn f8_linear_workspace(&self, n: i64, k: i64, m: i64) -> Result<usize> {
         let mut b = 0usize;
         // SAFETY: a host out-pointer.
         let r = unsafe { (self.api.glyd_gpu_f8_linear_workspace)(n, k, m, &mut b) };
@@ -909,12 +884,7 @@ impl Lib {
         Ok(b)
     }
 
-    /// Y [m, n] = X [m, k] W^T for m of 1 to 64 and W in the lossless FP8 format with its scales (`kind`, `scale`, `lds`: glyd_gpu.h's f8_linear), X and Y bf16 with rows k and n elements apart.
-    ///
-    /// # Safety
-    /// Live device buffers of those sizes; `done` ceil(n / 128) zeroed counters.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn f8_linear(
+    unsafe fn f8_linear(
         &self,
         h: bool,
         core: u64,
@@ -956,7 +926,7 @@ impl Lib {
         self.ck(call!("f8_linear"), r)
     }
 
-    pub fn f8_moe_workspace(&self, n: i64, k: i64, m: i64, slots: i64) -> Result<usize> {
+    fn f8_moe_workspace(&self, n: i64, k: i64, m: i64, slots: i64) -> Result<usize> {
         let mut b = 0usize;
         // SAFETY: a host out-pointer.
         let r = unsafe { (self.api.glyd_gpu_f8_moe_workspace)(n, k, m, slots, &mut b) };
@@ -964,14 +934,7 @@ impl Lib {
         Ok(b)
     }
 
-    /// The experts' product (glyd_gpu.h's f8_moe): `experts` matrices [n, k] packed as one [experts n, k] with their block scales, each pair of `plan` (moe_way's) times its expert's matrix into its row of
-    /// y [pairs, n] in the plan's order; x's row of a pair its token's (`gather`: x [tokens, k], `k_` choices a token) or its own in the plan's order (x [pairs, k]). `m`: the most pairs an expert has (1 to 64),
-    /// `slots`: the most experts the plan hits.
-    ///
-    /// # Safety
-    /// Live device buffers of those sizes; `done` slots ceil(n / 128) zeroed counters.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn f8_moe(
+    unsafe fn f8_moe(
         &self,
         h: bool,
         core: u64,
@@ -1020,11 +983,7 @@ impl Lib {
         self.ck(call!("f8_moe"), r)
     }
 
-    /// Rows [row0, row0 + rows) of W back to bf16 into `out` [rows, cols] (both multiples of 64).
-    ///
-    /// # Safety
-    /// As `linear`.
-    pub unsafe fn unpack(&self, w: &Pack, row0: i64, rows: i64, out: u64, cs: Stream) -> Result<()> {
+    unsafe fn unpack(&self, w: &Pack, row0: i64, rows: i64, out: u64, cs: Stream) -> Result<()> {
         let r = match w.words {
             Words::Tiered { blocks, block_base, tiers } => (self.api.glyd_gpu_mma_unpack)(
                 w.data as *const u8,
@@ -1054,19 +1013,12 @@ impl Lib {
         self.ck(call!("unpack"), r)
     }
 
-    /// The plan (int32 [2 + 2 experts + pairs]) of `pairs` pairs sorted by expert, `ids` (int64 [pairs]) each pair's expert (outside 0 to experts - 1: routed nowhere): the experts hit and where each one's
-    /// pairs start in the order, then the pairs by expert, in order within each. A token's k choices are its pairs (pair j: token j / k, choice j mod k). Experts up to 12,288.
-    ///
-    /// # Safety
-    /// As `linear`; `plan` holds 2 + 2 experts + pairs int32.
-    pub unsafe fn moe_way(&self, ids: u64, pairs: i64, experts: i64, plan: u64, cs: Stream) -> Result<()> {
+    unsafe fn moe_way(&self, ids: u64, pairs: i64, experts: i64, plan: u64, cs: Stream) -> Result<()> {
         let r = (self.api.glyd_gpu_moe_way)(ids as *const i64, pairs, experts, plan as *mut i32, cs);
         self.ck(call!("moe_way"), r)
     }
 
-    /// The workspace bytes of `moe`'s product of `experts` experts' matrices [o, cols] for `t` tokens of `k` choices (act 0, 1 or 2; `weighted`: with the choices' weights), on the current GPU.
-    #[allow(clippy::too_many_arguments)]
-    pub fn moe_workspace(&self, twelve: bool, experts: i64, o: i64, cols: i64, t: i64, k: i64, act: i64, weighted: bool) -> Result<usize> {
+    fn moe_workspace(&self, twelve: bool, experts: i64, o: i64, cols: i64, t: i64, k: i64, act: i64, weighted: bool) -> Result<usize> {
         let mut b = 0usize;
         // SAFETY: a host out-pointer.
         let r = unsafe {
@@ -1080,14 +1032,7 @@ impl Lib {
         Ok(b)
     }
 
-    /// The experts' product over `w`, the experts' matrices [o, cols] stacked as one pack [experts o, cols] (`experts` of them), by the plan of `moe_way`: x [t, cols] (`gather`: a pair takes its token's row) or [t k, cols]
-    /// (the pairs in the plan's order). `act` 0: y [t k, o] in the plan's order; 1 (SiLU) or 2 (GELU, tanh): y [t k, o / 2] = act(gate) up, the gate an expert's first o / 2 rows (o a multiple of 128).
-    /// `weights` (fp32 [t, k], act 0; 0: none) with `ids` (int64 [t, k]): y [t, o], each token's k rows times their weights, added in fp32. `done`: int32 counters, zero before, left zero.
-    ///
-    /// # Safety
-    /// As `linear`; the workspace is `moe_workspace`'s bytes; the counters are o / 64 (o / 128 with an act) times min(experts, t k).
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn moe(
+    unsafe fn moe(
         &self,
         w: &Pack,
         experts: i64,
@@ -1160,12 +1105,7 @@ impl Lib {
         self.ck(call!("moe"), r)
     }
 
-    /// `moe` over an expert cache's places of a tiered-layout stack (glyd_gpu_mma_moe_placed: each place its own block entries, `stride` bytes of blocks a place); the weights, ids and the rest as `moe`'s.
-    ///
-    /// # Safety
-    /// As `moe`; `w`'s block entries [places][steps an expert + 1] and blocks [places][stride].
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn moe_placed(
+    unsafe fn moe_placed(
         &self,
         w: &Pack,
         stride: u64,
@@ -1215,8 +1155,7 @@ impl Lib {
         self.ck(call!("moe_placed"), r)
     }
 
-    /// A page's bytes for `h` heads of `d` channels with an arena of `a` entries.
-    pub fn kv_page_bytes(&self, h: i64, d: i64, a: i64) -> Result<i64> {
+    fn kv_page_bytes(&self, h: i64, d: i64, a: i64) -> Result<i64> {
         let mut b = 0;
         // SAFETY: a host out-pointer.
         let r = unsafe { (self.api.glyd_gpu_kv_leaf_bytes)(h, d, a, &mut b) };
@@ -1224,7 +1163,7 @@ impl Lib {
         Ok(b)
     }
 
-    pub fn kv_escape_bytes(&self, nchunks: i64) -> Result<i64> {
+    fn kv_escape_bytes(&self, nchunks: i64) -> Result<i64> {
         let mut b = 0;
         // SAFETY: a host out-pointer.
         let r = unsafe { (self.api.glyd_gpu_kv_extra_bytes)(nchunks, &mut b) };
@@ -1232,7 +1171,7 @@ impl Lib {
         Ok(b)
     }
 
-    pub fn kv_raw_bytes(&self, nslabs: i64, h: i64) -> Result<i64> {
+    fn kv_raw_bytes(&self, nslabs: i64, h: i64) -> Result<i64> {
         let mut b = 0;
         // SAFETY: a host out-pointer.
         let r = unsafe { (self.api.glyd_gpu_kv_second_bytes)(nslabs, h, &mut b) };
@@ -1240,12 +1179,7 @@ impl Lib {
         Ok(b)
     }
 
-    /// `n` tokens' keys and values [n, H, D] (token t's row at key + t * key_stride elements) into the layer's pool at `slots` [n] (int64).
-    ///
-    /// # Safety
-    /// As `linear`; `status` is uint32 [16 + 2 ring] zeroed once; `lost` is uint32 words of `nlost` bits (two to a block), zeroed once, or 0 and 0.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn kv_write(
+    unsafe fn kv_write(
         &self,
         g: &KvGeom,
         pool: u64,
@@ -1292,12 +1226,7 @@ impl Lib {
         self.ck(call!("kv_write"), r)
     }
 
-    /// The pages `pages` [n] (int32, block numbers) of the layer's pool decoded into two bf16 tensors, keys `out_k` and values `out_v`, each [n, 16, H, D] (page j's tokens at j * 16 on: NHD, as a paged attention reads a cache of separate keys and values).
-    ///
-    /// # Safety
-    /// As `kv_write`; `pages` is an int32 array of n on the device, `out_k` and `out_v` hold n pages of 16 * H * D values each.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn kv_unpack(&self, g: &KvGeom, pool: u64, kbase: u64, vbase: u64, pages: u64, n: i64, out_k: u64, out_v: u64, cs: Stream) -> Result<()> {
+    unsafe fn kv_unpack(&self, g: &KvGeom, pool: u64, kbase: u64, vbase: u64, pages: u64, n: i64, out_k: u64, out_v: u64, cs: Stream) -> Result<()> {
         let r = (self.api.glyd_gpu_kv_unpack)(
             pool as *const u8,
             g.page_stride,
@@ -1319,12 +1248,7 @@ impl Lib {
         self.ck(call!("kv_unpack"), r)
     }
 
-    /// The pages `pages` [n] (int32, block numbers) of the layer's pool decoded into the bf16 staging cache `out` [blocks, 16, H, 2 D], page j into block `dst`[j].
-    ///
-    /// # Safety
-    /// As `kv_write`; `pages` and `dst` are int32 arrays of n on the device, `out` holds a block for every dst.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn kv_gather(&self, g: &KvGeom, pool: u64, kbase: u64, vbase: u64, pages: u64, dst: u64, n: i64, out: u64, cs: Stream) -> Result<()> {
+    unsafe fn kv_gather(&self, g: &KvGeom, pool: u64, kbase: u64, vbase: u64, pages: u64, dst: u64, n: i64, out: u64, cs: Stream) -> Result<()> {
         let r = (self.api.glyd_gpu_kv_gather)(
             pool as *const u8,
             g.page_stride,
@@ -1346,8 +1270,7 @@ impl Lib {
         self.ck(call!("kv_gather"), r)
     }
 
-    /// The most CTAs a (sequence, head) is split over, for `b` sequences of at most `max_pages` pages.
-    pub fn kv_decode_splits(&self, b: i64, h: i64, max_pages: i64) -> Result<i64> {
+    fn kv_decode_splits(&self, b: i64, h: i64, max_pages: i64) -> Result<i64> {
         let mut s = 0;
         // SAFETY: a host out-pointer.
         let r = unsafe { (self.api.glyd_gpu_kv_decode_shares)(b, h, max_pages, &mut s) };
@@ -1355,14 +1278,13 @@ impl Lib {
         Ok(s)
     }
 
-    /// The decode attention's least CTAs a sequence (1 to 64; 0: the GPU's own), for the whole process.
-    pub fn kv_floor_set(&self, floor: i32) -> Result<()> {
+    fn kv_floor_set(&self, floor: i32) -> Result<()> {
         // SAFETY: a plain value.
         let r = unsafe { (self.api.glyd_gpu_kv_floor_set)(floor) };
         self.ck(call!("kv_floor_set"), r)
     }
 
-    pub fn kv_decode_workspace(&self, b: i64, h: i64, g: i64, d: i64, splits: i64) -> Result<usize> {
+    fn kv_decode_workspace(&self, b: i64, h: i64, g: i64, d: i64, splits: i64) -> Result<usize> {
         let mut n = 0usize;
         // SAFETY: a host out-pointer.
         let r = unsafe { (self.api.glyd_gpu_kv_decode_workspace)(b, h, g, d, splits, &mut n) };
@@ -1370,13 +1292,7 @@ impl Lib {
         Ok(n)
     }
 
-    /// Attention for `b` sequences: query q [H G, D] at q + i * q_stride, `seq_lens` [b] (int32) tokens in the pages of
-    /// `block_table` (row i at + i * bt_stride, int32), out [H G, D] at out + i * out_stride.
-    ///
-    /// # Safety
-    /// As `kv_write`; the workspace is zero when made and left so.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn kv_decode(
+    unsafe fn kv_decode(
         &self,
         g: &KvGeom,
         group: i64,
@@ -1427,13 +1343,7 @@ impl Lib {
         self.ck(call!("kv_decode"), r)
     }
 
-    /// `kv_decode` over each sequence's tokens from `first` (int32 [b], a sliding window's start; 0: none, the whole sequence) to its length; `round`: each
-    /// score the bf16 of its dot product (a bf16 matmul's, Gemma 4's attention).
-    ///
-    /// # Safety
-    /// As `kv_decode`; `first`, where not 0, holds b int32.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn kv_decode_from(
+    unsafe fn kv_decode_from(
         &self,
         g: &KvGeom,
         group: i64,
@@ -1488,15 +1398,7 @@ impl Lib {
         self.ck(call!("kv_decode_from"), r)
     }
 
-    /// A prompt chunk's attention (glyd_gpu.h's `glyd_gpu_kv_prefill`): `n` rows of one sequence at positions `start` .. `start + n`, queries `q` [n, H G, D] (row t at q + t
-    /// q_stride elements), causal over the keys from each row's window (`window` tokens, 0: none) to itself: those before `start` read from the pages `block_table` (int32: the
-    /// sequence's row of the table) names, the chunk's own from its bf16 rows `key`, `value` [n, H, D] (0: from the pages too, written before); `round`: each score the bf16 of its dot
-    /// product (Gemma 4's), `softcap` 0: none, `sinks` 0 or float [H G] on the device; out [n, H G, D].
-    ///
-    /// # Safety
-    /// As `kv_decode`; `block_table` holds a page for every token before `start + n` that a row's window takes.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn kv_prefill(
+    unsafe fn kv_prefill(
         &self,
         g: &KvGeom,
         group: i64,
@@ -1553,14 +1455,7 @@ impl Lib {
         self.ck(call!("kv_prefill"), r)
     }
 
-    /// `kv_decode_from`'s attention with the keys and values in a bf16 cache `kc`, `vc` [places, H, D] (glyd_gpu.h's `glyd_gpu_kv_decode_bf16`): token p of sequence b at
-    /// `block_table[b bt_stride + p / 16] * 16 + p % 16` (0: p modulo `cap`); `b` sequences of `g` query heads a kv head, their lengths and first tokens on the device.
-    /// The same kernel, plan and merge: with the same splits and floor, `kv_decode_from`'s bits where the cache holds what the pages hold.
-    ///
-    /// # Safety
-    /// As `kv_decode_from`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn kv_decode_bf16(
+    unsafe fn kv_decode_bf16(
         &self,
         q: u64,
         q_stride: i64,
@@ -1599,14 +1494,7 @@ impl Lib {
         self.ck(call!("kv_decode_bf16"), r)
     }
 
-    /// `kv_prefill`'s attention with the keys and values in a bf16 cache `kc`, `vc` [places, H, D] (glyd_gpu.h's `glyd_gpu_kv_prefill_bf16`): position p's place
-    /// `block_table[p / 16] * 16 + p % 16` (0: p modulo `cap`), the chunk's own written there before the call; `g` query heads a kv head. The same kernel and sums:
-    /// where the cache holds what the pages hold, `kv_prefill`'s bits.
-    ///
-    /// # Safety
-    /// Live device buffers: q and out [n, H g, D] (rows `q_stride`, `out_stride` apart), the cache's every place a row reads, the table's blocks.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn kv_prefill_bf16(
+    unsafe fn kv_prefill_bf16(
         &self,
         q: u64,
         q_stride: i64,

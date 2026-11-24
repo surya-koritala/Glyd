@@ -78,6 +78,7 @@ pub mod glm;
 pub mod glm_cb;
 #[cfg(feature = "dev")]
 pub mod glm_serve;
+pub mod gpu_ops;
 pub mod hb_codec;
 pub mod hb_pack;
 pub mod hb_usage;

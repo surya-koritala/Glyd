@@ -18,6 +18,7 @@ use super::pages::BLOCK;
 use super::Dyn;
 use crate::dev::{copy_d2h_async, copy_h2d_async, Ev, Pinned, Side};
 use crate::ffi::{Error, Result};
+use crate::gpu_ops::GpuOps;
 use std::collections::HashMap;
 
 /// The bytes a segment of the area is pinned in (more where one sequence's copy is larger), and the alignment of each part of a copy in it (the copy kernel's 16-byte words).

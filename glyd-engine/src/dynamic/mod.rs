@@ -37,6 +37,7 @@ pub mod tp_cache;
 use crate::dev::{copy_d2d_async, copy_d2h_async, copy_h2d_async, Buf, Dev, Ev, Graph, Pinned};
 use crate::ffi::{err, Error, Lib, Result};
 use crate::gemma4::{pf_kib, rotary, G4Pf, KernG4, EMBED_GROUPS};
+use crate::gpu_ops::{Gemm, GpuOps};
 use crate::kern::{embed_plan, TopGpu};
 use crate::kern::{norm_threads, Kern};
 use crate::kern35::{Kern35, Mat};

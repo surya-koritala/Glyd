@@ -5,6 +5,7 @@ use crate::args::Args;
 use crate::chat::{Chat, Message};
 use crate::conv::{Gen, Part, Request, Splitter, Talk};
 use crate::dev::{Dev, Gpu};
+use crate::gpu_ops::GpuOps;
 use crate::hub::{self, Hub};
 use crate::levels::{self, is_qat, layout_for, QAT_WREN};
 pub use crate::levels::{packed_repo, ship_layout, short_name};

@@ -15,6 +15,7 @@
 
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Lib, Pack, Result, Stream, Words};
+use crate::gpu_ops::GpuOps;
 use crate::launch;
 use crate::moe_hbg::{self, HbgExperts, HbgKern};
 use crate::moe_rows::{Down, RowsKern};

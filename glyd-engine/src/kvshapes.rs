@@ -6,6 +6,7 @@
 
 use crate::dev::{Buf, Dev};
 use crate::ffi::{KvGeom, Lib, Result, KV_ONE_STREAM};
+use crate::gpu_ops::GpuOps;
 
 struct Rng(u64);
 
