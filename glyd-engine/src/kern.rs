@@ -99,6 +99,8 @@ pub struct Kern {
     gather: crate::kt::gather_bf16,
     kv12_rows: crate::kt::kv12_rows,
     swap_copy: crate::kt::swap_copy,
+    /// None where the kernels have none (a step is then not launched before the one before it is read).
+    step_ids: Option<crate::kt::step_ids>,
     expsum: crate::kt::expsum_bf16,
     logsumexp: crate::kt::logsumexp_bf16,
     read_stream: crate::kt::read_stream,
@@ -126,6 +128,7 @@ impl Kern {
             gather: dev.typed()?,
             kv12_rows: dev.typed()?,
             swap_copy: dev.typed()?,
+            step_ids: dev.typed::<crate::kt::step_ids>().ok(),
             expsum: dev.typed()?,
             logsumexp: dev.typed()?,
             read_stream: dev.typed()?,
@@ -383,6 +386,23 @@ impl Kern {
     /// `items` and every range it lists are live for the kernel's run, device memory or mapped pinned host memory, and no two destinations overlap.
     pub unsafe fn swap_copy(&self, s: Stream, items: u64, n: usize, blocks: u32) -> Result<()> {
         launch!(self.swap_copy, [blocks.max(1), 1, 1], [256, 1, 1], s; items, n as i32)
+    }
+
+    /// ids [n] (int64) = src[i] where that is a token, else tok[-1 - src[i]]: a step's token ids, those the step before chose read where it left them (`step_ids`).
+    ///
+    /// # Safety
+    /// src and ids hold n entries on the device; tok every row a negative src names.
+    pub unsafe fn step_ids(&self, s: Stream, src: u64, tok: u64, ids: u64, n: usize) -> Result<()> {
+        let Some(k) = &self.step_ids else { return crate::ffi::err("these kernels have no step_ids") };
+        if n == 0 {
+            return Ok(());
+        }
+        launch!(k, [(n as u32).div_ceil(256), 1, 1], [256, 1, 1], s; src, tok, ids, n as i32)
+    }
+
+    /// Whether the kernels have `step_ids`.
+    pub fn has_step_ids(&self) -> bool {
+        self.step_ids.is_some()
     }
 
     pub unsafe fn gather_row(&self, s: Stream, logits: u64, v: usize, row: usize, idx: u64, n: usize, out: u64) -> Result<()> {

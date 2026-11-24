@@ -436,6 +436,11 @@ impl Pages {
         self.dirty[slot][g].take()
     }
 
+    /// Whether any of sequence `slot`'s tables has entries changed since they were last taken (`take_dirty`).
+    pub fn dirty(&self, slot: usize) -> bool {
+        self.dirty[slot].iter().any(Option::is_some)
+    }
+
     /// Blocks held in group `g` (one held by several sequences once).
     #[cfg(test)]
     fn held(&self, g: usize) -> usize {

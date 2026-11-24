@@ -338,7 +338,8 @@ pub trait Gen {
     fn held(&self) -> Option<crate::dev::Held> {
         None
     }
-    /// The engine as a scheduler's step for up to `users` sequences at once, with the sequences it made room for; None where it runs one sequence at a time (`server::work_gen`).
+    /// The engine as a scheduler's step for up to `users` sequences at once, with the sequences it made room for (a model that runs one sequence at a time: one); None where
+    /// the engine is not one (`serve` refuses it: every model it serves is a step).
     fn as_step(&mut self, _users: usize) -> Result<Option<(usize, &mut dyn crate::sched::ModelStep)>> {
         Ok(None)
     }

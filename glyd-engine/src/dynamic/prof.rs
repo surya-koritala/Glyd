@@ -9,6 +9,11 @@
 //! it where the host is slower than the GPU (`queued_ms`, the host's time to queue the pass, says when that is so); a graph's are the GPU's own. The events
 //! add a little to every pass (a graph's event nodes, an eager pass's records). `serve` hands the figures out at `GET /v1/glyd/prof` (`?reset=1` starts
 //! again); `bench` reads them around each load's measured rounds and prints them under the load; `run` prints them when it ends.
+//!
+//! A served model's steps have two more figures (src/dynamic/rows.rs `Gaps`): the GPU's time from a step's first work to its last, and the GPU's idle time
+//! before the step, from the step before's last work to its first (the host's work between steps as the GPU waits for it). A step launched before the step
+//! before it is read (`ModelStep::launch`, a step that overlaps) is timed by those alone: its call is the host's time in `launch` and `finish`, and a graph's
+//! replay is timed by operation only where no later step was launched before it was read (the graph's events are each replay's).
 
 use serde_json::{json, Value};
 use std::sync::Mutex;
@@ -54,7 +59,8 @@ struct Passes {
     ops: Vec<(&'static str, f64)>,
 }
 
-/// One kind of step's sums (ms): calls, their wall time, their passes' GPU time, and the time before each since the call before it ended (`gaps` of them).
+/// One kind of step's sums (ms): calls, their wall time, their passes' GPU time, and the time before each since the call before it ended (`gaps` of them); the GPU's own
+/// time of the steps and its idle time before them, by the events at their first and last work (`timed` of them, `idles` with an idle time).
 #[derive(Default)]
 struct Steps {
     n: u64,
@@ -62,6 +68,27 @@ struct Steps {
     gpu: f64,
     between: f64,
     gaps: u64,
+    timed: u64,
+    busy: f64,
+    idles: u64,
+    idle: f64,
+    /// Each idle time (ms), for the median: a step after the server waited for requests has the wait in its idle time, which the mean holds and the median does not.
+    idle_each: Vec<f32>,
+}
+
+/// The median of `v` (0 where empty).
+pub(crate) fn median(v: &[f32]) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    let mut v = v.to_vec();
+    v.sort_by(f32::total_cmp);
+    let m = v.len() / 2;
+    if v.len() % 2 == 1 {
+        v[m] as f64
+    } else {
+        (v[m - 1] as f64 + v[m] as f64) / 2.0
+    }
 }
 
 #[derive(Default)]
@@ -150,6 +177,28 @@ pub fn end(s: Option<Step>, rows: usize, prompt: usize) {
     });
 }
 
+/// A step of `rows` decode rows and `prompt` prompt tokens timed by its events (src/dynamic/rows.rs `Gaps`): the GPU's time from its first work to its last, and
+/// its idle time before it (None: no step before it was timed).
+pub fn gpu_times(rows: usize, prompt: usize, busy: f64, idle: Option<f64>) {
+    with(|a| {
+        let st = entry(&mut a.steps, Key::of(rows, prompt));
+        (st.timed, st.busy) = (st.timed + 1, st.busy + busy);
+        if let Some(i) = idle {
+            (st.idles, st.idle) = (st.idles + 1, st.idle + i);
+            st.idle_each.push(i as f32);
+        }
+    });
+}
+
+/// A step launched to be read later (`ModelStep::launch`): its host's time in `launch` and `finish` (ms) and its pass's GPU time by operation (0 where not taken); the
+/// time before each call is not counted (the calls of two steps interleave).
+pub fn launched(rows: usize, prompt: usize, call: f64, gpu: f64) {
+    with(|a| {
+        let st = entry(&mut a.steps, Key::of(rows, prompt));
+        (st.n, st.wall, st.gpu) = (st.n + 1, st.wall + call, st.gpu + gpu);
+    });
+}
+
 /// The figures so far, as JSON (every time a mean: a pass's or a call's, ms); with `reset` they start again.
 pub fn snapshot(reset: bool) -> Value {
     let r3 = |x: f64| (x * 1000.0).round() / 1000.0;
@@ -169,7 +218,10 @@ pub fn snapshot(reset: bool) -> Value {
             "steps": steps.iter().map(|(k, s)| {
                 let n = s.n.max(1) as f64;
                 json!({"kind": k.words(), "calls": s.n, "wall_ms": r3(s.wall / n), "gpu_ms": r3(s.gpu / n), "host_ms": r3((s.wall - s.gpu) / n),
-                    "between_ms": if s.gaps > 0 { json!(r3(s.between / s.gaps as f64)) } else { Value::Null }})
+                    "between_ms": if s.gaps > 0 { json!(r3(s.between / s.gaps as f64)) } else { Value::Null },
+                    "step_gpu_ms": if s.timed > 0 { json!(r3(s.busy / s.timed as f64)) } else { Value::Null },
+                    "gpu_idle_before_ms": if s.idles > 0 { json!(r3(s.idle / s.idles as f64)) } else { Value::Null },
+                    "gpu_idle_before_median_ms": if s.idles > 0 { json!(r3(median(&s.idle_each))) } else { Value::Null }})
             }).collect::<Vec<_>>(),
         });
         if reset {
@@ -222,8 +274,13 @@ pub fn text(v: &Value) -> String {
                 f(&s["wall_ms"]),
                 f(&s["gpu_ms"]),
                 f(&s["host_ms"]),
-                s["between_ms"].as_f64().map_or(String::new(), |b| format!("; {b:.3} between one call's end and the next one's start"))
+                s["between_ms"].as_f64().map_or(String::new(), |b| format!("; {b:.3} between one call's end and the next one's start")),
             ));
+            if let (Some(g), Some(i), Some(m)) = (s["step_gpu_ms"].as_f64(), s["gpu_idle_before_ms"].as_f64(), s["gpu_idle_before_median_ms"].as_f64()) {
+                out.push_str(&format!(
+                    "  the GPU {g:.3} ms from the step's first work to its last; idle before it (since the step before's last work) {m:.3} ms the median, {i:.3} the mean\n"
+                ));
+            }
         }
     }
     out
@@ -299,6 +356,29 @@ mod tests {
         assert!(st["wall_ms"].as_f64().unwrap() >= 1.0 && st["host_ms"].as_f64().unwrap() >= 0.5);
         assert!(st["between_ms"].as_f64().unwrap() >= 1.0, "{st}");
         assert_eq!(v["passes"][0]["passes"].as_u64(), Some(3));
+    }
+
+    /// A served step's GPU time and the GPU's idle time before it (`gpu_times`, from its events): the mean of each, and the idle time's median, which a step after a wait
+    /// for requests does not move; a launched step's call counts as a call.
+    #[test]
+    fn a_steps_gpu_time_and_the_idle_time_before_it_are_counted() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        snapshot(true);
+        gpu_times(8, 0, 10.0, None);
+        gpu_times(8, 0, 12.0, Some(0.5));
+        gpu_times(8, 0, 11.0, Some(0.25));
+        gpu_times(8, 0, 11.0, Some(40.0));
+        launched(8, 0, 0.75, 9.0);
+        let v = snapshot(true);
+        let st = &v["steps"][0];
+        assert_eq!((st["calls"].as_u64(), st["wall_ms"].as_f64(), st["gpu_ms"].as_f64()), (Some(1), Some(0.75), Some(9.0)));
+        assert_eq!(
+            (st["step_gpu_ms"].as_f64(), st["gpu_idle_before_ms"].as_f64(), st["gpu_idle_before_median_ms"].as_f64()),
+            (Some(11.0), Some(13.583), Some(0.5))
+        );
+        assert!(text(&json!({"passes": [{"kind": "x", "passes": 1, "graphs": 1, "gpu_ms": 1.0, "ops": []}], "steps": v["steps"]}))
+            .contains("idle before it (since the step before's last work) 0.500 ms the median, 13.583 the mean"));
+        assert_eq!((median(&[]), median(&[3.0, 1.0]), median(&[5.0, 1.0, 2.0])), (0.0, 2.0, 2.0));
     }
 
     #[test]

@@ -907,10 +907,12 @@ fn serve_lossy(a: &Args, layout: Layout, name: String, ui: &RefCell<Ui>, pair: O
     }
     let window = step_window.map_or(e.capacity(), |w| w.min(e.capacity()));
     if let Some(k) = several {
-        ui.borrow_mut().line(&format!(
-            "Up to {k} users at once{}.",
-            if k < users { format!(" (the GPU's free memory holds {k} of the {users} asked for)") } else { String::new() }
-        ));
+        // (one where more were asked for: the GPU's memory holds one, or the model runs one sequence at a time, across GPUs or with a draft model)
+        ui.borrow_mut().line(&match k {
+            1 if users > 1 => format!("One user at a time, of the {users} asked for."),
+            _ if k < users => format!("Up to {k} users at once (the GPU's free memory holds {k} of the {users} asked for)."),
+            _ => format!("Up to {k} users at once."),
+        });
         if window < e.capacity() {
             ui.borrow_mut().line(&format!("A request holds up to {window} tokens of the {} of context: the GPU's memory holds no more for one.", e.capacity()));
         }
@@ -950,12 +952,12 @@ fn serve_lossy(a: &Args, layout: Layout, name: String, ui: &RefCell<Ui>, pair: O
     }
     access_notes(ui, a);
     ui.borrow_mut().line(&format!("{name} is served at http://{addr}: the chat page at /, the API at /v1 (OpenAI-compatible). Ctrl-C stops it."));
-    let refused = if several.is_some() { &[][..] } else { server::ONE_AT_A_TIME };
     let shared =
-        Arc::new(server::Shared { vocab, tok, chat, name, defaults, window, thinking: None, refused, rt: crate::runtime::context::Context::current() });
+        Arc::new(server::Shared { vocab, tok, chat, name, defaults, window, thinking: None, refused: &[], rt: crate::runtime::context::Context::current() });
     match e.as_step(users) {
         Ok(Some((k, step))) => server::work_with(&mut crate::sched::Sched::new(step, k), shared, &rx, &tx),
-        _ => server::work_gen(&mut *e, shared, &rx, &tx),
+        Ok(None) => return fail(ui, &cannot(crate::ffi::Error("this engine is not a scheduler's step".into()))),
+        Err(err) => return fail(ui, &cannot(err)),
     }
     0
 }
@@ -1406,7 +1408,7 @@ fn load_lossy(
         let weights = format!("{} level: about {bits:.1} bits per weight, {exact}", level_name(layout));
         let mut about = about(served, &dir, requested(served, a.has("lossy")), level_name(layout), lossless, &weights, held.as_ref(), &gpu);
         about.push(("costs", crate::costs::served(&dir, served, requested(served, a.has("lossy")), e.capacity(), plan.chunk, held)));
-        server::Info { about, gpu: Some(gpu.ordinal), held, concurrency: 1, window: e.capacity(), refused: server::ONE_AT_A_TIME, started }
+        server::Info { about, gpu: Some(gpu.ordinal), held, concurrency: 1, window: e.capacity(), refused: &[], started }
     });
     Ok((e, tok, chat, defaults, vocab, line, info))
 }
@@ -1820,7 +1822,7 @@ fn load_dynamic(
             ("penguin", true, "penguin level: the release's weights exactly")
         };
         let about = about(served, &dir, requested(served, a.has("lossy")), level, exact, words, held.as_ref(), gpu);
-        server::Info { about, gpu: Some(devices[0]), held, concurrency: 1, window: e.capacity(), refused: server::ONE_AT_A_TIME, started }
+        server::Info { about, gpu: Some(devices[0]), held, concurrency: 1, window: e.capacity(), refused: &[], started }
     });
     let vocab = crate::dynamic::split::config_num(&text, "vocab_size").unwrap_or(0);
     Ok((Box::new(e), tok, chat, defaults, vocab, line, info))

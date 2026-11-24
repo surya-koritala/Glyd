@@ -51,6 +51,122 @@ impl Cands {
     }
 }
 
+/// How many steps' rooms `Lanes` keeps: one running, the next queued behind it, and the one before them, whose GPU times `Gaps` still reads.
+const LANES: usize = 3;
+
+/// What a step that `overlaps` is launched with (`ModelStep::launch`, docs/design/runtime.md section 5, "Launch and finish"): the GPU's token ids for the embedding's lookup
+/// (`Lib::rows`, which reads them on the GPU: a row's token may be the one the step before chose, `Row::after`) and their sources, and a lane for each of LANES steps in turn:
+/// the host's pinned room for the step's inputs (positions, the ids' sources, the block tables it changed) and for its samples, and an event after its last work, which
+/// `finish` waits for (not the whole stream). A lane is written again three launches later, when its step and the one after it have been finished: its copies have run.
+pub(super) struct Lanes {
+    ids: Buf,
+    src: Buf,
+    lane: Vec<Lane>,
+    next: usize,
+    /// Steps launched and not finished.
+    out: usize,
+    /// Whether a step's head rows are the logits' rows the scheduler may read (`top`, `logits`, `gather`): not once a later step is launched over them.
+    pub(super) stale: bool,
+    /// Each lane's step's slot in `Gaps` (None: not timed).
+    gap: [Option<usize>; LANES],
+}
+
+struct Lane {
+    /// Positions (int32 a row), then the ids' sources (int32 a row: a token, or -1 - the head row of the step before), a chunk's rows of each.
+    ins: crate::dev::Pinned,
+    /// The head rows' tokens (int32) and largest logits (f32).
+    outs: crate::dev::Pinned,
+    /// The block tables as this step's inputs have them ([slot][group][entry], int32), from which the entries a step changed are copied.
+    tabs: crate::dev::Pinned,
+    done: crate::dev::Ev,
+    /// The step: its decode rows, whether each prompt chunk ends its prompt, its prompt tokens, whether it was the step graph's replay, the host's time to queue it (ms),
+    /// and GLYD_PROF's events of its operations (an eager pass's).
+    rows: usize,
+    lasts: Vec<bool>,
+    prompt: usize,
+    graph: bool,
+    queue_ms: f64,
+    evs: Vec<(&'static str, crate::dev::Ev)>,
+}
+
+impl Lanes {
+    /// Room for steps of up to `chunk` rows and `head` sampled rows, with tables of `tab_words` entries in all.
+    fn new(chunk: usize, head: usize, tab_words: usize) -> Result<Lanes> {
+        let lane = (0..LANES)
+            .map(|_| {
+                Ok(Lane {
+                    ins: crate::dev::Pinned::new(8 * chunk)?,
+                    outs: crate::dev::Pinned::new(8 * head)?,
+                    tabs: crate::dev::Pinned::new(4 * tab_words)?,
+                    done: crate::dev::Ev::untimed()?,
+                    rows: 0,
+                    lasts: Vec::new(),
+                    prompt: 0,
+                    graph: false,
+                    queue_ms: 0.0,
+                    evs: Vec::new(),
+                })
+            })
+            .collect::<Result<_>>()?;
+        Ok(Lanes { ids: Buf::zeroed(8 * chunk)?, src: Buf::zeroed(4 * chunk)?, lane, next: 0, out: 0, stale: false, gap: [None; LANES] })
+    }
+}
+
+/// The GPU's own time of each step and its idle time before it (GLYD_ENGINE_STEP_PROF=1 and GLYD_PROF=1): an event at a step's first work and one after its last, in a ring
+/// of LANES; a step's idle time is from the end of the step before to its start, both read once the step is done. With a step that waits for its tokens, the GPU is idle for
+/// the host's work between steps (the sampler's, the scheduler's, the server's) and for the host's time to queue the step's first work; with the next step launched before
+/// a step is read, for less.
+pub(super) struct Gaps {
+    start: Vec<crate::dev::Ev>,
+    end: Vec<crate::dev::Ev>,
+    /// The ring's slot of the step begun last, and whether the slot before it has an end recorded.
+    at: std::cell::Cell<usize>,
+    ended: std::cell::Cell<[bool; LANES]>,
+}
+
+impl Gaps {
+    pub(super) fn new() -> Result<Gaps> {
+        let evs = || (0..LANES).map(|_| crate::dev::Ev::new()).collect::<Result<Vec<_>>>();
+        Ok(Gaps { start: evs()?, end: evs()?, at: std::cell::Cell::new(LANES - 1), ended: std::cell::Cell::new([false; LANES]) })
+    }
+
+    /// A step begins: its slot, the start recorded on `s` (before its first work).
+    pub(super) fn begin(&self, s: crate::ffi::Stream) -> Result<usize> {
+        let k = (self.at.get() + 1) % LANES;
+        self.at.set(k);
+        let mut e = self.ended.get();
+        e[k] = false;
+        self.ended.set(e);
+        self.start[k].record(s)?;
+        Ok(k)
+    }
+
+    /// The step of slot `k` has queued its last work: its end recorded on `s` (again where it is recorded more than once: the last counts).
+    pub(super) fn end(&self, k: usize, s: crate::ffi::Stream) -> Result<()> {
+        self.end[k].record(s)?;
+        let mut e = self.ended.get();
+        e[k] = true;
+        self.ended.set(e);
+        Ok(())
+    }
+
+    /// The slot of the step begun last.
+    pub(super) fn last(&self) -> usize {
+        self.at.get()
+    }
+
+    /// The step of slot `k`, done: its GPU time and the GPU's idle time before it (ms; None for the first step, or one whose step before recorded no end).
+    pub(super) fn read(&self, k: usize) -> Result<(f64, Option<f64>)> {
+        let gpu = self.end[k].since(&self.start[k])? as f64;
+        let before = (k + LANES - 1) % LANES;
+        let idle = match self.ended.get()[before] {
+            true => Some((self.start[k].since(&self.end[before])? as f64).max(0.0)),
+            false => None,
+        };
+        Ok((gpu, idle))
+    }
+}
+
 /// One sequence's rows in a pass over several: the first row, how many, where its tokens begin in the sequence, and its caches and recurrent states.
 pub(super) struct Part {
     /// The sequence (its index in `Dyn::seqs`, its latent attention caches' too).
@@ -409,6 +525,10 @@ impl Dyn {
         unsafe {
             self.embed(tokens)?;
             self.forward(&self.big, n, (pp, pp), last as usize)?;
+            if let (true, Some(dr)) = (last, &self.draft) {
+                // (the draft model's first input: the hidden state of the prompt's last position, as `prefill` hands it)
+                self.kern.copy_row(self.dev.stream, self.big.slot(super::Slot::H), n as i32 - 1, self.big.d.hidden as i32, dr.p.slot(super::Slot::Hid))?;
+            }
         }
         self.n += n;
         self.prof_pass(0, n)?;
@@ -465,6 +585,12 @@ impl Dyn {
     pub fn serve_rows(&mut self, users: usize) -> Result<Option<usize>> {
         // (Gemma 4, Qwen3.5's layout, which Qwen3.8 dense runs on, Muse Spark, Kimi-K3, GLM-5.3-Flash, Nemotron-H, DeepSeek-V4, Qwen3.8-Flash-Next and the Llama-style dense
         // models on one GPU)
+        if self.draft.is_some() && self.stage.first && self.stage.last {
+            // (a drafted model: its one sequence, each decode step a drafting round, `ModelStep::draft`)
+            self.reset()?;
+            self.make_lanes()?;
+            return Ok(Some(1));
+        }
         if self.draft.is_some()
             || !self.stage.first
             || !self.stage.last
@@ -507,6 +633,7 @@ impl Dyn {
             self.add_seqs(users - 1)?;
             // (the host's swap area for the sequences sent back for room: as the plan sizes it, from what the computer has free now that the experts' host tier is in it)
             self.swap_room(crate::plan::swap_area(self.swap_backs() as u64, crate::offload::host_memory()) as usize)?;
+            self.make_lanes()?;
             return Ok(Some(users));
         }
         let per = (self.kc.bytes + self.vc.bytes + states * (1 + marks as usize)).max(1);
@@ -518,6 +645,7 @@ impl Dyn {
             self.mark_room(more + 1)?;
         }
         self.add_seqs(more)?;
+        self.make_lanes()?;
         Ok(Some(more + 1))
     }
 
@@ -610,11 +738,10 @@ const STEP_LEAST: usize = 16;
 /// The most rows of a pass whose products give every row the bits of its own pass (the kernels change past it: `glyd-engine roundcheck` measures it on every family).
 pub(crate) const EXACT_ROWS: usize = 16;
 
-/// `GLYD_ENGINE_STEP_PROF=1` (a development build's): where a decode step's time goes, every 256 steps on stderr. The call's wall time; the GPU's, from an event at the
-/// call's start to one after its work (the time the GPU is busy with the step or waits for the host to queue the rest of it); and the host's between one step's return
-/// and the next one's call (the scheduler, the sampler, the server). With a step that waits for its tokens, the GPU is idle for the host's share.
+/// `GLYD_ENGINE_STEP_PROF=1` (a development build's): where a step's time goes, every 256 steps on stderr. The host's time in the step's call (`decode`, `round`; a launched
+/// step's `launch` and `finish`) and between one step's call and the next one's (the scheduler, the sampler, the server); the GPU's from the step's first work to its last, and
+/// its idle time before the step (from the step before's last work: `Gaps`). With a step that waits for its tokens, the GPU is idle for the host's work between steps.
 struct StepProf {
-    start: crate::dev::Ev,
     at: std::time::Instant,
 }
 
@@ -624,8 +751,12 @@ struct StepSums {
     rows: usize,
     prompt: usize,
     call: f64,
-    gpu: f64,
     host: f64,
+    hosts: usize,
+    gpu: f64,
+    idle: f64,
+    idles: usize,
+    idle_each: Vec<f32>,
     last: Option<std::time::Instant>,
 }
 
@@ -637,40 +768,40 @@ impl StepProf {
         *ON.get_or_init(|| crate::tune!("GLYD_ENGINE_STEP_PROF").is_some_and(|v| v == "1"))
     }
 
-    fn begin(s: crate::ffi::Stream) -> Option<StepProf> {
-        if !Self::on() {
-            return None;
-        }
-        let start = crate::dev::Ev::new().ok()?;
-        start.record(s).ok()?;
-        Some(StepProf { start, at: std::time::Instant::now() })
+    fn begin() -> Option<StepProf> {
+        Self::on().then(|| StepProf { at: std::time::Instant::now() })
     }
 
-    fn end(p: Option<StepProf>, s: crate::ffi::Stream, rows: usize, prompt: usize) {
+    /// The step `p` began has its samples: `call` ms of the host's time in its calls (None: since `begin`), the GPU's times where `Gaps` took them.
+    fn end(p: Option<StepProf>, rows: usize, prompt: usize, call: Option<f64>, times: Option<(f64, Option<f64>)>) {
         let Some(p) = p else { return };
-        let Ok(stop) = crate::dev::Ev::new() else { return };
-        if stop.record(s).is_err() {
-            return;
-        }
-        let gpu = stop.since(&p.start).unwrap_or(f32::NAN) as f64;
         let now = std::time::Instant::now();
-        let call = now.duration_since(p.at).as_secs_f64() * 1e3;
+        let call = call.unwrap_or_else(|| now.duration_since(p.at).as_secs_f64() * 1e3);
         STEP_SUMS.with(|c| {
             let mut c = c.borrow_mut();
-            if let Some(last) = c.last {
-                c.host += p.at.duration_since(last).as_secs_f64() * 1e3;
+            if let Some(last) = c.last.filter(|&l| l <= p.at) {
+                (c.host, c.hosts) = (c.host + p.at.duration_since(last).as_secs_f64() * 1e3, c.hosts + 1);
             }
             c.last = Some(now);
-            (c.n, c.rows, c.prompt, c.call, c.gpu) = (c.n + 1, c.rows + rows, c.prompt + prompt, c.call + call, c.gpu + gpu);
+            (c.n, c.rows, c.prompt, c.call) = (c.n + 1, c.rows + rows, c.prompt + prompt, c.call + call);
+            if let Some((gpu, idle)) = times {
+                c.gpu += gpu;
+                if let Some(i) = idle {
+                    (c.idle, c.idles) = (c.idle + i, c.idles + 1);
+                    c.idle_each.push(i as f32);
+                }
+            }
             if c.n == 256 {
                 let n = c.n as f64;
                 eprintln!(
-                    "step profile, 256 steps of {:.1} rows and {:.0} prompt tokens on average: the call {:.3} ms (the GPU from its first work to its last {:.3} ms), the host between steps {:.3} ms",
+                    "step profile, 256 steps of {:.1} rows and {:.0} prompt tokens on average: the call {:.3} ms (the GPU from its first work to its last {:.3} ms), the host between steps {:.3} ms, the GPU idle before a step {:.3} ms (the median; {:.3} the mean)",
                     c.rows as f64 / n,
                     c.prompt as f64 / n,
                     c.call / n,
                     c.gpu / n,
-                    c.host / (n - 1.0)
+                    c.host / c.hosts.max(1) as f64,
+                    super::prof::median(&c.idle_each),
+                    c.idle / c.idles.max(1) as f64
                 );
                 *c = StepSums { last: c.last, ..Default::default() };
             }
@@ -679,6 +810,280 @@ impl StepProf {
 }
 
 impl Dyn {
+    /// Err where a later step has been launched over the last step's head rows (their logits are that step's now): a step's rows are read before the next is launched.
+    fn rows_readable(&self) -> Result<()> {
+        if self.lanes.as_ref().is_some_and(|l| l.stale) {
+            return err("a step's logits read after a later step was launched over them");
+        }
+        Ok(())
+    }
+
+    /// A served step's figures: the host's (`StepProf`, its call `call` ms where given) and the GPU's (`Gaps`: the step of slot `k`, or the last begun, done by now; GLYD_PROF=1's too).
+    fn step_times(&self, p: Option<StepProf>, rows: usize, prompt: usize, call: Option<f64>) {
+        self.step_times_of(p, rows, prompt, call, None)
+    }
+
+    fn step_times_of(&self, p: Option<StepProf>, rows: usize, prompt: usize, call: Option<f64>, k: Option<usize>) {
+        let times = self.gaps.as_ref().and_then(|g| g.read(k.unwrap_or_else(|| g.last())).ok());
+        if let Some((busy, idle)) = times.filter(|_| super::prof::on()) {
+            super::prof::gpu_times(rows, prompt, busy, idle);
+        }
+        StepProf::end(p, rows, prompt, call, times);
+    }
+
+    /// A pass begins its first work on the GPU (`Gaps`; not inside a graph's capture): the slot of its times.
+    pub(super) fn gap_begin(&self) -> Result<Option<usize>> {
+        match &self.gaps {
+            Some(g) if !self.capturing.get() => g.begin(self.dev.stream).map(Some),
+            _ => Ok(None),
+        }
+    }
+
+    /// The pass begun last has queued its last work (recorded again where it queues more).
+    pub(super) fn gap_end(&self) -> Result<()> {
+        match &self.gaps {
+            Some(g) if !self.capturing.get() => g.end(g.last(), self.dev.stream),
+            _ => Ok(()),
+        }
+    }
+
+    /// `Lanes` for a served model whose steps can be launched before the step before them is read (`ModelStep::overlaps`: the conditions are there), where the library
+    /// looks up its embedding's rows by tokens on the GPU (asked once here, of the embedding's layout); and `Gaps` where a step profile is asked for.
+    fn make_lanes(&mut self) -> Result<()> {
+        if StepProf::on() || super::prof::on() {
+            self.gaps = Some(Gaps::new()?);
+        }
+        let Some(e) = self.big.mats[self.big.d.embed].packed_opt().map(|p| p.pack) else { return Ok(()) };
+        if !crate::sched::overlap_asked()
+            || !ModelStep::one_step(self)
+            || !self.cuts()
+            || self.lossless.is_some()
+            || self.tok.is_some()
+            || !self.stores().is_empty()
+            || self.big.ram.is_some()
+            || !self.kern.has_step_ids()
+        {
+            return Ok(());
+        }
+        let tab_words = self.paged.as_ref().map_or(0, |pg| self.seqs.len() * pg.pages.groups() * self.ctx.div_ceil(BLOCK));
+        let lanes = Lanes::new(self.chunk, self.head_room(), tab_words)?;
+        lanes.ids.write(0, &[0i64])?;
+        // SAFETY: the embedding's pack; ids holds one id (0, a row of it), the scratch room a chunk's rows of the hidden width.
+        let ok = unsafe { self.lib.rows(&e, lanes.ids.ptr, 1, self.big.slot(super::Slot::X), self.dev.stream) }.is_ok() && self.dev.sync().is_ok();
+        if ok {
+            self.lanes = Some(lanes);
+        }
+        Ok(())
+    }
+
+    /// The entries of sequence `slot`'s tables changed since they were last copied, copied to the GPU on the stream from the room of the lane the next step takes (`Lanes`): after
+    /// the steps queued before it, which read the tables as they were, and before the next step's work; no wait. Without lanes: `upload_tables` (the steps before waited for).
+    pub(super) fn upload_tables_queued(&mut self, slot: usize) -> Result<()> {
+        let s = self.dev.stream;
+        let len = self.ctx.div_ceil(BLOCK);
+        let (Some(pg), Some(lanes)) = (&mut self.paged, &mut self.lanes) else {
+            self.dev.sync()?;
+            return self.upload_tables(slot);
+        };
+        let groups = pg.pages.groups();
+        let lane = &mut lanes.lane[lanes.next];
+        for g in 0..groups {
+            if let Some((lo, hi)) = pg.pages.take_dirty(slot, g) {
+                let at = (slot * groups + g) * len;
+                let host = lane.tabs.as_slice_mut::<i32>();
+                for (i, &b) in pg.pages.table(slot, g)[lo..hi].iter().enumerate() {
+                    host[at + lo + i] = b as i32;
+                }
+                // SAFETY: the table's entries lo..hi of its device buffer (len entries), from the lane's pinned room at the same entries, which is not written again until
+                // this lane's next step is launched three steps on (its copies have run by then).
+                unsafe {
+                    crate::dev::copy_h2d_async(
+                        pg.tabs[slot][g].ptr + (lo * 4) as u64,
+                        (lane.tabs.ptr as *const i32).add(at + lo) as *const _,
+                        (hi - lo) * 4,
+                        s,
+                    )?
+                };
+            }
+        }
+        Ok(())
+    }
+
+    /// `ModelStep::launch` on `Lanes`: the step's work queued on the stream with no wait, its inputs copied from the next lane's pinned room (positions, and the tokens' sources,
+    /// which `step_ids` makes the embedding's ids of, a row's token the step before chose read from that step's head), its samples copied back into the lane, and the lane's
+    /// event recorded after them. One decode row alone is its sequence's graph's step where it has one (the decode step a reply alone takes); else one pass of every row and
+    /// chunk, as `pass` makes it. The sequences' places move on now, as `pass` moves them.
+    fn queue_step(&mut self, rows: &[Row], jobs: &[PrefillJob]) -> Result<crate::sched::Launched> {
+        let called = std::time::Instant::now();
+        for (slot, at) in rows.iter().map(|r| (r.pages[0] as usize, r.pos)).chain(jobs.iter().map(|j| (j.pages[0] as usize, j.start))) {
+            if self.seq_n(slot) != at {
+                return err(format!("tokens at {at} of sequence {slot}, which holds {}", self.seq_n(slot)));
+            }
+        }
+        let n = rows.len() + jobs.iter().map(|j| j.tokens.len()).sum::<usize>();
+        let asked = rows.len() + jobs.iter().filter(|j| j.last).count();
+        if n == 0 || n > self.chunk || asked > self.head_room() || jobs.iter().any(|j| j.tokens.is_empty()) {
+            return err(format!("a step of {n} rows and {asked} samples, where a pass holds {} and the head {}", self.chunk, self.head_room()));
+        }
+        let (mut pos, mut src) = (Vec::with_capacity(n), Vec::with_capacity(n));
+        for r in rows {
+            pos.push(r.pos as i32);
+            src.push(match r.after {
+                Some(h) if h < self.head_room() => -1 - h as i32,
+                Some(h) => return err(format!("a row after head row {h} of a head of {}", self.head_room())),
+                None => r.token as i32,
+            });
+        }
+        for j in jobs {
+            pos.extend((0..j.tokens.len()).map(|i| (j.start + i) as i32));
+            src.extend(j.tokens.iter().map(|&t| t as i32));
+        }
+        if let Some(&t) = src.iter().find(|&&t| t >= 0 && t as usize >= self.big.d.vocab) {
+            return err(format!("token {t}: the vocabulary has {}", self.big.d.vocab));
+        }
+        if pos.iter().any(|&p| p as usize + 1 > self.ctx) {
+            return err(format!("a step past the cache's {} tokens", self.ctx));
+        }
+        let one = rows.len() == 1 && jobs.is_empty();
+        if one {
+            // (its graph and its own buffers selected: no wait where it is selected already, the sequences' steps before it waited for where not)
+            self.select(rows[0].pages[0] as usize)?;
+        }
+        let graph = one && self.graph.is_some() && !self.verifying.get();
+        let (s, chunk) = (self.dev.stream, self.chunk);
+        let lanes = self.lanes.as_mut().expect("lanes");
+        if lanes.out >= LANES - 1 {
+            return err("a step launched while two are not finished");
+        }
+        let k = lanes.next;
+        let (ids, src_dev, ins) = (lanes.ids.ptr, lanes.src.ptr, lanes.lane[k].ins.ptr as *mut i32);
+        // SAFETY: the lane's pinned room holds a chunk's positions, then a chunk's sources (n <= chunk); it was last read by copies three steps ago, finished since.
+        unsafe {
+            std::ptr::copy_nonoverlapping(pos.as_ptr(), ins, n);
+            std::ptr::copy_nonoverlapping(src.as_ptr(), ins.add(chunk), n);
+        }
+        let gap = self.gap_begin()?;
+        let e = self.big.mats[self.big.d.embed].packed_opt().map(|p| p.pack).ok_or_else(|| crate::ffi::Error("the embedding is not packed".into()))?;
+        let pp = if graph { self.st.ptr } else { self.pos.ptr };
+        // SAFETY: the engine's live buffers: pos (or st) and the ids' room hold a chunk's rows, the head's tok its rows (each source below the head's rows, checked
+        // above); the copies are ordered on the stream before the work that reads them and after the steps before (whose head this step's ids read).
+        unsafe {
+            crate::dev::copy_h2d_async(pp, ins as *const _, 4 * n, s)?;
+            crate::dev::copy_h2d_async(src_dev, ins.add(chunk) as *const _, 4 * n, s)?;
+            Dyn::mark(self, "start")?;
+            self.kern.step_ids(s, src_dev, self.big.tok.ptr, ids, n)?;
+            self.lib.rows(&e, ids, n as i64, self.big.slot(super::Slot::X), s)?;
+        }
+        let mut lasts = Vec::with_capacity(jobs.len());
+        if graph {
+            // SAFETY: the graph was captured on these buffers (the selected sequence's).
+            unsafe { self.graph.as_ref().expect("a graph").launch(s)? };
+            self.replayed.set(true);
+            let slot = rows[0].pages[0] as usize;
+            self.set_seq_n(slot, rows[0].pos + 1);
+        } else {
+            let (mut parts, mut head_rows, mut row0) = (Vec::new(), Vec::new(), 0);
+            for r in rows {
+                parts.push(self.part_of(r.pages[0] as usize, row0, 1, r.pos)?);
+                head_rows.push(row0);
+                row0 += 1;
+            }
+            for j in jobs {
+                parts.push(self.part_of(j.pages[0] as usize, row0, j.tokens.len(), j.start)?);
+                row0 += j.tokens.len();
+                if j.last {
+                    head_rows.push(row0 - 1);
+                }
+                lasts.push(j.last);
+            }
+            (self.parts, self.head_rows) = (parts, head_rows);
+            // SAFETY: live buffers of the engine and of each sequence, the pass's rows within a chunk's (checked above).
+            let r = unsafe { self.forward(&self.big, n, (pp, pp), asked) };
+            self.parts.clear();
+            self.head_rows.clear();
+            r?;
+            for r in rows {
+                self.set_seq_n(r.pages[0] as usize, r.pos + 1);
+            }
+            for j in jobs {
+                self.set_seq_n(j.pages[0] as usize, j.start + j.tokens.len());
+            }
+        }
+        if graph {
+            lasts.clear();
+        }
+        let head = self.head_room();
+        let evs = self.prof.as_ref().map(|p| std::mem::take(&mut *p.borrow_mut())).unwrap_or_default();
+        let lanes = self.lanes.as_mut().expect("lanes");
+        let lane = &mut lanes.lane[k];
+        // SAFETY: the head's tok and val hold `asked` rows (written by this step's head); the lane's pinned room holds `head` of each, read after its event.
+        unsafe {
+            crate::dev::copy_d2h_async(lane.outs.ptr, self.big.tok.ptr, 4 * asked, s)?;
+            crate::dev::copy_d2h_async((lane.outs.ptr as *mut u8).add(4 * head) as *mut _, self.big.val.ptr, 4 * asked, s)?;
+        }
+        if let (Some(g), Some(k)) = (&self.gaps, gap) {
+            g.end(k, s)?;
+        }
+        lane.done.record(s)?;
+        (lane.rows, lane.lasts, lane.prompt, lane.graph, lane.evs) = (rows.len(), lasts, n - rows.len(), graph, evs);
+        lane.queue_ms = called.elapsed().as_secs_f64() * 1e3;
+        lanes.gap[k] = gap;
+        lanes.next = (k + 1) % LANES;
+        lanes.out += 1;
+        lanes.stale = true;
+        Ok(crate::sched::Launched { done: None, tag: k })
+    }
+
+    /// `ModelStep::finish` of a step `queue_step` launched in lane `k`: its event waited for (the step's own work, not what was queued after it), its samples read from the
+    /// lane: the decode rows', then each chunk's that ends its prompt. Its head rows' logits are the scheduler's to read (`top`, `logits`) only where no later step is out.
+    fn land_step(&mut self, k: usize) -> Result<crate::sched::Samples> {
+        let called = std::time::Instant::now();
+        let head = self.head_room();
+        let lanes = self.lanes.as_mut().ok_or_else(|| crate::ffi::Error("a launched step's samples on an engine with no lanes".into()))?;
+        lanes.lane[k].done.wait_host()?;
+        lanes.out = lanes.out.saturating_sub(1);
+        lanes.stale = lanes.out > 0;
+        let later = lanes.out > 0;
+        let gap = lanes.gap[k];
+        let lane = &mut lanes.lane[k];
+        let asked = lane.rows + lane.lasts.iter().filter(|&&l| l).count();
+        // SAFETY: the lane's pinned room, which the step's copies (done: its event) wrote `asked` tokens and logits of.
+        let (tok, val) = unsafe {
+            (
+                std::slice::from_raw_parts(lane.outs.ptr as *const i32, asked).to_vec(),
+                std::slice::from_raw_parts((lane.outs.ptr as *const u8).add(4 * head) as *const f32, asked).to_vec(),
+            )
+        };
+        let mut it = tok.into_iter().zip(val).map(|(t, v)| Sample { token: t as u32, logit: v, logprob: None });
+        let decoded: Vec<Sample> = it.by_ref().take(lane.rows).collect();
+        let prompted: Vec<Option<Sample>> = lane.lasts.iter().map(|&l| if l { it.next() } else { None }).collect();
+        let (rows, prompt, graph, queue_ms) = (lane.rows, lane.prompt, lane.graph, lane.queue_ms);
+        let evs = std::mem::take(&mut lane.evs);
+        if graph && !later {
+            self.replayed.set(false);
+        }
+        self.cands.fresh(asked);
+        self.end_expert_step()?;
+        // (GLYD_PROF=1: the pass's operations, by its own events; a graph's replay only where no later replay has recorded its events again)
+        if super::prof::on() && self.prof.is_some() {
+            let ops = match graph {
+                true if !later => super::prof::between(&self.gmarks)?,
+                true => Vec::new(),
+                false => super::prof::between(&evs)?,
+            };
+            let gpu = ops.iter().map(|x| x.1).sum();
+            if !ops.is_empty() {
+                super::prof::pass(rows, prompt, &ops, graph, (!graph).then_some(queue_ms));
+            }
+            super::prof::launched(rows, prompt, queue_ms + called.elapsed().as_secs_f64() * 1e3, gpu);
+        }
+        self.spare.borrow_mut().extend(evs.into_iter().map(|x| x.1));
+        let at = called - std::time::Duration::from_secs_f64(queue_ms / 1e3);
+        let p = StepProf::on().then_some(StepProf { at });
+        self.step_times_of(p, rows, prompt, Some(queue_ms + called.elapsed().as_secs_f64() * 1e3), gap);
+        Ok((decoded, prompted))
+    }
+
     /// Head row `row`'s candidates of the last step (`Cands`): None where the step wrote no such row, the vocabulary is not one the top-k kernel takes, or
     /// GLYD_ENGINE_HOST_SAMPLING=1 asks for the row on the host.
     fn row_top(&mut self, row: usize) -> Result<Option<Vec<(u32, f32)>>> {
@@ -847,32 +1252,66 @@ impl ModelStep for Dyn {
         if jobs.is_empty() {
             return Ok((ModelStep::decode(self, rows)?, Vec::new()));
         }
-        let (p, timed) = (StepProf::begin(self.dev.stream), super::prof::begin());
+        let (p, timed) = (StepProf::begin(), super::prof::begin());
         let r = self.round_rows(rows, jobs);
         let prompt = jobs.iter().map(|j| j.tokens.len()).sum();
-        StepProf::end(p, self.dev.stream, rows.len(), prompt);
+        self.step_times(p, rows.len(), prompt, None);
         self.cands.fresh(rows.len() + jobs.iter().filter(|j| j.last).count());
         self.end_expert_step()?;
         super::prof::end(timed, rows.len(), prompt);
         r
     }
     fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
-        let (p, timed) = (StepProf::begin(self.dev.stream), super::prof::begin());
+        let (p, timed) = (StepProf::begin(), super::prof::begin());
         let r = self.decode_rows(rows);
-        StepProf::end(p, self.dev.stream, rows.len(), 0);
+        self.step_times(p, rows.len(), 0, None);
         self.cands.fresh(rows.len());
         self.end_expert_step()?;
         super::prof::end(timed, rows.len(), 0);
         r
     }
+    /// A served model whose description runs the round as one step on one GPU, with every row's cache its keys and values alone (no recurrent state, whose copies at a mark
+    /// or a boundary are of the state after the sequence's last landed token), bf16 pages, the tokens read only by the embedding (no n-gram embedding, no routing by token),
+    /// no expert cache and no layer in the computer's memory (their host work is in the pass): `Lanes`, made by `serve_rows`. GLYD_ENGINE_OVERLAP=0: none.
+    fn overlaps(&self) -> bool {
+        self.lanes.is_some()
+    }
+    /// The step queued (`queue_step`), its rows' tokens read on the GPU by the embedding's lookup: a row's token the step before chose (`Row::after`) is read where that
+    /// step's head left it. A step that does not overlap runs `round` to its end.
+    fn launch(&mut self, rows: &[Row], jobs: &[PrefillJob]) -> Result<crate::sched::Launched> {
+        if self.lanes.is_none() {
+            if rows.iter().any(|r| r.after.is_some()) {
+                return err("a row whose token the step before chose, on a step that is not launched before it is read");
+            }
+            return Ok(crate::sched::Launched { done: Some(ModelStep::round(self, rows, jobs)?), tag: 0 });
+        }
+        self.queue_step(rows, jobs)
+    }
+    fn finish(&mut self, l: crate::sched::Launched) -> Result<crate::sched::Samples> {
+        match l.done {
+            Some(d) => Ok(d),
+            None => self.land_step(l.tag),
+        }
+    }
+    /// The steps out waited for (where the stream still runs; an error is the scheduler's already) and their lanes free.
+    fn abandon(&mut self) {
+        let _ = self.dev.sync();
+        if let Some(l) = &mut self.lanes {
+            (l.out, l.stale) = (0, false);
+        }
+    }
     /// The candidates the GPU makes of the step's head rows (`Cands`); where it cannot (an error), the row is read as without them.
     fn top(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
+        if self.lanes.as_ref().is_some_and(|l| l.stale) {
+            return None;
+        }
         self.row_top(row).unwrap_or(None)
     }
     fn expert_stats(&self) -> Vec<crate::offload::LayerStats> {
         Dyn::expert_stats(self)
     }
     fn logits(&mut self, row: usize) -> Result<Vec<f32>> {
+        self.rows_readable()?;
         self.dev.sync()?;
         let v = self.big.d.vocab;
         let mut words = vec![0u16; v];
@@ -880,6 +1319,7 @@ impl ModelStep for Dyn {
         Ok(words.into_iter().map(|w| f32::from_bits((w as u32) << 16)).collect())
     }
     fn gather(&mut self, row: usize, tokens: &[u32]) -> Result<Vec<(u32, f32)>> {
+        self.rows_readable()?;
         let v = self.big.d.vocab;
         let toks: Vec<u32> = tokens.iter().copied().filter(|&t| (t as usize) < v).collect();
         if toks.is_empty() {
@@ -907,8 +1347,8 @@ impl ModelStep for Dyn {
             self.empty(p as usize)?;
             if let Some(pg) = &mut self.paged {
                 pg.pages.release(p as usize);
-                self.dev.sync()?;
-                self.upload_tables(p as usize)?;
+                // (a step in flight may still read the tables as they were: the copy is queued after it, and a block given back is written only by the steps after)
+                self.upload_tables_queued(p as usize)?;
             }
         }
         Ok(())
@@ -918,7 +1358,24 @@ impl ModelStep for Dyn {
     /// than the whole prompt's, which is another kernel's (the module's note).
     fn keeps(&self) -> bool {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_KEEP").is_none_or(|v| v != "0")) && Self::batch_prefill()
+        *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_KEEP").is_none_or(|v| v != "0")) && Self::batch_prefill() && self.draft.is_none()
+    }
+    /// A drafted model's decode of its one sequence: a drafting round (`spec_round`), as a reply alone runs it.
+    fn draft(&mut self, row: &Row, sampler: Option<&mut crate::sampler::Sampler>) -> Result<Option<Vec<u32>>> {
+        if self.draft.is_none() {
+            return Ok(None);
+        }
+        self.select(row.pages[0] as usize)?;
+        if self.n != row.pos {
+            return err(format!("a token at {} of a sequence that holds {}", row.pos, self.n));
+        }
+        let (p, timed) = (StepProf::begin(), super::prof::begin());
+        let toks = self.spec_round(row.token, sampler)?;
+        self.step_times(p, 1, 0, None);
+        self.cands.fresh(0);
+        self.end_expert_step()?;
+        super::prof::end(timed, 1, 0);
+        Ok(Some(toks))
     }
     /// Full blocks are found by name where the keys and values are paged (`Pages::name`, `Pages::adopt`): where nothing of a sequence is a state, a start of any whole
     /// number of blocks; a model with recurrent states and the pool of them (`named`), a start that ends at a boundary whose states are kept.
@@ -1123,8 +1580,10 @@ impl ModelStep for Dyn {
         if !pg.pages.grow_from(slot as usize, n, upto, chunk) {
             return Ok(false);
         }
-        self.dev.sync()?;
-        self.upload_tables(slot as usize)?;
+        // (nothing to copy where no entry changed: most steps; else the entries copied on the stream, or after the steps before where the steps are not launched ahead)
+        if pg.pages.dirty(slot as usize) {
+            self.upload_tables_queued(slot as usize)?;
+        }
         Ok(true)
     }
     /// Paged sequences are swapped to the host's area and back (src/dynamic/swap.rs), every family's the same way: their blocks in every group and their states.
