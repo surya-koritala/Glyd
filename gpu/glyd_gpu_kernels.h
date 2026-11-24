@@ -1399,7 +1399,7 @@ __device__ __forceinline__ bool last_of(int* done, int64_t n, int& last) {
 #define GEMM1_BLOCKS 2
 #endif
 template <class Fmt, int MT, bool B = false, bool PF = false>
-__global__ void __launch_bounds__(256, MT == 1 ? GEMM1_BLOCKS : 1) mma_gemm_kernel(Fmt f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done, int pf) {
+__device__ __forceinline__ void mma_gemm_body(Fmt f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done, int pf) {
     extern __shared__ __align__(128) float red[];  // [4 warps][16 MT rows][65], then (tiered) the warps' scratch [8][S2_BYTES]
     __shared__ int last;
     __shared__ uint32_t tab[Fmt::kTable ? 256 : 1];
@@ -1467,6 +1467,11 @@ __global__ void __launch_bounds__(256, MT == 1 ? GEMM1_BLOCKS : 1) mma_gemm_kern
             }
         __syncthreads();  // red and last are reused
     }
+}
+
+template <class Fmt, int MT, bool B = false, bool PF = false>
+__global__ void __launch_bounds__(256, MT == 1 ? GEMM1_BLOCKS : 1) mma_gemm_kernel(Fmt f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done, int pf) {
+    mma_gemm_body<Fmt, MT, B, PF>(f, O, K, M, X, bias, Y, parts, done, pf);
 }
 
 // The tiered layout's product for 1 to 16 tokens (a generation step). mma_gemm_kernel's split of the steps over blocks and its
@@ -1627,7 +1632,7 @@ __device__ __forceinline__ void step_steps(const Tiered& f, int64_t base, int s0
 }
 
 template <bool SW>
-__global__ void __launch_bounds__(32 * STEP_WARPS, STEP_BLOCKS) step_kernel(Tiered f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
+__device__ __forceinline__ void step_body(Tiered f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
     constexpr int NW = STEP_WARPS, ROWS = SW ? 8 : 16;  // warps a block, tokens a pass
     extern __shared__ __align__(128) float red[];  // [NW warps][ROWS][65] sums, then the warps' scratch [NW][S2_BYTES]
     __shared__ int last;
@@ -1692,4 +1697,9 @@ __global__ void __launch_bounds__(32 * STEP_WARPS, STEP_BLOCKS) step_kernel(Tier
             }
         __syncthreads();  // red and last are reused
     }
+}
+
+template <bool SW>
+__global__ void __launch_bounds__(32 * STEP_WARPS, STEP_BLOCKS) step_kernel(Tiered f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
+    step_body<SW>(f, O, K, M, X, bias, Y, parts, done);
 }
