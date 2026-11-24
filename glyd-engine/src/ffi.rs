@@ -1107,6 +1107,134 @@ impl Lib {
         self.ck(call!("kv_prefill_bf16"), r)
     }
 
+    /// `GpuOps::kv_write` by the library's own kernel: the oracle of the engine's (`fold`).
+    ///
+    /// # Safety
+    /// As `GpuOps::kv_write`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn library_kv_write(
+        &self,
+        g: &KvGeom,
+        pool: u64,
+        kbase: u64,
+        vbase: u64,
+        layer: i64,
+        key: u64,
+        key_stride: i64,
+        value: u64,
+        value_stride: i64,
+        slots: u64,
+        n: i64,
+        status: u64,
+        lost: u64,
+        nlost: i64,
+        ring: i64,
+        cs: Stream,
+    ) -> Result<()> {
+        let r = (self.api.glyd_gpu_kv_write)(
+            key as *const u16,
+            key_stride,
+            value as *const u16,
+            value_stride,
+            slots as *const i64,
+            n,
+            pool as *mut u8,
+            g.page_stride,
+            kbase as *const u8,
+            vbase as *const u8,
+            g.heads,
+            g.dim,
+            g.arena,
+            g.escape as *mut u8,
+            g.nchunks,
+            g.raw as *mut u8,
+            g.nslabs,
+            layer,
+            status as *mut u32,
+            lost as *mut u32,
+            nlost,
+            ring,
+            cs,
+        );
+        self.ck(call!("kv_write"), r)
+    }
+
+    /// `GpuOps::kv_unpack` by the library's own kernel: the oracle of the engine's (`fold`).
+    ///
+    /// # Safety
+    /// As `GpuOps::kv_unpack`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn library_kv_unpack(
+        &self,
+        g: &KvGeom,
+        pool: u64,
+        kbase: u64,
+        vbase: u64,
+        pages: u64,
+        n: i64,
+        out_k: u64,
+        out_v: u64,
+        cs: Stream,
+    ) -> Result<()> {
+        let r = (self.api.glyd_gpu_kv_unpack)(
+            pool as *const u8,
+            g.page_stride,
+            pages as *const i32,
+            n,
+            kbase as *const u8,
+            vbase as *const u8,
+            g.heads,
+            g.dim,
+            g.arena,
+            g.escape as *const u8,
+            g.nchunks,
+            g.raw as *const u8,
+            g.nslabs,
+            out_k as *mut u16,
+            out_v as *mut u16,
+            cs,
+        );
+        self.ck(call!("kv_unpack"), r)
+    }
+
+    /// `GpuOps::kv_gather` by the library's own kernel: the oracle of the engine's (`fold`).
+    ///
+    /// # Safety
+    /// As `GpuOps::kv_gather`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn library_kv_gather(
+        &self,
+        g: &KvGeom,
+        pool: u64,
+        kbase: u64,
+        vbase: u64,
+        pages: u64,
+        dst: u64,
+        n: i64,
+        out: u64,
+        cs: Stream,
+    ) -> Result<()> {
+        let r = (self.api.glyd_gpu_kv_gather)(
+            pool as *const u8,
+            g.page_stride,
+            pages as *const i32,
+            dst as *const i32,
+            n,
+            kbase as *const u8,
+            vbase as *const u8,
+            g.heads,
+            g.dim,
+            g.arena,
+            g.escape as *const u8,
+            g.nchunks,
+            g.raw as *const u8,
+            g.nslabs,
+            out as *mut u16,
+            cs,
+        );
+        self.ck(call!("kv_gather"), r)
+    }
+
     /// `GpuOps::moe_way` by the library's own kernels (glyd_gpu_moe_way): the oracle of the engine's (`fold::moe_way`).
     ///
     /// # Safety
@@ -1504,76 +1632,28 @@ impl GpuOps for Lib {
         ring: i64,
         cs: Stream,
     ) -> Result<()> {
-        let r = (self.api.glyd_gpu_kv_write)(
-            key as *const u16,
-            key_stride,
-            value as *const u16,
-            value_stride,
-            slots as *const i64,
-            n,
-            pool as *mut u8,
-            g.page_stride,
-            kbase as *const u8,
-            vbase as *const u8,
-            g.heads,
-            g.dim,
-            g.arena,
-            g.escape as *mut u8,
-            g.nchunks,
-            g.raw as *mut u8,
-            g.nslabs,
-            layer,
-            status as *mut u32,
-            lost as *mut u32,
-            nlost,
-            ring,
-            cs,
-        );
-        self.ck(call!("kv_write"), r)
+        // (the engine's own kernel, from the library's source: R17's `fold`)
+        let rows = (key, key_stride, value, value_stride, slots, n);
+        if crate::fold::on() && crate::fold::kv_write(g, (pool, kbase, vbase, layer), rows, (status, lost, nlost, ring), cs)? {
+            return Ok(());
+        }
+        self.library_kv_write(g, pool, kbase, vbase, layer, key, key_stride, value, value_stride, slots, n, status, lost, nlost, ring, cs)
     }
 
     unsafe fn kv_unpack(&self, g: &KvGeom, pool: u64, kbase: u64, vbase: u64, pages: u64, n: i64, out_k: u64, out_v: u64, cs: Stream) -> Result<()> {
-        let r = (self.api.glyd_gpu_kv_unpack)(
-            pool as *const u8,
-            g.page_stride,
-            pages as *const i32,
-            n,
-            kbase as *const u8,
-            vbase as *const u8,
-            g.heads,
-            g.dim,
-            g.arena,
-            g.escape as *const u8,
-            g.nchunks,
-            g.raw as *const u8,
-            g.nslabs,
-            out_k as *mut u16,
-            out_v as *mut u16,
-            cs,
-        );
-        self.ck(call!("kv_unpack"), r)
+        // (the engine's own kernel, from the library's source: R17's `fold`)
+        if crate::fold::on() && crate::fold::kv_unpack(g, (pool, kbase, vbase), pages, n, (out_k, out_v), cs)? {
+            return Ok(());
+        }
+        self.library_kv_unpack(g, pool, kbase, vbase, pages, n, out_k, out_v, cs)
     }
 
     unsafe fn kv_gather(&self, g: &KvGeom, pool: u64, kbase: u64, vbase: u64, pages: u64, dst: u64, n: i64, out: u64, cs: Stream) -> Result<()> {
-        let r = (self.api.glyd_gpu_kv_gather)(
-            pool as *const u8,
-            g.page_stride,
-            pages as *const i32,
-            dst as *const i32,
-            n,
-            kbase as *const u8,
-            vbase as *const u8,
-            g.heads,
-            g.dim,
-            g.arena,
-            g.escape as *const u8,
-            g.nchunks,
-            g.raw as *const u8,
-            g.nslabs,
-            out as *mut u16,
-            cs,
-        );
-        self.ck(call!("kv_gather"), r)
+        // (the engine's own kernel, from the library's source: R17's `fold`)
+        if crate::fold::on() && crate::fold::kv_gather(g, (pool, kbase, vbase), (pages, dst, n), out, cs)? {
+            return Ok(());
+        }
+        self.library_kv_gather(g, pool, kbase, vbase, pages, dst, n, out, cs)
     }
 
     fn kv_decode_splits(&self, b: i64, h: i64, max_pages: i64) -> Result<i64> {

@@ -1252,6 +1252,191 @@ pub unsafe fn kv_prefill_bf16(
     Ok(true)
 }
 
+/// kvc::EscapePool (gpu/glyd_gpu_kernels.h), field for field: the escape pool as the write kernel takes it (esc_of).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KvEscapePool {
+    pub bits: u64,
+    pub owner: u64,
+    pub ent: u64,
+    pub nc: i32,
+}
+
+/// kvc::WriteParams (gpu/glyd_gpu_kernels.h), field for field: the write kernel's parameters, built as glyd_gpu_kv_write builds them.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KvWriteParams {
+    pub key: u64,
+    pub value: u64,
+    pub key_stride: i64,
+    pub value_stride: i64,
+    pub slots: u64,
+    pub pool: u64,
+    pub page_stride: i64,
+    pub kbase: u64,
+    pub vbase: u64,
+    pub status: u64,
+    pub esc: KvEscapePool,
+    pub raw: KvRawPool,
+    pub lost: u64,
+    pub nlost: i64,
+    pub ring: u32,
+    pub layer_tag: u32,
+    pub n: i32,
+    pub h: i32,
+    pub a: i32,
+    pub lean: i32,
+    pub one: i32,
+}
+
+/// The pool checks the library makes of a KV call (kv_escape_ok, kv_raw_ok, the page's bytes and alignment); false where it refuses them.
+fn kv_pools_ok(g: &crate::ffi::KvGeom, pool: u64) -> bool {
+    let esc_ok = (0..=1 << 30).contains(&g.nchunks) && (g.nchunks == 0 || (g.escape != 0 && g.escape % 16 == 0));
+    let raw_ok = (0..=1 << 30).contains(&g.nslabs) && (g.nslabs == 0 || (g.raw != 0 && g.raw % 16 == 0));
+    kv_page_bytes(g.heads, g.dim, g.arena).is_ok_and(|page| g.page_stride >= page && g.page_stride % 16 == 0 && pool % 16 == 0) && esc_ok && raw_ok
+}
+
+/// `n` tokens' keys and values into the layer's pool by the engine's write kernel (glyd_gpu_kv_write): a CTA a token, 256 threads; the layer's owner tag,
+/// the status rings and the lost blocks' bits as the library passes them, GLYD_KV_LEAN (development builds) as it reads it. False where the library takes it.
+///
+/// # Safety
+/// As `GpuOps::kv_write`; a context with the engine's module is current.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn kv_write(
+    g: &crate::ffi::KvGeom,
+    (pool, kbase, vbase, layer): (u64, u64, u64, i64),
+    (key, key_stride, value, value_stride, slots, n): (u64, i64, u64, i64, u64, i64),
+    (status, lost, nlost, ring): (u64, u64, i64, i64),
+    cs: Stream,
+) -> Result<bool> {
+    use crate::dev::here;
+    use crate::kt;
+    use crate::launch;
+    let (h, d) = (g.heads, g.dim);
+    if cfg!(glyd_hip) || !(0..=i32::MAX as i64).contains(&n) || status == 0 || !kv_pools_ok(g, pool) {
+        return Ok(false);
+    }
+    if !(0..=254).contains(&layer) || nlost < 0 || (nlost > 0 && (lost == 0 || lost % 4 != 0)) || !(1..=1 << 24).contains(&ring) {
+        return Ok(false);
+    }
+    if n == 0 {
+        return Ok(true);
+    }
+    let (dm, one) = (kv_dim(d), d & KV_ONE != 0);
+    if key == 0 || slots == 0 || kbase == 0 || key_stride < h * dm || key_stride % 2 != 0 || key % 4 != 0 {
+        return Ok(false);
+    }
+    if !one && (value == 0 || vbase == 0 || value_stride < h * dm || value_stride % 2 != 0 || value % 4 != 0) {
+        return Ok(false);
+    }
+    let hp = h * (dm / KV_D);
+    let esc = if g.nchunks == 0 || g.escape == 0 {
+        KvEscapePool::default()
+    } else {
+        let bits = ((g.nchunks + 31) / 32 + 3) / 4 * 16;
+        KvEscapePool { bits: g.escape, owner: g.escape + bits as u64, ent: g.escape + pool_head_bytes(g.nchunks) as u64, nc: g.nchunks as i32 }
+    };
+    let p = KvWriteParams {
+        key,
+        value,
+        key_stride,
+        value_stride,
+        slots,
+        pool,
+        page_stride: g.page_stride,
+        kbase,
+        vbase,
+        status,
+        esc,
+        raw: kv_raw(g.raw, g.nslabs, hp),
+        lost: if nlost > 0 { lost } else { 0 },
+        nlost,
+        ring: ring as u32,
+        layer_tag: ((layer + 1) as u32) << 24,
+        n: n as i32,
+        h: hp as i32,
+        a: g.arena as i32,
+        lean: !crate::tune!("GLYD_KV_LEAN").is_some_and(|v| v.starts_with('0')) as i32,
+        one: one as i32,
+    };
+    launch!(here::<kt::fold_kv_write>()?, [n as u32, 1, 1], [256, 1, 1], cs; p)?;
+    Ok(true)
+}
+
+/// Pages `pages` [n] back to bf16 keys and values [n][16][H][D] by the engine's kernel (glyd_gpu_kv_unpack: a warp a (page, head-page), 4 a CTA; one stream:
+/// the keys alone, into `out_k`). False where the library takes it.
+///
+/// # Safety
+/// As `GpuOps::kv_unpack`; a context with the engine's module is current.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn kv_unpack(
+    g: &crate::ffi::KvGeom,
+    (pool, kbase, vbase): (u64, u64, u64),
+    pages: u64,
+    n: i64,
+    (out_k, out_v): (u64, u64),
+    cs: Stream,
+) -> Result<bool> {
+    use crate::dev::here;
+    use crate::kt;
+    use crate::launch;
+    let one = g.dim & KV_ONE != 0;
+    let hp = g.heads * (kv_dim(g.dim) / KV_D);
+    if cfg!(glyd_hip) || n < 0 || n * hp > i32::MAX as i64 || !kv_pools_ok(g, pool) {
+        return Ok(false);
+    }
+    if n == 0 {
+        return Ok(true);
+    }
+    if pages == 0 || kbase == 0 || out_k == 0 || (!one && (vbase == 0 || out_v == 0)) {
+        return Ok(false);
+    }
+    let (ent, nc) = kv_escape(g.escape, g.nchunks);
+    let raw = kv_raw(g.raw, g.nslabs, hp);
+    let (vb, ov) = if one { (kbase, out_k) } else { (vbase, out_v) };
+    let grid = [((n * hp + 3) / 4) as u32, 1, 1];
+    launch!(here::<kt::fold_kv_unpack>()?, grid, [128, 1, 1], cs; pool, g.page_stride, pages, n as i32, kbase, vb, hp as i32, g.arena as i32, ent, nc, raw, out_k, ov, one as i32)?;
+    Ok(true)
+}
+
+/// Pages `pages` [n] into the bf16 staging cache `out` [blocks][16][H][2 D], page j into block `dst`[j], by the engine's kernel (glyd_gpu_kv_gather). False
+/// where the library takes it.
+///
+/// # Safety
+/// As `GpuOps::kv_gather`; a context with the engine's module is current.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn kv_gather(g: &crate::ffi::KvGeom, (pool, kbase, vbase): (u64, u64, u64), (pages, dst, n): (u64, u64, i64), out: u64, cs: Stream) -> Result<bool> {
+    use crate::dev::here;
+    use crate::kt;
+    use crate::launch;
+    let hp = g.heads * (kv_dim(g.dim) / KV_D);
+    if cfg!(glyd_hip) || g.dim & KV_ONE != 0 || n < 0 || n * hp > i32::MAX as i64 || !kv_pools_ok(g, pool) {
+        return Ok(false);
+    }
+    if n == 0 {
+        return Ok(true);
+    }
+    if pages == 0 || dst == 0 || kbase == 0 || vbase == 0 || out == 0 || out % 4 != 0 {
+        return Ok(false);
+    }
+    let (ent, nc) = kv_escape(g.escape, g.nchunks);
+    let raw = kv_raw(g.raw, g.nslabs, hp);
+    let (grid, blk) = ([((n * hp + 3) / 4) as u32, 1, 1], [128u32, 1, 1]);
+    let args = (pool, g.page_stride, pages, dst, n as i32, kbase, vbase, hp as i32, g.arena as i32, ent, nc, raw, out);
+    match g.dim / KV_D {
+        1 => {
+            launch!(here::<kt::fold_kv_gather_1>()?, grid, blk, cs; args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7, args.8, args.9, args.10, args.11, args.12)
+        }
+        2 => {
+            launch!(here::<kt::fold_kv_gather_2>()?, grid, blk, cs; args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7, args.8, args.9, args.10, args.11, args.12)
+        }
+        _ => {
+            launch!(here::<kt::fold_kv_gather_4>()?, grid, blk, cs; args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7, args.8, args.9, args.10, args.11, args.12)
+        }
+    }?;
+    Ok(true)
+}
+
 /// `foldcheck` (R17): each folded piece against the library's on this GPU, the library the oracle: the GPU's code; the way of every GPU code the
 /// library knows (with and without SPLIT), both layouts, matrices of every kind of K and size, at token counts on each side of every threshold;
 /// the KV cache's sizes and decode workspace over valid and refused shapes; the experts' plan and the unpacking of every layout by the engine's own
@@ -1367,7 +1552,7 @@ pub fn check() -> Result<()> {
     let (n, bad) = route_check(&dev, &lib)?;
     say("the experts' plan (moe_way), the engine's kernels against the library's (one warp and one block, ids out of range among them)", n, bad);
     let (n, bad) = kv_check(&dev, &lib)?;
-    say("the decode and prompt attention over 12-bit pages and a bf16 cache, the engine's kernels against the library's, and the decode's plan", n, bad);
+    say("the 12-bit pages' write, unpack and gather, and the decode and prompt attention over them and over a bf16 cache: the engine's kernels against the library's", n, bad);
     let (n, bad) = linear_check(&dev, &lib)?;
     say("the step product (route GEMM, 1 to 64 tokens), the engine's kernels against the library's, and its workspace", n, bad);
     let (n, bad) = unpack_check(&dev, &lib)?;
@@ -1563,7 +1748,6 @@ fn linear_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, 
 fn kv_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
     use crate::dev::Buf;
     use crate::ffi::KvGeom;
-    use crate::gpu_ops::GpuOps;
     let mut seed = 0x94D0_49BB_1331_11EBu64;
     let mut next = move || {
         seed ^= seed << 13;
@@ -1620,8 +1804,89 @@ fn kv_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<
         let stride = (h * d) as i64;
         // SAFETY: the pool and its tables, the tokens' rows and slots, live; one stream.
         unsafe {
-            lib.kv_write(&geom, pool.ptr, kb.ptr, vb.ptr, 0, kbuf.ptr, stride, vbuf.ptr, stride, sl.ptr, tokens as i64, status.ptr, 0, 0, RING, dev.stream)?
+            lib.library_kv_write(
+                &geom,
+                pool.ptr,
+                kb.ptr,
+                vb.ptr,
+                0,
+                kbuf.ptr,
+                stride,
+                vbuf.ptr,
+                stride,
+                sl.ptr,
+                tokens as i64,
+                status.ptr,
+                0,
+                0,
+                RING,
+                dev.stream,
+            )?
         };
+        // the pages back by both kernels, unpacked (NHD keys and values) and gathered (the staging cache): every bf16 the same; then the same tokens written by the
+        // engine's kernel into pools of their own, read back by the library's: every value the one written (the pools' bytes are not compared: the escape chunks a
+        // page takes are found by atomics, in any order)
+        let ids: Vec<i32> = (0..blocks as i32).collect();
+        let (pages, dst) = (Buf::new(4 * blocks)?, Buf::new(4 * blocks)?);
+        pages.write(0, &ids)?;
+        dst.write(0, &ids)?;
+        let words = blocks * 16 * h * d;
+        let (uka, uva, ukb, uvb) = (Buf::zeroed(2 * words)?, Buf::zeroed(2 * words)?, Buf::zeroed(2 * words)?, Buf::zeroed(2 * words)?);
+        let (gka, gkb) = (Buf::zeroed(4 * words)?, Buf::zeroed(4 * words)?);
+        // SAFETY: the pool and its tables, the pages' and destinations' lists, outputs of `blocks` pages each; one stream.
+        let r = unsafe {
+            lib.library_kv_unpack(&geom, pool.ptr, kb.ptr, vb.ptr, pages.ptr, blocks as i64, uka.ptr, uva.ptr, dev.stream)?;
+            lib.library_kv_gather(&geom, pool.ptr, kb.ptr, vb.ptr, pages.ptr, dst.ptr, blocks as i64, gka.ptr, dev.stream)?;
+            let u = kv_unpack(&geom, (pool.ptr, kb.ptr, vb.ptr), pages.ptr, blocks as i64, (ukb.ptr, uvb.ptr), dev.stream)?;
+            let gt = kv_gather(&geom, (pool.ptr, kb.ptr, vb.ptr), (pages.ptr, dst.ptr, blocks as i64), gkb.ptr, dev.stream)?;
+            (u, gt)
+        };
+        dev.sync()?;
+        let same = |a: &Buf, b: &Buf, len: usize| -> Result<usize> {
+            let (mut x, mut y) = (vec![0u16; len], vec![0u16; len]);
+            a.read(0, &mut x)?;
+            b.read(0, &mut y)?;
+            Ok(x.iter().zip(&y).filter(|(p, q)| p != q).count())
+        };
+        n += 2;
+        if r != (true, true) {
+            bad.push(format!("{h} x {d}: the engine's unpack or gather did not take the call ({r:?})"));
+        } else {
+            let (du, dg) = (same(&uka, &ukb, words)? + same(&uva, &uvb, words)?, same(&gka, &gkb, 2 * words)?);
+            if du + dg > 0 {
+                bad.push(format!("{h} x {d}: unpack {du}, gather {dg} bf16 differ"));
+            }
+        }
+        let (pool2, escape2, raw2, status2) = (
+            Buf::zeroed(page as usize * blocks)?,
+            Buf::zeroed(kv_escape_bytes(nchunks)? as usize)?,
+            Buf::zeroed(kv_raw_bytes(nslabs, hp)? as usize)?,
+            Buf::zeroed(4 * (16 + 2 * RING) as usize)?,
+        );
+        let geom2 = KvGeom { escape: escape2.ptr, raw: raw2.ptr, ..geom };
+        let (uk2, uv2) = (Buf::zeroed(2 * words)?, Buf::zeroed(2 * words)?);
+        // SAFETY: the second pool and its tables, the tokens' rows and slots, outputs; one stream.
+        let w2 = unsafe {
+            let ok = kv_write(
+                &geom2,
+                (pool2.ptr, kb.ptr, vb.ptr, 0),
+                (kbuf.ptr, stride, vbuf.ptr, stride, sl.ptr, tokens as i64),
+                (status2.ptr, 0, 0, RING),
+                dev.stream,
+            )?;
+            lib.library_kv_unpack(&geom2, pool2.ptr, kb.ptr, vb.ptr, pages.ptr, blocks as i64, uk2.ptr, uv2.ptr, dev.stream)?;
+            ok
+        };
+        dev.sync()?;
+        n += 1;
+        if !w2 {
+            bad.push(format!("{h} x {d}: the engine's write did not take the call"));
+        } else {
+            let d2 = same(&uka, &uk2, words)? + same(&uva, &uv2, words)?;
+            if d2 > 0 {
+                bad.push(format!("{h} x {d}: the engine's write read back by the library: {d2} bf16 differ from the library's write"));
+            }
+        }
         // the same values as a bf16 cache [places][h][d], the places the pages' tokens
         let (kc, vc) = (Buf::new(2 * k.len())?, Buf::new(2 * v.len())?);
         kc.write(0, &k)?;
@@ -2040,6 +2305,15 @@ mod tests {
             offset_of!(KvPrefillParams, capl2),
         ];
         assert_eq!(pf, [96, 104, 144, 184, 228]);
+        assert_eq!((size_of::<KvEscapePool>(), size_of::<KvWriteParams>()), (32, 200));
+        let wp = [
+            offset_of!(KvWriteParams, esc),
+            offset_of!(KvWriteParams, raw),
+            offset_of!(KvWriteParams, lost),
+            offset_of!(KvWriteParams, ring),
+            offset_of!(KvWriteParams, one),
+        ];
+        assert_eq!(wp, [80, 112, 152, 168, 192]);
     }
 
     #[test]

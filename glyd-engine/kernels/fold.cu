@@ -154,3 +154,23 @@ FOLD_KV_ATTN(pipe_1, true, 1, false)
 FOLD_KV_PREFILL(1, 4)
 FOLD_KV_PREFILL(2, 4)
 FOLD_KV_PREFILL(4, 2)
+
+// glyd_gpu_kv_write (a CTA a token: its keys and values into its page, 12 bits a value), _kv_unpack (pages to bf16 keys and values, NHD) and _kv_gather
+// (pages into the bf16 staging cache [blocks][16][H][2 D]): kvc's write_body, unpack_body and gather_body, launched as the library launches them.
+extern "C" __global__ void __launch_bounds__(256) fold_kv_write(const __grid_constant__ glib::kvc::WriteParams P) {
+    glib::kvc::write_body(P);
+}
+
+extern "C" __global__ void __launch_bounds__(128) fold_kv_unpack(const uint8_t* pool, int64_t page_stride, const int32_t* pages, int n, const uint8_t* kbase, const uint8_t* vbase,
+                                                                  int H, int A, const uint32_t* ent, int nc, const glib::kvc::RawPool R, uint16_t* out_k, uint16_t* out_v, int one) {
+    glib::kvc::unpack_body(pool, page_stride, pages, n, kbase, vbase, H, A, ent, nc, R, out_k, out_v, one);
+}
+
+#define FOLD_KV_GATHER(HV) \
+    extern "C" __global__ void __launch_bounds__(128) fold_kv_gather_##HV(const uint8_t* pool, int64_t page_stride, const int32_t* pages, const int32_t* dst, int n, \
+        const uint8_t* kbase, const uint8_t* vbase, int H, int A, const uint32_t* ent, int nc, const glib::kvc::RawPool R, uint16_t* out) { \
+        glib::kvc::gather_body<HV>(pool, page_stride, pages, dst, n, kbase, vbase, H, A, ent, nc, R, out); \
+    }
+FOLD_KV_GATHER(1)
+FOLD_KV_GATHER(2)
+FOLD_KV_GATHER(4)
