@@ -41,7 +41,7 @@ pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
         ));
     }
     let st = Stage::whole(d.layers.len());
-    let blocks = |ck: &Checkpoint| -> Result<Vec<Box<dyn MoeBlock>>> {
+    let blocks = |ck: &Checkpoint, _: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
         (0..c.layers).map(|l| Ok(Box::new(ResidentMoe(crate::model_qwen4x::QxMoe::load(l, &c, ck, Layout::Int6)?.into_layer())) as Box<dyn MoeBlock>)).collect()
     };
     Dyn::new_with(dir, d, None, st, o, &blocks)

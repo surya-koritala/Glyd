@@ -1938,4 +1938,31 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// The executor's loader holds the random Nemotron-H as its own loader (src/kern_nh.rs) did: the same matrices dense (the parts the packer does not take), every
+    /// small tensor as saved in bf16 (none read wider); the Mamba-2 scan's chunked workspace comes from its operations.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_executors_loader_holds_nemotron_as_its_own_loader_did() {
+        use super::super::{held_as_saved, read_f32, read_f32_as_bf16};
+        let dir = std::env::temp_dir().join(format!("glyd-nh-loader-{}", std::process::id()));
+        crate::kcheck_nh::random(&dir, 0, 16).unwrap();
+        let c = crate::nemotron::ConfigNemotronH::load(&dir).unwrap();
+        let d = super::super::nemotron::lowered(&dir, &c, &super::super::Stage::whole(c.layers)).unwrap();
+        let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
+        let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
+        let packs: Vec<crate::qwen35::Pack35> = (0..c.layers).filter(|&l| c.kinds[l] != crate::nemotron::NhKind::Moe).flat_map(|l| c.layer_packs(l)).collect();
+        let dense: std::collections::HashSet<String> = packs.iter().filter(|p| !p.packable()).flat_map(|p| p.parts.iter().map(|x| x.0.clone())).collect();
+        for (k, it) in d.mats.iter().enumerate() {
+            assert_eq!(held_as_saved(&d, k, &rows_of), it.members.iter().all(|m| dense.contains(m)), "{:?}", it.members);
+        }
+        let kept: std::collections::HashMap<String, &str> = (0..c.layers).flat_map(|l| c.layer_kept(l)).map(|t| (t.name, t.dtype)).collect();
+        let (f32s, as_bf16) = (read_f32(&d), read_f32_as_bf16(&d));
+        for (i, n) in d.small.iter().enumerate() {
+            assert!(!f32s.contains(&i) && !as_bf16.contains(&i), "{n}");
+            assert!(kept.get(n).is_none_or(|&t| t == "BF16"), "{n}");
+        }
+        assert!(d.layers.iter().flatten().any(|op| matches!(op, Op::MambaScan { .. })));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

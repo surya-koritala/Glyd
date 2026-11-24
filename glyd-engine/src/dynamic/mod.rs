@@ -736,8 +736,8 @@ impl Part {
     }
 }
 
-/// What reads a description's blocks of experts (`Op::Moe`'s, in its order) from its checkpoint.
-pub type Experts<'a> = dyn Fn(&Checkpoint) -> Result<Vec<Box<dyn MoeBlock>>> + 'a;
+/// What reads a description's blocks of experts (`Op::Moe`'s, in its order) from its checkpoint, the matrices' layout given.
+pub type Experts<'a> = dyn Fn(&Checkpoint, Layout) -> Result<Vec<Box<dyn MoeBlock>>> + 'a;
 
 /// Whether matrix `k` of `d` is held as saved (bf16), not packed: a table an operation reads by row (`Op::NgramRows`), or a shape the library does not pack
 /// (columns not a multiple of 16, or a member's rows, `rows_of` it where the checkpoint holds it, not a multiple of 64: a save keeps such a merge as its parts).
@@ -855,7 +855,7 @@ fn load_part(dir: &Path, d: ModelDesc, layout: Layout, threads: usize, rows: usi
             }
         })
         .collect::<Result<_>>()?;
-    let moe = experts(&ck)?;
+    let moe = experts(&ck, layout)?;
     Part::from_loaded(d, Loaded { mats, small, moe, ..Loaded::default() }, rows, out)
 }
 
@@ -1105,7 +1105,7 @@ impl Dyn {
 
     /// Stage `st` of the model of `dir` (its layers, and the embedding or the head where it holds them), on `o.device`: a split model's part.
     pub fn new_stage(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts) -> Result<Dyn> {
-        Dyn::new_with(dir, d, draft, st, o, &|_| Ok(Vec::new()))
+        Dyn::new_with(dir, d, draft, st, o, &|_, _| Ok(Vec::new()))
     }
 
     /// `new_stage` of a description with experts: `experts` reads its blocks of experts (`Op::Moe`'s, in its order) from the checkpoint.
@@ -1146,7 +1146,7 @@ impl Dyn {
         // (a draft model is packed lossy here: the big model checks every draft token, so its precision moves only how many are kept)
         let draft = match draft {
             None => None,
-            Some(x) => Some(Draft { p: load_part(x.dir, x.desc, Layout::Int6, threads, 1, 1, None, &|_| Ok(Vec::new()))?, k: x.k, pos: Buf::zeroed(8)? }),
+            Some(x) => Some(Draft { p: load_part(x.dir, x.desc, Layout::Int6, threads, 1, 1, None, &|_, _| Ok(Vec::new()))?, k: x.k, pos: Buf::zeroed(8)? }),
         };
         Dyn::build(dev, big, draft, ropes, layout, st, o)
     }
@@ -1323,6 +1323,12 @@ impl Dyn {
             None => None,
         };
         let bytes = big.bytes() + draft.as_ref().map_or(0, |x| x.p.bytes());
+        // (the Mamba-2 scan's chunked workspace, for its most heads and groups)
+        let ssd = ops()
+            .filter_map(|op| if let Op::MambaScan { nh, ng, .. } = *op { Some((nh, ng)) } else { None })
+            .reduce(|a, b| (a.0.max(b.0), a.1.max(b.1)))
+            .map(|(nh, ng)| SsdWs::sized(nh, ng, ch))
+            .transpose()?;
         let mut e = Dyn {
             dev,
             lib,
@@ -1352,7 +1358,7 @@ impl Dyn {
             lse,
             top,
             part,
-            ssd: None,
+            ssd,
             moe_sc,
             start: std::cell::Cell::new(0),
             prepped: std::cell::Cell::new(false),
