@@ -295,7 +295,9 @@ fn task_sets(a: &Args) -> Result<Vec<(&'static str, Vec<Item>)>> {
             .map(|k| bench::kind_tokens(k.trim()).and_then(|t| t.ok_or_else(|| Error(format!("--long {k}: 4k, 16k, 32k or NNNt")))))
             .collect::<Result<_>>()?,
     };
+    // (`--long 0`: no long-context task at all, not one of no problems)
     want.iter()
+        .filter(|t| **t != "long" || !lengths.is_empty())
         .map(|t| {
             Ok(match *t {
                 "reasoning" => ("reasoning", reasoning(n)),
@@ -816,6 +818,27 @@ mod tests {
         let t = table(&[a, b]);
         let (q6, wren) = (t.find("| llama.cpp | Q6_K | 6.56 |").unwrap(), t.find("| glyd | wren | 4.53 |").unwrap());
         assert!(q6 < wren && t.contains("34/40 (36)") && t.contains("| kestrel | publish |"), "{t}");
+    }
+
+    /// The suite against a server as any engine's is measured (--against): the real handler and scheduler over the made-up model. Every text's prefixes have
+    /// log-probabilities, every problem is asked and answered, and the server's result against its own is a card of no divergence and the same answers.
+    #[test]
+    fn the_suite_runs_against_a_server_and_a_server_against_itself_diverges_nowhere() {
+        let addr = crate::server::tests::serve_fake(crate::sched::tests::Fake::new(4096, 64), None, 8);
+        let words = ["quality", "--against", &format!("http://{addr}"), "--n", "3", "--long", "0", "--quiet", "--engine", "fake"];
+        let mut r = measure(&Args::from(words.iter().map(|w| w.to_string()))).unwrap();
+        assert_eq!(r["schema"], SCHEMA);
+        for (name, _) in texts() {
+            let rows = r["next_token"][name]["rows"].as_array().unwrap();
+            assert!(rows.len() == PREFIXES && rows.iter().all(|x| !x.as_array().unwrap().is_empty()), "{name}: {}", r["next_token"][name]);
+        }
+        assert_eq!((r["tasks"]["reasoning"]["n"].as_u64(), r["tasks"]["code"]["n"].as_u64()), (Some(3), Some(3)));
+        assert!(r["tasks"]["long"].is_null() && r["model"]["engine"] == "fake");
+        assert!(r["tasks"]["code"]["items"].as_array().unwrap().iter().all(|i| i["want"].is_i64()));
+        r["model"]["level"] = json!("penguin");
+        let c = card(&r, &r, "wren", "wren").unwrap();
+        assert_eq!(c["kl"]["mean"].as_f64(), Some(0.0), "{c}");
+        assert_eq!((c["kl"]["top1"].as_f64(), c["tasks"]["code"]["same_answer"].as_u64(), c["verdict"].as_str()), (Some(1.0), Some(3), Some("publish")), "{c}");
     }
 
     #[test]
