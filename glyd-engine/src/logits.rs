@@ -2675,6 +2675,18 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     }
     // (the sampler's candidates the step makes on the GPU (src/dynamic/rows.rs `Cands`), against its rows' logits)
     drop(s);
+    // (decode steps of several rows replay a CUDA graph of their padded rows where the description takes one (src/dynamic/rows.rs `rows_bucket`): with prompts one a pass, a
+    // description with experts decodes a sequence a step)
+    let replays = e.rows_replays.get();
+    let graphs = e.rows_graphs() && !(one_a_pass && !e.rows_exact());
+    println!(
+        "decode steps of several rows replayed from a CUDA graph: {replays}{}",
+        if graphs { "" } else { " (this description's steps of several rows run eager)" }
+    );
+    if graphs && batchable && k > 1 && steps[2..].iter().any(|&x| x > 0) && replays == 0 {
+        println!("FAIL no decode step of several rows replayed a graph");
+        fails += 1;
+    }
     let Some((_, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
     let (rows, bad) = cands_check(step, &prompts)?;
     println!("{} the step's candidates of {rows} rows against their logits' {} largest", if bad == 0 { "PASS" } else { "FAIL" }, crate::kern::TOPK);

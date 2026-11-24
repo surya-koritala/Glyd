@@ -1,7 +1,10 @@
 //! The description executor as a scheduler's step (`sched::ModelStep`, docs/design/runtime.md section 2): several sequences, each with its own room of the context (`add_seqs`), run by the one
 //! scheduler that runs the dense Qwen3 engine. A step of one sequence is that sequence's pass as a reply alone runs it (its prompt chunk, or its graph's one-token step). A step of several runs their rows
 //! in one pass: the operations that act row by row (the products, norms, activations) on all the rows at once, so each weight is read once for the step, and the operations on a sequence's cache or
-//! states (the attention's cache write and read, the recurrent layers) on each sequence's rows by themselves with the kernels and row counts its own pass has. What a row computes never turns
+//! states (the attention's cache write and read, the recurrent layers) on each sequence's rows by themselves with the kernels and row counts its own pass has; the pass's rows that decode, a token
+//! of a sequence each, take an attention layer in one launch of each kernel (one call of the library's decode), each row through its own block table (`RowTabs`), which is each row's own pass's
+//! arithmetic. A step of nothing but such rows replays a CUDA graph of its rows padded to a ladder of sizes (`rows_bucket`), where the description is one of attention layers and operations that
+//! act row by row (no recurrent state): its padding rows read and write no key. What a row computes never turns
 //! on what the other sequences hold. It can turn on how many rows the step has, because a product's kernel is picked by them: in a step of 16 rows or fewer every row's logits are, bit for bit,
 //! those of its own pass; in a larger one (17 to 64 rows another kernel, past 64 `decoded_way`'s) they differ by the rounding of the engine's bf16 values, as the engine differs from an f32
 //! reference. Measured by `glyd-engine roundcheck` (src/logits.rs) on every family and on gemma-4-12B at wren with a text's tokens: a KL of 0.002 to 0.005 from the row alone on average, the
@@ -26,11 +29,57 @@ use crate::dev::{copy_d2d_async, Buf};
 use crate::ffi::{err, Result};
 use crate::sched::{ModelStep, PrefillJob, Row, Sample, FUSED_ROWS};
 
-/// Paged keys and values: the blocks every sequence holds, each ring's layer group, and each sequence's block tables on the GPU ([slot][group], int32 a BLOCK of tokens).
+/// Paged keys and values: the blocks every sequence holds, each ring's layer group, and each sequence's block tables on the GPU (a buffer a group: every slot's row of `tlen`
+/// entries, int32 a BLOCK of tokens, slot after slot), and the tables of a pass's decode rows (`RowTabs`; None where an attention layer's calls cannot take them).
 pub(super) struct Paged {
     pub(super) pages: Pages,
     pub(super) group: Vec<usize>,
-    tabs: Vec<Vec<Buf>>,
+    tabs: Vec<Buf>,
+    tlen: usize,
+    pub(super) rows: Option<RowTabs>,
+}
+
+/// The block tables of a pass's rows that decode, one token of a sequence each (h:attn-backends:attention:2, as SGLang's decode backend takes a batch's every sequence in one
+/// call through its own block table): row r of group g's `tab` holds `dup[g]` copies of row r's sequence's table, made on the GPU at the pass's start (`Dyn::row_tables`, from the
+/// slots the host writes to `slot`, -1 a padding row) so that one launch of the preparation and one call of the decode take a layer's every such row; a call of the library's
+/// decode whose rows' query heads are `sp` sequences finds row r's j-th at stride `dup / sp` tables (every `sp` of the group's divides `dup`). `win`: each group's window (0: none).
+/// `graphs`: whether a step of such rows alone may replay a CUDA graph of its padded rows (`Dyn::rows_bucket`): every operation of the description acts row by row or is an
+/// attention layer, and no sequence has recurrent states.
+pub(super) struct RowTabs {
+    pub(super) tab: Vec<Buf>,
+    pub(super) dup: Vec<usize>,
+    pub(super) win: Vec<usize>,
+    pub(super) slot: Buf,
+    pub(super) rows: usize,
+    pub(super) graphs: bool,
+}
+
+/// The least common multiple of a and b (both at least 1).
+fn lcm(a: usize, b: usize) -> usize {
+    let (mut x, mut y) = (a, b);
+    while y != 0 {
+        (x, y) = (y, x % y);
+    }
+    a / x * b
+}
+
+/// Each group's copies of a row's table (`RowTabs::dup`): the least common multiple of the sequences a row's query heads are in the decode's calls on the group's rings (`sp`:
+/// each attention layer's ring and its calls' sequences a row), 0 for a group no attention layer reads.
+pub(super) fn row_dups(groups: usize, sp: impl Iterator<Item = (usize, usize)>) -> Vec<usize> {
+    let mut dup = vec![0usize; groups];
+    for (g, sp) in sp {
+        dup[g] = lcm(dup[g].max(1), sp.max(1));
+    }
+    dup
+}
+
+/// The rows a CUDA graph of a step of `n` rows that decode is captured for (`Dyn::rows_bucket`): the least power of two at or above n below `most`, else `most` (the
+/// head's rows, which a step never passes); None for one row (the sequence's own graph) or more than `most`.
+pub(super) fn bucket(n: usize, most: usize) -> Option<usize> {
+    if n < 2 || n > most {
+        return None;
+    }
+    Some(n.next_power_of_two().min(most))
 }
 
 /// The sampler's candidates of a step's rows (`ModelStep::top`): the `kern::TOPK` largest logits of each head row of the last step, made by one launch for all
@@ -140,9 +189,8 @@ impl Paged {
 
     /// Sequence `slot`'s table in ring `ring`'s group as the GPU holds it (what the kernels read; the host's may have moved on since the last step).
     pub(super) fn gpu_table(&self, slot: usize, ring: usize) -> Result<Vec<u32>> {
-        let b = &self.tabs[slot][self.group[ring]];
-        let mut t = vec![0i32; b.bytes / 4];
-        b.read(0, &mut t)?;
+        let mut t = vec![0i32; self.tlen];
+        self.tabs[self.group[ring]].read(slot * self.tlen * 4, &mut t)?;
         Ok(t.into_iter().map(|x| x as u32).collect())
     }
 }
@@ -170,7 +218,26 @@ impl Dyn {
     /// Ring `ring`'s block table for the sequence in `slot` (0: none).
     pub(super) fn table_of(&self, slot: usize, ring: usize) -> u64 {
         let Some(pg) = &self.paged else { return 0 };
-        pg.tabs[slot][pg.group[ring]].ptr
+        pg.tabs[pg.group[ring]].ptr + (slot * pg.tlen * 4) as u64
+    }
+
+    /// Ring `ring`'s group's tables of the pass's rows that decode (`RowTabs`): the first row's, the entries a row's, and the copies of a row's table (`RowTabs::dup`).
+    pub(super) fn row_tab(&self, ring: usize) -> (u64, usize, usize) {
+        let pg = self.paged.as_ref().expect("a pass's decode rows are paged");
+        let rt = pg.rows.as_ref().expect("a pass's decode rows have their tables");
+        let g = pg.group[ring];
+        (rt.tab[g].ptr, pg.tlen, rt.dup[g])
+    }
+
+    /// The tables of the pass's first `self.lead` rows, each its sequence's (`RowTabs`), from the slots written to `RowTabs::slot` and the rows' positions `pos`: a launch a
+    /// group, on the GPU (a graph's replay makes them for the rows it is replayed with).
+    pub(super) unsafe fn row_tables(&self, pos: u64) -> Result<()> {
+        let pg = self.paged.as_ref().expect("a pass's decode rows are paged");
+        let rt = pg.rows.as_ref().expect("a pass's decode rows have their tables");
+        for (g, tab) in rt.tab.iter().enumerate().filter(|(g, _)| rt.dup[*g] > 0) {
+            self.kern.row_tables(self.dev.stream, pg.tabs[g].ptr, pg.tlen, rt.slot.ptr, pos, self.lead.get(), rt.win[g], rt.dup[g], tab.ptr)?;
+        }
+        Ok(())
     }
 
     /// Whether this description's keys and values can be paged (`pages_all`), with no draft model, the whole model on one GPU.
@@ -265,22 +332,59 @@ impl Dyn {
                 &blocks,
                 &self.ring_cap,
                 rows,
-                self.split_rows,
+                self.split_rows.max(users),
                 self.ctx,
                 self.chunk,
                 self.ldec.as_ref().map(|d| d.splits).ok_or_else(|| crate::ffi::Error("12-bit pages for a model the library's decode does not take".into()))?,
             )?);
         }
-        let tabs = (0..users)
-            .map(|_| (0..windows.len()).map(|_| Buf::zeroed(self.ctx.div_ceil(BLOCK) * 4)).collect::<Result<Vec<_>>>())
-            .collect::<Result<Vec<_>>>()?;
+        let tlen = self.ctx.div_ceil(BLOCK);
+        let tabs = (0..windows.len()).map(|_| Buf::zeroed(users * tlen * 4)).collect::<Result<Vec<_>>>()?;
+        let rows = self.row_tabs_for(&group, &windows, users, tlen)?;
         let counts: Vec<u32> = blocks.iter().map(|&b| (b + 1) as u32).collect();
-        self.paged = Some(Paged { pages: Pages::new(&counts, &keep, users, self.ctx), group, tabs });
+        self.paged = Some(Paged { pages: Pages::new(&counts, &keep, users, self.ctx), group, tabs, tlen, rows });
+        self.rgraphs.clear();
         // (sequence 0's graph again, on the pools and its tables)
         if graphed {
             self.capture_graph()?;
         }
         Ok(())
+    }
+
+    /// The tables of a pass's decode rows (`RowTabs`) for `users` sequences, the groups `group` makes of the rings (`windows`: one a group), tables of `tlen` entries: None where an attention layer's decode cannot take them (a layer that reads its picks, a call's sequences a row no group's copies divide).
+    fn row_tabs_for(&self, group: &[usize], windows: &[usize], users: usize, tlen: usize) -> Result<Option<RowTabs>> {
+        let d = &self.big.d;
+        let attns: Vec<&super::AttnOp> = d.layers.iter().flatten().filter_map(|op| if let Op::Attn(a) = op { Some(a) } else { None }).collect();
+        if attns.is_empty() || attns.iter().any(|a| a.picked.is_some()) {
+            return Ok(None);
+        }
+        // (a layer's calls of the library's decode: its query heads in dparts() sequences a row, over a bf16 cache and 12-bit pages alike)
+        let sp = |a: &super::AttnOp| if self.ldec.is_some() && a.lib_decode() { a.dparts() } else { 1 };
+        let pages12 = self.lossless.iter().flat_map(|lx| lx.rings.iter().enumerate()).filter_map(|(r, rp)| rp.as_ref().map(|rp| (group[r], rp.parts)));
+        let dup = row_dups(windows.len(), attns.iter().map(|a| (group[a.ring], sp(a))).chain(pages12));
+        // (a group's tables are copied from the first block its widest reader reads: none sliding, from the first)
+        let mut win: Vec<Option<usize>> = vec![None; windows.len()];
+        let readers = attns.iter().map(|a| (group[a.ring], a.window));
+        let readers12 = self.lossless.iter().flat_map(|lx| lx.rings.iter().enumerate()).filter_map(|(r, rp)| rp.as_ref().map(|rp| (group[r], rp.shape.window)));
+        for (g, w) in readers.chain(readers12) {
+            win[g] = Some(match (win[g], w) {
+                (Some(0), _) | (_, 0) => 0,
+                (Some(v), w) => v.max(w),
+                (None, w) => w,
+            });
+        }
+        let win: Vec<usize> = win.into_iter().map(|w| w.unwrap_or(0)).collect();
+        let tab = dup.iter().map(|&k| Buf::zeroed((users * k * tlen * 4).max(4))).collect::<Result<Vec<_>>>()?;
+        // (a step of such rows alone in a graph: every operation one that acts row by row or an attention layer, no recurrent state; the latent attention runs its sequences by
+        // their own pointers, so not it)
+        let graphs = self.rgraph_on
+            && self.states.is_empty()
+            && std::iter::once(&d.first).chain(d.layers.iter().flatten()).all(|op| match op {
+                Op::Attn(_) => true,
+                Op::Mla(_) => false,
+                op => row_wise(op),
+            });
+        Ok(Some(RowTabs { tab, dup, win, slot: Buf::zeroed(4 * users)?, rows: users, graphs }))
     }
 
     /// The entries of sequence `slot`'s tables changed since they were last copied, copied to the GPU (nothing runs on them then: the steps before have been waited for).
@@ -289,7 +393,7 @@ impl Dyn {
         for g in 0..pg.pages.groups() {
             if let Some((lo, hi)) = pg.pages.take_dirty(slot, g) {
                 let v: Vec<i32> = pg.pages.table(slot, g)[lo..hi].iter().map(|&b| b as i32).collect();
-                pg.tabs[slot][g].write(lo * 4, &v)?;
+                pg.tabs[g].write((slot * pg.tlen + lo) * 4, &v)?;
             }
         }
         Ok(())
@@ -439,14 +543,38 @@ impl Dyn {
                 head_rows.push(tokens.len() - 1);
             }
         }
+        // (the leading rows that decode, a token of a sequence each: their attention one launch, or one call of the library's decode, a layer, each row through its own table
+        // (`RowTabs`); a step of nothing else, padded to a graph's rows, that graph's replay (`rows_bucket`): its padding rows at position -1, which write and read no key)
+        let room = self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).map_or(0, |rt| rt.rows);
+        let lead = jobs.iter().take_while(|j| j.1.len() == 1).count().min(room);
+        let graph = if lead == jobs.len() && asked == lead { self.rows_bucket(n) } else { None };
+        let rows = graph.unwrap_or(n);
+        if let Some(k) = graph {
+            pos.resize(k, -1);
+            tokens.resize(k, tokens[0]);
+            head_rows = (0..k).collect();
+        }
         self.dev.sync()?;
         self.pos.write(0, &pos)?;
+        if lead > 0 {
+            // (a graph's padding rows -1; the rows past the lead, a prompt's, have no entry)
+            let mut slots: Vec<i32> = jobs[..lead].iter().map(|j| j.0 as i32).collect();
+            slots.resize(if graph.is_some() { rows } else { lead }, -1);
+            self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).expect("room for the rows' tables").slot.write(0, &slots)?;
+        }
         let pp = self.pos.ptr;
         (self.parts, self.head_rows) = (parts, head_rows);
-        // SAFETY: live buffers of the engine and of each sequence, the pass's rows within a chunk's.
-        let r = unsafe { self.embed(&tokens).and_then(|_| self.forward(&self.big, n, (pp, pp), asked)) };
+        self.lead.set(if graph.is_some() { rows } else { lead });
+        // SAFETY: live buffers of the engine and of each sequence, the pass's rows within a chunk's (a graph's padded rows within the head's).
+        let r = unsafe {
+            self.embed(&tokens).and_then(|_| match graph {
+                Some(k) => self.rows_replay(k),
+                None => self.forward(&self.big, n, (pp, pp), asked),
+            })
+        };
         self.parts.clear();
         self.head_rows.clear();
+        self.lead.set(0);
         r?;
         for &(slot, t, _) in jobs {
             let to = self.seq_n(slot) + t.len();
@@ -458,6 +586,63 @@ impl Dyn {
         self.prof_pass(rows, n - rows)?;
         let mut heads = heads.into_iter();
         Ok(jobs.iter().map(|j| j.2.then(|| heads.next().map(|(token, logit)| Sample { token, logit, logprob: None })).flatten()).collect())
+    }
+
+    /// The rows of the CUDA graph a step of `n` rows that decode (and nothing else) replays (f:cuda-graphs:serving:2: vLLM's full graphs of uniform decode batches at a ladder of
+    /// padded sizes): `bucket`'s ladder up to the head's rows, where the description takes such a graph (`RowTabs::graphs`) and the engine captures graphs at all; None: the
+    /// step runs eager. GLYD_ENGINE_ROWS_GRAPH=0 (a development build's) runs every such step eager, to compare.
+    fn rows_bucket(&self, n: usize) -> Option<usize> {
+        let rt = self.paged.as_ref()?.rows.as_ref().filter(|rt| rt.graphs)?;
+        if super::tp::comm().is_some() || crate::hb_usage::recording() || crate::tune!("GLYD_ENGINE_ROWS_GRAPH").is_some_and(|v| v == "0") {
+            return None;
+        }
+        bucket(n, self.head_room().min(rt.rows).min(self.chunk))
+    }
+
+    /// Whether steps of several rows that decode replay CUDA graphs (`rows_bucket`).
+    #[cfg(feature = "dev")]
+    pub(crate) fn rows_graphs(&self) -> bool {
+        self.rows_bucket(2).is_some()
+    }
+
+    /// A step of `k` rows that decode (padded: `pass`), its embedding queued: the graph of k rows replayed; where there is none yet, the step run eager and then captured
+    /// (its first run is the warm-up a capture needs: every buffer and kernel it takes made). The pass's rows' positions, slots and tokens are in the buffers the graph reads.
+    unsafe fn rows_replay(&mut self, k: usize) -> Result<()> {
+        if let Some(i) = self.rgraphs.iter().position(|g| g.rows == k) {
+            self.rgraphs[i].graph.launch(self.dev.stream)?;
+            self.replayed.set(true);
+            self.rplayed.set(Some(i));
+            self.dcalls.set(self.rgraphs[i].calls);
+            self.rows_replays.set(self.rows_replays.get() + 1);
+            return Ok(());
+        }
+        let pp = self.pos.ptr;
+        self.forward(&self.big, k, (pp, pp), k)?;
+        // (--prof: the eager pass's events kept for its profile, the capture's kept with the graph)
+        let eager = self.prof.as_ref().map(|p| std::mem::take(&mut *p.borrow_mut()));
+        let queued = self.queued.get();
+        self.capturing.set(true);
+        let g = self.dev.capture(|| {
+            // SAFETY: as the eager pass above, on the same buffers.
+            unsafe { self.forward(&self.big, k, (pp, pp), k) }
+        });
+        self.capturing.set(false);
+        self.queued.set(queued);
+        let marks = match (&self.prof, eager) {
+            (Some(p), Some(e)) => std::mem::replace(&mut *p.borrow_mut(), e),
+            _ => Vec::new(),
+        };
+        match g {
+            Ok(graph) => self.rgraphs.push(super::RowsGraph { rows: k, graph, marks, calls: self.dcalls.get() }),
+            Err(e) => {
+                // (the step ran; a capture that fails leaves such steps eager from here, as they were)
+                eprintln!("glyd: a decode step of {k} rows could not be captured as a CUDA graph ({e}): such steps run eager");
+                if let Some(rt) = self.paged.as_mut().and_then(|pg| pg.rows.as_mut()) {
+                    rt.graphs = false;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Ready to be a scheduler's step for up to `users` sequences: the head's room for a row each, and as many more sequences as the GPU's free memory holds (the first is this one's). None where this
@@ -1142,5 +1327,40 @@ impl ModelStep for Dyn {
     }
     fn swap_drop(&mut self, ticket: u64) {
         self.swap_drop_of(ticket)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A step of rows that decode replays the graph of the least power of two of rows that holds it, the head's rows at most (a ladder of padded sizes, as vLLM's
+    /// decode graphs); one row is its sequence's own graph, and more rows than the head holds none.
+    #[test]
+    fn a_step_takes_the_least_graph_that_holds_its_rows() {
+        let got: Vec<Option<usize>> = (0..=10).map(|n| bucket(n, 8)).collect();
+        assert_eq!(got, [None, None, Some(2), Some(4), Some(4), Some(8), Some(8), Some(8), Some(8), None, None]);
+        // (a head of rows that is no power of two: the ladder ends at it)
+        assert_eq!((bucket(5, 6), bucket(6, 6), bucket(3, 6)), (Some(6), Some(6), Some(4)));
+        assert_eq!((bucket(33, 64), bucket(64, 64), bucket(17, 20)), (Some(64), Some(64), Some(20)));
+    }
+
+    /// A row's table is copied as many times as the decode's calls on the group make sequences of a row, every count of them dividing it: the stride `dup / sp` tables
+    /// finds row r's j-th sequence's table in row r's copies (Gemma 4's global layers: 16 query heads over one kv head, two sequences a row; its sliding ones one).
+    #[test]
+    fn a_rows_tables_are_copied_for_every_calls_sequences() {
+        let dup = row_dups(3, [(0, 1), (1, 2), (1, 1), (0, 1)].into_iter());
+        assert_eq!(dup, [1, 2, 0]);
+        assert_eq!(row_dups(1, [(0, 2), (0, 3)].into_iter()), [6]);
+        // (sequence b = r sp + j of a call at stride dup / sp tables: row r's copy j dup / sp, within its dup copies)
+        let (t, d) = (100usize, 2usize);
+        for sp in [1usize, 2] {
+            for r in 0..5 {
+                for j in 0..sp {
+                    let at = (r * sp + j) * (d / sp) * t;
+                    assert!(at >= r * d * t && at < (r + 1) * d * t, "sp {sp} row {r} part {j}");
+                }
+            }
+        }
     }
 }

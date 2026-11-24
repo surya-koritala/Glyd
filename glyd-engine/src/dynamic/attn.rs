@@ -39,6 +39,8 @@ pub(super) struct LibDecode {
     kinds: Vec<(usize, usize)>,
     lens: Vec<crate::dev::Buf>,
     first: Vec<crate::dev::Buf>,
+    /// The widest call's kv heads, query heads a call's sequence and head width (the workspace's shape).
+    shape: (usize, usize, usize),
 }
 
 impl LibDecode {
@@ -63,7 +65,19 @@ impl LibDecode {
         let ws = crate::dev::Buf::zeroed(lib.kv_decode_workspace((drows * parts) as i64, heads as i64, g as i64, d as i64, splits)?)?;
         let lens = kinds.iter().map(|k| crate::dev::Buf::new(4 * rows * k.1)).collect::<Result<_>>()?;
         let first = kinds.iter().map(|k| crate::dev::Buf::new(4 * rows * k.1)).collect::<Result<_>>()?;
-        Ok(Some(LibDecode { splits, ws, kinds, lens, first }))
+        Ok(Some(LibDecode { splits, ws, kinds, lens, first, shape: (heads, g, d) }))
+    }
+
+    /// The workspace made for a call of `drows` rows at least (a step's rows that decode, all in one call: `Dyn::attn_lead`), each row's query heads in the most calls' sequences
+    /// a kind has. The splits stay: a sequence's bits do not depend on the batch.
+    pub fn grow(&mut self, lib: &crate::ffi::Lib, drows: usize) -> Result<()> {
+        let parts = self.kinds.iter().map(|k| k.1).max().unwrap_or(1);
+        let (h, g, d) = self.shape;
+        let need = lib.kv_decode_workspace((drows * parts) as i64, h as i64, g as i64, d as i64, self.splits)?;
+        if need > self.ws.bytes {
+            self.ws = crate::dev::Buf::zeroed(need)?;
+        }
+        Ok(())
     }
 }
 
@@ -328,6 +342,8 @@ pub(crate) struct AttnArgs {
     pub out: u64,
     pub gate: u64,
     pub part: u64,
+    /// Row t's table at tab + t tstride entries (a step's rows that decode, each its sequence's: `rows::RowTabs`); 0: one table for every row.
+    pub tstride: i64,
     pub d: i32,
     pub stride: i32,
     pub q_step: i32,
@@ -516,7 +532,7 @@ impl Dyn {
     pub(super) unsafe fn lib_decode_prepare(&self, n: usize, pos: (u64, u64)) -> Result<()> {
         let Some(ld) = &self.ldec else { return Ok(()) };
         for (i, &(window, sp)) in ld.kinds.iter().enumerate() {
-            self.kern.kv12_rows(self.dev.stream, pos.1, n, 0, window, sp, 0, ld.lens[i].ptr, ld.first[i].ptr)?;
+            self.kern.kv12_rows(self.dev.stream, pos.1, n, (0, 0), window, sp, 0, ld.lens[i].ptr, ld.first[i].ptr)?;
         }
         Ok(())
     }
@@ -524,15 +540,22 @@ impl Dyn {
     /// A decode call of the library over the bf16 cache `x` names (its table, or its ring of `x.cap` places): the n rows of the part an operation runs on now, each
     /// row's query heads in `a.dparts()` calls' sequences.
     unsafe fn lib_decode(&self, a: &AttnOp, n: usize, x: &AttnArgs) -> Result<()> {
+        self.lib_decode_at(a, n, x, (x.tab, 0), self.row0())
+    }
+
+    /// `lib_decode` of the n rows from row `row0` of the pass, the call's sequence b (row b / sp's query heads' part b % sp) through table `tab.0` + b `tab.1` (0: every
+    /// sequence the one table).
+    unsafe fn lib_decode_at(&self, a: &AttnOp, n: usize, x: &AttnArgs, tab: (u64, usize), row0: usize) -> Result<()> {
         let ld = self.ldec.as_ref().expect("a library decode");
         let sp = a.dparts();
         let k = ld.kinds.iter().position(|&k| k == (a.window, sp)).expect("a kind of the description's");
-        let at = 4 * (self.row0() * sp) as u64;
+        let at = 4 * (row0 * sp) as u64;
+        self.dcalls.set(self.dcalls.get() + 1);
         let stride = (a.nq * a.d / sp) as i64;
         self.lib.kv_decode_bf16(
             x.qo,
             stride,
-            (x.kc, x.vc, x.tab, 0, x.cap as i64),
+            (x.kc, x.vc, tab.0, tab.1 as i64, x.cap as i64),
             (ld.lens[k].ptr + at, ld.first[k].ptr + at, (n * sp) as i64, ld.splits),
             (a.nk as i64, (a.nq / a.nk / sp) as i64, a.d as i64),
             (a.scale as f64, a.sbf16),
@@ -551,6 +574,53 @@ impl Dyn {
             self.attn_prep(p, l, i, a, n, pos, head)?;
         }
         self.attn_read(p, a, n, pos)
+    }
+
+    /// `Op::Attn` (op `i` of layer `l` of part `p`) on the pass's first `rows.0` rows (of `rows.1`), each a decode row of its own sequence (`Dyn::lead`): their preparation in one
+    /// launch (unless the pass made it for every row already: `prepped`), their attention in one launch of the parts kernel or one call of the library's decode, each row through its
+    /// own block table (`rows::RowTabs`, made at the pass's start). Each row's kernels and sums are its own pass's: the same bits (the decode's plan is a sequence's own, and
+    /// the 12-bit pages' decode is the bf16 cache's).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) unsafe fn attn_lead(&self, p: &Part, l: usize, i: usize, a: &AttnOp, rows: (usize, usize), pos: (u64, u64), head: usize) -> Result<()> {
+        let (s, k) = (self.dev.stream, rows.0);
+        let (tab, t, dup) = self.row_tab(a.ring);
+        let (kc, vc) = self.cache(a.ring);
+        if !self.prepped.get() {
+            let mut x = a.args(k, p.d.eps);
+            (x.kc, x.vc, x.cap, x.tab, x.tstride) = (kc, vc, self.ring_cap[a.ring] as i32, tab, (dup * t) as i64);
+            (x.src, x.qo, x.qpos) = (p.slot(a.src), p.slot(Slot::Qo), pos.0);
+            if let Some((q, kw)) = a.weights() {
+                (x.qw, x.kw) = (p.small[q].ptr, p.small[kw].ptr);
+            }
+            if let Some(r) = a.rope {
+                (x.cs, x.sn) = (self.ropes[r.table].0.ptr, self.ropes[r.table].1.ptr);
+            }
+            let (nx, m) = Self::next_linear(p, l, i, rows.1, head);
+            let pf = self.pf(nx, m, self.pf_kib[0], (a.d / 2) as u32);
+            self.ka.prep(s, &x, a.nq + if a.writes { a.nk } else { 0 }, pf)?;
+            self.mark("attention: preparation (norms, rotary, cache write)")?;
+        }
+        let mut x = a.args(k, p.d.eps);
+        (x.qo, x.out, x.kpos) = (p.slot(Slot::Qo), p.slot(Slot::Att), pos.1);
+        if let Some(g) = a.gate {
+            x.gate = p.slot(a.src) + (g.off * 2) as u64;
+        }
+        if let Some(rp) = self.pages12(p, a.ring) {
+            self.kv12_decode_at(a.ring, k, a.nq, x.qo, x.out, (tab, dup / rp.parts * t), 0)?;
+            self.ka.gate(s, &x)?;
+            return self.mark(if a.window > 0 { "attention (sliding, 12-bit pages)" } else { "attention (global, 12-bit pages)" });
+        }
+        (x.kc, x.vc, x.cap) = (kc, vc, self.ring_cap[a.ring] as i32);
+        if self.ldec.is_some() && std::ptr::eq(p, &self.big) && a.lib_decode() {
+            self.lib_decode_at(a, k, &x, (tab, dup / a.dparts() * t), 0)?;
+            self.ka.gate(s, &x)?;
+        } else {
+            // (the parts kernel, a block a row, each row's keys through its own table; its merge gates)
+            (x.tab, x.tstride, x.part) = (tab, (dup * t) as i64, self.part.ptr);
+            self.dcalls.set(self.dcalls.get() + 1);
+            self.ka.decode(s, &x)?;
+        }
+        self.mark(if a.window > 0 { "attention (sliding)" } else { "attention (global)" })
     }
 
     /// The preparation: the queries into Qo, the keys and values into the ring (or a 12-bit ring's staging rows, then its pages).
@@ -630,6 +700,7 @@ impl Dyn {
                 Some(v) if self.verifying.get() && n > 1 => v.ptr,
                 _ => self.part.ptr,
             };
+            self.dcalls.set(self.dcalls.get() + 1);
             self.ka.decode(s, &x)?;
         } else {
             self.ka.prompt(&self.lib, s, &x, self.start.get())?;
@@ -779,6 +850,7 @@ pub fn check() -> Result<bool> {
             } else {
                 &["a prompt's rows on the tensor cores", "a prompt's rows, a warp a head", "each row a decode step"]
             };
+            let mut alone: Vec<(&str, Vec<u16>)> = Vec::new();
             for &how in hows {
                 let out = Buf::zeroed(n * nq * d * 2)?;
                 let x = AttnArgs { out: out.ptr, ..a };
@@ -817,6 +889,62 @@ pub fn check() -> Result<bool> {
                     if pass { "ok  " } else { "FAIL" },
                     if pages { ", the keys in pages" } else { "" },
                     got.len()
+                );
+                alone.push((how, got));
+            }
+            if !pages {
+                continue;
+            }
+            // (each row through a table of its own, as a step's rows of several sequences take theirs (`Dyn::attn_lead`, rows::RowTabs): the one table copied twice a row, found at
+            // a stride; the last row a padding row (position -1). The other rows' bits are the decode's above, the padding row's zeros.)
+            let rows_tab: Vec<i32> = (0..2 * n).flat_map(|_| tab.iter().copied()).collect();
+            let mut kp: Vec<i32> = (0..n).map(|t| (p0 + t) as i32).collect();
+            kp[n - 1] = -1;
+            let (lens_p, firsts_p): (Vec<i32>, Vec<i32>) =
+                lens.iter().zip(&firsts).enumerate().map(|(i, (&l, &f))| if i / sp == n - 1 { (0, 0) } else { (l, f) }).unzip();
+            let (rtb, kpb, lpb, fpb) = (Buf::new(4 * rows_tab.len())?, Buf::new(4 * n)?, Buf::new(4 * lens_p.len())?, Buf::new(4 * firsts_p.len())?);
+            rtb.write(0, &rows_tab)?;
+            kpb.write(0, &kp)?;
+            lpb.write(0, &lens_p)?;
+            fpb.write(0, &firsts_p)?;
+            for (how, base) in &alone {
+                let library = *how == "each row a decode step of the library's";
+                if !library && *how != "each row a decode step" {
+                    continue;
+                }
+                let out = Buf::zeroed(n * nq * d * 2)?;
+                let x = AttnArgs { out: out.ptr, tab: rtb.ptr, tstride: (2 * nb) as i64, kpos: kpb.ptr, ..a };
+                // SAFETY: as above.
+                unsafe {
+                    if library {
+                        let stride = (nq * d / sp) as i64;
+                        lib.kv_decode_bf16(
+                            x.qo,
+                            stride,
+                            (x.kc, x.vc, rtb.ptr, (2 / sp * nb) as i64, x.cap as i64),
+                            (lpb.ptr, fpb.ptr, (n * sp) as i64, splits),
+                            (nk as i64, (g / sp) as i64, d as i64),
+                            (scale as f64, sbf16),
+                            x.out,
+                            stride,
+                            (ws.ptr, ws_bytes),
+                            dev.stream,
+                        )?;
+                        k.gate(dev.stream, &x)?
+                    } else {
+                        k.decode(dev.stream, &x)?
+                    }
+                }
+                dev.sync()?;
+                let mut got = vec![0u16; n * nq * d];
+                out.read(0, &mut got)?;
+                let w = (n - 1) * nq * d;
+                let (differ, pad) = (got[..w].iter().zip(&base[..w]).filter(|(x, y)| x != y).count(), got[w..].iter().filter(|&&v| v & 0x7FFF != 0).count());
+                let pass = differ == 0 && pad == 0;
+                ok &= pass;
+                println!(
+                    "{} {what}: {how}, each row through its own table, the last a padding row: {differ} values not the bits above, {pad} of the padding row's not zero",
+                    if pass { "ok  " } else { "FAIL" }
                 );
             }
         }
@@ -1016,9 +1144,10 @@ mod tests {
         assert!(AttnOp::of(&wide, Slot::Mix, 0, Some(0), Some((2, 3))).is_err());
     }
 
-    /// kernels/attn.cu's AttnArgs: 14 pointers, 21 ints, 5 floats, no padding.
+    /// kernels/attn.cu's AttnArgs: 14 pointers and a long long, 21 ints, 5 floats, no padding.
     #[test]
     fn the_arguments_are_the_kernels_struct() {
-        assert_eq!(std::mem::size_of::<AttnArgs>(), 14 * 8 + 26 * 4);
+        assert_eq!(std::mem::size_of::<AttnArgs>(), 15 * 8 + 26 * 4);
+        assert_eq!(std::mem::offset_of!(AttnArgs, tstride), 14 * 8);
     }
 }
