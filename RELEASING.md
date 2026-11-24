@@ -21,6 +21,9 @@ bird: penguin, kestrel, swift, wren, hummingbird.
 - [ ] Each model card's first screen: what the quant is (bits per weight, lossless or not, against what), quality against the
       original (KLD + one non-saturated eval), speed on 2-3 common cards with the machine named, known limits, how-it-works link.
 - [ ] Numbers in the notes and cards match research/*/results/ (no number without a results file).
+- [ ] Every lossy pack in the release has a quality card that says publish (`quality.json` in the pack; docs/quality.md); `ship` will not upload one without it.
+- [ ] Consumer benchmarks: `scripts/consumer_bench.sh` on each owned GPU's tier (or the `Consumer bench` workflow), the results and page in
+      `benchmarks/consumer/vX.Y.Z/`; the 1x H100 occupancy check held to the last one (benchmarks/consumer/README.md).
 - [ ] Binaries built on Ubuntu 22.04 (glibc 2.35 or older), sha256 written down.
 - [ ] Clean-install check on a fresh machine: `pip install glyd==X.Y.Z`, `glyd run` each new model, `glyd verify` it.
 - [ ] Plain style everywhere (first person, raw numbers, no adjectives, no comparisons with other projects).

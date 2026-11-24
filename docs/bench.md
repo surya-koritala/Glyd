@@ -22,6 +22,7 @@ Each request is a streamed chat completion at temperature 0 with `--max-tokens` 
 | `arrive` | 8 requests one after another: short prompts 100 ms apart, 1k 250 ms apart, 4k 500 ms apart. The later prompts come in while the earlier replies are being written |
 | `chat` | conversations of 4 turns that begin with a 1k and a 4k prompt, 1 and 8 of them at once: each later turn resends the conversation and adds a question |
 | `shared` | 8 requests 250 ms apart whose 1k or 4k of notes are the same and whose questions differ (`same1k`, `same4k`), and 8 conversations of 4 turns that begin with the same 4k (`same4k*4`): what a server shares of a start it has run |
+| `occupancy` | short at 1, 8, 32 and 64 at once (`--users 64`): one-token and batched decode as shares of the ceiling, the datacenter occupancy check of P20 (benchmarks/consumer/README.md) |
 
 `--loads short:1,4k:8` names loads by hand. `4k+250ms:8` is 8 requests of 4k prompts, each begun 250 ms after the one before, not all at once: what a server does when a prompt comes in
 while it is writing other replies shows in that load's first-token time and in the 99th percentile of the gaps between tokens (a reply that stops while a prompt runs has a long gap). Such a load has
@@ -39,6 +40,21 @@ is the median over the requests of the round; each file keeps, for each figure, 
 
 The peak GPU memory is sampled every 100 ms from `nvidia-smi` while everything runs. Before the server starts the harness looks at the GPU five times 0.3 s apart: if its median utilization is past 10% or
 more than 2,500 MiB are in use, the result says `contention.busy_before: true` and the gate will not decide on it.
+
+## Engines side by side: `--report`
+
+A result says which engine served it and what a comparison groups it by: `--engine NAME` (`glyd` for the server the bench starts), `--source REPO` (the
+Hub repo whose weights the server runs; the bench's own model without its tag by default), `--bits B` (bits a weight; a Glyd level's by default) and
+`--params B` (parameters, in billions), kept under `server.engine` and `model.source`, `model.bits`, `model.params_b`.
+
+```bash
+glyd-engine bench --report DIR [--title TEXT] > DIR/README.md
+```
+
+reads every result under DIR and writes the comparison page as Markdown: per GPU and its tier (8, 12, 16, 24 or 32 GB), each engine's largest model
+(by `params_b`) whose decode one user at a time on a short prompt is 20 tokens/s or more with no failed request, then each model's results side by
+side (the most bits first) with the files beside each (`NAME.cmd`, `NAME.log`) and the sides that did not run (`NAME.skip`). `scripts/consumer_bench.sh`
+makes such a directory for a release (benchmarks/consumer/README.md).
 
 ## Where the time goes: `GLYD_PROF=1`
 
@@ -63,7 +79,7 @@ counted in the next operation that has one.
 ## The ceiling
 
 `pct_of_ceiling` of a load is its decode tokens/s a user over the ceiling: the memory's bandwidth over the weights' bytes a token. The bandwidth is the spec sheet's for the GPU's name (`bench::spec_bandwidth`:
-736 GB/s for an RTX 4080 SUPER; `--bandwidth-gbs` for any other) and the bytes are what the server says it holds (`/v1/glyd/info`, `memory.weights_bytes`) or `--weights-gib` (Gemma 4 12B at the wren
+736 GB/s for an RTX 4080 SUPER, 3,352 for an H100 SXM; `--bandwidth-gbs` for any other) and the bytes are what the server says it holds (`/v1/glyd/info`, `memory.weights_bytes`) or `--weights-gib` (Gemma 4 12B at the wren
 level in the engine: 6.3 GiB, a ceiling of 108.8 tokens/s on the RTX 4080 SUPER). KV reads are not counted, so a long prompt's share is lower than its ceiling would make it. The engine drafts for
 Gemma 4 (speculative decoding, 8 tokens a round), which can pass the ceiling: `--no-draft` starts the server without it, and the gate's results are taken that way.
 
@@ -72,10 +88,10 @@ Gemma 4 (speculative decoding, 8 tokens a round), which can pass the ceiling: `-
 ```text
 schema, label, recorded_unix
 machine      gpu, driver, memory_mib, max_sm_mhz, max_mem_mhz, power_limit_w, compute_capability, cpu, cpu_threads, os, arch
-model        id, argument, level, weights_bytes, weights_source
+model        id, argument, level, weights_bytes, weights_source, source, bits, params_b
 bandwidth    gbs, source
 versions     glyd_engine, git, server
-server       against (the URL, or null), started_by_bench
+server       against (the URL, or null), engine, started_by_bench
 config       suite, loads, runs, warmup, max_tokens
 contention   busy_before, utilization_median_pct, before, after (memory, utilization, clocks, the computer's load)
 idle_mib, peak_mib
