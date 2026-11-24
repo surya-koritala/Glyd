@@ -26,7 +26,7 @@ pub const SCHEMA: &str = "glyd-bench/1";
 
 // ---- the fixed workload
 
-const WORDS: &str = "river stone market letter garden window engine paper silver winter harbor signal ladder copper meadow lantern bridge orchard compass thunder village canvas anchor forest \
+pub(crate) const WORDS: &str = "river stone market letter garden window engine paper silver winter harbor signal ladder copper meadow lantern bridge orchard compass thunder village canvas anchor forest \
 ribbon quartz pepper violet cabin marble kettle falcon summit harvest tunnel mirror saddle velvet crystal ember plains lagoon pigeon ceiling puzzle bottle shadow carpet planet button candle valley hammer \
 island jacket cotton rocket temple orange basket";
 
@@ -41,10 +41,10 @@ const TOPICS: [&str; 8] = [
     "how a bicycle stays upright",
 ];
 
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
-    fn next(&mut self) -> u64 {
+    pub(crate) fn next(&mut self) -> u64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
         self.0 ^= self.0 << 17;
@@ -53,7 +53,7 @@ impl Rng {
 }
 
 /// The tokens a prompt kind is about (None: a short question). `same4k` is the 4k prompt whose notes are the same in every request (`prompt`).
-fn kind_tokens(kind: &str) -> Result<Option<usize>> {
+pub(crate) fn kind_tokens(kind: &str) -> Result<Option<usize>> {
     Ok(match kind.strip_prefix("same").filter(|k| *k != "short").unwrap_or(kind) {
         "short" => None,
         "1k" => Some(1024),
@@ -162,7 +162,7 @@ struct Req {
     error: Option<String>,
 }
 
-fn agent() -> ureq::Agent {
+pub(crate) fn agent() -> ureq::Agent {
     ureq::Agent::new_with_config(ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(1800))).build())
 }
 
@@ -381,7 +381,51 @@ pub fn spec_bandwidth(name: &str, memory_mib: f64) -> Option<f64> {
     } else if has("5090") {
         1792.0
     } else if has("3090") {
-        936.0
+        if has("TI") {
+            1008.0
+        } else {
+            936.0
+        }
+    // (the consumer cards of P20's tiers, 8 to 32 GB: a name's more specific words first)
+    } else if pair("4070", "TI") && has("SUPER") {
+        672.0
+    } else if has("4070") {
+        504.2
+    } else if has("4060") {
+        if has("TI") {
+            288.0
+        } else {
+            272.0
+        }
+    } else if has("5080") {
+        960.0
+    } else if has("5070") {
+        if has("TI") {
+            896.0
+        } else {
+            672.0
+        }
+    } else if pair("5060", "TI") || pair("3060", "TI") || has("3070") || has("A4000") {
+        448.0
+    } else if has("3060") {
+        360.0
+    } else if has("3080") {
+        if memory_mib > 11_000.0 {
+            912.0
+        } else {
+            760.0
+        }
+    // (the datacenter cards of the occupancy check: H100 SXM's HBM3, PCIe's HBM2e, NVL's 94 GB; H200's HBM3e)
+    } else if has("H200") {
+        4800.0
+    } else if has("H100") {
+        if has("PCIE") {
+            2039.0
+        } else if has("NVL") {
+            3938.0
+        } else {
+            3352.0
+        }
     } else if has("L40S") {
         864.0
     } else if has("L4") {
@@ -399,7 +443,7 @@ pub fn spec_bandwidth(name: &str, memory_mib: f64) -> Option<f64> {
     })
 }
 
-fn machine() -> Value {
+pub(crate) fn machine() -> Value {
     let q = smi("name,driver_version,memory.total,clocks.max.sm,clocks.max.memory,power.limit,compute_cap").unwrap_or_default();
     let f: Vec<&str> = q.split(',').map(str::trim).collect();
     let get = |i: usize| f.get(i).copied().unwrap_or("");
@@ -453,9 +497,9 @@ impl Peak {
 
 // ---- the server
 
-struct Server {
+pub(crate) struct Server {
     child: Child,
-    url: String,
+    pub(crate) url: String,
     /// The directory of this run's server log (private to this run, removed with the server).
     dir: std::path::PathBuf,
 }
@@ -549,7 +593,7 @@ fn free_port() -> Result<u16> {
 }
 
 /// `serve MODEL` of this program on a port of its own, up when /v1/models answers (the first start downloads and packs the model).
-fn start_server(model: &str, a: &Args, users: usize) -> Result<Server> {
+pub(crate) fn start_server(model: &str, a: &Args, users: usize) -> Result<Server> {
     let port = match a.flag("port") {
         Some(p) => p.parse::<u16>().map_err(|_| Error(format!("--port {p}: not a port")))?,
         None => free_port()?,
@@ -600,14 +644,14 @@ fn start_server(model: &str, a: &Args, users: usize) -> Result<Server> {
     }
 }
 
-fn get_json(url: &str) -> Option<Value> {
+pub(crate) fn get_json(url: &str) -> Option<Value> {
     let mut r = ureq::get(url).call().ok()?;
     serde_json::from_str(&r.body_mut().read_to_string().ok()?).ok()
 }
 
 // ---- the measurement
 
-fn git_sha() -> Option<String> {
+pub(crate) fn git_sha() -> Option<String> {
     std::env::var("GITHUB_SHA").ok().map(|s| s.chars().take(10).collect()).or_else(|| {
         Command::new("git")
             .args(["rev-parse", "--short=10", "HEAD"])
@@ -844,7 +888,7 @@ pub fn last_number(text: &str) -> Option<String> {
     best
 }
 
-fn same_number(a: &str, b: &str) -> bool {
+pub(crate) fn same_number(a: &str, b: &str) -> bool {
     match (a.parse::<f64>(), b.parse::<f64>()) {
         (Ok(x), Ok(y)) => (x - y).abs() < 1e-6,
         _ => a == b,
@@ -874,16 +918,8 @@ fn gsm8k(agent: &ureq::Agent, url: &str, model: &str, n: usize) -> Value {
             s.spawn(|| loop {
                 let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let Some((q, want)) = problems.get(i) else { break };
-                let body = json!({"model": model, "messages": [{"role": "user", "content": format!("{q}\nThink step by step, then end with the final answer as a number alone on the last line.")}],
-                    "max_tokens": 768, "temperature": 0, "stream": false, "chat_template_kwargs": {"enable_thinking": false}});
-                let reply = agent
-                    .post(&format!("{url}/v1/chat/completions"))
-                    .header("Content-Type", "application/json")
-                    .send(body.to_string())
-                    .ok()
-                    .and_then(|mut r| r.body_mut().read_to_string().ok())
-                    .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-                    .and_then(|v| v["choices"][0]["message"]["content"].as_str().map(str::to_string));
+                let reply =
+                    ask(agent, url, model, &format!("{q}\nThink step by step, then end with the final answer as a number alone on the last line."), 768);
                 done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if reply.and_then(|t| last_number(&t)).is_some_and(|got| same_number(&got, want)) {
                     correct.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -893,6 +929,20 @@ fn gsm8k(agent: &ureq::Agent, url: &str, model: &str, n: usize) -> Value {
     });
     let (c, d) = (correct.into_inner(), done.into_inner());
     json!({"source": "openai/gsm8k test, first problems", "problems": d, "correct": c, "accuracy": if d > 0 { c as f64 / d as f64 } else { f64::NAN }})
+}
+
+/// One chat completion at temperature 0, thinking off, not streamed: the reply's text (None where the request failed).
+pub(crate) fn ask(agent: &ureq::Agent, url: &str, model: &str, content: &str, max_tokens: usize) -> Option<String> {
+    let body = json!({"model": model, "messages": [{"role": "user", "content": content}], "max_tokens": max_tokens, "temperature": 0, "stream": false,
+        "chat_template_kwargs": {"enable_thinking": false}});
+    agent
+        .post(&format!("{url}/v1/chat/completions"))
+        .header("Content-Type", "application/json")
+        .send(body.to_string())
+        .ok()
+        .and_then(|mut r| r.body_mut().read_to_string().ok())
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v["choices"][0]["message"]["content"].as_str().map(str::to_string))
 }
 
 // ---- quality: the next token after fixed prefixes of one text
@@ -916,25 +966,53 @@ const TOP: usize = 20;
 
 /// Each prefix of PASSAGE as a raw completion of one token at temperature 0, its top 20 log-probabilities: rows of [token, logprob] pairs. A prefix that fails is an empty row.
 fn next_token_rows(agent: &ureq::Agent, url: &str, model: &str) -> Value {
-    let words: Vec<&str> = PASSAGE.split_whitespace().collect();
-    let first = 24usize.min(words.len());
-    let step = (words.len() - first) / (PREFIXES - 1);
-    let mut rows = Vec::new();
-    for i in 0..PREFIXES {
-        let n = (first + i * step).min(words.len());
-        let body = json!({"model": model, "prompt": words[..n].join(" "), "max_tokens": 1, "temperature": 0, "logprobs": TOP});
-        let pairs: Vec<Value> = agent
-            .post(&format!("{url}/v1/completions"))
-            .header("Content-Type", "application/json")
-            .send(body.to_string())
-            .ok()
-            .and_then(|mut r| r.body_mut().read_to_string().ok())
-            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-            .and_then(|v| v["choices"][0]["logprobs"]["top_logprobs"][0].as_object().map(|o| o.iter().map(|(k, x)| json!([k, x])).collect()))
-            .unwrap_or_default();
-        rows.push(Value::Array(pairs));
+    next_token_rows_of(agent, url, model, PASSAGE, PREFIXES)
+}
+
+/// The `count` prefixes of `text` the next-token rows are taken after: the first 24 words, then growing by the same number of words to (about) the whole
+/// text, each cut where a word ends, so that the text's own spaces and line breaks are kept (a program's lines stay lines). The first prefix's words and the step.
+pub(crate) fn prefixes(text: &str, count: usize) -> (Vec<&str>, usize, usize) {
+    let ends: Vec<usize> = text
+        .char_indices()
+        .filter(|&(i, c)| !c.is_whitespace() && text[i + c.len_utf8()..].chars().next().is_none_or(char::is_whitespace))
+        .map(|(i, c)| i + c.len_utf8())
+        .collect();
+    let first = 24usize.min(ends.len());
+    let step = (ends.len() - first) / count.saturating_sub(1).max(1);
+    let cuts = (0..count).map(|i| (first + i * step).min(ends.len())).filter(|&n| n > 0).map(|n| &text[..ends[n - 1]]).collect();
+    (cuts, first, step)
+}
+
+/// The likeliest tokens of a completion's first token, as [token, logprob] pairs, in either shape servers give them: the legacy completions API's object of text to log-probability (vLLM, SGLang,
+/// this engine: `logprobs.top_logprobs[0]`), or the chat API's list (llama.cpp's `logprobs.content[0].top_logprobs`, `[{token, logprob}]`).
+pub(crate) fn first_top(v: &Value) -> Option<Vec<Value>> {
+    let lp = &v["choices"][0]["logprobs"];
+    if let Some(o) = lp["top_logprobs"][0].as_object() {
+        return Some(o.iter().map(|(k, x)| json!([k, x])).collect());
     }
-    json!({"prefixes": PREFIXES, "top": TOP, "words_first": first, "words_step": step, "rows": rows})
+    lp["content"][0]["top_logprobs"].as_array().map(|a| a.iter().filter_map(|e| Some(json!([e["token"].as_str()?, e["logprob"].as_f64()?]))).collect())
+}
+
+/// Each of `count` prefixes of `text` (`prefixes`) as a raw completion of one token at temperature 0, its top 20 log-probabilities: rows of [token, logprob] pairs. A prefix that fails is an empty row.
+pub(crate) fn next_token_rows_of(agent: &ureq::Agent, url: &str, model: &str, text: &str, count: usize) -> Value {
+    let (cuts, first, step) = prefixes(text, count);
+    let rows: Vec<Value> = cuts
+        .iter()
+        .map(|p| {
+            let body = json!({"model": model, "prompt": p, "max_tokens": 1, "temperature": 0, "logprobs": TOP});
+            let pairs = agent
+                .post(&format!("{url}/v1/completions"))
+                .header("Content-Type", "application/json")
+                .send(body.to_string())
+                .ok()
+                .and_then(|mut r| r.body_mut().read_to_string().ok())
+                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                .and_then(|v| first_top(&v))
+                .unwrap_or_default();
+            Value::Array(pairs)
+        })
+        .collect();
+    json!({"prefixes": rows.len(), "top": TOP, "words_first": first, "words_step": step, "rows": rows})
 }
 
 /// KL(reference || candidate) over the reference's top tokens and the rest as one bin, for one prefix; the candidate's probability of a token it did not list is its smallest listed one.
@@ -1571,6 +1649,18 @@ mod tests {
         assert_eq!(gpu_word("NVIDIA A100-SXM4-80GB"), "A100");
         assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 4080 SUPER", 16376.0), Some(736.0));
         assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 4080", 16376.0), Some(716.8));
+        // the occupancy check's datacenter cards and the consumer tiers' (a name's longer form before its shorter)
+        assert_eq!(spec_bandwidth("NVIDIA H100 80GB HBM3", 81559.0), Some(3352.0));
+        assert_eq!(spec_bandwidth("NVIDIA H100 PCIe", 81559.0), Some(2039.0));
+        assert_eq!(spec_bandwidth("NVIDIA H100 NVL", 95830.0), Some(3938.0));
+        assert_eq!(spec_bandwidth("NVIDIA H200", 143771.0), Some(4800.0));
+        assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 4070 Ti SUPER", 16376.0), Some(672.0));
+        assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 4070 SUPER", 12282.0), Some(504.2));
+        assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 4060 Ti", 8188.0), Some(288.0));
+        assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 3060 Ti", 8192.0), Some(448.0));
+        assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 3060", 12288.0), Some(360.0));
+        assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 5070 Ti", 16303.0), Some(896.0));
+        assert_eq!(spec_bandwidth("NVIDIA RTX A4000", 16376.0), Some(448.0));
     }
 
     #[test]

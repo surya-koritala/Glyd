@@ -143,6 +143,8 @@ pub mod packcheck;
 pub mod pixels;
 pub mod plan;
 pub mod plancheck;
+/// The quality bar of the lossy levels: the suite, the cards, publish or refuse (R14, docs/quality.md).
+pub mod quality;
 pub mod qwen35;
 #[cfg(feature = "dev")]
 pub mod qwen35_ref;
