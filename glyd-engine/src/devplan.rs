@@ -8,6 +8,20 @@
 //!
 //! The store keeps its own plan (`LayerCache`) for the calls it plans on the host (a prompt's chunks): before such a call the GPU's table is read into it, after it the places are written back
 //! (`ExpertStore::run_early_at`).
+//!
+//! Calling it (for a step queued ahead of the last one's end, #138, as for a graph):
+//! - Enable: `Offload::device` set on the store before its layers are added (`HbCaching::offload`; a development build's `--device-plan`); `ExpertStore::device_on(layer)` says which layers took
+//!   it (a host half of FP4 experts, every expert in the computer's memory), and `MoeLayer::reads_host` is false for a layer that did.
+//! - A call: `MoeLayer::via_store` (the MoE kind's; `MoeLayer::cached` and Kimi-K3's block call it), which asks `ExpertStore::device_args(layer, tokens, pairs)` and, where it gives `DevArgs`
+//!   (1 to `DEV_ROWS` rows), queues on the engine's stream alone: xp_plan, xp_fill (the copies), `early`, the products (`products(1)`), xp_fill (the promotions), xp_wait, xp_take, the
+//!   experts' sum. It reads the router's choices and weights (the scratch's `ids`, int64 [t k], and `wts`, fp32 [t k]) and z (bf16 [t, hidden]) on the device; it writes the pairs' places
+//!   (`way`, int64 [t k]), the layer's table and counters (`DevArgs::place_of` .. `meta`), the request (mapped host memory) and the host's sums (the scratch's `cpu`, fp32 [t, hidden]), and y.
+//!   No host call waits inside it and none reads the routing: the host's thread (`DevMail`) answers the request as the GPU posts it.
+//! - Between calls: nothing. Calls of one store follow each other on one stream (its request and answer are one each: two streams' calls at once would share them), so a step may be queued
+//!   before the last one has run. There is no event to wait on: the step's own end (the engine's synchronize before it reads the sample) is the only wait.
+//! - After a step has run (after that synchronize, never while a step is queued): `ExpertStore::end_step` reads the GPU's counters into the layers' `LayerStats` and writes the plan's next
+//!   settings (`Params`, from the costs measured so far; a synchronous write a queued step would race).
+//! - A call the host plans (more than `DEV_ROWS` rows: a prompt's chunk) synchronizes the stream itself first (`run_early_at`: the GPU's table read into the host's plan, written back after).
 
 use crate::dev::{Buf, Pinned};
 use crate::ffi::{err, Error, Result};
