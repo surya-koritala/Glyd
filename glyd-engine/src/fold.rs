@@ -2301,8 +2301,8 @@ fn kv_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<
 
 /// `foldcheck`'s grouped experts: 8 experts of 128 x 1024 in each layout the products take, a plan of random choices (2 a token) for 1 to 64 tokens, the
 /// products with no activation, SiLU and GELU, gathered and not, and weighted sums: by the library's kernels and by the engine's where the plan takes the
-/// step products (the prompt kernel and the wgmma route are the library's still), every bf16 compared. The expert cache's places (moe_placed) are
-/// tiercheck's (the GPU job). (compared, differences)
+/// step products (the prompt kernel and the wgmma route are the library's still), every bf16 compared; and the expert cache's places (moe_placed), the
+/// tiered stack cut per expert as the store cuts it. (compared, differences)
 #[cfg(feature = "dev")]
 fn moe_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
     use crate::dev::Buf;
@@ -2375,6 +2375,60 @@ fn moe_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec
                 if differ > 0 && bad.len() < 12 {
                     bad.push(format!("{what}: {differ} of {len} bf16 differ"));
                 }
+            }
+        }
+    }
+    // the expert cache's places: the tiered stack cut per expert (tiering::TieredPlaces: each place its blocks and entries), glyd_gpu_mma_moe_placed
+    let w: Vec<u16> =
+        (0..(e * o) as usize * kk).map(|_| (((next() >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 0.1).to_bits().wrapping_shr(16) as u16).collect();
+    let places = crate::tiering::TieredPlaces::of(&glyd_gpu::pack::pack_tiered(&w, (e * o) as usize, kk), e as usize)?;
+    let pb = upload_packed(crate::weights::Packed {
+        data: places.data.clone(),
+        b1: places.blocks.clone(),
+        b2: places.entries.clone(),
+        words: Words::Tiered { blocks: 0, block_base: 0, tiers: places.tiers },
+        rows: (e * o) as usize,
+        cols: kk,
+    })?;
+    for t in [1i64, 4, 17, 33, 64] {
+        let k = 2i64;
+        let ids: Vec<i64> = (0..t * k).map(|_| (next() % e as u64) as i64).collect();
+        let (idb, plan) = (Buf::new(8 * ids.len())?, Buf::new(4 * (2 + 2 * e + t * k) as usize)?);
+        idb.write(0, &ids)?;
+        // SAFETY: the ids and the plan's room; one stream.
+        unsafe { lib.library_moe_way(idb.ptr, t * k, e, plan.ptr, dev.stream)? };
+        for act in [0i64, 1] {
+            let ws_bytes = lib.library_moe_workspace(false, e, o, kk as i64, t, k, act, false)?.max(16);
+            let len = (t * k * if act != 0 { o / 2 } else { o }) as usize;
+            let units = (if act != 0 { o / 128 } else { o / 64 }) * e.min(t * k);
+            let (ws, da, db, ya, yb) =
+                (Buf::zeroed(ws_bytes)?, Buf::zeroed(4 * units as usize + 64)?, Buf::zeroed(4 * units as usize + 64)?, Buf::new(2 * len)?, Buf::new(2 * len)?);
+            ya.fill_async(0xA5, dev.stream)?;
+            yb.fill_async(0x5A, dev.stream)?;
+            let stride = places.stride as u64;
+            // SAFETY: the places, X, the plan, a workspace of the library's size, zeroed counters each, Y each; one stream.
+            let (ra, rb) = unsafe {
+                let ra = lib.library_moe_placed(&pb.pack, stride, e, xb.ptr, t, k, true, plan.ptr, act, 0, 0, ya.ptr, ws.ptr, ws_bytes, da.ptr, dev.stream);
+                dev.sync()?;
+                (ra, moe(&pb.pack, Some(stride as i64), e, (xb.ptr, t, k, true), (plan.ptr, act, 0, 0), yb.ptr, (ws.ptr, ws_bytes, db.ptr), dev.stream))
+            };
+            dev.sync()?;
+            n += 1;
+            let what = format!("the expert cache's places, {t} tokens, act {act}");
+            match (&ra, &rb) {
+                (Err(x), _) | (_, Err(x)) => {
+                    bad.push(format!("{what}: {x}"));
+                    continue;
+                }
+                (_, Ok(false)) => continue,
+                _ => folded += 1,
+            }
+            let (mut va, mut vb) = (vec![0u16; len], vec![0u16; len]);
+            ya.read(0, &mut va)?;
+            yb.read(0, &mut vb)?;
+            let differ = va.iter().zip(&vb).filter(|(p, q)| p != q).count();
+            if differ > 0 {
+                bad.push(format!("{what}: {differ} of {len} bf16 differ"));
             }
         }
     }
