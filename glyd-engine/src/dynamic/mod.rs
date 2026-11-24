@@ -933,6 +933,11 @@ pub struct Dyn {
     draws: bool,
     /// The 12-bit pages' status as the lane of the step landed last copied it (src/dynamic/kvpages.rs `kv12_lost` reads it once); None: the GPU's own.
     status_from: Option<*const u32>,
+    /// The grammar masks of the next step's sampled rows (`ModelStep::masks`), put on the rows before their candidates' top-k (`masker`), and the room for a row's sum of
+    /// exponentials (`ModelStep::mass`).
+    row_masks: Vec<Option<crate::constrain::MaskHandle>>,
+    masker: Option<crate::kern::MaskGpu>,
+    sums: Option<Buf>,
 }
 
 /// A sequence's own buffers and place, while another is selected (`Dyn::select`): its keys and values, its states, its position, the verify pass it can go back
@@ -1294,6 +1299,9 @@ impl Dyn {
             gaps: None,
             draws: false,
             status_from: None,
+            row_masks: Vec::new(),
+            masker: None,
+            sums: None,
         };
         // (a group of GPUs: every one's engine made before any one's first pass, src/dynamic/tp.rs)
         if let Some(c) = tp::comm() {

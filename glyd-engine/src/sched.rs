@@ -300,6 +300,11 @@ pub trait ModelStep {
     fn top(&mut self, _row: usize) -> Option<Vec<(u32, f32)>> {
         None
     }
+    /// The sum over row `row`'s logits of exp((logit - largest) / temperature), made where the logits are (a top-p over the whole row with no top-k; at temperature 1,
+    /// the row's log-sum-exp for log-probabilities). None: the backend has none, the logits are read.
+    fn mass(&mut self, _row: usize, _temperature: f32) -> Option<f64> {
+        None
+    }
     /// Row `row`'s logits at `tokens` (those in the vocabulary, with them): what a draw from the candidates needs where penalties, a bias or suppressed tokens
     /// change those tokens' logits (`Sampler::sample_adjusted`). By default from the whole row; a GPU backend reads those tokens alone.
     fn gather(&mut self, row: usize, tokens: &[u32]) -> Result<Vec<(u32, f32)>> {
@@ -519,6 +524,9 @@ impl ModelStep for &mut dyn ModelStep {
     }
     fn top(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
         (**self).top(row)
+    }
+    fn mass(&mut self, row: usize, temperature: f32) -> Option<f64> {
+        (**self).mass(row, temperature)
     }
     fn gather(&mut self, row: usize, tokens: &[u32]) -> Result<Vec<(u32, f32)>> {
         (**self).gather(row, tokens)
@@ -1690,29 +1698,54 @@ impl<B: ModelStep> Sched<B> {
         Ok(())
     }
 
-    /// The token the sample after row `row` of the step stands for: the largest logit, or a draw from the logits as the request's sampling says; with it, its log-probabilities where the request asks for them
-    /// (from the whole row: the draw may have looked at the largest 64 alone, the log-sum-exp is of all).
+    /// The token the sample after row `row` of the step stands for: the largest logit, or a draw from the logits as the request's sampling says; with it, its log-probabilities where the request asks for them.
+    /// Both from what the step makes on the GPU where that holds them: the row's largest logits (a top-k within them; penalties, a bias or suppressed tokens put on them and on those tokens' own logits;
+    /// a grammar's mask put on the row before them), the sum of its exponentials (a top-p with no top-k; at temperature 1 the log-sum-exp the log-probabilities take); the whole row is read only where they do not.
     fn pick(&mut self, i: usize, sample: Sample, row: usize) -> Result<(u32, Option<Lp>)> {
         let want = self.active[i].reply.logprobs;
         if self.active[i].greedy && want.is_none() {
             return Ok((sample.token, None));
         }
-        // the row's largest logits come with the step: where they are all the sampler looks at (a top-k within them, no penalties, no bias) the logits are not copied to the host, unless log-probabilities are asked for
         let top = self.be.top(row);
-        if want.is_none() {
-            if let Some(t) = top.as_deref().and_then(|c| self.active[i].sampler.sample_top(c, None)) {
-                return Ok((t, None));
-            }
+        let mut tok = self.active[i].greedy.then_some(sample.token);
+        if let (None, Some(c)) = (tok, top.as_deref()) {
+            let mass = match self.active[i].sampler.top_need() {
+                Some(n) if n.mass => self.be.mass(row, n.temperature),
+                _ => None,
+            };
+            tok = self.active[i].sampler.sample_top(c, mass);
             // (penalties, a bias or suppressed tokens: the candidates and those tokens' own logits, changed as the whole row's would be, where that shows the draw)
-            if let (Some(c), Some(ts)) = (top.as_deref(), self.active[i].sampler.adjusts()) {
+            if let (None, Some(ts)) = (tok, self.active[i].sampler.adjusts()) {
                 let raw = self.be.gather(row, &ts)?;
-                if let Some(t) = self.active[i].sampler.sample_adjusted(c, &raw) {
-                    return Ok((t, None));
-                }
+                tok = self.active[i].sampler.sample_adjusted(c, &raw);
             }
         }
+        // (log-probabilities: the token's logit and the k likeliest from the candidates, the log-sum-exp from the row's sum at temperature 1 about its largest logit, the first's; not where a
+        // grammar's mask made the candidates, which are then the allowed tokens', not the row's likeliest)
+        let lp = match (want, tok, top.as_deref()) {
+            (Some(k), Some(t), Some(c)) if k <= c.len() && self.active[i].sampler.mask_handle().is_none() => {
+                let x = match c.iter().find(|x| x.0 == t) {
+                    Some(x) => Some(x.1),
+                    None => self.be.gather(row, &[t])?.first().map(|x| x.1),
+                };
+                match (x, self.be.mass(row, 1.0)) {
+                    (Some(x), Some(m)) if m > 0.0 => {
+                        let lse = c[0].1 as f64 + m.ln();
+                        Some(Lp { token: t, logprob: x as f64 - lse, top: c[..k].iter().map(|&(u, y)| (u, y as f64 - lse)).collect() })
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if let Some(t) = tok.filter(|_| want.is_none() || lp.is_some()) {
+            return Ok((t, lp));
+        }
         let logits = self.be.logits(row)?;
-        let tok = if self.active[i].greedy { sample.token } else { self.active[i].sampler.sample(&logits) };
+        let tok = match tok {
+            Some(t) => t,
+            None => self.active[i].sampler.sample(&logits),
+        };
         Ok((tok, want.map(|k| logprobs_of(&logits, tok, k, top.as_deref()))))
     }
 
@@ -2404,6 +2437,12 @@ pub(crate) mod tests {
             let r = self.rows.get(row).ok_or_else(|| crate::ffi::Error("no logits".into()))?;
             Ok(tokens.iter().filter_map(|&t| r.get(t as usize).map(|&x| (t, x))).collect())
         }
+        // (as a GPU's sum of the row, where it has candidates)
+        fn mass(&mut self, row: usize, temperature: f32) -> Option<f64> {
+            let r = self.rows.get(row).filter(|_| self.gpu_top)?;
+            let max = r.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
+            Some(r.iter().map(|&x| ((x as f64 - max) / temperature as f64).exp()).sum())
+        }
         fn release(&mut self, pages: &[i32]) -> Result<()> {
             self.released += pages.len();
             for &p in pages {
@@ -2493,6 +2532,51 @@ pub(crate) mod tests {
             }
             assert!(s.be.batches > 0, "no pass took more than one prompt ({pages} pages, chunk {chunk}, {batch} to a pass)");
         }
+    }
+
+    /// #138: a draw and its log-probabilities from what the GPU makes, never the whole row (the fake counts its reads): a top-k draw from the candidates, a top-p over the
+    /// whole row with no top-k from the candidates and the row's sum of exponentials, and log-probabilities from the candidates and the row's log-sum-exp, the same as the
+    /// whole row gives them; where the backend has no candidates the row is read.
+    #[test]
+    fn draws_and_log_probabilities_read_no_row_where_the_gpu_makes_them() {
+        let asks = [
+            Reply { logprobs: Some(3), ..reply(6) },
+            Reply { params: Params { temperature: 0.7, top_k: 5, seed: 3, ..Params::default() }, logprobs: Some(2), ..reply(6) },
+            Reply { params: Params { temperature: 0.9, top_p: 0.9, seed: 5, ..Params::default() }, ..reply(6) },
+        ];
+        let run_with = |gpu_top: bool| {
+            let mut be = Fake::new(64, 32);
+            be.gpu_top = gpu_top;
+            let mut s = Sched::new(be, 4);
+            let rx: Vec<_> = asks.iter().enumerate().map(|(k, r)| add_reply(&mut s, prompt(k as u32 + 1, 9), r.clone())).collect();
+            run(&mut s);
+            let got: Vec<(Vec<u32>, Vec<(u32, f64, Vec<(u32, f64)>)>)> = rx
+                .iter()
+                .map(|r| {
+                    let (mut toks, mut lps) = (Vec::new(), Vec::new());
+                    loop {
+                        match r.recv().unwrap() {
+                            Ev::Token(t) => toks.push(t),
+                            Ev::Lp(l) => lps.push((l.token, l.logprob, l.top)),
+                            Ev::End(_) => return (toks, lps),
+                        }
+                    }
+                })
+                .collect();
+            (got, s.be.logit_reads)
+        };
+        let ((on, reads_on), (off, reads_off)) = (run_with(true), run_with(false));
+        assert_eq!(reads_on, 0, "a row read where the candidates and the sums hold the draw");
+        assert!(reads_off > 0);
+        for ((a, la), (b, lb)) in on.iter().zip(&off) {
+            assert_eq!(a, b, "the tokens drawn");
+            assert_eq!(la.len(), lb.len());
+            for (x, y) in la.iter().zip(lb) {
+                assert_eq!((x.0, x.2.iter().map(|t| t.0).collect::<Vec<_>>()), (y.0, y.2.iter().map(|t| t.0).collect::<Vec<_>>()));
+                assert!((x.1 - y.1).abs() < 1e-9 && x.2.iter().zip(&y.2).all(|(p, q)| (p.1 - q.1).abs() < 1e-9), "{x:?} {y:?}");
+            }
+        }
+        assert!(on[0].1.len() == 6 && on[1].1.len() == 6 && on[2].1.is_empty());
     }
 
     /// A round that is one step (`ModelStep::one_step`): every sequence gives the tokens it gives alone, whatever the mix of lengths, a shared start, sampling from the logits' rows and a pool

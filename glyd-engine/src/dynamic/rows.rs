@@ -1137,16 +1137,53 @@ impl Dyn {
         if self.cands.bufs.as_ref().is_none_or(|b| b.3 < cap) {
             self.cands.bufs = Some((Buf::new(4 * TOPK * cap)?, Buf::new(4 * TOPK * cap)?, crate::dev::Pinned::new(8 * TOPK * cap)?, cap));
         }
-        let (tok, val, host, cap) = self.cands.bufs.as_ref().expect("made above");
-        let (s, h) = (self.dev.stream, host.ptr as *mut u8);
+        let (tok, val, host, cap) = self.cands.bufs.as_ref().map(|b| (b.0.ptr, b.1.ptr, b.2.ptr as *mut u8, b.3)).expect("made above");
+        let s = self.dev.stream;
+        // (the grammar masks of the step's sampled rows, given before it: the candidates of those rows made again with the mask put on the row before the top-k)
+        let masks = std::mem::take(&mut self.row_masks);
+        if masks.iter().any(Option::is_some) && self.masker.is_none() {
+            self.masker = crate::kern::MaskGpu::new(v, cap).ok();
+        }
         // SAFETY: the pass's head rows of v logits each (n of them, within the head's room); TOPK of each to the buffers made for `cap` rows; the pinned room holds the
-        // tokens, then from 4 TOPK cap on the logits, read after the stream has run the copies.
+        // tokens, then from 4 TOPK cap on the logits, read after the stream has run the copies; the masker's staging was read by a copy the stream has run (a step's
+        // candidates are made once its step before landed).
         unsafe {
-            self.kern.topk_rows(s, self.big.logits.ptr, v as i32, n as u32, tok.ptr, val.ptr)?;
-            crate::dev::copy_d2h_async(h as *mut _, tok.ptr, 4 * TOPK * n, s)?;
-            crate::dev::copy_d2h_async(h.add(4 * TOPK * *cap) as *mut _, val.ptr, 4 * TOPK * n, s)?;
+            self.kern.topk_rows(s, self.big.logits.ptr, v as i32, n as u32, tok, val)?;
+            if let Some(g) = self.masker.as_ref().filter(|_| masks.iter().any(Option::is_some)) {
+                g.apply(&self.kern, &self.dev, &masks[..masks.len().min(n)], self.big.logits.ptr, tok, val)?;
+            }
+            crate::dev::copy_d2h_async(host as *mut _, tok, 4 * TOPK * n, s)?;
+            crate::dev::copy_d2h_async(host.add(4 * TOPK * cap) as *mut _, val, 4 * TOPK * n, s)?;
         }
         Ok(())
+    }
+
+    /// `ModelStep::mass`: row `row`'s sum of exp((logit - largest) / temperature) on the GPU, about the head's largest (`val`), read back (8 bytes, not the row).
+    fn row_mass(&mut self, row: usize, temperature: f32) -> Result<Option<f64>> {
+        let v = self.big.d.vocab;
+        if self.top.off || row >= self.cands.rows || !v.is_multiple_of(8) || self.lanes.as_ref().is_some_and(|l| l.stale) {
+            return Ok(None);
+        }
+        if self.sums.is_none() {
+            self.sums = Some(Buf::zeroed(8)?);
+        }
+        let out = self.sums.as_ref().expect("made above").ptr;
+        // SAFETY: the step's head row `row` of v logits and its largest (f32) in val; one f64 out; read after the synchronize.
+        unsafe {
+            self.kern.exp_sum_rows(
+                self.dev.stream,
+                self.big.logits.ptr + (row * v * 2) as u64,
+                v as i32,
+                1,
+                self.big.val.ptr + (4 * row) as u64,
+                temperature,
+                out,
+            )?
+        };
+        self.dev.sync()?;
+        let mut m = [0f64; 1];
+        self.sums.as_ref().expect("made above").read(0, &mut m)?;
+        Ok(Some(m[0]))
     }
 
     /// `ModelStep::round` with prompt chunks beside the rows.
@@ -1338,6 +1375,12 @@ impl ModelStep for Dyn {
     }
     fn draws(&mut self, on: bool) {
         self.draws = on;
+    }
+    fn masks(&mut self, masks: Vec<Option<crate::constrain::MaskHandle>>) {
+        self.row_masks = masks;
+    }
+    fn mass(&mut self, row: usize, temperature: f32) -> Option<f64> {
+        self.row_mass(row, temperature).unwrap_or(None)
     }
     /// The candidates the GPU makes of the step's head rows (`Cands`); where it cannot (an error), the row is read as without them.
     fn top(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
