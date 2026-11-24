@@ -391,7 +391,7 @@ impl KernGlm {
             tile = tile.min(t);
         }
         let smem = ((ks + 2 * tile) * 4) as u32;
-        launch!(self.mla_attn, [heads as u32, n, splits as u32], [256, 1, 1], smem smem, s; qa, lat, 0u64, sel, cnt, olat, part, tmax, heads, kr, ks, scale, splits, tile)?;
+        launch!(self.mla_attn, [heads as u32, n, splits as u32], [256, 1, 1], smem smem, s; qa, lat, ks, 0u64, sel, cnt, olat, part, tmax, heads, kr, ks, scale, splits, tile)?;
         if splits > 1 {
             launch!(self.mla_merge, [heads as u32, n, 1], [256, 1, 1], s; part, olat, heads, kr, splits)?;
         }

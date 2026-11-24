@@ -239,8 +239,8 @@ impl Dyn {
                     None => BLOCK * rings[r].nk * rings[r].d * 2,
                 };
                 let c = counts[pg.group[r]];
-                // (a ring of keys alone: no values)
-                let v = if rings[r].values || twelve(r).is_some() { per * c } else { 0 };
+                // (a ring of keys alone, or 12-bit pages of one stream (a latent's): no values)
+                let v = if rings[r].values || twelve(r).is_some_and(|x| !x.shape.one) { per * c } else { 0 };
                 moved += per * c + v;
                 Some((take(per * c), take(v), per))
             })
