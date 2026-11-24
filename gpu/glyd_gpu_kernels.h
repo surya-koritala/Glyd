@@ -3089,7 +3089,7 @@ __device__ __forceinline__ void bf16_words(const AttnParams& P, int64_t blk, int
 // The grid is (H, B, splits): a call's CTAs are dispatched split by split, so those of the first splits (the ones that have pages, where a sequence is short) start before the ones past
 // their sequence's plan, which return at once.
 template <bool PIPE, bool FUSE, int HALVES, bool BF16 = false>
-__global__ void __launch_bounds__(NW * 32, 1) attn_kernel(const AttnParams P) {
+__device__ __forceinline__ void attn_body(const AttnParams P) {
     constexpr int DO = D * HALVES;   // a query head's channels
     constexpr int NP = NW / HALVES;  // pages a CTA has in hand at once
     const int split = blockIdx.z, h = blockIdx.x, b = blockIdx.y;
@@ -3302,6 +3302,11 @@ __global__ void __launch_bounds__(NW * 32, 1) attn_kernel(const AttnParams P) {
         for (int head = warp; head < G; head += NW) merge_head<DO>(P.ws_ml + bh * P.splits * G * 2, P.ws_o + bh * P.splits * G * DO, P.out + (int64_t)b * P.out_stride + (int64_t)h * G * DO, G, head, sb, lane);
         if (threadIdx.x == 0) P.cnt[bh] = 0;  // (zero for the next call)
     }
+}
+
+template <bool PIPE, bool FUSE, int HALVES, bool BF16 = false>
+__global__ void __launch_bounds__(NW * 32, 1) attn_kernel(const AttnParams P) {
+    attn_body<PIPE, FUSE, HALVES, BF16>(P);
 }
 
 // the partials of a (sequence, kv head) merged: one warp a query head, a lane DO / 32 channels; a sequence of no tokens gives zeros
