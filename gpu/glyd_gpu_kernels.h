@@ -5175,7 +5175,7 @@ __device__ __forceinline__ bool f8_slot(const F8Lin& P0, F8Lin& P) {
 // G: the experts' product (glyd_gpu_f8_moe: a slot of the plan a blockIdx.y, f8_slot's).
 // KIND | F8_H: W in layout H (block scales, the default plan alone): its row blocks' cores and literals copied and decoded as H has them, the rest as above.
 template <int NTL, int KIND, int AHEAD, int DENSE, int G = 0, int S = 2>
-__global__ void __launch_bounds__(LNT, 1) f8_linear_kernel(const F8Lin P0) {
+__device__ __forceinline__ void f8_linear_body(const F8Lin& P0) {
     constexpr bool H = (KIND & F8_H) != 0;
     constexpr int D = AHEAD ? 1 : 0, SK = KIND & 7, HS = f8_hs<S>(), XS = f8_xs<S>(), LSM = f8_lsmem<S, H>(), CS = f8_csl<S, H>();
     static_assert(S == 2 || (!AHEAD && !DENSE), "three slots: the one-token product's path alone");
@@ -5477,6 +5477,11 @@ __global__ void __launch_bounds__(LNT, 1) f8_linear_kernel(const F8Lin P0) {
     }
 }
 
+template <int NTL, int KIND, int AHEAD, int DENSE, int G = 0, int S = 2>
+__global__ void __launch_bounds__(LNT, 1) f8_linear_kernel(const F8Lin P0) {
+    f8_linear_body<NTL, KIND, AHEAD, DENSE, G, S>(P0);
+}
+
 // Layout H, one token (block scales; G: the experts' product, a slot's one pair), on f8_linear_kernel's plan: the CTA's patches, the sums of its first and last row
 // groups in parts and the last CTA's adds, so its results to the bit. Each warp copies its own patch's head (two steps ahead, to registers) and its core, literals
 // and X (a step ahead, to its own slots), so no barrier a step; the steps' places in 32 bits.
@@ -5484,7 +5489,7 @@ constexpr int XW1 = PC * 2 / 4;                    // words of a warp's X slot: 
 constexpr int L1W = 2 * HCSL + 2 * VB + 2 * XW1;   // words of a warp's slots
 // C: the CTAs an SM the compiler fits (3: 80 registers a thread; 2: as many as it likes). Being measured on HBM GPUs (GLYD_F8H_CTAS).
 template <int G, int C>
-__global__ void __launch_bounds__(LNT, C) f8h_lin1_kernel(const F8Lin P) {
+__device__ __forceinline__ void f8h_lin1_body(const F8Lin& P) {
     // (the slot's pointers alone as registers; the rest read from the parameters, which f8_slot leaves as they are)
     const uint8_t* core = P.core;
     const uint32_t* heads = P.heads;
@@ -5622,6 +5627,11 @@ __global__ void __launch_bounds__(LNT, C) f8h_lin1_kernel(const F8Lin P) {
         step(rgC, kpC);
         step(rgH, kpH);
     }
+}
+
+template <int G, int C>
+__global__ void __launch_bounds__(LNT, C) f8h_lin1_kernel(const F8Lin P) {
+    f8h_lin1_body<G, C>(P);
 }
 
 // Layout H, one token, the copies two steps ahead in the same two core slots: a step's core words go to registers first (14 a lane), then its slot takes the step
@@ -5821,7 +5831,7 @@ __global__ void __launch_bounds__(LNT, C) f8h_lin2_kernel(const F8Lin P) {
 // take step j + 2's. The sums as f8h_lin1_kernel's, to the bit. GLYD_F8H_ONE=3 (only with plain packs: a coded patch read this way is wrong).
 constexpr int BW = 2 * 512 + 2 * XW1;   // words of a warp's slots
 template <int G, int C>
-__global__ void __launch_bounds__(LNT, C) f8b_lin1_kernel(const F8Lin P) {
+__device__ __forceinline__ void f8b_lin1_body(const F8Lin& P) {
     const uint8_t* core = P.core;
     const uint32_t* heads = P.heads;
     const float* scale = (const float*)P.scale;
@@ -5954,6 +5964,11 @@ __global__ void __launch_bounds__(LNT, C) f8b_lin1_kernel(const F8Lin P) {
         step(rgA, kpA);
         step(rgC, kpC);
     }
+}
+
+template <int G, int C>
+__global__ void __launch_bounds__(LNT, C) f8b_lin1_kernel(const F8Lin P) {
+    f8b_lin1_body<G, C>(P);
 }
 
 // Layout H, one token, lean (research, 2026-10-20): f8h_lin2_kernel's work with f8b_lin1_kernel's step. Two core slots (a step's words to registers, then
