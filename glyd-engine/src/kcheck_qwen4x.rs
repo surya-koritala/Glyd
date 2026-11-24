@@ -397,7 +397,7 @@ pub fn toy(model: &Path, refd: &Path, a: &Args) -> Result<bool> {
 /// `glyd-engine qxcb MODEL PACK REF --layers L,L [--rows N] [--slots N]`: a layer's experts from the codebook pack through the expert cache, on the first N rows of the reference's experts' input: every pair on the GPU (the
 /// cache's copies, kernels/qwen4x.cu) against every pair on the host (src/cpu_cb.rs, the same codes), both against the reference's bf16 experts (the pack's rounding), and the router's choices.
 pub fn cb(model: &Path, pack_dir: &Path, refd: &Path, a: &Args) -> Result<bool> {
-    use crate::moe_glm_cb::CbPack;
+    use crate::cb_pack::CbPack;
     use crate::moe_qwen4x::{factory, QxCbShared};
     use crate::offload::{ExpertStore, Mode, Offload};
     let c = ConfigQx::load(model)?;
@@ -612,7 +612,7 @@ pub fn bench(a: &Args) -> Result<()> {
     };
     if a.has("dec") {
         // a decode step's indexer scores, picks and attention over picked tokens of one attention layer at a position (--pos, 32,000 by default) of a 33,000-token context, n rows (--n, 1): microseconds a launch
-        let kg = crate::model_glm::KernGlm::load(&dev)?;
+        let kg = crate::kern_glm::KernGlm::load(&dev)?;
         let (ctx, n, at): (usize, usize, usize) = (a.num("ctx", 33000usize)?, a.num("n", 1usize)?, a.num("pos", 32000usize)?);
         let (ixh, ixd, kp, budget, nq, nk, hd) = (4usize, 128usize, 4usize, 2048usize, 24usize, 2usize, 256usize);
         let (pmax, ksel, tmax) = (ctx / kp, budget / kp, budget + kp - 1);
@@ -966,7 +966,7 @@ fn half_bits(x: f32) -> u16 {
 pub fn host_bench(pack_dir: &Path, a: &Args) -> Result<()> {
     use crate::cpu_cb::{experts_pinned, GlmExpert, GlmMat, GlmPair};
     use crate::cpu_experts::Z;
-    let mut pack = crate::moe_glm_cb::CbPack::open_dims(pack_dir, 2560, 640)?;
+    let mut pack = crate::cb_pack::CbPack::open_dims(pack_dir, 2560, 640)?;
     if let Some(d) = a.flag("side") {
         pack = pack.with_side(Path::new(d))?;
     }

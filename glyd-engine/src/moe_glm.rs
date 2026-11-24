@@ -1,10 +1,11 @@
-//! GLM-5.3-Flash's mixture-of-experts layer on the GPU (`Glm5NextTextMoE`): `GlmMoe`, the `MoeBlock` that model_glm.rs's layers call, built on the mixture-of-experts core (src/moe.rs, kernels/moe.cu) as it stands: the layer of
-//! the core's comments, with the router, the experts and the shared expert all reading the layer's normed input at the model's width (`MoeLayer::forward`). The router scores the 288 experts in fp32 (sigmoid scores; the 8
+//! GLM-5.3-Flash's mixture-of-experts layer on the GPU (`Glm5NextTextMoE`) as the mixture-of-experts core's layer (src/moe.rs, kernels/moe.cu): `layer` reads it, the executor's
+//! `Op::Moe` (src/dynamic/glm.rs, `layers_cached`) and the frozen development engine's block (`GlmMoe`, src/model_glm.rs) run it. The layer of the core's comments, with the router,
+//! the experts and the shared expert all reading the layer's normed input at the model's width (`MoeLayer::forward`). The router scores the 288 experts in fp32 (sigmoid scores; the 8
 //! picked by their scores plus the fp32 `e_score_correction_bias`; the chosen scores divided by their sum and times `routed_scaling_factor`, 2.5), each expert is a SwiGLU of 2,048 with the gate at most 10 and the up within
 //! 10 of zero, and the shared expert, the same on the same input, is added to their weighted sum. The arithmetic and its roundings are `tools/glm_ref.py`'s `moe_mixer` (the structure checked against transformers'
-//! Glm5NextTextMoE there); `GlmMoe::forward` is the core's launches in order.
+//! Glm5NextTextMoE there).
 //!
-//! The layer's tensors are read here, not by `WeightsGlm::load`: the router and its fp32 bias as the checkpoint has them, the shared expert's two matrices and the experts as packs in a block layout (`level`: Int6, Int5 or
+//! The layer's tensors are read here, not by `WeightsGlm::load` (src/kern_glm.rs): the router and its fp32 bias as the checkpoint has them, the shared expert's two matrices and the experts as packs in a block layout (`level`: Int6, Int5 or
 //! Int4; the experts have no other, `ExpertStack`), packed as they load from the checkpoint's FP8 (as the bf16 it dequantises to) or bf16 or read from a glyd-v7 directory where it holds them saved. The rest of the model is at the
 //! same level where the directory is a glyd-v7 one, else in the engine's layout.
 
@@ -12,8 +13,8 @@ use crate::dev::Dev;
 use crate::f8::{F8Experts, F8Mat, F8Places};
 use crate::ffi::{err, Error, Lib, Result, Words};
 use crate::glm::ConfigGlm;
-use crate::model_glm::{f32_bytes, EngineGlm, MoeBlock};
-use crate::moe::{Act, ExpertStack, Joined, MoeCfg, MoeLayer, MoeScratch, MoeWeights, Router, Shared};
+use crate::kern_glm::f32_bytes;
+use crate::moe::{Act, ExpertStack, Joined, MoeCfg, MoeLayer, MoeWeights, Router, Shared};
 use crate::moe_rows::Down;
 use crate::weights::{ordered, pack_item_map, read_pack, upload_bytes, upload_packed, v7_manifest, Item, Layout, PackBuf, Packed};
 use glyd_gpu::json::Value;
@@ -273,179 +274,123 @@ fn read_layer_with(l: usize, c: &ConfigGlm, ck: &Checkpoint, level: Layout, f8: 
     Ok(Host { router, bias, s_up, s_down, experts })
 }
 
-/// A mixture-of-experts layer on the GPU: the core's layer (router, experts, shared expert).
-pub struct GlmMoe {
-    layer: MoeLayer,
+/// Layer `l` of the model `c` from the checkpoint `ck` as the core's layer (router, experts, shared expert), its matrices at `level` (Int6, Int5 or Int4), copied to the GPU. A layer
+/// whose shapes the products do not take is refused (`MoeLayer::new`). `f8`: at the lossless level, FP8 experts are held in the FP8 format as released (on that device, by that
+/// library), not as the bf16 they dequantise to.
+pub fn layer(l: usize, c: &ConfigGlm, ck: &Checkpoint, level: Layout, f8: Option<(&Dev, &Lib)>) -> Result<MoeLayer> {
+    layer_cached(l, c, ck, level, f8, None)
 }
 
-impl GlmMoe {
-    /// Layer `l` of the model `c` from the checkpoint `ck`, its matrices at `level` (Int6, Int5 or Int4), copied to the GPU. A layer whose shapes the products do not take is refused (`MoeLayer::new`).
-    /// `f8`: at the lossless level, FP8 experts are held in the FP8 format as released (on that device, by that library), not as the bf16 they dequantise to.
-    pub fn load(l: usize, c: &ConfigGlm, ck: &Checkpoint, level: Layout, f8: Option<(&Dev, &Lib)>) -> Result<GlmMoe> {
-        GlmMoe::load_cached(l, c, ck, level, f8, None)
-    }
-
-    /// `load`, a hummingbird directory's experts in the expert cache where `caching` is given (the stage's places and memory, its store, the GPU's number: src/hbg_store.rs).
-    pub fn load_cached(
-        l: usize,
-        c: &ConfigGlm,
-        ck: &Checkpoint,
-        level: Layout,
-        f8: Option<(&Dev, &Lib)>,
-        caching: Option<(&crate::hbg_store::HbCaching, &std::rc::Rc<crate::offload::ExpertStore>, i32)>,
-    ) -> Result<GlmMoe> {
-        // (a hummingbird directory, src/hb_pack.rs: the routed experts' codebook rows; the router and the shared expert as released)
-        let cfg = moe_cfg(c);
-        let hb = crate::hb_pack::HbDir::open(&ck.dir)?;
-        let ordinal = caching.map_or(0, |x| x.2);
-        let hbx = crate::hbg_store::hb_layer(
-            hb.as_ref(),
-            l,
-            false,
-            caching.map(|x| (x.0, x.1)),
-            cfg.act,
-            crate::cpu_hbg::Finish::Rotated,
-            ordinal,
-            cfg.router.top_k,
-        )?;
-        if let Some(x) = hbx {
-            let h = read_layer_with(l, c, ck, level, true)?;
-            let (router, bias) = (upload_bytes(&h.router)?, Some(upload_bytes(&h.bias)?));
-            if f8_shared(ck, c, l) {
-                let (dev, lib) = f8.ok_or_else(|| Error("a hummingbird directory's FP8 shared expert is read with a device (GLYD_GLM_F8 is 0)".into()))?;
-                let shared = Shared {
-                    inter: c.experts.shared_inter,
-                    up: PackBuf::shape_only(h.s_up.rows, h.s_up.cols)?,
-                    down: PackBuf::shape_only(h.s_down.rows, h.s_down.cols)?,
-                    gate: None,
-                };
-                let (su, sd) = read_shared_f8(ck, c, l, dev, lib)?;
-                return Ok(GlmMoe { layer: x.into_layer(cfg, router, bias, None, Some(shared))?.with_shared8(su, sd)? });
-            }
-            let shared = Shared { inter: c.experts.shared_inter, up: upload_packed(h.s_up)?, down: upload_packed(h.s_down)?, gate: None };
-            return Ok(GlmMoe { layer: x.into_layer(cfg, router, bias, None, Some(shared))? });
-        }
-        let f8 = f8.filter(|_| matches!(level, Layout::Tiered | Layout::Twelve) && f8_experts(ck, c, l));
-        let h = read_layer_with(l, c, ck, level, f8.is_some())?;
+/// `layer`, a hummingbird directory's experts in the expert cache where `caching` is given (the stage's places and memory, its store, the GPU's number: src/hbg_store.rs).
+pub fn layer_cached(
+    l: usize,
+    c: &ConfigGlm,
+    ck: &Checkpoint,
+    level: Layout,
+    f8: Option<(&Dev, &Lib)>,
+    caching: Option<(&crate::hbg_store::HbCaching, &std::rc::Rc<crate::offload::ExpertStore>, i32)>,
+) -> Result<MoeLayer> {
+    // (a hummingbird directory, src/hb_pack.rs: the routed experts' codebook rows; the router and the shared expert as released)
+    let cfg = moe_cfg(c);
+    let hb = crate::hb_pack::HbDir::open(&ck.dir)?;
+    let ordinal = caching.map_or(0, |x| x.2);
+    let hbx =
+        crate::hbg_store::hb_layer(hb.as_ref(), l, false, caching.map(|x| (x.0, x.1)), cfg.act, crate::cpu_hbg::Finish::Rotated, ordinal, cfg.router.top_k)?;
+    if let Some(x) = hbx {
+        let h = read_layer_with(l, c, ck, level, true)?;
         let (router, bias) = (upload_bytes(&h.router)?, Some(upload_bytes(&h.bias)?));
-        // (R12: the experts in the expert cache where the stage has one: the block levels' stacks in places, FP8 as released each expert packed on its own; the lossless pack of bf16 experts is not in places)
-        let mut tiered = None;
-        let (up, down) = match h.experts {
-            Experts::Block(u, d) => match caching {
-                Some((cg, store, ordinal)) => {
-                    if cg.ram.is_some() {
-                        return err("GLM's experts in the expert cache at a block level: every expert in the computer's memory (the disk holds hummingbird directories' experts alone)");
-                    }
-                    let (su, sd, cache) = crate::tiering::cached_stacks(&u, &d, cg.places, store, l, ordinal, None)?;
-                    tiered = Some(cache);
-                    (su, sd)
+        if f8_shared(ck, c, l) {
+            let (dev, lib) = f8.ok_or_else(|| Error("a hummingbird directory's FP8 shared expert is read with a device (GLYD_GLM_F8 is 0)".into()))?;
+            let shared = Shared {
+                inter: c.experts.shared_inter,
+                up: PackBuf::shape_only(h.s_up.rows, h.s_up.cols)?,
+                down: PackBuf::shape_only(h.s_down.rows, h.s_down.cols)?,
+                gate: None,
+            };
+            let (su, sd) = read_shared_f8(ck, c, l, dev, lib)?;
+            return x.into_layer(cfg, router, bias, None, Some(shared))?.with_shared8(su, sd);
+        }
+        let shared = Shared { inter: c.experts.shared_inter, up: upload_packed(h.s_up)?, down: upload_packed(h.s_down)?, gate: None };
+        return x.into_layer(cfg, router, bias, None, Some(shared));
+    }
+    let f8 = f8.filter(|_| matches!(level, Layout::Tiered | Layout::Twelve) && f8_experts(ck, c, l));
+    let h = read_layer_with(l, c, ck, level, f8.is_some())?;
+    let (router, bias) = (upload_bytes(&h.router)?, Some(upload_bytes(&h.bias)?));
+    // (R12: the experts in the expert cache where the stage has one: the block levels' stacks in places, FP8 as released each expert packed on its own; the lossless pack of bf16 experts is not in places)
+    let mut tiered = None;
+    let (up, down) = match h.experts {
+        Experts::Block(u, d) => match caching {
+            Some((cg, store, ordinal)) => {
+                if cg.ram.is_some() {
+                    return err("GLM's experts in the expert cache at a block level: every expert in the computer's memory (the disk holds hummingbird directories' experts alone)");
                 }
-                None => (ExpertStack::upload(&u)?, ExpertStack::upload(&d)?),
-            },
-            Experts::Lossless(..) if caching.is_some() => {
-                return err(
+                let (su, sd, cache) = crate::tiering::cached_stacks(&u, &d, cg.places, store, l, ordinal, None)?;
+                tiered = Some(cache);
+                (su, sd)
+            }
+            None => (ExpertStack::upload(&u)?, ExpertStack::upload(&d)?),
+        },
+        Experts::Lossless(..) if caching.is_some() => {
+            return err(
                     "GLM's experts in the expert cache: as released (FP8), at the block levels (kestrel, swift, wren) and at hummingbird; the lossless pack of bf16 experts (GLYD_GLM_F8=0) is not in places",
                 );
-            }
-            Experts::Lossless(u, d) => {
-                (ExpertStack::lossless(upload_packed(u)?, c.experts.experts)?, ExpertStack::lossless(upload_packed(d)?, c.experts.experts)?)
-            }
-            Experts::F8 => {
-                let (dev, lib) = f8.expect("FP8 experts are read with a device");
-                // (in the expert cache: each expert packed on its own, places for some on the GPU, every one in the computer's memory)
-                let (experts, tiered) = match caching {
-                    Some((cg, store, ordinal)) => {
-                        if cg.ram.is_some() {
-                            return err("GLM's FP8 experts in the expert cache: every expert in the computer's memory (the disk holds hummingbird directories' experts alone)");
-                        }
-                        let (pu, pd) = places_f8(ck, c, l, dev, lib)?;
-                        let (x, cache) = crate::tiering::cached_f8(&pu, &pd, cg.places, store, l, ordinal)?;
-                        (x, Some(cache))
+        }
+        Experts::Lossless(u, d) => (ExpertStack::lossless(upload_packed(u)?, c.experts.experts)?, ExpertStack::lossless(upload_packed(d)?, c.experts.experts)?),
+        Experts::F8 => {
+            let (dev, lib) = f8.expect("FP8 experts are read with a device");
+            // (in the expert cache: each expert packed on its own, places for some on the GPU, every one in the computer's memory)
+            let (experts, tiered) = match caching {
+                Some((cg, store, ordinal)) => {
+                    if cg.ram.is_some() {
+                        return err("GLM's FP8 experts in the expert cache: every expert in the computer's memory (the disk holds hummingbird directories' experts alone)");
                     }
-                    None => (read_experts_f8(ck, c, l, dev, lib)?, None),
-                };
-                let cached = |layer: MoeLayer| match tiered {
-                    Some(cache) => layer.with_cache(cache),
-                    None => Ok(layer),
-                };
-                if !f8_shared(ck, c, l) {
-                    let shared = Shared { inter: c.experts.shared_inter, up: upload_packed(h.s_up)?, down: upload_packed(h.s_down)?, gate: None };
-                    return Ok(GlmMoe { layer: cached(MoeLayer::new_f8(moe_cfg(c), router, bias, experts, Some(shared))?)? });
+                    let (pu, pd) = places_f8(ck, c, l, dev, lib)?;
+                    let (x, cache) = crate::tiering::cached_f8(&pu, &pd, cg.places, store, l, ordinal)?;
+                    (x, Some(cache))
                 }
-                let shared = Shared {
-                    inter: c.experts.shared_inter,
-                    up: PackBuf::shape_only(h.s_up.rows, h.s_up.cols)?,
-                    down: PackBuf::shape_only(h.s_down.rows, h.s_down.cols)?,
-                    gate: None,
-                };
-                let (su, sd) = read_shared_f8(ck, c, l, dev, lib)?;
-                return Ok(GlmMoe { layer: cached(MoeLayer::new_f8(moe_cfg(c), router, bias, experts, Some(shared))?.with_shared8(su, sd)?)? });
+                None => (read_experts_f8(ck, c, l, dev, lib)?, None),
+            };
+            let cached = |layer: MoeLayer| match tiered {
+                Some(cache) => layer.with_cache(cache),
+                None => Ok(layer),
+            };
+            if !f8_shared(ck, c, l) {
+                let shared = Shared { inter: c.experts.shared_inter, up: upload_packed(h.s_up)?, down: upload_packed(h.s_down)?, gate: None };
+                return cached(MoeLayer::new_f8(moe_cfg(c), router, bias, experts, Some(shared))?);
             }
-        };
-        let shared = Shared { inter: c.experts.shared_inter, up: upload_packed(h.s_up)?, down: upload_packed(h.s_down)?, gate: None };
-        let w = MoeWeights { router, bias, escale: None, up, down: Down::Block(down) };
-        let layer = MoeLayer::new(moe_cfg(c), w, Some(shared))?;
-        Ok(GlmMoe {
-            layer: match tiered {
-                Some(cache) => layer.with_cache(cache)?,
-                None => layer,
-            },
-        })
+            let shared = Shared {
+                inter: c.experts.shared_inter,
+                up: PackBuf::shape_only(h.s_up.rows, h.s_up.cols)?,
+                down: PackBuf::shape_only(h.s_down.rows, h.s_down.cols)?,
+                gate: None,
+            };
+            let (su, sd) = read_shared_f8(ck, c, l, dev, lib)?;
+            return cached(MoeLayer::new_f8(moe_cfg(c), router, bias, experts, Some(shared))?.with_shared8(su, sd)?);
+        }
+    };
+    let shared = Shared { inter: c.experts.shared_inter, up: upload_packed(h.s_up)?, down: upload_packed(h.s_down)?, gate: None };
+    let w = MoeWeights { router, bias, escale: None, up, down: Down::Block(down) };
+    let layer = MoeLayer::new(moe_cfg(c), w, Some(shared))?;
+    match tiered {
+        Some(cache) => layer.with_cache(cache),
+        None => Ok(layer),
     }
 }
 
-/// The factory `EngineGlm::new` takes: each mixture-of-experts layer is a `GlmMoe` at `level` (Int6, Int5 or Int4), whatever the layout of the engine's other matrices.
-pub fn factory(level: Layout) -> impl Fn(usize, &ConfigGlm, &Checkpoint, Layout) -> Result<Box<dyn MoeBlock>> {
-    move |l, c, ck, _| Ok(Box::new(GlmMoe::load(l, c, ck, level, None)?))
-}
-
-/// `factory` whose lossless level holds FP8 experts in the FP8 format (`GlmMoe::load`'s `f8`; GLYD_GLM_F8=0: as the bf16 they dequantise to).
-pub fn factory_f8<'a>(level: Layout, dev: &'a Dev, lib: &'a Lib) -> impl Fn(usize, &ConfigGlm, &Checkpoint, Layout) -> Result<Box<dyn MoeBlock>> + 'a {
-    factory_cached(level, dev, lib, None)
-}
-
-/// `factory_f8` with a hummingbird directory's experts in the expert cache where `caching` is given (one store for the stage's layers, src/hbg_store.rs).
-pub fn factory_cached<'a>(
+/// The executor's maker of the model's mixture-of-experts layers (src/dynamic/glm.rs): each the core's layer at `level`, FP8 experts in the FP8 format as released where the lossless level
+/// is asked (GLYD_GLM_F8=0: as the bf16 they dequantise to), a hummingbird directory's experts in the expert cache where `caching` is given (one store for the stage's layers,
+/// src/hbg_store.rs).
+pub fn layers_cached<'a>(
     level: Layout,
     dev: &'a Dev,
     lib: &'a Lib,
     caching: Option<crate::hbg_store::HbCaching>,
-) -> impl Fn(usize, &ConfigGlm, &Checkpoint, Layout) -> Result<Box<dyn MoeBlock>> + 'a {
+) -> impl Fn(usize, &ConfigGlm, &Checkpoint, Layout) -> Result<Box<MoeLayer>> + 'a {
     let on = crate::tune!("GLYD_GLM_F8").as_deref() != Some("0");
     let store = caching.as_ref().map(crate::hbg_store::store_for);
     move |l, c, ck, _| {
         let cached = caching.as_ref().zip(store.as_ref()).map(|(h, s)| (h, s, dev.ordinal));
-        Ok(Box::new(GlmMoe::load_cached(l, c, ck, level, on.then_some((dev, lib)), cached)?))
-    }
-}
-
-/// The scratch of the engine's mixture-of-experts layers, which the first layer that runs makes (all the model's layers have this one's shape; the engine's warm-up step runs one before the decode graph is captured) for
-/// the rows of a prompt chunk.
-fn scratch<'a>(e: &'a EngineGlm, layer: &MoeLayer) -> Result<&'a MoeScratch> {
-    if e.moe_scratch.get().is_none() {
-        let _ = e.moe_scratch.set(MoeScratch::new(&e.dev, &e.lib, &[layer], e.chunk())?);
-    }
-    e.moe_scratch.get().ok_or_else(|| Error("the mixture-of-experts scratch is not made".into()))
-}
-
-impl MoeBlock for GlmMoe {
-    /// The router on `h`, the experts' weighted sum of it into `out`, then the shared expert on `h` added to `out`: `MoeLayer::forward`. All launches on the engine's stream, none reading a result: a decode step captures
-    /// into the graph.
-    unsafe fn forward(&self, e: &EngineGlm, h: u64, n: usize, out: u64) -> Result<()> {
-        let sc = scratch(e, &self.layer)?;
-        self.layer.forward(&e.lib, sc, e.dev.stream, h, n, out)
-    }
-
-    fn graphable(&self) -> bool {
-        true
-    }
-
-    fn bytes(&self) -> usize {
-        self.layer.weights_bytes()
-    }
-
-    fn layer(&self) -> Option<&MoeLayer> {
-        Some(&self.layer)
+        Ok(Box::new(layer_cached(l, c, ck, level, on.then_some((dev, lib)), cached)?))
     }
 }
 

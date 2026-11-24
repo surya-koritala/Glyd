@@ -257,7 +257,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
                 &devices,
             )
         }
-        "glmrandom" => glyd_engine::kcheck_glm::random(
+        "glmrandom" => glyd_engine::glm::random(
             Path::new(a.need(1, "OUT")?),
             a.has("fp8"),
             if a.has("real") { Some((a.num("layers", 4)?, a.num("experts", 32)?)) } else { None },
@@ -313,9 +313,6 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
             }
             Ok(())
         }
-        "glmserve" => glyd_engine::glm_serve::serve(Path::new(a.need(1, "CKPT")?), Path::new(a.need(2, "PACK")?), a),
-        "glmcbtest" => glyd_engine::glm_serve::cb_test(Path::new(a.need(1, "PACK")?), Path::new(a.need(2, "TESTVEC")?)),
-        "glmcbblock" => glyd_engine::glm_serve::cb_block(Path::new(a.need(1, "CKPT")?), Path::new(a.need(2, "PACK")?), a),
         "glmmtp" => glyd_engine::kcheck_glm::mtp(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "IO_DIR")?)),
         "glmspec" => glyd_engine::kcheck_glm::spec(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "IO_DIR")?)),
         "glmprof" => {

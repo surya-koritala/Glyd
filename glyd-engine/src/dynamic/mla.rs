@@ -29,8 +29,8 @@ use crate::runtime::kinds;
 /// Bytes of the indexer's scores and of the latent outputs a block of attention rows may take.
 const SUB_SCORES: usize = 256 << 20;
 const SUB_OLAT: usize = 64 << 20;
-/// Rows at most that the attention of one call cuts its tokens into eight runs for (a decode step, the rows of a verified draft): `model_glm::HC_FEW`.
-const FEW: u32 = crate::model_glm::HC_FEW;
+/// Rows at most that the attention of one call cuts its tokens into eight runs for (a decode step, the rows of a verified draft): `kern_glm::HC_FEW`.
+const FEW: u32 = crate::kern_glm::HC_FEW;
 
 /// Where a latent layer's input products are.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -324,7 +324,7 @@ pub(crate) struct KernMla {
 impl KernMla {
     pub fn load(dev: &Dev) -> Result<KernMla> {
         // (the attention's tokens a pass, two words a token, are in shared memory: as much as the GPU gives a block)
-        let (attn, smem) = (dev.typed::<crate::kt::mla_attn>()?, crate::model_glm::mla_smem(dev)?);
+        let (attn, smem) = (dev.typed::<crate::kt::mla_attn>()?, crate::kern_glm::mla_smem(dev)?);
         attn.allow_smem(smem)?;
         Ok(KernMla {
             rms2: dev.typed()?,
@@ -625,7 +625,7 @@ impl Dyn {
         let splits: i32 = if m as u32 <= FEW { 8 } else { 1 };
         let tmax = tmax as i32;
         // (a block's tokens a tile at a time: as many as its shared memory holds, two words a token besides the query's KS)
-        let mut tile = ((tmax + splits - 1) / splits).min(crate::model_glm::mla_positions(k.smem, ks) as i32).max(1);
+        let mut tile = ((tmax + splits - 1) / splits).min(crate::kern_glm::mla_positions(k.smem, ks) as i32).max(1);
         if tile < 64 && tile < (tmax + splits - 1) / splits {
             return err(format!("latent attention with scores over {ks} channels: {} bytes of shared memory a block hold too few tokens a pass", k.smem));
         }

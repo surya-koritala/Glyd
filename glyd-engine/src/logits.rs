@@ -842,7 +842,7 @@ pub fn cases() -> Vec<Case> {
         Case {
             id: "glm",
             family: "GLM-5.3 (delta attention, sparse attention, mixture of experts)",
-            weights: Weights::Random(|d| crate::kcheck_glm::random(d, false, None)),
+            weights: Weights::Random(|d| crate::glm::random(d, false, None)),
             engine: glm_engine,
             cpu: None,
             vocab: 2048,
@@ -1564,7 +1564,7 @@ pub(crate) fn random_dyn(case: &str, level: &str, tag: &str) -> Result<Dyn> {
             "qwen3" => qwen3_random(&dir)?,
             "muse" => crate::muse_ref::random(&dir)?,
             "kimi" => crate::kimi_ref::random(&dir, 1, true, 8)?,
-            "glm" => crate::kcheck_glm::random(&dir, false, None)?,
+            "glm" => crate::glm::random(&dir, false, None)?,
             "nemotron" => crate::kcheck_nh::random(&dir, 0, 16)?,
             "deepseek-v4" => crate::dsv4_ref::random(&dir, None)?,
             "qwen4x" => qwen4x_random(&dir)?,

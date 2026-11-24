@@ -658,6 +658,151 @@ impl ConfigGlm {
     }
 }
 
+#[cfg(feature = "dev")]
+/// `glmrandom OUT`: a random GLM-5.3-Flash of the toy config's shape (tests/fixtures/glm5_next_toy_config.json: eight layers, Kimi delta attention and latent attention, a dense MLP in the first three and
+/// experts in the rest; its matrices bf16, no MTP head) in Hub format: the executor's logits, user and tier checks' GLM (`logitsmodel glm`, `glmrandom`), and the frozen development engine's (`glmdyn`).
+/// `fp8`: the routed experts in FP8 as the release has them (E4M3 with fp32 scales of 128 x 128 blocks, `_scale_inv`; their intermediate size 256, a multiple of the blocks), the rest bf16.
+/// `real`: (layers, experts) at the release's widths (GLM-5.3-Flash's config: its heads, latents, indexer, experts' sizes and choices, vocabulary), every MLP a block of experts, the layers' attention
+/// kinds its first ones' with a sparse attention layer last; for timing a step on one GPU (the experts in FP8 as released).
+pub fn random(out: &std::path::Path, fp8: bool, real: Option<(usize, usize)>) -> crate::ffi::Result<()> {
+    use crate::ffi::Error;
+    use glyd_gpu::json::{self, Value};
+    let io = |r: std::io::Result<()>| r.map_err(|e| Error(e.to_string()));
+    let fp8 = fp8 || real.is_some();
+    let mut v = json::parse(if real.is_some() {
+        include_str!("../tests/fixtures/glm5_next_config.json")
+    } else {
+        include_str!("../tests/fixtures/glm5_next_toy_config.json")
+    })
+    .map_err(|e| Error(e.to_string()))?;
+    if let (Some((layers, experts)), Value::Object(o)) = (real, &mut v) {
+        if let Some((_, Value::Object(t))) = o.iter_mut().find(|(k, _)| k == "text_config") {
+            let kinds: Vec<Value> = (0..layers).map(|l| Value::from(if l + 1 == layers { "deepseek_sparse_attention" } else { "linear_attention" })).collect();
+            for (k, x) in t.iter_mut() {
+                match k.as_str() {
+                    "num_hidden_layers" => *x = Value::from(layers as u64),
+                    "n_routed_experts" => *x = Value::from(experts as u64),
+                    "first_k_dense_replace" => *x = Value::from(0u64),
+                    "layer_types" => *x = Value::Array(kinds.clone()),
+                    "mlp_layer_types" => *x = Value::Array(vec![Value::from("sparse"); layers]),
+                    _ => {}
+                }
+            }
+            if let Some((_, Value::Object(la))) = t.iter_mut().find(|(k, _)| k == "linear_attn_config") {
+                for (k, x) in la.iter_mut() {
+                    match k.as_str() {
+                        "kda_layers" => *x = Value::Array((0..layers - 1).map(|l| Value::from(l as u64)).collect()),
+                        "full_attn_layers" => *x = Value::Array(vec![Value::from((layers - 1) as u64)]),
+                        _ => {}
+                    }
+                }
+            }
+            for key in ["indexer_types"] {
+                if let Some((_, x)) = t.iter_mut().find(|(k, _)| k == key) {
+                    if let Value::Array(a) = x {
+                        a.truncate(layers);
+                        while a.len() < layers {
+                            a.push(a.last().cloned().unwrap_or(Value::Null));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Value::Object(o) = &mut v {
+        if !fp8 {
+            o.retain(|(k, _)| k != "quantization_config");
+        }
+        if let Some((_, Value::Object(t))) = o.iter_mut().find(|(k, _)| k == "text_config") {
+            for (k, x) in t.iter_mut() {
+                if k == "num_nextn_predict_layers" {
+                    *x = Value::from(0u64);
+                }
+                if fp8 && real.is_none() && k == "moe_intermediate_size" {
+                    *x = Value::from(256u64);
+                }
+            }
+        }
+    }
+    let text = json::to_python(&v, 2);
+    let c = ConfigGlm::parse(&text, "random", None)?;
+    let mut r = 0x2026_1018_0000_0002u64;
+    let mut uni = |a: f32, b: f32| {
+        r ^= r << 13;
+        r ^= r >> 7;
+        r ^= r << 17;
+        a + (b - a) * ((r >> 40) as f32 / (1u64 << 24) as f32)
+    };
+    let bf = |x: f32| {
+        let b = x.to_bits();
+        ((b + 0x7fff + ((b >> 16) & 1)) >> 16) as u16
+    };
+    let mut tensors: Vec<(String, &str, Vec<u64>, Vec<u8>)> = Vec::new();
+    // (E4M3: a value rounded to it, then its byte)
+    let code: std::collections::HashMap<u32, u8> =
+        (0..=255u8).filter(|b| !glyd_gpu::fp8::E4M3[*b as usize].is_nan()).map(|b| (glyd_gpu::fp8::E4M3[b as usize].to_bits(), b)).collect();
+    for pk in c.packs() {
+        let a = (3.0 / pk.cols as f32).sqrt();
+        for (name, rows) in &pk.parts {
+            let cols = pk.cols;
+            if fp8 && (name.contains(".mlp.experts.") || (real.is_some() && name.contains(".mlp.shared_experts."))) {
+                let w: Vec<f32> = (0..rows * cols).map(|_| uni(-a, a)).collect();
+                let (gr, gc) = (rows.div_ceil(128), cols.div_ceil(128));
+                let mut sc = vec![0f32; gr * gc];
+                for (i, x) in w.iter().enumerate() {
+                    let b = &mut sc[(i / cols) / 128 * gc + (i % cols) / 128];
+                    *b = b.max(x.abs() / 448.0);
+                }
+                let q: Vec<u8> =
+                    w.iter().enumerate().map(|(i, x)| code[&crate::dsv4_ref::e4m3_round(x / sc[(i / cols) / 128 * gc + (i % cols) / 128]).to_bits()]).collect();
+                tensors.push((name.clone(), "F8_E4M3", vec![*rows as u64, cols as u64], q));
+                tensors.push((format!("{name}_scale_inv"), "F32", vec![gr as u64, gc as u64], sc.iter().flat_map(|x| x.to_le_bytes()).collect()));
+                continue;
+            }
+            let w: Vec<u16> = (0..rows * cols).map(|_| bf(uni(-a, a))).collect();
+            tensors.push((name.clone(), "BF16", vec![*rows as u64, cols as u64], crate::weights::as_bytes(&w).to_vec()));
+        }
+    }
+    for t in c.kept() {
+        let n: u64 = t.shape.iter().product();
+        let last = *t.shape.last().unwrap_or(&1) as f32;
+        let (lo, hi) = match t.name.as_str() {
+            s if s.ends_with("k_norm.bias") => (-0.1, 0.1),
+            s if s.ends_with("norm.weight") || s.ends_with("layernorm.weight") => (0.9, 1.1),
+            s if s.contains("hc_") && s.ends_with("_fn") => (-0.02, 0.02),
+            s if s.contains("hc_") && s.ends_with("_base") => (-0.5, 0.5),
+            s if s.contains("hc_") && s.ends_with("_scale") => (0.5, 1.5),
+            s if s.ends_with("A_log") => (0.0, 2.7),
+            s if s.ends_with("dt_bias") => (-4.6, -2.3),
+            s if s.contains("conv1d") => (-0.5, 0.5),
+            s if s.ends_with("e_score_correction_bias") => (0.0, 0.1),
+            s if s.ends_with("compress_ape") => (-0.5, 0.5),
+            _ => {
+                let a = (3.0 / last).sqrt();
+                (-a, a)
+            }
+        };
+        let bytes = if t.dtype == "F32" {
+            (0..n).flat_map(|_| uni(lo, hi).to_le_bytes()).collect()
+        } else {
+            crate::weights::as_bytes(&(0..n).map(|_| bf(uni(lo, hi))).collect::<Vec<u16>>()).to_vec()
+        };
+        tensors.push((t.name.clone(), t.dtype, t.shape.clone(), bytes));
+    }
+    io(std::fs::create_dir_all(out))?;
+    io(std::fs::write(out.join("config.json"), &text))?;
+    io(std::fs::write(out.join("generation_config.json"), include_str!("../tests/fixtures/glm5_next_generation_config.json")))?;
+    let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = tensors.iter().map(|(n, d, s, b)| (n.as_str(), *d, s.clone(), &b[..])).collect();
+    crate::pack::write_safetensors(&out.join("model.safetensors"), &[("format", "pt".to_string())], &refs)?;
+    println!(
+        "{}: a random GLM-5.3-Flash of the toy's shape, {} tensors, {:.0} MB",
+        out.display(),
+        tensors.len(),
+        tensors.iter().map(|t| t.3.len()).sum::<usize>() as f64 / 1e6
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;

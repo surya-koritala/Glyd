@@ -74,8 +74,11 @@ the recent families is the first priority.
 Today a model runs on one of two kinds of code:
 
 - **Hand-written engines.** `model.rs` (Qwen3 dense), `model35.rs` (Qwen3.5/3.8), `model_gemma4.rs`,
-  `model_qwen4x.rs` (Condor's Qwen3.8-Flash-Next) and the GLM development engine (`model_glm.rs`, `glm_serve.rs`, `glm_cb.rs`,
-  `moe_glm*.rs`, `mla_glm.rs`, `mtp_glm.rs`). Each has its own step, cache and sampling.
+  `model_qwen4x.rs` (Condor's Qwen3.8-Flash-Next) and the GLM development engine (`model_glm.rs`, `mla_glm.rs`, `mtp_glm.rs`). Each has
+  its own step, cache and sampling. **As built (R13, #234):** the GLM development engine is frozen for its MTP drafting alone (R6, #145,
+  puts the MtpHead kind on the executor); what the executor and Condor load GLM by moved out of it (`kern_glm.rs`: the kernel table and
+  the layers' weights; `moe_glm.rs`: the experts' layer), and its serving over the lossy codes pack (`glm_serve.rs`, `glm_cb.rs`, the
+  codes block of `moe_glm_cb.rs`, `draft_loop.rs`) is gone: the executor tiers GLM's experts by hummingbird and the block levels (R12).
 - **The description executor** (`dynamic/mod.rs`). A `ModelDesc` (`mod.rs:518-558`) is a list of `Op`s per layer over 25 activation slots;
   `Dyn::op` is a `match` over 60 `Op` variants (`mod.rs:85-482`, `1428-1870`). Ops are named by family more than by kind (`Prep35`,
   `AttnNh`, `V4Attn`, `GlmPre`, `KimiMixNorm`, `MuseQk`; M2 moves them onto the kinds' operations: the residual streams, the depth mix,

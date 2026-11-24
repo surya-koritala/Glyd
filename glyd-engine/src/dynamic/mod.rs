@@ -878,7 +878,7 @@ pub struct Dyn {
     /// DeepSeek-V4's buffers, where the model is one.
     v4: Option<deepseek_v4::V4Run>,
     /// GLM's kernels and the experts' activation.
-    kglm: crate::model_glm::KernGlm,
+    kglm: crate::kern_glm::KernGlm,
     kmoe: crate::moe::MoeKern,
     /// The residual rules' kernels, a block's mixing weights of the streams (fp32 [chunk, 24]) and the split mixing projection's partial sums (`residual::part_words`).
     kres: residual::KernRes,
@@ -1159,7 +1159,7 @@ impl Dyn {
         let ws = Buf::zeroed(need)?;
         let done = Buf::zeroed(4 << 18)?;
         let host = Pinned::new(4096)?;
-        let (kglm, kmoe, hcp) = (crate::model_glm::KernGlm::load(&dev)?, crate::moe::MoeKern::load(&dev)?, Buf::zeroed(ch * 24 * 4)?);
+        let (kglm, kmoe, hcp) = (crate::kern_glm::KernGlm::load(&dev)?, crate::moe::MoeKern::load(&dev)?, Buf::zeroed(ch * 24 * 4)?);
         // (the split mixing projection's sums: as the model's streams round, one buffer for every block's)
         let round = d.layers.iter().flatten().find_map(|op| if let Op::StreamsPre { round, .. } = *op { Some(round) } else { None });
         let hc_part = Buf::zeroed(round.map_or(Ok(1), |r| residual::part_words(r, ch, d.hidden))? * 4)?;

@@ -1,4 +1,4 @@
-//! FROZEN (R13, #234): see src/model_glm.rs; the dynamic route does not draft with MTP yet.
+//! FROZEN (R13, #234): the reason the development engine stays (src/model_glm.rs): the executor has no MTP head yet; R6 (#145) puts one on it as the MtpHead kind.
 //! GLM-5.3-Flash's multi-token-prediction head (the checkpoint's layer after the model's own, `num_nextn_predict_layers` 1): it drafts the token after the one the model has just picked from the model's last hidden state, to be
 //! verified in one pass beside the model's own (`EngineGlm::verify`). transformers does not implement it; vLLM's `mtp.py` and `Glm5NextDecoderLayer(is_mtp_layer)` are the description, and `tools/glm_ref.py`'s `mtp_forward`
 //! the reference of this file's arithmetic. For a row (the final normed hidden state `h` of position j, the token `t` that follows it): `enorm(embedding(t))` and `hnorm(h)` side by side are projected back to the model's

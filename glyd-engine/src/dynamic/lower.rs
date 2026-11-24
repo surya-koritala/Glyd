@@ -1022,11 +1022,11 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
 
 /// GLM-5.3-Flash: the four streams mixed around each layer's two blocks, Kimi delta attention (its forget gate bounded) or the latent attention (its block's),
 /// a dense MLP (its SwiGLU clamped) in the first layers and a mixture of experts in the rest (its block's), the mean of the streams and the final norm. The
-/// matrices, small tensors and blocks are model_glm.rs's loader's (`dynamic::glm::describe` indexes them in its order).
+/// matrices, small tensors and blocks are kern_glm.rs's loader's (`dynamic::glm::describe` indexes them in its order).
 pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
     use super::glm::{dense_ops, glm_desc, kda_ops, per_layer};
     use crate::glm::GlmKind;
-    use crate::model_glm::GM_D;
+    use crate::kern_glm::GM_D;
     use crate::runtime::kinds::{Decay, Residual};
     let m = &d.desc;
     if m.blocks.len() % 2 != 0 || m.embed.streams != 4 {
@@ -1394,7 +1394,7 @@ mod tests {
     }
 
     /// GLM-5.3-Flash lowered from its released config and the tiny and toy ones, whole and as a split's stages, is the executor's own description of it; each
-    /// layer's matrices are as many as model_glm.rs's loader packs.
+    /// layer's matrices are as many as kern_glm.rs's loader packs.
     #[test]
     fn glm_lowered_is_the_executors_own_description() {
         // (and the released one with every layer's feed-forward its experts, as glmrandom --real makes it: no dense MLP, so neither description sizes its slots)
@@ -1413,7 +1413,7 @@ mod tests {
             for l in 0..c.layers {
                 // (a latent attention layer's four more: the kind's operation's, mla_glm.rs's `MlaWeights`)
                 let latent = if c.kinds[l] == crate::glm::GlmKind::Mla { 4 } else { 0 };
-                assert_eq!(crate::model_glm::layer_matrices(&c, l).len() + latent, super::super::glm::per_layer(c.kinds[l], c.moe[l]), "{f}: layer {l}");
+                assert_eq!(crate::kern_glm::layer_matrices(&c, l).len() + latent, super::super::glm::per_layer(c.kinds[l], c.moe[l]), "{f}: layer {l}");
             }
             let kinds = crate::runtime::describe::describe(&serde_json::from_str(&text).unwrap()).unwrap();
             let half = c.layers / 2;
@@ -1446,7 +1446,7 @@ mod tests {
     fn the_random_glm_lowers_as_its_own_description() {
         for fp8 in [false, true] {
             let dir = std::env::temp_dir().join(format!("glyd-lower-glm-{}-{fp8}", std::process::id()));
-            crate::kcheck_glm::random(&dir, fp8, None).unwrap();
+            crate::glm::random(&dir, fp8, None).unwrap();
             let c = crate::glm::ConfigGlm::load(&dir).unwrap();
             let half = c.layers / 2;
             for st in [

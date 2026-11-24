@@ -27,6 +27,7 @@ pub mod args;
 pub mod bench;
 pub mod calib;
 pub mod cb2_prefill;
+pub mod cb_pack;
 #[cfg(feature = "dev")]
 pub mod ceiling;
 pub mod chat;
@@ -59,7 +60,6 @@ pub(crate) mod kt {
 }
 pub mod disk;
 pub mod doctor;
-pub mod draft_loop;
 #[cfg(feature = "dev")]
 pub mod dsv4_ref;
 pub mod dynamic;
@@ -74,9 +74,6 @@ pub mod gguf;
 pub mod gguf_pre;
 pub mod gguf_tok;
 pub mod glm;
-pub mod glm_cb;
-#[cfg(feature = "dev")]
-pub mod glm_serve;
 pub mod hb_codec;
 pub mod hb_pack;
 pub mod hb_usage;
@@ -99,6 +96,7 @@ pub mod kcheck_nh;
 pub mod kcheck_qwen4x;
 pub mod kern;
 pub mod kern35;
+pub mod kern_glm;
 pub mod kern_nh;
 pub mod kimi;
 #[cfg(feature = "dev")]
@@ -119,7 +117,6 @@ pub mod model_qwen4x;
 pub mod models;
 pub mod moe;
 pub mod moe_glm;
-pub mod moe_glm_cb;
 pub mod moe_hb;
 pub mod moe_hbg;
 pub mod moe_nh;

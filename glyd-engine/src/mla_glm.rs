@@ -1,3 +1,4 @@
+//! FROZEN (R13, #234): see src/model_glm.rs; the executor's latent attention is src/dynamic/mla.rs, its weights src/kern_glm.rs's `MlaWeights`.
 //! GLM-5.3-Flash's latent attention layers (11 of the 45) on the GPU: `GlmMla`, the `MlaBlock` that model_glm.rs's layers call. No rotary; a token's cache is its latent (`kv_a_proj_with_mqa`'s product, normed, `kv_lora_rank` wide),
 //! which is its key and, through `kv_b_proj`, its value, so the attention runs in the latent space: the query `q_h` becomes `Wk_h^T q_h`, the scores are its products with the latents, and the weighted sum of the latents is
 //! multiplied by `Wv_h` at the end (the absorbed form: 1 KiB of cache a token and layer instead of 64 heads' keys and values). Each layer's indexer picks the tokens a query attends to: the keys of the complete pools of
@@ -10,14 +11,12 @@
 //! o) are packed as they load; `kv_b_proj` is held as the bf16 it is (the absorbed form multiplies by its rows), and the indexer's tensors as the checkpoint has them.
 
 use crate::dev::Buf;
-use crate::ffi::{err, Error, Result, Words};
+use crate::ffi::{err, Error, Result};
 use crate::glm::ConfigGlm;
 use crate::kern35::Mat;
+use crate::kern_glm::MlaWeights;
 use crate::model_glm::{mark, GlmHost, MlaBlock};
-use crate::qwen35::Pack35;
-use crate::weights::{as_bytes, read_pack, upload_bytes, upload_packed, v7_manifest, Layout};
-use glyd_gpu::json::Value;
-use glyd_gpu::pack::{unpack_int4, unpack_int5, unpack_int6, Tiered, INT4_TAG, INT5_TAG, INT6_TAG};
+use crate::weights::Layout;
 use glyd_gpu::safetensors::Checkpoint;
 use std::cell::{OnceCell, RefCell};
 
@@ -55,26 +54,6 @@ pub struct MlaScratch {
 const SUB_SCORES: usize = 256 << 20;
 const SUB_OLAT: usize = 64 << 20;
 
-/// A latent attention layer's weights on the GPU: the library's products (q's two, the key-value latent's, o; packed as they load), kv_b_proj as the bf16 it is (the
-/// absorbed form multiplies by its rows), the two norms' weights and the indexer's tensors as the checkpoint has them. The frozen engine's block (`GlmMla`) and the
-/// dynamic engine's latent attention (src/dynamic/glm.rs: `Op::Mla`'s matrices and small tensors) both load them here.
-pub(crate) struct MlaWeights {
-    pub q_a: Mat,
-    pub q_b: Mat,
-    pub kv_a: Mat,
-    pub o: Mat,
-    pub q_a_ln: Buf,
-    pub kv_a_ln: Buf,
-    pub kv_b: Buf,
-    pub wq_b: Buf,
-    pub wk: Buf,
-    pub k_norm_w: Buf,
-    pub k_norm_b: Buf,
-    pub wproj: Buf,
-    pub ape: Buf,
-    pub ix_gate: Buf,
-}
-
 /// A latent attention layer on the GPU.
 pub struct GlmMla {
     nh: usize,
@@ -102,100 +81,6 @@ struct Dump {
     cnt: Vec<u8>,
     sel: Vec<u8>,
     olat: Vec<u8>,
-}
-
-/// A matrix of the layer as the engine multiplies by it: packed in `layout` (from the FP8 or bf16 checkpoint or a glyd-v7 directory's saved pack) where the library packs it, else as the bf16 it is.
-fn load_mat(ck: &Checkpoint, v7: Option<&(Layout, Value)>, pk: &Pack35, layout: Layout) -> Result<Mat> {
-    if pk.packable() {
-        // (a GPU of a group: its slice of the rows where the matrix is a big one, src/dynamic/tp.rs)
-        let cut = crate::dynamic::tp::slicer().filter(|s| s.slices(pk.rows(), pk.cols)).map(|s| s.rows(pk.rows()));
-        let mut b = upload_packed(crate::weights::read_pack_rows(ck, v7, pk, layout, cut)?)?;
-        if cut.is_some() {
-            b.tp_rows = pk.rows();
-        }
-        return Ok(Mat::Packed(b));
-    }
-    let (rows, cols) = (pk.rows(), pk.cols);
-    let mut w = vec![0u16; rows * cols];
-    let mut at = 0;
-    for (name, r) in &pk.parts {
-        ck.read_bf16(name, &mut w[at..at + r * cols]).map_err(|e| Error(format!("{name}: {e}")))?;
-        at += r * cols;
-    }
-    Ok(Mat::Dense(upload_bytes(as_bytes(&w))?, rows, cols))
-}
-
-/// A tensor of the checkpoint, bf16 as it is, on the GPU.
-fn tensor(ck: &Checkpoint, name: &str, elements: usize) -> Result<Buf> {
-    let (_, t) = ck.get(name).ok_or_else(|| Error(format!("no tensor {name}")))?;
-    if t.dtype != "BF16" || t.shape.iter().product::<u64>() as usize != elements {
-        return err(format!("{name} is {} {:?}, where {elements} BF16 values are wanted", t.dtype, t.shape));
-    }
-    upload_bytes(&ck.read(name).map_err(|e| Error(format!("{name}: {e}")))?)
-}
-
-impl MlaWeights {
-    /// Layer `l`'s of the model `c` from the checkpoint `ck`, its library matrices packed in `layout`. `kv_b_proj` is the checkpoint's bf16 (from a glyd-v7 directory, which holds it packed, the pack decoded: the
-    /// layer's numbers are then the pack's).
-    pub(crate) fn load(l: usize, c: &ConfigGlm, ck: &Checkpoint, layout: Layout) -> Result<MlaWeights> {
-        if !c.has_layer(l) || c.kind_of(l) != crate::glm::GlmKind::Mla {
-            return err(format!("layer {l} is not a latent attention layer"));
-        }
-        let (m, ix) = (&c.mla, &c.indexer);
-        let v7 = v7_manifest(&ck.dir)?;
-        if let Some((got, _)) = &v7 {
-            if *got != layout {
-                return err(format!("{}: packed in the {got:?} layout, where {layout:?} is asked", ck.dir.display()));
-            }
-        }
-        let packs = c.layer_packs(l);
-        let find =
-            |suffix: &str| -> Result<&Pack35> { packs.iter().find(|p| p.key.ends_with(suffix)).ok_or_else(|| Error(format!("layer {l}: no pack {suffix}"))) };
-        let a = format!("{}layers.{l}.self_attn", c.prefix);
-        let (q_a, q_b, kv_a, o) = (
-            load_mat(ck, v7.as_ref(), find(".q_a_proj")?, layout)?,
-            load_mat(ck, v7.as_ref(), find(".q_b_proj")?, layout)?,
-            load_mat(ck, v7.as_ref(), find(".kv_a_proj_with_mqa")?, layout)?,
-            load_mat(ck, v7.as_ref(), find(".o_proj")?, layout)?,
-        );
-        // kv_b_proj: the checkpoint's bf16; where the directory holds it as a pack (a glyd-v7 one), that pack decoded
-        let kv_b_name = format!("{a}.kv_b_proj.weight");
-        let kv_b = if ck.get(&kv_b_name).is_some() {
-            let mut w = vec![0u16; m.heads * (m.nope + m.v) * m.kv_rank];
-            ck.read_bf16(&kv_b_name, &mut w).map_err(|e| Error(format!("{kv_b_name}: {e}")))?;
-            upload_bytes(as_bytes(&w))?
-        } else {
-            let pk = find(".kv_b_proj")?;
-            upload_bytes(as_bytes(&unpacked(ck, v7.as_ref(), pk, layout)?))?
-        };
-        let (h, qr) = (c.hidden, m.q_rank);
-        let ixn = format!("{a}.indexer");
-        Ok(MlaWeights {
-            q_a,
-            q_b,
-            kv_a,
-            o,
-            q_a_ln: tensor(ck, &format!("{a}.q_a_layernorm.weight"), qr)?,
-            kv_a_ln: tensor(ck, &format!("{a}.kv_a_layernorm.weight"), m.kv_rank)?,
-            kv_b,
-            wq_b: tensor(ck, &format!("{ixn}.wq_b.weight"), ix.heads * ix.dim * qr)?,
-            wk: tensor(ck, &format!("{ixn}.wk.weight"), ix.dim * h)?,
-            k_norm_w: tensor(ck, &format!("{ixn}.k_norm.weight"), ix.dim)?,
-            k_norm_b: tensor(ck, &format!("{ixn}.k_norm.bias"), ix.dim)?,
-            wproj: tensor(ck, &format!("{ixn}.weights_proj.weight"), ix.heads * h)?,
-            ape: tensor(ck, &format!("{ixn}.index_kpool_compress_ape"), ix.kpool * ix.dim)?,
-            ix_gate: tensor(ck, &format!("{ixn}.index_kpool_compress_gate"), ix.dim * h)?,
-        })
-    }
-
-    /// Device bytes.
-    pub(crate) fn bytes(&self) -> usize {
-        [&self.q_a, &self.q_b, &self.kv_a, &self.o].iter().map(|m| m.bytes()).sum::<usize>()
-            + [&self.q_a_ln, &self.kv_a_ln, &self.kv_b, &self.wq_b, &self.wk, &self.k_norm_w, &self.k_norm_b, &self.wproj, &self.ape, &self.ix_gate]
-                .iter()
-                .map(|b| b.bytes)
-                .sum::<usize>()
-    }
 }
 
 impl GlmMla {
@@ -294,25 +179,6 @@ impl GlmMla {
             let _ = e.mla_scratch().set(s);
         }
         e.mla_scratch().get().ok_or_else(|| Error("the latent attention scratch is not made".into()))
-    }
-}
-
-/// A pack of `ck` in the `level` layout (a glyd-v7 directory's saved one where `v7` is its manifest and it holds the pack, else packed from the Hub-format tensors) decoded to bf16 rows, as the library decodes it on the GPU.
-pub(crate) fn unpacked(ck: &Checkpoint, v7: Option<&(Layout, Value)>, pk: &Pack35, level: Layout) -> Result<Vec<u16>> {
-    let p = read_pack(ck, v7, pk, level)?;
-    let Words::Tiered { tiers, .. } = p.words else { return err(format!("{}: not in a block layout", pk.key)) };
-    let t = Tiered { rows: p.rows, cols: p.cols, data: p.data, blocks: p.b1, block_base: Vec::new(), tiers };
-    let mut w = vec![0u16; p.rows * p.cols];
-    let ok = match tiers[0] >> 24 {
-        INT6_TAG => unpack_int6(&t, &mut w),
-        INT5_TAG => unpack_int5(&t, &mut w),
-        INT4_TAG => unpack_int4(&t, &mut w),
-        tag => return err(format!("{}: a layout of tag {tag}", pk.key)),
-    };
-    if ok {
-        Ok(w)
-    } else {
-        err(format!("{}: its buffers do not decode", pk.key))
     }
 }
 
