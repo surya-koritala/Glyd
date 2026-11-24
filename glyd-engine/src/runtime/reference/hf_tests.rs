@@ -436,7 +436,7 @@ fn deepseek_v4_mhc() {
         norm_in: Norm::rms(1e-6),
         body: Body::Ffn(Ffn::Mlp(silu_mlp(Some(10.0)))),
         norm_out: None,
-        residual: Residual::Streams(StreamsP { streams: 4, sinkhorn_iters: 20, eps: 1e-6, norm_eps: 1e-6, rounding: Rounding::Once }),
+        residual: Residual::Streams(StreamsP { streams: 4, sinkhorn_iters: 20, eps: 1e-6, norm_eps: 1e-6, rounding: Rounding::Once, lagged: false }),
     };
     let p = params(
         &f,

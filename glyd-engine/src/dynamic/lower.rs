@@ -1038,8 +1038,8 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
     }
     let layers = m.blocks.len() / 2;
     let (hc, round) = match &m.blocks[0].residual {
-        Residual::Streams(s) => ((s.eps, s.sinkhorn_iters as i32), s.rounding),
-        r => return err(format!("GLM-5.3-Flash: a residual of {r:?}, not the streams")),
+        Residual::Streams(s) if !s.lagged => ((s.eps, s.sinkhorn_iters as i32), s.rounding),
+        r => return err(format!("GLM-5.3-Flash: a residual of {r:?}, not mHC's streams")),
     };
     let lin = m.blocks.iter().find_map(|b| match &b.body {
         Body::Mixer(Mixer::Linear(x)) => Some(x),
@@ -1221,8 +1221,8 @@ pub fn deepseek_v4(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Sta
         };
         for b in [ab, eb] {
             match &b.residual {
-                Residual::Streams(s) => hc = (s.eps, s.sinkhorn_iters, s.streams, s.rounding),
-                r => return err(format!("DeepSeek-V4: layer {l}'s residual is {r:?}, not the streams")),
+                Residual::Streams(s) if !s.lagged => hc = (s.eps, s.sinkhorn_iters, s.streams, s.rounding),
+                r => return err(format!("DeepSeek-V4: layer {l}'s residual is {r:?}, not mHC's streams (lagged mHC has no operation yet)")),
             }
         }
         ratios.push(c.ratio);

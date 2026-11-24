@@ -522,7 +522,7 @@ pub struct GateP {
 /// n residual streams mixed per block: mHC (GLM-5.3, DeepSeek-V4). The block's input is a weighted sum of the streams; its output is
 /// spread back over them with the Sinkhorn-projected mixing of the streams. Roles `hc_fn` [(2 + n) n, n hidden], `hc_base` [(2 + n) n],
 /// `hc_scale` [3]. Condor's gated residuals are the other rule of several streams (`GatedStreamsP`).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct StreamsP {
     pub streams: usize,
     pub sinkhorn_iters: usize,
@@ -535,6 +535,28 @@ pub struct StreamsP {
     /// projection, post and comb rounded before they weigh, each term of the update rounded, the collapse's norm rounding the normed
     /// value before its weight (GLM-5.3-Flash). The final collapse and norm (`Collapse::Weighted`, `Collapse::Mean`) round as the blocks'.
     pub rounding: Rounding,
+    /// Lagged mHC (DeepSeek-V4.1): the block's input is the streams weighed by the previous lagged block's input weights (`pre`), the first
+    /// block's by one-hot weights on stream 0 (the streams being copies of the embedding, its embedding unscaled); the weights the block's own
+    /// projection makes go to the next block (the model's last ones to the head: `Collapse::LastPre`). Its output's weights and the streams'
+    /// mixing are its own, as mHC's.
+    pub lagged: bool,
+}
+
+/// The derived form, with `lagged` said only where it is set: the other blocks' descriptions read as before the field (the digests of
+/// tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for StreamsP {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("StreamsP");
+        s.field("streams", &self.streams)
+            .field("sinkhorn_iters", &self.sinkhorn_iters)
+            .field("eps", &self.eps)
+            .field("norm_eps", &self.norm_eps)
+            .field("rounding", &self.rounding);
+        if self.lagged {
+            s.field("lagged", &self.lagged);
+        }
+        s.finish()
+    }
 }
 
 /// Kimi-K3's depth mix: a block's input is a softmax mix of the sources so far (the embedding and each completed group of layers'
@@ -615,6 +637,8 @@ pub enum Collapse {
     /// Condor's final mixer: the gated residuals' input mix (`GatedStreamsP`) with the model's roles `out_mix_down`, `out_mix_up`, each stream
     /// normed by the final norm (its weight [n hidden], a stream's each) before the mix, and no norm after it.
     GatedMix,
+    /// Lagged mHC's (DeepSeek-V4.1, no hyper-head): the streams weighed by the last block's own input weights (`StreamsP::lagged`).
+    LastPre,
 }
 
 /// A draft head: a few blocks after a projection of [embedding of the next token, the model's last hidden state] (R6).

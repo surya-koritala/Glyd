@@ -1282,6 +1282,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
     // the residual streams (GLM-5.3-Flash)
     let streams = if flash && k.bool("mhc", true)? {
         Some(StreamsP {
+            lagged: false,
             streams: k.opt_usize("hc_mult")?.unwrap_or(4),
             sinkhorn_iters: k.opt_usize("hc_sinkhorn_iters")?.unwrap_or(20),
             eps: k.opt_f64("hc_eps")?.unwrap_or(1e-6) as f32,
@@ -1847,6 +1848,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     let limit = k.opt_f64("swiglu_limit")?.filter(|&l| l > 0.0).map(|l| l as f32);
     let scale = k.opt_f64("routed_scaling_factor")?.unwrap_or(1.0) as f32;
     let streams = StreamsP {
+        lagged: false,
         streams: k.usize("hc_mult")?,
         sinkhorn_iters: k.opt_usize("hc_sinkhorn_iters")?.unwrap_or(20),
         eps: k.opt_f64("hc_eps")?.unwrap_or(1e-6) as f32,

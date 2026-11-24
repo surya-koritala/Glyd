@@ -4,7 +4,7 @@
 use super::{depth_mix, norm::norm, Params, RefLayer};
 use crate::ffi::{err, Error, Result};
 use crate::runtime::describe::{Described, Source};
-use crate::runtime::kinds::{Collapse, ModelDesc, Residual};
+use crate::runtime::kinds::{Collapse, ModelDesc, Residual, StreamsP};
 
 /// A checkpoint's tensors by name: (shape, values as f32).
 pub type Tensors<'a> = &'a dyn Fn(&str) -> Option<(Vec<usize>, Vec<f32>)>;
@@ -183,7 +183,19 @@ impl RefModel {
         let seqs = vec![0; tokens.len()];
         // the depth mix's sources per token, and the open group's partial sum (the embedding to begin with)
         let mut depth: Vec<Depth> = x.chunks(n * d).map(|r| Depth { sources: Vec::new(), partial: Some(r[..d].to_vec()) }).collect();
+        // (lagged mHC: each token's input weights from the last lagged block; one-hot on stream 0 before the first)
+        let mut lag: Vec<Vec<f32>> = vec![(0..n).map(|j| (j == 0) as u32 as f32).collect(); tokens.len()];
         for l in &mut self.layers {
+            if let Residual::Streams(s @ StreamsP { lagged: true, .. }) = l.block.residual {
+                for (t, xt) in x.chunks_mut(n * d).enumerate() {
+                    let (pre, post, comb) = super::hc_weights(&s, &l.p, xt)?;
+                    let input: Vec<f32> = (0..d).map(|i| (0..n).map(|j| lag[t][j] * xt[j * d + i]).sum()).collect();
+                    let o = l.output(seqs[t], pos[t], tokens[t], &input)?;
+                    l.post(xt, &o, Some((post, comb)))?;
+                    lag[t] = pre;
+                }
+                continue;
+            }
             let Residual::DepthMix(dm) = l.block.residual else {
                 l.forward(&pos, &seqs, tokens, &mut x)?;
                 continue;
@@ -198,7 +210,7 @@ impl RefModel {
         let h = &self.desc.head;
         let mut out = Vec::with_capacity(tokens.len());
         for (t, xt) in x.chunks(n * d).enumerate() {
-            let y = self.final_h(xt, Some(&depth[t]))?;
+            let y = self.final_h_with(xt, Some(&depth[t]), &lag[t])?;
             out.push(
                 super::matvec(&self.head, d, &y)
                     .into_iter()
@@ -215,6 +227,11 @@ impl RefModel {
     /// The head's input for one token: its residual `xt` (its streams) collapsed into one (`Head::collapse`; Kimi-K3's from the depth mix's
     /// state), then the final norm.
     pub fn final_h(&self, xt: &[f32], depth: Option<&Depth>) -> Result<Vec<f32>> {
+        self.final_h_with(xt, depth, &[])
+    }
+
+    /// `final_h` with lagged mHC's last input weights `pre` (`Collapse::LastPre`).
+    pub fn final_h_with(&self, xt: &[f32], depth: Option<&Depth>, pre: &[f32]) -> Result<Vec<f32>> {
         let (d, n) = (self.desc.hidden, self.desc.embed.streams.max(1));
         let r: Vec<f32> = match self.desc.head.collapse {
             Collapse::None if n == 1 => xt.to_vec(),
@@ -232,6 +249,8 @@ impl RefModel {
                 let dp = depth.ok_or_else(|| Error("the depth mix's collapse without its sources".into()))?;
                 dp.mix(self.p.vec("out_mix_norm")?, self.p.vec("out_mix_proj")?)
             }
+            Collapse::LastPre if pre.len() == n => (0..d).map(|i| (0..n).map(|j| pre[j] * xt[j * d + i]).sum()).collect(),
+            Collapse::LastPre => return err(format!("lagged mHC's collapse with {} weights for {n} streams", pre.len())),
             // (the streams normed by the final norm before the mix, none after it)
             Collapse::GatedMix => {
                 let (down, up) = (self.p.vec("out_mix_down")?, self.p.vec("out_mix_up")?);
@@ -239,5 +258,90 @@ impl RefModel {
             }
         };
         Ok(norm(&self.desc.final_norm, &r, Some(&self.final_norm), None))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::kinds::{Act, Block, Body, Embed, Ffn, Head, Mlp, Norm, Rounding};
+    use crate::runtime::reference::{ffn, hc_weights, matvec, testing::fill};
+
+    const D: usize = 8;
+    const N: usize = 4;
+
+    fn streams(lagged: bool) -> StreamsP {
+        StreamsP { streams: N, sinkhorn_iters: 20, eps: 1e-6, norm_eps: 1e-6, rounding: Rounding::F32, lagged }
+    }
+
+    fn mlp() -> Mlp {
+        Mlp { act: Act::Silu, gated: true, bias: false, clamp: None }
+    }
+
+    /// A block of a gated MLP over `N` streams, its weights by `k`.
+    fn block(k: usize, s: StreamsP) -> RefLayer {
+        let mut p = Params::new();
+        for (role, shape) in [("gate", [12, D]), ("up", [12, D]), ("down", [D, 12]), ("hc_fn", [(2 + N) * N, N * D])] {
+            p.put(role, &shape, fill(&format!("lag{k}.{role}"), shape[0] * shape[1], -0.5, 0.5));
+        }
+        p.put("hc_base", &[(2 + N) * N], fill(&format!("lag{k}.hc_base"), (2 + N) * N, -0.5, 0.5));
+        p.put("hc_scale", &[3], vec![0.7, 0.9, 1.1]);
+        p.put("norm_in", &[D], fill(&format!("lag{k}.norm_in"), D, 0.5, 1.5));
+        RefLayer::new(Block { norm_in: Norm::rms(1e-6), body: Body::Ffn(Ffn::Mlp(mlp())), norm_out: None, residual: Residual::Streams(s) }, D, p)
+    }
+
+    fn model(s: StreamsP, collapse: Collapse) -> RefModel {
+        let layers = vec![block(0, s), block(1, s)];
+        let desc = ModelDesc {
+            hidden: D,
+            vocab: 16,
+            embed: Embed { scale: 1.0, norm: None, streams: N },
+            blocks: layers.iter().map(|l| l.block.clone()).collect(),
+            final_norm: Norm::rms(1e-6),
+            head: Head { tied: false, softcap: None, scale: 1.0, collapse },
+            mtp: Vec::new(),
+            vision: None,
+            rope: None,
+        };
+        RefModel {
+            desc,
+            embed: fill("lag.embed", 16 * D, -1.0, 1.0),
+            final_norm: fill("lag.fn", D, 0.5, 1.5),
+            head: fill("lag.head", 16 * D, -0.5, 0.5),
+            layers,
+            p: Params::new(),
+        }
+    }
+
+    /// Lagged mHC (DeepSeek-V4.1): a block's input is the streams weighed by the previous block's own input weights, the first block's by
+    /// stream 0 alone, the head's by the last block's; written out by hand for two blocks it is the model's logits to the bit, and other
+    /// logits than mHC's own-weights wiring.
+    #[test]
+    fn lagged_mhc_hands_each_blocks_weights_to_the_next() {
+        let (s, tokens) = (streams(true), [3u32, 7, 1]);
+        let mut m = model(s, Collapse::LastPre);
+        let got = m.forward(&tokens, 0).unwrap();
+        let n = |x: &[f32], w: Option<&[f32]>| norm(&Norm::rms(1e-6), x, w, None);
+        let weigh = |w: &[f32], x: &[f32]| -> Vec<f32> { (0..D).map(|i| (0..N).map(|j| w[j] * x[j * D + i]).sum()).collect() };
+        for (t, &id) in tokens.iter().enumerate() {
+            let mut x: Vec<f32> = (0..N).flat_map(|_| m.embed[id as usize * D..][..D].to_vec()).collect();
+            let mut prev = vec![1.0, 0.0, 0.0, 0.0];
+            for l in &m.layers {
+                let (pre, post, comb) = hc_weights(&s, &l.p, &x).unwrap();
+                let o = ffn::mlp(&mlp(), &l.p, "", &n(&weigh(&prev, &x), l.p.opt("norm_in"))).unwrap();
+                let old = x.clone();
+                for k in 0..N {
+                    for i in 0..D {
+                        x[k * D + i] = post[k] * o[i] + (0..N).map(|j| comb[j][k] * old[j * D + i]).sum::<f32>();
+                    }
+                }
+                prev = pre;
+            }
+            assert_eq!(got[t], matvec(&m.head, D, &n(&weigh(&prev, &x), Some(&m.final_norm))), "token {t}");
+        }
+        let own = model(streams(false), Collapse::Mean).forward(&tokens, 0).unwrap();
+        assert!(own.iter().zip(&got).all(|(a, b)| a != b));
+        // (a lagged block alone has no input weights to take)
+        assert!(block(0, s).pre(&vec![0.5; N * D]).is_err());
     }
 }
