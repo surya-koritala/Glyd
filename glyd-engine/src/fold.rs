@@ -329,7 +329,13 @@ pub fn kv_decode_workspace(b: i64, h: i64, g: i64, d: i64, splits: i64) -> Resul
     if b < 1 || d & KV_ONE != 0 || !kv_shape_ok(h, d, 0) || !(1..=8).contains(&g) || !(1..=65535).contains(&splits) || b * h > KV_CNT_BYTES / 4 {
         return Err(invalid("kv_decode_workspace"));
     }
-    Ok((KV_CNT_BYTES + b * h * splits * g * (2 + d) * 4) as usize)
+    Ok((KV_CNT_BYTES + (kv_ml_floats(b * h * splits * g) + b * h * splits * g * d) * 4) as usize)
+}
+
+/// The partials' maxima and sums (two floats each) after the decode workspace's counters, rounded up to 16 bytes: the partial outputs after them are read
+/// as float4 (kv_ml_floats in glyd_gpu.cu).
+fn kv_ml_floats(partials: i64) -> i64 {
+    (partials * 2 + 3) / 4 * 4
 }
 
 /// The layouts' numbers in a pack's first tier word's top byte (glyd_gpu.cu).
@@ -900,7 +906,7 @@ pub unsafe fn kv_decode(
         nc,
         raw: kv_raw(g.raw, g.nslabs, hp),
         ws_ml,
-        ws_o: ws_ml + (b * h * splits * group * 2 * 4) as u64,
+        ws_o: ws_ml + (kv_ml_floats(b * h * splits * group) * 4) as u64,
         h: h as i32,
         g: group as i32,
         a: a as i32,
@@ -968,7 +974,7 @@ pub unsafe fn kv_decode_bf16(
         bt_stride,
         slen: seq_lens,
         ws_ml,
-        ws_o: ws_ml + (b * h * splits * group * 2 * 4) as u64,
+        ws_o: ws_ml + (kv_ml_floats(b * h * splits * group) * 4) as u64,
         h: h as i32,
         g: group as i32,
         splits: splits as i32,
@@ -2860,6 +2866,9 @@ mod tests {
         assert_eq!(kv_raw_bytes(3, 8).unwrap(), 16 + 16 + 3 * 8 * 2048);
         assert!(kv_raw_bytes(1, 0).is_err() && kv_raw_bytes(1, 33).is_err());
         assert_eq!(kv_decode_workspace(2, 8, 4, 128, 3).unwrap(), (1 << 20) + 2 * 8 * 3 * 4 * 130 * 4);
+        // an odd count of partials: their sums padded to 16 bytes, so the partial outputs after them are float4-aligned
+        assert_eq!(kv_decode_workspace(1, 1, 1, 128, 1).unwrap(), (1 << 20) + 4 * 4 + 128 * 4);
+        assert_eq!(kv_decode_workspace(1, 3, 1, 128, 3).unwrap(), (1 << 20) + 20 * 4 + 9 * 128 * 4);
         for (b, h, g, d, s) in
             [(0, 8, 4, 128, 1), (1, 8, 9, 128, 1), (1, 8, 4, 128 | KV_ONE, 1), (1, 8, 4, 128, 0), (1, 8, 4, 128, 65536), (32769, 8, 1, 128, 1)]
         {

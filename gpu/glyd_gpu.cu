@@ -5502,6 +5502,9 @@ GLYD_GPU_INTERNAL int glyd_gpu_attn_decode(const uint16_t* q, int64_t D, const u
 
 // The lossless 12-bit KV cache (kvc, above): its C API (glyd_gpu.h says what each takes).
 static constexpr size_t KV_CNT_BYTES = 1 << 20;  // the decode workspace's counters (a u32 a (sequence, kv head)), first in it
+// The partials' maxima and sums (two floats each) after the counters, rounded up to 16 bytes: the partial outputs after them are read as float4 (merge_head), so an odd
+// count of partials would leave them 8 bytes off.
+static constexpr int64_t kv_ml_floats(int64_t partials) { return (partials * 2 + 3) / 4 * 4; }
 static bool kv_pipe() {  // the attention kernel loading the next page ahead (GLYD_KV_PIPE=1; not by default: it takes 219 registers of the 168 and an SM holds 2 of its CTAs where it holds 3, which measured as fast on an L4 and
     // faster on an A100), read at each call: the plan's bits do not depend on it
     const char* e = TUNING_ENV("GLYD_KV_PIPE");
@@ -5666,7 +5669,7 @@ GLYD_GPU_INTERNAL int glyd_gpu_kv_decode_shares(int64_t B, int64_t H, int64_t ma
 
 GLYD_GPU_INTERNAL int glyd_gpu_kv_decode_workspace(int64_t B, int64_t H, int64_t G, int64_t D, int64_t splits, size_t* bytes) {
     if (!bytes || B < 1 || kv_one(D) || !kv_shape_ok(H, D, 0) || G < 1 || G > 8 || splits < 1 || splits > 65535 || B * H > (int64_t)(KV_CNT_BYTES / sizeof(uint32_t))) return cudaErrorInvalidValue;
-    *bytes = KV_CNT_BYTES + (size_t)(B * H * splits * G * (2 + D)) * sizeof(float);
+    *bytes = KV_CNT_BYTES + (size_t)(kv_ml_floats(B * H * splits * G) + B * H * splits * G * D) * sizeof(float);
     return 0;
 }
 
@@ -5709,7 +5712,7 @@ GLYD_GPU_INTERNAL int glyd_gpu_kv_decode_from(const uint16_t* q, int64_t q_strid
     float* ws_ml = (float*)((uint8_t*)workspace + KV_CNT_BYTES);
     const kvc::EscapePool E = kvc::esc_of((uint8_t*)escape, nchunks);
     const int HP = kv_heads(H, D);
-    kvc::AttnParams P{bf(q), q_stride, pool, page_stride, kbase, vbase, block_table, bt_stride, seq_lens, E.ent, E.nc, kvc::raw_of((uint8_t*)raw, nslabs, HP), ws_ml, ws_ml + B * H * splits * G * 2, (int)H, (int)G, (int)A, kvc::hdr_bytes(HP, (int)A), (int)splits,
+    kvc::AttnParams P{bf(q), q_stride, pool, page_stride, kbase, vbase, block_table, bt_stride, seq_lens, E.ent, E.nc, kvc::raw_of((uint8_t*)raw, nslabs, HP), ws_ml, ws_ml + kv_ml_floats(B * H * splits * G), (int)H, (int)G, (int)A, kvc::hdr_bytes(HP, (int)A), (int)splits,
                       HP, (float)(scale * 1.4426950408889634), kv_ppc_min(), kv_floor(B, H, current_device()), ws_cnt, bf(out), out_stride, first, (int)(round_scores != 0), nullptr, nullptr, 0};
     return kv_attn_launch(P, B, H, D, splits, seq_lens, first, out, out_stride, cs);
 }
@@ -5728,7 +5731,7 @@ GLYD_GPU_INTERNAL int glyd_gpu_kv_decode_bf16(const uint16_t* q, int64_t q_strid
         return cudaErrorInvalidValue;
     uint32_t* ws_cnt = (uint32_t*)workspace;
     float* ws_ml = (float*)((uint8_t*)workspace + KV_CNT_BYTES);
-    kvc::AttnParams P{bf(q), q_stride, nullptr, 0, nullptr, nullptr, block_table, bt_stride, seq_lens, nullptr, 0, kvc::RawPool{}, ws_ml, ws_ml + B * H * splits * G * 2, (int)H, (int)G, 0, 0,
+    kvc::AttnParams P{bf(q), q_stride, nullptr, 0, nullptr, nullptr, block_table, bt_stride, seq_lens, nullptr, 0, kvc::RawPool{}, ws_ml, ws_ml + kv_ml_floats(B * H * splits * G), (int)H, (int)G, 0, 0,
                       (int)splits, (int)(H * (D / kvc::D)), (float)(scale * 1.4426950408889634), kv_ppc_min(), kv_floor(B, H, current_device()), ws_cnt, bf(out), out_stride, first,
                       (int)(round_scores != 0), bf(kc), bf(vc), (int)std::min<int64_t>(cap, INT32_MAX)};
     return kv_attn_launch(P, B, H, D, splits, seq_lens, first, out, out_stride, cs);
