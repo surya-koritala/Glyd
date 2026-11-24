@@ -921,11 +921,13 @@ pub struct Dyn {
     /// In such a pass: its first rows that decode, a token of a sequence each, whose attention runs as one (`attn::Dyn::attn_lead`, through `rows::RowTabs`); 0: none.
     lead: std::cell::Cell<usize>,
     /// The CUDA graphs of steps of rows that decode, one for each padded row count met so far (`rows::Dyn::rows_replay`), whether such graphs may be captured (graphs on, and
-    /// no block of experts that reads the host), the last one replayed (for `prof_take`), and the replays (`usercheck` counts them).
+    /// no block of experts that reads the host), the last one replayed (for `prof_take`), the replays and the captures made in a request's step rather than before the
+    /// first (`usercheck` counts them).
     rgraphs: Vec<RowsGraph>,
     rgraph_on: bool,
     rplayed: std::cell::Cell<Option<usize>>,
     pub(crate) rows_replays: std::cell::Cell<u64>,
+    pub(crate) rows_late: std::cell::Cell<u64>,
     /// Piecewise graphs of the passes no whole graph takes (src/dynamic/pieces.rs): the sets captured, how `forward` runs the pass being made, the pieces a capture makes,
     /// whether a piece's capture is open (to end it on an error), the set the last pass replayed and where its pieces' events go among the eager ones (`prof_take`), the
     /// pieces the last pass replayed, and the passes replayed so (`usercheck` counts them).
@@ -1315,6 +1317,7 @@ impl Dyn {
             rgraph_on: false,
             rplayed: std::cell::Cell::new(None),
             rows_replays: std::cell::Cell::new(0),
+            rows_late: std::cell::Cell::new(0),
             pieces: Default::default(),
             pmode: std::cell::Cell::new(pieces::Mode::Eager),
             pcap: Default::default(),
@@ -1986,16 +1989,8 @@ impl Dyn {
             self.mark("embedding")?;
         }
         let st = if std::ptr::eq(p, &self.big) { self.stage } else { Stage::whole(p.d.layers.len()) };
-        // (the tables of the pass's rows that decode, each its sequence's; then the 12-bit pages' slots, lengths and first tokens of the pass's rows, once for every layer)
-        if !capture && std::ptr::eq(p, &self.big) && !self.parts.is_empty() && self.lead.get() > 0 {
-            self.row_tables(pos.0)?;
-        }
-        if !capture && self.lossless.is_some() && std::ptr::eq(p, &self.big) {
-            self.kv12_prepare(n, pos)?;
-        }
-        if !capture && std::ptr::eq(p, &self.big) {
-            self.lib_decode_prepare(n, pos)?;
-            self.mark("attention: the rows' lengths")?;
+        if !capture {
+            self.pass_prepare(p, n, pos)?;
         }
         let head = if st.last { head } else { 0 };
         if st.first && !self.in_piece(&mut pc, p, 0, 0, &p.d.first, n, pos, head)? {
@@ -2118,6 +2113,23 @@ impl Dyn {
         }
         self.queued.set(queue.elapsed().as_secs_f64() * 1e3);
         Ok(())
+    }
+
+    /// What a pass of part `p` on n rows at `pos` makes once for every layer before its operations run: the tables of its rows that decode, each its sequence's
+    /// (`rows::RowTabs`), the 12-bit pages' slots, and the rows' lengths and first tokens the attention's decode reads. Every caller of `op` runs it first (`forward`, and
+    /// kindcheck's operation-by-operation passes).
+    unsafe fn pass_prepare(&self, p: &Part, n: usize, pos: (u64, u64)) -> Result<()> {
+        if !std::ptr::eq(p, &self.big) {
+            return Ok(());
+        }
+        if !self.parts.is_empty() && self.lead.get() > 0 {
+            self.row_tables(pos.0)?;
+        }
+        if self.lossless.is_some() {
+            self.kv12_prepare(n, pos)?;
+        }
+        self.lib_decode_prepare(n, pos)?;
+        self.mark("attention: the rows' lengths")
     }
 
     fn capture_graph(&mut self) -> Result<()> {

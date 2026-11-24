@@ -262,6 +262,9 @@ impl Dyn {
         }
         self.start.set(at);
         let pp = self.pos.ptr;
+        // (what `forward` makes before a pass's operations: the decode's rows' lengths and first tokens, which the attention's decode steps read)
+        // SAFETY: as below.
+        unsafe { self.pass_prepare(&self.big, n, (pp, pp))? };
         for i in ops {
             // SAFETY: the engine's own buffers, sized for a chunk (n rows at most a chunk); its slots hold the rows the operation reads (written above or by the
             // operations before it), and the stream orders the launches; it is synchronized before a slot is read.

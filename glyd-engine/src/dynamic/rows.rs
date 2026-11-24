@@ -652,7 +652,7 @@ impl Dyn {
         // SAFETY: live buffers of the engine and of each sequence, the pass's rows within a chunk's (a graph's padded rows within the head's).
         let r = unsafe {
             self.embed(&tokens).and_then(|_| match graph {
-                Some(k) => self.rows_replay(k),
+                Some(k) => self.rows_replay(k, false),
                 None if pieces => self.pieces_pass(n, (pp, pp), asked),
                 None => self.forward(&self.big, n, (pp, pp), asked),
             })
@@ -690,9 +690,41 @@ impl Dyn {
         self.rows_bucket(2).is_some()
     }
 
+    /// The graphs of steps of rows that decode, every size of `rows_bucket`'s ladder, captured before the first request (as vLLM captures its at start), so that no
+    /// step waits on a capture: each after a warm-up pass of padding rows alone (position -1: no key read or written, no sequence's state touched).
+    fn capture_rows(&mut self) -> Result<()> {
+        if self.rows_bucket(2).is_none() {
+            return Ok(());
+        }
+        let most = self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).map_or(0, |rt| rt.rows).min(self.head_room()).min(self.chunk);
+        let mut sizes: Vec<usize> = (2..=most).filter_map(|n| bucket(n, most)).collect();
+        sizes.dedup();
+        for k in sizes {
+            if self.rgraphs.iter().any(|g| g.rows == k) {
+                continue;
+            }
+            self.dev.sync()?;
+            self.pos.write(0, &vec![-1i32; k])?;
+            self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).expect("room for the rows' tables").slot.write(0, &vec![-1i32; k])?;
+            // (a part of no row of its own: the pass is one over several sequences, its rows all the lead's)
+            (self.parts, self.head_rows) = (vec![self.part_of(self.seq, 0, 1, 0)?], (0..k).collect());
+            self.lead.set(k);
+            // SAFETY: the engine's buffers, sized for the head's rows (k at most); the padding rows write no cache.
+            let r = unsafe { self.embed(&vec![0u32; k]).and_then(|_| self.rows_replay(k, true)) };
+            self.parts.clear();
+            self.head_rows.clear();
+            self.lead.set(0);
+            r?;
+        }
+        // (--prof: the warm-ups' events are no request's)
+        self.prof_take()?;
+        self.dev.sync()
+    }
+
     /// A step of `k` rows that decode (padded: `pass`), its embedding queued: the graph of k rows replayed; where there is none yet, the step run eager and then captured
     /// (its first run is the warm-up a capture needs: every buffer and kernel it takes made). The pass's rows' positions, slots and tokens are in the buffers the graph reads.
-    unsafe fn rows_replay(&mut self, k: usize) -> Result<()> {
+    /// `start`: the capture is `capture_rows`' (else one in a request's step, counted: `rows_late`).
+    unsafe fn rows_replay(&mut self, k: usize, start: bool) -> Result<()> {
         if let Some(i) = self.rgraphs.iter().position(|g| g.rows == k) {
             self.rgraphs[i].graph.launch(self.dev.stream)?;
             self.replayed.set(true);
@@ -700,6 +732,9 @@ impl Dyn {
             self.dcalls.set(self.rgraphs[i].calls);
             self.rows_replays.set(self.rows_replays.get() + 1);
             return Ok(());
+        }
+        if !start {
+            self.rows_late.set(self.rows_late.get() + 1);
         }
         let pp = self.pos.ptr;
         self.forward(&self.big, k, (pp, pp), k)?;
@@ -777,6 +812,7 @@ impl Dyn {
             self.add_seqs(users - 1)?;
             // (the host's swap area for the sequences sent back for room: as the plan sizes it, from what the computer has free now that the experts' host tier is in it)
             self.swap_room(crate::plan::swap_area(self.swap_backs() as u64, crate::offload::host_memory()) as usize)?;
+            self.capture_rows()?;
             return Ok(Some(users));
         }
         let per = (self.kc.bytes + self.vc.bytes + states * (1 + marks as usize)).max(1);

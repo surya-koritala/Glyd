@@ -2679,14 +2679,19 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     drop(s);
     // (decode steps of several rows replay a CUDA graph of their padded rows where the description takes one (src/dynamic/rows.rs `rows_bucket`): with prompts one a pass, a
     // description with experts decodes a sequence a step)
-    let replays = e.rows_replays.get();
+    let (replays, late) = (e.rows_replays.get(), e.rows_late.get());
     let graphs = e.rows_graphs() && !(one_a_pass && !e.rows_exact());
     println!(
-        "decode steps of several rows replayed from a CUDA graph: {replays}{}",
+        "decode steps of several rows replayed from a CUDA graph: {replays}, graphs captured in a request's step: {late}{}",
         if graphs { "" } else { " (this description's steps of several rows run eager)" }
     );
     if graphs && batchable && k > 1 && steps[2..].iter().any(|&x| x > 0) && replays == 0 {
         println!("FAIL no decode step of several rows replayed a graph");
+        fails += 1;
+    }
+    // (every size captured before the first request (rows.rs `capture_rows`): no step waits on a capture)
+    if late > 0 {
+        println!("FAIL {late} graphs of decode steps were captured in a request's step, not before the first");
         fails += 1;
     }
     // (passes in pieces (src/dynamic/pieces.rs): the prompts at once twice more, every pass eager, then every pass that is no whole graph's in pieces, each size captured the
