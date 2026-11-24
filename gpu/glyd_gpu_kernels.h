@@ -3381,7 +3381,7 @@ __device__ __forceinline__ float pf_score(const PrefillParams& P, float x, bool 
 }
 
 template <int HALVES, int RG>
-__global__ void __launch_bounds__(32 * RG * HALVES, 1) prefill_kernel(const PrefillParams P) {
+__device__ __forceinline__ void prefill_body(const PrefillParams P) {
     constexpr int DO = D * HALVES, KS = DO + 8, NWP = RG * HALVES, BM = 16 * RG;
     static_assert(RG % 2 == 0, "the fill: a tile's two pages over the warps of a task in steps of RG / 2");
     extern __shared__ __align__(16) unsigned char pf_sm[];
@@ -3644,6 +3644,11 @@ __global__ void __launch_bounds__(32 * RG * HALVES, 1) prefill_kernel(const Pref
         if (ra < n) *reinterpret_cast<__nv_bfloat162*>(P.out + (int64_t)ra * P.out_stride + c) = __floats2bfloat162_rn(sa > 0.f ? acc[j][0] / sa : 0.f, sa > 0.f ? acc[j][1] / sa : 0.f);
         if (rb < n) *reinterpret_cast<__nv_bfloat162*>(P.out + (int64_t)rb * P.out_stride + c) = __floats2bfloat162_rn(sb > 0.f ? acc[j][2] / sb : 0.f, sb > 0.f ? acc[j][3] / sb : 0.f);
     }
+}
+
+template <int HALVES, int RG>
+__global__ void __launch_bounds__(32 * RG * HALVES, 1) prefill_kernel(const PrefillParams P) {
+    prefill_body<HALVES, RG>(P);
 }
 
 }  // namespace kvc
