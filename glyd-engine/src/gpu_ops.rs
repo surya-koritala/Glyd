@@ -383,7 +383,8 @@ pub trait Gemm {
 
 /// V8a's row for the dense product of a matrix decoded to bf16 (glyd-engine/docs/design/kernel-libraries.md), on a GPU of compute capability `cc`:
 /// (whether to take cuBLAS where the machine has it, whether Glyd's own product may take it). cuBLAS, but on Ada (8.9) Glyd's own (an RTX 4080 SUPER's
-/// 2,000-token Qwen3-8B pass: own 353 ms against vLLM's 357 on cuBLAS, `benchmarks/gpu/rtx4080s-gemm-tiles-2026-11-20`); Glyd's own on Ampere and
+/// 2,000-token Qwen3-8B pass: own 353 ms against vLLM's 357 on cuBLAS, `benchmarks/gpu/rtx4080s-gemm-tiles-2026-11-20`; an A100's Qwen3-8B prompt of
+/// 498 / 1,001 / 4,003 tokens 10% / 4% / 2% faster by cuBLAS, `benchmarks/gpu/a100-device-seam-2026-11-24`); Glyd's own on Ampere and
 /// Hopper where cuBLAS is not there; neither elsewhere (the fused kernels keep the product). `want` (GLYD_ENGINE_GEMM, a development build's) "blas" or
 /// "own" takes that one (another value: neither). A row changes where its A/B on that GPU measures the other faster.
 pub fn dense_choice(cc: (i32, i32), want: &str) -> (bool, bool) {
