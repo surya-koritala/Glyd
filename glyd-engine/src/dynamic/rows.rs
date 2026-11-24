@@ -705,7 +705,12 @@ impl Dyn {
             }
             self.dev.sync()?;
             self.pos.write(0, &vec![-1i32; k])?;
-            self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).expect("room for the rows' tables").slot.write(0, &vec![-1i32; k])?;
+            let rt = self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).expect("room for the rows' tables");
+            rt.slot.write(0, &vec![-1i32; k])?;
+            // (no row's state: the recurrent layers' kernels skip every row)
+            if rt.nst > 0 {
+                rt.states.write(0, &vec![0u64; k * rt.nst])?;
+            }
             // (a part of no row of its own: the pass is one over several sequences, its rows all the lead's)
             (self.parts, self.head_rows) = (vec![self.part_of(self.seq, 0, 1, 0)?], (0..k).collect());
             self.lead.set(k);
@@ -813,6 +818,7 @@ impl Dyn {
             // (the host's swap area for the sequences sent back for room: as the plan sizes it, from what the computer has free now that the experts' host tier is in it)
             self.swap_room(crate::plan::swap_area(self.swap_backs() as u64, crate::offload::host_memory()) as usize)?;
             self.capture_rows()?;
+            self.capture_pieces()?;
             return Ok(Some(users));
         }
         let per = (self.kc.bytes + self.vc.bytes + states * (1 + marks as usize)).max(1);
@@ -824,6 +830,7 @@ impl Dyn {
             self.mark_room(more + 1)?;
         }
         self.add_seqs(more)?;
+        self.capture_pieces()?;
         Ok(Some(more + 1))
     }
 

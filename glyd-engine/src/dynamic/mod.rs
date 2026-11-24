@@ -1317,7 +1317,6 @@ impl Dyn {
             rgraph_on: false,
             rplayed: std::cell::Cell::new(None),
             rows_replays: std::cell::Cell::new(0),
-            rows_late: std::cell::Cell::new(0),
             pieces: Default::default(),
             pmode: std::cell::Cell::new(pieces::Mode::Eager),
             pcap: Default::default(),
@@ -1326,6 +1325,7 @@ impl Dyn {
             psplice: Default::default(),
             pcount: std::cell::Cell::new(0),
             piece_replays: std::cell::Cell::new(0),
+            rows_late: std::cell::Cell::new(0),
             dcalls: std::cell::Cell::new(0),
             gcalls: 0,
             paged: None,
@@ -1981,7 +1981,8 @@ impl Dyn {
         let (s, queue) = (self.dev.stream, std::time::Instant::now());
         // (a pass of pieces (src/dynamic/pieces.rs): a capture queues nothing but its pieces' operations, captured; a replay launches each piece's graph in its place)
         let mode = if std::ptr::eq(p, &self.big) { self.pmode.get() } else { pieces::Mode::Eager };
-        let capture = mode == pieces::Mode::Capture;
+        // (a capture or a warm-up of the pieces queues nothing but their operations: no preparation, no operation between them, no head)
+        let capture = matches!(mode, pieces::Mode::Capture | pieces::Mode::Warm);
         let mut pc = pieces::Run { mode, k: 0, open: false };
         self.pcount.set(0);
         if !capture {
@@ -2070,7 +2071,7 @@ impl Dyn {
         }
         self.piece_close(&mut pc)?;
         if capture {
-            // (a capture's pieces end at the last layer: the head is eager, its rows the pass's own)
+            // (the pieces end at the last layer: the head is eager, its rows the pass's own)
             return Ok(());
         }
         if head > 0 {

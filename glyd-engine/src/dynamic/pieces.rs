@@ -4,21 +4,20 @@
 //! operations, which read a sequence's cache or state by its rows) eager between them. The host then queues one launch a piece where it queued every kernel of it.
 //!
 //! A set of pieces is captured for a pass's exact rows, not for a padded size as vLLM's buckets are: the kernel a product takes turns on its rows (the library's route, cuBLAS's
-//! algorithm), so a padded pass would not be the eager pass's arithmetic, and a padding row would be one more row in the step. A size is captured the second time it is met
-//! (`Pieces::meet`; the first pass of a size is eager, which also makes every buffer its kernels take), and the `MOST` sets last used are kept. A replay is the eager pass
-//! bit for bit: the same kernels with the same arguments in the same order, the operations between the pieces the eager pass's.
+//! algorithm), so a padded pass would not be the eager pass's arithmetic, and a padding row would be one more row in the step. A replay is the eager pass bit for bit: the same
+//! kernels with the same arguments in the same order, the operations between the pieces the eager pass's.
 //!
-//! A scheduler's mixed steps are mostly of one size (a step's prompt budget fills it to a chunk: `ModelStep::prompt_budget`), and so are the chunks of long prompts, so a few sets
-//! take most passes. GLYD_ENGINE_PIECES=0 (a development build's) runs every such pass eager, to compare.
+//! The one size captured is a full pass's, the chunk's rows (`Dyn::capture_pieces`), when the scheduler's step is made, as vLLM captures its graphs at start: a step's prompt
+//! budget fills it to the chunk (`ModelStep::prompt_budget`), so the prompt and mixed steps of long prompts are of that size; a pass of any other size runs eager. A size captured
+//! in a request's step made that step and the prompts behind it wait (the A10's short x8 first token, 0.073 to 0.090 and 0.113 s on Qwen3-8B, with sizes captured the second
+//! time they were met), and a pass of a few hundred tokens of short prompts is rarely met twice. usercheck captures every size the first time (`Pieces::first`) to hold the
+//! replays to the eager passes. GLYD_ENGINE_PIECES=0 (a development build's) runs every pass eager, to compare.
 
 use super::Op;
 use crate::dev::{Ev, Graph};
 
-/// The sets of pieces kept at most (each a graph a piece, about two a layer).
+/// The sets of pieces kept at most (each a graph a piece, about two a layer): a check's, which captures every size it meets.
 pub(super) const MOST: usize = 16;
-
-/// The sizes met once and not captured that are remembered (the oldest forgotten past it).
-const MET: usize = 64;
 
 /// What an operation is to a pass of pieces.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -56,11 +55,12 @@ pub(super) fn count<'a>(ops: impl Iterator<Item = &'a Op>) -> usize {
     n
 }
 
-/// How `Dyn::forward` runs a pass: every operation eager; its pieces captured (nothing run: the operations between the pieces are not queued, nor the head); or each piece's
-/// graph of set `i` launched in its place and the rest eager.
+/// How `Dyn::forward` runs a pass: every operation eager; its pieces' operations alone, eager (a warm-up: the operations between the pieces are not queued, nor the head); its
+/// pieces captured (nothing run, nothing else queued); or each piece's graph of set `i` launched in its place and the rest eager.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Mode {
     Eager,
+    Warm,
     Capture,
     Replay(usize),
 }
@@ -88,46 +88,36 @@ pub(super) struct PieceSet {
 /// What a pass of some rows does (`Pieces::meet`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Meet {
-    /// Run eager: the first time its size is met.
+    /// Run eager: no set of its size.
     Eager,
-    /// Capture its size's pieces, then replay them.
+    /// Capture its size's pieces, then replay them (a check's).
     Capture,
     /// Replay set `i`.
     Replay(usize),
 }
 
-/// The sets of pieces captured, the sizes met once, and the switches a check sets.
+/// The sets of pieces captured, and the switches a check sets.
 #[derive(Default)]
 pub(super) struct Pieces {
     pub(super) sets: Vec<PieceSet>,
-    met: Vec<(usize, u64)>,
     tick: u64,
-    /// Capture a size the first time it is met (usercheck's comparison of every pass), not the second.
+    /// Capture a size the first time it is met, in a request's step (usercheck's comparison of every pass); else only the sets captured before the first request replay.
     pub(super) first: bool,
     /// No pieces: a capture failed, or a check runs the passes eager.
     pub(super) off: bool,
 }
 
 impl Pieces {
-    /// A pass of `rows` rows: its set's replay where there is one; else a capture the second time the size is met (the first where `first`), else eager.
+    /// A pass of `rows` rows: its set's replay where there is one; else a capture where `first`, else eager. A request's step never waits on a capture otherwise.
     pub(super) fn meet(&mut self, rows: usize) -> Meet {
         self.tick += 1;
         if let Some(i) = self.sets.iter().position(|s| s.rows == rows) {
             self.sets[i].used = self.tick;
             return Meet::Replay(i);
         }
-        if let Some(i) = self.met.iter().position(|m| m.0 == rows) {
-            self.met.swap_remove(i);
-            return Meet::Capture;
-        }
         if self.first {
             return Meet::Capture;
         }
-        if self.met.len() == MET {
-            let oldest = (0..self.met.len()).min_by_key(|&i| self.met[i].1).expect("met is full");
-            self.met.swap_remove(oldest);
-        }
-        self.met.push((rows, self.tick));
         Meet::Eager
     }
 
@@ -141,10 +131,9 @@ impl Pieces {
         self.sets.len() - 1
     }
 
-    /// Every set dropped (the buffers they read are made again), and the sizes met.
+    /// Every set dropped (the buffers they read are made again).
     pub(super) fn clear(&mut self) {
         self.sets.clear();
-        self.met.clear();
     }
 }
 
@@ -174,8 +163,47 @@ impl super::Dyn {
         on
     }
 
-    /// A pass of the big model on its `n` rows (the embedding queued), which no whole graph takes: its pieces' replay (`Pieces::meet`), captured first where this is the
-    /// size's second time; else eager.
+    /// The pieces of a full pass (the chunk's rows) captured when the scheduler's step is made, so that no request's step waits on a capture: after a warm-up pass of the
+    /// pieces' operations alone over zeroed rows (no preparation, no attention or recurrent operation, no head: no cache, state or sequence touched), which makes every buffer
+    /// their kernels take. A capture that fails leaves every pass eager.
+    pub(super) fn capture_pieces(&mut self) -> crate::ffi::Result<()> {
+        if !self.pieces_on() || self.pieces.sets.iter().any(|s| s.rows == self.chunk) {
+            return Ok(());
+        }
+        let n = self.chunk;
+        // SAFETY: the engine's buffers, sized for a chunk; the warm-up writes the slots (scratch every pass writes before it reads) and nothing else.
+        match unsafe { self.warm_capture(n) } {
+            Ok(set) => {
+                self.pieces.add(n, set);
+            }
+            Err(e) => {
+                eprintln!("glyd: a pass of {n} rows could not be captured in pieces ({e}): such passes run eager");
+                self.pieces.off = true;
+                self.pieces.clear();
+            }
+        }
+        // (--prof: the warm-up's events are no request's)
+        self.prof_take()?;
+        self.dev.sync()
+    }
+
+    /// `capture_pieces`' warm-up and capture of a pass of `n` rows.
+    unsafe fn warm_capture(&mut self, n: usize) -> crate::ffi::Result<Vec<Piece>> {
+        let pp = self.pos.ptr;
+        self.dev.sync()?;
+        for b in &self.big.slots {
+            b.fill_async(0, self.dev.stream)?;
+        }
+        self.pmode.set(Mode::Warm);
+        let r = self.forward(&self.big, n, (pp, pp), 1);
+        self.pmode.set(Mode::Eager);
+        r?;
+        self.dev.sync()?;
+        self.pieces_capture(n, (pp, pp), 1)
+    }
+
+    /// A pass of the big model on its `n` rows (the embedding queued), which no whole graph takes: its pieces' replay where its size's set was captured (`Pieces::meet`;
+    /// in a check, captured first where none is); else eager.
     pub(super) unsafe fn pieces_pass(&mut self, n: usize, pos: (u64, u64), head: usize) -> crate::ffi::Result<()> {
         if !self.pieces_on() {
             return self.forward(&self.big, n, pos, head);
@@ -228,8 +256,9 @@ impl super::Dyn {
         Ok(set)
     }
 
-    /// Op `i` of layer `l` of `p` in a pass `pc` of pieces: an operation of a piece captured (a capture) or left to the piece's graph (a replay), the piece opened first where
-    /// none is: true, it is done. An operation that cuts the pieces closes the one open: false, the caller runs it, except in a capture (true: nothing else is queued).
+    /// Op `i` of layer `l` of `p` in a pass `pc` of pieces: an operation of a piece run (a warm-up), captured (a capture) or left to the piece's graph (a replay), the piece
+    /// opened first where none is: true, it is done. An operation that cuts the pieces closes the one open: false, the caller runs it, except in a warm-up or a capture (true:
+    /// nothing else is queued).
     #[allow(clippy::too_many_arguments)]
     pub(super) unsafe fn in_piece(
         &self,
@@ -247,7 +276,12 @@ impl super::Dyn {
             (_, Role::Nothing) => Ok(true),
             (_, Role::Cut) => {
                 self.piece_close(pc)?;
-                Ok(pc.mode == Mode::Capture)
+                Ok(matches!(pc.mode, Mode::Capture | Mode::Warm))
+            }
+            (Mode::Warm, Role::Piece) => {
+                pc.open = true;
+                self.op(p, l, i, op, n, pos, head)?;
+                Ok(true)
             }
             (Mode::Capture, Role::Piece) => {
                 if !pc.open {
@@ -352,18 +386,18 @@ mod tests {
         assert_eq!(role(&lin()), Role::Piece);
     }
 
-    /// A size is captured the second time it is met (the first with `first`), replayed from then on; the least recently used set goes when `MOST` are kept.
+    /// Only a size captured before replays (a request's step never waits on a capture), or where a check captures every size the first time it is met; the least recently
+    /// used set goes when `MOST` are kept.
     #[test]
-    fn a_size_is_captured_when_met_again_and_the_least_used_set_goes() {
+    fn only_sizes_captured_before_replay_and_the_least_used_set_goes() {
         let mut p = Pieces::default();
         assert_eq!(p.meet(512), Meet::Eager);
-        assert_eq!(p.meet(300), Meet::Eager);
-        assert_eq!(p.meet(512), Meet::Capture);
         assert_eq!(p.add(512, Vec::new()), 0);
         assert_eq!(p.meet(512), Meet::Replay(0));
-        assert_eq!(p.meet(300), Meet::Capture, "remembered as met once");
-        p.add(300, Vec::new());
+        assert_eq!((p.meet(300), p.meet(300)), (Meet::Eager, Meet::Eager), "never captured in a request's step");
         p.first = true;
+        assert_eq!(p.meet(300), Meet::Capture);
+        p.add(300, Vec::new());
         for n in 2..MOST {
             assert_eq!(p.meet(1000 + n), Meet::Capture);
             p.add(1000 + n, Vec::new());
@@ -378,17 +412,6 @@ mod tests {
         p.clear();
         p.first = false;
         assert_eq!(p.meet(512), Meet::Eager);
-    }
-
-    /// Sizes met once are remembered up to `MET`, the oldest forgotten first.
-    #[test]
-    fn the_oldest_size_met_once_is_forgotten() {
-        let mut p = Pieces::default();
-        for n in 0..=MET {
-            assert_eq!(p.meet(n + 1), Meet::Eager);
-        }
-        assert_eq!(p.meet(1), Meet::Eager, "the first size was forgotten");
-        assert_eq!(p.meet(MET + 1), Meet::Capture);
     }
 
     /// The pieces' events go before the eager event recorded after their launch: eager e0, piece 0's (a, b), eager e1, e2, piece 1's (c), and a piece after the last eager one.

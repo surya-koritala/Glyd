@@ -250,8 +250,10 @@ its own state (a table of the rows' state addresses the host writes per step, as
 touches no state). Every other pass (a prompt's chunk, prompts together, decode rows with prompt chunks, decode rows of a description with
 no whole graph) runs in pieces (`dynamic/pieces.rs`): the runs of row-wise operations between the attention and recurrent operations are
 graphs, the rest eager between them. Pieces are captured for a pass's exact row count, not a padded bucket, because a product's kernel
-(the library's route, cuBLAS's algorithm) turns on its rows: a replay is the eager pass bit for bit. A size is captured the second time it
-is met and the 16 sets last used are kept; a scheduler's mixed steps are mostly one size (the prompt budget fills a step to a chunk).
+(the library's route, cuBLAS's algorithm) turns on its rows: a replay is the eager pass bit for bit. The one size captured is a full
+pass's (the chunk's rows: the prompt budget fills a mixed step to it), when the scheduler's step is made, as the decode graphs are; a pass
+of another size runs eager. Captured in a request's step (the second time a size was met), they made the A10's short x8 first token worse
+(Qwen3-8B 0.073 to 0.090 and 0.113 s).
 
 ## 3. The layer-kind interface
 
