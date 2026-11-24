@@ -489,8 +489,8 @@ pub enum Ffn {
 /// hidden, dim], `value` [hidden, dim], `norm_key` and `norm_conv` [streams hidden] (their kind `norm`, a stream at a time), `conv`
 /// [streams hidden, conv]; and the hash's own int64 tensors, what the parameters make: `ngram_mult` [order], `ngram_sizes`,
 /// `ngram_offsets` [(order - 1) heads]. A sequence's state: its last `order` - 1 tokens and the convolution's last (conv - 1) dilation
-/// inputs.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// inputs. `form` says where a family's differs (DeepSeek-V4.1's Engram: `NgramForm::Engram`).
+#[derive(Clone, Copy, PartialEq)]
 pub struct Ngram {
     pub order: usize,
     pub heads: usize,
@@ -504,6 +504,44 @@ pub struct Ngram {
     pub conv: usize,
     pub dilation: usize,
     pub norm: Norm,
+    pub form: NgramForm,
+}
+
+/// Where an n-gram embedding's hash and output differ by family.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NgramForm {
+    /// Condor's (Qwen3.8-Flash-Next), as `Ngram` says.
+    Condor,
+    /// DeepSeek-V4.1's Engram: each token first mapped to a compressed vocabulary of `vocab` ids (tokens that normalise alike, one id: a table
+    /// the tokenizer makes, the loader's role `ngram_map` [the model's vocabulary], not a checkpoint tensor), and the hash over those ids; the
+    /// multipliers numpy's `default_rng(seed)` draws below (2^63 - 1) / vocab / 2, times 2 plus 1 (`seed`: 10007 times the layer's number); no
+    /// segments: a position before the sequence reads as `eos` (its pad id) and the end token is a token like another; no convolution (`conv`
+    /// 0): the output is g. The key and the value may be one product, role `kv` [(streams + 1) hidden, dim], the keys' rows first.
+    Engram,
+}
+
+/// The derived form, with `form` said only where it is not Condor's: Condor's descriptions read as they did before the field (the digests of
+/// tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for Ngram {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("Ngram");
+        s.field("order", &self.order)
+            .field("heads", &self.heads)
+            .field("dim", &self.dim)
+            .field("base", &self.base)
+            .field("vocab", &self.vocab)
+            .field("seed", &self.seed)
+            .field("index", &self.index)
+            .field("eos", &self.eos)
+            .field("streams", &self.streams)
+            .field("conv", &self.conv)
+            .field("dilation", &self.dilation)
+            .field("norm", &self.norm);
+        if self.form != NgramForm::Condor {
+            s.field("form", &self.form);
+        }
+        s.finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

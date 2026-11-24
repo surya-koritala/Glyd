@@ -427,6 +427,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
             Body::Ngram(n) => {
                 let Ngram { order, heads, dim, conv, dilation, streams, eos: end, .. } = *n;
                 if (order, conv, dilation, streams) != (3, 4, 3, 4)
+                    || n.form != crate::runtime::kinds::NgramForm::Condor
                     || n.norm.weight != NormWeight::PlusOne
                     || dim % (2 * heads) != 0
                     || b.residual != Residual::Add

@@ -812,7 +812,21 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
                 "{mt}: an n-gram embedding of {ple_dim} over {per} tables for each order up to {order}, a convolution of {taps}, {parts} shards"
             ));
         }
-        Ok(Ngram { order, heads: per, dim: ple_dim, base, vocab, seed, index, eos, streams: hc, conv: taps, dilation: order, norm: pn })
+        Ok(Ngram {
+            order,
+            heads: per,
+            dim: ple_dim,
+            base,
+            vocab,
+            seed,
+            index,
+            eos,
+            streams: hc,
+            conv: taps,
+            dilation: order,
+            norm: pn,
+            form: NgramForm::Condor,
+        })
     };
     for &l in &ple {
         if l == 0 || l > layers || types[l - 1] != "linear_attention" {
