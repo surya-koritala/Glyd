@@ -508,8 +508,10 @@ impl Dyn {
         let (Some(lx), Some(pg)) = (self.lossless.as_ref(), self.paged.as_ref()) else { return Ok((0, 0, 0, 0)) };
         let s = self.dev.stream;
         let (mut pages, mut differ, mut moved, mut bf16) = (0, 0, 0, 0);
-        for rp in lx.rings.iter().flatten() {
-            let tab = pg.group_table(self.seq, rp.group);
+        for (r, rp) in lx.rings.iter().enumerate() {
+            let Some(rp) = rp else { continue };
+            // (the table as the GPU holds it, which the reply's steps read: the host's gave the sequence's blocks back when the reply ended)
+            let tab = pg.gpu_table(self.seq, r)?;
             let src: Vec<i32> = tab[..n.div_ceil(16).min(tab.len())].iter().filter(|&&b| b != 0).map(|&b| b as i32).collect();
             // (the pool's last blocks that no table entry of this sequence names)
             let dst: Vec<i32> = (1..rp.blocks as i32).rev().filter(|b| !src.contains(b)).take(src.len()).collect();
