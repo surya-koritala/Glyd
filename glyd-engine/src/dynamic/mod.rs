@@ -940,6 +940,29 @@ struct Seq {
     gmarks: Vec<(&'static str, Ev)>,
 }
 
+/// The first operation a verify pass (`Dyn::verify_rows`) cannot run as a decode step runs each row, or `Dyn::rewind` cannot go back in: a mixture of experts (its
+/// product groups the pass's rows), a cache or state other than the attention kind's rings (the rows past the kept ones are written over) and the gated delta
+/// rule's (its convolution and recurrence run again over the kept rows). None: the description verifies.
+fn unverifiable_op(d: &ModelDesc) -> Option<&Op> {
+    std::iter::once(&d.first).chain(d.layers.iter().flatten()).find(|op| match op {
+        Op::GdnConv { .. } | Op::GdnDelta { .. } => false,
+        Op::Attn(a) => a.picked.is_some(),
+        Op::Moe(_) | Op::MoeEarly { .. } => true,
+        _ => !rows::row_wise(op) || !op.rings().is_empty() || !op.states().is_empty(),
+    })
+}
+
+/// The per-sequence states' number types as `held` reports them (an engine that holds some): the gated delta rule's where its operations hold every state
+/// (src/dynamic/qwen35.rs: the convolution's state two bytes a value, the delta rule's four), else not reported.
+fn state_type(d: &ModelDesc) -> &'static str {
+    let mut held = d.layers.iter().flatten().filter(|op| !op.states().is_empty()).peekable();
+    if held.peek().is_some() && held.all(|op| matches!(op, Op::GdnConv { .. } | Op::GdnDelta { .. })) {
+        "fp32 (the delta rule's), bf16 (the convolution's)"
+    } else {
+        "not reported"
+    }
+}
+
 /// The most rows a verify pass takes (`Dyn::verify_rows`): a product of up to 8 rows runs the kernel a one-row step's does (the library's one m-tile product; the
 /// tiered layout's step kernel to 8 rows), so each row's sums are a step's. Checked bit for bit on swift only; the range worker refuses verify on other levels.
 pub const VERIFY_ROWS: usize = 8;
@@ -2186,11 +2209,16 @@ impl Dyn {
 
     /// A verify pass (drafted tokens checked, docs/range-worker.md): `stage_rows` on 1 to VERIFY_ROWS rows, each row as a decode step runs it (the delta rule one row
     /// after another, the decode step's attention, products of at most 8 rows), so each row's outputs are the step's at its position, bit for bit; and what `rewind`
-    /// needs kept (the states before the pass, each linear-attention layer's inputs). One row is a plain step (the graph): `rewind` keeps it. Qwen3.5's stages.
+    /// needs kept (the states before the pass, each linear-attention layer's inputs). One row is a plain step (the graph): `rewind` keeps it. A description
+    /// with no operation `unverifiable_op` names.
     pub fn verify_rows(&mut self, tokens: &[u32], at: usize, io: &mut Vec<u16>, head: usize) -> Result<()> {
         let n = tokens.len();
-        if self.big.d.family != "Qwen3.5" {
-            return err(format!("a verify pass on {}: Qwen3.5's stages only", self.big.d.family));
+        if let Some(op) = unverifiable_op(&self.big.d) {
+            return err(format!(
+                "a verify pass on {}: its operation {} is not run row after row as steps, or not gone back in by rewind",
+                self.big.d.family,
+                rows::op_name(op)
+            ));
         }
         if n == 0 || n > VERIFY_ROWS {
             return err(format!("a verify pass of {n} rows: 1 to {VERIFY_ROWS}"));
@@ -2306,16 +2334,20 @@ impl Dyn {
     }
 
     /// Room for `k` more sequences beside the one in use (each its own keys and values for the context, its states, its graph captured on them; the
-    /// activations and workspaces stay shared): `select` picks the one the next passes run on. Qwen3.5's stages; after `set_head_rows`.
+    /// activations and workspaces stay shared): `select` picks the one the next passes run on. A description every operation of which keeps a sequence's
+    /// data in its rings and states (`rows::one_sequence_op`), with no draft model; after `set_head_rows`.
     pub fn add_seqs(&mut self, k: usize) -> Result<()> {
-        if k > 0
-            && (!matches!(self.big.d.family, "Qwen3.5" | "Gemma 4" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash" | "Nemotron-H" | "DeepSeek-V4" | dense::FAMILY)
-                || self.draft.is_some())
-        {
-            return err(format!(
-                "more sequences than one on {}: Qwen3.5's, Gemma 4's, Muse Spark's, Kimi-K3's, GLM-5.3-Flash's, Nemotron-H's, DeepSeek-V4's and the Llama-style dense models' only, with no draft model",
-                self.big.d.family
-            ));
+        if k > 0 {
+            if self.draft.is_some() {
+                return err(format!("more sequences than one on {}: not with a draft model", self.big.d.family));
+            }
+            if let Some(op) = rows::one_sequence_op(&self.big.d) {
+                return err(format!(
+                    "more sequences than one on {}: its operation {} keeps a sequence's data outside the rings and states each sequence holds",
+                    self.big.d.family,
+                    rows::op_name(op)
+                ));
+            }
         }
         for _ in 0..k {
             let states = self.states.iter().map(|b| Buf::zeroed(b.bytes)).collect::<Result<_>>()?;
@@ -2627,12 +2659,7 @@ impl crate::conv::Gen for Dyn {
 
     /// The weights (a draft model's too), the rings of keys and values for the whole context, and the states; all made in `build` and kept as they are while it runs.
     fn held(&self) -> Option<crate::dev::Held> {
-        let state_type = match (self.big.d.family, self.states.is_empty()) {
-            (_, true) => "none",
-            // (qwen35.rs: the convolution's state two bytes a value, the delta rule's four)
-            ("Qwen3.5", _) => "fp32 (the delta rule's), bf16 (the convolution's)",
-            _ => "not reported",
-        };
+        let state_type = if self.states.is_empty() { "none" } else { state_type(&self.big.d) };
         // (every sequence's: they are alike, `add_seqs`)
         let k = self.seqs.len() as u64;
         Some(crate::dev::Held {

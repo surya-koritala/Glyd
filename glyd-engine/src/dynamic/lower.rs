@@ -1797,4 +1797,80 @@ mod tests {
             panic!("the lowered description differs from the executor's at line {first:?}");
         }
     }
+
+    /// Each family's executor description: the random models' of the logits checks, the fixtures' configs (Nemotron-H), a Llama-style config, Gemma 4's draft.
+    #[cfg(feature = "dev")]
+    fn every_family() -> Vec<ModelDesc> {
+        use super::super::{deepseek_v4, gemma4, glm, kimi, muse, nemotron, qwen35, qwen4x, Stage};
+        let dir = |x: &str| std::env::temp_dir().join(format!("glyd-by-op-{x}-{}", std::process::id()));
+        let mut v = Vec::new();
+        let d = dir("q35");
+        crate::logits::qwen35_random(&d).unwrap();
+        let c = crate::qwen35::Config35::load(&d).unwrap();
+        v.push(qwen35::describe(&c, &Stage::whole(c.layers)).unwrap());
+        let d = dir("g4");
+        crate::logits::gemma4_random(&d).unwrap();
+        let c = crate::gemma4::ConfigG4::load(&d).unwrap();
+        v.extend([gemma4::describe(&c), gemma4::describe_draft(&c, &c)]);
+        let d = dir("muse");
+        crate::muse_ref::random(&d).unwrap();
+        let c = crate::muse::ConfigMuse::load(&d).unwrap();
+        v.push(muse::describe(&c, &Stage::whole(c.layers)).unwrap());
+        let d = dir("kimi");
+        crate::kimi_ref::random(&d, 1, true, 8).unwrap();
+        let c = crate::kimi::ConfigKimi::load(&d).unwrap();
+        let w32 = kimi::dtypes(&glyd_gpu::safetensors::Checkpoint::open(&d).unwrap(), &c).unwrap();
+        v.push(kimi::describe(&c, &Stage::whole(c.layers), &w32, false).unwrap());
+        let d = dir("glm");
+        crate::kcheck_glm::random(&d, false, None).unwrap();
+        let c = crate::glm::ConfigGlm::load(&d).unwrap();
+        v.push(glm::describe(&c, &Stage::whole(c.layers)).unwrap());
+        let d = dir("v4");
+        crate::dsv4_ref::random(&d, None).unwrap();
+        let c = crate::deepseek_v4::ConfigV4::load(&d).unwrap();
+        let vo = deepseek_v4::V4Opts { exact8: true, f8_min: 16 << 20, ostack: true, sim: true, ctx: 512 };
+        v.push(deepseek_v4::describe(&c, &Stage::whole(c.layers), &vo).unwrap());
+        let d = dir("qx");
+        crate::logits::qwen4x_random(&d).unwrap();
+        v.push(qwen4x::lowered(&d, 1024).unwrap_or_else(|e| panic!("{}", e.msg)));
+        for f in ["nemotron_h_config.json", "nemotron_h_moetoy_config.json"] {
+            let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(f)).unwrap();
+            let c = crate::nemotron::ConfigNemotronH::parse(&text, f, None).unwrap();
+            v.extend(nemotron::describe(&c, &Stage::whole(c.layers)));
+        }
+        v.push(dense(&crate::runtime::describe::describe(&llama_style("llama", serde_json::json!({}))).unwrap(), vec![2], 4096).unwrap());
+        for x in ["q35", "g4", "muse", "kimi", "glm", "v4", "qx"] {
+            let _ = std::fs::remove_dir_all(dir(x));
+        }
+        v
+    }
+
+    /// The decisions the executor made by a family's name, made by its description's operations now, give every family the answer the name lists gave, but
+    /// where named: a second sequence for Qwen3.8-Flash-Next (`add_seqs`: every one of its operations keeps a sequence's data in its rings and states, as
+    /// `batchable` said already); a verify pass for Gemma 4 and the Llama-style dense models (attention rings and row-wise operations alone; the range worker,
+    /// verify's one caller, loads Qwen3.5 alone).
+    #[cfg(feature = "dev")]
+    #[test]
+    fn decisions_by_operation_give_the_family_lists_answers() {
+        use super::super::{dense::FAMILY as DENSE, qwen4x::FAMILY as QX, rows, state_type, unverifiable_op};
+        let all = every_family();
+        let families: std::collections::BTreeSet<&str> = all.iter().map(|d| d.family).collect();
+        assert_eq!(families.len(), 10, "{families:?}");
+        for d in &all {
+            let f = d.family;
+            let listed = matches!(f, "Qwen3.5" | "Gemma 4" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash" | "Nemotron-H" | "DeepSeek-V4" | DENSE);
+            assert_eq!(rows::one_sequence_op(d).is_none(), listed || f == QX, "{f}: more sequences than one");
+            assert_eq!(
+                unverifiable_op(d).is_none(),
+                matches!(f, "Qwen3.5" | "Gemma 4" | DENSE),
+                "{f}: a verify pass ({:?})",
+                unverifiable_op(d).map(rows::op_name)
+            );
+            if !d.states.is_empty() {
+                let gdn = "fp32 (the delta rule's), bf16 (the convolution's)";
+                assert_eq!(state_type(d), if f == "Qwen3.5" { gdn } else { "not reported" }, "{f}: the states' types");
+            }
+        }
+        assert_eq!(all.iter().find(|d| d.family == "Gemma 4 draft").and_then(rows::one_sequence_op).map(rows::op_name).as_deref(), Some("DraftIn"));
+    }
 }
