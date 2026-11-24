@@ -1,6 +1,6 @@
 # R17: one kernel build
 
-Status: steps 0 and the first part of 2 are in the code (see "Progress" at the end); the kernels are still the library's. Decisions (the coordinator, Nov 21): CUDA 12 stays (step 5); HIP stays a compile-only job until M5b, and the CUDA fold keeps the HIP path building (step 6); step 0 is R1a, #134 ("Part of #134"), started once the R3b pull requests that touch `ffi.rs` have merged and the other sessions working on `ffi.rs` have been asked; each step carries its own bit-for-bit check in the GPU job on glyd-pc (a CI job, no rental). It needs a GPU to validate every step (each step is compared bit for bit with the library on the GPU runner), which this repository's CI has only on glyd-pc.
+Status: step 0 done; steps 1, 2, 5 and 6 begun (see "Progress" at the end): the unpackers and the experts' plan run from the engine's fatbin, the products still the library's. Decisions (the coordinator, Nov 21): CUDA 12 stays (step 5); HIP stays a compile-only job until M5b, and the CUDA fold keeps the HIP path building (step 6); step 0 is R1a, #134 ("Part of #134"), started once the R3b pull requests that touch `ffi.rs` have merged and the other sessions working on `ffi.rs` have been asked; each step carries its own bit-for-bit check in the GPU job on glyd-pc (a CI job, no rental). It needs a GPU to validate every step (each step is compared bit for bit with the library on the GPU runner), which this repository's CI has only on glyd-pc.
 
 ## What there is today
 
@@ -42,13 +42,28 @@ Each step lands alone, keeps `libglyd_gpu` loadable (the Python package needs it
 - **Step 0, done.** `glyd-engine/src/gpu_ops.rs`: `GpuOps`, the 32 operations the engine runs of the library, and `Gemm`, the dense product
   (cuBLAS). `ffi::Lib` and `ffi::Blas` implement them over the C API's table; every caller goes through the traits. The device layer under
   them is `device::Device` (R1a, #134).
+- **Step 1, begun.** The one source both builds compile is `gpu/glyd_gpu_kernels.h` (a `.h`, so the library's cache keys, `gpu/*.h`, take
+  it): the mma layouts' section of `glyd_gpu.cu` moved there unchanged (Tiers through Nib, pf_l2, mma16816), with the bodies of
+  `mma_unpack_kernel`, `moe_route_kernel` and `moe_route_block_kernel` as `__device__` functions the library's kernels call.
+  `glyd-engine/kernels/fold.cu` includes it in a namespace of its own and names an extern "C" kernel per instance the engine runs:
+  `fold_unpack_{tiered, compact, int6, int5, int4, int4h, fp4, fp4r, int3, twelve}` and `fold_moe_route`, `fold_moe_route_block`.
+  Their launches are Rust (`src/fold.rs`: the words read as the library reads them, the same grids, blocks and shared memory).
+  `GpuOps::unpack` and `GpuOps::moe_way` run them; the library's stay as `Lib::library_unpack` and `Lib::library_moe_way` (the oracle,
+  and `GLYD_ENGINE_FOLD=lib` in a development build). `glyd-engine foldcheck` compares both on every layout and plan shape.
 - **Step 2, begun: the host side in Rust.** `glyd-engine/src/fold.rs` holds what the library's host code decided for the engine and needs no
   kernel of its: the packed products' way for M tokens on a GPU (`glyd_gpu_mma_way`, `_mma12_way`, with the route table's measured
   thresholds and its tuning variables, read as the library's development and release builds read them), the GPU's code (`glyd_gpu_gpu`:
   compute capability plus its class by name), and the paged KV cache's sizes and decode workspace (`glyd_gpu_kv_leaf_bytes`,
   `_extra_bytes`, `_second_bytes`, `_kv_decode_workspace`). `GpuOps for Lib` answers these from Rust; the library's own answers stay as
   `Lib::oracle_*` (development builds) for `glyd-engine foldcheck`, in the GPU job, which compares the two for every GPU code the library
-  knows, both layouts, matrices of every kind of K, token counts on each side of every threshold, and valid and refused KV shapes.
-- Not started: step 1 (the kernels in the fatbin), the rest of step 2 (the workspaces that depend on a kernel's occupancy, as
-  `kv_decode_splits`, or on the launch plans), steps 3 to 6.
-
+  knows, both layouts, matrices of every kind of K, token counts on each side of every threshold, and valid and refused KV shapes. The
+  workspaces left (`linear_workspace`, `moe_workspace`, the FP8 ones, `kv_decode_splits`) depend on their kernels' occupancy and launch
+  plans: each folds with its family.
+- **Step 3, order.** Folded: the unpackers of the first family and the grouped experts' plan. Next: the mma products themselves (the step
+  product to 64 tokens, then the prompt kernels by route; their grids depend on occupancy, which needs `cuOccupancyMaxActiveBlocksPerMultiprocessor`
+  in the device layer and the same split rules, so that the sums' order and so the bits are the library's), the grouped products, the paged KV
+  cache, FP8.
+- **Step 5.** The folded kernels are in `kernels/engine.cu`'s fatbin, so the CUDA 12 fatbin (`NVCC12`) carries them as it carries the rest.
+- **Step 6.** The HIP build compiles `engine.cu`, so `fold.cu` and the header with it: the header is the library's own HIP-compiling source.
+  Not compiled by hipcc yet (the AMD job runs it).
+- **Step 4, not started**: the library goes from the engine when no `GpuOps` method of `Lib` calls its table.
