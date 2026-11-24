@@ -166,9 +166,8 @@ fn planner(a: &Args, model: &str) -> Option<crate::plan::Planned> {
 /// The level run, serve and preflight load MODEL at (`run_level`), where nothing is asked the one `fit` printed: a Gemma 4 model or a family of the dynamic route takes
 /// penguin by default (`run_level`), which a 16 GB card cannot hold for Gemma 4 12B; the planner's level is what the printed plan said would load (P16, #221). A tag, --lossy,
 /// a glyd-v7 directory and a pre-packed repo are their own level.
-/// A family whose default is no level at all here (`run_level` None: Qwen3.5 to 3.8, which run at their lossy levels alone, and the Qwen3 dense models) takes the planner's level
-/// where it is a lossy one: Qwen3.8-27B on a 24 GB card is swift (the M1 gate on Windows, an A10G), where it was refused as penguin; a Qwen3 model the planner keeps lossless stays
-/// on its own path (None).
+/// A family whose default is penguin takes the planner's level where it is a lossy one: Qwen3.8-27B on a 24 GB card is swift (the M1 gate on Windows, an A10G), its penguin
+/// needing two such cards or a larger one; a model the planner keeps lossless stays at penguin.
 fn load_level(a: &Args, model: &str, asked: Option<Layout>) -> Done<Option<Layout>> {
     let layout = run_level(model, asked)?;
     // (a tag is its own level, `:penguin` too, whose layout is the untagged one's: the ladder, not the planner, settles what a tagged model that does not fit loads at)
@@ -203,13 +202,19 @@ fn load_level(a: &Args, model: &str, asked: Option<Layout>) -> Done<Option<Layou
     Ok(layout)
 }
 
-/// The family of a model the dynamic engine runs from its release (DeepSeek-V4, GLM-5.3-Flash, Muse Spark, Nemotron-H; GLY-354), by its config; None for
-/// another path's, a glyd-v7 directory's, or a config not to be had (offline).
+/// The family of a model the dynamic engine runs from its release (DeepSeek-V4, GLM-5.3-Flash, Muse Spark, Nemotron-H, the Qwen3.5 layout; GLY-354), by
+/// its config; None for another path's, a glyd-v7 directory's, or a config not to be had (offline).
 fn dynamic_family(model: &str) -> Option<&'static str> {
     if v7_layout(model).ok().flatten().is_some() {
         return None;
     }
     crate::dynamic::split::family(&config_text(model).ok()?)
+}
+
+/// Whether a family of the dynamic route takes `layout` on the one-GPU path of the lossy levels instead (`load_lossy`'s own): every level but penguin of a
+/// family whose row has lossy levels (Nemotron-H, the Qwen3.5 layout); the others run penguin and hummingbird on the dynamic route alone.
+fn lossy_route(family: &str, layout: Layout) -> bool {
+    layout != Layout::Tiered && crate::support::row_named(family).is_some_and(|r| r.allows("kestrel"))
 }
 
 // ---- the GPU --------------------------------------------------------------------------------------------------------------------------------------------
@@ -1299,7 +1304,7 @@ fn load_lossy(
     let (t0, started) = (Instant::now(), crate::monitor::clock());
     let model = a.need(1, "MODEL")?.to_string();
     match dynamic_family(&model) {
-        Some("Nemotron-H") if layout != Layout::Tiered => {}
+        Some(family) if lossy_route(family, layout) => {}
         Some(family) => return load_dynamic(a, &model, family, hb_level(&model, layout), served, ui),
         None => {}
     }
@@ -2022,7 +2027,7 @@ fn check(a: &Args, ui: &RefCell<Ui>) -> Done<String> {
 /// download takes.
 fn check_lossy(a: &Args, model: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<String> {
     match dynamic_family(model) {
-        Some("Nemotron-H") if layout != Layout::Tiered => {}
+        Some(family) if lossy_route(family, layout) => {}
         Some(family) => return check_dynamic(a, model, family, hb_level(model, layout), ui),
         None => {}
     }
@@ -2091,7 +2096,7 @@ pub fn fetch(a: &Args) -> i32 {
         // MODEL:LEVEL fetches the level's pre-packed repo (google/gemma-4-12B-it:wren is glyd/gemma-4-12B-wren)
         let (rest, layout) = level(tagged, false)?;
         table_check(rest, layout)?;
-        let dynamic = dynamic_family(rest).filter(|f| *f != "Nemotron-H" || layout.map_or(true, |l| l == Layout::Tiered));
+        let dynamic = dynamic_family(rest).filter(|f| !layout.is_some_and(|l| lossy_route(f, l)));
         if let (Some(family), Some(l)) = (dynamic, layout) {
             if l != Layout::Tiered {
                 return Err(penguin_only(&short_name(rest), family, rest));
@@ -2594,7 +2599,7 @@ mod tests {
         assert!(e.code == 1 && e.what.contains(":sparrow is not a level"), "{e:?}");
         let e = supports_check(&format!("{gp}:swift"), true).unwrap_err();
         assert!(e.what.contains("--lossy is :kestrel"), "{e:?}");
-        // Qwen3.5 to 3.8 runs at its lossy levels alone
+        // Qwen3.5 to 3.8 runs lossless and at the lossy levels; not at hummingbird, which is for experts
         let q35: Value = json::parse(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/qwen35_configs.json")).unwrap()).unwrap();
         let first = match &q35 {
             Value::Object(m) => m[0].1.clone(),
@@ -2605,11 +2610,12 @@ mod tests {
         let qp = q.to_str().unwrap();
         assert!(supports_check(qp, false).is_ok());
         assert!(supports_check(&format!("{qp}:swift"), false).is_ok());
-        let e = supports_check(&format!("{qp}:penguin"), false).unwrap_err();
+        assert!(supports_check(&format!("{qp}:penguin"), false).is_ok());
+        let e = supports_check(&format!("{qp}:hummingbird"), false).unwrap_err();
         assert!(
             e.code == 3
-                && e.what.ends_with("(Qwen3.5) runs at the kestrel, swift and wren levels in this engine, not penguin")
-                && e.fix == format!("Run it at the kestrel level: glyd run {qp}:kestrel"),
+                && e.what.ends_with("(Qwen3.5) runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird")
+                && e.fix == format!("Run it lossless: glyd run {qp}"),
             "{e:?}"
         );
         // Qwen3 runs at penguin and the block levels, and keeps its own refusals; another kind of model keeps its words at any level
@@ -2629,6 +2635,26 @@ mod tests {
         assert_eq!(supports_check("/nonexistent/model:kestrel", false).unwrap_err().code, 1);
         for d in [g, q, q3, scaled, l] {
             std::fs::remove_dir_all(d).unwrap();
+        }
+    }
+
+    /// The dynamic route takes the Qwen3.5 layout at penguin; its lossy levels, and Nemotron-H's, stay on the one-GPU lossy path; Kimi-K3's hummingbird stays on
+    /// the dynamic route.
+    #[test]
+    fn the_route_of_each_level() {
+        let q35: Value = json::parse(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/qwen35_configs.json")).unwrap()).unwrap();
+        let q38 = json::to_compact(q35.get("Qwen/Qwen3.8-27B").unwrap());
+        assert_eq!(crate::dynamic::split::family(&q38), Some("Qwen3.5"));
+        for (family, layout, lossy) in [
+            ("Qwen3.5", Layout::Tiered, false),
+            ("Qwen3.5", Layout::Int6, true),
+            ("Qwen3.5", Layout::Int4, true),
+            ("Nemotron-H", Layout::Tiered, false),
+            ("Nemotron-H", Layout::Hummingbird, true),
+            ("Kimi-K3", Layout::Hummingbird, false),
+            ("GLM-5.3-Flash", Layout::Tiered, false),
+        ] {
+            assert_eq!(lossy_route(family, layout), lossy, "{family} {layout:?}");
         }
     }
 
@@ -2899,7 +2925,7 @@ mod tests {
         let on_tag = Args::from(["run", tagged.as_str(), "--machine", "rtx4080s"].iter().map(|s| s.to_string()));
         assert_eq!(load_level(&on_tag, m, None).unwrap(), Some(Layout::Tiered));
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
-        // Qwen3.8-27B runs at its lossy levels alone: untagged, it loads the planner's (swift on a 24 GB card), and the table takes it, where it was refused as penguin
+        // Qwen3.8-27B untagged loads the planner's level: a lossy one on a 24 GB card (its penguin does not fit one), which the table takes, as it takes penguin
         let q35: Value = json::parse(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/qwen35_configs.json")).unwrap()).unwrap();
         let q38 = match &q35 {
             Value::Object(m) => m.iter().find(|(k, _)| k.as_str() == "Qwen/Qwen3.8-27B").map(|(_, v)| v.clone()).unwrap(),
@@ -2910,7 +2936,8 @@ mod tests {
         let onq = |machine: &str| Args::from(["serve", qp, "--machine", machine].iter().map(|s| s.to_string()));
         let l = load_level(&onq("rtx4090"), qp, None).unwrap();
         assert!(matches!(l, Some(Layout::Int6 | Layout::Int5 | Layout::Int4)), "{l:?}");
-        assert!(table_check(qp, l).is_ok() && table_check(qp, None).is_err());
+        assert!(table_check(qp, l).is_ok() && table_check(qp, None).is_ok());
+        assert_eq!(run_level(qp, None).unwrap(), Some(Layout::Tiered), "penguin where nothing is asked, as the dynamic route's families");
         assert_eq!(l, planner_level(&onq("rtx4090"), qp));
         // on a 16 GB card nothing fits: fit's refusal (run's own sizing, in its words), before anything is downloaded
         let e = load_level(&onq("rtx4080s"), qp, None).unwrap_err();

@@ -1576,6 +1576,62 @@ pub(crate) fn random_dyn(case: &str, level: &str, tag: &str) -> Result<Dyn> {
     e
 }
 
+/// `splitcheck CASE [--split CUT,..] [--devices GPU,..] [--level L | --layout mma12] [--tokens T]` (development): the case's random model on the dynamic route as `run` opens it
+/// (`split::open`: its family's loader, any family of that route), once on one GPU and once with its layers cut into stages (by default before its middle
+/// layer, both stages on GPU 0: the hand-over through host memory checked on a machine with one GPU). A prompt of 24 tokens, then T greedy steps fed the
+/// one-GPU run's tokens: every pass's logits the same bits both ways.
+pub fn split_check(a: &crate::args::Args) -> Result<()> {
+    let case = a.need(1, "CASE")?;
+    let level = a.flag("level").unwrap_or("penguin");
+    let tokens: usize = a.num("tokens", 12usize)?;
+    let Weights::Random(make) = find_case(case)?.weights else { return err(format!("{case}: a real model, not a random one")) };
+    let dir = std::env::temp_dir().join(format!("glyd-splitcheck-{case}-{}", std::process::id()));
+    let r = (|| -> Result<()> {
+        make(&dir)?;
+        let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(e.to_string()))?;
+        if crate::dynamic::split::family(&text).is_none() {
+            return err(format!("{case}: its family is not on the dynamic route (`run` cuts no layers of it)"));
+        }
+        let config = |k: &str| crate::dynamic::split::config_num(&text, k).unwrap_or(0);
+        let (nl, vocab) = (config("num_hidden_layers"), config("vocab_size"));
+        let (cuts, devices) = match crate::dynamic::split::split_args(a)? {
+            (c, _) if c.is_empty() => (vec![nl / 2], vec![0, 0]),
+            x => x,
+        };
+        // (penguin's packs in the smallest layout, or the 12-bit one with --layout mma12, as an HBM GPU's plan holds them)
+        let o = dyn_opts(a.layout()?.or(level_layout(level)?).or(Some(Layout::Tiered)));
+        let prompt = token_list(24, vocab, 0);
+        // (each pass's logits, the steps fed `feed` where given, else the run's own greedy tokens)
+        let run = |cuts: &[usize], devices: &[i32], feed: Option<&[u32]>| -> Result<(Vec<Vec<f32>>, Vec<u32>)> {
+            let mut e = crate::dynamic::split::open(&dir, &o, cuts, devices)?;
+            let mut s = e.prefill(&prompt)?;
+            let (mut rows, mut fed) = (vec![e.logits()?], Vec::new());
+            for i in 0..tokens {
+                let t = feed.map_or(s.token, |f| f[i]);
+                fed.push(t);
+                s = e.step(t)?;
+                rows.push(e.logits()?);
+            }
+            Ok((rows, fed))
+        };
+        let (one, fed) = run(&[], &devices[..1], None)?;
+        let (staged, _) = run(&cuts, &devices, Some(&fed))?;
+        let differ: Vec<usize> = (0..one.len()).filter(|&i| one[i].iter().map(|x| x.to_bits()).ne(staged[i].iter().map(|x| x.to_bits()))).collect();
+        println!(
+            "{case} at {level}: {nl} layers, cut before {cuts:?} on GPUs {devices:?}; {} passes (a prompt of {}, {tokens} steps), {} with logits that differ from the one-GPU run's",
+            one.len(),
+            prompt.len(),
+            differ.len()
+        );
+        if !differ.is_empty() {
+            return err(format!("{case}: the passes {differ:?} differ between one GPU and the stages"));
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    r
+}
+
 /// `twomodels [A B] [--level L] [--tokens T]` (R16: two models in one process): two cases' random models (gemma4 and qwen35 unless named) loaded on this GPU in this process, each with a scheduler
 /// in a runtime context of its own. Each of three prompts is replied to by each model alone (`reply`: the reference), then by both at once, their schedulers' rounds one after the other on
 /// this thread, so that a step of one model runs between two steps of the other. Every reply is its reference, token for token, and each context counts its own model's prompt tokens and

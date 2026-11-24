@@ -154,8 +154,8 @@ jobs:
           [ -x /tmp/clients/bin/python ] || python3 -m venv /tmp/clients
           /tmp/clients/bin/pip install -q openai anthropic ollama requests jsonschema langchain-openai langchain-anthropic langchain-ollama
           "$E" logitsmodel qwen35 /tmp/tiny-qwen --servable
-          # (the Qwen3.5 layout runs at the lossy levels in this engine)
-          "$E" serve /tmp/tiny-qwen:kestrel --port 8351 --ctx 4096 > /tmp/tiny-serve.log 2>&1 &
+          # (untagged: penguin, the Qwen3.5 layout on the dynamic route, lossless)
+          "$E" serve /tmp/tiny-qwen --port 8351 --ctx 4096 > /tmp/tiny-serve.log 2>&1 &
           server=$!
           for _ in $(seq 1 300); do
             curl -sf http://127.0.0.1:8351/v1/models > /dev/null && break
@@ -204,6 +204,8 @@ jobs:
           GLYD_ENGINE_BATCH_PREFILL=0 "$E" usercheck gemma4 --users 32 --level penguin
           # (paged keys and values run out: 8 users on 24 blocks a group, each sequence sent back gives its blocks back and runs again; every reply comes, none fails)
           GLYD_ENGINE_PAGES=24 "$E" usercheck gemma4 --users 8 --level penguin
+          # (a model of the dynamic route with its layers cut into stages, as `run` cuts them over GPUs: both stages on this GPU, every pass's logits the one-GPU run's bits)
+          "$E" splitcheck qwen35
           # (two models in one process, R16: each with its scheduler in a runtime context of its own, a round of one between two rounds of the other; every reply the reply alone, each context's figures its own)
           "$E" twomodels gemma4 qwen35
           "$E" twomodels muse kimi

@@ -366,12 +366,14 @@ pub fn family(text: &str) -> Option<&'static str> {
         Family::Glm => Some("GLM-5.3-Flash"),
         Family::NemotronH => Some("Nemotron-H"),
         Family::DeepSeekV4 => Some("DeepSeek-V4"),
+        Family::Qwen35 => Some("Qwen3.5"),
         _ => None,
     }
 }
 
 /// The model of `dir` on the dynamic engine, by its config's family: on one GPU where `cuts` is empty, else in stages (`devices`: one more than `cuts`).
-/// GLM's and Nemotron-H's experts at `o.layout`'s level (penguin's lossless where none is given); DeepSeek-V4's and Muse's as the release has them, exact.
+/// GLM's and Nemotron-H's experts at `o.layout`'s level (penguin's lossless where none is given); DeepSeek-V4's and Muse's as the release has them, exact;
+/// the Qwen3.5 layout's bf16 matrices at `o.layout` (penguin's lossless packs).
 pub fn open(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32]) -> Result<Run> {
     let (nl, eos, make) = maker(dir, o)?;
     Run::new(nl, eos, cuts, devices, o, make)
@@ -406,6 +408,10 @@ fn maker(dir: &Path, o: &Opts) -> Result<(usize, Vec<i64>, MakeStage)> {
         Some("Nemotron-H") => {
             let (nl, eos) = (config_num(&text, "num_hidden_layers").unwrap_or(0), config_eos(&text));
             (nl, eos, std::sync::Arc::new(move |st, o: &Opts| super::nemotron::load_stage(&owned, o, level, st)))
+        }
+        Some("Qwen3.5") => {
+            let c = crate::qwen35::Config35::load(dir)?;
+            (c.layers, c.eos.clone(), std::sync::Arc::new(move |st, o: &Opts| super::qwen35::load_stage(&owned, o, st)))
         }
         _ => {
             let c = crate::deepseek_v4::ConfigV4::load(dir)?;
