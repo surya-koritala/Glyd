@@ -739,13 +739,13 @@ impl Part {
 /// What reads a description's blocks of experts (`Op::Moe`'s, in its order) from its checkpoint.
 pub type Experts<'a> = dyn Fn(&Checkpoint) -> Result<Vec<Box<dyn MoeBlock>>> + 'a;
 
-/// A matrix whose rows or columns are not a multiple of this is held as saved (bf16) and multiplied by the small product: the library packs those that are.
-const PACKED_BY: usize = 64;
-
-/// Whether matrix `k` of `d` is held as saved (bf16), not packed: a table an operation reads by row (`Op::NgramRows`), or a shape the library does not pack.
-fn held_as_saved(d: &ModelDesc, k: usize) -> bool {
+/// Whether matrix `k` of `d` is held as saved (bf16), not packed: a table an operation reads by row (`Op::NgramRows`), or a shape the library does not pack
+/// (columns not a multiple of 16, or a member's rows, `rows_of` it where the checkpoint holds it, not a multiple of 64: a save keeps such a merge as its parts).
+fn held_as_saved(d: &ModelDesc, k: usize, rows_of: &dyn Fn(&str) -> Option<usize>) -> bool {
     let it = &d.mats[k];
-    it.rows % PACKED_BY != 0 || it.cols % PACKED_BY != 0 || d.layers.iter().flatten().any(|op| matches!(op, Op::NgramRows(x) if x.table == k))
+    !it.cols.is_multiple_of(16)
+        || it.members.iter().any(|m| rows_of(m).is_some_and(|r| r == 0 || !r.is_multiple_of(64)))
+        || d.layers.iter().flatten().any(|op| matches!(op, Op::NgramRows(x) if x.table == k))
 }
 
 /// The small tensors an operation reads in fp32 (the delta rule's A_log): a bf16 one is widened.
@@ -753,23 +753,65 @@ fn read_f32(d: &ModelDesc) -> Vec<usize> {
     d.layers.iter().flatten().filter_map(|op| if let Op::GdnDelta { a_log, .. } = op { Some(*a_log) } else { None }).collect()
 }
 
-/// `d`'s weights from `dir`: a glyd-v7 directory's packs as saved (each under its first member's name), else packed here at `layout`; the matrices
-/// `held_as_saved` names as saved; the small tensors in the type their operations read (`read_f32`; int64 as saved, a hash's numbers); the experts by `experts`.
+/// The small tensors an operation reads in fp32 with the values the model's dtype holds (the silu-gated norm's weight, `Op::GatedNorm` not `sigmoid`, as vLLM
+/// holds it): an fp32 one rounded to bf16, kept four bytes wide; a bf16 one widened.
+fn read_f32_as_bf16(d: &ModelDesc) -> Vec<usize> {
+    d.layers.iter().flatten().filter_map(|op| if let Op::GatedNorm { w, sigmoid: false, .. } = op { Some(*w) } else { None }).collect()
+}
+
+/// Bytes a value of small tensor `i` takes on the GPU, stored as `dtype`.
+fn small_width(d: &ModelDesc, i: usize, dtype: &str) -> u64 {
+    if read_f32(d).contains(&i) || read_f32_as_bf16(d).contains(&i) {
+        4
+    } else if dtype == "I64" {
+        8
+    } else {
+        2
+    }
+}
+
+/// A saved directory's layout and manifest: a glyd-v7 one's, or a lossless glyd-v4 save's (the tiered layout); None: a Hub-format directory.
+fn stored(dir: &Path) -> Result<Option<(Layout, glyd_gpu::json::Value)>> {
+    Ok(match crate::weights::v7_manifest(dir)? {
+        Some(x) => Some(x),
+        None => crate::weights::lossless_manifest(dir)?.map(|m| (Layout::Tiered, m)),
+    })
+}
+
+/// `d`'s weights from `dir`: a saved directory's packs as saved (under the first member's name where the save merged the members, else each member's), a matrix
+/// it holds as bf16 packed here, a Hub-format directory's packed here at `layout`; the matrices `held_as_saved` names as saved; the small tensors in the type
+/// their operations read (`read_f32`, `read_f32_as_bf16`; int64 as saved, a hash's numbers); the experts by `experts`.
 #[allow(clippy::too_many_arguments)]
 fn load_part(dir: &Path, d: ModelDesc, layout: Layout, threads: usize, rows: usize, out: usize, want: Option<&[bool]>, experts: &Experts) -> Result<Part> {
     let ck = Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
-    let v7 = crate::weights::v7_manifest(dir)?;
+    let v7 = stored(dir)?;
+    let has = |k: &str| ck.get(&format!("{k}.glyd_data")).is_some();
+    let pack_rows = |k: &str| -> usize {
+        v7.as_ref().and_then(|(_, m)| m.get("packs")?.get(k)?.get("shape")?.as_u64s()).and_then(|s| s.first().copied()).unwrap_or(0) as usize
+    };
     let one = |k: usize| -> Result<crate::weights::Packed> {
         let it = &d.mats[k];
+        let each: Vec<&str> = it.members.iter().map(|m| m.trim_end_matches(".weight")).collect();
+        let parts: Vec<(&str, usize)> = if v7.is_none() {
+            Vec::new()
+        } else if has(each[0]) && (each.len() == 1 || !has(each[1])) {
+            vec![(each[0], it.rows)]
+        } else if each.iter().all(|k| has(k)) {
+            each.iter().map(|k| (*k, pack_rows(k))).collect()
+        } else {
+            Vec::new()
+        };
         match &v7 {
-            Some((Layout::Tiered, m)) => crate::weights::read_lossless(&ck, m, it.members[0].trim_end_matches(".weight"), it.rows, it.cols),
-            Some((l, m)) => crate::weights::read_v7(&ck, m, *l, &[(it.members[0].trim_end_matches(".weight"), it.rows)], it.cols),
-            None => pack_item_map(&ck, it, layout, &|_| {}),
+            Some((Layout::Tiered, m)) if !parts.is_empty() => crate::weights::read_lossless_parts(&ck, m, &parts, it.cols),
+            Some((l, m)) if !parts.is_empty() => crate::weights::read_v7(&ck, m, *l, &parts, it.cols),
+            _ => pack_item_map(&ck, it, layout, &|_| {}),
         }
     };
+    let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
+    let saved: Vec<bool> = (0..d.mats.len()).map(|k| held_as_saved(&d, k, &rows_of)).collect();
     let mut packed: Vec<Option<PackBuf>> = (0..d.mats.len()).map(|_| None).collect();
     // (a stage of a split model loads only the matrices its layers multiply by)
-    let ks: Vec<usize> = (0..d.mats.len()).filter(|&k| want.is_none_or(|w| w[k]) && !held_as_saved(&d, k)).collect();
+    let ks: Vec<usize> = (0..d.mats.len()).filter(|&k| want.is_none_or(|w| w[k]) && !saved[k]).collect();
     ordered(ks.len(), threads, 2 * threads.max(1), &|i| one(ks[i]), |i, pk| {
         crate::status::STATUS.beat();
         packed[ks[i]] = Some(upload_packed(pk)?);
@@ -782,7 +824,7 @@ fn load_part(dir: &Path, d: ModelDesc, layout: Layout, threads: usize, rows: usi
         .map(|(k, x)| {
             Ok(match x {
                 Some(p) => Mat::Packed(p),
-                None if want.is_none_or(|w| w[k]) && held_as_saved(&d, k) => {
+                None if want.is_none_or(|w| w[k]) && saved[k] => {
                     let it = &d.mats[k];
                     Mat::Dense(upload_bytes(crate::weights::as_bytes(&crate::weights::item_words(&ck, it)?))?, it.rows, it.cols)
                 }
@@ -790,7 +832,7 @@ fn load_part(dir: &Path, d: ModelDesc, layout: Layout, threads: usize, rows: usi
             })
         })
         .collect::<Result<_>>()?;
-    let f32s = read_f32(&d);
+    let (f32s, as_bf16) = (read_f32(&d), read_f32_as_bf16(&d));
     let small: Vec<Buf> = d
         .small
         .iter()
@@ -798,7 +840,12 @@ fn load_part(dir: &Path, d: ModelDesc, layout: Layout, threads: usize, rows: usi
         .map(|(i, name)| {
             let (_, t) = ck.get(name).ok_or_else(|| Error(format!("no tensor {name}")))?;
             let b = ck.read(name).map_err(|e| Error(format!("{name}: {e}")))?;
-            match (t.dtype.as_str(), f32s.contains(&i)) {
+            let wide = f32s.contains(&i) || as_bf16.contains(&i);
+            if t.dtype == "F32" && as_bf16.contains(&i) {
+                let v: Vec<f32> = b.as_chunks::<4>().0.iter().map(|x| crate::kern35::bf16_round(f32::from_le_bytes(*x))).collect();
+                return upload_bytes(crate::weights::as_bytes(&v));
+            }
+            match (t.dtype.as_str(), wide) {
                 ("BF16", true) => {
                     let v: Vec<f32> = b.chunks_exact(2).map(|x| f32::from_bits((u16::from_le_bytes([x[0], x[1]]) as u32) << 16)).collect();
                     upload_bytes(crate::weights::as_bytes(&v))
@@ -1068,10 +1115,17 @@ impl Dyn {
         }
         let dev = Dev::new(o.device)?;
         let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
-        let matrix_bytes: u64 = d.mats.iter().map(|it| (it.rows * it.cols * 2) as u64).sum();
-        let layout = match crate::weights::v7_manifest(dir)? {
+        // (the layout by the packed matrices' bytes and what is held beside them: the matrices held as saved, the small tensors as their operations read them)
+        let ck = Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
+        let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
+        let bytes = |k: usize| (d.mats[k].rows * d.mats[k].cols * 2) as u64;
+        let (saved, packed): (Vec<usize>, Vec<usize>) = (0..d.mats.len()).partition(|&k| held_as_saved(&d, k, &rows_of));
+        let small: u64 =
+            d.small.iter().enumerate().map(|(i, n)| ck.get(n).map_or(0, |(_, t)| t.shape.iter().product::<u64>() * small_width(&d, i, &t.dtype))).sum();
+        let (matrix_bytes, other) = (packed.into_iter().map(bytes).sum(), saved.into_iter().map(bytes).sum::<u64>() + small);
+        let layout = match stored(dir)? {
             Some((l, _)) => l,
-            None => choose_layout(o.layout, dev.cc_pair(), dev.total_mem as u64, matrix_bytes, 0).0,
+            None => choose_layout(o.layout, dev.cc_pair(), dev.total_mem as u64, matrix_bytes, other).0,
         };
         let ch = o.chunk.max(1);
         let rows_out = draft.as_ref().map_or(1, |x| x.k + 1);

@@ -1904,4 +1904,38 @@ mod tests {
             }
         }
     }
+
+    /// The executor's loader holds the random Qwen3.5 as Qwen3.5's own loader (src/kern35.rs) did: the same matrices dense (the b and a gates' parts under 64
+    /// rows), the same small tensors in fp32 (A_log; the gated norm's weight, its values bf16's), the same rotary tables.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_executors_loader_holds_qwen35_as_its_own_loader_did() {
+        use super::super::{held_as_saved, read_f32, read_f32_as_bf16};
+        let dir = std::env::temp_dir().join(format!("glyd-q35-loader-{}", std::process::id()));
+        crate::logits::qwen35_random(&dir).unwrap();
+        let c = crate::qwen35::Config35::load(&dir).unwrap();
+        let d = super::super::qwen35::lowered(&dir, &c, &super::super::Stage::whole(c.layers)).unwrap();
+        let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
+        let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
+        let dense: std::collections::HashSet<String> = crate::kern35::layer_mats(&c)
+            .into_iter()
+            .flatten()
+            .filter_map(|s| if let crate::kern35::Src::Dense(p, ..) = s { Some(p) } else { None })
+            .flatten()
+            .collect();
+        assert!(!dense.is_empty());
+        for (k, it) in d.mats.iter().enumerate() {
+            assert_eq!(held_as_saved(&d, k, &rows_of), it.members.iter().all(|m| dense.contains(m)), "{:?}", it.members);
+        }
+        let kept: std::collections::HashMap<String, &str> = c.kept().into_iter().map(|t| (t.name, t.dtype)).collect();
+        let (f32s, as_bf16) = (read_f32(&d), read_f32_as_bf16(&d));
+        for (i, n) in d.small.iter().enumerate() {
+            assert_eq!(f32s.contains(&i) || as_bf16.contains(&i), kept[n] == "F32", "{n}");
+            assert_eq!(as_bf16.contains(&i), n.ends_with("linear_attn.norm.weight"), "{n}");
+        }
+        for r in &d.ropes {
+            assert_eq!(crate::gemma4::rotary(r.theta, r.dim, r.pairs, 64), crate::weights::rope_tables(c.rope_theta, c.rotary_dim, 64));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

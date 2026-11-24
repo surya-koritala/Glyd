@@ -68,12 +68,27 @@ mod tests {
     fn the_loader_holds_each_matrix_and_small_tensor_as_its_operations_read_it() {
         let m = super::super::lower::qwen4x(&describe(&tiny()).unwrap(), vec![2000], 1100).unwrap();
         assert!(m.wanted(&super::super::Stage::whole(m.layers.len())).iter().all(|&w| w), "a matrix no operation multiplies by");
-        let saved: Vec<usize> = (0..m.mats.len()).filter(|&k| super::super::held_as_saved(&m, k)).collect();
+        let man: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/qwen4x_tiny_manifest.json")).unwrap();
+        let rows: std::collections::HashMap<String, usize> =
+            man["tensors"].as_array().unwrap().iter().map(|t| (t[0].as_str().unwrap().to_string(), t[2][0].as_u64().unwrap() as usize)).collect();
+        let rows_of = |n: &str| rows.get(n).copied();
+        let saved: Vec<usize> = (0..m.mats.len()).filter(|&k| super::super::held_as_saved(&m, k, &rows_of)).collect();
         let table = super::held_as_saved(&m);
         assert!(!table.is_empty() && table.iter().all(|k| saved.contains(k)), "{table:?} of {saved:?}");
         for &k in &saved {
             let it = &m.mats[k];
-            assert!(table.contains(&k) || it.rows % 64 != 0 || it.cols % 64 != 0, "{}: {}x{}", it.members[0], it.rows, it.cols);
+            assert!(
+                table.contains(&k) || it.members.iter().any(|n| rows_of(n).unwrap() % 64 != 0) || it.cols % 16 != 0,
+                "{}: {}x{}",
+                it.members[0],
+                it.rows,
+                it.cols
+            );
+        }
+        // (and packs the rest: their old rule, rows and columns each a multiple of 64, holds the same matrices as saved)
+        for k in 0..m.mats.len() {
+            let it = &m.mats[k];
+            assert_eq!(saved.contains(&k), table.contains(&k) || it.rows % 64 != 0 || it.cols % 64 != 0, "{}", it.members[0]);
         }
         assert!(saved.len() > table.len(), "the unpacked shapes");
         let f32s = super::super::read_f32(&m);
