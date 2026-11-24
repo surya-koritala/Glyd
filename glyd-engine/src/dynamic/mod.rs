@@ -939,6 +939,8 @@ pub struct Dyn {
     psplice: std::cell::RefCell<Vec<(usize, usize)>>,
     pcount: std::cell::Cell<usize>,
     pub(crate) piece_replays: std::cell::Cell<u64>,
+    /// usercheck's switch: no graph replayed or captured (the one-row step's, the decode steps', the pieces'), every pass eager, to hold the graphs' replies to.
+    graphs_off: std::cell::Cell<bool>,
     /// The attention's decode calls of the pass being made or last made (a launch of the parts kernel or a call of the library's decode: GLYD_PROF's count), and the one-row
     /// step graph's as it was captured.
     dcalls: std::cell::Cell<usize>,
@@ -1325,6 +1327,7 @@ impl Dyn {
             psplice: Default::default(),
             pcount: std::cell::Cell::new(0),
             piece_replays: std::cell::Cell::new(0),
+            graphs_off: std::cell::Cell::new(false),
             rows_late: std::cell::Cell::new(0),
             dcalls: std::cell::Cell::new(0),
             gcalls: 0,
@@ -2266,7 +2269,7 @@ impl Dyn {
                 }
             }
             match &self.graph {
-                Some(g) if one => {
+                Some(g) if one && !self.graphs_off.get() => {
                     g.launch(self.dev.stream)?;
                     self.replayed.set(true);
                     self.rplayed.set(None);
@@ -2637,13 +2640,13 @@ impl Dyn {
         unsafe {
             self.embed(&[token])?;
             match &self.graph {
-                Some(g) => {
+                Some(g) if !self.graphs_off.get() => {
                     g.launch(self.dev.stream)?;
                     self.replayed.set(true);
                     self.rplayed.set(None);
                     self.dcalls.set(self.gcalls);
                 }
-                None => self.forward(&self.big, 1, (st, st), 1)?,
+                _ => self.forward(&self.big, 1, (st, st), 1)?,
             }
         }
         self.n += 1;

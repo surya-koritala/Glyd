@@ -2440,8 +2440,8 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
 /// the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts one a pass, decode steps of the rows that decode: 16 or fewer here, whose bits
 /// are each row's own pass's). With prompts run together the replies that differ are counted, not refused (a step of more than 16 rows is another kernel's; a random model's near ties turn on its last
 /// bits: `roundcheck` measures the logits). The round is one step of the rows that decode and the prompts' chunks unless GLYD_ENGINE_ONE_STEP=0, and some step must then have held both.
-/// Then the prompts at once twice more, every pass eager and then every pass that is no whole graph's in pieces (src/dynamic/pieces.rs): the replies the same token for token,
-/// and some pass replayed its pieces.
+/// Then the prompts at once twice more, with no graph at all (every pass eager) and with every graph on and every pass that is no whole graph's in pieces
+/// (src/dynamic/pieces.rs): the replies the same token for token, and where pieces can run, some pass replayed them.
 ///
 /// With a page budget too small for all of them at once (GLYD_ENGINE_PAGES, R4d) the prompts are run at once three more times: sequences sent back for room swapped to the host wherever they can be,
 /// swapped where that costs less than their recompute (the default), and run again from their tokens only; each run's replies against the references, its sequences sent back and swapped, and each
@@ -2694,27 +2694,32 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         println!("FAIL {late} graphs of decode steps were captured in a request's step, not before the first");
         fails += 1;
     }
-    // (passes in pieces (src/dynamic/pieces.rs): the prompts at once twice more, every pass eager, then every pass that is no whole graph's in pieces, each size captured the
-    // first time it is met and replayed: the same kernels on the same rows in the same order, so the replies are the same token for token, and passes replayed their pieces.
-    // Not where sequences are sent back for room, which turns on timings)
-    if !squeezed && std::env::var_os("GLYD_KV12_POOL").is_none() && e.pieces_for_check(true, true) {
+    // (graphs against eager: the prompts at once twice more, first with no graph at all (every pass eager: no one-row step's graph, no decode steps' graph, no pieces), then
+    // with every graph on and every pass that is no whole graph's in pieces (src/dynamic/pieces.rs), each size captured the first time it is met: the same kernels on the
+    // same rows in the same order, so the replies are the same token for token, and where pieces can run, passes replayed them. Not where sequences are sent back for room,
+    // which turns on timings)
+    let pieces_on = e.pieces_for_check(true, true);
+    if !squeezed && std::env::var_os("GLYD_KV12_POOL").is_none() && (pieces_on || e.graphs_taken()) {
         let run = |e: &mut Dyn| -> Result<Vec<Vec<u32>>> {
             let Some((_, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
             ask(&mut Sched::new(step, k).keeping(false), &prompts)
         };
         let eager = run(&mut e)?;
         e.pieces_for_check(true, false);
-        let before = e.piece_replays.get();
-        let pieces = run(&mut e)?;
-        let played = e.piece_replays.get() - before;
+        let (before, rows_before) = (e.piece_replays.get(), e.rows_replays.get());
+        let graphs = run(&mut e)?;
+        let (played, rows_played) = (e.piece_replays.get() - before, e.rows_replays.get() - rows_before);
         e.pieces_for_check(false, false);
-        let same = pieces.iter().zip(&eager).filter(|(a, b)| a == b).count();
+        let same = graphs.iter().zip(&eager).filter(|(a, b)| a == b).count();
+        let ok = same == prompts.len() && (played > 0 || !pieces_on);
         println!(
-            "{} passes in pieces: {same} of {} replies at once the eager passes' at once, token for token; {played} passes replayed their pieces",
-            if same == prompts.len() && played > 0 { "PASS" } else { "FAIL" },
-            prompts.len()
+            "{} graphs on against off: {same} of {} replies at once the eager passes', token for token; {played} passes replayed their pieces, {rows_played} decode steps \
+             their graph{}",
+            if ok { "PASS" } else { "FAIL" },
+            prompts.len(),
+            if pieces_on { "" } else { " (no pieces here)" }
         );
-        fails += (same < prompts.len() || played == 0) as usize;
+        fails += !ok as usize;
     }
     let Some((_, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
     let (rows, bad) = cands_check(step, &prompts)?;

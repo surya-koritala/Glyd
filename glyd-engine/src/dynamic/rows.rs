@@ -44,19 +44,72 @@ pub(super) struct Paged {
 /// call through its own block table): row r of group g's `tab` holds `dup[g]` copies of row r's sequence's table, made on the GPU at the pass's start (`Dyn::row_tables`, from the
 /// slots the host writes to `slot`, -1 a padding row) so that one launch of the preparation and one call of the decode take a layer's every such row; a call of the library's
 /// decode whose rows' query heads are `sp` sequences finds row r's j-th at stride `dup / sp` tables (every `sp` of the group's divides `dup`). `win`: each group's window (0: none).
-/// `states`: the addresses of each row's recurrent states (row r's state i at entry r `nst` + i, as vLLM's state indices pick a request's slot of the state pools:
-/// f:recurrent-state:kv_cache:8), which the host writes for the pass's rows (0 for a padding row), read by the recurrent layers' kernels of such rows (`Dyn::state_lead`).
+/// `meta`: the step's metadata, which the host writes for a pass in one copy and which a graph's replay reads where it was captured (no capture again for other rows): the
+/// pass's positions (`pcap` entries, a chunk's), the slots of its rows that decode (`rows` entries, -1 a padding row), and the addresses of each such row's recurrent states
+/// (row r's state i at entry r `nst` + i, as vLLM's state indices pick a request's slot of the state pools: f:recurrent-state:kv_cache:8; 0 for a padding row), read by the
+/// recurrent layers' kernels of such rows (`Dyn::state_lead`).
 /// `graphs`: whether a step of such rows alone may replay a CUDA graph of its padded rows (`Dyn::rows_bucket`): every operation of the description acts row by row, is an
 /// attention layer or is a recurrent layer's operation that takes such rows (`rows_state`).
 pub(super) struct RowTabs {
     pub(super) tab: Vec<Buf>,
     pub(super) dup: Vec<usize>,
     pub(super) win: Vec<usize>,
-    pub(super) slot: Buf,
-    pub(super) states: Buf,
+    pub(super) meta: Buf,
+    pub(super) pcap: usize,
     pub(super) nst: usize,
     pub(super) rows: usize,
     pub(super) graphs: bool,
+}
+
+impl RowTabs {
+    /// Where the pass's positions are (`meta`).
+    pub(super) fn pos_at(&self) -> u64 {
+        self.meta.ptr
+    }
+
+    /// Where the slots of the pass's rows that decode are.
+    pub(super) fn slot_at(&self) -> u64 {
+        self.meta.ptr + (4 * self.pcap) as u64
+    }
+
+    /// Where the rows' state table is.
+    pub(super) fn states_at(&self) -> u64 {
+        self.meta.ptr + meta_states(self.pcap, self.rows) as u64
+    }
+
+    /// The pass's positions, its decode rows' slots and their state table (`state_table`), in one copy (the GPU waited for).
+    pub(super) fn write(&self, pos: &[i32], slots: &[i32], states: &[u64]) -> Result<()> {
+        self.meta.write(0, &meta_bytes(self.pcap, self.rows, pos, slots, states))
+    }
+}
+
+/// The byte where `RowTabs::meta`'s state table begins: after `pcap` positions and `rows` slots, at 8 bytes.
+fn meta_states(pcap: usize, rows: usize) -> usize {
+    (4 * (pcap + rows)).next_multiple_of(8)
+}
+
+/// `RowTabs::meta`'s bytes for a pass: positions from 0, slots from 4 pcap, the state table from `meta_states`; only as far as what is written reaches.
+pub(super) fn meta_bytes(pcap: usize, rows: usize, pos: &[i32], slots: &[i32], states: &[u64]) -> Vec<u8> {
+    assert!(pos.len() <= pcap && slots.len() <= rows, "a pass within the metadata's room");
+    let end = if !states.is_empty() {
+        meta_states(pcap, rows) + 8 * states.len()
+    } else if !slots.is_empty() {
+        4 * (pcap + slots.len())
+    } else {
+        4 * pos.len()
+    };
+    let mut b = vec![0u8; end];
+    for (i, p) in pos.iter().enumerate() {
+        b[4 * i..4 * i + 4].copy_from_slice(&p.to_le_bytes());
+    }
+    for (i, s) in slots.iter().enumerate() {
+        b[4 * (pcap + i)..4 * (pcap + i) + 4].copy_from_slice(&s.to_le_bytes());
+    }
+    let at = meta_states(pcap, rows);
+    for (i, a) in states.iter().enumerate() {
+        b[at + 8 * i..at + 8 * i + 8].copy_from_slice(&a.to_le_bytes());
+    }
+    b
 }
 
 /// Whether an operation on a sequence's recurrent state has a kernel that takes a step's rows that decode, a token of a sequence each, each through its own state
@@ -266,7 +319,7 @@ impl Dyn {
         let pg = self.paged.as_ref().expect("a pass's decode rows are paged");
         let rt = pg.rows.as_ref().expect("a pass's decode rows have their tables");
         for (g, tab) in rt.tab.iter().enumerate().filter(|(g, _)| rt.dup[*g] > 0) {
-            self.kern.row_tables(self.dev.stream, pg.tabs[g].ptr, pg.tlen, rt.slot.ptr, pos, self.lead.get(), rt.win[g], rt.dup[g], tab.ptr)?;
+            self.kern.row_tables(self.dev.stream, pg.tabs[g].ptr, pg.tlen, rt.slot_at(), pos, self.lead.get(), rt.win[g], rt.dup[g], tab.ptr)?;
         }
         Ok(())
     }
@@ -277,7 +330,7 @@ impl Dyn {
         use super::Slot;
         let rt = self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).expect("a pass's decode rows have their tables");
         let (s, ss, ru) = (self.dev.stream, rt.nst as i32, rows as u32);
-        let sts = |i: usize| rt.states.ptr + 8 * i as u64;
+        let sts = |i: usize| rt.states_at() + 8 * i as u64;
         match *op {
             Op::GdnConv { w, state, cd, row } => {
                 self.k35.conv_rows(s, p.slot(Slot::Mix), row as i32, p.small[w].ptr, sts(state), ss, p.slot(Slot::Xc), ru, cd as i32)?;
@@ -457,8 +510,9 @@ impl Dyn {
         // their own pointers, so not it)
         // (a step of such rows alone in a graph: `rows_graphable`; each row's recurrent states through the table of their addresses)
         let graphs = self.rgraph_on && rows_graphable(std::iter::once(&d.first).chain(d.layers.iter().flatten()));
-        let nst = self.states.len();
-        Ok(Some(RowTabs { tab, dup, win, slot: Buf::zeroed(4 * users)?, states: Buf::zeroed((8 * users * nst).max(8))?, nst, rows: users, graphs }))
+        let (nst, pcap) = (self.states.len(), self.chunk);
+        let meta = Buf::zeroed(meta_states(pcap, users) + 8 * users * nst.max(1))?;
+        Ok(Some(RowTabs { tab, dup, win, meta, pcap, nst, rows: users, graphs }))
     }
 
     /// The entries of sequence `slot`'s tables changed since they were last copied, copied to the GPU (nothing runs on them then: the steps before have been waited for).
@@ -629,20 +683,23 @@ impl Dyn {
             head_rows = (0..k).collect();
         }
         self.dev.sync()?;
-        self.pos.write(0, &pos)?;
-        if lead > 0 {
-            // (a graph's padding rows -1; the rows past the lead, a prompt's, have no entry; each row's recurrent states' addresses, a padding row's 0)
-            let mut slots: Vec<i32> = jobs[..lead].iter().map(|j| j.0 as i32).collect();
-            let height = if graph.is_some() { rows } else { lead };
-            slots.resize(height, -1);
-            let rt = self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).expect("room for the rows' tables");
-            rt.slot.write(0, &slots)?;
-            if rt.nst > 0 {
+        // (the step's metadata in one copy where the rows' tables are (`RowTabs::meta`): the positions; the slots of the rows that decode, a graph's padding rows -1, the rows
+        // past the lead, a prompt's, with no entry; each such row's recurrent states' addresses, a padding row's 0)
+        let pp = match self.paged.as_ref().and_then(|pg| pg.rows.as_ref()) {
+            Some(rt) => {
+                let height = if graph.is_some() { rows } else { lead };
+                let mut slots: Vec<i32> = jobs[..lead].iter().map(|j| j.0 as i32).collect();
+                slots.resize(height, -1);
                 let lead_states: Vec<&[u64]> = parts[..lead].iter().map(|p| &p.states[..]).collect();
-                rt.states.write(0, &state_table(&lead_states, height, rt.nst))?;
+                let states = if rt.nst > 0 && height > 0 { state_table(&lead_states, height, rt.nst) } else { Vec::new() };
+                rt.write(&pos, &slots, &states)?;
+                rt.pos_at()
             }
-        }
-        let pp = self.pos.ptr;
+            None => {
+                self.pos.write(0, &pos)?;
+                self.pos.ptr
+            }
+        };
         (self.parts, self.head_rows) = (parts, head_rows);
         self.lead.set(if graph.is_some() { rows } else { lead });
         // (a pass that is no whole graph's in pieces (src/dynamic/pieces.rs): one that holds a prompt's tokens, or rows that decode of a description that takes no whole graph of
@@ -678,7 +735,11 @@ impl Dyn {
     /// step runs eager. GLYD_ENGINE_ROWS_GRAPH=0 (a development build's) runs every such step eager, to compare.
     fn rows_bucket(&self, n: usize) -> Option<usize> {
         let rt = self.paged.as_ref()?.rows.as_ref().filter(|rt| rt.graphs)?;
-        if super::tp::comm().is_some() || crate::hb_usage::recording() || crate::tune!("GLYD_ENGINE_ROWS_GRAPH").is_some_and(|v| v == "0") {
+        if self.graphs_off.get()
+            || super::tp::comm().is_some()
+            || crate::hb_usage::recording()
+            || crate::tune!("GLYD_ENGINE_ROWS_GRAPH").is_some_and(|v| v == "0")
+        {
             return None;
         }
         bucket(n, self.head_room().min(rt.rows).min(self.chunk))
@@ -704,13 +765,9 @@ impl Dyn {
                 continue;
             }
             self.dev.sync()?;
-            self.pos.write(0, &vec![-1i32; k])?;
+            // (positions and slots -1, no row's state: no key read or written, the recurrent layers' kernels skip every row)
             let rt = self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).expect("room for the rows' tables");
-            rt.slot.write(0, &vec![-1i32; k])?;
-            // (no row's state: the recurrent layers' kernels skip every row)
-            if rt.nst > 0 {
-                rt.states.write(0, &vec![0u64; k * rt.nst])?;
-            }
+            rt.write(&vec![-1i32; k], &vec![-1i32; k], &vec![0u64; k * rt.nst])?;
             // (a part of no row of its own: the pass is one over several sequences, its rows all the lead's)
             (self.parts, self.head_rows) = (vec![self.part_of(self.seq, 0, 1, 0)?], (0..k).collect());
             self.lead.set(k);
@@ -741,7 +798,8 @@ impl Dyn {
         if !start {
             self.rows_late.set(self.rows_late.get() + 1);
         }
-        let pp = self.pos.ptr;
+        // (the positions in the step's metadata, which every replay reads: `RowTabs::meta`)
+        let pp = self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).map_or(self.pos.ptr, |rt| rt.pos_at());
         self.forward(&self.big, k, (pp, pp), k)?;
         // (--prof: the eager pass's events kept for its profile, the capture's kept with the graph)
         let eager = self.prof.as_ref().map(|p| std::mem::take(&mut *p.borrow_mut()));
@@ -1491,6 +1549,20 @@ mod tests {
         assert!(gdn.iter().chain(&mamba).filter(|op| rows_state(op)).count() == 4);
         let kda = Op::KdaConv { w: 0, state: 0, c: 8, row: 8, w32: false };
         assert!(!rows_state(&kda) && !rows_graphable([lin.clone(), kda].iter()));
+    }
+
+    /// The step's metadata in one copy: positions from 0, slots after the chunk's positions, the state table after them at 8 bytes; only as far as what is written.
+    #[test]
+    fn a_steps_metadata_is_one_copy() {
+        let b = meta_bytes(4, 3, &[7, 8], &[2, -1], &[0xAA, 0, 0xBB, 0]);
+        assert_eq!(b.len(), meta_states(4, 3) + 32);
+        assert_eq!(meta_states(4, 3), 32, "28 bytes of positions and slots, then 8-byte entries");
+        let i32_at = |o: usize| i32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        let u64_at = |o: usize| u64::from_le_bytes(b[o..o + 8].try_into().unwrap());
+        assert_eq!((i32_at(0), i32_at(4), i32_at(16), i32_at(20)), (7, 8, 2, -1));
+        assert_eq!((u64_at(32), u64_at(40), u64_at(48)), (0xAA, 0, 0xBB));
+        assert_eq!(meta_bytes(4, 3, &[1, 2, 3], &[], &[]).len(), 12);
+        assert_eq!(meta_bytes(4, 3, &[1], &[5], &[]).len(), 20);
     }
 
     /// The rows' state table: row r's sequence's states at r nst .. r nst + nst, padding rows 0 (their kernels then write zeros and touch no state).

@@ -16,8 +16,8 @@
 use super::Op;
 use crate::dev::{Ev, Graph};
 
-/// The sets of pieces kept at most (each a graph a piece, about two a layer): a check's, which captures every size it meets.
-pub(super) const MOST: usize = 16;
+/// The sets of pieces kept at most (each a graph a piece, about two a layer): `pieces_sizes`' at most 18, and a check's, which captures every size it meets.
+pub(super) const MOST: usize = 24;
 
 /// What an operation is to a pass of pieces.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -144,6 +144,7 @@ impl super::Dyn {
         static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let off = *OFF.get_or_init(|| crate::tune!("GLYD_ENGINE_PIECES").is_some_and(|v| v == "0") || crate::tune!("GLYD_OP_PROBE").is_some());
         !off && !self.pieces.off
+            && !self.graphs_off.get()
             && self.rgraph_on
             && self.big.ram.is_none()
             && self.stage.first
@@ -161,37 +162,52 @@ impl super::Dyn {
         takes(self.blas.is_some(), n, crate::tune!("GLYD_ENGINE_PIECES").is_some_and(|v| v == "1"))
     }
 
-    /// usercheck's switches, the sets kept dropped: every pass eager (`off`), or in pieces captured the first time a size is met (`first`). Whether passes may run in pieces
-    /// at all here (`pieces_on` with the switches set so).
+    /// usercheck's switches, the sets of pieces kept dropped: every pass eager, no graph replayed or captured (`off`: the one-row step's, the decode steps', the pieces'), or
+    /// graphs on and pieces captured the first time a size is met (`first`). Whether passes may run in pieces at all here (`pieces_on` with the switches set so).
     #[cfg(feature = "dev")]
     pub(crate) fn pieces_for_check(&mut self, first: bool, off: bool) -> bool {
         self.pieces.clear();
         (self.pieces.first, self.pieces.off) = (first, false);
+        self.graphs_off.set(false);
         let on = self.pieces_on();
-        self.pieces.off = off;
+        self.graphs_off.set(off);
         on
     }
 
-    /// The pieces of a full pass (the chunk's rows) captured when the scheduler's step is made, so that no request's step waits on a capture: after a warm-up pass of the
-    /// pieces' operations alone over zeroed rows (no preparation, no attention or recurrent operation, no head: no cache, state or sequence touched), which makes every buffer
-    /// their kernels take. A capture that fails leaves every pass eager.
+    /// Whether the engine replays graphs at all (the one-row step's is captured).
+    #[cfg(feature = "dev")]
+    pub(crate) fn graphs_taken(&self) -> bool {
+        self.graph.is_some()
+    }
+
+    /// The pieces captured when the scheduler's step is made, so that no request's step waits on a capture (`pieces_sizes`: a full pass's, and the decode steps' of a
+    /// description that takes no whole graph of them), each after a warm-up pass of the pieces' operations alone over zeroed rows (no preparation, no attention or recurrent
+    /// operation, no head: no cache, state or sequence touched), which makes every buffer their kernels take. A capture that fails leaves every pass eager.
     pub(super) fn capture_pieces(&mut self) -> crate::ffi::Result<()> {
-        if !self.pieces_on() || !self.pieces_take(self.chunk) || self.pieces.sets.iter().any(|s| s.rows == self.chunk) {
+        if !self.pieces_on() {
             return Ok(());
         }
-        let n = self.chunk;
-        // SAFETY: the engine's buffers, sized for a chunk; the warm-up writes the slots (scratch every pass writes before it reads) and nothing else.
-        match unsafe { self.warm_capture(n) } {
-            Ok(set) => {
-                self.pieces.add(n, set);
+        let whole = self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).is_some_and(|rt| rt.graphs);
+        let sizes: Vec<usize> =
+            pieces_sizes(self.chunk, self.head_room().min(self.seqs.len()).min(self.chunk), whole).into_iter().filter(|&n| self.pieces_take(n)).collect();
+        for n in sizes {
+            if self.pieces.sets.iter().any(|s| s.rows == n) {
+                continue;
             }
-            Err(e) => {
-                eprintln!("glyd: a pass of {n} rows could not be captured in pieces ({e}): such passes run eager");
-                self.pieces.off = true;
-                self.pieces.clear();
+            // SAFETY: the engine's buffers, sized for a chunk; the warm-up writes the slots (scratch every pass writes before it reads) and nothing else.
+            match unsafe { self.warm_capture(n) } {
+                Ok(set) => {
+                    self.pieces.add(n, set);
+                }
+                Err(e) => {
+                    eprintln!("glyd: a pass of {n} rows could not be captured in pieces ({e}): such passes run eager");
+                    self.pieces.off = true;
+                    self.pieces.clear();
+                    break;
+                }
             }
         }
-        // (--prof: the warm-up's events are no request's)
+        // (--prof: the warm-ups' events are no request's)
         self.prof_take()?;
         self.dev.sync()
     }
@@ -340,6 +356,19 @@ impl super::Dyn {
     }
 }
 
+/// The sizes `Dyn::capture_pieces` captures: a full pass's (`chunk` rows: the prompt and mixed steps of long prompts); and where the description takes no whole graph of
+/// its decode steps (the latent attention's, the picked attention's, DeepSeek-V4's), the decode steps' of 2 to 16 rows and of 32 and 64, up to the `users` served (a step of
+/// other rows runs eager; one row is its sequence's own graph).
+pub(super) fn pieces_sizes(chunk: usize, users: usize, whole: bool) -> Vec<usize> {
+    let mut v = vec![chunk];
+    if !whole {
+        v.extend((2..=users.min(16)).chain([32, 64].into_iter().filter(|&n| n <= users)));
+    }
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
 /// `Dyn::pieces_take`: a pass of `n` rows in pieces unless cuBLAS is found and it has more than 64 rows (`Dyn::decoded_way`'s products), or where `forced`.
 fn takes(blas: bool, n: usize, forced: bool) -> bool {
     !blas || n <= 64 || forced
@@ -426,6 +455,17 @@ mod tests {
         p.clear();
         p.first = false;
         assert_eq!(p.meet(512), Meet::Eager);
+    }
+
+    /// A full pass's size always; the decode steps' (2 to 16, 32, 64, up to the users) only where no whole graph takes them.
+    #[test]
+    fn decode_sizes_are_captured_where_no_whole_graph_takes_them() {
+        assert_eq!(pieces_sizes(512, 8, true), [512]);
+        assert_eq!(pieces_sizes(512, 8, false), [2, 3, 4, 5, 6, 7, 8, 512]);
+        let v = pieces_sizes(512, 64, false);
+        assert_eq!((v.len(), v[14], v[15], v[16], v[17]), (18, 16, 32, 64, 512));
+        assert!(pieces_sizes(512, 64, false).len() <= MOST);
+        assert_eq!(pieces_sizes(64, 64, false).last(), Some(&64));
     }
 
     /// A pass whose products take cuBLAS (more than 64 rows, cuBLAS found) runs eager unless forced; one of 64 rows or fewer, or with no cuBLAS, in pieces.
