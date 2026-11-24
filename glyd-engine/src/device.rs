@@ -213,6 +213,11 @@ pub trait Device {
     /// # Safety
     /// `f` is a kernel `function` found, of a module loaded still.
     unsafe fn allow_smem(f: Self::Function, bytes: u32) -> Result<()>;
+    /// The blocks of `threads` threads and `smem` bytes of dynamic shared memory an SM holds at once of `f` (its shared memory allowed first).
+    ///
+    /// # Safety
+    /// As `allow_smem`.
+    unsafe fn occupancy(f: Self::Function, threads: u32, smem: u32) -> Result<i32>;
     /// `f` launched on `s` with `smem` bytes of dynamic shared memory.
     ///
     /// # Safety
@@ -525,6 +530,18 @@ impl Device for CudaDevice {
     unsafe fn allow_smem(f: CuFunction, bytes: u32) -> Result<()> {
         // SAFETY: a function of a loaded module (the caller's contract) and a plain integer; 8: CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES.
         cu("cuFuncSetAttribute", unsafe { (driver()?.cuFuncSetAttribute)(f, 8, bytes as c_int) })
+    }
+
+    unsafe fn occupancy(f: CuFunction, threads: u32, smem: u32) -> Result<i32> {
+        let mut n = 0;
+        // SAFETY: a function of a loaded module (the caller's contract); a host out-pointer.
+        unsafe {
+            cu(
+                "cuOccupancyMaxActiveBlocksPerMultiprocessor",
+                (driver()?.cuOccupancyMaxActiveBlocksPerMultiprocessor)(&mut n, f, threads as c_int, smem as usize),
+            )?
+        };
+        Ok(n)
     }
 
     unsafe fn launch(f: CuFunction, grid: [u32; 3], block: [u32; 3], smem: u32, s: Stream, args: &mut [*mut c_void]) -> Result<()> {

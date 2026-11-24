@@ -278,18 +278,23 @@ type Found = std::sync::Mutex<std::collections::HashMap<(usize, &'static str), u
 /// A kernel of the engine's by its type, in a module of the context current on this thread: what code with no `Dev` at hand launches (the library's
 /// operations the engine runs from its own fatbin, `fold.rs`). Looked up once a context and kept.
 pub fn here<T: Typed>() -> Result<T> {
+    here_named(T::NAME).map(T::of)
+}
+
+/// `here` by the kernel's name alone (an untyped kernel: for its occupancy, not a launch).
+pub fn here_named(name: &'static str) -> Result<Kernel> {
     static FOUND: std::sync::OnceLock<Found> = std::sync::OnceLock::new();
     let ctx = current_ctx()?;
     let found = FOUND.get_or_init(Default::default);
-    if let Some(&f) = found.lock().unwrap_or_else(|e| e.into_inner()).get(&(ctx, T::NAME)) {
-        return Ok(T::of(Kernel(f as CuFunction)));
+    if let Some(&f) = found.lock().unwrap_or_else(|e| e.into_inner()).get(&(ctx, name)) {
+        return Ok(Kernel(f as CuFunction));
     }
     let module = MODULES.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|m| m.0 == ctx).map(|m| m.1);
-    let Some(module) = module else { return err(format!("{}: no engine module in this context (no Dev opened it, or a build without kernels)", T::NAME)) };
+    let Some(module) = module else { return err(format!("{name}: no engine module in this context (no Dev opened it, or a build without kernels)")) };
     // SAFETY: a module a Dev loaded in this context, kept for the process.
-    let k = unsafe { function_in(module as CuModule, T::NAME)? };
-    found.lock().unwrap_or_else(|e| e.into_inner()).insert((ctx, T::NAME), k.0 as usize);
-    Ok(T::of(k))
+    let k = unsafe { function_in(module as CuModule, name)? };
+    found.lock().unwrap_or_else(|e| e.into_inner()).insert((ctx, name), k.0 as usize);
+    Ok(k)
 }
 
 /// A kernel of the engine's module.
@@ -337,6 +342,14 @@ impl Kernel {
             }
             Ok(())
         })
+    }
+
+    /// The blocks of `threads` threads with `smem` bytes of dynamic shared memory an SM holds at once of this kernel, its shared memory allowed first (at
+    /// least 1): what the GPU library's `per_sm` asks of the runtime, for the plans folded from it (`fold`).
+    pub fn blocks_per_sm(&self, threads: u32, smem: u32) -> Result<i64> {
+        self.allow_smem(smem)?;
+        // SAFETY: a function of the loaded module.
+        Ok(unsafe { D::occupancy(self.0, threads, smem)? }.max(1) as i64)
     }
 
     /// The most dynamic shared memory a launch of this kernel may ask for (CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES).

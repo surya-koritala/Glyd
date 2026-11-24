@@ -296,6 +296,7 @@ table! {
         fn cuModuleLoadData(*mut CuModule, *const c_void) -> c_int;
         fn cuModuleGetFunction(*mut CuFunction, CuModule, *const c_char) -> c_int;
         fn cuFuncSetAttribute(CuFunction, c_int, c_int) -> c_int;
+        fn cuOccupancyMaxActiveBlocksPerMultiprocessor(*mut c_int, CuFunction, c_int, usize) -> c_int;
         fn cuLaunchKernel(CuFunction, c_uint, c_uint, c_uint, c_uint, c_uint, c_uint, c_uint, Stream, *mut *mut c_void, *mut *mut c_void) -> c_int;
         fn cuGetErrorString(c_int, *mut *const c_char) -> c_int;
     }
@@ -318,7 +319,7 @@ mod hip {
     const LIBS: [&str; 2] = ["amdhip64_7.dll", "amdhip64_6.dll"];
 
     /// The driver table's functions by HIP's names (ROCm 6.4 on: hipEventRecordWithFlags), all but the two adapters' below.
-    const NAMES: [(&str, &str); 50] = [
+    const NAMES: [(&str, &str); 51] = [
         ("cuInit", "hipInit"),
         ("cuDriverGetVersion", "hipDriverGetVersion"),
         ("cuDeviceGet", "hipDeviceGet"),
@@ -368,6 +369,7 @@ mod hip {
         ("cuModuleLoadData", "hipModuleLoadData"),
         ("cuModuleGetFunction", "hipModuleGetFunction"),
         ("cuLaunchKernel", "hipModuleLaunchKernel"),
+        ("cuOccupancyMaxActiveBlocksPerMultiprocessor", "hipModuleOccupancyMaxActiveBlocksPerMultiprocessor"),
         ("cuGetErrorString", "hipDrvGetErrorString"),
     ];
 
@@ -766,6 +768,66 @@ impl Lib {
         Err(Error::of(Kind::of_status(status), format!("{call}: {t} ({status})")))
     }
 
+    /// `GpuOps::linear_workspace` by the library's own plans: the oracle of the engine's (`fold::linear_workspace`), and every route it has not folded.
+    pub(crate) fn library_linear_workspace(&self, twelve: bool, o: i64, k: i64, m: i64) -> Result<usize> {
+        let mut b = 0usize;
+        // SAFETY: a host out-pointer.
+        let r = unsafe {
+            if twelve {
+                (self.api.glyd_gpu_mma12_linear_workspace)(o, k, m, -1, &mut b)
+            } else {
+                (self.api.glyd_gpu_mma_linear_workspace)(o, k, m, -1, &mut b)
+            }
+        };
+        self.ck(call!("linear_workspace"), r)?;
+        Ok(b)
+    }
+
+    /// `GpuOps::linear` by the library's own kernels: the oracle of the engine's (`fold::linear`), and every route it has not folded.
+    ///
+    /// # Safety
+    /// As `GpuOps::linear`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn library_linear(&self, w: &Pack, x: u64, m: i64, y: u64, ws: u64, ws_bytes: usize, done: u64, cs: Stream) -> Result<()> {
+        let r = match w.words {
+            Words::Tiered { blocks, block_base, tiers } => (self.api.glyd_gpu_mma_linear)(
+                w.data as *const u8,
+                blocks as *const u8,
+                block_base as *const i32,
+                tiers.as_ptr(),
+                w.rows,
+                w.cols,
+                x as *const u16,
+                m,
+                std::ptr::null(),
+                y as *mut u16,
+                -1,
+                ws as *mut c_void,
+                ws_bytes,
+                done as *mut c_int,
+                cs,
+            ),
+            Words::Twelve { exc, exc_base, sym } => (self.api.glyd_gpu_mma12_linear)(
+                w.data as *const u8,
+                exc as *const u32,
+                exc_base as *const i32,
+                sym.as_ptr(),
+                w.rows,
+                w.cols,
+                x as *const u16,
+                m,
+                std::ptr::null(),
+                y as *mut u16,
+                -1,
+                ws as *mut c_void,
+                ws_bytes,
+                done as *mut c_int,
+                cs,
+            ),
+        };
+        self.ck(call!("linear"), r)
+    }
+
     /// `GpuOps::moe_way` by the library's own kernels (glyd_gpu_moe_way): the oracle of the engine's (`fold::moe_way`).
     ///
     /// # Safety
@@ -820,57 +882,21 @@ impl GpuOps for Lib {
     }
 
     fn linear_workspace(&self, twelve: bool, o: i64, k: i64, m: i64) -> Result<usize> {
-        let mut b = 0usize;
-        // SAFETY: a host out-pointer.
-        let r = unsafe {
-            if twelve {
-                (self.api.glyd_gpu_mma12_linear_workspace)(o, k, m, -1, &mut b)
-            } else {
-                (self.api.glyd_gpu_mma_linear_workspace)(o, k, m, -1, &mut b)
+        // (the engine's plans where its kernels take the product: R17's `fold`)
+        if crate::fold::on() {
+            if let Some(b) = crate::fold::linear_workspace(twelve, o, k, m)? {
+                return Ok(b);
             }
-        };
-        self.ck(call!("linear_workspace"), r)?;
-        Ok(b)
+        }
+        self.library_linear_workspace(twelve, o, k, m)
     }
 
     unsafe fn linear(&self, w: &Pack, x: u64, m: i64, y: u64, ws: u64, ws_bytes: usize, done: u64, cs: Stream) -> Result<()> {
-        let r = match w.words {
-            Words::Tiered { blocks, block_base, tiers } => (self.api.glyd_gpu_mma_linear)(
-                w.data as *const u8,
-                blocks as *const u8,
-                block_base as *const i32,
-                tiers.as_ptr(),
-                w.rows,
-                w.cols,
-                x as *const u16,
-                m,
-                std::ptr::null(),
-                y as *mut u16,
-                -1,
-                ws as *mut c_void,
-                ws_bytes,
-                done as *mut c_int,
-                cs,
-            ),
-            Words::Twelve { exc, exc_base, sym } => (self.api.glyd_gpu_mma12_linear)(
-                w.data as *const u8,
-                exc as *const u32,
-                exc_base as *const i32,
-                sym.as_ptr(),
-                w.rows,
-                w.cols,
-                x as *const u16,
-                m,
-                std::ptr::null(),
-                y as *mut u16,
-                -1,
-                ws as *mut c_void,
-                ws_bytes,
-                done as *mut c_int,
-                cs,
-            ),
-        };
-        self.ck(call!("linear"), r)
+        // (the engine's own kernels, from the library's source, where the route is GEMM: R17's `fold`)
+        if crate::fold::on() && crate::fold::linear(w, x, m, y, ws, ws_bytes, done, cs)? {
+            return Ok(());
+        }
+        self.library_linear(w, x, m, y, ws, ws_bytes, done, cs)
     }
 
     unsafe fn f8_size(&self, h: bool, w: u64, ld: i64, o: i64, k: i64, heads: u64, ws: u64, ws_bytes: usize, cs: Stream) -> Result<i64> {

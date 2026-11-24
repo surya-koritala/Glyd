@@ -488,6 +488,213 @@ pub unsafe fn moe_way(ids: u64, pairs: i64, experts: i64, plan: u64, cs: Stream)
     }
 }
 
+/// A development build's integer tuning variable as the library reads it (TUNING_INT: atoll of the variable, read at each call; a release build: the
+/// fallback).
+fn tuned(v: Option<String>, fallback: i64) -> i64 {
+    v.map_or(fallback, |v| atoll(&v))
+}
+
+/// The step product's kernel for a launch (mma_gemm_run's choice): the layout's mma_gemm_kernel for MT tiles of 16 tokens, or the tiered layout's step loop
+/// (`true`: W as the A operand, to 8 tokens).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StepK {
+    Mt(u32),
+    Tiered(bool),
+}
+
+/// mma_gemm_run's kernel for W of layout `u` (K its columns) and `m` tokens, as the library chooses with no tuning variable set; None where a variable
+/// asks for a kernel not folded yet (GLYD_GPU_TMID's tiered_mid_run, the 12-bit layout's GLYD_GPU_PATCH_B and GLYD_GPU_PFD loops).
+fn step_plan(u: Unpacker, k: i64, m: i64) -> Option<StepK> {
+    if u == Unpacker::Tiered {
+        let (mid, mt2) = (tuned(crate::tune!("GLYD_GPU_TMID"), 0), tuned(crate::tune!("GLYD_GPU_TMT2"), 0));
+        if mid > 0 && m >= mid && k % 64 == 0 {
+            return None;
+        }
+        if mt2 > 0 && m >= mt2 && m <= 32 {
+            return Some(StepK::Mt(2));
+        }
+        if m <= 16 && tuned(crate::tune!("GLYD_GPU_STEP"), 1) != 0 {
+            return Some(StepK::Tiered(m <= 8));
+        }
+    }
+    if matches!(u, Unpacker::Twelve { .. }) && (tuned(crate::tune!("GLYD_GPU_PATCH_B"), 0) != 0 || pfd() > 0) {
+        return None;
+    }
+    Some(StepK::Mt(if m <= 16 {
+        1
+    } else if m <= 32 {
+        2
+    } else {
+        4
+    }))
+}
+
+/// GLYD_GPU_PFD (0-16): the steps the 12-bit layout's small-M product asks of L2 ahead, which every step kernel is given (step_opts().pfd).
+fn pfd() -> i32 {
+    tuned(crate::tune!("GLYD_GPU_PFD"), 0).clamp(0, 16) as i32
+}
+
+/// The kernel's name in the engine's module (kernels/fold.cu), its threads and its dynamic shared memory (mma_gemm_mt's and step_launch's).
+fn step_kernel(u: Unpacker, p: StepK) -> Option<(&'static str, u32, u32)> {
+    const S2_BYTES: u32 = 1040;
+    let name = match p {
+        StepK::Tiered(true) => "fold_step_tiered_w",
+        StepK::Tiered(false) => "fold_step_tiered_x",
+        StepK::Mt(mt) => {
+            let names: [&'static str; 3] = match u {
+                Unpacker::Tiered => ["fold_gemm_tiered_1", "fold_gemm_tiered_2", "fold_gemm_tiered_4"],
+                Unpacker::Compact => ["fold_gemm_compact_1", "fold_gemm_compact_2", "fold_gemm_compact_4"],
+                Unpacker::Int6 => ["fold_gemm_int6_1", "fold_gemm_int6_2", "fold_gemm_int6_4"],
+                Unpacker::Int5 => ["fold_gemm_int5_1", "fold_gemm_int5_2", "fold_gemm_int5_4"],
+                Unpacker::Int4 => ["fold_gemm_int4_1", "fold_gemm_int4_2", "fold_gemm_int4_4"],
+                Unpacker::Int4H(_) => ["fold_gemm_int4h_1", "fold_gemm_int4h_2", "fold_gemm_int4h_4"],
+                Unpacker::Fp4 => ["fold_gemm_fp4_1", "fold_gemm_fp4_2", "fold_gemm_fp4_4"],
+                Unpacker::Fp4R { .. } => ["fold_gemm_fp4r_1", "fold_gemm_fp4r_2", "fold_gemm_fp4r_4"],
+                Unpacker::Int3 => ["fold_gemm_int3_1", "fold_gemm_int3_2", "fold_gemm_int3_4"],
+                Unpacker::Twelve { .. } => ["fold_gemm_twelve_1", "fold_gemm_twelve_2", "fold_gemm_twelve_4"],
+                Unpacker::V1 => return None,
+            };
+            names[(mt / 2) as usize]
+        }
+    };
+    let table = !matches!(u, Unpacker::Twelve { .. });
+    Some(match p {
+        StepK::Mt(mt) => (name, 256, 4 * mt * 16 * 65 * 4 + if table { 8 * S2_BYTES } else { 0 }),
+        StepK::Tiered(sw) => (name, 128, 4 * if sw { 8 } else { 16 } * 65 * 4 + 4 * S2_BYTES),
+    })
+}
+
+/// The blocks an SM holds of an engine kernel at `threads` and `smem` in the current context, and the GPU's SMs (the library's per_sm and sm_count),
+/// asked once a context.
+fn per_sm(name: &'static str, threads: u32, smem: u32) -> Result<(i64, i64)> {
+    type Seen = std::sync::Mutex<std::collections::HashMap<(usize, &'static str), (i64, i64)>>;
+    static SEEN: std::sync::OnceLock<Seen> = std::sync::OnceLock::new();
+    let ctx = D::current()? as usize;
+    let seen = SEEN.get_or_init(Default::default);
+    if let Some(&v) = seen.lock().unwrap_or_else(|e| e.into_inner()).get(&(ctx, name)) {
+        return Ok(v);
+    }
+    let v = (crate::dev::here_named(name)?.blocks_per_sm(threads, smem)?, (D::attribute(D::current_device()?, Attr::Sms)? as i64).max(1));
+    seen.lock().unwrap_or_else(|e| e.into_inner()).insert((ctx, name), v);
+    Ok(v)
+}
+
+/// The current context's GPU's code (`current_gpu`), read once a device.
+fn this_gpu() -> Result<i64> {
+    static CODES: [std::sync::atomic::AtomicI64; 64] = [const { std::sync::atomic::AtomicI64::new(0) }; 64];
+    let dev = D::current_device()?;
+    let slot = CODES.get(dev as usize);
+    if let Some(c) = slot.map(|c| c.load(std::sync::atomic::Ordering::Relaxed)).filter(|&c| c > 0) {
+        return Ok(c - 1);
+    }
+    let code = current_gpu()? as i64;
+    if let Some(c) = slot {
+        c.store(code + 1, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(code)
+}
+
+/// The step product's blocks and workspace for W [o, k] of layout `u`, `m` tokens, kernel `p` (mma_gemm_mt and step_launch: as many blocks as fit at once,
+/// but at least 32 steps a block; their parts and the row blocks' sums, [blocks + o / 64][m][64] floats).
+fn step_grid(u: Unpacker, p: StepK, o: i64, k: i64, m: i64) -> Result<Option<(&'static str, u32, u32, i64, usize)>> {
+    let Some((name, threads, smem)) = step_kernel(u, p) else { return Ok(None) };
+    let (per, sms) = per_sm(name, threads, smem)?;
+    let (rb, total) = (o / 64, o / 64 * (k / 16));
+    let nb = (per * sms).min(total / 32).max(1);
+    Ok(Some((name, threads, smem, nb, ((nb + rb) * m * 64 * 4) as usize)))
+}
+
+/// Whether the engine's kernels take W [o, k] (the 12-bit layout or not) for `m` tokens on this GPU: the route GEMM, the library's default plans, a CUDA build.
+fn gemm_route(twelve: bool, o: i64, k: i64, m: i64) -> Result<bool> {
+    if cfg!(glyd_hip) || o % 64 != 0 || k % 16 != 0 || !(0..=64).contains(&m) {
+        return Ok(false);
+    }
+    Ok(route(this_gpu()?, twelve, o, k, m).is_ok_and(|r| r == ROUTE_GEMM))
+}
+
+/// `GpuOps::linear_workspace` by the engine's plans where every layout's product of that size is the engine's (glyd_gpu_mma_linear_workspace: the most of
+/// the tiered, compact, Int6, Int5, Int4 and Int3 layouts' workspaces; glyd_gpu_mma12_linear_workspace: the 12-bit layout's); None: the library's.
+pub fn linear_workspace(twelve: bool, o: i64, k: i64, m: i64) -> Result<Option<usize>> {
+    if !gemm_route(twelve, o, k, m)? {
+        return Ok(None);
+    }
+    let layouts: &[Unpacker] = if twelve {
+        &[Unpacker::Twelve { hb4: 0, xmax: 4 }]
+    } else {
+        &[Unpacker::Tiered, Unpacker::Compact, Unpacker::Int6, Unpacker::Int5, Unpacker::Int4, Unpacker::Int3]
+    };
+    let mut most = 0;
+    for &u in layouts {
+        let Some(p) = step_plan(u, k, m) else { return Ok(None) };
+        let Some((.., bytes)) = step_grid(u, p, o, k, m)? else { return Ok(None) };
+        most = most.max(bytes);
+    }
+    Ok(Some(most))
+}
+
+/// `GpuOps::linear` (Y [m, rows] = X [m, cols] W^T, no bias) by the engine's kernels where the route is GEMM and the plan the library's default; false
+/// where the library takes it (another route, a variable's plan, words or a workspace it refuses: its own error then).
+///
+/// # Safety
+/// As `GpuOps::linear`; a context with the engine's module is current.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn linear(w: &Pack, x: u64, m: i64, y: u64, ws: u64, ws_bytes: usize, done: u64, cs: Stream) -> Result<bool> {
+    use crate::dev::here;
+    use crate::kt;
+    use crate::launch;
+    let (o, k) = (w.rows, w.cols);
+    let u = match unpacker(w) {
+        Ok(Unpacker::V1) | Err(_) => return Ok(false),
+        Ok(u) => u,
+    };
+    if !gemm_route(w.is_twelve(), o, k, m)? {
+        return Ok(false);
+    }
+    let Some(p) = step_plan(u, k, m) else { return Ok(false) };
+    let Some((_, threads, smem, nb, bytes)) = step_grid(u, p, o, k, m)? else { return Ok(false) };
+    if done == 0 || (bytes > 0 && (ws == 0 || ws_bytes < bytes)) {
+        return Ok(false);
+    }
+    let (g, b, pf) = ([nb as u32, 1, 1], [threads, 1, 1], pfd());
+    macro_rules! mt {
+        ($k1:ty, $k2:ty, $k4:ty; $($a:expr),+) => {
+            match p {
+                StepK::Mt(1) => launch!(here::<$k1>()?, g, b, smem smem, cs; $($a),+, o, k, m, x, 0u64, y, ws, done, pf),
+                StepK::Mt(2) => launch!(here::<$k2>()?, g, b, smem smem, cs; $($a),+, o, k, m, x, 0u64, y, ws, done, pf),
+                _ => launch!(here::<$k4>()?, g, b, smem smem, cs; $($a),+, o, k, m, x, 0u64, y, ws, done, pf),
+            }
+        };
+    }
+    match (u, w.words) {
+        (Unpacker::Tiered, Words::Tiered { blocks, block_base, tiers: t }) => match p {
+            StepK::Tiered(true) => {
+                launch!(here::<kt::fold_step_tiered_w>()?, g, b, smem smem, cs; w.data, blocks, block_base, t[0], t[1], t[2], o, k, m, x, 0u64, y, ws, done)
+            }
+            StepK::Tiered(false) => {
+                launch!(here::<kt::fold_step_tiered_x>()?, g, b, smem smem, cs; w.data, blocks, block_base, t[0], t[1], t[2], o, k, m, x, 0u64, y, ws, done)
+            }
+            _ => mt!(kt::fold_gemm_tiered_1, kt::fold_gemm_tiered_2, kt::fold_gemm_tiered_4; w.data, blocks, block_base, t[0], t[1], t[2]),
+        },
+        (Unpacker::Compact, Words::Tiered { blocks, block_base, tiers: t }) => {
+            mt!(kt::fold_gemm_compact_1, kt::fold_gemm_compact_2, kt::fold_gemm_compact_4; w.data, blocks, block_base, t[0], t[1], t[2])
+        }
+        (Unpacker::Int6, Words::Tiered { blocks, .. }) => mt!(kt::fold_gemm_int6_1, kt::fold_gemm_int6_2, kt::fold_gemm_int6_4; w.data, blocks),
+        (Unpacker::Int5, Words::Tiered { blocks, .. }) => mt!(kt::fold_gemm_int5_1, kt::fold_gemm_int5_2, kt::fold_gemm_int5_4; w.data, blocks),
+        (Unpacker::Int4, Words::Tiered { blocks, .. }) => mt!(kt::fold_gemm_int4_1, kt::fold_gemm_int4_2, kt::fold_gemm_int4_4; w.data, blocks),
+        (Unpacker::Int4H(base), Words::Tiered { blocks, .. }) => mt!(kt::fold_gemm_int4h_1, kt::fold_gemm_int4h_2, kt::fold_gemm_int4h_4; w.data, blocks, base),
+        (Unpacker::Fp4, Words::Tiered { blocks, .. }) => mt!(kt::fold_gemm_fp4_1, kt::fold_gemm_fp4_2, kt::fold_gemm_fp4_4; w.data, blocks),
+        (Unpacker::Fp4R { ks, mg, sh }, Words::Tiered { blocks, .. }) => {
+            mt!(kt::fold_gemm_fp4r_1, kt::fold_gemm_fp4r_2, kt::fold_gemm_fp4r_4; w.data, blocks, ks, mg, sh)
+        }
+        (Unpacker::Int3, Words::Tiered { blocks, .. }) => mt!(kt::fold_gemm_int3_1, kt::fold_gemm_int3_2, kt::fold_gemm_int3_4; w.data, blocks),
+        (Unpacker::Twelve { hb4, xmax }, Words::Twelve { exc, exc_base, .. }) => {
+            mt!(kt::fold_gemm_twelve_1, kt::fold_gemm_twelve_2, kt::fold_gemm_twelve_4; w.data, exc, exc_base, hb4, xmax)
+        }
+        _ => return Ok(false),
+    }?;
+    Ok(true)
+}
+
 /// `foldcheck` (R17): each folded piece against the library's on this GPU, the library the oracle: the GPU's code; the way of every GPU code the
 /// library knows (with and without SPLIT), both layouts, matrices of every kind of K and size, at token counts on each side of every threshold;
 /// the KV cache's sizes and decode workspace over valid and refused shapes; the experts' plan and the unpacking of every layout by the engine's own
@@ -602,6 +809,8 @@ pub fn check() -> Result<()> {
     say("the KV cache's sizes and the decode's workspace", n, bad);
     let (n, bad) = route_check(&dev, &lib)?;
     say("the experts' plan (moe_way), the engine's kernels against the library's (one warp and one block, ids out of range among them)", n, bad);
+    let (n, bad) = linear_check(&dev, &lib)?;
+    say("the step product (route GEMM, 1 to 64 tokens), the engine's kernels against the library's, and its workspace", n, bad);
     let (n, bad) = unpack_check(&dev, &lib)?;
     say("the mma layouts' unpacking, the engine's kernels against the library's (every bf16 of each layout, whole and a row block)", n, bad);
     if fails > 0 {
@@ -667,13 +876,133 @@ fn route_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, V
     Ok((n, bad))
 }
 
+/// Random weights of `rows` x `cols` in each of the ten mma layouts, packed by glyd-gpu's packers (None where a packer did not take them), for `foldcheck`.
+#[cfg(feature = "dev")]
+fn test_packs(rows: usize, cols: usize, next: &mut impl FnMut() -> u64) -> Vec<(&'static str, Option<crate::weights::Packed>)> {
+    use crate::weights::Packed;
+    use glyd_gpu::pack as gp;
+    // bf16 weights about N(0, 0.05): a sum of four uniforms
+    let w: Vec<u16> = (0..rows * cols)
+        .map(|_| {
+            let u: f32 = (0..4).map(|_| (next() >> 40) as f32 / (1u64 << 24) as f32 - 0.5).sum();
+            ((u * 0.087).to_bits() >> 16) as u16
+        })
+        .collect();
+    let rounded: Vec<u16> = w.iter().map(|&x| gp::round_a(x)).collect();
+    let h4: Vec<u16> = (0..rows * cols / 32).map(|_| ((next() >> 40) as u16 & 0x07FF) | ((5 + (next() % 4) as u16) << 11)).collect();
+    let w4h: Vec<u16> = (0..rows * cols).map(|i| gp::int4h_value((next() % 16) as u8, h4[i / 32], 110)).collect();
+    let q: Vec<u8> = (0..rows * cols / 2).map(|_| next() as u8).collect();
+    let (e, er): (Vec<u8>, Vec<u8>) = (0..rows * cols / 32).map(|_| (120 + (next() % 7) as u8, 121 + (next() % 4) as u8)).unzip();
+    let tiered = |p: gp::Tiered| Packed {
+        data: p.data,
+        b1: p.blocks,
+        b2: p.block_base.iter().flat_map(|x| x.to_le_bytes()).collect(),
+        words: Words::Tiered { blocks: 0, block_base: 0, tiers: p.tiers },
+        rows,
+        cols,
+    };
+    let t12 = gp::pack_twelve(&w, rows, cols);
+    let twelve = Packed {
+        data: t12.data,
+        b1: t12.exc.iter().flat_map(|x| x.to_le_bytes()).collect(),
+        b2: t12.exc_base.iter().flat_map(|x| x.to_le_bytes()).collect(),
+        words: Words::Twelve { exc: 0, exc_base: 0, sym: t12.sym },
+        rows,
+        cols,
+    };
+    let packs: Vec<(&str, Option<Packed>)> = vec![
+        ("tiered", Some(tiered(gp::pack_tiered(&w, rows, cols)))),
+        ("compact", gp::pack_compact_checked(&rounded, rows, cols).map(tiered)),
+        ("int6", gp::pack_int6(&w, rows, cols).map(tiered)),
+        ("int5", gp::pack_int5(&w, rows, cols).map(tiered)),
+        ("int4", gp::pack_int4(&w, rows, cols).map(tiered)),
+        ("int4h", gp::pack_int4h(&w4h, rows, cols).map(tiered)),
+        ("fp4", gp::pack_fp4_checked(&q, &e, rows, cols).map(tiered)),
+        ("fp4r", gp::pack_fp4r_checked(&q, &er, rows, cols).map(tiered)),
+        ("int3", gp::pack_int3(&w, rows, cols).map(tiered)),
+        ("12-bit", Some(twelve)),
+    ];
+    packs
+}
+
+/// `foldcheck`'s step product: Y [m, o] = X W^T for every layout at 1 to 64 tokens, by the library's kernels and by the engine's where the GPU's route is
+/// GEMM (the others are still the library's), every bf16 compared, and the workspace each asks, at 256 x 1024 and 128 x 4096. (compared, differences)
+#[cfg(feature = "dev")]
+fn linear_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
+    use crate::dev::Buf;
+    use crate::weights::upload_packed;
+    let mut seed = 0xD1B5_4A32_D192_ED03u64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let (mut n, mut bad, mut folded) = (0, Vec::new(), 0);
+    let ms = [1i64, 2, 7, 8, 9, 15, 16, 17, 24, 32, 33, 48, 64];
+    for (rows, cols) in [(256usize, 1024usize), (128, 4096)] {
+        let x: Vec<u16> = (0..64 * cols).map(|_| (((next() >> 40) as f32 / (1u64 << 24) as f32 - 0.5).to_bits() >> 16) as u16).collect();
+        let xb = Buf::new(x.len() * 2)?;
+        xb.write(0, &x)?;
+        for twelve in [false, true] {
+            for &m in &ms {
+                n += 1;
+                let (a, b) = (lib.library_linear_workspace(twelve, rows as i64, cols as i64, m), linear_workspace(twelve, rows as i64, cols as i64, m));
+                match (&a, &b) {
+                    (Ok(x), Ok(Some(y))) if x != y => {
+                        bad.push(format!("workspace of {rows} x {cols}, 12-bit {twelve}, {m} tokens: the library's {x} bytes, the engine's {y}"))
+                    }
+                    (Err(e), _) | (_, Err(e)) => bad.push(format!("workspace of {rows} x {cols}, 12-bit {twelve}, {m} tokens: {e}")),
+                    _ => {}
+                }
+            }
+        }
+        for (name, p) in test_packs(rows, cols, &mut next) {
+            let Some(p) = p else { continue };
+            let pb = upload_packed(p)?;
+            for &m in &ms {
+                let ws_bytes = lib.library_linear_workspace(pb.pack.is_twelve(), rows as i64, cols as i64, m)?.max(16);
+                let (ws, da, db) = (Buf::new(ws_bytes)?, Buf::zeroed(4 * rows / 64 + 64)?, Buf::zeroed(4 * rows / 64 + 64)?);
+                let (ya, yb) = (Buf::new(m as usize * rows * 2)?, Buf::new(m as usize * rows * 2)?);
+                ya.fill_async(0xA5, dev.stream)?;
+                yb.fill_async(0x5A, dev.stream)?;
+                // SAFETY: the pack, X [64, cols], the workspace of the library's size (the engine's is the same or the product is the library's), zeroed
+                // counters of each, Y [m, rows] each; one stream.
+                let (ra, rb) = unsafe {
+                    let ra = lib.library_linear(&pb.pack, xb.ptr, m, ya.ptr, ws.ptr, ws_bytes, da.ptr, dev.stream);
+                    dev.sync()?;
+                    (ra, linear(&pb.pack, xb.ptr, m, yb.ptr, ws.ptr, ws_bytes, db.ptr, dev.stream))
+                };
+                dev.sync()?;
+                n += 1;
+                match (&ra, &rb) {
+                    (Err(e), _) | (_, Err(e)) => {
+                        bad.push(format!("{name} {rows} x {cols}, {m} tokens: {e}"));
+                        continue;
+                    }
+                    (_, Ok(false)) => continue,
+                    _ => folded += 1,
+                }
+                let (mut va, mut vb) = (vec![0u16; m as usize * rows], vec![0u16; m as usize * rows]);
+                ya.read(0, &mut va)?;
+                yb.read(0, &mut vb)?;
+                let differ = va.iter().zip(&vb).filter(|(x, y)| x != y).count();
+                if differ > 0 && bad.len() < 12 {
+                    bad.push(format!("{name} {rows} x {cols}, {m} tokens: {differ} of {} bf16 differ", va.len()));
+                }
+            }
+        }
+    }
+    println!("  (the step product: {folded} products by the engine's kernels, the rest the library's route on this GPU)");
+    Ok((n, bad))
+}
+
 /// `foldcheck`'s unpacking: random weights of each layout packed by glyd-gpu's packers, unpacked by the library's kernel and by the engine's, whole and
 /// rows 64-127, every bf16 compared; a pack of a layout number neither knows refused by both. (compared, differences)
 #[cfg(feature = "dev")]
 fn unpack_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
     use crate::dev::Buf;
-    use crate::weights::{upload_packed, Packed};
-    use glyd_gpu::pack as gp;
+    use crate::weights::upload_packed;
     let mut seed = 0x2545_F491_4F6C_DD1Du64;
     let mut next = move || {
         seed ^= seed << 13;
@@ -683,47 +1012,7 @@ fn unpack_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, 
     };
     let (mut n, mut bad) = (0, Vec::new());
     for (rows, cols) in [(256usize, 1024usize), (128, 4096)] {
-        // bf16 weights about N(0, 0.05): a sum of four uniforms
-        let w: Vec<u16> = (0..rows * cols)
-            .map(|_| {
-                let u: f32 = (0..4).map(|_| (next() >> 40) as f32 / (1u64 << 24) as f32 - 0.5).sum();
-                ((u * 0.087).to_bits() >> 16) as u16
-            })
-            .collect();
-        let rounded: Vec<u16> = w.iter().map(|&x| gp::round_a(x)).collect();
-        let h4: Vec<u16> = (0..rows * cols / 32).map(|_| ((next() >> 40) as u16 & 0x07FF) | ((5 + (next() % 4) as u16) << 11)).collect();
-        let w4h: Vec<u16> = (0..rows * cols).map(|i| gp::int4h_value((next() % 16) as u8, h4[i / 32], 110)).collect();
-        let q: Vec<u8> = (0..rows * cols / 2).map(|_| next() as u8).collect();
-        let (e, er): (Vec<u8>, Vec<u8>) = (0..rows * cols / 32).map(|_| (120 + (next() % 7) as u8, 121 + (next() % 4) as u8)).unzip();
-        let tiered = |p: gp::Tiered| Packed {
-            data: p.data,
-            b1: p.blocks,
-            b2: p.block_base.iter().flat_map(|x| x.to_le_bytes()).collect(),
-            words: Words::Tiered { blocks: 0, block_base: 0, tiers: p.tiers },
-            rows,
-            cols,
-        };
-        let t12 = gp::pack_twelve(&w, rows, cols);
-        let twelve = Packed {
-            data: t12.data,
-            b1: t12.exc.iter().flat_map(|x| x.to_le_bytes()).collect(),
-            b2: t12.exc_base.iter().flat_map(|x| x.to_le_bytes()).collect(),
-            words: Words::Twelve { exc: 0, exc_base: 0, sym: t12.sym },
-            rows,
-            cols,
-        };
-        let packs: Vec<(&str, Option<Packed>)> = vec![
-            ("tiered", Some(tiered(gp::pack_tiered(&w, rows, cols)))),
-            ("compact", gp::pack_compact_checked(&rounded, rows, cols).map(tiered)),
-            ("int6", gp::pack_int6(&w, rows, cols).map(tiered)),
-            ("int5", gp::pack_int5(&w, rows, cols).map(tiered)),
-            ("int4", gp::pack_int4(&w, rows, cols).map(tiered)),
-            ("int4h", gp::pack_int4h(&w4h, rows, cols).map(tiered)),
-            ("fp4", gp::pack_fp4_checked(&q, &e, rows, cols).map(tiered)),
-            ("fp4r", gp::pack_fp4r_checked(&q, &er, rows, cols).map(tiered)),
-            ("int3", gp::pack_int3(&w, rows, cols).map(tiered)),
-            ("12-bit", Some(twelve)),
-        ];
+        let packs = test_packs(rows, cols, &mut next);
         for (name, p) in packs {
             let Some(p) = p else {
                 bad.push(format!("{name} {rows} x {cols}: glyd-gpu's packer did not pack the random weights"));
