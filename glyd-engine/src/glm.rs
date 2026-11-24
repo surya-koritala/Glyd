@@ -660,7 +660,7 @@ impl ConfigGlm {
 
 #[cfg(feature = "dev")]
 /// `glmrandom OUT`: a random GLM-5.3-Flash of the toy config's shape (tests/fixtures/glm5_next_toy_config.json: eight layers, Kimi delta attention and latent attention, a dense MLP in the first three and
-/// experts in the rest; its matrices bf16, no MTP head) in Hub format: the executor's logits, user and tier checks' GLM (`logitsmodel glm`, `glmrandom`), and the frozen development engine's (`glmdyn`).
+/// experts in the rest; its matrices bf16, no MTP head) in Hub format: the executor's logits, user, 12-bit and tier checks' GLM (`logitsmodel glm`, `glmrandom`).
 /// `fp8`: the routed experts in FP8 as the release has them (E4M3 with fp32 scales of 128 x 128 blocks, `_scale_inv`; their intermediate size 256, a multiple of the blocks), the rest bf16.
 /// `real`: (layers, experts) at the release's widths (GLM-5.3-Flash's config: its heads, latents, indexer, experts' sizes and choices, vocabulary), every MLP a block of experts, the layers' attention
 /// kinds its first ones' with a sparse attention layer last; for timing a step on one GPU (the experts in FP8 as released).

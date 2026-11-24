@@ -1,14 +1,13 @@
 //! GLM-5.3-Flash (`Glm5NextForConditionalGeneration`) as a description: the four streams mixed around each layer's two blocks (transformers' rounding), Kimi delta attention or the latent attention over the
 //! keys its indexer picks (the layer kind's, `Op::Mla`: src/dynamic/mla.rs), a dense MLP in the first layers and a mixture of experts in the rest, the mean of the streams and the final norm. Its weights load by
-//! src/kern_glm.rs's loader (a latent attention's by its `MlaWeights`) and the experts' layers by src/moe_glm.rs, handed over as they are; the arithmetic is kernels/glm.cu's and kernels/mla.cu's, as
-//! the frozen development engine (model_glm.rs) runs it (`glmdyn` checks the two against each other).
+//! src/kern_glm.rs's loader (a latent attention's by its `MlaWeights`) and the experts' layers by src/moe_glm.rs, handed over as they are; the arithmetic is kernels/glm.cu's and kernels/mla.cu's.
 
 use super::{Dyn, HeadMix, IdxKeys, IdxPick, IdxScore, Loaded, MlaIn, MlaIndexer, MlaOp, ModelDesc, MoeOp, Op, Opts, Ring, Slot, Stage, StreamsMix, View};
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result};
 use crate::glm::{ConfigGlm, GlmKind};
 use crate::kern35::Mat;
-use crate::kern_glm::{NoBlock, WeightsGlm, GM_D};
+use crate::kern_glm::{WeightsGlm, GM_D};
 use crate::kern_nh::{MoeBlock, NhHost};
 use crate::moe::{Act, MoeLayer};
 use crate::runtime::kinds::Rounding;
@@ -52,7 +51,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
     let whole = st.first && st.last;
     let w = {
         let moe = crate::moe_glm::layers_cached(level, &dev, &lib8, caching.copied());
-        WeightsGlm::<NoBlock, MoeLayer>::load_ends(
+        WeightsGlm::load_ends(
             dir,
             threads,
             o.layout,
@@ -61,7 +60,6 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
             (!whole).then_some(&only[..]),
             Some((st.first, st.last)),
             Some(&moe),
-            None,
         )?
     };
     // (the latent attention layers' weights: the kind's operation's matrices and small tensors)

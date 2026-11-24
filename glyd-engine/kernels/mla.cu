@@ -1,4 +1,4 @@
-// The latent attention layer kind's kernels (src/dynamic/mla.rs runs them for every family with one, Kimi-K3 and GLM-5.3-Flash; src/model_glm.rs's frozen engine too) and the sparse-attention indexer's,
+// The latent attention layer kind's kernels (src/dynamic/mla.rs runs them for every family with one, Kimi-K3 and GLM-5.3-Flash) and the sparse-attention indexer's,
 // whose pick DeepSeek-V4's compressed attention takes as well. Included by engine.cu after glm.cu (GM_PER, GM_DYN_FLOATS) and qwen35.cu (warp_max).
 // A token's cache is its latent c (kv_lora_rank wide: the key-value down product's, normed) and the key part the heads share (rope channels, Kimi-K3's 64; GLM-5.3's none), which is its key and, through kv_b_proj, its
 // value, so the attention runs in the latent space (the absorbed form): the query q_h becomes q_abs = Wk_h^T q_h, the scores are q_abs . c_t, the output is (sum_t p_t c_t) multiplied by Wv_h at the end. An indexer

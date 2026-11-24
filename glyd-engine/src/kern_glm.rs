@@ -1,14 +1,14 @@
-//! GLM-5.3-Flash's kernel table and weights, which the executor's description of it loads by (src/dynamic/glm.rs) and Condor's engine (src/model_qwen4x.rs) and the
-//! frozen development engine (src/model_glm.rs, R13 #234) share: the kernels of kernels/glm.cu and kernels/mla.cu with typed launches (`KernGlm`: Kimi delta attention, the
-//! residual streams, the latent attention's), the layers' weights (`WeightsGlm`: a layer's norms, mixing weights and Kimi delta or dense MLP matrices, packed as they load,
-//! and the blocks a caller makes of its latent attention and mixture-of-experts layers), and a latent attention layer's (`MlaWeights`). The config and tensor names are
-//! src/glm.rs's.
+//! GLM-5.3-Flash's kernel table and weights, which the executor's description of it loads by (src/dynamic/glm.rs) and Condor's engine (src/model_qwen4x.rs) shares: the
+//! kernels of kernels/glm.cu and kernels/mla.cu with typed launches (`KernGlm`: Kimi delta attention, the residual streams, the latent attention's), the layers' weights
+//! (`WeightsGlm`: a layer's norms, mixing weights and Kimi delta or dense MLP matrices, packed as they load, and the blocks a caller makes of its mixture-of-experts layers),
+//! and a latent attention layer's (`MlaWeights`). The config and tensor names are src/glm.rs's. (GLM's own development engine, which these came out of, is gone: R13 #234.)
 
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result, Stream, Words};
 use crate::glm::{ConfigGlm, GlmKind};
 use crate::kern35::Mat;
 use crate::launch;
+use crate::moe::MoeLayer;
 use crate::qwen35::Pack35;
 use crate::runtime::kinds::Rounding;
 use crate::weights::{as_bytes, choose_layout, ordered, read_pack, upload_bytes, upload_packed, v7_manifest, Layout, PackBuf};
@@ -409,9 +409,9 @@ pub struct Hc {
     pub scale: Buf,
 }
 
-/// A layer's buffers, by kind: its matrices (Kimi delta attention: qkv, o, f_a, f_b, g_a, g_b, b; then a dense MLP's gate and up, down; a latent attention layer's and a mixture of experts' are their blocks') and small tensors;
-/// its blocks of the caller's types (`A` a latent attention's, `E` a mixture of experts'), where it was given makers of them.
-pub struct LayerGlm<A: ?Sized, E: ?Sized> {
+/// A layer's buffers, by kind: its matrices (Kimi delta attention: qkv, o, f_a, f_b, g_a, g_b, b; then a dense MLP's gate and up, down; a latent attention layer's are `MlaWeights`, a mixture of experts' its
+/// layer) and small tensors; a mixture-of-experts layer's experts' layer, where the loader was given a maker of it.
+pub struct LayerGlm {
     pub kind: GlmKind,
     /// Its index among the layers of its kind (a Kimi delta layer's state, a latent attention layer's cache).
     pub idx: usize,
@@ -423,15 +423,14 @@ pub struct LayerGlm<A: ?Sized, E: ?Sized> {
     pub mats: Vec<Mat>,
     /// Kimi delta attention: the three convolutions' weights as one [3 heads 128, 4], A_log, dt_bias (fp32), the gated norm's weight.
     pub small: Vec<Buf>,
-    pub mla: Option<Box<A>>,
-    pub moe: Option<Box<E>>,
+    pub moe: Option<Box<MoeLayer>>,
 }
 
 /// The model's weights in GPU memory. A layer not asked for (`only`) is None; so are the embedding, the LM head and the final norm then.
-pub struct WeightsGlm<A: ?Sized, E: ?Sized> {
+pub struct WeightsGlm {
     pub cfg: ConfigGlm,
     pub layout: Layout,
-    pub layers: Vec<Option<LayerGlm<A, E>>>,
+    pub layers: Vec<Option<LayerGlm>>,
     pub embed: Option<PackBuf>,
     pub head: Option<PackBuf>,
     pub norm_f: Option<Buf>,
@@ -458,35 +457,14 @@ pub(crate) fn layer_matrices(cfg: &ConfigGlm, l: usize) -> Vec<Pack35> {
     attn.iter().filter(|_| cfg.kinds[l] == GlmKind::Kda).chain(mlp.iter().filter(|_| !cfg.moe[l])).cloned().collect()
 }
 
-/// What the loader needs of a layer's block: its device bytes.
-pub trait Held {
-    fn bytes(&self) -> usize;
-}
+/// Makes layer `l`'s experts' layer (src/moe_glm.rs `layers_cached`): the layer's number, the config, the checkpoint, the layout of the packs.
+pub type Make<'a> = &'a dyn Fn(usize, &ConfigGlm, &Checkpoint, Layout) -> Result<Box<MoeLayer>>;
 
-/// No block: the type of a caller's blocks where it makes none (the executor holds a latent attention layer's weights itself, `MlaWeights`).
-pub enum NoBlock {}
-
-impl Held for NoBlock {
-    fn bytes(&self) -> usize {
-        match *self {}
-    }
-}
-
-/// The experts' layer of the mixture-of-experts core (src/moe_glm.rs reads it), the executor's block of a mixture-of-experts layer.
-impl Held for crate::moe::MoeLayer {
-    fn bytes(&self) -> usize {
-        self.weights_bytes()
-    }
-}
-
-/// Makes layer `l`'s block of type `B`: the layer's number, the config, the checkpoint, the layout of the packs.
-pub type Make<'a, B> = &'a dyn Fn(usize, &ConfigGlm, &Checkpoint, Layout) -> Result<Box<B>>;
-
-impl<A: ?Sized + Held, E: ?Sized + Held> WeightsGlm<A, E> {
+impl WeightsGlm {
     /// A Hub-format directory (config.json, the safetensors: FP8 with block scales or bf16) or a glyd-v7 directory (`glyd-engine pack MODEL OUT --layout i6|i5`): the layers of `only` (all, with the embedding, the head and the
     /// final norm, where None) checked against the weight map, their matrices packed here by `threads` workers in `layout` (None: the GPU's) and copied to the GPU as they are done. A glyd-v7 directory is at one level
-    /// (`layout` None, or the same): the packs it holds saved are read as they are, the rest (a matrix the packer does not take) as the Hub's. A latent attention layer holds its norms and mixing weights and its block, which
-    /// is `mla`'s (none where there is no maker); a mixture-of-experts layer the same with `moe`'s: a block gets the checkpoint and the layout and loads what it needs of the layer's tensors.
+    /// (`layout` None, or the same): the packs it holds saved are read as they are, the rest (a matrix the packer does not take) as the Hub's. A latent attention layer holds its norms and mixing weights (its own weights are
+    /// `MlaWeights`); a mixture-of-experts layer the same and `moe`'s experts' layer, which gets the checkpoint and the layout and loads what it needs of the layer's tensors.
     #[allow(clippy::too_many_arguments)]
     pub fn load(
         dir: &Path,
@@ -495,10 +473,9 @@ impl<A: ?Sized + Held, E: ?Sized + Held> WeightsGlm<A, E> {
         cc: (i32, i32),
         total_mem: u64,
         only: Option<&[usize]>,
-        moe: Option<Make<'_, E>>,
-        mla: Option<Make<'_, A>>,
-    ) -> Result<WeightsGlm<A, E>> {
-        WeightsGlm::load_ends(dir, threads, layout, cc, total_mem, only, None, moe, mla)
+        moe: Option<Make<'_>>,
+    ) -> Result<WeightsGlm> {
+        WeightsGlm::load_ends(dir, threads, layout, cc, total_mem, only, None, moe)
     }
 
     /// `load`, with the ends asked for apart from the layers: `ends` (the embedding; the LM head and the final norm) for a stage of a model split across GPUs, None for `load`'s (with the whole model, or with no
@@ -512,9 +489,8 @@ impl<A: ?Sized + Held, E: ?Sized + Held> WeightsGlm<A, E> {
         total_mem: u64,
         only: Option<&[usize]>,
         ends: Option<(bool, bool)>,
-        moe: Option<Make<'_, E>>,
-        mla: Option<Make<'_, A>>,
-    ) -> Result<WeightsGlm<A, E>> {
+        moe: Option<Make<'_>>,
+    ) -> Result<WeightsGlm> {
         let cfg = ConfigGlm::load(dir)?;
         let ck = Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
         let have: Vec<(String, String, Vec<u64>)> = ck
@@ -581,7 +557,7 @@ impl<A: ?Sized + Held, E: ?Sized + Held> WeightsGlm<A, E> {
         let read = |name: &str| -> Result<Buf> { upload_bytes(&ck.read(name).map_err(|e| Error(format!("{name}: {e}")))?) };
         let read_f32 = |name: &str| -> Result<Buf> { upload_bytes(&f32_bytes(&ck, name)?) };
         let schedule = cfg.schedule();
-        let mut layers: Vec<Option<LayerGlm<A, E>>> = (0..cfg.layers).map(|_| None).collect();
+        let mut layers: Vec<Option<LayerGlm>> = (0..cfg.layers).map(|_| None).collect();
         let mut bytes = 0usize;
         for &l in &wanted {
             crate::status::STATUS.beat(); // (a mixture-of-experts layer's block takes seconds to read)
@@ -618,10 +594,6 @@ impl<A: ?Sized + Held, E: ?Sized + Held> WeightsGlm<A, E> {
             } else {
                 Vec::new()
             };
-            let mla_block = match &mla {
-                Some(make) if kind == GlmKind::Mla => Some(make(l, &cfg, &ck, layout)?),
-                _ => None,
-            };
             let moe_block = match &moe {
                 Some(make) if cfg.moe[l] => Some(make(l, &cfg, &ck, layout)?),
                 _ => None,
@@ -631,8 +603,8 @@ impl<A: ?Sized + Held, E: ?Sized + Held> WeightsGlm<A, E> {
                 + hc.iter().map(|h| h.proj.bytes + h.base.bytes + h.scale.bytes).sum::<usize>()
                 + mats.iter().map(Mat::bytes).sum::<usize>()
                 + small.iter().map(|b| b.bytes).sum::<usize>();
-            bytes += mla_block.as_ref().map_or(0, |b| b.bytes()) + moe_block.as_ref().map_or(0, |b| b.bytes());
-            layers[l] = Some(LayerGlm { kind, idx, norm_a, norm_f, hc, mats, small, mla: mla_block, moe: moe_block });
+            bytes += moe_block.as_ref().map_or(0, |b| b.weights_bytes());
+            layers[l] = Some(LayerGlm { kind, idx, norm_a, norm_f, hc, mats, small, moe: moe_block });
         }
         let embed = if first || (last && cfg.tie) { Some(packed.remove("embed").ok_or_else(|| Error("the embedding is not packed".into()))?) } else { None };
         let head = if last && !cfg.tie { Some(packed.remove("lm_head").ok_or_else(|| Error("the LM head is not packed".into()))?) } else { None };
@@ -656,7 +628,7 @@ impl<A: ?Sized + Held, E: ?Sized + Held> WeightsGlm<A, E> {
 
 /// A latent attention layer's weights on the GPU: the library's products (q's two, the key-value latent's, o; packed as they load), kv_b_proj as the bf16 it is (the
 /// absorbed form multiplies by its rows), the two norms' weights and the indexer's tensors as the checkpoint has them. The executor's latent attention (src/dynamic/glm.rs:
-/// `Op::Mla`'s matrices and small tensors) and the frozen engine's block (`GlmMla`, src/mla_glm.rs) both load them here.
+/// `Op::Mla`'s matrices and small tensors) loads them here.
 pub(crate) struct MlaWeights {
     pub q_a: Mat,
     pub q_b: Mat,
@@ -756,15 +728,6 @@ impl MlaWeights {
             ape: tensor(ck, &format!("{ixn}.index_kpool_compress_ape"), ix.kpool * ix.dim)?,
             ix_gate: tensor(ck, &format!("{ixn}.index_kpool_compress_gate"), ix.dim * h)?,
         })
-    }
-
-    /// Device bytes.
-    pub(crate) fn bytes(&self) -> usize {
-        [&self.q_a, &self.q_b, &self.kv_a, &self.o].iter().map(|m| m.bytes()).sum::<usize>()
-            + [&self.q_a_ln, &self.kv_a_ln, &self.kv_b, &self.wq_b, &self.wk, &self.k_norm_w, &self.k_norm_b, &self.wproj, &self.ape, &self.ix_gate]
-                .iter()
-                .map(|b| b.bytes)
-                .sum::<usize>()
     }
 }
 

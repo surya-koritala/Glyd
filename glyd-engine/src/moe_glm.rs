@@ -1,5 +1,5 @@
 //! GLM-5.3-Flash's mixture-of-experts layer on the GPU (`Glm5NextTextMoE`) as the mixture-of-experts core's layer (src/moe.rs, kernels/moe.cu): `layer` reads it, the executor's
-//! `Op::Moe` (src/dynamic/glm.rs, `layers_cached`) and the frozen development engine's block (`GlmMoe`, src/model_glm.rs) run it. The layer of the core's comments, with the router,
+//! `Op::Moe` (src/dynamic/glm.rs, `layers_cached`) runs it. The layer of the core's comments, with the router,
 //! the experts and the shared expert all reading the layer's normed input at the model's width (`MoeLayer::forward`). The router scores the 288 experts in fp32 (sigmoid scores; the 8
 //! picked by their scores plus the fp32 `e_score_correction_bias`; the chosen scores divided by their sum and times `routed_scaling_factor`, 2.5), each expert is a SwiGLU of 2,048 with the gate at most 10 and the up within
 //! 10 of zero, and the shared expert, the same on the same input, is added to their weighted sum. The arithmetic and its roundings are `tools/glm_ref.py`'s `moe_mixer` (the structure checked against transformers'

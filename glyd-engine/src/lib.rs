@@ -85,8 +85,6 @@ pub mod hub;
 pub mod kcheck;
 #[cfg(feature = "dev")]
 pub mod kcheck35;
-#[cfg(feature = "dev")]
-pub mod kcheck_glm;
 pub mod kcheck_hb;
 #[cfg(feature = "dev")]
 pub mod kcheck_moe;
@@ -111,8 +109,6 @@ pub mod levels;
 pub mod logits;
 pub mod machine;
 pub mod mapped;
-pub mod mla_glm;
-pub mod model_glm;
 pub mod model_qwen4x;
 pub mod models;
 pub mod moe;
@@ -125,7 +121,6 @@ pub mod moe_qwen4x;
 pub mod moe_ref;
 pub mod moe_rows;
 pub mod monitor;
-pub mod mtp_glm;
 pub mod muse;
 #[cfg(feature = "dev")]
 pub mod muse_ref;

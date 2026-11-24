@@ -1411,7 +1411,7 @@ mod tests {
             let text = if f == "all experts" { all_experts.clone() } else { fixture(f) };
             let c = crate::glm::ConfigGlm::parse(&text, f, None).unwrap_or_else(|e| panic!("{f}: {}", e.msg));
             for l in 0..c.layers {
-                // (a latent attention layer's four more: the kind's operation's, mla_glm.rs's `MlaWeights`)
+                // (a latent attention layer's four more: the kind's operation's, kern_glm.rs's `MlaWeights`)
                 let latent = if c.kinds[l] == crate::glm::GlmKind::Mla { 4 } else { 0 };
                 assert_eq!(crate::kern_glm::layer_matrices(&c, l).len() + latent, super::super::glm::per_layer(c.kinds[l], c.moe[l]), "{f}: layer {l}");
             }
