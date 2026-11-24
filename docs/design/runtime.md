@@ -451,7 +451,9 @@ step `overlaps` and every sequence that samples in step N takes its largest logi
 step N chose names its head row (`Row::after`, the `Tok::Prev` above); the executor's `step_ids` kernel makes the step's int64 token ids
 from the host's tokens and step N's head (`tok`, the argmax), and the library's `mma_rows` looks the embedding's rows up by them on the GPU,
 bit for bit the rows `unpack` gives. A step that draws, or asks for log-probabilities, lands before the next is launched: its rows are
-read on the host. A sequence whose token in flight is its last by its length has no row in the next step; one that ends on a stop token
+read on the host; its candidates (the 64 largest logits a row, `top`) are queued with the step and copied back with its samples
+(`ModelStep::draws`), so the draw waits for nothing more. Every step of the scheduler goes through `launch` and `finish` (a model whose
+rounds are two passes launches its prompt pass and its decode step each to run at once). A sequence whose token in flight is its last by its length has no row in the next step; one that ends on a stop token
 or the end-of-sequence token has had its row in the next step run, and that row's output is not taken.
 
 On the executor (`src/dynamic/rows.rs` `Lanes`) a step's inputs are copied on the stream from pinned memory (three lanes: one step

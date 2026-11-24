@@ -929,6 +929,8 @@ pub struct Dyn {
     lanes: Option<rows::Lanes>,
     /// GLYD_ENGINE_STEP_PROF=1 or GLYD_PROF=1 on a served model: the GPU's time of each step and its idle time before it (src/dynamic/rows.rs `Gaps`).
     gaps: Option<rows::Gaps>,
+    /// Whether a row of the next launched step draws from its candidates (`ModelStep::draws`): they are queued with the step.
+    draws: bool,
 }
 
 /// A sequence's own buffers and place, while another is selected (`Dyn::select`): its keys and values, its states, its position, the verify pass it can go back
@@ -1288,6 +1290,7 @@ impl Dyn {
             swap: None,
             lanes: None,
             gaps: None,
+            draws: false,
         };
         // (a group of GPUs: every one's engine made before any one's first pass, src/dynamic/tp.rs)
         if let Some(c) = tp::comm() {

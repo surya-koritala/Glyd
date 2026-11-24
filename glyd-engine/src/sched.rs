@@ -247,12 +247,22 @@ pub trait ModelStep {
     fn overlaps(&self) -> bool {
         false
     }
-    /// `round` queued (`one_step`): `finish` gives its samples. Between the two the scheduler calls nothing that reads this step's rows (`top`, `logits`, `gather`) once a
-    /// later step is launched, and nothing that changes a sequence of the step but `grow` (room for its next tokens), `release` (it ended) and `name` (its blocks named
-    /// for the cache).
+    /// A step queued: `round`'s rows and chunks (a step that is not `one_step`: rows alone, a decode step, or chunks alone, a prompt pass), whose samples `finish` gives.
+    /// Between the two the scheduler calls nothing that reads this step's rows (`top`, `logits`, `gather`) once a later step is launched, and nothing that changes a sequence
+    /// of the step but `grow` (room for its next tokens), `release` (it ended) and `name` (its blocks named for the cache). By default the step runs to its end here.
     fn launch(&mut self, rows: &[Row], jobs: &[PrefillJob]) -> Result<Launched> {
-        Ok(Launched { done: Some(self.round(rows, jobs)?), tag: 0 })
+        let done = match (self.one_step(), rows.is_empty(), jobs.is_empty()) {
+            (true, _, _) => self.round(rows, jobs)?,
+            (false, _, true) => (self.decode(rows)?, Vec::new()),
+            (false, true, false) => (Vec::new(), self.prefill_many(jobs)?),
+            (false, false, false) => return Err(crate::ffi::Error("a step of rows and prompt chunks, on a model whose rounds are two passes".into())),
+        };
+        Ok(Launched { done: Some(done), tag: 0 })
     }
+    /// Whether a row of the next step `launch` queues draws its token from its candidates or reads its logits (a sequence that is not greedy, or asks for
+    /// log-probabilities): a step that makes the candidates on the GPU (`top`) then queues them with the step's work and their copy with its samples, and `top` waits
+    /// for nothing.
+    fn draws(&mut self, _on: bool) {}
     /// The samples of a step `launch` queued, once its work has run (the wait is for that step, not for the GPU's whole queue).
     fn finish(&mut self, l: Launched) -> Result<Samples> {
         l.done.ok_or_else(|| crate::ffi::Error("a step launched to run at once has no samples".into()))
@@ -479,6 +489,9 @@ impl ModelStep for &mut dyn ModelStep {
     }
     fn abandon(&mut self) {
         (**self).abandon()
+    }
+    fn draws(&mut self, on: bool) {
+        (**self).draws(on)
     }
     fn draft(&mut self, row: &Row, sampler: Option<&mut Sampler>) -> Result<Option<Vec<u32>>> {
         (**self).draft(row, sampler)
@@ -1771,7 +1784,7 @@ impl<B: ModelStep> Sched<B> {
             .map(|i| self.active[i].sampler.mask_handle())
             .collect();
         self.be.masks(masks);
-        let samples = self.be.prefill_many(&jobs)?;
+        let samples = self.be.launch(&[], &jobs).and_then(|l| self.be.finish(l))?.1;
         if self.trace {
             eprintln!(
                 "sched {:.4} pass from {:.4} of {} sequences {:?}, {} tokens, {:.1} ms; {} active, {} waiting",
@@ -1943,6 +1956,7 @@ impl<B: ModelStep> Sched<B> {
         let on_device = sampled.iter().all(|&i| self.active[i].greedy && self.active[i].reply.logprobs.is_none());
         let (t, t0) = (std::time::Instant::now(), crate::monitor::clock());
         self.be.masks(masks);
+        self.be.draws(!on_device);
         let l = self.be.launch(&rows, &jobs)?;
         drop((rows, jobs));
         Ok(Flight { l, rows: plan.rows.iter().map(|r| r.0).collect(), picks, used: plan.used, t, t0, on_device })
@@ -2055,7 +2069,7 @@ impl<B: ModelStep> Sched<B> {
         let t = std::time::Instant::now();
         let masks: Vec<_> = idx.iter().map(|&i| self.active[i].sampler.mask_handle()).collect();
         self.be.masks(masks);
-        let samples = self.be.decode(&rows)?;
+        let samples = self.be.launch(&rows, &[]).and_then(|l| self.be.finish(l))?.0;
         self.stats.decode_ns += t.elapsed().as_nanos() as u64;
         self.stats.steps += 1;
         self.stats.rows += rows.len() as u64;
@@ -3658,7 +3672,12 @@ pub(crate) mod tests {
         fn launch(&mut self, rows: &[Row], jobs: &[PrefillJob]) -> Result<Launched> {
             if !self.overlap {
                 assert!(rows.iter().all(|r| r.after.is_none()), "a row whose token the step before chose, on a step that does not overlap");
-                return Ok(Launched { done: Some(self.round(rows, jobs)?), tag: 0 });
+                let done = match (self.one_step, jobs.is_empty()) {
+                    (true, _) => self.round(rows, jobs)?,
+                    (false, true) => (self.decode(rows)?, Vec::new()),
+                    (false, false) => (Vec::new(), self.prefill_many(jobs)?),
+                };
+                return Ok(Launched { done: Some(done), tag: 0 });
             }
             let toks: Vec<u32> = rows.iter().map(|r| r.after.map_or(r.token, |h| self.heads[h])).collect();
             let rows: Vec<Row> = rows.iter().zip(&toks).map(|(r, &t)| Row::new(t, r.pos, r.pages)).collect();

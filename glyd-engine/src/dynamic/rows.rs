@@ -87,6 +87,8 @@ struct Lane {
     graph: bool,
     queue_ms: f64,
     evs: Vec<(&'static str, crate::dev::Ev)>,
+    /// Whether the step's candidates were queued with it (`ModelStep::draws`).
+    drawn: bool,
 }
 
 impl Lanes {
@@ -105,6 +107,7 @@ impl Lanes {
                     graph: false,
                     queue_ms: 0.0,
                     evs: Vec::new(),
+                    drawn: false,
                 })
             })
             .collect::<Result<_>>()?;
@@ -1021,10 +1024,18 @@ impl Dyn {
             crate::dev::copy_d2h_async(lane.outs.ptr, self.big.tok.ptr, 4 * asked, s)?;
             crate::dev::copy_d2h_async((lane.outs.ptr as *mut u8).add(4 * head) as *mut _, self.big.val.ptr, 4 * asked, s)?;
         }
+        // (a step whose rows draw from their candidates: those queued with its work, read once its event is waited for; the top-k kernel takes the vocabulary)
+        let drawn = self.draws && !self.top.off && self.big.d.vocab.is_multiple_of(8) && self.big.d.vocab >= crate::kern::TOPK;
+        if drawn {
+            self.queue_cands(asked)?;
+        }
+        let lanes = self.lanes.as_mut().expect("lanes");
+        let lane = &mut lanes.lane[k];
         if let (Some(g), Some(k)) = (&self.gaps, gap) {
             g.end(k, s)?;
         }
         lane.done.record(s)?;
+        lane.drawn = drawn;
         (lane.rows, lane.lasts, lane.prompt, lane.graph, lane.evs) = (rows.len(), lasts, n - rows.len(), graph, evs);
         lane.queue_ms = called.elapsed().as_secs_f64() * 1e3;
         lanes.gap[k] = gap;
@@ -1062,7 +1073,10 @@ impl Dyn {
         if graph && !later {
             self.replayed.set(false);
         }
+        let drawn = lane.drawn;
         self.cands.fresh(asked);
+        // (made with the step where it draws: its event covers their copy)
+        self.cands.made = drawn;
         self.end_expert_step()?;
         // (GLYD_PROF=1: the pass's operations, by its own events; a graph's replay only where no later replay has recorded its events again)
         if super::prof::on() && self.prof.is_some() {
@@ -1092,25 +1106,35 @@ impl Dyn {
         if self.top.off || row >= self.cands.rows || !v.is_multiple_of(8) || v < TOPK {
             return Ok(None);
         }
-        let cap = self.head_room().max(self.cands.rows);
+        if !self.cands.made {
+            self.queue_cands(self.cands.rows)?;
+            self.dev.sync()?;
+            self.cands.made = true;
+        }
+        let (_, _, host, cap) = self.cands.bufs.as_ref().expect("made with the candidates");
+        // SAFETY: the pinned bytes were copied (the stream synchronized since, or the step's event waited for), TOPK for each row below `rows`.
+        Ok(Some(unsafe { crate::kern::read_candidates(host.ptr as *const u8, 0, 4 * TOPK * cap, row) }))
+    }
+
+    /// The candidates of the last pass's first `n` head rows (`Cands`) queued on the stream: one top-k launch for all of them and their copy to the host's pinned room, read
+    /// once the stream has run them (a sync, or the event of a launched step recorded after them).
+    fn queue_cands(&mut self, n: usize) -> Result<()> {
+        use crate::kern::TOPK;
+        let v = self.big.d.vocab;
+        let cap = self.head_room().max(n);
         if self.cands.bufs.as_ref().is_none_or(|b| b.3 < cap) {
             self.cands.bufs = Some((Buf::new(4 * TOPK * cap)?, Buf::new(4 * TOPK * cap)?, crate::dev::Pinned::new(8 * TOPK * cap)?, cap));
         }
         let (tok, val, host, cap) = self.cands.bufs.as_ref().expect("made above");
-        if !self.cands.made {
-            let (n, s, h) = (self.cands.rows, self.dev.stream, host.ptr as *mut u8);
-            // SAFETY: the step's head rows of v logits each (n of them, within the head's room); TOPK of each to the buffers made for `cap` rows; the pinned room
-            // holds the tokens, then from 4 TOPK cap on the logits; read after the synchronize.
-            unsafe {
-                self.kern.topk_rows(s, self.big.logits.ptr, v as i32, n as u32, tok.ptr, val.ptr)?;
-                crate::dev::copy_d2h_async(h as *mut _, tok.ptr, 4 * TOPK * n, s)?;
-                crate::dev::copy_d2h_async(h.add(4 * TOPK * cap) as *mut _, val.ptr, 4 * TOPK * n, s)?;
-            }
-            self.dev.sync()?;
-            self.cands.made = true;
+        let (s, h) = (self.dev.stream, host.ptr as *mut u8);
+        // SAFETY: the pass's head rows of v logits each (n of them, within the head's room); TOPK of each to the buffers made for `cap` rows; the pinned room holds the
+        // tokens, then from 4 TOPK cap on the logits, read after the stream has run the copies.
+        unsafe {
+            self.kern.topk_rows(s, self.big.logits.ptr, v as i32, n as u32, tok.ptr, val.ptr)?;
+            crate::dev::copy_d2h_async(h as *mut _, tok.ptr, 4 * TOPK * n, s)?;
+            crate::dev::copy_d2h_async(h.add(4 * TOPK * *cap) as *mut _, val.ptr, 4 * TOPK * n, s)?;
         }
-        // SAFETY: the pinned bytes were copied above (the stream synchronized since), TOPK for each row below `rows`.
-        Ok(Some(unsafe { crate::kern::read_candidates(host.ptr as *const u8, 0, 4 * TOPK * cap, row) }))
+        Ok(())
     }
 
     /// `ModelStep::round` with prompt chunks beside the rows.
@@ -1299,6 +1323,9 @@ impl ModelStep for Dyn {
         if let Some(l) = &mut self.lanes {
             (l.out, l.stale) = (0, false);
         }
+    }
+    fn draws(&mut self, on: bool) {
+        self.draws = on;
     }
     /// The candidates the GPU makes of the step's head rows (`Cands`); where it cannot (an error), the row is read as without them.
     fn top(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
