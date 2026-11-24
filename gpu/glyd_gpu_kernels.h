@@ -2766,7 +2766,7 @@ __device__ __forceinline__ void v_one_store(const VCalc& c, const VOne& r, uint8
 
 // The write kernel: a CTA a token. A token that is the only one of its run goes through the decode step's path (the rest of this kernel); a longer run's first token runs write_run; the
 // run's other tokens return at once. (P.lean 0: write_run for every run.)
-__global__ void __launch_bounds__(256) write_kernel(const __grid_constant__ WriteParams P) {
+__device__ __forceinline__ void write_body(const WriteParams& P) {
     const int i = blockIdx.x;
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int64_t mine = P.slots[i];
@@ -2841,8 +2841,12 @@ __global__ void __launch_bounds__(256) write_kernel(const __grid_constant__ Writ
     if (*(volatile uint32_t*)&g_need) make_raw(P, pg, pg32, hb, tag, o0, 1, i, block, s_used0, s_cnt0);
 }
 
+__global__ void __launch_bounds__(256) write_kernel(const __grid_constant__ WriteParams P) {
+    write_body(P);
+}
+
 // ---- reading pages back to bf16: out [page][token][head][channel] for the pages listed (one warp a head-page) -----------------
-__global__ void __launch_bounds__(128) unpack_kernel(const uint8_t* __restrict__ pool, int64_t page_stride, const int32_t* __restrict__ pages, int n, const uint8_t* __restrict__ kbase,
+__device__ __forceinline__ void unpack_body(const uint8_t* __restrict__ pool, int64_t page_stride, const int32_t* __restrict__ pages, int n, const uint8_t* __restrict__ kbase,
                                                      const uint8_t* __restrict__ vbase, int H, int A, const uint32_t* __restrict__ ent, int nc, const RawPool R, uint16_t* __restrict__ out_k, uint16_t* __restrict__ out_v, int one) {
     const int wl = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
     if (wl >= n * H) return;
@@ -2884,12 +2888,17 @@ __global__ void __launch_bounds__(128) unpack_kernel(const uint8_t* __restrict__
     }
 }
 
+__global__ void __launch_bounds__(128) unpack_kernel(const uint8_t* __restrict__ pool, int64_t page_stride, const int32_t* __restrict__ pages, int n, const uint8_t* __restrict__ kbase,
+                                                     const uint8_t* __restrict__ vbase, int H, int A, const uint32_t* __restrict__ ent, int nc, const RawPool R, uint16_t* __restrict__ out_k, uint16_t* __restrict__ out_v, int one) {
+    unpack_body(pool, page_stride, pages, n, kbase, vbase, H, A, ent, nc, R, out_k, out_v, one);
+}
+
 // ---- decoding pages into a paged bf16 cache, as vLLM's FlashAttention reads one ----------------------------------------------------
 // The pages listed (pages[j]) decoded into the block dst[j] of `out` [blocks][16 tokens][H][2 D] bf16: token t of head h of block b has its keys at ((b 16 + t) H + h) 2 D and its
 // values D after (the cache the prefill rows' FlashAttention runs on: a context's pages made bf16 before the step's own tokens are put after it). One warp a head-page, as unpack.
 // HALVES 2: a head of 256 channels, held as the page's heads 2 h and 2 h + 1 (its channels 0-127 and 128-255): the head-page 2 h + f's keys at channels 128 f of head h's 256, its values 256 after.
 template <int HALVES>
-__global__ void __launch_bounds__(128) gather_kernel(const uint8_t* __restrict__ pool, int64_t page_stride, const int32_t* __restrict__ pages, const int32_t* __restrict__ dst, int n,
+__device__ __forceinline__ void gather_body(const uint8_t* __restrict__ pool, int64_t page_stride, const int32_t* __restrict__ pages, const int32_t* __restrict__ dst, int n,
                                                      const uint8_t* __restrict__ kbase, const uint8_t* __restrict__ vbase, int H, int A, const uint32_t* __restrict__ ent, int nc, const RawPool R,
                                                      uint16_t* __restrict__ out) {
     const int wl = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
@@ -2936,6 +2945,13 @@ __global__ void __launch_bounds__(128) gather_kernel(const uint8_t* __restrict__
             p[(int64_t)(2 * q + 9) * H * 2 * D] = (uint16_t)(w1 >> 16);
         }
     }
+}
+
+template <int HALVES>
+__global__ void __launch_bounds__(128) gather_kernel(const uint8_t* __restrict__ pool, int64_t page_stride, const int32_t* __restrict__ pages, const int32_t* __restrict__ dst, int n,
+                                                     const uint8_t* __restrict__ kbase, const uint8_t* __restrict__ vbase, int H, int A, const uint32_t* __restrict__ ent, int nc, const RawPool R,
+                                                     uint16_t* __restrict__ out) {
+    gather_body<HALVES>(pool, page_stride, pages, dst, n, kbase, vbase, H, A, ent, nc, R, out);
 }
 
 // ---- a step's own keys and values into the bf16 staging cache ------------------------------------------------------------------------
