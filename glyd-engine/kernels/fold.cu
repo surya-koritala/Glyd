@@ -2,6 +2,9 @@
 // (gpu/glyd_gpu_kernels.h, in a namespace of its own here), as extern "C" kernels the driver finds by name. Their launches are Rust
 // (src/fold.rs), as the library's host code makes them, and `glyd-engine foldcheck` holds each to the library's bit for bit.
 #include <type_traits>
+#if !defined(__HIPCC__)
+#include <cuda.h>  // (CUtensorMap: the Hopper kernels' tensor maps, a kernel parameter; hip.h has its own)
+#endif
 
 namespace glib {
 #include "../../gpu/glyd_gpu_kernels.h"
