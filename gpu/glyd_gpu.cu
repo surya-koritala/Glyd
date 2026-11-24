@@ -3994,56 +3994,10 @@ __global__ void __launch_bounds__(256) moe_wg_epilogue_test_kernel(const float* 
     wm_epilogue<NT, ACT>(d, info, ct, O, E, plan, xch_test, bias, wts, wf32, Y, Y32);
 }
 
-// The mma layout back to bf16, rows [row0, row0 + rows) of W (multiples of
-// 64) into out [rows, K] (checks, and the many-token path that multiplies
-// with PyTorch): a warp a step; FEW (a decode ahead, a few warps an SM),
-// each warp its step and on by the grid's warps. MOE (exact, a mixture of
-// experts' layer, W its experts' matrices of `rows` rows stacked):
-// blockIdx.y a hit expert of plan (moe_route's; past those hit: nothing to
-// do), its rows into the same rows of out [E rows, K], the rest of out left
-// as it is. The 12-bit layout's steps: a warp a step on Hopper by
-// Nib::load_decode (the low bytes first), elsewhere and FEW by load() (all at
-// once), each as it measured fastest (Hopper measured on a GH200 alone; any
-// other GPU not measured, as it was).
+// mma_unpack_body (glyd_gpu_kernels.h) as the library launches it.
 template <class Fmt, bool MOE = false, bool FEW = false>
 __global__ void mma_unpack_kernel(Fmt f, int64_t K, int64_t row0, int64_t rows, uint16_t* __restrict__ out, const int* __restrict__ plan = nullptr) {
-    if constexpr (MOE) {
-        if ((int)blockIdx.y >= __ldg(plan)) return;  // the whole block: no expert this far down the hits
-        row0 = (int64_t)__ldg(plan + 1 + blockIdx.y) * rows;
-        out += row0 * K;
-    }
-    __shared__ uint32_t tab[Fmt::kTable ? 256 : 1];
-    if constexpr (Fmt::kTable) fill_groups(tab);
-    __syncthreads();
-    int64_t KS = K / 16, total = rows / 64 * KS;
-    int lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
-    __shared__ uint4 scratch[8][Fmt::kTable ? S2_BYTES / 16 : 1];
-    uint32_t* out32 = (uint32_t*)out;
-    for (int64_t local = (blockIdx.x * (int64_t)blockDim.x + threadIdx.x) >> 5; local < total; local += (int64_t)gridDim.x * blockDim.x >> 5) {
-        int64_t step = row0 / 64 * KS + local, rb, s;
-        uint32_t R[16];
-#if __CUDA_ARCH__ == 900
-        constexpr bool low_first = std::is_same_v<Fmt, Nib> && !FEW;
-#else
-        constexpr bool low_first = false;
-#endif
-        if constexpr (low_first) {
-            f.load_decode(step, lane, R, [&] { rb = local / KS, s = local % KS; });
-        } else {
-            rb = local / KS, s = local % KS;
-            typename Fmt::St st;
-            f.load(st, step, lane);
-            f.decode(st, lane, (uint32_t*)scratch[threadIdx.x >> 5], tab, R);
-        }
-        // R[2n]: row 8n + g, columns 2t and 2t + 1; R[2n + 1]: columns 8 + 2t, 9 + 2t.
-#pragma unroll
-        for (int n = 0; n < 8; n++) {
-            int64_t at2 = ((rb * 64 + 8 * n + g) * K + s * 16 + 2 * t) / 2;
-            out32[at2] = R[2 * n];
-            out32[at2 + 4] = R[2 * n + 1];
-        }
-        if constexpr (!FEW) break;
-    }
+    mma_unpack_body<Fmt, MOE, FEW>(f, K, row0, rows, out, plan);
 }
 
 // Rows of W [., K] by id (an embedding's lookup; the ids on the device, so a batch's lookup is one launch whatever they
