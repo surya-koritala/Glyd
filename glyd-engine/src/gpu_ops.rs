@@ -380,3 +380,33 @@ pub trait Gemm {
     #[allow(clippy::too_many_arguments)]
     unsafe fn gemm_nt(&self, s: Stream, w: u64, x: u64, y: u64, o: i32, k: i32, m: i32) -> Result<()>;
 }
+
+/// V8a's row for the dense product of a matrix decoded to bf16 (glyd-engine/docs/design/kernel-libraries.md), on a GPU of compute capability `cc`:
+/// (whether to take cuBLAS where the machine has it, whether Glyd's own product may take it). cuBLAS, but on Ada (8.9) Glyd's own (an RTX 4080 SUPER's
+/// 2,000-token Qwen3-8B pass: own 353 ms against vLLM's 357 on cuBLAS, `benchmarks/gpu/rtx4080s-gemm-tiles-2026-11-20`); Glyd's own on Ampere and
+/// Hopper where cuBLAS is not there; neither elsewhere (the fused kernels keep the product). `want` (GLYD_ENGINE_GEMM, a development build's) "blas" or
+/// "own" takes that one (another value: neither). A row changes where its A/B on that GPU measures the other faster.
+pub fn dense_choice(cc: (i32, i32), want: &str) -> (bool, bool) {
+    match want {
+        "blas" => (true, false),
+        "own" => (false, true),
+        "" => (cc != (8, 9), matches!(cc.0, 8 | 9)),
+        _ => (false, false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The dense product's row as the executor took it before the table: cuBLAS off Ada, Glyd's own on Ada and where cuBLAS is not there (Ampere,
+    /// Hopper), neither on other GPUs without cuBLAS; GLYD_ENGINE_GEMM takes one.
+    #[test]
+    fn the_dense_products_row() {
+        use super::dense_choice;
+        assert_eq!(dense_choice((8, 9), ""), (false, true));
+        assert_eq!(dense_choice((8, 0), ""), (true, true));
+        assert_eq!(dense_choice((9, 0), ""), (true, true));
+        assert_eq!(dense_choice((12, 0), ""), (true, false));
+        assert_eq!(dense_choice((8, 9), "blas"), (true, false));
+        assert_eq!(dense_choice((12, 0), "own"), (false, true));
+    }
+}

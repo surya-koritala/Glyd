@@ -1113,10 +1113,11 @@ impl Dyn {
         if let Some((layer, _)) = big.moe.first().and_then(|b| b.resident()) {
             let _ = moe_sc.set(crate::moe::MoeScratch::new(&dev, &lib, &[layer], ch)?);
         }
-        // the decoded-then-dense way, as Qwen3.5's engine chooses it: the library's dense product off Ada, our own on Ampere and Ada
+        // the decoded-then-dense way's product, by V8a's table (gpu_ops::dense_choice)
         let want = crate::tune!("GLYD_ENGINE_GEMM").unwrap_or_default();
-        let blas = if d.decoded && ch > 64 && (want == "blas" || (want.is_empty() && dev.cc != (8, 9))) { crate::ffi::Blas::find() } else { None };
-        let own = d.decoded && (want == "own" || (want.is_empty() && blas.is_none() && matches!(dev.cc.0, 8 | 9)));
+        let (try_blas, may_own) = crate::gpu_ops::dense_choice(dev.cc, &want);
+        let blas = if d.decoded && ch > 64 && try_blas { crate::ffi::Blas::find() } else { None };
+        let own = d.decoded && may_own && (want == "own" || blas.is_none());
         let gpu_code = lib.gpu()? as i64;
         let packed: Vec<&PackBuf> = (0..big.mats.len()).filter(|&k| k != d.lm && k != d.embed).filter_map(|k| big.mats[k].packed_opt()).collect();
         // (the blocks' own matrices too: the experts')
