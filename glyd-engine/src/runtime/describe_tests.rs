@@ -390,11 +390,10 @@ fn conventions_name_the_checkpoints_tensors_exactly() {
 
 /// #333: every header fixture there is (tests/fixtures/headers; `sizes::record_header_fixtures` records the recent releases', #333's among them) describes
 /// from its config.json alone a weight map its checkpoint holds and reads it whole but the parts the language model does not run, or is refused in the words
-/// `LACKS` gives: the releases whose mechanisms the layer kinds do not have yet (DeepSeek-V4.1's compressed sparse attention of ratios 1 and 2 with caches
-/// shared across layers, its Engram n-gram memory and its lagged hyper-connections: no deepseek_v41 builder).
+/// `LACKS` gives: the releases whose mechanisms the layer kinds do not have yet (none now: DeepSeek-V4.1's CSA2, Engram and lagged mHC are kind parameters).
 #[test]
 fn every_recorded_release_describes_or_says_what_it_lacks() {
-    const LACKS: &[(&str, &str)] = &[("DeepSeek-V4.1-Flash", "model_type deepseek_v41 has no description builder yet")];
+    const LACKS: &[(&str, &str)] = &[];
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers");
     let mut files: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     files.sort();
@@ -769,4 +768,182 @@ fn condors_model_on_the_reference_against_condors_engine() {
     let w = compare(&fx, &Bound::Kl { mean: 5e-5, max: 2e-4, top1: 1.0 }, &run(&every));
     assert!(w.mean_kl > 1e-4, "the indexer's picks do not show: KL mean {:.3e}", w.mean_kl);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A DeepSeek-V4.1 config of the release's keys (vLLM's and llama.cpp's readings of it: `compress_ratios`, the kv, index and candidate sources,
+/// the Engram keys), its values small and made up for the test (the release's own config.json is #333's to record). Layers 0 and 1 the window
+/// alone; 2 and 3 ratio 2 (both sources 2); 4 to 7 ratio 1 (kv sources 4 and 6, index sources 4, 5 and 6, the candidate source 4); Engram before
+/// layers 1 and 5; one draft layer.
+fn v41_config() -> serde_json::Value {
+    let n = super::kinds::Ngram {
+        order: 3,
+        heads: 1,
+        dim: 8,
+        base: 11,
+        vocab: 24,
+        seed: 0,
+        index: 0,
+        eos: 0,
+        streams: 2,
+        conv: 0,
+        dilation: 1,
+        norm: super::kinds::Norm::rms(1e-6),
+        form: super::kinds::NgramForm::Engram,
+    };
+    let rows: Vec<u64> = (0..2).map(|i| super::reference::ngram::tables(&super::kinds::Ngram { index: i, ..n }).0.iter().sum()).collect();
+    let mut c: serde_json::Value = serde_json::from_str(
+        r#"{"architectures": ["DeepseekV41ForCausalLM"], "model_type": "deepseek_v41",
+        "quantization_config": {"quant_method": "fp8", "fmt": "e4m3", "weight_block_size": [32, 32], "activation_scheme": "dynamic", "scale_fmt": "ue8m0",
+            "expert_dtype": "fp4"},
+        "vision_config": {"num_hidden_layers": 2},
+        "text_config": {"model_type": "deepseek_v41_text", "vocab_size": 32, "hidden_size": 16, "num_hidden_layers": 8, "rms_norm_eps": 1e-6,
+            "hidden_act": "silu", "num_attention_heads": 2, "num_key_value_heads": 1, "head_dim": 8, "qk_rope_head_dim": 4, "q_lora_rank": 12,
+            "o_lora_rank": 4, "o_groups": 2, "sliding_window": 3, "index_n_heads": 2, "index_head_dim": 8, "index_topk": 2,
+            "n_routed_experts": 4, "num_experts_per_tok": 2, "n_shared_experts": 1, "moe_intermediate_size": 6, "scoring_func": "sqrtsoftplus",
+            "norm_topk_prob": true, "routed_scaling_factor": 1.5, "swiglu_limit": 10.0, "gate_temp": 1.0, "num_hash_layers": 0,
+            "hc_mult": 2, "hc_sinkhorn_iters": 20, "hc_eps": 1e-6, "rope_theta": 10000.0, "compress_rope_theta": 160000.0,
+            "rope_scaling": {"type": "yarn", "factor": 4.0, "original_max_position_embeddings": 64, "beta_fast": 32, "beta_slow": 1},
+            "max_position_embeddings": 256, "compress_ratios": [0, 0, 2, 2, 1, 1, 1, 1, 0],
+            "kv_source_layer_ids": [2, 4, 6], "index_source_layer_ids": [2, 4, 5, 6],
+            "candidate_source_layer_id": 4, "candidate_block_size": 2, "candidate_topk_blocks": 1,
+            "engram_layer_ids": [1, 5], "engram_max_ngram_size": 3, "engram_n_heads": 1, "engram_head_dim": 4, "engram_vocab_size": 11,
+            "engram_compressed_vocab_size": 24, "engram_pad_token_id": 0,
+            "num_nextn_predict_layers": 1, "dspark_block_size": 5, "dspark_noise_token_id": 31, "dspark_target_layer_ids": [5, 6, 7],
+            "dspark_markov_rank": 4}}"#,
+    )
+    .unwrap();
+    c["text_config"]["engram_num_embeddings"] = serde_json::json!(rows);
+    c
+}
+
+/// #333, DeepSeek-V4.1 describes with the kinds there are, through V4.1's three parameters: CSA2's sharing (each compressing layer's entries and
+/// picks from the most recent source at or below it, the candidate blocks from layer 4 to the index sources after it), lagged mHC (the head's
+/// collapse the last block's weights), Engram before layers 1 and 5 (numpy's multipliers seeded by 10007 times the layer); the weight map reads the
+/// sources' compressors and indexers alone, each quantized matrix with its scale, and leaves the drafter, the vision tower and the image tokens'
+/// router bias. What it does not describe is refused.
+#[test]
+fn deepseek_v41_describes_with_csa2_lagged_mhc_and_engram() {
+    use super::kinds::*;
+    let cfg = v41_config();
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!((d.desc.blocks.len(), d.mtp_layers, d.desc.head.collapse), (2 * 8 + 2, 1, Collapse::LastPre));
+    let comp = |b: usize| match &d.desc.blocks[b].body {
+        Body::Mixer(Mixer::Compressed(c)) => c.clone(),
+        x => panic!("block {b}: {x:?}"),
+    };
+    // (blocks: 0 attn, 1 moe, 2 engram, 3 attn of layer 1, 4 moe, then layers 2-4 two blocks each, 11 engram, 12 attn of layer 5, ...)
+    let attn = [0usize, 3, 5, 7, 9, 12, 14, 16];
+    for (l, &b) in attn.iter().enumerate() {
+        let c = comp(b);
+        assert!(!c.ape && !c.q_head_norm && matches!(d.desc.blocks[b].residual, Residual::Streams(StreamsP { lagged: true, .. })), "layer {l}");
+        assert_eq!(c.ratio, [0, 0, 2, 2, 1, 1, 1, 1][l], "layer {l}");
+    }
+    let share = |l: usize| comp(attn[l]).share;
+    assert_eq!(share(0), None);
+    assert_eq!(share(2), Some(CompShare { entries: None, picks: None, candidates: None, publish: None }));
+    assert_eq!(share(3), Some(CompShare { entries: Some(attn[2]), picks: Some(attn[2]), candidates: None, publish: None }));
+    assert_eq!(share(4), Some(CompShare { entries: None, picks: None, candidates: None, publish: Some((2, 1)) }));
+    assert_eq!(share(5), Some(CompShare { entries: Some(attn[4]), picks: None, candidates: Some(attn[4]), publish: None }));
+    assert_eq!(share(6), Some(CompShare { entries: None, picks: None, candidates: Some(attn[4]), publish: None }));
+    assert_eq!(share(7), Some(CompShare { entries: Some(attn[6]), picks: Some(attn[6]), candidates: None, publish: None }));
+    for (b, layer, place) in [(2usize, 1u64, 0usize), (11, 5, 1)] {
+        let Body::Ngram(n) = &d.desc.blocks[b].body else { panic!("block {b}: {:?}", d.desc.blocks[b].body) };
+        assert_eq!((n.form, n.seed, n.index, n.conv, n.streams, n.vocab), (NgramForm::Engram, 10007 * layer, place, 0, 2, 24));
+    }
+    let names = d.names();
+    let has = |n: &str| names.contains(n);
+    assert!(has("layers.2.attn.compressor.wgate.weight") && !has("layers.6.attn.compressor.wgate.weight") && has("layers.6.attn.compressor.wkv.weight"));
+    assert!(!has("layers.3.attn.compressor.wkv.weight") && !has("layers.3.attn.indexer.wq_b.weight"));
+    assert!(has("layers.5.attn.indexer.wq_b.weight") && !has("layers.5.attn.indexer.wk.weight") && has("layers.4.attn.indexer.wk.weight"));
+    assert!(has("layers.1.engram.embed.weight") && has("layers.5.engram.wkv.weight") && !has("hc_head_fn"));
+    assert_eq!(d.scales.get("layers.1.engram.embed.weight").map(String::as_str), Some("layers.1.engram.embed.scale"));
+    assert_eq!(d.scales.get("layers.0.ffn.experts.3.w2.weight").map(String::as_str), Some("layers.0.ffn.experts.3.w2.scale"));
+    let mut ck: BTreeSet<String> = names.iter().cloned().chain(d.scales.values().cloned()).collect();
+    ck.extend(["layers.3.ffn.gate.bias_vl", "mtp.0.attn.wq_a.weight", "vision.blocks.0.w.weight", "aligner.w.weight"].map(String::from));
+    d.check(&ck, true).unwrap_or_else(|e| panic!("{}", e.msg));
+    let refused = |edit: &dyn Fn(&mut serde_json::Value), want: &str| {
+        let mut c = cfg.clone();
+        edit(&mut c["text_config"]);
+        let e = describe(&c).unwrap_err().msg;
+        assert!(e.contains(want), "{want}: {e}");
+    };
+    refused(&|t| t["compress_ratios"][2] = 4.into(), "compress_ratios");
+    refused(&|t| t["gate_temp"] = 2.0.into(), "gate_temp");
+    refused(&|t| t["kv_source_layer_ids"] = serde_json::json!([2, 6]), "layer 4");
+    refused(&|t| t["candidate_source_layer_id"] = 2.into(), "the candidate source 2");
+    refused(&|t| t["engram_num_embeddings"][1] = 7.into(), "engram_num_embeddings");
+}
+
+/// The tiny DeepSeek-V4.1 of `v41_config`, its tensors made at random by role, on the CPU reference: its description runs as a model, CSA2's parts
+/// shared from block to block, the mHC weights handed on, Engram's tables read through a compressed vocabulary; the same tokens give the same logits
+/// twice, every one finite.
+#[test]
+fn deepseek_v41s_tiny_model_runs_on_the_reference() {
+    use super::describe::Source;
+    use super::reference::testing::fill;
+    let d = describe(&v41_config()).unwrap();
+    let (h, n, i, e) = (16usize, 2usize, 6usize, 4usize);
+    let shape = |role: &str, b: usize| -> Vec<usize> {
+        let engram = matches!(d.desc.blocks[b].body, super::kinds::Body::Ngram(_));
+        match role {
+            "norm_in" if engram => vec![n * h],
+            "norm_in" => vec![h],
+            "q_a" => vec![12, h],
+            "q_a_norm" => vec![12],
+            "q_b" | "idx_q_b" => vec![16, 12],
+            "kv" if engram => vec![(n + 1) * h, 8],
+            "kv" | "comp_kv" | "comp_gate" | "idx_k" => vec![8, if role == "idx_k" { 8 } else { h }],
+            "kv_norm" | "comp_norm" | "idx_k_norm" => vec![8],
+            "o_a" => vec![8, 8],
+            "o_b" => vec![h, 8],
+            "sinks" => vec![2],
+            "idx_weights" => vec![2, h],
+            "hc_fn" => vec![(2 + n) * n, n * h],
+            "hc_base" => vec![(2 + n) * n],
+            "hc_scale" => vec![3],
+            "router" => vec![e, h],
+            "choice_bias" => vec![e],
+            "experts_gate_up" | "shared_gate" | "shared_up" => vec![i, h],
+            "experts_down" | "shared_down" => vec![h, i],
+            "ngram" => vec![0, 4],
+            "norm_key" => vec![n * h],
+            r => panic!("no shape for role {r}"),
+        }
+    };
+    let mut t: std::collections::HashMap<String, (Vec<usize>, Vec<f32>)> = std::collections::HashMap::new();
+    for (b, roles) in d.blocks.iter().enumerate() {
+        for (role, src) in roles {
+            let names = match src {
+                Source::Tensor(x) => vec![x.clone()],
+                Source::Rows(v) => v.clone(),
+                Source::Experts(v) => v.iter().flatten().cloned().collect(),
+            };
+            for x in names {
+                let mut s = shape(role, b);
+                if role == "ngram" {
+                    let super::kinds::Body::Ngram(ng) = &d.desc.blocks[b].body else { unreachable!() };
+                    s[0] = super::reference::ngram::tables(ng).0.iter().sum::<u64>() as usize;
+                }
+                let (lo, hi) = if role.contains("norm") { (0.5, 1.5) } else { (-0.4, 0.4) };
+                let v = fill(&format!("v41.{x}"), s.iter().product(), lo, hi);
+                t.insert(x, (s, v));
+            }
+        }
+    }
+    t.insert(d.embed.clone(), (vec![32, h], fill("v41.embed", 32 * h, -1.0, 1.0)));
+    t.insert(d.head.clone().unwrap(), (vec![32, h], fill("v41.head", 32 * h, -0.5, 0.5)));
+    t.insert(d.final_norm.clone(), (vec![h], fill("v41.norm", h, 0.5, 1.5)));
+    let src = |x: &str| t.get(x).cloned();
+    let run = || {
+        let mut m = RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{}", e.msg));
+        // (the compressed vocabulary's map, the loader's from the tokenizer: 32 ids onto 24)
+        for b in [2, 11] {
+            m.layers[b].p.put("ngram_map", &[32], (0..32).map(|x| (x % 24) as f32).collect());
+        }
+        let tokens: Vec<u32> = (0..12).map(|x| (x * 5 + 3) % 32).collect();
+        m.forward(&tokens, 0).unwrap_or_else(|e| panic!("{}", e.msg))
+    };
+    let (a, b) = (run(), run());
+    assert_eq!(a, b);
+    assert!(a.len() == 12 && a.iter().flatten().all(|v| v.is_finite()));
 }

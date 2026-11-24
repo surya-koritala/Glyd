@@ -99,7 +99,8 @@ impl Described {
             return err(format!("the description reads tensors that are not in the checkpoint ({} names), {}", self.convention, few(&missing)));
         }
         let names = self.names();
-        let left: Vec<String> = have.iter().filter(|n| !names.contains(*n) && !self.unread.iter().any(|p| n.starts_with(p.as_str()))).cloned().collect();
+        let unread = |n: &str| self.unread.iter().any(|p| p.strip_prefix('*').map_or(n.starts_with(p.as_str()), |sfx| n.ends_with(sfx)));
+        let left: Vec<String> = have.iter().filter(|n| !names.contains(*n) && !unread(n)).cloned().collect();
         if all && !left.is_empty() {
             return err(format!("the checkpoint holds tensors not read by its description ({} names), {}", self.convention, few(&left)));
         }
@@ -374,6 +375,7 @@ pub fn describe_config(c: &ModelConfig) -> Result<Described> {
         "kimi_k3" => return kimi(c),
         "muse_spark" => return muse(tc, prefix),
         "deepseek_v4" => return deepseek_v4(tc),
+        "deepseek_v41" => return deepseek_v41(c),
         "nemotron_h" => return nemotron_h(tc),
         _ => {}
     }
@@ -2028,6 +2030,237 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
         blocks,
         final_norm: Norm::rms(eps),
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::Weighted { eps: streams.eps, norm_eps: eps } },
+        mtp: Vec::new(),
+        vision: None,
+        rope: None,
+    };
+    let mut out = finish(&k, desc, cv, "", roles, mtp_layers)?;
+    out.scales = scales;
+    Ok(out)
+}
+
+/// DeepSeek-V4.1 (`deepseek_v41`, its text model `deepseek_v41_text`, a vision tower beside it): V4's decoder with V4.1's three mechanisms, each a
+/// parameter of a kind V4 has. Its attention is CSA2 (`Comp` with no window bias and no per-head query norm): `compress_ratios` 0 (the window
+/// alone), 1 or 2, every compressing layer reading the entries of the most recent kv source at or below it (`kv_source_layer_ids`) and the picks of
+/// the most recent index source (`index_source_layer_ids`), the candidate source (`candidate_source_layer_id`) publishing blocks of
+/// `candidate_block_size` entries, `candidate_topk_blocks` kept, which the index sources after it score inside (`CompShare`). Its residual is lagged
+/// mHC (`StreamsP::lagged`, the head's collapse `Collapse::LastPre`: no hyper-head). On `engram_layer_ids` an Engram block (`NgramForm::Engram`)
+/// comes before the layer's attention. The MoE is V4's sqrt-softplus router (no hash layers; `gate_temp` 1 alone). Not read: the DSpark draft
+/// layers (counted), the vision tower, the routers' image-token bias.
+fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
+    let (mt, tc) = ("deepseek_v41", &c.text);
+    top_keys(&c.top, mt, &["text_config", "vision_config", "quantization_config", "architectures", "tie_word_embeddings"])?;
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab, eps, tied) = common(&k, c.top.get("tie_word_embeddings").and_then(|v| v.as_bool()))?;
+    let max_pos = k.opt_usize("max_position_embeddings")?;
+    k.expect("hidden_act", &Value::from("silu"))?;
+    k.expect("scoring_func", &Value::from("sqrtsoftplus"))?;
+    k.expect("num_key_value_heads", &Value::from(1))?;
+    k.expect("n_shared_experts", &Value::from(1))?;
+    k.expect("norm_topk_prob", &Value::Bool(true))?;
+    k.expect("gate_temp", &Value::from(1.0))?;
+    k.expect("num_hash_layers", &Value::from(0))?;
+    let q = c.top.get("quantization_config").or(k.raw("quantization_config"));
+    let fp8 = Fp8::parse(
+        q.map(|v| {
+            let mut o = v.as_object().cloned().unwrap_or_default();
+            // (the experts' and the Engram tables' formats, said beside the dense matrices' FP8)
+            o.retain(|key, _| !key.starts_with("engram_") && !matches!(key.as_str(), "expert_dtype" | "scale_fmt" | "activation_scheme"));
+            Value::Object(o)
+        })
+        .as_ref(),
+        mt,
+    )?
+    .is_some();
+    let fp4 = q.and_then(|v| v.get("expert_dtype")).or(k.raw("expert_dtype")).and_then(|v| v.as_str()) == Some("fp4");
+    let (heads, hd, rd) = (k.usize("num_attention_heads")?, k.usize("head_dim")?, k.usize("qk_rope_head_dim")?);
+    let (q_lora, o_lora, o_groups, window) =
+        (k.usize("q_lora_rank")?, k.usize("o_lora_rank")?, k.usize("o_groups")?, k.opt_usize("sliding_window")?.unwrap_or(128));
+    let (ih, idim, itop) = (k.usize("index_n_heads")?, k.usize("index_head_dim")?, k.usize("index_topk")?);
+    let (ne, top_k) = (k.usize("n_routed_experts")?, k.usize("num_experts_per_tok")?);
+    k.usize("moe_intermediate_size")?;
+    let limit = k.opt_f64("swiglu_limit")?.filter(|&l| l > 0.0).map(|l| l as f32);
+    let scale = k.opt_f64("routed_scaling_factor")?.unwrap_or(1.0) as f32;
+    let streams = StreamsP {
+        streams: k.usize("hc_mult")?,
+        sinkhorn_iters: k.opt_usize("hc_sinkhorn_iters")?.unwrap_or(20),
+        eps: k.opt_f64("hc_eps")?.unwrap_or(1e-6) as f32,
+        norm_eps: eps,
+        rounding: Rounding::Once,
+        lagged: true,
+    };
+    let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
+    // (the DSpark drafter's settings, and the vision tower's tokens: not this model's computation)
+    for x in
+        ["dspark_block_size", "dspark_noise_token_id", "dspark_target_layer_ids", "dspark_markov_rank", "dspark_n_routed_experts", "dspark_num_experts_per_tok"]
+    {
+        k.raw(x);
+    }
+    let list = |x: &str| -> Result<Vec<usize>> {
+        k.raw(x)
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as usize)).collect())
+            .ok_or_else(|| Error(format!("{mt}: no {x}")))
+    };
+    let ratios = list("compress_ratios")?;
+    if ratios.len() < layers || ratios[..layers].iter().any(|r| *r > 2) {
+        return err(format!("{mt}: compress_ratios {ratios:?} for {layers} layers: 0, 1 or 2 each"));
+    }
+    let (kv_src, idx_src) = (list("kv_source_layer_ids")?, list("index_source_layer_ids")?);
+    let cand = k.raw("candidate_source_layer_id").and_then(|v| v.as_i64()).filter(|&c| c >= 0).map(|c| c as usize);
+    let cand_shape = match cand {
+        Some(_) => Some((k.usize("candidate_block_size")?, k.usize("candidate_topk_blocks")?)),
+        None => None,
+    };
+    // (each compressing layer's sources: the most recent at or below it, which compresses by the same ratio)
+    let source = |ids: &[usize], l: usize| ids.iter().copied().filter(|&s| s <= l).max().filter(|&s| ratios[s] == ratios[l]);
+    for l in (0..layers).filter(|&l| ratios[l] > 0) {
+        if source(&kv_src, l).is_none() || source(&idx_src, l).is_none() {
+            return err(format!("{mt}: layer {l} compresses by {}, and the most recent kv or index source at or below it does not", ratios[l]));
+        }
+        // (a candidate block is a span of positions of the candidate source's ratio: an index source of another ratio is not described)
+        if let Some(c) = cand.filter(|&c| c < l && idx_src.contains(&l) && ratios[c] != ratios[l]) {
+            return err(format!("{mt}: index source {l} compresses by {}, the candidate source {c} by {}", ratios[l], ratios[c]));
+        }
+    }
+    let mut main = Rope::plain(k.opt_f64("rope_theta")?.unwrap_or(10_000.0), rd);
+    main.style = RopeStyle::Interleaved;
+    let mut comp_m = match k.raw("rope_scaling") {
+        Some(Value::Object(o)) => o.clone(),
+        _ => Map::new(),
+    };
+    comp_m.insert("rope_theta".into(), Value::from(k.opt_f64("compress_rope_theta")?.unwrap_or(160_000.0)));
+    if comp_m.contains_key("factor") && !comp_m.contains_key("attention_factor") {
+        comp_m.insert("attention_factor".into(), Value::from(1.0));
+    }
+    let mut comp_rope = rope(&comp_m, rd, max_pos, &format!("{mt} rope_scaling"))?;
+    comp_rope.style = RopeStyle::Interleaved;
+    // Engram's layers, each a block before the layer's attention: its tables the next primes past engram_vocab_size, their rows engram_num_embeddings
+    let engram: Vec<usize> = list("engram_layer_ids").unwrap_or_default();
+    let engram_kind = |place: usize, layer: usize| -> Result<Ngram> {
+        let n = Ngram {
+            order: k.usize("engram_max_ngram_size")?,
+            heads: k.usize("engram_n_heads")?,
+            dim: (k.usize("engram_max_ngram_size")? - 1) * k.usize("engram_n_heads")? * k.usize("engram_head_dim")?,
+            base: k.usize("engram_vocab_size")? as u64,
+            vocab: k.usize("engram_compressed_vocab_size")?,
+            seed: 10007 * layer as u64,
+            index: place,
+            eos: k.usize("engram_pad_token_id")? as u32,
+            streams: streams.streams,
+            conv: 0,
+            dilation: 1,
+            norm: Norm::rms(eps),
+            form: NgramForm::Engram,
+        };
+        let rows = list("engram_num_embeddings")?;
+        let want = super::reference::ngram::tables(&n).0.iter().sum::<u64>();
+        if rows.get(place).map(|&r| r as u64) != Some(want) {
+            return err(format!("{mt}: engram_num_embeddings {rows:?}: Engram layer {layer}'s tables hold {want} rows"));
+        }
+        Ok(n)
+    };
+    let cv = &names::DEEPSEEK_V41;
+    let mut scales = std::collections::BTreeMap::new();
+    let q8 = ["q_a", "q_b", "kv", "o_a", "o_b", "idx_q_b", "shared_gate", "shared_up", "shared_down", "ngram"];
+    let mark = |r: &[(String, Source)], scales: &mut std::collections::BTreeMap<String, String>| {
+        for (_, src) in r.iter().filter(|(role, _)| if role.starts_with("experts_") { fp4 } else { (fp8 && q8.contains(&role.as_str())) || role == "ngram" }) {
+            for w in src.names() {
+                scales.insert(w.clone(), w.replace(".weight", ".scale"));
+            }
+        }
+    };
+    let mlp = Mlp { act: Act::Silu, gated: true, bias: false, clamp: limit };
+    let (mut blocks, mut roles, mut attn_block) = (Vec::new(), Vec::new(), vec![0usize; layers]);
+    for l in 0..layers {
+        let p = cv.layer("", l);
+        if let Some(place) = engram.iter().position(|&e| e == l) {
+            let r = names::roles(part::ENGRAM, &p, 0, all);
+            mark(&r, &mut scales);
+            blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Ngram(engram_kind(place, l)?), norm_out: None, residual: Residual::Add });
+            roles.push(r);
+        }
+        attn_block[l] = blocks.len();
+        let ratio = ratios[l];
+        let (is_kv, is_idx) = (kv_src.contains(&l), idx_src.contains(&l));
+        let mut r = names::roles(part::V4_ATTN, &p, 0, all);
+        r.extend(names::roles(part::V4_KV_NORM, &p, 0, all));
+        r.extend(names::roles(part::V4_SINKS, &p, 0, all));
+        if ratio > 0 && is_kv {
+            r.extend(names::roles(part::V41_COMP, &p, 0, |x| ratio > 1 || x != "comp_gate"));
+        }
+        if ratio > 0 && is_idx {
+            r.extend(names::roles(part::V41_INDEXER, &p, 0, |x| is_kv || !x.starts_with("idx_k")));
+        }
+        r.extend(names::roles(part::HC_ATTN, &p, 0, all));
+        mark(&r, &mut scales);
+        let share = (ratio > 0).then(|| CompShare {
+            entries: (!is_kv).then(|| attn_block[source(&kv_src, l).expect("checked above")]),
+            picks: (!is_idx).then(|| attn_block[source(&idx_src, l).expect("checked above")]),
+            candidates: cand.filter(|&c| is_idx && c < l).map(|c| attn_block[c]),
+            publish: cand_shape.filter(|_| cand == Some(l)),
+        });
+        let comp = Comp {
+            heads,
+            head_dim: hd,
+            q_lora,
+            o_groups,
+            o_lora,
+            window,
+            ratio,
+            overlap: false,
+            rope: if ratio > 0 { comp_rope.clone() } else { main.clone() },
+            indexer: (ratio > 0).then_some(Indexer {
+                heads: ih,
+                head_dim: idim,
+                top_k: itop,
+                block: ratio,
+                shared: false,
+                form: IndexForm::Gated { key: Norm::rms(eps) },
+            }),
+            norm_eps: eps,
+            ape: false,
+            q_head_norm: false,
+            share,
+        };
+        blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Compressed(comp)), norm_out: None, residual: Residual::Streams(streams) });
+        roles.push(r);
+        let mut r = names::roles(part::V4_MOE, &p, ne, |x| x != "hash");
+        r.extend(names::roles(part::HC_FFN, &p, 0, all));
+        mark(&r, &mut scales);
+        let moe = Moe {
+            router: Router { score: RouterScore::SqrtSoftplus, logit_scale: 1.0, bias: true, groups: None, top_k, renorm: true, scale, hash: false },
+            experts: ne,
+            expert: mlp,
+            shared: Some(mlp),
+            shared_gate: false,
+            latent: None,
+        };
+        blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Ffn(Ffn::Moe(moe)), norm_out: None, residual: Residual::Streams(streams) });
+        roles.push(r);
+    }
+    for x in ["rope_scaling", "rope_theta", "compress_rope_theta", "candidate_source_layer_id", "candidate_block_size", "candidate_topk_blocks", "expert_dtype"]
+    {
+        k.raw(x);
+    }
+    for x in [
+        "engram_max_ngram_size",
+        "engram_n_heads",
+        "engram_head_dim",
+        "engram_vocab_size",
+        "engram_compressed_vocab_size",
+        "engram_pad_token_id",
+        "engram_num_embeddings",
+    ] {
+        k.raw(x);
+    }
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: streams.streams },
+        blocks,
+        final_norm: Norm::rms(eps),
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::LastPre },
         mtp: Vec::new(),
         vision: None,
         rope: None,
