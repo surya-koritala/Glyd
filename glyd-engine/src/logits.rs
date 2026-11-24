@@ -2677,7 +2677,13 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         }
     }
     // (the sampler's candidates the step makes on the GPU (src/dynamic/rows.rs `Cands`), against its rows' logits)
+    let swapped = s.stats.swapped;
     drop(s);
+    if squeezed {
+        // (the bytes over the link, each way)
+        let (out, back) = e.swap_moved();
+        println!("swaps: {swapped} sequences, {:.1} MiB copied out and {:.1} MiB back", out as f64 / (1 << 20) as f64, back as f64 / (1 << 20) as f64);
+    }
     let Some((_, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
     let (rows, bad) = cands_check(step, &prompts)?;
     println!("{} the step's candidates of {rows} rows against their logits' {} largest", if bad == 0 { "PASS" } else { "FAIL" }, crate::kern::TOPK);

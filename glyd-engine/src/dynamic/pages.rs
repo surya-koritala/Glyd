@@ -48,6 +48,11 @@ struct Pool {
     tick: u64,
     /// Names taken off blocks since `Pages::take_gone` (src/kv_events.rs).
     gone: Vec<u128>,
+    /// R4d: each block's fence (0: none), the copy that may still read it (a swap's part: `Pages::release_fenced`), and the free blocks that have one, taken after the
+    /// others (the first given up last, so taken first: a swap's first entries); the most recent fence of a block taken since `Pages::take_fence`.
+    fence: Vec<u64>,
+    cooling: Vec<u32>,
+    hit: u64,
 }
 
 impl Pool {
@@ -65,15 +70,19 @@ impl Pool {
             age: vec![0; n as usize],
             tick: 0,
             gone: Vec::new(),
+            fence: vec![0; n as usize],
+            cooling: Vec::new(),
+            hit: 0,
         }
     }
     /// Blocks that can be had now: the free, and the named ones no sequence holds.
     fn available(&self) -> usize {
-        self.free.len() + self.idle.len()
+        self.free.len() + self.cooling.len() + self.idle.len()
     }
-    /// A block for one holder, with no name: a free one, else the oldest named one that no sequence holds.
+    /// A block for one holder, with no name: a free one (one no copy reads first), else the oldest named one that no sequence holds. Its fence, where it has one, is
+    /// the caller's to wait for (`hit`).
     fn take(&mut self) -> Option<u32> {
-        let b = match self.free.pop() {
+        let b = match self.free.pop().or_else(|| self.cooling.pop()) {
             Some(b) => b,
             None => {
                 let (&age, &b) = self.idle.iter().next()?;
@@ -83,6 +92,7 @@ impl Pool {
             }
         };
         self.refs[b as usize] = 1;
+        self.hit = self.hit.max(std::mem::take(&mut self.fence[b as usize]));
         Some(b)
     }
     /// One holder gives block `b` up. When it was the last: free again, or, named, kept until the pool needs it.
@@ -94,7 +104,11 @@ impl Pool {
             return;
         }
         if self.name[b as usize] == 0 {
-            self.free.push(b);
+            if self.fence[b as usize] > 0 {
+                self.cooling.push(b);
+            } else {
+                self.free.push(b);
+            }
         } else {
             self.tick += 1;
             self.age[b as usize] = self.tick;
@@ -279,16 +293,30 @@ impl Pages {
     /// Every block of sequence `slot` back in its pool, the last first (of the named ones, which stay until the pool needs them, the sequence's end is then the first to go
     /// and its start the last).
     pub fn release(&mut self, slot: usize) {
+        self.release_fenced(slot, |_, _| 0);
+    }
+
+    /// `release` of a sequence whose blocks a copy still reads (R4d: a swap out, on a stream of its own): each block keeps the fence `fence(g, entry)` (a number, 0: none,
+    /// later copies' larger) until it is taken again, whoever else holds it now. A block with a fence is taken after the free ones that have none (`take_fence` then says
+    /// the largest fence taken, which the step that writes them waits for); of a sequence's, its first entries first.
+    pub fn release_fenced(&mut self, slot: usize, fence: impl Fn(usize, usize) -> u64) {
         for g in 0..self.pools.len() {
             self.floor[slot][g] = 0;
             for b in (0..self.tabs[slot][g].len()).rev() {
                 let blk = std::mem::take(&mut self.tabs[slot][g][b]);
                 if blk != 0 {
+                    let f = &mut self.pools[g].fence[blk as usize];
+                    *f = (*f).max(fence(g, b));
                     self.pools[g].give(blk);
                     self.mark(slot, g, b);
                 }
             }
         }
+    }
+
+    /// The largest fence of the blocks taken since the last call (0: none): the copy a step that writes them waits for first.
+    pub fn take_fence(&mut self) -> u64 {
+        self.pools.iter_mut().map(|p| std::mem::take(&mut p.hit)).max().unwrap_or(0)
     }
 
     /// The first tokens of a sequence a step at `upto` reads in group `g`, as a table entry: a sliding group's window behind `upto` (what `keep` holds less `slack`, a chunk),
@@ -334,12 +362,15 @@ impl Pages {
         if upto == 0 {
             return 0;
         }
-        // (the block the cut is in is written from there on: it is no longer the tokens its name says)
+        // (the block the cut is in is written from there on: it is no longer the tokens its name says, and a copy that read it, where it was another sequence's swapped out
+        // and this one found it by name, is waited for as a block taken is)
         for g in 0..self.pools.len() {
             if let Some(b) = self.partial(g, upto) {
                 let blk = self.tabs[slot][g][b];
                 if blk != 0 {
-                    self.pools[g].unname(blk);
+                    let p = &mut self.pools[g];
+                    p.unname(blk);
+                    p.hit = p.hit.max(std::mem::take(&mut p.fence[blk as usize]));
                 }
             }
         }
@@ -634,6 +665,26 @@ mod tests {
         assert_eq!((p.partial(2, 96), p.partial(0, 96)), (Some(1), None));
         assert!(p.table(1, 2)[0] == p.table(0, 2)[0] && p.table(1, 2)[1] == 0);
         assert!(p.grow(1, 96) && p.table(1, 2)[1] != 0 && p.table(1, 2)[1] != p.table(0, 2)[1]);
+    }
+
+    /// R4d: the blocks of a sequence swapped out are given back with fences (the parts of the copy that still reads them). A block with a fence is taken after every free one
+    /// that has none, a swapped sequence's first entries first, and says its fence when taken, though it was held by another sequence when the swap gave it up.
+    #[test]
+    fn blocks_a_copy_reads_are_taken_last_and_say_so() {
+        let mut p = Pages::new(&[12], &[None], 3, 1024);
+        assert!(p.grow(0, 100));
+        let own: Vec<u32> = p.table(0, 0)[..7].to_vec();
+        assert_eq!(p.share(0, 1, 64, 32), 64);
+        // (the copy's first part reads entries 0 and 1, the second the rest)
+        p.release_fenced(0, |_, b| if b < 2 { 10 } else { 11 });
+        assert_eq!((p.free(0).0, p.take_fence()), (7, 0));
+        // the four free blocks no copy reads first, then the swapped sequence's first entry that no one holds (4), whose fence is the second part's
+        assert!(p.grow(2, 64) && p.take_fence() == 0);
+        assert!(p.grow(2, 80) && p.take_fence() == 11 && p.table(2, 0)[4] == own[4]);
+        // the blocks it shared keep their fences: given up by the other sequence, they are taken first after it, its first entry first
+        p.release(1);
+        assert!(p.grow(2, 96) && p.take_fence() == 10 && p.table(2, 0)[5] == own[0]);
+        assert_eq!(p.take_fence(), 0, "said once");
     }
 
     /// The names of the full blocks of `n` tokens of a stream: stream `a` to `fork`, stream `b` after.

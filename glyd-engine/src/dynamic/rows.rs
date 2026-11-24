@@ -290,8 +290,10 @@ impl Dyn {
         Ok(())
     }
 
-    /// The entries of sequence `slot`'s tables changed since they were last copied, copied to the GPU (nothing runs on them then: the steps before have been waited for).
+    /// The entries of sequence `slot`'s tables changed since they were last copied, copied to the GPU (nothing runs on them then: the steps before have been waited for);
+    /// the next step after the copies out that still read the blocks taken (`fence_wait`).
     pub(super) fn upload_tables(&mut self, slot: usize) -> Result<()> {
+        self.fence_wait()?;
         let Some(pg) = &mut self.paged else { return Ok(()) };
         for g in 0..pg.pages.groups() {
             if let Some((lo, hi)) = pg.pages.take_dirty(slot, g) {
@@ -391,8 +393,9 @@ impl Dyn {
         Ok(Part { slot, row0, rows, start, kc, vc, states })
     }
 
-    /// Sequence `slot` empty again: no tokens, its states zeroed (its cache is overwritten as it runs).
+    /// Sequence `slot` empty again: no tokens, its states zeroed (its cache is overwritten as it runs). A slot swapped out: after the copy that reads its states.
     pub(super) fn empty(&mut self, slot: usize) -> Result<()> {
+        self.unsettled_wait(slot)?;
         if let Some(m) = self.snap_n.get_mut(slot) {
             *m = 0;
         }
@@ -414,6 +417,7 @@ impl Dyn {
 
     /// Sequence `slot`'s prompt chunk `tokens` (at its place in the sequence), as `prefill` runs one chunk: the head on its last row where `last`.
     fn chunk_alone(&mut self, slot: usize, tokens: &[u32], last: bool) -> Result<Option<Sample>> {
+        self.settle_slot(slot)?;
         self.select(slot)?;
         let n = tokens.len();
         if n == 0 || n > self.chunk || self.n + n + 1 > self.ctx {
@@ -447,6 +451,7 @@ impl Dyn {
         }
         let (mut parts, mut pos, mut tokens, mut head_rows) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for &(slot, t, last) in jobs {
+            self.settle_slot(slot)?;
             let start = self.seq_n(slot);
             if t.is_empty() || start + t.len() + 1 > self.ctx {
                 return err(format!("{} tokens after {start}, where the cache holds {}", t.len(), self.ctx));
@@ -985,6 +990,7 @@ impl ModelStep for Dyn {
         if !self.shares_starts() || self.seq_n(t) != 0 {
             return Ok(0);
         }
+        self.settle_slot(t)?;
         let chunk = self.chunk;
         if self.cuts() {
             let n = self.paged.as_mut().expect("paged").pages.adopt(t, keys, chunk);
@@ -1023,6 +1029,7 @@ impl ModelStep for Dyn {
         if self.paged.is_none() || f == t || self.seq_n(t) != 0 || upto > self.seq_n(f) {
             return Ok(0);
         }
+        self.settle_slot(t)?;
         let chunk = self.chunk;
         let to_n = if self.cuts() {
             self.paged.as_mut().expect("paged").pages.share(f, t, upto, chunk)
@@ -1138,6 +1145,7 @@ impl ModelStep for Dyn {
     /// From the tokens the slot holds: the room for a whole prompt, which the scheduler takes as it lets the prompt in, holds a sliding group's blocks from where its next pass reads
     /// (`Pages::grow_from`).
     fn grow(&mut self, slot: i32, upto: usize) -> Result<bool> {
+        self.settle_slot(slot as usize)?;
         let (n, chunk) = (self.seq_n(slot as usize), self.chunk);
         let Some(pg) = &mut self.paged else { return Ok(true) };
         if !pg.pages.grow_from(slot as usize, n, upto, chunk) {

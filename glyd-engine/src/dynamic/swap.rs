@@ -8,8 +8,11 @@
 //!
 //! The copies run on a stream of their own, their host end pinned memory mapped into the device's addresses: one launch of `swap_copy` moves every bf16 block however
 //! scattered its pools are, and the library's unpack and write read and write the host's memory themselves, with no staging buffer on the GPU, whose memory is what ran
-//! out. Out: the engine's stream waits for the copy before its next step, which may write the blocks given back. Back: the copy runs beside the other sequences' steps,
-//! into blocks no one else holds, and the sequence steps once it is done (`ModelStep::swap_ready`).
+//! out. Out: the copy runs beside the next steps, in two parts: the first `head` blocks of each group (head: the sequences, the most blocks a decode step takes of a
+//! group), then the rest and the states. The blocks given back keep the part that reads them as a fence (`Pages::release_fenced`) and are taken after every free block
+//! that has none, the sequence's first entries first; a step that takes one waits for its part alone (`Dyn::fence_wait`). The slot's states are emptied when the slot
+//! is used again, after the copy (`Dyn::empty`). Back: the copy runs beside the other sequences' steps, into blocks no one else holds, and the sequence steps once it is
+//! done (`ModelStep::swap_ready`). (A development build's GLYD_ENGINE_SWAP_HOLD=1: the next step waits for the whole copy out, as before; usercheck compares the two.)
 //!
 //! The area is pinned as it is needed, in segments, up to what the plan gives it (`plan::swap_area`: twice the GPU cache it backs, within what the computer has free
 //! after the expert store's host tier). A sequence the area has no room for is run again from its tokens, as before.
@@ -17,8 +20,8 @@
 use super::pages::BLOCK;
 use super::Dyn;
 use crate::dev::{copy_d2h_async, copy_h2d_async, Ev, Pinned, Side};
-use crate::ffi::{Error, Result};
-use std::collections::HashMap;
+use crate::ffi::{Error, Result, Stream};
+use std::collections::{HashMap, VecDeque};
 
 /// The bytes a segment of the area is pinned in (more where one sequence's copy is larger), and the alignment of each part of a copy in it (the copy kernel's 16-byte words).
 const SEGMENT: usize = 256 << 20;
@@ -99,9 +102,15 @@ pub(super) struct Swap {
     images: HashMap<u64, Image>,
     next: u64,
     loading: Vec<Loading>,
+    /// The parts of the copies out not yet seen done, in the order they run: each one's fence (2 ticket, then 2 ticket + 1) and the event after it.
+    outs: VecDeque<(u64, Ev)>,
+    /// The slots swapped out whose states are not emptied yet (the copy's second part reads them), and that part's fence.
+    unsettled: Vec<(usize, u64)>,
     /// Bytes copied either way and their seconds on the copy stream: the link's rate.
     bytes: f64,
     secs: f64,
+    /// Bytes copied out, and back (`Dyn::swap_moved`).
+    moved: (usize, usize),
 }
 
 impl Swap {
@@ -114,9 +123,26 @@ impl Swap {
             images: HashMap::new(),
             next: 0,
             loading: Vec::new(),
+            outs: VecDeque::new(),
+            unsettled: Vec::new(),
             bytes: 0.0,
             secs: 0.0,
+            moved: (0, 0),
         })
+    }
+
+    /// Stream `s` made to wait for the part of a copy out whose fence is `f`, and so for the parts before it (one stream runs them in order), where it is not done yet.
+    fn wait_fence(&mut self, f: u64, s: Stream) -> Result<()> {
+        while let Some((_, ev)) = self.outs.front() {
+            if !ev.done()? {
+                break;
+            }
+            self.outs.pop_front();
+        }
+        match self.outs.iter().find(|(x, _)| *x == f) {
+            Some((_, ev)) => ev.wait(s),
+            None => Ok(()),
+        }
     }
 
     /// The link's rate in bytes a second: measured on the copies so far, the planner's figure before any (`plan::LINK_GBS`).
@@ -288,7 +314,7 @@ impl Dyn {
         let mark = self.mark_of(slot);
         let lay = self.swap_layout(&counts, mark > 0);
         let Some(at) = sw.alloc(lay.total) else { return Ok(None) };
-        // (the steps that wrote the sequence are done: the copy reads what they left)
+        // (the steps that wrote the sequence are done: the copy reads what they left, and its tables are written below)
         self.dev.sync()?;
         let s = sw.side.stream;
         let pg = self.paged.as_ref().expect("paged");
@@ -297,33 +323,41 @@ impl Dyn {
             let blocks: Vec<i32> = e.iter().map(|&b| tab[b] as i32).collect();
             sw.slice::<i32>(at, lay.blocks[g], blocks.len()).copy_from_slice(&blocks);
         }
-        let items = self.swap_items(sw, at, &lay, &entries, slot, true);
+        // (the first part: the first `head` blocks of each group, those a decode step of every sequence takes first)
+        let head = self.seqs.len().max(1);
+        let (items, first) = self.swap_items(sw, at, &lay, &entries, slot, true, head);
         sw.slice::<u64>(at, lay.items, items.len()).copy_from_slice(&items);
-        let (began, out) = (Ev::new()?, Ev::new()?);
+        let (began, mid, end, out) = (Ev::new()?, Ev::untimed()?, Ev::untimed()?, Ev::new()?);
         began.record(s)?;
         // SAFETY: the items list the blocks of the pools and the area's range for them (the layout's, `per` bytes each, 16-byte multiples and aligned); the range is the
         // area's (mapped, pinned), live until the image is given back, which waits for `out`.
         unsafe {
-            if lay.nitems > 0 {
-                self.kern.swap_copy(s, sw.host(at, lay.items), lay.nitems, (lay.nitems as u32).min(4 * self.dev.sms.max(1) as u32))?;
-            }
-            if let Some(lx) = &self.lossless {
-                for (r, rp) in lx.rings.iter().enumerate() {
-                    let (Some(rp), Some((k, v, _))) = (rp, lay.rings[r]) else { continue };
-                    let g = rp.group;
-                    if counts[g] > 0 {
-                        self.lib.kv_unpack(
-                            &rp.geom,
-                            rp.pool.ptr,
-                            rp.kbase.ptr,
-                            rp.vbase.ptr,
-                            sw.host(at, lay.blocks[g]),
-                            counts[g] as i64,
-                            sw.host(at, k),
-                            sw.host(at, v),
-                            s,
-                        )?;
+            for (part, (i0, i1)) in [(0, first), (first, lay.nitems)].into_iter().enumerate() {
+                if i1 > i0 {
+                    self.kern.swap_copy(s, sw.host(at, lay.items + 24 * i0), i1 - i0, ((i1 - i0) as u32).min(4 * self.dev.sms.max(1) as u32))?;
+                }
+                if let Some(lx) = &self.lossless {
+                    for (r, rp) in lx.rings.iter().enumerate() {
+                        let (Some(rp), Some((k, v, per))) = (rp, lay.rings[r]) else { continue };
+                        let (g, h) = (rp.group, head.min(counts[rp.group]));
+                        let (j0, j1) = if part == 0 { (0, h) } else { (h, counts[g]) };
+                        if j1 > j0 {
+                            self.lib.kv_unpack(
+                                &rp.geom,
+                                rp.pool.ptr,
+                                rp.kbase.ptr,
+                                rp.vbase.ptr,
+                                sw.host(at, lay.blocks[g] + 4 * j0),
+                                (j1 - j0) as i64,
+                                sw.host(at, k + j0 * per),
+                                sw.host(at, v + j0 * per),
+                                s,
+                            )?;
+                        }
                     }
+                }
+                if part == 0 {
+                    mid.record(s)?;
                 }
             }
             let states = self.part_of(slot, 0, 0, 0)?.states;
@@ -334,19 +368,54 @@ impl Dyn {
                 copy_d2h_async(sw.host(at, off) as *mut _, self.snaps[slot][i].ptr, self.states[i].bytes, s)?;
             }
         }
+        end.record(s)?;
         out.record(s)?;
-        // (the next step may write the blocks given back, and the slot's states: after the copy)
-        out.wait(self.dev.stream)?;
-        self.empty(slot)?;
-        self.paged.as_mut().expect("paged").pages.release(slot);
+        let ticket = sw.next + 1;
+        let (f0, f1) = (2 * ticket, 2 * ticket + 1);
+        if crate::tune!("GLYD_ENGINE_SWAP_HOLD").is_some_and(|v| v == "1") {
+            // (the next step waits for the whole copy, as before the parts)
+            end.wait(self.dev.stream)?;
+        }
+        sw.outs.extend([(f0, mid), (f1, end)]);
+        // the slot: empty, its states filled when it is used again, after the copy (`empty`); its blocks given back with the part that reads them as their fence
+        self.set_seq_n(slot, 0);
+        if let Some(m) = self.snap_n.get_mut(slot) {
+            *m = 0;
+        }
+        sw.unsettled.push((slot, f1));
+        self.paged.as_mut().expect("paged").pages.release_fenced(slot, |g, b| match entries[g].binary_search(&b) {
+            Ok(j) if j < head => f0,
+            Ok(_) => f1,
+            Err(_) => 0,
+        });
         self.upload_tables(slot)?;
-        sw.next += 1;
-        sw.images.insert(sw.next, Image { at, n, entries, floor, mark, lay, began, out });
-        Ok(Some(sw.next))
+        sw.next = ticket;
+        sw.moved.0 += lay.moved;
+        sw.images.insert(ticket, Image { at, n, entries, floor, mark, lay, began, out });
+        Ok(Some(ticket))
     }
 
-    /// The copy kernel's items for sequence `slot`'s bf16 rings: each block of `entries` (the slot's blocks now) to or from its place in the range `at`, keys then values.
-    fn swap_items(&self, sw: &Swap, at: (usize, usize, usize), lay: &Layout, entries: &[Vec<usize>], slot: usize, out: bool) -> Vec<u64> {
+    /// The copy kernel's items for sequence `slot`'s bf16 rings: each block of `entries` (the slot's blocks now) to or from its place in the range `at`, keys then values;
+    /// those of the first `head` entries of each group first, and how many those are.
+    fn swap_items(&self, sw: &Swap, at: (usize, usize, usize), lay: &Layout, entries: &[Vec<usize>], slot: usize, out: bool, head: usize) -> (Vec<u64>, usize) {
+        let (first, rest) =
+            (self.swap_items_of(sw, at, lay, entries, slot, out, 0..head), self.swap_items_of(sw, at, lay, entries, slot, out, head..usize::MAX));
+        let n = first.len() / 3;
+        (first.into_iter().chain(rest).collect(), n)
+    }
+
+    /// `swap_items` of the entries `part` of each group (by their place in its list).
+    #[allow(clippy::too_many_arguments)]
+    fn swap_items_of(
+        &self,
+        sw: &Swap,
+        at: (usize, usize, usize),
+        lay: &Layout,
+        entries: &[Vec<usize>],
+        slot: usize,
+        out: bool,
+        part: std::ops::Range<usize>,
+    ) -> Vec<u64> {
         let pg = self.paged.as_ref().expect("paged");
         let mut items = Vec::with_capacity(3 * lay.nitems);
         for (r, ring) in lay.rings.iter().enumerate() {
@@ -359,7 +428,7 @@ impl Dyn {
             let (ko, vo) = self.ring_off[r];
             let values = self.big.d.rings[r].values.then_some((self.vc.ptr + vo, v));
             for (base, host) in std::iter::once((self.kc.ptr + ko, k)).chain(values) {
-                for (j, &b) in entries[g].iter().enumerate() {
+                for (j, &b) in entries[g].iter().enumerate().take(part.end).skip(part.start) {
                     let dev = base + (tab[b] as usize * per) as u64;
                     let h = sw.host(at, host + j * per);
                     items.extend(if out { [dev, h, per as u64] } else { [h, dev, per as u64] });
@@ -390,6 +459,10 @@ impl Dyn {
             pg.pages.release(slot);
             return Ok(None);
         }
+        // (blocks a copy out still reads: this copy runs after it on the same stream, and the engine's steps write them only after this one, `swap_ready`)
+        pg.pages.take_fence();
+        // (and the slot's states, where it was swapped out itself and not used since: this copy writes them, after that copy)
+        sw.unsettled.retain(|u| u.0 != slot);
         let img = sw.images.remove(&ticket).expect("found above");
         // (its copy out read the lists this one writes over: done first, and counted)
         img.out.wait_host()?;
@@ -410,7 +483,7 @@ impl Dyn {
                 sw.slice::<i64>(at, off, slots.len()).copy_from_slice(&slots);
             }
         }
-        let items = self.swap_items(sw, at, lay, &img.entries, slot, false);
+        let (items, _) = self.swap_items(sw, at, lay, &img.entries, slot, false, usize::MAX);
         sw.slice::<u64>(at, lay.items, items.len()).copy_from_slice(&items);
         let s = sw.side.stream;
         // (the engine's stream may still empty this slot's states, or step others: what it queued before is done first)
@@ -468,6 +541,7 @@ impl Dyn {
             self.snap_n[slot] = img.mark;
         }
         self.upload_tables(slot)?;
+        sw.moved.1 += lay.moved;
         sw.loading.push(Loading { slot, at, began, done, moved: lay.moved });
         Ok(Some(img.n))
     }
@@ -503,6 +577,40 @@ impl Dyn {
             Some(sw) => sw.settle(slot),
             None => Ok(()),
         }
+    }
+
+    /// The engine's stream made to wait for the copies out that still read the blocks taken since the last call (`Pages::take_fence`): before the step that writes them.
+    pub(super) fn fence_wait(&mut self) -> Result<()> {
+        let Some(pg) = self.paged.as_mut() else { return Ok(()) };
+        let f = pg.pages.take_fence();
+        match self.swap.as_mut() {
+            Some(sw) if f > 0 => sw.wait_fence(f, self.dev.stream),
+            _ => Ok(()),
+        }
+    }
+
+    /// The engine's stream made to wait for the copy out of slot `slot`'s states, where it was swapped out and its states are not emptied since (`empty` fills them
+    /// after it); whether it was.
+    pub(super) fn unsettled_wait(&mut self, slot: usize) -> Result<bool> {
+        let Some(sw) = self.swap.as_mut() else { return Ok(false) };
+        let Some(i) = sw.unsettled.iter().position(|u| u.0 == slot) else { return Ok(false) };
+        let (_, f) = sw.unsettled.remove(i);
+        sw.wait_fence(f, self.dev.stream)?;
+        Ok(true)
+    }
+
+    /// A slot swapped out and used again (a prompt, a start found or shared): emptied first, after the copy out read its states.
+    pub(super) fn settle_slot(&mut self, slot: usize) -> Result<()> {
+        if self.swap.as_ref().is_some_and(|sw| sw.unsettled.iter().any(|u| u.0 == slot)) {
+            self.empty(slot)?;
+        }
+        Ok(())
+    }
+
+    /// The bytes swapped out and back so far.
+    #[cfg(feature = "dev")]
+    pub(crate) fn swap_moved(&self) -> (usize, usize) {
+        self.swap.as_ref().map_or((0, 0), |sw| sw.moved)
     }
 }
 
