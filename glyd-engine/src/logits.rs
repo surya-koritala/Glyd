@@ -4054,18 +4054,18 @@ fn random_model(case: &str, dir: &Path) -> Result<()> {
     }
 }
 
-/// The context the planner gives the case's random model on this GPU for one user (`serve`'s plan of it), and the bytes of keys and values it plans there; or why it
-/// gives none.
-fn planned_context(case: &str) -> Result<(usize, u64)> {
+/// The context the planner gives the case's random model on this GPU for one user (`serve`'s plan of it), the bytes of keys and values it plans there and their
+/// format (`LoadPlan::kv_format`: an estimate's is bf16); or why it gives none.
+fn planned_context(case: &str) -> Result<(usize, u64, &'static str)> {
     let dir = std::env::temp_dir().join(format!("glyd-planned-{case}-{}", std::process::id()));
-    let got = (|| -> Result<(usize, u64)> {
+    let got = (|| -> Result<(usize, u64, &'static str)> {
         random_model(case, &dir)?;
         let words = ["serve".to_string(), dir.display().to_string(), "--users".into(), "1".into(), "--no-draft".into()];
         let f = crate::plan::planned(&crate::args::Args::from(words)).map_err(|r| Error(format!("the planner: {}", r.what)))?;
         f.plan
             .chosen
             .as_ref()
-            .map(|c| (c.context, c.kv))
+            .map(|c| (c.context, c.kv, c.load.as_ref().map_or("bf16", |l| l.kv_format())))
             .filter(|c| c.0 > 0)
             .ok_or_else(|| Error(format!("the planner has no plan for the random {case} model")))
     })();
@@ -5512,11 +5512,12 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         std::env::set_var("GLYD_KV", "lossless");
     }
     let planned = if a.flag("ctx") == Some("plan") { Some(planned_context(case)?) } else { None };
-    if let Some((c, kv)) = planned {
+    if let Some((c, kv, format)) = planned {
         println!(
-            "the random {case} model at the planner's context for this GPU{}: {c} tokens ({:.1} MiB of keys and values planned), prompts of up to {} and {tokens} made",
+            "the random {case} model at the planner's context for this GPU{}: {c} tokens ({:.1} MiB of keys and values planned in {format}{}), prompts of up to {} and {tokens} made",
             if kv12 { " with GLYD_KV=lossless" } else { "" },
             kv as f64 / (1u64 << 20) as f64,
+            if kv12 && format != "12-bit" { ": the 12-bit pages would reserve more there; the check runs them as asked" } else { "" },
             c.saturating_sub(tokens + 32)
         );
     }
