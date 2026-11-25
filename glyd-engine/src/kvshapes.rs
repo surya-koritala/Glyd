@@ -74,10 +74,12 @@ fn bases(v: &[u16], n: usize, h: usize, d: usize) -> Vec<u8> {
     out
 }
 
-/// What `n` tokens of keys `k` and values `v` ([n][h][d]) give for queries `q` ([h g][d]): the attention of each query head over its kv head's tokens, in f64.
-fn attention(q: &[u16], k: &[u16], v: &[u16], first: usize, n: usize, h: usize, g: usize, d: usize) -> Vec<f64> {
+/// What `n` tokens of keys `k` and values `v` ([n][h][d]) give for queries `q` ([h g][d]): the attention of each query head over its kv head's tokens, in f64. With each
+/// output, the sum of its terms' magnitudes (each probability times its value's magnitude): the kernel rounds each probability to bf16 for the values, which moves an
+/// output by up to 2^-8 of that (as `prompt_attention` holds the prompt's kernel to).
+fn attention(q: &[u16], k: &[u16], v: &[u16], first: usize, n: usize, h: usize, g: usize, d: usize) -> (Vec<f64>, Vec<f64>) {
     let scale = 1.0 / (d as f64).sqrt();
-    let mut out = vec![0.0; h * g * d];
+    let (mut out, mut mag) = (vec![0.0; h * g * d], vec![0.0; h * g * d]);
     for hh in 0..h {
         for j in 0..g {
             let qh = &q[(hh * g + j) * d..(hh * g + j + 1) * d];
@@ -90,10 +92,11 @@ fn attention(q: &[u16], k: &[u16], v: &[u16], first: usize, n: usize, h: usize, 
             let z: f64 = w.iter().sum();
             for c in 0..d {
                 out[(hh * g + j) * d + c] = (first..n).map(|t| w[t - first] * f32_of(v[(t * h + hh) * d + c]) as f64).sum::<f64>() / z;
+                mag[(hh * g + j) * d + c] = (first..n).map(|t| w[t - first] * (f32_of(v[(t * h + hh) * d + c]) as f64).abs()).sum::<f64>() / z;
             }
         }
     }
-    out
+    (out, mag)
 }
 
 /// One shape: `h` kv heads of `d` channels, `g` query heads to each. False where anything differs.
@@ -251,14 +254,14 @@ fn shape(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
                 dev.sync()?;
                 let mut got = vec![0u16; h * g * d];
                 o.read(0, &mut got)?;
-                let want = attention(&q, &k, &v, first, len, h, g, d);
+                let (want, mag) = attention(&q, &k, &v, first, len, h, g, d);
                 let (mut worst, mut off) = (0f64, 0usize);
-                for (x, w) in got.iter().zip(&want) {
-                    let e = (f32_of(*x) as f64 - w).abs() / (w.abs() * 0.015 + 2e-3);
+                for ((x, w), m) in got.iter().zip(&want).zip(&mag) {
+                    let e = (f32_of(*x) as f64 - w).abs() / (w.abs() * 0.015 + 2e-3 + m / 256.0);
                     worst = worst.max(e);
                     off += (e > 1.0 || !e.is_finite()) as usize;
                 }
-                println!("{} {h} heads x {d}, {g} queries to a head, {len} tokens from {first}: decode attention, {off} of {} values past 1.5% + 0.002 (worst {worst:.2} of the bound)", if off == 0 { "ok  " } else { "FAIL" }, got.len());
+                println!("{} {h} heads x {d}, {g} queries to a head, {len} tokens from {first}: decode attention, {off} of {} values past 1.5% + 0.002 + 2^-8 of their terms (worst {worst:.2} of the bound)", if off == 0 { "ok  " } else { "FAIL" }, got.len());
                 if off != 0 {
                     bad += 1;
                 }
@@ -469,9 +472,16 @@ fn decode_batch(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize, round: bool)
         say(x == 0 && y == 0, format!("{len} tokens from {first} alone, {x} values of the pages' and {y} of the bf16 cache's not its bits in the call"));
         if !round {
             let (k, v) = &kv[b];
-            let want = attention(&q[b * width..(b + 1) * width], k, v, first, len, h, g, d);
-            let off = mine.iter().zip(&want).filter(|(x, w)| !((f32_of(**x) as f64 - **w).abs() <= w.abs() * 0.015 + 2e-3)).count();
-            say(off == 0, format!("{len} tokens from {first}, {off} values past 1.5% + 0.002 of the host's attention"));
+            let (want, mag) = attention(&q[b * width..(b + 1) * width], k, v, first, len, h, g, d);
+            let over = |((x, w), m): ((&u16, &f64), &f64)| (f32_of(*x) as f64 - w).abs() / (w.abs() * 0.015 + 2e-3 + m / 256.0);
+            let worst = mine.iter().zip(&want).zip(&mag).map(over).fold(0f64, f64::max);
+            let off = mine.iter().zip(&want).zip(&mag).filter(|&t| !(over(t) <= 1.0)).count();
+            say(
+                off == 0,
+                format!(
+                    "{len} tokens from {first}, {off} values past 1.5% + 0.002 + 2^-8 of their terms of the host's attention (worst {worst:.2} of the bound)"
+                ),
+            );
         }
         if len - first <= CAP {
             // (a ring: token t at t modulo CAP, the later over the earlier)
