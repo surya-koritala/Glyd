@@ -9,7 +9,7 @@
 use crate::dev::{Buf, Dev};
 use crate::dynamic::attn::{AttnArgs, KernAttn, SPLITS};
 use crate::ffi::Result;
-use crate::kern35::Kern35;
+use crate::kern::Kern35;
 use crate::qwen35_ref::{bf16, conv_step, delta_step, gated_norm, l2norm, sigmoid, softplus};
 
 struct Rng(u64);
@@ -385,7 +385,7 @@ pub fn run() -> Result<bool> {
         (a.src, a.qw, a.kw, a.cs, a.sn, a.qpos) = (qb.ptr, qwb.ptr, kwb.ptr, cb.ptr, sb.ptr, pb.ptr);
         (a.qo, a.kc, a.vc, a.cap) = (qo.ptr, kc.ptr, vc.ptr, (p0 + n) as i32);
         // SAFETY: as above.
-        unsafe { ka.prep(s, &a, nq + nk, (crate::gemma4::G4Pf::default(), 0))? };
+        unsafe { ka.prep(s, &a, nq + nk, (crate::kern::G4Pf::default(), 0))? };
         dev.sync()?;
         t.ulp("query norm and rotary (64 of 256 dims)", &down(&qo, wq.len())?, &wq, 1);
         t.ulp("key norm and rotary into the cache", &down(&kc, wk.len())?, &wk, 1);

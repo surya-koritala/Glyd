@@ -665,14 +665,28 @@ pub fn qwen4x_random(out: &Path) -> Result<()> {
     manifest_random(include_str!("../tests/fixtures/qwen4x_tiny_manifest.json"), out, 0x2026_1120_0000_0005, false, "Qwen3.8-Flash-Next of the tiny shape")
 }
 
-/// A small Qwen3 dense model of Qwen3-0.6B's layout (4 layers, 16 query and 8 key-value heads of 128, a vocabulary of 4096): a Llama-style dense model, not a release (none of the Qwen3 dense releases is recent).
-pub fn qwen3_random(out: &Path) -> Result<()> {
-    manifest_random(include_str!("../tests/fixtures/qwen3_tiny_manifest.json"), out, 0x2026_1120_0000_0006, true, "Qwen3 dense")
+/// The plain dense kind's small model (a pre-norm decoder of one attention and one gated SiLU MLP a layer: 4 layers, 16 query and 8 key-value heads of 128 with normed
+/// queries and keys, a vocabulary of 4096): the kind's case, no release's.
+pub fn dense_random(out: &Path) -> Result<()> {
+    manifest_random(include_str!("../tests/fixtures/dense_tiny_manifest.json"), out, 0x2026_1120_0000_0006, true, "plain dense model")
 }
 
 /// A small Qwen3.5-family text model (Qwen3_5ForCausalLM: three Gated DeltaNet layers and a gated full-attention one, 1024 wide, a vocabulary of 4096): the layout of Qwen3.8-27B and the releases of its family at 0.8B's widths.
 pub fn qwen35_random(out: &Path) -> Result<()> {
     manifest_random(include_str!("../tests/fixtures/qwen35_tiny_manifest.json"), out, 0x2026_1120_0000_0007, false, "Qwen3.5-family")
+}
+
+/// The Qwen3.5 family's layout in the shape its larger checkpoints have and `qwen35_random` lacks (Qwen3_5ForConditionalGeneration: the text model under `text_config`, its
+/// tensors under `model.language_model.`): three Gated DeltaNet layers and a gated full-attention one, twice; three value heads to a key head in the linear attention and
+/// six query heads to a key-value head; a head of its own (no tied embedding); an MTP layer and a part of a vision tower in the checkpoint, which the engine counts or leaves.
+pub fn qwen35_wide_random(out: &Path) -> Result<()> {
+    manifest_random(
+        include_str!("../tests/fixtures/qwen35_wide_tiny_manifest.json"),
+        out,
+        0x2026_1125_0000_0038,
+        false,
+        "Qwen3.5-family model of the wide shape",
+    )
 }
 
 /// A random model of a manifest's tensors (names, types and shapes from a real checkpoint's header, cut down), their values from a fixed seed by the rules of tools/qwen4x_ref.py for each kind of tensor.
@@ -737,7 +751,7 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
         let cols = *shape.last().unwrap_or(&1) as usize;
         let vals: Vec<f32> = if name.ends_with("norm.weight")
             || name.ends_with("layernorm.weight")
-            || ["hc_norm", "norm_key", "norm_query", "norm_conv"].iter().any(|k| name.contains(k))
+            || ["hc_norm", "norm_key", "norm_query", "norm_conv", "pre_fc_norm"].iter().any(|k| name.contains(k))
         {
             let plus = if name.contains(".linear_attn.norm.") || dense_norms { 1.0 } else { 0.0 };
             (0..n).map(|_| (u01() - 0.5 + plus) as f32).collect()
@@ -845,8 +859,8 @@ fn qwen35_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     boxed(crate::dynamic::qwen35::load(dir, &dyn_opts(level_layout(level)?)))
 }
 
-/// Qwen3 on the executor (src/dynamic/dense.rs): its description lowered from the config, packed here at the level (penguin: the GPU's lossless layout).
-fn qwen3_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
+/// A plain dense model on the executor (src/dynamic/dense.rs): its description lowered from the config, packed here at the level (penguin: the GPU's lossless layout).
+fn dense_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     boxed(crate::dynamic::dense::load(dir, &dyn_opts(level_layout(level)?)))
 }
 
@@ -854,11 +868,11 @@ fn qwen3_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
 pub fn cases() -> Vec<Case> {
     vec![
         Case {
-            id: "qwen3",
-            family: "Qwen3 dense (a Llama-style dense model on the executor; no recent release uses it)",
-            weights: Weights::Random(qwen3_random),
-            engine: qwen3_engine,
-            cpu: None,
+            id: "dense",
+            family: "the plain dense kind (a pre-norm decoder of one attention and one gated MLP a layer, on the executor)",
+            weights: Weights::Random(dense_random),
+            engine: dense_engine,
+            cpu: Some(described_cpu),
             vocab: 4096,
         },
         Case {
@@ -866,7 +880,15 @@ pub fn cases() -> Vec<Case> {
             family: "Qwen3.5 family (Gated DeltaNet and gated attention: Qwen3.8-27B's layout)",
             weights: Weights::Random(qwen35_random),
             engine: qwen35_engine,
-            cpu: None,
+            cpu: Some(described_cpu),
+            vocab: 4096,
+        },
+        Case {
+            id: "qwen35-wide",
+            family: "Qwen3.5 family, the wide shape (three value heads to a key head, a head of its own, the text model of a checkpoint with a vision tower)",
+            weights: Weights::Random(qwen35_wide_random),
+            engine: qwen35_engine,
+            cpu: Some(described_cpu),
             vocab: 4096,
         },
         Case {
@@ -1405,7 +1427,7 @@ pub fn record(a: &crate::args::Args) -> Result<()> {
         "source".into(),
         match from {
             // (Nemotron-H has no reference of its own: its description on the reference of the layer kinds)
-"cpu" if matches!(c.id, "nemotron-h" | "qwen4x" | "deepseek-v41") => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
+"cpu" if matches!(c.id, "nemotron-h" | "qwen4x" | "deepseek-v41" | "qwen35" | "qwen35-wide" | "dense") => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
             "cpu" => format!(
                 "the CPU reference of src/{}_ref.rs, fp32 inside, on this case's random model (seed fixed in the generator)",
                 c.id.replace("deepseek-", "ds").replace('-', "")
@@ -1624,7 +1646,7 @@ mod tests {
     }
 }
 
-/// The random model of a case (gemma4, qwen35, qwen3, muse, kimi, glm) on the description executor at `level`, made in a directory of its own and loaded (the directory is let go).
+/// The random model of a case (gemma4, qwen35, qwen35-wide, dense, muse, kimi, glm) on the description executor at `level`, made in a directory of its own and loaded (the directory is let go).
 /// The case's model in `dir` on the description executor.
 pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Result<Dyn> {
     Ok(match case {
@@ -1632,8 +1654,8 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
             let c = crate::gemma4::ConfigG4::load(dir)?;
             Dyn::new(dir, crate::dynamic::gemma4::lowered(dir, &c)?, None, o)?
         }
-        "qwen35" => crate::dynamic::qwen35::load(dir, o)?,
-        "qwen3" => crate::dynamic::dense::load(dir, o)?,
+        "qwen35" | "qwen35-wide" => crate::dynamic::qwen35::load(dir, o)?,
+        "dense" => crate::dynamic::dense::load(dir, o)?,
         "muse" => crate::dynamic::muse::load(dir, o)?,
         "kimi" => crate::dynamic::kimi::load(dir, o)?,
         // (its experts at a lossy level, as its logits case: kestrel where penguin is asked)
@@ -1642,7 +1664,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
         "nemotron" => crate::dynamic::nemotron::load(dir, o, level_layout(level)?.unwrap_or(Layout::Tiered))?,
         "deepseek-v4" => crate::dynamic::deepseek_v4::load(dir, o)?,
         "qwen4x" => crate::dynamic::qwen4x::load(dir, o)?,
-        other => return err(format!("{other}: gemma4, qwen35, qwen3, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
+        other => return err(format!("{other}: gemma4, qwen35, qwen35-wide, dense, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
     })
 }
 
@@ -1659,14 +1681,15 @@ pub(crate) fn random_dyn_at(case: &str, level: &str, layout: Option<Layout>, tag
         match case {
             "gemma4" => gemma4_random(&dir)?,
             "qwen35" => qwen35_random(&dir)?,
-            "qwen3" => qwen3_random(&dir)?,
+            "qwen35-wide" => qwen35_wide_random(&dir)?,
+            "dense" => dense_random(&dir)?,
             "muse" => crate::muse_ref::random(&dir)?,
             "kimi" => crate::kimi_ref::random(&dir, 1, true, 8)?,
             "glm" => crate::glm::random(&dir, false, None)?,
             "nemotron" => crate::kcheck_nh::random(&dir, 0, 16)?,
             "deepseek-v4" => crate::dsv4_ref::random(&dir, None)?,
             "qwen4x" => qwen4x_random(&dir)?,
-            other => return err(format!("{other}: gemma4, qwen35, qwen3, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
+            other => return err(format!("{other}: gemma4, qwen35, qwen35-wide, dense, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
         }
         load_dyn(case, &dir, &o, level)
     })();

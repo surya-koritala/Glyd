@@ -26,7 +26,7 @@ extern "C" __global__ void two(
 __device__ void helper(int q) {}
 "#;
     let out = kernel_types::generate(&[("x.cu".to_string(), src.to_string())]).unwrap();
-    assert_eq!(args_of(&out, "one"), "(u64, i32, f32, u32, i64, u64, crate::gemma4::G4Pf,)");
+    assert_eq!(args_of(&out, "one"), "(u64, i32, f32, u32, i64, u64, crate::kern::G4Pf,)");
     assert_eq!(args_of(&out, "two"), "(u64, u64,)");
     assert!(!out.contains("not_a_kernel") && !out.contains("neither") && !out.contains("helper"), "{out}");
     assert!(out.contains("pub const COUNT: usize = 2;"));
