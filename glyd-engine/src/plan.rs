@@ -2772,6 +2772,12 @@ pub mod sizing {
         ((cfg.layers * 2 * cfg.kv_heads * cfg.head_dim) as f64 * kv_value_bytes(twelve)) as u64
     }
 
+    /// A token's bytes in a ring of the executor's 12-bit lossless pages as the planner sizes them: a sixteenth of the ring's page (`kv12::page_bytes_of`; `kv12check` compares it with
+    /// the pages' own, their share of the escape pool in).
+    pub fn kv12_token_bytes(heads: usize, channels: usize, one: bool) -> u64 {
+        crate::dynamic::kv12::page_bytes_of(heads, channels, one).div_ceil(16)
+    }
+
     /// A key's or value's bytes as `kv_per_token` plans them: 2 in bf16; in the 12-bit pages 1.5 and 6% for the page's headers, escape room and raw slabs (a pool of
     /// heads of 128 holds within 5% of it: src/dynamic/kvpages.rs's tokens-a-GiB test).
     pub fn kv_value_bytes(twelve: bool) -> f64 {
@@ -3148,7 +3154,7 @@ pub mod sizing {
             let (mut fixed, mut per) = (0u64, 0u64);
             for &k in &self.kinds {
                 let (d, nk, _) = self.attn_of(k);
-                let b = if twelve { crate::dynamic::kv12::page_bytes(nk, d).div_ceil(16) } else { (nk * d * 2 * 2) as u64 };
+                let b = if twelve { crate::plan::sizing::kv12_token_bytes(nk, d, false) } else { (nk * d * 2 * 2) as u64 };
                 match k {
                     KindG4::Sliding => fixed += cap_s * b,
                     KindG4::Global => per += b,
