@@ -876,7 +876,7 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
 /// block's, read apart.
 pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
     use super::nemotron::per_layer;
-    use crate::kern_nh::{NH_N, NH_P};
+    use crate::kern::{MAMBA2_HEAD, MAMBA2_STATE};
     use crate::nemotron::NhKind;
     let m = &d.desc;
     let one = |roles: &[(String, Source)], r: &str| match role(roles, r) {
@@ -904,9 +904,9 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
     }
     let mb = mamba.ok_or_else(|| Error("Nemotron-H: no Mamba-2 layer".into()))?;
     let (nq, nk, hd) = att.map_or((0, 0, 128), |a| (a.heads, a.kv_heads, a.head_dim));
-    if mb.head_dim != NH_P || mb.state != NH_N || mb.conv != 4 || hd != 128 {
+    if mb.head_dim != MAMBA2_HEAD || mb.state != MAMBA2_STATE || mb.conv != 4 || hd != 128 {
         return err(format!(
-            "Mamba-2 heads of {} channels with a state of {}, a convolution of {}, attention heads of {hd}: this engine runs heads of {NH_P}, a state of {NH_N}, a convolution of 4 and attention heads of 128",
+            "Mamba-2 heads of {} channels with a state of {}, a convolution of {}, attention heads of {hd}: this engine runs heads of {MAMBA2_HEAD}, a state of {MAMBA2_STATE}, a convolution of 4 and attention heads of 128",
             mb.head_dim, mb.state, mb.conv
         ));
     }
@@ -941,7 +941,7 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
                 }
                 let (conv, ssm) = (states.len(), states.len() + 1);
                 states.push(3 * cd * 2);
-                states.push(mb.heads * NH_P * NH_N * 4);
+                states.push(mb.heads * MAMBA2_HEAD * MAMBA2_STATE * 4);
                 ops.extend([
                     Op::Linear { w: b, x: Slot::H, y: Slot::Mix, name: "Mamba-2: in product" },
                     Op::MambaConv { w: s0 + 1, bias: s0 + 2, state: conv, cd, row, x_off: di },

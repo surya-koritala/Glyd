@@ -1,9 +1,9 @@
-//! Nemotron-H's kernel table (`KernNh`, src/kern/nemotron.rs's: the Mamba-2 kernels of kernels/nemotron.cu; its attention is the attention kind's,
-//! src/dynamic/attn.rs) and the interface a block of mixture-of-experts layers plugs into the executor by (`MoeBlock`, `MoeFactory`: src/moe_nh.rs makes
-//! Nemotron-H's blocks) and the host hooks the other families' blocks share (`NhHost`). The model's
-//! weights load by the executor's loader from its lowered description (src/dynamic/nemotron.rs). The hand-written engine that used to be here is retired:
-//! its parity record is R7's fixtures and `paritycheck`'s (bits-identical at every level), and its layer-by-layer tools (`nhlayers`, `nhtoy`, `nhoffload`)
-//! run on the executor. The layers' math: tools/nemotron_ref.py; the config and tensor names: src/nemotron.rs.
+//! The interface a block of mixture-of-experts layers plugs into the executor by (`MoeBlock`, `MoeFactory`: src/moe_nh.rs makes Nemotron-H's blocks) and the
+//! host hooks the other families' blocks share (`NhHost`). Nemotron-H's weights load by the executor's loader from its lowered description
+//! (src/dynamic/nemotron.rs); its Mamba-2 layers run the layer kind's kernels (src/kern/mamba2.rs), its attention the attention kind's (src/dynamic/attn.rs).
+//! The hand-written engine that used to be here is retired: its parity record is R7's fixtures and `paritycheck`'s (bits-identical at every level), and its
+//! layer-by-layer tools (`nhlayers`, `nhtoy`, `nhoffload`) run on the executor. The layers' math: tools/nemotron_ref.py; the config and tensor names:
+//! src/nemotron.rs.
 
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Lib, Result};
@@ -12,8 +12,6 @@ use crate::moe::MoeScratch;
 use crate::nemotron::ConfigNemotronH;
 use crate::weights::Layout;
 use glyd_gpu::safetensors::Checkpoint;
-
-pub use crate::kern::nemotron::{KernNh, SsdWs, NH_L, NH_N, NH_P};
 
 /// A latent mixture-of-experts layer's mixer, which the engine's layers call and does not itself hold: router (full-width scores, the choice of `top_k`), the latent projections, the experts, the
 /// shared expert. `h` [n, hidden] bf16 is the layer's normed input, `out` [n, hidden] bf16 its mixer's output (the engine adds it to the residual).
@@ -106,12 +104,12 @@ pub type MoeFactory<'a> = &'a dyn Fn(usize, &ConfigNemotronH, &Checkpoint, Layou
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
+    /// The Mamba-2 kind's kernels take Nemotron-H's released shape: its heads, state and chunk are the kernels' limits.
     #[test]
-    fn the_kernels_constants_are_the_configs() {
+    fn the_kernels_limits_take_the_released_config() {
+        use crate::kern::{MAMBA2_CHUNK, MAMBA2_HEAD, MAMBA2_STATE};
         let c = crate::nemotron::tests::parse();
-        assert_eq!((c.m_head_dim, c.m_state, c.chunk), (NH_P, NH_N, NH_L));
+        assert_eq!((c.m_head_dim, c.m_state, c.chunk), (MAMBA2_HEAD, MAMBA2_STATE, MAMBA2_CHUNK));
         assert!(c.inner() / c.m_groups <= 1024 && c.heads / c.kv_heads <= 16);
         let _ = crate::kern::norm_threads(c.hidden as i32).unwrap();
     }

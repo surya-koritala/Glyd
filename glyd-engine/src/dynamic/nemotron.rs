@@ -8,7 +8,8 @@
 use super::attn::{AttnOp, QkNorm};
 use super::{Dyn, ModelDesc, MoeOp, NormW, Op, Opts, Placing, Ring, Slot, Stage};
 use crate::ffi::{err, Result};
-use crate::kern_nh::{MoeBlock, MoeFactory, NH_N, NH_P};
+use crate::kern::{MAMBA2_HEAD, MAMBA2_STATE};
+use crate::kern_nh::{MoeBlock, MoeFactory};
 use crate::nemotron::NhKind;
 use crate::weights::Layout;
 use glyd_gpu::safetensors::Checkpoint;
@@ -97,8 +98,8 @@ pub(crate) fn attention(nq: usize, nk: usize, ring: usize) -> AttnOp {
 /// The executor's description of Nemotron-H for stage `st`, its matrices, small tensors and blocks of experts indexed in the order `lower::nemotron` names them
 /// (this description names none: the lowering is held to it with its names left out).
 pub fn describe(c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<ModelDesc> {
-    if c.m_head_dim != NH_P || c.m_state != NH_N || c.conv_kernel != 4 || c.head_dim != 128 {
-        return err(format!("Mamba-2 heads of {} channels with a state of {}, a convolution of {}, attention heads of {}: this engine runs heads of {NH_P}, a state of {NH_N}, a convolution of 4 and attention heads of 128", c.m_head_dim, c.m_state, c.conv_kernel, c.head_dim));
+    if c.m_head_dim != MAMBA2_HEAD || c.m_state != MAMBA2_STATE || c.conv_kernel != 4 || c.head_dim != 128 {
+        return err(format!("Mamba-2 heads of {} channels with a state of {}, a convolution of {}, attention heads of {}: this engine runs heads of {MAMBA2_HEAD}, a state of {MAMBA2_STATE}, a convolution of 4 and attention heads of 128", c.m_head_dim, c.m_state, c.conv_kernel, c.head_dim));
     }
     let (hid, di, cd, row) = (c.hidden, c.inner(), c.conv_dim(), c.in_rows());
     let qkv_w = (c.heads + 2 * c.kv_heads) * c.head_dim;
@@ -122,7 +123,7 @@ pub fn describe(c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<Mode
             NhKind::Mamba => {
                 let (conv, ssm) = (states.len(), states.len() + 1);
                 states.push(3 * cd * 2);
-                states.push(c.m_heads * NH_P * NH_N * 4);
+                states.push(c.m_heads * MAMBA2_HEAD * MAMBA2_STATE * 4);
                 ops.extend([
                     Op::Linear { w: b, x: Slot::H, y: Slot::Mix, name: "Mamba-2: in product" },
                     Op::MambaConv { w: s0 + 1, bias: s0 + 2, state: conv, cd, row, x_off: di },

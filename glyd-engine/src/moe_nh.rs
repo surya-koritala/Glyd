@@ -427,7 +427,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::kern_nh::{NH_N, NH_P};
+    use crate::kern::{MAMBA2_HEAD, MAMBA2_STATE};
     use crate::moe::expert_strides;
     use crate::nemotron::tests::{bf16_bytes, checkpoint};
     use crate::pack::nemotron_plan;
@@ -536,8 +536,8 @@ mod tests {
         let c = ConfigNemotronH::parse(include_str!("../tests/fixtures/nemotron_h_moetoy_config.json"), "moetoy", None).unwrap();
         assert_eq!(c.kinds, [NhKind::Mamba, NhKind::Moe, NhKind::Attention, NhKind::Moe, NhKind::Mamba, NhKind::Moe]);
         assert!(
-            c.m_head_dim == NH_P
-                && c.m_state == NH_N
+            c.m_head_dim == MAMBA2_HEAD
+                && c.m_state == MAMBA2_STATE
                 && c.conv_kernel == 4
                 && c.head_dim == 128
                 && c.inner() / c.m_groups <= 1024
