@@ -211,7 +211,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     let device = a.has("device");
     // (`--layout`: the level a family's loader packs at, GLM's experts at a block level among them)
     let o = crate::dynamic::Opts { ctx: n + 64, chunk: 256, graph: device, device: 0, layout: a.layout()? };
-    let graphed = std::cell::Cell::new(false);
+    let (graphed, planned) = (std::cell::Cell::new(false), std::cell::Cell::new(0usize));
     let run = |cached: bool| -> Result<Vec<Vec<f32>>> {
         let mut e = if cached {
             let caching = crate::hbg_store::HbCaching { places, ram: None, offload: crate::offload::Offload { mode, device, ..Default::default() }, dense };
@@ -221,6 +221,9 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         };
         if cached {
             graphed.set(matches!(&e, crate::dynamic::split::Run::One(d) if d.has_graph()));
+            if let crate::dynamic::split::Run::One(d) = &e {
+                planned.set(d.stores().iter().map(|s| s.device_layers()).sum());
+            }
         }
         let mut out = Vec::new();
         e.prefill(&tokens[..n - 4])?;
@@ -255,8 +258,17 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         resident.len()
     );
     if device {
-        println!("  the decode calls planned on the GPU: the decode step {} one graph", if graphed.get() { "is" } else { "is not" });
-        if !graphed.get() {
+        // (the plan on the GPU takes layers whose host half is FP4 experts; another family's layers are the host's plan, said and not failed)
+        if planned.get() == 0 {
+            println!("  no layer's calls are planned on the GPU (its experts' host half is not FP4 experts): the host plans them");
+        } else {
+            println!(
+                "  the decode calls planned on the GPU ({} layers): the decode step {} one graph",
+                planned.get(),
+                if graphed.get() { "is" } else { "is not" }
+            );
+        }
+        if planned.get() > 0 && !graphed.get() {
             return err("--device: the cached model's decode step was not captured in a graph");
         }
     }
