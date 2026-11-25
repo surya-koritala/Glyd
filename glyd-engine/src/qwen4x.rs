@@ -4,8 +4,8 @@
 
 use crate::ffi::{err, Error, Result};
 use crate::qwen35::Pack35;
+use crate::runtime::config::ModelConfig;
 use crate::weights::{eos_ids, num};
-use glyd_gpu::json::{self, Value};
 use std::path::Path;
 
 /// A layer's token mixer: Gated DeltaNet (`linear_attention`) or Qwen Sparse Attention (`full_attention`, transformers' `indexed_attention`: gated attention over the tokens its indexer picks).
@@ -82,11 +82,17 @@ impl ConfigQx {
     }
 
     pub fn parse(text: &str, label: &str, generation: Option<&str>) -> Result<ConfigQx> {
-        let v = json::parse(text).map_err(|e| Error(format!("{label}: {e}")))?;
+        ConfigQx::of(&ModelConfig::parse(text).map_err(|e| e.context(label))?, label, generation)
+    }
+
+    /// `parse` of a config.json parsed once (`ModelConfig`).
+    pub fn of(c: &ModelConfig, label: &str, generation: Option<&str>) -> Result<ConfigQx> {
+        use serde_json::Value;
+        let v = &c.top;
         if v.get("model_type").and_then(Value::as_str) != Some("qwen4_exp") {
             return err(format!("{label}: not a qwen4_exp model"));
         }
-        let t = v.get("text_config").ok_or_else(|| Error(format!("{label}: no text_config")))?;
+        let t = v.get("text_config").and_then(Value::as_object).ok_or_else(|| Error(format!("{label}: no text_config")))?;
         let get = |k: &str| t.get(k).filter(|x| **x != Value::Null).ok_or_else(|| Error(format!("{label}: no {k}")));
         let u = |k: &str| -> Result<usize> { get(k)?.as_u64().map(|x| x as usize).ok_or_else(|| Error(format!("{label}: {k}: not an integer"))) };
         let u_or = |k: &str, d: usize| -> Result<usize> {
@@ -138,7 +144,7 @@ impl ConfigQx {
         let head_dim = u("head_dim")?;
         let rotary = (head_dim as f64 * factor) as usize;
         let gate = t.get("output_gate_type").and_then(Value::as_str).unwrap_or("silu");
-        let ple = match t.get("ple_layer_ids").and_then(Value::as_u64s) {
+        let ple = match t.get("ple_layer_ids").and_then(crate::runtime::config::u64s) {
             Some(ids) if ids.len() > 1 => return refuse("n-gram embeddings at more than one layer"),
             Some(ids) if ids.len() == 1 => {
                 let layer = ids[0] as usize;

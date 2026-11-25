@@ -3,12 +3,12 @@
 //! its gate. The experts are glyd-hbr-codes/2 rows at 2,560 x 640 (cb2, cb3, cb4 or ternary, an expert's own format; ~/glyd-scratch/qwen/qwen_pack.py writes them), every layer's file mapped as the cache's host tier
 //! (src/offload.rs): the GPU holds `slots` experts of a layer in places, copied in as the router asks for them, and the host computes a miss from its memory (src/cpu_cb.rs) or copies it, as the store plans.
 
+use crate::cb_pack::{CbPack, LayerMap};
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result, Stream};
 use crate::launch;
 use crate::model_qwen4x::{moe_cfg, EngineQx, MoeBlockQx};
 use crate::moe::{route_with, select_with, MoeCfg, MoeScratch};
-use crate::moe_glm_cb::{CbPack, LayerMap};
 use crate::offload::{Call, ExpertStore, HostMem, Stage};
 use crate::qwen4x::ConfigQx;
 use crate::weights::{upload_bytes, Layout};
@@ -373,11 +373,6 @@ impl Whole {
     pub fn bytes(rows: usize, k: usize) -> usize {
         rows * (H * 2 + k * 12 + H * 4 + H * 2)
     }
-}
-
-/// Device bytes the layer-by-layer prefill holds for `rows` rows beside the engine's (`Whole`).
-pub fn whole_bytes(rows: usize, k: usize) -> usize {
-    Whole::bytes(rows, k)
 }
 
 /// Device bytes a call of the layer-by-layer prefill makes for `rows` rows beside the engine's: the experts' set, and the streaming prefill's ring (sixteen slots of eight experts of up to 2.6 MB), plan and activations

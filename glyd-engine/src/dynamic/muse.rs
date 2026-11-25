@@ -52,7 +52,7 @@ fn attention(c: &ConfigMuse, l: usize, ring: usize) -> Op {
         gate: Some(GateAt { off: (nq + 2 * nk) * hd, step: hd, norm: true }),
         round: true,
         sbf16: false,
-        picked: None,
+        picked: false,
     })
 }
 
@@ -227,7 +227,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_sto
         };
         l_.moe.push(Box::new(ResidentMoe(layer)));
         let ring = rings.len();
-        rings.push(Ring { d: hd, nk, window: if c.sliding[l] { c.window } else { 0 }, values: true });
+        rings.push(Ring::kv(hd, nk, if c.sliding[l] { c.window } else { 0 }));
         let mut ops = vec![
             Op::RmsNorm { x: Slot::X, w: w_in, y: Slot::H, weight: NormW::Plain, eps: c.eps },
             Op::Linear { w: m0, x: Slot::H, y: Slot::Mix, name: "attention: q, k, v and gate product" },
@@ -350,7 +350,7 @@ pub fn describe(c: &ConfigMuse, st: &Stage) -> Result<ModelDesc> {
         n_moe += 1;
         let ring = rings.len();
         let window = if c.sliding[l] { c.window } else { 0 };
-        rings.push(Ring { d: hd, nk, window, values: true });
+        rings.push(Ring::kv(hd, nk, window));
         let mut ops = vec![
             Op::RmsNorm { x: Slot::X, w: w_in, y: Slot::H, weight: NormW::Plain, eps: c.eps },
             Op::Linear { w: m0, x: Slot::H, y: Slot::Mix, name: "attention: q, k, v and gate product" },

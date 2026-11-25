@@ -14,8 +14,8 @@
 //!   hummingbird (glyd/nemotron-3-hummingbird: the experts in codebook rows), from a random Nemotron-H with latent experts and a random export of them: no level packs it as
 //!   it loads, so its digest is the engine's own bits on the saved directory (`HB_DIGEST`).
 //!
-//! Comparable mechanisms (the knowledge base's f:gguf-basic:quant:9 and e:cpu:quant:1, llama.cpp's GGUF: a type id is never reused and a file names its version, which a
-//! reader refuses past what it knows; f:compressed-tensors:quant:5 and f:fp8-block:quant:1, vLLM: a checkpoint's quantization_config picks the reader). Glyd's saves name
+//! Comparable mechanisms (llama.cpp's GGUF: a type id is never reused and a file names its version, which a
+//! reader refuses past what it knows; vLLM: a checkpoint's quantization_config picks the reader). Glyd's saves name
 //! their format in glyd.json (`glyd-vN`) and each pack its layout; a change to a layout's bytes is a new format version with a new fixture, never an edit of one.
 
 use crate::ffi::{err, Error, Result};
@@ -456,6 +456,16 @@ fn check_engine(scratch: &Path, fixtures: &Path) -> Result<Vec<String>> {
     Ok(failed)
 }
 
+/// Where a digest the check holds a format to is not recorded (and this is no recording): the line that says so, a failure, before any model is made or loaded.
+fn digest_missing(path: &Path, record: bool) -> Option<String> {
+    (!record && !path.exists()).then(|| {
+        format!(
+            "FAIL nemotron-h-hb     glyd-v7 at hummingbird: no digest recorded ({}): packcheck --engine --record on the GPU generation the GPU job runs on",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        )
+    })
+}
+
 /// The Hummingbird level's digest: the engine's own bits (no level packs it as it loads, its codes being an export's), on the GPU generation that recorded them.
 pub const HB_DIGEST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/packs/nemotron-h-hb.json.gz");
 
@@ -464,6 +474,10 @@ pub const HB_DIGEST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/packs/ne
 /// saves from them, loaded as `run` loads the repo; its rows against `HB_DIGEST` (written where `record`). Whether it passed (a digest of another GPU generation: skipped).
 fn hummingbird(scratch: &Path, record: bool) -> Result<bool> {
     use glyd_gpu::save::Layout;
+    if let Some(line) = digest_missing(Path::new(HB_DIGEST), record) {
+        println!("{line}");
+        return Ok(false);
+    }
     let (model, export, out) = (scratch.join("nemotron-h-latent"), scratch.join("nemotron-h-export"), scratch.join("nemotron-h-hb"));
     if !model.join("config.json").exists() {
         crate::kcheck_nh::random(&model, 1024, 16)?;
@@ -531,6 +545,15 @@ mod tests {
 
     /// Every saved checkpoint of tests/data/packs loads (every check of `glyd verify`, then its packs decoded on the CPU) and, where it holds the tiny Qwen3, its rows on the CPU
     /// reference are its recorded digest's: on every merge (ci.yml's engine tests).
+    /// A format whose digest is not recorded fails the check with a line that says how to record it, and does not stop the other formats' checks.
+    #[test]
+    fn a_digest_not_recorded_fails_and_says_how_to_record_it() {
+        let gone = std::env::temp_dir().join(format!("glyd-packcheck-no-digest-{}.json.gz", std::process::id()));
+        let line = digest_missing(&gone, false).unwrap();
+        assert!(line.starts_with("FAIL nemotron-h-hb") && line.contains("packcheck --engine --record"), "{line}");
+        assert!(digest_missing(&gone, true).is_none() && digest_missing(Path::new(env!("CARGO_MANIFEST_DIR")), false).is_none());
+    }
+
     #[test]
     fn every_saved_pack_format_loads_to_its_recorded_logits() {
         let (lines, failed) = check_saved(&Decoder::Cpu).unwrap();

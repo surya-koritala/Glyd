@@ -19,7 +19,7 @@ if [ -z "$WORK" ]; then
   AUTO_WORK=1  # ours to remove when done; a WORKDIR named on the command line is the caller's
 fi
 mkdir -p "$WORK"
-MODEL="Qwen/Qwen3-0.6B"
+MODEL="Qwen/Qwen3.5-0.8B"
 
 step() { echo "[check_gpu_install] $*"; }
 

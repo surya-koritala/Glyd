@@ -22,6 +22,7 @@ pub mod nemotron;
 pub mod ngram;
 pub mod pages;
 mod picked;
+mod pieces;
 pub mod prof;
 pub mod qwen35;
 pub mod qwen4x;
@@ -48,6 +49,8 @@ use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload
 pub use attn::AttnOp;
 use glyd_gpu::safetensors::Checkpoint;
 pub use mla::{IdxKeys, IdxPick, IdxScore, MlaIn, MlaIndexer, MlaOp};
+#[cfg(feature = "dev")]
+pub(crate) use rows::EXACT_ROWS;
 use std::path::Path;
 
 /// An activation a pass reads and writes, [rows, width] bf16: the residual, the normed input of the next product, the q/k/v projection, the prepared
@@ -260,7 +263,7 @@ pub enum Op {
     },
     /// Compressed keys and values: a compressor of H, its two products by `w` (small: [2 W, hidden] bf16, kv's rows then the gate's) in fp32 into Cp, the pooling of every `ratio` rows with `ape` (small,
     /// fp32) and its state (states `state` and `state` + 1: the kv rows and the scores), each completed window's entry normed by `norm`, the rotary of `rope`, quantized (`indexer`: rotated, E2M1; else
-    /// E4M3) into state `cache` [entries, d].
+    /// E4M3) into ring `cache` (`Ring::entries`: an entry a row).
     Compress {
         w: usize,
         ape: usize,
@@ -280,8 +283,9 @@ pub enum Op {
     /// The indexer's pick (src/dynamic/mla.rs, every indexer's): Iq and Iw (its weights' product) scored against its entries, each row's best.
     IdxPick(IdxPick),
     /// The mean-pooled indexer's queries and keys (`IndexForm::Mean`; src/dynamic/picked.rs, kernels/qwen4x.cu): of the index product in Qr (`heads` + 1 heads of 128 a row),
-    /// each query head normed (`q_norm`, (1 + w)) and rotated by table `rope` into Iq; the raw key into state `keys` [positions, 128] at the row's position; then each pool
-    /// of 4 the call completes: the mean of its raw keys, normed (`k_norm`) and rotated at its first position, into state `pools` [positions / 4, 128] (`IdxKeys::Pools`).
+    /// each query head normed (`q_norm`, (1 + w)) and rotated by table `rope` into Iq; the raw key into ring `keys` at the row's position; then each pool
+    /// of 4 the call completes: the mean of its raw keys, normed (`k_norm`) and rotated at its first position, into ring `pools` (`Ring::entries`, a pool a row:
+    /// `IdxKeys::Pools`). The raw keys are ring `keys` [positions, 128]: both paged as any keys.
     IdxMean {
         heads: usize,
         q_norm: usize,
@@ -294,7 +298,7 @@ pub enum Op {
     /// streams S.
     NgramRows(ngram::NgramRows),
     NgramAdd(ngram::NgramAdd),
-    /// The attention of Qo over the window (ring `ring`) and the compressed entries (state `cache`: ratio 4, the indexer's picks; another, every complete entry) with the sink (small, fp32), the
+    /// The attention of Qo over the window (ring `ring`) and the compressed entries (ring `cache`: ratio 4, the indexer's picks; another, every complete entry) with the sink (small, fp32), the
     /// rotary of `rope` taken off its output; into Att in the grouped low rank's order (`hpg` heads a group).
     CompAttn {
         ring: usize,
@@ -394,6 +398,9 @@ pub enum StreamsMix {
     /// mHC (`Residual::Streams`): the mixing weights of S by the projection `f` (small, [24, 4 hidden]: fp32 where the rounding is `Once`, else bf16), `base` and
     /// `scale`, made doubly stochastic (the model's `hc`), and the collapse normed by the op's `norm` into H.
     Hc { f: usize, base: usize, scale: usize },
+    /// Lagged mHC (`StreamsP::lagged`): `Hc`'s weights made, the collapse by the previous lagged block's input weights (one-hot on stream 0 where `first`), this block's own kept for the
+    /// next (kernels/residual.cu hc_lag).
+    HcLagged { f: usize, base: usize, scale: usize, first: bool },
     /// The gated residuals (`Residual::GatedStreams`): each stream of S normed by the op's `norm` ((1 + w), a weight a stream) into Hq; the bottleneck's products
     /// `down` (Hq into Mid), silu of a quarter, `up` (Mid into Cp); H the mean over the streams of sigmoid(Cp) Hq; the streams' weights 2 sigmoid(`inject` Hq / 4)
     /// (`inject`'s product into Kv) kept for StreamsPost. Four streams (kernels/qwen4x.cu's).
@@ -409,6 +416,8 @@ pub enum HeadMix {
     Weighted([usize; 3]),
     /// The gated residuals' mix of them, normed a stream at a time by the op's `norm` (`Collapse::GatedMix`): `StreamsMix::Gated` with no inject.
     Gated { down: usize, up: usize },
+    /// Lagged mHC's: weighed by the last lagged block's input weights, then the final norm (`Collapse::LastPre`).
+    LastPre,
 }
 
 /// Where an RMS norm's weight goes (`kinds::NormWeight` as the loader holds the small tensor: a (1 + w) it may hold already added).
@@ -505,29 +514,48 @@ pub struct Rope {
 }
 
 /// A layer's keys and values, `nk` heads of `d`: a ring of the window and a chunk where `window` > 0, else the whole context. `values` false: keys alone, in kc
-/// (a latent cache, an indexer's keys, DeepSeek-V4's window whose keys are its values), no room in vc.
+/// (a latent cache, an indexer's keys, DeepSeek-V4's window whose keys are its values), no room in vc. `ratio` > 1: a row an entry of `ratio` tokens, not a token
+/// (DeepSeek-V4's compressed entries, the attention's and the indexer's: entry e at row e), whose blocks then cover BLOCK `ratio` tokens.
 #[derive(Clone, Debug)]
 pub struct Ring {
     pub d: usize,
     pub nk: usize,
     pub window: usize,
     pub values: bool,
+    pub ratio: usize,
 }
 
 impl Ring {
     /// A ring of keys and values.
     pub const fn kv(d: usize, nk: usize, window: usize) -> Ring {
-        Ring { d, nk, window, values: true }
+        Ring { d, nk, window, values: true, ratio: 1 }
     }
 
     /// A ring of keys alone.
     pub const fn keys(d: usize, nk: usize, window: usize) -> Ring {
-        Ring { d, nk, window, values: false }
+        Ring { d, nk, window, values: false, ratio: 1 }
     }
 
-    /// Bytes a token takes in it (bf16).
+    /// The compressed entries of every `ratio` tokens, `d` wide (keys alone, the whole context).
+    pub const fn entries(d: usize, ratio: usize) -> Ring {
+        Ring { d, nk: 1, window: 0, values: false, ratio }
+    }
+
+    /// Bytes a token takes in it (bf16; an entry's over its tokens, rounded up).
     pub fn token_bytes(&self) -> usize {
-        (1 + self.values as usize) * self.nk * self.d * 2
+        ((1 + self.values as usize) * self.nk * self.d * 2).div_ceil(self.ratio.max(1))
+    }
+
+    /// Rows it holds for a context of `ctx` tokens: a window's ring the window and a chunk of `chunk`, compressed entries one for every `ratio` tokens (and two more:
+    /// a pass's last entry is written past its last complete one), else a row a token.
+    pub fn rows(&self, ctx: usize, chunk: usize) -> usize {
+        if self.ratio > 1 {
+            ctx / self.ratio + 2
+        } else if self.window > 0 {
+            (self.window + chunk).min(ctx)
+        } else {
+            ctx
+        }
     }
 }
 
@@ -646,9 +674,13 @@ impl Op {
 
     fn rings(&self) -> Vec<usize> {
         match *self {
-            Op::Attn(ref a) if a.picked.is_none() => vec![a.ring],
+            Op::Attn(ref a) => vec![a.ring],
+            Op::IdxMean { keys, pools, .. } => vec![keys, pools],
             Op::Mla(ref a) => std::iter::once(a.ring).chain(a.indexer.as_ref().map(|_| a.ring + 1)).collect(),
-            Op::CompKv { ring, .. } | Op::CompAttn { ring, .. } => vec![ring],
+            Op::CompKv { ring, .. } => vec![ring],
+            Op::CompAttn { ring, cache, .. } => std::iter::once(ring).chain(cache).collect(),
+            Op::Compress { cache, .. } => vec![cache],
+            Op::IdxPick(IdxPick { keys: IdxKeys::Entries(r) | IdxKeys::Pools(r), .. }) => vec![r],
             _ => Vec::new(),
         }
     }
@@ -656,10 +688,8 @@ impl Op {
     fn states(&self) -> Vec<usize> {
         match *self {
             Op::GdnConv { state, .. } | Op::GdnDelta { state, .. } | Op::MambaConv { state, .. } | Op::MambaScan { state, .. } => vec![state],
-            Op::Compress { cache, state, .. } => vec![cache, state, state + 1],
+            Op::Compress { state, .. } => vec![state, state + 1],
             Op::KdaConv { state, .. } | Op::KdaDelta { state, .. } => vec![state],
-            Op::IdxMean { keys, pools, .. } => vec![keys, pools],
-            Op::Attn(ref a) => a.picked.map_or(Vec::new(), |kv| kv.to_vec()),
             Op::NgramRows(x) => vec![x.hist],
             Op::NgramAdd(x) => vec![x.conv],
             _ => Vec::new(),
@@ -978,11 +1008,13 @@ pub struct Dyn {
     prepped: std::cell::Cell<bool>,
     ws: Buf,
     done: Buf,
-    /// The decoded-then-dense way for long chunks (ModelDesc::decoded): the library's or our own dense product, the decoded matrix's room, the GPU's code.
+    /// The decoded-then-dense way for long chunks (ModelDesc::decoded): the library's or our own dense product, the decoded matrix's room, the GPU's code, and
+    /// a development build's GLYD_ENGINE_DECODE_FROM (`decodes`).
     blas: Option<crate::ffi::Blas>,
     own: bool,
     scratch_w: Buf,
     gpu_code: i64,
+    decode_from: Option<usize>,
     /// A prompt's delta rule in chunks of 64 (else one token after another).
     chunked: bool,
     graph: Option<Graph>,
@@ -1014,11 +1046,13 @@ pub struct Dyn {
     /// DeepSeek-V4's buffers, where the model is one.
     v4: Option<deepseek_v4::V4Run>,
     /// GLM's kernels and the experts' activation.
-    kglm: crate::model_glm::KernGlm,
+    kglm: crate::kern_glm::KernGlm,
     kmoe: crate::moe::MoeKern,
     /// The residual rules' kernels, a block's mixing weights of the streams (fp32 [chunk, 24]) and the split mixing projection's partial sums (`residual::part_words`).
     kres: residual::KernRes,
     hcp: Buf,
+    /// Lagged mHC's input weights of each row, from block to block of a pass ([rows, 4] fp32).
+    hc_lag: Buf,
     hc_part: Buf,
     /// Muse Spark's kernels.
     kmuse: muse::KernMuse,
@@ -1053,6 +1087,33 @@ pub struct Dyn {
     parts: Vec<rows::Part>,
     at: std::cell::Cell<Option<usize>>,
     head_rows: Vec<usize>,
+    /// In such a pass: its first rows that decode, a token of a sequence each, whose attention runs as one (`attn::Dyn::attn_lead`, through `rows::RowTabs`); 0: none.
+    lead: std::cell::Cell<usize>,
+    /// The CUDA graphs of steps of rows that decode, one for each padded row count met so far (`rows::Dyn::rows_replay`), whether such graphs may be captured (graphs on, and
+    /// no block of experts that reads the host), the last one replayed (for `prof_take`), the replays and the captures made in a request's step rather than before the
+    /// first (`usercheck` counts them).
+    rgraphs: Vec<RowsGraph>,
+    rgraph_on: bool,
+    rplayed: std::cell::Cell<Option<usize>>,
+    pub(crate) rows_replays: std::cell::Cell<u64>,
+    pub(crate) rows_late: std::cell::Cell<u64>,
+    /// Piecewise graphs of the passes no whole graph takes (src/dynamic/pieces.rs): the sets captured, how `forward` runs the pass being made, the pieces a capture makes,
+    /// whether a piece's capture is open (to end it on an error), the set the last pass replayed and where its pieces' events go among the eager ones (`prof_take`), the
+    /// pieces the last pass replayed, and the passes replayed so (`usercheck` counts them).
+    pieces: pieces::Pieces,
+    pmode: std::cell::Cell<pieces::Mode>,
+    pcap: std::cell::RefCell<Vec<pieces::Piece>>,
+    popen: std::cell::Cell<bool>,
+    pplayed: std::cell::Cell<Option<usize>>,
+    psplice: std::cell::RefCell<Vec<(usize, usize)>>,
+    pcount: std::cell::Cell<usize>,
+    pub(crate) piece_replays: std::cell::Cell<u64>,
+    /// usercheck's switch: no graph replayed or captured (the one-row step's, the decode steps', the pieces'), every pass eager, to hold the graphs' replies to.
+    graphs_off: std::cell::Cell<bool>,
+    /// The attention's decode calls of the pass being made or last made (a launch of the parts kernel or a call of the library's decode: GLYD_PROF's count), and the one-row
+    /// step graph's as it was captured.
+    dcalls: std::cell::Cell<usize>,
+    gcalls: usize,
     /// Paged keys and values (R4b: src/dynamic/pages.rs): kc and vc are then the pools every sequence's blocks are in, and each sequence has a block table a layer group. None: each sequence a
     /// room of its own.
     paged: Option<rows::Paged>,
@@ -1061,6 +1122,19 @@ pub struct Dyn {
     lossless: Option<kvpages::Lossless>,
     /// The host's swap area for paged sequences sent back for room, and its copies (R4d: src/dynamic/swap.rs); None: they are run again from their tokens.
     swap: Option<swap::Swap>,
+    /// A served model's room for steps launched before the step before them is read (src/dynamic/rows.rs `Lanes`, `ModelStep::overlaps`); None: a step runs to its end.
+    lanes: Option<rows::Lanes>,
+    /// GLYD_ENGINE_STEP_PROF=1 or GLYD_PROF=1 on a served model: the GPU's time of each step and its idle time before it (src/dynamic/rows.rs `Gaps`).
+    gaps: Option<rows::Gaps>,
+    /// Whether a row of the next launched step draws from its candidates (`ModelStep::draws`): they are queued with the step.
+    draws: bool,
+    /// The 12-bit pages' status as the lane of the step landed last copied it (src/dynamic/kvpages.rs `kv12_lost` reads it once); None: the GPU's own.
+    status_from: Option<*const u32>,
+    /// The grammar masks of the next step's sampled rows (`ModelStep::masks`), put on the rows before their candidates' top-k (`masker`), and the room for a row's sum of
+    /// exponentials (`ModelStep::mass`).
+    row_masks: Vec<Option<crate::constrain::MaskHandle>>,
+    masker: Option<crate::kern::MaskGpu>,
+    sums: Option<Buf>,
 }
 
 /// A sequence's own buffers and place, while another is selected (`Dyn::select`): its keys and values, its states, its position, the verify pass it can go back
@@ -1082,7 +1156,7 @@ struct Seq {
 fn unverifiable_op(d: &ModelDesc) -> Option<&Op> {
     std::iter::once(&d.first).chain(d.layers.iter().flatten()).find(|op| match op {
         Op::GdnConv { .. } | Op::GdnDelta { .. } => false,
-        Op::Attn(a) => a.picked.is_some(),
+        Op::Attn(a) => a.picked,
         Op::Moe(_) | Op::MoeEarly { .. } => true,
         _ => !rows::row_wise(op) || !op.rings().is_empty() || !op.states().is_empty(),
     })
@@ -1117,6 +1191,41 @@ fn handed_over(d: &ModelDesc) -> Vec<(Slot, usize)> {
 /// The most rows a verify pass takes (`Dyn::verify_rows`): a product of up to 8 rows runs the kernel a one-row step's does (the library's one m-tile product; the
 /// tiered layout's step kernel to 8 rows), so each row's sums are a step's. Checked bit for bit on swift only; the range worker refuses verify on other levels.
 pub const VERIFY_ROWS: usize = 8;
+
+/// A step of rows that decode as a graph: its rows (padded), the graph, the events in it (`--prof`) and its attention's decode calls.
+struct RowsGraph {
+    rows: usize,
+    graph: Graph,
+    marks: Vec<(&'static str, Ev)>,
+    calls: usize,
+}
+
+/// The library's routes (glyd_gpu.h GLYD_GPU_ROUTE_*) `Dyn::decodes` reads: W decoded for the caller's dense product, the prompt kernel, W decoded ahead.
+const ROUTE_DECODE: i32 = 0;
+const ROUTE_BIG: i32 = 4;
+const ROUTE_AHEAD: i32 = 5;
+
+/// Rows from which a prompt's product of a layout the route table has no crossover for on the GPU (an A100's tiered layout: the fused prompt kernel at any length)
+/// is decoded and multiplied dense: the lowest crossover measured for the tiered layout elsewhere (an A10's 512, GeForce Ada's 513: gpu/glyd_gpu.cu `ahead_min`).
+/// Not measured on those GPUs: by arithmetic, a weight's tiered decode at the A100's prompt tile of 256
+/// tokens uses most of the SM's issue slots, where unpacking W once and cuBLAS's product cost about 2.5 ps a weight plus the product at about 70% of peak.
+const DECODE_FROM: usize = 512;
+
+/// The profile's stage for a matrix unpacked to bf16 before its dense product (GLYD_PROF=1: the product's own stage then is the dense product alone).
+const DECODED: &str = "products: a matrix decoded to bf16 for the dense product";
+
+/// `Dyn::decodes` for a product of `m` rows (more than 64) of a matrix in the 12-bit layout or not (`twelve`), `route` the library's route for a row count.
+fn decodes_by(m: usize, twelve: bool, from: Option<usize>, route: &dyn Fn(i64) -> Result<i32>) -> Result<bool> {
+    if let Some(f) = from {
+        return Ok(m >= f);
+    }
+    match route(m as i64)? {
+        ROUTE_DECODE | ROUTE_AHEAD => Ok(true),
+        // (the prompt kernel past any length here: the table measured no crossover for this layout on this GPU)
+        ROUTE_BIG => Ok(!twelve && m >= DECODE_FROM && route(1 << 40)? == ROUTE_BIG),
+        _ => Ok(false),
+    }
+}
 
 /// What `Dyn::rewind` needs of a verify pass: the per-sequence states as they were before it (`states`' sizes), each linear-attention layer's b, a rows then its
 /// convolution's input rows (Mix's whole rows) of the pass (VERIFY_ROWS rows of each; None for another kind of layer or another stage's).
@@ -1273,13 +1382,7 @@ impl Dyn {
         let whole = stage.first && stage.last;
         let (mut ring_off, mut ring_cap, mut at, mut at_v) = (Vec::new(), Vec::new(), 0u64, 0u64);
         for (i, r) in d.rings.iter().enumerate() {
-            let cap = if !whole && !rings_used.contains(&i) {
-                0
-            } else if r.window > 0 {
-                (r.window + ch).min(ctx)
-            } else {
-                ctx
-            };
+            let cap = if !whole && !rings_used.contains(&i) { 0 } else { r.rows(ctx, ch) };
             ring_off.push((at, at_v));
             ring_cap.push(cap);
             at += (cap * r.nk * r.d * 2) as u64;
@@ -1305,12 +1408,20 @@ impl Dyn {
         if let Some((layer, _)) = big.moe.first().and_then(|b| b.resident()) {
             let _ = moe_sc.set(crate::moe::MoeScratch::new(&dev, &lib, &[layer], ch)?);
         }
-        // the decoded-then-dense way, as Qwen3.5's engine chooses it: the library's dense product off Ada, our own on Ampere and Ada
+        // the decoded-then-dense way, as Qwen3.5's engine chooses it: the library's dense product off Ada, our own on Ampere and Ada; made where a matrix takes it at a
+        // chunk's rows (`decodes`: the most rows a product has; past its first row count a matrix keeps that way)
         let want = crate::tune!("GLYD_ENGINE_GEMM").unwrap_or_default();
-        let blas = if d.decoded && ch > 64 && (want == "blas" || (want.is_empty() && dev.cc != (8, 9))) { crate::ffi::Blas::find() } else { None };
-        let own = d.decoded && (want == "own" || (want.is_empty() && blas.is_none() && matches!(dev.cc.0, 8 | 9)));
         let gpu_code = lib.gpu()? as i64;
+        let decode_from = crate::tune!("GLYD_ENGINE_DECODE_FROM").and_then(|v| v.parse().ok());
         let packed: Vec<&PackBuf> = (0..big.mats.len()).filter(|&k| k != d.lm && k != d.embed).filter_map(|k| big.mats[k].packed_opt()).collect();
+        let mut decoding = false;
+        if d.decoded {
+            for p in &packed {
+                decoding |= Dyn::decodes(&lib, gpu_code, decode_from, p, ch)?;
+            }
+        }
+        let blas = if decoding && (want == "blas" || (want.is_empty() && dev.cc != (8, 9))) { crate::ffi::Blas::find() } else { None };
+        let own = decoding && (want == "own" || (want.is_empty() && blas.is_none() && matches!(dev.cc.0, 8 | 9)));
         // (the blocks' own matrices too: the experts')
         let block_shapes: Vec<(i64, i64, bool)> = big.moe.iter().flat_map(|b| b.pack_shapes()).collect();
         let biggest = packed.iter().map(|p| (p.pack.rows * p.pack.cols) as usize).chain(block_shapes.iter().map(|s| (s.0 * s.1) as usize)).max().unwrap_or(8);
@@ -1352,7 +1463,8 @@ impl Dyn {
         let ws = Buf::zeroed(need)?;
         let done = Buf::zeroed(4 << 18)?;
         let host = Pinned::new(4096)?;
-        let (kglm, kmoe, hcp) = (crate::model_glm::KernGlm::load(&dev)?, crate::moe::MoeKern::load(&dev)?, Buf::zeroed(ch * 24 * 4)?);
+        let (kglm, kmoe, hcp) = (crate::kern_glm::KernGlm::load(&dev)?, crate::moe::MoeKern::load(&dev)?, Buf::zeroed(ch * 24 * 4)?);
+        let hc_lag = Buf::zeroed(ch * 4 * 4)?;
         // (the split mixing projection's sums: as the model's streams round, one buffer for every block's)
         let round = d.layers.iter().flatten().find_map(|op| if let Op::StreamsPre { round, .. } = *op { Some(round) } else { None });
         let hc_part = Buf::zeroed(round.map_or(Ok(1), |r| residual::part_words(r, ch, d.hidden))? * 4)?;
@@ -1369,7 +1481,7 @@ impl Dyn {
                     | Op::IdxMean { .. }
                     | Op::NgramRows(_)
                     | Op::NgramAdd(_)
-            ) || matches!(op, Op::Attn(a) if a.picked.is_some())
+            ) || matches!(op, Op::Attn(a) if a.picked)
         });
         let kqx = if qx { Some(crate::model_qwen4x::KernQx::load(&dev)?) } else { None };
         let picks = picked::PickRun::new(d, ch)?;
@@ -1432,6 +1544,7 @@ impl Dyn {
             own,
             scratch_w,
             gpu_code,
+            decode_from,
             chunked: crate::tune!("GLYD_ENGINE_GDN").as_deref() != Some("recurrent"),
             graph: None,
             host,
@@ -1457,6 +1570,7 @@ impl Dyn {
             kmoe,
             kres,
             hcp,
+            hc_lag,
             hc_part,
             kmuse,
             moe_inv,
@@ -1477,10 +1591,34 @@ impl Dyn {
             parts: Vec::new(),
             at: std::cell::Cell::new(None),
             head_rows: Vec::new(),
+            lead: std::cell::Cell::new(0),
+            rgraphs: Vec::new(),
+            rgraph_on: false,
+            rplayed: std::cell::Cell::new(None),
+            rows_replays: std::cell::Cell::new(0),
+            pieces: Default::default(),
+            pmode: std::cell::Cell::new(pieces::Mode::Eager),
+            pcap: Default::default(),
+            popen: std::cell::Cell::new(false),
+            pplayed: std::cell::Cell::new(None),
+            psplice: Default::default(),
+            pcount: std::cell::Cell::new(0),
+            piece_replays: std::cell::Cell::new(0),
+            graphs_off: std::cell::Cell::new(false),
+            rows_late: std::cell::Cell::new(0),
+            dcalls: std::cell::Cell::new(0),
+            gcalls: 0,
             paged: None,
             kv12: None,
             lossless: None,
             swap: None,
+            lanes: None,
+            gaps: None,
+            draws: false,
+            status_from: None,
+            row_masks: Vec::new(),
+            masker: None,
+            sums: None,
         };
         // (a group of GPUs: every one's engine made before any one's first pass, src/dynamic/tp.rs)
         if let Some(c) = tp::comm() {
@@ -1489,6 +1627,7 @@ impl Dyn {
         // (a block that reads the router's choices on the host, an expert cache's, is not captured)
         if o.graph && e.big.moe.iter().all(|b| !b.reads_host() && (b.resident().is_some() || b.graphable())) {
             e.capture_graph()?;
+            e.rgraph_on = true;
         }
         Ok(e)
     }
@@ -1583,6 +1722,8 @@ impl Dyn {
     /// records (the stages' times as the graph runs them: without it a step of small kernels waits on the host's launches).
     pub fn prof_in_graph(&mut self) -> Result<()> {
         self.prof = Some(std::cell::RefCell::new(Vec::new()));
+        self.rgraphs.clear();
+        self.pieces.clear();
         if self.graph.take().is_some() {
             self.capture_graph()?;
         }
@@ -1592,11 +1733,21 @@ impl Dyn {
     /// The stages' times since the last call (ms, summed by stage, in the order first seen), the eager passes' events cleared; where the last pass was the step
     /// graph's replay, its last replay's (the graph's events kept).
     pub fn prof_take(&self) -> Result<Vec<(&'static str, f64)>> {
-        let replayed = self.replayed.replace(false);
+        let (replayed, rows) = (self.replayed.replace(false), self.rplayed.replace(None));
+        let (set, splice) = (self.pplayed.replace(None), std::mem::take(&mut *self.psplice.borrow_mut()));
         let Some(p) = &self.prof else { return Ok(Vec::new()) };
         self.dev.sync()?;
         let evs = std::mem::take(&mut *p.borrow_mut());
-        let out = if replayed { prof::between(&self.gmarks)? } else { prof::between(&evs)? };
+        fn refs<'a>(v: &'a [(&'static str, Ev)]) -> Vec<(&'static str, &'a Ev)> {
+            v.iter().map(|(l, e)| (*l, e)).collect()
+        }
+        let out = match (replayed, rows, set.and_then(|i| self.pieces.sets.get(i))) {
+            (true, Some(i), _) => prof::between(&refs(&self.rgraphs[i].marks))?,
+            (true, None, _) => prof::between(&refs(&self.gmarks))?,
+            // (a pass of pieces: each piece's events where its replay was queued among the eager ones)
+            (_, _, Some(set)) => prof::between(&pieces::splice(&evs, &splice, |k| &set.pieces[k].marks))?,
+            _ => prof::between(&refs(&evs))?,
+        };
         self.spare.borrow_mut().extend(evs.into_iter().map(|x| x.1));
         Ok(out)
     }
@@ -1607,9 +1758,9 @@ impl Dyn {
         if !prof::on() || self.prof.is_none() {
             return Ok(());
         }
-        let graph = self.replayed.get();
+        let (graph, pieces) = (self.replayed.get(), self.pcount.get());
         let ops = self.prof_take()?;
-        prof::pass(rows, prompt, &ops, graph, (!graph).then(|| self.queued.get()));
+        prof::pass(rows, prompt, &ops, graph, (!graph).then(|| self.queued.get()), self.dcalls.get(), pieces);
         Ok(())
     }
 
@@ -1655,6 +1806,7 @@ impl Dyn {
         }
         if self.decoded_way(p, m)? {
             self.lib.unpack(&p.pack, 0, p.pack.rows, self.scratch_w.ptr, s)?;
+            self.mark(DECODED)?;
             if let Some(b) = &self.blas {
                 return b.gemm_nt(s, self.scratch_w.ptr, x, y, p.pack.rows as i32, p.pack.cols as i32, m as i32);
             }
@@ -1664,13 +1816,25 @@ impl Dyn {
         self.lib.linear(&p.pack, x, m as i64, y, self.ws.ptr, self.ws.bytes, self.done.ptr, s)
     }
 
-    /// Whether a product of `m` rows decodes the matrix and multiplies dense (ModelDesc::decoded, the library's route DECODE or AHEAD), as Qwen3.5's engine.
-    unsafe fn decoded_way(&self, p: &PackBuf, m: usize) -> Result<bool> {
-        if (self.blas.is_none() && !self.own) || m <= 64 || p.pack.cols % 64 != 0 || p.pack.rows % 128 != 0 {
+    /// Whether a product of `m` rows decodes the matrix and multiplies dense (ModelDesc::decoded, where the model has that way: `decodes`), as Qwen3.5's engine.
+    fn decoded_way(&self, p: &PackBuf, m: usize) -> Result<bool> {
+        if self.blas.is_none() && !self.own {
             return Ok(false);
         }
-        let route = self.lib.route(self.gpu_code, p.pack.is_twelve(), p.pack.rows, p.pack.cols, m as i64)?;
-        Ok(route == 0 || route == 5)
+        Dyn::decodes(&self.lib, self.gpu_code, self.decode_from, p, m)
+    }
+
+    /// Whether a product of `m` rows by `p` on the GPU of code `gpu` is the decoded matrix's (W unpacked to bf16 once, then a dense product): the library's route
+    /// DECODE or AHEAD where its table has a crossover for the pack's layout on that GPU (as measured there: an A100's 12-bit layout from 769 rows, an L4's,
+    /// GeForce Ada's, an A10's, an L40S's, every Hopper's); where it has none (the prompt kernel at any length: an A100's tiered and lossy layouts, Ampere GeForce,
+    /// Blackwell), from DECODE_FROM rows for a layout that is not the 12-bit one. A development build's GLYD_ENGINE_DECODE_FROM=N replaces both: from N rows
+    /// decoded, below them the library's kernels (a large N: never). K a multiple of 64 and the rows of 128 (the dense products' tiles), more than 64 rows.
+    fn decodes(lib: &crate::ffi::Lib, gpu: i64, from: Option<usize>, p: &PackBuf, m: usize) -> Result<bool> {
+        let (o, k, twelve) = (p.pack.rows, p.pack.cols, p.pack.is_twelve());
+        if m <= 64 || k % 64 != 0 || o % 128 != 0 {
+            return Ok(false);
+        }
+        decodes_by(m, twelve, from, &|rows| lib.route(gpu, twelve, o, k, rows))
     }
 
     /// The matrix the next product after op `i` of layer `l` of `p` reads, and its rows (the LM head's after the last layer: `head`).
@@ -1686,8 +1850,9 @@ impl Dyn {
 
     /// The tokens' raw embedding rows into the big model's X.
     unsafe fn embed(&self, tokens: &[u32]) -> Result<()> {
-        // (a profile's first event: the embedding is timed by the pass's own first, `forward`'s)
+        // (a profile's first event: the embedding is timed by the pass's own first, `forward`'s; and a served step's first work, `Gaps`)
         self.mark("start")?;
+        self.gap_begin()?;
         let hid = self.big.d.hidden;
         let s = self.dev.stream;
         let Some(e) = self.big.mats[self.big.d.embed].packed_opt().map(|p| &p.pack) else { return err("the embedding is not packed") };
@@ -1782,8 +1947,8 @@ impl Dyn {
                 self.mark(name)
             }
             Op::Attn(ref a) => match a.picked {
-                Some(kv) => self.attn_picked(p, a, kv, n, pos.0),
-                None => self.attn(p, l, i, a, n, pos, head),
+                true => self.attn_picked(p, a, n, pos.0),
+                false => self.attn(p, l, i, a, n, pos, head),
             },
             Op::AddNorm { y, post, scalar, next } => {
                 let (nx, rows) = Self::next_linear(p, l, i, n, head);
@@ -1877,6 +2042,7 @@ impl Dyn {
                         && inter.is_multiple_of(128)
                     {
                         self.lib.unpack(&pk.pack, 0, pk.pack.rows, self.scratch_w.ptr, s)?;
+                        self.mark(DECODED)?;
                         self.kern.gemm_silu(s, p.slot(Slot::H), self.scratch_w.ptr, p.slot(Slot::M), nu as i32, pk.pack.rows as i32, pk.pack.cols as i32)?;
                         return self.mark("MLP: gate and up product, SiLU");
                     }
@@ -1922,6 +2088,18 @@ impl Dyn {
                 let (fp, bp, sp) = (p.small[f].ptr, p.small[base].ptr, p.small[scale].ptr);
                 let (h, nw, (hc_eps, iters)) = (p.slot(Slot::H), p.small[norm].ptr, p.d.hc);
                 self.kres.pre(s, p.slot(Slot::S), (fp, bp, sp), nw, h, self.hcp.ptr, self.hc_part.ptr, nu, hid, (eps, hc_eps, iters), round)?;
+                self.mark("hyper-connections")
+            }
+            Op::StreamsPre { mix: StreamsMix::HcLagged { f, base, scale, first }, norm, round } => {
+                let (fp, bp, sp) = (p.small[f].ptr, p.small[base].ptr, p.small[scale].ptr);
+                let (h, nw, (hc_eps, iters)) = (p.slot(Slot::H), p.small[norm].ptr, p.d.hc);
+                self.kres.pre(s, p.slot(Slot::S), (fp, bp, sp), nw, h, self.hcp.ptr, self.hc_part.ptr, nu, hid, (eps, hc_eps, iters), round)?;
+                // (H again, from the previous lagged block's weights; this block's kept in hc_lag for the next)
+                self.kres.lag(s, p.slot(Slot::S), self.hc_lag.ptr, self.hcp.ptr, nw, h, nu, hid, eps, (first, true), round)?;
+                self.mark("hyper-connections")
+            }
+            Op::StreamsHead { mix: HeadMix::LastPre, norm, round } => {
+                self.kres.lag(s, p.slot(Slot::S), self.hc_lag.ptr, self.hcp.ptr, p.small[norm].ptr, p.slot(Slot::H), nu, hid, eps, (false, false), round)?;
                 self.mark("hyper-connections")
             }
             Op::StreamsPre { mix: StreamsMix::Gated { down, up, inject }, norm, .. } => {
@@ -2115,41 +2293,64 @@ impl Dyn {
     /// soft-cap and the argmax (its logits, tok, val a row each).
     unsafe fn forward(&self, p: &Part, n: usize, pos: (u64, u64), head: usize) -> Result<()> {
         let (s, queue) = (self.dev.stream, std::time::Instant::now());
-        self.mark("embedding")?;
-        let st = if std::ptr::eq(p, &self.big) { self.stage } else { Stage::whole(p.d.layers.len()) };
-        // (the 12-bit pages' slots, lengths and first tokens of the pass's rows, once for every layer)
-        if self.lossless.is_some() && std::ptr::eq(p, &self.big) {
-            self.kv12_prepare(n, pos)?;
+        // (a pass of pieces (src/dynamic/pieces.rs): a capture queues nothing but its pieces' operations, captured; a replay launches each piece's graph in its place)
+        let mode = if std::ptr::eq(p, &self.big) { self.pmode.get() } else { pieces::Mode::Eager };
+        // (a capture or a warm-up of the pieces queues nothing but their operations: no preparation, no operation between them, no head)
+        let capture = matches!(mode, pieces::Mode::Capture | pieces::Mode::Warm);
+        let mut pc = pieces::Run { mode, k: 0, open: false };
+        self.pcount.set(0);
+        if !capture {
+            self.dcalls.set(0);
+            self.mark("embedding")?;
         }
-        if std::ptr::eq(p, &self.big) {
-            self.lib_decode_prepare(n, pos)?;
-            self.mark("attention: the rows' lengths")?;
+        let st = if std::ptr::eq(p, &self.big) { self.stage } else { Stage::whole(p.d.layers.len()) };
+        if !capture {
+            self.pass_prepare(p, n, pos)?;
         }
         let head = if st.last { head } else { 0 };
-        if st.first {
+        if st.first && !self.in_piece(&mut pc, p, 0, 0, &p.d.first, n, pos, head)? {
             self.op(p, 0, 0, &p.d.first, n, pos, head)?;
         }
         // (a development build's GLYD_OP_PROBE: after each op, the slots' first rows read back; the first op that leaves a slot not finite named)
         let probe = crate::tune!("GLYD_OP_PROBE").is_some();
         let mut seen = false;
         for (l, ops) in p.d.layers.iter().enumerate().take(st.layers.1).skip(st.layers.0) {
-            // (a layer whose matrices are in the computer's memory: copied into the slot on this stream first, a node of the step's graph)
+            // (a layer whose matrices are in the computer's memory: copied into the slot on this stream first, a node of the step's graph; no pass of pieces has such layers)
             if let Some(r) = &p.ram {
                 r.fetch(l, s)?;
             }
             for (i, op) in ops.iter().enumerate() {
+                if self.in_piece(&mut pc, p, l, i, op, n, pos, head)? {
+                    continue;
+                }
                 // (a preparation whose keys and values go to 12-bit pages writes staging rows and no sequence's ring: the pass's rows at once, and one
                 // write of them; the slots of each sequence's rows the pass made)
                 if !self.parts.is_empty() && !rows::row_wise(op) {
+                    // (the pass's first rows that decode, a token of a sequence each: an attention layer's, or a recurrent layer's operation that takes them (`rows::rows_state`),
+                    // for all of them at once, each through its own table or state, which is what each row's own pass computes, bit for bit (the decode's plan is a sequence's
+                    // own; the recurrent kernels the one-sequence ones' on a token))
+                    let lead = match op {
+                        Op::Attn(a) if !a.picked => self.lead.get(),
+                        op if rows::rows_state(op) => self.lead.get(),
+                        _ => 0,
+                    };
+                    let mut r = Ok(());
                     if let Op::Attn(a) = op {
                         if a.writes && self.pages12(p, a.ring).is_some() {
                             self.attn_prep(p, l, i, a, n, pos, head)?;
                             self.prepped.set(true);
                         }
+                        if lead > 0 {
+                            r = self.attn_lead(p, l, i, a, (lead, n), pos, head);
+                        }
+                    } else if lead > 0 {
+                        r = self.state_lead(p, op, lead);
                     }
                     // (an operation on a sequence's cache or state: each sequence's rows by themselves, as a pass of that sequence alone runs them)
-                    let mut r = Ok(());
-                    for (k, part) in self.parts.iter().enumerate() {
+                    for (k, part) in self.parts.iter().enumerate().skip(lead) {
+                        if r.is_err() {
+                            break;
+                        }
                         self.at.set(Some(k));
                         self.start.set(part.start);
                         let off = 4 * part.row0 as u64;
@@ -2181,6 +2382,11 @@ impl Dyn {
                     }
                 }
             }
+        }
+        self.piece_close(&mut pc)?;
+        if capture {
+            // (the pieces end at the last layer: the head is eager, its rows the pass's own)
+            return Ok(());
         }
         if head > 0 {
             // (a pass over several sequences: the rows the head reads, the last of each sequence that asks for a token, moved to the pass's last rows in order)
@@ -2220,8 +2426,28 @@ impl Dyn {
             self.kern.argmax_rows(s, p.logits.ptr, p.d.vocab as i32, head as u32, p.tok.ptr, p.val.ptr)?;
             self.mark("head")?;
         }
+        if std::ptr::eq(p, &self.big) {
+            self.gap_end()?;
+        }
         self.queued.set(queue.elapsed().as_secs_f64() * 1e3);
         Ok(())
+    }
+
+    /// What a pass of part `p` on n rows at `pos` makes once for every layer before its operations run: the tables of its rows that decode, each its sequence's
+    /// (`rows::RowTabs`), the 12-bit pages' slots, and the rows' lengths and first tokens the attention's decode reads. Every caller of `op` runs it first (`forward`, and
+    /// kindcheck's operation-by-operation passes).
+    unsafe fn pass_prepare(&self, p: &Part, n: usize, pos: (u64, u64)) -> Result<()> {
+        if !std::ptr::eq(p, &self.big) {
+            return Ok(());
+        }
+        if !self.parts.is_empty() && self.lead.get() > 0 {
+            self.row_tables(pos.0)?;
+        }
+        if self.lossless.is_some() {
+            self.kv12_prepare(n, pos)?;
+        }
+        self.lib_decode_prepare(n, pos)?;
+        self.mark("attention: the rows' lengths")
     }
 
     fn capture_graph(&mut self) -> Result<()> {
@@ -2247,6 +2473,7 @@ impl Dyn {
         });
         self.capturing.set(false);
         self.graph = Some(g?);
+        self.gcalls = self.dcalls.get();
         if let Some(p) = &self.prof {
             self.gmarks = std::mem::take(&mut *p.borrow_mut());
         }
@@ -2344,9 +2571,11 @@ impl Dyn {
                 }
             }
             match &self.graph {
-                Some(g) if one => {
+                Some(g) if one && !self.graphs_off.get() => {
                     g.launch(self.dev.stream)?;
                     self.replayed.set(true);
+                    self.rplayed.set(None);
+                    self.dcalls.set(self.gcalls);
                 }
                 _ => self.forward(&self.big, n, (pp, pp), head)?,
             }
@@ -2591,6 +2820,14 @@ impl Dyn {
         self.dev.sync()?;
         self.big.logits = Buf::new(self.big.d.vocab * rows * 2)?;
         (self.big.tok, self.big.val) = (Buf::zeroed(4 * rows)?, Buf::zeroed(4 * rows)?);
+        // (a step's rows that decode take their attention at once (`attn_lead`): the parts kernel's room and the library decode's workspace for that many)
+        let (heads, dmax) = self.big.d.heads();
+        self.part = Buf::zeroed(rows.max(self.split_rows) * heads.max(1) * attn::SPLITS * (dmax + 2) * 4)?;
+        if let Some(ld) = &mut self.ldec {
+            ld.grow(&self.lib, rows)?;
+        }
+        self.rgraphs.clear();
+        self.pieces.clear();
         if let Some(lm) = self.big.mats[self.big.d.lm].packed_opt() {
             let mut need = 0;
             for m in 1..=rows as i64 {
@@ -2673,6 +2910,8 @@ impl Dyn {
     /// The selected sequence's blocks grown to hold its tokens before `upto`, where its keys and values are paged: a pass outside the scheduler (`reply`,
     /// `prefill`, `step`) wrote every token to block 0, which a table names until it grows, so a paged executor's replies were not the model's.
     fn hold_blocks(&mut self, upto: usize) -> Result<()> {
+        // (the pass before this one is queued: what its growth promised of the 12-bit pools is in their counts when `kv12_room` waits for the stream and reads them)
+        self.kv12_stepped();
         if self.paged.is_some() && !crate::sched::ModelStep::grow(self, self.seq as i32, upto)? {
             return err(format!("the paged cache has no block left for token {upto} of the sequence"));
         }
@@ -2714,11 +2953,14 @@ impl Dyn {
         unsafe {
             self.embed(&[token])?;
             match &self.graph {
-                Some(g) => {
+                Some(g) if !self.graphs_off.get() => {
                     g.launch(self.dev.stream)?;
                     self.replayed.set(true);
+                    self.rplayed.set(None);
+                    self.dcalls.set(self.gcalls);
+                    self.gap_end()?;
                 }
-                None => self.forward(&self.big, 1, (st, st), 1)?,
+                _ => self.forward(&self.big, 1, (st, st), 1)?,
             }
         }
         self.n += 1;
@@ -3010,4 +3252,34 @@ pub fn prodbench(a: &crate::args::Args) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A route table as glyd_gpu.cu's `route_for` gives it past 64 rows: the prompt kernel, and from `dec` rows the decoded way (None: never).
+    fn table(dec: Option<(i64, i32)>) -> impl Fn(i64) -> Result<i32> {
+        move |m| Ok(dec.filter(|&(from, _)| m >= from).map_or(ROUTE_BIG, |(_, r)| r))
+    }
+
+    /// A prompt's product of the tiered layout where the table has no crossover for it (an A100's: the prompt kernel at any length) is decoded and multiplied
+    /// dense from DECODE_FROM rows; the 12-bit layout there, and either layout where the table has one, keep the table's; GLYD_ENGINE_DECODE_FROM replaces both.
+    #[test]
+    fn a_prompt_of_a_layout_the_table_never_decodes_is_decoded_from_512_rows() {
+        let a100_tiered = table(None);
+        assert!(!decodes_by(511, false, None, &a100_tiered).unwrap());
+        assert!(decodes_by(512, false, None, &a100_tiered).unwrap());
+        assert!(decodes_by(4096, false, None, &a100_tiered).unwrap());
+        // (the 12-bit layout where the table never decodes it: the table's way, the prompt kernel)
+        assert!(!decodes_by(4096, true, None, &a100_tiered).unwrap());
+        // (an A100's 12-bit layout: from 769, as measured; GeForce Ada's tiered layout decoded ahead from 513, the prompt kernel at 512)
+        let a100_twelve = table(Some((769, ROUTE_DECODE)));
+        assert!(!decodes_by(768, true, None, &a100_twelve).unwrap() && decodes_by(769, true, None, &a100_twelve).unwrap());
+        let ada_tiered = table(Some((513, ROUTE_AHEAD)));
+        assert!(!decodes_by(512, false, None, &ada_tiered).unwrap() && decodes_by(513, false, None, &ada_tiered).unwrap());
+        // (GLYD_ENGINE_DECODE_FROM: from its rows whatever the table, and never below them)
+        assert!(decodes_by(300, true, Some(256), &a100_tiered).unwrap());
+        assert!(!decodes_by(4096, false, Some(1 << 30), &a100_twelve).unwrap());
+    }
 }

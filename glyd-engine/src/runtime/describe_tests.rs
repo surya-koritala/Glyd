@@ -75,6 +75,42 @@ fn released_qwen_configs() {
     }
 }
 
+/// #333: Qwen3.8-2.4T-A95B (`Qwen3_5MoeForCausalLM`, its released config.json in tests/fixtures/qwen35_configs.json) describes with the kinds the library has:
+/// the Gated DeltaNet and gated attention of the Qwen3.5 layout, and on every layer a mixture of 512 softmax-routed experts (top 10, renormalised) with the
+/// shared expert gated by sigmoid(shared_router x); each tensor's shape said, each expert's matrices and the shared expert's included. It has no other
+/// mechanism: what it lacks to run is the Qwen3.5 layout's experts on the executor (its weights, 4.6 TB of bf16, are for a machine of many GPUs).
+#[test]
+fn qwen38_2_4t_describes_with_the_existing_kinds() {
+    use super::kinds::*;
+    let cfgs = fixture("qwen35_configs.json");
+    let c = &cfgs["Qwen/Qwen3.8-2.4T-A95B"];
+    let d = describe(c).unwrap_or_else(|e| panic!("{}", e.msg));
+    let n = |k: &str| c[k].as_u64().unwrap() as usize;
+    let (layers, hidden) = (n("num_hidden_layers"), n("hidden_size"));
+    assert_eq!(d.desc.blocks.len(), 2 * layers);
+    for (l, ty) in c["layer_types"].as_array().unwrap().iter().enumerate() {
+        match (&d.desc.blocks[2 * l].body, ty.as_str().unwrap()) {
+            (Body::Mixer(Mixer::Linear(x)), "linear_attention") => assert_eq!(x.kind, LinearKind::GatedDeltaNet),
+            (Body::Mixer(Mixer::Attention(a)), "full_attention") => assert_eq!(a.gate.map(|g| g.from), Some(GateFrom::InQuery)),
+            (b, t) => panic!("layer {l} ({t}): {b:?}"),
+        }
+        let Body::Ffn(Ffn::Moe(m)) = &d.desc.blocks[2 * l + 1].body else { panic!("layer {l}: {:?}", d.desc.blocks[2 * l + 1].body) };
+        assert_eq!((m.experts, m.router.top_k, m.router.score, m.router.renorm, m.shared_gate), (512, 10, RouterScore::Softmax, true, true));
+    }
+    assert_eq!(d.shapes.keys().cloned().collect::<BTreeSet<_>>(), d.names(), "a shape for every tensor described");
+    let (mi, si) = (n("moe_intermediate_size"), n("shared_expert_intermediate_size"));
+    let p = "model.layers.3.mlp.";
+    for (t, want) in [
+        ("experts.511.gate_proj.weight", vec![mi, hidden]),
+        ("experts.0.down_proj.weight", vec![hidden, mi]),
+        ("gate.weight", vec![512, hidden]),
+        ("shared_expert.up_proj.weight", vec![si, hidden]),
+        ("shared_expert_gate.weight", vec![1, hidden]),
+    ] {
+        assert_eq!(d.shapes.get(&format!("{p}{t}")), Some(&want), "{t}");
+    }
+}
+
 #[test]
 fn released_gemma4_config() {
     use super::kinds::*;
@@ -352,6 +388,29 @@ fn conventions_name_the_checkpoints_tensors_exactly() {
     }
 }
 
+/// #333: every header fixture there is (tests/fixtures/headers; `sizes::record_header_fixtures` records the recent releases', #333's among them) describes
+/// from its config.json alone a weight map its checkpoint holds and reads it whole but the parts the language model does not run, or is refused in the words
+/// `LACKS` gives: the releases whose mechanisms the layer kinds do not have yet (none now: DeepSeek-V4.1's CSA2, Engram and lagged mHC are kind parameters).
+#[test]
+fn every_recorded_release_describes_or_says_what_it_lacks() {
+    const LACKS: &[(&str, &str)] = &[];
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers");
+    let mut files: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    files.sort();
+    assert!(files.len() >= 4, "{files:?}");
+    for f in files {
+        let name = f.trim_end_matches(".json");
+        let h = fixture(&format!("headers/{f}"));
+        let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap_or_else(|e| panic!("{f}: its config: {e}"));
+        match (describe(&cfg), LACKS.iter().find(|l| l.0 == name)) {
+            (Ok(d), None) => d.check(&header_names(&h), true).unwrap_or_else(|e| panic!("{f}: {}", e.msg)),
+            (Err(e), Some((_, why))) => assert!(e.msg.contains(why), "{f}: {}", e.msg),
+            (Ok(_), Some(_)) => panic!("{f} describes now: take it out of LACKS"),
+            (Err(e), None) => panic!("{f}: {}", e.msg),
+        }
+    }
+}
+
 /// A loader's check (`describe_dir`) reads a Hub directory's index: a tensor the description reads is named where the index lacks it, a matrix is there in
 /// either stored form, and a directory Glyd packed (its glyd.json) is not held to it.
 #[test]
@@ -381,6 +440,30 @@ fn a_loader_names_a_missing_tensor_from_the_index() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// #333, DSpark: DeepSeek-V4-Flash-0731's released config describes its drafter (`kinds::DSpark`): three of the decoder's layers with the window alone
+/// (`n_mtp_layers` unsaid: 3, as its checkpoint's mtp.0 to mtp.2), drafting blocks of 5 from main_x of layers 40 to 42, a Markov head of rank 256 and
+/// the noise token 128799; its streams mHC's own (V4's, not lagged).
+#[test]
+fn deepseek_v4_0731s_dspark_drafter_is_described() {
+    use super::kinds::*;
+    let h = fixture("headers/DeepSeek-V4-Flash-0731.json");
+    let d = describe(&serde_json::from_str(h["config"].as_str().unwrap()).unwrap()).unwrap();
+    let [head] = &d.desc.mtp[..] else { panic!("{:?}", d.desc.mtp.len()) };
+    let ds = head.dspark.as_ref().unwrap();
+    assert_eq!((ds.block, ds.noise, ds.targets.clone(), ds.markov_rank, head.blocks.len()), (5, 128_799, vec![40, 41, 42], 256, 6));
+    let Body::Mixer(Mixer::Compressed(c)) = &head.blocks[0].body else { panic!() };
+    assert_eq!((c.ratio, c.window, c.indexer.is_some(), c.ape, c.q_head_norm), (0, 128, false, true, true));
+    assert!(head.blocks.iter().all(|b| matches!(b.residual, Residual::Streams(StreamsP { lagged: false, .. }))));
+    // (its tensors mapped: every mtp.* tensor of the checkpoint is a role's or a role's scale, and every role's is in the checkpoint)
+    let (names, have) = (d.names(), header_names(&h));
+    let drafter: BTreeSet<&String> = have.iter().filter(|n| n.starts_with("mtp.")).collect();
+    assert_eq!(drafter.len(), 3 * (29 + 6 * 256) + 10, "three layers of 29 tensors and 256 experts of six, ten of the head");
+    assert!(drafter.iter().all(|n| names.contains(*n)), "{:?}", drafter.iter().find(|n| !names.contains(**n)));
+    d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+    let [(blocks, own)] = &d.mtp[..] else { panic!() };
+    assert_eq!((blocks.len(), own.len()), (6, 9));
+}
+
 /// Every tensor name of a header fixture: its groups' masks with each of their layers ({L}) and experts ({E}).
 fn header_names(h: &serde_json::Value) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
@@ -397,6 +480,61 @@ fn header_names(h: &serde_json::Value) -> BTreeSet<String> {
         }
     }
     out
+}
+
+/// #333, Kimi-K3.1: its sparse attention (`text_config.dsa_config`, the keys of vLLM's `KimiLinearDSAConfig`; the release's own config.json is not in the
+/// fixtures yet) on Kimi-K3's released config: each latent attention layer it names takes DeepSeek-V3.2's indexer of a key a token in the gated form, its
+/// keys RMS-normed at the model's eps (LayerNorm-ed with a bias where `index_k_norm_type` says so), and reads the indexer's tensors; the delta attention layers
+/// are as they were. What is not described is refused: an indexer rotary, picks shared across layers, a layer that is no latent attention.
+#[test]
+fn kimi_k31s_sparse_attention_is_the_gated_indexer_with_its_key_norm() {
+    use super::kinds::*;
+    let h = fixture("headers/Kimi-K3.json");
+    let base: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    let full: Vec<u64> = base["text_config"]["linear_attn_config"]["full_attn_layers"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap()).collect();
+    let eps = base["text_config"]["rms_norm_eps"].as_f64().unwrap() as f32;
+    let with = |edit: &dyn Fn(&mut serde_json::Value)| {
+        let mut c = base.clone();
+        c["text_config"]["dsa_config"] = serde_json::json!({"dsa_layers": full, "index_topk": 2048, "index_head_dim": 64, "index_num_heads": 16,
+            "index_rope_dim": 0, "index_k_norm_type": "rmsnorm", "indexer_use_fp8": false, "index_topk_freq": 1, "index_skip_topk_offset": 1});
+        edit(&mut c["text_config"]["dsa_config"]);
+        describe(&c)
+    };
+    let plain = describe(&base).unwrap();
+    for (norm, kind) in [("rmsnorm", NormKind::Rms), ("layernorm", NormKind::Layer)] {
+        let d = with(&|x| x["index_k_norm_type"] = norm.into()).unwrap_or_else(|e| panic!("{norm}: {}", e.msg));
+        let mut latent = 0;
+        for (b, was) in d.desc.blocks.iter().zip(&plain.desc.blocks) {
+            match (&b.body, &was.body) {
+                (Body::Mixer(Mixer::Mla(m)), Body::Mixer(Mixer::Mla(w))) => {
+                    let ix = m.indexer.as_ref().unwrap();
+                    assert_eq!((ix.heads, ix.head_dim, ix.top_k, ix.block, ix.shared), (16, 64, 2048, 1, false));
+                    assert_eq!(ix.form, IndexForm::Gated { key: Norm { kind, ..Norm::rms(eps) } }, "{norm}");
+                    assert_eq!(Mla { indexer: None, ..m.clone() }, *w, "the latent attention otherwise as Kimi-K3's");
+                    latent += 1;
+                }
+                (x, y) => assert_eq!(x, y),
+            }
+        }
+        assert_eq!(latent, full.len());
+        let names = d.names();
+        let l = full[0] - 1;
+        for t in ["wq_b.weight", "wk.weight", "weights_proj.weight", "k_norm.weight"] {
+            assert!(names.contains(&format!("language_model.model.layers.{l}.self_attn.indexer.{t}")), "{norm}: {t}");
+        }
+        assert_eq!(names.contains(&format!("language_model.model.layers.{l}.self_attn.indexer.k_norm.bias")), kind == NormKind::Layer, "{norm}");
+        assert_eq!(names.len(), plain.names().len() + full.len() * if kind == NormKind::Layer { 5 } else { 4 }, "{norm}");
+    }
+    for (edit, want) in [
+        (&(|x: &mut serde_json::Value| x["index_rope_dim"] = 64.into()) as &dyn Fn(&mut serde_json::Value), "index_rope_dim"),
+        (&|x: &mut serde_json::Value| x["index_topk_freq"] = 2.into(), "index_topk_freq"),
+        (&|x: &mut serde_json::Value| x["dsa_layers"] = serde_json::json!([1]), "layer 1"),
+        (&|x: &mut serde_json::Value| x["index_k_norm_type"] = "l2".into(), "rmsnorm or layernorm"),
+        (&|x: &mut serde_json::Value| x["index_share"] = true.into(), "index_share"),
+    ] {
+        let e = with(edit).unwrap_err().msg;
+        assert!(e.contains(want), "{want}: {e}");
+    }
 }
 
 /// Kimi-K3's experts as released (MXFP4 in groups of 32): each expert matrix is its packed codes and its scales; a quantization the description does not read is
@@ -654,4 +792,226 @@ fn condors_model_on_the_reference_against_condors_engine() {
     let w = compare(&fx, &Bound::Kl { mean: 5e-5, max: 2e-4, top1: 1.0 }, &run(&every));
     assert!(w.mean_kl > 1e-4, "the indexer's picks do not show: KL mean {:.3e}", w.mean_kl);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A DeepSeek-V4.1 config of the release's keys (vLLM's and llama.cpp's readings of it: `compress_ratios`, the kv, index and candidate sources,
+/// the Engram keys), its values small and made up for the test (the release's own config.json is #333's to record). Layers 0 and 1 the window
+/// alone; 2 and 3 ratio 2 (both sources 2); 4 to 7 ratio 1 (kv sources 4 and 6, index sources 4, 5 and 6, the candidate source 4); Engram before
+/// layers 1 and 5; one draft layer.
+fn v41_config() -> serde_json::Value {
+    let n = super::kinds::Ngram {
+        order: 3,
+        heads: 1,
+        dim: 8,
+        base: 11,
+        vocab: 24,
+        seed: 0,
+        index: 0,
+        eos: 0,
+        streams: 2,
+        conv: 0,
+        dilation: 1,
+        norm: super::kinds::Norm::rms(1e-6),
+        form: super::kinds::NgramForm::Engram,
+    };
+    let rows: Vec<u64> = (0..2).map(|i| super::reference::ngram::tables(&super::kinds::Ngram { index: i, ..n }).0.iter().sum()).collect();
+    let mut c: serde_json::Value = serde_json::from_str(
+        r#"{"architectures": ["DeepseekV41ForCausalLM"], "model_type": "deepseek_v41",
+        "quantization_config": {"quant_method": "fp8", "fmt": "e4m3", "weight_block_size": [32, 32], "activation_scheme": "dynamic", "scale_fmt": "ue8m0",
+            "expert_dtype": "fp4"},
+        "vision_config": {"num_hidden_layers": 2},
+        "text_config": {"model_type": "deepseek_v41_text", "vocab_size": 32, "hidden_size": 16, "num_hidden_layers": 8, "rms_norm_eps": 1e-6,
+            "hidden_act": "silu", "num_attention_heads": 2, "num_key_value_heads": 1, "head_dim": 8, "qk_rope_head_dim": 4, "q_lora_rank": 12,
+            "o_lora_rank": 4, "o_groups": 2, "sliding_window": 3, "index_n_heads": 2, "index_head_dim": 8, "index_topk": 2,
+            "n_routed_experts": 4, "num_experts_per_tok": 2, "n_shared_experts": 1, "moe_intermediate_size": 6, "scoring_func": "sqrtsoftplus",
+            "norm_topk_prob": true, "routed_scaling_factor": 1.5, "swiglu_limit": 10.0, "gate_temp": 1.0, "num_hash_layers": 0,
+            "hc_mult": 2, "hc_sinkhorn_iters": 20, "hc_eps": 1e-6, "rope_theta": 10000.0, "compress_rope_theta": 160000.0,
+            "rope_scaling": {"type": "yarn", "factor": 4.0, "original_max_position_embeddings": 64, "beta_fast": 32, "beta_slow": 1},
+            "max_position_embeddings": 256, "compress_ratios": [0, 0, 2, 2, 1, 1, 1, 1, 0],
+            "kv_source_layer_ids": [2, 4, 6], "index_source_layer_ids": [2, 4, 5, 6],
+            "candidate_source_layer_id": 4, "candidate_block_size": 2, "candidate_topk_blocks": 1,
+            "engram_layer_ids": [1, 5], "engram_max_ngram_size": 3, "engram_n_heads": 1, "engram_head_dim": 4, "engram_vocab_size": 11,
+            "engram_compressed_vocab_size": 24, "engram_pad_token_id": 0,
+            "num_nextn_predict_layers": 1, "dspark_block_size": 5, "dspark_noise_token_id": 31, "dspark_target_layer_ids": [5, 6, 7],
+            "dspark_markov_rank": 4, "dspark_n_routed_experts": 3, "dspark_num_experts_per_tok": 1}}"#,
+    )
+    .unwrap();
+    c["text_config"]["engram_num_embeddings"] = serde_json::json!(rows);
+    c
+}
+
+/// #333, DeepSeek-V4.1 describes with the kinds there are, through V4.1's three parameters: CSA2's sharing (each compressing layer's entries and
+/// picks from the most recent source at or below it, the candidate blocks from layer 4 to the index sources after it), lagged mHC (the head's
+/// collapse the last block's weights), Engram before layers 1 and 5 (numpy's multipliers seeded by 10007 times the layer); the weight map reads the
+/// sources' compressors and indexers alone, each quantized matrix with its scale, and leaves the drafter, the vision tower and the image tokens'
+/// router bias. What it does not describe is refused.
+#[test]
+fn deepseek_v41_describes_with_csa2_lagged_mhc_and_engram() {
+    use super::kinds::*;
+    let cfg = v41_config();
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!((d.desc.blocks.len(), d.mtp_layers, d.desc.head.collapse), (2 * 8 + 2, 1, Collapse::LastPre));
+    let comp = |b: usize| match &d.desc.blocks[b].body {
+        Body::Mixer(Mixer::Compressed(c)) => c.clone(),
+        x => panic!("block {b}: {x:?}"),
+    };
+    // (blocks: 0 attn, 1 moe, 2 engram, 3 attn of layer 1, 4 moe, then layers 2-4 two blocks each, 11 engram, 12 attn of layer 5, ...)
+    let attn = [0usize, 3, 5, 7, 9, 12, 14, 16];
+    for (l, &b) in attn.iter().enumerate() {
+        let c = comp(b);
+        assert!(!c.ape && !c.q_head_norm && matches!(d.desc.blocks[b].residual, Residual::Streams(StreamsP { lagged: true, .. })), "layer {l}");
+        assert_eq!(c.ratio, [0, 0, 2, 2, 1, 1, 1, 1][l], "layer {l}");
+    }
+    let share = |l: usize| comp(attn[l]).share;
+    assert_eq!(share(0), None);
+    assert_eq!(share(2), Some(CompShare { entries: None, picks: None, candidates: None, publish: None }));
+    assert_eq!(share(3), Some(CompShare { entries: Some(attn[2]), picks: Some(attn[2]), candidates: None, publish: None }));
+    assert_eq!(share(4), Some(CompShare { entries: None, picks: None, candidates: None, publish: Some((2, 1)) }));
+    assert_eq!(share(5), Some(CompShare { entries: Some(attn[4]), picks: None, candidates: Some(attn[4]), publish: None }));
+    assert_eq!(share(6), Some(CompShare { entries: None, picks: None, candidates: Some(attn[4]), publish: None }));
+    assert_eq!(share(7), Some(CompShare { entries: Some(attn[6]), picks: Some(attn[6]), candidates: None, publish: None }));
+    for (b, layer, place) in [(2usize, 1u64, 0usize), (11, 5, 1)] {
+        let Body::Ngram(n) = &d.desc.blocks[b].body else { panic!("block {b}: {:?}", d.desc.blocks[b].body) };
+        assert_eq!((n.form, n.seed, n.index, n.conv, n.streams, n.vocab), (NgramForm::Engram, 10007 * layer, place, 0, 2, 24));
+    }
+    let names = d.names();
+    let has = |n: &str| names.contains(n);
+    assert!(has("layers.2.attn.compressor.wgate.weight") && !has("layers.6.attn.compressor.wgate.weight") && has("layers.6.attn.compressor.wkv.weight"));
+    assert!(!has("layers.3.attn.compressor.wkv.weight") && !has("layers.3.attn.indexer.wq_b.weight"));
+    assert!(has("layers.5.attn.indexer.wq_b.weight") && !has("layers.5.attn.indexer.wk.weight") && has("layers.4.attn.indexer.wk.weight"));
+    assert!(has("layers.1.engram.embed.weight") && has("layers.5.engram.wkv.weight") && !has("hc_head_fn"));
+    assert_eq!(d.scales.get("layers.1.engram.embed.weight").map(String::as_str), Some("layers.1.engram.embed.scale"));
+    assert_eq!(d.scales.get("layers.0.ffn.experts.3.w2.weight").map(String::as_str), Some("layers.0.ffn.experts.3.w2.scale"));
+    let mut ck: BTreeSet<String> = names.iter().cloned().chain(d.scales.values().cloned()).collect();
+    ck.extend(["layers.3.ffn.gate.bias_vl", "mtp.0.attn.wq_a.weight", "vision.blocks.0.w.weight", "aligner.w.weight"].map(String::from));
+    d.check(&ck, true).unwrap_or_else(|e| panic!("{}", e.msg));
+    let refused = |edit: &dyn Fn(&mut serde_json::Value), want: &str| {
+        let mut c = cfg.clone();
+        edit(&mut c["text_config"]);
+        let e = describe(&c).unwrap_err().msg;
+        assert!(e.contains(want), "{want}: {e}");
+    };
+    // (its DSpark drafter: one layer of the window's attention and its own experts, on the lagged streams)
+    let [h] = &d.desc.mtp[..] else { panic!("{:?}", d.desc.mtp) };
+    let ds = h.dspark.as_ref().unwrap();
+    assert_eq!((ds.block, ds.noise, ds.targets.clone(), ds.markov_rank, h.blocks.len()), (5, 31, vec![5, 6, 7], 4, 2));
+    let (Body::Mixer(Mixer::Compressed(c)), Body::Ffn(Ffn::Moe(m))) = (&h.blocks[0].body, &h.blocks[1].body) else { panic!("{:?}", h.blocks) };
+    assert_eq!((c.ratio, c.indexer.is_some(), c.share, m.experts, m.router.top_k), (0, false, None, 3, 1));
+    assert!(matches!(h.blocks[0].residual, Residual::Streams(StreamsP { lagged: true, .. })));
+    refused(&|t| t["compress_ratios"][2] = 4.into(), "compress_ratios");
+    refused(&|t| t["gate_temp"] = 0.0.into(), "gate temperature");
+    let mut hot = cfg.clone();
+    hot["text_config"]["gate_temp"] = 2.0.into();
+    let Body::Ffn(Ffn::Moe(m)) = &describe(&hot).unwrap().desc.blocks[1].body else { panic!() };
+    assert_eq!(m.router.logit_scale, 0.5, "the logits over the gate temperature");
+    refused(&|t| t["kv_source_layer_ids"] = serde_json::json!([2, 6]), "layer 4");
+    refused(&|t| t["candidate_source_layer_id"] = 2.into(), "the candidate source 2");
+    refused(&|t| t["engram_num_embeddings"][1] = 7.into(), "engram_num_embeddings");
+}
+
+/// DeepSeek-V4.1-Flash's configuration as published (tests/fixtures/deepseek_v41_config.json: the keys and defaults of the released configuration
+/// class, read by vLLM and by unsloth; rms_norm_eps, whose class default is a placeholder, V4's release's): 40 layers (2 window-only, 18 of ratio 2,
+/// 20 of ratio 1), kv sources 2, 8, 14 and 20, index sources those and 24 to 36, the candidate source 20; Engram before layers 1 and 14, whose
+/// tables are the primes past 16,000,000 that engram_num_embeddings counts (384,006,168 and 384,016,682 rows); three DSpark layers of 128 experts.
+#[test]
+fn deepseek_v41_flashs_published_config_describes() {
+    use super::kinds::*;
+    let d = describe(&fixture("deepseek_v41_config.json")).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!(d.desc.blocks.len(), 2 * 40 + 2);
+    // (the block of each layer's attention: two blocks a layer, Engram's before layers 1 and 14)
+    let attn = |l: usize| 2 * l + (l >= 1) as usize + (l >= 14) as usize;
+    let comp = |l: usize| match &d.desc.blocks[attn(l)].body {
+        Body::Mixer(Mixer::Compressed(c)) => c.clone(),
+        x => panic!("layer {l}: {x:?}"),
+    };
+    let sh = |l: usize| comp(l).share.unwrap();
+    assert_eq!(comp(0).share, None);
+    assert_eq!((sh(2).entries, sh(2).picks), (None, None));
+    assert_eq!((sh(13).entries, sh(13).picks, comp(13).ratio), (Some(attn(8)), Some(attn(8)), 2));
+    assert_eq!((sh(20).entries, sh(20).picks, sh(20).publish, comp(20).ratio), (None, None, Some((8, 2048)), 1));
+    assert_eq!((sh(24).entries, sh(24).picks, sh(24).candidates), (Some(attn(20)), None, Some(attn(20))));
+    assert_eq!((sh(39).entries, sh(39).picks, sh(39).candidates), (Some(attn(20)), Some(attn(36)), None));
+    for (l, place) in [(1usize, 0usize), (14, 1)] {
+        let Body::Ngram(n) = &d.desc.blocks[attn(l) - 1].body else { panic!("layer {l}") };
+        assert_eq!((n.order, n.heads, n.dim, n.vocab, n.seed, n.index, n.eos), (4, 8, 3 * 8 * 256, 99_092, 10007 * l as u64, place, 2));
+    }
+    let [h] = &d.desc.mtp[..] else { panic!() };
+    let Body::Ffn(Ffn::Moe(m)) = &h.blocks[1].body else { panic!() };
+    assert_eq!((h.blocks.len(), m.experts, m.router.top_k, h.dspark.as_ref().unwrap().targets.clone()), (6, 128, 3, vec![37, 38, 39]));
+    let Body::Ffn(Ffn::Moe(m)) = &d.desc.blocks[1].body else { panic!() };
+    assert_eq!((m.experts, m.router.top_k, m.router.logit_scale, m.router.scale, m.expert.clamp), (384, 6, 1.0, 1.5, Some(10.0)));
+}
+
+/// The tiny DeepSeek-V4.1 of `v41_config`, its tensors made at random by role, on the CPU reference: its description runs as a model, CSA2's parts
+/// shared from block to block, the mHC weights handed on, Engram's tables read through a compressed vocabulary; the same tokens give the same logits
+/// twice, every one finite.
+#[test]
+fn deepseek_v41s_tiny_model_runs_on_the_reference() {
+    use super::describe::Source;
+    use super::reference::testing::fill;
+    let d = describe(&v41_config()).unwrap();
+    let (h, n, i, e) = (16usize, 2usize, 6usize, 4usize);
+    let shape = |role: &str, b: usize| -> Vec<usize> {
+        let engram = matches!(d.desc.blocks[b].body, super::kinds::Body::Ngram(_));
+        match role {
+            "norm_in" if engram => vec![n * h],
+            "norm_in" => vec![h],
+            "q_a" => vec![12, h],
+            "q_a_norm" => vec![12],
+            "q_b" | "idx_q_b" => vec![16, 12],
+            "kv" if engram => vec![(n + 1) * h, 8],
+            "kv" | "comp_kv" | "comp_gate" | "idx_k" => vec![8, if role == "idx_k" { 8 } else { h }],
+            "kv_norm" | "comp_norm" | "idx_k_norm" => vec![8],
+            "o_a" => vec![8, 8],
+            "o_b" => vec![h, 8],
+            "sinks" => vec![2],
+            "idx_weights" => vec![2, h],
+            "hc_fn" => vec![(2 + n) * n, n * h],
+            "hc_base" => vec![(2 + n) * n],
+            "hc_scale" => vec![3],
+            "router" => vec![e, h],
+            "choice_bias" => vec![e],
+            "experts_gate_up" | "shared_gate" | "shared_up" => vec![i, h],
+            "experts_down" | "shared_down" => vec![h, i],
+            "ngram" => vec![0, 4],
+            "norm_key" => vec![n * h],
+            r => panic!("no shape for role {r}"),
+        }
+    };
+    let mut t: std::collections::HashMap<String, (Vec<usize>, Vec<f32>)> = std::collections::HashMap::new();
+    for (b, roles) in d.blocks.iter().enumerate() {
+        for (role, src) in roles {
+            let names = match src {
+                Source::Tensor(x) => vec![x.clone()],
+                Source::Rows(v) => v.clone(),
+                Source::Experts(v) => v.iter().flatten().cloned().collect(),
+            };
+            for x in names {
+                let mut s = shape(role, b);
+                if role == "ngram" {
+                    let super::kinds::Body::Ngram(ng) = &d.desc.blocks[b].body else { unreachable!() };
+                    s[0] = super::reference::ngram::tables(ng).0.iter().sum::<u64>() as usize;
+                }
+                let (lo, hi) = if role.contains("norm") { (0.5, 1.5) } else { (-0.4, 0.4) };
+                let v = fill(&format!("v41.{x}"), s.iter().product(), lo, hi);
+                t.insert(x, (s, v));
+            }
+        }
+    }
+    t.insert(d.embed.clone(), (vec![32, h], fill("v41.embed", 32 * h, -1.0, 1.0)));
+    t.insert(d.head.clone().unwrap(), (vec![32, h], fill("v41.head", 32 * h, -0.5, 0.5)));
+    t.insert(d.final_norm.clone(), (vec![h], fill("v41.norm", h, 0.5, 1.5)));
+    let src = |x: &str| t.get(x).cloned();
+    let run = || {
+        let mut m = RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{}", e.msg));
+        // (the compressed vocabulary's map, the loader's from the tokenizer: 32 ids onto 24)
+        for b in [2, 11] {
+            m.layers[b].p.put("ngram_map", &[32], (0..32).map(|x| (x % 24) as f32).collect());
+        }
+        let tokens: Vec<u32> = (0..12).map(|x| (x * 5 + 3) % 32).collect();
+        m.forward(&tokens, 0).unwrap_or_else(|e| panic!("{}", e.msg))
+    };
+    let (a, b) = (run(), run());
+    assert_eq!(a, b);
+    assert!(a.len() == 12 && a.iter().flatten().all(|v| v.is_finite()));
 }

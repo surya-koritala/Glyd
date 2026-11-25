@@ -1,20 +1,11 @@
-//! The lossless KV cache's per-model tables, calibrated on the engine itself: the host's half (the corpus and its sequences, the windows from the
-//! exponents' histograms, the sweep's figures into the pool's sizing, the tables' meta). The plugin's `glyd_gpu.kvcal` does the same on vLLM; this is its
-//! rule (VERSION 8) and the tables it makes are the plugin's: `k` and `v` uint8 [layers, kv heads, channels], `exc` int16 [rows of the embedding matrix, layers] and the meta.
-//! The GPU's half (the histograms, the values outside the windows, the sweep) is in kernels/engine.cu and src/calib.rs.
+//! The host's half of calibrating the 12-bit KV pages' tables (src/dynamic/kv12.rs) on the engine itself: the corpus and the sequences made of it, and the windows from the
+//! exponents' histograms. The plugin's `glyd_gpu.kvcal` reads the same corpus the same way. The legacy dense engine's tables (their sweep, meta and file format) went with
+//! it (R3c, #139); what was left of them here, used by nothing, went with `work_gen` (R4a, #138).
 
-use crate::ffi::{err, Error, Result};
-
-pub const VERSION: u32 = 8; // the tables' format and rule (the plugin's: 8, the file's keys under neutral names)
 pub const TIERS: [usize; 5] = [4096, 8192, 16384, 32768, 40960]; // the positions a table is calibrated for
 pub const WINDOW: usize = 8; // values of exponent >> 1 a base covers
-pub const REFUSED: f64 = 0.0015; // the most of either tensor's values a kind of text may leave outside the windows
-pub const INLINE: i64 = 3; // exceptions a head-page holds in its header
-pub const CH: i64 = 64; // entries in a chunk of the escape pool
-pub const ND: i64 = 16; // the chunks a page's header names
 pub const CHUNK: usize = 512; // tokens of a kind of text a sequence takes at a time
 pub const LAP: usize = 211; // the offset a stream is read again from when the text is shorter than a sequence
-pub const PT: usize = 16; // tokens a page
 
 /// The corpus's sections (the text of kvcorpus.bin: `@@@ kind name` then the body): (kind, name, body).
 pub fn parse_corpus(text: &str) -> Vec<(String, String, String)> {
@@ -90,210 +81,6 @@ pub fn best_base(hist: &[i64]) -> u8 {
     at as u8
 }
 
-/// The entries past its heads' inline ones that a page of 16 of a token needs, from the token's exceptions per head (keys' and values' together): the plugin's `sweep_needs`.
-pub fn sweep_need(per_head: &[i64]) -> i32 {
-    per_head.iter().map(|&hp| (hp * 16 - INLINE).max(0)).sum::<i64>() as i32
-}
-
-/// The sweep's figures per token from need [rows, layers] (the entries a page of 16 of each token needs past its heads' inline ones, in each layer): the chunks a layer-page of the
-/// token takes on average over the layers (a page that needs more than `capacity` is made raw: no chunks), the layers in which it needs more than a page holds, and the most entries it
-/// needs in any layer. The plugin's `sweep_stats`.
-pub fn sweep_stats(need: &[i32], layers: usize, arena: i64, capacity: i64) -> (Vec<f32>, Vec<i32>, Vec<i32>) {
-    let rows = need.len() / layers;
-    let (mut chunks, mut over, mut maxneed) = (Vec::with_capacity(rows), Vec::with_capacity(rows), Vec::with_capacity(rows));
-    for r in 0..rows {
-        let (mut sum, mut o, mut mx) = (0i64, 0i32, i32::MIN);
-        for &n in &need[r * layers..(r + 1) * layers] {
-            let n64 = n as i64;
-            if n64 > capacity {
-                o += 1;
-            } else {
-                sum += ((n64 - arena).max(0) + CH - 1) / CH;
-            }
-            mx = mx.max(n);
-        }
-        chunks.push(sum as f32 / layers as f32);
-        over.push(o);
-        maxneed.push(mx);
-    }
-    (chunks, over, maxneed)
-}
-
-/// Python's round(x, 4) of a float32 widened to a double.
-pub fn round4(x: f32) -> f64 {
-    format!("{:.4}", x as f64).parse().unwrap_or(x as f64)
-}
-
-/// torch.quantile of integers as float32, linear: the value at rank p (n - 1) of the sorted ones, the neighbours' interpolation, truncated to an integer (the meta's figures).
-pub fn quantile_int(x: &[i64], p: f32) -> i64 {
-    if x.is_empty() {
-        return 0;
-    }
-    let mut v: Vec<f32> = x.iter().map(|&a| a as f32).collect();
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let rank = p * (v.len() - 1) as f32;
-    let (lo, hi) = (rank.floor() as usize, rank.ceil() as usize);
-    let w = rank - rank.floor();
-    let (a, b) = (v[lo], v[hi]);
-    let r = if w < 0.5 { a + w * (b - a) } else { b - (b - a) * (1.0 - w) };
-    r as i64
-}
-
-/// The store's meta from the sweep's figures (chunks, over, maxneed per row): the plugin's `store_meta` (without its `top` list). `reach(i)`: the tokenizer makes token i from text;
-/// `decode(i)`: its string.
-#[allow(clippy::too_many_arguments)]
-pub fn store_meta(
-    chunks: &[f32],
-    over: &[i32],
-    maxneed: &[i32],
-    arena: i64,
-    capacity: i64,
-    rows: usize,
-    reach: &dyn Fn(usize) -> bool,
-    decode: &dyn Fn(usize) -> String,
-) -> Vec<(String, Json)> {
-    let heavy: Vec<usize> = (0..over.len()).filter(|&i| over[i] > 0).collect();
-    let text: Vec<usize> = heavy.iter().copied().filter(|&i| reach(i)).collect();
-    let ids: Vec<usize> = heavy.iter().copied().filter(|i| !text.contains(i)).collect();
-    let (mut worst, mut wi) = (f32::MIN, 0usize);
-    for (i, &c) in chunks.iter().enumerate() {
-        if c > worst {
-            worst = c;
-            wi = i;
-        }
-    }
-    let mut sorted = chunks.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let median = sorted[(sorted.len() - 1) / 2];
-    let n = |x: usize| Json::Num(x as f64);
-    let list = |v: &[usize], k: usize| Json::Arr(v.iter().take(k).map(|&x| n(x)).collect());
-    vec![
-        ("swept".into(), n(rows)),
-        ("bay".into(), Json::Num(arena as f64)),
-        ("capacity".into(), Json::Num(capacity as f64)),
-        ("worst_chunks_per_layer_leaf".into(), Json::Num(round4(worst))),
-        ("worst_token".into(), n(wi)),
-        ("median_chunks_per_layer_leaf".into(), Json::Num(round4(median))),
-        ("hard".into(), n(heavy.len())),
-        ("hard_text".into(), n(text.len())),
-        ("hard_ids".into(), n(ids.len())),
-        ("hard_text_ids".into(), list(&text, 32)),
-        ("hard_text_tokens".into(), Json::Arr(text.iter().take(8).map(|&i| Json::Str(decode(i))).collect())),
-        ("hard_ids_sample".into(), list(&ids, 64)),
-        ("hard_worst_leaf_need".into(), Json::Num(heavy.iter().map(|&i| maxneed[i]).max().unwrap_or(0) as f64)),
-        ("second_layers".into(), Json::Num(over.iter().copied().max().unwrap_or(0) as f64)),
-    ]
-}
-
-/// A JSON value for the tables' meta (keys written in order given, so callers sort them as Python's sort_keys does).
-#[derive(Clone, Debug)]
-pub enum Json {
-    Num(f64),
-    Str(String),
-    Bool(bool),
-    Arr(Vec<Json>),
-    Obj(Vec<(String, Json)>),
-}
-
-impl Json {
-    pub fn obj(mut fields: Vec<(String, Json)>) -> Json {
-        fields.sort_by(|a, b| a.0.cmp(&b.0));
-        Json::Obj(fields)
-    }
-
-    pub fn write(&self, out: &mut String) {
-        match self {
-            Json::Num(x) => {
-                if x.fract() == 0.0 && x.abs() < 1e15 {
-                    out.push_str(&format!("{}", *x as i64));
-                } else {
-                    out.push_str(&format!("{x}"));
-                }
-            }
-            Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-            Json::Str(s) => {
-                out.push('"');
-                for c in s.chars() {
-                    match c {
-                        '"' => out.push_str("\\\""),
-                        '\\' => out.push_str("\\\\"),
-                        '\n' => out.push_str("\\n"),
-                        '\r' => out.push_str("\\r"),
-                        '\t' => out.push_str("\\t"),
-                        c if (c as u32) < 0x20 || (c as u32) > 0x7e => {
-                            let mut b = [0u16; 2];
-                            for u in c.encode_utf16(&mut b) {
-                                out.push_str(&format!("\\u{u:04x}"));
-                            }
-                        }
-                        c => out.push(c),
-                    }
-                }
-                out.push('"');
-            }
-            Json::Arr(v) => {
-                out.push('[');
-                for (i, x) in v.iter().enumerate() {
-                    if i > 0 {
-                        out.push_str(", ");
-                    }
-                    x.write(out);
-                }
-                out.push(']');
-            }
-            Json::Obj(v) => {
-                out.push('{');
-                for (i, (k, x)) in v.iter().enumerate() {
-                    if i > 0 {
-                        out.push_str(", ");
-                    }
-                    Json::Str(k.clone()).write(out);
-                    out.push_str(": ");
-                    x.write(out);
-                }
-                out.push('}');
-            }
-        }
-    }
-}
-
-impl std::fmt::Display for Json {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut s = String::new();
-        self.write(&mut s);
-        f.write_str(&s)
-    }
-}
-
-/// The arena a page of `h` heads holds without growing: what its header leaves up to a multiple of 128 bytes (15 for 8 heads), from the page's bytes with no arena (the library's).
-pub fn free_arena(page_bytes_no_arena: i64, h: i64) -> i64 {
-    (page_bytes_no_arena - h * 6144 - 16 * h) / 4 - 1 - ND
-}
-
-/// Why a model's tables refuse it: its values fall outside 12 bits too often.
-pub fn refusal(k: f64, v: f64) -> String {
-    if cfg!(feature = "dev") {
-        format!(
-            "the model's values compress too poorly (worst kind of text left out: K {:.3}%, V {:.3}%, the limit {:.2}%)",
-            k * 100.0,
-            v * 100.0,
-            REFUSED * 100.0
-        )
-    } else {
-        "this model's values do not suit the engine's cache, so the engine does not run it".to_string()
-    }
-}
-
-pub fn check_positions(p: usize) -> Result<usize> {
-    TIERS.iter().copied().find(|&t| t >= p).ok_or_else(|| Error(format!("{p} positions: the tables cover up to {}", TIERS[TIERS.len() - 1]))).or_else(|e| {
-        if p == 0 {
-            err("0 positions")
-        } else {
-            Err(e)
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,58 +107,6 @@ mod tests {
             }
         }
         assert_eq!(n, 12);
-    }
-
-    #[test]
-    fn the_sweeps_figures_and_the_pools_meta() {
-        let f = fixtures();
-        let s = f.get("sweep").unwrap();
-        let need: Vec<i32> = s.get("need").unwrap().as_array().unwrap().iter().flat_map(ints).map(|x| x as i32).collect();
-        let (arena, capacity) = (s.get("bay").unwrap().as_i64().unwrap(), s.get("capacity").unwrap().as_i64().unwrap());
-        assert_eq!(arena, free_arena(256 + 8 * 6144, 8));
-        assert_eq!(capacity, arena + ND * CH);
-        let (chunks, over, maxneed) = sweep_stats(&need, 6, arena, capacity);
-        let want = s.get("chunks").unwrap().as_array().unwrap();
-        for (a, b) in chunks.iter().zip(want) {
-            let b = match b {
-                Value::Number(n) => n.parse::<f32>().unwrap(),
-                _ => panic!(),
-            };
-            assert!((a - b).abs() < 1e-6, "{a} {b}");
-        }
-        assert_eq!(over.iter().map(|&x| x as i64).collect::<Vec<_>>(), ints(s.get("over").unwrap()));
-        assert_eq!(maxneed.iter().map(|&x| x as i64).collect::<Vec<_>>(), ints(s.get("maxneed").unwrap()));
-        let pool = store_meta(&chunks, &over, &maxneed, arena, capacity, 60, &|i| i % 3 != 0, &|i| format!("<{i}>"));
-        let want = s.get("store").unwrap();
-        for (k, v) in &pool {
-            let w = want.get(k).unwrap_or_else(|| panic!("no {k}"));
-            let mut got = String::new();
-            v.write(&mut got);
-            match (v, w) {
-                (Json::Num(x), Value::Number(n)) => assert!((x - n.parse::<f64>().unwrap()).abs() < 1e-9, "{k}: {x} {n}"),
-                (Json::Arr(a), Value::Array(b)) => {
-                    assert_eq!(a.len(), b.len(), "{k}");
-                    for (x, y) in a.iter().zip(b) {
-                        match (x, y) {
-                            (Json::Num(x), Value::Number(n)) => assert_eq!(*x, n.parse::<f64>().unwrap(), "{k}"),
-                            (Json::Str(x), Value::String(y)) => assert_eq!(x, y, "{k}"),
-                            _ => panic!("{k}"),
-                        }
-                    }
-                }
-                _ => panic!("{k}: {got}"),
-            }
-        }
-    }
-
-    #[test]
-    fn quantiles_as_torch() {
-        let f = fixtures();
-        let q = f.get("quantile").unwrap();
-        let x = ints(q.get("x").unwrap());
-        for (p, key) in [(0.99f32, "0.99"), (0.999f32, "0.999")] {
-            assert_eq!(quantile_int(&x, p), q.get("q").unwrap().get(key).unwrap().as_i64().unwrap());
-        }
     }
 
     #[test]
@@ -432,12 +167,5 @@ mod tests {
         assert_eq!(c.get("window").unwrap().as_i64().unwrap() as usize, WINDOW);
         assert_eq!(c.get("chunk").unwrap().as_i64().unwrap() as usize, CHUNK);
         assert_eq!(c.get("lap").unwrap().as_i64().unwrap() as usize, LAP);
-        assert_eq!(c.get("version").unwrap().as_i64().unwrap() as u32, VERSION);
-    }
-
-    #[test]
-    fn json_as_python_writes_it() {
-        let j = Json::obj(vec![("b".into(), Json::Num(1.0)), ("a".into(), Json::Arr(vec![Json::Num(0.5), Json::Str("\u{e9}\"x".into()), Json::Bool(true)]))]);
-        assert_eq!(j.to_string(), format!("{{\"a\": [0.5, \"{}u00e9\\\"x\", true], \"b\": 1}}", '\\'));
     }
 }

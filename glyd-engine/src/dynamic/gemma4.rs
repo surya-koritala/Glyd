@@ -32,7 +32,7 @@ pub(crate) fn attention(c: &ConfigG4, kind: KindG4, nq: usize, q_norm: usize, k_
         gate: None,
         round: true,
         sbf16: true,
-        picked: None,
+        picked: false,
     })
 }
 
@@ -68,7 +68,7 @@ pub fn describe(c: &ConfigG4) -> ModelDesc {
         let (d, nk, _) = c.attn_of(kind);
         let sliding = kind == KindG4::Sliding;
         let ring = rings.len();
-        rings.push(Ring { d, nk, window: if sliding { c.window } else { 0 }, values: true });
+        rings.push(Ring::kv(d, nk, if sliding { c.window } else { 0 }));
         let (q_norm, k_norm) = (name(format!("{pl}.self_attn.q_norm.weight")), name(format!("{pl}.self_attn.k_norm.weight")));
         let (post_attn, pre_ff) = (name(format!("{pl}.post_attention_layernorm.weight")), name(format!("{pl}.pre_feedforward_layernorm.weight")));
         let (post_ff, scalar) = (name(format!("{pl}.post_feedforward_layernorm.weight")), name(format!("{pl}.layer_scalar")));

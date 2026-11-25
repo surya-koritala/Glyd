@@ -8,9 +8,9 @@ use crate::dev::{copy_d2h_async, copy_h2d_async, Buf, Dev, Pinned};
 use crate::ffi::{err, Error, Lib, Result, Stream};
 use crate::kern::Kern;
 use crate::kern35::{Kern35, Mat};
+use crate::kern_glm::{f32_bytes, KernGlm};
 use crate::launch;
 use crate::mapped::Mapping;
-use crate::model_glm::{f32_bytes, KernGlm};
 use crate::moe::{Act, ExpertStack, Joined, MoeCfg, MoeLayer, MoeScratch, MoeWeights, Router, Shared};
 use crate::moe_rows::Down;
 use crate::qwen35::Pack35;
@@ -484,7 +484,30 @@ impl KernQx {
         ih: usize,
         eps: f32,
     ) -> Result<()> {
-        launch!(self.ix_prep, [n as u32, ih as u32 + 1, 1], [128, 1, 1], s; qk, wq, cs, sn, half as i32, pos, iq, ik, ih as i32, eps)
+        self.ix_prep_at(s, qk, wq, cs, sn, half, pos, iq, (ik, 0), n, ih, eps)
+    }
+
+    /// `ix_prep` into a cache of the executor's pages: `ik`'s rows through its block table (0: none).
+    ///
+    /// # Safety
+    /// As `ix_prep`; the table names a block for every position in `pos`.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn ix_prep_at(
+        &self,
+        s: Stream,
+        qk: u64,
+        wq: u64,
+        cs: u64,
+        sn: u64,
+        half: usize,
+        pos: u64,
+        iq: u64,
+        ik: (u64, u64),
+        n: usize,
+        ih: usize,
+        eps: f32,
+    ) -> Result<()> {
+        launch!(self.ix_prep, [n as u32, ih as u32 + 1, 1], [128, 1, 1], s; qk, wq, cs, sn, half as i32, pos, iq, ik.0, ik.1, ih as i32, eps)
     }
 
     /// The keys of the blocks of 4 tokens the call's rows complete into pk.
@@ -493,7 +516,28 @@ impl KernQx {
     /// As `ix_prep`.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn ix_cmp(&self, s: Stream, ik: u64, wk: u64, cs: u64, sn: u64, half: usize, pos: u64, pk: u64, n: usize, eps: f32) -> Result<()> {
-        launch!(self.ix_cmp, [(n as u32).div_ceil(4) + 1, 1, 1], [128, 1, 1], s; ik, wk, cs, sn, half as i32, pos, pk, n as i32, eps)
+        self.ix_cmp_at(s, (ik, 0), wk, cs, sn, half, pos, (pk, 0), n, eps)
+    }
+
+    /// `ix_cmp` on caches of the executor's pages: the raw keys' and the pools' rows through their block tables (0: none).
+    ///
+    /// # Safety
+    /// As `ix_cmp`; the tables name a block for every position and pool the call reads and writes.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn ix_cmp_at(
+        &self,
+        s: Stream,
+        ik: (u64, u64),
+        wk: u64,
+        cs: u64,
+        sn: u64,
+        half: usize,
+        pos: u64,
+        pk: (u64, u64),
+        n: usize,
+        eps: f32,
+    ) -> Result<()> {
+        launch!(self.ix_cmp, [(n as u32).div_ceil(4) + 1, 1, 1], [128, 1, 1], s; ik.0, ik.1, wk, cs, sn, half as i32, pos, pk.0, pk.1, n as i32, eps)
     }
 
     /// The indexer's scores of a prompt chunk's n rows on the tensor cores (`qx_ix_score`: four heads of 128, no head weights): scores [n, pmax] fp32 for the pools each row sees, `pools` the most a row of the call sees.
@@ -601,10 +645,37 @@ impl KernQx {
         splits: usize,
         n: usize,
     ) -> Result<()> {
+        self.attn_sel_at(s, q, qs, gate, gs, (kc, vc, 0), sel, cnt, tmax, out, os, nq, nk, part, splits, n)
+    }
+
+    /// `attn_sel` over a cache of the executor's pages: kc and vc's rows through their block table (`kv.2`, 0: none), position p's at row tab[p / 16] 16 + p % 16.
+    ///
+    /// # Safety
+    /// As `attn_sel`; the table names a block for every position picked.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn attn_sel_at(
+        &self,
+        s: Stream,
+        q: u64,
+        qs: usize,
+        gate: u64,
+        gs: usize,
+        kv: (u64, u64, u64),
+        sel: u64,
+        cnt: u64,
+        tmax: usize,
+        out: u64,
+        os: usize,
+        nq: usize,
+        nk: usize,
+        part: u64,
+        splits: usize,
+        n: usize,
+    ) -> Result<()> {
         let g = (nq / nk) as u32;
         let smem = (QX_KB * (QX_KS + 128) + 128 * g) * 4;
         let sl2 = (1.0f64 / 16.0 * std::f64::consts::LOG2_E) as f32;
-        launch!(self.attn_sel, [n as u32, nk as u32, splits as u32], [32 * g, 1, 1], smem smem, s; q, qs as i32, gate, gs as i32, kc, vc, sel, cnt, tmax as i32, out, os as i32, nq as i32, nk as i32, sl2, part, splits as i32)?;
+        launch!(self.attn_sel, [n as u32, nk as u32, splits as u32], [32 * g, 1, 1], smem smem, s; q, qs as i32, gate, gs as i32, kv.0, kv.1, kv.2, sel, cnt, tmax as i32, out, os as i32, nq as i32, nk as i32, sl2, part, splits as i32)?;
         if splits > 1 {
             launch!(self.merge, [n as u32, nq as u32, 1], [256, 1, 1], s; merge_args(part, splits, gate, gs, out, os, nq))?;
         }

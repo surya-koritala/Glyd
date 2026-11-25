@@ -97,7 +97,7 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
         });
         let (dh, nk, has_v) = (a.head_dim, a.kv_heads, !a.k_eq_v);
         let ring = rings.len();
-        rings.push(Ring { d: dh, nk, window: a.window.unwrap_or(0), values: true });
+        rings.push(Ring::kv(dh, nk, a.window.unwrap_or(0)));
         let mut qkv = vec![one(ar, "q")?, one(ar, "k")?];
         if has_v {
             qkv.push(one(ar, "v")?);
@@ -265,7 +265,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
             None => None,
         };
         let ring = rings.len();
-        rings.push(Ring { d: a.head_dim, nk: a.kv_heads, window: a.window.unwrap_or(0), values: true });
+        rings.push(Ring::kv(a.head_dim, a.kv_heads, a.window.unwrap_or(0)));
         let attn = AttnOp::of(a, Slot::Proj, ring, table, qk)?;
         let w = mats.len();
         let qkv = item(vec![one(ar, "q")?, one(ar, "k")?, one(ar, "v")?], &shape)?;
@@ -391,7 +391,8 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
     {
         return err(format!("{what}: an embedding of {:?} and a head of {:?}: the kernels take four gated streams and their mixer", m.embed, m.head));
     }
-    let (mut mats, mut small, mut states, mut ropes) = (Vec::new(), Vec::<String>::new(), Vec::<usize>::new(), Vec::<Rope>::new());
+    let (mut mats, mut small, mut states, mut ropes, mut rings) =
+        (Vec::new(), Vec::<String>::new(), Vec::<usize>::new(), Vec::<Rope>::new(), Vec::<Ring>::new());
     let mut ops: Vec<Vec<Op>> = Vec::new();
     let mut layer: Vec<Op> = Vec::new();
     let (mut mix_w, mut attn_w, mut rank_w, mut ple_w, mut n_moe) = (0, 0, 0, 0, 0);
@@ -429,6 +430,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
             Body::Ngram(n) => {
                 let Ngram { order, heads, dim, conv, dilation, streams, eos: end, .. } = *n;
                 if (order, conv, dilation, streams) != (3, 4, 3, 4)
+                    || n.form != crate::runtime::kinds::NgramForm::Condor
                     || n.norm.weight != NormWeight::PlusOne
                     || dim % (2 * heads) != 0
                     || b.residual != Residual::Add
@@ -505,9 +507,10 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                             }
                         };
                         let qk = (name(&mut small, one(roles, "q_norm")?), name(&mut small, one(roles, "k_norm")?));
-                        let kvb = max_pos * a.kv_heads * a.head_dim * 2;
-                        let kv = [state(&mut states, kvb), state(&mut states, kvb)];
-                        let att = AttnOp::picked(a, Slot::Mix, kv, Some(table), Some(qk))?;
+                        // (its keys and values, the indexer's raw keys and its pools' keys: rings of the executor's pages, as every attention kind's; the pools an entry of 4 tokens a row)
+                        let ring = rings.len();
+                        rings.extend([Ring::kv(a.head_dim, a.kv_heads, 0), Ring::keys(128, 1, 0), Ring::entries(128, 4)]);
+                        let att = AttnOp::picked(a, Slot::Mix, ring, Some(table), Some(qk))?;
                         let stride = att.stride;
                         let qkv = mat(&mut mats, vec![one(roles, "q")?, one(roles, "k")?, one(roles, "v")?])?;
                         if mats[qkv].rows != stride {
@@ -516,7 +519,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                         let index = mat(&mut mats, vec![one(roles, "index_qk")?])?;
                         let o = mat(&mut mats, vec![one(roles, "o")?])?;
                         let (iqn, ikn) = (name(&mut small, one(roles, "index_q_norm")?), name(&mut small, one(roles, "index_k_norm")?));
-                        let (keys, pools) = (state(&mut states, max_pos * 128 * 2), state(&mut states, (max_pos / 4 + 1) * 128 * 2));
+                        let (keys, pools) = (ring + 1, ring + 2);
                         let pick = super::IdxPick {
                             heads: ix.heads,
                             ratio: ix.block,
@@ -607,7 +610,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
         small,
         forms: Vec::new(),
         ropes,
-        rings: Vec::new(),
+        rings,
         first: Op::Streams,
         layers: ops,
         states,
@@ -731,7 +734,7 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
             }
             Kind::Full => {
                 let ring = rings.len();
-                rings.push(Ring { d: 256, nk, window: 0, values: true });
+                rings.push(Ring::kv(256, nk, 0));
                 let a = AttnOp::of(att, Slot::Mix, ring, Some(0), Some((s0 + 2, s0 + 3)))?;
                 if a.stride != full_w {
                     return err(format!("Qwen3.5: an attention product of {full_w} where its attention reads {}", a.stride));
@@ -875,7 +878,7 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
             }
             NhKind::Attention => {
                 let ring = rings.len();
-                rings.push(Ring { d: hd, nk, window: 0, values: true });
+                rings.push(Ring::kv(hd, nk, 0));
                 let a = att.ok_or_else(|| Error("Nemotron-H: an attention layer of no kind".into()))?;
                 let a = AttnOp::of(a, Slot::Mix, ring, None, None)?;
                 if a.stride != qkv_w {
@@ -1022,7 +1025,7 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
         let block = n_moe;
         n_moe += 1;
         let ring = rings.len();
-        rings.push(Ring { d: hd, nk, window: a.window.unwrap_or(0), values: true });
+        rings.push(Ring::kv(hd, nk, a.window.unwrap_or(0)));
         let attn = AttnOp::of(a, Slot::Mix, ring, Some(0), None)?;
         if attn.stride != row {
             return err(format!("Muse Spark: an attention product of {row} where its attention reads {}", attn.stride));
@@ -1096,11 +1099,11 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
 
 /// GLM-5.3-Flash: the four streams mixed around each layer's two blocks, Kimi delta attention (its forget gate bounded) or the latent attention (its block's),
 /// a dense MLP (its SwiGLU clamped) in the first layers and a mixture of experts in the rest (its block's), the mean of the streams and the final norm. The
-/// matrices, small tensors and blocks are model_glm.rs's loader's (`dynamic::glm::describe` indexes them in its order).
+/// matrices, small tensors and blocks are kern_glm.rs's loader's (`dynamic::glm::describe` indexes them in its order).
 pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
     use super::glm::{dense_ops, glm_desc, kda_ops, per_layer};
     use crate::glm::GlmKind;
-    use crate::model_glm::GM_D;
+    use crate::kern_glm::GM_D;
     use crate::runtime::kinds::{Decay, Residual};
     let m = &d.desc;
     if m.blocks.len() % 2 != 0 || m.embed.streams != 4 {
@@ -1112,8 +1115,8 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
     }
     let layers = m.blocks.len() / 2;
     let (hc, round) = match &m.blocks[0].residual {
-        Residual::Streams(s) => ((s.eps, s.sinkhorn_iters as i32), s.rounding),
-        r => return err(format!("GLM-5.3-Flash: a residual of {r:?}, not the streams")),
+        Residual::Streams(s) if !s.lagged => ((s.eps, s.sinkhorn_iters as i32), s.rounding),
+        r => return err(format!("GLM-5.3-Flash: a residual of {r:?}, not mHC's streams")),
     };
     let lin = m.blocks.iter().find_map(|b| match &b.body {
         Body::Mixer(Mixer::Linear(x)) => Some(x),
@@ -1279,6 +1282,11 @@ pub fn deepseek_v4(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Sta
             Body::Mixer(Mixer::Compressed(c)) => c,
             b => return err(format!("DeepSeek-V4: layer {l}'s mixer is {b:?}")),
         };
+        if !c.ape || !c.q_head_norm || c.share.is_some() {
+            return err(format!(
+                "DeepSeek-V4: layer {l} is V4.1's compressed sparse attention (no window bias, parts shared across layers): no operation of this executor yet"
+            ));
+        }
         if c.indexer.is_some() != (c.ratio == 4) {
             return err(format!(
                 "DeepSeek-V4: layer {l} compresses by {} with{} an indexer: this engine runs the indexer on the layers of ratio 4 alone",
@@ -1295,8 +1303,8 @@ pub fn deepseek_v4(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Sta
         };
         for b in [ab, eb] {
             match &b.residual {
-                Residual::Streams(s) => hc = (s.eps, s.sinkhorn_iters, s.streams, s.rounding),
-                r => return err(format!("DeepSeek-V4: layer {l}'s residual is {r:?}, not the streams")),
+                Residual::Streams(s) if !s.lagged => hc = (s.eps, s.sinkhorn_iters, s.streams, s.rounding),
+                r => return err(format!("DeepSeek-V4: layer {l}'s residual is {r:?}, not mHC's streams (lagged mHC has no operation yet)")),
             }
         }
         ratios.push(c.ratio);
@@ -1468,7 +1476,7 @@ mod tests {
     }
 
     /// GLM-5.3-Flash lowered from its released config and the tiny and toy ones, whole and as a split's stages, is the executor's own description of it; each
-    /// layer's matrices are as many as model_glm.rs's loader packs.
+    /// layer's matrices are as many as kern_glm.rs's loader packs.
     #[test]
     fn glm_lowered_is_the_executors_own_description() {
         // (and the released one with every layer's feed-forward its experts, as glmrandom --real makes it: no dense MLP, so neither description sizes its slots)
@@ -1485,9 +1493,9 @@ mod tests {
             let text = if f == "all experts" { all_experts.clone() } else { fixture(f) };
             let c = crate::glm::ConfigGlm::parse(&text, f, None).unwrap_or_else(|e| panic!("{f}: {}", e.msg));
             for l in 0..c.layers {
-                // (a latent attention layer's four more: the kind's operation's, mla_glm.rs's `MlaWeights`)
+                // (a latent attention layer's four more: the kind's operation's, kern_glm.rs's `MlaWeights`)
                 let latent = if c.kinds[l] == crate::glm::GlmKind::Mla { 4 } else { 0 };
-                assert_eq!(crate::model_glm::layer_matrices(&c, l).len() + latent, super::super::glm::per_layer(c.kinds[l], c.moe[l]), "{f}: layer {l}");
+                assert_eq!(crate::kern_glm::layer_matrices(&c, l).len() + latent, super::super::glm::per_layer(c.kinds[l], c.moe[l]), "{f}: layer {l}");
             }
             let kinds = crate::runtime::describe::describe(&serde_json::from_str(&text).unwrap()).unwrap();
             let half = c.layers / 2;
@@ -1520,7 +1528,7 @@ mod tests {
     fn the_random_glm_lowers_as_its_own_description() {
         for fp8 in [false, true] {
             let dir = std::env::temp_dir().join(format!("glyd-lower-glm-{}-{fp8}", std::process::id()));
-            crate::kcheck_glm::random(&dir, fp8, None).unwrap();
+            crate::glm::random(&dir, fp8, None).unwrap();
             let c = crate::glm::ConfigGlm::load(&dir).unwrap();
             let half = c.layers / 2;
             for st in [
@@ -1897,7 +1905,7 @@ mod tests {
         let w32 = kimi::dtypes(&glyd_gpu::safetensors::Checkpoint::open(&d).unwrap(), &c).unwrap();
         v.push(kimi::describe(&c, &Stage::whole(c.layers), &w32, false).unwrap());
         let d = dir("glm");
-        crate::kcheck_glm::random(&d, false, None).unwrap();
+        crate::glm::random(&d, false, None).unwrap();
         let c = crate::glm::ConfigGlm::load(&d).unwrap();
         v.push(glm::describe(&c, &Stage::whole(c.layers)).unwrap());
         let d = dir("v4");
