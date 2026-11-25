@@ -22,6 +22,17 @@ pub struct KimiMla {
     pub v: usize,
 }
 
+/// The newer config's sparse attention (`dsa_config`): on the latent attention layers it names (`layers`, from 0) an indexer of a key a token, `heads` query
+/// heads of `dim` channels, the best `top_k` tokens kept; its keys RMS-normed, or LayerNorm-ed with a bias (`layer_norm`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct KimiDsa {
+    pub layers: Vec<usize>,
+    pub heads: usize,
+    pub dim: usize,
+    pub top_k: usize,
+    pub layer_norm: bool,
+}
+
 /// The mixture of experts: the router picks `top_k` of `experts` by sigmoid scores plus a bias (the chosen scores divided by their sum where `renorm`, times
 /// `scale`); each expert maps the `latent` the layer's input is projected to through `inter` and back; the `shared` experts are one MLP of `shared` x `inter`.
 #[derive(Clone, Debug, PartialEq)]
@@ -52,6 +63,8 @@ pub struct ConfigKimi {
     pub inter: usize,
     pub kda: KdaDims,
     pub mla: KimiMla,
+    /// The sparse attention of the latent attention layers it names, where the config has one.
+    pub dsa: Option<KimiDsa>,
     pub experts: KimiMoe,
     /// The situ activation's two caps: gate a, up b, 4 tanh(a / beta) sigmoid(a) x 25 tanh(b / linear) for beta 4 and linear 25.
     pub situ: (f32, f32),
@@ -151,6 +164,23 @@ impl ConfigKimi {
             rope: u("qk_rope_head_dim")?,
             v: u("v_head_dim")?,
         };
+        // (the newer config's sparse attention: the latent attention layers it names, from 1; what of it this engine does not run the description builder refuses)
+        let dsa = match t.get("dsa_config") {
+            None | Some(Value::Null) => None,
+            Some(Value::Object(o)) => {
+                let du = |k: &str| o.get(k).and_then(Value::as_u64).map(|x| x as usize).ok_or_else(|| Error(format!("{label}: dsa_config: no {k}")));
+                let named = o.get("dsa_layers").or_else(|| o.get("layers")).and_then(Value::as_array);
+                let named = named.ok_or_else(|| Error(format!("{label}: dsa_config names no layers")))?;
+                let on: Vec<usize> = named.iter().filter_map(Value::as_u64).filter(|&l| l >= 1).map(|l| l as usize - 1).collect();
+                let layer_norm = match o.get("index_k_norm_type").and_then(Value::as_str).unwrap_or("rmsnorm") {
+                    "rmsnorm" => false,
+                    "layernorm" => true,
+                    other => return err(format!("{label}: dsa_config.index_k_norm_type {other}: rmsnorm or layernorm")),
+                };
+                Some(KimiDsa { layers: on, heads: du("index_num_heads")?, dim: du("index_head_dim")?, top_k: du("index_topk")?, layer_norm })
+            }
+            Some(x) => return err(format!("{label}: dsa_config {x}: an object")),
+        };
         let inter_e = u("moe_intermediate_size")?;
         let experts = KimiMoe {
             experts: u("num_experts")?,
@@ -179,6 +209,7 @@ impl ConfigKimi {
             inter: u("intermediate_size")?,
             kda,
             mla,
+            dsa,
             experts,
             situ,
             res_block: u("attn_res_block_size")?,
