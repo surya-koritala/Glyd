@@ -22,16 +22,33 @@ use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 
 pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
-    let layers = match with_experts(dir) {
-        Some((kinds, _)) => kinds.desc.blocks.len() / 2,
-        None => crate::qwen35::Config35::load(dir)?.layers,
-    };
-    load_stage(dir, o, Stage::whole(layers))
+    load_stage(dir, o, Stage::whole(ends(dir)?.0))
+}
+
+/// The model's layers and end-of-sequence ids (the dynamic route's `split::Loader::ends`): the dense layout's config's (`Config35`), the layout with experts'
+/// by its description (a block of attention and one of its feed-forward a layer) and its config's ids, as `load_experts` takes them.
+pub fn ends(dir: &Path) -> Result<(usize, Vec<i64>)> {
+    match with_experts(dir) {
+        Some((kinds, _)) => Ok((kinds.desc.blocks.len() / 2, experts_config(dir)?.0)),
+        None => crate::qwen35::Config35::load(dir).map(|c| (c.layers, c.eos)),
+    }
 }
 
 /// The description of the model in `dir` and its label, where a layer's feed-forward is a mixture of experts (None: the dense layout, or no description).
 fn with_experts(dir: &Path) -> Option<(Described, String)> {
     crate::runtime::describe::describe_dir(dir).ok().filter(|(k, _)| k.desc.blocks.iter().any(|b| matches!(b.body, Body::Ffn(Ffn::Moe(_)))))
+}
+
+/// The layout with experts' end-of-sequence ids (generation_config.json's, else its text model's config's, else the top level's) and its longest context.
+fn experts_config(dir: &Path) -> Result<(Vec<i64>, usize)> {
+    let cfg = crate::runtime::config::ModelConfig::load(dir)?;
+    let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
+    let mut eos = crate::runtime::config::eos_ids(&cfg.text, generation.as_deref());
+    if eos.is_empty() {
+        eos = crate::runtime::config::eos_ids(&cfg.top, None);
+    }
+    let max_pos = cfg.shared.max_position_embeddings.ok_or_else(|| Error("no max_position_embeddings".into()))?;
+    Ok((eos, max_pos))
 }
 
 /// The dynamic route's stage (src/dynamic/split.rs `StageLoad`): `load_stage`, every expert on the GPU where the layout has experts. A caching is refused: the
@@ -58,13 +75,7 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
 /// The layout with experts: its kinds lowered (`lower::qwen35`), each layer's experts the kind's resident block (`experts::resident`: the softmax router, the
 /// experts and the gated shared expert at the level of the other matrices), the stage's layers' in order. Every expert is on the GPU.
 fn load_experts(dir: &Path, o: &Opts, st: Stage, kinds: &Described) -> Result<Dyn> {
-    let cfg = crate::runtime::config::ModelConfig::load(dir)?;
-    let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
-    let mut eos = crate::runtime::config::eos_ids(&cfg.text, generation.as_deref());
-    if eos.is_empty() {
-        eos = crate::runtime::config::eos_ids(&cfg.top, None);
-    }
-    let max_pos = cfg.shared.max_position_embeddings.ok_or_else(|| Error("no max_position_embeddings".into()))?;
+    let (eos, max_pos) = experts_config(dir)?;
     let d = super::lower::qwen35(kinds, eos, max_pos, &st)?;
     let (hidden, blocks) = (kinds.desc.hidden, &kinds.desc.blocks);
     let mine = || {
@@ -264,6 +275,21 @@ mod tests {
 
     fn tiny() -> serde_json::Value {
         serde_json::from_str(include_str!("../../tests/fixtures/qwen35moe_tiny_config.json")).unwrap()
+    }
+
+    /// The dynamic route's ends of the layout with experts (`split::Loader::ends`) are its description's layers and its config's ids: the dense layout's config
+    /// reader refuses it (`Config35`), so `run` at penguin failed there before its first stage.
+    #[test]
+    fn the_layout_with_experts_ends_by_its_description() {
+        let dir = std::env::temp_dir().join(format!("glyd-q35moe-ends-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), include_str!("../../tests/fixtures/qwen35moe_tiny_config.json")).unwrap();
+        let loader = crate::dynamic::split::loader(&describe(&tiny()).unwrap()).unwrap();
+        let (got, routed) = (super::ends(&dir), (loader.ends)(&dir));
+        let dense = crate::qwen35::Config35::load(&dir).map(|c| c.layers);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!((got.unwrap(), routed.unwrap()), ((4, vec![2]), (4, vec![2])));
+        assert!(dense.unwrap_err().msg.contains("mixture of experts"));
     }
 
     /// The layout with experts, lowered from its kinds: each layer's mixer as the dense layout's, then the post-attention norm and `Op::Moe` in the MLP's place
