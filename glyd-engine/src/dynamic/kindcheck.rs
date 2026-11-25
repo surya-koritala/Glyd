@@ -396,7 +396,9 @@ struct Rows<'a> {
 
 /// Layer `l` of the executor (blocks `starts[l]..starts[l + 1]`, `block_starts`) on `rows` (the depth mix's completed groups made by `rng`). With what it
 /// compared, the residual the layer left (as the slot holds it).
-fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng: &mut Rng) -> Result<(Got, Vec<f32>)> {
+/// `lend`: the picks the last latent attention with an indexer of its own took for the pass's rows (each row's entries), which a layer whose indexer is
+/// shared attends to, as the engine's does (`MlaOp::lent`); set by such a body here.
+fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng: &mut Rng, lend: &mut Option<Vec<Vec<usize>>>) -> Result<(Got, Vec<f32>)> {
     let Rows { at, tok, x0 } = rows;
     let (d, layers, n) = (m.desc.hidden, dy.big.d.layers.len(), tok.len());
     let (first, per) = (starts[l], starts[l + 1] - starts[l]);
@@ -566,7 +568,13 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng:
             .into_iter()
             .flat_map(|t| {
                 let keys = std::rc::Rc::new(t.keys);
-                t.pos.into_iter().zip(t.picks).zip(t.q.into_iter().zip(t.w)).map(move |((pos, picks), (q, w))| crate::logits::PickRow { pos, picks, q, w, keys: keys.clone() })
+                t.pos.into_iter().zip(t.picks).zip(t.q.into_iter().zip(t.w)).map(move |((pos, picks), (q, w))| crate::logits::PickRow {
+                    pos,
+                    picks,
+                    q,
+                    w,
+                    keys: keys.clone(),
+                })
             })
             .collect();
         if ix.is_some() {
@@ -575,9 +583,18 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng:
             }
             let c = latent_cache(&mut m.layers[b], 0)?;
             (c.take, c.picked) = (rows_picked.iter().map(|r| r.picks.clone()).collect(), Some(Vec::new()));
+            *lend = Some(rows_picked.iter().map(|r| r.picks.clone()).collect());
+        }
+        // (a layer whose indexer is shared: each row attends to the picks the latent attention with an indexer before it took for that row)
+        let shared = matches!(&m.layers[b].block.body, Body::Mixer(Mixer::Mla(x)) if x.indexer.as_ref().is_some_and(|i| i.shared));
+        if shared && lend.as_ref().is_none_or(|p| p.len() != n) {
+            return err(format!("L{l} B{b}: a shared indexer's layer, with no picks of this pass's {n} rows lent to it"));
         }
         let (mut want, mut margin) = (Vec::with_capacity(n * d), Vec::with_capacity(n));
         for t in 0..n {
+            if let Some(p) = lend.as_ref().filter(|_| shared) {
+                latent_cache(&mut m.layers[b], 0)?.lent = Some(p[t].clone());
+            }
             want.extend(m.body(b, 0, (at + t) as u32, tok[t], &h[t * d..][..d])?);
             // (a row on the engine's own picks is compared whatever the reference's own margin: none is left out as near a tie)
             margin.push(if ix.is_some() { f32::INFINITY } else { m.layers[b].margin });
@@ -719,6 +736,8 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
             m2.forward_seen(&tok, at as u32, &mut |x| own.push(x.to_vec()))?;
         }
         // (the first layer's residual: --chain the tokens' scaled embedding rows, --sequence the reference's own; at random each layer's otherwise)
+        // (the picks a layer whose indexer is shared takes: the last latent attention's with one of its own, on this pass's rows)
+        let mut lend = None;
         let mut x = match how {
             Passes::Chain => Some(tok.iter().flat_map(|&t| m.embed[t as usize * hd..][..hd].iter().map(|&v| bf16(v * bf16(scale)))).collect::<Vec<f32>>()),
             _ => own.first().cloned(),
@@ -728,7 +747,7 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
                 Some(x) => x,
                 None => rngs[l].v(n * sw),
             };
-            let (got, after) = pass(&dy, &mut m, l, &starts, Rows { at, tok: &tok, x0 }, &mut rngs[l])?;
+            let (got, after) = pass(&dy, &mut m, l, &starts, Rows { at, tok: &tok, x0 }, &mut rngs[l], &mut lend)?;
             if alone.is_some() {
                 let want = &own[starts[l + 1]];
                 let v = rel(&after, want);
@@ -803,7 +822,7 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
 
 /// `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain | --sequence]`: the cases (all unless named), then each class's worst against its bound.
 pub fn run(a: &crate::args::Args) -> Result<()> {
-    const ALL: [&str; 14] = [
+    const ALL: [&str; 15] = [
         "gemma4",
         "gemma4-kv",
         "qwen35",
@@ -815,6 +834,7 @@ pub fn run(a: &crate::args::Args) -> Result<()> {
         "kimi",
         "kimi-dsa",
         "glm",
+        "glm-dsa",
         "deepseek-v4",
         "qwen4x",
         "qwen4x-s2",

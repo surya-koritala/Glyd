@@ -167,6 +167,8 @@ pub(crate) fn latent(c: &ConfigKimi) -> MlaOp {
         eps: 1e-6,
         ring: 0,
         indexer: None,
+        rot: None,
+        lent: None,
     }
 }
 

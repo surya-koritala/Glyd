@@ -55,6 +55,14 @@
     "plan": "51461fae19b4c2d8",
     "family": "refused: m is a GlmMoeDsaForCausalLM model, which this engine has no description of yet"
   },
+  "glm_moe_dsa_toy_config.json": {
+    "blocks": 8,
+    "tensors": 211,
+    "kinds": "7a69c2a2d0ba79e8",
+    "weights": "48030b1c4c060000",
+    "plan": "61e762a9b913390e",
+    "family": "refused: m is a GlmMoeDsaForCausalLM model, which this engine has no description of yet"
+  },
   "nemotron_h_config.json": {
     "blocks": 88,
     "tensors": 41643,

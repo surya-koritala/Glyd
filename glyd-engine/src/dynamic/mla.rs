@@ -12,6 +12,11 @@
 //! attention reads a sequence's pages unpacked to bf16 rows (`kv12_latents`), the same values as the bf16 ring's: the same kernels give the same bits. The indexer's
 //! ring stays bf16.
 //!
+//! A rotary (`MlaOp::rot`, GLM-5.3's) turns interleaved pairs at each token's position: each query head's rope channels and the shared key part before it is cached,
+//! and the first channels of the indexer's queries and keys (`mla_rope`). A layer whose indexer is `shared` runs none (`MlaOp::lent`): its rows attend to the picks
+//! the latent attention before it made for them, which every layer keeps at the rows' places in the pass (`MlaRun::sel`, `cnt`), as transformers hands a layer
+//! `prev_topk_indices`.
+//!
 //! The indexer's pick (`IdxPick`) is every indexer's, DeepSeek-V4's (`Op::IdxPick`) too: the score of each complete entry, sum_h w_h relu(q_h . k), the best `top_k`
 //! kept in order (kernels/mla.cu `idx_pick`); GLM-5.3's entries are pools of tokens, which the pick gives as their tokens and the open pool's after them. The scores'
 //! arithmetic is the family's reference's: GLM-5.3's in f32 (transformers'), DeepSeek-V4's each term rounded to bf16 as the release computes it.
@@ -183,26 +188,63 @@ pub struct MlaOp {
     pub eps: f32,
     pub ring: usize,
     pub indexer: Option<MlaIndexer>,
+    /// The rotary (GLM-5.3's): None where no channel turns (the rope channels as they are: Kimi-K3's, a NoPE layer's).
+    pub rot: Option<MlaRot>,
+    /// A layer whose indexer is `shared`: no indexer of its own; its rows attend to the picks the latent attention with an indexer before it made for them, a pick
+    /// of this shape (the lender's: its room a row, `tmax`).
+    pub lent: Option<IdxPick>,
+}
+
+/// A latent attention's rotary: table `table` of the description's (`ModelDesc::ropes`, `rope / 2` pairs) turns interleaved pairs of each query head's rope
+/// channels and of the shared key part at their tokens' positions, and of the first `index` channels of the indexer's keys and query heads (0: none of them).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MlaRot {
+    pub table: usize,
+    pub index: usize,
 }
 
 impl MlaOp {
     /// The operation of layer kind `k` whose input products are `input`, its other matrices `q_b` and `o`, its small tensors from `s0` (the q latent's norm, the
-    /// key-value latent's, kv_b_proj, then an indexer's in `MlaIndexer::at`'s order), its caches the rings `ring` and `ring + 1`. A gate takes a fused product.
+    /// key-value latent's, kv_b_proj, then an indexer's in `MlaIndexer::at`'s order), its caches the rings `ring` and `ring + 1`; a kind with a rotary turns by
+    /// the description's table `table` (made for the kind's rotary: `ModelDesc::ropes`). A gate takes a fused product.
     #[allow(clippy::too_many_arguments)]
-    pub fn of(k: &kinds::Mla, input: MlaIn, q_b: usize, o: usize, s0: usize, ring: usize, tail: bool) -> Result<MlaOp> {
+    pub fn of(k: &kinds::Mla, input: MlaIn, q_b: usize, o: usize, s0: usize, ring: usize, tail: bool, table: Option<usize>) -> Result<MlaOp> {
         let q_rank = k.q_lora.ok_or_else(|| Error("a latent attention whose query has no low rank: not an operation of this executor".into()))?;
-        if k.rope.is_some() {
-            return err("a latent attention whose shared key part is rotated: not an operation of this executor");
-        }
+        let rot = match (&k.rope, table) {
+            (None, _) => None,
+            (Some(r), Some(t)) if r.style == kinds::RopeStyle::Interleaved && r.scaling == kinds::RopeScaling::None && r.mrope.is_none() && r.dim == k.rope_dim && r.freq_dim == r.dim && r.freqs * 2 == r.dim => {
+                Some(MlaRot { table: t, index: k.indexer.as_ref().filter(|x| !x.shared).map_or(0, |x| x.rope) })
+            }
+            (Some(r), _) => {
+                return err(format!(
+                    "a latent attention's rotary of {r:?}: the kernels turn interleaved pairs of the shared key part at the default frequencies, by the description's table"
+                ))
+            }
+        };
         let gate = match (k.gate, input) {
             (None, _) => false,
             (Some(g), MlaIn::Fused { .. }) if g.act == kinds::Act::Sigmoid && g.norm.is_none() => true,
             (Some(g), _) => return err(format!("a latent attention's gate of {g:?}: the kernels take a sigmoid gate in a fused input product")),
         };
+        if let Some(x) = k.indexer.as_ref().filter(|x| x.rope > 0 && rot.is_none()) {
+            return err(format!("a latent attention's indexer whose first {} channels turn, under no rotary of the attention's", x.rope));
+        }
+        let pick = |x: &kinds::Indexer| IdxPick {
+            heads: x.heads,
+            ratio: x.block.max(1),
+            top_k: x.top_k / x.block.max(1),
+            expand: true,
+            tail,
+            wscale: (x.heads as f32).powf(-0.5),
+            score: IdxScore::F32 { dim: x.head_dim, scale: (x.head_dim as f32).powf(-0.5) },
+            keys: IdxKeys::Ring(ring + 1),
+            weighted: true,
+            cand: None,
+        };
+        let lent = k.indexer.as_ref().filter(|x| x.shared).map(pick);
         let indexer = match &k.indexer {
             None => None,
-            Some(x) if x.shared => return err("a latent attention that reuses another layer's picks: not an operation of this executor"),
-            Some(x) if x.rope > 0 => return err("a latent attention's indexer whose queries and keys are rotated: not an operation of this executor"),
+            Some(x) if x.shared => None,
             Some(x) => {
                 // (the keys' norm as the kind's form gives it: a LayerNorm with its bias, or an RMS norm with a weight; the mean-pooled form is an attention's)
                 let key = match x.form {
@@ -214,29 +256,7 @@ impl MlaOp {
                         ))
                     }
                 };
-                let ix = MlaIndexer {
-                    pick: IdxPick {
-                        heads: x.heads,
-                        ratio: x.block.max(1),
-                        top_k: x.top_k / x.block.max(1),
-                        expand: true,
-                        tail,
-                        wscale: (x.heads as f32).powf(-0.5),
-                        score: IdxScore::F32 { dim: x.head_dim, scale: (x.head_dim as f32).powf(-0.5) },
-                        keys: IdxKeys::Ring(ring + 1),
-                        weighted: true,
-                        cand: None,
-                    },
-                    dim: x.head_dim,
-                    q_b: 0,
-                    k: 0,
-                    k_norm: 0,
-                    k_bias: 0,
-                    weights: 0,
-                    ape: 0,
-                    gate: 0,
-                    key,
-                };
+                let ix = MlaIndexer { pick: pick(x), dim: x.head_dim, q_b: 0, k: 0, k_norm: 0, k_bias: 0, weights: 0, ape: 0, gate: 0, key };
                 Some(ix.at(s0 + 3, ring + 1))
             }
         };
@@ -259,6 +279,8 @@ impl MlaOp {
             eps: k.q_norm.eps,
             ring,
             indexer,
+            rot,
+            lent,
         };
         a.check()?;
         Ok(a)
@@ -313,6 +335,18 @@ impl MlaOp {
         if self.gate && !matches!(self.input, MlaIn::Fused { .. }) {
             return err("a latent attention's gate outside a fused input product");
         }
+        if let Some(r) = self.rot {
+            let ix = self.indexer.as_ref().map_or(0, |x| x.dim);
+            if self.rope == 0 || self.rope % 2 != 0 || self.rope > 128 || r.index % 2 != 0 || r.index > self.rope || r.index > ix {
+                return err(format!(
+                    "a rotary of {} channels, {} of the indexer's {ix}: the kernels turn an even count up to 128, the indexer's no more than the attention's",
+                    self.rope, r.index
+                ));
+            }
+        }
+        if self.indexer.is_some() && self.lent.is_some() {
+            return err("a latent attention with an indexer of its own and lent picks");
+        }
         if let Some(x) = &self.indexer {
             let (p, kp) = (&x.pick, x.pick.ratio);
             if x.dim == 0 || x.dim > 256 || kp == 0 || kp > 8 || p.top_k == 0 {
@@ -331,10 +365,15 @@ impl MlaOp {
 
     /// The tokens a row attends to at most where the indexer picks them: the best pools' and the incomplete last pool's; with none, the context.
     fn tmax(&self, ctx: usize) -> usize {
-        match &self.indexer {
-            Some(x) => x.pick.top_k * x.pick.ratio + x.pick.ratio - 1,
+        match self.pick() {
+            Some(p) => p.top_k * p.ratio + p.ratio - 1,
             None => ctx,
         }
+    }
+
+    /// The pick its rows attend to: its indexer's, or the one it is lent (`lent`).
+    fn pick(&self) -> Option<&IdxPick> {
+        self.indexer.as_ref().map(|x| &x.pick).or(self.lent.as_ref())
     }
 
     /// The pools a row's scores hold at most at a context of `ctx`.
@@ -346,10 +385,15 @@ impl MlaOp {
     /// a sequence's rows at once (Kimi-K3's dense attention). A row's attention cuts its tokens into runs where a call has a few rows (`FEW`), so these blocks are
     /// what each family's engine took.
     fn rows_at_once(&self, ch: usize, ctx: usize) -> usize {
-        if self.indexer.is_none() {
+        if self.pick().is_none() {
             return ch;
         }
-        let sub = ch.min((SUB_OLAT / (self.heads * self.kv_rank * 4)).max(1)).min((SUB_SCORES / (self.pmax(ctx) * 4)).max(1));
+        // (a layer lent its picks scores nothing: its rows are bounded by the latent outputs' room alone)
+        let scores = match self.pmax(ctx) {
+            0 => usize::MAX,
+            p => (SUB_SCORES / (p * 4)).max(1),
+        };
+        let sub = ch.min((SUB_OLAT / (self.heads * self.kv_rank * 4)).max(1)).min(scores);
         // (a development build's check can ask for more rows at a time, to see a long call's stages whole)
         crate::tune!("GLYD_ENGINE_MLA_ROWS").and_then(|v| v.parse::<usize>().ok()).map_or(sub, |v| v.clamp(1, ch))
     }
@@ -358,7 +402,7 @@ impl MlaOp {
 /// kernels/mla.cu's kernels, each by its type (`crate::kt`).
 pub(crate) struct KernMla {
     rms2: crate::kt::rms2_rows,
-    rms2_512: crate::kt::rms2_rows512,
+    pub(super) rms2_512: crate::kt::rms2_rows512,
     layernorm: crate::kt::layernorm_rows,
     scatter: crate::kt::scatter_rows,
     small: crate::kt::small_linear,
@@ -376,6 +420,7 @@ pub(crate) struct KernMla {
     expand: crate::kt::mla_expand_v,
     gate: crate::kt::mla_gate,
     dense_cnt: crate::kt::mla_dense_cnt,
+    rope: crate::kt::mla_rope,
     /// The pages a 12-bit latent ring unpacks for a sequence (`Dyn::kv12_latents`).
     pub(super) pages: crate::kt::ml_pages,
 }
@@ -404,6 +449,7 @@ impl KernMla {
             expand: dev.typed()?,
             gate: dev.typed()?,
             dense_cnt: dev.typed()?,
+            rope: dev.typed()?,
             pages: dev.typed()?,
         })
     }
@@ -466,7 +512,8 @@ impl MlaRun {
             qa: b(sub * most(&|a| a.heads * (a.kv_rank + a.rope)) * 4)?,
             olat: b(sub * most(&|a| a.heads * a.kv_rank) * 4)?,
             scores: b(sub * most(&|a| a.pmax(ctx)) * 4)?,
-            sel: b(sub * most(&|a| if a.indexer.is_some() { a.tmax(ctx) } else { 0 }) * 4)?,
+            // (every row's picks at its place in the pass, a chunk's: a layer whose indexer is shared reads the ones the layer before it left)
+            sel: b(ch.max(sub) * most(&|a| if a.pick().is_some() { a.tmax(ctx) } else { 0 }) * 4)?,
             cnt: b(ch.max(sub) * 4)?,
             part: b(FEW as usize * most(&|a| a.heads * 8 * (a.kv_rank + 2)) * 4)?,
         }))
@@ -657,6 +704,10 @@ impl Dyn {
             launch!(k.rms2, [nr, 1, 1], [256, 1, 1], s; x, q_row as i32, qn, r.qr.ptr, a.q_rank as i32, 0u64, 0u64, a.q_rank as i32, a.eps)?;
         }
         self.lin(&p.mats[a.q_b], r.qr.ptr, n, r.q.ptr)?;
+        // (a rotary: each head's rope channels, after its nope ones, turned at the row's position)
+        if let Some(rt) = a.rot {
+            self.mla_rope(r.q.ptr, nh * qw, (nh, qw), a.nope, pos, rt.table, a.rope / 2, n)?;
+        }
         self.mark("latent attention: q")?;
         // the key-value latent normed into the cache, the shared key part after it
         let (kv, kv_row) = match a.input {
@@ -666,6 +717,10 @@ impl Dyn {
                 (x, p.mats[kv_a].whole_rows())
             }
         };
+        // (a rotary: the shared key part, after the latent, turned at the row's position before it is cached)
+        if let Some(rt) = a.rot {
+            self.mla_rope(kv, kv_row, (1, 0), kr, pos, rt.table, a.rope / 2, n)?;
+        }
         // (12-bit pages: a row of the call to its staging row, `pw` wide, the channels past the latent's zero; then the rows into their pages)
         let staged = self.pages12(p, a.ring).map(|rp| (rp.shape.heads * rp.shape.channels, self.lossless.as_ref().expect("pages").rows_k.ptr));
         if let Some((pw, rows)) = staged.filter(|x| x.0 > ks) {
@@ -695,10 +750,29 @@ impl Dyn {
             let sm = |i: usize| p.small[i].ptr;
             k.small_linear(s, r.qr.ptr, a.q_rank, sm(ix.q_b), r.iq.ptr, ih * id, n, ih * id, a.q_rank)?;
             k.small_linear(s, h, hid, sm(ix.k), r.ix.ptr, id, n, id, hid)?;
+            // (a rotary of the indexer's: each query head's first channels, and each key's after its norm, turned at the row's position: the keys normed in
+            // place, turned, then into the cache)
+            let turn = a.rot.filter(|rt| rt.index > 0);
+            if let Some(rt) = turn {
+                self.mla_rope(r.iq.ptr, ih * id, (ih, id), 0, pos, rt.table, rt.index / 2, n)?;
+                match ix.key {
+                    KeyNorm::Layer(eps) => {
+                        launch!(k.layernorm, [nr, 1, 1], [128, 1, 1], s; r.ix.ptr, id as i32, sm(ix.k_norm), sm(ix.k_bias), r.ix.ptr, id as i32, 0u64, 0u64, id as i32, eps)?
+                    }
+                    KeyNorm::Rms(eps) => {
+                        launch!(k.rms2, [nr, 1, 1], [256, 1, 1], s; r.ix.ptr, id as i32, sm(ix.k_norm), r.ix.ptr, id as i32, 0u64, 0u64, id as i32, eps)?
+                    }
+                }
+                self.mla_rope(r.ix.ptr, id, (1, 0), 0, pos, rt.table, rt.index / 2, n)?;
+            }
             // (each token's key normed into its cache's row, as the kind's form says: a LayerNorm with its bias, or the weighted RMS norm)
             for &(r0, m, kc, slot) in &seqs {
                 let (ring, tab) = self.ring_at(kc, slot, a.ring + 1);
                 let (x, at) = (r.ix.ptr + (r0 * id * 2) as u64, pos + (r0 * 4) as u64);
+                if turn.is_some() {
+                    launch!(k.scatter, [m as u32, 1, 1], [256, 1, 1], s; x, id as i32, ring, (2 * id) as i32, at, tab, id as i32)?;
+                    continue;
+                }
                 match ix.key {
                     KeyNorm::Layer(eps) => {
                         launch!(k.layernorm, [m as u32, 1, 1], [128, 1, 1], s; x, id as i32, sm(ix.k_norm), sm(ix.k_bias), ring, (2 * id) as i32, at, tab, id as i32, eps)?
@@ -749,6 +823,8 @@ impl Dyn {
             while r0 < first + rows {
                 let m = sub.min(first + rows - r0);
                 let p0 = pos + (r0 * 4) as u64;
+                // (the rows' picks and counts at their rows' places in the pass: a layer whose indexer is shared reads the ones the latent attention before it left)
+                let (sel_at, cnt_at) = (r.sel.ptr + (r0 * tmax * 4) as u64, r.cnt.ptr + (r0 * 4) as u64);
                 launch!(k.absorb, [nh as u32, (m as u32).div_ceil(8), 1], [256, 1, 1], s;
                     r.q.ptr + (r0 * nh * qw * 2) as u64, (nh * qw) as i32, qw as i32, wkv, r.qa.ptr, m as i32, nh as i32, a.nope as i32, a.v as i32, kr as i32, ks as i32)?;
                 let sel = match &a.indexer {
@@ -765,20 +841,21 @@ impl Dyn {
                             rows: m,
                             scores: r.scores.ptr,
                             emax: pmax,
-                            sel: r.sel.ptr,
+                            sel: sel_at,
                             sk: tmax,
-                            cnt: r.cnt.ptr,
+                            cnt: cnt_at,
                             cand: CandAt::default(),
                         };
                         self.idx_pick(&ix.pick, &at)?;
-                        r.sel.ptr
+                        sel_at
                     }
+                    None if a.lent.is_some() => sel_at,
                     None => {
-                        launch!(k.dense_cnt, [(m as u32).div_ceil(256), 1, 1], [256, 1, 1], s; p0, r.cnt.ptr, m as i32)?;
+                        launch!(k.dense_cnt, [(m as u32).div_ceil(256), 1, 1], [256, 1, 1], s; p0, cnt_at, m as i32)?;
                         0
                     }
                 };
-                self.mla_attn(r, (lat, ls), tab, sel, tmax, a, m)?;
+                self.mla_attn(r, (lat, ls), tab, (sel, cnt_at), tmax, a, m)?;
                 launch!(k.expand, [nh as u32, (m as u32).div_ceil(4), 1], [256, 1, 1], smem (4 * kr * 4) as u32, s;
                     r.olat.ptr, wkv, r.ov.ptr + (r0 * nh * a.v * 2) as u64, m as i32, nh as i32, a.nope as i32, a.v as i32, kr as i32)?;
                 r0 += m;
@@ -793,10 +870,19 @@ impl Dyn {
         self.mark("latent attention: o product")
     }
 
+    /// `mla_rope` (kernels/mla.cu) on n rows of x (rows xs apart) at the rows' positions `pos`: `heads` heads `hs` apart, `pairs` interleaved pairs from channel
+    /// `off`, by the description's rotary table `t`.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn mla_rope(&self, x: u64, xs: usize, (heads, hs): (usize, usize), off: usize, pos: u64, t: usize, pairs: usize, n: usize) -> Result<()> {
+        let (cs, sn) = self.ropes.get(t).ok_or_else(|| Error(format!("a latent attention's rotary table {t}, of {}", self.ropes.len())))?;
+        launch!(self.km.rope, [n as u32, heads.max(1) as u32, 1], [pairs.next_multiple_of(32) as u32, 1, 1], self.dev.stream;
+            x, xs as i32, hs as i32, off as i32, pos, cs.ptr, sn.ptr, pairs as i32)
+    }
+
     /// olat [m, heads, kv_rank] fp32: each row's and head's softmax attention over the tokens the counts (and picks, `sel`; 0: every position up to the row's) give,
     /// of the latents `lat.0` (rows `lat.1` apart: the ring's, through `tab`, or a 12-bit ring's pages unpacked, position p at row p). A few rows (at most `FEW`) cut
     /// their tokens into 8 runs over blocks and merge them; more rows are parallel enough by themselves.
-    unsafe fn mla_attn(&self, r: &MlaRun, lat: (u64, usize), tab: u64, sel: u64, tmax: usize, a: &MlaOp, m: usize) -> Result<()> {
+    unsafe fn mla_attn(&self, r: &MlaRun, lat: (u64, usize), tab: u64, (sel, cnt): (u64, u64), tmax: usize, a: &MlaOp, m: usize) -> Result<()> {
         let (s, k) = (self.dev.stream, &self.km);
         let (nh, kr, ks) = (a.heads as i32, a.kv_rank as i32, (a.kv_rank + a.rope) as i32);
         let splits: i32 = if m as u32 <= FEW { 8 } else { 1 };
@@ -812,7 +898,7 @@ impl Dyn {
         }
         let smem = ((ks + 2 * tile) * 4) as u32;
         launch!(k.attn, [nh as u32, m as u32, splits as u32], [256, 1, 1], smem smem, s;
-            r.qa.ptr, lat.0, lat.1 as i32, tab, sel, r.cnt.ptr, r.olat.ptr, r.part.ptr, tmax, nh, kr, ks, a.scale, splits, tile)?;
+            r.qa.ptr, lat.0, lat.1 as i32, tab, sel, cnt, r.olat.ptr, r.part.ptr, tmax, nh, kr, ks, a.scale, splits, tile)?;
         if splits > 1 {
             launch!(k.merge, [nh as u32, m as u32, 1], [256, 1, 1], s; r.part.ptr, r.olat.ptr, nh, kr, splits)?;
         }
@@ -936,7 +1022,7 @@ mod tests {
             }
         }
         let k = kind(64, true, false);
-        assert_eq!(MlaOp::of(&k, MlaIn::Fused { w: 5 }, 6, 7, 10, 2, false).unwrap().scale.to_bits(), k.scale.to_bits());
+        assert_eq!(MlaOp::of(&k, MlaIn::Fused { w: 5 }, 6, 7, 10, 2, false, None).unwrap().scale.to_bits(), k.scale.to_bits());
     }
 
     /// The kind's parameters land where the kernels read them: a fused product with its gate (Kimi-K3), two products and an indexer (GLM-5.3) whose small tensors
@@ -944,19 +1030,19 @@ mod tests {
     #[test]
     fn the_kind_lowers_to_the_operation() {
         let twice = Norm { rounding: kinds::Rounding::Twice, ..Norm::rms(1e-6) };
-        let k = MlaOp::of(&kinds::Mla { q_norm: twice, ..kind(64, true, false) }, MlaIn::Fused { w: 5 }, 6, 7, 10, 2, false).unwrap();
+        let k = MlaOp::of(&kinds::Mla { q_norm: twice, ..kind(64, true, false) }, MlaIn::Fused { w: 5 }, 6, 7, 10, 2, false, None).unwrap();
         assert_eq!((k.gate, k.q_norm, k.kv_norm, k.kv_b, k.small_count(), k.rope, k.q_rank), (true, 10, 11, 12, 3, 64, 128));
         // (the q latent's norm: KimiRMSNorm's rounding is the kind's, which picks its kernel; GLM-5.3's kind gives its norm in f32)
         assert_eq!(k.q_round, kinds::Rounding::Twice);
         let twice_not = kind(0, false, true).q_norm.rounding;
-        let g = MlaOp::of(&kind(0, false, true), MlaIn::Apart { q_a: 1, kv_a: 2 }, 3, 4, 20, 6, true).unwrap();
+        let g = MlaOp::of(&kind(0, false, true), MlaIn::Apart { q_a: 1, kv_a: 2 }, 3, 4, 20, 6, true, None).unwrap();
         let x = g.indexer.as_ref().unwrap();
         assert_eq!((x.q_b, x.gate, x.pick.top_k, x.pick.keys, g.small_count(), g.q_round), (23, 29, 2, IdxKeys::Ring(7), 10, twice_not));
         assert_eq!((g.tmax(1024), g.pmax(1024), g.rows_at_once(64, 1024)), (2 * 4 + 3, 257, 64));
         // (a key a token, RMS-normed: no bias, no pooling tensors; its four small tensors follow the latent's three. LayerNorm-ed: its bias too)
         let per_token = |key: Norm| {
             let ix = Indexer { block: 1, top_k: 8, form: kinds::IndexForm::Gated { key }, ..kind(0, false, true).indexer.unwrap() };
-            MlaOp::of(&kinds::Mla { indexer: Some(ix), ..kind(0, false, false) }, MlaIn::Fused { w: 0 }, 1, 2, 20, 6, false).unwrap()
+            MlaOp::of(&kinds::Mla { indexer: Some(ix), ..kind(0, false, false) }, MlaIn::Fused { w: 0 }, 1, 2, 20, 6, false, None).unwrap()
         };
         let r = per_token(Norm::rms(1e-5));
         let x = r.indexer.as_ref().unwrap();
@@ -974,13 +1060,16 @@ mod tests {
         // (an RMS norm whose weight is (1 + w), and the mean-pooled form, are not the latent attention's indexer's)
         let odd = |form| Indexer { form, ..kind(0, false, true).indexer.unwrap() };
         for form in [kinds::IndexForm::Gated { key: Norm::rms_plus_one(1e-6) }, kinds::IndexForm::Mean { norm: Norm::rms(1e-6) }] {
-            assert!(MlaOp::of(&kinds::Mla { indexer: Some(odd(form)), ..kind(0, false, false) }, MlaIn::Apart { q_a: 1, kv_a: 2 }, 3, 4, 0, 0, true).is_err());
+            assert!(
+                MlaOp::of(&kinds::Mla { indexer: Some(odd(form)), ..kind(0, false, false) }, MlaIn::Apart { q_a: 1, kv_a: 2 }, 3, 4, 0, 0, true, None).is_err()
+            );
         }
         // (an indexer beside a shared key part, not rotated: the attention's scores are over the latent and the shared part of the tokens it picks)
-        let both = MlaOp::of(&kind(64, false, true), MlaIn::Fused { w: 0 }, 1, 2, 0, 0, false).unwrap();
+        let both = MlaOp::of(&kind(64, false, true), MlaIn::Fused { w: 0 }, 1, 2, 0, 0, false, None).unwrap();
         assert_eq!((both.rope, both.indexer.as_ref().map(|x| x.pick.ratio), both.rings().len()), (64, Some(4), 2));
         // (a gate with two products, a rotated shared part)
-        assert!(MlaOp::of(&kind(0, true, false), MlaIn::Apart { q_a: 1, kv_a: 2 }, 3, 4, 0, 0, false).is_err());
-        assert!(MlaOp::of(&kinds::Mla { rope: Some(kinds::Rope::plain(1e4, 64)), ..kind(64, false, false) }, MlaIn::Fused { w: 0 }, 1, 2, 0, 0, false).is_err());
+        assert!(MlaOp::of(&kind(0, true, false), MlaIn::Apart { q_a: 1, kv_a: 2 }, 3, 4, 0, 0, false, None).is_err());
+        assert!(MlaOp::of(&kinds::Mla { rope: Some(kinds::Rope::plain(1e4, 64)), ..kind(64, false, false) }, MlaIn::Fused { w: 0 }, 1, 2, 0, 0, false, None)
+            .is_err());
     }
 }

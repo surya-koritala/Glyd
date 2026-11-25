@@ -457,6 +457,8 @@ pub enum NormW {
     PlusOne,
     /// y = bf16(rmsnorm(bf16(x w))): the weight scales the input, the norm has none (`NormWeight::InputPlusOne`)
     Input,
+    /// y = bf16(bf16(rmsnorm(x)) w): the normed value rounded before the weight (`Rounding::Twice`, transformers' RMSNorm in bf16: GLM's)
+    Rounded,
 }
 
 /// A mixture of experts (the part's block `block`): the router reads H, the experts and the shared expert `x` (H; the release's FP8-rounded H, Hq; a latent
@@ -2327,6 +2329,7 @@ impl Dyn {
                     NormW::Plain => self.kern.rmsnorm(s, x, w, y, nu, k, eps)?,
                     NormW::PlusOne => self.k35.rmsnorm(s, x, w, y, nu, k, eps)?,
                     NormW::Input => self.kres.rms_in(s, x, w, y, nu, k, eps)?,
+                    NormW::Rounded => launch!(self.km.rms2_512, [nu, 1, 1], [512, 1, 1], s; x, k, w, y, k, k, eps)?,
                 }
                 self.mark("norms")
             }

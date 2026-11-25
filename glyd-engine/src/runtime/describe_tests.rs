@@ -300,7 +300,10 @@ fn released_glm53_config() {
     let shared: Vec<bool> = mla.iter().map(|m| m.indexer.as_ref().unwrap().shared).collect();
     assert_eq!(shared, (0..78).map(|l| l >= 3 && (l - 2) % 4 != 0).collect::<Vec<bool>>());
     let (m, ix) = (mla[0], mla[0].indexer.as_ref().unwrap());
-    assert_eq!((m.rope_dim, m.rope.as_ref().map(|r| (r.dim, r.style)), ix.rope, ix.top_k, ix.block), (64, Some((64, super::kinds::RopeStyle::Interleaved)), 64, 2048, 1));
+    assert_eq!(
+        (m.rope_dim, m.rope.as_ref().map(|r| (r.dim, r.style)), ix.rope, ix.top_k, ix.block),
+        (64, Some((64, super::kinds::RopeStyle::Interleaved)), 64, 2048, 1)
+    );
     assert_eq!((d.mtp_layers, d.desc.embed.streams, d.desc.head.rounding), (1, 1, super::kinds::Rounding::Once));
 }
 
@@ -1269,4 +1272,3 @@ fn deepseek_v41s_tiny_model_runs_on_the_reference() {
     assert_eq!(a, b);
     assert!(a.len() == 12 && a.iter().flatten().all(|v| v.is_finite()));
 }
-
