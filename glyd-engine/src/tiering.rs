@@ -219,7 +219,12 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         Some("copy") => true,
         Some(x) => return err(format!("--against {x}: copy")),
     };
-    let run = |cached: bool| -> Result<Vec<Vec<f32>>> {
+    // (the router's choices of the run's passes, an eager run's: each selection read back, `moe::ROUTES`, from the prompt on)
+    let tap = |on: Option<Vec<(usize, Vec<i64>)>>| {
+        crate::moe::ROUTES.lock().map(|mut r| std::mem::replace(&mut *r, on)).map_err(|_| Error("the routes' lock".into()))
+    };
+    type Routes = Option<Vec<(usize, Vec<i64>)>>;
+    let run = |cached: bool| -> Result<(Vec<Vec<f32>>, Routes)> {
         let caching =
             |mode, device| crate::hbg_store::HbCaching { places, ram: None, offload: crate::offload::Offload { mode, device, ..Default::default() }, dense };
         let mut e = if cached {
@@ -235,16 +240,49 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                 planned.set(d.stores().iter().map(|s| s.device_layers()).sum());
             }
         }
-        let mut out = Vec::new();
-        e.prefill(&tokens[..n - 4])?;
-        out.push(e.logits()?);
-        for &t in &tokens[n - 4..] {
-            e.step(t)?;
+        tap((!device).then(Vec::new))?;
+        let passes = (|| -> Result<Vec<Vec<f32>>> {
+            let mut out = Vec::new();
+            e.prefill(&tokens[..n - 4])?;
             out.push(e.logits()?);
-        }
-        Ok(out)
+            for &t in &tokens[n - 4..] {
+                e.step(t)?;
+                out.push(e.logits()?);
+            }
+            Ok(out)
+        })();
+        let seen = tap(None)?;
+        Ok((passes?, seen))
     };
-    let (resident, cached) = (run(false)?, run(true)?);
+    let ((resident, routes_r), (cached, routes_c)) = (run(false)?, run(true)?);
+    // (each position's pass's tokens routed to other experts in some layer: the prompt's pass is the first selections' tokens, each decode step's one token; None: not compared)
+    let passes = resident.len();
+    let routing: Option<Vec<(usize, usize)>> = match (&routes_r, &routes_c) {
+        (Some(a), Some(b)) if a.len() == b.len() && !a.is_empty() && a.len() % passes == 0 => {
+            let per = a.len() / passes;
+            Some(
+                (0..passes)
+                    .map(|i| {
+                        let calls = (i * per..(i + 1) * per).map(|j| (&a[j], &b[j]));
+                        let mut other = std::collections::BTreeSet::new();
+                        let mut tokens = 0;
+                        for ((k, x), (_, y)) in calls {
+                            tokens = x.len() / k;
+                            for (tk, (u, v)) in x.chunks(*k).zip(y.chunks(*k)).enumerate() {
+                                let (mut u, mut v) = (u.to_vec(), v.to_vec());
+                                (u.sort_unstable(), v.sort_unstable());
+                                if u != v {
+                                    other.insert(tk);
+                                }
+                            }
+                        }
+                        (other.len(), tokens)
+                    })
+                    .collect(),
+            )
+        }
+        _ => None,
+    };
     let (mut differ, mut worst, mut least_cos) = (0usize, 0f32, 1f64);
     for (i, (r, c)) in resident.iter().zip(&cached).enumerate() {
         let (mut d, mut w) = (0usize, 0f32);
@@ -266,8 +304,13 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         least_cos = least_cos.min(cos);
         if d > 0 {
             // (which pass it was: the prompt's last row, or a decode step's one row; a step of one token has few pairs, where the library splits a product's K over blocks)
+            let route = match routing.as_ref().map(|r| r[i]) {
+                Some((0, _)) => ", the routing the same".to_string(),
+                Some((o, t)) => format!(", the routing differs at {o} of the pass's {t} tokens"),
+                None => String::new(),
+            };
             println!(
-                "  position {i} ({}): {d} of {} logits differ, the largest by {w:e} (the reference's spread {:.3}; cosine {cos:.6})",
+                "  position {i} ({}): {d} of {} logits differ, the largest by {w:e} (the reference's spread {:.3}; cosine {cos:.6}{route})",
                 if i == 0 { "the prompt's" } else { "a decode step's" },
                 r.len(),
                 (rr / n).sqrt()
@@ -276,6 +319,15 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         (differ, worst) = (differ + d, worst.max(w));
     }
     let total: usize = resident.iter().map(Vec::len).sum();
+    match &routing {
+        Some(r) => println!(
+            "  the routing differs at {} of {passes} positions' passes ({} tokens in all)",
+            r.iter().filter(|x| x.0 > 0).count(),
+            r.iter().map(|x| x.0).sum::<usize>()
+        ),
+        None if !device => println!("  the routing not compared: the two runs' selections differ in number"),
+        None => println!("  the routing not compared: the decode step is one graph, whose selections are not read back"),
+    }
     println!(
         "{}: {} logits of {} positions, {} against the expert cache ({places} places a layer, {mode:?}{}): {differ} differ, the largest by {worst:e}, the least cosine {least_cos:.6}",
         dir.display(),

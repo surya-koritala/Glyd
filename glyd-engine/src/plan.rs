@@ -406,6 +406,10 @@ pub struct Shape {
     /// KV bytes a token adds (bf16) in layers that keep every position, and in sliding-window layers with their window.
     pub kv_full: f64,
     pub kv_sliding: f64,
+    /// The same in the executor's 12-bit lossless pages: a ring that takes them (src/dynamic/kv12.rs `shapes`) at the planner's bytes a token there (`sizing::kv12_token_bytes`),
+    /// the others as bf16 (`in_twelve`).
+    pub kv12_full: f64,
+    pub kv12_sliding: f64,
     pub window: usize,
     /// Recurrent state per sequence (linear attention, Mamba), bytes.
     pub state: f64,
@@ -461,6 +465,12 @@ impl Shape {
     }
 
     /// From a config.json parsed once: its shared keys, typed (`runtime::config::Shared`), the families' names for one thing read as one.
+    /// The shape with its keys and values in the executor's 12-bit lossless pages (`kv12_full`, `kv12_sliding`), as a run that takes them holds them (`takes_twelve`).
+    pub fn in_twelve(mut self) -> Shape {
+        (self.kv_full, self.kv_sliding) = (self.kv12_full, self.kv12_sliding);
+        self
+    }
+
     pub fn from_model(c: &ModelConfig) -> Result<Shape, String> {
         let s = &c.shared;
         let f = |x: Option<usize>| x.map(|v| v as f64);
@@ -513,6 +523,21 @@ impl Shape {
         let gate = if s.attn_output_gate.unwrap_or(false) { 2.0 } else { 1.0 };
         let hq = heads as f64;
         let (g_kv, g_hd) = (f(s.num_global_key_value_heads).unwrap_or(kv_heads), f(s.global_head_dim).unwrap_or(hd));
+        // (the 12-bit pages take a latent's one stream, and keys and values of heads of a multiple of 128 channels with no softcap of the scores; a latent attention's indexer stays bf16)
+        let softcap = c.text.get("attn_logit_softcapping").and_then(serde_json::Value::as_f64).is_some_and(|v| v != 0.0);
+        let twelve = |global: bool| -> f64 {
+            let pages = |heads: usize, channels: usize, one: bool| sizing::kv12_token_bytes(heads, channels, one) as f64;
+            if kv_lora > 0.0 {
+                pages(((kv_lora + rope) as usize).div_ceil(128), 128, true) + indexer * 4.0
+            } else {
+                let (kv, d) = if global { (g_kv, g_hd) } else { (kv_heads, hd) };
+                if (d as usize) % 128 == 0 && !softcap {
+                    pages(kv as usize, d as usize, false)
+                } else {
+                    2.0 * kv * d * 2.0
+                }
+            }
+        };
         let attention = |global: bool| -> (f64, f64) {
             if kv_lora > 0.0 {
                 let q = if q_lora > 0.0 { hf * q_lora + q_lora * hq * (nope + rope) } else { hf * hq * (nope + rope) };
@@ -546,22 +571,26 @@ impl Shape {
                 }
                 k if k.contains("attention") => {
                     let sliding = k.contains("sliding") && sh.window > 0;
-                    let (p, kv) = attention(!sliding && pattern.is_none() && s.global_head_dim.is_some());
+                    let global = !sliding && pattern.is_none() && s.global_head_dim.is_some();
+                    let (p, kv) = attention(global);
                     sh.dense += p;
                     if let Some(r) = &ratios {
+                        // (no 12-bit pages for these rings: the same bytes)
                         let (ratio, d, idim) = (r.get(i).copied().unwrap_or(0), hd as usize, s.index_head_dim.unwrap_or(0));
                         let entries = |w: usize, every: usize| (w * 2).div_ceil(every) as f64;
-                        sh.kv_sliding += (d * 2) as f64;
+                        let (mut full, slid) = (0.0, (d * 2) as f64);
                         if ratio > 0 {
-                            sh.kv_full += entries(d, ratio);
+                            full += entries(d, ratio);
                         }
                         if ratio == 4 {
-                            sh.kv_full += entries(idim, 4);
+                            full += entries(idim, 4);
                         }
+                        (sh.kv_full, sh.kv_sliding, sh.kv12_full, sh.kv12_sliding) =
+                            (sh.kv_full + full, sh.kv_sliding + slid, sh.kv12_full + full, sh.kv12_sliding + slid);
                     } else if sliding {
-                        sh.kv_sliding += kv
+                        (sh.kv_sliding, sh.kv12_sliding) = (sh.kv_sliding + kv, sh.kv12_sliding + twelve(global));
                     } else {
-                        sh.kv_full += kv
+                        (sh.kv_full, sh.kv12_full) = (sh.kv_full + kv, sh.kv12_full + twelve(global));
                     }
                 }
                 _ => {}
@@ -2581,6 +2610,18 @@ pub struct Planned {
     pub positions: f64,
 }
 
+/// Whether the run of `a` holds its keys and values in the executor's 12-bit lossless pages (GLYD_KV=lossless), as the family's load plan sizes them: Gemma 4 with no draft model,
+/// dense Qwen3 served (`sizing::twelve_pages`); the loaders that take them (src/cli.rs `twelve_bit_pages`).
+fn takes_twelve(a: &crate::args::Args, f: crate::support::Family) -> bool {
+    use crate::support::Family;
+    let lossless = std::env::var("GLYD_KV").as_deref() == Ok("lossless");
+    match f {
+        Family::Gemma4 => lossless && a.has("no-draft"),
+        Family::Qwen3 => sizing::twelve_pages(a),
+        _ => false,
+    }
+}
+
 pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
     use crate::ui::Refusal;
     let given = a.need(1, "MODEL").map_err(|e| Refusal::new(e.msg, "glyd-engine fit MODEL[:LEVEL]"))?;
@@ -2608,6 +2649,7 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
         crate::support::check(&config, model, &name, "penguin")?;
     }
     let sh = shape_of(model, &config).map_err(|e| Refusal::unsupported(format!("{name}: {e}"), ""))?;
+    let sh = if takes_twelve(a, fam.family) { sh.in_twelve() } else { sh };
     let context: Option<usize> = a.flag("context").map(|c| c.parse()).transpose().map_err(|_| Refusal::new("--context takes a number", "--context 8192"))?;
     crate::support::context_check(&name, fam, sh.max_ctx, context)?;
     let users: usize = a.num("users", 1usize)?;
@@ -4738,6 +4780,19 @@ mod tests {
             eprintln!("{kind}: the pools {full} + {sliding} (sliding) bytes a token, the planner {} + {}", sh.kv_full, sh.kv_sliding);
             if (sh.kv_full, sh.kv_sliding) != (full as f64, sliding as f64) {
                 bad.push(format!("{kind}: the pools {full} + {sliding}, the planner {} + {}", sh.kv_full, sh.kv_sliding));
+            }
+            // (in 12-bit pages: each ring the pages take (kv12::shapes) at the planner's bytes a token there, which kv12check holds to the pages' own; the others as bf16)
+            let mut taken: Vec<Option<crate::dynamic::kv12::KvShape>> = vec![None; d.rings.len()];
+            for k in crate::dynamic::kv12::shapes(d).into_iter().flatten() {
+                let r = k.ring;
+                taken[r] = Some(k);
+            }
+            let bytes = |i: usize| taken[i].as_ref().map_or(d.rings[i].token_bytes(), |k| sizing::kv12_token_bytes(k.heads, k.channels, k.one) as usize);
+            let full12: usize = (0..d.rings.len()).filter(|&i| d.rings[i].window == 0).map(bytes).sum();
+            let sliding12: usize = (0..d.rings.len()).filter(|&i| d.rings[i].window > 0).map(bytes).sum();
+            eprintln!("{kind}: in 12-bit pages the pools {full12} + {sliding12}, the planner {} + {}", sh.kv12_full, sh.kv12_sliding);
+            if (sh.kv12_full, sh.kv12_sliding) != (full12 as f64, sliding12 as f64) {
+                bad.push(format!("{kind}: in 12-bit pages the pools {full12} + {sliding12}, the planner {} + {}", sh.kv12_full, sh.kv12_sliding));
             }
         }
         assert!(bad.is_empty(), "{bad:?}");
