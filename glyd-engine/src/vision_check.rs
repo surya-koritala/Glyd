@@ -16,6 +16,8 @@
 //!                                            token, at the bound (the kind's: kl:1e-4:2.5e-4:0.85); --expect-apart: a pass where they are past it (a check that must tell them apart)
 //!   visioncheck sched DIR IMAGE IMAGE [--tokens N]   prompts with and without images through the common scheduler at once, each against itself alone (`conv::Gen::reply`), and a second
 //!                                            turn about an image already read; GLYD_ENGINE_BATCH_PREFILL=0 holds them to the bit
+//!   visioncheck rope DIR IMAGE               the keys the attention and the indexer's pools turned at an image prompt's M-RoPE positions, angle by angle against the same prompt's at
+//!                                            each row's own position
 
 use crate::args::Args;
 use crate::dev::Dev;
@@ -40,7 +42,8 @@ pub fn run(a: &Args) -> Result<()> {
         "logits" => logits(a),
         "compare" => compare(a),
         "sched" => sched(a),
-        x => err(format!("visioncheck {x}: make, tower, logits, compare or sched")),
+        "rope" => rope(a),
+        x => err(format!("visioncheck {x}: make, tower, logits, compare, sched or rope")),
     }
 }
 
@@ -465,6 +468,84 @@ fn compare(a: &Args) -> Result<()> {
     Ok(())
 }
 
+/// `rope`: an image prompt's keys as the attention and the indexer's pools turned them at the prompt's M-RoPE positions, against the same prompt's keys turned at
+/// each row's own position (`Dyn::plain_positions`): the layers before the first attention are no position's, so each pair of a key is the other run's turned by
+/// the difference of the two angles. Held at the attention kind's bound (the largest difference over the layer's largest magnitude, 2e-2); the same keys taken as
+/// turned by no difference, and with every angle turning by the temporal position alone, must be past it (what the check tells apart), and the rows before the
+/// first image the same bits.
+fn rope(a: &Args) -> Result<()> {
+    let dir = Path::new(a.need(2, "DIR")?);
+    let image = a.need(3, "IMAGE")?;
+    let mut e = engine(dir, 1)?;
+    let prep = crate::vision::PREP.get().cloned().ok_or_else(|| Error("no image settings".into()))?;
+    let img = Arc::new(prep.image(&io(std::fs::read(image), Path::new(image))?)?);
+    let (ids, _) = prompt_ids(dir, true)?;
+    let ids = crate::vision::expand(&ids, prep.image_token, std::slice::from_ref(&img))?;
+    let (pos, _) = crate::vision::positions(&ids, prep.image_token, &[img.grid()])?;
+    let first = ids.iter().position(|&t| t == prep.image_token).unwrap_or(ids.len());
+    let mut keys = |plain: bool| -> Result<Vec<(String, usize, usize, usize, usize, f64, usize, Vec<u16>)>> {
+        e.plain_positions(plain);
+        e.reset()?;
+        e.set_images(&ids, std::slice::from_ref(&img))?;
+        e.prefill(&ids)?;
+        e.turned_rows(ids.len())
+    };
+    let (m, p) = (keys(false)?, keys(true)?);
+    e.plain_positions(false);
+    let r = crate::runtime::describe::describe_dir(dir)?.0;
+    let mrope = r.desc.blocks.iter().find_map(|b| {
+        if let crate::runtime::kinds::Body::Mixer(crate::runtime::kinds::Mixer::Attention(a)) = &b.body {
+            a.rope.clone()
+        } else {
+            None
+        }
+    });
+    let mrope = mrope.ok_or_else(|| Error("no attention's rotary".into()))?;
+    let f = |w: u16| f32::from_bits((w as u32) << 16) as f64;
+    let mut ok = true;
+    for ((what, width, head, span, pairs, theta, covers, a), (_, _, _, _, _, _, _, b)) in m.iter().zip(&p) {
+        let inv: Vec<f64> = (0..*pairs).map(|i| (1.0f32 / (*theta as f32).powf((2 * i) as f32 / *span as f32)) as f64).collect();
+        let rows = a.len() / width;
+        let scale = a.iter().fold(0f64, |x, &w| x.max(f(w).abs()));
+        // (each row's error against b turned by the difference of the angles, by none, and by the temporal position's alone)
+        let (mut err_m, mut err_none, mut err_t, mut same_before) = (0f64, 0f64, 0f64, true);
+        for row in 0..rows {
+            let at = row * covers;
+            let pm = pos[at];
+            if at + covers <= first {
+                same_before &= a[row * width..(row + 1) * width] == b[row * width..(row + 1) * width];
+            }
+            for h in 0..width / head {
+                let o = row * width + h * head;
+                for (i, &w) in inv.iter().enumerate() {
+                    let (j, k) = (o + i, o + i + span / 2);
+                    let turn = |d: f64| {
+                        let (c, s) = ((d * w).cos(), (d * w).sin());
+                        (f(b[j]) * c - f(b[k]) * s, f(b[k]) * c + f(b[j]) * s)
+                    };
+                    let far = |(x, y): (f64, f64)| (f(a[j]) - x).abs().max((f(a[k]) - y).abs());
+                    err_m = err_m.max(far(turn(pm[mrope.mrope_axis(i)] as f64 - at as f64)));
+                    err_none = err_none.max(far(turn(0.0)));
+                    err_t = err_t.max(far(turn(pm[0] as f64 - at as f64)));
+                }
+            }
+        }
+        let (em, en, et) = (err_m / scale, err_none / scale, err_t / scale);
+        let pass = em <= BLOCK_BOUND as f64 && en > BLOCK_BOUND as f64 && et > BLOCK_BOUND as f64 && same_before;
+        ok &= pass;
+        println!(
+            "{} {what}: {rows} rows; turned by the M-RoPE angles' difference {em:.3e} from the plain run's keys (bound {BLOCK_BOUND:.0e}); by none {en:.3e}, by the temporal position alone {et:.3e} (both must be past it); the rows before the image {} the same bits",
+            if pass { "PASS" } else { "FAIL" },
+            if same_before { "are" } else { "are NOT" }
+        );
+    }
+    if !ok || m.is_empty() {
+        return err("visioncheck rope: the keys are not turned at the prompt's M-RoPE positions");
+    }
+    println!("PASS visioncheck rope");
+    Ok(())
+}
+
 /// `sched`: see the module's words.
 fn sched(a: &Args) -> Result<()> {
     use crate::conv::Gen;
@@ -569,11 +650,14 @@ fn sched(a: &Args) -> Result<()> {
     let got = collect(rx)?;
     let found = cached.load(std::sync::atomic::Ordering::Relaxed);
     let same = got == alone_second;
-    ok &= found > 0;
+    // (GLYD_ENGINE_BATCH_PREFILL=0, where every reply is to be the reply alone: the step keeps no finished sequence, so nothing is found)
+    let keeps = std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_none_or(|v| v != "0");
+    ok &= (found > 0) == keeps;
     println!(
-        "{} a second turn about the first image ({} ids): {found} of them found in the first's kept slot; its tokens {} the whole prompt's alone (not judged: the kept slot goes on from the first prompt's end, the prompt alone in chunks from its start){}",
-        if found > 0 { "PASS" } else { "FAIL" },
+        "{} a second turn about the first image ({} ids): {found} of them found in the first's kept slot{}; its tokens {} the whole prompt's alone (not judged: the kept slot goes on from the first prompt's end, the prompt alone in chunks from its start){}",
+        if (found > 0) == keeps { "PASS" } else { "FAIL" },
         second.len(),
+        if keeps { "" } else { " (none kept: one a pass)" },
         if same { "are" } else { "are not" },
         if same { String::new() } else { format!(" (here {got:?}, alone {alone_second:?})") }
     );

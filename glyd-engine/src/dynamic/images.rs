@@ -157,6 +157,43 @@ impl Dyn {
         }
     }
 
+    /// A check's: the keys the selected sequence's first `n` positions left that turn by their positions, each layer's in order: an attention's keys ([n, kv
+    /// heads, head], its pairs (i, i + span / 2) of i < `pairs` turned) and a mean-pooled indexer's pools' keys ([n / block, dim], the first 2 `pairs` channels
+    /// turned): (what, a row's width, a head's width, span, pairs, the theta of its table, the tokens a row covers, bf16 rows). The sequence's own rooms (a
+    /// paged engine's pools are not read here).
+    #[cfg(feature = "dev")]
+    pub fn turned_rows(&self, n: usize) -> Result<Vec<(String, usize, usize, usize, usize, f64, usize, Vec<u16>)>> {
+        if self.paged.is_some() {
+            return err("turned_rows: a paged engine's keys are in its pools");
+        }
+        let mut out = Vec::new();
+        for (l, op) in self.big.d.layers.iter().enumerate() {
+            for op in op {
+                let (what, ring, width, head, span, pairs, theta, covers) = match op {
+                    Op::Attn(a) => match a.rope {
+                        Some(r) => (format!("layer {l}'s attention keys"), a.ring, a.nk * a.d, a.d, r.span, r.pairs, self.big.d.ropes[r.table].theta, 1),
+                        None => continue,
+                    },
+                    Op::IdxMean { dim, block, rope, pools, .. } => {
+                        let r = &self.big.d.ropes[*rope];
+                        (format!("layer {l}'s indexer pools"), *pools, *dim, *dim, 2 * r.pairs, r.pairs, r.theta, *block)
+                    }
+                    _ => continue,
+                };
+                let rows = n / covers;
+                if rows > self.ring_cap[ring] {
+                    return err(format!("{rows} rows of a ring of {}", self.ring_cap[ring]));
+                }
+                let mut v = vec![0u16; rows * width];
+                // SAFETY: the ring's first `rows` rows (a room of its own: row p at p), read after the stream is synchronized.
+                unsafe { crate::dev::copy_d2h_async(v.as_mut_ptr() as *mut _, self.cache(ring).0, v.len() * 2, self.dev.stream)? };
+                self.dev.sync()?;
+                out.push((what, width, head, span, pairs, theta, covers, v));
+            }
+        }
+        Ok(out)
+    }
+
     /// A check's: every row of the model's passes turned at its own position (true), the M-RoPE positions off; the step graph captured again with it.
     #[cfg(feature = "dev")]
     pub fn plain_positions(&mut self, on: bool) {
