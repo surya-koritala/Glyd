@@ -500,6 +500,8 @@ pub struct Rope {
     pub theta: f64,
     pub dim: usize,
     pub pairs: usize,
+    /// Each angle (fp32) through f64 trig, rounded to fp32 then bf16 (transformers' cos and sin in the activations' type, Muse Spark's); else fp32 trig.
+    pub trig64: bool,
 }
 
 /// A layer's keys and values, `nk` heads of `d`: a ring of the window and a chunk where `window` > 0, else the whole context. `values` false: keys alone, in kc
@@ -776,6 +778,20 @@ fn read_f32(d: &ModelDesc) -> Vec<usize> {
 /// holds it): an fp32 one rounded to bf16, kept four bytes wide; a bf16 one widened.
 fn read_f32_as_bf16(d: &ModelDesc) -> Vec<usize> {
     d.layers.iter().flatten().filter_map(|op| if let Op::GatedNorm { w, sigmoid: false, .. } = op { Some(*w) } else { None }).collect()
+}
+
+/// cos and sin [positions, pairs] as `rotary` makes them, each angle (fp32) through f64 trig and rounded to fp32 then bf16 (`Rope::trig64`).
+fn rotary64(theta: f64, dim: usize, pairs: usize, max_pos: usize) -> (Vec<u16>, Vec<u16>) {
+    let inv: Vec<f32> = (0..pairs).map(|i| 1.0f32 / (theta as f32).powf((2 * i) as f32 / dim as f32)).collect();
+    let (mut c, mut s) = (Vec::with_capacity(max_pos * pairs), Vec::with_capacity(max_pos * pairs));
+    for p in 0..max_pos {
+        for &f in &inv {
+            let (s_, c_) = ((p as f32 * f) as f64).sin_cos();
+            c.push(crate::gemma4::bf16_bits(c_ as f32));
+            s.push(crate::gemma4::bf16_bits(s_ as f32));
+        }
+    }
+    (c, s)
 }
 
 /// Small tensor `name` made in form `f` from its checkpoint's bf16 values: bf16 words.
@@ -1185,7 +1201,7 @@ impl Dyn {
             .ropes
             .iter()
             .map(|r| {
-                let (c, s) = rotary(r.theta, r.dim, r.pairs, mp);
+                let (c, s) = if r.trig64 { rotary64(r.theta, r.dim, r.pairs, mp) } else { rotary(r.theta, r.dim, r.pairs, mp) };
                 Ok((upload_bytes(crate::weights::as_bytes(&c))?, upload_bytes(crate::weights::as_bytes(&s))?))
             })
             .collect::<Result<_>>()?;
