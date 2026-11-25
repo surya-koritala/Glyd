@@ -1099,6 +1099,9 @@ impl crate::kern_nh::NhHost for Dyn {
     unsafe fn lin(&self, w: &Mat, x: u64, m: usize, y: u64) -> Result<()> {
         Dyn::lin(self, w, x, m, y)
     }
+    unsafe fn gemm(&self, x: u64, w: u64, y: u64, m: i32, n: i32, k: i32) -> Result<()> {
+        self.kern.gemm_fill(self.dev.stream, x, w, y, m, n, k)
+    }
 }
 
 impl Dyn {

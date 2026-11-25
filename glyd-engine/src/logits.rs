@@ -2435,7 +2435,7 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
-/// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR --prompt-tokens P]` (gemma4, qwen35, muse, kimi, glm, nemotron): the case's random model on the description executor (or the model
+/// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR --prompt-tokens P] [--pack P [--precise]]` (gemma4, qwen35, muse, kimi, glm, nemotron): the case's random model on the description executor (or the model
 /// in DIR, its prompts of P (k + 1) / N tokens), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
 /// the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts one a pass, decode steps of the rows that decode: 16 or fewer here, whose bits
 /// are each row's own pass's). With prompts run together the replies that differ are counted, not refused (a step of more than 16 rows is another kernel's; a random model's near ties turn on its last
@@ -2458,7 +2458,12 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let mut e: Dyn = match a.flag("dir") {
         Some(d) => {
             let o = DynOpts { ctx: (len(users - 1) + tokens + 64).next_multiple_of(256), chunk: 256, graph: true, device: 0, layout: level_layout(level)? };
-            load_dyn(case, Path::new(d), &o, level)?
+            // (--pack P [--precise]: Condor's experts from its pack in the expert cache)
+            match a.flag("pack") {
+                Some(p) if case == "qwen4x" => crate::dynamic::qwen4x::load_pack(Path::new(d), Path::new(p), a.has("precise"), users, &o)?,
+                Some(_) => return err("--pack: the qwen4x case's pack of experts"),
+                None => load_dyn(case, Path::new(d), &o, level)?,
+            }
         }
         None => random_dyn(case, level, "usercheck")?,
     };

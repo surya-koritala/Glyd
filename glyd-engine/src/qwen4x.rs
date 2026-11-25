@@ -441,8 +441,73 @@ impl ConfigQx {
     }
 }
 
+/// Which of Condor's packs of experts a directory serves as (`qwenget` makes them: DIR/pack or DIR/fast, DIR/precise, DIR/best): precise where asked (`--precise`), best
+/// where the directory's name starts with "best", else fast. Each takes its own sidecars and its own skipping of the misses' tail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PackMode {
+    Precise,
+    Best,
+    Fast,
+}
+
+impl PackMode {
+    pub fn of(pack: &Path, precise: bool) -> PackMode {
+        if precise {
+            PackMode::Precise
+        } else if pack.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("best")) {
+            PackMode::Best
+        } else {
+            PackMode::Fast
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PackMode::Precise => "precise",
+            PackMode::Best => "best",
+            PackMode::Fast => "fast",
+        }
+    }
+
+    /// The sidecar whose copies of some experts the GPU's places hold in place of the pack's, where the pack has one: precise its `hot` (its cb3 and cb4 experts as
+    /// they are, the hottest at three bits); else its `fast` (every cb3 and cb4 expert at two bits: smaller places, more of them; MMLU-Pro 124/150 as with the
+    /// pack's own), else its `hot`.
+    pub fn side(self, pack: &Path) -> Option<std::path::PathBuf> {
+        let names: &[&str] = if self == PackMode::Precise { &["hot"] } else { &["fast", "hot"] };
+        names.iter().map(|x| pack.join(x)).find(|d| d.join("meta.json").exists())
+    }
+
+    /// The offload's `skip_rank`: precise 1, the most skipping that keeps its pack's numbers against the bf16 model (Strata's set: top-64 KL 0.137, top-1 88.1%,
+    /// against 0.152 and 87.0% at 3); best 0, none skipped (its pack's 0.099 and 89.6%; 0.105 at 1, 0.117 at 3); fast 3.
+    pub fn skip_rank(self) -> usize {
+        match self {
+            PackMode::Precise => 1,
+            PackMode::Best => 0,
+            PackMode::Fast => 3,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// A pack's mode by the flag and the directory's name, and each mode's sidecar where the pack has it.
+    #[test]
+    fn a_packs_mode_takes_its_sidecar_and_skipping() {
+        let root = std::env::temp_dir().join(format!("glyd-packmode-{}", std::process::id()));
+        let (best, fast) = (root.join("best-v2"), root.join("fast"));
+        for d in [best.join("hot"), fast.join("fast"), fast.join("hot")] {
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("meta.json"), "{}").unwrap();
+        }
+        assert_eq!([PackMode::of(&best, false), PackMode::of(&fast, false), PackMode::of(&best, true)], [PackMode::Best, PackMode::Fast, PackMode::Precise]);
+        assert_eq!(PackMode::Fast.side(&fast), Some(fast.join("fast")));
+        assert_eq!(PackMode::Precise.side(&fast), Some(fast.join("hot")));
+        assert_eq!(PackMode::Best.side(&best), Some(best.join("hot")));
+        assert_eq!(PackMode::Fast.side(&root), None);
+        assert_eq!([PackMode::Precise, PackMode::Best, PackMode::Fast].map(PackMode::skip_rank), [1, 0, 3]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     use super::*;
 
     pub(crate) fn real() -> ConfigQx {

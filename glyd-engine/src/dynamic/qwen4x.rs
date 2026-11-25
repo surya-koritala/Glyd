@@ -1,13 +1,18 @@
 //! Qwen3.8-Flash-Next (`Qwen4ExpForConditionalGeneration`, Condor's model) on the executor (R3d, #140): its config's layer kinds lowered to the shared operations
 //! (`lower::qwen4x`) and loaded here: the matrices packed at the level asked (penguin's lossless packs where none is), the ones the library does not pack and the table of n-grams
-//! held as saved (bf16), the small tensors as saved but A_log in fp32 (the delta rule reads it so), each layer's experts on the GPU at kestrel's six bits (Condor's
-//! block, `QxMoe`, handed over as a `ResidentMoe`). Condor's engine (src/model_qwen4x.rs) keeps serving the release: its experts in the computer's memory and their
-//! cache, its draft head and the table of n-grams read from the disk are not on the executor yet, so a model whose experts or table do not fit this GPU is refused.
+//! held as saved (bf16), the small tensors as saved but A_log in fp32 (the delta rule reads it so). The experts either all on the GPU at kestrel's six bits (`load`:
+//! Condor's block, `QxMoe`, handed over as a `ResidentMoe`), or from a pack of codebook rows in the shared expert store (`load_cached`: Condor's codebook block,
+//! `QxMoeCb`, the misses on the host). Condor's engine (src/model_qwen4x.rs) still holds what the executor does not take yet: the draft head, the table of n-grams
+//! read from the disk, the vision tower.
 
 use super::{Dyn, ModelDesc, Op, Opts, ResidentMoe, Stage};
 use crate::dev::Dev;
 use crate::ffi::{err, Result};
 use crate::kern_nh::MoeBlock;
+use crate::moe_glm_cb::CbPack;
+use crate::moe_qwen4x::{QxCbShared, QxMoeCb};
+use crate::offload::{ExpertStore, Offload};
+pub use crate::qwen4x::PackMode;
 use crate::weights::Layout;
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
@@ -34,7 +39,7 @@ pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
     let free = Dev::new(o.device)?.mem_info().map(|(f, _)| f as u64).unwrap_or(0);
     if experts + table > free {
         return err(format!(
-            "{FAMILY}: its experts ({:.1} GB at six bits) and its table of n-grams ({:.1} GB) do not fit this GPU's {:.1} GB free: Condor's engine serves it (condor/README.md)",
+            "{FAMILY}: its experts ({:.1} GB at six bits) and its table of n-grams ({:.1} GB) do not fit this GPU's {:.1} GB free: a pack of its experts serves it (`load_cached`)",
             experts as f64 / 1e9,
             table as f64 / 1e9,
             free as f64 / 1e9
@@ -45,6 +50,83 @@ pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
         (0..c.layers).map(|l| Ok(Box::new(ResidentMoe(crate::model_qwen4x::QxMoe::load(l, &c, ck, Layout::Int6)?.into_layer())) as Box<dyn MoeBlock>)).collect()
     };
     Dyn::new_with(dir, d, None, st, o, &blocks)
+}
+
+/// Condor's routed experts from a pack of codebook rows (glyd-hbr-codes/2: each expert cb2, cb3, cb4 or ternary, the pack's mode's sidecar over them) in the
+/// shared expert store (src/offload.rs): a layer's places on the GPU, the pack's file mapped as their host tier, the misses computed by the host or copied in as
+/// `offload` says.
+pub struct Caching {
+    pub pack: std::path::PathBuf,
+    pub mode: PackMode,
+    /// places a layer (None: what the GPU has free after the always-on matrices, less `reserve`, over the layers)
+    pub places: Option<usize>,
+    pub offload: Offload,
+    /// GPU bytes the places leave for the sequences' keys, values and states and the executor's scratch (`reserve_for`)
+    pub reserve: u64,
+}
+
+impl Caching {
+    /// The pack in `pack` served as `mode`, its places sized by the room the GPU has, its misses computed by the host, the mode's skipping, room kept for `users`
+    /// sequences of the description `d`.
+    pub fn new(pack: &Path, mode: PackMode, d: &ModelDesc, users: usize) -> Caching {
+        let offload = Offload { mode: crate::offload::Mode::Cpu, skip_rank: mode.skip_rank(), async_copies: true, ..Offload::default() };
+        Caching { pack: pack.to_path_buf(), mode, places: None, offload, reserve: reserve_for(d, users) }
+    }
+}
+
+/// The GPU memory a model's places leave: each of `users` sequences' keys, values and states for the description's context, and the executor's slots and scratch
+/// (1.5 GiB, not measured for this model: the final pass measures it).
+pub fn reserve_for(d: &ModelDesc, users: usize) -> u64 {
+    let ring: u64 = d.rings.iter().map(|r| (d.max_pos * r.nk * r.d * 2 * (1 + r.values as usize)) as u64).sum();
+    let states: u64 = d.states.iter().map(|&b| b as u64).sum();
+    users.max(1) as u64 * (ring + states) + (3 << 29)
+}
+
+/// Places a layer: the GPU's `free` bytes less `reserve`, over `layers` layers of places of `place` bytes; at least one, at most `kept` (all of a layer's).
+pub fn places_for(free: u64, reserve: u64, layers: usize, place: usize, kept: usize) -> usize {
+    ((free.saturating_sub(reserve) / (layers.max(1) * place.max(1)) as u64) as usize).clamp(1, kept.max(1))
+}
+
+/// The model in `dir` on the executor's loader with its routed experts in the expert cache (`Caching`): the always-on matrices as `load` loads them, each layer's
+/// block Condor's codebook block (`QxMoeCb`) over one store shared by the layers.
+pub fn load_cached(dir: &Path, o: &Opts, k: &Caching) -> Result<Dyn> {
+    let c = crate::qwen4x::ConfigQx::load(dir)?;
+    let d = lowered(dir, o.ctx + o.chunk + 16)?;
+    let mut pack = CbPack::open_dims(&k.pack, c.hidden, c.inter)?;
+    if let Some(side) = k.mode.side(&k.pack) {
+        pack = pack.with_side(&side)?;
+    }
+    if let Some(l) = (0..c.layers).find(|&l| !pack.has(l)) {
+        return err(format!("{}: no experts of layer {l} of the model's {}", k.pack.display(), c.layers));
+    }
+    let (store, common) = (ExpertStore::new(), QxCbShared::new());
+    store.set_offload(k.offload);
+    common.stream.set(true);
+    let place = (0..c.layers).map(|l| pack.place_bytes(l)).max().unwrap_or(1);
+    let kept = (0..c.layers).filter_map(|l| pack.kept(l).map(<[usize]>::len)).min().unwrap_or(1);
+    let dev = o.device;
+    let blocks = |ck: &Checkpoint, layout: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
+        // (read after the always-on matrices are on the GPU: what is free now, less the reserve, is the places')
+        let slots = match k.places {
+            Some(p) => p,
+            None => places_for(Dev::new(dev)?.mem_info().map(|(f, _)| f as u64).unwrap_or(0), k.reserve, c.layers, place, kept),
+        };
+        (0..c.layers)
+            .map(|l| {
+                crate::status::STATUS.beat();
+                Ok(Box::new(QxMoeCb::load(l, &c, ck, layout, &pack, &store, slots, &common)?) as Box<dyn MoeBlock>)
+            })
+            .collect()
+    };
+    let e = Dyn::new_with(dir, d, None, Stage::whole(c.layers), o, &blocks)?;
+    common.fill_page_tables();
+    Ok(e)
+}
+
+/// `load_cached` of the pack in `pack` served as its mode (`PackMode::of`), room kept for `users` sequences.
+pub fn load_pack(dir: &Path, pack: &Path, precise: bool, users: usize, o: &Opts) -> Result<Dyn> {
+    let d = lowered(dir, o.ctx + o.chunk + 16)?;
+    load_cached(dir, o, &Caching::new(pack, PackMode::of(pack, precise), &d, users))
 }
 
 /// The matrices held as saved: the tables of n-grams (`Op::NgramRows` reads their rows).
@@ -156,6 +238,19 @@ mod tests {
         // (A_log the delta rule's, read in fp32)
         assert_eq!(super::super::read_f32(&m).len(), 6);
         assert!(super::super::read_f32(&m).iter().all(|&i| m.small[i].ends_with("linear_attn.A_log")));
+    }
+
+    /// The places take what the GPU has free past the reserve, a layer's share of it: at least one, at most all of a layer's experts; the reserve holds each
+    /// sequence's states (the tiny model's are its context's keys and values) and grows with the users.
+    #[test]
+    fn the_places_take_the_room_past_the_reserve() {
+        assert_eq!(super::places_for(10 << 30, 2 << 30, 48, 1 << 20, 512), 170);
+        assert_eq!(super::places_for(1 << 30, 2 << 30, 48, 1 << 20, 512), 1);
+        assert_eq!(super::places_for(1 << 40, 0, 48, 1 << 20, 512), 512);
+        let m = super::super::lower::qwen4x(&describe(&tiny()).unwrap(), vec![2000], 1100).unwrap();
+        let (one, four) = (super::reserve_for(&m, 1), super::reserve_for(&m, 4));
+        let states: u64 = m.states.iter().map(|&b| b as u64).sum();
+        assert!(states > 0 && four - one == 3 * states, "{one} {four} {states}");
     }
 
     /// What the shared operations do not take is refused in words: a linear attention's silu gate, gated residuals over another count of streams.

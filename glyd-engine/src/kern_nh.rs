@@ -237,6 +237,13 @@ pub trait NhHost {
     /// # Safety
     /// Live device buffers of those sizes, on the engine's stream.
     unsafe fn lin(&self, w: &Mat, x: u64, m: usize, y: u64) -> Result<()>;
+    /// y [m, n] = x [m, k] w^T in bf16, w a block's own rows on the GPU (rows it decodes for a call: Condor's shared expert).
+    ///
+    /// # Safety
+    /// Live device buffers of those sizes, on the engine's stream.
+    unsafe fn gemm(&self, _x: u64, _w: u64, _y: u64, _m: i32, _n: i32, _k: i32) -> Result<()> {
+        err("this engine runs no product over a block's own rows")
+    }
     /// A development build's stage marker (a profile's).
     fn mark(&self, _what: &'static str) {}
 }
