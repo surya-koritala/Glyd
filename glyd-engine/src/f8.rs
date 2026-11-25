@@ -3,6 +3,7 @@
 
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Lib, Result};
+use crate::gpu_ops::GpuOps;
 use crate::weights::{as_bytes, upload_bytes};
 
 pub struct F8Mat {

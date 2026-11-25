@@ -5054,7 +5054,7 @@ mod tests {
                 1274.41,
                 61.49,
                 312.0,
-                "Lambda A100 SXM4 40GB, session 3: bench at m2-stage3 63bdcdcb, gate suite, GLYD_KV=bf16, the median of 3",
+                "Lambda A100 SXM4 40GB, session 3: bench at 63bdcdcb, gate suite, GLYD_KV=bf16, the median of 3",
                 a100,
             ),
             (
@@ -5067,7 +5067,7 @@ mod tests {
                 518.53,
                 116.68,
                 125.0,
-                "Lambda A10, session 5: plancheck at m2-y 87023bbc, 8 users, the median of 3",
+                "Lambda A10: plancheck at 87023bbc, 8 users, the median of 3",
                 a10,
             ),
         ] {
@@ -5227,7 +5227,7 @@ mod tests {
     }
 
     /// A step of several rows reads the weights once for all of them: each row past the first adds its keys' and values' reads and its class's time a layer, no
-    /// weights. On the A100 (its records: one user and eight, m2-stage3) eight users at 1k positions are each predicted at 1 / (the one user's step + 7 rows).
+    /// weights. On the A100 (its records: one user and eight, at 63bdcdcb) eight users at 1k positions are each predicted at 1 / (the one user's step + 7 rows).
     #[test]
     fn a_step_of_several_rows_reads_the_weights_once() {
         let (_, q08) = measured_shapes();
