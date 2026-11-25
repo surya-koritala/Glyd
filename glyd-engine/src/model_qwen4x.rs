@@ -4260,10 +4260,12 @@ pub struct QxMoe {
 }
 
 impl QxMoe {
-    /// Layer `l`'s block (`l` = layers: the MTP head's): the router and the shared expert's gate bf16, the shared expert and the experts packed at `level` (Int6, Int5 or Int4).
+    /// Layer `l`'s block (`l` = layers: the MTP head's): the router and the shared expert's gate bf16, the shared expert and the experts packed at `level`: Int6, Int5
+    /// or Int4 (each expert's block codes), or a lossless layout (Tiered, Twelve: every expert's rows of a matrix stacked as one pack, decoded to the checkpoint's bits).
     pub fn load(l: usize, c: &ConfigQx, ck: &Checkpoint, level: Layout) -> Result<QxMoe> {
-        if !matches!(level, Layout::Int6 | Layout::Int5 | Layout::Int4) {
-            return err(format!("the experts are held at the kestrel, swift and wren levels: {level:?} is asked"));
+        let lossless = matches!(level, Layout::Tiered | Layout::Twelve);
+        if !lossless && !matches!(level, Layout::Int6 | Layout::Int5 | Layout::Int4) {
+            return err(format!("the experts are held at the penguin, kestrel, swift and wren levels: {level:?} is asked"));
         }
         let p = format!("{}.mlp", c.layer_name(l));
         let router = tensor(ck, &format!("{p}.gate.weight"))?;
@@ -4276,9 +4278,20 @@ impl QxMoe {
             down: upload_packed(read_pack(ck, None, s_down, level)?)?,
             gate: Some(gate),
         };
+        let (gu, dn) = (format!("{p}.experts.gate_up_proj"), format!("{p}.experts.down_proj"));
+        if lossless {
+            let stack = |name: &str, rows: usize, cols: usize| -> Result<ExpertStack> {
+                let mut w = Vec::with_capacity(c.experts * rows * cols);
+                for e in 0..c.experts {
+                    w.extend(read_expert(ck, name, e)?);
+                }
+                ExpertStack::lossless(upload_packed(crate::weights::pack_words(&w, c.experts * rows, cols, level, name)?)?, c.experts)
+            };
+            let w = MoeWeights { router, bias: None, escale: None, up: stack(&gu, 2 * c.inter, c.hidden)?, down: Down::Block(stack(&dn, c.hidden, c.inter)?) };
+            return Ok(QxMoe { layer: MoeLayer::new(moe_cfg(c), w, Some(shared))? });
+        }
         let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
         let (mut up, mut down): (Vec<glyd_gpu::pack::Tiered>, Vec<glyd_gpu::pack::Tiered>) = (Vec::new(), Vec::new());
-        let (gu, dn) = (format!("{p}.experts.gate_up_proj"), format!("{p}.experts.down_proj"));
         ordered(
             2 * c.experts,
             threads,

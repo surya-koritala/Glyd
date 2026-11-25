@@ -29,22 +29,37 @@ pub fn lowered(dir: &Path, ctx: usize) -> Result<ModelDesc> {
 }
 
 /// The model in `dir` on the executor's loader (`Dyn::new_with`: its matrices at the level asked or this GPU's, the table of n-grams and the shapes the library
-/// does not pack as saved, A_log in fp32), its experts at kestrel's six bits (Condor's block, `QxMoe`, handed over as a `ResidentMoe`).
+/// does not pack as saved, A_log in fp32), its experts all on the GPU (`QxMoe`'s block, handed over as a `ResidentMoe`) at the level asked: a lossy level's codes
+/// where `o.layout` is one, else lossless (penguin), as every family's.
 pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
-    load_level(dir, o, Layout::Int6)
+    load_level(dir, o, experts_at(o.layout))
 }
 
-/// `load` with the experts at `level` (a lossy level's codes: six, five or four bits).
+/// The experts' layout for the matrices' `layout`: a lossy level's block codes (six, five or four bits) where it is one, else the lossless layout.
+pub fn experts_at(layout: Option<Layout>) -> Layout {
+    match layout {
+        Some(l @ (Layout::Int6 | Layout::Int5 | Layout::Int4)) => l,
+        _ => Layout::Tiered,
+    }
+}
+
+/// `load` with the experts at `level` (lossless, or a lossy level's codes: six, five or four bits).
 pub fn load_level(dir: &Path, o: &Opts, level: Layout) -> Result<Dyn> {
     let c = crate::qwen4x::ConfigQx::load(dir)?;
     let d = lowered(dir, o.ctx + o.chunk + 16)?;
-    // (what the GPU would hold: the experts at six bits and the table of n-grams as saved; Condor's engine serves a model past that)
-    let experts = (c.layers * c.experts * 3 * c.inter * c.hidden) as u64 * 3 / 4;
+    // (what the GPU would hold: the experts at the level (lossless: two bytes a weight at most) and the table of n-grams as saved; past that, `load_cached`)
+    let per = match level {
+        Layout::Int6 => 6,
+        Layout::Int5 => 5,
+        Layout::Int4 => 4,
+        _ => 16,
+    };
+    let experts = (c.layers * c.experts * 3 * c.inter * c.hidden) as u64 * per / 8;
     let table: u64 = held_as_saved(&d).iter().map(|&k| (d.mats[k].rows * d.mats[k].cols * 2) as u64).sum();
     let free = Dev::new(o.device)?.mem_info().map(|(f, _)| f as u64).unwrap_or(0);
     if experts + table > free {
         return err(format!(
-            "{FAMILY}: its experts ({:.1} GB at six bits) and its table of n-grams ({:.1} GB) do not fit this GPU's {:.1} GB free: a pack of its experts serves it (`load_cached`)",
+            "{FAMILY}: its experts ({:.1} GB at {per} bits) and its table of n-grams ({:.1} GB) do not fit this GPU's {:.1} GB free: a pack of its experts serves it (`load_cached`)",
             experts as f64 / 1e9,
             table as f64 / 1e9,
             free as f64 / 1e9
@@ -252,7 +267,7 @@ mod tests {
     }
 
     /// The places take what the GPU has free past the reserve, a layer's share of it: at least one, at most all of a layer's experts; the reserve holds each
-    /// sequence's states (the tiny model's are its context's keys and values) and grows with the users.
+    /// sequence's keys, values and states beside the scratch, and grows with the users by them.
     #[test]
     fn the_places_take_the_room_past_the_reserve() {
         assert_eq!(super::places_for(10 << 30, 2 << 30, 48, 1 << 20, 512), 170);
@@ -261,7 +276,19 @@ mod tests {
         let m = super::super::lower::qwen4x(&describe(&tiny()).unwrap(), vec![2000], 1100).unwrap();
         let (one, four) = (super::reserve_for(&m, 1), super::reserve_for(&m, 4));
         let states: u64 = m.states.iter().map(|&b| b as u64).sum();
-        assert!(states > 0 && four - one == 3 * states, "{one} {four} {states}");
+        let seq = one - (3 << 29);
+        assert!(states > 0 && seq >= states && four - one == 3 * seq, "{one} {four} {states}");
+    }
+
+    /// The experts take a lossy level's codes where the matrices' layout is one, else the lossless layout (penguin's, as every family's).
+    #[test]
+    fn the_experts_are_lossless_unless_a_lossy_level_is_asked() {
+        use crate::weights::Layout;
+        assert_eq!(super::experts_at(None), Layout::Tiered);
+        assert_eq!(super::experts_at(Some(Layout::Twelve)), Layout::Tiered);
+        for l in [Layout::Int6, Layout::Int5, Layout::Int4] {
+            assert_eq!(super::experts_at(Some(l)), l);
+        }
     }
 
     /// What the shared operations do not take is refused in words: a linear attention's silu gate, gated residuals over another count of streams.

@@ -643,9 +643,9 @@ impl Run for Qwen4x {
     }
 }
 
-/// The experts of Qwen3.8-Flash-Next are held in six-bit codes at its kestrel level (the random model's are on that grid, as tools/qwen4x_ref.py makes them). At penguin:
-/// the description executor (src/dynamic/qwen4x.rs: the other matrices lossless, the experts at six bits, which hold the random model's exactly); at the other levels
-/// Condor's own engine. The penguin fixture's bound (tests/logits/qwen4x.json.gz: KL mean 1e-4, max 5e-4) is the cost of the routers' near ties: the random model's 16
+/// The experts of Qwen3.8-Flash-Next at penguin are lossless, at kestrel six-bit codes (the random model's are on that grid, as tools/qwen4x_ref.py makes them, so both
+/// hold its weights exactly). At penguin: the description executor (src/dynamic/qwen4x.rs, every matrix lossless); at the other levels Condor's own engine, whose
+/// bits the sm89 fixture holds, until `paritycheck qwen4x` retires it. The penguin fixture's bound (tests/logits/qwen4x.json.gz: KL mean 1e-4, max 5e-4) is the cost of the routers' near ties: the random model's 16
 /// experts, 4 a token, leave 15 choices in its 12 decode rows within 1e-2 of the next expert (`reference::ffn::margin`), which a bf16 engine may take either way, and
 /// each taken the other way on the reference costs its row a KL of 7.8e-6 to 3.5e-4 (the most: row 7, the fourth layer's experts, margin 3.8e-3; an A100 running the
 /// executor measured 3.52e-4 at that row, 2026-11-23).
@@ -1126,9 +1126,9 @@ fn legacy_pairs() -> Vec<Pair> {
     vec![("qwen4x", qwen4x_old, qwen4x_desc)]
 }
 
-/// The experts of the random Qwen3.8-Flash-Next at a level: its codes (six bits at penguin, where they hold the random model's exactly, as `qwen4x_engine`).
+/// The experts of the random Qwen3.8-Flash-Next at a level: a lossy level's codes, lossless at penguin.
 fn qwen4x_experts(level: &str) -> Result<Layout> {
-    Ok(level_layout(level)?.unwrap_or(Layout::Int6))
+    Ok(crate::dynamic::qwen4x::experts_at(level_layout(level)?))
 }
 
 /// Condor's own engine (src/model_qwen4x.rs) on the random model: the other matrices lossless, the experts at the level.
@@ -1182,11 +1182,23 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
             let new_rows = drive(new.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
             let arg = |v: &[f32]| v.iter().enumerate().fold(0, |b, (j, &x)| if x > v[b] { j } else { b });
             let (mut same_bits, mut same_best, mut max_kl, mut max_d) = (0usize, 0usize, 0f64, 0f32);
-            for (o, n) in old_rows.iter().zip(&new_rows) {
+            let mut off = Vec::new();
+            for (i, (o, n)) in old_rows.iter().zip(&new_rows).enumerate() {
                 same_bits += (o == n) as usize;
                 same_best += (arg(o) == arg(n)) as usize;
-                max_kl = max_kl.max(kl_of(&Row::from_logits(o)?, n));
+                let kl = kl_of(&Row::from_logits(o)?, n);
+                max_kl = max_kl.max(kl);
                 max_d = o.iter().zip(n).fold(max_d, |m, (x, y)| m.max((x - y).abs()));
+                if arg(o) != arg(n) || kl > 1e-4 {
+                    // (the old engine's lead of its best token over the next: a row whose best two are within the difference is a near tie)
+                    let (b, mut second) = (arg(o), f32::NEG_INFINITY);
+                    for (j, &x) in o.iter().enumerate() {
+                        if j != b {
+                            second = second.max(x);
+                        }
+                    }
+                    off.push(format!("row {i}: best {} / {}, lead {:.4}, KL {kl:.2e}", arg(o), arg(n), o[b] - second));
+                }
             }
             let rows = old_rows.len();
             let ok = same_best == rows && max_kl <= 1e-3;
@@ -1194,6 +1206,9 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
                 "{} {id:12} {level:8} {rows:3} rows: bits-equal {same_bits}, best token {same_best}/{rows}, KL max {max_kl:.2e}, largest logit difference {max_d:.4}",
                 if ok { "PASS" } else { "FAIL" }
             );
+            for x in &off {
+                println!("       {x}");
+            }
             if !ok {
                 failed.push(format!("{id} at {level}"));
             }
