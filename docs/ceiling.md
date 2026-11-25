@@ -151,6 +151,34 @@ misses equal the distinct missed experts' bytes in every line (+0.00%: each copi
   wait after a layer is 2 ms beside 9-11 ms of copies). Why DeepSeek-V4's do not is not measured (a trace of the copy stream against the host's
   pairs is the next measurement).
 
+### Why: the copy stream's order, and calls of two kinds (2026-11-23, from the same runs)
+
+The per-layer statistics of those runs say what the formula missed; it does not need a trace.
+
+- **8 rows.** Each DeepSeek-V4 layer copies 6 experts for its call (2.9 ms) and promotes 4 behind it (1.9 ms), the host computes 10
+  (3.0 ms). The promotions are queued on the one copy stream after the layer's products (they wait for them), so the next layer's
+  copies wait behind them: the copy stream's period a layer is its copies, the products and its promotions (5.3 ms), not the longer
+  of the copies and the host's 3 ms. Kimi-K3 at 8 rows promotes none and was predicted within 1%.
+- **32 rows.** A layer's hits leave 2 places for 30 misses, so `waves_quicker` copies some calls whole in waves (31 copies, no host
+  half) and gives the host the others (2 copies, 28 experts): layer 4's 13 copies and 17 host experts a step are 3 calls of the
+  one kind and 5 of the other, and the longer of 13 copies and 17 host experts is not the mean of the calls' times. Rebuilt from
+  that split, the step of the formula below is 289.2 ms against 286.5 measured (+1.0%); the lines now carry the calls copied whole
+  (`whole`, `whole_bytes`), so the next run measures the split instead.
+
+`ceiling --stats` now follows the layers in order on the host, the copy stream and the GPU, at the run's measured rates: a call
+plans, its copies start when the copy stream has run what is queued before them, its products after its copies, its promotions
+after its products; the host's pairs from the plan on; the next layer after the products, the host's pairs and the rest of the
+layer. A call copied whole has the host wait for its copies and products. The fixed time a layer goes with the products (the
+copies behind them wait for it), the time a row with the rest of the layer. On the lines above, calibrated on each model's copy run
+(`ceiling::tests::the_cached_step_predicts_the_measured_auto_runs`, with the GPU's dense reads left to the fixed time):
+
+| model | rows | measured | the formula before | now |
+|---|---|---|---|---|
+| DeepSeek-V4, auto | 1 / 8 / 32 | 19.58 / 95.69 / 286.45 ms | -5.5% / -13.4% / -16.3% | +6.3% / -6.8% / -21.1% (no `whole` in these lines) |
+| Kimi-K3, auto | 1 / 8 / 32 | 17.00 / 51.51 / 201.33 ms | -10.1% / +1.0% / +5.2% | +2.2% / +0.5% / -2.2% |
+
+`storebench --out` writes each layer's totals over the timed steps (`"totals": true`), so a share of calls is kept as it is.
+
 ## What it says
 
 - **One GPU:** our code is near the ceiling: 85-94% of it on the 4080.

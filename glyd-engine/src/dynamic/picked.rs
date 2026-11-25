@@ -1,8 +1,9 @@
-//! The sparse attention whose indexer is mean-pooled (`runtime::kinds::IndexForm::Mean`, Qwen3.8-Flash-Next's QSA) on the executor: `Op::IdxMean`, the indexer's queries
-//! and its pools' keys (each pool of 4 tokens the mean of their raw keys, normed and rotated at its first position) in two per-sequence states; `Op::IdxPick` with
-//! `IdxKeys::Pools`, every indexer's pick (kernels/mla.cu `idx_score`, `idx_pick`), unweighted: the best pools' tokens and the open pool's; then the attention kind's
-//! preparation (`Op::Attn` with `picked`) of the queries, and of the keys and values into two per-sequence states, and the attention over the picked tokens with
-//! the in-query gate (kernels/qwen4x.cu `qx_attn_sel`). The states hold every position of a sequence up to the model's context (`ModelDesc::max_pos`).
+//! The sparse attention whose indexer is mean-pooled (`runtime::kinds::IndexForm::Mean`, Qwen3.8-Flash-Next's QSA) on the executor: `Op::IdxMean`, the indexer's queries,
+//! its raw keys and its pools' keys (each pool of 4 tokens the mean of their raw keys, normed and rotated at its first position); `Op::IdxPick` with `IdxKeys::Pools`, every
+//! indexer's pick (kernels/mla.cu `idx_score`, `idx_pick`), unweighted: the best pools' tokens and the open pool's; then the attention kind's preparation (`Op::Attn` with
+//! `picked`) of the queries, and of the keys and values into its ring, and the attention over the picked tokens with the in-query gate (kernels/qwen4x.cu `qx_attn_sel`).
+//! The keys and values, the raw keys and the pools' keys are rings (the pools' `Ring::entries` of 4 tokens), paged as every attention's (R4b): each read and written
+//! through the sequence's block table where it has one.
 
 use super::attn::AttnOp;
 use super::{Dyn, IdxKeys, IdxPick, ModelDesc, Op, Part, Slot};
@@ -57,8 +58,9 @@ impl Dyn {
         let half = p.d.ropes[rope].pairs;
         let qk = p.slot(Slot::Qr) + self.rows_before((heads + 1) * 128);
         let iq = p.slot(Slot::Iq) + self.rows_before(heads * 128);
-        k.ix_prep(s, qk, p.small[q_norm].ptr, cs, sn, half, pos, iq, self.state(keys), n, heads, p.d.eps)?;
-        k.ix_cmp(s, self.state(keys), p.small[k_norm].ptr, cs, sn, half, pos, self.state(pools), n, p.d.eps)?;
+        let (ik, pk) = ((self.cache(keys).0, self.table(keys)), (self.cache(pools).0, self.table(pools)));
+        k.ix_prep_at(s, qk, p.small[q_norm].ptr, cs, sn, half, pos, iq, ik, n, heads, p.d.eps)?;
+        k.ix_cmp_at(s, ik, p.small[k_norm].ptr, cs, sn, half, pos, pk, n, p.d.eps)?;
         self.mark("indexer: queries and pools")
     }
 
@@ -70,9 +72,9 @@ impl Dyn {
         let at = super::mla::PickAt {
             q: p.slot(Slot::Iq) + self.rows_before(x.heads * 128),
             w: if x.weighted { p.slot(Slot::Iw) + self.rows_before(x.heads) } else { r.ones.ptr },
-            keys: self.state(pools),
+            keys: self.cache(pools).0,
             stride: 128,
-            tab: 0,
+            tab: self.table(pools),
             pos,
             rows: n,
             scores: r.scores.ptr,
@@ -85,15 +87,15 @@ impl Dyn {
         self.mark("indexer: picks")
     }
 
-    /// `Op::Attn` with `picked` on n rows of one sequence at positions `pos`: the queries, keys and values prepared (the keys and values into their states, every
-    /// position its own row), then the attention of each row over its picks, gated, into Att.
-    pub(super) unsafe fn attn_picked(&self, p: &Part, a: &AttnOp, kv: [usize; 2], n: usize, pos: u64) -> Result<()> {
+    /// `Op::Attn` with `picked` on n rows of one sequence at positions `pos`: the queries, keys and values prepared (the keys and values into its ring, through the
+    /// sequence's block table where it has one), then the attention of each row over its picks, gated, into Att.
+    pub(super) unsafe fn attn_picked(&self, p: &Part, a: &AttnOp, n: usize, pos: u64) -> Result<()> {
         let k = self.kqx.as_ref().ok_or_else(|| Error("a sparse attention in a model loaded without its kernels".into()))?;
         let r = self.picks.as_ref().ok_or_else(|| Error("a sparse attention in a model loaded without its picks' room".into()))?;
         let s = self.dev.stream;
-        let (kc, vc) = (self.state(kv[0]), self.state(kv[1]));
+        let ((kc, vc), tab) = (self.cache(a.ring), self.table(a.ring));
         let mut x = a.args(n, p.d.eps);
-        (x.kc, x.vc, x.cap, x.tab) = (kc, vc, p.d.max_pos as i32, 0);
+        (x.kc, x.vc, x.cap, x.tab) = (kc, vc, self.ring_cap[a.ring] as i32, tab);
         x.src = p.slot(a.src) + self.rows_before(a.stride);
         x.qo = p.slot(Slot::Qo) + self.rows_before(a.nq * a.d);
         x.qpos = pos;
@@ -108,7 +110,7 @@ impl Dyn {
         let src = p.slot(a.src) + self.rows_before(a.stride);
         let out = p.slot(Slot::Att) + self.rows_before(a.nq * a.d);
         let (sel, cnt) = (r.sel.ptr + (row0 * r.sk * 4) as u64, r.cnt.ptr + (row0 * 4) as u64);
-        k.attn_sel(s, x.qo, a.nq * a.d, src, a.stride, kc, vc, sel, cnt, r.sk, out, a.nq * a.d, a.nq, a.nk, 0, 1, n)?;
+        k.attn_sel_at(s, x.qo, a.nq * a.d, src, a.stride, (kc, vc, tab), sel, cnt, r.sk, out, a.nq * a.d, a.nq, a.nk, 0, 1, n)?;
         self.mark("attention (the indexer's picks)")
     }
 }

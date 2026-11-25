@@ -19,6 +19,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 pub const FORMAT: &str = "glyd-logits/1";
+/// The words of a case's engine that is not built yet (its fixture the CPU reference's): logitscheck skips its levels.
+pub const NOT_ON_EXECUTOR: &str = "not on the executor yet";
 /// The largest logits a row keeps.
 pub const TOPK: usize = 64;
 /// A reference's lead of its best logit over its second that counts for the greedy-token check (the bf16 roundings of two near ties decide those).
@@ -507,6 +509,16 @@ fn described_cpu(dir: &Path) -> Result<Box<dyn Run>> {
         let desc = crate::runtime::describe::describe(&cfg)?;
         let ck = io(glyd_gpu::safetensors::Checkpoint::open(&d))?;
         let mut m = RefModel::load(&desc, &|n: &str| checkpoint_tensor(&ck, n))?;
+        // (Engram's compressed vocabulary, where the model has Engram layers)
+        if let Some(map) = engram_token_map(&d)? {
+            for l in m
+                .layers
+                .iter_mut()
+                .filter(|l| matches!(l.block.body, crate::runtime::kinds::Body::Ngram(g) if g.form == crate::runtime::kinds::NgramForm::Engram))
+            {
+                l.p.put("ngram_map", &[map.len()], map.clone());
+            }
+        }
         let mut pos = 0u32;
         Ok(move |t: u32| {
             let l = m.forward(&[t], pos).unwrap_or_else(|e| panic!("the reference at position {pos}: {}", e.msg)).pop().expect("a token's logits");
@@ -816,6 +828,69 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
     Ok(())
 }
 
+/// A small DeepSeek-V4.1 (tests/fixtures/deepseek_v41_tiny_config.json: six layers at DeepSeek-V4's kernels' widths, ratios 0, 2, 2, 1, 1, 1 sharing their
+/// compressors, indexers and candidate blocks, Engram before layers 1 and 4, lagged mHC over four streams, one DSpark layer): every tensor of its description at
+/// its shape, at random from a fixed seed (the matrices about U(-a, a), a = sqrt(3 / cols); the norms' weights about 1; the mixing projections small), bf16 but
+/// the mixers' and the sinks' and choice biases' fp32 as released; and the compressed vocabulary Engram hashes (`engram_token_map.json`: a token's id mod its size).
+pub fn deepseek_v41_random(out: &Path) -> Result<()> {
+    let text = include_str!("../tests/fixtures/deepseek_v41_tiny_config.json");
+    let cfg: Value = serde_json::from_str(text).map_err(|e| Error(e.to_string()))?;
+    let d = crate::runtime::describe::describe(&cfg)?;
+    let mut r = 0x2026_1124_0000_0041u64;
+    let mut uni = move |a: f32, b: f32| {
+        r ^= r << 13;
+        r ^= r >> 7;
+        r ^= r << 17;
+        a + (b - a) * ((r >> 40) as f32 / (1u64 << 24) as f32)
+    };
+    let bf = |x: f32| -> u16 {
+        let b = x.to_bits();
+        ((b.wrapping_add(0x7fff + ((b >> 16) & 1))) >> 16) as u16
+    };
+    let mut tensors: Vec<(String, &str, Vec<u64>, Vec<u8>)> = Vec::new();
+    for name in d.names() {
+        let shape = d.shapes.get(&name).cloned().ok_or_else(|| Error(format!("DeepSeek-V4.1's description has no shape for {name}")))?;
+        let n: usize = shape.iter().product();
+        let cols = *shape.last().unwrap_or(&1) as f32;
+        let leaf = name.rsplit('.').next().unwrap_or("");
+        let (lo, hi) = if name.contains("hc_") && name.ends_with("_fn") {
+            (-0.02, 0.02)
+        } else if name.contains("hc_") && name.ends_with("_scale") {
+            (0.5, 1.5)
+        } else if name.contains("hc_") || name.ends_with("attn_sink") || name.ends_with("gate.bias") {
+            (-0.5, 0.5)
+        } else if name.contains("norm") || name.ends_with("q_weight") || name.ends_with("k_weight") {
+            (0.9, 1.1)
+        } else if name == d.embed || name.ends_with("engram.embed.weight") {
+            (-1.0, 1.0)
+        } else {
+            let a = (3.0 / cols).sqrt();
+            (-a, a)
+        };
+        let vals: Vec<f32> = (0..n).map(|_| uni(lo, hi)).collect();
+        let f32s = name.contains("hc_") || name.ends_with("attn_sink") || name.ends_with("gate.bias") || leaf == "q_weight" || leaf == "k_weight";
+        let bytes = if f32s { vals.iter().flat_map(|x| x.to_le_bytes()).collect() } else { vals.iter().flat_map(|&x| bf(x).to_le_bytes()).collect() };
+        tensors.push((name, if f32s { "F32" } else { "BF16" }, shape.iter().map(|&x| x as u64).collect(), bytes));
+    }
+    io(std::fs::create_dir_all(out))?;
+    io(std::fs::write(out.join("config.json"), text))?;
+    let (vocab, map) = (d.desc.vocab, cfg["text_config"]["engram_compressed_vocab_size"].as_u64().unwrap_or(1) as usize);
+    io(std::fs::write(out.join("engram_token_map.json"), serde_json::to_string(&(0..vocab).map(|t| t % map).collect::<Vec<_>>()).unwrap_or_default()))?;
+    let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = tensors.iter().map(|(n, t, s, b)| (n.as_str(), *t, s.clone(), &b[..])).collect();
+    crate::pack::write_safetensors(&out.join("model.safetensors"), &[("format", "pt".to_string())], &refs)?;
+    println!("{}: a random DeepSeek-V4.1, {} tensors, {:.0} MB", out.display(), tensors.len(), tensors.iter().map(|t| t.3.len()).sum::<usize>() as f64 / 1e6);
+    Ok(())
+}
+
+/// The compressed vocabulary DeepSeek-V4.1's Engram hashes (`kinds::NgramForm::Engram`): the model directory's `engram_token_map.json` (a list, the compressed id of
+/// each token), which the loader makes from the tokenizer; None where the directory has none.
+pub fn engram_token_map(dir: &Path) -> Result<Option<Vec<f32>>> {
+    let p = dir.join("engram_token_map.json");
+    let Ok(text) = std::fs::read_to_string(&p) else { return Ok(None) };
+    let v: Vec<u32> = serde_json::from_str(&text).map_err(|e| Error(format!("{}: {e}", p.display())))?;
+    Ok(Some(v.into_iter().map(|x| x as f32).collect()))
+}
+
 fn qwen35_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     boxed(crate::dynamic::qwen35::load(dir, &dyn_opts(level_layout(level)?)))
 }
@@ -901,9 +976,17 @@ pub fn cases() -> Vec<Case> {
             vocab: 4096,
         },
         Case {
+            id: "deepseek-v41",
+            family: "DeepSeek-V4.1 (CSA2's shared compressed attention, lagged mHC, Engram, mixture of experts)",
+            weights: Weights::Random(deepseek_v41_random),
+            engine: |_, _| err(format!("DeepSeek-V4.1 is {NOT_ON_EXECUTOR}: its CPU reference alone (logitscheck --cpu-ref)")),
+            cpu: Some(described_cpu),
+            vocab: 4096,
+        },
+        Case {
             id: "glm",
             family: "GLM-5.3 (delta attention, sparse attention, mixture of experts)",
-            weights: Weights::Random(|d| crate::kcheck_glm::random(d, false, None)),
+            weights: Weights::Random(|d| crate::glm::random(d, false, None)),
             engine: glm_engine,
             cpu: None,
             vocab: 2048,
@@ -1042,7 +1125,14 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                         None => continue,
                     }
                 } else {
-                    (c.engine)(&dir, &lb.level)?
+                    match (c.engine)(&dir, &lb.level) {
+                        // (a family whose CPU reference stands before its engine: its fixture is the reference's, checked with --cpu-ref)
+                        Err(e) if e.msg.contains(NOT_ON_EXECUTOR) => {
+                            println!("SKIP {:12} {}: {}", c.id, lb.level, e.msg);
+                            continue;
+                        }
+                        r => r?,
+                    }
                 };
                 let load = t0.elapsed().as_secs_f64();
                 let got = drive(run.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
@@ -1373,7 +1463,7 @@ pub fn record(a: &crate::args::Args) -> Result<()> {
         "source".into(),
         match from {
             // (Nemotron-H has no reference of its own: its description on the reference of the layer kinds)
-"cpu" if c.id == "nemotron-h" || c.id == "qwen4x" => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
+"cpu" if matches!(c.id, "nemotron-h" | "qwen4x" | "deepseek-v41") => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
             "cpu" => format!(
                 "the CPU reference of src/{}_ref.rs, fp32 inside, on this case's random model (seed fixed in the generator)",
                 c.id.replace("deepseek-", "ds").replace('-', "")
@@ -1616,8 +1706,13 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
 
 /// The case's random model, made in a directory of its own and loaded.
 pub(crate) fn random_dyn(case: &str, level: &str, tag: &str) -> Result<Dyn> {
+    random_dyn_at(case, level, level_layout(level)?, tag, None)
+}
+
+/// `random_dyn` with its packs in `layout` (None: the GPU's choice) and a context of `ctx` tokens (None: the cases' 1,024).
+pub(crate) fn random_dyn_at(case: &str, level: &str, layout: Option<Layout>, tag: &str, ctx: Option<usize>) -> Result<Dyn> {
     let dir = std::env::temp_dir().join(format!("glyd-{tag}-{case}-{}", std::process::id()));
-    let o = dyn_opts(level_layout(level)?);
+    let o = DynOpts { ctx: ctx.unwrap_or(1024), ..dyn_opts(layout) };
     let e: Result<Dyn> = (|| {
         match case {
             "gemma4" => gemma4_random(&dir)?,
@@ -1626,7 +1721,7 @@ pub(crate) fn random_dyn(case: &str, level: &str, tag: &str) -> Result<Dyn> {
             "qwen3" => qwen3_random(&dir)?,
             "muse" => crate::muse_ref::random(&dir)?,
             "kimi" => crate::kimi_ref::random(&dir, 1, true, 8)?,
-            "glm" => crate::kcheck_glm::random(&dir, false, None)?,
+            "glm" => crate::glm::random(&dir, false, None)?,
             "nemotron" => crate::kcheck_nh::random(&dir, 0, 16)?,
             "deepseek-v4" => crate::dsv4_ref::random(&dir, None)?,
             "qwen4x" => qwen4x_random(&dir)?,
@@ -1636,6 +1731,62 @@ pub(crate) fn random_dyn(case: &str, level: &str, tag: &str) -> Result<Dyn> {
     })();
     let _ = std::fs::remove_dir_all(&dir);
     e
+}
+
+/// `splitcheck CASE [--split CUT,..] [--devices GPU,..] [--level L | --layout mma12] [--tokens T]` (development): the case's random model on the dynamic route as `run` opens it
+/// (`split::open`: its family's loader, any family of that route), once on one GPU and once with its layers cut into stages (by default before its middle
+/// layer, both stages on GPU 0: the hand-over through host memory checked on a machine with one GPU). A prompt of 24 tokens, then T greedy steps fed the
+/// one-GPU run's tokens: every pass's logits the same bits both ways.
+pub fn split_check(a: &crate::args::Args) -> Result<()> {
+    let case = a.need(1, "CASE")?;
+    let level = a.flag("level").unwrap_or("penguin");
+    let tokens: usize = a.num("tokens", 12usize)?;
+    let Weights::Random(make) = find_case(case)?.weights else { return err(format!("{case}: a real model, not a random one")) };
+    let dir = std::env::temp_dir().join(format!("glyd-splitcheck-{case}-{}", std::process::id()));
+    let r = (|| -> Result<()> {
+        make(&dir)?;
+        let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(e.to_string()))?;
+        if crate::dynamic::split::family(&text).is_none() {
+            return err(format!("{case}: its family is not on the dynamic route (`run` cuts no layers of it)"));
+        }
+        let config = |k: &str| crate::dynamic::split::config_num(&text, k).unwrap_or(0);
+        let (nl, vocab) = (config("num_hidden_layers"), config("vocab_size"));
+        let (cuts, devices) = match crate::dynamic::split::split_args(a)? {
+            (c, _) if c.is_empty() => (vec![nl / 2], vec![0, 0]),
+            x => x,
+        };
+        // (penguin's packs in the smallest layout, or the 12-bit one with --layout mma12, as an HBM GPU's plan holds them)
+        let o = dyn_opts(a.layout()?.or(level_layout(level)?).or(Some(Layout::Tiered)));
+        let prompt = token_list(24, vocab, 0);
+        // (each pass's logits, the steps fed `feed` where given, else the run's own greedy tokens)
+        let run = |cuts: &[usize], devices: &[i32], feed: Option<&[u32]>| -> Result<(Vec<Vec<f32>>, Vec<u32>)> {
+            let mut e = crate::dynamic::split::open(&dir, &o, cuts, devices)?;
+            let mut s = e.prefill(&prompt)?;
+            let (mut rows, mut fed) = (vec![e.logits()?], Vec::new());
+            for i in 0..tokens {
+                let t = feed.map_or(s.token, |f| f[i]);
+                fed.push(t);
+                s = e.step(t)?;
+                rows.push(e.logits()?);
+            }
+            Ok((rows, fed))
+        };
+        let (one, fed) = run(&[], &devices[..1], None)?;
+        let (staged, _) = run(&cuts, &devices, Some(&fed))?;
+        let differ: Vec<usize> = (0..one.len()).filter(|&i| one[i].iter().map(|x| x.to_bits()).ne(staged[i].iter().map(|x| x.to_bits()))).collect();
+        println!(
+            "{case} at {level}: {nl} layers, cut before {cuts:?} on GPUs {devices:?}; {} passes (a prompt of {}, {tokens} steps), {} with logits that differ from the one-GPU run's",
+            one.len(),
+            prompt.len(),
+            differ.len()
+        );
+        if !differ.is_empty() {
+            return err(format!("{case}: the passes {differ:?} differ between one GPU and the stages"));
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    r
 }
 
 /// `twomodels [A B] [--level L] [--tokens T]` (R16: two models in one process): two cases' random models (gemma4 and qwen35 unless named) loaded on this GPU in this process, each with a scheduler
@@ -1802,6 +1953,8 @@ fn fill(s: &mut dyn crate::sched::ModelStep, slot: i32, t: &[u32], by: usize, la
 ///     the other sequence holds, so with no mixture of experts (`rows_exact`) not one bit may differ (a row that read another sequence's keys or state would);
 ///   - the prompt's side: the logits after its last chunk run beside the row, against the same chunks alone; and, as a yardstick of what the kernels' choice by rows alone does on this model,
 ///     the same prompt alone in chunks of that size against alone in whole chunks.
+///   - prompts of different lengths in one pass (`prefill_many`, prompts that come in together): each prompt's logits after its last token and after the step that follows it, against
+///     the prompt alone (every bit where the pass is 16 rows or fewer); and the first prompt beside other prompts of the same lengths: with no mixture of experts not a bit may differ.
 ///
 /// Required: in a step of 16 rows or fewer every logit is the reference's, bit for bit (what the kernels give at those sizes on every family); the other sequence's content changes nothing
 /// on a model with no mixture of experts; and every KL within --kl where one is given (a real model: a random model's logits are near ties that last bits move far). With
@@ -1852,7 +2005,7 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
     let mut reference = Vec::new();
     for (t, &f) in fa.iter().enumerate() {
         room(s, 0, pa.len() + t + 2)?;
-        s.decode(&[Row { token: f, pos: pa.len() + t, pages: &[0] }])?;
+        s.decode(&[Row::new(f, pa.len() + t, &[0])])?;
         reference.push(s.logits(0)?);
     }
     s.release(&[0])?;
@@ -1909,11 +2062,11 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
         let slots: Vec<[i32; 1]> = (0..n as i32).map(|j| [j]).collect();
         let mut got = Vec::new();
         for t in 0..steps {
-            let mut rows = vec![Row { token: fa[t], pos: pa.len() + t, pages: &slots[0] }];
+            let mut rows = vec![Row::new(fa[t], pa.len() + t, &slots[0])];
             room(s, 0, pa.len() + t + 2)?;
             for (j, (p, f)) in others.iter().enumerate() {
                 room(s, j as i32 + 1, p.len() + t + 2)?;
-                rows.push(Row { token: f[t], pos: p.len() + t, pages: &slots[j + 1] });
+                rows.push(Row::new(f[t], p.len() + t, &slots[j + 1]));
             }
             s.decode(&rows)?;
             got.push(s.logits(0)?);
@@ -1950,10 +2103,7 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
                 room(s, 0, pa.len() + t + 2)?;
                 room(s, 1, (t + 1) * c + (t + 1 == n) as usize)?;
                 let last = t + 1 == n;
-                s.round(
-                    &[Row { token: fa[t], pos: pa.len() + t, pages: &[0] }],
-                    &[PrefillJob { pages: &[1], start: t * c, tokens: &prompt[t * c..(t + 1) * c], last }],
-                )?;
+                s.round(&[Row::new(fa[t], pa.len() + t, &[0])], &[PrefillJob { pages: &[1], start: t * c, tokens: &prompt[t * c..(t + 1) * c], last }])?;
                 got.push(s.logits(0)?);
                 if last {
                     after = s.logits(1)?;
@@ -1981,6 +2131,56 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
         let whole = fill(s, 1, &px, chunk, true)?.expect("the last chunk's logits");
         s.release(&[1])?;
         report(&format!("(yardstick) that prompt alone in chunks of {c}, against alone in chunks of {chunk}"), false, &[(&whole[..], &alone[..])]);
+    }
+    // prompts of different lengths in one pass (`prefill_many`: prompts that come in together), each prompt's logits after its last token and after the step that follows it
+    // (its state and cache as the pass left them), against the prompt alone; the first prompt beside other prompts of the same lengths, against beside the first ones
+    let alone_then_step = |s: &mut dyn ModelStep, p: &[u32]| -> Result<(Vec<f32>, Vec<f32>)> {
+        let after = fill(s, 0, p, chunk, true)?.expect("the prompt's logits");
+        room(s, 0, p.len() + 2)?;
+        s.decode(&[Row { token: fa[0], pos: p.len(), pages: &[0], after: None }])?;
+        let next = s.logits(0)?;
+        s.release(&[0])?;
+        Ok((after, next))
+    };
+    let together = |s: &mut dyn ModelStep, ps: &[Vec<u32>]| -> Result<Vec<(Vec<f32>, Vec<f32>)>> {
+        let slots: Vec<[i32; 1]> = (0..ps.len() as i32).map(|j| [j]).collect();
+        for (p, sl) in ps.iter().zip(&slots) {
+            room(s, sl[0], p.len() + 2)?;
+        }
+        let jobs: Vec<PrefillJob> = ps.iter().zip(&slots).map(|(p, sl)| PrefillJob { pages: sl, start: 0, tokens: p, last: true }).collect();
+        s.prefill_many(&jobs)?;
+        let after: Vec<Vec<f32>> = (0..ps.len()).map(|j| s.logits(j)).collect::<Result<_>>()?;
+        let mut out = Vec::new();
+        for ((p, sl), a) in ps.iter().zip(&slots).zip(after) {
+            s.decode(&[Row { token: fa[0], pos: p.len(), pages: sl, after: None }])?;
+            out.push((a, s.logits(0)?));
+        }
+        s.release(&slots.concat())?;
+        Ok(out)
+    };
+    // (15 rows in all: the products' kernels of a pass alone, so every bit is required; then 74 rows, another kernel's sums, counted)
+    for lens in [&[7usize, 5, 3][..], &[37, 9, 23, 5]] {
+        let lens: Vec<usize> = lens.iter().copied().take(k.min(s.prefill_rows())).filter(|&l| l + 2 < window).collect();
+        if lens.len() < 2 || lens.iter().sum::<usize>() > chunk {
+            continue;
+        }
+        let rows: usize = lens.iter().sum();
+        let ps: Vec<Vec<u32>> = lens.iter().enumerate().map(|(j, &l)| toks(l, 3000 + j as u32)).collect();
+        let alone: Vec<(Vec<f32>, Vec<f32>)> = ps.iter().map(|p| alone_then_step(s, p)).collect::<Result<_>>()?;
+        let got = together(s, &ps)?;
+        let pairs: Vec<(&[f32], &[f32])> = alone.iter().zip(&got).flat_map(|(w, g)| [(&w.0[..], &g.0[..]), (&w.1[..], &g.1[..])]).collect();
+        report(
+            &format!("prompts of {lens:?} in one pass ({rows} rows), each one's logits after it and after its next step, against alone"),
+            rows <= crate::dynamic::EXACT_ROWS,
+            &pairs,
+        );
+        let others: Vec<Vec<u32>> = std::iter::once(ps[0].clone()).chain(lens[1..].iter().enumerate().map(|(j, &l)| toks(l, 4000 + j as u32))).collect();
+        let beside = together(s, &others)?;
+        report(
+            &format!("prompts of {lens:?} in one pass, the first beside other prompts of those lengths, against beside the first ones"),
+            exact,
+            &[(&got[0].0[..], &beside[0].0[..]), (&got[0].1[..], &beside[0].1[..])],
+        );
     }
     sizes_done(case, fails)
 }
@@ -2023,9 +2223,11 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         None => random_dyn(case, level, "keepcheck")?,
     };
     let (vocab, cuts, marks, window) = (e.desc().vocab as u32, e.cuts(), e.can_mark(), e.least_window());
-    // (a model with recurrent states keeps them at boundaries (src/dynamic/snaps.rs); this check's prompts are short, so at boundaries 32 tokens apart)
+    // (a model with recurrent states keeps them at boundaries (src/dynamic/snaps.rs); this check's prompts are short, so at boundaries 32 tokens apart, or as far apart as the
+    // largest blocks: DeepSeek-V4's compressed entries' are found by name whole)
     if !cuts && marks {
-        e.ask_state_every(32);
+        let unit = e.whole_start();
+        e.ask_state_every(if unit % 32 == 0 { unit } else { 2 * unit });
     }
     let Some((k, s)) = e.as_step(3)? else { return err(format!("{case}: no scheduler's step")) };
     if k < 3 || !s.keeps() {
@@ -2052,7 +2254,7 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     fn steps(s: &mut dyn ModelStep, slot: i32, start: usize, t: &[u32]) -> Result<()> {
         for (i, &tok) in t.iter().enumerate() {
             room(s, slot, start + i + 2)?;
-            s.decode(&[Row { token: tok, pos: start + i, pages: &[slot] }])?;
+            s.decode(&[Row::new(tok, start + i, &[slot])])?;
         }
         Ok(())
     }
@@ -2316,7 +2518,8 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         // back as it grew: they wait by their names); and the sequence is unharmed
         if all + alt.len() < s.window() {
             let keys = crate::kv::block_names(root, &long);
-            let at = 6 * chunk;
+            // (a recurrent model's start is found at a boundary)
+            let at = (6 * chunk).next_multiple_of(every.max(1));
             fill_named(s, 0, &long, chunk, &keys)?;
             let got = s.adopt(1, &keys[..at / 16])?;
             if got != at {
@@ -2412,7 +2615,7 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         let mut out = vec![first.ok_or_else(|| Error("no sample after a chunk".into()))?.token];
         for (i, &t) in reply[..reply.len() - 1].iter().enumerate() {
             room(s, slot, at + i + 2)?;
-            out.push(s.decode(&[Row { token: t, pos: at + i, pages: &[slot] }])?[0].token);
+            out.push(s.decode(&[Row::new(t, at + i, &[slot])])?[0].token);
         }
         Ok(out)
     };
@@ -2497,11 +2700,15 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
-/// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR --prompt-tokens P]` (gemma4, qwen35, muse, kimi, glm, nemotron): the case's random model on the description executor (or the model
-/// in DIR, its prompts of P (k + 1) / N tokens), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
+/// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR [--places N [--mode M] [--device]] | --ctx C] [--prompt-tokens P] [--stagger D]` (gemma4, qwen35, muse, kimi, glm, nemotron): the case's random model on the
+/// description executor (or the model in DIR, with `--places` its experts in the expert cache; with `--ctx` a context of C tokens; with `--prompt-tokens` prompts of P (k + 1) / N tokens), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
 /// the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts one a pass, decode steps of the rows that decode: 16 or fewer here, whose bits
 /// are each row's own pass's). With prompts run together the replies that differ are counted, not refused (a step of more than 16 rows is another kernel's; a random model's near ties turn on its last
 /// bits: `roundcheck` measures the logits). The round is one step of the rows that decode and the prompts' chunks unless GLYD_ENGINE_ONE_STEP=0, and some step must then have held both.
+/// Then the prompts at once twice more, with no graph at all (every pass eager) and with every graph on and every pass that is no whole graph's in pieces
+/// (src/dynamic/pieces.rs): the replies the same token for token, and where pieces can run, some pass replayed them.
+/// With --stagger D the prompts then come D scheduler rounds apart, as a server's requests do: with prompts one a pass every reply is the reply alone, and with no mixture of
+/// experts each reply is the same when every other prompt's tokens are changed (a row's sums may turn on its passes' row counts, never on the other rows' content).
 ///
 /// With a page budget too small for all of them at once (GLYD_ENGINE_PAGES, R4d) the prompts are run at once three more times: sequences sent back for room swapped to the host wherever they can be,
 /// swapped where that costs less than their recompute (the default), and run again from their tokens only; each run's replies against the references, its sequences sent back and swapped, and each
@@ -2517,13 +2724,45 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let tokens: usize = a.num("tokens", 24usize)?;
     let long: Option<usize> = a.flag("prompt-tokens").map(|v| v.parse().map_err(|_| Error(format!("--prompt-tokens {v}: not a number")))).transpose()?;
     let len = |k: usize| long.map_or(5 + 29 * k, |p| (p * (k + 1) / users).max(1));
-    let mut e: Dyn = match a.flag("dir") {
-        Some(d) => {
-            let o = DynOpts { ctx: (len(users - 1) + tokens + 64).next_multiple_of(256), chunk: 256, graph: true, device: 0, layout: level_layout(level)? };
+    // (--layout mma|mma12: penguin's packs in that layout, where the GPU's choice is another)
+    let layout = a.layout()?.or(level_layout(level)?);
+    let mut e: Dyn = match (a.flag("dir"), a.num("places", 0usize)?) {
+        // (`--places N`: the model in DIR with its experts in the expert cache, N places a layer and every expert in the computer's memory (src/offload.rs; `--mode`, copy by default, `--device`: the
+        // decode calls planned on the GPU, src/devplan.rs): a model larger than the GPU, its replies alone against its replies at once)
+        (Some(d), places) if places > 0 => {
+            let mode = match a.flag("mode") {
+                Some(m) => crate::offload::Mode::parse(m).ok_or_else(|| Error(format!("--mode {m}: copy, cpu, split or auto")))?,
+                None => crate::offload::Mode::Copy,
+            };
+            let o = DynOpts { ctx: (len(users - 1) + tokens + 64).next_multiple_of(256), chunk: 256, graph: true, device: 0, layout };
+            let offload = crate::offload::Offload { mode, device: a.has("device"), ..Default::default() };
+            let caching = crate::hbg_store::HbCaching { places, ram: None, offload, dense: 0 };
+            match crate::dynamic::split::open_cached(Path::new(d), &o, &[], &[0], vec![caching])? {
+                crate::dynamic::split::Run::One(e) => {
+                    println!(
+                        "{d}: its experts in the expert cache, {places} places a layer, mode {}{}",
+                        mode.name(),
+                        if e.has_graph() { ", the decode step one graph" } else { "" }
+                    );
+                    e
+                }
+                _ => return err("the model on one GPU was asked for"),
+            }
+        }
+        (Some(d), _) => {
+            let o = DynOpts { ctx: (len(users - 1) + tokens + 64).next_multiple_of(256), chunk: 256, graph: true, device: 0, layout };
             load_dyn(case, Path::new(d), &o, level)?
         }
-        None => random_dyn(case, level, "usercheck")?,
+        // (--ctx N: the random model with a context of N tokens, for a long prompt's check: --prompt-tokens)
+        (None, _) => random_dyn_at(
+            case,
+            level,
+            layout,
+            "usercheck",
+            a.flag("ctx").map(|v| v.parse().map_err(|_| Error(format!("--ctx {v}: not a number")))).transpose()?,
+        )?,
     };
+    println!("{case} at {level}: layout {:?}", e.layout);
     let vocab = e.desc().vocab as u32;
     let prompts: Vec<Vec<u32>> = (0..users).map(|k| (0..len(k) as u32).map(|i| 3 + (i * 7919 + k as u32 * 104_729) % (vocab - 3)).collect()).collect();
     let reply = Reply {
@@ -2534,37 +2773,42 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         stop_ids: Vec::new(),
     };
     let reference: Vec<Vec<u32>> = prompts.iter().map(|p| e.reply(p, &reply, &mut |_| true).map(|r| r.0)).collect::<Result<_>>()?;
-    // (--kv12: the scheduler's cache in 12-bit lossless pages, of tables made on these prompts; with GLYD_KV12_POOL's small pools pages are made void, and the
-    // sequences that hold them are taken back and run again)
+    // (--kv12: the scheduler's cache in 12-bit lossless pages, of tables made on these prompts; with GLYD_KV12_POOL's small pools the newest sequence is paused where the
+    // raw slabs run short, and no page is made void)
     let kv12 = a.has("kv12");
     if kv12 {
         let t = crate::dynamic::kv12::calibrate(&mut e, &prompts, "usercheck")?;
         e.set_kv12(Some(t));
     }
-    let batchable = e.batchable();
+    let (batchable, exact) = (e.batchable(), e.rows_exact());
     let Some((k, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
     // (no finished sequence kept: the same prompts come again below, and each is to run from its first token, in passes with the others)
     let mut s = Sched::new(step, k).keeping(false);
-    let ask = |s: &mut Sched<&mut dyn crate::sched::ModelStep>, ps: &[Vec<u32>]| -> Result<Vec<Vec<u32>>> {
-        let rx: Vec<_> = ps
-            .iter()
-            .map(|p| {
-                let (tx, rx) = std::sync::mpsc::channel();
-                s.submit(Submit {
-                    prompt: p.clone(),
-                    reply: reply.clone(),
-                    out: tx,
-                    abort: Arc::new(AtomicBool::new(false)),
-                    resumed: Default::default(),
-                    cached: Default::default(),
-                    created: Default::default(),
-                    salt: 0,
-                    pin: 0,
-                    images: Vec::new(),
-                });
-                rx
-            })
-            .collect();
+    // (the prompts `gap` scheduler rounds apart: 0, all of them before the first round)
+    let ask = |s: &mut Sched<&mut dyn crate::sched::ModelStep>, ps: &[Vec<u32>], gap: usize| -> Result<Vec<Vec<u32>>> {
+        let mut rx = Vec::new();
+        for p in ps {
+            let (tx, r) = std::sync::mpsc::channel();
+            s.submit(Submit {
+                prompt: p.clone(),
+                reply: reply.clone(),
+                out: tx,
+                abort: Arc::new(AtomicBool::new(false)),
+                resumed: Default::default(),
+                cached: Default::default(),
+                created: Default::default(),
+                salt: 0,
+                pin: 0,
+                images: Vec::new(),
+            });
+            rx.push(r);
+            for _ in 0..gap {
+                if s.idle() {
+                    break;
+                }
+                s.tick()?;
+            }
+        }
         while !s.idle() {
             s.tick()?;
         }
@@ -2584,7 +2828,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     };
     let mut fails = 0;
     for (i, p) in prompts.iter().enumerate() {
-        let got = ask(&mut s, std::slice::from_ref(p))?.remove(0);
+        let got = ask(&mut s, std::slice::from_ref(p), 0)?.remove(0);
         let same = got == reference[i];
         fails += !same as usize;
         println!(
@@ -2594,7 +2838,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             if same { "the reply alone, token for token".into() } else { format!("{got:?} against {:?}", reference[i]) }
         );
     }
-    let together = ask(&mut s, &prompts)?;
+    let together = ask(&mut s, &prompts, 0)?;
     let same = together.iter().zip(&reference).filter(|(a, b)| a == b).count();
     // (with a page budget too small for all of them at once (GLYD_ENGINE_PAGES), sequences give their blocks back and run again from their tokens, the generated ones as a prompt: the
     // replies are then counted, not required to be the same)
@@ -2712,15 +2956,46 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     }
     if kv12 {
         let back = s.stats.taken_back;
-        println!("12-bit pages: {back} steps taken back for void pages, {} sequences ended for want of room", s.stats.ended_lost);
-        if std::env::var_os("GLYD_KV12_POOL").is_some() && back == 0 {
-            println!("FAIL small pools (GLYD_KV12_POOL) made no step be taken back");
+        println!("12-bit pages: {back} steps taken back for void pages, {} sequences ended for want of room, {resumed} sent back for room", s.stats.ended_lost);
+        // (R4b's deterministic capacity: small pools (GLYD_KV12_POOL), values that do not compress (GLYD_KV12_SHIFT): the newest sequence is paused where the raw slabs
+        // run short, no page is made void and no request fails)
+        if std::env::var_os("GLYD_KV12_POOL").is_some() && (back > 0 || s.stats.ended_lost > 0) {
+            println!("FAIL small pools (GLYD_KV12_POOL): a step taken back for a void page, or a request ended, where the newest sequence is to be paused");
             fails += 1;
         }
     }
     if strict && same < prompts.len() {
         println!("FAIL replies at once differ from alone with prompts one a pass");
         fails += 1;
+    }
+    // (--stagger D: the prompts D scheduler rounds apart, as requests reach a server, each joining while those before it decode (GLYD_ENGINE_STEP_TOKENS cuts a prompt
+    // mid-way in the rounds that hold rows beside it); the replies against alone, then each against the same arrivals with every other prompt's tokens changed, their
+    // lengths kept: a row's sums turn on how many rows its passes hold, never on what the others hold, so with no mixture of experts every reply is the same)
+    if let Some(d) = a.flag("stagger") {
+        let d: usize = d.parse().map_err(|_| Error(format!("--stagger {d}: a number of rounds")))?;
+        let got = ask(&mut s, &prompts, d)?;
+        let alone = got.iter().zip(&reference).filter(|(a, b)| a == b).count();
+        let mut beside = 0;
+        for i in 0..prompts.len() {
+            let others: Vec<Vec<u32>> = prompts
+                .iter()
+                .enumerate()
+                .map(|(j, p)| if j == i { p.clone() } else { p.iter().map(|&t| 3 + (t * 31 + 17) % (vocab - 3)).collect() })
+                .collect();
+            beside += (ask(&mut s, &others, d)?[i] == got[i]) as usize;
+        }
+        println!(
+            "staggered {d} rounds apart: {alone} of {n} replies the reply alone, {beside} of {n} the same beside other prompts' tokens",
+            n = prompts.len()
+        );
+        if strict && alone < prompts.len() {
+            println!("FAIL staggered replies differ from alone with prompts one a pass");
+            fails += 1;
+        }
+        if exact && !squeezed && beside < prompts.len() {
+            println!("FAIL a staggered reply changed with what the other prompts hold");
+            fails += 1;
+        }
     }
     if batchable && k > 1 && steps[2..].iter().all(|&x| x == 0) {
         println!("FAIL no decode step had more than one row");
@@ -2736,7 +3011,59 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         }
     }
     // (the sampler's candidates the step makes on the GPU (src/dynamic/rows.rs `Cands`), against its rows' logits)
+    let swapped = s.stats.swapped;
     drop(s);
+    // (decode steps of several rows replay a CUDA graph of their padded rows where the description takes one (src/dynamic/rows.rs `rows_bucket`): with prompts one a pass, a
+    // description with experts decodes a sequence a step)
+    let (replays, late) = (e.rows_replays.get(), e.rows_late.get());
+    // (steps launched ahead, GLYD_ENGINE_OVERLAP=1, run as passes of parts: no graph of rows and no pieces there yet)
+    let ahead = crate::sched::ModelStep::overlaps(&e);
+    let graphs = e.rows_graphs() && !(one_a_pass && !e.rows_exact()) && !ahead;
+    println!(
+        "decode steps of several rows replayed from a CUDA graph: {replays}, graphs captured in a request's step: {late}{}",
+        if graphs { "" } else { " (this description's steps of several rows run eager)" }
+    );
+    if graphs && batchable && k > 1 && steps[2..].iter().any(|&x| x > 0) && replays == 0 {
+        println!("FAIL no decode step of several rows replayed a graph");
+        fails += 1;
+    }
+    // (every size captured before the first request (rows.rs `capture_rows`): no step waits on a capture)
+    if late > 0 {
+        println!("FAIL {late} graphs of decode steps were captured in a request's step, not before the first");
+        fails += 1;
+    }
+    // (graphs against eager: the prompts at once twice more, first with no graph at all (every pass eager: no one-row step's graph, no decode steps' graph, no pieces), then
+    // with every graph on and every pass that is no whole graph's in pieces (src/dynamic/pieces.rs), each size captured the first time it is met: the same kernels on the
+    // same rows in the same order, so the replies are the same token for token, and where pieces can run, passes replayed them. Not where sequences are sent back for room,
+    // which turns on timings)
+    let pieces_on = e.pieces_for_check(true, true);
+    if !squeezed && std::env::var_os("GLYD_KV12_POOL").is_none() && (pieces_on || e.graphs_taken()) {
+        let run = |e: &mut Dyn| -> Result<Vec<Vec<u32>>> {
+            let Some((_, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
+            ask(&mut Sched::new(step, k).keeping(false), &prompts, 0)
+        };
+        let eager = run(&mut e)?;
+        e.pieces_for_check(true, false);
+        let (before, rows_before) = (e.piece_replays.get(), e.rows_replays.get());
+        let graphs = run(&mut e)?;
+        let (played, rows_played) = (e.piece_replays.get() - before, e.rows_replays.get() - rows_before);
+        e.pieces_for_check(false, false);
+        let same = graphs.iter().zip(&eager).filter(|(a, b)| a == b).count();
+        let ok = same == prompts.len() && (played > 0 || !pieces_on || ahead);
+        println!(
+            "{} graphs on against off: {same} of {} replies at once the eager passes', token for token; {played} passes replayed their pieces, {rows_played} decode steps \
+             their graph{}",
+            if ok { "PASS" } else { "FAIL" },
+            prompts.len(),
+            if pieces_on { "" } else { " (no pieces here)" }
+        );
+        fails += !ok as usize;
+    }
+    if squeezed {
+        // (the bytes over the link, each way)
+        let (out, back) = e.swap_moved();
+        println!("swaps: {swapped} sequences, {:.1} MiB copied out and {:.1} MiB back", out as f64 / (1 << 20) as f64, back as f64 / (1 << 20) as f64);
+    }
     let Some((_, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
     let (rows, bad) = cands_check(step, &prompts)?;
     println!("{} the step's candidates of {rows} rows against their logits' {} largest", if bad == 0 { "PASS" } else { "FAIL" }, crate::kern::TOPK);
@@ -2791,8 +3118,7 @@ fn cands_check(step: &mut dyn crate::sched::ModelStep, prompts: &[Vec<u32>]) -> 
         next.push(s.token);
     }
     let pages: Vec<[i32; 1]> = (0..next.len()).map(|j| [j as i32]).collect();
-    let decode: Vec<crate::sched::Row> =
-        next.iter().enumerate().map(|(j, &t)| crate::sched::Row { token: t, pos: prompts[j].len(), pages: &pages[j] }).collect();
+    let decode: Vec<crate::sched::Row> = next.iter().enumerate().map(|(j, &t)| crate::sched::Row::new(t, prompts[j].len(), &pages[j])).collect();
     if !decode.is_empty() {
         step.decode(&decode)?;
         for r in 0..decode.len() {

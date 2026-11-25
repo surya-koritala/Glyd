@@ -38,7 +38,7 @@ pub mod v1;
 /// The C API this crate calls (glyd_gpu.h's `GLYD_GPU_API_VERSION`): a
 /// library of another version is refused, as a C FFI does not see a call's
 /// arguments.
-pub const API_VERSION: i32 = 20;
+pub const API_VERSION: i32 = 22;
 /// A GPU's class by name in its code ([`Library::gpu`]): "GeForce" in its name.
 pub const GEFORCE: i32 = 1000;
 /// A GPU's class by name in its code: "A10" in its name as a word (an A10, not an A10G, A100 or A40).
@@ -258,6 +258,9 @@ api! { Api, DECLARED;
     fn glyd_gpu_kv_write(key: *const u16, key_stride: i64, value: *const u16, value_stride: i64, slots: *const i64, n: i64, pool: *mut u8, page_stride: i64, kbase: *const u8, vbase: *const u8, h: i64, d: i64, a: i64, escape: *mut u8, nchunks: i64, raw: *mut u8, nslabs: i64, layer: i64, status: *mut u32, lost: *mut u32, nlost: i64, ring: i64, cs: Stream) -> c_int;
     fn glyd_gpu_kv_release(pool: *mut u8, page_stride: i64, nblocks: i64, blocks: *const i32, n: i64, h: i64, d: i64, a: i64, escape: *mut u8, nchunks: i64, raw: *mut u8, nslabs: i64, layer: i64, status: *mut u32, lost: *mut u32, nlost: i64, cs: Stream) -> c_int;
     fn glyd_gpu_kv_unpack(pool: *const u8, page_stride: i64, pages: *const i32, n: i64, kbase: *const u8, vbase: *const u8, h: i64, d: i64, a: i64, escape: *const u8, nchunks: i64, raw: *const u8, nslabs: i64, out_k: *mut u16, out_v: *mut u16, cs: Stream) -> c_int;
+    fn glyd_gpu_kv_image_bytes(h: i64, d: i64, a: i64, bytes: *mut i64) -> c_int;
+    fn glyd_gpu_kv_save(pool: *const u8, page_stride: i64, nblocks: i64, pages: *const i32, n: i64, h: i64, d: i64, a: i64, escape: *const u8, nchunks: i64, raw: *const u8, nslabs: i64, layer: i64, out: *mut u8, moved: *mut u32, cs: Stream) -> c_int;
+    fn glyd_gpu_kv_load(img: *const u8, dst: *const i32, n: i64, pool: *mut u8, page_stride: i64, nblocks: i64, h: i64, d: i64, a: i64, escape: *mut u8, nchunks: i64, raw: *mut u8, nslabs: i64, layer: i64, status: *mut u32, ring: i64, cs: Stream) -> c_int;
     fn glyd_gpu_kv_gather(pool: *const u8, page_stride: i64, pages: *const i32, dst: *const i32, n: i64, kbase: *const u8, vbase: *const u8, h: i64, d: i64, a: i64, escape: *const u8, nchunks: i64, raw: *const u8, nslabs: i64, out: *mut u16, cs: Stream) -> c_int;
     fn glyd_gpu_kv_work_put(key: *const u16, key_stride: i64, value: *const u16, value_stride: i64, slots: *const i64, n: i64, h: i64, d: i64, out: *mut u16, blocks: i64, cs: Stream) -> c_int;
     fn glyd_gpu_kv_decode_shares(b: i64, h: i64, max_pages: i64, splits: *mut i64) -> c_int;

@@ -6,6 +6,7 @@ use crate::dev::Buf;
 use crate::ffi::Words;
 use crate::ffi::{err, Error, Pack, Result};
 use crate::qwen35::Pack35;
+use crate::runtime::config::{ModelConfig, Width};
 use glyd_gpu::json::{self, Value};
 use glyd_gpu::safetensors::Checkpoint;
 pub use glyd_gpu::save::Layout;
@@ -15,28 +16,7 @@ fn io<T>(r: std::io::Result<T>) -> Result<T> {
     r.map_err(|e| Error(e.to_string()))
 }
 
-pub(crate) fn num(v: &Value, what: &str) -> Result<f64> {
-    match v {
-        Value::Number(n) => n.parse().map_err(|_| Error(format!("config.json: {what}: not a number"))),
-        _ => err(format!("config.json: {what}: not a number")),
-    }
-}
-
-/// The end-of-sequence ids: generation_config.json's (a number or a list) where it gives any, else the config's.
-pub fn eos_ids(config: &Value, generation: Option<&str>) -> Vec<i64> {
-    let mut eos = Vec::new();
-    if let Some(Ok(g)) = generation.map(json::parse) {
-        match g.get("eos_token_id") {
-            Some(Value::Number(n)) => eos.extend(n.parse::<i64>().ok()),
-            Some(Value::Array(a)) => eos.extend(a.iter().filter_map(Value::as_i64)),
-            _ => {}
-        }
-    }
-    if eos.is_empty() {
-        eos.extend(config.get("eos_token_id").and_then(Value::as_i64));
-    }
-    eos
-}
+pub use crate::runtime::config::{eos_ids, num};
 
 /// What the engine reads of a Qwen3 config.json.
 #[derive(Clone, Debug)]
@@ -65,39 +45,48 @@ impl Config {
 
     /// A config.json's text (and a generation_config.json's, where there is one) read as `load` reads the files: `label` names the file in an error.
     pub fn parse(text: &str, label: &str, generation: Option<&str>) -> Result<Config> {
-        let v = json::parse(text).map_err(|e| Error(format!("{label}: {e}")))?;
-        let get = |k: &str| v.get(k).ok_or_else(|| Error(format!("{label}: no {k}")));
-        let arch = get("architectures")?.as_array().and_then(|a| a.first()).and_then(Value::as_str).unwrap_or("");
-        if arch != "Qwen3ForCausalLM" {
-            return err(format!("{label}: {arch}: the engine runs Qwen3 dense (Qwen3ForCausalLM) so far"));
+        Config::of(&ModelConfig::parse(text).map_err(|e| e.context(label))?, label, generation)
+    }
+
+    /// What the engine reads of a config.json parsed once (`ModelConfig`): its shared keys typed, `rms_norm_eps` and `rope_theta` its own.
+    pub fn of(c: &ModelConfig, label: &str, generation: Option<&str>) -> Result<Config> {
+        let s = &c.shared;
+        if c.arch != "Qwen3ForCausalLM" {
+            return err(format!("{label}: {}: the engine runs Qwen3 dense (Qwen3ForCausalLM) so far", c.arch));
         }
-        let u = |k: &str| -> Result<usize> { get(k)?.as_u64().map(|x| x as usize).ok_or_else(|| Error(format!("{label}: {k}: not an integer"))) };
-        let heads = u("num_attention_heads")?;
+        let need = |x: Option<usize>, k: &str| x.ok_or_else(|| Error(format!("{label}: no {k}")));
+        let heads = need(s.num_attention_heads, "num_attention_heads")?;
         if heads == 0 {
             return err(format!("{label}: num_attention_heads: 0"));
         }
-        let head_dim = v.get("head_dim").and_then(Value::as_u64).map(|x| x as usize).unwrap_or(u("hidden_size")? / heads);
-        if v.get("rope_scaling").is_some_and(|r| *r != Value::Null) {
+        let hidden = need(s.hidden_size, "hidden_size")?;
+        let head_dim = s.head_dim.unwrap_or(hidden / heads);
+        if c.top.get("rope_scaling").is_some_and(|r| !r.is_null()) {
             return err(format!("{label}: rope_scaling: not supported yet"));
         }
-        let eos = eos_ids(&v, generation);
-        let layers = u("num_hidden_layers")?;
+        let layers = need(s.num_hidden_layers, "num_hidden_layers")?;
         if layers > crate::plan::MAX_LAYERS {
             return err(format!("{label}: num_hidden_layers {layers}, where no model has more than {}", crate::plan::MAX_LAYERS));
         }
+        let inter = match &s.intermediate_size {
+            Some(Width::One(i)) => *i,
+            Some(Width::PerLayer(_)) => return err(format!("{label}: intermediate_size: a width a layer, where Qwen3 has one")),
+            None => return err(format!("{label}: no intermediate_size")),
+        };
+        let get = |k: &str| c.top.get(k).ok_or_else(|| Error(format!("{label}: no {k}")));
         Ok(Config {
-            hidden: u("hidden_size")?,
+            hidden,
             layers,
             heads,
-            kv_heads: u("num_key_value_heads")?,
+            kv_heads: need(s.num_key_value_heads, "num_key_value_heads")?,
             head_dim,
-            inter: u("intermediate_size")?,
-            vocab: u("vocab_size")?,
+            inter,
+            vocab: need(s.vocab_size, "vocab_size")?,
             eps: num(get("rms_norm_eps")?, "rms_norm_eps")? as f32,
             rope_theta: num(get("rope_theta")?, "rope_theta")?,
-            max_pos: u("max_position_embeddings")?,
-            tie: v.get("tie_word_embeddings").and_then(Value::as_bool).unwrap_or(false),
-            eos,
+            max_pos: need(s.max_position_embeddings, "max_position_embeddings")?,
+            tie: s.tie_word_embeddings.unwrap_or(false),
+            eos: eos_ids(&c.top, generation),
         })
     }
 }
