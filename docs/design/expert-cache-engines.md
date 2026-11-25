@@ -1,7 +1,7 @@
 # The expert cache beside llama.cpp's and KTransformers' (R12, #232)
 
-What each engine does with the experts of a mixture of experts that the GPU does not hold, read from their sources (llama.cpp at the
-reference clone's commit; KTransformers through SGLang's integration of it), and what a same-bits, same-GPU comparison has to hold
+What each engine does with the experts of a mixture of experts that the GPU does not hold, read from their sources (llama.cpp at commit
+0b51bb2f, 2026-11-22; KTransformers through SGLang's integration of it at de41ccfa, 2026-11-23), and what a same-bits, same-GPU comparison has to hold
 fixed. The comparison itself is a measurement on the issue's GPU (phase 3); this note is what it compares.
 
 ## The three designs
