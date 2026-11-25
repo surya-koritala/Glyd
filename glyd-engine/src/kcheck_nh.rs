@@ -149,7 +149,7 @@ pub fn kernels(ind: &Path, outd: &Path) -> Result<()> {
     let ka = crate::dynamic::attn::KernAttn::load(&dev)?;
     // SAFETY: as above.
     unsafe {
-        ka.prep(s, &at, nq + nk, (crate::kern::G4Pf::default(), 0))?;
+        ka.prep(s, &at, nq + nk, (crate::kern::NextPf::default(), 0))?;
         ka.decode(s, &crate::dynamic::attn::AttnArgs { out: out.ptr, ..at })?;
         ka.prompt(&crate::ffi::Lib::find()?, s, &crate::dynamic::attn::AttnArgs { out: pre.ptr, ..at }, 0)?;
     }

@@ -39,6 +39,16 @@ pub fn mlp(m: &Mlp, p: &Params, prefix: &str, x: &[f32]) -> Result<Vec<f32>> {
     finish(m, &first, |h| p.prod(&format!("{prefix}down"), h))
 }
 
+/// A per-layer input's gated branch (`kinds::PerLayer`) on one token's residual `x` and its layer's input `input`: proj(act(gate x) input).
+pub fn per_layer(pl: &crate::runtime::kinds::PerLayer, p: &Params, x: &[f32], input: &[f32]) -> Result<Vec<f32>> {
+    let g = p.prod("gate", x)?;
+    if g.len() != input.len() {
+        return crate::ffi::err(format!("a per-layer branch of {} gates for an input of {}", g.len(), input.len()));
+    }
+    let m: Vec<f32> = g.iter().zip(input).map(|(&g, &i)| super::act(pl.act, g) * i).collect();
+    p.prod("proj", &m)
+}
+
 /// One token's chosen experts (in order) and their weights, from the router's logits.
 pub fn route(r: &Router, logits: &[f32], choice_bias: Option<&[f32]>, hash: Option<&[f32]>) -> Result<(Vec<usize>, Vec<f32>)> {
     route_margin(r, logits, choice_bias, hash).map(|(ids, w, _)| (ids, w))

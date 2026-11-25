@@ -17,7 +17,7 @@ use super::{Dyn, Part, Slot};
 use crate::dev::Dev;
 use crate::ffi::{err, Result, Stream};
 use crate::gpu_ops::GpuOps;
-use crate::kern::G4Pf;
+use crate::kern::NextPf;
 use crate::launch;
 use crate::runtime::kinds;
 
@@ -441,7 +441,7 @@ impl KernAttn {
     ///
     /// # Safety
     /// `a`'s buffers live and of the sizes its fields give.
-    pub(crate) unsafe fn prep(&self, s: Stream, a: &AttnArgs, heads: usize, pf: (G4Pf, u32)) -> Result<()> {
+    pub(crate) unsafe fn prep(&self, s: Stream, a: &AttnArgs, heads: usize, pf: (NextPf, u32)) -> Result<()> {
         let (n, d) = (a.n as u32, a.d as usize);
         let grid = [n, heads as u32, 1 + pf.1.div_ceil(n * heads as u32)];
         let block = [(d / 2) as u32, 1, 1];
@@ -1151,6 +1151,7 @@ mod tests {
             k_eq_v: false,
             indexer: None,
             rounding: AttnRounding::Flash,
+            kv_from: None,
         }
     }
 

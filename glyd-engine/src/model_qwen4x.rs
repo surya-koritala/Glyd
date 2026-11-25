@@ -2892,14 +2892,14 @@ impl EngineQx {
         self.lin(&ly.mats[0], self.h.ptr, n, self.mix.ptr)?;
         crate::tmark!(s, "attn: qkv product");
         // (the Qwen3.5 layout's gated attention, the attention kind's kernels: the preparation; the attention over every token below, its warp kernels as before)
-        let op = crate::dynamic::qwen35::attention(nq, nk, c.rotary, (0, 0), 0);
+        let op = crate::dynamic::qwen35::attention(256, nq, nk, c.rotary, (0, 0), 0);
         if op.stride != qd || c.head_dim != 256 {
             return err(format!("attention rows of {qd} with heads of {}: the gated attention's are {} with heads of 256", c.head_dim, op.stride));
         }
         let mut at = op.args(n, c.eps);
         (at.src, at.qw, at.kw, at.cs, at.sn, at.qpos, at.kpos) = (self.mix.ptr, sm[0].ptr, sm[1].ptr, self.cos.ptr, self.sin.ptr, pos, pos);
         (at.qo, at.kc, at.vc, at.cap, at.out, at.gate) = (self.qo.ptr, kc, vc, self.ctx as i32, self.core.ptr, self.mix.ptr + 512);
-        self.ka.prep(s, &at, nq + nk, (crate::kern::G4Pf::default(), 0))?;
+        self.ka.prep(s, &at, nq + nk, (crate::kern::NextPf::default(), 0))?;
         self.lin(&ly.mats[2], self.h.ptr, n, self.ixqk.ptr)?;
         crate::tmark!(s, "attn: indexer product");
         self.kq.ix_prep(s, self.ixqk.ptr, sm[2].ptr, self.cos.ptr, self.sin.ptr, half, pos, self.ixq.ptr, ik, n, c.ix_heads, c.eps)?;

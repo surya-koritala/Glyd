@@ -2,31 +2,6 @@
 // sublayer's output normed before it is added), the per-layer scalar, gelu(tanh) times up, and the final soft-cap; its attention is the attention kind's (kernels/attn.cu).
 // bf16 in memory, fp32 inside; the rounding points are transformers' eager ones (models/gemma4/modeling_gemma4.py): a norm rounds once, gelu rounds before the product by up.
 
-// ---- the next product's bytes into L2 (GLY-312) -----------------------------------------------------------------------------------------
-// The memory is idle while a small kernel (a norm, the q/k/v preparation and the attention after it, gelu) runs; its spare blocks (blockIdx.y or .z above 0) ask L2 for
-// the start of each first-wave block of the skinny product that comes next (kernels/skinny.cu: block r's steps at data + r dstride, its scales at scales + r sstride),
-// dhead and shead bytes of them (multiples of 128), a prefetch every 2^shift bytes, so that the product starts on L2's copies. data null: nothing.
-struct G4Pf {
-    const unsigned char* data;
-    const unsigned char* scales;
-    long long dstride, sstride;
-    int dhead, shead, regions, shift;
-};
-
-__device__ __forceinline__ void g4_pf(const G4Pf& p, int b, int nb) {
-    if (!p.data) return;
-    const int dl = p.dhead >> p.shift, per = dl + (p.shead >> p.shift);
-    for (int i = b * blockDim.x + threadIdx.x; i < p.regions * per; i += nb * blockDim.x) {
-        const int r = i / per, j = i - r * per;
-        const unsigned char* a = j < dl ? p.data + r * p.dstride + ((size_t)j << p.shift) : p.scales + r * p.sstride + ((size_t)(j - dl) << p.shift);
-#if defined(__HIP_PLATFORM_AMD__)
-        (void)a;  // (RDNA has no prefetch into L2)
-#else
-        asm volatile("prefetch.global.L2::evict_last [%0];" ::"l"(a));
-#endif
-    }
-}
-
 // ---- norms and the residual ------------------------------------------------------------------------------------------------------------
 // 1 / sqrt(mean of squares + eps): the norm's scale (transformers: torch.pow(mean + eps, -0.5) in fp32).
 __device__ __forceinline__ float g4_scale(float ss, int K, float eps) { return 1.f / sqrtf(ss / (float)K + eps); }
@@ -77,8 +52,8 @@ extern "C" __global__ void g4_embed_norm(bf16* x, float scale, const bf16* w, bf
 // The sandwich residual of a sublayer: x = bf16(x + bf16(rmsnorm(y) * wpost)); where `scalar`, x = bf16(x * scalar[0]) (the layer's scalar, at the end of a layer); where `wnext`,
 // out = bf16(rmsnorm(x) * wnext) (the next norm: the feed-forward's pre-norm, the next layer's input norm or the final norm). Two reductions, one block a row.
 // blockIdx.y above 0: `pf`'s prefetch.
-extern "C" __global__ void __launch_bounds__(1024) g4_add_norm(bf16* x, const bf16* y, const bf16* wpost, const bf16* scalar, const bf16* wnext, bf16* out, int K, float eps, G4Pf pf) {
-    if (blockIdx.y > 0) return g4_pf(pf, (blockIdx.y - 1) * gridDim.x + blockIdx.x, (gridDim.y - 1) * gridDim.x);
+extern "C" __global__ void __launch_bounds__(1024) g4_add_norm(bf16* x, const bf16* y, const bf16* wpost, const bf16* scalar, const bf16* wnext, bf16* out, int K, float eps, NextPf pf) {
+    if (blockIdx.y > 0) return next_pf(pf, (blockIdx.y - 1) * gridDim.x + blockIdx.x, (gridDim.y - 1) * gridDim.x);
     bf16* xr = x + (size_t)blockIdx.x * K;
     const bf16* yr = y + (size_t)blockIdx.x * K;
     // (every load first: one wait on L2 instead of three, the sums after)
@@ -124,8 +99,8 @@ extern "C" __global__ void __launch_bounds__(1024) g4_add_norm(bf16* x, const bf
 
 // ---- the feed-forward and the logits ------------------------------------------------------------------------------------------------------
 // m [n, inter] = bf16(bf16(gelu_tanh(gate)) * up), gate and up the halves of gu [n, 2 inter] (transformers: the activation's bf16 output times up, rounded).
-extern "C" __global__ void g4_gelu_mul(const bf16* gu, bf16* m, int inter, G4Pf pf) {
-    if (blockIdx.z > 0) return g4_pf(pf, (blockIdx.z - 1) * gridDim.x * gridDim.y + blockIdx.y * gridDim.x + blockIdx.x, (gridDim.z - 1) * gridDim.x * gridDim.y);
+extern "C" __global__ void g4_gelu_mul(const bf16* gu, bf16* m, int inter, NextPf pf) {
+    if (blockIdx.z > 0) return next_pf(pf, (blockIdx.z - 1) * gridDim.x * gridDim.y + blockIdx.y * gridDim.x + blockIdx.x, (gridDim.z - 1) * gridDim.x * gridDim.y);
     const int r = blockIdx.y;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < inter; i += gridDim.x * blockDim.x) {
         const float g = b2f(gu[(size_t)r * 2 * inter + i]), u = b2f(gu[(size_t)r * 2 * inter + inter + i]);

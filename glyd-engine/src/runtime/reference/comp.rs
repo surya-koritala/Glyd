@@ -383,7 +383,7 @@ mod tests {
         let desc = ModelDesc {
             hidden: D,
             vocab: 32,
-            embed: Embed { scale: 1.0, norm: None, streams: 1 },
+            embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None },
             blocks: layers.iter().map(|l| l.block.clone()).collect(),
             final_norm: Norm::rms(1e-6),
             head: Head { tied: false, softcap: None, scale: 1.0, collapse: crate::runtime::kinds::Collapse::None },
