@@ -50,10 +50,7 @@ pub struct Config35 {
 
 impl Config35 {
     pub fn load(dir: &Path) -> Result<Config35> {
-        let p = dir.join("config.json");
-        let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-        let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
-        Ok(Config35::parse(&text, &p.display().to_string(), generation.as_deref())?.as_saved(dir))
+        Ok(ModelConfig::read(dir, Config35::of)?.as_saved(dir))
     }
 
     /// A glyd-v7 directory (and a lossless glyd-v4 save, glyd/NAME-penguin's) holds the text model under the names transformers' causal LM gives it (`model.layers.*`,

@@ -173,10 +173,7 @@ struct Fp8Keys {
 
 impl ConfigGlm {
     pub fn load(dir: &Path) -> Result<ConfigGlm> {
-        let p = dir.join("config.json");
-        let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-        let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
-        ConfigGlm::parse(&text, &p.display().to_string(), generation.as_deref())
+        ModelConfig::read(dir, ConfigGlm::of)
     }
 
     /// A config.json's text (and a generation_config.json's, where there is one): `label` names the file in an error. A key the config lacks that transformers gives a default is read as that default (the layer schedule, the

@@ -2,7 +2,7 @@
 //! mixture-of-experts layers, in the order of `hybrid_override_pattern`), the tensors it loads and how they are packed, and what a sequence holds. The reference: transformers 5.19.0's
 //! modeling_nemotron_h.py and vLLM's nemotron_h.py (research/nemotron3-super-offload.md has the numbers); the layers' math is tools/nemotron_ref.py, the layers on the GPU src/kern_nh.rs.
 
-use crate::ffi::{err, Error, Result};
+use crate::ffi::{err, Result};
 use crate::qwen35::{Pack35, Tensor35};
 use crate::runtime::config::ModelConfig;
 use crate::weights::{eos_ids, saved_parts, Layout};
@@ -134,10 +134,7 @@ struct Keys {
 
 impl ConfigNemotronH {
     pub fn load(dir: &Path) -> Result<ConfigNemotronH> {
-        let p = dir.join("config.json");
-        let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-        let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
-        ConfigNemotronH::parse(&text, &p.display().to_string(), generation.as_deref())
+        ModelConfig::read(dir, ConfigNemotronH::of)
     }
 
     /// A config.json's text (and a generation_config.json's, where there is one): `label` names the file in an error.

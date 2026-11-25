@@ -119,8 +119,13 @@ impl Described {
 /// The description of the model in `dir`, from its config.json alone, and the file's path for the words of an error. A directory in the Hub's format (its
 /// safetensors, no glyd.json) is held to its index: a tensor the description reads and the checkpoint lacks is named here, with all of its kind.
 pub fn describe_dir(dir: &std::path::Path) -> Result<(Described, String)> {
+    describe_dir_of(dir, &ModelConfig::load(dir)?)
+}
+
+/// `describe_dir` of a config.json parsed once.
+pub fn describe_dir_of(dir: &std::path::Path, c: &ModelConfig) -> Result<(Described, String)> {
     let label = dir.join("config.json").display().to_string();
-    let d = describe_config(&ModelConfig::load(dir)?)?;
+    let d = describe_config(c)?;
     let hub = !dir.join("glyd.json").exists() && (dir.join("model.safetensors.index.json").exists() || dir.join("model.safetensors").exists());
     if hub {
         d.check(&names::index_names(dir)?, false).map_err(|e| e.context(&label))?;

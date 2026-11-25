@@ -209,7 +209,7 @@ fn plain(t: &Tokenizer) -> Tokenizer {
 
 /// The end-of-sequence ids of the model's directory: generation_config.json's where it gives any, else config.json's (or its text_config's).
 fn ends_of(dir: &Path) -> Vec<u32> {
-    let Some(config) = std::fs::read_to_string(dir.join("config.json")).ok().and_then(|t| crate::runtime::config::ModelConfig::parse(&t).ok()) else {
+    let Some(config) = crate::runtime::config::ModelConfig::load(dir).ok() else {
         return Vec::new();
     };
     let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();

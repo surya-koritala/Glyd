@@ -2807,7 +2807,7 @@ fn index_total(model: &str) -> Option<f64> {
 pub mod sizing {
     use super::{reserve_of, Kind, LoadPlan, Target, GEMMA_CHUNK, GEMMA_DRAFT_BYTES, HOST_MARGIN, LOSSY_CTX, LOSSY_MIN_CTX, LOSSY_WORK, QWEN3_WORK};
     use crate::args::Args;
-    use crate::cli::{cannot, gemma_draft, gemma_wren, level, level_name, shape_checks, short_name, supported, unrun_fix, users_of};
+    use crate::cli::{cannot, gemma_draft, gemma_wren, level, level_name, shape_checks, short_name, supported_in, unrun_fix, users_of};
     use crate::dev::Gpu;
     use crate::ffi::Blas;
     use crate::levels::{self, layout_for};
@@ -3723,11 +3723,13 @@ pub mod sizing {
         users: usize,
     ) -> Done<Option<LoadPlan>> {
         let name = short_name(model);
-        let row = crate::support::row(crate::support::family(text, &name)?);
+        // (config.json parsed once)
+        let c = crate::support::parsed(text, &name)?;
+        let row = crate::support::row(crate::support::family_in(&c, &name)?);
         match row.route.sizing {
             Sizing::Dense => {
-                supported(&name, text)?;
-                let cfg = Config::parse(text, "config.json", None).map_err(cannot)?;
+                supported_in(&name, &c)?;
+                let cfg = Config::of(&c, "config.json", None).map_err(cannot)?;
                 // (penguin at the layout the GPU is fastest in, a lossy level at its own)
                 let (_, _, p) = dense_plan(a, &cfg, row, &name, t, levels::layout_of(level).filter(|l| *l != Layout::Tiered), users)?;
                 shape_checks(&name, &cfg, &p)?;
