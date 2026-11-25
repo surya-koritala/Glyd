@@ -880,7 +880,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// A Llama-style dense model (the logits checks' random Qwen3) packed at penguin is a glyd-v7 save the executor reads as saved: each matrix of its lowered description (q, k
+    /// A Llama-style dense model (the logits checks' random plain dense model) packed at penguin is a glyd-v7 save the executor reads as saved: each matrix of its lowered description (q, k
     /// and v under q's name; gate and up under gate's; the embedding, the head) a lossless pack under its first member's name at the description's rows and columns, each small
     /// tensor copied as bf16, and no sidecar of the dense Qwen3 engine's.
     #[cfg(feature = "dev")]
@@ -889,7 +889,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("glyd-pack-dense-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let (src, out) = (dir.join("src"), dir.join("out"));
-        crate::logits::qwen3_random(&src).unwrap();
+        crate::logits::dense_random(&src).unwrap();
         run_with(src.to_str().unwrap(), &out, 2, Layout::Tiered, true).unwrap();
         let (layout, m) = crate::weights::v7_manifest(&out).unwrap().expect("a glyd-v7 save");
         assert_eq!(layout, Layout::Tiered);

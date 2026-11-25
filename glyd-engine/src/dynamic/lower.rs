@@ -1708,7 +1708,7 @@ mod tests {
         use super::super::attn::{QkNorm, RopeAt};
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let manifest: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/qwen3_tiny_manifest.json")).unwrap()).unwrap();
+            serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/dense_tiny_manifest.json")).unwrap()).unwrap();
         let tiny_text = manifest["config"].as_str().unwrap().to_string();
         let tiny_shapes: std::collections::HashMap<String, Vec<usize>> = manifest["tensors"]
             .as_array()
