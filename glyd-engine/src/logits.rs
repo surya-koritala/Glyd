@@ -106,6 +106,104 @@ impl Fixture {
     pub fn expected_rows(&self) -> usize {
         1 + self.decode.len() + (!self.long.is_empty()) as usize
     }
+
+    /// What a comparison with this fixture shows (`Held`): a fixture with a GPU generation is the engine's own recorded output, a pin.
+    pub fn held(&self) -> Held {
+        if self.gpu.is_some() {
+            Held::Pin
+        } else {
+            Held::Reference
+        }
+    }
+}
+
+/// What a fixture holds the engine to. `Reference`: another implementation's numbers (a CPU reference, transformers), within a bound: it shows the logits are right
+/// to that bound. `Pin`: the engine's own output as one GPU generation recorded it, bit for bit: it shows the logits have not moved since, and nothing of whether
+/// they were right when recorded. A case with pins alone is said to be pinned only, never within bounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Held {
+    Reference,
+    Pin,
+}
+
+impl Held {
+    /// The word a passing line starts with: PASS for a reference's bound kept, PIN for recorded bits unchanged.
+    pub fn passed(self) -> &'static str {
+        match self {
+            Held::Reference => "PASS",
+            Held::Pin => "PIN ",
+        }
+    }
+    /// The tag a line's bound carries.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Held::Reference => "a reference",
+            Held::Pin => "a pin: the engine's own recorded output",
+        }
+    }
+}
+
+/// A run's comparisons counted by what held them, and the cases nothing or a pin alone held.
+#[derive(Default, Debug)]
+pub struct Tally {
+    pub refs: usize,
+    pub pins: usize,
+    /// Cases whose only comparisons were pins.
+    pub pinned_only: Vec<String>,
+    /// Cases with nothing compared, each with why: failures.
+    pub none: Vec<(String, String)>,
+    /// Cases whose engine is not built: named, not held.
+    pub waits: Vec<String>,
+}
+
+impl Tally {
+    pub fn add(&mut self, h: Held) {
+        match h {
+            Held::Reference => self.refs += 1,
+            Held::Pin => self.pins += 1,
+        }
+    }
+    /// A case's end: `refs` and `pins` its comparisons, `waiting` its engine not built, `others` the GPU generations whose bits it has and this GPU cannot be held to.
+    /// The line to print for a case no reference held, if any.
+    pub fn case(&mut self, id: &str, refs: usize, pins: usize, waiting: bool, others: &[String]) -> Option<String> {
+        if refs > 0 {
+            return None;
+        }
+        if pins > 0 {
+            self.pinned_only.push(id.to_string());
+            return Some(format!(
+                "PIN  {id:12} pinned only: no reference holds this case; its fixtures are the engine's own recorded bits, which show a change and not that the logits are right"
+            ));
+        }
+        if waiting {
+            self.waits.push(id.to_string());
+            return None;
+        }
+        if others.is_empty() {
+            return None;
+        }
+        let why = format!("its fixtures are the bits of {}", others.join(", "));
+        self.none.push((id.to_string(), why.clone()));
+        Some(format!("FAIL {id:12} nothing compared: {why}, another GPU generation"))
+    }
+    /// The cases that fail for having nothing compared.
+    pub fn failed(&self) -> Vec<String> {
+        self.none.iter().map(|(c, why)| format!("{c}: nothing compared ({why})")).collect()
+    }
+    /// "N held to a reference, M pinned, K not held", then the cases pinned only and not held by name.
+    pub fn summary(&self) -> String {
+        let mut s = format!("{} held to a reference, {} pinned, {} not held", self.refs, self.pins, self.none.len() + self.waits.len());
+        if !self.pinned_only.is_empty() {
+            s += &format!("; pinned only (no reference): {}", self.pinned_only.join(", "));
+        }
+        if !self.none.is_empty() {
+            s += &format!("; not held: {}", self.none.iter().map(|x| x.0.as_str()).collect::<Vec<_>>().join(", "));
+        }
+        if !self.waits.is_empty() {
+            s += &format!("; not held, no engine yet: {}", self.waits.join(", "));
+        }
+        s
+    }
 }
 
 use serde_json::{json, Value};
@@ -459,7 +557,7 @@ pub fn token_list(n: usize, vocab: usize, offset: usize) -> Vec<u32> {
     (0..n).map(|i| if i + offset == 0 { 2 } else { (((i + offset - 1) as u32) * 37 + 11) % vocab as u32 }).collect()
 }
 
-fn standard_tokens(vocab: usize) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+pub(crate) fn standard_tokens(vocab: usize) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
     // (a prompt of 24, then 12 steps; a long prompt of 150 crosses the chunk of 64 twice)
     (token_list(24, vocab, 0), token_list(12, vocab, 24), token_list(150, vocab, 0))
 }
@@ -536,8 +634,28 @@ fn described_cpu_with(dir: &Path, edit: fn(&mut crate::runtime::describe::Descri
 }
 
 fn nemotron_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
-    let layout = level_layout(level)?;
+    nemotron_at(dir, level_layout(level)?)
+}
+
+fn nemotron_at(dir: &Path, layout: Option<Layout>) -> Result<Box<dyn Run>> {
     boxed(crate::dynamic::nemotron::load(dir, &dyn_opts(layout), layout.unwrap_or(Layout::Tiered)))
+}
+
+/// The case's engine on the model in `dir` at `level` with its packs in `layout`: as the case's own engine (`Case::engine`) runs it, the layout given where the level
+/// leaves it to the GPU (penguin: the tiered layout on Ada, the 12-bit one on other GPUs). `packcheck --engine` loads a saved directory and the model it was saved
+/// from this way, so that both are in the layout the directory was saved in on any GPU. The cases of `packcheck::SAVED`.
+pub(crate) fn engine_at(case: &str, dir: &Path, level: &str, layout: Layout) -> Result<Box<dyn Run>> {
+    if let Some(l) = level_layout(level)?.filter(|&l| l != layout) {
+        return err(format!("{case} at {level} is packed {}, not {}", l.name(), layout.name()));
+    }
+    let o = dyn_opts(Some(layout));
+    match case {
+        "gemma4" | "gemma4-kv" => gemma4_at(dir, Some(layout)),
+        "qwen35" | "qwen35-wide" | "qwen35moe" => boxed(crate::dynamic::qwen35::load(dir, &o)),
+        "dense" => boxed(crate::dynamic::dense::load(dir, &o)),
+        "nemotron-h" => nemotron_at(dir, Some(layout)),
+        other => err(format!("{other}: no saved format of this case is checked (packcheck::SAVED)")),
+    }
 }
 
 /// GLM-5.3-Flash has no lossless level (its experts are FP8 in the release): its levels are the lossy ones, the experts at six, five or four bits.
@@ -546,11 +664,14 @@ fn glm_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     boxed(crate::dynamic::glm::load(dir, &dyn_opts(Some(Layout::Tiered)), experts))
 }
 
-/// Gemma 4 on the hand-written dense engine.
 /// Gemma 4 on the description executor, as `serve` runs it (no draft model).
 fn gemma4_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
+    gemma4_at(dir, level_layout(level)?)
+}
+
+fn gemma4_at(dir: &Path, layout: Option<Layout>) -> Result<Box<dyn Run>> {
     let c = crate::gemma4::ConfigG4::load(dir)?;
-    let o = DynOpts { ctx: 1024, chunk: 64, graph: false, device: 0, layout: level_layout(level)? };
+    let o = DynOpts { ctx: 1024, chunk: 64, graph: false, device: 0, layout };
     boxed(crate::dynamic::gemma4::lowered(dir, &c).and_then(|d| Dyn::new(dir, d, None, &o)))
 }
 
@@ -1148,17 +1269,10 @@ fn fixtures_dir(a: &crate::args::Args) -> PathBuf {
     a.flag("fixtures").map(PathBuf::from).unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits"))
 }
 
-/// What a run that compared nothing for some cases says of them: each case with why (`none`: a failure, the case's fixtures being all another GPU generation's bits;
-/// `waits`: a case whose engine is not built, which the run names and does not hold).
-fn uncompared_lines(none: &[(String, String)], waits: &[String]) -> (Vec<String>, String) {
-    let failed = none.iter().map(|(c, why)| format!("{c}: nothing compared ({why})")).collect();
-    let said = if waits.is_empty() { String::new() } else { format!("; not compared, no engine yet: {}", waits.join(", ")) };
-    (failed, said)
-}
-
 /// `logitscheck [CASE...] [--fixtures DIR] [--scratch DIR] [--cpu-ref] [--level L]`: each case's engine (or CPU reference) against its fixture at each level the fixture bounds. Exit 1 where one is not within,
 /// and where a case had no fixture this GPU can be held to (every one of them another GPU generation's bits): a case with nothing compared is not one within its bounds.
-/// A case whose engine is not built yet is named in the last line as not compared.
+/// A line says what held it (`Held`): PASS a reference's bound kept, PIN the engine's own recorded bits unchanged. The last lines count them apart ("N held to a
+/// reference, M pinned, K not held") and name the cases pinned only (no reference of another implementation: Gemma 4's and GLM-5.3's cases today) and not held.
 pub fn check(a: &crate::args::Args) -> Result<()> {
     let fixtures = fixtures_dir(a);
     let want: Vec<&str> = a.pos.iter().skip(1).map(String::as_str).collect();
@@ -1178,12 +1292,13 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     let (cpu, only_level) = (a.has("cpu-ref"), a.flag("level"));
     let scratch = Scratch::new(a)?;
     let (mut failed, mut ran) = (Vec::new(), 0usize);
-    let (mut none, mut waits): (Vec<(String, String)>, Vec<String>) = (Vec::new(), Vec::new());
+    let mut tally = Tally::default();
     let t_all = std::time::Instant::now();
     let gpu = gpu_label().ok();
     for c in &all {
         let dir = model_dir(c, &scratch.dir)?;
-        let (ran_before, mut others, mut waiting) = (ran, Vec::new(), false);
+        let (mut others, mut waiting) = (Vec::new(), false);
+        let (refs_before, pins_before) = (tally.refs, tally.pins);
         for path in fixture_files(&fixtures, c.id)? {
             let fx = Fixture::read(&path)?;
             if cpu && fx.gpu.is_some() {
@@ -1219,14 +1334,18 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                 let got = drive(run.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
                 let v = compare(&fx, &lb.bound, &got);
                 ran += 1;
+                // (under --cpu-ref the reference runs against its own fixture: a reference's line)
+                let held = fx.held();
+                tally.add(held);
                 let bound = match &lb.bound {
                     Bound::Bits => "bits".to_string(),
                     Bound::Kl { mean, max, top1 } => format!("KL mean <= {mean:.1e}, max <= {max:.1e}, top-1 >= {:.0}%", top1 * 100.0),
                 };
+                let bound = format!("{bound}; {}", held.tag());
                 let name = path.file_name().unwrap_or_default().to_string_lossy().replace(".json.gz", "");
                 println!(
                     "{} {:20} {:8} {:3} rows: bits-equal {}, KL mean {:.2e} max {:.2e}, best token {}/{} with a lead, largest logit difference {:.4}  [{bound}] ({load:.1} s to load, {:.1} s)",
-                    if v.ok { "PASS" } else { "FAIL" },
+                    if v.ok { held.passed() } else { "FAIL" },
                     name,
                     lb.level,
                     v.rows,
@@ -1246,27 +1365,26 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                 }
             }
         }
-        // (a case this run compared nothing for: its engine is not built, or every fixture it has is another GPU generation's bits)
-        if ran == ran_before && waiting {
-            waits.push(c.id.to_string());
-        } else if ran == ran_before && !others.is_empty() {
-            others.dedup();
-            println!(
-                "FAIL {:12} nothing compared: its fixtures are the bits of {}, this GPU is {} (logitsrecord {} --from engine --out {} records this generation's)",
-                c.id,
-                others.join(", "),
-                gpu.as_deref().unwrap_or("unknown"),
-                c.id,
-                fixtures.display()
-            );
-            none.push((c.id.to_string(), format!("its fixtures are the bits of {}", others.join(", "))));
+        // (a case no reference held: pinned only; its engine not built; or nothing compared, every fixture it has being another GPU generation's bits)
+        others.dedup();
+        if let Some(line) = tally.case(c.id, tally.refs - refs_before, tally.pins - pins_before, waiting, &others) {
+            let how = if line.starts_with("FAIL") {
+                format!(
+                    "; this GPU is {} (logitsrecord {} --from engine --out {} records this generation's pin)",
+                    gpu.as_deref().unwrap_or("unknown"),
+                    c.id,
+                    fixtures.display()
+                )
+            } else {
+                String::new()
+            };
+            println!("{line}{how}");
         }
     }
-    let (not_held, said) = uncompared_lines(&none, &waits);
-    failed.extend(not_held);
-    println!("{ran} comparisons in {:.1} s against {}{said}", t_all.elapsed().as_secs_f64(), fixtures.display());
+    failed.extend(tally.failed());
+    println!("{ran} comparisons in {:.1} s against {}: {}", t_all.elapsed().as_secs_f64(), fixtures.display(), tally.summary());
     if failed.is_empty() {
-        println!("all logits compared are within their bounds");
+        println!("every comparison made is kept: a reference's bound, or a pin's bits unchanged (a pin does not show the logits are right)");
         Ok(())
     } else {
         println!("OFF: {}", failed.join(", "));
@@ -1822,15 +1940,33 @@ mod tests {
         }
     }
 
-    /// A case logitscheck compared nothing for is a failure where its fixtures are all another GPU generation's bits, and is named where its engine is not built:
-    /// neither reads as a case within its bounds.
+    /// logitscheck counts apart what a reference held and what a pin held. A case with pins alone is said to be pinned only; one with nothing compared is a failure
+    /// where its fixtures are all another GPU generation's bits, and is named where its engine is not built: none of the three reads as a case within its bounds.
     #[test]
-    fn a_case_with_nothing_compared_is_not_a_pass() {
-        let (failed, said) = uncompared_lines(&[], &[]);
-        assert!(failed.is_empty() && said.is_empty());
-        let (failed, said) = uncompared_lines(&[("gemma4".into(), "its fixtures are the bits of sm89".into())], &["deepseek-v41".into()]);
-        assert_eq!(failed, vec!["gemma4: nothing compared (its fixtures are the bits of sm89)".to_string()]);
-        assert!(said.contains("not compared") && said.contains("deepseek-v41"), "{said}");
+    fn a_case_no_reference_held_is_said_and_one_with_nothing_compared_fails() {
+        let fx = |gpu: Option<&str>| Fixture { gpu: gpu.map(str::to_string), ..fixture(vec![logits(100, 1), logits(100, 2)]) };
+        assert_eq!((fx(None).held(), fx(Some("sm89")).held()), (Held::Reference, Held::Pin));
+        assert_eq!((Held::Reference.passed(), Held::Pin.passed()), ("PASS", "PIN "));
+        let mut t = Tally::default();
+        // a case a reference held, with a pin beside it: nothing to say
+        for h in [Held::Reference, Held::Reference, Held::Pin] {
+            t.add(h);
+        }
+        assert!(t.case("qwen35", 2, 1, false, &[]).is_none());
+        // a case with pins alone
+        t.add(Held::Pin);
+        let line = t.case("gemma4", 0, 1, false, &[]).unwrap();
+        assert!(line.starts_with("PIN  gemma4") && line.contains("pinned only") && !line.contains("within"), "{line}");
+        // a case whose fixtures are another generation's bits, one whose engine is not built, one with no fixture at this level
+        let line = t.case("glm", 0, 0, false, &["sm89".to_string()]).unwrap();
+        assert!(line.starts_with("FAIL glm") && line.contains("nothing compared") && line.contains("sm89"), "{line}");
+        assert!(t.case("deepseek-v41", 0, 0, true, &[]).is_none() && t.case("dense", 0, 0, false, &[]).is_none());
+        assert_eq!(t.failed(), vec!["glm: nothing compared (its fixtures are the bits of sm89)".to_string()]);
+        assert_eq!(
+            t.summary(),
+            "2 held to a reference, 2 pinned, 2 not held; pinned only (no reference): gemma4; not held: glm; not held, no engine yet: deepseek-v41"
+        );
+        assert_eq!(Tally::default().summary(), "0 held to a reference, 0 pinned, 0 not held");
     }
 
     #[test]
