@@ -487,7 +487,9 @@ pub(crate) mod tests {
     }
 
     /// Records the headers of the recent models by ranges from the Hub (the files' headers and the small files; no weights) into tests/fixtures/headers:
-    /// `GLYD_RECORD_HEADERS=1 cargo test -p glyd-engine --lib -- --ignored record_header_fixtures`.
+    /// `GLYD_RECORD_HEADERS=1 cargo test -p glyd-engine --lib -- --ignored record_header_fixtures`. #333's releases among them (GLM-5.3, Qwen3.8-2.4T-A95B,
+    /// DeepSeek-V4.1-Flash, DeepSeek-V4-Flash's DSpark drafter): `runtime::describe_tests::every_recorded_release_describes_or_says_what_it_lacks` holds each
+    /// file it writes.
     #[test]
     #[ignore = "needs the network: GLYD_RECORD_HEADERS=1"]
     fn record_header_fixtures() {
@@ -498,9 +500,17 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&out).unwrap();
         let hub = hub::Hub::from_env();
         let root = std::env::temp_dir().join(format!("glyd-record-headers-{}", std::process::id()));
-        for repo in
-            ["google/gemma-4-12B-it", "moonshotai/Kimi-K3", "deepseek-ai/DeepSeek-V4-Flash-0731", "meta-models/Muse-Spark-Open-816B-A42B", "Qwen/Qwen3.8-27B"]
-        {
+        for repo in [
+            "google/gemma-4-12B-it",
+            "moonshotai/Kimi-K3",
+            "deepseek-ai/DeepSeek-V4-Flash-0731",
+            "meta-models/Muse-Spark-Open-816B-A42B",
+            "Qwen/Qwen3.8-27B",
+            "zai-org/GLM-5.3",
+            "Qwen/Qwen3.8-2.4T-A95B",
+            "deepseek-ai/DeepSeek-V4.1-Flash",
+            "deepseek-ai/DeepSeek-V4-Flash-DSpark",
+        ] {
             let remote = hub.list(repo, "main").unwrap_or_else(|e| panic!("{repo}: {e}"));
             let table = match Table::from_hub_in(&root, &hub, &remote) {
                 Ok(t) => t,

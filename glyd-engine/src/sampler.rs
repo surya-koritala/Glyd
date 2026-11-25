@@ -447,6 +447,42 @@ impl Sampler {
         Some(tok)
     }
 
+    /// The tokens a draw from an allowed list (`Params::allowed`, no grammar) looks at, ascending, for a draw from those tokens' own logits alone (`sample_listed`); None where
+    /// the request has no such list or a grammar.
+    pub fn listed(&self) -> Option<Vec<u32>> {
+        if self.p.allowed.is_empty() || self.gram.is_some() {
+            return None;
+        }
+        let mut t = self.p.allowed.clone();
+        t.sort_unstable();
+        t.dedup();
+        Some(t)
+    }
+
+    /// The next token from the logits `raw` of the allowed tokens alone (`listed`, those in the vocabulary): each changed as `processed` changes the row (every other token is
+    /// taken out there), then the draw `sample` makes over them: the largest at temperature 0 (the smaller token of equal ones), else the top-k, temperature, min-p and top-p
+    /// of those, largest first. The token `sample` gives from the whole row. None where the list is not the draw's.
+    pub fn sample_listed(&mut self, raw: &[(u32, f32)]) -> Option<u32> {
+        self.listed()?;
+        let mut c: Vec<(u32, f32)> = raw.iter().map(|&(t, x)| (t, self.changed(t, x))).collect();
+        if c.is_empty() {
+            return None;
+        }
+        c.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+        let tok = if self.p.temperature <= 0.0 {
+            c[0].0
+        } else {
+            if self.p.top_k > 0 {
+                c.truncate(self.p.top_k);
+            }
+            let (idx, vals): (Vec<u32>, Vec<f32>) = c.into_iter().unzip();
+            let (idx, probs) = self.cut(idx, vals);
+            self.walk(&idx, &probs)
+        };
+        self.note(tok);
+        Some(tok)
+    }
+
     /// The next token for an engine that makes the row's largest logits on the GPU (`top`, as `top_need` asked): drawn from them where that is all the draw looks at (`sample_top`), else from the whole row, which `row`
     /// reads then and not before. The same token either way.
     pub fn sample_with(&mut self, top: Option<&Top>, row: impl FnOnce() -> crate::ffi::Result<Vec<f32>>) -> crate::ffi::Result<u32> {
@@ -946,6 +982,30 @@ mod tests {
             let (reads, _) = run(0.3, &|_| bad);
             assert_eq!(reads, 200, "a sum of {bad:?} is not trusted");
         }
+    }
+
+    /// A draw from an allowed list made from those tokens' own logits (`sample_listed`, what a GPU gathers) is `sample`'s from the whole row, token for token, with a bias, the
+    /// penalties, a top-k past the candidates, top-p, min-p and temperature 0; a request with no list has none.
+    #[test]
+    fn an_allowed_lists_draw_from_its_tokens_alone_is_the_rows() {
+        let row: Vec<f32> = (0..5000).map(|i| ((i * 7919 % 1000) as f32 / 100.0) - 5.0).collect();
+        let allowed: Vec<u32> = (0..5000).step_by(37).chain([4999, 3, 3]).collect();
+        let base = Params { temperature: 0.8, allowed: allowed.clone(), seed: 11, ..Params::default() };
+        for p in [
+            base.clone(),
+            Params { temperature: 0.0, ..base.clone() },
+            Params { top_k: 100, top_p: 0.9, ..base.clone() },
+            Params { min_p: 0.05, ..base.clone() },
+            Params { logit_bias: vec![(37, 4.0), (1, 50.0)], repetition_penalty: 1.3, presence_penalty: 0.4, ..base.clone() },
+        ] {
+            let (mut a, mut b) = (Sampler::new(p.clone(), &[37, 74]), Sampler::new(p.clone(), &[37, 74]));
+            let toks = b.listed().expect("a list");
+            for _ in 0..40 {
+                let raw: Vec<(u32, f32)> = toks.iter().map(|&t| (t, row[t as usize])).collect();
+                assert_eq!(b.sample_listed(&raw), Some(a.sample(&row)), "{p:?}");
+            }
+        }
+        assert!(Sampler::new(Params::default(), &[]).listed().is_none());
     }
 
     #[test]

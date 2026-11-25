@@ -72,6 +72,25 @@ pub struct Row<'a> {
     pub token: u32,
     pub pos: usize,
     pub pages: &'a [i32],
+    /// Some(r): the token is the one the step launched before this one chooses in its head row r (its largest logit), which the host does not have yet: the step
+    /// reads it on the GPU (`ModelStep::launch`, a step that `overlaps`), and `token` is not used.
+    pub after: Option<usize>,
+}
+
+impl<'a> Row<'a> {
+    /// A row whose token the host has.
+    pub fn new(token: u32, pos: usize, pages: &'a [i32]) -> Row<'a> {
+        Row { token, pos, pages, after: None }
+    }
+}
+
+/// The samples of a step: each decode row's, then each prompt chunk's that is `last` (None for the others).
+pub type Samples = (Vec<Sample>, Vec<Option<Sample>>);
+
+/// A step `ModelStep::launch` queued: its samples where it ran to its end at its launch, else the step's own note of where they will be (`finish` reads them).
+pub struct Launched {
+    pub done: Option<Samples>,
+    pub tag: usize,
 }
 
 /// A sampled token with its logit and, where asked, its logprob.
@@ -218,8 +237,43 @@ pub trait ModelStep {
     }
     /// A round as one step over a flat batch (`one_step`): the decode rows, then the prompt chunks; the sample after each row, and after each chunk that is `last`. The logits and candidates of the
     /// decode rows are rows 0 on, then those of the chunks that are `last`, in order (the masks given before it are in that order too).
-    fn round(&mut self, _rows: &[Row], _jobs: &[PrefillJob]) -> Result<(Vec<Sample>, Vec<Option<Sample>>)> {
+    fn round(&mut self, _rows: &[Row], _jobs: &[PrefillJob]) -> Result<Samples> {
         Err(crate::ffi::Error("this model's rounds are a prompt pass and a decode step, not one step".into()))
+    }
+    /// Whether `launch` returns with the step queued on the GPU and not run, so that the host's work between steps (the scheduler's, the sampler's, the server's) runs while the
+    /// GPU runs the step, and the next step may be launched before this one's `finish`, its rows reading this step's greedy tokens on the GPU (`Row::after`). SGLang's overlap
+    /// loop and vLLM's async scheduling (KB f:overlap:serving:3). A sequence's blocks are named (`name`) and its prompt's end marked (`mark`) when the next step is launched
+    /// (before its work), for the step in flight's tokens, never after a later step was launched over it. False: `launch` runs `round` to its end.
+    fn overlaps(&self) -> bool {
+        false
+    }
+    /// A step queued: `round`'s rows and chunks (a step that is not `one_step`: rows alone, a decode step, or chunks alone, a prompt pass), whose samples `finish` gives.
+    /// Between the two the scheduler calls nothing that reads this step's rows (`top`, `logits`, `gather`) once a later step is launched, and nothing that changes a sequence
+    /// of the step but `grow` (room for its next tokens), `release` (it ended) and `name` (its blocks named for the cache). By default the step runs to its end here.
+    fn launch(&mut self, rows: &[Row], jobs: &[PrefillJob]) -> Result<Launched> {
+        let done = match (self.one_step(), rows.is_empty(), jobs.is_empty()) {
+            (true, _, _) => self.round(rows, jobs)?,
+            (false, _, true) => (self.decode(rows)?, Vec::new()),
+            (false, true, false) => (Vec::new(), self.prefill_many(jobs)?),
+            (false, false, false) => return Err(crate::ffi::Error("a step of rows and prompt chunks, on a model whose rounds are two passes".into())),
+        };
+        Ok(Launched { done: Some(done), tag: 0 })
+    }
+    /// Whether a row of the next step `launch` queues draws its token from its candidates or reads its logits (a sequence that is not greedy, or asks for
+    /// log-probabilities): a step that makes the candidates on the GPU (`top`) then queues them with the step's work and their copy with its samples, and `top` waits
+    /// for nothing.
+    fn draws(&mut self, _on: bool) {}
+    /// The samples of a step `launch` queued, once its work has run (the wait is for that step, not for the GPU's whole queue).
+    fn finish(&mut self, l: Launched) -> Result<Samples> {
+        l.done.ok_or_else(|| crate::ffi::Error("a step launched to run at once has no samples".into()))
+    }
+    /// The steps launched and not finished given up (the scheduler ends every sequence: `Sched::fail`): their samples are not asked for.
+    fn abandon(&mut self) {}
+    /// A drafting step's decode of the one sequence that decodes (a draft model proposes tokens and the model checks them in one pass: src/dynamic/mod.rs `spec_round`): the
+    /// tokens after the row's, 1 to the draft's length and one more, as steps one at a time would choose them (drawn by `sampler` where given, else the largest logits); the
+    /// cache then holds the row's token and each of them but the last. None: the step does not draft (its decode is one token a row).
+    fn draft(&mut self, _row: &Row, _sampler: Option<&mut Sampler>) -> Result<Option<Vec<u32>>> {
+        Ok(None)
     }
     /// The grammar masks of the rows the next `decode`, `prefill_many` or `round` draws samples from (one for each, in order; None: no grammar), for a backend that makes the sampler's candidates on the GPU to put on the row before its top-k.
     fn masks(&mut self, _masks: Vec<Option<crate::constrain::MaskHandle>>) {}
@@ -244,6 +298,11 @@ pub trait ModelStep {
     }
     /// The sampler's candidates for row `row` of the last step: the largest logits of its row, largest first (None: the backend has none, the logits are read).
     fn top(&mut self, _row: usize) -> Option<Vec<(u32, f32)>> {
+        None
+    }
+    /// The sum over row `row`'s logits of exp((logit - largest) / temperature), made where the logits are (a top-p over the whole row with no top-k; at temperature 1,
+    /// the row's log-sum-exp for log-probabilities). None: the backend has none, the logits are read.
+    fn mass(&mut self, _row: usize, _temperature: f32) -> Option<f64> {
         None
     }
     /// Row `row`'s logits at `tokens` (those in the vocabulary, with them): what a draw from the candidates needs where penalties, a bias or suppressed tokens
@@ -421,8 +480,26 @@ impl ModelStep for &mut dyn ModelStep {
     fn prompt_budget(&self, rows: usize) -> usize {
         (**self).prompt_budget(rows)
     }
-    fn round(&mut self, rows: &[Row], jobs: &[PrefillJob]) -> Result<(Vec<Sample>, Vec<Option<Sample>>)> {
+    fn round(&mut self, rows: &[Row], jobs: &[PrefillJob]) -> Result<Samples> {
         (**self).round(rows, jobs)
+    }
+    fn overlaps(&self) -> bool {
+        (**self).overlaps()
+    }
+    fn launch(&mut self, rows: &[Row], jobs: &[PrefillJob]) -> Result<Launched> {
+        (**self).launch(rows, jobs)
+    }
+    fn finish(&mut self, l: Launched) -> Result<Samples> {
+        (**self).finish(l)
+    }
+    fn abandon(&mut self) {
+        (**self).abandon()
+    }
+    fn draws(&mut self, on: bool) {
+        (**self).draws(on)
+    }
+    fn draft(&mut self, row: &Row, sampler: Option<&mut Sampler>) -> Result<Option<Vec<u32>>> {
+        (**self).draft(row, sampler)
     }
     fn masks(&mut self, masks: Vec<Option<crate::constrain::MaskHandle>>) {
         (**self).masks(masks)
@@ -447,6 +524,9 @@ impl ModelStep for &mut dyn ModelStep {
     }
     fn top(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
         (**self).top(row)
+    }
+    fn mass(&mut self, row: usize, temperature: f32) -> Option<f64> {
+        (**self).mass(row, temperature)
     }
     fn gather(&mut self, row: usize, tokens: &[u32]) -> Result<Vec<(u32, f32)>> {
         (**self).gather(row, tokens)
@@ -534,6 +614,64 @@ fn finish_name(f: Finish) -> &'static str {
     }
 }
 
+/// A step launched and not landed yet (`ModelStep::launch`): the sequences it runs, in its order, for `land` to take its samples to. A sequence that leaves the running ones
+/// before then (it ended, or went back to wait) has its id here made 0, so that its row's output is not taken.
+struct Flight {
+    l: Launched,
+    /// The decode rows' sequences (their samples are the head's rows 0 on).
+    rows: Vec<u64>,
+    /// The prompt chunks: sequence, tokens, and whether the chunk ends the prompt (its sample the head's next row after the rows' and the earlier last chunks').
+    picks: Vec<(u64, usize, bool)>,
+    used: usize,
+    t: std::time::Instant,
+    t0: f64,
+    /// Whether every sequence that samples in it takes the step's own largest logit (greedy, no log-probabilities): the next step can then read the tokens on the GPU
+    /// and be launched before this one lands.
+    on_device: bool,
+}
+
+impl Flight {
+    /// What sequence `id` has in the step: its tokens there, and the head row of its sample (a decode row's, or its prompt's last chunk's).
+    fn of(&self, id: u64) -> (usize, Option<usize>) {
+        if let Some(r) = self.rows.iter().position(|&x| x == id) {
+            return (1, Some(r));
+        }
+        let mut row = self.rows.len();
+        for &(x, n, last) in &self.picks {
+            if x == id {
+                return (n, last.then_some(row));
+            }
+            row += last as usize;
+        }
+        (0, None)
+    }
+
+    /// Sequence `id`'s output not to be taken.
+    fn strike(&mut self, id: u64) {
+        self.rows.iter_mut().chain(self.picks.iter_mut().map(|p| &mut p.0)).filter(|x| **x == id).for_each(|x| *x = 0);
+    }
+}
+
+/// A round's step as `plan` chose it: the rows that decode (each sequence, and the head row of the step in flight whose sample is its token, where it is not had yet) and the prompts' chunks.
+struct Plan {
+    rows: Vec<(u64, Option<usize>)>,
+    picks: Vec<(u64, usize)>,
+    used: usize,
+}
+
+/// Whether a step that can be launched before the one before it lands (`ModelStep::overlaps`) is: GLYD_ENGINE_OVERLAP=0 lands each step before the next is launched (the round as it was).
+pub(crate) fn overlap_asked() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_OVERLAP").is_none_or(|v| v != "0"))
+}
+
+/// Whether launching steps ahead is asked for outright (GLYD_ENGINE_OVERLAP=1). The executor launches its steps ahead only then: a launched step runs its rows as a pass
+/// of parts, not `pass`'s rows that decode in one launch a layer, their graphs or the pieces (src/dynamic/rows.rs `make_lanes`), which are the default until it takes them.
+pub(crate) fn overlap_forced() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_OVERLAP").is_some_and(|v| v == "1"))
+}
+
 /// The most tokens a prompt pass has for the round's decode step to wait on the prompts that are coming in, and the most rounds in a row it does.
 const SHORT_PASS: usize = 256;
 const MAX_SKIPS: u32 = 4;
@@ -572,6 +710,11 @@ pub struct Sched<B: ModelStep> {
     kept: VecDeque<Kept>,
     /// Whether finished sequences are kept (a slot step that `keeps`, unless `keeping(false)`).
     keep: bool,
+    /// The step launched and not landed (a step that `overlaps`), and whether the next may be launched before it lands; whether it landed while the next step was planned
+    /// (a sequence of it swapped for room: `ensure_pages`), which then plans again.
+    flight: Option<Flight>,
+    overlap: bool,
+    relanded: bool,
 }
 
 impl<B: ModelStep> Sched<B> {
@@ -586,6 +729,7 @@ impl<B: ModelStep> Sched<B> {
         };
         let eos = be.eos();
         let keep = slots.is_some() && be.keeps();
+        let overlap = be.one_step() && be.overlaps() && overlap_asked();
         let (emit, batches) = std::sync::mpsc::channel::<Vec<(Sender<Ev>, Ev)>>();
         std::thread::spawn(move || {
             for batch in batches {
@@ -620,7 +764,16 @@ impl<B: ModelStep> Sched<B> {
             free: slots.map(|k| (0..k as i32).rev().collect()),
             kept: VecDeque::new(),
             keep,
+            flight: None,
+            overlap,
+            relanded: false,
         }
+    }
+
+    /// The scheduler with a step launched before the one before it lands where the step can (`ModelStep::overlaps`; on by default), or not.
+    pub fn overlapping(mut self, on: bool) -> Sched<B> {
+        self.overlap = on && self.be.one_step() && self.be.overlaps();
+        self
     }
 
     /// The scheduler with finished sequences kept in their slots or not (kept by default where the step keeps): off for a check of what runs when every prompt begins at its
@@ -663,7 +816,21 @@ impl<B: ModelStep> Sched<B> {
     }
 
     pub fn idle(&self) -> bool {
-        self.active.is_empty() && self.waiting.is_empty() && self.loading.is_empty()
+        self.active.is_empty() && self.waiting.is_empty() && self.loading.is_empty() && self.flight.is_none()
+    }
+
+    /// Running sequence `i` taken out of the running ones: its output in the step in flight is not taken.
+    fn unrun(&mut self, i: usize) -> Seq {
+        let s = self.active.remove(i);
+        if let Some(f) = &mut self.flight {
+            f.strike(s.id);
+        }
+        s
+    }
+
+    /// Whether sequence `id` has tokens in the step in flight.
+    fn flying(&self, id: u64) -> bool {
+        self.flight.as_ref().is_some_and(|f| f.of(id).0 > 0)
     }
 
     /// Pages that can be had now (free or only cached); a slot step's slots that are free or only kept.
@@ -681,7 +848,8 @@ impl<B: ModelStep> Sched<B> {
 
     /// A slot step that keeps: sequence `i`'s prompt is all in its slot, a place a later request may go on from.
     fn mark_prompt(&mut self, i: usize) -> Result<()> {
-        if self.keep {
+        // (not where its next tokens are in a step launched since: it was marked as that step was launched, `launch`)
+        if self.keep && !self.flying(self.active[i].id) {
             let s = &self.active[i];
             self.be.mark(s.pages[0], s.done)?;
         }
@@ -945,6 +1113,10 @@ impl<B: ModelStep> Sched<B> {
 
     /// Every sequence ended with `msg`, the pages all free again.
     pub fn fail(&mut self, err: &crate::ffi::Error) {
+        // (a step in flight: its samples are not taken)
+        if self.flight.take().is_some() {
+            self.be.abandon();
+        }
         let all: Vec<Seq> = self.active.drain(..).chain(self.waiting.drain(..)).chain(self.loading.drain(..)).collect();
         for s in all {
             if let Some(t) = s.swapped {
@@ -1213,7 +1385,7 @@ impl<B: ModelStep> Sched<B> {
                 }
                 if self.active.len() == 1 && self.loading.is_empty() {
                     // alone, nothing kept or coming back: no room will come. Sent back, it would be let in again to the same end, without end: it ends with the reason
-                    let mut s = self.active.remove(i);
+                    let mut s = self.unrun(i);
                     self.give_back(&mut s)?;
                     self.rt.figures.finished("error", s.began, &s.trace, s.generated);
                     let msg = format!("{upto} tokens, where the cache holds fewer with nothing else running");
@@ -1221,6 +1393,14 @@ impl<B: ModelStep> Sched<B> {
                     return Ok(false);
                 }
                 let victim = self.active.iter().enumerate().max_by_key(|(_, s)| s.id).map(|(v, _)| v).expect("an active sequence");
+                // (one with tokens in the step in flight that would be swapped: that step lands first, so that its cache is what its tokens say when it is copied; then the room is
+                // asked for again, the step's own having ended or grown)
+                if self.flying(self.active[victim].id) && self.swap_pays(&self.active[victim]) {
+                    let f = self.flight.take().expect("a step in flight");
+                    self.land(f)?;
+                    self.relanded = true;
+                    continue;
+                }
                 self.preempt(victim, true)?;
             }
         }
@@ -1324,7 +1504,7 @@ impl<B: ModelStep> Sched<B> {
                     eprintln!("sched: sequence {} ended for the cache's extra memory (tries {}, alone {alone})", id, self.active[i].tries);
                 }
                 self.stats.ended_lost += 1;
-                let mut s = self.active.remove(i);
+                let mut s = self.unrun(i);
                 self.give_back(&mut s)?;
                 self.rt.figures.finished("error", s.began, &s.trace, s.generated);
                 self.pending.push((s.out.clone(), Ev::End(Err(Error::of(Kind::Request, ALONE_MESSAGE)))));
@@ -1344,7 +1524,8 @@ impl<B: ModelStep> Sched<B> {
     /// named first, as `give_back` names them), to be copied back and go on from where it is. Otherwise, or where the host's area has no room: its full pages go to the cache, the rest are cleared,
     /// and it is run again from its tokens.
     fn preempt(&mut self, i: usize, swap: bool) -> Result<()> {
-        if swap && self.swap_pays(&self.active[i]) {
+        // (not one with tokens in the step in flight, whose cache is not what its tokens say until that step lands: `ensure_pages` lands it first where a swap would pay)
+        if swap && !self.flying(self.active[i].id) && self.swap_pays(&self.active[i]) {
             let slot = self.active[i].pages[0];
             if self.names() {
                 Self::name_blocks(&mut self.be, &mut self.active[i], self.rt.kv_events.as_ref().map(|_| &mut self.kv_out))?;
@@ -1353,7 +1534,7 @@ impl<B: ModelStep> Sched<B> {
             let out = self.be.swap_out(slot)?;
             self.stats.release_ns += t.elapsed().as_nanos() as u64;
             if let Some(ticket) = out {
-                let mut s = self.active.remove(i);
+                let mut s = self.unrun(i);
                 s.pages.clear();
                 let free = self.free.as_mut().expect("a slot step");
                 free.push(slot);
@@ -1366,7 +1547,7 @@ impl<B: ModelStep> Sched<B> {
                 return Ok(());
             }
         }
-        let mut s = self.active.remove(i);
+        let mut s = self.unrun(i);
         self.give_back(&mut s)?;
         s.done = 0;
         s.published = 0;
@@ -1426,7 +1607,7 @@ impl<B: ModelStep> Sched<B> {
     }
 
     fn finish(&mut self, i: usize, f: Finish) -> Result<()> {
-        let mut s = self.active.remove(i);
+        let mut s = self.unrun(i);
         if self.keep && s.done >= KEEP_LEAST && s.pages.len() == 1 {
             // (kept in its slot: the conversation's next turn begins with these tokens)
             if self.names() {
@@ -1466,10 +1647,16 @@ impl<B: ModelStep> Sched<B> {
     /// The full blocks of a slot step's sequence that the step has not been told the names of yet, told (`ModelStep::name`).
     /// With `out` (the cache's events are kept): the blocks told, their parent's name and their tokens, as a stored event.
     fn name_blocks(be: &mut B, s: &mut Seq, out: Option<&mut Vec<crate::kv_events::Event>>) -> Result<()> {
+        let done = s.done;
+        Self::name_blocks_to(be, s, done, out)
+    }
+
+    /// `name_blocks` of the blocks of its first `upto` tokens (more than it has done where the step in flight writes the rest: `launch`).
+    fn name_blocks_to(be: &mut B, s: &mut Seq, upto: usize, out: Option<&mut Vec<crate::kv_events::Event>>) -> Result<()> {
         let first = s.published;
         let parent = (first > 0).then_some(s.chain);
         let mut keys = Vec::new();
-        while (s.published + 1) * PAGE <= s.done {
+        while (s.published + 1) * PAGE <= upto {
             s.chain = block_hash(s.chain, &s.tokens[s.published * PAGE..(s.published + 1) * PAGE]);
             keys.push(s.chain);
             s.published += 1;
@@ -1518,29 +1705,59 @@ impl<B: ModelStep> Sched<B> {
         Ok(())
     }
 
-    /// The token the sample after row `row` of the step stands for: the largest logit, or a draw from the logits as the request's sampling says; with it, its log-probabilities where the request asks for them
-    /// (from the whole row: the draw may have looked at the largest 64 alone, the log-sum-exp is of all).
+    /// The token the sample after row `row` of the step stands for: the largest logit, or a draw from the logits as the request's sampling says; with it, its log-probabilities where the request asks for them.
+    /// Both from what the step makes on the GPU where that holds them: the row's largest logits (a top-k within them; penalties, a bias or suppressed tokens put on them and on those tokens' own logits;
+    /// a grammar's mask put on the row before them), the sum of its exponentials (a top-p with no top-k; at temperature 1 the log-sum-exp the log-probabilities take); the whole row is read only where they do not.
     fn pick(&mut self, i: usize, sample: Sample, row: usize) -> Result<(u32, Option<Lp>)> {
         let want = self.active[i].reply.logprobs;
         if self.active[i].greedy && want.is_none() {
             return Ok((sample.token, None));
         }
-        // the row's largest logits come with the step: where they are all the sampler looks at (a top-k within them, no penalties, no bias) the logits are not copied to the host, unless log-probabilities are asked for
         let top = self.be.top(row);
-        if want.is_none() {
-            if let Some(t) = top.as_deref().and_then(|c| self.active[i].sampler.sample_top(c, None)) {
-                return Ok((t, None));
-            }
+        let mut tok = self.active[i].greedy.then_some(sample.token);
+        if let (None, Some(c)) = (tok, top.as_deref()) {
+            let mass = match self.active[i].sampler.top_need() {
+                Some(n) if n.mass => self.be.mass(row, n.temperature),
+                _ => None,
+            };
+            tok = self.active[i].sampler.sample_top(c, mass);
             // (penalties, a bias or suppressed tokens: the candidates and those tokens' own logits, changed as the whole row's would be, where that shows the draw)
-            if let (Some(c), Some(ts)) = (top.as_deref(), self.active[i].sampler.adjusts()) {
+            if let (None, Some(ts)) = (tok, self.active[i].sampler.adjusts()) {
                 let raw = self.be.gather(row, &ts)?;
-                if let Some(t) = self.active[i].sampler.sample_adjusted(c, &raw) {
-                    return Ok((t, None));
-                }
+                tok = self.active[i].sampler.sample_adjusted(c, &raw);
             }
         }
+        // (an allowed list: the draw over those tokens' own logits, gathered where the logits are)
+        if let (None, Some(ts), Some(_)) = (tok, self.active[i].sampler.listed(), top.as_deref()) {
+            let raw = self.be.gather(row, &ts)?;
+            tok = self.active[i].sampler.sample_listed(&raw);
+        }
+        // (log-probabilities: the token's logit and the k likeliest from the candidates, the log-sum-exp from the row's sum at temperature 1 about its largest logit, the first's; not where a
+        // grammar's mask made the candidates, which are then the allowed tokens', not the row's likeliest)
+        let lp = match (want, tok, top.as_deref()) {
+            (Some(k), Some(t), Some(c)) if k <= c.len() && self.active[i].sampler.mask_handle().is_none() => {
+                let x = match c.iter().find(|x| x.0 == t) {
+                    Some(x) => Some(x.1),
+                    None => self.be.gather(row, &[t])?.first().map(|x| x.1),
+                };
+                match (x, self.be.mass(row, 1.0)) {
+                    (Some(x), Some(m)) if m > 0.0 => {
+                        let lse = c[0].1 as f64 + m.ln();
+                        Some(Lp { token: t, logprob: x as f64 - lse, top: c[..k].iter().map(|&(u, y)| (u, y as f64 - lse)).collect() })
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if let Some(t) = tok.filter(|_| want.is_none() || lp.is_some()) {
+            return Ok((t, lp));
+        }
         let logits = self.be.logits(row)?;
-        let tok = if self.active[i].greedy { sample.token } else { self.active[i].sampler.sample(&logits) };
+        let tok = match tok {
+            Some(t) => t,
+            None => self.active[i].sampler.sample(&logits),
+        };
         Ok((tok, want.map(|k| logprobs_of(&logits, tok, k, top.as_deref()))))
     }
 
@@ -1618,7 +1835,7 @@ impl<B: ModelStep> Sched<B> {
             .map(|i| self.active[i].sampler.mask_handle())
             .collect();
         self.be.masks(masks);
-        let samples = self.be.prefill_many(&jobs)?;
+        let samples = self.be.launch(&[], &jobs).and_then(|l| self.be.finish(l))?.1;
         if self.trace {
             eprintln!(
                 "sched {:.4} pass from {:.4} of {} sequences {:?}, {} tokens, {:.1} ms; {} active, {} waiting",
@@ -1668,34 +1885,68 @@ impl<B: ModelStep> Sched<B> {
     /// A round as one step (`ModelStep::one_step`): a token for every sequence that is decoding and, in the same pass, chunks of the prompts of those still on theirs, the oldest first: as
     /// many tokens as the backend takes beside those rows (`prompt_budget`; with no row decoding, a chunk's). The first prompt's chunk is cut to that; a later prompt joins only with its whole
     /// rest, as in `prefill_step`. A sequence that is decoding gets a token every round whatever prompts come in, and a prompt's first token does not wait for a decode step between its chunks.
+    ///
+    /// Where the step `overlaps` (docs/design/runtime.md section 5, "Launch and finish"), the round's step is launched before the step before it lands: the rows whose token that step chose
+    /// read it on the GPU (`Row::after`), and the host takes that step's samples, sends its tokens and ends its sequences while the GPU runs this one. That is so only where every sequence that
+    /// samples in the step before takes its largest logit (greedy, no log-probabilities): otherwise that step lands first, its tokens drawn on the host, and this one is launched after. A
+    /// sequence that ends in a step has had its row in the next one run too (the end is seen only when it lands); that row's output is not taken.
     fn round_one_step(&mut self) -> Result<()> {
+        if self.flight.as_ref().is_some_and(|f| !(self.overlap && f.on_device)) {
+            let f = self.flight.take().expect("a step in flight");
+            self.land(f)?;
+        }
+        let Some(plan) = self.plan()? else {
+            if let Some(f) = self.flight.take() {
+                self.land(f)?;
+            }
+            return Ok(());
+        };
+        let f = self.launch(plan)?;
+        if !self.overlap {
+            return self.land(f);
+        }
+        match self.flight.replace(f) {
+            Some(before) => self.land(before),
+            None => Ok(()),
+        }
+    }
+
+    /// The round's step (`round_one_step`): room for the next token of each sequence that is decoding (the newest give theirs back where there is none), and the prompts' chunks beside them.
+    /// A sequence with tokens in the step in flight goes on after them: a decode row there (or its prompt's last chunk) makes this one's row a token not had yet (the head row it is in).
+    fn plan(&mut self) -> Result<Option<Plan>> {
         let at = |a: &Vec<Seq>, id: u64| a.iter().position(|s| s.id == id);
         let tb = std::time::Instant::now();
-        // room for the next token of each sequence that is decoding (the newest give theirs back where there is none)
-        let ids: Vec<u64> = self.active.iter().filter(|s| !s.prefilling).map(|s| s.id).collect();
+        let ahead = |f: &Option<Flight>, id: u64| f.as_ref().map_or((0, None), |f| f.of(id));
+        // (a sequence is decoding when its prompt has run, or its last chunk is in flight; one whose token in flight is its last by its length or the window's has no row,
+        // nor anything else, in this step)
+        let window = self.be.window();
+        let ends = |f: &Option<Flight>, s: &Seq| ahead(f, s.id).1.is_some() && (s.generated + 1 >= s.reply.max_new || s.tokens.len() + 1 > window);
+        let decoding = |f: &Option<Flight>, s: &Seq| (!s.prefilling || ahead(f, s.id).1.is_some()) && !ends(f, s);
+        let prompting = |f: &Option<Flight>, s: &Seq| s.prefilling && ahead(f, s.id).1.is_none();
+        let ids: Vec<u64> = self.active.iter().filter(|s| decoding(&self.flight, s)).map(|s| s.id).collect();
         for id in ids {
             let Some(s) = self.active.iter().find(|s| s.id == id) else { continue };
-            let upto = s.done + 1;
+            let upto = s.done + ahead(&self.flight, id).0 + 1;
             self.ensure_pages(id, upto)?;
         }
-        let decoding = self.active.iter().filter(|s| !s.prefilling).count();
-        // the prompts' chunks beside them
-        let budget = if decoding == 0 { self.be.chunk() } else { self.be.prompt_budget(decoding).min(self.be.chunk().saturating_sub(decoding)) };
+        let rows: Vec<(u64, Option<usize>)> = self.active.iter().filter(|s| decoding(&self.flight, s)).map(|s| (s.id, ahead(&self.flight, s.id).1)).collect();
+        let n_rows = rows.len();
+        let budget = if n_rows == 0 { self.be.chunk() } else { self.be.prompt_budget(n_rows).min(self.be.chunk().saturating_sub(n_rows)) };
         let together = self.be.prefill_together();
         // (as many prompts as a pass of prompts takes: with the rows that are decoding they are no more than the sequences the scheduler runs at once, which the step's head holds)
         let most = self.be.prefill_rows().max(1);
-        let cands: Vec<u64> = self.active.iter().filter(|s| s.prefilling).take(most).map(|s| s.id).collect();
+        let cands: Vec<u64> = self.active.iter().filter(|s| prompting(&self.flight, s)).take(most).map(|s| s.id).collect();
         let mut picks: Vec<(u64, usize)> = Vec::new();
         let mut used = 0;
         for id in cands {
             let Some(i) = at(&self.active, id) else { continue };
-            let left = self.active[i].tokens.len() - self.active[i].done;
-            let n = self.snap_cut(self.active[i].done, if picks.is_empty() { left.min(budget) } else { left });
+            let done = self.active[i].done + ahead(&self.flight, id).0;
+            let left = self.active[i].tokens.len() - done;
+            let n = self.snap_cut(done, if picks.is_empty() { left.min(budget) } else { left });
             if n == 0 || used + n > budget || (!picks.is_empty() && n > together) {
                 break;
             }
-            let upto = self.active[i].done + n;
-            if !self.ensure_pages(id, upto)? {
+            if !self.ensure_pages(id, done + n)? {
                 continue;
             }
             picks.push((id, n));
@@ -1707,77 +1958,121 @@ impl<B: ModelStep> Sched<B> {
         // (the room of a later one may have been taken from an earlier one, or from one that was decoding: those went back to wait)
         let slots = self.free.is_some();
         picks.retain(|&(id, n)| {
-            at(&self.active, id).is_some_and(|i| self.active[i].prefilling && (slots || self.active[i].pages.len() * PAGE >= self.active[i].done + n))
+            at(&self.active, id).is_some_and(|i| {
+                let s = &self.active[i];
+                s.prefilling && (slots || s.pages.len() * PAGE >= s.done + ahead(&self.flight, id).0 + n)
+            })
         });
-        let rows_of: Vec<u64> = self.active.iter().filter(|s| !s.prefilling).map(|s| s.id).collect();
-        if rows_of.is_empty() && picks.is_empty() {
-            return Ok(());
+        let rows: Vec<(u64, Option<usize>)> = rows.into_iter().filter(|r| at(&self.active, r.0).is_some()).collect();
+        self.stats.before_ns += tb.elapsed().as_nanos() as u64;
+        if std::mem::take(&mut self.relanded) {
+            // (the step in flight landed on the way: its tokens are the host's now, and what ended in it has gone; the room taken stays taken)
+            return self.plan();
         }
-        let last_of = |a: &Vec<Seq>, id: u64, n: usize| at(a, id).is_some_and(|i| a[i].done + n == a[i].tokens.len());
-        let rows: Vec<Row> = rows_of
+        Ok((!rows.is_empty() || !picks.is_empty()).then_some(Plan { rows, picks, used }))
+    }
+
+    /// The planned step launched (`ModelStep::launch`), with the grammar masks of the rows that are sampled (the decode rows, then the prompts that end in it).
+    ///
+    /// Where the step in flight lands after it, what landing would ask of the step for that one's sequences is asked first, so that it is queued before this step's work:
+    /// the blocks that step fills named (a model that keeps states at boundaries copies the states there), and each prompt that ends in it marked (a recurrent model's states
+    /// at the prompt's end copied aside). Those are the states after that step's tokens, which this step's rows go on from.
+    fn launch(&mut self, plan: Plan) -> Result<Flight> {
+        let at = |a: &Vec<Seq>, id: u64| a.iter().position(|s| s.id == id);
+        if let Some(f) = &self.flight {
+            let ahead: Vec<(u64, usize, bool)> = f.rows.iter().map(|&id| (id, 1, false)).chain(f.picks.iter().copied()).collect();
+            for (id, n, last) in ahead {
+                let Some(i) = at(&self.active, id) else { continue };
+                let upto = self.active[i].done + n;
+                if self.names() {
+                    Self::name_blocks_to(&mut self.be, &mut self.active[i], upto, self.rt.kv_events.as_ref().map(|_| &mut self.kv_out))?;
+                }
+                if last && self.keep {
+                    let slot = self.active[i].pages[0];
+                    self.be.mark(slot, upto)?;
+                }
+            }
+        }
+        let ahead = |f: &Option<Flight>, id: u64| f.as_ref().map_or(0, |f| f.of(id).0);
+        let picks: Vec<(u64, usize, bool)> = plan
+            .picks
             .iter()
-            .map(|&id| {
+            .map(|&(id, n)| {
+                let s = &self.active[at(&self.active, id).expect("a picked sequence")];
+                (id, n, s.done + ahead(&self.flight, id) + n == s.tokens.len())
+            })
+            .collect();
+        let rows: Vec<Row> = plan
+            .rows
+            .iter()
+            .map(|&(id, after)| {
                 let s = &self.active[at(&self.active, id).expect("a decoding sequence")];
-                Row { token: s.tokens[s.done], pos: s.done, pages: &s.pages }
+                let pos = s.done + ahead(&self.flight, id);
+                Row { token: if after.is_some() { 0 } else { s.tokens[pos] }, pos, pages: &s.pages, after }
             })
             .collect();
         let jobs: Vec<PrefillJob> = picks
             .iter()
-            .map(|&(id, n)| {
+            .map(|&(id, n, last)| {
                 let s = &self.active[at(&self.active, id).expect("a picked sequence")];
-                PrefillJob { pages: &s.pages, start: s.done, tokens: &s.tokens[s.done..s.done + n], last: s.done + n == s.tokens.len() }
+                let start = s.done + ahead(&self.flight, id);
+                PrefillJob { pages: &s.pages, start, tokens: &s.tokens[start..start + n], last }
             })
             .collect();
-        // (the grammar masks of the rows that are sampled, in the order of their samples: the decode rows, then the prompts that end in this step)
-        let masks: Vec<_> = rows_of
-            .iter()
-            .copied()
-            .chain(picks.iter().filter(|&&(id, n)| last_of(&self.active, id, n)).map(|p| p.0))
-            .filter_map(|id| at(&self.active, id))
-            .map(|i| self.active[i].sampler.mask_handle())
-            .collect();
-        self.stats.before_ns += tb.elapsed().as_nanos() as u64;
-        let t = std::time::Instant::now();
-        let t0 = crate::monitor::clock();
+        let sampled: Vec<usize> =
+            plan.rows.iter().map(|r| r.0).chain(picks.iter().filter(|p| p.2).map(|p| p.0)).filter_map(|id| at(&self.active, id)).collect();
+        let masks: Vec<_> = sampled.iter().map(|&i| self.active[i].sampler.mask_handle()).collect();
+        let on_device = sampled.iter().all(|&i| self.active[i].greedy && self.active[i].reply.logprobs.is_none());
+        let (t, t0) = (std::time::Instant::now(), crate::monitor::clock());
         self.be.masks(masks);
-        let (decoded, prompted) = self.be.round(&rows, &jobs)?;
+        self.be.draws(!on_device);
+        let l = self.be.launch(&rows, &jobs)?;
+        drop((rows, jobs));
+        Ok(Flight { l, rows: plan.rows.iter().map(|r| r.0).collect(), picks, used: plan.used, t, t0, on_device })
+    }
+
+    /// A launched step's samples (`ModelStep::finish`) taken: each decode row's token chosen and sent, each prompt chunk's tokens counted (a prompt's first token at its last), and the sequences
+    /// that ended given their slot back; a sequence that holds a block the step could not store exactly is sent back instead (`after_step`).
+    fn land(&mut self, f: Flight) -> Result<()> {
+        let at = |a: &Vec<Seq>, id: u64| a.iter().position(|s| s.id == id);
+        let (decoded, prompted) = self.be.finish(f.l)?;
+        let n_rows = f.rows.len();
         if self.trace {
             eprintln!(
                 "sched {:.4} step from {:.4}: {} rows, {} prompts {:?} of {} tokens, {:.1} ms; {} active, {} waiting",
                 crate::monitor::clock(),
-                t0,
-                rows.len(),
-                jobs.len(),
-                picks.iter().map(|p| p.0).collect::<Vec<_>>(),
-                used,
-                t.elapsed().as_secs_f64() * 1e3,
+                f.t0,
+                n_rows,
+                f.picks.len(),
+                f.picks.iter().map(|p| p.0).collect::<Vec<_>>(),
+                f.used,
+                f.t.elapsed().as_secs_f64() * 1e3,
                 self.active.len(),
                 self.waiting.len()
             );
         }
-        let n_rows = rows.len();
-        drop((rows, jobs));
+        let took = f.t.elapsed().as_nanos() as u64;
         if n_rows > 0 {
-            self.stats.decode_ns += t.elapsed().as_nanos() as u64;
+            self.stats.decode_ns += took;
             self.stats.steps += 1;
             self.stats.rows += n_rows as u64;
             self.stats.by_rows[n_rows.min(MAX_ROWS)] += 1;
         } else {
-            self.stats.prefill_ns += t.elapsed().as_nanos() as u64;
+            self.stats.prefill_ns += took;
         }
-        if !picks.is_empty() {
+        if !f.picks.is_empty() {
             self.stats.prefill_rounds += 1;
             self.stats.both += (n_rows > 0) as u64;
             // (the step's whole time, its rows' share too: a recompute is priced no cheaper than it is)
-            self.stats.pass_ns += t.elapsed().as_nanos() as u64;
-            self.stats.pass_tokens += used as u64;
+            self.stats.pass_ns += took;
+            self.stats.pass_tokens += f.used as u64;
         }
-        self.pass_tokens = used;
+        self.pass_tokens = f.used;
         // what the step could not store exactly: the output of the sequences that hold such a block is not used (they are sent back below)
         let hit = self.after_step()?;
         let tc = std::time::Instant::now();
         let mut ended: Vec<(u64, Finish)> = Vec::new();
-        for (row, (&id, sample)) in rows_of.iter().zip(decoded).enumerate() {
+        for (row, (&id, sample)) in f.rows.iter().zip(decoded).enumerate() {
             if hit.contains(&id) {
                 continue;
             }
@@ -1785,12 +2080,12 @@ impl<B: ModelStep> Sched<B> {
             self.active[i].done += 1;
             self.publish(i)?;
             let (tok, lp) = self.pick(i, sample, row)?;
-            if let Some(f) = self.accept(i, tok, lp) {
-                ended.push((id, f));
+            if let Some(fin) = self.accept(i, tok, lp) {
+                ended.push((id, fin));
             }
         }
         let mut row = n_rows;
-        for (k, &(id, n)) in picks.iter().enumerate() {
+        for (k, &(id, n, _)) in f.picks.iter().enumerate() {
             let sample = prompted.get(k).copied().flatten();
             let my_row = row;
             row += sample.is_some() as usize;
@@ -1804,15 +2099,15 @@ impl<B: ModelStep> Sched<B> {
                 self.active[i].prefilling = false;
                 self.mark_prompt(i)?;
                 let (tok, lp) = self.pick(i, sample, my_row)?;
-                if let Some(f) = self.accept(i, tok, lp) {
-                    ended.push((id, f));
+                if let Some(fin) = self.accept(i, tok, lp) {
+                    ended.push((id, fin));
                 }
             }
         }
         // (every row's token is chosen before a sequence gives its room back: the step's logits are the backend's until then)
-        for (id, f) in ended {
+        for (id, fin) in ended {
             if let Some(i) = at(&self.active, id) {
-                self.finish(i, f)?;
+                self.finish(i, fin)?;
             }
         }
         self.take_back(&hit)?;
@@ -1833,13 +2128,17 @@ impl<B: ModelStep> Sched<B> {
         if idx.is_empty() {
             return Ok(());
         }
-        let rows: Vec<Row> =
-            idx.iter().map(|&i| Row { token: self.active[i].tokens[self.active[i].done], pos: self.active[i].done, pages: &self.active[i].pages }).collect();
+        if let [i] = idx[..] {
+            if self.draft_step(i, tb)? {
+                return Ok(());
+            }
+        }
+        let rows: Vec<Row> = idx.iter().map(|&i| Row::new(self.active[i].tokens[self.active[i].done], self.active[i].done, &self.active[i].pages)).collect();
         self.stats.before_ns += tb.elapsed().as_nanos() as u64;
         let t = std::time::Instant::now();
         let masks: Vec<_> = idx.iter().map(|&i| self.active[i].sampler.mask_handle()).collect();
         self.be.masks(masks);
-        let samples = self.be.decode(&rows)?;
+        let samples = self.be.launch(&rows, &[]).and_then(|l| self.be.finish(l))?.0;
         self.stats.decode_ns += t.elapsed().as_nanos() as u64;
         self.stats.steps += 1;
         self.stats.rows += rows.len() as u64;
@@ -1866,6 +2165,32 @@ impl<B: ModelStep> Sched<B> {
         self.take_back(&hit)?;
         self.stats.after_ns += tc.elapsed().as_nanos() as u64;
         Ok(())
+    }
+
+    /// The decode step of the one sequence `i` that decodes, where the step drafts (`ModelStep::draft`): the tokens a drafting round gives, each sent and added as a step's
+    /// would be, up to the sequence's end. Not for a sequence that asks for log-probabilities or a least length (the round reads no row's whole logits): its step is the
+    /// plain one. False: the step does not draft.
+    fn draft_step(&mut self, i: usize, tb: std::time::Instant) -> Result<bool> {
+        let s = &mut self.active[i];
+        if s.reply.logprobs.is_some() || s.reply.params.min_tokens > 0 {
+            return Ok(false);
+        }
+        let row = Row::new(s.tokens[s.done], s.done, &s.pages);
+        let t = std::time::Instant::now();
+        let Some(toks) = self.be.draft(&row, if s.greedy { None } else { Some(&mut s.sampler) })? else { return Ok(false) };
+        self.stats.before_ns += t.duration_since(tb).as_nanos() as u64;
+        self.stats.decode_ns += t.elapsed().as_nanos() as u64;
+        (self.stats.steps, self.stats.rows) = (self.stats.steps + 1, self.stats.rows + 1);
+        self.stats.by_rows[1] += 1;
+        // (the cache holds the row's token and every token of the round but its last, which the next round takes)
+        self.active[i].done += toks.len();
+        self.publish(i)?;
+        for tok in toks {
+            if let Some(f) = self.accept(i, tok, None) {
+                return self.finish(i, f).map(|_| true);
+            }
+        }
+        Ok(true)
     }
 }
 
@@ -2124,6 +2449,12 @@ pub(crate) mod tests {
             let r = self.rows.get(row).ok_or_else(|| crate::ffi::Error("no logits".into()))?;
             Ok(tokens.iter().filter_map(|&t| r.get(t as usize).map(|&x| (t, x))).collect())
         }
+        // (as a GPU's sum of the row, where it has candidates)
+        fn mass(&mut self, row: usize, temperature: f32) -> Option<f64> {
+            let r = self.rows.get(row).filter(|_| self.gpu_top)?;
+            let max = r.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
+            Some(r.iter().map(|&x| ((x as f64 - max) / temperature as f64).exp()).sum())
+        }
         fn release(&mut self, pages: &[i32]) -> Result<()> {
             self.released += pages.len();
             for &p in pages {
@@ -2215,6 +2546,51 @@ pub(crate) mod tests {
         }
     }
 
+    /// #138: a draw and its log-probabilities from what the GPU makes, never the whole row (the fake counts its reads): a top-k draw from the candidates, a top-p over the
+    /// whole row with no top-k from the candidates and the row's sum of exponentials, and log-probabilities from the candidates and the row's log-sum-exp, the same as the
+    /// whole row gives them; where the backend has no candidates the row is read.
+    #[test]
+    fn draws_and_log_probabilities_read_no_row_where_the_gpu_makes_them() {
+        let asks = [
+            Reply { logprobs: Some(3), ..reply(6) },
+            Reply { params: Params { temperature: 0.7, top_k: 5, seed: 3, ..Params::default() }, logprobs: Some(2), ..reply(6) },
+            Reply { params: Params { temperature: 0.9, top_p: 0.9, seed: 5, ..Params::default() }, ..reply(6) },
+        ];
+        let run_with = |gpu_top: bool| {
+            let mut be = Fake::new(64, 32);
+            be.gpu_top = gpu_top;
+            let mut s = Sched::new(be, 4);
+            let rx: Vec<_> = asks.iter().enumerate().map(|(k, r)| add_reply(&mut s, prompt(k as u32 + 1, 9), r.clone())).collect();
+            run(&mut s);
+            let got: Vec<(Vec<u32>, Vec<(u32, f64, Vec<(u32, f64)>)>)> = rx
+                .iter()
+                .map(|r| {
+                    let (mut toks, mut lps) = (Vec::new(), Vec::new());
+                    loop {
+                        match r.recv().unwrap() {
+                            Ev::Token(t) => toks.push(t),
+                            Ev::Lp(l) => lps.push((l.token, l.logprob, l.top)),
+                            Ev::End(_) => return (toks, lps),
+                        }
+                    }
+                })
+                .collect();
+            (got, s.be.logit_reads)
+        };
+        let ((on, reads_on), (off, reads_off)) = (run_with(true), run_with(false));
+        assert_eq!(reads_on, 0, "a row read where the candidates and the sums hold the draw");
+        assert!(reads_off > 0);
+        for ((a, la), (b, lb)) in on.iter().zip(&off) {
+            assert_eq!(a, b, "the tokens drawn");
+            assert_eq!(la.len(), lb.len());
+            for (x, y) in la.iter().zip(lb) {
+                assert_eq!((x.0, x.2.iter().map(|t| t.0).collect::<Vec<_>>()), (y.0, y.2.iter().map(|t| t.0).collect::<Vec<_>>()));
+                assert!((x.1 - y.1).abs() < 1e-9 && x.2.iter().zip(&y.2).all(|(p, q)| (p.1 - q.1).abs() < 1e-9), "{x:?} {y:?}");
+            }
+        }
+        assert!(on[0].1.len() == 6 && on[1].1.len() == 6 && on[2].1.is_empty());
+    }
+
     /// A round that is one step (`ModelStep::one_step`): every sequence gives the tokens it gives alone, whatever the mix of lengths, a shared start, sampling from the logits' rows and a pool
     /// too small for all of them; some step held both rows that decode and a prompt's chunk, none held more than a chunk's tokens, and none more prompt tokens beside rows than the budget.
     #[test]
@@ -2266,6 +2642,147 @@ pub(crate) mod tests {
                 assert!(st.iter().all(|&(r, t)| r == 0 || t <= b), "more than {b} prompt tokens beside rows: {st:?}");
             }
         }
+    }
+
+    /// A request with its own reply's asks.
+    fn add_reply<B: ModelStep>(s: &mut Sched<B>, prompt: Vec<u32>, reply: Reply) -> Receiver<Ev> {
+        let (tx, rx) = channel();
+        s.submit(Submit {
+            prompt,
+            reply,
+            out: tx,
+            abort: Arc::new(AtomicBool::new(false)),
+            resumed: Default::default(),
+            cached: Default::default(),
+            created: Default::default(),
+            salt: 0,
+            pin: 0,
+            images: Vec::new(),
+        });
+        rx
+    }
+
+    /// A slot fake whose round is one step and whose steps are launched before the step before them is read (`overlaps`).
+    fn launching(slots: usize, chunk: usize, beside: Option<usize>) -> SlotFake {
+        let mut f = SlotFake::new(slots, 256, chunk);
+        (f.one_step, f.batch, f.beside, f.overlap) = (true, slots, beside, true);
+        f
+    }
+
+    /// #138, a step's launch and its finish (docs/design/runtime.md section 5, "Launch and finish"): where the step overlaps, each round's step is launched before the step before it
+    /// lands, its rows reading the tokens that step chose on the GPU (the fake: from the head rows of its last launch). Every reply is the one it gives alone, whatever comes in and
+    /// when; no step's rows are read after a later launch (the fake panics); every slot is empty at the end. With `overlapping(false)` no step is launched before the one before lands.
+    #[test]
+    fn a_step_launched_before_the_one_before_lands_gives_the_replies_alone() {
+        for (slots, chunk, beside, on) in [(1, 16, None, true), (3, 16, Some(5), true), (8, 7, Some(2), true), (4, 64, None, true), (4, 64, None, false)] {
+            let mut s = Sched::new(launching(slots, chunk, beside), slots).overlapping(on);
+            let reqs: Vec<(Vec<u32>, usize)> = (0..slots + 6).map(|k| (prompt(k as u32 + 1, 3 + 11 * (k % 9)), 1 + 3 * (k % 9))).collect();
+            // (half the requests at once, the rest one a round while those run)
+            let half = reqs.len() / 2;
+            let mut rx: Vec<_> = reqs[..half].iter().map(|(p, n)| add(&mut s, p.clone(), *n).0).collect();
+            for (p, n) in &reqs[half..] {
+                s.tick().unwrap();
+                rx.push(add(&mut s, p.clone(), *n).0);
+            }
+            run(&mut s);
+            for ((p, n), rx) in reqs.iter().zip(&rx) {
+                assert_eq!(collect(rx), (reference(p, *n), Finish::Length), "slots {slots}, chunk {chunk}, {beside:?} beside, overlap {on}");
+            }
+            assert!(s.be.rooms.iter().all(Vec::is_empty) && s.be.emptied == reqs.len() && s.be.out.is_empty() && s.idle());
+            assert_eq!(s.be.ahead > 0, on, "steps launched ahead: {} (slots {slots}, overlap {on})", s.be.ahead);
+            // (a sequence whose last token by its length is in flight has no row in the next step: no room holds a token past its reply)
+            assert_eq!(s.be.ran, reqs.iter().map(|(p, _)| p.len()).sum::<usize>());
+        }
+    }
+
+    /// A sequence that ends where a launched step chose its end (a stop token) has had its row in the next step run too: that row's output is not taken, and the reply is the
+    /// one it gives alone, ended by the stop. A sequence that draws from its logits (not its largest) has its step land before the next is launched: its rows are read on the
+    /// host; the replies are those of the same requests with no step launched ahead.
+    #[test]
+    fn a_stop_or_a_draw_in_a_launched_step() {
+        let greedy = |n: usize, stop: Vec<u32>| Reply { stop_ids: stop, ..reply(n) };
+        let mut s = Sched::new(launching(4, 32, None), 4);
+        let ps: Vec<Vec<u32>> = (0..4).map(|k| prompt(k + 3, 9 + 5 * k as usize)).collect();
+        let full: Vec<Vec<u32>> = ps.iter().map(|p| reference(p, 30)).collect();
+        // (each stops at its reply's 6th + k token, where that token first comes)
+        let stops: Vec<u32> = full.iter().enumerate().map(|(k, r)| r[5 + k]).collect();
+        let rx: Vec<_> = ps.iter().zip(&stops).map(|(p, &t)| add_reply(&mut s, p.clone(), greedy(30, vec![t]))).collect();
+        run(&mut s);
+        for ((r, &t), rx) in full.iter().zip(&stops).zip(&rx) {
+            let upto = r.iter().position(|&x| x == t).expect("the stop is in the reply");
+            assert_eq!(collect(rx), (r[..upto].to_vec(), Finish::Stop));
+        }
+        assert!(s.be.ahead > 0 && s.be.rooms.iter().all(Vec::is_empty));
+        // drawn: the same with and without launching ahead, and nothing launched ahead while a draw's step was out
+        let drawn = |on: bool| {
+            let mut s = Sched::new(launching(4, 32, None), 4).overlapping(on);
+            let sampled = Reply { params: Params { temperature: 0.9, seed: 7, ..Params::default() }, ..reply(12) };
+            let rx: Vec<_> = ps.iter().map(|p| add_reply(&mut s, p.clone(), sampled.clone())).collect();
+            run(&mut s);
+            (rx.iter().map(collect).collect::<Vec<_>>(), s.be.ahead)
+        };
+        let (on, ahead) = drawn(true);
+        assert_eq!((on, ahead), (drawn(false).0, 0));
+    }
+
+    /// A conversation's next turn goes on in the slot its last turn finished in where steps are launched ahead too, with the same replies and the same tokens found; and a
+    /// scheduler that fails while a step is out gives that step up (`abandon`), every request ending with the error and every slot empty.
+    #[test]
+    fn launched_steps_keep_a_conversation_and_are_given_up_on_a_failure() {
+        let mut runs = Vec::new();
+        for on in [false, true] {
+            let mut f = launching(2, 16, None);
+            (f.window, f.keeps) = (512, true);
+            let mut s = Sched::new(f, 2).overlapping(on);
+            let p1 = prompt(1, 40);
+            let r1 = turn(&mut s, &p1, 8);
+            let p2: Vec<u32> = [&p1[..], &r1[..], &prompt(2, 10)[..]].concat();
+            let r2 = turn(&mut s, &p2, 8);
+            assert_eq!((r1, r2), (reference(&p1, 8), reference(&p2, 8)));
+            runs.push((s.be.resumed.clone(), s.stats.hit, s.be.ahead > 0));
+        }
+        assert_eq!((runs[0].0.clone(), runs[0].1), (runs[1].0.clone(), runs[1].1));
+        assert_eq!((runs[0].2, runs[1].2), (false, true));
+        let mut s = Sched::new(launching(3, 16, None), 3);
+        let rx: Vec<_> = (0..3).map(|k| add(&mut s, prompt(k + 1, 20), 50).0).collect();
+        for _ in 0..6 {
+            s.tick().unwrap();
+        }
+        assert!(s.flight.is_some());
+        s.fail(&crate::ffi::Error("a made-up failure".into()));
+        assert!(s.idle() && s.be.abandoned == 1 && s.be.out.is_empty());
+        for rx in &rx {
+            while !matches!(rx.recv().expect("an end"), Ev::End(Err(_))) {}
+        }
+    }
+
+    /// #138: the models that ran one request at a time through a loop of their own (`server::work_gen`, gone) are the scheduler's steps of one slot. A drafted model's decode
+    /// step is a drafting round (`ModelStep::draft`), its tokens each sent and added as a step's would be; a request that asks for log-probabilities or a least length has plain
+    /// steps (a round reads no row's whole logits); a request that draws gives the round its sampler. Every reply is the one it gives alone, ended by its length or a stop.
+    #[test]
+    fn a_drafted_model_is_a_step_of_one_slot_whose_decode_is_a_round() {
+        let mut f = SlotFake::new(1, 256, 16);
+        f.drafts = 3;
+        let mut s = Sched::new(f, 4);
+        assert_eq!(s.users(), 1);
+        let ps: Vec<Vec<u32>> = (0..4).map(|k| prompt(k + 11, 7 + 9 * k as usize)).collect();
+        let full = reference(&ps[1], 30);
+        let rx = [
+            add(&mut s, ps[0].clone(), 25).0,
+            add_reply(&mut s, ps[1].clone(), Reply { stop_ids: vec![full[13]], ..reply(30) }),
+            add_reply(&mut s, ps[2].clone(), Reply { logprobs: Some(0), ..reply(9) }),
+            add_reply(&mut s, ps[3].clone(), Reply { params: Params { temperature: 0.5, top_k: 1, ..Params::default() }, ..reply(11) }),
+        ];
+        run(&mut s);
+        assert_eq!(collect(&rx[0]), (reference(&ps[0], 25), Finish::Length));
+        let stop = full.iter().position(|&t| t == full[13]).expect("the stop");
+        assert_eq!(collect(&rx[1]), (full[..stop].to_vec(), Finish::Stop));
+        assert_eq!(collect(&rx[2]), (reference(&ps[2], 9), Finish::Length));
+        assert_eq!(collect(&rx[3]), (reference(&ps[3], 11), Finish::Length));
+        // (the plain steps are the log-probabilities' request's alone: 8 tokens after its first; the rounds gave the others' tokens, more than one a round)
+        assert_eq!(s.be.steps.len(), 8);
+        assert!(s.be.rounds > 0 && s.be.rounds < 24 + stop + 10, "{} rounds", s.be.rounds);
+        assert!(s.be.drawn_rounds > 0 && s.be.rooms[0].is_empty() && s.be.emptied == 4);
     }
 
     /// What the one step is for: while a long prompt comes in, every sequence that is decoding still gets a token every round (the prompt's chunk rides in their step, as many tokens as the
@@ -3040,6 +3557,28 @@ pub(crate) mod tests {
         pub slide: usize,
         pub jumps: bool,
         pub blocks: [std::collections::HashMap<u32, [u32; PAGE]>; 2],
+        /// R4b's deterministic capacity on values that never compress: every page written is raw and takes a slab of a pool of `slabs` (None: no such pool), each slot's
+        /// raw pages, the slabs this step's growths promised (`Dyn::kv12_room`'s rule), and the pages written with no slab free (void: what the rule is to make none).
+        pub slabs: Option<usize>,
+        pub raw: Vec<usize>,
+        pub promised: usize,
+        /// The pages (first, end) this step's growths promised each slot: a slot asked twice is promised once, and one emptied or swapped out takes its promise with it.
+        pub asked: std::collections::HashMap<i32, (usize, usize)>,
+        pub voided: usize,
+        /// A step launched before the step before it is read (`overlaps`, as the executor's on a model with no recurrent state): each step runs at its launch, as a stream runs
+        /// what is queued in order, and its samples wait for `finish`; a row's token the step before chose is read from that step's head rows. The steps launched while
+        /// another was out, and the steps given up (`abandon`).
+        pub overlap: bool,
+        pub out: VecDeque<(usize, Samples)>,
+        pub heads: Vec<u32>,
+        pub launches: usize,
+        pub ahead: usize,
+        pub abandoned: usize,
+        /// A drafting step (`draft`): the most draft tokens a round has (0: it does not draft; a round at position p keeps p mod (drafts + 1) of them), the rounds run, and
+        /// those given a sampler.
+        pub drafts: usize,
+        pub rounds: usize,
+        pub drawn_rounds: usize,
     }
 
     impl SlotFake {
@@ -3085,6 +3624,20 @@ pub(crate) mod tests {
                 slide: 0,
                 jumps: false,
                 blocks: Default::default(),
+                slabs: None,
+                raw: vec![0; slots],
+                promised: 0,
+                asked: std::collections::HashMap::new(),
+                voided: 0,
+                overlap: false,
+                out: VecDeque::new(),
+                heads: Vec::new(),
+                launches: 0,
+                ahead: 0,
+                abandoned: 0,
+                drafts: 0,
+                rounds: 0,
+                drawn_rounds: 0,
             }
         }
         /// `new` on the executor's blocks: pools as `Dyn::page` sizes them for `slots` sequences of `window` tokens, a full group and a sliding one of `slide` tokens.
@@ -3134,6 +3687,19 @@ pub(crate) mod tests {
             if self.whole_only && self.snap_every > 0 {
                 let next = (start / self.snap_every + 1) * self.snap_every;
                 assert!(start + tokens.len() <= next, "{} tokens from {start}, past the boundary at {next}", tokens.len());
+            }
+            if let Some(slabs) = self.slabs {
+                // (every page the tokens are in raw: a slab for each the slot has none for yet, where one is free; else void)
+                let s = slot[0] as usize;
+                for _ in self.raw[s]..(start + tokens.len()).div_ceil(PAGE) {
+                    if self.raw.iter().sum::<usize>() < slabs {
+                        self.raw[s] += 1;
+                    } else {
+                        self.voided += 1;
+                    }
+                }
+                self.promised = 0;
+                self.asked.clear();
             }
             let room = &mut self.rooms[slot[0] as usize];
             assert_eq!(room.len(), start, "tokens at {start} where the slot holds {}", room.len());
@@ -3243,7 +3809,55 @@ pub(crate) mod tests {
             Ok(out)
         }
         fn logits(&mut self, row: usize) -> Result<Vec<f32>> {
+            assert!(self.out.is_empty(), "a step's logits read after a later step was launched over them");
             self.rows.get(row).cloned().ok_or_else(|| crate::ffi::Error("no logits".into()))
+        }
+        fn overlaps(&self) -> bool {
+            self.overlap
+        }
+        fn launch(&mut self, rows: &[Row], jobs: &[PrefillJob]) -> Result<Launched> {
+            if !self.overlap {
+                assert!(rows.iter().all(|r| r.after.is_none()), "a row whose token the step before chose, on a step that does not overlap");
+                let done = match (self.one_step, jobs.is_empty()) {
+                    (true, _) => self.round(rows, jobs)?,
+                    (false, true) => (self.decode(rows)?, Vec::new()),
+                    (false, false) => (Vec::new(), self.prefill_many(jobs)?),
+                };
+                return Ok(Launched { done: Some(done), tag: 0 });
+            }
+            let toks: Vec<u32> = rows.iter().map(|r| r.after.map_or(r.token, |h| self.heads[h])).collect();
+            let rows: Vec<Row> = rows.iter().zip(&toks).map(|(r, &t)| Row::new(t, r.pos, r.pages)).collect();
+            let out = self.round(&rows, jobs)?;
+            self.heads = out.0.iter().map(|x| x.token).chain(out.1.iter().flatten().map(|x| x.token)).collect();
+            self.launches += 1;
+            self.ahead += !self.out.is_empty() as usize;
+            self.out.push_back((self.launches, out));
+            Ok(Launched { done: None, tag: self.launches })
+        }
+        fn finish(&mut self, l: Launched) -> Result<Samples> {
+            if let Some(d) = l.done {
+                return Ok(d);
+            }
+            let (tag, out) = self.out.pop_front().expect("a step launched");
+            assert_eq!(tag, l.tag, "steps finished out of their order");
+            Ok(out)
+        }
+        fn abandon(&mut self) {
+            self.abandoned += self.out.len();
+            self.out.clear();
+        }
+        fn draft(&mut self, row: &Row, sampler: Option<&mut Sampler>) -> Result<Option<Vec<u32>>> {
+            if self.drafts == 0 {
+                return Ok(None);
+            }
+            (self.rounds, self.drawn_rounds) = (self.rounds + 1, self.drawn_rounds + sampler.is_some() as usize);
+            let m = 1 + row.pos % (self.drafts + 1);
+            let mut out = vec![self.put(row.pages, row.pos, &[row.token])];
+            while out.len() < m {
+                let (at, t) = (self.rooms[row.pages[0] as usize].len(), out[out.len() - 1]);
+                out.push(self.put(row.pages, at, &[t]));
+            }
+            Ok(Some(out))
         }
         fn release(&mut self, pages: &[i32]) -> Result<()> {
             for &p in pages {
@@ -3251,6 +3865,11 @@ pub(crate) mod tests {
                 self.held[p as usize] = 0;
                 self.marks[p as usize] = 0;
                 self.loading[p as usize] = 0;
+                // (its pages cleared: their slabs back, `kv12_release_blocks`; what the step promised it with them, `kv12_unpromise`)
+                self.raw[p as usize] = 0;
+                if let Some((a, b)) = self.asked.remove(&p) {
+                    self.promised -= b - a;
+                }
                 self.emptied += 1;
                 if let Some(pg) = &mut self.paged {
                     pg.release(p as usize);
@@ -3270,7 +3889,10 @@ pub(crate) mod tests {
             }
             self.tickets += 1;
             self.host.insert(self.tickets, (std::mem::take(&mut self.rooms[s]), self.marks[s]));
-            (self.held[s], self.marks[s]) = (0, 0);
+            (self.held[s], self.marks[s], self.raw[s]) = (0, 0, 0);
+            if let Some((a, b)) = self.asked.remove(&slot) {
+                self.promised -= b - a;
+            }
             Ok(Some(self.tickets))
         }
         fn swap_in(&mut self, slot: i32, ticket: u64, upto: usize) -> Result<Option<usize>> {
@@ -3278,6 +3900,14 @@ pub(crate) mod tests {
             assert!(self.rooms[s].is_empty() && self.held[s] == 0, "a copy back into slot {s}, which holds {} tokens", self.rooms[s].len());
             let n = self.host.get(&ticket).expect("a ticket given").0.len();
             assert!(upto > n, "room for {upto} tokens asked for a sequence of {n}");
+            // (its raw pages take their slabs as they load: not now where the pool has too few)
+            if let Some(slabs) = self.slabs {
+                let have = slabs as i64 - self.raw.iter().sum::<usize>() as i64;
+                if !crate::dynamic::pages::room(&[n.div_ceil(PAGE) as i64], &[have], &[self.promised as i64]) {
+                    return Ok(None);
+                }
+                self.raw[s] = n.div_ceil(PAGE);
+            }
             if let Some(budget) = self.budget {
                 if self.held.iter().sum::<usize>() + upto.div_ceil(PAGE) * PAGE > budget {
                     return Ok(None);
@@ -3400,6 +4030,17 @@ pub(crate) mod tests {
             Ok(kept)
         }
         fn grow(&mut self, slot: i32, upto: usize) -> Result<bool> {
+            if let Some(slabs) = self.slabs {
+                // (`Dyn::kv12_room`: a slab for every page the next pass writes, beside what this step promised; else the newest is paused)
+                let n = self.rooms[slot as usize].len();
+                let (more, pages) = crate::dynamic::pages::pages_more(self.asked.get(&slot).copied(), n, upto.min(n + self.chunk));
+                let have = slabs as i64 - self.raw.iter().sum::<usize>() as i64;
+                if !crate::dynamic::pages::room(&[more as i64], &[have], &[self.promised as i64]) {
+                    return Ok(false);
+                }
+                self.promised += more;
+                self.asked.insert(slot, pages);
+            }
             if let Some(p) = &mut self.paged {
                 let (s, n) = (slot as usize, self.rooms[slot as usize].len());
                 return Ok(if self.jumps { p.grow(s, upto) } else { p.grow_from(s, n, upto, self.chunk) });
@@ -3712,8 +4353,17 @@ pub(crate) mod tests {
     /// conversation still goes on from all it left at its next turn. Every reply is the one the whole prompt gives from its first token.
     #[test]
     fn a_recurrent_model_finds_a_start_at_its_newest_kept_boundary() {
+        for ahead in [false, true] {
+            recurrent_starts(ahead);
+        }
+    }
+
+    /// `a_recurrent_model_finds_a_start_at_its_newest_kept_boundary`, with steps launched before the one before lands (`ahead`): the states at a boundary and at a prompt's
+    /// end are copied as the next step is launched, and are the same states.
+    fn recurrent_starts(ahead: bool) {
         let mut f = SlotFake::new(3, 512, 64);
         (f.keeps, f.whole_only, f.marking, f.snap_every) = (true, true, true, 32);
+        (f.one_step, f.batch, f.overlap) = (ahead, 3, ahead);
         let mut s = Sched::new(f, 3);
         let system = prompt(1, 70);
         let pa: Vec<u32> = [&system[..], &prompt(2, 100)[..]].concat();
@@ -3731,6 +4381,7 @@ pub(crate) mod tests {
         let pc: Vec<u32> = [&system[..20], &prompt(5, 10)[..]].concat();
         assert_eq!(turn(&mut s, &pc, 8), reference(&pc, 8));
         assert_eq!(s.be.adopted.last().map(|a| a.1), Some(0));
+        assert_eq!(s.be.ahead > 0, ahead, "steps launched ahead");
     }
 
     /// A request that comes while another with the same start still runs finds what that one has run; and where the only slot holds a kept conversation whose start it
@@ -4004,8 +4655,20 @@ pub(crate) mod tests {
     /// drops the thinking), go on from the mark, the prompt's end; the turn that sends the whole reply goes on from the slot's end.
     #[test]
     fn a_recurrent_models_kept_sequence_goes_on_from_its_prompts_end() {
+        for ahead in [false, true] {
+            from_the_prompts_end(ahead);
+        }
+    }
+
+    /// `a_recurrent_models_kept_sequence_goes_on_from_its_prompts_end`, with steps launched ahead or not: a prompt that ends in the step in flight is marked as the next step
+    /// is launched, at the same place.
+    fn from_the_prompts_end(ahead: bool) {
         let mut s = keeping(1);
         (s.be.whole_only, s.be.marking) = (true, true);
+        if ahead {
+            (s.be.one_step, s.be.overlap) = (true, true);
+            s = s.overlapping(true);
+        }
         let p1 = prompt(1, 40);
         assert_eq!(turn(&mut s, &p1, 12), reference(&p1, 12));
         assert_eq!(s.be.marks, vec![40], "the prompt's end is marked");
@@ -4023,6 +4686,7 @@ pub(crate) mod tests {
         let early = [&next[..50], &prompt(9, 40)[..]].concat();
         assert_eq!(turn(&mut s, &early, 4), reference(&early, 4));
         assert_eq!((s.be.resumed[2], s.be.emptied, s.be.begun.len()), ((0, 50, 0), 1, 2));
+        assert_eq!(s.be.ahead > 0, ahead, "steps launched ahead");
     }
 
     /// Rooms that take memory as they fill: a kept sequence's room is given up before a request waits for room or a running sequence is sent back.
@@ -4206,20 +4870,48 @@ pub(crate) mod tests {
         (reqs, got, f.ran, s.stats)
     }
 
+    /// R4b's deterministic capacity on the made-up model, with values that never compress (every page raw, a slab each) and slabs for one sequence's pages and a pass
+    /// more: an admitted request is never refused for its values. Where the slabs run short the newest sequence is paused (swapped, or run again from its tokens), no page
+    /// is written without a slab, and every reply is the reply alone, token for token.
+    #[test]
+    fn incompressible_values_pause_the_newest_and_fail_no_request() {
+        for (slots, mode) in [(8, SwapMode::Always), (8, SwapMode::Never), (4, SwapMode::ByCost), (3, SwapMode::Always)] {
+            let (window, chunk) = (512usize, 16usize);
+            let mut f = SlotFake::new(slots, window, chunk);
+            (f.slabs, f.host_room) = (Some(window / PAGE + crate::dynamic::pages::pages_written(0, chunk) + 1), 1 << 20);
+            let mut s = Sched::new(f, slots).swapping(mode);
+            let reqs: Vec<(Vec<u32>, usize)> = (0..10).map(|k| (prompt(k as u32 + 3, 30 + 9 * k), 60 + 11 * k)).collect();
+            let rx: Vec<_> = reqs.iter().map(|(p, n)| add(&mut s, p.clone(), *n).0).collect();
+            run(&mut s);
+            for ((p, n), r) in reqs.iter().zip(&rx) {
+                assert_eq!(collect(r), (reference(p, *n), Finish::Length), "{slots} slots, {mode:?}");
+            }
+            assert_eq!(s.be.voided, 0, "{slots} slots, {mode:?}: pages written with no slab");
+            assert!(s.stats.preempted > 0, "{slots} slots, {mode:?}: no sequence paused for the slabs");
+            assert!(s.be.raw.iter().all(|&r| r == 0), "slabs left held");
+        }
+    }
+
     /// The acceptance of R4d on the made-up model: where the rooms run out, the sequences sent back are swapped to the host and copied back, and every reply is the reply alone, token for
     /// token; no prompt token is run twice (recompute-only runs the ones sent back again).
     #[test]
     fn swapped_sequences_go_on_with_the_tokens_they_have_alone() {
-        for (slots, budget) in [(4, 160), (8, 256), (8, 128), (2, 128)] {
-            let (reqs, got, ran, st) = squeezed(slots, budget, SwapMode::Always, |_| {});
+        // (and where steps are launched before the one before lands: a sequence of the step in flight that is swapped has that step land first)
+        for (slots, budget, ahead) in [(4, 160, false), (8, 256, false), (8, 128, false), (2, 128, false), (4, 160, true), (8, 128, true), (2, 128, true)] {
+            let launched = |f: &mut SlotFake| {
+                if ahead {
+                    (f.one_step, f.batch, f.overlap) = (true, slots, true);
+                }
+            };
+            let (reqs, got, ran, st) = squeezed(slots, budget, SwapMode::Always, launched);
             for ((p, n), g) in reqs.iter().zip(&got) {
-                assert_eq!(g, &(reference(p, *n), Finish::Length), "{slots} slots, budget {budget}");
+                assert_eq!(g, &(reference(p, *n), Finish::Length), "{slots} slots, budget {budget}, launched ahead {ahead}");
             }
             let prompts: usize = reqs.iter().map(|(p, _)| p.len()).sum();
             // (every one that held tokens: one sent back before its first chunk has nothing to copy, nor to run again)
-            assert!(st.swapped > 0, "{slots} slots, budget {budget}: {} sent back, none swapped", st.preempted);
-            assert_eq!(ran, prompts, "{slots} slots, budget {budget}: prompt tokens run again");
-            let (_, again, ran_again, st_again) = squeezed(slots, budget, SwapMode::Never, |_| {});
+            assert!(st.swapped > 0, "{slots} slots, budget {budget}, launched ahead {ahead}: {} sent back, none swapped", st.preempted);
+            assert_eq!(ran, prompts, "{slots} slots, budget {budget}, launched ahead {ahead}: prompt tokens run again");
+            let (_, again, ran_again, st_again) = squeezed(slots, budget, SwapMode::Never, launched);
             assert_eq!(again, got);
             assert!(st_again.preempted > 0 && st_again.swapped == 0 && ran_again > prompts, "recompute ran {ran_again} prompt tokens, swap {ran}");
         }

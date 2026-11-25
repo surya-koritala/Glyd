@@ -1163,8 +1163,34 @@ pub fn score_classes(records: &[serde_json::Value]) -> Vec<(String, Vec<f64>, Ve
         .collect()
 }
 
-/// The share of expert reads a cache holding a share `f` of the experts serves: experts are used unevenly (Condor: 70-76% at about a quarter).
-const HIT_EXPONENT: f64 = 0.23;
+/// The share of expert reads a cache holding a share `f` of the experts serves at one row, f^HIT_EXPONENT: experts are used unevenly and a sequence uses its own again (Condor: 70-76% at about a quarter;
+/// the Nemotron 3 Super decode traces' least-recently-used places: 61, 73 and 80% at 17, 32 and 46%, where this says 67, 77 and 84: offload.rs's test). A router that chooses uniformly (a random model's) is 1.
+pub const HIT_EXPONENT: f64 = 0.23;
+/// How fast the reuse of the places between steps goes as a step's rows' distinct experts fill them (`step_hit`), fitted to the Nemotron 3 Super decode traces at 4 to 20 rows (offload.rs's test).
+const ROWS_DECAY: f64 = 0.55;
+
+/// The distinct experts `users` rows choose a step in a layer of `experts` choosing `topk` each, in one row's experts (k): E (1 - (1 - k/E)^U) / k, as a router choosing uniformly makes them, and at least one row's.
+pub fn step_distinct(experts: usize, topk: usize, users: usize) -> f64 {
+    if experts == 0 || topk == 0 || users <= 1 {
+        return 1.0;
+    }
+    let (e, k) = (experts as f64, topk as f64);
+    (e * (1.0 - (1.0 - k / e).powf(users.max(1) as f64)) / k).max(1.0)
+}
+
+/// The share of a step's distinct experts a layer's cache of `places` of its `experts` finds there, for `users` rows (`topk` each): f^s at one row (f the places' share, s `skew`: `HIT_EXPONENT` for a release's
+/// router, 1 for a uniform one), the exponent going to 1 as the step's distinct experts D fill the places, s + (1 - s)(1 - exp(-ROWS_DECAY (D - k) / places)): what the places keep between steps is what the step's
+/// other rows have not taken. A uniform router's share is f at any rows.
+pub fn step_hit(experts: usize, topk: usize, places: usize, users: usize, skew: f64) -> f64 {
+    let f = (places as f64 / experts.max(1) as f64).min(1.0);
+    let fill = (step_distinct(experts, topk, users) - 1.0) * topk as f64 / places.max(1) as f64;
+    f.powf(skew + (1.0 - skew) * (1.0 - (-ROWS_DECAY * fill).exp()))
+}
+
+/// A step's distinct missed experts of a layer in one row's experts (k), each read once for all its rows: `step_distinct` (1 - `step_hit`); 1 - f^s at one row.
+pub fn step_misses(experts: usize, topk: usize, places: usize, users: usize, skew: f64) -> f64 {
+    step_distinct(experts, topk, users) * (1.0 - step_hit(experts, topk, places, users, skew))
+}
 /// The rate an expert's bytes come from an NVMe disk in direct reads of whole experts, 16 in flight (src/disk.rs), GB/s: a planning figure.
 pub const DISK_GBS: f64 = 3.0;
 
@@ -1769,6 +1795,12 @@ fn speed_at(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan, positions: f64)
 /// `speed_at` for each of `users` sequences decoded together: one step reads the weights once for all of them, and each one's keys and values, and takes its
 /// class's time a layer for each row past the first.
 pub fn speed_users(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan, positions: f64, users: usize) -> f64 {
+    speed_routed(sh, m, main, lp, positions, users, HIT_EXPONENT)
+}
+
+/// `speed_users` for a router whose choices have the skew `skew` (`step_hit`: `HIT_EXPONENT` for a release's, 1 for a uniform one, a random model's): a step of `users` rows reads each of its distinct missed
+/// experts once (`step_misses`).
+pub fn speed_routed(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan, positions: f64, users: usize, skew: f64) -> f64 {
     let d0 = &m.devices[main];
     let Some((bits, ebits)) = plan_bits(lp, sh, d0) else { return 0.0 };
     let gain = gain_of(sh, lp.kind == Kind::Condor);
@@ -1785,19 +1817,19 @@ pub fn speed_users(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan, position
         let rates: Vec<f64> = sp.devices.iter().filter_map(|&d| m.devices.get(d as usize)).map(Device::rate).collect();
         let n = rates.len().max(1) as f64;
         let active = sh.routed_active() * ebits / 8.0;
-        let hit = if sp.host_bytes > 0 {
-            (sp.places.iter().min().copied().unwrap_or(0) as f64 / sp.experts_per_layer.max(1) as f64).min(1.0).powf(HIT_EXPONENT)
+        let missed = if sp.host_bytes > 0 {
+            active * step_misses(sp.experts_per_layer, sh.topk, sp.places.iter().min().copied().unwrap_or(0), users, skew)
         } else {
-            1.0
+            0.0
         };
-        let on_gpu = read - active * (1.0 - hit);
+        let on_gpu = read - missed;
         let gpu_t = if sp.across {
             on_gpu / (n * rates.iter().copied().fold(f64::MAX, f64::min) * eff)
         } else {
             rates.iter().map(|r| on_gpu / n / (r * eff)).sum::<f64>()
         } + step
             + 0.1e-3 * (n - 1.0);
-        let cpu_t = active * (1.0 - hit) / (m.ram_bandwidth * GB * EFF_CPU);
+        let cpu_t = missed / (m.ram_bandwidth * GB * EFF_CPU);
         // (the last layers' dense matrices in the computer's memory, src/dense_ram.rs: each copied to the GPU before it runs, every token)
         let link_t = sp.dense_bytes as f64 / (LINK_GBS * GB);
         return gain / (gpu_t.max(cpu_t) + link_t + if sp.host_bytes > 0 { SYNC_PER_MOE_LAYER * sh.moe_layers as f64 } else { 0.0 });
@@ -1805,10 +1837,9 @@ pub fn speed_users(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan, position
     match &lp.experts {
         None => gain / (read / (d0.rate() * eff) + step),
         Some(c) => {
-            let hit = (c.slots as f64 / c.experts.max(1) as f64).min(1.0).powf(HIT_EXPONENT);
-            let active = sh.routed_active() * ebits / 8.0;
-            let gpu_t = (read - active * (1.0 - hit)) / (d0.rate() * eff) + step;
-            let cpu_t = active * (1.0 - hit) / (m.ram_bandwidth * GB * EFF_CPU);
+            let missed = sh.routed_active() * ebits / 8.0 * step_misses(c.experts, sh.topk, c.slots, users, skew);
+            let gpu_t = (read - missed) / (d0.rate() * eff) + step;
+            let cpu_t = missed / (m.ram_bandwidth * GB * EFF_CPU);
             gain / (gpu_t.max(cpu_t) + SYNC_PER_MOE_LAYER * sh.moe_layers as f64)
         }
     }
@@ -2622,6 +2653,9 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
 fn fit(a: &crate::args::Args) -> Result<(), crate::ui::Refusal> {
     let f = planned(a)?;
     let (model, p) = (f.model.as_str(), &f.plan);
+    // each level's quality against the lossless level, as its card says (R14: src/quality.rs)
+    let shown: Vec<&str> = p.options.iter().map(|o| o.level).collect();
+    let (quality_text, quality_json) = crate::quality::fit_block(model, &shown);
     if a.has("json") {
         let mut v: serde_json::Value = match &p.chosen {
             Some(c) => serde_json::from_str(&c.json(model, &f.machine)).unwrap_or_default(),
@@ -2629,11 +2663,15 @@ fn fit(a: &crate::args::Args) -> Result<(), crate::ui::Refusal> {
         };
         v["degrade"] = f.ladder.as_ref().map_or(serde_json::Value::Null, Ladder::json);
         v["positions"] = serde_json::json!(f.positions);
+        v["quality"] = quality_json;
         println!("{v}");
     } else {
         print!("{}", text(model, &f.shape, &f.machine, p));
         if let Some(l) = &f.ladder {
             print!("{}", l.report());
+        }
+        if !shown.is_empty() {
+            print!("{quality_text}");
         }
         if let Some(n) = p.chosen.as_ref().and_then(|c| remembered(&crate::store::cache_root(), model, c)) {
             println!("note: {n}");
@@ -3664,7 +3702,8 @@ pub mod sizing {
     ) -> Done<Option<LoadPlan>> {
         use crate::support::Family;
         let name = short_name(model);
-        match crate::support::row(crate::support::family(text, &name)?).family {
+        let row = crate::support::row(crate::support::family(text, &name)?);
+        match row.family {
             Family::Qwen3 => {
                 supported(&name, text)?;
                 let cfg = Config::parse(text, "config.json", None).map_err(cannot)?;
@@ -3675,8 +3714,9 @@ pub mod sizing {
             }
             Family::Qwen35 | Family::Gemma4 | Family::NemotronH => {
                 let Some(layout) = levels::layout_of(level) else { return Ok(None) };
-                if layout == Layout::Tiered && crate::nemotron::is_nemotron_h(text) {
-                    return size_local_dynamic(a, model, text, "Nemotron-H", devs, reach);
+                // (penguin of a family with lossy levels on the dynamic route: its layers cut over the GPUs as their room holds them; its row's name is the route's)
+                if layout == Layout::Tiered && row.split_levels.contains(&"penguin") {
+                    return size_local_dynamic(a, model, text, row.name, devs, reach);
                 }
                 lossy_plan_with(a, model, layout_for(model, layout), text, None, t.free, &t.name, None, t.host).map(Some)
             }
@@ -4310,7 +4350,7 @@ pub mod sizing {
 
     /// The table's name of a dynamic family (`dynamic_family`'s words are these).
     pub(crate) fn static_family(family: &str) -> &'static str {
-        ["Kimi-K3", "GLM-5.3-Flash", "DeepSeek-V4", "Muse Spark", "Nemotron-H"].into_iter().find(|f| *f == family).unwrap_or("DeepSeek-V4")
+        ["Kimi-K3", "GLM-5.3-Flash", "DeepSeek-V4", "Muse Spark", "Nemotron-H", "Qwen3.5"].into_iter().find(|f| *f == family).unwrap_or("DeepSeek-V4")
     }
 
     /// Whether the GPUs of `devs` are HBM ones (A100, H100, B200: compute capability 8.0, 9.0, 10.0), whose FP8 matrices take layout H (src/f8.rs `layout_h`).
@@ -4345,13 +4385,20 @@ pub mod sizing {
             Some(d) => crate::dynamic::split::hb_layer_bytes(d, nl).map_err(cannot)?,
             None => Vec::new(),
         };
-        let ((per, base), cut, coded, mut twelve) = crate::dynamic::split::fit_table_with(table, nl, &room, hbm, kimi, &hb_experts);
+        // (the loaders that take penguin's 12-bit layout for their bf16 matrices, which an HBM GPU reads faster where it fits: Kimi-K3's, the Qwen3.5 layout's;
+        // a release with no FP8 matrices takes it on every GPU but Ada's where it fits, as the one-GPU paths choose it (`best_layout`) and as their checks
+        // of several sequences at once ran)
+        let takes_twelve = kimi || family == "Qwen3.5";
+        let no_f8 = !table.rows.iter().any(|r| r.dtype == "F8_E4M3");
+        let twelve_faster = hbm || (no_f8 && !devs.is_empty() && devs.iter().all(|t| !crate::weights::smallest_is_fastest(t.cc)));
+        let ((per, base), cut, coded, mut twelve) = crate::dynamic::split::fit_table_with(table, nl, &room, twelve_faster, takes_twelve, &hb_experts);
         let mut total = per.iter().sum::<u64>() + base;
         let chosen = a.flag("split").is_some() || a.flag("devices").is_some();
         let model_max = crate::dynamic::split::config_num(text, "max_position_embeddings").unwrap_or(usize::MAX);
         let row = crate::support::row_named(family).expect("a dynamic family has a row");
-        let ctx = a.num("context", crate::support::default_context(row, model_max)).map_err(|e| Refusal::new(e.msg, "--context 8192"))?;
-        crate::support::context_check(&name, row, model_max, a.flag("context").map(|_| ctx))?;
+        // (--ctx as the one-GPU paths take it, too: the Qwen3.5 layout's lossy levels and its penguin read the same flags)
+        let ctx = a.either("context", "ctx", crate::support::default_context(row, model_max)).map_err(|e| Refusal::new(e.msg, "--context 8192"))?;
+        crate::support::context_check(&name, row, model_max, (a.has("context") || a.has("ctx")).then_some(ctx))?;
         // (every layer across the GPUs, src/dynamic/tp.rs: by default on datacenter GPUs that reach each other directly, where no split is asked for; a
         // development build's GLYD_TP=1 or 0 says so itself, GLYD_TP_GPUS which GPUs)
         let tp_room: Vec<(i32, u64)> = match crate::tune!("GLYD_TP_GPUS") {
@@ -5493,8 +5540,8 @@ mod tests {
                         }
                         _ => {
                             let layout = crate::levels::layout_for(model, crate::levels::layout_of(level).unwrap());
-                            if layout == crate::weights::Layout::Tiered && crate::nemotron::is_nemotron_h(text) {
-                                continue; // (the dynamic route's: not sized by `size` yet)
+                            if layout == crate::weights::Layout::Tiered && row.split_levels.contains(&"penguin") {
+                                continue; // (the dynamic route's, sized from the files' headers: a directory of a config.json alone has none)
                             }
                             sizing::lossy_plan_with(&args(&["run", model]), model, layout, text, None, d.free, &d.name, None, Some(m.ram_free))
                         }
@@ -5639,6 +5686,35 @@ mod tests {
 
     /// A checkpoint of the tensors of `fixture` (their names, types and shapes, from a real release's header: `tensors`) as a sparse file: the header the planner
     /// reads, no bytes written.
+    /// The released tensors of a Qwen3.5-layout model the fixtures list, as `header_only_checkpoint` takes them: Qwen3.5 0.8B's and 9B's index, Qwen3.8-27B's
+    /// header fixture (its groups expanded); None for another model.
+    fn qwen35_tensors(name: &str) -> Option<String> {
+        let tensors: serde_json::Map<String, serde_json::Value> = match name {
+            "Qwen3.5-0.8B" | "Qwen3.5-9B" => {
+                serde_json::from_str::<serde_json::Value>(&fixture("qwen35_tensors.json")).unwrap()[format!("Qwen/{name}")].as_object()?.clone()
+            }
+            "Qwen3.8-27B" => {
+                let h: serde_json::Value = serde_json::from_str(&fixture("headers/Qwen3.8-27B.json")).unwrap();
+                let groups = h["groups"].as_array().unwrap();
+                let mut out = serde_json::Map::new();
+                for g in groups {
+                    let mask = g["mask"].as_str().unwrap();
+                    let layers: Vec<String> = match g["layers"].as_array().unwrap() {
+                        l if l.is_empty() => vec![String::new()],
+                        l => l.iter().map(|x| x.to_string()).collect(),
+                    };
+                    assert_eq!(g["experts"], 0, "a dense model's groups");
+                    for l in layers {
+                        out.insert(mask.replace("{L}", &l), serde_json::json!([g["dtype"], g["shape"]]));
+                    }
+                }
+                out
+            }
+            _ => return None,
+        };
+        Some(serde_json::json!({ "tensors": tensors }).to_string())
+    }
+
     fn header_only_checkpoint(dir: &std::path::Path, fixture: &str) {
         let v = json::parse(fixture).unwrap();
         let (mut header, mut at) = (String::from("{"), 0u64);
@@ -5728,6 +5804,44 @@ mod tests {
             }
         }
         assert!(planned_ok >= 3, "{planned_ok}");
+    }
+
+    /// The Qwen3.5 layout's penguin is the dynamic route's (#331): Qwen3.8-27B, from its released tensors' headers, planned as `run` loads it: its layers cut
+    /// over two A100 40 GB cards (and two RTX 3090s), whole on one A100 80 GB (an A100's in the 12-bit layout), refused on one 24 GB card; `--ctx` read as
+    /// `--context`; and untagged, two A100
+    /// 40 GB cards load it at penguin, one 24 GB card at a lossy level.
+    #[test]
+    fn the_qwen35_layouts_penguin_is_planned_on_the_dynamic_route() {
+        let q35 = json::parse(&fixture("qwen35_configs.json")).unwrap();
+        let dir = model_dir("q35-penguin", "Qwen3.8-27B", &json::to_compact(q35.get("Qwen/Qwen3.8-27B").unwrap()));
+        header_only_checkpoint(&dir, &qwen35_tensors("Qwen3.8-27B").unwrap());
+        let a100s = dir.parent().unwrap().join("2xa100-40g.json");
+        let a100 = r#"{"name": "NVIDIA A100-SXM4-40GB", "cc": [8, 0], "total_gib": 40, "free_gib": 39.4}"#;
+        std::fs::write(&a100s, format!(r#"{{"name": "2xa100-40g", "gpus": [{a100}, {a100}], "ram_free_gib": 200}}"#)).unwrap();
+        let (model, a100s) = (dir.to_str().unwrap(), a100s.to_str().unwrap());
+        let fit = |model: &str, machine: &str, more: &[&str]| {
+            let mut w = vec!["fit", model, "--machine", machine];
+            w.extend(more);
+            planned(&args(&w)).unwrap()
+        };
+        let penguin = format!("{model}:penguin");
+        // (an A100's bf16 matrices in penguin's 12-bit layout, which its one-token product reads faster, as an RTX A6000's (Ampere, not Ada: the one-GPU
+        // paths' choice); two RTX 3090s' in the smallest, the 12-bit one not fitting)
+        for (machine, stages, twelve) in [(a100s, 2, true), ("2x3090", 2, false), ("a100-80g", 1, true), ("a6000", 1, true)] {
+            let f = fit(&penguin, machine, &[]);
+            let p = f.plan.chosen.as_ref().and_then(|c| c.load.clone()).unwrap_or_else(|| panic!("{machine}: {:?}", f.refusal));
+            let sp = p.spread.as_ref().unwrap();
+            assert_eq!((p.family, p.level, sp.devices.len(), sp.cuts.len()), ("Qwen3.5", "penguin", stages, stages - 1), "{machine}");
+            assert_eq!((sp.twelve, p.layout == crate::weights::Layout::Twelve), (twelve, twelve), "{machine}");
+            assert!(p.gpu_total() <= p.free, "{machine}");
+        }
+        let r = fit(&penguin, "rtx4090", &[]).refusal.unwrap();
+        assert!(r.what.contains("needs about") && r.what.contains("at penguin"), "{r:?}");
+        let p = fit(&penguin, "a100-80g", &["--ctx", "4096"]).plan.chosen.and_then(|c| c.load).unwrap();
+        assert_eq!(p.context, 4096, "--ctx is --context");
+        assert_eq!(fit(model, a100s, &[]).plan.chosen.unwrap().level, "penguin", "lossless where it fits, over two GPUs");
+        assert_ne!(fit(model, "rtx4090", &[]).plan.chosen.unwrap().level, "penguin");
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
     /// The reply a model's first load times (`first_use`): a prompt of 512 tokens of ids past the special ones, 33 made with no end, and the times of its first
@@ -6270,6 +6384,10 @@ mod tests {
             }
             if *name == "NVIDIA-Nemotron-H" {
                 header_only_checkpoint(&dir, &fixture("nemotron_h_tensors.json"));
+            }
+            // (the Qwen3.5 layout's penguin is the dynamic route's, planned from the files' headers: the released tensors of each)
+            if let Some(t) = qwen35_tensors(name) {
+                header_only_checkpoint(&dir, &t);
             }
             let model = dir.to_str().unwrap();
             let base = dir.parent().unwrap().to_str().unwrap().to_string();

@@ -348,11 +348,116 @@ impl crate::conv::Gen for Run {
             Run::Split(_) | Run::Tp(_) => None,
         }
     }
-    /// One GPU: the engine's own step (src/dynamic/rows.rs); stages and layers across GPUs run one sequence at a time.
+    /// One GPU: the engine's own step (src/dynamic/rows.rs); stages and layers across GPUs: a step of one sequence at a time (`ModelStep for Run`), its slot empty (what a
+    /// reply before this left in the cache is not a scheduler's sequence, which begins at its first token: `serve_rows` empties the executor's the same way).
     fn as_step(&mut self, users: usize) -> Result<Option<(usize, &mut dyn crate::sched::ModelStep)>> {
         match self {
             Run::One(e) => crate::conv::Gen::as_step(e, users),
-            Run::Split(_) | Run::Tp(_) => Ok(None),
+            Run::Split(_) | Run::Tp(_) => {
+                self.reset()?;
+                Ok(Some((1, self as &mut dyn crate::sched::ModelStep)))
+            }
+        }
+    }
+}
+
+impl Run {
+    /// Tokens in the cache.
+    fn held(&self) -> usize {
+        match self {
+            Run::One(e) => e.n,
+            Run::Split(e) => e.n,
+            Run::Tp(e) => e.held(),
+        }
+    }
+}
+
+/// Stages or layers across GPUs as a scheduler's step of one sequence at a time (R4a #138: every model is served by `Sched`, none by a loop of its own): one slot, emptied
+/// at the sequence's end; a prompt in one call (the stages run it a chunk at a time), a token a decode step, a draw read from the last stage's logits row. Batching across
+/// GPUs (stage_rows and the gathers with several sequences) is the next piece for these.
+impl crate::sched::ModelStep for Run {
+    fn window(&self) -> usize {
+        crate::conv::Gen::capacity(self)
+    }
+    fn chunk(&self) -> usize {
+        crate::conv::Gen::capacity(self)
+    }
+    fn pages(&self) -> usize {
+        0
+    }
+    fn slots(&self) -> Option<usize> {
+        Some(1)
+    }
+    fn eos(&self) -> Vec<i64> {
+        match self {
+            Run::One(e) => e.desc().eos.clone(),
+            Run::Split(e) => e.eos().to_vec(),
+            Run::Tp(e) => e.eos().to_vec(),
+        }
+    }
+    fn prefill(&mut self, _pages: &[i32], start: usize, tokens: &[u32], last: bool) -> Result<Option<Sample>> {
+        if start != self.held() {
+            return err(format!("a chunk at {start} of a sequence that holds {}", self.held()));
+        }
+        let s = Run::prefill(self, tokens)?;
+        Ok(last.then_some(s))
+    }
+    fn decode(&mut self, rows: &[crate::sched::Row]) -> Result<Vec<Sample>> {
+        match rows {
+            [r] if r.pos == self.held() => Ok(vec![Run::step(self, r.token)?]),
+            [r] => err(format!("a token at {} of a sequence that holds {}", r.pos, self.held())),
+            _ => err(format!("a step of {} rows on a model that runs one sequence at a time", rows.len())),
+        }
+    }
+    fn logits(&mut self, _row: usize) -> Result<Vec<f32>> {
+        Run::logits(self)
+    }
+    fn release(&mut self, _pages: &[i32]) -> Result<()> {
+        self.reset()
+    }
+}
+
+/// A greedy reply of `tokens` tokens to `prompt` from the model alone (`Gen::reply`), and the same through the scheduler with the model as its step (`as_step`: across GPUs, a
+/// step of one slot): both, for a check that they are the same (`tpcheck`).
+#[cfg(feature = "dev")]
+pub fn sched_reply(e: &mut Run, prompt: &[u32], tokens: usize) -> Result<(Vec<u32>, Vec<u32>)> {
+    use crate::conv::Gen;
+    use crate::sched::{Ev, Reply, Sched, Submit};
+    let reply = Reply {
+        params: crate::sampler::Params { temperature: 0.0, ..Default::default() },
+        max_new: tokens,
+        ignore_eos: true,
+        logprobs: None,
+        stop_ids: Vec::new(),
+    };
+    let (alone, _) = e.reply(prompt, &reply, &mut |_| true)?;
+    let Some((k, step)) = e.as_step(1)? else { return err("no scheduler's step") };
+    let mut s = Sched::new(step, k);
+    let (tx, rx) = channel();
+    s.submit(Submit {
+        prompt: prompt.to_vec(),
+        reply,
+        out: tx,
+        abort: Default::default(),
+        resumed: Default::default(),
+        cached: Default::default(),
+        created: Default::default(),
+        salt: 0,
+        pin: 0,
+        images: Vec::new(),
+    });
+    while !s.idle() {
+        s.tick()?;
+    }
+    let mut via = Vec::new();
+    loop {
+        match rx.recv().map_err(|_| Error("the scheduler dropped the sequence".into()))? {
+            Ev::Token(t) => via.push(t),
+            Ev::Lp(_) => {}
+            Ev::End(r) => {
+                r?;
+                return Ok((alone, via));
+            }
         }
     }
 }
@@ -366,12 +471,14 @@ pub fn family(text: &str) -> Option<&'static str> {
         Family::Glm => Some("GLM-5.3-Flash"),
         Family::NemotronH => Some("Nemotron-H"),
         Family::DeepSeekV4 => Some("DeepSeek-V4"),
+        Family::Qwen35 => Some("Qwen3.5"),
         _ => None,
     }
 }
 
 /// The model of `dir` on the dynamic engine, by its config's family: on one GPU where `cuts` is empty, else in stages (`devices`: one more than `cuts`).
-/// GLM's and Nemotron-H's experts at `o.layout`'s level (penguin's lossless where none is given); DeepSeek-V4's and Muse's as the release has them, exact.
+/// GLM's and Nemotron-H's experts at `o.layout`'s level (penguin's lossless where none is given); DeepSeek-V4's and Muse's as the release has them, exact;
+/// the Qwen3.5 layout's bf16 matrices at `o.layout` (penguin's lossless packs).
 pub fn open(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32]) -> Result<Run> {
     let (nl, eos, make) = maker(dir, o)?;
     Run::new(nl, eos, cuts, devices, o, make)
@@ -406,6 +513,10 @@ fn maker(dir: &Path, o: &Opts) -> Result<(usize, Vec<i64>, MakeStage)> {
         Some("Nemotron-H") => {
             let (nl, eos) = (config_num(&text, "num_hidden_layers").unwrap_or(0), config_eos(&text));
             (nl, eos, std::sync::Arc::new(move |st, o: &Opts| super::nemotron::load_stage(&owned, o, level, st)))
+        }
+        Some("Qwen3.5") => {
+            let c = crate::qwen35::Config35::load(dir)?;
+            (c.layers, c.eos.clone(), std::sync::Arc::new(move |st, o: &Opts| super::qwen35::load_stage(&owned, o, st)))
         }
         _ => {
             let c = crate::deepseek_v4::ConfigV4::load(dir)?;

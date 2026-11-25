@@ -3,12 +3,12 @@
 //! its gate. The experts are glyd-hbr-codes/2 rows at 2,560 x 640 (cb2, cb3, cb4 or ternary, an expert's own format; ~/glyd-scratch/qwen/qwen_pack.py writes them), every layer's file mapped as the cache's host tier
 //! (src/offload.rs): the GPU holds `slots` experts of a layer in places, copied in as the router asks for them, and the host computes a miss from its memory (src/cpu_cb.rs) or copies it, as the store plans.
 
+use crate::cb_pack::{CbPack, LayerMap};
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result, Stream};
 use crate::launch;
 use crate::model_qwen4x::{moe_cfg, EngineQx, MoeBlockQx};
 use crate::moe::{route_with, select_with, MoeCfg, MoeScratch};
-use crate::moe_glm_cb::{CbPack, LayerMap};
 use crate::offload::{Call, ExpertStore, HostMem, Stage};
 use crate::qwen4x::ConfigQx;
 use crate::weights::{upload_bytes, Layout};
