@@ -179,11 +179,13 @@ extern "C" __global__ void __launch_bounds__(128) moe_select32(const float* logi
 // out [rows, I]: MOE_SILU or MOE_GELU (tanh): act(min(g, lim)) * clamp(u, -lim, lim) of gu [rows, 2 I] (the gate in the first I columns, the up in the next I; lim = INFINITY: no clamp, GLM-5.x's is 10);
 // MOE_SITU: lim tanh(g / lim) sigmoid(g) x lin tanh(u / lin) of the same halves; MOE_RELU2: relu(x)^2 of gu [rows, I] (in place where out = gu). One rounding (MOE_SILU_R: silu(g) rounded before the
 // product too). I a multiple of 8; a thread takes
-// 8 columns, block (row, chunk of 256 threads' columns).
-extern "C" __global__ void moe_act(const bf16* gu, bf16* out, int I, int mode, float lim, float lin) {
+// 8 columns, block (row, chunk of 256 threads' columns). With an experts' plan (`plan` of E experts, not null) the rows are its order's: a row past the pairs it routes is none (no
+// product wrote it), as in v4_moe_act.
+extern "C" __global__ void moe_act(const bf16* gu, bf16* out, int I, int mode, float lim, float lin, const int* plan, int E) {
     const int i = (blockIdx.y * blockDim.x + threadIdx.x) * 8;
     if (i >= I) return;
     const size_t r = blockIdx.x;
+    if (plan && (int)r >= plan[1 + E + plan[0]]) return;
     uint4 ov;
     bf16* op = reinterpret_cast<bf16*>(&ov);
     if (mode == MOE_RELU2) {
