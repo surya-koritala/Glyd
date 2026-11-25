@@ -313,10 +313,10 @@ impl Dyn {
     }
 }
 
-/// `glyd-engine draftcheck CASE [--level L] [--k K] [--tokens N] [--split CUT,.. --devices GPU,..]`: a family's draft head on the executor (`lower::draft_head`), on its random case with its
-/// MTP layer: CASE `qwen4x` (`logits::qwen4x_mtp_random`: the `qwen4x` case's model to the bit and its head of the model's streams), `glm-dsa` and
-/// `glm-dsa-f8` (`logits::glm_dsa_mtp_random`: those cases' models to the bit, bf16 and as released in FP8, and their joined head: a latent attention with an
-/// indexer of its own and the experts). For a short prompt and one past two chunks: (1) the drafted greedy generation against the model alone, N tokens:
+/// `glyd-engine draftcheck CASE [--level L] [--k K] [--tokens N] [--split CUT,.. --devices GPU,..]`: a family's draft head on the executor (`lower::draft_head`),
+/// on its random case with its MTP layer: CASE `qwen4x` (`logits::qwen4x_mtp_random`: the `qwen4x` case's model to the bit and its head of the model's
+/// streams), `glm-dsa` and `glm-dsa-f8` (`logits::glm_dsa_mtp_random`: those cases' models to the bit, bf16 and as released in FP8, and their joined head: a
+/// latent attention with an indexer of its own and the experts). For a short prompt and one past two chunks: (1) the drafted greedy generation against the model alone, N tokens:
 /// every token and every one of its rows of logits the same bits (the round's verify rows are the steps'), the drafts and how many were kept said; (2)
 /// the head held to the CPU reference of the kinds (`RefMtp::step_streams`, `RefMtp::step`) on the states and tokens it read: each of its passes' last row
 /// against the reference's on the head's own choices (its experts, its indexer's picks), at the bound the family is held to (the case's fixture's,

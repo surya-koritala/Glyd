@@ -247,10 +247,10 @@ pub fn gpus(a: &crate::args::Args) -> Result<Vec<i32>> {
 
 /// Where `qwenserve` cuts the model's layers over `gpus` (more than one): `--split CUT,..` (the first layer of each part after the first) where given, else
 /// the planner's rule for an expert cache (`split::places_plan`: the layers in order, every one with the same places, the most that fit), over each layer's
-/// always-on matrices at the layout (the checkpoint's tensors but the routed experts, at the layout's share of their bf16 bytes: an estimate), the pack's
-/// place, and each GPU's free memory (shared by the parts named on it) less a part's share of the sequences' room and its scratch. The places themselves are
-/// `--places N` a layer for every part, else what each part's GPU has free after its own matrices at the load (`load_cached_stage`), which a GPU named twice
-/// cannot share: there `--places` is asked for. The cuts and each part's GPU (fewer where one holds it all).
+/// always-on matrices (the checkpoint's tensors but the routed experts, at the layout's share of their bf16 bytes, the tables of n-grams at theirs: an
+/// estimate), the pack's place, and each GPU's free memory (shared by the parts named on it) less a part's share of the sequences' room and its scratch. The
+/// places themselves are `--places N` a layer for every part, else what each part's GPU has free after its own matrices at the load (`load_cached_stage`),
+/// which a GPU named twice cannot share: there `--places` is asked for. The cuts and each part's GPU (fewer where one holds it all).
 fn parts(snap: &Path, k: &Caching, o: &Opts, gpus: &[i32], a: &crate::args::Args) -> Result<(Vec<usize>, Vec<i32>)> {
     use crate::ffi::Error;
     let c = crate::qwen4x::ConfigQx::load(snap)?;
@@ -278,9 +278,14 @@ fn parts(snap: &Path, k: &Caching, o: &Opts, gpus: &[i32], a: &crate::args::Args
     }
     let place = (0..c.layers).map(|l| pack.place_bytes(l)).max().unwrap_or(1) as u64;
     let kept = (0..c.layers).filter_map(|l| pack.kept(l).map(<[usize]>::len)).min().unwrap_or(1);
-    let (dense, base) = super::split::layer_bytes_where(snap, c.layers, 100, bf16_pct(o.layout), &|n| !n.contains(".mlp.experts."))?;
     let d = lowered(snap, o.ctx + o.chunk + 16)?;
-    let (scratch, all) = (3u64 << 29, reserve_for(&d, k.users, &Stage::whole(c.layers)));
+    let whole = Stage::whole(c.layers);
+    // (the tables of n-grams are held as saved, at their bf16 bytes; the routed experts are the pack's)
+    let saved: std::collections::HashSet<&str> = held_as_saved(&d, &whole).into_iter().flat_map(|k| d.mats[k].members.iter().map(String::as_str)).collect();
+    let bytes = |pct: u64, keep: &dyn Fn(&str) -> bool| super::split::layer_bytes_where(snap, c.layers, 100, pct, keep);
+    let (packed, base) = bytes(bf16_pct(o.layout), &|n| !n.contains(".mlp.experts.") && !saved.contains(n))?;
+    let dense: Vec<u64> = packed.iter().zip(bytes(100, &|n| saved.contains(n))?.0).map(|(a, b)| a + b).collect();
+    let (scratch, all) = (3u64 << 29, reserve_for(&d, k.users, &whole));
     let room = gpus
         .iter()
         .map(|&g| {
