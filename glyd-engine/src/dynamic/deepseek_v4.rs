@@ -539,7 +539,8 @@ fn experts(x: &ExpertsAt, ml: &MoeLoad, d: usize, pack: PackFn, dense: DenseFn) 
                     packed: ju.tag == glyd_gpu::pack::FP4R_TAG,
                     act: crate::cpu_fp4::Act::Release { lim: limit.unwrap_or(f32::INFINITY), fp8: x.sim },
                 });
-                let (u, dd, cache) = crate::tiering::cached_stacks(&ju, &jd, cg.places, st, l, x.dev.ordinal, half)?;
+                let (u, dd, cache) = crate::tiering::cached_stacks(&ju, &crate::moe_rows::DownHost::Block(jd), cg.places, st, l, x.dev.ordinal, half)?;
+                let Down::Block(dd) = dd else { return err("DeepSeek-V4's second matrices in a row layout") };
                 tiered = Some(cache);
                 (u, dd)
             }

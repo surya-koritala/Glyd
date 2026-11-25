@@ -3331,7 +3331,7 @@ pub mod sizing {
     /// The expert cache that `budget` bytes of the GPU's memory buy for the model `c` at `level`: places a layer for each of its mixture-of-experts layers, as many as fit (all of a layer's experts at most); None where
     /// fewer than `least` fit.
     pub fn cache_plan(c: &ConfigNemotronH, level: Layout, budget: u64, least: usize) -> crate::ffi::Result<Option<CachePlan>> {
-        let (layers, experts, expert_bytes) = (c.layers_of(NhKind::Moe), c.moe.experts, crate::moe_nh::expert_bytes(c, level)?);
+        let (layers, experts, expert_bytes) = (c.layers_of(NhKind::Moe), c.moe.experts, c.expert_bytes(level)?);
         Ok(places_for(budget, layers, expert_bytes, experts, least).map(|slots| CachePlan {
             layers,
             experts,
@@ -3795,7 +3795,7 @@ pub mod sizing {
         gpu: &str,
     ) -> Result<(usize, CachePlan), String> {
         let (layers, experts, k) = (cfg.layers_of(NhKind::Moe), cfg.moe.experts, cfg.moe.top_k);
-        let each = crate::moe_nh::expert_bytes(cfg, layout).map_err(|e| e.msg)?;
+        let each = cfg.expert_bytes(layout).map_err(|e| e.msg)?;
         let experts_bytes = (layers * experts) as u64 * each;
         let ctx = ctx.unwrap_or(LOSSY_CTX).min(cfg.max_pos.max(LOSSY_MIN_CTX));
         // (the plan's weights are at `bits` a weight, a little over the experts' exact bytes: the rest of the model is taken as what is left)
@@ -3816,7 +3816,7 @@ pub mod sizing {
         let disk = layout == Layout::Hummingbird;
         let ram = held_in_memory(experts_bytes, asked_host, host);
         let least_ram = if disk { (layers * 2 * k) as u64 * each } else { experts_bytes };
-        let Some(plan) = crate::moe_nh::cache_plan(cfg, layout, budget, least).map_err(|e| e.msg)?.filter(|p| p.gpu_bytes() + rest <= free) else {
+        let Some(plan) = cache_plan(cfg, layout, budget, least).map_err(|e| e.msg)?.filter(|p| p.gpu_bytes() + rest <= free) else {
             return Err(format!(
                 "with its experts in the computer's memory it needs at least {} of GPU memory (and {} of the computer's)",
                 gib(need),

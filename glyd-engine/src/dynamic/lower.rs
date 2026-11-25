@@ -921,7 +921,7 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
 }
 
 /// Nemotron-H (Nemotron 3 Super, Nemotron 3.5 Lightning): a block a layer, Mamba-2, attention without a positional encoding, or a mixture of experts (its block of
-/// experts is moe_nh.rs's); every layer x + mixer(norm(x)), the final norm on the last row; stage `st` of a model split across GPUs. Every matrix and small
+/// experts is the Moe kind's, `experts::block`); every layer x + mixer(norm(x)), the final norm on the last row; stage `st` of a model split across GPUs. Every matrix and small
 /// tensor the operations use is named from the description's roles, in the order they index them (`dynamic::nemotron::describe`'s), sized by the kinds'
 /// widths: a layer's norm, then a Mamba-2 layer's convolution's weight and bias, A_log, D, dt_bias and gated norm; the final norm. Matrices: a Mamba-2 layer's
 /// in and out products, an attention layer's q, k and v as one and o; the embedding, then the head where it is not the embedding. A layer's experts are its

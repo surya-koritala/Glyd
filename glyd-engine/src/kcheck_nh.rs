@@ -12,7 +12,6 @@ use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result, Words};
 use crate::kcheck::top_vs_row;
 use crate::kern::{KernMamba2, SsdWs, MAMBA2_HEAD, MAMBA2_STATE};
-use crate::moe_nh::factory;
 use crate::nemotron::{pack_layout, ConfigNemotronH, NhKind};
 use crate::offload::{CachePlan, HostMemory, Mode, Offload};
 use crate::qwen35::Pack35;
@@ -183,7 +182,7 @@ pub fn layers(dir: &Path, outd: &Path) -> Result<()> {
     let hid = cfg.hidden;
     let total = xb.len() / 2 / hid;
     let chunk = get(&spec, "chunk").unwrap_or(512);
-    let make = factory(level_of(get(&spec, "level"))?);
+    let level = level_of(get(&spec, "level"))?;
     let x_words: Vec<u16> = xb.as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes(*b)).collect();
     // (a layer is loaded once for each way a case runs it: a graph for single rows or not)
     let mut loaded: std::collections::HashMap<(usize, bool), crate::dynamic::Dyn> = std::collections::HashMap::new();
@@ -233,7 +232,7 @@ pub fn layers(dir: &Path, outd: &Path) -> Result<()> {
             std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
             std::collections::hash_map::Entry::Vacant(v) => {
                 let o = crate::dynamic::Opts { ctx: total + 64, chunk, graph, device: 0, layout: None };
-                v.insert(crate::dynamic::nemotron::load_with(dir, &o, &make, Stage { layers: (l, l + 1), first: false, last: false })?)
+                v.insert(crate::dynamic::nemotron::load_cached(dir, &o, level, None, Stage { layers: (l, l + 1), first: false, last: false })?)
             }
         };
         e.reset()?;
@@ -294,12 +293,9 @@ pub fn toy(dir: &Path, outd: &Path, cache: Option<(&str, Offload)>) -> Result<()
         let o = crate::dynamic::Opts { ctx: total + 16, chunk: 128, graph, device: 0, layout: None };
         let store = crate::offload::ExpertStore::new();
         store.set_offload(offload[0]);
-        let make: Box<dyn Fn(usize, &ConfigNemotronH, &Checkpoint, Layout) -> Result<Box<dyn crate::kern_nh::MoeBlock>>> = match places {
-            Some(plan) => Box::new(crate::moe_nh::factory_cached(level, plan.slots, &store)),
-            None => Box::new(factory(level)),
-        };
         let cfg = ConfigNemotronH::load(dir)?;
-        let mut e = crate::dynamic::nemotron::load_with(dir, &o, &*make, crate::dynamic::Stage::whole(cfg.layers))?;
+        let mut e =
+            crate::dynamic::nemotron::load_cached(dir, &o, level, places.as_ref().map(|p| (p.slots, &store)), crate::dynamic::Stage::whole(cfg.layers))?;
         if graph != e.has_graph() {
             return err(format!("the decode graph was asked for: {graph}, the engine has one: {}", e.has_graph()));
         }
@@ -376,7 +372,7 @@ pub fn cache_for(spec: Option<&str>, dir: &Path, level: Layout, cfg: &ConfigNemo
         Some(g) => {
             let gib: f64 =
                 g.parse().ok().filter(|v: &f64| v.is_finite() && *v > 0.0).ok_or_else(|| Error(format!("--expert-cache {g}: not a number of GiB")))?;
-            let plan = crate::moe_nh::cache_plan(cfg, level, (gib * (1u64 << 30) as f64) as u64, cfg.moe.top_k)?;
+            let plan = crate::plan::sizing::cache_plan(cfg, level, (gib * (1u64 << 30) as f64) as u64, cfg.moe.top_k)?;
             Ok(Some(plan.ok_or_else(|| Error(format!("--expert-cache {g}: fewer than {} experts a layer fit", cfg.moe.top_k)))?))
         }
     }
@@ -498,7 +494,7 @@ pub fn logits_within(got: &[u16], want: &[u16], positions: usize, bound: f32) ->
 /// and a run is held to `logits_within` the run with every expert on the GPU: every logit within two places of bf16 (2^-6) of the largest, the token it picks within that of the best. The host must have computed
 /// pairs in a cache of fewer places than experts, and in `cpu` have started copies behind them (`promoted`).
 pub fn offload(dir: &Path, outd: &Path, slots: &[usize], host: Option<Offload>, memory: &[u64]) -> Result<bool> {
-    use crate::moe_nh::factory_cached;
+    use crate::dynamic::nemotron::load_cached;
     use crate::offload::ExpertStore;
     let tolerant = host.is_some_and(|o| o.mode != Mode::Copy);
     let t = nums(outd, "toy.txt")?;
@@ -511,7 +507,10 @@ pub fn offload(dir: &Path, outd: &Path, slots: &[usize], host: Option<Offload>, 
     }
     // (the bytes of all the directory's experts, which a budget is a share of)
     let all_experts = match &manifest {
-        Some((Layout::Hummingbird, m)) if !memory.is_empty() => crate::moe_hb::experts_bytes(m, &ConfigNemotronH::load(dir)?)?,
+        Some((Layout::Hummingbird, m)) if !memory.is_empty() => {
+            let c = ConfigNemotronH::load(dir)?;
+            crate::moe_hb::experts_bytes(m, &(0..c.layers).filter(|&l| c.kinds[l] == NhKind::Moe).map(|l| c.hb_names(l)).collect::<Vec<_>>())?
+        }
         _ => 0,
     };
     let level = if hummingbird { Layout::Hummingbird } else { level_of(t.get(2).map(|&b| b as usize))? };
@@ -603,13 +602,12 @@ pub fn offload(dir: &Path, outd: &Path, slots: &[usize], host: Option<Offload>, 
     for (what, chunk, prompt, steps) in &runs {
         println!("== {what}");
         let o = |graph| crate::dynamic::Opts { ctx: prompt.len() + steps.len() + 16, chunk: *chunk, graph, device: 0, layout: None };
-        let make = factory(level);
         // every expert on the GPU, the decode step launched one kernel at a time: the reference every cache below is held to
-        let mut e = crate::dynamic::nemotron::load_with(dir, &o(false), &make, whole(&cfg))?;
+        let mut e = load_cached(dir, &o(false), level, None, whole(&cfg))?;
         println!("all there: {}", e.describe());
         let reference = run(&mut e, prompt, steps, None)?;
         drop(e);
-        let mut g = crate::dynamic::nemotron::load_with(dir, &o(true), &make, whole(&cfg))?;
+        let mut g = load_cached(dir, &o(true), level, None, whole(&cfg))?;
         if !g.has_graph() {
             println!("FAIL all there: no decode graph was captured");
             ok = false;
@@ -621,8 +619,7 @@ pub fn offload(dir: &Path, outd: &Path, slots: &[usize], host: Option<Offload>, 
             if let Some(o) = host {
                 store.set_offload(o);
             }
-            let make = factory_cached(level, n, &store);
-            let mut e = crate::dynamic::nemotron::load_with(dir, &o(true), &make, whole(&cfg))?;
+            let mut e = load_cached(dir, &o(true), level, Some((n, &store)), whole(&cfg))?;
             let (experts, layers) = (cfg.moe.experts, cfg.layers_of(NhKind::Moe) * if hummingbird { 2 } else { 1 });
             println!("{n} places a layer of {experts}: {}", e.describe());
             // (a graph where every expert is on the GPU alone: blocks that read the router's choices on the host are not captured)
@@ -730,16 +727,14 @@ fn on_disk(
     (mode, budget, all): (Offload, u64, u64),
     run: Run,
 ) -> Result<bool> {
-    use crate::moe_nh::factory_cached;
     let mut results = Vec::new();
     for bytes in [None, Some(budget)] {
         let store = crate::offload::ExpertStore::new();
         store.set_offload(mode);
         store.hold_costs();
         store.set_host_memory(bytes.map(|bytes| HostMemory { bytes, total: all }));
-        let make = factory_cached(level, n, &store);
         let cfg = ConfigNemotronH::load(dir)?;
-        let mut e = crate::dynamic::nemotron::load_with(dir, o, &make, crate::dynamic::Stage::whole(cfg.layers))?;
+        let mut e = crate::dynamic::nemotron::load_cached(dir, o, level, Some((n, &store)), crate::dynamic::Stage::whole(cfg.layers))?;
         let (experts, layers) = (cfg.moe.experts, cfg.layers_of(NhKind::Moe) * 2);
         let mut passes = Vec::new();
         for (pass, hints) in [("first pass", false), ("second pass, the cache warm", false), ("with hints between the steps", true)] {
@@ -784,7 +779,13 @@ pub fn disk(dir: &Path, reads: usize, depth: usize) -> Result<()> {
     let c = ConfigNemotronH::load(dir)?;
     let ck = io(Checkpoint::open(dir))?;
     let layers: Vec<usize> = (0..c.layers).filter(|&l| c.kinds[l] == NhKind::Moe).collect();
-    let disks = layers.iter().map(|&l| Ok(Arc::new(HbDisk::open(&ck, &c, l, &index_layer(&manifest, &c, l)?)?))).collect::<Result<Vec<_>>>()?;
+    let disks = layers
+        .iter()
+        .map(|&l| {
+            let x = c.hb_names(l);
+            Ok(Arc::new(HbDisk::open(&ck, &x, &index_layer(&manifest, &x)?)?))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let mut x = 0x9E37_79B9_7F4A_7C15u64;
     let mut next = move || {
         x ^= x << 13;
@@ -1049,8 +1050,10 @@ mod tests {
         assert!(e.contains("not a glyd-v7 directory at the Hummingbird level"), "{e}");
         // the tiny directory's experts: 6 at three bits and 10 at two in each of three layers
         let (_, m) = v7_manifest(&out).unwrap().unwrap();
-        let total = crate::moe_hb::experts_bytes(&m, &c).unwrap();
-        assert_eq!(total, 3 * (6 * crate::moe_hb::expert_bytes_at(&c, 3).unwrap() + 10 * crate::moe_hb::expert_bytes_at(&c, 2).unwrap()));
+        let layers: Vec<_> = (0..c.layers).filter(|&l| c.kinds[l] == NhKind::Moe).map(|l| c.hb_names(l)).collect();
+        let total = crate::moe_hb::experts_bytes(&m, &layers).unwrap();
+        let at = |bits| crate::moe_hb::HbPlace::new(bits, c.moe.inter, c.moe.latent).unwrap().bytes();
+        assert_eq!(total, 3 * (6 * at(3) + 10 * at(2)));
         let mut plan = CachePlan { layers: 3, experts: 16, slots: 4, expert_bytes: total / 48, in_place: true, ram: total };
         let args = |extra: &[&str]| crate::args::Args::from(["generate".to_string(), "x".to_string()].into_iter().chain(extra.iter().map(|s| s.to_string())));
         host_budget(&args(&["--host-memory", "0.0003"]), &mut plan).unwrap();
