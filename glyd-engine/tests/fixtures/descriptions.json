@@ -202,7 +202,7 @@
   "runtime/glm53_model.json": {
     "blocks": 6,
     "tensors": 106,
-    "kinds": "8900d3cff626270e",
+    "kinds": "baf29761e58110b8",
     "weights": "80edc8fdd35186b0",
     "plan": "86e0271d8683bd94",
     "family": "refused: m is a GlmMoeDsaForCausalLM model, and this engine runs Qwen3 models so far"

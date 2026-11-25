@@ -623,8 +623,8 @@ impl Backend for Ref {
 
     /// Every kind, in any format a source decodes to f32, at the speed of plain Rust (DeepSeek-V4's compressed attention too: `comp.rs`; a latent
     /// attention's indexer: `mla.rs`; Condor's on GQA: `attention.rs`; its n-gram embedding: `ngram.rs`). The match names each kind, so that a kind added
-    /// to `KindRef` is decided here. (A gated-form indexer on plain attention, and GLM's `shared` indexer that reuses the previous layer's picks, are not in
-    /// the reference: such a layer says so where it would pick.)
+    /// to `KindRef` is decided here. (A gated-form indexer on plain attention is not in the reference: such a layer says so where it would pick. A latent
+    /// attention's `shared` indexer attends to the picks of the layer before it, which the model lends: `RefModel::share_into`.)
     fn supports(&self, kind: &KindRef, _: &Format) -> Support {
         match kind {
             KindRef::Attention
