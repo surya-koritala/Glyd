@@ -27,7 +27,7 @@
     "blocks": 90,
     "tensors": 74001,
     "kinds": "d22f9b20c676bb3c",
-    "weights": "d959d3c88c30f995",
+    "weights": "a9f5fc3dc31bc783",
     "plan": "3303afecd72e4c0d",
     "family": "Glm"
   },
@@ -35,7 +35,7 @@
     "blocks": 10,
     "tensors": 287,
     "kinds": "0d1648187cbecbdb",
-    "weights": "d99404eef9c9fc4c",
+    "weights": "960dd97a1611e84b",
     "plan": "c7101a664acb48dd",
     "family": "Glm"
   },
@@ -43,7 +43,7 @@
     "blocks": 16,
     "tensors": 787,
     "kinds": "4183faaeb2304c38",
-    "weights": "2851afdc5a846cfc",
+    "weights": "b946d4939ed131f8",
     "plan": "23566ee950a2eee9",
     "family": "Glm"
   },
@@ -203,7 +203,7 @@
     "blocks": 6,
     "tensors": 106,
     "kinds": "baf29761e58110b8",
-    "weights": "80edc8fdd35186b0",
+    "weights": "95e1bb9c29503b78",
     "plan": "ecbb696f1cab49b6",
     "family": "refused: m is a GlmMoeDsaForCausalLM model, which this engine has no description of yet"
   },
@@ -211,7 +211,7 @@
     "blocks": 8,
     "tensors": 184,
     "kinds": "8e50c90554f0b7be",
-    "weights": "6e99b4d27f83c141",
+    "weights": "01f78ecd9cef5ef8",
     "plan": "5d1e28ec859c6d30",
     "family": "Glm"
   },

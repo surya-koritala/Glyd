@@ -13,6 +13,12 @@ fn model(case: &str, tol: f32) {
     let mut d = describe(&f.j["config"]).unwrap_or_else(|e| panic!("{case}: {}", e.msg));
     let want: BTreeSet<String> = f.j["tensors"].as_object().unwrap().keys().cloned().collect();
     assert_eq!(d.names(), want, "{case}: the weight map");
+    // (each shape the description gives is the tensor's: a loader by the kinds and a random model read them)
+    for (n, s) in &d.shapes {
+        let got: Vec<usize> =
+            f.j["tensors"][n]["shape"].as_array().map(|a| a.iter().filter_map(|x| x.as_u64()).map(|x| x as usize).collect()).unwrap_or_default();
+        assert_eq!(&got, s, "{case}: the shape of {n}");
+    }
     // (transformers in float32: the attention's bf16 rounding points, which the description gives as the family's engine rounds, off)
     d.desc.f32_attention();
     let src = |n: &str| f.j["tensors"].get(n).map(|_| f.tensor(n));
@@ -23,6 +29,16 @@ fn model(case: &str, tol: f32) {
 }
 
 const MODEL_TOL: f32 = 1e-5;
+
+/// The full-size GLM layout's description gives every tensor it names a shape (what a loader by the kinds and a random model of the layout read); `model`
+/// holds each to the recorded checkpoint's.
+#[test]
+fn glm53_model_shapes_every_tensor() {
+    let f = Fixture::load("glm53_model");
+    let d = describe(&f.j["config"]).unwrap_or_else(|e| panic!("{}", e.msg));
+    let missing: Vec<String> = d.names().into_iter().filter(|n| !d.shapes.contains_key(n)).collect();
+    assert!(missing.is_empty(), "no shape for {missing:?}");
+}
 
 /// The full-size GLM family's shape with an indexer that drops tokens and a layer whose indexer is shared: the recorded fixture's model, its
 /// `index_topk` cut to 4 of its prompt's 7 tokens and its second layer's indexer made `shared`. The reference's model lends the first layer's picks
