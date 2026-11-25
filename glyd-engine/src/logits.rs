@@ -1200,39 +1200,88 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
 pub const LEVEL_KL: [(&str, f64, f64); 3] = [("kestrel", 0.006, 0.015), ("swift", 0.025, 0.05), ("wren", 0.09, 0.14)];
 pub const LEVEL_KL_GEMMA4: [(&str, f64, f64); 3] = [("kestrel", 0.045, 0.21), ("swift", 0.075, 0.21), ("wren", 0.19, 0.46)];
 
-/// `levelcheck [CASE...] [--level L] [--scratch DIR]`: each family with lossy levels (Qwen3.5, Gemma 4, Nemotron-H: Nemotron 3.5
-/// Lightning's layout) on its random model at penguin and at each lossy level, the same tokens as its R7 fixture, and the KL of the
-/// lossy level's rows from penguin's against `LEVEL_KL` (`LEVEL_KL_GEMMA4` for Gemma 4). Exit 1 where one is past its threshold.
+/// The hummingbird level's KL thresholds from the lossless one (mean, max over rows), per mixture-of-experts family's random model: the
+/// model's routed experts coded at 3 and 2 bits by use (src/hb_pack.rs) from a corpus pass over made-up documents (src/hb_usage.rs,
+/// `synthetic`), every other matrix as released. Not measured yet: a NaN holds nothing, so each of these fails, printing what it measured,
+/// until its first run on a GPU sets it (about twice that run, as Gemma 4's above).
+pub const LEVEL_KL_HB: [(&str, f64, f64); 4] =
+    [("kimi", f64::NAN, f64::NAN), ("glm", f64::NAN, f64::NAN), ("deepseek-v4", f64::NAN, f64::NAN), ("muse", f64::NAN, f64::NAN)];
+
+/// The families held at the block levels of every weight (kestrel, swift, wren: `LEVEL_KL`); `LEVEL_KL_HB`'s are held at hummingbird.
+const LEVEL_BLOCK_CASES: [&str; 3] = ["qwen35", "gemma4", "nemotron-h"];
+
+/// A mixture-of-experts case's model in `dir` with every matrix as `dir` holds it: the release's lossless, or a hummingbird directory's
+/// experts in their codes. (GLM-5.3-Flash's logits case runs its experts at a block level; here they are lossless, as kindcheck loads them.)
+fn moe_as_held(id: &str, dir: &Path) -> Result<Box<dyn Run>> {
+    match id {
+        "glm" => boxed(crate::dynamic::glm::load(dir, &dyn_opts(Some(Layout::Tiered)), Layout::Tiered)),
+        _ => (find_case(id)?.engine)(dir, "penguin"),
+    }
+}
+
+/// The model in `dir` at the hummingbird level in `out`, as its two commands make it (`calibrate-experts --synthetic`, then
+/// `pack --layout hummingbird --usage`): each expert's use counted on this GPU over made-up documents, its rows coded from the counts.
+fn hummingbird_dir(dir: &Path, out: &Path) -> Result<()> {
+    if out.join("glyd.json").exists() {
+        return Ok(());
+    }
+    let (model, usage) = (dir.to_string_lossy(), out.with_extension("usage.json"));
+    crate::hb_usage::run_with(&model, &usage, 512, &[0], &[], 256, true)?;
+    crate::hb_pack::run(&model, out, std::thread::available_parallelism().map_or(8, |n| n.get()), &usage)
+}
+
+/// `levelcheck [CASE...] [--level L] [--scratch DIR]`: each family on its random model at penguin and at each lossy level it runs, the
+/// same tokens as its R7 fixture, and the KL of the lossy level's rows from penguin's against the level's threshold: Qwen3.5, Gemma 4 and
+/// the state-space case at kestrel, swift and wren (`LEVEL_KL`, `LEVEL_KL_GEMMA4` for Gemma 4); Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and
+/// Muse Spark at hummingbird (`LEVEL_KL_HB`, the directory made here). Exit 1 where one is past its threshold, or does not load: a level
+/// that does not run is not one within its threshold.
 pub fn level_check(a: &crate::args::Args) -> Result<()> {
     let want: Vec<&str> = a.pos.iter().skip(1).map(String::as_str).collect();
-    let ids: Vec<&str> = ["qwen35", "gemma4", "nemotron-h"].into_iter().filter(|c| want.is_empty() || want.contains(c)).collect();
+    let all: Vec<&str> = LEVEL_BLOCK_CASES.iter().copied().chain(LEVEL_KL_HB.iter().map(|x| x.0)).collect();
+    let ids: Vec<&str> = all.iter().copied().filter(|c| want.is_empty() || want.contains(c)).collect();
     if !want.is_empty() && ids.len() != want.len() {
-        return err("cases: qwen35, gemma4, nemotron-h");
+        return err(format!("cases: {}", all.join(", ")));
     }
     let (fixtures, scratch, only_level) = (fixtures_dir(a), Scratch::new(a)?, a.flag("level"));
     let mut failed = Vec::new();
     for id in ids {
+        let hb = LEVEL_KL_HB.iter().find(|x| x.0 == id);
+        let levels: Vec<(&str, f64, f64)> = match hb {
+            Some(&(_, mean, max)) => vec![("hummingbird", mean, max)],
+            None if id == "gemma4" => LEVEL_KL_GEMMA4.to_vec(),
+            None => LEVEL_KL.to_vec(),
+        };
+        let levels: Vec<(&str, f64, f64)> = levels.into_iter().filter(|l| only_level.is_none_or(|o| o == l.0)).collect();
+        if levels.is_empty() {
+            continue;
+        }
         let c = find_case(id)?;
         let dir = model_dir(&c, &scratch.dir)?;
         let fx = Fixture::read(&fixture_files(&fixtures, id)?[0])?;
         let engine = c.engine;
-        let mut base = match engine(&dir, "penguin") {
+        let lossless = if hb.is_some() { moe_as_held(id, &dir) } else { engine(&dir, "penguin") };
+        let mut base = match lossless {
             Ok(r) => r,
             Err(e) => {
-                println!("SKIP {id:12} penguin, the base: {}", e.msg);
+                println!("FAIL {id:12} penguin, the base, does not load: {}", e.msg);
+                failed.push(format!("{id} at penguin"));
                 continue;
             }
         };
         let base_rows = drive(base.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
         drop(base);
-        for (level, mean_bound, max_bound) in if id == "gemma4" { LEVEL_KL_GEMMA4 } else { LEVEL_KL } {
-            if only_level.is_some_and(|l| l != level) {
-                continue;
-            }
-            let mut run = match engine(&dir, level) {
+        for (level, mean_bound, max_bound) in levels {
+            let lossy = if hb.is_some() {
+                let out = scratch.dir.join(format!("{id}-hummingbird"));
+                hummingbird_dir(&dir, &out).and_then(|()| moe_as_held(id, &out))
+            } else {
+                engine(&dir, level)
+            };
+            let mut run = match lossy {
                 Ok(r) => r,
                 Err(e) => {
-                    println!("SKIP {id:12} {level:8} {}", e.msg);
+                    println!("FAIL {id:12} {level:8} does not load: {}", e.msg);
+                    failed.push(format!("{id} at {level}"));
                     continue;
                 }
             };
