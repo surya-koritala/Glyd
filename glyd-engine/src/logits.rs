@@ -861,7 +861,7 @@ pub fn deepseek_v41_random(out: &Path) -> Result<()> {
 }
 
 /// The compressed vocabulary DeepSeek-V4.1's Engram hashes (`kinds::NgramForm::Engram`): the model directory's `engram_token_map.json` (a list, the compressed id of
-/// each token), which the loader makes from the tokenizer; None where the directory has none.
+/// each token), which `deepseek_v41_random` writes for the random model (no loader makes one from a release's tokenizer); None where the directory has none.
 pub fn engram_token_map(dir: &Path) -> Result<Option<Vec<f32>>> {
     let p = dir.join("engram_token_map.json");
     let Ok(text) = std::fs::read_to_string(&p) else { return Ok(None) };
@@ -1075,7 +1075,17 @@ fn fixtures_dir(a: &crate::args::Args) -> PathBuf {
     a.flag("fixtures").map(PathBuf::from).unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits"))
 }
 
-/// `logitscheck [CASE...] [--fixtures DIR] [--scratch DIR] [--cpu-ref] [--level L]`: each case's engine (or CPU reference) against its fixture at each level the fixture bounds. Exit 1 where one is not within.
+/// What a run that compared nothing for some cases says of them: each case with why (`none`: a failure, the case's fixtures being all another GPU generation's bits;
+/// `waits`: a case whose engine is not built, which the run names and does not hold).
+fn uncompared_lines(none: &[(String, String)], waits: &[String]) -> (Vec<String>, String) {
+    let failed = none.iter().map(|(c, why)| format!("{c}: nothing compared ({why})")).collect();
+    let said = if waits.is_empty() { String::new() } else { format!("; not compared, no engine yet: {}", waits.join(", ")) };
+    (failed, said)
+}
+
+/// `logitscheck [CASE...] [--fixtures DIR] [--scratch DIR] [--cpu-ref] [--level L]`: each case's engine (or CPU reference) against its fixture at each level the fixture bounds. Exit 1 where one is not within,
+/// and where a case had no fixture this GPU can be held to (every one of them another GPU generation's bits): a case with nothing compared is not one within its bounds.
+/// A case whose engine is not built yet is named in the last line as not compared.
 pub fn check(a: &crate::args::Args) -> Result<()> {
     let fixtures = fixtures_dir(a);
     let want: Vec<&str> = a.pos.iter().skip(1).map(String::as_str).collect();
@@ -1095,10 +1105,12 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     let (cpu, only_level) = (a.has("cpu-ref"), a.flag("level"));
     let scratch = Scratch::new(a)?;
     let (mut failed, mut ran) = (Vec::new(), 0usize);
+    let (mut none, mut waits): (Vec<(String, String)>, Vec<String>) = (Vec::new(), Vec::new());
     let t_all = std::time::Instant::now();
     let gpu = gpu_label().ok();
     for c in &all {
         let dir = model_dir(c, &scratch.dir)?;
+        let (ran_before, mut others, mut waiting) = (ran, Vec::new(), false);
         for path in fixture_files(&fixtures, c.id)? {
             let fx = Fixture::read(&path)?;
             if cpu && fx.gpu.is_some() {
@@ -1107,6 +1119,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
             if let (Some(want), Some(have)) = (&fx.gpu, &gpu) {
                 if want != have && !cpu {
                     println!("SKIP {:12} {}: its bits are {want}'s, this GPU is {have}", c.id, path.file_name().unwrap_or_default().to_string_lossy());
+                    others.push(want.clone());
                     continue;
                 }
             }
@@ -1123,6 +1136,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                         // (a family whose CPU reference stands before its engine: its fixture is the reference's, checked with --cpu-ref)
                         Err(e) if e.msg.contains(NOT_ON_EXECUTOR) => {
                             println!("SKIP {:12} {}: {}", c.id, lb.level, e.msg);
+                            waiting = true;
                             continue;
                         }
                         r => r?,
@@ -1159,10 +1173,27 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                 }
             }
         }
+        // (a case this run compared nothing for: its engine is not built, or every fixture it has is another GPU generation's bits)
+        if ran == ran_before && waiting {
+            waits.push(c.id.to_string());
+        } else if ran == ran_before && !others.is_empty() {
+            others.dedup();
+            println!(
+                "FAIL {:12} nothing compared: its fixtures are the bits of {}, this GPU is {} (logitsrecord {} --from engine --out {} records this generation's)",
+                c.id,
+                others.join(", "),
+                gpu.as_deref().unwrap_or("unknown"),
+                c.id,
+                fixtures.display()
+            );
+            none.push((c.id.to_string(), format!("its fixtures are the bits of {}", others.join(", "))));
+        }
     }
-    println!("{ran} comparisons in {:.1} s against {}", t_all.elapsed().as_secs_f64(), fixtures.display());
+    let (not_held, said) = uncompared_lines(&none, &waits);
+    failed.extend(not_held);
+    println!("{ran} comparisons in {:.1} s against {}{said}", t_all.elapsed().as_secs_f64(), fixtures.display());
     if failed.is_empty() {
-        println!("all logits within their bounds");
+        println!("all logits compared are within their bounds");
         Ok(())
     } else {
         println!("OFF: {}", failed.join(", "));
@@ -1662,6 +1693,17 @@ mod tests {
             long: vec![],
             rows: rows.iter().map(|r| Row::from_logits(r).unwrap()).collect(),
         }
+    }
+
+    /// A case logitscheck compared nothing for is a failure where its fixtures are all another GPU generation's bits, and is named where its engine is not built:
+    /// neither reads as a case within its bounds.
+    #[test]
+    fn a_case_with_nothing_compared_is_not_a_pass() {
+        let (failed, said) = uncompared_lines(&[], &[]);
+        assert!(failed.is_empty() && said.is_empty());
+        let (failed, said) = uncompared_lines(&[("gemma4".into(), "its fixtures are the bits of sm89".into())], &["deepseek-v41".into()]);
+        assert_eq!(failed, vec!["gemma4: nothing compared (its fixtures are the bits of sm89)".to_string()]);
+        assert!(said.contains("not compared") && said.contains("deepseek-v41"), "{said}");
     }
 
     #[test]
@@ -2243,10 +2285,16 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
         s.release(&slots.concat())?;
         Ok(out)
     };
-    // (15 rows in all: the products' kernels of a pass alone, so every bit is required; then 74 rows, another kernel's sums, counted)
-    for lens in [&[7usize, 5, 3][..], &[37, 9, 23, 5]] {
-        let lens: Vec<usize> = lens.iter().copied().take(k.min(s.prefill_rows())).filter(|&l| l + 2 < window).collect();
+    // (15 rows in all: the products' kernels of a pass alone, so every bit is required; then 56 rows, which a pass of 64 holds, and 74: another kernel's sums, counted.
+    // A set this step cannot run is said, not passed over: a run that left one out did not hold it)
+    for set in [&[7usize, 5, 3][..], &[23, 9, 19, 5], &[37, 9, 23, 5]] {
+        let lens: Vec<usize> = set.iter().copied().take(k.min(s.prefill_rows())).filter(|&l| l + 2 < window).collect();
         if lens.len() < 2 || lens.iter().sum::<usize>() > chunk {
+            println!(
+                "SKIP prompts of {set:?} in one pass: {} of them fit ({k} sequences, {} prompts a pass, a sequence of {window}), and a pass holds {chunk} rows",
+                lens.len(),
+                s.prefill_rows()
+            );
             continue;
         }
         let rows: usize = lens.iter().sum();
@@ -3062,6 +3110,11 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         // run short, no page is made void and no request fails)
         if std::env::var_os("GLYD_KV12_POOL").is_some() && (back > 0 || s.stats.ended_lost > 0) {
             println!("FAIL small pools (GLYD_KV12_POOL): a step taken back for a void page, or a request ended, where the newest sequence is to be paused");
+            fails += 1;
+        }
+        // (and the pools did run short: with no sequence sent back for room the run shows nothing of what a short pool does)
+        if std::env::var_os("GLYD_KV12_POOL").is_some() && resumed == 0 {
+            println!("FAIL small pools (GLYD_KV12_POOL): no sequence was sent back for room, so the pools never ran short and the run does not show what they do then");
             fails += 1;
         }
     }
