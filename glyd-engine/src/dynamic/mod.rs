@@ -6,6 +6,7 @@ pub mod attn;
 mod comp;
 pub mod deepseek_v4;
 pub mod dense;
+pub mod experts;
 pub mod gemma4;
 pub mod glm;
 pub mod kimi;

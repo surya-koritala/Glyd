@@ -672,6 +672,20 @@ pub fn qwen35_random(out: &Path) -> Result<()> {
     manifest_random(include_str!("../tests/fixtures/qwen35_tiny_manifest.json"), out, 0x2026_1120_0000_0007, false, "Qwen3.5-family")
 }
 
+/// A small model of Qwen3.8-2.4T-A95B's layout (`Qwen3_5MoeForCausalLM`; tests/fixtures/qwen35moe_tiny_config.json: its released config at 1024 wide and four layers, three
+/// Gated DeltaNet and a gated full-attention one, each followed by 32 experts of which a token takes 10 and the gated shared expert): every tensor of its description at its
+/// shape, its values by `manifest_random`'s rules for each kind of tensor.
+pub fn qwen35moe_random(out: &Path) -> Result<()> {
+    let text = include_str!("../tests/fixtures/qwen35moe_tiny_config.json");
+    let d = crate::runtime::describe::describe(&serde_json::from_str(text).map_err(|e| Error(e.to_string()))?)?;
+    let tensors = d
+        .names()
+        .into_iter()
+        .map(|n| d.shapes.get(&n).map(|s| json!([n, "BF16", s])).ok_or_else(|| Error(format!("the description has no shape for {n}"))))
+        .collect::<Result<Vec<Value>>>()?;
+    manifest_random(&json!({"config": text, "tensors": tensors}).to_string(), out, 0x2026_1124_0000_0333, false, "Qwen3.5-family mixture of experts")
+}
+
 /// A random model of a manifest's tensors (names, types and shapes from a real checkpoint's header, cut down), their values from a fixed seed by the rules of tools/qwen4x_ref.py for each kind of tensor.
 /// `dense_norms`: the norms' weights are the scales themselves (0.5 to 1.5) and not the (1 + w) of the other families (-0.5 to 0.5).
 fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, what: &str) -> Result<()> {
@@ -864,6 +878,14 @@ pub fn cases() -> Vec<Case> {
             weights: Weights::Random(qwen35_random),
             engine: qwen35_engine,
             cpu: None,
+            vocab: 4096,
+        },
+        Case {
+            id: "qwen35moe",
+            family: "Qwen3.5 family with experts (softmax-routed experts and a gated shared expert: Qwen3.8-2.4T-A95B's layout)",
+            weights: Weights::Random(qwen35moe_random),
+            engine: qwen35_engine,
+            cpu: Some(described_cpu),
             vocab: 4096,
         },
         Case {
@@ -1402,7 +1424,7 @@ pub fn record(a: &crate::args::Args) -> Result<()> {
         "source".into(),
         match from {
             // (Nemotron-H has no reference of its own: its description on the reference of the layer kinds)
-"cpu" if matches!(c.id, "nemotron-h" | "qwen4x" | "deepseek-v41") => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
+"cpu" if matches!(c.id, "nemotron-h" | "qwen4x" | "deepseek-v41" | "qwen35moe") => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
             "cpu" => format!(
                 "the CPU reference of src/{}_ref.rs, fp32 inside, on this case's random model (seed fixed in the generator)",
                 c.id.replace("deepseek-", "ds").replace('-', "")
@@ -1629,7 +1651,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
             let c = crate::gemma4::ConfigG4::load(dir)?;
             Dyn::new(dir, crate::dynamic::gemma4::lowered(dir, &c)?, None, o)?
         }
-        "qwen35" => crate::dynamic::qwen35::load(dir, o)?,
+        "qwen35" | "qwen35moe" => crate::dynamic::qwen35::load(dir, o)?,
         "qwen3" => crate::dynamic::dense::load(dir, o)?,
         "muse" => crate::dynamic::muse::load(dir, o)?,
         "kimi" => crate::dynamic::kimi::load(dir, o)?,
@@ -1639,7 +1661,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
         "nemotron" => crate::dynamic::nemotron::load(dir, o, level_layout(level)?.unwrap_or(Layout::Tiered))?,
         "deepseek-v4" => crate::dynamic::deepseek_v4::load(dir, o)?,
         "qwen4x" => crate::dynamic::qwen4x::load(dir, o)?,
-        other => return err(format!("{other}: gemma4, qwen35, qwen3, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
+        other => return err(format!("{other}: gemma4, qwen35, qwen35moe, qwen3, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
     })
 }
 
@@ -1656,6 +1678,7 @@ pub(crate) fn random_dyn_at(case: &str, level: &str, layout: Option<Layout>, tag
         match case {
             "gemma4" => gemma4_random(&dir)?,
             "qwen35" => qwen35_random(&dir)?,
+            "qwen35moe" => qwen35moe_random(&dir)?,
             "qwen3" => qwen3_random(&dir)?,
             "muse" => crate::muse_ref::random(&dir)?,
             "kimi" => crate::kimi_ref::random(&dir, 1, true, 8)?,
@@ -1663,7 +1686,7 @@ pub(crate) fn random_dyn_at(case: &str, level: &str, layout: Option<Layout>, tag
             "nemotron" => crate::kcheck_nh::random(&dir, 0, 16)?,
             "deepseek-v4" => crate::dsv4_ref::random(&dir, None)?,
             "qwen4x" => qwen4x_random(&dir)?,
-            other => return err(format!("{other}: gemma4, qwen35, qwen3, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
+            other => return err(format!("{other}: gemma4, qwen35, qwen35moe, qwen3, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
         }
         load_dyn(case, &dir, &o, level)
     })();

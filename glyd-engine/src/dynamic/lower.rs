@@ -630,7 +630,8 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
 
 /// Qwen3.5's layout (dense: Qwen3.5, 3.6 and 3.8 of 256-wide heads): pairs of blocks, a Gated DeltaNet or a gated full attention, then the SiLU MLP, the (1 + w)
 /// norms, the final norm on the last row. The matrices and small tensors are src/kern35.rs's loader's (`dynamic::qwen35::describe` indexes them in its order);
-/// stage `st` of a model split across GPUs.
+/// stage `st` of a model split across GPUs. A layer whose feed-forward is a mixture of experts (Qwen3.8-2.4T-A95B's: a softmax router, the gated shared expert)
+/// runs `Op::Moe` in the MLP's place, block k the stage's k-th such layer's (`dynamic::experts`), and names no MLP matrices.
 pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
     use super::qwen35::per_layer;
     use crate::qwen35::Kind;
@@ -642,9 +643,16 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
     let eps = m.blocks.first().map_or(1e-6, |b| b.norm_in.eps);
     let (mut lin, mut att) = (None, None);
     let mut kinds = Vec::with_capacity(layers);
+    // (each layer's feed-forward: the SiLU MLP, or a mixture of experts, its block the layer kind's: `dynamic::experts`)
+    let mut sparse = Vec::with_capacity(layers);
     for l in 0..layers {
-        if !matches!(m.blocks[2 * l + 1].body, Body::Ffn(Ffn::Mlp(_))) {
-            return err(format!("Qwen3.5: layer {l}'s second block is {:?}, not an MLP (a mixture of experts is not lowered yet)", m.blocks[2 * l + 1].body));
+        match &m.blocks[2 * l + 1].body {
+            Body::Ffn(Ffn::Mlp(_)) => sparse.push(false),
+            Body::Ffn(Ffn::Moe(e)) => {
+                super::experts::cfg(e, m.hidden, 0).map_err(|x| x.context(format!("Qwen3.5: layer {l}")))?;
+                sparse.push(true)
+            }
+            b => return err(format!("Qwen3.5: layer {l}'s second block is {b:?}, not an MLP or a mixture of experts")),
         }
         match &m.blocks[2 * l].body {
             Body::Mixer(Mixer::Linear(x)) => {
@@ -668,12 +676,18 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
     }
     let rope = att.rope.as_ref().ok_or_else(|| Error("Qwen3.5: attention with no rotary".into()))?;
     let rotary = 2 * rope.freqs;
-    let gate = role(&d.blocks[1], "gate").ok_or_else(|| Error("Qwen3.5: no MLP gate".into()))?;
-    let gate = match gate {
-        Source::Tensor(n) => n,
-        g => return err(format!("Qwen3.5: an MLP gate of {g:?}")),
+    // (the MLP's width, the first dense layer's: 0 where every layer's feed-forward is experts)
+    let inter = match sparse.iter().position(|&s| !s) {
+        Some(l) => {
+            let gate = match role(&d.blocks[2 * l + 1], "gate").ok_or_else(|| Error("Qwen3.5: no MLP gate".into()))? {
+                Source::Tensor(n) => n,
+                g => return err(format!("Qwen3.5: an MLP gate of {g:?}")),
+            };
+            d.shapes.get(gate).map(|s| s[0]).ok_or_else(|| Error(format!("Qwen3.5: no shape for {gate}")))?
+        }
+        None => 0,
     };
-    let inter = d.shapes.get(gate).map(|s| s[0]).ok_or_else(|| Error(format!("Qwen3.5: no shape for {gate}")))?;
+    let mut n_moe = 0;
     let (nq, nk, nv) = (att.heads, att.kv_heads, lin.v_heads);
     let (vd, cd) = (nv * lin.v_dim, 2 * lin.k_heads * lin.k_dim + nv * lin.v_dim);
     let full_w = 2 * nq * 256 + 2 * nk * 256;
@@ -702,15 +716,18 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
         for m in mixer.0 {
             mats.push(item(m.iter().map(|r| one(ar, r)).collect::<Result<_>>()?, &shape)?);
         }
-        mats.push(item(vec![one(fr, "gate")?, one(fr, "up")?], &shape)?);
-        mats.push(item(vec![one(fr, "down")?], &shape)?);
+        if !sparse[l] {
+            mats.push(item(vec![one(fr, "gate")?, one(fr, "up")?], &shape)?);
+            mats.push(item(vec![one(fr, "down")?], &shape)?);
+        }
         small.extend([one(ar, "norm_in")?, one(fr, "norm_in")?]);
         for r in mixer.1 {
             small.push(one(ar, r)?);
         }
         let (b, s0) = (n_mats, n_small);
         let (mm, nn) = per_layer(kind);
-        (n_mats, n_small) = (n_mats + mm, n_small + nn);
+        // (a layer of experts has no MLP's two matrices: its block holds its own)
+        (n_mats, n_small) = (n_mats + mm - if sparse[l] { 2 } else { 0 }, n_small + nn);
         let mut ops = Vec::new();
         if l == 0 {
             first = Some(Op::RmsNorm { x: Slot::X, w: s0, y: Slot::H, weight: NormW::PlusOne, eps });
@@ -747,11 +764,14 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
                 b + 2
             }
         };
-        ops.extend([
-            Op::NormAdd { y: Slot::O, w: s0 + 1, plus1: true },
-            Op::GateUpSilu { w: mlp, inter },
-            Op::Linear { w: mlp + 1, x: Slot::M, y: Slot::D, name: "MLP: down product" },
-        ]);
+        ops.push(Op::NormAdd { y: Slot::O, w: s0 + 1, plus1: true });
+        if sparse[l] {
+            // (the router and the experts read the normed H; their sum, the gated shared expert's with it, is the layer's update)
+            ops.push(Op::Moe(MoeOp { y: Slot::D, ..MoeOp::of(n_moe) }));
+            n_moe += 1;
+        } else {
+            ops.extend([Op::GateUpSilu { w: mlp, inter }, Op::Linear { w: mlp + 1, x: Slot::M, y: Slot::D, name: "MLP: down product" }]);
+        }
         ops_all.push(ops);
     }
     let e = n_mats;

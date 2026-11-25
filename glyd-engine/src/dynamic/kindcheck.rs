@@ -525,7 +525,7 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize) -> Result<Vec
 
 /// `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR]`: the cases (all unless named), then each class's worst against its bound.
 pub fn run(a: &crate::args::Args) -> Result<()> {
-    const ALL: [&str; 7] = ["gemma4", "qwen35", "nemotron-h", "muse", "kimi", "glm", "deepseek-v4"];
+    const ALL: [&str; 8] = ["gemma4", "qwen35", "qwen35moe", "nemotron-h", "muse", "kimi", "glm", "deepseek-v4"];
     let want: Vec<&str> = a.pos.iter().skip(1).map(String::as_str).collect();
     if let Some(w) = want.iter().find(|w| !ALL.contains(w)) {
         return err(format!("no case {w}: {}", ALL.join(", ")));
