@@ -652,18 +652,6 @@ pub(crate) fn saved_parts<'a>(ck: &Checkpoint, pk: &'a Pack35) -> Vec<(&'a str, 
 
 /// The pack `pk` in `level`, ready to upload: read from a glyd-v7 directory (`v7`: its level and glyd.json) where it holds the pack saved (in the layout its entry names, else `level`), else packed from the bf16 tensors
 /// in `level`.
-/// `read_pack` of rows r0..r0 + rn of the matrix alone (a GPU's slice of it, src/dynamic/tp.rs), from the checkpoint (a glyd-v7 directory's saved packs are
-/// whole matrices: not sliced); the whole where `rows` is None.
-pub(crate) fn read_pack_rows(ck: &Checkpoint, v7: Option<&(Layout, Value)>, pk: &Pack35, level: Layout, rows: Option<(usize, usize)>) -> Result<Packed> {
-    let Some((r0, rn)) = rows else { return read_pack(ck, v7, pk, level) };
-    if v7.is_some() && !saved_parts(ck, pk).is_empty() {
-        return err(format!("{}: a saved pack, which is not sliced across GPUs", pk.key));
-    }
-    let it = Item { members: pk.parts.iter().map(|x| x.0.clone()).collect(), rows: pk.rows(), cols: pk.cols };
-    let w = item_words(ck, &it)?;
-    pack_words(&w[r0 * it.cols..(r0 + rn) * it.cols], rn, it.cols, level, &it.members.join(" + "))
-}
-
 pub(crate) fn read_pack(ck: &Checkpoint, v7: Option<&(Layout, Value)>, pk: &Pack35, level: Layout) -> Result<Packed> {
     let saved = saved_parts(ck, pk);
     match v7 {

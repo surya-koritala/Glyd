@@ -92,12 +92,14 @@ pub(crate) fn per_layer(k: NhKind) -> (usize, usize) {
     }
 }
 
-/// Nemotron-H's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::nemotron`); `c` the same config as the
-/// family's reader takes it, for its end tokens and its context. What the loader runs; `describe` below is the description it is held to.
+/// Nemotron-H's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::nemotron`, every tensor named), held
+/// to `describe` below with the names left out (the family's own description names none); `c` the same config as the family's reader takes it, for its end
+/// tokens and its context. What the loader runs.
 pub fn lowered(dir: &Path, c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<ModelDesc> {
     let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
     let lowered = super::lower::nemotron(&kinds, c.eos.clone(), c.max_pos, st)?;
-    super::lower::agree(lowered, &describe(c, st)?, &label)
+    super::lower::agree(super::lower::nameless(&lowered), &describe(c, st)?, &label)?;
+    Ok(lowered)
 }
 
 /// Nemotron-H's attention of heads of 128 (nq query heads over nk key-value heads, ring `ring`): no norms and no positional encoding, the keys and values as the

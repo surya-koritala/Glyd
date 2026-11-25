@@ -887,7 +887,8 @@ fn held_as_saved(d: &ModelDesc, k: usize, rows_of: &dyn Fn(&str) -> Option<usize
         || d.layers.iter().flatten().any(|op| matches!(op, Op::NgramRows(x) if x.table == k))
 }
 
-/// The small tensors an operation reads in fp32 (the gated delta rule's A_log; the Kimi delta rule's A_log and dt_bias): a bf16 one is widened.
+/// The small tensors an operation reads in fp32 (the gated delta rule's A_log; the Kimi delta rule's A_log and dt_bias; the mHC streams' mix's base and
+/// scale): a bf16 one is widened.
 fn read_f32(d: &ModelDesc) -> Vec<usize> {
     d.layers
         .iter()
@@ -895,6 +896,7 @@ fn read_f32(d: &ModelDesc) -> Vec<usize> {
         .flat_map(|op| match *op {
             Op::GdnDelta { a_log, .. } => vec![a_log],
             Op::KdaDelta { a_log, dt_bias, .. } => vec![a_log, dt_bias],
+            Op::StreamsPre { mix: StreamsMix::Hc { base, scale, .. } | StreamsMix::HcLagged { base, scale, .. }, .. } => vec![base, scale],
             _ => Vec::new(),
         })
         .collect()

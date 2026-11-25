@@ -869,13 +869,22 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
 }
 
 /// Nemotron-H (Nemotron 3 Super, Nemotron 3.5 Lightning): a block a layer, Mamba-2, attention without a positional encoding, or a mixture of experts (its block of
-/// experts is moe_nh.rs's); every layer x + mixer(norm(x)), the final norm on the last row. The matrices, small tensors and blocks are kern_nh.rs's loader's
-/// (`dynamic::nemotron::describe` indexes them in its order); stage `st` of a model split across GPUs.
+/// experts is moe_nh.rs's); every layer x + mixer(norm(x)), the final norm on the last row; stage `st` of a model split across GPUs. Every matrix and small
+/// tensor the operations use is named from the description's roles, in the order they index them (`dynamic::nemotron::describe`'s), sized by the kinds'
+/// widths: a layer's norm, then a Mamba-2 layer's convolution's weight and bias, A_log, D, dt_bias and gated norm; the final norm. Matrices: a Mamba-2 layer's
+/// in and out products, an attention layer's q, k and v as one and o; the embedding, then the head where it is not the embedding. A layer's experts are its
+/// block's, read apart.
 pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
     use super::nemotron::per_layer;
     use crate::kern_nh::{NH_N, NH_P};
     use crate::nemotron::NhKind;
     let m = &d.desc;
+    let one = |roles: &[(String, Source)], r: &str| match role(roles, r) {
+        Some(Source::Tensor(n)) => Ok(n.clone()),
+        x => err(format!("Nemotron-H: the role {r} is {x:?}, where one tensor is")),
+    };
+    let it = |members: Vec<String>, rows: usize, cols: usize| Item { members, rows, cols };
+    let (mut mats, mut small) = (Vec::new(), Vec::new());
     let eps = m.blocks.first().map_or(1e-5, |b| b.norm_in.eps);
     let (mut mamba, mut att) = (None, None);
     let mut kinds = Vec::with_capacity(m.blocks.len());
@@ -922,8 +931,14 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
         } else {
             ops.push(Op::NormAdd { y: Slot::O, w: s0, plus1: false });
         }
+        let r = &d.blocks[l];
+        small.push(one(r, "norm_in")?);
         match kind {
             NhKind::Mamba => {
+                mats.extend([it(vec![one(r, "in")?], row, hid), it(vec![one(r, "o")?], hid, di)]);
+                for x in ["conv", "conv_bias", "a_log", "d", "dt_bias", "norm"] {
+                    small.push(one(r, x)?);
+                }
                 let (conv, ssm) = (states.len(), states.len() + 1);
                 states.push(3 * cd * 2);
                 states.push(mb.heads * NH_P * NH_N * 4);
@@ -936,6 +951,7 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
                 ]);
             }
             NhKind::Attention => {
+                mats.extend([it(["q", "k", "v"].iter().map(|x| one(r, x)).collect::<Result<_>>()?, qkv_w, hid), it(vec![one(r, "o")?], hid, nq * hd)]);
                 let ring = rings.len();
                 rings.push(Ring::kv(hd, nk, 0));
                 let a = att.ok_or_else(|| Error("Nemotron-H: an attention layer of no kind".into()))?;
@@ -958,6 +974,21 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
     }
     let e = n_mats;
     let lm = if d.head.is_none() { e } else { e + 1 };
+    // (the final norm, the embedding and the head: named on every stage, a stage loading the ones it reads)
+    small.push(d.final_norm.clone());
+    mats.push(it(vec![d.embed.clone()], m.vocab, hid));
+    if let Some(h) = &d.head {
+        mats.push(it(vec![h.clone()], m.vocab, hid));
+    }
+    if (mats.len(), small.len()) != (lm + 1, n_small + 1) {
+        return err(format!(
+            "Nemotron-H: {} matrices and {} small tensors named, where its operations index {} and {}",
+            mats.len(),
+            small.len(),
+            lm + 1,
+            n_small + 1
+        ));
+    }
     let mut widths = [0usize; SLOTS];
     for (s, w) in [
         (Slot::X, hid),
@@ -979,8 +1010,8 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
         eps,
         max_pos,
         widths,
-        mats: Vec::new(),
-        small: Vec::new(),
+        mats,
+        small,
         forms: Vec::new(),
         ropes: Vec::new(),
         rings,
@@ -1158,14 +1189,26 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
 }
 
 /// GLM-5.3-Flash: the four streams mixed around each layer's two blocks, Kimi delta attention (its forget gate bounded) or the latent attention (its block's),
-/// a dense MLP (its SwiGLU clamped) in the first layers and a mixture of experts in the rest (its block's), the mean of the streams and the final norm. The
-/// matrices, small tensors and blocks are kern_glm.rs's loader's (`dynamic::glm::describe` indexes them in its order).
+/// a dense MLP (its SwiGLU clamped) in the first layers and a mixture of experts in the rest (its block's), the mean of the streams and the final norm. Every
+/// matrix and small tensor the operations use is named from the description's roles, in the order they index them (`dynamic::glm::describe`'s), sized by the
+/// kinds' widths (a dense MLP's by its gate's shape): a layer's small tensors its two norms, the mixer block's stream mix (projection, base, scale), a delta
+/// layer's three convolutions as one (`SmallForm::Joined`), A_log, dt_bias and gated norm or a latent layer's two norms, kv_b as saved and its indexer's, then
+/// the feed-forward block's stream mix; the last stage's final norm. Matrices: a delta layer's q, k and v as one, o, the forget gate's two, the output gate's two
+/// and beta; a latent layer's q_a, q_b, kv_a and o; a dense MLP's gate and up as one, and down; then the embedding and, on the last stage, the head. A layer's
+/// experts are its block's, read apart (`dynamic::experts`).
 pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
     use super::glm::{dense_ops, glm_desc, kda_ops, per_layer};
     use crate::glm::GlmKind;
     use crate::kern::GM_D;
-    use crate::runtime::kinds::{Decay, Residual};
+    use crate::runtime::kinds::{Decay, IndexForm, NormKind, Residual};
     let m = &d.desc;
+    let h = m.hidden;
+    let one = |roles: &[(String, Source)], r: &str| match role(roles, r) {
+        Some(Source::Tensor(n)) => Ok(n.clone()),
+        x => err(format!("GLM-5.3-Flash: the role {r} is {x:?}, where one tensor is")),
+    };
+    let it = |members: Vec<String>, rows: usize, cols: usize| Item { members, rows, cols };
+    let (mut mats, mut small, mut forms) = (Vec::new(), Vec::new(), Vec::new());
     if m.blocks.len() % 2 != 0 || m.embed.streams != 4 {
         return err(format!(
             "GLM-5.3-Flash: {} blocks over {} streams, where each layer is a mixer block and a feed-forward block over 4",
@@ -1215,6 +1258,10 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
             ops_all.push(Vec::new());
             continue;
         }
+        let (a, f) = (&d.blocks[2 * l], &d.blocks[2 * l + 1]);
+        for (roles, r) in [(a, "norm_in"), (f, "norm_in"), (a, "hc_fn"), (a, "hc_base"), (a, "hc_scale")] {
+            small.push(one(roles, r)?);
+        }
         let s = n_small;
         n_small += 5;
         let mut ops = vec![Op::StreamsPre { mix: StreamsMix::Hc { f: s + 2, base: s + 3, scale: s + 4 }, norm: s, round }];
@@ -1222,6 +1269,27 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
         let nm = per_layer(kind, moe);
         n_mats += nm;
         if kind == GlmKind::Kda {
+            // (q, k and v one product; o; the forget gate's two; the output gate's two; beta, a row a head)
+            let kd = qd / heads.max(1);
+            let qkv = [one(a, "q")?, one(a, "k")?, one(a, "v")?].to_vec();
+            mats.extend([
+                it(qkv, 3 * qd, h),
+                it(vec![one(a, "o")?], h, qd),
+                it(vec![one(a, "decay_a")?], kd, h),
+                it(vec![one(a, "decay_b")?], qd, kd),
+                it(vec![one(a, "gate_a")?], kd, h),
+                it(vec![one(a, "gate_b")?], qd, kd),
+                it(vec![one(a, "beta")?], heads, h),
+            ]);
+            let conv = match role(a, "conv") {
+                Some(Source::Rows(v)) => v.join("|"),
+                x => return err(format!("GLM-5.3-Flash: layer {l}'s convolutions are {x:?}, where the three are")),
+            };
+            forms.push((small.len(), super::SmallForm::Joined));
+            small.push(conv);
+            for r in ["a_log", "dt_bias", "norm"] {
+                small.push(one(a, r)?);
+            }
             let s0 = n_small;
             n_small += 4;
             let (conv, ssm) = (states.len(), states.len() + 1);
@@ -1231,17 +1299,47 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
         } else if let Some(x) = mla {
             // (q's and the key-value latent's products apart; the indexer's picks given as their tokens and the open pool's)
             let op = super::mla::MlaOp::of(x, super::mla::MlaIn::Apart { q_a: m0, kv_a: m0 + 2 }, m0 + 1, m0 + 3, n_small, rings.len(), true)?;
+            let q_rank = x.q_lora.ok_or_else(|| Error(format!("GLM-5.3-Flash: layer {l}'s latent attention has no query latent")))?;
+            mats.extend([
+                it(vec![one(a, "q_a")?], q_rank, h),
+                it(vec![one(a, "q_b")?], x.heads * (x.nope + x.rope_dim), q_rank),
+                it(vec![one(a, "kv_a")?], x.kv_lora + x.rope_dim, h),
+                it(vec![one(a, "o")?], h, x.heads * x.v_dim),
+            ]);
+            for r in ["q_a_norm", "kv_a_norm", "kv_b"] {
+                small.push(one(a, r)?);
+            }
+            // (the indexer's, in the order the operation reads them: `MlaIndexer::at`)
+            if let Some(ix) = &x.indexer {
+                let layer = matches!(ix.form, IndexForm::Gated { key } if key.kind == NormKind::Layer);
+                let pooled = op.indexer.as_ref().is_some_and(super::mla::MlaIndexer::pooled);
+                let names = ["indexer_wq_b", "indexer_wk", "indexer_k_norm"]
+                    .into_iter()
+                    .chain(layer.then_some("indexer_k_norm_bias"))
+                    .chain(["indexer_weights"])
+                    .chain(if pooled { ["indexer_pool_ape", "indexer_pool_gate"].as_slice() } else { &[] }.iter().copied());
+                for r in names {
+                    small.push(one(a, r)?);
+                }
+            }
             n_small += op.small_count();
             rings.extend(op.rings());
             ops.push(Op::Mla(op));
         }
-        let h = n_small;
+        for r in ["hc_fn", "hc_base", "hc_scale"] {
+            small.push(one(f, r)?);
+        }
+        let hs = n_small;
         n_small += 3;
-        ops.extend([Op::StreamsPost { round, gated: false }, Op::StreamsPre { mix: StreamsMix::Hc { f: h, base: h + 1, scale: h + 2 }, norm: s + 1, round }]);
+        ops.extend([
+            Op::StreamsPost { round, gated: false },
+            Op::StreamsPre { mix: StreamsMix::Hc { f: hs, base: hs + 1, scale: hs + 2 }, norm: s + 1, round },
+        ]);
         if moe {
             ops.push(Op::Moe(MoeOp::of(n_moe)));
             n_moe += 1;
         } else {
+            mats.extend([it(vec![one(f, "gate")?, one(f, "up")?], 2 * inter, h), it(vec![one(f, "down")?], h, inter)]);
             ops.extend(dense_ops(m0 + nm - 2, inter, limit));
         }
         ops.push(Op::StreamsPost { round, gated: false });
@@ -1249,11 +1347,32 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
     }
     if st.last {
         ops_all.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::StreamsHead { mix: HeadMix::Mean, norm: n_small, round });
+        small.push(d.final_norm.clone());
     }
     let e = n_mats;
     let lm = if st.last && d.head.is_some() { e + 1 } else { e };
+    mats.push(it(vec![d.embed.clone()], m.vocab, h));
+    if let Some(head) = d.head.as_ref().filter(|_| st.last) {
+        mats.push(it(vec![head.clone()], m.vocab, h));
+    }
+    if (mats.len(), small.len()) != (lm + 1, n_small + usize::from(st.last)) {
+        return err(format!(
+            "GLM-5.3-Flash: {} matrices and {} small tensors named, where its operations index {} and {}",
+            mats.len(),
+            small.len(),
+            lm + 1,
+            n_small
+        ));
+    }
     let eps = m.blocks.first().map_or(1e-5, |b| b.norm_in.eps);
-    Ok(glm_desc(m.hidden, qd, heads, inter, m.vocab, eps, max_pos, eos, hc, ops_all, (states, rings), e, lm))
+    let mut out = glm_desc(m.hidden, qd, heads, inter, m.vocab, eps, max_pos, eos, hc, ops_all, (states, rings), e, lm);
+    (out.mats, out.small, out.forms) = (mats, small, forms);
+    Ok(out)
+}
+
+/// `d` with no tensor named (its operations, slots, rings and states alone): what a family's own description of it says, which names none.
+pub(crate) fn nameless(d: &ModelDesc) -> ModelDesc {
+    ModelDesc { mats: Vec::new(), small: Vec::new(), forms: Vec::new(), ..d.clone() }
 }
 
 /// A fused product's rows (several tensors' stacked) are padded with zero rows to a multiple of this: 64 a GPU in groups of up to 8.
@@ -1491,7 +1610,7 @@ mod tests {
     }
 
     /// Nemotron-H lowered from Nemotron 3 Super's released config and from the mixture-of-experts toy's, whole and as a split's stages, is the executor's own
-    /// description of it.
+    /// description of it with its names left out, and names only the description's tensors.
     #[test]
     fn nemotron_lowered_is_the_executors_own_description() {
         for f in ["nemotron_h_config.json", "nemotron_h_moetoy_config.json"] {
@@ -1517,7 +1636,11 @@ mod tests {
                     }
                     Ok(own) => (own, nemotron(&kinds, c.eos.clone(), c.max_pos, &st).unwrap_or_else(|e| panic!("{f}: {}", e.msg))),
                 };
-                let (a, b) = (format!("{own:#?}"), format!("{lowered:#?}"));
+                // (every tensor it names is the description's)
+                let names = kinds.names();
+                assert_eq!(super::super::unnamed(&lowered), None, "{f}");
+                assert!(lowered.mats.iter().flat_map(|it| &it.members).chain(&lowered.small).all(|m| names.contains(m)), "{f}");
+                let (a, b) = (format!("{own:#?}"), format!("{:#?}", nameless(&lowered)));
                 if a != b {
                     let first = a.lines().zip(b.lines()).enumerate().find(|(_, (x, y))| x != y);
                     panic!("{f}: the lowered description differs at line {first:?}");
@@ -1542,8 +1665,9 @@ mod tests {
         assert!(e.contains("describe different models") && e.contains("not loaded"), "{e}");
     }
 
-    /// GLM-5.3-Flash lowered from its released config and the tiny and toy ones, whole and as a split's stages, is the executor's own description of it; each
-    /// layer's matrices are as many as kern_glm.rs's loader packs.
+    /// GLM-5.3-Flash lowered from its released config and the tiny and toy ones, whole and as a split's stages, is the executor's own description of it with its
+    /// names left out; every tensor it names is the description's, and the released config's first layer (delta attention, a dense MLP) names its seven and two
+    /// matrices at the release's shapes.
     #[test]
     fn glm_lowered_is_the_executors_own_description() {
         // (and the released one with every layer's feed-forward its experts, as glmrandom --real makes it: no dense MLP, so neither description sizes its slots)
@@ -1559,12 +1683,13 @@ mod tests {
         for f in ["glm5_next_config.json", "glm5_next_tiny_config.json", "glm5_next_toy_config.json", "all experts"] {
             let text = if f == "all experts" { all_experts.clone() } else { fixture(f) };
             let c = crate::glm::ConfigGlm::parse(&text, f, None).unwrap_or_else(|e| panic!("{f}: {}", e.msg));
-            for l in 0..c.layers {
-                // (a latent attention layer's four more: the kind's operation's, kern_glm.rs's `MlaWeights`)
-                let latent = if c.kinds[l] == crate::glm::GlmKind::Mla { 4 } else { 0 };
-                assert_eq!(crate::kern_glm::layer_matrices(&c, l).len() + latent, super::super::glm::per_layer(c.kinds[l], c.moe[l]), "{f}: layer {l}");
-            }
             let kinds = crate::runtime::describe::describe(&serde_json::from_str(&text).unwrap()).unwrap();
+            if f == "glm5_next_config.json" {
+                let d = glm(&kinds, c.eos.clone(), c.max_pos, &super::super::Stage::whole(c.layers)).unwrap();
+                let shapes: Vec<(usize, usize)> = d.mats[..9].iter().map(|it| (it.rows, it.cols)).collect();
+                assert_eq!(shapes, [(24576, 4096), (4096, 8192), (128, 4096), (8192, 128), (128, 4096), (8192, 128), (64, 4096), (24576, 4096), (4096, 12288)]);
+                assert!(d.mats[0].members.iter().zip(["q_proj", "k_proj", "v_proj"]).all(|(m, x)| m.ends_with(&format!("layers.0.self_attn.{x}.weight"))));
+            }
             let half = c.layers / 2;
             for st in [
                 super::super::Stage::whole(c.layers),
@@ -1580,12 +1705,95 @@ mod tests {
                     }
                 };
                 let lowered = glm(&kinds, c.eos.clone(), c.max_pos, &st).unwrap_or_else(|e| panic!("{f}: {}", e.msg));
-                let (a, b) = (format!("{own:#?}"), format!("{lowered:#?}"));
+                assert_eq!(super::super::unnamed(&lowered), None, "{f}");
+                let names = kinds.names();
+                assert!(lowered.mats.iter().flat_map(|it| &it.members).all(|m| names.contains(m)), "{f}");
+                assert!(lowered.small.iter().flat_map(|s| s.split('|')).all(|s| names.contains(s)), "{f}");
+                let (a, b) = (format!("{own:#?}"), format!("{:#?}", nameless(&lowered)));
                 if a != b {
                     let first = a.lines().zip(b.lines()).enumerate().find(|(_, (x, y))| x != y);
                     panic!("{f}: the lowered description differs at line {first:?}");
                 }
             }
+        }
+    }
+
+    /// The tensors the GLM family's lowering names are the ones its own loader read before the executor's loader took them over (src/glm.rs's `layer_packs`
+    /// and `layer_kept`, in that loader's order), at the checkpoint's shapes, on the random models (bf16, and FP8 experts) whole and as a split's stages: each
+    /// layer's two norms and its attention block's stream mix, then a delta layer's convolutions (the three as one), A_log, dt_bias and gated norm, or a latent
+    /// layer's two norms, kv_b and its indexer's seven; then the feed-forward block's stream mix; the last stage's final norm. Matrices: a delta layer's q, k and
+    /// v as one, o, f_a, f_b, g_a, g_b, b; a latent layer's q_a, q_b, kv_a, o; a dense MLP's gate and up as one, down; the embedding and the head.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_random_glms_tensors_are_named_as_the_loader_reads_them() {
+        use crate::glm::GlmKind;
+        for fp8 in [false, true] {
+            let dir = std::env::temp_dir().join(format!("glyd-lower-glm-names-{}-{fp8}", std::process::id()));
+            crate::glm::random(&dir, fp8, None).unwrap();
+            let c = crate::glm::ConfigGlm::load(&dir).unwrap();
+            let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
+            let half = c.layers / 2;
+            for st in [
+                super::super::Stage::whole(c.layers),
+                super::super::Stage { layers: (0, half), first: true, last: false },
+                super::super::Stage { layers: (half, c.layers), first: false, last: true },
+            ] {
+                let d = super::super::glm::lowered(&dir, &c, &st).unwrap_or_else(|e| panic!("fp8 {fp8}: {}", e.msg));
+                let (mut mats, mut small): (Vec<(Vec<String>, usize, usize)>, Vec<String>) = (Vec::new(), Vec::new());
+                for l in st.layers.0..st.layers.1 {
+                    let (packs, kept) = (c.layer_packs(l), c.layer_kept(l));
+                    let name = |t: &str| kept.iter().find(|x| x.name.ends_with(t)).unwrap_or_else(|| panic!("layer {l}: {t}")).name.clone();
+                    small.extend(kept[..5].iter().map(|t| t.name.clone()));
+                    let (attn, mlp) = packs.split_at(packs.len() - 2);
+                    let kda = c.kinds[l] == GlmKind::Kda;
+                    for p in attn.iter().filter(|p| kda || !p.key.ends_with(".kv_b_proj")) {
+                        mats.push((p.parts.iter().map(|x| x.0.clone()).collect(), p.rows(), p.cols));
+                    }
+                    if kda {
+                        small.push(["q", "k", "v"].map(|x| name(&format!("self_attn.{x}_conv1d.weight"))).join("|"));
+                        small.extend(["self_attn.A_log", "self_attn.dt_bias", "self_attn.o_norm.weight"].map(name));
+                    } else {
+                        small.extend(["q_a_layernorm.weight", "kv_a_layernorm.weight"].map(|x| name(&format!("self_attn.{x}"))));
+                        small.push(format!("{}layers.{l}.self_attn.kv_b_proj.weight", c.prefix));
+                        let ix = [
+                            "wq_b.weight",
+                            "wk.weight",
+                            "k_norm.weight",
+                            "k_norm.bias",
+                            "weights_proj.weight",
+                            "index_kpool_compress_ape",
+                            "index_kpool_compress_gate",
+                        ];
+                        small.extend(ix.map(|x| name(&format!("self_attn.indexer.{x}"))));
+                    }
+                    small.extend(kept[5..8].iter().map(|t| t.name.clone()));
+                    if !c.moe[l] {
+                        for p in mlp {
+                            mats.push((p.parts.iter().map(|x| x.0.clone()).collect(), p.rows(), p.cols));
+                        }
+                    }
+                }
+                if st.last {
+                    small.push(format!("{}norm.weight", c.prefix));
+                }
+                mats.push((vec![format!("{}embed_tokens.weight", c.prefix)], c.vocab, c.hidden));
+                if st.last && !c.tie {
+                    mats.push((vec!["lm_head.weight".into()], c.vocab, c.hidden));
+                }
+                let got: Vec<(Vec<String>, usize, usize)> = d.mats.iter().map(|it| (it.members.clone(), it.rows, it.cols)).collect();
+                assert_eq!(got, mats, "fp8 {fp8}, {st:?}");
+                assert_eq!(d.small, small, "fp8 {fp8}, {st:?}");
+                // (each named at the checkpoint's shape: a matrix's members' rows add up, their columns its own)
+                for (members, rows, cols) in &got {
+                    let shapes: Vec<Vec<u64>> = members.iter().map(|m| ck.get(m).unwrap_or_else(|| panic!("no tensor {m}")).1.shape.clone()).collect();
+                    assert!(
+                        shapes.iter().all(|s| s.len() == 2 && s[1] as usize == *cols) && shapes.iter().map(|s| s[0] as usize).sum::<usize>() == *rows,
+                        "{members:?}"
+                    );
+                }
+                assert!(d.small.iter().flat_map(|s| s.split('|')).all(|s| ck.get(s).is_some()));
+            }
+            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 
@@ -1607,7 +1815,7 @@ mod tests {
                     super::super::glm::describe(&c, &st).unwrap(),
                     super::super::glm::lowered(&dir, &c, &st).unwrap_or_else(|e| panic!("fp8 {fp8}: {}", e.msg)),
                 );
-                assert_eq!(format!("{own:#?}"), format!("{lowered:#?}"));
+                assert_eq!(format!("{own:#?}"), format!("{:#?}", nameless(&lowered)));
             }
             let _ = std::fs::remove_dir_all(&dir);
         }
@@ -2279,10 +2487,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Legacy coverage, of a layout whose loader is still its own (it goes when the executor's loader reads the layout): the executor's loader's rules, on the
-    /// tensors of the Mamba-2 layout's random model named in that loader's order (src/kern_nh.rs), make that loader's choices: the same
-    /// matrices dense (the parts the packer does not take), every small tensor as saved in bf16 (none read wider). Its description names no tensor yet, so it
-    /// loads by its own loader still, and the executor's refuses it.
+    /// The Nemotron-H lowering names its tensors as its own loader reads them (src/kern_nh.rs: `layer_packs` and `layer_kept` in that loader's order), on the
+    /// random model whole and as a split's stages, and the executor's loader's rules on them make that loader's choices: the same matrices dense (the parts
+    /// the packer does not take), every small tensor as saved in bf16 (none read wider).
     #[cfg(feature = "dev")]
     #[test]
     fn the_executors_rules_on_nemotron_make_its_own_loaders_choices() {
@@ -2290,23 +2497,34 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("glyd-nh-loader-{}", std::process::id()));
         crate::kcheck_nh::random(&dir, 0, 16).unwrap();
         let c = crate::nemotron::ConfigNemotronH::load(&dir).unwrap();
-        let mut d = super::super::nemotron::lowered(&dir, &c, &super::super::Stage::whole(c.layers)).unwrap();
-        // (its description names none of its tensors: kern_nh's loader fills them by index; named here in that loader's order, the rules are checked on them)
-        assert_eq!(super::super::unnamed(&d), Some(0), "the description names its matrices: Nemotron-H can load through the executor's loader");
+        // (the loader's matrices and small tensors in its order, of the stage's layers; the final norm, the embedding and the head named on every stage)
+        let half = c.layers / 2;
+        for st in [
+            super::super::Stage::whole(c.layers),
+            super::super::Stage { layers: (0, half), first: true, last: false },
+            super::super::Stage { layers: (half, c.layers), first: false, last: true },
+        ] {
+            let d = super::super::nemotron::lowered(&dir, &c, &st).unwrap();
+            let it = |p: &crate::qwen35::Pack35| (p.parts.iter().map(|x| x.0.clone()).collect::<Vec<_>>(), p.rows(), p.cols);
+            let mut mats: Vec<_> =
+                (st.layers.0..st.layers.1).filter(|&l| c.kinds[l] != crate::nemotron::NhKind::Moe).flat_map(|l| c.layer_packs(l)).map(|p| it(&p)).collect();
+            mats.push((vec![format!("{}embeddings.weight", c.prefix)], c.vocab, c.hidden));
+            if !c.tie {
+                mats.push((vec!["lm_head.weight".into()], c.vocab, c.hidden));
+            }
+            let mut small = Vec::new();
+            for l in st.layers.0..st.layers.1 {
+                let kept = c.layer_kept(l);
+                let n = if c.kinds[l] == crate::nemotron::NhKind::Mamba { kept.len() } else { 1 };
+                small.extend(kept.into_iter().take(n).map(|t| t.name));
+            }
+            small.push(format!("{}norm_f.weight", c.prefix));
+            let got: Vec<_> = d.mats.iter().map(|x| (x.members.clone(), x.rows, x.cols)).collect();
+            assert_eq!((got, &d.small), (mats, &small), "{st:?}");
+            assert_eq!((super::super::unnamed(&d), d.small.len()), (None, d.final_norm.unwrap().0 + 1), "{st:?}");
+        }
+        let d = super::super::nemotron::lowered(&dir, &c, &super::super::Stage::whole(c.layers)).unwrap();
         let packs: Vec<crate::qwen35::Pack35> = (0..c.layers).filter(|&l| c.kinds[l] != crate::nemotron::NhKind::Moe).flat_map(|l| c.layer_packs(l)).collect();
-        let it = |p: &crate::qwen35::Pack35| Item { members: p.parts.iter().map(|x| x.0.clone()).collect(), rows: p.rows(), cols: p.cols };
-        d.mats = packs.iter().map(it).collect();
-        d.mats.push(Item { members: vec![format!("{}embeddings.weight", c.prefix)], rows: c.vocab, cols: c.hidden });
-        if !c.tie {
-            d.mats.push(Item { members: vec!["lm_head.weight".into()], rows: c.vocab, cols: c.hidden });
-        }
-        for l in 0..c.layers {
-            let kept = c.layer_kept(l);
-            let n = if c.kinds[l] == crate::nemotron::NhKind::Mamba { kept.len() } else { 1 };
-            d.small.extend(kept.into_iter().take(n).map(|t| t.name));
-        }
-        d.small.push(format!("{}norm_f.weight", c.prefix));
-        assert_eq!((super::super::unnamed(&d), d.small.len()), (None, d.final_norm.unwrap().0 + 1));
         let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
         let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
         let dense: std::collections::HashSet<String> = packs.iter().filter(|p| !p.packable()).flat_map(|p| p.parts.iter().map(|x| x.0.clone())).collect();

@@ -119,7 +119,6 @@ pub mod mapped;
 pub mod model_qwen4x;
 pub mod models;
 pub mod moe;
-pub mod moe_glm;
 pub mod moe_hb;
 pub mod moe_hbg;
 pub mod moe_nh;

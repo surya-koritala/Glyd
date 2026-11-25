@@ -244,10 +244,7 @@ pub fn lowered(dir: &Path, c: &ConfigKimi, st: &Stage, w32: &[(bool, bool)], ear
     Ok(lowered)
 }
 
-/// `d` with no tensor named (its operations, slots, rings and states alone).
-pub(crate) fn nameless(d: &ModelDesc) -> ModelDesc {
-    ModelDesc { mats: Vec::new(), small: Vec::new(), forms: Vec::new(), ..d.clone() }
-}
+pub(crate) use super::lower::nameless;
 
 /// The executor's description of Kimi-K3 for stage `st`, as the loader indexes what it loads. Each layer's small tensors: its input and post-attention norms, the
 /// two depth mixes' norms and projections, then a delta layer's convolutions, A_log, dt_bias and gated norm; the last stage's output mix's norm and projection and

@@ -2669,15 +2669,27 @@ fn f8_lin_ctas(n: i64, k: i64, m: i64, kind: Option<i64>) -> Result<i64> {
     Ok((sms * r).min(w / least).max(1))
 }
 
-/// The experts' product's CTAs a slot (f8_moe_ctas: the GPU's at once shared among the slots, at most the work; GLYD_F8_MOE_GRID's in a development build).
-fn f8_moe_ctas(n: i64, k: i64, m: i64, slots: i64) -> Result<i64> {
+/// The experts' product's CTAs a slot (f8_moe_ctas): one a row group of 128 rows of a matrix, which adds all of the row group's K in order, so a pair's sum is
+/// the same whatever shares its call (its tokens, its slots, the one-token kernel on the same plan) and follows from the matrix's shape alone (the rule of the
+/// other experts' products: handoff notes, moe-kernels.md); GLYD_F8_MOE_GRID's in a development build.
+fn f8_moe_ctas(n: i64, k: i64) -> i64 {
     let w = f8_work(n, k);
     let c = tuned(crate::tune!("GLYD_F8_MOE_GRID"), 0);
     if c > 0 {
-        return Ok(c.min(w));
+        return c.min(w);
     }
-    let (r, sms) = f8_resident(5, m)?;
-    Ok((sms * r / slots.max(1)).min(w).max(1))
+    (w / ((k + 127) / 128)).max(1)
+}
+
+/// The experts' product's workspace for `ctas` CTAs a slot (f8_moe_parts): the parts of the row groups the grid splits between CTAs, none where each CTA holds
+/// whole row groups.
+fn f8_moe_parts(n: i64, k: i64, m: i64, slots: i64, ctas: i64) -> i64 {
+    let rg = f8_work(n, k) / ((k + 127) / 128);
+    if rg % ctas.max(1) == 0 {
+        0
+    } else {
+        slots * f8_parts(ctas, m)
+    }
 }
 
 /// Layout H's grid at most (glyd_gpu_f8h_linear, _f8h_moe: the CTAs an SM of its own kernel, shared among the slots of the experts' product).
@@ -2709,8 +2721,7 @@ pub fn f8_moe_workspace(n: i64, k: i64, m: i64, slots: i64) -> Result<Option<usi
     if !(1..=64).contains(&m) || !(1..=65535).contains(&slots) || f8_patches(n, k).is_none() || !f8_default()? {
         return Ok(None);
     }
-    let one = if m == 1 { f8h_one_ctas(n, k, slots)? } else { 1 };
-    Ok(Some((slots * f8_parts(f8_moe_ctas(n, k, m, slots)?.max(one), m)) as usize))
+    Ok(Some(f8_moe_parts(n, k, m, slots, f8_moe_ctas(n, k)) as usize))
 }
 
 /// A launch of an FP8 product's kernel with its parameters, its shared memory allowed to `most` first (the library's cudaFuncSetAttribute at each launch).
@@ -2843,15 +2854,13 @@ pub unsafe fn f8_moe(
     {
         return Ok(false);
     }
-    let mut ctas = f8_moe_ctas(n, k, m, slots)?;
-    if h {
-        ctas = ctas.min(f8h_ctas(n, k, m, Some(slots))?);
-    }
-    let need = slots * f8_parts(ctas, m);
+    // (layout H's grid as layout C's: a CTA a row group; the one-token kernel on the same plan, so its sums are the others' to the bit)
+    let ctas = f8_moe_ctas(n, k);
+    let need = f8_moe_parts(n, k, m, slots, ctas);
     if (ctas > 1 && done == 0) || !fits(ws, ws_bytes, need) || (need > 0 && ws % 16 != 0) {
         return Ok(false);
     }
-    let mut p = F8Lin {
+    let p = F8Lin {
         core,
         heads,
         var,
@@ -2878,13 +2887,8 @@ pub unsafe fn f8_moe(
     };
     if h && m == 1 && f8h_one()? != 0 {
         let plain = f8h_one()? == 3;
-        let one = f8h_one_ctas(n, k, slots)?;
-        if (one > 1 && done == 0) || !fits(ws, ws_bytes, slots * f8_parts(one, 1)) {
-            return Ok(false);
-        }
-        p.ctas = one as i32;
         let smem = if plain { F8H_ONE_PLAIN } else { F8H_ONE_CODED };
-        f8_launch(f8h_one_name(plain, true), [one as u32, slots as u32, 1], (smem, smem), p, cs)?;
+        f8_launch(f8h_one_name(plain, true), [ctas as u32, slots as u32, 1], (smem, smem), p, cs)?;
         return Ok(true);
     }
     f8_launch(f8_name(if h { 7 } else { 5 }, f8_ntl(m)), [ctas as u32, slots as u32, 1], (f8_shared(m, h), f8_shared(64, h)), p, cs)?;

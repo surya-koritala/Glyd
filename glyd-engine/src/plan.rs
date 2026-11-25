@@ -6144,7 +6144,8 @@ mod tests {
     /// The matrices the planner counts in the computer's memory for a layer there (its row's `ram_linears`) are the ones the executor's loader puts there: every
     /// matrix of the layer's own products, as its family's lowered description names them (`dynamic::layer_tensors`), on Kimi-K3's released tensors (its
     /// delta and latent attention layers and its dense MLP) and on the random models of Kimi's two shapes and Muse Spark; so a plan frees on the GPU, and
-    /// holds in the computer's memory, what the load does. A row that keeps none there counts none.
+    /// holds in the computer's memory, what the load does. A row that keeps none there counts none (GLM-5.3-Flash's, whose random models load by the same
+    /// loader, which keeps none there unless the plan asks).
     #[test]
     fn the_matrices_counted_in_memory_are_the_loaders() {
         use crate::dynamic::{layer_tensors, Stage};
@@ -6198,6 +6199,18 @@ mod tests {
                 };
                 let table = crate::sizes::Table::from_dir(&dir).unwrap();
                 assert_eq!(by_layer(&table, low.layers.len(), family), loaders(&low), "{m}");
+            }
+            // (GLM-5.3-Flash loads by the same loader, which keeps a layer's matrices there only where the plan says (`Placing::ram`, the cache's `dense`); its
+            // row keeps none there, so its plans ask for none and count none, both random models, bf16 and with FP8 experts)
+            for fp8 in [false, true] {
+                let _ = std::fs::remove_dir_all(&dir);
+                crate::glm::random(&dir, fp8, None).unwrap();
+                let c = crate::glm::ConfigGlm::load(&dir).unwrap();
+                let low = crate::dynamic::glm::lowered(&dir, &c, &Stage::whole(c.layers)).unwrap();
+                let table = crate::sizes::Table::from_dir(&dir).unwrap();
+                assert!(loaders(&low).iter().all(|l| !l.is_empty()), "every layer multiplies by matrices of its own");
+                assert_eq!(by_layer(&table, c.layers, "GLM-5.3-Flash"), vec![BTreeSet::new(); c.layers], "fp8 {fp8}");
+                assert!(sizing::ram_bytes_table(&table, c.layers, "GLM-5.3-Flash", 90, 72).iter().all(|&b| b == 0), "fp8 {fp8}");
             }
             let _ = std::fs::remove_dir_all(&dir);
         }
