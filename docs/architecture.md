@@ -159,7 +159,7 @@ compute-bound standard dense/FP8/NVFP4 ops to proven vendor libraries.
 | FP8 / FP4 / MXFP4 releases | as released | yes | kept as the release's codes; FP8 also in a ~7-bit lossless coding |
 | kestrel / swift / wren | 6.5 / 5.5 / 4.5 | no | Int6 / Int5 / Int4; wren keeps QAT 4-bit releases exactly |
 | hummingbird | ~2-3.4 on experts | no | experts' bits by use; attention 4-6 bits |
-| KV cache | 12 (bf16 16) | yes | per-model tables; the executor's pages are bf16, or 12-bit with `GLYD_KV=lossless` (`run` and `serve` take it for Gemma 4 and the plain dense kind; `kv12check` and `usercheck --kv12` hold the Qwen3.5 layout's too) |
+| KV cache | 12 (bf16 16) | yes | per-model tables; the executor's pages are bf16, or 12-bit where `GLYD_KV=lossless` asks for them (Gemma 4 with `--no-draft`; the plain dense kind under `serve`) and they reserve no more than bf16 for the plan: the plan chooses and says which (`kv_format`), and the loader follows it. `kv12check` and `usercheck --kv12` hold the Qwen3.5 layout's too |
 
 `glyd verify` checks a lossless pack tensor by tensor against the source's sha256.
 

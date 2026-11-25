@@ -493,7 +493,7 @@ def parse(cmd, argv):
     p = argparse.ArgumentParser(prog=f"glyd {cmd}", allow_abbrev=False, formatter_class=argparse.RawDescriptionHelpFormatter,
                                 description={"run": "Download a model, start it with Glyd, and chat with it in the terminal and at a web page.",
                                              "serve": "Download a model, start it with Glyd, and leave it up as an OpenAI API (and the chat page)."}[cmd],
-                                epilog="MODEL is a Hugging Face name (Qwen/Qwen3.5-9B) or a folder. Memory, context and parsers are chosen from your GPU; any vLLM\nflag after a lone -- is passed on and wins:  glyd %s MODEL -- --max-model-len 4096\nglyd run uses Glyd's own engine for a Qwen3 model on a GPU where it is measured at least as fast as vLLM and will certainly run the model (checked before anything is downloaded), and vLLM runs the rest; glyd serve uses vLLM; GLYD_ENGINE=1 uses the engine on any GPU it runs on, GLYD_ENGINE=0 runs any model with vLLM.\n" % cmd + (
+                                epilog="MODEL is a Hugging Face name (Qwen/Qwen3.5-9B) or a folder. Memory, context and parsers are chosen from your GPU; any vLLM\nflag after a lone -- is passed on and wins:  glyd %s MODEL -- --max-model-len 4096\nglyd run asks Glyd's own engine first (before anything is downloaded) and uses it where it will certainly run the model: every family the engine runs (Gemma 4, the Qwen3.5 family, Nemotron-H, the large mixture-of-experts models) and every lossy level, and a plain dense model at the lossless level only on a GPU where the engine is measured at least as fast as vLLM; vLLM runs the rest; glyd serve uses vLLM; GLYD_ENGINE=1 uses the engine on any GPU it runs on, GLYD_ENGINE=0 runs any model with vLLM.\n" % cmd + (
                                     "The KV cache is vLLM's own in glyd run; GLYD_KV=auto glyd run MODEL uses Glyd's lossless cache on an A100, an L4, an H100 or a GH200, after a first start that makes the model's tables (minutes)." if cmd == "run" else
                                     "The KV cache is Glyd's lossless cache on an A100, an L4, an H100 or a GH200, after a first start that makes the model's tables (minutes); GLYD_KV=off keeps vLLM's own."))
     p.add_argument("model", help="a Hugging Face name such as Qwen/Qwen3.5-9B, or a folder" + (" (add :kestrel or :swift for a lossy level on Glyd's own engine, :penguin is the lossless default)" if cmd == "run" else ""))
@@ -750,7 +750,7 @@ def engine_row(prog):
     except (OSError, subprocess.SubprocessError) as e:
         return ("info", "Glyd engine", f"{prog} did not start ({e}): glyd run and glyd serve use vLLM")
     if asked.returncode == 0:
-        return ("ok", "Glyd engine", f"{prog}: glyd run starts it for Qwen3 models here (GLYD_ENGINE=0: vLLM instead); glyd serve uses vLLM (GLYD_ENGINE=1: the engine)")
+        return ("ok", "Glyd engine", f"{prog}: glyd run starts it for the models it runs here (GLYD_ENGINE=0: vLLM instead; a plain dense model at the lossless level only on a GPU where it is measured at least as fast as vLLM, or with GLYD_ENGINE=1); glyd serve uses vLLM (GLYD_ENGINE=1: the engine)")
     return ("info", "Glyd engine", f"{prog} is here, and glyd run uses vLLM on this computer: {engine.reason(asked.stderr) or 'it did not start (exit status ' + str(asked.returncode) + ')'}; glyd serve uses vLLM (GLYD_ENGINE=1: the engine)")
 
 

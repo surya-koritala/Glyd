@@ -1,5 +1,5 @@
-//! The interface a block of mixture-of-experts layers plugs into the executor by (`MoeBlock`, `MoeFactory`: src/moe_nh.rs makes Nemotron-H's blocks) and the
-//! host hooks the other families' blocks share (`NhHost`). Nemotron-H's weights load by the executor's loader from its lowered description
+//! The interface a block of mixture-of-experts layers plugs into the executor by (`MoeBlock`: src/dynamic/experts.rs makes the Moe kind's blocks) and the
+//! host hooks the blocks that run their own launches share (`NhHost`). Nemotron-H's weights load by the executor's loader from its lowered description
 //! (src/dynamic/nemotron.rs); its Mamba-2 layers run the layer kind's kernels (src/kern/mamba2.rs), its attention the attention kind's (src/dynamic/attn.rs).
 //! The hand-written engine that used to be here is retired: its parity record is R7's fixtures and `paritycheck`'s (bits-identical at every level), and its
 //! layer-by-layer tools (`nhlayers`, `nhtoy`, `nhoffload`) run on the executor. The layers' math: tools/nemotron_ref.py; the config and tensor names:
@@ -9,17 +9,14 @@ use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Lib, Result};
 use crate::kern35::Mat;
 use crate::moe::MoeScratch;
-use crate::nemotron::ConfigNemotronH;
-use crate::weights::Layout;
-use glyd_gpu::safetensors::Checkpoint;
 
 /// A latent mixture-of-experts layer's mixer, which the engine's layers call and does not itself hold: router (full-width scores, the choice of `top_k`), the latent projections, the experts, the
 /// shared expert. `h` [n, hidden] bf16 is the layer's normed input, `out` [n, hidden] bf16 its mixer's output (the engine adds it to the residual).
 ///
-/// What a block does with the layer's tensors (transformers' NemotronHMoE): scores = sigmoid(h . gate^T) in fp32, the `top_k` of scores + e_score_correction_bias, their scores normed and times `scale`
-/// (the router sees the full width); z = fc1_latent(h) [n, latent]; y = the chosen experts' down(relu2(up(z))) weighted, summed [n, latent]; out = fc2_latent(y) + shared_down(relu2(shared_up(h))).
-/// With the mixture-of-experts core (GLY-101, `moe::MoeLayer`; src/moe_nh.rs): `route(h)`, `lin(fc1)`, `experts(z)`, `lin(fc2)`, `add_shared(h)`, all launches on the engine's stream and none reading a result on the host,
-/// so `graphable` is true; its scratch is one for all the layers, in the engine's `moe_scratch`, made by the first block that runs (the engine's warm-up step runs before the graph is captured).
+/// What a block of a latent of its own does with the layer's tensors (transformers' NemotronHMoE): scores = sigmoid(h . gate^T) in fp32, the `top_k` of scores + e_score_correction_bias, their scores normed and times
+/// `scale` (the router sees the full width); z = fc1_latent(h) [n, latent]; y = the chosen experts' down(relu2(up(z))) weighted, summed [n, latent]; out = fc2_latent(y) + shared_down(relu2(shared_up(h))).
+/// With the mixture-of-experts core (GLY-101, `moe::MoeLayer`; src/dynamic/experts.rs `block`): `route(h)`, `lin(fc1)`, `experts(z)`, `lin(fc2)`, `add_shared(h)`, all launches on the engine's stream and none reading a result on the
+/// host, so `graphable` is true; its scratch is one for all the layers, in the engine's `moe_scratch`, made by the first block that runs (the engine's warm-up step runs before the graph is captured).
 pub trait MoeBlock {
     /// # Safety
     /// Live device buffers of those sizes, used on the engine's stream.
@@ -98,9 +95,6 @@ pub trait NhHost {
     /// A development build's stage marker (a profile's).
     fn mark(&self, _what: &'static str) {}
 }
-
-/// Makes layer `l`'s block of experts: the layer's number, the config, the checkpoint, the layout of the packs.
-pub type MoeFactory<'a> = &'a dyn Fn(usize, &ConfigNemotronH, &Checkpoint, Layout) -> Result<Box<dyn MoeBlock>>;
 
 #[cfg(test)]
 mod tests {

@@ -286,17 +286,17 @@ fn released_qwen38_flash_next_config() {
     }
 }
 
-/// GLM-5.3's released config (`glm_moe_dsa`) describes its released checkpoint exactly: every tensor (the experts from the fixture's runs), less the MTP
-/// layer, each at the checkpoint's shape where the description gives one; the FP8 matrices are the ones the checkpoint holds with block scales; the
-/// indexers' schedule is the config's (a `full` layer every fourth after the first three, `shared` between); the latent attention turns 64 channels
-/// of interleaved pairs, its indexer the same first 64 of its keys and queries.
+/// GLM-5.3's released config (`glm_moe_dsa`) describes its released checkpoint exactly: every tensor (the experts from the fixture's runs), its MTP layer
+/// as its draft head (DeepSeek-V3's joined form: enorm, hnorm, eh_proj, shared_head.norm, and a latent attention with an indexer of its own and the
+/// experts on a plain residual), each at the checkpoint's shape where the description gives one; the FP8 matrices are the ones the checkpoint holds with
+/// block scales (the head's too); the indexers' schedule is the config's (a `full` layer every fourth after the first three, `shared` between); the
+/// latent attention turns 64 channels of interleaved pairs, its indexer the same first 64 of its keys and queries.
 #[test]
 fn released_glm53_config() {
-    use super::kinds::{Body, Mixer};
+    use super::kinds::{Body, Ffn, Mixer, MtpInput, Residual};
     let d = describe(&fixture("glm_moe_dsa_config.json")).unwrap_or_else(|e| panic!("{}", e.msg));
     let t = fixture("glm_moe_dsa_tensors.json");
-    let mtp = format!("model.layers.{}.", d.desc.blocks.len() / 2);
-    let want: BTreeSet<String> = names_with_runs(&t).into_iter().filter(|n| !n.starts_with(&mtp)).collect();
+    let want: BTreeSet<String> = names_with_runs(&t);
     let got = d.names();
     let missing: Vec<_> = want.difference(&got).take(8).collect();
     let extra: Vec<_> = got.difference(&want).take(8).collect();
@@ -325,6 +325,17 @@ fn released_glm53_config() {
         (64, Some((64, super::kinds::RopeStyle::Interleaved)), 64, 2048, 1)
     );
     assert_eq!((d.mtp_layers, d.desc.embed.streams, d.desc.head.rounding), (1, 1, super::kinds::Rounding::Once));
+    // (the draft head: layer 78's two blocks, its own roles under that layer's name; nothing of the checkpoint left unread)
+    let (h, (_, own)) = (&d.desc.mtp[0], &d.mtp[0]);
+    assert_eq!((d.desc.mtp.len(), h.input, h.blocks.len()), (1, MtpInput::Joined, 2));
+    assert!(matches!(&h.blocks[0].body, Body::Mixer(Mixer::Mla(m)) if m.indexer.as_ref().is_some_and(|i| !i.shared) && m.rope_dim == 64));
+    assert!(matches!(&h.blocks[1].body, Body::Ffn(Ffn::Moe(m)) if m.experts == 256) && h.blocks.iter().all(|b| b.residual == Residual::Add));
+    let own: Vec<String> = own.iter().flat_map(|(_, s)| s.names()).collect();
+    assert_eq!(
+        own,
+        ["model.layers.78.eh_proj.weight", "model.layers.78.enorm.weight", "model.layers.78.hnorm.weight", "model.layers.78.shared_head.norm.weight"]
+    );
+    assert!(d.unread.iter().all(|p| !p.starts_with("model.layers.")), "{:?}", d.unread);
 }
 
 /// The indexers' schedule where a config lists no `indexer_types`: transformers' GlmMoeDsaConfig makes it from `index_topk_pattern`, else from

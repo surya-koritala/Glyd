@@ -2,25 +2,30 @@
 //! mixture-of-experts layers (with a latent, Super's; or at the model's width, Lightning's); every layer x + mixer(norm(x)) (the arithmetic is the layer kinds'
 //! kernels'). Loaded by the executor's loader (`Dyn::new_placed`): the lowered description (`lower::nemotron`) names every matrix and small tensor, the matrices
 //! packed in the layout the level gives every matrix but the routed experts' (`nemotron::dense_layout`: six-bit codes at wren and hummingbird), and each
-//! mixture-of-experts layer's block made by the factory it is given (moe_nh.rs's): a block with all its experts on the GPU is run by the executor, one with an
-//! expert cache (or at the hummingbird level) runs its own launches over the executor's buffers (`NhHost`).
+//! mixture-of-experts layer's experts the Moe kind's block (`experts::block`, a block a layer: the latent's own projections around the experts, their second
+//! matrices in the level's row layout, a glyd-v7 directory's packs as saved, the expert cache's places where the stage has one, the directory's codebook rows at
+//! hummingbird), which `Op::Moe` runs.
 
 use super::attn::{AttnOp, QkNorm};
 use super::{Dyn, ModelDesc, MoeOp, NormW, Op, Opts, Placing, Ring, Slot, Stage};
 use crate::ffi::{err, Result};
 use crate::kern::{MAMBA2_HEAD, MAMBA2_STATE};
-use crate::kern_nh::{MoeBlock, MoeFactory};
+use crate::kern_nh::MoeBlock;
 use crate::nemotron::NhKind;
+use crate::offload::ExpertStore;
+use crate::runtime::describe::Described;
 use crate::weights::Layout;
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
+use std::rc::Rc;
 
 /// The dynamic route's stage (src/dynamic/split.rs `StageLoad`): `load_stage` with its experts at `o.layout`'s level (penguin's lossless where none is given),
-/// all on the GPU. A caching is refused: its experts' cache is its blocks' own (`moe_nh::factory_cached`, which the lossy route's loader gives `load_with`).
+/// all on the GPU. A caching is refused: Nemotron-H's expert cache is the lossy route's (src/cli.rs gives `load_cached` its places and store), not the dynamic
+/// route's caching.
 pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
     if caching.is_some() {
         return err(format!(
-            "{}: Nemotron-H's experts are cached by their own blocks (moe_nh.rs `factory_cached`), not as the dynamic route's caching says",
+            "{}: Nemotron-H's experts are cached as the lossy route plans them (src/cli.rs), not as the dynamic route's caching says",
             dir.display()
         ));
     }
@@ -36,22 +41,35 @@ pub fn load(dir: &Path, o: &Opts, level: Layout) -> Result<Dyn> {
 /// Stage `st` of it (a model split across GPUs: its layers, the embedding where it is the first, the head where the last; a layer of another
 /// stage is an empty one here).
 pub fn load_stage(dir: &Path, o: &Opts, level: Layout, st: Stage) -> Result<Dyn> {
-    load_with(dir, o, &crate::moe_nh::factory(level), st)
+    load_cached(dir, o, level, None, st)
 }
 
-/// Stage `st` with the blocks of experts `make` makes (moe_nh.rs's factories: the experts all on the GPU, or an expert cache's places for them, src/offload.rs),
-/// by the executor's loader: the lowered description names every matrix and small tensor of the stage, each matrix packed in the layout `o.layout`'s level
-/// gives every matrix but the routed experts' (`nemotron::dense_layout`; a glyd-v7 directory's packs as saved, each in the layout its entry names), the
-/// stage's layers on its GPU (none in the computer's memory: the planner's row keeps none there), the Mamba-2 scan's buffers sized from its operations.
-pub fn load_with(dir: &Path, o: &Opts, make: MoeFactory<'_>, st: Stage) -> Result<Dyn> {
+/// Stage `st` with its experts at `level`, all on the GPU or in the expert cache (`cache`: places a layer for them on the GPU and the store every expert is in,
+/// src/offload.rs; a layer of no more experts than places all on the GPU), by the executor's loader: the lowered description names every matrix and small tensor of
+/// the stage, each matrix packed in the layout `o.layout`'s level gives every matrix but the routed experts' (`nemotron::dense_layout`; a glyd-v7 directory's packs
+/// as saved, each in the layout its entry names), the stage's layers on its GPU (none in the computer's memory: the planner's row keeps none there), the Mamba-2
+/// scan's buffers sized from its operations; each mixture-of-experts layer's experts the Moe kind's block (`experts::block`: its matrices besides the experts at
+/// `dense_layout` of the level; its layer in the cache its number among the model's mixture-of-experts layers, so that a predictor's next is the next of them).
+pub fn load_cached(dir: &Path, o: &Opts, level: Layout, cache: Option<(usize, &Rc<ExpertStore>)>, st: Stage) -> Result<Dyn> {
     let c = crate::nemotron::ConfigNemotronH::load(dir)?;
-    let d = lowered(dir, &c, &st)?;
-    let experts = |ck: &Checkpoint, layout: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
-        (st.layers.0..st.layers.1)
-            .filter(|&l| c.kinds[l] == NhKind::Moe)
-            .map(|l| {
+    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
+    let d = lowered_of(&kinds, &label, &c, &st)?;
+    let caching = cache.map(|(places, store)| crate::hbg_store::HbCaching { places, ram: store.host_memory(), offload: store.offload(), dense: 0 });
+    let codebooks = Rc::new(crate::moe_hb::HbShared::default());
+    let held = super::experts::Held {
+        hb: None,
+        cache: caching.as_ref().zip(cache.map(|x| x.1)),
+        ordinal: o.device,
+        f8: None,
+        dense: Some(crate::nemotron::dense_layout(level)),
+        codebooks: Some(&codebooks),
+    };
+    let hidden = kinds.desc.hidden;
+    let experts = |ck: &Checkpoint, _: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
+        super::experts::of_layers(&kinds, st.layers, 1)
+            .map(|(ix, m, roles)| {
                 crate::status::STATUS.beat(); // (a mixture-of-experts layer's block takes seconds to read)
-                make(l, &c, ck, layout)
+                super::experts::block(m, roles, hidden, ck, level, (ix, &held))
             })
             .collect()
     };
@@ -74,8 +92,13 @@ pub(crate) fn per_layer(k: NhKind) -> (usize, usize) {
 /// tokens and its context. What the loader runs.
 pub fn lowered(dir: &Path, c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<ModelDesc> {
     let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
-    let lowered = super::lower::nemotron(&kinds, c.eos.clone(), c.max_pos, st)?;
-    super::lower::agree(super::lower::nameless(&lowered), &describe(c, st)?, &label)?;
+    lowered_of(&kinds, &label, c, st)
+}
+
+/// `lowered` of the description `kinds` (named `label` in an error).
+fn lowered_of(kinds: &Described, label: &str, c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<ModelDesc> {
+    let lowered = super::lower::nemotron(kinds, c.eos.clone(), c.max_pos, st)?;
+    super::lower::agree(super::lower::nameless(&lowered), &describe(c, st)?, label)?;
     Ok(lowered)
 }
 

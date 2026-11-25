@@ -82,7 +82,6 @@ pub(super) struct Lossless {
     pub nchunks: i64,
     pub ledger: super::pages::Ledger,
     /// Device bytes of the pages, the pools and the step's buffers.
-    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
     pub bytes: usize,
 }
 
@@ -638,6 +637,13 @@ impl Dyn {
     /// The 12-bit KV tables the next paged layout (`serve_rows`) uses for the rings they fit; None: bf16 pages.
     pub fn set_kv12(&mut self, t: Option<Tables>) {
         self.kv12 = t;
+    }
+
+    /// Whether the keys and values are held in 12-bit pages: tables the loader set (`set_kv12`, where its plan has the pages: `LoadPlan::kv12`) that a ring in use takes, as
+    /// `Dyn::page` makes the pools. True from the load, before the pools are made.
+    pub(super) fn holds_12bit_pages(&self) -> bool {
+        let Some(t) = &self.kv12 else { return false };
+        (0..self.big.d.rings.len()).any(|r| self.ring_cap[r] > 0 && Lossless::token_bytes(&self.lib, &self.big.d, t, r).is_some())
     }
 
     /// Each ring's pages that hold escape chunks, read from their headers (a page's directory words past its heads' headers and its used word): the

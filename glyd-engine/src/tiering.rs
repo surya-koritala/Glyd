@@ -6,37 +6,37 @@
 use crate::f8::{F8Experts, F8Places};
 use crate::ffi::{err, Result};
 use crate::moe::{ExpertCache, ExpertStack, Joined};
+use crate::moe_rows::{Down, DownHost};
 use crate::offload::{ExpertStore, HostHalf, PackIn};
 use std::rc::Rc;
 
-/// A layer's experts (`up` and `down`, each every expert's pack end to end, as `Joined` makes them) in the expert cache `store` as its layer `layer`: `slots` places of each matrix on the GPU (`ExpertStack::pooled`), every
-/// expert's bytes in pinned memory, the host computing from them where `cpu` says how (else the misses are copied). Returns the two stacks (the layer's `MoeWeights`) and the cache (`MoeLayer::with_cache`) for the GPU `ordinal`.
+/// A layer's experts (`up` and `down`, each every expert's pack end to end, as `Joined` makes them; the second matrices in a block layout or a row layout) in the expert cache `store` as its layer `layer`: `slots` places of
+/// each matrix on the GPU (`ExpertStack::pooled`, `RowStack::pooled`), every expert's bytes in pinned memory, the host computing from them where `cpu` says how (else the misses are copied). Returns the two stacks (the
+/// layer's `MoeWeights`) and the cache (`MoeLayer::with_cache`) for the GPU `ordinal`.
 pub fn cached_stacks(
     up: &Joined,
-    down: &Joined,
+    down: &DownHost,
     slots: usize,
     store: &Rc<ExpertStore>,
     layer: usize,
     ordinal: i32,
     cpu: Option<HostHalf>,
-) -> Result<(ExpertStack, ExpertStack, ExpertCache)> {
-    if up.experts != down.experts {
-        return err(format!("{} experts of the first matrix and {} of the second", up.experts, down.experts));
+) -> Result<(ExpertStack, Down, ExpertCache)> {
+    if up.experts != down.experts() {
+        return err(format!("{} experts of the first matrix and {} of the second", up.experts, down.experts()));
     }
     let slots = slots.clamp(1, up.experts);
-    let (u, d) = (
-        ExpertStack::pooled(up.tag, up.tiers, up.experts, slots, up.rows, up.cols)?,
-        ExpertStack::pooled(down.tag, down.tiers, down.experts, slots, down.rows, down.cols)?,
-    );
-    for (j, s, what) in [(up, &u, "first"), (down, &d, "second")] {
-        if j.data.len() as u64 != j.experts as u64 * s.data_stride || j.scales.len() as u64 != j.experts as u64 * s.scale_stride {
+    let (u, d) = (ExpertStack::pooled(up.tag, up.tiers, up.experts, slots, up.rows, up.cols)?, down.pooled(slots)?);
+    let ((ud, us), (dd, ds)) = (([u.data_stride, u.scale_stride], u.buffers()), (d.places().1, d.places().0));
+    for (bytes, stride, what) in [([&up.data[..], &up.scales[..]], ud, "first"), (down.bytes(), dd, "second")] {
+        if bytes[0].len() as u64 != up.experts as u64 * stride[0] || bytes[1].len() as u64 != up.experts as u64 * stride[1] {
             return err(format!(
                 "the {what} matrices' {} + {} bytes, where {} experts at the places' strides take {} + {}",
-                j.data.len(),
-                j.scales.len(),
-                j.experts,
-                j.experts as u64 * s.data_stride,
-                j.experts as u64 * s.scale_stride
+                bytes[0].len(),
+                bytes[1].len(),
+                up.experts,
+                up.experts as u64 * stride[0],
+                up.experts as u64 * stride[1]
             ));
         }
     }
@@ -44,10 +44,7 @@ pub fn cached_stacks(
         layer,
         up.experts,
         slots,
-        &[
-            PackIn { bytes: [&up.data, &up.scales], stride: [u.data_stride, u.scale_stride], dev: u.buffers() },
-            PackIn { bytes: [&down.data, &down.scales], stride: [d.data_stride, d.scale_stride], dev: d.buffers() },
-        ],
+        &[PackIn { bytes: [&up.data, &up.scales], stride: ud, dev: us }, PackIn { bytes: down.bytes(), stride: dd, dev: ds }],
         cpu,
     )?;
     Ok((u, d, ExpertCache { store: store.clone(), layer, ordinal }))

@@ -22,6 +22,9 @@ pub enum Family {
     Gemma4,
     Kimi,
     Glm,
+    /// GLM-5.3 (`glm_moe_dsa`: the latent attention on every layer, its indexer its own or shared, plain residuals; FP8 as released): penguin on the dynamic
+    /// route (src/dynamic/glm.rs `load_plain`), on one GPU or its layers cut over several, every expert of a stage on its GPU.
+    GlmDsa,
     DeepSeekV4,
     Muse,
     /// Qwen3.8-Flash-Next (the Qwen 4 preview, `qwen4_exp`): penguin on the dynamic route on one GPU, every expert on it (src/dynamic/qwen4x.rs `stage`).
@@ -124,7 +127,7 @@ const PENGUIN: &[&str] = &["penguin"];
 /// Lossless, or the routed experts at hummingbird's bits (a directory `glyd-engine pack --layout hummingbird --usage` makes: src/hb_pack.rs).
 const PENGUIN_HB: &[&str] = &["penguin", "hummingbird"];
 
-pub static TABLE: [Support; 9] = [
+pub static TABLE: [Support; 10] = [
     Support {
         family: Family::Qwen3,
         name: "plain dense",
@@ -202,6 +205,18 @@ pub static TABLE: [Support; 9] = [
         experts_in_ram_levels: PENGUIN_HB,
         drafts: false,
         route: Route { sizing: Sizing::Dynamic, across: Across::Asked, expert_cache: ExpertCache::Release, ..ONE_GPU },
+    },
+    Support {
+        family: Family::GlmDsa,
+        name: "GLM-5.3",
+        levels: PENGUIN,
+        hummingbird_packed_only: false,
+        default_ctx: Some(DEFAULT_CTX),
+        max_ctx: None,
+        split_levels: PENGUIN,
+        experts_in_ram_levels: NONE,
+        drafts: false,
+        route: Route { sizing: Sizing::Dynamic, ..ONE_GPU },
     },
     Support {
         family: Family::DeepSeekV4,
@@ -477,6 +492,21 @@ mod tests {
             assert!(d.desc.blocks.iter().any(|b| matches!(b.body, crate::runtime::kinds::Body::Ffn(crate::runtime::kinds::Ffn::Moe(_)))), "{what}");
             assert!(crate::dynamic::split::loader(&d).is_ok(), "{what}");
         }
+    }
+
+    /// GLM-5.3 (`glm_moe_dsa`) is a family of its own: penguin on the dynamic route, its layers cut over the GPUs there, opened by the loader of the latent
+    /// attention with plain residuals (src/dynamic/glm.rs `stage_plain`).
+    #[test]
+    fn glm53_runs_on_the_dynamic_route() {
+        let g = fixture("glm_moe_dsa_config.json");
+        assert_eq!(family(&g, "g").unwrap(), Family::GlmDsa);
+        assert!(check(&g, "zai-org/GLM-5.3", "GLM-5.3", "penguin").is_ok());
+        let r = check(&g, "zai-org/GLM-5.3", "GLM-5.3", "kestrel").unwrap_err();
+        assert_eq!(r.what, "GLM-5.3 (GLM-5.3) runs at the penguin level in this engine, not kestrel", "{r:?}");
+        assert_eq!((row(Family::GlmDsa).split_levels, row(Family::GlmDsa).route.sizing), (PENGUIN, Sizing::Dynamic));
+        assert_eq!(crate::dynamic::split::family(&g), Some("GLM-5.3"), "opened by the dynamic route from its release's directory");
+        let d = crate::runtime::describe::describe(&serde_json::from_str(&g).unwrap()).unwrap();
+        assert!(crate::dynamic::split::loader(&d).is_ok());
     }
 
     #[test]

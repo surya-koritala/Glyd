@@ -364,6 +364,37 @@ impl ConfigNemotronH {
             .collect()
     }
 
+    /// Layer `l`'s routed experts in a glyd-v7 directory at the Hummingbird level, as src/hbpack.rs saves them (src/moe_hb.rs `HbNames`): each expert's up and down
+    /// packs, their neuron rows over the latent, the signs of the layer's rotation beside them. What the format's tools read a directory by (`diskcheck`).
+    pub fn hb_names(&self, l: usize) -> crate::moe_hb::HbNames {
+        let p = format!("{}.mixer", self.layer_name(l));
+        crate::moe_hb::HbNames {
+            experts: (0..self.moe.experts).map(|e| [format!("{p}.experts.{e}.up_proj"), format!("{p}.experts.{e}.down_proj")]).collect(),
+            rows: self.moe.inter,
+            cols: self.moe.latent,
+            signs: format!("{p}.glyd_rot_signs"),
+        }
+    }
+
+    /// The GPU memory one expert takes at `level` (and so a place of the expert cache): the codes and the scales of its two matrices; at the Hummingbird level the
+    /// mean of the recipe hb40's (the directory's own bytes are what `lossy_plan` sizes the weights by). The second matrix in its row layout takes the same bytes as
+    /// in the block layout (`moe_rows::row_strides` and `moe::expert_strides` give the same for the transpose: a test holds them equal), so a cache is the same size
+    /// whichever layout the experts are held in.
+    pub fn expert_bytes(&self, level: Layout) -> Result<u64> {
+        let (m, w) = (&self.moe, self.moe.width(self.hidden));
+        if level == Layout::Hummingbird {
+            return crate::moe_hb::expert_bytes_mean(m.experts, m.inter, m.latent);
+        }
+        let tag = match level {
+            Layout::Int6 => glyd_gpu::pack::INT6_TAG,
+            Layout::Int5 => glyd_gpu::pack::INT5_TAG,
+            Layout::Int4 => glyd_gpu::pack::INT4_TAG,
+            other => return err(format!("the experts are held in the block layouts: {} is asked", other.name())),
+        };
+        let ((ud, us), (dd, ds)) = (crate::moe::expert_strides(tag, m.inter, w)?, crate::moe::expert_strides(tag, w, m.inter)?);
+        Ok(ud + us + dd + ds)
+    }
+
     /// The packed matrices in load order (the packable ones of the layers' matrices and experts, then the embedding and the LM head where the model has its own): packed at a level.
     pub fn packs(&self) -> Vec<Pack35> {
         self.matrices().into_iter().filter(Pack35::packable).collect()
@@ -898,6 +929,132 @@ pub(crate) mod tests {
         have.retain(|t| !held.contains(Pack35::saved(&t.0)));
         assert!(c.check_layers(&have, &[0, 7], &none).unwrap_err().msg.contains("no backbone.layers.7.mixer.q_proj.weight"));
         c.check_layers(&have, &[0, 7], &held).unwrap();
+    }
+    /// The Moe kind's block of the released config's description is the core's layer moe.rs holds for Nemotron 3 Super (22 of 512, scale 5, a latent of 1,024,
+    /// relu squared without a gate, the router over the model's width), and a config that does not renormalize says so.
+    #[test]
+    fn the_moe_kind_of_the_super_config() {
+        use crate::moe::{Act, MoeCfg, Router};
+        let of = |t: &str| {
+            let kinds = crate::runtime::describe::describe(&serde_json::from_str(t).unwrap()).unwrap();
+            let (ix, m, _) = crate::dynamic::experts::of_layers(&kinds, (0, 88), 1).next().unwrap();
+            assert_eq!((ix.layer, ix.moe), (1, 0), "the first mixture-of-experts layer is the second block, a block a layer");
+            crate::dynamic::experts::cfg(m, 4096, 2688).unwrap()
+        };
+        let cfg = of(text());
+        assert_eq!(cfg, MoeCfg { experts: 512, router_hidden: 4096, hidden: 1024, inter: 2688, router: Router::sigmoid(22, 5.0), act: Act::Relu2 });
+        cfg.check().unwrap();
+        assert!(!of(&edited(|t| set(t, "norm_topk_prob", "false"))).router.renorm);
+        // (every mixture-of-experts layer of the pattern, numbered among them in order)
+        let kinds = crate::runtime::describe::describe(&serde_json::from_str(text()).unwrap()).unwrap();
+        let c = parse();
+        let of: Vec<(usize, usize)> = crate::dynamic::experts::of_layers(&kinds, (0, c.layers), 1).map(|(ix, _, _)| (ix.layer, ix.moe)).collect();
+        let want: Vec<(usize, usize)> = (0..c.layers).filter(|&l| c.kinds[l] == NhKind::Moe).enumerate().map(|(k, l)| (l, k)).collect();
+        assert_eq!((of.len(), of), (c.layers_of(NhKind::Moe), want));
+    }
+
+    /// An expert is 3,784,704 bytes at swift, 4,472,832 at kestrel and 3,096,576 at wren (the codes and scales of its two matrices), and a budget buys places a layer
+    /// of 512 by them: at swift 14.95, 22.99 and 34 GiB are 106, 163 and 241; fewer than the choices of a step (22) are none.
+    #[test]
+    fn an_expert_is_a_few_megabytes_and_a_budget_buys_places() {
+        use crate::plan::sizing::cache_plan;
+        let c = parse();
+        assert_eq!(
+            (c.expert_bytes(Layout::Int5).unwrap(), c.expert_bytes(Layout::Int6).unwrap(), c.expert_bytes(Layout::Int4).unwrap()),
+            (3_784_704, 4_472_832, 3_096_576)
+        );
+        assert!(c.expert_bytes(Layout::Twelve).is_err() && c.expert_bytes(Layout::Int3).is_err());
+        let gib = |g: f64| (g * (1u64 << 30) as f64) as u64;
+        for (cap, places) in [(14.95, 106), (22.99, 163), (34.0, 241)] {
+            let plan = cache_plan(&c, Layout::Int5, gib(cap), 22).unwrap().unwrap();
+            assert_eq!((plan.slots, plan.layers, plan.experts), (places, 40, 512), "{cap} GiB");
+        }
+        assert!(cache_plan(&c, Layout::Int5, gib(3.0), 22).unwrap().is_none(), "21 experts a layer are fewer than a step's choices");
+    }
+
+    /// An expert's second matrix in a row layout takes the bytes it takes in the block layout, at the real shape and at the three levels: 2,688 neurons of 512, 640
+    /// or 768 bytes of codes and 64 of scales, against the block layout's 1,024 rows of 2,688: the expert cache's places and its plan are the same size for either.
+    #[test]
+    fn a_second_matrix_in_a_row_layout_takes_the_bytes_of_the_block_layout() {
+        use crate::moe::expert_strides;
+        use crate::moe_rows::row_strides;
+        use glyd_gpu::pack::{INT4_ROW_TAG, INT4_TAG, INT5_ROW_TAG, INT5_TAG, INT6_ROW_TAG, INT6_TAG};
+        let c = parse();
+        for (block, row, per_neuron) in [(INT6_TAG, INT6_ROW_TAG, 768u64), (INT5_TAG, INT5_ROW_TAG, 640), (INT4_TAG, INT4_ROW_TAG, 512)] {
+            let (rows, blocks) = (row_strides(row, c.moe.inter, c.moe.latent).unwrap(), expert_strides(block, c.moe.latent, c.moe.inter).unwrap());
+            assert_eq!(rows, blocks, "tag {block}");
+            assert_eq!(rows, (c.moe.inter as u64 * per_neuron, c.moe.inter as u64 * 64), "tag {block}");
+        }
+    }
+
+    /// A layer's matrices come in the order the packer saves them, and the experts' in the order it saves them.
+    #[test]
+    fn the_layers_matrices_in_the_order_they_are_saved() {
+        let c = parse();
+        let keys: Vec<(String, usize, usize)> =
+            c.layer_packs(1).into_iter().map(|p| (p.key.rsplit("mixer.").next().unwrap().to_string(), p.rows(), p.cols)).collect();
+        assert_eq!(
+            keys,
+            [
+                ("fc1_latent_proj".to_string(), 1024, 4096),
+                ("fc2_latent_proj".to_string(), 4096, 1024),
+                ("shared_experts.up_proj".to_string(), 5376, 4096),
+                ("shared_experts.down_proj".to_string(), 4096, 5376)
+            ]
+        );
+        let experts = c.expert_packs(1);
+        assert_eq!(experts.len(), 1024);
+        assert!(
+            experts[0].key.ends_with("experts.0.up_proj")
+                && experts[1].key.ends_with("experts.0.down_proj")
+                && experts[1023].key.ends_with("experts.511.down_proj")
+        );
+        assert_eq!((experts[0].rows(), experts[0].cols, experts[1].rows(), experts[1].cols), (2688, 1024, 1024, 2688));
+        // (a hummingbird directory's names of the same experts, and the signs beside them)
+        let x = c.hb_names(1);
+        assert_eq!((x.experts.len(), x.rows, x.cols), (512, 2688, 1024));
+        assert_eq!((x.experts[0][0].as_str(), x.experts[511][1].as_str()), (experts[0].key.as_str(), experts[1023].key.as_str()));
+        assert_eq!(x.signs, "backbone.layers.1.mixer.glyd_rot_signs");
+    }
+
+    /// The tiny model `tools/nemotron_ref.py moetoy` builds (its config is the fixture the script's selftest holds it to) is a model this engine runs: the numbers of
+    /// its kernels, the Moe kind's block of its description, and every matrix of its mixture-of-experts layers in whole blocks of both block layouts.
+    #[test]
+    fn the_random_tiny_model_is_one_the_engine_takes() {
+        use crate::kern::{MAMBA2_HEAD, MAMBA2_STATE};
+        use crate::moe::expert_strides;
+        use glyd_gpu::pack::{INT5_TAG, INT6_TAG};
+        let text = include_str!("../tests/fixtures/nemotron_h_moetoy_config.json");
+        let c = ConfigNemotronH::parse(text, "moetoy", None).unwrap();
+        assert_eq!(c.kinds, [NhKind::Mamba, NhKind::Moe, NhKind::Attention, NhKind::Moe, NhKind::Mamba, NhKind::Moe]);
+        assert!(
+            c.m_head_dim == MAMBA2_HEAD
+                && c.m_state == MAMBA2_STATE
+                && c.conv_kernel == 4
+                && c.head_dim == 128
+                && c.inner() / c.m_groups <= 1024
+                && c.heads / c.kv_heads <= 16
+                && c.hidden <= 8192
+        );
+        assert_eq!(
+            (c.moe.experts, c.moe.top_k, c.moe.latent, c.moe.inter, c.moe.shared_inter, c.moe.scale, c.moe.norm_topk),
+            (16, 4, 128, 128, 256, 5.0, true)
+        );
+        let kinds = crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap();
+        let blocks: Vec<_> = crate::dynamic::experts::of_layers(&kinds, (0, c.layers), 1).collect();
+        assert_eq!(blocks.iter().map(|b| (b.0.layer, b.0.moe)).collect::<Vec<_>>(), [(1, 0), (3, 1), (5, 2)]);
+        for (_, m, _) in &blocks {
+            crate::dynamic::experts::cfg(m, c.hidden, c.moe.inter).unwrap().check().unwrap();
+        }
+        for l in 0..c.layers {
+            assert!(c.layer_packs(l).iter().all(Pack35::packable), "layer {l}'s matrices are packed");
+        }
+        for p in c.layer_packs(1).into_iter().chain(c.expert_packs(1)) {
+            for tag in [INT6_TAG, INT5_TAG] {
+                assert!(expert_strides(tag, p.rows(), p.cols).is_ok(), "{} is {} x {}", p.key, p.rows(), p.cols);
+            }
+        }
+        assert_eq!((c.vocab, c.hidden), (2048, 256));
     }
 }
 

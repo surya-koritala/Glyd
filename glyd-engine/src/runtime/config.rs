@@ -217,6 +217,7 @@ fn family_by(arch: &str, model_type: &str, nested: Option<&str>) -> Option<Famil
         _ if a == "MuseSparkForConditionalGeneration" => Family::Muse,
         _ if m == "kimi_k3" => Family::Kimi,
         _ if a == "Glm5NextForConditionalGeneration" => Family::Glm,
+        _ if m == "glm_moe_dsa" => Family::GlmDsa,
         _ if a == "NemotronHForCausalLM" => Family::NemotronH,
         _ if m == "deepseek_v4" => Family::DeepSeekV4,
         _ if m == "qwen4_exp" => Family::FlashNext,

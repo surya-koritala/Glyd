@@ -118,7 +118,6 @@ pub mod models;
 pub mod moe;
 pub mod moe_hb;
 pub mod moe_hbg;
-pub mod moe_nh;
 pub mod moe_qwen4x;
 #[cfg(feature = "dev")]
 pub mod moe_ref;

@@ -441,6 +441,22 @@ impl RefLayer {
         self.body_with(None, seq, pos, token, h)
     }
 
+    /// The sequence's cached positions from `pos` on forgotten (an attention's keys and values, a latent attention's latents and indexer keys): a row run
+    /// again at a position the cache holds then takes its place, and the later ones' (a draft head's rows run again once the model has checked its drafts).
+    pub fn forget_from(&mut self, seq: u32, pos: u32) {
+        match self.seqs.get_mut(&seq) {
+            Some(SeqState::Attention(c)) => {
+                let keep = c.pos.iter().take_while(|&&q| q < pos).count();
+                (c.pos.truncate(keep), c.k.truncate(keep), c.v.truncate(keep), c.ikey.truncate(keep));
+            }
+            Some(SeqState::Mla(c)) => {
+                let keep = c.pos.iter().take_while(|&&q| q < pos).count();
+                (c.pos.truncate(keep), c.lat.truncate(keep), c.ikey.truncate(keep), c.igate.truncate(keep));
+            }
+            _ => {}
+        }
+    }
+
     /// The sequence's attention cache in this block, where it has one.
     pub fn kv_cache(&self, seq: u32) -> Option<&attention::KvCache> {
         match self.seqs.get(&seq) {

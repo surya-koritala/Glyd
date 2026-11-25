@@ -31,13 +31,13 @@ pub fn driver_min(cc: (i32, i32)) -> i32 {
 }
 
 /// What `run`, `serve` and `fit` say on a GPU whose driver reports CUDA `driver` (12090 for 12.9) where the build carries the CUDA 12 kernels beside the CUDA 13 ones
-/// (`both`, a release's): the driver takes the CUDA 12 kernels and GPU library (dev.rs `pick_fatbin`, glyd-gpu's library by the driver's version), and says why and
+/// (`both`, a release's): the driver takes the CUDA 12 kernels (dev.rs `pick_fatbin`; a CUDA build loads no GPU library), and says why and
 /// how fast. Measured 2026-11-23: gemma-4-12B at wren on an RTX 4080 SUPER with the CUDA 12 pair against the CUDA 13 one, every load of the bench's gate suite
 /// within 0.3% (decode and prompt). None on a driver of CUDA 13, or a build with one pair.
 pub fn cuda12_note(driver: i32, both: bool) -> Option<String> {
     (both && driver > 0 && driver < 13000).then(|| {
         format!(
-            "this driver (the {} series) reports CUDA {}.{}, not 13, so the engine runs its CUDA 12 kernels and GPU library; they measured as fast as the CUDA 13 ones (gemma-4-12B on an RTX 4080 SUPER, within 0.3%). A driver of 580 or newer runs the CUDA 13 ones.",
+            "this driver (the {} series) reports CUDA {}.{}, not 13, so the engine runs its CUDA 12 kernels; they measured as fast as the CUDA 13 ones (gemma-4-12B on an RTX 4080 SUPER, within 0.3%). A driver of 580 or newer runs the CUDA 13 ones.",
             driver_series(driver),
             driver / 1000,
             driver % 1000 / 10

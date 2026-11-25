@@ -45,14 +45,14 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_sto
     // (a hummingbird directory, src/hb_pack.rs: the routed experts' codebook rows in place of the release's)
     let hb = crate::hb_pack::HbDir::open(dir)?;
     let store = hc.map(crate::hbg_store::store_for);
-    let held = super::experts::Held { hb: hb.as_ref(), cache: hc.zip(store.as_ref()), ordinal: o.device, f8: None };
+    let held = super::experts::Held { hb: hb.as_ref(), cache: hc.zip(store.as_ref()), ordinal: o.device, f8: None, dense: None, codebooks: None };
     let hidden = kinds.desc.hidden;
     // (the experts lossless in the tiered layout, whatever the level of the rest)
     let experts = |ck: &Checkpoint, _: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
-        super::experts::of_layers(&kinds, st.layers)
-            .map(|(l, m, roles)| {
+        super::experts::of_layers(&kinds, st.layers, 2)
+            .map(|(ix, m, roles)| {
                 crate::status::STATUS.beat();
-                Ok(Box::new(ResidentMoe(super::experts::held(m, roles, hidden, ck, Layout::Tiered, Some((l, &held)))?)) as Box<dyn MoeBlock>)
+                Ok(Box::new(ResidentMoe(super::experts::held(m, roles, hidden, ck, Layout::Tiered, Some((ix, &held)))?)) as Box<dyn MoeBlock>)
             })
             .collect()
     };
@@ -99,8 +99,8 @@ mod tests {
             assert!(d.small.iter().enumerate().all(|(i, s)| if i == 0 { s.is_empty() } else { names.contains(s) }));
             let blocks: Vec<usize> = d.layers.iter().flatten().filter_map(|op| if let Op::Moe(x) = op { Some(x.block) } else { None }).collect();
             assert_eq!(blocks, (0..n).collect::<Vec<_>>());
-            let of: Vec<_> = experts::of_layers(&kinds, st.layers).collect();
-            assert_eq!(of.iter().map(|b| b.0).collect::<Vec<_>>(), (st.layers.0..st.layers.1).collect::<Vec<_>>());
+            let of: Vec<_> = experts::of_layers(&kinds, st.layers, 2).collect();
+            assert_eq!(of.iter().map(|b| b.0.layer).collect::<Vec<_>>(), (st.layers.0..st.layers.1).collect::<Vec<_>>());
             for (_, m, _) in of {
                 let k = experts::cfg(m, kinds.desc.hidden, c.inter).unwrap();
                 assert_eq!((k.experts, k.router_hidden, k.hidden, k.inter, k.fused()), (c.experts, c.hidden, c.latent, c.inter, 0));

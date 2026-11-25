@@ -1,10 +1,11 @@
-//! Hummingbird (Linear GLY-98, GLY-134): Nemotron 3 Super's routed experts at 3 and 2 bits a weight on the GPU, `NhMoeHb`, the `MoeBlock` the layers of a glyd-v7 directory at the Hummingbird level run (`hb` in glyd.json). An expert is
-//! two matrices of 2,688 neuron rows of 1,024 values (`up`, and `downT`, down transposed), each row its codes (3 or 2 bits, a bitstream), a bf16 scale for each run of 32 and a bf16 codebook of its own (glyd-gpu's codebook.rs
-//! has the layout; 464 and 328 bytes a row, 2,494,464 and 1,763,328 bytes an expert), in the basis of one rotation R = H diag(signs) of the 1,024 axis for the layer (H the natural-order Hadamard matrix over sqrt 1,024, the signs
-//! a tensor of the directory). A layer's call is: the router on the layer's input; `fc1_latent_proj` of it, z; z' = R z once for the token (kernels/moe_hb.cu `hb_rot_in`); for each expert a pair chose, the first product over its up
+//! Hummingbird (Linear GLY-98, GLY-134): the routed experts of a glyd-v7 directory at the Hummingbird level (`hb` in glyd.json, the format glyd/nemotron-3-hummingbird holds) at 3 and 2 bits a weight on the GPU, `HbMoe`,
+//! the Moe kind's block of relu squared experts in a latent of the block's own (src/dynamic/experts.rs `block`), made from the layer's kind and its roles' tensors (`HbNames`). An expert is two matrices of neuron rows over the
+//! latent (Nemotron 3 Super's: 2,688 rows of 1,024 values; `up`, and `downT`, down transposed), each row its codes (3 or 2 bits, a bitstream), a bf16 scale for each run of 32 and a bf16 codebook of its own (glyd-gpu's
+//! codebook.rs has the layout; at that shape 464 and 328 bytes a row, 2,494,464 and 1,763,328 bytes an expert), in the basis of one rotation R = H diag(signs) of the latent's axis for the layer (H the natural-order Hadamard
+//! matrix over sqrt of the width, the signs a tensor of the directory). A layer's call is: the router on the layer's input; the latent's down projection of it, z; z' = R z once for the token (kernels/moe_hb.cu `hb_rot_in`); for each expert a pair chose, the first product over its up
 //! rows with relu squared (`hb_up2`, `hb_up3`: u_n = <w_n, z'>, rounded to bf16, relu squared rounded to bf16 once), the second product over the rows of the neurons that are not zero (`hb_down2`, `hb_down3`: the rows of downT of
 //! the active neurons added, each times its activation, into the 1,024 outputs; the sparse product of src/moe_rows.rs); the weighted sum of a token's pairs and R^T once (`hb_sum_rot`: y = signs o (H y')), one rounding to bf16;
-//! `fc2_latent_proj`; the shared expert. No atomics: every launch gives the same bits every time, and an expert gives the same bits in whatever place of the GPU's memory it is, so that a layer through the expert cache is the layer
+//! the latent's up projection; the shared expert. No atomics: every launch gives the same bits every time, and an expert gives the same bits in whatever place of the GPU's memory it is, so that a layer through the expert cache is the layer
 //! with every expert resident bit for bit, and a decode step of a layer with every expert there is captured in a CUDA graph.
 //!
 //! An expert has its own bits (the recipe hb40: the 40% most used of a layer 3, the rest 2), so a layer's experts are held in two groups, one a bit width (`HbStack`: the codes, and the scales and codebooks, of its experts end to end,
@@ -30,11 +31,11 @@ use crate::kern35::Mat;
 use crate::kern_nh::{MoeBlock, NhHost};
 use crate::launch;
 use crate::moe::{add_shared_with, route_with, shared_add_with, shared_mlp_with, MoeCfg, MoeScratch, Shape, Shared};
-use crate::moe_nh::{bias_f32, moe_cfg};
 use crate::moe_rows::{split_for, ROWS_MAX_INTER};
-use crate::nemotron::{pack_layout, ConfigNemotronH, NhKind};
 use crate::offload::{Call, DiskIn, ExpertStore, Groups, GroupsCall, HostHalf, PackIn, Reader, Stage, CPU_TOKENS};
-use crate::weights::{ordered, read_pack, upload_bytes, upload_packed, v7_manifest, Layout};
+use crate::runtime::describe::Source;
+use crate::runtime::kinds;
+use crate::weights::{ordered, upload_bytes, upload_packed, v7_manifest, Layout};
 use glyd_gpu::codebook::{cb_rows_bits, cb_strides, CbRows};
 use glyd_gpu::json::Value;
 use glyd_gpu::safetensors::Checkpoint;
@@ -381,6 +382,46 @@ impl HbStack {
 
 // ---- reading a layer from a directory ---------------------------------------------------------------------------------------------------------------------------------------
 
+/// A layer's routed experts in a glyd-v7 directory at the Hummingbird level, by name: each expert's two packs (its up matrix's and its down matrix's, saved as the
+/// transpose), the neuron rows of each and the values of a row (the experts' width), and the tensor of the signs of the layer's rotation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HbNames {
+    pub experts: Vec<[String; 2]>,
+    pub rows: usize,
+    pub cols: usize,
+    pub signs: String,
+}
+
+impl HbNames {
+    /// The experts of a description's block (`roles`: each expert's up matrix, `experts_up`, and down matrix, `experts_down`, a tensor each), `cols` wide, as
+    /// the directory's glyd.json holds them (`manifest`: a pack an expert's matrix, its neuron rows the first of its shape); the signs beside them, the tensor
+    /// `glyd_rot_signs` of the module that holds the experts' list (the part of their names before the expert's number, less the list's own name).
+    pub fn of_roles(roles: &[(String, Source)], manifest: &Value, cols: usize) -> Result<HbNames> {
+        let each = |r: &str| match roles.iter().find(|(n, _)| n == r).map(|(_, s)| s) {
+            Some(Source::Experts(v)) if v.len() > 1 && v.iter().all(|x| x.len() == 1) => {
+                Ok(v.iter().map(|x| crate::qwen35::Pack35::saved(&x[0]).to_string()).collect::<Vec<_>>())
+            }
+            other => err(format!("the experts' role {r} is {other:?}, where a tensor an expert is, of two or more experts")),
+        };
+        let (up, down) = (each("experts_up")?, each("experts_down")?);
+        if up.len() != down.len() {
+            return err(format!("{} experts' up matrices and {} down matrices", up.len(), down.len()));
+        }
+        // (the common start of two experts' names ends at the list's name and the dot before an expert's number: the module is what comes before the list's name)
+        let common = up[0].bytes().zip(up[1].bytes()).take_while(|(a, b)| a == b).count();
+        let list = up[0][..common].rfind('.').map(|i| &up[0][..i]).ok_or_else(|| Error(format!("{}: no module of the experts' list", up[0])))?;
+        let signs = format!("{}glyd_rot_signs", list.rfind('.').map_or("", |i| &list[..=i]));
+        let rows = manifest
+            .get("packs")
+            .and_then(|p| p.get(&up[0]))
+            .and_then(|e| e.get("shape"))
+            .and_then(Value::as_u64s)
+            .and_then(|s| s.first().copied())
+            .ok_or_else(|| Error(format!("glyd.json: no pack {} with its shape", up[0])))? as usize;
+        Ok(HbNames { experts: up.into_iter().zip(down).map(|(u, d)| [u, d]).collect(), rows, cols, signs })
+    }
+}
+
 /// A layer's experts read from a Hummingbird directory: the two groups (index 0 the two-bit experts, 1 the three-bit ones; None where a layer has none of that width), each expert's group and its number there, and the signs of the rotation.
 pub struct HbLayerHost {
     pub groups: [Option<HbHost>; 2],
@@ -426,40 +467,37 @@ fn read_matrix(ck: &Checkpoint, manifest: &Value, key: &str, rows: usize, cols: 
     })
 }
 
-/// The signs of layer `l`'s rotation: `glyd_rot_signs`, int8 [cols] of +1 and -1.
-fn read_signs(ck: &Checkpoint, c: &ConfigNemotronH, l: usize) -> Result<Vec<i8>> {
-    let name = format!("{}layers.{l}.mixer.glyd_rot_signs", c.prefix);
-    let (_, t) = ck.get(&name).ok_or_else(|| Error(format!("{}: no tensor {name}: the directory is not a Hummingbird one", ck.dir.display())))?;
-    if t.dtype != "I8" || t.shape != [c.moe.latent as u64] {
-        return err(format!("{name} is {} {:?}, where I8 [{}] is wanted", t.dtype, t.shape, c.moe.latent));
+/// The signs of a layer's rotation (`x.signs`): int8 [cols] of +1 and -1.
+fn read_signs(ck: &Checkpoint, x: &HbNames) -> Result<Vec<i8>> {
+    let name = &x.signs;
+    let (_, t) = ck.get(name).ok_or_else(|| Error(format!("{}: no tensor {name}: the directory is not a Hummingbird one", ck.dir.display())))?;
+    if t.dtype != "I8" || t.shape != [x.cols as u64] {
+        return err(format!("{name} is {} {:?}, where I8 [{}] is wanted", t.dtype, t.shape, x.cols));
     }
-    let signs: Vec<i8> = ck.read(&name).map_err(|e| Error(e.to_string()))?.into_iter().map(|b| b as i8).collect();
+    let signs: Vec<i8> = ck.read(name).map_err(|e| Error(e.to_string()))?.into_iter().map(|b| b as i8).collect();
     if signs.iter().any(|&s| s != 1 && s != -1) {
         return err(format!("{name}: a sign that is neither +1 nor -1"));
     }
     Ok(signs)
 }
 
-/// Layer `l`'s experts and signs from `ck` (a directory at the Hummingbird level), each expert's two packs read on as many threads as the machine has, in order, and joined by bit width. ponytail: the host holds the layer's packs
-/// twice at the join (the real model's 1.05 GB a layer, 2.1 GB at the peak); group by group into the device buffers if a host with less memory runs it.
-pub fn read_layer(ck: &Checkpoint, manifest: &Value, c: &ConfigNemotronH, l: usize) -> Result<HbLayerHost> {
-    let (m, p) = (&c.moe, format!("{}layers.{l}.mixer.experts", c.prefix));
+/// A layer's experts and signs (`x`) from `ck` (a directory at the Hummingbird level), each expert's two packs read on as many threads as the machine has, in order, and joined by bit width. ponytail: the host holds the
+/// layer's packs twice at the join (Nemotron 3 Super's 1.05 GB a layer, 2.1 GB at the peak); group by group into the device buffers if a host with less memory runs it.
+pub fn read_layer(ck: &Checkpoint, manifest: &Value, x: &HbNames) -> Result<HbLayerHost> {
     let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
     let (mut pairs, mut group_of): ([Vec<(CbRows, CbRows)>; 2], Vec<u8>) = ([Vec::new(), Vec::new()], Vec::new());
     let mut local_of = Vec::new();
     ordered(
-        m.experts,
+        x.experts.len(),
         threads,
         2 * threads,
         &|e| {
-            Ok((
-                read_matrix(ck, manifest, &format!("{p}.{e}.up_proj"), m.inter, m.latent, false)?,
-                read_matrix(ck, manifest, &format!("{p}.{e}.down_proj"), m.inter, m.latent, true)?,
-            ))
+            let [up, down] = &x.experts[e];
+            Ok((read_matrix(ck, manifest, up, x.rows, x.cols, false)?, read_matrix(ck, manifest, down, x.rows, x.cols, true)?))
         },
         |e, (up, down)| {
             if up.bits != down.bits {
-                return err(format!("{p}.{e}: its up matrix is {} bits and its down matrix {}", up.bits, down.bits));
+                return err(format!("{}: its up matrix is {} bits and its down matrix {}", x.experts[e][0], up.bits, down.bits));
             }
             let g = group_index(up.bits);
             group_of.push(g as u8);
@@ -471,10 +509,10 @@ pub fn read_layer(ck: &Checkpoint, manifest: &Value, c: &ConfigNemotronH, l: usi
     let mut groups = [None, None];
     for (g, ps) in pairs.iter().enumerate() {
         if !ps.is_empty() {
-            groups[g] = Some(HbHost::of(HbPlace::new(g as u32 + 2, m.inter, m.latent)?, ps)?);
+            groups[g] = Some(HbHost::of(HbPlace::new(g as u32 + 2, x.rows, x.cols)?, ps)?);
         }
     }
-    Ok(HbLayerHost { groups, group_of, local_of, signs: read_signs(ck, c, l)? })
+    Ok(HbLayerHost { groups, group_of, local_of, signs: read_signs(ck, x)? })
 }
 
 // ---- the experts that stay on the disk ------------------------------------------------------------------------------------------------------------------------------------------
@@ -493,17 +531,13 @@ impl HbIndex {
     }
 }
 
-/// Layer `l`'s experts' groups from glyd.json alone: the widths of each expert's two matrices (which must be one), held to the config's shape.
-pub fn index_layer(manifest: &Value, c: &ConfigNemotronH, l: usize) -> Result<HbIndex> {
-    let (m, p) = (&c.moe, format!("{}layers.{l}.mixer.experts", c.prefix));
+/// A layer's experts' groups (`x`) from glyd.json alone: the widths of each expert's two matrices (which must be one), held to the layer's shape.
+pub fn index_layer(manifest: &Value, x: &HbNames) -> Result<HbIndex> {
     let mut out = HbIndex { group_of: Vec::new(), local_of: Vec::new(), members: [Vec::new(), Vec::new()] };
-    for e in 0..m.experts {
-        let (up, down) = (
-            matrix_bits(manifest, &format!("{p}.{e}.up_proj"), m.inter, m.latent, false)?,
-            matrix_bits(manifest, &format!("{p}.{e}.down_proj"), m.inter, m.latent, true)?,
-        );
+    for (e, [u, d]) in x.experts.iter().enumerate() {
+        let (up, down) = (matrix_bits(manifest, u, x.rows, x.cols, false)?, matrix_bits(manifest, d, x.rows, x.cols, true)?);
         if up != down {
-            return err(format!("{p}.{e}: its up matrix is {up} bits and its down matrix {down}"));
+            return err(format!("{u}: its up matrix is {up} bits and its down matrix {down}"));
         }
         let g = group_index(up);
         out.group_of.push(g as u8);
@@ -513,24 +547,24 @@ pub fn index_layer(manifest: &Value, c: &ConfigNemotronH, l: usize) -> Result<Hb
     Ok(out)
 }
 
-/// The bytes of all the routed experts of a directory (every mixture-of-experts layer's, by the widths glyd.json gives them): what a budget for the computer's memory is shared against.
-pub fn experts_bytes(manifest: &Value, c: &ConfigNemotronH) -> Result<u64> {
+/// The bytes of all the routed experts of a directory (each layer's of `layers`, by the widths glyd.json gives them): what a budget for the computer's memory is shared against.
+pub fn experts_bytes<'a>(manifest: &Value, layers: impl IntoIterator<Item = &'a HbNames>) -> Result<u64> {
     let mut total = 0u64;
-    for l in (0..c.layers).filter(|&l| c.kinds[l] == NhKind::Moe) {
-        for (g, n) in index_layer(manifest, c, l)?.counts().into_iter().enumerate() {
-            total += n as u64 * expert_bytes_at(c, g as u32 + 2)?;
+    for x in layers {
+        for (g, n) in index_layer(manifest, x)?.counts().into_iter().enumerate() {
+            total += n as u64 * HbPlace::new(g as u32 + 2, x.rows, x.cols)?.bytes();
         }
     }
     Ok(total)
 }
 
 /// A layer as `read_layer` gives it but with none of its experts' bytes: the groups' places and the numbers of their experts (buffers empty), the groups of the experts and the signs of the rotation.
-fn index_host(ck: &Checkpoint, c: &ConfigNemotronH, l: usize, ix: &HbIndex) -> Result<HbLayerHost> {
+fn index_host(ck: &Checkpoint, x: &HbNames, ix: &HbIndex) -> Result<HbLayerHost> {
     let mut groups = [None, None];
     for (g, n) in ix.counts().into_iter().enumerate().filter(|&(_, n)| n > 0) {
-        groups[g] = Some(HbHost { place: HbPlace::new(g as u32 + 2, c.moe.inter, c.moe.latent)?, experts: n, data: Vec::new(), meta: Vec::new() });
+        groups[g] = Some(HbHost { place: HbPlace::new(g as u32 + 2, x.rows, x.cols)?, experts: n, data: Vec::new(), meta: Vec::new() });
     }
-    Ok(HbLayerHost { groups, group_of: ix.group_of.clone(), local_of: ix.local_of.clone(), signs: read_signs(ck, c, l)? })
+    Ok(HbLayerHost { groups, group_of: ix.group_of.clone(), local_of: ix.local_of.clone(), signs: read_signs(ck, x)? })
 }
 
 /// Experts' parts that are within this many bytes of each other in a shard are read in one read (the tensors of an expert are one run of the shard when the shard was written in the names' order; a shard boundary or another
@@ -567,22 +601,21 @@ pub struct HbDisk {
 }
 
 impl HbDisk {
-    /// The experts of layer `l` of the directory `ck` (`index`: their groups): each tensor found and held to the size its place wants.
-    pub fn open(ck: &Checkpoint, c: &ConfigNemotronH, l: usize, index: &HbIndex) -> Result<HbDisk> {
-        let (m, p) = (&c.moe, format!("{}layers.{l}.mixer.experts", c.prefix));
-        let places = [HbPlace::new(2, m.inter, m.latent)?, HbPlace::new(3, m.inter, m.latent)?];
-        let (mut paths, mut experts): (Vec<PathBuf>, Vec<DiskExpert>) = (Vec::new(), Vec::with_capacity(m.experts));
-        for e in 0..m.experts {
+    /// A layer's experts (`x`) of the directory `ck` (`index`: their groups): each tensor found and held to the size its place wants.
+    pub fn open(ck: &Checkpoint, x: &HbNames, index: &HbIndex) -> Result<HbDisk> {
+        let places = [HbPlace::new(2, x.rows, x.cols)?, HbPlace::new(3, x.rows, x.cols)?];
+        let (mut paths, mut experts): (Vec<PathBuf>, Vec<DiskExpert>) = (Vec::new(), Vec::with_capacity(x.experts.len()));
+        for (e, keys) in x.experts.iter().enumerate() {
             let g = index.group_of[e] as usize;
             let place = &places[g];
             let (cs, ss, bs) = cb_strides(place.bits, place.cols);
             let mut segs = [Seg::default(); 6];
             let mut i = 0;
-            for (matrix, codes, scales, book) in [("up_proj", 0, 0, place.up_book), ("down_proj", place.down_codes, place.down_scales, place.down_book)] {
+            for (matrix, codes, scales, book) in [(&keys[0], 0, 0, place.up_book), (&keys[1], place.down_codes, place.down_scales, place.down_book)] {
                 for (part, bytes, meta, to) in
                     [("data", place.rows * cs, false, codes), ("blocks", place.rows * ss, true, scales), ("codebook", place.rows * bs, true, book)]
                 {
-                    let key = format!("{p}.{e}.{matrix}.glyd_{part}");
+                    let key = format!("{matrix}.glyd_{part}");
                     let (file, t) = ck.get(&key).ok_or_else(|| Error(format!("{}: no tensor {key}", ck.dir.display())))?;
                     if t.bytes != bytes as u64 || t.dtype != "U8" {
                         return err(format!("{key} is {} bytes of {}, where an expert's {part} at {} bits are {bytes} of U8", t.bytes, t.dtype, place.bits));
@@ -695,11 +728,12 @@ struct HbGroup {
     store_layer: Option<usize>,
 }
 
-/// A Hummingbird mixture-of-experts layer on the GPU: the router, the shared expert and the latent projections as `NhMoe` has them, the experts in two groups.
-pub struct NhMoeHb {
+/// The Moe kind's block whose routed experts are a glyd-v7 directory's codebook rows at the Hummingbird level, on a latent of the block's own: the router and its
+/// choice bias, the latent's two projections and the shared expert as the directory holds them, the experts in two groups (one a width).
+pub struct HbMoe {
     cfg: MoeCfg,
     router: Buf,
-    bias: Buf,
+    bias: Option<Buf>,
     shared: Shared,
     fc1: Mat,
     fc2: Mat,
@@ -742,69 +776,83 @@ pub fn split_slots(slots: usize, n: [usize; 2]) -> [usize; 2] {
     s
 }
 
-/// The bytes of an expert at `bits` for the model `c` (its two matrices' codes, scales and codebooks).
-pub fn expert_bytes_at(c: &ConfigNemotronH, bits: u32) -> Result<u64> {
-    Ok(HbPlace::new(bits, c.moe.inter, c.moe.latent)?.bytes())
+/// The mean bytes of an expert of the recipe hb40 for `experts` experts a layer of `rows` neuron rows of `cols` values: 40% of a layer's experts at three bits,
+/// the rest at two. What a plan of the cache counts with where it has not read the directory.
+pub fn expert_bytes_mean(experts: usize, rows: usize, cols: usize) -> Result<u64> {
+    let threes = (experts * HB40_THREE_BIT_PERCENT).div_ceil(100);
+    let at = |bits: u32| Ok::<u64, Error>(HbPlace::new(bits, rows, cols)?.bytes());
+    Ok((threes as u64 * at(3)? + (experts - threes) as u64 * at(2)?) / experts.max(1) as u64)
 }
 
-/// The mean bytes of an expert of the recipe hb40 for the model `c`: 40% of a layer's experts at three bits, the rest at two. What a plan of the cache counts with where it has not read the directory.
-pub fn expert_bytes_mean(c: &ConfigNemotronH) -> Result<u64> {
-    let e = c.moe.experts;
-    let threes = (e * HB40_THREE_BIT_PERCENT).div_ceil(100);
-    Ok((threes as u64 * expert_bytes_at(c, 3)? + (e - threes) as u64 * expert_bytes_at(c, 2)?) / e as u64)
-}
-
-/// The shapes a layer's matrices must have for the kernels: the latent a power of two from 128 to 1,024 (the rotation), the neurons at most the sparse product's list, in runs of 8.
-fn check_shape(c: &ConfigNemotronH) -> Result<()> {
-    let m = &c.moe;
-    if !(ROT_MIN..=ROT_MAX).contains(&m.latent) || !m.latent.is_power_of_two() || m.inter > ROWS_MAX_INTER || !m.inter.is_multiple_of(8) || m.experts > 1024 {
-        return err(format!("experts of {} neurons over a latent of {}: the Hummingbird kernels take a latent that is a power of two from {ROT_MIN} to {ROT_MAX}, at most {ROWS_MAX_INTER} neurons in runs of 8, and 1,024 experts", m.inter, m.latent));
+/// The shapes a layer's matrices must have for the kernels: `experts` of `rows` neuron rows over a width of `cols` (the latent), the width a power of two from 128
+/// to 1,024 (the rotation), the neurons at most the sparse product's list, in runs of 8, and 1,024 experts at most.
+fn check_shape(experts: usize, rows: usize, cols: usize) -> Result<()> {
+    if !(ROT_MIN..=ROT_MAX).contains(&cols) || !cols.is_power_of_two() || rows > ROWS_MAX_INTER || !rows.is_multiple_of(8) || experts > 1024 {
+        return err(format!("{experts} experts of {rows} neurons over a latent of {cols}: the Hummingbird kernels take a latent that is a power of two from {ROT_MIN} to {ROT_MAX}, at most {ROWS_MAX_INTER} neurons in runs of 8, and 1,024 experts"));
     }
     Ok(())
 }
 
-impl NhMoeHb {
-    /// Layer `l` of the model `c` from the Hummingbird directory `ck`, its experts all on the GPU, or (`cache`: the places a layer has in the mean of the experts' widths, and the store) in the computer's memory with places for that
-    /// many on the GPU, split between the two widths (`split_slots`).
-    pub fn load(l: usize, c: &ConfigNemotronH, ck: &Checkpoint, cache: Option<(usize, &Rc<ExpertStore>)>, common: &Rc<HbShared>) -> Result<NhMoeHb> {
-        if c.moe.latent == 0 {
-            return err("the hummingbird level's experts work on the latent: this model has none (kestrel, swift or wren take it)");
-        }
-        if c.kinds.get(l) != Some(&NhKind::Moe) {
-            return err(format!("layer {l} is not a mixture-of-experts layer"));
-        }
-        check_shape(c)?;
+impl HbMoe {
+    /// The block of the kind `m` over a model `hidden` wide, its tensors as `roles` names them, from the Hummingbird directory `ck`: the router (bf16) and its
+    /// choice bias where the kind has one, the latent's projections (`latent_down`, `latent_up`) and the shared expert as the directory holds them (else packed at
+    /// `dense`), its experts all on the GPU, or (`cache`: the places a layer has at the mean of the experts' widths, and the store) in the computer's memory with
+    /// places for that many on the GPU, split between the two widths (`split_slots`), the store's layers 2 `moe` and 2 `moe` + 1 (`moe`: the block's number
+    /// among the blocks of experts); the scratch shared with the stage's other such blocks (`common`). What it does not run is refused in words: a latent with a
+    /// norm or none (the kernels rotate the latent the block projects to), a shape the kernels do not take.
+    #[allow(clippy::too_many_arguments)]
+    pub fn load(
+        m: &kinds::Moe,
+        roles: &[(String, Source)],
+        hidden: usize,
+        ck: &Checkpoint,
+        dense: Layout,
+        moe: usize,
+        cache: Option<(usize, &Rc<ExpertStore>)>,
+        common: &Rc<HbShared>,
+    ) -> Result<HbMoe> {
+        let latent = match &m.latent {
+            Some(l) if l.norm_in.is_none() && l.expert_norm.is_none() && l.norm_out.is_none() => l.dim,
+            other => return err(format!("a latent of {other:?}: the hummingbird level's experts work in a latent of the block's own projections, with no norm (kestrel, swift or wren take the others)")),
+        };
         let v7 = v7_manifest(&ck.dir)?.ok_or_else(|| Error(format!("{}: not a glyd-v7 directory", ck.dir.display())))?;
         let (layout, manifest) = (v7.0, &v7.1);
         if layout != Layout::Hummingbird {
             return err(format!("{}: packed in the {} layout, where the Hummingbird level is asked", ck.dir.display(), layout.name()));
         }
-        let p = format!("{}layers.{l}.mixer", c.prefix);
+        let names = HbNames::of_roles(roles, manifest, latent)?;
+        if names.experts.len() != m.experts {
+            return err(format!("{} experts named, where the layer has {}", names.experts.len(), m.experts));
+        }
+        check_shape(m.experts, names.rows, names.cols)?;
+        let one = |r: &str| match roles.iter().find(|(n, _)| n == r).map(|(_, s)| s) {
+            Some(Source::Tensor(n)) => Ok(n.clone()),
+            other => err(format!("the experts' role {r} is {other:?}, where one tensor is")),
+        };
         let tensor = |name: &str| -> Result<(String, Vec<u8>)> {
             let (_, t) = ck.get(name).ok_or_else(|| Error(format!("no tensor {name}")))?;
             Ok((t.dtype.clone(), ck.read(name).map_err(|e| Error(format!("{name}: {e}")))?))
         };
-        let (dtype, router) = tensor(&format!("{p}.gate.weight"))?;
+        let r = one("router")?;
+        let (dtype, router) = tensor(&r)?;
         if dtype != "BF16" {
-            return err(format!("{p}.gate.weight is {dtype}, where the router is read as BF16"));
+            return err(format!("{r} is {dtype}, where the router is read as BF16"));
         }
-        let bias = tensor(&format!("{p}.gate.e_score_correction_bias")).and_then(|(d, b)| bias_f32(&d, &b))?;
-        let dense = c.layer_packs(l).iter().map(|pk| read_pack(ck, Some(&v7), pk, pack_layout(layout, &pk.key))).collect::<Result<Vec<_>>>()?;
-        let Ok([fc1, fc2, s_up, s_down]) = <[_; 4]>::try_from(dense) else {
-            return err(format!("layer {l}: a mixture-of-experts layer has four matrices besides its experts"));
-        };
-        let index = c.kinds[..l].iter().filter(|&&k| k == NhKind::Moe).count();
+        let bias = if m.router.bias { Some(tensor(&one("choice_bias")?).and_then(|(d, b)| crate::dynamic::experts::bias_f32(&d, &b))?) } else { None };
+        let mat = |r: &str| -> Result<crate::weights::Packed> { crate::dynamic::experts::pack_of(ck, Some(&v7), &[one(r)?], dense) };
+        let (fc1, fc2, s_up, s_down) = (mat("latent_down")?, mat("latent_up")?, mat("shared_up")?, mat("shared_down")?);
+        let shared_inter = s_up.rows;
         // where the computer's memory holds only some of the model's experts (the store has a budget for them), the layer's experts stay in the packed directory and are read into the host tier's slots as the router asks for them
         // (src/offload.rs `Tier`): none of them is read here but the ones a group the GPU holds whole is uploaded from, and the slots' first experts
-        let ix = cache.filter(|(_, store)| store.host_memory().is_some()).map(|_| index_layer(manifest, c, l)).transpose()?;
+        let ix = cache.filter(|(_, store)| store.host_memory().is_some()).map(|_| index_layer(manifest, &names)).transpose()?;
         let (host, disk) = match &ix {
             Some(ix) => {
                 let counts = ix.counts();
                 let whole = cache.is_some_and(|(n, _)| split_slots(n, counts).iter().zip(counts).any(|(&s, n)| n > 0 && s >= n));
-                let host = if whole { read_layer(ck, manifest, c, l)? } else { index_host(ck, c, l, ix)? };
-                (host, Some((Arc::new(HbDisk::open(ck, c, l, ix)?), ix)))
+                let host = if whole { read_layer(ck, manifest, &names)? } else { index_host(ck, &names, ix)? };
+                (host, Some((Arc::new(HbDisk::open(ck, &names, ix)?), ix)))
             }
-            None => (read_layer(ck, manifest, c, l)?, None),
+            None => (read_layer(ck, manifest, &names)?, None),
         };
         let counts = [0, 1].map(|g| host.groups[g].as_ref().map_or(0, |h| h.experts));
         let slots = cache.map(|(n, _)| split_slots(n, counts));
@@ -817,33 +865,29 @@ impl NhMoeHb {
                     let (dev, stride) = stack.places();
                     match &disk {
                         // (the host reads the group's places in the host tier where they are: no second copy of any matrix)
-                        None => store.add_layer(
-                            2 * index + g,
-                            h.experts,
-                            s[g],
-                            &[PackIn { bytes: [&h.data, &h.meta], stride, dev }],
-                            Some(HostHalf::Hb(h.place)),
-                        )?,
+                        None => {
+                            store.add_layer(2 * moe + g, h.experts, s[g], &[PackIn { bytes: [&h.data, &h.meta], stride, dev }], Some(HostHalf::Hb(h.place)))?
+                        }
                         Some((d, ix)) => store.add_layer_on_disk(
-                            2 * index + g,
+                            2 * moe + g,
                             h.experts,
                             s[g],
                             DiskIn { place: h.place, dev, ram: store.host_slots(h.experts, h.place.bytes())?, read: d.reader(ix.members[g].clone()) },
                         )?,
                     }
-                    HbGroup { stack, store_layer: Some(2 * index + g) }
+                    HbGroup { stack, store_layer: Some(2 * moe + g) }
                 }
                 _ => HbGroup { stack: HbStack::upload(h)?, store_layer: None },
             });
         }
-        let cfg = moe_cfg(c);
+        let cfg = crate::dynamic::experts::cfg(m, hidden, names.rows)?;
         cfg.check()?;
-        let shared = Shared { inter: c.moe.shared_inter, up: upload_packed(s_up)?, down: upload_packed(s_down)?, gate: None };
+        let shared = Shared { inter: shared_inter, up: upload_packed(s_up)?, down: upload_packed(s_down)?, gate: None };
         let cached = groups.iter().flatten().any(|g| g.store_layer.is_some());
-        Ok(NhMoeHb {
+        Ok(HbMoe {
             cfg,
             router: upload_bytes(&router)?,
-            bias: upload_bytes(&bias)?,
+            bias: bias.map(|b| upload_bytes(&b)).transpose()?,
             shared,
             fc1: Mat::Packed(upload_packed(fc1)?),
             fc2: Mat::Packed(upload_packed(fc2)?),
@@ -986,9 +1030,9 @@ impl NhMoeHb {
     }
 }
 
-impl MoeBlock for NhMoeHb {
-    /// `NhMoe::forward`'s launches with the experts' products of this module: `fc1_latent_proj` of `h` into the engine's `mix` buffer, the router, the experts' weighted sum of it into `xc` (rotated and rotated back), the shared
-    /// expert's MLP (queued with the experts' products where the layer is in the cache), `fc2_latent_proj` of the sum into `out`, the shared expert added. With every expert on the GPU all launches are on the engine's stream and none reads a result, so a decode
+impl MoeBlock for HbMoe {
+    /// The resident block's launches (src/dynamic/mod.rs `moe`) with the experts' products of this module: the latent's down projection of `h` into the engine's `mix` buffer, the router, the experts' weighted sum of it into `xc`
+    /// (rotated and rotated back), the shared expert's MLP (queued with the experts' products where the layer is in the cache), the latent's up projection of the sum into `out`, the shared expert added. With every expert on the GPU all launches are on the engine's stream and none reads a result, so a decode
     /// step captures into the graph; with a cache the choices are read on the host to place the experts (`ExpertStore::run_groups`, or `run` for each width a layer has) and the step is not captured.
     unsafe fn forward(&self, e: &dyn NhHost, h: u64, n: usize, out: u64) -> Result<()> {
         let (c, s) = (&self.cfg, e.dev().stream);
@@ -998,7 +1042,7 @@ impl MoeBlock for NhMoeHb {
         }
         let (sc, hs) = self.scratch(e)?;
         e.lin(&self.fc1, h, n, e.mix().ptr)?;
-        route_with(c, &self.router, Some(&self.bias), None, sc, s, h, c.router_hidden, n)?;
+        route_with(c, &self.router, self.bias.as_ref(), None, sc, s, h, c.router_hidden, n)?;
         let queued = self.experts(e.dev(), e.lib(), sc, hs, h, e.mix().ptr, n, e.xc().ptr)?;
         e.lin(&self.fc2, e.xc().ptr, n, out)?;
         if queued {
@@ -1014,7 +1058,7 @@ impl MoeBlock for NhMoeHb {
 
     fn bytes(&self) -> usize {
         self.router.bytes
-            + self.bias.bytes
+            + self.bias.as_ref().map_or(0, |b| b.bytes)
             + self.shared.up.bytes
             + self.shared.down.bytes
             + self.fc1.bytes()
@@ -1169,14 +1213,14 @@ mod tests {
         assert_eq!((p3.data, p3.meta, p2.data, p2.meta), (2 * 2688 * 384, 2 * 2688 * 80, 2 * 2688 * 256, 2 * 2688 * 72));
         assert_eq!((p3.down_codes, p3.up_book, p3.down_scales, p3.down_book), (2688 * 384, 2688 * 64, 2688 * 64 + 2688 * 16, 2 * 2688 * 64 + 2688 * 16));
         let c = crate::nemotron::tests::parse();
-        assert_eq!((expert_bytes_at(&c, 3).unwrap(), expert_bytes_at(&c, 2).unwrap()), (2_494_464, 1_763_328));
+        assert_eq!((c.moe.inter, c.moe.latent), (2688, 1024));
         // 205 of 512 at three bits: a layer 1,052,706,816 bytes, 42.1 GB over 40 layers
         let layer = 205 * 2_494_464 + 307 * 1_763_328;
         assert_eq!(layer, 1_052_706_816);
-        assert_eq!(expert_bytes_mean(&c).unwrap(), layer / 512);
+        assert_eq!(expert_bytes_mean(c.moe.experts, c.moe.inter, c.moe.latent).unwrap(), layer / 512);
         // the expert cache's plan at the real shape counts the mean expert: a 24 GB card's 13 GiB buys 169 places a layer of 40 layers of 512, the host tier holds the 42.1 GB
-        let plan = crate::moe_nh::cache_plan(&c, Layout::Hummingbird, 13 << 30, 22).unwrap().unwrap();
-        let mean = expert_bytes_mean(&c).unwrap();
+        let plan = crate::plan::sizing::cache_plan(&c, Layout::Hummingbird, 13 << 30, 22).unwrap().unwrap();
+        let mean = expert_bytes_mean(c.moe.experts, c.moe.inter, c.moe.latent).unwrap();
         assert_eq!((plan.layers, plan.experts, plan.expert_bytes, plan.slots), (40, 512, mean, ((13u64 << 30) / (40 * mean)) as usize));
         assert_eq!((plan.slots, plan.host_bytes()), (169, 40 * 512 * mean));
         assert!((42.0e9..42.2e9).contains(&(plan.host_bytes() as f64)));
@@ -1351,12 +1395,13 @@ mod tests {
             assert_eq!(ck.files.len() > 1, shard_bytes < 1 << 20, "{shards}: {} files", ck.files.len());
             let mut two_reads = 0;
             for l in [1usize, 3, 5] {
-                let host = read_layer(&ck, &manifest, &c, l).unwrap();
-                let ix = index_layer(&manifest, &c, l).unwrap();
+                let x = c.hb_names(l);
+                let host = read_layer(&ck, &manifest, &x).unwrap();
+                let ix = index_layer(&manifest, &x).unwrap();
                 assert_eq!((&ix.group_of, &ix.local_of), (&host.group_of, &host.local_of), "{shards}, layer {l}");
                 assert_eq!(ix.counts(), [0, 1].map(|g| host.groups[g].as_ref().map_or(0, |h| h.experts)));
                 assert!(ix.counts()[0] > 0 && ix.counts()[1] > 0);
-                let disk = Arc::new(HbDisk::open(&ck, &c, l, &ix).unwrap());
+                let disk = Arc::new(HbDisk::open(&ck, &x, &ix).unwrap());
                 two_reads += disk.experts.iter().filter(|e| e.segs.iter().any(|s| s.file != e.segs[0].file)).count();
                 // (in one shard an expert's six tensors are one run of the file, as the writer sorts them by name: one read of exactly the bytes of its place; if the writer's order changed, every read would be three)
                 if shard_bytes > 1 << 20 {
@@ -1402,7 +1447,7 @@ mod tests {
             // (the shards of 24 KB put some experts' tensors in two files; the one shard none)
             assert_eq!(two_reads > 0, shard_bytes < 1 << 20, "{shards}: {two_reads} experts in two files");
             // a layer of the directory that is not a mixture-of-experts layer has no experts to find
-            assert!(HbDisk::open(&ck, &c, 0, &index_layer(&manifest, &c, 1).unwrap()).is_err());
+            assert!(HbDisk::open(&ck, &c.hb_names(0), &index_layer(&manifest, &c.hb_names(1)).unwrap()).is_err());
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

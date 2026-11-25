@@ -1082,10 +1082,13 @@ impl MoeLayer {
             launch!(kk.xp_take, [(n as u32).div_ceil(256), 1, 1], [256, 1, 1], s; d.meta, d.sums, sc.cpu.ptr, n as i64)?;
             return self.experts_sum(sc, s, t, y, sc.way.ptr, sc.cpu.ptr);
         }
-        store.run_early_at(layer, at, &call, early, &mut |stage, _, waves, hy| match stage {
+        store.run_early_at(layer, at, &call, early, &mut |stage, wave, waves, hy| match stage {
             crate::offload::Stage::Products if hy.gpu => products(waves),
             // (every pair the host's: the sum is its sums alone)
             crate::offload::Stage::Products => crate::dev::memset_async(y, 0, t * width * 2, s),
+            // (a call in waves: the store asks for the sum after each, and only the last one's has every pair's part written (a row layout's sum reads them
+            // all; a block layout's products sum the waves so far themselves): the earlier sums, which the last one's would overwrite, are not made)
+            crate::offload::Stage::Sum if wave + 1 < waves => Ok(()),
             crate::offload::Stage::Sum if hy.rows => self.rows_sum(sc, s, t, y, hy.ids),
             crate::offload::Stage::Sum => self.experts_sum(sc, s, t, y, hy.ids, hy.extra),
         })
