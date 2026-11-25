@@ -24,7 +24,7 @@ const TYPES: [(&str, &str); 20] = [
     ("signed char", "i8"),
     ("unsigned char", "u8"),
     ("bool", "bool"),
-    ("G4Pf", "crate::gemma4::G4Pf"),
+    ("G4Pf", "crate::kern::G4Pf"),
     ("C2Segs", "crate::cb2_prefill::Segs"),
     ("AttnArgs", "crate::dynamic::attn::AttnArgs"),
 ];

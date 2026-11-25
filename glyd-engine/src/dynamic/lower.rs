@@ -1063,7 +1063,7 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
 pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
     use super::glm::{dense_ops, glm_desc, kda_ops, per_layer};
     use crate::glm::GlmKind;
-    use crate::kern_glm::GM_D;
+    use crate::kern::GM_D;
     use crate::runtime::kinds::{Decay, Residual};
     let m = &d.desc;
     if m.blocks.len() % 2 != 0 || m.embed.streams != 4 {

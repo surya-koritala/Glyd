@@ -39,9 +39,10 @@ pub mod tp_cache;
 
 use crate::dev::{copy_d2d_async, copy_d2h_async, copy_h2d_async, Buf, Dev, Ev, Graph, Pinned};
 use crate::ffi::{err, Error, Lib, Result};
-use crate::gemma4::{pf_kib, rotary, G4Pf, KernG4, EMBED_GROUPS};
+use crate::gemma4::{rotary, EMBED_GROUPS};
 use crate::kern::{embed_plan, TopGpu};
 use crate::kern::{norm_threads, Kern};
+use crate::kern::{pf_kib, G4Pf, KernG4};
 use crate::kern35::{Kern35, Mat};
 use crate::kern_nh::{KernNh, MoeBlock, SsdWs};
 use crate::launch;
@@ -1032,7 +1033,7 @@ pub struct Dyn {
     /// DeepSeek-V4's buffers, where the model is one.
     v4: Option<deepseek_v4::V4Run>,
     /// GLM's kernels and the experts' activation.
-    kglm: crate::kern_glm::KernGlm,
+    kglm: crate::kern::KernGlm,
     kmoe: crate::moe::MoeKern,
     /// The residual rules' kernels, a block's mixing weights of the streams (fp32 [chunk, 24]) and the split mixing projection's partial sums (`residual::part_words`).
     kres: residual::KernRes,
@@ -1449,7 +1450,7 @@ impl Dyn {
         let ws = Buf::zeroed(need)?;
         let done = Buf::zeroed(4 << 18)?;
         let host = Pinned::new(4096)?;
-        let (kglm, kmoe, hcp) = (crate::kern_glm::KernGlm::load(&dev)?, crate::moe::MoeKern::load(&dev)?, Buf::zeroed(ch * 24 * 4)?);
+        let (kglm, kmoe, hcp) = (crate::kern::KernGlm::load(&dev)?, crate::moe::MoeKern::load(&dev)?, Buf::zeroed(ch * 24 * 4)?);
         let hc_lag = Buf::zeroed(ch * 4 * 4)?;
         // (the split mixing projection's sums: as the model's streams round, one buffer for every block's)
         let round = d.layers.iter().flatten().find_map(|op| if let Op::StreamsPre { round, .. } = *op { Some(round) } else { None });
@@ -2055,7 +2056,7 @@ impl Dyn {
             Op::MambaScan { dt_bias, a_log, d, state, cd, row, dt_off, nh, ng } => {
                 let (dtr, st) = (p.slot(Slot::Mix) + self.rows_before(row) + (dt_off * 2) as u64, self.state(state));
                 let (dtb, al, dd) = (p.small[dt_bias].ptr, p.small[a_log].ptr, p.small[d].ptr);
-                let (core, xc) = (p.slot(Slot::Core) + self.rows_before(nh * crate::kern_nh::NH_P), p.slot(Slot::Xc) + self.rows_before(cd));
+                let (core, xc) = (p.slot(Slot::Core) + self.rows_before(nh * crate::kern::NH_P), p.slot(Slot::Xc) + self.rows_before(cd));
                 match &self.ssd {
                     Some(ws) if self.chunked && n > 1 => {
                         self.knh.ssd(s, ws, xc, cd as i32, dtr, row as i32, dtb, al, dd, st, core, n as i32, nh as i32, ng as i32, 0.0)?

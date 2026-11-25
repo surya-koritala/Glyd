@@ -90,7 +90,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
         };
         let [ha, hf] = ly.hc;
         let (na, nf) = (put(&mut l_.small, ly.norm_a), put(&mut l_.small, ly.norm_f));
-        let pre = |small: &mut Vec<Buf>, h: crate::kern_glm::Hc, norm: usize| Op::StreamsPre {
+        let pre = |small: &mut Vec<Buf>, h: crate::kern::Hc, norm: usize| Op::StreamsPre {
             mix: StreamsMix::Hc { f: put(small, h.proj), base: put(small, h.base), scale: put(small, h.scale) },
             norm,
             round: Rounding::Twice,

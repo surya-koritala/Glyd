@@ -2861,7 +2861,7 @@ impl EngineQx {
         let mut at = op.args(n, c.eps);
         (at.src, at.qw, at.kw, at.cs, at.sn, at.qpos, at.kpos) = (self.mix.ptr, sm[0].ptr, sm[1].ptr, self.cos.ptr, self.sin.ptr, pos, pos);
         (at.qo, at.kc, at.vc, at.cap, at.out, at.gate) = (self.qo.ptr, kc, vc, self.ctx as i32, self.core.ptr, self.mix.ptr + 512);
-        self.ka.prep(s, &at, nq + nk, (crate::gemma4::G4Pf::default(), 0))?;
+        self.ka.prep(s, &at, nq + nk, (crate::kern::G4Pf::default(), 0))?;
         self.lin(&ly.mats[2], self.h.ptr, n, self.ixqk.ptr)?;
         crate::tmark!(s, "attn: indexer product");
         self.kq.ix_prep(s, self.ixqk.ptr, sm[2].ptr, self.cos.ptr, self.sin.ptr, half, pos, self.ixq.ptr, ik, n, c.ix_heads, c.eps)?;
