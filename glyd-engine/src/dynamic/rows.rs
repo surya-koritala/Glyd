@@ -1835,6 +1835,8 @@ impl ModelStep for Dyn {
             // (a slot being copied back from the host: the copy done first)
             self.swap_settle(p as usize)?;
             self.empty(p as usize)?;
+            // (what this step's growths promised it of the 12-bit pools goes with it)
+            self.kv12_unpromise(p as usize);
             if let Some(pg) = &mut self.paged {
                 // (its 12-bit pages that no one reads again cleared: their chunks and slabs back to the pools, for the sequences that go on)
                 let freed = if self.lossless.is_some() { pg.pages.sole_unnamed(p as usize) } else { Vec::new() };
@@ -2083,11 +2085,12 @@ impl ModelStep for Dyn {
         self.settle_slot(slot as usize)?;
         let (n, chunk) = (self.seq_n(slot as usize), self.chunk);
         // (12-bit pages: a slab for every page its next pass writes, else the newest sequence is paused: `kv12_room`)
-        if !self.kv12_room(n, upto)? {
+        if !self.kv12_room(slot as usize, n, upto)? {
             return Ok(false);
         }
         let Some(pg) = &mut self.paged else { return Ok(true) };
         if !pg.pages.grow_from(slot as usize, n, upto, chunk) {
+            self.kv12_unpromise(slot as usize);
             return Ok(false);
         }
         // (nothing to copy where no entry changed: most steps; else the entries copied on the stream, or after the steps before where the steps are not launched ahead)

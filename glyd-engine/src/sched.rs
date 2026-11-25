@@ -3562,6 +3562,8 @@ pub(crate) mod tests {
         pub slabs: Option<usize>,
         pub raw: Vec<usize>,
         pub promised: usize,
+        /// The pages (first, end) this step's growths promised each slot: a slot asked twice is promised once, and one emptied or swapped out takes its promise with it.
+        pub asked: std::collections::HashMap<i32, (usize, usize)>,
         pub voided: usize,
         /// A step launched before the step before it is read (`overlaps`, as the executor's on a model with no recurrent state): each step runs at its launch, as a stream runs
         /// what is queued in order, and its samples wait for `finish`; a row's token the step before chose is read from that step's head rows. The steps launched while
@@ -3625,6 +3627,7 @@ pub(crate) mod tests {
                 slabs: None,
                 raw: vec![0; slots],
                 promised: 0,
+                asked: std::collections::HashMap::new(),
                 voided: 0,
                 overlap: false,
                 out: VecDeque::new(),
@@ -3696,6 +3699,7 @@ pub(crate) mod tests {
                     }
                 }
                 self.promised = 0;
+                self.asked.clear();
             }
             let room = &mut self.rooms[slot[0] as usize];
             assert_eq!(room.len(), start, "tokens at {start} where the slot holds {}", room.len());
@@ -3861,8 +3865,11 @@ pub(crate) mod tests {
                 self.held[p as usize] = 0;
                 self.marks[p as usize] = 0;
                 self.loading[p as usize] = 0;
-                // (its pages cleared: their slabs back, `kv12_release_blocks`)
+                // (its pages cleared: their slabs back, `kv12_release_blocks`; what the step promised it with them, `kv12_unpromise`)
                 self.raw[p as usize] = 0;
+                if let Some((a, b)) = self.asked.remove(&p) {
+                    self.promised -= b - a;
+                }
                 self.emptied += 1;
                 if let Some(pg) = &mut self.paged {
                     pg.release(p as usize);
@@ -3883,6 +3890,9 @@ pub(crate) mod tests {
             self.tickets += 1;
             self.host.insert(self.tickets, (std::mem::take(&mut self.rooms[s]), self.marks[s]));
             (self.held[s], self.marks[s], self.raw[s]) = (0, 0, 0);
+            if let Some((a, b)) = self.asked.remove(&slot) {
+                self.promised -= b - a;
+            }
             Ok(Some(self.tickets))
         }
         fn swap_in(&mut self, slot: i32, ticket: u64, upto: usize) -> Result<Option<usize>> {
@@ -4023,12 +4033,13 @@ pub(crate) mod tests {
             if let Some(slabs) = self.slabs {
                 // (`Dyn::kv12_room`: a slab for every page the next pass writes, beside what this step promised; else the newest is paused)
                 let n = self.rooms[slot as usize].len();
-                let need = crate::dynamic::pages::pages_written(n, upto.min(n + self.chunk)) as i64;
+                let (more, pages) = crate::dynamic::pages::pages_more(self.asked.get(&slot).copied(), n, upto.min(n + self.chunk));
                 let have = slabs as i64 - self.raw.iter().sum::<usize>() as i64;
-                if !crate::dynamic::pages::room(&[need], &[have], &[self.promised as i64]) {
+                if !crate::dynamic::pages::room(&[more as i64], &[have], &[self.promised as i64]) {
                     return Ok(false);
                 }
-                self.promised += need as usize;
+                self.promised += more;
+                self.asked.insert(slot, pages);
             }
             if let Some(p) = &mut self.paged {
                 let (s, n) = (slot as usize, self.rooms[slot as usize].len());

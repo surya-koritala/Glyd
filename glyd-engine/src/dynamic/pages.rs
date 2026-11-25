@@ -38,6 +38,20 @@ pub fn pages_written(n: usize, upto: usize) -> usize {
     }
 }
 
+/// The pages a growth of a sequence adds to what the step has promised it: its pass writes tokens `n` to `upto`, and `had` is the pages (first, end) the step's growths
+/// before promised it (a prompt is asked for as it is let in and again before its pass; a sequence's tokens do not change within a step, so both begin at one page). The
+/// pages to promise more, and the sequence's promised pages after.
+pub fn pages_more(had: Option<(usize, usize)>, n: usize, upto: usize) -> (usize, (usize, usize)) {
+    let new = (n / BLOCK, n / BLOCK + pages_written(n, upto));
+    match had {
+        Some((a, b)) => {
+            let all = (a.min(new.0), b.max(new.1));
+            ((all.1 - all.0) - (b - a), all)
+        }
+        None => (new.1 - new.0, new),
+    }
+}
+
 /// Whether a pass whose pages need `need` slabs of each raw pool may begin: every pool has them free (`spare`) beside what is promised already (`taken`).
 pub fn room(need: &[i64], spare: &[i64], taken: &[i64]) -> bool {
     need.iter().zip(spare).zip(taken).all(|((n, s), t)| *n <= s - t)
@@ -955,6 +969,23 @@ mod tests {
         assert_eq!(p.table(0, 1)[14..19], before[..]);
         let mut q = pools();
         assert!(q.grow(0, 301) && !q.grow(0, 32));
+    }
+
+    /// A sequence asked for room twice in a step (as its prompt is let in, then before its pass) is promised each page once; a later ask that reaches further adds
+    /// only the pages past the first's.
+    #[test]
+    fn a_step_promises_a_sequences_pages_once() {
+        // (a prompt of 40 tokens let in: pages 0, 1, 2)
+        let (more, had) = pages_more(None, 0, 41);
+        assert_eq!((more, had), (3, (0, 3)));
+        // (asked again before its pass: nothing more)
+        assert_eq!(pages_more(Some(had), 0, 41), (0, (0, 3)));
+        // (a pass of fewer tokens: nothing more; one that reaches a page further: that page)
+        assert_eq!(pages_more(Some(had), 0, 20), (0, (0, 3)));
+        assert_eq!(pages_more(Some(had), 0, 49), (1, (0, 4)));
+        // (a decode step in the middle of a page: its page; no token: none)
+        assert_eq!(pages_more(None, 37, 38), (1, (2, 3)));
+        assert_eq!(pages_more(None, 37, 37), (0, (2, 2)));
     }
 
     /// Growth takes blocks in every group or in none; a sequence past the context never grows.

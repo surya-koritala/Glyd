@@ -80,6 +80,9 @@ pub(super) struct Lossless {
     pub ring_raw: Vec<Option<usize>>,
     pub nchunks: i64,
     pub promised: Vec<i64>,
+    /// The pages (first, end) this step's growths promised each slot (slot, first, end): a slot asked twice in a step is promised its pages once, and one that gives
+    /// its blocks up before the step runs takes its promise with it.
+    pub asked: Vec<(usize, usize, usize)>,
     /// The copies back in flight (`Lib::kv_load` on the swap's stream): each one's slot and the slabs and chunks its pages take as they load.
     pub loading: Vec<(usize, Vec<i64>, i64)>,
     /// Device bytes of the pages, the pools and the step's buffers.
@@ -315,6 +318,7 @@ impl Lossless {
             splits,
             bytes,
             promised: vec![0; raw_pools.len()],
+            asked: Vec::new(),
             loading: Vec::new(),
             raw_pools,
             ring_raw,
@@ -351,11 +355,10 @@ impl Lossless {
         Ok((slabs, self.nchunks - w.iter().map(|x| x[4] as i64).sum::<i64>()))
     }
 
-    /// The slabs a pass that writes tokens `n` to `upto` of a sequence may take of each raw pool: a slab for every page of every 12-bit ring it writes (each may be
-    /// made raw by values that do not compress).
-    pub fn need(&self, n: usize, upto: usize) -> Vec<i64> {
-        let pages = super::pages::pages_written(n, upto) as i64;
-        (0..self.raw_pools.len()).map(|c| self.ring_raw.iter().filter(|&&x| x == Some(c)).count() as i64 * pages).collect()
+    /// The slabs `pages` pages of a sequence may take of each raw pool: a slab for every page of every 12-bit ring that draws on it (each may be made raw by values
+    /// that do not compress).
+    pub fn need_pages(&self, pages: usize) -> Vec<i64> {
+        (0..self.raw_pools.len()).map(|c| self.ring_raw.iter().filter(|&&x| x == Some(c)).count() as i64 * pages as i64).collect()
     }
 
     /// Each group's status words (glyd_gpu.h's kv_write): [0] the exceptions with no place, [4]/[5] the escape chunks taken now and the most at once, [8]/[9] the raw slabs,
@@ -648,10 +651,14 @@ impl Dyn {
     /// tokens `n` to `upto` (a chunk at most) may begin only where every raw pool has a slab for every page it writes, beside what this step's growths and the copies
     /// back in flight have promised. Where not: the swap's releases waited for, the named blocks no one holds dropped (`Pages::drop_idle`, their pages cleared),
     /// and asked again; false: the scheduler pauses the newest sequence (`ModelStep::grow`), whose blocks' chunks and slabs go back as it gives them up
-    /// (`kv12_release_blocks`). A sequence alone always fits: each raw pool has the slabs of one sequence's pages and a pass more (`Lossless::alone_slabs`).
-    pub(super) fn kv12_room(&mut self, n: usize, upto: usize) -> Result<bool> {
+    /// (`kv12_release_blocks`). A sequence alone always fits: each raw pool has the slabs of one sequence's pages and a pass more (`Lossless::alone_slabs`). A slot's
+    /// pages are promised once a step however often it is asked (as its prompt is let in, and before its pass: `pages_more`), and a slot that gives its blocks up
+    /// before the step runs takes its promise with it (`kv12_unpromise`).
+    pub(super) fn kv12_room(&mut self, slot: usize, n: usize, upto: usize) -> Result<bool> {
         let Some(lx) = self.lossless.as_ref() else { return Ok(true) };
-        let need = lx.need(n, upto.min(n + self.chunk));
+        let had = lx.asked.iter().find(|a| a.0 == slot).map(|a| (a.1, a.2));
+        let (more, pages) = super::pages::pages_more(had, n, upto.min(n + self.chunk));
+        let need = lx.need_pages(more);
         if need.iter().all(|&x| x == 0) {
             return Ok(true);
         }
@@ -663,6 +670,8 @@ impl Dyn {
             if super::pages::room(&need, &slabs, &taken) {
                 let lx = self.lossless.as_mut().expect("above");
                 lx.promised.iter_mut().zip(&need).for_each(|(p, x)| *p += x);
+                lx.asked.retain(|a| a.0 != slot);
+                lx.asked.push((slot, pages.0, pages.1));
                 return Ok(true);
             }
             match attempt {
@@ -678,6 +687,17 @@ impl Dyn {
     pub(super) fn kv12_stepped(&mut self) {
         if let Some(lx) = self.lossless.as_mut() {
             lx.promised.iter_mut().for_each(|p| *p = 0);
+            lx.asked.clear();
+        }
+    }
+
+    /// Slot `slot` gives its blocks up (released, or copied out to the host) before the step it was promised pages for has run: the promise goes with it.
+    pub(super) fn kv12_unpromise(&mut self, slot: usize) {
+        let Some(lx) = self.lossless.as_mut() else { return };
+        if let Some(i) = lx.asked.iter().position(|a| a.0 == slot) {
+            let (_, first, end) = lx.asked.swap_remove(i);
+            let back = lx.need_pages(end - first);
+            lx.promised.iter_mut().zip(&back).for_each(|(p, x)| *p -= x);
         }
     }
 
@@ -717,11 +737,13 @@ impl Dyn {
             let Some(rp) = rp else { continue };
             // (the table as the GPU holds it, which the reply's steps read: the host's gave the sequence's blocks back when the reply ended)
             let tab = pg.gpu_table(self.seq, r)?;
-            let src: Vec<i32> = tab[..n.div_ceil(16).min(tab.len())].iter().filter(|&&b| b != 0).map(|&b| b as i32).collect();
-            // (the pool's last blocks that no table entry of this sequence names)
+            let mut src: Vec<i32> = tab[..n.div_ceil(16).min(tab.len())].iter().filter(|&&b| b != 0).map(|&b| b as i32).collect();
+            // (the pool's blocks that no table entry of this sequence names, the last first; as many of its pages as there are of them: a pool of one sequence's has
+            // fewer free blocks than the sequence holds)
             let dst: Vec<i32> = (1..rp.blocks as i32).rev().filter(|b| !src.contains(b)).take(src.len()).collect();
+            src.truncate(dst.len());
             let k = src.len();
-            if k == 0 || dst.len() < k {
+            if k == 0 {
                 continue;
             }
             let per = 16 * rp.shape.heads * rp.shape.channels * 2;

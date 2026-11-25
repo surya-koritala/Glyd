@@ -1645,13 +1645,13 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
 
 /// The case's random model, made in a directory of its own and loaded.
 pub(crate) fn random_dyn(case: &str, level: &str, tag: &str) -> Result<Dyn> {
-    random_dyn_at(case, level, level_layout(level)?, tag)
+    random_dyn_at(case, level, level_layout(level)?, tag, None)
 }
 
-/// `random_dyn` with its packs in `layout` (None: the GPU's choice).
-pub(crate) fn random_dyn_at(case: &str, level: &str, layout: Option<Layout>, tag: &str) -> Result<Dyn> {
+/// `random_dyn` with its packs in `layout` (None: the GPU's choice) and a context of `ctx` tokens (None: the cases' 1,024).
+pub(crate) fn random_dyn_at(case: &str, level: &str, layout: Option<Layout>, tag: &str, ctx: Option<usize>) -> Result<Dyn> {
     let dir = std::env::temp_dir().join(format!("glyd-{tag}-{case}-{}", std::process::id()));
-    let o = dyn_opts(layout);
+    let o = DynOpts { ctx: ctx.unwrap_or(1024), ..dyn_opts(layout) };
     let e: Result<Dyn> = (|| {
         match case {
             "gemma4" => gemma4_random(&dir)?,
@@ -2638,8 +2638,8 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
-/// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR --prompt-tokens P [--places N [--mode M] [--device]]] [--stagger D]` (gemma4, qwen35, muse, kimi, glm, nemotron): the case's random model on the
-/// description executor (or the model in DIR, its prompts of P (k + 1) / N tokens; with `--places`, its experts in the expert cache), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
+/// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR [--places N [--mode M] [--device]] | --ctx C] [--prompt-tokens P] [--stagger D]` (gemma4, qwen35, muse, kimi, glm, nemotron): the case's random model on the
+/// description executor (or the model in DIR, with `--places` its experts in the expert cache; with `--ctx` a context of C tokens; with `--prompt-tokens` prompts of P (k + 1) / N tokens), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
 /// the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts one a pass, decode steps of the rows that decode: 16 or fewer here, whose bits
 /// are each row's own pass's). With prompts run together the replies that differ are counted, not refused (a step of more than 16 rows is another kernel's; a random model's near ties turn on its last
 /// bits: `roundcheck` measures the logits). The round is one step of the rows that decode and the prompts' chunks unless GLYD_ENGINE_ONE_STEP=0, and some step must then have held both.
@@ -2691,7 +2691,14 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             let o = DynOpts { ctx: (len(users - 1) + tokens + 64).next_multiple_of(256), chunk: 256, graph: true, device: 0, layout };
             load_dyn(case, Path::new(d), &o, level)?
         }
-        (None, _) => random_dyn_at(case, level, layout, "usercheck")?,
+        // (--ctx N: the random model with a context of N tokens, for a long prompt's check: --prompt-tokens)
+        (None, _) => random_dyn_at(
+            case,
+            level,
+            layout,
+            "usercheck",
+            a.flag("ctx").map(|v| v.parse().map_err(|_| Error(format!("--ctx {v}: not a number")))).transpose()?,
+        )?,
     };
     println!("{case} at {level}: layout {:?}", e.layout);
     let vocab = e.desc().vocab as u32;

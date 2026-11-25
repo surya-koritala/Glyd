@@ -310,6 +310,10 @@ impl Dyn {
         let mut sw = self.swap.take().expect("swaps");
         let r = self.swap_out_with(&mut sw, slot, n);
         self.swap = Some(sw);
+        if matches!(r, Ok(Some(_))) {
+            // (what this step's growths promised it of the 12-bit pools goes with it)
+            self.kv12_unpromise(slot);
+        }
         r
     }
 
