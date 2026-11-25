@@ -8,7 +8,7 @@
 | Linux x86_64, NVIDIA older than Ampere (Turing and before) | Refused: "older than the engine runs on". |
 | Linux aarch64 (Grace, Jetson, DGX Spark) | Refused: the engine has not run on an aarch64 computer. File compression only. |
 | macOS, Apple GPU | Refused: Apple GPUs are not supported yet. File compression only. |
-| Windows x86_64, NVIDIA Ampere or newer, driver 535 or newer | From v0.34.0 a zip with `glyd.exe` (the engine linked in) and the GPU libraries, and `install.ps1` (below). The release workflow builds it and installs it on a runner with no GPU; a first chat on a Windows GPU is still to be shown ([#159](https://github.com/surya-koritala/Glyd/issues/159)). [Condor](condor.md) has PowerShell scripts for its own model. |
+| Windows x86_64, NVIDIA Ampere or newer, driver 535 or newer | From v0.34.0 a zip with `glyd.exe` (the engine linked in; its kernels are in the program, so no GPU library), and `install.ps1` (below). The release workflow builds it and installs it on a runner with no GPU; a first chat on a Windows GPU is still to be shown ([#159](https://github.com/surya-koritala/Glyd/issues/159)). [Condor](condor.md) has PowerShell scripts for its own model. |
 | AMD (RDNA 3 and 4) | A development build: `GLYD_HIP=1 cargo build --release -p glyd --features engine`. Not in releases. |
 | No GPU | Refused: "no GPU was found: the engine's CPU backend is not built yet". |
 
@@ -28,15 +28,14 @@ engine does not run.
 
 On a Mac, or a machine with no NVIDIA GPU, it installs the file compression program only.
 
-The copy of the script at getglyd.com is replaced with the v0.33.0 one when the site is next published from this repository.
-Until then it installs v0.32.1, which goes through vLLM. To install v0.33.0 now, take the script from its tag:
+The copy of the script at getglyd.com is the one the owner last put there at a release (`RELEASING.md`, step 5); a release's own script is at its tag, and installs that release:
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/surya-koritala/Glyd/v0.33.0/scripts/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/surya-koritala/Glyd/v0.34.2/scripts/install.sh | sh
 ```
 
-The release has the engine bundles `glyd-engine-v0.33.0-linux-x86_64.tar.gz` and its `.sha256`
-([releases](https://github.com/surya-koritala/Glyd/releases/tag/v0.33.0)).
+The release has the engine bundles `glyd-engine-v0.34.2-linux-x86_64.tar.gz` and its `.sha256`
+([releases](https://github.com/surya-koritala/Glyd/releases/tag/v0.34.2)).
 
 ## Windows
 
@@ -44,8 +43,8 @@ The release has the engine bundles `glyd-engine-v0.33.0-linux-x86_64.tar.gz` and
 irm https://getglyd.com/install.ps1 | iex
 ```
 
-The script downloads the release's `glyd-engine-vX.Y.Z-windows-x86_64.zip`, checks it against the `.sha256` beside it, puts `glyd.exe` and the GPU
-libraries (CUDA 13 and CUDA 12; the engine loads the one the driver's version asks for) in `%LOCALAPPDATA%\Glyd`, adds that folder to your user PATH, and runs
+The script downloads the release's `glyd-engine-vX.Y.Z-windows-x86_64.zip`, checks it against the `.sha256` beside it, puts `glyd.exe` (its kernels are in
+the program, CUDA 13's and CUDA 12's, and the driver's version picks; where a zip also holds the GPU library DLLs, as an earlier build's did, it puts those there too) in `%LOCALAPPDATA%\Glyd`, adds that folder to your user PATH, and runs
 `glyd doctor`. No administrator rights. `$env:GLYD_RELEASE_URL` (a mirror or a folder), `$env:GLYD_VERSION`, `$env:GLYD_HOME` and `$env:GLYD_NO_PATH = '1'`
 change where it reads from and writes to.
 
