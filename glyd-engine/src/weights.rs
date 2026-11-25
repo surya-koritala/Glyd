@@ -36,10 +36,7 @@ pub struct Config {
 
 impl Config {
     pub fn load(dir: &Path) -> Result<Config> {
-        let p = dir.join("config.json");
-        let text = io(std::fs::read_to_string(&p))?;
-        let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
-        Config::parse(&text, &p.display().to_string(), generation.as_deref())
+        ModelConfig::read(dir, Config::of)
     }
 
     /// A config.json's text (and a generation_config.json's, where there is one) read as `load` reads the files: `label` names the file in an error.

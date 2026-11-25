@@ -207,6 +207,27 @@ impl ModelConfig {
     pub fn family(&self) -> Option<Family> {
         family_by(&self.arch, &self.model_type, self.nested.then_some(self.text_type.as_str()))
     }
+
+    /// Whether the text model is one of the types the description builder's `llama` reading takes: the plain dense kind.
+    pub fn is_dense(&self) -> bool {
+        super::describe::LLAMA.contains(&self.text_type.as_str())
+    }
+
+    /// A key's number (an integer or not), the top level's first, else the text model's.
+    pub fn num(&self, key: &str) -> Option<usize> {
+        self.top.get(key).or(self.text.get(key))?.as_u64().map(|x| x as usize)
+    }
+
+    /// `dir`'s generation_config.json, where it has one.
+    pub fn generation(dir: &Path) -> Option<String> {
+        std::fs::read_to_string(dir.join("generation_config.json")).ok()
+    }
+
+    /// A family's reader of the model in `dir`, from this one parse of its config.json: `of` takes the parse, the file's path for the words of an error and the
+    /// generation_config.json beside it.
+    pub fn read<T>(dir: &Path, of: impl FnOnce(&ModelConfig, &str, Option<&str>) -> Result<T>) -> Result<T> {
+        of(&ModelConfig::load(dir)?, &dir.join("config.json").display().to_string(), ModelConfig::generation(dir).as_deref())
+    }
 }
 
 /// A family by the names a release's config gives its architecture and model type (and its text model's, `nested`), in the order the engine has always asked
@@ -349,6 +370,23 @@ mod tests {
         reads("Qwen3.8-Flash-Next", &fixture("qwen4x_config.json"), |t| crate::qwen4x::ConfigQx::parse(t, "c", None));
         // (Nemotron-H reads n_groups itself: refused before as now)
         reads("Nemotron-H", &fixture("nemotron_h_config.json"), |t| crate::nemotron::ConfigNemotronH::parse(t, "c", None));
+    }
+
+    /// A number is the top level's, else the text model's; the plain dense kind is the text model's type; a family's reader of a directory takes the one parse.
+    #[test]
+    fn numbers_kind_and_the_directory_read_from_the_one_parse() {
+        let c =
+            ModelConfig::parse(r#"{"vocab_size": 5, "model_type": "x", "text_config": {"model_type": "qwen3", "vocab_size": 7, "hidden_size": 8}}"#).unwrap();
+        assert_eq!((c.num("vocab_size"), c.num("hidden_size"), c.num("none"), c.is_dense()), (Some(5), Some(8), None, true));
+        let dir = std::env::temp_dir().join(format!("glyd-config-read-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), r#"{"model_type": "other", "vocab_size": 9}"#).unwrap();
+        std::fs::write(dir.join("generation_config.json"), "{}").unwrap();
+        let seen = ModelConfig::read(&dir, |c, label, generation| Ok((c.num("vocab_size"), label.to_string(), generation.map(str::to_string)))).unwrap();
+        assert_eq!(seen, (Some(9), dir.join("config.json").display().to_string(), Some("{}".to_string())));
+        std::fs::remove_file(dir.join("config.json")).unwrap();
+        assert!(ModelConfig::read(&dir, |c, _, _| Ok(c.num("vocab_size"))).unwrap_err().msg.contains("config.json"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A shared key of another type is an error that names the key; a config that is not an object is refused.

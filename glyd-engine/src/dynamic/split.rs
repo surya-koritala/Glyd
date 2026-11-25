@@ -465,7 +465,16 @@ pub fn sched_reply(e: &mut Run, prompt: &[u32], tokens: usize) -> Result<(Vec<u3
 /// or the row is sized as the dynamic route's on one GPU (`Sizing::Dynamic`): the families this module opens from their release's directory; None for another
 /// path's model.
 pub fn family(text: &str) -> Option<&'static str> {
-    let row = crate::support::row(crate::runtime::config::family_of(text)?);
+    dynamic_row(crate::runtime::config::family_of(text)?)
+}
+
+/// `family` of a config.json parsed once.
+pub fn family_in(c: &crate::runtime::config::ModelConfig) -> Option<&'static str> {
+    dynamic_row(c.family()?)
+}
+
+fn dynamic_row(f: crate::support::Family) -> Option<&'static str> {
+    let row = crate::support::row(f);
     (!row.split_levels.is_empty() || row.route.sizing == crate::support::Sizing::Dynamic).then_some(row.name)
 }
 
@@ -614,8 +623,7 @@ pub fn loader(d: &crate::runtime::describe::Described) -> Result<Loader> {
 
 /// A number of the config (its `text_config`'s for a model that nests one).
 pub fn config_num(text: &str, key: &str) -> Option<usize> {
-    let c = crate::runtime::config::ModelConfig::parse(text).ok()?;
-    c.top.get(key).or(c.text.get(key))?.as_u64().map(|x| x as usize)
+    crate::runtime::config::ModelConfig::parse(text).ok()?.num(key)
 }
 
 /// Where the dynamic route's layers go and how many of their experts each GPU holds: the planner's (src/plan.rs `sizing`).

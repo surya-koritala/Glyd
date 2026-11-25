@@ -5,6 +5,7 @@
 
 use crate::machine::{driver_min, driver_need, ARCHS, MAX_CONTEXT};
 use crate::plan::{Machine, Vendor};
+use crate::runtime::config::ModelConfig;
 use crate::ui::Refusal;
 
 /// A family of models the engine tells apart by its config.json.
@@ -300,13 +301,21 @@ impl Support {
     }
 }
 
+/// A config.json's text parsed once, or the refusal `run` gives where a key is of another type than the engine reads it as. `name`: the model's short name, for the words.
+pub fn parsed(cfg_text: &str, name: &str) -> Result<ModelConfig, Refusal> {
+    ModelConfig::parse(cfg_text).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), ""))
+}
+
 /// The family of a config.json, or the refusal `run` gives for it. `name`: the model's short name, for the words.
 pub fn family(cfg_text: &str, name: &str) -> Result<Family, Refusal> {
-    // (config.json parsed once: the family by its names, `runtime::config`'s one rule)
-    let c = crate::runtime::config::ModelConfig::parse(cfg_text).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), ""))?;
+    family_in(&parsed(cfg_text, name)?, name)
+}
+
+/// `family` of a config.json parsed once: the family by its names, `runtime::config`'s one rule.
+pub fn family_in(c: &ModelConfig, name: &str) -> Result<Family, Refusal> {
     if c.family() == Some(Family::Gemma4) {
         // (the 26B-A4B mixture of experts and the E models are refused whatever the level)
-        if let Err(e) = crate::gemma4::ConfigG4::of(&c, None, false) {
+        if let Err(e) = crate::gemma4::ConfigG4::of(c, None, false) {
             if e.msg.contains("not in this engine yet") {
                 return Err(Refusal::unsupported(format!("{name}: {}", e.msg), "Run Gemma 4 12B or 31B: glyd run google/gemma-4-12B-it"));
             }

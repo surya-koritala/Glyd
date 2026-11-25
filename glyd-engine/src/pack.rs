@@ -6,6 +6,8 @@ use crate::ffi::{err, Error, Result};
 use crate::glm::ConfigGlm;
 use crate::nemotron::{pack_layout, ConfigNemotronH};
 use crate::qwen35::{Config35, Pack35, Tensor35};
+use crate::runtime::config::ModelConfig;
+use crate::support::Family;
 use glyd_gpu::pack::{pack_smallest_checked, pack_twelve_checked, Packed};
 use glyd_gpu::safetensors::Checkpoint;
 use glyd_gpu::save::{self, Layout, Source};
@@ -150,16 +152,24 @@ pub fn desc_plan(d: &crate::dynamic::ModelDesc, f32: &dyn Fn(&str) -> bool) -> S
 
 /// The save plan of the level `level` for the model in `dir` where it is a Gemma 4, a plain dense, a dense Qwen3.5, a NemotronH or a GLM-5.3-Flash one (`gemma4_plan`, `desc_plan`,
 /// `qwen35_plan`, `nemotron_plan`, `glm_plan`), else none. A config of GLM-5.3-Flash that the engine does not run is an error that says why, not a model of no known kind.
-fn level_plan(dir: &Path, level: Layout) -> Result<Option<String>> {
-    if let Ok(g) = crate::gemma4::ConfigG4::load(dir) {
+/// `config`: the directory's config.json parsed once. Where there is none, or its keys do not parse, there is no plan, but for a GLM-5.3-Flash release's (its names tell
+/// it): its error names the key.
+fn level_plan(dir: &Path, level: Layout, config: Option<&ModelConfig>) -> Result<Option<String>> {
+    let Some(c) = config else {
+        let glm = std::fs::read_to_string(dir.join("config.json")).is_ok_and(|t| crate::glm::is_glm(&t));
+        return if glm { ConfigGlm::load(dir).map(|_| None) } else { Ok(None) };
+    };
+    let (label, generation) = (dir.join("config.json").display().to_string(), ModelConfig::generation(dir));
+    if let Ok(g) = crate::gemma4::ConfigG4::of(c, generation.as_deref(), false) {
         return Ok(Some(gemma4_plan(&g)));
     }
-    if std::fs::read_to_string(dir.join("config.json")).is_ok_and(|t| crate::dynamic::dense::is_dense(&t)) {
+    if c.is_dense() {
         let ck = io(Checkpoint::open(dir))?;
-        return Ok(Some(desc_plan(&crate::dynamic::dense::lowered(dir)?, &|n: &str| ck.get(n).is_some_and(|(_, t)| t.dtype == "F32"))));
+        return Ok(Some(desc_plan(&crate::dynamic::dense::lowered_of(dir, c)?, &|n: &str| ck.get(n).is_some_and(|(_, t)| t.dtype == "F32"))));
     }
-    let glm = if std::fs::read_to_string(dir.join("config.json")).is_ok_and(|t| crate::glm::is_glm(&t)) { Some(ConfigGlm::load(dir)?) } else { None };
-    let (qwen35, nemotron) = (Config35::load(dir).ok(), ConfigNemotronH::load(dir).ok());
+    let glm = if c.family() == Some(Family::Glm) { Some(ConfigGlm::of(c, &label, generation.as_deref())?) } else { None };
+    let (qwen35, nemotron) =
+        (Config35::of(c, &label, generation.as_deref()).ok().map(|q| q.as_saved(dir)), ConfigNemotronH::of(c, &label, generation.as_deref()).ok());
     if qwen35.is_none() && nemotron.is_none() && glm.is_none() {
         return Ok(None);
     }
@@ -180,8 +190,9 @@ pub fn run(model: &str, out: &Path, threads: usize, layout: Layout) -> Result<()
 pub fn run_with(model: &str, out: &Path, threads: usize, layout: Layout, quiet: bool) -> Result<()> {
     let source = io(Source::find(model))?;
     // (a Gemma 4 model's and a plain dense one's penguin is a glyd-v7 save too: the executor reads its packs as saved)
-    let saved_penguin = crate::gemma4::ConfigG4::load(&source.dir).is_ok()
-        || std::fs::read_to_string(source.dir.join("config.json")).is_ok_and(|t| crate::dynamic::dense::is_dense(&t));
+    let config = ModelConfig::load(&source.dir).ok();
+    let saved_penguin =
+        config.as_ref().is_some_and(|c| c.is_dense() || crate::gemma4::ConfigG4::of(c, ModelConfig::generation(&source.dir).as_deref(), false).is_ok());
     let t0 = Instant::now();
     let mut have = out.join("glyd.json").exists();
     if have && crate::weights::earlier_format(out).is_some() {
@@ -210,7 +221,7 @@ pub fn run_with(model: &str, out: &Path, threads: usize, layout: Layout, quiet: 
         // (and penguin of a Gemma 4 model or a plain dense one: the executor reads the packs as saved, a glyd-v7 directory of level penguin)
         let planned =
             if matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3) || (layout == Layout::Tiered && saved_penguin) {
-                level_plan(&source.dir, layout)?
+                level_plan(&source.dir, layout, config.as_ref())?
             } else {
                 None
             };

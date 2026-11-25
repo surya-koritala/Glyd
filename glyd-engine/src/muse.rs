@@ -73,10 +73,7 @@ pub fn is_muse(text: &str) -> bool {
 
 impl ConfigMuse {
     pub fn load(dir: &Path) -> Result<ConfigMuse> {
-        let p = dir.join("config.json");
-        let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-        let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
-        ConfigMuse::parse(&text, &p.display().to_string(), generation.as_deref())
+        ModelConfig::read(dir, ConfigMuse::of)
     }
 
     pub fn parse(text: &str, label: &str, generation: Option<&str>) -> Result<ConfigMuse> {
