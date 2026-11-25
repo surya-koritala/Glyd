@@ -333,9 +333,9 @@ fn tower(a: &Args) -> Result<()> {
 /// The executor on the model in `dir` as its server loads it (src/dynamic/qwen4x.rs `load_cached`): the matrices lossless, its experts from its pack with a place for
 /// each (none computed by the host), up to `users` sequences.
 fn engine(dir: &Path, users: usize) -> Result<crate::dynamic::Dyn> {
-    use crate::dynamic::qwen4x::{load_cached, lowered, Caching, PackMode};
+    use crate::dynamic::qwen4x::{load_cached, Caching, PackMode};
     let o = crate::dynamic::Opts { ctx: 4096, chunk: 128, graph: true, device: 0, layout: None };
-    let k = Caching::new(&dir.join("pack"), PackMode::Best, &lowered(dir, o.ctx + o.chunk + 16)?, users);
+    let k = Caching::new(&dir.join("pack"), PackMode::Best, users);
     let e = load_cached(dir, &o, &k)?;
     if !e.sees() {
         return err(format!("{}: the executor opened no vision tower", dir.display()));

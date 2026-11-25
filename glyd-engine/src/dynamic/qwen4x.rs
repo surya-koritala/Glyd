@@ -2,9 +2,11 @@
 //! (`lower::qwen4x`) and loaded here: the matrices packed at the level asked (penguin's lossless packs where none is), the ones the library does not pack and the table of n-grams
 //! held as saved (bf16), the small tensors as saved but A_log in fp32 (the delta rule reads it so). The experts either all on the GPU at the level asked (`load`:
 //! `moe_qwen4x::QxMoe`, handed over as a `ResidentMoe`), or from a pack of codebook rows in the shared expert store (`load_cached`: the codebook block,
-//! `QxMoeCb`, the misses on the host). The MTP layer is a draft head of the model (`load_drafting`: `lower::draft_head`, src/dynamic/head.rs). The vision
-//! tower is the description's (src/dynamic/images.rs: every loader of the executor opens it). Not on the executor yet: the table of n-grams read from the disk in
-//! place of the GPU (the family's own engine did it; R3d deleted it).
+//! `QxMoeCb`, the misses on the host). The MTP layer is a draft head of the model (`load_drafting`: `lower::draft_head`, src/dynamic/head.rs). Across GPUs
+//! the layers are cut by the generic split (src/dynamic/split.rs): a stage's experts all on its GPU (`load_stage`, `open_split`; the head on the last), or in
+//! an expert cache of its own (`load_cached_stage`, `open_cached`; `qwenserve --gpus 0,1`). The vision tower is the description's (src/dynamic/images.rs: every
+//! loader of the executor opens it on a model on one GPU; a model across GPUs reads no images yet). Not on the executor yet: the table of n-grams read from
+//! the disk in place of the GPU (the family's own engine did it; R3d deleted it).
 
 use super::{Dyn, ModelDesc, Op, Opts, ResidentMoe, Stage};
 use crate::cb_pack::CbPack;
@@ -44,19 +46,17 @@ pub fn experts_at(layout: Option<Layout>) -> Layout {
     }
 }
 
-/// The dynamic route's stage loader of the family (`split::loader`: the gated residuals' streams): the whole model on one GPU, its experts all on it at the level
-/// `o.layout` names (`load`). A stage of a model split across GPUs, and its experts in the expert cache as a hummingbird directory's caching says, are refused in
-/// words: the family's cache is its pack of codebook rows (`load_cached`, `qwenserve CKPT PACK`).
+/// The dynamic route's stage loader of the family (`split::loader`: the gated residuals' streams): stage `st` (the whole model on one GPU, or its layers
+/// `st.layers` of a model split across GPUs: src/dynamic/split.rs), its experts all on its GPU at the level `o.layout` names (`load_stage`). Its experts in the
+/// expert cache as a hummingbird directory's caching says are refused in words: the family's cache is its pack of codebook rows (`load_cached_stage`,
+/// `open_cached`, `qwenserve CKPT PACK`).
 pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
-    if !(st.first && st.last) {
-        return err(format!("{FAMILY}: a stage of layers {}..{} of a model split across GPUs: the family loads on one GPU yet", st.layers.0, st.layers.1));
-    }
     if caching.is_some() {
         return err(format!(
             "{FAMILY}: its experts in the expert cache are a pack of codebook rows (qwenserve CKPT PACK), not a hummingbird directory's places"
         ));
     }
-    load(dir, o)
+    load_stage(dir, o, experts_at(o.layout), st, None)
 }
 
 /// The draft head of the model in `dir` (its MTP layers: `lower::draft_head` of the family's lowering) for sequences of up to `ctx` positions; None where its
@@ -72,44 +72,50 @@ pub fn head_lowered(dir: &Path, ctx: usize) -> Result<Option<ModelDesc>> {
 
 /// `load` with the experts at `level` (lossless, or a lossy level's codes: six, five or four bits).
 pub fn load_level(dir: &Path, o: &Opts, level: Layout) -> Result<Dyn> {
-    load_with(dir, o, level, None)
+    load_stage(dir, o, level, None, None)
 }
 
 /// `load_level` with the model's draft head (`head_lowered`) drafting `k` tokens a round (at most `VERIFY_ROWS` - 1), its experts held as the model's: each round's
 /// drafts checked in one verify pass whose rows are the steps' (src/dynamic/head.rs).
 pub fn load_drafting(dir: &Path, o: &Opts, level: Layout, k: usize) -> Result<Dyn> {
-    load_with(dir, o, level, Some(k))
+    load_stage(dir, o, level, None, Some(k))
 }
 
-fn load_with(dir: &Path, o: &Opts, level: Layout, draft: Option<usize>) -> Result<Dyn> {
+/// Stage `st` of the model in `dir` (None: the whole model) on the executor's loader (`Dyn::new_placed`): the stage's layers' matrices and their experts all on
+/// its GPU at `level`, the embedding on the first, the final mixer and the LM head on the last; where `draft` is given, the last stage holds the draft head too
+/// (`load_drafting`'s, drafting k tokens a round: src/dynamic/split.rs runs its rounds across the stages).
+pub fn load_stage(dir: &Path, o: &Opts, level: Layout, st: impl Into<Option<Stage>>, draft: Option<usize>) -> Result<Dyn> {
     let c = crate::qwen4x::ConfigQx::load(dir)?;
-    let d = lowered(dir, o.ctx + o.chunk + 16)?;
-    // (what the GPU would hold: the experts at the level (lossless: two bytes a weight at most) and the table of n-grams as saved; past that, `load_cached`)
+    let st = st.into().unwrap_or(Stage::whole(c.layers));
+    let d = lowered(dir, o.ctx + o.chunk + 16)?.staged(&st);
+    // (what the GPU would hold of the stage: its layers' experts at the level (lossless: two bytes a weight at most) and their table of n-grams as saved; past
+    // that, `load_cached`)
     let per = match level {
         Layout::Int6 => 6,
         Layout::Int5 => 5,
         Layout::Int4 => 4,
         _ => 16,
     };
-    let experts = (c.layers * c.experts * 3 * c.inter * c.hidden) as u64 * per / 8;
-    let table: u64 = held_as_saved(&d).iter().map(|&k| (d.mats[k].rows * d.mats[k].cols * 2) as u64).sum();
+    let experts = ((st.layers.1 - st.layers.0) * c.experts * 3 * c.inter * c.hidden) as u64 * per / 8;
+    let table: u64 = held_as_saved(&d, &st).iter().map(|&k| (d.mats[k].rows * d.mats[k].cols * 2) as u64).sum();
     let free = Dev::new(o.device)?.mem_info()?.0 as u64;
     if experts + table > free {
         return err(format!(
-            "{FAMILY}: its experts ({:.1} GB at {per} bits) and its table of n-grams ({:.1} GB) do not fit this GPU's {:.1} GB free: a pack of its experts serves it (`load_cached`)",
+            "{FAMILY}: the experts of layers {}..{} ({:.1} GB at {per} bits) and their table of n-grams ({:.1} GB) do not fit this GPU's {:.1} GB free: a pack of its experts serves it (`load_cached`)",
+            st.layers.0,
+            st.layers.1,
             experts as f64 / 1e9,
             table as f64 / 1e9,
             free as f64 / 1e9
         ));
     }
-    let st = Stage::whole(d.layers.len());
     // (layer l's experts, the MTP layers' after the model's)
     let resident = |ck: &Checkpoint, ls: std::ops::Range<usize>| -> Result<Vec<Box<dyn MoeBlock>>> {
         ls.map(|l| Ok(Box::new(ResidentMoe(crate::moe_qwen4x::QxMoe::load(l, &c, ck, level)?.into_layer())) as Box<dyn MoeBlock>)).collect()
     };
-    let blocks = |ck: &Checkpoint, _: Layout| resident(ck, 0..c.layers);
+    let blocks = |ck: &Checkpoint, _: Layout| resident(ck, st.layers.0..st.layers.1);
     let head = |ck: &Checkpoint, _: Layout| resident(ck, c.layers..c.layers + c.mtp_layers);
-    let spec = match draft {
+    let spec = match draft.filter(|_| st.last) {
         None => None,
         Some(k) => {
             let h = head_lowered(dir, o.ctx + o.chunk + 16)?
@@ -117,36 +123,49 @@ fn load_with(dir: &Path, o: &Opts, level: Layout, draft: Option<usize>) -> Resul
             Some(super::DraftSpec { dir, desc: h, k, experts: Some(&head) })
         }
     };
-    Dyn::new_with(dir, d, spec, st, o, &blocks)
+    Dyn::new_placed(dir, d, spec, st, o, &blocks, &super::Placing::default())
+}
+
+/// The model in `dir` at `level` with its layers cut before each of `cuts` over `devices` (one more than the cuts; a GPU named twice: two stages on it, the
+/// split's check on one GPU), through the generic split (src/dynamic/split.rs: a stage a thread, the rows handed over through host memory), each stage's
+/// experts all on its GPU (`load_stage`); the draft head on the last stage drafting `draft` tokens a round where given. One GPU where `cuts` is empty.
+pub fn open_split(dir: &Path, o: &Opts, level: Layout, cuts: &[usize], devices: &[i32], draft: Option<usize>) -> Result<super::split::Run> {
+    let c = crate::qwen4x::ConfigQx::load(dir)?;
+    let owned = dir.to_path_buf();
+    super::split::Run::new(c.layers, c.eos, cuts, devices, o, std::sync::Arc::new(move |st, o: &Opts| load_stage(&owned, o, level, st, draft)))
 }
 
 /// Condor's routed experts from a pack of codebook rows (glyd-hbr-codes/2: each expert cb2, cb3, cb4 or ternary, the pack's mode's sidecar over them) in the
 /// shared expert store (src/offload.rs): a layer's places on the GPU, the pack's file mapped as their host tier, the misses computed by the host or copied in as
-/// `offload` says.
+/// `offload` says. A model split across GPUs has an expert cache a stage, each of these settings (`open_cached`).
+#[derive(Clone, Debug)]
 pub struct Caching {
     pub pack: std::path::PathBuf,
     pub mode: PackMode,
-    /// places a layer (None: what the GPU has free after the always-on matrices, less `reserve`, over the layers)
+    /// places a layer (None: what the GPU has free after the always-on matrices, less the reserve, over the layers)
     pub places: Option<usize>,
     pub offload: Offload,
-    /// GPU bytes the places leave for the sequences' keys, values and states and the executor's scratch (`reserve_for`)
-    pub reserve: u64,
+    /// the sequences the GPU keeps room for beside the places: their keys, values and states, and the executor's scratch (`reserve_for`)
+    pub users: usize,
 }
 
 impl Caching {
     /// The pack in `pack` served as `mode`, its places sized by the room the GPU has, its misses computed by the host, the mode's skipping, room kept for `users`
-    /// sequences of the description `d`.
-    pub fn new(pack: &Path, mode: PackMode, d: &ModelDesc, users: usize) -> Caching {
+    /// sequences.
+    pub fn new(pack: &Path, mode: PackMode, users: usize) -> Caching {
         let offload = Offload { mode: crate::offload::Mode::Cpu, skip_rank: mode.skip_rank(), async_copies: true, ..Offload::default() };
-        Caching { pack: pack.to_path_buf(), mode, places: None, offload, reserve: reserve_for(d, users) }
+        Caching { pack: pack.to_path_buf(), mode, places: None, offload, users }
     }
 }
 
-/// The GPU memory a model's places leave: each of `users` sequences' keys, values and states for the description's context, and the executor's slots and scratch
-/// (1.5 GiB, not measured for this model: the final pass measures it).
-pub fn reserve_for(d: &ModelDesc, users: usize) -> u64 {
-    let ring: u64 = d.rings.iter().map(|r| (d.max_pos * r.nk * r.d * 2 * (1 + r.values as usize)) as u64).sum();
-    let states: u64 = d.states.iter().map(|&b| b as u64).sum();
+/// The GPU memory the places of stage `st` of a model leave: each of `users` sequences' keys, values and states the stage's layers hold for the description's
+/// context, and the executor's slots and scratch (1.5 GiB, not measured for this model: the final pass measures it).
+pub fn reserve_for(d: &ModelDesc, users: usize, st: &Stage) -> u64 {
+    let ops = || d.layers[st.layers.0..st.layers.1].iter().flatten();
+    let rings: std::collections::BTreeSet<usize> = ops().flat_map(super::Op::rings).collect();
+    let states: std::collections::BTreeSet<usize> = ops().flat_map(super::Op::states).collect();
+    let ring: u64 = rings.iter().map(|&i| &d.rings[i]).map(|r| (d.max_pos * r.nk * r.d * 2 * (1 + r.values as usize)) as u64).sum();
+    let states: u64 = states.iter().map(|&i| d.states[i] as u64).sum();
     users.max(1) as u64 * (ring + states) + (3 << 29)
 }
 
@@ -158,70 +177,152 @@ pub fn places_for(free: u64, reserve: u64, layers: usize, place: usize, kept: us
 /// The model in `dir` on the executor's loader with its routed experts in the expert cache (`Caching`): the always-on matrices as `load` loads them, each layer's
 /// block Condor's codebook block (`QxMoeCb`) over one store shared by the layers.
 pub fn load_cached(dir: &Path, o: &Opts, k: &Caching) -> Result<Dyn> {
+    load_cached_stage(dir, o, k, None)
+}
+
+/// Stage `st` of `load_cached`'s model (None: the whole model), with an expert cache of its own: its layers' blocks over one store and one set of the codebook
+/// block's shared settings, made on this stage's GPU (src/dynamic/split.rs makes each stage on a thread of its own), the places a layer `k.places` or what the
+/// GPU has free after the stage's always-on matrices, less the reserve its own layers' sequences take (`reserve_for`), over its layers.
+pub fn load_cached_stage(dir: &Path, o: &Opts, k: &Caching, st: impl Into<Option<Stage>>) -> Result<Dyn> {
     let c = crate::qwen4x::ConfigQx::load(dir)?;
     // (a width the codebook kernels do not take is refused before anything is read or put on the GPU)
     crate::moe_qwen4x::takes(c.hidden, c.inter).map_err(|e| e.context(FAMILY))?;
-    let d = lowered(dir, o.ctx + o.chunk + 16)?;
+    let st = st.into().unwrap_or(Stage::whole(c.layers));
+    let d = lowered(dir, o.ctx + o.chunk + 16)?.staged(&st);
     let mut pack = CbPack::open_dims(&k.pack, c.hidden, c.inter)?;
     if let Some(side) = k.mode.side(&k.pack) {
         pack = pack.with_side(&side)?;
     }
-    if let Some(l) = (0..c.layers).find(|&l| !pack.has(l)) {
+    let layers = st.layers.0..st.layers.1;
+    if let Some(l) = layers.clone().find(|&l| !pack.has(l)) {
         return err(format!("{}: no experts of layer {l} of the model's {}", k.pack.display(), c.layers));
     }
     let (store, common) = (ExpertStore::new(), QxCbShared::new());
     store.set_offload(k.offload);
     common.stream.set(true);
-    let place = (0..c.layers).map(|l| pack.place_bytes(l)).max().unwrap_or(1);
-    let kept = (0..c.layers).filter_map(|l| pack.kept(l).map(<[usize]>::len)).min().unwrap_or(1);
-    let dev = o.device;
+    let place = layers.clone().map(|l| pack.place_bytes(l)).max().unwrap_or(1);
+    let kept = layers.clone().filter_map(|l| pack.kept(l).map(<[usize]>::len)).min().unwrap_or(1);
+    let (dev, reserve) = (o.device, reserve_for(&d, k.users, &st));
     let blocks = |ck: &Checkpoint, layout: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
         // (read after the always-on matrices are on the GPU: what is free now, less the reserve, is the places')
         let slots = match k.places {
             Some(p) => p,
-            None => places_for(Dev::new(dev)?.mem_info()?.0 as u64, k.reserve, c.layers, place, kept),
+            None => places_for(Dev::new(dev)?.mem_info()?.0 as u64, reserve, layers.len(), place, kept),
         };
-        (0..c.layers)
+        layers
+            .clone()
             .map(|l| {
                 crate::status::STATUS.beat();
                 Ok(Box::new(QxMoeCb::load(l, &c, ck, layout, &pack, &store, slots, &common)?) as Box<dyn MoeBlock>)
             })
             .collect()
     };
-    let e = Dyn::new_with(dir, d, None, Stage::whole(c.layers), o, &blocks)?;
+    let e = Dyn::new_placed(dir, d, None, st, o, &blocks, &super::Placing::default())?;
     common.fill_page_tables();
     Ok(e)
 }
 
-/// `load_cached` of the pack in `pack` served as its mode (`PackMode::of`), room kept for `users` sequences.
-pub fn load_pack(dir: &Path, pack: &Path, precise: bool, users: usize, o: &Opts) -> Result<Dyn> {
-    let d = lowered(dir, o.ctx + o.chunk + 16)?;
-    load_cached(dir, o, &Caching::new(pack, PackMode::of(pack, precise), &d, users))
+/// The model in `dir` with its routed experts in the expert cache (`k`), its layers cut before each of `cuts` over `devices` (one more than the cuts; a GPU
+/// named twice: two stages on it, the split's check on one GPU), through the generic split (src/dynamic/split.rs): each stage's experts in a cache of its own
+/// (`load_cached_stage`: `k.places` a layer, else its GPU's room). One GPU where `cuts` is empty.
+pub fn open_cached(dir: &Path, o: &Opts, k: &Caching, cuts: &[usize], devices: &[i32]) -> Result<super::split::Run> {
+    let c = crate::qwen4x::ConfigQx::load(dir)?;
+    let (owned, k) = (dir.to_path_buf(), k.clone());
+    super::split::Run::new(c.layers, c.eos, cuts, devices, o, std::sync::Arc::new(move |st, o: &Opts| load_cached_stage(&owned, o, &k, st)))
 }
 
-/// The GPU `--gpus` names (`GLYD_GPUS` of tools/serve.sh), GPU 0 where it names none. The family runs on one GPU in this release (its layers are not cut over GPUs on the
-/// executor yet; its own engine's `--gpus 0,1` split them), so a list of more is refused in words, never run on one card in silence.
-pub fn one_gpu(a: &crate::args::Args) -> Result<i32> {
-    let Some(asked) = a.flag("gpus") else { return Ok(0) };
+/// `load_cached` of the pack in `pack` served as its mode (`PackMode::of`), room kept for `users` sequences.
+pub fn load_pack(dir: &Path, pack: &Path, precise: bool, users: usize, o: &Opts) -> Result<Dyn> {
+    load_cached(dir, o, &Caching::new(pack, PackMode::of(pack, precise), users))
+}
+
+/// The GPUs `--gpus` names (`GLYD_GPUS` of tools/serve.sh), GPU 0 where it names none: one, or several to cut the layers over (a GPU named twice: two parts on
+/// it, the split's check on one GPU). Anything else is refused in words.
+pub fn gpus(a: &crate::args::Args) -> Result<Vec<i32>> {
+    let Some(asked) = a.flag("gpus") else { return Ok(vec![0]) };
     let named: Option<Vec<i32>> = asked.split(',').map(|x| x.trim().parse::<i32>().ok().filter(|&n| n >= 0)).collect();
-    match named.as_deref() {
-        Some(&[one]) => Ok(one),
-        Some(_) => err(format!(
-            "--gpus {asked} (GLYD_GPUS in tools/serve.sh): {FAMILY} runs on one GPU in this release; its layers are not split over several GPUs yet. \
-             Name one GPU instead (--gpus 1, GLYD_GPUS=1), or leave it out for GPU 0."
-        )),
-        None => err(format!("--gpus {asked}: GPU numbers are 0, 1, ...; this release takes one (--gpus 0)")),
+    named.ok_or_else(|| {
+        crate::ffi::Error(format!("--gpus {asked}: GPU numbers, comma-separated (--gpus 1 for the second card, --gpus 0,1 to cut the layers over two)"))
+    })
+}
+
+/// Where `qwenserve` cuts the model's layers over `gpus` (more than one): `--split CUT,..` (the first layer of each part after the first) where given, else
+/// the planner's rule for an expert cache (`split::places_plan`: the layers in order, every one with the same places, the most that fit), over each layer's
+/// always-on matrices (the checkpoint's tensors but the routed experts, at the layout's share of their bf16 bytes, the tables of n-grams at theirs: an
+/// estimate), the pack's place, and each GPU's free memory (shared by the parts named on it) less a part's share of the sequences' room and its scratch. The
+/// places themselves are `--places N` a layer for every part, else what each part's GPU has free after its own matrices at the load (`load_cached_stage`),
+/// which a GPU named twice cannot share: there `--places` is asked for. The cuts and each part's GPU (fewer where one holds it all).
+fn parts(snap: &Path, k: &Caching, o: &Opts, gpus: &[i32], a: &crate::args::Args) -> Result<(Vec<usize>, Vec<i32>)> {
+    use crate::ffi::Error;
+    let c = crate::qwen4x::ConfigQx::load(snap)?;
+    let shared = gpus.iter().enumerate().any(|(i, g)| gpus[..i].contains(g));
+    if shared && k.places.is_none() {
+        return err(format!(
+            "--gpus {}: a GPU named twice holds two parts, which cannot each take what it has free: give the places a layer (--places N)",
+            a.flag("gpus").unwrap_or_default()
+        ));
+    }
+    if let Some(s) = a.flag("split") {
+        let cuts: Vec<usize> = s
+            .split(',')
+            .map(|x| x.trim().parse::<usize>().ok())
+            .collect::<Option<_>>()
+            .ok_or_else(|| Error(format!("--split {s}: the first layer of each GPU's part after the first, comma-separated")))?;
+        if cuts.len() + 1 != gpus.len() || cuts.windows(2).any(|w| w[0] >= w[1]) || cuts.iter().any(|&x| x == 0 || x >= c.layers) {
+            return err(format!("--split {s}: {} first layers in order between 1 and {}, one for each GPU after the first", gpus.len() - 1, c.layers - 1));
+        }
+        return Ok((cuts, gpus.to_vec()));
+    }
+    let mut pack = CbPack::open_dims(&k.pack, c.hidden, c.inter)?;
+    if let Some(side) = k.mode.side(&k.pack) {
+        pack = pack.with_side(&side)?;
+    }
+    let place = (0..c.layers).map(|l| pack.place_bytes(l)).max().unwrap_or(1) as u64;
+    let kept = (0..c.layers).filter_map(|l| pack.kept(l).map(<[usize]>::len)).min().unwrap_or(1);
+    let d = lowered(snap, o.ctx + o.chunk + 16)?;
+    let whole = Stage::whole(c.layers);
+    // (the tables of n-grams are held as saved, at their bf16 bytes; the routed experts are the pack's)
+    let saved: std::collections::HashSet<&str> = held_as_saved(&d, &whole).into_iter().flat_map(|k| d.mats[k].members.iter().map(String::as_str)).collect();
+    let bytes = |pct: u64, keep: &dyn Fn(&str) -> bool| super::split::layer_bytes_where(snap, c.layers, 100, pct, keep);
+    let (packed, base) = bytes(bf16_pct(o.layout), &|n| !n.contains(".mlp.experts.") && !saved.contains(n))?;
+    let dense: Vec<u64> = packed.iter().zip(bytes(100, &|n| saved.contains(n))?.0).map(|(a, b)| a + b).collect();
+    let (scratch, all) = (3u64 << 29, reserve_for(&d, k.users, &whole));
+    let room = gpus
+        .iter()
+        .map(|&g| {
+            let on = gpus.iter().filter(|&&h| h == g).count() as u64;
+            Ok((g, (Dev::probe(g)?.free / on).saturating_sub((all - scratch) / gpus.len() as u64 + scratch)))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let (cuts, devices, _) = super::split::places_plan(&dense, base, &vec![true; c.layers], &room, place, kept, 1)
+        .ok_or_else(|| Error(format!("--gpus {}: no cut of the {} layers leaves every GPU a place a layer", a.flag("gpus").unwrap_or_default(), c.layers)))?;
+    Ok((cuts, devices))
+}
+
+/// The share of a matrix's bf16 bytes the layout packs it in: a block layout's step (64 rows of 16 weights: its codes, its scales' 64 bytes and its base's 4, of
+/// the 2,048 bytes they are in bf16); penguin's own (`split::TIERED_PCT`, `TWELVE_PCT`).
+fn bf16_pct(layout: Option<Layout>) -> u64 {
+    use glyd_gpu::pack::{INT4_STEP_BYTES, INT5_STEP_BYTES, INT6_STEP_BYTES};
+    let step = |b: usize| ((b + 68) * 100).div_ceil(2048) as u64;
+    match layout {
+        Some(Layout::Int6) => step(INT6_STEP_BYTES),
+        Some(Layout::Int5) => step(INT5_STEP_BYTES),
+        Some(Layout::Int4) => step(INT4_STEP_BYTES),
+        Some(Layout::Twelve) => super::split::TWELVE_PCT,
+        _ => super::split::TIERED_PCT,
     }
 }
 
-/// `qwenserve CKPT PACK --port P [--host H] [--page DIR] [--name NAME] [--users N] [--gpus N] [--ctx N] [--chunk N] [--places N] [--precise] [--layout L]`: the HTTP server
-/// (src/server.rs: the chat page, the OpenAI and Anthropic APIs, the Monitor's numbers) on the description executor, the model's routed experts from its pack of
-/// codebook rows in the expert cache (`load_cached`: `--places N` a layer, else what the GPU has free past the reserve), the always-on matrices at the level asked
-/// (four bits where none is), its requests through the common scheduler (`server::work_with`), up to N at once. It listens while the model loads (/health is 503
-/// until it is loaded). Thinking is off where a request does not ask for it; the sampling defaults are the model's, at a temperature of 0.5 at most with min-p
-/// 0.1. One GPU (`one_gpu`). Images (PNG, JPEG) come as OpenAI image_url parts (a data: URL or an http(s) one) and Anthropic image blocks, read by the
-/// model's vision tower (src/dynamic/images.rs), `--image-pixels N` the most pixels each is resized to (1,048,576 by default). Not on the executor yet: the draft
-/// head over the expert cache (its verify pass takes experts held whole on the GPU: src/dynamic/head.rs).
+/// `qwenserve CKPT PACK --port P [--host H] [--page DIR] [--name NAME] [--users N] [--gpus G,..] [--split CUT,..] [--ctx N] [--chunk N] [--places N] [--precise]
+/// [--layout L] [--image-pixels N]`: the HTTP server (src/server.rs: the chat page, the OpenAI and Anthropic APIs, the Monitor's numbers) on the description
+/// executor, the model's routed experts from its pack of codebook rows in the expert cache (`load_cached`: `--places N` a layer, else what the GPU has free past
+/// the reserve), the always-on matrices at the level asked (four bits where none is), its requests through the common scheduler (`server::work_with`), up to N
+/// at once. It listens while the model loads (/health is 503 until it is loaded). Thinking is off where a request does not ask for it; the sampling defaults are
+/// the model's, at a temperature of 0.5 at most with min-p 0.1. `--gpus 0,1`: the layers cut over those GPUs through the generic split (`open_cached`: each
+/// part's experts in a cache of its own, the cut `parts`' rule), one request at a time (each part would hold its share of every sequence). Images (PNG, JPEG)
+/// come as OpenAI image_url parts (a data: URL or an http(s) one) and Anthropic image blocks, read by the model's vision tower on one GPU (src/dynamic/images.rs),
+/// `--image-pixels N` the most pixels each is resized to (1,048,576 by default); across GPUs a request with images is refused in words. Not on the executor yet:
+/// the draft head over the expert cache (its verify pass takes experts held whole on the GPU: src/dynamic/head.rs).
 pub fn http(snap: &Path, pack: &Path, a: &crate::args::Args) -> Result<()> {
     use crate::server;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -232,7 +333,7 @@ pub fn http(snap: &Path, pack: &Path, a: &crate::args::Args) -> Result<()> {
     if !(1..=crate::sched::MAX_ROWS).contains(&users) {
         return err(format!("--users {users}: 1 to {} requests at once", crate::sched::MAX_ROWS));
     }
-    let device = one_gpu(a)?;
+    let gpus = gpus(a)?;
     let mode = PackMode::of(pack, a.has("precise"));
     if let Some(p) = a.flag("image-pixels") {
         let n = p.parse::<usize>().ok().filter(|&n| n > 0).ok_or_else(|| crate::ffi::Error(format!("--image-pixels {p}: a number of pixels")))?;
@@ -266,13 +367,23 @@ pub fn http(snap: &Path, pack: &Path, a: &crate::args::Args) -> Result<()> {
     let addr = server::listen_loading(&format!("{host}:{port}"), &name, ctx - 2, key, server::is_loopback_addr(host), tx.clone(), loading.clone())?;
     println!("Qwen3.8-Flash-Next on Glyd: the chat at http://{addr}/, the API at http://{addr}/v1 (OpenAI and Anthropic). Loading the model...");
     // (the always-on matrices at four bits by default, as the release has been served; `--layout` another level's)
-    let o = Opts { ctx, chunk: a.num("chunk", 1024usize)?, graph: true, device, layout: a.layout()?.or(Some(Layout::Int4)) };
-    let mut k = Caching::new(pack, mode, &lowered(snap, o.ctx + o.chunk + 16)?, users);
+    let o = Opts { ctx, chunk: a.num("chunk", 1024usize)?, graph: true, device: gpus[0], layout: a.layout()?.or(Some(Layout::Int4)) };
+    let mut k = Caching::new(pack, mode, users);
     if let Some(p) = a.flag("places") {
         k.places = Some(p.parse().map_err(|_| crate::ffi::Error(format!("--places {p}: a number of places a layer")))?);
     }
-    let mut e = load_cached(snap, &o, &k)?;
-    let vocab = e.desc().vocab;
+    let (cuts, devices) = if gpus.len() > 1 { parts(snap, &k, &o, &gpus, a)? } else { (Vec::new(), gpus.clone()) };
+    if gpus.len() > 1 {
+        println!(
+            "{}",
+            match cuts.as_slice() {
+                [] => format!("GPU {} holds the model and the places it plans: one part", devices[0]),
+                _ => format!("the layers cut before {cuts:?} over GPUs {devices:?}"),
+            }
+        );
+    }
+    let mut e = open_cached(snap, &o, &k, &cuts, &devices)?;
+    let vocab = crate::qwen4x::ConfigQx::load(snap)?.vocab;
     let Some((n, step)) = crate::conv::Gen::as_step(&mut e, users)? else { return err(format!("{FAMILY}: the engine is not a scheduler's step")) };
     let window = crate::sched::ModelStep::window(step).min(ctx - 2);
     let rt = crate::runtime::context::Context::process().clone();
@@ -382,10 +493,11 @@ pub fn get(repo: &str, dir: &Path, a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
-/// `glyd-engine servecheck CASE [--tokens N]`: the family's HTTP server (`http`) on the expert cache's random case (`logits::qwen4x_cb_random`, CASE `qwen4x-cb`:
-/// its pack, a tokenizer and chat template made for it) against the common scheduler in this process on the same model, pack and places (`load_cached` as
-/// `http` loads it): for a short prompt and one past a chunk, the served completion's tokens (greedy, N of them, by their ids) the scheduler's for the same
-/// tokens. An error where one differs.
+/// `glyd-engine servecheck CASE [--tokens N] [--gpus G,.. --split CUT,..]`: the family's HTTP server (`http`) on the expert cache's random case
+/// (`logits::qwen4x_cb_random`, CASE `qwen4x-cb`: its pack, a tokenizer and chat template made for it) against the common scheduler in this process on the same
+/// model, pack and places on one GPU (`load_cached` as `http` loads it): for a short prompt and one past a chunk, the served completion's tokens (greedy, N of
+/// them, by their ids) the scheduler's for the same tokens. With `--gpus` and `--split` the server cuts the layers over those GPUs (`open_cached`), which the
+/// one-GPU scheduler's tokens then hold to. An error where one differs.
 #[cfg(feature = "dev")]
 pub fn serve_check(a: &crate::args::Args) -> Result<()> {
     use crate::sched::{Ev, Finish, Reply, Sched, Submit};
@@ -406,6 +518,7 @@ pub fn serve_check(a: &crate::args::Args) -> Result<()> {
         .into_iter()
         .map(String::from)
         .chain(["--ctx", &ctx.to_string(), "--chunk", &chunk.to_string(), "--places", &places.to_string(), "--users", &users.to_string()].map(String::from))
+        .chain(["gpus", "split"].into_iter().filter_map(|f| a.flag(f).map(|v| [format!("--{f}"), v.to_string()])).flatten())
         .collect();
     let served = crate::args::Args::from(words);
     let (d2, p2) = (dir.clone(), pack.clone());
@@ -463,7 +576,7 @@ pub fn serve_check(a: &crate::args::Args) -> Result<()> {
     }
     // the same model, pack and places on the scheduler in this process, the same prompts one after another
     let o = Opts { ctx, chunk, graph: true, device: 0, layout: Some(Layout::Int4) };
-    let mut k = Caching::new(&pack, PackMode::of(&pack, false), &lowered(&dir, o.ctx + o.chunk + 16)?, users);
+    let mut k = Caching::new(&pack, PackMode::of(&pack, false), users);
     k.places = Some(places);
     let mut e = load_cached(&dir, &o, &k)?;
     let Some((n, step)) = crate::conv::Gen::as_step(&mut e, users)? else { return err("servecheck: no scheduler's step") };
@@ -520,9 +633,9 @@ pub fn serve_check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
-/// The matrices held as saved: the tables of n-grams (`Op::NgramRows` reads their rows).
-fn held_as_saved(d: &ModelDesc) -> Vec<usize> {
-    d.layers.iter().flatten().filter_map(|op| if let Op::NgramRows(x) = op { Some(x.table) } else { None }).collect()
+/// The matrices stage `st` holds as saved: its layers' tables of n-grams (`Op::NgramRows` reads their rows).
+fn held_as_saved(d: &ModelDesc, st: &Stage) -> Vec<usize> {
+    d.layers[st.layers.0..st.layers.1].iter().flatten().filter_map(|op| if let Op::NgramRows(x) = op { Some(x.table) } else { None }).collect()
 }
 
 #[cfg(test)]
@@ -535,23 +648,26 @@ mod tests {
         serde_json::from_str(m["config"].as_str().unwrap()).unwrap()
     }
 
-    /// `--gpus` (`GLYD_GPUS` of tools/serve.sh) names the one GPU the family runs on, or is refused in words naming the setting, what this release runs and what to
-    /// give instead: a list of more than one (the old engine's `--gpus 0,1` split) is never taken as GPU 0 in silence, nor a GPU named twice.
+    /// `--gpus` (`GLYD_GPUS` of tools/serve.sh) names the GPUs the family runs on: GPU 0 where none is named, one, or a list to cut the layers over (a GPU named
+    /// twice: two parts on it); what is not a list of GPU numbers is refused in words.
     #[test]
-    fn gpus_names_one_gpu_or_is_refused_in_words() {
-        let one = |gpus: &[&str]| super::one_gpu(&crate::args::Args::from(["qwenserve", "ckpt", "pack"].iter().chain(gpus).map(|w| w.to_string())));
-        assert_eq!(one(&[]).unwrap(), 0);
-        assert_eq!((one(&["--gpus", "0"]).unwrap(), one(&["--gpus", "1"]).unwrap(), one(&["--gpus", " 2 "]).unwrap()), (0, 1, 2));
-        for many in ["0,1", "1,0", "0,0", "0, 1,2"] {
-            let e = one(&["--gpus", many]).unwrap_err().to_string();
-            for said in [&format!("--gpus {many}"), "GLYD_GPUS", "one GPU in this release", "Name one GPU instead (--gpus 1, GLYD_GPUS=1)"] {
-                assert!(e.contains(said), "{many}: {e}");
-            }
+    fn gpus_names_the_gpus_or_is_refused_in_words() {
+        let gpus = |g: &[&str]| super::gpus(&crate::args::Args::from(["qwenserve", "ckpt", "pack"].iter().chain(g).map(|w| w.to_string())));
+        assert_eq!(gpus(&[]).unwrap(), [0]);
+        assert_eq!((gpus(&["--gpus", "1"]).unwrap(), gpus(&["--gpus", " 2 "]).unwrap()), (vec![1], vec![2]));
+        assert_eq!((gpus(&["--gpus", "0,1"]).unwrap(), gpus(&["--gpus", "0, 0"]).unwrap()), (vec![0, 1], vec![0, 0]));
+        for bad in ["", "x", "0,", "1.5", "-1"] {
+            let e = gpus(&["--gpus", bad]).unwrap_err().to_string();
+            assert!(e.contains(&format!("--gpus {bad}: GPU numbers")) && e.contains("--gpus 0,1 to cut the layers over two"), "{bad:?}: {e}");
         }
-        for bad in ["", "x", "0,", "1.5"] {
-            let e = one(&["--gpus", bad]).unwrap_err().to_string();
-            assert!(e.contains(&format!("--gpus {bad}: GPU numbers")), "{bad:?}: {e}");
-        }
+    }
+
+    /// A block layout's share of a matrix's bf16 bytes is its step's: four bits about 28%, five 35%, six 41%; penguin's are its own.
+    #[test]
+    fn a_layouts_share_of_the_bf16_bytes_is_its_steps() {
+        use crate::weights::Layout;
+        assert_eq!([Layout::Int4, Layout::Int5, Layout::Int6].map(|l| super::bf16_pct(Some(l))), [29, 35, 41]);
+        assert_eq!((super::bf16_pct(None), super::bf16_pct(Some(Layout::Twelve))), (super::super::split::TIERED_PCT, super::super::split::TWELVE_PCT));
     }
 
     /// The executor's loader takes every matrix of the tiny model (a whole model's stage wants each one), holds as saved the table of n-grams and the shapes the
@@ -565,8 +681,10 @@ mod tests {
             man["tensors"].as_array().unwrap().iter().map(|t| (t[0].as_str().unwrap().to_string(), t[2][0].as_u64().unwrap() as usize)).collect();
         let rows_of = |n: &str| rows.get(n).copied();
         let saved: Vec<usize> = (0..m.mats.len()).filter(|&k| super::super::held_as_saved(&m, k, &rows_of)).collect();
-        let table = super::held_as_saved(&m);
+        let table = super::held_as_saved(&m, &super::super::Stage::whole(m.layers.len()));
         assert!(!table.is_empty() && table.iter().all(|k| saved.contains(k)), "{table:?} of {saved:?}");
+        // (the table is the n-gram layer's: a stage without that layer holds none)
+        assert!(super::held_as_saved(&m, &super::super::Stage { layers: (2, 8), first: false, last: true }).is_empty());
         for &k in &saved {
             let it = &m.mats[k];
             assert!(
@@ -664,10 +782,27 @@ mod tests {
         assert_eq!(super::places_for(1 << 30, 2 << 30, 48, 1 << 20, 512), 1);
         assert_eq!(super::places_for(1 << 40, 0, 48, 1 << 20, 512), 512);
         let m = super::super::lower::qwen4x(&describe(&tiny()).unwrap(), vec![2000], 1100).unwrap();
-        let (one, four) = (super::reserve_for(&m, 1), super::reserve_for(&m, 4));
+        let whole = super::super::Stage::whole(m.layers.len());
+        let (one, four) = (super::reserve_for(&m, 1, &whole), super::reserve_for(&m, 4, &whole));
         let states: u64 = m.states.iter().map(|&b| b as u64).sum();
         let seq = one - (3 << 29);
         assert!(states > 0 && seq >= states && four - one == 3 * seq, "{one} {four} {states}");
+        // (a stage's reserve is its own layers' rings and states: the two halves of the model hold the whole one's between them)
+        let half = |layers| super::reserve_for(&m, 4, &super::super::Stage { layers, first: false, last: false }) - (3 << 29);
+        assert!(half((0, 4)) > 0 && half((4, 8)) > 0 && half((0, 4)) + half((4, 8)) == four - (3 << 29));
+    }
+
+    /// A stage of the model numbers its experts' blocks as its loader reads them (the stage's k-th layer of experts, block k), the whole model's the layers'.
+    #[test]
+    fn a_stage_numbers_its_experts_from_its_first_layer() {
+        use super::super::{Op, Stage};
+        let m = super::super::lower::qwen4x(&describe(&tiny()).unwrap(), vec![2000], 1100).unwrap();
+        let blocks = |d: &super::super::ModelDesc, ls: std::ops::Range<usize>| -> Vec<usize> {
+            d.layers[ls].iter().flatten().filter_map(|op| if let Op::Moe(x) = op { Some(x.block) } else { None }).collect()
+        };
+        assert_eq!(blocks(&m.clone().staged(&Stage::whole(8)), 0..8), (0..8).collect::<Vec<_>>());
+        let late = m.staged(&Stage { layers: (5, 8), first: false, last: true });
+        assert_eq!(blocks(&late, 5..8), [0, 1, 2]);
     }
 
     /// The experts take a lossy level's codes where the matrices' layout is one, else the lossless layout (penguin's, as every family's).
@@ -774,8 +909,7 @@ mod tests {
     fn a_width_the_codebook_kernels_do_not_take_is_refused() {
         let dir = std::env::temp_dir().join(format!("glyd-qwen4x-cb-width-{}", std::process::id()));
         crate::logits::qwen4x_random(&dir).unwrap();
-        let k =
-            super::Caching { pack: dir.join("pack"), mode: super::PackMode::Fast, places: Some(1), offload: crate::offload::Offload::default(), reserve: 0 };
+        let k = super::Caching { pack: dir.join("pack"), mode: super::PackMode::Fast, places: Some(1), offload: crate::offload::Offload::default(), users: 1 };
         let o = super::super::Opts { ctx: 256, chunk: 64, graph: false, device: 0, layout: None };
         let e = super::load_cached(&dir, &o, &k).err().map(|e| e.msg).unwrap_or_default();
         let _ = std::fs::remove_dir_all(&dir);
