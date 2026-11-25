@@ -92,7 +92,7 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
         let sliding = a.window.is_some();
         let slot = if sliding { &mut sliding_rope } else { &mut global_rope };
         let r = *slot.get_or_insert_with(|| {
-            ropes.push(Rope { theta: rope.theta, dim: rope.dim, pairs: rope.freqs });
+            ropes.push(Rope { theta: rope.theta, dim: rope.dim, pairs: rope.freqs, trig64: false });
             ropes.len() - 1
         });
         let (dh, nk, has_v) = (a.head_dim, a.kv_heads, !a.k_eq_v);
@@ -249,7 +249,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
                 return err(format!("{what}: layer {l}'s rope is {r:?}, where the executor's tables are the plain rotary's"));
             }
             Some(r) => {
-                let t = Rope { theta: r.theta, dim: r.dim, pairs: r.freqs };
+                let t = Rope { theta: r.theta, dim: r.dim, pairs: r.freqs, trig64: false };
                 Some(match ropes.iter().position(|x| (x.theta, x.dim, x.pairs) == (t.theta, t.dim, t.pairs)) {
                     Some(i) => i,
                     None => {
@@ -509,7 +509,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                                 "{what}: a rotary of {r:?} and an indexer of {ix:?}: the kernels take the plain rotary, index heads of 128 and pools of 4"
                             ));
                         }
-                        let rt = Rope { theta: r.theta, dim: r.dim, pairs: r.freqs };
+                        let rt = Rope { theta: r.theta, dim: r.dim, pairs: r.freqs, trig64: false };
                         let table = match ropes.iter().position(|x| (x.theta, x.dim, x.pairs) == (rt.theta, rt.dim, rt.pairs)) {
                             Some(i) => i,
                             None => {
@@ -642,7 +642,8 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
 
 /// Qwen3.5's layout (dense: Qwen3.5, 3.6 and 3.8 of 256-wide heads): pairs of blocks, a Gated DeltaNet or a gated full attention, then the SiLU MLP, the (1 + w)
 /// norms, the final norm on the last row. The matrices and small tensors are src/kern35.rs's loader's (`dynamic::qwen35::describe` indexes them in its order);
-/// stage `st` of a model split across GPUs.
+/// stage `st` of a model split across GPUs. A layer whose feed-forward is a mixture of experts (the layout's with experts: a softmax router, the gated shared expert)
+/// runs `Op::Moe` in the MLP's place, block k the stage's k-th such layer's (`dynamic::experts`), and names no MLP matrices.
 pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
     use super::qwen35::per_layer;
     use crate::qwen35::Kind;
@@ -654,9 +655,16 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
     let eps = m.blocks.first().map_or(1e-6, |b| b.norm_in.eps);
     let (mut lin, mut att) = (None, None);
     let mut kinds = Vec::with_capacity(layers);
+    // (each layer's feed-forward: the SiLU MLP, or a mixture of experts, its block the layer kind's: `dynamic::experts`)
+    let mut sparse = Vec::with_capacity(layers);
     for l in 0..layers {
-        if !matches!(m.blocks[2 * l + 1].body, Body::Ffn(Ffn::Mlp(_))) {
-            return err(format!("Qwen3.5: layer {l}'s second block is {:?}, not an MLP (a mixture of experts is not lowered yet)", m.blocks[2 * l + 1].body));
+        match &m.blocks[2 * l + 1].body {
+            Body::Ffn(Ffn::Mlp(_)) => sparse.push(false),
+            Body::Ffn(Ffn::Moe(e)) => {
+                super::experts::cfg(e, m.hidden, 0).map_err(|x| x.context(format!("Qwen3.5: layer {l}")))?;
+                sparse.push(true)
+            }
+            b => return err(format!("Qwen3.5: layer {l}'s second block is {b:?}, not an MLP or a mixture of experts")),
         }
         match &m.blocks[2 * l].body {
             Body::Mixer(Mixer::Linear(x)) => {
@@ -680,12 +688,18 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
     }
     let rope = att.rope.as_ref().ok_or_else(|| Error("Qwen3.5: attention with no rotary".into()))?;
     let rotary = 2 * rope.freqs;
-    let gate = role(&d.blocks[1], "gate").ok_or_else(|| Error("Qwen3.5: no MLP gate".into()))?;
-    let gate = match gate {
-        Source::Tensor(n) => n,
-        g => return err(format!("Qwen3.5: an MLP gate of {g:?}")),
+    // (the MLP's width, the first dense layer's: 0 where every layer's feed-forward is experts)
+    let inter = match sparse.iter().position(|&s| !s) {
+        Some(l) => {
+            let gate = match role(&d.blocks[2 * l + 1], "gate").ok_or_else(|| Error("Qwen3.5: no MLP gate".into()))? {
+                Source::Tensor(n) => n,
+                g => return err(format!("Qwen3.5: an MLP gate of {g:?}")),
+            };
+            d.shapes.get(gate).map(|s| s[0]).ok_or_else(|| Error(format!("Qwen3.5: no shape for {gate}")))?
+        }
+        None => 0,
     };
-    let inter = d.shapes.get(gate).map(|s| s[0]).ok_or_else(|| Error(format!("Qwen3.5: no shape for {gate}")))?;
+    let mut n_moe = 0;
     let (nq, nk, nv) = (att.heads, att.kv_heads, lin.v_heads);
     let (vd, cd) = (nv * lin.v_dim, 2 * lin.k_heads * lin.k_dim + nv * lin.v_dim);
     let full_w = 2 * nq * 256 + 2 * nk * 256;
@@ -714,15 +728,18 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
         for m in mixer.0 {
             mats.push(item(m.iter().map(|r| one(ar, r)).collect::<Result<_>>()?, &shape)?);
         }
-        mats.push(item(vec![one(fr, "gate")?, one(fr, "up")?], &shape)?);
-        mats.push(item(vec![one(fr, "down")?], &shape)?);
+        if !sparse[l] {
+            mats.push(item(vec![one(fr, "gate")?, one(fr, "up")?], &shape)?);
+            mats.push(item(vec![one(fr, "down")?], &shape)?);
+        }
         small.extend([one(ar, "norm_in")?, one(fr, "norm_in")?]);
         for r in mixer.1 {
             small.push(one(ar, r)?);
         }
         let (b, s0) = (n_mats, n_small);
         let (mm, nn) = per_layer(kind);
-        (n_mats, n_small) = (n_mats + mm, n_small + nn);
+        // (a layer of experts has no MLP's two matrices: its block holds its own)
+        (n_mats, n_small) = (n_mats + mm - if sparse[l] { 2 } else { 0 }, n_small + nn);
         let mut ops = Vec::new();
         if l == 0 {
             first = Some(Op::RmsNorm { x: Slot::X, w: s0, y: Slot::H, weight: NormW::PlusOne, eps });
@@ -759,11 +776,14 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
                 b + 2
             }
         };
-        ops.extend([
-            Op::NormAdd { y: Slot::O, w: s0 + 1, plus1: true },
-            Op::GateUpSilu { w: mlp, inter },
-            Op::Linear { w: mlp + 1, x: Slot::M, y: Slot::D, name: "MLP: down product" },
-        ]);
+        ops.push(Op::NormAdd { y: Slot::O, w: s0 + 1, plus1: true });
+        if sparse[l] {
+            // (the router and the experts read the normed H; their sum, the gated shared expert's with it, is the layer's update)
+            ops.push(Op::Moe(MoeOp { y: Slot::D, ..MoeOp::of(n_moe) }));
+            n_moe += 1;
+        } else {
+            ops.extend([Op::GateUpSilu { w: mlp, inter }, Op::Linear { w: mlp + 1, x: Slot::M, y: Slot::D, name: "MLP: down product" }]);
+        }
         ops_all.push(ops);
     }
     let e = n_mats;
@@ -802,7 +822,7 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
         mats,
         small,
         forms: Vec::new(),
-        ropes: vec![Rope { theta: rope.theta, dim: rotary, pairs: rotary / 2 }],
+        ropes: vec![Rope { theta: rope.theta, dim: rotary, pairs: rotary / 2, trig64: false }],
         rings,
         first: first.unwrap_or(Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, weight: NormW::PlusOne, eps }),
         layers: ops_all,
@@ -987,10 +1007,48 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
     let row = (2 * nq + 2 * nk) * hd;
     let ones = 0;
     let (mut n_small, mut n_mats, mut n_moe, mut rings, mut ops_all) = (1, 0, 0, Vec::new(), Vec::new());
+    // (the tensors, named in the order the operations index them; the small tensors made from their values: the ones, the centered norms' 1 + w, the gates' factors)
+    use super::SmallForm::{GateAlpha, GateBeta, Ones, PlusOne};
+    // (sized by the kinds' widths: the describer gives no shapes for this family's tensors)
+    let it = |members: Vec<String>, rows: usize, cols: usize| Item { members, rows, cols };
+    let one = |roles: &[(String, Source)], r: &str| -> Result<String> {
+        match role(roles, r) {
+            Some(Source::Tensor(n)) => Ok(n.clone()),
+            other => err(format!("Muse Spark: the role {r} is {other:?}, where one tensor is")),
+        }
+    };
+    let (mut mats, mut small, mut forms) = (Vec::new(), vec![String::new()], vec![(0, Ones(m.hidden.max(lat)))]);
     for (l, a) in atts.iter().enumerate() {
         if !(st.layers.0..st.layers.1).contains(&l) {
             ops_all.push(Vec::new());
             continue;
+        }
+        let (ar, fr) = (&d.blocks[2 * l], &d.blocks[2 * l + 1]);
+        mats.push(it(["q", "k", "v", "g"].iter().map(|r| one(ar, r)).collect::<Result<_>>()?, row, m.hidden));
+        mats.push(it(vec![one(ar, "o")?], m.hidden, nq * hd));
+        mats.push(it(vec![one(fr, "latent_down")?], lat, m.hidden));
+        mats.push(it(vec![one(fr, "latent_up")?], m.hidden, lat));
+        let temp = |b: &crate::runtime::kinds::Block| match b.residual {
+            crate::runtime::kinds::Residual::Gated(g) => Ok(g.temperature),
+            ref r => err(format!("Muse Spark: layer {l}'s residual is {r:?}, where a gated one is")),
+        };
+        let (ta, tf) = (temp(&m.blocks[2 * l])?, temp(&m.blocks[2 * l + 1])?);
+        for (n, f) in [
+            (one(ar, "norm_in")?, PlusOne),
+            (one(ar, "res_gate")?, GateAlpha(ta)),
+            (one(ar, "res_gate")?, GateBeta(ta)),
+            (one(fr, "norm_in")?, PlusOne),
+            (one(fr, "latent_norm_in")?, PlusOne),
+            (one(fr, "expert_norm")?, PlusOne),
+            (one(fr, "norm_out")?, PlusOne),
+            (one(fr, "res_gate")?, GateAlpha(tf)),
+            (one(fr, "res_gate")?, GateBeta(tf)),
+        ] {
+            forms.push((small.len(), f));
+            small.push(n);
+        }
+        if st.last && l + 1 == layers {
+            small.push(d.final_norm.clone());
         }
         let s0 = n_small;
         n_small += 9;
@@ -1025,6 +1083,8 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
         }
         ops_all.push(ops);
     }
+    mats.push(it(vec![d.embed.clone()], m.vocab, m.hidden));
+    mats.push(it(vec![d.head.clone().ok_or_else(|| Error("Muse Spark: no head of its own".into()))?], m.vocab, m.hidden));
     let d_ = m.hidden;
     let mut widths = [0usize; SLOTS];
     for (s, w) in [
@@ -1047,10 +1107,10 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
         eps,
         max_pos,
         widths,
-        mats: Vec::new(),
-        small: Vec::new(),
-        forms: Vec::new(),
-        ropes: Vec::new(),
+        mats,
+        small,
+        forms,
+        ropes: vec![Rope { theta: atts.iter().find_map(|a| a.rope.as_ref()).map_or(0.0, |r| r.theta), dim: hd, pairs: hd / 2, trig64: true }],
         rings,
         first: Op::RmsNorm { x: Slot::X, w: ones, y: Slot::X, weight: NormW::Plain, eps },
         layers: ops_all,
@@ -1269,7 +1329,7 @@ mod tests {
         let all: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
         let mut seen = 0;
         for (repo, cfg) in all.as_object().unwrap() {
-            // (the mixtures of experts are refused by the family's reader, and not lowered yet)
+            // (the mixtures of experts are refused by the family's reader: lowered from their kinds alone, with no description of the reader's to hold them to)
             let Ok(c) = crate::qwen35::Config35::parse(&cfg.to_string(), repo, None) else { continue };
             if c.head_dim != 256 {
                 continue;
@@ -1619,7 +1679,7 @@ mod tests {
             let eps = cfg["rms_norm_eps"].as_f64().unwrap() as f32;
             assert_eq!((d.family, d.hidden, d.vocab, d.eps, d.layers.len()), (super::super::dense::FAMILY, hid, n("vocab_size"), eps, layers), "{what}");
             let theta = cfg["rope_theta"].as_f64().unwrap();
-            assert_eq!(format!("{:?}", d.ropes), format!("{:?}", [Rope { theta, dim: hd, pairs: hd / 2 }]), "{what}");
+            assert_eq!(format!("{:?}", d.ropes), format!("{:?}", [Rope { theta, dim: hd, pairs: hd / 2, trig64: false }]), "{what}");
             // (the small tensors: each layer's two norms, its q and k norms where it has them; then the final norm)
             let per = if qk { 4 } else { 2 };
             assert_eq!(d.small.len(), per * layers + 1, "{what}");
@@ -1944,14 +2004,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The descriptions the executor's loader reads (`Dyn::new_with`: Gemma 4, its draft, the Llama-style dense models, Qwen3.5, Qwen3.8-Flash-Next) name every matrix
+    /// The descriptions the executor's loader can read (`Dyn::new_with`: Gemma 4, its draft, the Llama-style dense models, Qwen3.5, Muse Spark, Qwen3.8-Flash-Next) name every matrix
     /// their operations use; the others name none yet, their families' loaders filling them by index, and the executor's loader refuses them in words.
     #[cfg(feature = "dev")]
     #[test]
     fn the_executors_loader_reads_only_descriptions_that_name_their_tensors() {
         use super::super::{dense::FAMILY as DENSE, qwen4x::FAMILY as QX, unnamed};
         for d in every_family("named") {
-            let named = matches!(d.family, "Gemma 4" | "Gemma 4 draft" | "Qwen3.5" | DENSE | QX);
+            let named = matches!(d.family, "Gemma 4" | "Gemma 4 draft" | "Qwen3.5" | "Muse Spark" | DENSE | QX);
             assert_eq!(unnamed(&d).is_none(), named, "{}: {:?} of {} matrices named", d.family, unnamed(&d), d.mats.len());
         }
     }

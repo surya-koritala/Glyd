@@ -91,7 +91,7 @@ _AUX = {  # the route SPLIT's ring (glyd_gpu.h), each call's arguments whole (a 
 }
 
 
-API_VERSION = 23  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
+API_VERSION = 24  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
 KV_AUX = 2040  # places of each of the status's two rings, where a caller does not size them
 KV_AUX_AT = 16  # the void ring's first place in the status
 KV_STATUS_WORDS = KV_AUX_AT + 2 * KV_AUX  # a lossless KV cache's status words (glyd_gpu.h) at KV_RING: counters, then the ring of lost blocks and the ring of blocks with a raw page

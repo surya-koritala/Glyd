@@ -966,7 +966,7 @@ fn fit_rows<const N: usize>(rows: &[([f64; N], f64)], prior: [f64; N], scale: [f
 }
 
 /// The seconds of other users' prompts in the median user's decode, where `n` users send a prompt of `prompt` tokens at once (bench's loads): the scheduler reads
-/// the prompts in turn, and each user's reply runs beside the prompts read after its own, (n - 1) / 2 of them for the median one. Measured on an A100 ():
+/// the prompts in turn, and each user's reply runs beside the prompts read after its own, (n - 1) / 2 of them for the median one. Measured on an A100:
 /// Qwen3.5-0.8B's 8 users took 154.5 tokens/s each on short prompts and 127.3 on 1k ones, where 127 steps of the first and 3.5 prompts of 994 tokens at
 /// 20,206 tokens/s come to 127.8.
 pub fn prompt_wait(n: usize, prompt: f64, prefill: f64) -> f64 {
@@ -4724,11 +4724,10 @@ mod tests {
                 crate::dynamic::glm::describe(&c, &Stage::whole(c.layers)).unwrap()
             }),
             ("compressed entries, a window and an indexer", crate::dsv4_ref::SMALL_CONFIG.to_string(), {
-                // (its lowering: the kinds the description reads, lowered as the loader lowers them)
                 let c = crate::deepseek_v4::ConfigV4::parse(crate::dsv4_ref::SMALL_CONFIG, "random", None).unwrap();
-                let kinds = crate::runtime::describe::describe(&serde_json::from_str(crate::dsv4_ref::SMALL_CONFIG).unwrap()).unwrap();
                 let vo = crate::dynamic::deepseek_v4::V4Opts::of(crate::weights::Layout::Tiered, 1024);
-                crate::dynamic::lower_comp::lower(&kinds, vec![1], 65536, &Stage::whole(c.layers), &vo).unwrap().0
+                let kinds = crate::runtime::describe::describe(&serde_json::from_str(crate::dsv4_ref::SMALL_CONFIG).unwrap()).unwrap();
+                crate::dynamic::lower::deepseek_v4(&kinds, vec![1], 1 << 20, &Stage::whole(c.layers), &vo).unwrap()
             }),
         ];
         let mut bad = Vec::new();
