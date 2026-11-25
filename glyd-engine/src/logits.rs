@@ -6043,34 +6043,35 @@ fn cands_check(step: &mut dyn crate::sched::ModelStep, prompts: &[Vec<u32>]) -> 
     };
     let mut next = Vec::new();
     // (a sequence's room grown before each of its passes, as the scheduler grows it (`Sched::ensure_pages`): a sliding group holds the blocks the next pass reads and
-    // writes, and a pass's rows are never written past the blocks their sequence holds)
-    let grow = |step: &mut dyn crate::sched::ModelStep, j: usize, upto: usize| -> Result<()> {
-        if step.grow(j as i32, upto)? {
-            Ok(())
-        } else {
-            err(format!("the step has no room for sequence {j}'s first {upto} tokens"))
-        }
-    };
-    for (j, p) in prompts.iter().take(k).enumerate() {
+    // writes, and a pass's rows are never written past the blocks their sequence holds. Where the step has no room for a pass (the 12-bit pages' raw slabs all taken,
+    // where the scheduler pauses the newest sequence), that sequence is given up and the check takes no more: it runs on the sequences before it)
+    'prompts: for (j, p) in prompts.iter().take(k).enumerate() {
         if !step.grow(j as i32, p.len() + 2)? {
             break;
         }
         // (in the step's chunks, as the scheduler runs a prompt: a pass holds `chunk` tokens at most)
         let (mut s, chunk) = (None, step.chunk().max(1));
         for (i, c) in p.chunks(chunk).enumerate() {
-            grow(step, j, i * chunk + c.len())?;
+            if !step.grow(j as i32, i * chunk + c.len())? {
+                step.release(&[j as i32])?;
+                break 'prompts;
+            }
             s = step.prefill(&[j as i32], i * chunk, c, (i + 1) * chunk >= p.len())?;
         }
         let s = s.ok_or_else(|| Error("a prompt's last chunk gave no sample".into()))?;
         check(step, 0, &format!("after prompt {j}"))?;
         next.push(s.token);
     }
-    let pages: Vec<[i32; 1]> = (0..next.len()).map(|j| [j as i32]).collect();
-    let decode: Vec<crate::sched::Row> = next.iter().enumerate().map(|(j, &t)| crate::sched::Row::new(t, prompts[j].len(), &pages[j])).collect();
-    if !decode.is_empty() {
-        for j in 0..decode.len() {
-            grow(step, j, prompts[j].len() + 1)?;
+    // (a decode row for each sequence whose room grows for it, likewise)
+    let mut ready = Vec::new();
+    for j in 0..next.len() {
+        if step.grow(j as i32, prompts[j].len() + 1)? {
+            ready.push(j);
         }
+    }
+    let pages: Vec<[i32; 1]> = ready.iter().map(|&j| [j as i32]).collect();
+    let decode: Vec<crate::sched::Row> = ready.iter().zip(&pages).map(|(&j, page)| crate::sched::Row::new(next[j], prompts[j].len(), page)).collect();
+    if !decode.is_empty() {
         step.decode(&decode)?;
         for r in 0..decode.len() {
             check(step, r, &format!("decode row {r} of {}", decode.len()))?;

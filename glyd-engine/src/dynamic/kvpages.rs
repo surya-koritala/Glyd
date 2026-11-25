@@ -798,20 +798,20 @@ impl Dyn {
         let first = n.saturating_sub(keep);
         let (_, _, cap) = self.kv12_stage(ring, n - 1, 1)?;
         self.dev.sync()?;
-        // (one stream: the keys alone, as `kv_rows` reads it)
-        let one = rp.shape.one;
-        let (mut sk, mut sv) = (vec![0u16; cap * w], vec![0u16; if one { 0 } else { cap * w }]);
-        lx.stage_k.read(0, &mut sk)?;
-        lx.stage_v.read(0, &mut sv)?;
-        let (mut k, mut v) = (Vec::with_capacity((n - first) * w), Vec::with_capacity(if one { 0 } else { (n - first) * w }));
-        for p in first..n {
-            let at = (p % cap) * w;
-            k.extend_from_slice(&sk[at..at + w]);
-            if !one {
-                v.extend_from_slice(&sv[at..at + w]);
+        // (the rows of tokens first .. n alone, position p's at p modulo the ring's places: at most two runs of them; the ring's other rows hold what no unpack
+        // wrote. One stream: the keys alone, as `kv_rows` reads it)
+        let rows = |b: &Buf| -> Result<Vec<u16>> {
+            let (mut out, mut p) = (Vec::with_capacity((n - first) * w), first);
+            while p < n {
+                let (at, len) = (p % cap, (cap - p % cap).min(n - p));
+                let mut part = vec![0u16; len * w];
+                b.read(at * w * 2, &mut part)?;
+                out.extend_from_slice(&part);
+                p += len;
             }
-        }
-        Ok((k, v, first))
+            Ok(out)
+        };
+        Ok((rows(&lx.stage_k)?, if rp.shape.one { Vec::new() } else { rows(&lx.stage_v)? }, first))
     }
 }
 
