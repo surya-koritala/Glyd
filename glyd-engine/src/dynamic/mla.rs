@@ -192,6 +192,7 @@ impl MlaOp {
         let indexer = match &k.indexer {
             None => None,
             Some(x) if x.shared => return err("a latent attention that reuses another layer's picks: not an operation of this executor"),
+            Some(x) if x.rope > 0 => return err("a latent attention's indexer whose queries and keys are rotated: not an operation of this executor"),
             Some(x) => {
                 // (the keys' norm as the kind's form gives it: a LayerNorm with its bias, or an RMS norm with a weight; the mean-pooled form is an attention's)
                 let key = match x.form {
@@ -304,11 +305,10 @@ impl MlaOp {
         }
         if let Some(x) = &self.indexer {
             let (p, kp) = (&x.pick, x.pick.ratio);
-            if x.dim == 0 || x.dim > 256 || kp == 0 || kp > 8 || p.top_k == 0 || self.rope > 0 {
+            if x.dim == 0 || x.dim > 256 || kp == 0 || kp > 8 || p.top_k == 0 {
                 return err(format!(
-                    "an indexer of channels {} picking {} groups of {kp} keys (beside a shared key part of {}): the kernels take indexer channels up to 256, groups \
-                     up to 8 keys, and no shared key part",
-                    x.dim, p.top_k, self.rope
+                    "an indexer of channels {} picking {} groups of {kp} keys: the kernels take indexer channels up to 256 and groups up to 8 keys",
+                    x.dim, p.top_k
                 ));
             }
             // (the indexer's scores' dynamic shared memory must fit the 48 KiB a launch may take without an opt-in)
@@ -759,6 +759,7 @@ mod tests {
                 block: 4,
                 shared: false,
                 form: crate::runtime::kinds::IndexForm::LAYER_KEYS,
+                rope: 0,
             }),
         }
     }
@@ -866,9 +867,11 @@ mod tests {
         for form in [kinds::IndexForm::Gated { key: Norm::rms_plus_one(1e-6) }, kinds::IndexForm::Mean { norm: Norm::rms(1e-6) }] {
             assert!(MlaOp::of(&kinds::Mla { indexer: Some(odd(form)), ..kind(0, false, false) }, MlaIn::Apart { q_a: 1, kv_a: 2 }, 3, 4, 0, 0, true).is_err());
         }
-        // (a gate with two products, a rotated shared part, a shared key part beside an indexer)
+        // (an indexer beside a shared key part, not rotated: the attention's scores are over the latent and the shared part of the tokens it picks)
+        let both = MlaOp::of(&kind(64, false, true), MlaIn::Fused { w: 0 }, 1, 2, 0, 0, false).unwrap();
+        assert_eq!((both.rope, both.indexer.as_ref().map(|x| x.pick.ratio), both.rings().len()), (64, Some(4), 2));
+        // (a gate with two products, a rotated shared part)
         assert!(MlaOp::of(&kind(0, true, false), MlaIn::Apart { q_a: 1, kv_a: 2 }, 3, 4, 0, 0, false).is_err());
         assert!(MlaOp::of(&kinds::Mla { rope: Some(kinds::Rope::plain(1e4, 64)), ..kind(64, false, false) }, MlaIn::Fused { w: 0 }, 1, 2, 0, 0, false).is_err());
-        assert!(MlaOp::of(&kind(64, false, true), MlaIn::Fused { w: 0 }, 1, 2, 0, 0, false).is_err());
     }
 }
