@@ -588,11 +588,11 @@ pub struct Ngram {
     pub form: NgramForm,
 }
 
-/// Where an n-gram embedding's hash and output differ by family.
+/// Where an n-gram embedding's hash and output differ, by mechanism.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NgramForm {
-    /// Condor's (Qwen3.8-Flash-Next), as `Ngram` says.
-    Condor,
+    /// Segments ended by `eos`, multipliers from splitmix64, a convolution after the gate: as `Ngram` says (Qwen3.8-Flash-Next's).
+    Segmented,
     /// DeepSeek-V4.1's Engram: each token first mapped to a compressed vocabulary of `vocab` ids (tokens that normalise alike, one id: a table
     /// the tokenizer makes, the loader's role `ngram_map` [the model's vocabulary], not a checkpoint tensor), and the hash over those ids; the
     /// multipliers numpy's `default_rng(seed)` draws below (2^63 - 1) / vocab / 2, times 2 plus 1 (`seed`: 10007 times the layer's number); no
@@ -601,7 +601,7 @@ pub enum NgramForm {
     Engram,
 }
 
-/// The derived form, with `form` said only where it is not Condor's: Condor's descriptions read as they did before the field (the digests of
+/// The derived form, with `form` said only where it is not `Segmented`: descriptions of that form read as they did before the field (the digests of
 /// tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for Ngram {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -618,7 +618,7 @@ impl std::fmt::Debug for Ngram {
             .field("conv", &self.conv)
             .field("dilation", &self.dilation)
             .field("norm", &self.norm);
-        if self.form != NgramForm::Condor {
+        if self.form != NgramForm::Segmented {
             s.field("form", &self.form);
         }
         s.finish()
