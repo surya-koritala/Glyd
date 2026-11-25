@@ -14,7 +14,7 @@ mkdir -p "$OUT" && OUT=$(cd "$OUT" && pwd)
 export HF_HUB_OFFLINE=1 GLYD_ENGINE_ARCHS="${GLYD_ENGINE_ARCHS:-89}" NVCC="${NVCC:-$(command -v nvcc)}" CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 export CARGO_PROFILE_RELEASE_LTO="${CARGO_PROFILE_RELEASE_LTO:-false}" CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-16}"
 bash scripts/ci_gpu_build.sh > "$OUT/build.log" 2>&1; echo "build rc=$? $(date -u +%H:%M:%S)"; tail -2 "$OUT/build.log"
-E=$CARGO_TARGET_DIR/release/glyd-engine; export GLYD_GPU_LIB=$(ls -t "$CARGO_TARGET_DIR"/gpu-*/libglyd_gpu_cuda*.so | head -1)
+E=$CARGO_TARGET_DIR/release/glyd-engine
 export GLYD_CACHE=$OUT/cache
 rm -rf "$GLYD_CACHE" && mkdir -p "$GLYD_CACHE"
 if [ -n "${PACKS:-}" ]; then ln -s "$PACKS" "$GLYD_CACHE/engine"; else mkdir -p "$GLYD_CACHE/engine"; fi

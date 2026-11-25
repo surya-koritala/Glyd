@@ -3290,53 +3290,36 @@ pub mod sizing {
         crate::support::row_named(family).map_or(RamLinears::None, |r| r.route.ram_linears)
     }
 
-    /// The layers of the model whose config.json is `text` that mix by a delta attention (`kinds::LinearKind::KimiDelta`), in order, from its description.
-    pub(crate) fn delta_layers(text: &str) -> crate::ffi::Result<Vec<bool>> {
-        use crate::runtime::kinds::{Body, LinearKind, Mixer};
-        let cfg = serde_json::from_str(text).map_err(|e| crate::ffi::Error(format!("config.json: {e}")))?;
-        let d = crate::runtime::describe::describe(&cfg)?;
-        let mixers = d.desc.blocks.iter().filter_map(|b| if let Body::Mixer(m) = &b.body { Some(m) } else { None });
-        Ok(mixers.map(|m| matches!(m, Mixer::Linear(l) if l.kind == LinearKind::KimiDelta)).collect())
-    }
-
     /// Each of the model's `nl` layers' bytes that its family's loader can keep in the computer's memory (src/dense_ram.rs: its packed linears there), at the packing `layer_bytes_where` counts: the linears the
-    /// family's row names (`Route::ram_linears`: the attention's and the latent projections, or the delta attention's); zeros for the others (their attention is in blocks of their own, or FP8).
+    /// family's row names (`Route::ram_linears`: every matrix of a layer's own products the executor's loader packs); zeros for a row that keeps none there.
     pub fn ram_bytes(dir: &Path, nl: usize, family: &str, f8_pct: u64, bf16_pct: u64) -> crate::ffi::Result<Vec<u64>> {
         if ram_linears(family) == RamLinears::None {
             return Ok(vec![0; nl]);
         }
-        let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| crate::ffi::Error(format!("{}: {e}", dir.display())))?;
-        ram_bytes_table(&crate::sizes::Table::from_dir(dir).map_err(crate::ffi::Error)?, &text, nl, family, f8_pct, bf16_pct)
+        Ok(ram_bytes_table(&crate::sizes::Table::from_dir(dir).map_err(crate::ffi::Error)?, nl, family, f8_pct, bf16_pct))
     }
 
-    /// `ram_bytes` of a table of tensors and the model's config.json (src/sizes.rs: before the files are here too).
-    pub fn ram_bytes_table(table: &crate::sizes::Table, text: &str, nl: usize, family: &str, f8_pct: u64, bf16_pct: u64) -> crate::ffi::Result<Vec<u64>> {
-        let kda: Vec<bool> = match ram_linears(family) {
-            RamLinears::DeltaAttention => delta_layers(text)?,
-            RamLinears::Attention => Vec::new(),
-            RamLinears::None => return Ok(vec![0; nl]),
-        };
-        Ok(layer_bytes_table(table, nl, f8_pct, bf16_pct, &|n| in_ram(family, &kda, n)).0)
+    /// `ram_bytes` of a table of tensors (src/sizes.rs: before the files are here too).
+    pub fn ram_bytes_table(table: &crate::sizes::Table, nl: usize, family: &str, f8_pct: u64, bf16_pct: u64) -> Vec<u64> {
+        layer_bytes_table(table, nl, f8_pct, bf16_pct, &|n| in_ram(family, n)).0
     }
 
-    /// Whether the tensor `name` is one of the matrices `family`'s loader keeps in the computer's memory for a layer there (src/dense_ram.rs; `kda`: the model's layers of delta attention).
-    pub(crate) fn in_ram(family: &str, kda: &[bool], name: &str) -> bool {
-        linear_in_ram(ram_linears(family), kda, name)
+    /// Whether the tensor `name` is one of the matrices `family`'s loader keeps in the computer's memory for a layer there (src/dense_ram.rs).
+    pub(crate) fn in_ram(family: &str, name: &str) -> bool {
+        linear_in_ram(ram_linears(family), name)
     }
 
     /// `in_ram` by the linears a loader keeps there (`Route::ram_linears`).
-    fn linear_in_ram(which: RamLinears, kda: &[bool], name: &str) -> bool {
-        let layer = name.split("layers.").nth(1).and_then(|r| r.split('.').next()).and_then(|x| x.parse::<usize>().ok());
+    fn linear_in_ram(which: RamLinears, name: &str) -> bool {
         match which {
-            RamLinears::Attention => {
-                (name.contains(".self_attn.") && name.ends_with("_proj.weight")) || name.contains(".pre_expert_proj.") || name.contains(".post_expert_proj.")
-            }
-            RamLinears::DeltaAttention => {
-                layer.is_some_and(|l| kda.get(l) == Some(&true))
-                    && name.contains(".self_attn.")
-                    && ["q_proj", "k_proj", "v_proj", "g_proj", "f_a_proj", "b_proj", "o_proj", "f_b_proj"]
-                        .iter()
-                        .any(|x| name.ends_with(&format!(".{x}.weight")))
+            RamLinears::Products => {
+                let attention = name.contains(".self_attn.")
+                    && !name.contains(".indexer.")
+                    && !name.ends_with(".kv_b_proj.weight")
+                    && (name.ends_with("_proj.weight") || name.ends_with(".kv_a_proj_with_mqa.weight"));
+                let mlp =
+                    ["gate_proj", "up_proj", "down_proj", "pre_expert_proj", "post_expert_proj"].iter().any(|x| name.ends_with(&format!(".mlp.{x}.weight")));
+                attention || mlp
             }
             RamLinears::None => false,
         }
@@ -4260,7 +4243,7 @@ pub mod sizing {
         }
         // (no room for a token's experts on one GPU: the last layers' dense matrices in the computer's memory, src/dense_ram.rs)
         let family = crate::dynamic::split::family(text).unwrap_or("");
-        let ram = crate::dynamic::split::ram_bytes_table(table, text, nl, family, crate::dynamic::split::CODED_PCT, bf16).map_err(cannot)?;
+        let ram = crate::dynamic::split::ram_bytes_table(table, nl, family, crate::dynamic::split::CODED_PCT, bf16);
         let Some((cuts, devices, places, held, freed)) = crate::dynamic::split::places_plan_dense(&dense, base, &c.moe, room, expert, e.experts, e.top_k, &ram)
         else {
             return Err(Refusal::unsupported(
@@ -4385,7 +4368,7 @@ pub mod sizing {
         }
         // (no room for a token's experts on one GPU: the last layers' dense matrices in the computer's memory, src/dense_ram.rs)
         let family = crate::dynamic::split::family(text).unwrap_or("");
-        let rb = crate::dynamic::split::ram_bytes_table(table, text, nl, family, crate::dynamic::split::CODED_PCT, bf16).map_err(cannot)?;
+        let rb = crate::dynamic::split::ram_bytes_table(table, nl, family, crate::dynamic::split::CODED_PCT, bf16);
         let Some((cuts, devices, places, held, freed)) = crate::dynamic::split::places_plan_dense(&dense, base, &moe, room, mean, experts, sh.topk.max(1), &rb)
         else {
             return Err(Refusal::unsupported(
@@ -6137,28 +6120,66 @@ mod tests {
         }
     }
 
-    /// The linears a loader keeps in the computer's memory are the row's field's, and a delta attention's layers are read from the description: the same
-    /// answer for Kimi-K3's config as its own parser gives, and for GLM-5.3-Flash's, another family with the kind.
+    /// The matrices the planner counts in the computer's memory for a layer there (its row's `ram_linears`) are the ones the executor's loader puts there: every
+    /// matrix of the layer's own products, as its family's lowered description names them (`dynamic::layer_tensors`), on Kimi-K3's released tensors (its
+    /// delta and latent attention layers and its dense MLP) and on the random models of Kimi's two shapes and Muse Spark; so a plan frees on the GPU, and
+    /// holds in the computer's memory, what the load does. A row that keeps none there counts none.
     #[test]
-    fn the_linears_in_memory_are_the_rows_and_the_descriptions() {
-        use crate::glm::GlmKind;
-        let kda = |kinds: &[GlmKind]| kinds.iter().map(|k| matches!(k, GlmKind::Kda)).collect::<Vec<_>>();
-        let kimi: serde_json::Value = serde_json::from_str(&fixture("headers/Kimi-K3.json")).unwrap();
-        let kimi = kimi["config"].as_str().unwrap();
-        let own = kda(&crate::kimi::ConfigKimi::parse(kimi, "config.json", None).unwrap().kinds);
-        assert!(own.iter().any(|&k| k) && own.iter().any(|&k| !k));
-        assert_eq!(sizing::delta_layers(kimi).unwrap(), own);
-        let glm = fixture("glm5_next_config.json");
-        assert_eq!(sizing::delta_layers(&glm).unwrap(), kda(&crate::glm::ConfigGlm::parse(&glm, "config.json", None).unwrap().kinds));
-        // (the table of Kimi-K3's released tensors: the bytes by its row's name are the bytes by the row's field)
-        let table = crate::sizes::Table::expand(&header_groups(&serde_json::from_str(&fixture("headers/Kimi-K3.json")).unwrap()));
-        let by_name = sizing::ram_bytes_table(&table, kimi, own.len(), "Kimi-K3", 90, 72).unwrap();
-        assert!(by_name.iter().zip(&own).all(|(&b, &k)| (b > 0) == k), "{by_name:?}");
-        assert!(sizing::ram_bytes_table(&table, kimi, own.len(), "DeepSeek-V4", 90, 72).unwrap().iter().all(|&b| b == 0));
-        assert!(
-            sizing::in_ram("Muse Spark", &[], "model.layers.3.self_attn.q_proj.weight")
-                && !sizing::in_ram("No such family", &[], "model.layers.3.self_attn.q_proj.weight")
-        );
+    fn the_matrices_counted_in_memory_are_the_loaders() {
+        use crate::dynamic::{layer_tensors, Stage};
+        use std::collections::BTreeSet;
+        let by_layer = |table: &crate::sizes::Table, nl: usize, family: &str| -> Vec<BTreeSet<String>> {
+            let mut v = vec![BTreeSet::new(); nl];
+            for r in table.rows.iter().filter(|r| sizing::in_ram(family, &r.name)) {
+                if let Some(l) = crate::sizes::layer_of(&r.name).filter(|&l| l < nl) {
+                    v[l].insert(r.name.clone());
+                }
+            }
+            v
+        };
+        let loaders =
+            |d: &crate::dynamic::ModelDesc| -> Vec<BTreeSet<String>> { (0..d.layers.len()).map(|l| layer_tensors(d, l).into_iter().collect()).collect() };
+        let h: serde_json::Value = serde_json::from_str(&fixture("headers/Kimi-K3.json")).unwrap();
+        let text = h["config"].as_str().unwrap();
+        let c = crate::kimi::ConfigKimi::parse(text, "config.json", None).unwrap();
+        let kinds = crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap();
+        let w32 = vec![(true, true); c.layers];
+        let low = crate::dynamic::lower::kimi(&kinds, c.eos.clone(), c.max_pos, &Stage::whole(c.layers), &w32, false).unwrap();
+        let table = crate::sizes::Table::expand(&header_groups(&h));
+        let (got, want) = (by_layer(&table, c.layers, "Kimi-K3"), loaders(&low));
+        assert_eq!(got, want);
+        // (every layer keeps its attention there, a latent attention layer's too; the bytes are the table's of those tensors)
+        let bytes = sizing::ram_bytes_table(&table, c.layers, "Kimi-K3", 90, 72);
+        assert!(bytes.iter().all(|&b| b > 0) && c.kinds.iter().any(|&k| k == crate::glm::GlmKind::Mla), "{bytes:?}");
+        assert!(sizing::ram_bytes_table(&table, c.layers, "DeepSeek-V4", 90, 72).iter().all(|&b| b == 0));
+        #[cfg(feature = "dev")]
+        {
+            let dir = std::env::temp_dir().join(format!("glyd-plan-ram-{}", std::process::id()));
+            for m in ["kimi", "kimi-dsa", "muse"] {
+                let _ = std::fs::remove_dir_all(&dir);
+                let (family, low) = match m {
+                    "muse" => {
+                        crate::muse_ref::random(&dir).unwrap();
+                        let (kinds, _) = crate::runtime::describe::describe_dir(&dir).unwrap();
+                        let nl = crate::muse::ConfigMuse::load(&dir).unwrap().layers;
+                        ("Muse Spark", crate::dynamic::muse::lowered(&dir, &kinds, &Stage::whole(nl)).unwrap())
+                    }
+                    _ => {
+                        if m == "kimi" {
+                            crate::kimi_ref::random(&dir, 1, true, 8).unwrap();
+                        } else {
+                            crate::kimi_ref::random_dsa(&dir).unwrap();
+                        }
+                        let c = crate::kimi::ConfigKimi::load(&dir).unwrap();
+                        let w32 = crate::dynamic::kimi::dtypes(&glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap(), &c).unwrap();
+                        ("Kimi-K3", crate::dynamic::kimi::lowered(&dir, &c, &Stage::whole(c.layers), &w32, false).unwrap())
+                    }
+                };
+                let table = crate::sizes::Table::from_dir(&dir).unwrap();
+                assert_eq!(by_layer(&table, low.layers.len(), family), loaders(&low), "{m}");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// The hummingbird level's bits a weight are the recipe's shares of the two row layouts' bits, not a number of one model's experts.
@@ -6771,6 +6792,10 @@ mod tests {
         }
         let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plans_p2a.json");
         if std::env::var_os("GLYD_WRITE_P2A").is_some() {
+            // (the file is a build's with CUDA 13's kernels alone: one with CUDA 12's runs on more drivers, below)
+            if crate::machine::KERNELS12 {
+                panic!("write the file on a build with CUDA 13's kernels alone");
+            }
             // (a case a line)
             let lines: Vec<String> = got.iter().map(|(k, v)| format!("{}: {v}", serde_json::Value::from(k.as_str()))).collect();
             std::fs::write(&file, format!("{{\n{}\n}}\n", lines.join(",\n"))).unwrap();
@@ -6780,9 +6805,29 @@ mod tests {
         assert_eq!(got.len(), want.len(), "the cases recorded");
         let plans = want.values().filter(|v| v.get("schema").is_some()).count();
         assert!(plans > 300, "{plans} plans recorded");
+        // (the file holds a build with CUDA 13's kernels alone. A build that carries CUDA 12's too runs on a preset whose driver is below CUDA 13 and at
+        // least this build's floor (the laptop preset's 12.7): there the file's refusal of that driver is this build's plan of the case, which is held
+        // only to not refusing the driver)
+        let driver_refusal = |v: &serde_json::Value| v["refusal"][0].as_str().is_some_and(|w| w.starts_with("the driver supports CUDA"));
+        let admitted = |k: &str| {
+            let preset = k.split(' ').nth(1).and_then(Machine::preset);
+            preset.is_some_and(|m| {
+                m.devices
+                    .iter()
+                    .filter(|d| d.vendor == Vendor::Nvidia)
+                    .all(|d| d.driver < crate::machine::DRIVER_MIN && d.driver >= crate::machine::driver_min(d.cc))
+            })
+        };
+        let mut planned_here = 0;
         for (k, w) in &want {
+            if driver_refusal(w) && admitted(k) {
+                planned_here += 1;
+                assert!(got.get(k).is_some_and(|g| !driver_refusal(g)), "{k}: this build runs on the driver the file's build refused: {:?}", got.get(k));
+                continue;
+            }
             assert_eq!(got.get(k), Some(w), "{k}");
         }
+        assert!(crate::machine::KERNELS12 || planned_here == 0, "{planned_here} cases of drivers this build refuses were not compared");
     }
 
     /// `fit` prints the ladder from the level asked for: Gemma 4 12B lossless does not fit a 16 GB card, kestrel does, and the step is a lower level that asks; as JSON too.

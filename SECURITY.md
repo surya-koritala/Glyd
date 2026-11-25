@@ -84,8 +84,10 @@ In scope: a way to make it install a file that fails the check, run code from a 
 release, or write outside the directories it names. The checksum is published with the tarball, so it guards
 against a damaged or swapped download, not against a compromised release.
 
-**The GPU library** (`libglyd_gpu_cuda12.so`, `libglyd_gpu_cuda13.so`, `gpu/`, `glyd-gpu/`). It is loaded with
-`dlopen` by name from the loader's path, or from the file `GLYD_GPU_LIB` names. In scope: memory-unsafe behavior in
+**The GPU library** (`libglyd_gpu_cuda12.so`, `libglyd_gpu_cuda13.so`, `gpu/`, `glyd-gpu/`). The Python package loads
+it with `dlopen` by name from the loader's path, or from the file `GLYD_GPU_LIB` names; the engine loads it only from the
+file `GLYD_GPU_LIB` names (an NVIDIA build runs its own kernels without it; an AMD build also looks for `libglyd_gpu_hip`
+beside the program and on the loader's path). In scope: memory-unsafe behavior in
 the library on input from a model file or the codec's streams. Whoever can set `GLYD_GPU_LIB`, or write into the
 loader's search path, can already run code as you, so that is not a vulnerability.
 

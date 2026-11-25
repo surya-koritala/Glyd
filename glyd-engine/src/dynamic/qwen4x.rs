@@ -111,6 +111,8 @@ pub fn places_for(free: u64, reserve: u64, layers: usize, place: usize, kept: us
 /// block Condor's codebook block (`QxMoeCb`) over one store shared by the layers.
 pub fn load_cached(dir: &Path, o: &Opts, k: &Caching) -> Result<Dyn> {
     let c = crate::qwen4x::ConfigQx::load(dir)?;
+    // (a width the codebook kernels do not take is refused before anything is read or put on the GPU)
+    crate::moe_qwen4x::takes(c.hidden, c.inter).map_err(|e| e.context(FAMILY))?;
     let d = lowered(dir, o.ctx + o.chunk + 16)?;
     let mut pack = CbPack::open_dims(&k.pack, c.hidden, c.inter)?;
     if let Some(side) = k.mode.side(&k.pack) {
@@ -332,6 +334,22 @@ mod tests {
             let cols = *shapes[&it.members[0]].last().unwrap();
             assert_eq!((rows as usize, cols as usize), (it.rows, it.cols), "{:?}", it.members);
         }
+    }
+
+    /// A model whose experts the codebook kernels do not take (the tiny one: 128 neurons over 256) is refused by the expert cache's loader before it reads
+    /// anything else, in words that name its widths and the kernels'.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_width_the_codebook_kernels_do_not_take_is_refused() {
+        let dir = std::env::temp_dir().join(format!("glyd-qwen4x-cb-width-{}", std::process::id()));
+        crate::logits::qwen4x_random(&dir).unwrap();
+        let k =
+            super::Caching { pack: dir.join("pack"), mode: super::PackMode::Fast, places: Some(1), offload: crate::offload::Offload::default(), reserve: 0 };
+        let o = super::super::Opts { ctx: 256, chunk: 64, graph: false, device: 0, layout: None };
+        let e = super::load_cached(&dir, &o, &k).err().map(|e| e.msg).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(e.contains("128 neurons over a width of 256") && e.contains("exactly 640 neurons over a width of 2560"), "{e}");
+        assert!(crate::moe_qwen4x::takes(2560, 640).is_ok() && crate::moe_qwen4x::takes(2560, 1280).is_err());
     }
 
     /// What the shared operations do not take is refused in words: a linear attention's silu gate, gated residuals over more streams than the kernels take.

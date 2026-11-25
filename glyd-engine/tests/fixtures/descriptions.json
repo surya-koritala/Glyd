@@ -18,7 +18,7 @@
   "gemma4_12b_config.json": {
     "blocks": 96,
     "tensors": 666,
-    "kinds": "24fdf0d566740d1c",
+    "kinds": "18b9a0917d274a73",
     "weights": "3c9abac351475bc3",
     "plan": "7d3931684b32a9f2",
     "family": "Gemma4"
@@ -178,7 +178,7 @@
   "headers/gemma-4-12B-it.json": {
     "blocks": 96,
     "tensors": 666,
-    "kinds": "24fdf0d566740d1c",
+    "kinds": "18b9a0917d274a73",
     "weights": "3c9abac351475bc3",
     "plan": "7d3931684b32a9f2",
     "family": "Gemma4"
@@ -194,7 +194,7 @@
   "runtime/gemma4_model.json": {
     "blocks": 4,
     "tensors": 29,
-    "kinds": "0f1a8dc5abf3d9d8",
+    "kinds": "b06e080b87b2b7e3",
     "weights": "fefa98c6cfe451b2",
     "plan": "4834e44e89185697",
     "family": "Gemma4"

@@ -60,6 +60,11 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
     if m.embed.per_layer.is_some() {
         return err("Gemma 4: per-layer inputs (E2B, E4B): not an operation of the executor yet");
     }
+    // (the executor's head: the product's bf16 output, then g4_softcap's three rounded operations)
+    use crate::runtime::kinds::{Collapse, Rounding};
+    if m.head.rounding != Rounding::Twice || m.head.scale != 1.0 || m.head.collapse != Collapse::None {
+        return err(format!("Gemma 4: a head of {:?}, where the executor's rounds the logits to bf16 between operations, unscaled", m.head));
+    }
     if m.blocks.len() % 2 != 0 {
         return err(format!("Gemma 4: {} blocks, where each layer is an attention block and an MLP block", m.blocks.len()));
     }
@@ -1251,6 +1256,14 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
     Ok(glm_desc(m.hidden, qd, heads, inter, m.vocab, eps, max_pos, eos, hc, ops_all, (states, rings), e, lm))
 }
 
+/// A fused product's rows (several tensors' stacked) are padded with zero rows to a multiple of this: 64 a GPU in groups of up to 8.
+pub(crate) const FUSED_ROWS: usize = 512;
+
+/// A fused product's rows (several tensors' stacked): padded with zero rows to a multiple of `FUSED_ROWS`.
+pub(crate) fn fused(rows: usize) -> usize {
+    rows.div_ceil(FUSED_ROWS) * FUSED_ROWS
+}
+
 /// `members` stacked by rows (`item`), then zero rows to a multiple of `to` rows (`weights::ZERO_ROWS`): a fused product whose parts' rows the library does not
 /// pack as they are, and that a group of GPUs slices in 64s whatever the group. No product reads the zero rows.
 fn padded(members: Vec<String>, shape: Shape, to: usize) -> Result<Item> {
@@ -1351,9 +1364,8 @@ fn kimi_names(d: &Described, st: &super::Stage) -> Result<(Vec<Item>, Vec<String
         Some(Source::Tensor(n)) => Ok(n.clone()),
         x => err(format!("Kimi-K3: the role {r} is {x:?}, where one tensor is")),
     };
-    let fused = |roles: &[(String, Source)], rs: &[&str]| -> Result<Item> {
-        padded(rs.iter().map(|r| one(roles, r)).collect::<Result<_>>()?, &shape, super::kimi::FUSED_ROWS)
-    };
+    let fused =
+        |roles: &[(String, Source)], rs: &[&str]| -> Result<Item> { padded(rs.iter().map(|r| one(roles, r)).collect::<Result<_>>()?, &shape, FUSED_ROWS) };
     let (mut mats, mut small, mut forms) = (Vec::new(), Vec::new(), Vec::new());
     for l in st.layers.0..st.layers.1 {
         let (a, f) = (&d.blocks[2 * l], &d.blocks[2 * l + 1]);
@@ -1708,8 +1720,7 @@ mod tests {
             assert!(r.as_ref().is_err_and(|e| e.contains("where F32 or BF16 is read")), "a gated norm of I32 read as {r:?}");
         }
         // (the fused products' widths as the loader stacks them from the checkpoint's own tensors: a delta layer's six, an experts layer's three, padded)
-        let rows =
-            |names: &[String]| -> usize { super::super::kimi::fused(names.iter().map(|n| ck.get(&format!("{n}.weight")).unwrap().1.shape[0] as usize).sum()) };
+        let rows = |names: &[String]| -> usize { super::fused(names.iter().map(|n| ck.get(&format!("{n}.weight")).unwrap().1.shape[0] as usize).sum()) };
         let (kl, ml) = (c.kinds.iter().position(|&k| k == crate::glm::GlmKind::Kda).unwrap(), c.moe.iter().position(|&m| m).unwrap());
         let a = format!("{}layers.{kl}.self_attn", c.prefix);
         let f = format!("{}layers.{ml}.block_sparse_moe", c.prefix);
@@ -1792,7 +1803,7 @@ mod tests {
                     let rows: usize = shapes.iter().map(|s| s[0] as usize).sum();
                     assert!(shapes.iter().all(|s| s.len() == 2 && s[1] as usize == it.cols), "{:?}", it.members);
                     let padded = it.members.last().is_some_and(String::is_empty);
-                    assert_eq!(it.rows, if padded { super::super::kimi::fused(rows) } else { rows }, "{:?}", it.members);
+                    assert_eq!(it.rows, if padded { super::fused(rows) } else { rows }, "{:?}", it.members);
                     assert_eq!(padded, shapes.len() > 1, "{:?}", it.members);
                 }
                 assert_eq!(d.forms.iter().map(|f| &d.small[f.0]).collect::<Vec<_>>(), small.iter().filter(|s| s.contains('|')).collect::<Vec<_>>());
@@ -1980,6 +1991,20 @@ mod tests {
         let (own, lowered) = (super::super::gemma4::describe(&c), super::super::gemma4::lowered(&dir, &c).unwrap_or_else(|e| panic!("{}", e.msg)));
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(format!("{own:#?}"), format!("{lowered:#?}"));
+    }
+
+    /// The executor's Gemma 4 head rounds the logits to bf16 between operations (the product's output, g4_softcap's three): a description whose head
+    /// says otherwise is refused, named.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_gemma4_head_that_rounds_otherwise_is_refused() {
+        let mut d = crate::runtime::describe::describe(&serde_json::from_str(crate::logits::GEMMA4_RANDOM_CONFIG).unwrap()).unwrap();
+        let shapes = d.shapes.clone();
+        let shape = |n: &str| shapes.get(n).cloned();
+        assert!(gemma4(&d, &shape, vec![1], 4096).is_ok());
+        d.desc.head.rounding = crate::runtime::kinds::Rounding::F32;
+        let e = gemma4(&d, &shape, vec![1], 4096).unwrap_err().msg;
+        assert!(e.contains("a head of") && e.contains("rounds the logits to bf16"), "{e}");
     }
 
     /// KV sharing lowered (the gemma4-kv case's random model): a shared layer's attention reads its store layer's ring and writes none, its product the

@@ -161,9 +161,6 @@ jobs:
           - {os: ubuntu-latest, name: linux-x86_64, cuda: "13.0.3", compress: size, artifact: gpu-lib}
           - {os: ubuntu-24.04-arm, name: linux-aarch64, cuda: "12.8.2", compress: size, artifact: gpu-lib}
           - {os: ubuntu-24.04-arm, name: linux-aarch64, cuda: "13.0.3", compress: size, artifact: gpu-lib}
-          # ... and the engine bundle's CUDA 12 library, not compressed at all, which a driver of CUDA 12.2 (R535) reads (no size limit on a GitHub release)
-          - {os: ubuntu-latest, name: linux-x86_64, cuda: "12.9.1", compress: none, artifact: bundle-lib}
-          - {os: ubuntu-24.04-arm, name: linux-aarch64, cuda: "12.9.1", compress: none, artifact: bundle-lib}
     runs-on: ${{ matrix.name == 'linux-x86_64' && vars.CI_RUNNER && !startsWith(github.ref, 'refs/tags/') && fromJSON(vars.CI_RUNNER) || matrix.os }}  # (a release candidate's x86_64 Linux on glyd-pc where CI_RUNNER is set: the owner's PC, not GitHub's 2-core runners. A v* tag, which is signed and published,
     # builds only on GitHub's fresh runners: the PC also runs pull requests' CI, Dependabot's included, and keeps state between jobs. aarch64 stays on GitHub's arm runners)
     container:
@@ -320,10 +317,11 @@ jobs:
         run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP")" "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
 
   engine-bundle:
-    # Glyd's engine with its GPU library (CUDA 13), a tarball for each Linux architecture: what install.sh puts beside the compression program on
-    # Linux with an NVIDIA GPU, with no Python (GLY-353). The very files the wheels hold (the engine and gpu-lib jobs built and checked them; their
-    # sha256 are checked again here); RELEASING.md's step attaches the tarballs and their sha256 to the public repository's release.
-    needs: [plan, engine, gpu-lib]
+    # Glyd's engine, a tarball for each Linux architecture: what install.sh puts beside the compression program on Linux with an NVIDIA GPU, with
+    # no Python (GLY-353). Its GPU kernels are in the program, which loads no GPU library (R17): none ships beside it, and the step below fails
+    # where the tarball holds one or the program links one. The very program the engine job built and checked (its sha256 checked again here);
+    # RELEASING.md's step attaches the tarballs and their sha256 to the public repository's release.
+    needs: [plan, engine]
     runs-on: ${{ matrix.name == 'linux-x86_64' && vars.CI_RUNNER && !startsWith(github.ref, 'refs/tags/') && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 15
     permissions:
@@ -342,33 +340,25 @@ jobs:
         with:
           name: glyd-engine-${{ matrix.name }}
           path: engine
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: gpu-lib-${{ matrix.name }}-cuda13.0.3
-          path: lib
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: bundle-lib-${{ matrix.name }}-cuda12.9.1
-          path: lib12
-      - name: The tarball (glyd with the engine linked, glyd-engine as a link to it, libglyd_gpu_cuda13.so and the not compressed libglyd_gpu_cuda12.so, LICENSE) and its sha256
+      - name: The tarball (glyd with the engine linked, glyd-engine as a link to it, LICENSE; no GPU library) and its sha256
         env:
           VERSION: ${{ needs.plan.outputs.version }}
           NAME: ${{ matrix.name }}
         run: |
           set -euo pipefail
           (cd engine && sha256sum -c glyd-engine.sha256)
-          (cd lib && sha256sum -c libglyd_gpu_cuda13.so.sha256)
-          (cd lib12 && sha256sum -c libglyd_gpu_cuda12.so.sha256)
+          # (the program links no GPU library: it opens the driver and cuBLAS by their system names, and its kernels are its own)
+          if ldd engine/glyd | grep -i libglyd_gpu; then echo "glyd links Glyd's GPU library, which the engine no longer loads" >&2; exit 1; fi
           d="glyd-engine-v$VERSION-$NAME"
           mkdir -p "out/$d"
-          # (the engine loads the library of the driver's CUDA version: 13 from a driver of CUDA 13, else 12; a driver of CUDA 12.2 or newer reads the not compressed 12)
-          cp engine/glyd lib/libglyd_gpu_cuda13.so lib12/libglyd_gpu_cuda12.so "out/$d/"
+          cp engine/glyd "out/$d/"
           cp glyd-engine/LICENSE "out/$d/LICENSE"
           chmod +x "out/$d/glyd"
           # (the engine's old command: this program under that name, which it takes for the engine's command line; install.sh and condor/tools/install.sh copy it)
           ln -s glyd "out/$d/glyd-engine"
           tar -C out --owner=0 --group=0 -czf "out/$d.tar.gz" "$d"
           (cd out && sha256sum "$d.tar.gz" > "$d.tar.gz.sha256" && cat "$d.tar.gz.sha256" && tar -tzvf "$d.tar.gz")
+          if tar -tzf "out/$d.tar.gz" | grep -i libglyd_gpu; then echo "the tarball holds a GPU library, which the engine no longer loads" >&2; exit 1; fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: engine-bundle-${{ matrix.name }}
@@ -378,69 +368,12 @@ jobs:
           if-no-files-found: error
 
   # Windows x86_64: glyd.exe (the compression program with Glyd's engine linked, the `engine` feature), built with CUDA 13.0.3's nvcc and CUDA 12.9.1's (NVCC12: the kernels a
-  # driver of CUDA 12 loads), and the GPU library DLLs of both (libglyd_gpu_cuda13.dll, and libglyd_gpu_cuda12.dll not compressed), in three jobs: the two DLLs and glyd.exe are
-  # built side by side (one after the other they took 87 minutes), and engine-windows checks them, zips them and installs the zip. The CUDA toolkits are NVIDIA's network installers,
-  # checked against the sha256 written here, with the compiler and the runtime only (.github/scripts/cuda-windows.ps1); nothing of the toolkit ships (the DLLs link the CUDA runtime
-  # in; the engine opens nvcuda.dll). Built here, not run: no runner has a GPU. The zip and its sha256 are attached to the release by attach-engine when they succeeded; a failure
+  # driver of CUDA 12 loads), in two jobs: engine-windows-exe builds glyd.exe, and engine-windows checks it, zips it and installs the zip. No GPU library ships: the engine's
+  # kernels are in the program, which loads none (R17). The CUDA toolkits are NVIDIA's network installers, checked against the sha256 written here, with the compiler and the
+  # runtime only (.github/scripts/cuda-windows.ps1); nothing of the toolkit ships (the engine opens nvcuda.dll). Built here, not run: no runner has a GPU. The zip and its sha256 are attached to the release by attach-engine when they succeeded; a failure
   # here does not hold the Linux bundles back. A run that is not a tag takes a DLL, or the engine's compiled kernels, from the Actions cache where their sources did not change
   # (keyed by them); a tag builds everything fresh, so a release's files are its own run's.
   # (windows-2022: its Visual Studio 2022 is the host compiler CUDA 13.0 and 12.9 list; windows-latest has Visual Studio 2026, whose STL asks for CUDA 13.4 or newer)
-  gpu-lib-windows:
-    name: gpu-lib-windows (CUDA ${{ matrix.cuda }})
-    needs: plan
-    runs-on: windows-2022
-    timeout-minutes: 90
-    permissions:
-      contents: read
-    defaults:
-      run:
-        shell: pwsh
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {cuda: "13.0.3", mm: "13.0", major: "13", sha: "6b544a8cfea2ca18cc816dacda92064dcf821a201b35185e6c14ca17ccbc026f", compress: size}
-          - {cuda: "12.9.1", mm: "12.9", major: "12", sha: "de45c336ab4e9825018b546357dc9de5ded9f89c4f5200ef52b8eeac3b1b4072", compress: none}
-    env:
-      GLYD_GPU_RELEASE: "1"
-      GLYD_GPU_COMPRESS: ${{ matrix.compress }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          ref: ${{ needs.plan.outputs.sha }}
-          persist-credentials: false
-      - id: memo
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
-        with:
-          path: lib
-          key: gpulib-windows-cuda${{ matrix.cuda }}-${{ matrix.compress }}-${{ hashFiles('gpu/*.cu', 'gpu/*.h', 'gpu/build_lib.ps1') }}-v1
-      - name: The CUDA toolkit (the compiler and the runtime)
-        if: steps.memo.outputs.cache-hit != 'true'
-        run: ./.github/scripts/cuda-windows.ps1 -Version ${{ matrix.cuda }} -Sha256 ${{ matrix.sha }}
-      - name: Build (MSVC's environment, nvcc, the DLL)
-        if: steps.memo.outputs.cache-hit != 'true'
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
-          cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" && set" | ForEach-Object { if ($_ -match '^(.*?)=(.*)$') { Set-Item "env:$($Matches[1])" $Matches[2] } }
-          # (the runner's Visual Studio can be newer than the one a CUDA release lists: the build is checked by what it makes, not by nvcc's list)
-          $env:NVCC_APPEND_FLAGS = '-allow-unsupported-compiler'
-          $env:PATH = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${{ matrix.mm }}\bin;$env:PATH"
-          New-Item -ItemType Directory -Force lib | Out-Null
-          & .\gpu\build_lib.ps1 -Out (Resolve-Path lib)
-          Get-ChildItem lib | Select-Object Name, Length
-      - if: ${{ !startsWith(github.ref, 'refs/tags/') && steps.memo.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
-        with:
-          path: lib
-          key: gpulib-windows-cuda${{ matrix.cuda }}-${{ matrix.compress }}-${{ hashFiles('gpu/*.cu', 'gpu/*.h', 'gpu/build_lib.ps1') }}-v1
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: gpu-lib-windows-cuda${{ matrix.major }}
-          path: lib/libglyd_gpu_cuda${{ matrix.major }}.dll
-          if-no-files-found: error
-
   engine-windows-exe:
     needs: plan
     runs-on: windows-2022
@@ -500,7 +433,7 @@ jobs:
           if-no-files-found: error
 
   engine-windows:
-    needs: [plan, gpu-lib-windows, engine-windows-exe]
+    needs: [plan, engine-windows-exe]
     runs-on: windows-2022
     timeout-minutes: 20
     permissions:
@@ -517,15 +450,7 @@ jobs:
         with:
           name: glyd-exe-windows
           path: target/release
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: gpu-lib-windows-cuda13
-          path: lib13
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: gpu-lib-windows-cuda12
-          path: lib12
-      - name: Check (the program starts; the system's DLLs alone; the DLLs export the C API) and the zip
+      - name: Check (the program starts; the system's DLLs alone) and the zip
         env:
           VERSION: ${{ needs.plan.outputs.version }}
         run: |
@@ -542,23 +467,18 @@ jobs:
           $deps
           $other = $deps | Where-Object { $_ -notmatch '^(kernel32|user32|advapi32|ws2_32|bcrypt|ntdll|userenv|shell32|ole32|oleaut32|crypt32|secur32|ncrypt|msvcrt|api-ms-win-.*|iphlpapi|dbghelp|gdi32|winmm|setupapi|cfgmgr32|rpcrt4|shlwapi|version|wintrust|ucrtbase|normaliz|psapi|propsys|mswsock|dnsapi|netapi32|bcryptprimitives|cabinet)\.dll$' }
           if ($other) { throw "glyd.exe imports more than the system's DLLs: $other" }
-          foreach ($dll in 'lib13\libglyd_gpu_cuda13.dll', 'lib12\libglyd_gpu_cuda12.dll') {
-            $exports = & $dumpbin /exports $dll | Out-String
-            foreach ($f in 'glyd_gpu_api_version', 'glyd_gpu_error_string', 'glyd_gpu_cuda_version') { if ($exports -notmatch $f) { throw "$dll does not export $f" } }
-          }
           $d = "glyd-engine-v$($env:VERSION)-windows-x86_64"
           New-Item -ItemType Directory -Force "out\$d" | Out-Null
           Copy-Item $exe "out\$d\glyd.exe"; Copy-Item $exe "out\$d\glyd-engine.exe"
-          Copy-Item lib13\libglyd_gpu_cuda13.dll, lib12\libglyd_gpu_cuda12.dll "out\$d\"
           Copy-Item glyd-engine\LICENSE "out\$d\LICENSE"
           Compress-Archive -Path "out\$d" -DestinationPath "out\$d.zip"
           $h = (Get-FileHash "out\$d.zip" -Algorithm SHA256).Hash.ToLower()
           "$h  $d.zip" | Set-Content -NoNewline "out\$d.zip.sha256"
           Get-Content "out\$d.zip.sha256"; Get-ChildItem out | Select-Object Name, Length
-          # the installer (scripts/install.ps1) on this zip, from a folder (GLYD_RELEASE_URL): it installs, finds the DLLs, and `glyd doctor` on a runner with no GPU says so in words
+          # the installer (scripts/install.ps1) on this zip, from a folder (GLYD_RELEASE_URL): it installs, and `glyd doctor` on a runner with no GPU says so in words
           $env:GLYD_VERSION = $env:VERSION; $env:GLYD_RELEASE_URL = (Resolve-Path out).Path; $env:GLYD_HOME = Join-Path $PWD 'install-test'; $env:GLYD_NO_PATH = '1'
           & .\scripts\install.ps1
-          foreach ($f in 'glyd.exe', 'glyd-engine.exe', 'libglyd_gpu_cuda13.dll', 'libglyd_gpu_cuda12.dll', 'LICENSE-engine') {
+          foreach ($f in 'glyd.exe', 'glyd-engine.exe', 'LICENSE-engine') {
             if (-not (Test-Path (Join-Path $env:GLYD_HOME $f))) { throw "the installer did not put $f in $env:GLYD_HOME" }
           }
           $v = & (Join-Path $env:GLYD_HOME 'glyd.exe') --version | Out-String
@@ -768,10 +688,10 @@ jobs:
             bundles/*.spdx.json
 
   attach-engine:
-    # The engine bundles (engine-bundle: glyd with the engine linked, glyd-engine as a link to it, libglyd_gpu_cuda13.so, LICENSE, a tarball for each Linux architecture, and its sha256) attached to this
+    # The engine bundles (engine-bundle: glyd with the engine linked, glyd-engine as a link to it, LICENSE, a tarball for each Linux architecture, and its sha256) attached to this
     # repository's GitHub release of the tag: what install.sh and condor/tools/install.sh download on Linux with an NVIDIA GPU. release.yml makes the release
     # (its attach job); this job waits up to 30 minutes for it, then uploads, replacing assets of the same name.
-    # The Windows zip (engine-windows: glyd.exe, the two GPU library DLLs; attested and signed like the tarballs, but not code-signed: P13) goes up with them where that job succeeded; its failure does not hold the Linux bundles back.
+    # The Windows zip (engine-windows: glyd.exe; attested and signed like the tarballs, but not code-signed: P13) goes up with them where that job succeeded; its failure does not hold the Linux bundles back.
     needs: [plan, engine-bundle, sign-engine, engine-windows]
     if: ${{ always() && needs.plan.outputs.publish == 'true' && startsWith(github.ref, 'refs/tags/v') && needs.engine-bundle.result == 'success' && needs.sign-engine.result == 'success' }}
     runs-on: ubuntu-latest

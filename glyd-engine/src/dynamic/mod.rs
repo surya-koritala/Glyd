@@ -842,6 +842,13 @@ fn unnamed(d: &ModelDesc) -> Option<usize> {
     std::iter::once(&d.first).chain(d.layers.iter().flatten()).flat_map(Op::mats).chain([d.embed, d.lm]).find(|&k| k >= d.mats.len())
 }
 
+/// The checkpoint's tensors of the matrices layer `l`'s operations multiply by (`ModelDesc::mats`' members; a fused product's zero rows are none): what the
+/// executor's loader keeps in the computer's memory for a layer there (`Placing::ram`), each one it packs (the planner's test holds its figures to them).
+#[cfg(test)]
+pub(crate) fn layer_tensors(d: &ModelDesc, l: usize) -> Vec<String> {
+    d.layers[l].iter().flat_map(Op::mats).filter_map(|k| d.mats.get(k)).flat_map(|it| it.members.iter().filter(|m| !m.is_empty()).cloned()).collect()
+}
+
 /// Whether matrix `k` of `d` is held as saved (bf16), not packed: a table an operation reads by row (`Op::NgramRows`), or a shape the library does not pack
 /// (columns not a multiple of 16, or a member's rows, `rows_of` it where the checkpoint holds it, not a multiple of 64: a save keeps such a merge as its parts;
 /// an item padded with zero rows is one matrix of its own rows, whatever its members').
@@ -1257,8 +1264,8 @@ pub struct Dyn {
     trace: std::cell::RefCell<Option<Vec<Vec<u16>>>>,
     /// Where Some: the layer whose operations each eager pass records (`trace_ops`), and after each of them its name and the bf16 values of the slots `TRACED`.
     op_trace: std::cell::RefCell<Option<(usize, Vec<(String, Vec<Vec<u16>>)>)>>,
-    /// Where Some: each eager pass adds, after each mixture-of-experts operation whose experts are all on the GPU, its layer, its router's choices
-    /// and its router's input rows (`trace_routes`).
+    /// Where Some: each eager pass adds, after each mixture-of-experts operation whose block leaves its choices in the experts' scratch
+    /// (`MoeBlock::top_k`: a resident block, the expert cache's codebook block), its layer, its router's choices and its router's input rows (`trace_routes`).
     route_trace: std::cell::RefCell<Option<Vec<Routes>>>,
     picks: Option<picked::PickRun>,
     /// The latent attentions' scratch, where the model has one.
@@ -1482,7 +1489,7 @@ impl Dyn {
 
     /// The routers' choices in the passes run between `trace_routes(true)` and `trace_routes(false)`, which returns them: for each mixture-of-experts
     /// operation in the order run, its layer, the experts a row takes (k), its rows' experts ([rows, k], each row's in the router's order) and the
-    /// router's input as the operation read it (bf16, [rows, its width]). A layer whose experts are in a cache that routes on its own adds nothing.
+    /// router's input as the operation read it (bf16, [rows, its width]). A layer whose block leaves no choices in the experts' scratch adds nothing.
     pub fn trace_routes(&self, on: bool) -> Vec<Routes> {
         std::mem::replace(&mut *self.route_trace.borrow_mut(), on.then(Vec::new)).unwrap_or_default()
     }
@@ -1502,11 +1509,11 @@ impl Dyn {
         Ok((!v.is_empty()).then_some(v))
     }
 
-    /// The router's input of `op` on n rows, read before it runs, where `trace_routes` records its call (a mixture-of-experts operation whose
-    /// experts are all on the GPU): its input slot's rows, bf16.
+    /// The router's input of `op` on n rows, read before it runs, where `trace_routes` records its call (`MoeBlock::top_k`): its input slot's
+    /// rows, bf16.
     fn route_input(&self, p: &Part, op: &Op, n: usize) -> Result<Option<Vec<u16>>> {
         let Op::Moe(MoeOp { block, x, .. }) = *op else { return Ok(None) };
-        if !std::ptr::eq(p, &self.big) || self.route_trace.borrow().is_none() || p.moe[block].resident().is_none() {
+        if !std::ptr::eq(p, &self.big) || self.route_trace.borrow().is_none() || p.moe[block].top_k().is_none() {
             return Ok(None);
         }
         self.dev.sync()?;
@@ -1521,10 +1528,9 @@ impl Dyn {
         if !std::ptr::eq(p, &self.big) || self.route_trace.borrow().is_none() {
             return Ok(());
         }
-        let Some((layer, _)) = p.moe[block].resident() else { return Ok(()) };
+        let Some(k) = p.moe[block].top_k() else { return Ok(()) };
         let sc = self.moe_sc.get().ok_or_else(|| Error("no mixture-of-experts scratch".into()))?;
         self.dev.sync()?;
-        let k = layer.cfg.router.top_k;
         let mut ids = vec![0i64; n * k];
         sc.ids.read(0, &mut ids)?;
         let input = input.ok_or_else(|| Error(format!("layer {l}: the router's input was not read before its experts ran")))?;

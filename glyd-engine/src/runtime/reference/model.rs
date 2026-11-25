@@ -4,7 +4,7 @@
 use super::{depth_mix, norm::norm, Params, RefLayer, SeqState};
 use crate::ffi::{err, Error, Result};
 use crate::runtime::describe::{Described, Source};
-use crate::runtime::kinds::{Body, Collapse, Comp, Mixer, Mla, ModelDesc, Residual, StreamsP};
+use crate::runtime::kinds::{Body, Collapse, Comp, Head, Mixer, Mla, ModelDesc, Residual, Rounding, StreamsP};
 
 /// A checkpoint's tensors by name: (shape, values as f32).
 pub type Tensors<'a> = &'a dyn Fn(&str) -> Option<(Vec<usize>, Vec<f32>)>;
@@ -57,6 +57,18 @@ pub fn load(src: Tensors, role: &str, s: &Source) -> Result<(Vec<usize>, Vec<f32
 /// compressed-tensors packs them), whatever the model is called. Another type: none.
 pub fn checkpoint_tensor(ck: &glyd_gpu::safetensors::Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
     crate::formats::tensor(ck, name)
+}
+
+/// One logit from the head's product `z`: times the head's scale, through its soft-cap, rounded where the head rounds (`Head::rounding`).
+pub fn logit(h: &Head, z: f32) -> f32 {
+    let (product, ops) = match h.rounding {
+        Rounding::F32 => (false, false),
+        Rounding::Once => (true, false),
+        Rounding::Twice => (true, true),
+    };
+    let r = |v: f32, at: bool| if at { super::bf16(v) } else { v };
+    let z = r(r(z, product) * h.scale, ops);
+    h.softcap.map_or(z, |c| r(c * r(r(z / c, ops).tanh(), ops), ops))
 }
 
 /// Kimi-K3's depth mix for one token: the completed groups' sums (the sources) and the open group's partial sum.
@@ -216,19 +228,11 @@ impl RefModel {
             }
         }
         seen(&mut x);
-        let h = &self.desc.head;
+        let h = self.desc.head;
         let mut out = Vec::with_capacity(tokens.len());
         for (t, xt) in x.chunks(n * d).enumerate() {
             let y = self.final_h_with(xt, Some(&depth[t]), &lag[t])?;
-            out.push(
-                super::matvec(&self.head, d, &y)
-                    .into_iter()
-                    .map(|z| {
-                        let z = z * h.scale;
-                        h.softcap.map_or(z, |c| c * (z / c).tanh())
-                    })
-                    .collect(),
-            );
+            out.push(super::matvec(&self.head, d, &y).into_iter().map(|z| logit(&h, z)).collect());
         }
         Ok(out)
     }
@@ -401,7 +405,7 @@ mod tests {
             embed: Embed { scale: 1.0, norm: None, streams: N, per_layer: None },
             blocks: layers.iter().map(|l| l.block.clone()).collect(),
             final_norm: Norm::rms(1e-6),
-            head: Head { tied: false, softcap: None, scale: 1.0, collapse },
+            head: Head { tied: false, softcap: None, scale: 1.0, collapse, rounding: Rounding::F32 },
             mtp: Vec::new(),
             vision: None,
             rope: None,
@@ -496,5 +500,24 @@ mod tests {
         let mut again = model(streams(false), Collapse::Mean);
         assert_eq!(again.forward(&tokens, 0).unwrap(), logits, "recording leaves the logits as they are");
         assert!(again.record.is_none());
+    }
+
+    /// The head's rounding points (`Head::rounding`): none in f32; the product's output alone; or a bf16 tensor between operations, as transformers
+    /// soft-caps a bf16 model's logits (`/ cap`, `tanh`, `* cap`, each rounded), which the engine's g4_softcap does too. By hand.
+    #[test]
+    fn the_head_rounds_where_it_says() {
+        use crate::runtime::reference::bf16;
+        let h = |rounding, scale| Head { tied: true, softcap: Some(30.0), scale, collapse: Collapse::None, rounding };
+        let z = 23.456_79f32;
+        assert_eq!(logit(&h(Rounding::F32, 1.0), z), 30.0 * (z / 30.0).tanh());
+        assert_eq!(logit(&h(Rounding::Once, 1.0), z), 30.0 * (bf16(z) / 30.0).tanh());
+        let release = bf16(bf16(bf16(bf16(z) / 30.0).tanh()) * 30.0);
+        assert_eq!(logit(&h(Rounding::Twice, 1.0), z), release);
+        assert_ne!(release, 30.0 * (z / 30.0).tanh());
+        // (the scale's product rounded too, before the cap)
+        assert_eq!(logit(&h(Rounding::Twice, 0.5), z), bf16(bf16(bf16(bf16(bf16(z) * 0.5) / 30.0).tanh()) * 30.0));
+        // (no cap: the product, rounded where the head rounds)
+        let bare = Head { softcap: None, ..h(Rounding::Twice, 1.0) };
+        assert_eq!((logit(&bare, z), logit(&Head { rounding: Rounding::F32, ..bare }, z)), (bf16(z), z));
     }
 }

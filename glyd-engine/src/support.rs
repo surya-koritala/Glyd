@@ -100,10 +100,10 @@ pub enum ExpertCache {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RamLinears {
     None,
-    /// The attention's projections and the experts' latent projections, of every layer.
-    Attention,
-    /// The delta attention's projections, of the layers that have one.
-    DeltaAttention,
+    /// Every matrix the executor's loader packs for a layer's own products (src/dynamic/mod.rs `Placing::ram` keeps each of them there): the attention's
+    /// projections (a delta attention's or a latent one's: not a latent attention's kv_b nor its indexer's, small tensors it holds as saved), a dense MLP's
+    /// three, and the experts' latent projections where they are the layer's products (a block of experts keeps its own matrices on the GPU).
+    Products,
 }
 
 /// A family on one GPU with nothing kept off it: what the other rows differ from.
@@ -185,7 +185,7 @@ pub static TABLE: [Support; 9] = [
             bf16_twelve: true,
             across: Across::Default,
             expert_cache: ExpertCache::Packed,
-            ram_linears: RamLinears::DeltaAttention,
+            ram_linears: RamLinears::Products,
         },
     },
     Support {
@@ -222,7 +222,7 @@ pub static TABLE: [Support; 9] = [
         split_levels: PENGUIN_HB,
         experts_in_ram_levels: PENGUIN_HB,
         drafts: false,
-        route: Route { sizing: Sizing::Dynamic, across: Across::Asked, expert_cache: ExpertCache::Release, ram_linears: RamLinears::Attention, ..ONE_GPU },
+        route: Route { sizing: Sizing::Dynamic, across: Across::Asked, expert_cache: ExpertCache::Release, ram_linears: RamLinears::Products, ..ONE_GPU },
     },
     Support {
         family: Family::FlashNext,
@@ -463,8 +463,20 @@ mod tests {
         other.arch = "riscv64".into();
         let r = machine(&other).unwrap();
         assert!(r.what.contains("riscv64") && r.fix.contains("x86_64 and aarch64"), "{r:?}");
+        // (a driver below this build's floor, read from the build: CUDA 12.7 where it carries CUDA 13's kernels alone, 12.1 where it carries CUDA 12's
+        // too, which run from 12.2; the refusal names the driver's version and the floor's)
         let mut old = Machine::preset("rtx4080s").unwrap();
-        old.devices[0].driver = 12070;
-        assert!(machine(&old).unwrap().what.contains("CUDA 12.7"));
+        let (cc, floor) = (old.devices[0].cc, crate::machine::driver_min(old.devices[0].cc));
+        old.devices[0].driver = if floor > 12070 { 12070 } else { floor - 10 };
+        let r = machine(&old).unwrap();
+        let said = format!("CUDA {}.{}", old.devices[0].driver / 1000, old.devices[0].driver % 1000 / 10);
+        assert!(r.what.contains(&said) && r.what.contains(&crate::machine::driver_need(cc)), "{r:?}");
+        // (and a driver at the floor runs: CUDA 12.7 does where the build carries CUDA 12's kernels)
+        old.devices[0].driver = floor;
+        assert!(machine(&old).is_none());
+        if crate::machine::KERNELS12 {
+            old.devices[0].driver = 12070;
+            assert!(machine(&old).is_none());
+        }
     }
 }

@@ -767,7 +767,7 @@ impl std::fmt::Debug for Embed {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Head {
     pub tied: bool,
     pub softcap: Option<f32>,
@@ -775,6 +775,24 @@ pub struct Head {
     pub scale: f32,
     /// How the residual becomes the final norm's input.
     pub collapse: Collapse,
+    /// Where the logits round to bf16: `F32` nowhere; `Once` the product's output alone; `Twice` a bf16 tensor between operations, as
+    /// transformers' head of a bf16 model makes them: the product's output, then the scale's product and each of the soft-cap's three operations
+    /// (the division, the tanh, the product) rounded (Gemma 4 as released: models/gemma4/modeling_gemma4.py takes `lm_head`'s bf16 output through
+    /// `/ cap`, `tanh`, `* cap`; vLLM's head in the model's type does the same).
+    pub rounding: Rounding,
+}
+
+/// The derived form, with `rounding` said only where the logits round: the other heads' descriptions read as they did before the field (the
+/// digests of tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for Head {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("Head");
+        s.field("tied", &self.tied).field("softcap", &self.softcap).field("scale", &self.scale).field("collapse", &self.collapse);
+        if self.rounding != Rounding::F32 {
+            s.field("rounding", &self.rounding);
+        }
+        s.finish()
+    }
 }
 
 /// The residual stream(s) into the final norm.
@@ -846,8 +864,8 @@ pub struct ModelDesc {
 
 impl ModelDesc {
     /// Every rounding point a description names in f32: the attentions' (`AttnRounding::F32`), the residual streams', the norms' (the blocks', the final
-    /// one, the latent attentions' q and key-value latents'): the description as transformers runs it in float32, which the fixtures of `tests/runtime`
-    /// were recorded in.
+    /// one, the latent attentions' q and key-value latents'), the head's (`Head::rounding`): the description as transformers runs it in float32, which the
+    /// fixtures of `tests/runtime` were recorded in.
     pub fn f32_arithmetic(&mut self) {
         self.final_norm.rounding = Rounding::F32;
         for b in self.blocks.iter_mut().chain(self.mtp.iter_mut().flat_map(|m| m.blocks.iter_mut())) {
@@ -864,5 +882,6 @@ impl ModelDesc {
                 s.rounding = Rounding::F32;
             }
         }
+        self.head.rounding = Rounding::F32;
     }
 }

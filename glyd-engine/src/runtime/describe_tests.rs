@@ -19,7 +19,7 @@ fn model(case: &str, tol: f32) {
             f.j["tensors"][n]["shape"].as_array().map(|a| a.iter().filter_map(|x| x.as_u64()).map(|x| x as usize).collect()).unwrap_or_default();
         assert_eq!(&got, s, "{case}: the shape of {n}");
     }
-    // (transformers in float32: the attention's bf16 rounding points, which the description gives as the family's engine rounds, off)
+    // (transformers in float32: every bf16 rounding point the description gives as the family's release rounds, off: `ModelDesc::f32_arithmetic`)
     d.desc.f32_arithmetic();
     let src = |n: &str| f.j["tensors"].get(n).map(|_| f.tensor(n));
     let mut m = RefModel::load(&d, &src).unwrap();
@@ -177,7 +177,8 @@ fn released_gemma4_config() {
     assert_eq!((s.head_dim, s.kv_heads, s.window, s.k_eq_v), (256, 8, Some(1024), false));
     assert_eq!((g.head_dim, g.kv_heads, g.window, g.k_eq_v), (512, 1, None, true));
     assert_eq!(g.rope.unwrap(), Rope::proportional(1e6, 512, 0.25));
-    assert_eq!((d.desc.head.tied, d.desc.head.softcap), (true, Some(30.0)));
+    // (the release's logits are bf16 from the head's product on, through the soft-cap's three operations)
+    assert_eq!((d.desc.head.tied, d.desc.head.softcap, d.desc.head.rounding), (true, Some(30.0), Rounding::Twice));
     assert!(d.head.is_none());
 }
 
