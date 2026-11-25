@@ -563,7 +563,11 @@ impl Dyn {
         let entries = (last + 1) / kp;
         let mut ring = vec![0u16; entries * kp * 2 * id];
         r.cnt.read(0, &mut cnt)?;
-        r.sel.read(0, &mut sel)?;
+        // (each row's picks alone: the rest of a row of sel is never written)
+        for (t, &c) in cnt.iter().enumerate() {
+            let c = (c.max(0) as usize).min(tmax);
+            r.sel.read(t * tmax * 4, &mut sel[t * tmax..][..c])?;
+        }
         r.iq.read(0, &mut q)?;
         r.wts.read(0, &mut w)?;
         self.kc.read(self.ring_off[a.ring + 1].0 as usize, &mut ring)?;
