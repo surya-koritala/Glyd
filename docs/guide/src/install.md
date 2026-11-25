@@ -89,8 +89,9 @@ Without `--features engine` the install is the file compression program alone.
 - The build finds `nvcc` on the PATH, or at `$NVCC`. Without one it builds without CUDA kernels and warns. The kernels are
   built for Ampere, Ada and Hopper (`GLYD_ENGINE_ARCHS="80 86 89 90a"` is the default); `GLYD_ENGINE_ARCHS="89"` builds for one
   architecture, which is quicker.
-- `gpu/build_lib.sh DIR` writes the GPU library, `libglyd_gpu_cuda13.so`, into `DIR`. The engine looks for it beside its own
-  program, then in the loader's path; `GLYD_GPU_LIB=/path/to/it` names it.
+- The engine's GPU kernels are in its own program: it loads no GPU library. `gpu/build_lib.sh DIR` writes the GPU library,
+  `libglyd_gpu_cuda13.so`, into `DIR`, for the Python package and for `glyd-engine foldcheck` (a development build's
+  comparison of the engine's kernels with the library's), which `GLYD_GPU_LIB=/path/to/it` names to the engine.
 - The engine needs the NVIDIA driver only. It does not link the CUDA runtime.
 
 The rest of the guide writes `glyd`. With a source build, run it as `target/release/glyd`.
