@@ -300,6 +300,20 @@ pub trait ModelStep {
     fn top(&mut self, _row: usize) -> Option<Vec<(u32, f32)>> {
         None
     }
+    /// Row `row`'s whole distribution at `temperature` in buckets (`sampler::Hist`, HIST_BUCKETS of HIST_PER a unit), made where the logits are: a draw over all of the row
+    /// the candidates cannot hold (`Sampler::sample_hist`). None: the backend has none, the row is read.
+    fn hist(&mut self, _row: usize, _temperature: f32) -> Option<crate::sampler::Hist> {
+        None
+    }
+    /// The tokens of bucket `bucket` of `hist(row, temperature)`'s (token and logit), all of them; None where there are more than `cap`, or the backend has none.
+    fn hist_bucket(&mut self, _row: usize, _temperature: f32, _bucket: usize, _cap: usize) -> Option<Vec<(u32, f32)>> {
+        None
+    }
+    /// The row's own largest logits, as `top` gives them where no grammar's mask was put on the row before them (a step that made them with a mask: before it); the
+    /// log-probabilities' top. By default `top`'s.
+    fn top_raw(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
+        self.top(row)
+    }
     /// The sum over row `row`'s logits of exp((logit - largest) / temperature), made where the logits are (a top-p over the whole row with no top-k; at temperature 1,
     /// the row's log-sum-exp for log-probabilities). None: the backend has none, the logits are read.
     fn mass(&mut self, _row: usize, _temperature: f32) -> Option<f64> {
@@ -528,6 +542,15 @@ impl ModelStep for &mut dyn ModelStep {
     fn mass(&mut self, row: usize, temperature: f32) -> Option<f64> {
         (**self).mass(row, temperature)
     }
+    fn top_raw(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
+        (**self).top_raw(row)
+    }
+    fn hist(&mut self, row: usize, temperature: f32) -> Option<crate::sampler::Hist> {
+        (**self).hist(row, temperature)
+    }
+    fn hist_bucket(&mut self, row: usize, temperature: f32, bucket: usize, cap: usize) -> Option<Vec<(u32, f32)>> {
+        (**self).hist_bucket(row, temperature, bucket, cap)
+    }
     fn gather(&mut self, row: usize, tokens: &[u32]) -> Result<Vec<(u32, f32)>> {
         (**self).gather(row, tokens)
     }
@@ -598,6 +621,9 @@ impl Seq {
         }
     }
 }
+
+/// The most tokens of a bucket a draw over the whole row takes from the GPU (`ModelStep::hist_bucket`); one with more is drawn from the row.
+const HIST_CAP: usize = 4096;
 
 /// The most sequences a slot step runs at once (the rows of a pass's head).
 pub const MAX_USERS: usize = 64;
@@ -1732,10 +1758,21 @@ impl<B: ModelStep> Sched<B> {
             let raw = self.be.gather(row, &ts)?;
             tok = self.active[i].sampler.sample_listed(&raw);
         }
-        // (log-probabilities: the token's logit and the k likeliest from the candidates, the log-sum-exp from the row's sum at temperature 1 about its largest logit, the first's; not where a
-        // grammar's mask made the candidates, which are then the allowed tokens', not the row's likeliest)
-        let lp = match (want, tok, top.as_deref()) {
-            (Some(k), Some(t), Some(c)) if k <= c.len() && self.active[i].sampler.mask_handle().is_none() => {
+        // (a draw over all of the row (no top-k, or one past the candidates): from the row's buckets and the tokens of the ones it lands in)
+        if let (None, Some(t)) = (tok, self.active[i].sampler.hist_need()) {
+            if let Some(h) = self.be.hist(row, t) {
+                let (be, sampler) = (&mut self.be, &mut self.active[i].sampler);
+                tok = sampler.sample_hist(&h, &mut |b| be.hist_bucket(row, t, b, HIST_CAP));
+            }
+        }
+        // (log-probabilities: the token's logit and the k likeliest from the row's own candidates (where a grammar's mask made the draw's, those from before it), the log-sum-exp
+        // from the row's sum at temperature 1 about its largest logit, the first's)
+        let own = match (want, self.active[i].sampler.mask_handle()) {
+            (Some(_), Some(_)) => self.be.top_raw(row),
+            _ => top.clone(),
+        };
+        let lp = match (want, tok, own.as_deref()) {
+            (Some(k), Some(t), Some(c)) if k <= c.len() => {
                 let x = match c.iter().find(|x| x.0 == t) {
                     Some(x) => Some(x.1),
                     None => self.be.gather(row, &[t])?.first().map(|x| x.1),
@@ -2461,6 +2498,32 @@ pub(crate) mod tests {
             let r = self.rows.get(row).ok_or_else(|| crate::ffi::Error("no logits".into()))?;
             Ok(tokens.iter().filter_map(|&t| r.get(t as usize).map(|&x| (t, x))).collect())
         }
+        // (as a GPU's buckets of the row, where it has candidates)
+        fn hist(&mut self, row: usize, temperature: f32) -> Option<crate::sampler::Hist> {
+            let r = self.rows.get(row).filter(|_| self.gpu_top)?;
+            let max = r.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let (n, per) = (crate::sampler::HIST_BUCKETS, crate::sampler::HIST_PER);
+            let (mut sums, mut counts) = (vec![0f64; n], vec![0u32; n]);
+            for &x in r {
+                let q = (x - max) / temperature;
+                let b = ((-q * per).floor().min((n - 1) as f32) as usize).min(n - 1);
+                sums[b] += (q as f64).exp();
+                counts[b] += 1;
+            }
+            Some(crate::sampler::Hist { max, per, sums, counts })
+        }
+        fn hist_bucket(&mut self, row: usize, temperature: f32, bucket: usize, cap: usize) -> Option<Vec<(u32, f32)>> {
+            let r = self.rows.get(row).filter(|_| self.gpu_top)?;
+            let max = r.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let (n, per) = (crate::sampler::HIST_BUCKETS, crate::sampler::HIST_PER);
+            let v: Vec<(u32, f32)> = r
+                .iter()
+                .enumerate()
+                .filter(|(_, &x)| (((-(x - max) / temperature) * per).floor().min((n - 1) as f32) as usize).min(n - 1) == bucket)
+                .map(|(t, &x)| (t as u32, x))
+                .collect();
+            (v.len() <= cap).then_some(v)
+        }
         // (as a GPU's sum of the row, where it has candidates)
         fn mass(&mut self, row: usize, temperature: f32) -> Option<f64> {
             let r = self.rows.get(row).filter(|_| self.gpu_top)?;
@@ -2567,6 +2630,9 @@ pub(crate) mod tests {
             Reply { logprobs: Some(3), ..reply(6) },
             Reply { params: Params { temperature: 0.7, top_k: 5, seed: 3, ..Params::default() }, logprobs: Some(2), ..reply(6) },
             Reply { params: Params { temperature: 0.9, top_p: 0.9, seed: 5, ..Params::default() }, ..reply(6) },
+            // (over all of the row: temperature alone, and a top-k past the candidates; hot enough that the draws land in the bucket of the row's 2,046 equal logits)
+            Reply { params: Params { temperature: 8.0, seed: 9, ..Params::default() }, ..reply(8) },
+            Reply { params: Params { temperature: 6.0, top_k: 100, seed: 13, ..Params::default() }, ..reply(8) },
         ];
         let run_with = |gpu_top: bool| {
             let mut be = Fake::new(64, 32);
@@ -2601,6 +2667,8 @@ pub(crate) mod tests {
             }
         }
         assert!(on[0].1.len() == 6 && on[1].1.len() == 6 && on[2].1.is_empty());
+        // (the hot draws reached the row's low tokens: a draw over all of it)
+        assert!(on[3].0.iter().chain(&on[4].0).any(|&t| t > 1001), "{:?}", (&on[3].0, &on[4].0));
     }
 
     /// A round that is one step (`ModelStep::one_step`): every sequence gives the tokens it gives alone, whatever the mix of lengths, a shared start, sampling from the logits' rows and a pool

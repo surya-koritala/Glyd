@@ -102,6 +102,8 @@ pub struct Kern {
     swap_copy: crate::kt::swap_copy,
     /// None where the kernels have none (a step is then not launched before the one before it is read).
     step_ids: Option<crate::kt::step_ids>,
+    /// A whole row's draw's buckets and a bucket's tokens (`Sampler::sample_hist`); None where the kernels have none (the row is then read).
+    hist: Option<(crate::kt::exp_hist_bf16, crate::kt::hist_bucket_bf16)>,
     expsum: crate::kt::expsum_bf16,
     logsumexp: crate::kt::logsumexp_bf16,
     read_stream: crate::kt::read_stream,
@@ -131,6 +133,7 @@ impl Kern {
             row_tables: dev.typed()?,
             swap_copy: dev.typed()?,
             step_ids: dev.typed::<crate::kt::step_ids>().ok(),
+            hist: dev.typed::<crate::kt::exp_hist_bf16>().ok().zip(dev.typed::<crate::kt::hist_bucket_bf16>().ok()),
             expsum: dev.typed()?,
             logsumexp: dev.typed()?,
             read_stream: dev.typed()?,
@@ -428,6 +431,49 @@ impl Kern {
     /// Whether the kernels have `step_ids`.
     pub fn has_step_ids(&self) -> bool {
         self.step_ids.is_some()
+    }
+
+    /// Whether the kernels have the whole row's draw's buckets (`exp_hist`, `hist_bucket`).
+    pub fn has_hist(&self) -> bool {
+        self.hist.is_some()
+    }
+
+    /// Of a row of `v` logits (its largest at `maxv`, f32): each token's exp((x - max) / temp) summed into `b` buckets of the quotient, `per` buckets a unit of it, with their
+    /// counts (`exp_hist_bf16`): sums (f64) and counts (u32), `b` of each, zeroed here first.
+    ///
+    /// # Safety
+    /// Live device buffers of those sizes on the stream.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn exp_hist(&self, s: Stream, logits: u64, v: i32, maxv: u64, temp: f32, b: i32, per: f32, sums: u64, counts: u64) -> Result<()> {
+        let Some((k, _)) = &self.hist else { return crate::ffi::err("these kernels have no exp_hist") };
+        crate::dev::memset_async(sums, 0, 8 * b as usize, s)?;
+        crate::dev::memset_async(counts, 0, 4 * b as usize, s)?;
+        launch!(k, [1, 1, 1], [1024, 1, 1], s; logits, v, maxv, temp, b, per, sums, counts)
+    }
+
+    /// The tokens of bucket `want` (an int on the device) of `exp_hist`'s, at most `cap`: token (int32) and logit (f32) into `tok` and `val`, how many into `n` (zeroed here).
+    ///
+    /// # Safety
+    /// Live device buffers of those sizes on the stream.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn hist_bucket(
+        &self,
+        s: Stream,
+        logits: u64,
+        v: i32,
+        maxv: u64,
+        temp: f32,
+        b: i32,
+        per: f32,
+        want: u64,
+        cap: i32,
+        n: u64,
+        tok: u64,
+        val: u64,
+    ) -> Result<()> {
+        let Some((_, k)) = &self.hist else { return crate::ffi::err("these kernels have no hist_bucket") };
+        crate::dev::memset_async(n, 0, 4, s)?;
+        launch!(k, [1, 1, 1], [1024, 1, 1], s; logits, v, maxv, temp, b, per, want, cap, n, tok, val)
     }
 
     pub unsafe fn gather_row(&self, s: Stream, logits: u64, v: usize, row: usize, idx: u64, n: usize, out: u64) -> Result<()> {
