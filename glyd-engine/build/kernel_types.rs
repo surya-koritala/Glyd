@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 /// The C types of the kernels' arguments that are not pointers, and the Rust type passed for each.
-const TYPES: [(&str, &str); 20] = [
+const TYPES: [(&str, &str); 28] = [
     ("int", "i32"),
     ("int32_t", "i32"),
     ("unsigned", "u32"),
@@ -27,6 +27,14 @@ const TYPES: [(&str, &str); 20] = [
     ("G4Pf", "crate::gemma4::G4Pf"),
     ("C2Segs", "crate::cb2_prefill::Segs"),
     ("AttnArgs", "crate::dynamic::attn::AttnArgs"),
+    ("glib::kvc::AttnParams", "crate::fold::KvAttnParams"),
+    ("glib::kvc::PrefillParams", "crate::fold::KvPrefillParams"),
+    ("glib::kvc::WriteParams", "crate::fold::KvWriteParams"),
+    ("glib::kvc::RawPool", "crate::fold::KvRawPool"),
+    ("glib::f8c::F8Pk", "crate::fold::F8Pk"),
+    ("glib::f8c::F8Un", "crate::fold::F8Un"),
+    ("glib::f8c::F8Lin", "crate::fold::F8Lin"),
+    ("glib::MoePairs", "crate::fold::MoePairs"),
 ];
 
 /// The source without comments, its continued lines joined.
@@ -110,7 +118,8 @@ fn substitute(s: &str, params: &[String], args: &[String]) -> String {
 
 /// The Rust type of one argument's declaration (`const bf16* __restrict__ x`, `int K`), or an error naming it.
 fn rust_type(decl: &str) -> Result<String, String> {
-    let words: Vec<&str> = decl.split_whitespace().filter(|w| !matches!(*w, "const" | "__restrict__" | "__restrict" | "volatile")).collect();
+    let words: Vec<&str> =
+        decl.split_whitespace().filter(|w| !matches!(*w, "const" | "__restrict__" | "__restrict" | "volatile" | "__grid_constant__")).collect();
     let text = words.join(" ");
     if text.contains('*') {
         return Ok("u64".to_string());

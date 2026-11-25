@@ -952,7 +952,7 @@ fn fit_rows<const N: usize>(rows: &[([f64; N], f64)], prior: [f64; N], scale: [f
 }
 
 /// The seconds of other users' prompts in the median user's decode, where `n` users send a prompt of `prompt` tokens at once (bench's loads): the scheduler reads
-/// the prompts in turn, and each user's reply runs beside the prompts read after its own, (n - 1) / 2 of them for the median one. Measured on an A100 (m2-stage2):
+/// the prompts in turn, and each user's reply runs beside the prompts read after its own, (n - 1) / 2 of them for the median one. Measured on an A100 ():
 /// Qwen3.5-0.8B's 8 users took 154.5 tokens/s each on short prompts and 127.3 on 1k ones, where 127 steps of the first and 3.5 prompts of 994 tokens at
 /// 20,206 tokens/s come to 127.8.
 pub fn prompt_wait(n: usize, prompt: f64, prefill: f64) -> f64 {
@@ -4986,7 +4986,7 @@ mod tests {
     }
 
     /// The shipped calibration records (calibration/records.jsonl), with the features the planner reads of them: the RTX 4080 SUPER's runs (g1 and g2 of
-    /// 2026-11-23, bench --loads 1k:1 --no-draft, the median of 3; prompts of 936 and 1,002 tokens, 128 made) and the A100 SXM4 40GB's runs of m2-stage3 63bdcdcb
+    /// 2026-11-23, bench --loads 1k:1 --no-draft, the median of 3; prompts of 936 and 1,002 tokens, 128 made) and the A100 SXM4 40GB's runs at 63bdcdcb
     /// (session 3, 2026-11-24, bench's gate suite with GLYD_KV=bf16, the median of 3, 128 made: one user and eight on short prompts, one at 1k and 4k; the
     /// prompts of the short loads too short to time a prompt, so their prompt rates are not kept; the rate the A100's probe measured in session 2), and the A10's
     /// plancheck runs of session 5 (15: 8 users, Qwen3.5-0.8B kestrel, gemma-4-12B wren and swift at 1k, 4k, 8k, 1k for eight and 85% of the context). Only
@@ -5054,7 +5054,7 @@ mod tests {
                 1274.41,
                 61.49,
                 312.0,
-                "Lambda A100 SXM4 40GB, session 3: bench at m2-stage3 63bdcdcb, gate suite, GLYD_KV=bf16, the median of 3",
+                "Lambda A100 SXM4 40GB, session 3: bench at 63bdcdcb, gate suite, GLYD_KV=bf16, the median of 3",
                 a100,
             ),
             (
@@ -5067,7 +5067,7 @@ mod tests {
                 518.53,
                 116.68,
                 125.0,
-                "Lambda A10, session 5: plancheck at m2-y 87023bbc, 8 users, the median of 3",
+                "Lambda A10, session 5: plancheck at 87023bbc, 8 users, the median of 3",
                 a10,
             ),
         ] {
@@ -5227,7 +5227,7 @@ mod tests {
     }
 
     /// A step of several rows reads the weights once for all of them: each row past the first adds its keys' and values' reads and its class's time a layer, no
-    /// weights. On the A100 (its records: one user and eight, m2-stage3) eight users at 1k positions are each predicted at 1 / (the one user's step + 7 rows).
+    /// weights. On the A100 (its records: one user and eight, at 63bdcdcb) eight users at 1k positions are each predicted at 1 / (the one user's step + 7 rows).
     #[test]
     fn a_step_of_several_rows_reads_the_weights_once() {
         let (_, q08) = measured_shapes();
@@ -5244,7 +5244,7 @@ mod tests {
         assert_eq!((w1, kv8), (w8, 8.0 * kv_at(&q08, 1088.0)));
     }
 
-    /// Users who send their prompts at once each wait in their replies for the prompts read after theirs (`prompt_wait`): on the A100 at m2-stage2, Qwen3.5-0.8B's
+    /// Users who send their prompts at once each wait in their replies for the prompts read after theirs (`prompt_wait`): on the A100, Qwen3.5-0.8B's
     /// eight users took 127.3 tokens/s each on 1k prompts (994 tokens, 20,206 tokens/s) and 154.5 on short ones; the first, its wait taken out of its 127 steps,
     /// is the second within 1%. A record of such a run is fitted on its steps.
     #[test]
