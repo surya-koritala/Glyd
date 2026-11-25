@@ -2759,6 +2759,9 @@ impl Dyn {
                     self.prepped.set(false);
                     r?;
                     self.trace_op(p, l, op, n)?;
+                    if dump {
+                        self.dump_op(p, l, i, op, n)?;
+                    }
                     continue;
                 }
                 let input = self.route_input(p, op, n)?;
