@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """The record of the few-users runs: python record_users.py FETCHED_DIR OUT_DIR
 
+It wrote benchmarks/gpu/engine-mvp-2026-10-03/users. The checks whose outputs it reads (`kvtest`, `rowcheck`, `stress`, `recompute`) were commands of the dense engine of that release and
+were removed with it (R3c, #139): the tool makes that record again from those runs' kept outputs, and reads nothing a current build prints.
+
 FETCHED_DIR holds what the runs left on the box (copied by hand, as the files lie under ~/engine-out there):
   conc/RUN/   engine_conc_bench.sh's results, one directory a run: engine1, engine2, kvglyd1, kvglyd2 (the first measurement) and engineA, kvglydA, kvglydB, engineB (the alternated runs of the final build)
   p3/         the final build's checks (the lossless cache's proofs as `p3/NAME.out`; `p3/multi/`: clients at once, the API's smoke and soak, the layout default, a step's profile, the seeded draws)

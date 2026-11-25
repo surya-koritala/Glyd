@@ -228,7 +228,7 @@ impl Delta {
 
 /// The Qwen3.5 layout's attention arguments for n rows of nq query heads over nk key-value heads (heads of 256, the rotary on 2 `half` dims), the pointers null.
 fn args35(n: usize, nq: usize, nk: usize, half: usize, eps: f32) -> AttnArgs {
-    crate::dynamic::qwen35::attention(nq, nk, 2 * half, (0, 0), 0).args(n, eps)
+    crate::dynamic::qwen35::attention(256, nq, nk, 2 * half, (0, 0), 0).args(n, eps)
 }
 
 /// Head-256 attention of `n` rows at positions p0 .. over random keys (nq query heads over nk key-value heads), times sigmoid(gate), against a plain fp64 softmax: the prompt's
@@ -385,7 +385,7 @@ pub fn run() -> Result<bool> {
         (a.src, a.qw, a.kw, a.cs, a.sn, a.qpos) = (qb.ptr, qwb.ptr, kwb.ptr, cb.ptr, sb.ptr, pb.ptr);
         (a.qo, a.kc, a.vc, a.cap) = (qo.ptr, kc.ptr, vc.ptr, (p0 + n) as i32);
         // SAFETY: as above.
-        unsafe { ka.prep(s, &a, nq + nk, (crate::kern::G4Pf::default(), 0))? };
+        unsafe { ka.prep(s, &a, nq + nk, (crate::kern::NextPf::default(), 0))? };
         dev.sync()?;
         t.ulp("query norm and rotary (64 of 256 dims)", &down(&qo, wq.len())?, &wq, 1);
         t.ulp("key norm and rotary into the cache", &down(&kc, wk.len())?, &wk, 1);

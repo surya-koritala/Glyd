@@ -1,6 +1,14 @@
 //! Multi-head latent attention (`kinds::Mla`), in the expanded form: each cached latent through `kv_b` gives a head's key (nope part) and
 //! value; the rope part of the key is one per token, shared by the heads. The absorbed form a backend runs is the same function. With an
 //! indexer a query attends only to the tokens it picks (GLM-5.3-Flash: pooled keys; `picks`).
+//!
+//! Not checked against transformers: the indexer's rotary (`Indexer::rope`) and a `shared` indexer's lent picks. Both are read from transformers'
+//! `GlmMoeDsaIndexer` and `GlmMoeDsaAttention` and checked by hand in this file's tests alone. The family's two recorded fixtures
+//! (tests/runtime/glm53_mla.json and glm53_model.json; tests/runtime/record.py's cases of those names) keep every token, their `index_topk` of 64
+//! being past their prompt of 7, and name every layer's indexer `full`: the reference agrees with transformers on them whatever it does with either.
+//! A check takes those two cases recorded again with an `index_topk` below the prompt's 7 tokens (4, say), and the model's with
+//! `indexer_types` of a `shared` layer after a `full` one; record.py runs where torch and a transformers that has `glm_moe_dsa` are installed (a CPU
+//! is enough), and `hf_tests` then holds this reference to what it wrote.
 
 use super::{act, dot, norm::norm, rope, softmax, Params};
 use crate::ffi::{err, Result};

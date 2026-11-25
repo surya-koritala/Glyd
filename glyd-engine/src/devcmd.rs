@@ -45,7 +45,7 @@
 //!                                                             that differ, the largest difference, the KL; and that what the other sequence holds changes nothing (src/logits.rs)
 //!   glyd-engine keepcheck CASE                                a finished sequence kept in its slot and gone on with (a conversation's next turn): against a sequence that ran the same tokens without ending, bit for bit
 //!   glyd-engine twomodels [A B]                               two cases' random models in this process, each with a scheduler and a runtime context of its own: each reply beside the other model against alone
-//!   glyd-engine foldcheck                                 R17: what the engine folded from the GPU library (ways, the GPU's class, KV sizes; the products, the KV cache and the FP8 format by its own kernels) against the library's own
+//!   glyd-engine foldcheck [--only WORD]                   R17: what the engine folded from the GPU library (ways, the GPU's class, KV sizes; the products, the KV cache and the FP8 format by its own kernels) against the library's own (--only: the kernels' checks whose line has WORD)
 //!   glyd-engine splitcheck CASE [--split CUTS --devices GPUS] [--level L] [--tokens T]   a random model of a dynamic-route family (qwen35, qwen35-wide, glm, kimi, muse, nemotron, deepseek-v4) as `run` opens it, on one GPU and with its layers in stages: every pass's logits the same bits
 //!   glyd-engine bufcheck                                  a buffer belongs to its context: one of a second context on GPU 0 written, read, zeroed and freed while the first is current
 //!   glyd-engine bandwidth [--gib N]                           the GPU's streaming read bandwidth
@@ -174,7 +174,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "twomodels" => glyd_engine::logits::two_models_check(a),
         "splitcheck" => glyd_engine::logits::split_check(a),
         "bufcheck" => glyd_engine::dev::buf_check(),
-        "foldcheck" => glyd_engine::fold::check(),
+        "foldcheck" => glyd_engine::fold::check(a.flag("only")),
         "seamcheck" => glyd_engine::runtime::cuda::check(&a),
         "kindcheck" => glyd_engine::dynamic::kindcheck::run(&a),
         "roundcheck" => glyd_engine::logits::round_check(a),
@@ -192,6 +192,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "dsv4prof" => glyd_engine::dsv4_ref::prof(&a),
         "dsv4ref" => glyd_engine::dsv4_ref::cmd(&a),
         "dsv4check" => glyd_engine::dsv4_ref::check(&a),
+        "v4qcheck" => glyd_engine::dsv4_ref::qcheck(&a),
         "dsv4prompt" => glyd_engine::dsv4_ref::prompt(&a),
         "dsv4layers" => glyd_engine::dsv4_ref::layers(&a),
         "dsv4pack" => glyd_engine::dsv4_ref::pack_check(&a),

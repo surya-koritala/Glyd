@@ -3,8 +3,8 @@
 //! dc_plan) where it has pairs enough (`Params`) and copies it there (`xp_fill`, the host tier read through its mapped address), and sends the other misses' pairs and the tokens' rows of z to the host's
 //! thread through mapped host memory (`DevMail`: a request, then its number, written last); the products run over the places meanwhile, a miss the host had a short while before is promoted (filled behind
 //! the products), `xp_wait` waits on the GPU for the answer's number and `xp_take` brings the host's sums to the experts' sum. The host's thread answers each request as it comes, with the layer's host half
-//! (`HostFp4`: the FP4 experts of the host tier, the kernels of src/cpu_fp4.rs). What SGLang's paged experts decide on the GPU and what its CPU experts compute beside the
-//! GPU's, in one step: SGLang copies every miss of a captured step, and computes on the host a fixed set of experts.
+//! (`HostFp4`: the FP4 experts of the host tier, the kernels of src/cpu_fp4.rs). docs/design/expert-cache-engines.md sets this design beside
+//! llama.cpp's and KTransformers' (SGLang's integration of it).
 //!
 //! The store keeps its own plan (`LayerCache`) for the calls it plans on the host (a prompt's chunks): before such a call the GPU's table is read into it, after it the places are written back
 //! (`ExpertStore::run_early_at`).
@@ -161,6 +161,16 @@ impl DevPlan {
         self.tab.write(o[1], expert_of)?;
         self.tab.write(o[2], &vec![0u32; self.slots])?;
         self.tab.write(o[4], &vec![0u8; self.slots])
+    }
+
+    /// The plan's own state back to its start (with `upload`, a cold cache's: `ExpertStore::cold`): no expert the host computed lately (`hostlast`), the step and the clock's hand at 0, the
+    /// counters at 0; the GPU's work before is done.
+    pub fn reset(&mut self) -> Result<()> {
+        let o = offsets(self.experts, self.slots);
+        self.tab.write(o[3], &vec![0u32; self.experts])?;
+        self.tab.write(o[5], &[0u32; 16])?;
+        self.seen = [0; 8];
+        Ok(())
     }
 
     /// The counters since the last read (calls, hand (none), experts asked for, found, copied, the host's experts, its pairs, promoted); the GPU's work before is done.

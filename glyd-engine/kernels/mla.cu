@@ -9,7 +9,7 @@
 // reference (checked there against transformers 5.19.0's Glm5NextTextAttention and Glm5NextTextIndexer).
 
 #define GM_NOPE_MAX 256    // a query head's width (nope) at most
-#define GM_KSEL_MAX 1024   // pools picked at most (the frozen engine's bound; idx_pick takes any)
+#define GM_KSEL_MAX 1024   // pools picked at most (a bound no kernel here reads: idx_pick takes any)
 #define GM_IDX_W 8         // pools a block of idx_score scores (a warp each)
 #define GM_RB 8            // rows a block of mla_absorb takes
 #define GM_VB 4            // rows a block of mla_expand_v takes
@@ -190,7 +190,7 @@ extern "C" __global__ void __launch_bounds__(256) mla_absorb(const bf16* q, int 
 
 // The keys of the complete pools that this call (rows at pos[0] .. pos[n-1], consecutive) completes, from the normed keys ik and the gate scores gs (D wide, a position's row iks and gss apart, through tab) and the
 // pooling bias ape [kp, D]: pool p's key = sum over its kp tokens j of softmax_j(gs[kp p + j][c] + ape[j][c]) * ik[kp p + j][c], rounded to bf16, into pk's row of position p pstep + poff (pks apart, through tab: the
-// executor keeps it in its last token's key, pstep = kp, poff = kp - 1, which only this block reads, each channel by the thread that writes it; the frozen engine in a row of its own, pstep 1, poff 0). A block a pool
+// executor keeps it in its last token's key, pstep = kp, poff = kp - 1, which only this block reads, each channel by the thread that writes it; a caller that keeps each pool's key in a row of its own passes pstep 1, poff 0). A block a pool
 // from pos[0] / kp on (grid ceil(n / kp) + 1); a pool whose last token is past the call's last row is left (a later call completes it).
 extern "C" __global__ void __launch_bounds__(128) idx_pool(const bf16* ik, int iks, const bf16* gs, int gss, const bf16* ape, bf16* pk, int pks, int pstep, int poff, const int* tab, const int* pos, int n, int D, int kp) {
     const int p = pos[0] / kp + blockIdx.x;
@@ -410,7 +410,7 @@ extern "C" __global__ void __launch_bounds__(256) idx_inside(float* scores, int 
 // block a (head, row, split) (grid NH x n x splits), 256 threads; the row's tokens are cut into `splits` runs, a block takes one: a warp four tokens at a time for the scores (bf16 pairs, KR a multiple of 64; the four
 // rows' loads are in flight together, where one at a time a decode step's 2,051 tokens took 270 us), the softmax in fp32 over the block's tokens, then a thread two columns of the weighted sum, four tokens at a time.
 // With one split the block writes olat; with more, its unnormalised sum, its largest score and the sum of its exponentials to part [n][NH][splits][KR + 2] for mla_merge. Dynamic shared memory (KS + 2 tile) 4-byte
-// words: a block's tokens `tile` at a time (GLY-357: Kimi-K3's dense attention over the whole context).
+// words: a block's tokens `tile` at a time (Kimi-K3's dense attention over the whole context).
 // The scores are over KS channels (qa's heads KS wide, lat's rows ls >= KS apart), the values the first KR of them (Kimi-K3: the latent's 512 and the shared key part's 64; GLM: KS = KR); sel null: every
 // position from 0 (a dense attention, cnt[i] = pos + 1). lat is a ring (ls = KS) or a 12-bit ring's pages unpacked to bf16 (ls its padded width, tab null): the same values in the same order, the same bits.
 extern "C" __global__ void __launch_bounds__(256) mla_attn(const float* qa, const bf16* lat, int ls, const int* tab, const int* sel, const int* cnt, float* olat, float* part, int Tmax, int NH, int KR, int KS, float scale,

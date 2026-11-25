@@ -754,45 +754,6 @@ __global__ void mma_unpack_kernel(Fmt f, int64_t K, int64_t row0, int64_t rows, 
     mma_unpack_body<Fmt, MOE, FEW>(f, K, row0, rows, out, plan);
 }
 
-// Rows of W [., K] by id (an embedding's lookup; the ids on the device, so a batch's lookup is one launch whatever they
-// are, and a CUDA graph can hold it) into out [n, K]: a warp a (row, step), the step decoded as mma_unpack_kernel decodes
-// it, and only the picked row's 16 weights written. Row r of its block of 64 is row 8 m + g of the step (r = 8 m + g), in
-// the lanes 4 g to 4 g + 3: R[2 m] and R[2 m + 1] of each, its columns 2 t, 2 t + 1 and 8 + 2 t, 9 + 2 t. An id outside
-// [0, rows) has no row: zeros (nothing is read).
-template <class Fmt>
-__global__ void mma_rows_kernel(Fmt f, int64_t K, int64_t rows, const int64_t* __restrict__ ids, int64_t n, uint16_t* __restrict__ out) {
-    __shared__ uint32_t tab[Fmt::kTable ? 256 : 1];
-    if constexpr (Fmt::kTable) fill_groups(tab);
-    __syncthreads();
-    __shared__ uint4 scratch[8][Fmt::kTable ? S2_BYTES / 16 : 1];
-    int64_t KS = K / 16, unit = (blockIdx.x * (int64_t)blockDim.x + threadIdx.x) >> 5;
-    if (unit >= n * KS) return;  // (a whole warp: a unit is a warp's)
-    int lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
-    int64_t row = unit / KS, s = unit % KS, id = (int64_t)__ldg((const long long*)ids + row);
-    uint32_t* o = (uint32_t*)out + (row * K + s * 16) / 2;
-    if ((uint64_t)id >= (uint64_t)rows) {
-        if (lane < 8) o[lane] = 0;
-        return;
-    }
-    int r = (int)(id % 64), pick = r >> 3;
-    uint32_t R[16];
-    typename Fmt::St st;
-    f.load(st, id / 64 * KS + s, lane);
-    f.decode(st, lane, (uint32_t*)scratch[threadIdx.x >> 5], tab, R);
-    if (g == (r & 7)) {
-        uint32_t a = 0, b = 0;
-#pragma unroll
-        for (int m = 0; m < 8; m++) {
-            if (m == pick) {
-                a = R[2 * m];
-                b = R[2 * m + 1];
-            }
-        }
-        o[t] = a;
-        o[4 + t] = b;
-    }
-}
-
 // Option 2's decode (the route SPLIT: glyd_gpu_mma12_unpack_part, glyd_gpu_mma12_ring_*): the 12-bit layout's rows
 // [row0, row0 + rows) into out [rows, K] on the few SMs a green context sets apart for it, the products on the rest. A
 // warp takes units of 4 steps of a row block (64 rows x 64 columns), grid-stride, the next unit's steps loaded into
@@ -2982,7 +2943,8 @@ static int mma_moe_run(Fmt f, int64_t E, int64_t O, int64_t K, const uint16_t* x
     size_t bytes = ((w ? 1 : 0) + (splits > 1 ? splits : 0)) * (size_t)(P * O) * sizeof(float);  // [Y32][parts]
     bool wg = false;  // the wgmma route (Hopper, the 12-bit layout, GLYD_GPU_MOE_WG tokens a step and more)
     if constexpr (std::is_same_v<Fmt, Nib>) {
-        const int64_t from = TUNING_INT("GLYD_GPU_MOE_WG", h100_gpu(current_device()) ? 17 : 0);
+        // (never by default: its sums are added in another order than the step products', so a pair's bits would turn on how many tokens share its call)
+        const int64_t from = TUNING_INT("GLYD_GPU_MOE_WG", 0);
         wg = from > 0 && T >= from && P > 0 && K % 64 == 0 && O % (act ? 128 : 64) == 0 && act <= 1 && wg_device(current_device());
         if (need && from > 0 && P > 0 && wg_device(current_device())) bytes = std::max(bytes, (w ? (size_t)P * O * sizeof(float) : 0) + wg_tail(E, K, P, act || gather));
     }
@@ -3065,22 +3027,26 @@ static int mma_moe_run(Fmt f, int64_t E, int64_t O, int64_t K, const uint16_t* x
             else mma_moe_launch<Fmt, M, 0, V>(f, E, O, K, x, k, gather, plan, bias, w, wf32, y, y32, P, parts, done, grid, cs);
         });
     };
-    // From 48 pairs an expert, on average (a prompt): the tiled GEMM (measured on an A10, OLMoE-1B-7B).
-    // (an H100: 96, where the decode products beat the tiled GEMM at 768 tokens, 714 us a layer against 1,379; an A100, both from 64: Qwen3-30B-A3B's layer, its second A100 run, at 768 tokens the down 448 us on the decode
-    // products against 591 on the tiled GEMM, at 1,152 the gate and up 981 on the tiled GEMM against 1,309 and the down 661 against 754; the layer 11% and 16% faster than from 84 and 48.
-    // GLYD_GPU_MOE_BIG_GU and GLYD_GPU_MOE_BIG_DN: the gate and up's, the down's alone; GLYD_GPU_MOE_BIG: both)
-    const bool h100 = h100_gpu(current_device()), a100 = ga100_gpu(current_device());
-    const int64_t big_set = TUNING_INT("GLYD_GPU_MOE_BIG", -1);  // (negative: not set)
-    const int64_t big = act ? TUNING_INT("GLYD_GPU_MOE_BIG_GU", big_set >= 0 ? big_set : a100 ? 64 : h100 ? 96 : 48) : TUNING_INT("GLYD_GPU_MOE_BIG_DN", big_set >= 0 ? big_set : a100 ? 64 : h100 ? 96 : 48);
-    // No gate, rows a warp over the whole K (mma_moe_rows_kernel; MT 2 and 4): from 17 tokens on an H100 and an A100 and 33 on a GDDR GPU, the GPUs it was measured on (an L4: 17-32 took 3% longer); on another HBM part
-    // the other kernels, until it is measured there (GLYD_GPU_MOE_ROWS=N: from N tokens).
-    const int64_t rows_from = so.rows == 0 ? INT64_MAX : so.rows >= 2 ? so.rows : (h100 || a100) ? 17 : hbm_gpu(current_device()) ? INT64_MAX : 33;
+    // Every call takes the step products (mma_moe_kernel), whatever its tokens: the kernel follows from nothing that changes with the pairs a call holds, so a
+    // pair's sum is the same for a row alone and beside others, a GPU's slice and the whole layer, an expert cache's wave and the resident layer. The tiled
+    // GEMM (mma_moe_big) and the rows kernel (mma_moe_rows_kernel) add a row's terms in another order; a development build's GLYD_GPU_MOE_BIG (_GU, _DN: N
+    // pairs an expert) and GLYD_GPU_MOE_ROWS (from N tokens) still take them, as measured before for prompts (an A10 from 48 pairs an expert on OLMoE-1B-7B;
+    // an H100 from 96 and an A100 from 64 on Qwen3-30B-A3B; the rows kernel from 17 tokens on an H100 and an A100, 33 on a GDDR GPU), until they add in
+    // the step products' order.
+    const int64_t big_set = TUNING_INT("GLYD_GPU_MOE_BIG", -1);  // (negative: not set, never)
+    const int64_t big = act ? TUNING_INT("GLYD_GPU_MOE_BIG_GU", big_set) : TUNING_INT("GLYD_GPU_MOE_BIG_DN", big_set);
+    const int64_t rows_from = so.rows >= 2 ? so.rows : INT64_MAX;
     bool rows = act == 0 && MT >= 2 && T >= rows_from;
     auto go_rows = [&](auto mt) {
         constexpr int M = decltype(mt)::value;
         with_variant([&](auto vv) { mma_moe_rows_launch<Fmt, M, decltype(vv)::value>(f, E, O, K, x, k, gather, plan, bias, w, wf32, y, y32, hits, cs); });
     };
-    if (T * k >= big * sE && K % 64 == 0 && (uintptr_t)x % 16 == 0) mma_moe_big(f, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, y, y32, cs);
+    const bool big_call = big >= 0 && T * k >= big * sE && K % 64 == 0 && (uintptr_t)x % 16 == 0;
+    // (GLYD_GPU_MOE_TRACE=1: each call's kernel and shape on stderr, the checks' record of which kernel a pair's sum took)
+    if (TUNING_INT("GLYD_GPU_MOE_TRACE", 0))
+        fprintf(stderr, "moe-kernel lib %s T=%lld k=%lld E=%lld O=%lld K=%lld act=%lld splits=%lld\n", big_call ? "big" : rows ? "rows" : "step", (long long)T, (long long)k, (long long)E,
+                (long long)O, (long long)K, (long long)act, (long long)splits);
+    if (big_call) mma_moe_big(f, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, y, y32, cs);
     else if (rows && MT == 1) go_rows(std::integral_constant<int, 1>());
     else if (rows && MT == 2) go_rows(std::integral_constant<int, 2>());
     else if (rows) go_rows(std::integral_constant<int, 4>());

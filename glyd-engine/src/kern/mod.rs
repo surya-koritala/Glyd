@@ -5,7 +5,7 @@ pub mod glm;
 pub mod nemotron;
 pub mod qwen35;
 
-pub(crate) use gemma4::{pf_kib, G4Pf, KernG4};
+pub(crate) use gemma4::KernG4;
 pub use glm::{mla_positions, mla_smem, Hc, KernGlm, GM_CHUNK_SMEM, GM_D, GM_HC, GM_L, GM_NP, HC_FEW};
 pub use nemotron::{KernNh, SsdWs, NH_L, NH_N, NH_P};
 pub use qwen35::Kern35;
@@ -678,6 +678,31 @@ pub fn embed_plan(tokens: &[u32], per: usize) -> (Vec<i64>, Vec<Vec<(i32, i32)>>
         by_batch[g / per].push((i as i32, (g % per * 64) as i32 + (t % 64) as i32));
     }
     (groups, by_batch)
+}
+
+/// kernels/engine.cu's NextPf: a small kernel's spare blocks (a norm's, the attention's preparation's, an activation's) prefetch into L2 the start of the first-wave
+/// blocks of the skinny product that comes next.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct NextPf {
+    pub(crate) data: u64,
+    pub(crate) scales: u64,
+    pub(crate) dstride: i64,
+    pub(crate) sstride: i64,
+    pub(crate) dhead: i32,
+    pub(crate) shead: i32,
+    pub(crate) regions: i32,
+    pub(crate) shift: i32,
+}
+
+/// GLYD_G4_PF: "a,n,g" KiB (unset: the default 128,32,8; 0,0,0 none).
+pub(crate) fn pf_kib(v: Option<&str>) -> Result<[usize; 3]> {
+    let Some(v) = v.filter(|v| !v.is_empty()) else { return Ok([128, 32, 8]) };
+    let k: Vec<Option<usize>> = v.split(',').map(|x| x.trim().parse().ok()).collect();
+    match k[..] {
+        [Some(a), Some(n), Some(g)] => Ok([a, n, g]),
+        _ => crate::ffi::err(format!("the prefetch setting {v}: three numbers of KiB, a,n,g")),
+    }
 }
 
 #[cfg(test)]
