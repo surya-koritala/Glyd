@@ -287,7 +287,7 @@ impl Config35 {
 
     /// Every matrix in load order, packable or not: each layer's (full: q with its gate, k and v as one, then o; linear: the queries, keys, values and z as one, b and a
     /// as one, then out; both: gate and up as one, then down), then the embedding and the LM head where the model has its own.
-    fn matrices(&self) -> Vec<Pack35> {
+    pub(crate) fn matrices(&self) -> Vec<Pack35> {
         let (h, hd) = (self.hidden, self.head_dim);
         let mut out = Vec::new();
         let mut pack = |module: String, parts: &[(&str, usize)], cols: usize| {

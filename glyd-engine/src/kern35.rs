@@ -270,7 +270,7 @@ pub struct Weights35 {
 }
 
 /// `x` rounded to bf16 (to nearest, ties to even), as an f32.
-fn bf16_round(x: f32) -> f32 {
+pub(crate) fn bf16_round(x: f32) -> f32 {
     if x.is_nan() {
         return x;
     }

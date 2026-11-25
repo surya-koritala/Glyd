@@ -265,6 +265,18 @@ fn by_sequence(op: &Op) -> bool {
     )
 }
 
+/// The first operation of a description that keeps something of a sequence outside the rings and states each sequence holds (`Dyn::add_seqs`, `Dyn::select`
+/// swaps those): neither one that acts row by row (it keeps nothing) nor one that takes a sequence's cache or states. None: an engine of the description
+/// holds as many sequences as it has room for. A draft model's input (`Op::DraftIn`, the big model's last hidden state) is the one such today.
+pub(super) fn one_sequence_op(d: &super::ModelDesc) -> Option<&Op> {
+    std::iter::once(&d.first).chain(d.layers.iter().flatten()).find(|op| !row_wise(op) && !by_sequence(op))
+}
+
+/// An operation's kind as its error messages name it (`GdnConv`, `Attn`): its variant's name.
+pub(super) fn op_name(op: &Op) -> String {
+    format!("{op:?}").split(|c: char| !c.is_alphanumeric()).next().unwrap_or_default().to_string()
+}
+
 impl Paged {
     /// Sequence `slot`'s blocks in group `g`, as the host holds them.
     pub(super) fn group_table(&self, slot: usize, g: usize) -> &[u32] {
@@ -539,11 +551,7 @@ impl Dyn {
     /// Whether the rows of several sequences run in one pass (else each sequence's pass by itself): a whole model with no draft model, every operation row-wise or one that takes a sequence's
     /// rows at an offset.
     pub fn batchable(&self) -> bool {
-        let d = &self.big.d;
-        self.draft.is_none()
-            && self.stage.first
-            && self.stage.last
-            && std::iter::once(&d.first).chain(d.layers.iter().flatten()).all(|op| row_wise(op) || by_sequence(op))
+        self.draft.is_none() && self.stage.first && self.stage.last && one_sequence_op(&self.big.d).is_none()
     }
 
     /// Whether a step of several rows gives each row the sums a one-row step does: not where the description has experts (a product over the experts' rows groups them by the step's rows; the GPU job's
@@ -830,26 +838,10 @@ impl Dyn {
     }
 
     /// Ready to be a scheduler's step for up to `users` sequences: the head's room for a row each, and as many more sequences as the GPU's free memory holds (the first is this one's). None where this
-    /// engine runs one sequence only (a draft model, a stage of a split model, a family `add_seqs` refuses).
+    /// engine runs one sequence only (a draft model, a stage of a split model, a description `add_seqs` refuses).
     pub fn serve_rows(&mut self, users: usize) -> Result<Option<usize>> {
-        // (Gemma 4, Qwen3.5's layout, which Qwen3.8 dense runs on, Muse Spark, Kimi-K3, GLM-5.3-Flash, Nemotron-H, DeepSeek-V4, Qwen3.8-Flash-Next and the Llama-style dense
-        // models on one GPU)
-        if self.draft.is_some()
-            || !self.stage.first
-            || !self.stage.last
-            || !matches!(
-                self.big.d.family,
-                "Gemma 4"
-                    | "Qwen3.5"
-                    | "Muse Spark"
-                    | "Kimi-K3"
-                    | "GLM-5.3-Flash"
-                    | "Nemotron-H"
-                    | "DeepSeek-V4"
-                    | super::dense::FAMILY
-                    | super::qwen4x::FAMILY
-            )
-        {
+        // (a whole model on one GPU whose every operation keeps a sequence's data in its rings and states, with no draft model)
+        if self.draft.is_some() || !self.stage.first || !self.stage.last || one_sequence_op(&self.big.d).is_some() {
             return Ok(None);
         }
         if self.seqs.len() > 1 {

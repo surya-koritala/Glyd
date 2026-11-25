@@ -1,12 +1,10 @@
 //! Qwen3.5 (dense: 9B, 27B; Qwen3.6-27B, Qwen3.8-27B) as a description: Gated DeltaNet layers and gated full-attention layers, the (1 + w) norms,
-//! the SiLU MLP, the final norm on the last row (models/qwen3_5; the arithmetic is the kernels', as src/kern35.rs names them). Its weights load by
-//! src/kern35.rs's loader (the small matrices it keeps dense, the fp32 parameters, the gated norm's weight as vLLM holds it), handed over as they are.
+//! the SiLU MLP, the final norm on the last row (models/qwen3_5; the arithmetic is the kernels', as src/kern35.rs names them). Its description names its
+//! tensors in kern35's loader's order and the executor's loader reads them (the small matrices dense, the fp32 parameters, the gated norm's weight as vLLM holds it).
 
 use super::attn::{AttnOp, GateAt, QkNorm, RopeAt};
 use super::{Dyn, ModelDesc, NormW, Op, Opts, Ring, Rope, Slot, Stage};
-use crate::dev::Dev;
 use crate::ffi::{err, Result};
-use crate::kern35::{Mat, Weights35};
 use crate::qwen35::Kind;
 use std::path::Path;
 
@@ -16,53 +14,11 @@ pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
 }
 
 /// Stage `st` of it (a model split across GPUs: its layers, the embedding where it is the first, the head where the last; a layer of another
-/// stage is an empty one here).
+/// stage is an empty one here), on the executor's loader (`Dyn::new_stage`: the b and a gates' small parts held as saved, A_log and the gated norm's
+/// weight in fp32, a saved directory's packs as saved).
 pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
-    let dev = Dev::new(o.device)?;
-    let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
-    let whole = st.first && st.last;
-    let w = Weights35::load_stage(
-        dir,
-        o.ctx + 16,
-        threads,
-        o.layout,
-        dev.cc_pair(),
-        dev.total_mem as u64,
-        None,
-        (!whole).then_some((st.layers, st.first, st.last)),
-    )?;
-    let Weights35 { cfg: c, layout, layers: lys, embed, head, norm, cos, sin, .. } = w;
-    let d = lowered(dir, &c, &st)?;
-    // (the loader's matrices and small tensors, in the order `describe` indexes them: a layer's, then the final norm, the embedding and the head)
-    let (mut mats, mut small) = (Vec::new(), Vec::new());
-    for (l, ly) in lys.into_iter().enumerate() {
-        if !(st.layers.0..st.layers.1).contains(&l) {
-            continue;
-        }
-        let (m, n) = per_layer(ly.kind);
-        if ly.mats.len() != m || ly.small.len() + 2 != n {
-            return err(format!("layer {l}: {} matrices and {} small tensors loaded, where its kind has {m} and {n}", ly.mats.len(), ly.small.len() + 2));
-        }
-        mats.extend(ly.mats);
-        small.push(ly.in_norm);
-        small.push(ly.post_norm);
-        small.extend(ly.small);
-    }
-    small.push(norm);
-    mats.push(Mat::Packed(embed));
-    if let Some(h) = head {
-        mats.push(Mat::Packed(h));
-    }
-    if (mats.len(), small.len()) != (d.lm + 1, d.final_norm.map_or(0, |f| f.0 + 1)) {
-        return err(format!(
-            "{} matrices and {} small tensors loaded, where the description indexes {} and {}",
-            mats.len(),
-            small.len(),
-            d.lm + 1,
-            d.final_norm.map_or(0, |f| f.0 + 1)
-        ));
-    }
-    Dyn::from_loaded(dev, d, mats, small, Vec::new(), vec![(cos, sin)], layout, st, o)
+    let c = crate::qwen35::Config35::load(dir)?;
+    Dyn::new_stage(dir, lowered(dir, &c, &st)?, None, st, o)
 }
 
 /// A layer's matrices and small tensors as the loader holds them: a linear-attention layer's qkvz, ba and out products and its MLP's two; its input and
@@ -177,6 +133,21 @@ pub fn describe(c: &crate::qwen35::Config35, st: &Stage) -> Result<ModelDesc> {
     let final_norm = n_small;
     let e = n_mats;
     let lm = if c.tie { e } else { e + 1 };
+    // (the tensors, named in the order the operations index them: a stage's layers' matrices and small tensors, then the final norm, the embedding and the head)
+    let all = c.matrices();
+    let item = |m: &crate::qwen35::Pack35| crate::weights::Item { members: m.parts.iter().map(|x| x.0.clone()).collect(), rows: m.rows(), cols: m.cols };
+    let (mut mats, mut small) = (Vec::new(), Vec::new());
+    for l in st.layers.0..st.layers.1.min(c.layers) {
+        let p = format!("{}layers.{l}", c.prefix);
+        mats.extend(all.iter().filter(|m| m.key.starts_with(&format!("{p}."))).map(item));
+        small.extend([format!("{p}.input_layernorm.weight"), format!("{p}.post_attention_layernorm.weight")]);
+        small.extend(match c.kinds[l] {
+            Kind::Full => ["q_norm", "k_norm"].map(|x| format!("{p}.self_attn.{x}.weight")).to_vec(),
+            Kind::Linear => ["conv1d.weight", "A_log", "dt_bias", "norm.weight"].map(|x| format!("{p}.linear_attn.{x}")).to_vec(),
+        });
+    }
+    small.push(format!("{}norm.weight", c.prefix));
+    mats.extend(all.iter().filter(|m| m.key == "embed" || m.key == "lm_head").map(item));
     let mut widths = [0usize; super::SLOTS];
     let q_w = nq * 256;
     for (s, w) in [
@@ -203,9 +174,9 @@ pub fn describe(c: &crate::qwen35::Config35, st: &Stage) -> Result<ModelDesc> {
         eps: c.eps,
         max_pos: c.max_pos,
         widths,
-        // (the loader's own lists: src/kern35.rs names and packs the tensors)
-        mats: Vec::new(),
-        small: Vec::new(),
+        mats,
+        small,
+        forms: Vec::new(),
         ropes: vec![Rope { theta: c.rope_theta, dim: c.rotary_dim, pairs: c.rotary_dim / 2 }],
         rings,
         // (a later stage never runs the first operation)

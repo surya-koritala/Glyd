@@ -544,6 +544,8 @@ pub struct ModelDesc {
     pub(crate) mats: Vec<Item>,
     /// The small tensors (norms, scalars), bf16 as saved.
     pub small: Vec<String>,
+    /// The small tensors made from their tensor's values rather than read as saved (`SmallForm`), by index into `small`.
+    pub forms: Vec<(usize, SmallForm)>,
     pub ropes: Vec<Rope>,
     pub rings: Vec<Ring>,
     pub first: Op,
@@ -596,6 +598,18 @@ pub struct Opts {
     pub graph: bool,
     pub device: i32,
     pub layout: Option<Layout>,
+}
+
+/// How a small tensor is made from the values its checkpoint holds (bf16), as the operation reading it takes it: each result rounded to bf16.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SmallForm {
+    /// `n` ones, no tensor read (a weightless norm's weight).
+    Ones(usize),
+    /// 1 + w (a centered norm's factors, as transformers adds them: `muse::plus_one`).
+    PlusOne,
+    /// A residual gate's two factors of its parameter at temperature T (`muse::residual_gate`): alpha, and beta.
+    GateAlpha(f32),
+    GateBeta(f32),
 }
 
 /// The layers one GPU runs of a model split across several (`split::Split`): layers `layers.0..layers.1`, the embedding where `first`, the final norm
@@ -737,21 +751,106 @@ impl Part {
     }
 }
 
-/// `d`'s weights from `dir`: a glyd-v7 directory's packs as saved (each under its first member's name), else packed here at `layout`.
-fn load_part(dir: &Path, d: ModelDesc, layout: Layout, threads: usize, rows: usize, out: usize, want: Option<&[bool]>) -> Result<Part> {
+/// What reads a description's blocks of experts (`Op::Moe`'s, in its order) from its checkpoint, the matrices' layout given.
+pub type Experts<'a> = dyn Fn(&Checkpoint, Layout) -> Result<Vec<Box<dyn MoeBlock>>> + 'a;
+
+/// The first matrix the description's operations, embedding or head use that it does not name (None: the executor's loader can read every one).
+fn unnamed(d: &ModelDesc) -> Option<usize> {
+    std::iter::once(&d.first).chain(d.layers.iter().flatten()).flat_map(Op::mats).chain([d.embed, d.lm]).find(|&k| k >= d.mats.len())
+}
+
+/// Whether matrix `k` of `d` is held as saved (bf16), not packed: a table an operation reads by row (`Op::NgramRows`), or a shape the library does not pack
+/// (columns not a multiple of 16, or a member's rows, `rows_of` it where the checkpoint holds it, not a multiple of 64: a save keeps such a merge as its parts).
+fn held_as_saved(d: &ModelDesc, k: usize, rows_of: &dyn Fn(&str) -> Option<usize>) -> bool {
+    let it = &d.mats[k];
+    !it.cols.is_multiple_of(16)
+        || it.members.iter().any(|m| rows_of(m).is_some_and(|r| r == 0 || !r.is_multiple_of(64)))
+        || d.layers.iter().flatten().any(|op| matches!(op, Op::NgramRows(x) if x.table == k))
+}
+
+/// The small tensors an operation reads in fp32 (the delta rule's A_log): a bf16 one is widened.
+fn read_f32(d: &ModelDesc) -> Vec<usize> {
+    d.layers.iter().flatten().filter_map(|op| if let Op::GdnDelta { a_log, .. } = op { Some(*a_log) } else { None }).collect()
+}
+
+/// The small tensors an operation reads in fp32 with the values the model's dtype holds (the silu-gated norm's weight, `Op::GatedNorm` not `sigmoid`, as vLLM
+/// holds it): an fp32 one rounded to bf16, kept four bytes wide; a bf16 one widened.
+fn read_f32_as_bf16(d: &ModelDesc) -> Vec<usize> {
+    d.layers.iter().flatten().filter_map(|op| if let Op::GatedNorm { w, sigmoid: false, .. } = op { Some(*w) } else { None }).collect()
+}
+
+/// Small tensor `name` made in form `f` from its checkpoint's bf16 values: bf16 words.
+fn small_of(ck: &Checkpoint, name: &str, f: SmallForm) -> Result<Vec<u16>> {
+    let vals = || -> Result<Vec<f32>> {
+        let (_, t) = ck.get(name).ok_or_else(|| Error(format!("no tensor {name}")))?;
+        if t.dtype != "BF16" {
+            return err(format!("{name}: {}, where bf16 is read", t.dtype));
+        }
+        let b = ck.read(name).map_err(|e| Error(format!("{name}: {e}")))?;
+        Ok(b.as_chunks::<2>().0.iter().map(|x| f32::from_bits((u16::from_le_bytes(*x) as u32) << 16)).collect())
+    };
+    let v = match f {
+        SmallForm::Ones(n) => vec![1.0; n],
+        SmallForm::PlusOne => crate::muse::plus_one(&vals()?),
+        SmallForm::GateAlpha(t) => crate::muse::residual_gate(&vals()?, t).0,
+        SmallForm::GateBeta(t) => crate::muse::residual_gate(&vals()?, t).1,
+    };
+    Ok(v.into_iter().map(crate::gemma4::bf16_bits).collect())
+}
+
+/// Bytes a value of small tensor `i` takes on the GPU, stored as `dtype`.
+fn small_width(d: &ModelDesc, i: usize, dtype: &str) -> u64 {
+    if read_f32(d).contains(&i) || read_f32_as_bf16(d).contains(&i) {
+        4
+    } else if dtype == "I64" {
+        8
+    } else {
+        2
+    }
+}
+
+/// A saved directory's layout and manifest: a glyd-v7 one's, or a lossless glyd-v4 save's (the tiered layout); None: a Hub-format directory.
+fn stored(dir: &Path) -> Result<Option<(Layout, glyd_gpu::json::Value)>> {
+    Ok(match crate::weights::v7_manifest(dir)? {
+        Some(x) => Some(x),
+        None => crate::weights::lossless_manifest(dir)?.map(|m| (Layout::Tiered, m)),
+    })
+}
+
+/// `d`'s weights from `dir`: a saved directory's packs as saved (under the first member's name where the save merged the members, else each member's), a matrix
+/// it holds as bf16 packed here, a Hub-format directory's packed here at `layout`; the matrices `held_as_saved` names as saved; the small tensors in the type
+/// their operations read (`read_f32`, `read_f32_as_bf16`; int64 as saved, a hash's numbers); the experts by `experts`.
+#[allow(clippy::too_many_arguments)]
+fn load_part(dir: &Path, d: ModelDesc, layout: Layout, threads: usize, rows: usize, out: usize, want: Option<&[bool]>, experts: &Experts) -> Result<Part> {
     let ck = Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
-    let v7 = crate::weights::v7_manifest(dir)?;
+    let v7 = stored(dir)?;
+    let has = |k: &str| ck.get(&format!("{k}.glyd_data")).is_some();
+    let pack_rows = |k: &str| -> usize {
+        v7.as_ref().and_then(|(_, m)| m.get("packs")?.get(k)?.get("shape")?.as_u64s()).and_then(|s| s.first().copied()).unwrap_or(0) as usize
+    };
     let one = |k: usize| -> Result<crate::weights::Packed> {
         let it = &d.mats[k];
+        let each: Vec<&str> = it.members.iter().map(|m| m.trim_end_matches(".weight")).collect();
+        let parts: Vec<(&str, usize)> = if v7.is_none() {
+            Vec::new()
+        } else if has(each[0]) && (each.len() == 1 || !has(each[1])) {
+            vec![(each[0], it.rows)]
+        } else if each.iter().all(|k| has(k)) {
+            each.iter().map(|k| (*k, pack_rows(k))).collect()
+        } else {
+            Vec::new()
+        };
         match &v7 {
-            Some((Layout::Tiered, m)) => crate::weights::read_lossless(&ck, m, it.members[0].trim_end_matches(".weight"), it.rows, it.cols),
-            Some((l, m)) => crate::weights::read_v7(&ck, m, *l, &[(it.members[0].trim_end_matches(".weight"), it.rows)], it.cols),
-            None => pack_item_map(&ck, it, layout, &|_| {}),
+            Some((Layout::Tiered, m)) if !parts.is_empty() => crate::weights::read_lossless_parts(&ck, m, &parts, it.cols),
+            Some((l, m)) if !parts.is_empty() => crate::weights::read_v7(&ck, m, *l, &parts, it.cols),
+            _ => pack_item_map(&ck, it, layout, &|_| {}),
         }
     };
+    let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
+    let saved: Vec<bool> = (0..d.mats.len()).map(|k| held_as_saved(&d, k, &rows_of)).collect();
     let mut packed: Vec<Option<PackBuf>> = (0..d.mats.len()).map(|_| None).collect();
     // (a stage of a split model loads only the matrices its layers multiply by)
-    let ks: Vec<usize> = (0..d.mats.len()).filter(|&k| want.is_none_or(|w| w[k])).collect();
+    let ks: Vec<usize> = (0..d.mats.len()).filter(|&k| want.is_none_or(|w| w[k]) && !saved[k]).collect();
     ordered(ks.len(), threads, 2 * threads.max(1), &|i| one(ks[i]), |i, pk| {
         crate::status::STATUS.beat();
         packed[ks[i]] = Some(upload_packed(pk)?);
@@ -760,25 +859,46 @@ fn load_part(dir: &Path, d: ModelDesc, layout: Layout, threads: usize, rows: usi
     // ponytail: a matrix another stage holds is an empty dense one here (never multiplied by); a Mat variant of its own if one is ever read by mistake
     let mats: Vec<Mat> = packed
         .into_iter()
-        .map(|x| {
+        .enumerate()
+        .map(|(k, x)| {
             Ok(match x {
                 Some(p) => Mat::Packed(p),
+                None if want.is_none_or(|w| w[k]) && saved[k] => {
+                    let it = &d.mats[k];
+                    Mat::Dense(upload_bytes(crate::weights::as_bytes(&crate::weights::item_words(&ck, it)?))?, it.rows, it.cols)
+                }
                 None => Mat::Dense(Buf::new(2)?, 0, 0),
             })
         })
         .collect::<Result<_>>()?;
+    let (f32s, as_bf16) = (read_f32(&d), read_f32_as_bf16(&d));
     let small: Vec<Buf> = d
         .small
         .iter()
-        .map(|name| {
-            let (_, t) = ck.get(name).ok_or_else(|| Error(format!("no tensor {name}")))?;
-            if t.dtype != "BF16" {
-                return err(format!("{name}: {} where bf16 is wanted", t.dtype));
+        .enumerate()
+        .map(|(i, name)| {
+            if let Some(&(_, f)) = d.forms.iter().find(|x| x.0 == i) {
+                return upload_bytes(crate::weights::as_bytes(&small_of(&ck, name, f)?));
             }
-            upload_bytes(&ck.read(name).map_err(|e| Error(e.to_string()))?)
+            let (_, t) = ck.get(name).ok_or_else(|| Error(format!("no tensor {name}")))?;
+            let b = ck.read(name).map_err(|e| Error(format!("{name}: {e}")))?;
+            let wide = f32s.contains(&i) || as_bf16.contains(&i);
+            if t.dtype == "F32" && as_bf16.contains(&i) {
+                let v: Vec<f32> = b.as_chunks::<4>().0.iter().map(|x| crate::kern35::bf16_round(f32::from_le_bytes(*x))).collect();
+                return upload_bytes(crate::weights::as_bytes(&v));
+            }
+            match (t.dtype.as_str(), wide) {
+                ("BF16", true) => {
+                    let v: Vec<f32> = b.chunks_exact(2).map(|x| f32::from_bits((u16::from_le_bytes([x[0], x[1]]) as u32) << 16)).collect();
+                    upload_bytes(crate::weights::as_bytes(&v))
+                }
+                ("F32", true) | ("BF16", false) | ("I64", false) => upload_bytes(&b),
+                (dt, f) => err(format!("{name}: {dt}, where {} is read", if f { "bf16 or fp32" } else { "bf16, or int64 for a hash's numbers" })),
+            }
         })
         .collect::<Result<_>>()?;
-    Part::from_loaded(d, Loaded { mats, small, ..Loaded::default() }, rows, out)
+    let moe = experts(&ck, layout)?;
+    Part::from_loaded(d, Loaded { mats, small, moe, ..Loaded::default() }, rows, out)
 }
 
 /// What a family's loader puts on the GPU for its description: the matrices, the FP8 ones, the small tensors, the blocks of experts.
@@ -968,6 +1088,44 @@ struct Seq {
     gmarks: Vec<(&'static str, Ev)>,
 }
 
+/// The first operation a verify pass (`Dyn::verify_rows`) cannot run as a decode step runs each row, or `Dyn::rewind` cannot go back in: a mixture of experts (its
+/// product groups the pass's rows), a cache or state other than the attention kind's rings (the rows past the kept ones are written over) and the gated delta
+/// rule's (its convolution and recurrence run again over the kept rows). None: the description verifies.
+fn unverifiable_op(d: &ModelDesc) -> Option<&Op> {
+    std::iter::once(&d.first).chain(d.layers.iter().flatten()).find(|op| match op {
+        Op::GdnConv { .. } | Op::GdnDelta { .. } => false,
+        Op::Attn(a) => a.picked.is_some(),
+        Op::Moe(_) | Op::MoeEarly { .. } => true,
+        _ => !rows::row_wise(op) || !op.rings().is_empty() || !op.states().is_empty(),
+    })
+}
+
+/// The per-sequence states' number types as `held` reports them (an engine that holds some): the gated delta rule's where its operations hold every state
+/// (src/dynamic/qwen35.rs: the convolution's state two bytes a value, the delta rule's four), else not reported.
+fn state_type(d: &ModelDesc) -> &'static str {
+    let mut held = d.layers.iter().flatten().filter(|op| !op.states().is_empty()).peekable();
+    if held.peek().is_some() && held.all(|op| matches!(op, Op::GdnConv { .. } | Op::GdnDelta { .. })) {
+        "fp32 (the delta rule's), bf16 (the convolution's)"
+    } else {
+        "not reported"
+    }
+}
+
+/// The slots a cut between two layers hands the next layer: the ones its first operation reads before any operation writes them, with their widths. A layer
+/// that begins with the depth mix (`Op::DepthMix`) reads the residual X and the completed blocks Blk; one whose residual add waits for the next layer (the
+/// description's `final_norm` adds that slot on the last rows; each layer's first operation is `Op::NormAdd` of it) reads X and that slot; another hands X, H,
+/// D, O and S where the model has them (what a layer may read first: its own first operation reads one of them).
+fn handed_over(d: &ModelDesc) -> Vec<(Slot, usize)> {
+    let slots: Vec<Slot> = if d.layers.iter().flatten().any(|op| matches!(op, Op::DepthMix(_))) {
+        vec![Slot::X, Slot::Blk]
+    } else if let Some((_, y, _)) = d.final_norm {
+        vec![Slot::X, y]
+    } else {
+        vec![Slot::X, Slot::H, Slot::D, Slot::O, Slot::S]
+    };
+    slots.into_iter().map(|s| (s, d.widths[s as usize])).filter(|&(_, w)| w > 0).collect()
+}
+
 /// The most rows a verify pass takes (`Dyn::verify_rows`): a product of up to 8 rows runs the kernel a one-row step's does (the library's one m-tile product; the
 /// tiered layout's step kernel to 8 rows), so each row's sums are a step's. Checked bit for bit on swift only; the range worker refuses verify on other levels.
 pub const VERIFY_ROWS: usize = 8;
@@ -1024,15 +1182,34 @@ impl Dyn {
 
     /// Stage `st` of the model of `dir` (its layers, and the embedding or the head where it holds them), on `o.device`: a split model's part.
     pub fn new_stage(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts) -> Result<Dyn> {
+        Dyn::new_with(dir, d, draft, st, o, &|_, _| Ok(Vec::new()))
+    }
+
+    /// `new_stage` of a description with experts: `experts` reads its blocks of experts (`Op::Moe`'s, in its order) from the checkpoint.
+    pub fn new_with(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts, experts: &Experts) -> Result<Dyn> {
         if draft.is_some() && !(st.first && st.last) {
             return err("drafting with a model split across GPUs: not yet");
         }
+        if let Some(k) = unnamed(&d) {
+            return err(format!(
+                "{}: matrix {k} is used and the description names {} (a description its family's loader fills by index)",
+                d.family,
+                d.mats.len()
+            ));
+        }
         let dev = Dev::new(o.device)?;
         let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
-        let matrix_bytes: u64 = d.mats.iter().map(|it| (it.rows * it.cols * 2) as u64).sum();
-        let layout = match crate::weights::v7_manifest(dir)? {
+        // (the layout by the packed matrices' bytes and what is held beside them: the matrices held as saved, the small tensors as their operations read them)
+        let ck = Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
+        let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
+        let bytes = |k: usize| (d.mats[k].rows * d.mats[k].cols * 2) as u64;
+        let (saved, packed): (Vec<usize>, Vec<usize>) = (0..d.mats.len()).partition(|&k| held_as_saved(&d, k, &rows_of));
+        let small: u64 =
+            d.small.iter().enumerate().map(|(i, n)| ck.get(n).map_or(0, |(_, t)| t.shape.iter().product::<u64>() * small_width(&d, i, &t.dtype))).sum();
+        let (matrix_bytes, other) = (packed.into_iter().map(bytes).sum(), saved.into_iter().map(bytes).sum::<u64>() + small);
+        let layout = match stored(dir)? {
             Some((l, _)) => l,
-            None => choose_layout(o.layout, dev.cc_pair(), dev.total_mem as u64, matrix_bytes, 0).0,
+            None => choose_layout(o.layout, dev.cc_pair(), dev.total_mem as u64, matrix_bytes, other).0,
         };
         let ch = o.chunk.max(1);
         let rows_out = draft.as_ref().map_or(1, |x| x.k + 1);
@@ -1049,11 +1226,11 @@ impl Dyn {
             })
             .collect::<Result<_>>()?;
         let want = d.wanted(&st);
-        let big = load_part(dir, d, layout, threads, ch, rows_out, Some(&want))?;
+        let big = load_part(dir, d, layout, threads, ch, rows_out, Some(&want), experts)?;
         // (a draft model is packed lossy here: the big model checks every draft token, so its precision moves only how many are kept)
         let draft = match draft {
             None => None,
-            Some(x) => Some(Draft { p: load_part(x.dir, x.desc, Layout::Int6, threads, 1, 1, None)?, k: x.k, pos: Buf::zeroed(8)? }),
+            Some(x) => Some(Draft { p: load_part(x.dir, x.desc, Layout::Int6, threads, 1, 1, None, &|_, _| Ok(Vec::new()))?, k: x.k, pos: Buf::zeroed(8)? }),
         };
         Dyn::build(dev, big, draft, ropes, layout, st, o)
     }
@@ -1230,6 +1407,12 @@ impl Dyn {
             None => None,
         };
         let bytes = big.bytes() + draft.as_ref().map_or(0, |x| x.p.bytes());
+        // (the Mamba-2 scan's chunked workspace, for its most heads and groups)
+        let ssd = ops()
+            .filter_map(|op| if let Op::MambaScan { nh, ng, .. } = *op { Some((nh, ng)) } else { None })
+            .reduce(|a, b| (a.0.max(b.0), a.1.max(b.1)))
+            .map(|(nh, ng)| SsdWs::sized(nh, ng, ch))
+            .transpose()?;
         let mut e = Dyn {
             dev,
             lib,
@@ -1259,7 +1442,7 @@ impl Dyn {
             lse,
             top,
             part,
-            ssd: None,
+            ssd,
             moe_sc,
             start: std::cell::Cell::new(0),
             prepped: std::cell::Cell::new(false),
@@ -2180,21 +2363,9 @@ impl Dyn {
         Ok(Sample { token: token as u32, logit, logprob: None })
     }
 
-    /// The slots a stage hands the next (the residual and what the next layer's first operation reads: H, D or O), in this order where the model has them.
-    const IO_SLOTS: [Slot; 5] = [Slot::X, Slot::H, Slot::D, Slot::O, Slot::S];
-
-    /// What a cut between two layers carries (docs/range-worker.md): the slots the next layer reads before it writes them, in this order, each `[rows, width]` bf16, one after the other. Qwen3.5's
-    /// layers end with the MLP's down product into D and begin by adding it to the residual X (NormAdd; the final norm adds it the same way): the pair X, D, and nothing else is live. The other
-    /// families' stages hand over IO_SLOTS, as the split across GPUs has (its proofs are on it).
+    /// What a cut between two layers carries (docs/range-worker.md): `handed_over` of the description, each `[rows, width]` bf16, one after the other.
     pub fn boundary(&self) -> Vec<(Slot, usize)> {
-        let d = &self.big.d;
-        // (Kimi-K3's layers begin with the depth mix of the completed blocks and the partial sum: those two, nothing else, are live)
-        let slots: &[Slot] = match d.family {
-            "Qwen3.5" => &[Slot::X, Slot::D],
-            "Kimi-K3" => &[Slot::X, Slot::Blk],
-            _ => &Self::IO_SLOTS,
-        };
-        slots.iter().map(|&s| (s, d.widths[s as usize])).filter(|&(_, w)| w > 0).collect()
+        handed_over(&self.big.d)
     }
 
     fn io_words(&self, n: usize) -> usize {
@@ -2300,11 +2471,16 @@ impl Dyn {
 
     /// A verify pass (drafted tokens checked, docs/range-worker.md): `stage_rows` on 1 to VERIFY_ROWS rows, each row as a decode step runs it (the delta rule one row
     /// after another, the decode step's attention, products of at most 8 rows), so each row's outputs are the step's at its position, bit for bit; and what `rewind`
-    /// needs kept (the states before the pass, each linear-attention layer's inputs). One row is a plain step (the graph): `rewind` keeps it. Qwen3.5's stages.
+    /// needs kept (the states before the pass, each linear-attention layer's inputs). One row is a plain step (the graph): `rewind` keeps it. A description
+    /// with no operation `unverifiable_op` names.
     pub fn verify_rows(&mut self, tokens: &[u32], at: usize, io: &mut Vec<u16>, head: usize) -> Result<()> {
         let n = tokens.len();
-        if self.big.d.family != "Qwen3.5" {
-            return err(format!("a verify pass on {}: Qwen3.5's stages only", self.big.d.family));
+        if let Some(op) = unverifiable_op(&self.big.d) {
+            return err(format!(
+                "a verify pass on {}: its operation {} is not run row after row as steps, or not gone back in by rewind",
+                self.big.d.family,
+                rows::op_name(op)
+            ));
         }
         if n == 0 || n > VERIFY_ROWS {
             return err(format!("a verify pass of {n} rows: 1 to {VERIFY_ROWS}"));
@@ -2420,16 +2596,20 @@ impl Dyn {
     }
 
     /// Room for `k` more sequences beside the one in use (each its own keys and values for the context, its states, its graph captured on them; the
-    /// activations and workspaces stay shared): `select` picks the one the next passes run on. Qwen3.5's stages; after `set_head_rows`.
+    /// activations and workspaces stay shared): `select` picks the one the next passes run on. A description every operation of which keeps a sequence's
+    /// data in its rings and states (`rows::one_sequence_op`), with no draft model; after `set_head_rows`.
     pub fn add_seqs(&mut self, k: usize) -> Result<()> {
-        if k > 0
-            && (!matches!(self.big.d.family, "Qwen3.5" | "Gemma 4" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash" | "Nemotron-H" | "DeepSeek-V4" | dense::FAMILY)
-                || self.draft.is_some())
-        {
-            return err(format!(
-                "more sequences than one on {}: Qwen3.5's, Gemma 4's, Muse Spark's, Kimi-K3's, GLM-5.3-Flash's, Nemotron-H's, DeepSeek-V4's and the Llama-style dense models' only, with no draft model",
-                self.big.d.family
-            ));
+        if k > 0 {
+            if self.draft.is_some() {
+                return err(format!("more sequences than one on {}: not with a draft model", self.big.d.family));
+            }
+            if let Some(op) = rows::one_sequence_op(&self.big.d) {
+                return err(format!(
+                    "more sequences than one on {}: its operation {} keeps a sequence's data outside the rings and states each sequence holds",
+                    self.big.d.family,
+                    rows::op_name(op)
+                ));
+            }
         }
         for _ in 0..k {
             let states = self.states.iter().map(|b| Buf::zeroed(b.bytes)).collect::<Result<_>>()?;
@@ -2751,12 +2931,7 @@ impl crate::conv::Gen for Dyn {
 
     /// The weights (a draft model's too), the rings of keys and values for the whole context, and the states; all made in `build` and kept as they are while it runs.
     fn held(&self) -> Option<crate::dev::Held> {
-        let state_type = match (self.big.d.family, self.states.is_empty()) {
-            (_, true) => "none",
-            // (qwen35.rs: the convolution's state two bytes a value, the delta rule's four)
-            ("Qwen3.5", _) => "fp32 (the delta rule's), bf16 (the convolution's)",
-            _ => "not reported",
-        };
+        let state_type = if self.states.is_empty() { "none" } else { state_type(&self.big.d) };
         // (every sequence's: they are alike, `add_seqs`)
         let k = self.seqs.len() as u64;
         Some(crate::dev::Held {
