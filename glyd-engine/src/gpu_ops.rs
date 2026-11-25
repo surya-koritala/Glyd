@@ -139,6 +139,9 @@ pub trait GpuOps {
     /// (the pairs in the plan's order). `act` 0: y [t k, o] in the plan's order; 1 (SiLU) or 2 (GELU, tanh): y [t k, o / 2] = act(gate) up, the gate an expert's first o / 2 rows (o a multiple of 128).
     /// `weights` (fp32 [t, k], act 0; 0: none) with `ids` (int64 [t, k]): y [t, o], each token's k rows times their weights, added in fp32. `done`: int32 counters, zero before, left zero.
     ///
+    /// `whole`: an expert's rows and the experts of the whole layer where `w` holds a part of it (a GPU's slice of each expert's rows, an expert cache's
+    /// places; 0: its own), so the work is cut as the whole layer's call cuts it and each row's sum is the whole layer's, bit for bit.
+    ///
     /// # Safety
     /// As `linear`; the workspace is `moe_workspace`'s bytes; the counters are o / 64 (o / 128 with an act) times min(experts, t k).
     #[allow(clippy::too_many_arguments)]
@@ -159,6 +162,7 @@ pub trait GpuOps {
         ws_bytes: usize,
         done: u64,
         cs: Stream,
+        whole: (i64, i64),
     ) -> Result<()>;
 
     /// `moe` over an expert cache's places of a tiered-layout stack (glyd_gpu_mma_moe_placed: each place its own block entries, `stride` bytes of blocks a place); the weights, ids and the rest as `moe`'s.
@@ -184,6 +188,7 @@ pub trait GpuOps {
         ws_bytes: usize,
         done: u64,
         cs: Stream,
+        whole: (i64, i64),
     ) -> Result<()>;
 
     /// A page's bytes for `h` heads of `d` channels with an arena of `a` entries.

@@ -56,8 +56,8 @@ pub fn describe(c: &ConfigG4) -> ModelDesc {
         small.len() - 1
     };
     let ropes = vec![
-        Rope { theta: c.sliding_theta, dim: c.head_dim, pairs: c.head_dim / 2 },
-        Rope { theta: c.global_theta, dim: c.global_head_dim, pairs: c.global_rot },
+        Rope { theta: c.sliding_theta, dim: c.head_dim, pairs: c.head_dim / 2, trig64: false },
+        Rope { theta: c.global_theta, dim: c.global_head_dim, pairs: c.global_rot, trig64: false },
     ];
     let mut rings = Vec::new();
     let in_norms: Vec<usize> = (0..c.layers).map(|l| name(format!("{p}layers.{l}.input_layernorm.weight"))).collect();
