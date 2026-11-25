@@ -662,7 +662,10 @@ FOLD_F8H_ONE(plain, f8b_lin1_body, 1)
 // with eight consumer warps (v3), K split over blocks as mma_gemm_grid_run splits it (finish_body adds the splits); on GeForce Ada mma_gemm_sk_body
 // (stream-K) in its two shapes; the experts' prompt kernel (mma_moe_big: v1 with the plan, MOE); and the 12-bit layout's route MID (mma12_mid_any:
 // mma12_mid_body in tiles of 16, 32 and 64 tokens and two or four warpgroups, mma12_ws_body in an A100's four tiles of 32 to 128 tokens).
-// Their grids, splits and workspaces are Rust (src/fold.rs), as the library's host code makes them.
+// Their grids, splits and workspaces are Rust (src/fold.rs: prompt_run, mid12_runs), as the library's host code makes them, and foldcheck holds each
+// to the library's bit for bit on a GPU that takes it: the grid's shapes and the experts' on an A10 or an L4, stream-K on GeForce Ada, v3 and the
+// four tiles on an A100; route MID's 16-token tile (which a GPU's own route takes only under a development build's GLYD_MID_MIN) and its four
+// warpgroups (a block of 153 KB of shared memory: an H100) with the route given.
 extern "C" __global__ void fold_finish(const float* y32, int64_t split, const __nv_bfloat16* bias, int64_t M, int64_t O, __nv_bfloat16* y) {
     glib::finish_body(y32, split, bias, M, O, y);
 }

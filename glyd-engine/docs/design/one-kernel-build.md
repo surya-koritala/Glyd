@@ -79,7 +79,11 @@ Each step lands alone, keeps `libglyd_gpu` loadable (the Python package needs it
   pages' release, save into an image and load from one (`fold_kv_release`, `_save`, `_load`), with an image's size (a host formula).
   Layout H's plain or coded choice (`f8h_plain`) is the engine's own state; the library is told it before each FP8 call of its own.
   `foldcheck` ends with the kernels of `kernels/fold.cu` it launched on the GPU it ran on and the names of those it did not (the routes
-  of another GPU's class: stream-K on GeForce Ada, an A100's tiles of the 12-bit route MID, Hopper's TMA and wgmma products).
+  of another GPU's class: stream-K on GeForce Ada, an A100's tiles of the 12-bit route MID, Hopper's TMA and wgmma products). Its case
+  of the 12-bit route MID given (the library's product takes a route) runs the route's tiles that no GPU's own route reaches with the
+  default plans: the 16-token one (a development build's `GLYD_MID_MIN` under 17 alone asks it) on any GPU of the route, and the four
+  warpgroups' where a block's shared memory holds 153 KB (an H100). `GLYD_GPU_LIB=none` loads no library: the engine's own kernels
+  alone, and a call they do not take fails naming the library's function it needed (`foldcheck`, which needs the library, refuses).
   What is left before the engine stops loading the library: every `GpuOps` method of `Lib` still ends in a `library_*` call for
   what its `fold` function does not take. Those are, by kind: arguments the library refuses (the engine has to refuse them itself, in
   the same words); an AMD build (its fold functions say false: nothing of them has run on an AMD GPU); a development build's tuning
@@ -93,9 +97,13 @@ Each step lands alone, keeps `libglyd_gpu` loadable (the Python package needs it
   `ptxas` 101 and 102 s). `gpu/build_lib.sh` ran the library's six at once: 914 s (`cicc` 465 to 540 s, `ptxas` 269 to 326 s, then
   44 s of host compile), 24 of the 30 processors idle throughout; the library of the tree before the fold took 915 s, so the fold added
   the engine's time and not the library's. `scripts/ci_gpu_build.sh` now builds the library beside cargo's build, the engine's
-  architectures at once (`GLYD_ENGINE_NVCC_THREADS=0`), and the library for the engine's architectures alone (`GLYD_GPU_ARCHS`).
-  nvcc's `--split-compile` does not help: with 15 threads an architecture's `cicc` took 576 s against 523 (15 threads for about 50 s,
-  then one thread for the code generation), in twice the memory, and the machine code it made was not the same bytes. What would:
-  several translation units an architecture, each its own `cicc` and `ptxas`. The engine's kernels are found by name, so its fatbin can be several modules (`fold.cu` by family beside `engine.cu`); the
-  library's kernels are templates its host code launches, so a unit has to hold explicit instances that the host unit declares
-  `extern template` (nvcc 12.8 compiles and runs that, and warns that it will want `-static-global-template-stub=false`).
+  architectures at once (`GLYD_ENGINE_NVCC_THREADS=0`), and the library for the engine's architectures alone (`GLYD_GPU_ARCHS`): the
+  library for sm_80 and sm_86 alone carries the same machine code for both, byte for byte, as the six built at once, and the whole
+  build took 830 s (the library's nvcc 829 s beside cargo's build, the engine's kernels 391 s in it). Six architectures at once are
+  already six processes side by side, so a compile an architecture would end no sooner: the longest, sm_90a, is 540 s of `cicc` and
+  326 s of `ptxas`. nvcc's `--split-compile` does not help: with 15 threads an architecture's `cicc` took 576 s against 523 (15
+  threads for about 50 s, then one thread for the code generation), in twice the memory, and the machine code it made was not the
+  same bytes. What would: several translation units an architecture, each its own `cicc` and `ptxas`. The engine's kernels are found
+  by name, so its fatbin can be several modules (`fold.cu` by family beside `engine.cu`); the library's kernels are templates its
+  host code launches, so a unit has to hold explicit instances that the host unit declares `extern template` (nvcc 12.8 compiles and
+  runs that, and warns that it will want `-static-global-template-stub=false`).

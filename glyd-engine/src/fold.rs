@@ -3051,6 +3051,9 @@ pub fn check(only: Option<&str>) -> Result<()> {
     use crate::gpu_ops::GpuOps;
     let dev = crate::dev::Dev::new(0)?;
     let lib = crate::ffi::Lib::find()?;
+    if !lib.loaded() {
+        return crate::ffi::err("foldcheck holds the engine's kernels to the library's: it needs the library, and GLYD_GPU_LIB=none loads none");
+    }
     let mut fails = 0;
     let mut say = |what: &str, n: usize, bad: Vec<String>| {
         println!(
@@ -3156,7 +3159,7 @@ pub fn check(only: Option<&str>) -> Result<()> {
     }
     say("the KV cache's sizes, a page's image and the decode's workspace", n, bad);
     type Check = fn(&crate::dev::Dev, &crate::ffi::Lib) -> Result<(usize, Vec<String>)>;
-    let checks: [(&str, Check); 9] = [
+    let checks: [(&str, Check); 10] = [
         ("the experts' plan (moe_way), the engine's kernels against the library's (one warp and one block, ids out of range among them)", route_check),
         (
             "the 12-bit pages' write, unpack and gather, and the decode and prompt attention over them and over a bf16 cache: the engine's kernels against the library's",
@@ -3173,6 +3176,10 @@ pub fn check(only: Option<&str>) -> Result<()> {
         (
             "the packed products (1 to 1,000 tokens: the step product, and this GPU's routes for a prompt), the engine's kernels against the library's, and their workspace",
             linear_check,
+        ),
+        (
+            "the 12-bit layout's route MID given (1 to 200 tokens: every tile of the route on this GPU), the engine's kernels against the library's, and their workspace",
+            mid_check,
         ),
         ("the mma layouts' unpacking and rows by id, the engine's kernels against the library's (every bf16 of each layout, whole and a row block)", unpack_check),
     ];
@@ -3337,7 +3344,7 @@ fn linear_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, 
         for twelve in [false, true] {
             for &m in &ms {
                 n += 1;
-                let (a, b) = (lib.library_linear_workspace(twelve, rows as i64, cols as i64, m), linear_workspace(twelve, rows as i64, cols as i64, m));
+                let (a, b) = (lib.library_linear_workspace(twelve, rows as i64, cols as i64, m, -1), linear_workspace(twelve, rows as i64, cols as i64, m));
                 match (&a, &b) {
                     (Ok(x), Ok(Some(y))) if x != y => {
                         bad.push(format!("workspace of {rows} x {cols}, 12-bit {twelve}, {m} tokens: the library's {x} bytes, the engine's {y}"))
@@ -3351,7 +3358,7 @@ fn linear_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, 
             let Some(p) = p else { continue };
             let pb = upload_packed(p)?;
             for &m in &ms {
-                let ws_bytes = lib.library_linear_workspace(pb.pack.is_twelve(), rows as i64, cols as i64, m)?.max(16);
+                let ws_bytes = lib.library_linear_workspace(pb.pack.is_twelve(), rows as i64, cols as i64, m, -1)?.max(16);
                 let (ws, da, db) = (Buf::new(ws_bytes)?, Buf::zeroed(4 * rows / 64 + 64)?, Buf::zeroed(4 * rows / 64 + 64)?);
                 let (ya, yb) = (Buf::new(m as usize * rows * 2)?, Buf::new(m as usize * rows * 2)?);
                 ya.fill_async(0xA5, dev.stream)?;
@@ -3359,7 +3366,7 @@ fn linear_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, 
                 // SAFETY: the pack, X [1000, cols], the workspace of the library's size (the engine's is the same or the product is the library's), zeroed
                 // counters of each, Y [m, rows] each; one stream.
                 let (ra, rb) = unsafe {
-                    let ra = lib.library_linear(&pb.pack, xb.ptr, m, ya.ptr, ws.ptr, ws_bytes, da.ptr, dev.stream);
+                    let ra = lib.library_linear(&pb.pack, xb.ptr, m, ya.ptr, ws.ptr, ws_bytes, da.ptr, -1, dev.stream);
                     synced(dev, || format!("the library's step product, {name} {rows} x {cols}, {m} tokens"))?;
                     (ra, linear(&pb.pack, xb.ptr, m, yb.ptr, ws.ptr, ws_bytes, db.ptr, dev.stream))
                 };
@@ -3384,6 +3391,78 @@ fn linear_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, 
         }
     }
     println!("  (the packed products: {folded} products by the engine's kernels, the rest the library's route on this GPU)");
+    Ok((n, bad))
+}
+
+/// `foldcheck`'s 12-bit route MID given (the library's product takes a route; the engine's is `mid12_linear`), 1 to 200 tokens: every tile of the route on
+/// this GPU runs, those no route of its own reaches included: the 16-token tile (a development build's GLYD_MID_MIN under 17 alone asks it), the
+/// tiles of four warpgroups (where a block's shared memory holds 153 KB: given the route, an H100) and the A100's four. Every bf16 and the workspace
+/// compared, at 256 x 1024 and 128 x 4096; a GPU with no such kernel refuses it on both sides. (compared, differences)
+#[cfg(feature = "dev")]
+fn mid_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
+    use crate::dev::Buf;
+    use crate::weights::upload_packed;
+    let mut seed = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let (mut n, mut bad, mut folded) = (0, Vec::new(), 0);
+    let ms = [1i64, 2, 7, 15, 16, 17, 24, 32, 33, 48, 64, 65, 80, 100, 128, 129, 200];
+    for (rows, cols) in [(256usize, 1024usize), (128, 4096)] {
+        let x: Vec<u16> = (0..200 * cols).map(|_| (((next() >> 40) as f32 / (1u64 << 24) as f32 - 0.5).to_bits() >> 16) as u16).collect();
+        let xb = Buf::new(x.len() * 2)?;
+        xb.write(0, &x)?;
+        let Some(p) = test_packs(rows, cols, &mut next).into_iter().find(|p| p.0 == "12-bit").and_then(|p| p.1) else { continue };
+        let pb = upload_packed(p)?;
+        let u = unpacker(&pb.pack)?;
+        let (o, k) = (rows as i64, cols as i64);
+        for &m in &ms {
+            n += 1;
+            let theirs = lib.library_linear_workspace(true, o, k, m, ROUTE_MID as i64);
+            let ours = mid12_runs(o, k, m)?.map(|r| r.1);
+            let ws_bytes = match (&theirs, ours) {
+                (Ok(a), Some(b)) if *a == b => b.max(16),
+                (Err(_), None) => continue,
+                _ => {
+                    bad.push(format!("workspace of {rows} x {cols}, {m} tokens: the library's {theirs:?}, the engine's {ours:?}"));
+                    continue;
+                }
+            };
+            let (ws, da, db) = (Buf::new(ws_bytes)?, Buf::zeroed(4 * rows / 64 + 64)?, Buf::zeroed(4 * rows / 64 + 64)?);
+            let (ya, yb) = (Buf::new(m as usize * rows * 2)?, Buf::new(m as usize * rows * 2)?);
+            ya.fill_async(0xA5, dev.stream)?;
+            yb.fill_async(0x5A, dev.stream)?;
+            // SAFETY: the pack, X [200, cols], the workspace both sides asked, zeroed counters of each, Y [m, rows] each; one stream.
+            let (ra, rb) = unsafe {
+                let ra = lib.library_linear(&pb.pack, xb.ptr, m, ya.ptr, ws.ptr, ws_bytes, da.ptr, ROUTE_MID as i64, dev.stream);
+                synced(dev, || format!("the library's route MID, {rows} x {cols}, {m} tokens"))?;
+                (ra, mid12_linear(u, &pb.pack, xb.ptr, m, yb.ptr, (ws.ptr, ws_bytes, db.ptr), dev.stream))
+            };
+            synced(dev, || format!("the engine's route MID, {rows} x {cols}, {m} tokens"))?;
+            match (&ra, &rb) {
+                (Ok(()), Ok(true)) => folded += 1,
+                (Err(e), _) | (_, Err(e)) => {
+                    bad.push(format!("{rows} x {cols}, {m} tokens: {e}"));
+                    continue;
+                }
+                (Ok(()), Ok(false)) => {
+                    bad.push(format!("{rows} x {cols}, {m} tokens: the library took it, the engine did not"));
+                    continue;
+                }
+            }
+            let (mut va, mut vb) = (vec![0u16; m as usize * rows], vec![0u16; m as usize * rows]);
+            ya.read(0, &mut va)?;
+            yb.read(0, &mut vb)?;
+            let differ = va.iter().zip(&vb).filter(|(x, y)| x != y).count();
+            if differ > 0 && bad.len() < 12 {
+                bad.push(format!("{rows} x {cols}, {m} tokens: {differ} of {} bf16 differ", va.len()));
+            }
+        }
+    }
+    println!("  (the route MID given: {folded} products by the engine's kernels)");
     Ok((n, bad))
 }
 
