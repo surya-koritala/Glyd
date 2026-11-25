@@ -912,12 +912,13 @@ impl MoeLayer {
         }
     }
 
-    /// The layer with its experts in the FP8 format (`f8`): the router and its bias, the shared expert, as `new`'s. The second product's rows go where the first's were (the scratch's
-    /// rows a pair the wider of the two: `Shape::f8`), so an expert's first matrices may have fewer rows than the layer is wide (GLM-5.3's: 4,096 of 6,144).
+    /// The layer with its experts in the FP8 format (`f8`): the router and its bias, the shared expert, as `new`'s. The activation is its own kernel's whatever the library's products
+    /// would fuse (`experts_products`: the first product's rows, then the activation into H), and the second product's rows go where the first's were (the scratch's rows a pair the
+    /// wider of the two: `Shape::f8`), so an expert's first matrices may have fewer rows than the layer is wide (GLM-5.3's: 4,096 of 6,144, SwiGLU with no limit).
     pub fn new_f8(cfg: MoeCfg, router: Buf, bias: Option<Buf>, f8: crate::f8::F8Experts, shared: Option<Shared>) -> Result<MoeLayer> {
         let (e, up_rows) = (cfg.experts, cfg.up_rows());
-        if !cfg.act.gated() || cfg.fused() != 0 || !cfg.hidden.is_multiple_of(8) {
-            return err("FP8 experts: a gated activation of its own kernel, a width divisible by 8");
+        if !cfg.act.gated() || !cfg.hidden.is_multiple_of(8) {
+            return err("FP8 experts: a gated activation, a width divisible by 8");
         }
         // (a stack of this GPU's slices of each expert's rows: the whole experts' shapes, src/dynamic/tp.rs; the expert cache's places: an expert's rows)
         let whole = |m: &crate::f8::F8Mat| match m.place {
@@ -2293,8 +2294,8 @@ impl Sizes {
         let mut z = Sizes { sg: 16, sh: 16, so: 16, h: 16, units: 1 << 18, ..Sizes::default() }; // (the counters of the dense products too: 1 << 18, as the engine's)
         for sh in shapes {
             let c = &sh.cfg;
-            // (hummingbird's first product writes the rows the activation's kernel reads, whatever the activation)
-            let (hb, fused) = (sh.hb > 0, if sh.hb > 0 { 0 } else { sh.cfg.fused() });
+            // (hummingbird's and the FP8 experts' first product writes the rows the activation's kernel reads, whatever the activation)
+            let (hb, fused) = (sh.hb > 0, if sh.hb > 0 || sh.f8 { 0 } else { sh.cfg.fused() });
             let pairs = max_tokens * c.router.top_k;
             z.logits = z.logits.max(max_tokens * c.experts * 4);
             z.pairs = z.pairs.max(pairs);
@@ -2797,10 +2798,12 @@ mod tests {
         assert_eq!(both.grouped.len(), 4);
         // the counters: a unit a row block of the first product (128 rows with a fused activation), by the experts a pair can hit
         assert_eq!(both.units, 1 << 18); // (the dense products' floor: the grouped ones need 42 * 512 and 64 * 288)
-                                         // FP8 experts narrower than the width (GLM-5.3's: 4,096 rows of a first product over 6,144): the second product's rows, where the first's were, the wider
-        let wide = MoeCfg { hidden: 6144, router_hidden: 6144, experts: 256, ..glm.cfg };
+                                         // FP8 experts narrower than the width (GLM-5.3's: 4,096 rows of a first product over 6,144): the second product's rows, where the first's were, the wider; its
+                                         // SwiGLU with no limit, which the library's products would fuse, by the activation's own kernel into H all the same
+        let wide = MoeCfg { hidden: 6144, router_hidden: 6144, experts: 256, act: Act::SwiGlu { limit: None }, ..glm.cfg };
         let (f8, bf) = (Sizes::of(&[Shape { cfg: wide, f8: true, ..glm }], 64), Sizes::of(&[Shape { cfg: wide, ..glm }], 64));
-        assert_eq!((f8.a, bf.a), (64 * 8 * 6144 * 2, 64 * 8 * 4096 * 2));
+        assert_eq!((wide.fused(), f8.a, f8.h), (1, 64 * 8 * 6144 * 2, 64 * 8 * 2048 * 2));
+        assert_eq!((bf.a, bf.h), (64 * 8 * 2048 * 2, 16), "the packed layer's activation fused into its first product");
     }
 
     /// A hummingbird layer's scratch: the first product's rows are never fused with the activation (a SwiGLU layer whose library product would fuse them has rows of 2 inter and a buffer for the activation), the rotated inputs, the parts and the
