@@ -500,6 +500,8 @@ table! {
         fn glyd_gpu_mma_linear_workspace(i64, i64, i64, i64, *mut usize) -> c_int;
         fn glyd_gpu_mma_linear(*const u8, *const u8, *const i32, *const u32, i64, i64, *const u16, i64, *const u16, *mut u16, i64, *mut c_void, usize, *mut c_int, Stream) -> c_int;
         fn glyd_gpu_mma_unpack(*const u8, *const u8, *const i32, *const u32, i64, i64, i64, *mut u16, i64, Stream) -> c_int;
+        fn glyd_gpu_mma_rows(*const u8, *const u8, *const i32, *const u32, i64, i64, *const i64, i64, *mut u16, Stream) -> c_int;
+        fn glyd_gpu_mma12_rows(*const u8, *const u32, *const i32, *const u32, i64, i64, *const i64, i64, *mut u16, Stream) -> c_int;
         fn glyd_gpu_moe_way(*const i64, i64, i64, *mut i32, Stream) -> c_int;
         fn glyd_gpu_f8_size_workspace(i64, i64, *mut usize) -> c_int;
         fn glyd_gpu_f8_size(*const u8, i64, i64, i64, *mut u32, *mut c_void, usize, *mut i64, Stream) -> c_int;
@@ -1055,6 +1057,41 @@ impl Lib {
             ),
         };
         self.ck(call!("unpack"), r)
+    }
+
+    /// Rows `ids` of W (int64 on the device, `n` of them) into `out` [n, cols] bf16, bit for bit the rows `unpack` gives: an embedding's lookup of tokens the GPU holds, one launch
+    /// whatever they are (an id outside W's rows: a row of zeros). The library's `mma_rows` (glyd-gpu-py's tests and the vLLM plugin's embedding use it).
+    ///
+    /// # Safety
+    /// As `linear`; `ids` holds n int64 on the device, `out` room for n rows.
+    pub unsafe fn rows(&self, w: &Pack, ids: u64, n: i64, out: u64, cs: Stream) -> Result<()> {
+        let r = match w.words {
+            Words::Tiered { blocks, block_base, tiers } => (self.api.glyd_gpu_mma_rows)(
+                w.data as *const u8,
+                blocks as *const u8,
+                block_base as *const i32,
+                tiers.as_ptr(),
+                w.cols,
+                w.rows,
+                ids as *const i64,
+                n,
+                out as *mut u16,
+                cs,
+            ),
+            Words::Twelve { exc, exc_base, sym } => (self.api.glyd_gpu_mma12_rows)(
+                w.data as *const u8,
+                exc as *const u32,
+                exc_base as *const i32,
+                sym.as_ptr(),
+                w.cols,
+                w.rows,
+                ids as *const i64,
+                n,
+                out as *mut u16,
+                cs,
+            ),
+        };
+        self.ck(call!("rows"), r)
     }
 
     /// The plan (int32 [2 + 2 experts + pairs]) of `pairs` pairs sorted by expert, `ids` (int64 [pairs]) each pair's expert (outside 0 to experts - 1: routed nowhere): the experts hit and where each one's

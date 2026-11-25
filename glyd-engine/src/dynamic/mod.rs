@@ -1097,6 +1097,19 @@ pub struct Dyn {
     lossless: Option<kvpages::Lossless>,
     /// The host's swap area for paged sequences sent back for room, and its copies (R4d: src/dynamic/swap.rs); None: they are run again from their tokens.
     swap: Option<swap::Swap>,
+    /// A served model's room for steps launched before the step before them is read (src/dynamic/rows.rs `Lanes`, `ModelStep::overlaps`); None: a step runs to its end.
+    lanes: Option<rows::Lanes>,
+    /// GLYD_ENGINE_STEP_PROF=1 or GLYD_PROF=1 on a served model: the GPU's time of each step and its idle time before it (src/dynamic/rows.rs `Gaps`).
+    gaps: Option<rows::Gaps>,
+    /// Whether a row of the next launched step draws from its candidates (`ModelStep::draws`): they are queued with the step.
+    draws: bool,
+    /// The 12-bit pages' status as the lane of the step landed last copied it (src/dynamic/kvpages.rs `kv12_lost` reads it once); None: the GPU's own.
+    status_from: Option<*const u32>,
+    /// The grammar masks of the next step's sampled rows (`ModelStep::masks`), put on the rows before their candidates' top-k (`masker`), and the room for a row's sum of
+    /// exponentials (`ModelStep::mass`).
+    row_masks: Vec<Option<crate::constrain::MaskHandle>>,
+    masker: Option<crate::kern::MaskGpu>,
+    sums: Option<Buf>,
 }
 
 /// A sequence's own buffers and place, while another is selected (`Dyn::select`): its keys and values, its states, its position, the verify pass it can go back
@@ -1572,6 +1585,13 @@ impl Dyn {
             kv12: None,
             lossless: None,
             swap: None,
+            lanes: None,
+            gaps: None,
+            draws: false,
+            status_from: None,
+            row_masks: Vec::new(),
+            masker: None,
+            sums: None,
         };
         // (a group of GPUs: every one's engine made before any one's first pass, src/dynamic/tp.rs)
         if let Some(c) = tp::comm() {
@@ -1803,8 +1823,9 @@ impl Dyn {
 
     /// The tokens' raw embedding rows into the big model's X.
     unsafe fn embed(&self, tokens: &[u32]) -> Result<()> {
-        // (a profile's first event: the embedding is timed by the pass's own first, `forward`'s)
+        // (a profile's first event: the embedding is timed by the pass's own first, `forward`'s; and a served step's first work, `Gaps`)
         self.mark("start")?;
+        self.gap_begin()?;
         let hid = self.big.d.hidden;
         let s = self.dev.stream;
         let Some(e) = self.big.mats[self.big.d.embed].packed_opt().map(|p| &p.pack) else { return err("the embedding is not packed") };
@@ -2366,6 +2387,9 @@ impl Dyn {
             self.kern.argmax_rows(s, p.logits.ptr, p.d.vocab as i32, head as u32, p.tok.ptr, p.val.ptr)?;
             self.mark("head")?;
         }
+        if std::ptr::eq(p, &self.big) {
+            self.gap_end()?;
+        }
         self.queued.set(queue.elapsed().as_secs_f64() * 1e3);
         Ok(())
     }
@@ -2893,6 +2917,7 @@ impl Dyn {
                     self.replayed.set(true);
                     self.rplayed.set(None);
                     self.dcalls.set(self.gcalls);
+                    self.gap_end()?;
                 }
                 _ => self.forward(&self.big, 1, (st, st), 1)?,
             }

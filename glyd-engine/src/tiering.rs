@@ -331,7 +331,7 @@ pub fn bench(a: &crate::args::Args) -> Result<()> {
         }
         let (mut ms, mut layers): (Vec<f64>, Vec<LayerStats>) = (Vec::new(), Vec::new());
         for i in 0..warm + steps {
-            let rows: Vec<Row> = at.iter().zip(&pages).map(|(&(token, pos), p)| Row { token, pos, pages: p }).collect();
+            let rows: Vec<Row> = at.iter().zip(&pages).map(|(&(token, pos), p)| Row::new(token, pos, p)).collect();
             let t0 = std::time::Instant::now();
             let got = step.decode(&rows)?;
             let t = t0.elapsed().as_secs_f64() * 1e3;

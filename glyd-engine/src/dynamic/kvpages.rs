@@ -17,6 +17,9 @@ use crate::ffi::{err, KvGeom, Lib, Result, KV_ONE_STREAM};
 pub const ARENA: i64 = 15;
 /// The places of each of a status's two rings (void and raw pages).
 pub(super) const RING: i64 = 4096;
+
+/// A status's words `kv12_lost` reads: the counters, then the void pages' ring.
+pub(super) const VOID_WORDS: usize = 16 + RING as usize;
 /// The values of a chunk of the escape pool.
 const CHUNK: f64 = 64.0;
 /// The decode attention's query heads to a kv head, at most.
@@ -570,9 +573,15 @@ impl Dyn {
         let mut lost = crate::kv::Lost::default();
         let (Some(lx), Some(pg)) = (self.lossless.as_mut(), self.paged.as_ref()) else { return Ok(lost) };
         let mut blocks: Vec<(usize, u32)> = Vec::new();
+        // (a launched step's status as its lane copied it after the step, where it is that step that landed; else as the GPU holds it now)
+        let copied = self.status_from.take();
         for (g, b) in lx.status.iter().enumerate() {
-            let mut w = vec![0u32; 16 + RING as usize];
-            b.read(0, &mut w)?;
+            let mut w = vec![0u32; VOID_WORDS];
+            match copied {
+                // SAFETY: the lane's pinned copy, VOID_WORDS a group, written by copies its step's event (waited for) followed.
+                Some(p) => w.copy_from_slice(unsafe { std::slice::from_raw_parts(p.add(g * VOID_WORDS), VOID_WORDS) }),
+                None => b.read(0, &mut w)?,
+            }
             let (head, seen) = (w[12], lx.seen[g]);
             let n = head.wrapping_sub(seen);
             lost.overflow |= n as i64 > RING;

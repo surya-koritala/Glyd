@@ -1790,7 +1790,7 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
     let mut reference = Vec::new();
     for (t, &f) in fa.iter().enumerate() {
         room(s, 0, pa.len() + t + 2)?;
-        s.decode(&[Row { token: f, pos: pa.len() + t, pages: &[0] }])?;
+        s.decode(&[Row::new(f, pa.len() + t, &[0])])?;
         reference.push(s.logits(0)?);
     }
     s.release(&[0])?;
@@ -1847,11 +1847,11 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
         let slots: Vec<[i32; 1]> = (0..n as i32).map(|j| [j]).collect();
         let mut got = Vec::new();
         for t in 0..steps {
-            let mut rows = vec![Row { token: fa[t], pos: pa.len() + t, pages: &slots[0] }];
+            let mut rows = vec![Row::new(fa[t], pa.len() + t, &slots[0])];
             room(s, 0, pa.len() + t + 2)?;
             for (j, (p, f)) in others.iter().enumerate() {
                 room(s, j as i32 + 1, p.len() + t + 2)?;
-                rows.push(Row { token: f[t], pos: p.len() + t, pages: &slots[j + 1] });
+                rows.push(Row::new(f[t], p.len() + t, &slots[j + 1]));
             }
             s.decode(&rows)?;
             got.push(s.logits(0)?);
@@ -1888,10 +1888,7 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
                 room(s, 0, pa.len() + t + 2)?;
                 room(s, 1, (t + 1) * c + (t + 1 == n) as usize)?;
                 let last = t + 1 == n;
-                s.round(
-                    &[Row { token: fa[t], pos: pa.len() + t, pages: &[0] }],
-                    &[PrefillJob { pages: &[1], start: t * c, tokens: &prompt[t * c..(t + 1) * c], last }],
-                )?;
+                s.round(&[Row::new(fa[t], pa.len() + t, &[0])], &[PrefillJob { pages: &[1], start: t * c, tokens: &prompt[t * c..(t + 1) * c], last }])?;
                 got.push(s.logits(0)?);
                 if last {
                     after = s.logits(1)?;
@@ -1992,7 +1989,7 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     fn steps(s: &mut dyn ModelStep, slot: i32, start: usize, t: &[u32]) -> Result<()> {
         for (i, &tok) in t.iter().enumerate() {
             room(s, slot, start + i + 2)?;
-            s.decode(&[Row { token: tok, pos: start + i, pages: &[slot] }])?;
+            s.decode(&[Row::new(tok, start + i, &[slot])])?;
         }
         Ok(())
     }
@@ -2353,7 +2350,7 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         let mut out = vec![first.ok_or_else(|| Error("no sample after a chunk".into()))?.token];
         for (i, &t) in reply[..reply.len() - 1].iter().enumerate() {
             room(s, slot, at + i + 2)?;
-            out.push(s.decode(&[Row { token: t, pos: at + i, pages: &[slot] }])?[0].token);
+            out.push(s.decode(&[Row::new(t, at + i, &[slot])])?[0].token);
         }
         Ok(out)
     };
@@ -2808,8 +2805,7 @@ fn cands_check(step: &mut dyn crate::sched::ModelStep, prompts: &[Vec<u32>]) -> 
         next.push(s.token);
     }
     let pages: Vec<[i32; 1]> = (0..next.len()).map(|j| [j as i32]).collect();
-    let decode: Vec<crate::sched::Row> =
-        next.iter().enumerate().map(|(j, &t)| crate::sched::Row { token: t, pos: prompts[j].len(), pages: &pages[j] }).collect();
+    let decode: Vec<crate::sched::Row> = next.iter().enumerate().map(|(j, &t)| crate::sched::Row::new(t, prompts[j].len(), &pages[j])).collect();
     if !decode.is_empty() {
         step.decode(&decode)?;
         for r in 0..decode.len() {

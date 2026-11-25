@@ -460,6 +460,38 @@ Two details the records found that the policy keeps:
 - **Arrival skew.** Requests of a burst arrive over 40-60 ms (tokenizing one after another). The front end tokenizes on its own threads
   (R11) and the scheduler waits at most one decode step's time for more prompts when the queue is non-empty and no row is decoding.
 
+### Launch and finish (built, R4a #138)
+
+`ModelStep::launch` queues a round's step and `finish` returns its samples; between the two the host does the work of the step before.
+`Sched::round_one_step` launches step N+1 before it lands step N (`land`: tokens chosen and sent, ends found, slots given back) where the
+step `overlaps` and every sequence that samples in step N takes its largest logit (greedy, no log-probabilities). A decode row whose token
+step N chose names its head row (`Row::after`, the `Tok::Prev` above); the executor's `step_ids` kernel makes the step's int64 token ids
+from the host's tokens and step N's head (`tok`, the argmax), and the library's `mma_rows` looks the embedding's rows up by them on the GPU,
+bit for bit the rows `unpack` gives. A step that draws, or asks for log-probabilities, lands before the next is launched: its rows are
+read on the host; its candidates (the 64 largest logits a row, `top`) are queued with the step and copied back with its samples
+(`ModelStep::draws`), so the draw waits for nothing more. Every step of the scheduler goes through `launch` and `finish` (a model whose
+rounds are two passes launches its prompt pass and its decode step each to run at once). A sequence whose token in flight is its last by its length has no row in the next step; one that ends on a stop token
+or the end-of-sequence token has had its row in the next step run, and that row's output is not taken.
+
+On the executor (`src/dynamic/rows.rs` `Lanes`) a step's inputs are copied on the stream from pinned memory (three lanes: one step
+running, the next queued, and the one before for its timings), its samples copied back into the lane, and `finish` waits on the lane's
+event, not the stream. A block table a step changes is copied on the stream from the lane too (`upload_tables_queued`): a step in flight
+reads the tables as they were, and a block given back is written only by the steps after it. No other wait is left in a decode step
+that keeps its blocks; a step that grows a sequence's blocks queues the copy and does not wait either. A recurrent model's states at a
+prompt's end (`mark`) and at a block boundary (`name`) are copied as the next step is launched, before its work: the scheduler asks then
+for the step in flight's sequences (`Sched::launch`), so the copies are of the states after that step's tokens. The 12-bit pages' status
+(the void pages a step made) is copied into the lane with the samples and read from there (`kv12_lost`). The operations that read the
+tokens (an n-gram embedding, routing by token) read the int32 ids `step_ids` writes beside the embedding's. The executor overlaps on one
+GPU where no layer's experts are in a cache and no layer's matrices are in the computer's memory (both do host work inside the pass);
+`GLYD_ENGINE_OVERLAP=0` turns it off. `GLYD_PROF=1` and `GLYD_ENGINE_STEP_PROF=1` time
+each step's GPU work and the GPU's idle time before it from events at its first and last work (`Gaps`).
+
+The models that ran one request at a time through a loop of their own (`server::work_gen`) are the scheduler's steps of one slot: stages
+and layers across GPUs (`ModelStep for Run`: a prompt in one call, a token a step, the logits read for a draw) and a model with a draft
+model (`ModelStep::draft`: a decode step is a drafting round, `spec_round`, each of its tokens sent and added as a step's; a request that
+asks for log-probabilities or a least length has plain steps). Condor's own engine (`qwenserve`, `qwen4x_serve.rs`'s `Qx` over
+`EngineQx`) is not the executor's and keeps its loop until R3d (#140) moves Condor onto the executor.
+
 ### Rows sized by memory
 
 `max_rows` comes from the plan: KV pages and state slots that fit after weights and workspace, not a constant. Graphs are captured at row
@@ -742,7 +774,7 @@ Recent families first; the legacy pipelines move last, at parity, so they can be
 | 1 | `sched::Backend` renamed `ModelStep`, scheduler types moved out of `model.rs`; `model::Engine` implements it unchanged | R4a #138 | no behaviour change; every later step uses the new names | - |
 | 2 | runtime context, typed errors, arenas, typed launches for the kernels the executor uses | R16 #237, R15 #236, R1a #134 | mechanical, benched per PR, needed by the executor | 56 globals, untyped launches |
 | 3 | layer-kind library and `Ref`; CUDA kinds wrap today's kernels (no new kernels) | R2 #135 | the vocabulary the descriptions need | the family-named `Op` variants, as kinds replace them |
-| 4 | the executor implements `ModelStep` (one sequence first); `work_gen` replaced | R4a #138 | every description reaches the scheduler | `work_gen` |
+| 4 | the executor implements `ModelStep` (one sequence first); `work_gen` replaced (done: drafted and multi-GPU models are steps of one slot) | R4a #138 | every description reaches the scheduler | `work_gen` (deleted) |
 | 5 | **gemma-4-12B and Qwen3.8 dense**: descriptions from `config.json`, batched rows, paged KV (sliding ring, GQA, GDN state slots), graphs per row bucket; Qwen3.8 dense gains its lossless level | R3a #136, R4b #141, #329; Qwen3.8 penguin (#331) | the recent dense models; the first batched paths besides legacy Qwen3 | - |
 | 6 | lossless KV for head dims 256/512 and MLA latents | #332 | the 12-bit format reaches the recent families | - |
 | 7 | **DeepSeek-V4, Kimi-K3, GLM-5.3-Flash, Muse Spark**: batched rows, paged MLA latent and compressed-entry groups, KDA state slots, expert tiering on the MoE kind | R12 #232, #327, R13 #234 | the large recent families; single-user parity on their reference boxes first, then rows | `tp_cache.rs` special cases, the GLM development engine |
