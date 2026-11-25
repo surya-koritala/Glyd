@@ -736,7 +736,8 @@ impl ConfigGlm {
 /// lossless bound (KL mean 1e-5 against 1e-4), so that the bound stays a fixed test of an engine and a fault must move the logits well past the
 /// rounding noise to pass. Every matrix is U(+-sqrt(3 / its columns)) but the embedding, U(-1, 1) as the other families' random models draw it, and
 /// the head, at half that scale (the logits' RMS about 0.5). Drawn with both at +-sqrt(3 / hidden) the floor was KL 7.5e-5 to 1.15e-4 on the case's
-/// model and five other seeds, the bound itself; drawn so, 3.3e-6 to 5.5e-6 (`logits::tests::glm_noise_floor`, which holds it to 1e-5).
+/// model and five other seeds, the bound itself; drawn so, 3.3e-6 to 5.5e-6, and 3.5e-6 to 5.6e-6 once the head rounds the logits as the release does
+/// (`logits::tests::glm_noise_floor`, which holds it to 1e-5).
 pub fn random(out: &std::path::Path, fp8: bool, real: Option<(usize, usize)>) -> crate::ffi::Result<()> {
     random_seeded(out, fp8, real, RANDOM_SEED)
 }
