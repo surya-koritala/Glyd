@@ -309,7 +309,7 @@ extern "C" __global__ void attn_gate(AttnArgs a) {
 }
 
 // ---- a prompt chunk's attention on the tensor cores -------------------------------------------------------------------------------------------------------------------
-// FlashAttention-2's loop (the knowledge base's l:fa2-prefill:attention:8, l:llamacpp-fattn:attention:11) with attn_rows_t's arithmetic (at_score, exp2 of the score less the
+// FlashAttention-2's loop with attn_rows_t's arithmetic (at_score, exp2 of the score less the
 // running maximum, the probabilities rounded to bf16 for the values, their fp32 sum dividing at the end), Q K^T and P V as mma.sync m16n8k16 bf16 products. A block takes
 // one key-value head and PF_ROWS of the chunk's rows of its query heads, packed token by token (row r: token r / G, query head kvh G + r % G), so that a token's G query
 // heads share every tile of keys and values the block reads; 4 warps of 16 rows, the queries' A fragments in registers. The keys PF_KT a tile at positions that are multiples

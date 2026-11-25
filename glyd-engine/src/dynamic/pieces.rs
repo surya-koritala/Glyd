@@ -1,4 +1,4 @@
-//! Piecewise CUDA graphs (f:cuda-graphs:serving:2: vLLM's PIECEWISE mode, the pieces of a pass between its attention layers captured, the attention left outside). A pass that no
+//! Piecewise CUDA graphs (vLLM's PIECEWISE mode, the pieces of a pass between its attention layers captured, the attention left outside). A pass that no
 //! whole graph takes (a prompt's chunk, a step of several prompts' chunks, a step of rows that decode and prompts' chunks) runs each run of operations that act row by row
 //! (`role`: the products, norms, activations and experts between two attention or recurrent layers) as one graph, and the others (the attention layers, the recurrent layers'
 //! operations, which read a sequence's cache or state by its rows) eager between them. The host then queues one launch a piece where it queued every kernel of it.

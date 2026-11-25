@@ -40,13 +40,13 @@ pub(super) struct Paged {
     pub(super) rows: Option<RowTabs>,
 }
 
-/// The block tables of a pass's rows that decode, one token of a sequence each (h:attn-backends:attention:2, as SGLang's decode backend takes a batch's every sequence in one
+/// The block tables of a pass's rows that decode, one token of a sequence each (as SGLang's decode backend takes a batch's every sequence in one
 /// call through its own block table): row r of group g's `tab` holds `dup[g]` copies of row r's sequence's table, made on the GPU at the pass's start (`Dyn::row_tables`, from the
 /// slots the host writes to `slot`, -1 a padding row) so that one launch of the preparation and one call of the decode take a layer's every such row; a call of the library's
 /// decode whose rows' query heads are `sp` sequences finds row r's j-th at stride `dup / sp` tables (every `sp` of the group's divides `dup`). `win`: each group's window (0: none).
 /// `meta`: the step's metadata, which the host writes for a pass in one copy and which a graph's replay reads where it was captured (no capture again for other rows): the
 /// pass's positions (`pcap` entries, a chunk's), the slots of its rows that decode (`rows` entries, -1 a padding row), and the addresses of each such row's recurrent states
-/// (row r's state i at entry r `nst` + i, as vLLM's state indices pick a request's slot of the state pools: f:recurrent-state:kv_cache:8; 0 for a padding row), read by the
+/// (row r's state i at entry r `nst` + i, as vLLM's state indices pick a request's slot of the state pools; 0 for a padding row), read by the
 /// recurrent layers' kernels of such rows (`Dyn::state_lead`).
 /// `graphs`: whether a step of such rows alone may replay a CUDA graph of its padded rows (`Dyn::rows_bucket`): every operation of the description acts row by row, is an
 /// attention layer or is a recurrent layer's operation that takes such rows (`rows_state`).
@@ -739,7 +739,7 @@ impl Dyn {
         Ok(jobs.iter().map(|j| j.2.then(|| heads.next().map(|(token, logit)| Sample { token, logit, logprob: None })).flatten()).collect())
     }
 
-    /// The rows of the CUDA graph a step of `n` rows that decode (and nothing else) replays (f:cuda-graphs:serving:2: vLLM's full graphs of uniform decode batches at a ladder of
+    /// The rows of the CUDA graph a step of `n` rows that decode (and nothing else) replays (vLLM's full graphs of uniform decode batches at a ladder of
     /// padded sizes): `bucket`'s ladder up to the head's rows, where the description takes such a graph (`RowTabs::graphs`) and the engine captures graphs at all; None: the
     /// step runs eager. GLYD_ENGINE_ROWS_GRAPH=0 (a development build's) runs every such step eager, to compare.
     fn rows_bucket(&self, n: usize) -> Option<usize> {

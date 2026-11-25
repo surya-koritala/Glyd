@@ -4,10 +4,10 @@
 //! from its first token); a prompt chunk's reads them where they are (`kv_prefill`, the kernel the bf16 cache's prompt attention is too). A verify pass's rows and
 //! the warp kernels read them unpacked into a bf16 ring (`kv12_stage`).
 //!
-//! A latent attention's latents (`Op::Mla`, f:mla-cache:kv_cache:6) are one stream: a row a token that is its key and, through kv_b_proj, its value, held in the keys'
+//! A latent attention's latents (`Op::Mla`) are one stream: a row a token that is its key and, through kv_b_proj, its value, held in the keys'
 //! layout alone (`KV_ONE_STREAM`; Kimi-K3's 512 + 64 as 5 heads of 128, the last 64 channels zero; GLM-5.3's 512 as 4). Its attention reads the pages unpacked to bf16
-//! rows (`kv12_latents`), as every project's decompressed prefill gathers a cached latent into a 16-bit workspace (h:mla-cache:attention:14), and runs the kernel the
-//! bf16 ring's attention runs on the same values in the same order: the same bits. The decode's reading the 12-bit latent in place (h:mla-cache:kernel:15) is not built.
+//! rows (`kv12_latents`), as every project's decompressed prefill gathers a cached latent into a 16-bit workspace, and runs the kernel the
+//! bf16 ring's attention runs on the same values in the same order: the same bits. The decode's reading the 12-bit latent in place is not built.
 use super::kv12::{shapes, KvShape, Tables};
 use super::{Dyn, Op, Part};
 use crate::dev::Buf;
@@ -780,7 +780,7 @@ mod tests {
     use super::super::kv12::{shapes, LayerTable, Tables};
     use super::*;
 
-    /// Kimi-K3's and GLM-5.3-Flash's releases' latents (f:mla-cache:kv_cache:6): each latent attention layer's ring is one stream of its kv_rank + rope values in heads
+    /// Kimi-K3's and GLM-5.3-Flash's releases' latents: each latent attention layer's ring is one stream of its kv_rank + rope values in heads
     /// of 128 (576 as 5, the last 64 channels padding; 512 as 4), written by its layer's operation; GLM-5.3's indexer ring has no 12-bit shape and stays bf16.
     #[test]
     fn a_latent_ring_is_one_stream_in_heads_of_128() {

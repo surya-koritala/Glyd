@@ -517,11 +517,11 @@ design keeps it, with two changes:
 Today's kernels take head dim 128 and GQA groups of at most 8 (`kv.rs:224-230`), which covers no recent family; widening them to head
 dims 256 and 512 and to MLA latents (576 values a token for Kimi-K3) is its own piece of work (#332), and until it lands those families
 use bf16 pages. **As built for latents (`dynamic/kvpages.rs`):** a latent attention's ring is one stream (`KV_ONE_STREAM`: the keys' tiles
-alone, f:mla-cache:kv_cache:6), its row in heads of 128 (Kimi-K3's 512 + 64 as 5 with 64 zero channels, GLM-5.3's 512 as 4); the step's
+alone), its row in heads of 128 (Kimi-K3's 512 + 64 as 5 with 64 zero channels, GLM-5.3's 512 as 4); the step's
 latents go to staging rows and from there to their pages, and the attention reads a sequence's pages unpacked to bf16 rows (listed on the
 device, so a decode step's graph holds it), then runs the bf16 ring's kernel: the same values in the same order, the same bits. Every
-project gathers a cached latent into a 16-bit workspace for its decompressed prefill this way (h:mla-cache:attention:14); the decode's
-reading the 12-bit latent in place (h:mla-cache:kernel:15, vLLM's Triton MLA reusing the loaded tile as V) is not built, so a latent's
+project gathers a cached latent into a 16-bit workspace for its decompressed prefill this way; the decode's
+reading the 12-bit latent in place (vLLM's Triton MLA reusing the loaded tile as V) is not built, so a latent's
 decode reads more bytes than bf16's, not fewer. GLM-5.3's indexer keys stay bf16. Models without tables get bf16 pages; FP8 KV (as released or as a lossy level) is a third page format. The page format is a property of
 the pool; attention kinds read pages through the pool's decode, as today's `kv_decode` does.
 

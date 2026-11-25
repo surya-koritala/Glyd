@@ -14,8 +14,8 @@
 //!   hummingbird (glyd/nemotron-3-hummingbird: the experts in codebook rows), from a random Nemotron-H with latent experts and a random export of them: no level packs it as
 //!   it loads, so its digest is the engine's own bits on the saved directory (`HB_DIGEST`).
 //!
-//! Comparable mechanisms (the knowledge base's f:gguf-basic:quant:9 and e:cpu:quant:1, llama.cpp's GGUF: a type id is never reused and a file names its version, which a
-//! reader refuses past what it knows; f:compressed-tensors:quant:5 and f:fp8-block:quant:1, vLLM: a checkpoint's quantization_config picks the reader). Glyd's saves name
+//! Comparable mechanisms (llama.cpp's GGUF: a type id is never reused and a file names its version, which a
+//! reader refuses past what it knows; vLLM: a checkpoint's quantization_config picks the reader). Glyd's saves name
 //! their format in glyd.json (`glyd-vN`) and each pack its layout; a change to a layout's bytes is a new format version with a new fixture, never an edit of one.
 
 use crate::ffi::{err, Error, Result};
