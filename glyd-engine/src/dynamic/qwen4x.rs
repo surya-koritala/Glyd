@@ -197,12 +197,27 @@ pub fn load_pack(dir: &Path, pack: &Path, precise: bool, users: usize, o: &Opts)
     load_cached(dir, o, &Caching::new(pack, PackMode::of(pack, precise), &d, users))
 }
 
-/// `qwenserve CKPT PACK --port P [--host H] [--page DIR] [--name NAME] [--users N] [--ctx N] [--chunk N] [--places N] [--precise] [--layout L]`: the HTTP server
+/// The GPU `--gpus` names (`GLYD_GPUS` of tools/serve.sh), GPU 0 where it names none. The family runs on one GPU in this release (its layers are not cut over GPUs on the
+/// executor yet; its own engine's `--gpus 0,1` split them), so a list of more is refused in words, never run on one card in silence.
+pub fn one_gpu(a: &crate::args::Args) -> Result<i32> {
+    let Some(asked) = a.flag("gpus") else { return Ok(0) };
+    let named: Option<Vec<i32>> = asked.split(',').map(|x| x.trim().parse::<i32>().ok().filter(|&n| n >= 0)).collect();
+    match named.as_deref() {
+        Some(&[one]) => Ok(one),
+        Some(_) => err(format!(
+            "--gpus {asked} (GLYD_GPUS in tools/serve.sh): {FAMILY} runs on one GPU in this release; its layers are not split over several GPUs yet. \
+             Name one GPU instead (--gpus 1, GLYD_GPUS=1), or leave it out for GPU 0."
+        )),
+        None => err(format!("--gpus {asked}: GPU numbers are 0, 1, ...; this release takes one (--gpus 0)")),
+    }
+}
+
+/// `qwenserve CKPT PACK --port P [--host H] [--page DIR] [--name NAME] [--users N] [--gpus N] [--ctx N] [--chunk N] [--places N] [--precise] [--layout L]`: the HTTP server
 /// (src/server.rs: the chat page, the OpenAI and Anthropic APIs, the Monitor's numbers) on the description executor, the model's routed experts from its pack of
 /// codebook rows in the expert cache (`load_cached`: `--places N` a layer, else what the GPU has free past the reserve), the always-on matrices at the level asked
 /// (four bits where none is), its requests through the common scheduler (`server::work_with`), up to N at once. It listens while the model loads (/health is 503
 /// until it is loaded). Thinking is off where a request does not ask for it; the sampling defaults are the model's, at a temperature of 0.5 at most with min-p
-/// 0.1. Not on the executor yet: the vision tower, and the draft head over the expert cache (its verify pass takes experts held whole on the GPU: src/dynamic/head.rs).
+/// 0.1. One GPU (`one_gpu`). Not on the executor yet: the vision tower, and the draft head over the expert cache (its verify pass takes experts held whole on the GPU: src/dynamic/head.rs).
 pub fn http(snap: &Path, pack: &Path, a: &crate::args::Args) -> Result<()> {
     use crate::server;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -213,6 +228,7 @@ pub fn http(snap: &Path, pack: &Path, a: &crate::args::Args) -> Result<()> {
     if !(1..=crate::sched::MAX_ROWS).contains(&users) {
         return err(format!("--users {users}: 1 to {} requests at once", crate::sched::MAX_ROWS));
     }
+    let device = one_gpu(a)?;
     let mode = PackMode::of(pack, a.has("precise"));
     crate::monitor::start(mode.name(), ctx);
     server::STANDALONE.store(true, Ordering::Relaxed);
@@ -242,7 +258,7 @@ pub fn http(snap: &Path, pack: &Path, a: &crate::args::Args) -> Result<()> {
     let addr = server::listen_loading(&format!("{host}:{port}"), &name, ctx - 2, key, server::is_loopback_addr(host), tx.clone(), loading.clone())?;
     println!("Qwen3.8-Flash-Next on Glyd: the chat at http://{addr}/, the API at http://{addr}/v1 (OpenAI and Anthropic). Loading the model...");
     // (the always-on matrices at four bits by default, as the release has been served; `--layout` another level's)
-    let o = Opts { ctx, chunk: a.num("chunk", 1024usize)?, graph: true, device: 0, layout: a.layout()?.or(Some(Layout::Int4)) };
+    let o = Opts { ctx, chunk: a.num("chunk", 1024usize)?, graph: true, device, layout: a.layout()?.or(Some(Layout::Int4)) };
     let mut k = Caching::new(pack, mode, &lowered(snap, o.ctx + o.chunk + 16)?, users);
     if let Some(p) = a.flag("places") {
         k.places = Some(p.parse().map_err(|_| crate::ffi::Error(format!("--places {p}: a number of places a layer")))?);
@@ -509,6 +525,25 @@ mod tests {
     fn tiny() -> serde_json::Value {
         let m: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/qwen4x_tiny_manifest.json")).unwrap();
         serde_json::from_str(m["config"].as_str().unwrap()).unwrap()
+    }
+
+    /// `--gpus` (`GLYD_GPUS` of tools/serve.sh) names the one GPU the family runs on, or is refused in words naming the setting, what this release runs and what to
+    /// give instead: a list of more than one (the old engine's `--gpus 0,1` split) is never taken as GPU 0 in silence, nor a GPU named twice.
+    #[test]
+    fn gpus_names_one_gpu_or_is_refused_in_words() {
+        let one = |gpus: &[&str]| super::one_gpu(&crate::args::Args::from(["qwenserve", "ckpt", "pack"].iter().chain(gpus).map(|w| w.to_string())));
+        assert_eq!(one(&[]).unwrap(), 0);
+        assert_eq!((one(&["--gpus", "0"]).unwrap(), one(&["--gpus", "1"]).unwrap(), one(&["--gpus", " 2 "]).unwrap()), (0, 1, 2));
+        for many in ["0,1", "1,0", "0,0", "0, 1,2"] {
+            let e = one(&["--gpus", many]).unwrap_err().to_string();
+            for said in [&format!("--gpus {many}"), "GLYD_GPUS", "one GPU in this release", "Name one GPU instead (--gpus 1, GLYD_GPUS=1)"] {
+                assert!(e.contains(said), "{many}: {e}");
+            }
+        }
+        for bad in ["", "x", "0,", "1.5"] {
+            let e = one(&["--gpus", bad]).unwrap_err().to_string();
+            assert!(e.contains(&format!("--gpus {bad}: GPU numbers")), "{bad:?}: {e}");
+        }
     }
 
     /// The executor's loader takes every matrix of the tiny model (a whole model's stage wants each one), holds as saved the table of n-grams and the shapes the

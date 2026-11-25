@@ -43,7 +43,8 @@ because the experts that miss the GPU's cache run on it.
 
 - Chat: `http://127.0.0.1:8080`. OpenAI API at `http://127.0.0.1:8080/v1` (any key, any model name), Anthropic API at `/v1/messages`.
 - Context up to 262,144 tokens; the default is 32,768 (`GLYD_CTX=65536 tools/serve.sh` for more).
-- Two NVIDIA cards: `GLYD_GPUS=0,1 tools/serve.sh`.
+- One GPU: this release runs Condor on one card. `GLYD_GPUS=1 tools/serve.sh` picks the second card of a machine with two; naming more than one
+  (`GLYD_GPUS=0,1`) is refused with that said, because the layers are not split over several GPUs yet.
 - 4 requests at once by default (`GLYD_USERS=N`, 1 to 8).
 
 More: [condor/README.md](https://github.com/surya-koritala/Glyd/blob/main/condor/README.md),
