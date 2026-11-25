@@ -1,5 +1,5 @@
-// GLM-5.3-Flash's own kernels (included by engine.cu after qwen35.cu and moe.cu; the executor runs them through src/kern_glm.rs's `KernGlm`): Kimi delta attention (the delta rule with a decay for each key channel, one token after another and in chunks, and the
-// gated norm of its output) and the latent attention over the keys an indexer picks; its residual streams are the streams kind's (residual.cu). bf16 in memory, fp32
+// GLM-5.3-Flash's own kernels (included by engine.cu after qwen35.cu and moe.cu; the executor runs them through src/kern/glm.rs's `KernGlm`): Kimi delta attention (the delta rule with a decay for each key channel, one token after another and in chunks, and the
+// gated norm of its output); its latent attention is the latent attention layer kind's (kernels/mla.cu) and its residual streams are the streams kind's (residual.cu). bf16 in memory, fp32
 // inside; the rounding points are transformers 5.19.0's (modeling_glm5_next.py). The causal convolution of q, k and v is the engine's `conv_silu` (qwen35.cu: the same operation, three convolutions side by side),
 // the products are the library's. Reference: tools/glm_ref.py.
 // Shapes: a head has GM_D = 128 channels, the state 128 x 128 (S[i][j]: i over the keys' channels, j over the values'); the layer's q, k and v are H heads each, in rows [q | k | v] of 3 H 128.

@@ -192,16 +192,23 @@ pub struct Indexer {
     /// The layer reuses the previous indexer layer's choice and has no indexer weights (GLM's `indexer_types` "shared").
     pub shared: bool,
     pub form: IndexForm,
+    /// The gated form's rotary: the first `rope` channels of each query head and of each token's key rotated to their positions by the attention's rotary
+    /// (the full-size GLM's and DeepSeek-V3.2's indexer, their `qk_rope_head_dim`); 0: none (GLM-5.3-Flash, Kimi-K3.1, DeepSeek-V4). The mean form's
+    /// queries and pools are rotated as `IndexForm::Mean` says, whatever this is.
+    pub rope: usize,
 }
 
-/// The derived form, with `form` said only where it is not the gated form with LayerNorm-ed keys (`IndexForm::LAYER_KEYS`): those indexers'
-/// descriptions read as they did before the field (the digests of tests/fixtures/descriptions.json are of this text).
+/// The derived form, with `form` said only where it is not the gated form with LayerNorm-ed keys (`IndexForm::LAYER_KEYS`) and `rope` only where it
+/// rotates: those indexers' descriptions read as they did before the fields (the digests of tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for Indexer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Indexer");
         s.field("heads", &self.heads).field("head_dim", &self.head_dim).field("top_k", &self.top_k).field("block", &self.block).field("shared", &self.shared);
         if self.form != IndexForm::LAYER_KEYS {
             s.field("form", &self.form);
+        }
+        if self.rope != 0 {
+            s.field("rope", &self.rope);
         }
         s.finish()
     }

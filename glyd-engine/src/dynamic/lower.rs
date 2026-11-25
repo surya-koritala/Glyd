@@ -1246,7 +1246,7 @@ pub fn kimi(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, w32
         x => err(format!("Kimi-K3: block {b}'s {r} is {x:?}")),
     };
     let (mut qd, mut nh, mut kd, mut bound) = (0, 0, 0, 0.0);
-    let (mut inter, mut situ, mut moe_rows, mut mla) = (0, (0.0, 0.0), 0, None);
+    let (mut inter, mut situ, mut moe_rows, mut mla, mut mla_ix) = (0, (0.0, 0.0), 0, None, None);
     let (mut ls, mut starts) = (Vec::with_capacity(layers), Vec::with_capacity(layers));
     for l in 0..layers {
         let (mx, ff) = (&m.blocks[2 * l], &m.blocks[2 * l + 1]);
@@ -1267,8 +1267,13 @@ pub fn kimi(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, w32
                 true
             }
             Body::Mixer(Mixer::Mla(x)) => {
-                // (q_a, the gate and kv_a one product)
-                mla = Some(super::mla::MlaOp::of(x, super::mla::MlaIn::Fused { w: 0 }, 0, 0, 0, 0, false)?);
+                // (q_a, the gate and kv_a one product; with the newer config's indexer on the layers it names)
+                let op = super::mla::MlaOp::of(x, super::mla::MlaIn::Fused { w: 0 }, 0, 0, 0, 0, false)?;
+                if x.indexer.is_some() {
+                    mla_ix = Some(op);
+                } else {
+                    mla = Some(op);
+                }
                 false
             }
             b => return err(format!("Kimi-K3: layer {l}'s mixer is {b:?}")),
@@ -1288,10 +1293,11 @@ pub fn kimi(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, w32
             }
             b => return err(format!("Kimi-K3: layer {l}'s feed-forward is {b:?}")),
         };
-        ls.push(KimiLayer { kda, moe, w32: w32.get(l).copied().unwrap_or_default() });
+        let ix = matches!(&mx.body, Body::Mixer(Mixer::Mla(x)) if x.indexer.is_some());
+        ls.push(KimiLayer { kda, moe, w32: w32.get(l).copied().unwrap_or_default(), ix });
     }
     let eps = m.blocks.first().map_or(1e-6, |b| b.norm_in.eps);
-    Ok(kimi_desc(&KimiDims { h: m.hidden, qd, nh, kd, bound, inter, situ, eps, moe_rows, mla }, &ls, &starts, st, early, m.vocab, max_pos, eos))
+    Ok(kimi_desc(&KimiDims { h: m.hidden, qd, nh, kd, bound, inter, situ, eps, moe_rows, mla, mla_ix }, &ls, &starts, st, early, m.vocab, max_pos, eos))
 }
 
 /// A model of compressed attention layers (DeepSeek-V4's and V4.1's forms of the kind; `lower_comp::lower`, which gives its loader's plan too). `vo` what the level and
@@ -1537,6 +1543,39 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The Kimi family's second random shape (the newer config's sparse attention) lowers as the loader's own description of it: its two latent attention layers
+    /// with the indexer of a key a token (RMS-normed keys at the model's epsilon, no pooling tensors, the best 16 tokens kept), a ring of its keys beside each
+    /// layer's latents, the shared key part kept.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_random_kimi_with_sparse_attention_lowers_as_its_own_description() {
+        let dir = std::env::temp_dir().join(format!("glyd-lower-kimi-dsa-{}", std::process::id()));
+        crate::kimi_ref::random_dsa(&dir).unwrap();
+        let c = crate::kimi::ConfigKimi::load(&dir).unwrap();
+        assert_eq!(c.dsa, Some(crate::kimi::KimiDsa { layers: vec![3, 7], heads: 4, dim: 64, top_k: 16, layer_norm: false }));
+        let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
+        let w32 = super::super::kimi::dtypes(&ck, &c).unwrap();
+        for st in [super::super::Stage::whole(c.layers), super::super::Stage { layers: (4, 8), first: false, last: true }] {
+            let d = super::super::kimi::lowered(&dir, &c, &st, &w32, false).unwrap_or_else(|e| panic!("{}", e.msg));
+            let ops: Vec<&super::super::MlaOp> = d.layers.iter().flatten().filter_map(|o| if let Op::Mla(a) = o { Some(a) } else { None }).collect();
+            assert_eq!((ops.len(), d.rings.len()), if st.first { (2, 4) } else { (1, 2) });
+            for a in ops {
+                let x = a.indexer.as_ref().expect("the indexer");
+                assert_eq!((x.key, x.pooled(), x.pick.ratio, x.pick.top_k, x.pick.heads, x.dim), (super::super::KeyNorm::Rms(1e-5), false, 1, 16, 4, 64));
+                assert_eq!(
+                    (a.small_count(), a.rope, d.rings[a.ring].d, d.rings[a.ring + 1].d, x.pick.keys),
+                    (7, 64, 128 + 64, 128, super::super::IdxKeys::Ring(a.ring + 1))
+                );
+            }
+        }
+        // (the first shape has no indexer)
+        crate::kimi_ref::random(&dir, 1, true, 8).unwrap();
+        let c = crate::kimi::ConfigKimi::load(&dir).unwrap();
+        let d = super::super::kimi::describe(&c, &super::super::Stage::whole(c.layers), &vec![(true, true); c.layers], false).unwrap();
+        assert!(c.dsa.is_none() && d.layers.iter().flatten().all(|o| !matches!(o, Op::Mla(a) if a.indexer.is_some())));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The random Kimi-K3 the logits and GPU checks run, lowered whole and as a split's stages, is the executor's own description of it; its dtypes as written.

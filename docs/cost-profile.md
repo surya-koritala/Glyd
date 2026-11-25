@@ -22,7 +22,7 @@ The record: [benchmarks/gpu/rtx4080s-cost-profile-2026-10-20](../benchmarks/gpu/
 ## The profile
 
 Bytes are bytes (not GiB); a value that is not known is `null`, never 0. Three kinds of number are kept apart by `basis`: sizes
-(`file`: read from the safetensors headers; `estimated`: the shape times the layout's bits a weight, src/fit.rs; `mixed`), the
+(`file`: read from the safetensors headers; `estimated`: the shape times the layout's bits a weight, src/plan.rs; `mixed`), the
 working memory (`measured`, from the loaded engine's counters, else `unavailable`), and timing (`estimated` from the predictor,
 or null).
 
