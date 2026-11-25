@@ -896,7 +896,8 @@ impl Part {
 
     /// The part's weights as loaded by the family's own loader, with its activations and outputs.
     fn from_loaded(d: ModelDesc, l: Loaded, rows: usize, out: usize) -> Result<Part> {
-        let slots: Vec<Buf> = d.widths.iter().map(|&w| Buf::new(w.max(1) * rows * 2)).collect::<Result<_>>()?;
+        // (zeroed: a stage after the first warms its graph up, and hands its slots over, before its own layers have written every one of them)
+        let slots: Vec<Buf> = d.widths.iter().map(|&w| Buf::zeroed(w.max(1) * rows * 2)).collect::<Result<_>>()?;
         let logits = Buf::new(d.vocab * out * 2)?;
         let (tok, val) = (Buf::zeroed(4 * out)?, Buf::zeroed(4 * out)?);
         let mut small_sc = l.small_sc;
@@ -3230,11 +3231,6 @@ impl Dyn {
         unsafe {
             if self.stage.first {
                 self.embed(&[0u32])?;
-            } else {
-                // (a later stage's row of what the stage before hands it: zeros, so that the warm-up reads no memory never written)
-                for (sl, w) in self.boundary() {
-                    crate::dev::memset_async(self.big.slot(sl), 0, w * 2, self.dev.stream)?;
-                }
             }
             self.forward(&self.big, 1, (st, st), 1)?;
         }
