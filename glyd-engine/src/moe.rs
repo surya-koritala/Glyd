@@ -2250,7 +2250,7 @@ mod tests {
             let at = LIBRARY.find(head).unwrap_or_else(|| panic!("no {head} in the library"));
             &LIBRARY[at..at + LIBRARY[at..].find("\n}\n").expect("the function's end")]
         };
-        for head in ["GLYD_GPU_INTERNAL int glyd_gpu_mma_moe(", "GLYD_GPU_INTERNAL int glyd_gpu_mma_moe_unpack("] {
+        for head in ["GLYD_GPU_INTERNAL int glyd_gpu_mma_moe_as(", "GLYD_GPU_INTERNAL int glyd_gpu_mma_moe_unpack("] {
             let f = body(head);
             for (tag, bits) in [(INT6_TAG, 6), (INT5_TAG, 5), (INT4_TAG, 4), (glyd_gpu::pack::INT3_TAG, 3)] {
                 let held = block_step_bytes(tag).is_some();
