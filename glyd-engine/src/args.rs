@@ -14,6 +14,7 @@ const SWITCHES: &[&str] = &[
     "quality",
     "bar",
     "cpu-ref",
+    "sequence",
     "list-cases",
     "p2p",
     "ignore-eos",

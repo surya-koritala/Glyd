@@ -534,10 +534,10 @@ fn nemotron_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     boxed(crate::dynamic::nemotron::load(dir, &dyn_opts(layout), layout.unwrap_or(Layout::Tiered)))
 }
 
-/// GLM-5.3-Flash has no lossless level (its experts are FP8 in the release): its levels are the lossy ones, the experts at six, five or four bits.
+/// GLM-5.3-Flash at a level: its experts at six, five or four bits (the release's levels, as its experts are FP8 there), or at penguin as the random model holds
+/// them (bf16, the lossless layout `kindcheck` loads): the level the description's CPU reference is held to.
 fn glm_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
-    let Some(experts) = level_layout(level)? else { return err("GLM-5.3-Flash runs at kestrel, swift or wren") };
-    boxed(crate::dynamic::glm::load(dir, &dyn_opts(Some(Layout::Tiered)), experts))
+    boxed(crate::dynamic::glm::load(dir, &dyn_opts(Some(Layout::Tiered)), level_layout(level)?.unwrap_or(Layout::Tiered)))
 }
 
 /// Gemma 4 on the hand-written dense engine.
@@ -982,7 +982,7 @@ pub fn cases() -> Vec<Case> {
             family: "GLM-5.3 (delta attention, sparse attention, mixture of experts)",
             weights: Weights::Random(|d| crate::glm::random(d, false, None)),
             engine: glm_engine,
-            cpu: None,
+            cpu: Some(described_cpu),
             vocab: 2048,
         },
     ]
@@ -1529,7 +1529,7 @@ pub fn record(a: &crate::args::Args) -> Result<()> {
         "source".into(),
         match from {
             // (Nemotron-H has no reference of its own: its description on the reference of the layer kinds)
-"cpu" if matches!(c.id, "nemotron-h" | "qwen4x" | "deepseek-v41" | "qwen35" | "qwen35-wide" | "dense" | "qwen35moe" | "kimi-dsa") => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
+"cpu" if matches!(c.id, "nemotron-h" | "qwen4x" | "deepseek-v41" | "qwen35" | "qwen35-wide" | "dense" | "qwen35moe" | "kimi-dsa" | "glm") => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
             "cpu" => format!(
                 "the CPU reference of src/{}_ref.rs, fp32 inside, on this case's random model (seed fixed in the generator)",
                 c.id.replace("deepseek-", "ds").replace('-', "")
