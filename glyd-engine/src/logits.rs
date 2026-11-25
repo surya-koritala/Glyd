@@ -724,6 +724,11 @@ pub struct RefRun {
 /// `RefRun` of the model in `dir` on `fx`'s tokens. With `take`, each token's experts in each block are those (an engine's `Choices`; a token's empty
 /// list: the router's own) in the place of the router's own choice: the reference of the experts kind on another engine's choices.
 pub fn ref_drive(dir: &Path, fx: &Fixture, take: Option<&Choices>) -> Result<RefRun> {
+    ref_drive_with(dir, fx, take, |_| {})
+}
+
+/// `ref_drive` of the description `edit` changes (another rounding point, say).
+fn ref_drive_with(dir: &Path, fx: &Fixture, take: Option<&Choices>, edit: fn(&mut crate::runtime::describe::Described)) -> Result<RefRun> {
     use crate::runtime::kinds::{Body, Ffn};
     let first: Vec<u32> = fx.prompt.iter().chain(&fx.decode).copied().collect();
     let mut out = RefRun { rows: Vec::new(), routed: Vec::new() };
@@ -732,7 +737,7 @@ pub fn ref_drive(dir: &Path, fx: &Fixture, take: Option<&Choices>) -> Result<Ref
         if tokens.is_empty() {
             continue;
         }
-        let mut m = ref_model(dir)?;
+        let mut m = ref_model_with(dir, edit)?;
         let moe: Vec<usize> = (0..m.layers.len()).filter(|&b| matches!(m.layers[b].block.body, Body::Ffn(Ffn::Moe(_)))).collect();
         if let Some(t) = take {
             if t.len() != moe.len() || t.iter().any(|l| l.len() < at + tokens.len()) {
@@ -2660,6 +2665,105 @@ mod tests {
         assert!(kv.provenance["source"].starts_with(described), "{}", kv.provenance["source"]);
     }
 
+    /// The storage roundings every engine makes and the CPU reference of the layer kinds does not, where the description keeps the value in f32:
+    /// each block's norms' outputs and the final norm's rounded once (an engine holds its activations in bf16), and the embedding's scale its bf16.
+    fn stored(d: &mut crate::runtime::describe::Described) {
+        use crate::runtime::kinds::{Norm, Rounding};
+        let once = |n: &mut Norm| {
+            if n.rounding == Rounding::F32 {
+                n.rounding = Rounding::Once;
+            }
+        };
+        for b in d.desc.blocks.iter_mut() {
+            once(&mut b.norm_in);
+            if let Some(n) = b.norm_out.as_mut() {
+                once(n);
+            }
+        }
+        once(&mut d.desc.final_norm);
+        d.desc.embed.scale = crate::runtime::reference::bf16(d.desc.embed.scale);
+    }
+
+    /// A case's noise floor: the CPU reference of the layer kinds against itself with `stored`'s roundings, on the fixture's tokens, as `compare`
+    /// measures an engine against `bound`; where the case is held on its routers' choices (`Case::on_choices`), the rounded run takes the
+    /// reference's own.
+    fn noise_floor(dir: &Path, fx: &Fixture, on_choices: bool, bound: &Bound) -> Result<Verdict> {
+        let base = ref_drive(dir, fx, None)?;
+        let take: Option<Choices> = on_choices.then(|| base.routed.iter().map(|l| l.iter().map(|r| r.ids.clone()).collect()).collect());
+        let rounded = ref_drive_with(dir, fx, take.as_ref(), stored)?;
+        let own = Fixture { rows: base.rows.iter().map(|r| Row::from_logits(r)).collect::<Result<_>>()?, ..fx.clone() };
+        Ok(compare(&own, bound, &rounded.rows))
+    }
+
+    /// The cases past a tenth of their bound today (on a Mac, 2026-11-25), each to have its draw fixed by its family's owner, never its bound.
+    /// Printed, not held to the line: a case near it may read either side of it on another machine's libm.
+    const NOISE_FLOOR_OPEN: [(&str, &str); 3] = [
+        ("qwen35", "KL mean 1.04e-5 against a tenth of its bound, 1.0e-5"),
+        ("qwen35moe", "KL max 1.87e-4 in one row, a logit 0.126 apart (an expert's choice, likely), against 2.5e-5"),
+        ("muse", "KL mean 2.16e-3 and max 1.31e-2, the best token 5 of 8, against 1.2e-3 and 3.0e-3"),
+    ];
+
+    /// Every case a CPU reference holds is well conditioned for its bound: its noise floor (`noise_floor`) is at most a tenth of its reference
+    /// fixture's bound, in KL mean and max, the best token kept where the bound asks it. A random case whose draw cannot tell a fault from rounding
+    /// (Gemma 4's were 3e-4 to 1.1e-3 against a bound of 1e-4) fails here, and its draw is fixed, not its bound (`NOISE_FLOOR_OPEN`). Each case's
+    /// reference is its description's on the layer kinds (a family with a hand-written reference too: the same function). Where a description
+    /// already rounds every norm (Kimi-K3's) and scales no embedding, `stored` moves nothing: its floor is 0 and says nothing of its draw. Not here:
+    /// glm (no CPU reference), deepseek-v41 (no engine: its fixture's bound is the reference's own across machines), nemotron-h (an older family).
+    #[cfg(feature = "dev")]
+    #[test]
+    fn every_case_held_to_a_reference_is_well_conditioned() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits");
+        let all: Vec<Case> = cases().into_iter().filter(|c| c.cpu.is_some() && !["glm", "deepseek-v41", "nemotron-h"].contains(&c.id)).collect();
+        let floors: Vec<(&str, Result<(Verdict, Bound)>)> = std::thread::scope(|s| {
+            let fixtures = &fixtures;
+            let runs: Vec<_> = all
+                .iter()
+                .map(|c| {
+                    s.spawn(move || {
+                        let dir = std::env::temp_dir().join(format!("glyd-floor-{}-{}", c.id, std::process::id()));
+                        let r = (|| {
+                            let Weights::Random(make) = &c.weights else { return err("a Hub model") };
+                            make(&dir)?;
+                            let fx = Fixture::read(&fixtures.join(format!("{}.json.gz", c.id)))?;
+                            let tenth = match fx.bounds[0].bound {
+                                Bound::Kl { mean, max, top1 } => Bound::Kl { mean: mean / 10.0, max: max / 10.0, top1 },
+                                Bound::Bits => return err("a reference fixture of bits"),
+                            };
+                            Ok((noise_floor(&dir, &fx, c.on_choices, &tenth)?, tenth))
+                        })();
+                        std::fs::remove_dir_all(&dir).ok();
+                        (c.id, r)
+                    })
+                })
+                .collect();
+            runs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let mut wrong = Vec::new();
+        for (id, r) in &floors {
+            let (v, tenth) = r.as_ref().unwrap_or_else(|e| panic!("{id}: {}", e.msg));
+            let Bound::Kl { mean, max, .. } = tenth else { unreachable!() };
+            let open = NOISE_FLOOR_OPEN.iter().find(|o| o.0 == *id);
+            println!(
+                "{} {id:12} noise floor: KL mean {:.2e} max {:.2e}, best token {}/{}, largest logit difference {:.4}; a tenth of its bound: mean {mean:.1e}, max {max:.1e}{}",
+                if v.ok { "PASS" } else if open.is_some() { "OPEN" } else { "FAIL" },
+                v.mean_kl,
+                v.max_kl,
+                v.top1.0,
+                v.top1.1,
+                v.max_dlogit,
+                match open {
+                    Some(o) if v.ok => format!(" (open, {}: within it here, off the list once it is on every machine)", o.1),
+                    Some(o) => format!(" (open: {}, its draw its owner's to fix)", o.1),
+                    None => String::new(),
+                }
+            );
+            if !v.ok && open.is_none() {
+                wrong.push(*id);
+            }
+        }
+        assert!(wrong.is_empty(), "past a tenth of the bound: {wrong:?} (a draw to fix, not a bound)");
+    }
+
     /// Each Gemma 4 random case is well conditioned for the kind's bound, and its fixture is what the CPU reference makes. For each case: its attention
     /// scores' scale (each layer's queries against the prompt's keys, before the rope), and the CPU reference against itself with storage roundings the
     /// engine makes and the reference does not (each norm's output and the embedding's scale bf16), within the kind's bound; the draw the plain case
@@ -2670,18 +2774,8 @@ mod tests {
     #[ignore]
     fn gemma4_reference_and_its_draws() {
         use crate::runtime::describe::Described;
-        use crate::runtime::kinds::{Body, Mixer, Rounding};
-        use crate::runtime::reference::{bf16, dot, norm::norm};
-        fn stored(d: &mut Described) {
-            for b in d.desc.blocks.iter_mut() {
-                b.norm_in.rounding = Rounding::Once;
-                if let Some(n) = b.norm_out.as_mut() {
-                    n.rounding = Rounding::Once;
-                }
-            }
-            d.desc.final_norm.rounding = Rounding::Once;
-            d.desc.embed.scale = bf16(d.desc.embed.scale);
-        }
+        use crate::runtime::kinds::{Body, Mixer};
+        use crate::runtime::reference::{dot, norm::norm};
         let kind = Bound::Kl { mean: 1e-4, max: 2.5e-4, top1: 0.85 };
         let (prompt, decode, long) = standard_tokens(4096);
         let rows_of = |dir: &Path, edit: fn(&mut Described)| drive(described_cpu_with(dir, edit).unwrap().as_mut(), &prompt, &decode, &long).unwrap();
