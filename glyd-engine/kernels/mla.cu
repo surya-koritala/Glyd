@@ -303,22 +303,34 @@ __device__ __forceinline__ unsigned gm_key(float f) {  // (the order of the floa
 // The indexer's pick, every family's (GLM-5.3's pools, DeepSeek-V4's compressed entries): the entries row t's query reads, the k of largest score (scores [n, emax]) of its ne = min((pos + 1) / ratio, emax) complete ones
 // (all where ne <= k), equal scores the earlier entry first, in the entries' order. Each entry is `expand` positions of sel (entry e: e expand .. e expand + expand - 1: a pool's tokens, or 1: the entry itself), then
 // where `tail` the (pos + 1) % ratio tokens of the incomplete entry after them; sel [n, sk] int32, their count into cnt [n]. The k-th largest key found bit by bit (32 counts over the row), then the larger ones and
-// the equal ones up to k taken in order by a scan. Block a row, 1,024 threads.
-extern "C" __global__ void __launch_bounds__(1024) idx_pick(const float* scores, int emax, const int* pos, int ratio, int k, int expand, int tail, int* sel, int sk, int* cnt) {
-    const int t = blockIdx.x, tid = threadIdx.x, P = (pos[t] + 1) / ratio, ne = min(P, emax), tl = tail ? (pos[t] + 1) % ratio : 0;
+// the equal ones up to k taken in order by a scan. Block a row, 1,024 threads. `nent` (where not null): each row's entries, in place of its complete ones (the candidate blocks' pick, idx_blocks'); `masked`: the
+// entries of score -inf are none of the row's candidates (idx_inside's), so a row of no more than k others takes those alone.
+extern "C" __global__ void __launch_bounds__(1024) idx_pick(const float* scores, int emax, const int* pos, int ratio, int k, int expand, int tail, int* sel, int sk, int* cnt, const int* nent, int masked) {
+    const int t = blockIdx.x, tid = threadIdx.x, P = (pos[t] + 1) / ratio, ne = nent ? min(nent[t], emax) : min(P, emax), tl = tail ? (pos[t] + 1) % ratio : 0;
     const float* sr = scores + (size_t)t * emax;
     int* out = sel + (size_t)t * sk;
     __shared__ int warp_n[32];
     __shared__ int base;
-    if (ne <= k) {
+    if (ne <= k && !masked) {
         const int T = ne * expand + tl;
         for (int e = tid; e < T; e += 1024) out[e] = e;
         if (tid == 0) cnt[t] = T;
         return;
     }
-    // the k-th largest key: the largest T with at least k keys >= T
+    // the k-th largest key: the largest T with at least k keys >= T (masked, with no more than k candidates: every candidate, the keys above -inf's)
     uint32_t T = 0;
-    for (int b = 31; b >= 0; b--) {
+    bool every = false;
+    if (masked) {
+        int c = 0;
+        for (int e = tid; e < ne; e += 1024) c += sr[e] > -INFINITY;
+        const int m = (int)block_sum((float)c);
+        if (m <= k) {
+            k = m;
+            T = gm_key(-INFINITY);
+            every = true;
+        }
+    }
+    for (int b = 31; b >= 0 && !every; b--) {
         const uint32_t try_ = T | (1u << b);
         int c = 0;
         for (int e = tid; e < ne; e += 1024) c += gm_key(sr[e]) >= try_;
@@ -362,6 +374,36 @@ extern "C" __global__ void __launch_bounds__(1024) idx_pick(const float* scores,
     }
     for (int u = tid; u < tl; u += 1024) out[k * expand + u] = P * expand + u;
     if (tid == 0) cnt[t] = k * expand + tl;
+}
+
+// The candidate source's blocks (`kinds::CompShare::publish`, DeepSeek-V4.1's CSA2): row t's ne = min((pos + 1) / ratio, emax) entries (scores [n, emax]) in blocks of `block`, each block's score its best entry's,
+// the block of its newest entry +inf (kept whatever its score) into bsc [n, bmax], their count into nent [n]: idx_pick then keeps the best `top` of them. Block a row, 256 threads.
+extern "C" __global__ void __launch_bounds__(256) idx_blocks(const float* scores, int emax, const int* pos, int ratio, int block, float* bsc, int bmax, int* nent) {
+    const int t = blockIdx.x, ne = min((pos[t] + 1) / ratio, emax), nb = min((ne + block - 1) / block, bmax);
+    const float* sr = scores + (size_t)t * emax;
+    for (int b = threadIdx.x; b < nb; b += blockDim.x) {
+        float m = -INFINITY;
+        for (int e = b * block; e < min((b + 1) * block, ne); e++) m = fmaxf(m, sr[e]);
+        bsc[(size_t)t * bmax + b] = b == nb - 1 ? INFINITY : m;
+    }
+    if (threadIdx.x == 0) nent[t] = nb;
+}
+
+// An index source after the candidate source: row t's entries outside the blocks its query was published (cand [n, top], ncand [n] of them, in order: idx_pick's of idx_blocks') get score -inf (scores
+// [n, emax]), out of the row's candidates (idx_pick's `masked`). Block a row, 256 threads.
+extern "C" __global__ void __launch_bounds__(256) idx_inside(float* scores, int emax, const int* pos, int ratio, int block, const int* cand, int top, const int* ncand) {
+    const int t = blockIdx.x, ne = min((pos[t] + 1) / ratio, emax), nc = ncand[t];
+    const int* cr = cand + (size_t)t * top;
+    for (int e = threadIdx.x; e < ne; e += blockDim.x) {
+        const int b = e / block;
+        int lo = 0, hi = nc;
+        while (lo < hi) {
+            const int mid = (lo + hi) / 2;
+            if (cr[mid] < b) lo = mid + 1;
+            else hi = mid;
+        }
+        if (lo == nc || cr[lo] != b) scores[(size_t)t * emax + e] = -INFINITY;
+    }
 }
 
 // olat [n, NH, KR] fp32 = for each row i and head h, softmax over its cnt[i] tokens t of (qa[i][h] . lat[sel[i][t]]) scale, times the latents: sum_t p_t lat[sel[i][t]] (lat [., KS] bf16, a position's row through tab). A

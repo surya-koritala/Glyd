@@ -85,7 +85,8 @@ extern "C" __global__ void v4_fp8(const bf16* x, bf16* y, int W, int block) {
 // ---- the attention's query and key ------------------------------------------------------------------------------------------------------------------------------------------------------------
 // q [n, H, 512] in place: each head normed in the release's bf16 arithmetic (the squares, their mean, the root's reciprocal and the product each rounded), then the rotary on its last 64 channels at the row's
 // position (cos and sin [positions, 32] fp32). Block (row, head), 128 threads of 4 channels.
-extern "C" __global__ void __launch_bounds__(128) v4_q_prep(bf16* q, const float* cs, const float* sn, const int* pos, float eps) {
+// (`norm` 0: no per-head norm, the rotary alone: `Comp::q_head_norm` false, DeepSeek-V4.1's)
+extern "C" __global__ void __launch_bounds__(128) v4_q_prep(bf16* q, const float* cs, const float* sn, const int* pos, float eps, int norm) {
     const int t = blockIdx.x, h = blockIdx.y, H = gridDim.y, c = threadIdx.x * 4;
     bf16* qr = q + ((size_t)t * H + h) * V4_HD;
     float v[4], ss = 0.f;
@@ -94,10 +95,12 @@ extern "C" __global__ void __launch_bounds__(128) v4_q_prep(bf16* q, const float
         v[i] = b2f(qr[c + i]);
         ss += b2f(f2b(v[i] * v[i]));
     }
-    const float mean = b2f(f2b(block_sum(ss) / V4_HD));
-    const float r = b2f(f2b(1.f / sqrtf(b2f(f2b(mean + eps)))));
+    if (norm) {
+        const float mean = b2f(f2b(block_sum(ss) / V4_HD));
+        const float r = b2f(f2b(1.f / sqrtf(b2f(f2b(mean + eps)))));
 #pragma unroll
-    for (int i = 0; i < 4; i++) v[i] = b2f(f2b(v[i] * r));
+        for (int i = 0; i < 4; i++) v[i] = b2f(f2b(v[i] * r));
+    }
     if (c >= V4_HD - V4_RD) {
         const float* ct = cs + (size_t)pos[t] * (V4_RD / 2);
         const float* st = sn + (size_t)pos[t] * (V4_RD / 2);
@@ -259,11 +262,37 @@ extern "C" __global__ void v4_comp_pool(const float* proj, const float* ape, flo
     }
 }
 
+// An indexer key's channel c (a thread a channel, 128 threads) after its norm: the rotary on its last 64 channels (cosines and sines ct, st at the key's position), the Hadamard rotation, E2M1 in blocks of
+// 32 where `sim`; through shared memory hs [128].
+__device__ __forceinline__ float v4_idx_tail(float v, float* hs, int c, const float* ct, const float* st, int sim) {
+    hs[c] = v;
+    __syncthreads();
+    if (c >= V4_IDX - V4_RD) {
+        const int p = (c - (V4_IDX - V4_RD)) / 2;
+        const float a = hs[c & ~1], b = hs[c | 1], cc = ct[p], sv = st[p];
+        v = b2f(f2b((c & 1) ? a * sv + b * cc : a * cc - b * sv));
+    }
+    __syncthreads();
+    hs[c] = v;
+    for (int h = 1; h < V4_IDX; h *= 2) {
+        __syncthreads();
+        const float a = hs[c], b = hs[c ^ h];
+        __syncthreads();
+        hs[c] = (c & h) ? b - a : a + b;
+    }
+    __syncthreads();
+    v = b2f(f2b(hs[c] * 0.08838834764831845f));
+    float q4[1] = {v};
+    v4_fp4_group(q4, 1, 32);
+    return sim ? q4[0] : v;
+}
+
 // Each window the chunk completed (block k: the k-th, window g = pos[0] / ratio + k; nothing where the chunk does not complete it): its pooled entry rounded to bf16, normed with w (rounded once), the rotary on
 // its last 64 channels at the window's first position, then (mode 0, the attention's: d = 512) its first d - 64 channels to E4M3 in blocks of 64, or (mode 1, the indexer's: d = 128) the Hadamard rotation and
-// E2M1 in blocks of 32; into cache [entries, d] at entry g (through tab). 128 threads, d / 128 channels each.
+// E2M1 in blocks of 32; into cache [entries, d] at entry g (through tab). Where `raw` ([entries, d], through tab: a ring of the cache's group), the normed entry before the rotary too, exact in
+// bf16 (a shared compressed attention's indexer keys are made of it: v4_idx_keys). 128 threads, d / 128 channels each.
 extern "C" __global__ void __launch_bounds__(128) v4_comp_out(const float* pooled, const bf16* w, const float* cs, const float* sn, const int* pos, int n, bf16* cache, const int* tab, int ratio, int d, int mode,
-                                                              float eps, int sim) {
+                                                              float eps, int sim, bf16* raw) {
     const int k = blockIdx.x, g = pos[0] / ratio + k, m = d / 128, c = threadIdx.x * m;
     if ((g + 1) * ratio - 1 > pos[n - 1]) return;  // (the whole block)
     __shared__ float hs[V4_IDX];
@@ -274,6 +303,8 @@ extern "C" __global__ void __launch_bounds__(128) v4_comp_out(const float* poole
     }
     const float r = rsqrtf(block_sum(ss) / d + eps);
     for (int i = 0; i < m; i++) v[i] = b2f(f2b(b2f(w[c + i]) * (v[i] * r)));
+    if (raw)
+        for (int i = 0; i < m; i++) raw[v4_place(tab, g, 0) * d + c + i] = f2b(v[i]);
     const float* ct = cs + (size_t)g * ratio * (V4_RD / 2);
     const float* st = sn + (size_t)g * ratio * (V4_RD / 2);
     if (mode == 0) {
@@ -288,29 +319,33 @@ extern "C" __global__ void __launch_bounds__(128) v4_comp_out(const float* poole
         }
     } else {
         // (d = 128: a channel a thread; the rotary's pairs and the Hadamard's butterflies through shared memory)
-        hs[c] = v[0];
-        __syncthreads();
-        if (c >= d - V4_RD) {
-            const int p = (c - (d - V4_RD)) / 2;
-            const float a = hs[c & ~1], b = hs[c | 1], cc = ct[p], sv = st[p];
-            v[0] = b2f(f2b((c & 1) ? a * sv + b * cc : a * cc - b * sv));
-        }
-        __syncthreads();
-        hs[c] = v[0];
-        for (int h = 1; h < V4_IDX; h *= 2) {
-            __syncthreads();
-            const float a = hs[c], b = hs[c ^ h];
-            __syncthreads();
-            hs[c] = (c & h) ? b - a : a + b;
-        }
-        __syncthreads();
-        v[0] = b2f(f2b(hs[c] * 0.08838834764831845f));
-        float q4[1] = {v[0]};
-        v4_fp4_group(q4, 1, 32);
-        if (sim) v[0] = q4[0];
+        v[0] = v4_idx_tail(v[0], hs, c, ct, st, sim);
     }
     bf16* out = cache + v4_place(tab, g, 0) * d;
     for (int i = 0; i < m; i++) out[c + i] = f2b(v[i]);
+}
+
+// The indexer's keys of a shared compressed attention's entries (`Op::IdxKeys`, DeepSeek-V4.1's CSA2): each window the chunk completed (block k, window g = pos[0] / ratio + k), of raw [entries, 512] (its
+// compressor's entry normed, before the rotary: v4_comp_out's), by wk [128, 512] (bf16) in fp32 rounded to bf16 (the release's bf16 product), normed with w (rounded once), then as an indexer entry of
+// v4_comp_out: the rotary at the window's first position, the Hadamard rotation, E2M1 where `sim`; into keys [entries, 128] at g. Both rings of the entries' group: rows through its table tab. 128
+// threads, a channel each.
+extern "C" __global__ void __launch_bounds__(128) v4_idx_keys(const bf16* raw, const int* tab, const bf16* wk, const bf16* w, const float* cs, const float* sn, const int* pos, int n, bf16* keys, int ratio, float eps,
+                                                              int sim) {
+    const int k = blockIdx.x, g = pos[0] / ratio + k, c = threadIdx.x;
+    if ((g + 1) * ratio - 1 > pos[n - 1]) return;  // (the whole block)
+    __shared__ float xs[V4_HD];
+    __shared__ float hs[V4_IDX];
+    const bf16* xr = raw + v4_place(tab, g, 0) * V4_HD;
+    for (int i = c; i < V4_HD; i += V4_IDX) xs[i] = b2f(xr[i]);
+    __syncthreads();
+    const bf16* wr = wk + (size_t)c * V4_HD;
+    float acc = 0.f;
+    for (int i = 0; i < V4_HD; i++) acc += b2f(wr[i]) * xs[i];
+    float v = b2f(f2b(acc));
+    const float r = rsqrtf(block_sum(v * v) / V4_IDX + eps);
+    v = b2f(f2b(b2f(w[c]) * (v * r)));
+    v = v4_idx_tail(v, hs, c, cs + (size_t)g * ratio * (V4_RD / 2), sn + (size_t)g * ratio * (V4_RD / 2), sim);
+    keys[v4_place(tab, g, 0) * V4_IDX + c] = f2b(v);
 }
 
 // ---- the indexer -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------

@@ -18,6 +18,7 @@ pub use kvpages::check as kvpages_check;
 #[cfg(feature = "dev")]
 pub(crate) use kvpages::room_of as kv12_room;
 pub mod lower;
+pub mod lower_comp;
 pub mod mla;
 pub mod muse;
 pub mod nemotron;
@@ -52,7 +53,7 @@ use crate::sched::Sample;
 use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload_packed, Item, Layout, PackBuf};
 pub use attn::AttnOp;
 use glyd_gpu::safetensors::Checkpoint;
-pub use mla::{IdxKeys, IdxPick, IdxScore, MlaIn, MlaIndexer, MlaOp};
+pub use mla::{Cand, IdxKeys, IdxPick, IdxScore, MlaIn, MlaIndexer, MlaOp};
 #[cfg(feature = "dev")]
 pub(crate) use rows::EXACT_ROWS;
 use std::path::Path;
@@ -254,10 +255,12 @@ pub enum Op {
         y: Slot,
         block: usize,
     },
-    /// The compressed attention's (`runtime::kinds::Comp`; src/dynamic/comp.rs, kernels/dsv4.cu): its queries Qo (`heads` of 512), each normed in bf16 arithmetic, the rotary of table `rope`.
+    /// The compressed attention's (`runtime::kinds::Comp`; src/dynamic/comp.rs, kernels/dsv4.cu): its queries Qo (`heads` of 512), each normed in bf16 arithmetic where `norm`
+    /// (`Comp::q_head_norm`), the rotary of table `rope`.
     CompQ {
         rope: usize,
         heads: usize,
+        norm: bool,
     },
     /// Its key-value row Kv (keys = values): normed by `norm`, the rotary of `rope`, its first 448 channels to E4M3; into ring `ring` (the window).
     CompKv {
@@ -267,17 +270,33 @@ pub enum Op {
     },
     /// Compressed keys and values: a compressor of H, its two products by `w` (small: [2 W, hidden] bf16, kv's rows then the gate's) in fp32 into Cp, the pooling of every `ratio` rows with `ape` (small,
     /// fp32) and its state (states `state` and `state` + 1: the kv rows and the scores), each completed window's entry normed by `norm`, the rotary of `rope`, quantized (`indexer`: rotated, E2M1; else
-    /// E4M3) into ring `cache` (`Ring::entries`: an entry a row).
+    /// E4M3) into ring `cache` (`Ring::entries`: an entry a row); where `raw`, each entry as normed before its rotation too (exact in bf16) into ring `raw` (`Ring::entries`
+    /// of the same ratio: the cache's group, one block table): the indexer's keys of a shared compressed attention are made of these (`Op::IdxKeys`). `overlap`: windows of
+    /// 2 `ratio` rows, the previous window's first half of the channels (`Comp::overlap`).
     Compress {
         w: usize,
         ape: usize,
         norm: usize,
         d: usize,
         ratio: usize,
+        overlap: bool,
         rope: usize,
         cache: usize,
         state: usize,
         indexer: bool,
+        raw: Option<usize>,
+    },
+    /// The indexer's keys of a shared compressed attention's entries (`CompShare`: a kv source with the indexer's key product): each entry the call completes, of state
+    /// ring `raw` (`Op::Compress`'s, normed, before its rotation), by the key product `w` (small, bf16 [128, 512]), normed by `norm` (small [128]), rotated by table `rope`
+    /// at its window's first position, rounded as the indexer's entries (E2M1 where the release's quantizations are simulated) into ring `keys` (`Ring::entries` of 128;
+    /// both rings of the entries' group).
+    IdxKeys {
+        w: usize,
+        norm: usize,
+        rope: usize,
+        ratio: usize,
+        raw: usize,
+        keys: usize,
     },
     /// The indexer's queries Iq (`heads` of 128): the rotary of `rope`, the rotation, E2M1.
     IdxQ {
@@ -304,10 +323,12 @@ pub enum Op {
     NgramAdd(ngram::NgramAdd),
     /// The attention of Qo over the window (ring `ring`) and the compressed entries (ring `cache`: ratio 4, the indexer's picks; another, every complete entry) with the sink (small, fp32), the
     /// rotary of `rope` taken off its output; into Att in the grouped low rank's order (`hpg` heads a group).
+    /// `picked`: the entries the latest indexer's pick chose (its picks' buffer: the layer's own, or the index source's it shares), else every complete entry.
     CompAttn {
         ring: usize,
         cache: Option<usize>,
         ratio: usize,
+        picked: bool,
         sink: usize,
         rope: usize,
         heads: usize,
@@ -505,6 +526,8 @@ pub struct V4Dims {
     pub sim: bool,
     /// the attention output's low-rank groups
     pub o_groups: usize,
+    /// the smallest ratio of a layer with an indexer (its entries a chunk makes and a query scores at most; 0: none)
+    pub idx_ratio: usize,
 }
 
 /// cos and sin [positions, pairs] of pairs i < `pairs` of a head of `dim`: inv_freq_i = theta^(-2i / dim).
@@ -681,7 +704,8 @@ impl Op {
             Op::Mla(ref a) => std::iter::once(a.ring).chain(a.indexer.as_ref().map(|_| a.ring + 1)).collect(),
             Op::CompKv { ring, .. } => vec![ring],
             Op::CompAttn { ring, cache, .. } => std::iter::once(ring).chain(cache).collect(),
-            Op::Compress { cache, .. } => vec![cache],
+            Op::Compress { cache, raw, .. } => std::iter::once(cache).chain(raw).collect(),
+            Op::IdxKeys { raw, keys, .. } => vec![raw, keys],
             Op::IdxPick(IdxPick { keys: IdxKeys::Entries(r) | IdxKeys::Pools(r), .. }) => vec![r],
             _ => Vec::new(),
         }
@@ -693,7 +717,7 @@ impl Op {
             Op::Compress { state, .. } => vec![state, state + 1],
             Op::KdaConv { state, .. } | Op::KdaDelta { state, .. } => vec![state],
             Op::NgramRows(x) => vec![x.hist],
-            Op::NgramAdd(x) => vec![x.conv],
+            Op::NgramAdd(x) => x.conv.map(|c| c.state).into_iter().collect(),
             _ => Vec::new(),
         }
     }
@@ -2209,6 +2233,7 @@ impl Dyn {
             | Op::CompKv { .. }
             | Op::Compress { .. }
             | Op::IdxQ { .. }
+            | Op::IdxKeys { .. }
             | Op::IdxPick(_)
             | Op::CompAttn { .. }
             | Op::OGroupLora { .. }

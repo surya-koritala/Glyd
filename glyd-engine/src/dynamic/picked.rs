@@ -82,6 +82,7 @@ impl Dyn {
             sel: r.sel.ptr + (row0 * r.sk * 4) as u64,
             sk: r.sk,
             cnt: r.cnt.ptr + (row0 * 4) as u64,
+            cand: super::mla::CandAt::default(),
         };
         self.idx_pick(x, &at)?;
         self.mark("indexer: picks")

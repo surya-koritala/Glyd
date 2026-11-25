@@ -399,6 +399,7 @@ fn by_sequence(op: &Op) -> bool {
             | Op::MambaScan { .. }
             | Op::CompKv { .. }
             | Op::Compress { .. }
+            | Op::IdxKeys { .. }
             | Op::IdxPick(_)
             | Op::CompAttn { .. }
             | Op::IdxMean { .. }
