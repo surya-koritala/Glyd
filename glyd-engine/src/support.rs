@@ -14,8 +14,9 @@ pub enum Family {
     /// The plain dense kind (every pre-norm dense decoder the description builder's `llama` reading takes: `runtime::describe::LLAMA`), on the executor
     /// (src/dynamic/dense.rs), lossless or at the lossy levels. The variant keeps the name of the first release that ran on it.
     Qwen3,
-    /// Qwen3.5, 3.6 and 3.8 dense (Qwen3_5ForCausalLM, Qwen3_5ForConditionalGeneration): penguin on the dynamic route (one GPU, or its layers
-    /// cut over several), the lossy levels on one GPU.
+    /// The Qwen3.5 layout (3.5, 3.6 and 3.8), dense (Qwen3_5ForCausalLM, Qwen3_5ForConditionalGeneration) or with experts (Qwen3_5MoeForCausalLM,
+    /// Qwen3_5MoeForConditionalGeneration): penguin on the dynamic route (one GPU, or its layers cut over several; every expert on its GPU), the lossy levels
+    /// on one GPU for the dense layout (the layout with experts is refused there: that route packs and sizes the dense layout's tensors alone).
     Qwen35,
     NemotronH,
     /// Gemma 4 dense (12B, 31B); the 26B-A4B mixture of experts and the E models are refused.
@@ -479,6 +480,27 @@ mod tests {
         let g = fixture("gemma4_12b_config.json");
         assert!(check(&g, "google/gemma-4-12B-it", "gemma-4-12B-it", "wren").is_ok(), "a QAT checkpoint's wren runs in every build");
         assert!(check(&g, "google/gemma-4-12B-it", "gemma-4-12B-it", "hummingbird").is_err());
+    }
+
+    /// The Qwen3.5 layout with experts (`Qwen3_5MoeForCausalLM`, `Qwen3_5MoeForConditionalGeneration`) is the Qwen3.5 family's, not a row of its own: the
+    /// dynamic route opens it (its layers cut over the GPUs at penguin) by the loader of the gated delta rule, which reads its layers by its description; the
+    /// tree's random case and the two releases of the fixtures alike. (Its lossy levels are refused where they are sized: src/plan.rs.)
+    #[test]
+    fn the_qwen35_layout_with_experts_is_the_familys() {
+        let q35: Value = json::parse(&fixture("qwen35_configs.json")).unwrap();
+        let cases = [
+            ("the random case", fixture("qwen35moe_tiny_config.json")),
+            ("Qwen3.5-35B-A3B", json::to_compact(q35.get("Qwen/Qwen3.5-35B-A3B").unwrap())),
+            ("Qwen3.8-2.4T-A95B", json::to_compact(q35.get("Qwen/Qwen3.8-2.4T-A95B").unwrap())),
+        ];
+        for (what, text) in &cases {
+            assert_eq!(family(text, "q").unwrap(), Family::Qwen35, "{what}");
+            assert!(check(text, "Qwen/q", "q", "penguin").is_ok(), "{what}");
+            assert_eq!(crate::dynamic::split::family(text), Some("Qwen3.5"), "{what}: opened by the dynamic route from its release's directory");
+            let d = crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap();
+            assert!(d.desc.blocks.iter().any(|b| matches!(b.body, crate::runtime::kinds::Body::Ffn(crate::runtime::kinds::Ffn::Moe(_)))), "{what}");
+            assert!(crate::dynamic::split::loader(&d).is_ok(), "{what}");
+        }
     }
 
     /// GLM-5.3 (`glm_moe_dsa`) is a family of its own: penguin on the dynamic route, its layers cut over the GPUs there, opened by the loader of the latent

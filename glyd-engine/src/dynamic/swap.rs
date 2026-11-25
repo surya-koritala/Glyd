@@ -207,6 +207,11 @@ impl Swap {
         }
         Ok(())
     }
+
+    /// Its stream waited for: every copy out and back issued has landed.
+    pub(super) fn sync(&self) -> Result<()> {
+        self.side.sync()
+    }
 }
 
 impl Drop for Swap {
@@ -477,15 +482,16 @@ impl Dyn {
         }
         // (its copy out wrote the images read below and the lists this one writes over: done first)
         img.out.wait_host()?;
-        // (12-bit pages: a slab for each raw page and a chunk for each a page holds, beside what the steps and the copies back in flight have promised; else not now)
+        // (12-bit pages: a slab for each raw page and a chunk for each a page holds, beside what the step's growths have promised, the pools read with nothing in flight
+        // on this stream (`pages::Ledger`); else not now)
         let (at, rings, entries) = (img.at, img.lay.rings.clone(), img.entries.clone());
         let load = self.load_need(sw, at, &rings, &entries);
         let Some(img) = sw.images.get(&ticket) else { return Err(Error(format!("ticket {ticket}: no sequence is swapped by it"))) };
-        if let (Some(lx), Some((slabs, chunks))) = (self.lossless.as_ref(), load.as_ref()) {
-            self.dev.sync()?;
-            let (free, cfree) = lx.spare()?;
-            let taken = |c: usize| lx.promised[c] + lx.loading.iter().map(|l| l.1[c]).sum::<i64>();
-            if (0..slabs.len()).any(|c| slabs[c] > free[c] - taken(c)) || *chunks > cfree - lx.loading.iter().map(|l| l.2).sum::<i64>() {
+        if let Some((slabs, chunks)) = load.as_ref() {
+            let mut ledger = std::mem::take(&mut self.lossless.as_mut().expect("12-bit pages").ledger);
+            let fits = ledger.copy_back(&mut super::kvpages::Gpu(self, Some(&*sw)), slot, slabs, *chunks);
+            self.lossless.as_mut().expect("12-bit pages").ledger = ledger;
+            if !fits? {
                 return Ok(None);
             }
         }
@@ -504,9 +510,6 @@ impl Dyn {
         // (and the slot's states, where it was swapped out itself and not used since: this copy writes them, after that copy)
         sw.unsettled.retain(|u| u.0 != slot);
         let img = sw.images.remove(&ticket).expect("found above");
-        if let (Some(lx), Some((slabs, chunks))) = (self.lossless.as_mut(), load) {
-            lx.loading.push((slot, slabs, chunks));
-        }
         let moved = Self::exact(self.lossless.as_ref(), sw, img.at, &img.lay, &img.entries);
         sw.count(moved, &img.began, &img.out);
         sw.moved.0 += moved;
@@ -586,10 +589,6 @@ impl Dyn {
         l.done.wait(self.dev.stream)?;
         sw.count(l.moved, &l.began, &l.done);
         sw.ranges.give(l.at.0, l.at.1, l.at.2);
-        // (what its pages took is in the pools' counts now)
-        if let Some(lx) = self.lossless.as_mut() {
-            lx.loading.retain(|x| x.0 != slot);
-        }
         Ok(true)
     }
 
@@ -618,9 +617,6 @@ impl Dyn {
     pub(super) fn swap_settle(&mut self, slot: usize) -> Result<()> {
         if let Some(sw) = self.swap.as_mut() {
             sw.settle(slot)?;
-        }
-        if let Some(lx) = self.lossless.as_mut() {
-            lx.loading.retain(|x| x.0 != slot);
         }
         Ok(())
     }
@@ -678,7 +674,7 @@ impl Dyn {
 
     /// The swap's copies done (its stream waited for): what they give back to the pools is counted.
     pub(super) fn swap_sync(&self) -> Result<()> {
-        self.swap.as_ref().map_or(Ok(()), |sw| sw.side.sync())
+        self.swap.as_ref().map_or(Ok(()), Swap::sync)
     }
 
     /// The bytes swapped out and back so far.
