@@ -2963,6 +2963,78 @@ mod tests {
         }
     }
 
+    /// GLM-5.3-Flash's streams on the CPU reference with the rounding points transformers' bf16 modeling has (`StreamsP` `Twice`: the collapse, post and
+    /// comb, each term of the update and their sum, the final mean) against the same reference with the streams in fp32, both on the same choices (the
+    /// rounded run's experts and picks taken by the other): how far those rounding points alone move the case's logits, for the case's model and five of
+    /// other seeds. Seconds on an optimized build: cargo test --profile ci -- --ignored glm_streams_rounding.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore]
+    fn glm_streams_rounding_on_the_same_choices() {
+        use crate::runtime::kinds::{Body, Ffn, Mixer, Residual, Rounding};
+        use crate::runtime::reference::{mla::LatentCache, model::checkpoint_tensor, model::RefModel, SeqState};
+        let (prompt, decode, long) = standard_tokens(2048);
+        for k in 0..6u64 {
+            let dir = std::env::temp_dir().join(format!("glyd-glmstreams-{k}-{}", std::process::id()));
+            crate::glm::random_seeded(&dir, false, None, crate::glm::RANDOM_SEED ^ (k << 32)).unwrap();
+            let cfg: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+            let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
+            // (each sequence a token at a time from a fresh model: its rows, and every block's choices in the order taken)
+            let run = |f32_streams: bool, take: Option<&Vec<Vec<Vec<usize>>>>| -> (Vec<Vec<f32>>, Vec<Vec<Vec<usize>>>) {
+                let mut d = crate::runtime::describe::describe(&cfg).unwrap();
+                for b in d.desc.blocks.iter_mut() {
+                    if let (true, Residual::Streams(s)) = (f32_streams, &mut b.residual) {
+                        s.rounding = Rounding::F32;
+                    }
+                }
+                let (mut rows, mut chose) = (Vec::new(), Vec::new());
+                for (i, seq) in [[prompt.clone(), decode.clone()].concat(), long.clone()].iter().enumerate() {
+                    let mut m = RefModel::load(&d, &|n: &str| checkpoint_tensor(&ck, n)).unwrap();
+                    let at = chose.first().map_or(0, |c: &Vec<Vec<usize>>| c.len());
+                    chose.resize_with(m.layers.len(), Vec::new);
+                    for (b, l) in m.layers.iter_mut().enumerate() {
+                        let given: std::collections::VecDeque<Vec<usize>> =
+                            take.map(|t| t[b][at..at + seq.len()].iter().cloned().collect()).unwrap_or_default();
+                        match &l.block.body {
+                            Body::Ffn(Ffn::Moe(_)) => (l.take, l.routed) = (given, Some(Vec::new())),
+                            Body::Mixer(Mixer::Mla(_)) => {
+                                l.seqs.insert(0, SeqState::Mla(LatentCache { take: given, picked: Some(Vec::new()), ..Default::default() }));
+                            }
+                            _ => {}
+                        }
+                    }
+                    for (t, &tok) in seq.iter().enumerate() {
+                        let r = m.forward(&[tok], t as u32).unwrap().pop().unwrap();
+                        if (i == 0 && t + 1 >= prompt.len()) || t + 1 == seq.len() {
+                            rows.push(r);
+                        }
+                    }
+                    for (b, l) in m.layers.iter_mut().enumerate() {
+                        let got: Vec<Vec<usize>> = match (&l.block.body, l.seqs.get_mut(&0)) {
+                            (Body::Ffn(Ffn::Moe(_)), _) => l.routed.take().unwrap_or_default().into_iter().map(|r| r.ids).collect(),
+                            (_, Some(SeqState::Mla(c))) => c.picked.take().unwrap_or_default().into_iter().map(|p| p.picks).collect(),
+                            _ => vec![Vec::new(); seq.len()],
+                        };
+                        chose[b].extend(got);
+                    }
+                }
+                // (the long prompt's last row once: the first sequence ends at the last decode token)
+                rows.dedup();
+                (rows, chose)
+            };
+            let (a, choices) = run(false, None);
+            let (b, _) = run(true, Some(&choices));
+            let kls: Vec<f64> = a.iter().zip(&b).map(|(w, g)| kl_of(&Row::from_logits(w).unwrap(), g)).collect();
+            println!(
+                "glm seed {k}: the streams' rounding points alone, on the same choices: KL mean {:.2e} max {:.2e} over {} rows",
+                kls.iter().sum::<f64>() / kls.len() as f64,
+                kls.iter().cloned().fold(0f64, f64::max),
+                kls.len()
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
     /// The reference taking an engine's picks (`ref_drive` with `Picks`) on the glm case's model: its own picks taken give its own rows bit for bit;
     /// another choice of one query is attended to (the record keeps the indexer's own) and moves the rows from that token's on; picks of another
     /// count of layers are refused.

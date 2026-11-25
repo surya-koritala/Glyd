@@ -334,7 +334,12 @@ impl RefModel {
         let r: Vec<f32> = match self.desc.head.collapse {
             Collapse::None if n == 1 => xt.to_vec(),
             Collapse::None => return err(format!("{n} residual streams and no collapse into the head")),
-            Collapse::Mean => (0..d).map(|i| (0..n).map(|j| xt[j * d + i]).sum::<f32>() / n as f32).collect(),
+            Collapse::Mean => {
+                // (streams that round `Twice`, transformers' bf16 tensors: the mean of the bf16 streams, summed in fp32, rounded once, as torch's mean of a bf16 tensor)
+                let twice =
+                    self.desc.blocks.iter().any(|b| matches!(b.residual, Residual::Streams(StreamsP { rounding: crate::runtime::kinds::Rounding::Twice, .. })));
+                (0..d).map(|i| (0..n).map(|j| xt[j * d + i]).sum::<f32>() / n as f32).map(|v| if twice { super::bf16(v) } else { v }).collect()
+            }
             Collapse::Weighted { eps, norm_eps } => {
                 let (f, base, sc) = (self.p.vec("out_hc_fn")?, self.p.vec("out_hc_base")?, self.p.vec("out_hc_scale")?[0]);
                 let r = 1.0 / (xt.iter().map(|v| v * v).sum::<f32>() / xt.len() as f32 + norm_eps).sqrt();
@@ -410,6 +415,40 @@ mod tests {
             p: Params::new(),
             record: None,
         }
+    }
+
+    /// Streams that round `Twice` (GLM-5.3-Flash, as transformers' bf16 modeling rounds): the collapse of the bf16 streams in fp32 rounded once; the
+    /// update bf16(bf16(bf16(post) bf16(out)) + bf16(sum of bf16(comb) x)), the streams staying bf16; the final mean rounded once before the norm. By
+    /// hand against the block and the model; in fp32 (`F32`) none of it rounds.
+    #[test]
+    fn streams_that_round_twice_round_as_transformers_in_bf16() {
+        use crate::runtime::reference::bf16;
+        let s = StreamsP { rounding: Rounding::Twice, ..streams(false) };
+        let l = block(0, s);
+        let x: Vec<f32> = fill("twice.x", N * D, -2.0, 2.0).into_iter().map(bf16).collect();
+        let o = fill("twice.o", D, -1.0, 1.0);
+        let (pre, post, comb) = hc_weights(&s, &l.p, &x).unwrap();
+        let (input, hc) = l.pre(&x).unwrap();
+        let want: Vec<f32> = (0..D).map(|i| bf16((0..N).map(|j| pre[j] * x[j * D + i]).sum::<f32>())).collect();
+        assert_eq!(input, want, "the collapse rounded once");
+        let mut got = x.clone();
+        l.post(&mut got, &o, hc).unwrap();
+        for k in 0..N {
+            for i in 0..D {
+                let m: f32 = (0..N).map(|j| bf16(comb[j][k]) * x[j * D + i]).sum();
+                assert_eq!(got[k * D + i], bf16(bf16(bf16(post[k]) * bf16(o[i])) + bf16(m)), "stream {k}, column {i}");
+            }
+        }
+        assert!(got.iter().all(|&v| v == bf16(v)), "the streams stay bf16");
+        let f = block(0, streams(false));
+        let (fi, fh) = f.pre(&x).unwrap();
+        let mut fx = x.clone();
+        f.post(&mut fx, &o, fh).unwrap();
+        assert!(fi != input && fx != got, "in fp32 nothing rounds");
+        // (the final mean, rounded once before the norm)
+        let m = model(s, Collapse::Mean);
+        let mean: Vec<f32> = (0..D).map(|i| bf16((0..N).map(|j| x[j * D + i]).sum::<f32>() / N as f32)).collect();
+        assert_eq!(m.final_h_with(&x, None, &[]).unwrap(), norm(&m.desc.final_norm, &mean, Some(&m.final_norm), None));
     }
 
     /// Lagged mHC (DeepSeek-V4.1): a block's input is the streams weighed by the previous block's own input weights, the first block's by

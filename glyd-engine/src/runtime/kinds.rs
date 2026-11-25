@@ -845,12 +845,15 @@ pub struct ModelDesc {
 }
 
 impl ModelDesc {
-    /// Every attention's arithmetic in f32 (`AttnRounding::F32`): the description as transformers runs it in float32, which the fixtures of
-    /// `tests/runtime` were recorded in.
+    /// Every attention's arithmetic and the residual streams' in f32 (`AttnRounding::F32`, `StreamsP::rounding` `F32`): the description as transformers
+    /// runs it in float32, which the fixtures of `tests/runtime` were recorded in.
     pub fn f32_attention(&mut self) {
         for b in self.blocks.iter_mut().chain(self.mtp.iter_mut().flat_map(|m| m.blocks.iter_mut())) {
             if let Body::Mixer(Mixer::Attention(a)) = &mut b.body {
                 a.rounding = AttnRounding::F32;
+            }
+            if let Residual::Streams(s) = &mut b.residual {
+                s.rounding = Rounding::F32;
             }
         }
     }
