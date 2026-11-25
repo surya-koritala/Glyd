@@ -150,4 +150,72 @@ impl Dyn {
             _ => unreachable!(),
         }
     }
+
+    /// `Dyn::trace_picks`' record of a compressed attention's indexer pick (`Op::IdxPick` over its compressor's entries: DeepSeek-V4's) of layer `l` on n rows of
+    /// one sequence whose rings are unpaged (another pass is an error): each row's picks, the entries it reads in their order, as the pick left them (`V4Run`'s
+    /// sel and cnt); its queries and head weights' product as the scores read them (Iq after the rotary and, where the release's quantizations are simulated, the
+    /// Hadamard rotation onto FP4's grid; Iw before `wscale`); the keys of the entries the pass's last row sees, in order. An entry is a pool of its own here
+    /// (`mla::PickTrace`'s): a row's `pos` is the last entry it sees, so that it picks among entries 0 ..= pos (0 for a row that sees none, which picks none).
+    pub(super) fn trace_comp_pick(&self, p: &Part, l: usize, op: &Op, n: usize, pos: u64) -> Result<()> {
+        let Op::IdxPick(ref x) = *op else { return Ok(()) };
+        let IdxKeys::Entries(cache) = x.keys else { return Ok(()) };
+        if !std::ptr::eq(p, &self.big) || self.pick_trace.borrow().is_none() {
+            return Ok(());
+        }
+        let v = self.v4.as_ref().ok_or_else(|| Error("a compressed attention's operation in a model loaded without its buffers".into()))?;
+        if n > v.sel.bytes / (x.top_k.max(1) * 4) || !self.parts.is_empty() || self.table(cache) != 0 {
+            return err(format!("layer {l}: picks traced on a pass of {n} rows of one sequence, its rings unpaged ({} sequences)", self.parts.len().max(1)));
+        }
+        let (tk, ih, ratio) = (x.top_k, x.heads, x.ratio);
+        let (mut at, mut cnt, mut q, mut w) = (vec![0i32; n], vec![0i32; n], vec![0u16; n * ih * 128], vec![0u16; n * ih]);
+        self.dev.sync()?;
+        // SAFETY: the n positions the operation read, the rows' queries and head weights (slots of the part), into host memory of their sizes; synchronized after.
+        unsafe {
+            crate::dev::copy_d2h_async(at.as_mut_ptr() as *mut _, pos, n * 4, self.dev.stream)?;
+            crate::dev::copy_d2h_async(q.as_mut_ptr() as *mut _, p.slot(Slot::Iq), q.len() * 2, self.dev.stream)?;
+            crate::dev::copy_d2h_async(w.as_mut_ptr() as *mut _, p.slot(Slot::Iw), w.len() * 2, self.dev.stream)?;
+        }
+        self.dev.sync()?;
+        if at.iter().any(|&x| x < 0) || at.windows(2).any(|w| w[1] != w[0] + 1) {
+            return err(format!("layer {l}: picks traced on rows at positions {at:?}, where a pass's rows are one sequence's in order"));
+        }
+        v.cnt.read(0, &mut cnt)?;
+        let mut picks = Vec::with_capacity(n);
+        for (t, &c) in cnt.iter().enumerate() {
+            if c < 0 || c as usize > tk {
+                return err(format!("layer {l} row {t}: {c} picks of at most {tk}"));
+            }
+            let mut got = vec![0i32; c as usize];
+            v.sel.read(t * tk * 4, &mut got)?;
+            if got.iter().any(|&e| e < 0 || e as usize >= (at[t] as usize + 1) / ratio) {
+                return err(format!("layer {l} row {t} at {}: picks {got:?}, past the entries it sees", at[t]));
+            }
+            picks.push(got.into_iter().map(|e| e as usize).collect());
+        }
+        // (each entry's key in the ring, a room of its own: entry e at e modulo its capacity)
+        let entries = (at[n - 1] as usize + 1) / ratio;
+        let (base, cap) = (self.cache(cache).0, self.ring_cap[cache]);
+        let mut keys = Vec::with_capacity(entries);
+        for e in 0..entries {
+            let mut k = vec![0u16; 128];
+            self.dev.sync()?;
+            // SAFETY: one entry's 128 bf16 values in the ring, into host memory of that size; synchronized after.
+            unsafe { crate::dev::copy_d2h_async(k.as_mut_ptr() as *mut _, base + ((e % cap) * 128 * 2) as u64, 256, self.dev.stream)? };
+            self.dev.sync()?;
+            keys.push(k);
+        }
+        let f = |v: &[u16]| v.iter().map(|&h| f32::from_bits((h as u32) << 16)).collect::<Vec<f32>>();
+        let rec = super::mla::PickTrace {
+            layer: l,
+            pos: at.iter().map(|&x| ((x as usize + 1) / ratio).saturating_sub(1)).collect(),
+            picks,
+            q: q.chunks(ih * 128).map(f).collect(),
+            w: w.chunks(ih).map(f).collect(),
+            keys: keys.iter().map(|k| f(k)).collect(),
+        };
+        if let Some(t) = self.pick_trace.borrow_mut().as_mut() {
+            t.push(rec);
+        }
+        Ok(())
+    }
 }
