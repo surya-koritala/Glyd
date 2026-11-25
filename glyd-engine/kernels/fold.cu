@@ -4,6 +4,15 @@
 #include <type_traits>
 #if !defined(__HIPCC__)
 #include <cuda.h>  // (CUtensorMap: the Hopper kernels' tensor maps, a kernel parameter; hip.h has its own)
+#include <cstddef>
+// (the numbers src/device.rs passes the driver for Hopper's launches, and the layouts it builds, held to cuda.h's)
+static_assert(CU_TENSOR_MAP_DATA_TYPE_BFLOAT16 == 9 && CU_TENSOR_MAP_INTERLEAVE_NONE == 0 && CU_TENSOR_MAP_SWIZZLE_128B == 3 && CU_TENSOR_MAP_L2_PROMOTION_L2_256B == 3 &&
+                  CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE == 0,
+              "device.rs's tensor map numbers");
+static_assert(sizeof(CUtensorMap) == 128 && alignof(CUtensorMap) == 64, "fold::TensorMap");
+static_assert(CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION == 4 && sizeof(CUlaunchConfig) == 56 && sizeof(CUlaunchAttribute) == 72 && offsetof(CUlaunchConfig, hStream) == 32 &&
+                  offsetof(CUlaunchConfig, numAttrs) == 48,
+              "device.rs's LaunchConfig and LaunchAttribute");
 #endif
 
 namespace glib {

@@ -647,6 +647,7 @@ fn product_need(u: Unpacker, r: i32, o: i64, k: i64, m: i64) -> Result<Option<us
         ROUTE_GEMM => step(),
         ROUTE_MID if twelve => Ok(mid12_runs(o, k, m)?.map(|(_, need)| need)),
         ROUTE_MID | ROUTE_WG if !twelve && u != Unpacker::Tiered && m <= 64 => step(),
+        ROUTE_WG => wg_need(u, o, k, m),
         ROUTE_DECODE | ROUTE_AHEAD | ROUTE_SPLIT | ROUTE_BIG if k % 64 == 0 && o % 64 == 0 => Ok(prompt_run(u, o, k, m)?.map(|r| r.bytes)),
         _ => Ok(None),
     }
@@ -687,8 +688,9 @@ pub unsafe fn linear(w: &Pack, x: u64, m: i64, y: u64, ws: u64, ws_bytes: usize,
         ROUTE_GEMM => step_linear(u, w, x, m, y, (ws, ws_bytes, done), cs),
         ROUTE_MID if twelve => mid12_linear(u, w, x, m, y, (ws, ws_bytes, done), cs),
         ROUTE_MID | ROUTE_WG if !twelve && u != Unpacker::Tiered && m <= 64 => step_linear(u, w, x, m, y, (ws, ws_bytes, done), cs),
+        ROUTE_WG => wg_linear(u, w, x, m, y, (ws, ws_bytes, done), cs),
         ROUTE_DECODE | ROUTE_AHEAD | ROUTE_SPLIT | ROUTE_BIG if k % 64 == 0 => prompt_linear(u, w, x, m, y, (ws, ws_bytes, done), cs),
-        // (Hopper's TMA and wgmma kernels, and what the library refuses: the library's)
+        // (what the library refuses: its own error)
         _ => Ok(false),
     }
 }
@@ -993,6 +995,318 @@ unsafe fn mid12_linear(u: Unpacker, w: &Pack, x: u64, m: i64, y: u64, (ws, ws_by
         let a = lead.i64(o).i64(k).i64(mc).p(x + (m0 * k * 2) as u64).p(0).p(y + (m0 * o * 2) as u64).p(ws).p(done);
         launch_slots(name, [nb as u32, 1, 1], threads, smem, a, None, cs)?;
     }
+    Ok(true)
+}
+
+/// Whether this GPU takes Hopper's kernels (compute capability 9.0: the fatbin's sm_90a code; wg_device).
+fn hopper_gpu() -> Result<bool> {
+    let dev = D::current_device()?;
+    Ok(!cfg!(glyd_hip) && (D::attribute(dev, Attr::CcMajor)?, D::attribute(dev, Attr::CcMinor)?) == (9, 0))
+}
+
+/// Hopper's kernels' shapes (Tma12, TmaT, Wgp12, Wm12 in gpu/glyd_gpu_kernels.h, read by a host compiler): threads and shared memory.
+fn tma12_smem(nt: i64) -> u32 {
+    match nt {
+        16 => 148_608,
+        32 => 164_992,
+        64 => 197_760,
+        96 => 202_864,
+        112 => 187_488,
+        _ => 199_776,
+    }
+}
+fn tmat_smem(nt: i64) -> u32 {
+    match nt {
+        16 => 181_504,
+        32 => 197_888,
+        _ => 230_656,
+    }
+}
+fn wm12_smem(nt: i64, act: bool) -> u32 {
+    match (nt, act) {
+        (16, false) => 140_416,
+        (16, true) => 144_512,
+        (32, false) => 156_800,
+        (32, true) => 164_992,
+        (64, false) => 189_568,
+        (64, true) => 205_952,
+        (_, false) => 224_368,
+        (_, true) => 226_400,
+    }
+}
+const HOP_THREADS: u32 = 288;
+const WGP_THREADS: u32 = 384;
+
+/// A Hopper launch: the kernel, its blocks (a cluster's of two for mma12_wgp), shared memory, the tensor map's box rows, and the kernel's own numbers past the map's
+/// and the layout's (mma12_wgp: D, ncs).
+struct HopRun {
+    name: &'static str,
+    blocks: i64,
+    cluster: u32,
+    threads: u32,
+    smem: u32,
+    box_rows: u32,
+    wgp: Option<(i64, i32)>,
+    need: usize,
+}
+
+/// The TMA kernels' blocks (mma12_tma_run, tiered_tma_run): as many as fit at once, at least 8 stages a block, or a whole number a unit where the units are
+/// fewer than the blocks and that idles at most a sixth of them (3 or more a unit).
+fn tma_blocks(name: &'static str, smem: u32, o: i64, k: i64, m: i64, nt: i64) -> Result<i64> {
+    let (per, sms) = per_sm(name, HOP_THREADS, smem)?;
+    let p = (o / 64 + 1) / 2 * ((m + nt - 1) / nt);
+    let u = p * (k / 64);
+    let mut nb = (per * sms).min(u / 8).max(1);
+    let w = nb / p * p;
+    if p < nb && u < 32 * nb && 6 * w >= 5 * nb && w / p >= 3 {
+        nb = w;
+    }
+    Ok(nb)
+}
+
+/// The 12-bit layout's route WG on Hopper (mma12_wg_any): to 128 tokens mma12_tma in the smallest tile, past it mma12_wgp in clusters of two (tiles of 192
+/// tokens where they take no more chunks than 256); None for no tokens.
+fn wg12_run(o: i64, k: i64, m: i64) -> Result<Option<HopRun>> {
+    if m == 0 {
+        return Ok(None);
+    }
+    if m > 128 {
+        let nt = if (m + 191) / 192 == (m + 255) / 256 { 192 } else { 256 };
+        let (name, smem, cl, split) = (leaked(format!("fold_wgp12_{nt}")), if nt == 192 { 198_048 } else { 192_848 }, 2i64, 3i64);
+        let sms = (D::attribute(D::current_device()?, Attr::Sms)? as i64).max(1);
+        type Seen = std::sync::Mutex<std::collections::HashMap<(usize, &'static str), i64>>;
+        static MOST: std::sync::OnceLock<Seen> = std::sync::OnceLock::new();
+        let ctx = D::current()? as usize;
+        let seen = MOST.get_or_init(Default::default);
+        let known = seen.lock().unwrap_or_else(|e| e.into_inner()).get(&(ctx, name)).copied();
+        let most = match known {
+            Some(v) => v,
+            None => {
+                let v = crate::dev::here_named(name)?.max_clusters((cl * sms) as u32, WGP_THREADS, smem, cl as u32)?;
+                seen.lock().unwrap_or_else(|e| e.into_inner()).insert((ctx, name), v);
+                v
+            }
+        };
+        let t = ((o / 64 + 1) / 2 + cl - 1) / cl * ((m + nt - 1) / nt);
+        let st = k / 64;
+        let mut nc = most.min(t * st / 8).max(1);
+        if t < nc && 6 * (nc / t * t) >= 5 * nc {
+            nc = nc / t * t;
+        }
+        let (r, d) = (t % nc, t - t % nc);
+        let w = if r > 0 { r * split.min(nc / r) } else { 0 };
+        let ncs = (r * st).min(if d == 0 {
+            nc
+        } else if 6 * w >= 5 * nc {
+            w
+        } else {
+            nc.min(split * r)
+        });
+        let need = if r > 0 { (2 * ncs * cl * nt * 128 * 4) as usize } else { 0 };
+        return Ok(Some(HopRun {
+            name,
+            blocks: cl * nc,
+            cluster: cl as u32,
+            threads: WGP_THREADS,
+            smem,
+            box_rows: (nt / cl) as u32,
+            wgp: Some((d, ncs as i32)),
+            need,
+        }));
+    }
+    let nt = match m {
+        ..=16 => 16,
+        17..=32 => 32,
+        33..=64 => 64,
+        65..=96 => 96,
+        97..=112 => 112,
+        _ => 128,
+    };
+    let (name, smem) = (leaked(format!("fold_tma12_{nt}")), tma12_smem(nt));
+    let nb = tma_blocks(name, smem, o, k, m, nt)?;
+    Ok(Some(HopRun { name, blocks: nb, cluster: 1, threads: HOP_THREADS, smem, box_rows: nt as u32, wgp: None, need: (2 * nb * nt * 128 * 4) as usize }))
+}
+
+/// The tiered layout's route WG on Hopper (tiered_wg_any at its default shape: two warpgroups, a block an SM): tiered_tma in the smallest tile of 16, 32 or 64
+/// tokens; None for no tokens.
+fn wgt_run(o: i64, k: i64, m: i64) -> Result<Option<HopRun>> {
+    if m == 0 {
+        return Ok(None);
+    }
+    let nt = match m {
+        ..=16 => 16,
+        17..=32 => 32,
+        _ => 64,
+    };
+    let (name, smem) = (leaked(format!("fold_tmat_{nt}")), tmat_smem(nt));
+    let nb = tma_blocks(name, smem, o, k, m, nt)?;
+    Ok(Some(HopRun { name, blocks: nb, cluster: 1, threads: HOP_THREADS, smem, box_rows: nt as u32, wgp: None, need: (2 * nb * nt * 128 * 4) as usize }))
+}
+
+/// A Hopper launch: X's tensor map (rows of `x`, `m` of them, `k` columns), then the layout's words, the shape, and the kernel's own arguments in `tail`.
+///
+/// # Safety
+/// As `linear`; `a` holds the arguments after the map, the kernel's.
+unsafe fn hop_launch(r: &HopRun, x: u64, k: i64, m: i64, a: Slots, cs: Stream) -> Result<()> {
+    let mut map = TensorMap(D::tensor_map(x, (k as u64, m as u64, (k * 2) as u64), (64, r.box_rows))?);
+    let mut a = a;
+    let mut ptrs = vec![&mut map as *mut TensorMap as *mut std::ffi::c_void];
+    ptrs.extend(crate::dev::KernelArgs::ptrs(&mut a));
+    let kern = crate::dev::here_named(r.name)?;
+    kern.allow_smem(r.smem)?;
+    if r.cluster > 1 {
+        kern.launch_clusters(r.blocks as u32, r.threads, r.smem, r.cluster, cs, &mut ptrs)
+    } else {
+        kern.launch_smem([r.blocks as u32, 1, 1], [r.threads, 1, 1], r.smem, cs, &mut ptrs)
+    }
+}
+
+/// The route WG on Hopper by the engine's kernels: the 12-bit layout's (glyd_gpu_mma12_linear on it), the tiered layout's (tiered_wg_linear: the step product
+/// where x is not 16-byte aligned; the workspace the larger); false where the library takes it.
+///
+/// # Safety
+/// As `linear`.
+unsafe fn wg_linear(u: Unpacker, w: &Pack, x: u64, m: i64, y: u64, (ws, ws_bytes, done): (u64, usize, u64), cs: Stream) -> Result<bool> {
+    let (o, k) = (w.rows, w.cols);
+    if !hopper_gpu()? || o < 64 || o % 64 != 0 || k < 1 || k % 64 != 0 || m < 0 {
+        return Ok(false);
+    }
+    match (u, w.words) {
+        (Unpacker::Twelve { .. }, Words::Twelve { exc, .. }) => {
+            if x % 16 != 0 || w.data % 16 != 0 || exc % 16 != 0 {
+                return Ok(false);
+            }
+            let r = wg12_run(o, k, m)?;
+            let need = r.as_ref().map_or(0, |r| r.need);
+            if !fits(ws, ws_bytes, need as i64) || done == 0 {
+                return Ok(false);
+            }
+            let Some(r) = r else { return Ok(true) };
+            let Some(lead) = layout_args(u, w, None) else { return Ok(false) };
+            let a = match r.wgp {
+                Some((d, ncs)) => lead.i64(o).i64(k).i64(m).i64(d).i32(ncs).p(0).p(y).p(ws).p(done),
+                None => lead.i64(o).i64(k).i64(m).p(0).p(y).p(ws).p(done),
+            };
+            hop_launch(&r, x, k, m, a, cs)?;
+            Ok(true)
+        }
+        (Unpacker::Tiered, Words::Tiered { blocks, .. }) => {
+            if m > 64 || w.data % 16 != 0 || blocks % 16 != 0 || tuned(crate::tune!("GLYD_GPU_HT_V"), 0) != 0 {
+                return Ok(false);
+            }
+            let r = wgt_run(o, k, m)?;
+            let Some(step) = product_need(u, ROUTE_GEMM, o, k, m)? else { return Ok(false) };
+            let need = r.as_ref().map_or(0, |r| r.need).max(step);
+            if !fits(ws, ws_bytes, need as i64) || done == 0 {
+                return Ok(false);
+            }
+            if x % 16 != 0 {
+                return step_linear(u, w, x, m, y, (ws, ws_bytes, done), cs);
+            }
+            let Some(r) = r else { return Ok(true) };
+            let Some(lead) = layout_args(u, w, None) else { return Ok(false) };
+            let bb = tuned(crate::tune!("GLYD_GPU_HT_BB"), 2048).min(2048) as i32;
+            hop_launch(&r, x, k, m, lead.i64(o).i64(k).i64(m).p(0).p(y).p(ws).p(done).i32(bb), cs)?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// The workspace of the route WG on Hopper for W [o, k] of layout `u` and `m` tokens (mma12_wg_any's need; tiered_wg_linear's: the larger of its and the step
+/// product's); None: the library's.
+fn wg_need(u: Unpacker, o: i64, k: i64, m: i64) -> Result<Option<usize>> {
+    if !hopper_gpu()? || o < 64 || o % 64 != 0 || k < 1 || k % 64 != 0 || m < 0 {
+        return Ok(None);
+    }
+    match u {
+        Unpacker::Twelve { .. } => Ok(Some(wg12_run(o, k, m)?.map_or(0, |r| r.need))),
+        Unpacker::Tiered if m <= 64 && tuned(crate::tune!("GLYD_GPU_HT_V"), 0) == 0 => {
+            let Some(step) = product_need(u, ROUTE_GEMM, o, k, m)? else { return Ok(None) };
+            Ok(Some(wgt_run(o, k, m)?.map_or(0, |r| r.need).max(step)))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// The experts' wgmma product's tile of pairs (wg_tile: the smallest that holds an expert's pairs on average and 1.5 standard deviations more; GLYD_GPU_MOE_WG_NT
+/// forces one).
+fn wg_tile(p: i64, e: i64) -> i64 {
+    let forced = tuned(crate::tune!("GLYD_GPU_MOE_WG_NT"), 0);
+    if matches!(forced, 16 | 32 | 64 | 128) {
+        return forced;
+    }
+    let hit = e.min(p).max(1) as f64;
+    let mean = p as f64 / hit;
+    let need = mean + 1.5 * mean.sqrt();
+    if need <= 16.0 {
+        16
+    } else if need <= 32.0 {
+        32
+    } else if need <= 64.0 {
+        64
+    } else {
+        128
+    }
+}
+
+/// The experts' wgmma product's workspace after Y32 (wg_tail): the tiles' records, then (where X is the tokens') the pairs' rows of X in the order's.
+fn wg_records(e: i64, p: i64) -> i64 {
+    ((1 + e.min(p) + (p + 15) / 16) * 16 + 255) & !255
+}
+fn wg_tail(e: i64, k: i64, p: i64, rows: bool) -> i64 {
+    wg_records(e, p) + if rows { (p * k * 2 + 255) & !255 } else { 0 }
+}
+
+/// The experts' wgmma product on Hopper (mma_moe_wg), the 12-bit layout's; Ok(false) where it does not take the call (the library's mma_moe_wg refusals:
+/// the other kernels take it then).
+///
+/// # Safety
+/// As `moe`.
+#[allow(clippy::too_many_arguments)]
+unsafe fn moe_wg(
+    w: &Pack,
+    experts: i64,
+    (o, kk): (i64, i64),
+    (x, t, k, gather): (u64, i64, i64, bool),
+    (plan, act, weights): (u64, i64, u64),
+    y: u64,
+    (ws, ws_bytes): (u64, usize),
+    cs: Stream,
+) -> Result<bool> {
+    let p = t * k;
+    let rows = act != 0 || gather;
+    let head = if weights != 0 { p * o * 4 } else { 0 };
+    let Words::Twelve { exc, .. } = w.words else { return Ok(false) };
+    if !fits(ws, ws_bytes, head + wg_tail(experts, kk, p, rows)) || act > 1 || kk % 64 != 0 || o % if act != 0 { 128 } else { 64 } != 0 {
+        return Ok(false);
+    }
+    if x % 16 != 0 || w.data % 16 != 0 || exc % 16 != 0 {
+        return Ok(false);
+    }
+    use crate::kt;
+    use crate::launch;
+    let tail = ws + head as u64;
+    let nt = wg_tile(p, experts);
+    launch!(crate::dev::here::<kt::fold_moe_wg_tiles>()?, [1, 1, 1], [1024, 1, 1], cs; plan, experts as i32, nt as i32, tail)?;
+    let mut xs = x;
+    if gather {
+        let g = tail + wg_records(experts, p) as u64;
+        launch!(crate::dev::here::<kt::fold_moe_wg_gather>()?, [p.min(4096) as u32, 1, 1], [128, 1, 1], cs; x, plan, experts as i32, k, kk / 8, g)?;
+        xs = g;
+    }
+    let ru = if act != 0 { o / 128 } else { (o / 64 + 1) / 2 };
+    let name = leaked(format!("fold_moe_wg_{nt}_{}", (act != 0) as u8));
+    let smem = wm12_smem(nt, act != 0);
+    let (per, sms) = per_sm(name, HOP_THREADS, smem)?;
+    let records = experts.min(p) + (p + nt - 1) / nt;
+    let nb = (per * sms).min(ru * records).max(1);
+    let r = HopRun { name, blocks: nb, cluster: 1, threads: HOP_THREADS, smem, box_rows: nt as u32, wgp: None, need: 0 };
+    let Ok(u) = unpacker(w) else { return Ok(false) };
+    let Some(lead) = layout_args(u, w, None) else { return Ok(false) };
+    let y32 = if weights != 0 { ws } else { 0 };
+    let a = lead.i64(o).i64(kk).i32(experts as i32).p(plan).p(tail).i32(ru as i32).p(0).p(weights).i32(1).p(y).p(y32);
+    hop_launch(&r, xs, kk, p, a, cs)?;
     Ok(true)
 }
 
@@ -1838,6 +2152,11 @@ fn moe_splits(units: i64, k: i64, hbm: bool) -> Result<i64> {
     Ok((slots / units).min(k / 256).max(1))
 }
 
+/// The experts' wgmma route from this many tokens a step on Hopper (GLYD_GPU_MOE_WG; an H100's 17, else 0: not).
+fn moe_wg_from(h100: bool) -> i64 {
+    tuned(crate::tune!("GLYD_GPU_MOE_WG"), if h100 { 17 } else { 0 })
+}
+
 /// `GpuOps::moe_workspace` by the library's plan (mma_moe_run's need: the weighted sums' Y32 and the splits' parts, [P][O] floats each), where the 12-bit
 /// layout's wgmma route cannot be taken (a GPU of compute capability 9.0 keeps the library's: the route's tail); None: the library's.
 pub fn moe_workspace(twelve: bool, experts: i64, o: i64, cols: i64, t: i64, k: i64, act: i64, weighted: bool) -> Result<Option<usize>> {
@@ -1847,15 +2166,16 @@ pub fn moe_workspace(twelve: bool, experts: i64, o: i64, cols: i64, t: i64, k: i
     if act != 0 && (o % 128 != 0 || weighted) {
         return Ok(None);
     }
-    let dev = D::current_device()?;
-    if twelve && (D::attribute(dev, Attr::CcMajor)?, D::attribute(dev, Attr::CcMinor)?) == (9, 0) {
-        return Ok(None);
-    }
-    let (hbm, ..) = moe_gpu()?;
+    let (hbm, h100, _) = moe_gpu()?;
     let p = t * k;
     let units = if act != 0 { o / 128 } else { o / 64 };
     let splits = if p > 0 { moe_splits(units * experts.min(p), cols, hbm)? } else { 1 };
-    Ok(Some(((weighted as i64 + if splits > 1 { splits } else { 0 }) * p * o * 4) as usize))
+    let mut bytes = (weighted as i64 + if splits > 1 { splits } else { 0 }) * p * o * 4;
+    // (the 12-bit layout's wgmma route on Hopper: Y32, then the tiles' records and, with the gate, the pairs' rows of X)
+    if twelve && moe_wg_from(h100) > 0 && p > 0 && hopper_gpu()? {
+        bytes = bytes.max(if weighted { p * o * 4 } else { 0 } + wg_tail(experts, cols, p, act != 0));
+    }
+    Ok(Some(bytes as usize))
 }
 
 /// `GpuOps::moe` and `moe_placed` (y = the experts' products of the plan's pairs, act 0, 1 SiLU or 2 GELU, weighted sums by `weights` and `ids`) by the
@@ -1894,6 +2214,20 @@ pub unsafe fn moe(
     }
     if p == 0 {
         return Ok(true);
+    }
+    // the 12-bit layout's wgmma route on Hopper (mma_moe_wg), where it takes the call; else the other kernels, as the library's (but GLYD_GPU_MOE_WG_STRICT's refusal)
+    if twelve && moe_wg_from(h100) > 0 && t >= moe_wg_from(h100) && kk % 64 == 0 && o % if act != 0 { 128 } else { 64 } == 0 && act <= 1 && hopper_gpu()? {
+        if moe_wg(w, experts, (o, kk), (x, t, k, gather), (plan, act, weights), y, (ws, ws_bytes), cs)? {
+            if weights != 0 {
+                use crate::kt;
+                use crate::launch;
+                launch!(crate::dev::here::<kt::fold_moe_sum>()?, [((t * o / 4 + 255) / 256) as u32, 1, 1], [256, 1, 1], cs; ws, ids, experts as i32, t, k, o, y)?;
+            }
+            return Ok(true);
+        }
+        if tuned(crate::tune!("GLYD_GPU_MOE_WG_STRICT"), 0) != 0 {
+            return Ok(false);
+        }
     }
     // the plan's choices as mma_moe_run makes them, the variables at their defaults
     let mt = if t <= 16 {
