@@ -1250,6 +1250,14 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
     Ok(glm_desc(m.hidden, qd, heads, inter, m.vocab, eps, max_pos, eos, hc, ops_all, (states, rings), e, lm))
 }
 
+/// A fused product's rows (several tensors' stacked) are padded with zero rows to a multiple of this: 64 a GPU in groups of up to 8.
+pub(crate) const FUSED_ROWS: usize = 512;
+
+/// A fused product's rows (several tensors' stacked): padded with zero rows to a multiple of `FUSED_ROWS`.
+pub(crate) fn fused(rows: usize) -> usize {
+    rows.div_ceil(FUSED_ROWS) * FUSED_ROWS
+}
+
 /// `members` stacked by rows (`item`), then zero rows to a multiple of `to` rows (`weights::ZERO_ROWS`): a fused product whose parts' rows the library does not
 /// pack as they are, and that a group of GPUs slices in 64s whatever the group. No product reads the zero rows.
 fn padded(members: Vec<String>, shape: Shape, to: usize) -> Result<Item> {
@@ -1350,9 +1358,8 @@ fn kimi_names(d: &Described, st: &super::Stage) -> Result<(Vec<Item>, Vec<String
         Some(Source::Tensor(n)) => Ok(n.clone()),
         x => err(format!("Kimi-K3: the role {r} is {x:?}, where one tensor is")),
     };
-    let fused = |roles: &[(String, Source)], rs: &[&str]| -> Result<Item> {
-        padded(rs.iter().map(|r| one(roles, r)).collect::<Result<_>>()?, &shape, super::kimi::FUSED_ROWS)
-    };
+    let fused =
+        |roles: &[(String, Source)], rs: &[&str]| -> Result<Item> { padded(rs.iter().map(|r| one(roles, r)).collect::<Result<_>>()?, &shape, FUSED_ROWS) };
     let (mut mats, mut small, mut forms) = (Vec::new(), Vec::new(), Vec::new());
     for l in st.layers.0..st.layers.1 {
         let (a, f) = (&d.blocks[2 * l], &d.blocks[2 * l + 1]);
@@ -1707,8 +1714,7 @@ mod tests {
             assert!(r.as_ref().is_err_and(|e| e.contains("where F32 or BF16 is read")), "a gated norm of I32 read as {r:?}");
         }
         // (the fused products' widths as the loader stacks them from the checkpoint's own tensors: a delta layer's six, an experts layer's three, padded)
-        let rows =
-            |names: &[String]| -> usize { super::super::kimi::fused(names.iter().map(|n| ck.get(&format!("{n}.weight")).unwrap().1.shape[0] as usize).sum()) };
+        let rows = |names: &[String]| -> usize { super::fused(names.iter().map(|n| ck.get(&format!("{n}.weight")).unwrap().1.shape[0] as usize).sum()) };
         let (kl, ml) = (c.kinds.iter().position(|&k| k == crate::glm::GlmKind::Kda).unwrap(), c.moe.iter().position(|&m| m).unwrap());
         let a = format!("{}layers.{kl}.self_attn", c.prefix);
         let f = format!("{}layers.{ml}.block_sparse_moe", c.prefix);
@@ -1791,7 +1797,7 @@ mod tests {
                     let rows: usize = shapes.iter().map(|s| s[0] as usize).sum();
                     assert!(shapes.iter().all(|s| s.len() == 2 && s[1] as usize == it.cols), "{:?}", it.members);
                     let padded = it.members.last().is_some_and(String::is_empty);
-                    assert_eq!(it.rows, if padded { super::super::kimi::fused(rows) } else { rows }, "{:?}", it.members);
+                    assert_eq!(it.rows, if padded { super::fused(rows) } else { rows }, "{:?}", it.members);
                     assert_eq!(padded, shapes.len() > 1, "{:?}", it.members);
                 }
                 assert_eq!(d.forms.iter().map(|f| &d.small[f.0]).collect::<Vec<_>>(), small.iter().filter(|s| s.contains('|')).collect::<Vec<_>>());
