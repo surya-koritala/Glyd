@@ -1,10 +1,10 @@
-//! GLM-5.3-Flash's and Kimi-K3's kernels (kernels/glm.cu, kernels/mla.cu) with typed launches: Kimi delta attention, the residual streams, the latent attention's (`KernGlm`),
-//! and the streams' mixing weights a launch takes (`Hc`), which the executor and Condor run.
+//! GLM-5.3-Flash's and Kimi-K3's kernels (kernels/glm.cu, kernels/mla.cu) with typed launches: Kimi delta attention, the embedding into the residual streams, the indexer's
+//! score and pick and the small dense product (`KernGlm`), and the streams' mixing weights a launch takes (`Hc`), which the executor and Condor run. The latent attention's
+//! own launches are the layer kind's (src/dynamic/mla.rs), the streams' mixing the streams kind's (src/dynamic/residual.rs).
 
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Result, Stream};
 use crate::launch;
-use crate::runtime::kinds::Rounding;
 
 /// A Kimi delta head's channels (and the state's side), the residual streams (kernels/residual.cu's), the tokens of a chunk of the chunked delta rule and its dynamic shared memory in bytes (kernels/glm.cu).
 pub const GM_D: usize = 128;
@@ -25,21 +25,9 @@ pub struct KernGlm {
     out: crate::kt::glm_kda_out,
     out_w32: crate::kt::glm_kda_out_w32,
     small: crate::kt::small_linear,
-    // the latent attention's (kernels/mla.cu, the layer kind's: this engine's caches are rooms of their own, read with no block table)
-    rms2: crate::kt::rms2_rows,
-    layernorm: crate::kt::layernorm_rows,
-    scatter: crate::kt::scatter_rows,
-    absorb: crate::kt::mla_absorb,
-    kp_keys: crate::kt::idx_pool,
+    // the indexer's score and pick (kernels/mla.cu), which Condor's engine runs on its own caches; the latent attention itself is src/dynamic/mla.rs's
     idx_score: crate::kt::idx_score,
     select: crate::kt::idx_pick,
-    mla_attn: crate::kt::mla_attn,
-    /// The shared memory a block of `mla_attn` may take here (the GPU's most, opted in to at load).
-    mla_smem: u32,
-    mla_merge: crate::kt::mla_merge,
-    expand_v: crate::kt::mla_expand_v,
-    /// The streams' split projection's partial sums, for up to HC_FEW rows.
-    hc_part: Buf,
 }
 
 /// Rows at most that the mixing weights' split projection takes (a decode step, the rows of a verified draft).
@@ -60,9 +48,6 @@ impl KernGlm {
     pub fn load(dev: &Dev) -> Result<KernGlm> {
         let chunk = dev.typed::<crate::kt::glm_kda_chunk>()?;
         chunk.allow_smem(GM_CHUNK_SMEM)?;
-        // (the dense attention's scores, two floats a position, are in shared memory: as much as the GPU gives a block)
-        let (mla_attn, mla_smem) = (dev.typed::<crate::kt::mla_attn>()?, mla_smem(dev)?);
-        mla_attn.allow_smem(mla_smem)?;
         Ok(KernGlm {
             hc: crate::dynamic::residual::KernRes::load(dev)?,
             conv: dev.typed()?,
@@ -72,18 +57,8 @@ impl KernGlm {
             out: dev.typed()?,
             out_w32: dev.typed()?,
             small: dev.typed()?,
-            rms2: dev.typed()?,
-            layernorm: dev.typed()?,
-            scatter: dev.typed()?,
-            absorb: dev.typed()?,
-            kp_keys: dev.typed()?,
             idx_score: dev.typed()?,
             select: dev.typed()?,
-            mla_attn,
-            mla_smem,
-            mla_merge: dev.typed()?,
-            expand_v: dev.typed()?,
-            hc_part: Buf::zeroed(crate::dynamic::residual::part_words(Rounding::Twice, 0, 0)? * 4)?,
         })
     }
 
@@ -93,33 +68,6 @@ impl KernGlm {
     /// Live device buffers of the sizes the kernels read and write (their comments in kernels/glm.cu and kernels/residual.cu).
     pub unsafe fn streams(&self, s: Stream, e: u64, x: u64, n: u32, d: i32) -> Result<()> {
         self.hc.streams(s, e, x, n, d)
-    }
-
-    /// The mixing weights of the streams x [n, 4, d] (fn [24, 4d] bf16, base [24] and scale [3] fp32) into hcp [n, 24] fp32, and the collapse normed with the weight nw [d] into h [n, d].
-    ///
-    /// # Safety
-    /// As `streams`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn hc_mix(&self, s: Stream, x: u64, hc: &Hc, nw: u64, h: u64, hcp: u64, n: u32, d: i32, eps: f32, hc_eps: f32, iters: i32) -> Result<()> {
-        let w = (hc.proj.ptr, hc.base.ptr, hc.scale.ptr);
-        self.hc.pre(s, x, w, nw, h, hcp, self.hc_part.ptr, n, d, (eps, hc_eps, iters), Rounding::Twice)
-    }
-
-    /// The streams x [n, 4, d] after a block whose output is o [n, d]: updated in place by the weights hcp [n, 24] holds.
-    ///
-    /// # Safety
-    /// As `streams`.
-    pub unsafe fn hc_post(&self, s: Stream, x: u64, o: u64, hcp: u64, n: u32, d: i32) -> Result<()> {
-        self.hc.post(s, x, o, hcp, n, d, Rounding::Twice)
-    }
-
-    /// out [rows, d] = the final norm (weight w [d]) of the mean of each row of x [rows, 4, d].
-    ///
-    /// # Safety
-    /// As `streams`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn hc_head(&self, s: Stream, x: u64, w: u64, out: u64, rows: u32, d: i32, eps: f32) -> Result<()> {
-        self.hc.head(s, x, None, 0, w, out, rows, d, (eps, 0.0), Rounding::Twice)
     }
 
     /// The causal convolution and SiLU of n rows (the first c channels of rows xs apart), the bf16 state [3, c] read and written (qwen35.cu's `conv_silu`; `w32`: the weights fp32, `conv_silu_w32`).
@@ -168,86 +116,6 @@ impl KernGlm {
         launch!(if w32 { self.out_w32.sig() } else { self.out.sig() }, [n, heads as u32, 1], [128, 1, 1], s; core, og, w, att, heads, eps)
     }
 
-    /// n rows of x (rows `xs` apart, `k` wide) normed as transformers' RMSNorm does (weight w [k]) into y (rows `ys` apart); with `dst` (the rows' positions, int32 on the device) row i goes to y's row dst[i], else to row i.
-    ///
-    /// # Safety
-    /// As `streams`; k at most 4,096.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn rms2(&self, s: Stream, x: u64, xs: i32, w: u64, y: u64, ys: i32, dst: u64, k: i32, eps: f32, n: u32) -> Result<()> {
-        if k <= 0 || k > 4096 {
-            return err(format!("a norm of {k} values: not supported"));
-        }
-        launch!(self.rms2, [n, 1, 1], [256, 1, 1], s; x, xs, w, y, ys, dst, 0u64, k, eps)
-    }
-
-    /// The same with a LayerNorm (weight w, bias b [k], k at most 256).
-    ///
-    /// # Safety
-    /// As `streams`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn layernorm(&self, s: Stream, x: u64, xs: i32, w: u64, b: u64, y: u64, ys: i32, dst: u64, k: i32, eps: f32, n: u32) -> Result<()> {
-        if k <= 0 || k > 256 {
-            return err(format!("a LayerNorm of {k} values: not supported"));
-        }
-        launch!(self.layernorm, [n, 1, 1], [128, 1, 1], s; x, xs, w, b, y, ys, dst, 0u64, k, eps)
-    }
-
-    /// Row pos[i] of dst (rows `ds` apart) = row i of src (rows `ss` apart), `k` values each.
-    ///
-    /// # Safety
-    /// As `streams`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn scatter(&self, s: Stream, src: u64, ss: i32, dst: u64, ds: i32, pos: u64, k: i32, n: u32) -> Result<()> {
-        launch!(self.scatter, [n, 1, 1], [256, 1, 1], s; src, ss, dst, ds, pos, 0u64, k)
-    }
-
-    /// qa [n, heads, kv_rank] fp32 = each head's Wk^T q for q [n, heads nope] (rows `qs` apart), from kv_b_proj `wkv` [heads (nope + vd), kv_rank].
-    ///
-    /// # Safety
-    /// As `streams`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn absorb(&self, s: Stream, q: u64, qs: i32, wkv: u64, qa: u64, n: i32, heads: i32, nope: i32, vd: i32, kr: i32) -> Result<()> {
-        self.absorb_with(s, q, qs, nope, wkv, qa, n, heads, nope, vd, kr, kr)
-    }
-
-    /// As `absorb`, a head's query `qhs` wide in q and `ks` wide in qa (its channels nope .. nope + ks - kr copied after the absorbed kr: Kimi-K3's key part the heads share).
-    ///
-    /// # Safety
-    /// As `streams`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn absorb_with(
-        &self,
-        s: Stream,
-        q: u64,
-        qs: i32,
-        qhs: i32,
-        wkv: u64,
-        qa: u64,
-        n: i32,
-        heads: i32,
-        nope: i32,
-        vd: i32,
-        kr: i32,
-        ks: i32,
-    ) -> Result<()> {
-        if nope <= 0 || nope > 256 || kr <= 0 || kr > 512 || ks < kr || qhs < nope + ks - kr {
-            return err(format!("latent attention with heads of {nope} ({qhs} wide), latents of {kr} and scores over {ks}: this engine runs heads up to 256 and latents up to 512"));
-        }
-        launch!(self.absorb, [heads as u32, (n as u32).div_ceil(8), 1], [256, 1, 1], s; q, qs, qhs, wkv, qa, n, heads, nope, vd, kr, ks)
-    }
-
-    /// The groups of keys the n rows (consecutive positions from pos[0]) complete: their keys into pk [., d].
-    ///
-    /// # Safety
-    /// As `streams`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn kp_keys(&self, s: Stream, ik: u64, gs: u64, ape: u64, pk: u64, pos: u64, n: i32, d: i32, kp: i32) -> Result<()> {
-        if kp <= 0 || kp > 8 {
-            return err(format!("key groups of {kp} tokens: this engine runs groups up to 8"));
-        }
-        launch!(self.kp_keys, [(n as u32).div_ceil(kp as u32) + 1, 1, 1], [128, 1, 1], s; ik, d, gs, d, ape, pk, d, 1i32, 0i32, 0u64, pos, n, d, kp)
-    }
-
     /// scores [n, pmax] fp32 for the rows whose pools are more than `ksel`: the indexer's heads (`ih` of `d` channels, queries iq with rows `iqs` apart, head weights wts with rows `wsr` apart) against the pool keys pk.
     ///
     /// # Safety
@@ -279,7 +147,7 @@ impl KernGlm {
     /// The tokens each of n rows attends to: sel [n, tmax] int32 (the first cnt[i] of a row), from the scores.
     ///
     /// # Safety
-    /// As `streams`; ksel at most 1,024.
+    /// As `streams`; ksel at most 1,024: this entry's own bound, as Condor's own pick's (src/model_qwen4x.rs `select`); the kernel here, `idx_pick`, takes any count.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn select(
         &self,
@@ -299,85 +167,6 @@ impl KernGlm {
             return err(format!("an indexer that picks {ksel} groups of keys: this engine runs up to 1,024"));
         }
         launch!(self.select, [n, 1, 1], [1024, 1, 1], s; scores, pmax, pos, kp, ksel, kp, tail as i32, sel, tmax, cnt, 0u64, 0i32)
-    }
-
-    /// olat [n, heads, kv_rank] fp32: each row's and head's softmax attention over the tokens sel/cnt picked, of the latents lat [., kv_rank]. A few rows (at most `HC_FEW`) cut their tokens into 8 runs over blocks and merge
-    /// them (`part`: [n, heads, 8, kv_rank + 2] fp32); more rows are parallel enough by themselves.
-    ///
-    /// # Safety
-    /// As `streams`; kv_rank a multiple of 64 up to 512.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn mla_attn(
-        &self,
-        s: Stream,
-        qa: u64,
-        lat: u64,
-        sel: u64,
-        cnt: u64,
-        olat: u64,
-        part: u64,
-        tmax: i32,
-        heads: i32,
-        kr: i32,
-        scale: f32,
-        n: u32,
-    ) -> Result<()> {
-        self.mla_attn_with(s, qa, lat, sel, cnt, olat, part, tmax, heads, kr, kr, scale, n)
-    }
-
-    /// As `mla_attn`, the scores over `ks` channels (qa's heads and lat's rows ks wide), the values the first kr; `sel` 0: every position up to the row's (cnt = pos + 1).
-    ///
-    /// # Safety
-    /// As `streams`; kv_rank and ks multiples of 64, kv_rank up to 512.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn mla_attn_with(
-        &self,
-        s: Stream,
-        qa: u64,
-        lat: u64,
-        sel: u64,
-        cnt: u64,
-        olat: u64,
-        part: u64,
-        tmax: i32,
-        heads: i32,
-        kr: i32,
-        ks: i32,
-        scale: f32,
-        n: u32,
-    ) -> Result<()> {
-        if ks < kr || ks % 64 != 0 {
-            return err(format!("latent attention of scores over {ks} channels and latents of {kr}: this engine does not run that shape"));
-        }
-        let splits = if n <= HC_FEW { 8 } else { 1 };
-        // (a block's tokens a tile at a time: as many as its shared memory holds, two words a token besides the query's KS)
-        let mut tile = ((tmax + splits - 1) / splits).min(mla_positions(self.mla_smem, ks) as i32).max(1);
-        if tile < 64 && tile < (tmax + splits - 1) / splits {
-            return err(format!(
-                "latent attention with scores over {ks} channels: {} bytes of shared memory a block hold too few tokens a pass",
-                self.mla_smem
-            ));
-        }
-        // (a development build's GLYD_MLA_TILE: smaller tiles, the passes of a long context on a short one)
-        if let Some(t) = crate::tune!("GLYD_MLA_TILE").and_then(|v| v.parse::<i32>().ok()).filter(|&t| t > 0) {
-            tile = tile.min(t);
-        }
-        let smem = ((ks + 2 * tile) * 4) as u32;
-        launch!(self.mla_attn, [heads as u32, n, splits as u32], [256, 1, 1], smem smem, s; qa, lat, ks, 0u64, sel, cnt, olat, part, tmax, heads, kr, ks, scale, splits, tile)?;
-        if splits > 1 {
-            launch!(self.mla_merge, [heads as u32, n, 1], [256, 1, 1], s; part, olat, heads, kr, splits)?;
-        }
-        Ok(())
-    }
-
-    /// ov [n, heads vd] bf16 = olat times each head's value rows of kv_b_proj `wkv`.
-    ///
-    /// # Safety
-    /// As `streams`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn expand_v(&self, s: Stream, olat: u64, wkv: u64, ov: u64, n: i32, heads: i32, nope: i32, vd: i32, kr: i32) -> Result<()> {
-        let smem = (4 * kr * 4) as u32;
-        launch!(self.expand_v, [heads as u32, (n as u32).div_ceil(4), 1], [256, 1, 1], smem smem, s; olat, wkv, ov, n, heads, nope, vd, kr)
     }
 
     /// y [m, rows] = x [m, cols] W^T for a bf16 W the library does not pack.

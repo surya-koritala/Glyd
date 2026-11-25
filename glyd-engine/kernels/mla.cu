@@ -9,7 +9,6 @@
 // reference (checked there against transformers 5.19.0's Glm5NextTextAttention and Glm5NextTextIndexer).
 
 #define GM_NOPE_MAX 256    // a query head's width (nope) at most
-#define GM_KSEL_MAX 1024   // pools picked at most (a bound no kernel here reads: idx_pick takes any)
 #define GM_IDX_W 8         // pools a block of idx_score scores (a warp each)
 #define GM_RB 8            // rows a block of mla_absorb takes
 #define GM_VB 4            // rows a block of mla_expand_v takes
@@ -56,7 +55,7 @@ extern "C" __global__ void __launch_bounds__(256) rms2_rows(const bf16* x, int x
 }
 
 // The same function summed by 512 threads, a thread's columns t, t + 512, ... in that order, each square added by an fma: KimiRMSNorm as Kimi-K3's engine sums it (its q latent's norm, its latent
-// experts' norm); any width, for K up to 512 ML_COLS a thread's columns read into registers once (a column a round had made a decode step's norm 8-15 us on one SM). y row i. A block a row, 512 threads.
+// experts' norm); any width, for K up to 512 ML_COLS a thread's columns read into registers once (a column a round is slower: the row's loads would follow one another). y row i. A block a row, 512 threads.
 #define ML_COLS 16
 extern "C" __global__ void __launch_bounds__(512) rms2_rows512(const bf16* x, int xs, const bf16* w, bf16* y, int ys, int K, float eps) {
     const bf16* xr = x + (size_t)blockIdx.x * xs;
@@ -128,7 +127,7 @@ extern "C" __global__ void scatter_rows(const bf16* src, int ss, bf16* dst, int 
 
 // qa [n, NH, KR] fp32 = for each row and head, Wk_h^T q_h: qa[i][h][j] = sum over d < nope of q[i][h nope + d] * wkv[h (nope + vd) + d][j] (wkv = kv_b_proj, bf16 [NH (nope + vd), KR]). A block a head and GM_RB rows (grid NH x
 // ceil(n / GM_RB)), 256 threads: KR / 8 threads a group, each 8 columns of a row of the matrix (one 16-byte load), the groups down the head's nope rows by turns, so that a head's 256 rows are read by 4 groups (KR = 512) or
-// 32 (KR = 64) at once (a thread a column read them one after another and a decode step's 64 blocks took 78 us); the groups' sums are added in order through shared memory. KR a multiple of 64 up to 512.
+// 32 (KR = 64) at once (a thread a column would read them one after another); the groups' sums are added in order through shared memory. KR a multiple of 64 up to 512.
 // A head's query is qhs wide in q (its nope channels first) and KS wide in qa: past KR its channels nope .. nope + KS - KR copied as they are (Kimi-K3's key part every head shares; GLM: qhs = nope, KS = KR).
 extern "C" __global__ void __launch_bounds__(256) mla_absorb(const bf16* q, int qs, int qhs, const bf16* wkv, float* qa, int n, int NH, int nope, int vd, int KR, int KS) {
     const int h = blockIdx.x, r0 = blockIdx.y * GM_RB, tid = threadIdx.x;
@@ -408,7 +407,7 @@ extern "C" __global__ void __launch_bounds__(256) idx_inside(float* scores, int 
 
 // olat [n, NH, KR] fp32 = for each row i and head h, softmax over its cnt[i] tokens t of (qa[i][h] . lat[sel[i][t]]) scale, times the latents: sum_t p_t lat[sel[i][t]] (lat [., KS] bf16, a position's row through tab). A
 // block a (head, row, split) (grid NH x n x splits), 256 threads; the row's tokens are cut into `splits` runs, a block takes one: a warp four tokens at a time for the scores (bf16 pairs, KR a multiple of 64; the four
-// rows' loads are in flight together, where one at a time a decode step's 2,051 tokens took 270 us), the softmax in fp32 over the block's tokens, then a thread two columns of the weighted sum, four tokens at a time.
+// rows' loads are in flight together, where one at a time each waits for the one before), the softmax in fp32 over the block's tokens, then a thread two columns of the weighted sum, four tokens at a time.
 // With one split the block writes olat; with more, its unnormalised sum, its largest score and the sum of its exponentials to part [n][NH][splits][KR + 2] for mla_merge. Dynamic shared memory (KS + 2 tile) 4-byte
 // words: a block's tokens `tile` at a time (Kimi-K3's dense attention over the whole context).
 // The scores are over KS channels (qa's heads KS wide, lat's rows ls >= KS apart), the values the first KR of them (Kimi-K3: the latent's 512 and the shared key part's 64; GLM: KS = KR); sel null: every
