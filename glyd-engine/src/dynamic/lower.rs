@@ -976,7 +976,8 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
 
 /// Muse Spark: pairs of blocks, the gated attention (q, k, v and the gate in one product, heads of 64, the rotary on the window's layers alone) with its input-scaled
 /// norms and residual gate, then the experts in the latent with theirs; the embedding normed without a weight, the soft-capped head times the output multiplier.
-/// The matrices, small tensors and blocks are dynamic/muse.rs's loader's (`dynamic::muse::describe` indexes them in its order).
+/// Every matrix and small tensor is named from the description's roles, in the order the operations index them, a small tensor made from its values where its
+/// operation reads it so (`SmallForm`): the executor's loader reads them (`dynamic::muse`), each layer's experts its kind's block (`dynamic::experts`).
 pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
     let m = &d.desc;
     if m.blocks.len() % 2 != 0 {
@@ -984,13 +985,13 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
     }
     let layers = m.blocks.len() / 2;
     let mut atts = Vec::with_capacity(layers);
-    let (mut lat, mut mult) = (None, 1.0);
+    let (mut lat, mut mult, mut top_k) = (None, 1.0, 0);
     for l in 0..layers {
         match (&m.blocks[2 * l].body, &m.blocks[2 * l + 1].body) {
             (Body::Mixer(Mixer::Attention(a)), Body::Ffn(Ffn::Moe(e))) => {
                 atts.push(a);
                 lat = lat.or(e.latent.as_ref().map(|x| x.dim));
-                mult = e.router.logit_scale;
+                (mult, top_k) = (e.router.logit_scale, top_k.max(e.router.top_k));
             }
             (a, f) => return err(format!("Muse Spark: layer {l} is {a:?} and {f:?}")),
         }
@@ -998,9 +999,9 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
     let a0 = atts.first().ok_or_else(|| Error("Muse Spark: no layers".into()))?;
     let (nq, nk, hd, lat) = (a0.heads, a0.kv_heads, a0.head_dim, lat.ok_or_else(|| Error("Muse Spark: experts without a latent".into()))?);
     let (eps, post_eps) = (m.blocks[0].norm_in.eps, m.blocks[0].norm_out.map_or(1e-6, |n| n.eps));
-    if hd != 64 || m.hidden > 8192 || lat > 4096 {
+    if hd != 64 || m.hidden > 8192 || lat > 4096 || top_k > 32 {
         return err(format!(
-            "heads of {hd}, a width of {}, a latent of {lat}: this engine runs heads of 64, widths up to 8192 and latents up to 4096",
+            "heads of {hd}, a width of {}, a latent of {lat}, {top_k} experts a token: this engine runs heads of 64, widths up to 8192, latents up to 4096 and up to 32 experts a token",
             m.hidden
         ));
     }
@@ -1072,7 +1073,7 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
             Op::RmsNorm { x: Slot::X, w: s0 + 3, y: Slot::H, weight: NormW::Plain, eps },
             Op::Linear { w: m0 + 2, x: Slot::H, y: Slot::Proj, name: "experts: latent in" },
             Op::RmsNorm { x: Slot::Proj, w: s0 + 4, y: Slot::Xc, weight: NormW::Plain, eps },
-            Op::Moe(super::muse::latent_moe(block, s0 + 5, post_eps, mult)),
+            Op::Moe(super::experts::latent_normed(block, s0 + 5, post_eps, mult)),
             Op::Linear { w: m0 + 3, x: Slot::M, y: Slot::O, name: "experts: latent out" },
             Op::RmsNorm { x: Slot::O, w: s0 + 6, y: Slot::O, weight: NormW::Input, eps: post_eps },
             Op::GatedResidual { alpha: s0 + 7, beta: s0 + 8 },
@@ -1246,7 +1247,7 @@ pub fn kimi(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, w32
         x => err(format!("Kimi-K3: block {b}'s {r} is {x:?}")),
     };
     let (mut qd, mut nh, mut kd, mut bound) = (0, 0, 0, 0.0);
-    let (mut inter, mut situ, mut moe_rows, mut mla) = (0, (0.0, 0.0), 0, None);
+    let (mut inter, mut situ, mut moe_rows, mut mla, mut mla_ix) = (0, (0.0, 0.0), 0, None, None);
     let (mut ls, mut starts) = (Vec::with_capacity(layers), Vec::with_capacity(layers));
     for l in 0..layers {
         let (mx, ff) = (&m.blocks[2 * l], &m.blocks[2 * l + 1]);
@@ -1267,8 +1268,13 @@ pub fn kimi(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, w32
                 true
             }
             Body::Mixer(Mixer::Mla(x)) => {
-                // (q_a, the gate and kv_a one product)
-                mla = Some(super::mla::MlaOp::of(x, super::mla::MlaIn::Fused { w: 0 }, 0, 0, 0, 0, false)?);
+                // (q_a, the gate and kv_a one product; with the newer config's indexer on the layers it names)
+                let op = super::mla::MlaOp::of(x, super::mla::MlaIn::Fused { w: 0 }, 0, 0, 0, 0, false)?;
+                if x.indexer.is_some() {
+                    mla_ix = Some(op);
+                } else {
+                    mla = Some(op);
+                }
                 false
             }
             b => return err(format!("Kimi-K3: layer {l}'s mixer is {b:?}")),
@@ -1288,10 +1294,11 @@ pub fn kimi(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, w32
             }
             b => return err(format!("Kimi-K3: layer {l}'s feed-forward is {b:?}")),
         };
-        ls.push(KimiLayer { kda, moe, w32: w32.get(l).copied().unwrap_or_default() });
+        let ix = matches!(&mx.body, Body::Mixer(Mixer::Mla(x)) if x.indexer.is_some());
+        ls.push(KimiLayer { kda, moe, w32: w32.get(l).copied().unwrap_or_default(), ix });
     }
     let eps = m.blocks.first().map_or(1e-6, |b| b.norm_in.eps);
-    Ok(kimi_desc(&KimiDims { h: m.hidden, qd, nh, kd, bound, inter, situ, eps, moe_rows, mla }, &ls, &starts, st, early, m.vocab, max_pos, eos))
+    Ok(kimi_desc(&KimiDims { h: m.hidden, qd, nh, kd, bound, inter, situ, eps, moe_rows, mla, mla_ix }, &ls, &starts, st, early, m.vocab, max_pos, eos))
 }
 
 /// A model of compressed attention layers (DeepSeek-V4's and V4.1's forms of the kind; `lower_comp::lower`, which gives its loader's plan too). `vo` what the level and
@@ -1419,26 +1426,6 @@ mod tests {
         assert!(e.contains("describe different models") && e.contains("not loaded"), "{e}");
     }
 
-    /// Muse Spark lowered from the random model's config the logits checks run, whole and as a split's stages, is the executor's own description of it.
-    #[cfg(feature = "dev")]
-    #[test]
-    fn the_random_muse_lowers_as_its_own_description() {
-        let dir = std::env::temp_dir().join(format!("glyd-lower-muse-{}", std::process::id()));
-        crate::muse_ref::random(&dir).unwrap();
-        let c = crate::muse::ConfigMuse::load(&dir).unwrap();
-        let half = c.layers / 2;
-        for st in [
-            super::super::Stage::whole(c.layers),
-            super::super::Stage { layers: (0, half), first: true, last: false },
-            super::super::Stage { layers: (half, c.layers), first: false, last: true },
-        ] {
-            let (own, lowered) =
-                (super::super::muse::describe(&c, &st).unwrap(), super::super::muse::lowered(&dir, &c, &st).unwrap_or_else(|e| panic!("{}", e.msg)));
-            assert_eq!(format!("{own:#?}"), format!("{lowered:#?}"));
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
     /// GLM-5.3-Flash lowered from its released config and the tiny and toy ones, whole and as a split's stages, is the executor's own description of it; each
     /// layer's matrices are as many as kern_glm.rs's loader packs.
     #[test]
@@ -1537,6 +1524,39 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The Kimi family's second random shape (the newer config's sparse attention) lowers as the loader's own description of it: its two latent attention layers
+    /// with the indexer of a key a token (RMS-normed keys at the model's epsilon, no pooling tensors, the best 16 tokens kept), a ring of its keys beside each
+    /// layer's latents, the shared key part kept.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_random_kimi_with_sparse_attention_lowers_as_its_own_description() {
+        let dir = std::env::temp_dir().join(format!("glyd-lower-kimi-dsa-{}", std::process::id()));
+        crate::kimi_ref::random_dsa(&dir).unwrap();
+        let c = crate::kimi::ConfigKimi::load(&dir).unwrap();
+        assert_eq!(c.dsa, Some(crate::kimi::KimiDsa { layers: vec![3, 7], heads: 4, dim: 64, top_k: 16, layer_norm: false }));
+        let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
+        let w32 = super::super::kimi::dtypes(&ck, &c).unwrap();
+        for st in [super::super::Stage::whole(c.layers), super::super::Stage { layers: (4, 8), first: false, last: true }] {
+            let d = super::super::kimi::lowered(&dir, &c, &st, &w32, false).unwrap_or_else(|e| panic!("{}", e.msg));
+            let ops: Vec<&super::super::MlaOp> = d.layers.iter().flatten().filter_map(|o| if let Op::Mla(a) = o { Some(a) } else { None }).collect();
+            assert_eq!((ops.len(), d.rings.len()), if st.first { (2, 4) } else { (1, 2) });
+            for a in ops {
+                let x = a.indexer.as_ref().expect("the indexer");
+                assert_eq!((x.key, x.pooled(), x.pick.ratio, x.pick.top_k, x.pick.heads, x.dim), (super::super::KeyNorm::Rms(1e-5), false, 1, 16, 4, 64));
+                assert_eq!(
+                    (a.small_count(), a.rope, d.rings[a.ring].d, d.rings[a.ring + 1].d, x.pick.keys),
+                    (7, 64, 128 + 64, 128, super::super::IdxKeys::Ring(a.ring + 1))
+                );
+            }
+        }
+        // (the first shape has no indexer)
+        crate::kimi_ref::random(&dir, 1, true, 8).unwrap();
+        let c = crate::kimi::ConfigKimi::load(&dir).unwrap();
+        let d = super::super::kimi::describe(&c, &super::super::Stage::whole(c.layers), &vec![(true, true); c.layers], false).unwrap();
+        assert!(c.dsa.is_none() && d.layers.iter().flatten().all(|o| !matches!(o, Op::Mla(a) if a.indexer.is_some())));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The random Kimi-K3 the logits and GPU checks run, lowered whole and as a split's stages, is the executor's own description of it; its dtypes as written.
@@ -1804,7 +1824,7 @@ mod tests {
         let d = dir("muse");
         crate::muse_ref::random(&d).unwrap();
         let c = crate::muse::ConfigMuse::load(&d).unwrap();
-        v.push(muse::describe(&c, &Stage::whole(c.layers)).unwrap());
+        v.push(muse::lowered(&d, &crate::runtime::describe::describe_dir(&d).unwrap().0, &Stage::whole(c.layers)).unwrap());
         let d = dir("kimi");
         crate::kimi_ref::random(&d, 1, true, 8).unwrap();
         let c = crate::kimi::ConfigKimi::load(&d).unwrap();

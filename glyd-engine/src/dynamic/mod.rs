@@ -667,6 +667,9 @@ pub enum SmallForm {
     /// A residual gate's two factors of its parameter at temperature T (`muse::residual_gate`): alpha, and beta.
     GateAlpha(f32),
     GateBeta(f32),
+    /// Several tensors one after another, each as saved and all of one type: the small tensor's name lists them, `|` between them (a delta attention layer's
+    /// three convolutions as the one its kernel reads).
+    Joined,
 }
 
 /// The layers one GPU runs of a model split across several (`split::Split`): layers `layers.0..layers.1`, the embedding where `first`, the final norm
@@ -688,7 +691,7 @@ impl Op {
     /// The matrix the operation multiplies by, the ring it reads or writes, the state it carries.
     fn mats(&self) -> Vec<usize> {
         match *self {
-            Op::Linear { w, .. } | Op::GateUpSilu { w, .. } | Op::OGroupLora { w, in_f8: false, .. } => vec![w],
+            Op::Linear { w, .. } | Op::LinearAt { w, .. } | Op::GateUpSilu { w, .. } | Op::OGroupLora { w, in_f8: false, .. } => vec![w],
             Op::StreamsPre { mix: StreamsMix::Gated { down, up, inject }, .. } => vec![down, up, inject],
             Op::StreamsHead { mix: HeadMix::Gated { down, up }, .. } => vec![down, up],
             Op::NgramRows(x) => vec![x.table],
@@ -811,6 +814,15 @@ impl Part {
     }
 }
 
+/// Where a stage's packed matrices are held beyond its GPU's own memory. `across`: every layer across the thread's group of GPUs where it has one
+/// (src/dynamic/tp.rs), this GPU holding its slice of the rows of each matrix big enough to slice (a Hub-format directory's, packed here). `ram`: the layers
+/// whose packed matrices are in the computer's memory, copied into one slot on the GPU before each runs (src/dense_ram.rs).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Placing {
+    pub across: bool,
+    pub ram: crate::dense_ram::Placer,
+}
+
 /// What reads a description's blocks of experts (`Op::Moe`'s, in its order) from its checkpoint, the matrices' layout given.
 pub type Experts<'a> = dyn Fn(&Checkpoint, Layout) -> Result<Vec<Box<dyn MoeBlock>>> + 'a;
 
@@ -820,17 +832,66 @@ fn unnamed(d: &ModelDesc) -> Option<usize> {
 }
 
 /// Whether matrix `k` of `d` is held as saved (bf16), not packed: a table an operation reads by row (`Op::NgramRows`), or a shape the library does not pack
-/// (columns not a multiple of 16, or a member's rows, `rows_of` it where the checkpoint holds it, not a multiple of 64: a save keeps such a merge as its parts).
+/// (columns not a multiple of 16, or a member's rows, `rows_of` it where the checkpoint holds it, not a multiple of 64: a save keeps such a merge as its parts;
+/// an item padded with zero rows is one matrix of its own rows, whatever its members').
 fn held_as_saved(d: &ModelDesc, k: usize, rows_of: &dyn Fn(&str) -> Option<usize>) -> bool {
     let it = &d.mats[k];
+    let padded = it.members.last().is_some_and(|m| m == crate::weights::ZERO_ROWS);
     !it.cols.is_multiple_of(16)
-        || it.members.iter().any(|m| rows_of(m).is_some_and(|r| r == 0 || !r.is_multiple_of(64)))
+        || if padded { !it.rows.is_multiple_of(64) } else { it.members.iter().any(|m| rows_of(m).is_some_and(|r| r == 0 || !r.is_multiple_of(64))) }
         || d.layers.iter().flatten().any(|op| matches!(op, Op::NgramRows(x) if x.table == k))
 }
 
-/// The small tensors an operation reads in fp32 (the delta rule's A_log): a bf16 one is widened.
+/// The small tensors an operation reads in fp32 (the gated delta rule's A_log; the Kimi delta rule's A_log and dt_bias): a bf16 one is widened.
 fn read_f32(d: &ModelDesc) -> Vec<usize> {
-    d.layers.iter().flatten().filter_map(|op| if let Op::GdnDelta { a_log, .. } = op { Some(*a_log) } else { None }).collect()
+    d.layers
+        .iter()
+        .flatten()
+        .flat_map(|op| match *op {
+            Op::GdnDelta { a_log, .. } => vec![a_log],
+            Op::KdaDelta { a_log, dt_bias, .. } => vec![a_log, dt_bias],
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+/// The small tensors an operation reads as saved in the type its own flag says (fp32 where true, else bf16: the Kimi delta attention's convolutions and gated
+/// norm, which a release holds in either): a tensor of the other type is refused.
+fn read_typed(d: &ModelDesc) -> Vec<(usize, bool)> {
+    d.layers
+        .iter()
+        .flatten()
+        .filter_map(|op| match *op {
+            Op::KdaConv { w, w32, .. } | Op::KdaOut { w, w32, .. } => Some((w, w32)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The values a small tensor's operation reads of it at least, where the operation says (a shorter tensor would be read past its end on the GPU; a longer one
+/// is read in its first values, as a release's A_log of more heads than the model has): the Kimi delta rule's A_log a head and dt_bias a channel, its gated
+/// norm a head's channels (a head's channels: the recurrence's state holds heads x channels x channels fp32), its convolutions' taps a channel (the row's own
+/// and the state's, bf16).
+fn read_at_least(d: &ModelDesc) -> Vec<(usize, usize)> {
+    let mut v = Vec::new();
+    for ops in &d.layers {
+        let kd = ops
+            .iter()
+            .find_map(|op| match *op {
+                Op::KdaDelta { state, heads, .. } => Some((d.states.get(state).copied().unwrap_or(0) / (4 * heads.max(1))).isqrt()),
+                _ => None,
+            })
+            .unwrap_or(0);
+        for op in ops {
+            match *op {
+                Op::KdaDelta { a_log, dt_bias, heads, .. } => v.extend([(a_log, heads), (dt_bias, heads * kd)]),
+                Op::KdaConv { w, state, c, .. } => v.push((w, c + d.states.get(state).map_or(0, |b| b / 2))),
+                Op::KdaOut { w, .. } => v.push((w, kd)),
+                _ => {}
+            }
+        }
+    }
+    v
 }
 
 /// The small tensors an operation reads in fp32 with the values the model's dtype holds (the silu-gated norm's weight, `Op::GatedNorm` not `sigmoid`, as vLLM
@@ -868,13 +929,36 @@ fn small_of(ck: &Checkpoint, name: &str, f: SmallForm) -> Result<Vec<u16>> {
         SmallForm::PlusOne => crate::muse::plus_one(&vals()?),
         SmallForm::GateAlpha(t) => crate::muse::residual_gate(&vals()?, t).0,
         SmallForm::GateBeta(t) => crate::muse::residual_gate(&vals()?, t).1,
+        SmallForm::Joined => return err(format!("{name}: several tensors as one are read as saved, not made from their values")),
     };
     Ok(v.into_iter().map(crate::gemma4::bf16_bits).collect())
 }
 
+/// Small tensor `name` as its checkpoint holds it, its type and bytes; `joined`: the tensors the name lists (`SmallForm::Joined`), one after another, all of one type.
+fn small_saved(ck: &Checkpoint, name: &str, joined: bool) -> Result<(String, Vec<u8>)> {
+    let one = |n: &str| -> Result<(String, Vec<u8>)> {
+        let (_, t) = ck.get(n).ok_or_else(|| Error(format!("no tensor {n}")))?;
+        Ok((t.dtype.clone(), ck.read(n).map_err(|e| Error(format!("{n}: {e}")))?))
+    };
+    if !joined {
+        return one(name);
+    }
+    let (mut dtype, mut bytes, mut each) = (String::new(), Vec::new(), 0);
+    for n in name.split('|') {
+        let (dt, b) = one(n)?;
+        if dtype.is_empty() {
+            (dtype, each) = (dt, b.len());
+        } else if dt != dtype || b.len() != each {
+            return err(format!("{n}: {dt} of {} bytes, where the tensors read as one with it are {dtype} of {each}", b.len()));
+        }
+        bytes.extend(b);
+    }
+    Ok((dtype, bytes))
+}
+
 /// Bytes a value of small tensor `i` takes on the GPU, stored as `dtype`.
 fn small_width(d: &ModelDesc, i: usize, dtype: &str) -> u64 {
-    if read_f32(d).contains(&i) || read_f32_as_bf16(d).contains(&i) {
+    if read_f32(d).contains(&i) || read_f32_as_bf16(d).contains(&i) || read_typed(d).contains(&(i, true)) {
         4
     } else if dtype == "I64" {
         8
@@ -893,11 +977,38 @@ fn stored(dir: &Path) -> Result<Option<(Layout, glyd_gpu::json::Value)>> {
 
 /// `d`'s weights from `dir`: a saved directory's packs as saved (under the first member's name where the save merged the members, else each member's), a matrix
 /// it holds as bf16 packed here, a Hub-format directory's packed here at `layout`; the matrices `held_as_saved` names as saved; the small tensors in the type
-/// their operations read (`read_f32`, `read_f32_as_bf16`; int64 as saved, a hash's numbers); the experts by `experts`.
+/// their operations read (`read_f32`, `read_f32_as_bf16`; int64 as saved, a hash's numbers); the experts by `experts`. `placing`: where the packed matrices
+/// are held beyond the GPU's own memory (this GPU's slice of a matrix's rows, a layer's matrices in the computer's memory).
 #[allow(clippy::too_many_arguments)]
-fn load_part(dir: &Path, d: ModelDesc, layout: Layout, threads: usize, rows: usize, out: usize, want: Option<&[bool]>, experts: &Experts) -> Result<Part> {
+fn load_part(
+    dir: &Path,
+    d: ModelDesc,
+    layout: Layout,
+    threads: usize,
+    rows: usize,
+    out: usize,
+    want: Option<&[bool]>,
+    experts: &Experts,
+    placing: &Placing,
+) -> Result<Part> {
     let ck = Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
     let v7 = stored(dir)?;
+    // (every layer across a group of GPUs: this GPU's slice of the rows of a matrix a product multiplies by, packed here; the embedding, read by row, whole)
+    let sl = if placing.across && v7.is_none() { tp::slicer() } else { None };
+    if sl.is_some() && placing.ram.count() > 0 {
+        return err(format!("{}: dense layers in the computer's memory: a stage on one GPU, not sliced across GPUs", d.family));
+    }
+    let slice = |k: usize| sl.filter(|t| k != d.embed && t.slices(d.mats[k].rows, d.mats[k].cols));
+    // (the layer whose operations multiply by each matrix: a layer in the computer's memory keeps its packed matrices there, src/dense_ram.rs)
+    let mut layer_of: Vec<Option<usize>> = vec![None; d.mats.len()];
+    for (l, ops) in d.layers.iter().enumerate() {
+        for k in ops.iter().flat_map(Op::mats) {
+            if let Some(x) = layer_of.get_mut(k) {
+                *x = Some(l);
+            }
+        }
+    }
+    let in_ram = |k: usize| layer_of[k].filter(|&l| placing.ram.in_ram(l));
     let has = |k: &str| ck.get(&format!("{k}.glyd_data")).is_some();
     let pack_rows = |k: &str| -> usize {
         v7.as_ref().and_then(|(_, m)| m.get("packs")?.get(k)?.get("shape")?.as_u64s()).and_then(|s| s.first().copied()).unwrap_or(0) as usize
@@ -914,54 +1025,89 @@ fn load_part(dir: &Path, d: ModelDesc, layout: Layout, threads: usize, rows: usi
         } else {
             Vec::new()
         };
-        match &v7 {
-            Some((Layout::Tiered, m)) if !parts.is_empty() => crate::weights::read_lossless_parts(&ck, m, &parts, it.cols),
-            Some((l, m)) if !parts.is_empty() => crate::weights::read_v7(&ck, m, *l, &parts, it.cols),
+        match (&v7, slice(k)) {
+            (Some((Layout::Tiered, m)), _) if !parts.is_empty() => crate::weights::read_lossless_parts(&ck, m, &parts, it.cols),
+            (Some((l, m)), _) if !parts.is_empty() => crate::weights::read_v7(&ck, m, *l, &parts, it.cols),
+            (_, Some(t)) => {
+                let (r0, rn) = t.rows(it.rows);
+                let w = crate::weights::item_words(&ck, it)?;
+                crate::weights::pack_words(&w[r0 * it.cols..(r0 + rn) * it.cols], rn, it.cols, layout, &it.members.join(" + "))
+            }
             _ => pack_item_map(&ck, it, layout, &|_| {}),
         }
     };
     let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
     let saved: Vec<bool> = (0..d.mats.len()).map(|k| held_as_saved(&d, k, &rows_of)).collect();
     let mut packed: Vec<Option<PackBuf>> = (0..d.mats.len()).map(|_| None).collect();
+    let mut hosted: Vec<Option<crate::weights::Packed>> = (0..d.mats.len()).map(|_| None).collect();
     // (a stage of a split model loads only the matrices its layers multiply by)
     let ks: Vec<usize> = (0..d.mats.len()).filter(|&k| want.is_none_or(|w| w[k]) && !saved[k]).collect();
     ordered(ks.len(), threads, 2 * threads.max(1), &|i| one(ks[i]), |i, pk| {
         crate::status::STATUS.beat();
-        packed[ks[i]] = Some(upload_packed(pk)?);
+        let k = ks[i];
+        if in_ram(k).is_some() {
+            hosted[k] = Some(pk);
+            return Ok(());
+        }
+        let mut b = upload_packed(pk)?;
+        if slice(k).is_some() {
+            b.tp_rows = d.mats[k].rows;
+        }
+        packed[k] = Some(b);
         Ok(())
     })?;
     // ponytail: a matrix another stage holds is an empty dense one here (never multiplied by); a Mat variant of its own if one is ever read by mistake
-    let mats: Vec<Mat> = packed
-        .into_iter()
-        .enumerate()
-        .map(|(k, x)| {
-            Ok(match x {
-                Some(p) => Mat::Packed(p),
-                None if want.is_none_or(|w| w[k]) && saved[k] => {
-                    let it = &d.mats[k];
-                    Mat::Dense(upload_bytes(crate::weights::as_bytes(&crate::weights::item_words(&ck, it)?))?, it.rows, it.cols)
-                }
-                None => Mat::Dense(Buf::new(2)?, 0, 0),
-            })
-        })
-        .collect::<Result<_>>()?;
-    let (f32s, as_bf16) = (read_f32(&d), read_f32_as_bf16(&d));
+    let mut ram = crate::dense_ram::RamBuilder::new(placing.ram);
+    let mut mats: Vec<Mat> = Vec::with_capacity(d.mats.len());
+    for (k, (x, h)) in packed.into_iter().zip(hosted).enumerate() {
+        match (x, h, in_ram(k)) {
+            (Some(p), _, _) => mats.push(Mat::Packed(p)),
+            (None, Some(p), Some(l)) => {
+                ram.push(l, &mut mats, p)?;
+            }
+            (None, _, _) if want.is_none_or(|w| w[k]) && saved[k] => {
+                let it = &d.mats[k];
+                mats.push(Mat::Dense(upload_bytes(crate::weights::as_bytes(&crate::weights::item_words(&ck, it)?))?, it.rows, it.cols));
+            }
+            _ => mats.push(Mat::Dense(Buf::new(2)?, 0, 0)),
+        }
+    }
+    let ram = ram.finish(&mut mats)?;
+    let (f32s, as_bf16, typed, least) = (read_f32(&d), read_f32_as_bf16(&d), read_typed(&d), read_at_least(&d));
     let small: Vec<Buf> = d
         .small
         .iter()
         .enumerate()
         .map(|(i, name)| {
-            if let Some(&(_, f)) = d.forms.iter().find(|x| x.0 == i) {
+            let form = d.forms.iter().find(|x| x.0 == i).map(|x| x.1);
+            if let Some(f) = form.filter(|&f| f != SmallForm::Joined) {
                 return upload_bytes(crate::weights::as_bytes(&small_of(&ck, name, f)?));
             }
-            let (_, t) = ck.get(name).ok_or_else(|| Error(format!("no tensor {name}")))?;
-            let b = ck.read(name).map_err(|e| Error(format!("{name}: {e}")))?;
+            // (the tensor as saved; several as one, each as saved and all of one type)
+            let (dtype, b) = small_saved(&ck, name, form == Some(SmallForm::Joined))?;
             let wide = f32s.contains(&i) || as_bf16.contains(&i);
-            if t.dtype == "F32" && as_bf16.contains(&i) {
+            let values = b.len()
+                / if dtype == "F32" {
+                    4
+                } else if dtype == "I64" {
+                    8
+                } else {
+                    2
+                };
+            if let Some(&(_, n)) = least.iter().find(|x| x.0 == i && values < x.1) {
+                return err(format!("{name}: {values} values, where its operation reads {n}"));
+            }
+            if let Some(&(_, w32)) = typed.iter().find(|x| x.0 == i) {
+                return match (dtype.as_str(), w32) {
+                    ("F32", true) | ("BF16", false) => upload_bytes(&b),
+                    (dt, _) => err(format!("{name}: {dt}, where its operation reads {}", if w32 { "fp32" } else { "bf16" })),
+                };
+            }
+            if dtype == "F32" && as_bf16.contains(&i) {
                 let v: Vec<f32> = b.as_chunks::<4>().0.iter().map(|x| crate::kern35::bf16_round(f32::from_le_bytes(*x))).collect();
                 return upload_bytes(crate::weights::as_bytes(&v));
             }
-            match (t.dtype.as_str(), wide) {
+            match (dtype.as_str(), wide) {
                 ("BF16", true) => {
                     let v: Vec<f32> = b.chunks_exact(2).map(|x| f32::from_bits((u16::from_le_bytes([x[0], x[1]]) as u32) << 16)).collect();
                     upload_bytes(crate::weights::as_bytes(&v))
@@ -972,7 +1118,7 @@ fn load_part(dir: &Path, d: ModelDesc, layout: Layout, threads: usize, rows: usi
         })
         .collect::<Result<_>>()?;
     let moe = experts(&ck, layout)?;
-    Part::from_loaded(d, Loaded { mats, small, moe, ..Loaded::default() }, rows, out)
+    Part::from_loaded(d, Loaded { mats, small, moe, ram, ..Loaded::default() }, rows, out)
 }
 
 /// What a family's loader puts on the GPU for its description: the matrices, the FP8 ones, the small tensors, the blocks of experts.
@@ -1310,6 +1456,12 @@ impl Dyn {
 
     /// `new_stage` of a description with experts: `experts` reads its blocks of experts (`Op::Moe`'s, in its order) from the checkpoint.
     pub fn new_with(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts, experts: &Experts) -> Result<Dyn> {
+        Dyn::new_placed(dir, d, draft, st, o, experts, &Placing::default())
+    }
+
+    /// `new_with`, the stage's packed matrices held as `placing` says.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_placed(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts, experts: &Experts, placing: &Placing) -> Result<Dyn> {
         if draft.is_some() && !(st.first && st.last) {
             return err("drafting with a model split across GPUs: not yet");
         }
@@ -1327,8 +1479,13 @@ impl Dyn {
         let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
         let bytes = |k: usize| (d.mats[k].rows * d.mats[k].cols * 2) as u64;
         let (saved, packed): (Vec<usize>, Vec<usize>) = (0..d.mats.len()).partition(|&k| held_as_saved(&d, k, &rows_of));
-        let small: u64 =
-            d.small.iter().enumerate().map(|(i, n)| ck.get(n).map_or(0, |(_, t)| t.shape.iter().product::<u64>() * small_width(&d, i, &t.dtype))).sum();
+        let small: u64 = d
+            .small
+            .iter()
+            .enumerate()
+            .flat_map(|(i, n)| n.split('|').map(move |m| (i, m)))
+            .map(|(i, n)| ck.get(n).map_or(0, |(_, t)| t.shape.iter().product::<u64>() * small_width(&d, i, &t.dtype)))
+            .sum();
         let (matrix_bytes, other) = (packed.into_iter().map(bytes).sum(), saved.into_iter().map(bytes).sum::<u64>() + small);
         let layout = match stored(dir)? {
             Some((l, _)) => l,
@@ -1349,11 +1506,15 @@ impl Dyn {
             })
             .collect::<Result<_>>()?;
         let want = d.wanted(&st);
-        let big = load_part(dir, d, layout, threads, ch, rows_out, Some(&want), experts)?;
+        let big = load_part(dir, d, layout, threads, ch, rows_out, Some(&want), experts, placing)?;
         // (a draft model is packed lossy here: the big model checks every draft token, so its precision moves only how many are kept)
         let draft = match draft {
             None => None,
-            Some(x) => Some(Draft { p: load_part(x.dir, x.desc, Layout::Int6, threads, 1, 1, None, &|_, _| Ok(Vec::new()))?, k: x.k, pos: Buf::zeroed(8)? }),
+            Some(x) => Some(Draft {
+                p: load_part(x.dir, x.desc, Layout::Int6, threads, 1, 1, None, &|_, _| Ok(Vec::new()), &Placing::default())?,
+                k: x.k,
+                pos: Buf::zeroed(8)?,
+            }),
         };
         Dyn::build(dev, big, draft, ropes, layout, st, o)
     }
@@ -3336,6 +3497,54 @@ pub fn prodbench(a: &crate::args::Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Kimi delta attention's small tensors as the executor's loader holds them, on the random Kimi-K3's description: A_log and dt_bias read in fp32,
+    /// the convolutions and the gated norm in the type their operations' flags say, each at least as long as its operation reads (a head, a channel, a
+    /// convolution's taps a channel, a head's channels); the forget gate's second product, multiplied by where the first leaves its input, is one of the
+    /// stage's matrices; and the three convolutions are read as one, each as saved, refused where they are not alike.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_kimi_delta_attentions_small_tensors_are_read_as_its_operations_say() {
+        use crate::runtime::describe::Source;
+        let dir = std::env::temp_dir().join(format!("glyd-kda-small-{}", std::process::id()));
+        crate::kimi_ref::random(&dir, 1, true, 8).unwrap();
+        let c = crate::kimi::ConfigKimi::load(&dir).unwrap();
+        let ck = Checkpoint::open(&dir).unwrap();
+        let w32 = kimi::dtypes(&ck, &c).unwrap();
+        let st = Stage::whole(c.layers);
+        let d = kimi::describe(&c, &st, &w32, false).unwrap();
+        let (nh, kd, taps) = (c.kda.heads, c.kda.dim, c.kda.conv_kernel);
+        let (f32s, typed, least) = (read_f32(&d), read_typed(&d), read_at_least(&d));
+        let mut seen = 0;
+        for ops in &d.layers {
+            for op in ops {
+                match *op {
+                    Op::KdaDelta { a_log, dt_bias, .. } => {
+                        assert!(f32s.contains(&a_log) && f32s.contains(&dt_bias));
+                        assert!(least.contains(&(a_log, nh)) && least.contains(&(dt_bias, nh * kd)), "{least:?}");
+                        seen += 1;
+                    }
+                    Op::KdaConv { w, w32, .. } => assert!(typed.contains(&(w, w32)) && least.contains(&(w, 3 * nh * kd * taps)), "{least:?}"),
+                    Op::KdaOut { w, w32, .. } => assert!(typed.contains(&(w, w32)) && least.contains(&(w, kd)), "{least:?}"),
+                    Op::LinearAt { w, .. } => assert!(op.mats() == [w] && d.wanted(&st)[w]),
+                    _ => {}
+                }
+            }
+        }
+        assert!(seen > 0 && typed.iter().all(|x| x.1), "the random model's delta layers, their convolutions and gated norms fp32");
+        assert_eq!((small_width(&d, typed[0].0, "F32"), small_width(&d, f32s[0], "BF16")), (4, 4));
+        // (a delta layer's three convolutions, by the description's role: one small tensor, each as saved)
+        let (kinds, _) = crate::runtime::describe::describe_dir(&dir).unwrap();
+        let role = |r: &str| kinds.blocks.iter().find_map(|b| b.iter().find(|x| x.0 == r).map(|x| x.1.clone()));
+        let (Some(Source::Rows(conv)), Some(Source::Tensor(a_log))) = (role("conv"), role("a_log")) else { panic!("no delta layer's convolutions") };
+        let (dtype, bytes) = small_saved(&ck, &conv.join("|"), true).unwrap();
+        assert_eq!((dtype.as_str(), bytes.len()), ("F32", 3 * nh * kd * taps * 4));
+        let own: Vec<u8> = conv.iter().flat_map(|n| ck.read(n).unwrap()).collect();
+        assert_eq!(bytes, own);
+        assert!(small_saved(&ck, &format!("{}|{a_log}", conv[0]), true).unwrap_err().msg.contains("read as one"));
+        assert_eq!(small_saved(&ck, &a_log, false).unwrap().1.len(), ck.read(&a_log).unwrap().len());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A route table as glyd_gpu.cu's `route_for` gives it past 64 rows: the prompt kernel, and from `dec` rows the decoded way (None: never).
     fn table(dec: Option<(i64, i32)>) -> impl Fn(i64) -> Result<i32> {

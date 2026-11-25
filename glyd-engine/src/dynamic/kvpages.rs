@@ -674,7 +674,7 @@ impl Dyn {
         Ok(out)
     }
 
-    /// Deterministic capacity (R4b, the owner's choice: the calibrated need reserved, the newest request paused when the spare pool runs out). The escape pool is made
+    /// Deterministic capacity (R4b: the calibrated need reserved, the newest request paused when the spare pool runs out). The escape pool is made
     /// for the calibrated chunks of every block (`chunks_per_page`), so a sequence's blocks reserve its calibrated need as it takes them. Values that compress worse
     /// make a page raw (a slab of its raw pool for the page) where the chunks run out, and a page void only where no slab is free: so a pass of sequence `slot`'s
     /// tokens `n` to `upto` (a chunk at most) may begin only where every raw pool has a slab for every page it writes, beside what this step's growths and the copies

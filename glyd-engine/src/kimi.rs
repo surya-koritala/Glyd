@@ -22,6 +22,17 @@ pub struct KimiMla {
     pub v: usize,
 }
 
+/// The newer config's sparse attention (`dsa_config`): on the latent attention layers it names (`layers`, from 0) an indexer of a key a token, `heads` query
+/// heads of `dim` channels, the best `top_k` tokens kept; its keys RMS-normed, or LayerNorm-ed with a bias (`layer_norm`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct KimiDsa {
+    pub layers: Vec<usize>,
+    pub heads: usize,
+    pub dim: usize,
+    pub top_k: usize,
+    pub layer_norm: bool,
+}
+
 /// The mixture of experts: the router picks `top_k` of `experts` by sigmoid scores plus a bias (the chosen scores divided by their sum where `renorm`, times
 /// `scale`); each expert maps the `latent` the layer's input is projected to through `inter` and back; the `shared` experts are one MLP of `shared` x `inter`.
 #[derive(Clone, Debug, PartialEq)]
@@ -52,6 +63,8 @@ pub struct ConfigKimi {
     pub inter: usize,
     pub kda: KdaDims,
     pub mla: KimiMla,
+    /// The sparse attention of the latent attention layers it names, where the config has one.
+    pub dsa: Option<KimiDsa>,
     pub experts: KimiMoe,
     /// The situ activation's two caps: gate a, up b, 4 tanh(a / beta) sigmoid(a) x 25 tanh(b / linear) for beta 4 and linear 25.
     pub situ: (f32, f32),
@@ -89,6 +102,19 @@ struct Keys {
     rms_norm_eps: Option<f64>,
     attn_res_block_size: Option<usize>,
     bos_token_id: Option<serde_json::Value>,
+    dsa_config: Option<Dsa>,
+}
+
+/// The sparse attention's keys (`dsa_config`).
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct Dsa {
+    dsa_layers: Option<Vec<u64>>,
+    layers: Option<Vec<u64>>,
+    index_num_heads: Option<usize>,
+    index_head_dim: Option<usize>,
+    index_topk: Option<usize>,
+    index_k_norm_type: Option<String>,
 }
 
 /// The delta attention's keys (`linear_attn_config`).
@@ -189,6 +215,25 @@ impl ConfigKimi {
             rope: need(s.qk_rope_head_dim, "qk_rope_head_dim")?,
             v: need(s.v_head_dim, "v_head_dim")?,
         };
+        // (the newer config's sparse attention: the latent attention layers it names, from 1; what of it this engine does not run the description builder refuses)
+        let dsa = match &k.dsa_config {
+            None => None,
+            Some(d) => {
+                let named = d.dsa_layers.as_ref().or(d.layers.as_ref()).ok_or_else(|| Error(format!("{label}: dsa_config names no layers")))?;
+                let layer_norm = match d.index_k_norm_type.as_deref().unwrap_or("rmsnorm") {
+                    "rmsnorm" => false,
+                    "layernorm" => true,
+                    other => return err(format!("{label}: dsa_config.index_k_norm_type {other}: rmsnorm or layernorm")),
+                };
+                Some(KimiDsa {
+                    layers: named.iter().filter(|&&l| l >= 1).map(|&l| l as usize - 1).collect(),
+                    heads: need(d.index_num_heads, "dsa_config.index_num_heads")?,
+                    dim: need(d.index_head_dim, "dsa_config.index_head_dim")?,
+                    top_k: need(d.index_topk, "dsa_config.index_topk")?,
+                    layer_norm,
+                })
+            }
+        };
         let inter_e = need(s.moe_intermediate_size, "moe_intermediate_size")?;
         let experts = KimiMoe {
             experts: need(s.num_experts, "num_experts")?,
@@ -222,6 +267,7 @@ impl ConfigKimi {
             inter,
             kda,
             mla,
+            dsa,
             experts,
             situ,
             res_block: need(k.attn_res_block_size, "attn_res_block_size")?,

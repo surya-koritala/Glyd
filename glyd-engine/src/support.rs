@@ -230,7 +230,7 @@ pub fn family(cfg_text: &str, name: &str) -> Result<Family, Refusal> {
             format!("{name} is a {arch} model, and this engine runs Qwen3 models so far"),
             crate::machine::instead(
                 "Other models run with the vLLM-based glyd, which is installed here",
-                &format!("Pick a Qwen3 model (glyd run Qwen/Qwen3-8B), or {}", crate::machine::FULL_TOOL),
+                &format!("Pick a model of a family this engine runs (glyd run Qwen/Qwen3.8-27B), or {}", crate::machine::FULL_TOOL),
             ),
         )),
     }
