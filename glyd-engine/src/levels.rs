@@ -23,7 +23,8 @@ pub struct Level {
 /// models (research/lossy-2026/kld_study.py: benchmarks/weights/kld-q56-2026-10-09, the cards' kl_bf16, and for hummingbird
 /// benchmarks/weights/moe-quality-2026-10-10/nemotron-hummingbird), about 1.4 times the largest KL measured and three to four points under the
 /// lowest top-1 agreement. Those were taken over WikiText-2 with 64 to 128 tokens a position; the suite's own texts and 20 tokens a position are
-/// to be checked against them by the first cards it writes.
+/// to be checked against them by the first cards it writes. `task_drop` (5 to 10 points) has no measurement behind it: it is a choice, held until
+/// the first cards' task figures, and changed as the other bars are.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Bar {
     pub kl_mean: f64,

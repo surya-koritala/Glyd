@@ -47,6 +47,8 @@ without calibration 0.0534 (top-1 88.9%, `benchmarks/weights/kld-q56-2026-10-09`
 `benchmarks/weights/moe-quality-2026-10-10/nemotron-hummingbird`). Each bar is about 1.4 times the largest KL and three to four points under the
 lowest agreement. Those studies read WikiText-2 with 64 to 128 tokens a position; the suite reads its own texts with 20. The first cards the suite
 writes are the check of the bars against its own figures, and a bar that does not hold is changed in `levels.rs` with the cards that show it.
+The task bars (5 points under the lossless level at kestrel, 7.5 at swift, 10 at wren and hummingbird) have no measurement behind them: they
+are a choice, held until the first cards' task figures, and changed the same way.
 
 ## Publish or refuse
 
