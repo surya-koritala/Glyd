@@ -918,6 +918,10 @@ impl MoeBlock for QxMoeCb {
     unsafe fn forward(&self, e: &dyn NhHost, h: u64, n: usize, out: u64) -> Result<()> {
         self.rows(&OnNh(e), h, n, out)
     }
+    /// (its router leaves a call's choices in the experts' scratch, `sc.ids`, as a resident block's does)
+    fn top_k(&self) -> Option<usize> {
+        Some(self.cfg.router.top_k)
+    }
     fn bytes(&self) -> usize {
         MoeBlockQx::bytes(self)
     }

@@ -1210,6 +1210,103 @@ pub fn qwen4x_s2_random(out: &Path) -> Result<()> {
     manifest_random(&qwen4x_s2_manifest()?, out, 0x2026_1125_0000_0002, false, "Qwen3.8-Flash-Next family of 2 streams, index heads of 64 over pools of 2")
 }
 
+/// The places a layer the expert cache's random case keeps of its 8 experts: fewer than a token takes (4), so every call has misses the host computes.
+const QWEN4X_CB_PLACES: usize = 3;
+
+/// The random case of the expert cache (`qwen4x-cb`): the tiny model's config at the codebook kernels' widths (hidden 2,560, experts of 640 neurons,
+/// `moe_qwen4x::takes`), two layers (a Gated DeltaNet one, an indexed attention one), 8 experts of which 4 a token, no n-gram embedding. Its routed experts are
+/// random two-bit experts (`cb_random`) written as a pack in `pack/`, and the checkpoint holds them in the model's basis, fp32 (`Cb2Expert::weights`), which the
+/// CPU reference reads as stored; the shared expert is on the grid the codebook block holds it on (int8 rows with a scale each: a row k 2^-m with integers k,
+/// the largest |k| 127), so the block's copy is the checkpoint's. Every other tensor of the description at random by the family's rules (`manifest_random`).
+/// A shard of each (`model.safetensors`, `experts.safetensors`) and the index that names them.
+pub fn qwen4x_cb_random(out: &Path) -> Result<()> {
+    use crate::cb_random::{write_pack, Cb2Expert, Rng};
+    let m: Value = serde_json::from_str(include_str!("../tests/fixtures/qwen4x_tiny_manifest.json")).map_err(|e| Error(e.to_string()))?;
+    let mut c: Value = serde_json::from_str(m["config"].as_str().unwrap_or("{}")).map_err(|e| Error(e.to_string()))?;
+    let (hidden, inter, experts, layers) = (2560usize, 640usize, 8usize, 2usize);
+    let t = &mut c["text_config"];
+    for (k, v) in [
+        ("hidden_size", json!(hidden)),
+        ("moe_intermediate_size", json!(inter)),
+        ("shared_expert_intermediate_size", json!(inter)),
+        ("num_experts", json!(experts)),
+        ("num_hidden_layers", json!(layers)),
+        ("layer_types", json!(["linear_attention", "indexed_attention"])),
+        ("ple_layer_ids", json!([])),
+        ("number_of_conv_states", json!(1)),
+    ] {
+        t[k] = v;
+    }
+    let text = c.to_string();
+    let d = crate::runtime::describe::describe(&c)?;
+    let routed = |n: &str| n.contains(".mlp.experts.");
+    let shared = |n: &str| n.contains(".mlp.shared_expert.");
+    let rest: Vec<Value> = d.shapes.iter().filter(|(n, _)| !routed(n) && !shared(n)).map(|(n, sh)| json!([n, "BF16", sh])).collect();
+    let manifest = json!({"config": text, "experts": OFF_GRID, "tensors": rest}).to_string();
+    manifest_random(&manifest, out, 0x2026_1125_0000_00cb, false, "Qwen3.8-Flash-Next family at the codebook kernels' widths (all but its experts)")?;
+    // (the routed experts: a pack's, and their weights in the model's basis; the shared expert on the int8 grid)
+    let mut rng = Rng(0x2026_1125_0000_0cb2);
+    let mut pack: Vec<(Vec<i8>, Vec<Cb2Expert>)> = Vec::new();
+    let mut shard: Vec<(String, &str, Vec<u64>, Vec<u8>)> = Vec::new();
+    let le = |v: &[f32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+    for l in 0..layers {
+        let signs: Vec<i8> = (0..hidden).map(|_| if rng.sym() < 0.0 { -1 } else { 1 }).collect();
+        let ex: Vec<Cb2Expert> = (0..experts).map(|_| Cb2Expert::random(hidden, inter, &mut rng)).collect();
+        let (mut gu, mut dn) = (Vec::with_capacity(experts * 2 * inter * hidden), Vec::with_capacity(experts * hidden * inter));
+        for e in &ex {
+            let (g, w) = e.weights(&signs, hidden, inter);
+            gu.extend(g);
+            dn.extend(w);
+        }
+        let of = |what: &str| d.shapes.keys().find(|n| n.contains(&format!("layers.{l}.mlp.{what}"))).cloned();
+        for (what, v) in [("experts.gate_up_proj", gu), ("experts.down_proj", dn)] {
+            let name = of(what).ok_or_else(|| Error(format!("no {what} of layer {l} in the description")))?;
+            let shape: Vec<u64> = d.shapes[&name].iter().map(|&x| x as u64).collect();
+            if shape.iter().product::<u64>() as usize != v.len() {
+                return err(format!("{name}: the description's {shape:?}, {} weights made", v.len()));
+            }
+            shard.push((name, "F32", shape, le(&v)));
+        }
+        for what in ["shared_expert.gate_proj", "shared_expert.up_proj", "shared_expert.down_proj"] {
+            let name = of(what).ok_or_else(|| Error(format!("no {what} of layer {l} in the description")))?;
+            let sh = d.shapes[&name].clone();
+            let (rows, cols) = (sh[0], sh[1]);
+            // (each row integers in [-127, 127], one of them +-127, times a power of two near the row's usual size: exact in bf16 and in the block's int8 rows)
+            let m = (3f32.sqrt() / (cols as f32).sqrt() / 127.0).log2().round();
+            let mut b = Vec::with_capacity(rows * cols * 2);
+            for _ in 0..rows {
+                let mut k: Vec<f32> = (0..cols).map(|_| (rng.sym() * 127.0).round()).collect();
+                k[(rng.next() % cols as u64) as usize] = if rng.sym() < 0.0 { -127.0 } else { 127.0 };
+                b.extend(k.iter().flat_map(|&q| (((q * m.exp2()).to_bits() >> 16) as u16).to_le_bytes()));
+            }
+            shard.push((name, "BF16", sh.iter().map(|&x| x as u64).collect(), b));
+        }
+        pack.push((signs, ex));
+    }
+    let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = shard.iter().map(|(n, t, s, b)| (n.as_str(), *t, s.clone(), &b[..])).collect();
+    crate::pack::write_safetensors(&out.join("experts.safetensors"), &[("format", "pt".to_string())], &refs)?;
+    let mut map = serde_json::Map::new();
+    for n in d.shapes.keys() {
+        map.insert(n.clone(), json!(if routed(n) || shared(n) { "experts.safetensors" } else { "model.safetensors" }));
+    }
+    io(std::fs::write(out.join("model.safetensors.index.json"), json!({"weight_map": map}).to_string()))?;
+    write_pack(&out.join("pack"), hidden, inter, &pack)
+}
+
+/// The random case's model on the expert cache (`dynamic::qwen4x::load_cached`): the matrices at the level, the routed experts from the case's pack (`PackMode::Best`,
+/// which skips none) in `QWEN4X_CB_PLACES` places a layer, the misses computed by the host.
+fn qwen4x_cb_load(dir: &Path, o: &DynOpts) -> Result<Dyn> {
+    use crate::dynamic::qwen4x::{load_cached, lowered, Caching, PackMode};
+    let d = lowered(dir, o.ctx + o.chunk + 16)?;
+    let mut k = Caching::new(&dir.join("pack"), PackMode::Best, &d, 4);
+    k.places = Some(QWEN4X_CB_PLACES);
+    load_cached(dir, o, &k)
+}
+
+fn qwen4x_cb_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
+    boxed(qwen4x_cb_load(dir, &dyn_opts(level_layout(level)?)))
+}
+
 /// `qwen4x_s2_random`'s manifest, from the tiny model's.
 pub fn qwen4x_s2_manifest() -> Result<String> {
     let mut m: Value = serde_json::from_str(include_str!("../tests/fixtures/qwen4x_tiny_manifest.json")).map_err(|e| Error(e.to_string()))?;
@@ -1581,6 +1678,16 @@ pub fn cases() -> Vec<Case> {
             family: "Qwen3.8-Flash-Next (Gated DeltaNet, indexed attention, hyper-connections, per-layer embeddings, mixture of experts)",
             weights: Weights::Random(qwen4x_random),
             engine: qwen4x_engine,
+            cpu: Some(described_cpu),
+            vocab: 2048,
+            on_choices: true,
+        },
+        Case {
+            id: "qwen4x-cb",
+            family:
+                "Qwen3.8-Flash-Next family through the expert cache (hidden 2,560, two-bit codebook experts of 640 neurons from a pack, 3 places of 8 a layer)",
+            weights: Weights::Random(qwen4x_cb_random),
+            engine: qwen4x_cb_engine,
             cpu: Some(described_cpu),
             vocab: 2048,
             on_choices: true,
@@ -3101,9 +3208,10 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
         "nemotron" => crate::dynamic::nemotron::load(dir, o, level_layout(level)?.unwrap_or(Layout::Tiered))?,
         "deepseek-v4" => crate::dynamic::deepseek_v4::load(dir, o)?,
         "qwen4x" | "qwen4x-s2" => crate::dynamic::qwen4x::load(dir, o)?,
+        "qwen4x-cb" => qwen4x_cb_load(dir, o)?,
         other => {
             return err(format!(
-                "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, nemotron, deepseek-v4, qwen4x or qwen4x-s2"
+                "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, nemotron, deepseek-v4, qwen4x, qwen4x-s2 or qwen4x-cb"
             ))
         }
     })
@@ -3143,8 +3251,9 @@ fn random_model(case: &str, dir: &Path) -> Result<()> {
         "deepseek-v4" => crate::dsv4_ref::random(dir, None),
         "qwen4x" => qwen4x_random(dir),
         "qwen4x-s2" => qwen4x_s2_random(dir),
+        "qwen4x-cb" => qwen4x_cb_random(dir),
         other => err(format!(
-            "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, nemotron, deepseek-v4, qwen4x or qwen4x-s2"
+            "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, nemotron, deepseek-v4, qwen4x, qwen4x-s2 or qwen4x-cb"
         )),
     }
 }
