@@ -70,8 +70,8 @@ pub(crate) fn per_layer(kind: GlmKind, moe: bool) -> usize {
 }
 
 /// GLM-5.3-Flash's latent attention as the layer kind's operation (`MlaOp`, its matrices, small tensors and rings at 0: `MlaOp::placed` puts a layer's): q's and the
-/// key-value latent's products apart, no shared key part, the norms' epsilon the config's, and the indexer over pools of its keys (its scores in f32, the picks given
-/// as their tokens and the open pool's).
+/// key-value latent's products apart, no shared key part, the norms' epsilon the config's and their rounding the release's (`Rounding::Twice`: the normed value to
+/// bf16, times the weight, rounded), and the indexer over pools of its keys (its scores in f32, the picks given as their tokens and the open pool's).
 pub(crate) fn latent(c: &ConfigGlm) -> MlaOp {
     let (m, ix) = (&c.mla, &c.indexer);
     MlaOp {
@@ -87,7 +87,7 @@ pub(crate) fn latent(c: &ConfigGlm) -> MlaOp {
         q_norm: 0,
         kv_norm: 0,
         kv_b: 0,
-        q_round: Rounding::F32,
+        q_round: Rounding::Twice,
         gate: false,
         scale: (m.nope as f32).powf(-0.5),
         eps: c.eps,
