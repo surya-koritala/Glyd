@@ -140,7 +140,7 @@ impl Pieces {
 impl super::Dyn {
     /// Whether passes run their pieces as graphs: the engine captures graphs (no block of experts that reads the host), on one GPU, no layer in the computer's memory, no
     /// expert cache (a prompt's chunk plans its calls on the host, which waits for the router's choices: no capture of it can be made), no corpus pass recording the routes,
-    /// no probe, and not turned off (GLYD_ENGINE_PIECES=0, a check's, or a capture that failed).
+    /// no probe or trace of the layers (`trace_layers`), and not turned off (GLYD_ENGINE_PIECES=0, a check's, or a capture that failed).
     fn pieces_on(&self) -> bool {
         static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let off = *OFF.get_or_init(|| crate::tune!("GLYD_ENGINE_PIECES").is_some_and(|v| v == "0") || crate::tune!("GLYD_OP_PROBE").is_some());
@@ -153,12 +153,13 @@ impl super::Dyn {
             && self.stage.last
             && super::tp::comm().is_none()
             && !crate::hb_usage::recording()
+            && !self.tracing()
     }
 
     /// Whether a pass of `n` rows runs in pieces where pieces are on: not where its products take cuBLAS (more than 64 rows, the decoded way, with cuBLAS found: the A10's
-    /// and A100's prompt passes). Measured on the A10 (gemma-4-12B at wren, 1k x8, full passes of 512 rows in pieces against eager): the GPU's time a pass 0.7% more
-    /// (208.4 against 207.0 ms, 212.7 against 211.1 with decode rows), the host's time to queue one 18 against 26 ms, which a pass of 200 ms of the GPU's does not
-    /// wait on. Whether cuBLAS takes its eager algorithm in a capture is not measured, so a replay's bits are not shown to be the eager pass's there (usercheck's random
+    /// and A100's prompt passes). Measured on an A10, 2026-11-23, in a run whose record was not kept (gemma-4-12B at wren, 1k x8, full passes of 512 rows in pieces
+    /// against eager): the GPU's time a pass 0.7% more (208.4 against 207.0 ms, 212.7 against 211.1 with decode rows), the host's time to queue one 18 against
+    /// 26 ms, which a pass of 200 ms of the GPU's does not wait on. Whether cuBLAS takes its eager algorithm in a capture is not measured, so a replay's bits are not shown to be the eager pass's there (usercheck's random
     /// models have passes of 64 rows at most, which never take cuBLAS). GLYD_ENGINE_PIECES=1 (a development build's) takes them anyway, to measure.
     fn pieces_take(&self, n: usize) -> bool {
         takes(self.blas.is_some(), n, crate::tune!("GLYD_ENGINE_PIECES").is_some_and(|v| v == "1"))

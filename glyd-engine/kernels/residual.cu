@@ -13,13 +13,12 @@
 __device__ __forceinline__ float hc_sig(float x) { return 1.f / (1.f + expf(-x)); }
 
 // ---- the streams -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-// x [n, 4, D] <- e [n, D] four times: every stream starts as the token's embedding. Block (row, 256 columns).
-extern "C" __global__ void hc_streams(const bf16* e, bf16* x, int D) {
+// x [n, ns, D] <- e [n, D] ns times: every stream starts as the token's embedding. Block (row, 256 columns).
+extern "C" __global__ void hc_streams(const bf16* e, bf16* x, int D, int ns) {
     const int d = blockIdx.y * blockDim.x + threadIdx.x;
     if (d >= D) return;
     const bf16 v = e[(size_t)blockIdx.x * D + d];
-#pragma unroll
-    for (int s = 0; s < HC_N; s++) x[((size_t)blockIdx.x * HC_N + s) * D + d] = v;
+    for (int s = 0; s < ns; s++) x[((size_t)blockIdx.x * ns + s) * D + d] = v;
 }
 
 // ---- the mixing weights and the collapse -----------------------------------------------------------------------------------------------------------------------------------------------
@@ -394,8 +393,8 @@ extern "C" __global__ void __launch_bounds__(256) rmsnorm_in(const bf16* x, cons
 // weighting their sum, rounded once; where push is given (blk's place for the next source), x made that source and then zeros (the next partial sum starts
 // empty); y (rows ys apart) = the RMS norm of the mix by w, the normed value rounded, times the weight, rounded again. A block a row of 512 threads, thread
 // t's eight-value chunks t and t + 512 (16-byte loads), the sources read four at a time with every source's sums in registers, each sum a warp's butterfly
-// and then the warps' in order. As four kernels (the add, the mix on one SM reading a source at a time, the push, the norm) a half-layer took 9.7 us with
-// two sources and 22 us with ten on a 4080 SUPER, in a graph; this one 5.8 and 9.8. D a multiple of 8, up to 8,192.
+// and then the warps' in order. One kernel where four ran before (the add, the mix on one SM reading a source at a time, the push, the norm): a launch
+// and a pass over the rows in place of four. D a multiple of 8, up to 8,192.
 #define DM_SOURCES 16  // a depth mix's sources at most (Kimi-K3: 9)
 #define DM_T 512
 #define DM_CH 2

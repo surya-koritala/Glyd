@@ -403,21 +403,22 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
         Ok(())
     };
     pn(&m.final_norm, "the final mixer")?;
-    if m.embed.streams != 4
+    let hc = m.embed.streams;
+    if !(1..=4).contains(&hc)
         || m.embed.scale != 1.0
         || m.embed.norm.is_some()
         || m.head.collapse != Collapse::GatedMix
         || m.head.softcap.is_some()
         || m.head.scale != 1.0
     {
-        return err(format!("{what}: an embedding of {:?} and a head of {:?}: the kernels take four gated streams and their mixer", m.embed, m.head));
+        return err(format!("{what}: an embedding of {:?} and a head of {:?}: the kernels take 1 to 4 gated streams and their mixer", m.embed, m.head));
     }
     let (mut mats, mut small, mut states, mut ropes, mut rings) =
         (Vec::new(), Vec::<String>::new(), Vec::<usize>::new(), Vec::<Rope>::new(), Vec::<Ring>::new());
     let mut ops: Vec<Vec<Op>> = Vec::new();
     let mut layer: Vec<Op> = Vec::new();
     let (mut mix_w, mut attn_w, mut rank_w, mut ple_w, mut n_moe) = (0, 0, 0, 0, 0);
-    let (mut cd_w, mut vd_w, mut nv_w, mut ix_w) = (0, 0, 0, 0);
+    let (mut cd_w, mut vd_w, mut nv_w, mut ix_w, mut ixd_w) = (0, 0, 0, 0, 0);
     let name = |small: &mut Vec<String>, n: String| -> usize {
         small.push(n);
         small.len() - 1
@@ -436,8 +437,8 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
             let Residual::GatedStreams(g) = b.residual else {
                 return err(format!("{what}: a block of residual {:?}, where every block's is the gated residuals", b.residual));
             };
-            if g.streams != 4 {
-                return err(format!("{what}: gated residuals over {} streams: the kernels take 4", g.streams));
+            if g.streams != hc {
+                return err(format!("{what}: gated residuals over {} streams, where the embedding makes {hc}", g.streams));
             }
             pn(&b.norm_in, "a gated residual")?;
             let norm = name(small, one(roles, "norm_in")?);
@@ -450,7 +451,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
         match &b.body {
             Body::Ngram(n) => {
                 let Ngram { order, heads, dim, conv, dilation, streams, eos: end, .. } = *n;
-                if (order, conv, dilation, streams) != (3, 4, 3, 4)
+                if (order, conv, dilation, streams, hc) != (3, 4, 3, 4, 4)
                     || n.form != crate::runtime::kinds::NgramForm::Condor
                     || n.norm.weight != NormWeight::PlusOne
                     || dim % (2 * heads) != 0
@@ -519,15 +520,15 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                         };
                         pn(&inorm, "the indexer")?;
                         let r = a.rope.as_ref().ok_or_else(|| Error(format!("{what}: an attention with no rotary")))?;
+                        let (idim, iblock) = (ix.head_dim, ix.block);
                         if r.scaling != RopeScaling::None
                             || r.freq_dim != r.dim
-                            || ix.head_dim != 128
-                            || ix.block != 4
-                            || r.dim > 128
-                            || ix.top_k % ix.block != 0
+                            || crate::model_qwen4x::index_fits(idim, iblock).is_err()
+                            || r.dim > idim
+                            || ix.top_k % iblock != 0
                         {
                             return err(format!(
-                                "{what}: a rotary of {r:?} and an indexer of {ix:?}: the kernels take the plain rotary, index heads of 128 and pools of 4"
+                                "{what}: a rotary of {r:?} and an indexer of {ix:?}: the kernels take the plain rotary within the index heads, of a multiple of 32 up to 1,024"
                             ));
                         }
                         let rt = Rope { theta: r.theta, dim: r.dim, pairs: r.freqs, trig64: false };
@@ -539,9 +540,9 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                             }
                         };
                         let qk = (name(&mut small, one(roles, "q_norm")?), name(&mut small, one(roles, "k_norm")?));
-                        // (its keys and values, the indexer's raw keys and its pools' keys: rings of the executor's pages, as every attention kind's; the pools an entry of 4 tokens a row)
+                        // (its keys and values, the indexer's raw keys and its pools' keys: rings of the executor's pages, as every attention kind's; the pools an entry of `iblock` tokens a row)
                         let ring = rings.len();
-                        rings.extend([Ring::kv(a.head_dim, a.kv_heads, 0), Ring::keys(128, 1, 0), Ring::entries(128, 4)]);
+                        rings.extend([Ring::kv(a.head_dim, a.kv_heads, 0), Ring::keys(idim, 1, 0), Ring::entries(idim, iblock)]);
                         let att = AttnOp::picked(a, Slot::Mix, ring, Some(table), Some(qk))?;
                         let stride = att.stride;
                         let qkv = mat(&mut mats, vec![one(roles, "q")?, one(roles, "k")?, one(roles, "v")?])?;
@@ -559,7 +560,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                             expand: true,
                             tail: true,
                             wscale: 1.0,
-                            score: super::IdxScore::F32 { dim: 128, scale: (128f32).powf(-0.5) },
+                            score: super::IdxScore::F32 { dim: idim, scale: (idim as f32).powf(-0.5) },
                             keys: super::IdxKeys::Pools(pools),
                             weighted: false,
                             cand: None,
@@ -567,12 +568,12 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                         layer.extend([
                             Op::Linear { w: qkv, x: Slot::H, y: Slot::Mix, name: "attention: qkv product" },
                             Op::Linear { w: index, x: Slot::H, y: Slot::Qr, name: "indexer: product" },
-                            Op::IdxMean { heads: ix.heads, q_norm: iqn, k_norm: ikn, rope: table, keys, pools },
+                            Op::IdxMean { heads: ix.heads, dim: idim, block: iblock, q_norm: iqn, k_norm: ikn, rope: table, keys, pools },
                             Op::IdxPick(pick),
                             Op::Attn(att),
                             Op::Linear { w: o, x: Slot::Att, y: Slot::O, name: "attention: o product" },
                         ]);
-                        (mix_w, attn_w, ix_w) = (mix_w.max(stride), attn_w.max(a.heads * a.head_dim), ix_w.max(ix.heads));
+                        (mix_w, attn_w, ix_w, ixd_w) = (mix_w.max(stride), attn_w.max(a.heads * a.head_dim), ix_w.max(ix.heads), ixd_w.max(idim));
                     }
                     mx => return err(format!("{what}: a mixer of {mx:?}")),
                 }
@@ -606,7 +607,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
         Some(h) => mat(&mut mats, vec![h.clone()])?,
         None => embed,
     };
-    let w = 4 * d_;
+    let w = hc * d_;
     let mut widths = [0usize; SLOTS];
     for (s, x) in [
         (Slot::X, d_),
@@ -615,7 +616,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
         (Slot::Hq, w),
         (Slot::Mid, rank_w),
         (Slot::Cp, w),
-        (Slot::Kv, 4),
+        (Slot::Kv, hc),
         (Slot::O, d_),
         (Slot::Mix, mix_w),
         (Slot::Ba, 2 * nv_w),
@@ -623,8 +624,8 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
         (Slot::Core, vd_w),
         (Slot::Qo, attn_w),
         (Slot::Att, attn_w),
-        (Slot::Qr, (ix_w + 1) * 128),
-        (Slot::Iq, ix_w * 128),
+        (Slot::Qr, (ix_w + 1) * ixd_w),
+        (Slot::Iq, ix_w * ixd_w),
         (Slot::In, ple_w),
         (Slot::Gu, if ple_w > 0 { 5 * d_ } else { 0 }),
         (Slot::D, if ple_w > 0 { w } else { 0 }),
@@ -1250,10 +1251,19 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
     Ok(glm_desc(m.hidden, qd, heads, inter, m.vocab, eps, max_pos, eos, hc, ops_all, (states, rings), e, lm))
 }
 
+/// `members` stacked by rows (`item`), then zero rows to a multiple of `to` rows (`weights::ZERO_ROWS`): a fused product whose parts' rows the library does not
+/// pack as they are, and that a group of GPUs slices in 64s whatever the group. No product reads the zero rows.
+fn padded(members: Vec<String>, shape: Shape, to: usize) -> Result<Item> {
+    let mut it = item(members, shape)?;
+    it.rows = it.rows.div_ceil(to) * to;
+    it.members.push(crate::weights::ZERO_ROWS.to_string());
+    Ok(it)
+}
+
 /// Kimi-K3: Kimi delta attention (its forget gate bounded) or gated NoPE latent attention (its block's), a dense MLP in the first layers and latent experts with
 /// shared ones in the rest (their block's), every block's input a depth mix over the groups of layers before it; SiTU. `w32` the delta layers' dtypes as the
-/// checkpoint holds them, `early` whether the cached experts are guessed ahead. The matrices, small tensors and blocks are dynamic/kimi.rs's loader's
-/// (`dynamic::kimi::describe` indexes them in its order).
+/// checkpoint holds them, `early` whether the cached experts are guessed ahead. Every matrix and small tensor the operations use is named from the
+/// description's roles (`kimi_names`); the blocks of experts are read apart, in the layers' order.
 pub fn kimi(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, w32: &[(bool, bool)], early: bool) -> Result<ModelDesc> {
     use super::kimi::{kimi_desc, KimiDims, KimiLayer};
     use crate::runtime::kinds::{Act, Decay, Residual};
@@ -1319,7 +1329,80 @@ pub fn kimi(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, w32
         ls.push(KimiLayer { kda, moe, w32: w32.get(l).copied().unwrap_or_default(), ix });
     }
     let eps = m.blocks.first().map_or(1e-6, |b| b.norm_in.eps);
-    Ok(kimi_desc(&KimiDims { h: m.hidden, qd, nh, kd, bound, inter, situ, eps, moe_rows, mla, mla_ix }, &ls, &starts, st, early, m.vocab, max_pos, eos))
+    let mut out =
+        kimi_desc(&KimiDims { h: m.hidden, qd, nh, kd, bound, inter, situ, eps, moe_rows, mla, mla_ix }, &ls, &starts, st, early, m.vocab, max_pos, eos);
+    (out.mats, out.small, out.forms) = kimi_names(d, st)?;
+    Ok(out)
+}
+
+/// Kimi-K3's tensors for stage `st`, in the order its operations index them (`dynamic::kimi::kimi_desc`), sized by the description's shapes. Small tensors: each
+/// layer's input and post-attention norms, its two depth mixes' norms and projections; then a delta layer's three convolutions as one (`SmallForm::Joined`),
+/// A_log, dt_bias and the gated norm, or a latent layer's two norms, kv_b as saved (the absorbed form multiplies by its rows) and its indexer's (the queries'
+/// and the keys' products, the keys' norm, its bias where a LayerNorm, the heads' weights); the last stage's output mix's norm and projection and the final
+/// norm. Matrices: a delta layer's one product (q, k, v, the full-rank gate, the forget gate's first product and beta, zero rows to 512s), o and the forget
+/// gate's second product; a latent layer's one product (q_a, the gate, kv_a, padded alike), q_b and o; a dense MLP's gate and up (padded alike) and down;
+/// then the embedding and the head. A layer's experts are its block's, not among them.
+#[allow(clippy::type_complexity)]
+fn kimi_names(d: &Described, st: &super::Stage) -> Result<(Vec<Item>, Vec<String>, Vec<(usize, super::SmallForm)>)> {
+    use crate::runtime::kinds::{IndexForm, NormKind};
+    let m = &d.desc;
+    let shape = |n: &str| d.shapes.get(n).cloned();
+    let one = |roles: &[(String, Source)], r: &str| match role(roles, r) {
+        Some(Source::Tensor(n)) => Ok(n.clone()),
+        x => err(format!("Kimi-K3: the role {r} is {x:?}, where one tensor is")),
+    };
+    let fused = |roles: &[(String, Source)], rs: &[&str]| -> Result<Item> {
+        padded(rs.iter().map(|r| one(roles, r)).collect::<Result<_>>()?, &shape, super::kimi::FUSED_ROWS)
+    };
+    let (mut mats, mut small, mut forms) = (Vec::new(), Vec::new(), Vec::new());
+    for l in st.layers.0..st.layers.1 {
+        let (a, f) = (&d.blocks[2 * l], &d.blocks[2 * l + 1]);
+        for (roles, r) in [(a, "norm_in"), (f, "norm_in"), (a, "mix_norm"), (a, "mix_proj"), (f, "mix_norm"), (f, "mix_proj")] {
+            small.push(one(roles, r)?);
+        }
+        match &m.blocks[2 * l].body {
+            Body::Mixer(Mixer::Linear(_)) => {
+                mats.extend([
+                    fused(a, &["q", "k", "v", "gate", "decay_a", "beta"])?,
+                    item(vec![one(a, "o")?], &shape)?,
+                    item(vec![one(a, "decay_b")?], &shape)?,
+                ]);
+                let conv = match role(a, "conv") {
+                    Some(Source::Rows(v)) => v.join("|"),
+                    x => return err(format!("Kimi-K3: layer {l}'s convolutions are {x:?}, where the three are")),
+                };
+                forms.push((small.len(), super::SmallForm::Joined));
+                small.push(conv);
+                for r in ["a_log", "dt_bias", "norm"] {
+                    small.push(one(a, r)?);
+                }
+            }
+            Body::Mixer(Mixer::Mla(x)) => {
+                mats.extend([fused(a, &["q_a", "g", "kv_a"])?, item(vec![one(a, "q_b")?], &shape)?, item(vec![one(a, "o")?], &shape)?]);
+                for r in ["q_a_norm", "kv_a_norm", "kv_b"] {
+                    small.push(one(a, r)?);
+                }
+                if let Some(ix) = &x.indexer {
+                    let layer = matches!(ix.form, IndexForm::Gated { key } if key.kind == NormKind::Layer);
+                    for r in
+                        ["indexer_wq_b", "indexer_wk", "indexer_k_norm"].into_iter().chain(layer.then_some("indexer_k_norm_bias")).chain(["indexer_weights"])
+                    {
+                        small.push(one(a, r)?);
+                    }
+                }
+            }
+            b => return err(format!("Kimi-K3: layer {l}'s mixer is {b:?}")),
+        }
+        if let Body::Ffn(Ffn::Mlp(_)) = &m.blocks[2 * l + 1].body {
+            mats.extend([fused(f, &["gate", "up"])?, item(vec![one(f, "down")?], &shape)?]);
+        }
+    }
+    if st.last {
+        small.extend([one(&d.extra, "out_mix_norm")?, one(&d.extra, "out_mix_proj")?, d.final_norm.clone()]);
+    }
+    mats.push(item(vec![d.embed.clone()], &shape)?);
+    mats.push(item(vec![d.head.clone().unwrap_or_else(|| d.embed.clone())], &shape)?);
+    Ok((mats, small, forms))
 }
 
 /// A model of compressed attention layers (DeepSeek-V4's and V4.1's forms of the kind; `lower_comp::lower`, which gives its loader's plan too). `vo` what the level and
@@ -1538,7 +1621,12 @@ mod tests {
             ] {
                 let own = super::super::kimi::describe(&c, &st, &w32, early).unwrap();
                 let lowered = kimi(&kinds, c.eos.clone(), c.max_pos, &st, &w32, early).unwrap_or_else(|e| panic!("{}", e.msg));
-                let (a, b) = (format!("{own:#?}"), format!("{lowered:#?}"));
+                // (every tensor it names is the release's, at the shape the release has it)
+                assert_eq!(super::super::unnamed(&lowered), None);
+                let names = kinds.names();
+                assert!(lowered.mats.iter().flat_map(|it| &it.members).all(|m| m.is_empty() || names.contains(m)));
+                assert!(lowered.small.iter().flat_map(|s| s.split('|')).all(|s| names.contains(s)));
+                let (a, b) = (format!("{own:#?}"), format!("{:#?}", super::super::kimi::nameless(&lowered)));
                 if a != b {
                     let first = a.lines().zip(b.lines()).enumerate().find(|(_, (x, y))| x != y);
                     panic!("the lowered description differs at line {first:?}");
@@ -1639,7 +1727,98 @@ mod tests {
                 super::super::kimi::describe(&c, &st, &w32, false).unwrap(),
                 super::super::kimi::lowered(&dir, &c, &st, &w32, false).unwrap_or_else(|e| panic!("{}", e.msg)),
             );
-            assert_eq!(format!("{own:#?}"), format!("{lowered:#?}"));
+            assert_eq!(format!("{own:#?}"), format!("{:#?}", super::super::kimi::nameless(&lowered)));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The tensors the Kimi family's lowering names are the ones its own loader read before the executor's loader took them over, in that loader's order and at
+    /// the checkpoint's shapes (the random models of both shapes, whole and as a split's stages): each layer's six depth-mix and norm tensors, then a delta
+    /// layer's convolutions (the three as one), A_log,
+    /// dt_bias and gated norm, or a latent layer's two norms, kv_b and its indexer's five; the last stage's output mix and final norm. Matrices: a delta
+    /// layer's six as one (zero rows to 512s), o, the forget gate's second; a latent layer's q_a, the gate and kv_a as one, q_b, o; a dense MLP's gate and up as
+    /// one, down; the embedding and the head. Each operation's index names the tensor it reads.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_random_kimis_tensors_are_named_as_the_loader_reads_them() {
+        use super::super::{DepthMixOp, Stage};
+        let dir = std::env::temp_dir().join(format!("glyd-lower-kimi-names-{}", std::process::id()));
+        for dsa in [false, true] {
+            if dsa {
+                crate::kimi_ref::random_dsa(&dir).unwrap();
+            } else {
+                crate::kimi_ref::random(&dir, 1, true, 8).unwrap();
+            }
+            let c = crate::kimi::ConfigKimi::load(&dir).unwrap();
+            let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
+            let w32 = super::super::kimi::dtypes(&ck, &c).unwrap();
+            let p = c.prefix;
+            for st in [Stage::whole(c.layers), Stage { layers: (0, 4), first: true, last: false }, Stage { layers: (4, 8), first: false, last: true }] {
+                let d = super::super::kimi::lowered(&dir, &c, &st, &w32, false).unwrap_or_else(|e| panic!("{}", e.msg));
+                // (the loader's reads, in its order)
+                let (mut mats, mut small): (Vec<Vec<String>>, Vec<String>) = (Vec::new(), Vec::new());
+                for l in st.layers.0..st.layers.1 {
+                    let (q, a) = (format!("{p}layers.{l}"), format!("{p}layers.{l}.self_attn"));
+                    small.extend(
+                        ["input_layernorm", "post_attention_layernorm", "self_attention_res_norm", "self_attention_res_proj", "mlp_res_norm", "mlp_res_proj"]
+                            .map(|n| format!("{q}.{n}.weight")),
+                    );
+                    if c.kinds[l] == crate::glm::GlmKind::Kda {
+                        mats.push(["q_proj", "k_proj", "v_proj", "g_proj", "f_a_proj", "b_proj"].map(|x| format!("{a}.{x}.weight")).to_vec());
+                        mats.extend([vec![format!("{a}.o_proj.weight")], vec![format!("{a}.f_b_proj.weight")]]);
+                        small.push(["q", "k", "v"].map(|x| format!("{a}.{x}_conv1d.weight")).join("|"));
+                        small.extend(["A_log", "dt_bias", "o_norm.weight"].map(|x| format!("{a}.{x}")));
+                    } else {
+                        mats.push(["q_a_proj", "g_proj", "kv_a_proj_with_mqa"].map(|x| format!("{a}.{x}.weight")).to_vec());
+                        mats.extend([vec![format!("{a}.q_b_proj.weight")], vec![format!("{a}.o_proj.weight")]]);
+                        small.extend(["q_a_layernorm", "kv_a_layernorm", "kv_b_proj"].map(|x| format!("{a}.{x}.weight")));
+                        if c.dsa.as_ref().is_some_and(|x| x.layers.contains(&l)) {
+                            small.extend(["wq_b", "wk", "k_norm", "weights_proj"].map(|x| format!("{a}.indexer.{x}.weight")));
+                        }
+                    }
+                    if !c.moe[l] {
+                        mats.extend([vec![format!("{q}.mlp.gate_proj.weight"), format!("{q}.mlp.up_proj.weight")], vec![format!("{q}.mlp.down_proj.weight")]]);
+                    }
+                }
+                if st.last {
+                    small.extend(["output_attn_res_norm", "output_attn_res_proj", "norm"].map(|x| format!("{p}{x}.weight")));
+                }
+                mats.extend([vec![format!("{p}embed_tokens.weight")], vec!["language_model.lm_head.weight".to_string()]]);
+                let members: Vec<Vec<String>> = d.mats.iter().map(|it| it.members.iter().filter(|m| !m.is_empty()).cloned().collect()).collect();
+                assert_eq!((members, &d.small), (mats, &small), "dsa {dsa}, {st:?}");
+                // (each matrix at the checkpoint's shape: its members' columns, their rows, zero rows to 512s after several)
+                for it in &d.mats {
+                    let shapes: Vec<Vec<u64>> = it.members.iter().filter(|m| !m.is_empty()).map(|m| ck.get(m).unwrap().1.shape.clone()).collect();
+                    let rows: usize = shapes.iter().map(|s| s[0] as usize).sum();
+                    assert!(shapes.iter().all(|s| s.len() == 2 && s[1] as usize == it.cols), "{:?}", it.members);
+                    let padded = it.members.last().is_some_and(String::is_empty);
+                    assert_eq!(it.rows, if padded { super::super::kimi::fused(rows) } else { rows }, "{:?}", it.members);
+                    assert_eq!(padded, shapes.len() > 1, "{:?}", it.members);
+                }
+                assert_eq!(d.forms.iter().map(|f| &d.small[f.0]).collect::<Vec<_>>(), small.iter().filter(|s| s.contains('|')).collect::<Vec<_>>());
+                // (each operation's indices name what it reads)
+                let ends = |pairs: &[(usize, &str)]| {
+                    for &(i, s) in pairs {
+                        assert!(d.small[i].ends_with(s), "{} where {s} is read", d.small[i]);
+                    }
+                };
+                for op in d.layers.iter().flatten() {
+                    match op {
+                        Op::DepthMix(DepthMixOp { w_n, w_p, w, .. }) => ends(&[(*w_n, "_res_norm.weight"), (*w_p, "_res_proj.weight"), (*w, "norm.weight")]),
+                        Op::KdaConv { w, .. } => ends(&[(*w, "v_conv1d.weight")]),
+                        Op::KdaDelta { a_log, dt_bias, .. } => ends(&[(*a_log, "A_log"), (*dt_bias, "dt_bias")]),
+                        Op::KdaOut { w, .. } => ends(&[(*w, "o_norm.weight")]),
+                        Op::Mla(x) => {
+                            ends(&[(x.q_norm, "q_a_layernorm.weight"), (x.kv_norm, "kv_a_layernorm.weight"), (x.kv_b, "kv_b_proj.weight")]);
+                            if let Some(ix) = &x.indexer {
+                                ends(&[(ix.q_b, "wq_b.weight"), (ix.k, "wk.weight"), (ix.k_norm, "k_norm.weight"), (ix.weights, "weights_proj.weight")]);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                assert!(d.layers.iter().flatten().flat_map(|op| op.mats()).all(|k| !d.mats[k].members[0].is_empty()));
+            }
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1686,10 +1865,10 @@ mod tests {
     }
 
     /// Each form of the plain dense decoder the description builder reads (the random dense model of the logits checks; no q and k norms, a window on every
-    /// layer; q and k norms with a tied head; neither) lowers to the operations the dense engine ran (src/model.rs, removed): the input norm (then its add of the
-    /// residual), the q, k and v product, the attention kind, o, the norm with the residual, gate and up with SiLU, down, the final norm on the last rows; its
-    /// matrices the checkpoint's tensors stacked in that engine's order and sized by the description's shapes, which are the checkpoint's; its widths, heads,
-    /// rotary and norms the config's as the planner's sizes read it (`weights::Config`). A scaled rope and biases in the attention are refused, named.
+    /// layer; q and k norms with a tied head; neither) lowers to these operations, written out here by hand: the input norm (then its add of the residual),
+    /// the q, k and v product, the attention kind, o, the norm with the residual, gate and up with SiLU, down, the final norm on the last rows; its matrices
+    /// the checkpoint's tensors stacked in that order and sized by the description's shapes, which are the checkpoint's; its widths, heads, rotary and norms
+    /// the config's as the planner's sizes read it (`weights::Config`). A scaled rope and biases in the attention are refused, named.
     #[test]
     fn dense_lowered_from_each_form_of_its_config() {
         use super::super::attn::{QkNorm, RopeAt};
@@ -1924,7 +2103,7 @@ mod tests {
         crate::kimi_ref::random(&d, 1, true, 8).unwrap();
         let c = crate::kimi::ConfigKimi::load(&d).unwrap();
         let w32 = kimi::dtypes(&glyd_gpu::safetensors::Checkpoint::open(&d).unwrap(), &c).unwrap();
-        v.push(kimi::describe(&c, &Stage::whole(c.layers), &w32, false).unwrap());
+        v.push(kimi::lowered(&d, &c, &Stage::whole(c.layers), &w32, false).unwrap());
         let d = dir("glm");
         crate::glm::random(&d, false, None).unwrap();
         let c = crate::glm::ConfigGlm::load(&d).unwrap();
@@ -2020,7 +2199,7 @@ mod tests {
         crate::logits::qwen35_random(&dir).unwrap();
         let c = crate::qwen35::Config35::load(&dir).unwrap();
         let d = super::super::qwen35::lowered(&dir, &c, &super::super::Stage::whole(c.layers)).unwrap();
-        // (its tensors as kern35's loader read them, in its order: the description names the same, in the same order)
+        // (its tensors in the order the description names them)
         let packs: std::collections::HashMap<String, crate::qwen35::Pack35> = c.packs().into_iter().map(|p| (p.key.clone(), p)).collect();
         let item = |src: &crate::kern35::Src| match src {
             crate::kern35::Src::Pack(k) => Item { members: packs[k].parts.iter().map(|x| x.0.clone()).collect(), rows: packs[k].rows(), cols: packs[k].cols },
@@ -2120,14 +2299,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The descriptions the executor's loader can read (`Dyn::new_with`: Gemma 4, its draft, the plain dense models, Qwen3.5, Muse Spark, Qwen3.8-Flash-Next) name every matrix
-    /// their operations use; the others name none yet, their families' loaders filling them by index, and the executor's loader refuses them in words.
+    /// The descriptions the executor's loader can read (`Dyn::new_with`: Gemma 4, its draft, the plain dense models, Qwen3.5, Muse Spark, Kimi-K3,
+    /// Qwen3.8-Flash-Next) name every matrix their operations use; the others name none yet, their families' loaders filling them by index, and the executor's
+    /// loader refuses them in words.
     #[cfg(feature = "dev")]
     #[test]
     fn the_executors_loader_reads_only_descriptions_that_name_their_tensors() {
         use super::super::{dense::FAMILY as DENSE, qwen4x::FAMILY as QX, unnamed};
         for d in every_family("named") {
-            let named = matches!(d.family, "Gemma 4" | "Gemma 4 draft" | "Qwen3.5" | "Muse Spark" | DENSE | QX);
+            let named = matches!(d.family, "Gemma 4" | "Gemma 4 draft" | "Qwen3.5" | "Muse Spark" | "Kimi-K3" | DENSE | QX);
             assert_eq!(unnamed(&d).is_none(), named, "{}: {:?} of {} matrices named", d.family, unnamed(&d), d.mats.len());
         }
     }

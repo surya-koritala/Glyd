@@ -536,7 +536,7 @@ fn a_loader_names_a_missing_tensor_from_the_index() {
 }
 
 /// #333, DSpark: DeepSeek-V4-Flash-0731's released config describes its drafter (`kinds::DSpark`): three of the decoder's layers with the window alone
-/// (`n_mtp_layers` unsaid: 3, as its checkpoint's mtp.0 to mtp.2), drafting blocks of 5 from main_x of layers 40 to 42, a Markov head of rank 256 and
+/// (`n_mtp_layers` unsaid: the format's 3, as its checkpoint's mtp.0 to mtp.2), drafting blocks of 5 from main_x of layers 40 to 42, a Markov head of rank 256 and
 /// the noise token 128799; its streams mHC's own (V4's, not lagged).
 #[test]
 fn deepseek_v4_0731s_dspark_drafter_is_described() {
@@ -557,6 +557,40 @@ fn deepseek_v4_0731s_dspark_drafter_is_described() {
     d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
     let [(blocks, own)] = &d.mtp[..] else { panic!() };
     assert_eq!((blocks.len(), own.len()), (6, 9));
+}
+
+/// A DSpark drafter's depth is the config's `n_mtp_layers`, else the format's default (three); a directory is held to its index in every family with the
+/// drafter: one whose checkpoint lacks the last draft layer the count reads is refused, its tensors named (DeepSeek-V4-Flash-0731's config, which says no
+/// count, and DeepSeek-V4.1's, which says one).
+#[test]
+fn a_drafters_depth_is_the_configs_else_the_formats_and_a_directory_is_held_to_it() {
+    let depth = |d: &super::describe::Described| d.desc.mtp.first().filter(|h| h.dspark.is_some()).map(|h| h.blocks.len() / 2);
+    let h = fixture("headers/DeepSeek-V4-Flash-0731.json");
+    let v4: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    assert!(v4.get("n_mtp_layers").is_none() && v4.get("dspark_block_size").is_some());
+    assert_eq!(depth(&describe(&v4).unwrap()), Some(3));
+    let mut said = v4.clone();
+    said["n_mtp_layers"] = 2.into();
+    assert_eq!(depth(&describe(&said).unwrap()), Some(2));
+    let dir = std::env::temp_dir().join(format!("glyd-describe-draft-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (what, cfg) in [("DeepSeek-V4", v4), ("DeepSeek-V4.1", fixture("deepseek_v41_config.json"))] {
+        let d = describe(&cfg).unwrap();
+        let n = depth(&d).unwrap_or_else(|| panic!("{what}: no drafter"));
+        let last = format!("mtp.{}.", n - 1);
+        std::fs::write(dir.join("config.json"), cfg.to_string()).unwrap();
+        let index = |keep: &dyn Fn(&String) -> bool| {
+            let map: serde_json::Map<String, serde_json::Value> =
+                d.names().into_iter().filter(|n| keep(n)).map(|n| (n, "model-00001.safetensors".into())).collect();
+            std::fs::write(dir.join("model.safetensors.index.json"), serde_json::json!({ "weight_map": map }).to_string()).unwrap();
+        };
+        index(&|_| true);
+        assert_eq!(depth(&super::describe::describe_dir(&dir).unwrap_or_else(|e| panic!("{what}: {}", e.msg)).0), Some(n), "{what}");
+        index(&|name| !name.contains(&last));
+        let e = super::describe::describe_dir(&dir).unwrap_err().msg;
+        assert!(e.contains("config.json") && e.contains("not in the checkpoint") && e.contains(&last), "{what}: {e}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Every tensor name of a header fixture: its groups' masks with each of their layers ({L}) and experts ({E}).
@@ -630,6 +664,32 @@ fn kimi_k31s_sparse_attention_is_the_gated_indexer_with_its_key_norm() {
         let e = with(edit).unwrap_err().msg;
         assert!(e.contains(want), "{want}: {e}");
     }
+}
+
+/// Kimi-K3's matrices' shapes as the builder makes them from the config are the released checkpoint's (the header fixture's index): each layer's delta
+/// attention's (q, k, v, the full-rank gate, the forget gate's two, beta, o), its latent attention's (q_a, q_b, the gate, kv_a, kv_b, o), the dense MLP's,
+/// the router's, the latent's two projections and the shared experts' three, the embedding and the head: every matrix of the text model but the experts'.
+/// The lowering to the executor sizes every product by them and names its tensors with them.
+#[test]
+fn kimi_k3s_matrices_shapes_are_the_released_checkpoints() {
+    let h = fixture("headers/Kimi-K3.json");
+    let d = describe(&serde_json::from_str(h["config"].as_str().unwrap()).unwrap()).unwrap();
+    let mut header = std::collections::BTreeMap::new();
+    for g in h["groups"].as_array().unwrap() {
+        let (mask, shape) = (g["mask"].as_str().unwrap(), g["shape"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect::<Vec<_>>());
+        let layers: Vec<u64> = g["layers"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap()).collect();
+        if layers.is_empty() {
+            header.insert(mask.to_string(), shape);
+        } else if !mask.contains("{E}") {
+            header.extend(layers.iter().map(|l| (mask.replace("{L}", &l.to_string()), shape.clone())));
+        }
+    }
+    for (n, sh) in &d.shapes {
+        assert_eq!(header.get(n), Some(sh), "{n}");
+    }
+    let matrices = header.iter().filter(|(n, s)| s.len() == 2 && s[0] > 1 && n.starts_with("language_model."));
+    let unsaid: Vec<&String> = matrices.filter(|(n, _)| !d.shapes.contains_key(*n)).map(|x| x.0).collect();
+    assert!(unsaid.is_empty(), "matrices of the text model with no shape said: {unsaid:?}");
 }
 
 /// Kimi-K3's experts as released (MXFP4 in groups of 32): each expert matrix is its packed codes and its scales; a quantization the description does not read is
@@ -847,7 +907,8 @@ fn condors_released_config() {
 }
 
 /// Condor's model from its config.json alone, on the CPU reference of the layer kinds, against Condor's own engine: the random tiny Qwen3.8-Flash-Next of the `qwen4x`
-/// logits case (src/logits.rs `qwen4x_random`) and the rows its engine recorded on an RTX 4080 SUPER at kestrel (tests/logits/qwen4x.sm89.json.gz), where the random
+/// logits case (src/logits.rs `qwen4x_random`) and the rows its engine recorded on an RTX 4080 SUPER at kestrel (tests/fixtures/qwen4x_condor_rows.json.gz, that engine's
+/// record: no logits case reads it, as the family is held to this reference and not to that engine's bits), where the random
 /// model's experts are on the six-bit grid kestrel holds them on and the engine's other matrices are lossless: the engine runs this model's weights, its activations
 /// bf16. The two implementations share no code. The prompt of 24 and the 12 decode steps (the prompt of 150 takes 50 s more here, and measured KL 4.0e-5): KL mean 8.5e-6, max 5.0e-5, the
 /// best token 6 of 6 where it leads clearly, the largest logit difference 0.097 (measured 2026-11-23). It counts: with the indexer keeping every token the KL mean is
@@ -863,7 +924,7 @@ fn condors_model_on_the_reference_against_condors_engine() {
     let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
     let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
     let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
-    let mut fx = Fixture::read(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/logits/qwen4x.sm89.json.gz")).unwrap();
+    let mut fx = Fixture::read(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/qwen4x_condor_rows.json.gz")).unwrap();
     // (the long prompt's row left out)
     fx.rows.pop();
     fx.long.clear();
@@ -1037,9 +1098,38 @@ fn deepseek_v41_flashs_published_config_describes() {
     assert_eq!((m.experts, m.router.top_k, m.router.logit_scale, m.router.scale, m.expert.clamp), (384, 6, 1.0, 1.5, Some(10.0)));
 }
 
-/// The tiny DeepSeek-V4.1 of `v41_config`, its tensors made at random by role, on the CPU reference: its description runs as a model, CSA2's parts
-/// shared from block to block, the mHC weights handed on, Engram's tables read through a compressed vocabulary; the same tokens give the same logits
-/// twice, every one finite.
+/// DeepSeek-V4.1's Engram keys that are no model's are refused by name, on the path a user's config.json takes: a list of layers that is not one (it was read as
+/// no Engram layers, and the model described without them), an entry that is not a layer, an order under 2 (it underflowed), no heads or no head width (a
+/// division by zero), a vocabulary past any model's (the builder would keep finding primes).
+#[test]
+fn deepseek_v41s_engram_keys_that_are_no_models_are_refused() {
+    let with = |key: &str, v: serde_json::Value| {
+        let mut c = v41_config();
+        let tc = if c.get("text_config").is_some() { &mut c["text_config"] } else { &mut c };
+        assert!(tc.get(key).is_some(), "{key} is a key of the fixture");
+        tc[key] = v;
+        describe(&c).err().unwrap_or_else(|| panic!("{key}: described")).msg
+    };
+    for (key, v, says) in [
+        ("engram_layer_ids", serde_json::json!("1, 5"), "engram_layer_ids"),
+        ("engram_layer_ids", serde_json::json!([1, "five"]), "engram_layer_ids"),
+        ("engram_max_ngram_size", serde_json::json!(0), "engram_max_ngram_size 0"),
+        ("engram_max_ngram_size", serde_json::json!(1), "engram_max_ngram_size 1"),
+        ("engram_max_ngram_size", serde_json::json!(65), "engram_max_ngram_size 65"),
+        ("engram_n_heads", serde_json::json!(0), "engram_n_heads 0"),
+        ("engram_head_dim", serde_json::json!(0), "engram_head_dim 0"),
+        ("engram_vocab_size", serde_json::json!(1u64 << 41), "engram_vocab_size"),
+        ("engram_compressed_vocab_size", serde_json::json!(0), "engram_compressed_vocab_size 0"),
+    ] {
+        let e = with(key, v.clone());
+        assert!(e.contains(says), "{key} = {v}: {e}");
+    }
+}
+
+/// A smoke test, with no expected value: the tiny DeepSeek-V4.1 of `v41_config`, its tensors made at random by role, runs on the CPU reference as a model
+/// (CSA2's parts shared from block to block, the mHC weights handed on, Engram's tables read through a compressed vocabulary), the same tokens give the same
+/// logits twice, and every one is finite. It would pass with those parts wired wrongly end to end: what holds each part's values is its own test by hand
+/// (`reference::comp`, `reference::ngram`, the streams' in `reference`), and nothing here holds the whole model's logits to another implementation's.
 #[test]
 fn deepseek_v41s_tiny_model_runs_on_the_reference() {
     use super::describe::Source;

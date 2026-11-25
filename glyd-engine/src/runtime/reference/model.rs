@@ -52,38 +52,11 @@ pub fn load(src: Tensors, role: &str, s: &Source) -> Result<(Vec<usize>, Vec<f32
     Ok((shape, data))
 }
 
-/// A checkpoint's tensor as f32: bf16 and f32 as stored; a hash table's expert ids (int64); and in a development build DeepSeek-V4's FP8
-/// matrices and FP4 experts decoded with their scales, and an MXFP4 matrix (`.weight_packed`, `.weight_scale`: Kimi-K3's experts) decoded
-/// where its `.weight` is asked for. Another type: none.
+/// A checkpoint's tensor as f32, by the type it is stored in (`formats::tensor`): bf16 and f32 as stored, a hash table's expert ids (int64), and a
+/// quantized matrix decoded with the scales stored beside it (FP8 a block a power-of-two scale, FP4 a run of 32 one, as a release names them or as
+/// compressed-tensors packs them), whatever the model is called. Another type: none.
 pub fn checkpoint_tensor(ck: &glyd_gpu::safetensors::Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
-    let Some((_, t)) = ck.get(name) else { return mxfp4(ck, name) };
-    let shape: Vec<usize> = t.shape.iter().map(|&d| d as usize).collect();
-    let v = match t.dtype.as_str() {
-        "BF16" => ck.read(name).ok()?.chunks_exact(2).map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)).collect(),
-        "F32" => ck.read(name).ok()?.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect(),
-        "I64" => ck.read(name).ok()?.chunks_exact(8).map(|c| i64::from_le_bytes(c.try_into().unwrap_or_default()) as f32).collect(),
-        #[cfg(feature = "dev")]
-        "F8_E4M3" | "I8" => {
-            let (sh, v) = crate::dsv4_ref::tensor_of(ck, name).ok()?;
-            return Some((sh.iter().map(|&d| d as usize).collect(), v));
-        }
-        _ => return None,
-    };
-    Some((shape, v))
-}
-
-#[cfg(feature = "dev")]
-fn mxfp4(ck: &glyd_gpu::safetensors::Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
-    let base = name.strip_suffix(".weight")?;
-    let (_, t) = ck.get(&format!("{base}.weight_packed"))?;
-    let (rows, cols) = (t.shape[0] as usize, t.shape[1] as usize * 2);
-    let w = crate::kimi_ref::mxfp4(&ck.read(&format!("{base}.weight_packed")).ok()?, &ck.read(&format!("{base}.weight_scale")).ok()?, rows, cols).ok()?;
-    Some((vec![rows, cols], w))
-}
-
-#[cfg(not(feature = "dev"))]
-fn mxfp4(_: &glyd_gpu::safetensors::Checkpoint, _: &str) -> Option<(Vec<usize>, Vec<f32>)> {
-    None
+    crate::formats::tensor(ck, name)
 }
 
 /// Kimi-K3's depth mix for one token: the completed groups' sums (the sources) and the open group's partial sum.
@@ -132,6 +105,8 @@ pub struct RefModel {
     pub layers: Vec<RefLayer>,
     /// The model's own roles (`Described::extra`).
     pub p: Params,
+    /// Where Some: `forward` adds the residual (every token's streams) after each block that ends a layer (a feed-forward), a check's view of each layer.
+    pub record: Option<Vec<Vec<f32>>>,
 }
 
 impl RefModel {
@@ -159,7 +134,7 @@ impl RefModel {
             let (shape, v) = load(src, role, s)?;
             p.put(role, &shape, v);
         }
-        Ok(RefModel { final_norm: get(src, &d.final_norm)?.1, embed, head, layers, desc, p })
+        Ok(RefModel { final_norm: get(src, &d.final_norm)?.1, embed, head, layers, desc, p, record: None })
     }
 
     /// The tokens of one sequence (slot 0) from position `start`: each token's logits.
@@ -226,6 +201,11 @@ impl RefModel {
             }
             let Residual::DepthMix(dm) = l.block.residual else {
                 l.forward_with(store, &pos, &seqs, tokens, &mut x)?;
+                if matches!(l.block.body, Body::Ffn(_)) {
+                    if let Some(r) = self.record.as_mut() {
+                        r.push(x.clone());
+                    }
+                }
                 continue;
             };
             let (wn, wp) = (l.p.vec("mix_norm")?.to_vec(), l.p.vec("mix_proj")?.to_vec());
@@ -428,6 +408,7 @@ mod tests {
             head: fill("lag.head", 16 * D, -0.5, 0.5),
             layers,
             p: Params::new(),
+            record: None,
         }
     }
 
@@ -461,5 +442,20 @@ mod tests {
         assert!(own.iter().zip(&got).all(|(a, b)| a != b));
         // (a lagged block alone has no input weights to take)
         assert!(block(0, s).pre(&vec![0.5; N * D]).is_err());
+    }
+
+    /// Where asked, the forward pass keeps the residual after each layer's last block (its feed-forward): every token's streams, the last the head's input.
+    #[test]
+    fn a_recorded_pass_keeps_each_layers_residual() {
+        let tokens = [3u32, 7, 1];
+        let mut m = model(streams(false), Collapse::Mean);
+        m.record = Some(Vec::new());
+        let logits = m.forward(&tokens, 0).unwrap();
+        let r = m.record.take().unwrap();
+        assert_eq!((r.len(), r[0].len()), (2, tokens.len() * N * D));
+        assert_ne!(r[0], r[1]);
+        let mut again = model(streams(false), Collapse::Mean);
+        assert_eq!(again.forward(&tokens, 0).unwrap(), logits, "recording leaves the logits as they are");
+        assert!(again.record.is_none());
     }
 }

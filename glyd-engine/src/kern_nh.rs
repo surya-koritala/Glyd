@@ -58,6 +58,11 @@ pub trait MoeBlock {
     fn resident(&self) -> Option<(&crate::moe::MoeLayer, Option<(&Mat, &Mat)>)> {
         None
     }
+    /// The core's layer whose router leaves a call's choices in the experts' scratch (`MoeScratch::ids`), where every expert of it is on the GPU: what the corpus
+    /// pass counts (src/hb_usage.rs). A resident block's; a block that makes its own launches over such a layer gives it too.
+    fn core(&self) -> Option<&crate::moe::MoeLayer> {
+        self.resident().map(|(l, _)| l)
+    }
     /// Whether a call reads the router's choices on the host (a layer of hummingbird experts in the expert cache, `MoeLayer::reads_host`): no graph captures a step with it.
     fn reads_host(&self) -> bool {
         self.resident().is_some_and(|(l, _)| l.reads_host())
@@ -82,6 +87,13 @@ pub trait NhHost {
     /// # Safety
     /// Live device buffers of those sizes, on the engine's stream.
     unsafe fn lin(&self, w: &Mat, x: u64, m: usize, y: u64) -> Result<()>;
+    /// y [m, n] = x [m, k] w^T in bf16, w a block's own rows on the GPU (rows it decodes for a call: Condor's shared expert).
+    ///
+    /// # Safety
+    /// Live device buffers of those sizes, on the engine's stream.
+    unsafe fn gemm(&self, _x: u64, _w: u64, _y: u64, _m: i32, _n: i32, _k: i32) -> Result<()> {
+        err("this engine runs no product over a block's own rows")
+    }
     /// A development build's stage marker (a profile's).
     fn mark(&self, _what: &'static str) {}
 }

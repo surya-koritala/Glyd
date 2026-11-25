@@ -23,7 +23,6 @@ use crate::offload::CPU_TOKENS;
 use crate::weights::PackBuf;
 use glyd_gpu::pack::{Tiered, FP4R_TAG, FP4_TAG, INT4_STEP_BYTES, INT4_TAG, INT5_STEP_BYTES, INT5_TAG, INT6_STEP_BYTES, INT6_TAG};
 
-// The kernels' names: those the .cu sources give them, in every build (kname!).
 /// Experts a router takes (moe_select8, 16 and 32: 256, 512 and 1,024), and choices a token has.
 pub const MAX_EXPERTS: usize = 1024;
 pub const MAX_TOPK: usize = 32;
@@ -328,6 +327,18 @@ impl ExpertStack {
             placed: 0,
             _bufs: Keep::Pack(p),
         })
+    }
+
+    /// The experts as the GPU holds them, read back and decoded on the host ([experts rows, cols], bf16), where the stack is a lossless level's one pack
+    /// (`lossless`): a check's, which holds the lossless level's experts to the checkpoint's bits. None: a stack it has no view of (the experts' own
+    /// packs end to end, a cache's places). A lossy level's block codes (six, five or four bits) are an error: at the lossless level that is the fault
+    /// the check is for.
+    pub fn held_words(&self) -> Result<Option<Vec<u16>>> {
+        match &self._bufs {
+            Keep::Pack(p) => p.words().map(Some),
+            _ if [INT6_TAG, INT5_TAG, INT4_TAG].contains(&self.tag) => err(format!("experts in a lossy level's block codes (layout tag {})", self.tag)),
+            _ => Ok(None),
+        }
     }
 
     /// No experts' buffers, the shape alone: a layer whose experts are held in another format (`MoeLayer::f8`).
@@ -1160,6 +1171,20 @@ impl MoeLayer {
             })?;
         }
         Ok(())
+    }
+
+    /// The routed experts' two stacks as the GPU holds them, decoded on the host (`ExpertStack::held_words`): the first products' rows [experts rows,
+    /// hidden] and the second's [experts hidden, inter]. None where either is in a form with no view (another format's experts, a second product in
+    /// rows of its own); an error where either is a lossy level's block codes.
+    pub fn held_experts(&self) -> Result<Option<(Vec<u16>, Vec<u16>)>> {
+        if self.f8.is_some() || self.hb.is_some() {
+            return Ok(None);
+        }
+        let Down::Block(d) = &self.w.down else { return Ok(None) };
+        Ok(match (self.w.up.held_words()?, d.held_words()?) {
+            (Some(up), Some(down)) => Some((up, down)),
+            _ => None,
+        })
     }
 
     /// Device bytes of the layer's weights.

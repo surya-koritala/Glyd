@@ -136,9 +136,7 @@ impl Family {
         let m = crate::runtime::config::ModelConfig::parse(text)?;
         match m.family() {
             Some(crate::support::Family::NemotronH) => return Ok(Family::Nemotron(ConfigNemotronH::of(&m, "config.json", generation)?)),
-            Some(crate::support::Family::Gemma4) => {
-                return err("a Gemma 4 model: its cost profile is not described yet (Qwen3.5-family and Nemotron-H models are)")
-            }
+            Some(crate::support::Family::Gemma4) => return err("a Gemma 4 model: `costs` describes Qwen3.5-family and Nemotron-H models alone"),
             _ => {}
         }
         let mut c =

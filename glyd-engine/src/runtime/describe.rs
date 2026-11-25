@@ -1727,17 +1727,48 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
         let mut r = names::roles(part::KIMI_ATTN_MIX, &p, 0, all);
         let mixer = if kda_l.contains(&(l as u64 + 1)) {
             let x = but(part::KDA, &p, 0, &["gate_a", "gate_b"]);
-            // (the forget gate's low rank: the delta heads' size, which the lowering to the executor sizes its slot by)
-            shape_roles(&mut shapes, &x, &[("decay_a", vec![kd, d])]);
+            // (each matrix's shape, which the lowering to the executor sizes its products by and names its tensors with; the forget gate's low rank the delta
+            // heads' size)
+            let qd = kh * kd;
+            shape_roles(
+                &mut shapes,
+                &x,
+                &[
+                    ("q", vec![qd, d]),
+                    ("k", vec![qd, d]),
+                    ("v", vec![qd, d]),
+                    ("gate", vec![qd, d]),
+                    ("decay_a", vec![kd, d]),
+                    ("beta", vec![kh, d]),
+                    ("o", vec![d, qd]),
+                    ("decay_b", vec![qd, kd]),
+                ],
+            );
             r.extend(x);
             Mixer::Linear(lin.clone())
         } else {
-            r.extend(but(part::MLA, &p, 0, &["q"]));
+            let x = but(part::MLA, &p, 0, &["q"]);
+            let (ql, hv) = (mla.q_lora.unwrap_or(0), heads * mla.v_dim);
+            shape_roles(
+                &mut shapes,
+                &x,
+                &[
+                    ("q_a", vec![ql, d]),
+                    ("g", vec![hv, d]),
+                    ("kv_a", vec![mla.kv_lora + rd, d]),
+                    ("q_b", vec![heads * (nope + rd), ql]),
+                    ("kv_b", vec![heads * (nope + mla.v_dim), mla.kv_lora]),
+                    ("o", vec![d, hv]),
+                ],
+            );
+            r.extend(x);
             let indexer = dsa.as_ref().filter(|(on, _)| on.contains(&(l as u64 + 1))).map(|(_, ix)| ix.clone());
-            if let Some(IndexForm::Gated { key }) = indexer.as_ref().map(|ix| ix.form) {
-                r.extend(names::roles(part::MLA_INDEXER, &p, 0, |x| {
-                    !x.starts_with("indexer_pool") && (key.kind == NormKind::Layer || x != "indexer_k_norm_bias")
-                }));
+            if let Some((IndexForm::Gated { key }, ix)) = indexer.as_ref().map(|ix| (ix.form, ix)) {
+                let x =
+                    names::roles(part::MLA_INDEXER, &p, 0, |x| !x.starts_with("indexer_pool") && (key.kind == NormKind::Layer || x != "indexer_k_norm_bias"));
+                let (ih, id) = (ix.heads, ix.head_dim);
+                shape_roles(&mut shapes, &x, &[("indexer_wq_b", vec![ih * id, ql]), ("indexer_wk", vec![id, d]), ("indexer_weights", vec![ih, d])]);
+                r.extend(x);
             }
             Mixer::Mla(Mla { indexer, ..mla.clone() })
         };
@@ -1746,7 +1777,7 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
         let mut r = names::roles(part::KIMI_FFN_MIX, &p, 0, all);
         let body = if l < dense {
             r.extend(names::roles(part::MLP_BODY, &p, 0, all));
-            shape_roles(&mut shapes, &r, &[("gate", vec![inter, d])]);
+            shape_roles(&mut shapes, &r, &[("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])]);
             Body::Ffn(Ffn::Mlp(mlp))
         } else {
             let mut x = names::roles(part::KIMI_MOE, &p, ne, |x| shared || !x.starts_with("shared_"));
@@ -1759,7 +1790,19 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
                     }
                 }
             }
-            shape_roles(&mut shapes, &x, &[("shared_gate", vec![n_shared * moe_inter, d])]);
+            let si = n_shared * moe_inter;
+            shape_roles(
+                &mut shapes,
+                &x,
+                &[
+                    ("router", vec![ne, d]),
+                    ("latent_down", vec![lat, d]),
+                    ("latent_up", vec![d, lat]),
+                    ("shared_gate", vec![si, d]),
+                    ("shared_up", vec![si, d]),
+                    ("shared_down", vec![d, si]),
+                ],
+            );
             r.extend(x);
             Body::Ffn(Ffn::Moe(moe.clone()))
         };
@@ -1780,6 +1823,8 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
         rope: None,
     };
     let mut out = finish(&k, desc, &names::KIMI, prefix, roles, mtp_layers)?;
+    // (the embedding's and the head's too: every matrix a product multiplies by or a token's row is read from)
+    shapes.extend(std::iter::once(&out.embed).chain(&out.head).map(|n| (n.clone(), vec![vocab, d])));
     (out.scales, out.shapes) = (scales, shapes);
     Ok(out)
 }
@@ -2132,12 +2177,12 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     ] {
         k.raw(x);
     }
-    // (the 0731 release's DSpark drafter: n_mtp_layers of the decoder's layers with the window alone, 3 where the config does not say)
+    // (a DSpark drafter: `n_mtp_layers` of the decoder's layers with the window alone, the format's default where the config does not say)
     let draft = match (comp_template, moe_template) {
         (Some(c), Some(mut m)) => {
             let window = Comp { ratio: 0, overlap: false, rope: main_rope.clone(), indexer: None, ..c };
             (m.router.hash, m.router.bias) = (false, true);
-            dspark_head(&k, k.opt_usize("n_mtp_layers")?.unwrap_or(3), window, m, Residual::Streams(streams), eps)?
+            dspark_head(&k, k.opt_usize("n_mtp_layers")?.unwrap_or(DSPARK_LAYERS), window, m, Residual::Streams(streams), eps)?
         }
         _ => None,
     };
@@ -2164,6 +2209,11 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     out.scales = scales;
     Ok(out)
 }
+
+/// A DSpark drafter's layers where its config has the drafter's keys and no `n_mtp_layers`: the format's default, which its readers define (vLLM's
+/// `models/deepseek_v4/nvidia/dspark.py`: `n_mtp_layers`, else 3). A directory is held to its index (`describe_dir`): a checkpoint that lacks a draft layer
+/// the count reads is refused, its tensors named.
+const DSPARK_LAYERS: usize = 3;
 
 /// A DeepSeek release's DSpark drafter (`dspark_*` keys; `kinds::DSpark`), where the config has one: `layers` draft layers, each the model's
 /// decoder layer with the window alone (the attention `window` with the model's own form, the feed-forward `moe`) on the model's residual rule,
@@ -2277,11 +2327,11 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
         lagged: true,
     };
     let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
+    // (a list of counts: one that is not a list, or holds an entry that is not a count, is refused by name, never read as the entries that are)
     let list = |x: &str| -> Result<Vec<usize>> {
-        k.raw(x)
-            .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as usize)).collect())
-            .ok_or_else(|| Error(format!("{mt}: no {x}")))
+        let v = k.raw(x).ok_or_else(|| Error(format!("{mt}: no {x}")))?;
+        let a = v.as_array().ok_or_else(|| Error(format!("{mt}: {x} = {v} is not a list")))?;
+        a.iter().map(|e| e.as_u64().map(|n| n as usize).ok_or_else(|| Error(format!("{mt}: {x} = {v}: {e} is not a count")))).collect()
     };
     let ratios = list("compress_ratios")?;
     if ratios.len() < layers || ratios[..layers].iter().any(|r| *r > 2) {
@@ -2331,14 +2381,28 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
     let mut comp_rope = rope(&comp_m, rd, max_pos, &format!("{mt} rope_scaling"))?;
     comp_rope.style = RopeStyle::Interleaved;
     // Engram's layers, each a block before the layer's attention: its tables the next primes past engram_vocab_size, their rows engram_num_embeddings
-    let engram: Vec<usize> = list("engram_layer_ids").unwrap_or_default();
+    // (no engram_layer_ids: a model with no Engram layers; one that is there and is not a list of layers is refused, not read as none)
+    let engram: Vec<usize> = match k.raw("engram_layer_ids") {
+        None => Vec::new(),
+        Some(_) => list("engram_layer_ids")?,
+    };
     let engram_kind = |place: usize, layer: usize| -> Result<Ngram> {
+        let (order, heads, head_dim) = (k.usize("engram_max_ngram_size")?, k.usize("engram_n_heads")?, k.usize("engram_head_dim")?);
+        let (base, vocab) = (k.usize("engram_vocab_size")? as u64, k.usize("engram_compressed_vocab_size")?);
+        // (sizes that are no model's: an order under 2 has no table, no heads or head width divides by zero, and past these the builder would keep finding
+        // primes; the bounds are the other n-gram form's, above)
+        let tables = order.saturating_sub(1).saturating_mul(heads);
+        if order < 2 || order > 64 || heads == 0 || head_dim == 0 || vocab == 0 || base == 0 || base > 1 << 40 || tables.saturating_mul(place + 1) > 4096 {
+            return err(format!(
+                "{mt}: Engram of engram_max_ngram_size {order}, engram_n_heads {heads}, engram_head_dim {head_dim}, engram_vocab_size {base}, engram_compressed_vocab_size {vocab}: an order of 2 to 64, heads and widths above 0, a vocabulary up to 2^40 and at most 4096 tables"
+            ));
+        }
         let n = Ngram {
-            order: k.usize("engram_max_ngram_size")?,
-            heads: k.usize("engram_n_heads")?,
-            dim: (k.usize("engram_max_ngram_size")? - 1) * k.usize("engram_n_heads")? * k.usize("engram_head_dim")?,
-            base: k.usize("engram_vocab_size")? as u64,
-            vocab: k.usize("engram_compressed_vocab_size")?,
+            order,
+            heads,
+            dim: (order - 1) * heads * head_dim,
+            base,
+            vocab,
             seed: 10007 * layer as u64,
             index: place,
             eos: k.usize("engram_pad_token_id")? as u32,

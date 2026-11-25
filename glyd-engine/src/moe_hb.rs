@@ -43,7 +43,6 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
-// The kernels' names: those the .cu sources give them, in every build (kname!).
 /// The share (percent) of a layer's experts at three bits in the recipe hb40, which a plan assumes where it has not read the directory.
 pub const HB40_THREE_BIT_PERCENT: usize = 40;
 /// Neurons a block of `hb_up2` and `hb_up3` takes (kernels/moe_hb.cu defines the same: a test holds them equal).

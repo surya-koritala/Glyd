@@ -47,6 +47,8 @@ without calibration 0.0534 (top-1 88.9%, `benchmarks/weights/kld-q56-2026-10-09`
 `benchmarks/weights/moe-quality-2026-10-10/nemotron-hummingbird`). Each bar is about 1.4 times the largest KL and three to four points under the
 lowest agreement. Those studies read WikiText-2 with 64 to 128 tokens a position; the suite reads its own texts with 20. The first cards the suite
 writes are the check of the bars against its own figures, and a bar that does not hold is changed in `levels.rs` with the cards that show it.
+The task bars (5 points under the lossless level at kestrel, 7.5 at swift, 10 at wren and hummingbird) have no measurement behind them: they
+are a choice, held until the first cards' task figures, and changed the same way.
 
 ## Publish or refuse
 
@@ -64,12 +66,12 @@ step and the upload's refusal are every lossy level's.
 The bars above are for released models, measured with the suite. The GPU job holds every level's arithmetic on a small random model of each family
 with `glyd-engine levelcheck` (`glyd-engine/src/logits.rs`): the model at penguin and at each lossy level its family runs, the same tokens, and the
 KL of the level's logits from penguin's against a threshold of that family and level, twice the family's first measured run. Qwen3.5, Gemma 4 and
-the state-space case are held at kestrel, swift and wren; DeepSeek-V4 and Muse Spark at hummingbird, on a directory the check makes with the two
+the state-space case are held at kestrel, swift and wren; DeepSeek-V4, Muse Spark and Kimi-K3 at hummingbird, on a directory the check makes with the two
 commands above (the corpus pass over made-up documents). A level that does not load fails the check. A random model's weights do not compress as a
 trained model's do, so these thresholds say nothing of a release: they catch a level whose kernels or packer changed.
 
-Kimi-K3 and GLM-5.3-Flash are not held at hummingbird yet: on a random model the corpus pass counts none of Kimi-K3's layers, and GLM-5.3-Flash's
-hummingbird directory does not load. The check prints both as open with what stops each, and fails the day one of them runs without a threshold.
+GLM-5.3-Flash is not held at hummingbird yet: its hummingbird directory does not load on a random model. The check prints it as open with what
+stops it, and fails the day it runs without a threshold.
 
 ## In `fit`
 

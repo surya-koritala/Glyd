@@ -1,6 +1,6 @@
 //! `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain | --sequence]` (R2, #135): every layer kind the families' descriptions hold, run by the executor's CUDA
 //! kernels against its CPU f32 reference (`runtime::reference`), kind by kind, on each logits case's random model (Gemma 4, the Qwen3.5 layout,
-//! the plain dense block, the Mamba-2 layout, Muse Spark, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4) at the lossless level.
+//! the plain dense block, the Mamba-2 layout, Muse Spark, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4, Qwen3.8-Flash-Next) at the lossless level.
 //!
 //! Each layer of the executor's description runs operation by operation on a prompt of `--prompt` rows, then `--steps` decode steps, each pass
 //! from a residual made at random (the layer's caches and states carried from pass to pass, as a sequence's). A layer's operations are runs of
@@ -9,10 +9,14 @@
 //!
 //! - a body's output slot against the reference's body (`RefLayer::body`) on the GPU's own input rows (H), so a body's error is its own;
 //! - after the residual's operations, the residual (X, mHC's streams S, the depth mix's partial sum and completed groups) and the next body's
-//!   input H against the reference's residual rule, advanced by the GPU's own body outputs, and its norms (the final norm after the last).
+//!   input H against the reference's residual rule, advanced by the GPU's own body outputs, and its norms (the final norm after the last);
+//! - an n-gram embedding, whose operations add its output into the streams in place (`Op::NgramAdd`), by the residual it leaves: the streams
+//!   against the reference's block on the same rows (and its own output, the streams' change, printed beside: not judged, as the streams round
+//!   it to bf16 with them).
 //!
 //! A comparison is the largest difference over the reference's largest magnitude on a pass's rows; each line has its kind's bound (`bound`,
-//! the table in `runtime::reference`), and names the rows left out as near a tie (`NEAR`). Exit status 1 where one is not kept.
+//! the table in `runtime::reference`), and names the rows left out as near a tie (`NEAR`), which may be few (`near_within`: a body that
+//! leaves out more of its rows fails, as one past its bound does). Exit status 1 where one is not kept.
 //!
 //! `--sequence`: the passes are one sequence's instead (the logits cases' fixed tokens, `logits::token_list`: the prompt, then each step's token).
 //! The first layer's residual is the reference's embedding of them and every later layer's is what the executor's layer before it left, so each
@@ -67,6 +71,15 @@ struct Line {
     prompt: f32,
     steps: f32,
     near: Vec<String>,
+    /// The rows this comparison saw (the prompt's and each step's), of which `near` were left out.
+    rows: usize,
+}
+
+impl Line {
+    /// Within its kind's bound on the prompt and on the steps, with no more rows left out than `near_within` allows.
+    fn ok(&self) -> bool {
+        self.prompt <= bound(self.class) && self.steps <= bound(self.class) && near_within(self.near.len(), self.rows)
+    }
 }
 
 /// A row past its bound whose choice (a router's experts, an indexer's picks) was nearer than this to another (`reference::ffn::margin`: the
@@ -74,9 +87,17 @@ struct Line {
 /// other way, which changes the output by far more than its arithmetic does.
 pub(crate) const NEAR: f32 = 1e-2;
 
-/// The largest difference over `want`'s largest magnitude (infinite where `got` has a value that is not finite).
+/// Whether a comparison of `rows` rows may leave `left` of them out as near a tie: one row in sixteen at most (and one where it has fewer than
+/// sixteen). The runs `runtime::reference`'s table records left out 1 row of a body's 52 to 66, and 2 and 3 of five bodies' 260 and 330;
+/// a body whose rows were mostly left out was compared with nothing, so it fails.
+fn near_within(left: usize, rows: usize) -> bool {
+    left <= (rows / 16).max(1)
+}
+
+/// The largest difference over `want`'s largest magnitude (infinite where either has a value that is not finite: a reference that is not a
+/// number bounds nothing).
 fn rel(got: &[f32], want: &[f32]) -> f32 {
-    if got.len() != want.len() || got.iter().any(|v| !v.is_finite()) {
+    if got.len() != want.len() || got.iter().chain(want).any(|v| !v.is_finite()) {
         return f32::INFINITY;
     }
     let scale = want.iter().fold(0f32, |m, v| m.max(v.abs())).max(1e-30);
@@ -209,15 +230,44 @@ fn out_slot(op: &Op) -> Result<Slot> {
     }
 }
 
-/// A layer's operations as runs: (a body's, its range).
-fn runs(ops: &[Op]) -> Vec<(bool, Range<usize>)> {
-    let mut v: Vec<(bool, Range<usize>)> = Vec::new();
+/// What a run of a layer's operations is: the residual's, a body's (its output in a slot), or an n-gram embedding's (`Op::NgramRows` to
+/// `Op::NgramAdd`: its output added into the streams in place).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Run {
+    Residual,
+    Body,
+    Ngram,
+}
+
+/// A layer's operations as runs: (what each is, its range). An n-gram embedding's operations are a run of their own, ending at its add.
+fn runs(ops: &[Op]) -> Vec<(Run, Range<usize>)> {
+    let mut v: Vec<(Run, Range<usize>)> = Vec::new();
+    let mut open = false;
     for (i, op) in ops.iter().enumerate() {
-        let body = !residual_op(op);
+        let run = if open || matches!(op, Op::NgramRows(_)) {
+            Run::Ngram
+        } else if residual_op(op) {
+            Run::Residual
+        } else {
+            Run::Body
+        };
+        let starts = matches!(op, Op::NgramRows(_));
+        open = run == Run::Ngram && !matches!(op, Op::NgramAdd(_));
         match v.last_mut() {
-            Some((b, r)) if *b == body => r.end = i + 1,
-            _ => v.push((body, i..i + 1)),
+            Some((k, r)) if *k == run && !starts => r.end = i + 1,
+            _ => v.push((run, i..i + 1)),
         }
+    }
+    v
+}
+
+/// Each layer's first block, and the blocks' count after the last: a block for each run of a body or of an n-gram embedding (a layer may have
+/// more blocks than another: Qwen3.8-Flash-Next's n-gram embedding before some layers' mixers).
+fn block_starts(layers: &[Vec<Op>]) -> Vec<usize> {
+    let mut v = vec![0];
+    for ops in layers {
+        let n = runs(ops).iter().filter(|(k, _)| *k != Run::Residual).count();
+        v.push(v[v.len() - 1] + n);
     }
     v
 }
@@ -302,11 +352,12 @@ struct Rows<'a> {
     x0: Vec<f32>,
 }
 
-/// Layer `l` of the executor (blocks `per l ..`) on `rows` (the depth mix's completed groups made by `rng`). With what it compared, the
-/// residual the layer left (as the slot holds it).
-fn pass(dy: &Dyn, m: &mut RefModel, l: usize, per: usize, rows: Rows, rng: &mut Rng) -> Result<(Got, Vec<f32>)> {
+/// Layer `l` of the executor (blocks `starts[l]..starts[l + 1]`, `block_starts`) on `rows` (the depth mix's completed groups made by `rng`). With what it
+/// compared, the residual the layer left (as the slot holds it).
+fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng: &mut Rng) -> Result<(Got, Vec<f32>)> {
     let Rows { at, tok, x0 } = rows;
     let (d, layers, n) = (m.desc.hidden, dy.big.d.layers.len(), tok.len());
+    let (first, per) = (starts[l], starts[l + 1] - starts[l]);
     let runs_l = runs(&dy.big.d.layers[l]);
     // (the residual: mHC's streams where the model has them, else X; the depth mix's completed groups in Blk)
     let state = dy.kc_state();
@@ -320,8 +371,8 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, per: usize, rows: Rows, rng: &mut 
             dy.kc_put(s, &vec![0.0; n * dy.kc_width(s)])?;
         }
     }
-    let depth = matches!(m.layers[per * l].block.residual, Residual::DepthMix(_));
-    let (bw, nb) = (dy.kc_width(Slot::Blk), m.layers[..per * l].iter().filter(|b| matches!(b.block.residual, Residual::DepthMix(dm) if dm.starts)).count());
+    let depth = matches!(m.layers[first].block.residual, Residual::DepthMix(_));
+    let (bw, nb) = (dy.kc_width(Slot::Blk), m.layers[..first].iter().filter(|b| matches!(b.block.residual, Residual::DepthMix(dm) if dm.starts)).count());
     let mut rows: Vec<Row> = Vec::with_capacity(n);
     let blk = if bw > 0 {
         let mut b = vec![0f32; n * bw];
@@ -394,13 +445,15 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, per: usize, rows: Rows, rng: &mut 
         }
         Ok(v)
     };
+    // (an n-gram embedding's input is the residual itself: before it the residual alone is compared)
+    let ngram = |m: &RefModel, b: usize| matches!(m.layers[b].block.body, Body::Ngram(_));
     let mut pending: Option<(usize, Vec<f32>)> = None;
     let mut body = 0;
     let mut last_ran = false;
-    for (k, (is_body, r)) in runs_l.iter().enumerate() {
-        let b = per * l + body;
-        if !is_body {
-            dy.kc_ops(l, r.clone(), n, at, tok)?;
+    for (k, (run, r)) in runs_l.iter().enumerate() {
+        let b = first + body;
+        if *run == Run::Residual {
+            dy.kc_ops(l, r.clone(), n, at, &tok)?;
             last_ran = true;
             if body == per {
                 // (the trailing run: compared with the next layer's first run, below)
@@ -409,18 +462,45 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, per: usize, rows: Rows, rng: &mut 
             if let Some((pb, o)) = pending.take() {
                 post(m, &mut rows, pb, &o)?;
             }
-            let h = pre(m, &mut rows, Some(b))?;
-            put(
-                format!("L{l} before B{b}"),
-                residual_label(Some(&m.layers[b].block)),
-                Class::Residual,
-                state_rel(&rows)?.max(rel(&dy.kc_get(Slot::H, n)?, &h)),
-                Vec::new(),
-            );
+            // (the reference's input first: a depth mix's group closes there)
+            let v = if ngram(m, b) {
+                state_rel(&rows)?
+            } else {
+                let h = pre(m, &mut rows, Some(b))?;
+                state_rel(&rows)?.max(rel(&dy.kc_get(Slot::H, n)?, &h))
+            };
+            put(format!("L{l} before B{b}"), residual_label(Some(&m.layers[b].block)), Class::Residual, v, Vec::new());
             continue;
         }
         if body >= per {
             return err(format!("layer {l}: more bodies than its {per} blocks"));
+        }
+        if *run == Run::Ngram {
+            if !ngram(m, b) {
+                return err(format!("layer {l}: an n-gram embedding's operations where block {b} is {:?}", m.layers[b].block.body));
+            }
+            if let Some((pb, o)) = pending.take() {
+                post(m, &mut rows, pb, &o)?;
+            }
+            let before: Vec<f32> = rows.iter().flat_map(|r| r.x.clone()).collect();
+            dy.kc_ops(l, r.clone(), n, at, &tok)?;
+            last_ran = false;
+            // (the reference's block on each row's residual: its norms per stream, its body with the row's token, its residual rule)
+            for (t, row) in rows.iter_mut().enumerate() {
+                let (input, hc) = m.layers[b].pre(&row.x)?;
+                let h = m.layers[b].norm_in(&input);
+                let o = m.body(b, 0, (at + t) as u32, tok[t], &h)?;
+                let o = m.layers[b].norm_out(o);
+                m.layers[b].post(&mut row.x, &o, hc)?;
+            }
+            let (class, kind) = label(&m.layers[b].block);
+            let got = dy.kc_get(state, n)?;
+            let want: Vec<f32> = rows.iter().flat_map(|r| r.x.clone()).collect();
+            let own = |v: &[f32]| v.iter().zip(&before).map(|(a, b)| a - b).collect::<Vec<f32>>();
+            println!("     L{l} B{b} {kind}: its own output (the streams' change) {:.2e} of its largest magnitude, not judged", rel(&own(&got), &own(&want)));
+            put(format!("L{l} B{b}"), kind, class, rel(&got, &want), Vec::new());
+            body += 1;
+            continue;
         }
         if k == 0 {
             // (a layer that begins with a body reads the H the layer before made: the reference's, rounded as a slot holds it)
@@ -428,7 +508,7 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, per: usize, rows: Rows, rng: &mut 
             dy.kc_put(Slot::H, &h)?;
         }
         let h = dy.kc_get(Slot::H, n)?;
-        dy.kc_ops(l, r.clone(), n, at, tok)?;
+        dy.kc_ops(l, r.clone(), n, at, &tok)?;
         last_ran = false;
         let out = out_slot(&dy.big.d.layers[l][r.end - 1])?;
         if dy.kc_width(out) != d {
@@ -464,24 +544,24 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, per: usize, rows: Rows, rng: &mut 
         return err(format!("layer {l}: {body} bodies, where it has {per} blocks"));
     }
     // the residual after the last body: the layer's last run and the next layer's first (its norm), or the final norm
-    let next = (l + 1 < layers).then(|| runs(&dy.big.d.layers[l + 1]).into_iter().next().filter(|(b, _)| !b)).flatten();
+    let next = (l + 1 < layers).then(|| runs(&dy.big.d.layers[l + 1]).into_iter().next().filter(|(k, _)| *k == Run::Residual)).flatten();
     if let Some((_, r)) = &next {
-        dy.kc_ops(l + 1, r.clone(), n, at, tok)?;
+        dy.kc_ops(l + 1, r.clone(), n, at, &tok)?;
     }
     if last_ran || next.is_some() {
         if let Some((pb, o)) = pending.take() {
             post(m, &mut rows, pb, &o)?;
         }
-        let b = (l + 1 < layers).then_some(per * (l + 1));
-        let h = pre(m, &mut rows, b)?;
+        let b = (l + 1 < layers).then_some(starts[l + 1]);
+        let v = match b {
+            Some(b) if ngram(m, b) => state_rel(&rows)?,
+            _ => {
+                let h = pre(m, &mut rows, b)?;
+                state_rel(&rows)?.max(rel(&dy.kc_get(Slot::H, n)?, &h))
+            }
+        };
         let what = b.map_or("the final norm".to_string(), |b| format!("B{b}"));
-        put(
-            format!("L{l} before {what}"),
-            residual_label(b.map(|b| &m.layers[b].block)),
-            Class::Residual,
-            state_rel(&rows)?.max(rel(&dy.kc_get(Slot::H, n)?, &h)),
-            Vec::new(),
-        );
+        put(format!("L{l} before {what}"), residual_label(b.map(|b| &m.layers[b].block)), Class::Residual, v, Vec::new());
     }
     Ok((got, dy.kc_get(state, n)?))
 }
@@ -528,10 +608,10 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
     let ck = glyd_gpu::safetensors::Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
     let mut m = RefModel::load(&d, &|n: &str| checkpoint_tensor(&ck, n))?;
     let layers = dy.big.d.layers.len();
-    if layers == 0 || m.layers.len() % layers != 0 {
-        return err(format!("{id}: {} blocks over {layers} layers", m.layers.len()));
+    let starts = block_starts(&dy.big.d.layers);
+    if layers == 0 || starts[layers] != m.layers.len() {
+        return err(format!("{id}: {} blocks, where the executor's {layers} layers run {}", m.layers.len(), starts[layers]));
     }
-    let per = m.layers.len() / layers;
     if prompt + steps + 1 > o.ctx || prompt > o.chunk {
         return err(format!("a prompt of {prompt} and {steps} steps: a chunk of {} and a cache of {}", o.chunk, o.ctx));
     }
@@ -577,9 +657,9 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
                 Some(x) => x,
                 None => rngs[l].v(n * sw),
             };
-            let (got, after) = pass(&dy, &mut m, l, per, Rows { at, tok: &tok, x0 }, &mut rngs[l])?;
+            let (got, after) = pass(&dy, &mut m, l, &starts, Rows { at, tok: &tok, x0 }, &mut rngs[l])?;
             if alone.is_some() {
-                let want = &own[per * (l + 1)];
+                let want = &own[starts[l + 1]];
                 let v = rel(&after, want);
                 if crate::tune!("GLYD_KINDCHECK_ROWS").is_some() {
                     for t in 0..n.min(want.len() / sw.max(1)) {
@@ -596,7 +676,10 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
                 x = Some(after);
             }
             if at == 0 {
-                lines[l] = got.into_iter().map(|(w, kind, class, v, near)| Line { case: id, at: w, kind, class, prompt: v, steps: 0.0, near }).collect();
+                lines[l] = got
+                    .into_iter()
+                    .map(|(w, kind, class, v, near)| Line { case: id, at: w, kind, class, prompt: v, steps: 0.0, near, rows: prompt + steps })
+                    .collect();
                 continue;
             }
             if got.len() != lines[l].len() {
@@ -610,8 +693,14 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
     }
     for (l, of) in lines.iter().enumerate() {
         for x in of {
-            let ok = x.prompt <= bound(x.class) && x.steps <= bound(x.class);
-            let near = if x.near.is_empty() { String::new() } else { format!("; past the bound near a tie, not compared: {}", x.near.join(", ")) };
+            let ok = x.ok();
+            let near = if x.near.is_empty() {
+                String::new()
+            } else if near_within(x.near.len(), x.rows) {
+                format!("; past the bound near a tie, not compared: {}", x.near.join(", "))
+            } else {
+                format!("; {} of its {} rows past the bound near a tie and not compared, more than one in sixteen: {}", x.near.len(), x.rows, x.near.join(", "))
+            };
             println!(
                 "{} {:11} {:22} {}: prompt {:.2e}, steps {:.2e} (bound {:.0e}){near}",
                 if ok { "ok  " } else { "FAIL" },
@@ -637,8 +726,22 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
 
 /// `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain | --sequence]`: the cases (all unless named), then each class's worst against its bound.
 pub fn run(a: &crate::args::Args) -> Result<()> {
-    const ALL: [&str; 12] =
-        ["gemma4", "gemma4-kv", "qwen35", "qwen35-wide", "qwen35moe", "dense", "nemotron-h", "muse", "kimi", "kimi-dsa", "glm", "deepseek-v4"];
+    const ALL: [&str; 14] = [
+        "gemma4",
+        "gemma4-kv",
+        "qwen35",
+        "qwen35-wide",
+        "qwen35moe",
+        "dense",
+        "nemotron-h",
+        "muse",
+        "kimi",
+        "kimi-dsa",
+        "glm",
+        "deepseek-v4",
+        "qwen4x",
+        "qwen4x-s2",
+    ];
     let want: Vec<&str> = a.pos.iter().skip(1).map(String::as_str).collect();
     if let Some(w) = want.iter().find(|w| !ALL.contains(w)) {
         return err(format!("no case {w}: {}", ALL.join(", ")));
@@ -687,10 +790,85 @@ pub fn run(a: &crate::args::Args) -> Result<()> {
         let near = if near > 0 { format!(" ({near} rows past the bound near a tie, not compared)") } else { String::new() };
         println!("  {:12} {worst:.2e} (bound {:.0e}) over {} comparisons{near}: {}", format!("{c:?}"), bound(c), of.len(), cases.join(", "));
     }
-    failed.extend(all.iter().filter(|x| x.prompt > bound(x.class) || x.steps > bound(x.class)).map(|x| format!("{} {} {}", x.case, x.at, x.kind)));
+    failed.extend(all.iter().filter(|x| !x.ok()).map(|x| format!("{} {} {}", x.case, x.at, x.kind)));
     if !failed.is_empty() {
         return err(format!("kindcheck: {} not within bounds: {}", failed.len(), failed.join("; ")));
     }
     println!("kindcheck: PASS");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A value of the reference that is not a number fails the comparison, as one of the GPU's does: `f32::max` drops a NaN difference, which read as 0.
+    #[test]
+    fn a_reference_that_is_not_a_number_is_not_within() {
+        assert_eq!(rel(&[1.0, 2.0], &[1.0, 2.0]), 0.0);
+        assert_eq!(rel(&[1.0, 2.5], &[1.0, 2.0]), 0.25);
+        assert_eq!(rel(&[1.0, f32::NAN], &[1.0, 2.0]), f32::INFINITY);
+        assert_eq!(rel(&[1.0, 2.0], &[1.0, f32::NAN]), f32::INFINITY);
+        assert_eq!(rel(&[1.0, 2.0], &[f32::INFINITY, 2.0]), f32::INFINITY);
+        assert_eq!(rel(&[1.0], &[1.0, 2.0]), f32::INFINITY);
+    }
+
+    /// A body may leave few rows out as near a tie: the runs on record left out 1 of 52, and one whose rows were all left out fails though its worst reads 0.
+    #[test]
+    fn a_body_that_leaves_most_rows_out_fails() {
+        let line = |near: usize, rows: usize| Line {
+            case: "t",
+            at: "L0 B0".into(),
+            kind: "latent attention".into(),
+            class: Class::Latent,
+            prompt: 0.0,
+            steps: 0.0,
+            near: vec!["position 0".to_string(); near],
+            rows,
+        };
+        assert!(line(0, 52).ok() && line(1, 52).ok() && line(3, 52).ok());
+        assert!(!line(4, 52).ok() && !line(52, 52).ok());
+        assert!(line(1, 5).ok() && !line(2, 5).ok());
+        // (and a bound still fails with nothing left out)
+        let mut past = line(0, 52);
+        past.steps = 2.5e-2;
+        assert!(!past.ok());
+    }
+
+    /// Qwen3.8-Flash-Next's tiny model: the n-gram embedding's three operations before the second layer's mixer are a run of their own (its add ends it), so
+    /// that layer has three blocks and every other two, and the layers' blocks are the description's, in its order.
+    #[test]
+    fn an_n_gram_embedding_is_a_block_of_its_own() {
+        let m: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/qwen4x_tiny_manifest.json")).unwrap();
+        let c: serde_json::Value = serde_json::from_str(m["config"].as_str().unwrap()).unwrap();
+        let d = crate::runtime::describe::describe(&c).unwrap();
+        let x = super::super::lower::qwen4x(&d, vec![2000], 1100).unwrap();
+        let kinds = |l: usize| runs(&x.layers[l]).into_iter().map(|(k, r)| (k, r.len())).collect::<Vec<_>>();
+        let gated = [(Run::Residual, 1), (Run::Body, 6), (Run::Residual, 2), (Run::Body, 1), (Run::Residual, 1)];
+        assert_eq!(kinds(0), gated);
+        assert_eq!(kinds(1)[0], (Run::Ngram, 3));
+        assert_eq!(kinds(1)[1..], gated);
+        let starts = block_starts(&x.layers);
+        assert_eq!(starts.len(), x.layers.len() + 1);
+        assert_eq!(starts[x.layers.len()], d.desc.blocks.len());
+        assert_eq!(&starts[..3], &[0, 2, 5]);
+        for (l, b) in starts.windows(2).enumerate() {
+            let at = &d.desc.blocks[b[0]..b[1]];
+            assert_eq!(matches!(at[0].body, crate::runtime::kinds::Body::Ngram(_)), l == 1, "layer {l}");
+            assert!(matches!(at.last().unwrap().body, crate::runtime::kinds::Body::Ffn(_)), "layer {l}");
+        }
+    }
+
+    /// Two n-gram embeddings one after the other are two runs, and a run of the residual's operations between bodies stays one.
+    #[test]
+    fn runs_end_where_their_kind_changes_or_an_n_gram_embedding_adds() {
+        use super::super::ngram::{NgramAdd, NgramRows};
+        let rows = Op::NgramRows(NgramRows { table: 0, hash: [0; 3], hist: 0, per: 1, row: 1, eos: 0, order: 3, map: None, segments: true });
+        let add = Op::NgramAdd(NgramAdd { q: 0, k: 0, conv: None, plus_one: true, eps: 1e-6 });
+        let lin = Op::Linear { w: 0, x: Slot::In, y: Slot::Gu, name: "" };
+        let ops = [rows.clone(), lin.clone(), add.clone(), rows, lin.clone(), add, Op::Nop, Op::Nop, lin];
+        let got: Vec<(Run, usize)> = runs(&ops).into_iter().map(|(k, r)| (k, r.len())).collect();
+        assert_eq!(got, [(Run::Ngram, 3), (Run::Ngram, 3), (Run::Residual, 2), (Run::Body, 1)]);
+        assert_eq!(block_starts(&[ops.to_vec()]), [0, 3]);
+    }
 }

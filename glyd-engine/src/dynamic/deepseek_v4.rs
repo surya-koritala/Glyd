@@ -18,7 +18,6 @@ use crate::weights::{as_bytes, pack_words, upload_bytes, upload_packed, Layout, 
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 
-// The kernels' names: those the .cu sources give them, in every build (kname!).
 /// kernels/dsv4.cu's kernels.
 pub(crate) struct KernV4 {
     pub(crate) fp8: crate::kt::v4_fp8,

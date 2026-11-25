@@ -568,8 +568,28 @@ mod tests {
             step(&m, &p, &mut c, h, t as u32).unwrap();
         }
         let qr = norm(&m.q_norm, &p.prod("q_a", &hs[8]).unwrap(), p.opt("q_a_norm"), None);
-        let got = picks(m.indexer.as_ref().unwrap(), &p, &c, &(0..9).collect::<Vec<_>>(), Some(&qr), &hs[8], &|_| Ok(())).unwrap().picks;
-        assert_eq!(got.len(), 5);
-        assert!(got.windows(2).all(|w| w[0] < w[1]));
+        let ix = m.indexer.as_ref().unwrap();
+        let got = picks(ix, &p, &c, &(0..9).collect::<Vec<_>>(), Some(&qr), &hs[8], &|_| Ok(())).unwrap().picks;
+        // by hand: each token's own key, its score sum_h w_h / sqrt(heads) relu(q_h . key / sqrt(head_dim)), and the five best in the tokens' order
+        let q = p.prod("indexer_wq_b", &qr).unwrap();
+        let w = p.prod("indexer_weights", &hs[8]).unwrap();
+        let (heads, dim) = (ix.heads, ix.head_dim);
+        assert_eq!((c.ikey.len(), q.len(), w.len()), (9, heads * dim, heads));
+        let score: Vec<f64> = (0..9)
+            .map(|t| {
+                (0..heads)
+                    .map(|hh| {
+                        let qk: f64 = (0..dim).map(|d| q[hh * dim + d] as f64 * c.ikey[t][d] as f64).sum();
+                        w[hh] as f64 / (heads as f64).sqrt() * (qk / (dim as f64).sqrt()).max(0.0)
+                    })
+                    .sum()
+            })
+            .collect();
+        let mut best: Vec<usize> = (0..9).collect();
+        best.sort_by(|&a, &b| score[b].total_cmp(&score[a]));
+        assert!(score[best[4]] - score[best[5]] > 1e-4, "the fifth and sixth tokens are too near to tell: {score:?}");
+        let mut want = best[..5].to_vec();
+        want.sort_unstable();
+        assert_eq!(got, want, "{score:?}");
     }
 }

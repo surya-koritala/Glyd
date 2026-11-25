@@ -169,7 +169,7 @@ pub(super) fn bucket(n: usize, most: usize) -> Option<usize> {
 
 /// The sampler's candidates of a step's rows (`ModelStep::top`): the `kern::TOPK` largest logits of each head row of the last step, made by one launch for all
 /// of them at the first ask after the step and copied to the host, where the scheduler would read the whole row (Qwen3.5's 248,320 logits, Gemma 4's 262,144) to
-/// copy, widen and draw from on the host. The dense engine had them in its step (its `candidates`). `rows`: the last step's head rows; `made`: whether its
+/// copy, widen and draw from on the host. `rows`: the last step's head rows; `made`: whether its
 /// candidates are; `bufs`: the GPU's and the host's room (tokens, logits; for `cap` rows), made at the first ask.
 #[derive(Default)]
 pub(super) struct Cands {
@@ -590,10 +590,11 @@ impl Dyn {
         let tab_bytes = users * windows.len() * self.ctx.div_ceil(BLOCK) * 4;
         // (12-bit pages: the raw slabs one sequence alone may take, every page of it raw: `Lossless::alone_slabs`, which the raw pools hold at the least)
         let alone: usize = match self.kv12.as_ref().filter(|_| twelve.iter().any(Option::is_some)) {
+            // (a size the library does not give is an error here, not a reserve of nothing that the pools then run out of)
             Some(t) => super::kvpages::Lossless::alone_slabs(&self.lib, &self.big.d, t, &self.ring_cap, self.ctx, self.chunk)
                 .iter()
-                .map(|&(hp, n)| self.lib.kv_raw_bytes(n, hp).unwrap_or(0) as usize)
-                .sum(),
+                .map(|&(hp, n)| self.lib.kv_raw_bytes(n, hp).map(|b| b as usize))
+                .sum::<Result<usize>>()?,
             None => 0,
         };
         let (free, _) = self.dev.mem_info()?;
@@ -2349,23 +2350,14 @@ mod tests {
         assert_eq!(state_table(&[&a], 1, 3), [10, 11, 12]);
     }
 
-    /// A row's table is copied as many times as the decode's calls on the group make sequences of a row, every count of them dividing it: the stride `dup / sp` tables
-    /// finds row r's j-th sequence's table in row r's copies (Gemma 4's global layers: 16 query heads over one kv head, two sequences a row; its sliding ones one).
+    /// A row's table is copied as many times as the decode's calls on the group make sequences of a row, every count of them dividing it (Gemma 4's global layers:
+    /// 16 query heads over one kv head, two sequences a row; its sliding ones one). A call then finds row r's j-th sequence's table at the stride `dup / sp` tables,
+    /// in row r's copies: the decode's launch passes that stride, and `kvshapes` holds what it reads on a GPU.
     #[test]
     fn a_rows_tables_are_copied_for_every_calls_sequences() {
         let dup = row_dups(3, [(0, 1), (1, 2), (1, 1), (0, 1)].into_iter());
         assert_eq!(dup, [1, 2, 0]);
         assert_eq!(row_dups(1, [(0, 2), (0, 3)].into_iter()), [6]);
-        // (sequence b = r sp + j of a call at stride dup / sp tables: row r's copy j dup / sp, within its dup copies)
-        let (t, d) = (100usize, 2usize);
-        for sp in [1usize, 2] {
-            for r in 0..5 {
-                for j in 0..sp {
-                    let at = (r * sp + j) * (d / sp) * t;
-                    assert!(at >= r * d * t && at < (r + 1) * d * t, "sp {sp} row {r} part {j}");
-                }
-            }
-        }
     }
 
     /// The pools' blocks from a budget: groups of BLOCK tokens get as many blocks each (the sliding ones capped, what they leave to the full ones, as before groups of larger

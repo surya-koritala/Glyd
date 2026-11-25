@@ -487,9 +487,10 @@ pub(crate) mod tests {
     }
 
     /// Records the headers of the recent models by ranges from the Hub (the files' headers and the small files; no weights) into tests/fixtures/headers:
-    /// `GLYD_RECORD_HEADERS=1 cargo test -p glyd-engine --lib -- --ignored record_header_fixtures`. #333's releases among them (GLM-5.3, Qwen3.8-2.4T-A95B,
-    /// DeepSeek-V4.1-Flash, DeepSeek-V4-Flash's DSpark drafter): `runtime::describe_tests::every_recorded_release_describes_or_says_what_it_lacks` holds each
-    /// file it writes.
+    /// `GLYD_RECORD_HEADERS=1 cargo test -p glyd-engine --lib -- --ignored record_header_fixtures`. Recorded and committed so far: four of the nine repos
+    /// listed below (gemma-4-12B-it, Kimi-K3, DeepSeek-V4-Flash-0731, Qwen3.8-27B). The others (Muse Spark, and #333's releases: GLM-5.3, Qwen3.8-2.4T-A95B,
+    /// DeepSeek-V4.1-Flash, DeepSeek-V4-Flash's DSpark drafter) are listed and not recorded: no header of theirs is in the tree, so
+    /// `runtime::describe_tests::every_recorded_release_describes_or_says_what_it_lacks`, which holds each file here, holds none of them.
     #[test]
     #[ignore = "needs the network: GLYD_RECORD_HEADERS=1"]
     fn record_header_fixtures() {
