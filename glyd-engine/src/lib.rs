@@ -29,6 +29,8 @@ pub mod calib;
 pub mod cb2_prefill;
 pub mod cb_pack;
 #[cfg(feature = "dev")]
+pub mod cb_random;
+#[cfg(feature = "dev")]
 pub mod ceiling;
 pub mod chat;
 pub mod choice;
