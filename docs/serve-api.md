@@ -261,7 +261,8 @@ From the record (served by its Hub name; the file list cut to two of sixteen):
   (the download checked it), else the file read at the start where it is 64 MiB or smaller, else null.
 - `level.requested` is the tag, `--lossy` (kestrel), or a glyd/NAME-LEVEL name; null where nothing asked for one (a
   directory runs at its own level). `effective` is the level loaded.
-- `precision`: `sums` is the products' accumulation. `kv` and `state` are null for a model across several GPUs, which does not say.
+- `precision`: `sums` is the products' accumulation. `kv` and `state` are null for a model across several GPUs, which does not say. `kv` is `bf16` for every model of the
+  executor, 12-bit pages too (`GLYD_KV=lossless`): the field does not say which pages are on.
 - `fields`: `read` are the request fields this server reads (some values of some are refused, below), `no_effect` change
   nothing here, `refused` are refused when set to anything but null or the value that means "not asked" (false, 0, []). The record's lists had 38, 12 and 38
   names; this tree's have 49, 12 and 28 (`DONE`, `NO_EFFECT`, and `NOT_DONE` with `CONSTRAINED`, in `glyd-engine/src/server.rs`).
@@ -279,7 +280,7 @@ From the record (served by its Hub name; the file list cut to two of sixteen):
 - `engine_bytes`: every buffer the engine holds on the GPU now, counted where the engine allocates and frees device memory
   (the sizes it asks for, not the driver's rounding).
 - `weights_bytes`, `kv_bytes`, `state_bytes`: what the model holds, made once at load and kept: the weights (the same
-  number as the start's "GiB of weights" line), the keys and values for the whole context (bf16, `--ctx` positions, used
+  number as the start's "GiB of weights" line), the keys and values for the whole context (bf16, or 12-bit pages where `GLYD_KV=lossless` asks for them; `--ctx` positions, used
   or not), the states a sequence carries (zeroed at each request). `scratch_bytes` is the rest of `engine_bytes`: the
   activations, the products' workspaces, the logits, the rotary tables. Null where the engine does not say (a model across several GPUs).
 - `peak_bytes`, `peak_at`: the most `engine_bytes` has been since the process started, and when. Never reset.
