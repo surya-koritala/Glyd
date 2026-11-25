@@ -33,6 +33,7 @@
 //!   glyd-engine microbench DIR [--prompt N[,N...]] [--new N] [--ctx N] [--chunk N] [--reps N] [--no-graph] [--layout L]
 //!   glyd-engine kvshapes                                     the lossless KV cache of head dims 128, 256 and 512 (no model): values written, read back bit for bit, and decode and prompt attention against the host's
 //!   glyd-engine kvprefill [--chunk 256] [--prefixes 0,1024,4096,8192] [--reps 20]   the prompt attention over 12-bit pages at gemma-4-12B's shapes against the pages unpacked to a bf16 ring and the bf16 kernel on it
+//!   glyd-engine kvdecode [--lens 40,1024,4096] [--ctx 32768] [--reps 100]   a decode row's attention over 12-bit pages against a bf16 cache of the same values, and its token's 12-bit write, us a call (Qwen3-8B's, gemma-4-12B's, the Qwen3.5 layout's shapes)
 //!   glyd-engine topkcheck                                     the sampling kernels' 64 largest logits of a row and sum of its exponentials against the host's
 //!   glyd-engine sampletime DIR PROMPT [--new N] [--ctx N]     a Qwen3.5 or Nemotron-H model's decode speed by greedy steps, by sampled ones from the GPU's candidates and from the row on the host (the same tokens)
 //!   glyd-engine logitscheck [CASE...] [--fixtures DIR] [--cpu-ref] [--level L] [--list-cases]   each model's engine logits against its fixture in tests/logits (src/logits.rs); logitsrecord CASE --from cpu|engine --out FILE: a fixture made; logitsbound FIXTURE LEVEL=BOUND...: its bounds set; logitsmodel CASE DIR: the case's random model made; usercheck CASE [--users 4] [--level L]: the case's random model (gemma4, qwen35) served by the scheduler, each reply alone and at once against the one-at-a-time reply; paritycheck [CASE...] [--level L]: the hand-written Qwen3.5, Gemma 4 and Nemotron-H engines against the description executor on their R7 fixtures' tokens (R3b); levelcheck [CASE...] [--level L]: each lossy level's KL from penguin on the Qwen3.5, Gemma 4 and Nemotron-H random models, against the per-level thresholds
@@ -95,6 +96,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
             Ok(())
         }
         "kvprefill" => glyd_engine::kvshapes::bench(a),
+        "kvdecode" => glyd_engine::kvshapes::decode_bench(a),
         // the planner's predictions against this machine, gated, and a calibration record a case (src/plancheck.rs)
         "plancheck" => std::process::exit(glyd_engine::plancheck::cmd(a)),
         "bandwidth" => {
