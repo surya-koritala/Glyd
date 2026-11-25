@@ -253,7 +253,7 @@ extern "C" __global__ void moe_add(bf16* y, const bf16* sh, const float* gate, i
 // y [T, H] = each token's rows [P, H] times its choices' weights wts [T k], summed in fp32 in the order of its choices, rounded once. A thread a pair; a thread 8 columns of a token.
 extern "C" __global__ void moe_inv(const int* plan, int* inv, int P, int E) {
     const int r = blockIdx.x * blockDim.x + threadIdx.x;
-    if (r < P) inv[plan[2 + 2 * E + r]] = r;
+    if (r < P && r < plan[1 + E + plan[0]]) inv[plan[2 + 2 * E + r]] = r;  // (a row past the routed pairs is none)
 }
 extern "C" __global__ void moe_wsum(const bf16* rows, const int* inv, const float* wts, bf16* y, int k, int H) {
     const int t = blockIdx.x, c = (blockIdx.y * blockDim.x + threadIdx.x) * 8;

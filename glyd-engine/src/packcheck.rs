@@ -349,7 +349,7 @@ fn threads() -> usize {
 /// The formats the engine reads a saved directory in, each as a published repo or the engine's cache holds it: the logits case of a family published in it, the level it
 /// runs at, the layout `pack::run` saves it in, and what it is.
 pub const SAVED: &[(&str, &str, &str, &str)] = &[
-    ("qwen3", "penguin", "mma", "glyd-v7 at penguin: a Qwen3 model in the engine's cache (the executor's, src/dynamic/dense.rs)"),
+    ("dense", "penguin", "mma", "glyd-v7 at penguin: a plain dense model in the engine's cache (the executor's, src/dynamic/dense.rs)"),
     ("qwen35", "kestrel", "i6", "glyd-v7 i6: glyd/Qwen3.5-*, Qwen3.6-27B and Qwen3.8-27B -kestrel"),
     ("qwen35", "swift", "i5", "glyd-v7 i5: the same at swift"),
     ("qwen35", "wren", "i4", "glyd-v7 i4: the same at wren"),

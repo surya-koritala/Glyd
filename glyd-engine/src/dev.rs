@@ -368,6 +368,22 @@ impl Kernel {
         self.blocks_per_sm_allowed(threads, smem)
     }
 
+    /// The clusters of `cluster` blocks of `threads` and `smem` (allowed first) the GPU holds at once of this kernel, for a grid of `grid` blocks (at least 1).
+    pub fn max_clusters(&self, grid: u32, threads: u32, smem: u32, cluster: u32) -> Result<i64> {
+        self.allow_smem(smem)?;
+        // SAFETY: a function of the loaded module.
+        Ok(unsafe { D::max_clusters(self.0, grid, threads, smem, cluster)? }.max(1) as i64)
+    }
+
+    /// A launch of `grid` blocks in clusters of `cluster` along x (Hopper's).
+    ///
+    /// # Safety
+    /// As `launch`.
+    pub unsafe fn launch_clusters(&self, grid: u32, threads: u32, smem: u32, cluster: u32, stream: Stream, args: &mut [*mut c_void]) -> Result<()> {
+        // SAFETY: the caller's arguments (its contract).
+        unsafe { D::launch_clusters(self.0, grid, threads, smem, cluster, stream, args) }
+    }
+
     /// `blocks_per_sm` where the kernel's shared memory is already allowed (`allow_smem`) to `smem` bytes or more.
     pub fn blocks_per_sm_allowed(&self, threads: u32, smem: u32) -> Result<i64> {
         // SAFETY: a function of the loaded module.

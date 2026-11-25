@@ -612,7 +612,7 @@ pub fn bench(a: &Args) -> Result<()> {
     };
     if a.has("dec") {
         // a decode step's indexer scores, picks and attention over picked tokens of one attention layer at a position (--pos, 32,000 by default) of a 33,000-token context, n rows (--n, 1): microseconds a launch
-        let kg = crate::kern_glm::KernGlm::load(&dev)?;
+        let kg = crate::kern::KernGlm::load(&dev)?;
         let (ctx, n, at): (usize, usize, usize) = (a.num("ctx", 33000usize)?, a.num("n", 1usize)?, a.num("pos", 32000usize)?);
         let (ixh, ixd, kp, budget, nq, nk, hd) = (4usize, 128usize, 4usize, 2048usize, 24usize, 2usize, 256usize);
         let (pmax, ksel, tmax) = (ctx / kp, budget / kp, budget + kp - 1);
@@ -795,7 +795,7 @@ pub fn bench(a: &Args) -> Result<()> {
         let (e0, e1) = (Ev::new()?, Ev::new()?);
         if a.has("check") {
             // the two passes in slices of n rows against the one-pass kernel (Kern35::delta, fp32) over 4 n rows from a zero state: the outputs' and the final state's relative errors, and two runs alike
-            let k35 = crate::kern35::Kern35::load(&dev)?;
+            let k35 = crate::kern::Kern35::load(&dev)?;
             let m = 4 * n;
             let (xc4, ba4) = (up(&bf(rnd(m * cd * 2)))?, up(&bf(rnd(m * 2 * nv * 2)))?);
             let (st_r, out_r) = (Buf::zeroed(nv * 128 * 128 * 4)?, Buf::zeroed(m * nv * 128 * 2)?);

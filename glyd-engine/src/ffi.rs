@@ -302,6 +302,29 @@ table! {
     }
 }
 
+#[cfg(not(glyd_hip))]
+table! {
+    pub struct Hopper {
+        fn cuTensorMapEncodeTiled(*mut c_void, c_int, c_uint, *mut c_void, *const u64, *const u64, *const u32, *const u32, c_int, c_int, c_int, c_int) -> c_int;
+        fn cuLaunchKernelEx(*const c_void, CuFunction, *mut *mut c_void, *mut *mut c_void) -> c_int;
+        fn cuOccupancyMaxActiveClusters(*mut c_int, CuFunction, *const c_void) -> c_int;
+    }
+}
+
+/// The driver's calls for Hopper's kernels (tensor maps, clusters: CUDA 12 on), from the driver the table came from; an error where it has none.
+#[cfg(not(glyd_hip))]
+pub fn hopper() -> Result<&'static Hopper> {
+    static H: OnceLock<std::result::Result<Hopper, String>> = OnceLock::new();
+    H.get_or_init(|| {
+        driver().map_err(|e| e.msg)?;
+        let h = dl::open(CUDA_DRIVER)?;
+        // SAFETY: libcuda's functions of these names and signatures (cuda.h, CUDA 12.0 on).
+        unsafe { Hopper::resolve(h) }.map_err(|e| format!("{CUDA_DRIVER}: {e} (a driver of CUDA 12 or later has them)"))
+    })
+    .as_ref()
+    .map_err(|e| Error::of(Kind::NoDriver, e.clone()))
+}
+
 /// AMD GPUs: a build with GLYD_HIP=1 (build.rs: the kernels by hipcc, cfg `glyd_hip`) takes the driver's table from HIP's runtime, libamdhip64, whose functions take
 /// the driver API's calls with the same arguments and flags (the numbers of the flags the engine passes are the same in HIP: a non-blocking stream 1, a relaxed capture 2,
 /// portable pinned memory 1, mapped 2, an event without timing 2, an external record 1, "not ready" 600). Two calls differ: a device's attributes go by HIP's numbers, and a kernel
@@ -433,7 +456,7 @@ mod hip {
             let t = unsafe {
                 super::table(&|n| {
                     got.borrow_mut().push(n.to_string());
-                    1usize as *mut std::ffi::c_void
+                    std::ptr::dangling_mut::<std::ffi::c_void>()
                 })
             };
             assert!(t.is_ok(), "{:?}", t.err());
@@ -482,7 +505,7 @@ pub fn cu(call: &str, status: c_int) -> Result<()> {
 }
 
 /// The C API version this binding is written for (glyd_gpu.h's GLYD_GPU_API_VERSION).
-pub const API_VERSION: c_int = 23;
+pub const API_VERSION: c_int = 25;
 
 /// The name a library call goes by in an error: the function's own.
 macro_rules! call {
@@ -523,10 +546,10 @@ table! {
         fn glyd_gpu_f8h_moe(*const u8, *const u32, *const u32, i64, i64, i64, *const f32, i64, *const u16, i64, *const i32, i64, i64, i64, i64, *mut u16, i64, *mut c_void, usize, *mut c_int, Stream) -> c_int;
         fn glyd_gpu_f8h_plain(c_int) -> c_int;
         fn glyd_gpu_mma_moe_workspace(i64, i64, i64, i64, i64, i64, i64, *mut usize) -> c_int;
-        fn glyd_gpu_mma_moe(*const u8, *const u8, *const i32, *const u32, i64, i64, i64, *const u16, i64, i64, i64, *const i32, i64, *const u16, *const c_void, i64, *const i64, *mut u16, *mut c_void, usize, *mut c_int, Stream) -> c_int;
-        fn glyd_gpu_mma_moe_placed(*const u8, *const u8, *const i32, *const u32, i64, i64, i64, i64, *const u16, i64, i64, i64, *const i32, i64, *const u16, *const c_void, i64, *const i64, *mut u16, *mut c_void, usize, *mut c_int, Stream) -> c_int;
+        fn glyd_gpu_mma_moe_as(*const u8, *const u8, *const i32, *const u32, i64, i64, i64, *const u16, i64, i64, i64, *const i32, i64, *const u16, *const c_void, i64, *const i64, *mut u16, *mut c_void, usize, *mut c_int, Stream, i64, i64) -> c_int;
+        fn glyd_gpu_mma_moe_placed_as(*const u8, *const u8, *const i32, *const u32, i64, i64, i64, i64, *const u16, i64, i64, i64, *const i32, i64, *const u16, *const c_void, i64, *const i64, *mut u16, *mut c_void, usize, *mut c_int, Stream, i64, i64) -> c_int;
         fn glyd_gpu_mma12_moe_workspace(i64, i64, i64, i64, i64, i64, i64, *mut usize) -> c_int;
-        fn glyd_gpu_mma12_moe(*const u8, *const u32, *const i32, *const u32, i64, i64, i64, *const u16, i64, i64, i64, *const i32, i64, *const u16, *const c_void, i64, *const i64, *mut u16, *mut c_void, usize, *mut c_int, Stream) -> c_int;
+        fn glyd_gpu_mma12_moe_as(*const u8, *const u32, *const i32, *const u32, i64, i64, i64, *const u16, i64, i64, i64, *const i32, i64, *const u16, *const c_void, i64, *const i64, *mut u16, *mut c_void, usize, *mut c_int, Stream, i64, i64) -> c_int;
         fn glyd_gpu_kv_leaf_bytes(i64, i64, i64, *mut i64) -> c_int;
         fn glyd_gpu_kv_extra_bytes(i64, *mut i64) -> c_int;
         fn glyd_gpu_kv_second_bytes(i64, i64, *mut i64) -> c_int;
@@ -1420,11 +1443,12 @@ impl Lib {
         ws_bytes: usize,
         done: u64,
         cs: Stream,
+        whole: (i64, i64),
     ) -> Result<()> {
         let o = w.rows / experts;
         let (wf, nul) = (weights as *const c_void, std::ptr::null());
         let r = match w.words {
-            Words::Tiered { blocks, block_base, tiers } => (self.api.glyd_gpu_mma_moe)(
+            Words::Tiered { blocks, block_base, tiers } => (self.api.glyd_gpu_mma_moe_as)(
                 w.data as *const u8,
                 blocks as *const u8,
                 block_base as *const i32,
@@ -1447,8 +1471,10 @@ impl Lib {
                 ws_bytes,
                 done as *mut c_int,
                 cs,
+                whole.0,
+                whole.1,
             ),
-            Words::Twelve { exc, exc_base, sym } => (self.api.glyd_gpu_mma12_moe)(
+            Words::Twelve { exc, exc_base, sym } => (self.api.glyd_gpu_mma12_moe_as)(
                 w.data as *const u8,
                 exc as *const u32,
                 exc_base as *const i32,
@@ -1471,6 +1497,8 @@ impl Lib {
                 ws_bytes,
                 done as *mut c_int,
                 cs,
+                whole.0,
+                whole.1,
             ),
         };
         self.ck(call!("moe"), r)
@@ -1499,11 +1527,12 @@ impl Lib {
         ws_bytes: usize,
         done: u64,
         cs: Stream,
+        whole: (i64, i64),
     ) -> Result<()> {
         let Words::Tiered { blocks, block_base, tiers } = w.words else {
             return err("an expert cache's places of a 12-bit pack: the tiered layout alone is placed");
         };
-        let r = (self.api.glyd_gpu_mma_moe_placed)(
+        let r = (self.api.glyd_gpu_mma_moe_placed_as)(
             w.data as *const u8,
             blocks as *const u8,
             block_base as *const i32,
@@ -1527,6 +1556,8 @@ impl Lib {
             ws_bytes,
             done as *mut c_int,
             cs,
+            whole.0,
+            whole.1,
         );
         self.ck(call!("moe_placed"), r)
     }
@@ -1940,12 +1971,13 @@ impl GpuOps for Lib {
         ws_bytes: usize,
         done: u64,
         cs: Stream,
+        whole: (i64, i64),
     ) -> Result<()> {
         // (the engine's own kernels, from the library's source, at a step's sizes: R17's `fold`)
-        if crate::fold::on() && crate::fold::moe(w, None, experts, (x, t, k, gather), (plan, act, weights, ids), y, (ws, ws_bytes, done), cs)? {
+        if crate::fold::on() && crate::fold::moe(w, None, experts, (x, t, k, gather), (plan, act, weights, ids), y, (ws, ws_bytes, done), cs, whole)? {
             return Ok(());
         }
-        self.library_moe(w, experts, x, t, k, gather, plan, act, weights, ids, y, ws, ws_bytes, done, cs)
+        self.library_moe(w, experts, x, t, k, gather, plan, act, weights, ids, y, ws, ws_bytes, done, cs, whole)
     }
 
     unsafe fn moe_placed(
@@ -1966,13 +1998,14 @@ impl GpuOps for Lib {
         ws_bytes: usize,
         done: u64,
         cs: Stream,
+        whole: (i64, i64),
     ) -> Result<()> {
         // (the engine's own kernels, from the library's source, at a step's sizes: R17's `fold`)
         let placed = Some(stride as i64);
-        if crate::fold::on() && crate::fold::moe(w, placed, experts, (x, t, k, gather), (plan, act, weights, ids), y, (ws, ws_bytes, done), cs)? {
+        if crate::fold::on() && crate::fold::moe(w, placed, experts, (x, t, k, gather), (plan, act, weights, ids), y, (ws, ws_bytes, done), cs, whole)? {
             return Ok(());
         }
-        self.library_moe_placed(w, stride, experts, x, t, k, gather, plan, act, weights, ids, y, ws, ws_bytes, done, cs)
+        self.library_moe_placed(w, stride, experts, x, t, k, gather, plan, act, weights, ids, y, ws, ws_bytes, done, cs, whole)
     }
 
     fn kv_page_bytes(&self, h: i64, d: i64, a: i64) -> Result<i64> {

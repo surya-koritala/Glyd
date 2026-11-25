@@ -176,14 +176,24 @@ pub(super) struct Cands {
     bufs: Option<(Buf, Buf, crate::dev::Pinned, usize)>,
     rows: usize,
     made: bool,
+    /// Each head row's sum of exponentials made with the step (a launched one's, `ModelStep::draws`): the temperature and the sum.
+    sums: Vec<Option<(f32, f64)>>,
+    /// Where a grammar's mask made the candidates, the rows' own largest logits before it (the log-probabilities' top: the row's, not the allowed tokens'), in the host's
+    /// pinned room (tokens, then logits, `cap` rows of each), and the rows they were made for.
+    raw: Option<crate::dev::Pinned>,
+    raw_rows: usize,
 }
 
 impl Cands {
     /// A step that wrote `rows` head rows ran: its candidates are not made yet.
     fn fresh(&mut self, rows: usize) {
-        (self.rows, self.made) = (rows, false);
+        (self.rows, self.made, self.raw_rows) = (rows, false, 0);
+        self.sums.clear();
     }
 }
+
+/// The steps launched ahead after which a model with an expert cache has one land before the next is launched, for the store's end of a step (`ModelStep::quiet`).
+const QUIET_EVERY: usize = 16;
 
 /// How many steps' rooms `Lanes` keeps: one running, the next queued behind it, and the one before them, whose GPU times `Gaps` still reads.
 const LANES: usize = 3;
@@ -225,6 +235,9 @@ struct Lane {
     drawn: bool,
     /// The 12-bit pages' status words of each group after the step (its void pages' ring, `kv12_lost`), copied with its samples.
     status: crate::dev::Pinned,
+    /// The head rows' sums of exponentials the step was asked for (f64 a row), and the asks.
+    sums: crate::dev::Pinned,
+    asks: Vec<Option<f32>>,
 }
 
 impl Lanes {
@@ -245,6 +258,8 @@ impl Lanes {
                     evs: Vec::new(),
                     drawn: false,
                     status: crate::dev::Pinned::new(4 * status_words)?,
+                    sums: crate::dev::Pinned::new(8 * head)?,
+                    asks: Vec::new(),
                 })
             })
             .collect::<Result<_>>()?;
@@ -399,6 +414,7 @@ fn by_sequence(op: &Op) -> bool {
             | Op::MambaScan { .. }
             | Op::CompKv { .. }
             | Op::Compress { .. }
+            | Op::IdxKeys { .. }
             | Op::IdxPick(_)
             | Op::CompAttn { .. }
             | Op::IdxMean { .. }
@@ -1007,9 +1023,15 @@ impl Dyn {
             self.make_lanes()?;
             return Ok(Some(1));
         }
-        // (a whole model on one GPU whose every operation keeps a sequence's data in its rings and states, with no draft model)
-        if self.draft.is_some() || !self.stage.first || !self.stage.last || one_sequence_op(&self.big.d).is_some() {
+        // (a stage of a model across GPUs: the run of the stages is the step, src/dynamic/split.rs)
+        if self.draft.is_some() || !self.stage.first || !self.stage.last {
             return Ok(None);
+        }
+        if one_sequence_op(&self.big.d).is_some() {
+            // (an operation that keeps a sequence's data outside the rings and states each sequence holds: one sequence, the scheduler's step of one slot)
+            self.reset()?;
+            self.make_lanes()?;
+            return Ok(Some(1));
         }
         if self.seqs.len() > 1 {
             // (made ready already)
@@ -1252,7 +1274,8 @@ impl Dyn {
     }
 
     /// `Lanes` for a served model whose steps can be launched before the step before them is read (`ModelStep::overlaps`: the conditions are there), where the library
-    /// looks up its embedding's rows by tokens on the GPU (asked once here, of the embedding's layout); and `Gaps` where a step profile is asked for.
+    /// looks up its embedding's rows by tokens on the GPU (asked once here, of the embedding's layout); and `Gaps` where a step profile is asked for. Its blocks of experts
+    /// are the ones a decode graph captures (src/dynamic/mod.rs): none reads the router's choices on the host, so an expert cache's are its layers planned on the GPU.
     fn make_lanes(&mut self) -> Result<()> {
         if StepProf::on() || super::prof::on() {
             self.gaps = Some(Gaps::new()?);
@@ -1260,7 +1283,7 @@ impl Dyn {
         let Some(e) = self.big.mats[self.big.d.embed].packed_opt().map(|p| p.pack) else { return Ok(()) };
         if !crate::sched::overlap_forced()
             || !ModelStep::one_step(self)
-            || !self.stores().is_empty()
+            || !self.big.moe.iter().all(|b| !b.reads_host() && (b.resident().is_some() || b.graphable()))
             || self.big.ram.is_some()
             || !self.kern.has_step_ids()
             || self.tok.as_ref().is_some_and(|b| b.bytes < 4 * self.chunk)
@@ -1428,13 +1451,43 @@ impl Dyn {
             crate::dev::copy_d2h_async(lane.outs.ptr, self.big.tok.ptr, 4 * asked, s)?;
             crate::dev::copy_d2h_async((lane.outs.ptr as *mut u8).add(4 * head) as *mut _, self.big.val.ptr, 4 * asked, s)?;
         }
-        // (a step whose rows draw from their candidates: those queued with its work, read once its event is waited for; the top-k kernel takes the vocabulary)
-        let drawn = self.draws && !self.top.off && self.big.d.vocab.is_multiple_of(8) && self.big.d.vocab >= crate::kern::TOPK;
+        // (a step whose rows draw from their candidates: those queued with its work, and the sums of exponentials its rows ask for, read once its event is waited for; the
+        // top-k kernel takes the vocabulary)
+        let v = self.big.d.vocab;
+        let asks = std::mem::take(&mut self.draws);
+        let drawn = asks.iter().any(Option::is_some) && !self.top.off && v.is_multiple_of(8) && v >= crate::kern::TOPK;
         if drawn {
             self.queue_cands(asked)?;
+            if asks.iter().flatten().any(|&t| t > 0.0) && self.sums.as_ref().is_none_or(|b| b.bytes < 8 * head) {
+                self.sums = Some(Buf::zeroed(8 * head)?);
+            }
+            let out = self.sums.as_ref().map_or(0, |b| b.ptr);
+            for (r, &t) in asks.iter().enumerate().take(asked) {
+                if let Some(t) = t.filter(|&t| t > 0.0) {
+                    // SAFETY: head row r of v logits and its largest (f32) in val; its f64 sum at row r of the sums' room (a head's rows).
+                    unsafe {
+                        self.kern.exp_sum_rows(
+                            s,
+                            self.big.logits.ptr + (r * v * 2) as u64,
+                            v as i32,
+                            1,
+                            self.big.val.ptr + (4 * r) as u64,
+                            t,
+                            out + (8 * r) as u64,
+                        )?
+                    };
+                }
+            }
         }
         let lanes = self.lanes.as_mut().expect("lanes");
         let lane = &mut lanes.lane[k];
+        if drawn && asks.iter().flatten().any(|&t| t > 0.0) {
+            if let Some(b) = &self.sums {
+                // SAFETY: the sums' room holds `asked` f64 (the head's rows); the lane's pinned room `head` of them, read after its event.
+                unsafe { crate::dev::copy_d2h_async(lane.sums.ptr, b.ptr, 8 * asked, s)? };
+            }
+        }
+        lane.asks = if drawn { asks } else { Vec::new() };
         if let Some(lx) = &self.lossless {
             // (the 12-bit pages' status after the step: its void ring, read when it lands, not as the next step writes it)
             for (g, b) in lx.status.iter().enumerate() {
@@ -1486,12 +1539,23 @@ impl Dyn {
             self.replayed.set(false);
         }
         let drawn = lane.drawn;
+        // SAFETY: the lane's pinned sums, written by the step's copies (its event waited for) for the rows that asked.
+        let sums: Vec<Option<(f32, f64)>> =
+            lane.asks.iter().enumerate().map(|(r, a)| a.filter(|&t| t > 0.0).map(|t| (t, unsafe { *(lane.sums.ptr as *const f64).add(r) }))).collect();
         // (the step's own status for the lost blocks the scheduler asks for next, `kv12_lost`)
         self.status_from = Some(lane.status.ptr as *const u32);
         self.cands.fresh(asked);
         // (made with the step where it draws: its event covers their copy)
         self.cands.made = drawn;
-        self.end_expert_step()?;
+        self.cands.sums = sums;
+        // (the expert cache's end of a step reads the GPU's counters and writes the plan's next settings: never while a later step is queued, whose calls read them; owed until
+        // a step lands with none after it, which `quiet` asks for every QUIET_EVERY steps)
+        if later {
+            self.owed += 1;
+        } else {
+            self.end_expert_step()?;
+            self.owed = 0;
+        }
         // (GLYD_PROF=1: the pass's operations, by its own events; a graph's replay only where no later replay has recorded its events again)
         if super::prof::on() && self.prof.is_some() {
             fn refs<'a>(v: &'a [(&'static str, crate::dev::Ev)]) -> Vec<(&'static str, &'a crate::dev::Ev)> {
@@ -1546,21 +1610,102 @@ impl Dyn {
         let s = self.dev.stream;
         // (the grammar masks of the step's sampled rows, given before it: the candidates of those rows made again with the mask put on the row before the top-k)
         let masks = std::mem::take(&mut self.row_masks);
-        if masks.iter().any(Option::is_some) && self.masker.is_none() {
+        let masked = masks.iter().any(Option::is_some);
+        if masked && self.masker.is_none() {
             self.masker = crate::kern::MaskGpu::new(v, cap).ok();
         }
-        // SAFETY: the pass's head rows of v logits each (n of them, within the head's room); TOPK of each to the buffers made for `cap` rows; the pinned room holds the
+        if masked && self.cands.raw.as_ref().is_none_or(|r| r.bytes < 8 * TOPK * cap) {
+            self.cands.raw = Some(crate::dev::Pinned::new(8 * TOPK * cap)?);
+        }
+        // SAFETY: the pass's head rows of v logits each (n of them, within the head's room); TOPK of each to the buffers made for `cap` rows; the pinned rooms hold the
         // tokens, then from 4 TOPK cap on the logits, read after the stream has run the copies; the masker's staging was read by a copy the stream has run (a step's
         // candidates are made once its step before landed).
         unsafe {
             self.kern.topk_rows(s, self.big.logits.ptr, v as i32, n as u32, tok, val)?;
-            if let Some(g) = self.masker.as_ref().filter(|_| masks.iter().any(Option::is_some)) {
-                g.apply(&self.kern, &self.dev, &masks[..masks.len().min(n)], self.big.logits.ptr, tok, val)?;
+            if let Some(g) = self.masker.as_ref().filter(|_| masked) {
+                // (the rows' own candidates copied first, then made again with the masks over them)
+                let raw = self.cands.raw.as_ref().expect("made above").ptr as *mut u8;
+                crate::dev::copy_d2h_async(raw as *mut _, tok, 4 * TOPK * n, s)?;
+                crate::dev::copy_d2h_async(raw.add(4 * TOPK * cap) as *mut _, val, 4 * TOPK * n, s)?;
+                if g.apply(&self.kern, &self.dev, &masks[..masks.len().min(n)], self.big.logits.ptr, tok, val)? {
+                    self.cands.raw_rows = n;
+                }
             }
             crate::dev::copy_d2h_async(host as *mut _, tok, 4 * TOPK * n, s)?;
             crate::dev::copy_d2h_async(host.add(4 * TOPK * cap) as *mut _, val, 4 * TOPK * n, s)?;
         }
         Ok(())
+    }
+
+    /// `ModelStep::hist`: row `row`'s HIST_BUCKETS buckets of its weights at `temperature` (`Kern::exp_hist`), and the row's largest logit they are about.
+    fn row_hist(&mut self, row: usize, temperature: f32) -> Result<Option<crate::sampler::Hist>> {
+        use crate::sampler::{HIST_BUCKETS, HIST_PER};
+        let v = self.big.d.vocab;
+        if self.top.off || row >= self.cands.rows || !self.kern.has_hist() || self.lanes.as_ref().is_some_and(|l| l.stale) {
+            return Ok(None);
+        }
+        let (sums, counts) = (Buf::new(8 * HIST_BUCKETS)?, Buf::new(4 * HIST_BUCKETS)?);
+        let s = self.dev.stream;
+        // SAFETY: the step's head row `row` of v logits and its largest (f32) in val; HIST_BUCKETS sums and counts; read after the synchronize.
+        unsafe {
+            self.kern.exp_hist(
+                s,
+                self.big.logits.ptr + (row * v * 2) as u64,
+                v as i32,
+                self.big.val.ptr + (4 * row) as u64,
+                temperature,
+                HIST_BUCKETS as i32,
+                HIST_PER,
+                sums.ptr,
+                counts.ptr,
+            )?
+        };
+        self.dev.sync()?;
+        let (mut h, mut c, mut m) = (vec![0f64; HIST_BUCKETS], vec![0u32; HIST_BUCKETS], [0f32; 1]);
+        sums.read(0, &mut h)?;
+        counts.read(0, &mut c)?;
+        self.big.val.read(4 * row, &mut m)?;
+        Ok(Some(crate::sampler::Hist { max: m[0], per: HIST_PER, sums: h, counts: c }))
+    }
+
+    /// `ModelStep::hist_bucket`: the tokens of bucket `bucket` of row `row`'s `row_hist` (`Kern::hist_bucket`), at most `cap`.
+    fn row_bucket(&mut self, row: usize, temperature: f32, bucket: usize, cap: usize) -> Result<Option<Vec<(u32, f32)>>> {
+        use crate::sampler::{HIST_BUCKETS, HIST_PER};
+        let v = self.big.d.vocab;
+        if self.top.off || row >= self.cands.rows || !self.kern.has_hist() || self.lanes.as_ref().is_some_and(|l| l.stale) {
+            return Ok(None);
+        }
+        let (want, n, tok, val) = (Buf::new(4)?, Buf::new(4)?, Buf::new(4 * cap.max(1))?, Buf::new(4 * cap.max(1))?);
+        want.write(0, &[bucket as i32])?;
+        let s = self.dev.stream;
+        // SAFETY: as `row_hist`; want holds the bucket, n one count, tok and val room for `cap`; read after the synchronize.
+        unsafe {
+            self.kern.hist_bucket(
+                s,
+                self.big.logits.ptr + (row * v * 2) as u64,
+                v as i32,
+                self.big.val.ptr + (4 * row) as u64,
+                temperature,
+                HIST_BUCKETS as i32,
+                HIST_PER,
+                want.ptr,
+                cap as i32,
+                n.ptr,
+                tok.ptr,
+                val.ptr,
+            )?
+        };
+        self.dev.sync()?;
+        let mut k = [0u32; 1];
+        n.read(0, &mut k)?;
+        let k = k[0] as usize;
+        if k > cap {
+            return Ok(None);
+        }
+        let (mut t, mut x) = (vec![0i32; k], vec![0f32; k]);
+        tok.read(0, &mut t)?;
+        val.read(0, &mut x)?;
+        Ok(Some(t.into_iter().map(|t| t as u32).zip(x).collect()))
     }
 
     /// `ModelStep::mass`: row `row`'s sum of exp((logit - largest) / temperature) on the GPU, about the head's largest (`val`), read back (8 bytes, not the row).
@@ -1570,7 +1715,7 @@ impl Dyn {
             return Ok(None);
         }
         if self.sums.is_none() {
-            self.sums = Some(Buf::zeroed(8)?);
+            self.sums = Some(Buf::zeroed(8 * self.head_room())?);
         }
         let out = self.sums.as_ref().expect("made above").ptr;
         // SAFETY: the step's head row `row` of v logits and its largest (f32) in val; one f64 out; read after the synchronize.
@@ -1782,13 +1927,40 @@ impl ModelStep for Dyn {
             (l.out, l.stale) = (0, false);
         }
     }
-    fn draws(&mut self, on: bool) {
-        self.draws = on;
+    fn draws(&mut self, asks: &[Option<f32>]) {
+        self.draws = asks.to_vec();
+    }
+    /// An expert cache's end of a step owed for QUIET_EVERY steps launched ahead (`land_step`): the next step is launched after this one lands.
+    fn quiet(&self) -> bool {
+        self.owed >= QUIET_EVERY && !self.stores().is_empty()
     }
     fn masks(&mut self, masks: Vec<Option<crate::constrain::MaskHandle>>) {
         self.row_masks = masks;
     }
+    /// Row `row`'s buckets on the GPU (`exp_hist`), about the head's largest (`val`), read back (12 KB, not the row).
+    fn hist(&mut self, row: usize, temperature: f32) -> Option<crate::sampler::Hist> {
+        self.row_hist(row, temperature).unwrap_or(None)
+    }
+    fn hist_bucket(&mut self, row: usize, temperature: f32, bucket: usize, cap: usize) -> Option<Vec<(u32, f32)>> {
+        self.row_bucket(row, temperature, bucket, cap).unwrap_or(None)
+    }
+    /// The row's own candidates where a grammar's mask made `top`'s (copied before the mask was put on): those of `top` otherwise.
+    fn top_raw(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
+        let top = ModelStep::top(self, row)?;
+        if row >= self.cands.raw_rows {
+            return Some(top);
+        }
+        let (raw, cap) = (self.cands.raw.as_ref()?, self.cands.bufs.as_ref()?.3);
+        // SAFETY: the pinned room the unmasked candidates were copied into with the masked ones (the stream run since: `top` read those), TOPK a row below `raw_rows`.
+        Some(unsafe { crate::kern::read_candidates(raw.ptr as *const u8, 0, 4 * crate::kern::TOPK * cap, row) })
+    }
     fn mass(&mut self, row: usize, temperature: f32) -> Option<f64> {
+        // (made with the step where it asked for this one; else made now)
+        if let Some(&Some((t, m))) = self.cands.sums.get(row).filter(|_| self.lanes.as_ref().is_none_or(|l| !l.stale)) {
+            if t == temperature {
+                return Some(m);
+            }
+        }
         self.row_mass(row, temperature).unwrap_or(None)
     }
     /// The candidates the GPU makes of the step's head rows (`Cands`); where it cannot (an error), the row is read as without them.

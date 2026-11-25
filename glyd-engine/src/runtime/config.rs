@@ -109,6 +109,31 @@ impl Shared {
     }
 }
 
+/// A key that a reader tells apart missing, null and given (`Option` takes null as missing): a field of a family's keys, `#[serde(default)]`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Given<T> {
+    #[default]
+    Missing,
+    Null,
+    Some(T),
+}
+
+impl<T: Clone> Given<T> {
+    /// The value where one is given.
+    pub fn value(&self) -> Option<T> {
+        match self {
+            Given::Some(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Given<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        Option::<T>::deserialize(d).map(|o| o.map_or(Given::Null, Given::Some))
+    }
+}
+
 /// A config.json, parsed once.
 #[derive(Clone, Debug)]
 pub struct ModelConfig {
@@ -243,6 +268,27 @@ impl ModelConfig {
     /// The text model's key `k`, else the top level's (where a multimodal release keeps it).
     pub fn key(&self, k: &str) -> Option<&Value> {
         self.text.get(k).filter(|v| !v.is_null()).or_else(|| self.top.get(k))
+    }
+
+    /// A family's own keys of the text model, typed by its reader's struct (`T`, serde, its fields `Option` and `#[serde(default)]`): read from this parse, a key
+    /// of another type than its field's an error that names it. The keys the families share are `shared`'s.
+    pub fn own<T: DeserializeOwned>(&self, what: &str) -> Result<T> {
+        typed(&self.text, what)
+    }
+
+    /// Whether the release has a vision tower (`vision_config` at the top level).
+    pub fn has_vision(&self) -> bool {
+        self.top.get("vision_config").is_some()
+    }
+
+    /// A family's own keys of the top level (a multimodal release's beside its text model), typed as `own`'s.
+    pub fn own_top<T: DeserializeOwned>(&self, what: &str) -> Result<T> {
+        typed(&self.top, what)
+    }
+
+    /// A shared key a family needs: its value, else an error that names it.
+    pub fn need(v: Option<usize>, label: &str, k: &str) -> Result<usize> {
+        v.ok_or_else(|| Error(format!("{label}: no {k}")))
     }
 }
 

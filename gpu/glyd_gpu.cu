@@ -2970,10 +2970,15 @@ static int mma_moe_wg(const Nib& f, int64_t E, int64_t O, int64_t K, const uint1
 }
 
 template <class Fmt>
-static int mma_moe_run(Fmt f, int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* ws, size_t ws_bytes, int* done, cudaStream_t cs, size_t* need) {
+// wO, wE: the whole layer's rows an expert and experts where this call holds a part of them (a GPU's slice of each expert's rows, an expert cache's places;
+// 0: the call's own). K is split over blocks by the layer's shape alone (an expert's whole rows and the layer's experts), never by the pairs the call holds:
+// a pair's sum is the same whatever shares its call (a row alone or beside others, a GPU's slice, a wave of the cache's places), bit for bit.
+static int mma_moe_run(Fmt f, int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* ws, size_t ws_bytes, int* done, cudaStream_t cs, size_t* need, int64_t wO = 0, int64_t wE = 0) {
     if (E < 1 || E > 12288 || O < 64 || O % 64 || K < 16 || K % 16 || T < 0 || k < 1 || act < 0 || act > 2 || (act && (O % 128 || w))) return cudaErrorInvalidValue;
+    if (wO < 0 || (wO && (wO < O || wO % 64)) || wE < 0 || (wE && wE < E)) return cudaErrorInvalidValue;
+    const int64_t sO = wO ? wO : O, sE = wE ? wE : E;
     int64_t P = T * k, MT = T <= 16 ? 1 : T <= 32 ? 2 : 4, units = act ? O / 128 : O / 64, hits = std::min(E, P);
-    int64_t splits = P ? moe_splits(units * hits, K) : 1;
+    int64_t splits = P ? moe_splits((act ? sO / 128 : sO / 64) * sE, K) : 1;
     size_t bytes = ((w ? 1 : 0) + (splits > 1 ? splits : 0)) * (size_t)(P * O) * sizeof(float);  // [Y32][parts]
     bool wg = false;  // the wgmma route (Hopper, the 12-bit layout, GLYD_GPU_MOE_WG tokens a step and more)
     if constexpr (std::is_same_v<Fmt, Nib>) {
@@ -3075,7 +3080,7 @@ static int mma_moe_run(Fmt f, int64_t E, int64_t O, int64_t K, const uint16_t* x
         constexpr int M = decltype(mt)::value;
         with_variant([&](auto vv) { mma_moe_rows_launch<Fmt, M, decltype(vv)::value>(f, E, O, K, x, k, gather, plan, bias, w, wf32, y, y32, hits, cs); });
     };
-    if (T * k >= big * E && K % 64 == 0 && (uintptr_t)x % 16 == 0) mma_moe_big(f, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, y, y32, cs);
+    if (T * k >= big * sE && K % 64 == 0 && (uintptr_t)x % 16 == 0) mma_moe_big(f, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, y, y32, cs);
     else if (rows && MT == 1) go_rows(std::integral_constant<int, 1>());
     else if (rows && MT == 2) go_rows(std::integral_constant<int, 2>());
     else if (rows) go_rows(std::integral_constant<int, 4>());
@@ -3086,40 +3091,60 @@ static int mma_moe_run(Fmt f, int64_t E, int64_t O, int64_t K, const uint16_t* x
     return cudaGetLastError();
 }
 
-GLYD_GPU_INTERNAL int glyd_gpu_mma_moe_workspace(int64_t E, int64_t O, int64_t K, int64_t T, int64_t k, int64_t act, int64_t weighted, size_t* bytes) {
+GLYD_GPU_INTERNAL int glyd_gpu_mma_moe_as_workspace(int64_t E, int64_t O, int64_t K, int64_t T, int64_t k, int64_t act, int64_t weighted, int64_t wO, int64_t wE, size_t* bytes) {
     int64_t one = 1;  // a stand-in for the weights: only whether there are any counts
-    return bytes ? mma_moe_run(Tiered{}, E, O, K, nullptr, T, k, 0, nullptr, act, nullptr, weighted ? &one : nullptr, 0, nullptr, nullptr, nullptr, 0, nullptr, 0, bytes) : cudaErrorInvalidValue;
+    return bytes ? mma_moe_run(Tiered{}, E, O, K, nullptr, T, k, 0, nullptr, act, nullptr, weighted ? &one : nullptr, 0, nullptr, nullptr, nullptr, 0, nullptr, 0, bytes, wO, wE) : cudaErrorInvalidValue;
 }
 
-GLYD_GPU_INTERNAL int glyd_gpu_mma_moe(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
+GLYD_GPU_INTERNAL int glyd_gpu_mma_moe_workspace(int64_t E, int64_t O, int64_t K, int64_t T, int64_t k, int64_t act, int64_t weighted, size_t* bytes) {
+    return glyd_gpu_mma_moe_as_workspace(E, O, K, T, k, act, weighted, 0, 0, bytes);
+}
+
+GLYD_GPU_INTERNAL int glyd_gpu_mma_moe_as(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs, int64_t wO, int64_t wE) {
     Tiers ts;
     bool bad = false;  // (Int6, Int5 and Int4 too: E experts' packs end to end are one pack of [E O, K]; K a multiple of 32; the workspace is the same)
     uint32_t base4h = 0;
-    if (int6_words(tiers, K, data, blocks, bad)) return bad ? cudaErrorInvalidValue : mma_moe_run(Int6{data, blocks}, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr);
-    if (int5_words(tiers, K, data, blocks, bad)) return bad ? cudaErrorInvalidValue : mma_moe_run(Int5{data, blocks}, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr);
-    if (int4_words(tiers, K, data, blocks, bad)) return bad ? cudaErrorInvalidValue : mma_moe_run(Int4{data, blocks}, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr);
-    if (int4h_words(tiers, K, data, blocks, bad, base4h)) return bad ? cudaErrorInvalidValue : mma_moe_run(Int4H{{data, blocks}, base4h}, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr);
-    if (fp4_words(tiers, K, data, blocks, bad)) return bad ? cudaErrorInvalidValue : mma_moe_run(Fp4{data, blocks}, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr);
-    if (fp4r_words(tiers, K, data, blocks, bad)) return bad ? cudaErrorInvalidValue : mma_moe_run(fp4r_fmt(data, blocks, K), E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr);
+    if (int6_words(tiers, K, data, blocks, bad)) return bad ? cudaErrorInvalidValue : mma_moe_run(Int6{data, blocks}, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr, wO, wE);
+    if (int5_words(tiers, K, data, blocks, bad)) return bad ? cudaErrorInvalidValue : mma_moe_run(Int5{data, blocks}, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr, wO, wE);
+    if (int4_words(tiers, K, data, blocks, bad)) return bad ? cudaErrorInvalidValue : mma_moe_run(Int4{data, blocks}, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr, wO, wE);
+    if (int4h_words(tiers, K, data, blocks, bad, base4h)) return bad ? cudaErrorInvalidValue : mma_moe_run(Int4H{{data, blocks}, base4h}, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr, wO, wE);
+    if (fp4_words(tiers, K, data, blocks, bad)) return bad ? cudaErrorInvalidValue : mma_moe_run(Fp4{data, blocks}, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr, wO, wE);
+    if (fp4r_words(tiers, K, data, blocks, bad)) return bad ? cudaErrorInvalidValue : mma_moe_run(fp4r_fmt(data, blocks, K), E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr, wO, wE);
     if (!tiered_words(tiers, ts)) return cudaErrorInvalidValue;
-    return mma_moe_run(Tiered{data, blocks, block_base, ts}, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr);
+    return mma_moe_run(Tiered{data, blocks, block_base, ts}, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr, wO, wE);
+}
+
+GLYD_GPU_INTERNAL int glyd_gpu_mma_moe(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
+    return glyd_gpu_mma_moe_as(data, blocks, block_base, tiers, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, 0, 0);
+}
+
+GLYD_GPU_INTERNAL int glyd_gpu_mma_moe_placed_as(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t stride, int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs, int64_t wO, int64_t wE) {
+    Tiers ts;
+    if (!tiered_words(tiers, ts) || stride < 0 || stride % 4 || O < 64 || O % 64 || K < 16 || K % 16) return cudaErrorInvalidValue;
+    return mma_moe_run(TieredPlaced{data, blocks, block_base, ts, O * K / 1024, stride}, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr, wO, wE);
 }
 
 GLYD_GPU_INTERNAL int glyd_gpu_mma_moe_placed(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t stride, int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
-    Tiers ts;
-    if (!tiered_words(tiers, ts) || stride < 0 || stride % 4 || O < 64 || O % 64 || K < 16 || K % 16) return cudaErrorInvalidValue;
-    return mma_moe_run(TieredPlaced{data, blocks, block_base, ts, O * K / 1024, stride}, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr);
+    return glyd_gpu_mma_moe_placed_as(data, blocks, block_base, tiers, stride, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, 0, 0);
+}
+
+GLYD_GPU_INTERNAL int glyd_gpu_mma12_moe_as_workspace(int64_t E, int64_t O, int64_t K, int64_t T, int64_t k, int64_t act, int64_t weighted, int64_t wO, int64_t wE, size_t* bytes) {
+    int64_t one = 1;  // a stand-in for the weights: only whether there are any counts
+    return bytes ? mma_moe_run(Nib{}, E, O, K, nullptr, T, k, 0, nullptr, act, nullptr, weighted ? &one : nullptr, 0, nullptr, nullptr, nullptr, 0, nullptr, 0, bytes, wO, wE) : cudaErrorInvalidValue;
 }
 
 GLYD_GPU_INTERNAL int glyd_gpu_mma12_moe_workspace(int64_t E, int64_t O, int64_t K, int64_t T, int64_t k, int64_t act, int64_t weighted, size_t* bytes) {
-    int64_t one = 1;  // a stand-in for the weights: only whether there are any counts
-    return bytes ? mma_moe_run(Nib{}, E, O, K, nullptr, T, k, 0, nullptr, act, nullptr, weighted ? &one : nullptr, 0, nullptr, nullptr, nullptr, 0, nullptr, 0, bytes) : cudaErrorInvalidValue;
+    return glyd_gpu_mma12_moe_as_workspace(E, O, K, T, k, act, weighted, 0, 0, bytes);
+}
+
+GLYD_GPU_INTERNAL int glyd_gpu_mma12_moe_as(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs, int64_t wO, int64_t wE) {
+    Nib f;
+    if (!nib12(data, exc, exc_base, sym, f)) return cudaErrorInvalidValue;
+    return mma_moe_run(f, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr, wO, wE);
 }
 
 GLYD_GPU_INTERNAL int glyd_gpu_mma12_moe(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
-    Nib f;
-    if (!nib12(data, exc, exc_base, sym, f)) return cudaErrorInvalidValue;
-    return mma_moe_run(f, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr);
+    return glyd_gpu_mma12_moe_as(data, exc, exc_base, sym, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, 0, 0);
 }
 
 // Attention for one new token a sequence over the KV cache in the mma layout (gpu/kv.py): q [pairs x G, D]

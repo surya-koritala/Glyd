@@ -1,6 +1,6 @@
 # A decode step's ceiling: the formula
 
-`glyd-engine ceiling MODEL --box B` (a development build, src/ceiling.rs) computes it. MODEL is a directory or a Hub repo; for a repo, only the
+`glyd-engine ceiling MODEL --box B` (a development build, glyd-engine/src/ceiling.rs) computes it. MODEL is a directory or a Hub repo; for a repo, only the
 safetensors headers are read, by ranges. The numbers below come from that command.
 
 ## Inputs
@@ -38,6 +38,9 @@ safetensors headers are read, by ranges. The numbers below come from that comman
 - **Unexplained:** measured minus "ours". It is a missing input to measure, not a reason to rent.
 
 ## Calibration: each input measured once per box, not guessed
+
+The figures of this table and of the sections that use them were measured on 2026-10-22 (the dates are beside each constant in
+`glyd-engine/src/ceiling.rs`), on the two boxes its columns name.
 
 | input | how | 4080 SUPER (PC) | 8x A100 80 GB |
 |---|---|---|---|

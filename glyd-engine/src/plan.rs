@@ -529,6 +529,10 @@ impl Shape {
         let arch = if c.arch.is_empty() { model_type.clone() } else { c.arch.clone() };
         let mut sh = Shape { arch, layers: kinds.len(), hidden: h, experts, topk, ..Default::default() };
         sh.window = s.sliding_window.unwrap_or(0);
+        // (compressed attention, DeepSeek-V4's (src/dynamic/deepseek_v4.rs): a layer keeps a window of keys that are its values, and where its ratio r is not 0 one compressed
+        // entry of every r tokens, its indexer's entry of every 4 beside it where r is 4)
+        let ratios: Option<Vec<usize>> =
+            c.text.get("compress_ratios").and_then(serde_json::Value::as_array).map(|a| a.iter().map(|v| v.as_u64().unwrap_or(0) as usize).collect());
         for (i, kind) in kinds.iter().enumerate() {
             match kind.as_str() {
                 "linear_attention" => {
@@ -544,7 +548,17 @@ impl Shape {
                     let sliding = k.contains("sliding") && sh.window > 0;
                     let (p, kv) = attention(!sliding && pattern.is_none() && s.global_head_dim.is_some());
                     sh.dense += p;
-                    if sliding {
+                    if let Some(r) = &ratios {
+                        let (ratio, d, idim) = (r.get(i).copied().unwrap_or(0), hd as usize, s.index_head_dim.unwrap_or(0));
+                        let entries = |w: usize, every: usize| (w * 2).div_ceil(every) as f64;
+                        sh.kv_sliding += (d * 2) as f64;
+                        if ratio > 0 {
+                            sh.kv_full += entries(d, ratio);
+                        }
+                        if ratio == 4 {
+                            sh.kv_full += entries(idim, 4);
+                        }
+                    } else if sliding {
                         sh.kv_sliding += kv
                     } else {
                         sh.kv_full += kv
@@ -952,7 +966,7 @@ fn fit_rows<const N: usize>(rows: &[([f64; N], f64)], prior: [f64; N], scale: [f
 }
 
 /// The seconds of other users' prompts in the median user's decode, where `n` users send a prompt of `prompt` tokens at once (bench's loads): the scheduler reads
-/// the prompts in turn, and each user's reply runs beside the prompts read after its own, (n - 1) / 2 of them for the median one. Measured on an A100 ():
+/// the prompts in turn, and each user's reply runs beside the prompts read after its own, (n - 1) / 2 of them for the median one. Measured on an A100:
 /// Qwen3.5-0.8B's 8 users took 154.5 tokens/s each on short prompts and 127.3 on 1k ones, where 127 steps of the first and 3.5 prompts of 994 tokens at
 /// 20,206 tokens/s come to 127.8.
 pub fn prompt_wait(n: usize, prompt: f64, prefill: f64) -> f64 {
@@ -1558,6 +1572,9 @@ pub struct Spread {
     pub places: Vec<usize>,
     pub experts_per_layer: usize,
     pub host_bytes: u64,
+    /// Each stage's share of `host_bytes`: the experts of its own layers (one entry where `across`; zeros where nothing is in the computer's memory). They add
+    /// up to `host_bytes`.
+    pub host_per_stage: Vec<u64>,
     /// The bytes the GPUs hold of the model (its weights, and the places' experts).
     pub gpu_bytes: u64,
     /// The last layers whose dense matrices are in the computer's memory (src/dense_ram.rs: one stage, P2d's rung after the experts), and their bytes there.
@@ -1638,7 +1655,7 @@ impl LoadPlan {
             "experts": experts,
             "spread": self.spread.as_ref().map(|s| serde_json::json!({
                 "cuts": s.cuts, "devices": s.devices, "across": s.across, "coded": s.coded, "twelve": s.twelve,
-                "places": s.places, "experts_per_layer": s.experts_per_layer, "host_bytes": s.host_bytes,
+                "places": s.places, "experts_per_layer": s.experts_per_layer, "host_bytes": s.host_bytes, "host_per_stage": s.host_per_stage,
             })),
         })
         .to_string()
@@ -2461,7 +2478,7 @@ pub fn text(model: &str, sh: &Shape, m: &Machine, p: &Plan) -> String {
         s += &format!("note: {n}\n");
     }
     s += &format!(
-        "(decode speeds are predictions for one user at about 1,000 positions: the GPU's memory rate {}, each class's floor a step and shares of that rate; prompts' from its tensor rate)\n",
+        "(decode speeds are predictions for one user at about 1,000 positions: the GPU's memory rate {}, each class's floor a step and shares of that rate; prompts' a share of it too)\n",
         if m.devices.iter().any(|d| d.stream.is_some()) { "as measured here" } else { "by the maker's figure" },
     );
     s
@@ -2752,7 +2769,23 @@ pub mod sizing {
 
     /// A token's keys and values in the executor's cache, all layers: bf16, or in its 12-bit lossless pages (`twelve`) 12 bits a value and a page's header.
     pub fn kv_per_token(cfg: &Config, twelve: bool) -> u64 {
-        ((cfg.layers * 2 * cfg.kv_heads * cfg.head_dim) as f64 * if twelve { 1.5 * 1.06 } else { 2.0 }) as u64
+        ((cfg.layers * 2 * cfg.kv_heads * cfg.head_dim) as f64 * kv_value_bytes(twelve)) as u64
+    }
+
+    /// A token's bytes in a ring of the executor's 12-bit lossless pages as the planner sizes them: a sixteenth of the ring's page (`kv12::page_bytes_of`; `kv12check` compares it with
+    /// the pages' own, their share of the escape pool in).
+    pub fn kv12_token_bytes(heads: usize, channels: usize, one: bool) -> u64 {
+        crate::dynamic::kv12::page_bytes_of(heads, channels, one).div_ceil(16)
+    }
+
+    /// A key's or value's bytes as `kv_per_token` plans them: 2 in bf16; in the 12-bit pages 1.5 and 6% for the page's headers, escape room and raw slabs (a pool of
+    /// heads of 128 holds within 5% of it: src/dynamic/kvpages.rs's tokens-a-GiB test).
+    pub fn kv_value_bytes(twelve: bool) -> f64 {
+        if twelve {
+            1.5 * 1.06
+        } else {
+            2.0
+        }
     }
 
     /// The activations of a chunk of `chunk` tokens (the buffers of one forward pass), the decoded matrix a cuBLAS product reads, and the fixed workspaces.
@@ -2956,6 +2989,11 @@ pub mod sizing {
                 places: parts.iter().map(|p| p.2).collect(),
                 experts_per_layer: experts,
                 host_bytes,
+                host_per_stage: stage_shares(
+                    &parts.iter().flat_map(|p| std::iter::repeat_n(1u64, (p.1).1 - (p.1).0)).collect::<Vec<_>>(),
+                    &parts.iter().skip(1).map(|p| (p.1).0).collect::<Vec<_>>(),
+                    host_bytes,
+                ),
                 gpu_bytes,
                 dense: 0,
                 dense_bytes: 0,
@@ -3051,6 +3089,20 @@ pub mod sizing {
         Ok(CondorLoad { gpus, parts, plan, free: start as u64 })
     }
 
+    /// `host` bytes in the computer's memory split over the stages that `cuts` make of layers holding `per_layer` bytes each (of what goes there): each stage's
+    /// share by its layers', the rounding the last stage's, so that they add up to `host` exactly; all of it the first's where no layer holds any.
+    pub fn stage_shares(per_layer: &[u64], cuts: &[usize], host: u64) -> Vec<u64> {
+        let bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(per_layer.len())).collect();
+        let n = per_layer.len();
+        let of: Vec<u128> = bounds.windows(2).map(|w| per_layer[w[0].min(n)..w[1].clamp(w[0].min(n), n)].iter().map(|&b| b as u128).sum()).collect();
+        let all: u128 = of.iter().sum();
+        let mut out: Vec<u64> = of.iter().map(|&b| if all == 0 { 0 } else { (host as u128 * b / all) as u64 }).collect();
+        let given: u64 = out.iter().sum();
+        let at = if all == 0 { 0 } else { out.len() - 1 };
+        out[at] += host - given;
+        out
+    }
+
     // ---- what each family's tensors take: the bytes the plans count (the loaders' lists of tensors are the families') ----
 
     impl crate::qwen35::Config35 {
@@ -3102,7 +3154,7 @@ pub mod sizing {
             let (mut fixed, mut per) = (0u64, 0u64);
             for &k in &self.kinds {
                 let (d, nk, _) = self.attn_of(k);
-                let b = if twelve { crate::dynamic::kv12::page_bytes(nk, d).div_ceil(16) } else { (nk * d * 2 * 2) as u64 };
+                let b = if twelve { crate::plan::sizing::kv12_token_bytes(nk, d, false) } else { (nk * d * 2 * 2) as u64 };
                 match k {
                     KindG4::Sliding => fixed += cap_s * b,
                     KindG4::Global => per += b,
@@ -4467,6 +4519,16 @@ pub mod sizing {
                 ram,
             }
         });
+        // (each stage's layers' experts: a hummingbird directory's files, else the table's expert tensors)
+        let host_per_stage = crate::plan::sizing::stage_shares(
+            &if hb_experts.is_empty() {
+                crate::dynamic::split::layer_bytes_table(table, nl, 100, 100, &|n| n.contains(".experts.")).0
+            } else {
+                hb_experts.clone()
+            },
+            if across { &[] } else { &cuts },
+            host_bytes,
+        );
         Ok(LoadPlan {
             kind: Kind::Dynamic,
             family,
@@ -4493,6 +4555,7 @@ pub mod sizing {
                 places: cache.as_ref().map_or(Vec::new(), |k| k.2.clone()),
                 experts_per_layer: cache.as_ref().map_or(0, |k| k.5),
                 host_bytes,
+                host_per_stage,
                 gpu_bytes: total,
                 dense: dense_ram.0,
                 dense_bytes: dense_ram.1,
@@ -4504,7 +4567,7 @@ pub mod sizing {
     mod fit_tests {
         use super::*;
 
-        fn qwen3_8b() -> Config {
+        fn dense_36l() -> Config {
             Config {
                 hidden: 4096,
                 layers: 36,
@@ -4525,7 +4588,7 @@ pub mod sizing {
         fn layout_by_gpu() {
             use crate::weights::smallest_is_fastest;
             let gib = 1u64 << 30;
-            let m = 16_380_000_000u64; // Qwen3-8B's matrices in bf16
+            let m = 16_380_000_000u64; // (the 36-layer dense shape's matrices in bf16)
             let (t, w) = (Layout::Tiered, Layout::Twelve);
             // (the GPU, its class, its memory, the layout it is given for an 8B model)
             for (gpu, cc, mem, want) in [
@@ -4562,28 +4625,28 @@ pub mod sizing {
         }
 
         #[test]
-        fn qwen3_8b_on_the_gpus() {
-            let c = qwen3_8b();
+        fn the_dense_kind_on_the_gpus() {
+            let c = dense_36l();
             // weights near the measured 10.2 GiB of the engine's record
             let w = weights(&c, Layout::Tiered);
             assert!((10 << 30..11_500_000_000u64).contains(&w), "{w}");
             // an L4 (22.5 GiB free): the want of 8,192 tokens, the 4,096 chunk with cuBLAS
-            let l4 = qwen3_fit(&c, "Qwen3-8B", "NVIDIA L4", 22 << 30, Layout::Tiered, None, 1, true).unwrap();
+            let l4 = qwen3_fit(&c, "dense-36l", "NVIDIA L4", 22 << 30, Layout::Tiered, None, 1, true).unwrap();
             assert_eq!((l4.context, l4.chunk), (8192, 4096), "{l4:?}");
             assert!(l4.gpu_total() < 22 << 30);
             // the whole 40,960-token window fits an L4 too: the lossless cache is small
-            assert_eq!(qwen3_fit(&c, "Qwen3-8B", "NVIDIA L4", 22 << 30, Layout::Tiered, Some(40960), 1, true).unwrap().context, 40960);
+            assert_eq!(qwen3_fit(&c, "dense-36l", "NVIDIA L4", 22 << 30, Layout::Tiered, Some(40960), 1, true).unwrap().context, 40960);
             // asking for more than fits is refused, with what fits
-            let r = qwen3_fit(&c, "Qwen3-8B", "NVIDIA L4", 13 << 30, Layout::Tiered, Some(40960), 1, true).unwrap_err();
+            let r = qwen3_fit(&c, "dense-36l", "NVIDIA L4", 13 << 30, Layout::Tiered, Some(40960), 1, true).unwrap_err();
             assert!(r.fix.starts_with("Ask for less: --context ") && r.code == crate::ui::CANNOT, "{r}");
             // a smaller GPU: less context than the want, or a smaller chunk
-            let small = qwen3_fit(&c, "Qwen3-8B", "NVIDIA L4", 13 << 30, Layout::Tiered, None, 1, true).unwrap();
+            let small = qwen3_fit(&c, "dense-36l", "NVIDIA L4", 13 << 30, Layout::Tiered, None, 1, true).unwrap();
             assert!(small.context >= CTX_MIN, "{small:?}");
             assert!(small.gpu_total() < 13 << 30, "{small:?}");
             // too small altogether: a refusal that hands the model to vLLM
-            assert_eq!(qwen3_fit(&c, "Qwen3-8B", "NVIDIA L4", 8 << 30, Layout::Tiered, None, 1, true).unwrap_err().code, crate::ui::CANNOT);
+            assert_eq!(qwen3_fit(&c, "dense-36l", "NVIDIA L4", 8 << 30, Layout::Tiered, None, 1, true).unwrap_err().code, crate::ui::CANNOT);
             // more than the model's own context
-            assert!(qwen3_fit(&Config { max_pos: 2048, ..qwen3_8b() }, "tiny", "NVIDIA L4", 22 << 30, Layout::Tiered, Some(4096), 1, true).is_err());
+            assert!(qwen3_fit(&Config { max_pos: 2048, ..dense_36l() }, "tiny", "NVIDIA L4", 22 << 30, Layout::Tiered, Some(4096), 1, true).is_err());
         }
 
         /// One rule sizes every one-GPU path (P2f): a context asked that does not fit is refused, at any level, with the longest that does, and that one loads; where
@@ -4637,6 +4700,49 @@ pub mod sizing {
 mod tests {
     use super::*;
 
+    /// The planner's keys and values a token (`Shape::kv_full`, `kv_sliding`) against what the executor's pools take a token (each ring's `token_bytes`, bf16), for a random case of each
+    /// attention kind: plain and sliding attention (Gemma 4's), the gated attention beside recurrent layers (Qwen3.5's layout), latent attention with its indexer's sparse keys
+    /// (GLM-5.3-Flash's toy case, as glmrandom makes it), compressed entries beside a window and an indexer (DeepSeek-V4's small random case). The same bytes, exactly.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_planners_keys_and_values_a_token_are_the_pools() {
+        use crate::dynamic::Stage;
+        let fixture = |f: &str| std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(f)).unwrap();
+        let qwen35: serde_json::Value = serde_json::from_str(&fixture("qwen35_tiny_manifest.json")).unwrap();
+        let q35 = qwen35["config"].as_str().unwrap().to_string();
+        let glm = fixture("glm5_next_toy_config.json");
+        let cases: Vec<(&str, String, crate::dynamic::ModelDesc)> = vec![
+            ("plain and sliding attention", crate::logits::GEMMA4_RANDOM_CONFIG.to_string(), {
+                crate::dynamic::gemma4::describe(&crate::gemma4::ConfigG4::parse(crate::logits::GEMMA4_RANDOM_CONFIG, None, false).unwrap())
+            }),
+            ("gated attention beside recurrent layers", q35.clone(), {
+                let c = crate::qwen35::Config35::parse(&q35, "qwen35", None).unwrap();
+                crate::dynamic::qwen35::describe(&c, &Stage::whole(c.layers)).unwrap()
+            }),
+            ("latent attention and its indexer's keys", glm.clone(), {
+                let c = crate::glm::ConfigGlm::parse(&glm, "GLM-5.3-Flash", None).unwrap();
+                crate::dynamic::glm::describe(&c, &Stage::whole(c.layers)).unwrap()
+            }),
+            ("compressed entries, a window and an indexer", crate::dsv4_ref::SMALL_CONFIG.to_string(), {
+                let c = crate::deepseek_v4::ConfigV4::parse(crate::dsv4_ref::SMALL_CONFIG, "random", None).unwrap();
+                let vo = crate::dynamic::deepseek_v4::V4Opts::of(crate::weights::Layout::Tiered, 1024);
+                let kinds = crate::runtime::describe::describe(&serde_json::from_str(crate::dsv4_ref::SMALL_CONFIG).unwrap()).unwrap();
+                crate::dynamic::lower::deepseek_v4(&kinds, vec![1], 1 << 20, &Stage::whole(c.layers), &vo).unwrap()
+            }),
+        ];
+        let mut bad = Vec::new();
+        for (kind, text, d) in &cases {
+            let sh = Shape::from_config(text).unwrap();
+            let full: usize = d.rings.iter().filter(|r| r.window == 0).map(|r| r.token_bytes()).sum();
+            let sliding: usize = d.rings.iter().filter(|r| r.window > 0).map(|r| r.token_bytes()).sum();
+            eprintln!("{kind}: the pools {full} + {sliding} (sliding) bytes a token, the planner {} + {}", sh.kv_full, sh.kv_sliding);
+            if (sh.kv_full, sh.kv_sliding) != (full as f64, sliding as f64) {
+                bad.push(format!("{kind}: the pools {full} + {sliding}, the planner {} + {}", sh.kv_full, sh.kv_sliding));
+            }
+        }
+        assert!(bad.is_empty(), "{bad:?}");
+    }
+
     fn fixture(name: &str) -> String {
         std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)).unwrap()
     }
@@ -4660,8 +4766,9 @@ mod tests {
         assert_eq!(swap_area(3 * gib, None), 6 * gib);
     }
 
-    /// Qwen3-32B's config (Qwen3ForCausalLM), as the Hub has it.
-    const QWEN3_32B: &str = r#"{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "hidden_size": 5120, "intermediate_size": 25600, "num_hidden_layers": 64, "num_attention_heads": 64, "num_key_value_heads": 8, "head_dim": 128, "vocab_size": 151936, "tie_word_embeddings": false, "max_position_embeddings": 40960}"#;
+    /// The plain dense kind, large: hidden 5,120, 64 layers of 64 query heads over 8 KV heads of 128, MLP 25,600, a vocabulary of 151,936 (the kind's
+    /// architecture key, as the planner tells it apart).
+    const DENSE_64L: &str = r#"{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "hidden_size": 5120, "intermediate_size": 25600, "num_hidden_layers": 64, "num_attention_heads": 64, "num_key_value_heads": 8, "head_dim": 128, "vocab_size": 151936, "tie_word_embeddings": false, "max_position_embeddings": 40960}"#;
 
     /// The routed experts' bits as released apart from the rest's (Kimi-K3's MXFP4 in its text config's compressed-tensors, DeepSeek-V4's
     /// `expert_dtype`), Kimi-K3's and Muse Spark's names for the experts' width and Kimi-K3's for the choices a token; and hummingbird offered
@@ -4772,7 +4879,7 @@ mod tests {
     /// A config.json that says a number of layers no model has was an allocation of that many entries (a panic, or the process killed for its memory), and is an error.
     #[test]
     fn a_config_with_a_billion_layers_is_an_error() {
-        let c = |layers: &str| QWEN3_32B.replace("\"num_hidden_layers\": 64", &format!("\"num_hidden_layers\": {layers}"));
+        let c = |layers: &str| DENSE_64L.replace("\"num_hidden_layers\": 64", &format!("\"num_hidden_layers\": {layers}"));
         for layers in ["1000000000", "4000000000000000000", "277777777777777777777777777777777777777777777777777"] {
             assert!(Shape::from_config(&c(layers)).unwrap_err().contains("num_hidden_layers"), "{layers}");
         }
@@ -4836,19 +4943,18 @@ mod tests {
     fn the_shapes_add_up_to_the_models_sizes() {
         // (sizes as the releases give them: the parameter count in the name, or the bf16 matrices gpu/README.md measured)
         let within = |got: f64, want: f64, tol: f64| assert!((got / want - 1.0).abs() < tol, "{got:.3e} vs {want:.3e}");
-        within(Shape::from_config(QWEN3_32B).unwrap().params(), 32.8e9, 0.04);
+        within(Shape::from_config(DENSE_64L).unwrap().params(), 32.8e9, 0.04);
         within(qwen35("Qwen/Qwen3.5-9B").params(), 9.0e9, 0.12);
         within(qwen35("Qwen/Qwen3.8-27B").params(), 26.9e9, 0.12);
         let g = Shape::from_config(&fixture("gemma4_12b_config.json")).unwrap();
         within(g.params(), 12.0e9, 0.15);
         assert!(g.kv_sliding > 0.0 && g.window == 1024 && g.kv_full > 0.0);
-        let nh = Shape::from_config(&fixture("nemotron_h_config.json")).unwrap();
-        within(nh.params(), 120.0e9, 0.12);
-        within(nh.params() - nh.routed + nh.routed_active(), 12.0e9, 0.25);
         let qx = Shape::from_config(&fixture("qwen4x_config.json")).unwrap();
         assert!(qx.is_moe() && qx.experts == 512 && qx.topk == 10 && qx.mtp && qx.state > 0.0);
+        // (a mixture of experts' active weights: the rest, and its routed experts' top-k share)
+        within(qx.routed_active(), qx.routed * qx.topk as f64 / qx.experts as f64, 1e-9);
         // scaled to an index's total, every part keeps its share
-        let s = Shape::from_config(QWEN3_32B).unwrap();
+        let s = Shape::from_config(DENSE_64L).unwrap();
         let t = s.clone().scaled_to(2.0 * s.params() * 1.1);
         within(t.params(), s.params() * 1.1, 1e-9);
     }
@@ -4874,8 +4980,14 @@ mod tests {
         let p = plan(&qx, &m4080, Ask { level: Some("hummingbird"), ..Default::default() });
         assert!(matches!(chosen(&p).placement, Some(Placement::ExpertsInRam { .. })), "{p:?}");
         within(&p, 91.0, 0.30);
-        // Qwen3-32B lossless on an RTX A6000: 11.8 (one sequence)
-        within(&plan(&Shape::from_config(QWEN3_32B).unwrap(), &Machine::preset("a6000").unwrap(), Ask::default()), 11.8, 0.25);
+        // (the large dense shape lossless on an RTX A6000, the tiered layout there: its weights read at the class's lossless share and its keys and values at
+        // theirs, and its floor; a release's own measurement on this class is a benchmark's, phase 3)
+        let (big, a6000) = (Shape::from_config(DENSE_64L).unwrap(), Machine::preset("a6000").unwrap());
+        let (c, d) = (chosen(&plan(&big, &a6000, Ask::default())).clone(), &a6000.devices[0]);
+        let (bits, ebits) = level_bits("penguin", &big, d).unwrap();
+        let (w, kv) = reads_of(&big, bits, ebits, POSITIONS, 1.0);
+        let want = 1.0 / ((w * d.consts.wl + kv * d.consts.kv) / d.rate() + d.consts.floor_s(big.layers as f64, big.hidden as f64, 1.0));
+        assert!(c.level == "penguin" && (c.prior / want - 1.0).abs() < 1e-9, "{} at {}: {} against {want}", c.level, c.bits, c.prior);
     }
 
     /// P2c: decode and prefill predicted from the rates of an RTX 4080 SUPER (the preset's stream is the one `glyd-engine rates` measured there, 697 GB/s) against
@@ -4929,7 +5041,7 @@ mod tests {
         assert!(chosen(&plan(&gemma_sh, &odd, Ask { level: Some("wren"), ..Default::default() })).prefill.is_none());
     }
 
-    /// `one_gpu_plan` in the layout the run loaded: at penguin the 12-bit one but on Ada (`best_layout`; the A100's and the A10's Qwen3-8B, 11.10 GB both).
+    /// `one_gpu_plan` in the layout the run loaded: at penguin the 12-bit one but on Ada (`best_layout`, as the A100 and the A10 loaded it).
     fn loaded(kind: Kind, level: &'static str, cc: [i32; 2]) -> LoadPlan {
         let mut p = one_gpu_plan(kind, level);
         if level == "penguin" && !crate::weights::smallest_is_fastest((cc[0], cc[1])) {
@@ -4961,10 +5073,9 @@ mod tests {
         }
     }
 
-    /// The header-table shapes of gemma-4-12B and Qwen3.5-0.8B (the checkpoints' own, as `fit` reads them).
-    fn measured_shapes() -> (Shape, Shape) {
-        let gemma: serde_json::Value = serde_json::from_str(&fixture("headers/gemma-4-12B-it.json")).unwrap();
-        let groups: Vec<crate::sizes::Group> = gemma["groups"]
+    /// A recorded header's compact table of tensors (tests/fixtures/headers).
+    fn header_groups(v: &serde_json::Value) -> Vec<crate::sizes::Group> {
+        v["groups"]
             .as_array()
             .unwrap()
             .iter()
@@ -4976,8 +5087,13 @@ mod tests {
                 layers: g["layers"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect(),
                 experts: g["experts"].as_u64().unwrap() as usize,
             })
-            .collect();
-        let gemma_sh = Shape::from_config(gemma["config"].as_str().unwrap()).unwrap().with_table(&crate::sizes::Table::expand(&groups));
+            .collect()
+    }
+
+    /// The header-table shapes of gemma-4-12B and Qwen3.5-0.8B (the checkpoints' own, as `fit` reads them).
+    fn measured_shapes() -> (Shape, Shape) {
+        let gemma: serde_json::Value = serde_json::from_str(&fixture("headers/gemma-4-12B-it.json")).unwrap();
+        let gemma_sh = Shape::from_config(gemma["config"].as_str().unwrap()).unwrap().with_table(&crate::sizes::Table::expand(&header_groups(&gemma)));
         let q35 = json::parse(&fixture("qwen35_configs.json")).unwrap();
         let q08_sh = Shape::from_config(&json::to_compact(q35.get("Qwen/Qwen3.5-0.8B").unwrap()))
             .unwrap()
@@ -4990,7 +5106,7 @@ mod tests {
     /// (session 3, 2026-11-24, bench's gate suite with GLYD_KV=bf16, the median of 3, 128 made: one user and eight on short prompts, one at 1k and 4k; the
     /// prompts of the short loads too short to time a prompt, so their prompt rates are not kept; the rate the A100's probe measured in session 2), and the A10's
     /// plancheck runs of session 5 (15: 8 users, Qwen3.5-0.8B kestrel, gemma-4-12B wren and swift at 1k, 4k, 8k, 1k for eight and 85% of the context). Only
-    /// releases of the last six months: the Qwen3-8B runs measured beside them are not kept. `GLYD_WRITE_CALIB=1` writes the file anew; the other machines'
+    /// releases of the last six months: the runs of older releases measured beside them are not kept. `GLYD_WRITE_CALIB=1` writes the file anew; the other machines'
     /// `plancheck` records are added to it.
     #[test]
     fn the_shipped_records_are_the_measured_runs() {
@@ -5287,8 +5403,8 @@ mod tests {
             "{:?}",
             p.notes
         );
-        // Qwen3-32B lossless on one 48 GB card (README: bf16 needs two); two 24 GB cards hold it at kestrel, split; one 24 GB card at a lower level
-        let q32 = Shape::from_config(QWEN3_32B).unwrap();
+        // the large dense shape lossless on one 48 GB card (its bf16 needs two); two 24 GB cards hold it at kestrel, split; one 24 GB card at a lower level
+        let q32 = Shape::from_config(DENSE_64L).unwrap();
         let p = plan(&q32, &Machine::preset("a6000").unwrap(), Ask::default());
         assert_eq!((chosen(&p).level, chosen(&p).placement.clone()), ("penguin", Some(Placement::Gpu(0))));
         let p = plan(&q32, &Machine::preset("2x3090").unwrap(), Ask::default());
@@ -5329,13 +5445,14 @@ mod tests {
         // placements and context (the table run reads, src/support.rs)
         let q35 = json::parse(&fixture("qwen35_configs.json")).unwrap();
         let mut configs =
-            vec![("Qwen/Qwen3-32B".to_string(), QWEN3_32B.to_string()), ("Qwen/Qwen3.5-9B".to_string(), json::to_compact(&q35.as_object().unwrap()[0].1))];
-        for (f, m) in [
-            ("gemma4_12b_config.json", "google/gemma-4-12B-it"),
-            ("nemotron_h_config.json", "nvidia/Nemotron-H"),
-            ("glm5_next_config.json", "zai-org/GLM-5.3-Flash"),
-        ] {
+            vec![("dense-64l".to_string(), DENSE_64L.to_string()), ("Qwen/Qwen3.5-9B".to_string(), json::to_compact(&q35.as_object().unwrap()[0].1))];
+        for (f, m) in [("gemma4_12b_config.json", "google/gemma-4-12B-it"), ("glm5_next_config.json", "zai-org/GLM-5.3-Flash")] {
             configs.push((m.to_string(), fixture(f)));
+        }
+        // (the mixtures of experts with their experts in the computer's memory: the released configs of the recorded headers)
+        for h in ["Kimi-K3", "DeepSeek-V4-Flash-0731"] {
+            let v: serde_json::Value = serde_json::from_str(&fixture(&format!("headers/{h}.json"))).unwrap();
+            configs.push((h.to_string(), v["config"].as_str().unwrap().to_string()));
         }
         let mut checked = 0;
         for (model, text) in &configs {
@@ -5402,26 +5519,40 @@ mod tests {
         config.replace("}", ", \"rms_norm_eps\": 1e-6, \"rope_theta\": 1000000}")
     }
 
-    const QWEN3_8B: &str = r#"{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "hidden_size": 4096, "intermediate_size": 12288, "num_hidden_layers": 36, "num_attention_heads": 32, "num_key_value_heads": 8, "head_dim": 128, "vocab_size": 151936, "tie_word_embeddings": false, "max_position_embeddings": 40960, "rms_norm_eps": 1e-6, "rope_theta": 1000000}"#;
+    /// The plain dense kind: hidden 4,096, 36 layers of 32 query heads over 8 KV heads of 128, MLP 12,288, the large one's vocabulary.
+    const DENSE_36L: &str = r#"{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "hidden_size": 4096, "intermediate_size": 12288, "num_hidden_layers": 36, "num_attention_heads": 32, "num_key_value_heads": 8, "head_dim": 128, "vocab_size": 151936, "tie_word_embeddings": false, "max_position_embeddings": 40960, "rms_norm_eps": 1e-6, "rope_theta": 1000000}"#;
 
     fn gpu_of(d: &Device, ordinal: i32) -> crate::dev::Gpu {
         crate::dev::Gpu { name: d.name.clone(), cc: d.cc, sms: 0, total: d.total, free: d.free, driver: d.driver, count: 1, ordinal }
     }
 
-    /// A plan whose users share pools of blocks holds at most what the GPU has left for them (at least one's context): on an A10 (23 GB) Qwen3-8B served to 8 at
+    /// Each stage's share of what the computer's memory holds goes by its layers' bytes there and adds up to all of it exactly, the rounding the last stage's; none
+    /// where nothing is there, all on the first where no layer holds any.
+    #[test]
+    fn the_stages_shares_of_the_computers_memory_add_up() {
+        use sizing::stage_shares;
+        assert_eq!(stage_shares(&[1, 1, 2, 2], &[2], 600), vec![200, 400]);
+        assert_eq!(stage_shares(&[3, 3, 3], &[1, 2], 100), vec![33, 33, 34]);
+        assert_eq!(stage_shares(&[0, 5, 5, 0], &[2], 1001).iter().sum::<u64>(), 1001);
+        assert_eq!(stage_shares(&[0, 0], &[1], 9), vec![9, 0]);
+        assert_eq!(stage_shares(&[4, 4], &[], 0), vec![0]);
+        assert_eq!(stage_shares(&[u64::MAX / 2, u64::MAX / 2], &[1], u64::MAX - 1), vec![(u64::MAX - 1) / 2, (u64::MAX - 1) / 2]);
+    }
+
+    /// A plan whose users share pools of blocks holds at most what the GPU has left for them (at least one's context): on an A10 (23 GB) a dense model of 8B parameters served to 8 at
     /// 16,384 tokens was planned at 31,867 MiB, eight full contexts, where the server took 21,889. And its decode reads penguin's weights in the layout it loads
     /// (the 12-bit one off Ada: 11.10 GB measured on the A10 and the A100, where the level's tiered 10.75 bits counted 10.17), at that layout's share.
     #[test]
     fn a_shared_pool_is_planned_within_the_gpu() {
-        let dir = model_dir("pool", "Qwen3-8B", QWEN3_8B);
+        let dir = model_dir("pool", "dense-36l", DENSE_36L);
         let m = dir.to_str().unwrap();
         for machine in ["l4", "rtx4090", "a6000"] {
             let p = planned(&args(&["serve", m, "--users", "8", "--ctx", "16384", "--machine", machine])).unwrap().plan.chosen.and_then(|c| c.load).unwrap();
             let one = p.kv / 8;
             assert!(p.gpu_total() <= p.free && p.users == 8 && p.context == 16384, "{machine}: {}", p.text());
-            assert!(p.kv >= 16384 * crate::plan::sizing::kv_per_token(&crate::weights::Config::parse(QWEN3_8B, "c", None).unwrap(), false) && one > 0);
+            assert!(p.kv >= 16384 * crate::plan::sizing::kv_per_token(&crate::weights::Config::parse(DENSE_36L, "c", None).unwrap(), false) && one > 0);
         }
-        let sh = Shape::from_config(QWEN3_8B).unwrap();
+        let sh = Shape::from_config(DENSE_36L).unwrap();
         let m = Machine::preset("a6000").unwrap();
         let mut lp = one_gpu_plan(Kind::Qwen3, "penguin");
         lp.layout = crate::weights::Layout::Twelve;
@@ -5464,10 +5595,9 @@ mod tests {
     fn fit_is_the_plan_run_builds() {
         let q35 = json::parse(&fixture("qwen35_configs.json")).unwrap();
         let configs = [
-            ("Qwen3-32B", with_rope(QWEN3_32B)),
+            ("dense-64l", with_rope(DENSE_64L)),
             ("Qwen3.5-9B", json::to_compact(&q35.as_object().unwrap()[0].1)),
             ("gemma-4-12B", fixture("gemma4_12b_config.json")),
-            ("NVIDIA-Nemotron-H", fixture("nemotron_h_config.json")),
         ];
         let mut sized = 0;
         for (name, text) in &configs {
@@ -5533,7 +5663,7 @@ mod tests {
     /// keep four contexts of cache and still fit.
     #[test]
     fn users_are_in_the_plan() {
-        let dir = model_dir("users", "Qwen3-8B", QWEN3_8B);
+        let dir = model_dir("users", "dense-36l", DENSE_36L);
         let one = planned(&args(&["fit", dir.to_str().unwrap(), "--machine", "l4"])).unwrap().plan.chosen.unwrap().load.unwrap();
         let four = planned(&args(&["fit", dir.to_str().unwrap(), "--machine", "l4", "--users", "4"])).unwrap().plan.chosen.unwrap().load.unwrap();
         assert_eq!((one.users, four.users), (1, 4));
@@ -5609,8 +5739,8 @@ mod tests {
         use crate::weights::Layout;
         let root = std::env::temp_dir().join(format!("glyd-plan-pack-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let (q3, q35) = (root.join("qwen3"), root.join("qwen35"));
-        crate::logits::qwen3_random(&q3).unwrap();
+        let (q3, q35) = (root.join("dense"), root.join("qwen35"));
+        crate::logits::dense_random(&q3).unwrap();
         crate::logits::qwen35_random(&q35).unwrap();
         let near = |got: u64, want: u64, what: &str| assert!((got as f64 / want as f64 - 1.0).abs() < 0.03, "{what}: planned {got}, written {want}");
         // Qwen3 dense, lossless
@@ -5974,31 +6104,27 @@ mod tests {
     }
 
     /// P16: no preset by fixture model by level where `fit` and `run` disagree: for every one, `fit` refuses exactly where `run` does, in `run`'s words and with its
-    /// status, and where `run` loads a plan `fit` prints that plan. The models are the families' fixtures, one a Llama (a kind the engine does not run), and
+    /// status, and where `run` loads a plan `fit` prints that plan. The models are the families' fixtures, one of a dense architecture the engine does not run, and
     /// Qwen3.8-Flash-Next (Condor's); every machine preset, AMD, Apple, Arm and the multi-GPU ones among them; every level this build has, those a family does not run at too.
     #[test]
     fn fit_and_run_agree_on_every_preset_and_model() {
         let q35 = json::parse(&fixture("qwen35_configs.json")).unwrap();
-        let llama = r#"{"architectures": ["LlamaForCausalLM"], "model_type": "llama", "hidden_size": 4096, "num_hidden_layers": 32, "num_attention_heads": 32, "num_key_value_heads": 8}"#;
+        let unknown = r#"{"architectures": ["DenseForCausalLM"], "model_type": "dense", "hidden_size": 4096, "num_hidden_layers": 32, "num_attention_heads": 32, "num_key_value_heads": 8}"#;
         let glm = fixture("glm5_next_config.json");
         let configs = [
-            ("Qwen3-32B", with_rope(QWEN3_32B)),
+            ("dense-64l", with_rope(DENSE_64L)),
             ("Qwen3.5-9B", json::to_compact(&q35.as_object().unwrap()[0].1)),
             ("gemma-4-12B", fixture("gemma4_12b_config.json")),
-            ("NVIDIA-Nemotron-H", fixture("nemotron_h_config.json")),
             ("GLM-5.3-Flash", glm.clone()),
             ("Qwen3.8-Flash-Next", fixture("qwen4x_config.json")),
-            ("Llama-3.1-8B", llama.to_string()),
+            ("dense-unknown", unknown.to_string()),
         ];
         let (mut pairs, mut loads, mut refusals) = (0, 0, 0);
         for (name, text) in &configs {
             let dir = model_dir("agree", name, text);
-            // (the dynamic route sizes a model from its files' headers (src/sizes.rs, P2b): a directory with a config alone has none, so these two get a header-only checkpoint)
+            // (the dynamic route sizes a model from its files' headers (src/sizes.rs, P2b): a directory with a config alone has none, so this one gets a header-only checkpoint)
             if *name == "GLM-5.3-Flash" {
                 header_only_checkpoint(&dir, &fixture("glm5_next_tensors.json"));
-            }
-            if *name == "NVIDIA-Nemotron-H" {
-                header_only_checkpoint(&dir, &fixture("nemotron_h_tensors.json"));
             }
             let model = dir.to_str().unwrap();
             for preset in Machine::PRESETS {
@@ -6041,10 +6167,10 @@ mod tests {
     #[test]
     fn context_limits_and_defaults_are_the_tables() {
         let row = crate::support::row(crate::support::Family::Qwen3);
-        let r = crate::support::context_check("Qwen3-8B", row, 40960, Some(100_000)).unwrap_err();
+        let r = crate::support::context_check("dense-36l", row, 40960, Some(100_000)).unwrap_err();
         assert_eq!(
             (r.what.as_str(), r.fix.as_str()),
-            ("Qwen3-8B takes at most 40960 tokens of context here, and 100000 were asked for", "Ask for less: --context 40960")
+            ("dense-36l takes at most 40960 tokens of context here, and 100000 were asked for", "Ask for less: --context 40960")
         );
         assert!(
             crate::support::context_check("m", row, 262_144, Some(100_000)).unwrap_err().what.contains("at most 40960"),
@@ -6055,10 +6181,10 @@ mod tests {
         assert_eq!(crate::support::default_context(crate::support::row(crate::support::Family::Gemma4), 262_144), LOSSY_CTX);
         assert_eq!(crate::support::default_context(crate::support::row(crate::support::Family::Gemma4), 8192), 8192, "never more than the model has");
         // (fit, the Qwen3 path and the lossy path say the same thing of an impossible context)
-        let dir = model_dir("ctx", "Qwen3-8B", QWEN3_8B);
+        let dir = model_dir("ctx", "dense-36l", DENSE_36L);
         let f = planned(&args(&["fit", dir.to_str().unwrap(), "--machine", "rtx4090", "--context", "100000"])).err().unwrap();
-        let a = args(&["run", "Qwen3-8B", "--context", "100000"]);
-        let cfg = crate::weights::Config::parse(QWEN3_8B, "config.json", None).unwrap();
+        let a = args(&["run", "dense-36l", "--context", "100000"]);
+        let cfg = crate::weights::Config::parse(DENSE_36L, "config.json", None).unwrap();
         let m = Machine::preset("rtx4090").unwrap();
         let r = sizing::qwen3_plan(&a, &cfg, &crate::cli::short_name(dir.to_str().unwrap()), &gpu_of(&m.devices[0], 0), None, 1).unwrap_err();
         assert_eq!((f.what, f.fix, f.code), (r.what, r.fix, r.code));
@@ -6113,18 +6239,15 @@ mod tests {
 
     /// P2b: a model's parameters counted from its tensors' headers are the checkpoint's (every weight of the parts a plan counts: the vision tower is left out, the
     /// multi-token-prediction head is counted only where the model drafts with it), where config.json's estimate is not: for the recent families whose headers the
-    /// fixtures hold (GLM-5.3-Flash, Qwen3.5 at 0.8B and 9B, Nemotron 3 Super) within 1%.
+    /// fixtures hold as tensor lists (GLM-5.3-Flash, Qwen3.5 at 0.8B and 9B) within 1%; the recorded headers of Kimi-K3, DeepSeek-V4-Flash and the others, whose
+    /// packed experts count by their bytes, are src/sizes.rs's `recorded_headers_are_the_hubs_file_sizes`.
     #[test]
     fn a_shape_from_the_headers_is_the_checkpoints() {
         use crate::sizes::{classify, Part};
         let glm = json::parse(&fixture("glm5_next_tensors.json")).unwrap();
         let q35 = json::parse(&fixture("qwen35_tensors.json")).unwrap();
         let q35c = json::parse(&fixture("qwen35_configs.json")).unwrap();
-        let nh = json::parse(&fixture("nemotron_h_tensors.json")).unwrap();
-        let mut cases = vec![
-            ("GLM-5.3-Flash", fixture("glm5_next_config.json"), table_of(glm.get("tensors").unwrap())),
-            ("Nemotron 3 Super", fixture("nemotron_h_config.json"), table_of(nh.get("tensors").unwrap())),
-        ];
+        let mut cases = vec![("GLM-5.3-Flash", fixture("glm5_next_config.json"), table_of(glm.get("tensors").unwrap()))];
         for m in ["Qwen/Qwen3.5-0.8B", "Qwen/Qwen3.5-9B"] {
             cases.push((m, json::to_compact(q35c.get(m).unwrap()), table_of(q35.get(m).unwrap())));
         }
@@ -6288,6 +6411,7 @@ mod tests {
             places: vec![26],
             experts_per_layer: 512,
             host_bytes: 40 * 512 * (3 << 20),
+            host_per_stage: vec![40 * 512 * (3 << 20)],
             gpu_bytes: base.weights,
             dense,
             dense_bytes,
@@ -6311,23 +6435,23 @@ mod tests {
 
     /// P2f: every plan the per-path planners made (P2a's: src/cli.rs `size`, `lossy_plan_with`, `gemma_plan`, `size_dynamic` and src/fit.rs `plan`, recorded in
     /// tests/fixtures/plans_p2a.json before they were moved here) is the plan the one planner makes: each family's fixture, on every preset, at every level this
-    /// build has, alone and with --users 4, --context 8192 and 131072, and Nemotron-H's --expert-cache and --host-memory; the plan `run` loads, or its refusal in its
-    /// words. `GLYD_WRITE_P2A=1` writes the file anew (only where a change in a plan is meant).
+    /// build has, alone and with --users 4, --context 8192 and 131072; the plan `run` loads, or its refusal in its words. The recent set (2026-11-25): the plain
+    /// dense kind at two shapes (36 and 64 layers) and one dense architecture the engine does not run, Qwen3.5 at 0.8B and 9B, Qwen3.8-27B, gemma-4-12B,
+    /// GLM-5.3-Flash and Qwen3.8-Flash-Next. `GLYD_WRITE_P2A=1` writes the file anew (only where a change in a plan is meant).
     #[test]
     fn the_plans_are_p2as() {
         let q35 = json::parse(&fixture("qwen35_configs.json")).unwrap();
-        let llama = r#"{"architectures": ["LlamaForCausalLM"], "model_type": "llama", "hidden_size": 4096, "num_hidden_layers": 32, "num_attention_heads": 32, "num_key_value_heads": 8}"#;
+        let unknown = r#"{"architectures": ["DenseForCausalLM"], "model_type": "dense", "hidden_size": 4096, "num_hidden_layers": 32, "num_attention_heads": 32, "num_key_value_heads": 8}"#;
         let configs = [
-            ("Qwen3-32B", with_rope(QWEN3_32B)),
-            ("Qwen3-8B", QWEN3_8B.to_string()),
+            ("dense-64l", with_rope(DENSE_64L)),
+            ("dense-36l", DENSE_36L.to_string()),
             ("Qwen3.5-0.8B", json::to_compact(q35.get("Qwen/Qwen3.5-0.8B").unwrap())),
             ("Qwen3.5-9B", json::to_compact(q35.get("Qwen/Qwen3.5-9B").unwrap())),
             ("Qwen3.8-27B", json::to_compact(q35.get("Qwen/Qwen3.8-27B").unwrap())),
             ("gemma-4-12B", fixture("gemma4_12b_config.json")),
-            ("NVIDIA-Nemotron-H", fixture("nemotron_h_config.json")),
             ("GLM-5.3-Flash", fixture("glm5_next_config.json")),
             ("Qwen3.8-Flash-Next", fixture("qwen4x_config.json")),
-            ("Llama-3.1-8B", llama.to_string()),
+            ("dense-unknown", unknown.to_string()),
         ];
         let mut got = serde_json::Map::new();
         for (name, text) in &configs {
@@ -6335,19 +6459,13 @@ mod tests {
             if *name == "GLM-5.3-Flash" {
                 header_only_checkpoint(&dir, &fixture("glm5_next_tensors.json"));
             }
-            if *name == "NVIDIA-Nemotron-H" {
-                header_only_checkpoint(&dir, &fixture("nemotron_h_tensors.json"));
-            }
             // (the Qwen3.5 layout's penguin is the dynamic route's, planned from the files' headers: the released tensors of each)
             if let Some(t) = qwen35_tensors(name) {
                 header_only_checkpoint(&dir, &t);
             }
             let model = dir.to_str().unwrap();
             let base = dir.parent().unwrap().to_str().unwrap().to_string();
-            let mut variants: Vec<Vec<&str>> = vec![vec![], vec!["--users", "4"], vec!["--context", "8192"], vec!["--context", "131072"]];
-            if *name == "NVIDIA-Nemotron-H" {
-                variants.extend([vec!["--expert-cache", "4"], vec!["--host-memory", "40"]]);
-            }
+            let variants: Vec<Vec<&str>> = vec![vec![], vec!["--users", "4"], vec!["--context", "8192"], vec!["--context", "131072"]];
             for preset in Machine::PRESETS {
                 let nvidia = Machine::preset(preset).unwrap().devices.iter().all(|d| d.vendor == Vendor::Nvidia);
                 for level in crate::levels::names_now() {

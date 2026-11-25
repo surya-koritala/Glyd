@@ -55,6 +55,22 @@ GPU that holds the lossless level) and on the pack, and writes the card into the
 "Quality" section of the pack's README. Its `upload` step refuses a lossy pack whose `quality.json` is missing, is of another level, or says refuse.
 A penguin pack needs no card: its weights are the release's, bit for bit (`glyd verify`).
 
+A hummingbird pack goes the same way. Its experts are coded from a corpus pass's counts, not by a layout of every matrix, so `ship`'s pack step
+takes the counts: `glyd-engine calibrate-experts MODEL usage.json`, then `glyd-engine ship MODEL hummingbird DIR --usage usage.json`. Its quality
+step and the upload's refusal are every lossy level's.
+
+## On random models, in the GPU job
+
+The bars above are for released models, measured with the suite. The GPU job holds every level's arithmetic on a small random model of each family
+with `glyd-engine levelcheck` (`glyd-engine/src/logits.rs`): the model at penguin and at each lossy level its family runs, the same tokens, and the
+KL of the level's logits from penguin's against a threshold of that family and level, twice the family's first measured run. Qwen3.5, Gemma 4 and
+the state-space case are held at kestrel, swift and wren; DeepSeek-V4 and Muse Spark at hummingbird, on a directory the check makes with the two
+commands above (the corpus pass over made-up documents). A level that does not load fails the check. A random model's weights do not compress as a
+trained model's do, so these thresholds say nothing of a release: they catch a level whose kernels or packer changed.
+
+Kimi-K3 and GLM-5.3-Flash are not held at hummingbird yet: on a random model the corpus pass counts none of Kimi-K3's layers, and GLM-5.3-Flash's
+hummingbird directory does not load. The check prints both as open with what stops each, and fails the day one of them runs without a threshold.
+
 ## In `fit`
 
 `glyd fit MODEL` prints, under the plan, one line a level: penguin is lossless; a lossy level shows its card's figures and verdict (a local pack's

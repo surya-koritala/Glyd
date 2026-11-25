@@ -1,0 +1,1 @@
+- A model family's own config.json keys are read typed from the one parse of the file (`ModelConfig::own`, `own_top`), for Muse Spark, Kimi-K3, GLM-5.3-Flash and Nemotron-H so far: a key of another type than the reader's is refused with its name, and a needed key that is null is reported as missing.
