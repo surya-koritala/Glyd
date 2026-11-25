@@ -6,7 +6,6 @@ use crate::ffi::{err, Result, Stream};
 use crate::launch;
 use crate::nemotron::ConfigNemotronH;
 
-// The kernels' names: those the .cu sources give them, in every build (kname!).
 /// A Mamba-2 head's channels, the state a channel has, the tokens of a chunk of the chunked scan (kernels/nemotron.cu).
 pub const NH_P: usize = 64;
 pub const NH_N: usize = 128;
