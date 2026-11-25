@@ -2956,6 +2956,9 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let (replays, late) = (e.rows_replays.get(), e.rows_late.get());
     // (steps launched ahead, GLYD_ENGINE_OVERLAP=1, run as passes of parts: no graph of rows and no pieces there yet)
     let ahead = crate::sched::ModelStep::overlaps(&e);
+    if crate::sched::overlap_asked() {
+        println!("steps launched before the step before lands (GLYD_ENGINE_OVERLAP=1): {}", if ahead { "yes" } else { "no, this model's steps land first" });
+    }
     let graphs = e.rows_graphs() && !(one_a_pass && !e.rows_exact()) && !ahead;
     println!(
         "decode steps of several rows replayed from a CUDA graph: {replays}, graphs captured in a request's step: {late}{}",

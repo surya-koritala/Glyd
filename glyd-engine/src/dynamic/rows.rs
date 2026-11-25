@@ -1272,7 +1272,8 @@ impl Dyn {
     }
 
     /// `Lanes` for a served model whose steps can be launched before the step before them is read (`ModelStep::overlaps`: the conditions are there), where the library
-    /// looks up its embedding's rows by tokens on the GPU (asked once here, of the embedding's layout); and `Gaps` where a step profile is asked for.
+    /// looks up its embedding's rows by tokens on the GPU (asked once here, of the embedding's layout); and `Gaps` where a step profile is asked for. Its blocks of experts
+    /// are the ones a decode graph captures (src/dynamic/mod.rs): none reads the router's choices on the host, so an expert cache's are its layers planned on the GPU.
     fn make_lanes(&mut self) -> Result<()> {
         if StepProf::on() || super::prof::on() {
             self.gaps = Some(Gaps::new()?);
@@ -1280,7 +1281,7 @@ impl Dyn {
         let Some(e) = self.big.mats[self.big.d.embed].packed_opt().map(|p| p.pack) else { return Ok(()) };
         if !crate::sched::overlap_forced()
             || !ModelStep::one_step(self)
-            || self.big.moe.iter().any(|b| b.reads_host())
+            || !self.big.moe.iter().all(|b| !b.reads_host() && (b.resident().is_some() || b.graphable()))
             || self.big.ram.is_some()
             || !self.kern.has_step_ids()
             || self.tok.as_ref().is_some_and(|b| b.bytes < 4 * self.chunk)
