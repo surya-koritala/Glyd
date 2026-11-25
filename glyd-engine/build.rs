@@ -86,6 +86,8 @@ fn main() {
     println!("cargo:rerun-if-changed=kernels/nemotron.cu");
     println!("cargo:rerun-if-changed=kernels/glm.cu");
     println!("cargo:rerun-if-changed=kernels/glm_cb.cu");
+    println!("cargo:rerun-if-changed=kernels/mla.cu");
+    println!("cargo:rerun-if-changed=kernels/seam.cu");
     println!("cargo:rerun-if-changed=kernels/kimi.cu");
     println!("cargo:rerun-if-changed=kernels/dsv4.cu");
     println!("cargo:rerun-if-changed=kernels/muse.cu");

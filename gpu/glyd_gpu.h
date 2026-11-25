@@ -61,8 +61,11 @@ typedef hipStream_t cudaStream_t;
  *    tokens with the weights as they are held; 17 from glyd_gpu_mma_moe_placed, the experts' product over an expert cache's places;
  * 18 from glyd_gpu_kv_decode_from, the decode attention over the tokens from a sequence's first one on (a sliding window's);
  * 19 from glyd_gpu_kv_prefill, a prompt chunk's attention over its sequence's pages and its own bf16 rows;
- * 20 from glyd_gpu_kv_prefill_bf16 and glyd_gpu_kv_decode_bf16, the same attentions over a bf16 cache. */
-#define GLYD_GPU_API_VERSION 20
+ * 20 from glyd_gpu_kv_prefill_bf16 and glyd_gpu_kv_decode_bf16, the same attentions over a bf16 cache; 21 from glyd_gpu_kv_unpack's
+ * skipping a negative page number (a list as long as the most a sequence can need, filled on the device);
+ * 22 from glyd_gpu_kv_image_bytes, glyd_gpu_kv_save and glyd_gpu_kv_load, pages moved whole to another place and back (their escape chunks and raw slabs lent anew);
+ * 23 from glyd_gpu_kv_decode_workspace's partial outputs on a 16-byte line (the workspace up to 8 bytes larger: an odd count of partials faulted before). */
+#define GLYD_GPU_API_VERSION 23
 
 #ifdef __cplusplus
 extern "C" {
@@ -471,13 +474,32 @@ int glyd_gpu_kv_write(const uint16_t* key, int64_t key_stride, const uint16_t* v
                       int64_t D, int64_t A, uint8_t* escape, int64_t nchunks, uint8_t* raw, int64_t nslabs, int64_t layer,
                       uint32_t* status, uint32_t* lost, int64_t nlost, int64_t ring, cudaStream_t cs);
 
+/* A page moved whole, its 12 bits as they are (a sequence swapped to the host and back): its image is the page's bytes (glyd_gpu_kv_leaf_bytes), then the
+ * entries of the escape chunks its directory names, 256 bytes a chunk at the directory's place (16 places), then its raw slab's bytes where it is raw (kv_second_bytes of one slab):
+ * glyd_gpu_kv_image_bytes apart, 16-byte aligned. Only what the page holds is written: the image's places for chunks and a slab it does not have are left as they were. */
+int glyd_gpu_kv_image_bytes(int64_t H, int64_t D, int64_t A, int64_t* bytes);
+
+/* The pages of the blocks pages[0 .. n) (int32, below nblocks) into images 0 .. n at out (memory the device writes: a mapped host buffer, or the device's), as they are; moved[j]
+ * (uint32, null: none) the bytes written for page j. A page whose chunks or slab the pools do not list as its own (one never written, or void) is saved void (its image's count
+ * word has the void flag): it loads void. The pages are read, not changed; pool, H, D, A, escape and raw as glyd_gpu_kv_write's, layer the pages' (their owner tag). */
+int glyd_gpu_kv_save(const uint8_t* pool, int64_t page_stride, int64_t nblocks, const int32_t* pages, int64_t n, int64_t H, int64_t D, int64_t A, const uint8_t* escape,
+                     int64_t nchunks, const uint8_t* raw, int64_t nslabs, int64_t layer, uint8_t* out, uint32_t* moved, cudaStream_t cs);
+
+/* The images 0 .. n at img (glyd_gpu_kv_save's, of pages of this H, D and A) into the pages of the blocks dst[0 .. n) (int32, below nblocks; any blocks, apart): each page's chunks or
+ * slab first given back to their pools as a page's first token gives them, then the image's bytes, with chunks of the escape pool and a slab of the raw pool lent to the block for
+ * what the image holds (owner tag: layer and block), the page's directory naming them. Read back, a loaded page holds the values the saved one did, bit for bit. A page that
+ * finds no chunk or slab, or whose image is void, is void: its block is named in the status's ring as glyd_gpu_kv_write names one (status[11] counts it); a raw page's block
+ * in the raw ring. status and ring as glyd_gpu_kv_write's. */
+int glyd_gpu_kv_load(const uint8_t* img, const int32_t* dst, int64_t n, uint8_t* pool, int64_t page_stride, int64_t nblocks, int64_t H, int64_t D, int64_t A, uint8_t* escape,
+                     int64_t nchunks, uint8_t* raw, int64_t nslabs, int64_t layer, uint32_t* status, int64_t ring, cudaStream_t cs);
+
 /* The pages of the blocks listed (int32 [n] block numbers, below nblocks: page p at pool + p * page_stride) cleared as a page's first token clears them: a page's chunks or its slab back to their
  * pools (by owner), its count and directory zero, and the block's bits in `lost` (nlost bits, as kv_write's). For blocks that no request holds and whose content is not to be read again;
  * layer, status, escape and raw as kv_write's. */
 int glyd_gpu_kv_release(uint8_t* pool, int64_t page_stride, int64_t nblocks, const int32_t* blocks, int64_t n, int64_t H, int64_t D, int64_t A, uint8_t* escape, int64_t nchunks, uint8_t* raw,
                         int64_t nslabs, int64_t layer, uint32_t* status, uint32_t* lost, int64_t nlost, cudaStream_t cs);
 
-/* The pages pages[0 .. n) (int32) back to bf16: out_k and out_v [n, 16, H, D]. */
+/* The pages pages[0 .. n) (int32) back to bf16: out_k and out_v [n, 16, H, D]; a negative pages[j] is a place no page is in: nothing is written for it. */
 int glyd_gpu_kv_unpack(const uint8_t* pool, int64_t page_stride, const int32_t* pages, int64_t n, const uint8_t* kbase,
                        const uint8_t* vbase, int64_t H, int64_t D, int64_t A, const uint8_t* escape, int64_t nchunks,
                        const uint8_t* raw, int64_t nslabs, uint16_t* out_k, uint16_t* out_v, cudaStream_t cs);

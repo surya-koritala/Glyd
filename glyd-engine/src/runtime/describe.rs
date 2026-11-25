@@ -62,6 +62,8 @@ pub struct Described {
     pub convention: &'static str,
     /// Parts of the checkpoint the description does not read: the towers and the draft layers, as prefixes of their tensors' names.
     pub unread: Vec<String>,
+    /// Per draft head of `desc.mtp` whose tensors are mapped: its blocks' roles' sources, and its own roles' (DSpark's `main_proj`, `markov_embed`, ...).
+    pub mtp: Vec<(Vec<Vec<(String, Source)>>, Vec<(String, Source)>)>,
 }
 
 impl Described {
@@ -74,6 +76,11 @@ impl Described {
         s.extend(self.scales.values().cloned());
         for b in &self.blocks {
             for (_, src) in b {
+                s.extend(src.names());
+            }
+        }
+        for (blocks, own) in &self.mtp {
+            for (_, src) in blocks.iter().flatten().chain(own) {
                 s.extend(src.names());
             }
         }
@@ -99,7 +106,8 @@ impl Described {
             return err(format!("the description reads tensors that are not in the checkpoint ({} names), {}", self.convention, few(&missing)));
         }
         let names = self.names();
-        let left: Vec<String> = have.iter().filter(|n| !names.contains(*n) && !self.unread.iter().any(|p| n.starts_with(p.as_str()))).cloned().collect();
+        let unread = |n: &str| self.unread.iter().any(|p| p.strip_prefix('*').map_or(n.starts_with(p.as_str()), |sfx| n.ends_with(sfx)));
+        let left: Vec<String> = have.iter().filter(|n| !names.contains(*n) && !unread(n)).cloned().collect();
         if all && !left.is_empty() {
             return err(format!("the checkpoint holds tensors not read by its description ({} names), {}", self.convention, few(&left)));
         }
@@ -348,8 +356,13 @@ fn but(table: names::Roles, at: &str, experts: usize, drop: &[&str]) -> Vec<(Str
 /// Shapes by role: each of `want`'s roles that `r` names as one tensor, that tensor's shape.
 fn shape_roles(shapes: &mut std::collections::BTreeMap<String, Vec<usize>>, r: &[(String, Source)], want: &[(&str, Vec<usize>)]) {
     for (role, s) in want {
-        if let Some((_, Source::Tensor(n))) = r.iter().find(|(x, _)| x == role) {
-            shapes.insert(n.clone(), s.clone());
+        match r.iter().find(|(x, _)| x == role) {
+            Some((_, Source::Tensor(n))) => {
+                shapes.insert(n.clone(), s.clone());
+            }
+            // (an expert's matrices, each its own tensor of the shape given: a gate and an up projection alike)
+            Some((_, Source::Experts(e))) => shapes.extend(e.iter().flatten().map(|n| (n.clone(), s.clone()))),
+            _ => {}
         }
     }
 }
@@ -369,6 +382,7 @@ pub fn describe_config(c: &ModelConfig) -> Result<Described> {
         "kimi_k3" => return kimi(c),
         "muse_spark" => return muse(tc, prefix),
         "deepseek_v4" => return deepseek_v4(tc),
+        "deepseek_v41" => return deepseek_v41(c),
         "nemotron_h" => return nemotron_h(tc),
         _ => {}
     }
@@ -409,6 +423,7 @@ fn finish(k: &Keys, desc: ModelDesc, cv: &Convention, prefix: &str, blocks: Vec<
         shapes: Default::default(),
         convention: cv.name,
         unread: cv.unread(),
+        mtp: Vec::new(),
     })
 }
 
@@ -547,10 +562,12 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         state_f32: true,
     };
     let mut dense_inter = None;
+    let (mut moe_inter, mut shared_inter) = (0, 0);
     let moe = if k.raw("num_experts").is_some() {
         let ne = k.usize("num_experts")?;
-        k.usize("moe_intermediate_size")?;
-        let shared = k.opt_usize("shared_expert_intermediate_size")?.is_some_and(|s| s > 0);
+        moe_inter = k.usize("moe_intermediate_size")?;
+        shared_inter = k.opt_usize("shared_expert_intermediate_size")?.unwrap_or(0);
+        let shared = shared_inter > 0;
         Some(Moe {
             router: Router {
                 score: RouterScore::Softmax,
@@ -577,7 +594,7 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     k.bool("mtp_use_dedicated_embeddings", false)?;
     let pn = Norm::rms_plus_one(eps);
     let (mut blocks, mut roles) = (Vec::new(), Vec::new());
-    // (the shapes of a dense model's tensors, as its heads and widths make them; a mixture of experts' are not said yet)
+    // (the shapes of the tensors, as the heads and widths make them: a mixture of experts' each expert's, the router's and the gated shared expert's too)
     let mut shapes = std::collections::BTreeMap::new();
     let (kh, vh, kd, vd) = (lin.k_heads, lin.v_heads, lin.k_dim, lin.v_dim);
     let qkv = 2 * kh * kd + vh * vd;
@@ -642,9 +659,26 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
                 names::roles(part::QWEN_MOE, &p, m.experts, |r| m.shared.is_some() || !r.starts_with("shared_"))
             }
         };
-        if let Some(inter) = dense_inter {
-            shape_roles(&mut shapes, &r, &[sh, vec![("norm_in", vec![d])]].concat());
-            shape_roles(&mut shapes, &f, &[("norm_in", vec![d]), ("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])]);
+        shape_roles(&mut shapes, &r, &[sh, vec![("norm_in", vec![d])]].concat());
+        match (dense_inter, &moe) {
+            (Some(inter), _) => {
+                shape_roles(&mut shapes, &f, &[("norm_in", vec![d]), ("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])])
+            }
+            (None, Some(m)) => shape_roles(
+                &mut shapes,
+                &f,
+                &[
+                    ("norm_in", vec![d]),
+                    ("router", vec![m.experts, d]),
+                    ("experts_gate_up", vec![moe_inter, d]),
+                    ("experts_down", vec![d, moe_inter]),
+                    ("shared_gate", vec![shared_inter, d]),
+                    ("shared_up", vec![shared_inter, d]),
+                    ("shared_down", vec![d, shared_inter]),
+                    ("shared_router", vec![1, d]),
+                ],
+            ),
+            (None, None) => unreachable!("a dense width or experts"),
         }
         roles.push(r);
         roles.push(f);
@@ -661,13 +695,11 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         rope: Some(rp),
     };
     let mut out = finish(&k, desc, &names::HF, prefix, roles, mtp_layers)?;
-    if dense_inter.is_some() {
-        for n in [Some(&out.embed), out.head.as_ref()].into_iter().flatten() {
-            shapes.insert(n.clone(), vec![vocab, d]);
-        }
-        shapes.insert(out.final_norm.clone(), vec![d]);
-        out.shapes = shapes;
+    for n in [Some(&out.embed), out.head.as_ref()].into_iter().flatten() {
+        shapes.insert(n.clone(), vec![vocab, d]);
     }
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    out.shapes = shapes;
     Ok(out)
 }
 
@@ -790,7 +822,21 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
                 "{mt}: an n-gram embedding of {ple_dim} over {per} tables for each order up to {order}, a convolution of {taps}, {parts} shards"
             ));
         }
-        Ok(Ngram { order, heads: per, dim: ple_dim, base, vocab, seed, index, eos, streams: hc, conv: taps, dilation: order, norm: pn })
+        Ok(Ngram {
+            order,
+            heads: per,
+            dim: ple_dim,
+            base,
+            vocab,
+            seed,
+            index,
+            eos,
+            streams: hc,
+            conv: taps,
+            dilation: order,
+            norm: pn,
+            form: NgramForm::Condor,
+        })
     };
     for &l in &ple {
         if l == 0 || l > layers || types[l - 1] != "linear_attention" {
@@ -1260,6 +1306,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
     // the residual streams (GLM-5.3-Flash)
     let streams = if flash && k.bool("mhc", true)? {
         Some(StreamsP {
+            lagged: false,
             streams: k.opt_usize("hc_mult")?.unwrap_or(4),
             sinkhorn_iters: k.opt_usize("hc_sinkhorn_iters")?.unwrap_or(20),
             eps: k.opt_f64("hc_eps")?.unwrap_or(1e-6) as f32,
@@ -1321,7 +1368,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
                     if !shared {
                         r.extend(names::roles(part::MLA_INDEXER, &p, 0, |x| flash || !x.starts_with("indexer_pool")));
                     }
-                    Some(Indexer { heads: h, head_dim: dim, top_k: top, block: pool, shared, form: IndexForm::Gated })
+                    Some(Indexer { heads: h, head_dim: dim, top_k: top, block: pool, shared, form: IndexForm::LAYER_KEYS })
                 }
                 _ => None,
             };
@@ -1501,6 +1548,44 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
         absorbed: true,
         indexer: None,
     };
+    // Kimi-K3.1's sparse attention (`dsa_config`): on the latent attention layers it names (1-based), DeepSeek-V3.2's indexer of a key a token, the
+    // gated form, its keys RMS-normed at the model's eps or LayerNorm-ed with a bias (`index_k_norm_type`); the indexer's query from the q latent
+    let dsa = match k.raw("dsa_config") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(o)) => {
+            let dk = Keys::new(o, "kimi_linear: dsa_config");
+            let named = if dk.raw("dsa_layers").is_some() { "dsa_layers" } else { "layers" };
+            let on: BTreeSet<u64> = dk
+                .raw(named)
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(Value::as_u64).collect())
+                .ok_or_else(|| Error(format!("{mt}: dsa_config names no layers")))?;
+            if let Some(l) = on.iter().find(|&&l| l == 0 || l > layers as u64 || kda_l.contains(&l)) {
+                return err(format!("{mt}: dsa_config names layer {l}, which is not one of the latent attention's (1-based)"));
+            }
+            let key = match dk.str("index_k_norm_type")?.unwrap_or("rmsnorm") {
+                "rmsnorm" => Norm::rms(eps),
+                "layernorm" => Norm { kind: NormKind::Layer, ..Norm::rms(eps) },
+                other => return err(format!("{mt}: dsa_config.index_k_norm_type {other}: rmsnorm or layernorm")),
+            };
+            // (a rotary on the indexer's first dims, picks shared across layers and an FP8 indexer are not described)
+            for (x, want) in [("index_rope_dim", 0), ("index_topk_freq", 1), ("index_skip_topk_offset", 1)] {
+                dk.expect(x, &Value::from(want))?;
+            }
+            dk.expect("indexer_use_fp8", &Value::Bool(false))?;
+            let ix = Indexer {
+                heads: dk.usize("index_num_heads")?,
+                head_dim: dk.usize("index_head_dim")?,
+                top_k: dk.usize("index_topk")?,
+                block: 1,
+                shared: false,
+                form: IndexForm::Gated { key },
+            };
+            dk.finish()?;
+            Some((on, ix))
+        }
+        Some(v) => return err(format!("{mt}: dsa_config {v}: an object")),
+    };
     let dense = k.usize("first_k_dense_replace")?;
     let inter = k.usize("intermediate_size")?;
     let moe_inter = k.usize("moe_intermediate_size")?;
@@ -1549,7 +1634,13 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
             Mixer::Linear(lin.clone())
         } else {
             r.extend(but(part::MLA, &p, 0, &["q"]));
-            Mixer::Mla(mla.clone())
+            let indexer = dsa.as_ref().filter(|(on, _)| on.contains(&(l as u64 + 1))).map(|(_, ix)| ix.clone());
+            if let Some(IndexForm::Gated { key }) = indexer.as_ref().map(|ix| ix.form) {
+                r.extend(names::roles(part::MLA_INDEXER, &p, 0, |x| {
+                    !x.starts_with("indexer_pool") && (key.kind == NormKind::Layer || x != "indexer_k_norm_bias")
+                }));
+            }
+            Mixer::Mla(Mla { indexer, ..mla.clone() })
         };
         blocks.push(Block { norm_in: n, body: Body::Mixer(mixer), norm_out: None, residual: Residual::DepthMix(DepthMixP { starts: l % group == 0 }) });
         roles.push(r);
@@ -1766,10 +1857,6 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     k.raw("architectures");
     let released = k.m.contains_key("compress_ratios");
     let fp4 = k.str("expert_dtype")? == Some("fp4");
-    // (the DSpark drafter's settings: its block of draft tokens, its noise token, the layers it reads and its rank. A drafter, not this model's computation; drafters are #333's)
-    for x in ["dspark_block_size", "dspark_noise_token_id", "dspark_target_layer_ids", "dspark_markov_rank"] {
-        let _ = k.raw(x);
-    }
     let fp8 = Fp8::parse(k.raw("quantization_config"), mt)?.is_some();
     let (heads, hd, rd) = (k.usize("num_attention_heads")?, k.usize("head_dim")?, k.usize("qk_rope_head_dim")?);
     k.opt_f64("partial_rotary_factor")?;
@@ -1781,6 +1868,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     let limit = k.opt_f64("swiglu_limit")?.filter(|&l| l > 0.0).map(|l| l as f32);
     let scale = k.opt_f64("routed_scaling_factor")?.unwrap_or(1.0) as f32;
     let streams = StreamsP {
+        lagged: false,
         streams: k.usize("hc_mult")?,
         sinkhorn_iters: k.opt_usize("hc_sinkhorn_iters")?.unwrap_or(20),
         eps: k.opt_f64("hc_eps")?.unwrap_or(1e-6) as f32,
@@ -1859,7 +1947,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     let cv = if released { &names::DEEPSEEK } else { &names::DEEPSEEK_HF };
     // (the release's quantized matrices, each with its `.scale`: the FP8 products of the attention and the shared experts, the FP4 routed experts)
     let mut scales = std::collections::BTreeMap::new();
-    let q8 = ["q_a", "q_b", "kv", "o_a", "o_b", "idx_q_b", "shared_gate", "shared_up", "shared_down"];
+    let q8 = ["q_a", "q_b", "kv", "o_a", "o_b", "idx_q_b", "shared_gate", "shared_up", "shared_down", "main_proj"];
     let mark = |r: &[(String, Source)], scales: &mut std::collections::BTreeMap<String, String>| {
         for (_, src) in r.iter().filter(|(role, _)| released && if role.starts_with("experts_") { fp4 } else { fp8 && q8.contains(&role.as_str()) }) {
             for w in src.names() {
@@ -1869,6 +1957,8 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     };
     let mlp = Mlp { act: Act::Silu, gated: true, bias: false, clamp: limit };
     let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    // (the last layer's attention and feed-forward, of which a DSpark drafter's are made)
+    let (mut comp_template, mut moe_template) = (None, None);
     for l in 0..layers {
         let p = cv.layer("", l);
         let (ratio, is_csa) = (ratios[l], csa[l]);
@@ -1893,9 +1983,21 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
             ratio,
             overlap: ratio > 0 && is_csa,
             rope: if ratio > 0 { comp_rope.clone() } else { main_rope.clone() },
-            indexer: (ratio > 0 && is_csa).then_some(Indexer { heads: ih, head_dim: idim, top_k: itop, block: ratio, shared: false, form: IndexForm::Gated }),
+            // (its compressed entries' keys normed by the compressor's RMS norm, `idx_norm`)
+            indexer: (ratio > 0 && is_csa).then_some(Indexer {
+                heads: ih,
+                head_dim: idim,
+                top_k: itop,
+                block: ratio,
+                shared: false,
+                form: IndexForm::Gated { key: Norm::rms(eps) },
+            }),
             norm_eps: eps,
+            ape: true,
+            q_head_norm: true,
+            share: None,
         };
+        comp_template = Some(c.clone());
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Compressed(c)), norm_out: None, residual: Residual::Streams(streams) });
         roles.push(r);
         // (a hash-routed layer's table of experts by token, else the choice bias)
@@ -1910,6 +2012,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
             shared_gate: false,
             latent: None,
         };
+        moe_template = Some(moe.clone());
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Ffn(Ffn::Moe(moe)), norm_out: None, residual: Residual::Streams(streams) });
         roles.push(r);
     }
@@ -1928,6 +2031,15 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     ] {
         k.raw(x);
     }
+    // (the 0731 release's DSpark drafter: n_mtp_layers of the decoder's layers with the window alone, 3 where the config does not say)
+    let draft = match (comp_template, moe_template) {
+        (Some(c), Some(mut m)) => {
+            let window = Comp { ratio: 0, overlap: false, rope: main_rope.clone(), indexer: None, ..c };
+            (m.router.hash, m.router.bias) = (false, true);
+            dspark_head(&k, k.opt_usize("n_mtp_layers")?.unwrap_or(3), window, m, Residual::Streams(streams), eps)?
+        }
+        _ => None,
+    };
     let desc = ModelDesc {
         hidden: d,
         vocab,
@@ -1935,13 +2047,432 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
         blocks,
         final_norm: Norm::rms(eps),
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::Weighted { eps: streams.eps, norm_eps: eps } },
-        mtp: Vec::new(),
+        mtp: draft.into_iter().collect(),
         vision: None,
         rope: None,
     };
     let mut out = finish(&k, desc, cv, "", roles, mtp_layers)?;
+    // (the 0731 release's drafter's tensors, under DeepSeek's names)
+    if let (Some(h), true) = (out.desc.mtp.first(), released) {
+        let (blocks, own) = dspark_roles(h.blocks.len() / 2, ne, false);
+        for r in blocks.iter().chain(std::iter::once(&own)) {
+            mark(r, &mut scales);
+        }
+        out.mtp = vec![(blocks, own)];
+    }
     out.scales = scales;
     Ok(out)
+}
+
+/// A DeepSeek release's DSpark drafter (`dspark_*` keys; `kinds::DSpark`), where the config has one: `layers` draft layers, each the model's
+/// decoder layer with the window alone (the attention `window` with the model's own form, the feed-forward `moe`) on the model's residual rule,
+/// drafting `dspark_block_size` tokens from main_x of `dspark_target_layer_ids`; a Markov head of `dspark_markov_rank` and a confidence head.
+fn dspark_head(k: &Keys, layers: usize, window: Comp, moe: Moe, residual: Residual, eps: f32) -> Result<Option<MtpHead>> {
+    let Some(block) = k.opt_usize("dspark_block_size")? else { return Ok(None) };
+    let targets: Vec<usize> = k
+        .raw("dspark_target_layer_ids")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as usize)).collect())
+        .ok_or_else(|| Error("dspark_target_layer_ids: a list of layers".into()))?;
+    let dspark = DSpark { block, noise: k.usize("dspark_noise_token_id")? as u32, targets, markov_rank: k.usize("dspark_markov_rank")?, confidence: true };
+    let b = |body: Body| Block { norm_in: Norm::rms(eps), body, norm_out: None, residual: residual.clone() };
+    let blocks = (0..layers).flat_map(|_| [b(Body::Mixer(Mixer::Compressed(window.clone()))), b(Body::Ffn(Ffn::Moe(moe.clone())))]).collect();
+    Ok(Some(MtpHead { blocks, norm_embed: Norm::rms(eps), norm_hidden: Norm::rms(eps), final_norm: Norm::rms(eps), dspark: Some(dspark) }))
+}
+
+/// A DSpark drafter's tensors as DeepSeek releases name them (`mtp.{i}.`): each draft layer's attention (the window's: no compressor) and its
+/// experts as the model's layers name them; the head's own on its first module (`main_proj`, `main_norm`) and its last (the Markov head's two factors,
+/// `markov_w1` and `markov_w2`, V4.1's `embed` and `head`; the confidence head, the final norm, and V4's hyper-head `hc_head_*`).
+fn dspark_roles(layers: usize, experts: usize, v41: bool) -> (Vec<Vec<(String, Source)>>, Vec<(String, Source)>) {
+    let mut blocks = Vec::new();
+    for i in 0..layers {
+        let p = format!("mtp.{i}");
+        let mut r = names::roles(part::V4_ATTN, &p, 0, all);
+        for t in [part::V4_KV_NORM, part::V4_SINKS, part::HC_ATTN] {
+            r.extend(names::roles(t, &p, 0, all));
+        }
+        blocks.push(r);
+        let mut r = names::roles(part::V4_MOE, &p, experts, |x| x != "hash");
+        r.extend(names::roles(part::HC_FFN, &p, 0, all));
+        blocks.push(r);
+    }
+    let (first, last) = ("mtp.0".to_string(), format!("mtp.{}", layers.saturating_sub(1)));
+    let t = |at: &str, n: &str| Source::Tensor(format!("{at}.{n}"));
+    let (w1, w2) = if v41 { ("markov_head.embed.weight", "markov_head.head.weight") } else { ("markov_head.markov_w1.weight", "markov_head.markov_w2.weight") };
+    let mut own = vec![
+        ("main_proj".to_string(), t(&first, "main_proj.weight")),
+        ("main_norm".to_string(), t(&first, "main_norm.weight")),
+        ("markov_embed".to_string(), t(&last, w1)),
+        ("markov_head".to_string(), t(&last, w2)),
+        ("confidence".to_string(), t(&last, "confidence_head.proj.weight")),
+        ("final_norm".to_string(), t(&last, "norm.weight")),
+    ];
+    if !v41 {
+        own.extend(
+            [("out_hc_fn", "hc_head_fn"), ("out_hc_base", "hc_head_base"), ("out_hc_scale", "hc_head_scale")].map(|(r, n)| (r.to_string(), t(&last, n))),
+        );
+    }
+    (blocks, own)
+}
+
+/// DeepSeek-V4.1 (`deepseek_v41`, its text model `deepseek_v41_text`, a vision tower beside it): V4's decoder with V4.1's three mechanisms, each a
+/// parameter of a kind V4 has. Its attention is CSA2 (`Comp` with no window bias and no per-head query norm): `compress_ratios` 0 (the window
+/// alone), 1 or 2, every compressing layer reading the entries of the most recent kv source at or below it (`kv_source_layer_ids`) and the picks of
+/// the most recent index source (`index_source_layer_ids`), the candidate source (`candidate_source_layer_id`) publishing blocks of
+/// `candidate_block_size` entries, `candidate_topk_blocks` kept, which the index sources after it score inside (`CompShare`). Its residual is lagged
+/// mHC (`StreamsP::lagged`, the head's collapse `Collapse::LastPre`: no hyper-head). On `engram_layer_ids` an Engram block (`NgramForm::Engram`)
+/// comes before the layer's attention. The MoE is V4's sqrt-softplus router (no hash layers; `gate_temp` 1 alone). Not read: the DSpark draft
+/// layers (counted), the vision tower, the routers' image-token bias.
+fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
+    let (mt, tc) = ("deepseek_v41", &c.text);
+    top_keys(&c.top, mt, &["text_config", "vision_config", "quantization_config", "architectures", "tie_word_embeddings"])?;
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab, eps, tied) = common(&k, c.top.get("tie_word_embeddings").and_then(|v| v.as_bool()))?;
+    let max_pos = k.opt_usize("max_position_embeddings")?;
+    k.expect("hidden_act", &Value::from("silu"))?;
+    k.expect("scoring_func", &Value::from("sqrtsoftplus"))?;
+    k.expect("topk_method", &Value::from("noaux_tc"))?;
+    k.expect("num_key_value_heads", &Value::from(1))?;
+    k.expect("n_shared_experts", &Value::from(1))?;
+    k.expect("norm_topk_prob", &Value::Bool(true))?;
+    // (the router's logits divided by the gate temperature before the score: as their factor 1 / it, the same at the release's 1)
+    let temperature = match (k.opt_f64("gate_temperature")?, k.opt_f64("gate_temp")?) {
+        (Some(a), Some(b)) if a != b => return err(format!("{mt}: gate_temperature {a} and gate_temp {b} differ")),
+        (a, b) => a.or(b).unwrap_or(1.0),
+    };
+    if temperature <= 0.0 {
+        return err(format!("{mt}: a gate temperature of {temperature}"));
+    }
+    // (the Engram tables' scale blocks: one a 32 values, which the scales' shapes say)
+    k.expect("engram_block_size", &Value::from(32))?;
+    k.expect("num_hash_layers", &Value::from(0))?;
+    let q = c.top.get("quantization_config").or(k.raw("quantization_config"));
+    let fp8 = Fp8::parse(
+        q.map(|v| {
+            let mut o = v.as_object().cloned().unwrap_or_default();
+            // (the experts' and the Engram tables' formats, said beside the dense matrices' FP8)
+            o.retain(|key, _| !key.starts_with("engram_") && !matches!(key.as_str(), "expert_dtype" | "scale_fmt" | "activation_scheme"));
+            Value::Object(o)
+        })
+        .as_ref(),
+        mt,
+    )?
+    .is_some();
+    let fp4 = q.and_then(|v| v.get("expert_dtype")).or(k.raw("expert_dtype")).and_then(|v| v.as_str()) == Some("fp4");
+    let (heads, hd, rd) = (k.usize("num_attention_heads")?, k.usize("head_dim")?, k.usize("qk_rope_head_dim")?);
+    let (q_lora, o_lora, o_groups, window) =
+        (k.usize("q_lora_rank")?, k.usize("o_lora_rank")?, k.usize("o_groups")?, k.opt_usize("sliding_window")?.unwrap_or(128));
+    let (ih, idim, itop) = (k.usize("index_n_heads")?, k.usize("index_head_dim")?, k.usize("index_topk")?);
+    let (ne, top_k) = (k.usize("n_routed_experts")?, k.usize("num_experts_per_tok")?);
+    k.usize("moe_intermediate_size")?;
+    let limit = k.opt_f64("swiglu_limit")?.filter(|&l| l > 0.0).map(|l| l as f32);
+    let scale = k.opt_f64("routed_scaling_factor")?.unwrap_or(1.0) as f32;
+    let streams = StreamsP {
+        streams: k.usize("hc_mult")?,
+        sinkhorn_iters: k.opt_usize("hc_sinkhorn_iters")?.unwrap_or(20),
+        eps: k.opt_f64("hc_eps")?.unwrap_or(1e-6) as f32,
+        norm_eps: eps,
+        rounding: Rounding::Once,
+        lagged: true,
+    };
+    let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
+    let list = |x: &str| -> Result<Vec<usize>> {
+        k.raw(x)
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as usize)).collect())
+            .ok_or_else(|| Error(format!("{mt}: no {x}")))
+    };
+    let ratios = list("compress_ratios")?;
+    if ratios.len() < layers || ratios[..layers].iter().any(|r| *r > 2) {
+        return err(format!("{mt}: compress_ratios {ratios:?} for {layers} layers: 0, 1 or 2 each"));
+    }
+    let (kv_src, idx_src) = (list("kv_source_layer_ids")?, list("index_source_layer_ids")?);
+    let cand = k.raw("candidate_source_layer_id").and_then(|v| v.as_i64()).filter(|&c| c >= 0).map(|c| c as usize);
+    let cand_shape = match cand {
+        Some(_) => Some((k.usize("candidate_block_size")?, k.usize("candidate_topk_blocks")?)),
+        None => None,
+    };
+    // (each compressing layer's sources: the most recent at or below it, which compresses by the same ratio)
+    let source = |ids: &[usize], l: usize| ids.iter().copied().filter(|&s| s <= l).max().filter(|&s| ratios[s] == ratios[l]);
+    for l in (0..layers).filter(|&l| ratios[l] > 0) {
+        if source(&kv_src, l).is_none() || source(&idx_src, l).is_none() {
+            return err(format!("{mt}: layer {l} compresses by {}, and the most recent kv or index source at or below it does not", ratios[l]));
+        }
+        // (a candidate block is a span of positions of the candidate source's ratio: an index source of another ratio is not described)
+        if let Some(c) = cand.filter(|&c| c < l && idx_src.contains(&l) && ratios[c] != ratios[l]) {
+            return err(format!("{mt}: index source {l} compresses by {}, the candidate source {c} by {}", ratios[l], ratios[c]));
+        }
+    }
+    let mut main = Rope::plain(k.opt_f64("rope_theta")?.unwrap_or(10_000.0), rd);
+    main.style = RopeStyle::Interleaved;
+    // (the compressing layers' YaRN: rope_scaling, else the rope_yarn_* keys, else the release's defaults: 16, 65,536, 32, 1)
+    let mut comp_m = match k.raw("rope_scaling") {
+        Some(Value::Object(o)) => o.clone(),
+        _ => {
+            let mut o = Map::new();
+            o.insert("type".into(), Value::from("yarn"));
+            for (key, own, dflt) in [
+                ("factor", "rope_yarn_factor", 16.0),
+                ("original_max_position_embeddings", "rope_yarn_original_max_position_embeddings", 65536.0),
+                ("beta_fast", "rope_yarn_beta_fast", 32.0),
+                ("beta_slow", "rope_yarn_beta_slow", 1.0),
+            ] {
+                let v = k.opt_f64(own)?.unwrap_or(dflt);
+                o.insert(key.into(), if key == "original_max_position_embeddings" { Value::from(v as u64) } else { Value::from(v) });
+            }
+            o
+        }
+    };
+    comp_m.insert("rope_theta".into(), Value::from(k.opt_f64("compress_rope_theta")?.unwrap_or(160_000.0)));
+    if comp_m.contains_key("factor") && !comp_m.contains_key("attention_factor") {
+        comp_m.insert("attention_factor".into(), Value::from(1.0));
+    }
+    let mut comp_rope = rope(&comp_m, rd, max_pos, &format!("{mt} rope_scaling"))?;
+    comp_rope.style = RopeStyle::Interleaved;
+    // Engram's layers, each a block before the layer's attention: its tables the next primes past engram_vocab_size, their rows engram_num_embeddings
+    let engram: Vec<usize> = list("engram_layer_ids").unwrap_or_default();
+    let engram_kind = |place: usize, layer: usize| -> Result<Ngram> {
+        let n = Ngram {
+            order: k.usize("engram_max_ngram_size")?,
+            heads: k.usize("engram_n_heads")?,
+            dim: (k.usize("engram_max_ngram_size")? - 1) * k.usize("engram_n_heads")? * k.usize("engram_head_dim")?,
+            base: k.usize("engram_vocab_size")? as u64,
+            vocab: k.usize("engram_compressed_vocab_size")?,
+            seed: 10007 * layer as u64,
+            index: place,
+            eos: k.usize("engram_pad_token_id")? as u32,
+            streams: streams.streams,
+            conv: 0,
+            dilation: 1,
+            norm: Norm::rms(eps),
+            form: NgramForm::Engram,
+        };
+        let rows = list("engram_num_embeddings")?;
+        let want = super::reference::ngram::tables(&n).0.iter().sum::<u64>();
+        if rows.get(place).map(|&r| r as u64) != Some(want) {
+            return err(format!("{mt}: engram_num_embeddings {rows:?}: Engram layer {layer}'s tables hold {want} rows"));
+        }
+        Ok(n)
+    };
+    let cv = &names::DEEPSEEK_V41;
+    let mut scales = std::collections::BTreeMap::new();
+    let q8 = ["q_a", "q_b", "kv", "o_a", "o_b", "idx_q_b", "shared_gate", "shared_up", "shared_down", "ngram", "main_proj"];
+    let mark = |r: &[(String, Source)], scales: &mut std::collections::BTreeMap<String, String>| {
+        for (_, src) in r.iter().filter(|(role, _)| if role.starts_with("experts_") { fp4 } else { fp8 && q8.contains(&role.as_str()) }) {
+            for w in src.names() {
+                scales.insert(w.clone(), w.replace(".weight", ".scale"));
+            }
+        }
+    };
+    let mlp = Mlp { act: Act::Silu, gated: true, bias: false, clamp: limit };
+    let (mut blocks, mut roles, mut attn_block) = (Vec::new(), Vec::new(), vec![0usize; layers]);
+    // (the last layer's attention and feed-forward, of which the drafter's are made)
+    let (mut comp_template, mut moe_template) = (None, None);
+    for l in 0..layers {
+        let p = cv.layer("", l);
+        if let Some(place) = engram.iter().position(|&e| e == l) {
+            let r = names::roles(part::ENGRAM, &p, 0, all);
+            mark(&r, &mut scales);
+            blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Ngram(engram_kind(place, l)?), norm_out: None, residual: Residual::Add });
+            roles.push(r);
+        }
+        attn_block[l] = blocks.len();
+        let ratio = ratios[l];
+        let (is_kv, is_idx) = (kv_src.contains(&l), idx_src.contains(&l));
+        let mut r = names::roles(part::V4_ATTN, &p, 0, all);
+        r.extend(names::roles(part::V4_KV_NORM, &p, 0, all));
+        r.extend(names::roles(part::V4_SINKS, &p, 0, all));
+        if ratio > 0 && is_kv {
+            r.extend(names::roles(part::V41_COMP, &p, 0, |x| ratio > 1 || x != "comp_gate"));
+        }
+        if ratio > 0 && is_idx {
+            r.extend(names::roles(part::V41_INDEXER, &p, 0, |x| is_kv || !x.starts_with("idx_k")));
+        }
+        r.extend(names::roles(part::HC_ATTN, &p, 0, all));
+        mark(&r, &mut scales);
+        let share = (ratio > 0).then(|| CompShare {
+            entries: (!is_kv).then(|| attn_block[source(&kv_src, l).expect("checked above")]),
+            picks: (!is_idx).then(|| attn_block[source(&idx_src, l).expect("checked above")]),
+            candidates: cand.filter(|&c| is_idx && c < l).map(|c| attn_block[c]),
+            publish: cand_shape.filter(|_| cand == Some(l)),
+        });
+        let comp = Comp {
+            heads,
+            head_dim: hd,
+            q_lora,
+            o_groups,
+            o_lora,
+            window,
+            ratio,
+            overlap: false,
+            rope: if ratio > 0 { comp_rope.clone() } else { main.clone() },
+            indexer: (ratio > 0).then_some(Indexer {
+                heads: ih,
+                head_dim: idim,
+                top_k: itop,
+                block: ratio,
+                shared: false,
+                form: IndexForm::Gated { key: Norm::rms(eps) },
+            }),
+            norm_eps: eps,
+            ape: false,
+            q_head_norm: false,
+            share,
+        };
+        comp_template = Some(comp.clone());
+        blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Compressed(comp)), norm_out: None, residual: Residual::Streams(streams) });
+        roles.push(r);
+        let mut r = names::roles(part::V4_MOE, &p, ne, |x| x != "hash");
+        r.extend(names::roles(part::HC_FFN, &p, 0, all));
+        mark(&r, &mut scales);
+        let moe = Moe {
+            router: Router {
+                score: RouterScore::SqrtSoftplus,
+                logit_scale: (1.0 / temperature) as f32,
+                bias: true,
+                groups: None,
+                top_k,
+                renorm: true,
+                scale,
+                hash: false,
+            },
+            experts: ne,
+            expert: mlp,
+            shared: Some(mlp),
+            shared_gate: false,
+            latent: None,
+        };
+        moe_template = Some(moe.clone());
+        blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Ffn(Ffn::Moe(moe)), norm_out: None, residual: Residual::Streams(streams) });
+        roles.push(r);
+    }
+    for x in ["rope_scaling", "rope_theta", "compress_rope_theta", "candidate_source_layer_id", "candidate_block_size", "candidate_topk_blocks", "expert_dtype"]
+    {
+        k.raw(x);
+    }
+    for x in [
+        "engram_max_ngram_size",
+        "engram_n_heads",
+        "engram_head_dim",
+        "engram_vocab_size",
+        "engram_compressed_vocab_size",
+        "engram_pad_token_id",
+        "engram_num_embeddings",
+    ] {
+        k.raw(x);
+    }
+    // (the DSpark drafter: its layers the decoder's with the window alone, their experts its own count)
+    let window_attn = Comp { ratio: 0, rope: main.clone(), indexer: None, share: None, ..comp_template.ok_or_else(|| Error(format!("{mt}: no layers")))? };
+    let mut dmoe = moe_template.ok_or_else(|| Error(format!("{mt}: no layers")))?;
+    dmoe.router.top_k = k.opt_usize("dspark_num_experts_per_tok")?.unwrap_or(top_k);
+    dmoe.experts = k.opt_usize("dspark_n_routed_experts")?.unwrap_or(ne);
+    let n_draft = k.opt_usize("n_mtp_layers")?.unwrap_or(mtp_layers);
+    let draft = dspark_head(&k, n_draft, window_attn, dmoe, Residual::Streams(streams), eps)?;
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: streams.streams },
+        blocks,
+        final_norm: Norm::rms(eps),
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::LastPre },
+        mtp: draft.into_iter().collect(),
+        vision: None,
+        rope: None,
+    };
+    let mut out = finish(&k, desc, cv, "", roles, mtp_layers)?;
+    if let Some(h) = out.desc.mtp.first() {
+        let experts = h.blocks.iter().find_map(|b| if let Body::Ffn(Ffn::Moe(m)) = &b.body { Some(m.experts) } else { None }).unwrap_or(0);
+        let (blocks, own) = dspark_roles(h.blocks.len() / 2, experts, true);
+        for r in blocks.iter().chain(std::iter::once(&own)) {
+            mark(r, &mut scales);
+        }
+        out.mtp = vec![(blocks, own)];
+    }
+    out.scales = scales;
+    out.shapes = v41_shapes(&out, k.usize("moe_intermediate_size")?);
+    Ok(out)
+}
+
+/// Each tensor's shape in a DeepSeek-V4.1 description (its blocks', its drafter's), from the kinds' widths and the experts' `inter`: what a lowering sizes
+/// its matrices by and what a random model of the config is made at.
+fn v41_shapes(out: &Described, inter: usize) -> std::collections::BTreeMap<String, Vec<usize>> {
+    let (d, v) = (out.desc.hidden, out.desc.vocab);
+    let mut sh = std::collections::BTreeMap::new();
+    let mut put = |b: &Block, r: &[(String, Source)]| {
+        let n = match b.residual {
+            Residual::Streams(s) => s.streams,
+            _ => 1,
+        };
+        let hc = [("hc_fn", vec![(2 + n) * n, n * d]), ("hc_base", vec![(2 + n) * n]), ("hc_scale", vec![3])];
+        let want: Vec<(&str, Vec<usize>)> = match &b.body {
+            Body::Mixer(Mixer::Compressed(c)) => {
+                let (q, hd, (ih, idim)) = (c.q_lora, c.head_dim, c.indexer.as_ref().map_or((0, 0), |x| (x.heads, x.head_dim)));
+                vec![
+                    ("norm_in", vec![d]),
+                    ("q_a", vec![q, d]),
+                    ("q_a_norm", vec![q]),
+                    ("q_b", vec![c.heads * hd, q]),
+                    ("kv", vec![hd, d]),
+                    ("kv_norm", vec![hd]),
+                    ("o_a", vec![c.o_groups * c.o_lora, c.heads * hd / c.o_groups.max(1)]),
+                    ("o_b", vec![d, c.o_groups * c.o_lora]),
+                    ("sinks", vec![c.heads]),
+                    ("comp_kv", vec![hd, d]),
+                    ("comp_gate", vec![hd, d]),
+                    ("comp_norm", vec![hd]),
+                    ("idx_q_b", vec![ih * idim, q]),
+                    ("idx_weights", vec![ih, d]),
+                    ("idx_k", vec![idim, hd]),
+                    ("idx_k_norm", vec![idim]),
+                ]
+            }
+            Body::Ffn(Ffn::Moe(m)) => vec![
+                ("norm_in", vec![d]),
+                ("router", vec![m.experts, d]),
+                ("choice_bias", vec![m.experts]),
+                ("experts_gate_up", vec![inter, d]),
+                ("experts_down", vec![d, inter]),
+                ("shared_gate", vec![inter, d]),
+                ("shared_up", vec![inter, d]),
+                ("shared_down", vec![d, inter]),
+            ],
+            Body::Ngram(g) => {
+                let rows = super::reference::ngram::tables(g).0.iter().sum::<u64>() as usize;
+                vec![
+                    ("ngram", vec![rows, g.dim / ((g.order - 1) * g.heads)]),
+                    ("kv", vec![(g.streams + 1) * d, g.dim]),
+                    ("norm_in", vec![g.streams, d]),
+                    ("norm_key", vec![g.streams, d]),
+                ]
+            }
+            _ => Vec::new(),
+        };
+        shape_roles(&mut sh, r, &[want, hc.to_vec()].concat());
+    };
+    for (b, r) in out.desc.blocks.iter().zip(&out.blocks) {
+        put(b, r);
+    }
+    if let (Some(h), Some((blocks, own))) = (out.desc.mtp.first(), out.mtp.first()) {
+        for (b, r) in h.blocks.iter().zip(blocks) {
+            put(b, r);
+        }
+        if let Some(ds) = &h.dspark {
+            let own_shapes = [
+                ("main_proj", vec![d, ds.targets.len() * d]),
+                ("main_norm", vec![d]),
+                ("markov_embed", vec![v, ds.markov_rank]),
+                ("markov_head", vec![v, ds.markov_rank]),
+                ("confidence", vec![1, d + ds.markov_rank]),
+                ("final_norm", vec![d]),
+            ];
+            shape_roles(&mut sh, own, &own_shapes);
+        }
+    }
+    for n in [Some(&out.embed), out.head.as_ref()].into_iter().flatten() {
+        sh.insert(n.clone(), vec![v, d]);
+    }
+    sh.insert(out.final_norm.clone(), vec![d]);
+    sh
 }
 
 /// Nemotron 3 (`nemotron_h`, `NemotronHForCausalLM`): a layer is one block, `x + mixer(norm(x))`, its mixer named by the pattern:

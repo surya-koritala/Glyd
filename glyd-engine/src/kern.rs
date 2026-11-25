@@ -98,7 +98,10 @@ pub struct Kern {
     topk_masked: Option<crate::kt::topk64_bf16_masked>,
     gather: crate::kt::gather_bf16,
     kv12_rows: crate::kt::kv12_rows,
+    row_tables: crate::kt::row_tables,
     swap_copy: crate::kt::swap_copy,
+    /// None where the kernels have none (a step is then not launched before the one before it is read).
+    step_ids: Option<crate::kt::step_ids>,
     expsum: crate::kt::expsum_bf16,
     logsumexp: crate::kt::logsumexp_bf16,
     read_stream: crate::kt::read_stream,
@@ -125,7 +128,9 @@ impl Kern {
             topk_masked: dev.typed::<crate::kt::topk64_bf16_masked>().ok(),
             gather: dev.typed()?,
             kv12_rows: dev.typed()?,
+            row_tables: dev.typed()?,
             swap_copy: dev.typed()?,
+            step_ids: dev.typed::<crate::kt::step_ids>().ok(),
             expsum: dev.typed()?,
             logsumexp: dev.typed()?,
             read_stream: dev.typed()?,
@@ -369,11 +374,33 @@ impl Kern {
     ///
     /// # Safety
     /// As `copy_row`; `idx` holds n ints below v and `out` room for n f32.
-    /// The 12-bit pages' slots (int64 [n]), lengths and windows' first tokens (int32 [n s]) of n rows at positions `pos` (int32 [n]) through block table `tab` (0: none), as the
-    /// kv12_rows kernel says.
+    /// The 12-bit pages' slots (int64 [n]), lengths and windows' first tokens (int32 [n s]) of n rows at positions `pos` (int32 [n]) through block table `tab.0` (0: none; row r's
+    /// at tab.0 + r tab.1 entries), as the kv12_rows kernel says.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn kv12_rows(&self, s: Stream, pos: u64, n: usize, tab: u64, window: usize, parts: usize, slots: u64, lens: u64, first: u64) -> Result<()> {
-        launch!(self.kv12_rows, [(n as u32).div_ceil(256), 1, 1], [256, 1, 1], s; pos, n as i32, tab, window as i32, parts as i32, slots, lens, first)
+    pub unsafe fn kv12_rows(
+        &self,
+        s: Stream,
+        pos: u64,
+        n: usize,
+        tab: (u64, usize),
+        window: usize,
+        parts: usize,
+        slots: u64,
+        lens: u64,
+        first: u64,
+    ) -> Result<()> {
+        launch!(self.kv12_rows, [(n as u32).div_ceil(256), 1, 1], [256, 1, 1], s; pos, n as i32, tab.0, tab.1 as i64, window as i32, parts as i32, slots, lens, first)
+    }
+
+    /// The block tables of a pass's `n` decode rows (the row_tables kernel): row r's sequence's (row `slot[r]` of `tabs`, `t` entries a row) to rows r dup .. r dup + dup - 1 of
+    /// `out`, the entries its position `pos[r]` reads in a window of `window` tokens (0: none). A row whose slot or position is negative (padding) is left as it is.
+    ///
+    /// # Safety
+    /// `tabs` holds every slot's t entries, `slot` and `pos` n int32 each, `out` n dup t int32.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn row_tables(&self, s: Stream, tabs: u64, t: usize, slot: u64, pos: u64, n: usize, window: usize, dup: usize, out: u64) -> Result<()> {
+        let x = (t as u32).div_ceil(256).clamp(1, 8);
+        launch!(self.row_tables, [x, n as u32, 1], [256, 1, 1], s; tabs, t as i64, slot, pos, n as i32, window as i32, dup as i32, out)
     }
 
     /// The `n` copies listed at `items` (three u64 a copy: source, destination, bytes, a multiple of 16 with both ends 16-byte aligned), by `blocks` blocks of 256 threads: a swap's
@@ -383,6 +410,24 @@ impl Kern {
     /// `items` and every range it lists are live for the kernel's run, device memory or mapped pinned host memory, and no two destinations overlap.
     pub unsafe fn swap_copy(&self, s: Stream, items: u64, n: usize, blocks: u32) -> Result<()> {
         launch!(self.swap_copy, [blocks.max(1), 1, 1], [256, 1, 1], s; items, n as i32)
+    }
+
+    /// ids [n] (int64) = src[i] where that is a token, else tok[-1 - src[i]]: a step's token ids, those the step before chose read where it left them (`step_ids`); the same
+    /// as int32 into ids32 where it is not 0.
+    ///
+    /// # Safety
+    /// src, ids and ids32 (where not 0) hold n entries on the device; tok every row a negative src names.
+    pub unsafe fn step_ids(&self, s: Stream, src: u64, tok: u64, ids: u64, ids32: u64, n: usize) -> Result<()> {
+        let Some(k) = &self.step_ids else { return crate::ffi::err("these kernels have no step_ids") };
+        if n == 0 {
+            return Ok(());
+        }
+        launch!(k, [(n as u32).div_ceil(256), 1, 1], [256, 1, 1], s; src, tok, ids, ids32, n as i32)
+    }
+
+    /// Whether the kernels have `step_ids`.
+    pub fn has_step_ids(&self) -> bool {
+        self.step_ids.is_some()
     }
 
     pub unsafe fn gather_row(&self, s: Stream, logits: u64, v: usize, row: usize, idx: u64, n: usize, out: u64) -> Result<()> {

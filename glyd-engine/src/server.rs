@@ -767,9 +767,6 @@ const NOT_DONE: &[(&str, &str)] = &[
 /// The fields of constrained decoding that are not done (the grammars' own, `constraint_spec`'s, are): where the server runs alone the grammar's whitespace is llguidance's, and its backend the only one.
 const CONSTRAINED: &[&str] = &["guided_whitespace_pattern"];
 
-/// What an engine that runs one sequence at a time (`work_gen`'s: a level's) does not do besides NOT_DONE, as NOT_DONE lists it: it gives no log-probabilities, and no least length (`min_tokens`).
-pub const ONE_AT_A_TIME: &[(&str, &str)] = &[("logprobs", "false"), ("min_tokens", "0")];
-
 /// Whether the request sets `name` to something other than null and `default`, the value that means it was not asked for.
 fn asked(v: &Value, name: &str, default: &str) -> bool {
     v.get(name).is_some_and(|x| *x != Value::Null && json::parse(default).map_or(true, |d| *x != d))
@@ -2283,7 +2280,7 @@ pub struct Shared {
     pub vocab: usize,
     /// Thinking where a request does not say (None: the template's own default).
     pub thinking: Option<bool>,
-    /// The fields the engine does not do besides NOT_DONE's (ONE_AT_A_TIME, or none): refused, in words, where a request sets one.
+    /// The fields the engine does not do besides NOT_DONE's (none: every engine is a scheduler's step, which does them): refused, in words, where a request sets one.
     pub refused: &'static [(&'static str, &'static str)],
     /// The model's runtime context (src/runtime/context.rs): its figures, its engine's first failure, what /v1/glyd/info says of it. The process's own where one model is served.
     pub rt: Arc<crate::runtime::context::Context>,
@@ -2530,41 +2527,6 @@ pub fn detach(job: Job, shared: &Arc<Shared>, tx: &Sender<Job>) {
             });
         }
         _ => {}
-    }
-}
-
-/// `work` for an engine that has no scheduler (a lossy level's): the sequences are run one at a time, in the order they come; one that is asked to end before its turn (a cancel, its client gone) is not run.
-pub fn work_gen(e: &mut dyn Gen, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &Sender<Job>) {
-    while let Ok(job) = rx.recv() {
-        match job {
-            Job::Stop => return,
-            Job::Seq(sub) if sub.abort.load(Ordering::Relaxed) => {
-                let _ = sub.out.send(Ev::End(Ok(Finish::Stopped)));
-            }
-            Job::Seq(sub) => {
-                let mut timer = crate::ops::Timer::start(sub.prompt.len());
-                let r = e.reply(&sub.prompt, &sub.reply, &mut |t| {
-                    timer.token();
-                    sub.out.send(Ev::Token(t)).is_ok() && !sub.abort.load(Ordering::Relaxed)
-                });
-                timer.end(match &r {
-                    Ok((_, Finish::Stop)) => "stop",
-                    Ok((_, Finish::Length)) => "length",
-                    Ok((_, Finish::Stopped)) => "stopped",
-                    Err(_) => "error",
-                });
-                if let Err(err) = &r {
-                    shared.rt.fail(&err.to_string());
-                }
-                let lost = r.as_ref().err().filter(|e| e.sticky()).cloned();
-                let _ = sub.out.send(Ev::End(r.map(|x| x.1)));
-                if let Some(err) = lost {
-                    device_lost(&err);
-                    return;
-                }
-            }
-            _ => detach(job, &shared, tx),
-        }
     }
 }
 
@@ -5878,7 +5840,10 @@ pub(crate) mod tests {
         assert_eq!((st, state(b).1.as_deref()), (200, Some("ended")));
     }
 
-    /// What a level's engine does not do (ONE_AT_A_TIME: log-probabilities, a least length) is refused in words where it is asked for, and not where its value means it is not; a length the context has no room
+    /// Fields an engine might not do (an engine that ran one sequence at a time gave no log-probabilities and no least length), for the checks of a refusal.
+    const ONE_AT_A_TIME: &[(&str, &str)] = &[("logprobs", "false"), ("min_tokens", "0")];
+
+    /// What an engine does not do (ONE_AT_A_TIME here: log-probabilities, a least length) is refused in words where it is asked for, and not where its value means it is not; a length the context has no room
     /// for after the prompt is refused, not cut short (one that fits to the last token is served); and /v1/glyd/tokenize counts a prompt as its reply's usage does, a chat's or a plain completion's, and runs nothing.
     #[test]
     fn what_the_engine_does_not_do_is_refused_and_a_prompt_is_counted() {
@@ -5923,59 +5888,6 @@ pub(crate) mod tests {
         }
         let (st, body) = chat(&format!(",\"max_tokens\":{}", window - used));
         assert_eq!(st, 200, "{body}");
-    }
-
-    /// A level's engine (`work_gen`: one sequence at a time) does not run a sequence asked to end before its turn (a cancel, its client gone): it ends at once, stopped; the next runs.
-    #[test]
-    fn a_sequence_asked_to_end_before_its_turn_is_not_run() {
-        struct Count(usize);
-        impl Gen for Count {
-            fn capacity(&self) -> usize {
-                64
-            }
-            fn reply(&mut self, _: &[u32], _: &Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, Finish)> {
-                self.0 += 1;
-                each(7);
-                Ok((vec![7], Finish::Length))
-            }
-        }
-        let shared = Arc::new(Shared {
-            tok: crate::tok::tests::toy(&["x"]),
-            chat: None,
-            name: "m".into(),
-            defaults: Params::default(),
-            window: 64,
-            vocab: 2048,
-            thinking: None,
-            refused: ONE_AT_A_TIME,
-            rt: crate::runtime::context::Context::process().clone(),
-        });
-        let (tx, rx) = std::sync::mpsc::channel();
-        let seq = |abort: bool| {
-            let (out, events) = std::sync::mpsc::channel();
-            let reply = Reply { params: Params::default(), max_new: 4, ignore_eos: false, logprobs: None, stop_ids: Vec::new() };
-            tx.send(Job::Seq(Submit {
-                prompt: vec![1, 2],
-                reply,
-                out,
-                abort: Arc::new(AtomicBool::new(abort)),
-                resumed: Default::default(),
-                cached: Default::default(),
-                created: Default::default(),
-                salt: 0,
-                pin: 0,
-                images: Vec::new(),
-            }))
-            .unwrap();
-            events
-        };
-        let (gone, kept) = (seq(true), seq(false));
-        tx.send(Job::Stop).unwrap();
-        let mut c = Count(0);
-        work_gen(&mut c, shared, &rx, &tx);
-        assert!(matches!(gone.recv().unwrap(), Ev::End(Ok(Finish::Stopped))));
-        assert!(matches!(kept.recv().unwrap(), Ev::Token(7)) && matches!(kept.recv().unwrap(), Ev::End(Ok(Finish::Length))));
-        assert_eq!(c.0, 1, "the sequence asked to end was not run");
     }
 }
 

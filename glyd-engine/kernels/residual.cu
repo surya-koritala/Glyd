@@ -320,6 +320,41 @@ extern "C" __global__ void __launch_bounds__(512) hc_head(const bf16* x, const f
     }
 }
 
+// Lagged mHC (kind `StreamsP::lagged`, DeepSeek-V4.1): the block's input from the streams x [n, 4, D] weighed by the previous lagged block's input weights lag [n, 4] (fp32; `first`: one-hot on
+// stream 0 before the first block), summed in the order of hc_tail's collapse and rounded to bf16, normed with the weight nw [D] (`single`: rounded once; else the normed value rounded first) into
+// h [n, D]; then, where `keep`, lag takes this block's own input weights, the first 4 of hcp [n, 24] (hc_fin's, hc_mix's). With `keep` 0 it is the head's collapse (`Collapse::LastPre`) and
+// the final norm. A block a row, 512 threads.
+extern "C" __global__ void __launch_bounds__(512) hc_lag(const bf16* x, float* lag, const float* hcp, const bf16* nw, bf16* h, int D, float eps, int first, int keep, int single) {
+    const int t = blockIdx.x, tid = threadIdx.x;
+    __shared__ float w[HC_N];
+    if (tid < HC_N) w[tid] = first ? (tid == 0 ? 1.f : 0.f) : lag[(size_t)t * HC_N + tid];
+    __syncthreads();
+    const bf16* xr = x + (size_t)t * HC_N * D;
+    float cv[HC_PER], ss = 0.f;
+#pragma unroll
+    for (int j = 0; j < HC_PER; j++) {
+        const int d = tid + j * blockDim.x;
+        float c = 0.f;
+        if (d < D) {
+            c = w[0] * b2f(xr[d]);
+            c += w[1] * b2f(xr[D + d]);
+            c += w[2] * b2f(xr[2 * D + d]);
+            c += w[3] * b2f(xr[3 * D + d]);
+            c = b2f(f2b(c));
+        }
+        cv[j] = c;
+        ss += c * c;
+    }
+    const float r = rsqrtf(block_sum(ss) / D + eps);
+#pragma unroll
+    for (int j = 0; j < HC_PER; j++) {
+        const int d = tid + j * blockDim.x;
+        if (d < D) h[(size_t)t * D + d] = f2b(b2f(nw[d]) * (single ? cv[j] * r : b2f(f2b(cv[j] * r))));
+    }
+    // (the weights were read into shared memory before: the row's own replace them for the next lagged block)
+    if (keep && tid < HC_N) lag[(size_t)t * HC_N + tid] = hcp[(size_t)t * HC_NP + tid];
+}
+
 // ---- the plain add, the gated residual, the input-scaled norm ------------------------------------------------------------------------------------------------------------------------------
 // x = bf16(x + a), e values (a depth mix's partial sum: an empty one is zeros, so the first add is a itself).
 extern "C" __global__ void res_add(bf16* x, const bf16* a, long long e) {

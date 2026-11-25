@@ -97,7 +97,7 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
         });
         let (dh, nk, has_v) = (a.head_dim, a.kv_heads, !a.k_eq_v);
         let ring = rings.len();
-        rings.push(Ring { d: dh, nk, window: a.window.unwrap_or(0), values: true });
+        rings.push(Ring::kv(dh, nk, a.window.unwrap_or(0)));
         let mut qkv = vec![one(ar, "q")?, one(ar, "k")?];
         if has_v {
             qkv.push(one(ar, "v")?);
@@ -161,6 +161,7 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
         widths,
         mats,
         small,
+        forms: Vec::new(),
         ropes,
         rings,
         // (the scale in the activations' type, bf16, as transformers casts it: 62.0 for sqrt(3840), where the f32 reference keeps 61.97)
@@ -264,7 +265,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
             None => None,
         };
         let ring = rings.len();
-        rings.push(Ring { d: a.head_dim, nk: a.kv_heads, window: a.window.unwrap_or(0), values: true });
+        rings.push(Ring::kv(a.head_dim, a.kv_heads, a.window.unwrap_or(0)));
         let attn = AttnOp::of(a, Slot::Proj, ring, table, qk)?;
         let w = mats.len();
         let qkv = item(vec![one(ar, "q")?, one(ar, "k")?, one(ar, "v")?], &shape)?;
@@ -329,6 +330,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         widths,
         mats,
         small,
+        forms: Vec::new(),
         ropes,
         rings,
         first: first.ok_or_else(|| Error(format!("{what}: no layers")))?,
@@ -389,7 +391,8 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
     {
         return err(format!("{what}: an embedding of {:?} and a head of {:?}: the kernels take four gated streams and their mixer", m.embed, m.head));
     }
-    let (mut mats, mut small, mut states, mut ropes) = (Vec::new(), Vec::<String>::new(), Vec::<usize>::new(), Vec::<Rope>::new());
+    let (mut mats, mut small, mut states, mut ropes, mut rings) =
+        (Vec::new(), Vec::<String>::new(), Vec::<usize>::new(), Vec::<Rope>::new(), Vec::<Ring>::new());
     let mut ops: Vec<Vec<Op>> = Vec::new();
     let mut layer: Vec<Op> = Vec::new();
     let (mut mix_w, mut attn_w, mut rank_w, mut ple_w, mut n_moe) = (0, 0, 0, 0, 0);
@@ -427,6 +430,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
             Body::Ngram(n) => {
                 let Ngram { order, heads, dim, conv, dilation, streams, eos: end, .. } = *n;
                 if (order, conv, dilation, streams) != (3, 4, 3, 4)
+                    || n.form != crate::runtime::kinds::NgramForm::Condor
                     || n.norm.weight != NormWeight::PlusOne
                     || dim % (2 * heads) != 0
                     || b.residual != Residual::Add
@@ -503,9 +507,10 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                             }
                         };
                         let qk = (name(&mut small, one(roles, "q_norm")?), name(&mut small, one(roles, "k_norm")?));
-                        let kvb = max_pos * a.kv_heads * a.head_dim * 2;
-                        let kv = [state(&mut states, kvb), state(&mut states, kvb)];
-                        let att = AttnOp::picked(a, Slot::Mix, kv, Some(table), Some(qk))?;
+                        // (its keys and values, the indexer's raw keys and its pools' keys: rings of the executor's pages, as every attention kind's; the pools an entry of 4 tokens a row)
+                        let ring = rings.len();
+                        rings.extend([Ring::kv(a.head_dim, a.kv_heads, 0), Ring::keys(128, 1, 0), Ring::entries(128, 4)]);
+                        let att = AttnOp::picked(a, Slot::Mix, ring, Some(table), Some(qk))?;
                         let stride = att.stride;
                         let qkv = mat(&mut mats, vec![one(roles, "q")?, one(roles, "k")?, one(roles, "v")?])?;
                         if mats[qkv].rows != stride {
@@ -514,7 +519,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                         let index = mat(&mut mats, vec![one(roles, "index_qk")?])?;
                         let o = mat(&mut mats, vec![one(roles, "o")?])?;
                         let (iqn, ikn) = (name(&mut small, one(roles, "index_q_norm")?), name(&mut small, one(roles, "index_k_norm")?));
-                        let (keys, pools) = (state(&mut states, max_pos * 128 * 2), state(&mut states, (max_pos / 4 + 1) * 128 * 2));
+                        let (keys, pools) = (ring + 1, ring + 2);
                         let pick = super::IdxPick {
                             heads: ix.heads,
                             ratio: ix.block,
@@ -603,8 +608,9 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
         widths,
         mats,
         small,
+        forms: Vec::new(),
         ropes,
-        rings: Vec::new(),
+        rings,
         first: Op::Streams,
         layers: ops,
         states,
@@ -674,10 +680,33 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
     let row = cd + vd;
     let (mut n_mats, mut n_small, mut rings, mut states, mut ops_all) = (0, 0, Vec::new(), Vec::new(), Vec::new());
     let mut first = None;
+    // (the tensors, named in the order the operations index them: a layer's matrices, its norms and its mixer's small tensors)
+    let shape = |n: &str| d.shapes.get(n).cloned();
+    let one = |roles: &[(String, Source)], r: &str| -> Result<String> {
+        match role(roles, r) {
+            Some(Source::Tensor(n)) => Ok(n.clone()),
+            other => err(format!("Qwen3.5: the role {r} is {other:?}, where one tensor is")),
+        }
+    };
+    let (mut mats, mut small) = (Vec::new(), Vec::<String>::new());
     for (l, &kind) in kinds.iter().enumerate() {
         if !(st.layers.0..st.layers.1).contains(&l) {
             ops_all.push(Vec::new());
             continue;
+        }
+        let (ar, fr) = (&d.blocks[2 * l], &d.blocks[2 * l + 1]);
+        let mixer: (&[&[&str]], &[&str]) = match kind {
+            Kind::Linear => (&[&["qkv", "gate"], &["beta", "decay"], &["o"]], &["conv", "a_log", "dt_bias", "norm"]),
+            Kind::Full => (&[&["q", "k", "v"], &["o"]], &["q_norm", "k_norm"]),
+        };
+        for m in mixer.0 {
+            mats.push(item(m.iter().map(|r| one(ar, r)).collect::<Result<_>>()?, &shape)?);
+        }
+        mats.push(item(vec![one(fr, "gate")?, one(fr, "up")?], &shape)?);
+        mats.push(item(vec![one(fr, "down")?], &shape)?);
+        small.extend([one(ar, "norm_in")?, one(fr, "norm_in")?]);
+        for r in mixer.1 {
+            small.push(one(ar, r)?);
         }
         let (b, s0) = (n_mats, n_small);
         let (mm, nn) = per_layer(kind);
@@ -705,7 +734,7 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
             }
             Kind::Full => {
                 let ring = rings.len();
-                rings.push(Ring { d: 256, nk, window: 0, values: true });
+                rings.push(Ring::kv(256, nk, 0));
                 let a = AttnOp::of(att, Slot::Mix, ring, Some(0), Some((s0 + 2, s0 + 3)))?;
                 if a.stride != full_w {
                     return err(format!("Qwen3.5: an attention product of {full_w} where its attention reads {}", a.stride));
@@ -727,6 +756,11 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
     }
     let e = n_mats;
     let lm = if d.head.is_none() { e } else { e + 1 };
+    small.push(d.final_norm.clone());
+    mats.push(item(vec![d.embed.clone()], &shape)?);
+    if let Some(h) = &d.head {
+        mats.push(item(vec![h.clone()], &shape)?);
+    }
     let q_w = nq * 256;
     let mut widths = [0usize; SLOTS];
     for (s, w) in [
@@ -753,8 +787,9 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
         eps,
         max_pos,
         widths,
-        mats: Vec::new(),
-        small: Vec::new(),
+        mats,
+        small,
+        forms: Vec::new(),
         ropes: vec![Rope { theta: rope.theta, dim: rotary, pairs: rotary / 2 }],
         rings,
         first: first.unwrap_or(Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, weight: NormW::PlusOne, eps }),
@@ -843,7 +878,7 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
             }
             NhKind::Attention => {
                 let ring = rings.len();
-                rings.push(Ring { d: hd, nk, window: 0, values: true });
+                rings.push(Ring::kv(hd, nk, 0));
                 let a = att.ok_or_else(|| Error("Nemotron-H: an attention layer of no kind".into()))?;
                 let a = AttnOp::of(a, Slot::Mix, ring, None, None)?;
                 if a.stride != qkv_w {
@@ -887,6 +922,7 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
         widths,
         mats: Vec::new(),
         small: Vec::new(),
+        forms: Vec::new(),
         ropes: Vec::new(),
         rings,
         first: first.unwrap_or(Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, weight: NormW::Plain, eps }),
@@ -951,7 +987,7 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
         let block = n_moe;
         n_moe += 1;
         let ring = rings.len();
-        rings.push(Ring { d: hd, nk, window: a.window.unwrap_or(0), values: true });
+        rings.push(Ring::kv(hd, nk, a.window.unwrap_or(0)));
         let attn = AttnOp::of(a, Slot::Mix, ring, Some(0), None)?;
         if attn.stride != row {
             return err(format!("Muse Spark: an attention product of {row} where its attention reads {}", attn.stride));
@@ -1001,6 +1037,7 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
         widths,
         mats: Vec::new(),
         small: Vec::new(),
+        forms: Vec::new(),
         ropes: Vec::new(),
         rings,
         first: Op::RmsNorm { x: Slot::X, w: ones, y: Slot::X, weight: NormW::Plain, eps },
@@ -1022,11 +1059,11 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
 
 /// GLM-5.3-Flash: the four streams mixed around each layer's two blocks, Kimi delta attention (its forget gate bounded) or the latent attention (its block's),
 /// a dense MLP (its SwiGLU clamped) in the first layers and a mixture of experts in the rest (its block's), the mean of the streams and the final norm. The
-/// matrices, small tensors and blocks are model_glm.rs's loader's (`dynamic::glm::describe` indexes them in its order).
+/// matrices, small tensors and blocks are kern_glm.rs's loader's (`dynamic::glm::describe` indexes them in its order).
 pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
     use super::glm::{dense_ops, glm_desc, kda_ops, per_layer};
     use crate::glm::GlmKind;
-    use crate::model_glm::GM_D;
+    use crate::kern_glm::GM_D;
     use crate::runtime::kinds::{Decay, Residual};
     let m = &d.desc;
     if m.blocks.len() % 2 != 0 || m.embed.streams != 4 {
@@ -1038,8 +1075,8 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
     }
     let layers = m.blocks.len() / 2;
     let (hc, round) = match &m.blocks[0].residual {
-        Residual::Streams(s) => ((s.eps, s.sinkhorn_iters as i32), s.rounding),
-        r => return err(format!("GLM-5.3-Flash: a residual of {r:?}, not the streams")),
+        Residual::Streams(s) if !s.lagged => ((s.eps, s.sinkhorn_iters as i32), s.rounding),
+        r => return err(format!("GLM-5.3-Flash: a residual of {r:?}, not mHC's streams")),
     };
     let lin = m.blocks.iter().find_map(|b| match &b.body {
         Body::Mixer(Mixer::Linear(x)) => Some(x),
@@ -1205,6 +1242,11 @@ pub fn deepseek_v4(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Sta
             Body::Mixer(Mixer::Compressed(c)) => c,
             b => return err(format!("DeepSeek-V4: layer {l}'s mixer is {b:?}")),
         };
+        if !c.ape || !c.q_head_norm || c.share.is_some() {
+            return err(format!(
+                "DeepSeek-V4: layer {l} is V4.1's compressed sparse attention (no window bias, parts shared across layers): no operation of this executor yet"
+            ));
+        }
         if c.indexer.is_some() != (c.ratio == 4) {
             return err(format!(
                 "DeepSeek-V4: layer {l} compresses by {} with{} an indexer: this engine runs the indexer on the layers of ratio 4 alone",
@@ -1221,8 +1263,8 @@ pub fn deepseek_v4(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Sta
         };
         for b in [ab, eb] {
             match &b.residual {
-                Residual::Streams(s) => hc = (s.eps, s.sinkhorn_iters, s.streams, s.rounding),
-                r => return err(format!("DeepSeek-V4: layer {l}'s residual is {r:?}, not the streams")),
+                Residual::Streams(s) if !s.lagged => hc = (s.eps, s.sinkhorn_iters, s.streams, s.rounding),
+                r => return err(format!("DeepSeek-V4: layer {l}'s residual is {r:?}, not mHC's streams (lagged mHC has no operation yet)")),
             }
         }
         ratios.push(c.ratio);
@@ -1394,7 +1436,7 @@ mod tests {
     }
 
     /// GLM-5.3-Flash lowered from its released config and the tiny and toy ones, whole and as a split's stages, is the executor's own description of it; each
-    /// layer's matrices are as many as model_glm.rs's loader packs.
+    /// layer's matrices are as many as kern_glm.rs's loader packs.
     #[test]
     fn glm_lowered_is_the_executors_own_description() {
         // (and the released one with every layer's feed-forward its experts, as glmrandom --real makes it: no dense MLP, so neither description sizes its slots)
@@ -1411,9 +1453,9 @@ mod tests {
             let text = if f == "all experts" { all_experts.clone() } else { fixture(f) };
             let c = crate::glm::ConfigGlm::parse(&text, f, None).unwrap_or_else(|e| panic!("{f}: {}", e.msg));
             for l in 0..c.layers {
-                // (a latent attention layer's four more: the kind's operation's, mla_glm.rs's `MlaWeights`)
+                // (a latent attention layer's four more: the kind's operation's, kern_glm.rs's `MlaWeights`)
                 let latent = if c.kinds[l] == crate::glm::GlmKind::Mla { 4 } else { 0 };
-                assert_eq!(crate::model_glm::layer_matrices(&c, l).len() + latent, super::super::glm::per_layer(c.kinds[l], c.moe[l]), "{f}: layer {l}");
+                assert_eq!(crate::kern_glm::layer_matrices(&c, l).len() + latent, super::super::glm::per_layer(c.kinds[l], c.moe[l]), "{f}: layer {l}");
             }
             let kinds = crate::runtime::describe::describe(&serde_json::from_str(&text).unwrap()).unwrap();
             let half = c.layers / 2;
@@ -1446,7 +1488,7 @@ mod tests {
     fn the_random_glm_lowers_as_its_own_description() {
         for fp8 in [false, true] {
             let dir = std::env::temp_dir().join(format!("glyd-lower-glm-{}-{fp8}", std::process::id()));
-            crate::kcheck_glm::random(&dir, fp8, None).unwrap();
+            crate::glm::random(&dir, fp8, None).unwrap();
             let c = crate::glm::ConfigGlm::load(&dir).unwrap();
             let half = c.layers / 2;
             for st in [
@@ -1795,6 +1837,235 @@ mod tests {
         if a != b {
             let first = a.lines().zip(b.lines()).enumerate().find(|(_, (x, y))| x != y);
             panic!("the lowered description differs from the executor's at line {first:?}");
+        }
+    }
+
+    /// Each family's executor description: the random models' of the logits checks, the fixtures' configs (Nemotron-H), a Llama-style config, Gemma 4's draft.
+    #[cfg(feature = "dev")]
+    fn every_family(tag: &str) -> Vec<ModelDesc> {
+        use super::super::{deepseek_v4, gemma4, glm, kimi, muse, nemotron, qwen35, qwen4x, Stage};
+        // (a directory of each caller's own: the tests run at once)
+        let dir = |x: &str| std::env::temp_dir().join(format!("glyd-by-op-{tag}-{x}-{}", std::process::id()));
+        let mut v = Vec::new();
+        let d = dir("q35");
+        crate::logits::qwen35_random(&d).unwrap();
+        let c = crate::qwen35::Config35::load(&d).unwrap();
+        v.push(qwen35::describe(&c, &Stage::whole(c.layers)).unwrap());
+        let d = dir("g4");
+        crate::logits::gemma4_random(&d).unwrap();
+        let c = crate::gemma4::ConfigG4::load(&d).unwrap();
+        v.extend([gemma4::describe(&c), gemma4::describe_draft(&c, &c)]);
+        let d = dir("muse");
+        crate::muse_ref::random(&d).unwrap();
+        let c = crate::muse::ConfigMuse::load(&d).unwrap();
+        v.push(muse::describe(&c, &Stage::whole(c.layers)).unwrap());
+        let d = dir("kimi");
+        crate::kimi_ref::random(&d, 1, true, 8).unwrap();
+        let c = crate::kimi::ConfigKimi::load(&d).unwrap();
+        let w32 = kimi::dtypes(&glyd_gpu::safetensors::Checkpoint::open(&d).unwrap(), &c).unwrap();
+        v.push(kimi::describe(&c, &Stage::whole(c.layers), &w32, false).unwrap());
+        let d = dir("glm");
+        crate::glm::random(&d, false, None).unwrap();
+        let c = crate::glm::ConfigGlm::load(&d).unwrap();
+        v.push(glm::describe(&c, &Stage::whole(c.layers)).unwrap());
+        let d = dir("v4");
+        crate::dsv4_ref::random(&d, None).unwrap();
+        let c = crate::deepseek_v4::ConfigV4::load(&d).unwrap();
+        let vo = deepseek_v4::V4Opts { exact8: true, f8_min: 16 << 20, ostack: true, sim: true, ctx: 512 };
+        v.push(deepseek_v4::describe(&c, &Stage::whole(c.layers), &vo).unwrap());
+        let d = dir("qx");
+        crate::logits::qwen4x_random(&d).unwrap();
+        v.push(qwen4x::lowered(&d, 1024).unwrap_or_else(|e| panic!("{}", e.msg)));
+        for f in ["nemotron_h_config.json", "nemotron_h_moetoy_config.json"] {
+            let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(f)).unwrap();
+            let c = crate::nemotron::ConfigNemotronH::parse(&text, f, None).unwrap();
+            v.extend(nemotron::describe(&c, &Stage::whole(c.layers)));
+        }
+        v.push(dense(&crate::runtime::describe::describe(&llama_style("llama", serde_json::json!({}))).unwrap(), vec![2], 4096).unwrap());
+        for x in ["q35", "g4", "muse", "kimi", "glm", "v4", "qx"] {
+            let _ = std::fs::remove_dir_all(dir(x));
+        }
+        v
+    }
+
+    /// The decisions the executor made by a family's name, made by its description's operations now, give every family the answer the name lists gave, but
+    /// where named: a second sequence for Qwen3.8-Flash-Next (`add_seqs`: every one of its operations keeps a sequence's data in its rings and states, as
+    /// `batchable` said already); a verify pass for Gemma 4 and the Llama-style dense models (attention rings and row-wise operations alone; the range worker,
+    /// verify's one caller, loads Qwen3.5 alone).
+    #[cfg(feature = "dev")]
+    #[test]
+    fn decisions_by_operation_give_the_family_lists_answers() {
+        use super::super::{dense::FAMILY as DENSE, qwen4x::FAMILY as QX, rows, state_type, unverifiable_op};
+        let all = every_family("decide");
+        let families: std::collections::BTreeSet<&str> = all.iter().map(|d| d.family).collect();
+        assert_eq!(families.len(), 10, "{families:?}");
+        for d in &all {
+            let f = d.family;
+            let listed = matches!(f, "Qwen3.5" | "Gemma 4" | "Muse Spark" | "Kimi-K3" | "GLM-5.3-Flash" | "Nemotron-H" | "DeepSeek-V4" | DENSE);
+            assert_eq!(rows::one_sequence_op(d).is_none(), listed || f == QX, "{f}: more sequences than one");
+            assert_eq!(
+                unverifiable_op(d).is_none(),
+                matches!(f, "Qwen3.5" | "Gemma 4" | DENSE),
+                "{f}: a verify pass ({:?})",
+                unverifiable_op(d).map(rows::op_name)
+            );
+            if !d.states.is_empty() {
+                let gdn = "fp32 (the delta rule's), bf16 (the convolution's)";
+                assert_eq!(state_type(d), if f == "Qwen3.5" { gdn } else { "not reported" }, "{f}: the states' types");
+            }
+        }
+        assert_eq!(all.iter().find(|d| d.family == "Gemma 4 draft").and_then(rows::one_sequence_op).map(rows::op_name).as_deref(), Some("DraftIn"));
+    }
+
+    /// A cut between layers hands over what each family's stages handed by name (Qwen3.5 X and D, Kimi-K3 X and Blk, the rest X, H, D, O and S where they are),
+    /// but where named: Nemotron-H and the Llama-style dense models, whose layers begin by adding the last one's output (O, D) to X, now hand X and that alone
+    /// (H, which that add writes, no more). Every layer after the first begins with an operation that reads those slots.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_cut_hands_over_what_the_next_layer_reads_first() {
+        use super::super::{dense::FAMILY as DENSE, handed_over, Slot::*};
+        for d in every_family("cut") {
+            let named: &[Slot] = match d.family {
+                "Qwen3.5" => &[X, D],
+                "Kimi-K3" => &[X, Blk],
+                _ => &[X, H, D, O, S],
+            };
+            let want: Vec<Slot> = match d.family {
+                "Nemotron-H" => vec![X, O],
+                DENSE => vec![X, D],
+                _ => named.iter().copied().filter(|&s| d.widths[s as usize] > 0).collect(),
+            };
+            let got: Vec<Slot> = handed_over(&d).into_iter().map(|x| x.0).collect();
+            assert_eq!(got, want, "{}", d.family);
+            for (l, ops) in d.layers.iter().enumerate().skip(1).filter(|(_, o)| !o.is_empty()) {
+                match ops[0] {
+                    Op::NormAdd { y, .. } => assert_eq!(got, [X, y], "{} layer {l}", d.family),
+                    Op::DepthMix(_) => assert_eq!(got, [X, Blk], "{} layer {l}", d.family),
+                    ref op => assert_eq!(got.len(), named.iter().filter(|&&s| d.widths[s as usize] > 0).count(), "{} layer {l} begins with {op:?}", d.family),
+                }
+            }
+        }
+    }
+
+    /// The executor's loader's rules, on the random Qwen3.5's tensors named in its own loader's order (src/kern35.rs), make that loader's choices: the same
+    /// matrices dense (the b and a gates' parts under 64 rows), the same small tensors in fp32 (A_log; the gated norm's weight, its values bf16's), the same rotary
+    /// tables; and its description names the tensors that loader read, in its order (what the executor's loader reads).
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_executors_rules_on_qwen35_make_its_own_loaders_choices() {
+        use super::super::{held_as_saved, read_f32, read_f32_as_bf16};
+        let dir = std::env::temp_dir().join(format!("glyd-q35-loader-{}", std::process::id()));
+        crate::logits::qwen35_random(&dir).unwrap();
+        let c = crate::qwen35::Config35::load(&dir).unwrap();
+        let d = super::super::qwen35::lowered(&dir, &c, &super::super::Stage::whole(c.layers)).unwrap();
+        // (its tensors as kern35's loader read them, in its order: the description names the same, in the same order)
+        let packs: std::collections::HashMap<String, crate::qwen35::Pack35> = c.packs().into_iter().map(|p| (p.key.clone(), p)).collect();
+        let item = |src: &crate::kern35::Src| match src {
+            crate::kern35::Src::Pack(k) => Item { members: packs[k].parts.iter().map(|x| x.0.clone()).collect(), rows: packs[k].rows(), cols: packs[k].cols },
+            crate::kern35::Src::Dense(p, r, cl) => Item { members: p.clone(), rows: *r, cols: *cl },
+        };
+        let mut mats: Vec<Item> = crate::kern35::layer_mats(&c).iter().flatten().map(item).collect();
+        mats.push(item(&crate::kern35::Src::Pack("embed".into())));
+        if !c.tie {
+            mats.push(item(&crate::kern35::Src::Pack("lm_head".into())));
+        }
+        let mut small = Vec::new();
+        for (l, k) in c.kinds.iter().enumerate() {
+            let p = format!("{}layers.{l}", c.prefix);
+            small.extend([format!("{p}.input_layernorm.weight"), format!("{p}.post_attention_layernorm.weight")]);
+            small.extend(match k {
+                crate::qwen35::Kind::Full => ["q_norm", "k_norm"].map(|x| format!("{p}.self_attn.{x}.weight")).to_vec(),
+                crate::qwen35::Kind::Linear => ["conv1d.weight", "A_log", "dt_bias", "norm.weight"].map(|x| format!("{p}.linear_attn.{x}")).to_vec(),
+            });
+        }
+        small.push(format!("{}norm.weight", c.prefix));
+        assert_eq!(format!("{:?}", d.mats), format!("{mats:?}"));
+        assert_eq!(d.small, small);
+        // (and each stage of a split names its own, its reading and the family's alike)
+        for st in [super::super::Stage { layers: (0, 2), first: true, last: false }, super::super::Stage { layers: (2, c.layers), first: false, last: true }] {
+            let (own, low) = (super::super::qwen35::describe(&c, &st).unwrap(), super::super::qwen35::lowered(&dir, &c, &st).unwrap());
+            assert_eq!(format!("{own:#?}"), format!("{low:#?}"));
+            assert_eq!((super::super::unnamed(&low), low.small.len()), (None, low.final_norm.unwrap().0 + 1), "{st:?}");
+            assert!(low.wanted(&st).iter().enumerate().all(|(k, &w)| !w || low.mats[k].rows > 0));
+        }
+        assert_eq!((super::super::unnamed(&d), d.small.len()), (None, d.final_norm.unwrap().0 + 1));
+        let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
+        let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
+        let dense: std::collections::HashSet<String> = crate::kern35::layer_mats(&c)
+            .into_iter()
+            .flatten()
+            .filter_map(|s| if let crate::kern35::Src::Dense(p, ..) = s { Some(p) } else { None })
+            .flatten()
+            .collect();
+        assert!(!dense.is_empty());
+        for (k, it) in d.mats.iter().enumerate() {
+            assert_eq!(held_as_saved(&d, k, &rows_of), it.members.iter().all(|m| dense.contains(m)), "{:?}", it.members);
+        }
+        let kept: std::collections::HashMap<String, &str> = c.kept().into_iter().map(|t| (t.name, t.dtype)).collect();
+        let (f32s, as_bf16) = (read_f32(&d), read_f32_as_bf16(&d));
+        for (i, n) in d.small.iter().enumerate() {
+            assert_eq!(f32s.contains(&i) || as_bf16.contains(&i), kept[n] == "F32", "{n}");
+            assert_eq!(as_bf16.contains(&i), n.ends_with("linear_attn.norm.weight"), "{n}");
+        }
+        for r in &d.ropes {
+            assert_eq!(crate::gemma4::rotary(r.theta, r.dim, r.pairs, 64), crate::weights::rope_tables(c.rope_theta, c.rotary_dim, 64));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The executor's loader's rules, on the random Nemotron-H's tensors named in its own loader's order (src/kern_nh.rs), make that loader's choices: the same
+    /// matrices dense (the parts the packer does not take), every small tensor as saved in bf16 (none read wider). Its description names no tensor yet, so it
+    /// loads by its own loader still, and the executor's refuses it.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_executors_rules_on_nemotron_make_its_own_loaders_choices() {
+        use super::super::{held_as_saved, read_f32, read_f32_as_bf16};
+        let dir = std::env::temp_dir().join(format!("glyd-nh-loader-{}", std::process::id()));
+        crate::kcheck_nh::random(&dir, 0, 16).unwrap();
+        let c = crate::nemotron::ConfigNemotronH::load(&dir).unwrap();
+        let mut d = super::super::nemotron::lowered(&dir, &c, &super::super::Stage::whole(c.layers)).unwrap();
+        // (its description names none of its tensors: kern_nh's loader fills them by index; named here in that loader's order, the rules are checked on them)
+        assert_eq!(super::super::unnamed(&d), Some(0), "the description names its matrices: Nemotron-H can load through the executor's loader");
+        let packs: Vec<crate::qwen35::Pack35> = (0..c.layers).filter(|&l| c.kinds[l] != crate::nemotron::NhKind::Moe).flat_map(|l| c.layer_packs(l)).collect();
+        let it = |p: &crate::qwen35::Pack35| Item { members: p.parts.iter().map(|x| x.0.clone()).collect(), rows: p.rows(), cols: p.cols };
+        d.mats = packs.iter().map(it).collect();
+        d.mats.push(Item { members: vec![format!("{}embeddings.weight", c.prefix)], rows: c.vocab, cols: c.hidden });
+        if !c.tie {
+            d.mats.push(Item { members: vec!["lm_head.weight".into()], rows: c.vocab, cols: c.hidden });
+        }
+        for l in 0..c.layers {
+            let kept = c.layer_kept(l);
+            let n = if c.kinds[l] == crate::nemotron::NhKind::Mamba { kept.len() } else { 1 };
+            d.small.extend(kept.into_iter().take(n).map(|t| t.name));
+        }
+        d.small.push(format!("{}norm_f.weight", c.prefix));
+        assert_eq!((super::super::unnamed(&d), d.small.len()), (None, d.final_norm.unwrap().0 + 1));
+        let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
+        let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
+        let dense: std::collections::HashSet<String> = packs.iter().filter(|p| !p.packable()).flat_map(|p| p.parts.iter().map(|x| x.0.clone())).collect();
+        for (k, it) in d.mats.iter().enumerate() {
+            assert_eq!(held_as_saved(&d, k, &rows_of), it.members.iter().all(|m| dense.contains(m)), "{:?}", it.members);
+        }
+        let kept: std::collections::HashMap<String, &str> = (0..c.layers).flat_map(|l| c.layer_kept(l)).map(|t| (t.name, t.dtype)).collect();
+        assert!(d.small.iter().filter(|n| kept.contains_key(*n)).count() + 1 == d.small.len());
+        let (f32s, as_bf16) = (read_f32(&d), read_f32_as_bf16(&d));
+        for (i, n) in d.small.iter().enumerate() {
+            assert!(!f32s.contains(&i) && !as_bf16.contains(&i), "{n}");
+            assert!(kept.get(n).is_none_or(|&t| t == "BF16"), "{n}");
+        }
+        assert!(d.layers.iter().flatten().any(|op| matches!(op, Op::MambaScan { .. })));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The descriptions the executor's loader reads (`Dyn::new_with`: Gemma 4, its draft, the Llama-style dense models, Qwen3.5, Qwen3.8-Flash-Next) name every matrix
+    /// their operations use; the others name none yet, their families' loaders filling them by index, and the executor's loader refuses them in words.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_executors_loader_reads_only_descriptions_that_name_their_tensors() {
+        use super::super::{dense::FAMILY as DENSE, qwen4x::FAMILY as QX, unnamed};
+        for d in every_family("named") {
+            let named = matches!(d.family, "Gemma 4" | "Gemma 4 draft" | "Qwen3.5" | DENSE | QX);
+            assert_eq!(unnamed(&d).is_none(), named, "{}: {:?} of {} matrices named", d.family, unnamed(&d), d.mats.len());
         }
     }
 }

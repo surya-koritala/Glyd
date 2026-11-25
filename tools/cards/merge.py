@@ -26,7 +26,7 @@ def merge(card, gpu, bench, size_bytes, kl, kl_fp8, glyd, commit, date):
     card["kl_bf16"] = kl if kl is not None else card.get("kl_bf16")
     card["kl_fp8_ref"] = kl_fp8 if kl_fp8 is not None else card.get("kl_fp8_ref")
     card["date"], card["versions"] = date, {"glyd": glyd, "commit": commit}
-    return {k: card[k] for k in ("size_gb", "gpus", "kl_bf16", "kl_fp8_ref", "date", "versions", "evals", "evals_bf16", "costs") if k in card}  # (costs: glyd-engine costs, docs/cost-profile.md)
+    return {k: card[k] for k in ("size_gb", "gpus", "kl_bf16", "kl_fp8_ref", "date", "versions", "evals", "evals_bf16", "costs", "quality") if k in card}  # (costs: glyd-engine costs, docs/cost-profile.md; quality: the suite's card, docs/quality.md)
 
 
 def merge_evals(card, shards, key, date):

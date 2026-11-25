@@ -243,14 +243,31 @@ impl Dev {
 
     /// The work queued on the stream captured into a graph: `body` runs with the stream capturing, nothing in it executes.
     pub fn capture(&self, body: impl FnOnce() -> Result<()>) -> Result<Graph> {
-        D::begin_capture(self.stream)?;
+        self.begin_capture()?;
         let r = body();
-        // (the capture begun above ended, whether the body worked or not)
-        let e = D::end_capture(self.stream);
+        // (ended whether the body worked or not)
+        let g = self.end_capture();
         r?;
-        let g = e?;
+        g
+    }
+
+    /// The work queued on this stream from now on captured, not run, until `end_capture` (relaxed mode: other threads' calls are not refused).
+    pub fn begin_capture(&self) -> Result<()> {
+        D::begin_capture(self.stream)
+    }
+
+    /// The work captured since `begin_capture`, as a graph to launch; the stream runs what is queued again (also where the capture failed: an error then).
+    pub fn end_capture(&self) -> Result<Graph> {
+        let g = D::end_capture(self.stream)?;
         // SAFETY: a captured graph.
-        let x = unsafe { D::instantiate(g)? };
+        let x = match unsafe { D::instantiate(g) } {
+            Ok(x) => x,
+            Err(e) => {
+                // SAFETY: the graph just captured, which nothing else holds.
+                let _ = unsafe { D::graph_free(g) };
+                return Err(e);
+            }
+        };
         Ok(Graph { graph: g, exec: x })
     }
 }

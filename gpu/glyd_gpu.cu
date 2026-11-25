@@ -3277,6 +3277,39 @@ GLYD_GPU_INTERNAL int glyd_gpu_kv_release(uint8_t* pool, int64_t page_stride, in
     return cudaGetLastError();
 }
 
+GLYD_GPU_INTERNAL int glyd_gpu_kv_image_bytes(int64_t H, int64_t D, int64_t A, int64_t* bytes) {
+    int64_t pb;
+    if (!bytes || glyd_gpu_kv_leaf_bytes(H, D, A, &pb)) return cudaErrorInvalidValue;
+    *bytes = kvc::image_bytes(pb, kv_heads(H, D));
+    return 0;
+}
+
+GLYD_GPU_INTERNAL int glyd_gpu_kv_save(const uint8_t* pool, int64_t page_stride, int64_t nblocks, const int32_t* pages, int64_t n, int64_t H, int64_t D, int64_t A, const uint8_t* escape, int64_t nchunks,
+                                  const uint8_t* raw, int64_t nslabs, int64_t layer, uint8_t* out, uint32_t* moved, cudaStream_t cs) {
+    int64_t pb;
+    if (glyd_gpu_kv_leaf_bytes(H, D, A, &pb) || n < 0 || n > INT32_MAX || nblocks < 0 || page_stride < pb || page_stride % 16 || (uintptr_t)pool % 16) return cudaErrorInvalidValue;
+    if (!kv_escape_ok(escape, nchunks) || !kv_raw_ok(raw, nslabs) || layer < 0 || layer > 254) return cudaErrorInvalidValue;
+    if (!n) return 0;
+    if (!pages || !out || (uintptr_t)out % 16 || (moved && (uintptr_t)moved % 4)) return cudaErrorInvalidValue;
+    const int HP = kv_heads(H, D);
+    kvc::save_kernel<<<(unsigned)n, 128, 0, cs>>>(pool, page_stride, nblocks, pages, pb, kvc::image_bytes(pb, HP), HP, kvc::esc_of((uint8_t*)escape, nchunks), kvc::raw_of((uint8_t*)raw, nslabs, HP),
+                                                (uint32_t)(layer + 1) << 24, out, moved);
+    return cudaGetLastError();
+}
+
+GLYD_GPU_INTERNAL int glyd_gpu_kv_load(const uint8_t* img, const int32_t* dst, int64_t n, uint8_t* pool, int64_t page_stride, int64_t nblocks, int64_t H, int64_t D, int64_t A, uint8_t* escape, int64_t nchunks,
+                                  uint8_t* raw, int64_t nslabs, int64_t layer, uint32_t* status, int64_t ring, cudaStream_t cs) {
+    int64_t pb;
+    if (glyd_gpu_kv_leaf_bytes(H, D, A, &pb) || n < 0 || n > INT32_MAX || nblocks < 0 || !status || page_stride < pb || page_stride % 16 || (uintptr_t)pool % 16) return cudaErrorInvalidValue;
+    if (!kv_escape_ok(escape, nchunks) || !kv_raw_ok(raw, nslabs) || layer < 0 || layer > 254 || ring < 1 || ring > (1 << 24)) return cudaErrorInvalidValue;
+    if (!n) return 0;
+    if (!img || !dst || (uintptr_t)img % 16) return cudaErrorInvalidValue;
+    const int HP = kv_heads(H, D);
+    kvc::load_kernel<<<(unsigned)n, 128, 0, cs>>>(img, dst, pb, kvc::image_bytes(pb, HP), pool, page_stride, nblocks, HP, kvc::esc_of(escape, nchunks), kvc::raw_of(raw, nslabs, HP), (uint32_t)(layer + 1) << 24,
+                                                status, (uint32_t)ring);
+    return cudaGetLastError();
+}
+
 GLYD_GPU_INTERNAL int glyd_gpu_kv_unpack(const uint8_t* pool, int64_t page_stride, const int32_t* pages, int64_t n, const uint8_t* kbase, const uint8_t* vbase, int64_t H, int64_t D, int64_t A,
                                     const uint8_t* escape, int64_t nchunks, const uint8_t* raw, int64_t nslabs, uint16_t* out_k, uint16_t* out_v, cudaStream_t cs) {
     int64_t need;

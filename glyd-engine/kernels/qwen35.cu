@@ -92,15 +92,29 @@ extern "C" __global__ void conv_silu(const bf16* x, int xs, const bf16* w, bf16*
 // conv_silu with fp32 weights (Kimi-K3 releases them so; each tap as it is).
 extern "C" __global__ void conv_silu_w32(const bf16* x, int xs, const float* w, bf16* st, bf16* y, int n, int C) { conv_silu_of(x, xs, w, st, y, n, C); }
 
+// conv_silu of a step's rows that decode, a token of a sequence each (grid C / 256 by rows): row r's state at sts[r ss] (a table of addresses, as vLLM's conv_state_indices
+// pick a request's slot; 0: a padding row, whose output is zeroed and which reads and writes no state), its input row r of x, its output row r of y. Each row's arithmetic
+// is conv_silu's on that sequence's one token.
+extern "C" __global__ void conv_silu_rows(const bf16* x, int xs, const bf16* w, const unsigned long long* sts, int ss, bf16* y, int C) {
+    const int r = blockIdx.y;
+    bf16* st = reinterpret_cast<bf16*>(sts[(size_t)r * ss]);
+    if (!st) {
+        const int c = blockIdx.x * blockDim.x + threadIdx.x;
+        if (c < C) y[(size_t)r * C + c] = f2b(0.f);
+        return;
+    }
+    conv_silu_of(x + (size_t)r * xs, xs, w, st, y + (size_t)r * C, 1, C);
+}
+
 __device__ __forceinline__ float softplus_f(float x) { return x > 20.f ? x : log1pf(expf(x)); }
 
 // The gated delta rule, one token after another, for the n rows of a sequence: xc [n, C] the convolution's output (queries: nk heads of 128, keys: nk heads of 128, values: nv heads
 // of 128; value head h reads key head h / (nv / nk)), ba [n, sba] (b: nv values, then a: nv values), A_log fp32 [nv], dt_bias bf16 [nv]; state fp32 [nv, 128, 128] (S[i][j]: i over
 // the key's dims, j over the value's), read and written back; core [n, nv 128] the outputs (bf16, before the gated norm). Per token: q and k l2-normed (q times 128^-0.5),
 // beta = sigmoid(b), g = -exp(A_log) softplus(a + dt_bias); S = exp(g) S; S += k (beta (v - S^T k))^T; o = S^T q. A block a value head, a thread a column of S (in registers).
-extern "C" __global__ void __launch_bounds__(128, 1) gdn_recurrent(const bf16* xc, int C, const bf16* ba, int sba, const float* A_log, const bf16* dt_bias, float* state, bf16* core, int n, int nk,
-                                                                   int nv) {
-    const int h = blockIdx.x, j = threadIdx.x, lane = j & 31, w = j >> 5;
+__device__ __forceinline__ void gdn_recurrent_of(int h, const bf16* xc, int C, const bf16* ba, int sba, const float* A_log, const bf16* dt_bias, float* state, bf16* core, int n,
+                                                 int nk, int nv) {
+    const int j = threadIdx.x, lane = j & 31, w = j >> 5;
     const int kh = h / (nv / nk), kd = nk * 128, vd = nv * 128;
     __shared__ __align__(16) float qk[2][128];
     __shared__ float red[2][4];
@@ -158,6 +172,25 @@ extern "C" __global__ void __launch_bounds__(128, 1) gdn_recurrent(const bf16* x
     }
 #pragma unroll
     for (int i = 0; i < 128; i++) st[i * 128 + j] = S[i];
+}
+
+extern "C" __global__ void __launch_bounds__(128, 1) gdn_recurrent(const bf16* xc, int C, const bf16* ba, int sba, const float* A_log, const bf16* dt_bias, float* state, bf16* core, int n, int nk,
+                                                                   int nv) {
+    gdn_recurrent_of(blockIdx.x, xc, C, ba, sba, A_log, dt_bias, state, core, n, nk, nv);
+}
+
+// gdn_recurrent of a step's rows that decode, a token of a sequence each (grid nv by rows): row r's state at sts[r ss] (0: a padding row, whose output is zeroed and which
+// reads and writes no state), its rows of xc, ba and core at r C, r sba and r nv 128. Each row's arithmetic is gdn_recurrent's on that sequence's one token.
+extern "C" __global__ void __launch_bounds__(128, 1) gdn_recurrent_rows(const bf16* xc, int C, const bf16* ba, int sba, const float* A_log, const bf16* dt_bias,
+                                                                        const unsigned long long* sts, int ss, bf16* core, int nk, int nv) {
+    const int r = blockIdx.y;
+    float* st = reinterpret_cast<float*>(sts[(size_t)r * ss]);
+    bf16* out = core + (size_t)r * nv * 128;
+    if (!st) {
+        out[blockIdx.x * 128 + threadIdx.x] = f2b(0.f);
+        return;
+    }
+    gdn_recurrent_of(blockIdx.x, xc + (size_t)r * C, C, ba + (size_t)r * sba, sba, A_log, dt_bias, st, out, 1, nk, nv);
 }
 
 #define GC 64   // tokens a chunk

@@ -159,6 +159,9 @@ pub trait Device {
     /// # Safety
     /// The two were made by `end_capture` and `instantiate`, are destroyed once, and no launch of them is queued.
     unsafe fn graph_destroy(g: Self::Graph, x: Self::Exec) -> Result<()>;
+    /// # Safety
+    /// `g` was made by `end_capture`, has no instance, and is destroyed once.
+    unsafe fn graph_free(g: Self::Graph) -> Result<()>;
 
     // Events.
 
@@ -462,6 +465,11 @@ impl Device for CudaDevice {
         // SAFETY: made by `end_capture` and `instantiate`, destroyed once (the caller's contract); the graph goes whether its instance went or not.
         let (rx, rg) = unsafe { ((d.cuGraphExecDestroy)(x), (d.cuGraphDestroy)(g)) };
         cu("cuGraphExecDestroy", rx).and(cu("cuGraphDestroy", rg))
+    }
+
+    unsafe fn graph_free(g: CuGraph) -> Result<()> {
+        // SAFETY: made by `end_capture`, with no instance, destroyed once (the caller's contract).
+        unsafe { cu("cuGraphDestroy", (driver()?.cuGraphDestroy)(g)) }
     }
 
     fn event(timing: bool) -> Result<CuEvent> {

@@ -547,6 +547,15 @@ impl Tp {
         self.ctx
     }
 
+    /// Tokens in the cache.
+    pub fn held(&self) -> usize {
+        self.n
+    }
+
+    pub fn eos(&self) -> &[i64] {
+        &self.eos
+    }
+
     /// A reply as `Split::reply` gives one.
     pub fn reply(&mut self, prompt: &[u32], o: &crate::sched::Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, crate::sched::Finish)> {
         use crate::sched::Finish;
@@ -588,9 +597,9 @@ impl Drop for Tp {
     }
 }
 
-/// `tpcheck DIR [--tp 0,0] [--tokens 24] [--chunk 64] [--ctx 1024]` (development): the model of `dir` on the first GPU of `--tp` alone and then with every
-/// layer across the GPUs of `--tp`, the same tokens through both (a decode step a token, then the whole list as a prompt in chunks): their logits compared
-/// value for value.
+/// `tpcheck DIR [--tp 0,0] [--split CUT] [--tokens 24] [--chunk 64] [--ctx 1024]` (development): the model of `dir` on the first GPU of `--tp` alone and then with every
+/// layer across the GPUs of `--tp` (with `--split`: its layers cut at CUT into two stages on the first two GPUs of `--tp`, the slots a cut hands over between them),
+/// the same tokens through both (a decode step a token, then the whole list as a prompt in chunks): their logits compared value for value.
 #[cfg(feature = "dev")]
 pub fn check(a: &crate::args::Args) -> Result<()> {
     use super::split::{config_num, open, open_tp, tp_args, Run};
@@ -621,7 +630,10 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         println!("one GPU: {}", one.describe());
         run(&mut one)?
     };
-    let mut tp = open_tp(dir, &o, &gpus)?;
+    let mut tp = match a.flag("split") {
+        Some(c) => open(dir, &o, &[c.parse().map_err(|_| Error(format!("--split {c}: a layer")))?], &[gpus[0], *gpus.get(1).unwrap_or(&gpus[0])])?,
+        None => open_tp(dir, &o, &gpus)?,
+    };
     println!("{}", tp.describe());
     let got = run(&mut tp)?;
     let mut same = 0;
@@ -634,6 +646,15 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         }
     }
     println!("{same} of {} passes the same to the bit", want.len());
+    // (#138: the model across the GPUs served by the scheduler as a step of one slot: a greedy reply through it against the reply alone)
+    let (alone, via) = super::split::sched_reply(&mut tp, &toks[..toks.len().min(8)], 16)?;
+    println!("{} the layers across the GPUs through the scheduler: {via:?}, alone {alone:?}", if alone == via { "PASS" } else { "FAIL" });
+    if same < want.len() {
+        return err(format!("{} of {} passes differ from the model on one GPU", want.len() - same, want.len()));
+    }
+    if alone != via {
+        return err("the reply through the scheduler is not the reply alone");
+    }
     Ok(())
 }
 
