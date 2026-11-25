@@ -256,28 +256,37 @@ impl Dyn {
     }
 
     /// A pass's 12-bit arguments, once for every layer (`n` rows at `pos`, their parts where it is over several sequences): each part's rows' slots in
-    /// each group's blocks (its table there), and each kind of decode's lengths and first tokens.
+    /// each group's blocks (its table there; the pass's first rows that decode, `Dyn::lead`, through their own tables at once), and each kind of decode's lengths and
+    /// first tokens (a row's are its position's: every row at once).
     pub(super) unsafe fn kv12_prepare(&self, n: usize, pos: (u64, u64)) -> Result<()> {
         let lx = self.lossless.as_ref().expect("pages");
         let s = self.dev.stream;
         // (a ring of each group, whose table is the group's)
         let of_group: Vec<Option<usize>> = (0..lx.slots.len()).map(|g| lx.rings.iter().position(|r| r.as_ref().is_some_and(|r| r.group == g))).collect();
+        let lead = if self.parts.is_empty() { 0 } else { self.lead.get() };
+        if lead > 0 {
+            for (g, r) in of_group.iter().enumerate() {
+                if let Some(r) = *r {
+                    let (tab, t, dup) = self.row_tab(r);
+                    self.kern.kv12_rows(s, pos.0, lead, (tab, dup * t), 0, 1, lx.slots[g].ptr, 0, 0)?;
+                }
+            }
+        }
         let parts: Vec<(Option<usize>, usize, usize)> =
-            if self.parts.is_empty() { vec![(None, 0, n)] } else { self.parts.iter().enumerate().map(|(k, p)| (Some(k), p.row0, p.rows)).collect() };
+            if self.parts.is_empty() { vec![(None, 0, n)] } else { self.parts.iter().enumerate().skip(lead).map(|(k, p)| (Some(k), p.row0, p.rows)).collect() };
         for (k, row0, rows) in parts {
             self.at.set(k);
             let off = 4 * row0 as u64;
             for (g, r) in of_group.iter().enumerate() {
                 if let Some(r) = *r {
-                    self.kern.kv12_rows(s, pos.0 + off, rows, self.table(r), 0, 1, lx.slots[g].ptr + 8 * row0 as u64, 0, 0)?;
+                    self.kern.kv12_rows(s, pos.0 + off, rows, (self.table(r), 0), 0, 1, lx.slots[g].ptr + 8 * row0 as u64, 0, 0)?;
                 }
-            }
-            for (i, &(window, sp)) in lx.kinds.iter().enumerate() {
-                let at = 4 * (row0 * sp) as u64;
-                self.kern.kv12_rows(s, pos.1 + off, rows, 0, window, sp, 0, lx.lens[i].ptr + at, lx.first[i].ptr + at)?;
             }
         }
         self.at.set(None);
+        for (i, &(window, sp)) in lx.kinds.iter().enumerate() {
+            self.kern.kv12_rows(s, pos.1, n, (0, 0), window, sp, 0, lx.lens[i].ptr, lx.first[i].ptr)?;
+        }
         Ok(())
     }
 
@@ -315,12 +324,19 @@ impl Dyn {
 
     /// The decode attention of n rows (queries `q`, out `att`, [n, nq d] each) over ring `ring`'s pages, at the lengths and first tokens the pass made.
     pub(super) unsafe fn kv12_decode(&self, ring: usize, n: usize, nq: usize, q: u64, att: u64) -> Result<()> {
+        // (every row a sequence of the decode's, its parts of query heads more; all of them the same sequence's pages: its table, rows 0 apart)
+        self.kv12_decode_at(ring, n, nq, q, att, (self.table(ring), 0), self.row0())
+    }
+
+    /// `kv12_decode` of the n rows from row `row0` of the pass, the call's sequence b (row b / parts's query heads' part b % parts) through table `tab.0` + b `tab.1`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) unsafe fn kv12_decode_at(&self, ring: usize, n: usize, nq: usize, q: u64, att: u64, tab: (u64, usize), row0: usize) -> Result<()> {
         let lx = self.lossless.as_ref().expect("a ring with pages");
         let rp = lx.rings[ring].as_ref().expect("a ring with pages");
         let s = self.dev.stream;
-        let at = 4 * (self.row0() * rp.parts) as u64;
+        let at = 4 * (row0 * rp.parts) as u64;
         let stride = (nq * rp.shape.channels / rp.parts) as i64;
-        // (every row a sequence of the decode's, its parts of query heads more; all of them the same sequence's pages: its table, rows 0 apart)
+        self.dcalls.set(self.dcalls.get() + 1);
         self.lib.kv_decode_from(
             &rp.geom,
             rp.g as i64,
@@ -329,8 +345,8 @@ impl Dyn {
             rp.vbase.ptr,
             q,
             stride,
-            self.table(ring),
-            0,
+            tab.0,
+            tab.1 as i64,
             lx.lens[rp.kind].ptr + at,
             lx.first[rp.kind].ptr + at,
             rp.shape.round,

@@ -488,6 +488,73 @@ fn decode_batch(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize, round: bool)
             say(z == 0, format!("{len} tokens from {first} over a bf16 ring of {CAP} places, {z} values not the pages' bits"));
         }
     }
+    // (the batch as a step's graph pads it (src/dynamic/rows.rs `RowTabs`): each sequence's table copied twice, the call finding it at a stride of two tables, and PAD
+    // sequences of no tokens after them; each sequence's bits the call's above, the padding's outputs zeros)
+    const PAD: usize = 3;
+    let rows = nb + PAD;
+    let mut table2 = vec![0i32; rows * 2 * stride];
+    for b in 0..nb {
+        for j in 0..2 {
+            table2[(2 * b + j) * stride..(2 * b + j + 1) * stride].copy_from_slice(&table[b * stride..(b + 1) * stride]);
+        }
+    }
+    let q2: Vec<u16> = q.iter().copied().chain((0..PAD * width).map(|i| bf16_of((i % 7) as f32 - 3.0))).collect();
+    let (lens2, firsts2): (Vec<i32>, Vec<i32>) = lens.iter().chain(&[0; PAD]).zip(firsts.iter().chain(&[0; PAD])).map(|(&l, &f)| (l, f)).unzip();
+    let (q2b, t2b, l2b, f2b) = (up16(&q2)?, up32(&table2)?, up32(&lens2)?, up32(&firsts2)?);
+    let ws2_bytes = lib.kv_decode_workspace(rows as i64, h as i64, g as i64, d as i64, splits)?;
+    let ws2 = Buf::zeroed(ws2_bytes)?;
+    for bf16 in [false, true] {
+        let o2 = Buf::zeroed(2 * rows * width)?;
+        // SAFETY: as above, the call's buffers made here for `rows` sequences.
+        unsafe {
+            if bf16 {
+                lib.kv_decode_bf16(
+                    q2b.ptr,
+                    width as i64,
+                    (kcb.ptr, vcb.ptr, t2b.ptr, 2 * stride as i64, 0),
+                    (l2b.ptr, f2b.ptr, rows as i64, splits),
+                    (h as i64, g as i64, d as i64),
+                    (scale, round),
+                    o2.ptr,
+                    width as i64,
+                    (ws2.ptr, ws2_bytes),
+                    dev.stream,
+                )?
+            } else {
+                lib.kv_decode_from(
+                    &geom,
+                    g as i64,
+                    pool.ptr,
+                    kbase.ptr,
+                    vbase.ptr,
+                    q2b.ptr,
+                    width as i64,
+                    t2b.ptr,
+                    2 * stride as i64,
+                    l2b.ptr,
+                    f2b.ptr,
+                    round,
+                    rows as i64,
+                    splits,
+                    scale,
+                    o2.ptr,
+                    width as i64,
+                    ws2.ptr,
+                    ws2_bytes,
+                    dev.stream,
+                )?
+            }
+        }
+        let got = read(&o2)?;
+        let (x, zeros) = (differ(&got[..nb * width], &pages), got[nb * width..].iter().filter(|&&v| v != 0).count());
+        say(
+            x == 0 && zeros == 0,
+            format!(
+                "padded by {PAD} sequences of no tokens, tables at a stride of two{}: {x} values not the call's bits, {zeros} of the padding's not zero",
+                if bf16 { ", over the bf16 cache" } else { "" }
+            ),
+        );
+    }
     lib.kv_floor_set(0)?;
     Ok(bad == 0)
 }

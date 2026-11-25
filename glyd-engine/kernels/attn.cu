@@ -26,6 +26,7 @@ struct AttnArgs {
     bf16* out;         // the attention's output, rows `os` apart, head h at h d
     const bf16* gate;  // the output gate's values, head h of row t at t gs + h g_step (null: no gate)
     float* part;       // a decode step's parts [(t nq + h) S + z][d + 2]
+    long long tstride; // row t's table at tab + t tstride (a pass's decode rows of several sequences: src/dynamic/rows.rs `RowTabs`); 0: one table for every row
     int d, stride, q_step, k_off, v_off;
     int norm;          // the q and k norms: 0 none, 1 x w, 2 x (1 + w), 3 no weight
     int v_norm;        // the values normed without a weight
@@ -61,7 +62,7 @@ __device__ __forceinline__ float at_score(const AttnArgs& a, float s) {
 // Row r's head hh (a query head below nq, else key head hh - nq with its values): the norm (one block sum), the queries' scale, the rotary (value j < span with
 // its pair j +- span / 2, angle j mod span / 2 where that is below `pairs`), the query to qo, the key and the value (normed or as it is) to the ring at the
 // row's position. Block (row, head), d / 2 threads: thread t holds t and t + d / 2. Grid y: nq + nk heads, or nq where no keys are written (a draft model's).
-// blockIdx.z above 0: `pf`'s prefetch of the next product.
+// blockIdx.z above 0: `pf`'s prefetch of the next product. A padding row (a negative position: a decode step padded to its graph's rows) writes nothing.
 __device__ __forceinline__ float at_rot(const AttnArgs& a, const float* xs, int j, float v, int p) {
     const int half = a.span >> 1;
     if (j >= a.span) return v;
@@ -81,6 +82,7 @@ __device__ __forceinline__ void attn_prep_t(const AttnArgs& a) {
     const int r = blockIdx.x, hh = blockIdx.y, t = threadIdx.x;
     const bf16* row = a.src + (size_t)r * a.stride;
     const int p = a.qpos[r];
+    if (p < 0) return;
     const bool isq = hh < a.nq;
     const int kh = hh - a.nq;
     const bf16* x = isq ? row + (size_t)hh * a.q_step : row + a.k_off + kh * D;
@@ -111,7 +113,7 @@ __device__ __forceinline__ void attn_prep_t(const AttnArgs& a) {
         v0 = at_rot(a, xs, t, v0, p);
         v1 = at_rot(a, xs, t + H, v1, p);
     }
-    const size_t slot = a.cap < 0 ? (size_t)r : at_place(a.tab, p, a.cap);
+    const size_t slot = a.cap < 0 ? (size_t)r : at_place(a.tab ? a.tab + (size_t)r * a.tstride : nullptr, p, a.cap);
     bf16* o = isq ? a.qo + (size_t)r * a.nq * D + hh * D : a.kc + (slot * a.nk + kh) * D;
     o[t] = f2b(v0);
     o[t + H] = f2b(v1);
@@ -153,7 +155,8 @@ extern "C" __global__ void __launch_bounds__(256) attn_prep512(AttnArgs a, G4Pf 
 // and the G = nq / nk query heads of one key-value head (a warp each), the keys AT_KB at a time through shared memory: lane j scores key j, then each lane sums D / 32 output
 // dims. Dynamic shared memory: (AT_KB (D/2 + 1) + AT_KB D/2 + R G D/2) * 4 bytes.
 // SPLIT (a decode step, R = 1): block z takes the S-th part z of the row's keys and writes its outputs, maximum (log2 units) and sum to part [(t nq + h) S + z][D + 2]; the
-// block's warps past the first G only fill the tiles (more loads in flight).
+// block's warps past the first G only fill the tiles (more loads in flight). Its row's own table (tstride: the rows of several sequences in one launch); a padding row (a negative
+// position) has no keys.
 template <int D, bool SPLIT>
 __device__ __forceinline__ void attn_rows_t(const AttnArgs& a, int R) {
     constexpr int W2 = D / 2, KS = W2 + 1, PER = D / 32;
@@ -166,6 +169,7 @@ __device__ __forceinline__ void attn_rows_t(const AttnArgs& a, int R) {
     const int G = nq / nk, w = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int kvh = blockIdx.y, r = w / G, h = kvh * G + w % G, t = blockIdx.x * R + r;
     const bool live = t < n && (!SPLIT || r == 0);
+    const int* tab = SPLIT && a.tab ? a.tab + (size_t)blockIdx.x * a.tstride : a.tab;
     if (live)
         for (int c = lane; c < W2; c += 32) Qs[w * W2 + c] = reinterpret_cast<const uint32_t*>(a.qo + (size_t)t * nq * D + h * D)[c];
     if (threadIdx.x == 0) {
@@ -199,7 +203,7 @@ __device__ __forceinline__ void attn_rows_t(const AttnArgs& a, int R) {
             const bool isv = c >= AT_KB * (W2 / 4);
             const int cc = isv ? c - AT_KB * (W2 / 4) : c, j = cc / (W2 / 4), q4 = cc % (W2 / 4);
             uint4 v = make_uint4(0, 0, 0, 0);
-            if (k0 + j < kmax) v = reinterpret_cast<const uint4*>((isv ? a.vc : a.kc) + (at_place(a.tab, k0 + j, a.cap) * nk + kvh) * D)[q4];
+            if (k0 + j < kmax) v = reinterpret_cast<const uint4*>((isv ? a.vc : a.kc) + (at_place(tab, k0 + j, a.cap) * nk + kvh) * D)[q4];
             if (isv) {
                 *reinterpret_cast<uint4*>(Vs + j * W2 + q4 * 4) = v;
             } else {
@@ -278,7 +282,7 @@ __device__ __forceinline__ float at_gated(const AttnArgs& a, float o, int t, int
 }
 
 // The S parts of a decode step combined: out = bf16(sum of the parts' outputs, each times 2^(its maximum - the largest), / the sum likewise), then the gate where
-// there is one. Block (row, query head), d threads (a dim each).
+// there is one. Block (row, query head), d threads (a dim each). A row with no keys (a padding row) is zeros, as the library's decode gives it.
 extern "C" __global__ void attn_merge(AttnArgs a) {
     const int D = a.d, S = a.S, t = blockIdx.x, h = blockIdx.y, d = threadIdx.x;
     const float* pp = a.part + (size_t)(t * a.nq + h) * S * (D + 2);
@@ -293,7 +297,8 @@ extern "C" __global__ void attn_merge(AttnArgs a) {
         acc = fmaf(pp[z * (D + 2) + d], wz, acc);
     }
     bf16* o = a.out + (size_t)t * a.os + h * D + d;
-    *o = a.gate ? f2b(at_gated(a, b2f(f2b(acc / l)), t, h, d)) : f2b(acc / l);
+    const float v = l > 0.f ? acc / l : 0.f;
+    *o = a.gate ? f2b(at_gated(a, b2f(f2b(v)), t, h, d)) : f2b(v);
 }
 
 // The gate of n rows' attention in place (a prompt chunk's, or a decode over 12-bit pages). Block (row, query head), d threads.

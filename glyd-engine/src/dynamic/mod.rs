@@ -917,6 +917,20 @@ pub struct Dyn {
     parts: Vec<rows::Part>,
     at: std::cell::Cell<Option<usize>>,
     head_rows: Vec<usize>,
+    /// In such a pass: its first rows that decode, a token of a sequence each, whose attention runs as one (`attn::Dyn::attn_lead`, through `rows::RowTabs`); 0: none.
+    lead: std::cell::Cell<usize>,
+    /// The CUDA graphs of steps of rows that decode, one for each padded row count met so far (`rows::Dyn::rows_replay`), whether such graphs may be captured (graphs on, and
+    /// no block of experts that reads the host), the last one replayed (for `prof_take`), the replays and the captures made in a request's step rather than before the
+    /// first (`usercheck` counts them).
+    rgraphs: Vec<RowsGraph>,
+    rgraph_on: bool,
+    rplayed: std::cell::Cell<Option<usize>>,
+    pub(crate) rows_replays: std::cell::Cell<u64>,
+    pub(crate) rows_late: std::cell::Cell<u64>,
+    /// The attention's decode calls of the pass being made or last made (a launch of the parts kernel or a call of the library's decode: GLYD_PROF's count), and the one-row
+    /// step graph's as it was captured.
+    dcalls: std::cell::Cell<usize>,
+    gcalls: usize,
     /// Paged keys and values (R4b: src/dynamic/pages.rs): kc and vc are then the pools every sequence's blocks are in, and each sequence has a block table a layer group. None: each sequence a
     /// room of its own.
     paged: Option<rows::Paged>,
@@ -943,6 +957,14 @@ struct Seq {
 /// The most rows a verify pass takes (`Dyn::verify_rows`): a product of up to 8 rows runs the kernel a one-row step's does (the library's one m-tile product; the
 /// tiered layout's step kernel to 8 rows), so each row's sums are a step's. Checked bit for bit on swift only; the range worker refuses verify on other levels.
 pub const VERIFY_ROWS: usize = 8;
+
+/// A step of rows that decode as a graph: its rows (padded), the graph, the events in it (`--prof`) and its attention's decode calls.
+struct RowsGraph {
+    rows: usize,
+    graph: Graph,
+    marks: Vec<(&'static str, Ev)>,
+    calls: usize,
+}
 
 /// What `Dyn::rewind` needs of a verify pass: the per-sequence states as they were before it (`states`' sizes), each linear-attention layer's b, a rows then its
 /// convolution's input rows (Mix's whole rows) of the pass (VERIFY_ROWS rows of each; None for another kind of layer or another stage's).
@@ -1278,6 +1300,14 @@ impl Dyn {
             parts: Vec::new(),
             at: std::cell::Cell::new(None),
             head_rows: Vec::new(),
+            lead: std::cell::Cell::new(0),
+            rgraphs: Vec::new(),
+            rgraph_on: false,
+            rplayed: std::cell::Cell::new(None),
+            rows_replays: std::cell::Cell::new(0),
+            rows_late: std::cell::Cell::new(0),
+            dcalls: std::cell::Cell::new(0),
+            gcalls: 0,
             paged: None,
             kv12: None,
             lossless: None,
@@ -1290,6 +1320,7 @@ impl Dyn {
         // (a block that reads the router's choices on the host, an expert cache's, is not captured)
         if o.graph && e.big.moe.iter().all(|b| !b.reads_host() && (b.resident().is_some() || b.graphable())) {
             e.capture_graph()?;
+            e.rgraph_on = true;
         }
         Ok(e)
     }
@@ -1384,6 +1415,7 @@ impl Dyn {
     /// records (the stages' times as the graph runs them: without it a step of small kernels waits on the host's launches).
     pub fn prof_in_graph(&mut self) -> Result<()> {
         self.prof = Some(std::cell::RefCell::new(Vec::new()));
+        self.rgraphs.clear();
         if self.graph.take().is_some() {
             self.capture_graph()?;
         }
@@ -1393,11 +1425,15 @@ impl Dyn {
     /// The stages' times since the last call (ms, summed by stage, in the order first seen), the eager passes' events cleared; where the last pass was the step
     /// graph's replay, its last replay's (the graph's events kept).
     pub fn prof_take(&self) -> Result<Vec<(&'static str, f64)>> {
-        let replayed = self.replayed.replace(false);
+        let (replayed, rows) = (self.replayed.replace(false), self.rplayed.replace(None));
         let Some(p) = &self.prof else { return Ok(Vec::new()) };
         self.dev.sync()?;
         let evs = std::mem::take(&mut *p.borrow_mut());
-        let out = if replayed { prof::between(&self.gmarks)? } else { prof::between(&evs)? };
+        let out = match (replayed, rows) {
+            (true, Some(i)) => prof::between(&self.rgraphs[i].marks)?,
+            (true, None) => prof::between(&self.gmarks)?,
+            _ => prof::between(&evs)?,
+        };
         self.spare.borrow_mut().extend(evs.into_iter().map(|x| x.1));
         Ok(out)
     }
@@ -1410,7 +1446,7 @@ impl Dyn {
         }
         let graph = self.replayed.get();
         let ops = self.prof_take()?;
-        prof::pass(rows, prompt, &ops, graph, (!graph).then(|| self.queued.get()));
+        prof::pass(rows, prompt, &ops, graph, (!graph).then(|| self.queued.get()), self.dcalls.get());
         Ok(())
     }
 
@@ -1916,16 +1952,10 @@ impl Dyn {
     /// soft-cap and the argmax (its logits, tok, val a row each).
     unsafe fn forward(&self, p: &Part, n: usize, pos: (u64, u64), head: usize) -> Result<()> {
         let (s, queue) = (self.dev.stream, std::time::Instant::now());
+        self.dcalls.set(0);
         self.mark("embedding")?;
         let st = if std::ptr::eq(p, &self.big) { self.stage } else { Stage::whole(p.d.layers.len()) };
-        // (the 12-bit pages' slots, lengths and first tokens of the pass's rows, once for every layer)
-        if self.lossless.is_some() && std::ptr::eq(p, &self.big) {
-            self.kv12_prepare(n, pos)?;
-        }
-        if std::ptr::eq(p, &self.big) {
-            self.lib_decode_prepare(n, pos)?;
-            self.mark("attention: the rows' lengths")?;
-        }
+        self.pass_prepare(p, n, pos)?;
         let head = if st.last { head } else { 0 };
         if st.first {
             self.op(p, 0, 0, &p.d.first, n, pos, head)?;
@@ -1942,15 +1972,27 @@ impl Dyn {
                 // (a preparation whose keys and values go to 12-bit pages writes staging rows and no sequence's ring: the pass's rows at once, and one
                 // write of them; the slots of each sequence's rows the pass made)
                 if !self.parts.is_empty() && !rows::row_wise(op) {
+                    // (the pass's first rows that decode, a token of a sequence each: an attention layer's for all of them at once, each through its own table, which is what
+                    // each row's own pass computes, bit for bit (the decode's plan is a sequence's own: h:attn-backends:attention:2))
+                    let lead = match op {
+                        Op::Attn(a) if a.picked.is_none() => self.lead.get(),
+                        _ => 0,
+                    };
+                    let mut r = Ok(());
                     if let Op::Attn(a) = op {
                         if a.writes && self.pages12(p, a.ring).is_some() {
                             self.attn_prep(p, l, i, a, n, pos, head)?;
                             self.prepped.set(true);
                         }
+                        if lead > 0 {
+                            r = self.attn_lead(p, l, i, a, (lead, n), pos, head);
+                        }
                     }
                     // (an operation on a sequence's cache or state: each sequence's rows by themselves, as a pass of that sequence alone runs them)
-                    let mut r = Ok(());
-                    for (k, part) in self.parts.iter().enumerate() {
+                    for (k, part) in self.parts.iter().enumerate().skip(lead) {
+                        if r.is_err() {
+                            break;
+                        }
                         self.at.set(Some(k));
                         self.start.set(part.start);
                         let off = 4 * part.row0 as u64;
@@ -2025,6 +2067,23 @@ impl Dyn {
         Ok(())
     }
 
+    /// What a pass of part `p` on n rows at `pos` makes once for every layer before its operations run: the tables of its rows that decode, each its sequence's
+    /// (`rows::RowTabs`), the 12-bit pages' slots, and the rows' lengths and first tokens the attention's decode reads. Every caller of `op` runs it first (`forward`, and
+    /// kindcheck's operation-by-operation passes).
+    unsafe fn pass_prepare(&self, p: &Part, n: usize, pos: (u64, u64)) -> Result<()> {
+        if !std::ptr::eq(p, &self.big) {
+            return Ok(());
+        }
+        if !self.parts.is_empty() && self.lead.get() > 0 {
+            self.row_tables(pos.0)?;
+        }
+        if self.lossless.is_some() {
+            self.kv12_prepare(n, pos)?;
+        }
+        self.lib_decode_prepare(n, pos)?;
+        self.mark("attention: the rows' lengths")
+    }
+
     fn capture_graph(&mut self) -> Result<()> {
         self.st.write(0, &[0i32])?;
         let st = self.st.ptr;
@@ -2048,6 +2107,7 @@ impl Dyn {
         });
         self.capturing.set(false);
         self.graph = Some(g?);
+        self.gcalls = self.dcalls.get();
         if let Some(p) = &self.prof {
             self.gmarks = std::mem::take(&mut *p.borrow_mut());
         }
@@ -2160,6 +2220,8 @@ impl Dyn {
                 Some(g) if one => {
                     g.launch(self.dev.stream)?;
                     self.replayed.set(true);
+                    self.rplayed.set(None);
+                    self.dcalls.set(self.gcalls);
                 }
                 _ => self.forward(&self.big, n, (pp, pp), head)?,
             }
@@ -2395,6 +2457,13 @@ impl Dyn {
         self.dev.sync()?;
         self.big.logits = Buf::new(self.big.d.vocab * rows * 2)?;
         (self.big.tok, self.big.val) = (Buf::zeroed(4 * rows)?, Buf::zeroed(4 * rows)?);
+        // (a step's rows that decode take their attention at once (`attn_lead`): the parts kernel's room and the library decode's workspace for that many)
+        let (heads, dmax) = self.big.d.heads();
+        self.part = Buf::zeroed(rows.max(self.split_rows) * heads.max(1) * attn::SPLITS * (dmax + 2) * 4)?;
+        if let Some(ld) = &mut self.ldec {
+            ld.grow(&self.lib, rows)?;
+        }
+        self.rgraphs.clear();
         if let Some(lm) = self.big.mats[self.big.d.lm].packed_opt() {
             let mut need = 0;
             for m in 1..=rows as i64 {
@@ -2521,6 +2590,8 @@ impl Dyn {
                 Some(g) => {
                     g.launch(self.dev.stream)?;
                     self.replayed.set(true);
+                    self.rplayed.set(None);
+                    self.dcalls.set(self.gcalls);
                 }
                 None => self.forward(&self.big, 1, (st, st), 1)?,
             }
