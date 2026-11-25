@@ -2464,7 +2464,7 @@ pub fn text(model: &str, sh: &Shape, m: &Machine, p: &Plan) -> String {
         s += &format!("note: {n}\n");
     }
     s += &format!(
-        "(decode speeds are predictions for one user at about 1,000 positions: the GPU's memory rate {}, each class's floor a step and shares of that rate; prompts' from its tensor rate)\n",
+        "(decode speeds are predictions for one user at about 1,000 positions: the GPU's memory rate {}, each class's floor a step and shares of that rate; prompts' a share of it too)\n",
         if m.devices.iter().any(|d| d.stream.is_some()) { "as measured here" } else { "by the maker's figure" },
     );
     s
