@@ -46,17 +46,24 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
     load_with_places(dir, o, st, None)
 }
 
-/// Stage `st` with `places` of each mixture-of-experts layer's experts on the GPU (None, or as many as it has: all; fewer: the expert cache, its host tier pinned).
+/// Stage `st` with `places` of each mixture-of-experts layer's experts on the GPU (None, or as many as it has: all; fewer: the expert cache, its host tier pinned),
+/// nothing else of the expert cache asked: `load_stage_hb`'s.
 pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) -> Result<Dyn> {
-    load_with_caching(dir, o, st, places, None)
+    let caching = places.map(|places| crate::hbg_store::HbCaching { places, ram: None, offload: Default::default(), dense: 0 });
+    load_stage_hb(dir, o, st, caching.as_ref())
 }
 
-/// `load_with_places`, a hummingbird directory's experts in the expert cache where `caching` is given (the stage's places and memory, src/hbg_store.rs; `places`
-/// is the penguin level's cache's and goes with no hummingbird directory). Loaded by the executor's loader (`Dyn::new_placed`) from the lowered description,
-/// which names every matrix and small tensor (`lower::kimi`); each layer's experts are made from its block's roles (`block`). Every layer is across the
-/// thread's group of GPUs where it has one (src/dynamic/tp.rs): this GPU's slice of a big matrix's rows, of each expert's; the stage's last layers' matrices in
-/// the computer's memory where the cache says so (src/dense_ram.rs).
-pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+/// Stage `st` with its experts as `caching` says, where it is given (the stage's places and memory, src/hbg_store.rs): a hummingbird directory's in the expert
+/// cache, the release's in the cache's places (`places` of each layer's, every expert in the computer's memory) where the directory holds no hummingbird
+/// experts. Loaded by the executor's loader (`Dyn::new_placed`) from the lowered description, which names every matrix and small tensor (`lower::kimi`);
+/// each layer's experts are the Moe kind's latent block (`experts::latent_block`). Every layer is across the thread's group of GPUs where it has one
+/// (src/dynamic/tp.rs): this GPU's slice of a big matrix's rows, of each expert's; the stage's last layers' matrices in the computer's memory where the cache
+/// says so (src/dense_ram.rs).
+pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+    // (a hummingbird directory, src/hb_pack.rs: the routed experts' codebook rows in place of the release's; the cache's places are the release's where
+    // there is none)
+    let hb = crate::hb_pack::HbDir::open(dir)?;
+    let places = caching.map(|c| c.places).filter(|_| hb.is_none());
     let c = ConfigKimi::load(dir)?;
     let (kd, md) = (&c.kda, &c.mla);
     if kd.dim != crate::kern::GM_D || c.hidden % 64 != 0 || c.hidden > 8192 || md.kv_rank > 512 || (md.kv_rank + md.rope) % 64 != 0 {
@@ -65,8 +72,6 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
     let dev = Dev::new(o.device)?;
     let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
     let w32 = dtypes(&io(Checkpoint::open(dir))?, &c)?;
-    // (a hummingbird directory, src/hb_pack.rs: the routed experts' codebook rows in place of the release's, all on the GPU)
-    let hb = crate::hb_pack::HbDir::open(dir)?;
     let hb_store = caching.map(crate::hbg_store::store_for);
     let threads = std::thread::available_parallelism().map_or(8, |n| n.get());
     let store = ExpertStore::new();

@@ -489,16 +489,30 @@ pub fn open_plan(dir: &Path, plan: &crate::plan::LoadPlan, offload: crate::offlo
     if sp.host_bytes == 0 {
         return if sp.across { open_tp(dir, &o, devices) } else { open(dir, &o, cuts, devices) };
     }
-    // (a hummingbird directory's experts, and the release's of the families the expert cache takes, in its places; Kimi-K3's release experts in its own)
-    let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
-    let kimi_release = family(&text) == Some("Kimi-K3") && plan.level != "hummingbird";
-    match (kimi_release, sp.across) {
-        (true, true) => open_kimi_tp(dir, &o, devices, sp.places[0]),
-        (true, false) => open_kimi(dir, &o, cuts, devices, sp.places.clone(), sp.dense),
-        _ => {
-            open_cached(dir, &o, cuts, devices, sp.places.iter().map(|&places| crate::hbg_store::HbCaching { places, ram, offload, dense: sp.dense }).collect())
-        }
+    // (each stage's experts in the expert cache: a hummingbird directory's, or the release's in places of their own; the release's experts of the latent block
+    // across the GPUs where the plan says so, their cache's host tier and plans shared: src/dynamic/tp_cache.rs)
+    let cachings: Vec<crate::hbg_store::HbCaching> =
+        sp.places.iter().map(|&places| crate::hbg_store::HbCaching { places, ram, offload, dense: sp.dense }).collect();
+    if sp.across && plan.level != "hummingbird" && latent_experts(dir)? {
+        let c = cachings.into_iter().next().ok_or_else(|| Error("a plan across GPUs with no places for its experts".into()))?;
+        return open_tp_cached(dir, &o, devices, c);
     }
+    open_cached(dir, &o, cuts, devices, cachings)
+}
+
+/// Whether the model of `dir` has experts of the Moe kind's latent block (`experts::latent_block`: a latent of their own projections whose sum is normed),
+/// whose expert cache runs across a group of GPUs (src/dynamic/tp_cache.rs), by its description.
+fn latent_experts(dir: &Path) -> Result<bool> {
+    Ok(latent_experts_of(&crate::runtime::describe::describe_dir(dir)?.0))
+}
+
+/// `latent_experts` of a description.
+fn latent_experts_of(d: &crate::runtime::describe::Described) -> bool {
+    use crate::runtime::kinds::{Body, Ffn};
+    d.desc
+        .blocks
+        .iter()
+        .any(|b| matches!(&b.body, Body::Ffn(Ffn::Moe(m)) if m.latent.as_ref().is_some_and(|l| l.norm_out.is_some() && l.expert_norm.is_none())))
 }
 
 /// The model of `dir` on the dynamic engine, by its config's family: on one GPU where `cuts` is empty, else in stages (`devices`: one more than `cuts`).
@@ -571,47 +585,49 @@ pub use crate::plan::sizing::{
     plan_cuts, ram_bytes, ram_bytes_table, CODED_PCT, PLAIN_PCT, TIERED_PCT, TWELVE_PCT,
 };
 
-/// Kimi-K3 in stages (`open`'s) with `places[k]` of a layer's experts on stage k's GPU, the rest in the expert cache's host tier.
-pub fn open_kimi(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], places: Vec<usize>, dense: usize) -> Result<Run> {
-    let c = crate::kimi::ConfigKimi::load(dir)?;
-    let owned = dir.to_path_buf();
-    let firsts: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).collect();
-    Run::new(
-        c.layers,
-        c.eos.clone(),
-        cuts,
-        devices,
-        o,
-        std::sync::Arc::new(move |st, o: &Opts| {
-            let k = firsts.iter().position(|&f| f == st.layers.0).unwrap_or(0);
-            // (the stage's last `dense` layers' matrices in the computer's memory, src/dense_ram.rs: one stage alone)
-            let caching =
-                (dense > 0).then(|| crate::hbg_store::HbCaching { places: places.get(k).copied().unwrap_or(1), ram: None, offload: Default::default(), dense });
-            super::kimi::load_with_caching(&owned, o, st, places.get(k).copied(), caching.as_ref())
-        }),
-    )
-}
-
 /// A model of the dynamic route in stages (`open`'s), stage k's layers with their experts in the expert cache as `cachings[k]` says: a hummingbird directory's (src/hbg_store.rs: places on its GPU, the computer's memory, the disk),
 /// or the release's where its experts are each the same bytes (src/tiering.rs, R12: DeepSeek-V4's FP4).
 pub fn open_cached(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], cachings: Vec<crate::hbg_store::HbCaching>) -> Result<Run> {
+    let (nl, eos, load) = cached_stage(dir, o)?;
+    let firsts: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).collect();
+    let make: MakeStage = std::sync::Arc::new(move |st, o: &Opts| {
+        let k = firsts.iter().position(|&f| f == st.layers.0).unwrap_or(0);
+        load(st, o, cachings.get(k).or(cachings.last()))
+    });
+    Run::new(nl, eos, cuts, devices, o, make)
+}
+
+/// The model of `dir` with every layer across `devices` (src/dynamic/tp.rs), its experts in the expert cache as `caching` says: `places` of a layer's in each
+/// GPU's slices of its places, the rest in the cache's host tier, shared by the group (src/dynamic/tp_cache.rs).
+pub fn open_tp_cached(dir: &Path, o: &Opts, devices: &[i32], caching: crate::hbg_store::HbCaching) -> Result<Run> {
+    let (nl, eos, load) = cached_stage(dir, o)?;
+    Ok(Run::Tp(super::tp::Tp::with(nl, eos, devices, o, std::sync::Arc::new(move |st, o: &Opts| load(st, o, Some(&caching))))?))
+}
+
+/// A stage of a model with its experts as a caching says, by its config's family's loader.
+type CachedStage = std::sync::Arc<dyn Fn(Stage, &Opts, Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> + Send + Sync>;
+
+/// The layers, end tokens and cached stage loader (`CachedStage`) of the model of `dir`, by its config's family: the ones whose experts the expert cache takes.
+fn cached_stage(dir: &Path, o: &Opts) -> Result<(usize, Vec<i64>, CachedStage)> {
     let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
-    let (nl, eos) = match family(&text) {
+    let level = o.layout.unwrap_or(crate::weights::Layout::Tiered);
+    let owned = dir.to_path_buf();
+    Ok(match family(&text) {
         Some("Muse Spark") => {
             let c = crate::muse::ConfigMuse::load(dir)?;
-            (c.layers, c.eos.clone())
+            (c.layers, c.eos.clone(), std::sync::Arc::new(move |st, o: &Opts, c| super::muse::load_stage_hb(&owned, o, st, c)))
         }
         Some("Kimi-K3") => {
             let c = crate::kimi::ConfigKimi::load(dir)?;
-            (c.layers, c.eos.clone())
+            (c.layers, c.eos.clone(), std::sync::Arc::new(move |st, o: &Opts, c| super::kimi::load_stage_hb(&owned, o, st, c)))
         }
         Some("GLM-5.3-Flash") => {
             let c = crate::glm::ConfigGlm::load(dir)?;
-            (c.layers, c.eos.clone())
+            (c.layers, c.eos.clone(), std::sync::Arc::new(move |st, o: &Opts, c| super::glm::load_stage_hb(&owned, o, level, st, c)))
         }
         Some("DeepSeek-V4") => {
             let c = crate::deepseek_v4::ConfigV4::load(dir)?;
-            (c.layers, c.eos.clone())
+            (c.layers, c.eos.clone(), std::sync::Arc::new(move |st, o: &Opts, c| super::deepseek_v4::load_stage_hb(&owned, o, st, c)))
         }
         f => {
             return err(format!(
@@ -620,40 +636,7 @@ pub fn open_cached(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], cachin
                 f.unwrap_or("its family")
             ))
         }
-    };
-    let fam = family(&text).unwrap_or("");
-    let level = o.layout.unwrap_or(crate::weights::Layout::Tiered);
-    let owned = dir.to_path_buf();
-    let firsts: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).collect();
-    let make: MakeStage = std::sync::Arc::new(move |st, o: &Opts| {
-        let k = firsts.iter().position(|&f| f == st.layers.0).unwrap_or(0);
-        let c = cachings.get(k).or(cachings.last());
-        match fam {
-            "Muse Spark" => super::muse::load_stage_hb(&owned, o, st, c),
-            // (the release's experts in places of their own where the directory holds no hummingbird experts, which the hummingbird cache takes)
-            "Kimi-K3" => {
-                let places = c.map(|c| c.places).filter(|_| crate::hb_pack::HbDir::open(&owned).is_ok_and(|h| h.is_none()));
-                super::kimi::load_with_caching(&owned, o, st, places, c)
-            }
-            "GLM-5.3-Flash" => super::glm::load_stage_hb(&owned, o, level, st, c),
-            _ => super::deepseek_v4::load_stage_hb(&owned, o, st, c),
-        }
-    });
-    Run::new(nl, eos, cuts, devices, o, make)
-}
-
-/// Kimi-K3 with every layer across `devices` (src/dynamic/tp.rs), `places` of a layer's experts in each GPU's slices of its places, the rest in the expert
-/// cache's host tier (src/dynamic/tp_cache.rs).
-pub fn open_kimi_tp(dir: &Path, o: &Opts, devices: &[i32], places: usize) -> Result<Run> {
-    let c = crate::kimi::ConfigKimi::load(dir)?;
-    let owned = dir.to_path_buf();
-    Ok(Run::Tp(super::tp::Tp::with(
-        c.layers,
-        c.eos.clone(),
-        devices,
-        o,
-        std::sync::Arc::new(move |st, o: &Opts| super::kimi::load_with_places(&owned, o, st, Some(places))),
-    )?))
+    })
 }
 
 #[cfg(test)]
@@ -690,6 +673,21 @@ mod tests {
         assert!(!k(&l("1.self_attn.q_conv1d.weight")) && !k(&l("1.block_sparse_moe.shared_experts.up_proj.weight")));
         assert!(!k(&l("1.block_sparse_moe.routed_expert_down_proj.weight")) && !k(&l("1.block_sparse_moe.experts.0.w1.weight_packed")));
         assert!(!crate::plan::sizing::in_ram("DeepSeek-V4", "model.layers.0.self_attn.wo.weight"));
+    }
+
+    /// A plan of experts in the computer's memory across GPUs opens the latent block's cache across them (src/dynamic/tp_cache.rs) by the description's
+    /// kind, not the family's name: Kimi-K3's released config has such experts; GLM-5.3-Flash's (experts on the layer's input) and DeepSeek-V4's do not.
+    #[test]
+    fn the_cache_across_gpus_is_the_latent_blocks() {
+        let describe = |text: &str| crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap();
+        let fixture = |f: &str| std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(f)).unwrap();
+        let config = |f: &str| {
+            let h: serde_json::Value = serde_json::from_str(&fixture(f)).unwrap();
+            h["config"].as_str().unwrap().to_string()
+        };
+        assert!(super::latent_experts_of(&describe(&config("headers/Kimi-K3.json"))));
+        assert!(!super::latent_experts_of(&describe(&fixture("glm5_next_config.json"))));
+        assert!(!super::latent_experts_of(&describe(&config("headers/DeepSeek-V4-Flash-0731.json"))));
     }
 
     /// The expert cache's plan: the dense bytes cut over every GPU (even where one would hold them), each stage's room after them as places for its experts.
