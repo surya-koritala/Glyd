@@ -46,7 +46,67 @@ pub struct Support {
     pub experts_in_ram_levels: &'static [&'static str],
     /// The path drafts with the model's own multi-token-prediction head (Condor's): a decode step makes more than one token. No other path loads that head yet.
     pub drafts: bool,
+    /// How the planner sizes the family's path and what its loader takes (src/plan.rs `sizing`).
+    pub route: Route,
 }
+
+/// What a family's loader takes, as the planner reads it: every branch of `plan::sizing` that differs between families reads a field here, so a
+/// family of the same layer kinds is a row, not an edit there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Route {
+    pub sizing: Sizing,
+    /// The loader holds bf16 matrices in penguin's 12-bit layout where that fits and reads faster (else tiered alone).
+    pub bf16_twelve: bool,
+    pub across: Across,
+    pub expert_cache: ExpertCache,
+    pub ram_linears: RamLinears,
+}
+
+/// Which sizing `plan::sizing::size` gives a family.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sizing {
+    /// No path of `run` loads it yet: the planner's estimate stands.
+    Estimate,
+    /// The dense kind on the executor, on one GPU at every level (`dense_fit`).
+    Dense,
+    /// One GPU at the lossy levels (`lossy_plan`), and the dynamic route at a level its layers split at (`Support::split_levels`).
+    OneGpu,
+    /// The dynamic route at every level, over one GPU or several (`size_dynamic`).
+    Dynamic,
+}
+
+/// Whether a family's layers run across the GPUs of one machine, each GPU a slice of every matrix (src/dynamic/tp.rs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Across {
+    No,
+    /// Where a development build asks for it (GLYD_TP=1).
+    Asked,
+    /// And where nothing is asked, on HBM GPUs that reach each other directly.
+    Default,
+}
+
+/// The cache of experts a family's loader keeps on the GPUs where they do not hold every expert, by what sizes a place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExpertCache {
+    None,
+    /// An expert as the loader packs it, and each layer's own cache for the context (`kimi_cache`).
+    Packed,
+    /// An expert's bytes as released, each the same (`release_cache`).
+    Release,
+}
+
+/// The linears of a layer a loader can keep in the computer's memory (src/dense_ram.rs), copied to the GPU before the layer runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RamLinears {
+    None,
+    /// The attention's projections and the experts' latent projections, of every layer.
+    Attention,
+    /// The delta attention's projections, of the layers that have one.
+    DeltaAttention,
+}
+
+/// A family on one GPU with nothing kept off it: what the other rows differ from.
+const ONE_GPU: Route = Route { sizing: Sizing::OneGpu, bf16_twelve: false, across: Across::No, expert_cache: ExpertCache::None, ram_linears: RamLinears::None };
 
 /// The most context the lossy paths take where none is asked (one constant: the planner's, src/plan.rs).
 pub use crate::plan::LOSSY_CTX;
@@ -71,6 +131,7 @@ pub static TABLE: [Support; 9] = [
         split_levels: NONE,
         experts_in_ram_levels: NONE,
         drafts: false,
+        route: Route { sizing: Sizing::Dense, ..ONE_GPU },
     },
     Support {
         family: Family::Qwen35,
@@ -82,6 +143,7 @@ pub static TABLE: [Support; 9] = [
         split_levels: PENGUIN,
         experts_in_ram_levels: NONE,
         drafts: false,
+        route: Route { bf16_twelve: true, ..ONE_GPU },
     },
     Support {
         family: Family::NemotronH,
@@ -93,6 +155,7 @@ pub static TABLE: [Support; 9] = [
         split_levels: PENGUIN,
         experts_in_ram_levels: &["kestrel", "swift", "wren", "hummingbird"],
         drafts: false,
+        route: ONE_GPU,
     },
     Support {
         family: Family::Gemma4,
@@ -104,6 +167,7 @@ pub static TABLE: [Support; 9] = [
         split_levels: NONE,
         experts_in_ram_levels: NONE,
         drafts: false,
+        route: ONE_GPU,
     },
     Support {
         family: Family::Kimi,
@@ -115,6 +179,13 @@ pub static TABLE: [Support; 9] = [
         split_levels: PENGUIN_HB,
         experts_in_ram_levels: PENGUIN_HB,
         drafts: false,
+        route: Route {
+            sizing: Sizing::Dynamic,
+            bf16_twelve: true,
+            across: Across::Default,
+            expert_cache: ExpertCache::Packed,
+            ram_linears: RamLinears::DeltaAttention,
+        },
     },
     Support {
         family: Family::Glm,
@@ -126,6 +197,7 @@ pub static TABLE: [Support; 9] = [
         split_levels: PENGUIN_HB,
         experts_in_ram_levels: PENGUIN_HB,
         drafts: false,
+        route: Route { sizing: Sizing::Dynamic, across: Across::Asked, expert_cache: ExpertCache::Release, ..ONE_GPU },
     },
     Support {
         family: Family::DeepSeekV4,
@@ -137,6 +209,7 @@ pub static TABLE: [Support; 9] = [
         split_levels: PENGUIN_HB,
         experts_in_ram_levels: PENGUIN_HB,
         drafts: false,
+        route: Route { sizing: Sizing::Dynamic, across: Across::Default, expert_cache: ExpertCache::Release, ..ONE_GPU },
     },
     Support {
         family: Family::Muse,
@@ -148,6 +221,7 @@ pub static TABLE: [Support; 9] = [
         split_levels: PENGUIN_HB,
         experts_in_ram_levels: PENGUIN_HB,
         drafts: false,
+        route: Route { sizing: Sizing::Dynamic, across: Across::Asked, expert_cache: ExpertCache::Release, ram_linears: RamLinears::Attention, ..ONE_GPU },
     },
     Support {
         family: Family::FlashNext,
@@ -159,6 +233,7 @@ pub static TABLE: [Support; 9] = [
         split_levels: NONE,
         experts_in_ram_levels: NONE,
         drafts: true,
+        route: Route { sizing: Sizing::Estimate, ..ONE_GPU },
     },
 ];
 

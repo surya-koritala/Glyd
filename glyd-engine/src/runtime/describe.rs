@@ -2089,12 +2089,12 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     ] {
         k.raw(x);
     }
-    // (the 0731 release's DSpark drafter: n_mtp_layers of the decoder's layers with the window alone, 3 where the config does not say)
+    // (a DSpark drafter: `n_mtp_layers` of the decoder's layers with the window alone, the format's default where the config does not say)
     let draft = match (comp_template, moe_template) {
         (Some(c), Some(mut m)) => {
             let window = Comp { ratio: 0, overlap: false, rope: main_rope.clone(), indexer: None, ..c };
             (m.router.hash, m.router.bias) = (false, true);
-            dspark_head(&k, k.opt_usize("n_mtp_layers")?.unwrap_or(3), window, m, Residual::Streams(streams), eps)?
+            dspark_head(&k, k.opt_usize("n_mtp_layers")?.unwrap_or(DSPARK_LAYERS), window, m, Residual::Streams(streams), eps)?
         }
         _ => None,
     };
@@ -2121,6 +2121,11 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     out.scales = scales;
     Ok(out)
 }
+
+/// A DSpark drafter's layers where its config has the drafter's keys and no `n_mtp_layers`: the format's default, which its readers define (vLLM's
+/// `models/deepseek_v4/nvidia/dspark.py`: `n_mtp_layers`, else 3). A directory is held to its index (`describe_dir`): a checkpoint that lacks a draft layer
+/// the count reads is refused, its tensors named.
+const DSPARK_LAYERS: usize = 3;
 
 /// A DeepSeek release's DSpark drafter (`dspark_*` keys; `kinds::DSpark`), where the config has one: `layers` draft layers, each the model's
 /// decoder layer with the window alone (the attention `window` with the model's own form, the feed-forward `moe`) on the model's residual rule,

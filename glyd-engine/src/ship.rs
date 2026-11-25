@@ -10,6 +10,7 @@
 
 use crate::args::Args;
 use crate::ffi::{Error, Result};
+use crate::levels::draft_repo;
 use glyd_gpu::json::{self, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -105,12 +106,6 @@ pub fn run(a: &Args) -> Result<()> {
     }
     eprintln!("== ship done ({:.0} s): {}", t0.elapsed().as_secs_f64(), repo.display());
     Ok(())
-}
-
-/// The draft model Google made for MODEL, a Gemma 4 model (google/gemma-4-12B-it: google/gemma-4-12B-it-assistant), else None.
-fn draft_repo(model: &str) -> Option<String> {
-    let name = model.rsplit('/').next().unwrap_or(model);
-    name.to_ascii_lowercase().starts_with("gemma-4-").then(|| format!("google/{name}-assistant"))
 }
 
 fn source_dir(model: &str) -> Result<PathBuf> {

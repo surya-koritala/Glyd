@@ -1846,7 +1846,7 @@ pub fn speed_users(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan, position
 pub fn speed_routed(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan, positions: f64, users: usize, skew: f64) -> f64 {
     let d0 = &m.devices[main];
     let Some((bits, ebits)) = plan_bits(lp, sh, d0) else { return 0.0 };
-    let gain = gain_of(sh, lp.kind == Kind::Condor);
+    let gain = gain_of(sh, drafts(lp));
     // (the step's floor, and its reads at the class's shares of the rate: the weights' share and the keys' and values')
     let (wb, kvb) = reads_of(sh, bits, ebits, positions, users as f64);
     let c = &d0.consts;
@@ -1898,13 +1898,18 @@ pub fn features(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan, positions: 
     let (w, kv) = reads_of(sh, bits, ebits, positions, users as f64);
     serde_json::json!({
         "weight_bytes": w, "kv_bytes": kv, "layers": sh.layers, "hidden": sh.hidden, "prompt_flops": 2.0 * (sh.dense + sh.routed_active()),
-        "attn_bytes": attn_bytes(sh, (positions - 64.0).max(0.0)), "gain": gain_of(sh, lp.kind == Kind::Condor), "lossless": lossless(lp.level, sh),
+        "attn_bytes": attn_bytes(sh, (positions - 64.0).max(0.0)), "gain": gain_of(sh, drafts(lp)), "lossless": lossless(lp.level, sh),
         "twelve": read_of(lp.level, sh, d0, Some(lp.layout)) == Read::Twelve, "in_vram": in_vram,
     })
 }
 
 fn speed_of(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan) -> f64 {
     speed_at(sh, m, main, lp, POSITIONS)
+}
+
+/// Whether the path that loads `lp` drafts with the model's own head: its family's row says (`Support::drafts`, the flag `plan` and the ladder read).
+fn drafts(lp: &LoadPlan) -> bool {
+    crate::support::row_named(lp.family).is_some_and(|r| r.drafts)
 }
 
 /// The tokens a decode step makes: `MTP_GAIN` where the model has a draft head and the path drafts with it (`drafts`), else one.
@@ -2779,6 +2784,7 @@ pub mod sizing {
     use crate::qwen35::{Config35, Pack35};
     use crate::runtime::config::ModelConfig;
     use crate::store;
+    use crate::support::{Across, ExpertCache, RamLinears, Sizing, Support};
     use crate::ui::{gib, Done, Refusal};
     use crate::weights::{packed_bytes, Config, Layout};
     use glyd_gpu::save::Source;
@@ -2800,7 +2806,12 @@ pub mod sizing {
             Layout::Int3 => 3.53,                   // (three-bit codes, a bf16 scale a run of 32, a step's unread word: 3 + 0.5 + 0.03)
             Layout::Cb3Row => 3.625,                // (three-bit codes, a bf16 scale a run of 32 and eight bf16 entries a row of 1,024: 3 + 0.5 + 0.125)
             Layout::Cb2Row => 2.5625,               // (two-bit codes, a bf16 scale a run of 32 and four bf16 entries a row of 1,024: 2 + 0.5 + 0.0625)
-            Layout::Hummingbird => 2.99, // (the experts of the recipe hb40: 205 of a layer's 512 at 3.625 and the rest at 2.5625; the directory's own bytes are what a plan uses where it has them)
+            // (a layer's experts in the recipe's shares: `moe_hb::HB40_THREE_BIT_PERCENT` of them in the three-bit rows and the rest in the two-bit ones, to a hundredth of a
+            // bit as the other levels' are said; the directory's own bytes are what a plan uses where it has them)
+            Layout::Hummingbird => {
+                let three = crate::moe_hb::HB40_THREE_BIT_PERCENT as f64 / 100.0;
+                ((three * bits(Layout::Cb3Row) + (1.0 - three) * bits(Layout::Cb2Row)) * 100.0).round() / 100.0
+            }
         }
     }
 
@@ -3274,10 +3285,24 @@ pub mod sizing {
         })
     }
 
-    /// Each of the model's `nl` layers' bytes that its family's loader can keep in the computer's memory (src/dense_ram.rs: its packed linears there), at the packing `layer_bytes_where` counts: Muse Spark's attention and
-    /// latent projections, Kimi-K3's delta attention's three; zeros for the others (their attention is in blocks of their own, or FP8).
+    /// The linears the loader of the family the table names `family` keeps in the computer's memory (`Route::ram_linears`; none for a name with no row).
+    fn ram_linears(family: &str) -> RamLinears {
+        crate::support::row_named(family).map_or(RamLinears::None, |r| r.route.ram_linears)
+    }
+
+    /// The layers of the model whose config.json is `text` that mix by a delta attention (`kinds::LinearKind::KimiDelta`), in order, from its description.
+    pub(crate) fn delta_layers(text: &str) -> crate::ffi::Result<Vec<bool>> {
+        use crate::runtime::kinds::{Body, LinearKind, Mixer};
+        let cfg = serde_json::from_str(text).map_err(|e| crate::ffi::Error(format!("config.json: {e}")))?;
+        let d = crate::runtime::describe::describe(&cfg)?;
+        let mixers = d.desc.blocks.iter().filter_map(|b| if let Body::Mixer(m) = &b.body { Some(m) } else { None });
+        Ok(mixers.map(|m| matches!(m, Mixer::Linear(l) if l.kind == LinearKind::KimiDelta)).collect())
+    }
+
+    /// Each of the model's `nl` layers' bytes that its family's loader can keep in the computer's memory (src/dense_ram.rs: its packed linears there), at the packing `layer_bytes_where` counts: the linears the
+    /// family's row names (`Route::ram_linears`: the attention's and the latent projections, or the delta attention's); zeros for the others (their attention is in blocks of their own, or FP8).
     pub fn ram_bytes(dir: &Path, nl: usize, family: &str, f8_pct: u64, bf16_pct: u64) -> crate::ffi::Result<Vec<u64>> {
-        if !matches!(family, "Kimi-K3" | "Muse Spark") {
+        if ram_linears(family) == RamLinears::None {
             return Ok(vec![0; nl]);
         }
         let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| crate::ffi::Error(format!("{}: {e}", dir.display())))?;
@@ -3286,29 +3311,34 @@ pub mod sizing {
 
     /// `ram_bytes` of a table of tensors and the model's config.json (src/sizes.rs: before the files are here too).
     pub fn ram_bytes_table(table: &crate::sizes::Table, text: &str, nl: usize, family: &str, f8_pct: u64, bf16_pct: u64) -> crate::ffi::Result<Vec<u64>> {
-        let kda: Vec<bool> = match family {
-            "Kimi-K3" => crate::kimi::ConfigKimi::parse(text, "config.json", None)?.kinds.iter().map(|k| matches!(k, crate::glm::GlmKind::Kda)).collect(),
-            "Muse Spark" => Vec::new(),
-            _ => return Ok(vec![0; nl]),
+        let kda: Vec<bool> = match ram_linears(family) {
+            RamLinears::DeltaAttention => delta_layers(text)?,
+            RamLinears::Attention => Vec::new(),
+            RamLinears::None => return Ok(vec![0; nl]),
         };
         Ok(layer_bytes_table(table, nl, f8_pct, bf16_pct, &|n| in_ram(family, &kda, n)).0)
     }
 
-    /// Whether the tensor `name` is one of the matrices `family`'s loader keeps in the computer's memory for a layer there (src/dense_ram.rs; `kda`: Kimi-K3's layers of delta attention).
+    /// Whether the tensor `name` is one of the matrices `family`'s loader keeps in the computer's memory for a layer there (src/dense_ram.rs; `kda`: the model's layers of delta attention).
     pub(crate) fn in_ram(family: &str, kda: &[bool], name: &str) -> bool {
+        linear_in_ram(ram_linears(family), kda, name)
+    }
+
+    /// `in_ram` by the linears a loader keeps there (`Route::ram_linears`).
+    fn linear_in_ram(which: RamLinears, kda: &[bool], name: &str) -> bool {
         let layer = name.split("layers.").nth(1).and_then(|r| r.split('.').next()).and_then(|x| x.parse::<usize>().ok());
-        match family {
-            "Muse Spark" => {
+        match which {
+            RamLinears::Attention => {
                 (name.contains(".self_attn.") && name.ends_with("_proj.weight")) || name.contains(".pre_expert_proj.") || name.contains(".post_expert_proj.")
             }
-            "Kimi-K3" => {
+            RamLinears::DeltaAttention => {
                 layer.is_some_and(|l| kda.get(l) == Some(&true))
                     && name.contains(".self_attn.")
                     && ["q_proj", "k_proj", "v_proj", "g_proj", "f_a_proj", "b_proj", "o_proj", "f_b_proj"]
                         .iter()
                         .any(|x| name.ends_with(&format!(".{x}.weight")))
             }
-            _ => false,
+            RamLinears::None => false,
         }
     }
 
@@ -3653,14 +3683,14 @@ pub mod sizing {
         Refusal::unsupported(what, alt.map_or_else(|| format!("C{rest}"), |a| format!("{a}\nOr c{rest}")))
     }
 
-    /// A Qwen3 model's needs on the executor at `layout` for `users` sequences: its packed weights, its keys and values (bf16, or 12 bits a value in its 12-bit pages:
-    /// `twelve`) in pages the sequences share (a sequence takes the blocks its tokens fill, so the context is sized for one), its chunks' work with cuBLAS (`cublas`) or
-    /// without.
-    pub(crate) fn qwen3_needs(cfg: &Config, layout: Layout, users: usize, cublas: bool, twelve: bool) -> Needs {
+    /// A dense model's needs on the executor at `layout` for `users` sequences (the dense kind's: one attention and one gated MLP a layer; `family`: its row's name):
+    /// its packed weights, its keys and values (bf16, or 12 bits a value in its 12-bit pages: `twelve`) in pages the sequences share (a sequence takes the blocks its
+    /// tokens fill, so the context is sized for one), its chunks' work with cuBLAS (`cublas`) or without.
+    pub(crate) fn dense_needs(cfg: &Config, family: &'static str, layout: Layout, users: usize, cublas: bool, twelve: bool) -> Needs {
         let first = if cublas { 4096 } else { 2048 };
         Needs {
             kind: Kind::Qwen3,
-            family: "Qwen3",
+            family,
             layout,
             weights: weights(cfg, layout),
             bf16: cfg.matrix_bytes(),
@@ -3678,8 +3708,32 @@ pub mod sizing {
         }
     }
 
-    /// The plan of a Qwen3 model on a GPU that has `free` bytes (`gpu` its name), for `users` sequences at once, at the context `asked`, else the model's own up to
-    /// `CTX_WANT`, less where the room is short (not below `CTX_MIN`); its keys and values bf16.
+    /// The plan of a dense model of the family `row` on a GPU that has `free` bytes (`gpu` its name), for `users` sequences at once, at the context `asked`, else the
+    /// model's own up to `CTX_WANT`, less where the room is short (not below `CTX_MIN`); its keys and values bf16, or in the 12-bit pages where `twelve`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn dense_fit(
+        cfg: &Config,
+        row: &'static Support,
+        name: &str,
+        gpu: &str,
+        free: u64,
+        layout: Layout,
+        asked: Option<usize>,
+        users: usize,
+        cublas: bool,
+        twelve: bool,
+    ) -> Result<LoadPlan, Refusal> {
+        let n = dense_needs(cfg, row.name, layout, users, cublas, twelve);
+        one_gpu(&n, free, asked, gpu).map_err(|s| too_big(name, level_name(layout), gpu, free, n.users, &s, asked, false, None))
+    }
+
+    /// The row of the one family whose configs take the dense sizing today (`Sizing::Dense`): what `qwen3_fit` and `qwen3_plan`, which are given no config's
+    /// text, size for.
+    fn dense_row() -> &'static Support {
+        crate::support::TABLE.iter().find(|r| r.route.sizing == Sizing::Dense).expect("a row takes the dense sizing")
+    }
+
+    /// `dense_fit` for the row that takes the dense sizing, its keys and values bf16 (src/cli.rs calls it by this name).
     #[allow(clippy::too_many_arguments)]
     pub fn qwen3_fit(
         cfg: &Config,
@@ -3691,24 +3745,7 @@ pub mod sizing {
         users: usize,
         cublas: bool,
     ) -> Result<LoadPlan, Refusal> {
-        qwen3_fit_kv(cfg, name, gpu, free, layout, asked, users, cublas, false)
-    }
-
-    /// `qwen3_fit` with the keys and values in the 12-bit pages where `twelve`.
-    #[allow(clippy::too_many_arguments)]
-    fn qwen3_fit_kv(
-        cfg: &Config,
-        name: &str,
-        gpu: &str,
-        free: u64,
-        layout: Layout,
-        asked: Option<usize>,
-        users: usize,
-        cublas: bool,
-        twelve: bool,
-    ) -> Result<LoadPlan, Refusal> {
-        let n = qwen3_needs(cfg, layout, users, cublas, twelve);
-        one_gpu(&n, free, asked, gpu).map_err(|s| too_big(name, level_name(layout), gpu, free, n.users, &s, asked, false, None))
+        dense_fit(cfg, dense_row(), name, gpu, free, layout, asked, users, cublas, false)
     }
 
     /// Whether a run of `a` puts its keys and values in the executor's 12-bit lossless pages: a server's (whose scheduler pages the cache) where GLYD_KV=lossless asks for
@@ -3730,19 +3767,28 @@ pub mod sizing {
     /// The layout and the fit of a model on a GPU: what `prepare` settles before it downloads a thing, and `preflight` before it says the engine will run the model. `packed`: the layout of a
     /// directory `pack` made, which is the layout there.
     pub(crate) fn qwen3_plan(a: &Args, cfg: &Config, name: &str, gpu: &Gpu, packed: Option<Layout>, users: usize) -> Done<(Layout, String, LoadPlan)> {
-        plan_for(a, cfg, name, &target(gpu), packed, users)
+        dense_plan(a, cfg, dense_row(), name, &target(gpu), packed, users)
     }
 
-    pub(crate) fn plan_for(a: &Args, cfg: &Config, name: &str, t: &Target, packed: Option<Layout>, users: usize) -> Done<(Layout, String, LoadPlan)> {
+    /// The layout and the plan of a dense model of the family `row` on the GPU `t` (`dense_fit`), with the flags of `a`.
+    pub(crate) fn dense_plan(
+        a: &Args,
+        cfg: &Config,
+        row: &'static Support,
+        name: &str,
+        t: &Target,
+        packed: Option<Layout>,
+        users: usize,
+    ) -> Done<(Layout, String, LoadPlan)> {
         let asked = if a.has("context") || a.has("ctx") { Some(a.either("context", "ctx", 0usize)?) } else { None };
-        crate::support::context_check(name, crate::support::row(crate::support::Family::Qwen3), cfg.max_pos, asked)?;
+        crate::support::context_check(name, row, cfg.max_pos, asked)?;
         let (layout, why) = match packed {
             Some(l) => (l, "as packed".to_string()),
             None => choose_layout(a.layout()?, t.cc, t.total, cfg.matrix_bytes(), 0),
         };
         // (what the last load of this model here took beyond its plan is planned as already taken: `calibrated`)
         let extra = calibration(name, levels::name_of(layout), &t.name);
-        let mut fit = qwen3_fit_kv(cfg, name, &t.name, t.free.saturating_sub(extra), layout, asked, users, dense_product(t.cc), twelve_pages(a))?;
+        let mut fit = dense_fit(cfg, row, name, &t.name, t.free.saturating_sub(extra), layout, asked, users, dense_product(t.cc), twelve_pages(a))?;
         calibrated(&mut fit, t.free, extra);
         Ok((layout, why, fit))
     }
@@ -3772,19 +3818,18 @@ pub mod sizing {
         reach: &dyn Fn(&[i32]) -> bool,
         users: usize,
     ) -> Done<Option<LoadPlan>> {
-        use crate::support::Family;
         let name = short_name(model);
         let row = crate::support::row(crate::support::family(text, &name)?);
-        match row.family {
-            Family::Qwen3 => {
+        match row.route.sizing {
+            Sizing::Dense => {
                 supported(&name, text)?;
                 let cfg = Config::parse(text, "config.json", None).map_err(cannot)?;
                 // (penguin at the layout the GPU is fastest in, a lossy level at its own)
-                let (_, _, p) = plan_for(a, &cfg, &name, t, levels::layout_of(level).filter(|l| *l != Layout::Tiered), users)?;
+                let (_, _, p) = dense_plan(a, &cfg, row, &name, t, levels::layout_of(level).filter(|l| *l != Layout::Tiered), users)?;
                 shape_checks(&name, &cfg, &p)?;
                 Ok(Some(p))
             }
-            Family::Qwen35 | Family::Gemma4 | Family::NemotronH => {
+            Sizing::OneGpu => {
                 let Some(layout) = levels::layout_of(level) else { return Ok(None) };
                 // (penguin of a family with lossy levels on the dynamic route: its layers cut over the GPUs as their room holds them; its row's name is the route's)
                 if layout == Layout::Tiered && row.split_levels.contains(&"penguin") {
@@ -3792,11 +3837,8 @@ pub mod sizing {
                 }
                 lossy_plan_with(a, model, layout_for(model, layout), text, None, t.free, &t.name, None, t.host).map(Some)
             }
-            Family::Kimi => size_local_dynamic(a, model, text, "Kimi-K3", devs, reach),
-            Family::Glm => size_local_dynamic(a, model, text, "GLM-5.3-Flash", devs, reach),
-            Family::DeepSeekV4 => size_local_dynamic(a, model, text, "DeepSeek-V4", devs, reach),
-            Family::Muse => size_local_dynamic(a, model, text, "Muse Spark", devs, reach),
-            Family::FlashNext => Ok(None),
+            Sizing::Dynamic => size_local_dynamic(a, model, text, row.name, devs, reach),
+            Sizing::Estimate => Ok(None),
         }
     }
 
@@ -4043,7 +4085,7 @@ pub mod sizing {
         let users = if a.pos.first().is_some_and(|c| c == "serve") { users_of(a)? } else { 1 };
         let n = Needs {
             kind: if nemotron { Kind::NemotronH } else { Kind::Qwen35 },
-            family: if nemotron { "Nemotron-H" } else { "Qwen3.5" },
+            family: crate::support::row(fam).name,
             layout,
             weights,
             bf16,
@@ -4121,7 +4163,7 @@ pub mod sizing {
         let (weights, bf16) = cfg.weight_bytes(layout, ck.as_ref());
         // (a model not on this computer yet comes as its pre-packed repo, which holds its draft model: planned with it, the larger of the two plans)
         let typed = a.pos.get(1).map_or(name, |m| level(m, false).map_or(m.as_str(), |(m, _)| m));
-        let draft_to_come = packed.is_none() && !a.has("no-draft") && short_name(typed).to_ascii_lowercase().starts_with("gemma-4-"); // (ship's `draft_repo`: Google's "-assistant" model of each Gemma 4)
+        let draft_to_come = packed.is_none() && !a.has("no-draft") && levels::draft_repo(typed).is_some(); // (the one rule that says which downloads bring a draft model: src/levels.rs)
         let draft = if gemma_draft(a, packed).is_some() || draft_to_come { GEMMA_DRAFT_BYTES } else { 0 };
         let asked = if a.has("context") || a.has("ctx") { Some(a.either("context", "ctx", 0usize)?) } else { None };
         crate::support::context_check(name, crate::support::row(crate::support::Family::Gemma4), cfg.max_pos, asked)?;
@@ -4207,7 +4249,8 @@ pub mod sizing {
             ));
         }
         // (no room for a token's experts on one GPU: the last layers' dense matrices in the computer's memory, src/dense_ram.rs)
-        let ram = crate::dynamic::split::ram_bytes_table(table, text, nl, "Kimi-K3", crate::dynamic::split::CODED_PCT, bf16).map_err(cannot)?;
+        let family = crate::dynamic::split::family(text).unwrap_or("");
+        let ram = crate::dynamic::split::ram_bytes_table(table, text, nl, family, crate::dynamic::split::CODED_PCT, bf16).map_err(cannot)?;
         let Some((cuts, devices, places, held, freed)) = crate::dynamic::split::places_plan_dense(&dense, base, &c.moe, room, expert, e.experts, e.top_k, &ram)
         else {
             return Err(Refusal::unsupported(
@@ -4420,9 +4463,10 @@ pub mod sizing {
         gpus.iter().map(|g| (g.ordinal, crate::plan::dynamic_room_of(g.free))).collect()
     }
 
-    /// The table's name of a dynamic family (`dynamic_family`'s words are these).
+    /// The table's own name of the family named `family` (`dynamic_family`'s words are these); the empty name for one the table has no row for, which
+    /// `size_dynamic` refuses.
     pub(crate) fn static_family(family: &str) -> &'static str {
-        ["Kimi-K3", "GLM-5.3-Flash", "DeepSeek-V4", "Muse Spark", "Nemotron-H", "Qwen3.5"].into_iter().find(|f| *f == family).unwrap_or("DeepSeek-V4")
+        crate::support::row_named(family).map_or("", |r| r.name)
     }
 
     /// Whether the GPUs of `devs` are HBM ones (A100, H100, B200: compute capability 8.0, 9.0, 10.0), whose FP8 matrices take layout H (src/f8.rs `layout_h`).
@@ -4446,10 +4490,30 @@ pub mod sizing {
         host: Option<u64>,
         reach: &dyn Fn(&[i32]) -> bool,
     ) -> Done<LoadPlan> {
+        // (a family the table has no row for is refused here, never sized as another's)
+        let row = crate::support::row_named(family).ok_or_else(|| {
+            Refusal::unsupported(format!("{name}: the engine has no family named {family:?} to size it as"), "Run a model of a family this engine runs")
+        })?;
+        size_dynamic_row(a, name, table, dir, text, row, devs, host, reach)
+    }
+
+    /// `size_dynamic` for the family whose row is `row`: every choice that differs between families is one of the row's fields (`Support::route`).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn size_dynamic_row(
+        a: &Args,
+        name: &str,
+        table: &crate::sizes::Table,
+        dir: Option<&Path>,
+        text: &str,
+        row: &'static Support,
+        devs: &[Target],
+        host: Option<u64>,
+        reach: &dyn Fn(&[i32]) -> bool,
+    ) -> Done<LoadPlan> {
+        let (family, route) = (row.name, row.route);
         let nl = crate::dynamic::split::config_num(text, "num_hidden_layers").unwrap_or(0);
         let room: Vec<(i32, u64)> = devs.iter().map(|t| (t.ordinal, crate::plan::dynamic_room_of(t.free))).collect();
         let hbm = hbm_of(devs);
-        let kimi = family == "Kimi-K3";
         // (a hummingbird directory, src/hb_pack.rs: its routed experts are files of their own, which no table of tensors lists)
         let hb_dir = dir.filter(|d| matches!(crate::hb_pack::HbDir::open(d), Ok(Some(_))));
         let hb = hb_dir.is_some();
@@ -4457,17 +4521,16 @@ pub mod sizing {
             Some(d) => crate::dynamic::split::hb_layer_bytes(d, nl).map_err(cannot)?,
             None => Vec::new(),
         };
-        // (the loaders that take penguin's 12-bit layout for their bf16 matrices, which an HBM GPU reads faster where it fits: Kimi-K3's, the Qwen3.5 layout's;
+        // (the loaders that take penguin's 12-bit layout for their bf16 matrices, which an HBM GPU reads faster where it fits: the row says (`Route::bf16_twelve`);
         // a release with no FP8 matrices takes it on every GPU but Ada's where it fits, as the one-GPU paths choose it (`best_layout`) and as their checks
         // of several sequences at once ran)
-        let takes_twelve = kimi || family == "Qwen3.5";
+        let takes_twelve = route.bf16_twelve;
         let no_f8 = !table.rows.iter().any(|r| r.dtype == "F8_E4M3");
         let twelve_faster = hbm || (no_f8 && !devs.is_empty() && devs.iter().all(|t| !crate::weights::smallest_is_fastest(t.cc)));
         let ((per, base), cut, coded, mut twelve) = crate::dynamic::split::fit_table_with(table, nl, &room, twelve_faster, takes_twelve, &hb_experts);
         let mut total = per.iter().sum::<u64>() + base;
         let chosen = a.flag("split").is_some() || a.flag("devices").is_some();
         let model_max = crate::dynamic::split::config_num(text, "max_position_embeddings").unwrap_or(usize::MAX);
-        let row = crate::support::row_named(family).expect("a dynamic family has a row");
         // (--ctx as the one-GPU paths take it, too: the Qwen3.5 layout's lossy levels and its penguin read the same flags)
         let ctx = a.either("context", "ctx", crate::support::default_context(row, model_max)).map_err(|e| Refusal::new(e.msg, "--context 8192"))?;
         crate::support::context_check(&name, row, model_max, (a.has("context") || a.has("ctx")).then_some(ctx))?;
@@ -4478,19 +4541,19 @@ pub mod sizing {
             None => room.clone(),
         };
         let tp_devs: Vec<i32> = tp_room.iter().map(|r| r.0).collect();
-        let across = matches!(family, "Kimi-K3" | "DeepSeek-V4" | "GLM-5.3-Flash" | "Muse Spark")
+        let across = route.across != Across::No
             && tp_room.len() > 1
             && !chosen
             && match crate::tune!("GLYD_TP").as_deref() {
                 Some("1") => true,
                 Some(_) => false,
-                None => matches!(family, "Kimi-K3" | "DeepSeek-V4") && hbm && reach(&tp_devs),
+                None => route.across == Across::Default && hbm && reach(&tp_devs),
             };
-        // Kimi-K3 where the GPUs do not hold its experts: the expert cache (each GPU's room after the other weights as places for its layers' experts, every
-        // expert in the computer's memory)
+        // a family whose loader packs its experts itself, where the GPUs do not hold them (`ExpertCache::Packed`): the expert cache (each GPU's room after the other
+        // weights as places for its layers' experts, every expert in the computer's memory)
         // (a hummingbird directory's own expert cache for any family, its layers cut over the GPUs, never every layer across them)
-        // (a release whose experts the cache takes, src/tiering.rs: DeepSeek-V4's FP4 experts, GLM-5.3-Flash's FP8 ones, Muse Spark's lossless ones; its cache where its GPUs do not hold it)
-        let release_cached = matches!(family, "DeepSeek-V4" | "GLM-5.3-Flash" | "Muse Spark") && !hb && cut.is_none() && !chosen;
+        // (a release whose experts the cache takes as released, src/tiering.rs (`ExpertCache::Release`: FP4 experts, FP8 ones, lossless bf16 ones); its cache where its GPUs do not hold it)
+        let release_cached = route.expert_cache == ExpertCache::Release && !hb && cut.is_none() && !chosen;
         let across = across && !hb && !release_cached;
         let mut ram = None;
         // (the last layers' dense matrices in the computer's memory where a token's experts do not fit beside them on one GPU: how many, their bytes)
@@ -4504,7 +4567,7 @@ pub mod sizing {
             let k = release_cache(table, text, nl, &room, name, ctx, hbm, host)?;
             (ram, dense_ram) = (Some(k.4), k.6);
             Some((k.0, k.1, k.2, k.3, k.4, k.5))
-        } else if kimi && !hb && cut.is_none() && !chosen {
+        } else if route.expert_cache == ExpertCache::Packed && !hb && cut.is_none() && !chosen {
             Some(if across {
                 kimi_cache_tp(table, text, &tp_room, name, ctx, hbm, host)?
             } else {
@@ -5943,6 +6006,142 @@ mod tests {
             }
         }
         assert!(planned_ok >= 3, "{planned_ok}");
+    }
+
+    /// The dynamic route reads a family's row, never its name: a row of another name with GLM-5.3-Flash's fields plans GLM-5.3-Flash's checkpoint as its own
+    /// row does, on every machine; a row that says no expert cache is refused where the cache was the plan; and a name the table has no row for is refused.
+    #[test]
+    fn the_dynamic_route_plans_by_the_rows_fields() {
+        use crate::support::{ExpertCache, Route, Support};
+        let text = fixture("glm5_next_config.json");
+        let dir = model_dir("dyn-row", "GLM-5.3-Flash", &text);
+        header_only_checkpoint(&dir, &fixture("glm5_next_tensors.json"));
+        let glm = crate::support::row_named("GLM-5.3-Flash").unwrap();
+        let row = |name: &'static str, route: Route| -> &'static Support {
+            Box::leak(Box::new(Support {
+                family: glm.family,
+                name,
+                levels: glm.levels,
+                hummingbird_packed_only: glm.hummingbird_packed_only,
+                default_ctx: glm.default_ctx,
+                max_ctx: glm.max_ctx,
+                split_levels: glm.split_levels,
+                experts_in_ram_levels: glm.experts_in_ram_levels,
+                drafts: glm.drafts,
+                route,
+            }))
+        };
+        let another = row("Another", glm.route);
+        let table = crate::sizes::Table::from_dir(&dir).unwrap();
+        let a = args(&["run", dir.to_str().unwrap()]);
+        let size = |r: &'static Support, m: &Machine| {
+            let devs: Vec<Target> = m.devices.iter().enumerate().map(|(i, d)| Target::of(d, i as i32, Some(m.ram_free))).collect();
+            sizing::size_dynamic_row(&a, "m", &table, Some(&dir), &text, r, &devs, Some(m.ram_free), &|_| false)
+        };
+        for preset in ["rtx4080s", "rtx4090", "2x3090", "a100-80g", "8xh100"] {
+            let m = Machine::preset(preset).unwrap();
+            match (size(glm, &m), size(another, &m)) {
+                (Ok(own), Ok(other)) => {
+                    assert_eq!((own.family, other.family), ("GLM-5.3-Flash", "Another"));
+                    assert_eq!(LoadPlan { family: "", ..own }, LoadPlan { family: "", ..other }, "{preset}");
+                }
+                (Err(own), Err(other)) => assert_eq!(own.what, other.what, "{preset}"),
+                (own, other) => panic!("{preset}: {:?} against {:?}", own.map(|p| p.level), other.map(|p| p.level)),
+            }
+        }
+        // (a tiny release with experts, on one GPU with room for its other weights and a third of its experts, in a computer with memory for every expert:
+        // the expert cache is the plan under its family's row and under a row of another name with the same fields; a row whose field says no cache is refused)
+        let tiny = std::env::temp_dir().join(format!("glyd-plan-rowcache-{}", std::process::id()));
+        crate::hb_pack::tests::release(&tiny, "dsv4_model");
+        let ttext = std::fs::read_to_string(tiny.join("config.json")).unwrap();
+        let nl = crate::dynamic::split::config_num(&ttext, "num_hidden_layers").unwrap();
+        let expert = |n: &str| n.contains(".experts.");
+        let (per, _) = crate::dynamic::split::layer_bytes_where(&tiny, nl, 100, 100, &expert).unwrap();
+        let (dense, base) =
+            crate::dynamic::split::layer_bytes_where(&tiny, nl, crate::dynamic::split::CODED_PCT, crate::dynamic::split::TIERED_PCT, &|n| !expert(n)).unwrap();
+        let all: u64 = per.iter().sum();
+        let sh = Shape::from_config(&ttext).unwrap();
+        let kv = ((sh.kv_full * 16.0 + sh.kv_sliding * 16f64.min(sh.window.max(1) as f64) + sh.state) / nl as f64) as u64 * nl as u64;
+        let want = dense.iter().sum::<u64>() + base + kv + all / 3;
+        // (the least free memory whose room holds that: the model is a fraction of a MiB, so a step of a MiB would hold all of it)
+        let (_, free) = (0..40).fold((0u64, 64u64 << 30), |(lo, hi), _| {
+            let mid = lo + (hi - lo) / 2;
+            if crate::plan::dynamic_room_of(mid) >= want {
+                (lo, mid)
+            } else {
+                (mid + 1, hi)
+            }
+        });
+        let gpu = Target { ordinal: 0, name: "NVIDIA GeForce RTX 4080 SUPER".into(), cc: (8, 9), total: free, free, host: None };
+        let ttable = crate::sizes::Table::from_dir(&tiny).unwrap();
+        let v4 = crate::support::row_named("DeepSeek-V4").unwrap();
+        let (renamed, bare) = (row("Renamed", v4.route), row("Bare", Route { expert_cache: ExpertCache::None, ..v4.route }));
+        let cache = |r: &'static Support| {
+            let a = args(&["run", "tiny", "--context", "16"]);
+            sizing::size_dynamic_row(&a, "tiny", &ttable, Some(&tiny), &ttext, r, std::slice::from_ref(&gpu), Some(all + HOST_MARGIN + (1 << 30)), &|_| false)
+        };
+        let (own, other) = (cache(v4).unwrap(), cache(renamed).unwrap());
+        assert!(own.experts.is_some_and(|c| c.host_bytes() == all) && own.spread.as_ref().unwrap().places.iter().all(|&p| p > 0), "{own:?}");
+        assert_eq!(LoadPlan { family: "", ..own }, LoadPlan { family: "", ..other });
+        assert!(cache(bare).unwrap_err().what.contains("of GPU memory at penguin"));
+        std::fs::remove_dir_all(&tiny).unwrap();
+        let r = sizing::size_dynamic(&a, "m", &table, Some(&dir), &text, sizing::static_family("No such family"), &[], None, &|_| false).unwrap_err();
+        assert!(r.what.contains("no family named"), "{r}");
+        for f in ["Kimi-K3", "GLM-5.3-Flash", "DeepSeek-V4", "Muse Spark", "Nemotron-H", "Qwen3.5", "Gemma 4"] {
+            assert_eq!(sizing::static_family(f), f);
+        }
+    }
+
+    /// A plan's draft gain is its family's row's flag, whichever engine path loads the plan: the same model at the same placement makes `MTP_GAIN` tokens a
+    /// step under a row that drafts and one under a row that does not.
+    #[test]
+    fn a_plans_draft_gain_is_its_family_rows() {
+        let (_, q08) = measured_shapes();
+        let sh = Shape { mtp: true, ..q08 };
+        let m = Machine::preset("a100-80g").unwrap();
+        let drafting = crate::support::TABLE.iter().find(|r| r.drafts).unwrap().name;
+        let plain = crate::support::TABLE.iter().find(|r| !r.drafts).unwrap().name;
+        for kind in [Kind::Condor, Kind::Dynamic, Kind::Qwen35] {
+            let of = |family: &'static str| LoadPlan { family, ..one_gpu_plan(kind, "kestrel") };
+            let gain = |family| features(&sh, &m, 0, &of(family), 1000.0, 1)["gain"].as_f64().unwrap();
+            assert_eq!((gain(drafting), gain(plain), gain("")), (MTP_GAIN, 1.0, 1.0), "{kind:?}");
+            let (fast, slow) = (speed_users(&sh, &m, 0, &of(drafting), 1000.0, 1), speed_users(&sh, &m, 0, &of(plain), 1000.0, 1));
+            assert!((fast / slow - MTP_GAIN).abs() < 1e-9, "{kind:?}: {fast} against {slow}");
+        }
+    }
+
+    /// The linears a loader keeps in the computer's memory are the row's field's, and a delta attention's layers are read from the description: the same
+    /// answer for Kimi-K3's config as its own parser gives, and for GLM-5.3-Flash's, another family with the kind.
+    #[test]
+    fn the_linears_in_memory_are_the_rows_and_the_descriptions() {
+        use crate::glm::GlmKind;
+        let kda = |kinds: &[GlmKind]| kinds.iter().map(|k| matches!(k, GlmKind::Kda)).collect::<Vec<_>>();
+        let kimi: serde_json::Value = serde_json::from_str(&fixture("headers/Kimi-K3.json")).unwrap();
+        let kimi = kimi["config"].as_str().unwrap();
+        let own = kda(&crate::kimi::ConfigKimi::parse(kimi, "config.json", None).unwrap().kinds);
+        assert!(own.iter().any(|&k| k) && own.iter().any(|&k| !k));
+        assert_eq!(sizing::delta_layers(kimi).unwrap(), own);
+        let glm = fixture("glm5_next_config.json");
+        assert_eq!(sizing::delta_layers(&glm).unwrap(), kda(&crate::glm::ConfigGlm::parse(&glm, "config.json", None).unwrap().kinds));
+        // (the table of Kimi-K3's released tensors: the bytes by its row's name are the bytes by the row's field)
+        let table = crate::sizes::Table::expand(&header_groups(&serde_json::from_str(&fixture("headers/Kimi-K3.json")).unwrap()));
+        let by_name = sizing::ram_bytes_table(&table, kimi, own.len(), "Kimi-K3", 90, 72).unwrap();
+        assert!(by_name.iter().zip(&own).all(|(&b, &k)| (b > 0) == k), "{by_name:?}");
+        assert!(sizing::ram_bytes_table(&table, kimi, own.len(), "DeepSeek-V4", 90, 72).unwrap().iter().all(|&b| b == 0));
+        assert!(
+            sizing::in_ram("Muse Spark", &[], "model.layers.3.self_attn.q_proj.weight")
+                && !sizing::in_ram("No such family", &[], "model.layers.3.self_attn.q_proj.weight")
+        );
+    }
+
+    /// The hummingbird level's bits a weight are the recipe's shares of the two row layouts' bits, not a number of one model's experts.
+    #[test]
+    fn hummingbirds_bits_are_the_recipes_shares() {
+        use crate::weights::Layout;
+        let three = crate::moe_hb::HB40_THREE_BIT_PERCENT as f64 / 100.0;
+        let mean = three * sizing::bits(Layout::Cb3Row) + (1.0 - three) * sizing::bits(Layout::Cb2Row);
+        assert!((sizing::bits(Layout::Hummingbird) - mean).abs() <= 0.005, "{mean}");
+        assert_eq!(sizing::bits(Layout::Hummingbird), 2.99);
     }
 
     /// The Qwen3.5 layout's penguin is the dynamic route's (#331): Qwen3.8-27B, from its released tensors' headers, planned as `run` loads it: its layers cut

@@ -521,7 +521,7 @@ fn a_loader_names_a_missing_tensor_from_the_index() {
 }
 
 /// #333, DSpark: DeepSeek-V4-Flash-0731's released config describes its drafter (`kinds::DSpark`): three of the decoder's layers with the window alone
-/// (`n_mtp_layers` unsaid: 3, as its checkpoint's mtp.0 to mtp.2), drafting blocks of 5 from main_x of layers 40 to 42, a Markov head of rank 256 and
+/// (`n_mtp_layers` unsaid: the format's 3, as its checkpoint's mtp.0 to mtp.2), drafting blocks of 5 from main_x of layers 40 to 42, a Markov head of rank 256 and
 /// the noise token 128799; its streams mHC's own (V4's, not lagged).
 #[test]
 fn deepseek_v4_0731s_dspark_drafter_is_described() {
@@ -542,6 +542,40 @@ fn deepseek_v4_0731s_dspark_drafter_is_described() {
     d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
     let [(blocks, own)] = &d.mtp[..] else { panic!() };
     assert_eq!((blocks.len(), own.len()), (6, 9));
+}
+
+/// A DSpark drafter's depth is the config's `n_mtp_layers`, else the format's default (three); a directory is held to its index in every family with the
+/// drafter: one whose checkpoint lacks the last draft layer the count reads is refused, its tensors named (DeepSeek-V4-Flash-0731's config, which says no
+/// count, and DeepSeek-V4.1's, which says one).
+#[test]
+fn a_drafters_depth_is_the_configs_else_the_formats_and_a_directory_is_held_to_it() {
+    let depth = |d: &super::describe::Described| d.desc.mtp.first().filter(|h| h.dspark.is_some()).map(|h| h.blocks.len() / 2);
+    let h = fixture("headers/DeepSeek-V4-Flash-0731.json");
+    let v4: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    assert!(v4.get("n_mtp_layers").is_none() && v4.get("dspark_block_size").is_some());
+    assert_eq!(depth(&describe(&v4).unwrap()), Some(3));
+    let mut said = v4.clone();
+    said["n_mtp_layers"] = 2.into();
+    assert_eq!(depth(&describe(&said).unwrap()), Some(2));
+    let dir = std::env::temp_dir().join(format!("glyd-describe-draft-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (what, cfg) in [("DeepSeek-V4", v4), ("DeepSeek-V4.1", fixture("deepseek_v41_config.json"))] {
+        let d = describe(&cfg).unwrap();
+        let n = depth(&d).unwrap_or_else(|| panic!("{what}: no drafter"));
+        let last = format!("mtp.{}.", n - 1);
+        std::fs::write(dir.join("config.json"), cfg.to_string()).unwrap();
+        let index = |keep: &dyn Fn(&String) -> bool| {
+            let map: serde_json::Map<String, serde_json::Value> =
+                d.names().into_iter().filter(|n| keep(n)).map(|n| (n, "model-00001.safetensors".into())).collect();
+            std::fs::write(dir.join("model.safetensors.index.json"), serde_json::json!({ "weight_map": map }).to_string()).unwrap();
+        };
+        index(&|_| true);
+        assert_eq!(depth(&super::describe::describe_dir(&dir).unwrap_or_else(|e| panic!("{what}: {}", e.msg)).0), Some(n), "{what}");
+        index(&|name| !name.contains(&last));
+        let e = super::describe::describe_dir(&dir).unwrap_err().msg;
+        assert!(e.contains("config.json") && e.contains("not in the checkpoint") && e.contains(&last), "{what}: {e}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Every tensor name of a header fixture: its groups' masks with each of their layers ({L}) and experts ({E}).
