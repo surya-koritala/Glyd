@@ -2,10 +2,12 @@
 //! What a family's layer is, is the operation's parameters (`AttnOp`): its heads and their width, where its q, k, v and gate are in the projection's rows, its norms,
 //! rotary, window, scale, soft-cap and gate, and its ring of keys and values; its rounding points the kind's (`kinds::AttnRounding`). One set of kernels runs them all
 //! (kernels/attn.cu): the preparation, then a decode row's attention (the keys in parts, combined) or a prompt chunk's, and the gate. A prompt chunk of heads of
-//! 128 to 512 takes the GPU library's prompt kernel, one for both caches: over bf16 rings or pages `glyd_gpu_kv_prefill_bf16`, over 12-bit pages (src/dynamic/kvpages.rs)
-//! `glyd_gpu_kv_prefill`, the same tiles and sums, so the same bits; heads of 64 take attn_fa64. A decode row likewise (`LibDecode`): over 12-bit pages
-//! `kv_decode_from`, over a bf16 cache `glyd_gpu_kv_decode_bf16`, one kernel, plan and merge, where the shape is the pages' (heads of 128 to 512, up to 8 query
-//! heads a kv head or one kv head, no soft-cap); others (Muse Spark's heads of 64, Nemotron-H's 16 query heads over 2) the engine's parts kernel.
+//! 64 and 128 takes the kind's own FlashAttention-2 kernel (attn_pf64, attn_pf128: a token's query heads in one block, tiles of 64 keys), over 12-bit pages
+//! (src/dynamic/kvpages.rs) on the pages unpacked to a bf16 ring, so the same bits as over a bf16 cache; heads of 256 and 512 the GPU library's prompt kernel,
+//! one for both caches: over bf16 rings or pages `glyd_gpu_kv_prefill_bf16`, over 12-bit pages `glyd_gpu_kv_prefill`, the same tiles and sums, so the same
+//! bits. A decode row likewise (`LibDecode`): over 12-bit pages `kv_decode_from`, over a bf16 cache `glyd_gpu_kv_decode_bf16`, one kernel, plan and merge, where
+//! the shape is the pages' (heads of 128 to 512, up to 8 query heads a kv head or one kv head, no soft-cap); others (Muse Spark's heads of 64, Nemotron-H's 16
+//! query heads over 2) the engine's parts kernel.
 //!
 //! The arithmetic of each family is the one its own operations had, bit for bit where the kernel is the same (the preparation, the decode and the gate of Gemma 4,
 //! the Qwen3.5 layout and Nemotron-H); a prompt chunk's is now the library's kernel for all (Gemma 4's g4_fa256, the Qwen3.5 layout's warp a head, Nemotron-H's
@@ -39,6 +41,8 @@ pub(super) struct LibDecode {
     kinds: Vec<(usize, usize)>,
     lens: Vec<crate::dev::Buf>,
     first: Vec<crate::dev::Buf>,
+    /// The widest call's kv heads, query heads a call's sequence and head width (the workspace's shape).
+    shape: (usize, usize, usize),
 }
 
 impl LibDecode {
@@ -63,7 +67,19 @@ impl LibDecode {
         let ws = crate::dev::Buf::zeroed(lib.kv_decode_workspace((drows * parts) as i64, heads as i64, g as i64, d as i64, splits)?)?;
         let lens = kinds.iter().map(|k| crate::dev::Buf::new(4 * rows * k.1)).collect::<Result<_>>()?;
         let first = kinds.iter().map(|k| crate::dev::Buf::new(4 * rows * k.1)).collect::<Result<_>>()?;
-        Ok(Some(LibDecode { splits, ws, kinds, lens, first }))
+        Ok(Some(LibDecode { splits, ws, kinds, lens, first, shape: (heads, g, d) }))
+    }
+
+    /// The workspace made for a call of `drows` rows at least (a step's rows that decode, all in one call: `Dyn::attn_lead`), each row's query heads in the most calls' sequences
+    /// a kind has. The splits stay: a sequence's bits do not depend on the batch.
+    pub fn grow(&mut self, lib: &crate::ffi::Lib, drows: usize) -> Result<()> {
+        let parts = self.kinds.iter().map(|k| k.1).max().unwrap_or(1);
+        let (h, g, d) = self.shape;
+        let need = lib.kv_decode_workspace((drows * parts) as i64, h as i64, g as i64, d as i64, self.splits)?;
+        if need > self.ws.bytes {
+            self.ws = crate::dev::Buf::zeroed(need)?;
+        }
+        Ok(())
     }
 }
 
@@ -72,9 +88,13 @@ pub(crate) fn rows_smem(d: usize, rg: usize) -> u32 {
     ((KB * (d / 2 + 1) + KB * d / 2 + rg * d / 2) * 4) as u32
 }
 
-/// Dynamic shared memory of a tensor-core block (attn_fa_t): Q [64][d + 8], K and V [32][d + 8] bf16.
-fn fa_smem(d: usize) -> u32 {
-    ((64 * (d + 8) + 2 * 32 * (d + 8)) * 2) as u32
+/// A prompt block's rows of the kind's own prompt kernel (kernels/attn.cu PF_ROWS: a key-value head's query heads, token by token) and its keys a tile (PF_KT).
+const PF_ROWS: usize = 64;
+const PF_KT: usize = 64;
+
+/// Dynamic shared memory of a block of the kind's own prompt kernel (attn_pf_t): K and V [PF_KT][d + 8] bf16.
+fn pf_smem(d: usize) -> u32 {
+    (2 * PF_KT * (d + 8) * 2) as u32
 }
 
 /// The q and k norms of a layer (their weights' small tensors).
@@ -137,9 +157,9 @@ pub struct AttnOp {
     pub gate: Option<GateAt>,
     pub round: bool,
     pub sbf16: bool,
-    /// The keys and values in two per-sequence states [positions, nk, d] (`ModelDesc::states`) and not a ring, the attention over the tokens the indexer's
-    /// pick before it took (`Op::IdxPick`, its picks' run: src/dynamic/picked.rs): a sparse attention (`Attn::indexer`). Heads of 256, the gate in the query.
-    pub picked: Option<[usize; 2]>,
+    /// The attention over the tokens the indexer's pick before it took (`Op::IdxPick`, its picks' run: src/dynamic/picked.rs), its keys and values in its ring as
+    /// any attention's: a sparse attention (`Attn::indexer`). Heads of 256, the gate in the query.
+    pub picked: bool,
 }
 
 impl AttnOp {
@@ -225,21 +245,21 @@ impl AttnOp {
             gate,
             round,
             sbf16,
-            picked: None,
+            picked: false,
         })
     }
 
-    /// The operation of a sparse attention (`a` with an indexer: Condor's, `IndexForm::Mean`) whose keys and values are the states `kv`, over the indexer's picks
+    /// The operation of a sparse attention (`a` with an indexer: Condor's, `IndexForm::Mean`) whose keys and values are ring `ring`, over the indexer's picks
     /// (`picked`); the rest as `of`. The kernel of the picks takes heads of 256 and an in-query gate.
-    pub fn picked(a: &kinds::Attn, src: Slot, kv: [usize; 2], table: Option<usize>, qk: Option<(usize, usize)>) -> Result<AttnOp> {
+    pub fn picked(a: &kinds::Attn, src: Slot, ring: usize, table: Option<usize>, qk: Option<(usize, usize)>) -> Result<AttnOp> {
         if a.head_dim != 256 || !a.gate.is_some_and(|g| g.from == kinds::GateFrom::InQuery && g.norm.is_none()) || a.window.is_some() || a.softcap.is_some() {
             return err(format!(
                 "a sparse attention of heads of {} (a window {:?}, a soft-cap {:?}): the kernel of the picks takes heads of 256 and an in-query gate",
                 a.head_dim, a.window, a.softcap
             ));
         }
-        let mut x = AttnOp::of(&kinds::Attn { indexer: None, ..a.clone() }, src, 0, table, qk)?;
-        x.picked = Some(kv);
+        let mut x = AttnOp::of(&kinds::Attn { indexer: None, ..a.clone() }, src, ring, table, qk)?;
+        x.picked = true;
         Ok(x)
     }
 
@@ -328,6 +348,8 @@ pub(crate) struct AttnArgs {
     pub out: u64,
     pub gate: u64,
     pub part: u64,
+    /// Row t's table at tab + t tstride entries (a step's rows that decode, each its sequence's: `rows::RowTabs`); 0: one table for every row.
+    pub tstride: i64,
     pub d: i32,
     pub stride: i32,
     pub q_step: i32,
@@ -372,9 +394,10 @@ pub(crate) struct KernAttn {
     parts512: crate::kt::attn_parts512,
     merge: crate::kt::attn_merge,
     gate: crate::kt::attn_gate,
-    fa64: crate::kt::attn_fa64,
-    /// Whether prompt chunks take the tensor-core kernels (the library's for heads of 128 to 512, attn_fa64 for 64; a development build's GLYD_ATTN_FA=0: the warp
-    /// kernels).
+    pf64: crate::kt::attn_pf64,
+    pf128: crate::kt::attn_pf128,
+    /// Whether prompt chunks take the tensor-core kernels (the kind's own for heads of 64 and 128, the library's for 256 and 512; a development build's GLYD_ATTN_FA=0:
+    /// the warp kernels).
     pub fa: bool,
 }
 
@@ -395,7 +418,8 @@ impl KernAttn {
             parts512: dev.typed()?,
             merge: dev.typed()?,
             gate: dev.typed()?,
-            fa64: dev.typed()?,
+            pf64: dev.typed()?,
+            pf128: dev.typed()?,
             // (on: against transformers bf16 on gemma-4-31B QAT, wikitext 32 x 512, KLD 0.0192 where the warp kernels' is 0.0225, and a 28K prompt 2x faster)
             fa: {
                 // (the switch back, a development build's alone: a release build reads no GLYD_ variable it does not list)
@@ -448,19 +472,26 @@ impl KernAttn {
         launch!(self.merge, [n, nq, 1], [d as u32, 1, 1], s; *a)
     }
 
-    /// A prompt chunk's attention of `a.n` rows into `a.out` over a bf16 cache, then the gate: the GPU library's kernel for heads of 128 to 512 (`lib`'s
-    /// glyd_gpu_kv_prefill_bf16, the one its 12-bit pages' prompt attention is: `start` the rows' first position, as it takes them), attn_fa64 for heads of 64, the warp
-    /// kernels where the tensor-core ones are off.
+    /// Whether a prompt chunk of heads of `d` takes the kind's own prompt kernel (attn_pf_t), else the GPU library's.
+    pub(crate) fn own_prompt(d: usize) -> bool {
+        d <= 128
+    }
+
+    /// A prompt chunk's attention of `a.n` rows into `a.out` over a bf16 cache, then the gate: the kind's own kernel for heads of 64 and 128 (a block of PF_ROWS
+    /// rows of a key-value head's query heads), the GPU library's for heads of 256 and 512 (`lib`'s glyd_gpu_kv_prefill_bf16, the one its 12-bit pages' prompt
+    /// attention is: `start` the rows' first position, as it takes them), the warp kernels where the tensor-core ones are off.
     ///
     /// # Safety
     /// As `prep`; the rows are at positions `start` .. `start + a.n` (`a.kpos` holds them).
     pub(crate) unsafe fn prompt(&self, lib: &crate::ffi::Lib, s: Stream, a: &AttnArgs, start: usize) -> Result<()> {
-        let (n, d, nq, nk) = (a.n as usize, a.d as usize, a.nq as u32, a.nk as i64);
+        let (n, d, g, nk) = (a.n as usize, a.d as usize, (a.nq / a.nk) as usize, a.nk as i64);
         if !self.fa {
             return self.rows(s, a);
         }
-        if d == 64 {
-            launch!(self.fa64, [n.div_ceil(64) as u32, nq, 1], [128, 1, 1], smem fa_smem(64), s; *a)?;
+        if KernAttn::own_prompt(d) {
+            let grid = [(n * g).div_ceil(PF_ROWS) as u32, nk as u32, 1];
+            let pf = if d == 64 { self.pf64.sig() } else { self.pf128.sig() };
+            launch!(pf, grid, [(32 * PF_ROWS / 16) as u32, 1, 1], smem pf_smem(d), s; *a)?;
         } else {
             let w = (a.nq * a.d) as i64;
             lib.kv_prefill_bf16(
@@ -516,7 +547,7 @@ impl Dyn {
     pub(super) unsafe fn lib_decode_prepare(&self, n: usize, pos: (u64, u64)) -> Result<()> {
         let Some(ld) = &self.ldec else { return Ok(()) };
         for (i, &(window, sp)) in ld.kinds.iter().enumerate() {
-            self.kern.kv12_rows(self.dev.stream, pos.1, n, 0, window, sp, 0, ld.lens[i].ptr, ld.first[i].ptr)?;
+            self.kern.kv12_rows(self.dev.stream, pos.1, n, (0, 0), window, sp, 0, ld.lens[i].ptr, ld.first[i].ptr)?;
         }
         Ok(())
     }
@@ -524,15 +555,22 @@ impl Dyn {
     /// A decode call of the library over the bf16 cache `x` names (its table, or its ring of `x.cap` places): the n rows of the part an operation runs on now, each
     /// row's query heads in `a.dparts()` calls' sequences.
     unsafe fn lib_decode(&self, a: &AttnOp, n: usize, x: &AttnArgs) -> Result<()> {
+        self.lib_decode_at(a, n, x, (x.tab, 0), self.row0())
+    }
+
+    /// `lib_decode` of the n rows from row `row0` of the pass, the call's sequence b (row b / sp's query heads' part b % sp) through table `tab.0` + b `tab.1` (0: every
+    /// sequence the one table).
+    unsafe fn lib_decode_at(&self, a: &AttnOp, n: usize, x: &AttnArgs, tab: (u64, usize), row0: usize) -> Result<()> {
         let ld = self.ldec.as_ref().expect("a library decode");
         let sp = a.dparts();
         let k = ld.kinds.iter().position(|&k| k == (a.window, sp)).expect("a kind of the description's");
-        let at = 4 * (self.row0() * sp) as u64;
+        let at = 4 * (row0 * sp) as u64;
+        self.dcalls.set(self.dcalls.get() + 1);
         let stride = (a.nq * a.d / sp) as i64;
         self.lib.kv_decode_bf16(
             x.qo,
             stride,
-            (x.kc, x.vc, x.tab, 0, x.cap as i64),
+            (x.kc, x.vc, tab.0, tab.1 as i64, x.cap as i64),
             (ld.lens[k].ptr + at, ld.first[k].ptr + at, (n * sp) as i64, ld.splits),
             (a.nk as i64, (a.nq / a.nk / sp) as i64, a.d as i64),
             (a.scale as f64, a.sbf16),
@@ -551,6 +589,53 @@ impl Dyn {
             self.attn_prep(p, l, i, a, n, pos, head)?;
         }
         self.attn_read(p, a, n, pos)
+    }
+
+    /// `Op::Attn` (op `i` of layer `l` of part `p`) on the pass's first `rows.0` rows (of `rows.1`), each a decode row of its own sequence (`Dyn::lead`): their preparation in one
+    /// launch (unless the pass made it for every row already: `prepped`), their attention in one launch of the parts kernel or one call of the library's decode, each row through its
+    /// own block table (`rows::RowTabs`, made at the pass's start). Each row's kernels and sums are its own pass's: the same bits (the decode's plan is a sequence's own, and
+    /// the 12-bit pages' decode is the bf16 cache's).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) unsafe fn attn_lead(&self, p: &Part, l: usize, i: usize, a: &AttnOp, rows: (usize, usize), pos: (u64, u64), head: usize) -> Result<()> {
+        let (s, k) = (self.dev.stream, rows.0);
+        let (tab, t, dup) = self.row_tab(a.ring);
+        let (kc, vc) = self.cache(a.ring);
+        if !self.prepped.get() {
+            let mut x = a.args(k, p.d.eps);
+            (x.kc, x.vc, x.cap, x.tab, x.tstride) = (kc, vc, self.ring_cap[a.ring] as i32, tab, (dup * t) as i64);
+            (x.src, x.qo, x.qpos) = (p.slot(a.src), p.slot(Slot::Qo), pos.0);
+            if let Some((q, kw)) = a.weights() {
+                (x.qw, x.kw) = (p.small[q].ptr, p.small[kw].ptr);
+            }
+            if let Some(r) = a.rope {
+                (x.cs, x.sn) = (self.ropes[r.table].0.ptr, self.ropes[r.table].1.ptr);
+            }
+            let (nx, m) = Self::next_linear(p, l, i, rows.1, head);
+            let pf = self.pf(nx, m, self.pf_kib[0], (a.d / 2) as u32);
+            self.ka.prep(s, &x, a.nq + if a.writes { a.nk } else { 0 }, pf)?;
+            self.mark("attention: preparation (norms, rotary, cache write)")?;
+        }
+        let mut x = a.args(k, p.d.eps);
+        (x.qo, x.out, x.kpos) = (p.slot(Slot::Qo), p.slot(Slot::Att), pos.1);
+        if let Some(g) = a.gate {
+            x.gate = p.slot(a.src) + (g.off * 2) as u64;
+        }
+        if let Some(rp) = self.pages12(p, a.ring) {
+            self.kv12_decode_at(a.ring, k, a.nq, x.qo, x.out, (tab, dup / rp.parts * t), 0)?;
+            self.ka.gate(s, &x)?;
+            return self.mark(if a.window > 0 { "attention (sliding, 12-bit pages)" } else { "attention (global, 12-bit pages)" });
+        }
+        (x.kc, x.vc, x.cap) = (kc, vc, self.ring_cap[a.ring] as i32);
+        if self.ldec.is_some() && std::ptr::eq(p, &self.big) && a.lib_decode() {
+            self.lib_decode_at(a, k, &x, (tab, dup / a.dparts() * t), 0)?;
+            self.ka.gate(s, &x)?;
+        } else {
+            // (the parts kernel, a block a row, each row's keys through its own table; its merge gates)
+            (x.tab, x.tstride, x.part) = (tab, (dup * t) as i64, self.part.ptr);
+            self.dcalls.set(self.dcalls.get() + 1);
+            self.ka.decode(s, &x)?;
+        }
+        self.mark(if a.window > 0 { "attention (sliding)" } else { "attention (global)" })
     }
 
     /// The preparation: the queries into Qo, the keys and values into the ring (or a 12-bit ring's staging rows, then its pages).
@@ -603,16 +688,18 @@ impl Dyn {
             self.ka.gate(s, &x)?;
             return self.mark(if a.window > 0 { "attention (sliding, 12-bit pages)" } else { "attention (global, 12-bit pages)" });
         }
-        if twelve && !decode && self.ka.fa {
-            // (a prompt chunk over 12-bit pages: the library's prompt attention reads them where they are, and the chunk's own keys and values from the staging rows the
-            // preparation wrote; the same kernel and sums as over a bf16 cache, so the same bits)
+        if twelve && !decode && self.ka.fa && !KernAttn::own_prompt(a.d) {
+            // (a prompt chunk of heads of 256 or 512 over 12-bit pages: the library's prompt attention reads them where they are, and the chunk's own keys and values
+            // from the staging rows the preparation wrote; the same kernel and sums as over a bf16 cache, so the same bits)
             self.kv12_prefill(a, n, x.qo, x.out)?;
             self.ka.gate(s, &x)?;
             return self.mark(if a.window > 0 { "attention (sliding, 12-bit pages)" } else { "attention (global, 12-bit pages)" });
         }
         (x.kc, x.vc, x.cap, x.tab) = if twelve {
-            // (a verify pass's rows, or the warp kernels: the pages unpacked to a bf16 ring)
+            // (a verify pass's rows, the warp kernels, or the kind's own prompt kernel: the pages unpacked to a bf16 ring, whose values are the bf16 cache's, so the
+            // same bits)
             let (kc, vc, cap) = self.kv12_stage(a.ring, self.start.get(), n)?;
+            self.mark("attention: 12-bit pages unpacked to bf16")?;
             (kc, vc, cap as i32, 0)
         } else {
             let (kc, vc) = self.cache(a.ring);
@@ -630,6 +717,7 @@ impl Dyn {
                 Some(v) if self.verifying.get() && n > 1 => v.ptr,
                 _ => self.part.ptr,
             };
+            self.dcalls.set(self.dcalls.get() + 1);
             self.ka.decode(s, &x)?;
         } else {
             self.ka.prompt(&self.lib, s, &x, self.start.get())?;
@@ -637,6 +725,10 @@ impl Dyn {
         self.mark(if a.window > 0 { "attention (sliding)" } else { "attention (global)" })
     }
 }
+
+/// attncheck's prompt rows in two calls (the kind's own prompt kernel: a row's bits are its position's and window's alone).
+#[cfg(feature = "dev")]
+const SPLIT: &str = "the same rows in two calls (the one call's bits)";
 
 /// `glyd-engine attncheck`: the attention kind's kernels against an fp64 attention on the CPU, on random queries, keys, values and gates, with each family's head width
 /// and arithmetic (Gemma 4's sliding and global heads with their scores in bf16, Nemotron-H's heads of 128, Muse Spark's window and normed gate, a soft-capped head):
@@ -667,7 +759,7 @@ pub fn check() -> Result<bool> {
     let bf = |x: f64| crate::muse::bf(x as f32) as f64;
     // (what, head, query heads, kv heads, window, the scores in bf16, scale, soft-cap, gate (normed), round, first position, rows)
     type Case = (&'static str, usize, usize, usize, usize, bool, f32, f32, Option<bool>, bool, usize, usize);
-    let cases: [Case; 7] = [
+    let cases: [Case; 8] = [
         ("Gemma 4's sliding layers (head 256, window 64, scores in bf16)", 256, 16, 8, 64, true, 1.0, 0.0, None, true, 100, 70),
         ("Gemma 4's global layers (head 512, scores in bf16)", 512, 16, 2, 0, true, 1.0, 0.0, None, true, 40, 37),
         ("Nemotron-H's (head 128)", 128, 32, 2, 0, false, 128f32.powf(-0.5), 0.0, None, false, 124, 62),
@@ -675,6 +767,7 @@ pub fn check() -> Result<bool> {
         ("Muse Spark's (head 64, window 32, the gate normed)", 64, 8, 2, 32, false, 0.125, 0.0, Some(true), true, 90, 40),
         ("a soft-capped head of 128 (cap 5)", 128, 8, 2, 0, false, 128f32.powf(-0.5), 5.0, None, false, 60, 33),
         ("Nemotron-H's (head 128), a whole chunk", 128, 32, 2, 0, false, 128f32.powf(-0.5), 0.0, None, false, 128, 64),
+        ("Qwen3-8B's (head 128, 32 query heads over 8)", 128, 32, 8, 0, false, 128f32.powf(-0.5), 0.0, None, false, 150, 100),
     ];
     let mut ok = true;
     for (what, d, nq, nk, window, sbf16, scale, softcap, gnorm, round, p0, n) in cases {
@@ -774,18 +867,38 @@ pub fn check() -> Result<bool> {
             let splits = lib.kv_decode_splits(1, nk as i64, cap.div_ceil(16) as i64)?;
             let ws_bytes = if lib_dec { lib.kv_decode_workspace((n * sp) as i64, nk as i64, (g / sp) as i64, d as i64, splits)? } else { 16 };
             let ws = Buf::zeroed(ws_bytes)?;
-            let hows: &[&str] = if lib_dec {
-                &["a prompt's rows on the tensor cores", "a prompt's rows, a warp a head", "each row a decode step", "each row a decode step of the library's"]
-            } else {
-                &["a prompt's rows on the tensor cores", "a prompt's rows, a warp a head", "each row a decode step"]
-            };
-            for &how in hows {
+            let mut hows = vec!["a prompt's rows on the tensor cores", "a prompt's rows, a warp a head", "each row a decode step"];
+            if lib_dec {
+                hows.push("each row a decode step of the library's");
+            }
+            // (the kind's own prompt kernel: the same rows in two calls, the second's first row not at a tile's, give the one call's bits)
+            let split = KernAttn::own_prompt(d).then_some(n / 2 - 3);
+            if split.is_some() {
+                hows.push(SPLIT);
+            }
+            let mut whole: Vec<u16> = Vec::new();
+            let mut alone: Vec<(&str, Vec<u16>)> = Vec::new();
+            for &how in &hows {
                 let out = Buf::zeroed(n * nq * d * 2)?;
                 let x = AttnArgs { out: out.ptr, ..a };
                 // SAFETY: buffers made here of the sizes the kernels read and write; read after a synchronize.
                 unsafe {
                     match how {
                         "a prompt's rows on the tensor cores" => k.prompt(&lib, dev.stream, &x, p0)?,
+                        SPLIT => {
+                            let h = split.unwrap_or(0);
+                            let row = (h * nq * d * 2) as u64;
+                            k.prompt(&lib, dev.stream, &AttnArgs { n: h as i32, ..x }, p0)?;
+                            let rest = AttnArgs {
+                                n: (n - h) as i32,
+                                qo: x.qo + row,
+                                out: x.out + row,
+                                kpos: x.kpos + 4 * h as u64,
+                                gate: if x.gate == 0 { 0 } else { x.gate + row },
+                                ..x
+                            };
+                            k.prompt(&lib, dev.stream, &rest, p0 + h)?
+                        }
                         "a prompt's rows, a warp a head" => k.rows(dev.stream, &x)?,
                         "each row a decode step" => k.decode(dev.stream, &x)?,
                         _ => {
@@ -810,13 +923,75 @@ pub fn check() -> Result<bool> {
                 let mut got = vec![0u16; n * nq * d];
                 out.read(0, &mut got)?;
                 let worst = got.iter().zip(&want).map(|(g, w)| (f32::from_bits((*g as u32) << 16) as f64 - w).abs()).fold(0f64, f64::max) / peak.max(1e-30);
-                let pass = worst <= 1e-2;
+                // (the two calls: the one call's bits, every value)
+                let differ = if how == SPLIT { got.iter().zip(&whole).filter(|(g, w)| g != w).count() } else { 0 };
+                if how == "a prompt's rows on the tensor cores" {
+                    whole = got.clone();
+                }
+                let pass = worst <= 1e-2 && differ == 0;
                 ok &= pass;
                 println!(
-                    "{} {what}: {how}{}, {} values, largest difference {worst:.2e} of the largest value (bound 1.0e-2)",
+                    "{} {what}: {how}{}, {} values, largest difference {worst:.2e} of the largest value (bound 1.0e-2){}",
                     if pass { "ok  " } else { "FAIL" },
                     if pages { ", the keys in pages" } else { "" },
-                    got.len()
+                    got.len(),
+                    if how == SPLIT { format!(", {differ} not the one call's bits") } else { String::new() }
+                );
+                alone.push((how, got));
+            }
+            if !pages {
+                continue;
+            }
+            // (each row through a table of its own, as a step's rows of several sequences take theirs (`Dyn::attn_lead`, rows::RowTabs): the one table copied twice a row, found at
+            // a stride; the last row a padding row (position -1). The other rows' bits are the decode's above, the padding row's zeros.)
+            let rows_tab: Vec<i32> = (0..2 * n).flat_map(|_| tab.iter().copied()).collect();
+            let mut kp: Vec<i32> = (0..n).map(|t| (p0 + t) as i32).collect();
+            kp[n - 1] = -1;
+            let (lens_p, firsts_p): (Vec<i32>, Vec<i32>) =
+                lens.iter().zip(&firsts).enumerate().map(|(i, (&l, &f))| if i / sp == n - 1 { (0, 0) } else { (l, f) }).unzip();
+            let (rtb, kpb, lpb, fpb) = (Buf::new(4 * rows_tab.len())?, Buf::new(4 * n)?, Buf::new(4 * lens_p.len())?, Buf::new(4 * firsts_p.len())?);
+            rtb.write(0, &rows_tab)?;
+            kpb.write(0, &kp)?;
+            lpb.write(0, &lens_p)?;
+            fpb.write(0, &firsts_p)?;
+            for (how, base) in &alone {
+                let library = *how == "each row a decode step of the library's";
+                if !library && *how != "each row a decode step" {
+                    continue;
+                }
+                let out = Buf::zeroed(n * nq * d * 2)?;
+                let x = AttnArgs { out: out.ptr, tab: rtb.ptr, tstride: (2 * nb) as i64, kpos: kpb.ptr, ..a };
+                // SAFETY: as above.
+                unsafe {
+                    if library {
+                        let stride = (nq * d / sp) as i64;
+                        lib.kv_decode_bf16(
+                            x.qo,
+                            stride,
+                            (x.kc, x.vc, rtb.ptr, (2 / sp * nb) as i64, x.cap as i64),
+                            (lpb.ptr, fpb.ptr, (n * sp) as i64, splits),
+                            (nk as i64, (g / sp) as i64, d as i64),
+                            (scale as f64, sbf16),
+                            x.out,
+                            stride,
+                            (ws.ptr, ws_bytes),
+                            dev.stream,
+                        )?;
+                        k.gate(dev.stream, &x)?
+                    } else {
+                        k.decode(dev.stream, &x)?
+                    }
+                }
+                dev.sync()?;
+                let mut got = vec![0u16; n * nq * d];
+                out.read(0, &mut got)?;
+                let w = (n - 1) * nq * d;
+                let (differ, pad) = (got[..w].iter().zip(&base[..w]).filter(|(x, y)| x != y).count(), got[w..].iter().filter(|&&v| v & 0x7FFF != 0).count());
+                let pass = differ == 0 && pad == 0;
+                ok &= pass;
+                println!(
+                    "{} {what}: {how}, each row through its own table, the last a padding row: {differ} values not the bits above, {pad} of the padding row's not zero",
+                    if pass { "ok  " } else { "FAIL" }
                 );
             }
         }
@@ -1016,9 +1191,10 @@ mod tests {
         assert!(AttnOp::of(&wide, Slot::Mix, 0, Some(0), Some((2, 3))).is_err());
     }
 
-    /// kernels/attn.cu's AttnArgs: 14 pointers, 21 ints, 5 floats, no padding.
+    /// kernels/attn.cu's AttnArgs: 14 pointers and a long long, 21 ints, 5 floats, no padding.
     #[test]
     fn the_arguments_are_the_kernels_struct() {
-        assert_eq!(std::mem::size_of::<AttnArgs>(), 14 * 8 + 26 * 4);
+        assert_eq!(std::mem::size_of::<AttnArgs>(), 15 * 8 + 26 * 4);
+        assert_eq!(std::mem::offset_of!(AttnArgs, tstride), 14 * 8);
     }
 }

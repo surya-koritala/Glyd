@@ -6,8 +6,8 @@
 
 use crate::ffi::{err, Error, Result};
 use crate::glm::{GlmKind, KdaDims};
+use crate::runtime::config::ModelConfig;
 use crate::weights::{eos_ids, num};
-use glyd_gpu::json::{self, Value};
 use std::path::Path;
 
 /// The latent attention: `heads` heads, queries from a latent of `q_rank`, keys and values from one of `kv_rank`; a head's key is its `nope` channels and the
@@ -79,11 +79,17 @@ impl ConfigKimi {
     /// A config.json's text (and a generation_config.json's, where there is one): `label` names the file in an error. What this engine does not run is refused
     /// by name: another activation, a rotary, grouped routing, experts outside the latent, a model with its residual stream.
     pub fn parse(text: &str, label: &str, generation: Option<&str>) -> Result<ConfigKimi> {
-        let v = json::parse(text).map_err(|e| Error(format!("{label}: {e}")))?;
+        ConfigKimi::of(&ModelConfig::parse(text).map_err(|e| e.context(label))?, label, generation)
+    }
+
+    /// `parse` of a config.json parsed once (`ModelConfig`).
+    pub fn of(c: &ModelConfig, label: &str, generation: Option<&str>) -> Result<ConfigKimi> {
+        use serde_json::Value;
+        let v = &c.top;
         if v.get("model_type").and_then(Value::as_str) != Some("kimi_k3") {
             return err(format!("{label}: not a Kimi-K3 model (model_type kimi_k3)"));
         }
-        let t = v.get("text_config").ok_or_else(|| Error(format!("{label}: no text_config")))?;
+        let t = v.get("text_config").and_then(Value::as_object).ok_or_else(|| Error(format!("{label}: no text_config")))?;
         if t.get("model_type").and_then(Value::as_str) != Some("kimi_linear") {
             return err(format!("{label}: the text model is not kimi_linear"));
         }
@@ -117,7 +123,7 @@ impl ConfigKimi {
         }
         // the mixers: linear_attn_config's lists are of 1-based layer numbers (the reference tests layer_idx + 1); a layer not in kda_layers is latent attention
         let attn = t.get("linear_attn_config").ok_or_else(|| Error(format!("{label}: no linear_attn_config")))?;
-        let list = |k: &str| attn.get(k).and_then(Value::as_u64s).ok_or_else(|| Error(format!("{label}: no linear_attn_config.{k}")));
+        let list = |k: &str| attn.get(k).and_then(crate::runtime::config::u64s).ok_or_else(|| Error(format!("{label}: no linear_attn_config.{k}")));
         let (kda_l, full_l) = (list("kda_layers")?, list("full_attn_layers")?);
         let kinds: Vec<GlmKind> = (1..=layers as u64).map(|n| if kda_l.contains(&n) { GlmKind::Kda } else { GlmKind::Mla }).collect();
         let mla_n: Vec<u64> = (1..=layers as u64).filter(|n| !kda_l.contains(n)).collect();

@@ -15,3 +15,4 @@
 - [Models](models.md)
 - [The model catalog](catalog.md)
 - [Checking a machine: the M1 gate](gate.md)
+- [Benchmarks against other engines](benchmarks.md)

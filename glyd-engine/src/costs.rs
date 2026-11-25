@@ -132,14 +132,16 @@ enum Family {
 
 impl Family {
     fn parse(text: &str, generation: Option<&str>, saved_causal: bool) -> Result<Family> {
-        if crate::nemotron::is_nemotron_h(text) {
-            return Ok(Family::Nemotron(ConfigNemotronH::parse(text, "config.json", generation)?));
+        let m = crate::runtime::config::ModelConfig::parse(text)?;
+        match m.family() {
+            Some(crate::support::Family::NemotronH) => return Ok(Family::Nemotron(ConfigNemotronH::of(&m, "config.json", generation)?)),
+            Some(crate::support::Family::Gemma4) => {
+                return err("a Gemma 4 model: its cost profile is not described yet (Qwen3.5-family and Nemotron-H models are)")
+            }
+            _ => {}
         }
-        if crate::gemma4::is_gemma4(text) {
-            return err("a Gemma 4 model: its cost profile is not described yet (Qwen3.5-family and Nemotron-H models are)");
-        }
-        let mut c = Config35::parse(text, "config.json", generation)
-            .map_err(|e| Error(format!("costs: {} (Qwen3.5-family and Nemotron-H models are described)", e.msg)))?;
+        let mut c =
+            Config35::of(&m, "config.json", generation).map_err(|e| Error(format!("costs: {} (Qwen3.5-family and Nemotron-H models are described)", e.msg)))?;
         if saved_causal {
             // (a glyd-v7 save holds the text model under the causal LM's names, whatever its config.json says of the checkpoint it came from, and no vision tower)
             (c.prefix, c.vision) = ("model.", false);

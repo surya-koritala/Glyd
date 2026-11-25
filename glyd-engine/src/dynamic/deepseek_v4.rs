@@ -103,10 +103,10 @@ impl V4Run {
     }
 }
 
-/// A ratio-4 layer's indexer's pick: every indexer's (`Op::IdxPick`), its entries the indexer's compressor's (state `cache`), its scores the release's bf16 arithmetic, the
+/// A ratio-4 layer's indexer's pick: every indexer's (`Op::IdxPick`), its entries the indexer's compressor's (ring `cache`), its scores the release's bf16 arithmetic, the
 /// entries kept as they are.
 fn pick(cache: usize, ratio: usize, heads: usize, top_k: usize, wscale: f32) -> Op {
-    Op::IdxPick(IdxPick { heads, ratio, top_k, expand: false, tail: false, wscale, score: IdxScore::Release, keys: IdxKeys::State(cache), weighted: true })
+    Op::IdxPick(IdxPick { heads, ratio, top_k, expand: false, tail: false, wscale, score: IdxScore::Release, keys: IdxKeys::Entries(cache), weighted: true })
 }
 
 /// A product's matrix: in the matrices' list, or the FP8 matrices'.
@@ -305,19 +305,19 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
             wkv.op(Slot::Hq, Slot::Kv, "attention: kv"),
             Op::CompKv { norm: kv_norm, rope, ring },
         ];
-        // a compressor: its two products stacked (kv's rows, then the gate's), its pooling's offsets, its norm; its cache and state
-        let comp = |sm: &mut Vec<Buf>, states: &mut Vec<usize>, q: &str, dd: usize, indexer: bool| -> Result<Op> {
+        // a compressor: its two products stacked (kv's rows, then the gate's), its pooling's offsets, its norm; its entries (a ring of them: paged as any keys) and its state (the open windows' rows)
+        let comp = |sm: &mut Vec<Buf>, rings: &mut Vec<Ring>, states: &mut Vec<usize>, q: &str, dd: usize, indexer: bool| -> Result<Op> {
             let coff = 1 + (ratio == 4) as usize;
             let mut wb = read(&format!("{q}.wkv.weight"))?;
             wb.extend(read(&format!("{q}.wgate.weight"))?);
             let w = put(sm, upload_bytes(&wb)?);
             let ape = put(sm, small(&format!("{q}.ape"))?);
             let norm = put(sm, small(&format!("{q}.norm.weight"))?);
-            let cache = states.len();
-            states.push((ctx / ratio + 2) * dd * 2);
+            let (cache, state) = (rings.len(), states.len());
+            rings.push(Ring::entries(dd, ratio));
             states.push(coff * ratio * coff * dd * 4);
             states.push(coff * ratio * coff * dd * 4);
-            Ok(Op::Compress { w, ape, norm, d: dd, ratio, rope, cache, state: cache + 1, indexer })
+            Ok(Op::Compress { w, ape, norm, d: dd, ratio, rope, cache, state, indexer })
         };
         let mut cache = None;
         if ratio == 4 {
@@ -325,7 +325,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
             let wp: Vec<u16> = read(&format!("{a}.indexer.weights_proj.weight"))?.chunks(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
             let iw = mats.len();
             mats.push(pack(&wp, c.idx_heads, d, &format!("{a}.indexer.weights_proj"))?);
-            let ic = comp(&mut sm, &mut states, &format!("{a}.indexer.compressor"), c.idx_dim, true)?;
+            let ic = comp(&mut sm, &mut rings, &mut states, &format!("{a}.indexer.compressor"), c.idx_dim, true)?;
             let Op::Compress { cache: icache, .. } = ic else { unreachable!() };
             let wscale = (c.idx_dim as f32).powf(-0.5) * (c.idx_heads as f32).powf(-0.5);
             ops.extend([
@@ -337,7 +337,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
             ]);
         }
         if ratio > 0 {
-            let mc = comp(&mut sm, &mut states, &format!("{a}.compressor"), hd, false)?;
+            let mc = comp(&mut sm, &mut rings, &mut states, &format!("{a}.compressor"), hd, false)?;
             if let Op::Compress { cache: k, .. } = mc {
                 cache = Some(k);
             }
@@ -604,6 +604,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
         widths,
         mats: Vec::new(),
         small: Vec::new(),
+        forms: Vec::new(),
         ropes: Vec::new(),
         rings,
         first: Op::Streams,
@@ -812,21 +813,21 @@ pub(crate) fn v4_desc(s: &V4Shape, st: &Stage, vo: &V4Opts) -> Result<ModelDesc>
             wkv.op(Slot::Hq, Slot::Kv, "attention: kv"),
             Op::CompKv { norm: kv_norm, rope, ring },
         ];
-        let comp = |n: &mut Count, states: &mut Vec<usize>, dd: usize, indexer: bool| -> Op {
+        let comp = |n: &mut Count, rings: &mut Vec<Ring>, states: &mut Vec<usize>, dd: usize, indexer: bool| -> Op {
             let coff = 1 + (ratio == 4) as usize;
             let w = small(n, 3);
-            let cache = states.len();
-            states.push((vo.ctx / ratio + 2) * dd * 2);
+            let (cache, state) = (rings.len(), states.len());
+            rings.push(Ring::entries(dd, ratio));
             states.push(coff * ratio * coff * dd * 4);
             states.push(coff * ratio * coff * dd * 4);
-            Op::Compress { w, ape: w + 1, norm: w + 2, d: dd, ratio, rope, cache, state: cache + 1, indexer }
+            Op::Compress { w, ape: w + 1, norm: w + 2, d: dd, ratio, rope, cache, state, indexer }
         };
         if ratio == 4 {
             let iq = lin(&mut n, ih * idim, s.q_lora, 0);
             let iw = n.mats;
             n.mats += 1;
-            let icache = states.len();
-            let ic = comp(&mut n, &mut states, idim, true);
+            let icache = rings.len();
+            let ic = comp(&mut n, &mut rings, &mut states, idim, true);
             let wscale = (idim as f32).powf(-0.5) * (ih as f32).powf(-0.5);
             ops.extend([
                 iq.op(Slot::Proj, Slot::Iq, "indexer: q"),
@@ -838,8 +839,8 @@ pub(crate) fn v4_desc(s: &V4Shape, st: &Stage, vo: &V4Opts) -> Result<ModelDesc>
         }
         let mut cache = None;
         if ratio > 0 {
-            cache = Some(states.len());
-            ops.push(comp(&mut n, &mut states, hd, false));
+            cache = Some(rings.len());
+            ops.push(comp(&mut n, &mut rings, &mut states, hd, false));
         }
         ops.extend([
             Op::CompAttn { ring, cache, ratio, sink, rope, heads: nh, hpg },
@@ -903,6 +904,7 @@ pub(crate) fn v4_desc(s: &V4Shape, st: &Stage, vo: &V4Opts) -> Result<ModelDesc>
         widths,
         mats: Vec::new(),
         small: Vec::new(),
+        forms: Vec::new(),
         ropes: Vec::new(),
         rings,
         first: Op::Streams,

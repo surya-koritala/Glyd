@@ -4,7 +4,7 @@
 
 use super::{act, dot, norm::norm, rope, softmax, Params};
 use crate::ffi::{err, Result};
-use crate::runtime::kinds::{Indexer, Mla, Norm, NormKind, NormWeight, Rounding};
+use crate::runtime::kinds::{IndexForm, Indexer, Mla, NormKind};
 
 /// A sequence's latents in one layer: per token the normed latent (kv_lora values) then the shared key part (rope_dim, rotated); and where
 /// the layer has an indexer of its own, per token its normed key and its pool gate's scores; and the last query's pick `margin`.
@@ -17,8 +17,12 @@ pub struct LatentCache {
     pub margin: f32,
 }
 
-/// The indexer's key norm: a LayerNorm with a bias at eps 1e-6 (transformers' `Glm5NextTextIndexer.k_norm`, DeepSeek-V3.2's).
-const KEY_NORM: Norm = Norm { kind: NormKind::Layer, weight: NormWeight::Plain, eps: 1e-6, rounding: Rounding::F32 };
+/// A gated indexer's key norm (`IndexForm::Gated`'s `key`) on the key product `k`: its weight, and a LayerNorm's bias.
+fn key_norm(ix: &Indexer, p: &Params, k: &[f32]) -> Result<Vec<f32>> {
+    let IndexForm::Gated { key } = ix.form else { return err(format!("a latent attention's indexer of the gated form, not {:?}", ix.form)) };
+    let bias = if key.kind == NormKind::Layer { Some(p.vec("indexer_k_norm_bias")?) } else { None };
+    Ok(norm(&key, k, Some(p.vec("indexer_k_norm")?), bias))
+}
 
 /// Which of the cache entries `seen` (in order, the sequence's first token first) the query attends to. While the complete pools of `block`
 /// tokens number no more than the `top_k / block` it keeps, every one; else the pools of the best scores, each pool's key the per-channel
@@ -93,7 +97,7 @@ pub fn step(m: &Mla, p: &Params, c: &mut LatentCache, h: &[f32], pos: u32) -> Re
     c.lat.push(lat);
     // (the indexer's key and pool gate of this token, where the layer has an indexer of its own)
     if let Some(ix) = m.indexer.as_ref().filter(|_| p.has("indexer_wk")) {
-        c.ikey.push(norm(&KEY_NORM, &p.prod("indexer_wk", h)?, Some(p.vec("indexer_k_norm")?), Some(p.vec("indexer_k_norm_bias")?)));
+        c.ikey.push(key_norm(ix, p, &p.prod("indexer_wk", h)?)?);
         c.igate.push(if ix.block > 1 { p.prod("indexer_pool_gate", h)? } else { Vec::new() });
     }
     let kv_b = p.vec("kv_b")?;
@@ -147,13 +151,14 @@ pub fn step(m: &Mla, p: &Params, c: &mut LatentCache, h: &[f32], pos: u32) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::kinds::Norm;
     use crate::runtime::reference::testing::{fill, rel};
 
     const D: usize = 32;
 
     /// A GLM-5.3-Flash-shaped latent attention (NoPE, q low rank) with an indexer of `heads` heads of 16 keeping `top_k` tokens in pools of `block`.
     fn layer(top_k: usize, block: usize) -> (Mla, Params) {
-        let ix = Indexer { heads: 2, head_dim: 16, top_k, block, shared: false, form: crate::runtime::kinds::IndexForm::Gated };
+        let ix = Indexer { heads: 2, head_dim: 16, top_k, block, shared: false, form: crate::runtime::kinds::IndexForm::LAYER_KEYS };
         let m = Mla {
             heads: 2,
             q_lora: Some(24),
@@ -214,6 +219,27 @@ mod tests {
         }
     }
 
+    /// The gated form's key norm is the kind's: RMS-normed keys (Kimi-K3.1's) read no bias and pick as their keys score, other picks than the
+    /// LayerNorm-ed keys'; until the pools run out the layer is the one without an indexer either way.
+    #[test]
+    fn the_keys_are_normed_as_the_form_says() {
+        let (m, mut p) = layer(8, 1);
+        let rms = Mla { indexer: m.indexer.clone().map(|ix| Indexer { form: IndexForm::Gated { key: Norm::rms(1e-6) }, ..ix }), ..m.clone() };
+        let h = &inputs(1)[0];
+        let k = p.prod("indexer_wk", h).unwrap();
+        assert_eq!(key_norm(rms.indexer.as_ref().unwrap(), &p, &k).unwrap(), norm(&Norm::rms(1e-6), &k, p.opt("indexer_k_norm"), None));
+        let layer_keys = key_norm(m.indexer.as_ref().unwrap(), &p, &k).unwrap();
+        assert!(rel(&layer_keys, &norm(&Norm::rms(1e-6), &k, p.opt("indexer_k_norm"), None)) > 1e-3);
+        p.t.remove("indexer_k_norm_bias");
+        assert!(key_norm(m.indexer.as_ref().unwrap(), &p, &k).is_err(), "a LayerNorm's key reads its bias");
+        let plain = Mla { indexer: None, ..m.clone() };
+        let (mut a, mut b) = (LatentCache::default(), LatentCache::default());
+        for (t, h) in inputs(8).iter().enumerate() {
+            let (x, y) = (step(&rms, &p, &mut a, h, t as u32).unwrap(), step(&plain, &p, &mut b, h, t as u32).unwrap());
+            assert_eq!(x, y, "token {t}: 8 tokens kept");
+        }
+    }
+
     /// The picks by hand: each complete pool's key and score written out for one query, the best two pools' tokens and the tail; and the
     /// layer's output is the attention over those tokens alone.
     #[test]
@@ -229,7 +255,7 @@ mod tests {
         let qr = norm(&m.q_norm, &p.prod("q_a", h).unwrap(), p.opt("q_a_norm"), None);
         // (the cache as step leaves it for the 23rd token, which joins before the choice)
         let mut c2 = LatentCache { pos: c.pos.clone(), lat: c.lat.clone(), ikey: c.ikey.clone(), igate: c.igate.clone(), margin: 0.0 };
-        let k = norm(&KEY_NORM, &p.prod("indexer_wk", h).unwrap(), p.opt("indexer_k_norm"), p.opt("indexer_k_norm_bias"));
+        let k = key_norm(&ix, &p, &p.prod("indexer_wk", h).unwrap()).unwrap();
         c2.ikey.push(k);
         c2.igate.push(p.prod("indexer_pool_gate", h).unwrap());
         c2.lat.push(Vec::new());

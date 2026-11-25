@@ -166,7 +166,8 @@ impl Tables {
 
 /// An attention layer's keys and values as the executor writes them: its ring, kv heads, channels, whether it has values of its own, and its
 /// sliding window (0: global); and its attention's arithmetic as the decode over 12-bit pages is to take it: the scale, and whether a score is the
-/// bf16 of its dot product (Gemma 4's) or fp32 (the Qwen3.5 layout's).
+/// bf16 of its dot product (Gemma 4's) or fp32 (the Qwen3.5 layout's). `width`: the values of a token's row in the ring (heads x channels, or a
+/// latent's kv_rank + rope, which its pages hold as `heads` heads of 128 with the rest zero: Kimi-K3's 576 as 5).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct KvShape {
     pub ring: usize,
@@ -176,9 +177,11 @@ pub struct KvShape {
     pub window: usize,
     pub scale: f64,
     pub round: bool,
+    pub width: usize,
 }
 
-/// Each layer's keys and values, where its attention writes them in rows of [kv heads][channels] the library's pages take (heads of 128, 256 or 512).
+/// Each layer's keys and values, where its attention writes them in rows of [kv heads][channels] the library's pages take (heads of 128, 256 or 512),
+/// or a latent attention's latents (the kind's one stream: one row a token, which is its key and, through kv_b_proj, its value).
 pub fn shapes(d: &super::ModelDesc) -> Vec<Option<KvShape>> {
     d.layers
         .iter()
@@ -186,8 +189,19 @@ pub fn shapes(d: &super::ModelDesc) -> Vec<Option<KvShape>> {
             ops.iter().find_map(|op| match op {
                 // (both streams always: where a layer has no values of its own (Gemma 4's global layers) they are its keys' projection normed without
                 // a weight and with no rotary, which the cache holds apart from the keys)
-                Op::Attn(a) if a.writes && a.d % 128 == 0 && a.softcap == 0.0 => {
-                    Some(KvShape { ring: a.ring, heads: a.nk, channels: a.d, one: false, window: a.window, scale: a.scale as f64, round: a.sbf16 })
+                Op::Attn(a) if a.writes && a.d % 128 == 0 && a.softcap == 0.0 => Some(KvShape {
+                    ring: a.ring,
+                    heads: a.nk,
+                    channels: a.d,
+                    one: false,
+                    window: a.window,
+                    scale: a.scale as f64,
+                    round: a.sbf16,
+                    width: a.nk * a.d,
+                }),
+                Op::Mla(a) => {
+                    let w = a.kv_rank + a.rope;
+                    Some(KvShape { ring: a.ring, heads: w.div_ceil(128), channels: 128, one: true, window: 0, scale: a.scale as f64, round: false, width: w })
                 }
                 _ => None,
             })
@@ -197,9 +211,10 @@ pub fn shapes(d: &super::ModelDesc) -> Vec<Option<KvShape>> {
 
 impl Dyn {
     /// The selected sequence's keys and values of `s.ring` at its tokens 0 .. n as the cache holds them: rows [tokens][kv heads channels] (the
-    /// values none where the keys are the values), and the first token they start at (a sliding layer's window, or its ring's, holds the last alone).
+    /// values none where the keys are the values; a latent's rows of `s.width` padded with zeros to its pages' heads), and the first token they start
+    /// at (a sliding layer's window, or its ring's, holds the last alone).
     pub(crate) fn kv_rows(&self, s: &KvShape, n: usize) -> Result<(Vec<u16>, Vec<u16>, usize)> {
-        let w = s.heads * s.channels;
+        let (w, rw) = (s.heads * s.channels, s.width);
         let cap = self.ring_cap[s.ring];
         let keep = if s.window > 0 { s.window.min(cap) } else { cap };
         let first = n.saturating_sub(keep);
@@ -218,10 +233,10 @@ impl Dyn {
         let mut v = if s.one { Vec::new() } else { vec![0u16; (n - first) * w] };
         for (i, p) in (first..n).enumerate() {
             let r = row_of(p)? as u64;
-            // SAFETY: row r of the ring's [rows][heads][channels] bf16 (a block of the sequence's, or a place of its ring), into host rows of w values;
-            // the stream is synchronized after.
+            // SAFETY: row r of the ring's rows of rw bf16 (a block of the sequence's, or a place of its ring), into the first rw values of a host row of w
+            // (the values' rows w wide); the stream is synchronized after.
             unsafe {
-                copy_d2h_async(k[i * w..].as_mut_ptr() as *mut _, kc + r * (w * 2) as u64, w * 2, self.dev.stream)?;
+                copy_d2h_async(k[i * w..].as_mut_ptr() as *mut _, kc + r * (rw * 2) as u64, rw * 2, self.dev.stream)?;
                 if !s.one {
                     copy_d2h_async(v[i * w..].as_mut_ptr() as *mut _, vc + r * (w * 2) as u64, w * 2, self.dev.stream)?;
                 }

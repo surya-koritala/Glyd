@@ -477,7 +477,7 @@ pub fn cu(call: &str, status: c_int) -> Result<()> {
 }
 
 /// The C API version this binding is written for (glyd_gpu.h's GLYD_GPU_API_VERSION).
-pub const API_VERSION: c_int = 20;
+pub const API_VERSION: c_int = 22;
 
 /// The name a library call goes by in an error: the function's own.
 macro_rules! call {
@@ -528,6 +528,9 @@ table! {
         fn glyd_gpu_kv_write(*const u16, i64, *const u16, i64, *const i64, i64, *mut u8, i64, *const u8, *const u8, i64, i64, i64, *mut u8, i64, *mut u8, i64, i64, *mut u32, *mut u32, i64, i64, Stream) -> c_int;
         fn glyd_gpu_kv_release(*mut u8, i64, i64, *const i32, i64, i64, i64, i64, *mut u8, i64, *mut u8, i64, i64, *mut u32, *mut u32, i64, Stream) -> c_int;
         fn glyd_gpu_kv_unpack(*const u8, i64, *const i32, i64, *const u8, *const u8, i64, i64, i64, *const u8, i64, *const u8, i64, *mut u16, *mut u16, Stream) -> c_int;
+        fn glyd_gpu_kv_image_bytes(i64, i64, i64, *mut i64) -> c_int;
+        fn glyd_gpu_kv_save(*const u8, i64, i64, *const i32, i64, i64, i64, i64, *const u8, i64, *const u8, i64, i64, *mut u8, *mut u32, Stream) -> c_int;
+        fn glyd_gpu_kv_load(*const u8, *const i32, i64, *mut u8, i64, i64, i64, i64, i64, *mut u8, i64, *mut u8, i64, i64, *mut u32, i64, Stream) -> c_int;
         fn glyd_gpu_kv_gather(*const u8, i64, *const i32, *const i32, i64, *const u8, *const u8, i64, i64, i64, *const u8, i64, *const u8, i64, *mut u16, Stream) -> c_int;
         fn glyd_gpu_kv_work_put(*const u16, i64, *const u16, i64, *const i64, i64, i64, i64, *mut u16, i64, Stream) -> c_int;
         fn glyd_gpu_kv_decode_shares(i64, i64, i64, *mut i64) -> c_int;
@@ -1354,6 +1357,113 @@ impl Lib {
             cs,
         );
         self.ck(call!("kv_unpack"), r)
+    }
+
+    /// The pages of the blocks `blocks` [n] (int32, below `nblocks`) of layer `layer`'s pool cleared as a page's first token clears them: the escape chunks or the
+    /// raw slab each holds back to their pools (by owner), counted in `status`. For blocks no sequence holds and whose content is not read again.
+    ///
+    /// # Safety
+    /// As `kv_write`; `blocks` an int32 array of n the device reads, no step's.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn kv_release(&self, g: &KvGeom, pool: u64, nblocks: i64, blocks: u64, n: i64, layer: i64, status: u64, cs: Stream) -> Result<()> {
+        let r = (self.api.glyd_gpu_kv_release)(
+            pool as *mut u8,
+            g.page_stride,
+            nblocks,
+            blocks as *const i32,
+            n,
+            g.heads,
+            g.dim,
+            g.arena,
+            g.escape as *mut u8,
+            g.nchunks,
+            g.raw as *mut u8,
+            g.nslabs,
+            layer,
+            status as *mut u32,
+            std::ptr::null_mut(),
+            0,
+            cs,
+        );
+        self.ck(call!("kv_release"), r)
+    }
+
+    /// A page's image (`kv_save`): its bytes, its escape chunks' entries and its raw slab's places.
+    pub fn kv_image_bytes(&self, g: &KvGeom) -> Result<i64> {
+        let mut b = 0;
+        // SAFETY: a host out-pointer.
+        let r = unsafe { (self.api.glyd_gpu_kv_image_bytes)(g.heads, g.dim, g.arena, &mut b) };
+        self.ck(call!("kv_image_bytes"), r)?;
+        Ok(b)
+    }
+
+    /// The pages of the blocks `pages` [n] (int32, below `nblocks`) of layer `layer`'s pool into n images at `out` (`kv_image_bytes` apart), their 12 bits as they are with the
+    /// escape chunks and the raw slab each holds; `moved` [n] (uint32, 0: none) the bytes written for each.
+    ///
+    /// # Safety
+    /// As `kv_write`; `pages` an int32 array of n the device reads, `out` n images' room the device writes (16-byte aligned), `moved` n uint32 where not 0.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn kv_save(&self, g: &KvGeom, pool: u64, nblocks: i64, pages: u64, n: i64, layer: i64, out: u64, moved: u64, cs: Stream) -> Result<()> {
+        let r = (self.api.glyd_gpu_kv_save)(
+            pool as *const u8,
+            g.page_stride,
+            nblocks,
+            pages as *const i32,
+            n,
+            g.heads,
+            g.dim,
+            g.arena,
+            g.escape as *const u8,
+            g.nchunks,
+            g.raw as *const u8,
+            g.nslabs,
+            layer,
+            out as *mut u8,
+            moved as *mut u32,
+            cs,
+        );
+        self.ck(call!("kv_save"), r)
+    }
+
+    /// The images `img` (`kv_save`'s) into the pages of the blocks `dst` [n] (int32, below `nblocks`) of layer `layer`'s pool: their bytes, and escape chunks and raw slabs lent
+    /// to these blocks for what they hold. A page that finds none is void (named in `status`'s ring of `ring` places, as `kv_write` names one).
+    ///
+    /// # Safety
+    /// As `kv_write`; `img` n images the device reads (16-byte aligned), `dst` an int32 array of n the device reads, the blocks apart and no step's.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn kv_load(
+        &self,
+        g: &KvGeom,
+        img: u64,
+        dst: u64,
+        n: i64,
+        pool: u64,
+        nblocks: i64,
+        layer: i64,
+        status: u64,
+        ring: i64,
+        cs: Stream,
+    ) -> Result<()> {
+        let r = (self.api.glyd_gpu_kv_load)(
+            img as *const u8,
+            dst as *const i32,
+            n,
+            pool as *mut u8,
+            g.page_stride,
+            nblocks,
+            g.heads,
+            g.dim,
+            g.arena,
+            g.escape as *mut u8,
+            g.nchunks,
+            g.raw as *mut u8,
+            g.nslabs,
+            layer,
+            status as *mut u32,
+            ring,
+            cs,
+        );
+        self.ck(call!("kv_load"), r)
     }
 
     /// The pages `pages` [n] (int32, block numbers) of the layer's pool decoded into the bf16 staging cache `out` [blocks, 16, H, 2 D], page j into block `dst`[j].

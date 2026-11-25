@@ -12,7 +12,8 @@ use crate::ui::Refusal;
 pub enum Family {
     /// Qwen3 dense (Qwen3ForCausalLM): on the executor as a Llama-style dense model (src/dynamic/dense.rs), lossless or at the lossy levels.
     Qwen3,
-    /// Qwen3.5, 3.6 and 3.8 dense (Qwen3_5ForCausalLM, Qwen3_5ForConditionalGeneration): the lossy levels.
+    /// Qwen3.5, 3.6 and 3.8 dense (Qwen3_5ForCausalLM, Qwen3_5ForConditionalGeneration): penguin on the dynamic route (one GPU, or its layers
+    /// cut over several), the lossy levels on one GPU.
     Qwen35,
     NemotronH,
     /// Gemma 4 dense (12B, 31B); the 26B-A4B mixture of experts and the E models are refused.
@@ -52,7 +53,8 @@ pub use crate::plan::LOSSY_CTX;
 /// The context the Qwen3 path and the dynamic engine take where none is asked (src/plan.rs `sizing::CTX_WANT`, `sizing::size_dynamic`).
 pub const DEFAULT_CTX: usize = 8192;
 
-const LOSSY: &[&str] = &["kestrel", "swift", "wren"];
+/// Lossless, or a block level of every weight.
+const PENGUIN_LOSSY: &[&str] = &["penguin", "kestrel", "swift", "wren"];
 const NONE: &[&str] = &[];
 const PENGUIN: &[&str] = &["penguin"];
 /// Lossless, or the routed experts at hummingbird's bits (a directory `glyd-engine pack --layout hummingbird --usage` makes: src/hb_pack.rs).
@@ -62,7 +64,7 @@ pub static TABLE: [Support; 9] = [
     Support {
         family: Family::Qwen3,
         name: "Qwen3",
-        levels: &["penguin", "kestrel", "swift", "wren"],
+        levels: PENGUIN_LOSSY,
         hummingbird_packed_only: false,
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: Some(MAX_CONTEXT),
@@ -73,11 +75,11 @@ pub static TABLE: [Support; 9] = [
     Support {
         family: Family::Qwen35,
         name: "Qwen3.5",
-        levels: LOSSY,
+        levels: PENGUIN_LOSSY,
         hummingbird_packed_only: false,
         default_ctx: None,
         max_ctx: None,
-        split_levels: NONE,
+        split_levels: PENGUIN,
         experts_in_ram_levels: NONE,
         drafts: false,
     },
@@ -95,7 +97,7 @@ pub static TABLE: [Support; 9] = [
     Support {
         family: Family::Gemma4,
         name: "Gemma 4",
-        levels: &["penguin", "kestrel", "swift", "wren"],
+        levels: PENGUIN_LOSSY,
         hummingbird_packed_only: false,
         default_ctx: None,
         max_ctx: None,
@@ -211,7 +213,7 @@ pub fn family(cfg_text: &str, name: &str) -> Result<Family, Refusal> {
     let c = crate::runtime::config::ModelConfig::parse(cfg_text).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), ""))?;
     if c.family() == Some(Family::Gemma4) {
         // (the 26B-A4B mixture of experts and the E models are refused whatever the level)
-        if let Err(e) = crate::gemma4::ConfigG4::parse(cfg_text, None, false) {
+        if let Err(e) = crate::gemma4::ConfigG4::of(&c, None, false) {
             if e.msg.contains("not in this engine yet") {
                 return Err(Refusal::unsupported(format!("{name}: {}", e.msg), "Run Gemma 4 12B or 31B: glyd run google/gemma-4-12B-it"));
             }
@@ -341,6 +343,14 @@ mod tests {
             assert!(check(&n, "nvidia/N", "N", l).is_ok(), "{l}");
         }
         assert!(check(&n, "nvidia/N", "N", "wren").is_ok(), "wren runs in every build");
+        // (the Qwen3.5 layout: penguin and every lossy level; never hummingbird, which is for experts)
+        let q35: Value = json::parse(&fixture("qwen35_configs.json")).unwrap();
+        let q38 = json::to_compact(q35.get("Qwen/Qwen3.8-27B").unwrap());
+        for l in ["penguin", "kestrel", "swift", "wren"] {
+            assert!(check(&q38, "Qwen/Qwen3.8-27B", "Qwen3.8-27B", l).is_ok(), "{l}");
+        }
+        assert!(check(&q38, "Qwen/Qwen3.8-27B", "Qwen3.8-27B", "hummingbird").is_err());
+        assert_eq!(row(Family::Qwen35).split_levels, ["penguin"], "its layers cut over the GPUs at penguin, as the dynamic route cuts them");
         let x = check(&fixture("qwen4x_config.json"), "Qwen/X", "X", "penguin").unwrap_err();
         assert!(x.fix.contains("condor/README.md"), "{x:?}");
         let g = fixture("gemma4_12b_config.json");

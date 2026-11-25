@@ -403,16 +403,31 @@ extern "C" __global__ void __launch_bounds__(256) gather_bf16(const bf16* row, c
 
 // The 12-bit KV pages' arguments of n rows from their positions (src/dynamic/kvpages.rs): row r's slot, its block's page (tab[p / 16], or p / 16 where there is no table) times 16 plus p % 16;
 // its length p + 1 and its window's first token (p + 1 - window, at least 0; window 0: 0) for each of its S parts of query heads (entries r S .. r S + S - 1: the decode attention's
-// sequences). A padding row (a negative position) has slot -1 (not written) and length 0 (a zero output). A null output is not made.
-extern "C" __global__ void __launch_bounds__(256) kv12_rows(const int* pos, int n, const int* tab, int window, int S, long long* slots, int* lens, int* first) {
+// sequences). A padding row (a negative position) has slot -1 (not written) and length 0 (a zero output). A null output is not made. Row r's table is at tab + r tstride
+// (the decode rows of several sequences, each its own: `row_tables`; 0: one table for every row).
+extern "C" __global__ void __launch_bounds__(256) kv12_rows(const int* pos, int n, const int* tab, long long tstride, int window, int S, long long* slots, int* lens, int* first) {
     const int r = blockIdx.x * 256 + threadIdx.x;
     if (r >= n) return;
     const int p = pos[r];
-    if (slots) slots[r] = p < 0 ? -1 : (long long)(tab ? tab[p >> 4] : p >> 4) * 16 + (p & 15);
+    if (slots) slots[r] = p < 0 ? -1 : (long long)(tab ? tab[(size_t)r * tstride + (p >> 4)] : p >> 4) * 16 + (p & 15);
     if (!lens) return;
     for (int s = 0; s < S; s++) {
         lens[r * S + s] = p < 0 ? 0 : p + 1;
         first[r * S + s] = p < 0 || window <= 0 ? 0 : max(0, p + 1 - window);
+    }
+}
+
+// The block tables of a pass's decode rows (src/dynamic/rows.rs `RowTabs`), one row of a sequence each: row r's sequence's table (row slot[r] of `tabs`, T entries a row) copied
+// to rows r dup .. r dup + dup - 1 of `out` (a call of the library's decode takes a row's query heads as `dup` / its parts' sequences: each finds its row's table at a stride),
+// the entries the row's position reads and writes (its window's first block, or the first, to its own). A padding row (slot or position negative) none: it reads and writes
+// no key. Grid (x, n): x blocks of 256 entries at a time a row.
+extern "C" __global__ void __launch_bounds__(256) row_tables(const int* tabs, long long T, const int* slot, const int* pos, int n, int window, int dup, int* out) {
+    const int r = blockIdx.y, s = r < n ? slot[r] : -1, p = r < n ? pos[r] : -1;
+    if (s < 0 || p < 0) return;
+    const int lo = window > 0 ? max(0, p + 1 - window) >> 4 : 0, hi = p >> 4;
+    for (int b = lo + blockIdx.x * 256 + threadIdx.x; b <= hi; b += gridDim.x * 256) {
+        const int v = tabs[(size_t)s * T + b];
+        for (int j = 0; j < dup; j++) out[((size_t)r * dup + j) * T + b] = v;
     }
 }
 

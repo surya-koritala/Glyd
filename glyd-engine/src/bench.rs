@@ -26,7 +26,7 @@ pub const SCHEMA: &str = "glyd-bench/1";
 
 // ---- the fixed workload
 
-const WORDS: &str = "river stone market letter garden window engine paper silver winter harbor signal ladder copper meadow lantern bridge orchard compass thunder village canvas anchor forest \
+pub(crate) const WORDS: &str = "river stone market letter garden window engine paper silver winter harbor signal ladder copper meadow lantern bridge orchard compass thunder village canvas anchor forest \
 ribbon quartz pepper violet cabin marble kettle falcon summit harvest tunnel mirror saddle velvet crystal ember plains lagoon pigeon ceiling puzzle bottle shadow carpet planet button candle valley hammer \
 island jacket cotton rocket temple orange basket";
 
@@ -41,10 +41,10 @@ const TOPICS: [&str; 8] = [
     "how a bicycle stays upright",
 ];
 
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
-    fn next(&mut self) -> u64 {
+    pub(crate) fn next(&mut self) -> u64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
         self.0 ^= self.0 << 17;
@@ -53,7 +53,7 @@ impl Rng {
 }
 
 /// The tokens a prompt kind is about (None: a short question). `same4k` is the 4k prompt whose notes are the same in every request (`prompt`).
-fn kind_tokens(kind: &str) -> Result<Option<usize>> {
+pub(crate) fn kind_tokens(kind: &str) -> Result<Option<usize>> {
     Ok(match kind.strip_prefix("same").filter(|k| *k != "short").unwrap_or(kind) {
         "short" => None,
         "1k" => Some(1024),
@@ -131,7 +131,9 @@ pub fn suite(name: &str) -> Result<Vec<(String, usize)>> {
         // requests that begin alike (one long start, each its own question), 8 of them 250 ms apart, and 8 conversations of 4 turns that begin so: what a server shares of
         // a start it has run, and whether it holds eight conversations that have 4k tokens in common where it does not hold eight of 4k apart
         "shared" => mk(&["same1k+250ms", "same4k+250ms", "same4k*4"], &[8]),
-        s => return err(format!("--suite {s}: gate, bar, full, arrive, chat or shared")),
+        // P20's occupancy check (a datacenter GPU's, 1x H100): one-token decode and batched decode, each load's decode as a share of the ceiling (`pct_of_ceiling`)
+        "occupancy" => mk(&["short"], &[1, 8, 32, 64]),
+        s => return err(format!("--suite {s}: gate, bar, full, arrive, chat, shared or occupancy")),
     })
 }
 
@@ -162,7 +164,7 @@ struct Req {
     error: Option<String>,
 }
 
-fn agent() -> ureq::Agent {
+pub(crate) fn agent() -> ureq::Agent {
     ureq::Agent::new_with_config(ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(1800))).build())
 }
 
@@ -381,7 +383,51 @@ pub fn spec_bandwidth(name: &str, memory_mib: f64) -> Option<f64> {
     } else if has("5090") {
         1792.0
     } else if has("3090") {
-        936.0
+        if has("TI") {
+            1008.0
+        } else {
+            936.0
+        }
+    // (the consumer cards of P20's tiers, 8 to 32 GB: a name's more specific words first)
+    } else if pair("4070", "TI") && has("SUPER") {
+        672.0
+    } else if has("4070") {
+        504.2
+    } else if has("4060") {
+        if has("TI") {
+            288.0
+        } else {
+            272.0
+        }
+    } else if has("5080") {
+        960.0
+    } else if has("5070") {
+        if has("TI") {
+            896.0
+        } else {
+            672.0
+        }
+    } else if pair("5060", "TI") || pair("3060", "TI") || has("3070") || has("A4000") {
+        448.0
+    } else if has("3060") {
+        360.0
+    } else if has("3080") {
+        if memory_mib > 11_000.0 {
+            912.0
+        } else {
+            760.0
+        }
+    // (the datacenter cards of the occupancy check: H100 SXM's HBM3, PCIe's HBM2e, NVL's 94 GB; H200's HBM3e)
+    } else if has("H200") {
+        4800.0
+    } else if has("H100") {
+        if has("PCIE") {
+            2039.0
+        } else if has("NVL") {
+            3938.0
+        } else {
+            3352.0
+        }
     } else if has("L40S") {
         864.0
     } else if has("L4") {
@@ -399,7 +445,7 @@ pub fn spec_bandwidth(name: &str, memory_mib: f64) -> Option<f64> {
     })
 }
 
-fn machine() -> Value {
+pub(crate) fn machine() -> Value {
     let q = smi("name,driver_version,memory.total,clocks.max.sm,clocks.max.memory,power.limit,compute_cap").unwrap_or_default();
     let f: Vec<&str> = q.split(',').map(str::trim).collect();
     let get = |i: usize| f.get(i).copied().unwrap_or("");
@@ -453,9 +499,9 @@ impl Peak {
 
 // ---- the server
 
-struct Server {
+pub(crate) struct Server {
     child: Child,
-    url: String,
+    pub(crate) url: String,
     /// The directory of this run's server log (private to this run, removed with the server).
     dir: std::path::PathBuf,
 }
@@ -549,7 +595,7 @@ fn free_port() -> Result<u16> {
 }
 
 /// `serve MODEL` of this program on a port of its own, up when /v1/models answers (the first start downloads and packs the model).
-fn start_server(model: &str, a: &Args, users: usize) -> Result<Server> {
+pub(crate) fn start_server(model: &str, a: &Args, users: usize) -> Result<Server> {
     let port = match a.flag("port") {
         Some(p) => p.parse::<u16>().map_err(|_| Error(format!("--port {p}: not a port")))?,
         None => free_port()?,
@@ -600,14 +646,14 @@ fn start_server(model: &str, a: &Args, users: usize) -> Result<Server> {
     }
 }
 
-fn get_json(url: &str) -> Option<Value> {
+pub(crate) fn get_json(url: &str) -> Option<Value> {
     let mut r = ureq::get(url).call().ok()?;
     serde_json::from_str(&r.body_mut().read_to_string().ok()?).ok()
 }
 
 // ---- the measurement
 
-fn git_sha() -> Option<String> {
+pub(crate) fn git_sha() -> Option<String> {
     std::env::var("GITHUB_SHA").ok().map(|s| s.chars().take(10).collect()).or_else(|| {
         Command::new("git")
             .args(["rev-parse", "--short=10", "HEAD"])
@@ -616,6 +662,24 @@ fn git_sha() -> Option<String> {
             .ok()
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    })
+}
+
+/// The users the server this program starts is asked to take: `--users N`, else the most a load sends at once, up to the scheduler's own limit (`sched::MAX_USERS`,
+/// which `serve` refuses past). What its plan holds of them is the server's to say (/v1/glyd/info `limits.concurrency`: `held_note`). (It was the most a load sends
+/// up to 8, the old limit of a step's rows: 64 at once ran 8 and queued the rest.)
+fn users_asked(a: &Args, loads: &[(String, usize)]) -> Result<usize> {
+    let most = loads.iter().map(|l| l.1).max().unwrap_or(1).min(crate::sched::MAX_USERS);
+    match a.flag("users") {
+        Some(u) => u.parse::<usize>().ok().filter(|&u| u > 0).ok_or_else(|| Error(format!("--users {u}: a number of sequences at once"))),
+        None => Ok(most),
+    }
+}
+
+/// Where the server runs fewer at once than a load sends (`concurrency`, its /v1/glyd/info `limits.concurrency`): what to say, as the rest wait in its queue.
+fn held_note(most: usize, concurrency: Option<usize>) -> Option<String> {
+    concurrency.filter(|&c| c < most).map(|c| {
+        format!("the server runs {c} requests at once (what its plan holds), and a load sends up to {most}: the others wait in its queue, and their first token with them")
     })
 }
 
@@ -648,9 +712,10 @@ pub fn measure(a: &Args) -> Result<()> {
     let idle = before["memory_used_mib"].as_f64().unwrap_or(0.0);
     let busy = util.is_some_and(|u| u > 10.0) || idle > 2500.0;
     let peak = Peak::start();
+    let users = users_asked(a, &loads)?;
     let server = match &against {
         Some(_) => None,
-        None => Some(start_server(model_arg.unwrap_or(""), a, loads.iter().map(|l| l.1).max().unwrap_or(1).min(8))?),
+        None => Some(start_server(model_arg.unwrap_or(""), a, users)?),
     };
     let url = against.clone().unwrap_or_else(|| server.as_ref().map(|s| s.url.clone()).unwrap_or_default());
     let models = get_json(&format!("{url}/v1/models")).ok_or_else(|| Error(format!("{url}/v1/models: no answer")))?;
@@ -673,6 +738,11 @@ pub fn measure(a: &Args) -> Result<()> {
     let ceiling = weights.zip(bandwidth).map(|(w, b)| b * 1e9 / w);
     let agent = agent();
     let quiet = a.has("quiet");
+    // (what the server runs at once, as its plan holds it: fewer than a load sends, and the rest wait in its queue)
+    let concurrency = info.as_ref().and_then(|i| i["limits"]["concurrency"].as_u64()).map(|c| c as usize);
+    if let Some(n) = held_note(loads.iter().map(|l| l.1).max().unwrap_or(1), concurrency) {
+        eprintln!("bench: {n}");
+    }
     let mut seed = 1000u64;
     // (a warm-up that is not a load of the matrix: kernels, graphs and the server's own caches)
     let _ = one(&agent, &url, &model, "short", 0, 16);
@@ -786,16 +856,22 @@ pub fn measure(a: &Args) -> Result<()> {
     }
     let peak_mib = peak.finish();
     let after = gpu_now();
+    let level = info.as_ref().and_then(|i| i["level"]["effective"].as_str());
     let result = json!({
         "schema": SCHEMA,
         "label": a.flag("label").unwrap_or(""),
         "recorded_unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()),
         "machine": machine,
-        "model": {"id": model, "argument": model_arg, "level": info.as_ref().and_then(|i| i["level"]["effective"].as_str()), "weights_bytes": weights,
-            "weights_source": if a.flag("weights-gib").is_some() { "flag" } else if weights.is_some() { "/v1/glyd/info" } else { "unknown" }},
+        "model": {"id": model, "argument": model_arg, "level": level, "weights_bytes": weights,
+            "weights_source": if a.flag("weights-gib").is_some() { "flag" } else if weights.is_some() { "/v1/glyd/info" } else { "unknown" },
+            // (what a comparison of engines groups and orders by: the Hub repo whose weights the server runs, its bits a weight and its parameters, as the caller says or the level gives)
+            "source": a.flag("source").map(str::to_string).or_else(|| model_arg.map(|m| crate::levels::split_tag(m).0.to_string())),
+            "bits": a.flag("bits").and_then(num_of).or_else(|| level.and_then(crate::levels::layout_of).map(crate::plan::sizing::bits)),
+            "params_b": a.flag("params").and_then(num_of)},
         "bandwidth": {"gbs": bandwidth, "source": if a.flag("bandwidth-gbs").is_some() { "flag" } else if bandwidth.is_some() { "spec sheet" } else { "unknown" }},
         "versions": {"glyd_engine": env!("CARGO_PKG_VERSION"), "git": git_sha(), "server": info.as_ref().and_then(|i| i["build"]["version"].as_str())},
-        "server": {"against": against, "started_by_bench": server.is_some(), "users": server.as_ref().map(|_| a.flag("users").and_then(|u| u.parse::<usize>().ok()).unwrap_or_else(|| loads.iter().map(|l| l.1).max().unwrap_or(1).min(8)))},
+        "server": {"against": against, "engine": a.flag("engine").unwrap_or(if server.is_some() { "glyd" } else { "" }), "started_by_bench": server.is_some(), "users": server.as_ref().map(|_| users),
+            "concurrency": concurrency},
         "config": {"suite": a.flag("suite").unwrap_or(if a.flag("loads").is_some() { "loads" } else { "gate" }), "loads": loads.iter().map(|(k, n)| format!("{k}:{n}")).collect::<Vec<_>>(),
             "runs": runs, "warmup": warmup, "max_tokens": max_tokens},
         "contention": {"busy_before": busy, "utilization_median_pct": util, "before": before, "after": after},
@@ -844,7 +920,7 @@ pub fn last_number(text: &str) -> Option<String> {
     best
 }
 
-fn same_number(a: &str, b: &str) -> bool {
+pub(crate) fn same_number(a: &str, b: &str) -> bool {
     match (a.parse::<f64>(), b.parse::<f64>()) {
         (Ok(x), Ok(y)) => (x - y).abs() < 1e-6,
         _ => a == b,
@@ -874,16 +950,8 @@ fn gsm8k(agent: &ureq::Agent, url: &str, model: &str, n: usize) -> Value {
             s.spawn(|| loop {
                 let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let Some((q, want)) = problems.get(i) else { break };
-                let body = json!({"model": model, "messages": [{"role": "user", "content": format!("{q}\nThink step by step, then end with the final answer as a number alone on the last line.")}],
-                    "max_tokens": 768, "temperature": 0, "stream": false, "chat_template_kwargs": {"enable_thinking": false}});
-                let reply = agent
-                    .post(&format!("{url}/v1/chat/completions"))
-                    .header("Content-Type", "application/json")
-                    .send(body.to_string())
-                    .ok()
-                    .and_then(|mut r| r.body_mut().read_to_string().ok())
-                    .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-                    .and_then(|v| v["choices"][0]["message"]["content"].as_str().map(str::to_string));
+                let reply =
+                    ask(agent, url, model, &format!("{q}\nThink step by step, then end with the final answer as a number alone on the last line."), 768);
                 done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if reply.and_then(|t| last_number(&t)).is_some_and(|got| same_number(&got, want)) {
                     correct.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -893,6 +961,20 @@ fn gsm8k(agent: &ureq::Agent, url: &str, model: &str, n: usize) -> Value {
     });
     let (c, d) = (correct.into_inner(), done.into_inner());
     json!({"source": "openai/gsm8k test, first problems", "problems": d, "correct": c, "accuracy": if d > 0 { c as f64 / d as f64 } else { f64::NAN }})
+}
+
+/// One chat completion at temperature 0, thinking off, not streamed: the reply's text (None where the request failed).
+pub(crate) fn ask(agent: &ureq::Agent, url: &str, model: &str, content: &str, max_tokens: usize) -> Option<String> {
+    let body = json!({"model": model, "messages": [{"role": "user", "content": content}], "max_tokens": max_tokens, "temperature": 0, "stream": false,
+        "chat_template_kwargs": {"enable_thinking": false}});
+    agent
+        .post(&format!("{url}/v1/chat/completions"))
+        .header("Content-Type", "application/json")
+        .send(body.to_string())
+        .ok()
+        .and_then(|mut r| r.body_mut().read_to_string().ok())
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v["choices"][0]["message"]["content"].as_str().map(str::to_string))
 }
 
 // ---- quality: the next token after fixed prefixes of one text
@@ -916,25 +998,53 @@ const TOP: usize = 20;
 
 /// Each prefix of PASSAGE as a raw completion of one token at temperature 0, its top 20 log-probabilities: rows of [token, logprob] pairs. A prefix that fails is an empty row.
 fn next_token_rows(agent: &ureq::Agent, url: &str, model: &str) -> Value {
-    let words: Vec<&str> = PASSAGE.split_whitespace().collect();
-    let first = 24usize.min(words.len());
-    let step = (words.len() - first) / (PREFIXES - 1);
-    let mut rows = Vec::new();
-    for i in 0..PREFIXES {
-        let n = (first + i * step).min(words.len());
-        let body = json!({"model": model, "prompt": words[..n].join(" "), "max_tokens": 1, "temperature": 0, "logprobs": TOP});
-        let pairs: Vec<Value> = agent
-            .post(&format!("{url}/v1/completions"))
-            .header("Content-Type", "application/json")
-            .send(body.to_string())
-            .ok()
-            .and_then(|mut r| r.body_mut().read_to_string().ok())
-            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-            .and_then(|v| v["choices"][0]["logprobs"]["top_logprobs"][0].as_object().map(|o| o.iter().map(|(k, x)| json!([k, x])).collect()))
-            .unwrap_or_default();
-        rows.push(Value::Array(pairs));
+    next_token_rows_of(agent, url, model, PASSAGE, PREFIXES)
+}
+
+/// The `count` prefixes of `text` the next-token rows are taken after: the first 24 words, then growing by the same number of words to (about) the whole
+/// text, each cut where a word ends, so that the text's own spaces and line breaks are kept (a program's lines stay lines). The first prefix's words and the step.
+pub(crate) fn prefixes(text: &str, count: usize) -> (Vec<&str>, usize, usize) {
+    let ends: Vec<usize> = text
+        .char_indices()
+        .filter(|&(i, c)| !c.is_whitespace() && text[i + c.len_utf8()..].chars().next().is_none_or(char::is_whitespace))
+        .map(|(i, c)| i + c.len_utf8())
+        .collect();
+    let first = 24usize.min(ends.len());
+    let step = (ends.len() - first) / count.saturating_sub(1).max(1);
+    let cuts = (0..count).map(|i| (first + i * step).min(ends.len())).filter(|&n| n > 0).map(|n| &text[..ends[n - 1]]).collect();
+    (cuts, first, step)
+}
+
+/// The likeliest tokens of a completion's first token, as [token, logprob] pairs, in either shape servers give them: the legacy completions API's object of text to log-probability (vLLM, SGLang,
+/// this engine: `logprobs.top_logprobs[0]`), or the chat API's list (llama.cpp's `logprobs.content[0].top_logprobs`, `[{token, logprob}]`).
+pub(crate) fn first_top(v: &Value) -> Option<Vec<Value>> {
+    let lp = &v["choices"][0]["logprobs"];
+    if let Some(o) = lp["top_logprobs"][0].as_object() {
+        return Some(o.iter().map(|(k, x)| json!([k, x])).collect());
     }
-    json!({"prefixes": PREFIXES, "top": TOP, "words_first": first, "words_step": step, "rows": rows})
+    lp["content"][0]["top_logprobs"].as_array().map(|a| a.iter().filter_map(|e| Some(json!([e["token"].as_str()?, e["logprob"].as_f64()?]))).collect())
+}
+
+/// Each of `count` prefixes of `text` (`prefixes`) as a raw completion of one token at temperature 0, its top 20 log-probabilities: rows of [token, logprob] pairs. A prefix that fails is an empty row.
+pub(crate) fn next_token_rows_of(agent: &ureq::Agent, url: &str, model: &str, text: &str, count: usize) -> Value {
+    let (cuts, first, step) = prefixes(text, count);
+    let rows: Vec<Value> = cuts
+        .iter()
+        .map(|p| {
+            let body = json!({"model": model, "prompt": p, "max_tokens": 1, "temperature": 0, "logprobs": TOP});
+            let pairs = agent
+                .post(&format!("{url}/v1/completions"))
+                .header("Content-Type", "application/json")
+                .send(body.to_string())
+                .ok()
+                .and_then(|mut r| r.body_mut().read_to_string().ok())
+                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                .and_then(|v| first_top(&v))
+                .unwrap_or_default();
+            Value::Array(pairs)
+        })
+        .collect();
+    json!({"prefixes": rows.len(), "top": TOP, "words_first": first, "words_step": step, "rows": rows})
 }
 
 /// KL(reference || candidate) over the reference's top tokens and the rest as one bin, for one prefix; the candidate's probability of a token it did not list is its smallest listed one.
@@ -1302,12 +1412,163 @@ pub fn bar(a: &Args) -> Result<i32> {
     Ok(0)
 }
 
+// ---- the comparison page (P20)
+
+/// The decode rate a user, one at a time on a short prompt, that a model must reach on a tier to count as run there.
+pub const TIER_FLOOR_TPS: f64 = 20.0;
+
+/// The consumer tier of a GPU's memory: 8, 12, 16, 24 or 32 GB (a card's MiB are a little under its GB), 0 under 8 and the GB above 32.
+pub fn tier(memory_mib: f64) -> u64 {
+    let gb = memory_mib / 1024.0 + 0.5;
+    if gb >= 40.0 {
+        return gb as u64;
+    }
+    [8u64, 12, 16, 24, 32].into_iter().rev().find(|&t| gb >= t as f64).unwrap_or(0)
+}
+
+/// Every `glyd-bench/1` file under `dir` (folders whose names begin with '.' left out), with its path.
+fn results_under(dir: &std::path::Path) -> Vec<(std::path::PathBuf, Value)> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if e.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        if p.is_dir() {
+            out.extend(results_under(&p));
+        } else if p.extension().is_some_and(|x| x == "json") {
+            if let Some(v) = std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).filter(|v| v["schema"] == SCHEMA) {
+                out.push((p, v));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// `bench --report DIR`: the comparison page of every result under DIR, as Markdown. By GPU (and its tier): for each engine the largest model whose decode one
+/// user at a time on a short prompt reached `TIER_FLOOR_TPS`, then each model's runs side by side, engines and levels or quants, with the files that hold their
+/// command lines (NAME.cmd) and logs (NAME.log), and the sides that could not run (NAME.skip, its reason). Only what the files measured is on the page.
+pub fn report(dir: &std::path::Path, title: &str) -> Result<String> {
+    let all = results_under(dir);
+    if all.is_empty() {
+        return err(format!("{}: no {SCHEMA} result under it", dir.display()));
+    }
+    let rel = |p: &std::path::Path| p.strip_prefix(dir).unwrap_or(p).display().to_string();
+    let med = |v: &Value, prompt: &str, conc: u64, m: &str| cell(v, prompt, conc).and_then(|c| f(&c[m], "median"));
+    let engine = |v: &Value| {
+        v["server"]["engine"].as_str().filter(|e| !e.is_empty()).unwrap_or(if v["server"]["started_by_bench"] == true { "glyd" } else { "?" }).to_string()
+    };
+    let what = |v: &Value| {
+        v["model"]["level"]
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| v["label"].as_str().map(|l| l.rsplit(' ').next().unwrap_or(l).to_string()))
+            .unwrap_or_default()
+    };
+    let mut s = format!("# {title}\n\nEvery figure is the median of the runs of `glyd-engine bench` ([docs/bench.md](https://github.com/surya-koritala/Glyd/blob/main/docs/bench.md)) against each engine's server on the same GPU, greedy, thinking off, no draft model; the command lines, versions and server logs are in the files named beside each row. Nothing here is estimated.\n");
+    let mut gpus: Vec<String> = all.iter().map(|(_, v)| v["machine"]["gpu"].as_str().unwrap_or("?").to_string()).collect();
+    gpus.dedup();
+    gpus.sort();
+    gpus.dedup();
+    for gpu in gpus {
+        let rs: Vec<&(std::path::PathBuf, Value)> = all.iter().filter(|(_, v)| v["machine"]["gpu"] == gpu.as_str()).collect();
+        let m = &rs[0].1;
+        let t = tier(m["machine"]["memory_mib"].as_f64().unwrap_or(0.0));
+        s += &format!(
+            "\n## {gpu} ({t} GB tier)\n\nDriver {}, {} threads of {}; loads {}, {} runs each, at most {} tokens a reply.\n",
+            m["machine"]["driver"].as_str().unwrap_or("?"),
+            m["machine"]["cpu_threads"],
+            m["machine"]["cpu"].as_str().unwrap_or("?"),
+            m["config"]["loads"].as_array().map_or("?".into(), |l| l.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")),
+            m["config"]["runs"],
+            m["config"]["max_tokens"]
+        );
+        let mut engines: Vec<String> = rs.iter().map(|(_, v)| engine(v)).collect();
+        engines.sort();
+        engines.dedup();
+        s += &format!("\n### The largest model at {TIER_FLOOR_TPS:.0} tokens/s or more (one user, short prompt)\n\n| engine | model | parameters | level or quant | decode tokens/s |\n| :-- | :-- | --: | :-- | --: |\n");
+        for e in &engines {
+            let best = rs
+                .iter()
+                .filter(|(_, v)| engine(v) == *e && v["cells"].as_array().into_iter().flatten().all(|c| c["errors"].as_u64().unwrap_or(0) == 0))
+                .filter_map(|(_, v)| med(v, "short", 1, "decode_tps_per_user").filter(|&d| d >= TIER_FLOOR_TPS).map(|d| (v, d)))
+                .max_by(|a, b| {
+                    a.0["model"]["params_b"].as_f64().unwrap_or(0.0).total_cmp(&b.0["model"]["params_b"].as_f64().unwrap_or(0.0)).then(a.1.total_cmp(&b.1))
+                });
+            s += &match best {
+                Some((v, d)) => format!(
+                    "| {e} | {} | {} | {} | {d:.1} |\n",
+                    v["model"]["source"].as_str().or(v["model"]["id"].as_str()).unwrap_or("?"),
+                    v["model"]["params_b"].as_f64().map_or("?".into(), |p| format!("{p}B")),
+                    what(v)
+                ),
+                None => format!("| {e} | none measured reached it | | | |\n"),
+            };
+        }
+        let mut models: Vec<String> = rs.iter().map(|(_, v)| v["model"]["source"].as_str().or(v["model"]["id"].as_str()).unwrap_or("?").to_string()).collect();
+        models.sort();
+        models.dedup();
+        for model in models {
+            s += &format!("\n### {model}\n\n| engine | level or quant | bits a weight | decode tokens/s, one user | in all, most at once | first token, 4K prompt (s) | peak GPU memory (MiB) | failed requests | files |\n| :-- | :-- | --: | --: | --: | --: | --: | --: | :-- |\n");
+            let mut rows: Vec<&&(std::path::PathBuf, Value)> =
+                rs.iter().filter(|(_, v)| v["model"]["source"].as_str().or(v["model"]["id"].as_str()) == Some(model.as_str())).collect();
+            rows.sort_by(|a, b| {
+                b.1["model"]["bits"].as_f64().unwrap_or(0.0).total_cmp(&a.1["model"]["bits"].as_f64().unwrap_or(0.0)).then(engine(&a.1).cmp(&engine(&b.1)))
+            });
+            for (p, v) in rows {
+                let most = v["cells"].as_array().into_iter().flatten().filter(|c| c["prompt"] == "short").filter_map(|c| c["conc"].as_u64()).max().unwrap_or(1);
+                let fmt = |x: Option<f64>, d: usize| x.map_or("-".into(), |x| format!("{x:.d$}"));
+                let errors: u64 = v["cells"].as_array().into_iter().flatten().map(|c| c["errors"].as_u64().unwrap_or(0)).sum();
+                // (NAME.cmd and NAME.log beside NAME.json: a name has dots of its own, llama.cpp-...)
+                let side: Vec<String> = ["cmd", "log"].iter().map(|x| p.with_extension(x)).filter(|q| q.exists()).map(|q| rel(&q)).collect();
+                s += &format!(
+                    "| {} | {} | {} | {} | {} (x{most}) | {} | {} | {errors} | {} |\n",
+                    engine(v),
+                    what(v),
+                    fmt(v["model"]["bits"].as_f64(), 2),
+                    fmt(med(v, "short", 1, "decode_tps_per_user"), 1),
+                    fmt(med(v, "short", most, "agg_tps"), 1),
+                    fmt(med(v, "4k", 1, "ttft_s"), 3),
+                    v["peak_mib"].as_u64().map_or("-".into(), |m| m.to_string()),
+                    [vec![rel(p)], side].concat().join(", ")
+                );
+            }
+        }
+    }
+    let mut skips: Vec<std::path::PathBuf> = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() && !e.file_name().to_string_lossy().starts_with('.') {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "skip") {
+                skips.push(p);
+            }
+        }
+    }
+    skips.sort();
+    if !skips.is_empty() {
+        s += "\n## Not run\n\n";
+        for p in skips {
+            s += &format!("- {}: {}\n", rel(&p.with_extension("")), std::fs::read_to_string(&p).unwrap_or_default().trim());
+        }
+    }
+    Ok(s)
+}
+
 /// The command: `bench MODEL`, `bench --compare`, `bench --bar`.
 pub fn cmd(a: &Args) -> i32 {
     let r = if a.has("compare") {
         compare(a)
     } else if a.has("bar") {
         bar(a)
+    } else if let Some(dir) = a.flag("report") {
+        report(std::path::Path::new(dir), a.flag("title").unwrap_or("Consumer benchmarks")).map(|t| {
+            print!("{t}");
+            0
+        })
     } else {
         measure(a).map(|_| 0)
     };
@@ -1483,7 +1744,103 @@ mod tests {
     }
 
     #[test]
+    fn the_report_puts_the_engines_side_by_side_by_tier_and_model() {
+        let dir = std::env::temp_dir().join(format!("glyd-bench-report-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("4080s")).unwrap();
+        let result = |engine: &str, source: &str, level: Option<&str>, bits: f64, params: f64, tps: f64| {
+            let c = |prompt: &str, conc: u64, d: f64| json!({"prompt": prompt, "conc": conc, "errors": 0, "decode_tps_per_user": stats(&[d]), "agg_tps": stats(&[d * conc as f64 * 0.9]), "ttft_s": stats(&[0.5])});
+            json!({"schema": SCHEMA, "label": format!("{engine} Q4_K_M"), "machine": {"gpu": "NVIDIA GeForce RTX 4080 SUPER", "memory_mib": 16376.0, "driver": "580.1", "cpu": "c", "cpu_threads": 32},
+                "model": {"id": "x", "level": level, "source": source, "bits": bits, "params_b": params}, "server": {"engine": engine, "started_by_bench": engine == "glyd"},
+                "config": {"loads": ["short:1", "short:4", "4k:1"], "runs": 3, "max_tokens": 256}, "peak_mib": 9000, "cells": [c("short", 1, tps), c("short", 4, tps), c("4k", 1, tps)]})
+        };
+        let put = |name: &str, v: Value| std::fs::write(dir.join("4080s").join(name), v.to_string()).unwrap();
+        put("glyd-gemma-wren.json", result("glyd", "google/gemma-4-12B-it", Some("wren"), 4.53, 12.0, 80.0));
+        put("llama.cpp-gemma-Q4_0.json", result("llama.cpp", "google/gemma-4-12B-it", None, 4.61, 12.0, 70.0));
+        put("glyd-q38-wren.json", result("glyd", "Qwen/Qwen3.8-27B", Some("wren"), 4.53, 27.0, 31.0));
+        put("llama.cpp-q38-Q4_K_M.json", result("llama.cpp", "Qwen/Qwen3.8-27B", None, 4.9, 27.0, 12.0));
+        std::fs::write(dir.join("4080s/llama.cpp-gemma-Q4_0.cmd"), "server: llama-server -m x.gguf").unwrap();
+        std::fs::write(dir.join("4080s/ollama-gemma-Q4_0.skip"), "no ollama here").unwrap();
+        let t = report(&dir, "Consumer benchmarks").unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(t.contains("## NVIDIA GeForce RTX 4080 SUPER (16 GB tier)"), "{t}");
+        // the largest model at 20 tokens/s or more: Glyd's 27B, llama.cpp's 12B (its 27B ran at 12)
+        assert!(
+            t.contains("| glyd | Qwen/Qwen3.8-27B | 27B | wren | 31.0 |") && t.contains("| llama.cpp | google/gemma-4-12B-it | 12B | Q4_K_M | 70.0 |"),
+            "{t}"
+        );
+        // a model's rows, the most bits first, with the files beside them
+        let (a, b) = (
+            t.find("| llama.cpp | Q4_K_M | 4.61 | 70.0 |").unwrap(),
+            t.find("| glyd | wren | 4.53 | 80.0 | 288.0 (x4) | 0.500 | 9000 | 0 | 4080s/glyd-gemma-wren.json |").unwrap(),
+        );
+        assert!(a < b && t.contains("4080s/llama.cpp-gemma-Q4_0.json, 4080s/llama.cpp-gemma-Q4_0.cmd"), "{t}");
+        assert!(t.contains("## Not run\n\n- 4080s/ollama-gemma-Q4_0: no ollama here"), "{t}");
+        assert_eq!((tier(8188.0), tier(12282.0), tier(16376.0), tier(24564.0), tier(32607.0), tier(81559.0), tier(6144.0)), (8, 12, 16, 24, 32, 80, 0));
+        assert!(report(std::path::Path::new("/nonexistent-glyd"), "x").is_err());
+    }
+
+    /// A result says what a comparison groups and orders it by: the engine, the Hub repo whose weights the server runs, its bits a weight and parameters, as given (the
+    /// made-up model's server, measured with --against as another engine's would be).
+    #[test]
+    fn a_result_keeps_the_engine_the_source_the_bits_and_the_parameters() {
+        let mut f = crate::sched::tests::Fake::new(512, 64);
+        f.decode_delay = Duration::from_millis(1);
+        let addr = crate::server::tests::serve_fake(f, None, 4);
+        let out = std::env::temp_dir().join(format!("glyd-bench-fields-{}.json", std::process::id()));
+        let words = [
+            "bench",
+            "--against",
+            &format!("http://{addr}"),
+            "--loads",
+            "short:1",
+            "--runs",
+            "1",
+            "--warmup",
+            "0",
+            "--max-tokens",
+            "8",
+            "--quiet",
+            "--engine",
+            "llama.cpp",
+            "--source",
+            "google/gemma-4-12B-it",
+            "--bits",
+            "4.61",
+            "--params",
+            "12",
+            "--out",
+            &out.to_string_lossy(),
+        ];
+        measure(&Args::from(words.iter().map(|w| w.to_string()))).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        std::fs::remove_file(&out).ok();
+        assert_eq!(v["server"]["engine"], "llama.cpp");
+        assert_eq!(
+            (v["model"]["source"].as_str(), v["model"]["bits"].as_f64(), v["model"]["params_b"].as_f64()),
+            (Some("google/gemma-4-12B-it"), Some(4.61), Some(12.0)),
+            "{}",
+            v["model"]
+        );
+    }
+
+    /// The server the bench starts is asked for as many users as the heaviest load sends, up to the scheduler's limit: not 8 (64 at once ran 8 and queued 56);
+    /// `--users` says otherwise, and a server that holds fewer is said to.
+    #[test]
+    fn the_server_takes_as_many_users_as_the_loads_send() {
+        let args = |extra: &[&str]| Args::from(["bench", "m"].iter().chain(extra).map(|s| s.to_string()));
+        assert_eq!(users_asked(&args(&[]), &parse_loads("short:1,short:64").unwrap()).unwrap(), 64);
+        assert_eq!(users_asked(&args(&[]), &suite("gate").unwrap()).unwrap(), 8);
+        assert_eq!(users_asked(&args(&[]), &suite("occupancy").unwrap()).unwrap(), 64);
+        // (the full suite's 256 at once: the most `serve` takes, the rest queued)
+        assert_eq!(users_asked(&args(&[]), &suite("full").unwrap()).unwrap(), crate::sched::MAX_USERS);
+        assert_eq!(users_asked(&args(&["--users", "12"]), &suite("occupancy").unwrap()).unwrap(), 12);
+        assert!(users_asked(&args(&["--users", "0"]), &suite("gate").unwrap()).is_err());
+        assert!(held_note(64, Some(24)).unwrap().contains("runs 24 requests at once") && held_note(64, Some(64)).is_none() && held_note(8, None).is_none());
+    }
+
+    #[test]
     fn suites_and_loads_are_read() {
+        assert_eq!(suite("occupancy").unwrap(), vec![("short".to_string(), 1), ("short".to_string(), 8), ("short".to_string(), 32), ("short".to_string(), 64)]);
         assert_eq!(suite("gate").unwrap().len(), 4);
         assert!(suite("full").unwrap().contains(&("short".to_string(), 256)));
         assert_eq!(parse_loads("short:1,4k:8").unwrap(), vec![("short".to_string(), 1), ("4k".to_string(), 8)]);
@@ -1571,6 +1928,18 @@ mod tests {
         assert_eq!(gpu_word("NVIDIA A100-SXM4-80GB"), "A100");
         assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 4080 SUPER", 16376.0), Some(736.0));
         assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 4080", 16376.0), Some(716.8));
+        // the occupancy check's datacenter cards and the consumer tiers' (a name's longer form before its shorter)
+        assert_eq!(spec_bandwidth("NVIDIA H100 80GB HBM3", 81559.0), Some(3352.0));
+        assert_eq!(spec_bandwidth("NVIDIA H100 PCIe", 81559.0), Some(2039.0));
+        assert_eq!(spec_bandwidth("NVIDIA H100 NVL", 95830.0), Some(3938.0));
+        assert_eq!(spec_bandwidth("NVIDIA H200", 143771.0), Some(4800.0));
+        assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 4070 Ti SUPER", 16376.0), Some(672.0));
+        assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 4070 SUPER", 12282.0), Some(504.2));
+        assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 4060 Ti", 8188.0), Some(288.0));
+        assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 3060 Ti", 8192.0), Some(448.0));
+        assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 3060", 12288.0), Some(360.0));
+        assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 5070 Ti", 16303.0), Some(896.0));
+        assert_eq!(spec_bandwidth("NVIDIA RTX A4000", 16376.0), Some(448.0));
     }
 
     #[test]

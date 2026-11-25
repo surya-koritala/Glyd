@@ -484,6 +484,11 @@ pub struct MoeKern {
     // the normed experts' router of fp32 weights and their normed weighted sum (kernels/muse.cu: transformers', Muse Spark's)
     router_f32: crate::kt::muse_router,
     norm_sum: crate::kt::muse_moe_sum,
+    // the expert cache planned on the GPU (src/devplan.rs): the plan, the copies into places, the wait for the host's pairs, their sums brought to the GPU
+    xp_plan: crate::kt::xp_plan,
+    xp_fill: crate::kt::xp_fill,
+    xp_wait: crate::kt::xp_wait,
+    xp_take: crate::kt::xp_take,
 }
 
 /// The select kernel for `experts` (8, 16 or 32 registers a lane: 256, 512 or 1,024 experts).
@@ -518,6 +523,10 @@ impl MoeKern {
             f8_rebase: dev.typed()?,
             router_f32: dev.typed()?,
             norm_sum: dev.typed()?,
+            xp_plan: dev.typed()?,
+            xp_fill: dev.typed()?,
+            xp_wait: dev.typed()?,
+            xp_take: dev.typed()?,
         })
     }
 
@@ -886,7 +895,7 @@ impl MoeLayer {
 
     /// Whether a call reads the router's choices on the host (the experts in the expert cache): no graph captures it.
     pub fn reads_host(&self) -> bool {
-        self.hb_cache.is_some() || self.cache.is_some()
+        self.hb_cache.is_some() || self.cache.as_ref().is_some_and(|c| !c.store.device_on(c.layer))
     }
 
     /// The call of the expert cache for `t` tokens whose choices the router made (`ids`, `wts` of the scratch; `z` the experts' input as the host reads it): the store reads the choices, copies the misses into places (in waves
@@ -897,12 +906,52 @@ impl MoeLayer {
     #[allow(clippy::too_many_arguments)]
     unsafe fn cached(&self, sc: &MoeScratch, s: Stream, z: u64, t: usize, y: u64, products: &mut dyn FnMut(usize) -> Result<()>) -> Result<()> {
         let c = self.cache.as_ref().ok_or_else(|| crate::ffi::Error("no expert cache".into()))?;
-        let call = crate::offload::Call { ids: sc.ids.ptr, wts: sc.wts.ptr, z, way: sc.way.ptr, part: sc.cpu.ptr, tokens: t, pairs: t * self.cfg.router.top_k };
         let at = crate::offload::At { ordinal: c.ordinal, stream: s };
-        c.store.run_at(c.layer, at, &call, &mut |stage, _, waves, hy| match stage {
+        self.via_store(&c.store, c.layer, at, sc, z, t, y, &mut || Ok(()), products)
+    }
+
+    /// A call of `t` tokens through layer `layer` of the expert cache `store` (the router's choices `ids` and `wts` of the scratch, `z` the experts' input [t, hidden]): where the store plans the layer on
+    /// the GPU (src/devplan.rs; a decode's call), the plan, the misses' copies into places, `early`, the products over the places (`products`, one wave), the promotions' copies behind them, the wait for
+    /// the host's pairs and the experts' sum with the host's sums, all queued on the stream with no host in them (a graph holds them); else the store plans the call on the host
+    /// (`ExpertStore::run_early_at`, `early` queued while it reads the choices).
+    ///
+    /// # Safety
+    /// As `route`.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn via_store(
+        &self,
+        store: &crate::offload::ExpertStore,
+        layer: usize,
+        at: crate::offload::At,
+        sc: &MoeScratch,
+        z: u64,
+        t: usize,
+        y: u64,
+        early: &mut dyn FnMut() -> Result<()>,
+        products: &mut dyn FnMut(usize) -> Result<()>,
+    ) -> Result<()> {
+        let (s, k, width) = (at.stream, self.cfg.router.top_k, self.cfg.hidden);
+        let call = crate::offload::Call { ids: sc.ids.ptr, wts: sc.wts.ptr, z, way: sc.way.ptr, part: sc.cpu.ptr, tokens: t, pairs: t * k };
+        if let Some(d) = store.device_args(layer, t, call.pairs) {
+            if sc.cpu.bytes < t * width * 4 || sc.way.bytes < call.pairs * 8 {
+                return err(format!("{t} tokens of {width} values: the scratch has no room for the host's sums and the pairs' places"));
+            }
+            let kk = &sc.k;
+            launch!(kk.xp_plan, [1, 1, 1], [256, 1, 1], s; call.ids, call.wts, z, t as i32, k as i32, width as i32, d.place_of, d.expert_of, d.last, d.hostlast, d.refb, d.meta, d.params, d.experts as i32, d.slots as i32, sc.way.ptr, d.fills, d.promos, d.mail, d.seq, d.layer as i32, d.max_pairs as i32)?;
+            launch!(kk.xp_fill, [16, d.slots as u32, 1], [256, 1, 1], s; d.fills, d.meta, 8i32, d.reg, d.nreg as i32)?;
+            early()?;
+            crate::dev::memset_async(y, 0, t * width * 2, s)?;
+            products(1)?;
+            launch!(kk.xp_fill, [16, d.slots as u32, 1], [256, 1, 1], s; d.promos, d.meta, 9i32, d.reg, d.nreg as i32)?;
+            launch!(kk.xp_wait, [1, 1, 1], [32, 1, 1], s; d.meta, d.ans, crate::devplan::XP_LIMIT)?;
+            let n = t * width;
+            launch!(kk.xp_take, [(n as u32).div_ceil(256), 1, 1], [256, 1, 1], s; d.meta, d.sums, sc.cpu.ptr, n as i64)?;
+            return self.experts_sum(sc, s, t, y, sc.way.ptr, sc.cpu.ptr);
+        }
+        store.run_early_at(layer, at, &call, early, &mut |stage, _, waves, hy| match stage {
             crate::offload::Stage::Products if hy.gpu => products(waves),
             // (every pair the host's: the sum is its sums alone)
-            crate::offload::Stage::Products => crate::dev::memset_async(y, 0, t * self.cfg.hidden * 2, s),
+            crate::offload::Stage::Products => crate::dev::memset_async(y, 0, t * width * 2, s),
             crate::offload::Stage::Sum => self.experts_sum(sc, s, t, y, hy.ids, hy.extra),
         })
     }

@@ -1,0 +1,19 @@
+# P20: the models each VRAM tier is measured on, every engine on the same GPU (scripts/consumer_bench.sh; benchmarks/consumer/README.md).
+# tier_gb: the GPU memory class the row is measured on (8, 12, 16, 24 or 32). model: the Hub repo (released within six months of the run).
+# params_b: its parameters, in billions (which model is the largest). glyd: the level Glyd runs it at. gguf: the llama.cpp quant of the same
+# weights at about the same bits, QUANT or QUANT@REPO where it is made from another checkpoint of the model (Google's QAT one for gemma's wren);
+# the same GGUF file is what Ollama and LM Studio are given. A row's gguf "-" has no llama.cpp side.
+# tier_gb	model	released	params_b	glyd	gguf
+8	nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	2026-08-01	30	wren	Q4_K_M
+8	google/gemma-4-12B-it	2026-05-23	12	wren	Q4_0@google/gemma-4-12B-it-qat-q4_0-unquantized
+12	google/gemma-4-12B-it	2026-05-23	12	wren	Q4_0@google/gemma-4-12B-it-qat-q4_0-unquantized
+12	nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	2026-08-01	30	wren	Q4_K_M
+16	google/gemma-4-12B-it	2026-05-23	12	kestrel	Q6_K
+16	google/gemma-4-12B-it	2026-05-23	12	wren	Q4_0@google/gemma-4-12B-it-qat-q4_0-unquantized
+16	nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	2026-08-01	30	kestrel	Q6_K
+16	Qwen/Qwen3.8-27B	2026-08-05	27	wren	Q4_K_M
+24	Qwen/Qwen3.8-27B	2026-08-05	27	wren	Q4_K_M
+24	Qwen/Qwen3.8-27B	2026-08-05	27	swift	Q5_K_M
+24	nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	2026-08-01	30	kestrel	Q6_K
+32	Qwen/Qwen3.8-27B	2026-08-05	27	kestrel	Q6_K
+32	nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	2026-08-01	30	kestrel	Q6_K

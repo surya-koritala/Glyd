@@ -13,7 +13,7 @@
 // st [3, C] the channel's last three inputs (the oldest first), read and left holding the last three of these rows; y [n, C]. A thread a channel.
 // ponytail: a thread a channel and the tokens one after another is 40 blocks and a prompt's latency of its length; split the tokens over blocks (each taking the three before its first as its
 // state) when a profile shows it.
-extern "C" __global__ void nh_conv(const bf16* x, int xs, const bf16* w, const bf16* bias, bf16* st, bf16* y, int n, int C) {
+__device__ __forceinline__ void nh_conv_of(const bf16* x, int xs, const bf16* w, const bf16* bias, bf16* st, bf16* y, int n, int C) {
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= C) return;
     const float w0 = b2f(w[c * 4]), w1 = b2f(w[c * 4 + 1]), w2 = b2f(w[c * 4 + 2]), w3 = b2f(w[c * 4 + 3]), bb = b2f(bias[c]);
@@ -34,12 +34,27 @@ extern "C" __global__ void nh_conv(const bf16* x, int xs, const bf16* w, const b
     st[2 * C + c] = f2b(s2);
 }
 
+extern "C" __global__ void nh_conv(const bf16* x, int xs, const bf16* w, const bf16* bias, bf16* st, bf16* y, int n, int C) { nh_conv_of(x, xs, w, bias, st, y, n, C); }
+
+// nh_conv of a step's rows that decode, a token of a sequence each (grid C / 256 by rows): row r's state at sts[r ss] (a table of addresses; 0: a padding row, whose output
+// is zeroed and which reads and writes no state), its input row r of x, its output row r of y. Each row's arithmetic is nh_conv's on that sequence's one token.
+extern "C" __global__ void nh_conv_rows(const bf16* x, int xs, const bf16* w, const bf16* bias, const unsigned long long* sts, int ss, bf16* y, int C) {
+    const int r = blockIdx.y;
+    bf16* st = reinterpret_cast<bf16*>(sts[(size_t)r * ss]);
+    if (!st) {
+        const int c = blockIdx.x * blockDim.x + threadIdx.x;
+        if (c < C) y[(size_t)r * C + c] = f2b(0.f);
+        return;
+    }
+    nh_conv_of(x + (size_t)r * xs, xs, w, bias, st, y + (size_t)r * C, 1, C);
+}
+
 // ---- the selective state update, one token after another ---------------------------------------------------------------------------------------------------------------------------
 // For the n rows of a sequence: xc [n, cs] the convolution's output, dtr [n, dts] the dt columns of the in_proj's output (bf16), dt_bias, A_log and D bf16 [nh]; state fp32 [nh, 64, 128] (the
 // state S[h][p][i]), read and written back; y [n, nh 64] (bf16, before the gated norm). Per token and head: dt = max(softplus(dt + dt_bias), dt_min), A = -exp(A_log),
 // S = S exp(A dt) + dt x B^T, y = S C + D x (B and C of the head's group). A warp a channel of a head (grid nh x 64 / warps), a lane 4 of the state's 128.
-extern "C" __global__ void __launch_bounds__(256) nh_ssm(const bf16* xc, int cs, const bf16* dtr, int dts, const bf16* dt_bias, const bf16* A_log, const bf16* Dp, float* state, bf16* y, int n, int nh,
-                                                         int ng, float dt_min) {
+__device__ __forceinline__ void nh_ssm_of(const bf16* xc, int cs, const bf16* dtr, int dts, const bf16* dt_bias, const bf16* A_log, const bf16* Dp, float* state, bf16* y, int n, int nh,
+                                          int ng, float dt_min) {
     const int h = blockIdx.x, lane = threadIdx.x & 31, p = blockIdx.y * (blockDim.x >> 5) + (threadIdx.x >> 5);
     const int di = nh * NH_P, g = h / (nh / ng);
     float* st = state + ((size_t)h * NH_P + p) * NH_N + lane * 4;
@@ -65,6 +80,26 @@ extern "C" __global__ void __launch_bounds__(256) nh_ssm(const bf16* xc, int cs,
         if (lane == 0) y[(size_t)t * di + h * NH_P + p] = f2b(fmaf(Dh, xv, acc));
     }
     *reinterpret_cast<float4*>(st) = s;
+}
+
+extern "C" __global__ void __launch_bounds__(256) nh_ssm(const bf16* xc, int cs, const bf16* dtr, int dts, const bf16* dt_bias, const bf16* A_log, const bf16* Dp, float* state, bf16* y, int n, int nh,
+                                                         int ng, float dt_min) {
+    nh_ssm_of(xc, cs, dtr, dts, dt_bias, A_log, Dp, state, y, n, nh, ng, dt_min);
+}
+
+// nh_ssm of a step's rows that decode, a token of a sequence each (grid nh by 64 / warps by rows): row r's state at sts[r ss] (0: a padding row, whose output is zeroed and
+// which reads and writes no state), its rows of xc, dtr and y at r cs, r dts and r nh 64. Each row's arithmetic is nh_ssm's on that sequence's one token.
+extern "C" __global__ void __launch_bounds__(256) nh_ssm_rows(const bf16* xc, int cs, const bf16* dtr, int dts, const bf16* dt_bias, const bf16* A_log, const bf16* Dp,
+                                                              const unsigned long long* sts, int ss, bf16* y, int nh, int ng, float dt_min) {
+    const int r = blockIdx.z;
+    float* st = reinterpret_cast<float*>(sts[(size_t)r * ss]);
+    bf16* out = y + (size_t)r * nh * NH_P;
+    if (!st) {
+        const int p = blockIdx.y * (blockDim.x >> 5) + (threadIdx.x >> 5);
+        if ((threadIdx.x & 31) == 0) out[blockIdx.x * NH_P + p] = f2b(0.f);
+        return;
+    }
+    nh_ssm_of(xc + (size_t)r * cs, cs, dtr + (size_t)r * dts, dts, dt_bias, A_log, Dp, st, out, 1, nh, ng, dt_min);
 }
 
 // ---- the same in chunks of NH_L tokens (state-space duality: transformers' mamba2_chunk_scan), for a prompt --------------------------------------------------------------------------------

@@ -209,19 +209,14 @@ fn plain(t: &Tokenizer) -> Tokenizer {
 
 /// The end-of-sequence ids of the model's directory: generation_config.json's where it gives any, else config.json's (or its text_config's).
 fn ends_of(dir: &Path) -> Vec<u32> {
-    let read = |f: &str| std::fs::read_to_string(dir.join(f)).ok().and_then(|t| glyd_gpu::json::parse(&t).ok());
-    let Some(config) = read("config.json") else { return Vec::new() };
+    let Some(config) = std::fs::read_to_string(dir.join("config.json")).ok().and_then(|t| crate::runtime::config::ModelConfig::parse(&t).ok()) else {
+        return Vec::new();
+    };
     let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
-    let mut ends = crate::weights::eos_ids(&config, generation.as_deref());
     // (the config's own end tokens, a number or a list; or its text model's)
-    for c in [Some(&config), config.get("text_config")].into_iter().flatten() {
-        if ends.is_empty() {
-            match c.get("eos_token_id") {
-                Some(glyd_gpu::json::Value::Number(n)) => ends.extend(n.parse::<i64>().ok()),
-                Some(glyd_gpu::json::Value::Array(a)) => ends.extend(a.iter().filter_map(glyd_gpu::json::Value::as_i64)),
-                _ => {}
-            }
-        }
+    let mut ends = crate::weights::eos_ids(&config.top, generation.as_deref());
+    if ends.is_empty() {
+        ends = crate::weights::eos_ids(&config.text, None);
     }
     ends.into_iter().filter_map(|e| u32::try_from(e).ok()).collect()
 }
