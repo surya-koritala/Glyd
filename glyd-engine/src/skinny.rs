@@ -9,6 +9,8 @@
 
 use crate::dev::Dev;
 use crate::ffi::{err, Pack, Result, Stream, Words};
+#[cfg(feature = "dev")]
+use crate::gpu_ops::GpuOps;
 use crate::launch;
 
 /// The layouts' numbers (tiers[0] >> 24; glyd-gpu's INT6_TAG, INT5_TAG and INT4_TAG).

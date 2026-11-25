@@ -25,6 +25,7 @@ use crate::cpu_hb::{CbView, HbExpert};
 use crate::dev::{Buf, Dev};
 use crate::disk::{Aligned, DirectFile};
 use crate::ffi::{err, Error, Lib, Result, Stream};
+use crate::gpu_ops::GpuOps;
 use crate::kern35::Mat;
 use crate::kern_nh::{MoeBlock, NhHost};
 use crate::launch;

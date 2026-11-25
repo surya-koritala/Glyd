@@ -59,6 +59,7 @@ pub mod devplan;
 pub(crate) mod kt {
     include!(concat!(env!("OUT_DIR"), "/kernel_types.rs"));
 }
+pub mod device;
 pub mod disk;
 pub mod doctor;
 #[cfg(feature = "dev")]
@@ -70,11 +71,13 @@ pub mod f8;
 #[cfg(test)]
 mod families;
 pub mod ffi;
+pub mod fold;
 pub mod gemma4;
 pub mod gguf;
 pub mod gguf_pre;
 pub mod gguf_tok;
 pub mod glm;
+pub mod gpu_ops;
 pub mod hb_codec;
 pub mod hb_pack;
 pub mod hb_usage;

@@ -7,6 +7,7 @@
 use crate::deepseek_v4::{fp4_runs, fp8_bf16, ConfigV4};
 use crate::dev::Buf;
 use crate::ffi::{err, Error, Result};
+use crate::gpu_ops::GpuOps;
 use crate::qwen35_ref::bf16;
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;

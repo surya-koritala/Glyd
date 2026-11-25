@@ -6,6 +6,7 @@
 
 use crate::dev::{copy_d2h_async, copy_h2d_async, Buf, Dev, Pinned};
 use crate::ffi::{err, Error, Lib, Result, Stream};
+use crate::gpu_ops::{Gemm, GpuOps};
 use crate::kern::Kern;
 use crate::kern35::{Kern35, Mat};
 use crate::kern_glm::{f32_bytes, KernGlm};

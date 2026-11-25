@@ -38,6 +38,7 @@ pub mod tp_cache;
 use crate::dev::{copy_d2d_async, copy_d2h_async, copy_h2d_async, Buf, Dev, Ev, Graph, Pinned};
 use crate::ffi::{err, Error, Lib, Result};
 use crate::gemma4::{pf_kib, rotary, G4Pf, KernG4, EMBED_GROUPS};
+use crate::gpu_ops::{Gemm, GpuOps};
 use crate::kern::{embed_plan, TopGpu};
 use crate::kern::{norm_threads, Kern};
 use crate::kern35::{Kern35, Mat};
@@ -1404,8 +1405,10 @@ impl Dyn {
                 decoding |= Dyn::decodes(&lib, gpu_code, decode_from, p, ch)?;
             }
         }
-        let blas = if decoding && (want == "blas" || (want.is_empty() && dev.cc != (8, 9))) { crate::ffi::Blas::find() } else { None };
-        let own = decoding && (want == "own" || (want.is_empty() && blas.is_none() && matches!(dev.cc.0, 8 | 9)));
+        // (the dense product's choice, by V8a's table: gpu_ops::dense_choice)
+        let (try_blas, may_own) = crate::gpu_ops::dense_choice(dev.cc, &want);
+        let blas = if decoding && try_blas { crate::ffi::Blas::find() } else { None };
+        let own = decoding && may_own && (want == "own" || blas.is_none());
         // (the blocks' own matrices too: the experts')
         let block_shapes: Vec<(i64, i64, bool)> = big.moe.iter().flat_map(|b| b.pack_shapes()).collect();
         let biggest = packed.iter().map(|p| (p.pack.rows * p.pack.cols) as usize).chain(block_shapes.iter().map(|s| (s.0 * s.1) as usize)).max().unwrap_or(8);
