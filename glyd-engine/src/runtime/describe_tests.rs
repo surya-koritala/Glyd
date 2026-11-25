@@ -24,6 +24,43 @@ fn model(case: &str, tol: f32) {
 
 const MODEL_TOL: f32 = 1e-5;
 
+/// The full-size GLM family's shape with an indexer that drops tokens and a layer whose indexer is shared: the recorded fixture's model, its
+/// `index_topk` cut to 4 of its prompt's 7 tokens and its second layer's indexer made `shared`. The reference's model lends the first layer's picks
+/// to the second (`RefModel::share_into`): each query keeps the same tokens in both, 4 at most; while every token is kept the logits are the
+/// recorded ones, and past that they are not. This is NOT a check against transformers: no fixture of this model was recorded
+/// (reference/mla.rs says what one takes).
+#[test]
+fn glm53_model_with_fewer_picks_and_a_shared_layer_runs_on_the_reference() {
+    use super::reference::SeqState;
+    let f = Fixture::load("glm53_model");
+    let mut cfg = f.j["config"].clone();
+    cfg["index_topk"] = 4.into();
+    cfg["indexer_types"] = serde_json::json!(["full", "shared", "full"]);
+    let mut d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    d.desc.f32_attention();
+    let src = |n: &str| f.j["tensors"].get(n).map(|_| f.tensor(n));
+    let mut m = RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{}", e.msg));
+    let toks: Vec<u32> = f.j["token_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+    let (want, mut got) = (f.f32s("output"), Vec::new());
+    let vocab = want.len() / toks.len();
+    for (t, &tok) in toks.iter().enumerate() {
+        let row = m.forward(&[tok], t as u32).unwrap_or_else(|e| panic!("token {t}: {}", e.msg)).concat();
+        // (a layer's mixer is its first block: blocks 0, 2 and 4)
+        let picks = |b: usize| match m.layers[b].seqs.get(&0) {
+            Some(SeqState::Mla(c)) => c.picks.clone(),
+            _ => panic!("block {b} has no latent cache"),
+        };
+        assert_eq!(picks(0), picks(2), "token {t}: the shared layer's picks are the layer's before it");
+        assert_eq!((picks(0).len(), picks(4).len()), ((t + 1).min(4), (t + 1).min(4)), "token {t}");
+        if t < 4 {
+            assert_close(&row, &want[t * vocab..(t + 1) * vocab], MODEL_TOL, &format!("token {t}, every token kept"));
+        }
+        got.extend(row);
+    }
+    let apart = got[4 * vocab..].iter().zip(&want[4 * vocab..]).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+    assert!(apart > 1e-4, "the picks dropped no token that mattered: {apart}");
+}
+
 #[test]
 fn qwen38_dense_model() {
     model("qwen38_model", MODEL_TOL);
