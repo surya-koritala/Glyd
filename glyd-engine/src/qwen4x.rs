@@ -216,29 +216,41 @@ impl ConfigQx {
         if c.head_dim != 256 || c.kv_heads == 0 || !c.heads.is_multiple_of(c.kv_heads) || c.heads / c.kv_heads > 16 || c.rotary > 128 || c.rotary % 2 != 0 {
             return refuse(&format!("attention of {} heads of {} over {} key-value heads, a rotary of {}", c.heads, c.head_dim, c.kv_heads, c.rotary));
         }
-        if c.ix_dim != 128
-            || u_or("indexer_kv_heads", 1)? != 1
-            || c.ix_block != 4
+        if u_or("indexer_kv_heads", 1)? != 1
+            || c.ix_block == 0
             || c.ix_budget == 0
             || !c.ix_budget.is_multiple_of(c.ix_block)
             || c.ix_budget / c.ix_block > 1024
             || c.rotary > c.ix_dim
         {
-            return refuse("an indexer other than one key head of 128 over blocks of 4 tokens");
+            return refuse("an indexer other than one key head over blocks of tokens");
         }
-        if c.hc != 4 || c.hidden > 4096 || !c.hidden.is_multiple_of(64) {
+        if c.hc == 0 || c.hidden > 4096 || !c.hidden.is_multiple_of(64) {
             return refuse(&format!("{} streams of {}", c.hc, c.hidden));
-        }
-        if c.ple.as_ref().is_some_and(|p| p.ngram != 3 || p.kernel != 4) {
-            return refuse("an n-gram embedding other than bigrams and trigrams with a convolution of 4");
         }
         Ok(c)
     }
 
+    /// The release's own shape, which Condor's engine (src/model_qwen4x.rs) is written for: four streams, index heads of 128 over blocks of 4 tokens, bigrams and
+    /// trigrams with a convolution of 4. The description executor takes the family's other shapes by its kinds (`dynamic::lower::qwen4x` refuses what its
+    /// kernels do not take).
+    pub fn release_shape(&self, label: &str) -> Result<()> {
+        if self.hc != 4 || self.ix_dim != 128 || self.ix_block != 4 || self.ple.as_ref().is_some_and(|p| p.ngram != 3 || p.kernel != 4) {
+            return err(format!(
+                "{label}: {} streams, index heads of {} over blocks of {}, an n-gram embedding of {:?}: Condor's engine runs the release's shape alone",
+                self.hc,
+                self.ix_dim,
+                self.ix_block,
+                self.ple.as_ref().map(|p| (p.ngram, p.kernel))
+            ));
+        }
+        Ok(())
+    }
+
     /// What this engine reads of a model, from the model's description (`runtime::describe`: its layer kinds, and the experts' widths from the
     /// shapes it says), with what no description holds from `own` (this engine's reading of the same config: the end tokens, with the generation
-    /// config's, the longest context, the tensors' prefix). Held to `own` (`agrees`), it is the check that the description says everything the
-    /// engine runs on, before the engine's work moves onto the description's kinds.
+    /// config's, the longest context, the tensors' prefix). Held to `own` (`agrees`, at the executor's load: `dynamic::qwen4x::lowered`), it is the
+    /// check that the description says everything the engine runs on.
     pub fn lowered(d: &crate::runtime::describe::Described, own: &ConfigQx) -> Result<ConfigQx> {
         use crate::runtime::describe::Source;
         use crate::runtime::kinds::{Body, Ffn, Mixer, Residual};
@@ -447,8 +459,73 @@ impl ConfigQx {
     }
 }
 
+/// Which of Condor's packs of experts a directory serves as (`qwenget` makes them: DIR/pack or DIR/fast, DIR/precise, DIR/best): precise where asked (`--precise`), best
+/// where the directory's name starts with "best", else fast. Each takes its own sidecars and its own skipping of the misses' tail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PackMode {
+    Precise,
+    Best,
+    Fast,
+}
+
+impl PackMode {
+    pub fn of(pack: &Path, precise: bool) -> PackMode {
+        if precise {
+            PackMode::Precise
+        } else if pack.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("best")) {
+            PackMode::Best
+        } else {
+            PackMode::Fast
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PackMode::Precise => "precise",
+            PackMode::Best => "best",
+            PackMode::Fast => "fast",
+        }
+    }
+
+    /// The sidecar whose copies of some experts the GPU's places hold in place of the pack's, where the pack has one: precise its `hot` (its cb3 and cb4 experts as
+    /// they are, the hottest at three bits); else its `fast` (every cb3 and cb4 expert at two bits: smaller places, more of them; MMLU-Pro 124/150 as with the
+    /// pack's own), else its `hot`.
+    pub fn side(self, pack: &Path) -> Option<std::path::PathBuf> {
+        let names: &[&str] = if self == PackMode::Precise { &["hot"] } else { &["fast", "hot"] };
+        names.iter().map(|x| pack.join(x)).find(|d| d.join("meta.json").exists())
+    }
+
+    /// The offload's `skip_rank`: precise 1, the most skipping that keeps its pack's numbers against the bf16 model (Strata's set: top-64 KL 0.137, top-1 88.1%,
+    /// against 0.152 and 87.0% at 3); best 0, none skipped (its pack's 0.099 and 89.6%; 0.105 at 1, 0.117 at 3); fast 3.
+    pub fn skip_rank(self) -> usize {
+        match self {
+            PackMode::Precise => 1,
+            PackMode::Best => 0,
+            PackMode::Fast => 3,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// A pack's mode by the flag and the directory's name, and each mode's sidecar where the pack has it.
+    #[test]
+    fn a_packs_mode_takes_its_sidecar_and_skipping() {
+        let root = std::env::temp_dir().join(format!("glyd-packmode-{}", std::process::id()));
+        let (best, fast) = (root.join("best-v2"), root.join("fast"));
+        for d in [best.join("hot"), fast.join("fast"), fast.join("hot")] {
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("meta.json"), "{}").unwrap();
+        }
+        assert_eq!([PackMode::of(&best, false), PackMode::of(&fast, false), PackMode::of(&best, true)], [PackMode::Best, PackMode::Fast, PackMode::Precise]);
+        assert_eq!(PackMode::Fast.side(&fast), Some(fast.join("fast")));
+        assert_eq!(PackMode::Precise.side(&fast), Some(fast.join("hot")));
+        assert_eq!(PackMode::Best.side(&best), Some(best.join("hot")));
+        assert_eq!(PackMode::Fast.side(&root), None);
+        assert_eq!([PackMode::Precise, PackMode::Best, PackMode::Fast].map(PackMode::skip_rank), [1, 0, 3]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     use super::*;
 
     pub(crate) fn real() -> ConfigQx {

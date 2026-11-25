@@ -3,7 +3,7 @@
 // and the attention over the tokens the indexer picked. bf16 in memory, fp32 inside; the rounding points are transformers 5.19.0's (modeling_qwen4_exp.py), which rounds every elementwise op of a bf16 tensor.
 // Reference: tools/qwen4x_ref.py (transformers' own modules).
 
-#define QX_HC 4  // residual streams
+#define QX_HC 4  // residual streams of Condor's own kernels (the release's); the kernels the description executor runs take the count, 1 to 4 (`hc`)
 
 __device__ __forceinline__ float qx_r(float x) { return b2f(f2b(x)); }  // a bf16 tensor op's rounding
 __device__ __forceinline__ float qx_sig(float x) { return 1.f / (1.f + expf(-x)); }
@@ -22,13 +22,13 @@ __device__ __forceinline__ float qx_quarter_sum(float v, float* sh) {
 }
 
 // ---- the Gated Residual ---------------------------------------------------------------------------------------------------------------------------------------------------------------------
-// xn [n, 4 D] = each stream of x [n, 4, D] normed (rms over its D values; `whole`: over the row's 4 D, as the MTP head's pre_fc_norm_hidden) times (1 + w [4 D]), one rounding; a block of 1024 threads a row, a quarter
-// of them a stream (D at most 256 * 16).
-extern "C" __global__ void __launch_bounds__(1024) qx_hc_norm(const bf16* x, const bf16* w, bf16* xn, int D, float eps, int whole) {
+// xn [n, hc D] = each stream of x [n, hc, D] normed (rms over its D values; `whole`: over the row's hc D, as the MTP head's pre_fc_norm_hidden) times (1 + w [hc D]), one rounding; a block of 256 hc threads a
+// row, 256 of them a stream (D at most 256 * 16, hc 1 to 4).
+extern "C" __global__ void __launch_bounds__(1024) qx_hc_norm(const bf16* x, const bf16* w, bf16* xn, int D, float eps, int whole, int hc) {
     __shared__ float sh[32];
-    __shared__ float tot[QX_HC];
+    __shared__ float tot[4];
     const int q = threadIdx.x >> 8, j = threadIdx.x & 255;
-    const size_t row = (size_t)blockIdx.x * QX_HC * D + (size_t)q * D;
+    const size_t row = (size_t)blockIdx.x * hc * D + (size_t)q * D;
     float v[16], acc = 0.f;
 #pragma unroll
     for (int k = 0; k < 16; k++) {
@@ -40,9 +40,11 @@ extern "C" __global__ void __launch_bounds__(1024) qx_hc_norm(const bf16* x, con
     if (whole) {
         if (j == 0) tot[q] = sum;
         __syncthreads();
-        sum = (tot[0] + tot[1]) + (tot[2] + tot[3]);
+        // (in pairs, as four streams' sums were added)
+        const float a = hc > 1 ? tot[0] + tot[1] : tot[0];
+        sum = hc > 3 ? a + (tot[2] + tot[3]) : hc > 2 ? a + tot[2] : a;
     }
-    const float s = rsqrtf(sum / (whole ? QX_HC * D : D) + eps);
+    const float s = rsqrtf(sum / (whole ? hc * D : D) + eps);
 #pragma unroll
     for (int k = 0; k < 16; k++) {
         const int c = j + k * 256;
@@ -50,36 +52,36 @@ extern "C" __global__ void __launch_bounds__(1024) qx_hc_norm(const bf16* x, con
     }
 }
 
-// y = silu(y / 4) in place (the mixing weights' bottleneck; y bf16 [count], a division by 4 that bf16 holds exactly, then the activation rounded).
-extern "C" __global__ void qx_silu4(bf16* y, int count) {
+// y = silu(y / hc) in place (the mixing weights' bottleneck over hc streams; y bf16 [count]): the quotient rounded, as the reference's bf16 tensor is (exact for 4
+// streams), then the activation rounded.
+extern "C" __global__ void qx_silu4(bf16* y, int count, int hc) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= count) return;
-    const float v = b2f(y[i]) * 0.25f;
+    const float v = qx_r(b2f(y[i]) / (float)hc);
     y[i] = f2b(v * qx_sig(v));
 }
 
-// The mix of a row's streams into the block's input: h [n, D] = mean over the streams s of bf16(bf16(sigmoid(gw[s])) * xn[s]) (gw [n, 4 D] the up product, xn [n, 4 D]), the sum in fp32, one rounding;
-// where injl (bf16 [n, 4], the inject product) is given, inj [n, 4] = 2 bf16(sigmoid(bf16(injl / 4))) as fp32. Block (row, 256 columns).
-extern "C" __global__ void qx_hc_mix(const bf16* gw, const bf16* xn, const bf16* injl, bf16* h, float* inj, int D) {
+// The mix of a row's hc streams into the block's input: h [n, D] = mean over the streams s of bf16(bf16(sigmoid(gw[s])) * xn[s]) (gw [n, hc D] the up product, xn [n, hc D]), the sum in fp32, one
+// rounding; where injl (bf16 [n, hc], the inject product) is given, inj [n, hc] = 2 bf16(sigmoid(bf16(injl / hc))) as fp32 (the quotient rounded: exact for 4). Block
+// (row, 256 columns).
+extern "C" __global__ void qx_hc_mix(const bf16* gw, const bf16* xn, const bf16* injl, bf16* h, float* inj, int D, int hc) {
     const int t = blockIdx.x, c = blockIdx.y * blockDim.x + threadIdx.x;
-    if (injl && blockIdx.y == 0 && threadIdx.x < QX_HC) inj[t * QX_HC + threadIdx.x] = 2.f * qx_r(qx_sig(b2f(injl[t * QX_HC + threadIdx.x]) * 0.25f));
+    if (injl && blockIdx.y == 0 && threadIdx.x < hc) inj[t * hc + threadIdx.x] = 2.f * qx_r(qx_sig(qx_r(b2f(injl[t * hc + threadIdx.x]) / (float)hc)));
     if (c >= D) return;
-    const size_t r = (size_t)t * QX_HC * D + c;
+    const size_t r = (size_t)t * hc * D + c;
     float s = 0.f;
-#pragma unroll
-    for (int k = 0; k < QX_HC; k++) s += qx_r(qx_r(qx_sig(b2f(gw[r + k * D]))) * b2f(xn[r + k * D]));
-    h[(size_t)t * D + c] = f2b(s * 0.25f);
+    for (int k = 0; k < hc; k++) s += qx_r(qx_r(qx_sig(b2f(gw[r + k * D]))) * b2f(xn[r + k * D]));
+    h[(size_t)t * D + c] = f2b(s / (float)hc);
 }
 
-// The streams after a block: x[s] = bf16(x[s] + bf16(o * inj[s])) for o [n, D] the block's output, inj [n, 4] fp32. Block (row, 256 columns).
-extern "C" __global__ void qx_hc_post(bf16* x, const bf16* o, const float* inj, int D) {
+// The hc streams after a block: x[s] = bf16(x[s] + bf16(o * inj[s])) for o [n, D] the block's output, inj [n, hc] fp32. Block (row, 256 columns).
+extern "C" __global__ void qx_hc_post(bf16* x, const bf16* o, const float* inj, int D, int hc) {
     const int t = blockIdx.x, c = blockIdx.y * blockDim.x + threadIdx.x;
     if (c >= D) return;
     const float ov = b2f(o[(size_t)t * D + c]);
-#pragma unroll
-    for (int k = 0; k < QX_HC; k++) {
-        const size_t i = ((size_t)t * QX_HC + k) * D + c;
-        x[i] = f2b(b2f(x[i]) + qx_r(ov * inj[t * QX_HC + k]));
+    for (int k = 0; k < hc; k++) {
+        const size_t i = ((size_t)t * hc + k) * D + c;
+        x[i] = f2b(b2f(x[i]) + qx_r(ov * inj[t * hc + k]));
     }
 }
 
@@ -340,19 +342,19 @@ extern "C" __global__ void qx_ngram_hist(const int* tok, int* hist, int n) {
 }
 
 // ---- the QSA indexer and attention --------------------------------------------------------------------------------------------------------------------------------------------------------
-// The indexer's rows [n, (IH + 1) 128] (IH query heads, then the token's key): each query head normed (1 + wq) and turned (the rotary on its first 2 half dims, cos and sin bf16 [max_pos, half]) into iq [n, IH 128];
-// the key, raw, into the key cache ik [positions, 128] at the row's position (through its block table ktab where it has one: kernels/mla.cu's ml_place). The norm rounded, the rotary's
-// products and sum each rounded (the reference's bf16 ops). Block (row, head), 128 threads.
-extern "C" __global__ void qx_ix_prep(const bf16* qk, const bf16* wq, const bf16* cs, const bf16* sn, int half, const int* pos, bf16* iq, bf16* ik, const int* ktab, int IH, float eps) {
+// The indexer's rows [n, (IH + 1) ID] (IH query heads of ID, then the token's key): each query head normed (1 + wq) and turned (the rotary on its first 2 half dims, cos and sin bf16 [max_pos, half]) into
+// iq [n, IH ID]; the key, raw, into the key cache ik [positions, ID] at the row's position (through its block table ktab where it has one: kernels/mla.cu's ml_place). The norm rounded, the rotary's products
+// and sum each rounded (the reference's bf16 ops). Block (row, head), ID threads (a multiple of 32, at most 1,024).
+extern "C" __global__ void qx_ix_prep(const bf16* qk, const bf16* wq, const bf16* cs, const bf16* sn, int half, const int* pos, bf16* iq, bf16* ik, const int* ktab, int IH, float eps, int ID) {
     const int t = blockIdx.x, hh = blockIdx.y, i = threadIdx.x, p = pos[t];
-    const bf16* x = qk + (size_t)t * (IH + 1) * 128 + hh * 128;
+    const bf16* x = qk + (size_t)t * (IH + 1) * ID + (size_t)hh * ID;
     if (hh == IH) {
-        ik[ml_place(ktab, p) * 128 + i] = x[i];
+        ik[ml_place(ktab, p) * ID + i] = x[i];
         return;
     }
-    __shared__ float nrm[128];
+    __shared__ float nrm[1024];
     const float a = b2f(x[i]);
-    const float s = rsqrtf(block_sum(a * a) / 128.f + eps);
+    const float s = rsqrtf(block_sum(a * a) / (float)ID + eps);
     nrm[i] = qx_r(a * s * (1.f + b2f(wq[i])));
     __syncthreads();
     float o = nrm[i];
@@ -361,28 +363,30 @@ extern "C" __global__ void qx_ix_prep(const bf16* qk, const bf16* wq, const bf16
         const float c = b2f(cs[(size_t)p * half + k]), sv = b2f(sn[(size_t)p * half + k]);
         o = i < half ? qx_r(qx_r(nrm[i] * c) - qx_r(nrm[i + half] * sv)) : qx_r(qx_r(nrm[i] * c) + qx_r(nrm[i - half] * sv));
     }
-    iq[(size_t)t * IH * 128 + hh * 128 + i] = f2b(o);
+    iq[(size_t)t * IH * ID + (size_t)hh * ID + i] = f2b(o);
 }
 
-// The keys of the blocks of 4 tokens that the call's rows (at pos[0] .. pos[n-1], consecutive) complete: pk[b] = rotary(bf16(norm(bf16(mean of ik[4b .. 4b+3])) (1 + wk)), position 4b), the mean in fp32. A block a
-// key block from pos[0] / 4 on (grid ceil(n / 4) + 1); one whose last token is past the call's last row is left to the call that completes it. ik's rows through ktab, pk's (a pool a row) through ptab, where
-// the sequence has block tables. 128 threads.
-extern "C" __global__ void qx_ix_cmp(const bf16* ik, const int* ktab, const bf16* wk, const bf16* cs, const bf16* sn, int half, const int* pos, bf16* pk, const int* ptab, int n, float eps) {
-    const int b = pos[0] / 4 + blockIdx.x, i = threadIdx.x;
-    if (4 * b + 3 > pos[n - 1]) return;
-    const auto k = [&](int p) { return b2f(ik[ml_place(ktab, p) * 128 + i]); };
-    const float m = qx_r((((k(4 * b) + k(4 * b + 1)) + k(4 * b + 2)) + k(4 * b + 3)) * 0.25f);
-    const float s = rsqrtf(block_sum(m * m) / 128.f + eps);
-    __shared__ float nrm[128];
+// The keys of the pools of B tokens that the call's rows (at pos[0] .. pos[n-1], consecutive) complete: pk[b] = rotary(bf16(norm(bf16(mean of ik[B b .. B b + B - 1])) (1 + wk)), position B b), the mean
+// in fp32 (summed in order). A block a pool from pos[0] / B on (grid ceil(n / B) + 1); one whose last token is past the call's last row is left to the call that completes it. ik's rows through ktab, pk's (a
+// pool a row) through ptab, where the sequence has block tables. ID threads.
+extern "C" __global__ void qx_ix_cmp(const bf16* ik, const int* ktab, const bf16* wk, const bf16* cs, const bf16* sn, int half, const int* pos, bf16* pk, const int* ptab, int n, float eps, int ID, int B) {
+    const int b = pos[0] / B + blockIdx.x, i = threadIdx.x;
+    if (B * b + B - 1 > pos[n - 1]) return;
+    const auto k = [&](int p) { return b2f(ik[ml_place(ktab, p) * ID + i]); };
+    float sum = k(B * b);
+    for (int j = 1; j < B; j++) sum += k(B * b + j);
+    const float m = qx_r(sum / (float)B);
+    const float s = rsqrtf(block_sum(m * m) / (float)ID + eps);
+    __shared__ float nrm[1024];
     nrm[i] = qx_r(m * s * (1.f + b2f(wk[i])));
     __syncthreads();
     float o = nrm[i];
     if (i < 2 * half) {
-        const int k = i < half ? i : i - half, p = 4 * b;
+        const int k = i < half ? i : i - half, p = B * b;
         const float c = b2f(cs[(size_t)p * half + k]), sv = b2f(sn[(size_t)p * half + k]);
         o = i < half ? qx_r(qx_r(nrm[i] * c) - qx_r(nrm[i + half] * sv)) : qx_r(qx_r(nrm[i] * c) + qx_r(nrm[i - half] * sv));
     }
-    pk[ml_place(ptab, b) * 128 + i] = f2b(o);
+    pk[ml_place(ptab, b) * ID + i] = f2b(o);
 }
 
 // conv_silu (qwen35.cu) for a prompt chunk with a thread a channel and QX_CT of the rows (grid (ceil(C / 256), ceil(n / QX_CT))), the same arithmetic for each output: conv_silu's single pass over the rows with a

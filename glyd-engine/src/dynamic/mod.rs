@@ -306,12 +306,14 @@ pub enum Op {
     },
     /// The indexer's pick (src/dynamic/mla.rs, every indexer's): Iq and Iw (its weights' product) scored against its entries, each row's best.
     IdxPick(IdxPick),
-    /// The mean-pooled indexer's queries and keys (`IndexForm::Mean`; src/dynamic/picked.rs, kernels/qwen4x.cu): of the index product in Qr (`heads` + 1 heads of 128 a row),
-    /// each query head normed (`q_norm`, (1 + w)) and rotated by table `rope` into Iq; the raw key into ring `keys` at the row's position; then each pool
-    /// of 4 the call completes: the mean of its raw keys, normed (`k_norm`) and rotated at its first position, into ring `pools` (`Ring::entries`, a pool a row:
-    /// `IdxKeys::Pools`). The raw keys are ring `keys` [positions, 128]: both paged as any keys.
+    /// The mean-pooled indexer's queries and keys (`IndexForm::Mean`; src/dynamic/picked.rs, kernels/qwen4x.cu): of the index product in Qr (`heads` + 1 heads of `dim` a
+    /// row), each query head normed (`q_norm`, (1 + w)) and rotated by table `rope` into Iq; the raw key into ring `keys` at the row's position; then each pool
+    /// of `block` the call completes: the mean of its raw keys, normed (`k_norm`) and rotated at its first position, into ring `pools` (`Ring::entries`, a pool a
+    /// row: `IdxKeys::Pools`). The raw keys are ring `keys` [positions, dim]: both paged as any keys.
     IdxMean {
         heads: usize,
+        dim: usize,
+        block: usize,
         q_norm: usize,
         k_norm: usize,
         rope: usize,
@@ -632,6 +634,11 @@ pub struct ModelDesc {
 }
 
 impl ModelDesc {
+    /// The residual streams a row holds (S's width over the hidden width; one where it has none).
+    pub fn streams(&self) -> usize {
+        (self.width(Slot::S) / self.hidden.max(1)).max(1)
+    }
+
     pub fn width(&self, s: Slot) -> usize {
         self.widths[s as usize]
     }
@@ -759,6 +766,10 @@ impl Default for Opts {
 
 /// The head's rows as `Dyn::head_out` reads them: each row's greedy token and its logit, and the rows' logits as bf16 words.
 pub type HeadOut = (Vec<(u32, f32)>, Vec<u16>);
+
+/// One mixture-of-experts call as `Dyn::trace_routes` records it: its layer, the experts a row takes (k), its rows' experts ([rows, k]) and its
+/// router's input rows (bf16, [rows, the input's width]).
+pub type Routes = (usize, usize, Vec<i64>, Vec<u16>);
 
 /// A draft model to give `Dyn::new`: its directory (bf16, packed here), its description, and its tokens a round.
 pub struct DraftSpec<'a> {
@@ -1241,6 +1252,14 @@ pub struct Dyn {
     ones: Option<Buf>,
     /// kernels/qwen4x.cu's, and the unweighted picks' room, where the description has the gated residuals, the n-gram embedding or the mean-pooled indexer.
     kqx: Option<crate::model_qwen4x::KernQx>,
+    /// Where Some: each eager pass adds the residual (mHC's or the gated residuals' streams S, else X) of its rows after each layer, a check's view of each layer
+    /// (`trace_layers`).
+    trace: std::cell::RefCell<Option<Vec<Vec<u16>>>>,
+    /// Where Some: the layer whose operations each eager pass records (`trace_ops`), and after each of them its name and the bf16 values of the slots `TRACED`.
+    op_trace: std::cell::RefCell<Option<(usize, Vec<(String, Vec<Vec<u16>>)>)>>,
+    /// Where Some: each eager pass adds, after each mixture-of-experts operation whose experts are all on the GPU, its layer, its router's choices
+    /// and its router's input rows (`trace_routes`).
+    route_trace: std::cell::RefCell<Option<Vec<Routes>>>,
     picks: Option<picked::PickRun>,
     /// The latent attentions' scratch, where the model has one.
     mla: Option<mla::MlaRun>,
@@ -1413,6 +1432,9 @@ struct Verify {
     keep: Vec<Option<Buf>>,
 }
 
+/// The slots `Dyn::trace_ops` records after each operation: the blocks' input and output, the residual's streams and the mixers' and gated residuals' own.
+pub const TRACED: [Slot; 10] = [Slot::H, Slot::O, Slot::S, Slot::Hq, Slot::Mid, Slot::Cp, Slot::Mix, Slot::Ba, Slot::Xc, Slot::Core];
+
 // ponytail: the big model's buffers; a draft model's own where one has a block of experts
 impl crate::kern_nh::NhHost for Dyn {
     fn dev(&self) -> &Dev {
@@ -1439,9 +1461,108 @@ impl crate::kern_nh::NhHost for Dyn {
     unsafe fn lin(&self, w: &Mat, x: u64, m: usize, y: u64) -> Result<()> {
         Dyn::lin(self, w, x, m, y)
     }
+    unsafe fn gemm(&self, x: u64, w: u64, y: u64, m: i32, n: i32, k: i32) -> Result<()> {
+        self.kern.gemm_fill(self.dev.stream, x, w, y, m, n, k)
+    }
 }
 
 impl Dyn {
+    /// Each layer's residual (bf16, the pass's rows) after the passes run between `trace_layers(true)` and `trace_layers(false)`, which returns them: a
+    /// check's view of each layer (the passes eager: no graph or piece holds a layer's end).
+    pub fn trace_layers(&self, on: bool) -> Vec<Vec<u16>> {
+        std::mem::replace(&mut *self.trace.borrow_mut(), on.then(Vec::new)).unwrap_or_default()
+    }
+
+    /// Whether the layers are traced (`trace_layers`, `trace_ops`, `trace_routes`): every pass eager, a decode step too.
+    pub(crate) fn tracing(&self) -> bool {
+        self.trace.borrow().is_some() || self.op_trace.borrow().is_some() || self.route_trace.borrow().is_some()
+    }
+
+    /// The routers' choices in the passes run between `trace_routes(true)` and `trace_routes(false)`, which returns them: for each mixture-of-experts
+    /// operation in the order run, its layer, the experts a row takes (k), its rows' experts ([rows, k], each row's in the router's order) and the
+    /// router's input as the operation read it (bf16, [rows, its width]). A layer whose experts are in a cache that routes on its own adds nothing.
+    pub fn trace_routes(&self, on: bool) -> Vec<Routes> {
+        std::mem::replace(&mut *self.route_trace.borrow_mut(), on.then(Vec::new)).unwrap_or_default()
+    }
+
+    /// The routed experts of each mixture-of-experts block as the GPU holds them, decoded on the host (`MoeLayer::held_experts`), in the blocks' order:
+    /// a check's view of what a lossless level loaded. None where the model has no such block, or one with no view of its experts (a cache's, another
+    /// format's); an error where a block's experts are a lossy level's block codes.
+    pub fn held_experts(&self) -> Result<Option<Vec<(Vec<u16>, Vec<u16>)>>> {
+        let mut v = Vec::with_capacity(self.big.moe.len());
+        for (i, b) in self.big.moe.iter().enumerate() {
+            let Some((l, _)) = b.resident() else { return Ok(None) };
+            match l.held_experts().map_err(|e| e.context(&format!("mixture-of-experts block {i}")))? {
+                Some(x) => v.push(x),
+                None => return Ok(None),
+            }
+        }
+        Ok((!v.is_empty()).then_some(v))
+    }
+
+    /// The router's input of `op` on n rows, read before it runs, where `trace_routes` records its call (a mixture-of-experts operation whose
+    /// experts are all on the GPU): its input slot's rows, bf16.
+    fn route_input(&self, p: &Part, op: &Op, n: usize) -> Result<Option<Vec<u16>>> {
+        let Op::Moe(MoeOp { block, x, .. }) = *op else { return Ok(None) };
+        if !std::ptr::eq(p, &self.big) || self.route_trace.borrow().is_none() || p.moe[block].resident().is_none() {
+            return Ok(None);
+        }
+        self.dev.sync()?;
+        let mut v = vec![0u16; n * p.d.width(x)];
+        p.slots[x as usize].read(0, &mut v)?;
+        Ok(Some(v))
+    }
+
+    /// `trace_routes`' record of `op` of layer `l` on n rows, with its router's input (`route_input`, read before it ran).
+    fn trace_route(&self, p: &Part, l: usize, op: &Op, n: usize, input: Option<Vec<u16>>) -> Result<()> {
+        let Op::Moe(MoeOp { block, .. }) = *op else { return Ok(()) };
+        if !std::ptr::eq(p, &self.big) || self.route_trace.borrow().is_none() {
+            return Ok(());
+        }
+        let Some((layer, _)) = p.moe[block].resident() else { return Ok(()) };
+        let sc = self.moe_sc.get().ok_or_else(|| Error("no mixture-of-experts scratch".into()))?;
+        self.dev.sync()?;
+        let k = layer.cfg.router.top_k;
+        let mut ids = vec![0i64; n * k];
+        sc.ids.read(0, &mut ids)?;
+        let input = input.ok_or_else(|| Error(format!("layer {l}: the router's input was not read before its experts ran")))?;
+        if let Some(t) = self.route_trace.borrow_mut().as_mut() {
+            t.push((l, k, ids, input));
+        }
+        Ok(())
+    }
+
+    /// Each operation of layer `layer` in the passes run between `trace_ops(Some(layer))` and `trace_ops(None)`, which returns them: its name and, after it ran,
+    /// the values of the slots `TRACED` (the pass's rows, each slot's whole width): a check's view inside a layer.
+    pub fn trace_ops(&self, layer: Option<usize>) -> Vec<(String, Vec<Vec<u16>>)> {
+        std::mem::replace(&mut *self.op_trace.borrow_mut(), layer.map(|l| (l, Vec::new()))).map(|t| t.1).unwrap_or_default()
+    }
+
+    /// `trace_ops`' record of `op` of layer `l` on n rows, where that layer is traced.
+    fn trace_op(&self, p: &Part, l: usize, op: &Op, n: usize) -> Result<()> {
+        if !std::ptr::eq(p, &self.big) || self.op_trace.borrow().as_ref().is_none_or(|t| t.0 != l) {
+            return Ok(());
+        }
+        let mut slots = Vec::with_capacity(TRACED.len());
+        for &sl in &TRACED {
+            let mut v = vec![0u16; n * p.d.width(sl)];
+            if !v.is_empty() {
+                // SAFETY: the slot holds a chunk's rows of its width; the stream is synchronized before the copy is read.
+                unsafe { copy_d2h_async(v.as_mut_ptr() as *mut _, p.slot(sl), v.len() * 2, self.dev.stream)? };
+            }
+            slots.push(v);
+        }
+        self.dev.sync()?;
+        let name = match op {
+            Op::Linear { name, .. } => name.to_string(),
+            o => format!("{o:?}").split([' ', '(', '{']).next().unwrap_or("").to_string(),
+        };
+        if let Some(t) = self.op_trace.borrow_mut().as_mut() {
+            t.1.push((name, slots));
+        }
+        Ok(())
+    }
+
     /// A description's model from `dir` by the generic loader (`ModelDesc::mats`, `small`, `ropes`), and a draft model's.
     pub fn new(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, o: &Opts) -> Result<Dyn> {
         let st = Stage::whole(d.layers.len());
@@ -1782,6 +1903,9 @@ impl Dyn {
             tok,
             ones,
             kqx,
+            trace: std::cell::RefCell::new(None),
+            op_trace: std::cell::RefCell::new(None),
+            route_trace: std::cell::RefCell::new(None),
             picks,
             mla,
             verify: None,
@@ -2119,11 +2243,11 @@ impl Dyn {
     /// The gated residuals' mix of the streams S into H on n rows (`StreamsMix::Gated`, `HeadMix::Gated`): each stream normed by `norm` into Hq, `down`'s product into
     /// Mid and its activation, `up`'s into Cp, the gated mean into H; with `inject`, its product into Kv and the streams' weights into hcp.
     unsafe fn gated_mix(&self, p: &Part, n: usize, norm: usize, down: usize, up: usize, inject: Option<usize>) -> Result<()> {
-        let (k, s, d) = (self.kqx()?, self.dev.stream, p.d.hidden);
+        let (k, s, d, hc) = (self.kqx()?, self.dev.stream, p.d.hidden, p.d.streams());
         let (sn, mid, gw) = (p.slot(Slot::Hq), p.slot(Slot::Mid), p.slot(Slot::Cp));
-        k.hc_norm(s, p.slot(Slot::S), p.small[norm].ptr, sn, n, d, p.d.eps)?;
+        k.hc_norm(s, p.slot(Slot::S), p.small[norm].ptr, sn, n, d, p.d.eps, hc)?;
         self.lin(&p.mats[down], sn, n, mid)?;
-        k.silu4(s, mid, n * p.d.width(Slot::Mid))?;
+        k.silu4(s, mid, n * p.d.width(Slot::Mid), hc)?;
         self.lin(&p.mats[up], mid, n, gw)?;
         let (il, inj) = match inject {
             Some(w) => {
@@ -2132,7 +2256,7 @@ impl Dyn {
             }
             None => (0, 0),
         };
-        k.hc_mix(s, gw, sn, il, p.slot(Slot::H), inj, n, d)
+        k.hc_mix(s, gw, sn, il, p.slot(Slot::H), inj, n, d, hc)
     }
 
     unsafe fn op(&self, p: &Part, l: usize, i: usize, op: &Op, n: usize, pos: (u64, u64), head: usize) -> Result<()> {
@@ -2289,7 +2413,7 @@ impl Dyn {
                 self.mark("Mamba-2: gated norm")
             }
             Op::Moe(ref m) => self.moe(p, m, n),
-            Op::Streams => self.kres.streams(s, p.slot(Slot::X), p.slot(Slot::S), nu, hid),
+            Op::Streams => self.kres.streams(s, p.slot(Slot::X), p.slot(Slot::S), nu, hid, p.d.streams()),
             Op::StreamsPre { mix: StreamsMix::Hc { f, base, scale }, norm, round } => {
                 let (fp, bp, sp) = (p.small[f].ptr, p.small[base].ptr, p.small[scale].ptr);
                 let (h, nw, (hc_eps, iters)) = (p.slot(Slot::H), p.small[norm].ptr, p.d.hc);
@@ -2313,7 +2437,7 @@ impl Dyn {
                 self.mark("gated residuals")
             }
             Op::StreamsPost { gated: true, .. } => {
-                self.kqx()?.hc_post(s, p.slot(Slot::S), p.slot(Slot::O), self.hcp.ptr, n, p.d.hidden)?;
+                self.kqx()?.hc_post(s, p.slot(Slot::S), p.slot(Slot::O), self.hcp.ptr, n, p.d.hidden, p.d.streams())?;
                 self.mark("gated residuals")
             }
             Op::StreamsPost { round, .. } => {
@@ -2329,7 +2453,9 @@ impl Dyn {
                 self.kres.head(s, p.slot(Slot::S), w, self.hc_part.ptr, p.small[norm].ptr, p.slot(Slot::H), nu, hid, (eps, p.d.hc.0), round)?;
                 self.mark("hyper-connections")
             }
-            Op::IdxMean { heads, q_norm, k_norm, rope, keys, pools } => self.idx_mean(p, heads, q_norm, k_norm, rope, keys, pools, n, pos.0),
+            Op::IdxMean { heads, dim, block, q_norm, k_norm, rope, keys, pools } => {
+                self.idx_mean(p, (heads, dim, block), q_norm, k_norm, rope, keys, pools, n, pos.0)
+            }
             Op::IdxPick(ref x) if matches!(x.keys, IdxKeys::Pools(_)) => self.idx_pick_pools(p, x, n, pos.0),
             Op::NgramRows(ref x) => self.ngram_rows(p, x, n),
             Op::NgramAdd(ref x) => self.ngram_add(p, x, n),
@@ -2598,9 +2724,13 @@ impl Dyn {
                     }
                     self.prepped.set(false);
                     r?;
+                    self.trace_op(p, l, op, n)?;
                     continue;
                 }
+                let input = self.route_input(p, op, n)?;
                 self.op(p, l, i, op, n, pos, head)?;
+                self.trace_op(p, l, op, n)?;
+                self.trace_route(p, l, op, n, input)?;
                 if dump {
                     self.dump_op(p, l, i, op, n)?;
                 }
@@ -2619,6 +2749,15 @@ impl Dyn {
                             seen = true;
                         }
                     }
+                }
+            }
+            if std::ptr::eq(p, &self.big) && self.tracing() {
+                let r = if p.d.width(Slot::S) > 0 { Slot::S } else { Slot::X };
+                let mut v = vec![0u16; n * p.d.width(r)];
+                copy_d2h_async(v.as_mut_ptr() as *mut _, p.slot(r), v.len() * 2, s)?;
+                self.dev.sync()?;
+                if let Some(t) = self.trace.borrow_mut().as_mut() {
+                    t.push(v);
                 }
             }
         }
@@ -2810,7 +2949,7 @@ impl Dyn {
                 }
             }
             match &self.graph {
-                Some(g) if one && !self.graphs_off.get() => {
+                Some(g) if one && !self.graphs_off.get() && !self.tracing() => {
                     g.launch(self.dev.stream)?;
                     self.replayed.set(true);
                     self.rplayed.set(None);
@@ -3192,7 +3331,7 @@ impl Dyn {
         unsafe {
             self.embed(&[token])?;
             match &self.graph {
-                Some(g) if !self.graphs_off.get() => {
+                Some(g) if !self.graphs_off.get() && !self.tracing() => {
                     g.launch(self.dev.stream)?;
                     self.replayed.set(true);
                     self.rplayed.set(None);

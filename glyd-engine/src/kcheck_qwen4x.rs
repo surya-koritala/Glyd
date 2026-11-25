@@ -238,7 +238,7 @@ pub fn layers(model: &Path, refd: &Path, a: &Args) -> Result<bool> {
             put(&e, &e.x, &x0)?;
             put(&e, &e.o, &r("a_out")?)?;
             put(&e, &e.inj[0], &f32s(refd, &format!("L{l}.a_inj.bin"))?)?;
-            e.kq.hc_post(s, e.x.ptr, e.o.ptr, e.inj[0].ptr, t, hid)?;
+            e.kq.hc_post(s, e.x.ptr, e.o.ptr, e.inj[0].ptr, t, hid, e.w.cfg.hc)?;
             ok &= stage("streams after attn", &read_bf16(&e, &e.x, t * hw)?, &widen(&r("mid")?), tol);
             // the experts' Gated Residual, the router, the experts, the update
             put(&e, &e.x, &r("mid")?)?;
@@ -282,7 +282,7 @@ pub fn layers(model: &Path, refd: &Path, a: &Args) -> Result<bool> {
             put(&e, &e.x, &r("mid")?)?;
             put(&e, &e.o, &r("m_out")?)?;
             put(&e, &e.inj[1], &f32s(refd, &format!("L{l}.m_inj.bin"))?)?;
-            e.kq.hc_post(s, e.x.ptr, e.o.ptr, e.inj[1].ptr, t, hid)?;
+            e.kq.hc_post(s, e.x.ptr, e.o.ptr, e.inj[1].ptr, t, hid, e.w.cfg.hc)?;
             ok &= stage("streams after the layer", &read_bf16(&e, &e.x, t * hw)?, &widen(&r("out")?), tol);
         }
         // the whole layer from its input, the engine's own values throughout

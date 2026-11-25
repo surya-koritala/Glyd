@@ -67,7 +67,7 @@ impl KernGlm {
     /// # Safety
     /// Live device buffers of the sizes the kernels read and write (their comments in kernels/glm.cu and kernels/residual.cu).
     pub unsafe fn streams(&self, s: Stream, e: u64, x: u64, n: u32, d: i32) -> Result<()> {
-        self.hc.streams(s, e, x, n, d)
+        self.hc.streams(s, e, x, n, d, 4)
     }
 
     /// The causal convolution and SiLU of n rows (the first c channels of rows xs apart), the bf16 state [3, c] read and written (qwen35.cu's `conv_silu`; `w32`: the weights fp32, `conv_silu_w32`).

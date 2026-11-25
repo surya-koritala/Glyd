@@ -509,7 +509,43 @@ and layers across GPUs (`ModelStep for Run`: a prompt in one call, a token a ste
 model (`ModelStep::draft`: a decode step is a drafting round, `spec_round`, each of its tokens sent and added as a step's; a request that
 asks for log-probabilities or a least length has plain steps). Condor's own engine (`qwenserve`, `qwen4x_serve.rs`'s `Qx` over
 `EngineQx`) is not the executor's and keeps its loop. As built (R3d, #140): the family's description runs on the executor and through the
-scheduler (the random case `qwen4x`, `dynamic/qwen4x.rs`); the release is still served by Condor's engine.
+scheduler (the random cases `qwen4x` and `qwen4x-s2`, `dynamic/qwen4x.rs`); the release is still served by Condor's engine.
+
+What the family's move is held to (`paritycheck`, and `logitscheck` after Condor's engine is gone). The two engines give the same bits
+through the first seven stages of layer 0 (the gated residual's norm, bottleneck, up product and mix; the linear attention's two products
+and its convolution) and part at the delta rule, where they run two kernels of one kind with different rounding points: the executor's is
+the kind's (the chunked kernel the Qwen3.5 layout runs: fp32 sums over normed q and k rounded to bf16), Condor's sums pairs of bf16 values
+in two passes. A layer kind has one kernel, so the executor's stays, and the family is held to the kind's CPU reference, not to Condor's
+engine:
+
+1. the stages before the delta rule have the same bits on both engines (checked while Condor's engine exists);
+2. wherever the executor's router chose other experts than the reference's own, the reference's router (fp32) is run on the executor's own
+   input for that token and layer (the block's normed input as the executor made it). Its choice there must be the executor's, or differ
+   from it by less than `kindcheck::NEAR` (1e-2) by its ranks on that same input. A choice that differs by `NEAR` or more on the same input
+   is a router that differs, and fails. How near the two choices are on the reference's own input is printed, and judges nothing;
+3. the executor's logits are within the kind's bound for the lossless level (the Qwen3.5 layout's fixtures': KL mean 1e-4, max 2.5e-4, the
+   best token on 85% of the rows with a clear lead) of the reference run again taking the executor's choices, on every row of both random
+   cases. A family has no bound of its own: the 5e-4 this family's fixture carried was fitted to a run of the executor and is withdrawn;
+4. the best token is the reference's own on every row where the reference's lead clears `CLEAR_LEAD`; the rows below it are printed.
+
+Why 2 and 3 and not a wider bound: the random model's routers leave choices within 1e-2 of the next expert, an engine that rounds anywhere
+takes some of them the other way, and one such choice moves its row, and the rows that read the states its pass wrote, by more than the
+bound allows arithmetic. A wider bound would cover that and a real fault alike. So the arithmetic is held, at the kind's bound, on the same
+choices (3), and the routers are held on the same inputs (2).
+
+Why 2 runs the reference's router on the executor's input and not on the reference's own: `NEAR` is kindcheck's constant, and there every
+body runs on the reference's own input, so a choice taken the other way can come only from the body's own arithmetic. In a whole model a
+later layer's router sees an input that already carries the earlier layers' bf16 roundings: on the first random case both of the family's
+engines are 2.3e-2 from fp32 at the fifth layer's output (its prompt), and on an A10 the executor's routers chose, against the reference's own input, experts
+1.2e-2 to 8.3e-2 apart by its ranks at 2 (`qwen4x`) and 11 (`qwen4x-s2`) tokens and layers, most of them in the long prompt's later
+layers (Condor's engine on `qwen4x`: 3, 1.7e-2 to 3.9e-2), while its logits on its own choices were within a KL of 3.2e-6 of the
+reference's. That margin measures the earlier layers' roundings, not the router. Given the same
+choices everything else is the reference's math (3); what is left to prove is the router itself, so it is held on the input it was given.
+On the same A10, on their own inputs the reference's router made the executor's choice at 25 of its 30 choices apart on `qwen4x` and 39
+of 40 on `qwen4x-s2`, the others near ties (1.7e-3 at most), and Condor's at 28 of its 35 (the rest near ties): every choice that was far
+from the reference's on the reference's own input, Condor's three among them, is the reference router's own on the engine's input.
+The figures against the reference's own choices and input are always printed beside them, and so are Condor's engine's by the same
+measures, its record before it is deleted.
 
 ### Rows sized by memory
 

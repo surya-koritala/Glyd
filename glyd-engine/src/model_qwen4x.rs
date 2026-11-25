@@ -168,24 +168,23 @@ impl KernQx {
         })
     }
 
-    /// xn [n, 4 d] = each stream of x [n, 4, d] normed, times (1 + w).
+    /// xn [n, hc d] = each of the hc streams of x [n, hc, d] normed, times (1 + w).
     ///
     /// # Safety
     /// Live device buffers of the sizes the kernels read and write (their comments in kernels/qwen4x.cu).
-    pub unsafe fn hc_norm(&self, s: Stream, x: u64, w: u64, xn: u64, n: usize, d: usize, eps: f32) -> Result<()> {
-        self.norm4(s, x, w, xn, n, d, eps, false)
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn hc_norm(&self, s: Stream, x: u64, w: u64, xn: u64, n: usize, d: usize, eps: f32, hc: usize) -> Result<()> {
+        self.norm4(s, x, w, xn, n, d, eps, false, hc)
     }
 
-    /// The same, the rms over each row's 4 d values where `whole`.
+    /// The same, the rms over each row's hc d values where `whole`.
     ///
     /// # Safety
     /// As `hc_norm`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn norm4(&self, s: Stream, x: u64, w: u64, xn: u64, n: usize, d: usize, eps: f32, whole: bool) -> Result<()> {
-        if d > 16 * 256 {
-            return err(format!("streams of {d}: the norm takes up to 4,096"));
-        }
-        launch!(self.hc_norm, [n as u32, 1, 1], [1024, 1, 1], s; x, w, xn, d as i32, eps, whole as i32)
+    pub unsafe fn norm4(&self, s: Stream, x: u64, w: u64, xn: u64, n: usize, d: usize, eps: f32, whole: bool, hc: usize) -> Result<()> {
+        streams_fit(d, hc)?;
+        launch!(self.hc_norm, [n as u32, 1, 1], [256 * hc as u32, 1, 1], s; x, w, xn, d as i32, eps, whole as i32, hc as i32)
     }
 
     /// The fused Gated Residual's first launch for n rows (at most 8): each stream's 1 / rms into rs [n, 4], the bottleneck's activations into lo [n, r], the streams' weights into inj [n, 4] where `injw` (bf16 [4, 4 d]) is
@@ -321,29 +320,31 @@ impl KernQx {
         launch!(self.i8bf16, [((orows * ocols / 4) as u32).div_ceil(256), 1, 1], [256, 1, 1], s; q, scale, out, rows as i32, cols as i32, orows as i32, ocols as i32)
     }
 
-    /// y = silu(y / 4) in place, `count` values.
+    /// y = silu(y / hc) in place, `count` values.
     ///
     /// # Safety
     /// As `hc_norm`.
-    pub unsafe fn silu4(&self, s: Stream, y: u64, count: usize) -> Result<()> {
-        launch!(self.silu4, [(count as u32).div_ceil(256), 1, 1], [256, 1, 1], s; y, count as i32)
+    pub unsafe fn silu4(&self, s: Stream, y: u64, count: usize, hc: usize) -> Result<()> {
+        launch!(self.silu4, [(count as u32).div_ceil(256), 1, 1], [256, 1, 1], s; y, count as i32, hc as i32)
     }
 
-    /// h [n, d] = the gated mean of the normed streams; inj [n, 4] fp32 from the inject product injl [n, 4] where given (0: none).
+    /// h [n, d] = the gated mean of the hc normed streams; inj [n, hc] fp32 from the inject product injl [n, hc] where given (0: none).
     ///
     /// # Safety
     /// As `hc_norm`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn hc_mix(&self, s: Stream, gw: u64, xn: u64, injl: u64, h: u64, inj: u64, n: usize, d: usize) -> Result<()> {
-        launch!(self.hc_mix, [n as u32, (d as u32).div_ceil(256), 1], [256, 1, 1], s; gw, xn, injl, h, inj, d as i32)
+    pub unsafe fn hc_mix(&self, s: Stream, gw: u64, xn: u64, injl: u64, h: u64, inj: u64, n: usize, d: usize, hc: usize) -> Result<()> {
+        streams_fit(d, hc)?;
+        launch!(self.hc_mix, [n as u32, (d as u32).div_ceil(256), 1], [256, 1, 1], s; gw, xn, injl, h, inj, d as i32, hc as i32)
     }
 
-    /// x [n, 4, d] += o [n, d] times each stream's weight inj [n, 4].
+    /// x [n, hc, d] += o [n, d] times each stream's weight inj [n, hc].
     ///
     /// # Safety
     /// As `hc_norm`.
-    pub unsafe fn hc_post(&self, s: Stream, x: u64, o: u64, inj: u64, n: usize, d: usize) -> Result<()> {
-        launch!(self.hc_post, [n as u32, (d as u32).div_ceil(256), 1], [256, 1, 1], s; x, o, inj, d as i32)
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn hc_post(&self, s: Stream, x: u64, o: u64, inj: u64, n: usize, d: usize, hc: usize) -> Result<()> {
+        launch!(self.hc_post, [n as u32, (d as u32).div_ceil(256), 1], [256, 1, 1], s; x, o, inj, d as i32, hc as i32)
     }
 
     /// The GDN's gated norm with the sigmoid gate, in place: core [n, nv 128], z rows zs apart, w bf16 [128].
@@ -485,7 +486,7 @@ impl KernQx {
         ih: usize,
         eps: f32,
     ) -> Result<()> {
-        self.ix_prep_at(s, qk, wq, cs, sn, half, pos, iq, (ik, 0), n, ih, eps)
+        self.ix_prep_at(s, qk, wq, cs, sn, half, pos, iq, (ik, 0), n, ih, eps, 128)
     }
 
     /// `ix_prep` into a cache of the executor's pages: `ik`'s rows through its block table (0: none).
@@ -507,17 +508,19 @@ impl KernQx {
         n: usize,
         ih: usize,
         eps: f32,
+        dim: usize,
     ) -> Result<()> {
-        launch!(self.ix_prep, [n as u32, ih as u32 + 1, 1], [128, 1, 1], s; qk, wq, cs, sn, half as i32, pos, iq, ik.0, ik.1, ih as i32, eps)
+        index_fits(dim, 1)?;
+        launch!(self.ix_prep, [n as u32, ih as u32 + 1, 1], [dim as u32, 1, 1], s; qk, wq, cs, sn, half as i32, pos, iq, ik.0, ik.1, ih as i32, eps, dim as i32)
     }
 
-    /// The keys of the blocks of 4 tokens the call's rows complete into pk.
+    /// The keys of the pools of 4 tokens the call's rows complete into pk (the release's: heads of 128).
     ///
     /// # Safety
     /// As `ix_prep`.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn ix_cmp(&self, s: Stream, ik: u64, wk: u64, cs: u64, sn: u64, half: usize, pos: u64, pk: u64, n: usize, eps: f32) -> Result<()> {
-        self.ix_cmp_at(s, (ik, 0), wk, cs, sn, half, pos, (pk, 0), n, eps)
+        self.ix_cmp_at(s, (ik, 0), wk, cs, sn, half, pos, (pk, 0), n, eps, 128, 4)
     }
 
     /// `ix_cmp` on caches of the executor's pages: the raw keys' and the pools' rows through their block tables (0: none).
@@ -537,8 +540,11 @@ impl KernQx {
         pk: (u64, u64),
         n: usize,
         eps: f32,
+        dim: usize,
+        block: usize,
     ) -> Result<()> {
-        launch!(self.ix_cmp, [(n as u32).div_ceil(4) + 1, 1, 1], [128, 1, 1], s; ik.0, ik.1, wk, cs, sn, half as i32, pos, pk.0, pk.1, n as i32, eps)
+        index_fits(dim, block)?;
+        launch!(self.ix_cmp, [(n as u32).div_ceil(block as u32) + 1, 1, 1], [dim as u32, 1, 1], s; ik.0, ik.1, wk, cs, sn, half as i32, pos, pk.0, pk.1, n as i32, eps, dim as i32, block as i32)
     }
 
     /// The indexer's scores of a prompt chunk's n rows on the tensor cores (`qx_ix_score`: four heads of 128, no head weights): scores [n, pmax] fp32 for the pools each row sees, `pools` the most a row of the call sees.
@@ -1186,7 +1192,7 @@ pub trait MoeBlockQx {
     /// As `forward`; `n` as the front's.
     unsafe fn back_post(&self, e: &EngineQx, n: usize, x: u64, inj: u64) -> Result<()> {
         self.back(e, e.o.ptr, n)?;
-        e.kq.hc_post(e.dev.stream, x, e.o.ptr, inj, n, e.w.cfg.hidden)
+        e.kq.hc_post(e.dev.stream, x, e.o.ptr, inj, n, e.w.cfg.hidden, e.w.cfg.hc)
     }
     /// Whether it takes a prompt layer by layer (`EngineQx::prefill` with `OptsQx::whole`): `whole_front` on each chunk of the prompt's rows, `whole_experts` once for them all (each expert read once for the prompt),
     /// `whole_back` on each chunk.
@@ -1613,6 +1619,9 @@ pub struct EngineQx {
     ng_ctx: [u32; 2],
     pub(crate) moe_scratch: OnceCell<MoeScratch>,
     pub trace: Option<TraceQx>,
+    /// Where Some: each named stage of a layer's halves (the gated residual's norm, bottleneck, up product and mix; the GDN's products, convolution, delta rule,
+    /// gated norm and out product; the block's output and the streams' update) adds its output's bf16 values in order, a check's view inside the layers (`stage_out`).
+    pub stages: std::cell::RefCell<Option<Vec<(&'static str, Vec<u16>)>>>,
     pub work_bytes: usize,
     /// The decode step in parts (`forward_segmented`): the graphs of the stretches of GPU work between the host's waits (made at the first step: a layer's by the layer's number + 1, 0 the stretch before the first), and
     /// whether a step runs so.
@@ -1889,6 +1898,7 @@ impl EngineQx {
         let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
         // (a part of a model split over GPUs: its layers; the final mixer, the LM head and the MTP head with the last one; the n-gram embedding's layer on the first part, where the rows are staged)
         let cfg = ConfigQx::load(dir)?;
+        cfg.release_shape(&dir.display().to_string())?;
         let (l0, l1) = o.span.unwrap_or((0, cfg.layers));
         if l0 >= l1 || l1 > cfg.layers || (l0 > 0 && cfg.ple.as_ref().is_some_and(|p| (l0..l1).contains(&p.layer))) {
             return err(format!("a part of layers {l0}..{l1} of {} (the n-gram embedding's layer goes on the first part)", cfg.layers));
@@ -2109,6 +2119,7 @@ impl EngineQx {
             ng_ctx: [eos, eos],
             moe_scratch: OnceCell::new(),
             trace: None,
+            stages: std::cell::RefCell::new(None),
             work_bytes,
             segs: std::cell::RefCell::new(Vec::new()),
             segmented: Cell::new(false),
@@ -2652,16 +2663,19 @@ impl EngineQx {
             }
         }
         if let Some((o, pinj)) = post {
-            self.kq.hc_post(s, x, o, pinj, n, c.hidden)?;
+            self.kq.hc_post(s, x, o, pinj, n, c.hidden, c.hc)?;
         }
-        self.kq.hc_norm(s, x, g.norm.ptr, self.xn.ptr, n, c.hidden, c.eps)?;
+        self.kq.hc_norm(s, x, g.norm.ptr, self.xn.ptr, n, c.hidden, c.eps, c.hc)?;
         crate::tmark!(s, "gr: norm");
+        self.stage_out("gated residual: norm", self.xn.ptr, n * hw)?;
         match &g.w {
             GrW::Mats(down, up) => {
                 self.lin(down, self.xn.ptr, n, self.lo.ptr)?;
                 crate::tmark!(s, "gr: down product");
-                self.kq.silu4(s, self.lo.ptr, n * c.hc_rank)?;
+                self.kq.silu4(s, self.lo.ptr, n * c.hc_rank, c.hc)?;
+                self.stage_out("gated residual: bottleneck", self.lo.ptr, n * c.hc_rank)?;
                 self.lin(up, self.lo.ptr, n, self.gw.ptr)?;
+                self.stage_out("gated residual: up product", self.gw.ptr, n * hw)?;
             }
             GrW::Q { r, rp, dq, ds, uq, us } => {
                 // (a prompt chunk: the int8 rows made bf16, the engine's dense products; the bottleneck padded with zeros to `rp`)
@@ -2669,7 +2683,7 @@ impl EngineQx {
                 self.kq.i8_bf16(s, dq.ptr, ds.ptr, w, *r, hw, *rp, hw)?;
                 self.kern.gemm_fill(s, self.xn.ptr, w, self.lo.ptr, n as i32, *rp as i32, hw as i32)?;
                 crate::tmark!(s, "gr: down product");
-                self.kq.silu4(s, self.lo.ptr, n * rp)?;
+                self.kq.silu4(s, self.lo.ptr, n * rp, c.hc)?;
                 self.kq.i8_bf16(s, uq.ptr, us.ptr, w, hw, *r, hw, *rp)?;
                 self.kern.gemm_fill(s, self.lo.ptr, w, self.gw.ptr, n as i32, hw as i32, *rp as i32)?;
             }
@@ -2682,7 +2696,25 @@ impl EngineQx {
             }
             None => 0,
         };
-        self.kq.hc_mix(s, self.gw.ptr, self.xn.ptr, injl, h, inj, n, c.hidden)
+        self.kq.hc_mix(s, self.gw.ptr, self.xn.ptr, injl, h, inj, n, c.hidden, c.hc)?;
+        self.stage_out("gated residual: mix", h, n * c.hidden)
+    }
+
+    /// A check's view of a stage's output (`stages`): its first `count` bf16 values at `ptr`, after the stream's work so far.
+    ///
+    /// # Safety
+    /// `ptr` holds `count` bf16 values once the stream's queued work is done.
+    unsafe fn stage_out(&self, what: &'static str, ptr: u64, count: usize) -> Result<()> {
+        if self.stages.borrow().is_none() {
+            return Ok(());
+        }
+        let mut v = vec![0u16; count];
+        crate::dev::copy_d2h_async(v.as_mut_ptr() as *mut _, ptr, count * 2, self.dev.stream)?;
+        self.dev.sync()?;
+        if let Some(t) = self.stages.borrow_mut().as_mut() {
+            t.push((what, v));
+        }
+        Ok(())
     }
 
     /// PLE on the n rows (their n-gram rows in `ple_e`): the key and value products, the gate, the convolution, the sum into the streams.
@@ -2724,6 +2756,7 @@ impl EngineQx {
         };
         self.lin(&ly.mats[0], self.h.ptr, n, mix)?;
         crate::tmark!(s, "gdn: qkvz product");
+        self.stage_out("linear attention: qkvz product", mix, n * row)?;
         // (a decode step's or a verification's few rows: the convolution beside the b and a product, then the rule with the gated norm, two launches for four)
         if let (true, Mat::Dense(wb, nb, kb)) = (n <= SPEC_ROWS && c.gate_sigmoid, &ly.mats[1]) {
             self.kq.gdn_conv_ba(s, mix, row, sm[0].ptr, conv, xc, n, cd, self.h.ptr, wb.ptr, ba, *nb, *nb, *kb)?;
@@ -2759,12 +2792,14 @@ impl EngineQx {
         }
         self.lin(&ly.mats[1], self.h.ptr, n, ba)?;
         crate::tmark!(s, "gdn: ba product");
+        self.stage_out("linear attention: ba product", ba, n * 2 * c.nv)?;
         if n > 16 {
             self.kq.conv_tok(s, mix, row, sm[0].ptr, conv, xc, n, cd)?;
         } else {
             self.k35.conv(s, mix, row as i32, sm[0].ptr, conv, xc, n as i32, cd as i32)?;
         }
         crate::tmark!(s, "gdn: convolution");
+        self.stage_out("linear attention: convolution", xc, n * cd)?;
         if self.chunked && n > 16 && !crate::tune!("GLYD_GDN_ONEPASS").is_some_and(|v| v == "1") {
             #[cfg(feature = "dev")]
             let check = if crate::tune!("GLYD_GDN_CHECK").is_some() && ly.idx % 12 == 5 {
@@ -2830,14 +2865,16 @@ impl EngineQx {
             )?;
         }
         crate::tmark!(s, "gdn: delta rule");
+        self.stage_out("linear attention: delta rule", self.core.ptr, n * vd)?;
         if !c.gate_sigmoid {
             return err("a GDN with a silu output gate: Qwen3.8-Flash-Next's is a sigmoid");
         }
         self.kq.gnorm(s, self.core.ptr, mix + (cd * 2) as u64, row, sm[3].ptr, n, c.nv, c.eps)?;
         crate::tmark!(s, "gdn: gated norm");
+        self.stage_out("linear attention: gated norm", self.core.ptr, n * vd)?;
         self.lin(&ly.mats[2], self.core.ptr, n, self.o.ptr)?;
         crate::tmark!(s, "gdn: out product");
-        Ok(())
+        self.stage_out("linear attention: out product", self.o.ptr, n * c.hidden)
     }
 
     /// An attention layer's mixer on the n rows in `h` (positions at `pos`, `start` tokens before them) into `o`: the q, k and v product, the norms and rotary, the cache; the indexer's product, its queries and
@@ -3099,8 +3136,9 @@ impl EngineQx {
         }
         crate::tmark!(s, "token mixer");
         if !defer {
-            self.kq.hc_post(s, x, self.o.ptr, self.inj[0].ptr, n, c.hidden)?;
+            self.kq.hc_post(s, x, self.o.ptr, self.inj[0].ptr, n, c.hidden, c.hc)?;
             crate::tmark!(s, "mHC update (mixer)");
+            self.stage_out("streams after the mixer", x, n * c.hc * c.hidden)?;
         }
         Ok(())
     }
@@ -3137,7 +3175,7 @@ impl EngineQx {
         moe.whole_experts(self, t)?;
         for &(j, n) in &parts {
             moe.whole_back(self, self.o.ptr, n, j)?;
-            self.kq.hc_post(s, xr(j), self.o.ptr, inj(j), n, c.hidden)?;
+            self.kq.hc_post(s, xr(j), self.o.ptr, inj(j), n, c.hidden, c.hc)?;
             crate::tmark!(s, "mHC update (feed-forward)");
         }
         Ok(())
@@ -3240,9 +3278,10 @@ impl EngineQx {
         crate::tmark!(s, "mHC mix (feed-forward)");
         ly.moe.as_ref().ok_or_else(|| Error("a layer without its block of experts".into()))?.forward(self, self.h.ptr, n, self.o.ptr)?;
         crate::tmark!(s, "experts or MLP");
-        self.kq.hc_post(s, self.x.ptr, self.o.ptr, self.inj[1].ptr, n, c.hidden)?;
+        self.stage_out("experts", self.o.ptr, n * c.hidden)?;
+        self.kq.hc_post(s, self.x.ptr, self.o.ptr, self.inj[1].ptr, n, c.hidden, c.hc)?;
         crate::tmark!(s, "mHC update (feed-forward)");
-        Ok(())
+        self.stage_out("streams after the experts", self.x.ptr, n * c.hc * c.hidden)
     }
 
     /// The token rows (in `o`) spread over the streams (on a part of a model split over GPUs: the part before it run, its streams taken), then the layers; where `head`, the final mixer of the last row, the LM head and
@@ -3907,9 +3946,9 @@ impl EngineQx {
         self.k35.rmsnorm(s, self.o.ptr, mh.ne.ptr, self.h.ptr, m as u32, hid as i32, c.eps)?;
         self.lin(&mh.fe, self.h.ptr, m, self.o.ptr)?;
         // the streams: normed as one vector, each projected by fc_hidden (4 m rows of hidden), the embedding's projection added to each
-        self.kq.norm4(s, prev, mh.nh.ptr, self.xn.ptr, m, hid, c.eps, true)?;
+        self.kq.norm4(s, prev, mh.nh.ptr, self.xn.ptr, m, hid, c.eps, true, c.hc)?;
         self.lin(&mh.fh, self.xn.ptr, c.hc * m, self.x.ptr)?;
-        self.kq.hc_post(s, self.x.ptr, self.o.ptr, self.ones4.ptr, m, hid)?;
+        self.kq.hc_post(s, self.x.ptr, self.o.ptr, self.ones4.ptr, m, hid, c.hc)?;
         self.mixer_half(&mh.layer, m, self.pos.ptr, pos0)
     }
 
@@ -3997,9 +4036,9 @@ impl EngineQx {
             self.stage_embed(pos0 + j + 1, &tokens[j..j + n], self.o.ptr)?;
             self.k35.rmsnorm(s, self.o.ptr, mh.ne.ptr, self.h.ptr, n as u32, hid as i32, c.eps)?;
             self.lin(&mh.fe, self.h.ptr, n, self.o.ptr)?;
-            self.kq.norm4(s, x, mh.nh.ptr, self.xn.ptr, n, hid, c.eps, true)?;
+            self.kq.norm4(s, x, mh.nh.ptr, self.xn.ptr, n, hid, c.eps, true, c.hc)?;
             self.lin(&mh.fh, self.xn.ptr, c.hc * n, x)?;
-            self.kq.hc_post(s, x, self.o.ptr, self.ones4.ptr, n, hid)?;
+            self.kq.hc_post(s, x, self.o.ptr, self.ones4.ptr, n, hid, c.hc)?;
         }
         self.layer_whole(&mh.layer, t, pos0)?;
         let last = xw + ((t - 1) * hw * 2) as u64;
@@ -4255,16 +4294,34 @@ pub fn read_expert(ck: &Checkpoint, name: &str, e: usize) -> Result<Vec<u16>> {
     Ok(b.as_chunks::<2>().0.iter().map(|x| u16::from_le_bytes(*x)).collect())
 }
 
+/// The indexer's kernels take heads of a multiple of 32 up to 1,024 values (a thread each) over pools of at least one token.
+pub fn index_fits(dim: usize, block: usize) -> Result<()> {
+    if dim == 0 || dim > 1024 || !dim.is_multiple_of(32) || block == 0 {
+        return err(format!("index heads of {dim} over pools of {block}: the kernels take heads of a multiple of 32 up to 1,024"));
+    }
+    Ok(())
+}
+
+/// The gated residuals' kernels take 1 to 4 streams of up to 4,096 values (a block's 256 threads a stream, 16 values a thread).
+pub fn streams_fit(d: usize, hc: usize) -> Result<()> {
+    if !(1..=4).contains(&hc) || d > 16 * 256 {
+        return err(format!("{hc} streams of {d}: the kernels take 1 to 4 streams of up to 4,096"));
+    }
+    Ok(())
+}
+
 /// A mixture-of-experts layer with every expert on the GPU in a block layout.
 pub struct QxMoe {
     layer: MoeLayer,
 }
 
 impl QxMoe {
-    /// Layer `l`'s block (`l` = layers: the MTP head's): the router and the shared expert's gate bf16, the shared expert and the experts packed at `level` (Int6, Int5 or Int4).
+    /// Layer `l`'s block (`l` = layers: the MTP head's): the router and the shared expert's gate bf16, the shared expert and the experts packed at `level`: Int6, Int5
+    /// or Int4 (each expert's block codes), or a lossless layout (Tiered, Twelve: every expert's rows of a matrix stacked as one pack, decoded to the checkpoint's bits).
     pub fn load(l: usize, c: &ConfigQx, ck: &Checkpoint, level: Layout) -> Result<QxMoe> {
-        if !matches!(level, Layout::Int6 | Layout::Int5 | Layout::Int4) {
-            return err(format!("the experts are held at the kestrel, swift and wren levels: {level:?} is asked"));
+        let lossless = matches!(level, Layout::Tiered | Layout::Twelve);
+        if !lossless && !matches!(level, Layout::Int6 | Layout::Int5 | Layout::Int4) {
+            return err(format!("the experts are held at the penguin, kestrel, swift and wren levels: {level:?} is asked"));
         }
         let p = format!("{}.mlp", c.layer_name(l));
         let router = tensor(ck, &format!("{p}.gate.weight"))?;
@@ -4277,9 +4334,20 @@ impl QxMoe {
             down: upload_packed(read_pack(ck, None, s_down, level)?)?,
             gate: Some(gate),
         };
+        let (gu, dn) = (format!("{p}.experts.gate_up_proj"), format!("{p}.experts.down_proj"));
+        if lossless {
+            let stack = |name: &str, rows: usize, cols: usize| -> Result<ExpertStack> {
+                let mut w = Vec::with_capacity(c.experts * rows * cols);
+                for e in 0..c.experts {
+                    w.extend(read_expert(ck, name, e)?);
+                }
+                ExpertStack::lossless(upload_packed(crate::weights::pack_words(&w, c.experts * rows, cols, level, name)?)?, c.experts)
+            };
+            let w = MoeWeights { router, bias: None, escale: None, up: stack(&gu, 2 * c.inter, c.hidden)?, down: Down::Block(stack(&dn, c.hidden, c.inter)?) };
+            return Ok(QxMoe { layer: MoeLayer::new(moe_cfg(c), w, Some(shared))? });
+        }
         let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
         let (mut up, mut down): (Vec<glyd_gpu::pack::Tiered>, Vec<glyd_gpu::pack::Tiered>) = (Vec::new(), Vec::new());
-        let (gu, dn) = (format!("{p}.experts.gate_up_proj"), format!("{p}.experts.down_proj"));
         ordered(
             2 * c.experts,
             threads,

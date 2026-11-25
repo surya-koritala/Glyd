@@ -329,6 +329,18 @@ impl ExpertStack {
         })
     }
 
+    /// The experts as the GPU holds them, read back and decoded on the host ([experts rows, cols], bf16), where the stack is a lossless level's one pack
+    /// (`lossless`): a check's, which holds the lossless level's experts to the checkpoint's bits. None: a stack it has no view of (the experts' own
+    /// packs end to end, a cache's places). A lossy level's block codes (six, five or four bits) are an error: at the lossless level that is the fault
+    /// the check is for.
+    pub fn held_words(&self) -> Result<Option<Vec<u16>>> {
+        match &self._bufs {
+            Keep::Pack(p) => p.words().map(Some),
+            _ if [INT6_TAG, INT5_TAG, INT4_TAG].contains(&self.tag) => err(format!("experts in a lossy level's block codes (layout tag {})", self.tag)),
+            _ => Ok(None),
+        }
+    }
+
     /// No experts' buffers, the shape alone: a layer whose experts are held in another format (`MoeLayer::f8`).
     pub fn shape_only(experts: usize, rows: usize, cols: usize) -> ExpertStack {
         let pack = Pack { data: 0, words: Words::Tiered { blocks: 0, block_base: 0, tiers: [0; 3] }, rows: (experts * rows) as i64, cols: cols as i64 };
@@ -1159,6 +1171,20 @@ impl MoeLayer {
             })?;
         }
         Ok(())
+    }
+
+    /// The routed experts' two stacks as the GPU holds them, decoded on the host (`ExpertStack::held_words`): the first products' rows [experts rows,
+    /// hidden] and the second's [experts hidden, inter]. None where either is in a form with no view (another format's experts, a second product in
+    /// rows of its own); an error where either is a lossy level's block codes.
+    pub fn held_experts(&self) -> Result<Option<(Vec<u16>, Vec<u16>)>> {
+        if self.f8.is_some() || self.hb.is_some() {
+            return Ok(None);
+        }
+        let Down::Block(d) = &self.w.down else { return Ok(None) };
+        Ok(match (self.w.up.held_words()?, d.held_words()?) {
+            (Some(up), Some(down)) => Some((up, down)),
+            _ => None,
+        })
     }
 
     /// Device bytes of the layer's weights.

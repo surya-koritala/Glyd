@@ -6,6 +6,7 @@
 use crate::cb_pack::{CbPack, LayerMap};
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result, Stream};
+use crate::kern_nh::{MoeBlock, NhHost};
 use crate::launch;
 use crate::model_qwen4x::{moe_cfg, EngineQx, MoeBlockQx};
 use crate::moe::{route_with, select_with, MoeCfg, MoeScratch};
@@ -588,18 +589,18 @@ impl QxMoeCb {
     }
 
     /// The MoE scratch every layer shares, and this module's beside it, made by the first call.
-    fn scratch<'a>(&'a self, e: &'a EngineQx) -> Result<(&'a MoeScratch, &'a QcScratch)> {
-        if e.moe_scratch.get().is_none() {
-            let _ = e.moe_scratch.set(MoeScratch::routing(&e.dev, self.cfg.experts, self.cfg.router.top_k, H, e.front_rows())?);
+    fn scratch<'a>(&'a self, e: &'a dyn QcHost) -> Result<(&'a MoeScratch, &'a QcScratch)> {
+        if e.moe_scratch().get().is_none() {
+            let _ = e.moe_scratch().set(MoeScratch::routing(e.dev(), self.cfg.experts, self.cfg.router.top_k, H, e.front_rows())?);
         }
-        let sc = e.moe_scratch.get().ok_or_else(|| Error("the mixture-of-experts scratch is not made".into()))?;
+        let sc = e.moe_scratch().get().ok_or_else(|| Error("the mixture-of-experts scratch is not made".into()))?;
         if self.common.scratch.get().is_none() {
             // (the front's buffers for `front_rows`, the per-pair products' for the engine's chunk)
             let (n, k) = (e.front_rows(), self.cfg.router.top_k);
             let pass = e.chunk().min(PAIR_TOKENS) * k;
             let si = self.shared.inter;
             let made = QcScratch {
-                kern: KernQc::load(&e.dev)?,
+                kern: KernQc::load(e.dev())?,
                 xr: Buf::new(n * H * 4)?,
                 xrb: Buf::new(n * H * 2)?,
                 gids: Buf::new(n * k * 8)?,
@@ -625,8 +626,8 @@ impl QxMoeCb {
     ///
     /// # Safety
     /// As `MoeBlockQx::forward`.
-    unsafe fn run_rows(&self, e: &EngineQx, h: u64, n: usize, out: u64) -> Result<()> {
-        let s = e.dev.stream;
+    unsafe fn run_rows(&self, e: &dyn QcHost, h: u64, n: usize, out: u64) -> Result<()> {
+        let s = e.dev().stream;
         let mut c = self.cfg;
         if self.common.topk.get() != 0 {
             c.router.top_k = self.common.topk.get().min(self.cfg.router.top_k);
@@ -661,7 +662,7 @@ impl QxMoeCb {
             crate::tmark!(s, "shared expert");
             Ok(())
         };
-        self.store.run_early(self.layer, &e.dev, &call, &mut early, &mut |stage, wave, waves, hy| match stage {
+        self.store.run_early(self.layer, e.dev(), &call, &mut early, &mut |stage, wave, waves, hy| match stage {
             Stage::Products => {
                 if !hy.gpu {
                     return Ok(());
@@ -688,10 +689,10 @@ impl QxMoeCb {
     /// # Safety
     /// As `MoeBlockQx::forward`; the buffers hold n rows.
     #[allow(clippy::too_many_arguments)]
-    unsafe fn stream_experts(&self, e: &EngineQx, cs: &QcScratch, n: usize, xrb: u64, gids: u64, wts: u64, y: u64) -> Result<()> {
-        let s = e.dev.stream;
+    unsafe fn stream_experts(&self, e: &dyn QcHost, cs: &QcScratch, n: usize, xrb: u64, gids: u64, wts: u64, y: u64) -> Result<()> {
+        let s = e.dev().stream;
         if cs.pre.get().is_none() {
-            let _ = cs.pre.set(crate::cb2_prefill::Cb2Kern::load_dims(&e.dev, H, I, NO_CLAMP)?);
+            let _ = cs.pre.set(crate::cb2_prefill::Cb2Kern::load_dims(e.dev(), H, I, NO_CLAMP)?);
         }
         let kern = cs.pre.get().ok_or_else(|| Error("the streaming prefill is not made".into()))?;
         kern.pinned.set(self.common.pin_pack.get());
@@ -721,7 +722,7 @@ impl QxMoeCb {
             None if n > HOST_ROWS => kern.host.set(None),
             None => kern.host.set(Some(share.filter(|h| h.auto).unwrap_or(crate::cb2_prefill::HostShare { max_rows: 12, threads: 12, auto: true }))),
         }
-        crate::cb2_prefill::cb2_prefill_experts(&e.dev, kern, &descs, n, self.cfg.router.top_k, xrb, gids, wts, y, s)?;
+        crate::cb2_prefill::cb2_prefill_experts(e.dev(), kern, &descs, n, self.cfg.router.top_k, xrb, gids, wts, y, s)?;
         if crate::tune!("GLYD_CB2_HOSTLOG").is_some() && kern.host.get().is_some() {
             let t = kern.took.get();
             eprintln!(
@@ -802,8 +803,8 @@ impl QxMoeCb {
     ///
     /// # Safety
     /// As `MoeBlockQx::forward`.
-    unsafe fn shared_out(&self, e: &EngineQx, cs: &QcScratch, h: u64, n: usize, dst: u64) -> Result<()> {
-        let (s, k, sh, si) = (e.dev.stream, &cs.kern, &self.shared, self.shared.inter);
+    unsafe fn shared_out(&self, e: &dyn QcHost, cs: &QcScratch, h: u64, n: usize, dst: u64) -> Result<()> {
+        let (s, k, sh, si) = (e.dev().stream, &cs.kern, &self.shared, self.shared.inter);
         if n <= 8 {
             // (H a multiple of 512, I of 128: the kernels' loads)
             let (k1, k2) = (crate::model_qwen4x::rows_kernel(&k.sh1, n), crate::model_qwen4x::rows_kernel(&k.sh2, n));
@@ -811,10 +812,10 @@ impl QxMoeCb {
             return launch!(k2, [(H as u32).div_ceil(32), 1, 1], [256, 1, 1], s; cs.sact.ptr, sh.dn_q.ptr, sh.dn_s.ptr, cs.sg.ptr, dst, n as i32, H as i32, si as i32);
         }
         launch!(k.i8bf16, [((2 * si * H / 4) as u32).div_ceil(256), 1, 1], [256, 1, 1], s; sh.gu_q.ptr, sh.gu_s.ptr, cs.sw.ptr, (2 * si) as i32, H as i32, (2 * si) as i32, H as i32)?;
-        e.kern.gemm_fill(s, h, cs.sw.ptr, cs.sgu.ptr, n as i32, (2 * si) as i32, H as i32)?;
+        e.gemm(h, cs.sw.ptr, cs.sgu.ptr, n as i32, (2 * si) as i32, H as i32)?;
         launch!(k.swiglu, [((n * si) as u32).div_ceil(256), 1, 1], [256, 1, 1], s; cs.sgu.ptr, cs.sact.ptr, n as i32, si as i32)?;
         launch!(k.i8bf16, [((H * si / 4) as u32).div_ceil(256), 1, 1], [256, 1, 1], s; sh.dn_q.ptr, sh.dn_s.ptr, cs.sw.ptr, H as i32, si as i32, H as i32, si as i32)?;
-        e.kern.gemm_fill(s, cs.sact.ptr, cs.sw.ptr, dst, n as i32, H as i32, si as i32)?;
+        e.gemm(cs.sact.ptr, cs.sw.ptr, dst, n as i32, H as i32, si as i32)?;
         launch!(k.small, [n as u32, 1, 1], [256, 1, 1], s; h, H as i32, sh.gate.ptr, cs.slog.ptr, 1i32, 1i32, H as i32)?;
         launch!(k.gate_rows, [((n * H) as u32).div_ceil(256), 1, 1], [256, 1, 1], s; dst, cs.slog.ptr, n as i32, H as i32)
     }
@@ -823,13 +824,17 @@ impl QxMoeCb {
     ///
     /// # Safety
     /// As `MoeBlockQx::forward`.
-    unsafe fn shared_add(&self, e: &EngineQx, cs: &QcScratch, out: u64, n: usize, src: u64) -> Result<()> {
-        launch!(cs.kern.add, [((n * H) as u32).div_ceil(256), 1, 1], [256, 1, 1], e.dev.stream; out, src, (n * H) as i32)
+    unsafe fn shared_add(&self, e: &dyn QcHost, cs: &QcScratch, out: u64, n: usize, src: u64) -> Result<()> {
+        launch!(cs.kern.add, [((n * H) as u32).div_ceil(256), 1, 1], [256, 1, 1], e.dev().stream; out, src, (n * H) as i32)
     }
 }
 
-impl MoeBlockQx for QxMoeCb {
-    unsafe fn forward(&self, e: &EngineQx, h: u64, n: usize, out: u64) -> Result<()> {
+impl QxMoeCb {
+    /// The block on n rows at `h` into `out`, whichever engine runs it: a long call streamed, else passes of at most `PAIR_TOKENS` rows over the cache's places.
+    ///
+    /// # Safety
+    /// As `MoeBlockQx::forward`.
+    unsafe fn rows(&self, e: &dyn QcHost, h: u64, n: usize, out: u64) -> Result<()> {
         self.pmap_stale.set(true);
         if n >= STREAM_MIN && self.common.stream.get() {
             return self.run_rows(e, h, n, out);
@@ -842,6 +847,83 @@ impl MoeBlockQx for QxMoeCb {
             r += m;
         }
         Ok(())
+    }
+}
+
+/// What a block's own calls read of the engine that runs them: Condor's (`EngineQx`) or the executor's (src/dynamic, through `NhHost`).
+pub trait QcHost {
+    fn dev(&self) -> &Dev;
+    fn moe_scratch(&self) -> &OnceCell<MoeScratch>;
+    fn chunk(&self) -> usize;
+    /// The rows the front's scratch takes at once (`EngineQx::front_rows`; the executor's chunk).
+    fn front_rows(&self) -> usize;
+    /// y [m, n] = x [m, k] w^T in bf16, w a block's own rows on the GPU.
+    ///
+    /// # Safety
+    /// Live device buffers of those sizes, on the engine's stream.
+    unsafe fn gemm(&self, x: u64, w: u64, y: u64, m: i32, n: i32, k: i32) -> Result<()>;
+}
+
+impl QcHost for EngineQx {
+    fn dev(&self) -> &Dev {
+        &self.dev
+    }
+    fn moe_scratch(&self) -> &OnceCell<MoeScratch> {
+        &self.moe_scratch
+    }
+    fn chunk(&self) -> usize {
+        EngineQx::chunk(self)
+    }
+    fn front_rows(&self) -> usize {
+        EngineQx::front_rows(self)
+    }
+    unsafe fn gemm(&self, x: u64, w: u64, y: u64, m: i32, n: i32, k: i32) -> Result<()> {
+        self.kern.gemm_fill(self.dev.stream, x, w, y, m, n, k)
+    }
+}
+
+/// The executor as the block's host.
+struct OnNh<'a>(&'a dyn NhHost);
+
+impl QcHost for OnNh<'_> {
+    fn dev(&self) -> &Dev {
+        self.0.dev()
+    }
+    fn moe_scratch(&self) -> &OnceCell<MoeScratch> {
+        self.0.moe_scratch()
+    }
+    fn chunk(&self) -> usize {
+        self.0.chunk()
+    }
+    fn front_rows(&self) -> usize {
+        self.0.chunk()
+    }
+    unsafe fn gemm(&self, x: u64, w: u64, y: u64, m: i32, n: i32, k: i32) -> Result<()> {
+        self.0.gemm(x, w, y, m, n, k)
+    }
+}
+
+/// The block on the executor (`Op::Moe` of a block whose experts are not all on the GPU runs the block's own launches over the executor's buffers): the router,
+/// the routed experts from the shared expert store (src/offload.rs: places on the GPU, the host's memory behind them), the shared expert. A call reads the
+/// router's choices on the host, so no graph captures it; the executor ends each step's statistics in its store.
+impl MoeBlock for QxMoeCb {
+    unsafe fn forward(&self, e: &dyn NhHost, h: u64, n: usize, out: u64) -> Result<()> {
+        self.rows(&OnNh(e), h, n, out)
+    }
+    fn bytes(&self) -> usize {
+        MoeBlockQx::bytes(self)
+    }
+    fn reads_host(&self) -> bool {
+        true
+    }
+    fn store(&self) -> Option<Rc<ExpertStore>> {
+        Some(self.store.clone())
+    }
+}
+
+impl MoeBlockQx for QxMoeCb {
+    unsafe fn forward(&self, e: &EngineQx, h: u64, n: usize, out: u64) -> Result<()> {
+        self.rows(e, h, n, out)
     }
 
     fn segmented(&self) -> bool {
