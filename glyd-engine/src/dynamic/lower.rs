@@ -864,13 +864,22 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
 }
 
 /// Nemotron-H (Nemotron 3 Super, Nemotron 3.5 Lightning): a block a layer, Mamba-2, attention without a positional encoding, or a mixture of experts (its block of
-/// experts is moe_nh.rs's); every layer x + mixer(norm(x)), the final norm on the last row. The matrices, small tensors and blocks are kern_nh.rs's loader's
-/// (`dynamic::nemotron::describe` indexes them in its order); stage `st` of a model split across GPUs.
+/// experts is moe_nh.rs's); every layer x + mixer(norm(x)), the final norm on the last row; stage `st` of a model split across GPUs. Every matrix and small
+/// tensor the operations use is named from the description's roles, in the order they index them (`dynamic::nemotron::describe`'s), sized by the kinds'
+/// widths: a layer's norm, then a Mamba-2 layer's convolution's weight and bias, A_log, D, dt_bias and gated norm; the final norm. Matrices: a Mamba-2 layer's
+/// in and out products, an attention layer's q, k and v as one and o; the embedding, then the head where it is not the embedding. A layer's experts are its
+/// block's, read apart.
 pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
     use super::nemotron::per_layer;
     use crate::kern_nh::{NH_N, NH_P};
     use crate::nemotron::NhKind;
     let m = &d.desc;
+    let one = |roles: &[(String, Source)], r: &str| match role(roles, r) {
+        Some(Source::Tensor(n)) => Ok(n.clone()),
+        x => err(format!("Nemotron-H: the role {r} is {x:?}, where one tensor is")),
+    };
+    let it = |members: Vec<String>, rows: usize, cols: usize| Item { members, rows, cols };
+    let (mut mats, mut small) = (Vec::new(), Vec::new());
     let eps = m.blocks.first().map_or(1e-5, |b| b.norm_in.eps);
     let (mut mamba, mut att) = (None, None);
     let mut kinds = Vec::with_capacity(m.blocks.len());
@@ -917,8 +926,14 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
         } else {
             ops.push(Op::NormAdd { y: Slot::O, w: s0, plus1: false });
         }
+        let r = &d.blocks[l];
+        small.push(one(r, "norm_in")?);
         match kind {
             NhKind::Mamba => {
+                mats.extend([it(vec![one(r, "in")?], row, hid), it(vec![one(r, "o")?], hid, di)]);
+                for x in ["conv", "conv_bias", "a_log", "d", "dt_bias", "norm"] {
+                    small.push(one(r, x)?);
+                }
                 let (conv, ssm) = (states.len(), states.len() + 1);
                 states.push(3 * cd * 2);
                 states.push(mb.heads * NH_P * NH_N * 4);
@@ -931,6 +946,7 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
                 ]);
             }
             NhKind::Attention => {
+                mats.extend([it(["q", "k", "v"].iter().map(|x| one(r, x)).collect::<Result<_>>()?, qkv_w, hid), it(vec![one(r, "o")?], hid, nq * hd)]);
                 let ring = rings.len();
                 rings.push(Ring::kv(hd, nk, 0));
                 let a = att.ok_or_else(|| Error("Nemotron-H: an attention layer of no kind".into()))?;
@@ -953,6 +969,21 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
     }
     let e = n_mats;
     let lm = if d.head.is_none() { e } else { e + 1 };
+    // (the final norm, the embedding and the head: named on every stage, a stage loading the ones it reads)
+    small.push(d.final_norm.clone());
+    mats.push(it(vec![d.embed.clone()], m.vocab, hid));
+    if let Some(h) = &d.head {
+        mats.push(it(vec![h.clone()], m.vocab, hid));
+    }
+    if (mats.len(), small.len()) != (lm + 1, n_small + 1) {
+        return err(format!(
+            "Nemotron-H: {} matrices and {} small tensors named, where its operations index {} and {}",
+            mats.len(),
+            small.len(),
+            lm + 1,
+            n_small + 1
+        ));
+    }
     let mut widths = [0usize; SLOTS];
     for (s, w) in [
         (Slot::X, hid),
@@ -974,8 +1005,8 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
         eps,
         max_pos,
         widths,
-        mats: Vec::new(),
-        small: Vec::new(),
+        mats,
+        small,
         forms: Vec::new(),
         ropes: Vec::new(),
         rings,
@@ -1574,7 +1605,7 @@ mod tests {
     }
 
     /// Nemotron-H lowered from Nemotron 3 Super's released config and from the mixture-of-experts toy's, whole and as a split's stages, is the executor's own
-    /// description of it.
+    /// description of it with its names left out, and names only the description's tensors.
     #[test]
     fn nemotron_lowered_is_the_executors_own_description() {
         for f in ["nemotron_h_config.json", "nemotron_h_moetoy_config.json"] {
@@ -1600,7 +1631,11 @@ mod tests {
                     }
                     Ok(own) => (own, nemotron(&kinds, c.eos.clone(), c.max_pos, &st).unwrap_or_else(|e| panic!("{f}: {}", e.msg))),
                 };
-                let (a, b) = (format!("{own:#?}"), format!("{lowered:#?}"));
+                // (every tensor it names is the description's)
+                let names = kinds.names();
+                assert_eq!(super::super::unnamed(&lowered), None, "{f}");
+                assert!(lowered.mats.iter().flat_map(|it| &it.members).chain(&lowered.small).all(|m| names.contains(m)), "{f}");
+                let (a, b) = (format!("{own:#?}"), format!("{:#?}", nameless(&lowered)));
                 if a != b {
                     let first = a.lines().zip(b.lines()).enumerate().find(|(_, (x, y))| x != y);
                     panic!("{f}: the lowered description differs at line {first:?}");
@@ -2433,10 +2468,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Legacy coverage, of a layout whose loader is still its own (it goes when the executor's loader reads the layout): the executor's loader's rules, on the
-    /// tensors of the Mamba-2 layout's random model named in that loader's order (src/kern_nh.rs), make that loader's choices: the same
-    /// matrices dense (the parts the packer does not take), every small tensor as saved in bf16 (none read wider). Its description names no tensor yet, so it
-    /// loads by its own loader still, and the executor's refuses it.
+    /// The Nemotron-H lowering names its tensors as its own loader reads them (src/kern_nh.rs: `layer_packs` and `layer_kept` in that loader's order), on the
+    /// random model whole and as a split's stages, and the executor's loader's rules on them make that loader's choices: the same matrices dense (the parts
+    /// the packer does not take), every small tensor as saved in bf16 (none read wider).
     #[cfg(feature = "dev")]
     #[test]
     fn the_executors_rules_on_nemotron_make_its_own_loaders_choices() {
@@ -2444,23 +2478,34 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("glyd-nh-loader-{}", std::process::id()));
         crate::kcheck_nh::random(&dir, 0, 16).unwrap();
         let c = crate::nemotron::ConfigNemotronH::load(&dir).unwrap();
-        let mut d = super::super::nemotron::lowered(&dir, &c, &super::super::Stage::whole(c.layers)).unwrap();
-        // (its description names none of its tensors: kern_nh's loader fills them by index; named here in that loader's order, the rules are checked on them)
-        assert_eq!(super::super::unnamed(&d), Some(0), "the description names its matrices: Nemotron-H can load through the executor's loader");
+        // (the loader's matrices and small tensors in its order, of the stage's layers; the final norm, the embedding and the head named on every stage)
+        let half = c.layers / 2;
+        for st in [
+            super::super::Stage::whole(c.layers),
+            super::super::Stage { layers: (0, half), first: true, last: false },
+            super::super::Stage { layers: (half, c.layers), first: false, last: true },
+        ] {
+            let d = super::super::nemotron::lowered(&dir, &c, &st).unwrap();
+            let it = |p: &crate::qwen35::Pack35| (p.parts.iter().map(|x| x.0.clone()).collect::<Vec<_>>(), p.rows(), p.cols);
+            let mut mats: Vec<_> =
+                (st.layers.0..st.layers.1).filter(|&l| c.kinds[l] != crate::nemotron::NhKind::Moe).flat_map(|l| c.layer_packs(l)).map(|p| it(&p)).collect();
+            mats.push((vec![format!("{}embeddings.weight", c.prefix)], c.vocab, c.hidden));
+            if !c.tie {
+                mats.push((vec!["lm_head.weight".into()], c.vocab, c.hidden));
+            }
+            let mut small = Vec::new();
+            for l in st.layers.0..st.layers.1 {
+                let kept = c.layer_kept(l);
+                let n = if c.kinds[l] == crate::nemotron::NhKind::Mamba { kept.len() } else { 1 };
+                small.extend(kept.into_iter().take(n).map(|t| t.name));
+            }
+            small.push(format!("{}norm_f.weight", c.prefix));
+            let got: Vec<_> = d.mats.iter().map(|x| (x.members.clone(), x.rows, x.cols)).collect();
+            assert_eq!((got, &d.small), (mats, &small), "{st:?}");
+            assert_eq!((super::super::unnamed(&d), d.small.len()), (None, d.final_norm.unwrap().0 + 1), "{st:?}");
+        }
+        let d = super::super::nemotron::lowered(&dir, &c, &super::super::Stage::whole(c.layers)).unwrap();
         let packs: Vec<crate::qwen35::Pack35> = (0..c.layers).filter(|&l| c.kinds[l] != crate::nemotron::NhKind::Moe).flat_map(|l| c.layer_packs(l)).collect();
-        let it = |p: &crate::qwen35::Pack35| Item { members: p.parts.iter().map(|x| x.0.clone()).collect(), rows: p.rows(), cols: p.cols };
-        d.mats = packs.iter().map(it).collect();
-        d.mats.push(Item { members: vec![format!("{}embeddings.weight", c.prefix)], rows: c.vocab, cols: c.hidden });
-        if !c.tie {
-            d.mats.push(Item { members: vec!["lm_head.weight".into()], rows: c.vocab, cols: c.hidden });
-        }
-        for l in 0..c.layers {
-            let kept = c.layer_kept(l);
-            let n = if c.kinds[l] == crate::nemotron::NhKind::Mamba { kept.len() } else { 1 };
-            d.small.extend(kept.into_iter().take(n).map(|t| t.name));
-        }
-        d.small.push(format!("{}norm_f.weight", c.prefix));
-        assert_eq!((super::super::unnamed(&d), d.small.len()), (None, d.final_norm.unwrap().0 + 1));
         let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
         let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
         let dense: std::collections::HashSet<String> = packs.iter().filter(|p| !p.packable()).flat_map(|p| p.parts.iter().map(|x| x.0.clone())).collect();
