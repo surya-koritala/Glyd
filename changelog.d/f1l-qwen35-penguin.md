@@ -1,2 +1,2 @@
 - The Qwen3.5 layout (Qwen3.5, 3.6 and 3.8 dense) runs at penguin, lossless: `glyd run Qwen/Qwen3.8-27B` loads it on the dynamic route, on one GPU where it fits (served to several users at once through the scheduler) or with its layers cut over the machine's GPUs (two A100 40 GB or two RTX 3090 cards; one user at a time there). Its lossy levels stay on one GPU as before. `fit` plans it from the files' headers: Qwen3.8-27B at about 36.1 GiB by the planner's estimate, 39.1 GiB on an A100 or H100, which holds it in the 12-bit layout whose one-token product reads faster there (not yet measured on a GPU).
-- The dynamic route reads `--ctx` as `--context`, as the one-GPU paths do.
+- The dynamic route reads `--ctx` as `--context`, as the one-GPU paths do. Part of #331.

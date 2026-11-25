@@ -505,7 +505,7 @@ pub fn cu(call: &str, status: c_int) -> Result<()> {
 }
 
 /// The C API version this binding is written for (glyd_gpu.h's GLYD_GPU_API_VERSION).
-pub const API_VERSION: c_int = 24;
+pub const API_VERSION: c_int = 25;
 
 /// The name a library call goes by in an error: the function's own.
 macro_rules! call {
@@ -1576,7 +1576,6 @@ impl Lib {
     }
 
     /// `GpuOps::f8h_plain` by the library's own kernels: the oracle of the engine's (`fold`).
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn library_f8h_plain(&self, plain: Option<bool>) -> Result<()> {
         // SAFETY: a value argument.
         let r = unsafe { (self.api.glyd_gpu_f8h_plain)(plain.map_or(-1, |p| p as c_int)) };
