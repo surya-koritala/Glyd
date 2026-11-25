@@ -505,7 +505,7 @@ pub fn cu(call: &str, status: c_int) -> Result<()> {
 }
 
 /// The C API version this binding is written for (glyd_gpu.h's GLYD_GPU_API_VERSION).
-pub const API_VERSION: c_int = 25;
+pub const API_VERSION: c_int = 26;
 
 /// The name a library call goes by in an error: the function's own.
 macro_rules! call {

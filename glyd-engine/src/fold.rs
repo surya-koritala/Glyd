@@ -2153,8 +2153,9 @@ fn moe_splits(units: i64, k: i64, hbm: bool) -> Result<i64> {
 }
 
 /// The experts' wgmma route from this many tokens a step on Hopper (GLYD_GPU_MOE_WG; an H100's 17, else 0: not).
-fn moe_wg_from(h100: bool) -> i64 {
-    tuned(crate::tune!("GLYD_GPU_MOE_WG"), if h100 { 17 } else { 0 })
+fn moe_wg_from(_h100: bool) -> i64 {
+    // (never by default, as mma_moe_run: the wgmma route adds a row's terms in another order than the step products)
+    tuned(crate::tune!("GLYD_GPU_MOE_WG"), 0)
 }
 
 /// `GpuOps::moe_workspace` by the library's plan (mma_moe_run's need: the weighted sums' Y32 and the splits' parts, [P][O] floats each), where the 12-bit
@@ -2245,22 +2246,14 @@ pub unsafe fn moe(
     } else {
         4
     };
+    // (the step products for every call, as mma_moe_run: the prompt kernel and the rows kernel where a development build asks for them alone)
     let big_set = tuned(crate::tune!("GLYD_GPU_MOE_BIG"), -1);
-    let big_default = if big_set >= 0 {
-        big_set
-    } else if a100 {
-        64
-    } else if h100 {
-        96
-    } else {
-        48
-    };
-    let big = if act != 0 { tuned(crate::tune!("GLYD_GPU_MOE_BIG_GU"), big_default) } else { tuned(crate::tune!("GLYD_GPU_MOE_BIG_DN"), big_default) };
+    let big = if act != 0 { tuned(crate::tune!("GLYD_GPU_MOE_BIG_GU"), big_set) } else { tuned(crate::tune!("GLYD_GPU_MOE_BIG_DN"), big_set) };
     let lname = if placed.is_some() { "placed" } else { name };
     let per_stride = placed.map(|stride| (o * kk / 1024, stride));
     let Some(lead) = layout_args(u, w, per_stride) else { return Ok(false) };
     let y32 = if weights != 0 { ws } else { 0 };
-    if p >= big * se && kk % 64 == 0 && x % 16 == 0 {
+    if big >= 0 && p >= big * se && kk % 64 == 0 && x % 16 == 0 {
         // (a part of a layer is the library's: it cuts the part as the whole layer's call)
         if whole_o > 0 || whole_e > 0 {
             return Ok(false);
@@ -2308,13 +2301,7 @@ pub unsafe fn moe(
     }
     let v = (skip as i64 * 2) | if table && mt == 1 && depth == 2 { 8 } else { 0 };
     let rows_set = tuned(crate::tune!("GLYD_GPU_MOE_ROWS"), 1);
-    let rows_from = match rows_set {
-        0 => i64::MAX,
-        r if r >= 2 => r,
-        _ if h100 || a100 => 17,
-        _ if hbm => i64::MAX,
-        _ => 33,
-    };
+    let rows_from = if rows_set >= 2 { rows_set } else { i64::MAX };
     let rows = act == 0 && mt >= 2 && t >= rows_from;
     if trace {
         eprintln!("moe-kernel fold {} T={t} k={k} E={experts} O={o} K={kk} act={act} splits={splits}", if rows { "rows" } else { "step" });
