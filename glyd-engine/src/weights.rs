@@ -728,6 +728,32 @@ pub(crate) fn upload_packed(p: Packed) -> Result<PackBuf> {
 }
 
 impl PackBuf {
+    /// The matrix as the GPU holds it: its buffers read back and decoded on the host ([rows, cols], bf16). A lossless layout's alone (the tiered one by its
+    /// tag, the 12-bit one): a check's, which holds what a lossless level loaded to the checkpoint's bits.
+    pub fn words(&self) -> Result<Vec<u16>> {
+        use glyd_gpu::pack::{unpack_tiered, unpack_twelve, Tiered, Twelve, TIERED_TAG};
+        let read = |b: &Buf| -> Result<Vec<u8>> {
+            let mut v = vec![0u8; b.bytes];
+            b.read(0, &mut v)?;
+            Ok(v)
+        };
+        let i32s = |b: &[u8]| -> Vec<i32> { b.as_chunks::<4>().0.iter().map(|x| i32::from_le_bytes(*x)).collect() };
+        let (rows, cols) = (self.pack.rows as usize, self.pack.cols as usize);
+        let (data, b1, b2) = (read(&self._bufs[0])?, read(&self._bufs[1])?, read(&self._bufs[2])?);
+        let mut out = vec![0u16; rows * cols];
+        let ok = match self.pack.words {
+            Words::Tiered { tiers, .. } if tiers[0] >> 24 == TIERED_TAG => {
+                unpack_tiered(&Tiered { rows, cols, data, blocks: b1, block_base: i32s(&b2), tiers }, &mut out)
+            }
+            Words::Tiered { tiers, .. } => return err(format!("a pack of layout tag {}: not a lossless layout's", tiers[0] >> 24)),
+            Words::Twelve { sym, .. } => unpack_twelve(&Twelve { rows, cols, data, exc: i32s(&b1), exc_base: i32s(&b2), sym }, &mut out),
+        };
+        if !ok {
+            return err(format!("a pack of {rows} x {cols} read back from the GPU does not decode"));
+        }
+        Ok(out)
+    }
+
     /// The whole matrix's rows: `tp_rows` where it is a slice of them, else its own.
     pub fn whole_rows(&self) -> usize {
         if self.tp_rows > 0 {

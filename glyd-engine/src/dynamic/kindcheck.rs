@@ -65,7 +65,7 @@ struct Line {
 /// A row past its bound whose choice (a router's experts, an indexer's picks) was nearer than this to another (`reference::ffn::margin`: the
 /// gap over the largest score) is left out of its body's comparison and named: the GPU's scores of bf16 inputs can order such a pair the
 /// other way, which changes the output by far more than its arithmetic does.
-const NEAR: f32 = 1e-2;
+pub(crate) const NEAR: f32 = 1e-2;
 
 /// The largest difference over `want`'s largest magnitude (infinite where `got` has a value that is not finite).
 fn rel(got: &[f32], want: &[f32]) -> f32 {

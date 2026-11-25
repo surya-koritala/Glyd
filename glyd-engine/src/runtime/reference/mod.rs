@@ -32,9 +32,14 @@
 //!
 //! Not compared on the GPU: the embedding's scale and norm and the head's soft-cap (each family's logits fixture holds them,
 //! `logitscheck`); the Qwen3.5 layout's mixture of experts (not lowered to the executor yet); MTP heads (their blocks are the kinds above);
-//! Condor's kinds (Qwen3.8-Flash-Next: the gated residuals and the final mixer, the indexer on GQA, the n-gram embedding), which run on
-//! Condor's own engine and not on the executor yet: the whole tiny model on `Ref` against that engine's logits fixture instead
-//! (`describe_tests::condors_model_on_the_reference_against_condors_engine`: KL mean 8.5e-6, max 5.0e-5).
+//! Qwen3.8-Flash-Next's kinds (the gated residuals and the final mixer, the indexer on GQA, the n-gram embedding): they run on the executor
+//! (`dynamic::lower::qwen4x`), and `kindcheck` has no case of them yet. The family's two random models whole stand in: the executor's logits
+//! against `Ref`'s on the executor's own routers' choices (`logitscheck`, `paritycheck`: `logits::held_on_choices`), and `Ref` against
+//! Condor's own engine's logits fixture (`describe_tests::condors_model_on_the_reference_against_condors_engine`: KL mean 8.5e-6, max 5.0e-5).
+//!
+//! A mixture of experts' router can be told the experts to take (`RefLayer::take`, `ffn::route_taking`): a check then holds an engine to
+//! `Ref` on the engine's own choices, where a near tie taken the other way would move a row by more than arithmetic does. The choice's
+//! distance from the router's own is by the router's ranks (`ffn::margin_between`).
 
 pub mod attention;
 pub mod comp;
@@ -416,11 +421,16 @@ pub struct RefLayer {
     /// How near the last token's choice (a router's experts, an indexer's picks) was to another (`ffn::margin`); infinite where the body chose
     /// nothing.
     pub margin: f32,
+    /// A MoE block's experts for the tokens to come, each token's in turn, taken in the place of its router's own choice (`ffn::route_taking`;
+    /// a token's empty list: the router's own): a check's, which holds an engine to the reference on the engine's own choices. Empty: the router's.
+    pub take: std::collections::VecDeque<Vec<usize>>,
+    /// A MoE block's routing of each token in turn (`ffn::Routed`: the experts taken, the router's own, its ranks), where a check reads them.
+    pub routed: Option<Vec<ffn::Routed>>,
 }
 
 impl RefLayer {
     pub fn new(block: Block, hidden: usize, p: Params) -> RefLayer {
-        RefLayer { block, hidden, p, seqs: HashMap::new(), routes: None, margin: f32::INFINITY }
+        RefLayer { block, hidden, p, seqs: HashMap::new(), routes: None, margin: f32::INFINITY, take: Default::default(), routed: None }
     }
 
     /// The body on the normed inputs of one token (the sequence's state advanced).
@@ -466,11 +476,15 @@ impl RefLayer {
             }
             Body::Ffn(Ffn::Mlp(m)) => ffn::mlp(m, p, "", h),
             Body::Ffn(Ffn::Moe(m)) => {
-                let (y, ids, gap) = ffn::moe_routed(m, p, h, token)?;
+                let take = self.take.pop_front();
+                let (y, c) = ffn::moe_taking(m, p, h, token, take.as_deref())?;
                 if let Some(r) = self.routes.as_mut() {
-                    r.extend(ids);
+                    r.extend(c.ids.iter().copied());
                 }
-                self.margin = gap;
+                self.margin = c.gap;
+                if let Some(r) = self.routed.as_mut() {
+                    r.push(c);
+                }
                 Ok(y)
             }
         }

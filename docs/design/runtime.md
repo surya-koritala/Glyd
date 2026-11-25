@@ -509,7 +509,28 @@ and layers across GPUs (`ModelStep for Run`: a prompt in one call, a token a ste
 model (`ModelStep::draft`: a decode step is a drafting round, `spec_round`, each of its tokens sent and added as a step's; a request that
 asks for log-probabilities or a least length has plain steps). Condor's own engine (`qwenserve`, `qwen4x_serve.rs`'s `Qx` over
 `EngineQx`) is not the executor's and keeps its loop. As built (R3d, #140): the family's description runs on the executor and through the
-scheduler (the random case `qwen4x`, `dynamic/qwen4x.rs`); the release is still served by Condor's engine.
+scheduler (the random cases `qwen4x` and `qwen4x-s2`, `dynamic/qwen4x.rs`); the release is still served by Condor's engine.
+
+What the family's move is held to (`paritycheck`, and `logitscheck` after Condor's engine is gone). The two engines give the same bits
+through the first seven stages of layer 0 (the gated residual's norm, bottleneck, up product and mix; the linear attention's two products
+and its convolution) and part at the delta rule, where they run two kernels of one kind with different rounding points: the executor's is
+the kind's (the chunked kernel the Qwen3.5 layout runs: fp32 sums over normed q and k rounded to bf16), Condor's sums pairs of bf16 values
+in two passes. A layer kind has one kernel, so the executor's stays, and the family is held to the kind's CPU reference, not to Condor's
+engine:
+
+1. the stages before the delta rule have the same bits on both engines (checked while Condor's engine exists);
+2. every choice of the executor's routers that is not the reference's own is a near tie by the reference's own ranks (nearer than
+   `kindcheck::NEAR`, 1e-2). A choice further apart is a router that differs, and fails;
+3. the executor's logits are within the kind's bound for the lossless level (the Qwen3.5 layout's fixtures': KL mean 1e-4, max 2.5e-4, the
+   best token on 85% of the rows with a clear lead) of the reference run again taking the executor's choices, on every row of both random
+   cases. A family has no bound of its own: the 5e-4 this family's fixture carried was fitted to a run of the executor and is withdrawn;
+4. the best token is the reference's own on every row where the reference's lead clears `CLEAR_LEAD`; the rows below it are printed.
+
+Why 2 and 3 and not a wider bound: the random model's routers leave choices within 1e-2 of the next expert, an engine that rounds anywhere
+takes some of them the other way, and one such choice moves its row, and the rows that read the states its pass wrote, by more than the
+bound allows arithmetic. A wider bound would cover that and a real fault alike. So the tie is counted as a tie only where the reference's
+own ranks say it is one, and the arithmetic is held, at the kind's bound, on the same choices. The figures against the reference's own
+choices are always printed beside them, and so are Condor's engine's by the same measures, its record before it is deleted.
 
 ### Rows sized by memory
 

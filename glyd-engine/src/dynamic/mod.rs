@@ -1107,6 +1107,9 @@ pub struct Dyn {
     trace: std::cell::RefCell<Option<Vec<Vec<u16>>>>,
     /// Where Some: the layer whose operations each eager pass records (`trace_ops`), and after each of them its name and the bf16 values of the slots `TRACED`.
     op_trace: std::cell::RefCell<Option<(usize, Vec<(String, Vec<Vec<u16>>)>)>>,
+    /// Where Some: each eager pass adds, after each mixture-of-experts operation whose experts are all on the GPU, its layer and its router's choices
+    /// (`trace_routes`).
+    route_trace: std::cell::RefCell<Option<Vec<(usize, usize, Vec<i64>)>>>,
     picks: Option<picked::PickRun>,
     /// The latent attentions' scratch, where the model has one.
     mla: Option<mla::MlaRun>,
@@ -1321,9 +1324,49 @@ impl Dyn {
         std::mem::replace(&mut *self.trace.borrow_mut(), on.then(Vec::new)).unwrap_or_default()
     }
 
-    /// Whether the layers are traced (`trace_layers`, `trace_ops`): every pass eager.
+    /// Whether the layers are traced (`trace_layers`, `trace_ops`, `trace_routes`): every pass eager, a decode step too.
     pub(crate) fn tracing(&self) -> bool {
-        self.trace.borrow().is_some() || self.op_trace.borrow().is_some()
+        self.trace.borrow().is_some() || self.op_trace.borrow().is_some() || self.route_trace.borrow().is_some()
+    }
+
+    /// The routers' choices in the passes run between `trace_routes(true)` and `trace_routes(false)`, which returns them: for each mixture-of-experts
+    /// operation in the order run, its layer, the experts a row takes (k) and its rows' experts ([rows, k], each row's in the router's order). A layer
+    /// whose experts are in a cache that routes on its own adds nothing.
+    pub fn trace_routes(&self, on: bool) -> Vec<(usize, usize, Vec<i64>)> {
+        std::mem::replace(&mut *self.route_trace.borrow_mut(), on.then(Vec::new)).unwrap_or_default()
+    }
+
+    /// The routed experts of each mixture-of-experts block as the GPU holds them, decoded on the host (`MoeLayer::held_experts`), in the blocks' order:
+    /// a check's view of what a lossless level loaded. None where the model has no such block, or one with no view of its experts (a cache's, another
+    /// format's); an error where a block's experts are a lossy level's block codes.
+    pub fn held_experts(&self) -> Result<Option<Vec<(Vec<u16>, Vec<u16>)>>> {
+        let mut v = Vec::with_capacity(self.big.moe.len());
+        for (i, b) in self.big.moe.iter().enumerate() {
+            let Some((l, _)) = b.resident() else { return Ok(None) };
+            match l.held_experts().map_err(|e| e.context(&format!("mixture-of-experts block {i}")))? {
+                Some(x) => v.push(x),
+                None => return Ok(None),
+            }
+        }
+        Ok((!v.is_empty()).then_some(v))
+    }
+
+    /// `trace_routes`' record of `op` of layer `l` on n rows.
+    fn trace_route(&self, p: &Part, l: usize, op: &Op, n: usize) -> Result<()> {
+        let Op::Moe(MoeOp { block, .. }) = *op else { return Ok(()) };
+        if !std::ptr::eq(p, &self.big) || self.route_trace.borrow().is_none() {
+            return Ok(());
+        }
+        let Some((layer, _)) = p.moe[block].resident() else { return Ok(()) };
+        let sc = self.moe_sc.get().ok_or_else(|| Error("no mixture-of-experts scratch".into()))?;
+        self.dev.sync()?;
+        let k = layer.cfg.router.top_k;
+        let mut ids = vec![0i64; n * k];
+        sc.ids.read(0, &mut ids)?;
+        if let Some(t) = self.route_trace.borrow_mut().as_mut() {
+            t.push((l, k, ids));
+        }
+        Ok(())
     }
 
     /// Each operation of layer `layer` in the passes run between `trace_ops(Some(layer))` and `trace_ops(None)`, which returns them: its name and, after it ran,
@@ -1684,6 +1727,7 @@ impl Dyn {
             kqx,
             trace: std::cell::RefCell::new(None),
             op_trace: std::cell::RefCell::new(None),
+            route_trace: std::cell::RefCell::new(None),
             picks,
             mla,
             verify: None,
@@ -2507,6 +2551,7 @@ impl Dyn {
                 }
                 self.op(p, l, i, op, n, pos, head)?;
                 self.trace_op(p, l, op, n)?;
+                self.trace_route(p, l, op, n)?;
                 if dump {
                     self.dump_op(p, l, i, op, n)?;
                 }
@@ -2725,7 +2770,7 @@ impl Dyn {
                 }
             }
             match &self.graph {
-                Some(g) if one && !self.graphs_off.get() => {
+                Some(g) if one && !self.graphs_off.get() && !self.tracing() => {
                     g.launch(self.dev.stream)?;
                     self.replayed.set(true);
                     self.rplayed.set(None);
@@ -3107,7 +3152,7 @@ impl Dyn {
         unsafe {
             self.embed(&[token])?;
             match &self.graph {
-                Some(g) if !self.graphs_off.get() => {
+                Some(g) if !self.graphs_off.get() && !self.tracing() => {
                     g.launch(self.dev.stream)?;
                     self.replayed.set(true);
                     self.rplayed.set(None);
