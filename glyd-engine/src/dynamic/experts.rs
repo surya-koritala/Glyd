@@ -108,6 +108,15 @@ pub fn of_layers(d: &Described, layers: (usize, usize), per: usize) -> impl Iter
         .filter_map(move |(moe, (layer, m, roles))| (layers.0..layers.1).contains(&layer).then_some((Ix { layer, moe }, m, roles)))
 }
 
+/// The blocks of experts of draft head `i` of `d` (`Described::mtp`), in order: each one's block number in the head, its kind and its roles.
+pub fn of_head(d: &Described, i: usize) -> impl Iterator<Item = (usize, &kinds::Moe, &[(String, Source)])> {
+    let (blocks, roles) = (d.desc.mtp.get(i).map_or(&[][..], |h| &h.blocks[..]), d.mtp.get(i).map_or(&[][..], |r| &r.0[..]));
+    blocks.iter().zip(roles).enumerate().filter_map(|(b, (blk, r))| match &blk.body {
+        Body::Ffn(Ffn::Moe(m)) => Some((b, m, r.as_slice())),
+        _ => None,
+    })
+}
+
 /// How a stage holds its blocks of experts beyond their level: a hummingbird directory's (src/hb_pack.rs; None: the release's), the expert cache (the stage's
 /// caching and its store: src/hbg_store.rs, src/tiering.rs; a cache of as many places as a layer has experts holds them all on the GPU), on the GPU `ordinal`;
 /// FP8 matrices as released where `f8` is given (`F8`); the block's matrices besides the routed experts' (the shared expert's, a latent's own projections) at

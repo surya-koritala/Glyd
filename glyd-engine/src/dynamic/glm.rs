@@ -70,6 +70,32 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
 /// indexer's products as their E4M3 codes and scales (`Part::scales`), the experts and the shared expert (`experts::F8`); at a block level its matrices are
 /// packed from the bf16 they dequantise to. A development build's GLYD_GLM_F8=0: the experts as that bf16 at the lossless level too.
 pub fn load_plain(dir: &Path, o: &Opts) -> Result<Dyn> {
+    plain(dir, o, None, None)
+}
+
+/// `load_plain` with the model's draft head (its MTP layer, DeepSeek-V3's joined form: `lower::draft_head`, src/dynamic/head.rs) drafting `k` tokens a round
+/// (at most `VERIFY_ROWS` - 1), its experts held as the model's.
+pub fn load_plain_drafting(dir: &Path, o: &Opts, k: usize) -> Result<Dyn> {
+    plain(dir, o, None, Some(k))
+}
+
+/// The dynamic route's stage of the model (src/dynamic/split.rs `StageLoad`): stage `st`'s layers, every expert of them on its GPU; an expert cache is
+/// refused in words.
+pub fn stage_plain(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+    if caching.is_some() {
+        return err("GLM-5.3's layout holds every expert of a stage on its GPU: its experts are not in the expert cache yet");
+    }
+    plain(dir, o, Some(st), None)
+}
+
+/// The layers and end tokens of the model in `dir`, as `load_plain` reads them (the dynamic route's `Loader::ends`).
+pub fn plain_ends(dir: &Path) -> Result<(usize, Vec<i64>)> {
+    let (kinds, _, eos, _) = plain_config(dir)?;
+    Ok((kinds.desc.blocks.len() / 2, eos))
+}
+
+/// The model's description, its label, its end tokens (generation_config.json's, else the config's) and its most positions.
+fn plain_config(dir: &Path) -> Result<(crate::runtime::describe::Described, String, Vec<i64>, usize)> {
     let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
     let cfg = crate::runtime::config::ModelConfig::load(dir)?;
     let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
@@ -78,8 +104,24 @@ pub fn load_plain(dir: &Path, o: &Opts) -> Result<Dyn> {
         eos = crate::runtime::config::eos_ids(&cfg.top, None);
     }
     let max_pos = cfg.shared.max_position_embeddings.ok_or_else(|| Error("no max_position_embeddings".into()))?;
-    let st = Stage::whole(kinds.desc.blocks.len() / 2);
-    let d = super::lower::latent_moe(&kinds, eos, max_pos, &st).map_err(|e| e.context(&label))?;
+    Ok((kinds, label, eos, max_pos))
+}
+
+/// The latent attention with plain residuals lowered for the whole of a description (`lower::latent_moe`): a draft head's blocks' lowering.
+fn latent_whole(d: &crate::runtime::describe::Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> {
+    super::lower::latent_moe(d, eos, max_pos, &Stage::whole(d.desc.blocks.len() / 2))
+}
+
+/// `load_plain` of stage `st` (the whole model where None), with its draft head drafting `draft` tokens a round where given.
+fn plain(dir: &Path, o: &Opts, st: Option<Stage>, draft: Option<usize>) -> Result<Dyn> {
+    let (kinds, label, eos, max_pos) = plain_config(dir)?;
+    let layers = kinds.desc.blocks.len() / 2;
+    let st = st.unwrap_or(Stage::whole(layers));
+    let d = super::lower::latent_moe(&kinds, eos.clone(), max_pos, &st).map_err(|e| e.context(&label))?;
+    let head = match draft {
+        Some(_) => Some(super::lower::draft_head(&kinds, eos, max_pos, latent_whole).map_err(|e| e.context(&label))?),
+        None => None,
+    };
     let hidden = kinds.desc.hidden;
     let (dev, lib) = (Dev::new(o.device)?, crate::ffi::Lib::find()?);
     let f8 = (!kinds.scales.is_empty() && crate::tune!("GLYD_GLM_F8").as_deref() != Some("0")).then_some(super::experts::F8 {
@@ -93,7 +135,16 @@ pub fn load_plain(dir: &Path, o: &Opts) -> Result<Dyn> {
             .map(|(ix, m, roles)| Ok(Box::new(ResidentMoe(super::experts::held(m, roles, hidden, ck, level, Some((ix, &held)))?)) as Box<dyn MoeBlock>))
             .collect()
     };
-    Dyn::new_with(dir, d, None, st, o, &experts)
+    // (the head's experts as the model's, its layer the one after the model's)
+    let head_experts = |ck: &Checkpoint, level: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
+        super::experts::of_head(&kinds, 0)
+            .map(|(b, m, roles)| {
+                Ok(Box::new(ResidentMoe(super::experts::held(m, roles, hidden, ck, level, Some((layers + b / 2, &held)))?)) as Box<dyn MoeBlock>)
+            })
+            .collect()
+    };
+    let spec = head.zip(draft).map(|(h, k)| super::DraftSpec { dir, desc: h, k, experts: Some(&head_experts) });
+    Dyn::new_with(dir, d, spec, st, o, &experts)
 }
 
 /// A layer's matrices as the loader holds them: a Kimi delta layer's seven (qkv, o, f_a, f_b, g_a, g_b, b) or a latent attention layer's four (q_a, q_b, kv_a, o),

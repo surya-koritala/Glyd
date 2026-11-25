@@ -1553,37 +1553,44 @@ pub fn qwen4x_mtp_random(out: &Path) -> Result<()> {
     manifest_random(&qwen4x_mtp_manifest()?, out, 0x2026_1120_0000_0005, false, "Qwen3.8-Flash-Next of the tiny shape with its draft head")
 }
 
-/// The CPU reference of the kinds on the model in `dir` over `tokens` (one sequence from position 0): each position's residual streams after the last block
-/// (before the head's collapse), the draft head's input there.
+/// The CPU reference of the kinds on the model in `dir` over `tokens` (one sequence from position 0): each position's state a draft head of the description
+/// reads there (`kinds::MtpInput`): the residual streams after the last block (before the head's collapse), or the final normed hidden state (a joined
+/// head's, DeepSeek-V3's form).
 pub fn ref_streams(dir: &Path, tokens: &[u32]) -> Result<Vec<Vec<f32>>> {
     let mut m = ref_model(dir)?;
+    let joined = m.desc.mtp.first().is_some_and(|h| h.input == crate::runtime::kinds::MtpInput::Joined);
     let mut last = Vec::new();
     m.forward_seen(tokens, 0, &mut |x| last = x.to_vec())?;
     let w = last.len() / tokens.len().max(1);
-    Ok(last.chunks(w.max(1)).map(<[f32]>::to_vec).collect())
+    last.chunks(w.max(1)).map(|r| if joined { m.final_h(r, None) } else { Ok(r.to_vec()) }).collect()
 }
 
-/// A draft head's row as a check gives it to the CPU reference: its position, the token it reads, the streams it continues ([n hidden]), and where the
-/// row's experts are taken in the place of its router's own (an engine's, `held on its choices`).
+/// A draft head's row as a check gives it to the CPU reference: its position, the token it reads, the state it continues (the model's last streams [n
+/// hidden], or its final normed hidden state: `ref_streams`), and where the row's experts and its indexer's picks are taken in the place of its own (an
+/// engine's, `held on its choices`).
 #[derive(Clone, Debug)]
 pub struct HeadRow {
     pub pos: u32,
     pub token: u32,
     pub streams: Vec<f32>,
     pub take: Option<Vec<usize>>,
+    pub picks: Option<Vec<usize>>,
+}
+
+/// What `ref_head` gives for each row: its logits by the model's head, its state after the head (the next draft's), its experts as the head's router chose
+/// them and as it took them (`ffn::Routed::own`, `ids`), and its indexers' own picks and the ones it took (empty where it has none).
+pub struct HeadRef {
+    pub logits: Vec<Vec<f32>>,
+    pub states: Vec<Vec<f32>>,
+    pub routes: Vec<(Vec<usize>, Vec<usize>)>,
+    pub picks: Vec<(Vec<usize>, Vec<usize>)>,
 }
 
 /// The draft head of the model in `dir` (its description's first, as `edit` leaves it) on the CPU reference of the kinds over `rows` in order (one
-/// sequence: a row at a position the head has run before takes its place, `RefMtp::step_streams`): each row's logits by the model's head, its streams
-/// after the head's blocks, and its experts as the head's router chose them (`ffn::Routed::own`) and as it took them.
-#[allow(clippy::type_complexity)]
-pub fn ref_head(
-    dir: &Path,
-    rows: &[HeadRow],
-    edit: fn(&mut crate::runtime::describe::Described),
-) -> Result<(Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<(Vec<usize>, Vec<usize>)>)> {
-    use crate::runtime::kinds::{Body, Ffn};
-    use crate::runtime::reference::{model::checkpoint_tensor, mtp::RefMtp};
+/// sequence: a row at a position the head has run before takes its place, `RefMtp::step_streams` or `RefMtp::step` by the head's form).
+pub fn ref_head(dir: &Path, rows: &[HeadRow], edit: fn(&mut crate::runtime::describe::Described)) -> Result<HeadRef> {
+    use crate::runtime::kinds::{Body, Ffn, Mixer, MtpInput};
+    use crate::runtime::reference::{mla::LatentCache, model::checkpoint_tensor, mtp::RefMtp, SeqState};
     let cfg: Value = serde_json::from_str(&io(std::fs::read_to_string(dir.join("config.json")))?).map_err(|e| Error(format!("config.json: {e}")))?;
     let mut desc = crate::runtime::describe::describe(&cfg)?;
     edit(&mut desc);
@@ -1595,21 +1602,42 @@ pub fn ref_head(
     for &b in &moe {
         h.blocks[b].routed = Some(Vec::new());
     }
+    // (its latent attentions with an indexer of their own: each row's picks recorded, and taken where the row gives them)
+    let idx: Vec<usize> = (0..h.blocks.len())
+        .filter(|&b| matches!(&h.blocks[b].block.body, Body::Mixer(Mixer::Mla(x)) if x.indexer.as_ref().is_some_and(|i| !i.shared)))
+        .collect();
     let d = desc.desc.hidden;
-    let (mut logits, mut streams, mut routes) = (Vec::with_capacity(rows.len()), Vec::with_capacity(rows.len()), Vec::with_capacity(rows.len()));
+    let mut out = HeadRef { logits: Vec::new(), states: Vec::new(), routes: Vec::new(), picks: Vec::new() };
     for r in rows {
         for &b in &moe {
             h.blocks[b].take = r.take.clone().into_iter().collect();
         }
+        for &b in &idx {
+            if let SeqState::Mla(c) = h.blocks[b].seqs.entry(0).or_insert_with(|| SeqState::Mla(LatentCache::default())) {
+                c.take = r.picks.clone().into_iter().collect();
+                c.picked.get_or_insert_with(Vec::new);
+            }
+        }
         let e = m.embed.get(r.token as usize * d..(r.token as usize + 1) * d).ok_or_else(|| Error(format!("token {} past the vocabulary", r.token)))?;
-        let (x, y) = h.step_streams(0, r.pos, r.token, e, &r.streams)?;
-        logits
+        let (x, y) = match h.head.input {
+            MtpInput::Streams => h.step_streams(0, r.pos, r.token, e, &r.streams)?,
+            MtpInput::Joined => {
+                let y = h.step(0, r.pos, r.token, e, &r.streams)?;
+                (y.clone(), y)
+            }
+        };
+        out.logits
             .push(crate::runtime::reference::matvec(&m.head, d, &y).into_iter().map(|z| crate::runtime::reference::model::logit(&desc.desc.head, z)).collect());
-        streams.push(x);
+        out.states.push(x);
         let c = moe.first().and_then(|&b| h.blocks[b].routed.as_mut().and_then(Vec::pop));
-        routes.push(c.map_or((Vec::new(), Vec::new()), |c| (c.own, c.ids)));
+        out.routes.push(c.map_or((Vec::new(), Vec::new()), |c| (c.own, c.ids)));
+        let pk = idx.first().and_then(|&b| match h.blocks[b].seqs.get_mut(&0) {
+            Some(SeqState::Mla(c)) => c.picked.as_mut().and_then(Vec::pop),
+            _ => None,
+        });
+        out.picks.push(pk.map_or((Vec::new(), Vec::new()), |p| (p.own, p.picks)));
     }
-    Ok((logits, streams, routes))
+    Ok(out)
 }
 
 /// The plain dense kind's small model (a pre-norm decoder of one attention and one gated SiLU MLP a layer: 4 layers, 16 query and 8 key-value heads of 128 with normed
@@ -1643,7 +1671,7 @@ pub fn qwen35moe_random(out: &Path) -> Result<()> {
 /// GLM-5.3-Flash's random case is (`glm::random`): each matrix U(+-sqrt(3 / its columns)), the embedding U(-1, 1), the head at half the matrices' scale, the
 /// norms' weights about 1, the indexer's key norm's bias and the choice bias small (the choice bias fp32, as released), bf16 else.
 pub fn glm_dsa_random(out: &Path) -> Result<()> {
-    glm_dsa_draw(out, GLM_DSA_SEED, false)
+    glm_dsa_draw(out, GLM_DSA_SEED, false, false)
 }
 
 /// The seed of `glm_dsa_random`'s draw.
@@ -1656,12 +1684,22 @@ pub const GLM_DSA_SEED: u64 = 0x2026_1125_0000_0053;
 /// indexer's wq_b and wk, the dense MLP's, the experts' and the shared expert's) is E4M3 with its fp32 block scales (`X.weight_scale_inv`), each block's
 /// scale its largest magnitude over 448 and each value the E4M3 nearest it over that scale (`glm::random`'s FP8 experts); the rest as `glm_dsa_random`'s.
 pub fn glm_dsa_f8_random(out: &Path) -> Result<()> {
-    glm_dsa_draw(out, GLM_DSA_SEED, true)
+    glm_dsa_draw(out, GLM_DSA_SEED, true, false)
 }
 
-/// `glm_dsa_random` (`fp8`: `glm_dsa_f8_random`) drawn from `seed` (not 0).
-pub fn glm_dsa_draw(out: &Path, seed: u64, fp8: bool) -> Result<()> {
+/// GLM-5.3's layout with its draft head, as the release has it (the draftcheck cases `glm-dsa` and `glm-dsa-f8`): `glm_dsa_random`'s model (`fp8`:
+/// `glm_dsa_f8_random`'s) to the bit, and one MTP layer after its layers (`num_nextn_predict_layers` 1: a latent attention with an indexer of its own and
+/// the experts, on a plain residual, the head's two norms, eh_proj and its final norm), every tensor of the head drawn after the model's by the same rules.
+pub fn glm_dsa_mtp_random(out: &Path, fp8: bool) -> Result<()> {
+    glm_dsa_draw(out, GLM_DSA_SEED, fp8, true)
+}
+
+/// `glm_dsa_random` (`fp8`: `glm_dsa_f8_random`; `mtp`: with its draft head, `glm_dsa_mtp_random`) drawn from `seed` (not 0).
+pub fn glm_dsa_draw(out: &Path, seed: u64, fp8: bool, mtp: bool) -> Result<()> {
     let mut cfg: Value = serde_json::from_str(include_str!("../tests/fixtures/glm_moe_dsa_toy_config.json")).map_err(|e| Error(e.to_string()))?;
+    if mtp {
+        cfg["num_nextn_predict_layers"] = json!(1);
+    }
     if fp8 {
         let wide = [
             ("hidden_size", 512),
@@ -1702,9 +1740,11 @@ pub fn glm_dsa_draw(out: &Path, seed: u64, fp8: bool) -> Result<()> {
     let code: std::collections::HashMap<u32, u8> =
         (0..=255u8).filter(|b| !glyd_gpu::fp8::E4M3[*b as usize].is_nan()).map(|b| (glyd_gpu::fp8::E4M3[b as usize].to_bits(), b)).collect();
     let mut tensors: Vec<(String, &str, Vec<u64>, Vec<u8>)> = Vec::new();
-    // (an FP8 matrix's scales are drawn with it)
+    // (an FP8 matrix's scales are drawn with it; a draft head's tensors after the model's, so that the model is the one without a head to the bit)
     let scales: std::collections::BTreeSet<&String> = d.scales.values().collect();
-    for name in d.names().into_iter().filter(|n| !scales.contains(n)) {
+    let head: std::collections::BTreeSet<String> = d.mtp.iter().flat_map(|(b, o)| b.iter().flatten().chain(o)).flat_map(|(_, s)| s.names()).collect();
+    let (model, own): (Vec<String>, Vec<String>) = d.names().into_iter().filter(|n| !scales.contains(n)).partition(|n| !head.contains(n));
+    for name in model.into_iter().chain(own) {
         let shape = d.shapes.get(&name).cloned().ok_or_else(|| Error(format!("GLM-5.3's description has no shape for {name}")))?;
         let n: usize = shape.iter().product();
         let a = (3.0 / *shape.last().unwrap_or(&1) as f32).sqrt();
@@ -2854,16 +2894,19 @@ pub fn make_model(a: &crate::args::Args) -> Result<()> {
         Weights::Random(make) => {
             let dir = Path::new(a.need(2, "DIR")?);
             make(dir)?;
-            // (`--servable`: the files a server needs besides the weights, for a client to talk to it: a tokenizer, the chat template and the end token; Qwen's
-            // chat format, which is the one with a template made: the Qwen3.5 layout's and Qwen3.8-Flash-Next's cases)
+            // (`--servable`: the files a server needs besides the weights, for a client to talk to it: a tokenizer, the chat template and the end token; the
+            // family's chat template where one is made: Qwen's for the Qwen3.5 layout's and Qwen3.8-Flash-Next's cases, GLM-5.3's for its layout's)
             if a.has("servable") {
-                if !["qwen35", "qwen4x", "qwen4x-s2"].contains(&c.id) {
-                    return err(format!(
-                        "--servable: only the cases of Qwen's chat format have a chat template made (qwen35, qwen4x, qwen4x-s2; not {})",
-                        c.id
-                    ));
-                }
-                write_serving_files(dir, include_str!("../tests/fixtures/chat_qwen38_tools.jinja"))?;
+                let template = match c.id {
+                    "qwen35" | "qwen4x" | "qwen4x-s2" => include_str!("../tests/fixtures/chat_qwen38_tools.jinja"),
+                    "glm-dsa" | "glm-dsa-f8" => include_str!("../tests/fixtures/chat_glm53_tools.jinja"),
+                    id => {
+                        return err(format!(
+                            "--servable: only the cases whose family's chat template is made (qwen35, qwen4x, qwen4x-s2, glm-dsa, glm-dsa-f8; not {id})"
+                        ))
+                    }
+                };
+                write_serving_files(dir, template)?;
             }
             Ok(())
         }
@@ -3158,10 +3201,11 @@ mod tests {
         };
         let toks: Vec<u32> = fx.prompt.iter().chain(&fx.decode).copied().collect();
         let st = ref_streams(&dir, &toks).unwrap();
-        let rows: Vec<HeadRow> = (0..toks.len() - 1).map(|i| HeadRow { pos: i as u32, token: toks[i + 1], streams: st[i].clone(), take: None }).collect();
-        let (base, _, routes) = ref_head(&dir, &rows, |_| {}).unwrap();
+        let rows: Vec<HeadRow> =
+            (0..toks.len() - 1).map(|i| HeadRow { pos: i as u32, token: toks[i + 1], streams: st[i].clone(), take: None, picks: None }).collect();
+        let HeadRef { logits: base, routes, .. } = ref_head(&dir, &rows, |_| {}).unwrap();
         let taken: Vec<HeadRow> = rows.iter().zip(&routes).map(|(r, (own, _))| HeadRow { take: Some(own.clone()), ..r.clone() }).collect();
-        let (rounded, _, _) = ref_head(&dir, &taken, stored).unwrap();
+        let rounded = ref_head(&dir, &taken, stored).unwrap().logits;
         // (the model itself: its own next-token rows on the same tokens)
         let model = described_rows(&dir, &toks).unwrap();
         std::fs::remove_dir_all(&dir).ok();
@@ -3181,6 +3225,55 @@ mod tests {
         let best = |r: &[f32]| (0..r.len()).fold(0, |b, t| if r[t] > r[b] { t } else { b });
         let same = base.iter().zip(&model[1..]).filter(|(h, m)| best(h) == best(m)).count();
         assert!(same < base.len(), "the head's best token is the model's next at every row");
+    }
+
+    /// GLM-5.3's draft head (`glm_dsa_mtp_random`: the glm-dsa and glm-dsa-f8 cases' models with one MTP layer, DeepSeek-V3's joined head) is well conditioned
+    /// for the bound the family is held to (each case's fixture's): on the reference's own final normed states of the fixture's prompt and decode tokens, a
+    /// row a position (the state there and the token after it), the head with its description's rounding points (its norms' `Twice`) against every one in
+    /// fp32 (`ModelDesc::f32_arithmetic`), the fp32 run on the rounded run's experts and indexer picks, is within a tenth of the bound; and the head is no
+    /// copy of the model's next-token answer.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_glm_draft_heads_case_is_well_conditioned() {
+        for (case, fp8) in [("glm-dsa", false), ("glm-dsa-f8", true)] {
+            let dir = std::env::temp_dir().join(format!("glyd-floor-{case}-mtp-{}", std::process::id()));
+            glm_dsa_mtp_random(&dir, fp8).unwrap();
+            let fx = Fixture::read(&Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/logits/{case}.json.gz"))).unwrap();
+            let tenth = match fx.bounds[0].bound {
+                Bound::Kl { mean, max, top1 } => Bound::Kl { mean: mean / 10.0, max: max / 10.0, top1 },
+                Bound::Bits => panic!("a reference fixture of bits"),
+            };
+            let toks: Vec<u32> = fx.prompt.iter().chain(&fx.decode).copied().collect();
+            let st = ref_streams(&dir, &toks).unwrap();
+            let rows: Vec<HeadRow> =
+                (0..toks.len() - 1).map(|i| HeadRow { pos: i as u32, token: toks[i + 1], streams: st[i].clone(), take: None, picks: None }).collect();
+            let base = ref_head(&dir, &rows, |_| {}).unwrap();
+            let taken: Vec<HeadRow> = rows
+                .iter()
+                .zip(base.routes.iter().zip(&base.picks))
+                .map(|(r, ((experts, _), (picks, _)))| HeadRow { take: Some(experts.clone()), picks: Some(picks.clone()), ..r.clone() })
+                .collect();
+            let f32s = ref_head(&dir, &taken, |d| d.desc.f32_arithmetic()).unwrap().logits;
+            let model = described_rows(&dir, &toks).unwrap();
+            std::fs::remove_dir_all(&dir).ok();
+            let own = Fixture { rows: base.logits.iter().map(|r| Row::from_logits(r)).collect::<Result<_>>().unwrap(), ..fx.clone() };
+            let v = compare(&own, &tenth, &f32s);
+            println!(
+                "{case} draft head noise floor: KL mean {:.2e} max {:.2e}, best token {}/{}, largest logit difference {:.4} over {} rows (the indexer leaves positions out at {} of {})",
+                v.mean_kl,
+                v.max_kl,
+                v.top1.0,
+                v.top1.1,
+                v.max_dlogit,
+                base.logits.len(),
+                base.picks.iter().enumerate().filter(|(i, (p, _))| p.len() <= *i).count(),
+                rows.len()
+            );
+            assert!(v.ok, "{case}: {:?}", v.notes);
+            let best = |r: &[f32]| (0..r.len()).fold(0, |b, t| if r[t] > r[b] { t } else { b });
+            let same = base.logits.iter().zip(&model[1..]).filter(|(h, m)| best(h) == best(m)).count();
+            assert!(same < base.logits.len(), "{case}: the head's best token is the model's next at every row");
+        }
     }
 
     /// The model's rows on the CPU reference of the kinds over `tokens` from position 0, a row a token.
@@ -3660,7 +3753,7 @@ mod tests {
         // (and the same draws in FP8 as released, the glm-dsa-f8 case's)
         for (k, fp8) in (0..3u64).flat_map(|k| [(k, false), (k, true)]) {
             let dir = std::env::temp_dir().join(format!("glyd-glmdsafloor-{k}-{fp8}-{}", std::process::id()));
-            glm_dsa_draw(&dir, GLM_DSA_SEED ^ (k << 32), fp8).unwrap();
+            glm_dsa_draw(&dir, GLM_DSA_SEED ^ (k << 32), fp8, false).unwrap();
             worst = worst.max(rounded_against_f32(&dir, &format!("glm-dsa{} seed {k}", if fp8 { "-f8" } else { "" })));
             let _ = std::fs::remove_dir_all(&dir);
         }

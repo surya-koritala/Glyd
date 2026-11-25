@@ -162,6 +162,18 @@ impl MlaIndexer {
     }
 }
 
+/// The roles of the small tensors a latent attention takes released in FP8 (`MlaOp::f8_small`: kv_b_proj, its indexer's queries', keys', head weights' and a
+/// pooled indexer's gate products), which the loader holds as their E4M3 codes' values in bf16 beside the fp32 block scales: two bytes a value, twice the
+/// release's.
+pub const F8_SMALL_ROLES: [&str; 5] = ["kv_b", "indexer_wq_b", "indexer_wk", "indexer_weights", "indexer_pool_gate"];
+
+/// Whether the checkpoint tensor `name` is a latent attention's small tensor of one of those roles, by the roles' names in a layer (`names::part::MLA`,
+/// `MLA_INDEXER`): what the planner counts at two bytes a value where the release holds it in FP8.
+pub fn f8_small_name(name: &str) -> bool {
+    use crate::runtime::names::part;
+    part::MLA.iter().chain(part::MLA_INDEXER).any(|(r, n)| F8_SMALL_ROLES.contains(r) && name.strip_suffix(n).is_some_and(|p| p.ends_with('.')))
+}
+
 /// `Op::Mla`: the latent attention of H into O. Matrices `input`'s, `q_b` [heads (nope + rope), q_rank] and `o` [hidden, heads v]; small tensors the q latent's
 /// norm, the key-value latent's norm and kv_b_proj [heads (nope + v), kv_rank] (the absorbed form multiplies by its rows); the cache ring `ring`, kv_rank + rope a
 /// token. Scores q . k times `scale` over the latent and the shared key part (rope channels as they are: none rotated), values the latent's; sigmoid(gate) on each
@@ -609,7 +621,8 @@ impl Dyn {
     /// are in its own buffer, not the pass's start).
     pub(super) fn trace_pick(&self, p: &Part, l: usize, op: &Op, n: usize, pos: u64) -> Result<()> {
         let Op::Mla(a @ MlaOp { indexer: Some(ix), .. }) = op else { return Ok(()) };
-        if !std::ptr::eq(p, &self.big) || self.pick_trace.borrow().is_none() {
+        // (the model's passes, and a draft head's of the model (src/dynamic/head.rs), whose rings follow the model's)
+        if !(std::ptr::eq(p, &self.big) || matches!(p.d.first, Op::MtpIn { .. })) || self.pick_trace.borrow().is_none() {
             return Ok(());
         }
         let (most, tab) = (a.rows_at_once(self.chunk, self.ctx), self.table_of(self.seq, a.ring + 1));
