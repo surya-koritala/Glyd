@@ -90,7 +90,7 @@ pub enum Cand {
     Inside { block: usize, top: usize },
 }
 
-/// How an indexer norms each token's key (`runtime::kinds::IndexForm::Gated`'s `key`), at its eps: nn.LayerNorm with its bias (GLM-5.3's, DeepSeek-V3.2's), or an
+/// How an indexer norms each token's key (`runtime::kinds::IndexForm::Gated`'s `key`), at its eps: nn.LayerNorm with its bias (GLM-5.3's), or an
 /// RMS norm with a weight and no bias (the normed value rounded, times the weight, rounded again: Kimi-K3.1's `rmsnorm`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum KeyNorm {

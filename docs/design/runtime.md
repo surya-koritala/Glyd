@@ -39,8 +39,8 @@ heads of 128, 256 and 512 and the latent attention's rows (`kvshapes`, `kv12chec
 
 1. **Names.** `ModelStep` is what the scheduler drives (today's `sched::Backend`, renamed). `Backend` is a vendor (CUDA, HIP,
    Metal through MLX, CPU) and implements layer kinds. `Device` is the CUDA/HIP device layer under those two backends (R1, R15).
-   `Engine` is the request-level interface the API front ends share (R11); `model::Engine` went with `model.rs` (R3c, #139: Qwen3 dense is a
-   Llama-style description on the executor, `src/dynamic/dense.rs`).
+   `Engine` is the request-level interface the API front ends share (R11); `model::Engine` went with `model.rs` (R3c, #139: the plain dense kind is a
+   description on the executor, `src/dynamic/dense.rs`).
 2. **One step over a flat batch.** A step takes a list of sequences, each contributing 1 token (decode), 1+k tokens (decode with
    drafts) or a prompt chunk, packed into one token list. There is no prefill or decode mode; a step is the tokens of every row
    the budget admits, decode rows first, then prompt chunks (Sarathi-Serve, vLLM V1).
@@ -122,7 +122,7 @@ and the whole lossless KV cache (`kv_write`, `kv_gather`, `kv_decode`, ...) are 
 | **GLM-5.3-Flash** (`dynamic/glm.rs`, `kern_glm.rs`, `kern/glm.rs`) | 34 of 45 KDA; 11 MLA (nope 256, v 256) with pooled-key indexer (top 2,048) | none (refused) | mHC: 4 streams, Sinkhorn mixing (20 iterations) | layers 0-2 dense SwiGLU clamp 10; MoE: sigmoid + bias, top-8 of 288, x2.5, 1 shared | 1 MTP head (not loaded; R6 #145) | latent 512 + indexer keys + KDA state, contiguous | FP8 128x128 blocks as released; Int6/5/4 or codebook experts on the hand-written path (removed in R13) |
 | **DeepSeek-V4** Flash, Pro (`dynamic/deepseek_v4.rs`) | one shared KV head of 512; window 128 ring plus a per-layer compressed cache (ratio 4 with an FP4-simulated indexer, or every entry); learned sink; grouped low-rank output | partial rope 64/512; YaRN on compressed layers | mHC, 4 streams; FP8 quantized product inputs | every layer MoE: sqrt-softplus + bias, hash routing (token id) in the first layers, SwiGLU limit, 1 FP8 shared | MTP parsed, unused | window ring (E4M3-simulated) + compressed caches + fp32 pooling state | FP8 large matrices kept, FP4 experts exact |
 | **Muse Spark** 816B-A42B (`dynamic/muse.rs`) | GQA hd 64, sliding (rope) and global (no rope); weightless q/k norm, gated output with per-head norm | full rope on sliding layers only | centred (1+w) RMSNorm; learned residual gates X = aX + bO; sandwich | every layer MoE in a latent, sigmoid + bias, per-expert output norm, no shared | logit softcap with multiplier | bf16 rings | bf16, lossless `Tiered` |
-| legacy: Qwen3 dense (`model.rs` then; as built `dynamic/dense.rs`, the plain dense kind) | GQA, hd 128, q/k norm fused with rope (`qk_norm_rope`) | rope, full, no scaling (refused) | RMSNorm pre-norm, residual fused in `rmsnorm_add` | SiLU-gated | tied allowed | paged 12-bit lossless, 16-token pages, 8 rows | `mma`/`mma12` decoded in the library product; long prompts unpack then GEMM |
+| legacy: the earlier dense engine (`model.rs` then; as built `dynamic/dense.rs`, the plain dense kind) | GQA, hd 128, q/k norm fused with rope (`qk_norm_rope`) | rope, full, no scaling (refused) | RMSNorm pre-norm, residual fused in `rmsnorm_add` | SiLU-gated | tied allowed | paged 12-bit lossless, 16-token pages, 8 rows | `mma`/`mma12` decoded in the library product; long prompts unpack then GEMM |
 | Nemotron-3-Super / Nemotron-H (`dynamic/nemotron.rs`; the hand-written engine is retired, `kern/nemotron.rs` holds the kernel table and `kern_nh.rs` the weights) | pattern of Mamba-2 (SSD chunk 128, fp32 state [heads,64,128]) and GQA hd 128 | none | RMSNorm, `x + mixer(norm(x))` | MoE: sigmoid + bias, top-22 of 512, renorm, x5; latent 1024 (Super); relu^2, no gate; full-width shared expert | MTP not loaded | bf16 contiguous plus SSM and conv state | Int6/5/4, hb40 codebook; expert cache with CPU misses (`moe_nh.rs:273-319`) |
 
 Recent families first, in bold; legacy rows last.
@@ -787,10 +787,10 @@ What is built (R12b, #327):
   outnumber the places. (The first rule, a miss copied wherever a copy cost less than the host's pairs, ignored that the two run
   at once and copied every miss at 1 and 8 rows: 62-80% slower than the host's plan on an A10.) The store's own plan
   (`LayerCache`) still plans a prompt's chunks: before such a call the GPU's table is read into it, after it written back.
-  On the Nemotron 3 Super decode traces its clock finds 0.5 to 0.6 points fewer of the pairs in places than the least-recently-used
+  On the decode traces of the routing record `benchmarks/moe-skew-2026-10-09` its clock finds 0.5 to 0.6 points fewer of the pairs in places than the least-recently-used
   cache at one row (60.7, 72.8 and 79.4% at 17, 32 and 46% of the experts), and at 8 rows 5.1 more to 0.6 fewer.
   Its GPU check (`tiercheck --device-plan`, `storebench --device-plan`) is not run yet.
-- **The slot policy and the hit-rate model at many rows**, checked on the Nemotron 3 Super decode traces (20 generations, 1 to 20
+- **The slot policy and the hit-rate model at many rows**, checked on the same record's decode traces (20 generations, 1 to 20
   rows side by side): a call's experts are asked for in the order of their pairs, fewest first (`by_rows`), so the busiest stay in
   places across waves (1 to 7 points more pairs found at 16 and 20 rows, never fewer); the planner prices a step's misses as its
   distinct missed experts (`plan::step_misses`: the distinct experts of U rows, E (1 - (1 - k/E)^U), less the share the places
@@ -836,11 +836,10 @@ Recent families first; the legacy pipelines move last, at parity, so they can be
 | 11 | the standard families: Llama 3, Mistral, Qwen 2/2.5, Phi-4, Granite, OLMo, SmolLM (the M2 gate's list) | F1a #166, F1b #167, F1d #169, F1e #170, F1h #173 | one GQA + SwiGLU kind with parameters; proves "config only" | the vLLM plugin path for them (F7, later) |
 | 12 | legacy at parity: Qwen3.5/3.6 and gemma-4-31B (same code as step 5), Nemotron-3-Super/Nemotron-H, Qwen3 dense with its lossless paged KV | R3b #137, R3c #139 | pipelines deleted; no optimisation beyond parity | `model35.rs`, `model_gemma4.rs`, `model_nh.rs`, `model.rs` |
 
-Steps 5 and 6 run in parallel once step 4 has landed, and step 7 can start with 5. The legacy Qwen3 path served until step 12;
-its measured numbers (Qwen3-8B, 59.9 tok/s at 1 user, 452.7 in all at 8, on the 4080 SUPER, 2026-11-20: `benchmarks/gpu/rtx4080s-bar-2026-11-20`) are the parity bar there and the reference for what batching
-must give the recent families in step 5. Step 12's Qwen3 part is R3c (#139): Qwen3 dense, and every config the description builder's
-`llama` reading takes, lowered to the shared operations (`lower::dense`) and served by the scheduler with paged keys and values;
-`model.rs` and what only it used are deleted. Its parity against that bar is the GPU check's to measure.
+Steps 5 and 6 run in parallel once step 4 has landed, and step 7 can start with 5. The old dense path served until step 12.
+Step 12's dense part is R3c (#139): every config the description builder's `llama` reading takes (the plain dense kind), lowered to
+the shared operations (`lower::dense`) and served by the scheduler with paged keys and values; `model.rs` and what only it used are
+deleted.
 
 ## 8. Prior art
 

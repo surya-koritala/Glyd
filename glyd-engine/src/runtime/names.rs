@@ -53,7 +53,7 @@ impl Convention {
 
 const TOWERS: &[&str] = &["model.visual.", "mtp."];
 
-/// Hugging Face's Llama-style names (Llama, Mistral, Qwen2/3, and the base of Qwen3.5's, Gemma 4's, GLM's and Muse's).
+/// Hugging Face's Llama-style names (the plain dense decoders', and the base of Qwen3.5's, Gemma 4's, GLM's and Muse's).
 pub const HF: Convention = Convention {
     name: "Hugging Face (Llama-style)",
     layers: "{p}layers.",

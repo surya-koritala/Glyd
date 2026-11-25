@@ -17,7 +17,7 @@ fn io<T>(r: std::io::Result<T>) -> Result<T> {
 
 pub use crate::runtime::config::{eos_ids, num};
 
-/// What the engine reads of a Qwen3 config.json.
+/// What the engine reads of a plain dense decoder's config.json (the dense kind's sizes: `runtime::describe::LLAMA`).
 #[derive(Clone, Debug)]
 pub struct Config {
     pub hidden: usize,
@@ -50,8 +50,8 @@ impl Config {
     /// What the engine reads of a config.json parsed once (`ModelConfig`): its shared keys typed, `rms_norm_eps` and `rope_theta` its own.
     pub fn of(c: &ModelConfig, label: &str, generation: Option<&str>) -> Result<Config> {
         let s = &c.shared;
-        if c.arch != "Qwen3ForCausalLM" {
-            return err(format!("{label}: {}: the engine runs Qwen3 dense (Qwen3ForCausalLM) so far", c.arch));
+        if !crate::runtime::describe::LLAMA.contains(&c.text_type.as_str()) {
+            return err(format!("{label}: model_type {:?}: not a plain dense decoder (the dense kind's sizes are read here)", c.text_type));
         }
         let need = |x: Option<usize>, k: &str| x.ok_or_else(|| Error(format!("{label}: no {k}")));
         let heads = need(s.num_attention_heads, "num_attention_heads")?;
@@ -871,29 +871,30 @@ mod tests {
     }
 
     #[test]
-    fn config_of_a_qwen3() {
+    fn config_of_a_dense_decoder() {
         let dir = std::env::temp_dir().join(format!("glyd-engine-cfg-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("config.json"),
-            r#"{"architectures":["Qwen3ForCausalLM"],"hidden_size":1024,"num_hidden_layers":28,"num_attention_heads":16,"num_key_value_heads":8,"head_dim":128,"intermediate_size":3072,"vocab_size":151936,"rms_norm_eps":1e-06,"rope_theta":1000000.0,"max_position_embeddings":40960,"tie_word_embeddings":true,"rope_scaling":null}"#,
+            r#"{"architectures":["Qwen3ForCausalLM"],"model_type":"qwen3","hidden_size":1024,"num_hidden_layers":28,"num_attention_heads":16,"num_key_value_heads":8,"head_dim":128,"intermediate_size":3072,"vocab_size":151936,"rms_norm_eps":1e-06,"rope_theta":1000000.0,"max_position_embeddings":40960,"tie_word_embeddings":true,"rope_scaling":null}"#,
         )
         .unwrap();
         std::fs::write(dir.join("generation_config.json"), r#"{"eos_token_id":[151645,151643]}"#).unwrap();
         let c = Config::load(&dir).unwrap();
         assert_eq!((c.hidden, c.layers, c.heads, c.kv_heads, c.head_dim, c.inter, c.vocab), (1024, 28, 16, 8, 128, 3072, 151936));
         assert!(c.tie && c.eps == 1e-6 && c.rope_theta == 1e6 && c.eos == vec![151645, 151643]);
-        std::fs::write(dir.join("config.json"), r#"{"architectures":["LlamaForCausalLM"]}"#).unwrap();
-        assert!(Config::load(&dir).unwrap_err().to_string().contains("Qwen3 dense"));
+        // (the kind is the model type's, as the description builder reads it: an architecture's name alone is not it)
+        std::fs::write(dir.join("config.json"), r#"{"architectures":["Qwen3ForCausalLM"],"model_type":"other"}"#).unwrap();
+        assert!(Config::load(&dir).unwrap_err().to_string().contains("not a plain dense decoder"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A config.json with no attention heads was a division by zero (the head's width is the hidden size over them).
     #[test]
-    fn a_qwen3_config_with_no_heads_is_an_error() {
+    fn a_dense_config_with_no_heads_is_an_error() {
         let c = |heads: &str| {
             format!(
-                r#"{{"architectures":["Qwen3ForCausalLM"],"hidden_size":1024,"num_hidden_layers":28,"num_attention_heads":{heads},"num_key_value_heads":8,"intermediate_size":3072,"vocab_size":151936,"rms_norm_eps":1e-06,"rope_theta":1000000.0,"max_position_embeddings":40960}}"#
+                r#"{{"architectures":["Qwen3ForCausalLM"],"model_type":"qwen3","hidden_size":1024,"num_hidden_layers":28,"num_attention_heads":{heads},"num_key_value_heads":8,"intermediate_size":3072,"vocab_size":151936,"rms_norm_eps":1e-06,"rope_theta":1000000.0,"max_position_embeddings":40960}}"#
             )
         };
         assert!(Config::parse(&c("0"), "config.json", None).unwrap_err().to_string().contains("num_attention_heads"));
@@ -933,7 +934,7 @@ mod tests {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(
             dir.join("config.json"),
-            r#"{"architectures":["Qwen3ForCausalLM"],"hidden_size":128,"num_hidden_layers":2,"num_attention_heads":2,"num_key_value_heads":1,"head_dim":64,"intermediate_size":256,"vocab_size":256,"rms_norm_eps":1e-06,"rope_theta":1000000.0,"max_position_embeddings":512,"tie_word_embeddings":true}"#,
+            r#"{"architectures":["Qwen3ForCausalLM"],"model_type":"qwen3","hidden_size":128,"num_hidden_layers":2,"num_attention_heads":2,"num_key_value_heads":1,"head_dim":64,"intermediate_size":256,"vocab_size":256,"rms_norm_eps":1e-06,"rope_theta":1000000.0,"max_position_embeddings":512,"tie_word_embeddings":true}"#,
         )
         .unwrap();
         let mut t: Vec<(String, Vec<u64>, Vec<u16>)> = Vec::new();

@@ -1,5 +1,5 @@
 //! The scheduler's pages (`Pager`): the blocks of 16 tokens lent to sequences, the full ones kept by their names (`block_hash`) for a later prompt that begins with
-//! the same tokens, and what a step lost or made heavy (`Lost`). The dense Qwen3 engine's 12-bit cache, which this file held, went with that engine (R3c, #139): the
+//! the same tokens, and what a step lost or made heavy (`Lost`). The earlier dense engine's 12-bit cache, which this file held, went with that engine (R3c, #139): the
 //! description executor's 12-bit pages are src/dynamic/kvpages.rs.
 
 /// What the cache lost or made heavy in the steps since it was last asked: blocks with a void layer-page (what they hold is not what was written), blocks with a raw layer-page (held exactly, in the scarce second

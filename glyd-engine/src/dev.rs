@@ -381,7 +381,14 @@ impl Kernel {
     /// As `launch`.
     pub unsafe fn launch_clusters(&self, grid: u32, threads: u32, smem: u32, cluster: u32, stream: Stream, args: &mut [*mut c_void]) -> Result<()> {
         // SAFETY: the caller's arguments (its contract).
-        unsafe { D::launch_clusters(self.0, grid, threads, smem, cluster, stream, args) }
+        unsafe { D::launch_clusters(self.0, grid, threads, smem, cluster, stream, args)? };
+        // (the census counts it; it is not timed)
+        if KPROF.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Some(x) = kprof_table().lock().ok().as_mut().and_then(|m| m.get_mut(&(self.0 as usize))) {
+                x.1 += 1;
+            }
+        }
+        Ok(())
     }
 
     /// `blocks_per_sm` where the kernel's shared memory is already allowed (`allow_smem`) to `smem` bytes or more.

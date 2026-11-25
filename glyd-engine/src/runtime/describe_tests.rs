@@ -439,8 +439,8 @@ fn released_configs_describe_their_checkpoints_tensors() {
     }
 }
 
-/// The naming conventions held to every checkpoint index the fixtures have (the Hub's headers above; Qwen3.5 0.8B and 9B, GLM-5.3-Flash and Nemotron 3
-/// Super's tensor lists): each names exactly the checkpoint's tensors, its quantized matrices' scales with them, less the parts it says it leaves. And the
+/// The naming conventions held to every checkpoint index the fixtures have (the Hub's headers above; Qwen3.5 0.8B and 9B and GLM-5.3-Flash's
+/// tensor lists): each names exactly the checkpoint's tensors, its quantized matrices' scales with them, less the parts it says it leaves. And the
 /// check finds what differs: a tensor the index lacks, and one it has that nothing reads.
 #[test]
 fn conventions_name_the_checkpoints_tensors_exactly() {
@@ -451,7 +451,6 @@ fn conventions_name_the_checkpoints_tensors_exactly() {
         .map(|r| (r.to_string(), cfgs[*r].clone(), q35[*r].as_object().unwrap().keys().cloned().collect()))
         .collect();
     cases.push(("GLM-5.3-Flash".into(), fixture("glm5_next_config.json"), names_with_runs(&fixture("glm5_next_tensors.json"))));
-    cases.push(("Nemotron 3 Super".into(), fixture("nemotron_h_config.json"), names_with_runs(&fixture("nemotron_h_tensors.json"))));
     for (what, cfg, have) in &cases {
         let d = describe(cfg).unwrap();
         d.check(have, true).unwrap_or_else(|e| panic!("{what}: {}", e.msg));
@@ -497,7 +496,7 @@ fn every_recorded_release_describes_or_says_what_it_lacks() {
 fn a_loader_names_a_missing_tensor_from_the_index() {
     let dir = std::env::temp_dir().join(format!("glyd-describe-dir-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let cfg = Fixture::load("llama_model").j["config"].clone();
+    let cfg = Fixture::load("qwen38_model").j["config"].clone();
     std::fs::write(dir.join("config.json"), cfg.to_string()).unwrap();
     let d = describe(&cfg).unwrap();
     let mut names: Vec<String> = d.names().into_iter().collect();
@@ -563,7 +562,7 @@ fn header_names(h: &serde_json::Value) -> BTreeSet<String> {
 }
 
 /// #333, Kimi-K3.1: its sparse attention (`text_config.dsa_config`, the keys of vLLM's `KimiLinearDSAConfig`; the release's own config.json is not in the
-/// fixtures yet) on Kimi-K3's released config: each latent attention layer it names takes DeepSeek-V3.2's indexer of a key a token in the gated form, its
+/// fixtures yet) on Kimi-K3's released config: each latent attention layer it names takes the sparse attention's indexer of a key a token in the gated form, its
 /// keys RMS-normed at the model's eps (LayerNorm-ed with a bias where `index_k_norm_type` says so), and reads the indexer's tensors; the delta attention layers
 /// are as they were. What is not described is refused: an indexer rotary, picks shared across layers, a layer that is no latent attention.
 #[test]

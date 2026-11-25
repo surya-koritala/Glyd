@@ -44,7 +44,7 @@ pub static LEVELS: [Level; 5] = [
     Level { name: "swift", layout: Some(Layout::Int5), bits: "5.5", lossless: false, bar: Some(Bar { kl_mean: 0.05, top1: 0.91, task_drop: 0.075 }) },
     // (four-bit codes without calibration: KL 0.0534, top-1 88.9% on Qwen3.8-27B; a QAT checkpoint's wren is exact)
     Level { name: "wren", layout: Some(Layout::Int4), bits: "4.5", lossless: false, bar: Some(Bar { kl_mean: 0.08, top1: 0.86, task_drop: 0.10 }) },
-    // (experts at 2-3 bits by use, hb40: KL 0.0831, top-1 93.96% on Nemotron 3 Super)
+    // (experts at 2-3 bits by use, hb40: KL 0.0831, top-1 93.96%, the record benchmarks/weights/moe-quality-2026-10-10)
     Level {
         name: "hummingbird",
         layout: Some(Layout::Hummingbird),

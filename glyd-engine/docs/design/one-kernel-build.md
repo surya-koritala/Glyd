@@ -1,6 +1,6 @@
 # R17: one kernel build
 
-Status: step 0 done; steps 1, 2, 5 and 6 begun (see "Progress" at the end): the library's operations run from the engine's fatbin but Hopper's wgmma and TMA products, whose launches are next. Decided 2026-11-21: CUDA 12 stays (step 5); HIP stays a compile-only job until M5b, and the CUDA fold keeps the HIP path building (step 6); step 0 is R1a, #134. Each step carries its own bit-for-bit check in the GPU job (`gpu-tests.yml`, on the project's GPU runner): every step is compared bit for bit with the library on a GPU.
+Status: step 0 done; steps 1 to 6 begun (see "Progress" at the end): the library's operations run from the engine's fatbin (Hopper's wgmma and TMA products are written and have run on no H100 yet), and the engine still loads the library for what its own kernels do not take (step 4). Decided 2026-11-21: CUDA 12 stays (step 5); HIP stays a compile-only job until M5b, and the CUDA fold keeps the HIP path building (step 6); step 0 is R1a, #134. Each step carries its own bit-for-bit check in the GPU job (`gpu-tests.yml`, on the project's GPU runner): every step is compared bit for bit with the library on a GPU.
 
 ## What there was when this was written (2026-11-21)
 
@@ -69,9 +69,33 @@ Each step lands alone, keeps `libglyd_gpu` loadable (the Python package needs it
   Their grids are the library's: occupancy of the engine's own kernels (`cuOccupancyMaxActiveBlocksPerMultiprocessor` in the device
   layer) and the same split rules, so the sums' order and the bits are the library's. A development build's variables that ask for
   another plan keep the library's. Hopper's kernels (the 12-bit layout's TMA and wgmma products, the tiered layout's TMA product, the
-  experts' wgmma product) are in the fatbin, built for sm_90a; their launches (tensor maps from the driver's `cuTensorMapEncodeTiled`,
-  clusters) are next, then step 4.
+  experts' wgmma product) are in the fatbin, built for sm_90a, with their launches (tensor maps from the driver's
+  `cuTensorMapEncodeTiled`, clusters); they have run on no H100 yet.
 - **Step 5.** The folded kernels are in `kernels/engine.cu`'s fatbin, so the CUDA 12 fatbin (`NVCC12`) carries them as it carries the rest.
 - **Step 6.** The HIP build compiles `engine.cu`, so `fold.cu` and the header with it: the header is the library's own HIP-compiling source.
   Not compiled by hipcc yet (the AMD job runs it).
-- **Step 4, not started**: the library goes from the engine when no `GpuOps` method of `Lib` calls its table.
+- **Step 4, begun.** The entries `Lib` still called outside `GpuOps` run from the engine's fatbin, each compared with the library's by
+  `foldcheck`: rows by id (`glyd_gpu_mma_rows`, `_mma12_rows`: `fold_rows_*`, a kernel a layout as the unpackers'), and the 12-bit KV
+  pages' release, save into an image and load from one (`fold_kv_release`, `_save`, `_load`), with an image's size (a host formula).
+  Layout H's plain or coded choice (`f8h_plain`) is the engine's own state; the library is told it before each FP8 call of its own.
+  `foldcheck` ends with the kernels of `kernels/fold.cu` it launched on the GPU it ran on and the names of those it did not (the routes
+  of another GPU's class: stream-K on GeForce Ada, an A100's tiles of the 12-bit route MID, Hopper's TMA and wgmma products).
+  What is left before the engine stops loading the library: every `GpuOps` method of `Lib` still ends in a `library_*` call for
+  what its `fold` function does not take. Those are, by kind: arguments the library refuses (the engine has to refuse them itself, in
+  the same words); an AMD build (its fold functions say false: nothing of them has run on an AMD GPU); a development build's tuning
+  variable that asks for a plan not folded (a release build reads none); the layout of v0.27 and before in `unpack`; a part of a
+  layer on the experts' prompt kernel; and Hopper's routes, which are written and have run on no H100 yet. Then `Lib::find()`'s
+  callers, `GLYD_GPU_LIB`, the bundle's libraries and `install.sh`'s copy go, and `foldcheck` keeps the library as a development
+  build's oracle.
+- **The builds' time** (measured 2026-11-25 on a rented A10 machine of 30 processors, nvcc 12.8, a development build for sm_80 and
+  sm_86; a `ps` sample a second). Both compiles are one translation unit each, and an architecture of a unit is one `cicc` followed by
+  one `ptxas`, each a single thread. `build.rs` ran the engine's two architectures one after the other: 501 s (`cicc` 149 and 148 s,
+  `ptxas` 101 and 102 s). `gpu/build_lib.sh` ran the library's six at once: 914 s (`cicc` 465 to 540 s, `ptxas` 269 to 326 s, then
+  44 s of host compile), 24 of the 30 processors idle throughout; the library of the tree before the fold took 915 s, so the fold added
+  the engine's time and not the library's. `scripts/ci_gpu_build.sh` now builds the library beside cargo's build, the engine's
+  architectures at once (`GLYD_ENGINE_NVCC_THREADS=0`), and the library for the engine's architectures alone (`GLYD_GPU_ARCHS`).
+  nvcc's `--split-compile` does not help: with 15 threads an architecture's `cicc` took 576 s against 523 (15 threads for about 50 s,
+  then one thread for the code generation), in twice the memory, and the machine code it made was not the same bytes. What would:
+  several translation units an architecture, each its own `cicc` and `ptxas`. The engine's kernels are found by name, so its fatbin can be several modules (`fold.cu` by family beside `engine.cu`); the
+  library's kernels are templates its host code launches, so a unit has to hold explicit instances that the host unit declares
+  `extern template` (nvcc 12.8 compiles and runs that, and warns that it will want `-static-global-template-stub=false`).
