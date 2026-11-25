@@ -3459,8 +3459,8 @@ impl Dyn {
                         }
                     }
                 }
-                // (the n-gram embedding: its convolution's last inputs those before the pass and the kept rows' (`qx_ple_conv`: oldest first), its last tokens the
-                // two before the pass and the kept rows' (`qx_ngram_hist`: each token + 1, oldest first))
+                // (the n-gram embedding: its convolution's last inputs those before the pass and the kept rows' (`qx_ple_conv`: oldest first), its last ids the
+                // `order` - 1 before the pass and the kept rows' (`qx_ngram_hist`: each token's id, its compressed one where the form maps it, + 1, oldest first))
                 for (l, ops) in p.d.layers.iter().enumerate() {
                     for op in ops {
                         match *op {
@@ -3476,10 +3476,19 @@ impl Dyn {
                             }
                             Op::NgramRows(x) => {
                                 self.dev.sync()?;
-                                let mut h = [0i32; 2];
+                                let k = x.order - 1;
+                                let mut h = vec![0i32; k];
                                 v.snap[x.hist].read(0, &mut h)?;
-                                let all: Vec<i32> = h.iter().copied().chain(v.tokens[..keep].iter().map(|&t| t as i32 + 1)).collect();
-                                self.states[x.hist].write(0, &all[all.len() - 2..])?;
+                                let mut kept = Vec::with_capacity(keep);
+                                for &t in &v.tokens[..keep] {
+                                    let mut id = [t as i32];
+                                    if let Some(m) = x.map {
+                                        p.small[m].read(t as usize * 4, &mut id)?;
+                                    }
+                                    kept.push(id[0] + 1);
+                                }
+                                let all: Vec<i32> = h.into_iter().chain(kept).collect();
+                                self.states[x.hist].write(0, &all[all.len() - k..])?;
                             }
                             _ => {}
                         }

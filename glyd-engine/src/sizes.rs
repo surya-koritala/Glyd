@@ -463,11 +463,12 @@ pub(crate) mod tests {
 
     /// The recorded headers: for each model the files the Hub listed (path, bytes), the index's total, the config.json and the table of tensors, compact
     /// (tests/fixtures/headers/NAME.json; `record_header_fixtures` writes them).
-    const HEADER_FIXTURES: [(&str, &str); 4] = [
+    const HEADER_FIXTURES: [(&str, &str); 5] = [
         ("gemma-4-12B-it", include_str!("../tests/fixtures/headers/gemma-4-12B-it.json")),
         ("Kimi-K3", include_str!("../tests/fixtures/headers/Kimi-K3.json")),
         ("DeepSeek-V4-Flash-0731", include_str!("../tests/fixtures/headers/DeepSeek-V4-Flash-0731.json")),
         ("Qwen3.8-27B", include_str!("../tests/fixtures/headers/Qwen3.8-27B.json")),
+        ("DeepSeek-V4.1-Flash-1017", include_str!("../tests/fixtures/headers/DeepSeek-V4.1-Flash-1017.json")),
     ];
 
     fn groups_of(v: &serde_json::Value) -> Vec<Group> {
@@ -487,16 +488,17 @@ pub(crate) mod tests {
     }
 
     /// Records the headers of the recent models by ranges from the Hub (the files' headers and the small files; no weights) into tests/fixtures/headers:
-    /// `GLYD_RECORD_HEADERS=1 cargo test -p glyd-engine --lib -- --ignored record_header_fixtures`. Recorded and committed so far: four of the nine repos
-    /// listed below (gemma-4-12B-it, Kimi-K3, DeepSeek-V4-Flash-0731, Qwen3.8-27B). The others (Muse Spark, and #333's releases: GLM-5.3, Qwen3.8-2.4T-A95B,
-    /// DeepSeek-V4.1-Flash, DeepSeek-V4-Flash's DSpark drafter) are listed and not recorded: no header of theirs is in the tree, so
-    /// `runtime::describe_tests::every_recorded_release_describes_or_says_what_it_lacks`, which holds each file here, holds none of them.
+    /// `GLYD_RECORD_HEADERS=1 cargo test -p glyd-engine --lib -- --ignored record_header_fixtures` (or GLYD_RECORD_HEADERS=REPO,REPO: those of the list alone).
+    /// Recorded and committed so far: five of the nine repos listed below (gemma-4-12B-it, Kimi-K3, DeepSeek-V4-Flash-0731, Qwen3.8-27B, and
+    /// DeepSeek-V4.1-Flash-1017, the family's newest release, whose config, index and inference code are the first DeepSeek-V4.1-Flash's byte for byte).
+    /// The others (Muse Spark, and #333's releases: GLM-5.3, Qwen3.8-2.4T-A95B, DeepSeek-V4-Flash's DSpark drafter) are listed and not recorded: no header
+    /// of theirs is in the tree, so `runtime::describe_tests::every_recorded_release_describes_or_says_what_it_lacks`, which holds each file here, holds
+    /// none of them.
     #[test]
     #[ignore = "needs the network: GLYD_RECORD_HEADERS=1"]
     fn record_header_fixtures() {
-        if std::env::var_os("GLYD_RECORD_HEADERS").is_none() {
-            return;
-        }
+        let Some(only) = std::env::var_os("GLYD_RECORD_HEADERS").map(|v| v.to_string_lossy().into_owned()) else { return };
+        let only: Vec<&str> = if only == "1" { Vec::new() } else { only.split(',').collect() };
         let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers");
         std::fs::create_dir_all(&out).unwrap();
         let hub = hub::Hub::from_env();
@@ -509,9 +511,12 @@ pub(crate) mod tests {
             "Qwen/Qwen3.8-27B",
             "zai-org/GLM-5.3",
             "Qwen/Qwen3.8-2.4T-A95B",
-            "deepseek-ai/DeepSeek-V4.1-Flash",
+            "deepseek-ai/DeepSeek-V4.1-Flash-1017",
             "deepseek-ai/DeepSeek-V4-Flash-DSpark",
         ] {
+            if !only.is_empty() && !only.contains(&repo) {
+                continue;
+            }
             let remote = hub.list(repo, "main").unwrap_or_else(|e| panic!("{repo}: {e}"));
             let table = match Table::from_hub_in(&root, &hub, &remote) {
                 Ok(t) => t,
@@ -573,8 +578,9 @@ pub(crate) mod tests {
         }
     }
 
-    /// The recorded headers of Kimi-K3 and DeepSeek-V4 plan over the GPUs of a machine before any file is here: the layers' bytes and the rest's are the tensors' less the
-    /// vision tower and the prediction head, and the plan fits what its GPUs have free.
+    /// The recorded headers of Kimi-K3, DeepSeek-V4 and DeepSeek-V4.1 plan over the GPUs of a machine before any file is here (or are refused, naming the model): the
+    /// layers' bytes and the rest's are the tensors' less the vision tower and the prediction head, an FP8 tensor of other blocks than 128 x 128 (V4.1's) at its
+    /// values in bf16 (twice its bytes, which is how its loader holds it), and the plan fits what its GPUs have free.
     #[test]
     fn the_recorded_dynamic_families_are_planned_from_their_headers() {
         let m = crate::plan::Machine::preset("8xh100").unwrap();
@@ -584,10 +590,22 @@ pub(crate) mod tests {
             let v: serde_json::Value = serde_json::from_str(text).unwrap();
             let table = Table::expand(&groups_of(&v));
             let config = v["config"].as_str().unwrap();
-            let family = if *name == "Kimi-K3" { "Kimi-K3" } else { "DeepSeek-V4" };
+            let family = crate::support::row(crate::runtime::config::family_of(config).unwrap()).name;
             let nl = crate::dynamic::split::config_num(config, "num_hidden_layers").unwrap();
             let (per, base) = crate::dynamic::split::layer_bytes_table(&table, nl, 100, 100, &|_| true);
-            let counted: u64 = table.rows.iter().filter(|r| !matches!(classify(&r.name, nl), Part::Vision | Part::Mtp)).map(|r| r.bytes).sum();
+            let shapes: std::collections::HashMap<&str, &[u64]> = table.rows.iter().map(|r| (r.name.as_str(), &r.shape[..])).collect();
+            let other_blocks = |r: &Row| {
+                r.dtype == "F8_E4M3"
+                    && shapes
+                        .get(r.name.replace(".weight", ".scale").as_str())
+                        .is_some_and(|sc| crate::formats::scale_block(r.shape[0] as usize, r.shape[1] as usize, sc).is_some_and(|b| b != [128, 128]))
+            };
+            let counted: u64 = table
+                .rows
+                .iter()
+                .filter(|r| !matches!(classify(&r.name, nl), Part::Vision | Part::Mtp))
+                .map(|r| if other_blocks(r) { 2 * r.bytes } else { r.bytes })
+                .sum();
             assert_eq!(per.iter().sum::<u64>() + base, counted, "{name}: every layer's bytes and the rest's");
             let args = crate::args::Args::from(["run".to_string(), name.to_string()]);
             match crate::plan::sizing::size_dynamic(&args, name, &table, None, config, family, &devs, Some(m.ram_free), &|_| true) {

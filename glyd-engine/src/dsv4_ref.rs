@@ -662,7 +662,7 @@ impl RefV4 {
 }
 
 /// E4M3's byte of a value it holds exactly.
-fn e4m3_byte(v: f32) -> u8 {
+pub(crate) fn e4m3_byte(v: f32) -> u8 {
     let (s, a) = (((v.to_bits() >> 31) as u8) << 7, v.abs());
     if a == 0.0 {
         return s;

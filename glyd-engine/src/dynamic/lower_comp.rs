@@ -12,11 +12,12 @@ use crate::ffi::{err, Error, Result};
 use crate::runtime::describe::{Described, Source};
 use crate::runtime::kinds::{Body, Collapse, Ffn, Mixer, Moe, Ngram, NgramForm, NormWeight, Residual, Rope, StreamsP};
 
-/// A part of a small tensor as the loader makes it: a checkpoint tensor's bytes as saved, zeros, int64 values the lowering computes, or the tokenizer's compressed
-/// vocabulary (Engram's: int32 [the model's vocabulary], `NgramForm::Engram`).
+/// A part of a small tensor as the loader makes it: a checkpoint tensor's bytes as saved (or as fp32: a bf16 one widened, exact), zeros, int64 values the lowering
+/// computes, or the tokenizer's compressed vocabulary (Engram's: int32 [the model's vocabulary], `NgramForm::Engram`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Piece {
     Tensor(String),
+    Fp32(String),
     Zeros(usize),
     I64(Vec<i64>),
     TokenMap,
@@ -128,6 +129,13 @@ struct Made {
 pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Opts) -> Result<(ModelDesc, Plan)> {
     let m = &d.desc;
     let what = "a compressed attention model";
+    // (the release's quantizations the kernels simulate are those of FP8 in blocks of 128: activations in 128s before each quantized product, the window's and
+    // the compressed entries' non-rotary channels FP8 in 64s, the indexer's FP4 after its Hadamard rotation. A release quantizing otherwise (DeepSeek-V4.1's
+    // blocks of 32: activations in 32s, its window FP8 whole, its entries FP4 in 16s, its indexer FP4 unrotated) runs without them: its weights' arithmetic)
+    let sim = vo.sim && d.fp8_block.is_none_or(|b| b == 128);
+    // (and the library's FP8 products take blocks of 128 alone: a release of other blocks has its FP8 matrices held as the bf16 they decode to)
+    let exact8 = vo.exact8 && d.fp8_block.is_none_or(|b| b == 128);
+    let vo = &V4Opts { sim, exact8, ..*vo };
     // the layers' blocks: (an n-gram block, the attention, the experts)
     let mut at = Vec::new();
     let mut i = 0;
@@ -519,8 +527,10 @@ fn ngram(
     let table = Lin::next(n, false);
     let Lin::Mat(table) = table else { unreachable!() };
     let kv = plan.lin(n, vo, one(roles, "kv", b)?, ((g.streams + 1) * d, g.dim, 0), None);
-    let q = plan.small(vec![Piece::Tensor(one(roles, "norm_in", b)?)]);
-    let k = plan.small(vec![Piece::Tensor(one(roles, "norm_key", b)?)]);
+    // (Engram's gate reads its plain weights in fp32)
+    let w = |r: &str| one(roles, r, b).map(|t| if g.form == NgramForm::Engram { Piece::Fp32(t) } else { Piece::Tensor(t) });
+    let q = plan.small(vec![w("norm_in")?]);
+    let k = plan.small(vec![w("norm_key")?]);
     let hist = states.len();
     states.push((g.order - 1) * 4);
     let conv = if g.conv > 0 {
@@ -563,10 +573,11 @@ mod tests {
 
     const VO: V4Opts = V4Opts { exact8: true, f8_min: 16 << 20, ostack: true, sim: true, ctx: 256 };
 
-    /// The tiny DeepSeek-V4.1 (ratios 0, 2, 2, 1, 1, 1; kv sources 1, 3, 5; index sources 1-4; candidate source 3; Engram before layers 1 and 4) lowers to V4.1's
-    /// forms of the operations: lagged streams (one-hot before the first block alone) and the last weights' collapse; compressors on the kv sources alone, the
-    /// indexer's keys on those that are index sources too; picks on the index sources, published by layer 3, read inside its blocks by layer 4; every compressing
-    /// layer's attention over the picks, no head norm; Engram's rows through the token map; the router's logits divided by the gate temperature.
+    /// The tiny DeepSeek-V4.1 (ratios 0, 2, 2, 1, 1, 1; kv sources 1, 3, 5; index sources 1-4; candidate source 3; Engram of orders 2 to 4 before layers 1 and 4) lowers
+    /// to V4.1's forms of the operations: lagged streams (one-hot before the first block alone) and the last weights' collapse; compressors on the kv sources alone,
+    /// the indexer's keys on those that are index sources too; picks on the index sources, published by layer 3, read inside its blocks by layer 4; every
+    /// compressing layer's attention over the picks, no head norm; Engram's rows through the token map; the router's logits divided by the gate temperature; and
+    /// no simulated quantization (its release's FP8 blocks of 32 are not those the kernels simulate) where the options ask for it.
     #[test]
     fn v41s_forms_lower_to_their_operations() {
         let d = described("tests/fixtures/deepseek_v41_tiny_config.json");
@@ -585,19 +596,20 @@ mod tests {
             let comp = on(l, &|op| matches!(op, Op::Compress { .. }));
             let keys = on(l, &|op| matches!(op, Op::IdxKeys { .. }));
             let picks = on(l, &|op| matches!(op, Op::IdxPick(_)));
-            let ng = on(l, &|op| matches!(op, Op::NgramRows(NgramRows { map: Some(_), segments: false, order: 3, .. })));
+            let ng = on(l, &|op| matches!(op, Op::NgramRows(NgramRows { map: Some(_), segments: false, order: 4, .. })));
             assert_eq!((comp, keys, picks, ng), ([0, 1, 0, 1, 0, 1][l], [0, 1, 0, 1, 0, 0][l], [0, 1, 1, 1, 1, 0][l], [0, 1, 0, 0, 1, 0][l]), "layer {l}");
             assert_eq!(on(l, &|op| matches!(op, Op::CompAttn { picked: true, .. })), (l > 0) as usize, "layer {l}");
             assert_eq!(on(l, &|op| matches!(op, Op::CompQ { norm: false, .. })), 1);
         }
         let cand = |l: usize| m.layers[l].iter().find_map(|op| if let Op::IdxPick(p) = op { Some(p.cand) } else { None }).flatten();
-        assert_eq!((cand(1), cand(2), cand(3), cand(4)), (None, None, Some(Cand::Publish { block: 4, top: 2 }), Some(Cand::Inside { block: 4, top: 2 })));
+        assert_eq!((cand(1), cand(2), cand(3), cand(4)), (None, None, Some(Cand::Publish { block: 4, top: 3 }), Some(Cand::Inside { block: 4, top: 3 })));
         let Some(Op::Moe(e)) = m.layers[0].iter().find(|op| matches!(op, Op::Moe(_))) else { panic!() };
         assert_eq!(e.logit_scale, 1.0);
         // (every index the operations read is the plan's)
         assert_eq!(plan.lins.len(), m.lm + 1 + plan.lins.iter().filter(|x| x.f8).count());
         assert_eq!(plan.moe.len(), 6);
-        assert_eq!(m.v4.as_ref().map(|v| (v.all_ratio, v.idx_ratio)), Some((0, 1)));
+        assert_eq!(m.v4.as_ref().map(|v| (v.all_ratio, v.idx_ratio, v.sim)), Some((0, 1, false)));
+        assert!(VO.sim && m.layers.iter().flatten().all(|op| !matches!(op, Op::Moe(MoeOp { fp8: true, .. }))));
     }
 
     /// Every tensor the plan reads is one the description says (its weight map: V4.1's shapes; DeepSeek-V4-Flash-0731's recorded header), the quantized ones with
@@ -626,7 +638,7 @@ mod tests {
             let have = |t: &str| known.map_or_else(|| d.shapes.contains_key(t), |k| k.contains(t));
             let (_, plan) = lower(&d, vec![1], 4096, &Stage::whole(layers), &VO).unwrap_or_else(|e| panic!("{rel}: {}", e.msg));
             for p in plan.small.iter().flatten() {
-                if let Piece::Tensor(t) = p {
+                if let Piece::Tensor(t) | Piece::Fp32(t) = p {
                     assert!(have(t), "{rel}: {t}");
                 }
             }

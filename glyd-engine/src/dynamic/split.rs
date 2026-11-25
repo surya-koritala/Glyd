@@ -608,9 +608,8 @@ fn lowering(d: &crate::runtime::describe::Described) -> Result<Lowering> {
 /// lowering's reader takes them.
 pub fn loader(d: &crate::runtime::describe::Described) -> Result<Loader> {
     Ok(match lowering(d)? {
-        Lowering::Compressed => {
-            Loader { ends: |dir| crate::deepseek_v4::ConfigV4::load(dir).map(|c| (c.layers, c.eos)), stage: super::deepseek_v4::load_stage_hb }
-        }
+        // (its layers and end tokens by the description: DeepSeek-V4's flat config and V4.1's nested one alike)
+        Lowering::Compressed => Loader { ends: |dir| super::deepseek_v4::ends(dir).map(|(l, e, _)| (l, e)), stage: super::deepseek_v4::load_stage_hb },
         Lowering::Mamba2 => Loader { ends: |dir| crate::nemotron::ConfigNemotronH::load(dir).map(|c| (c.layers, c.eos)), stage: super::nemotron::stage },
         Lowering::DeltaStreams => Loader { ends: |dir| crate::glm::ConfigGlm::load(dir).map(|c| (c.layers, c.eos)), stage: super::glm::stage },
         Lowering::DeltaDepth => Loader { ends: |dir| crate::kimi::ConfigKimi::load(dir).map(|c| (c.layers, c.eos)), stage: super::kimi::stage },

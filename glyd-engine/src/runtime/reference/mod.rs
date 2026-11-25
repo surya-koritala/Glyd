@@ -349,6 +349,13 @@ pub fn gated_mix(
 
 /// mHC's weights for one token: the input's weights over the streams (pre), the output's (post) and the streams' mixing comb[j][k]
 /// (from stream j into stream k), from the streams x [n, hidden] (transformers' `DeepseekV4HyperConnection`).
+/// mHC's collapse of a token's streams `xt` (n of `d`) into a block's input by the weights `w`: the fp32 sum, rounded once where the streams round (`Once`, the
+/// release's `.to(x.dtype)`; `Twice`, transformers' bf16: the fp32 collapse of the bf16 streams rounded once, `.to(hidden_streams.dtype)`).
+pub fn collapse(s: &crate::runtime::kinds::StreamsP, w: &[f32], xt: &[f32], d: usize) -> Vec<f32> {
+    let round = s.rounding != Rounding::F32;
+    (0..d).map(|i| (0..w.len()).map(|j| w[j] * xt[j * d + i]).sum::<f32>()).map(|v| if round { bf16(v) } else { v }).collect()
+}
+
 pub fn hc_weights(s: &crate::runtime::kinds::StreamsP, p: &Params, x: &[f32]) -> Result<(Vec<f32>, Vec<f32>, Vec<Vec<f32>>)> {
     let n = s.streams;
     let r = 1.0 / (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32 + s.norm_eps).sqrt();
@@ -548,12 +555,7 @@ impl RefLayer {
             Residual::Streams(s) if s.lagged => return err("a lagged mHC block runs in the model's executor (its input's weights are the previous block's)"),
             Residual::Streams(s) => {
                 let (pre, post, comb) = hc_weights(s, &self.p, xt)?;
-                let mut input: Vec<f32> = (0..d).map(|i| (0..s.streams).map(|j| pre[j] * xt[j * d + i]).sum()).collect();
-                // (`Twice`, transformers in bf16: the fp32 collapse of the bf16 streams rounded once, `.to(hidden_streams.dtype)`)
-                if s.rounding == Rounding::Twice {
-                    input.iter_mut().for_each(|v| *v = bf16(*v));
-                }
-                (input, Some((post, comb)))
+                (collapse(s, &pre, xt, d), Some((post, comb)))
             }
             Residual::GatedStreams(g) => {
                 let p = &self.p;
@@ -598,9 +600,11 @@ impl RefLayer {
                     }
                     return Ok(());
                 }
+                // (`Once`, the release's fp32 update of its bf16 streams: each stream's new value rounded once, `.type_as(x)`)
+                let r = |v: f32| if s.rounding == Rounding::Once { bf16(v) } else { v };
                 for k in 0..s.streams {
                     for i in 0..d {
-                        xt[k * d + i] = post[k] * o[i] + (0..s.streams).map(|j| comb[j][k] * old[j * d + i]).sum::<f32>();
+                        xt[k * d + i] = r(post[k] * o[i] + (0..s.streams).map(|j| comb[j][k] * old[j * d + i]).sum::<f32>());
                     }
                 }
             }

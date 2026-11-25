@@ -1,6 +1,9 @@
 //! `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain | --sequence]` (R2, #135): every layer kind the families' descriptions hold, run by the executor's CUDA
 //! kernels against its CPU f32 reference (`runtime::reference`), kind by kind, on each logits case's random model (Gemma 4, the Qwen3.5 layout,
-//! the plain dense block, the Mamba-2 layout, Muse Spark, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4, Qwen3.8-Flash-Next) at the lossless level.
+//! the plain dense block, the Mamba-2 layout, Muse Spark, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4, DeepSeek-V4.1, Qwen3.8-Flash-Next) at the lossless level.
+//! With lagged mHC (DeepSeek-V4.1's) each layer's pass is given the weights its first block takes as well (the first layer's one-hot, another's at
+//! random), on both sides; an indexer that picks for itself (a latent attention's, a compressed attention's index source) is traced and its picks taken
+//! by the reference, so that a layer reading another's picks reads the same ones.
 //!
 //! Each layer of the executor's description runs operation by operation on a prompt of `--prompt` rows, then `--steps` decode steps, each pass
 //! from a residual made at random (the layer's caches and states carried from pass to pass, as a sequence's). A layer's operations are runs of
@@ -29,10 +32,11 @@
 
 use super::{Dyn, Op, Opts, Slot};
 use crate::ffi::{err, Error, Result};
-use crate::runtime::kinds::{AttnRounding, Block, Body, Ffn, Indexer, LinearKind, Mixer, NormKind, NormWeight, Residual};
+use crate::runtime::kinds::{AttnRounding, Block, Body, Ffn, Indexer, LinearKind, Mixer, NormKind, NormWeight, Residual, StreamsP};
+use crate::runtime::reference::comp::CompState;
 use crate::runtime::reference::mla::{LatentCache, Picked};
 use crate::runtime::reference::model::{checkpoint_tensor, Depth, RefModel};
-use crate::runtime::reference::{bf16, Hc, RefLayer, SeqState};
+use crate::runtime::reference::{bf16, collapse, hc_weights, Hc, RefLayer, SeqState};
 use crate::weights::Layout;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -291,11 +295,13 @@ impl Rng {
     }
 }
 
-/// A token's residual on the reference: its stream(s), or the depth mix's state; and the mHC weights its block's `pre` gave its `post`.
+/// A token's residual on the reference: its stream(s), or the depth mix's state; the mHC weights its block's `pre` gave its `post`; and with lagged mHC
+/// (`StreamsP::lagged`) the weights the next block's input is weighed by (the block before's own).
 struct Row {
     x: Vec<f32>,
     depth: Option<Depth>,
     hc: Option<Hc>,
+    lag: Option<Vec<f32>>,
 }
 
 impl Dyn {
@@ -341,8 +347,14 @@ impl Dyn {
             // operations before it), and the stream orders the launches; it is synchronized before a slot is read.
             unsafe { self.op(&self.big, l, i, &self.big.d.layers[l][i], n, (pp, pp), 0)? };
             self.trace_pick(&self.big, l, &self.big.d.layers[l][i], n, pp)?;
+            self.trace_comp_pick(&self.big, l, &self.big.d.layers[l][i], n, pp)?;
         }
         self.dev.sync()
+    }
+
+    /// Lagged mHC's weights for the rows of the next pass (`hc_lag` [rows, 4] fp32, which the first lagged block of a layer reads).
+    fn kc_put_lag(&self, lag: &[f32]) -> Result<()> {
+        self.hc_lag.write(0, lag)
     }
 }
 
@@ -354,11 +366,24 @@ fn latent_cache(b: &mut RefLayer, seq: u32) -> Result<&mut LatentCache> {
     }
 }
 
-/// A latent attention's indexer of its own in a block (none for a shared one, which takes the picks of the layer before).
+/// A latent attention's indexer of its own in a block (none for a shared one, which takes the picks of the layer before), or a compressed attention's that
+/// picks for itself (an index source: none for one that reads another's picks), as the picks' judge takes it (an entry a pool of its own).
 fn own_indexer(b: &RefLayer) -> Option<Indexer> {
     match &b.block.body {
         Body::Mixer(Mixer::Mla(x)) => x.indexer.clone().filter(|ix| !ix.shared),
+        Body::Mixer(Mixer::Compressed(c)) if c.ratio > 0 && c.share.is_none_or(|s| s.picks.is_none()) => c.indexer.clone().map(|ix| Indexer { block: 1, ..ix }),
         _ => None,
+    }
+}
+
+/// Sequence `seq`'s picks to take and record of choices in a block of the reference whose indexer picks for itself: a latent attention's cache's, or a
+/// compressed attention's state's (each made where the block has not run the sequence yet).
+fn picks_of(b: &mut RefLayer, seq: u32) -> Result<(&mut std::collections::VecDeque<Vec<usize>>, &mut Option<Vec<Picked>>)> {
+    let comp = matches!(b.block.body, Body::Mixer(Mixer::Compressed(_)));
+    match b.seqs.entry(seq).or_insert_with(|| if comp { SeqState::Comp(CompState::default()) } else { SeqState::Mla(LatentCache::default()) }) {
+        SeqState::Mla(c) => Ok((&mut c.take, &mut c.picked)),
+        SeqState::Comp(c) => Ok((&mut c.take, &mut c.picked)),
+        _ => err("an indexer's sequence state is neither a latent cache nor a compressed attention's"),
     }
 }
 
@@ -387,11 +412,12 @@ fn indexer_apart(ix: &Indexer, picked: Vec<Picked>, rows: Vec<crate::logits::Pic
 /// What one pass of a layer compares: the comparisons' (where, kind, class, value, the rows near a tie, the indexer's choices apart).
 type Got = Vec<(String, String, Class, f32, Vec<String>, Vec<String>)>;
 
-/// A pass's rows: their tokens, the first's position, and each row's residual before the layer.
+/// A pass's rows: their tokens, the first's position, each row's residual before the layer, and with lagged mHC the weights its first block takes ([rows, 4]).
 struct Rows<'a> {
     at: usize,
     tok: &'a [u32],
     x0: Vec<f32>,
+    lag: Option<Vec<f32>>,
 }
 
 /// Layer `l` of the executor (blocks `starts[l]..starts[l + 1]`, `block_starts`) on `rows` (the depth mix's completed groups made by `rng`). With what it
@@ -399,7 +425,7 @@ struct Rows<'a> {
 /// `lend`: the picks the last latent attention with an indexer of its own took for the pass's rows (each row's entries), which a layer whose indexer is
 /// shared attends to, as the engine's does (`MlaOp::lent`); set by such a body here.
 fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng: &mut Rng, lend: &mut Option<Vec<Vec<usize>>>) -> Result<(Got, Vec<f32>)> {
-    let Rows { at, tok, x0 } = rows;
+    let Rows { at, tok, x0, lag } = rows;
     let (d, layers, n) = (m.desc.hidden, dy.big.d.layers.len(), tok.len());
     let (first, per) = (starts[l], starts[l + 1] - starts[l]);
     let runs_l = runs(&dy.big.d.layers[l]);
@@ -428,10 +454,15 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng:
     } else {
         Vec::new()
     };
+    // (lagged mHC: the weights the layer's first block takes, each row's, on the GPU too)
+    if let Some(w) = &lag {
+        dy.kc_put_lag(w)?;
+    }
     for t in 0..n {
         let x = x0[t * sw..][..sw].to_vec();
         let dp = depth.then(|| Depth { sources: (0..nb).map(|j| blk[t * bw + j * d..][..d].to_vec()).collect(), partial: Some(x.clone()) });
-        rows.push(Row { x, depth: dp, hc: None });
+        let lw = lag.as_ref().map(|w| w[t * 4..][..4].to_vec());
+        rows.push(Row { x, depth: dp, hc: None, lag: lw });
     }
     let mut got: Got = Vec::new();
     let mut put = |at: String, kind: String, class: Class, v: f32, near: Vec<String>, apart: Vec<String>| got.push((at, kind, class, v, near, apart));
@@ -440,11 +471,18 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng:
         let mut h = Vec::with_capacity(n * d);
         for r in rows.iter_mut() {
             match b {
-                None => h.extend(m.final_h(&r.x, r.depth.as_ref())?),
+                None => h.extend(m.final_h_with(&r.x, r.depth.as_ref(), r.lag.as_deref().unwrap_or(&[]))?),
                 Some(b) => {
                     let blk = &m.layers[b];
                     let input = match (&blk.block.residual, r.depth.as_mut()) {
                         (Residual::DepthMix(dm), Some(dp)) => dp.input(dm.starts, blk.p.vec("mix_norm")?, blk.p.vec("mix_proj")?),
+                        // (lagged mHC: weighed by the block before's weights, this block's own kept for the next)
+                        (Residual::Streams(s @ StreamsP { lagged: true, .. }), _) => {
+                            let (own, post, comb) = hc_weights(s, &blk.p, &r.x)?;
+                            let w = r.lag.replace(own).ok_or_else(|| Error(format!("block {b}: lagged mHC with no weights before it")))?;
+                            r.hc = Some((post, comb));
+                            collapse(s, &w, &r.x, d)
+                        }
                         _ => {
                             let (input, hc) = blk.pre(&r.x)?;
                             r.hc = hc;
@@ -564,25 +602,25 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng:
             return err(format!("layer {l}: a body's output slot {out:?} of {} values, not {d}", dy.kc_width(out)));
         }
         let o = dy.kc_get(out, n)?;
-        let rows_picked: Vec<crate::logits::PickRow> = traced
-            .into_iter()
-            .flat_map(|t| {
-                let keys = std::rc::Rc::new(t.keys);
-                t.pos.into_iter().zip(t.picks).zip(t.q.into_iter().zip(t.w)).map(move |((pos, picks), (q, w))| crate::logits::PickRow {
-                    pos,
-                    picks,
-                    q,
-                    w,
-                    keys: keys.clone(),
+        let rows_picked: Vec<crate::logits::PickRow> =
+            traced
+                .into_iter()
+                .flat_map(|t| {
+                    let keys = std::rc::Rc::new(t.keys);
+                    t.pos
+                        .into_iter()
+                        .zip(t.picks)
+                        .zip(t.q.into_iter().zip(t.w))
+                        .zip(t.inside)
+                        .map(move |(((pos, picks), (q, w)), inside)| crate::logits::PickRow { pos, picks, q, w, keys: keys.clone(), inside })
                 })
-            })
-            .collect();
+                .collect();
         if ix.is_some() {
             if rows_picked.len() != n {
                 return err(format!("L{l} B{b}: the picks of {} rows traced, where the pass has {n}", rows_picked.len()));
             }
-            let c = latent_cache(&mut m.layers[b], 0)?;
-            (c.take, c.picked) = (rows_picked.iter().map(|r| r.picks.clone()).collect(), Some(Vec::new()));
+            let (take, picked) = picks_of(&mut m.layers[b], 0)?;
+            (*take, *picked) = (rows_picked.iter().map(|r| r.picks.clone()).collect(), Some(Vec::new()));
             *lend = Some(rows_picked.iter().map(|r| r.picks.clone()).collect());
         }
         // (a layer whose indexer is shared: each row attends to the picks the latent attention with an indexer before it took for that row)
@@ -601,9 +639,9 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng:
         }
         let apart = match &ix {
             Some(ix) => {
-                let c = latent_cache(&mut m.layers[b], 0)?;
-                let picked = c.picked.take().unwrap_or_default();
-                c.take.clear();
+                let (take, picked) = picks_of(&mut m.layers[b], 0)?;
+                let picked = picked.take().unwrap_or_default();
+                take.clear();
                 indexer_apart(ix, picked, rows_picked, at, l, b)
             }
             None => Vec::new(),
@@ -719,6 +757,7 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
         Passes::Sequence => Some((RefModel::load(&d, &|n: &str| checkpoint_tensor(&ck, n))?, crate::logits::token_list(prompt + steps, m.desc.vocab, 0))),
     };
     let sw = dy.kc_width(dy.kc_state());
+    let lagged = m.layers.iter().any(|b| matches!(b.block.residual, Residual::Streams(StreamsP { lagged: true, .. })));
     let mut rngs: Vec<Rng> = (0..layers)
         .map(|l| Rng(0x2026_1123_0000_0001 ^ ((l as u64 + 1) << 32) ^ id.bytes().fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64))))
         .collect();
@@ -747,7 +786,13 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
                 Some(x) => x,
                 None => rngs[l].v(n * sw),
             };
-            let (got, after) = pass(&dy, &mut m, l, &starts, Rows { at, tok: &tok, x0 }, &mut rngs[l], &mut lend)?;
+            // (lagged mHC: the first layer's one-hot on stream 0, as the model's first block takes; another layer's at random in (0.1, 1), as sigmoid's plus
+            // hc_eps are)
+            let lag = lagged.then(|| match l {
+                0 => (0..n * 4).map(|i| (i % 4 == 0) as u32 as f32).collect(),
+                _ => rngs[l].v(n * 4).into_iter().map(|v| 0.55 + 0.45 * v).collect(),
+            });
+            let (got, after) = pass(&dy, &mut m, l, &starts, Rows { at, tok: &tok, x0, lag }, &mut rngs[l], &mut lend)?;
             if alone.is_some() {
                 let want = &own[starts[l + 1]];
                 let v = rel(&after, want);
@@ -822,7 +867,7 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
 
 /// `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain | --sequence]`: the cases (all unless named), then each class's worst against its bound.
 pub fn run(a: &crate::args::Args) -> Result<()> {
-    const ALL: [&str; 16] = [
+    const ALL: [&str; 17] = [
         "gemma4",
         "gemma4-kv",
         "qwen35",
@@ -837,6 +882,7 @@ pub fn run(a: &crate::args::Args) -> Result<()> {
         "glm-dsa",
         "glm-dsa-f8",
         "deepseek-v4",
+        "deepseek-v41",
         "qwen4x",
         "qwen4x-s2",
     ];

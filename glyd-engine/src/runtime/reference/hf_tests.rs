@@ -430,7 +430,8 @@ fn glm53_mtp_head() {
     assert_close(&got, &f.f32s("output"), BF16_TOL, "GLM-5.3 MTP head against glm_ref.py");
 }
 
-/// DeepSeek-V4's mHC residual rule around a block (an MLP body), through the reference's block: the streams in, the streams out.
+/// DeepSeek-V4's mHC residual rule around a block (an MLP body), through the reference's block: the streams in, the streams out. The fixture is transformers'
+/// in float32 (as every fixture here), so the streams' rounding point (the release's `Once`) is f32's here.
 #[test]
 fn deepseek_v4_mhc() {
     use super::RefLayer;
@@ -439,7 +440,7 @@ fn deepseek_v4_mhc() {
         norm_in: Norm::rms(1e-6),
         body: Body::Ffn(Ffn::Mlp(silu_mlp(Some(10.0)))),
         norm_out: None,
-        residual: Residual::Streams(StreamsP { streams: 4, sinkhorn_iters: 20, eps: 1e-6, norm_eps: 1e-6, rounding: Rounding::Once, lagged: false }),
+        residual: Residual::Streams(StreamsP { streams: 4, sinkhorn_iters: 20, eps: 1e-6, norm_eps: 1e-6, rounding: Rounding::F32, lagged: false }),
     };
     let p = params(
         &f,
