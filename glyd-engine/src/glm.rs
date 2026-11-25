@@ -5,9 +5,9 @@
 
 use crate::ffi::{err, Error, Result};
 use crate::qwen35::{Pack35, Tensor35};
+use crate::runtime::config::ModelConfig;
 use crate::weights::{eos_ids, num, saved_parts};
 use glyd_gpu::fp8;
-use glyd_gpu::json::{self, Value};
 use glyd_gpu::safetensors::Checkpoint;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -116,7 +116,13 @@ impl ConfigGlm {
     /// A config.json's text (and a generation_config.json's, where there is one): `label` names the file in an error. A key the config lacks that transformers gives a default is read as that default (the layer schedule, the
     /// experts' normalisation, the swiglu clamp, the hyper-connections' numbers); the model's sizes and the router's scale are required.
     pub fn parse(text: &str, label: &str, generation: Option<&str>) -> Result<ConfigGlm> {
-        let v = json::parse(text).map_err(|e| Error(format!("{label}: {e}")))?;
+        ConfigGlm::of(&ModelConfig::parse(text).map_err(|e| e.context(label))?, label, generation)
+    }
+
+    /// `parse` of a config.json parsed once (`ModelConfig`).
+    pub fn of(c: &ModelConfig, label: &str, generation: Option<&str>) -> Result<ConfigGlm> {
+        use serde_json::Value;
+        let v = &c.top;
         let arch = v.get("architectures").and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_str).unwrap_or("");
         if arch != "Glm5NextForConditionalGeneration" {
             return err(format!("{label}: {arch}: not a GLM-5.3-Flash model"));
@@ -124,7 +130,7 @@ impl ConfigGlm {
         if let Some(kind) = v.get("model_type").and_then(Value::as_str).filter(|k| *k != "glm5_next") {
             return err(format!("{label}: the model is {kind:?}, where GLM-5.3-Flash has glm5_next"));
         }
-        let t = v.get("text_config").ok_or_else(|| Error(format!("{label}: no text_config")))?;
+        let t = v.get("text_config").and_then(Value::as_object).ok_or_else(|| Error(format!("{label}: no text_config")))?;
         let kind = t.get("model_type").and_then(Value::as_str).unwrap_or("");
         if kind != "glm5_next_text" {
             return err(format!("{label}: the text model is {kind:?}, where GLM-5.3-Flash has glm5_next_text"));
@@ -187,7 +193,7 @@ impl ConfigGlm {
             None => (0..layers).map(|i| if i % 4 == 3 { GlmKind::Mla } else { GlmKind::Kda }).collect(),
         };
         let attn = t.get("linear_attn_config");
-        let listed = |k: &str| attn.and_then(|a| a.get(k)).and_then(Value::as_u64s);
+        let listed = |k: &str| attn.and_then(|a| a.get(k)).and_then(crate::runtime::config::u64s);
         for (key, kind) in [("kda_layers", GlmKind::Kda), ("full_attn_layers", GlmKind::Mla)] {
             let want: Vec<u64> = (0..layers as u64).filter(|&i| kinds[i as usize] == kind).collect();
             if listed(key).is_some_and(|l| l != want) {
@@ -303,7 +309,7 @@ impl ConfigGlm {
                 if let Some(fmt) = q.get("fmt").and_then(Value::as_str).filter(|f| *f != "e4m3") {
                     return refuse(&format!("FP8 of format {fmt}"));
                 }
-                match q.get("weight_block_size").and_then(Value::as_u64s).as_deref() {
+                match q.get("weight_block_size").and_then(crate::runtime::config::u64s).as_deref() {
                     Some(&[m, n]) if m > 0 && n > 0 => Some([m as usize, n as usize]),
                     _ => return err(format!("{label}: an FP8 quantization with no weight_block_size of two sizes")),
                 }
@@ -808,6 +814,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::nemotron::tests::{bf16_bytes, weights};
     use glyd_gpu::fp8::E4M3;
+    use glyd_gpu::json::{self, Value};
 
     pub(crate) fn text() -> &'static str {
         include_str!("../tests/fixtures/glm5_next_config.json")

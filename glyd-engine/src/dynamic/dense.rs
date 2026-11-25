@@ -19,10 +19,9 @@ pub fn is_dense(text: &str) -> bool {
 fn ends(dir: &Path) -> Result<(Vec<i64>, usize)> {
     let p = dir.join("config.json");
     let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-    let v = glyd_gpu::json::parse(&text).map_err(|e| Error(format!("{}: {e}", p.display())))?;
+    let c = crate::runtime::config::ModelConfig::parse(&text).map_err(|e| e.context(p.display()))?;
     let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
-    let max_pos = crate::runtime::config::ModelConfig::parse(&text)?.shared.max_position_embeddings.unwrap_or(crate::support::DEFAULT_CTX);
-    Ok((crate::weights::eos_ids(&v, generation.as_deref()), max_pos))
+    Ok((crate::weights::eos_ids(&c.top, generation.as_deref()), c.shared.max_position_embeddings.unwrap_or(crate::support::DEFAULT_CTX)))
 }
 
 /// The executor's description of the model in `dir`, from its config.json alone (its tensors' shapes the description's: a packed directory's too).

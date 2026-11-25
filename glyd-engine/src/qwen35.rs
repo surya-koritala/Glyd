@@ -3,6 +3,7 @@
 //! holds. The design: glyd-engine/docs/design/specs/2026-10-06-engine-qwen35-design.md.
 
 use crate::ffi::{err, Error, Result};
+use crate::runtime::config::ModelConfig;
 use crate::weights::{eos_ids, num};
 use glyd_gpu::json::{self, Value};
 use std::collections::{HashMap, HashSet};
@@ -71,13 +72,19 @@ impl Config35 {
 
     /// A config.json's text (and a generation_config.json's, where there is one): `label` names the file in an error.
     pub fn parse(text: &str, label: &str, generation: Option<&str>) -> Result<Config35> {
-        let v = json::parse(text).map_err(|e| Error(format!("{label}: {e}")))?;
+        Config35::of(&ModelConfig::parse(text).map_err(|e| e.context(label))?, label, generation)
+    }
+
+    /// `parse` of a config.json parsed once (`ModelConfig`).
+    pub fn of(c: &ModelConfig, label: &str, generation: Option<&str>) -> Result<Config35> {
+        use serde_json::Value;
+        let v = &c.top;
         let arch = v.get("architectures").and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_str).unwrap_or("");
         let (t, prefix, vision) = match arch {
             "Qwen3_5ForConditionalGeneration" => {
-                (v.get("text_config").ok_or_else(|| Error(format!("{label}: no text_config")))?, "model.language_model.", true)
+                (v.get("text_config").and_then(Value::as_object).ok_or_else(|| Error(format!("{label}: no text_config")))?, "model.language_model.", true)
             }
-            "Qwen3_5ForCausalLM" => (&v, "model.", false),
+            "Qwen3_5ForCausalLM" => (v, "model.", false),
             "Qwen3_5MoeForConditionalGeneration" | "Qwen3_5MoeForCausalLM" => {
                 return err(format!("{label}: {arch}: a mixture of experts, which the engine runs after the dense Qwen3.5 models"))
             }
@@ -130,7 +137,7 @@ impl Config35 {
         if rotary_dim == 0 || rotary_dim > head_dim || !rotary_dim.is_multiple_of(2) {
             return err(format!("{label}: a rotary of {rotary_dim} of {head_dim} dims"));
         }
-        if let Some(sec) = rope.get("mrope_section").and_then(Value::as_u64s) {
+        if let Some(sec) = rope.get("mrope_section").and_then(crate::runtime::config::u64s) {
             // with text alone the three position streams are one, and the sections' frequencies are the plain rotary's
             // (the sections' sum, checked: a section past 2^63 or sums that wrap round to the right one are not a model's)
             if sec.iter().try_fold(0u64, |a, &x| a.checked_add(x)) != Some(rotary_dim as u64 / 2) {
@@ -169,7 +176,7 @@ impl Config35 {
         }
         let mut eos = eos_ids(t, generation);
         if eos.is_empty() {
-            eos = eos_ids(&v, None);
+            eos = eos_ids(v, None);
         }
         let tie = v.get("tie_word_embeddings").or_else(|| t.get("tie_word_embeddings")).and_then(Value::as_bool).unwrap_or(false);
         Ok(Config35 {
@@ -231,17 +238,6 @@ impl Config35 {
     pub fn conv_dim(&self) -> usize {
         2 * self.key_dim() + self.value_dim()
     }
-
-    /// What one sequence holds besides its KV: every linear layer's fp32 state and bf16 convolution state.
-    pub fn state_bytes(&self) -> u64 {
-        let per = self.lin_v_heads * self.lin_k_dim * self.lin_v_dim * 4 + self.conv_dim() * (self.conv_kernel - 1) * 2;
-        (self.linear_layers() * per) as u64
-    }
-
-    /// A token's keys and values in bf16, over the full-attention layers.
-    pub fn kv_bytes_per_token(&self) -> u64 {
-        (self.full_layers() * 2 * self.kv_heads * self.head_dim * 2) as u64
-    }
 }
 
 /// One packed matrix: its parts (tensor names and rows) stacked in order, all of `cols` columns. `key` names it (the module of its first part).
@@ -291,7 +287,7 @@ impl Config35 {
 
     /// Every matrix in load order, packable or not: each layer's (full: q with its gate, k and v as one, then o; linear: the queries, keys, values and z as one, b and a
     /// as one, then out; both: gate and up as one, then down), then the embedding and the LM head where the model has its own.
-    fn matrices(&self) -> Vec<Pack35> {
+    pub(crate) fn matrices(&self) -> Vec<Pack35> {
         let (h, hd) = (self.hidden, self.head_dim);
         let mut out = Vec::new();
         let mut pack = |module: String, parts: &[(&str, usize)], cols: usize| {

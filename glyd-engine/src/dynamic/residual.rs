@@ -40,6 +40,7 @@ pub struct KernRes {
     fin: crate::kt::hc_fin,
     post: crate::kt::hc_post,
     head: crate::kt::hc_head,
+    lag: crate::kt::hc_lag,
     add: crate::kt::res_add,
     gate: crate::kt::res_gate,
     rms_in: crate::kt::rmsnorm_in,
@@ -56,6 +57,7 @@ impl KernRes {
             fin: dev.typed()?,
             post: dev.typed()?,
             head: dev.typed()?,
+            lag: dev.typed()?,
             add: dev.typed()?,
             gate: dev.typed()?,
             rms_in: dev.typed()?,
@@ -153,6 +155,33 @@ impl KernRes {
             }
             None => launch!(self.head, [rows, 1, 1], [512, 1, 1], s; x, 0u64, 0i32, 0u64, 0u64, nw, out, d, eps, 0f32, 0i32, single),
         }
+    }
+
+    /// Lagged mHC (`StreamsP::lagged`): h [n, d] = the streams x [n, 4, d] weighed by the previous lagged block's weights `lag` [n, 4] fp32 (one-hot on stream 0 where `first`), normed
+    /// (`eps`, the weight nw [d]); then, where `keep`, `lag` takes this block's own weights (hcp [n, 24]'s first four, `pre`'s). `keep` false: the head's collapse (`Collapse::LastPre`).
+    ///
+    /// # Safety
+    /// As `streams`.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn lag(
+        &self,
+        s: Stream,
+        x: u64,
+        lag: u64,
+        hcp: u64,
+        nw: u64,
+        h: u64,
+        n: u32,
+        d: i32,
+        eps: f32,
+        (first, keep): (bool, bool),
+        round: Rounding,
+    ) -> Result<()> {
+        if d <= 0 || d > 16 * 512 {
+            return err(format!("streams of {d} values: not supported"));
+        }
+        cpb(round)?;
+        launch!(self.lag, [n, 1, 1], [512, 1, 1], s; x, lag, hcp, nw, h, d, eps, first as i32, keep as i32, (round == Rounding::Once) as i32)
     }
 
     /// x = bf16(x + a), e values.

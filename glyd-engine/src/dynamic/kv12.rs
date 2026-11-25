@@ -202,7 +202,7 @@ pub struct KvShape {
 }
 
 /// Each layer's keys and values, where its attention writes them in rows of [kv heads][channels] the library's pages take (heads of 128, 256 or 512),
-/// or a latent attention's latents (the kind's one stream, f:mla-cache:kv_cache:6: one row a token, which is its key and, through kv_b_proj, its value).
+/// or a latent attention's latents (the kind's one stream: one row a token, which is its key and, through kv_b_proj, its value).
 pub fn shapes(d: &super::ModelDesc) -> Vec<Option<KvShape>> {
     d.layers
         .iter()

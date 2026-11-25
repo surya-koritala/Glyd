@@ -493,6 +493,7 @@ impl RefLayer {
     pub fn pre(&self, xt: &[f32]) -> Result<(Vec<f32>, Option<Hc>)> {
         let d = self.hidden;
         Ok(match &self.block.residual {
+            Residual::Streams(s) if s.lagged => return err("a lagged mHC block runs in the model's executor (its input's weights are the previous block's)"),
             Residual::Streams(s) => {
                 let (pre, post, comb) = hc_weights(s, &self.p, xt)?;
                 let input: Vec<f32> = (0..d).map(|i| (0..s.streams).map(|j| pre[j] * xt[j * d + i]).sum()).collect();

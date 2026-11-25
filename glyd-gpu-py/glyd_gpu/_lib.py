@@ -58,6 +58,8 @@ _ARGS = {  # each function's arguments before its stream
     "kv_write": [_P, _I64, _P, _I64, _P, _I64, _P, _I64, _P, _P, _I64, _I64, _I64, _P, _I64, _P, _I64, _I64, _P, _P, _I64, _I64],  # key, value, slots, pool, bases, H, D, A, escape pool, nchunks, raw pool, nslabs, layer, status, lost bitmap, its bits, the rings' places
     "kv_release": [_P, _I64, _I64, _P, _I64, _I64, _I64, _I64, _P, _I64, _P, _I64, _I64, _P, _P, _I64],  # pool, blocks, H, D, A, escape pool, nchunks, raw pool, nslabs, layer, status, lost bitmap, its bits
     "kv_unpack": [_P, _I64, _P, _I64, _P, _P, _I64, _I64, _I64, _P, _I64, _P, _I64, _P, _P],
+    "kv_save": [_P, _I64, _I64, _P, _I64, _I64, _I64, _I64, _P, _I64, _P, _I64, _I64, _P, _P],  # pool, nblocks, pages, H, D, A, escape pool, nchunks, raw pool, nslabs, layer, the images, their bytes
+    "kv_load": [_P, _P, _I64, _P, _I64, _I64, _I64, _I64, _I64, _P, _I64, _P, _I64, _I64, _P, _I64],  # the images, their blocks, pool, nblocks, H, D, A, escape pool, nchunks, raw pool, nslabs, layer, status, the rings' places
     "kv_gather": [_P, _I64, _P, _P, _I64, _P, _P, _I64, _I64, _I64, _P, _I64, _P, _I64, _P],
     "kv_work_put": [_P, _I64, _P, _I64, _P, _I64, _I64, _I64, _P, _I64],
     "kv_decode": [_P, _I64, _P, _I64, _P, _P, _P, _I64, _P, _I64, _I64, _I64, _I64, _I64, _I64, _P, _I64, _P, _I64, ctypes.c_double, _P, _I64, _P, _SZ],
@@ -78,7 +80,7 @@ _ARGS = {  # each function's arguments before its stream
     "f8h_moe": [_P, _P, _P, _I64, _I64, _I64, _P, _I64, _P, _I64, _P, _I64, _I64, _I64, _I64, _P, _I64, _P, _SZ, _P],  # layout H: as f8_'s
 }
 _SIZES = {"fast_gemm": 3, "fast_bgemv": 3, "mma_gemm": 3, "mma12_gemm": 3, "mma_gemm_x1": 4, "mma12_gemm_x1": 4, "mma12_gemm_x2": 3, "mma12_gemm_x3": 3, "attn_decode": 4, "mma_moe": 7, "mma12_moe": 7, "mma_linear": 4, "mma12_linear": 4, "kv_decode": 5, "f8_size": 2, "f8_linear": 3, "f8_moe": 4}  # their workspace queries' sizes
-_PLAIN = {"gpu": [_P], "mma_way": [_I64] * 4 + [_P, _P], "mma12_way": [_I64] * 4 + [_P, _P], "mma12_part_cus": [_I64] * 4 + [_P], "kv_leaf_bytes": [_I64] * 3 + [_P], "kv_extra_bytes": [_I64, _P], "kv_second_bytes": [_I64, _I64, _P], "kv_decode_shares": [_I64] * 3 + [_P], "kv_floor_set": [ctypes.c_int], "f8h_plain": [ctypes.c_int]}  # the calls with no stream
+_PLAIN = {"gpu": [_P], "mma_way": [_I64] * 4 + [_P, _P], "mma12_way": [_I64] * 4 + [_P, _P], "mma12_part_cus": [_I64] * 4 + [_P], "kv_leaf_bytes": [_I64] * 3 + [_P], "kv_image_bytes": [_I64] * 3 + [_P], "kv_extra_bytes": [_I64, _P], "kv_second_bytes": [_I64, _I64, _P], "kv_decode_shares": [_I64] * 3 + [_P], "kv_floor_set": [ctypes.c_int], "f8h_plain": [ctypes.c_int]}  # the calls with no stream
 _AUX = {  # the route SPLIT's ring (glyd_gpu.h), each call's arguments whole (a stream last where it takes one)
     "aux_create": [_P, _SZ, _SZ, _P],
     "aux_destroy": [_P],

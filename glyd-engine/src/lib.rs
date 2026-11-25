@@ -53,6 +53,7 @@ mod cpu_simd;
 pub mod deepseek_v4;
 pub mod dense_ram;
 pub mod dev;
+pub mod devplan;
 /// A type for each of the engine's kernels, with its arguments' types (R15; made by build.rs from kernels/*.cu: build/kernel_types.rs).
 #[allow(dead_code)]
 pub(crate) mod kt {
@@ -135,6 +136,8 @@ pub mod packcheck;
 pub mod pixels;
 pub mod plan;
 pub mod plancheck;
+/// The quality bar of the lossy levels: the suite, the cards, publish or refuse (R14, docs/quality.md).
+pub mod quality;
 pub mod qwen35;
 #[cfg(feature = "dev")]
 pub mod qwen35_ref;

@@ -4,10 +4,10 @@
 //! from its first token); a prompt chunk's reads them where they are (`kv_prefill`, the kernel the bf16 cache's prompt attention is too). A verify pass's rows and
 //! the warp kernels read them unpacked into a bf16 ring (`kv12_stage`).
 //!
-//! A latent attention's latents (`Op::Mla`, f:mla-cache:kv_cache:6) are one stream: a row a token that is its key and, through kv_b_proj, its value, held in the keys'
+//! A latent attention's latents (`Op::Mla`) are one stream: a row a token that is its key and, through kv_b_proj, its value, held in the keys'
 //! layout alone (`KV_ONE_STREAM`; Kimi-K3's 512 + 64 as 5 heads of 128, the last 64 channels zero; GLM-5.3's 512 as 4). Its attention reads the pages unpacked to bf16
-//! rows (`kv12_latents`), as every project's decompressed prefill gathers a cached latent into a 16-bit workspace (h:mla-cache:attention:14), and runs the kernel the
-//! bf16 ring's attention runs on the same values in the same order: the same bits. The decode's reading the 12-bit latent in place (h:mla-cache:kernel:15) is not built.
+//! rows (`kv12_latents`), as every project's decompressed prefill gathers a cached latent into a 16-bit workspace, and runs the kernel the
+//! bf16 ring's attention runs on the same values in the same order: the same bits. The decode's reading the 12-bit latent in place is not built.
 use super::kv12::{shapes, KvShape, Tables};
 use super::{Dyn, Op, Part};
 use crate::dev::Buf;
@@ -17,6 +17,9 @@ use crate::ffi::{err, KvGeom, Lib, Result, KV_ONE_STREAM};
 pub const ARENA: i64 = 15;
 /// The places of each of a status's two rings (void and raw pages).
 pub(super) const RING: i64 = 4096;
+
+/// A status's words `kv12_lost` reads: the counters, then the void pages' ring.
+pub(super) const VOID_WORDS: usize = 16 + RING as usize;
 /// The values of a chunk of the escape pool.
 const CHUNK: f64 = 64.0;
 /// The decode attention's query heads to a kv head, at most.
@@ -43,6 +46,9 @@ pub(super) struct RingPages {
     /// Its decode's kind (`Lossless::kinds`: its window and its calls' sequences a row), whose lengths and first tokens a pass makes once (none for one
     /// stream: a latent's attention reads its pages unpacked).
     pub kind: usize,
+    /// A page's image moved whole (`Lib::kv_save`: R4d's swap) and the blocks of its pool (block 0 among them).
+    pub image: usize,
+    pub blocks: usize,
 }
 
 /// The 12-bit pages of every ring that has them, the pools they share, and the step's buffers: the rows' keys and values before they are written,
@@ -68,6 +74,17 @@ pub(super) struct Lossless {
     pub list: Buf,
     pub ws: Buf,
     pub splits: i64,
+    /// Deterministic capacity (R4b): each raw pool's slabs and the groups whose rings draw on it (a page that finds no place for an entry takes one; one that finds
+    /// no slab is void), each ring's pool, the escape pool's chunks, and the slabs the growths of this step have promised (`Dyn::kv12_room`).
+    pub raw_pools: Vec<(i64, Vec<usize>)>,
+    pub ring_raw: Vec<Option<usize>>,
+    pub nchunks: i64,
+    pub promised: Vec<i64>,
+    /// The pages (first, end) this step's growths promised each slot (slot, first, end): a slot asked twice in a step is promised its pages once, and one that gives
+    /// its blocks up before the step runs takes its promise with it.
+    pub asked: Vec<(usize, usize, usize)>,
+    /// The copies back in flight (`Lib::kv_load` on the swap's stream): each one's slot and the slabs and chunks its pages take as they load.
+    pub loading: Vec<(usize, Vec<i64>, i64)>,
     /// Device bytes of the pages, the pools and the step's buffers.
     #[cfg_attr(not(feature = "dev"), allow(dead_code))]
     pub bytes: usize,
@@ -207,10 +224,14 @@ impl Lossless {
             lib.kv_floor_set(DECODE_FLOOR)?;
         }
         let escape = Buf::zeroed(lib.kv_escape_bytes(nchunks)? as usize)?;
-        // (a raw slab for one page in RAW_PAGES of each head count, at least RAW_MIN)
+        // (a raw slab for one page in RAW_PAGES of each head count, at least RAW_MIN, and at least what one sequence's pages of every ring of the head count and a pass's
+        // more take (`alone_slabs`): a sequence alone always has a slab for every page it writes, so it is never refused for its values, however they compress;
+        // GLYD_KV12_POOL's slabs no fewer)
+        let alone = Lossless::alone_slabs(lib, d, t, ring_cap, ctx, chunk);
         let mut raws = Vec::new();
         for &(hp, pages) in &heads_raw {
-            let slabs = squeeze.map_or((pages / RAW_PAGES).max(RAW_MIN), |s| s.1);
+            let floor = alone.iter().find(|a| a.0 == hp).map_or(0, |a| a.1);
+            let slabs = squeeze.map_or((pages / RAW_PAGES).max(RAW_MIN), |s| s.1).max(floor);
             raws.push((hp, slabs, Buf::zeroed(lib.kv_raw_bytes(slabs, hp)? as usize)?));
         }
         let mut bytes = escape.bytes + raws.iter().map(|r| r.2.bytes).sum::<usize>();
@@ -250,7 +271,22 @@ impl Lossless {
             if !s.one {
                 most_g = most_g.max(g / parts);
             }
-            out.push(Some(RingPages { geom, pool, kbase, vbase, layer: l as i64, group: group[r], shape: s, parts, g: g / parts, stage_blocks, kind }));
+            let image = lib.kv_image_bytes(&geom)? as usize;
+            out.push(Some(RingPages {
+                geom,
+                pool,
+                kbase,
+                vbase,
+                layer: l as i64,
+                group: group[r],
+                shape: s,
+                parts,
+                g: g / parts,
+                stage_blocks,
+                kind,
+                image,
+                blocks: n,
+            }));
         }
         let parts = out.iter().flatten().filter(|x| !x.shape.one).map(|x| x.parts).max().unwrap_or(1);
         // (the values' buffers for two streams' rings alone)
@@ -274,6 +310,16 @@ impl Lossless {
         };
         // (no lost bitmap: the void ring names a page each time it is made void, which a block reused by another sequence may be again)
         let status: Vec<Buf> = (0..groups).map(|_| Buf::zeroed(4 * (16 + 2 * RING as usize))).collect::<Result<_>>()?;
+        let ring_raw: Vec<Option<usize>> =
+            out.iter().map(|r| r.as_ref().and_then(|r| raws.iter().position(|x| x.0 == (r.shape.heads * r.shape.channels / 128) as i64))).collect();
+        let raw_pools: Vec<(i64, Vec<usize>)> = (0..raws.len())
+            .map(|c| {
+                let mut gs: Vec<usize> = out.iter().zip(&ring_raw).filter(|(_, rc)| **rc == Some(c)).filter_map(|(r, _)| r.as_ref().map(|r| r.group)).collect();
+                gs.sort_unstable();
+                gs.dedup();
+                (raws[c].1, gs)
+            })
+            .collect();
         bytes += rows_k.bytes
             + rows_v.bytes
             + stage_k.bytes
@@ -299,7 +345,48 @@ impl Lossless {
             ws,
             splits,
             bytes,
+            promised: vec![0; raw_pools.len()],
+            asked: Vec::new(),
+            loading: Vec::new(),
+            raw_pools,
+            ring_raw,
+            nchunks,
         })
+    }
+
+    /// The slabs one sequence alone needs at most of each raw pool (its page heads), for every page it holds of each 12-bit ring (a sliding ring's window and a chunk,
+    /// else the context) and a pass's pages more (a chunk's and the one it begins in): (page heads, slabs).
+    pub fn alone_slabs(lib: &Lib, d: &super::ModelDesc, t: &Tables, ring_cap: &[usize], ctx: usize, chunk: usize) -> Vec<(i64, i64)> {
+        let lay = shapes(d);
+        let mut out: Vec<(i64, i64)> = Vec::new();
+        for r in 0..d.rings.len() {
+            if ring_cap[r] == 0 || Lossless::token_bytes(lib, d, t, r).is_none() {
+                continue;
+            }
+            let Some(s) = writer(d, r).and_then(|(l, _)| lay[l]) else { continue };
+            let held = if s.window > 0 { (s.window + chunk).div_ceil(16) + 2 } else { ctx.div_ceil(16) + 1 };
+            let n = (held + chunk.div_ceil(16) + 1) as i64;
+            let hp = (s.heads * s.channels / 128) as i64;
+            match out.iter_mut().find(|x| x.0 == hp) {
+                Some(x) => x.1 += n,
+                None => out.push((hp, n)),
+            }
+        }
+        out
+    }
+
+    /// Each raw pool's slabs free now, at the least: its slabs less what the status of every group whose rings draw on it counts as taken (a group's count is of
+    /// all its rings' pools: an upper bound of this pool's), and the escape pool's chunks free (every group's calls count theirs).
+    pub fn spare(&self) -> Result<(Vec<i64>, i64)> {
+        let w = self.status()?;
+        let slabs = self.raw_pools.iter().map(|(n, gs)| n - gs.iter().map(|&g| w[g][8] as i64).sum::<i64>()).collect();
+        Ok((slabs, self.nchunks - w.iter().map(|x| x[4] as i64).sum::<i64>()))
+    }
+
+    /// The slabs `pages` pages of a sequence may take of each raw pool: a slab for every page of every 12-bit ring that draws on it (each may be made raw by values
+    /// that do not compress).
+    pub fn need_pages(&self, pages: usize) -> Vec<i64> {
+        (0..self.raw_pools.len()).map(|c| self.ring_raw.iter().filter(|&&x| x == Some(c)).count() as i64 * pages as i64).collect()
     }
 
     /// Each group's status words (glyd_gpu.h's kv_write): [0] the exceptions with no place, [4]/[5] the escape chunks taken now and the most at once, [8]/[9] the raw slabs,
@@ -323,28 +410,37 @@ impl Dyn {
     }
 
     /// A pass's 12-bit arguments, once for every layer (`n` rows at `pos`, their parts where it is over several sequences): each part's rows' slots in
-    /// each group's blocks (its table there), and each kind of decode's lengths and first tokens.
+    /// each group's blocks (its table there; the pass's first rows that decode, `Dyn::lead`, through their own tables at once), and each kind of decode's lengths and
+    /// first tokens (a row's are its position's: every row at once).
     pub(super) unsafe fn kv12_prepare(&self, n: usize, pos: (u64, u64)) -> Result<()> {
         let lx = self.lossless.as_ref().expect("pages");
         let s = self.dev.stream;
         // (a ring of each group, whose table is the group's)
         let of_group: Vec<Option<usize>> = (0..lx.slots.len()).map(|g| lx.rings.iter().position(|r| r.as_ref().is_some_and(|r| r.group == g))).collect();
+        let lead = if self.parts.is_empty() { 0 } else { self.lead.get() };
+        if lead > 0 {
+            for (g, r) in of_group.iter().enumerate() {
+                if let Some(r) = *r {
+                    let (tab, t, dup) = self.row_tab(r);
+                    self.kern.kv12_rows(s, pos.0, lead, (tab, dup * t), 0, 1, lx.slots[g].ptr, 0, 0)?;
+                }
+            }
+        }
         let parts: Vec<(Option<usize>, usize, usize)> =
-            if self.parts.is_empty() { vec![(None, 0, n)] } else { self.parts.iter().enumerate().map(|(k, p)| (Some(k), p.row0, p.rows)).collect() };
+            if self.parts.is_empty() { vec![(None, 0, n)] } else { self.parts.iter().enumerate().skip(lead).map(|(k, p)| (Some(k), p.row0, p.rows)).collect() };
         for (k, row0, rows) in parts {
             self.at.set(k);
             let off = 4 * row0 as u64;
             for (g, r) in of_group.iter().enumerate() {
                 if let Some(r) = *r {
-                    self.kern.kv12_rows(s, pos.0 + off, rows, self.table(r), 0, 1, lx.slots[g].ptr + 8 * row0 as u64, 0, 0)?;
+                    self.kern.kv12_rows(s, pos.0 + off, rows, (self.table(r), 0), 0, 1, lx.slots[g].ptr + 8 * row0 as u64, 0, 0)?;
                 }
-            }
-            for (i, &(window, sp)) in lx.kinds.iter().enumerate() {
-                let at = 4 * (row0 * sp) as u64;
-                self.kern.kv12_rows(s, pos.1 + off, rows, 0, window, sp, 0, lx.lens[i].ptr + at, lx.first[i].ptr + at)?;
             }
         }
         self.at.set(None);
+        for (i, &(window, sp)) in lx.kinds.iter().enumerate() {
+            self.kern.kv12_rows(s, pos.1, n, (0, 0), window, sp, 0, lx.lens[i].ptr, lx.first[i].ptr)?;
+        }
         Ok(())
     }
 
@@ -382,12 +478,19 @@ impl Dyn {
 
     /// The decode attention of n rows (queries `q`, out `att`, [n, nq d] each) over ring `ring`'s pages, at the lengths and first tokens the pass made.
     pub(super) unsafe fn kv12_decode(&self, ring: usize, n: usize, nq: usize, q: u64, att: u64) -> Result<()> {
+        // (every row a sequence of the decode's, its parts of query heads more; all of them the same sequence's pages: its table, rows 0 apart)
+        self.kv12_decode_at(ring, n, nq, q, att, (self.table(ring), 0), self.row0())
+    }
+
+    /// `kv12_decode` of the n rows from row `row0` of the pass, the call's sequence b (row b / parts's query heads' part b % parts) through table `tab.0` + b `tab.1`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) unsafe fn kv12_decode_at(&self, ring: usize, n: usize, nq: usize, q: u64, att: u64, tab: (u64, usize), row0: usize) -> Result<()> {
         let lx = self.lossless.as_ref().expect("a ring with pages");
         let rp = lx.rings[ring].as_ref().expect("a ring with pages");
         let s = self.dev.stream;
-        let at = 4 * (self.row0() * rp.parts) as u64;
+        let at = 4 * (row0 * rp.parts) as u64;
         let stride = (nq * rp.shape.channels / rp.parts) as i64;
-        // (every row a sequence of the decode's, its parts of query heads more; all of them the same sequence's pages: its table, rows 0 apart)
+        self.dcalls.set(self.dcalls.get() + 1);
         self.lib.kv_decode_from(
             &rp.geom,
             rp.g as i64,
@@ -396,8 +499,8 @@ impl Dyn {
             rp.vbase.ptr,
             q,
             stride,
-            self.table(ring),
-            0,
+            tab.0,
+            tab.1 as i64,
             lx.lens[rp.kind].ptr + at,
             lx.first[rp.kind].ptr + at,
             rp.shape.round,
@@ -501,9 +604,15 @@ impl Dyn {
         let mut lost = crate::kv::Lost::default();
         let (Some(lx), Some(pg)) = (self.lossless.as_mut(), self.paged.as_ref()) else { return Ok(lost) };
         let mut blocks: Vec<(usize, u32)> = Vec::new();
+        // (a launched step's status as its lane copied it after the step, where it is that step that landed; else as the GPU holds it now)
+        let copied = self.status_from.take();
         for (g, b) in lx.status.iter().enumerate() {
-            let mut w = vec![0u32; 16 + RING as usize];
-            b.read(0, &mut w)?;
+            let mut w = vec![0u32; VOID_WORDS];
+            match copied {
+                // SAFETY: the lane's pinned copy, VOID_WORDS a group, written by copies its step's event (waited for) followed.
+                Some(p) => w.copy_from_slice(unsafe { std::slice::from_raw_parts(p.add(g * VOID_WORDS), VOID_WORDS) }),
+                None => b.read(0, &mut w)?,
+            }
             let (head, seen) = (w[12], lx.seen[g]);
             let n = head.wrapping_sub(seen);
             lost.overflow |= n as i64 > RING;
@@ -562,6 +671,137 @@ impl Dyn {
             out.push((r, pages, chunks, zero));
         }
         Ok(out)
+    }
+
+    /// Deterministic capacity (R4b, the owner's choice: the calibrated need reserved, the newest request paused when the spare pool runs out). The escape pool is made
+    /// for the calibrated chunks of every block (`chunks_per_page`), so a sequence's blocks reserve its calibrated need as it takes them. Values that compress worse
+    /// make a page raw (a slab of its raw pool for the page) where the chunks run out, and a page void only where no slab is free: so a pass of sequence `slot`'s
+    /// tokens `n` to `upto` (a chunk at most) may begin only where every raw pool has a slab for every page it writes, beside what this step's growths and the copies
+    /// back in flight have promised. Where not: the swap's releases waited for, the named blocks no one holds dropped (`Pages::drop_idle`, their pages cleared),
+    /// and asked again; false: the scheduler pauses the newest sequence (`ModelStep::grow`), whose blocks' chunks and slabs go back as it gives them up
+    /// (`kv12_release_blocks`). A sequence alone always fits: each raw pool has the slabs of one sequence's pages and a pass more (`Lossless::alone_slabs`). A slot's
+    /// pages are promised once a step however often it is asked (as its prompt is let in, and before its pass: `pages_more`), and a slot that gives its blocks up
+    /// before the step runs takes its promise with it (`kv12_unpromise`).
+    pub(super) fn kv12_room(&mut self, slot: usize, n: usize, upto: usize) -> Result<bool> {
+        let Some(lx) = self.lossless.as_ref() else { return Ok(true) };
+        let had = lx.asked.iter().find(|a| a.0 == slot).map(|a| (a.1, a.2));
+        let (more, pages) = super::pages::pages_more(had, n, upto.min(n + self.chunk));
+        let need = lx.need_pages(more);
+        if need.iter().all(|&x| x == 0) {
+            return Ok(true);
+        }
+        for attempt in 0..3 {
+            self.dev.sync()?;
+            let lx = self.lossless.as_ref().expect("above");
+            let (slabs, _) = lx.spare()?;
+            let taken: Vec<i64> = (0..need.len()).map(|c| lx.promised[c] + lx.loading.iter().map(|l| l.1[c]).sum::<i64>()).collect();
+            if super::pages::room(&need, &slabs, &taken) {
+                let lx = self.lossless.as_mut().expect("above");
+                lx.promised.iter_mut().zip(&need).for_each(|(p, x)| *p += x);
+                lx.asked.retain(|a| a.0 != slot);
+                lx.asked.push((slot, pages.0, pages.1));
+                return Ok(true);
+            }
+            match attempt {
+                0 => self.swap_sync()?,
+                1 => self.kv12_drop_idle()?,
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+
+    /// A step has run: what its growths promised is in the pools' counts now.
+    pub(super) fn kv12_stepped(&mut self) {
+        if let Some(lx) = self.lossless.as_mut() {
+            lx.promised.iter_mut().for_each(|p| *p = 0);
+            lx.asked.clear();
+        }
+    }
+
+    /// Slot `slot` gives its blocks up (released, or copied out to the host) before the step it was promised pages for has run: the promise goes with it.
+    pub(super) fn kv12_unpromise(&mut self, slot: usize) {
+        let Some(lx) = self.lossless.as_mut() else { return };
+        if let Some(i) = lx.asked.iter().position(|a| a.0 == slot) {
+            let (_, first, end) = lx.asked.swap_remove(i);
+            let back = lx.need_pages(end - first);
+            lx.promised.iter_mut().zip(&back).for_each(|(p, x)| *p -= x);
+        }
+    }
+
+    /// The named blocks no sequence holds, of every group with 12-bit rings, dropped and their pages cleared (their chunks and slabs back to the pools).
+    fn kv12_drop_idle(&mut self) -> Result<()> {
+        let Some(lx) = self.lossless.as_ref() else { return Ok(()) };
+        let groups: Vec<usize> = lx.rings.iter().flatten().map(|r| r.group).collect();
+        for g in groups {
+            let blocks = self.paged.as_mut().expect("12-bit pages are paged").pages.drop_idle(g);
+            self.kv12_release_blocks(g, &blocks)?;
+        }
+        Ok(())
+    }
+
+    /// The pages of `blocks` of group `g` in every 12-bit ring of the group cleared on the engine's stream (their chunks and slabs back to the pools), waited for.
+    pub(super) fn kv12_release_blocks(&self, g: usize, blocks: &[u32]) -> Result<()> {
+        let Some(lx) = self.lossless.as_ref().filter(|_| !blocks.is_empty()) else { return Ok(()) };
+        let list = Buf::new(4 * blocks.len())?;
+        list.write(0, &blocks.iter().map(|&b| b as i32).collect::<Vec<i32>>())?;
+        for rp in lx.rings.iter().flatten().filter(|r| r.group == g) {
+            // SAFETY: the ring's pool and its pools; the list of the blocks, which no sequence holds; waited for before the list goes.
+            unsafe {
+                self.lib.kv_release(&rp.geom, rp.pool.ptr, rp.blocks as i64, list.ptr, blocks.len() as i64, rp.layer, lx.status[g].ptr, self.dev.stream)?
+            };
+        }
+        self.dev.sync()
+    }
+
+    /// R4d's pages moved whole: each 12-bit ring's pages of the selected sequence's first `n` tokens saved (`Lib::kv_save`) and loaded into as many free blocks of its pool
+    /// (`Lib::kv_load`), both unpacked: the pages, the values that differ between them, the bytes the images took, and those of the pages' values in bf16.
+    #[cfg(feature = "dev")]
+    fn kv12_move_check(&self, n: usize) -> Result<(usize, usize, usize, usize)> {
+        let (Some(lx), Some(pg)) = (self.lossless.as_ref(), self.paged.as_ref()) else { return Ok((0, 0, 0, 0)) };
+        let s = self.dev.stream;
+        let (mut pages, mut differ, mut moved, mut bf16) = (0, 0, 0, 0);
+        for (r, rp) in lx.rings.iter().enumerate() {
+            let Some(rp) = rp else { continue };
+            // (the table as the GPU holds it, which the reply's steps read: the host's gave the sequence's blocks back when the reply ended)
+            let tab = pg.gpu_table(self.seq, r)?;
+            let mut src: Vec<i32> = tab[..n.div_ceil(16).min(tab.len())].iter().filter(|&&b| b != 0).map(|&b| b as i32).collect();
+            // (the pool's blocks that no table entry of this sequence names, the last first; as many of its pages as there are of them: a pool of one sequence's has
+            // fewer free blocks than the sequence holds)
+            let dst: Vec<i32> = (1..rp.blocks as i32).rev().filter(|b| !src.contains(b)).take(src.len()).collect();
+            src.truncate(dst.len());
+            let k = src.len();
+            if k == 0 {
+                continue;
+            }
+            let per = 16 * rp.shape.heads * rp.shape.channels * 2;
+            let (sb, db, img, mv) = (Buf::new(4 * k)?, Buf::new(4 * k)?, Buf::zeroed(k * rp.image)?, Buf::zeroed(4 * k)?);
+            let outs = [Buf::new(k * per)?, Buf::new(k * per)?, Buf::new(k * per)?, Buf::new(k * per)?];
+            sb.write(0, &src)?;
+            db.write(0, &dst)?;
+            // SAFETY: the ring's pool and its pools; the lists, images and outputs of k pages each, sized above; the stream is synchronized before they are read.
+            unsafe {
+                self.lib.kv_save(&rp.geom, rp.pool.ptr, rp.blocks as i64, sb.ptr, k as i64, rp.layer, img.ptr, mv.ptr, s)?;
+                self.lib.kv_load(&rp.geom, img.ptr, db.ptr, k as i64, rp.pool.ptr, rp.blocks as i64, rp.layer, lx.status[rp.group].ptr, RING, s)?;
+                self.lib.kv_unpack(&rp.geom, rp.pool.ptr, rp.kbase.ptr, rp.vbase.ptr, sb.ptr, k as i64, outs[0].ptr, outs[1].ptr, s)?;
+                self.lib.kv_unpack(&rp.geom, rp.pool.ptr, rp.kbase.ptr, rp.vbase.ptr, db.ptr, k as i64, outs[2].ptr, outs[3].ptr, s)?;
+            }
+            self.dev.sync()?;
+            let read = |b: &Buf| -> Result<Vec<u16>> {
+                let mut v = vec![0u16; k * per / 2];
+                b.read(0, &mut v)?;
+                Ok(v)
+            };
+            // (one stream: the keys alone, as `kv12_back` reads it; nothing is unpacked into the values' room)
+            let streams = if rp.shape.one { 1 } else { 2 };
+            for (a, b) in [(0, 2), (1, 3)].into_iter().take(streams) {
+                differ += read(&outs[a])?.iter().zip(read(&outs[b])?).filter(|(x, y)| **x != *y).count();
+            }
+            let mut m = vec![0u32; k];
+            mv.read(0, &mut m)?;
+            (pages, moved, bf16) = (pages + k, moved + m.iter().map(|&x| x as usize).sum::<usize>(), bf16 + streams * k * per);
+        }
+        Ok((pages, differ, moved, bf16))
     }
 
     /// The selected sequence's keys and values of ring `ring` read back from its 12-bit pages at its tokens before n, as `kv_rows` reads the bf16 ring.
@@ -765,6 +1005,15 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     println!(
         "escape chunks held: {chunks} in {pages} pages ({zero} in block 0, no sequence's); the tables counted {tables_said:.2} a page a ring on their prompts"
     );
+    // (R4d: the sequence's pages moved whole to other blocks, as a swap moves them, and read back against where they were)
+    let (moved_pages, moved_differ, moved, bf16_moved) = e.kv12_move_check(n)?;
+    println!(
+        "{} pages moved whole: {moved_differ} values of {moved_pages} pages differ from where they were; {:.0} bytes a page over the link, {:.0} in bf16 ({:.1}%)",
+        if moved_differ == 0 && moved_pages > 0 { "ok  " } else { "FAIL" },
+        moved as f64 / moved_pages.max(1) as f64,
+        bf16_moved as f64 / moved_pages.max(1) as f64,
+        100.0 * moved as f64 / bf16_moved.max(1) as f64
+    );
     let lx = e.lossless.as_ref().expect("taken above");
     for (g, w) in lx.status()?.iter().enumerate() {
         println!(
@@ -784,6 +1033,9 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     if differ != 0 || want.first() != got.first() || lx.status()?.iter().any(|w| w[11] != 0) {
         return err("the 12-bit pages do not hold what the bf16 ones do");
     }
+    if moved_differ != 0 || moved_pages == 0 {
+        return err("the 12-bit pages moved whole do not hold what they held");
+    }
     Ok(())
 }
 
@@ -792,7 +1044,7 @@ mod tests {
     use super::super::kv12::{shapes, LayerTable, Tables};
     use super::*;
 
-    /// Kimi-K3's and GLM-5.3-Flash's releases' latents (f:mla-cache:kv_cache:6): each latent attention layer's ring is one stream of its kv_rank + rope values in heads
+    /// Kimi-K3's and GLM-5.3-Flash's releases' latents: each latent attention layer's ring is one stream of its kv_rank + rope values in heads
     /// of 128 (576 as 5, the last 64 channels padding; 512 as 4), written by its layer's operation; GLM-5.3's indexer ring has no 12-bit shape and stays bf16.
     #[test]
     fn a_latent_ring_is_one_stream_in_heads_of_128() {

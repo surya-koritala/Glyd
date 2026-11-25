@@ -194,13 +194,13 @@ pub struct Indexer {
     pub form: IndexForm,
 }
 
-/// The derived form, with `form` said only where it is not `Gated`: the gated indexers' descriptions read as they did before the field (the
-/// digests of tests/fixtures/descriptions.json are of this text).
+/// The derived form, with `form` said only where it is not the gated form with LayerNorm-ed keys (`IndexForm::LAYER_KEYS`): those indexers'
+/// descriptions read as they did before the field (the digests of tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for Indexer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Indexer");
         s.field("heads", &self.heads).field("head_dim", &self.head_dim).field("top_k", &self.top_k).field("block", &self.block).field("shared", &self.shared);
-        if self.form != IndexForm::Gated {
+        if self.form != IndexForm::LAYER_KEYS {
             s.field("form", &self.form);
         }
         s.finish()
@@ -210,15 +210,23 @@ impl std::fmt::Debug for Indexer {
 /// How an indexer makes its queries, its pooled keys and its scores.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IndexForm {
-    /// Queries and a key a token from their own products, each token's key normed; a pool's key the softmax(gate + ape)-weighted sum of
-    /// its tokens' keys; the heads' scores weighed by a learned product of the block's input (GLM-5.3-Flash, DeepSeek-V4).
-    Gated,
+    /// Queries and a key a token from their own products, each token's key normed by `key` (role `indexer_k_norm`, and with a LayerNorm its
+    /// bias `indexer_k_norm_bias`); a pool's key the softmax(gate + ape)-weighted sum of its tokens' keys; the heads' scores weighed by a learned
+    /// product of the block's input. The key's norm: a LayerNorm at 1e-6 (GLM-5.3-Flash, GLM-5, DeepSeek-V3.2: `LAYER_KEYS`), an RMS norm at the
+    /// model's eps (Kimi-K3.1's `dsa_config.index_k_norm_type` rmsnorm, its LayerNorm otherwise; DeepSeek-V4's compressed entries, normed by
+    /// their compressor's `idx_norm`).
+    Gated { key: Norm },
     /// Condor's Qwen Sparse Attention (Qwen3.8-Flash-Next): the `heads` queries and ONE key from one product of the block's input (role
     /// `index_qk` [(heads + 1) head_dim, hidden]); each query head normed by `norm` (role `index_q_norm` [head_dim]) and rotated as the
     /// attention's queries (its rope, on the first `dim` channels of the head); the raw keys cached, a pool's key the mean of its tokens'
     /// raw keys, normed by `norm` (role `index_k_norm`) and rotated at the pool's first position; a pool's score sum_h relu(q_h . k) /
     /// sqrt(head_dim), the heads unweighted.
     Mean { norm: Norm },
+}
+
+impl IndexForm {
+    /// The gated form whose keys are LayerNorm-ed with a bias at 1e-6 (GLM-5.3-Flash's, GLM-5's, DeepSeek-V3.2's).
+    pub const LAYER_KEYS: IndexForm = IndexForm::Gated { key: Norm { kind: NormKind::Layer, weight: NormWeight::Plain, eps: 1e-6, rounding: Rounding::F32 } };
 }
 
 /// Where an attention rounds to bf16 inside: the arithmetic of the implementation a family's engine follows.
@@ -307,7 +315,11 @@ pub struct Mla {
 /// `comp_gate` [(1 + overlap) head_dim, hidden], `comp_ape` [ratio, (1 + overlap) head_dim], `comp_norm` [head_dim]; with an indexer
 /// the same four as `idx_kv`, `idx_gate`, `idx_ape`, `idx_norm` at the indexer's head dim, `idx_q_b` [heads head_dim, q_lora] and
 /// `idx_weights` [heads, hidden]. The query's per-head norm has no weight.
-#[derive(Clone, Debug, PartialEq)]
+///
+/// DeepSeek-V4.1's form of it (CSA2): ratio 1 (each token its own entry, no gate) or 2 (windows of 2, no overlap), no position bias (`ape`
+/// false: no `comp_ape`), no per-head query norm (`q_head_norm` false), and the entries, the indexer's keys and its picks shared across
+/// layers (`share`). A query reads entry j only once its window has closed: j < (pos + 1) / ratio.
+#[derive(Clone, PartialEq)]
 pub struct Comp {
     pub heads: usize,
     pub head_dim: usize,
@@ -323,6 +335,55 @@ pub struct Comp {
     pub rope: Rope,
     pub indexer: Option<Indexer>,
     pub norm_eps: f32,
+    /// The compressed windows' learned position bias (`comp_ape`, `idx_ape`): DeepSeek-V4's; V4.1's have none.
+    pub ape: bool,
+    /// The query's per-head weightless RMS norm: DeepSeek-V4's; V4.1 has none.
+    pub q_head_norm: bool,
+    /// V4.1's sharing across layers; None: every part the layer's own (V4).
+    pub share: Option<CompShare>,
+}
+
+/// Where a V4.1 compressed attention's parts come from: None, the layer's own; Some(b), block b's of the description (the most recent source
+/// at or below the layer).
+///
+/// The entries: a kv source's compressor (`comp_kv`, `comp_gate` with ratio 2, `comp_norm`: `kv_source_layer_ids`), each entry normed, then
+/// rotated at its window's first position; and, where the source has the indexer's key product, the indexer's keys: `idx_k` [index head_dim,
+/// head_dim] of each entry before its rotation, normed by the indexer's key norm (`idx_k_norm`), rotated as the entry. The picks: an index
+/// source's (`index_source_layer_ids`), whose queries are its own (`idx_q_b` of the q latent, rotated at the query's position; `idx_weights`):
+/// score(j) = sum_h w_h relu(q_h . k_j) / sqrt(index head_dim) / sqrt(heads) over the visible entries, the best `top_k` kept in order; a layer
+/// that is no index source reads that source's picks of the same position. `candidates`: the candidate source's block, inside whose published
+/// blocks an index source after it scores (the rest masked before its top-k).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CompShare {
+    pub entries: Option<usize>,
+    pub picks: Option<usize>,
+    pub candidates: Option<usize>,
+    /// On the candidate source (`candidate_source_layer_id`): each query's visible scores max-pooled over blocks of `block` entries, the block
+    /// of its newest visible entry kept whatever its score, the best `top` blocks published (`candidate_block_size`, `candidate_topk_blocks`).
+    pub publish: Option<(usize, usize)>,
+}
+
+/// The derived form, with V4.1's fields said only where they differ from DeepSeek-V4's: V4's descriptions read as they did before them (the
+/// digests of tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for Comp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("Comp");
+        s.field("heads", &self.heads)
+            .field("head_dim", &self.head_dim)
+            .field("q_lora", &self.q_lora)
+            .field("o_groups", &self.o_groups)
+            .field("o_lora", &self.o_lora)
+            .field("window", &self.window)
+            .field("ratio", &self.ratio)
+            .field("overlap", &self.overlap)
+            .field("rope", &self.rope)
+            .field("indexer", &self.indexer)
+            .field("norm_eps", &self.norm_eps);
+        if !self.ape || !self.q_head_norm || self.share.is_some() {
+            s.field("ape", &self.ape).field("q_head_norm", &self.q_head_norm).field("share", &self.share);
+        }
+        s.finish()
+    }
 }
 
 /// Which delta rule a linear-attention layer runs.
@@ -481,8 +542,8 @@ pub enum Ffn {
 /// hidden, dim], `value` [hidden, dim], `norm_key` and `norm_conv` [streams hidden] (their kind `norm`, a stream at a time), `conv`
 /// [streams hidden, conv]; and the hash's own int64 tensors, what the parameters make: `ngram_mult` [order], `ngram_sizes`,
 /// `ngram_offsets` [(order - 1) heads]. A sequence's state: its last `order` - 1 tokens and the convolution's last (conv - 1) dilation
-/// inputs.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// inputs. `form` says where a family's differs (DeepSeek-V4.1's Engram: `NgramForm::Engram`).
+#[derive(Clone, Copy, PartialEq)]
 pub struct Ngram {
     pub order: usize,
     pub heads: usize,
@@ -496,6 +557,44 @@ pub struct Ngram {
     pub conv: usize,
     pub dilation: usize,
     pub norm: Norm,
+    pub form: NgramForm,
+}
+
+/// Where an n-gram embedding's hash and output differ by family.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NgramForm {
+    /// Condor's (Qwen3.8-Flash-Next), as `Ngram` says.
+    Condor,
+    /// DeepSeek-V4.1's Engram: each token first mapped to a compressed vocabulary of `vocab` ids (tokens that normalise alike, one id: a table
+    /// the tokenizer makes, the loader's role `ngram_map` [the model's vocabulary], not a checkpoint tensor), and the hash over those ids; the
+    /// multipliers numpy's `default_rng(seed)` draws below (2^63 - 1) / vocab / 2, times 2 plus 1 (`seed`: 10007 times the layer's number); no
+    /// segments: a position before the sequence reads as `eos` (its pad id) and the end token is a token like another; no convolution (`conv`
+    /// 0): the output is g. The key and the value may be one product, role `kv` [(streams + 1) hidden, dim], the keys' rows first.
+    Engram,
+}
+
+/// The derived form, with `form` said only where it is not Condor's: Condor's descriptions read as they did before the field (the digests of
+/// tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for Ngram {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("Ngram");
+        s.field("order", &self.order)
+            .field("heads", &self.heads)
+            .field("dim", &self.dim)
+            .field("base", &self.base)
+            .field("vocab", &self.vocab)
+            .field("seed", &self.seed)
+            .field("index", &self.index)
+            .field("eos", &self.eos)
+            .field("streams", &self.streams)
+            .field("conv", &self.conv)
+            .field("dilation", &self.dilation)
+            .field("norm", &self.norm);
+        if self.form != NgramForm::Condor {
+            s.field("form", &self.form);
+        }
+        s.finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -514,7 +613,7 @@ pub struct GateP {
 /// n residual streams mixed per block: mHC (GLM-5.3, DeepSeek-V4). The block's input is a weighted sum of the streams; its output is
 /// spread back over them with the Sinkhorn-projected mixing of the streams. Roles `hc_fn` [(2 + n) n, n hidden], `hc_base` [(2 + n) n],
 /// `hc_scale` [3]. Condor's gated residuals are the other rule of several streams (`GatedStreamsP`).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct StreamsP {
     pub streams: usize,
     pub sinkhorn_iters: usize,
@@ -527,6 +626,28 @@ pub struct StreamsP {
     /// projection, post and comb rounded before they weigh, each term of the update rounded, the collapse's norm rounding the normed
     /// value before its weight (GLM-5.3-Flash). The final collapse and norm (`Collapse::Weighted`, `Collapse::Mean`) round as the blocks'.
     pub rounding: Rounding,
+    /// Lagged mHC (DeepSeek-V4.1): the block's input is the streams weighed by the previous lagged block's input weights (`pre`), the first
+    /// block's by one-hot weights on stream 0 (the streams being copies of the embedding, its embedding unscaled); the weights the block's own
+    /// projection makes go to the next block (the model's last ones to the head: `Collapse::LastPre`). Its output's weights and the streams'
+    /// mixing are its own, as mHC's.
+    pub lagged: bool,
+}
+
+/// The derived form, with `lagged` said only where it is set: the other blocks' descriptions read as before the field (the digests of
+/// tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for StreamsP {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("StreamsP");
+        s.field("streams", &self.streams)
+            .field("sinkhorn_iters", &self.sinkhorn_iters)
+            .field("eps", &self.eps)
+            .field("norm_eps", &self.norm_eps)
+            .field("rounding", &self.rounding);
+        if self.lagged {
+            s.field("lagged", &self.lagged);
+        }
+        s.finish()
+    }
 }
 
 /// Kimi-K3's depth mix: a block's input is a softmax mix of the sources so far (the embedding and each completed group of layers'
@@ -607,15 +728,37 @@ pub enum Collapse {
     /// Condor's final mixer: the gated residuals' input mix (`GatedStreamsP`) with the model's roles `out_mix_down`, `out_mix_up`, each stream
     /// normed by the final norm (its weight [n hidden], a stream's each) before the mix, and no norm after it.
     GatedMix,
+    /// Lagged mHC's (DeepSeek-V4.1, no hyper-head): the streams weighed by the last block's own input weights (`StreamsP::lagged`).
+    LastPre,
 }
 
-/// A draft head: a few blocks after a projection of [embedding of the next token, the model's last hidden state] (R6).
+/// A draft head: a few blocks after a projection of [embedding of the next token, the model's last hidden state] (R6); or DSpark's form
+/// (`dspark`), whose blocks draft a block of tokens in one pass.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MtpHead {
     pub blocks: Vec<Block>,
     pub norm_embed: Norm,
     pub norm_hidden: Norm,
     pub final_norm: Norm,
+    pub dspark: Option<DSpark>,
+}
+
+/// DSpark (DeepSeek-V4's 0731 release, DeepSeek-V4.1): `block` tokens drafted in one pass, the anchor (the last token the target chose) then
+/// `block` - 1 `noise` tokens, each position predicting the next. The context: main_x = `main_norm`(`main_proj` [hidden, targets hidden] of the
+/// target's attention inputs at the layers `targets`, concatenated) at each position before the anchor; each draft layer's keys (= values) of
+/// the context are its own `kv` product of main_x, normed and rotated at the position. The head's blocks are the model's decoder layers with
+/// the window alone (`Comp` of ratio 0), their queries attending to the context keys in the window and to every token of the block (not
+/// causal inside it); then the streams' collapse (the model's: a hyper-head of the head's own `out_hc_*` roles, or lagged mHC's last weights),
+/// `final_norm`, the model's head: the base logits. Sequentially, position j's logits add `markov_head` [vocab, rank] `markov_embed`[prev]
+/// ([vocab, rank]: the Markov embedding of the token before it, the anchor at j = 0) and the token is chosen; with `confidence`,
+/// sigmoid(`confidence` [1, hidden + rank] [pre-norm hidden, Markov embedding]) estimates its acceptance.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DSpark {
+    pub block: usize,
+    pub noise: u32,
+    pub targets: Vec<usize>,
+    pub markov_rank: usize,
+    pub confidence: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

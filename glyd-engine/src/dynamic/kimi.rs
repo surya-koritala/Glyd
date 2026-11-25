@@ -16,7 +16,7 @@ use crate::kimi::ConfigKimi;
 use crate::launch;
 use crate::moe::{Act, ExpertStack, Joined, MoeCfg, MoeLayer, MoeScratch, MoeWeights, Router, Shared};
 use crate::moe_rows::Down;
-use crate::offload::{Call, ExpertStore, PinnedPack};
+use crate::offload::{ExpertStore, PinnedPack};
 use crate::weights::{as_bytes, pack_words, upload_bytes, upload_packed, Layout, PackBuf};
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
@@ -232,20 +232,18 @@ impl MoeBlock for KimiMoeCached {
         }
         let (z, y, gu) = m.down(e, sc, h, n)?;
         m.layer.route(sc, s, h, c.router_hidden, n)?;
-        let call = Call { ids: sc.ids.ptr, wts: sc.wts.ptr, z, way: sc.way.ptr, part: sc.cpu.ptr, tokens: n, pairs: n * c.router.top_k };
-        // (the shared experts queued while the host reads the choices and plans, beside the copies, instead of after them)
-        self.store.run_early(self.index, e.dev(), &call, &mut || m.layer.shared_from(e.lib(), sc, s, gu, n), &mut |stage, _wave, waves, hy| match stage {
-            crate::offload::Stage::Products => {
-                if hy.gpu {
-                    m.layer.experts_products(e.lib(), sc, s, z, n, y, Some(sc.way.ptr), waves)?;
-                } else {
-                    // (every pair the host's: the sum is its sums alone)
-                    crate::dev::memset_async(y, 0, n * c.hidden * 2, s)?;
-                }
-                Ok(())
-            }
-            crate::offload::Stage::Sum => m.layer.experts_sum(sc, s, n, y, hy.ids, hy.extra),
-        })?;
+        // (the shared experts queued while the host reads the choices and plans, beside the copies, instead of after them; a decode's call planned on the GPU where the store does: src/devplan.rs)
+        m.layer.via_store(
+            &self.store,
+            self.index,
+            crate::offload::At::of(e.dev()),
+            sc,
+            z,
+            n,
+            y,
+            &mut || m.layer.shared_from(e.lib(), sc, s, gu, n),
+            &mut |waves| m.layer.experts_products(e.lib(), sc, s, z, n, y, Some(sc.way.ptr), waves),
+        )?;
         m.k.rms2(s, y, m.latent, m.norm.ptr, z, m.latent, m.latent, m.eps, n as u32)?;
         e.lin(&m.up, z, n, out)?;
         if let Some((c, at)) = self.report.as_ref().filter(|_| n == 1) {
@@ -266,6 +264,15 @@ impl MoeBlock for KimiMoeCached {
             }
         }
         m.layer.shared_add(sc, s, n, out)
+    }
+
+    /// A decode step's calls planned on the GPU (src/devplan.rs) need no host: the step is one graph.
+    fn graphable(&self) -> bool {
+        self.store.device_on(self.index)
+    }
+
+    fn reads_host(&self) -> bool {
+        !self.store.device_on(self.index)
     }
 
     fn bytes(&self) -> usize {
@@ -509,7 +516,8 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
         .and_then(crate::offload::Mode::parse)
         .or(caching.map(|c| c.offload.mode))
         .unwrap_or(crate::offload::Mode::Auto);
-    store.set_offload(crate::offload::Offload { mode, threads: crew, pin: true, ..Default::default() });
+    let device = caching.is_some_and(|c| c.offload.device);
+    store.set_offload(crate::offload::Offload { mode, threads: crew, pin: true, device, ..Default::default() });
     // (the expert cache across a group of GPUs: its host tier and plans shared, this GPU's copies and pinned buffers: src/dynamic/tp_cache.rs)
     let tp_rank = match (&tp, places.filter(|&p| p < c.experts.experts)) {
         (Some(t), Some(_)) => {
@@ -996,6 +1004,7 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
         widths,
         mats: Vec::new(),
         small: Vec::new(),
+        forms: Vec::new(),
         ropes: Vec::new(),
         rings,
         // (the embedding into X, the partial sum: KimiPush makes it the first block)
@@ -1238,6 +1247,7 @@ pub(crate) fn kimi_desc(k: &KimiDims, ls: &[KimiLayer], starts: &[bool], st: &St
         widths,
         mats: Vec::new(),
         small: Vec::new(),
+        forms: Vec::new(),
         ropes: Vec::new(),
         rings,
         first: Op::Nop,

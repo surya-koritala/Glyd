@@ -24,7 +24,9 @@ Which families run at which level is on the [Models](models.md) page. A level a 
 
 ## What each costs
 
-`fit` shows the memory for your GPU ([First run](first-run.md) has an example). Quality is measured as the KL divergence of
+`fit` shows the memory for your GPU ([First run](first-run.md) has an example), and under the plan each level's quality against the
+lossless level of the same model: its quality card's figures where one was measured, or "not measured". A pack of a lossy level is published only
+with a card that passes the level's bar ([docs/quality.md](https://github.com/surya-koritala/Glyd/blob/main/docs/quality.md)). Quality is measured as the KL divergence of
 the model's next-token distribution from bf16's, and how often its top token is bf16's. The records, each with its machine,
 build and log, are in [benchmarks/](https://github.com/surya-koritala/Glyd/tree/main/benchmarks): start with
 [benchmarks/weights/kld-q56-2026-10-09](https://github.com/surya-koritala/Glyd/tree/main/benchmarks/weights/kld-q56-2026-10-09)

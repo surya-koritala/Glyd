@@ -71,7 +71,8 @@ jobs:
           "$E" kv12check --case gemma4
           # (the scheduler on 12-bit pages, then with pools made too small for four at once: void pages taken back and run again, every reply the one alone)
           "$E" usercheck gemma4 --users 4 --kv12
-          GLYD_KV12_SHIFT=60 GLYD_KV12_POOL=1,40 "$E" usercheck gemma4 --users 4 --kv12
+          # (values that do not compress, pools of one chunk and the least slabs: the newest sequence paused, no page void, no request failed)
+          GLYD_KV12_SHIFT=60 GLYD_KV12_POOL=1,0 "$E" usercheck gemma4 --users 8 --kv12
       # (its layers are toy ones: tens of megabytes of weights and scratch a case. The GPU's memory is sampled while it runs, the peak printed, and a peak of more than 12,000 MiB of the card's 16,376 fails it:
       # the margin a 16 GB card needs for the driver and the next step)
       - name: Every pack format in tests/data/packs decodes on this GPU to its release's sha256 and its recorded logits (packcheck.rs)
@@ -83,6 +84,9 @@ jobs:
           done
           # (each save that holds the tiny Qwen3, its packs decoded by the GPU library, on the CPU reference against its digest in glyd-engine/tests/packs)
           "$E" packcheck --gpu
+          # (the formats the engine loads a saved directory in, as the glyd/* repos are saved: glyd-v7 at penguin, kestrel, swift, wren and hummingbird, each made from a logits
+          # case's random model by the repos' packer, loaded from the directory and held to the case's fixtures in tests/logits and the Hummingbird digest in tests/packs)
+          "$E" packcheck --engine --scratch "$RUNNER_TEMP/packcheck"
       - name: MoE kernel checks (blocking; the peak GPU memory is printed and held under 12,000 MiB)
         run: |
           base=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1)
@@ -154,8 +158,8 @@ jobs:
           [ -x /tmp/clients/bin/python ] || python3 -m venv /tmp/clients
           /tmp/clients/bin/pip install -q openai anthropic ollama requests jsonschema langchain-openai langchain-anthropic langchain-ollama
           "$E" logitsmodel qwen35 /tmp/tiny-qwen --servable
-          # (the Qwen3.5 layout runs at the lossy levels in this engine)
-          "$E" serve /tmp/tiny-qwen:kestrel --port 8351 --ctx 4096 > /tmp/tiny-serve.log 2>&1 &
+          # (untagged: penguin, the Qwen3.5 layout on the dynamic route, lossless)
+          "$E" serve /tmp/tiny-qwen --port 8351 --ctx 4096 > /tmp/tiny-serve.log 2>&1 &
           server=$!
           for _ in $(seq 1 300); do
             curl -sf http://127.0.0.1:8351/v1/models > /dev/null && break
@@ -214,6 +218,8 @@ jobs:
           GLYD_ENGINE_BATCH_PREFILL=0 "$E" usercheck gemma4 --users 32 --level penguin
           # (paged keys and values run out: 8 users on 24 blocks a group, each sequence sent back gives its blocks back and runs again; every reply comes, none fails)
           GLYD_ENGINE_PAGES=24 "$E" usercheck gemma4 --users 8 --level penguin
+          # (a model of the dynamic route with its layers cut into stages, as `run` cuts them over GPUs: both stages on this GPU, every pass's logits the one-GPU run's bits)
+          "$E" splitcheck qwen35
           # (two models in one process, R16: each with its scheduler in a runtime context of its own, a round of one between two rounds of the other; every reply the reply alone, each context's figures its own)
           "$E" twomodels gemma4 qwen35
           "$E" twomodels muse kimi

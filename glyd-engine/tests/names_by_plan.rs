@@ -226,3 +226,19 @@ fn run_qwen35_takes_the_size_fit_predicts_on_each_preset() {
     assert!(seen.len() >= 2, "{seen:?}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// R14: `fit` shows each level's quality against the lossless level, from the level's card (cards/NAME-LEVEL.json), and says where none was measured.
+#[test]
+fn fit_shows_the_quality_of_each_level() {
+    let d = qwen35_world("quality");
+    let o = glyd(&d, &["fit", "qwen3.5:9b", "--machine", "h100"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("Quality against the lossless level"), "{out}");
+    assert!(out.contains("KL 0.0373 from bf16") && out.contains("cards/Qwen3.5-9B-swift.json"), "{out}");
+    assert!(out.contains("wren         not measured"), "{out}");
+    let o = glyd(&d, &["fit", "qwen3.5:9b", "--machine", "h100", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["quality"]["swift"]["source"], "cards/Qwen3.5-9B-swift.json", "{v}");
+    assert!(v["quality"]["wren"].is_null() && v["quality"].as_object().unwrap().contains_key("wren"), "{v}");
+    let _ = std::fs::remove_dir_all(&d);
+}

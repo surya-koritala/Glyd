@@ -56,9 +56,9 @@ pub enum IdxScore {
 pub enum IdxKeys {
     /// A ring of [key | gate score] a token, a complete entry's key in its last token's key (`Op::Mla`'s indexer).
     Ring(usize),
-    /// A per-sequence state of the compressed entries' keys, an entry a row (DeepSeek-V4's compressor's cache).
-    State(usize),
-    /// A per-sequence state of the pools' keys, a pool a row (`Op::IdxMean`'s, the mean-pooled indexer's), scored in f32 (`IdxScore::F32`).
+    /// A ring of the compressed entries' keys, an entry a row (`Ring::entries`: DeepSeek-V4's compressor's cache).
+    Entries(usize),
+    /// A ring of the pools' keys, a pool a row (`Ring::entries` of 4 tokens: `Op::IdxMean`'s, the mean-pooled indexer's), scored in f32 (`IdxScore::F32`).
     Pools(usize),
 }
 
@@ -141,6 +141,10 @@ impl MlaOp {
         let indexer = match &k.indexer {
             None => None,
             Some(x) if x.shared => return err("a latent attention that reuses another layer's picks: not an operation of this executor"),
+            // (the key kernel LayerNorms each key with its bias at 1e-6: an RMS-normed key, Kimi-K3.1's, is not its operation yet)
+            Some(x) if x.form != kinds::IndexForm::LAYER_KEYS => {
+                return err(format!("a latent attention's indexer of {:?}: the kernels take keys LayerNorm-ed with a bias at 1e-6", x.form))
+            }
             Some(x) => {
                 let s = s0 + 3;
                 Some(MlaIndexer {
@@ -464,7 +468,7 @@ impl Dyn {
                 // (the queries and weights, then idx_score_bf16's warps' terms: at most 64 heads)
                 let smem = (x.heads * 129 * 4 + 8 * 64 * 4) as u32;
                 launch!(k.score_bf16, [n, (at.emax as u32).div_ceil(8), 1], [256, 1, 1], smem smem, s;
-                    at.q, at.w, x.wscale, at.keys, at.pos, at.scores, x.heads as i32, x.ratio as i32, at.emax as i32)?;
+                    at.q, at.w, x.wscale, at.keys, at.tab, at.pos, at.scores, x.heads as i32, x.ratio as i32, at.emax as i32)?;
             }
         }
         let expand = if x.expand { x.ratio } else { 1 } as i32;
@@ -662,12 +666,19 @@ mod tests {
             gate: gate.then_some(OutGate { act: kinds::Act::Sigmoid, from: kinds::GateFrom::Own, norm: None }),
             scale: ((64 + rope) as f32).powf(-0.5),
             absorbed: true,
-            indexer: indexer.then_some(Indexer { heads: 4, head_dim: 32, top_k: 8, block: 4, shared: false, form: crate::runtime::kinds::IndexForm::Gated }),
+            indexer: indexer.then_some(Indexer {
+                heads: 4,
+                head_dim: 32,
+                top_k: 8,
+                block: 4,
+                shared: false,
+                form: crate::runtime::kinds::IndexForm::LAYER_KEYS,
+            }),
         }
     }
 
     /// Kimi-K3's and GLM-5.3-Flash's descriptions (their releases' configs) keep their latents, and GLM-5.3's indexer keys, in rings of keys alone that every latent
-    /// attention reads through a block table: they are paged as every attention's keys and values are. DeepSeek-V4's compressed entries are not yet.
+    /// attention reads through a block table: they are paged as every attention's keys and values are. So are DeepSeek-V4's window and compressed entries.
     #[test]
     fn the_latent_caches_are_paged_rings() {
         let fixture = |f: &str| std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(f)).unwrap();
@@ -690,15 +701,37 @@ mod tests {
             }
             assert!(super::super::rows::pages_all(d), "{}", d.family);
         }
-        // (DeepSeek-V4: its window is a ring of keys alone, its keys its values; its compressed entries a sequence's states, so not paged yet; its indexer's pick
-        // every indexer's, over those entries)
+        // (DeepSeek-V4: its window is a ring of keys alone, its keys its values; its compressed entries, the attention's and the indexer's, rings of an entry a row
+        // (`Ring::entries`), so paged; its states are its compressors' open windows alone; its indexer's pick every indexer's, over its entries' ring)
         let v4h: serde_json::Value = serde_json::from_str(&fixture("headers/DeepSeek-V4-Flash-0731.json")).unwrap();
         let vc = crate::deepseek_v4::ConfigV4::parse(v4h["config"].as_str().unwrap(), "DeepSeek-V4", None).unwrap();
         let vo = super::super::deepseek_v4::V4Opts { exact8: true, f8_min: 16 << 20, ostack: true, sim: true, ctx: 4096 };
         let v4 = super::super::deepseek_v4::describe(&vc, &super::super::Stage::whole(vc.layers), &vo).unwrap();
-        assert!(v4.rings.iter().all(|r| !r.values) && !super::super::rows::pages_all(&v4));
+        assert!(v4.rings.iter().all(|r| !r.values) && super::super::rows::pages_all(&v4));
+        let ratios: std::collections::BTreeSet<usize> = v4.rings.iter().map(|r| r.ratio).collect();
+        assert_eq!(ratios.into_iter().collect::<Vec<_>>(), vec![1, 4, 128]);
+        for op in v4.layers.iter().flatten() {
+            match *op {
+                Op::Compress { cache, d, ratio, state, .. } => {
+                    let r = &v4.rings[cache];
+                    assert_eq!((r.d, r.ratio, r.window, r.values), (d, ratio, 0, false));
+                    // (the open windows' rows and scores, fp32: twice the ratio's rows of twice the width where they overlap)
+                    let coff = 1 + (ratio == 4) as usize;
+                    assert_eq!((v4.states[state], v4.states[state + 1]), (coff * ratio * coff * d * 4, coff * ratio * coff * d * 4));
+                }
+                Op::CompAttn { ring, cache, ratio, .. } => {
+                    assert_eq!((v4.rings[ring].ratio, cache.map(|c| v4.rings[c].ratio)), (1, (ratio > 0).then_some(ratio)));
+                }
+                _ => {}
+            }
+        }
         let picks: Vec<&IdxPick> = v4.layers.iter().flatten().filter_map(|o| if let Op::IdxPick(x) = o { Some(x) } else { None }).collect();
-        assert!(!picks.is_empty() && picks.iter().all(|x| x.score == IdxScore::Release && !x.expand && matches!(x.keys, IdxKeys::State(_))));
+        assert!(
+            !picks.is_empty()
+                && picks.iter().all(|x| x.score == IdxScore::Release
+                    && !x.expand
+                    && matches!(x.keys, IdxKeys::Entries(r) if v4.rings[r].ratio == 4 && v4.rings[r].d == 128))
+        );
     }
 
     /// The scores' factor the kind gives is the one each family's own block took: Kimi-K3's 1 / sqrt(nope + rope) and GLM-5.3's nope^-0.5 at their releases' and

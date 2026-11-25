@@ -124,7 +124,7 @@ pub(crate) fn attention(nq: usize, nk: usize, ring: usize) -> AttnOp {
         gate: None,
         round: false,
         sbf16: false,
-        picked: None,
+        picked: false,
     }
 }
 
@@ -207,6 +207,7 @@ pub fn describe(c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<Mode
         // (the loader's own lists: kern_nh.rs names and packs the tensors)
         mats: Vec::new(),
         small: Vec::new(),
+        forms: Vec::new(),
         ropes: Vec::new(),
         rings,
         // (a later stage never runs the first operation)
