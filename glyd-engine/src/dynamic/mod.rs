@@ -2537,8 +2537,8 @@ impl Dyn {
             self.pass_prepare(p, n, pos)?;
         }
         let head = if st.last { head } else { 0 };
-        // (GLYD_OP_DUMP: a pass's number; a capture's operations are not run, so not hashed)
-        let dump = self.dump.is_some() && !capture;
+        // (GLYD_OP_DUMP: a pass's number; a capture's operations are not run, so not hashed: the pieces' and the step graphs')
+        let dump = self.dump.is_some() && !capture && !self.capturing.get();
         if let Some(d) = self.dump.as_ref().filter(|_| dump) {
             d.borrow_mut().1 += 1;
         }
