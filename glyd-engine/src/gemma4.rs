@@ -62,8 +62,7 @@ impl ConfigG4 {
 
     /// `draft`: a Gemma 4 "-assistant" draft model (its layers all read the big model's keys and values: no key or value projections; its tensors under "model.").
     pub fn load_for(dir: &Path, draft: bool) -> Result<ConfigG4> {
-        let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.join("config.json").display())))?;
-        ConfigG4::parse(&text, std::fs::read_to_string(dir.join("generation_config.json")).ok().as_deref(), draft)
+        ModelConfig::read(dir, |c, _, generation| ConfigG4::of(c, generation, draft))
     }
 
     /// `load_for` from the texts of config.json and generation_config.json.

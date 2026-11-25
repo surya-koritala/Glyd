@@ -13,6 +13,7 @@ use crate::sizes::layer_of;
 const TIERED_ACTUAL: f64 = 0.689;
 const TWELVE_ACTUAL: f64 = 0.752;
 use crate::ffi::{err, Error, Result};
+use crate::runtime::config::{u64s, ModelConfig};
 use glyd_gpu::json::{self, Value};
 use std::path::Path;
 
@@ -171,25 +172,22 @@ fn num(v: &Value) -> Option<f64> {
 }
 
 /// The config's value of the first of `keys` there (its text_config's first).
-fn cfg_num(c: &Value, keys: &[&str]) -> Option<f64> {
-    let t = c.get("text_config").unwrap_or(c);
-    keys.iter().find_map(|k| t.get(k).or_else(|| c.get(k)).and_then(num))
+fn cfg_num(c: &ModelConfig, keys: &[&str]) -> Option<f64> {
+    keys.iter().find_map(|k| c.text.get(*k).or_else(|| c.top.get(*k)).and_then(serde_json::Value::as_f64))
 }
 
-/// The tensors of MODEL (name, dtype, shape, bytes) and its config: a directory's safetensors, else a Hub repo's headers.
-fn tensors(model: &str) -> Result<(Value, Vec<(String, String, Vec<u64>, u64)>)> {
+/// The tensors of MODEL (name, dtype, shape, bytes) and its config, parsed once: a directory's safetensors, else a Hub repo's headers.
+fn tensors(model: &str) -> Result<(ModelConfig, Vec<(String, String, Vec<u64>, u64)>)> {
     let dir = Path::new(model);
     if dir.join("config.json").exists() {
-        let cfg = json::parse(&std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(e.to_string()))?)
-            .map_err(|e| Error(format!("config.json: {e}")))?;
+        let cfg = ModelConfig::load(dir)?;
         let ck = glyd_gpu::safetensors::Checkpoint::open(dir).map_err(|e| Error(format!("{model}: {e}")))?;
         let ts = ck.files.iter().flat_map(|f| f.tensors.iter().map(|(n, t)| (n.clone(), t.dtype.clone(), t.shape.clone(), t.bytes))).collect();
         return Ok((cfg, ts));
     }
     let hub = crate::hub::Hub::from_env();
     let remote = hub.list(model, "main").map_err(|e| Error(format!("{model}: {e}")))?;
-    let cfg = json::parse(&hub.text(model, &remote.commit, "config.json").map_err(|e| Error(format!("{model}: {e}")))?)
-        .map_err(|e| Error(format!("config.json: {e}")))?;
+    let cfg = ModelConfig::parse(&hub.text(model, &remote.commit, "config.json").map_err(|e| Error(format!("{model}: {e}")))?)?;
     let files: Vec<_> = remote.files.iter().filter(|e| e.path.ends_with(".safetensors") && !e.path.contains('/')).collect();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let out = std::sync::Mutex::new(Vec::new());
@@ -282,7 +280,7 @@ fn f8_held_pct(ts: &[(String, String, Vec<u64>, u64)], packed: u64) -> u64 {
 
 /// The tensors' bytes as the engine holds them and reads them a token, over `n` GPUs (every layer across them; 1: one GPU, or a split's, whose
 /// stages read in turn).
-fn step(cfg: &Value, ts: &[(String, String, Vec<u64>, u64)], n: usize, bf16_share: f64, f8_pct: u64, pos: usize) -> Result<Step> {
+fn step(cfg: &ModelConfig, ts: &[(String, String, Vec<u64>, u64)], n: usize, bf16_share: f64, f8_pct: u64, pos: usize) -> Result<Step> {
     let nl = cfg_num(cfg, &["num_hidden_layers", "n_layer"]).ok_or_else(|| Error("config.json: no num_hidden_layers".into()))? as usize;
     let experts = cfg_num(cfg, &["num_experts", "n_routed_experts", "num_local_experts"]).unwrap_or(0.0) as usize;
     let topk = cfg_num(cfg, &["num_experts_per_token", "num_experts_per_tok", "moe_topk"]).unwrap_or(0.0);
@@ -290,9 +288,8 @@ fn step(cfg: &Value, ts: &[(String, String, Vec<u64>, u64)], n: usize, bf16_shar
     let mut s = Step::default();
     let mut expert_layers = vec![0u64; nl];
     // (Kimi-K3: its layers' attention (full_attn_layers counts from 1), and its packs of several tensors sliced as one, rows padded to 512)
-    let tc = cfg.get("text_config").unwrap_or(cfg);
-    let kimi = tc.get("model_type").and_then(Value::as_str) == Some("kimi_linear");
-    let full: Vec<u64> = tc.get("linear_attn_config").and_then(|la| la.get("full_attn_layers")).and_then(Value::as_u64s).unwrap_or_default();
+    let kimi = cfg.text_type == "kimi_linear";
+    let full: Vec<u64> = cfg.text.get("linear_attn_config").and_then(|la| la.get("full_attn_layers")).and_then(u64s).unwrap_or_default();
     let kind = |l: Option<usize>| kimi.then(|| l.is_some_and(|l| full.contains(&(l as u64 + 1))));
     let base_of = |name: &str| name.trim_end_matches(".weight").trim_end_matches(".weight_packed").to_string();
     let mut packs: std::collections::BTreeMap<(usize, String), (u64, u64, usize)> = std::collections::BTreeMap::new();
@@ -386,13 +383,12 @@ fn step(cfg: &Value, ts: &[(String, String, Vec<u64>, u64)], n: usize, bf16_shar
     }
     s.products = every.len();
     // attention's reads a token (every GPU its own: attention is not sliced): the cache at `pos` and the linear attention's states, read and written
-    let t = cfg.get("text_config").unwrap_or(cfg);
-    let mt = t.get("model_type").and_then(Value::as_str).unwrap_or("");
-    if let Some(la) = t.get("linear_attn_config") {
-        let full = la.get("full_attn_layers").and_then(Value::as_u64s).map_or(0, |v| v.len());
+    let mt = cfg.text_type.as_str();
+    if let Some(la) = cfg.text.get("linear_attn_config") {
+        let full = la.get("full_attn_layers").and_then(u64s).map_or(0, |v| v.len());
         let kda = nl.saturating_sub(full);
         let heads = cfg_num(cfg, &["num_attention_heads"]).unwrap_or(0.0);
-        let hd = la.get("head_dim").and_then(num).unwrap_or(128.0);
+        let hd = la.get("head_dim").and_then(serde_json::Value::as_f64).unwrap_or(128.0);
         let latent = cfg_num(cfg, &["kv_lora_rank"]).unwrap_or(0.0) + cfg_num(cfg, &["qk_rope_head_dim"]).unwrap_or(0.0);
         s.attn = kda as f64 * heads * hd * hd * 4.0 * 2.0 + full as f64 * pos as f64 * latent * 2.0;
         s.attn_note =
@@ -786,7 +782,7 @@ mod tests {
     /// gathers (q, k and v one, gate and up one, the experts two) and the bytes each GPU reads.
     #[test]
     fn the_terms_of_a_small_model() {
-        let cfg = json::parse(r#"{"num_hidden_layers": 2, "num_experts": 4, "num_experts_per_tok": 2}"#).unwrap();
+        let cfg = ModelConfig::parse(r#"{"num_hidden_layers": 2, "num_experts": 4, "num_experts_per_tok": 2}"#).unwrap();
         let big = |name: &str| (name.to_string(), "BF16".to_string(), vec![4096u64, 4096], 4096 * 4096 * 2);
         let mut ts: Vec<_> = ["q_proj", "k_proj", "v_proj", "o_proj"].iter().map(|p| big(&format!("model.layers.0.self_attn.{p}.weight"))).collect();
         ts.extend(["gate_proj", "up_proj", "down_proj"].iter().map(|p| big(&format!("model.layers.0.mlp.{p}.weight"))));
@@ -875,7 +871,7 @@ mod tests {
     /// attention's q_a, gate and kv_a, a MoE layer's latent down projection and the shared experts' gate and up.
     #[test]
     fn kimi_packs_are_one_product() {
-        let cfg = json::parse(r#"{"model_type": "kimi_linear", "num_hidden_layers": 2, "num_experts": 4, "num_experts_per_token": 2, "linear_attn_config": {"full_attn_layers": [2]}}"#).unwrap();
+        let cfg = ModelConfig::parse(r#"{"model_type": "kimi_linear", "num_hidden_layers": 2, "num_experts": 4, "num_experts_per_token": 2, "linear_attn_config": {"full_attn_layers": [2]}}"#).unwrap();
         let m = |name: String, r: u64, c: u64| (name, "BF16".to_string(), vec![r, c], r * c * 2);
         let (a, b, f) = ("model.layers.0.self_attn", "model.layers.1.self_attn", "model.layers.1.block_sparse_moe");
         let mut ts: Vec<_> = ["q_proj", "k_proj", "v_proj", "g_proj", "o_proj"].iter().map(|p| m(format!("{a}.{p}.weight"), 4096, 4096)).collect();

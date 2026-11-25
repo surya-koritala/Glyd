@@ -75,10 +75,7 @@ pub fn is_qx(text: &str) -> bool {
 
 impl ConfigQx {
     pub fn load(dir: &Path) -> Result<ConfigQx> {
-        let p = dir.join("config.json");
-        let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-        let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
-        ConfigQx::parse(&text, &p.display().to_string(), generation.as_deref())
+        ModelConfig::read(dir, ConfigQx::of)
     }
 
     pub fn parse(text: &str, label: &str, generation: Option<&str>) -> Result<ConfigQx> {

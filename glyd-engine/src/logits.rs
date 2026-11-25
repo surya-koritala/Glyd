@@ -6173,8 +6173,11 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let strict = one_a_pass && !squeezed;
     let steps: Vec<u64> = s.context().sched[18..27].iter().map(|x| x.load(std::sync::atomic::Ordering::Relaxed)).collect();
     let resumed = s.context().sched[2].load(std::sync::atomic::Ordering::Relaxed);
+    // (and of them those swapped to the host and copied back, whose copies' pages land in the pools' counts while others step)
+    let swapped = s.context().sched[29].load(std::sync::atomic::Ordering::Relaxed);
     println!(
-        "at once: {same} of {} replies the reply alone (prompts {}); {k} sequences, rows in one pass: {batchable}; decode steps by rows {steps:?}; sequences sent back for room {resumed}",
+        "at once: {same} of {} replies the reply alone (prompts {}); {k} sequences, rows in one pass: {batchable}; decode steps by rows {steps:?}; sequences sent back for room {resumed} \
+         ({swapped} swapped)",
         prompts.len(),
         if strict { "one a pass" } else { "together" }
     );

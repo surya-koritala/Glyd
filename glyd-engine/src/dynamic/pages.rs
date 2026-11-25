@@ -23,6 +23,7 @@
 //! that holds nothing) lands where no one reads. The kernels read a position through the table (`g4_place` in kernels/gemma4.cu); this file is the host's side: which blocks a sequence
 //! holds, and which entries changed since the tables were last copied to the GPU.
 
+use crate::ffi::Result;
 use std::collections::{BTreeMap, HashMap};
 
 /// Tokens a block.
@@ -55,6 +56,103 @@ pub fn pages_more(had: Option<(usize, usize)>, n: usize, upto: usize) -> (usize,
 /// Whether a pass whose pages need `need` slabs of each raw pool may begin: every pool has them free (`spare`) beside what is promised already (`taken`).
 pub fn room(need: &[i64], spare: &[i64], taken: &[i64]) -> bool {
     need.iter().zip(spare).zip(taken).all(|((n, s), t)| *n <= s - t)
+}
+
+/// The 12-bit pools a growth or a copy back reads (src/dynamic/kvpages.rs `Gpu`, the engine's; a test's made-up ones).
+pub trait Pools {
+    /// The swap's stream waited for: its copies out have given their pages' slabs and chunks back, its copies back have taken theirs.
+    fn land(&mut self) -> Result<()>;
+    /// The named blocks no sequence holds dropped, their pages cleared (their slabs and chunks back).
+    fn drop_idle(&mut self) -> Result<()>;
+    /// Each raw pool's slabs and the escape chunks free as the pools count them, once the engine's stream has run what it was given.
+    fn free(&mut self) -> Result<(Vec<i64>, i64)>;
+}
+
+/// R4b's deterministic capacity as the host keeps it (`Dyn::kv12_room`): each raw pool's rings (a page of each may be made raw, a slab of the pool), and what this
+/// step's growths promised each pool and the pages (first, end) each slot was promised (a slot asked twice in a step is promised its pages once, and one that gives its
+/// blocks up before the step runs takes its promise with it). Every page is counted once, where it is: the pools are read with nothing in flight on the swap's stream
+/// (`counted`), so a copy back's pages move into the pools' counts at one point, the reading after it is issued, wherever its copy has got to. (Counted as promised
+/// until the scheduler saw its sequence copied back, a copy that had landed was counted twice, by the pools and by that promise: on an A10 Gemma 4's KV-sharing case
+/// was refused a decode step its plan had room for, 1 slab of the 3 a page takes left of a pool of 64, and the engine ended with an error.)
+#[derive(Default)]
+pub struct Ledger {
+    rings: Vec<i64>,
+    promised: Vec<i64>,
+    asked: Vec<(usize, usize, usize)>,
+}
+
+impl Ledger {
+    pub fn new(rings: Vec<i64>) -> Ledger {
+        Ledger { promised: vec![0; rings.len()], rings, ..Default::default() }
+    }
+
+    /// The slabs `pages` pages of a sequence may take of each raw pool: a slab for every page of every 12-bit ring that draws on it.
+    pub fn need(&self, pages: usize) -> Vec<i64> {
+        self.rings.iter().map(|&r| r * pages as i64).collect()
+    }
+
+    /// Each raw pool's slabs and the escape chunks free beside what is promised, read with every copy on the swap's stream landed: the pools' counts are then what
+    /// the pages hold, each counted once (a copy back's pages loaded, a copy out's given back).
+    pub fn counted(&self, p: &mut impl Pools) -> Result<(Vec<i64>, i64)> {
+        p.land()?;
+        let (slabs, chunks) = p.free()?;
+        Ok(((0..slabs.len()).map(|c| slabs[c] - self.promised[c]).collect(), chunks))
+    }
+
+    /// Whether `slabs` of each raw pool and `chunks` escape chunks are free beside what is promised (`counted`); where not, the named blocks no one holds dropped
+    /// (their pages cleared) and counted again. A refusal is so from counts with nothing in flight.
+    fn fits(&self, p: &mut impl Pools, slabs: &[i64], chunks: i64) -> Result<bool> {
+        for attempt in 0..2 {
+            if attempt == 1 {
+                p.drop_idle()?;
+            }
+            let (free, cfree) = self.counted(p)?;
+            if room(slabs, &free, &vec![0; slabs.len()]) && chunks <= cfree {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// A pass of sequence `slot`'s tokens `n` to `upto` (a chunk at most) may begin only where every raw pool has a slab for every page it writes beside what is promised
+    /// (`fits`); its pages promised where it may.
+    pub fn grow(&mut self, p: &mut impl Pools, slot: usize, n: usize, upto: usize) -> Result<bool> {
+        let had = self.asked.iter().find(|a| a.0 == slot).map(|a| (a.1, a.2));
+        let (more, pages) = pages_more(had, n, upto);
+        let need = self.need(more);
+        if need.iter().all(|&x| x == 0) {
+            return Ok(true);
+        }
+        if !self.fits(p, &need, 0)? {
+            return Ok(false);
+        }
+        self.promised.iter_mut().zip(&need).for_each(|(p, x)| *p += x);
+        self.asked.retain(|a| a.0 != slot);
+        self.asked.push((slot, pages.0, pages.1));
+        Ok(true)
+    }
+
+    /// A copy back into the empty slot `slot` whose pages take `slabs` of each raw pool and `chunks` escape chunks as they load: whether they are free beside what is
+    /// promised (`fits`). Once issued its pages are in the pools' counts from the next reading on.
+    pub fn copy_back(&mut self, p: &mut impl Pools, slot: usize, slabs: &[i64], chunks: i64) -> Result<bool> {
+        debug_assert!(self.asked.iter().all(|a| a.0 != slot), "a copy back into slot {slot}, which this step's growths promised pages");
+        self.fits(p, slabs, chunks)
+    }
+
+    /// A step has run: what its growths promised is in the pools' counts now.
+    pub fn stepped(&mut self) {
+        self.promised.iter_mut().for_each(|p| *p = 0);
+        self.asked.clear();
+    }
+
+    /// Slot `slot` gives its blocks up (released, or copied out to the host) before the step it was promised pages for has run: the promise goes with it.
+    pub fn unpromise(&mut self, slot: usize) {
+        if let Some(i) = self.asked.iter().position(|a| a.0 == slot) {
+            let (_, first, end) = self.asked.swap_remove(i);
+            let back = self.need(end - first);
+            self.promised.iter_mut().zip(&back).for_each(|(p, x)| *p -= x);
+        }
+    }
 }
 
 /// One layer group's pool.
@@ -1009,6 +1107,92 @@ mod tests {
         // (a decode step in the middle of a page: its page; no token: none)
         assert_eq!(pages_more(None, 37, 38), (1, (2, 3)));
         assert_eq!(pages_more(None, 37, 37), (0, (2, 2)));
+    }
+
+    /// A made-up GPU's 12-bit pools: each raw pool's slabs and those its status counts as taken, the escape chunks likewise, the copies on the swap's stream that have not
+    /// landed, in order (the slabs of each pool and the chunks each takes; a copy out's release gives back, less than nothing), and the slabs the named blocks no one holds keep.
+    struct MadeUp {
+        slabs: Vec<i64>,
+        taken: Vec<i64>,
+        chunks: i64,
+        ctaken: i64,
+        side: std::collections::VecDeque<(Vec<i64>, i64)>,
+        idle: Vec<i64>,
+    }
+
+    impl MadeUp {
+        fn new(slabs: &[i64], taken: &[i64]) -> MadeUp {
+            MadeUp { slabs: slabs.to_vec(), taken: taken.to_vec(), chunks: 1024, ctaken: 0, side: Default::default(), idle: vec![0; slabs.len()] }
+        }
+        /// The swap's stream runs its first copy: the GPU does, whatever the host reads meanwhile.
+        fn run(&mut self) {
+            if let Some((s, c)) = self.side.pop_front() {
+                self.taken.iter_mut().zip(&s).for_each(|(t, x)| *t += x);
+                self.ctaken += c;
+            }
+        }
+    }
+
+    impl Pools for MadeUp {
+        fn land(&mut self) -> Result<()> {
+            while !self.side.is_empty() {
+                self.run();
+            }
+            Ok(())
+        }
+        fn drop_idle(&mut self) -> Result<()> {
+            self.taken.iter_mut().zip(&mut self.idle).for_each(|(t, i)| *t -= std::mem::take(i));
+            Ok(())
+        }
+        fn free(&mut self) -> Result<(Vec<i64>, i64)> {
+            Ok((self.slabs.iter().zip(&self.taken).map(|(s, t)| s - t).collect(), self.chunks - self.ctaken))
+        }
+    }
+
+    /// A sequence copied back is counted once, by the pools, whenever its copy lands: before the plan reads them, between the plan and the step's own reading, or after
+    /// both. Gemma 4's KV-sharing case as an A10 ran it, every page raw: its sliding rings' raw pool of 64 slabs that its 3 rings draw on, the full ring's of 70; a
+    /// sequence at 133 tokens holds 7 sliding pages and 9 full ones (21 and 9 slabs), one copied back 21 and 10. The plan's decode row (a page: 3 slabs and 1) is had
+    /// at the step's own reading too (counted twice, the copy left 1 slab of the 3: the engine ended "no block left for token 134"); a growth after the copy landed is had
+    /// (no sequence paused for room that is there); a second copy back of 21 sliding slabs is had (22 free, not 1); and where the pools are short a refusal waits for
+    /// nothing in flight: a copy out's release on the swap's stream, the named blocks no one holds.
+    #[test]
+    fn a_copy_back_is_counted_once_whenever_it_lands() {
+        let (held, back) = ([21i64, 9], [21i64, 10]);
+        for lands in 0..3 {
+            let mut g = MadeUp::new(&[64, 70], &held);
+            let mut l = Ledger::new(vec![3, 1]);
+            assert!(l.copy_back(&mut g, 1, &back, 0).unwrap(), "the copy back's room");
+            g.side.push_back((back.to_vec(), 0));
+            if lands == 0 {
+                g.run();
+            }
+            let plan = l.counted(&mut g).unwrap();
+            assert!(l.grow(&mut g, 0, 133, 134).unwrap(), "copy landed {lands}: the plan's decode row");
+            if lands == 1 {
+                g.run();
+            }
+            // (the step's own reading, as a pass outside the scheduler asks: its step's promises given up first)
+            l.stepped();
+            let hold = l.counted(&mut g).unwrap();
+            assert_eq!(hold, plan, "copy landed {lands}: the plan's count and the step's");
+            assert_eq!(hold.0, [64 - 21 - 21, 70 - 9 - 10], "copy landed {lands}: each page counted once, where it is");
+            assert!(l.grow(&mut g, 0, 133, 134).unwrap(), "copy landed {lands}: the step's own reading");
+            // (a second copy back of a sequence of the same pages, the first's copy landed or not)
+            l.stepped();
+            if lands == 2 {
+                g.run();
+            }
+            assert!(l.copy_back(&mut g, 2, &[21, 4], 0).unwrap(), "copy landed {lands}: a second copy back, 22 slabs free");
+        }
+        // (short: a copy out's release on the swap's stream, then the named blocks no one holds, make the room; truly short, no)
+        let mut g = MadeUp::new(&[64, 70], &[63, 0]);
+        g.side.push_back((vec![-21, 0], 0));
+        assert!(Ledger::new(vec![3, 1]).grow(&mut g, 0, 133, 134).unwrap() && g.side.is_empty(), "a copy out's release");
+        let mut g = MadeUp::new(&[64, 70], &[63, 0]);
+        g.idle = vec![6, 0];
+        assert!(Ledger::new(vec![3, 1]).grow(&mut g, 0, 40, 41).unwrap() && g.idle == [0, 0], "the named blocks no one holds");
+        let mut g = MadeUp::new(&[64, 70], &[62, 0]);
+        assert!(!Ledger::new(vec![3, 1]).grow(&mut g, 0, 40, 41).unwrap(), "2 slabs free of the 3 a page takes");
     }
 
     /// Growth takes blocks in every group or in none; a sequence past the context never grows.

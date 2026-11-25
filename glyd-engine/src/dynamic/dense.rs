@@ -5,7 +5,8 @@
 //! paged keys and values (12-bit pages where the tables are set).
 
 use super::{Dyn, ModelDesc, Opts};
-use crate::ffi::{Error, Result};
+use crate::ffi::Result;
+use crate::runtime::config::ModelConfig;
 use std::path::Path;
 
 /// The executor description's family name.
@@ -13,22 +14,24 @@ pub const FAMILY: &str = "plain dense";
 
 /// Whether a config.json's text is one the `llama` builder reads (its text model's type).
 pub fn is_dense(text: &str) -> bool {
-    crate::runtime::config::ModelConfig::parse(text).is_ok_and(|c| crate::runtime::describe::LLAMA.contains(&c.text_type.as_str()))
+    ModelConfig::parse(text).is_ok_and(|c| c.is_dense())
 }
 
-/// The end tokens (generation_config.json's, else the config's) and the longest context of the model in `dir`.
-fn ends(dir: &Path) -> Result<(Vec<i64>, usize)> {
-    let p = dir.join("config.json");
-    let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-    let c = crate::runtime::config::ModelConfig::parse(&text).map_err(|e| e.context(p.display()))?;
-    let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
-    Ok((crate::weights::eos_ids(&c.top, generation.as_deref()), c.shared.max_position_embeddings.unwrap_or(crate::support::DEFAULT_CTX)))
+/// The end tokens (generation_config.json's, else the config's) and the longest context of the model in `dir`, whose config.json is `c`.
+fn ends(dir: &Path, c: &ModelConfig) -> (Vec<i64>, usize) {
+    let generation = ModelConfig::generation(dir);
+    (crate::weights::eos_ids(&c.top, generation.as_deref()), c.shared.max_position_embeddings.unwrap_or(crate::support::DEFAULT_CTX))
 }
 
 /// The executor's description of the model in `dir`, from its config.json alone (its tensors' shapes the description's: a packed directory's too).
 pub fn lowered(dir: &Path) -> Result<ModelDesc> {
-    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
-    let (eos, max_pos) = ends(dir)?;
+    lowered_of(dir, &ModelConfig::load(dir)?)
+}
+
+/// `lowered` of a config.json parsed once.
+pub fn lowered_of(dir: &Path, c: &ModelConfig) -> Result<ModelDesc> {
+    let (kinds, label) = crate::runtime::describe::describe_dir_of(dir, c)?;
+    let (eos, max_pos) = ends(dir, c);
     super::lower::dense(&kinds, eos, max_pos).map_err(|e| e.context(&label))
 }
 

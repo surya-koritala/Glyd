@@ -72,10 +72,7 @@ pub fn is_v4(text: &str) -> bool {
 
 impl ConfigV4 {
     pub fn load(dir: &Path) -> Result<ConfigV4> {
-        let p = dir.join("config.json");
-        let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-        let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
-        ConfigV4::parse(&text, &p.display().to_string(), generation.as_deref())
+        ModelConfig::read(dir, ConfigV4::of)
     }
 
     pub fn parse(text: &str, label: &str, generation: Option<&str>) -> Result<ConfigV4> {
