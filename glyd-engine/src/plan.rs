@@ -6124,7 +6124,7 @@ mod tests {
     /// matrix of the layer's own products, as its family's lowered description names them (`dynamic::layer_tensors`), on Kimi-K3's released tensors (its
     /// delta and latent attention layers and its dense MLP) and on the random models of Kimi's two shapes and Muse Spark; so a plan frees on the GPU, and
     /// holds in the computer's memory, what the load does. A row that keeps none there counts none (GLM-5.3-Flash's, whose random models load by the same
-    /// loader, which keeps none there unless the plan asks).
+    /// loader, which keeps none there unless the plan asks; Nemotron-H's, whose loader keeps none there).
     #[test]
     fn the_matrices_counted_in_memory_are_the_loaders() {
         use crate::dynamic::{layer_tensors, Stage};
@@ -6191,6 +6191,18 @@ mod tests {
                 assert_eq!(by_layer(&table, c.layers, "GLM-5.3-Flash"), vec![BTreeSet::new(); c.layers], "fp8 {fp8}");
                 assert!(sizing::ram_bytes_table(&table, c.layers, "GLM-5.3-Flash", 90, 72).iter().all(|&b| b == 0), "fp8 {fp8}");
             }
+            // (Nemotron-H loads by the same loader with no layer there (`Placing::default`): its row keeps none there and counts none; its Mamba-2 and
+            // attention layers multiply by matrices of their own, a mixture-of-experts layer by its block's alone)
+            let _ = std::fs::remove_dir_all(&dir);
+            crate::kcheck_nh::random(&dir, 0, 16).unwrap();
+            let c = crate::nemotron::ConfigNemotronH::load(&dir).unwrap();
+            let low = crate::dynamic::nemotron::lowered(&dir, &c, &Stage::whole(c.layers)).unwrap();
+            let own: Vec<bool> = c.kinds.iter().map(|&k| k != crate::nemotron::NhKind::Moe).collect();
+            assert!(own.contains(&false) && own.contains(&true));
+            assert_eq!(loaders(&low).iter().map(|l| !l.is_empty()).collect::<Vec<_>>(), own);
+            let table = crate::sizes::Table::from_dir(&dir).unwrap();
+            assert_eq!(by_layer(&table, c.layers, "Nemotron-H"), vec![BTreeSet::new(); c.layers]);
+            assert!(sizing::ram_bytes_table(&table, c.layers, "Nemotron-H", 90, 72).iter().all(|&b| b == 0));
             let _ = std::fs::remove_dir_all(&dir);
         }
     }

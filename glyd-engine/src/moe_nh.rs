@@ -3,7 +3,7 @@
 //! gate; the shared expert reads the model's width and its output is added to the experts' once they are back at it. The arithmetic and its roundings are `tools/nemotron_ref.py`'s `moe_mixer` (checked against
 //! transformers' own NemotronHMoE there); `NhMoe::forward` is its launches in order.
 //!
-//! The layer's tensors are read here, not by `WeightsNh::load`: the router and its fp32 score-correction bias as the checkpoint has them, and the latent projections, the shared expert and the experts as packs in
+//! The layer's tensors are read here, not by the executor's loader: the router and its fp32 score-correction bias as the checkpoint has them, and the latent projections, the shared expert and the experts as packs in
 //! a block layout (`level`: Int6, Int5 or Int4; at Int4 the experts alone are four-bit codes and the dense matrices six-bit ones, `pack_layout`), packed as they load from the bf16 checkpoint or read from a glyd-v7
 //! directory where it holds them saved, each in the layout its entry names (a bias saved there is bf16: the saver holds no fp32). The experts' second matrices (down) are in the row layout of their bits where the
 //! directory has them so or the checkpoint is packed here (`pack_layout`): the layer then runs the sparse product (src/moe_rows.rs); a directory saved with them in the block layout runs the library's dense
