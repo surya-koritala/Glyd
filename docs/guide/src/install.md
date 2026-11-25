@@ -20,7 +20,7 @@ The refusals are what `glyd run` prints (exit 3). `glyd doctor` says what the ma
 curl -LsSf https://getglyd.com/install.sh | sh
 ```
 
-On Linux x86_64 with an NVIDIA GPU, the v0.33.0 script installs `glyd` with the engine and its GPU library in one folder
+On Linux x86_64 with an NVIDIA GPU, the script installs `glyd` with the engine in one folder (its kernels are in the program: no GPU library)
 (about 100 MB, no Python, no PyTorch), checks each download against the release's sha256, and ends with `glyd doctor`. It
 also sets up the background service as a user unit of your account (see [Serving](serve.md)); `GLYD_NO_SERVICE=1` in front of
 `sh` leaves that out. `GLYD_WITH_VLLM=1` adds the Python tool with vLLM and PyTorch (about 8 GB), for the bf16 models the

@@ -263,7 +263,7 @@ Each run's SHA-256 of (tokens, logits) is printed.
 | EndSession / Unload with retained pools | `end_session` (waits behind a chunk), `unload` (refused while a session is open) with `retained_bytes` |
 | Handles scoped to the incarnation; exact repeats answered from history, conflicting repeats fail, retired sequences cannot execute | the same: incarnation-scoped handles, the kept replies by id (256, 64 MiB of bodies), a stale `position_start` refused |
 | Frames: 1 MiB JSON, length-prefixed; bodies up to 64 MiB; never JSON floats | the same limits; the body limit is the stage's own (describe) |
-| Process ownership, pipes, environment, credentials | the worker is a plain child on pipes; it reads GLYD_GPU_LIB, HF_HUB_CACHE/HF_HOME for a Hub id (a directory needs nothing). No network, no shared memory, no broker |
+| Process ownership, pipes, environment, credentials | the worker is a plain child on pipes; it reads HF_HUB_CACHE/HF_HOME for a Hub id (a directory needs nothing: a CUDA build loads no GPU library). No network, no shared memory, no broker |
 
 ## Supported and measured
 
@@ -279,7 +279,7 @@ Each run's SHA-256 of (tokens, logits) is printed.
   session's 256 tokens and logits equal to its own whole-model run, bit for bit, with the passes of the two in turn,
   plain, drafted and mixed, and one session cancelled and ended half way
   ([rtx4080s-range-sessions-2026-10-22](../benchmarks/gpu/rtx4080s-range-sessions-2026-10-22/README.md)).
-- Other families run as stages in `Split` (Gemma 4, Nemotron, GLM: GLY-300's checks across two GPUs); the worker and
+- Other families run as stages in `Split` (Gemma 4, Nemotron, GLM: `splitcheck` across two GPUs); the worker and
   `rangecheck` take Qwen3.5 only for now.
 - Speed is not the point here and not tuned: a chunk's boundary goes GPU to host to GPU through pipes (16 KiB a token).
 

@@ -134,7 +134,7 @@ dynamic at the layer-kind boundary; nothing is generic over the backend engine-w
 
 The engine opens the driver at run time (`glyd-engine/src/ffi.rs`), but the vendor is a build-time choice today
 (`cfg(glyd_hip)`). The release carries the engine's kernels twice, built with CUDA 13 (compressed) and CUDA 12.9 (not compressed, so that a driver of
-CUDA 12.2 reads them), and the GPU library for both; the driver's version picks (`dev.rs`, `ffi.rs`), and the release build adds the compute_89 PTX so
+CUDA 12.2 reads them), and no GPU library (a CUDA build loads none); the driver's version picks the kernels (`dev.rs`), and the release build adds the compute_89 PTX so
 a GPU newer than the machine code still runs (P6). The target is a small core that downloads the signed kernel bundle for the machine's vendor (P7b).
 
 ## Build or reuse (split execution bottom)
