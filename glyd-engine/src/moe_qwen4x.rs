@@ -18,9 +18,21 @@ use std::cell::{Cell, OnceCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
-/// The width and the neurons the kernels are made for.
+/// The width and the neurons the kernels are made for: their lanes take 80 codes of a row each (32 lanes) in the first product and 40 outputs a thread
+/// in the second, and the rotation is five transforms of 512, so no other width or count of neurons runs (`takes`).
 const H: usize = 2560;
 const I: usize = 640;
+
+/// Whether the kernels take experts of `inter` neurons over a width of `hidden`, or the refusal that names both and what the kernels take.
+pub fn takes(hidden: usize, inter: usize) -> Result<()> {
+    if (hidden, inter) == (H, I) {
+        return Ok(());
+    }
+    err(format!(
+        "experts of {inter} neurons over a width of {hidden}: the codebook experts' kernels take exactly {I} neurons over a width of {H} (each lane of the first product \
+         takes 80 codes of a row, each thread of the second 40 outputs, the rotation five transforms of 512)"
+    ))
+}
 /// The most pair-runs (pairs times runs of neurons) the partial sums of a call hold, and the most tokens a pass of the per-pair products takes (the host's pairs' limit: a longer call streams its experts).
 const PART_ROWS: usize = 4096;
 const PAIR_TOKENS: usize = 1024;
@@ -482,12 +494,8 @@ impl QxMoeCb {
         slots: usize,
         common: &Rc<QxCbShared>,
     ) -> Result<QxMoeCb> {
-        if (c.hidden, c.inter, pack.hidden, pack.inter) != (H, I, H, I) {
-            return err(format!(
-                "experts of {} neurons over {} (the pack's {} over {}): the kernels take {I} over {H}",
-                c.inter, c.hidden, pack.inter, pack.hidden
-            ));
-        }
+        takes(c.hidden, c.inter)?;
+        takes(pack.hidden, pack.inter).map_err(|e| e.context("the pack's"))?;
         let kept = pack.kept(l).ok_or_else(|| Error(format!("{}: no experts of layer {l}", pack.dir.display())))?.to_vec();
         let p = format!("{}.mlp", c.layer_name(l));
         let tensor = |name: &str| -> Result<Buf> { upload_bytes(&ck.read(name).map_err(|e| Error(format!("{name}: {e}")))?) };
