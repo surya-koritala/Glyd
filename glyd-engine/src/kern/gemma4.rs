@@ -19,7 +19,7 @@ impl KernG4 {
     }
 }
 
-/// kernels/gemma4.cu's G4Pf: a small kernel's spare blocks prefetch into L2 the start of the first-wave blocks of the skinny product that comes next (GLY-312).
+/// kernels/gemma4.cu's G4Pf: a small kernel's spare blocks prefetch into L2 the start of the first-wave blocks of the skinny product that comes next.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub(crate) struct G4Pf {

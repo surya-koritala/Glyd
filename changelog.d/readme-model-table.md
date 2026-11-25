@@ -1,1 +1,0 @@
-- The README's table of supported models gives each family's levels as `fit` checks them (hummingbird for Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark; Qwen3 and Qwen3.5 apart), how many users each serves at once, and the levels at which a mixture of experts keeps its experts in the computer's memory.

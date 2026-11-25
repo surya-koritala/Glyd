@@ -26,7 +26,7 @@ const KB: usize = 32;
 /// The parts a decode row's keys are split into.
 pub const SPLITS: usize = 16;
 /// The warps of a decode row's attention block: the G that score its row and more that only load the key and value tiles, so a short context is not one warp
-/// pair's loads in a row (GLY-312: 0.75 ms of a gemma-4-12B step at 30 tokens with 2 warps).
+/// pair's loads in a row.
 const PART_WARPS: usize = 16;
 /// Query heads to a key-value head the warp kernels take (a block of at most 512 threads).
 pub const MAX_G: usize = 16;

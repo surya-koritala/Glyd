@@ -479,10 +479,38 @@ pub struct MoeWeights {
     pub down: Down,
 }
 
-/// (development) The router's choices of every selection, in order (its k, then [tokens, k] experts), while a check holds `Some` here: `tiercheck` compares two runs' routing.
-/// An eager run's alone (a selection in a graph's capture is not read back).
+/// (development) The router's choices of every selection, in order, while a check holds `Some` here: `tiercheck` compares two runs' routing. An eager run's alone (a
+/// selection in a graph's capture is not read back).
 #[cfg(feature = "dev")]
-pub(crate) static ROUTES: std::sync::Mutex<Option<Vec<(usize, Vec<i64>)>>> = std::sync::Mutex::new(None);
+pub(crate) static ROUTES: std::sync::Mutex<Option<Vec<Seen>>> = std::sync::Mutex::new(None);
+
+/// (development) One selection as `ROUTES` keeps it: k, the experts [tokens, k], and each token's keys the selection ranks the experts by [tokens, experts] (the score, its bias added).
+#[cfg(feature = "dev")]
+pub(crate) struct Seen {
+    pub k: usize,
+    pub ids: Vec<i64>,
+    pub keys: Vec<f32>,
+}
+
+/// (development) Each layer's pairs computed by the host and the GPU from the same inputs, compared (`MoeLayer::pair_check`), while a check holds `Some` here.
+#[cfg(feature = "dev")]
+pub(crate) static PAIRS: std::sync::Mutex<Option<std::collections::BTreeMap<usize, PairDiff>>> = std::sync::Mutex::new(None);
+
+/// (development) A layer's pairs compared: how many, their values, the most last places between the host's and the GPU's, the values more than 1, 4 and 16 apart, and the
+/// largest difference over the pair's largest value.
+#[cfg(feature = "dev")]
+#[derive(Default, Debug)]
+pub(crate) struct PairDiff {
+    pub pairs: usize,
+    pub values: usize,
+    pub most: u32,
+    pub over: [usize; 3],
+    pub worst: f64,
+    /// The pairs whose values are more than 16 last places apart somewhere, and the first of them: its call of the layer, token, choice, expert and most last places.
+    pub far: usize,
+    pub first: Option<(usize, usize, usize, i64, u32)>,
+    pub calls: usize,
+}
 
 /// The layer's kernels (kernels/moe.cu) with typed launches. Device addresses are `u64`.
 pub struct MoeKern {
@@ -582,9 +610,30 @@ impl MoeKern {
         #[cfg(feature = "dev")]
         if let Some(seen) = ROUTES.lock().map_err(|_| crate::ffi::Error("the routes' lock".into()))?.as_mut() {
             crate::dev::sync_stream(s)?;
-            let mut got = vec![0i64; t * k];
+            let (mut got, mut keys, mut b) = (vec![0i64; t * k], vec![0f32; t * e], vec![0f32; if bias != 0 { e } else { 0 }]);
             crate::dev::read_dev(ids, &mut got)?;
-            seen.push((k, got));
+            crate::dev::read_dev(logits, &mut keys)?;
+            if bias != 0 {
+                crate::dev::read_dev(bias, &mut b)?;
+            }
+            // (the kernel's keys: the logits (rounded to bf16 where the router's are), their scores, the bias added)
+            for row in keys.chunks_mut(e) {
+                if r.bf16_logits {
+                    row.iter_mut().for_each(|l| *l = f32::from_bits(((l.to_bits() + 0x7fff + ((l.to_bits() >> 16) & 1)) >> 16) << 16));
+                }
+                match r.scoring {
+                    Scoring::SqrtSoftplus => row.iter_mut().for_each(|l| *l = (if *l > 20.0 { *l } else { l.exp().ln_1p() }).sqrt()),
+                    Scoring::Sigmoid => row.iter_mut().for_each(|l| *l = 1.0 / (1.0 + (-*l).exp())),
+                    Scoring::Softmax => {
+                        let mx = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                        row.iter_mut().for_each(|l| *l = (*l - mx).exp());
+                        let z: f32 = row.iter().sum();
+                        row.iter_mut().for_each(|l| *l /= z);
+                    }
+                }
+                row.iter_mut().zip(&b).for_each(|(l, b)| *l += b);
+            }
+            seen.push(Seen { k, ids: got, keys });
         }
         Ok(())
     }
@@ -968,6 +1017,13 @@ impl MoeLayer {
     ) -> Result<()> {
         let (s, k, width) = (at.stream, self.cfg.router.top_k, self.cfg.hidden);
         let call = crate::offload::Call { ids: sc.ids.ptr, wts: sc.wts.ptr, z, way: sc.way.ptr, part: sc.cpu.ptr, tokens: t, pairs: t * k };
+        #[cfg(feature = "dev")]
+        if PAIRS.lock().map_err(|_| crate::ffi::Error("the pairs' lock".into()))?.is_some()
+            && !store.device_on(layer)
+            && store.offload().mode != crate::offload::Mode::Copy
+        {
+            self.pair_check(store, layer, at, sc, &call, y, early, products)?;
+        }
         if let Some(d) = store.device_args(layer, t, call.pairs) {
             if sc.cpu.bytes < t * width * 4 || sc.way.bytes < call.pairs * 8 {
                 return err(format!("{t} tokens of {width} values: the scratch has no room for the host's sums and the pairs' places"));
@@ -990,6 +1046,89 @@ impl MoeLayer {
             crate::offload::Stage::Products => crate::dev::memset_async(y, 0, t * width * 2, s),
             crate::offload::Stage::Sum => self.experts_sum(sc, s, t, y, hy.ids, hy.extra),
         })
+    }
+
+    /// (development, `moe::PAIRS`) Each pair of the call computed by the host and by the GPU from the same rows of z, the same expert and weight: for each of the k choices
+    /// of a token, the call with that choice alone (the others none), once in copy mode (every pair on the GPU) and once in cpu mode with the layer's places emptied (every
+    /// pair the host's), y read back after each and compared in bf16's last places; then the call's choices back and the store's mode as it was.
+    ///
+    /// # Safety
+    /// As `via_store`.
+    #[cfg(feature = "dev")]
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn pair_check(
+        &self,
+        store: &crate::offload::ExpertStore,
+        layer: usize,
+        at: crate::offload::At,
+        sc: &MoeScratch,
+        call: &crate::offload::Call,
+        y: u64,
+        early: &mut dyn FnMut() -> Result<()>,
+        products: &mut dyn FnMut(usize) -> Result<()>,
+    ) -> Result<()> {
+        use crate::offload::{Mode, Offload, Stage};
+        let (s, k, w, t) = (at.stream, self.cfg.router.top_k, self.cfg.hidden, call.tokens);
+        let was: Offload = store.offload();
+        crate::dev::sync_stream(s)?;
+        let mut ids = vec![0i64; t * k];
+        crate::dev::read_dev(sc.ids.ptr, &mut ids)?;
+        let mut run = |mode: Mode| -> Result<Vec<u16>> {
+            store.set_offload(Offload { mode, ..was });
+            if mode == Mode::Cpu {
+                store.empty_places(layer)?;
+            }
+            store.run_early_at(layer, at, call, early, &mut |stage, _, waves, hy| match stage {
+                Stage::Products if hy.gpu => products(waves),
+                Stage::Products => crate::dev::memset_async(y, 0, t * w * 2, s),
+                Stage::Sum => self.experts_sum(sc, s, t, y, hy.ids, hy.extra),
+            })?;
+            crate::dev::sync_stream(s)?;
+            let mut out = vec![0u16; t * w];
+            crate::dev::read_dev(y, &mut out)?;
+            Ok(out)
+        };
+        // (a bf16's place among all of them in order: the difference of two is the last places between them)
+        let ord = |b: u16| if b & 0x8000 != 0 { -((b & 0x7fff) as i32) } else { b as i32 };
+        for j in 0..k {
+            let one: Vec<i64> = ids.iter().enumerate().map(|(i, &e)| if i % k == j { e } else { -1 }).collect();
+            sc.ids.write(0, &one)?;
+            let (g, h) = (run(Mode::Copy)?, run(Mode::Cpu)?);
+            let mut st = PAIRS.lock().map_err(|_| crate::ffi::Error("the pairs' lock".into()))?;
+            let Some(all) = st.as_mut() else { break };
+            let row = all.entry(layer).or_default();
+            let call_no = row.calls;
+            for (tk, (gr, hr)) in g.chunks(w).zip(h.chunks(w)).enumerate() {
+                if one[tk * k + j] < 0 {
+                    continue;
+                }
+                row.pairs += 1;
+                let big = gr.iter().map(|&b| f32::from_bits((b as u32) << 16).abs()).fold(0f32, f32::max).max(1e-30);
+                let most = gr.iter().zip(hr).map(|(&a, &b)| (ord(a) - ord(b)).unsigned_abs()).max().unwrap_or(0);
+                if most > 16 {
+                    row.far += 1;
+                    if row.first.is_none() {
+                        row.first = Some((call_no, tk, j, one[tk * k + j], most));
+                    }
+                }
+                for (&a, &b) in gr.iter().zip(hr) {
+                    let u = (ord(a) - ord(b)).unsigned_abs();
+                    row.values += 1;
+                    row.most = row.most.max(u);
+                    row.over[0] += (u > 1) as usize;
+                    row.over[1] += (u > 4) as usize;
+                    row.over[2] += (u > 16) as usize;
+                    let d = (f32::from_bits((a as u32) << 16) - f32::from_bits((b as u32) << 16)).abs() / big;
+                    row.worst = row.worst.max(d as f64);
+                }
+            }
+        }
+        if let Some(row) = PAIRS.lock().map_err(|_| crate::ffi::Error("the pairs' lock".into()))?.as_mut().and_then(|a| a.get_mut(&layer)) {
+            row.calls += 1;
+        }
+        sc.ids.write(0, &ids)?;
+        store.set_offload(was);
+        Ok(())
     }
 
     /// `cached` for FP8 experts in places (`F8Places`, copied only): in calls of at most `f8::MOE_TOKENS` tokens whose pairs are no more than the places (each call's experts in one wave, every row of the sum the call's
