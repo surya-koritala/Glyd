@@ -548,6 +548,24 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A model of the Qwen3.5 layout (the logits checks' random one) packed at kestrel by `run_with`, as `glyd prepare MODEL:kestrel` and a run pack it: a glyd-v7
+    /// directory whose merged packs (q, k and v; the gated delta rule's qkv with z; gate and up) glyd-gpu's verify takes as the save's own, every pack decoded to
+    /// the sha256 of its glyd.json (`glyd verify` refused it: its qkv and z were not taken for one group).
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_qwen35_layout_at_kestrel_verifies() {
+        let dir = std::env::temp_dir().join(format!("glyd-engine-q35-i6-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (src, out) = (dir.join("src"), dir.join("i6"));
+        crate::logits::qwen35_random(&src).unwrap();
+        run_with(src.to_str().unwrap(), &out, 4, Layout::Int6, true).unwrap();
+        let c = Config35::load(&src).unwrap();
+        assert!(c.packs().iter().any(|p| p.parts.len() == 2 && p.parts[1].0.ends_with("linear_attn.in_proj_z.weight")));
+        let v = save::verify(&out, 4, &save::Decoder::Cpu).unwrap();
+        assert_eq!(v.packed, c.packs().iter().map(|p| p.parts.len()).sum::<usize>());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// The GLM-5.3-Flash plan names every pack part and every kept tensor of the pinned checkpoint once, in its names, and nothing of the vision tower or the MTP layer; no tensor is cast (the fp32 ones are saved fp32), and
     /// the split by kind of tensor is the checkpoint's: the FP8 matrices and the bf16 ones are all packs, the small tensors and the indexer copies.
     #[test]
