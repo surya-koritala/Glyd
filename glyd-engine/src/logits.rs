@@ -1891,6 +1891,8 @@ fn fill(s: &mut dyn crate::sched::ModelStep, slot: i32, t: &[u32], by: usize, la
 ///     the other sequence holds, so with no mixture of experts (`rows_exact`) not one bit may differ (a row that read another sequence's keys or state would);
 ///   - the prompt's side: the logits after its last chunk run beside the row, against the same chunks alone; and, as a yardstick of what the kernels' choice by rows alone does on this model,
 ///     the same prompt alone in chunks of that size against alone in whole chunks.
+///   - prompts of different lengths in one pass (`prefill_many`, prompts that come in together): each prompt's logits after its last token and after the step that follows it, against
+///     the prompt alone (every bit where the pass is 16 rows or fewer); and the first prompt beside other prompts of the same lengths: with no mixture of experts not a bit may differ.
 ///
 /// Required: in a step of 16 rows or fewer every logit is the reference's, bit for bit (what the kernels give at those sizes on every family); the other sequence's content changes nothing
 /// on a model with no mixture of experts; and every KL within --kl where one is given (a real model: a random model's logits are near ties that last bits move far). With
@@ -2067,6 +2069,56 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
         let whole = fill(s, 1, &px, chunk, true)?.expect("the last chunk's logits");
         s.release(&[1])?;
         report(&format!("(yardstick) that prompt alone in chunks of {c}, against alone in chunks of {chunk}"), false, &[(&whole[..], &alone[..])]);
+    }
+    // prompts of different lengths in one pass (`prefill_many`: prompts that come in together), each prompt's logits after its last token and after the step that follows it
+    // (its state and cache as the pass left them), against the prompt alone; the first prompt beside other prompts of the same lengths, against beside the first ones
+    let alone_then_step = |s: &mut dyn ModelStep, p: &[u32]| -> Result<(Vec<f32>, Vec<f32>)> {
+        let after = fill(s, 0, p, chunk, true)?.expect("the prompt's logits");
+        room(s, 0, p.len() + 2)?;
+        s.decode(&[Row { token: fa[0], pos: p.len(), pages: &[0], after: None }])?;
+        let next = s.logits(0)?;
+        s.release(&[0])?;
+        Ok((after, next))
+    };
+    let together = |s: &mut dyn ModelStep, ps: &[Vec<u32>]| -> Result<Vec<(Vec<f32>, Vec<f32>)>> {
+        let slots: Vec<[i32; 1]> = (0..ps.len() as i32).map(|j| [j]).collect();
+        for (p, sl) in ps.iter().zip(&slots) {
+            room(s, sl[0], p.len() + 2)?;
+        }
+        let jobs: Vec<PrefillJob> = ps.iter().zip(&slots).map(|(p, sl)| PrefillJob { pages: sl, start: 0, tokens: p, last: true }).collect();
+        s.prefill_many(&jobs)?;
+        let after: Vec<Vec<f32>> = (0..ps.len()).map(|j| s.logits(j)).collect::<Result<_>>()?;
+        let mut out = Vec::new();
+        for ((p, sl), a) in ps.iter().zip(&slots).zip(after) {
+            s.decode(&[Row { token: fa[0], pos: p.len(), pages: sl, after: None }])?;
+            out.push((a, s.logits(0)?));
+        }
+        s.release(&slots.concat())?;
+        Ok(out)
+    };
+    // (15 rows in all: the products' kernels of a pass alone, so every bit is required; then 74 rows, another kernel's sums, counted)
+    for lens in [&[7usize, 5, 3][..], &[37, 9, 23, 5]] {
+        let lens: Vec<usize> = lens.iter().copied().take(k.min(s.prefill_rows())).filter(|&l| l + 2 < window).collect();
+        if lens.len() < 2 || lens.iter().sum::<usize>() > chunk {
+            continue;
+        }
+        let rows: usize = lens.iter().sum();
+        let ps: Vec<Vec<u32>> = lens.iter().enumerate().map(|(j, &l)| toks(l, 3000 + j as u32)).collect();
+        let alone: Vec<(Vec<f32>, Vec<f32>)> = ps.iter().map(|p| alone_then_step(s, p)).collect::<Result<_>>()?;
+        let got = together(s, &ps)?;
+        let pairs: Vec<(&[f32], &[f32])> = alone.iter().zip(&got).flat_map(|(w, g)| [(&w.0[..], &g.0[..]), (&w.1[..], &g.1[..])]).collect();
+        report(
+            &format!("prompts of {lens:?} in one pass ({rows} rows), each one's logits after it and after its next step, against alone"),
+            rows <= crate::dynamic::EXACT_ROWS,
+            &pairs,
+        );
+        let others: Vec<Vec<u32>> = std::iter::once(ps[0].clone()).chain(lens[1..].iter().enumerate().map(|(j, &l)| toks(l, 4000 + j as u32))).collect();
+        let beside = together(s, &others)?;
+        report(
+            &format!("prompts of {lens:?} in one pass, the first beside other prompts of those lengths, against beside the first ones"),
+            exact,
+            &[(&got[0].0[..], &beside[0].0[..]), (&got[0].1[..], &beside[0].1[..])],
+        );
     }
     sizes_done(case, fails)
 }
@@ -2586,13 +2638,15 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
-/// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR --prompt-tokens P [--places N [--mode M] [--device]]]` (gemma4, qwen35, muse, kimi, glm, nemotron): the case's random model on the
+/// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR --prompt-tokens P [--places N [--mode M] [--device]]] [--stagger D]` (gemma4, qwen35, muse, kimi, glm, nemotron): the case's random model on the
 /// description executor (or the model in DIR, its prompts of P (k + 1) / N tokens; with `--places`, its experts in the expert cache), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
 /// the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts one a pass, decode steps of the rows that decode: 16 or fewer here, whose bits
 /// are each row's own pass's). With prompts run together the replies that differ are counted, not refused (a step of more than 16 rows is another kernel's; a random model's near ties turn on its last
 /// bits: `roundcheck` measures the logits). The round is one step of the rows that decode and the prompts' chunks unless GLYD_ENGINE_ONE_STEP=0, and some step must then have held both.
 /// Then the prompts at once twice more, with no graph at all (every pass eager) and with every graph on and every pass that is no whole graph's in pieces
 /// (src/dynamic/pieces.rs): the replies the same token for token, and where pieces can run, some pass replayed them.
+/// With --stagger D the prompts then come D scheduler rounds apart, as a server's requests do: with prompts one a pass every reply is the reply alone, and with no mixture of
+/// experts each reply is the same when every other prompt's tokens are changed (a row's sums may turn on its passes' row counts, never on the other rows' content).
 ///
 /// With a page budget too small for all of them at once (GLYD_ENGINE_PAGES, R4d) the prompts are run at once three more times: sequences sent back for room swapped to the host wherever they can be,
 /// swapped where that costs less than their recompute (the default), and run again from their tokens only; each run's replies against the references, its sequences sent back and swapped, and each
@@ -2657,30 +2711,35 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         let t = crate::dynamic::kv12::calibrate(&mut e, &prompts, "usercheck")?;
         e.set_kv12(Some(t));
     }
-    let batchable = e.batchable();
+    let (batchable, exact) = (e.batchable(), e.rows_exact());
     let Some((k, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
     // (no finished sequence kept: the same prompts come again below, and each is to run from its first token, in passes with the others)
     let mut s = Sched::new(step, k).keeping(false);
-    let ask = |s: &mut Sched<&mut dyn crate::sched::ModelStep>, ps: &[Vec<u32>]| -> Result<Vec<Vec<u32>>> {
-        let rx: Vec<_> = ps
-            .iter()
-            .map(|p| {
-                let (tx, rx) = std::sync::mpsc::channel();
-                s.submit(Submit {
-                    prompt: p.clone(),
-                    reply: reply.clone(),
-                    out: tx,
-                    abort: Arc::new(AtomicBool::new(false)),
-                    resumed: Default::default(),
-                    cached: Default::default(),
-                    created: Default::default(),
-                    salt: 0,
-                    pin: 0,
-                    images: Vec::new(),
-                });
-                rx
-            })
-            .collect();
+    // (the prompts `gap` scheduler rounds apart: 0, all of them before the first round)
+    let ask = |s: &mut Sched<&mut dyn crate::sched::ModelStep>, ps: &[Vec<u32>], gap: usize| -> Result<Vec<Vec<u32>>> {
+        let mut rx = Vec::new();
+        for p in ps {
+            let (tx, r) = std::sync::mpsc::channel();
+            s.submit(Submit {
+                prompt: p.clone(),
+                reply: reply.clone(),
+                out: tx,
+                abort: Arc::new(AtomicBool::new(false)),
+                resumed: Default::default(),
+                cached: Default::default(),
+                created: Default::default(),
+                salt: 0,
+                pin: 0,
+                images: Vec::new(),
+            });
+            rx.push(r);
+            for _ in 0..gap {
+                if s.idle() {
+                    break;
+                }
+                s.tick()?;
+            }
+        }
         while !s.idle() {
             s.tick()?;
         }
@@ -2700,7 +2759,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     };
     let mut fails = 0;
     for (i, p) in prompts.iter().enumerate() {
-        let got = ask(&mut s, std::slice::from_ref(p))?.remove(0);
+        let got = ask(&mut s, std::slice::from_ref(p), 0)?.remove(0);
         let same = got == reference[i];
         fails += !same as usize;
         println!(
@@ -2710,7 +2769,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             if same { "the reply alone, token for token".into() } else { format!("{got:?} against {:?}", reference[i]) }
         );
     }
-    let together = ask(&mut s, &prompts)?;
+    let together = ask(&mut s, &prompts, 0)?;
     let same = together.iter().zip(&reference).filter(|(a, b)| a == b).count();
     // (with a page budget too small for all of them at once (GLYD_ENGINE_PAGES), sequences give their blocks back and run again from their tokens, the generated ones as a prompt: the
     // replies are then counted, not required to be the same)
@@ -2840,6 +2899,35 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         println!("FAIL replies at once differ from alone with prompts one a pass");
         fails += 1;
     }
+    // (--stagger D: the prompts D scheduler rounds apart, as requests reach a server, each joining while those before it decode (GLYD_ENGINE_STEP_TOKENS cuts a prompt
+    // mid-way in the rounds that hold rows beside it); the replies against alone, then each against the same arrivals with every other prompt's tokens changed, their
+    // lengths kept: a row's sums turn on how many rows its passes hold, never on what the others hold, so with no mixture of experts every reply is the same)
+    if let Some(d) = a.flag("stagger") {
+        let d: usize = d.parse().map_err(|_| Error(format!("--stagger {d}: a number of rounds")))?;
+        let got = ask(&mut s, &prompts, d)?;
+        let alone = got.iter().zip(&reference).filter(|(a, b)| a == b).count();
+        let mut beside = 0;
+        for i in 0..prompts.len() {
+            let others: Vec<Vec<u32>> = prompts
+                .iter()
+                .enumerate()
+                .map(|(j, p)| if j == i { p.clone() } else { p.iter().map(|&t| 3 + (t * 31 + 17) % (vocab - 3)).collect() })
+                .collect();
+            beside += (ask(&mut s, &others, d)?[i] == got[i]) as usize;
+        }
+        println!(
+            "staggered {d} rounds apart: {alone} of {n} replies the reply alone, {beside} of {n} the same beside other prompts' tokens",
+            n = prompts.len()
+        );
+        if strict && alone < prompts.len() {
+            println!("FAIL staggered replies differ from alone with prompts one a pass");
+            fails += 1;
+        }
+        if exact && !squeezed && beside < prompts.len() {
+            println!("FAIL a staggered reply changed with what the other prompts hold");
+            fails += 1;
+        }
+    }
     if batchable && k > 1 && steps[2..].iter().all(|&x| x == 0) {
         println!("FAIL no decode step had more than one row");
         fails += 1;
@@ -2881,7 +2969,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     if !squeezed && std::env::var_os("GLYD_KV12_POOL").is_none() && (pieces_on || e.graphs_taken()) {
         let run = |e: &mut Dyn| -> Result<Vec<Vec<u32>>> {
             let Some((_, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
-            ask(&mut Sched::new(step, k).keeping(false), &prompts)
+            ask(&mut Sched::new(step, k).keeping(false), &prompts, 0)
         };
         let eager = run(&mut e)?;
         e.pieces_for_check(true, false);

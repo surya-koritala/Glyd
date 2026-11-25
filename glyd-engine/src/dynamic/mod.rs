@@ -49,6 +49,8 @@ use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload
 pub use attn::AttnOp;
 use glyd_gpu::safetensors::Checkpoint;
 pub use mla::{IdxKeys, IdxPick, IdxScore, MlaIn, MlaIndexer, MlaOp};
+#[cfg(feature = "dev")]
+pub(crate) use rows::EXACT_ROWS;
 use std::path::Path;
 
 /// An activation a pass reads and writes, [rows, width] bf16: the residual, the normed input of the next product, the q/k/v projection, the prepared
