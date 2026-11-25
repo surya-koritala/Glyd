@@ -7,7 +7,7 @@
 use super::attn::{AttnOp, GateAt, QkNorm, RopeAt};
 #[cfg(any(test, feature = "dev"))]
 use super::Slot;
-use super::{Dyn, ModelDesc, Opts, ResidentMoe, Stage};
+use super::{Dyn, ModelDesc, Opts, Placing, Stage};
 #[cfg(test)]
 use super::{NormW, Op, Ring, Rope};
 #[cfg(test)]
@@ -34,6 +34,17 @@ pub fn ends(dir: &Path) -> Result<(usize, Vec<i64>)> {
     }
 }
 
+/// The model of the config `c` as the lossy route packs and sizes it (src/pack.rs `qwen35_plan`, src/plan.rs `lossy_plan_inner`), dense or with experts alike:
+/// its description lowered whole (`lower::qwen35`: what the loader runs, its states and rings, its longest context), the matrices a level's save packs and the
+/// tensors it keeps, in load order (`pack::described`: a layer's blocks of experts' too).
+pub fn saved(c: &crate::runtime::config::ModelConfig) -> Result<(ModelDesc, Vec<crate::qwen35::Pack35>, Vec<crate::qwen35::Tensor35>)> {
+    let d = crate::runtime::describe::describe_config(c)?;
+    let max_pos = c.shared.max_position_embeddings.ok_or_else(|| Error("no max_position_embeddings".into()))?;
+    let low = super::lower::qwen35(&d, Vec::new(), max_pos, &Stage::whole(d.desc.blocks.len() / 2))?;
+    let (packs, kept) = crate::pack::described(&d, &low)?;
+    Ok((low, packs, kept))
+}
+
 /// The description of the model in `dir` and its label, where a layer's feed-forward is a mixture of experts (None: the dense layout, or no description).
 fn with_experts(dir: &Path) -> Option<(Described, String)> {
     crate::runtime::describe::describe_dir(dir).ok().filter(|(k, _)| k.desc.blocks.iter().any(|b| matches!(b.body, Body::Ffn(Ffn::Moe(_)))))
@@ -51,13 +62,14 @@ fn experts_config(dir: &Path) -> Result<(Vec<i64>, usize)> {
     Ok((eos, max_pos))
 }
 
-/// The dynamic route's stage (src/dynamic/split.rs `StageLoad`): `load_stage`, every expert on the GPU where the layout has experts. A caching is refused: the
-/// layout's experts are not in the expert cache.
+/// The dynamic route's stage (src/dynamic/split.rs `StageLoad`): `load_stage`, the layout with experts' experts in the expert cache where `caching` is given
+/// (`load_experts`); the dense layout has none to keep there, and refuses a caching.
 pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
-    if caching.is_some() {
-        return crate::ffi::err(format!("{}: the Qwen3.5 layout's experts are all on the GPU: no expert cache", dir.display()));
+    match (with_experts(dir), caching) {
+        (Some((kinds, label)), _) => load_experts(dir, o, st, &kinds, caching).map_err(|e| e.context(&label)),
+        (None, Some(_)) => crate::ffi::err(format!("{}: the dense Qwen3.5 layout has no experts to keep in the expert cache", dir.display())),
+        (None, None) => load_stage(dir, o, st),
     }
-    load_stage(dir, o, st)
 }
 
 /// Stage `st` of it (a model split across GPUs: its layers, the embedding where it is the first, the head where the last; a layer of another
@@ -66,28 +78,32 @@ pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store:
 /// layer kinds alone (`load_experts`).
 pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
     if let Some((kinds, label)) = with_experts(dir) {
-        return load_experts(dir, o, st, &kinds).map_err(|e| e.context(&label));
+        return load_experts(dir, o, st, &kinds, None).map_err(|e| e.context(&label));
     }
     let c = crate::qwen35::Config35::load(dir)?;
     Dyn::new_stage(dir, lowered(dir, &c, &st)?, None, st, o)
 }
 
-/// The layout with experts: its kinds lowered (`lower::qwen35`), each layer's experts the kind's resident block (`experts::resident`: the softmax router, the
-/// experts and the gated shared expert at the level of the other matrices), the stage's layers' in order. Every expert is on the GPU.
-fn load_experts(dir: &Path, o: &Opts, st: Stage, kinds: &Described) -> Result<Dyn> {
+/// The layout with experts: its kinds lowered (`lower::qwen35`), each layer's experts the Moe kind's block (`experts::block`: the softmax router, the experts
+/// and the gated shared expert at the level of the other matrices), the stage's layers' in order: every expert on the GPU, or in the expert cache as `caching`
+/// says where it is given (src/tiering.rs: its places a layer on the GPU, every expert in the computer's memory, the cache's layer a block's number among the
+/// model's blocks of experts), and the stage's last layers' matrices in the computer's memory where it says so (src/dense_ram.rs).
+fn load_experts(dir: &Path, o: &Opts, st: Stage, kinds: &Described, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
     let (eos, max_pos) = experts_config(dir)?;
     let d = super::lower::qwen35(kinds, eos, max_pos, &st)?;
-    let (hidden, blocks) = (kinds.desc.hidden, &kinds.desc.blocks);
-    let mine = || {
-        blocks.iter().zip(&kinds.blocks).enumerate().filter_map(|(b, (blk, roles))| match &blk.body {
-            Body::Ffn(Ffn::Moe(m)) if (st.layers.0..st.layers.1).contains(&(b / 2)) => Some((m, roles)),
-            _ => None,
-        })
-    };
+    let store = caching.map(crate::hbg_store::store_for);
+    let held = super::experts::Held { hb: None, cache: caching.zip(store.as_ref()), ordinal: o.device, f8: None, dense: None, codebooks: None };
+    let hidden = kinds.desc.hidden;
     let experts = |ck: &Checkpoint, level: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
-        mine().map(|(m, roles)| Ok(Box::new(ResidentMoe(super::experts::resident(m, roles, hidden, ck, level)?)) as Box<dyn MoeBlock>)).collect()
+        super::experts::of_layers(kinds, st.layers, 2)
+            .map(|(ix, m, roles)| {
+                crate::status::STATUS.beat(); // (a block of experts takes seconds to read)
+                super::experts::block(m, roles, hidden, ck, level, (ix, &held))
+            })
+            .collect()
     };
-    Dyn::new_with(dir, d, None, st, o, &experts)
+    let placing = Placing { across: false, ram: crate::dense_ram::Placer::last(st.layers.0, st.layers.1, caching.map_or(0, |x| x.dense)) };
+    Dyn::new_placed(dir, d, None, st, o, &experts, &placing)
 }
 
 /// A layer's matrices and small tensors as the loader holds them: a linear-attention layer's qkvz, ba and out products and its MLP's two; its input and
@@ -323,6 +339,30 @@ mod tests {
         let blocks: Vec<Vec<usize>> =
             m.layers.iter().map(|ops| ops.iter().filter_map(|op| if let Op::Moe(x) = op { Some(x.block) } else { None }).collect()).collect();
         assert_eq!(blocks, [vec![], vec![], vec![0], vec![1]]);
+    }
+
+    /// The dense layout's save by its description (`saved`) is what the dense layout's own lists name, in their order (`Config35::packs` and `kept`), with the
+    /// same states a sequence, keys and values a token and longest context: the lossy route's saves and plans of a dense model are what they were. Every dense
+    /// config of the fixtures and the family's two random cases.
+    #[test]
+    fn the_dense_layouts_save_by_its_description_is_its_own_lists() {
+        let all: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/qwen35_configs.json")).unwrap();
+        let mut texts: Vec<(String, String)> = all.as_object().unwrap().iter().map(|(k, v)| (k.clone(), v.to_string())).collect();
+        for m in [include_str!("../../tests/fixtures/qwen35_tiny_manifest.json"), include_str!("../../tests/fixtures/qwen35_wide_tiny_manifest.json")] {
+            let man: serde_json::Value = serde_json::from_str(m).unwrap();
+            texts.push(("a random case".into(), man["config"].as_str().unwrap().to_string()));
+        }
+        let mut dense = 0;
+        for (name, text) in &texts {
+            // (the layout with experts: the dense layout's reader refuses it)
+            let Ok(c) = crate::qwen35::Config35::parse(text, name, None) else { continue };
+            let (low, packs, kept) = super::saved(&crate::runtime::config::ModelConfig::parse(text).unwrap()).unwrap();
+            assert_eq!((packs, kept), (c.packs(), c.kept()), "{name}");
+            let (state, per) = (low.states.iter().sum::<usize>() as u64, low.rings.iter().map(|r| r.token_bytes()).sum::<usize>() as u64);
+            assert_eq!((state, per, low.max_pos), (c.state_bytes(), c.kv_bytes_per_token(), c.max_pos), "{name}");
+            dense += 1;
+        }
+        assert_eq!(dense, 7 + 2);
     }
 
     /// The dense layout lowers as it did: its MLP's two products, no block of experts.

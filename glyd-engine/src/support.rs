@@ -15,8 +15,9 @@ pub enum Family {
     /// (src/dynamic/dense.rs), lossless or at the lossy levels. The variant keeps the name of the first release that ran on it.
     Qwen3,
     /// The Qwen3.5 layout (3.5, 3.6 and 3.8), dense (Qwen3_5ForCausalLM, Qwen3_5ForConditionalGeneration) or with experts (Qwen3_5MoeForCausalLM,
-    /// Qwen3_5MoeForConditionalGeneration): penguin on the dynamic route (one GPU, or its layers cut over several; every expert on its GPU), the lossy levels
-    /// on one GPU for the dense layout (the layout with experts is refused there: that route packs and sizes the dense layout's tensors alone).
+    /// Qwen3_5MoeForConditionalGeneration): penguin on the dynamic route (one GPU, or its layers cut over several; the experts in the expert cache where the
+    /// GPUs do not hold them), the lossy levels on one GPU, both layouts packed and sized by their description (src/pack.rs `described`), every expert on the
+    /// GPU at the lossy levels.
     Qwen35,
     NemotronH,
     /// Gemma 4 dense (12B, 31B); the 26B-A4B mixture of experts and the E models are refused.
@@ -24,7 +25,8 @@ pub enum Family {
     Kimi,
     Glm,
     /// GLM-5.3 (`glm_moe_dsa`: the latent attention on every layer, its indexer its own or shared, plain residuals; FP8 as released): penguin on the dynamic
-    /// route (src/dynamic/glm.rs `load_plain`), on one GPU or its layers cut over several, every expert of a stage on its GPU.
+    /// route (src/dynamic/glm.rs `load_plain`), on one GPU or its layers cut over several, a stage's experts on its GPU or, where the GPUs do not hold them,
+    /// in the expert cache as released (FP8 experts each packed on its own: src/tiering.rs).
     GlmDsa,
     DeepSeekV4,
     Muse,
@@ -150,9 +152,10 @@ pub static TABLE: [Support; 10] = [
         default_ctx: None,
         max_ctx: None,
         split_levels: PENGUIN,
-        experts_in_ram_levels: NONE,
+        // (the layout with experts: at penguin, where its GPUs do not hold them)
+        experts_in_ram_levels: PENGUIN,
         drafts: false,
-        route: Route { bf16_twelve: true, ..ONE_GPU },
+        route: Route { bf16_twelve: true, expert_cache: ExpertCache::Release, ..ONE_GPU },
     },
     Support {
         family: Family::NemotronH,
@@ -216,9 +219,9 @@ pub static TABLE: [Support; 10] = [
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
         split_levels: PENGUIN,
-        experts_in_ram_levels: NONE,
+        experts_in_ram_levels: PENGUIN,
         drafts: false,
-        route: Route { sizing: Sizing::Dynamic, ..ONE_GPU },
+        route: Route { sizing: Sizing::Dynamic, expert_cache: ExpertCache::Release, ..ONE_GPU },
     },
     Support {
         family: Family::DeepSeekV4,
@@ -486,7 +489,7 @@ mod tests {
 
     /// The Qwen3.5 layout with experts (`Qwen3_5MoeForCausalLM`, `Qwen3_5MoeForConditionalGeneration`) is the Qwen3.5 family's, not a row of its own: the
     /// dynamic route opens it (its layers cut over the GPUs at penguin) by the loader of the gated delta rule, which reads its layers by its description; the
-    /// tree's random case and the two releases of the fixtures alike. (Its lossy levels are refused where they are sized: src/plan.rs.)
+    /// tree's random case and the two releases of the fixtures alike, at every level of the row (its lossy levels sized by its description: src/plan.rs).
     #[test]
     fn the_qwen35_layout_with_experts_is_the_familys() {
         let q35: Value = json::parse(&fixture("qwen35_configs.json")).unwrap();
@@ -497,7 +500,9 @@ mod tests {
         ];
         for (what, text) in &cases {
             assert_eq!(family(text, "q").unwrap(), Family::Qwen35, "{what}");
-            assert!(check(text, "Qwen/q", "q", "penguin").is_ok(), "{what}");
+            for level in PENGUIN_LOSSY {
+                assert!(check(text, "Qwen/q", "q", level).is_ok(), "{what} {level}");
+            }
             assert_eq!(crate::dynamic::split::family(text), Some("Qwen3.5"), "{what}: opened by the dynamic route from its release's directory");
             let d = crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap();
             assert!(d.desc.blocks.iter().any(|b| matches!(b.body, crate::runtime::kinds::Body::Ffn(crate::runtime::kinds::Ffn::Moe(_)))), "{what}");

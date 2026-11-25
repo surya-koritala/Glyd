@@ -172,7 +172,8 @@ fn qwen35_world(test: &str) -> std::path::PathBuf {
 
 /// P4b's acceptance: `glyd run qwen3.5` on each preset machine takes the size `glyd fit` predicts: the largest whose own plan (`fit qwen3.5:SIZE --machine PRESET
 /// --json`) reaches 10 tokens a second and 8,192 tokens of context, else the fastest that fits, else none (a refusal that says why for each size). Every size of the
-/// family is sized by the planner's one sizing (src/plan.rs `sizing`, P2f), at the level the plan takes, the mixture of experts this engine does not run refused.
+/// family is sized by the planner's one sizing (src/plan.rs `sizing`, P2f), at the level the plan takes, the mixture of experts (the Qwen3.5 layout with
+/// experts, sized by its description at the lossy levels) among them.
 #[test]
 fn run_qwen35_takes_the_size_fit_predicts_on_each_preset() {
     let d = qwen35_world("qwen35");
@@ -219,8 +220,10 @@ fn run_qwen35_takes_the_size_fit_predicts_on_each_preset() {
             }
             None => assert!(err.contains("no size fits"), "{preset}: {err}"),
         }
-        // (the mixture of experts is not one this engine runs: never picked)
-        assert!(plans.iter().any(|(s, p)| *s == "35b-a3b" && p.is_none()), "{preset}: {plans:?}");
+        // (the mixture of experts is planned as the other sizes are: where a card of 80 GB holds it, it has a plan)
+        if preset == "a100-80g" {
+            assert!(plans.iter().any(|(s, p)| *s == "35b-a3b" && p.is_some()), "{preset}: {plans:?}");
+        }
     }
     // (machines of different memory take different sizes)
     assert!(seen.len() >= 2, "{seen:?}");

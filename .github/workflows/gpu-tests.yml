@@ -244,7 +244,7 @@ jobs:
           "$E" nhtoy "$d/model" "$d/io"
           "$E" nhoffload "$d/model" "$d/io"
           rm -rf "$d"
-      - name: The expert cache against every expert on the GPU (R12 and hummingbird; random DeepSeek-V4, GLM-5.3-Flash, Muse Spark and Kimi-K3 models; tiering.rs tiercheck)
+      - name: The expert cache against every expert on the GPU (R12 and hummingbird; random DeepSeek-V4, GLM-5.3-Flash, Muse Spark, Kimi-K3, Qwen3.5-with-experts and GLM-5.3 models; tiering.rs tiercheck)
         run: |
           # (copy mode: the products over the cache's places are the resident layer's. The same bits where the cache's calls are the resident pass's; where they are not, the differences are printed with --report: tiering.rs says which and why)
           # (DeepSeek-V4's FP4 experts: 4 choices a token over 2 places, so every call is waves, a decode step's too)
@@ -271,6 +271,16 @@ jobs:
           "$E" tiercheck /tmp/muse-tier --places 6 --dense 2 --tokens 6
           "$E" logitsmodel kimi /tmp/kimi-tier
           "$E" tiercheck /tmp/kimi-tier --places 4 --dense 2
+          # (the Qwen3.5 layout with experts, 32 a layer of which a token takes 10: penguin's lossless bf16 experts the stack's tiered pack cut per expert, a block level's each expert's packs; 12 places hold a step's choices, 4 make every call waves; the same bits either way, the last two layers' dense matrices in the computer's memory too)
+          "$E" logitsmodel qwen35moe /tmp/q35m-tier
+          "$E" tiercheck /tmp/q35m-tier --places 12 --tokens 6
+          "$E" tiercheck /tmp/q35m-tier --places 4
+          "$E" tiercheck /tmp/q35m-tier --places 4 --layout i6
+          "$E" tiercheck /tmp/q35m-tier --places 12 --dense 2 --tokens 6
+          # (GLM-5.3 as released in FP8: each expert packed on its own in places, as GLM-5.3-Flash's)
+          "$E" logitsmodel glm-dsa-f8 /tmp/glm-dsa-f8-tier
+          "$E" tiercheck /tmp/glm-dsa-f8-tier --places 6 --tokens 6
+          "$E" tiercheck /tmp/glm-dsa-f8-tier --places 6
       - name: The workspace back to the runner's user
         if: always()
         run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP" 2> /dev/null || echo 1000:1000)" "$GITHUB_WORKSPACE" || true
