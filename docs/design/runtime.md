@@ -482,8 +482,12 @@ prompt's end (`mark`) and at a block boundary (`name`) are copied as the next st
 for the step in flight's sequences (`Sched::launch`), so the copies are of the states after that step's tokens. The 12-bit pages' status
 (the void pages a step made) is copied into the lane with the samples and read from there (`kv12_lost`). The operations that read the
 tokens (an n-gram embedding, routing by token) read the int32 ids `step_ids` writes beside the embedding's. The executor overlaps on one
-GPU where no layer's experts are in a cache and no layer's matrices are in the computer's memory (both do host work inside the pass);
-`GLYD_ENGINE_OVERLAP=1` turns it on: it is off by default, since a launched step does not yet take the decode rows' one launch a layer,
+GPU where no layer's matrices are in the computer's memory and no block of experts reads the router's choices on the host (the blocks a
+decode graph captures): an expert cache's layers planned on the GPU (`--device`, src/devplan.rs) queue a decode call of up to eight rows
+whole, and a call the store plans on the host (a prompt's chunk) synchronizes the stream itself. The store's end of a step
+(`ExpertStore::end_step`) reads what the GPU counted and writes the plan's next settings, so it runs only when a step lands with none
+queued after it: after 16 steps landed with a later one out, the step asks to be quiet (`ModelStep::quiet`) and the scheduler lands it
+before launching the next. `GLYD_ENGINE_OVERLAP=1` turns it on: it is off by default, since a launched step does not yet take the decode rows' one launch a layer,
 their graphs or the pieces. `GLYD_PROF=1` and `GLYD_ENGINE_STEP_PROF=1` time
 each step's GPU work and the GPU's idle time before it from events at its first and last work (`Gaps`).
 
