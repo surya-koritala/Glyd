@@ -136,10 +136,13 @@ fn plain(dir: &Path, o: &Opts, st: Option<Stage>, draft: Option<usize>) -> Resul
             .collect()
     };
     // (the head's experts as the model's, its layer the one after the model's)
+    // (its block of experts numbered after the model's: the expert cache's next layer)
+    let model_moe = super::experts::of_layers(&kinds, (0, layers), 2).count();
     let head_experts = |ck: &Checkpoint, level: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
         super::experts::of_head(&kinds, 0)
             .map(|(b, m, roles)| {
-                Ok(Box::new(ResidentMoe(super::experts::held(m, roles, hidden, ck, level, Some((layers + b / 2, &held)))?)) as Box<dyn MoeBlock>)
+                let ix = super::experts::Ix { layer: layers + b / 2, moe: model_moe + b / 2 };
+                Ok(Box::new(ResidentMoe(super::experts::held(m, roles, hidden, ck, level, Some((ix, &held)))?)) as Box<dyn MoeBlock>)
             })
             .collect()
     };
