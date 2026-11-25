@@ -40,7 +40,7 @@ These are exit 3 unless noted. The message says what to do; the usual ones:
 
 | Message starts | What it means | What to do |
 | :--- | :--- | :--- |
-| `X is a ...ForCausalLM model, and this engine runs Qwen3 models so far` | The model's kind is not one of the [Models](models.md) families. | Pick a listed family, or run it with another engine. |
+| `X is a ...ForCausalLM model, which this engine has no description of yet` | The model's kind is not one of the [Models](models.md) families. | Pick a listed family, or run it with another engine. |
 | `GLM-5.3-Flash (GLM-5.3-Flash) runs at the penguin level in this engine, not swift` | The family does not run that level. | Use the level the message offers, or see [Models](models.md). |
 | `it needs ... GiB of GPU memory` | The model does not fit at the level and context asked. | A lower level, a smaller `--context`, another GPU, or for a mixture of experts more of the computer's memory (`--host-memory`). `glyd fit MODEL` shows each level's size first. |
 | `no GPU was found: the engine's CPU backend is not built yet` | No usable GPU. | See [Install](install.md). |

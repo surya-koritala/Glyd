@@ -15,7 +15,6 @@ const SWITCHES: &[&str] = &[
     "bar",
     "cpu-ref",
     "sequence",
-    "chain",
     "list-cases",
     "p2p",
     "ignore-eos",
@@ -98,6 +97,7 @@ const SWITCHES: &[&str] = &[
     "record",
     "rgb",
     "servable",
+    "chain",
 ];
 #[cfg(not(feature = "dev"))]
 const SWITCHES: &[&str] = &[

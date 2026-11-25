@@ -1,5 +1,5 @@
 //! The calibration corpus: every kind of text the KV cache's tables are made over (the 12-bit pages' tables, src/dynamic/kv12.rs) and Hummingbird's use counts
-//! are taken on (src/hb_usage.rs), as token ids by document. The tables of the dense Qwen3 engine, which this module made on that engine, went with it (R3c, #139).
+//! are taken on (src/hb_usage.rs), as token ids by document. The tables of the earlier dense engine, which this module made on that engine, went with it (R3c, #139).
 
 use crate::chat::{self, Chat};
 use crate::ffi::Result;

@@ -803,7 +803,7 @@ pub const STREAM_OF_SPEC: f64 = 0.9475;
 /// Of the streamed rate, what decode's reads reach: the lossy levels' packs all of it, the lossless layout (decoded in the product) 0.72; and a decode step's time
 /// besides its reads, 35 µs a layer (its kernels' launches and the gaps between them). Measured on an RTX 4080 SUPER at about 1,000 positions: gemma-4-12B at wren
 /// 86.2 tokens/s and kestrel 63.3, Qwen3.5-0.8B at kestrel 561.9 and wren 657.9 (a 35 µs layer and the stream's rate predict them within 4%: fitted on them, in-sample); the lossless
-/// figure from Qwen3-32B on an RTX A6000 (11.8 tokens/s, likewise fitted).
+/// figure from a dense model of 64 layers of 5,120 on an RTX A6000 (11.8 tokens/s, likewise fitted; not measured on a recent release yet).
 const EFF_LOSSY: f64 = 1.0;
 const EFF_LOSSLESS: f64 = 0.72;
 const LAYER_S: f64 = 35e-6;
@@ -819,7 +819,7 @@ const PROMPT_LAYER_S: f64 = 1.11e-6;
 /// The same products' time said against the GPU's streamed memory rate, as the figures are fitted (`Consts::f`): the RTX 4080 SUPER's 104.5 TFLOPS at
 /// `PROMPT_EFF` over its 697.35 GB/s. Across classes the engine's prompt products follow the memory rate more closely than the tensor rate a maker gives:
 /// each class's prompt runs predicted from the other classes' records came to a mean 18-25% off said against the stream (RTX 4080 SUPER, A100 SXM4 40GB,
-/// A10, with Qwen3-8B's runs among them), 27-42% against the tensor rate.
+/// A10, with a 36-layer dense model's runs among them), 27-42% against the tensor rate.
 const PROMPT_F: f64 = 697.35e9 / (PROMPT_EFF * 104.5e12);
 /// The band a prediction is given in where no run on the GPU was observed (p10 and p90 against the prediction): the runs these figures are calibrated on (above, and
 /// `predictions_match_what_was_measured`'s) came to 0.91-1.02 of their predictions on the GPUs they were measured on; another GPU's kernels may differ more.
@@ -841,7 +841,7 @@ pub struct Consts {
     pub layer_s: f64,
     pub width_s: f64,
     pub row_s: f64,
-    /// the 12-bit lossless layout's weights (a layout and kernels of their own: Qwen3-8B on the A100 and the A10 read a byte faster than their packs; no shipped
+    /// the 12-bit lossless layout's weights (a layout and kernels of their own: a 36-layer dense model on the A100 and the A10 read a byte faster than its packs; no shipped
     /// record has it, so it is the packs' share until a recent release's penguin run is recorded)
     pub w12: f64,
     pub f: f64,
@@ -1139,7 +1139,7 @@ pub fn prior_from(records: &[serde_json::Value], class: &str) -> Prior {
 /// The figures a class starts from before its own records: the decode figures the classes `others_of` gives it fit (from the defaults), and the prompt figures
 /// every other class's records fit (a kin's few prompts leave its three figures loose: the A10's prompts from the RTX 4080 SUPER's four came out 120% off on
 /// the mean, from every other class's 19%; its decode from the kin 17.6%, from every other class 10.8%, but the 4080 SUPER's from every other 23.9% against
-/// 14.5% from its kin: decode keeps the kin. Those with Qwen3-8B's runs among the records; without them, prompts 17.7%). Where none of the kin ran a step of several rows, a row's time is the one every other class's records fit.
+/// 14.5% from its kin: decode keeps the kin. Those with a 36-layer dense model's runs among the records; without them, prompts 17.7%). Where none of the kin ran a step of several rows, a row's time is the one every other class's records fit.
 fn base_of(records: &[serde_json::Value], class: &str) -> Consts {
     let kin = others_of(records, class);
     if kin.is_empty() {
@@ -1207,9 +1207,9 @@ pub fn score_classes(records: &[serde_json::Value]) -> Vec<(String, Vec<f64>, Ve
 }
 
 /// The share of expert reads a cache holding a share `f` of the experts serves at one row, f^HIT_EXPONENT: experts are used unevenly and a sequence uses its own again (Condor: 70-76% at about a quarter;
-/// the Nemotron 3 Super decode traces' least-recently-used places: 61, 73 and 80% at 17, 32 and 46%, where this says 67, 77 and 84: offload.rs's test). A router that chooses uniformly (a random model's) is 1.
+/// the routing record benchmarks/moe-skew-2026-10-09's decode traces' least-recently-used places: 61, 73 and 80% at 17, 32 and 46%, where this says 67, 77 and 84: offload.rs's test). A router that chooses uniformly (a random model's) is 1.
 pub const HIT_EXPONENT: f64 = 0.23;
-/// How fast the reuse of the places between steps goes as a step's rows' distinct experts fill them (`step_hit`), fitted to the Nemotron 3 Super decode traces at 4 to 20 rows (offload.rs's test).
+/// How fast the reuse of the places between steps goes as a step's rows' distinct experts fill them (`step_hit`), fitted to the same record's decode traces at 4 to 20 rows (offload.rs's test).
 const ROWS_DECAY: f64 = 0.55;
 
 /// The distinct experts `users` rows choose a step in a layer of `experts` choosing `topk` each, in one row's experts (k): E (1 - (1 - k/E)^U) / k, as a router choosing uniformly makes them, and at least one row's.
@@ -1574,7 +1574,7 @@ pub const SCHEMA: &str = "glyd-plan/1";
 /// The engine path that loads a plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// Qwen3 dense (and every Llama-style dense model the description builder reads) on the executor: src/dynamic/dense.rs, at penguin, kestrel, swift and wren.
+    /// The plain dense kind (every pre-norm dense decoder the description builder's `llama` reading takes) on the executor: src/dynamic/dense.rs, at penguin, kestrel, swift and wren.
     Qwen3,
     /// Qwen3.5, 3.6 and 3.8 dense at a lossy level.
     Qwen35,
@@ -1754,7 +1754,7 @@ impl LoadPlan {
 }
 
 /// The bits a weight of each part takes in plan `lp` on `d`: the level's (`level_bits`), and at penguin the layout the loader took (`LoadPlan::layout`: the 12-bit
-/// one where it decodes faster and fits, `best_layout`; Qwen3-8B on an A10 loaded 11.10 GB in it, where the level's 10.75 bits counted 10.17).
+/// one where it decodes faster and fits, `best_layout`; a dense model of 36 layers of 4,096 on an A10 loaded 11.10 GB in it, where the level's 10.75 bits counted 10.17).
 fn plan_bits(lp: &LoadPlan, sh: &Shape, d: &Device) -> Option<(f64, f64)> {
     let (bits, ebits) = level_bits(lp.level, sh, d)?;
     Some(match lp.layout {
@@ -2611,7 +2611,7 @@ pub struct Planned {
 }
 
 /// Whether the run of `a` holds its keys and values in the executor's 12-bit lossless pages (GLYD_KV=lossless), as the family's load plan sizes them: Gemma 4 with no draft model,
-/// dense Qwen3 served (`sizing::twelve_pages`); the loaders that take them (src/cli.rs `twelve_bit_pages`).
+/// a plain dense decoder served (`sizing::twelve_pages`); the loaders that take them (src/cli.rs `twelve_bit_pages`).
 fn takes_twelve(a: &crate::args::Args, f: crate::support::Family) -> bool {
     use crate::support::Family;
     let lossless = std::env::var("GLYD_KV").as_deref() == Ok("lossless");
@@ -3589,7 +3589,7 @@ pub mod sizing {
         let mut p = n.plan_at(ctx, chunk, free, gpu);
         if n.fewer {
             // (a scheduler of rooms in pools of blocks holds what the GPU has left, at most every user's context, at least one's: src/dynamic/rows.rs `page`.
-            // On an A10 (23 GB) Qwen3-8B for 8 users at 16,384 tokens was planned at 31,867 MiB, the context of all eight; the server took 21,889)
+            // On an A10 (23 GB) a dense model of 36 layers of 4,096 for 8 users at 16,384 tokens was planned at 31,867 MiB, the context of all eight; the server took 21,889)
             let one = n.per_seq + ctx as u64 * per;
             p.kv = p.kv.min(free.saturating_sub(p.weights + p.draft + p.work + p.reserve)).max(one);
         }
@@ -3660,7 +3660,7 @@ pub mod sizing {
         let first = if cublas { 4096 } else { 2048 };
         Needs {
             kind: Kind::Qwen3,
-            family: "Qwen3",
+            family: crate::dynamic::dense::FAMILY,
             layout,
             weights: weights(cfg, layout),
             bf16: cfg.matrix_bytes(),
@@ -3861,7 +3861,7 @@ pub mod sizing {
         Ok(lossy_plan_with(&Args::from(["run".to_string(), name.clone()]), &name, layout, &text, generation.as_deref(), free, gpu, packed, host)?.experts)
     }
 
-    /// Nemotron 3 Super with its experts in the computer's memory (pinned) and a cache of them on the GPU: the context, and the cache, which takes what the GPU has left besides the rest of the model, the states, the
+    /// A model of the Nemotron-H layout with its experts in the computer's memory (pinned) and a cache of them on the GPU: the context, and the cache, which takes what the GPU has left besides the rest of the model, the states, the
     /// workspaces and the context's keys and values (or `asked` bytes of it); why not, in words, where the GPU cannot hold even that rest and the least cache (a step's choices and as many again; the choices alone for
     /// an asked cache), or the computer cannot hold the experts. At the Hummingbird level a computer that cannot hold them all (or `--host-memory`, `asked_host`, that gives it less) keeps the rest in the packed directory:
     /// `CachePlan::ram` is what it holds, refused where that is less than a step's choices in each width of each layer.
@@ -3923,7 +3923,7 @@ pub mod sizing {
         Ok((ctx, CachePlan { ram, ..plan }))
     }
 
-    /// The model's config as a lossy level reads it (Qwen3.5, Qwen3.6 and Qwen3.8 dense: their config says `qwen3_5`; Nemotron 3 Super: `nemotron_h`, at the kestrel, swift and wren levels), and what it takes in `layout` of
+    /// The model's config as a lossy level reads it (Qwen3.5, Qwen3.6 and Qwen3.8 dense: their config says `qwen3_5`; the Nemotron-H layout: `nemotron_h`, at the kestrel, swift and wren levels), and what it takes in `layout` of
     /// `free` bytes of GPU memory at the context asked for (else up to LOSSY_CTX, as much as fits): refused where it does not fit at LOSSY_MIN_CTX. A pack is sized in its own layout (`pack_layout`: Nemotron's experts
     /// alone are four-bit at wren). `packed`: the glyd-v7 directory the model is, where its packs' bytes are the ones it holds.
     pub(crate) fn lossy_plan(
@@ -3982,15 +3982,18 @@ pub mod sizing {
         let nemotron = m.family() == Some(crate::support::Family::NemotronH);
         let (packs, kept, state, per, max_pos) = if nemotron {
             if !matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Hummingbird) {
-                return Err(Refusal::unsupported(format!("{name}: the {tag} level is not built for Nemotron 3 Super, whose experts are held at the kestrel, swift and wren levels, or at the hummingbird level"), format!("Run it at the wren, swift or kestrel level: glyd run {model}:wren")));
+                return Err(Refusal::unsupported(format!("{name}: the {tag} level is not built for the Nemotron-H layout, whose experts are held at the kestrel, swift and wren levels, or at the hummingbird level"), format!("Run it at the wren, swift or kestrel level: glyd run {model}:wren")));
             }
             let cfg = ConfigNemotronH::of(&m, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
-            // (the hummingbird kernels take experts on a latent that is a power of two from 128 to 1,024, Nemotron 3 Super's: src/moe_hb.rs; the
-            // experts of a model with no latent, Nemotron 3.5 Lightning's, read its width)
+            // (the hummingbird kernels take experts on a latent that is a power of two from 128 to 1,024: src/moe_hb.rs; the experts of a model
+            // with no latent read its width)
             let l = cfg.moe.latent;
             if layout == Layout::Hummingbird && !(l.is_power_of_two() && (128..=1024).contains(&l)) {
                 return Err(Refusal::unsupported(
-                    format!("{name}: the hummingbird level takes Nemotron-H experts on a latent of 128 to 1,024 (Nemotron 3 Super's); this model's experts read its width of {}", cfg.hidden),
+                    format!(
+                        "{name}: the hummingbird level takes Nemotron-H experts on a latent of 128 to 1,024; this model's experts read its width of {}",
+                        cfg.hidden
+                    ),
                     format!("Run it at the swift or kestrel level: glyd run {model}:swift"),
                 ));
             }
@@ -3998,13 +4001,13 @@ pub mod sizing {
         } else {
             if layout == Layout::Hummingbird {
                 return Err(Refusal::unsupported(
-                    format!("{name}: the hummingbird level is built for Nemotron 3 Super alone"),
+                    format!("{name}: the hummingbird level on this path is built for the Nemotron-H layout alone"),
                     "Run it at the kestrel, swift or wren level: glyd run MODEL:swift",
                 ));
             }
             let cfg = Config35::of(&m, "config.json", gen).map_err(|e| {
                 Refusal::unsupported(
-                    format!("{name}: the {tag} level runs {} models so far ({})", "Qwen3.5, Qwen3.6, Qwen3.8 and Nemotron 3 Super", e.msg),
+                    format!("{name}: the {tag} level on this path takes the Qwen3.5 and Nemotron-H layouts ({})", e.msg),
                     format!("Run it lossless: glyd run {model}"),
                 )
             })?;
@@ -4062,11 +4065,17 @@ pub mod sizing {
         let fitted = one_gpu(&n, free, asked, gpu);
         let cache = cache_flag(a)?;
         if cache.is_some() && !nemotron {
-            return Err(Refusal::new(format!("--expert-cache: {name} has no experts to keep in the computer's memory"), "It is for Nemotron 3 Super"));
+            return Err(Refusal::new(
+                format!("--expert-cache: {name} has no experts to keep in the computer's memory"),
+                "It is for a model of the Nemotron-H layout, whose experts it keeps there",
+            ));
         }
         let host_asked = host_flag(a)?;
         if host_asked.is_some() && !nemotron {
-            return Err(Refusal::new(format!("--host-memory: {name} has no experts to keep in the computer's memory"), "It is for Nemotron 3 Super"));
+            return Err(Refusal::new(
+                format!("--host-memory: {name} has no experts to keep in the computer's memory"),
+                "It is for a model of the Nemotron-H layout, whose experts it keeps there",
+            ));
         }
         let mut also = String::new();
         if nemotron && (fitted.is_err() || cache.is_some()) {
@@ -4969,8 +4978,8 @@ mod tests {
         assert!(crate::glm::ConfigGlm::parse(&glm, "c", None).unwrap_err().to_string().contains("num_hidden_layers"));
         let q35 = big(&json::to_compact(json::parse(&fixture("qwen35_configs.json")).unwrap().get("Qwen/Qwen3.5-9B").unwrap()));
         assert!(crate::qwen35::Config35::parse(&q35, "c", None).unwrap_err().to_string().contains("num_hidden_layers"));
-        let q3 = r#"{"architectures":["Qwen3ForCausalLM"],"hidden_size":1024,"num_hidden_layers":1000000000,"num_attention_heads":16,"num_key_value_heads":8,"intermediate_size":3072,"vocab_size":151936,"rms_norm_eps":1e-06,"rope_theta":1000000.0,"max_position_embeddings":40960}"#;
-        assert!(crate::weights::Config::parse(q3, "c", None).unwrap_err().to_string().contains("num_hidden_layers"));
+        let dense = r#"{"architectures":["Qwen3ForCausalLM"],"model_type":"qwen3","hidden_size":1024,"num_hidden_layers":1000000000,"num_attention_heads":16,"num_key_value_heads":8,"intermediate_size":3072,"vocab_size":151936,"rms_norm_eps":1e-06,"rope_theta":1000000.0,"max_position_embeddings":40960}"#;
+        assert!(crate::weights::Config::parse(dense, "c", None).unwrap_err().to_string().contains("num_hidden_layers"));
         assert!(start.elapsed() < std::time::Duration::from_secs(10), "{:?}", start.elapsed());
         // an interval of 0 in a Qwen4x config without layer_types
         let mut v = json::parse(&fixture("qwen4x_config.json")).unwrap();
