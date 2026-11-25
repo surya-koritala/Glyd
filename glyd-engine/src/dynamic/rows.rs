@@ -1774,13 +1774,13 @@ impl Dyn {
             return err(format!("a step of {} rows, where the head holds {}", rows.len(), self.head_room()));
         }
         if rows.len() == 1 || !self.batchable() || (!Self::batch_prefill() && !self.rows_exact()) {
-            // (one sequence's step as a reply alone takes it, its graph where it has one; several one after another, the last first, each one's logits row moved to its place in the head's rows
-            // before the next step writes its own over the first)
+            // (one sequence's step as a reply alone takes it, its graph where it has one, on the blocks the scheduler's growth took; several one after another, the last
+            // first, each one's logits row moved to its place in the head's rows before the next step writes its own over the first)
             let mut out = vec![None; rows.len()];
             let w = self.big.d.vocab * 2;
             for (j, r) in rows.iter().enumerate().rev() {
                 self.select(r.pages[0] as usize)?;
-                out[j] = Some(self.step(r.token)?);
+                out[j] = Some(self.step_with(r.token, false)?);
                 if j > 0 {
                     // SAFETY: the head's logits hold head_room rows; the step's are row 0.
                     unsafe { copy_d2d_async(self.big.logits.ptr + (j * w) as u64, self.big.logits.ptr, w, self.dev.stream)? };

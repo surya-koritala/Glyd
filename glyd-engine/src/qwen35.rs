@@ -83,7 +83,9 @@ impl Config35 {
             }
             "Qwen3_5ForCausalLM" => (v, "model.", false),
             "Qwen3_5MoeForConditionalGeneration" | "Qwen3_5MoeForCausalLM" => {
-                return err(format!("{label}: {arch}: a mixture of experts, which the engine runs after the dense Qwen3.5 models"))
+                return err(format!(
+                    "{label}: {arch}: a mixture of experts, whose tensors this list of the dense layout's does not hold (it loads by its description: src/dynamic/qwen35.rs)"
+                ))
             }
             _ => return err(format!("{label}: {arch}: not a Qwen3.5 model")),
         };

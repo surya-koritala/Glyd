@@ -133,7 +133,7 @@
     "kinds": "c55d2d920f378acb",
     "weights": "50315f61daf3a38b",
     "plan": "a49c5026b7265ff6",
-    "family": "refused: m is a Qwen3_5MoeForConditionalGeneration model, which this engine has no description of yet"
+    "family": "Qwen35"
   },
   "qwen35_configs.json:Qwen/Qwen3.8-27B": {
     "blocks": 128,
@@ -149,7 +149,7 @@
     "kinds": "0bf40d99f98cab0a",
     "weights": "c71d637d2707d4a0",
     "plan": "353d917de7b8253e",
-    "family": "refused: m is a Qwen3_5MoeForCausalLM model, which this engine has no description of yet"
+    "family": "Qwen35"
   },
   "qwen35moe_tiny_config.json": {
     "blocks": 8,
@@ -157,7 +157,7 @@
     "kinds": "d9e0c20fa47bcabc",
     "weights": "694faae469d31951",
     "plan": "622bb78f32059f9a",
-    "family": "refused: m is a Qwen3_5MoeForCausalLM model, which this engine has no description of yet"
+    "family": "Qwen35"
   },
   "qwen4x_config.json": {
     "blocks": 97,

@@ -3744,11 +3744,20 @@ impl Dyn {
 
     /// One token through the model (the graph where there is one); the token after it.
     pub fn step(&mut self, token: u32) -> Result<Sample> {
+        self.step_with(token, true)
+    }
+
+    /// `step`, its blocks grown first where `hold` (a pass outside the scheduler). A scheduler's step (`ModelStep::decode`) runs on the blocks its growth took
+    /// (`ModelStep::grow`, which pauses the newest sequence where the pools are short): grown again here, its promises were given up and the 12-bit pools asked
+    /// again, and a refusal ended the engine where the scheduler would have paused a sequence (Gemma 4's KV-sharing case on an A10, 2026-11-25).
+    pub(super) fn step_with(&mut self, token: u32, hold: bool) -> Result<Sample> {
         if self.n + 1 > self.ctx {
             return err("the cache is full");
         }
         let timed = prof::begin();
-        self.hold_blocks(self.n + 1)?;
+        if hold {
+            self.hold_blocks(self.n + 1)?;
+        }
         self.dev.sync()?;
         self.st.write(0, &[self.n as i32])?;
         let st = self.st.ptr;

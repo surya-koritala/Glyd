@@ -615,7 +615,7 @@ pub fn loader(d: &crate::runtime::describe::Described) -> Result<Loader> {
         Lowering::DeltaDepth => Loader { ends: |dir| crate::kimi::ConfigKimi::load(dir).map(|c| (c.layers, c.eos)), stage: super::kimi::stage },
         Lowering::GatedResidual => Loader { ends: |dir| crate::muse::ConfigMuse::load(dir).map(|c| (c.layers, c.eos)), stage: super::muse::load_stage_hb },
         Lowering::GatedStreams => Loader { ends: |dir| crate::qwen4x::ConfigQx::load(dir).map(|c| (c.layers, c.eos)), stage: super::qwen4x::stage },
-        Lowering::GatedDelta => Loader { ends: |dir| crate::qwen35::Config35::load(dir).map(|c| (c.layers, c.eos)), stage: super::qwen35::stage },
+        Lowering::GatedDelta => Loader { ends: super::qwen35::ends, stage: super::qwen35::stage },
         Lowering::LatentPlain => Loader { ends: super::glm::plain_ends, stage: super::glm::stage_plain },
     })
 }
@@ -680,7 +680,8 @@ mod tests {
 
     /// The matrices a layer in the computer's memory keeps there (src/dense_ram.rs) are the ones the executor's loader puts there: every matrix of the layer's
     /// own products, Muse Spark's attention and latent projections, Kimi-K3's delta and latent attention's and its dense MLP's (not a latent attention's kv_b
-    /// or indexer, small tensors, nor a block of experts' own matrices); none of DeepSeek-V4's.
+    /// or indexer, small tensors, nor a block of experts' own matrices); none of DeepSeek-V4's, nor of the Qwen3.5 layout's, dense or with experts (its row keeps
+    /// no layer there: every expert is on its GPU).
     #[test]
     fn the_matrices_a_layer_keeps_in_memory_are_its_loaders() {
         let m = |n: &str| crate::plan::sizing::in_ram("Muse Spark", n);
@@ -696,6 +697,13 @@ mod tests {
         assert!(!k(&l("1.self_attn.q_conv1d.weight")) && !k(&l("1.block_sparse_moe.shared_experts.up_proj.weight")));
         assert!(!k(&l("1.block_sparse_moe.routed_expert_down_proj.weight")) && !k(&l("1.block_sparse_moe.experts.0.w1.weight_packed")));
         assert!(!crate::plan::sizing::in_ram("DeepSeek-V4", "model.layers.0.self_attn.wo.weight"));
+        let q = |n: &str| crate::plan::sizing::in_ram("Qwen3.5", n);
+        assert!(
+            !q("model.layers.3.self_attn.q_proj.weight")
+                && !q("model.layers.0.linear_attn.in_proj_qkv.weight")
+                && !q("model.layers.0.mlp.experts.gate_up_proj")
+        );
+        assert!(!q("model.layers.0.mlp.shared_expert.up_proj.weight") && !q("model.layers.0.mlp.gate.weight"));
     }
 
     /// A plan of experts in the computer's memory across GPUs opens the latent block's cache across them (src/dynamic/tp_cache.rs) by the description's
