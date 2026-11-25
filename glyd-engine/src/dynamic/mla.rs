@@ -29,8 +29,9 @@ use crate::runtime::kinds;
 /// Bytes of the indexer's scores and of the latent outputs a block of attention rows may take.
 const SUB_SCORES: usize = 256 << 20;
 const SUB_OLAT: usize = 64 << 20;
-/// Rows at most that the attention of one call cuts its tokens into eight runs for (a decode step, the rows of a verified draft): `kern_glm::HC_FEW`.
-const FEW: u32 = crate::kern::HC_FEW;
+/// A sequence's rows at most in a call that the attention cuts its tokens into eight runs for (a decode step, the rows of a verified draft): by the
+/// sequence's own rows (`seq_parts`), so a row's sums are those of its sequence's pass alone whatever else the pass holds.
+const FEW: u32 = 8;
 
 /// Where a latent layer's input products are.
 #[derive(Clone, Copy, Debug, PartialEq)]

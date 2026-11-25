@@ -6,7 +6,7 @@ pub mod nemotron;
 pub mod qwen35;
 
 pub(crate) use gemma4::KernG4;
-pub use glm::{mla_positions, mla_smem, Hc, KernGlm, GM_CHUNK_SMEM, GM_D, GM_HC, GM_L, GM_NP, HC_FEW};
+pub use glm::{mla_positions, mla_smem, Hc, KernGlm, GM_CHUNK_SMEM, GM_D, GM_HC, GM_L, GM_NP};
 pub use nemotron::{KernNh, SsdWs, NH_L, NH_N, NH_P};
 pub use qwen35::Kern35;
 
