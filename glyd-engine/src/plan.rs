@@ -3761,7 +3761,8 @@ pub mod sizing {
 
     /// The plan `run` loads MODEL (its config.json `text`) at `level` on the GPU `t`, with the flags of `a`, or the refusal `run` gives: what `fit` prints
     /// and `run`, `serve` and `preflight` size with. `users`: the sequences a server holds at once (the Qwen3 path's; the lossy paths hold one). Ok(None): this
-    /// family's path is not sized by its loader yet, and the planner's estimate stands (src/plan.rs).
+    /// family's path is not sized here (Qwen3.8-Flash-Next's own engine sizes its load at its entry, `sizing::condor_load`, src/qwen4x_serve.rs), and for
+    /// `fit` the planner's estimate stands (src/plan.rs).
     pub(crate) fn size(
         a: &Args,
         model: &str,
@@ -5047,13 +5048,20 @@ mod tests {
 
     /// P2c: decode and prefill predicted from the rates of an RTX 4080 SUPER (the preset's stream is the one `glyd-engine rates` measured there, 697 GB/s) against
     /// what `glyd-engine bench --loads 1k:1 --no-draft` measured on one (2026-11-23, three runs each, the median): gemma-4-12B at wren 86.2 tokens/s and kestrel 63.3,
-    /// prompts of 936 tokens at 3,570 and 3,580; Qwen3.5-0.8B at kestrel 561.9 and wren 657.9, prompts of 1,002 tokens at 27,073 and 27,372. Each within 15%, with
+    /// prompts of 936 tokens at 3,570 and 3,580; Qwen3.5-0.8B at kestrel 561.9 and wren 657.9, prompts of 1,002 tokens at 27,073 and 27,372. Each within the fit's own error (below), with
     /// the shapes `fit` reads (the checkpoints' own headers) and the family's path (Qwen3.5's does not draft with its head); the measurement in the band.
-    /// FITTED, IN-SAMPLE: `EFF_LOSSY`, `LAYER_S`, `PROMPT_EFF` and `PROMPT_LAYER_S` were set from these very runs, so this pins the constants and is no evidence
-    /// that they predict other runs. The held-out check (other levels, 4k and 8k positions, other prompt lengths, each predicted before it is measured) is
-    /// scripts/planner_heldout_check.sh on the 4080 SUPER, not run yet.
+    /// FITTED, IN-SAMPLE: `EFF_LOSSY`, `LAYER_S`, `PROMPT_EFF` and `PROMPT_LAYER_S` were set from these very runs, so this pins the constants (`FIT_DECODE`,
+    /// `FIT_PREFILL`: a little over the fit's own error on them) and is no evidence that they predict other runs. The held-out measurement (other levels, 4k and
+    /// 8k positions, other prompt lengths, each predicted before it is measured) is scripts/planner_heldout_check.sh on the 4080 SUPER, not run yet: the 15% the
+    /// planner states for a prediction is that run's to hold.
+    /// The fits' own errors on the runs they were fitted on, each a little over the largest: the 4080 SUPER's four runs are within 0.6% (decode) and 0.7%
+    /// (prompts) of their figures, the A100's eight within 9.5% (seven of them within 4.7%). A change to a constant that moves a fitted point past these is seen.
+    const FIT_DECODE: f64 = 0.02;
+    const FIT_PREFILL: f64 = 0.02;
+    const FIT_A100: f64 = 0.11;
+
     #[test]
-    fn predictions_on_the_4080_super_are_within_15_percent() {
+    fn the_fit_on_the_4080_supers_runs_is_pinned() {
         let gemma: serde_json::Value = serde_json::from_str(&fixture("headers/gemma-4-12B-it.json")).unwrap();
         let groups: Vec<crate::sizes::Group> = gemma["groups"]
             .as_array()
@@ -5085,10 +5093,16 @@ mod tests {
         ] {
             let fam = crate::support::row(crate::support::family(text, "m").unwrap());
             let c = chosen(&plan(sh, &m, Ask { level: Some(level), family: Some(fam), ..Default::default() })).clone();
-            assert!((c.tok_s / decode - 1.0).abs() < 0.15, "{level}: {:.1} tokens/s predicted, {decode} measured", c.tok_s);
-            assert!(c.range.0 <= decode && decode <= c.range.1, "{level}: {decode} outside {:?}", c.range);
             let p = c.prefill.unwrap();
-            assert!((p / prefill - 1.0).abs() < 0.15, "{level}: prefill {p:.0} predicted, {prefill} measured");
+            eprintln!(
+                "{level}: decode {:.1} against {decode} ({:+.1}%), prefill {p:.0} against {prefill} ({:+.1}%)",
+                c.tok_s,
+                100.0 * (c.tok_s / decode - 1.0),
+                100.0 * (p / prefill - 1.0)
+            );
+            assert!((c.tok_s / decode - 1.0).abs() < FIT_DECODE, "{level}: {:.1} tokens/s predicted, {decode} measured", c.tok_s);
+            assert!(c.range.0 <= decode && decode <= c.range.1, "{level}: {decode} outside {:?}", c.range);
+            assert!((p / prefill - 1.0).abs() < FIT_PREFILL, "{level}: prefill {p:.0} predicted, {prefill} measured");
         }
         // (a GPU whose tensor rate the planner does not know has no prefill prediction)
         let mut odd = m.clone();
@@ -5348,23 +5362,27 @@ mod tests {
         assert_eq!(Machine::preset("h100").unwrap().devices[0].prior, prior_for((9, 0)));
     }
 
-    /// The A100's runs (one user and eight, lossy and lossless), which the RTX 4080 SUPER's figures predicted far too fast: its own figures predict each within
-    /// 15% (a fitted point, in-sample), and the leave-one-class-out score says how far the other class's figures were (the error an unseen class may expect).
+    /// The A100's shipped runs (one user and eight; every one at a lossy level), which the RTX 4080 SUPER's figures predicted far too fast: its own figures
+    /// predict each within `FIT_A100` (a fitted point, in-sample: this pins the fit and is no evidence of other runs), and the leave-one-class-out score says how
+    /// far the other class's figures were (the error an unseen class may expect).
     #[test]
     fn the_a100s_runs_are_its_figures_fit() {
         let records = records_of(CALIBRATION);
         let p = prior_from(&records, "sm80");
-        let (dec, _) = rows_of(&records.iter().filter(|r| r["class"] == "sm80").collect::<Vec<_>>());
+        let sm80: Vec<&serde_json::Value> = records.iter().filter(|r| r["class"] == "sm80").collect();
+        assert!(!sm80.is_empty() && sm80.iter().all(|r| r["features"]["lossless"] == false), "the shipped A100 records are lossy levels'");
+        let (dec, _) = rows_of(&sm80);
         for (x, y) in &dec {
             let t = p.consts.decode_s(x);
-            assert!((t / y - 1.0).abs() < 0.15, "{t} against {y}");
+            eprintln!("sm80 in-sample: {t:.6} s against {y:.6} ({:+.1}%)", 100.0 * (t / y - 1.0));
+            assert!((t / y - 1.0).abs() < FIT_A100, "{t} against {y}");
         }
-        // (the 4080 SUPER's figures predict the A100's packs 60-283% too fast; its lossless runs, the A100's 12-bit layout, 12-14% too slow at one user)
+        // (the 4080 SUPER's figures predict the A100's packs 60-283% too fast)
         let s = score_classes(&records);
         let a100 = s.iter().find(|c| c.0 == "sm80").unwrap();
-        let sm80: Vec<&serde_json::Value> = records.iter().filter(|r| r["class"] == "sm80").collect();
+        assert_eq!(sm80.len(), a100.1.len());
         for (r, e) in sm80.iter().zip(&a100.1) {
-            assert!(r["features"]["lossless"] == true || *e > 0.3, "the 4080 SUPER's figures predict the A100's packs too fast: {} {e}", r["load"]);
+            assert!(*e > 0.3, "the 4080 SUPER's figures predict the A100's packs too fast: {} {e}", r["load"]);
         }
     }
 
@@ -6488,13 +6506,14 @@ mod tests {
         assert!(l.plan.is_none() && l.steps.is_empty() && l.refusal.is_none());
     }
 
-    /// P2f: every plan the per-path planners made (P2a's: src/cli.rs `size`, `lossy_plan_with`, `gemma_plan`, `size_dynamic` and src/fit.rs `plan`, recorded in
-    /// tests/fixtures/plans_p2a.json before they were moved here) is the plan the one planner makes: each family's fixture, on every preset, at every level this
-    /// build has, alone and with --users 4, --context 8192 and 131072; the plan `run` loads, or its refusal in its words. The recent set (2026-11-25): the plain
-    /// dense kind at two shapes (36 and 64 layers) and one dense architecture the engine does not run, Qwen3.5 at 0.8B and 9B, Qwen3.8-27B, gemma-4-12B,
-    /// GLM-5.3-Flash and Qwen3.8-Flash-Next. `GLYD_WRITE_P2A=1` writes the file anew (only where a change in a plan is meant).
+    /// A snapshot of the planner's own plans (tests/fixtures/plans_p2a.json): each family's fixture, on every preset, at every level this build has, alone and
+    /// with --users 4, --context 8192 and 131072; the plan `run` loads, or its refusal in its words. It holds the planner to what it made when the file was last
+    /// written, so a change in a plan is seen; it does not compare the planner with any other (the file began as the plans of the per-path planners this one
+    /// replaced, and has been written anew since where a plan was meant to change). The recent set (2026-11-25): the plain dense kind at two shapes (36 and 64
+    /// layers) and one dense architecture the engine does not run, Qwen3.5 at 0.8B and 9B, Qwen3.8-27B, gemma-4-12B, GLM-5.3-Flash and Qwen3.8-Flash-Next.
+    /// `GLYD_WRITE_P2A=1` writes the file anew (only where a change in a plan is meant, and the diff of the file is then read).
     #[test]
-    fn the_plans_are_p2as() {
+    fn the_plans_are_the_recorded_ones() {
         let q35 = json::parse(&fixture("qwen35_configs.json")).unwrap();
         let unknown = r#"{"architectures": ["DenseForCausalLM"], "model_type": "dense", "hidden_size": 4096, "num_hidden_layers": 32, "num_attention_heads": 32, "num_key_value_heads": 8}"#;
         let configs = [

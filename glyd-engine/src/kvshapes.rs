@@ -256,14 +256,16 @@ fn shape(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
                 let mut got = vec![0u16; h * g * d];
                 o.read(0, &mut got)?;
                 let (want, mag) = attention(&q, &k, &v, first, len, h, g, d);
-                let (mut worst, mut off) = (0f64, 0usize);
+                let (mut worst, mut off, mut needed) = (0f64, 0usize, 0usize);
                 for ((x, w), m) in got.iter().zip(&want).zip(&mag) {
-                    let e = (f32_of(*x) as f64 - w).abs() / (w.abs() * 0.015 + 2e-3 + m / 256.0);
+                    let (e, tight) = over_bound(*x, *w, *m);
                     worst = worst.max(e);
                     off += (e > 1.0 || !e.is_finite()) as usize;
+                    needed += (tight > 1.0) as usize;
                 }
-                println!("{} {h} heads x {d}, {g} queries to a head, {len} tokens from {first}: decode attention, {off} of {} values past 1.5% + 0.002 + 2^-8 of their terms (worst {worst:.2} of the bound)", if off == 0 { "ok  " } else { "FAIL" }, got.len());
-                if off != 0 {
+                let fine = off == 0 && needed <= rounding_allowed(got.len());
+                println!("{} {h} heads x {d}, {g} queries to a head, {len} tokens from {first}: decode attention, {off} of {} values past 1.5% + 0.002 + 2^-8 of their terms (worst {worst:.2} of the bound), {needed} needed the 2^-8 term (at most {})", if fine { "ok  " } else { "FAIL" }, got.len(), rounding_allowed(got.len()));
+                if !fine {
                     bad += 1;
                 }
                 // (the same values as a bf16 cache: the attention kind's decode over bf16 pages, glyd_gpu_kv_decode_bf16, held to the pages' bit for bit; the pages are lossless)
@@ -474,13 +476,15 @@ fn decode_batch(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize, round: bool)
         if !round {
             let (k, v) = &kv[b];
             let (want, mag) = attention(&q[b * width..(b + 1) * width], k, v, first, len, h, g, d);
-            let over = |((x, w), m): ((&u16, &f64), &f64)| (f32_of(*x) as f64 - w).abs() / (w.abs() * 0.015 + 2e-3 + m / 256.0);
-            let worst = mine.iter().zip(&want).zip(&mag).map(over).fold(0f64, f64::max);
-            let off = mine.iter().zip(&want).zip(&mag).filter(|&t| !(over(t) <= 1.0)).count();
+            let over = |((x, w), m): ((&u16, &f64), &f64)| over_bound(*x, *w, *m);
+            let worst = mine.iter().zip(&want).zip(&mag).map(|t| over(t).0).fold(0f64, f64::max);
+            let off = mine.iter().zip(&want).zip(&mag).filter(|&t| !(over(t).0 <= 1.0)).count();
+            let needed = mine.iter().zip(&want).zip(&mag).filter(|&t| over(t).1 > 1.0).count();
             say(
-                off == 0,
+                off == 0 && needed <= rounding_allowed(mine.len()),
                 format!(
-                    "{len} tokens from {first}, {off} values past 1.5% + 0.002 + 2^-8 of their terms of the host's attention (worst {worst:.2} of the bound)"
+                    "{len} tokens from {first}, {off} values past 1.5% + 0.002 + 2^-8 of their terms of the host's attention (worst {worst:.2} of the bound), {needed} needed the 2^-8 term (at most {})",
+                    rounding_allowed(mine.len())
                 ),
             );
         }
@@ -570,9 +574,24 @@ fn decode_batch(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize, round: bool)
     Ok(bad == 0)
 }
 
+/// A GPU value's difference from the host's `w`, over the attention checks' bound and over that bound without its last term: 1.5% of the output and 0.002,
+/// and 2^-8 of the sum of its terms' magnitudes `m`, which is what the kernel's rounding of each probability to bf16 can move an output by. The first past 1
+/// fails the value; the second past 1 is a value that needed the rounding's term, which few may (`rounding_allowed`).
+fn over_bound(x: u16, w: f64, m: f64) -> (f64, f64) {
+    let d = (f32_of(x) as f64 - w).abs();
+    (d / (w.abs() * 0.015 + 2e-3 + m / 256.0), d / (w.abs() * 0.015 + 2e-3))
+}
+
+/// How many of a comparison's `n` values may need the rounding's term: one in a hundred (one where it has fewer). On record: one value of a decode
+/// comparison, and 0.3 to 0.7% of a prompt chunk's outputs. A comparison where more need it fails: the wider bound is for that rounding, not for a kernel
+/// that is off by it everywhere.
+fn rounding_allowed(n: usize) -> usize {
+    (n / 100).max(1)
+}
+
 /// Tokens a GiB of a filled pool against the planner's (#332): `n` pages of a ring of `h` heads of `d` channels (two streams, or one: a latent of `width` values in heads of
 /// 128, the rest zero), with the escape chunks and raw slabs the executor gives such a pool (`kvpages::room_of`), filled with every token of values whose share outside
-/// their windows is gemma-4-12B's at 8k tokens (0.3%); the library's sizes are first held to kv12.rs's replicas the planner uses. Ok: the sizes the same, no page void,
+/// their windows is 3 in a thousand (`values`' `far`); the library's sizes are first held to kv12.rs's replicas the planner uses. Ok: the sizes the same, no page void,
 /// every value read back, and the pool's tokens a GiB (its pages, escape and raw pools, as allocated) within 5% of `kv12::planned_token_bytes`'s (heads of 128 in two
 /// streams: the Qwen3 planner's `kv_value_bytes`).
 fn filled(lib: &Lib, dev: &Dev, h: usize, d: usize, one: bool, width: usize, label: &str) -> Result<bool> {
@@ -833,9 +852,9 @@ fn prompt_attention(q: &[u16], k: &[u16], v: &[u16], c: Chunk, h: usize, g: usiz
 
 /// The prompt attention of one shape (`h` kv heads of `d` channels, `g` query heads to each) over a sequence of 230 tokens in pages taken out of order: a chunk at its start,
 /// in its middle (its prefix in pages from a token inside a page), past a sliding window, the chunk's keys from the pages, a window with soft-capping and sinks, a single row;
-/// against the host's attention from the same values. False where a value is past the decode check's bound and the probabilities' rounding to bf16 (2^-8 of the sum of its
-/// terms' magnitudes: over a softmax of tens to hundreds of keys, that rounding alone took 0.3 to 0.7% of the outputs past the decode check's bound, at head 512 too, where the kernel's
-/// outputs are Gemma 4's g4_fa512b's bit for bit).
+/// against the host's attention from the same values. False where a value is past the bound (`over_bound`: the decode check's and the probabilities' rounding to bf16,
+/// 2^-8 of the sum of its terms' magnitudes), or where more than one output in a hundred needed that rounding's term (`rounding_allowed`: over a softmax of tens to hundreds
+/// of keys the rounding alone takes some outputs past 1.5% + 0.002, at head 512 too).
 fn prefill(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
     const A: i64 = 15;
     const RING: i64 = 256;
@@ -923,10 +942,11 @@ fn prefill(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
         let mut got = vec![0u16; ch.n * qw];
         o.read(0, &mut got)?;
         let (want, mag) = prompt_attention(&q[ch.start * qw..(ch.start + ch.n) * qw], &k, &v, ch, h, g, d, scale, &sinks);
-        let (mut worst, mut off, mut at) = (0f64, 0usize, None);
+        let (mut worst, mut off, mut at, mut needed) = (0f64, 0usize, None, 0usize);
         for (i, ((x, w), m)) in got.iter().zip(&want).zip(&mag).enumerate() {
-            let e = (f32_of(*x) as f64 - w).abs() / (w.abs() * 0.015 + 2e-3 + m / 256.0);
+            let (e, tight) = over_bound(*x, *w, *m);
             worst = worst.max(e);
+            needed += (tight > 1.0) as usize;
             if e > 1.0 || !e.is_finite() {
                 off += 1;
                 at.get_or_insert((i / qw, i % qw / d, i % d, *w, f32_of(*x)));
@@ -967,8 +987,8 @@ fn prefill(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
             bad += (differ != 0) as usize;
         }
         println!(
-            "{} {h} heads x {d}, {g} queries to a head, rows {}..{} (window {}, keys {}{}{}{}): prompt attention, {off} of {} values past 1.5% + 0.002 + 2^-8 of the terms (worst {worst:.2} of the bound)",
-            if off == 0 { "ok  " } else { "FAIL" },
+            "{} {h} heads x {d}, {g} queries to a head, rows {}..{} (window {}, keys {}{}{}{}): prompt attention, {off} of {} values past 1.5% + 0.002 + 2^-8 of the terms (worst {worst:.2} of the bound), {needed} needed the 2^-8 term (at most {})",
+            if off == 0 && needed <= rounding_allowed(got.len()) { "ok  " } else { "FAIL" },
             ch.start,
             ch.start + ch.n,
             ch.window,
@@ -976,9 +996,10 @@ fn prefill(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
             if ch.round { ", scores bf16" } else { ", scores fp32" },
             if ch.cap > 0.0 { ", soft-capped" } else { "" },
             if ch.sinks { ", sinks" } else { "" },
-            got.len()
+            got.len(),
+            rounding_allowed(got.len())
         );
-        bad += (off != 0) as usize;
+        bad += (off != 0 || needed > rounding_allowed(got.len())) as usize;
     }
     let mut head = [0u32; 16];
     status.read(0, &mut head)?;
@@ -1322,7 +1343,24 @@ pub fn run() -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    /// The bf16 decode's values (gpu/glyd_gpu.cu `bf16_words`, then `transpose8x8` in attn_kernel): a lane reads words 8 i + q and 8 i + 4 + q of the page's tokens g and g + 8, as
+    /// The attention checks' bound has a term for the kernel's rounding of each probability to bf16, and few values may need it: a value past the whole bound
+    /// fails, one within it only by that term is counted, and a comparison where more than one in a hundred are so fails.
+    #[test]
+    fn few_values_may_need_the_roundings_term() {
+        use super::{over_bound, rounding_allowed};
+        let bf16 = |x: f32| (x.to_bits() >> 16) as u16;
+        // (an output of 1.0 where the host's is 1.0: within both; 1.03: past 1.5% + 0.002 alone, within with terms of magnitude 4; 1.1: past both)
+        let (e, tight) = over_bound(bf16(1.0), 1.0, 4.0);
+        assert!(e == 0.0 && tight == 0.0);
+        let (e, tight) = over_bound(bf16(1.03125), 1.0, 4.0);
+        assert!(e < 1.0 && tight > 1.0, "{e} {tight}");
+        let (e, tight) = over_bound(bf16(1.125), 1.0, 4.0);
+        assert!(e > 1.0 && tight > 1.0, "{e} {tight}");
+        assert_eq!((rounding_allowed(50), rounding_allowed(100), rounding_allowed(4096)), (1, 1, 40));
+    }
+
+    /// An index proof on paper, which runs no kernel (the kernel's own values are what `kvshapes` holds on a GPU): the two closures below are this test's, so a
+    /// change to the kernel cannot fail it. The bf16 decode's values (gpu/glyd_gpu_kernels.h `bf16_words`, then `transpose8x8` in attn_kernel): a lane reads words 8 i + q and 8 i + 4 + q of the page's tokens g and g + 8, as
     /// it reads the keys, and one 8 x 8 transpose (movmatrix .trans: lane l holds row l / 4, columns 2 (l % 4) and the next, the first in the low half, before and after) makes each
     /// of V^T's fragments, which the kernel read a value at a time before: f[i].x channel 16 i + g of tokens 2 q and 2 q + 1, .y the channel 8 on, .z and .w the tokens 8 on.
     #[test]

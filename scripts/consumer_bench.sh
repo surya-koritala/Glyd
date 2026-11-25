@@ -3,6 +3,7 @@
 # here, measured by the one harness (`glyd-engine bench`, docs/bench.md) on the same GPU: Glyd at the row's level, llama.cpp on a GGUF of the same weights at
 # about the same bits, Ollama and LM Studio on that same GGUF file. Each result keeps its command lines, the engines' versions and the server's log beside it
 # (NAME.json, NAME.cmd, NAME.log); a side that could not run says why (NAME.skip). At the end the comparison page: `glyd-engine bench --report OUT`.
+# It exits 1 where a Glyd row did not run, or where other engines were asked for and none of them ran a row.
 #   scripts/consumer_bench.sh OUT
 # Environment:
 #   GLYD_ENGINE     the glyd-engine program (default: target/release/glyd-engine, then PATH)
@@ -37,10 +38,17 @@ bench() {  # bench NAME ARGS...: the harness's run, its command kept
   local name=$1; shift
   { versions; echo "bench: $GE bench $* --loads $LOADS --runs $RUNS --max-tokens $MAX_TOKENS"; } >> "$OUT/$name.cmd"
   "$GE" bench "$@" --loads "$LOADS" --runs "$RUNS" --max-tokens "$MAX_TOKENS" --out "$OUT/$name.json" >> "$OUT/$name.log" 2>&1
-  echo "  $name: rc=$? $(tail -n 4 "$OUT/$name.log" | tr '\n' ' ' | cut -c1-200)"
+  local rc=$?
+  echo "  $name: rc=$rc $(tail -n 4 "$OUT/$name.log" | tr '\n' ' ' | cut -c1-200)"
   # (a side that did not run, as a model the engine refuses on this card, is on the page with the log's last words)
   [ -s "$OUT/$name.json" ] || { echo "did not run: $(tail -n 2 "$OUT/$name.log" | tr '\n' ' ' | cut -c1-300)" > "$OUT/$name.skip"; }
+  # (counted for the end: a Glyd row that failed, and the rows another engine ran)
+  case $name in
+    glyd-*) { [ $rc = 0 ] && [ -s "$OUT/$name.json" ]; } || GLYD_FAILED="$GLYD_FAILED $name" ;;
+    *) [ -s "$OUT/$name.json" ] && OTHERS=$((OTHERS + 1)) ;;
+  esac
 }
+GLYD_FAILED=""; OTHERS=0
 llama_server() {
   [ -n "${LLAMA_SERVER:-}" ] && { echo "$LLAMA_SERVER"; return; }
   local s=$WORK/llama.cpp/build/bin/llama-server
@@ -112,4 +120,9 @@ while IFS=$'\t' read -r tier model released params level quant; do
   elif on lmstudio; then echo "no LM Studio server given (LMSTUDIO_URL, LMSTUDIO_MODEL)" > "$OUT/lmstudio-$short-$q.skip"; fi
 done < "$MATRIX"
 
-"$GE" bench --report "$OUT" --title "Consumer benchmarks, $(echo "$GPU" | cut -d, -f1) ($TIER GB)" > "$OUT/README.md" && echo "wrote $OUT/README.md"
+"$GE" bench --report "$OUT" --title "Consumer benchmarks, $(echo "$GPU" | cut -d, -f1) ($TIER GB)" > "$OUT/README.md" || { echo "the report failed"; exit 1; }
+echo "wrote $OUT/README.md"
+# (the run fails where a Glyd row failed, and where engines besides Glyd were asked for and none ran a row: a page with nothing to compare is no comparison)
+[ -z "$GLYD_FAILED" ] || { echo "Glyd's rows that did not run:$GLYD_FAILED"; exit 1; }
+asked=0; for e in llama.cpp ollama lmstudio; do on "$e" && asked=1; done
+[ $asked = 0 ] || [ "$OTHERS" -gt 0 ] || { echo "no engine besides Glyd ran a row (their .skip files say why)"; exit 1; }
