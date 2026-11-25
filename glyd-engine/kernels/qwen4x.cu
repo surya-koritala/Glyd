@@ -52,19 +52,21 @@ extern "C" __global__ void __launch_bounds__(1024) qx_hc_norm(const bf16* x, con
     }
 }
 
-// y = silu(y / hc) in place (the mixing weights' bottleneck over hc streams; y bf16 [count], the division in fp32, then the activation rounded).
+// y = silu(y / hc) in place (the mixing weights' bottleneck over hc streams; y bf16 [count]): the quotient rounded, as the reference's bf16 tensor is (exact for 4
+// streams), then the activation rounded.
 extern "C" __global__ void qx_silu4(bf16* y, int count, int hc) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= count) return;
-    const float v = b2f(y[i]) / (float)hc;
+    const float v = qx_r(b2f(y[i]) / (float)hc);
     y[i] = f2b(v * qx_sig(v));
 }
 
 // The mix of a row's hc streams into the block's input: h [n, D] = mean over the streams s of bf16(bf16(sigmoid(gw[s])) * xn[s]) (gw [n, hc D] the up product, xn [n, hc D]), the sum in fp32, one
-// rounding; where injl (bf16 [n, hc], the inject product) is given, inj [n, hc] = 2 bf16(sigmoid(bf16(injl / hc))) as fp32. Block (row, 256 columns).
+// rounding; where injl (bf16 [n, hc], the inject product) is given, inj [n, hc] = 2 bf16(sigmoid(bf16(injl / hc))) as fp32 (the quotient rounded: exact for 4). Block
+// (row, 256 columns).
 extern "C" __global__ void qx_hc_mix(const bf16* gw, const bf16* xn, const bf16* injl, bf16* h, float* inj, int D, int hc) {
     const int t = blockIdx.x, c = blockIdx.y * blockDim.x + threadIdx.x;
-    if (injl && blockIdx.y == 0 && threadIdx.x < hc) inj[t * hc + threadIdx.x] = 2.f * qx_r(qx_sig(b2f(injl[t * hc + threadIdx.x]) / (float)hc));
+    if (injl && blockIdx.y == 0 && threadIdx.x < hc) inj[t * hc + threadIdx.x] = 2.f * qx_r(qx_sig(qx_r(b2f(injl[t * hc + threadIdx.x]) / (float)hc)));
     if (c >= D) return;
     const size_t r = (size_t)t * hc * D + c;
     float s = 0.f;

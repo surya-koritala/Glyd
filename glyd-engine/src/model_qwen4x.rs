@@ -1619,6 +1619,9 @@ pub struct EngineQx {
     ng_ctx: [u32; 2],
     pub(crate) moe_scratch: OnceCell<MoeScratch>,
     pub trace: Option<TraceQx>,
+    /// Where Some: each named stage of a layer's halves (the gated residual's norm, bottleneck, up product and mix; the GDN's products, convolution, delta rule,
+    /// gated norm and out product; the block's output and the streams' update) adds its output's bf16 values in order, a check's view inside the layers (`stage_out`).
+    pub stages: std::cell::RefCell<Option<Vec<(&'static str, Vec<u16>)>>>,
     pub work_bytes: usize,
     /// The decode step in parts (`forward_segmented`): the graphs of the stretches of GPU work between the host's waits (made at the first step: a layer's by the layer's number + 1, 0 the stretch before the first), and
     /// whether a step runs so.
@@ -2116,6 +2119,7 @@ impl EngineQx {
             ng_ctx: [eos, eos],
             moe_scratch: OnceCell::new(),
             trace: None,
+            stages: std::cell::RefCell::new(None),
             work_bytes,
             segs: std::cell::RefCell::new(Vec::new()),
             segmented: Cell::new(false),
@@ -2663,12 +2667,15 @@ impl EngineQx {
         }
         self.kq.hc_norm(s, x, g.norm.ptr, self.xn.ptr, n, c.hidden, c.eps, c.hc)?;
         crate::tmark!(s, "gr: norm");
+        self.stage_out("gated residual: norm", self.xn.ptr, n * hw)?;
         match &g.w {
             GrW::Mats(down, up) => {
                 self.lin(down, self.xn.ptr, n, self.lo.ptr)?;
                 crate::tmark!(s, "gr: down product");
                 self.kq.silu4(s, self.lo.ptr, n * c.hc_rank, c.hc)?;
+                self.stage_out("gated residual: bottleneck", self.lo.ptr, n * c.hc_rank)?;
                 self.lin(up, self.lo.ptr, n, self.gw.ptr)?;
+                self.stage_out("gated residual: up product", self.gw.ptr, n * hw)?;
             }
             GrW::Q { r, rp, dq, ds, uq, us } => {
                 // (a prompt chunk: the int8 rows made bf16, the engine's dense products; the bottleneck padded with zeros to `rp`)
@@ -2689,7 +2696,25 @@ impl EngineQx {
             }
             None => 0,
         };
-        self.kq.hc_mix(s, self.gw.ptr, self.xn.ptr, injl, h, inj, n, c.hidden, c.hc)
+        self.kq.hc_mix(s, self.gw.ptr, self.xn.ptr, injl, h, inj, n, c.hidden, c.hc)?;
+        self.stage_out("gated residual: mix", h, n * c.hidden)
+    }
+
+    /// A check's view of a stage's output (`stages`): its first `count` bf16 values at `ptr`, after the stream's work so far.
+    ///
+    /// # Safety
+    /// `ptr` holds `count` bf16 values once the stream's queued work is done.
+    unsafe fn stage_out(&self, what: &'static str, ptr: u64, count: usize) -> Result<()> {
+        if self.stages.borrow().is_none() {
+            return Ok(());
+        }
+        let mut v = vec![0u16; count];
+        crate::dev::copy_d2h_async(v.as_mut_ptr() as *mut _, ptr, count * 2, self.dev.stream)?;
+        self.dev.sync()?;
+        if let Some(t) = self.stages.borrow_mut().as_mut() {
+            t.push((what, v));
+        }
+        Ok(())
     }
 
     /// PLE on the n rows (their n-gram rows in `ple_e`): the key and value products, the gate, the convolution, the sum into the streams.
@@ -2731,6 +2756,7 @@ impl EngineQx {
         };
         self.lin(&ly.mats[0], self.h.ptr, n, mix)?;
         crate::tmark!(s, "gdn: qkvz product");
+        self.stage_out("linear attention: qkvz product", mix, n * row)?;
         // (a decode step's or a verification's few rows: the convolution beside the b and a product, then the rule with the gated norm, two launches for four)
         if let (true, Mat::Dense(wb, nb, kb)) = (n <= SPEC_ROWS && c.gate_sigmoid, &ly.mats[1]) {
             self.kq.gdn_conv_ba(s, mix, row, sm[0].ptr, conv, xc, n, cd, self.h.ptr, wb.ptr, ba, *nb, *nb, *kb)?;
@@ -2766,12 +2792,14 @@ impl EngineQx {
         }
         self.lin(&ly.mats[1], self.h.ptr, n, ba)?;
         crate::tmark!(s, "gdn: ba product");
+        self.stage_out("linear attention: ba product", ba, n * 2 * c.nv)?;
         if n > 16 {
             self.kq.conv_tok(s, mix, row, sm[0].ptr, conv, xc, n, cd)?;
         } else {
             self.k35.conv(s, mix, row as i32, sm[0].ptr, conv, xc, n as i32, cd as i32)?;
         }
         crate::tmark!(s, "gdn: convolution");
+        self.stage_out("linear attention: convolution", xc, n * cd)?;
         if self.chunked && n > 16 && !crate::tune!("GLYD_GDN_ONEPASS").is_some_and(|v| v == "1") {
             #[cfg(feature = "dev")]
             let check = if crate::tune!("GLYD_GDN_CHECK").is_some() && ly.idx % 12 == 5 {
@@ -2837,14 +2865,16 @@ impl EngineQx {
             )?;
         }
         crate::tmark!(s, "gdn: delta rule");
+        self.stage_out("linear attention: delta rule", self.core.ptr, n * vd)?;
         if !c.gate_sigmoid {
             return err("a GDN with a silu output gate: Qwen3.8-Flash-Next's is a sigmoid");
         }
         self.kq.gnorm(s, self.core.ptr, mix + (cd * 2) as u64, row, sm[3].ptr, n, c.nv, c.eps)?;
         crate::tmark!(s, "gdn: gated norm");
+        self.stage_out("linear attention: gated norm", self.core.ptr, n * vd)?;
         self.lin(&ly.mats[2], self.core.ptr, n, self.o.ptr)?;
         crate::tmark!(s, "gdn: out product");
-        Ok(())
+        self.stage_out("linear attention: out product", self.o.ptr, n * c.hidden)
     }
 
     /// An attention layer's mixer on the n rows in `h` (positions at `pos`, `start` tokens before them) into `o`: the q, k and v product, the norms and rotary, the cache; the indexer's product, its queries and
@@ -3108,6 +3138,7 @@ impl EngineQx {
         if !defer {
             self.kq.hc_post(s, x, self.o.ptr, self.inj[0].ptr, n, c.hidden, c.hc)?;
             crate::tmark!(s, "mHC update (mixer)");
+            self.stage_out("streams after the mixer", x, n * c.hc * c.hidden)?;
         }
         Ok(())
     }
@@ -3247,9 +3278,10 @@ impl EngineQx {
         crate::tmark!(s, "mHC mix (feed-forward)");
         ly.moe.as_ref().ok_or_else(|| Error("a layer without its block of experts".into()))?.forward(self, self.h.ptr, n, self.o.ptr)?;
         crate::tmark!(s, "experts or MLP");
+        self.stage_out("experts", self.o.ptr, n * c.hidden)?;
         self.kq.hc_post(s, self.x.ptr, self.o.ptr, self.inj[1].ptr, n, c.hidden, c.hc)?;
         crate::tmark!(s, "mHC update (feed-forward)");
-        Ok(())
+        self.stage_out("streams after the experts", self.x.ptr, n * c.hc * c.hidden)
     }
 
     /// The token rows (in `o`) spread over the streams (on a part of a model split over GPUs: the part before it run, its streams taken), then the layers; where `head`, the final mixer of the last row, the LM head and

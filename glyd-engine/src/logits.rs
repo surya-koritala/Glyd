@@ -1221,6 +1221,7 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
             let new_rows = drive(new.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
             let new_layers = new.layers(&fx.prompt)?;
             drop(new);
+            let arg = |v: &[f32]| v.iter().enumerate().fold(0, |b, (j, &x)| if x > v[b] { j } else { b });
             if let Some(cf) = &cpu_fx {
                 let b = Bound::Kl { mean: 1e-4, max: 5e-4, top1: 0.85 };
                 for (who, rows) in [("the old engine", &old_rows), ("the executor", &new_rows)] {
@@ -1230,11 +1231,31 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
                         v.identical, v.rows, v.mean_kl, v.max_kl, v.top1.0, v.top1.1
                     );
                 }
+                // (each row: the reference's best token and its lead over the second, each engine's best token and KL from the reference)
+                for (i, r) in cf.rows.iter().enumerate() {
+                    let (b, mut second) = (arg(&r.logits), f32::NEG_INFINITY);
+                    for (j, &x) in r.logits.iter().enumerate() {
+                        if j != b {
+                            second = second.max(x);
+                        }
+                    }
+                    let (o, n) = (&old_rows[i], &new_rows[i]);
+                    println!(
+                        "       row {i:2}: the reference's best {b} by {:.4}; old {} KL {:.2e}; executor {} KL {:.2e}",
+                        r.logits[b] - second,
+                        arg(o),
+                        kl_of(r, o),
+                        arg(n),
+                        kl_of(r, n)
+                    );
+                }
             }
             if let (Some(ol), Some(nl)) = (&old_layers, &new_layers) {
                 layer_lines(ol, nl, cpu_layers.as_deref());
             }
-            let arg = |v: &[f32]| v.iter().enumerate().fold(0, |b, (j, &x)| if x > v[b] { j } else { b });
+            if id == "qwen4x" {
+                qwen4x_stage_lines(&dir, &level, &fx.prompt)?;
+            }
             let (mut same_bits, mut same_best, mut max_kl, mut max_d) = (0usize, 0usize, 0f64, 0f32);
             let mut off = Vec::new();
             for (i, (o, n)) in old_rows.iter().zip(&new_rows).enumerate() {
@@ -1276,6 +1297,82 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
         drop(scratch);
         std::process::exit(1);
     }
+}
+
+/// Layer 0 of the random Qwen3.8-Flash-Next on a prompt, stage by stage, on Condor's engine (its `stages`) and the executor (`Dyn::trace_ops`): each stage's
+/// output on the two (the gated residual's norm, bottleneck, up product and mix; the linear attention's products, convolution, delta rule, gated norm and out
+/// product; the experts; the streams after each block), the values with the same bits and the largest difference over the largest magnitude; the first stage
+/// apart named.
+fn qwen4x_stage_lines(dir: &Path, level: &str, prompt: &[u32]) -> Result<()> {
+    use crate::dynamic::Slot;
+    // (Condor's stage, the executor's operation of the same output and the slot it is in)
+    const MAP: [(&str, &str, Slot); 13] = [
+        ("gated residual: norm", "StreamsPre", Slot::Hq),
+        ("gated residual: bottleneck", "StreamsPre", Slot::Mid),
+        ("gated residual: up product", "StreamsPre", Slot::Cp),
+        ("gated residual: mix", "StreamsPre", Slot::H),
+        ("linear attention: qkvz product", "linear attention: qkvz product", Slot::Mix),
+        ("linear attention: ba product", "linear attention: ba product", Slot::Ba),
+        ("linear attention: convolution", "GdnConv", Slot::Xc),
+        ("linear attention: delta rule", "GdnDelta", Slot::Core),
+        ("linear attention: gated norm", "GatedNorm", Slot::Core),
+        ("linear attention: out product", "linear attention: out product", Slot::O),
+        ("streams after the mixer", "StreamsPost", Slot::S),
+        ("experts", "Moe", Slot::O),
+        ("streams after the experts", "StreamsPost", Slot::S),
+    ];
+    let experts = qwen4x_experts(level)?;
+    let old: Vec<(&'static str, Vec<u16>)> = {
+        let o = crate::model_qwen4x::OptsQx { ctx: 1024, chunk: 64, layout: Layout::Tiered, chunked: true, ..Default::default() };
+        let make = crate::model_qwen4x::gpu_experts(experts);
+        let mut r = Qwen4x { e: crate::model_qwen4x::EngineQx::new(dir, &o, Some(&make))?, chunk: 64, last_chunk: 0 };
+        r.reset()?;
+        *r.e.stages.borrow_mut() = Some(Vec::new());
+        let p = r.prefill(prompt);
+        let got = r.e.stages.borrow_mut().take().unwrap_or_default();
+        p?;
+        // (layer 0's: up to its streams after the experts)
+        let end = got.iter().position(|(w, _)| *w == "streams after the experts").map_or(got.len(), |i| i + 1);
+        got.into_iter().take(end).collect()
+    };
+    let new = {
+        let mut e = crate::dynamic::qwen4x::load_level(dir, &dyn_opts(Some(Layout::Tiered)), experts)?;
+        Dyn::reset(&mut e)?;
+        e.trace_ops(Some(0));
+        let p = Dyn::prefill(&mut e, prompt);
+        let got = e.trace_ops(None);
+        p?;
+        got
+    };
+    let f = |v: &[u16]| v.iter().map(|&h| f32::from_bits((h as u32) << 16)).collect::<Vec<f32>>();
+    let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    let mut first = None;
+    for (what, ov) in &old {
+        let Some(&(_, op, slot)) = MAP.iter().find(|m| m.0 == *what) else { continue };
+        let k = seen.entry(what).or_insert(0);
+        let at = new.iter().enumerate().filter(|(_, (n, _))| n == op).nth(*k).map(|(i, _)| i);
+        *k += 1;
+        let Some(i) = at else {
+            println!("     layer 0 {what}: the executor has no operation {op} for it");
+            continue;
+        };
+        let nv = &new[i].1[crate::dynamic::TRACED.iter().position(|s| *s == slot).expect("a traced slot")];
+        if nv.len() < ov.len() {
+            println!("     layer 0 {what}: the executor's {slot:?} holds {} values, where Condor's stage made {}", nv.len(), ov.len());
+            continue;
+        }
+        let nv = &nv[..ov.len()];
+        let same = ov.iter().zip(nv).filter(|(a, b)| a == b).count();
+        let (a, b) = (f(ov), f(nv));
+        let scale = a.iter().fold(0f32, |m, v| m.max(v.abs())).max(1e-30);
+        let d = a.iter().zip(&b).fold(0f32, |m, (x, y)| m.max((x - y).abs())) / scale;
+        if same != ov.len() && first.is_none() {
+            first = Some(*what);
+        }
+        println!("     layer 0 {what} (operation {i} {op}, {slot:?}): {same}/{} values the same bits, apart by {d:.2e}", ov.len());
+    }
+    println!("     layer 0's first stage apart: {}", first.unwrap_or("none"));
+    Ok(())
 }
 
 /// The CPU f32 reference's residual after each layer of a prompt of the model in `dir` (from its description).

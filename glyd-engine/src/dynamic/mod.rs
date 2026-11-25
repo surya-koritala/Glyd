@@ -1058,6 +1058,8 @@ pub struct Dyn {
     /// Where Some: each eager pass adds the residual (mHC's or the gated residuals' streams S, else X) of its rows after each layer, a check's view of each layer
     /// (`trace_layers`).
     trace: std::cell::RefCell<Option<Vec<Vec<u16>>>>,
+    /// Where Some: the layer whose operations each eager pass records (`trace_ops`), and after each of them its name and the bf16 values of the slots `TRACED`.
+    op_trace: std::cell::RefCell<Option<(usize, Vec<(String, Vec<Vec<u16>>)>)>>,
     picks: Option<picked::PickRun>,
     /// The latent attentions' scratch, where the model has one.
     mla: Option<mla::MlaRun>,
@@ -1229,6 +1231,9 @@ struct Verify {
     keep: Vec<Option<Buf>>,
 }
 
+/// The slots `Dyn::trace_ops` records after each operation: the blocks' input and output, the residual's streams and the mixers' and gated residuals' own.
+pub const TRACED: [Slot; 10] = [Slot::H, Slot::O, Slot::S, Slot::Hq, Slot::Mid, Slot::Cp, Slot::Mix, Slot::Ba, Slot::Xc, Slot::Core];
+
 // ponytail: the big model's buffers; a draft model's own where one has a block of experts
 impl crate::kern_nh::NhHost for Dyn {
     fn dev(&self) -> &Dev {
@@ -1267,9 +1272,40 @@ impl Dyn {
         std::mem::replace(&mut *self.trace.borrow_mut(), on.then(Vec::new)).unwrap_or_default()
     }
 
-    /// Whether the layers are traced (`trace_layers`): every pass eager.
+    /// Whether the layers are traced (`trace_layers`, `trace_ops`): every pass eager.
     pub(crate) fn tracing(&self) -> bool {
-        self.trace.borrow().is_some()
+        self.trace.borrow().is_some() || self.op_trace.borrow().is_some()
+    }
+
+    /// Each operation of layer `layer` in the passes run between `trace_ops(Some(layer))` and `trace_ops(None)`, which returns them: its name and, after it ran,
+    /// the values of the slots `TRACED` (the pass's rows, each slot's whole width): a check's view inside a layer.
+    pub fn trace_ops(&self, layer: Option<usize>) -> Vec<(String, Vec<Vec<u16>>)> {
+        std::mem::replace(&mut *self.op_trace.borrow_mut(), layer.map(|l| (l, Vec::new()))).map(|t| t.1).unwrap_or_default()
+    }
+
+    /// `trace_ops`' record of `op` of layer `l` on n rows, where that layer is traced.
+    fn trace_op(&self, p: &Part, l: usize, op: &Op, n: usize) -> Result<()> {
+        if !std::ptr::eq(p, &self.big) || self.op_trace.borrow().as_ref().is_none_or(|t| t.0 != l) {
+            return Ok(());
+        }
+        let mut slots = Vec::with_capacity(TRACED.len());
+        for &sl in &TRACED {
+            let mut v = vec![0u16; n * p.d.width(sl)];
+            if !v.is_empty() {
+                // SAFETY: the slot holds a chunk's rows of its width; the stream is synchronized before the copy is read.
+                unsafe { copy_d2h_async(v.as_mut_ptr() as *mut _, p.slot(sl), v.len() * 2, self.dev.stream)? };
+            }
+            slots.push(v);
+        }
+        self.dev.sync()?;
+        let name = match op {
+            Op::Linear { name, .. } => name.to_string(),
+            o => format!("{o:?}").split([' ', '(', '{']).next().unwrap_or("").to_string(),
+        };
+        if let Some(t) = self.op_trace.borrow_mut().as_mut() {
+            t.1.push((name, slots));
+        }
+        Ok(())
     }
 
     /// A description's model from `dir` by the generic loader (`ModelDesc::mats`, `small`, `ropes`), and a draft model's.
@@ -1589,6 +1625,7 @@ impl Dyn {
             ones,
             kqx,
             trace: std::cell::RefCell::new(None),
+            op_trace: std::cell::RefCell::new(None),
             picks,
             mla,
             verify: None,
@@ -2376,9 +2413,11 @@ impl Dyn {
                     }
                     self.prepped.set(false);
                     r?;
+                    self.trace_op(p, l, op, n)?;
                     continue;
                 }
                 self.op(p, l, i, op, n, pos, head)?;
+                self.trace_op(p, l, op, n)?;
                 if crate::hb_usage::recording() && std::ptr::eq(p, &self.big) {
                     self.record_routes(p, l, op, n)?;
                 }
