@@ -1511,16 +1511,16 @@ impl Dyn {
         Ok((!v.is_empty()).then_some(v))
     }
 
-    /// The router's input of `op` on n rows, read before it runs, where `trace_routes` records its call (`MoeBlock::top_k`): its input slot's
-    /// rows, bf16.
+    /// The router's input of `op` on n rows, read before it runs, where `trace_routes` records its call (`MoeBlock::top_k`): H's rows, bf16, which
+    /// the router reads whatever its experts read (`Dyn::moe`: a latent block's experts read the normed latent, Muse Spark's Xc).
     fn route_input(&self, p: &Part, op: &Op, n: usize) -> Result<Option<Vec<u16>>> {
-        let Op::Moe(MoeOp { block, x, .. }) = *op else { return Ok(None) };
+        let Op::Moe(MoeOp { block, .. }) = *op else { return Ok(None) };
         if !std::ptr::eq(p, &self.big) || self.route_trace.borrow().is_none() || p.moe[block].top_k().is_none() {
             return Ok(None);
         }
         self.dev.sync()?;
-        let mut v = vec![0u16; n * p.d.width(x)];
-        p.slots[x as usize].read(0, &mut v)?;
+        let mut v = vec![0u16; n * p.d.width(Slot::H)];
+        p.slots[Slot::H as usize].read(0, &mut v)?;
         Ok(Some(v))
     }
 

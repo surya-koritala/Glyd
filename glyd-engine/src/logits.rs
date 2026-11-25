@@ -715,12 +715,6 @@ fn muse_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     boxed(crate::dynamic::muse::load(dir, &dyn_opts(level_layout(level)?)))
 }
 
-fn muse_cpu(dir: &Path) -> Result<Box<dyn Run>> {
-    let d = dir.to_path_buf();
-    let load = move || crate::muse_ref::RefMuse::load(&d).map(|mut m| move |t| m.step(t));
-    Ok(Box::new(CpuRef { load: Box::new(load), m: None, last: Vec::new(), source: "the CPU reference of src/muse_ref.rs" }))
-}
-
 fn kimi_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     boxed(crate::dynamic::kimi::load(dir, &dyn_opts(level_layout(level)?)))
 }
@@ -1729,16 +1723,16 @@ pub fn cases() -> Vec<Case> {
             engine: qwen35_engine,
             cpu: Some(described_cpu),
             vocab: 4096,
-            on_choices: false,
+            on_choices: true,
         },
         Case {
             id: "muse",
             family: "Muse Spark (sliding and full attention, mixture of experts)",
             weights: Weights::Random(crate::muse_ref::random),
             engine: muse_engine,
-            cpu: Some(muse_cpu),
+            cpu: Some(described_cpu),
             vocab: 4096,
-            on_choices: false,
+            on_choices: true,
         },
         Case {
             id: "kimi",
@@ -2956,21 +2950,30 @@ mod tests {
         Ok(compare(&own, bound, &rounded.rows))
     }
 
-    /// The cases past a tenth of their bound today (on a Mac, 2026-11-25), each to have its draw fixed by its family's owner, never its bound.
-    /// Printed, not held to the line: a case near it may read either side of it on another machine's libm.
-    const NOISE_FLOOR_OPEN: [(&str, &str); 3] = [
-        ("qwen35", "KL mean 1.04e-5 against a tenth of its bound, 1.0e-5"),
-        ("qwen35moe", "KL max 1.87e-4 in one row, a logit 0.126 apart (an expert's choice, likely), against 2.5e-5"),
-        ("muse", "KL mean 2.16e-3 and max 1.31e-2, the best token 5 of 8, against 1.2e-3 and 3.0e-3"),
-    ];
+    /// The cases past a tenth of their bound today, each with why: printed, not held to the line (one near it may read either side of it on another
+    /// machine's libm). Its draw is its family's owner's to fix, never its bound.
+    const NOISE_FLOOR_OPEN: [(&str, &str); 1] = [(
+        "qwen35",
+        "1.04e-5 in KL mean against 1.0e-5, four more seeds 8.3e-6 to 1.05e-5, its checkpoint bf16 as a release's: 70% of it is layer 0's input, as \
+         Qwen3.5 adds its tied embedding unscaled and the first block's output is all of the residual; an embedding wide enough to share the residual \
+         makes a token's own row the head's largest (19.9, the softmax a point), so no honest draw lowers it",
+    )];
 
     /// Every case a CPU reference holds is well conditioned for its bound: its noise floor (`noise_floor`) is at most a tenth of its reference
     /// fixture's bound, in KL mean and max, the best token kept where the bound asks it. A random case whose draw cannot tell a fault from rounding
-    /// (Gemma 4's were 3e-4 to 1.1e-3 against a bound of 1e-4) fails here, and its draw is fixed, not its bound (`NOISE_FLOOR_OPEN`). Each case's
-    /// reference is its description's on the layer kinds (a family with a hand-written reference too: the same function). Where a description
-    /// already rounds every norm (Kimi-K3's, GLM-5.3-Flash's) and scales no embedding, `stored` moves nothing: its floor is 0 and says nothing of
-    /// its draw (GLM-5.3-Flash's is the reference in fp32 against all its rounding points, `glm_noise_floor`). Not here: deepseek-v41 (no engine: its
-    /// fixture's bound is the reference's own across machines), nemotron-h (an older family).
+    /// (Gemma 4's were 3e-4 to 1.1e-3 against a bound of 1e-4, Muse's 1.2e-4 from its scores' scale) fails here, and its draw is fixed, not its
+    /// bound (`NOISE_FLOOR_OPEN`).
+    ///
+    /// A case with routers is measured on its reference's own expert choices where it is held on its routers' choices (`Case::on_choices`), which
+    /// is how a case with free routers must be held: a choice flips where the router's gap between the last expert chosen and the first left out is
+    /// below the change the input's rounding (about 2^-9 of it) makes in the router's scores, and both scale with the router's weights, so no
+    /// router draw clears it short of one that takes the same experts for every token (Muse, before it was held on choices: 187 of 744 choices
+    /// apart under these roundings, a floor of 2.2e-3; qwen35moe 18, one row 1.9e-4).
+    ///
+    /// Each case's reference is its description's on the layer kinds. Where a description already rounds every norm (Kimi-K3's, GLM-5.3-Flash's)
+    /// and scales no embedding, `stored` moves nothing: its floor is 0 and says nothing of its draw (GLM-5.3-Flash's is the reference in fp32
+    /// against all its rounding points, `glm_noise_floor`). Not here: deepseek-v41 (no engine: its fixture's bound is the reference's own across
+    /// machines), nemotron-h (an older family).
     #[cfg(feature = "dev")]
     #[test]
     fn every_case_held_to_a_reference_is_well_conditioned() {
@@ -3024,6 +3027,43 @@ mod tests {
             }
         }
         assert!(wrong.is_empty(), "past a tenth of the bound: {wrong:?} (a draw to fix, not a bound)");
+    }
+
+    /// Muse Spark's two CPU references on the same draw and the same expert choices (the description's, which its case holds the engine to, and
+    /// src/muse_ref.rs's): the same function term by term (router, gated residuals, attention, experts, head); muse_ref.rs rounds to bf16 at every
+    /// operation of the release's eager bf16 arithmetic, the description's where its kinds say, so they part by those roundings alone: on the Mac,
+    /// 2026-11-25, KL mean 8.6e-6 and 1.3e-5 at most, within a tenth of the kind's bound, every best token (on their own choices 2.3e-3: router
+    /// flips). A minute: cargo test --profile ci -p glyd-engine --lib -- --ignored muse_references.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore]
+    fn muse_references_agree_on_the_same_choices() {
+        let dir = std::env::temp_dir().join(format!("glyd-muse-refs-{}", std::process::id()));
+        crate::muse_ref::random(&dir).unwrap();
+        let fx = Fixture::read(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits/muse.json.gz")).unwrap();
+        let desc = ref_drive(&dir, &fx, None).unwrap();
+        let take: Choices = desc.routed.iter().map(|l| l.iter().map(|r| r.ids.clone()).collect()).collect();
+        let first: Vec<u32> = fx.prompt.iter().chain(&fx.decode).copied().collect();
+        let (mut rows, mut at) = (Vec::new(), 0usize);
+        for (tokens, from) in [(&first, fx.prompt.len() - 1), (&fx.long, fx.long.len() - 1)] {
+            let mut m = crate::muse_ref::RefMuse::load(&dir).unwrap();
+            *m.take.borrow_mut() = take.iter().map(|l| l[at..at + tokens.len()].iter().cloned().collect()).collect();
+            for (i, &t) in tokens.iter().enumerate() {
+                let l = m.step(t);
+                if i >= from {
+                    rows.push(l);
+                }
+            }
+            at += tokens.len();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let own = Fixture { rows: desc.rows.iter().map(|r| Row::from_logits(r).unwrap()).collect(), ..fx.clone() };
+        let v = compare(&own, &Bound::Kl { mean: 1e-5, max: 2.5e-5, top1: 0.85 }, &rows);
+        println!(
+            "the description's reference against muse_ref.rs on its choices: KL mean {:.2e} max {:.2e}, best token {}/{}",
+            v.mean_kl, v.max_kl, v.top1.0, v.top1.1
+        );
+        assert!(v.ok, "{:?}", v.notes);
     }
 
     /// Each Gemma 4 random case is well conditioned for the kind's bound, and its fixture is what the CPU reference makes. For each case: its attention

@@ -1041,6 +1041,10 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
     if m.blocks.len() % 2 != 0 {
         return err(format!("Muse Spark: {} blocks, where each layer is an attention block and an experts block", m.blocks.len()));
     }
+    // (the executor's head: the product's bf16 output, then muse_softcap's multiply and soft-cap, each rounded)
+    if m.head.rounding != crate::runtime::kinds::Rounding::Twice {
+        return err(format!("Muse Spark: a head of {:?}, where the executor's rounds the logits to bf16 between operations", m.head));
+    }
     let layers = m.blocks.len() / 2;
     let mut atts = Vec::with_capacity(layers);
     let (mut lat, mut mult, mut top_k) = (None, 1.0, 0);
