@@ -3813,37 +3813,25 @@ GLYD_GPU_INTERNAL int glyd_gpu_f8_linear(const uint8_t* core, const uint32_t* he
     });
 }
 
-// The experts' product's grid: a slot (blockIdx.y) of the plan for each of `slots`, and as many CTAs a slot (blockIdx.x) as the GPU holds at once of the kernel shared among them,
-// at most one a row group's patch of a matrix.
-static int64_t f8_moe_ctas(int64_t N, int64_t K, int64_t M, int64_t slots, int dev) {
-    const int64_t W = f8c::f8_cdiv(f8c::f8_cdiv(N, f8c::PR) * 4, f8c::LW) * f8c::f8_cdiv(K, f8c::PC);
+// The experts' product's grid: a slot (blockIdx.y) of the plan for each of `slots`, and a CTA a slot (blockIdx.x) for each row group of 128 rows of a matrix, which
+// adds all of the row group's K in order: a pair's sum is the same whatever shares its call (the tokens, the slots, a decode's one-token kernel, on the same plan) and
+// follows from the matrix's shape alone, the rule of the other experts' products (handoff notes: moe-kernels.md). GLYD_F8_MOE_GRID (a development build's): that grid.
+static int64_t f8_moe_ctas(int64_t N, int64_t K) {
+    const int64_t KT = f8c::f8_cdiv(K, f8c::PC), W = f8c::f8_cdiv(f8c::f8_cdiv(N, f8c::PR) * 4, f8c::LW) * KT;
     const int64_t c = TUNING_INT("GLYD_F8_MOE_GRID", 0);
     if (c > 0) return std::min<int64_t>(c, W);
-    static std::atomic<int> resident[64][65];
-    int r = dev < 64 ? resident[dev][M].load(std::memory_order_relaxed) : 0;
-    if (!r) {
-        const int sl = f8_lin_slots(M, 0, 0, 0);
-        r = f8_lin_with<f8c::F8_BLOCK>(f8_lin_ntl(M), 0, 0, [&]<int N_, int K_, int A_, int D_>() {
-            int nb = 0;
-            if constexpr (N_ == 1 && A_ == 0 && D_ == 0)
-                if (sl == 3) {
-                    cudaFuncSetAttribute((const void*)f8c::f8_linear_kernel<N_, K_, A_, D_, 1, 3>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)f8_lin_shared<3>(64, 0, 0));
-                    if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&nb, (const void*)f8c::f8_linear_kernel<N_, K_, A_, D_, 1, 3>, f8c::LNT, f8_lin_shared<3>(M, 0, 0)) != cudaSuccess) nb = 1;
-                    return std::max(nb, 1);
-                }
-            cudaFuncSetAttribute((const void*)f8c::f8_linear_kernel<N_, K_, A_, D_, 1>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)f8_lin_shared(64, D_, 0));
-            if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&nb, (const void*)f8c::f8_linear_kernel<N_, K_, A_, D_, 1>, f8c::LNT, f8_lin_shared(M, D_, 0)) != cudaSuccess) nb = 1;
-            return std::max(nb, 1);
-        });
-        if (dev < 64) resident[dev][M].store(r, std::memory_order_relaxed);
-    }
-    return std::max<int64_t>(1, std::min<int64_t>(sm_count(dev) * r / std::max<int64_t>(slots, 1), W));
+    return std::max<int64_t>(1, W / KT);
+}
+// Its workspace: the parts of the row groups a grid of `ctas` splits between CTAs (none where each CTA holds whole row groups).
+static size_t f8_moe_parts(int64_t N, int64_t K, int64_t M, int64_t slots, int64_t ctas) {
+    const int64_t RG = f8c::f8_cdiv(f8c::f8_cdiv(N, f8c::PR) * 4, f8c::LW);
+    return RG % ctas == 0 ? 0 : (size_t)slots * f8_lin_parts(ctas, M);
 }
 
 GLYD_GPU_INTERNAL int glyd_gpu_f8_moe_workspace(int64_t N, int64_t K, int64_t M, int64_t slots, size_t* bytes) {
     if (!bytes || M < 1 || M > 64 || slots < 1 || slots > 65535 || !f8_shape(N, K, nullptr)) return cudaErrorInvalidValue;
     const int dev = current_device();
-    *bytes = (size_t)slots * f8_lin_parts(std::max(f8_moe_ctas(N, K, M, slots, dev), M == 1 ? f8h_one_ctas(N, K, slots, dev) : 1), M);
+    *bytes = f8_moe_parts(N, K, M, slots, f8_moe_ctas(N, K));
     return 0;
 }
 
@@ -3859,9 +3847,8 @@ GLYD_GPU_INTERNAL int glyd_gpu_f8_moe(const uint8_t* core, const uint32_t* heads
         k < 1 || k > INT32_MAX || ldx < K || ldy < N || lds < f8c::f8_cdiv(K, 128) || (uintptr_t)core % 16 || (uintptr_t)heads % 16 || (uintptr_t)var % 4 || (uintptr_t)scale % 4 ||
         (uintptr_t)x % 2 || (uintptr_t)y % 2)
         return cudaErrorInvalidValue;
-    const int dev = current_device();
-    const int64_t ctas = f8_moe_ctas(N, K, M, slots, dev), KT = f8c::f8_cdiv(K, f8c::PC);
-    const size_t need = (size_t)slots * f8_lin_parts(ctas, M);
+    const int64_t ctas = f8_moe_ctas(N, K), KT = f8c::f8_cdiv(K, f8c::PC);
+    const size_t need = f8_moe_parts(N, K, M, slots, ctas);
     if ((ctas > 1 && !done) || !fits(workspace, workspace_bytes, need) || (need && (uintptr_t)workspace % 16)) return cudaErrorInvalidValue;
     const f8c::F8Lin P{core, heads, var, scale, x, y, nullptr, nullptr, (float*)workspace, done, lds, ldx, ldy, (int)M, (int)N, (int)K, (int)KT,
                        (int)f8c::f8_cdiv(f8c::f8_cdiv(N, f8c::PR) * 4, f8c::LW), (int)ctas, ((uintptr_t)x % 16 == 0 && ldx % 8 == 0) ? 1 : 0, plan, nullptr, (int)E, (int)k, gather ? 1 : 0};
@@ -3933,17 +3920,14 @@ GLYD_GPU_INTERNAL int glyd_gpu_f8h_moe(const uint8_t* core, const uint32_t* head
         k < 1 || k > INT32_MAX || ldx < K || ldy < N || lds < f8c::f8_cdiv(K, 128) || (uintptr_t)core % 16 || (uintptr_t)heads % 16 || (uintptr_t)var % 4 || (uintptr_t)scale % 4 ||
         (uintptr_t)x % 2 || (uintptr_t)y % 2)
         return cudaErrorInvalidValue;
-    const int dev = current_device();
-    const int64_t W = f8c::f8_cdiv(f8c::f8_cdiv(N, f8c::PR) * 4, f8c::LW) * f8c::f8_cdiv(K, f8c::PC);
-    const int64_t ctas = std::min<int64_t>(f8_moe_ctas(N, K, M, slots, dev), std::max<int64_t>(1, std::min<int64_t>(sm_count(dev) * f8h_resident<1>(M, dev) / slots, W)));
-    const size_t need = (size_t)slots * f8_lin_parts(ctas, M);
+    // (the grid as layout C's: a CTA a row group, the one-token kernel on the same plan, so its sums are the others' to the bit)
+    const int64_t ctas = f8_moe_ctas(N, K);
+    const size_t need = f8_moe_parts(N, K, M, slots, ctas);
     if ((ctas > 1 && !done) || !fits(workspace, workspace_bytes, need) || (need && (uintptr_t)workspace % 16)) return cudaErrorInvalidValue;
     const f8c::F8Lin P{core, heads, var, scale, x, y, nullptr, nullptr, (float*)workspace, done, lds, ldx, ldy, (int)M, (int)N, (int)K, (int)f8c::f8_cdiv(K, f8c::PC),
                        (int)f8c::f8_cdiv(f8c::f8_cdiv(N, f8c::PR) * 4, f8c::LW), (int)ctas, ((uintptr_t)x % 16 == 0 && ldx % 8 == 0) ? 1 : 0, plan, nullptr, (int)E, (int)k, gather ? 1 : 0};
     if (M == 1 && f8h_one()) {
         f8c::F8Lin P1 = P;
-        P1.ctas = (int)f8h_one_ctas(N, K, slots, dev);
-        if ((P1.ctas > 1 && !done) || !fits(workspace, workspace_bytes, (size_t)slots * f8_lin_parts(P1.ctas, 1))) return cudaErrorInvalidValue;
         f8h_one_launch<1>(P1, dim3((unsigned)P1.ctas, (unsigned)slots), cs);
         return (int)cudaGetLastError();
     }

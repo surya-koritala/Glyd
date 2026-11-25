@@ -259,7 +259,7 @@ jobs:
           # (GLM-5.3-Flash at a block level: its experts in places of the level's layout)
           "$E" glmrandom /tmp/glm-tier
           "$E" tiercheck /tmp/glm-tier --places 2 --layout i6
-          # (GLM-5.3-Flash's FP8 experts as released: each packed on its own in places, the heads made the place's; a call's pairs no more than the places. The same bits for a prompt of two tokens; a longer one's last bits are the library's split of K by the call's size)
+          # (GLM-5.3-Flash's FP8 experts as released: each packed on its own in places, the heads made the place's; a call's pairs no more than the places. The same bits at any prompt length: the FP8 product adds a row group's K in one block, whatever its call holds)
           "$E" glmrandom /tmp/glm-f8 --fp8
           "$E" tiercheck /tmp/glm-f8 --places 6 --tokens 6
           "$E" tiercheck /tmp/glm-f8 --places 6 --report
