@@ -3,8 +3,11 @@
 //! lowered (`lower::qwen35`), the executor's loader reading the tensors the lowered description names (the small matrices dense, the fp32 parameters, the
 //! gated norm's weight as vLLM holds it).
 
+#[cfg(any(test, feature = "dev"))]
 use super::attn::{AttnOp, GateAt, QkNorm, RopeAt};
-use super::{Dyn, ModelDesc, Opts, ResidentMoe, Slot, Stage};
+#[cfg(any(test, feature = "dev"))]
+use super::Slot;
+use super::{Dyn, ModelDesc, Opts, ResidentMoe, Stage};
 #[cfg(test)]
 use super::{NormW, Op, Ring, Rope};
 #[cfg(test)]
@@ -93,9 +96,10 @@ pub fn lowered(dir: &Path, c: &crate::qwen35::Config35, st: &Stage) -> Result<Mo
     super::lower::qwen35(&kinds, c.eos.clone(), c.max_pos, st).map_err(|e| e.context(&label))
 }
 
-/// The Qwen3.5 layout's gated attention (Qwen3.5, Qwen3.8 dense; Condor's, src/model_qwen4x.rs): heads of `d`, each query head with its gate in Mix's rows; the
-/// (1 + w) q and k norms (small tensors `qk`) and the rotary on the first `rotary` dims in fp32 with one rounding; scale d^-0.5, the scores fp32; the output times
-/// sigmoid(gate). Ring `ring`.
+/// The Qwen3.5 layout's gated attention (Qwen3.5, Qwen3.8 dense) as the tests' description and kcheck35 build it: heads of `d`, each query head with its gate in
+/// Mix's rows; the (1 + w) q and k norms (small tensors `qk`) and the rotary on the first `rotary` dims in fp32 with one rounding; scale d^-0.5, the scores fp32;
+/// the output times sigmoid(gate). Ring `ring`.
+#[cfg(any(test, feature = "dev"))]
 pub(crate) fn attention(d: usize, nq: usize, nk: usize, rotary: usize, qk: (usize, usize), ring: usize) -> AttnOp {
     AttnOp {
         src: Slot::Mix,

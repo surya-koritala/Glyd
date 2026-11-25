@@ -209,7 +209,7 @@ impl ConfigQx {
             mtp_layers,
             prefix: "model.language_model.",
         };
-        // (what the kernels hold to: model_qwen4x.rs's checks name the limits)
+        // (what the kernels hold to: kernels/qwen4x.cu's and the delta rule's)
         if u_or("linear_key_head_dim", 128)? != 128 || u_or("linear_value_head_dim", 128)? != 128 || c.conv != 4 || c.nk == 0 || !c.nv.is_multiple_of(c.nk) {
             return refuse("Gated DeltaNet heads other than 128 channels with a convolution of 4");
         }
@@ -231,7 +231,7 @@ impl ConfigQx {
         Ok(c)
     }
 
-    /// The release's own shape, which Condor's engine (src/model_qwen4x.rs) is written for: four streams, index heads of 128 over blocks of 4 tokens, bigrams and
+    /// The release's own shape, which the family's own engine (deleted in R3d) was written for: four streams, index heads of 128 over blocks of 4 tokens, bigrams and
     /// trigrams with a convolution of 4. The description executor takes the family's other shapes by its kinds (`dynamic::lower::qwen4x` refuses what its
     /// kernels do not take).
     pub fn release_shape(&self, label: &str) -> Result<()> {

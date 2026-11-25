@@ -1217,84 +1217,6 @@ pub fn gemma4_kv_random(out: &Path) -> Result<()> {
     gemma4_shaped_random(out, text, 0x2026_1123_0000_00e2)
 }
 
-/// Qwen3.8-Flash-Next on its own engine: a prompt in chunks (the last chunk's last row through the head), the logits of a step.
-struct Qwen4x {
-    e: crate::model_qwen4x::EngineQx,
-    chunk: usize,
-    last_chunk: usize,
-    /// The routers' calls `choices` reads, while it is on.
-    routed: Option<RoutedCalls>,
-}
-
-/// An engine's routers' calls as a hook of it adds them (`dynamic::Routes`: the layer, the experts a row takes, the rows' experts, the router's input rows).
-type RoutedCalls = std::rc::Rc<std::cell::RefCell<Vec<crate::dynamic::Routes>>>;
-
-impl Run for Qwen4x {
-    fn describe(&self) -> String {
-        self.e.describe()
-    }
-    fn reset(&mut self) -> Result<()> {
-        self.last_chunk = 0;
-        self.e.reset()
-    }
-    fn prefill(&mut self, t: &[u32]) -> Result<()> {
-        for c in t.chunks(self.chunk) {
-            self.e.prefill(c)?;
-            self.last_chunk = c.len();
-        }
-        Ok(())
-    }
-    fn step(&mut self, t: u32) -> Result<()> {
-        self.last_chunk = 0;
-        self.e.step(t).map(|_| ())
-    }
-    fn layers(&mut self, t: &[u32]) -> Result<Option<Vec<Vec<f32>>>> {
-        let got = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let (g, w) = (got.clone(), self.e.w.cfg.hc * self.e.w.cfg.hidden);
-        // (the streams after each layer, read where the engine's trace looks: a prompt's chunk of n rows at a time)
-        self.e.trace = Some(Box::new(move |e: &crate::model_qwen4x::EngineQx, _l: usize, n: usize, _start: usize| {
-            let mut v = vec![0u16; n * w];
-            if e.dev.sync().is_ok() && e.x.read(0, &mut v).is_ok() {
-                g.borrow_mut().push(v);
-            }
-        }));
-        let r = self.reset().and_then(|_| self.prefill(t));
-        self.e.trace = None;
-        r?;
-        let got = std::mem::take(&mut *got.borrow_mut());
-        Ok(Some(widen(got)))
-    }
-    fn choices(&mut self, on: bool) -> Result<Option<Routing>> {
-        // (the engine's hook after each layer: the layer's experts ran last, so the scratch holds its rows' choices and `h` its experts' input, which
-        // nothing after them in the layer writes; a pass with a hook runs whole and eager)
-        let was = self.routed.take();
-        self.e.trace = None;
-        if on {
-            let got: RoutedCalls = Default::default();
-            let (g, k, hid) = (got.clone(), self.e.w.cfg.top_k, self.e.w.cfg.hidden);
-            self.e.trace = Some(Box::new(move |e: &crate::model_qwen4x::EngineQx, l: usize, n: usize, _start: usize| {
-                if let Ok((ids, _)) = crate::model_qwen4x::QxMoe::routed(e, n, k) {
-                    let mut h = vec![0u16; n * hid];
-                    if e.h.read(0, &mut h).is_ok() {
-                        g.borrow_mut().push((l, k, ids, h));
-                    }
-                }
-            }));
-            self.routed = Some(got);
-        }
-        choices_of(was.map(|w| std::mem::take(&mut *w.borrow_mut())).unwrap_or_default()).map(Some)
-    }
-    fn logits(&mut self) -> Result<Vec<f32>> {
-        if self.last_chunk == 0 {
-            return self.e.logits();
-        }
-        let h = self.e.final_rows(self.last_chunk)?;
-        let rows = self.e.head_rows(&h)?;
-        let v = rows.len() / self.last_chunk;
-        Ok(rows[rows.len() - v..].iter().map(|&w| f32::from_bits((w as u32) << 16)).collect())
-    }
-}
-
 /// Qwen3.8-Flash-Next on the description executor (src/dynamic/qwen4x.rs) at every level, as the other cases' engines: the matrices at the level (penguin's lossless
 /// packs where none is), the experts lossless at penguin and in a lossy level's codes at the others. Condor's own engine runs no level of the case: the family is held to
 /// the CPU reference of the kinds, not to that engine's bits (its kestrel rows on an RTX 4080 SUPER are its record, tests/fixtures/qwen4x_condor_rows.json.gz, which
@@ -2244,14 +2166,14 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     }
 }
 
-// ---- the hand-written engines against the description path (R3b, #137)
+// ---- the description path against the CPU reference on its own choices, layer by layer (R3b, #137; R3d, #140)
 
-/// The cases whose families still have a hand-written engine: (case, the hand-written engine, the description path).
-type Pair = (&'static str, fn(&Path, &str) -> Result<Box<dyn Run>>, fn(&Path, &str) -> Result<Box<dyn Run>>);
+/// The cases `paritycheck` takes: (case, the description path). (R3b retired Qwen3.5's, Gemma 4's and Nemotron-H's hand-written engines on their parity
+/// records, #410 and the R3b pull requests; R3d Condor's, the last, once the executor served its model.)
+type ParityCase = (&'static str, fn(&Path, &str) -> Result<Box<dyn Run>>);
 
-fn legacy_pairs() -> Vec<Pair> {
-    // (R3b retired Qwen3.5's, Gemma 4's and Nemotron-H's hand-written engines on their parity records, #410 and the R3b pull requests; Condor's is the last, R3d)
-    vec![("qwen4x", qwen4x_old, qwen4x_desc), ("qwen4x-s2", qwen4x_old, qwen4x_desc)]
+fn parity_cases() -> Vec<ParityCase> {
+    vec![("qwen4x", qwen4x_desc), ("qwen4x-s2", qwen4x_desc)]
 }
 
 /// The experts of the random Qwen3.8-Flash-Next at a level: a lossy level's codes, lossless at penguin.
@@ -2259,45 +2181,30 @@ fn qwen4x_experts(level: &str) -> Result<Layout> {
     Ok(crate::dynamic::qwen4x::experts_at(level_layout(level)?))
 }
 
-/// Condor's own engine (src/model_qwen4x.rs) on the random model: the other matrices lossless, the experts at the level.
-fn qwen4x_old(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
-    let o = crate::model_qwen4x::OptsQx { ctx: 1024, chunk: 64, layout: Layout::Tiered, chunked: true, ..Default::default() };
-    let make = crate::model_qwen4x::gpu_experts(qwen4x_experts(level)?);
-    Ok(Box::new(Qwen4x { e: crate::model_qwen4x::EngineQx::new(dir, &o, Some(&make))?, chunk: 64, last_chunk: 0, routed: None }))
-}
-
-/// The description executor (src/dynamic/qwen4x.rs) on the same weights as `qwen4x_old`.
+/// The description executor (src/dynamic/qwen4x.rs) on the random model: the other matrices lossless, the experts at the level.
 fn qwen4x_desc(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     boxed(crate::dynamic::qwen4x::load_level(dir, &dyn_opts(Some(Layout::Tiered)), qwen4x_experts(level)?))
 }
 
-/// The stages of layer 0 that the family's two engines share: the ones before the delta rule, where their kernels part (`qwen4x_stage_lines`).
-const SHARED_STAGES: usize = 7;
-
-/// `paritycheck [CASE...] [--level L] [--scratch DIR]`: each case of a family that still has a hand-written engine (Qwen3.8-Flash-Next's,
-/// src/model_qwen4x.rs) on the description executor and, where it runs the case, on that engine: the same random model, prompt and decode tokens as
-/// the case's fixture, at each level the fixtures bound.
-///
-/// The executor is held to the CPU reference of the layer kinds (the case's fixture), not to the hand-written engine. The two run different kernels
-/// of one kind, the delta rule (the executor's is the kind's: fp32 sums over normed q and k rounded to bf16; the hand-written engine's sums pairs of
-/// bf16 values), so their bits part at that stage and no bound between the two engines is a fact of either. Required of the executor:
-///   1. where the hand-written engine runs the case, layer 0's stages before the delta rule (the first `SHARED_STAGES`) have the same bits on both;
-///   2. wherever its router's choice is not the reference's own, the reference's router on the executor's own input row for that token and layer
+/// `paritycheck [CASE...] [--level L] [--scratch DIR]`: each case of Qwen3.8-Flash-Next (qwen4x, qwen4x-s2) on the description executor: the same random
+/// model, prompt and decode tokens as the case's fixture, at each level the fixtures bound, held to the CPU reference of the layer kinds (the case's
+/// fixture). Required of the executor:
+///   1. wherever its router's choice is not the reference's own, the reference's router on the executor's own input row for that token and layer
 ///      takes the executor's choice, or one less than `NEAR` from it by its ranks on that input (`held_on_choices`: why the same input);
-///   3. its logits are within the kind's bound for the lossless level of the reference taking its choices, every row. The bound is the case's
+///   2. its logits are within the kind's bound for the lossless level of the reference taking its choices, every row. The bound is the case's
 ///      fixture's, which must be the one the Qwen3.5 layout's fixture holds (tests/logits/qwen35.json.gz): a family has no bound of its own;
-///   4. its best token is the reference's own on every row where the reference's lead clears `CLEAR_LEAD`; a row below it is printed, not required.
+///   3. its best token is the reference's own on every row where the reference's lead clears `CLEAR_LEAD`; a row below it is printed, not required.
 ///
-/// Printed beside them and not required: each row's KL against the reference's own choices (never left out); the hand-written engine by the same
-/// measures, its record before it is deleted; the two engines against each other row by row, layer by layer and, in layer 0, stage by stage; and what
-/// the executor's first choice apart leaves in the rows after it, by the kind of state that carries it (`carry_lines`). Exit 1 where a requirement
-/// fails. With `--choice ROW:LAYER` no engine runs: the reference alone takes the nearest other choice in that row's pass and layer, and the same
-/// lines say what it leaves (any machine, no GPU).
+/// Printed beside them and not required: each row's KL against the reference's own choices (never left out); its residual after each layer against the
+/// reference's; and what the executor's first choice apart leaves in the rows after it, by the kind of state that carries it (`carry_lines`). Exit 1
+/// where a requirement fails. With `--choice ROW:LAYER` no engine runs: the reference alone takes the nearest other choice in that row's pass and layer,
+/// and the same lines say what it leaves (any machine, no GPU). (Condor's own engine ran beside it here until it was deleted: its record is
+/// tests/fixtures/qwen4x_condor_rows.json.gz, which `runtime::describe_tests` holds the reference to.)
 pub fn parity(a: &crate::args::Args) -> Result<()> {
     let want: Vec<&str> = a.pos.iter().skip(1).map(String::as_str).collect();
-    let pairs: Vec<Pair> = legacy_pairs().into_iter().filter(|p| want.is_empty() || want.contains(&p.0)).collect();
+    let pairs: Vec<ParityCase> = parity_cases().into_iter().filter(|p| want.is_empty() || want.contains(&p.0)).collect();
     if !want.is_empty() && pairs.len() != want.len() {
-        return err(format!("cases: {}", legacy_pairs().iter().map(|p| p.0).collect::<Vec<_>>().join(", ")));
+        return err(format!("cases: {}", parity_cases().iter().map(|p| p.0).collect::<Vec<_>>().join(", ")));
     }
     let (fixtures, scratch, only_level) = (fixtures_dir(a), Scratch::new(a)?, a.flag("level"));
     let kind_bound = |level: &str| -> Result<Bound> {
@@ -2314,7 +2221,7 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
         None => None,
     };
     let mut failed = Vec::new();
-    for (id, legacy, desc) in pairs {
+    for (id, desc) in pairs {
         let c = find_case(id)?;
         let dir = model_dir(&c, &scratch.dir)?;
         let files = fixture_files(&fixtures, id)?;
@@ -2366,13 +2273,6 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
         for level in levels {
             let mut ok = bound_ok;
             let mut why: Vec<String> = if bound_ok { Vec::new() } else { vec!["the fixture's bound is not the kind's".into()] };
-            let old = match legacy(&dir, &level) {
-                Ok(mut r) => Some(ran(r.as_mut())?),
-                Err(e) => {
-                    println!("     {id} {level}: the hand-written engine does not run it ({}): the executor alone", e.msg);
-                    None
-                }
-            };
             let mut new = desc(&dir, &level)?;
             let (new_rows, new_traced, new_choices, new_layers) = ran(new.as_mut())?;
             if level == "penguin" {
@@ -2385,37 +2285,14 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
                 }
             }
             drop(new);
-            // 1. the stages the two engines share
-            if let Some((old_rows, _, _, old_layers)) = &old {
-                if let (Some(ol), Some(nl)) = (old_layers, &new_layers) {
-                    layer_lines(ol, nl, Some(&cpu_layers));
-                }
-                let shared = qwen4x_stage_lines(&dir, &level, &cf.prompt)?;
-                if shared < SHARED_STAGES {
-                    ok = false;
-                    why.push(format!("{shared} of layer 0's {SHARED_STAGES} stages before the delta rule have the hand-written engine's bits"));
-                }
-                let (mut same_bits, mut same_best, mut max_kl, mut max_d) = (0usize, 0usize, 0f64, 0f32);
-                for (o, n) in old_rows.iter().zip(&new_rows) {
-                    same_bits += (o == n) as usize;
-                    same_best += (arg(o) == arg(n)) as usize;
-                    max_kl = max_kl.max(kl_of(&Row::from_logits(o)?, n));
-                    max_d = o.iter().zip(n).fold(max_d, |m, (x, y)| m.max((x - y).abs()));
-                }
-                println!(
-                    "     the executor against the hand-written engine (not required): {} rows, bits-equal {same_bits}, best token {same_best}, KL max {max_kl:.2e}, largest logit difference {max_d:.4}",
-                    old_rows.len()
-                );
+            if let Some(nl) = &new_layers {
+                layer_lines(nl, &cpu_layers);
             }
-            // (each engine against the reference's own rows: never left out)
-            let mut engines: Vec<(&str, &Vec<Vec<f32>>)> = vec![("the executor", &new_rows)];
-            if let Some((old_rows, ..)) = &old {
-                engines.push(("the hand-written engine", old_rows));
-            }
-            for (who, rows) in &engines {
-                let v = compare(cf, &bound, rows);
+            // (the executor against the reference's own rows: never left out)
+            {
+                let v = compare(cf, &bound, &new_rows);
                 println!(
-                    "     {who} against the reference's own rows: bits-equal {}/{}, KL mean {:.2e} max {:.2e}, best token {}/{} with a lead ({})",
+                    "     the executor against the reference's own rows: bits-equal {}/{}, KL mean {:.2e} max {:.2e}, best token {}/{} with a lead ({})",
                     v.identical,
                     v.rows,
                     v.mean_kl,
@@ -2425,18 +2302,12 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
                     if v.ok { "within the bound" } else { "PAST the bound" }
                 );
             }
-            // 4. the best token where the reference's lead is clear; every row's lead, best tokens and KL
+            // 3. the best token where the reference's lead is clear; every row's lead, best tokens and KL
             let mut unclear = Vec::new();
             for (i, r) in cf.rows.iter().enumerate() {
                 let lead = if r.logits.len() > 1 { r.logits[0] - r.logits[1] } else { f32::INFINITY };
                 let n = arg(&new_rows[i]) as u32;
-                let o = old.as_ref().map(|o| (arg(&o.0[i]), kl_of(r, &o.0[i])));
-                println!(
-                    "       row {i:2}: the reference's best {} by {lead:.4}; the executor's {n} KL {:.2e}{}",
-                    r.ids[0],
-                    kl_of(r, &new_rows[i]),
-                    o.map_or(String::new(), |(b, k)| format!("; the hand-written engine's {b} KL {k:.2e}"))
-                );
+                println!("       row {i:2}: the reference's best {} by {lead:.4}; the executor's {n} KL {:.2e}", r.ids[0], kl_of(r, &new_rows[i]));
                 if n != r.ids[0] {
                     if lead > CLEAR_LEAD {
                         ok = false;
@@ -2449,7 +2320,7 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
             if !unclear.is_empty() {
                 println!("     the executor's best token is not the reference's where its lead is {CLEAR_LEAD} or less (not required): {}", unclear.join(", "));
             }
-            // 2. and 3. on the engine's own choices; the hand-written engine's by the same measures, for its record
+            // 1. and 2. on the engine's own choices
             let traced_same = new_rows.iter().zip(&new_traced).filter(|(x, y)| x == y).count();
             println!("     the executor's rows with its choices read (every pass eager): {traced_same}/{} the same bits as without", new_rows.len());
             match &new_choices {
@@ -2473,25 +2344,11 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
                     why.push("the executor gave no view of its routers' choices".into());
                 }
             }
-            if let Some((_, old_traced, Some(ch), _)) = &old {
-                match held_on_choices("the hand-written engine (its record, not required)", &dir, cf, &bound, old_traced, ch, &own) {
-                    Ok(h) => println!(
-                        "     the hand-written engine's record: on its own router inputs its choices apart {}, its logits on its choices {}",
-                        if h.routing { "the reference router's or near ties" } else { "NOT all the reference router's or near ties" },
-                        if h.logits { "within the bound" } else { "PAST the bound" }
-                    ),
-                    Err(e) => println!("     the hand-written engine's record on its choices was not made: {}", e.msg),
-                }
-            }
             println!(
                 "{} {id:12} {level:8} {} rows{}",
                 if ok { "PASS" } else { "FAIL" },
                 new_rows.len(),
-                if ok {
-                    ": the shared stages' bits, the routers' choices, the logits on them and the clear best tokens hold".to_string()
-                } else {
-                    format!(": {}", why.join("; "))
-                }
+                if ok { ": the routers' choices, the logits on them and the clear best tokens hold".to_string() } else { format!(": {}", why.join("; ")) }
             );
             if !ok {
                 failed.push(format!("{id} at {level}"));
@@ -2607,88 +2464,6 @@ fn carry_lines(dir: &Path, fx: &Fixture, own: &RefRun, d: &Apart) -> Result<()> 
     Ok(())
 }
 
-/// Layer 0 of the random Qwen3.8-Flash-Next on a prompt, stage by stage, on Condor's engine (its `stages`) and the executor (`Dyn::trace_ops`): each stage's
-/// output on the two (the gated residual's norm, bottleneck, up product and mix; the linear attention's products, convolution, delta rule, gated norm and out
-/// product; the experts; the streams after each block), the values with the same bits and the largest difference over the largest magnitude; the first stage
-/// apart named.
-fn qwen4x_stage_lines(dir: &Path, level: &str, prompt: &[u32]) -> Result<usize> {
-    use crate::dynamic::Slot;
-    // (Condor's stage, the executor's operation of the same output and the slot it is in)
-    // (and which of the layer's operations of that name, past the stage's earlier ones: the streams' update after the experts is the layer's second)
-    const MAP: [(&str, &str, Slot, usize); 13] = [
-        ("gated residual: norm", "StreamsPre", Slot::Hq, 0),
-        ("gated residual: bottleneck", "StreamsPre", Slot::Mid, 0),
-        ("gated residual: up product", "StreamsPre", Slot::Cp, 0),
-        ("gated residual: mix", "StreamsPre", Slot::H, 0),
-        ("linear attention: qkvz product", "linear attention: qkvz product", Slot::Mix, 0),
-        ("linear attention: ba product", "linear attention: ba product", Slot::Ba, 0),
-        ("linear attention: convolution", "GdnConv", Slot::Xc, 0),
-        ("linear attention: delta rule", "GdnDelta", Slot::Core, 0),
-        ("linear attention: gated norm", "GatedNorm", Slot::Core, 0),
-        ("linear attention: out product", "linear attention: out product", Slot::O, 0),
-        ("streams after the mixer", "StreamsPost", Slot::S, 0),
-        ("experts", "Moe", Slot::O, 0),
-        ("streams after the experts", "StreamsPost", Slot::S, 1),
-    ];
-    let experts = qwen4x_experts(level)?;
-    let old: Vec<(&'static str, Vec<u16>)> = {
-        let o = crate::model_qwen4x::OptsQx { ctx: 1024, chunk: 64, layout: Layout::Tiered, chunked: true, ..Default::default() };
-        let make = crate::model_qwen4x::gpu_experts(experts);
-        let mut r = Qwen4x { e: crate::model_qwen4x::EngineQx::new(dir, &o, Some(&make))?, chunk: 64, last_chunk: 0, routed: None };
-        r.reset()?;
-        *r.e.stages.borrow_mut() = Some(Vec::new());
-        let p = r.prefill(prompt);
-        let got = r.e.stages.borrow_mut().take().unwrap_or_default();
-        p?;
-        // (layer 0's: up to its streams after the experts)
-        let end = got.iter().position(|(w, _)| *w == "streams after the experts").map_or(got.len(), |i| i + 1);
-        got.into_iter().take(end).collect()
-    };
-    let new = {
-        let mut e = crate::dynamic::qwen4x::load_level(dir, &dyn_opts(Some(Layout::Tiered)), experts)?;
-        Dyn::reset(&mut e)?;
-        e.trace_ops(Some(0));
-        let p = Dyn::prefill(&mut e, prompt);
-        let got = e.trace_ops(None);
-        p?;
-        got
-    };
-    let f = |v: &[u16]| v.iter().map(|&h| f32::from_bits((h as u32) << 16)).collect::<Vec<f32>>();
-    let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-    let (mut first, mut shared) = (None, 0usize);
-    for (what, ov) in &old {
-        let Some(&(_, op, slot, past)) = MAP.iter().find(|m| m.0 == *what) else { continue };
-        let k = seen.entry(what).or_insert(0);
-        let at = new.iter().enumerate().filter(|(_, (n, _))| n == op).nth(*k + past).map(|(i, _)| i);
-        *k += 1;
-        let again = *k > 1;
-        let Some(i) = at else {
-            println!("     layer 0 {what}: the executor has no operation {op} for it");
-            continue;
-        };
-        let nv = &new[i].1[crate::dynamic::TRACED.iter().position(|s| *s == slot).expect("a traced slot")];
-        if nv.len() < ov.len() {
-            println!("     layer 0 {what}: the executor's {slot:?} holds {} values, where Condor's stage made {}", nv.len(), ov.len());
-            continue;
-        }
-        let nv = &nv[..ov.len()];
-        let same = ov.iter().zip(nv).filter(|(a, b)| a == b).count();
-        let (a, b) = (f(ov), f(nv));
-        let scale = a.iter().fold(0f32, |m, v| m.max(v.abs())).max(1e-30);
-        let d = a.iter().zip(&b).fold(0f32, |m, (x, y)| m.max((x - y).abs())) / scale;
-        if same != ov.len() && first.is_none() {
-            first = Some(*what);
-        }
-        // (the stages before the delta rule, in the order the layer runs them: the ones the two engines share)
-        if first.is_none() && !again && same == ov.len() && MAP.iter().position(|m| m.0 == *what).is_some_and(|k| k < SHARED_STAGES) {
-            shared += 1;
-        }
-        println!("     layer 0 {what} (operation {i} {op}, {slot:?}): {same}/{} values the same bits, apart by {d:.2e}", ov.len());
-    }
-    println!("     layer 0's first stage apart: {}; {shared} of the {SHARED_STAGES} stages before the delta rule the same bits", first.unwrap_or("none"));
-    Ok(shared)
-}
-
 /// The CPU f32 reference's residual after each layer of a prompt of the model in `dir` (from its description).
 fn cpu_layers(dir: &Path, tokens: &[u32]) -> Result<Vec<Vec<f32>>> {
     use crate::runtime::reference::model::{checkpoint_tensor, RefModel};
@@ -2701,29 +2476,17 @@ fn cpu_layers(dir: &Path, tokens: &[u32]) -> Result<Vec<Vec<f32>>> {
     Ok(m.record.take().unwrap_or_default())
 }
 
-/// Two engines' residuals after each layer of the same prompt, and the CPU reference's where given: per layer the values with the same bits, the largest
-/// difference over the largest magnitude between them, and each against the reference; the first layer apart named.
-fn layer_lines(old: &[Vec<f32>], new: &[Vec<f32>], cpu: Option<&[Vec<f32>]>) {
-    let rel = |a: &[f32], b: &[f32]| {
-        let scale = b.iter().fold(0f32, |m, v| m.max(v.abs())).max(1e-30);
-        a.iter().zip(b).fold(0f32, |m, (x, y)| m.max((x - y).abs())) / scale
-    };
-    if old.len() != new.len() {
-        println!("     layers: the old engine traced {}, the executor {}", old.len(), new.len());
+/// The executor's residual after each layer of a prompt against the CPU reference's: per layer the largest difference over the largest magnitude of the
+/// reference's, and the values with the same bits.
+fn layer_lines(new: &[Vec<f32>], cpu: &[Vec<f32>]) {
+    if cpu.len() != new.len() {
+        println!("     layers: the reference traced {}, the executor {}", cpu.len(), new.len());
     }
-    let mut first = None;
-    for (l, (o, n)) in old.iter().zip(new).enumerate() {
-        let same = o.iter().zip(n).filter(|(x, y)| x.to_bits() == y.to_bits()).count();
-        if same != o.len() && first.is_none() {
-            first = Some(l);
-        }
-        let c = cpu.and_then(|c| c.get(l)).filter(|c| c.len() == o.len());
-        let refs = c.map_or(String::new(), |c| format!("; against the CPU reference: old {:.2e}, executor {:.2e}", rel(o, c), rel(n, c)));
-        println!("     layer {l}: {same}/{} values the same bits, apart by {:.2e}{refs}", o.len(), rel(n, o));
-    }
-    match first {
-        Some(l) => println!("     the first layer apart: {l}"),
-        None => println!("     every layer the same bits"),
+    for (l, (n, c)) in new.iter().zip(cpu).enumerate().filter(|(_, (n, c))| n.len() == c.len()) {
+        let scale = c.iter().fold(0f32, |m, v| m.max(v.abs())).max(1e-30);
+        let d = n.iter().zip(c).fold(0f32, |m, (x, y)| m.max((x - y).abs())) / scale;
+        let same = n.iter().zip(c).filter(|(x, y)| x.to_bits() == y.to_bits()).count();
+        println!("     layer {l}: against the CPU reference apart by {d:.2e}, {same}/{} values the same bits", n.len());
     }
 }
 

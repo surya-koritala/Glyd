@@ -1,5 +1,5 @@
-//! GLM-5.3-Flash's kernel table (kernels/glm.cu and kernels/mla.cu, `KernGlm`: src/kern/glm.rs's), which the executor (src/dynamic/glm.rs) and Condor's engine
-//! (src/model_qwen4x.rs) share, and a reader of a checkpoint's fp32 parameters. The executor loads GLM's weights by its generic loader (`Dyn::new_placed`, from
+//! GLM-5.3-Flash's kernel table (kernels/glm.cu and kernels/mla.cu, `KernGlm`: src/kern/glm.rs's), which the executor runs (src/dynamic/glm.rs), and a reader of
+//! a checkpoint's fp32 parameters. The executor loads GLM's weights by its generic loader (`Dyn::new_placed`, from
 //! the lowered description: `lower::glm`) and its experts as the Moe kind's block (`dynamic::experts`). The config and tensor names are src/glm.rs's.
 
 use crate::ffi::{err, Error, Result};

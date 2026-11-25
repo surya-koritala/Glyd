@@ -1,5 +1,5 @@
-//! A development build's timeline of the steps of a session: markers recorded on the engine's stream (a CUDA event each: the stream's own clock) with the host's clock beside them, for the steps `qwenserve` is asked to trace
-//! (`{"set": {"trace": 1}}`, or 2 for every stage marker of the engine). The decode step of the expert cache is host work and GPU work in turn (a layer's router choices are read on the host before its experts run); this is
+//! A development build's timeline of the steps of a session: markers recorded on the engine's stream (a CUDA event each: the stream's own clock) with the host's clock beside them, for the steps a check asks to trace
+//! (`start`; every stage marker of the engine with `all`). The decode step of the expert cache is host work and GPU work in turn (a layer's router choices are read on the host before its experts run); this is
 //! where the time of one step is split per layer into the parts: the GPU's always-on work, the readback of the router's choices and the wait for it, the host's plan and copies, the experts on the GPU, the experts on the host
 //! and the sums sent back, the sum and what follows.
 
@@ -160,70 +160,3 @@ pub fn stages(marks: &[Mark]) -> Vec<(&'static str, f64)> {
 
 /// A traced decode step: the parts of each layer, the stages, the step's milliseconds.
 pub type TracedStep = (Vec<Layer>, Vec<(&'static str, f64)>, f64);
-
-#[cfg(feature = "dev")]
-/// The traced steps of a request (all but the first, which finds the cache as the prompt left it, where there are others): the mean of each layer's parts in microseconds on the stream's clock, the totals by part, and with
-/// every stage marker the stages' totals.
-pub(crate) fn print_trace(steps: &[TracedStep]) {
-    let used = if steps.len() > 1 { &steps[1..] } else { steps };
-    let n = used.len() as f64;
-    let layers = used.iter().map(|s| s.0.len()).min().unwrap_or(0);
-    let mean = |f: &dyn Fn(&Layer) -> f64, l: usize| used.iter().map(|s| f(&s.0[l])).sum::<f64>() / n;
-    let step_ms = used.iter().map(|s| s.2).sum::<f64>() / n;
-    let mut tot = [0f64; 11];
-    let mut lines = vec![format!(
-        "trace: {} decode steps ({} of them averaged), a step {step_ms:.1} ms; per layer, microseconds on the stream's clock",
-        steps.len(),
-        used.len()
-    )];
-    lines.push("  layer   always  router readback     plan products hostexp      sum     post |    total | host: queue   wait".into());
-    for l in 0..layers {
-        let f: [&dyn Fn(&Layer) -> f64; 11] = [
-            &|x| x.always,
-            &|x| x.router,
-            &|x| x.readback,
-            &|x| x.plan,
-            &|x| x.products,
-            &|x| x.host_experts,
-            &|x| x.sum,
-            &|x| x.post,
-            &|x| x.total,
-            &|x| x.host_queue,
-            &|x| x.host_wait,
-        ];
-        let v: Vec<f64> = f.iter().map(|g| mean(g, l)).collect();
-        for (t, x) in tot.iter_mut().zip(&v) {
-            *t += x;
-        }
-        lines.push(format!(
-            "  {l:>5} {:>8.0} {:>7.0} {:>8.0} {:>8.0} {:>8.0} {:>7.0} {:>8.0} {:>8.0} | {:>8.0} | {:>11.0} {:>6.0}",
-            v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10]
-        ));
-    }
-    lines.push(format!("  total {:>8.0} {:>7.0} {:>8.0} {:>8.0} {:>8.0} {:>7.0} {:>8.0} {:>8.0} | {:>8.0} | {:>11.0} {:>6.0}   (the layers; a step is {:.0} us with the head and the embedding)", tot[0], tot[1], tot[2], tot[3], tot[4], tot[5], tot[6], tot[7], tot[8], tot[9], tot[10], step_ms * 1e3));
-    let sum = tot[8].max(1e-9);
-    lines.push(format!(
-        "  share of the layers: always-on {:.0}%, router and shared expert {:.0}%, readback {:.0}%, plan and copies {:.0}%, experts on the GPU {:.0}%, experts on the host {:.0}%, sum {:.0}%, update {:.0}%",
-        100.0 * tot[0] / sum, 100.0 * tot[1] / sum, 100.0 * tot[2] / sum, 100.0 * tot[3] / sum, 100.0 * tot[4] / sum, 100.0 * tot[5] / sum, 100.0 * tot[6] / sum, 100.0 * tot[7] / sum
-    ));
-    // the stages (level 2): the time from the marker before to each marker, summed by its label over the layers, averaged over the steps
-    if used.iter().any(|s| s.1.len() > 64) {
-        let mut by: std::collections::BTreeMap<&str, f64> = Default::default();
-        for s in used {
-            for (label, us) in &s.1 {
-                *by.entry(label).or_default() += us / n;
-            }
-        }
-        let mut v: Vec<(&str, f64)> = by.into_iter().collect();
-        v.sort_by(|a, b| b.1.total_cmp(&a.1));
-        lines.push("  stages, microseconds a step (the time since the marker before), largest first:".into());
-        for (label, us) in v.iter().take(40) {
-            lines.push(format!("    {label:<34} {us:>8.0}"));
-        }
-    }
-    // (each line on the standard error, with the seconds since the first line, as the server's log lines)
-    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-    for l in lines {
-        eprintln!("[{:7.1} s] {l}", START.get_or_init(Instant::now).elapsed().as_secs_f64());
-    }
-}

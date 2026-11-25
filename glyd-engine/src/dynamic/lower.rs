@@ -528,7 +528,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                         let (idim, iblock) = (ix.head_dim, ix.block);
                         if r.scaling != RopeScaling::None
                             || r.freq_dim != r.dim
-                            || crate::model_qwen4x::index_fits(idim, iblock).is_err()
+                            || crate::kern::qwen4x::index_fits(idim, iblock).is_err()
                             || r.dim > idim
                             || ix.top_k % iblock != 0
                         {

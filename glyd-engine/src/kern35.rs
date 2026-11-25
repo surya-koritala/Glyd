@@ -1,4 +1,4 @@
-//! The Qwen3.5 layout's GPU pieces that the description executor (src/dynamic) and Condor (src/model_qwen4x.rs) run (its kernel table, `Kern35`, is src/kern/qwen35.rs's):
+//! The Qwen3.5 layout's GPU pieces that the description executor (src/dynamic) runs (its kernel table, `Kern35`, is src/kern/qwen35.rs's):
 //! a packed matrix (`Mat`) and where each of a layer's matrices comes from (`layer_mats`: a pack the library makes, or tensors kept as the checkpoint has them). The
 //! executor's loader (src/dynamic, `Dyn::new_stage`) reads the tensors the description names; this file loads none.
 //!

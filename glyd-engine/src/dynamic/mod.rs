@@ -1325,7 +1325,7 @@ pub struct Dyn {
     tok: Option<Buf>,
     ones: Option<Buf>,
     /// kernels/qwen4x.cu's, and the unweighted picks' room, where the description has the gated residuals, the n-gram embedding or the mean-pooled indexer.
-    kqx: Option<crate::model_qwen4x::KernQx>,
+    kqx: Option<crate::kern::qwen4x::KernQx>,
     /// A draft head's weights of one for its input (`Op::MtpIn`): fp32 [chunk, streams].
     head_ones: Option<Buf>,
     /// Where Some: each eager pass adds the residual (mHC's or the gated residuals' streams S, else X) of its rows after each layer, a check's view of each layer
@@ -1994,7 +1994,7 @@ impl Dyn {
                     | Op::NgramAdd(_)
             ) || matches!(op, Op::Attn(a) if a.picked)
         });
-        let kqx = if qx { Some(crate::model_qwen4x::KernQx::load(&dev)?) } else { None };
+        let kqx = if qx { Some(crate::kern::qwen4x::KernQx::load(&dev)?) } else { None };
         let picks = picked::PickRun::new(d, ch)?;
         let ones = if moes().any(|m| m.weigh_act) {
             let k = big.moe.iter().filter_map(|b| b.resident()).map(|(l, _)| l.cfg.router.top_k).max().unwrap_or(crate::moe::MAX_TOPK);
@@ -2451,7 +2451,7 @@ impl Dyn {
     }
 
     /// The gated residuals', the n-gram embedding's and the mean-pooled indexer's kernels (kernels/qwen4x.cu), where the description has those kinds.
-    fn kqx(&self) -> Result<&crate::model_qwen4x::KernQx> {
+    fn kqx(&self) -> Result<&crate::kern::qwen4x::KernQx> {
         self.kqx.as_ref().ok_or_else(|| Error("a gated residual, n-gram embedding or mean-pooled indexer in a model loaded without its kernels".into()))
     }
 

@@ -135,15 +135,19 @@ pub fn run(prog: &str, mut a: Args, dev: Dev) -> Result<()> {
         Some("fit") => std::process::exit(crate::plan::fit_cmd(&a)),
         // a range of a model's layers as a process: glyd-range/1 on the standard input and output (docs/range-worker.md)
         Some("rangeworker") => crate::dynamic::range::worker(&a),
-        // Qwen3.8-Flash-Next behind glyd-hummingbird's tools/qwen_shim.py: one JSON request a line on stdin, one answer a line on stdout
-        // (with --port or --host: the HTTP server, the chat page and the OpenAI and Anthropic APIs; else the JSON-lines protocol on the standard input)
+        // Qwen3.8-Flash-Next with its packs of codebook experts: the HTTP server (the chat page, the OpenAI and Anthropic APIs) on the description executor
         Some("qwenbench") => crate::qwen_tools::bench(&a),
         Some("qwenmcp") => crate::qwen_tools::mcp(&a),
-        Some("qwenget") => crate::qwen4x_serve::get(a.need(1, "REPO")?, std::path::Path::new(a.need(2, "DIR")?), &a),
+        Some("qwenget") => crate::dynamic::qwen4x::get(a.need(1, "REPO")?, std::path::Path::new(a.need(2, "DIR")?), &a),
         Some("qwenserve") if a.has("port") || a.has("host") => {
             crate::dynamic::qwen4x::http(std::path::Path::new(a.need(1, "CKPT")?), std::path::Path::new(a.need(2, "PACK")?), &a)
         }
-        Some("qwenserve") => crate::qwen4x_serve::serve(std::path::Path::new(a.need(1, "CKPT")?), std::path::Path::new(a.need(2, "PACK")?), &a),
+        // (the JSON-lines protocol on the standard input was the family's own engine's; only development scripts spoke it: tools/oneshot, tools/runpod/jobs,
+        // research/qwen-kld)
+        Some("qwenserve") => err(
+            "qwenserve serves over HTTP: qwenserve CKPT PACK --port PORT, then POST /v1/completions (a prompt of token ids, max_tokens, logprobs) in place of a \
+             JSON line on the standard input, a protocol of the model's own engine, which is gone",
+        ),
         Some(c) if dev.is_some() => (dev.unwrap())(c, &a),
         _ => err(USAGE),
     }

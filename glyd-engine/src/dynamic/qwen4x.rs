@@ -1,9 +1,9 @@
 //! Qwen3.8-Flash-Next (`Qwen4ExpForConditionalGeneration`, Condor's model) on the executor (R3d, #140): its config's layer kinds lowered to the shared operations
 //! (`lower::qwen4x`) and loaded here: the matrices packed at the level asked (penguin's lossless packs where none is), the ones the library does not pack and the table of n-grams
-//! held as saved (bf16), the small tensors as saved but A_log in fp32 (the delta rule reads it so). The experts either all on the GPU at kestrel's six bits (`load`:
-//! Condor's block, `QxMoe`, handed over as a `ResidentMoe`), or from a pack of codebook rows in the shared expert store (`load_cached`: Condor's codebook block,
-//! `QxMoeCb`, the misses on the host). The MTP layer is a draft head of the model (`load_drafting`: `lower::qwen4x_head`, src/dynamic/head.rs). Condor's engine
-//! (src/model_qwen4x.rs) still holds what the executor does not take yet: the table of n-grams read from the disk, the vision tower.
+//! held as saved (bf16), the small tensors as saved but A_log in fp32 (the delta rule reads it so). The experts either all on the GPU at the level asked (`load`:
+//! `moe_qwen4x::QxMoe`, handed over as a `ResidentMoe`), or from a pack of codebook rows in the shared expert store (`load_cached`: the codebook block,
+//! `QxMoeCb`, the misses on the host). The MTP layer is a draft head of the model (`load_drafting`: `lower::qwen4x_head`, src/dynamic/head.rs). Not on the
+//! executor yet: the vision tower, and the table of n-grams read from the disk in place of the GPU (the family's own engine did both; R3d deleted it).
 
 use super::{Dyn, ModelDesc, Op, Opts, ResidentMoe, Stage};
 use crate::cb_pack::CbPack;
@@ -103,7 +103,7 @@ fn load_with(dir: &Path, o: &Opts, level: Layout, draft: Option<usize>) -> Resul
     let st = Stage::whole(d.layers.len());
     // (layer l's experts, the MTP layers' after the model's)
     let resident = |ck: &Checkpoint, ls: std::ops::Range<usize>| -> Result<Vec<Box<dyn MoeBlock>>> {
-        ls.map(|l| Ok(Box::new(ResidentMoe(crate::model_qwen4x::QxMoe::load(l, &c, ck, level)?.into_layer())) as Box<dyn MoeBlock>)).collect()
+        ls.map(|l| Ok(Box::new(ResidentMoe(crate::moe_qwen4x::QxMoe::load(l, &c, ck, level)?.into_layer())) as Box<dyn MoeBlock>)).collect()
     };
     let blocks = |ck: &Checkpoint, _: Layout| resident(ck, 0..c.layers);
     let head = |ck: &Checkpoint, _: Layout| resident(ck, c.layers..c.layers + c.mtp_layers);
@@ -257,6 +257,104 @@ pub fn http(snap: &Path, pack: &Path, a: &crate::args::Args) -> Result<()> {
     loading.store(false, Ordering::Relaxed);
     println!("Ready: up to {n} requests at once.");
     server::work_with(&mut crate::sched::Sched::new(step, n), shared, &rx, &tx);
+    Ok(())
+}
+
+/// `qwenget REPO DIR [--precise | --best]`: the model from the Hugging Face Hub (src/hub.rs: large files as ranges on several connections, resumed where they stopped, checked by SHA-256) into the Hub's cache, which
+/// every tool on the computer shares, and DIR/model and DIR/pack (with --precise, DIR/precise in its place; with --best, DIR/best) linked to its folders.
+pub fn get(repo: &str, dir: &Path, a: &crate::args::Args) -> Result<()> {
+    use crate::ffi::Error;
+    use crate::hub::{disk_free, Hub, HubError};
+    use std::io::Write;
+    use std::time::Instant;
+    let hub = Hub::from_env();
+    let e = |x: HubError| match x {
+        HubError::Denied(code) => Error(format!("{repo}: the Hub answered {code} (no such repository, or a private one: set HF_TOKEN)")),
+        x => Error(format!("{repo}: {x}")),
+    };
+    let remote = hub.list(repo, "main").map_err(e)?;
+    // (fast mode's experts are fast/ since v0.2.2 (format q); pack/ is the earlier engines' fast. precise-v2/ and best-v2/ (format q at 3 and 4 bits) are
+    // this engine's precise and best, precise/ and best/ the earlier engines' (and ours where the repo has no -v2 yet))
+    let has = |p: &str| remote.files.iter().any(|f| f.path.starts_with(&format!("{p}/")));
+    let experts = if a.has("best") {
+        ["best-v2", "best"]
+    } else if a.has("precise") {
+        ["precise-v2", "precise"]
+    } else {
+        ["fast", "fast"]
+    };
+    let parts: &[&str] = &["model", experts.into_iter().find(|p| has(p)).unwrap_or(experts[1])];
+    let wanted: Vec<crate::hub::Entry> = remote.files.iter().filter(|f| parts.iter().any(|p| f.path.starts_with(&format!("{p}/")))).cloned().collect();
+    for p in parts {
+        if !wanted.iter().any(|f| f.path.starts_with(&format!("{p}/"))) {
+            return err(format!("{repo} has no {p}/ folder"));
+        }
+    }
+    let need = hub.missing(&remote, &wanted);
+    let at = crate::store::existing_ancestor(hub.cache());
+    if let Some(free) = disk_free(&at) {
+        if free < need + (2 << 30) {
+            return err(format!(
+                "{:.0} GB more to download and {:.0} GB free in {}: free some space (or set HF_HUB_CACHE to a disk with room)",
+                need as f64 / 1e9,
+                free as f64 / 1e9,
+                at.display()
+            ));
+        }
+    }
+    let total: u64 = wanted.iter().map(|f| f.size).sum();
+    println!("{repo}: {:.1} GB, {:.1} GB of it to download, into {}", total as f64 / 1e9, need as f64 / 1e9, hub.cache().display());
+    let t0 = Instant::now();
+    let shown = std::sync::Mutex::new((0.0f64, 0u64));
+    let progress = |done: u64, total: u64| {
+        let t = t0.elapsed().as_secs_f64();
+        let Ok(mut s) = shown.lock() else { return };
+        if t - s.0 < 1.0 && done < total {
+            return;
+        }
+        if s.1 == 0 {
+            s.1 = done.max(1); // (what was there before this run, not counted in the speed)
+        }
+        let rate = (done.saturating_sub(s.1)) as f64 / t.max(1e-3);
+        let left = if rate > 0.0 { format!(", about {:.0} min left", (total - done) as f64 / rate / 60.0) } else { String::new() };
+        print!("\r  {:.1} of {:.1} GB  {:.0} MB/s{left}      ", done as f64 / 1e9, total as f64 / 1e9, rate / 1e6);
+        let _ = std::io::stdout().flush();
+        s.0 = t;
+    };
+    let snap = hub.fetch(&remote, &wanted, &progress).map_err(e)?;
+    hub.pin(&remote).map_err(e)?;
+    println!();
+    std::fs::create_dir_all(dir).map_err(|x| Error(format!("{}: {x}", dir.display())))?;
+    for p in parts {
+        let link = dir.join(p);
+        #[cfg(unix)]
+        if link.is_symlink() {
+            let _ = std::fs::remove_file(&link);
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(snap.join(p), &link).map_err(|x| Error(format!("{}: {x}", link.display())))?;
+        // (Windows: a junction, the folder link it makes without Developer Mode or administrator rights)
+        #[cfg(windows)]
+        {
+            if link.is_symlink() {
+                let _ = std::fs::remove_dir(&link);
+            }
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(snap.join(p))
+                .output()
+                .map_err(|x| Error(format!("{}: {x}", link.display())))?;
+            if !made.status.success() {
+                return err(format!("{}: {}", link.display(), String::from_utf8_lossy(&made.stderr).trim()));
+            }
+        }
+    }
+    // (a download counts on the Hub only through its query files (meta.yaml at the root): one small read per install, none when nothing was downloaded)
+    if need > 0 {
+        let _ = hub.text(repo, "main", "meta.yaml");
+    }
+    println!("the model is in {} ({})", dir.display(), parts.join(", "));
     Ok(())
 }
 

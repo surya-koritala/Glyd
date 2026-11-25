@@ -37,3 +37,8 @@
   release's weights exactly, every expert on one GPU (its layers are not cut over GPUs yet), sized from the files' headers. The released model needs about
   327 GiB on one GPU, so every machine preset refuses it in those words; a model of the family that fits one GPU runs. Its packs of codebook experts (precise,
   best, fast) are still served by `qwenserve CKPT PACK --port`. Before, `glyd run` and `fit` refused the family whatever its size. Part of #140.
+- Qwen3.8-Flash-Next's own engine is gone (`model_qwen4x.rs`, its development checks `qxlayers`, `qxcb`, `qxbench`, `qxprod`, `qxhost`, `qxtoy`, and the
+  standard-input server): the description executor runs the family everywhere. What it kept of that engine moved: the family's kernels the executor launches
+  (`kern::qwen4x`), its experts held whole on the GPU (`moe_qwen4x::QxMoe`). `paritycheck` holds the executor to the CPU reference alone, layer by layer
+  (the old engine's record stays in `tests/fixtures/qwen4x_condor_rows.json.gz`). `qwenserve CKPT PACK` without `--port` now says to serve over HTTP:
+  the JSON-lines protocol on the standard input was that engine's, and only development scripts used it. `qwenget` downloads as before. Part of #140.

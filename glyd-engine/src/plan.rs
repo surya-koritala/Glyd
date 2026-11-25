@@ -1303,7 +1303,7 @@ pub fn dynamic_room_of(free: u64) -> u64 {
     room_of(free).saturating_sub(dynamic_work_of(free))
 }
 
-/// Condor's (Qwen3.8-Flash-Next's) memory terms on a GPU, measured on an RTX 4080 SUPER (src/qwen4x_serve.rs): what its first prompt and the first decode use
+/// Condor's (Qwen3.8-Flash-Next's) memory terms on a GPU, measured on an RTX 4080 SUPER on the family's own engine (deleted in R3d; no load is sized by them now): what its first prompt and the first decode use
 /// beyond the load (0.886 GiB), a chunk's scratch a row (0.335 MB), the keys and values of a token (28 KB) and the margin kept free (0.3 GiB); the places of
 /// its expert cache take the rest.
 pub const CONDOR_FIRST_PROMPT_GIB: f64 = 0.886;
@@ -1594,7 +1594,7 @@ pub enum Kind {
     Gemma4,
     /// The dynamic route (src/dynamic): Kimi-K3, GLM-5.3-Flash, DeepSeek-V4, Muse Spark and Nemotron-H lossless, over one GPU or several.
     Dynamic,
-    /// Condor (`qwenserve`, src/qwen4x_serve.rs): Qwen3.8-Flash-Next with its experts in the computer's memory and a cache of them on each GPU.
+    /// Condor (the family's own engine, deleted in R3d): Qwen3.8-Flash-Next with its experts in the computer's memory and a cache of them on each GPU.
     Condor,
 }
 
@@ -2922,7 +2922,7 @@ pub mod sizing {
         fit(lo)
     }
 
-    /// What Condor's parts are sized from (`qwenserve`, src/qwen4x_serve.rs): the GiB free on its one GPU (`free`) or on each part's (`frees`, a GPU's own shared among the
+    /// What Condor's parts are sized from (the family's own engine, deleted in R3d: nothing calls this sizing now): the GiB free on its one GPU (`free`) or on each part's (`frees`, a GPU's own shared among the
     /// parts on it), the always-on matrices, a part's own scratch (`fixed`) and the whole reserve of one GPU (`reserve`), the context, the LM head (GiB), the bytes of an
     /// expert's place, and the experts a layer.
     pub struct CondorRoom<'a> {
@@ -3066,7 +3066,7 @@ pub mod sizing {
         }
     }
 
-    /// Condor's load as the plan makes it (`qwenserve`, src/qwen4x_serve.rs `load`, which allocates what it says): the GPUs (`--gpus`) and the parts over them
+    /// Condor's load as the plan made it for the family's own engine (deleted in R3d), which allocated what it says: the GPUs (`--gpus`) and the parts over them
     /// (`--split`, `--cache-gb`), the plan of them, and the free bytes it was made from (every part's GPU together).
     pub struct CondorLoad {
         pub gpus: Vec<i32>,
@@ -3808,9 +3808,9 @@ pub mod sizing {
     }
 
     /// The plan `run` loads MODEL (its config.json `text`) at `level` on the GPU `t`, with the flags of `a`, or the refusal `run` gives: what `fit` prints
-    /// and `run`, `serve` and `preflight` size with. `users`: the sequences a server holds at once (the Qwen3 path's; the lossy paths hold one). Ok(None): this
-    /// family's path is not sized here (Qwen3.8-Flash-Next's own engine sizes its load at its entry, `sizing::condor_load`, src/qwen4x_serve.rs), and for
-    /// `fit` the planner's estimate stands (src/plan.rs).
+    /// and `run`, `serve` and `preflight` size with. `users`: the sequences a server holds at once (the Qwen3 path's; the lossy paths hold one). Ok(None): no
+    /// path of `run` loads this family yet (`Sizing::Estimate`), or the dynamic route has no headers of the model's files, and for `fit` the planner's
+    /// estimate stands (src/plan.rs).
     pub(crate) fn size(
         a: &Args,
         model: &str,
@@ -5482,7 +5482,7 @@ mod tests {
         }
     }
 
-    /// Condor's load is sized here alone (`sizing::condor_load`, what src/qwen4x_serve.rs `load` allocates): on one GPU the places take what the reserve leaves
+    /// Condor's load is sized here alone (`sizing::condor_load`, what the family's own engine, deleted in R3d, allocated): on one GPU the places take what the reserve leaves
     /// (the always-on matrices, the first prompt's and a chunk's scratch, the context's cache, the margin), so the plan adds up to the free memory; `--cache-gb`
     /// caps them; over two GPUs (one named twice: the split's check) each part has places, and a split that is not one, or more GPUs than half the layers, is
     /// refused in words.

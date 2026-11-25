@@ -46,7 +46,8 @@ pub struct Support {
     pub split_levels: &'static [&'static str],
     /// The levels at which a mixture of experts may keep its experts in the computer's memory.
     pub experts_in_ram_levels: &'static [&'static str],
-    /// The path drafts with the model's own multi-token-prediction head (Condor's): a decode step makes more than one token. No other path loads that head yet.
+    /// The family's own multi-token-prediction head drafts on the executor (src/dynamic/head.rs, Qwen3.8-Flash-Next's): a decode step makes more than one token. The
+    /// planner counts that gain; the served paths do not draft with the head yet (its verify pass takes experts held whole on the GPU).
     pub drafts: bool,
     /// How the planner sizes the family's path and what its loader takes (src/plan.rs `sizing`).
     pub route: Route,
