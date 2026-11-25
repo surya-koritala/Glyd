@@ -461,11 +461,12 @@ pub fn sched_reply(e: &mut Run, prompt: &[u32], tokens: usize) -> Result<(Vec<u3
     }
 }
 
-/// The name of the support row of the model whose config.json is `text`, where the row's layers split over GPUs on the dynamic route (`Support::split_levels`:
-/// the families this module opens from their release's directory); None for another path's model.
+/// The name of the support row of the model whose config.json is `text`, where the row's layers split over GPUs on the dynamic route (`Support::split_levels`)
+/// or the row is sized as the dynamic route's on one GPU (`Sizing::Dynamic`): the families this module opens from their release's directory; None for another
+/// path's model.
 pub fn family(text: &str) -> Option<&'static str> {
     let row = crate::support::row(crate::runtime::config::family_of(text)?);
-    (!row.split_levels.is_empty()).then_some(row.name)
+    (!row.split_levels.is_empty() || row.route.sizing == crate::support::Sizing::Dynamic).then_some(row.name)
 }
 
 /// The model of `dir` as `plan` says it loads (src/plan.rs `size_dynamic`): its layers cut over the plan's GPUs (`Spread::cuts`, `devices`) or across them

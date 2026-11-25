@@ -33,3 +33,7 @@
   has), its routed experts from the pack in the expert cache (`--places N` a layer, else what the GPU has free); Condor's own request loop (`Qx`) is gone.
   Not on the executor yet: the vision tower, and drafting over the expert cache (a verify pass takes experts held whole on the GPU). `glyd-engine
   servecheck qwen4x-cb` holds a served greedy completion to the same tokens through the scheduler in one process. Part of #140.
+- `glyd run`, `glyd serve` and `fit` take Qwen3.8-Flash-Next at penguin through the dynamic route's openers, the same as every family of the executor: the
+  release's weights exactly, every expert on one GPU (its layers are not cut over GPUs yet), sized from the files' headers. The released model needs about
+  327 GiB on one GPU, so every machine preset refuses it in those words; a model of the family that fits one GPU runs. Its packs of codebook experts (precise,
+  best, fast) are still served by `qwenserve CKPT PACK --port`. Before, `glyd run` and `fit` refused the family whatever its size. Part of #140.

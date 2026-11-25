@@ -2874,10 +2874,14 @@ pub fn make_model(a: &crate::args::Args) -> Result<()> {
         Weights::Random(make) => {
             let dir = Path::new(a.need(2, "DIR")?);
             make(dir)?;
-            // (`--servable`: the files a server needs besides the weights, for a client to talk to it: a tokenizer, the chat template and the end token; the Qwen3.8 layout's, which is the one with a template made)
+            // (`--servable`: the files a server needs besides the weights, for a client to talk to it: a tokenizer, the chat template and the end token; Qwen's
+            // chat format, which is the one with a template made: the Qwen3.5 layout's and Qwen3.8-Flash-Next's cases)
             if a.has("servable") {
-                if c.id != "qwen35" {
-                    return err(format!("--servable: only the qwen35 case has a chat template made (not {})", c.id));
+                if !["qwen35", "qwen4x", "qwen4x-s2"].contains(&c.id) {
+                    return err(format!(
+                        "--servable: only the cases of Qwen's chat format have a chat template made (qwen35, qwen4x, qwen4x-s2; not {})",
+                        c.id
+                    ));
                 }
                 write_serving_files(dir, include_str!("../tests/fixtures/chat_qwen38_tools.jinja"))?;
             }

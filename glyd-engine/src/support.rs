@@ -23,7 +23,8 @@ pub enum Family {
     Glm,
     DeepSeekV4,
     Muse,
-    /// Qwen3.8-Flash-Next: Condor's model, run by `qwenserve` until `glyd run` takes it (ROADMAP P8).
+    /// Qwen3.8-Flash-Next (the Qwen 4 preview, `qwen4_exp`): penguin on the dynamic route on one GPU, every expert on it (src/dynamic/qwen4x.rs `stage`).
+    /// Its packs of codebook experts (Condor's precise, best and fast) are served by `qwenserve CKPT PACK --port` until `glyd run` resolves them (ROADMAP P8).
     FlashNext,
 }
 
@@ -227,14 +228,14 @@ pub static TABLE: [Support; 9] = [
     Support {
         family: Family::FlashNext,
         name: "Qwen3.8-Flash-Next",
-        levels: NONE,
+        levels: PENGUIN,
         hummingbird_packed_only: false,
-        default_ctx: None,
+        default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
         split_levels: NONE,
         experts_in_ram_levels: NONE,
         drafts: true,
-        route: Route { sizing: Sizing::Estimate, ..ONE_GPU },
+        route: Route { sizing: Sizing::Dynamic, ..ONE_GPU },
     },
 ];
 
@@ -441,8 +442,15 @@ mod tests {
         }
         assert!(check(&q38, "Qwen/Qwen3.8-27B", "Qwen3.8-27B", "hummingbird").is_err());
         assert_eq!(row(Family::Qwen35).split_levels, ["penguin"], "its layers cut over the GPUs at penguin, as the dynamic route cuts them");
-        let x = check(&fixture("qwen4x_config.json"), "Qwen/X", "X", "penguin").unwrap_err();
-        assert!(x.fix.contains("condor/README.md"), "{x:?}");
+        // (Qwen3.8-Flash-Next: penguin on the dynamic route, on one GPU; its packs of codebook experts are not a level of glyd run yet)
+        let x = fixture("qwen4x_config.json");
+        assert!(check(&x, "Qwen/X", "X", "penguin").is_ok());
+        for l in ["kestrel", "hummingbird"] {
+            let r = check(&x, "Qwen/X", "X", l).unwrap_err();
+            assert_eq!(r.what, format!("X (Qwen3.8-Flash-Next) runs at the penguin level in this engine, not {l}"), "{r:?}");
+        }
+        assert!(row(Family::FlashNext).split_levels.is_empty() && row(Family::FlashNext).route.sizing == Sizing::Dynamic);
+        assert_eq!(crate::dynamic::split::family(&x), Some("Qwen3.8-Flash-Next"), "opened by the dynamic route from its release's directory");
         let g = fixture("gemma4_12b_config.json");
         assert!(check(&g, "google/gemma-4-12B-it", "gemma-4-12B-it", "wren").is_ok(), "a QAT checkpoint's wren runs in every build");
         assert!(check(&g, "google/gemma-4-12B-it", "gemma-4-12B-it", "hummingbird").is_err());

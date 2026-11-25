@@ -270,6 +270,22 @@ fn released_glm53_flash_config() {
     assert_eq!((d.mtp_layers, d.desc.embed.streams), (1, 4));
 }
 
+/// Qwen3.8-Flash-Next's released config (tests/fixtures/qwen4x_config.json) describes its released checkpoint (tests/fixtures/qwen4x_tensors.json, the
+/// release's safetensors headers) exactly: every tensor, the MTP layer's as the draft head's, less the vision tower; each at the checkpoint's shape where the
+/// description gives one.
+#[test]
+fn released_qwen38_flash_next_config() {
+    let d = describe(&fixture("qwen4x_config.json")).unwrap_or_else(|e| panic!("{}", e.msg));
+    let t = fixture("qwen4x_tensors.json");
+    let tensors = t["tensors"].as_object().unwrap();
+    let have: BTreeSet<String> = tensors.keys().cloned().collect();
+    d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+    for (n, shape) in &d.shapes {
+        let got: Vec<usize> = tensors[n][1].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect();
+        assert_eq!(&got, shape, "{n}");
+    }
+}
+
 /// GLM-5.3's released config (`glm_moe_dsa`) describes its released checkpoint exactly: every tensor (the experts from the fixture's runs), less the MTP
 /// layer, each at the checkpoint's shape where the description gives one; the FP8 matrices are the ones the checkpoint holds with block scales; the
 /// indexers' schedule is the config's (a `full` layer every fourth after the first three, `shared` between); the latent attention turns 64 channels
