@@ -672,7 +672,7 @@ def test_doctor():
     with tempfile.TemporaryDirectory() as d:  # (an engine program that is there: said, with where, and what it makes of this computer)
         eng = fake_engine(d)
         rows, _ = run.doctor_lines(environ={"GLYD_ENGINE": eng}, run=smi(L4))
-        assert [r for r in rows if r[1] == "Glyd engine"] == [("ok", "Glyd engine", f"{eng}: glyd run starts it for Qwen3 models here (GLYD_ENGINE=0: vLLM instead); glyd serve uses vLLM (GLYD_ENGINE=1: the engine)")]
+        assert [r for r in rows if r[1] == "Glyd engine"] == [("ok", "Glyd engine", f"{eng}: glyd run starts it for the models it runs here (GLYD_ENGINE=0: vLLM instead; a plain dense model at the lossless level only on a GPU where it is measured at least as fast as vLLM, or with GLYD_ENGINE=1); glyd serve uses vLLM (GLYD_ENGINE=1: the engine)")]
         eng = fake_engine(d, preflight=3, text="glyd: NVIDIA GeForce RTX 4090 is not a GPU the engine is measured at least as fast as vLLM on.\n  vLLM runs the model on this GPU")
         rows, _ = run.doctor_lines(environ={"GLYD_ENGINE": eng}, run=smi(L4))
         assert [r for r in rows if r[1] == "Glyd engine"] == [("info", "Glyd engine", f"{eng} is here, and glyd run uses vLLM on this computer: NVIDIA GeForce RTX 4090 is not a GPU the engine is measured at least as fast as vLLM on; glyd serve uses vLLM (GLYD_ENGINE=1: the engine)")]

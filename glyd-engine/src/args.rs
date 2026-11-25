@@ -19,7 +19,6 @@ const SWITCHES: &[&str] = &[
     "p2p",
     "ignore-eos",
     "logprobs",
-    "profile",
     "profile-prefill",
     "attn-decode",
     "no-think",

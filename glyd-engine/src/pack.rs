@@ -1,6 +1,6 @@
-//! `glyd-engine pack MODEL OUT`: the checkpoint packed as glyd-v4 (`glyd-gpu pack`'s save, each matrix in the smaller of the two layouts: the layers' packs, the LM
-//! head's where the model has one, the norms) and, beside it in `engine.safetensors`, the embedding packed the same
-//! way (tiered `mma`), so that every matrix the engine holds is compressed.
+//! `glyd-engine pack MODEL OUT`: the checkpoint packed by `glyd-gpu`'s save: a glyd-v7 directory for a lossy level and for penguin of Gemma 4 and the plain dense kind, each
+//! matrix packed, the embedding too; otherwise glyd-v3 (the 12-bit layout) or glyd-v4 (each matrix in the smaller of the two layouts) with the embedding packed beside it in
+//! `engine.safetensors`, so that every matrix the engine holds is compressed.
 
 use crate::ffi::{err, Error, Result};
 use crate::glm::ConfigGlm;

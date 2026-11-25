@@ -366,7 +366,7 @@ pub fn checks(f: &Facts) -> Vec<Check> {
             "cuBLAS",
             Status::Note,
             "not found: long prompts use the engine's own products (a little slower)",
-            Some("Optional: install the CUDA 13 cuBLAS, or set GLYD_CUBLAS to it"),
+            Some("Optional: install the CUDA 13 cuBLAS where the loader finds it (a development build also takes GLYD_CUBLAS, a path; a release build ignores it)"),
         )),
     }
     // the backends: each one detected or not, its version, and accepted or rejected with the reason (the refusal `run` gives)

@@ -35,13 +35,15 @@ Short names offer models released in the last six months. An older model still w
 ## fit
 
 `fit` reads the model's `config.json` from the Hub and prints the plan: the level, where the weights go, the context, and a
-predicted speed. For Qwen3.5-9B with `--machine rtx4090`, the preset for an RTX 4090 with 23 GiB free:
+predicted speed. For gemma-4-12B with `--machine rtx4090`, the preset for an RTX 4090 with 23 GiB free (the plan line and the levels; the lines
+between them and the ones after, on quality and on where the speeds come from, are left out):
 
 ```
-Plan: kestrel (6.5 bits) · GPU 0 (NVIDIA GeForce RTX 4090) · 32768 tokens of context · ~127 tokens/s (114-139) · prompts ~7906 tokens/s
-  kestrel        6.8 GiB    32768 ctx  ~ 127 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)  <- chosen
-  swift          5.8 GiB    32768 ctx  ~ 146 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)
-  wren           4.7 GiB    32768 ctx  ~ 172 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)
+Plan: penguin (10.8 bits) · GPU 0 (NVIDIA GeForce RTX 4090) · 32768 tokens of context · ~41 tokens/s (37-45) · prompts ~4583 tokens/s
+  penguin       15.0 GiB    32768 ctx  ~  41 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)  <- chosen
+  kestrel        9.1 GiB    32768 ctx  ~  83 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)
+  swift          7.7 GiB    32768 ctx  ~  95 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)
+  wren           6.3 GiB    32768 ctx  ~ 111 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)
 ```
 
 It lists every level the model runs at with its size on your GPU, and marks the one it chose. The speeds are predictions for
@@ -56,11 +58,11 @@ you can see the plan before you buy or rent. `--context N` and `--users N` chang
 
 When a model does not load at the level asked for, `fit` prints the degrade ladder: a shorter context, experts in the computer's memory, the last layers' dense matrices there too, then a lower level, each with its cost in speed. `run` says the same steps in its first lines and asks before one that costs over 30% of the speed or lowers the level (`--yes`, or `GLYD_DEGRADE=yes`, takes them; `GLYD_DEGRADE=no` refuses); `serve` and the service never stop to ask and refuse without `--yes`.
 
-`fit` reads the model's file headers by range requests (two small reads a shard, kept in the cache), so a model's sizes are exact before anything is downloaded; nothing of the weights is fetched to plan. The plan is what loads. For Qwen3 dense, Qwen3.5/3.6/3.8, Nemotron 3 Super, Gemma 4 and (once its files are here) the models that run over several GPUs, `fit` sizes the model with the
+`fit` reads the model's file headers by range requests (two small reads a shard, kept in the cache), so a model's sizes are exact before anything is downloaded; nothing of the weights is fetched to plan. The plan is what loads. For every family of `glyd-engine/src/support.rs` (once its files are here, the models that run over several GPUs too), `fit` sizes the model with the
 functions `run` and `serve` do, from the same GPU's free memory: the weights, the cache for the context and the users, the engine's work, and a
 small reserve the GPU keeps. Where `run` would refuse, `fit` refuses in the same words and exits 3. `run` prints its plan before it loads
 (`Plan: ...`). `fit --json` prints the plan as `glyd-plan/1` for scripts: `level`, `context`, `users`, the bytes of each part, `kv_format`
-(`bf16`, or `12-bit` where `GLYD_KV=lossless` asks for the lossless 12-bit pages and they reserve no more than bf16 for the plan), and `experts`
+(`bf16`, or `12-bit` where `GLYD_KV=lossless` asks for the lossless 12-bit pages and they reserve no more than bf16 for the plan; `fit` and `run` say which in their plan line, "keys and values in bf16" or "in 12-bit pages", and `run` and `serve` load what the plan says), and `experts`
 (places a layer on the GPU, bytes in the computer's memory and on the disk) where a mixture of experts keeps them off the GPU.
 
 The one size `fit` estimates is the lossless level's (penguin), which depends on how well the weights compress: 10.75 bits a weight
@@ -69,7 +71,7 @@ model's first load, `fit` and `run` plan the GPU's memory with what that load to
 
 ## run
 
-The first run downloads the model into the Hugging Face cache, packs it for this GPU and makes the KV tables. Later runs start
+The first run downloads the model into the Hugging Face cache and packs it for this GPU (and makes the 12-bit KV tables where its plan has those pages: `GLYD_KV=lossless` asks for them). Later runs start
 from the packed copy.
 
 - `--prompt "TEXT"` gives one answer and exits. `--no-think` turns a thinking model's thinking off.

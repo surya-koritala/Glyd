@@ -3847,16 +3847,21 @@ impl crate::conv::Gen for Dyn {
         self.share = part.clamp(0.0, 1.0);
     }
 
-    /// The weights (a draft model's too), the rings of keys and values for the whole context, and the states; all made in `build` and kept as they are while it runs.
+    /// The weights (a draft model's too), the rings of keys and values for the whole context (where they are in 12-bit pages, the pages with their pools and buffers: `Lossless::bytes`),
+    /// and the states; all made in `build` and kept as they are while it runs. `kv_type` is the format the loader took for the keys and values (`plan::kv_format_of`).
     fn held(&self) -> Option<crate::dev::Held> {
         let state_type = if self.states.is_empty() { "none" } else { state_type(&self.big.d) };
         // (every sequence's: they are alike, `add_seqs`)
         let k = self.seqs.len() as u64;
         Some(crate::dev::Held {
             weights: self.bytes as u64,
-            kv: if self.paged.is_some() { (self.kc.bytes + self.vc.bytes) as u64 } else { k * (self.kc.bytes + self.vc.bytes) as u64 },
+            kv: if self.paged.is_some() {
+                (self.kc.bytes + self.vc.bytes + self.lossless.as_ref().map_or(0, |lx| lx.bytes)) as u64
+            } else {
+                k * (self.kc.bytes + self.vc.bytes) as u64
+            },
             state: k * self.states.iter().map(|b| b.bytes as u64).sum::<u64>(),
-            kv_type: "bf16",
+            kv_type: crate::plan::kv_format_of(self.holds_12bit_pages()),
             state_type,
         })
     }
