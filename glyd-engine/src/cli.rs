@@ -1785,7 +1785,7 @@ fn load_dynamic(
         ui.borrow_mut().line("Its FP8 matrices are held coded (the same values in about 7 bits of 8) for it to fit; as they are, they do not.");
     }
     ui.borrow_mut().status(&format!("Reading {name} and loading it onto the GPU{}...", if devices.len() == 1 { "" } else { "s" }));
-    let mut e = open_dynamic(a, &plan, &dir, family)?.map_err(|e| {
+    let mut e = open_dynamic(a, &plan, &dir)?.map_err(|e| {
         if e.out_of_memory() {
             Refusal::unsupported(
                 format!("a GPU ran out of memory loading {name} ({})", stages.join(", ")),
@@ -1834,32 +1834,11 @@ fn load_dynamic(
     Ok((Box::new(e), tok, chat, defaults, vocab, line, info))
 }
 
-/// The engine of a dynamic-route plan from the directory `dir`: its layers cut over the plan's GPUs or across them, its expert cache's places, the computer's memory for
-/// its experts and the last layers' dense matrices, its context, prompt chunk and layout; nothing is sized here.
-fn open_dynamic(a: &Args, plan: &LoadPlan, dir: &Path, family: &str) -> Done<std::result::Result<crate::dynamic::split::Run, crate::ffi::Error>> {
-    let sp = plan.spread.as_ref().expect("the dynamic route's plan spreads the model");
-    // (penguin's bf16 matrices in its 12-bit layout where it fits an HBM GPU: lossless as the smallest, a faster one-token product there)
-    // (a hummingbird directory holds the rest of the model as released: its matrices are packed as at penguin, and the loader reads the experts' rows itself)
-    let hb = plan.level == "hummingbird";
-    let layout = if sp.twelve { Layout::Twelve } else { Layout::Tiered };
-    let o = crate::dynamic::Opts { ctx: plan.context, chunk: plan.chunk, graph: true, device: sp.devices[0], layout: Some(layout) };
-    // (a hummingbird directory's experts in its own cache: each stage its places, the computer's memory for its share of the experts, the copy-or-compute policy of the flags)
+/// The engine of a dynamic-route plan from the directory `dir` (src/dynamic/split.rs `open_plan`: it loads what the plan says), the flags' copy-or-compute policy
+/// of its expert cache.
+fn open_dynamic(a: &Args, plan: &LoadPlan, dir: &Path) -> Done<std::result::Result<crate::dynamic::split::Run, crate::ffi::Error>> {
     let offload = crate::offload::offload_args(a).map_err(|e| Refusal::new(e.msg, "--cpu-threads takes a number of threads: --cpu-threads 8"))?;
-    let ram = plan.experts.filter(|c| c.ram < c.host_bytes()).map(|c| crate::offload::HostMemory { bytes: c.ram, total: c.host_bytes() });
-    let (cuts, devices) = (&sp.cuts, &sp.devices);
-    Ok(match (sp.host_bytes > 0).then_some(sp) {
-        Some(k) if hb || matches!(family, "DeepSeek-V4" | "GLM-5.3-Flash" | "Muse Spark") => crate::dynamic::split::open_cached(
-            dir,
-            &o,
-            cuts,
-            devices,
-            k.places.iter().map(|&places| crate::hbg_store::HbCaching { places, ram, offload, dense: sp.dense }).collect(),
-        ),
-        Some(k) if sp.across => crate::dynamic::split::open_kimi_tp(dir, &o, devices, k.places[0]),
-        Some(k) => crate::dynamic::split::open_kimi(dir, &o, cuts, devices, k.places.clone(), sp.dense),
-        None if sp.across => crate::dynamic::split::open_tp(dir, &o, devices),
-        None => crate::dynamic::split::open(dir, &o, cuts, devices),
-    })
+    Ok(crate::dynamic::split::open_plan(dir, plan, offload))
 }
 
 /// `run MODEL:kestrel` (or `:swift`, or `--lossy`): the model (a directory in the Hub's layout, the cache's copy, else downloaded), every weight rounded and packed in `layout` once into the cache and read from there (a glyd-v7 directory: read

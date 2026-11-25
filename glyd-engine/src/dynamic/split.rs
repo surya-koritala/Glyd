@@ -476,6 +476,31 @@ pub fn family(text: &str) -> Option<&'static str> {
     }
 }
 
+/// The model of `dir` as `plan` says it loads (src/plan.rs `size_dynamic`): its layers cut over the plan's GPUs (`Spread::cuts`, `devices`) or across them
+/// (`across`), its context, prompt chunk and layout (the 12-bit one where `twelve`), and where its experts are in the computer's memory each stage's places
+/// of them, the memory the plan gives them and the last layers' dense matrices there (`dense`), with the expert cache's copy-or-compute policy `offload`.
+/// Nothing is sized here.
+pub fn open_plan(dir: &Path, plan: &crate::plan::LoadPlan, offload: crate::offload::Offload) -> Result<Run> {
+    let sp = plan.spread.as_ref().ok_or_else(|| Error("a plan of the dynamic route spreads the model (Spread)".into()))?;
+    let layout = if sp.twelve { crate::weights::Layout::Twelve } else { crate::weights::Layout::Tiered };
+    let o = Opts { ctx: plan.context, chunk: plan.chunk, graph: true, device: sp.devices[0], layout: Some(layout) };
+    let ram = plan.experts.filter(|c| c.ram < c.host_bytes()).map(|c| crate::offload::HostMemory { bytes: c.ram, total: c.host_bytes() });
+    let (cuts, devices) = (&sp.cuts, &sp.devices);
+    if sp.host_bytes == 0 {
+        return if sp.across { open_tp(dir, &o, devices) } else { open(dir, &o, cuts, devices) };
+    }
+    // (a hummingbird directory's experts, and the release's of the families the expert cache takes, in its places; Kimi-K3's release experts in its own)
+    let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
+    let kimi_release = family(&text) == Some("Kimi-K3") && plan.level != "hummingbird";
+    match (kimi_release, sp.across) {
+        (true, true) => open_kimi_tp(dir, &o, devices, sp.places[0]),
+        (true, false) => open_kimi(dir, &o, cuts, devices, sp.places.clone(), sp.dense),
+        _ => {
+            open_cached(dir, &o, cuts, devices, sp.places.iter().map(|&places| crate::hbg_store::HbCaching { places, ram, offload, dense: sp.dense }).collect())
+        }
+    }
+}
+
 /// The model of `dir` on the dynamic engine, by its config's family: on one GPU where `cuts` is empty, else in stages (`devices`: one more than `cuts`).
 /// GLM's and Nemotron-H's experts at `o.layout`'s level (penguin's lossless where none is given); DeepSeek-V4's and Muse's as the release has them, exact;
 /// the Qwen3.5 layout's bf16 matrices at `o.layout` (penguin's lossless packs).

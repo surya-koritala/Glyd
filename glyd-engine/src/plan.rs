@@ -1558,6 +1558,9 @@ pub struct Spread {
     pub places: Vec<usize>,
     pub experts_per_layer: usize,
     pub host_bytes: u64,
+    /// Each stage's share of `host_bytes`: the experts of its own layers (one entry where `across`; zeros where nothing is in the computer's memory). They add
+    /// up to `host_bytes`.
+    pub host_per_stage: Vec<u64>,
     /// The bytes the GPUs hold of the model (its weights, and the places' experts).
     pub gpu_bytes: u64,
     /// The last layers whose dense matrices are in the computer's memory (src/dense_ram.rs: one stage, P2d's rung after the experts), and their bytes there.
@@ -1638,7 +1641,7 @@ impl LoadPlan {
             "experts": experts,
             "spread": self.spread.as_ref().map(|s| serde_json::json!({
                 "cuts": s.cuts, "devices": s.devices, "across": s.across, "coded": s.coded, "twelve": s.twelve,
-                "places": s.places, "experts_per_layer": s.experts_per_layer, "host_bytes": s.host_bytes,
+                "places": s.places, "experts_per_layer": s.experts_per_layer, "host_bytes": s.host_bytes, "host_per_stage": s.host_per_stage,
             })),
         })
         .to_string()
@@ -2461,7 +2464,7 @@ pub fn text(model: &str, sh: &Shape, m: &Machine, p: &Plan) -> String {
         s += &format!("note: {n}\n");
     }
     s += &format!(
-        "(decode speeds are predictions for one user at about 1,000 positions: the GPU's memory rate {}, each class's floor a step and shares of that rate; prompts' from its tensor rate)\n",
+        "(decode speeds are predictions for one user at about 1,000 positions: the GPU's memory rate {}, each class's floor a step and shares of that rate; prompts' a share of it too)\n",
         if m.devices.iter().any(|d| d.stream.is_some()) { "as measured here" } else { "by the maker's figure" },
     );
     s
@@ -2966,6 +2969,11 @@ pub mod sizing {
                 places: parts.iter().map(|p| p.2).collect(),
                 experts_per_layer: experts,
                 host_bytes,
+                host_per_stage: stage_shares(
+                    &parts.iter().flat_map(|p| std::iter::repeat_n(1u64, (p.1).1 - (p.1).0)).collect::<Vec<_>>(),
+                    &parts.iter().skip(1).map(|p| (p.1).0).collect::<Vec<_>>(),
+                    host_bytes,
+                ),
                 gpu_bytes,
                 dense: 0,
                 dense_bytes: 0,
@@ -3059,6 +3067,20 @@ pub mod sizing {
         let start = if gpus.len() == 1 { free * gib } else { frees.iter().sum::<f64>() * gib };
         let plan = condor_plan(layout, always, &parts, ctx, chunk, stream, headroom, start, host, c.experts);
         Ok(CondorLoad { gpus, parts, plan, free: start as u64 })
+    }
+
+    /// `host` bytes in the computer's memory split over the stages that `cuts` make of layers holding `per_layer` bytes each (of what goes there): each stage's
+    /// share by its layers', the rounding the last stage's, so that they add up to `host` exactly; all of it the first's where no layer holds any.
+    pub fn stage_shares(per_layer: &[u64], cuts: &[usize], host: u64) -> Vec<u64> {
+        let bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(per_layer.len())).collect();
+        let n = per_layer.len();
+        let of: Vec<u128> = bounds.windows(2).map(|w| per_layer[w[0].min(n)..w[1].clamp(w[0].min(n), n)].iter().map(|&b| b as u128).sum()).collect();
+        let all: u128 = of.iter().sum();
+        let mut out: Vec<u64> = of.iter().map(|&b| if all == 0 { 0 } else { (host as u128 * b / all) as u64 }).collect();
+        let given: u64 = out.iter().sum();
+        let at = if all == 0 { 0 } else { out.len() - 1 };
+        out[at] += host - given;
+        out
     }
 
     // ---- what each family's tensors take: the bytes the plans count (the loaders' lists of tensors are the families') ----
@@ -4477,6 +4499,16 @@ pub mod sizing {
                 ram,
             }
         });
+        // (each stage's layers' experts: a hummingbird directory's files, else the table's expert tensors)
+        let host_per_stage = crate::plan::sizing::stage_shares(
+            &if hb_experts.is_empty() {
+                crate::dynamic::split::layer_bytes_table(table, nl, 100, 100, &|n| n.contains(".experts.")).0
+            } else {
+                hb_experts.clone()
+            },
+            if across { &[] } else { &cuts },
+            host_bytes,
+        );
         Ok(LoadPlan {
             kind: Kind::Dynamic,
             family,
@@ -4503,6 +4535,7 @@ pub mod sizing {
                 places: cache.as_ref().map_or(Vec::new(), |k| k.2.clone()),
                 experts_per_layer: cache.as_ref().map_or(0, |k| k.5),
                 host_bytes,
+                host_per_stage,
                 gpu_bytes: total,
                 dense: dense_ram.0,
                 dense_bytes: dense_ram.1,
@@ -5418,6 +5451,19 @@ mod tests {
         crate::dev::Gpu { name: d.name.clone(), cc: d.cc, sms: 0, total: d.total, free: d.free, driver: d.driver, count: 1, ordinal }
     }
 
+    /// Each stage's share of what the computer's memory holds goes by its layers' bytes there and adds up to all of it exactly, the rounding the last stage's; none
+    /// where nothing is there, all on the first where no layer holds any.
+    #[test]
+    fn the_stages_shares_of_the_computers_memory_add_up() {
+        use sizing::stage_shares;
+        assert_eq!(stage_shares(&[1, 1, 2, 2], &[2], 600), vec![200, 400]);
+        assert_eq!(stage_shares(&[3, 3, 3], &[1, 2], 100), vec![33, 33, 34]);
+        assert_eq!(stage_shares(&[0, 5, 5, 0], &[2], 1001).iter().sum::<u64>(), 1001);
+        assert_eq!(stage_shares(&[0, 0], &[1], 9), vec![9, 0]);
+        assert_eq!(stage_shares(&[4, 4], &[], 0), vec![0]);
+        assert_eq!(stage_shares(&[u64::MAX / 2, u64::MAX / 2], &[1], u64::MAX - 1), vec![(u64::MAX - 1) / 2, (u64::MAX - 1) / 2]);
+    }
+
     /// A plan whose users share pools of blocks holds at most what the GPU has left for them (at least one's context): on an A10 (23 GB) Qwen3-8B served to 8 at
     /// 16,384 tokens was planned at 31,867 MiB, eight full contexts, where the server took 21,889. And its decode reads penguin's weights in the layout it loads
     /// (the 12-bit one off Ada: 11.10 GB measured on the A10 and the A100, where the level's tiered 10.75 bits counted 10.17), at that layout's share.
@@ -6298,6 +6344,7 @@ mod tests {
             places: vec![26],
             experts_per_layer: 512,
             host_bytes: 40 * 512 * (3 << 20),
+            host_per_stage: vec![40 * 512 * (3 << 20)],
             gpu_bytes: base.weights,
             dense,
             dense_bytes,
