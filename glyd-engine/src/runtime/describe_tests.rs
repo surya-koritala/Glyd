@@ -24,6 +24,43 @@ fn model(case: &str, tol: f32) {
 
 const MODEL_TOL: f32 = 1e-5;
 
+/// The full-size GLM family's shape with an indexer that drops tokens and a layer whose indexer is shared: the recorded fixture's model, its
+/// `index_topk` cut to 4 of its prompt's 7 tokens and its second layer's indexer made `shared`. The reference's model lends the first layer's picks
+/// to the second (`RefModel::share_into`): each query keeps the same tokens in both, 4 at most; while every token is kept the logits are the
+/// recorded ones, and past that they are not. This is NOT a check against transformers: no fixture of this model was recorded
+/// (reference/mla.rs says what one takes).
+#[test]
+fn glm53_model_with_fewer_picks_and_a_shared_layer_runs_on_the_reference() {
+    use super::reference::SeqState;
+    let f = Fixture::load("glm53_model");
+    let mut cfg = f.j["config"].clone();
+    cfg["index_topk"] = 4.into();
+    cfg["indexer_types"] = serde_json::json!(["full", "shared", "full"]);
+    let mut d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    d.desc.f32_attention();
+    let src = |n: &str| f.j["tensors"].get(n).map(|_| f.tensor(n));
+    let mut m = RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{}", e.msg));
+    let toks: Vec<u32> = f.j["token_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+    let (want, mut got) = (f.f32s("output"), Vec::new());
+    let vocab = want.len() / toks.len();
+    for (t, &tok) in toks.iter().enumerate() {
+        let row = m.forward(&[tok], t as u32).unwrap_or_else(|e| panic!("token {t}: {}", e.msg)).concat();
+        // (a layer's mixer is its first block: blocks 0, 2 and 4)
+        let picks = |b: usize| match m.layers[b].seqs.get(&0) {
+            Some(SeqState::Mla(c)) => c.picks.clone(),
+            _ => panic!("block {b} has no latent cache"),
+        };
+        assert_eq!(picks(0), picks(2), "token {t}: the shared layer's picks are the layer's before it");
+        assert_eq!((picks(0).len(), picks(4).len()), ((t + 1).min(4), (t + 1).min(4)), "token {t}");
+        if t < 4 {
+            assert_close(&row, &want[t * vocab..(t + 1) * vocab], MODEL_TOL, &format!("token {t}, every token kept"));
+        }
+        got.extend(row);
+    }
+    let apart = got[4 * vocab..].iter().zip(&want[4 * vocab..]).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+    assert!(apart > 1e-4, "the picks dropped no token that mattered: {apart}");
+}
+
 #[test]
 fn qwen38_dense_model() {
     model("qwen38_model", MODEL_TOL);
@@ -126,6 +163,49 @@ fn released_gemma4_config() {
     assert_eq!(g.rope.unwrap(), Rope::proportional(1e6, 512, 0.25));
     assert_eq!((d.desc.head.tied, d.desc.head.softcap), (true, Some(30.0)));
     assert!(d.head.is_none());
+}
+
+/// KV sharing and the double-wide MLP (E2B, E4B): the last `num_kv_shared_layers` layers' attentions read the keys and values of the last earlier layer of
+/// their type (`Attn::kv_from`, that layer's attention block), name no k, v or k norm (a checkpoint's are left unread), and their MLPs are twice as wide.
+#[test]
+fn gemma4_kv_sharing_and_the_double_wide_mlp() {
+    use super::kinds::*;
+    let mut g = fixture("gemma4_12b_config.json");
+    let t = &mut g["text_config"];
+    let types = [
+        "sliding_attention",
+        "sliding_attention",
+        "full_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "full_attention",
+        "sliding_attention",
+        "full_attention",
+    ];
+    t["layer_types"] = serde_json::json!(types);
+    (t["num_hidden_layers"], t["num_kv_shared_layers"], t["use_double_wide_mlp"]) = (8.into(), 4.into(), true.into());
+    let inter = t["intermediate_size"].as_u64().unwrap() as usize;
+    let d = describe(&g).unwrap();
+    let from: Vec<Option<usize>> = (0..8)
+        .map(|l| match &d.desc.blocks[2 * l].body {
+            Body::Mixer(Mixer::Attention(a)) => a.kv_from,
+            b => panic!("{b:?}"),
+        })
+        .collect();
+    assert_eq!(from, [None, None, None, None, Some(6), Some(4), Some(6), Some(4)]);
+    let p = "model.language_model.layers";
+    for l in 0..8 {
+        let names: BTreeSet<String> = d.blocks[2 * l].iter().map(|(r, _)| r.clone()).collect();
+        assert_eq!(names.contains("k") && names.contains("k_norm"), l < 4, "layer {l}: {names:?}");
+        assert_eq!(d.shapes[&format!("{p}.{l}.mlp.gate_proj.weight")][0], if l < 4 { inter } else { 2 * inter }, "layer {l}");
+        assert_eq!(d.unread.contains(&format!("{p}.{l}.self_attn.k_proj.")), l >= 4);
+    }
+    // (the double-wide MLP is on the shared layers alone; with no shared layers there is none)
+    g["text_config"]["num_kv_shared_layers"] = 0.into();
+    assert!(describe(&g).unwrap().shapes.iter().filter(|(n, _)| n.ends_with("gate_proj.weight")).all(|(_, s)| s[0] == inter));
+    // (every layer shared: none makes the keys and values)
+    g["text_config"]["num_kv_shared_layers"] = 8.into();
+    assert!(describe(&g).is_err());
 }
 
 /// A key the builder does not know fails with its name; a setting it does not support says so.

@@ -23,6 +23,8 @@ pub enum KindRef {
     Moe,
     /// Condor's hashed n-gram embedding into the residual streams.
     Ngram,
+    /// A per-layer input's gated branch (Gemma 4's E2B, E4B).
+    PerLayer,
 }
 
 impl KindRef {
@@ -40,6 +42,7 @@ impl KindRef {
             Body::Ffn(Ffn::Mlp(_)) => KindRef::Mlp,
             Body::Ffn(Ffn::Moe(_)) => KindRef::Moe,
             Body::Ngram(_) => KindRef::Ngram,
+            Body::PerLayer(_) => KindRef::PerLayer,
         }
     }
 }

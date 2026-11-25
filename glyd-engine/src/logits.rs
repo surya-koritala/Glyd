@@ -502,11 +502,17 @@ fn dsv4_cpu(dir: &Path) -> Result<Box<dyn Run>> {
 /// A model directory's description (`runtime::describe`) on the CPU reference of the layer kinds, a token at a time: the reference of a family that has no hand-written one
 /// (Nemotron-H). Its weights are read as they are stored (bf16 or f32).
 fn described_cpu(dir: &Path) -> Result<Box<dyn Run>> {
+    described_cpu_with(dir, |_| {})
+}
+
+/// `described_cpu` of the description `edit` changes (a test's: another rounding point, say).
+fn described_cpu_with(dir: &Path, edit: fn(&mut crate::runtime::describe::Described)) -> Result<Box<dyn Run>> {
     use crate::runtime::reference::model::{checkpoint_tensor, RefModel};
     let d = dir.to_path_buf();
     let load = move || {
         let cfg: Value = serde_json::from_str(&io(std::fs::read_to_string(d.join("config.json")))?).map_err(|e| Error(format!("config.json: {e}")))?;
-        let desc = crate::runtime::describe::describe(&cfg)?;
+        let mut desc = crate::runtime::describe::describe(&cfg)?;
+        edit(&mut desc);
         let ck = io(glyd_gpu::safetensors::Checkpoint::open(&d))?;
         let mut m = RefModel::load(&desc, &|n: &str| checkpoint_tensor(&ck, n))?;
         // (Engram's compressed vocabulary, where the model has Engram layers)
@@ -607,6 +613,65 @@ pub fn gemma4_random(out: &Path) -> Result<()> {
     crate::pack::write_safetensors(&out.join("model.safetensors"), &[("format", "pt".to_string())], &refs)?;
     println!("{}: a random Gemma 4, {} tensors, {:.0} MB", out.display(), t.len(), t.iter().map(|t| t.2.len()).sum::<usize>() as f64 / 1e6);
     Ok(())
+}
+
+/// A random model of a Gemma 4 config `text`, every tensor at the shape its description gives (`Described::shapes`) and drawn from `seed` in the order of
+/// their names: the embedding in [-1, 1], the q and k norms' weights in [0.1, 0.3], the other norms in [0.5, 1.5], layer scalars in [0.5, 1], every other
+/// matrix in +-sqrt(3 / its columns). The sizes the E2B and E4B releases add (KV sharing, the double-wide MLP) come from the description, so each config's
+/// model is its own shape. (Gemma 4's scores are not scaled: the q and k norms set them. With those weights in [0.5, 1.5] a random model's scores reach
+/// about +-16 at heads of 256, its softmax is nearly one-hot and the engine's bf16 rounding can move a near tie: on an A10, eight-layer models of six seeds
+/// were 2e-3 to 3.2e-1 in KL mean from the CPU reference, their largest logit differences up to 13, with KV sharing and without alike; at [0.1, 0.3] every
+/// one was 6e-4 to 1.3e-3, at most 2.3e-3 a row and 0.37 a logit.)
+pub fn gemma4_shaped_random(out: &Path, text: &str, seed: u64) -> Result<()> {
+    let cfg: Value = serde_json::from_str(text).map_err(|e| Error(format!("config.json: {e}")))?;
+    let d = crate::runtime::describe::describe(&cfg)?;
+    let mut r = seed;
+    let mut uni = move |a: f32, b: f32| {
+        r ^= r << 13;
+        r ^= r >> 7;
+        r ^= r << 17;
+        a + (b - a) * ((r >> 40) as f32 / (1u64 << 24) as f32)
+    };
+    let bf = |x: f32| {
+        let b = x.to_bits();
+        ((b + 0x7fff + ((b >> 16) & 1)) >> 16) as u16
+    };
+    let mut t: Vec<(String, Vec<u64>, Vec<u8>)> = Vec::new();
+    for (name, shape) in &d.shapes {
+        let (lo, hi) = if *name == d.embed {
+            (-1.0, 1.0)
+        } else if name.ends_with("layer_scalar") {
+            (0.5, 1.0)
+        } else if name.ends_with("q_norm.weight") || name.ends_with("k_norm.weight") {
+            (0.1, 0.3)
+        } else if shape.len() == 1 {
+            (0.5, 1.5)
+        } else {
+            let a = (3.0 / shape[shape.len() - 1] as f32).sqrt();
+            (-a, a)
+        };
+        let n: usize = shape.iter().product();
+        t.push((name.clone(), shape.iter().map(|&x| x as u64).collect(), (0..n).flat_map(|_| bf(uni(lo, hi)).to_le_bytes()).collect()));
+    }
+    io(std::fs::create_dir_all(out))?;
+    io(std::fs::write(out.join("config.json"), text))?;
+    let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = t.iter().map(|(n, s, b)| (n.as_str(), "BF16", s.clone(), &b[..])).collect();
+    crate::pack::write_safetensors(&out.join("model.safetensors"), &[("format", "pt".to_string())], &refs)?;
+    println!("{}: a random Gemma 4, {} tensors, {:.0} MB", out.display(), t.len(), t.iter().map(|t| t.2.len()).sum::<usize>() as f64 / 1e6);
+    Ok(())
+}
+
+/// A small Gemma 4 with the E2B and E4B releases' KV sharing and double-wide MLP: eight layers, the last four (three sliding, one global) reading the
+/// keys and values of the last sliding and the last global layer before them, their MLPs twice as wide; no K = V (the E sizes have none).
+pub fn gemma4_kv_random(out: &Path) -> Result<()> {
+    let text = r#"{"architectures": ["Gemma4ForConditionalGeneration"], "model_type": "gemma4", "eos_token_id": [1, 106],
+        "text_config": {"model_type": "gemma4_text", "hidden_size": 512, "num_hidden_layers": 8, "num_attention_heads": 4, "num_key_value_heads": 1,
+        "attention_k_eq_v": false, "head_dim": 256, "global_head_dim": 512, "intermediate_size": 512, "vocab_size": 4096, "rms_norm_eps": 1e-6, "sliding_window": 32,
+        "layer_types": ["sliding_attention", "sliding_attention", "sliding_attention", "full_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention"],
+        "num_kv_shared_layers": 4, "use_double_wide_mlp": true, "final_logit_softcapping": 30.0, "max_position_embeddings": 4096,
+        "enable_moe_block": false, "hidden_size_per_layer_input": 0, "hidden_activation": "gelu_pytorch_tanh",
+        "rope_parameters": {"sliding_attention": {"rope_theta": 10000.0, "rope_type": "default"}, "full_attention": {"rope_theta": 1000000.0, "partial_rotary_factor": 0.25, "rope_type": "proportional"}}}}"#;
+    gemma4_shaped_random(out, text, 0x2026_1123_0000_00e2)
 }
 
 /// Qwen3.8-Flash-Next on its own engine: a prompt in chunks (the last chunk's last row through the head), the logits of a step.
@@ -950,7 +1015,15 @@ pub fn cases() -> Vec<Case> {
             family: "Gemma 4 (sliding and global attention, K = V, soft-capped head)",
             weights: Weights::Random(gemma4_random),
             engine: gemma4_engine,
-            cpu: None,
+            cpu: Some(described_cpu),
+            vocab: 4096,
+        },
+        Case {
+            id: "gemma4-kv",
+            family: "Gemma 4 E2B/E4B layers (KV sharing across layers, the double-wide MLP)",
+            weights: Weights::Random(gemma4_kv_random),
+            engine: gemma4_engine,
+            cpu: Some(described_cpu),
             vocab: 4096,
         },
         Case {
@@ -1610,6 +1683,60 @@ pub fn record(a: &crate::args::Args) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// The CPU reference of each Gemma 4 random case against the fixtures the engine and the reference recorded, row by row: the plain case's against the
+    /// engine's own bits (gemma4.sm89.json.gz), the KV-sharing case's against its fixture. Minutes on an unoptimized build: cargo test -- --ignored
+    /// gemma4_reference_against.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore]
+    fn gemma4_reference_against_the_fixtures() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits");
+        for (case, file, make) in
+            [("gemma4", "gemma4.sm89.json.gz", gemma4_random as fn(&Path) -> Result<()>), ("gemma4-kv", "gemma4-kv.json.gz", gemma4_kv_random)]
+        {
+            let dir = std::env::temp_dir().join(format!("glyd-g4ref-{case}-{}", std::process::id()));
+            make(&dir).unwrap();
+            let fx = Fixture::read(&fixtures.join(file)).unwrap();
+            let got = drive(described_cpu(&dir).unwrap().as_mut(), &fx.prompt, &fx.decode, &fx.long).unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            let kls: Vec<String> = fx.rows.iter().zip(&got).map(|(w, g)| format!("{:.1e}", kl_of(w, g))).collect();
+            let v = compare(&fx, &Bound::Kl { mean: 1e-4, max: 2.5e-4, top1: 0.9 }, &got);
+            println!(
+                "{case} reference against {file}: KL mean {:.2e} max {:.2e}, best token {}/{}; rows {}",
+                v.mean_kl,
+                v.max_kl,
+                v.top1.0,
+                v.top1.1,
+                kls.join(" ")
+            );
+            // (the reference with each norm's output rounded to bf16, as transformers' Gemma4RMSNorm casts it back to a bf16 input's type and the engine holds it)
+            let once = |d: &mut crate::runtime::describe::Described| {
+                use crate::runtime::kinds::Rounding;
+                for b in d.desc.blocks.iter_mut() {
+                    b.norm_in.rounding = Rounding::Once;
+                    if let Some(n) = b.norm_out.as_mut() {
+                        n.rounding = Rounding::Once;
+                    }
+                }
+                d.desc.final_norm.rounding = Rounding::Once;
+            };
+            make(&dir).unwrap();
+            let got2 = drive(described_cpu_with(&dir, once).unwrap().as_mut(), &fx.prompt, &fx.decode, &fx.long).unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            let v = compare(&fx, &Bound::Kl { mean: 1e-4, max: 2.5e-4, top1: 0.9 }, &got2);
+            println!("{case} reference, its norms' outputs rounded to bf16, against {file}: KL mean {:.2e} max {:.2e}", v.mean_kl, v.max_kl);
+            // (the same logits through the engine's head arithmetic: the product's output bf16, then its soft-cap's three roundings, kernels/gemma4.cu g4_softcap)
+            let b = crate::runtime::reference::bf16;
+            let cap = 30.0f32;
+            let r16: Vec<Vec<f32>> = got
+                .iter()
+                .map(|r| r.iter().map(|&l| cap * (l / cap).clamp(-1.0 + 1e-7, 1.0 - 1e-7).atanh()).map(|z| b(b(b(b(z) / cap).tanh()) * cap)).collect())
+                .collect();
+            let v = compare(&fx, &Bound::Kl { mean: 1e-4, max: 2.5e-4, top1: 0.9 }, &r16);
+            println!("{case} reference, its head rounded as the engine's, against {file}: KL mean {:.2e} max {:.2e}", v.mean_kl, v.max_kl);
+        }
+    }
+
     /// The CPU's candidates usercheck holds the step's to: the largest first, equal logits by the smaller token, as the sampler's `sample_top` takes them.
     #[test]
     fn host_top_orders_by_logit_then_token() {
@@ -1793,7 +1920,7 @@ mod tests {
 /// The case's model in `dir` on the description executor.
 pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Result<Dyn> {
     Ok(match case {
-        "gemma4" => {
+        "gemma4" | "gemma4-kv" => {
             let c = crate::gemma4::ConfigG4::load(dir)?;
             Dyn::new(dir, crate::dynamic::gemma4::lowered(dir, &c)?, None, o)?
         }
@@ -1807,7 +1934,11 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
         "nemotron" => crate::dynamic::nemotron::load(dir, o, level_layout(level)?.unwrap_or(Layout::Tiered))?,
         "deepseek-v4" => crate::dynamic::deepseek_v4::load(dir, o)?,
         "qwen4x" => crate::dynamic::qwen4x::load(dir, o)?,
-        other => return err(format!("{other}: gemma4, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, nemotron, deepseek-v4 or qwen4x")),
+        other => {
+            return err(format!(
+                "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, nemotron, deepseek-v4 or qwen4x"
+            ))
+        }
     })
 }
 
@@ -1832,6 +1963,7 @@ pub(crate) fn random_dyn_at(case: &str, level: &str, layout: Option<Layout>, tag
 fn random_model(case: &str, dir: &Path) -> Result<()> {
     match case {
         "gemma4" => gemma4_random(dir),
+        "gemma4-kv" => gemma4_kv_random(dir),
         "qwen35" => qwen35_random(dir),
         "qwen35-wide" => qwen35_wide_random(dir),
         "qwen35moe" => qwen35moe_random(dir),
@@ -1843,7 +1975,7 @@ fn random_model(case: &str, dir: &Path) -> Result<()> {
         "nemotron" => crate::kcheck_nh::random(dir, 0, 16),
         "deepseek-v4" => crate::dsv4_ref::random(dir, None),
         "qwen4x" => qwen4x_random(dir),
-        other => err(format!("{other}: gemma4, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, nemotron, deepseek-v4 or qwen4x")),
+        other => err(format!("{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, nemotron, deepseek-v4 or qwen4x")),
     }
 }
 
@@ -2839,7 +2971,10 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
 /// are each row's own pass's). With prompts run together the replies that differ are counted, not refused (a step of more than 16 rows is another kernel's; a random model's near ties turn on its last
 /// bits: `roundcheck` measures the logits). The round is one step of the rows that decode and the prompts' chunks unless GLYD_ENGINE_ONE_STEP=0, and some step must then have held both.
 /// Then the prompts at once twice more, with no graph at all (every pass eager) and with every graph on and every pass that is no whole graph's in pieces
-/// (src/dynamic/pieces.rs): the replies the same token for token, and where pieces can run, some pass replayed them.
+/// (src/dynamic/pieces.rs): the replies the same token for token and each sample's logit to the bit, and where pieces can run, some pass replayed them. With
+/// GLYD_ENGINE_OVERLAP=1, where steps are launched ahead, the prompts at once launched ahead and not: the same tokens and logits. With `--places` every run (each reference, alone,
+/// at once, each side of each comparison) begins from the expert cache's cold state with its planner's times held (`ExpertStore::cold`, `hold_costs`), so two runs of the
+/// same calls find the same experts in places and plan alike, in every mode.
 /// With --stagger D the prompts then come D scheduler rounds apart, as a server's requests do: with prompts one a pass every reply is the reply alone, and with no mixture of
 /// experts each reply is the same when every other prompt's tokens are changed (a row's sums may turn on its passes' row counts, never on the other rows' content).
 ///
@@ -2871,22 +3006,27 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let len = |k: usize| long.map_or(5 + 29 * k, |p| (p * (k + 1) / users).max(1));
     // (--layout mma|mma12: penguin's packs in that layout, where the GPU's choice is another)
     let layout = a.layout()?.or(level_layout(level)?);
-    let mut e: Dyn = match (a.flag("dir"), a.num("places", 0usize)?) {
+    let places = a.num("places", 0usize)?;
+    let mode = match a.flag("mode") {
+        Some(m) => crate::offload::Mode::parse(m).ok_or_else(|| Error(format!("--mode {m}: copy, cpu, split or auto")))?,
+        None => crate::offload::Mode::Copy,
+    };
+    let mut e: Dyn = match (a.flag("dir"), places) {
         // (`--places N`: the model in DIR with its experts in the expert cache, N places a layer and every expert in the computer's memory (src/offload.rs; `--mode`, copy by default, `--device-plan`: the
         // decode calls planned on the GPU, src/devplan.rs): a model larger than the GPU, its replies alone against its replies at once)
         (Some(d), places) if places > 0 => {
-            let mode = match a.flag("mode") {
-                Some(m) => crate::offload::Mode::parse(m).ok_or_else(|| Error(format!("--mode {m}: copy, cpu, split or auto")))?,
-                None => crate::offload::Mode::Copy,
-            };
             let o = DynOpts { ctx: (len(users - 1) + tokens + 64).next_multiple_of(256), chunk: 256, graph: true, device: 0, layout };
             let offload = crate::offload::Offload { mode, device: a.has("device-plan"), ..Default::default() };
             let caching = crate::hbg_store::HbCaching { places, ram: None, offload, dense: 0 };
             match crate::dynamic::split::open_cached(Path::new(d), &o, &[], &[0], vec![caching])? {
                 crate::dynamic::split::Run::One(e) => {
+                    // (the planner's times held where they start, so that two runs from one state plan alike: each run below starts from the cold cache, `Sched::cold`)
+                    e.stores().iter().for_each(|st| st.hold_costs());
+                    let planned: usize = e.stores().iter().map(|st| st.device_layers()).sum();
                     println!(
-                        "{d}: its experts in the expert cache, {places} places a layer, mode {}{}",
+                        "{d}: its experts in the expert cache, {places} places a layer, mode {}{}{}",
                         mode.name(),
+                        if a.has("device-plan") { format!(", the decode calls of {planned} layers planned on the GPU") } else { String::new() },
                         if e.has_graph() { ", the decode step one graph" } else { "" }
                     );
                     e
@@ -2920,7 +3060,9 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         logprobs: None,
         stop_ids: Vec::new(),
     };
-    let reference: Vec<Vec<u32>> = prompts.iter().map(|p| e.reply(p, &reply, &mut |_| true).map(|r| r.0)).collect::<Result<_>>()?;
+    // (each reply from the expert cache's cold state, as every run below: the same calls then find the same experts in places)
+    let reference: Vec<Vec<u32>> =
+        prompts.iter().map(|p| crate::sched::ModelStep::cold(&mut e).and_then(|()| e.reply(p, &reply, &mut |_| true).map(|r| r.0))).collect::<Result<_>>()?;
     // (--kv12: the scheduler's cache in 12-bit lossless pages, of tables made on these prompts; with GLYD_KV12_POOL's small pools the newest sequence is paused where the
     // raw slabs run short, and no page is made void)
     let kv12 = a.has("kv12");
@@ -2932,9 +3074,14 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let Some((k, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
     let chunk = crate::sched::ModelStep::chunk(step);
     // (no finished sequence kept: the same prompts come again below, and each is to run from its first token, in passes with the others)
-    let mut s = Sched::new(step, k).keeping(false);
-    // (the prompts `gap` scheduler rounds apart: 0, all of them before the first round)
+    let mut s = Sched::new(step, k).keeping(false).recording(true);
+    // (the prompts `gap` scheduler rounds apart: 0, all of them before the first round; from the expert cache's cold state, its planner's times held, so that every run
+    // begins from one state and the same calls find the same experts in places)
     let ask = |s: &mut Sched<&mut dyn crate::sched::ModelStep>, ps: &[Vec<u32>], gap: usize| -> Result<Vec<Vec<u32>>> {
+        s.cold()?;
+        if let Some(c) = s.chosen.as_mut() {
+            c.clear();
+        }
         let mut rx = Vec::new();
         for p in ps {
             let (tx, r) = std::sync::mpsc::channel();
@@ -2975,9 +3122,19 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             })
             .collect()
     };
+    // (the last run's sample logits, each sequence's in the order the prompts were given (its id rises with the submits), as bits)
+    let seen = |s: &Sched<&mut dyn crate::sched::ModelStep>| -> Vec<Vec<u32>> {
+        let mut by: std::collections::BTreeMap<u64, Vec<u32>> = Default::default();
+        for &(id, _, l) in s.chosen.iter().flatten() {
+            by.entry(id).or_default().push(l.to_bits());
+        }
+        by.into_values().collect()
+    };
     let mut fails = 0;
+    let mut alone_logits = Vec::new();
     for (i, p) in prompts.iter().enumerate() {
         let got = ask(&mut s, std::slice::from_ref(p), 0)?.remove(0);
+        alone_logits.push(seen(&s).pop().unwrap_or_default());
         let same = got == reference[i];
         fails += !same as usize;
         println!(
@@ -2989,6 +3146,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     }
     let together = ask(&mut s, &prompts, 0)?;
     let same = together.iter().zip(&reference).filter(|(a, b)| a == b).count();
+    let same_logits = seen(&s).iter().zip(&alone_logits).filter(|(a, b)| a == b).count();
     // (with a page budget too small for all of them at once (GLYD_ENGINE_PAGES), sequences give their blocks back and run again from their tokens, the generated ones as a prompt: the
     // replies are then counted, not required to be the same)
     let squeezed = std::env::var_os("GLYD_ENGINE_PAGES").is_some();
@@ -3118,8 +3276,19 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             fails += 1;
         }
     }
-    if strict && same < prompts.len() {
+    println!("  at once against alone, logit for logit: {same_logits} of {} replies' every sample logit the same bits", prompts.len());
+    // (an expert cache whose mode gives the host pairs (cpu, split, auto): which of a call's misses the host computes, and which are copied or promoted, turns on how many pairs each
+    // expert has in the call (xp_plan, `plan`), so a row's sums turn on the rows beside it and alone against at once is counted; runs of the same calls are held to the bit)
+    let host_pairs = places > 0 && mode != crate::offload::Mode::Copy;
+    if strict && host_pairs {
+        println!("  (mode {}: the host's share of a call is planned by all of its rows' pairs, so at once is not alone's calls: counted)", mode.name());
+    }
+    if strict && !host_pairs && same < prompts.len() {
         println!("FAIL replies at once differ from alone with prompts one a pass");
+        fails += 1;
+    }
+    if strict && !host_pairs && same == prompts.len() && same_logits < prompts.len() {
+        println!("FAIL replies at once take other logits than alone with prompts one a pass");
         fails += 1;
     }
     // (--stagger D: the prompts D scheduler rounds apart, as requests reach a server, each joining while those before it decode (GLYD_ENGINE_STEP_TOKENS cuts a prompt
@@ -3199,31 +3368,49 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     // same rows in the same order, so the replies are the same token for token, and where pieces can run, passes replayed them. Not where sequences are sent back for room,
     // which turns on timings)
     let pieces_on = e.pieces_for_check(true, true);
-    // (not where the host computes pairs (--places with --mode cpu, split or auto, or the plan on the GPU, which sends the host a call's misses the places cannot take): which pairs are
-    // its turns on the cache's history, which the second run starts from where the first left it, and its sums differ from the GPU's in their last bits (src/tiering.rs `check`))
-    let hosted = a.num("places", 0usize)? > 0 && (a.flag("mode").is_some_and(|m| m != "copy") || a.has("device-plan"));
-    if hosted && !squeezed && (pieces_on || e.graphs_taken()) {
-        println!("graphs on against off: not compared (the host's pairs turn on the cache's history; --mode copy without --device-plan compares them)");
-    }
-    if !hosted && !squeezed && std::env::var_os("GLYD_KV12_POOL").is_none() && (pieces_on || e.graphs_taken()) {
-        let run = |e: &mut Dyn| -> Result<Vec<Vec<u32>>> {
-            let Some((_, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
-            ask(&mut Sched::new(step, k).keeping(false), &prompts, 0)
-        };
-        let eager = run(&mut e)?;
+    // (a run of the prompts at once, its replies and its sample logits: launched ahead or not where the step can be, `overlapping`)
+    let run = |e: &mut Dyn, ahead: bool| -> Result<(Vec<Vec<u32>>, Vec<Vec<u32>>)> {
+        let Some((_, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
+        let mut s = Sched::new(step, k).keeping(false).recording(true).overlapping(ahead);
+        let got = ask(&mut s, &prompts, 0)?;
+        Ok((got, seen(&s)))
+    };
+    let same = |a: &(Vec<Vec<u32>>, Vec<Vec<u32>>), b: &(Vec<Vec<u32>>, Vec<Vec<u32>>)| {
+        (a.0.iter().zip(&b.0).filter(|(x, y)| x == y).count(), a.1.iter().zip(&b.1).filter(|(x, y)| x == y).count())
+    };
+    if !squeezed && std::env::var_os("GLYD_KV12_POOL").is_none() && (pieces_on || e.graphs_taken()) {
+        let eager = run(&mut e, ahead)?;
         e.pieces_for_check(true, false);
         let (before, rows_before) = (e.piece_replays.get(), e.rows_replays.get());
-        let graphs = run(&mut e)?;
+        let graphs = run(&mut e, ahead)?;
         let (played, rows_played) = (e.piece_replays.get() - before, e.rows_replays.get() - rows_before);
         e.pieces_for_check(false, false);
-        let same = graphs.iter().zip(&eager).filter(|(a, b)| a == b).count();
-        let ok = same == prompts.len() && (played > 0 || !pieces_on || ahead);
+        let (same_t, same_l) = same(&graphs, &eager);
+        let ok = same_t == prompts.len() && same_l == prompts.len() && (played > 0 || !pieces_on || ahead);
         println!(
-            "{} graphs on against off: {same} of {} replies at once the eager passes', token for token; {played} passes replayed their pieces, {rows_played} decode steps \
-             their graph{}",
+            "{} graphs on against off: {same_t} of {} replies at once the eager passes', token for token, {same_l} logit for logit; {played} passes replayed their pieces, \
+             {rows_played} decode steps their graph{}",
             if ok { "PASS" } else { "FAIL" },
             prompts.len(),
-            if pieces_on { "" } else { " (no pieces here)" }
+            if pieces_on {
+                ""
+            } else if !e.stores().is_empty() {
+                " (no pieces with an expert cache: a prompt's chunk plans its calls on the host)"
+            } else {
+                " (no pieces here)"
+            }
+        );
+        fails += !ok as usize;
+    }
+    // (launched ahead against not, GLYD_ENGINE_OVERLAP=1: the same steps, each landed before the next is launched in the second run)
+    if ahead && !squeezed {
+        let (on, off) = (run(&mut e, true)?, run(&mut e, false)?);
+        let (same_t, same_l) = same(&on, &off);
+        let ok = same_t == prompts.len() && same_l == prompts.len();
+        println!(
+            "{} launched ahead against not: {same_t} of {} replies at once token for token, {same_l} logit for logit",
+            if ok { "PASS" } else { "FAIL" },
+            prompts.len()
         );
         fails += !ok as usize;
     }

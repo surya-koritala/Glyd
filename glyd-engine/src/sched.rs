@@ -274,6 +274,10 @@ pub trait ModelStep {
     fn quiet(&self) -> bool {
         false
     }
+    /// A check's: the expert cache's places, counts and planner's times back to where they started (`ExpertStore::cold`), so that two runs begin from one state.
+    fn cold(&mut self) -> Result<()> {
+        Ok(())
+    }
     /// A drafting step's decode of the one sequence that decodes (a draft model proposes tokens and the model checks them in one pass: src/dynamic/mod.rs `spec_round`): the
     /// tokens after the row's, 1 to the draft's length and one more, as steps one at a time would choose them (drawn by `sampler` where given, else the largest logits); the
     /// cache then holds the row's token and each of them but the last. None: the step does not draft (its decode is one token a row).
@@ -517,6 +521,9 @@ impl ModelStep for &mut dyn ModelStep {
     fn quiet(&self) -> bool {
         (**self).quiet()
     }
+    fn cold(&mut self) -> Result<()> {
+        (**self).cold()
+    }
     fn draws(&mut self, asks: &[Option<f32>]) {
         (**self).draws(asks)
     }
@@ -747,6 +754,8 @@ pub struct Sched<B: ModelStep> {
     /// The step launched and not landed (a step that `overlaps`), and whether the next may be launched before it lands; whether it landed while the next step was planned
     /// (a sequence of it swapped for room: `ensure_pages`), which then plans again.
     flight: Option<Flight>,
+    /// A check's record of every token chosen, with its sample's logit, by sequence (`recording`): two runs compared logit for logit.
+    pub chosen: Option<Vec<(u64, u32, f32)>>,
     overlap: bool,
     relanded: bool,
 }
@@ -799,9 +808,24 @@ impl<B: ModelStep> Sched<B> {
             kept: VecDeque::new(),
             keep,
             flight: None,
+            chosen: None,
             overlap,
             relanded: false,
         }
+    }
+
+    /// The scheduler recording each token chosen with its sample's logit (`chosen`), or not.
+    pub fn recording(mut self, on: bool) -> Sched<B> {
+        self.chosen = on.then(Vec::new);
+        self
+    }
+
+    /// A check's: the step in flight landed, then the step's expert cache back to its start (`ModelStep::cold`).
+    pub fn cold(&mut self) -> Result<()> {
+        if let Some(f) = self.flight.take() {
+            self.land(f)?;
+        }
+        self.be.cold()
     }
 
     /// The scheduler with a step launched before the one before it lands where the step can (`ModelStep::overlaps`; on by default), or not.
@@ -1743,6 +1767,9 @@ impl<B: ModelStep> Sched<B> {
     /// Both from what the step makes on the GPU where that holds them: the row's largest logits (a top-k within them; penalties, a bias or suppressed tokens put on them and on those tokens' own logits;
     /// a grammar's mask put on the row before them), the sum of its exponentials (a top-p with no top-k; at temperature 1 the log-sum-exp the log-probabilities take); the whole row is read only where they do not.
     fn pick(&mut self, i: usize, sample: Sample, row: usize) -> Result<(u32, Option<Lp>)> {
+        if let Some(c) = self.chosen.as_mut() {
+            c.push((self.active[i].id, sample.token, sample.logit));
+        }
         let want = self.active[i].reply.logprobs;
         if self.active[i].greedy && want.is_none() {
             return Ok((sample.token, None));
@@ -2811,6 +2838,25 @@ pub(crate) mod tests {
         };
         let (on, ahead) = drawn(true);
         assert_eq!((on, ahead), (drawn(false).0, 0));
+    }
+
+    /// A recording scheduler keeps every token chosen with its sample's logit, by sequence (`chosen`, a check's comparison of two runs), launched ahead or not; `cold` lands the
+    /// step in flight before the step's expert cache is made cold.
+    #[test]
+    fn a_recording_keeps_each_chosen_token_with_its_logit() {
+        for ahead in [false, true] {
+            let mut s = Sched::new(launching(3, 16, None), 3).overlapping(ahead).recording(true);
+            let reqs: Vec<(Vec<u32>, usize)> = (0..3).map(|k| (prompt(k + 1, 9 + 7 * k as usize), 6)).collect();
+            let rx: Vec<_> = reqs.iter().map(|(p, n)| add(&mut s, p.clone(), *n).0).collect();
+            run(&mut s);
+            s.cold().unwrap();
+            assert!(s.flight.is_none());
+            let chosen = s.chosen.as_ref().unwrap();
+            for (k, rx) in rx.iter().enumerate() {
+                let mine: Vec<u32> = chosen.iter().filter(|c| c.0 == k as u64 + 1).map(|c| c.1).collect();
+                assert_eq!(mine, collect(rx).0, "sequence {k}, ahead {ahead}");
+            }
+        }
     }
 
     /// A step that asks to be quiet (`ModelStep::quiet`: an expert cache's end of a step owed) has the step in flight land before the next is launched: the same replies, none

@@ -205,6 +205,8 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
     let layout = o.layout.unwrap_or(Layout::Tiered);
     let vo = V4Opts::of(layout, o.ctx);
     let (desc, plan) = super::lower_comp::lower(&kinds, eos, max_pos, &st, &vo).map_err(|e| e.context(&label))?;
+    let cfg = crate::runtime::config::ModelConfig::load(dir)?;
+    let inter = cfg.text.get("moe_intermediate_size").and_then(|v| v.as_u64()).ok_or_else(|| Error(format!("{label}: no moe_intermediate_size")))? as usize;
     let dev = Dev::new(o.device)?;
     let ck = io(Checkpoint::open(dir))?;
     // (a hummingbird directory, src/hb_pack.rs: the routed experts' codebook rows in place of the release's)
@@ -353,7 +355,20 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
     for ml in &plan.moe {
         crate::status::STATUS.beat();
         moe.push(experts(
-            &ExpertsAt { ck: &ck, kinds: &kinds, dev: &dev, lib: &lib, hb: hb.as_ref(), caching, store: store.as_ref(), threads, tpr, exact8, sim: vo.sim },
+            &ExpertsAt {
+                ck: &ck,
+                kinds: &kinds,
+                dev: &dev,
+                lib: &lib,
+                hb: hb.as_ref(),
+                caching,
+                store: store.as_ref(),
+                threads,
+                tpr,
+                exact8,
+                sim: vo.sim,
+                inter,
+            },
             ml,
             d,
             &pack,
@@ -366,7 +381,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
 }
 
 /// What a layer's experts are loaded with: the checkpoint and its description, the GPU and the library, a hummingbird directory and the expert cache where
-/// there are, the host's threads, this GPU's place in a group, the level's FP8 and its simulated quantizations.
+/// there are, the host's threads, this GPU's place in a group, the level's FP8 and its simulated quantizations, the experts' width (the config's).
 struct ExpertsAt<'a> {
     ck: &'a Checkpoint,
     kinds: &'a crate::runtime::describe::Described,
@@ -379,6 +394,7 @@ struct ExpertsAt<'a> {
     tpr: Option<(usize, usize)>,
     exact8: bool,
     sim: bool,
+    inter: usize,
 }
 
 /// A layer's experts (`MoeLoad`): the routed ones in the smallest layout that holds them exactly, the shared one as released or as its bf16, the router's weights.
@@ -414,11 +430,8 @@ fn experts(x: &ExpertsAt, ml: &MoeLoad, d: usize, pack: PackFn, dense: DenseFn) 
     if ups.len() != e || downs.len() != e || ups.iter().any(|u| u.len() != 2) {
         return err(format!("layer {l}: {} and {} experts' matrices for {e} experts, each gate and up", ups.len(), downs.len()));
     }
-    let i = {
-        let (_, t) = ck.get(&downs[0][0]).ok_or_else(|| Error(format!("no tensor {}", downs[0][0])))?;
-        // (the down matrix's columns: two FP4 values a byte where it has scales)
-        t.shape[1] as usize * if x.kinds.scales.contains_key(&downs[0][0]) { 2 } else { 1 }
-    };
+    // (the experts' width as the config says it: a hummingbird directory holds them as codes, not as the release's matrices)
+    let i = x.inter;
     if i % 128 != 0 {
         return err(format!("experts of width {i}: this engine runs widths of 128s"));
     }
@@ -507,9 +520,10 @@ fn experts(x: &ExpertsAt, ml: &MoeLoad, d: usize, pack: PackFn, dense: DenseFn) 
                 if x.tpr.is_some() || cg.ram.is_some() {
                     return err("DeepSeek-V4's experts in the expert cache: on one GPU a stage, every expert in the computer's memory (the disk holds hummingbird directories' experts alone)");
                 }
-                // (the host computes the misses the plan gives it where the experts are in an exact FP4 layout, as the GPU's act_w does: src/cpu_fp4.rs)
+                // (the host computes the misses the plan gives it where the experts are in an exact FP4 layout, as the GPU's act_w does: src/cpu_fp4.rs; the plan on the GPU
+                // copies from the host tier through the same half, in copy mode too)
                 let fp4 = [glyd_gpu::pack::FP4_TAG, glyd_gpu::pack::FP4R_TAG].contains(&ju.tag);
-                let half = (fp4 && st.wants_cpu()).then_some(crate::offload::HostHalf::Fp4 {
+                let half = (fp4 && (st.wants_cpu() || st.offload().device)).then_some(crate::offload::HostHalf::Fp4 {
                     inter: i,
                     latent: d,
                     packed: ju.tag == glyd_gpu::pack::FP4R_TAG,
