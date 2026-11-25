@@ -242,7 +242,7 @@ pub trait ModelStep {
     }
     /// Whether `launch` returns with the step queued on the GPU and not run, so that the host's work between steps (the scheduler's, the sampler's, the server's) runs while the
     /// GPU runs the step, and the next step may be launched before this one's `finish`, its rows reading this step's greedy tokens on the GPU (`Row::after`). SGLang's overlap
-    /// loop and vLLM's async scheduling (KB f:overlap:serving:3). A sequence's blocks are named (`name`) and its prompt's end marked (`mark`) when the next step is launched
+    /// loop and vLLM's async scheduling. A sequence's blocks are named (`name`) and its prompt's end marked (`mark`) when the next step is launched
     /// (before its work), for the step in flight's tokens, never after a later step was launched over it. False: `launch` runs `round` to its end.
     fn overlaps(&self) -> bool {
         false
