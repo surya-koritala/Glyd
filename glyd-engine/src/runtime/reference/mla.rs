@@ -350,7 +350,7 @@ mod tests {
         assert!(rel(&got_out, &out) < 1e-6, "the attention over the picks");
     }
 
-    /// The indexer's rotary (the full-size GLM's and DeepSeek-V3.2's: transformers' `GlmMoeDsaIndexer`): the first `rope` channels of each query head and
+    /// The indexer's rotary (the full-size GLM's: transformers' `GlmMoeDsaIndexer`): the first `rope` channels of each query head and
     /// of each token's key turned by the attention's rotary to their positions before the scores. By hand for one query; other picks than the same
     /// keys unturned; and refused where the attention has no rotary of that many channels.
     #[test]
@@ -429,7 +429,7 @@ mod tests {
         assert!(e.contains("none were lent"), "{e}");
     }
 
-    /// One key a token (`block` 1, DeepSeek-V3.2's form): the best `top_k` tokens, no tail.
+    /// One key a token (`block` 1, the form Kimi-K3.1's `dsa_config` has): the best `top_k` tokens, no tail.
     #[test]
     fn a_key_a_token() {
         let (m, mut p) = layer(5, 1);

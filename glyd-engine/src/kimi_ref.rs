@@ -14,22 +14,7 @@ fn io<T>(r: std::io::Result<T>) -> Result<T> {
     r.map_err(|e| Error(e.to_string()))
 }
 
-/// E2M1's values: the low three bits the magnitude, the fourth the sign.
-const E2M1: [f32; 16] = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0];
-
-/// An MXFP4 matrix [rows, cols] as compressed-tensors packs it: two weights a byte (the even column in the low four bits), an E8M0 scale (2^(s - 127)) per 32 of a row.
-pub fn mxfp4(packed: &[u8], scales: &[u8], rows: usize, cols: usize) -> Result<Vec<f32>> {
-    if cols % 32 != 0 || packed.len() != rows * cols / 2 || scales.len() != rows * cols / 32 {
-        return err(format!("an MXFP4 matrix of {rows} x {cols}: {} bytes and {} scales", packed.len(), scales.len()));
-    }
-    Ok((0..rows * cols)
-        .map(|i| {
-            let b = packed[i / 2];
-            let code = if i % 2 == 0 { b & 15 } else { b >> 4 };
-            E2M1[code as usize] * 2f32.powi(scales[i / 32] as i32 - 127)
-        })
-        .collect())
-}
+pub use crate::formats::mxfp4;
 
 /// A matrix's values [rows, cols].
 struct Mat {

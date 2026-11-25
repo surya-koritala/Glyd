@@ -267,7 +267,7 @@ pub fn distinct(ids: &[i64], experts: usize) -> Vec<u16> {
 }
 
 /// A call's distinct experts (`needed`) in the order of their pairs among `ids`, the fewest first (the order given among equals): asked for in this order, the busiest are the most recently used, and where a call
-/// is computed in waves (`LayerCache::waves`) its last wave, whose experts stay in places for the next call, holds the busiest of its misses. On the Nemotron 3 Super decode traces at 16 and 20 rows a step this
+/// is computed in waves (`LayerCache::waves`) its last wave, whose experts stay in places for the next call, holds the busiest of its misses. On the decode traces of the routing record benchmarks/moe-skew-2026-10-09 at 16 and 20 rows a step this
 /// finds 1 to 7 points more of the pairs in places than the order the experts first appear in, and never fewer (the test below).
 pub fn by_rows(mut needed: Vec<u16>, ids: &[i64], experts: usize) -> Vec<u16> {
     let mut n = vec![0u32; experts];
@@ -4879,7 +4879,7 @@ mod tests {
         (distinct_n as f64 / calls as f64, missed as f64 / calls as f64, found as f64 / pairs as f64)
     }
 
-    /// The slot policy and the planner's model of it over the record's decode traces at 1 to 20 rows a step (Nemotron 3 Super, 512 experts, 22 chosen; places for 17, 32 and 46% of them):
+    /// The slot policy and the planner's model of it over the routing record's decode traces at 1 to 20 rows a step (benchmarks/moe-skew-2026-10-09: 512 experts, 22 chosen; places for 17, 32 and 46% of them):
     /// - asking for a step's experts by their rows, fewest first (`by_rows`), never finds fewer pairs in places than in the order they first appear, and more at 16 and 20 rows;
     /// - the planner's distinct missed experts a step (`plan::step_misses` with `HIT_EXPONENT`: the reads from the computer's memory a step) are within 20% of the cache's at every point; at one row its
     ///   f^0.23 is 61, 73 and 80% where the cache finds 61, 73 and 80... (printed), the misses' error the largest there, and at many rows the places' reuse between steps goes as the rows' experts fill them.

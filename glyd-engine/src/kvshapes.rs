@@ -593,7 +593,7 @@ fn rounding_allowed(n: usize) -> usize {
 /// 128, the rest zero), with the escape chunks and raw slabs the executor gives such a pool (`kvpages::room_of`), filled with every token of values whose share outside
 /// their windows is 3 in a thousand (`values`' `far`); the library's sizes are first held to kv12.rs's replicas the planner uses. Ok: the sizes the same, no page void,
 /// every value read back, and the pool's tokens a GiB (its pages, escape and raw pools, as allocated) within 5% of `kv12::planned_token_bytes`'s (heads of 128 in two
-/// streams: the Qwen3 planner's `kv_value_bytes`).
+/// streams: the planner's `kv_value_bytes`).
 fn filled(lib: &Lib, dev: &Dev, h: usize, d: usize, one: bool, width: usize, label: &str) -> Result<bool> {
     use crate::dynamic::kv12::{escape_bytes, page_bytes_of, planned_token_bytes, raw_bytes, KvShape};
     const A: i64 = 15;
@@ -1011,7 +1011,7 @@ fn prefill(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize) -> Result<bool> {
 }
 
 /// `kvdecode [--lens 40,1024,4096] [--ctx 32768] [--reps 100]`: a decode step's attention of one sequence and the write of its token, microseconds a call in a CUDA graph of --reps,
-/// at Qwen3-8B's shapes (8 kv heads of 128, 32 query heads), gemma-4-12B's sliding (8 of 256, 16, a window of 1,024) and global (1 of 512, 16 query heads in two calls' 8) layers
+/// at heads of 128 (8 kv heads, 32 query heads), gemma-4-12B's sliding (8 of 256, 16, a window of 1,024) and global (1 of 512, 16 query heads in two calls' 8) layers
 /// and the Qwen3.5 layout's (2 of 256, 8): over 12-bit pages (glyd_gpu_kv_decode_from), over a bf16 cache of the same values (glyd_gpu_kv_decode_bf16), and the token's write
 /// into the pages (glyd_gpu_kv_write of one token, as a decode step's); with the engine's plan for a context of --ctx (its floor of 32), the outputs of the two decodes compared
 /// bit for bit, and the pages' escape chunks and raw pages after the writes.

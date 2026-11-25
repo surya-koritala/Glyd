@@ -21,7 +21,7 @@ pub enum KindRef {
     Mamba2,
     Mlp,
     Moe,
-    /// Condor's hashed n-gram embedding into the residual streams.
+    /// A hashed n-gram embedding into the residual streams (Qwen3.8-Flash-Next's, DeepSeek-V4.1's Engram).
     Ngram,
     /// A per-layer input's gated branch (Gemma 4's E2B, E4B).
     PerLayer,

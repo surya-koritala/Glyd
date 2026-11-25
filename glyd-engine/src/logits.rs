@@ -478,16 +478,18 @@ impl Run for Dyn {
     }
 }
 
-/// A CPU reference one token at a time: its `step` is every pass's way in, and a prompt is its tokens one after another.
+/// A CPU reference one token at a time: its `step` is every pass's way in, and a prompt is its tokens one after another. `source`: which reference it is, in
+/// the words a fixture's provenance gives it.
 struct CpuRef<F: FnMut(u32) -> Vec<f32>> {
     load: Box<dyn Fn() -> Result<F>>,
     m: Option<F>,
     last: Vec<f32>,
+    source: &'static str,
 }
 
 impl<F: FnMut(u32) -> Vec<f32>> Run for CpuRef<F> {
     fn describe(&self) -> String {
-        "the CPU reference".into()
+        self.source.into()
     }
     fn reset(&mut self) -> Result<()> {
         self.m = Some((self.load)()?);
@@ -576,7 +578,8 @@ fn muse_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
 
 fn muse_cpu(dir: &Path) -> Result<Box<dyn Run>> {
     let d = dir.to_path_buf();
-    Ok(Box::new(CpuRef { load: Box::new(move || crate::muse_ref::RefMuse::load(&d).map(|mut m| move |t| m.step(t))), m: None, last: Vec::new() }))
+    let load = move || crate::muse_ref::RefMuse::load(&d).map(|mut m| move |t| m.step(t));
+    Ok(Box::new(CpuRef { load: Box::new(load), m: None, last: Vec::new(), source: "the CPU reference of src/muse_ref.rs" }))
 }
 
 fn kimi_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
@@ -585,7 +588,8 @@ fn kimi_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
 
 fn kimi_cpu(dir: &Path) -> Result<Box<dyn Run>> {
     let d = dir.to_path_buf();
-    Ok(Box::new(CpuRef { load: Box::new(move || crate::kimi_ref::RefKimi::load(&d).map(|mut m| move |t| m.step(t))), m: None, last: Vec::new() }))
+    let load = move || crate::kimi_ref::RefKimi::load(&d).map(|mut m| move |t| m.step(t));
+    Ok(Box::new(CpuRef { load: Box::new(load), m: None, last: Vec::new(), source: "the CPU reference of src/kimi_ref.rs" }))
 }
 
 fn dsv4_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
@@ -594,11 +598,12 @@ fn dsv4_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
 
 fn dsv4_cpu(dir: &Path) -> Result<Box<dyn Run>> {
     let d = dir.to_path_buf();
-    Ok(Box::new(CpuRef { load: Box::new(move || crate::dsv4_ref::RefV4::load(&d, true).map(|mut m| move |t| m.step(t))), m: None, last: Vec::new() }))
+    let load = move || crate::dsv4_ref::RefV4::load(&d, true).map(|mut m| move |t| m.step(t));
+    Ok(Box::new(CpuRef { load: Box::new(load), m: None, last: Vec::new(), source: "the CPU reference of src/dsv4_ref.rs" }))
 }
 
-/// A model directory's description (`runtime::describe`) on the CPU reference of the layer kinds, a token at a time: the reference of a family that has no hand-written one
-/// (Nemotron-H). Its weights are read as they are stored (bf16 or f32).
+/// A model directory's description (`runtime::describe`) on the CPU reference of the layer kinds, a token at a time: the reference of every case with no hand-written
+/// one. Its weights are read as they are stored (bf16 or f32).
 fn described_cpu(dir: &Path) -> Result<Box<dyn Run>> {
     described_cpu_with(dir, |_| {})
 }
@@ -630,7 +635,8 @@ fn described_cpu_with(dir: &Path, edit: fn(&mut crate::runtime::describe::Descri
             l
         })
     };
-    Ok(Box::new(CpuRef { load: Box::new(load), m: None, last: Vec::new() }))
+    let source = "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference)";
+    Ok(Box::new(CpuRef { load: Box::new(load), m: None, last: Vec::new(), source }))
 }
 
 fn nemotron_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
@@ -1750,12 +1756,8 @@ pub fn record(a: &crate::args::Args) -> Result<()> {
     provenance.insert(
         "source".into(),
         match from {
-            // (Nemotron-H has no reference of its own: its description on the reference of the layer kinds)
-"cpu" if matches!(c.id, "nemotron-h" | "qwen4x" | "deepseek-v41" | "qwen35" | "qwen35-wide" | "dense" | "qwen35moe" | "kimi-dsa") => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
-            "cpu" => format!(
-                "the CPU reference of src/{}_ref.rs, fp32 inside, on this case's random model (seed fixed in the generator)",
-                c.id.replace("deepseek-", "ds").replace('-', "")
-            ),
+            // (the reference's own words: the description's on the layer kinds' reference, or a hand-written one's file; `CpuRef::source`)
+            "cpu" => format!("{}, fp32 inside, on this case's random model (seed fixed in the generator)", run.describe()),
             _ => format!(
                 "glyd-engine {} at {} ({}, level {}): the engine's own output, no reference of another implementation",
                 env!("CARGO_PKG_VERSION"),
@@ -1800,6 +1802,31 @@ pub fn record(a: &crate::args::Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fixture's provenance is its CPU reference's own words, not a list of case ids: every case on the description's reference says so (the two Gemma 4
+    /// cases too, which such a list had left out, so that gemma4-kv's fixture named a src/gemma4kv_ref.rs that never was), and a hand-written reference
+    /// names its file, which is in the tree. (The references load on the first reset: nothing is read here.)
+    #[test]
+    fn a_cpu_references_provenance_is_its_own() {
+        let described = "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference)";
+        let mut on_description = Vec::new();
+        for c in cases() {
+            let Some(cpu) = c.cpu else { continue };
+            let source = cpu(Path::new("no-such-model")).unwrap().describe();
+            match source.strip_prefix("the CPU reference of ") {
+                Some(file) => assert!(Path::new(env!("CARGO_MANIFEST_DIR")).join(file).is_file(), "{}: {source}", c.id),
+                None => {
+                    assert_eq!(source, described, "{}", c.id);
+                    on_description.push(c.id);
+                }
+            }
+        }
+        for id in ["gemma4", "gemma4-kv", "dense", "qwen35", "nemotron-h"] {
+            assert!(on_description.contains(&id), "{id}: {on_description:?}");
+        }
+        let kv = Fixture::read(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits/gemma4-kv.json.gz")).unwrap();
+        assert!(kv.provenance["source"].starts_with(described), "{}", kv.provenance["source"]);
+    }
 
     /// The CPU reference of each Gemma 4 random case against the fixtures the engine and the reference recorded, row by row: the plain case's against the
     /// engine's own bits (gemma4.sm89.json.gz), the KV-sharing case's against its fixture. Minutes on an unoptimized build: cargo test -- --ignored
@@ -3101,7 +3128,7 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
-/// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR [--places N [--mode M] [--device-plan]] | --ctx C] [--prompt-tokens P] [--stagger D]` (gemma4, qwen35, muse, kimi, glm, nemotron): the case's random model on the
+/// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR [--places N [--mode M] [--device-plan]] | --ctx C] [--prompt-tokens P] [--stagger D]` (gemma4, qwen35, muse, kimi, glm): the case's random model on the
 /// description executor (or the model in DIR, with `--places` its experts in the expert cache; with `--ctx` a context of C tokens; with `--prompt-tokens` prompts of P (k + 1) / N tokens), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
 /// the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts one a pass, decode steps of the rows that decode: 16 or fewer here, whose bits
 /// are each row's own pass's). With prompts run together the replies that differ are counted, not refused (a step of more than 16 rows is another kernel's; a random model's near ties turn on its last

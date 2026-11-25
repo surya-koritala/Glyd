@@ -1,4 +1,4 @@
-//! Pack-format compatibility: every format this glyd reads, held as small saved checkpoints in `tests/data/packs/` (a tiny Qwen3 packed by a release, or by the
+//! Pack-format compatibility: every format this glyd reads, held as small saved checkpoints in `tests/data/packs/` (a tiny dense checkpoint packed by a release, or by the
 //! packer of an old one), each of which must load and decode bit for bit, on the CPU, on every merge.
 //!
 //! `committed_packs_verify` is the guard: `verify` decodes every pack of each fixture and compares each decoded tensor with the sha256 the release that saved it recorded in
@@ -6,14 +6,14 @@
 //! `the_current_packer_writes_the_released_files` is the other direction: the packer of this glyd, run on the same tiny checkpoint, writes the fixtures' files byte for byte;
 //! a deliberate change of a layout's bytes fails it, and wants a new format version (and a new fixture) rather than an edit of the old.
 //!
-//! The fixtures: `main-NAME` hold what no release's `glyd pack` writes of the tiny Qwen3 (the row layouts i6r, i5r and i4r; a Hummingbird save with its codebook rows c3r and c2r;
-//! glyd-v7 at penguin and the exact four-bit i4x, which `glyd-engine pack` writes for Gemma 4 alone, the second from the tiny Qwen3 trained to four bits, `tiny_source_as`), made
+//! The fixtures: `main-NAME` hold what no release's `glyd pack` writes of the tiny dense checkpoint (the row layouts i6r, i5r and i4r; a Hummingbird save with its codebook rows c3r and c2r;
+//! glyd-v7 at penguin and the exact four-bit i4x, which `glyd-engine pack` writes for Gemma 4 alone, the second from the tiny dense checkpoint trained to four bits, `tiny_source_as`), made
 //! by this glyd (`write_pack_sources`): they say what a decoder must keep reading; the release that first writes each replaces them with its own. `v0.33.1-LAYOUT` was written
 //! by the `glyd pack` of release 0.33.1 (the tiny checkpoint `tiny_source` writes, `--layout LAYOUT`). `v1-0.27.0-mma` and `v2-0.27.0-mma` are a glyd-v1 save of one matrix
 //! and a glyd-v2 save of a layer's experts as glyd 0.27's `save_pretrained` made them (the tiered layout of glyd 0.20 to 0.27: the Python packer is the only one that wrote
-//! it, so its layout is `crate::v1`'s); `v5-0.29.1-mma` the glyd-v5 save of the tiny Qwen3 as 0.29.1's `save_pretrained(tables=True)` made it (the embedding packed as a
+//! it, so its layout is `crate::v1`'s); `v5-0.29.1-mma` the glyd-v5 save of the tiny dense checkpoint as 0.29.1's `save_pretrained(tables=True)` made it (the embedding packed as a
 //! table). To add the next release's: build it, run `glyd pack` on the checkpoint `GLYD_PACK_SRC=DIR cargo test -p glyd-gpu write_pack_sources -- --ignored` writes, and
-//! put the output in `tests/data/packs/vX.Y.Z-LAYOUT`. glyd-engine's `packcheck.rs` runs each that holds the tiny Qwen3 on its CPU reference against a recorded digest.
+//! put the output in `tests/data/packs/vX.Y.Z-LAYOUT`. glyd-engine's `packcheck.rs` runs each that holds the tiny dense checkpoint on its CPU reference against a recorded digest.
 use super::*;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/data/packs");
@@ -28,7 +28,7 @@ const LAYOUTS: &[(&str, Layout)] = &[
     ("i3", Layout::Int3),
 ];
 
-/// The tiny Qwen3's tensors in the order their values are drawn: one layer, 128-wide (4 query heads and 2 key-value heads of 32), a vocabulary of 128, the output layer tied.
+/// The tiny dense checkpoint's tensors in the order their values are drawn: one layer, 128-wide (4 query heads and 2 key-value heads of 32), a vocabulary of 128, the output layer tied.
 fn tiny_tensors() -> Vec<(String, Vec<u64>)> {
     let mut ts = vec![("model.embed_tokens.weight".to_string(), vec![128, 128]), ("model.norm.weight".to_string(), vec![128])];
     for (n, s) in [
@@ -49,7 +49,8 @@ fn tiny_tensors() -> Vec<(String, Vec<u64>)> {
     ts
 }
 
-/// The tiny Qwen3 the fixtures hold the packs of: random bf16 weights from a fixed seed. `qat`: its matrices as a checkpoint trained to four bits holds them
+/// The tiny dense checkpoint the fixtures hold the packs of: random bf16 weights from a fixed seed (its config.json names `Qwen3ForCausalLM` only because
+/// the released fixtures' do: the model is no release's). `qat`: its matrices as a checkpoint trained to four bits holds them
 /// (each run of 32 of a row a code from -8 to 7 times one scale of a 12-bit significand, rounded to bf16 once: what the exact four-bit layout, i4x, holds bit
 /// for bit), its norms as the other's.
 fn tiny_source_as(src: &Path, qat: bool) {
@@ -177,7 +178,7 @@ fn set(m: &mut Value, key: &str, v: Value) {
     }
 }
 
-/// The glyd-v5 save of the tiny Qwen3, as glyd 0.29.1's save_pretrained(tables=True) made one: the save of glyd-v4 with the embedding (the table the output layer is
+/// The glyd-v5 save of the tiny dense checkpoint, as glyd 0.29.1's save_pretrained(tables=True) made one: the save of glyd-v4 with the embedding (the table the output layer is
 /// tied to) packed as a Linear is, its entry marked "table". (format.py packs a table of 2^20 weights or more; the tiny model's 16,384 are packed to hold the same entry.)
 fn tables(tmp: &Path) {
     let out = Path::new(FIXTURES).join("v5-0.29.1-mma");
@@ -338,7 +339,7 @@ fn write_pack_sources() {
     main_fixtures(&dir, &new);
 }
 
-/// The plan of the tiny Qwen3 as the block layouts' (q, k, v and gate, up merged, the embedding a linear too), with `layout: ROW` on its one-member linears (o_proj, down_proj) where
+/// The plan of the tiny dense checkpoint as the block layouts' (q, k, v and gate, up merged, the embedding a linear too), with `layout: ROW` on its one-member linears (o_proj, down_proj) where
 /// `row` names one: the weight's transpose a row at a time (a merged group cannot be).
 fn plan_of(src: &Path, row: Option<&str>) -> String {
     let config = json::parse(&std::fs::read_to_string(src.join("config.json")).unwrap()).unwrap();
@@ -371,8 +372,8 @@ fn scrub(out: &Path, names: &[&Path]) {
     std::fs::write(path, text).unwrap();
 }
 
-/// The `main-*` fixtures (each where `new` says it is not there yet): the tiny Qwen3 with its o_proj and down_proj in each row layout (the save at the block layout of the same bits); a
-/// Hummingbird save from a synthetic export of two experts (one at three bits, c3r; one at two, c2r) beside a dense linear at six bits; the tiny Qwen3 at penguin as Gemma 4's
+/// The `main-*` fixtures (each where `new` says it is not there yet): the tiny dense checkpoint with its o_proj and down_proj in each row layout (the save at the block layout of the same bits); a
+/// Hummingbird save from a synthetic export of two experts (one at three bits, c3r; one at two, c2r) beside a dense linear at six bits; the tiny dense checkpoint at penguin as Gemma 4's
 /// lossless repos are saved (glyd-v7 at `mma`, every pack read as saved: `save_penguin`); and its four-bit-trained form at the exact four-bit layout, as Gemma 4's
 /// quantization-aware checkpoints are saved at wren (glyd-v7, `i4x`).
 fn main_fixtures(tmp: &Path, new: &dyn Fn(&str) -> bool) {

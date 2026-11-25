@@ -1,6 +1,6 @@
-//! `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain]` (R2, #135): every layer kind of the recent families run by the executor's CUDA
+//! `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain]` (R2, #135): every layer kind the families' descriptions hold, run by the executor's CUDA
 //! kernels against its CPU f32 reference (`runtime::reference`), kind by kind, on each logits case's random model (Gemma 4, the Qwen3.5 layout,
-//! Nemotron-H, Muse Spark, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4) at the lossless level.
+//! the plain dense block, the Mamba-2 layout, Muse Spark, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4) at the lossless level.
 //!
 //! Each layer of the executor's description runs operation by operation on a prompt of `--prompt` rows, then `--steps` decode steps, each pass
 //! from a residual made at random (the layer's caches and states carried from pass to pass, as a sequence's). A layer's operations are runs of

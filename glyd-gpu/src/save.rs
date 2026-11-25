@@ -168,6 +168,9 @@ const ATTENTION_QK_NORMS: &[Child] =
 const QKV: &[&str] = &["q_proj", "k_proj", "v_proj"];
 const MLP: &[Child] = &[Linear("gate_proj"), Linear("up_proj"), Linear("down_proj")];
 const GATE_UP: &[&str] = &["gate_proj", "up_proj"];
+/// A gated delta rule layer's input projections the engine's level plans merge (the queries, keys and values with the output gate z; b with a): a
+/// save of those plans holds them as one pack under the first's name.
+const IN_PROJ: &[&[&str]] = &[&["in_proj_qkv", "in_proj_z"], &["in_proj_b", "in_proj_a"]];
 const NORMS: &[Child] = &[Plain("input_layernorm.weight", ""), Plain("post_attention_layernorm.weight", "")];
 
 const FAMILIES: &[Family] = &[
@@ -1874,14 +1877,15 @@ pub fn verify(dir: &Path, threads: usize, decoder: &Decoder) -> io::Result<Verif
         buffers.extend(layout.buffers().0.iter().map(|(b, _)| format!("{key}{b}")));
         let ts: Vec<&str> =
             e.get("tensors").and_then(Value::as_array).unwrap_or(&[]).iter().map(|t| t.get("name").and_then(Value::as_str).unwrap_or("")).collect();
-        // its own: an experts' weight's name, its module's .weight, a merged group's (q, k, v; gate, up: every name
-        // the key's; q, k alone where a layer's values are its keys, Gemma 4's global layers)
+        // its own: an experts' weight's name, its module's .weight, a merged group's (q, k, v; gate, up; a gated delta
+        // rule's qkv, z and b, a: every name the key's; q, k alone where a layer's values are its keys, Gemma 4's global layers)
         let (parent, first) = name.rsplit_once('.').unwrap_or(("", name));
         let own: Vec<String> = match (e.get("experts"), ts.len()) {
             (Some(_), _) => vec![name.clone()],
             (None, 1) => vec![format!("{name}.weight")],
             _ => [QKV, GATE_UP]
                 .iter()
+                .chain(IN_PROJ)
                 .filter(|g| g[0] == first && g.len() >= ts.len())
                 .flat_map(|g| g[..ts.len()].iter().map(|c| format!("{parent}.{c}.weight")))
                 .collect(),
@@ -2789,6 +2793,38 @@ mod tests {
         std::fs::write(src.join("config.json"), r#"{"architectures": ["Qwen3ForCausalLM"], "num_hidden_layers": 0, "quantization_config": {"quant_method": "fp8", "weight_block_size": [128, 128]}}"#).unwrap();
         let e = save(&source, &dir.join("o3"), 1, 1 << 30, true, Layout::Tiered).err().map(|e| e.to_string()).unwrap_or_default();
         assert!(e.contains("where glyd packs a bf16 checkpoint"), "{e:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A gated delta rule layer's input projections saved as the engine's level plans merge them (qkv with z, b with a: each pair one pack under the
+    /// first's name) are the save's own to verify; a member renamed in glyd.json (z as y) is refused.
+    #[test]
+    fn a_gated_delta_rules_merged_projections_verify() {
+        let dir = std::env::temp_dir().join(format!("glyd-gpu-gdr-{}", std::process::id()));
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("config.json"), r#"{"architectures": ["Tiny"]}"#).unwrap();
+        let m = "model.layers.0.linear_attn";
+        let t = |name: &str, rows: u64, cols: u64| {
+            let w: Vec<u16> = (0..rows * cols).map(|i| ((i as u16).wrapping_mul(40503) & 0x807F) | (120 << 7)).collect();
+            Saved { name: format!("{m}.{name}"), dtype: "BF16", shape: vec![rows, cols], bytes: u16_bytes(&w), sha256: None }
+        };
+        let mut ts = vec![t("in_proj_qkv.weight", 128, 64), t("in_proj_z.weight", 64, 64), t("in_proj_b.weight", 64, 64), t("in_proj_a.weight", 64, 64)];
+        ts.push(Saved { shape: vec![64], ..t("norm.weight", 1, 64) });
+        write_safetensors(&src.join("model.safetensors"), &mut ts).unwrap();
+        let source = Source::find(src.to_str().unwrap()).unwrap();
+        let plan = format!(
+            r#"{{"puts": [{{"linear": ["{m}.in_proj_qkv", "{m}.in_proj_z"]}}, {{"linear": ["{m}.in_proj_b", "{m}.in_proj_a"]}}, {{"copy": "{m}.norm.weight"}}]}}"#
+        );
+        let out = dir.join("i6");
+        save_planned(&source, &out, 2, 1 << 30, Layout::Int6, &plan).unwrap();
+        let v = verify(&out, 2, &Decoder::Cpu).unwrap();
+        assert_eq!((v.packed, v.hashed, v.unchecked), (4, 1, 0));
+        let text =
+            std::fs::read_to_string(out.join("glyd.json")).unwrap().replacen(&format!("\"{m}.in_proj_z.weight\""), &format!("\"{m}.in_proj_y.weight\""), 1);
+        std::fs::write(out.join("glyd.json"), text).unwrap();
+        let e = verify(&out, 2, &Decoder::Cpu).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(e.contains("in_proj_qkv's tensors are not its own"), "{e:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

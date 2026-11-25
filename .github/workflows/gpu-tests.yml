@@ -84,7 +84,7 @@ jobs:
           for d in tests/data/packs/*/; do
             "$CARGO_TARGET_DIR/release/glyd-gpu" verify "$d" --device cuda:0
           done
-          # (each save that holds the tiny Qwen3, its packs decoded by the GPU library, on the CPU reference against its digest in glyd-engine/tests/packs)
+          # (each save that holds the fixtures' tiny dense model, its packs decoded by the GPU library, on the CPU reference against its digest in glyd-engine/tests/packs)
           "$E" packcheck --gpu
           # (the formats the engine loads a saved directory in, as the glyd/* repos are saved: glyd-v7 at penguin, kestrel, swift, wren and hummingbird, each made from a logits
           # case's random model by the repos' packer, loaded from the directory and held to the same model packed as it loads in the same layout, bit for bit, and to the

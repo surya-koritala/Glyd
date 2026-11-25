@@ -146,7 +146,7 @@ impl Kern {
     }
 
     /// The tile a dense product of `m` rows by `n` columns and `k` deep takes (an index for `gemm`): the 256x128 tile from 1,536 rows on; below, the 128x256 one (BK 64) for the widest products and
-    /// the 128x128 one (BK 64) for the rest; as measured on an L4 with Qwen3-8B's shapes (within 1.00 to 1.09 of cuBLAS's time at 1,024 and 3,500 rows). GLYD_ENGINE_TILE=name forces one.
+    /// the 128x128 one (BK 64) for the rest; as measured on an L4 at a dense model's shapes of hidden 4,096 (within 1.00 to 1.09 of cuBLAS's time at 1,024 and 3,500 rows). GLYD_ENGINE_TILE=name forces one.
     pub fn pick_tile(&self, m: usize, n: usize, k: usize) -> usize {
         if let Some(t) = crate::tune!("GLYD_ENGINE_TILE") {
             if let Some(i) = self.plain.iter().position(|x| x.name == t) {
@@ -591,7 +591,7 @@ impl MaskGpu {
     }
 }
 
-/// The GPU's side of the sampler's candidates for an engine with one row of logits (Qwen3.5's and Nemotron 3 Super's, whose `Gen::reply` draws on the host): behind a step that `ask` names (`Sampler::top_need`), `queue` makes the row's
+/// The GPU's side of the sampler's candidates for an engine with one row of logits (the Qwen3.5 layout's and the Nemotron-H layout's, whose `Gen::reply` draws on the host): behind a step that `ask` names (`Sampler::top_need`), `queue` makes the row's
 /// 64 largest logits and, for a top-p with no top-k, the sum of its exponentials, and copies them to the host in the step's one synchronize; `read` gives them. A draw then reads 520 bytes in place of the row (131,072 to
 /// 248,000 logits to copy, sort and exponentiate on the host). `off` (GLYD_ENGINE_HOST_SAMPLING=1, to compare): none are made and the row is read.
 pub struct TopGpu {
