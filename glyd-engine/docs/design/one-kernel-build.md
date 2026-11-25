@@ -1,6 +1,6 @@
 # R17: one kernel build
 
-Status: step 0 done; steps 1, 2, 5 and 6 begun (see "Progress" at the end): the unpackers and the experts' plan run from the engine's fatbin, the products still the library's. Decisions (the coordinator, Nov 21): CUDA 12 stays (step 5); HIP stays a compile-only job until M5b, and the CUDA fold keeps the HIP path building (step 6); step 0 is R1a, #134 ("Part of #134"), started once the R3b pull requests that touch `ffi.rs` have merged and the other sessions working on `ffi.rs` have been asked; each step carries its own bit-for-bit check in the GPU job on glyd-pc (a CI job, no rental). It needs a GPU to validate every step (each step is compared bit for bit with the library on the GPU runner), which this repository's CI has only on glyd-pc.
+Status: step 0 done; steps 1, 2, 5 and 6 begun (see "Progress" at the end): the library's operations run from the engine's fatbin but Hopper's wgmma and TMA products, whose launches are next. Decisions (the coordinator, Nov 21): CUDA 12 stays (step 5); HIP stays a compile-only job until M5b, and the CUDA fold keeps the HIP path building (step 6); step 0 is R1a, #134 ("Part of #134"), started once the R3b pull requests that touch `ffi.rs` have merged and the other sessions working on `ffi.rs` have been asked; each step carries its own bit-for-bit check in the GPU job on glyd-pc (a CI job, no rental). It needs a GPU to validate every step (each step is compared bit for bit with the library on the GPU runner), which this repository's CI has only on glyd-pc.
 
 ## What there is today
 
@@ -59,10 +59,17 @@ Each step lands alone, keeps `libglyd_gpu` loadable (the Python package needs it
   knows, both layouts, matrices of every kind of K, token counts on each side of every threshold, and valid and refused KV shapes. The
   workspaces left (`linear_workspace`, `moe_workspace`, the FP8 ones, `kv_decode_splits`) depend on their kernels' occupancy and launch
   plans: each folds with its family.
-- **Step 3, order.** Folded: the unpackers of the first family and the grouped experts' plan. Next: the mma products themselves (the step
-  product to 64 tokens, then the prompt kernels by route; their grids depend on occupancy, which needs `cuOccupancyMaxActiveBlocksPerMultiprocessor`
-  in the device layer and the same split rules, so that the sums' order and so the bits are the library's), the grouped products, the paged KV
-  cache, FP8.
+- **Step 3, order.** Folded (each compared bit for bit with the library by `foldcheck` in the GPU job): the unpackers; the experts' plan;
+  the step product to 64 tokens (route GEMM, and the step product of the routes MID and WG for the layouts that take it); the prompt
+  kernel (routes BIG, DECODE, AHEAD and SPLIT: mma_gemm_big in its three default shapes and, on GeForce Ada, its stream-K form, with
+  split-K's finish); the 12-bit layout's route MID (mma12_mid, and the A100's mma12_ws); the grouped experts' step products, their
+  prompt kernel and the expert cache's places; the 12-bit KV pages' write, unpack, gather, decode and prompt attention (and over a
+  bf16 cache); the lossless FP8 format's size, pack and unpack and its products (both layouts, every kind of scales, the experts').
+  Their grids are the library's: occupancy of the engine's own kernels (`cuOccupancyMaxActiveBlocksPerMultiprocessor` in the device
+  layer) and the same split rules, so the sums' order and the bits are the library's. A development build's variables that ask for
+  another plan keep the library's. Hopper's kernels (the 12-bit layout's TMA and wgmma products, the tiered layout's TMA product, the
+  experts' wgmma product) are in the fatbin, built for sm_90a; their launches (tensor maps from the driver's `cuTensorMapEncodeTiled`,
+  clusters) are next, then step 4.
 - **Step 5.** The folded kernels are in `kernels/engine.cu`'s fatbin, so the CUDA 12 fatbin (`NVCC12`) carries them as it carries the rest.
 - **Step 6.** The HIP build compiles `engine.cu`, so `fold.cu` and the header with it: the header is the library's own HIP-compiling source.
   Not compiled by hipcc yet (the AMD job runs it).
