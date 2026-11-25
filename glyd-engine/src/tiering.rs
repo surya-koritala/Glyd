@@ -331,10 +331,10 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     println!(
         "{}: {} logits of {} positions, {} against the expert cache ({places} places a layer, {mode:?}{}): {differ} differ, the largest by {worst:e}, the least cosine {least_cos:.6}",
         dir.display(),
-        if against_copy { "the cache in copy mode" } else { "resident" },
-        if device { ", the decode calls planned on the GPU" } else { "" },
         total,
-        resident.len()
+        resident.len(),
+        if against_copy { "the cache in copy mode" } else { "resident" },
+        if device { ", the decode calls planned on the GPU" } else { "" }
     );
     if device {
         // (the plan on the GPU takes layers whose host half is FP4 experts; another family's layers are the host's plan, said and not failed)
