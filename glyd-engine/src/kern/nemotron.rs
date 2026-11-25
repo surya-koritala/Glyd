@@ -54,7 +54,6 @@ pub struct KernNh {
     pass: crate::kt::nh_ssd_pass,
     scan_y: crate::kt::nh_ssd_y,
     gnorm: crate::kt::nh_gated_norm,
-    small: crate::kt::small_linear,
 }
 
 impl KernNh {
@@ -70,7 +69,6 @@ impl KernNh {
             pass: dev.typed()?,
             scan_y: dev.typed()?,
             gnorm: dev.typed()?,
-            small: dev.typed()?,
         })
     }
 
@@ -188,14 +186,5 @@ impl KernNh {
             return err(format!("a gated norm of {di} channels in {ng} groups: not supported"));
         }
         launch!(self.gnorm, [n, ng as u32, 1], [256, 1, 1], s; y, z, zs, w, di, ng, eps)
-    }
-
-    /// y [m, rows] = x [m, cols] W^T for a bf16 W the library does not pack.
-    ///
-    /// # Safety
-    /// As `conv`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn small_linear(&self, s: Stream, x: u64, xs: i32, w: u64, y: u64, ys: i32, m: u32, rows: i32, cols: i32) -> Result<()> {
-        launch!(self.small, [m, (rows.max(1) as u32).div_ceil(8), 1], [256, 1, 1], s; x, xs, w, y, ys, rows, cols)
     }
 }

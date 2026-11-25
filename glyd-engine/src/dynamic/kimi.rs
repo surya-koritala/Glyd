@@ -24,7 +24,6 @@ use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 use std::rc::Rc;
 
-// The kernels' names: those the .cu sources give them, in every build (kname!).
 /// kernels/kimi.cu's kernels, KimiRMSNorm (kernels/mla.cu's `rms2_rows512`) and engine.cu's copy of a fused product's part.
 pub struct KernKimi {
     rms2: crate::kt::rms2_rows512,

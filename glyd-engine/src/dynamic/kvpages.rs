@@ -1090,7 +1090,7 @@ mod tests {
     }
 
     /// Tokens held a GiB in each format of keys and values, as a pool of 2 GiB holds them (blocks of 16 tokens, block 0 none's), against the planner's: bf16 rings at
-    /// their row's bytes; 12-bit pages of two streams at heads of 128 (a Qwen3 dense model's 8 kv heads: the planner's `kv_per_token`), 256 and 512 (gemma-4-12B's
+    /// their row's bytes; 12-bit pages of two streams at 8 kv heads of 128 (the dense planner's `kv_per_token`), 256 and 512 (gemma-4-12B's
     /// sliding and K=V global layers: `kv12::planned_token_bytes`, Gemma 4's planner's), one stream (Kimi-K3's and GLM-5.3's latents) with the engine's escape room and
     /// raw slabs: within 5% of the planner's.
     #[test]
@@ -1106,18 +1106,16 @@ mod tests {
             round: false,
             width,
         };
-        // (bf16: a ring's blocks are its row's bytes a token, nothing else)
+        // (bf16: a ring's blocks are its row's bytes a token, nothing else, so a ring's bytes a token are the planner's for its values, to the byte)
         for (nk, d, values) in [(8usize, 128usize, true), (1, 512, true), (1, 576, false), (1, 512, false)] {
             let r = super::super::Ring::keys(d, nk, 0);
             let r = super::super::Ring { values, ..r };
-            let per = r.token_bytes();
-            let n = (2.0 * gib / (16.0 * per as f64)) as u64;
-            let held = (n - 1) * 16;
-            assert!(((held as f64 / (n * 16 * per as u64) as f64 * gib) / (gib / per as f64) - 1.0).abs() < 0.05, "bf16 {nk} x {d}");
+            let planned = crate::plan::sizing::kv_value_bytes(false) * ((1 + values as usize) * nk * d) as f64;
+            assert_eq!(r.token_bytes() as f64, planned, "bf16 {nk} x {d}");
         }
-        let qwen3 = crate::plan::sizing::kv_value_bytes(true) * (2 * 8 * 128) as f64;
+        let dense = crate::plan::sizing::kv_value_bytes(true) * (2 * 8 * 128) as f64;
         for (s, planned, what) in [
-            (shape(8, 128, false, 1024), qwen3, "8 heads of 128 (Qwen3 dense's planner)"),
+            (shape(8, 128, false, 1024), dense, "8 heads of 128 (plan::sizing::kv_per_token)"),
             (shape(8, 256, false, 2048), 0.0, "8 heads of 256 (gemma-4-12B sliding)"),
             (shape(1, 512, false, 512), 0.0, "1 head of 512, K=V (gemma-4-12B global)"),
             (shape(5, 128, true, 576), 0.0, "a latent of 512 + 64 (Kimi-K3)"),

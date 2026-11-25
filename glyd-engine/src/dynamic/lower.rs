@@ -203,11 +203,11 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
     })
 }
 
-/// The pre-norm dense decoder (the description builder's `llama` reading: Llama, Mistral, Qwen2, Qwen3): pairs of blocks, an attention of the kind's parameters
+/// The pre-norm dense decoder (the description builder's `llama` reading): pairs of blocks, an attention of the kind's parameters
 /// (its q and k norms where the kind has them, a window where it slides) and the gated SiLU MLP, each `x + block(rmsnorm(x) w)`; the final norm on the last rows,
 /// the head the embedding's matrix where tied. Each matrix of a layer is its checkpoint tensors stacked (q, k and v; gate and up), sized by the shapes the
 /// description gives. The products are the library's at every row count, a long chunk's decoded and multiplied dense where its route says so: the products,
-/// norms, activation, embedding and head of the dense Qwen3 engine this replaces, kernel for kernel. A kind this lowering does not take (a bias, a rope with
+/// norms, activation, embedding and head of the dense engine this replaces, kernel for kernel. A kind this lowering does not take (a bias, a rope with
 /// scaling, a norm or activation of another kind) is refused, named.
 pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> {
     use crate::runtime::kinds::{Act, Collapse, NormKind, NormWeight, Residual, RopeScaling};
@@ -1853,9 +1853,9 @@ mod tests {
         assert!(twice.len() == 4 * 43 + 1 && twice.iter().all(|&r| r == Rounding::Twice));
     }
 
-    /// A Llama-style config (model_type, the attention's settings) of `layers` layers of hidden 256, 4 query heads over 2 of 64, an MLP of 512, a vocabulary of 1,024:
-    /// test shapes, no release's.
-    fn llama_style(model_type: &str, extra: serde_json::Value) -> serde_json::Value {
+    /// A plain dense decoder's config (the model type the description builder reads it by, the attention's settings) of three layers of hidden 256, 4 query heads over 2
+    /// of 64, an MLP of 512, a vocabulary of 1,024: test shapes, no release's.
+    fn dense_config(model_type: &str, extra: serde_json::Value) -> serde_json::Value {
         let mut c = serde_json::json!({"architectures": ["X"], "model_type": model_type, "hidden_size": 256, "intermediate_size": 512, "num_hidden_layers": 3,
             "num_attention_heads": 4, "num_key_value_heads": 2, "head_dim": 64, "vocab_size": 1024, "rms_norm_eps": 1e-5, "rope_theta": 10000.0,
             "max_position_embeddings": 4096, "hidden_act": "silu", "tie_word_embeddings": false});
@@ -1863,13 +1863,13 @@ mod tests {
         c
     }
 
-    /// Each Llama-style config of the fixtures (the random Qwen3 the logits checks run, a Mistral-layout one with a window, Qwen3's with its q and k norms
-    /// and a tied head) lowers to the operations the dense Qwen3 engine ran (src/model.rs, removed): the input norm (then its add of the residual), the q, k
-    /// and v product, the attention kind, o, the norm with the residual, gate and up with SiLU, down, the final norm on the last rows; its matrices the
-    /// checkpoint's tensors stacked in that engine's order and sized by the description's shapes, which are the checkpoint's; its widths, heads, rotary and
-    /// norms the config's as that engine read it (`weights::Config`, for Qwen3). Llama 3's scaled rope and Qwen2's biases are refused, named.
+    /// Each form of the plain dense decoder the description builder reads (the random dense model of the logits checks; no q and k norms, a window on every
+    /// layer; q and k norms with a tied head; neither) lowers to these operations, written out here by hand: the input norm (then its add of the residual),
+    /// the q, k and v product, the attention kind, o, the norm with the residual, gate and up with SiLU, down, the final norm on the last rows; its matrices
+    /// the checkpoint's tensors stacked in that order and sized by the description's shapes, which are the checkpoint's; its widths, heads, rotary and norms
+    /// the config's as the planner's sizes read it (`weights::Config`). A scaled rope and biases in the attention are refused, named.
     #[test]
-    fn dense_lowered_from_each_llama_style_config() {
+    fn dense_lowered_from_each_form_of_its_config() {
         use super::super::attn::{QkNorm, RopeAt};
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let manifest: serde_json::Value =
@@ -1882,10 +1882,10 @@ mod tests {
             .map(|t| (t[0].as_str().unwrap().to_string(), t[2].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect()))
             .collect();
         let cases = [
-            ("the random Qwen3 of the logits checks", serde_json::from_str(&tiny_text).unwrap()),
-            ("a Mistral layout, a window on every layer", llama_style("mistral", serde_json::json!({"sliding_window": 128}))),
-            ("a Qwen3 layout, a tied head", llama_style("qwen3", serde_json::json!({"tie_word_embeddings": true, "rms_norm_eps": 1e-6}))),
-            ("a Llama layout", llama_style("llama", serde_json::json!({}))),
+            ("the random dense model of the logits checks", serde_json::from_str(&tiny_text).unwrap()),
+            ("no q and k norms, a window on every layer", dense_config("mistral", serde_json::json!({"sliding_window": 128}))),
+            ("q and k norms, a tied head", dense_config("qwen3", serde_json::json!({"tie_word_embeddings": true, "rms_norm_eps": 1e-6}))),
+            ("no q and k norms, no window", dense_config("llama", serde_json::json!({}))),
         ];
         for (what, cfg) in cases {
             let kinds = crate::runtime::describe::describe(&cfg).unwrap_or_else(|e| panic!("{what}: {}", e.msg));
@@ -1947,28 +1947,24 @@ mod tests {
             for (s, w) in [(Slot::Proj, (heads + 2 * kv) * hd), (Slot::Att, heads * hd), (Slot::Gu, 2 * inter), (Slot::M, inter), (Slot::Hlast, hid)] {
                 assert_eq!(d.width(s), w, "{what}: {s:?}");
             }
-            if cfg["model_type"] == "qwen3" {
-                // (and the config as the dense Qwen3 engine read it)
-                let mut text = cfg.clone();
-                text["architectures"] = serde_json::json!(["Qwen3ForCausalLM"]);
-                let c = crate::weights::Config::parse(&text.to_string(), what, None).unwrap();
-                assert_eq!(
-                    (c.hidden, c.heads, c.kv_heads, c.head_dim, c.inter, c.layers, c.eps, c.rope_theta, c.tie),
-                    (hid, heads, kv, hd, inter, layers, eps, theta, tied)
-                );
-            }
+            // (and the config as the planner's sizes read it: every form of the kind, by its model type)
+            let c = crate::weights::Config::parse(&cfg.to_string(), what, None).unwrap();
+            assert_eq!(
+                (c.hidden, c.heads, c.kv_heads, c.head_dim, c.inter, c.layers, c.eps, c.rope_theta, c.tie),
+                (hid, heads, kv, hd, inter, layers, eps, theta, tied)
+            );
         }
-        // (the random Qwen3's shapes are its checkpoint's, every one)
+        // (the random dense model's shapes are its checkpoint's, every one)
         let kinds = crate::runtime::describe::describe(&serde_json::from_str(&tiny_text).unwrap()).unwrap();
         for (name, s) in &kinds.shapes {
             assert_eq!(Some(s), tiny_shapes.get(name), "{name}");
         }
         assert_eq!(kinds.shapes.len(), tiny_shapes.len());
-        // (a kind the executor does not take: Llama 3's scaled rope, Qwen2's biases)
-        let llama3 = crate::runtime::reference::testing::Fixture::load("llama_model").j["config"].clone();
-        let e = dense(&crate::runtime::describe::describe(&llama3).unwrap(), vec![2], 4096).unwrap_err().msg;
+        // (a kind the executor does not take: a scaled rope, biases in the attention)
+        let scaled = crate::runtime::reference::testing::Fixture::load("llama_model").j["config"].clone();
+        let e = dense(&crate::runtime::describe::describe(&scaled).unwrap(), vec![2], 4096).unwrap_err().msg;
         assert!(e.contains("rope") && e.contains("Llama3"), "{e}");
-        let e = dense(&crate::runtime::describe::describe(&llama_style("qwen2", serde_json::json!({}))).unwrap(), vec![2], 4096).unwrap_err().msg;
+        let e = dense(&crate::runtime::describe::describe(&dense_config("qwen2", serde_json::json!({}))).unwrap(), vec![2], 4096).unwrap_err().msg;
         assert!(e.contains("a bias"), "{e}");
     }
 
@@ -2082,7 +2078,8 @@ mod tests {
         }
     }
 
-    /// Each family's executor description: the random models' of the logits checks, the fixtures' configs (Nemotron-H), a Llama-style config, Gemma 4's draft.
+    /// Each family's executor description: the random models' of the logits checks, the fixtures' configs (the Mamba-2 layout's, with and without experts: the
+    /// kind's only description in the tree), a plain dense config, Gemma 4's draft.
     #[cfg(feature = "dev")]
     fn every_family(tag: &str) -> Vec<ModelDesc> {
         use super::super::{deepseek_v4, gemma4, glm, kimi, muse, nemotron, qwen35, qwen4x, Stage};
@@ -2124,7 +2121,7 @@ mod tests {
             let c = crate::nemotron::ConfigNemotronH::parse(&text, f, None).unwrap();
             v.extend(nemotron::describe(&c, &Stage::whole(c.layers)));
         }
-        v.push(dense(&crate::runtime::describe::describe(&llama_style("llama", serde_json::json!({}))).unwrap(), vec![2], 4096).unwrap());
+        v.push(dense(&crate::runtime::describe::describe(&dense_config("llama", serde_json::json!({}))).unwrap(), vec![2], 4096).unwrap());
         for x in ["q35", "g4", "muse", "kimi", "glm", "v4", "qx"] {
             let _ = std::fs::remove_dir_all(dir(x));
         }
@@ -2133,7 +2130,7 @@ mod tests {
 
     /// The decisions the executor made by a family's name, made by its description's operations now, give every family the answer the name lists gave, but
     /// where named: a second sequence for Qwen3.8-Flash-Next (`add_seqs`: every one of its operations keeps a sequence's data in its rings and states, as
-    /// `batchable` said already); a verify pass for Gemma 4 and the Llama-style dense models (attention rings and row-wise operations alone; the range worker,
+    /// `batchable` said already); a verify pass for Gemma 4 and the plain dense models (attention rings and row-wise operations alone; the range worker,
     /// verify's one caller, loads Qwen3.5 alone).
     #[cfg(feature = "dev")]
     #[test]
@@ -2161,7 +2158,7 @@ mod tests {
     }
 
     /// A cut between layers hands over what each family's stages handed by name (Qwen3.5 X and D, Kimi-K3 X and Blk, the rest X, H, D, O and S where they are),
-    /// but where named: Nemotron-H and the Llama-style dense models, whose layers begin by adding the last one's output (O, D) to X, now hand X and that alone
+    /// but where named: Nemotron-H and the plain dense models, whose layers begin by adding the last one's output (O, D) to X, now hand X and that alone
     /// (H, which that add writes, no more). Every layer after the first begins with an operation that reads those slots.
     #[cfg(feature = "dev")]
     #[test]
@@ -2201,7 +2198,7 @@ mod tests {
         crate::logits::qwen35_random(&dir).unwrap();
         let c = crate::qwen35::Config35::load(&dir).unwrap();
         let d = super::super::qwen35::lowered(&dir, &c, &super::super::Stage::whole(c.layers)).unwrap();
-        // (its tensors as kern35's loader read them, in its order: the description names the same, in the same order)
+        // (its tensors in the order the description names them)
         let packs: std::collections::HashMap<String, crate::qwen35::Pack35> = c.packs().into_iter().map(|p| (p.key.clone(), p)).collect();
         let item = |src: &crate::kern35::Src| match src {
             crate::kern35::Src::Pack(k) => Item { members: packs[k].parts.iter().map(|x| x.0.clone()).collect(), rows: packs[k].rows(), cols: packs[k].cols },
@@ -2256,7 +2253,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The executor's loader's rules, on the random Nemotron-H's tensors named in its own loader's order (src/kern_nh.rs), make that loader's choices: the same
+    /// Legacy coverage, of a layout whose loader is still its own (it goes when the executor's loader reads the layout): the executor's loader's rules, on the
+    /// tensors of the Mamba-2 layout's random model named in that loader's order (src/kern_nh.rs), make that loader's choices: the same
     /// matrices dense (the parts the packer does not take), every small tensor as saved in bf16 (none read wider). Its description names no tensor yet, so it
     /// loads by its own loader still, and the executor's refuses it.
     #[cfg(feature = "dev")]
@@ -2300,7 +2298,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The descriptions the executor's loader can read (`Dyn::new_with`: Gemma 4, its draft, the Llama-style dense models, Qwen3.5, Muse Spark, Kimi-K3,
+    /// The descriptions the executor's loader can read (`Dyn::new_with`: Gemma 4, its draft, the plain dense models, Qwen3.5, Muse Spark, Kimi-K3,
     /// Qwen3.8-Flash-Next) name every matrix their operations use; the others name none yet, their families' loaders filling them by index, and the executor's
     /// loader refuses them in words.
     #[cfg(feature = "dev")]

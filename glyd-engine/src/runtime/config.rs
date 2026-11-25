@@ -98,7 +98,7 @@ impl Shared {
         [self.num_experts_per_tok, self.num_experts_per_token].into_iter().flatten().max().unwrap_or(0)
     }
 
-    /// The experts' width where they run in a latent (Nemotron 3 Super's `moe_latent_size`, Kimi-K3's `routed_expert_hidden_size`, Muse Spark's `moe_hidden_size`).
+    /// The experts' width where they run in a latent (the Nemotron-H layout's `moe_latent_size`, Kimi-K3's `routed_expert_hidden_size`, Muse Spark's `moe_hidden_size`).
     pub fn latent(&self) -> Option<usize> {
         self.moe_latent_size.or(self.routed_expert_hidden_size).or(self.moe_hidden_size)
     }
@@ -221,7 +221,8 @@ fn family_by(arch: &str, model_type: &str, nested: Option<&str>) -> Option<Famil
         _ if m == "deepseek_v4" => Family::DeepSeekV4,
         _ if m == "qwen4_exp" => Family::FlashNext,
         _ if m.starts_with("gemma4") || nested.is_some_and(|t| t.starts_with("gemma4")) => Family::Gemma4,
-        _ if a == "Qwen3ForCausalLM" => Family::Qwen3,
+        // (the plain dense kind: every model type the description builder's `llama` reading takes, whatever the release calls its architecture)
+        _ if super::describe::LLAMA.contains(&nested.unwrap_or(m)) => Family::Qwen3,
         _ if a == "Qwen3_5ForCausalLM" || a == "Qwen3_5ForConditionalGeneration" => Family::Qwen35,
         _ => return None,
     })
@@ -265,11 +266,6 @@ pub fn eos_ids(config: &Map<String, Value>, generation: Option<&str>) -> Vec<i64
 }
 
 impl ModelConfig {
-    /// The text model's key `k`, else the top level's (where a multimodal release keeps it).
-    pub fn key(&self, k: &str) -> Option<&Value> {
-        self.text.get(k).filter(|v| !v.is_null()).or_else(|| self.top.get(k))
-    }
-
     /// A family's own keys of the text model, typed by its reader's struct (`T`, serde, its fields `Option` and `#[serde(default)]`): read from this parse, a key
     /// of another type than its field's an error that names it. The keys the families share are `shared`'s.
     pub fn own<T: DeserializeOwned>(&self, what: &str) -> Result<T> {
@@ -307,22 +303,29 @@ mod tests {
         assert_eq!((g.nested, g.prefix(), g.family()), (true, "model.language_model.", Some(Family::Glm)));
         assert_eq!(g.shared.quantization_config.as_ref().and_then(|q| q.quant_method.as_deref()), Some("fp8"));
         assert_eq!((g.shared.experts(), g.shared.top_k(), g.shared.mtp_layers()), (288, 8, 1));
-        let n = ModelConfig::parse(&fixture("nemotron_h_config.json")).unwrap();
-        assert_eq!((n.nested, n.prefix(), n.family(), n.shared.latent()), (false, "model.", Some(Family::NemotronH), Some(1024)));
+        let kimi = serde_json::from_str::<Value>(&fixture("headers/Kimi-K3.json")).unwrap()["config"].as_str().unwrap().to_string();
+        let k = ModelConfig::parse(&kimi).unwrap();
+        assert_eq!((k.nested, k.prefix(), k.family(), k.shared.latent()), (true, "model.language_model.", Some(Family::Kimi), Some(3584)));
+        // (the plain dense kind is told by the model type the description builder reads, any of them, and not by what a release calls its architecture)
+        for model_type in super::super::describe::LLAMA {
+            let d = ModelConfig::parse(&format!(r#"{{"architectures": ["AnyNameForCausalLM"], "model_type": "{model_type}"}}"#)).unwrap();
+            assert_eq!((d.nested, d.prefix(), d.family()), (false, "model.", Some(Family::Qwen3)), "{model_type}");
+        }
+        assert_eq!(family_of(r#"{"architectures": ["Qwen3ForCausalLM"], "model_type": "other"}"#), None);
         // (a null in the text model does not hide the top level's value)
         let c = ModelConfig::parse(r#"{"tie_word_embeddings": true, "text_config": {"tie_word_embeddings": null, "hidden_size": 8}}"#).unwrap();
         assert_eq!((c.shared.tie_word_embeddings, c.shared.hidden_size), (Some(true), Some(8)));
     }
 
-    /// Every family's own reader takes the one parse (R3a, #136): from a `ModelConfig` each reads what it reads from the text, and a shared key of another type
-    /// that the family does not read itself (`n_groups`, Mamba-2's, set to a word) is refused by each, named with its value, where all but Nemotron-H's reader
-    /// once passed it by.
+    /// Every family's own reader takes the one parse (R3a, #136: each `parse` is its `of` on `ModelConfig::parse`, so the two are one path and are not compared
+    /// here): each reads its fixture's config, and a shared key of another type that the family does not read itself (`n_groups`, Mamba-2's, set to a word) is
+    /// refused by each, named with its value, where all but Nemotron-H's reader once passed it by.
     #[test]
     fn every_family_reads_the_one_parse() {
-        use std::fmt::Debug;
-        fn same<T: Debug>(name: &str, text: &str, parse: fn(&str) -> Result<T>, of: fn(&ModelConfig) -> Result<T>) {
-            let a = format!("{:?}", parse(text).unwrap_or_else(|e| panic!("{name}: {}", e.msg)));
-            assert_eq!(a, format!("{:?}", of(&ModelConfig::parse(text).unwrap()).unwrap()), "{name}");
+        fn reads<T>(name: &str, text: &str, parse: fn(&str) -> Result<T>) {
+            if let Err(e) = parse(text) {
+                panic!("{name}: {}", e.msg);
+            }
             let mut v: Value = serde_json::from_str(text).unwrap();
             v["n_groups"] = "eight".into();
             let e = parse(&v.to_string()).err().unwrap_or_else(|| panic!("{name}: n_groups \"eight\" passed by")).msg;
@@ -330,40 +333,21 @@ mod tests {
         }
         let header = |f: &str| serde_json::from_str::<Value>(&fixture(&format!("headers/{f}"))).unwrap()["config"].as_str().unwrap().to_string();
         let q35 = serde_json::from_str::<Value>(&fixture("qwen35_configs.json")).unwrap()["Qwen/Qwen3.5-0.8B"].to_string();
-        let qwen3 = r#"{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "hidden_size": 4096, "intermediate_size": 12288, "num_hidden_layers": 36,
+        // (the plain dense kind's reader, on a shape that is no release's by name: `model_type` is the description builder's input)
+        let dense = r#"{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "hidden_size": 4096, "intermediate_size": 12288, "num_hidden_layers": 36,
             "num_attention_heads": 32, "num_key_value_heads": 8, "head_dim": 128, "vocab_size": 151936, "max_position_embeddings": 40960, "rms_norm_eps": 1e-6,
             "rope_theta": 1000000, "eos_token_id": 151645}"#;
-        same("Qwen3", qwen3, |t| crate::weights::Config::parse(t, "c", None), |c| crate::weights::Config::of(c, "c", None));
-        same("Qwen3.5", &q35, |t| crate::qwen35::Config35::parse(t, "c", None), |c| crate::qwen35::Config35::of(c, "c", None));
-        same(
-            "Gemma 4",
-            &fixture("gemma4_12b_config.json"),
-            |t| crate::gemma4::ConfigG4::parse(t, None, false),
-            |c| crate::gemma4::ConfigG4::of(c, None, false),
-        );
-        same("GLM-5.3-Flash", &fixture("glm5_next_config.json"), |t| crate::glm::ConfigGlm::parse(t, "c", None), |c| crate::glm::ConfigGlm::of(c, "c", None));
-        same("Kimi-K3", &header("Kimi-K3.json"), |t| crate::kimi::ConfigKimi::parse(t, "c", None), |c| crate::kimi::ConfigKimi::of(c, "c", None));
-        same(
-            "DeepSeek-V4",
-            &header("DeepSeek-V4-Flash-0731.json"),
-            |t| crate::deepseek_v4::ConfigV4::parse(t, "c", None),
-            |c| crate::deepseek_v4::ConfigV4::of(c, "c", None),
-        );
+        reads("plain dense", dense, |t| crate::weights::Config::parse(t, "c", None));
+        reads("Qwen3.5", &q35, |t| crate::qwen35::Config35::parse(t, "c", None));
+        reads("Gemma 4", &fixture("gemma4_12b_config.json"), |t| crate::gemma4::ConfigG4::parse(t, None, false));
+        reads("GLM-5.3-Flash", &fixture("glm5_next_config.json"), |t| crate::glm::ConfigGlm::parse(t, "c", None));
+        reads("Kimi-K3", &header("Kimi-K3.json"), |t| crate::kimi::ConfigKimi::parse(t, "c", None));
+        reads("DeepSeek-V4", &header("DeepSeek-V4-Flash-0731.json"), |t| crate::deepseek_v4::ConfigV4::parse(t, "c", None));
         #[cfg(feature = "dev")]
-        same("Muse Spark", crate::muse_ref::RANDOM_CONFIG, |t| crate::muse::ConfigMuse::parse(t, "c", None), |c| crate::muse::ConfigMuse::of(c, "c", None));
-        same(
-            "Qwen3.8-Flash-Next",
-            &fixture("qwen4x_config.json"),
-            |t| crate::qwen4x::ConfigQx::parse(t, "c", None),
-            |c| crate::qwen4x::ConfigQx::of(c, "c", None),
-        );
+        reads("Muse Spark", crate::muse_ref::RANDOM_CONFIG, |t| crate::muse::ConfigMuse::parse(t, "c", None));
+        reads("Qwen3.8-Flash-Next", &fixture("qwen4x_config.json"), |t| crate::qwen4x::ConfigQx::parse(t, "c", None));
         // (Nemotron-H reads n_groups itself: refused before as now)
-        same(
-            "Nemotron-H",
-            &fixture("nemotron_h_config.json"),
-            |t| crate::nemotron::ConfigNemotronH::parse(t, "c", None),
-            |c| crate::nemotron::ConfigNemotronH::of(c, "c", None),
-        );
+        reads("Nemotron-H", &fixture("nemotron_h_config.json"), |t| crate::nemotron::ConfigNemotronH::parse(t, "c", None));
     }
 
     /// A shared key of another type is an error that names the key; a config that is not an object is refused.

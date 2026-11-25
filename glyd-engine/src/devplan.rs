@@ -407,7 +407,8 @@ pub unsafe fn answer(
 }
 
 /// kernels/moe.cu's xp_plan on the host, its decisions the kernel's step for step (the tests' reference): a layer's table and its clock. `call` plans one call: each pair's place (-1: the host's, or no
-/// expert), the copies and promotions ((expert, place)) and the host's pairs (their numbers).
+/// expert), the copies and promotions ((expert, place)) and the host's pairs (their numbers). The tests' alone (here and src/offload.rs's).
+#[cfg(test)]
 pub struct Policy {
     pub place_of: Vec<i32>,
     pub expert_of: Vec<i32>,
@@ -419,6 +420,7 @@ pub struct Policy {
 }
 
 /// One call's plan (`Policy::call`).
+#[cfg(test)]
 #[derive(Debug, Default, PartialEq)]
 pub struct Planned {
     pub way: Vec<i64>,
@@ -429,6 +431,7 @@ pub struct Planned {
     pub hits: usize,
 }
 
+#[cfg(test)]
 impl Policy {
     pub fn new(experts: usize, slots: usize) -> Policy {
         Policy {

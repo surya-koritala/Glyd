@@ -2337,9 +2337,9 @@ pub fn moe_workspace(twelve: bool, experts: i64, o: i64, cols: i64, t: i64, k: i
 }
 
 /// `GpuOps::moe` and `moe_placed` (y = the experts' products of the plan's pairs, act 0, 1 SiLU or 2 GELU, weighted sums by `weights` and `ids`) by the
-/// engine's kernels where the library's plan takes its step products (mma_moe_kernel, mma_moe_rows_kernel) in their default variants; false where the
-/// library takes it (the prompt kernel past GLYD_GPU_MOE_BIG pairs an expert, the 12-bit layout's wgmma route on Hopper, a tuning variable's variant,
-/// arguments it refuses).
+/// engine's kernels where the library's plan takes its step products (mma_moe_kernel) in their default variants, as it does for every call; false where
+/// the library takes it (the prompt kernel and the rows kernel, which a development build's GLYD_GPU_MOE_BIG and GLYD_GPU_MOE_ROWS ask for; another
+/// tuning variable's variant; arguments it refuses).
 ///
 /// # Safety
 /// As `GpuOps::moe`; a context with the engine's module is current.
@@ -2410,40 +2410,8 @@ pub unsafe fn moe(
     let Some(lead) = layout_args(u, w, per_stride) else { return Ok(false) };
     let y32 = if weights != 0 { ws } else { 0 };
     if big >= 0 && p >= big * se && kk % 64 == 0 && x % 16 == 0 {
-        // (a part of a layer is the library's: it cuts the part as the whole layer's call)
-        if whole_o > 0 || whole_e > 0 {
-            return Ok(false);
-        }
-        // the prompt kernel (mma_moe_big: 128 pairs by two row blocks a block, blockIdx.z the experts hit; GLYD_GPU_BIG_TM=256, a development build's, the library's)
-        if tuned(crate::tune!("GLYD_GPU_BIG_TM"), 128) == 256 {
-            return Ok(false);
-        }
-        if crate::tune!("GLYD_GPU_MOE_TRACE").is_some_and(|v| v != "0") {
-            eprintln!("moe-kernel fold big T={t} k={k} E={experts} O={o} K={kk} act={act} splits={splits}");
-        }
-        let kname = leaked(format!("fold_big_{lname}_moe"));
-        let (threads, tm, smem) = big_shape(4, 4, 3, 2, 64);
-        per_sm(kname, threads, smem)?;
-        let plan_args = MoePairs {
-            plan,
-            e: experts as i32,
-            k,
-            gather: gather as i32,
-            act: act as i32,
-            w: weights,
-            wf32: 1,
-            xahead: tuned(crate::tune!("GLYD_GPU_BIG_XAHEAD"), 0) as i32,
-            pf: tuned(crate::tune!("GLYD_GPU_BIG_PF"), 0).clamp(0, 8) as i32,
-            skip: (tuned(crate::tune!("GLYD_GPU_BIG_SKIP"), 1) != 0) as i32,
-        };
-        let grid = [((t + tm - 1) / tm) as u32, (if act != 0 { o / 128 } else { (o / 64 + 1) / 2 }) as u32, hits as u32];
-        launch_slots(kname, grid, threads, smem, lead.i64(o).i64(kk).i64(0).i64(0).p(x).p(0).p(y).p(y32), Some(plan_args), cs)?;
-        if weights != 0 {
-            use crate::kt;
-            use crate::launch;
-            launch!(crate::dev::here::<kt::fold_moe_sum>()?, [((t * o / 4 + 255) / 256) as u32, 1, 1], [256, 1, 1], cs; ws, ids, experts as i32, t, k, o, y)?;
-        }
-        return Ok(true);
+        // (the prompt kernel, mma_moe_big, which a development build's GLYD_GPU_MOE_BIG asks for: the library's)
+        return Ok(false);
     }
     let trace = crate::tune!("GLYD_GPU_MOE_TRACE").is_some_and(|v| v != "0");
     let pf = tuned(crate::tune!("GLYD_GPU_PF"), 0).clamp(0, 16);
@@ -2459,34 +2427,26 @@ pub unsafe fn moe(
     let rows_set = tuned(crate::tune!("GLYD_GPU_MOE_ROWS"), 1);
     let rows_from = if rows_set >= 2 { rows_set } else { i64::MAX };
     let rows = act == 0 && mt >= 2 && t >= rows_from;
-    if trace {
-        eprintln!("moe-kernel fold {} T={t} k={k} E={experts} O={o} K={kk} act={act} splits={splits}", if rows { "rows" } else { "step" });
-    }
-    let o_args = |s: Slots| s.i64(o).i64(kk).p(plan).i32(experts as i32).i64(k).i32(gather as i32).p(x).p(0).p(weights).i32(1).p(y).p(y32);
     if rows {
-        let kname = leaked(format!("fold_moe_rows_{lname}_{mt}_{v}"));
-        let mut a = o_args(lead).i32(pf as i32);
-        crate::dev::here_named(kname)?.launch_smem(
-            [((o / 64 + 7) / 8) as u32, hits as u32, 1],
-            [256, 1, 1],
-            8 * 1040,
-            cs,
-            &mut crate::dev::KernelArgs::ptrs(&mut a),
-        )?;
-    } else {
-        let kname = leaked(format!("fold_moe_{lname}_{mt}_{act}_{v}"));
-        let shared = (4 * mt * 16 * 65 * 4 + 8 * 1040) as u32;
-        per_sm(kname, 256, shared)?;
-        let parts = if splits > 1 { ws + if weights != 0 { (p * o * 4) as u64 } else { 0 } } else { 0 };
-        let mut a = o_args(lead).i64(p).p(parts).p(done).i32(pf as i32);
-        crate::dev::here_named(kname)?.launch_smem(
-            [units as u32, hits as u32, splits as u32],
-            [256, 1, 1],
-            shared,
-            cs,
-            &mut crate::dev::KernelArgs::ptrs(&mut a),
-        )?;
+        // (the rows kernel, mma_moe_rows_kernel, which a development build's GLYD_GPU_MOE_ROWS asks for: the library's)
+        return Ok(false);
     }
+    if trace {
+        eprintln!("moe-kernel fold step T={t} k={k} E={experts} O={o} K={kk} act={act} splits={splits}");
+    }
+    let kname = leaked(format!("fold_moe_{lname}_{mt}_{act}_{v}"));
+    let shared = (4 * mt * 16 * 65 * 4 + 8 * 1040) as u32;
+    per_sm(kname, 256, shared)?;
+    let parts = if splits > 1 { ws + if weights != 0 { (p * o * 4) as u64 } else { 0 } } else { 0 };
+    let mut a = lead.i64(o).i64(kk).p(plan).i32(experts as i32).i64(k).i32(gather as i32).p(x).p(0).p(weights).i32(1).p(y).p(y32);
+    a = a.i64(p).p(parts).p(done).i32(pf as i32);
+    crate::dev::here_named(kname)?.launch_smem(
+        [units as u32, hits as u32, splits as u32],
+        [256, 1, 1],
+        shared,
+        cs,
+        &mut crate::dev::KernelArgs::ptrs(&mut a),
+    )?;
     if weights != 0 {
         use crate::kt;
         use crate::launch;
@@ -3051,6 +3011,9 @@ pub fn check(only: Option<&str>) -> Result<()> {
     use crate::gpu_ops::GpuOps;
     let dev = crate::dev::Dev::new(0)?;
     let lib = crate::ffi::Lib::find()?;
+    if !lib.loaded() {
+        return crate::ffi::err("foldcheck holds the engine's kernels to the library's: it needs the library, and GLYD_GPU_LIB=none loads none");
+    }
     let mut fails = 0;
     let mut say = |what: &str, n: usize, bad: Vec<String>| {
         println!(
@@ -3156,7 +3119,7 @@ pub fn check(only: Option<&str>) -> Result<()> {
     }
     say("the KV cache's sizes, a page's image and the decode's workspace", n, bad);
     type Check = fn(&crate::dev::Dev, &crate::ffi::Lib) -> Result<(usize, Vec<String>)>;
-    let checks: [(&str, Check); 9] = [
+    let checks: [(&str, Check); 10] = [
         ("the experts' plan (moe_way), the engine's kernels against the library's (one warp and one block, ids out of range among them)", route_check),
         (
             "the 12-bit pages' write, unpack and gather, and the decode and prompt attention over them and over a bf16 cache: the engine's kernels against the library's",
@@ -3169,10 +3132,14 @@ pub fn check(only: Option<&str>) -> Result<()> {
         ("the lossless FP8 format's size, pack and unpack (both layouts), the engine's kernels against the library's", f8_check),
         ("the FP8 products (each kind of scales, both layouts, 1 to 64 tokens, the experts'), the engine's kernels against the library's", f8_product_check),
         ("layout H's packs plain and coded by the process's choice: the FP8 format and its products under each, against the library's", f8h_plain_check),
-        ("the grouped experts' products (the step products and the prompt kernel: no activation, SiLU, GELU, gathered, weighted), the engine's kernels against the library's", moe_check),
+        ("the grouped experts' products (the step products: no activation, SiLU, GELU, gathered, weighted), the engine's kernels against the library's", moe_check),
         (
             "the packed products (1 to 1,000 tokens: the step product, and this GPU's routes for a prompt), the engine's kernels against the library's, and their workspace",
             linear_check,
+        ),
+        (
+            "the 12-bit layout's route MID given (1 to 200 tokens: every tile of the route on this GPU), the engine's kernels against the library's, and their workspace",
+            mid_check,
         ),
         ("the mma layouts' unpacking and rows by id, the engine's kernels against the library's (every bf16 of each layout, whole and a row block)", unpack_check),
     ];
@@ -3337,7 +3304,7 @@ fn linear_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, 
         for twelve in [false, true] {
             for &m in &ms {
                 n += 1;
-                let (a, b) = (lib.library_linear_workspace(twelve, rows as i64, cols as i64, m), linear_workspace(twelve, rows as i64, cols as i64, m));
+                let (a, b) = (lib.library_linear_workspace(twelve, rows as i64, cols as i64, m, -1), linear_workspace(twelve, rows as i64, cols as i64, m));
                 match (&a, &b) {
                     (Ok(x), Ok(Some(y))) if x != y => {
                         bad.push(format!("workspace of {rows} x {cols}, 12-bit {twelve}, {m} tokens: the library's {x} bytes, the engine's {y}"))
@@ -3351,7 +3318,7 @@ fn linear_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, 
             let Some(p) = p else { continue };
             let pb = upload_packed(p)?;
             for &m in &ms {
-                let ws_bytes = lib.library_linear_workspace(pb.pack.is_twelve(), rows as i64, cols as i64, m)?.max(16);
+                let ws_bytes = lib.library_linear_workspace(pb.pack.is_twelve(), rows as i64, cols as i64, m, -1)?.max(16);
                 let (ws, da, db) = (Buf::new(ws_bytes)?, Buf::zeroed(4 * rows / 64 + 64)?, Buf::zeroed(4 * rows / 64 + 64)?);
                 let (ya, yb) = (Buf::new(m as usize * rows * 2)?, Buf::new(m as usize * rows * 2)?);
                 ya.fill_async(0xA5, dev.stream)?;
@@ -3359,7 +3326,7 @@ fn linear_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, 
                 // SAFETY: the pack, X [1000, cols], the workspace of the library's size (the engine's is the same or the product is the library's), zeroed
                 // counters of each, Y [m, rows] each; one stream.
                 let (ra, rb) = unsafe {
-                    let ra = lib.library_linear(&pb.pack, xb.ptr, m, ya.ptr, ws.ptr, ws_bytes, da.ptr, dev.stream);
+                    let ra = lib.library_linear(&pb.pack, xb.ptr, m, ya.ptr, ws.ptr, ws_bytes, da.ptr, -1, dev.stream);
                     synced(dev, || format!("the library's step product, {name} {rows} x {cols}, {m} tokens"))?;
                     (ra, linear(&pb.pack, xb.ptr, m, yb.ptr, ws.ptr, ws_bytes, db.ptr, dev.stream))
                 };
@@ -3384,6 +3351,78 @@ fn linear_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, 
         }
     }
     println!("  (the packed products: {folded} products by the engine's kernels, the rest the library's route on this GPU)");
+    Ok((n, bad))
+}
+
+/// `foldcheck`'s 12-bit route MID given (the library's product takes a route; the engine's is `mid12_linear`), 1 to 200 tokens: every tile of the route on
+/// this GPU runs, those no route of its own reaches included: the 16-token tile (a development build's GLYD_MID_MIN under 17 alone asks it), the
+/// tiles of four warpgroups (where a block's shared memory holds 153 KB: given the route, an H100) and the A100's four. Every bf16 and the workspace
+/// compared, at 256 x 1024 and 128 x 4096; a GPU with no such kernel refuses it on both sides. (compared, differences)
+#[cfg(feature = "dev")]
+fn mid_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
+    use crate::dev::Buf;
+    use crate::weights::upload_packed;
+    let mut seed = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let (mut n, mut bad, mut folded) = (0, Vec::new(), 0);
+    let ms = [1i64, 2, 7, 15, 16, 17, 24, 32, 33, 48, 64, 65, 80, 100, 128, 129, 200];
+    for (rows, cols) in [(256usize, 1024usize), (128, 4096)] {
+        let x: Vec<u16> = (0..200 * cols).map(|_| (((next() >> 40) as f32 / (1u64 << 24) as f32 - 0.5).to_bits() >> 16) as u16).collect();
+        let xb = Buf::new(x.len() * 2)?;
+        xb.write(0, &x)?;
+        let Some(p) = test_packs(rows, cols, &mut next).into_iter().find(|p| p.0 == "12-bit").and_then(|p| p.1) else { continue };
+        let pb = upload_packed(p)?;
+        let u = unpacker(&pb.pack)?;
+        let (o, k) = (rows as i64, cols as i64);
+        for &m in &ms {
+            n += 1;
+            let theirs = lib.library_linear_workspace(true, o, k, m, ROUTE_MID as i64);
+            let ours = mid12_runs(o, k, m)?.map(|r| r.1);
+            let ws_bytes = match (&theirs, ours) {
+                (Ok(a), Some(b)) if *a == b => b.max(16),
+                (Err(_), None) => continue,
+                _ => {
+                    bad.push(format!("workspace of {rows} x {cols}, {m} tokens: the library's {theirs:?}, the engine's {ours:?}"));
+                    continue;
+                }
+            };
+            let (ws, da, db) = (Buf::new(ws_bytes)?, Buf::zeroed(4 * rows / 64 + 64)?, Buf::zeroed(4 * rows / 64 + 64)?);
+            let (ya, yb) = (Buf::new(m as usize * rows * 2)?, Buf::new(m as usize * rows * 2)?);
+            ya.fill_async(0xA5, dev.stream)?;
+            yb.fill_async(0x5A, dev.stream)?;
+            // SAFETY: the pack, X [200, cols], the workspace both sides asked, zeroed counters of each, Y [m, rows] each; one stream.
+            let (ra, rb) = unsafe {
+                let ra = lib.library_linear(&pb.pack, xb.ptr, m, ya.ptr, ws.ptr, ws_bytes, da.ptr, ROUTE_MID as i64, dev.stream);
+                synced(dev, || format!("the library's route MID, {rows} x {cols}, {m} tokens"))?;
+                (ra, mid12_linear(u, &pb.pack, xb.ptr, m, yb.ptr, (ws.ptr, ws_bytes, db.ptr), dev.stream))
+            };
+            synced(dev, || format!("the engine's route MID, {rows} x {cols}, {m} tokens"))?;
+            match (&ra, &rb) {
+                (Ok(()), Ok(true)) => folded += 1,
+                (Err(e), _) | (_, Err(e)) => {
+                    bad.push(format!("{rows} x {cols}, {m} tokens: {e}"));
+                    continue;
+                }
+                (Ok(()), Ok(false)) => {
+                    bad.push(format!("{rows} x {cols}, {m} tokens: the library took it, the engine did not"));
+                    continue;
+                }
+            }
+            let (mut va, mut vb) = (vec![0u16; m as usize * rows], vec![0u16; m as usize * rows]);
+            ya.read(0, &mut va)?;
+            yb.read(0, &mut vb)?;
+            let differ = va.iter().zip(&vb).filter(|(x, y)| x != y).count();
+            if differ > 0 && bad.len() < 12 {
+                bad.push(format!("{rows} x {cols}, {m} tokens: {differ} of {} bf16 differ", va.len()));
+            }
+        }
+    }
+    println!("  (the route MID given: {folded} products by the engine's kernels)");
     Ok((n, bad))
 }
 
@@ -4009,8 +4048,7 @@ fn f8h_plain_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usiz
 
 /// `foldcheck`'s grouped experts: 8 experts of 128 x 1024 in each layout the products take, a plan of random choices (2 a token) for 1 to 300 tokens, the
 /// products with no activation, SiLU and GELU, gathered and not, and weighted sums: by the library's kernels and by the engine's (the step products,
-/// and from 48 pairs an expert hit, 64 on an A100 and 96 on an H100, the prompt kernel; Hopper's wgmma product where the GPU takes it), every bf16
-/// compared; and the expert cache's places (moe_placed), the tiered stack cut per expert as the store cuts it. A product the engine's kernels do not
+/// which every call takes), every bf16 compared; and the expert cache's places (moe_placed), the tiered stack cut per expert as the store cuts it. A product the engine's kernels do not
 /// take is the library's and is not compared: the line printed says how many were. (compared, differences)
 #[cfg(feature = "dev")]
 fn moe_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
@@ -4034,7 +4072,7 @@ fn moe_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec
             continue;
         }
         let pb = upload_packed(p)?;
-        // (from 48 pairs an expert on average, 64 on an A100, 96 on an H100: the experts' prompt kernel)
+        // (1 to 300 tokens, two choices a token: the step products at every count)
         for t in [1i64, 4, 16, 17, 32, 33, 64, 200, 300] {
             let k = 2i64;
             let ids: Vec<i64> = (0..t * k).map(|_| (next() % e as u64) as i64).collect();
@@ -4742,8 +4780,6 @@ mod tests {
         assert_eq!(built(full(lead(Unpacker::Fp4R { ks: 4, mg: 1, sh: 1 }, tiers, None))), args_of::<kt::fold_moe_fp4r_1_1_8>());
         let twelve = Words::Twelve { exc: 0, exc_base: 0, sym: [0; 4] };
         assert_eq!(built(full(lead(Unpacker::Twelve { hb4: 0, xmax: 4 }, twelve, None))), args_of::<kt::fold_moe_twelve_4_2_2>());
-        assert_eq!(built(common(lead(Unpacker::Fp4, tiers, None)).i32(0)), args_of::<kt::fold_moe_rows_fp4_2_0>());
-        assert_eq!(built(common(lead(Unpacker::Twelve { hb4: 0, xmax: 4 }, twelve, None)).i32(0)), args_of::<kt::fold_moe_rows_twelve_4_2>());
     }
 
     #[test]

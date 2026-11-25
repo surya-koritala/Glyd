@@ -6,12 +6,11 @@
 //! (src/dynamic/kvpages.rs) on the pages unpacked to a bf16 ring, so the same bits as over a bf16 cache; heads of 256 and 512 the GPU library's prompt kernel,
 //! one for both caches: over bf16 rings or pages `glyd_gpu_kv_prefill_bf16`, over 12-bit pages `glyd_gpu_kv_prefill`, the same tiles and sums, so the same
 //! bits. A decode row likewise (`LibDecode`): over 12-bit pages `kv_decode_from`, over a bf16 cache `glyd_gpu_kv_decode_bf16`, one kernel, plan and merge, where
-//! the shape is the pages' (heads of 128 to 512, up to 8 query heads a kv head or one kv head, no soft-cap); others (Muse Spark's heads of 64, Nemotron-H's 16
-//! query heads over 2) the engine's parts kernel.
+//! the shape is the pages' (heads of 128 to 512, up to 8 query heads a kv head or one kv head, no soft-cap); others (heads of 64, or more than 8 query heads over several kv heads) the
+//! engine's parts kernel.
 //!
-//! The arithmetic of each family is the one its own operations had, bit for bit where the kernel is the same (the preparation, the decode and the gate of Gemma 4,
-//! the Qwen3.5 layout and Nemotron-H); a prompt chunk's is now the library's kernel for all (Gemma 4's g4_fa256, the Qwen3.5 layout's warp a head, Nemotron-H's
-//! dense-engine kernel and Muse Spark's key at a time before): the same function, sums in another order. Muse Spark's decode is the parts kernel too.
+//! One arithmetic for every family: the preparation, the decode and the gate are the kind's own kernels, a prompt chunk's sums the library's kernel, and
+//! Muse Spark's decode the parts kernel.
 
 use super::{Dyn, Part, Slot};
 use crate::dev::Dev;
@@ -178,7 +177,7 @@ impl AttnOp {
             return err(format!("{nq} query heads over {nk} key-value heads: the kernels take up to {MAX_G} a key-value head"));
         }
         if a.sinks || a.bias || a.indexer.is_some() {
-            return err("attention with sinks, a bias or an indexer: not an operation of this executor yet");
+            return err("attention with sinks, a bias or an indexer: not an operation of this executor");
         }
         let in_query = a.gate.is_some_and(|g| g.from == kinds::GateFrom::InQuery);
         let q_step = if in_query { 2 * d } else { d };
@@ -266,13 +265,12 @@ impl AttnOp {
 
     /// The kernels' arguments of this operation on n rows, the pointers null (`Dyn::attn` sets them).
     pub(crate) fn args(&self, n: usize, eps: f32) -> AttnArgs {
-        let (q, k, norm) = match self.norm {
-            QkNorm::None => (0, 0, 0),
-            QkNorm::Weight { q, k } => (q, k, 1),
-            QkNorm::Plus1 { q, k } => (q, k, 2),
-            QkNorm::Plain => (0, 0, 3),
+        let norm = match self.norm {
+            QkNorm::None => 0,
+            QkNorm::Weight { .. } => 1,
+            QkNorm::Plus1 { .. } => 2,
+            QkNorm::Plain => 3,
         };
-        let _ = (q, k);
         let g = self.gate.unwrap_or(GateAt { off: 0, step: 0, norm: false });
         AttnArgs {
             d: self.d as i32,
@@ -421,7 +419,8 @@ impl KernAttn {
             gate: dev.typed()?,
             pf64: dev.typed()?,
             pf128: dev.typed()?,
-            // (on: against transformers bf16 on gemma-4-31B QAT, wikitext 32 x 512, KLD 0.0192 where the warp kernels' is 0.0225, and a 28K prompt 2x faster)
+            // (on. The figures that chose it are the kernels' before these, research/gemma4-kld/results-fa-2026-10-15: against transformers bf16 on gemma-4-31B QAT,
+            // wikitext 32 x 512, KLD 0.0192 for g4_fa256 + g4_fa512b where g4_attn_t's was 0.0225. The kernel that runs now is not measured this way)
             fa: {
                 // (the switch back, a development build's alone: a release build reads no GLYD_ variable it does not list)
                 #[cfg(feature = "dev")]
@@ -732,7 +731,7 @@ impl Dyn {
 const SPLIT: &str = "the same rows in two calls (the one call's bits)";
 
 /// `glyd-engine attncheck`: the attention kind's kernels against an fp64 attention on the CPU, on random queries, keys, values and gates, with each family's head width
-/// and arithmetic (Gemma 4's sliding and global heads with their scores in bf16, Nemotron-H's heads of 128, Muse Spark's window and normed gate, a soft-capped head):
+/// and arithmetic (Gemma 4's sliding and global heads with their scores in bf16, heads of 128 with 16 query heads a kv head, Muse Spark's window and normed gate, a soft-capped head):
 /// a prompt's rows on the tensor cores and a warp a head, and each row as a decode step (its keys in SPLITS parts). The bound is on the largest difference, relative
 /// to the largest value (the kernels round their probabilities to bf16 for the values, the CPU does not). Exit status 1 where one is past it.
 #[cfg(feature = "dev")]
@@ -763,11 +762,11 @@ pub fn check() -> Result<bool> {
     let cases: [Case; 8] = [
         ("Gemma 4's sliding layers (head 256, window 64, scores in bf16)", 256, 16, 8, 64, true, 1.0, 0.0, None, true, 100, 70),
         ("Gemma 4's global layers (head 512, scores in bf16)", 512, 16, 2, 0, true, 1.0, 0.0, None, true, 40, 37),
-        ("Nemotron-H's (head 128)", 128, 32, 2, 0, false, 128f32.powf(-0.5), 0.0, None, false, 124, 62),
+        ("a head of 128, 32 query heads over 2", 128, 32, 2, 0, false, 128f32.powf(-0.5), 0.0, None, false, 124, 62),
         ("the Qwen3.5 layout's (head 256, gated)", 256, 16, 4, 0, false, 1.0 / 16.0, 0.0, Some(false), false, 50, 20),
         ("Muse Spark's (head 64, window 32, the gate normed)", 64, 8, 2, 32, false, 0.125, 0.0, Some(true), true, 90, 40),
         ("a soft-capped head of 128 (cap 5)", 128, 8, 2, 0, false, 128f32.powf(-0.5), 5.0, None, false, 60, 33),
-        ("Nemotron-H's (head 128), a whole chunk", 128, 32, 2, 0, false, 128f32.powf(-0.5), 0.0, None, false, 128, 64),
+        ("a head of 128, 32 query heads over 2, a whole chunk", 128, 32, 2, 0, false, 128f32.powf(-0.5), 0.0, None, false, 128, 64),
         ("the plain dense shape (head 128, 32 query heads over 8)", 128, 32, 8, 0, false, 128f32.powf(-0.5), 0.0, None, false, 150, 100),
     ];
     let mut ok = true;
@@ -1155,7 +1154,7 @@ mod tests {
         }
     }
 
-    /// The scale the kernels take is the one each family's own attention took: Gemma 4's log2(e), the Qwen3.5 layout's 256^-0.5 and Nemotron-H's 128^-0.5 in
+    /// The scale the kernels take is the one each family's own attention took: Gemma 4's log2(e), the Qwen3.5 layout's 256^-0.5 and a head of 128's 128^-0.5 in
     /// log2 units as their engines made them in f64.
     #[test]
     fn the_scores_factor_is_the_old_kernels() {

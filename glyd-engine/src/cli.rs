@@ -120,18 +120,14 @@ fn v7_level(model: &str, have: Option<Layout>, asked: Option<Layout>) -> Done<Op
     }
 }
 
-/// Whether MODEL is a Qwen3 dense model (a Llama-style dense one on the executor: src/dynamic/dense.rs): a directory whose config says so, or a Hub name of one
-/// (Qwen/Qwen3-8B; not Qwen3.5 and later, whose names go on with a point).
+/// Whether MODEL is a plain dense decoder (the dense kind on the executor: src/dynamic/dense.rs), by its config.json alone (`config_text`: the directory's, the
+/// cache's, else the Hub's). A name says nothing of the kind: where the config is not to be had the model has no level here, and the path that reads it says why.
 fn is_dense_model(model: &str) -> bool {
-    let qwen3 = |t: &str| crate::runtime::config::family_of(t) == Some(crate::support::Family::Qwen3);
-    match config_text(model) {
-        Ok(text) => qwen3(&text),
-        Err(_) => short_name(model).to_ascii_lowercase().starts_with("qwen3-"),
-    }
+    config_text(model).is_ok_and(|text| crate::dynamic::dense::is_dense(&text))
 }
 
-/// The level run, serve and preflight take MODEL at: a glyd-v7 directory's own, else the one asked; a Gemma 4 model, a Qwen3 model or a family of the dynamic route without one
-/// is penguin (each runs on the description executor, its packs lossless: the levels' route with the lossless layout).
+/// The level run, serve and preflight take MODEL at: a glyd-v7 directory's own, else the one asked; a Gemma 4 model, a plain dense decoder or a family of the dynamic route
+/// without one is penguin (each runs on the description executor, its packs lossless: the levels' route with the lossless layout).
 fn run_level(model: &str, asked: Option<Layout>) -> Done<Option<Layout>> {
     Ok(v7_level(model, v7_layout(model)?, asked)?
         .or_else(|| (is_gemma4_model(model) || dynamic_family(model).is_some() || is_dense_model(model)).then_some(Layout::Tiered)))
@@ -311,25 +307,16 @@ fn engine_refusal(e: crate::ffi::Error, name: &str, fit: &LoadPlan, gpu: &Gpu) -
 
 // ---- a model made ready -------------------------------------------------------------------------------------------------------------------------------
 
-/// What a Qwen3 config.json sets that the engine does not do (it would run such a model wrongly, and without a word): a sliding window or layers that are not full attention, biases in the attention,
-/// an activation other than silu.
-fn unsupported_setting(c: &crate::runtime::config::ModelConfig) -> Option<&'static str> {
-    use serde_json::Value as J;
-    let v = &c.text;
-    let on = |k: &str| v.get(k).is_some_and(|x| !matches!(x, J::Null | J::Bool(false)));
-    if on("sliding_window") && v.get("use_sliding_window").is_some_and(|x| *x != J::Bool(false)) {
-        return Some("a sliding window");
-    }
-    if c.shared.layer_types.as_ref().is_some_and(|t| t.iter().any(|l| l != "full_attention")) {
-        return Some("layers that are not full attention");
-    }
-    if v.get("attention_bias") == Some(&J::Bool(true)) {
-        return Some("biases in the attention");
-    }
-    if v.get("hidden_act").and_then(J::as_str).is_some_and(|a| a != "silu") {
-        return Some("an activation other than silu");
-    }
-    None
+/// What a plain dense decoder's description holds that the dense kind's lowering refuses, in the words a refusal says it in: biases in the attention, a rope with
+/// scaling, an activation other than silu. None for the rest, which the lowering's own sentence names.
+fn dense_lacks(d: &crate::runtime::describe::Described) -> Option<&'static str> {
+    use crate::runtime::kinds::{Act, Body, Ffn, Mixer, RopeScaling};
+    d.desc.blocks.iter().find_map(|b| match &b.body {
+        Body::Mixer(Mixer::Attention(a)) if a.bias => Some("biases in the attention"),
+        Body::Mixer(Mixer::Attention(a)) if a.rope.as_ref().is_some_and(|r| r.scaling != RopeScaling::None) => Some("rope scaling"),
+        Body::Ffn(Ffn::Mlp(m)) if m.act != Act::Silu => Some("an activation other than silu"),
+        _ => None,
+    })
 }
 
 /// What to do with a model the engine does not run (yet): vLLM runs it where it is installed, else the whole tool does.
@@ -337,41 +324,28 @@ pub(crate) fn unrun_fix() -> String {
     machine::instead("Run it with the vLLM-based glyd, which is installed here", &format!("The engine does not run it yet: {}", machine::FULL_TOOL))
 }
 
-/// The engine runs Qwen3 dense models (Qwen3ForCausalLM) with no rope scaling: a Refusal (exit 3) for the rest.
+/// A model's config.json against what the description executor runs of its kind, with no file read but the config. A plain dense decoder (`dynamic::dense::is_dense`)
+/// is held to the dense kind's own lowering (`runtime::describe`, then `dynamic::lower::dense`): what that takes runs, and what it refuses is refused here in the
+/// same words, before anything is downloaded. A family of another route is that route's to check; a config the table has no family for is refused (exit 3) with what
+/// is missing: the description of its architecture (src/support.rs `family`).
 pub(crate) fn supported(name: &str, cfg_text: &str) -> Done<()> {
     // (config.json parsed once: src/runtime/config.rs)
-    let c = crate::runtime::config::ModelConfig::parse(cfg_text)
-        .map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), "The engine runs Qwen3 models so far"))?;
-    let arch = c.arch.as_str();
-    if arch.is_empty() {
-        return Err(Refusal::unsupported(format!("{name}: its config.json does not say what kind of model it is"), "The engine runs Qwen3 models so far"));
+    let c = crate::runtime::config::ModelConfig::parse(cfg_text).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
+    if !crate::runtime::describe::LLAMA.contains(&c.text_type.as_str()) {
+        return crate::support::family(cfg_text, name).map(|_| ());
     }
-    let scaled = c.text.get("rope_scaling").is_some_and(|r| !r.is_null());
-    if c.family() == Some(crate::support::Family::NemotronH) {
-        return Err(Refusal::unsupported(
-            format!("{name} is a Nemotron-H model: this engine runs it at the hummingbird, swift and kestrel levels, not lossless"),
-            machine::instead(
-                "Run it at a level: glyd run MODEL:hummingbird on a 16 to 32 GB card (or :swift, :kestrel on a 96 GB one or larger); lossless it runs with the vLLM-based glyd, which is installed here",
-                &format!("Run it at a level: glyd run MODEL:hummingbird on a 16 to 32 GB card (or :swift, :kestrel on a 96 GB one or larger); lossless, {}", machine::FULL_TOOL),
-            ),
-        ));
+    let d = crate::runtime::describe::describe_config(&c).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
+    let max_pos = c.shared.max_position_embeddings.unwrap_or(crate::support::DEFAULT_CTX);
+    match crate::dynamic::lower::dense(&d, Vec::new(), max_pos) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(Refusal::unsupported(
+            match dense_lacks(&d) {
+                Some(what) => format!("{name} has {what}, which this engine does not run yet"),
+                None => format!("{name}: {}", e.msg),
+            },
+            unrun_fix(),
+        )),
     }
-    if arch != "Qwen3ForCausalLM" {
-        return Err(Refusal::unsupported(
-            format!("{name} is a {arch} model, and this engine runs Qwen3 models so far"),
-            machine::instead(
-                "Other models run with the vLLM-based glyd, which is installed here",
-                &format!("Pick a model of a family this engine runs (glyd run Qwen/Qwen3.8-27B), or {}", machine::FULL_TOOL),
-            ),
-        ));
-    }
-    if scaled {
-        return Err(Refusal::unsupported(format!("{name} uses rope scaling, which this engine does not run yet"), unrun_fix()));
-    }
-    if let Some(what) = unsupported_setting(&c) {
-        return Err(Refusal::unsupported(format!("{name} has {what}, which this engine does not run yet"), unrun_fix()));
-    }
-    Ok(())
 }
 
 /// The model's shape against what the engine's KV cache takes, and its context against what the tables cover: refused before anything is downloaded.
@@ -382,11 +356,21 @@ pub(crate) fn shape_checks(name: &str, cfg: &Config, fit: &LoadPlan) -> Done<()>
     }
 }
 
-/// What a first run writes (the download, and the packed copy) against the disks: refused before anything is downloaded. `source`: the model where it is on this computer already;
-/// `download`: the bytes still to fetch.
-fn first_run_checks(name: &str, cfg: &Config, layout: Layout, source: Option<&Source>, download: u64) -> Done<()> {
+/// The bytes of the packed copy a first run writes into the engine's cache: `pack` (the plan's weights), and none where the copy is made already (a glyd-v7 save at
+/// the layout in the model's place in the cache).
+fn first_run_pack_bytes(pack: u64, layout: Layout, source: Option<&Source>) -> u64 {
     let made = source.is_some_and(|s| store::cached_pack(&store::packed_dir(s, layout), layout));
-    let pack = if made { 0 } else { (cfg.matrix_bytes() as f64 * bits(layout) / 16.0) as u64 };
+    if made {
+        0
+    } else {
+        pack
+    }
+}
+
+/// What a first run writes (the download, and the packed copy of `pack` bytes: the plan's weights) against the disks: refused before anything is downloaded. `source`: the model
+/// where it is on this computer already; `download`: the bytes still to fetch.
+fn first_run_checks(name: &str, pack: u64, layout: Layout, source: Option<&Source>, download: u64) -> Done<()> {
+    let pack = first_run_pack_bytes(pack, layout, source);
     let (models, cache) = (store::existing_ancestor(&hub::hub_cache()), store::existing_ancestor(&store::cache_root()));
     if let Some(r) = machine::disk_refusal(name, hub::disk_free(&models), hub::disk_free(&cache), store::same_filesystem(&models, &cache), download, pack) {
         return Err(r);
@@ -394,60 +378,88 @@ fn first_run_checks(name: &str, cfg: &Config, layout: Layout, source: Option<&So
     Ok(())
 }
 
-/// MODEL, a Qwen3 model, made ready for the executor at `layout` (`glyd prepare`): a glyd-v7 directory as it is, else downloaded where it is not here and packed for this
-/// GPU into the cache (once). The directory the engine reads.
-fn prepare(a: &Args, gpu: &Gpu, ui: &RefCell<Ui>, layout: Layout) -> Done<PathBuf> {
-    let model = a.need(1, "MODEL")?;
+/// The directory a level's engine reads MODEL from at `layout` on `gpu`, made ready (a run's steps before its load, and all of `glyd prepare`): a glyd-v7 directory as
+/// it is; else the pack in the cache or the pre-packed repo (`pre_packed`); else the model, downloaded where it is not here and packed once into the cache, its plan
+/// made (`plan_level`) and the disks checked before anything is fetched. The directory, the glyd-v7 directory it is, and the layout as packed (wren of a QAT
+/// checkpoint is the exact four-bit one).
+fn level_dir(a: &Args, model: &str, layout: Layout, gpu: &Gpu, ui: &RefCell<Ui>) -> Done<(PathBuf, Option<PathBuf>, Layout)> {
     let name = short_name(model);
-    let direct = Path::new(model);
-    let plan_of = |cfg: &Config, layout: Layout| -> Done<LoadPlan> {
-        let (_, _, fit) = qwen3_plan(a, cfg, &name, gpu, Some(layout).filter(|l| *l != Layout::Tiered), 1)?;
-        shape_checks(&name, cfg, &fit)?;
-        Ok(fit)
+    let mut packed = v7_layout(model)?.map(|_| PathBuf::from(model));
+    let first = match packed {
+        None => Some(plan_level(a, model, layout, &config_text(model)?, None, gpu, None)?),
+        Some(_) => None,
     };
-    // a directory `pack` made: a glyd-v7 save, which the executor reads as it is
-    if direct.join("glyd.json").exists() {
-        let Some(l) = v7_layout(model)? else {
-            return Err(Refusal::unsupported(
-                format!("{model} is packed in a format the engine no longer reads (the dense Qwen3 engine's, glyd 0.34 and before)"),
-                "Pack the model again: glyd pack MODEL DIR",
-            ));
-        };
-        supported(&name, &config_text(model)?)?;
-        plan_of(&Config::load(direct).map_err(cannot)?, l)?;
-        return Ok(direct.to_path_buf());
+    if packed.is_none() {
+        packed = pre_packed(model, layout, ui)?;
     }
-    // a Hub-format directory, or a repo in the cache, else the Hub
-    let source: Source = match Source::find(model) {
-        Ok(s) => s,
-        Err(_) => {
-            let (hub, remote, wanted) = store::hub_plan(model, ui)?;
-            // what kind of model it is, and whether it fits, before its weights are fetched
-            let text = hub.text(model, "main", "config.json").map_err(|e| match e {
-                hub::HubError::Denied(_) => store::hub_refusal(model),
-                e => Refusal::new(format!("cannot read {model} from the Hugging Face Hub ({e})"), "Check the network connection and run this again"),
-            })?;
-            supported(&name, &text)?;
-            let small: Vec<hub::Entry> = wanted.iter().filter(|e| e.path == "config.json" || e.path == "generation_config.json").cloned().collect();
-            hub.fetch(&remote, &small, &|_, _| {})?;
-            let cfg = Config::load(&hub.snapshot(&remote)).map_err(cannot)?;
-            plan_of(&cfg, layout)?;
-            first_run_checks(&name, &cfg, layout, None, hub.missing(&remote, &wanted))?;
-            store::download(&hub, &remote, &wanted, model, ui)?;
-            Source::find(model).map_err(cannot)?
-        }
+    let pack_bytes = first.as_ref().map_or(0, |p| p.weights);
+    let dir = match &packed {
+        Some(d) => d.clone(),
+        None if Path::new(model).join("config.json").exists() => PathBuf::from(model),
+        None => match Source::find(model) {
+            Ok(s) => s.dir,
+            Err(_) => {
+                let (hub, remote, wanted) = store::hub_plan(model, ui)?;
+                first_run_checks(&name, pack_bytes, layout, None, hub.missing(&remote, &wanted))?;
+                store::download(&hub, &remote, &wanted, model, ui)?;
+                Source::find(model).map_err(cannot)?.dir
+            }
+        },
     };
-    supported(
-        &name,
-        &std::fs::read_to_string(source.dir.join("config.json")).map_err(|e| Refusal::unsupported(format!("{}: {e}", source.dir.display()), ""))?,
-    )?;
-    let cfg = Config::load(&source.dir).map_err(cannot)?;
-    let fit = plan_of(&cfg, layout)?;
-    first_run_checks(&name, &cfg, layout, Some(&source), 0)?;
-    store::pack(&source, model, layout, fit.weights, ui)
+    // (a pre-packed repo given by its own name is a glyd-v7 directory once downloaded; a bf16 model is packed into the cache once, and read from there)
+    if packed.is_none() {
+        packed = v7_manifest(&dir).map_err(cannot)?.map(|_| dir.clone());
+    }
+    if let Some(d) = &packed {
+        // (the layout as packed: wren of a QAT checkpoint is the exact four-bit one)
+        let layout = v7_level(model, v7_manifest(d).map_err(cannot)?.map(|m| m.0), Some(layout))?.unwrap_or(layout);
+        return Ok((dir, packed, layout));
+    }
+    if layout == Layout::Hummingbird {
+        return Err(Refusal::unsupported(
+            format!("{name} at the hummingbird level comes as a finished download or directory only: its experts' codes are made apart"),
+            format!("Download the pre-packed model: glyd/{name}-hummingbird"),
+        ));
+    }
+    let source = Source::find(model).map_err(cannot)?;
+    first_run_checks(&name, pack_bytes, layout, Some(&source), 0)?;
+    let dir = store::pack(&source, model, layout, pack_bytes, ui)?;
+    Ok((dir.clone(), Some(dir), layout))
 }
 
-/// Sequences a server runs at once: --users, else 4 (1 to MAX_USERS; the dense Qwen3 engine takes at most MAX_ROWS of them, a level's engine as many as its memory holds).
+/// MODEL made ready at its level, the directory the engine reads (`glyd prepare`): a run's own steps up to its load, for every family this build runs. The level is
+/// the one `serve` would load (`served`: the tag's, a packed directory's own, else the planner's; a step the ladder asks about needs --yes or GLYD_DEGRADE=yes), held to the
+/// table as a run's is. A family of the dynamic route is its release's directory (downloaded where it is not here; its hummingbird directory at that level) sized
+/// over this machine's GPUs as its load sizes it (`dynamic_dir`, `dynamic_plan`); every other is its level's glyd-v7 directory, pre-packed or packed here once, and
+/// planned as the load plans it (`level_dir`, `plan_level`). What cannot be made ready is refused by the step that lacks something, in that step's own words.
+fn prepare(a: &Args, ui: &RefCell<Ui>) -> Done<PathBuf> {
+    a.need(1, "MODEL")?;
+    let (a, layout) = served(a, ui)?;
+    let model = a.need(1, "MODEL")?.to_string();
+    let Some(layout) = layout else { return Err(unrun(&model)) };
+    let name = short_name(&model);
+    if let Some(family) = dynamic_family(&model).filter(|f| !lossy_route(f, layout)) {
+        let layout = hb_level(&model, layout);
+        if !matches!(layout, Layout::Tiered | Layout::Hummingbird) {
+            return Err(penguin_only(&name, family, &model));
+        }
+        let dir = dynamic_dir(&model, &name, family, layout == Layout::Hummingbird, ui)?;
+        dynamic_plan(&a, &name, family, &dir)?;
+        return Ok(dir);
+    }
+    let gpu = gpu_pick()?;
+    if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, true, machine::ANY_FAMILY) {
+        return Err(r);
+    }
+    let (dir, packed, layout) = level_dir(&a, &model, layout_for(&model, layout), &gpu, ui)?;
+    // (the plan of the directory as it now is, the one the load makes: a refusal of it is said here, not at the run)
+    let read = |f: &str| std::fs::read_to_string(dir.join(f)).ok();
+    let text = read("config.json").ok_or_else(|| cannot(format!("{}: no config.json", dir.display())))?;
+    plan_level(&a, &model, layout, &text, read("generation_config.json").as_deref(), &gpu, packed.as_deref())?;
+    Ok(dir)
+}
+
+/// Sequences a server runs at once: --users, else 4 (1 to MAX_USERS; a level's engine as many as its memory holds).
 pub(crate) fn users_of(a: &Args) -> Done<usize> {
     use crate::sched::MAX_USERS;
     let n: usize = a.num("users", 4usize).map_err(|e| Refusal::new(e.msg, format!("Give a number from 1 to {MAX_USERS}: --users 4")))?;
@@ -1224,7 +1236,7 @@ fn chat_loop(tx: mpsc::Sender<Job>, defaults: Params, mut thinking: Option<bool>
     let _ = tx.send(Job::Stop);
 }
 
-// ---- the lossy levels: a Qwen3.5-family or Nemotron 3 Super model at about 6.5 bits per weight (:kestrel, which --lossy is: six-bit block codes), 5.5 (:swift: five-bit) or 4.5 (:wren: four-bit; Nemotron's experts alone, the rest six-bit), one user at a time ------
+// ---- the lossy levels: a model of a family whose row has them (the plain dense kind, Gemma 4, the Qwen3.5 layout, the Nemotron-H layout) at about 6.5 bits per weight (:kestrel, which --lossy is: six-bit block codes), 5.5 (:swift: five-bit) or 4.5 (:wren: four-bit; the Nemotron-H layout's experts alone, the rest six-bit), one user at a time ------
 
 // (the lossy paths' work, context bounds, host margin and Gemma's draft and chunk are src/plan.rs's constants, with the one reserve)
 
@@ -1279,11 +1291,11 @@ fn pre_packed(model: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<Option<Path
     Ok(held(&repo))
 }
 
-/// The plan of MODEL (its config.json `text`, its generation_config.json's `gen`) at `layout` on `gpu`, as `load_lossy` and `check_lossy` make it: a Qwen3 model's on the executor
-/// (`qwen3_plan`, as `fit` sizes it: penguin at the layout this GPU is fastest in, a lossy level at its own; a server's sequences in shared pages), else the lossy levels'
-/// (`lossy_plan`; `packed`: the glyd-v7 directory it is).
+/// The plan of MODEL (its config.json `text`, its generation_config.json's `gen`) at `layout` on `gpu`, as `load_lossy`, `check_lossy` and `prepare` make it, by the
+/// kind its config describes: a plain dense decoder's on the executor (`dynamic::dense::is_dense`; sized as `fit` sizes it: penguin at the layout this GPU is fastest
+/// in, a lossy level at its own; a server's sequences in shared pages), else the lossy levels' (`lossy_plan`; `packed`: the glyd-v7 directory it is).
 fn plan_level(a: &Args, model: &str, layout: Layout, text: &str, gen: Option<&str>, gpu: &Gpu, packed: Option<&Path>) -> Done<LoadPlan> {
-    if crate::runtime::config::family_of(text) != Some(crate::support::Family::Qwen3) {
+    if !crate::dynamic::dense::is_dense(text) {
         return lossy_plan(a, model, layout, text, gen, gpu.free, &gpu.name, packed);
     }
     let name = short_name(model);
@@ -1295,7 +1307,7 @@ fn plan_level(a: &Args, model: &str, layout: Layout, text: &str, gen: Option<&st
     Ok(p)
 }
 
-/// The level's engine as `run` loads it (Gemma 4's, Qwen3's, Qwen3.5's or Nemotron 3 Super's), with its tokenizer, chat template and sampling defaults, the size of its vocabulary, the line that says it is ready, and what
+/// The level's engine as `run` loads it (Gemma 4's, the plain dense kind's, the Qwen3.5 layout's or the Nemotron-H layout's), with its tokenizer, chat template and sampling defaults, the size of its vocabulary, the line that says it is ready, and what
 /// /v1/glyd/info says of it served as `served` (MODEL as typed).
 #[allow(clippy::type_complexity)]
 fn load_lossy(
@@ -1311,49 +1323,13 @@ fn load_lossy(
         Some(family) => return load_dynamic(a, &model, family, hb_level(&model, layout), served, ui),
         None => {}
     }
-    let mut layout = layout_for(&model, layout);
     let name = short_name(&model);
-    let mut packed = v7_layout(&model)?.map(|_| PathBuf::from(&model));
     let gpu = gpu_pick()?;
     if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, true, machine::ANY_FAMILY) {
         return Err(r);
     }
-    let first = match packed {
-        None => Some(plan_level(a, &model, layout, &config_text(&model)?, None, &gpu, None)?),
-        Some(_) => None,
-    };
-    if packed.is_none() {
-        packed = pre_packed(&model, layout, ui)?;
-    }
-    let mut dir = match &packed {
-        Some(d) => d.clone(),
-        None if Path::new(&model).join("config.json").exists() => PathBuf::from(&model),
-        None => match Source::find(&model) {
-            Ok(s) => s.dir,
-            Err(_) => {
-                let (hub, remote, wanted) = store::hub_plan(&model, ui)?;
-                store::download(&hub, &remote, &wanted, &model, ui)?;
-                Source::find(&model).map_err(cannot)?.dir
-            }
-        },
-    };
-    // (a pre-packed repo given by its own name is a glyd-v7 directory once downloaded; a bf16 model is packed into the cache once, and read from there)
-    if packed.is_none() {
-        packed = v7_manifest(&dir).map_err(cannot)?.map(|_| dir.clone());
-    }
-    if let Some(d) = &packed {
-        // (the layout as packed: wren of a QAT checkpoint is the exact four-bit one)
-        layout = v7_level(&model, v7_manifest(d).map_err(cannot)?.map(|m| m.0), Some(layout))?.unwrap_or(layout);
-    } else if let Some(first) = first {
-        if layout == Layout::Hummingbird {
-            return Err(Refusal::unsupported(
-                format!("{name} at the hummingbird level comes as a finished download or directory only: its experts' codes are made apart"),
-                format!("Download the pre-packed model: glyd/{name}-hummingbird"),
-            ));
-        }
-        dir = store::pack(&Source::find(&model).map_err(cannot)?, &model, layout, first.weights, ui)?;
-        packed = Some(dir.clone());
-    }
+    // (the directory made ready, as `glyd prepare` makes it: downloaded, packed once)
+    let (dir, packed, layout) = level_dir(a, &model, layout_for(&model, layout), &gpu, ui)?;
     let read = |f: &str| std::fs::read_to_string(dir.join(f)).ok();
     let plan = plan_level(
         a,
@@ -1507,7 +1483,7 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: 
     })
 }
 
-/// The 12-bit lossless KV pages for `e` where the scheduler pages its cache and GLYD_KV=lossless asks for them (until admission reserves their room): the tables made on
+/// The 12-bit lossless KV pages for `e` where the scheduler pages its cache and GLYD_KV=lossless asks for them (off unless asked for: admission does not reserve their room): the tables made on
 /// the model's first run and kept in the cache.
 fn twelve_bit_pages(e: &mut crate::dynamic::Dyn, dir: &Path, name: &str, ui: &RefCell<Ui>) -> Done<()> {
     if std::env::var("GLYD_KV").as_deref() != Ok("lossless") {
@@ -1700,6 +1676,36 @@ fn check_dynamic(a: &Args, model: &str, family: &str, layout: Layout, ui: &RefCe
     }
 }
 
+/// The directory the dynamic route reads MODEL from, made ready (a run's first step, and `glyd prepare`'s): its hummingbird directory where `hb` (`hb_dir_for`),
+/// else the model's own, the cache's copy, else downloaded.
+fn dynamic_dir(model: &str, name: &str, family: &str, hb: bool, ui: &RefCell<Ui>) -> Done<PathBuf> {
+    if hb {
+        return hb_dir_for(model, name, family, Some(ui));
+    }
+    if Path::new(model).join("config.json").exists() {
+        return Ok(PathBuf::from(model));
+    }
+    match Source::find(model) {
+        Ok(s) => Ok(s.dir),
+        Err(_) => {
+            let (hub, remote, wanted) = store::hub_plan_as(model, ui, true)?;
+            store::download(&hub, &remote, &wanted, model, ui)?;
+            Ok(Source::find(model).map_err(cannot)?.dir)
+        }
+    }
+}
+
+/// The plan of the dynamic route's model in `dir` over this machine's GPUs (`size_dynamic` on its files' headers), or its refusal: the directory's config.json, the
+/// GPUs, the first of them and the plan.
+fn dynamic_plan(a: &Args, name: &str, family: &str, dir: &Path) -> Done<(String, Vec<Gpu>, Gpu, LoadPlan)> {
+    let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| cannot(format!("{}: {e}", dir.display())))?;
+    let (gpus, first) = dynamic_gpus()?;
+    let targets: Vec<Target> = gpus.iter().map(target).collect();
+    let table = crate::sizes::Table::from_dir(dir).map_err(cannot)?;
+    let plan = size_dynamic(a, name, &table, Some(dir), &text, static_family(family), &targets, crate::offload::host_memory(), &crate::dynamic::tp::reach)?;
+    Ok((text, gpus, first, plan))
+}
+
 /// `run`/`serve` of a model the dynamic engine runs from its release's directory (`dynamic_family`), at penguin: the release's weights exactly (an FP8 or
 /// FP4 release's as it has them, a bf16 one's lossless). The directory is the model's own, the cache's copy, else downloaded; its layers are cut over the
 /// machine's GPUs as their free memory holds them (`--split CUTS --devices GPUS` chooses), and `--context N` (8,192) is the KV's. What load_lossy gives.
@@ -1717,26 +1723,9 @@ fn load_dynamic(
         return Err(penguin_only(&name, family, model));
     }
     let hb = layout == Layout::Hummingbird;
-    let dir = if hb {
-        hb_dir_for(model, &name, family, Some(ui))?
-    } else if Path::new(model).join("config.json").exists() {
-        PathBuf::from(model)
-    } else {
-        match Source::find(model) {
-            Ok(s) => s.dir,
-            Err(_) => {
-                let (hub, remote, wanted) = store::hub_plan_as(model, ui, true)?;
-                store::download(&hub, &remote, &wanted, model, ui)?;
-                Source::find(model).map_err(cannot)?.dir
-            }
-        }
-    };
-    let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| cannot(format!("{}: {e}", dir.display())))?;
-    let (gpus, first) = dynamic_gpus()?;
+    let dir = dynamic_dir(model, &name, family, hb, ui)?;
+    let (text, gpus, first, plan) = dynamic_plan(a, &name, family, &dir)?;
     let nl = crate::dynamic::split::config_num(&text, "num_hidden_layers").unwrap_or(0);
-    let targets: Vec<Target> = gpus.iter().map(target).collect();
-    let table = crate::sizes::Table::from_dir(&dir).map_err(cannot)?;
-    let plan = size_dynamic(a, &name, &table, Some(&dir), &text, static_family(family), &targets, crate::offload::host_memory(), &crate::dynamic::tp::reach)?;
     let sp = plan.spread.clone().expect("the dynamic route's plan spreads the model");
     let (total, coded, across) = (plan.weights_on_gpu(), sp.coded, sp.across);
     let (cuts, devices) = (sp.cuts.clone(), sp.devices.clone());
@@ -1920,8 +1909,8 @@ pub fn supports(a: &Args) -> i32 {
     }
 }
 
-/// `supports`' answer for `tagged` (MODEL with its level, if one is asked): the family, at the level where there is one, and for Qwen3 the settings its path does not run. A model packed at a level (a glyd-v7
-/// directory, a pre-packed repo) is at its own.
+/// `supports`' answer for `tagged` (MODEL with its level, if one is asked): the family, at the level where there is one, and for a plain dense decoder what the dense kind's lowering does not take
+/// (`supported`). A model packed at a level (a glyd-v7 directory, a pre-packed repo) is at its own.
 fn supports_check(tagged: &str, lossy: bool) -> Done<()> {
     let (model, layout) = level(tagged, lossy)?;
     // (a level is asked by a tag or --lossy; the lossless one has no layout, so a tag's presence says it)
@@ -1931,11 +1920,11 @@ fn supports_check(tagged: &str, lossy: bool) -> Done<()> {
     if v7_layout(model)?.is_some() || levels::repo_level(model).is_some() {
         return Ok(());
     }
-    let family = crate::support::family(&text, &name)?;
+    crate::support::family(&text, &name)?;
     if let Some(level) = asked {
         crate::support::check(&text, model, &name, level)?;
     }
-    if family == crate::support::Family::Qwen3 {
+    if crate::dynamic::dense::is_dense(&text) {
         supported(&name, &text)?;
     }
     Ok(())
@@ -2015,9 +2004,9 @@ fn check_lossy(a: &Args, model: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<
     }
     let text = config_text(model)?;
     let gpu = gpu_pick()?;
-    // (Qwen3 at penguin goes to the engine by the measured list, `machine::GPUS`, where vLLM is here to run it otherwise: GLYD_ENGINE=1, passed on by glyd run and glyd serve,
-    // asks for the engine by name; every other path is the engine's whatever the list)
-    let dense = crate::runtime::config::family_of(&text) == Some(crate::support::Family::Qwen3) && layout == Layout::Tiered;
+    // (a plain dense decoder at penguin goes to the engine by the measured list, `machine::GPUS`, where vLLM is here to run it otherwise: GLYD_ENGINE=1, passed on by glyd run
+    // and glyd serve, asks for the engine by name; every other path is the engine's whatever the list)
+    let dense = crate::dynamic::dense::is_dense(&text) && layout == Layout::Tiered;
     let (asked, family) = match dense {
         true => (machine::engine_chosen(std::env::var("GLYD_ENGINE_ASKED").is_ok_and(|v| v.trim() == "1")), machine::QWEN3),
         false => (true, machine::ANY_FAMILY),
@@ -2050,18 +2039,10 @@ fn check_lossy(a: &Args, model: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<
     Ok(format!("{}: {}, {} tokens of context, {} level", gpu.name, short_name(model), plan.context, level_name(layout)))
 }
 
-/// MODEL, a Qwen3 model, made ready at its level (downloaded, packed for this GPU): what `run` does first.
+/// MODEL made ready at its level (downloaded, packed for this GPU): what `run` does first, for any model it runs. The directory is printed.
 pub fn prepare_cmd(a: &Args) -> i32 {
     let ui = RefCell::new(Ui::new());
-    let r = gpu_pick().and_then(|g| {
-        let (_, layout) = level(a.need(1, "MODEL")?, a.has("lossy"))?;
-        let mut q = a.clone();
-        if let Some(m) = q.pos.get_mut(1) {
-            *m = level(m, false)?.0.to_string();
-        }
-        prepare(&q, &g, &ui, layout.unwrap_or(Layout::Tiered))
-    });
-    match r {
+    match prepare(a, &ui) {
         Ok(dir) => {
             println!("{}", dir.display());
             0
@@ -2404,7 +2385,11 @@ mod tests {
     }
     use crate::ui::CANNOT;
 
-    const QWEN3: &str = r#"{"architectures": ["Qwen3ForCausalLM"], "hidden_size": 4096, "num_hidden_layers": 36, "num_attention_heads": 32, "num_key_value_heads": 8, "head_dim": 128, "intermediate_size": 12288,
+    /// The plain dense kind's sizing case (a pre-norm dense decoder of 36 layers of 4,096, 32 query heads over 8 of 128: no release's by name), and a config of a
+    /// kind this engine has no description of. `architectures` and `model_type` are what the description builder reads: its input, not a subject.
+    const OTHER: &str =
+        r#"{"architectures": ["OtherForCausalLM"], "model_type": "other", "hidden_size": 4096, "num_hidden_layers": 32, "num_attention_heads": 32}"#;
+    const DENSE: &str = r#"{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "hidden_size": 4096, "num_hidden_layers": 36, "num_attention_heads": 32, "num_key_value_heads": 8, "head_dim": 128, "intermediate_size": 12288,
         "vocab_size": 151936, "rms_norm_eps": 1e-06, "rope_theta": 1000000, "max_position_embeddings": 40960, "tie_word_embeddings": false, "rope_scaling": null, "sliding_window": null, "use_sliding_window": false}"#;
 
     fn dir_with(name: &str, config: &str) -> PathBuf {
@@ -2503,55 +2488,100 @@ mod tests {
         assert_eq!(key_of(None, &env(&[("GLYD_API_KEY", "")])), None);
     }
 
+    /// The config decides, by its kind: a plain dense decoder runs whatever its architecture is called, and a kind with no description is refused with that, not
+    /// with a list of families.
     #[test]
     fn what_the_engine_runs() {
-        let qwen3 = r#"{"architectures": ["Qwen3ForCausalLM"], "rope_scaling": null}"#;
-        assert!(supported("Qwen3-8B", qwen3).is_ok());
-        assert!(supported("Qwen3-8B", QWEN3).is_ok());
-        let llama = supported("Llama-3.1-8B", r#"{"architectures": ["LlamaForCausalLM"]}"#).unwrap_err();
-        assert_eq!(llama.code, 3);
-        assert!(llama.what.contains("LlamaForCausalLM"));
-        assert_eq!(supported("x", r#"{"architectures": ["Qwen3ForCausalLM"], "rope_scaling": {"type": "yarn"}}"#).unwrap_err().code, 3);
+        assert!(supported("dense-36l", DENSE).is_ok());
+        assert!(supported("dense-36l", &DENSE.replace("Qwen3ForCausalLM", "AnotherNameForCausalLM")).is_ok(), "the architecture's name is not read");
+        for other_type in ["mistral", "llama"] {
+            assert!(supported("dense-36l", &DENSE.replace(r#""model_type": "qwen3""#, &format!(r#""model_type": "{other_type}""#))).is_ok(), "{other_type}");
+        }
+        let other = supported("other", OTHER).unwrap_err();
+        assert_eq!(other.code, 3);
+        assert_eq!(other.what, "other is a OtherForCausalLM model, which this engine has no description of yet");
+        assert!(!other.what.contains("Qwen3") && !other.fix.contains("Qwen3 model") && !other.fix.contains("Qwen3-"), "{other:?}");
         assert_eq!(supported("x", "{}").unwrap_err().code, 3);
-        // Nemotron-H is known by name and refused lossless with its own reason (exit 3, as any other model the engine does not run), in a release build as in a development one: its levels are named
-        let nemo = supported("NVIDIA-Nemotron-3-Super-120B-A12B-BF16", r#"{"architectures": ["NemotronHForCausalLM"]}"#).unwrap_err();
-        assert_eq!(nemo.code, 3);
-        assert!(
-            nemo.what.contains("Nemotron-H model")
-                && nemo.what.contains("hummingbird, swift and kestrel levels, not lossless")
-                && nemo.fix.contains("MODEL:hummingbird on a 16 to 32 GB card")
-                && !nemo.fix.contains("wren"),
-            "{}",
-            nemo.what
-        );
-        assert_eq!(short_name("Qwen/Qwen3-8B"), "Qwen3-8B");
+        assert_eq!(short_name("google/gemma-4-12B-it"), "gemma-4-12B-it");
         assert_eq!(short_name("/models/mine/"), "mine");
     }
 
-    /// A Qwen3 config that sets what the engine does not do is not run by it: a sliding window that is on, layers of another kind, biases, another activation. What it has set off, or null, is nothing.
+    /// The dense route is taken by the config's kind alone: a directory whose name begins as an older release's did and whose config is another architecture has no
+    /// level; a plain dense decoder under any name, of any of the builder's model types, is penguin; a name with no config to read says nothing.
     #[test]
-    fn a_qwen3_that_sets_what_the_engine_does_not_do_goes_to_vllm() {
-        let with = |extra: &str| format!(r#"{{"architectures": ["Qwen3ForCausalLM"], {extra}}}"#);
-        for fine in [
-            r#""sliding_window": null, "use_sliding_window": false"#,
-            r#""sliding_window": 4096, "use_sliding_window": false"#,
-            r#""sliding_window": 4096"#,
-            r#""use_sliding_window": true"#,
-            r#""layer_types": ["full_attention", "full_attention"]"#,
-            r#""attention_bias": false, "hidden_act": "silu""#,
-        ] {
+    fn the_dense_route_is_the_configs_not_the_names() {
+        let named = dir_with("qwen3-named-other", OTHER).join("qwen3-8b");
+        std::fs::create_dir_all(&named).unwrap();
+        std::fs::write(named.join("config.json"), OTHER).unwrap();
+        let n = named.to_str().unwrap();
+        assert!(short_name(n).starts_with("qwen3-") && !is_dense_model(n));
+        assert_eq!(run_level(n, None).unwrap(), None);
+        let ui = RefCell::new(Ui::silent());
+        let r = check(&args(&["preflight", n]), &ui).unwrap_err();
+        assert!(r.code == 3 && r.what.contains("OtherForCausalLM") && r.what.contains("no description"), "{r}");
+        for model_type in ["qwen3", "mistral", "llama"] {
+            let d = dir_with(&format!("any-name-{model_type}"), &DENSE.replace(r#""model_type": "qwen3""#, &format!(r#""model_type": "{model_type}""#)));
+            let m = d.to_str().unwrap();
+            assert!(is_dense_model(m), "{model_type}");
+            assert_eq!(run_level(m, None).unwrap(), Some(Layout::Tiered), "{model_type}");
+            assert!(table_check(m, None).is_ok() && table_check(m, Some(Layout::Int5)).is_ok(), "{model_type}");
+            // (and its plan is the dense kind's, by the config: an A100's free memory holds it)
+            let p = plan_level(&args(&["run", m]), m, Layout::Tiered, &config_text(m).unwrap(), None, &gpu("NVIDIA A100-SXM4-80GB", (8, 0), 70), None).unwrap();
+            assert!(p.kind == Kind::Qwen3 && p.family == crate::dynamic::dense::FAMILY, "{model_type}: {}", p.family);
+            std::fs::remove_dir_all(&d).unwrap();
+        }
+        assert!(!is_dense_model("/nonexistent/qwen3-8b"));
+        assert_eq!(run_level("/nonexistent/qwen3-8b", None).unwrap(), None);
+        std::fs::remove_dir_all(named.parent().unwrap()).unwrap();
+    }
+
+    /// `prepare` takes the path `run` and `serve` take, whatever the family: the level and the table are read first, from the config, and a refusal is a run's own
+    /// (a kind with no description; a level the family does not run; a tag that is no level), said before a GPU is looked at. No family is told it is not the one
+    /// the command serves.
+    #[test]
+    fn prepare_reads_the_level_and_the_table_as_a_run_does() {
+        let ui = RefCell::new(Ui::silent());
+        let other = dir_with("prepare-other", OTHER);
+        let r = prepare(&args(&["prepare", other.to_str().unwrap()]), &ui).unwrap_err();
+        assert!(r.code == CANNOT && r.what.contains("is a OtherForCausalLM model, which this engine has no description of yet"), "{r}");
+        let g = fixture_dir("prepare-g4", "gemma4_12b_config.json");
+        let gp = g.to_str().unwrap();
+        let r = prepare(&args(&["prepare", &format!("{gp}:hummingbird")]), &ui).unwrap_err();
+        assert!(r.code == CANNOT && r.what.ends_with("(Gemma 4) runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird"), "{r}");
+        let r = prepare(&args(&["prepare", &format!("{gp}:sparrow")]), &ui).unwrap_err();
+        assert!(r.code == 1 && r.what == ":sparrow is not a level", "{r}");
+        let dense = dir_with("prepare-dense", DENSE);
+        let r = prepare(&args(&["prepare", &format!("{}:hummingbird", dense.to_str().unwrap())]), &ui).unwrap_err();
+        assert!(r.code == CANNOT && r.what.contains("(plain dense) runs at the penguin, kestrel, swift and wren levels"), "{r}");
+        assert_eq!(prepare(&args(&["prepare"]), &ui).unwrap_err().code, 1);
+        for d in [other, g, dense] {
+            std::fs::remove_dir_all(d).unwrap();
+        }
+    }
+
+    /// A plain dense decoder that sets what the dense kind's lowering does not take is refused before anything is downloaded, with the setting named: biases in the
+    /// attention, a rope with scaling, another activation. A sliding window is the attention kind's parameter and runs; what a config sets off, or null, is nothing.
+    #[test]
+    fn a_dense_config_the_lowering_refuses_is_refused_with_what_it_sets() {
+        let with = |extra: &str| DENSE.replacen('{', &format!("{{{extra}, "), 1);
+        for fine in [r#""attention_bias": false, "hidden_act": "silu""#, r#""layer_types": null"#] {
             assert!(supported("m", &with(fine)).is_ok(), "{fine}");
         }
         for (setting, said) in [
-            (r#""sliding_window": 4096, "use_sliding_window": true"#, "a sliding window"),
-            (r#""layer_types": ["full_attention", "sliding_attention"]"#, "layers that are not full attention"),
-            (r#""layer_types": ["linear_attention"]"#, "layers that are not full attention"),
-            (r#""attention_bias": true"#, "biases in the attention"),
-            (r#""hidden_act": "gelu""#, "an activation other than silu"),
+            (r#""attention_bias": true"#, "m has biases in the attention, which this engine does not run yet"),
+            (r#""hidden_act": "gelu""#, "m has an activation other than silu, which this engine does not run yet"),
         ] {
             let r = supported("m", &with(setting)).unwrap_err();
-            assert!(r.code == CANNOT && r.what.contains(said), "{setting}: {r}");
+            assert!(r.code == CANNOT && r.what == said, "{setting}: {r}");
         }
+        let scaled = DENSE.replace(r#""rope_scaling": null"#, r#""rope_scaling": {"rope_type": "linear", "factor": 2.0}"#);
+        let r = supported("m", &scaled).unwrap_err();
+        assert!(r.code == CANNOT && r.what == "m has rope scaling, which this engine does not run yet", "{r}");
+        // (a window is a parameter of the attention kind: the lowering takes it)
+        let windowed = DENSE
+            .replace(r#""model_type": "qwen3""#, r#""model_type": "mistral""#)
+            .replace(r#""sliding_window": null, "use_sliding_window": false"#, r#""sliding_window": 4096"#);
+        assert!(supported("m", &windowed).is_ok());
     }
 
     fn fixture_dir(name: &str, file: &str) -> PathBuf {
@@ -2600,28 +2630,31 @@ mod tests {
                 && e.fix == format!("Run it lossless: glyd run {qp}"),
             "{e:?}"
         );
-        // Qwen3 runs at penguin and the block levels, and keeps its own refusals; another kind of model keeps its words at any level
-        let q3 = dir_with("supports-q3", QWEN3);
-        let q3p = q3.to_str().unwrap();
-        assert!(supports_check(&format!("{q3p}:penguin"), false).is_ok() && supports_check(&format!("{q3p}:swift"), false).is_ok());
-        let e = supports_check(&format!("{q3p}:hummingbird"), false).unwrap_err();
-        assert!(e.code == 3 && e.what.ends_with("(Qwen3) runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird"), "{e:?}");
-        let scaled = dir_with("supports-scaled", r#"{"architectures": ["Qwen3ForCausalLM"], "rope_scaling": {"type": "yarn"}}"#);
-        assert!(supports_check(scaled.to_str().unwrap(), false).unwrap_err().what.contains("rope scaling"));
-        let l = dir_with("supports-llama", r#"{"architectures": ["LlamaForCausalLM"]}"#);
+        // a plain dense decoder runs at penguin and the block levels, and keeps the dense kind's own refusals; a kind with no description keeps its words at any level
+        let dense = dir_with("supports-dense", DENSE);
+        let dp = dense.to_str().unwrap();
+        assert!(
+            supports_check(dp, false).is_ok()
+                && supports_check(&format!("{dp}:penguin"), false).is_ok()
+                && supports_check(&format!("{dp}:swift"), false).is_ok()
+        );
+        let e = supports_check(&format!("{dp}:hummingbird"), false).unwrap_err();
+        assert!(e.code == 3 && e.what.ends_with("(plain dense) runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird"), "{e:?}");
+        let biased = dir_with("supports-biased", &DENSE.replacen('{', r#"{"attention_bias": true, "#, 1));
+        assert!(supports_check(biased.to_str().unwrap(), false).unwrap_err().what.contains("biases in the attention"));
+        let l = dir_with("supports-llama", OTHER);
         for tag in ["", ":kestrel"] {
             let e = supports_check(&format!("{}{tag}", l.to_str().unwrap()), false).unwrap_err();
-            assert!(e.code == 3 && e.what.contains("is a LlamaForCausalLM model, and this engine runs Qwen3 models so far"), "{e:?}");
+            assert!(e.code == 3 && e.what.contains("is a OtherForCausalLM model, which this engine has no description of yet"), "{e:?}");
         }
         // a model that cannot be read is "not told", whatever the level
         assert_eq!(supports_check("/nonexistent/model:kestrel", false).unwrap_err().code, 1);
-        for d in [g, q, q3, scaled, l] {
+        for d in [g, q, dense, biased, l] {
             std::fs::remove_dir_all(d).unwrap();
         }
     }
 
-    /// The dynamic route takes the Qwen3.5 layout at penguin; its lossy levels, and Nemotron-H's, stay on the one-GPU lossy path; Kimi-K3's hummingbird stays on
-    /// the dynamic route.
+    /// The dynamic route takes the Qwen3.5 layout at penguin; its lossy levels stay on the one-GPU lossy path; Kimi-K3's hummingbird stays on the dynamic route.
     #[test]
     fn the_route_of_each_level() {
         let q35: Value = json::parse(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/qwen35_configs.json")).unwrap()).unwrap();
@@ -2631,8 +2664,6 @@ mod tests {
             ("Qwen3.5", Layout::Tiered, false),
             ("Qwen3.5", Layout::Int6, true),
             ("Qwen3.5", Layout::Int4, true),
-            ("Nemotron-H", Layout::Tiered, false),
-            ("Nemotron-H", Layout::Hummingbird, true),
             ("Kimi-K3", Layout::Hummingbird, false),
             ("GLM-5.3-Flash", Layout::Tiered, false),
         ] {
@@ -2642,8 +2673,8 @@ mod tests {
 
     #[test]
     fn supports_is_the_kind_of_model_alone() {
-        let q = dir_with("supports-q", QWEN3);
-        let l = dir_with("supports-l", r#"{"architectures": ["LlamaForCausalLM"]}"#);
+        let q = dir_with("supports-q", DENSE);
+        let l = dir_with("supports-l", OTHER);
         assert_eq!(supports(&args(&["supports", q.to_str().unwrap()])), 0);
         assert_eq!(supports(&args(&["supports", l.to_str().unwrap()])), 3);
         assert_eq!(supports(&args(&["supports", "/nonexistent/model"])), 1); // (cannot be told: the engine's own refusal comes with the run)
@@ -2651,8 +2682,8 @@ mod tests {
         // the preflight says the same of a model of another kind before it looks at a GPU
         let ui = RefCell::new(Ui::silent());
         let r = check(&args(&["preflight", l.to_str().unwrap()]), &ui).unwrap_err();
-        assert!(r.code == 3 && r.what.contains("LlamaForCausalLM"), "{r}");
-        assert_eq!(config_text(q.to_str().unwrap()).unwrap(), QWEN3);
+        assert!(r.code == 3 && r.what.contains("OtherForCausalLM"), "{r}");
+        assert_eq!(config_text(q.to_str().unwrap()).unwrap(), DENSE);
         std::fs::remove_dir_all(&q).unwrap();
         std::fs::remove_dir_all(&l).unwrap();
     }
@@ -2715,14 +2746,14 @@ mod tests {
         }
         // what is not all letters after the last ':' is no tag: the model is left alone, --lossy or not
         for plain in [
-            "Qwen/Qwen3-8B",
+            "org/dense-36l",
             "/models/mine/",
             "mine",
-            "/mnt/disk:1/Qwen3",
+            "/mnt/disk:1/model",
             "./a:b/c",
             "/data/x:kestrel/model",
             "C:\\models\\Qwen",
-            "Qwen/Qwen3-8B:",
+            "org/dense-36l:",
             "m:v2",
             "m:4bit",
             "m:ké",
@@ -2765,12 +2796,12 @@ mod tests {
         for tag in ["sparrow", "falcon"] {
             assert_eq!(serve(&args(&["serve", &format!("Qwen/Qwen3.8-27B:{tag}")])), 1, "{tag}");
         }
-        // penguin's tag is off the model that is looked up: the directory it names is the one read (a Llama: status 3), whatever the tag's case
-        let l = dir_with("level-l", r#"{"architectures": ["LlamaForCausalLM"]}"#);
+        // penguin's tag is off the model that is looked up: the directory it names is the one read (a kind with no description: status 3), whatever the tag's case
+        let l = dir_with("level-l", OTHER);
         let m = l.to_str().unwrap();
         for tagged in [m.to_string(), format!("{m}:penguin"), format!("{m}:PENGUIN")] {
             let r = check(&args(&["preflight", &tagged]), &ui).unwrap_err();
-            assert!(r.code == 3 && r.what.contains("LlamaForCausalLM"), "{tagged}: {r}");
+            assert!(r.code == 3 && r.what.contains("OtherForCausalLM"), "{tagged}: {r}");
         }
         std::fs::remove_dir_all(&l).unwrap();
     }
@@ -2806,11 +2837,11 @@ mod tests {
         for (layout, level) in [(Layout::Int6, "kestrel"), (Layout::Int5, "swift"), (Layout::Int4, "wren")] {
             let r = plan(layout, 8).err().unwrap();
             assert!(r.code == CANNOT && r.what.starts_with(&format!("Qwen3.8-27B at the {level} level takes about ")), "{r}");
-            let r = lossy_plan(&a, "Qwen/Qwen3-8B", layout, QWEN3, None, 80 << 30, "NVIDIA A100", None).err().unwrap();
+            let r = lossy_plan(&a, "org/dense-36l", layout, DENSE, None, 80 << 30, "NVIDIA A100", None).err().unwrap();
             assert!(
                 r.code == CANNOT
-                    && r.what.starts_with(&format!("Qwen3-8B: the {level} level runs Qwen3.5"))
-                    && r.fix == "Run it lossless: glyd run Qwen/Qwen3-8B",
+                    && r.what.starts_with(&format!("dense-36l: the {level} level on this path takes the Qwen3.5 and Nemotron-H layouts"))
+                    && r.fix == "Run it lossless: glyd run org/dense-36l",
                 "{r}"
             );
         }
@@ -2863,11 +2894,11 @@ mod tests {
         assert_eq!(at(&["serve", model, "--users", "8", "--no-draft", "--ctx", "8192"]).context, 8192);
         // (a draft model to come with the download: drafted, one user at a time, the context of one)
         assert_eq!(at(&["serve", model, "--users", "8"]).users, 1);
-        // (run, serve and preflight alike: Gemma 4 without a tag is penguin, with one the level asked; so is Qwen3, on the executor too)
+        // (run, serve and preflight alike: Gemma 4 without a tag is penguin, with one the level asked; so is a plain dense decoder, on the executor too)
         assert_eq!(run_level(model, None).unwrap(), Some(Layout::Tiered));
         assert_eq!(run_level(model, Some(Layout::Int4)).unwrap(), Some(Layout::Int4));
-        let q3 = dir_with("run-level-q3", QWEN3);
-        assert_eq!(run_level(q3.to_str().unwrap(), None).unwrap(), Some(Layout::Tiered));
+        let dense = dir_with("run-level-dense", DENSE);
+        assert_eq!(run_level(dense.to_str().unwrap(), None).unwrap(), Some(Layout::Tiered));
     }
 
     /// A run whose context does not fit at the level asked loads at the shorter one the ladder takes (on a 16 GB card, gemma-4-12B at kestrel with 262144 tokens loads
@@ -2928,10 +2959,10 @@ mod tests {
         if crate::support::machine(&crate::plan::Machine::preset("rtx4060-laptop").unwrap()).is_some() {
             assert!(load_level(&onq("rtx4060-laptop"), qp, None).is_ok());
         }
-        // a Qwen3 dense model the planner keeps lossless loads at penguin, on the executor
-        let q3 = dir_with("load-level-q3", QWEN3);
-        let q3p = q3.to_str().unwrap();
-        assert_eq!(load_level(&Args::from(["serve", q3p, "--machine", "rtx4090"].iter().map(|s| s.to_string())), q3p, None).unwrap(), Some(Layout::Tiered));
+        // a plain dense decoder the planner keeps lossless loads at penguin, on the executor
+        let dense = dir_with("load-level-dense", DENSE);
+        let dp = dense.to_str().unwrap();
+        assert_eq!(load_level(&Args::from(["serve", dp, "--machine", "rtx4090"].iter().map(|s| s.to_string())), dp, None).unwrap(), Some(Layout::Tiered));
     }
 
     #[test]
@@ -2988,7 +3019,7 @@ mod tests {
         assert!(asked("262144").is_err());
         // the three-bit layout is no level of it
         let r = plan(Layout::Int3, 140).err().unwrap();
-        assert!(r.code == CANNOT && r.what.contains("the i3 level is not built for Nemotron 3 Super") && r.fix.ends_with(&format!("{model}:wren")), "{r}");
+        assert!(r.code == CANNOT && r.what.contains("the i3 level is not built for the Nemotron-H layout") && r.fix.ends_with(&format!("{model}:wren")), "{r}");
         // a config the engine does not run (here one with a convolution without its bias) is said in the config's own words
         let r = plan_of(&a, model, text.replace("\"use_conv_bias\": true", "\"use_conv_bias\": false")).err().unwrap();
         assert!(r.code == CANNOT && r.what.contains("a convolution without its bias"), "{r}");
@@ -3201,14 +3232,13 @@ mod tests {
             std::fs::write(d.join("config.json"), config).unwrap();
             d.to_string_lossy().into_owned()
         };
-        let llama =
-            model("Llama-3.1-8B", r#"{"architectures": ["LlamaForCausalLM"], "hidden_size": 4096, "num_hidden_layers": 32, "num_attention_heads": 32}"#);
-        let r = table_check(&llama, None).unwrap_err();
-        assert!(r.code == CANNOT && r.what.contains("is a LlamaForCausalLM model"), "{r}");
-        let qwen3 = model("Qwen3-8B", QWEN3);
-        assert!(table_check(&qwen3, None).is_ok() && table_check(&qwen3, Some(Layout::Tiered)).is_ok());
-        assert!(table_check(&qwen3, Some(Layout::Int5)).is_ok());
-        let r = table_check(&qwen3, Some(Layout::Hummingbird)).unwrap_err();
+        let other = model("other", OTHER);
+        let r = table_check(&other, None).unwrap_err();
+        assert!(r.code == CANNOT && r.what.contains("is a OtherForCausalLM model"), "{r}");
+        let dense = model("dense-36l", DENSE);
+        assert!(table_check(&dense, None).is_ok() && table_check(&dense, Some(Layout::Tiered)).is_ok());
+        assert!(table_check(&dense, Some(Layout::Int5)).is_ok());
+        let r = table_check(&dense, Some(Layout::Hummingbird)).unwrap_err();
         assert!(r.code == CANNOT && r.what.contains("runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird"), "{r}");
         // (a model whose config is not to be had is the paths' own to say)
         assert!(table_check(&dir.join("nowhere").to_string_lossy(), Some(Layout::Int5)).is_ok());
@@ -3233,15 +3263,15 @@ mod tests {
     /// The plan of a model on a GPU is a status 3 wherever it fails for the computer or the model (not for what the user typed): the memory, the context, the shape.
     #[test]
     fn what_a_model_needs_of_a_gpu_is_decided_before_anything_is_downloaded() {
-        let cfg = Config::parse(QWEN3, "config.json", None).unwrap();
+        let cfg = Config::parse(DENSE, "config.json", None).unwrap();
         let l4 = gpu("NVIDIA L4", (8, 9), 22);
-        let (layout, _, fit) = qwen3_plan(&args(&["run", "Qwen/Qwen3-8B"]), &cfg, "Qwen3-8B", &l4, None, 1).unwrap();
-        assert!(fit.context == 8192 && layout == Layout::Tiered && shape_checks("Qwen3-8B", &cfg, &fit).is_ok());
+        let (layout, _, fit) = qwen3_plan(&args(&["run", "org/dense-36l"]), &cfg, "dense-36l", &l4, None, 1).unwrap();
+        assert!(fit.context == 8192 && layout == Layout::Tiered && shape_checks("dense-36l", &cfg, &fit).is_ok());
         // a card with too little room: the vLLM way, with the numbers
-        let small = qwen3_plan(&args(&["run", "Qwen/Qwen3-8B"]), &cfg, "Qwen3-8B", &gpu("NVIDIA L4", (8, 9), 8), None, 1).unwrap_err();
+        let small = qwen3_plan(&args(&["run", "org/dense-36l"]), &cfg, "dense-36l", &gpu("NVIDIA L4", (8, 9), 8), None, 1).unwrap_err();
         assert!(small.code == CANNOT && small.what.contains("takes about") && small.what.contains("has 8.0 GiB free"), "{small}");
         // a context that does not fit
-        let big = qwen3_plan(&args(&["run", "Qwen/Qwen3-8B", "--context", "40960"]), &cfg, "Qwen3-8B", &gpu("NVIDIA L4", (8, 9), 13), None, 1).unwrap_err();
+        let big = qwen3_plan(&args(&["run", "org/dense-36l", "--context", "40960"]), &cfg, "dense-36l", &gpu("NVIDIA L4", (8, 9), 13), None, 1).unwrap_err();
         assert!(big.code == CANNOT && big.fix.contains("--context"), "{big}");
         // a context past the tables' reach on a model whose own window is longer
         let long = Config { max_pos: 262_144, ..cfg.clone() };
@@ -3263,27 +3293,36 @@ mod tests {
         let root = std::env::temp_dir().join(format!("glyd-engine-first-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::env::set_var("GLYD_CACHE", &root);
-        let cfg = Config::parse(QWEN3, "config.json", None).unwrap();
+        // (the packed copy's bytes: the plan's weights at the level)
+        let pack = (Config::parse(DENSE, "config.json", None).unwrap().matrix_bytes() as f64 * bits(Layout::Tiered) / 16.0) as u64;
         let source = Source { dir: "/x".into(), repo: "org/model".into(), revision: Some("0123456789abcdef0123456789abcdef01234567".into()) };
-        assert!(first_run_checks("model", &cfg, Layout::Tiered, Some(&source), 0).is_ok());
+        // (not made yet: the copy's bytes are counted, and a disk that has not that much left over refuses the run)
+        assert!(pack > 0 && first_run_pack_bytes(pack, Layout::Tiered, Some(&source)) == pack && first_run_pack_bytes(pack, Layout::Tiered, None) == pack);
+        assert!(machine::disk_refusal("model", Some(pack), Some(pack), true, 0, pack).is_some());
+        assert!(first_run_checks("model", pack, Layout::Tiered, Some(&source), 0).is_ok());
         let d = store::packed_dir(&source, Layout::Tiered);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("glyd.json"), r#"{"format": "glyd-v7", "layout": "mma", "level": "penguin", "packs": {}}"#).unwrap();
-        assert!(store::cached_pack(&d, Layout::Tiered) && first_run_checks("model", &cfg, Layout::Tiered, Some(&source), 0).is_ok());
+        // (made: nothing is counted for it, at that layout alone, and the same disk takes the run)
+        assert!(store::cached_pack(&d, Layout::Tiered));
+        assert_eq!(first_run_pack_bytes(pack, Layout::Tiered, Some(&source)), 0);
+        assert_eq!(first_run_pack_bytes(pack, Layout::Int6, Some(&source)), pack);
+        assert!(machine::disk_refusal("model", Some(pack), Some(pack), true, 0, 0).is_none());
+        assert!(first_run_checks("model", pack, Layout::Tiered, Some(&source), 0).is_ok());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// Every way of loading the engine failing says it in words, and hands the model to the other runner.
     #[test]
     fn a_failure_to_load_the_engine_hands_the_model_to_vllm() {
-        let cfg = Config::parse(QWEN3, "config.json", None).unwrap();
+        let cfg = Config::parse(DENSE, "config.json", None).unwrap();
         let g = gpu("NVIDIA L4", (8, 9), 22);
-        let f = crate::plan::sizing::qwen3_fit(&cfg, "Qwen3-8B", &g.name, g.free, Layout::Tiered, None, 1, true).unwrap();
-        let said = |e: &str| engine_refusal(crate::ffi::Error(e.to_string()), "Qwen3-8B", &f, &g);
+        let f = crate::plan::sizing::qwen3_fit(&cfg, "dense-36l", &g.name, g.free, Layout::Tiered, None, 1, true).unwrap();
+        let said = |e: &str| engine_refusal(crate::ffi::Error(e.to_string()), "dense-36l", &f, &g);
         // (an error of the kind, whatever its words; then errors that come as words alone, as from another process: the status their words end in)
-        let r = engine_refusal(crate::ffi::Error::of(crate::ffi::Kind::OutOfMemory, "no room for a KV cache"), "Qwen3-8B", &f, &g);
+        let r = engine_refusal(crate::ffi::Error::of(crate::ffi::Kind::OutOfMemory, "no room for a KV cache"), "dense-36l", &f, &g);
         assert!(r.code == CANNOT && r.what.contains("ran out of memory"), "{r}");
-        let r = engine_refusal(crate::ffi::Error::of(crate::ffi::Kind::of_status(2), "cuMemAlloc: no words for it"), "Qwen3-8B", &f, &g);
+        let r = engine_refusal(crate::ffi::Error::of(crate::ffi::Kind::of_status(2), "cuMemAlloc: no words for it"), "dense-36l", &f, &g);
         assert!(r.what.contains("ran out of memory"), "{r}");
         for (e, text) in [
             ("cuMemAlloc: out of memory (2)", "ran out of memory"),
@@ -3303,7 +3342,7 @@ mod tests {
         // the same error on a driver below the build's minimum is the driver's
         let old = Gpu { driver: machine::driver_min(g.cc) - 1, ..g.clone() };
         let r =
-            engine_refusal(crate::ffi::Error("cuModuleLoadData: no kernel image is available for execution on the device (209)".into()), "Qwen3-8B", &f, &old);
+            engine_refusal(crate::ffi::Error("cuModuleLoadData: no kernel image is available for execution on the device (209)".into()), "dense-36l", &f, &old);
         assert!(r.what.contains("driver cannot run the engine's kernels") && r.fix.contains("Update the NVIDIA driver"), "{r}");
     }
 
@@ -3315,7 +3354,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("why");
         let ui = RefCell::new(Ui::silent());
-        let cannot = Refusal::unsupported("Qwen3-8B does not fit this GPU: it needs about 14.2 GiB.", "Close programs that use the GPU");
+        let cannot = Refusal::unsupported("dense-36l does not fit this GPU: it needs about 14.2 GiB.", "Close programs that use the GPU");
         let own = Refusal::new("port 8000 is in use by another program", "Choose another: --port 8001");
         // no file named: said on the terminal, nothing written
         let none = Status::new();
@@ -3324,7 +3363,7 @@ mod tests {
         let st = Status::new();
         st.set(file.clone());
         assert_eq!(refuse_to(&ui, &cannot, &st), 3);
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "Qwen3-8B does not fit this GPU: it needs about 14.2 GiB\n");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "dense-36l does not fit this GPU: it needs about 14.2 GiB\n");
         assert_eq!(refuse_to(&ui, &own, &st), 1);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "port 8000 is in use by another program\n");
         // up: the file says so, and a refusal leaves it so
@@ -3332,10 +3371,10 @@ mod tests {
         assert_eq!(refuse_to(&ui, &own, &st), 1);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "ready\n");
         // the flag, as the program that starts the engine gives it, among the user's own
-        let a = args(&["run", "--status-file", file.to_str().unwrap(), "Qwen/Qwen3-8B", "--prompt", "hi"]);
+        let a = args(&["run", "--status-file", file.to_str().unwrap(), "org/dense-36l", "--prompt", "hi"]);
         assert_eq!(
             (a.pos.clone(), a.flag("status-file"), a.flag("prompt")),
-            (vec!["run".to_string(), "Qwen/Qwen3-8B".to_string()], Some(file.to_str().unwrap()), Some("hi"))
+            (vec!["run".to_string(), "org/dense-36l".to_string()], Some(file.to_str().unwrap()), Some("hi"))
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }

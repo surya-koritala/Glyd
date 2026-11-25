@@ -1,6 +1,6 @@
 //! The Qwen3.5 layout's GPU pieces that the description executor (src/dynamic) and Condor (src/model_qwen4x.rs) run (its kernel table, `Kern35`, is src/kern/qwen35.rs's):
-//! a packed matrix (`Mat`) and where each layer's matrices come from (`layer_mats`). The hand-written
-//! engine that ran them was removed in R3b (#137), after `paritycheck` found the description executor's rows the same bits at every level.
+//! a packed matrix (`Mat`) and where each of a layer's matrices comes from (`layer_mats`: a pack the library makes, or tensors kept as the checkpoint has them). The
+//! executor's loader (src/dynamic, `Dyn::new_stage`) reads the tensors the description names; this file loads none.
 //!
 //! A layer: x += mixer(norm1(x)); x += mlp(norm2(x)), the norms zero-centered. Full attention (1 in 4): the qkv product (each query head with its gate), the q/k norms and
 //! the rotary on 64 of 256 dims, the causal attention times sigmoid(gate) (the attention kind's kernels, src/dynamic/attn.rs), the o product. Linear attention: the qkvz and ba products, the causal convolution with SiLU,

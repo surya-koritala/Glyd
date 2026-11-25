@@ -22,7 +22,7 @@
 //!                                                             at its level), then a chat in the terminal, or one answer with --prompt
 //!   glyd-engine serve MODEL [--port N] [--host H] [--context N]   the OpenAI-compatible API and the chat page
 //!   glyd-engine fetch MODEL                                      the model's files downloaded into the Hugging Face cache (no GPU)
-//!   glyd-engine prepare MODEL[:LEVEL]                          a Qwen3 model downloaded and packed for this GPU at its level
+//!   glyd-engine prepare MODEL[:LEVEL]                          a model downloaded and packed for this GPU at its level (any the engine runs: what `run` does first)
 //!   glyd-engine doctor | login | supports MODEL                  what this computer has for it; a Hugging Face token saved; whether the engine runs MODEL (exit 3: no)
 //!   glyd-engine generate DIR PROMPT [--new N] [--ctx N] [--no-graph] [--expert-cache GIB|auto|auto:GIB] [--host-memory GIB|auto] [--offload-mode MODE[,MODE...]] [--cpu-threads N] [--cpu-pin]   a raw completion (a Nemotron 3 Super directory `pack` made, or a bf16 one with
 //!                                                             --layout i6|i5|i4; --expert-cache: its experts in the computer's memory and a cache of them in GIB GiB of the GPU's, src/offload.rs); the prefill and the decode steps timed apart, with the cache's
@@ -34,11 +34,11 @@
 //!   glyd-engine microbench DIR [--prompt N[,N...]] [--new N] [--ctx N] [--chunk N] [--reps N] [--no-graph] [--layout L]
 //!   glyd-engine kvshapes                                     the lossless KV cache of head dims 128, 256 and 512 (no model): values written, read back bit for bit, and decode and prompt attention against the host's
 //!   glyd-engine kvprefill [--chunk 256] [--prefixes 0,1024,4096,8192] [--reps 20]   the prompt attention over 12-bit pages at gemma-4-12B's shapes against the pages unpacked to a bf16 ring and the bf16 kernel on it
-//!   glyd-engine kvdecode [--lens 40,1024,4096] [--ctx 32768] [--reps 100]   a decode row's attention over 12-bit pages against a bf16 cache of the same values, and its token's 12-bit write, us a call (Qwen3-8B's, gemma-4-12B's, the Qwen3.5 layout's shapes)
+//!   glyd-engine kvdecode [--lens 40,1024,4096] [--ctx 32768] [--reps 100]   a decode row's attention over 12-bit pages against a bf16 cache of the same values, and its token's 12-bit write, us a call (8 kv heads of 128 with 32 query heads, gemma-4-12B's and the Qwen3.5 layout's shapes)
 //!   glyd-engine topkcheck                                     the sampling kernels' 64 largest logits of a row and sum of its exponentials against the host's
 //!   glyd-engine sampletime DIR PROMPT [--new N] [--ctx N]     a Qwen3.5 or Nemotron-H model's decode speed by greedy steps, by sampled ones from the GPU's candidates and from the row on the host (the same tokens)
 //!   glyd-engine logitscheck [CASE...] [--fixtures DIR] [--cpu-ref] [--level L] [--list-cases]   each model's engine logits against its fixture in tests/logits (src/logits.rs); logitsrecord CASE --from cpu|engine --out FILE: a fixture made; logitsbound FIXTURE LEVEL=BOUND...: its bounds set; logitsmodel CASE DIR: the case's random model made; paritycheck [CASE...] [--level L]: each family that still has a hand-written engine against the description executor on its R7 fixture's tokens (none has since R3b, so it compares nothing); levelcheck [CASE...] [--level L]: each lossy level's KL from penguin on its families' random models, against the thresholds of the family and level (qwen35, gemma4 and nemotron-h at kestrel, swift and wren; deepseek-v4 and muse at hummingbird; kimi and glm at hummingbird printed as open)
-//!   glyd-engine packcheck [--gpu] [--record] [--engine [--scratch DIR]]   every pack format of tests/data/packs read and run on the CPU reference against its digest in tests/packs (--gpu: decoded by the GPU library; --record: the digests written); --engine: the formats the engine reads (glyd-v7 penguin, kestrel, swift, wren) made from the logits cases' random models, loaded from the saved directory, against the case's fixtures (src/packcheck.rs)
+//!   glyd-engine packcheck [--gpu] [--record] [--engine [--scratch DIR]]   every pack format of tests/data/packs read and run on the CPU reference against its digest in tests/packs (--gpu: decoded by the GPU library; --record: the digests written); --engine: the formats the engine reads (glyd-v7 penguin, kestrel, swift, wren) made from the logits cases' random models, loaded from the saved directory, against the same model packed as it loads in the same layout (bits) and the case's reference where one bounds the level, and the Hummingbird level against this GPU generation's digest in tests/packs (--engine --record: that digest written, on a GPU of the generation); a row or a digest with nothing recorded for this GPU fails (src/packcheck.rs)
 //!   glyd-engine kcheck IN_DIR OUT_DIR                        the kernels on inputs tools/kcheck.py wrote
 //!   glyd-engine usercheck CASE [--users N] [--tokens T] [--dir DIR --prompt-tokens P [--places N [--mode M] [--device-plan]]] [--stagger D]       a random model of the case (gemma4, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, glm, nemotron, deepseek-v4, qwen4x), or the model in DIR, on the description executor: each reply through the scheduler alone and all at once, against the reply alone; with GLYD_ENGINE_PAGES too few for all at once, at once again swapping sequences sent back for room always, by cost, and never (R4d), each run's first-token and between-token times
 //!   glyd-engine roundcheck CASE [--dir MODEL --ctx N --chunk N] [--kl BOUND]   a sequence's logits by what its step holds beside it (other sequences' rows, a prompt's chunk, other prompts in one pass; 2 rows to a chunk's), against its row alone: the bits
@@ -71,7 +71,7 @@
 //!   glyd-engine plancheck [--models M,M,...] [--loads 1k:1,4k:1,8k:1,1k:8] [--users 8] [--ctx N] [--runs 3] [--out DIR] [--records FILE] [--predict-only]   the planner against what this machine measures (src/plancheck.rs)
 //!   glyd-engine ship MODEL LEVEL DIR [--steps fetch,pack,draft,verify,measure,quality,card,upload] [--usage FILE] [--repo glyd/NAME]   a Hugging Face model to its Glyd repo; a lossy pack is uploaded only with a quality card that says publish (src/ship.rs)
 //!
-//! `generate`, `check`, `microbench` and `sampletime` run a Qwen3.5 model or a Llama-style dense one (Qwen3; its config.json says which: a directory in the Hub's layout or a glyd-v7 one, or a Hub
+//! `generate`, `check`, `microbench` and `sampletime` run a Qwen3.5-layout model or a plain dense decoder (its config.json says which: a directory in the Hub's layout or a glyd-v7 one, or a Hub
 //! id in the cache) on the description executor (src/dynamic/qwen35.rs, src/dynamic/dense.rs), one sequence, packed in memory as it loads (--layout auto|mma|mma12|i6|i5|i4).
 
 use glyd_engine::args::Args;
@@ -696,17 +696,17 @@ fn cmd_run_nh(a: &Args, dir: &Path) -> Result<()> {
 }
 
 /// The model of the command line where it is a Qwen3.5 one (a directory, or a Hub id in the cache, whose config.json parses as Qwen3.5).
-/// The model of the command line where the executor runs it one sequence at a time here: a Qwen3.5-family model, or a Llama-style dense one (Qwen3).
+/// The model of the command line where the executor runs it one sequence at a time here: a Qwen3.5-family model, or a plain dense decoder.
 fn exec_dir(a: &Args) -> Result<std::path::PathBuf> {
     let d = model_dir(a)?;
     let text = std::fs::read_to_string(d.join("config.json")).map_err(|e| Error(format!("{}: {e}", d.display())))?;
     if glyd_engine::qwen35::Config35::load(&d).is_ok() || glyd_engine::dynamic::dense::is_dense(&text) {
         return Ok(d);
     }
-    err(format!("{}: a Qwen3.5-family, Qwen3 or Nemotron-H model is run here", d.display()))
+    err(format!("{}: a Qwen3.5-family model, a plain dense decoder or a Nemotron-H model is run here", d.display()))
 }
 
-/// A Qwen3.5-family model, or a Llama-style dense one, on the description executor (their hand-written engines are gone: R3b, #137; R3c, #139).
+/// A Qwen3.5-family model, or a plain dense decoder, on the description executor (their hand-written engines are gone: R3b, #137; R3c, #139).
 fn open35(a: &Args, dir: &Path) -> Result<(glyd_engine::dynamic::Dyn, f64)> {
     let t0 = Instant::now();
     let o = glyd_engine::dynamic::Opts {

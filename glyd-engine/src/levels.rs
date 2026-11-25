@@ -23,7 +23,8 @@ pub struct Level {
 /// models (research/lossy-2026/kld_study.py: benchmarks/weights/kld-q56-2026-10-09, the cards' kl_bf16, and for hummingbird
 /// benchmarks/weights/moe-quality-2026-10-10/nemotron-hummingbird), about 1.4 times the largest KL measured and three to four points under the
 /// lowest top-1 agreement. Those were taken over WikiText-2 with 64 to 128 tokens a position; the suite's own texts and 20 tokens a position are
-/// to be checked against them by the first cards it writes.
+/// to be checked against them by the first cards it writes. `task_drop` (5 to 10 points) has no measurement behind it: it is a choice, held until
+/// the first cards' task figures, and changed as the other bars are.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Bar {
     pub kl_mean: f64,
@@ -44,7 +45,7 @@ pub static LEVELS: [Level; 5] = [
     Level { name: "swift", layout: Some(Layout::Int5), bits: "5.5", lossless: false, bar: Some(Bar { kl_mean: 0.05, top1: 0.91, task_drop: 0.075 }) },
     // (four-bit codes without calibration: KL 0.0534, top-1 88.9% on Qwen3.8-27B; a QAT checkpoint's wren is exact)
     Level { name: "wren", layout: Some(Layout::Int4), bits: "4.5", lossless: false, bar: Some(Bar { kl_mean: 0.08, top1: 0.86, task_drop: 0.10 }) },
-    // (experts at 2-3 bits by use, hb40: KL 0.0831, top-1 93.96% on Nemotron 3 Super)
+    // (experts at 2-3 bits by use, hb40: KL 0.0831, top-1 93.96%, the record benchmarks/weights/moe-quality-2026-10-10)
     Level {
         name: "hummingbird",
         layout: Some(Layout::Hummingbird),
@@ -126,6 +127,14 @@ pub fn layout_of(word: &str) -> Option<Layout> {
 /// A model's name on the Hub: the text after its org (`Qwen/Qwen3.8-27B` → `Qwen3.8-27B`).
 pub fn short_name(model: &str) -> String {
     model.trim_end_matches('/').rsplit('/').next().unwrap_or(model).to_string()
+}
+
+/// The draft model published beside MODEL, by the name its publisher gives it (google/gemma-4-12B-it: google/gemma-4-12B-it-assistant), else None. The
+/// one rule for which downloads bring a draft model: `ship` packs it into the model's pre-packed repos, and the planner keeps room for it (src/plan.rs
+/// `gemma_plan`) where the model is still to come.
+pub fn draft_repo(model: &str) -> Option<String> {
+    let name = short_name(model);
+    name.to_ascii_lowercase().starts_with("gemma-4-").then(|| format!("google/{name}-assistant"))
 }
 
 /// A model's Hub name and the shorter one its pre-packed repos have (glyd-gpu-py's engine.REPO_NAMES is the same table).

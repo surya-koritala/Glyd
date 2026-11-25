@@ -20,21 +20,22 @@
 //!
 //! | kind (families measured) | bound | why it is not 0 | worst |
 //! | :--- | :--- | :--- | :--- |
-//! | attention: GQA and MQA, windows, K = V, full, partial, proportional or no rope, an in-query or own gate after a norm, heads of 64 to 512 (Gemma 4, the Qwen3.5 layout, Nemotron-H, Muse Spark) | 2e-2 | `Ref` rounds where the family's engine does (`AttnRounding`: Gemma 4's eager bf16 scores and rope, Muse's SDPA, FlashAttention's bf16 probabilities); left: fp32 sums in another order than f64's, the GPU's exp2 and online softmax, a decode step's keys summed in parts | 5.4e-3 |
-//! | latent attention: Kimi-K3's gated NoPE MLA, GLM-5.3-Flash's with the pooled-key indexer | 2e-2 | the GPU keeps the latents, the absorbed queries and the pooled keys bf16, `Ref` f32; an indexer's choice nearer than 1e-2 to another (`kindcheck::NEAR`) can go the other way, and such a row past the bound is named, not compared (one row in each run, its margin 2.3e-3) | 1.1e-2 |
+//! | attention: GQA and MQA, windows, K = V, full, partial, proportional or no rope, an in-query or own gate after a norm, heads of 64 to 512 (Gemma 4, the Qwen3.5 layout, the Nemotron-H layout, Muse Spark) | 2e-2 | `Ref` rounds where the family's engine does (`AttnRounding`: Gemma 4's eager bf16 scores and rope, Muse's SDPA, FlashAttention's bf16 probabilities); left: fp32 sums in another order than f64's, the GPU's exp2 and online softmax, a decode step's keys summed in parts | 5.4e-3 |
+//! | latent attention: Kimi-K3's gated NoPE MLA, GLM-5.3-Flash's with the pooled-key indexer | 2e-2 | the GPU keeps the latents, the absorbed queries and the pooled keys bf16, `Ref` f32; an indexer's choice nearer than 1e-2 to another (`kindcheck::NEAR`) can go the other way, and such a row past the bound is named, not compared (one row in each run, its margin 2.3e-3); a body may leave out one row in sixteen at most (`kindcheck::near_within`), and fails past that | 1.1e-2 |
 //! | compressed attention: DeepSeek-V4's window, ratio 16, ratio 4 with the indexer | 2e-2 | the window's keys and the compressed entries bf16 on the GPU; the indexer's near ties as above (2 rows of 260, 3 of 330; margins 1.2e-4 to 2.2e-3) | 7.3e-3 |
 //! | Gated DeltaNet (the Qwen3.5 layout) | 3e-2 | the state fp32 on both; q, k, v and the gates bf16 on the GPU; the prompt's chunked (WY) form against `Ref`'s token recurrence; the per-head norm after the recurrence divides by the output's RMS, so where a head's sum cancels its error is magnified | 8.6e-3 |
 //! | Kimi delta attention (Kimi-K3, GLM-5.3-Flash) | 3e-2 | as Gated DeltaNet (Kimi-K3's first layer, a step's row alone: single rows to 2.1e-2, most 3-7e-3, none growing with the position) | 2.1e-2 |
-//! | Mamba-2 (Nemotron-H) | 3e-2 | as Gated DeltaNet, the prompt's chunked scan | 5.6e-3 |
+//! | Mamba-2 (the Nemotron-H layout) | 3e-2 | as Gated DeltaNet, the prompt's chunked scan | 5.6e-3 |
 //! | MLP: SwiGLU, its limits, gelu-tanh, situ (Gemma 4, the Qwen3.5 layout, Kimi-K3, GLM-5.3-Flash) | 1e-2 | gate and up rounded before the activation, the activation's product rounded, down's sums in fp32 | 6.1e-3 |
-//! | MoE: sigmoid routers with a choice bias, sqrt-softplus and hash routers, shared and latent experts, expert norms (Nemotron-H, Muse Spark, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4) | 2e-2 | each expert's activations bf16, the weighted sum's order; a router's choice near a tie as above (none past the bound) | 9.9e-3 |
+//! | MoE: sigmoid routers with a choice bias, sqrt-softplus and hash routers, shared and latent experts, expert norms (the Nemotron-H layout, Muse Spark, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4) | 2e-2 | each expert's activations bf16, the weighted sum's order; a router's choice near a tie as above (none past the bound) | 9.9e-3 |
 //! | residual and norms: RMS (w, 1 + w, input-scaled, Kimi's two roundings), sandwich norms and the layer scalar, the gated residual, mHC's streams, the depth mix, each family's final norm and collapse (all seven) | 2e-2 | the residual bf16 after each add, the normed value rounded, mHC's Sinkhorn and the depth mix's softmax in fp32 on the GPU's bf16 inputs | 1.6e-2 |
 //!
-//! Not compared on the GPU: the embedding's scale and norm and the head's soft-cap (each family's logits fixture holds them,
-//! `logitscheck`); the Qwen3.5 layout's mixture of experts (not lowered to the executor yet); MTP heads (their blocks are the kinds above);
-//! Condor's kinds (Qwen3.8-Flash-Next: the gated residuals and the final mixer, the indexer on GQA, the n-gram embedding), which run on
-//! Condor's own engine and not on the executor yet: the whole tiny model on `Ref` against that engine's logits fixture instead
-//! (`describe_tests::condors_model_on_the_reference_against_condors_engine`: KL mean 8.5e-6, max 5.0e-5).
+//! Not compared on the GPU kind by kind: the embedding's scale and norm and the head's soft-cap (each family's logits fixture holds them,
+//! `logitscheck`); MTP heads (their blocks are the kinds above); Condor's kinds (Qwen3.8-Flash-Next: the gated residuals and the final
+//! mixer, the indexer on GQA, the n-gram embedding), which the executor runs (`dynamic::lower::qwen4x`) but `kindcheck` has no case of:
+//! the whole tiny model on `Ref` against Condor's engine's logits fixture stands in
+//! (`describe_tests::condors_model_on_the_reference_against_condors_engine`: KL mean 8.5e-6, max 5.0e-5), and `logitscheck qwen4x` holds
+//! the executor's logits to `Ref`'s.
 
 pub mod attention;
 pub mod comp;

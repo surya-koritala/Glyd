@@ -8,7 +8,7 @@
 //! alone twice, or six times, ends with an error in words. Lost and heavy blocks are never kept in the prefix cache.
 //!
 //! The scheduler is the same for every model: it drives a `ModelStep` (docs/design/runtime.md, section 2). A step keeps its cache one of two ways: pages shared by every sequence (with the prefix cache and
-//! preemption above: the scheduler's own tests' steps, since the dense Qwen3 engine went onto the executor), or a room of the whole context for each of a few sequences (`ModelStep::slots`: the description executor, `src/dynamic`), where a sequence holds one slot from
+//! preemption above: the scheduler's own tests' steps, since the earlier dense engine went onto the executor), or a room of the whole context for each of a few sequences (`ModelStep::slots`: the description executor, `src/dynamic`), where a sequence holds one slot from
 //! its admission to its end, nothing is shared and nothing is preempted for room.
 
 use crate::ffi::{Error, Kind, Result};
@@ -828,7 +828,9 @@ impl<B: ModelStep> Sched<B> {
         self.be.cold()
     }
 
-    /// The scheduler with a step launched before the one before it lands where the step can (`ModelStep::overlaps`; on by default), or not.
+    /// The scheduler with a step launched before the one before it lands where the step can (`ModelStep::overlaps`), or not. The switch is on by default, and
+    /// the executor's step can only with GLYD_ENGINE_OVERLAP=1 (`overlap_forced`, src/dynamic/rows.rs `make_lanes`): a served model launches no step ahead unless
+    /// asked to.
     pub fn overlapping(mut self, on: bool) -> Sched<B> {
         self.overlap = on && self.be.one_step() && self.be.overlaps();
         self

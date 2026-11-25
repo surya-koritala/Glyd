@@ -1,6 +1,6 @@
-//! `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain]` (R2, #135): every layer kind of the recent families run by the executor's CUDA
+//! `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain]` (R2, #135): every layer kind the families' descriptions hold, run by the executor's CUDA
 //! kernels against its CPU f32 reference (`runtime::reference`), kind by kind, on each logits case's random model (Gemma 4, the Qwen3.5 layout,
-//! Nemotron-H, Muse Spark, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4) at the lossless level.
+//! the plain dense block, the Mamba-2 layout, Muse Spark, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4) at the lossless level.
 //!
 //! Each layer of the executor's description runs operation by operation on a prompt of `--prompt` rows, then `--steps` decode steps, each pass
 //! from a residual made at random (the layer's caches and states carried from pass to pass, as a sequence's). A layer's operations are runs of
@@ -12,7 +12,8 @@
 //!   input H against the reference's residual rule, advanced by the GPU's own body outputs, and its norms (the final norm after the last).
 //!
 //! A comparison is the largest difference over the reference's largest magnitude on a pass's rows; each line has its kind's bound (`bound`,
-//! the table in `runtime::reference`), and names the rows left out as near a tie (`NEAR`). Exit status 1 where one is not kept.
+//! the table in `runtime::reference`), and names the rows left out as near a tie (`NEAR`), which may be few (`near_within`: a body that
+//! leaves out more of its rows fails, as one past its bound does). Exit status 1 where one is not kept.
 //! GLYD_KINDCHECK_ROWS prints each body's rows one by one. DeepSeek-V4's simulated quantizations of the release (GLYD_V4_SIM) are turned
 //! off: no kind names them (GLYD_KINDCHECK_SIM=1 leaves them on, to see where they first take a body away from the reference).
 
@@ -60,6 +61,15 @@ struct Line {
     prompt: f32,
     steps: f32,
     near: Vec<String>,
+    /// The rows this comparison saw (the prompt's and each step's), of which `near` were left out.
+    rows: usize,
+}
+
+impl Line {
+    /// Within its kind's bound on the prompt and on the steps, with no more rows left out than `near_within` allows.
+    fn ok(&self) -> bool {
+        self.prompt <= bound(self.class) && self.steps <= bound(self.class) && near_within(self.near.len(), self.rows)
+    }
 }
 
 /// A row past its bound whose choice (a router's experts, an indexer's picks) was nearer than this to another (`reference::ffn::margin`: the
@@ -67,9 +77,17 @@ struct Line {
 /// other way, which changes the output by far more than its arithmetic does.
 const NEAR: f32 = 1e-2;
 
-/// The largest difference over `want`'s largest magnitude (infinite where `got` has a value that is not finite).
+/// Whether a comparison of `rows` rows may leave `left` of them out as near a tie: one row in sixteen at most (and one where it has fewer than
+/// sixteen). The runs `runtime::reference`'s table records left out 1 row of a body's 52 to 66, and 2 and 3 of five bodies' 260 and 330;
+/// a body whose rows were mostly left out was compared with nothing, so it fails.
+fn near_within(left: usize, rows: usize) -> bool {
+    left <= (rows / 16).max(1)
+}
+
+/// The largest difference over `want`'s largest magnitude (infinite where either has a value that is not finite: a reference that is not a
+/// number bounds nothing).
 fn rel(got: &[f32], want: &[f32]) -> f32 {
-    if got.len() != want.len() || got.iter().any(|v| !v.is_finite()) {
+    if got.len() != want.len() || got.iter().chain(want).any(|v| !v.is_finite()) {
         return f32::INFINITY;
     }
     let scale = want.iter().fold(0f32, |m, v| m.max(v.abs())).max(1e-30);
@@ -530,7 +548,7 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, chain: bool) 
             None => pass(&dy, &mut m, l, per, prompt, 0, &mut rng, None)?,
         };
         let mut lines: Vec<Line> =
-            first.into_iter().map(|(at, kind, class, v, near)| Line { case: id, at, kind, class, prompt: v, steps: 0.0, near }).collect();
+            first.into_iter().map(|(at, kind, class, v, near)| Line { case: id, at, kind, class, prompt: v, steps: 0.0, near, rows: prompt + steps }).collect();
         for s in 0..steps {
             let g = match by_pass.next() {
                 Some(g) => g,
@@ -545,8 +563,14 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, chain: bool) 
             }
         }
         for x in &lines {
-            let ok = x.prompt <= bound(x.class) && x.steps <= bound(x.class);
-            let near = if x.near.is_empty() { String::new() } else { format!("; past the bound near a tie, not compared: {}", x.near.join(", ")) };
+            let ok = x.ok();
+            let near = if x.near.is_empty() {
+                String::new()
+            } else if near_within(x.near.len(), x.rows) {
+                format!("; past the bound near a tie, not compared: {}", x.near.join(", "))
+            } else {
+                format!("; {} of its {} rows past the bound near a tie and not compared, more than one in sixteen: {}", x.near.len(), x.rows, x.near.join(", "))
+            };
             println!(
                 "{} {:11} {:22} {}: prompt {:.2e}, steps {:.2e} (bound {:.0e}){near}",
                 if ok { "ok  " } else { "FAIL" },
@@ -609,10 +633,48 @@ pub fn run(a: &crate::args::Args) -> Result<()> {
         let near = if near > 0 { format!(" ({near} rows past the bound near a tie, not compared)") } else { String::new() };
         println!("  {:12} {worst:.2e} (bound {:.0e}) over {} comparisons{near}: {}", format!("{c:?}"), bound(c), of.len(), cases.join(", "));
     }
-    failed.extend(all.iter().filter(|x| x.prompt > bound(x.class) || x.steps > bound(x.class)).map(|x| format!("{} {} {}", x.case, x.at, x.kind)));
+    failed.extend(all.iter().filter(|x| !x.ok()).map(|x| format!("{} {} {}", x.case, x.at, x.kind)));
     if !failed.is_empty() {
         return err(format!("kindcheck: {} not within bounds: {}", failed.len(), failed.join("; ")));
     }
     println!("kindcheck: PASS");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A value of the reference that is not a number fails the comparison, as one of the GPU's does: `f32::max` drops a NaN difference, which read as 0.
+    #[test]
+    fn a_reference_that_is_not_a_number_is_not_within() {
+        assert_eq!(rel(&[1.0, 2.0], &[1.0, 2.0]), 0.0);
+        assert_eq!(rel(&[1.0, 2.5], &[1.0, 2.0]), 0.25);
+        assert_eq!(rel(&[1.0, f32::NAN], &[1.0, 2.0]), f32::INFINITY);
+        assert_eq!(rel(&[1.0, 2.0], &[1.0, f32::NAN]), f32::INFINITY);
+        assert_eq!(rel(&[1.0, 2.0], &[f32::INFINITY, 2.0]), f32::INFINITY);
+        assert_eq!(rel(&[1.0], &[1.0, 2.0]), f32::INFINITY);
+    }
+
+    /// A body may leave few rows out as near a tie: the runs on record left out 1 of 52, and one whose rows were all left out fails though its worst reads 0.
+    #[test]
+    fn a_body_that_leaves_most_rows_out_fails() {
+        let line = |near: usize, rows: usize| Line {
+            case: "t",
+            at: "L0 B0".into(),
+            kind: "latent attention".into(),
+            class: Class::Latent,
+            prompt: 0.0,
+            steps: 0.0,
+            near: vec!["position 0".to_string(); near],
+            rows,
+        };
+        assert!(line(0, 52).ok() && line(1, 52).ok() && line(3, 52).ok());
+        assert!(!line(4, 52).ok() && !line(52, 52).ok());
+        assert!(line(1, 5).ok() && !line(2, 5).ok());
+        // (and a bound still fails with nothing left out)
+        let mut past = line(0, 52);
+        past.steps = 2.5e-2;
+        assert!(!past.ok());
+    }
 }
