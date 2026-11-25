@@ -1,4 +1,4 @@
-// Gemma 4's own kernels (included by engine.cu; the description executor runs them through src/gemma4.rs's table): the norms (the weight as it is, x * w, in fp32 with one rounding), the sandwich residual (the
+// Gemma 4's own kernels (included by engine.cu; the description executor runs them through src/kern/gemma4.rs's table): the norms (the weight as it is, x * w, in fp32 with one rounding), the sandwich residual (the
 // sublayer's output normed before it is added), the per-layer scalar, gelu(tanh) times up, and the final soft-cap; its attention is the attention kind's (kernels/attn.cu).
 // bf16 in memory, fp32 inside; the rounding points are transformers' eager ones (models/gemma4/modeling_gemma4.py): a norm rounds once, gelu rounds before the product by up.
 

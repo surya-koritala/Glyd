@@ -660,8 +660,6 @@ impl Dyn {
         }
         let win: Vec<usize> = win.into_iter().map(|w| w.unwrap_or(0)).collect();
         let tab = dup.iter().map(|&k| Buf::zeroed((users * k * tlen * 4).max(4))).collect::<Result<Vec<_>>>()?;
-        // (a step of such rows alone in a graph: every operation one that acts row by row or an attention layer, no recurrent state; the latent attention runs its sequences by
-        // their own pointers, so not it)
         // (a step of such rows alone in a graph: `rows_graphable`; each row's recurrent states through the table of their addresses)
         let graphs = self.rgraph_on && rows_graphable(std::iter::once(&d.first).chain(d.layers.iter().flatten()));
         let (nst, pcap) = (self.states.len(), self.chunk);

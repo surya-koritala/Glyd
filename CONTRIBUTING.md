@@ -26,7 +26,7 @@ cargo build --release -p starlings-cli                  # cluster: target/releas
 | Codec, store, packer, engine host code, Starlings | `cargo test --release --workspace` | CPU; IPv6 loopback and `systemd-analyze` for a few of Starlings' tests |
 | Engine release feature set | `cargo test --release -p glyd-engine --no-default-features` | CPU |
 | Starlings alone | `cargo test --locked -p starlings-protocol -p starlings-core -p starlings-adapters -p starlings-cli -p starlings-security` | CPU; IPv6 loopback and `systemd-analyze` for a few tests |
-| Engine on a GPU | `glyd-engine check`, `kcheck`, `kvtest`, `stress`, `bench` (development build) | NVIDIA GPU |
+| Engine on a GPU | `glyd-engine check`, `kcheck`, `bench` (development build) | NVIDIA GPU |
 | GPU jobs on rented machines | `glyd-engine/jobs/*.sh`, `tools/runpod/` | see the scripts' headers |
 
 ## What CI runs today

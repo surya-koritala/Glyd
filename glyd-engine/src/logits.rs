@@ -1646,7 +1646,6 @@ mod tests {
     }
 }
 
-/// The random model of a case (gemma4, qwen35, qwen35-wide, dense, muse, kimi, glm) on the description executor at `level`, made in a directory of its own and loaded (the directory is let go).
 /// The case's model in `dir` on the description executor.
 pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Result<Dyn> {
     Ok(match case {
@@ -3039,7 +3038,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
-/// A row's `k` largest logits, largest first, equal ones by the smaller token: the GPU's top-k (kern.rs `topk_rows`) as the CPU makes it.
+/// A row's `k` largest logits, largest first, equal ones by the smaller token: the GPU's top-k (kern/mod.rs `topk_rows`) as the CPU makes it.
 pub fn host_top(row: &[f32], k: usize) -> Vec<(u32, f32)> {
     let mut v: Vec<(u32, f32)> = row.iter().enumerate().map(|(i, &x)| (i as u32, x)).collect();
     v.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));

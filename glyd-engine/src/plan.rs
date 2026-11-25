@@ -966,7 +966,7 @@ fn fit_rows<const N: usize>(rows: &[([f64; N], f64)], prior: [f64; N], scale: [f
 }
 
 /// The seconds of other users' prompts in the median user's decode, where `n` users send a prompt of `prompt` tokens at once (bench's loads): the scheduler reads
-/// the prompts in turn, and each user's reply runs beside the prompts read after its own, (n - 1) / 2 of them for the median one. Measured on an A100 ():
+/// the prompts in turn, and each user's reply runs beside the prompts read after its own, (n - 1) / 2 of them for the median one. Measured on an A100:
 /// Qwen3.5-0.8B's 8 users took 154.5 tokens/s each on short prompts and 127.3 on 1k ones, where 127 steps of the first and 3.5 prompts of 994 tokens at
 /// 20,206 tokens/s come to 127.8.
 pub fn prompt_wait(n: usize, prompt: f64, prefill: f64) -> f64 {
@@ -2724,7 +2724,7 @@ fn index_total(model: &str) -> Option<f64> {
 
 // ---- the plan each path loads ------------------------------------------------------------------------------------------------------------------------------------------------------
 
-/// The loaders' sizing, moved here from src/cli.rs and src/fit.rs (P2f): the plan `run`, `serve`, `preflight` and `fit` load and print.
+/// The loaders' sizing (P2f): the plan `run`, `serve`, `preflight` and `fit` load and print.
 pub mod sizing {
     use super::{reserve_of, Kind, LoadPlan, Target, GEMMA_CHUNK, GEMMA_DRAFT_BYTES, HOST_MARGIN, LOSSY_CTX, LOSSY_MIN_CTX, LOSSY_WORK, QWEN3_WORK};
     use crate::args::Args;
