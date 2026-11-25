@@ -575,7 +575,7 @@ mod tests {
         assert_eq!([HostMem::Pinned as u32, HostMem::Portable as u32, HostMem::Mapped as u32], [0, 1, 2]);
     }
 
-    /// Where there is no driver (this machine, a CPU runner), a call is an error of the kind that says so, not a crash.
+    /// Where there is no driver (a machine with no GPU, a CPU runner), a call is an error of the kind that says so, not a crash.
     #[test]
     fn without_a_driver_a_call_says_so() {
         if crate::ffi::driver().is_ok() {

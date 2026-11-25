@@ -1,6 +1,6 @@
 # R17: one kernel build
 
-Status: step 0 done; steps 1, 2, 5 and 6 begun (see "Progress" at the end): the unpackers and the experts' plan run from the engine's fatbin, the products still the library's. Decisions (the coordinator, Nov 21): CUDA 12 stays (step 5); HIP stays a compile-only job until M5b, and the CUDA fold keeps the HIP path building (step 6); step 0 is R1a, #134 ("Part of #134"), started once the R3b pull requests that touch `ffi.rs` have merged and the other sessions working on `ffi.rs` have been asked; each step carries its own bit-for-bit check in the GPU job on glyd-pc (a CI job, no rental). It needs a GPU to validate every step (each step is compared bit for bit with the library on the GPU runner), which this repository's CI has only on glyd-pc.
+Status: step 0 done; steps 1, 2, 5 and 6 begun (see "Progress" at the end): the unpackers and the experts' plan run from the engine's fatbin, the products still the library's. Decisions (2026-11-21): CUDA 12 stays (step 5); HIP stays a compile-only job until M5b, and the CUDA fold keeps the HIP path building (step 6); step 0 is R1a, #134 ("Part of #134"), started once the R3b pull requests that touch `ffi.rs` have merged; each step carries its own bit-for-bit check in the GPU job on glyd-pc (a CI job, no rental). It needs a GPU to validate every step (each step is compared bit for bit with the library on the GPU runner), which this repository's CI has only on glyd-pc.
 
 ## What there is today
 

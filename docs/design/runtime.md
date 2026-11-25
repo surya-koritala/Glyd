@@ -558,7 +558,7 @@ design keeps it, with two changes:
 - **Lost blocks become impossible, not rare.** With reservations, `Lost` remains only as a checked invariant: the kernel still writes the
   status word, and a lost block is a bug reported as an error, not a retry.
 
-Built (R4b, the owner's choice of 2026-11-23: reserve the calibrated need, pause the newest request when the spare pool runs out): the
+Built (R4b, chosen 2026-11-23: reserve the calibrated need, pause the newest request when the spare pool runs out): the
 escape pool is made for the calibrated chunks of every block, so a sequence's blocks reserve its calibrated need as it takes them. Values
 that compress worse make a page raw where the chunks run out (a slab of the raw pool for the page), and a page is void only where no slab
 is free. So a pass may begin only where every raw pool has a slab for every page it writes, beside what the step's growths and the copies

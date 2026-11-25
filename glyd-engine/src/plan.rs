@@ -646,7 +646,7 @@ pub struct Ask {
     /// The checkpoint is quantization-aware (`levels::is_qat`): its wren is exact (a pre-packed repo of the release's own four-bit weights).
     pub qat: bool,
     /// The positions a decode step reads in the prediction (0: `POSITIONS`); a development build's `GLYD_FIT_POSITIONS` sets it for `fit`, to predict a longer
-    /// conversation (the held-out checks of the predictions, scripts in the M2 handoff).
+    /// conversation (the held-out check of the predictions, scripts/planner_heldout_check.sh).
     pub positions: usize,
 }
 
@@ -4982,8 +4982,8 @@ mod tests {
     /// prompts of 936 tokens at 3,570 and 3,580; Qwen3.5-0.8B at kestrel 561.9 and wren 657.9, prompts of 1,002 tokens at 27,073 and 27,372. Each within 15%, with
     /// the shapes `fit` reads (the checkpoints' own headers) and the family's path (Qwen3.5's does not draft with its head); the measurement in the band.
     /// FITTED, IN-SAMPLE: `EFF_LOSSY`, `LAYER_S`, `PROMPT_EFF` and `PROMPT_LAYER_S` were set from these very runs, so this pins the constants and is no evidence
-    /// that they predict other runs. The held-out check (other levels, 4k and 8k positions, other prompt lengths, each predicted before it is measured) is the M2
-    /// handoff's g3 script on the 4080 SUPER, not run yet.
+    /// that they predict other runs. The held-out check (other levels, 4k and 8k positions, other prompt lengths, each predicted before it is measured) is
+    /// scripts/planner_heldout_check.sh on the 4080 SUPER, not run yet.
     #[test]
     fn predictions_on_the_4080_super_are_within_15_percent() {
         let gemma: serde_json::Value = serde_json::from_str(&fixture("headers/gemma-4-12B-it.json")).unwrap();
@@ -5084,11 +5084,11 @@ mod tests {
         (gemma_sh, q08_sh)
     }
 
-    /// The shipped calibration records (calibration/records.jsonl), with the features the planner reads of them: the RTX 4080 SUPER's runs (g1 and g2 of
+    /// The shipped calibration records (calibration/records.jsonl), with the features the planner reads of them: the RTX 4080 SUPER's runs (two of
     /// 2026-11-23, bench --loads 1k:1 --no-draft, the median of 3; prompts of 936 and 1,002 tokens, 128 made) and the A100 SXM4 40GB's runs at 63bdcdcb
-    /// (session 3, 2026-11-24, bench's gate suite with GLYD_KV=bf16, the median of 3, 128 made: one user and eight on short prompts, one at 1k and 4k; the
-    /// prompts of the short loads too short to time a prompt, so their prompt rates are not kept; the rate the A100's probe measured in session 2), and the A10's
-    /// plancheck runs of session 5 (15: 8 users, Qwen3.5-0.8B kestrel, gemma-4-12B wren and swift at 1k, 4k, 8k, 1k for eight and 85% of the context). Only
+    /// (2026-11-24, bench's gate suite with GLYD_KV=bf16, the median of 3, 128 made: one user and eight on short prompts, one at 1k and 4k; the
+    /// prompts of the short loads too short to time a prompt, so their prompt rates are not kept; the rate the A100's probe measured), and the A10's
+    /// plancheck runs (15: 8 users, Qwen3.5-0.8B kestrel, gemma-4-12B wren and swift at 1k, 4k, 8k, 1k for eight and 85% of the context). Only
     /// releases of the last six months: the Qwen3-8B runs measured beside them are not kept. `GLYD_WRITE_CALIB=1` writes the file anew; the other machines'
     /// `plancheck` records are added to it.
     #[test]
@@ -5135,7 +5135,7 @@ mod tests {
                 697.35,
                 73.91,
                 104.5,
-                "glyd-pc g1/g2: bench --loads 1k:1 --no-draft, the median of 3",
+                "glyd-pc: bench --loads 1k:1 --no-draft, the median of 3",
                 vec![
                     (g, &gemma_sh, Kind::Gemma4, "wren", "1k:1", 936.0, 1usize, 86.167488, Some(3570.250176)),
                     (g, &gemma_sh, Kind::Gemma4, "kestrel", "1k:1", 936.0, 1, 63.290554, Some(3579.659425)),
@@ -5153,7 +5153,7 @@ mod tests {
                 1274.41,
                 61.49,
                 312.0,
-                "Lambda A100 SXM4 40GB, session 3: bench at 63bdcdcb, gate suite, GLYD_KV=bf16, the median of 3",
+                "Lambda A100 SXM4 40GB: bench at 63bdcdcb, gate suite, GLYD_KV=bf16, the median of 3",
                 a100,
             ),
             (
@@ -5166,7 +5166,7 @@ mod tests {
                 518.53,
                 116.68,
                 125.0,
-                "Lambda A10, session 5: plancheck at 87023bbc, 8 users, the median of 3",
+                "Lambda A10: plancheck at 87023bbc, 8 users, the median of 3",
                 a10,
             ),
         ] {
