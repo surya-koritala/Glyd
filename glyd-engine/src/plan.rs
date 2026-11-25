@@ -2619,6 +2619,9 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
 fn fit(a: &crate::args::Args) -> Result<(), crate::ui::Refusal> {
     let f = planned(a)?;
     let (model, p) = (f.model.as_str(), &f.plan);
+    // each level's quality against the lossless level, as its card says (R14: src/quality.rs)
+    let shown: Vec<&str> = p.options.iter().map(|o| o.level).collect();
+    let (quality_text, quality_json) = crate::quality::fit_block(model, &shown);
     if a.has("json") {
         let mut v: serde_json::Value = match &p.chosen {
             Some(c) => serde_json::from_str(&c.json(model, &f.machine)).unwrap_or_default(),
@@ -2626,11 +2629,15 @@ fn fit(a: &crate::args::Args) -> Result<(), crate::ui::Refusal> {
         };
         v["degrade"] = f.ladder.as_ref().map_or(serde_json::Value::Null, Ladder::json);
         v["positions"] = serde_json::json!(f.positions);
+        v["quality"] = quality_json;
         println!("{v}");
     } else {
         print!("{}", text(model, &f.shape, &f.machine, p));
         if let Some(l) = &f.ladder {
             print!("{}", l.report());
+        }
+        if !shown.is_empty() {
+            print!("{quality_text}");
         }
         if let Some(n) = p.chosen.as_ref().and_then(|c| remembered(&crate::store::cache_root(), model, c)) {
             println!("note: {n}");
