@@ -382,21 +382,22 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
         Ok(())
     };
     pn(&m.final_norm, "the final mixer")?;
-    if m.embed.streams != 4
+    let hc = m.embed.streams;
+    if !(1..=4).contains(&hc)
         || m.embed.scale != 1.0
         || m.embed.norm.is_some()
         || m.head.collapse != Collapse::GatedMix
         || m.head.softcap.is_some()
         || m.head.scale != 1.0
     {
-        return err(format!("{what}: an embedding of {:?} and a head of {:?}: the kernels take four gated streams and their mixer", m.embed, m.head));
+        return err(format!("{what}: an embedding of {:?} and a head of {:?}: the kernels take 1 to 4 gated streams and their mixer", m.embed, m.head));
     }
     let (mut mats, mut small, mut states, mut ropes, mut rings) =
         (Vec::new(), Vec::<String>::new(), Vec::<usize>::new(), Vec::<Rope>::new(), Vec::<Ring>::new());
     let mut ops: Vec<Vec<Op>> = Vec::new();
     let mut layer: Vec<Op> = Vec::new();
     let (mut mix_w, mut attn_w, mut rank_w, mut ple_w, mut n_moe) = (0, 0, 0, 0, 0);
-    let (mut cd_w, mut vd_w, mut nv_w, mut ix_w) = (0, 0, 0, 0);
+    let (mut cd_w, mut vd_w, mut nv_w, mut ix_w, mut ixd_w) = (0, 0, 0, 0, 0);
     let name = |small: &mut Vec<String>, n: String| -> usize {
         small.push(n);
         small.len() - 1
@@ -415,8 +416,8 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
             let Residual::GatedStreams(g) = b.residual else {
                 return err(format!("{what}: a block of residual {:?}, where every block's is the gated residuals", b.residual));
             };
-            if g.streams != 4 {
-                return err(format!("{what}: gated residuals over {} streams: the kernels take 4", g.streams));
+            if g.streams != hc {
+                return err(format!("{what}: gated residuals over {} streams, where the embedding makes {hc}", g.streams));
             }
             pn(&b.norm_in, "a gated residual")?;
             let norm = name(small, one(roles, "norm_in")?);
@@ -429,7 +430,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
         match &b.body {
             Body::Ngram(n) => {
                 let Ngram { order, heads, dim, conv, dilation, streams, eos: end, .. } = *n;
-                if (order, conv, dilation, streams) != (3, 4, 3, 4)
+                if (order, conv, dilation, streams, hc) != (3, 4, 3, 4, 4)
                     || n.form != crate::runtime::kinds::NgramForm::Condor
                     || n.norm.weight != NormWeight::PlusOne
                     || dim % (2 * heads) != 0
@@ -487,15 +488,15 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                         };
                         pn(&inorm, "the indexer")?;
                         let r = a.rope.as_ref().ok_or_else(|| Error(format!("{what}: an attention with no rotary")))?;
+                        let (idim, iblock) = (ix.head_dim, ix.block);
                         if r.scaling != RopeScaling::None
                             || r.freq_dim != r.dim
-                            || ix.head_dim != 128
-                            || ix.block != 4
-                            || r.dim > 128
-                            || ix.top_k % ix.block != 0
+                            || crate::model_qwen4x::index_fits(idim, iblock).is_err()
+                            || r.dim > idim
+                            || ix.top_k % iblock != 0
                         {
                             return err(format!(
-                                "{what}: a rotary of {r:?} and an indexer of {ix:?}: the kernels take the plain rotary, index heads of 128 and pools of 4"
+                                "{what}: a rotary of {r:?} and an indexer of {ix:?}: the kernels take the plain rotary within the index heads, of a multiple of 32 up to 1,024"
                             ));
                         }
                         let rt = Rope { theta: r.theta, dim: r.dim, pairs: r.freqs };
@@ -507,9 +508,9 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                             }
                         };
                         let qk = (name(&mut small, one(roles, "q_norm")?), name(&mut small, one(roles, "k_norm")?));
-                        // (its keys and values, the indexer's raw keys and its pools' keys: rings of the executor's pages, as every attention kind's; the pools an entry of 4 tokens a row)
+                        // (its keys and values, the indexer's raw keys and its pools' keys: rings of the executor's pages, as every attention kind's; the pools an entry of `iblock` tokens a row)
                         let ring = rings.len();
-                        rings.extend([Ring::kv(a.head_dim, a.kv_heads, 0), Ring::keys(128, 1, 0), Ring::entries(128, 4)]);
+                        rings.extend([Ring::kv(a.head_dim, a.kv_heads, 0), Ring::keys(idim, 1, 0), Ring::entries(idim, iblock)]);
                         let att = AttnOp::picked(a, Slot::Mix, ring, Some(table), Some(qk))?;
                         let stride = att.stride;
                         let qkv = mat(&mut mats, vec![one(roles, "q")?, one(roles, "k")?, one(roles, "v")?])?;
@@ -527,19 +528,19 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                             expand: true,
                             tail: true,
                             wscale: 1.0,
-                            score: super::IdxScore::F32 { dim: 128, scale: (128f32).powf(-0.5) },
+                            score: super::IdxScore::F32 { dim: idim, scale: (idim as f32).powf(-0.5) },
                             keys: super::IdxKeys::Pools(pools),
                             weighted: false,
                         };
                         layer.extend([
                             Op::Linear { w: qkv, x: Slot::H, y: Slot::Mix, name: "attention: qkv product" },
                             Op::Linear { w: index, x: Slot::H, y: Slot::Qr, name: "indexer: product" },
-                            Op::IdxMean { heads: ix.heads, q_norm: iqn, k_norm: ikn, rope: table, keys, pools },
+                            Op::IdxMean { heads: ix.heads, dim: idim, block: iblock, q_norm: iqn, k_norm: ikn, rope: table, keys, pools },
                             Op::IdxPick(pick),
                             Op::Attn(att),
                             Op::Linear { w: o, x: Slot::Att, y: Slot::O, name: "attention: o product" },
                         ]);
-                        (mix_w, attn_w, ix_w) = (mix_w.max(stride), attn_w.max(a.heads * a.head_dim), ix_w.max(ix.heads));
+                        (mix_w, attn_w, ix_w, ixd_w) = (mix_w.max(stride), attn_w.max(a.heads * a.head_dim), ix_w.max(ix.heads), ixd_w.max(idim));
                     }
                     mx => return err(format!("{what}: a mixer of {mx:?}")),
                 }
@@ -573,7 +574,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
         Some(h) => mat(&mut mats, vec![h.clone()])?,
         None => embed,
     };
-    let w = 4 * d_;
+    let w = hc * d_;
     let mut widths = [0usize; SLOTS];
     for (s, x) in [
         (Slot::X, d_),
@@ -582,7 +583,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
         (Slot::Hq, w),
         (Slot::Mid, rank_w),
         (Slot::Cp, w),
-        (Slot::Kv, 4),
+        (Slot::Kv, hc),
         (Slot::O, d_),
         (Slot::Mix, mix_w),
         (Slot::Ba, 2 * nv_w),
@@ -590,8 +591,8 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
         (Slot::Core, vd_w),
         (Slot::Qo, attn_w),
         (Slot::Att, attn_w),
-        (Slot::Qr, (ix_w + 1) * 128),
-        (Slot::Iq, ix_w * 128),
+        (Slot::Qr, (ix_w + 1) * ixd_w),
+        (Slot::Iq, ix_w * ixd_w),
         (Slot::In, ple_w),
         (Slot::Gu, if ple_w > 0 { 5 * d_ } else { 0 }),
         (Slot::D, if ple_w > 0 { w } else { 0 }),

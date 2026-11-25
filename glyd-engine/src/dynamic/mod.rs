@@ -283,12 +283,14 @@ pub enum Op {
     },
     /// The indexer's pick (src/dynamic/mla.rs, every indexer's): Iq and Iw (its weights' product) scored against its entries, each row's best.
     IdxPick(IdxPick),
-    /// The mean-pooled indexer's queries and keys (`IndexForm::Mean`; src/dynamic/picked.rs, kernels/qwen4x.cu): of the index product in Qr (`heads` + 1 heads of 128 a row),
-    /// each query head normed (`q_norm`, (1 + w)) and rotated by table `rope` into Iq; the raw key into ring `keys` at the row's position; then each pool
-    /// of 4 the call completes: the mean of its raw keys, normed (`k_norm`) and rotated at its first position, into ring `pools` (`Ring::entries`, a pool a row:
-    /// `IdxKeys::Pools`). The raw keys are ring `keys` [positions, 128]: both paged as any keys.
+    /// The mean-pooled indexer's queries and keys (`IndexForm::Mean`; src/dynamic/picked.rs, kernels/qwen4x.cu): of the index product in Qr (`heads` + 1 heads of `dim` a
+    /// row), each query head normed (`q_norm`, (1 + w)) and rotated by table `rope` into Iq; the raw key into ring `keys` at the row's position; then each pool
+    /// of `block` the call completes: the mean of its raw keys, normed (`k_norm`) and rotated at its first position, into ring `pools` (`Ring::entries`, a pool a
+    /// row: `IdxKeys::Pools`). The raw keys are ring `keys` [positions, dim]: both paged as any keys.
     IdxMean {
         heads: usize,
+        dim: usize,
+        block: usize,
         q_norm: usize,
         k_norm: usize,
         rope: usize,
@@ -603,6 +605,11 @@ pub struct ModelDesc {
 }
 
 impl ModelDesc {
+    /// The residual streams a row holds (S's width over the hidden width; one where it has none).
+    pub fn streams(&self) -> usize {
+        (self.width(Slot::S) / self.hidden.max(1)).max(1)
+    }
+
     pub fn width(&self, s: Slot) -> usize {
         self.widths[s as usize]
     }
@@ -1918,11 +1925,11 @@ impl Dyn {
     /// The gated residuals' mix of the streams S into H on n rows (`StreamsMix::Gated`, `HeadMix::Gated`): each stream normed by `norm` into Hq, `down`'s product into
     /// Mid and its activation, `up`'s into Cp, the gated mean into H; with `inject`, its product into Kv and the streams' weights into hcp.
     unsafe fn gated_mix(&self, p: &Part, n: usize, norm: usize, down: usize, up: usize, inject: Option<usize>) -> Result<()> {
-        let (k, s, d) = (self.kqx()?, self.dev.stream, p.d.hidden);
+        let (k, s, d, hc) = (self.kqx()?, self.dev.stream, p.d.hidden, p.d.streams());
         let (sn, mid, gw) = (p.slot(Slot::Hq), p.slot(Slot::Mid), p.slot(Slot::Cp));
-        k.hc_norm(s, p.slot(Slot::S), p.small[norm].ptr, sn, n, d, p.d.eps)?;
+        k.hc_norm(s, p.slot(Slot::S), p.small[norm].ptr, sn, n, d, p.d.eps, hc)?;
         self.lin(&p.mats[down], sn, n, mid)?;
-        k.silu4(s, mid, n * p.d.width(Slot::Mid))?;
+        k.silu4(s, mid, n * p.d.width(Slot::Mid), hc)?;
         self.lin(&p.mats[up], mid, n, gw)?;
         let (il, inj) = match inject {
             Some(w) => {
@@ -1931,7 +1938,7 @@ impl Dyn {
             }
             None => (0, 0),
         };
-        k.hc_mix(s, gw, sn, il, p.slot(Slot::H), inj, n, d)
+        k.hc_mix(s, gw, sn, il, p.slot(Slot::H), inj, n, d, hc)
     }
 
     unsafe fn op(&self, p: &Part, l: usize, i: usize, op: &Op, n: usize, pos: (u64, u64), head: usize) -> Result<()> {
@@ -2088,7 +2095,7 @@ impl Dyn {
                 self.mark("Mamba-2: gated norm")
             }
             Op::Moe(ref m) => self.moe(p, m, n),
-            Op::Streams => self.kres.streams(s, p.slot(Slot::X), p.slot(Slot::S), nu, hid),
+            Op::Streams => self.kres.streams(s, p.slot(Slot::X), p.slot(Slot::S), nu, hid, p.d.streams()),
             Op::StreamsPre { mix: StreamsMix::Hc { f, base, scale }, norm, round } => {
                 let (fp, bp, sp) = (p.small[f].ptr, p.small[base].ptr, p.small[scale].ptr);
                 let (h, nw, (hc_eps, iters)) = (p.slot(Slot::H), p.small[norm].ptr, p.d.hc);
@@ -2112,7 +2119,7 @@ impl Dyn {
                 self.mark("gated residuals")
             }
             Op::StreamsPost { gated: true, .. } => {
-                self.kqx()?.hc_post(s, p.slot(Slot::S), p.slot(Slot::O), self.hcp.ptr, n, p.d.hidden)?;
+                self.kqx()?.hc_post(s, p.slot(Slot::S), p.slot(Slot::O), self.hcp.ptr, n, p.d.hidden, p.d.streams())?;
                 self.mark("gated residuals")
             }
             Op::StreamsPost { round, .. } => {
@@ -2128,7 +2135,9 @@ impl Dyn {
                 self.kres.head(s, p.slot(Slot::S), w, self.hc_part.ptr, p.small[norm].ptr, p.slot(Slot::H), nu, hid, (eps, p.d.hc.0), round)?;
                 self.mark("hyper-connections")
             }
-            Op::IdxMean { heads, q_norm, k_norm, rope, keys, pools } => self.idx_mean(p, heads, q_norm, k_norm, rope, keys, pools, n, pos.0),
+            Op::IdxMean { heads, dim, block, q_norm, k_norm, rope, keys, pools } => {
+                self.idx_mean(p, (heads, dim, block), q_norm, k_norm, rope, keys, pools, n, pos.0)
+            }
             Op::IdxPick(ref x) if matches!(x.keys, IdxKeys::Pools(_)) => self.idx_pick_pools(p, x, n, pos.0),
             Op::NgramRows(ref x) => self.ngram_rows(p, x, n),
             Op::NgramAdd(ref x) => self.ngram_add(p, x, n),

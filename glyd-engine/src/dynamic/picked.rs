@@ -43,7 +43,7 @@ impl Dyn {
     pub(super) unsafe fn idx_mean(
         &self,
         p: &Part,
-        heads: usize,
+        (heads, dim, block): (usize, usize, usize),
         q_norm: usize,
         k_norm: usize,
         rope: usize,
@@ -56,11 +56,11 @@ impl Dyn {
         let s = self.dev.stream;
         let (cs, sn) = (self.ropes[rope].0.ptr, self.ropes[rope].1.ptr);
         let half = p.d.ropes[rope].pairs;
-        let qk = p.slot(Slot::Qr) + self.rows_before((heads + 1) * 128);
-        let iq = p.slot(Slot::Iq) + self.rows_before(heads * 128);
+        let qk = p.slot(Slot::Qr) + self.rows_before((heads + 1) * dim);
+        let iq = p.slot(Slot::Iq) + self.rows_before(heads * dim);
         let (ik, pk) = ((self.cache(keys).0, self.table(keys)), (self.cache(pools).0, self.table(pools)));
-        k.ix_prep_at(s, qk, p.small[q_norm].ptr, cs, sn, half, pos, iq, ik, n, heads, p.d.eps)?;
-        k.ix_cmp_at(s, ik, p.small[k_norm].ptr, cs, sn, half, pos, pk, n, p.d.eps)?;
+        k.ix_prep_at(s, qk, p.small[q_norm].ptr, cs, sn, half, pos, iq, ik, n, heads, p.d.eps, dim)?;
+        k.ix_cmp_at(s, ik, p.small[k_norm].ptr, cs, sn, half, pos, pk, n, p.d.eps, dim, block)?;
         self.mark("indexer: queries and pools")
     }
 
@@ -70,10 +70,10 @@ impl Dyn {
         let IdxKeys::Pools(pools) = x.keys else { return err("not an indexer of pooled keys") };
         let row0 = self.rows_before(1) as usize / 2;
         let at = super::mla::PickAt {
-            q: p.slot(Slot::Iq) + self.rows_before(x.heads * 128),
+            q: p.slot(Slot::Iq) + self.rows_before(x.heads * x.dim()),
             w: if x.weighted { p.slot(Slot::Iw) + self.rows_before(x.heads) } else { r.ones.ptr },
             keys: self.cache(pools).0,
-            stride: 128,
+            stride: x.dim(),
             tab: self.table(pools),
             pos,
             rows: n,

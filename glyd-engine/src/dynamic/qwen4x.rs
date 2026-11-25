@@ -291,7 +291,25 @@ mod tests {
         }
     }
 
-    /// What the shared operations do not take is refused in words: a linear attention's silu gate, gated residuals over another count of streams.
+    /// The indexer's head size and pool are the config's: heads of 64 over pools of 2 lower to the raw keys' ring of 64, the pools' ring of entries of 2 tokens,
+    /// the index product's rows of 64 a head and the pick's scores over heads of 64.
+    #[test]
+    fn the_indexers_heads_and_pools_are_the_configs() {
+        let mut c = tiny();
+        c["text_config"]["indexer_head_dim"] = 64.into();
+        c["text_config"]["indexer_compress_ratio"] = 2.into();
+        let m = super::super::lower::qwen4x(&describe(&c).unwrap(), vec![2000], 1100).unwrap();
+        let ix = m.layers.iter().flatten().find_map(|op| if let Op::IdxMean { heads, dim, block, .. } = *op { Some((heads, dim, block)) } else { None });
+        assert_eq!(ix, Some((4, 64, 2)));
+        let pick = m.layers.iter().flatten().find_map(|op| if let Op::IdxPick(x) = op { Some(x.clone()) } else { None }).unwrap();
+        assert_eq!((pick.dim(), pick.ratio, pick.top_k), (64, 2, 4));
+        assert_eq!((m.width(Slot::Qr), m.width(Slot::Iq)), (5 * 64, 4 * 64));
+        let mut c = tiny();
+        c["text_config"]["indexer_head_dim"] = 100.into();
+        assert!(super::super::lower::qwen4x(&describe(&c).unwrap(), vec![2000], 1100).unwrap_err().msg.contains("multiple of 32"));
+    }
+
+    /// What the shared operations do not take is refused in words: a linear attention's silu gate, gated residuals over more streams than the kernels take.
     #[test]
     fn what_the_kernels_do_not_take_is_refused() {
         let mut c = tiny();
@@ -299,8 +317,24 @@ mod tests {
         let e = super::super::lower::qwen4x(&describe(&c).unwrap(), vec![2000], 1100).unwrap_err().msg;
         assert!(e.contains("sigmoid gate"), "{e}");
         let mut c = tiny();
-        c["text_config"]["hc_count"] = 2.into();
+        c["text_config"]["hc_count"] = 5.into();
         let e = super::super::lower::qwen4x(&describe(&c).unwrap(), vec![2000], 1100).unwrap_err().msg;
         assert!(e.contains("streams"), "{e}");
+    }
+
+    /// The family's stream count is its config's: two streams lower to residual slots of two rows of the width and the inject's two weights a row (a model with
+    /// no n-gram embedding: that block's kernels take four streams yet).
+    #[test]
+    fn the_streams_are_the_configs() {
+        let mut c = tiny();
+        c["text_config"]["hc_count"] = 2.into();
+        let e = super::super::lower::qwen4x(&describe(&c).unwrap(), vec![2000], 1100).unwrap_err().msg;
+        assert!(e.contains("four streams"), "{e}");
+        (c["text_config"]["ple_layer_ids"], c["text_config"]["number_of_conv_states"]) = (serde_json::json!([]), 1.into());
+        let m = super::super::lower::qwen4x(&describe(&c).unwrap(), vec![2000], 1100).unwrap();
+        assert!(!m.layers.iter().flatten().any(|op| matches!(op, Op::NgramRows(_))));
+        assert_eq!((m.streams(), m.width(Slot::S), m.width(Slot::Kv)), (2, 512, 2));
+        let four = super::super::lower::qwen4x(&describe(&tiny()).unwrap(), vec![2000], 1100).unwrap();
+        assert_eq!((four.streams(), four.width(Slot::S), four.width(Slot::Kv)), (4, 1024, 4));
     }
 }

@@ -13,13 +13,12 @@
 __device__ __forceinline__ float hc_sig(float x) { return 1.f / (1.f + expf(-x)); }
 
 // ---- the streams -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-// x [n, 4, D] <- e [n, D] four times: every stream starts as the token's embedding. Block (row, 256 columns).
-extern "C" __global__ void hc_streams(const bf16* e, bf16* x, int D) {
+// x [n, ns, D] <- e [n, D] ns times: every stream starts as the token's embedding. Block (row, 256 columns).
+extern "C" __global__ void hc_streams(const bf16* e, bf16* x, int D, int ns) {
     const int d = blockIdx.y * blockDim.x + threadIdx.x;
     if (d >= D) return;
     const bf16 v = e[(size_t)blockIdx.x * D + d];
-#pragma unroll
-    for (int s = 0; s < HC_N; s++) x[((size_t)blockIdx.x * HC_N + s) * D + d] = v;
+    for (int s = 0; s < ns; s++) x[((size_t)blockIdx.x * ns + s) * D + d] = v;
 }
 
 // ---- the mixing weights and the collapse -----------------------------------------------------------------------------------------------------------------------------------------------

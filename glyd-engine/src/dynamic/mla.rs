@@ -79,6 +79,16 @@ pub struct IdxPick {
     pub weighted: bool,
 }
 
+impl IdxPick {
+    /// A head's values (the release's score: 128).
+    pub fn dim(&self) -> usize {
+        match self.score {
+            IdxScore::F32 { dim, .. } => dim,
+            IdxScore::Release => 128,
+        }
+    }
+}
+
 /// A latent attention's indexer: its pick, and its small tensors (bf16 as released): the queries' product `q_b` [heads dim, q_rank] (of the normed q latent), the
 /// keys' `k` [dim, hidden], their LayerNorm's weight and bias [dim], the head weights' product [heads, hidden], the pooling bias `ape` [ratio, dim] and the gate's
 /// product [dim, hidden]. Its cache is the pick's ring (`IdxKeys::Ring`), 2 dim a token.

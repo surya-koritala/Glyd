@@ -104,7 +104,7 @@ impl KernGlm {
     /// # Safety
     /// Live device buffers of the sizes the kernels read and write (their comments in kernels/glm.cu and kernels/residual.cu).
     pub unsafe fn streams(&self, s: Stream, e: u64, x: u64, n: u32, d: i32) -> Result<()> {
-        self.hc.streams(s, e, x, n, d)
+        self.hc.streams(s, e, x, n, d, 4)
     }
 
     /// The mixing weights of the streams x [n, 4, d] (fn [24, 4d] bf16, base [24] and scale [3] fp32) into hcp [n, 24] fp32, and the collapse normed with the weight nw [d] into h [n, d].

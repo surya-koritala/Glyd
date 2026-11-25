@@ -216,23 +216,35 @@ impl ConfigQx {
         if c.head_dim != 256 || c.kv_heads == 0 || !c.heads.is_multiple_of(c.kv_heads) || c.heads / c.kv_heads > 16 || c.rotary > 128 || c.rotary % 2 != 0 {
             return refuse(&format!("attention of {} heads of {} over {} key-value heads, a rotary of {}", c.heads, c.head_dim, c.kv_heads, c.rotary));
         }
-        if c.ix_dim != 128
-            || u_or("indexer_kv_heads", 1)? != 1
-            || c.ix_block != 4
+        if u_or("indexer_kv_heads", 1)? != 1
+            || c.ix_block == 0
             || c.ix_budget == 0
             || !c.ix_budget.is_multiple_of(c.ix_block)
             || c.ix_budget / c.ix_block > 1024
             || c.rotary > c.ix_dim
         {
-            return refuse("an indexer other than one key head of 128 over blocks of 4 tokens");
+            return refuse("an indexer other than one key head over blocks of tokens");
         }
-        if c.hc != 4 || c.hidden > 4096 || !c.hidden.is_multiple_of(64) {
+        if c.hc == 0 || c.hidden > 4096 || !c.hidden.is_multiple_of(64) {
             return refuse(&format!("{} streams of {}", c.hc, c.hidden));
         }
-        if c.ple.as_ref().is_some_and(|p| p.ngram != 3 || p.kernel != 4) {
-            return refuse("an n-gram embedding other than bigrams and trigrams with a convolution of 4");
-        }
         Ok(c)
+    }
+
+    /// The release's own shape, which Condor's engine (src/model_qwen4x.rs) is written for: four streams, index heads of 128 over blocks of 4 tokens, bigrams and
+    /// trigrams with a convolution of 4. The description executor takes the family's other shapes by its kinds (`dynamic::lower::qwen4x` refuses what its
+    /// kernels do not take).
+    pub fn release_shape(&self, label: &str) -> Result<()> {
+        if self.hc != 4 || self.ix_dim != 128 || self.ix_block != 4 || self.ple.as_ref().is_some_and(|p| p.ngram != 3 || p.kernel != 4) {
+            return err(format!(
+                "{label}: {} streams, index heads of {} over blocks of {}, an n-gram embedding of {:?}: Condor's engine runs the release's shape alone",
+                self.hc,
+                self.ix_dim,
+                self.ix_block,
+                self.ple.as_ref().map(|p| (p.ngram, p.kernel))
+            ));
+        }
+        Ok(())
     }
 
     /// What this engine reads of a model, from the model's description (`runtime::describe`: its layer kinds, and the experts' widths from the
