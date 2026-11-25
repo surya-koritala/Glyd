@@ -244,6 +244,17 @@ impl ModelConfig {
     pub fn key(&self, k: &str) -> Option<&Value> {
         self.text.get(k).filter(|v| !v.is_null()).or_else(|| self.top.get(k))
     }
+
+    /// A family's own keys of the text model, typed by its reader's struct (`T`, serde, its fields `Option` and `#[serde(default)]`): read from this parse, a key
+    /// of another type than its field's an error that names it. The keys the families share are `shared`'s.
+    pub fn own<T: DeserializeOwned>(&self, what: &str) -> Result<T> {
+        typed(&self.text, what)
+    }
+
+    /// A shared key a family needs: its value, else an error that names it.
+    pub fn need(v: Option<usize>, label: &str, k: &str) -> Result<usize> {
+        v.ok_or_else(|| Error(format!("{label}: no {k}")))
+    }
 }
 
 #[cfg(test)]
