@@ -75,6 +75,10 @@ fn glm53_model_with_fewer_picks_and_a_shared_layer_runs_on_the_reference() {
     }
     let apart = got[4 * vocab..].iter().zip(&want[4 * vocab..]).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
     assert!(apart > 1e-4, "the picks dropped no token that mattered: {apart}");
+    // (the tokens in one call: a layer runs them all before the next layer, and the shared layer takes each token's own picks, so its rows are the
+    // token-by-token ones, bit for bit)
+    let whole = RefModel::load(&d, &src).unwrap().forward(&toks, 0).unwrap_or_else(|e| panic!("{}", e.msg)).concat();
+    assert!(whole.iter().zip(&got).all(|(a, b)| a.to_bits() == b.to_bits()) && whole.len() == got.len(), "the tokens in one call");
 }
 
 #[test]

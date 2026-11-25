@@ -593,7 +593,7 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng:
         let (mut want, mut margin) = (Vec::with_capacity(n * d), Vec::with_capacity(n));
         for t in 0..n {
             if let Some(p) = lend.as_ref().filter(|_| shared) {
-                latent_cache(&mut m.layers[b], 0)?.lent = Some(p[t].clone());
+                latent_cache(&mut m.layers[b], 0)?.lent = std::iter::once(p[t].clone()).collect();
             }
             want.extend(m.body(b, 0, (at + t) as u32, tok[t], &h[t * d..][..d])?);
             // (a row on the engine's own picks is compared whatever the reference's own margin: none is left out as near a tie)
