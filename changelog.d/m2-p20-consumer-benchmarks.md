@@ -3,5 +3,5 @@
   bits (llama.cpp's GGUF made from the same checkpoint, the same file for Ollama and LM Studio), no draft model on either side, each run's command
   lines, versions and server log kept beside its result. `glyd bench --report DIR` writes the comparison page: per GPU each engine's largest model at
   20 tokens/s or more, and each model's runs side by side. Results record `--engine`, `--source`, `--bits` and `--params`. The `Consumer bench`
-  workflow runs it on the project's GPU machine when a release is published. `glyd bench --suite occupancy` (1, 8, 32 and 64 at once) is the 1x H100
+  workflow runs it on a self-hosted GPU runner when a release is published. `glyd bench --suite occupancy` (1, 8, 32 and 64 at once) is the 1x H100
   occupancy check; the H100, H200 and the tiers' consumer cards are in the bench's spec-sheet bandwidths. Part of #242.
