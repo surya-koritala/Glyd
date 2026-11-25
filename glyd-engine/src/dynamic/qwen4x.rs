@@ -85,7 +85,7 @@ mod tests {
                 it.cols
             );
         }
-        // (and packs the rest: their old rule, rows and columns each a multiple of 64, holds the same matrices as saved)
+        // (and packs the rest: a matrix outside the table is held as saved only where its rows or its columns are not a multiple of 64)
         for k in 0..m.mats.len() {
             let it = &m.mats[k];
             assert_eq!(saved.contains(&k), table.contains(&k) || it.rows % 64 != 0 || it.cols % 64 != 0, "{}", it.members[0]);

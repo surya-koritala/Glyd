@@ -512,7 +512,7 @@ fn x_ms(v: f64, per: f64) -> f64 {
 }
 
 /// What a cached step takes besides its terms, for each MoE layer: `layer` ms, which goes with the layer's products (the copies queued behind them wait for it), and `row` ms a row, which goes with the rest of the
-/// layer (the work a row adds a layer that the terms do not count: on the PC, the launches of the operations a pass runs sequence by sequence), measured as runs' unexplained (`fit`).
+/// layer (the work a row adds a layer that the terms do not count: on the RTX 4080 SUPER (the box `4080s`), the launches of the operations a pass runs sequence by sequence), measured as runs' unexplained (`fit`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Fixed {
     layer: f64,
@@ -638,7 +638,7 @@ pub fn cmd(a: &Args) -> Result<()> {
     let w = s.dense + s.expert * hit;
     let missing = s.expert * across as f64 * (1.0 - hit);
     let fixed_us: f64 = a.num("fixed-us", 0.0)?;
-    // (a product's own time beside its bytes: its start and its last wave, measured on the PC at the slices' sizes; the experts' product of a MoE layer more)
+    // (a product's own time beside its bytes: its start and its last wave, measured on the RTX 4080 SUPER (the box `4080s`) at the slices' sizes; the experts' product of a MoE layer more)
     let (t0, t0_moe): (f64, f64) = (a.num("t0-us", b.t0_us.0)?, a.num("t0-moe-us", b.t0_us.1)?);
     let t_products = (s.products as f64 * t0 + 2.0 * s.moe_layers as f64 * t0_moe) / 1e3;
     // (each gather at its size from the box's measured points, the low-latency kind's (--gathers regular: the other's); else one time for every gather:
