@@ -187,6 +187,23 @@ FOLD_KV_GATHER(1)
 FOLD_KV_GATHER(2)
 FOLD_KV_GATHER(4)
 
+// glyd_gpu_kv_release (a warp a block: its page cleared, its chunks or slab back to their pools), _kv_save (a page into its image) and _kv_load (an image into a
+// page, chunks or a slab lent anew), a CTA a page of 128 threads: kvc's release_body, save_body and load_body, launched as the library launches them.
+extern "C" __global__ void __launch_bounds__(32) fold_kv_release(uint8_t* pool, int64_t page_stride, int64_t nblocks, const int32_t* blocks, int H, const glib::kvc::EscapePool esc,
+                                                                  const glib::kvc::RawPool raw, uint32_t layer_tag, uint32_t* status, uint32_t* lost, int64_t nlost) {
+    glib::kvc::release_body(pool, page_stride, nblocks, blocks, H, esc, raw, layer_tag, status, lost, nlost);
+}
+
+extern "C" __global__ void __launch_bounds__(128) fold_kv_save(const uint8_t* pool, int64_t page_stride, int64_t nblocks, const int32_t* pages, int64_t pb, int64_t ib, int HP,
+                                                                const glib::kvc::EscapePool esc, const glib::kvc::RawPool raw, uint32_t layer_tag, uint8_t* img, uint32_t* moved) {
+    glib::kvc::save_body(pool, page_stride, nblocks, pages, pb, ib, HP, esc, raw, layer_tag, img, moved);
+}
+
+extern "C" __global__ void __launch_bounds__(128) fold_kv_load(const uint8_t* img, const int32_t* dst, int64_t pb, int64_t ib, uint8_t* pool, int64_t page_stride, int64_t nblocks, int HP,
+                                                                const glib::kvc::EscapePool esc, const glib::kvc::RawPool raw, uint32_t layer_tag, uint32_t* status, uint32_t ring) {
+    glib::kvc::load_body(img, dst, pb, ib, pool, page_stride, nblocks, HP, esc, raw, layer_tag, status, ring);
+}
+
 // glyd_gpu_mma_moe, _mma12_moe and _mma_moe_placed (mma_moe_run) at a decode step's and a few rows' sizes: mma_moe_body for MT tiles of 16 pairs (1, 2, 4),
 // the activation (0 none, 1 SiLU, 2 GELU) and the step loop's variant the library takes by default on each GPU class (0; 2: the m-tiles with pairs alone, an H100's
 // and an A100's; 8 and 10: two steps loaded ahead, an HBM GPU's one-token products), and mma_moe_rows_body (no gate, a warp a row block over the whole K: MT 2

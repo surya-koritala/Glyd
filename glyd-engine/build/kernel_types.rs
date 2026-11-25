@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 /// The C types of the kernels' arguments that are not pointers, and the Rust type passed for each.
-const TYPES: [(&str, &str); 29] = [
+const TYPES: [(&str, &str); 30] = [
     ("int", "i32"),
     ("int32_t", "i32"),
     ("unsigned", "u32"),
@@ -31,6 +31,7 @@ const TYPES: [(&str, &str); 29] = [
     ("glib::kvc::PrefillParams", "crate::fold::KvPrefillParams"),
     ("glib::kvc::WriteParams", "crate::fold::KvWriteParams"),
     ("glib::kvc::RawPool", "crate::fold::KvRawPool"),
+    ("glib::kvc::EscapePool", "crate::fold::KvEscapePool"),
     ("glib::f8c::F8Pk", "crate::fold::F8Pk"),
     ("glib::f8c::F8Un", "crate::fold::F8Un"),
     ("glib::f8c::F8Lin", "crate::fold::F8Lin"),
