@@ -482,6 +482,20 @@ pub(crate) struct PickAt {
     pub cand: CandAt,
 }
 
+/// One latent attention's indexer in a pass `Dyn::trace_picks` traced: its layer, each row's position and picks (the positions its query attends to, in order),
+/// and the indexer's inputs as the GPU held them (bf16): each row's queries [heads dim] and head weights' product [heads] (before heads^-0.5), and the key of
+/// each complete entry the pass's last row sees, in order (a pool's as pooled; a token's own where an entry is a token). What a check runs the reference's
+/// choice on (`runtime::reference::mla::choose`) where the engine's picks are not the reference's own.
+#[derive(Clone, Debug)]
+pub struct PickTrace {
+    pub layer: usize,
+    pub pos: Vec<usize>,
+    pub picks: Vec<Vec<usize>>,
+    pub q: Vec<Vec<f32>>,
+    pub w: Vec<Vec<f32>>,
+    pub keys: Vec<Vec<f32>>,
+}
+
 /// Where a pick's candidate blocks are (`IdxPick::cand`; all 0 without them).
 #[derive(Clone, Copy, Default)]
 pub(crate) struct CandAt {
@@ -505,6 +519,57 @@ impl Dyn {
     /// Ring `ring`'s keys for a sequence whose room is `kc` (`seq_parts`), and its block table in the ring's group for the sequence in `slot` (0: none).
     pub(super) fn ring_at(&self, kc: u64, slot: usize, ring: usize) -> (u64, u64) {
         (kc + self.ring_off[ring].0, self.table_of(slot, ring))
+    }
+
+    /// `Dyn::trace_picks`' record of `op` of layer `l` on n rows, a latent attention with an indexer (`PickTrace`): each row's picks as the attention left them (`MlaRun`'s
+    /// sel and cnt, which hold every row of a pass of one sequence whose rows the attention takes at once: `rows_at_once`), its queries and head weights (iq, wts)
+    /// and the keys of the complete entries in the ring (unpaged); another pass is an error.
+    pub(super) fn trace_pick(&self, p: &Part, l: usize, op: &Op, n: usize) -> Result<()> {
+        let Op::Mla(a @ MlaOp { indexer: Some(ix), .. }) = op else { return Ok(()) };
+        if !std::ptr::eq(p, &self.big) || self.pick_trace.borrow().is_none() {
+            return Ok(());
+        }
+        let (most, tab) = (a.rows_at_once(self.chunk, self.ctx), self.table_of(self.seq, a.ring + 1));
+        if n > most || !self.parts.is_empty() || tab != 0 {
+            return err(format!(
+                "layer {l}: picks traced on a pass of {n} rows of one sequence, at most {most}, its ring unpaged (this one: {} sequences, {})",
+                self.parts.len().max(1),
+                if tab != 0 { "paged" } else { "unpaged" }
+            ));
+        }
+        let r = self.mla.as_ref().ok_or_else(|| Error("a latent attention in a model loaded without its buffers".into()))?;
+        let (tmax, ih, id, kp, at) = (a.tmax(self.ctx), ix.pick.heads, ix.dim, ix.pick.ratio, self.start.get());
+        let (mut cnt, mut sel, mut q, mut w) = (vec![0i32; n], vec![0i32; n * tmax], vec![0u16; n * ih * id], vec![0u16; n * ih]);
+        // (the ring's rows of the complete entries the last row sees: [key | gate score] a token, a pool's key in its last token's row)
+        let entries = (at + n) / kp;
+        let mut ring = vec![0u16; entries * kp * 2 * id];
+        self.dev.sync()?;
+        r.cnt.read(0, &mut cnt)?;
+        r.sel.read(0, &mut sel)?;
+        r.iq.read(0, &mut q)?;
+        r.wts.read(0, &mut w)?;
+        self.kc.read(self.ring_off[a.ring + 1].0 as usize, &mut ring)?;
+        let f = |v: &[u16]| v.iter().map(|&h| f32::from_bits((h as u32) << 16)).collect::<Vec<f32>>();
+        let mut picks = Vec::with_capacity(n);
+        for (t, &c) in cnt.iter().enumerate() {
+            let got = &sel[t * tmax..][..(c.max(0) as usize).min(tmax)];
+            if c < 0 || c as usize > tmax || got.iter().any(|&e| e < 0) {
+                return err(format!("layer {l} row {t}: {c} picks of at most {tmax}, or one below 0"));
+            }
+            picks.push(got.iter().map(|&e| e as usize).collect());
+        }
+        let rec = PickTrace {
+            layer: l,
+            pos: (at..at + n).collect(),
+            picks,
+            q: q.chunks(ih * id).map(f).collect(),
+            w: w.chunks(ih).map(f).collect(),
+            keys: (0..entries).map(|j| f(&ring[(j * kp + kp - 1) * 2 * id..][..id])).collect(),
+        };
+        if let Some(t) = self.pick_trace.borrow_mut().as_mut() {
+            t.1.push(rec);
+        }
+        Ok(())
     }
 
     /// An indexer's pick (`IdxPick`) for `at.rows` rows: the entries' scores in its arithmetic, then the best of each row (kernels/mla.cu `idx_pick`).

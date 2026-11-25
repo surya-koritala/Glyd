@@ -9,6 +9,10 @@
 //! A check takes those two cases recorded again with an `index_topk` below the prompt's 7 tokens (4, say), and the model's with
 //! `indexer_types` of a `shared` layer after a `full` one; record.py runs where torch and a transformers that has `glm_moe_dsa` are installed (a CPU
 //! is enough), and `hf_tests` then holds this reference to what it wrote.
+//!
+//! A query's picks can be given (`LatentCache::take`): a check then holds an engine to this reference on the engine's own picks, where a near tie
+//! taken the other way would move a row by more than arithmetic does. Each query's record (`Picked`) has the indexer's own picks and the pools'
+//! scores, by which two choices' distance is measured (`Picked::margin_between`).
 
 use super::{act, dot, norm::norm, rope, softmax, Params};
 use crate::ffi::{err, Result};
@@ -17,7 +21,9 @@ use crate::runtime::kinds::{IndexForm, Indexer, Mla, NormKind, Rope};
 /// A sequence's latents in one layer: per token the normed latent (kv_lora values) then the shared key part (rope_dim, rotated); and where
 /// the layer has an indexer of its own, per token its normed key and its pool gate's scores; and the last query's pick `margin`. `picks`:
 /// the entries the last query attended to, where the layer has an indexer; `lent`: for a layer whose indexer is `shared`, the picks of the
-/// latent attention before it for the query about to run (the model lends them: `RefModel::share_into`), taken by that query.
+/// latent attention before it for the query about to run (the model lends them: `RefModel::share_into`), taken by that query. `take`: the
+/// picks of the queries to come, each query's in turn, in the place of the indexer's own (a check's: another engine's picks, the entries each
+/// query attends to; an empty list: the indexer's own); `picked`: each query's record in turn (`Picked`), where a check reads them.
 #[derive(Default)]
 pub struct LatentCache {
     pub pos: Vec<u32>,
@@ -27,6 +33,49 @@ pub struct LatentCache {
     pub margin: f32,
     pub picks: Vec<usize>,
     pub lent: Option<Vec<usize>>,
+    pub take: std::collections::VecDeque<Vec<usize>>,
+    pub picked: Option<Vec<Picked>>,
+}
+
+/// One query's choice by an indexer of its layer's own: the entries it attended to (`picks`: the indexer's own, unless a check gave others), the
+/// indexer's own (`own`), how near that choice was to another (`gap`: `ffn::margin` of the pools' scores; infinite where every entry was kept),
+/// each complete pool's score (none where every entry was kept), and the tokens a pool (`block`). A sequence's entries are its tokens from the
+/// first, so pool j is entries j block .. (j + 1) block.
+#[derive(Clone, Debug)]
+pub struct Picked {
+    pub picks: Vec<usize>,
+    pub own: Vec<usize>,
+    pub gap: f32,
+    pub score: Vec<f32>,
+    pub block: usize,
+}
+
+impl Picked {
+    /// How far apart the indexer's own choice and `other` (entries of the same query) are by the pools' scores: the largest score among the
+    /// pools only the own choice holds less the smallest among those only `other` holds, over the scores' largest magnitude (`ffn::margin`'s
+    /// scale); the same entries, 0. NaN where `other` is not a choice the indexer could make (pools not whole, another count of them, another
+    /// open pool): a difference no tie explains.
+    pub fn margin_between(&self, other: &[usize]) -> f32 {
+        if other == self.own {
+            return 0.0;
+        }
+        let (b, n) = (self.block.max(1), self.score.len());
+        let pools = |v: &[usize]| -> Option<Vec<usize>> {
+            let mut count = vec![0usize; n];
+            for &e in v.iter().filter(|&&e| e < n * b) {
+                count[e / b] += 1;
+            }
+            count.iter().all(|&c| c == 0 || c == b).then(|| (0..n).filter(|&j| count[j] == b).collect())
+        };
+        let open = |v: &[usize]| v.iter().copied().filter(|&e| e >= n * b).collect::<Vec<usize>>();
+        let (Some(mine), Some(theirs)) = (pools(&self.own), pools(other)) else { return f32::NAN };
+        if mine.len() != theirs.len() || open(&self.own) != open(other) {
+            return f32::NAN;
+        }
+        let top = mine.iter().filter(|j| !theirs.contains(j)).map(|&j| self.score[j]).fold(f32::NEG_INFINITY, f32::max);
+        let low = theirs.iter().filter(|j| !mine.contains(j)).map(|&j| self.score[j]).fold(f32::INFINITY, f32::min);
+        (top - low) / self.score.iter().fold(0f32, |m, x| m.max(x.abs())).max(1e-30)
+    }
 }
 
 /// A gated indexer's key norm (`IndexForm::Gated`'s `key`) on the key product `k`: its weight, and a LayerNorm's bias.
@@ -60,7 +109,7 @@ fn index_turn(ix: &Indexer, rot: &Option<(&Rope, (Vec<f32>, f32))>, x: &mut [f32
 /// softmax(gate + ape) weighted sum of its tokens' normed keys, a pool's score sum_h w_h relu(q_h . key / sqrt(head_dim)) with w the
 /// weights' product of the block's input over sqrt(heads) and q the indexer's product of the normed query residual `qr`; then the tokens
 /// of the incomplete last pool (transformers' `Glm5NextTextIndexer`, `index_kpool_always_select_tail`). Equal scores keep the earlier pool.
-/// With the picks, how near the choice was to another (`ffn::margin` of the pools' scores). `turn`: the indexer's rotary of a query head at
+/// The picks with how near the choice was to another and the pools' scores (`Picked`). `turn`: the indexer's rotary of a query head at
 /// the query's position (`index_turn`; the keys in the cache were turned at theirs).
 pub fn picks(
     ix: &Indexer,
@@ -70,18 +119,18 @@ pub fn picks(
     qr: Option<&[f32]>,
     h: &[f32],
     turn: &dyn Fn(&mut [f32]) -> Result<()>,
-) -> Result<(Vec<usize>, f32)> {
+) -> Result<Picked> {
     let (b, dim) = (ix.block.max(1), ix.head_dim);
     let (pools, keep) = (seen.len() / b, ix.top_k / b);
     if pools <= keep {
-        return Ok((seen.to_vec(), f32::INFINITY));
+        return Ok(Picked { picks: seen.to_vec(), own: seen.to_vec(), gap: f32::INFINITY, score: Vec::new(), block: b });
     }
     if ix.shared || c.ikey.len() != c.lat.len() {
         return err("MLA: a shared indexer reuses the previous layer's picks, which the reference does not hold");
     }
     let qr = qr.ok_or_else(|| crate::ffi::Error("MLA: an indexer reads the query's low rank, and this layer has none".into()))?;
     let mut q = p.prod("indexer_wq_b", qr)?;
-    let w: Vec<f32> = p.prod("indexer_weights", h)?.iter().map(|x| x * (ix.heads as f32).powf(-0.5)).collect();
+    let w = p.prod("indexer_weights", h)?;
     if q.len() != ix.heads * dim || w.len() != ix.heads {
         return err(format!("MLA: an indexer of {} query values and {} weights for {} heads of {dim}", q.len(), w.len(), ix.heads));
     }
@@ -89,11 +138,10 @@ pub fn picks(
         turn(head)?;
     }
     let ape = if b > 1 { p.vec("indexer_pool_ape")? } else { &[] };
-    let sc = (dim as f32).powf(-0.5);
-    let score: Vec<f32> = (0..pools)
+    let keys: Vec<Vec<f32>> = (0..pools)
         .map(|j| {
             let toks = &seen[j * b..(j + 1) * b];
-            let key: Vec<f32> = (0..dim)
+            (0..dim)
                 .map(|ch| {
                     if b == 1 {
                         return c.ikey[toks[0]][ch];
@@ -102,17 +150,33 @@ pub fn picks(
                     softmax(&mut g);
                     toks.iter().zip(&g).map(|(&t, &a)| a as f64 * c.ikey[t][ch] as f64).sum::<f64>() as f32
                 })
-                .collect();
-            (0..ix.heads).map(|hh| w[hh] * (dot(&q[hh * dim..][..dim], &key) * sc).max(0.0)).sum()
+                .collect()
         })
         .collect();
+    Ok(choose(ix, &q, &w, &keys, seen))
+}
+
+/// The indexer's choice on its inputs: each query head's values `q` [heads dim] (turned where the indexer has a rotary), the head weights' product `w`
+/// [heads] (times heads^-0.5 here), and each complete entry's key `keys` (a pool's as pooled, a token's own where an entry is a token), among the
+/// entries `seen` (in order; pool j is entries j block .. (j + 1) block, the open pool's after the complete ones). The best `top_k / block` pools of
+/// score sum_h w_h relu(q_h . key / sqrt(head_dim)), equal scores the earlier first, in order, then the open pool's tokens (`Picked`: its margin and
+/// every pool's score). `picks` runs it on this reference's own inputs; a check runs it on another engine's (`dynamic::PickTrace`).
+pub fn choose(ix: &Indexer, q: &[f32], w: &[f32], keys: &[Vec<f32>], seen: &[usize]) -> Picked {
+    let (b, dim) = (ix.block.max(1), ix.head_dim);
+    let (pools, keep) = (keys.len(), ix.top_k / b);
+    if pools <= keep {
+        return Picked { picks: seen.to_vec(), own: seen.to_vec(), gap: f32::INFINITY, score: Vec::new(), block: b };
+    }
+    let w: Vec<f32> = w.iter().map(|x| x * (ix.heads as f32).powf(-0.5)).collect();
+    let sc = (dim as f32).powf(-0.5);
+    let score: Vec<f32> = keys.iter().map(|key| (0..ix.heads).map(|hh| w[hh] * (dot(&q[hh * dim..][..dim], key) * sc).max(0.0)).sum()).collect();
     let mut ord: Vec<usize> = (0..pools).collect();
     ord.sort_by(|&x, &y| score[y].total_cmp(&score[x]).then(x.cmp(&y)));
     ord.truncate(keep);
     ord.sort_unstable();
     let mut out: Vec<usize> = ord.iter().flat_map(|&j| seen[j * b..(j + 1) * b].iter().copied()).collect();
     out.extend_from_slice(&seen[pools * b..]);
-    Ok((out, super::ffn::margin(&score, keep)))
+    Picked { own: out.clone(), picks: out, gap: super::ffn::margin(&score, keep), score, block: b }
 }
 
 pub fn step(m: &Mla, p: &Params, c: &mut LatentCache, h: &[f32], pos: u32) -> Result<Vec<f32>> {
@@ -160,7 +224,21 @@ pub fn step(m: &Mla, p: &Params, c: &mut LatentCache, h: &[f32], pos: u32) -> Re
             Some(lent) => (lent, f32::INFINITY),
             None => return err("MLA: a shared indexer attends to the picks of the latent attention before it, and none were lent to it"),
         },
-        Some(ix) => picks(ix, p, c, &seen, qr.as_deref(), h, &|x: &mut [f32]| index_turn(ix, &rot, x, pos))?,
+        Some(ix) => {
+            let mut got = picks(ix, p, c, &seen, qr.as_deref(), h, &|x: &mut [f32]| index_turn(ix, &rot, x, pos))?;
+            // (a check's picks for this query in the place of the indexer's own: entries the query sees, each once, in order)
+            if let Some(t) = c.take.pop_front().filter(|t| !t.is_empty()) {
+                if t.windows(2).any(|w| w[0] >= w[1]) || t.iter().any(|e| seen.binary_search(e).is_err()) {
+                    return err(format!("MLA: picks to take of {t:?}: entries the query at {pos} sees, each once, in order"));
+                }
+                got.picks = t;
+            }
+            let r = (got.picks.clone(), got.gap);
+            if let Some(v) = c.picked.as_mut() {
+                v.push(got);
+            }
+            r
+        }
         None => (seen, f32::INFINITY),
     };
     c.margin = margin;
@@ -313,7 +391,7 @@ mod tests {
         c2.igate.push(p.prod("indexer_pool_gate", h).unwrap());
         c2.lat.push(Vec::new());
         let seen: Vec<usize> = (0..23).collect();
-        let (got, margin) = picks(&ix, &p, &c2, &seen, Some(&qr), h, &|_| Ok(())).unwrap();
+        let Picked { picks: got, gap: margin, .. } = picks(&ix, &p, &c2, &seen, Some(&qr), h, &|_| Ok(())).unwrap();
         assert!(margin > 0.0 && margin.is_finite());
         // by hand: 5 complete pools of 4, scores, the best two in order, the tail 20, 21, 22
         let q = p.prod("indexer_wq_b", &qr).unwrap();
@@ -348,6 +426,55 @@ mod tests {
             out = step(&plain, &p, &mut c3, &hs[t], t as u32).unwrap();
         }
         assert!(rel(&got_out, &out) < 1e-6, "the attention over the picks");
+    }
+
+    /// Picks given in the indexer's place (`LatentCache::take`: a check's, another engine's): the indexer's own taken are its own run, bit for bit; another
+    /// choice is the attention over those tokens, its record keeping the indexer's own choice, and two choices' distance is by the pools' scores (a pool
+    /// swapped for the next best: the choice's own margin); what the indexer could not choose has none; a list that is not entries the query sees, each
+    /// once and in order, is refused.
+    #[test]
+    fn picks_taken_in_the_indexers_place() {
+        let (m, p) = layer(8, 4);
+        let hs = inputs(23);
+        let mut own = LatentCache { picked: Some(Vec::new()), ..Default::default() };
+        let outs: Vec<Vec<f32>> = hs.iter().enumerate().map(|(t, h)| step(&m, &p, &mut own, h, t as u32).unwrap()).collect();
+        let rec = own.picked.take().unwrap();
+        assert_eq!(rec.len(), 23);
+        let mut same = LatentCache { take: rec.iter().map(|r| r.own.clone()).collect(), ..Default::default() };
+        for (t, h) in hs.iter().enumerate() {
+            assert_eq!(step(&m, &p, &mut same, h, t as u32).unwrap(), outs[t], "token {t}");
+        }
+        // (the last query: its weakest pool kept swapped for the best one left out)
+        let last = rec.last().unwrap();
+        let (b, n, sc) = (last.block, last.score.len(), &last.score);
+        let mut kept: Vec<usize> = (0..n).filter(|&j| last.own.contains(&(j * b))).collect();
+        let low = *kept.iter().min_by(|&&x, &&y| sc[x].total_cmp(&sc[y])).unwrap();
+        let best = (0..n).filter(|j| !kept.contains(j)).max_by(|&x, &y| sc[x].total_cmp(&sc[y])).unwrap();
+        kept.retain(|&j| j != low);
+        kept.push(best);
+        kept.sort_unstable();
+        let mut other: Vec<usize> = kept.iter().flat_map(|&j| j * b..j * b + b).collect();
+        other.extend(n * b..23);
+        assert_eq!(last.margin_between(&other), (sc[low] - sc[best]) / sc.iter().fold(0f32, |a, x| a.max(x.abs())));
+        assert_eq!((last.margin_between(&other), last.margin_between(&last.own)), (last.gap, 0.0));
+        assert!(last.margin_between(&other[1..]).is_nan() && last.margin_between(&other[..other.len() - 1]).is_nan(), "a pool not whole, the open pool cut");
+        let mut c =
+            LatentCache { take: rec[..22].iter().map(|r| r.own.clone()).chain([other.clone()]).collect(), picked: Some(Vec::new()), ..Default::default() };
+        let mut got = Vec::new();
+        for (t, h) in hs.iter().enumerate() {
+            got = step(&m, &p, &mut c, h, t as u32).unwrap();
+        }
+        let r = c.picked.unwrap().pop().unwrap();
+        assert_eq!((&r.picks, &r.own), (&other, &last.own));
+        let (plain, mut alone, mut want) = (Mla { indexer: None, ..m.clone() }, LatentCache::default(), Vec::new());
+        for &t in &other {
+            want = step(&plain, &p, &mut alone, &hs[t], t as u32).unwrap();
+        }
+        assert!(rel(&got, &want) < 1e-6, "the attention over the picks taken");
+        for bad in [vec![0, 23], vec![1, 0], vec![2, 2]] {
+            let mut c = LatentCache { take: [bad.clone()].into(), ..Default::default() };
+            assert!(step(&m, &p, &mut c, &hs[3], 3).is_err(), "{bad:?}");
+        }
     }
 
     /// The indexer's rotary (the full-size GLM's and DeepSeek-V3.2's: transformers' `GlmMoeDsaIndexer`): the first `rope` channels of each query head and
@@ -397,7 +524,7 @@ mod tests {
             rope::apply(&r, &inv, af, x, pos);
             Ok(())
         };
-        let got = picks(&ix, &p, &a, &(0..12).collect::<Vec<_>>(), Some(&qr), h, &turn).unwrap().0;
+        let got = picks(&ix, &p, &a, &(0..12).collect::<Vec<_>>(), Some(&qr), h, &turn).unwrap().picks;
         assert_eq!(got, want);
         assert!(index_turn(&ix, &None, &mut [0f32; 16], 0).is_err(), "an indexer's rotary with no rotary of the attention's");
         assert!(index_turn(&Indexer { rope: 4, ..ix.clone() }, &Some((&r, (inv.clone(), af))), &mut [0f32; 16], 0).is_err(), "of other channels");
@@ -441,7 +568,7 @@ mod tests {
             step(&m, &p, &mut c, h, t as u32).unwrap();
         }
         let qr = norm(&m.q_norm, &p.prod("q_a", &hs[8]).unwrap(), p.opt("q_a_norm"), None);
-        let got = picks(m.indexer.as_ref().unwrap(), &p, &c, &(0..9).collect::<Vec<_>>(), Some(&qr), &hs[8], &|_| Ok(())).unwrap().0;
+        let got = picks(m.indexer.as_ref().unwrap(), &p, &c, &(0..9).collect::<Vec<_>>(), Some(&qr), &hs[8], &|_| Ok(())).unwrap().picks;
         assert_eq!(got.len(), 5);
         assert!(got.windows(2).all(|w| w[0] < w[1]));
     }
