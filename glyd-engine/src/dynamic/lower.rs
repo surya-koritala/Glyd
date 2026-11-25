@@ -60,6 +60,11 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
     if m.embed.per_layer.is_some() {
         return err("Gemma 4: per-layer inputs (E2B, E4B): not an operation of the executor yet");
     }
+    // (the executor's head: the product's bf16 output, then g4_softcap's three rounded operations)
+    use crate::runtime::kinds::{Collapse, Rounding};
+    if m.head.rounding != Rounding::Twice || m.head.scale != 1.0 || m.head.collapse != Collapse::None {
+        return err(format!("Gemma 4: a head of {:?}, where the executor's rounds the logits to bf16 between operations, unscaled", m.head));
+    }
     if m.blocks.len() % 2 != 0 {
         return err(format!("Gemma 4: {} blocks, where each layer is an attention block and an MLP block", m.blocks.len()));
     }
@@ -2194,6 +2199,20 @@ mod tests {
         let (own, lowered) = (super::super::gemma4::describe(&c), super::super::gemma4::lowered(&dir, &c).unwrap_or_else(|e| panic!("{}", e.msg)));
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(format!("{own:#?}"), format!("{lowered:#?}"));
+    }
+
+    /// The executor's Gemma 4 head rounds the logits to bf16 between operations (the product's output, g4_softcap's three): a description whose head
+    /// says otherwise is refused, named.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_gemma4_head_that_rounds_otherwise_is_refused() {
+        let mut d = crate::runtime::describe::describe(&serde_json::from_str(crate::logits::GEMMA4_RANDOM_CONFIG).unwrap()).unwrap();
+        let shapes = d.shapes.clone();
+        let shape = |n: &str| shapes.get(n).cloned();
+        assert!(gemma4(&d, &shape, vec![1], 4096).is_ok());
+        d.desc.head.rounding = crate::runtime::kinds::Rounding::F32;
+        let e = gemma4(&d, &shape, vec![1], 4096).unwrap_err().msg;
+        assert!(e.contains("a head of") && e.contains("rounds the logits to bf16"), "{e}");
     }
 
     /// KV sharing lowered (the gemma4-kv case's random model): a shared layer's attention reads its store layer's ring and writes none, its product the
