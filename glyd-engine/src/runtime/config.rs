@@ -221,7 +221,8 @@ fn family_by(arch: &str, model_type: &str, nested: Option<&str>) -> Option<Famil
         _ if m == "deepseek_v4" => Family::DeepSeekV4,
         _ if m == "qwen4_exp" => Family::FlashNext,
         _ if m.starts_with("gemma4") || nested.is_some_and(|t| t.starts_with("gemma4")) => Family::Gemma4,
-        _ if a == "Qwen3ForCausalLM" => Family::Qwen3,
+        // (the plain dense kind: every model type the description builder's `llama` reading takes, whatever the release calls its architecture)
+        _ if super::describe::LLAMA.contains(&nested.unwrap_or(m)) => Family::Qwen3,
         _ if a == "Qwen3_5ForCausalLM" || a == "Qwen3_5ForConditionalGeneration" => Family::Qwen35,
         _ => return None,
     })
@@ -307,8 +308,15 @@ mod tests {
         assert_eq!((g.nested, g.prefix(), g.family()), (true, "model.language_model.", Some(Family::Glm)));
         assert_eq!(g.shared.quantization_config.as_ref().and_then(|q| q.quant_method.as_deref()), Some("fp8"));
         assert_eq!((g.shared.experts(), g.shared.top_k(), g.shared.mtp_layers()), (288, 8, 1));
-        let n = ModelConfig::parse(&fixture("nemotron_h_config.json")).unwrap();
-        assert_eq!((n.nested, n.prefix(), n.family(), n.shared.latent()), (false, "model.", Some(Family::NemotronH), Some(1024)));
+        let kimi = serde_json::from_str::<Value>(&fixture("headers/Kimi-K3.json")).unwrap()["config"].as_str().unwrap().to_string();
+        let k = ModelConfig::parse(&kimi).unwrap();
+        assert_eq!((k.nested, k.prefix(), k.family(), k.shared.latent()), (true, "model.language_model.", Some(Family::Kimi), Some(3584)));
+        // (the plain dense kind is told by the model type the description builder reads, any of them, and not by what a release calls its architecture)
+        for model_type in super::super::describe::LLAMA {
+            let d = ModelConfig::parse(&format!(r#"{{"architectures": ["AnyNameForCausalLM"], "model_type": "{model_type}"}}"#)).unwrap();
+            assert_eq!((d.nested, d.prefix(), d.family()), (false, "model.", Some(Family::Qwen3)), "{model_type}");
+        }
+        assert_eq!(family_of(r#"{"architectures": ["Qwen3ForCausalLM"], "model_type": "other"}"#), None);
         // (a null in the text model does not hide the top level's value)
         let c = ModelConfig::parse(r#"{"tie_word_embeddings": true, "text_config": {"tie_word_embeddings": null, "hidden_size": 8}}"#).unwrap();
         assert_eq!((c.shared.tie_word_embeddings, c.shared.hidden_size), (Some(true), Some(8)));
@@ -330,10 +338,11 @@ mod tests {
         }
         let header = |f: &str| serde_json::from_str::<Value>(&fixture(&format!("headers/{f}"))).unwrap()["config"].as_str().unwrap().to_string();
         let q35 = serde_json::from_str::<Value>(&fixture("qwen35_configs.json")).unwrap()["Qwen/Qwen3.5-0.8B"].to_string();
-        let qwen3 = r#"{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "hidden_size": 4096, "intermediate_size": 12288, "num_hidden_layers": 36,
+        // (the plain dense kind's reader, on a shape that is no release's by name: `model_type` is the description builder's input)
+        let dense = r#"{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "hidden_size": 4096, "intermediate_size": 12288, "num_hidden_layers": 36,
             "num_attention_heads": 32, "num_key_value_heads": 8, "head_dim": 128, "vocab_size": 151936, "max_position_embeddings": 40960, "rms_norm_eps": 1e-6,
             "rope_theta": 1000000, "eos_token_id": 151645}"#;
-        same("Qwen3", qwen3, |t| crate::weights::Config::parse(t, "c", None), |c| crate::weights::Config::of(c, "c", None));
+        same("plain dense", dense, |t| crate::weights::Config::parse(t, "c", None), |c| crate::weights::Config::of(c, "c", None));
         same("Qwen3.5", &q35, |t| crate::qwen35::Config35::parse(t, "c", None), |c| crate::qwen35::Config35::of(c, "c", None));
         same(
             "Gemma 4",

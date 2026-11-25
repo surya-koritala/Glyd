@@ -10,7 +10,8 @@ use crate::ui::Refusal;
 /// A family of models the engine tells apart by its config.json.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Family {
-    /// Qwen3 dense (Qwen3ForCausalLM): on the executor as a Llama-style dense model (src/dynamic/dense.rs), lossless or at the lossy levels.
+    /// The plain dense kind (every pre-norm dense decoder the description builder's `llama` reading takes: `runtime::describe::LLAMA`), on the executor
+    /// (src/dynamic/dense.rs), lossless or at the lossy levels. The variant keeps the name of the first release that ran on it.
     Qwen3,
     /// Qwen3.5, 3.6 and 3.8 dense (Qwen3_5ForCausalLM, Qwen3_5ForConditionalGeneration): penguin on the dynamic route (one GPU, or its layers
     /// cut over several), the lossy levels on one GPU.
@@ -50,7 +51,7 @@ pub struct Support {
 
 /// The most context the lossy paths take where none is asked (one constant: the planner's, src/plan.rs).
 pub use crate::plan::LOSSY_CTX;
-/// The context the Qwen3 path and the dynamic engine take where none is asked (src/plan.rs `sizing::CTX_WANT`, `sizing::size_dynamic`).
+/// The context the plain dense kind's path and the dynamic engine take where none is asked (src/plan.rs `sizing::CTX_WANT`, `sizing::size_dynamic`).
 pub const DEFAULT_CTX: usize = 8192;
 
 /// Lossless, or a block level of every weight.
@@ -63,7 +64,7 @@ const PENGUIN_HB: &[&str] = &["penguin", "hummingbird"];
 pub static TABLE: [Support; 9] = [
     Support {
         family: Family::Qwen3,
-        name: "Qwen3",
+        name: "plain dense",
         levels: PENGUIN_LOSSY,
         hummingbird_packed_only: false,
         default_ctx: Some(DEFAULT_CTX),
@@ -222,12 +223,14 @@ pub fn family(cfg_text: &str, name: &str) -> Result<Family, Refusal> {
     let arch = c.arch.as_str();
     match c.family() {
         Some(f) => Ok(f),
-        None if arch.is_empty() => {
-            Err(Refusal::unsupported(format!("{name}: its config.json does not say what kind of model it is"), "The engine runs Qwen3 models so far"))
-        }
-        // (the frozen Python tool reads this sentence to hand the model to vLLM; keep its words)
+        None if arch.is_empty() => Err(Refusal::unsupported(
+            format!("{name}: its config.json does not say what kind of model it is"),
+            "Run a model whose config.json names its architecture, as google/gemma-4-12B-it's does",
+        )),
+        // (what is missing is said, not a list of what runs: the description of this architecture's layers. The Python tool hands the model to vLLM on this
+        // refusal's status and prints its first line as it is)
         _ => Err(Refusal::unsupported(
-            format!("{name} is a {arch} model, and this engine runs Qwen3 models so far"),
+            format!("{name} is a {arch} model, which this engine has no description of yet"),
             crate::machine::instead(
                 "Other models run with the vLLM-based glyd, which is installed here",
                 &format!("Pick a model of a family this engine runs (glyd run Qwen/Qwen3.8-27B), or {}", crate::machine::FULL_TOOL),
@@ -312,11 +315,19 @@ mod tests {
         std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)).unwrap()
     }
 
-    const QWEN3: &str = r#"{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "hidden_size": 4096, "num_hidden_layers": 36, "num_attention_heads": 32, "num_key_value_heads": 8, "head_dim": 128}"#;
+    /// A plain dense decoder's config (the kind's: `model_type` is what the description builder reads, no release is meant by it).
+    const DENSE: &str = r#"{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "hidden_size": 4096, "num_hidden_layers": 36, "num_attention_heads": 32, "num_key_value_heads": 8, "head_dim": 128}"#;
 
     #[test]
     fn every_family_is_told_apart() {
-        assert_eq!(family(QWEN3, "q").unwrap(), Family::Qwen3);
+        assert_eq!(family(DENSE, "d").unwrap(), Family::Qwen3);
+        assert_eq!(
+            row(Family::Qwen3).name,
+            crate::dynamic::dense::FAMILY,
+            "one name for the dense kind: the table's row, the executor's description, a plan's family"
+        );
+        // (the dense kind by any model type the description builder's `llama` reading takes, under any architecture's name)
+        assert_eq!(family(r#"{"architectures": ["AnyNameForCausalLM"], "model_type": "mistral"}"#, "d").unwrap(), Family::Qwen3);
         let q35: Value = json::parse(&fixture("qwen35_configs.json")).unwrap();
         let first = q35.as_object().unwrap()[0].1.clone();
         assert_eq!(family(&json::to_compact(&first), "q").unwrap(), Family::Qwen35);
@@ -325,19 +336,23 @@ mod tests {
         assert_eq!(family(&fixture("glm5_next_config.json"), "g").unwrap(), Family::Glm);
         assert_eq!(family(&fixture("qwen4x_config.json"), "x").unwrap(), Family::FlashNext);
         assert_eq!(family(r#"{"model_type": "deepseek_v4", "architectures": ["DeepseekV4ForCausalLM"]}"#, "d").unwrap(), Family::DeepSeekV4);
-        let r = family(r#"{"architectures": ["Qwen2ForCausalLM"]}"#, "Qwen2.5-7B").unwrap_err();
-        assert!(r.what == "Qwen2.5-7B is a Qwen2ForCausalLM model, and this engine runs Qwen3 models so far" && r.code == crate::ui::CANNOT, "{r:?}");
+        // (a kind with no description: what is missing is said, and no family is listed)
+        let r = family(r#"{"architectures": ["OtherForCausalLM"], "model_type": "other"}"#, "other").unwrap_err();
+        assert!(r.what == "other is a OtherForCausalLM model, which this engine has no description of yet" && r.code == crate::ui::CANNOT, "{r:?}");
+        assert!(!r.fix.contains("Qwen3 model") && !r.fix.contains("Qwen3-"), "{r:?}");
+        let r = family("{}", "nameless").unwrap_err();
+        assert!(r.what.contains("does not say what kind of model it is") && !r.fix.contains("Qwen3"), "{r:?}");
     }
 
     #[test]
     fn levels_follow_the_table() {
-        assert!(check(QWEN3, "Qwen/Qwen3-8B", "Qwen3-8B", "penguin").is_ok());
-        assert!(check(QWEN3, "Qwen/Qwen3-8B", "Qwen3-8B", "swift").is_ok(), "Qwen3 runs on the executor at the lossy levels too");
-        let r = check(QWEN3, "Qwen/Qwen3-8B", "Qwen3-8B", "hummingbird").unwrap_err();
+        // (the dense kind's one line: the row's levels, and a refusal's words, on a made-up name)
+        let r = check(DENSE, "org/dense", "dense", "hummingbird").unwrap_err();
         assert_eq!(
             (r.what.as_str(), r.fix.as_str()),
-            ("Qwen3-8B (Qwen3) runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird", "Run it lossless: glyd run Qwen/Qwen3-8B")
+            ("dense (plain dense) runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird", "Run it lossless: glyd run org/dense")
         );
+        assert!(check(DENSE, "org/dense", "dense", "penguin").is_ok() && check(DENSE, "org/dense", "dense", "swift").is_ok());
         let n = fixture("nemotron_h_config.json");
         for l in ["penguin", "kestrel", "swift", "hummingbird"] {
             assert!(check(&n, "nvidia/N", "N", l).is_ok(), "{l}");

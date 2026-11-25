@@ -3660,7 +3660,7 @@ pub mod sizing {
         let first = if cublas { 4096 } else { 2048 };
         Needs {
             kind: Kind::Qwen3,
-            family: "Qwen3",
+            family: crate::dynamic::dense::FAMILY,
             layout,
             weights: weights(cfg, layout),
             bf16: cfg.matrix_bytes(),
@@ -4969,8 +4969,8 @@ mod tests {
         assert!(crate::glm::ConfigGlm::parse(&glm, "c", None).unwrap_err().to_string().contains("num_hidden_layers"));
         let q35 = big(&json::to_compact(json::parse(&fixture("qwen35_configs.json")).unwrap().get("Qwen/Qwen3.5-9B").unwrap()));
         assert!(crate::qwen35::Config35::parse(&q35, "c", None).unwrap_err().to_string().contains("num_hidden_layers"));
-        let q3 = r#"{"architectures":["Qwen3ForCausalLM"],"hidden_size":1024,"num_hidden_layers":1000000000,"num_attention_heads":16,"num_key_value_heads":8,"intermediate_size":3072,"vocab_size":151936,"rms_norm_eps":1e-06,"rope_theta":1000000.0,"max_position_embeddings":40960}"#;
-        assert!(crate::weights::Config::parse(q3, "c", None).unwrap_err().to_string().contains("num_hidden_layers"));
+        let dense = r#"{"architectures":["Qwen3ForCausalLM"],"model_type":"qwen3","hidden_size":1024,"num_hidden_layers":1000000000,"num_attention_heads":16,"num_key_value_heads":8,"intermediate_size":3072,"vocab_size":151936,"rms_norm_eps":1e-06,"rope_theta":1000000.0,"max_position_embeddings":40960}"#;
+        assert!(crate::weights::Config::parse(dense, "c", None).unwrap_err().to_string().contains("num_hidden_layers"));
         assert!(start.elapsed() < std::time::Duration::from_secs(10), "{:?}", start.elapsed());
         // an interval of 0 in a Qwen4x config without layer_types
         let mut v = json::parse(&fixture("qwen4x_config.json")).unwrap();

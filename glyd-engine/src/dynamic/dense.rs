@@ -1,4 +1,4 @@
-//! Every pre-norm dense decoder the description builder reads with its `llama` builder (Llama, Mistral, Qwen2, Qwen3: `runtime::describe::LLAMA`) on the
+//! Every pre-norm dense decoder of the config types the description builder's `llama` builder reads (`runtime::describe::LLAMA`) on the
 //! executor (R3c, #139): the config's layer kinds lowered to the shared operations (`lower::dense`: the attention kind, the gated SiLU MLP, the RMS norms),
 //! loaded by the executor's own loader at any level its products take (penguin's lossless packs, kestrel's, swift's and wren's), served by the scheduler with
 //! paged keys and values (12-bit pages where the tables are set).
@@ -8,7 +8,7 @@ use crate::ffi::{Error, Result};
 use std::path::Path;
 
 /// The executor description's family name.
-pub const FAMILY: &str = "Llama-style dense";
+pub const FAMILY: &str = "plain dense";
 
 /// Whether a config.json's text is one the `llama` builder reads (its text model's type).
 pub fn is_dense(text: &str) -> bool {
