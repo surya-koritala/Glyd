@@ -783,6 +783,19 @@ impl ModelDesc {
         }
         w
     }
+
+    /// The description as stage `st` runs it, from one lowered for the whole model: its experts' blocks numbered as a stage's loader reads them (`Op::Moe`'s block k
+    /// the stage's k-th, the blocks of its layers alone), the operations of the other stages' layers kept as they are (never run here).
+    pub(super) fn staged(mut self, st: &Stage) -> ModelDesc {
+        let mut k = 0;
+        for op in self.layers[st.layers.0..st.layers.1].iter_mut().flatten() {
+            if let Op::Moe(m) = op {
+                m.block = k;
+                k += 1;
+            }
+        }
+        self
+    }
 }
 
 impl Default for Opts {
@@ -883,7 +896,8 @@ impl Part {
 
     /// The part's weights as loaded by the family's own loader, with its activations and outputs.
     fn from_loaded(d: ModelDesc, l: Loaded, rows: usize, out: usize) -> Result<Part> {
-        let slots: Vec<Buf> = d.widths.iter().map(|&w| Buf::new(w.max(1) * rows * 2)).collect::<Result<_>>()?;
+        // (zeroed: a stage after the first warms its graph up, and hands its slots over, before its own layers have written every one of them)
+        let slots: Vec<Buf> = d.widths.iter().map(|&w| Buf::zeroed(w.max(1) * rows * 2)).collect::<Result<_>>()?;
         let logits = Buf::new(d.vocab * out * 2)?;
         let (tok, val) = (Buf::zeroed(4 * out)?, Buf::zeroed(4 * out)?);
         let mut small_sc = l.small_sc;
@@ -1856,8 +1870,11 @@ impl Dyn {
     /// `new_with`, the stage's packed matrices held as `placing` says.
     #[allow(clippy::too_many_arguments)]
     pub fn new_placed(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts, experts: &Experts, placing: &Placing) -> Result<Dyn> {
-        if draft.is_some() && !(st.first && st.last) {
-            return err("drafting with a model split across GPUs: not yet");
+        // (across GPUs a draft head of the model drafts on the last stage, which holds the model's last state (`head::state`) and its LM head; a draft
+        // model, or a head elsewhere, is not split)
+        let head_drafts = draft.as_ref().is_some_and(|x| matches!(x.desc.first, Op::MtpIn { .. }));
+        if draft.is_some() && !(st.first && st.last) && !(head_drafts && st.last) {
+            return err("drafting with a model split across GPUs: a draft head of the model's on the last stage alone (not a draft model)");
         }
         if let Some(k) = unnamed(&d) {
             return err(format!(
@@ -1899,7 +1916,11 @@ impl Dyn {
                 Ok((upload_bytes(crate::weights::as_bytes(&c))?, upload_bytes(crate::weights::as_bytes(&s))?))
             })
             .collect::<Result<_>>()?;
-        let want = d.wanted(&st);
+        let mut want = d.wanted(&st);
+        // (a last stage that drafts with the head holds the embedding too: the head reads the row of the token after the model's)
+        if head_drafts {
+            want[d.embed] = true;
+        }
         let big = load_part(dir, d, layout, threads, ch, rows_out, Some(&want), experts, placing, &dev)?;
         // (a draft model is packed lossy here: the big model checks every draft token, so its precision moves only how many are kept; a draft head of the model
         // at the model's layout, a chunk's rows (it reads each prompt row's streams), its rings after the model's, its LM head and embedding the model's)
@@ -1985,7 +2006,8 @@ impl Dyn {
         // (a draft head's rings after the model's: its operations name them so, `head::shift_rings`)
         let head_rings: &[Ring] = draft.as_ref().filter(|x| x.head.is_some()).map_or(&[], |x| &x.p.d.rings);
         for (i, r) in d.rings.iter().chain(head_rings).enumerate() {
-            let cap = if !whole && !rings_used.contains(&i) { 0 } else { r.rows(ctx, ch) };
+            // (the stage's rings, and a draft head's on the stage that drafts)
+            let cap = if !whole && !rings_used.contains(&i) && i < d.rings.len() { 0 } else { r.rows(ctx, ch) };
             ring_off.push((at, at_v));
             ring_cap.push(cap);
             at += (cap * r.nk * r.d * 2) as u64;
@@ -3316,6 +3338,10 @@ impl Dyn {
             if self.stage.first {
                 self.embed(tokens)?;
             } else {
+                // (the rows' tokens, which an operation of a later stage may read as the embedding hands them to the first: the n-gram embedding's rows, hash routing)
+                if let Some(v) = &self.tok {
+                    v.write(0, &tokens.iter().map(|&t| t as i32).collect::<Vec<i32>>())?;
+                }
                 let mut off = 0usize;
                 for (sl, w) in self.boundary() {
                     copy_h2d_async(self.big.slot(sl), io[off..].as_ptr() as *const _, n * w * 2, self.dev.stream)?;
@@ -3460,8 +3486,8 @@ impl Dyn {
                     }
                 }
                 // (the n-gram embedding: its convolution's last inputs those before the pass and the kept rows' (`qx_ple_conv`: oldest first), its last tokens the
-                // two before the pass and the kept rows' (`qx_ngram_hist`: each token + 1, oldest first))
-                for (l, ops) in p.d.layers.iter().enumerate() {
+                // two before the pass and the kept rows' (`qx_ngram_hist`: each token + 1, oldest first); this stage's layers', another stage holds the others' states)
+                for (l, ops) in p.d.layers.iter().enumerate().take(self.stage.layers.1).skip(self.stage.layers.0) {
                     for op in ops {
                         match *op {
                             Op::NgramAdd(x) => {

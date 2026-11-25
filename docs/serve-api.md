@@ -47,8 +47,9 @@ HF_HUB_OFFLINE=1 GLYD_API_KEY=... glyd-engine serve /path/to/models--glyd--Qwen3
   The start checks two gathers of known values and refuses (exit 3) where the GPUs' writes to each other arrive wrong.
   Elsewhere, or with `--split CUTS --devices GPUS`, the layers are split between the GPUs (one at work at a time). The
   numbers: [research/tp-8xa100-2026-10-22](../research/tp-8xa100-2026-10-22/README.md). The Qwen3.5 layout and Nemotron-H are cut over the GPUs at penguin too.
-  Qwen3.8-Flash-Next (penguin, `glyd run`, `serve` and `fit`) runs on the one GPU with the most room: its layers are not cut over GPUs on the executor yet, so `--split` and a
-  `--devices` of more than one are refused in words (`Leave out --split; --devices 1 picks the GPU`), as is `qwenserve --gpus 0,1`; a model that does not fit that one GPU is refused with the memory it needs.
+  Qwen3.8-Flash-Next (penguin, `glyd run`, `serve` and `fit`) is cut over the GPUs too, the same way: one GPU where one holds it, its layers split where
+  not (`--split CUTS --devices GPUS` chooses); Condor's `qwenserve CKPT PACK --gpus 0,1` cuts the layers over those cards with each part's experts in a cache
+  of its own (one request at a time across GPUs, as the release did).
 - The environment it reads: GLYD_API_KEY (or VLLM_API_KEY; `--api-key` works but `ps` shows it), HF_HUB_CACHE or HF_HOME
   for a Hub name, HF_HUB_OFFLINE=1. A directory needs nothing else: a CUDA build loads no GPU library (its kernels are its own),
   so there is none to find (`GLYD_GPU_LIB=PATH` loads Glyd's library for the checks that compare with it; an AMD build looks for

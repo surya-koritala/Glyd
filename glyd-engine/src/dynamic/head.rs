@@ -8,6 +8,9 @@
 //! (or takes the draft the head made after the last round), drafts on its own streams, has the model check the drafts in one verify pass (each row as its
 //! step: `Dyn::verify_rows`, the states gone back to after the rows kept: `Dyn::rewind`), and runs the head again on the kept rows' streams, its rows at those
 //! positions in place of its drafts' (what its caches held past them is written again before a row reads it).
+//!
+//! A model split across GPUs (src/dynamic/split.rs) drafts with the head on its last stage, which holds the model's last state, its LM head and the embedding
+//! the head reads: the same steps, a round's in its parts (`stage_chunk`, `stage_drafts`, every stage's verify pass and rewind, `stage_head_again`).
 
 use super::{copy_d2d_async, copy_d2h_async, Draft, Dyn, HeadLast, IdxKeys, IdxPick, ModelDesc, MtpFront, Op, Slot, VERIFY_ROWS};
 use crate::ffi::{err, Error, Result};
@@ -234,7 +237,7 @@ impl Dyn {
     /// (greedy), or each by `sampler`; the states go back to after the rows kept (`rewind`), and the head runs again on those rows' streams with the token after
     /// each, its rows there in place of its drafts', its last row's draft the next round's first.
     fn verify_drafts(&mut self, dr: &Draft, last: u32, drafts: &[u32], sampler: Option<&mut crate::sampler::Sampler>) -> Result<Vec<u32>> {
-        let (n0, s, w) = (self.n, self.dev.stream, dr.p.d.width(Slot::Hid) * 2);
+        let n0 = self.n;
         let seq: Vec<u32> = std::iter::once(last).chain(drafts.iter().copied()).collect();
         let n = seq.len();
         let mut io = Vec::new();
@@ -244,13 +247,53 @@ impl Dyn {
         let (out, kept) = super::accept(&seq, &big, &words, self.big.d.vocab, sampler);
         self.rewind(kept + 1)?;
         let next: Vec<u32> = seq[1..=kept].iter().copied().chain(out.last().copied()).collect();
+        self.head_again(dr, n0, kept, &next)?;
+        self.prof_pass(n, 0)?;
+        Ok(out)
+    }
+
+    /// After a round's verify pass at `n0` and `rewind` to its `kept` drafts and the row before them: the head again on those rows' streams, each with the token
+    /// after it (`next`), its rows there in place of its drafts', its last row's draft the next round's first.
+    fn head_again(&self, dr: &Draft, n0: usize, kept: usize, next: &[u32]) -> Result<()> {
+        let (s, w) = (self.dev.stream, dr.p.d.width(Slot::Hid) * 2);
         // SAFETY: the model's state slot holds the verify pass's rows (`rewind` writes other slots); the copy is queued before the head's pass.
         unsafe {
             copy_d2d_async(dr.p.slot(Slot::Hid), self.big.slot(state(&dr.p.d)), (kept + 1) * w, s)?;
-            self.head_pass(dr, n0, &next)?;
+            self.head_pass(dr, n0, next)?;
         }
-        self.prof_pass(n, 0)?;
-        Ok(out)
+        Ok(())
+    }
+
+    /// A prompt chunk's rows through this stage of a model split across GPUs (`stage_rows`), and on the stage that drafts with a head of the model (the last) the
+    /// head's rows of the chunk, as `prefill` hands them on one GPU (`draft_after_chunk`).
+    pub fn stage_chunk(&mut self, tokens: &[u32], at: usize, io: &mut Vec<u16>, head: usize) -> Result<()> {
+        self.stage_rows(tokens, at, io, head)?;
+        // SAFETY: the stage's slots hold the chunk's rows (its pass just ran; `stage_rows` synchronized the stream).
+        unsafe { self.draft_after_chunk(at, tokens, head > 0) }
+    }
+
+    /// The drafts of a round across GPUs, on the stage that drafts with a head of the model (the last): k after `last` (the head's and the context's most), as
+    /// `spec_round` drafts them on one GPU; or `given`, after the head's own first pass all the same (`spec_round_given`'s way to every count kept).
+    pub fn stage_drafts(&mut self, last: u32, given: Option<&[u32]>) -> Result<Vec<u32>> {
+        let Some(dr) = self.draft.take() else { return err("drafts asked of a stage that does not draft") };
+        let most = dr.k.min(VERIFY_ROWS - 1).min(self.ctx.saturating_sub(self.n + 1));
+        let r = match (&dr.head, given) {
+            (None, _) => err("drafts across GPUs are a draft head's of the model (a draft model's are not split)"),
+            _ if self.n == 0 => err("a drafting round before a prompt"),
+            (Some(_), None) => self.head_drafts(&dr, last, most),
+            (Some(_), Some(d)) if !d.is_empty() && d.len() <= most => self.head_drafts(&dr, last, 1).map(|_| d.to_vec()),
+            (Some(_), Some(d)) => err(format!("{} drafts given after {} tokens: 1 to {most}", d.len(), self.n)),
+        };
+        self.draft = Some(dr);
+        r
+    }
+
+    /// The stage that drafts after a round's verify pass at `n0` and every stage's `rewind` to the `kept` drafts: the head again on the kept rows (`head_again`).
+    pub fn stage_head_again(&mut self, n0: usize, kept: usize, next: &[u32]) -> Result<()> {
+        let Some(dr) = self.draft.take() else { return err("the head asked of a stage that does not draft") };
+        let r = if dr.head.is_some() { self.head_again(&dr, n0, kept, next) } else { err("a draft model's round across GPUs") };
+        self.draft = Some(dr);
+        r
     }
 
     /// A drafting round with `drafts` in place of the head's (its waiting row given `last` all the same, as a round takes it): a check's way to every count of drafts
@@ -270,14 +313,16 @@ impl Dyn {
     }
 }
 
-/// `glyd-engine draftcheck CASE [--level L] [--k K] [--tokens N]`: a family's draft head on the executor (`lower::draft_head`), on its random case with its
-/// MTP layer: CASE `qwen4x` (`logits::qwen4x_mtp_random`: the `qwen4x` case's model to the bit and its head of the model's streams), `glm-dsa` and
-/// `glm-dsa-f8` (`logits::glm_dsa_mtp_random`: those cases' models to the bit, bf16 and as released in FP8, and their joined head: a latent attention with an
-/// indexer of its own and the experts). For a short prompt and one past two chunks: (1) the drafted greedy generation against the model alone, N tokens:
+/// `glyd-engine draftcheck CASE [--level L] [--k K] [--tokens N] [--split CUT,.. --devices GPU,..]`: a family's draft head on the executor (`lower::draft_head`),
+/// on its random case with its MTP layer: CASE `qwen4x` (`logits::qwen4x_mtp_random`: the `qwen4x` case's model to the bit and its head of the model's
+/// streams), `glm-dsa` and `glm-dsa-f8` (`logits::glm_dsa_mtp_random`: those cases' models to the bit, bf16 and as released in FP8, and their joined head: a
+/// latent attention with an indexer of its own and the experts). For a short prompt and one past two chunks: (1) the drafted greedy generation against the model alone, N tokens:
 /// every token and every one of its rows of logits the same bits (the round's verify rows are the steps'), the drafts and how many were kept said; (2)
 /// the head held to the CPU reference of the kinds (`RefMtp::step_streams`, `RefMtp::step`) on the states and tokens it read: each of its passes' last row
 /// against the reference's on the head's own choices (its experts, its indexer's picks), at the bound the family is held to (the case's fixture's,
-/// tests/logits/CASE.json.gz), the figures on the reference's own choices printed beside them. An error where either fails.
+/// tests/logits/CASE.json.gz), the figures on the reference's own choices printed beside them. With `--split` (the `qwen4x` case), (1) again with the model's
+/// layers in stages (src/dynamic/split.rs; GPU 0 for each where `--devices` is not given), its head on the last: the tokens and rows the model's alone, and
+/// each round's tokens the one-GPU drafted engine's (the head drafts there as on one GPU). An error where any fails.
 #[cfg(feature = "dev")]
 pub fn check(a: &crate::args::Args) -> Result<()> {
     let case = a.need(1, "CASE")?;
@@ -291,9 +336,10 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     };
     let level = a.flag("level").unwrap_or("penguin");
     let (k, tokens): (usize, usize) = (a.num("k", 3usize)?, a.num("tokens", 24usize)?);
+    let split = super::split::split_args(a)?;
     let dir = std::env::temp_dir().join(format!("glyd-draftcheck-{}", std::process::id()));
     make(&dir)?;
-    let r = check_on(case, &dir, level, k, tokens);
+    let r = check_on(case, &dir, level, k, tokens, &split);
     std::fs::remove_dir_all(&dir).ok();
     let (bits_ok, held_ok) = r?;
     if !(bits_ok && held_ok) {
@@ -305,6 +351,70 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     }
     println!("PASS draftcheck {case} at {level}");
     Ok(())
+}
+
+/// A drafted engine as `draftcheck` drives it: the model on one GPU (`Dyn`), or its layers in stages with the head on the last (`split::Split`).
+#[cfg(feature = "dev")]
+trait Drafted {
+    /// A new sequence's prompt: the token after it and that row's logits (bf16 words).
+    fn begin(&mut self, prompt: &[u32]) -> Result<(u32, Vec<u16>)>;
+    /// A round from `last`, of the head's drafts or of those `given`: its tokens and their rows' logits.
+    fn round(&mut self, last: u32, given: Option<&[u32]>) -> Result<(Vec<u32>, Vec<u16>)>;
+}
+
+#[cfg(feature = "dev")]
+impl Drafted for Dyn {
+    fn begin(&mut self, prompt: &[u32]) -> Result<(u32, Vec<u16>)> {
+        self.reset()?;
+        let s = self.prefill(prompt)?;
+        Ok((s.token, self.logit_words()?))
+    }
+    fn round(&mut self, last: u32, given: Option<&[u32]>) -> Result<(Vec<u32>, Vec<u16>)> {
+        let out = match given {
+            Some(d) => self.spec_round_given(last, d)?,
+            None => self.spec_round(last, None)?,
+        };
+        let words = self.head_out(out.len(), true)?.1;
+        Ok((out, words))
+    }
+}
+
+#[cfg(feature = "dev")]
+impl Drafted for super::split::Split {
+    fn begin(&mut self, prompt: &[u32]) -> Result<(u32, Vec<u16>)> {
+        self.reset()?;
+        let s = self.prefill(prompt)?;
+        // (the last stage's row, widened from its bf16 words: their bits again)
+        Ok((s.token, self.logits()?.iter().map(|x| (x.to_bits() >> 16) as u16).collect()))
+    }
+    fn round(&mut self, last: u32, given: Option<&[u32]>) -> Result<(Vec<u32>, Vec<u16>)> {
+        let out = self.spec_round_with(last, given, None)?;
+        let words = self.head_out(out.len(), true)?.1;
+        Ok((out, words))
+    }
+}
+
+/// `tokens` greedy tokens of `e` drafting after `prompt` (round r at token `at` of `given(r, at)`'s drafts where it gives some, else the head's): the tokens, their
+/// rows of logits and each round's tokens.
+#[cfg(feature = "dev")]
+#[allow(clippy::type_complexity)]
+fn drafted_run(
+    e: &mut dyn Drafted,
+    prompt: &[u32],
+    tokens: usize,
+    given: &dyn Fn(usize, usize) -> Option<Vec<u32>>,
+) -> Result<(Vec<u32>, Vec<Vec<u16>>, Vec<Vec<u32>>)> {
+    let (t, row) = e.begin(prompt)?;
+    let (mut got, mut rows, mut rounds) = (vec![t], vec![row], Vec::new());
+    while got.len() < tokens {
+        let (out, words) = e.round(*got.last().unwrap_or(&0), given(rounds.len(), got.len()).as_deref())?;
+        rows.extend(words.chunks(words.len() / out.len().max(1)).map(<[u16]>::to_vec));
+        got.extend(&out);
+        rounds.push(out);
+    }
+    got.truncate(tokens);
+    rows.truncate(tokens);
+    Ok((got, rows, rounds))
 }
 
 /// The model of `case` in `dir` alone, and drafting with its head `k` tokens a round, each by its family's loader.
@@ -319,10 +429,10 @@ fn engines(case: &str, dir: &std::path::Path, o: &super::Opts, k: usize) -> Resu
     })
 }
 
-/// `check`'s two parts on the model of `case` in `dir`: whether the drafted generations are the model's alone, bit for bit, and whether the head is within
-/// its bound.
+/// `check`'s parts on the model of `case` in `dir`: whether the drafted generations are the model's alone, bit for bit (and across the stages of `split`
+/// where it cuts any: the one GPU's rounds too), and whether the head is within its bound.
 #[cfg(feature = "dev")]
-fn check_on(case: &str, dir: &std::path::Path, level: &str, k: usize, tokens: usize) -> Result<(bool, bool)> {
+fn check_on(case: &str, dir: &std::path::Path, level: &str, k: usize, tokens: usize, split: &(Vec<usize>, Vec<i32>)) -> Result<(bool, bool)> {
     use crate::logits::{compare, level_layout, Bound, Fixture, HeadRef, HeadRow, Row};
     let layout = level_layout(level)?;
     let o = super::Opts { ctx: 1024, chunk: 64, graph: true, device: 0, layout };
@@ -330,6 +440,14 @@ fn check_on(case: &str, dir: &std::path::Path, level: &str, k: usize, tokens: us
     let bound = fx.bounds.first().map(|b| b.bound.clone()).ok_or_else(|| Error(format!("the {case} fixture has no bound")))?;
     let (mut plain, mut drafted) = engines(case, dir, &o, k)?;
     let vocab = plain.big.d.vocab;
+    let mut staged = match split {
+        (cuts, _) if cuts.is_empty() => None,
+        (cuts, devices) if case == "qwen4x" => match super::qwen4x::open_split(dir, &o, super::qwen4x::experts_at(o.layout), cuts, devices, Some(k))? {
+            super::split::Run::Split(s) if s.drafting() => Some(s),
+            _ => return err(format!("draftcheck --split {cuts:?}: the stages do not draft")),
+        },
+        _ => return err(format!("draftcheck {case} --split: the check across stages takes the qwen4x case")),
+    };
     let (short, _, long) = crate::logits::standard_tokens(vocab);
     let (mut bits_ok, mut held_ok) = (true, true);
     drafted.trace_head(true);
@@ -344,24 +462,24 @@ fn check_on(case: &str, dir: &std::path::Path, level: &str, k: usize, tokens: us
             want.push(s.token);
             want_rows.push(plain.logit_words()?);
         }
+        // (the drafts given: the model's own next tokens, round r's (r mod (k + 1))-th changed (none where that is k), so that every count of drafts kept, 0 to
+        // k, is gone back to: a random head's own drafts are seldom the model's)
+        let given = |r: usize, at: usize| -> Option<Vec<u32>> {
+            let mut d: Vec<u32> = want[at..at + k].to_vec();
+            if let Some(x) = d.get_mut(r % (k + 1)) {
+                *x = (*x + 1) % vocab as u32;
+            }
+            Some(d)
+        };
+        // (a run against the model alone: every token and row of logits; the rows the same and the first token apart)
+        let judge = |got: &[u32], rows: &[Vec<u16>]| {
+            let same = rows.iter().zip(&want_rows).filter(|(a, b)| a == b).count();
+            (got == &want[..tokens] && same == tokens, same, got.iter().zip(&want).position(|(a, b)| a != b))
+        };
+        let tokens_said = |got: &[u32]| if got == &want[..tokens] { "every token" } else { "NOT" };
         // drafted: the prompt's row, then each round's tokens and its verify rows' logits
-        drafted.reset()?;
-        let s = drafted.prefill(prompt)?;
-        let (mut got, mut got_rows) = (vec![s.token], vec![drafted.logit_words()?]);
-        let (mut rounds, mut kept) = (0, 0);
-        while got.len() < tokens {
-            let out = drafted.spec_round(*got.last().unwrap_or(&0), None)?;
-            let (_, words) = drafted.head_out(out.len(), true)?;
-            rounds += 1;
-            kept += out.len() - 1;
-            got_rows.extend(words.chunks(vocab).map(<[u16]>::to_vec));
-            got.extend(out);
-        }
-        got.truncate(tokens);
-        got_rows.truncate(tokens);
-        let same = got_rows.iter().zip(&want_rows).filter(|(a, b)| a == b).count();
-        let first = got.iter().zip(&want).position(|(a, b)| a != b);
-        let ok = got[..] == want[..tokens] && same == tokens;
+        let (got, rows, own) = drafted_run(&mut drafted, prompt, tokens, &|_, _| None)?;
+        let ((ok, same, first), kept) = (judge(&got, &rows), own.iter().map(|r| r.len() - 1).sum::<usize>());
         bits_ok &= ok;
         if !ok {
             // (where a round's verify rows part from the steps': the first operation whose rows do, layer by layer)
@@ -373,41 +491,55 @@ fn check_on(case: &str, dir: &std::path::Path, level: &str, k: usize, tokens: us
             drafted.trace_head(true);
         }
         println!(
-                "{} drafted {what}, {tokens} tokens: {} the model's alone, rows of logits the same bits {same} of {tokens}{}; {rounds} rounds of {k} drafts, {kept} drafts kept ({:.2} tokens a round)",
-                if ok { "PASS" } else { "FAIL" },
-                if got[..] == want[..tokens] { "every token" } else { "NOT" },
-                first.map_or(String::new(), |i| format!(" (the first token apart: {i}, {} against {})", got[i], want[i])),
-                tokens as f64 / rounds.max(1) as f64
-            );
-        // drafts given: the model's own next tokens, round r's (r mod (k + 1))-th changed (none where that is k), so that every count of drafts kept, 0 to k, is
-        // gone back to (a random head's own drafts are seldom the model's)
-        drafted.reset()?;
-        let s = drafted.prefill(prompt)?;
-        let (mut got, mut got_rows) = (vec![s.token], vec![drafted.logit_words()?]);
-        let (mut rounds, mut kept_by) = (0, vec![0usize; k + 1]);
-        while got.len() < tokens {
-            let at = got.len();
-            let mut d: Vec<u32> = want[at..at + k].to_vec();
-            if let Some(x) = d.get_mut(rounds % (k + 1)) {
-                *x = (*x + 1) % vocab as u32;
-            }
-            let out = drafted.spec_round_given(*got.last().unwrap_or(&0), &d)?;
-            let (_, words) = drafted.head_out(out.len(), true)?;
-            kept_by[(out.len() - 1).min(k)] += 1;
-            rounds += 1;
-            got_rows.extend(words.chunks(vocab).map(<[u16]>::to_vec));
-            got.extend(out);
-        }
-        got.truncate(tokens);
-        got_rows.truncate(tokens);
-        let same = got_rows.iter().zip(&want_rows).filter(|(a, b)| a == b).count();
-        let ok = got[..] == want[..tokens] && same == tokens && kept_by.iter().all(|&c| c > 0);
+            "{} drafted {what}, {tokens} tokens: {} the model's alone, rows of logits the same bits {same} of {tokens}{}; {} rounds of {k} drafts, {kept} drafts kept ({:.2} tokens a round)",
+            if ok { "PASS" } else { "FAIL" },
+            tokens_said(&got),
+            first.map_or(String::new(), |i| format!(" (the first token apart: {i}, {} against {})", got[i], want[i])),
+            own.len(),
+            tokens as f64 / own.len().max(1) as f64
+        );
+        let kept_by = |rounds: &[Vec<u32>]| {
+            let mut by = vec![0usize; k + 1];
+            rounds.iter().for_each(|r| by[(r.len() - 1).min(k)] += 1);
+            by
+        };
+        let (got, rows, rounds) = drafted_run(&mut drafted, prompt, tokens, &given)?;
+        let ((ok, same, _), by) = (judge(&got, &rows), kept_by(&rounds));
+        let ok = ok && by.iter().all(|&c| c > 0);
         bits_ok &= ok;
         println!(
-            "{} drafts given, {what}, {tokens} tokens: {} the model's alone, rows of logits the same bits {same} of {tokens}; {rounds} rounds, of each count of drafts kept 0 to {k}: {kept_by:?}",
+            "{} drafts given, {what}, {tokens} tokens: {} the model's alone, rows of logits the same bits {same} of {tokens}; {} rounds, of each count of drafts kept 0 to {k}: {by:?}",
             if ok { "PASS" } else { "FAIL" },
-            if got[..] == want[..tokens] { "every token" } else { "NOT" },
+            tokens_said(&got),
+            rounds.len()
         );
+        // across the stages: the head's own drafts (each round the one GPU's), then the drafts given
+        if let Some(st) = staged.as_mut() {
+            let (got, rows, rounds) = drafted_run(st, prompt, tokens, &|_, _| None)?;
+            let (ok, same, first) = judge(&got, &rows);
+            let ok = ok && rounds == own;
+            bits_ok &= ok;
+            println!(
+                "{} drafted across the stages {:?} on GPUs {:?}, {what}: {} the model's alone, rows of logits the same bits {same} of {tokens}{}; {} rounds, {} the one GPU's round for round",
+                if ok { "PASS" } else { "FAIL" },
+                split.0,
+                split.1,
+                tokens_said(&got),
+                first.map_or(String::new(), |i| format!(" (the first token apart: {i}, {} against {})", got[i], want[i])),
+                rounds.len(),
+                if rounds == own { "every one" } else { "NOT" }
+            );
+            let (got, rows, rounds) = drafted_run(st, prompt, tokens, &given)?;
+            let ((ok, same, _), by) = (judge(&got, &rows), kept_by(&rounds));
+            let ok = ok && by.iter().all(|&c| c > 0);
+            bits_ok &= ok;
+            println!(
+                "{} drafts given across the stages, {what}: {} the model's alone, rows of logits the same bits {same} of {tokens}; {} rounds, of each count of drafts kept 0 to {k}: {by:?}",
+                if ok { "PASS" } else { "FAIL" },
+                tokens_said(&got),
+                rounds.len()
+            );
+        }
     }
     // the head against the reference, a row of each pass on the state and the token it read, its experts and its indexer's picks the head's own
     let passes = drafted.trace_head(false);
