@@ -341,6 +341,12 @@ fn situ(a: f32, b: f32, (beta, linear): (f32, f32)) -> f32 {
     bf16(beta * (a / beta).tanh() / (1.0 + (-a).exp()) * linear * (b / linear).tanh())
 }
 
+/// The release's weighted activation of a pair's gate and up (bf16 values; kernels/dsv4.cu's v4_moe_act): bf16(w silu(min(g, lim)) clamp(u, -lim, lim)).
+fn release(g: f32, u: f32, w: f32, lim: f32) -> f32 {
+    let (g, u) = (g.min(lim), u.clamp(-lim, lim));
+    bf16(w * (g / (1.0 + (-g).exp()) * u))
+}
+
 /// kernel.py's power-of-two scale: 2^ceil(log2(amax / max)), from the f32 bits.
 pub(crate) fn pow2_scale(amax: f32, inv_max: f32) -> f32 {
     let b = (amax * inv_max).to_bits();
@@ -448,8 +454,7 @@ pub fn experts(kernel: Kernel, z: &[u16], pairs: &[Fp4Pair], out: &mut [f32], ac
             Act::Release { lim, fp8 } => {
                 let w = pairs[p].weight;
                 for (i, v) in h.iter_mut().enumerate() {
-                    let (g, u) = (bf16(g[i]).min(lim), bf16(u[i]).clamp(-lim, lim));
-                    *v = bf16(w * (g / (1.0 + (-g).exp()) * u));
+                    *v = release(bf16(g[i]), bf16(u[i]), w, lim);
                 }
                 if fp8 {
                     fp8_sim(h, 128);
@@ -471,6 +476,65 @@ pub fn experts(kernel: Kernel, z: &[u16], pairs: &[Fp4Pair], out: &mut [f32], ac
             }
         }
     });
+    Ok(())
+}
+
+/// `actcheck` (development): the activations the expert cache's host computes beside the GPU, each as the GPU's kernel computes it and as the host does (`experts`), on the same bf16
+/// inputs: Kimi-K3's situ (kernels/moe.cu's moe_act) and the release's weighted SiLU of DeepSeek-V4 (kernels/dsv4.cu's v4_moe_act, a weight of one, no E4M3 step). The inputs: every
+/// gate bf16 holds from -64 to 64 against ups of each size, and every such up against gates of each size; the outputs (bf16) that differ, the most last places apart, and the first.
+#[cfg(feature = "dev")]
+pub fn act_check(_a: &crate::args::Args) -> Result<()> {
+    use crate::dev::Buf;
+    let dev = crate::dev::Dev::new(0)?;
+    let k = crate::moe::MoeKern::load(&dev)?;
+    let release_k: crate::kt::v4_moe_act = dev.typed()?;
+    let s = dev.stream;
+    let f = |b: u16| f32::from_bits((b as u32) << 16);
+    // (every bf16 of size at most 64, both signs; a spread of the other input)
+    let all: Vec<u16> = (0..=u16::MAX).filter(|&b| f(b).is_finite() && f(b).abs() <= 64.0).collect();
+    let spread: Vec<u16> =
+        [-40.0f32, -17.0, -3.0, -0.75, -0.0625, 0.0078125, 0.5, 1.0, 2.5, 6.0, 23.0, 50.0].iter().map(|&v| (bf16(v).to_bits() >> 16) as u16).collect();
+    let mut pairs: Vec<(u16, u16)> = all.iter().flat_map(|&g| spread.iter().map(move |&u| (g, u))).collect();
+    pairs.extend(all.iter().flat_map(|&u| spread.iter().map(move |&g| (g, u))));
+    const I: usize = 1024;
+    let rows = pairs.len().div_ceil(I);
+    pairs.resize(rows * I, (0, 0));
+    let mut gu = vec![0u16; rows * 2 * I];
+    for (n, &(g, u)) in pairs.iter().enumerate() {
+        (gu[n / I * 2 * I + n % I], gu[n / I * 2 * I + I + n % I]) = (g, u);
+    }
+    let (din, dout) = (Buf::new(gu.len() * 2)?, Buf::new(rows * I * 2)?);
+    din.write(0, &gu)?;
+    let ord = |b: u16| if b & 0x8000 != 0 { -((b & 0x7fff) as i32) } else { b as i32 };
+    let mut out = vec![0u16; rows * I];
+    for name in ["situ", "the release's SiLU"] {
+        // SAFETY: the buffers hold `rows` rows of [2 I] and [I] bf16; the stream is the Dev's.
+        unsafe {
+            if name == "situ" {
+                k.act(s, din.ptr, dout.ptr, rows, I, &crate::moe::Act::Situ { beta: 4.0, linear: 25.0 })?;
+            } else {
+                crate::launch!(release_k, [rows as u32, (I / 512) as u32, 1], [128, 1, 1], s; din.ptr, dout.ptr, 0u64, 0u64, 0i32, I as i32, f32::INFINITY, 0i32)?;
+            }
+        }
+        dev.sync()?;
+        dout.read(0, &mut out)?;
+        let (mut differ, mut most, mut first) = (0usize, 0u32, None);
+        for (n, &(g, u)) in pairs.iter().enumerate() {
+            let host = if name == "situ" { situ(f(g), f(u), (4.0, 25.0)) } else { release(f(g), f(u), 1.0, f32::INFINITY) };
+            let h = (host.to_bits() >> 16) as u16;
+            let d = (ord(h) - ord(out[n])).unsigned_abs();
+            if d > 0 {
+                differ += 1;
+                most = most.max(d);
+                first.get_or_insert((f(g), f(u), f(out[n]), host));
+            }
+        }
+        println!(
+            "{name}: {} inputs, the GPU's kernel against the host's: {differ} outputs differ, the most {most} last places apart{}",
+            pairs.len(),
+            first.map_or(String::new(), |(g, u, a, b)| format!("; the first: gate {g:e}, up {u:e}: the GPU {a:e}, the host {b:e}"))
+        );
+    }
     Ok(())
 }
 
