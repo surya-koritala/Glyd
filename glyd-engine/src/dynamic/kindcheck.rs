@@ -1,4 +1,4 @@
-//! `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR]` (R2, #135): every layer kind of the recent families run by the executor's CUDA
+//! `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain]` (R2, #135): every layer kind of the recent families run by the executor's CUDA
 //! kernels against its CPU f32 reference (`runtime::reference`), kind by kind, on each logits case's random model (Gemma 4, the Qwen3.5 layout,
 //! Nemotron-H, Muse Spark, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4) at the lossless level.
 //!
@@ -279,15 +279,19 @@ impl Dyn {
 /// What one pass of a layer compares: the comparisons' (where, kind, class, value, the rows near a tie).
 type Got = Vec<(String, String, Class, f32, Vec<String>)>;
 
-/// Layer `l` of the executor (blocks `per l ..`) on n rows at position `at`, from a residual made by `rng`.
-fn pass(dy: &Dyn, m: &mut RefModel, l: usize, per: usize, n: usize, at: usize, rng: &mut Rng) -> Result<Got> {
+/// Layer `l` of the executor (blocks `per l ..`) on n rows at position `at`, from a residual made by `rng` (or `x_in`, the residual the layer before made: `--chain`).
+#[allow(clippy::too_many_arguments)]
+fn pass(dy: &Dyn, m: &mut RefModel, l: usize, per: usize, n: usize, at: usize, rng: &mut Rng, x_in: Option<&[f32]>) -> Result<Got> {
     let (d, layers) = (m.desc.hidden, dy.big.d.layers.len());
-    let tok: Vec<u32> = (0..n).map(|t| (((at + t) * 37 + 11) % m.desc.vocab) as u32).collect();
+    let tok = tokens(n, at, m.desc.vocab);
     let runs_l = runs(&dy.big.d.layers[l]);
     // (the residual: mHC's streams where the model has them, else X; the depth mix's completed groups in Blk)
     let state = if dy.kc_width(Slot::S) > 0 { Slot::S } else { Slot::X };
     let sw = dy.kc_width(state);
-    let x0 = rng.v(n * sw);
+    let x0 = match x_in {
+        Some(x) => x.to_vec(),
+        None => rng.v(n * sw),
+    };
     dy.kc_put(state, &x0)?;
     for s in [Slot::O, Slot::D] {
         if dy.kc_width(s) > 0 {
@@ -460,8 +464,15 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, per: usize, n: usize, at: usize, r
     Ok(got)
 }
 
-/// A case's model made (its logits case's random one), loaded lossless, described and loaded on the reference; every layer through `pass`.
-fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize) -> Result<Vec<Line>> {
+/// The tokens of a pass of n rows at `at` (DeepSeek-V4's hash routing and the per-layer inputs read them; `--chain` embeds them).
+fn tokens(n: usize, at: usize, vocab: usize) -> Vec<u32> {
+    (0..n).map(|t| (((at + t) * 37 + 11) % vocab) as u32).collect()
+}
+
+/// A case's model made (its logits case's random one), loaded lossless, described and loaded on the reference; every layer through `pass`. `chain`: the passes
+/// in a model's order, each through every layer, a layer's residual the one the GPU's layer before made (the first's the tokens' scaled embedding rows): the
+/// whole model's sequence of caches and positions, each block still on the GPU's own inputs.
+fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, chain: bool) -> Result<Vec<Line>> {
     let c = crate::logits::find_case(id)?;
     if !dir.join("config.json").exists() {
         match c.weights {
@@ -469,7 +480,8 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize) -> Result<Vec
             crate::logits::Weights::Hub(h) => return err(format!("{id}: a Hub model ({h}), not a random one")),
         }
     }
-    let o = Opts { ctx: 256, chunk: 64, graph: false, device: 0, layout: Some(Layout::Tiered) };
+    // (--chain: the logits cases' options, a context of 1,024 and the GPU's layout at the lossless level)
+    let o = Opts { ctx: if chain { 1024 } else { 256 }, chunk: 64, graph: false, device: 0, layout: if chain { None } else { Some(Layout::Tiered) } };
     let mut dy = match id {
         // (its logits case runs the experts lossy; here the lossless level's)
         "glm" => super::glm::load(dir, &o, Layout::Tiered)?,
@@ -491,13 +503,39 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize) -> Result<Vec
         return err(format!("a prompt of {prompt} and {steps} steps: a chunk of {} and a cache of {}", o.chunk, o.ctx));
     }
     let mut out: Vec<Line> = Vec::new();
+    // (--chain: every pass's lines by layer, the passes run in order through all layers first)
+    let mut chained: Vec<Vec<Got>> = vec![Vec::new(); layers];
+    if chain {
+        if dy.kc_width(Slot::S) > 0 || dy.kc_width(Slot::Blk) > 0 {
+            return err(format!("{id}: --chain takes a model of one residual stream"));
+        }
+        let (d, e) = (m.desc.hidden, m.desc.embed.scale);
+        let mut rng = Rng(1);
+        for (n, at) in std::iter::once((prompt, 0)).chain((0..steps).map(|s| (1, prompt + s))) {
+            let mut x: Vec<f32> = tokens(n, at, m.desc.vocab)
+                .iter()
+                .flat_map(|&t| m.embed[t as usize * d..][..d].iter().map(|&v| bf16(v * bf16(e))).collect::<Vec<_>>())
+                .collect();
+            for (l, c) in chained.iter_mut().enumerate() {
+                c.push(pass(&dy, &mut m, l, per, n, at, &mut rng, Some(&x))?);
+                x = dy.kc_get(Slot::X, n)?;
+            }
+        }
+    }
     for l in 0..layers {
         let mut rng = Rng(0x2026_1123_0000_0001 ^ ((l as u64 + 1) << 32) ^ id.bytes().fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64)));
-        let first = pass(&dy, &mut m, l, per, prompt, 0, &mut rng)?;
+        let mut by_pass = std::mem::take(&mut chained[l]).into_iter();
+        let first = match by_pass.next() {
+            Some(g) => g,
+            None => pass(&dy, &mut m, l, per, prompt, 0, &mut rng, None)?,
+        };
         let mut lines: Vec<Line> =
             first.into_iter().map(|(at, kind, class, v, near)| Line { case: id, at, kind, class, prompt: v, steps: 0.0, near }).collect();
         for s in 0..steps {
-            let g = pass(&dy, &mut m, l, per, 1, prompt + s, &mut rng)?;
+            let g = match by_pass.next() {
+                Some(g) => g,
+                None => pass(&dy, &mut m, l, per, 1, prompt + s, &mut rng, None)?,
+            };
             if g.len() != lines.len() {
                 return err(format!("{id} layer {l}: a step compared {} things, the prompt {}", g.len(), lines.len()));
             }
@@ -525,7 +563,7 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize) -> Result<Vec
     Ok(out)
 }
 
-/// `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR]`: the cases (all unless named), then each class's worst against its bound.
+/// `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain]`: the cases (all unless named), then each class's worst against its bound.
 pub fn run(a: &crate::args::Args) -> Result<()> {
     const ALL: [&str; 8] = ["gemma4", "gemma4-kv", "qwen35", "nemotron-h", "muse", "kimi", "glm", "deepseek-v4"];
     let want: Vec<&str> = a.pos.iter().skip(1).map(String::as_str).collect();
@@ -542,7 +580,7 @@ pub fn run(a: &crate::args::Args) -> Result<()> {
     let mut all: Vec<Line> = Vec::new();
     let mut failed: Vec<String> = Vec::new();
     for id in ids {
-        match case(id, &scratch.join(id), prompt, steps) {
+        match case(id, &scratch.join(id), prompt, steps, a.has("chain")) {
             Ok(l) => all.extend(l),
             Err(e) => {
                 println!("FAIL {id}: {}", e.msg);

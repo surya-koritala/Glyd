@@ -948,7 +948,7 @@ pub fn cases() -> Vec<Case> {
             family: "Gemma 4 (sliding and global attention, K = V, soft-capped head)",
             weights: Weights::Random(gemma4_random),
             engine: gemma4_engine,
-            cpu: None,
+            cpu: Some(described_cpu),
             vocab: 4096,
         },
         Case {
@@ -1512,6 +1512,35 @@ pub fn record(a: &crate::args::Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The CPU reference of each Gemma 4 random case against the fixtures the engine and the reference recorded, row by row: the plain case's against the
+    /// engine's own bits (gemma4.sm89.json.gz), the KV-sharing case's against its fixture. Minutes on an unoptimized build: cargo test -- --ignored
+    /// gemma4_reference_against.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore]
+    fn gemma4_reference_against_the_fixtures() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits");
+        for (case, file, make) in
+            [("gemma4", "gemma4.sm89.json.gz", gemma4_random as fn(&Path) -> Result<()>), ("gemma4-kv", "gemma4-kv.json.gz", gemma4_kv_random)]
+        {
+            let dir = std::env::temp_dir().join(format!("glyd-g4ref-{case}-{}", std::process::id()));
+            make(&dir).unwrap();
+            let fx = Fixture::read(&fixtures.join(file)).unwrap();
+            let got = drive(described_cpu(&dir).unwrap().as_mut(), &fx.prompt, &fx.decode, &fx.long).unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            let kls: Vec<String> = fx.rows.iter().zip(&got).map(|(w, g)| format!("{:.1e}", kl_of(w, g))).collect();
+            let v = compare(&fx, &Bound::Kl { mean: 1e-4, max: 2.5e-4, top1: 0.9 }, &got);
+            println!(
+                "{case} reference against {file}: KL mean {:.2e} max {:.2e}, best token {}/{}; rows {}",
+                v.mean_kl,
+                v.max_kl,
+                v.top1.0,
+                v.top1.1,
+                kls.join(" ")
+            );
+        }
+    }
 
     /// The CPU's candidates usercheck holds the step's to: the largest first, equal logits by the smaller token, as the sampler's `sample_top` takes them.
     #[test]
