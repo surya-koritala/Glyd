@@ -2752,7 +2752,17 @@ pub mod sizing {
 
     /// A token's keys and values in the executor's cache, all layers: bf16, or in its 12-bit lossless pages (`twelve`) 12 bits a value and a page's header.
     pub fn kv_per_token(cfg: &Config, twelve: bool) -> u64 {
-        ((cfg.layers * 2 * cfg.kv_heads * cfg.head_dim) as f64 * if twelve { 1.5 * 1.06 } else { 2.0 }) as u64
+        ((cfg.layers * 2 * cfg.kv_heads * cfg.head_dim) as f64 * kv_value_bytes(twelve)) as u64
+    }
+
+    /// A key's or value's bytes as `kv_per_token` plans them: 2 in bf16; in the 12-bit pages 1.5 and 6% for the page's headers, escape room and raw slabs (a pool of
+    /// heads of 128 holds within 5% of it: src/dynamic/kvpages.rs's tokens-a-GiB test).
+    pub fn kv_value_bytes(twelve: bool) -> f64 {
+        if twelve {
+            1.5 * 1.06
+        } else {
+            2.0
+        }
     }
 
     /// The activations of a chunk of `chunk` tokens (the buffers of one forward pass), the decoded matrix a cuBLAS product reads, and the fixed workspaces.

@@ -105,7 +105,7 @@ impl Dyn {
         if let Some(rp) = a.rope {
             (x.cs, x.sn) = (self.ropes[rp.table].0.ptr, self.ropes[rp.table].1.ptr);
         }
-        self.ka.prep(s, &x, a.nq + a.nk, (crate::gemma4::G4Pf::default(), 0))?;
+        self.ka.prep(s, &x, a.nq + a.nk, (crate::kern::G4Pf::default(), 0))?;
         let row0 = self.rows_before(1) as usize / 2;
         let src = p.slot(a.src) + self.rows_before(a.stride);
         let out = p.slot(Slot::Att) + self.rows_before(a.nq * a.d);
