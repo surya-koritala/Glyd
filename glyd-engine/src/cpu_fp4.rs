@@ -1,7 +1,8 @@
 //! Kimi-K3's experts on the host, read where the expert cache's host tier holds them (GLY-330): MXFP4 matrices in the GPU's exact FP4 block layouts
 //! (glyd_gpu::pack's Fp4 and Fp4R: Int4's steps of 64 rows x 16 columns of codes, a row's scale for each run of 32 columns, as released or packed). A weight is
 //! its E2M1 code times its run's power of two (exact in fp32); the sums are fp32, rounded where the GPU's are: the first product to bf16, the activation (situ)
-//! to bf16, the second product to bf16, then times the pair's weight.
+//! to bf16, and the second product's fp32 sum times the pair's weight, as the GPU's weighted second product writes a pair's row (src/moe.rs `rows_sum`), not rounded
+//! first.
 
 use crate::cpu_experts::Kernel;
 use crate::ffi::{err, Result};
@@ -322,7 +323,8 @@ pub struct Fp4Pair<'a> {
 /// The activation between a pair's two products and where its weight goes, as the GPU's kernel of the layer computes them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Act {
-    /// Kimi-K3's situ (moe.cu's MOE_SITU): the first product rounded to bf16, situ(gate, up) rounded to bf16, the second product rounded to bf16, then times the weight.
+    /// Kimi-K3's situ (moe.cu's MOE_SITU): the first product rounded to bf16, situ(gate, up) rounded to bf16, the second product's fp32 sum times the weight, as the
+    /// GPU's weighted second product writes a pair's row (unrounded: the layer's sum rounds a token's pairs once).
     Situ { beta: f32, linear: f32 },
     /// DeepSeek-V4's release (kernels/dsv4.cu's v4_moe_act): bf16(weight silu(min(gate, lim)) clamp(up, -lim, lim)) of the first product as bf16, each block of 128 rounded to E4M3 at its power-of-two scale where
     /// `fp8`; the second product (fp32) is the pair's output, its weight already in it.
@@ -333,9 +335,10 @@ pub(crate) fn bf16(v: f32) -> f32 {
     f32::from_bits((((v.to_bits() as u64 + 0x7FFF + ((v.to_bits() >> 16) & 1) as u64) as u32) >> 16) << 16)
 }
 
-/// situ(a, b) = beta tanh(a / beta) sigmoid(a) x linear tanh(b / linear), in fp32, rounded to bf16 (moe.cu's MOE_SITU, kimi_ref's situ).
+/// situ(a, b) = beta tanh(a / beta) sigmoid(a) x linear tanh(b / linear), in fp32, rounded to bf16, its operations in the order moe.cu's MOE_SITU does them
+/// (the sigmoid a division, not a reciprocal's product: the GPU's pair to the bit where its tanh and exp are the host's).
 fn situ(a: f32, b: f32, (beta, linear): (f32, f32)) -> f32 {
-    bf16(beta * (a / beta).tanh() * (1.0 / (1.0 + (-a).exp())) * linear * (b / linear).tanh())
+    bf16(beta * (a / beta).tanh() / (1.0 + (-a).exp()) * linear * (b / linear).tanh())
 }
 
 /// kernel.py's power-of-two scale: 2^ceil(log2(amax / max)), from the f32 bits.
@@ -395,7 +398,7 @@ impl Out {
     }
 }
 
-/// out[p latent ..] = pair p's output with its weight (`act`): the second matrix times the activation of [gate | up], the first matrix times its token's row of z (bf16),
+/// out[p latent ..] = pair p's output with its weight (`act`), fp32 as the GPU's weighted second product keeps a pair's row: the second matrix times the activation of [gate | up], the first matrix times its token's row of z (bf16),
 /// on `threads` threads (the crew of src/cpu_experts.rs; `pin`: its threads each kept to a core). An item of work is a block of 64 rows of an expert's matrix for every pair of
 /// that expert (`by_expert`), so a call reads each expert's bytes from memory once whatever its pairs (the block stays in the core's cache between them); each pair's sums are
 /// the ones it has alone, to the bit.
@@ -464,7 +467,7 @@ pub fn experts(kernel: Kernel, z: &[u16], pairs: &[Fp4Pair], out: &mut [f32], ac
             rows(kernel, &pairs[p].expert.down, &a[p * inter..(p + 1) * inter], 64 * b, 64 * b + 64, y);
             if let Act::Situ { .. } = act {
                 let w = pairs[p].weight;
-                y.iter_mut().for_each(|v| *v = bf16(*v) * w);
+                y.iter_mut().for_each(|v| *v *= w);
             }
         }
     });
@@ -606,7 +609,8 @@ mod tests {
         }
     }
 
-    /// A pair's output is the second matrix times situ of the first's halves, times its weight; the threads change nothing.
+    /// A pair's output is the second matrix times situ of the first's halves, its fp32 sum times its weight with no rounding between (the GPU's weighted second
+    /// product's row); the threads change nothing.
     #[test]
     fn a_pair_is_its_two_products_and_situ() {
         let (latent, inter) = (128, 64);
@@ -627,8 +631,10 @@ mod tests {
         let a: Vec<f32> = (0..inter).map(|i| situ(bf16(gu[i]), bf16(gu[inter + i]), (4.0, 25.0))).collect();
         let mut d = vec![0f32; latent];
         rows(Kernel::Scalar, &ex.down, &a, 0, latent, &mut d);
-        let want: Vec<f32> = d.iter().map(|&v| bf16(v) * 0.25).collect();
+        let want: Vec<f32> = d.iter().map(|&v| v * 0.25).collect();
         assert_eq!(&one[..latent], &want[..]);
+        // (a sum rounded before its weight is another row: the host's pair is the GPU's only where it rounds where the GPU does)
+        assert!(d.iter().any(|&v| bf16(v) * 0.25 != v * 0.25));
         let mut four = vec![0f32; 2 * latent];
         experts(Kernel::Scalar, &z, &pairs, &mut four, act, 4, false).unwrap();
         assert_eq!(one, four);
