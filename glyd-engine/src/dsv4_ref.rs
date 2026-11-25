@@ -817,9 +817,12 @@ pub fn random(out: &Path, real: Option<(usize, usize)>) -> Result<()> {
         fp8(&mut t, &format!("{f}.shared_experts.w2"), d, c.inter, &mut uni);
         for e in 0..c.experts {
             for (w, rows, cols) in [("w1", c.inter, d), ("w3", c.inter, d), ("w2", d, c.inter)] {
-                // random E2M1 codes; each run's scale near sqrt(3 / cols) / 3
+                // random E2M1 codes (rms 2.93), each run's scale a power of two near sqrt(3 / cols) / 6, one exponent either way: a weight's rms is 0.9 / sqrt(cols), as the
+                // FP8 matrices' 1 / sqrt(cols). Near sqrt(3 / cols) / 3 it was 1.8: an expert's output 3 times its input's rms and 10 times the attention's, the stream a mixture of
+                // experts' alone, and the SwiGLU's product doubles the roundings it carries: the reference's noise floor without the simulation was KL mean 1.11e-5, max 1.76e-5
+                // (four draws 1.08e-5 to 1.26e-5, max up to 2.62e-5; `logits::tests::deepseek_v4_noise_floor`), past a tenth of the kind's bound whatever the draw
                 let q: Vec<u8> = (0..rows * cols / 2).map(|_| uni(0.0, 256.0) as u8).collect();
-                let e0 = (((3.0 / cols as f32).sqrt() / 3.0).log2().round() as i32 + 127) as f32;
+                let e0 = (((3.0 / cols as f32).sqrt() / 3.0).log2().round() as i32 + 126) as f32;
                 let s: Vec<u8> = (0..rows * cols / 32).map(|_| (e0 + uni(-1.0, 1.0).round()) as u8).collect();
                 t.push((format!("{f}.experts.{e}.{w}.weight"), "I8", vec![rows as u64, cols as u64 / 2], q));
                 t.push((format!("{f}.experts.{e}.{w}.scale"), "F8_E8M0", vec![rows as u64, cols as u64 / 32], s));
@@ -1638,8 +1641,12 @@ mod tests {
 /// both sides and every value the quantization reads is the weight's: what differs past that is the quantization's rule (its block, scale,
 /// rounding, clamp) or the rotary's arithmetic. Prints each operation's count of elements whose bits differ; exit 1 where one is not 0.
 pub fn qcheck(a: &crate::args::Args) -> Result<()> {
+    qcheck_rows(a.num("rows", 64usize)?)
+}
+
+/// `qcheck` on `n` rows of each operation (the logits case of DeepSeek-V4 runs it as a part of its check: `logits::dsv4_also`).
+pub fn qcheck_rows(n: usize) -> Result<()> {
     use crate::launch;
-    let n: usize = a.num("rows", 64usize)?;
     let dev = crate::dev::Dev::new(0)?;
     let s = dev.stream;
     let mut seed = 0x2026_1125_0000_0001u64;

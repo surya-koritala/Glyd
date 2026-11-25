@@ -689,13 +689,19 @@ pub struct Case {
     /// The vocabulary of a random model (its fixed tokens are made from it); a Hub model's tokens come from the reference tool.
     pub vocab: usize,
     /// Where Some: the engine is held to the case's CPU reference on its own choices, its routers' and its indexers' (`held_on_choices`), that reference
-    /// run taking them by this (the layer kinds' `ref_drive`; DeepSeek-V4's hand-written one with the release's simulated quantizations, `dsv4_drive`):
-    /// asked by a case of a described model whose near ties a bf16 engine takes either way. Its rows against the reference's own are printed all the same.
+    /// run taking them by this (the layer kinds' `ref_drive`; DeepSeek-V4's hand-written one, `dsv4_drive`): asked by a case of a described model whose near
+    /// ties a bf16 engine takes either way. Its rows against the reference's own are printed all the same.
     pub on_choices: Option<Forced>,
+    /// Where Some: what the case holds beside its engine's rows, on each fixture and level of the reference's (`Also`).
+    pub also: Option<Also>,
 }
 
 /// A CPU reference on a fixture's tokens (`ref_drive`'s order and record), taking an engine's experts and indexer picks where given.
 pub type Forced = fn(&Path, &Fixture, Option<&Choices>, Option<&Picks>) -> Result<RefRun>;
+
+/// A case's checks beside its engine's rows against its reference (a GPU's: not under `--cpu-ref`), for a fixture and its level: they print their lines, and
+/// say whether they hold (a part that is information only holds). A part that fails fails the case.
+pub type Also = fn(&Path, &Fixture, &LevelBound) -> Result<bool>;
 
 /// The fixed list the checks of src/*_ref.rs feed (a first token, then 37 i + 11 modulo the vocabulary).
 pub fn token_list(n: usize, vocab: usize, offset: usize) -> Vec<u32> {
@@ -723,22 +729,32 @@ fn kimi_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     boxed(crate::dynamic::kimi::load(dir, &dyn_opts(level_layout(level)?)))
 }
 
+/// DeepSeek-V4's engine without the release's simulated quantizations (the held part of its case, `dsv4_also` says why), or with them as the product runs.
 fn dsv4_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
-    boxed(crate::dynamic::deepseek_v4::load(dir, &dyn_opts(level_layout(level)?)))
+    boxed(crate::dynamic::deepseek_v4::load_sim(dir, &dyn_opts(level_layout(level)?), false))
 }
 
+fn dsv4_engine_sim(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
+    boxed(crate::dynamic::deepseek_v4::load_sim(dir, &dyn_opts(level_layout(level)?), true))
+}
+
+/// DeepSeek-V4's CPU reference (src/dsv4_ref.rs) without the release's simulated quantizations, the function its case's engine computes.
 fn dsv4_cpu(dir: &Path) -> Result<Box<dyn Run>> {
     let d = dir.to_path_buf();
-    let load = move || crate::dsv4_ref::RefV4::load(&d, true).map(|mut m| move |t| m.step(t));
+    let load = move || crate::dsv4_ref::RefV4::load(&d, false).map(|mut m| move |t| m.step(t));
     Ok(Box::new(CpuRef { load: Box::new(load), m: None, last: Vec::new(), source: "the CPU reference of src/dsv4_ref.rs" }))
 }
 
-/// DeepSeek-V4's CPU reference (src/dsv4_ref.rs, the release's quantizations simulated as the product runs them) on a fixture's tokens as `ref_drive` runs the
-/// kinds' (each sequence from a fresh load, a token at a time), taking an engine's experts (`take`: every layer's) and its indexers' picks (`picks`: the
-/// entries each query reads, the indexed layers in order) where given: its rows, each token's routing and each indexer's choice as the kinds' reference
-/// records them (an entry a pool of its own), and the indexers as the picks' judge takes them (`picks_apart`: the description's, a pool an entry, a row's
-/// position its last entry, as `dynamic::Dyn::trace_comp_pick` traces the engine's).
+/// DeepSeek-V4's CPU reference (src/dsv4_ref.rs) on a fixture's tokens as `ref_drive` runs the kinds' (each sequence from a fresh load, a token at a time),
+/// taking an engine's experts (`take`: every layer's) and its indexers' picks (`picks`: the entries each query reads, the indexed layers in order) where
+/// given: its rows, each token's routing and each indexer's choice as the kinds' reference records them (an entry a pool of its own), and the indexers as
+/// the picks' judge takes them (`picks_apart`: the description's, a pool an entry, a row's position its last entry, as `dynamic::Dyn::trace_comp_pick`
+/// traces the engine's). Without the release's simulated quantizations (`dsv4_drive_sim` with them).
 pub fn dsv4_drive(dir: &Path, fx: &Fixture, take: Option<&Choices>, picks: Option<&Picks>) -> Result<RefRun> {
+    dsv4_drive_with(dir, fx, take, picks, false)
+}
+
+fn dsv4_drive_sim(dir: &Path, fx: &Fixture, take: Option<&Choices>, picks: Option<&Picks>) -> Result<RefRun> {
     dsv4_drive_with(dir, fx, take, picks, true)
 }
 
@@ -1162,6 +1178,42 @@ pub fn held_on_choices(
         );
     }
     Ok(OnChoices { routing: far == 0 && pick_far == 0, logits: v.ok, apart: diffs })
+}
+
+/// DeepSeek-V4's case, held in three parts, none with a number set from a run:
+///   1. its engine and its reference both WITHOUT the release's simulated quantizations (`dsv4_engine`, `dsv4_cpu`, `dsv4_drive`: the fixture is that reference's), on the
+///      engine's own routers' and indexers' choices at the kind's bound (KL mean 1e-4, max 2.5e-4, best token 85%): the arithmetic of the model, whose reference's noise
+///      floor is within a tenth of that bound (`tests::deepseek_v4_noise_floor`). That is the verdict of `check` on the case's line.
+///   2. the operations the simulation is made of, here: each operation that quantizes as the release does, fed the reference's own input, bit for bit
+///      (`dsv4_ref::qcheck_rows`). The case fails where one differs: part 1 leaves them out, and this is where a fault of theirs shows.
+///   3. the whole model with them (the product's default), the engine against the reference that simulates them: its figures against the reference's own choices
+///      and on the engine's, each choice apart, printed, never a pass or fail. A rounding before a quantizer moves a value near a grid point's edge to the next
+///      grid point (an E4M3 step is 6 to 12% of a value, E2M1's more), and such values are a fixed share of every activation whatever its scale, so no draw
+///      lowers it: the reference's own noise floor with the simulation, its rounding points against itself in fp32, is eight times the kind's bound
+///      (the Mac, 2026-11-25: KL mean 7.75e-4, max 1.04e-3), and an engine that is not the reference bit for bit before each quantizer cannot be held to the
+///      kind's bound by it. What the printed figures say is where it stands, not a verdict.
+fn dsv4_also(dir: &Path, fx: &Fixture, lb: &LevelBound) -> Result<bool> {
+    println!("     the quantizing operations on the reference's own input, bit for bit:");
+    let ops = match crate::dsv4_ref::qcheck_rows(64) {
+        Ok(()) => true,
+        Err(e) => {
+            println!("FAIL {}", e.msg);
+            false
+        }
+    };
+    let mut run = dsv4_engine_sim(dir, &lb.level)?;
+    let own = dsv4_drive_sim(dir, fx, None, None)?;
+    let fx = Fixture { rows: own.rows.iter().map(|r| Row::from_logits(r)).collect::<Result<_>>()?, ..fx.clone() };
+    run.choices(true)?;
+    let rows = drive(run.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
+    let Some(routing) = run.choices(false)? else { return err("deepseek-v4: its engine gives no view of its routers' choices") };
+    let v = compare(&fx, &lb.bound, &rows);
+    println!(
+        "     the whole model with the release's simulated quantizations (information, never a pass or fail): the engine against the reference that simulates them, on the reference's own choices KL mean {:.2e} max {:.2e}, best token {}/{} with a lead",
+        v.mean_kl, v.max_kl, v.top1.0, v.top1.1
+    );
+    held_on_choices("the engine with the simulation", dir, &fx, &lb.bound, &rows, &routing, &own, dsv4_drive_sim)?;
+    Ok(ops)
 }
 
 fn nemotron_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
@@ -1846,6 +1898,7 @@ pub fn cases() -> Vec<Case> {
             cpu: Some(described_cpu),
             vocab: 4096,
             on_choices: None,
+            also: None,
         },
         Case {
             id: "qwen35",
@@ -1855,6 +1908,7 @@ pub fn cases() -> Vec<Case> {
             cpu: Some(described_cpu),
             vocab: 4096,
             on_choices: None,
+            also: None,
         },
         Case {
             id: "qwen35-wide",
@@ -1864,6 +1918,7 @@ pub fn cases() -> Vec<Case> {
             cpu: Some(described_cpu),
             vocab: 4096,
             on_choices: None,
+            also: None,
         },
         Case {
             id: "qwen35moe",
@@ -1873,6 +1928,7 @@ pub fn cases() -> Vec<Case> {
             cpu: Some(described_cpu),
             vocab: 4096,
             on_choices: Some(ref_drive),
+            also: None,
         },
         Case {
             id: "muse",
@@ -1882,6 +1938,7 @@ pub fn cases() -> Vec<Case> {
             cpu: Some(described_cpu),
             vocab: 4096,
             on_choices: Some(ref_drive),
+            also: None,
         },
         Case {
             id: "kimi",
@@ -1891,6 +1948,7 @@ pub fn cases() -> Vec<Case> {
             cpu: Some(described_cpu),
             vocab: 4096,
             on_choices: Some(ref_drive),
+            also: None,
         },
         Case {
             id: "kimi-dsa",
@@ -1900,6 +1958,7 @@ pub fn cases() -> Vec<Case> {
             cpu: Some(described_cpu),
             vocab: 4096,
             on_choices: Some(ref_drive),
+            also: None,
         },
         Case {
             id: "glm-dsa",
@@ -1909,20 +1968,19 @@ pub fn cases() -> Vec<Case> {
             cpu: Some(described_cpu),
             vocab: 2048,
             on_choices: Some(ref_drive),
+            also: None,
         },
         Case {
             id: "deepseek-v4",
             family: "DeepSeek-V4 (four residual streams, compressed attention, mixture of experts)",
             weights: Weights::Random(|d| crate::dsv4_ref::random(d, None)),
+            // (held in three parts, `dsv4_also` has the second and third: the engine and the reference both WITHOUT the release's simulated quantizations, on the
+            // engine's choices at the kind's bound; the quantizing operations bit for bit on the reference's own input; and the whole model with them, printed)
             engine: dsv4_engine,
-            // (the reference that simulates the release's quantizations, as the product runs them: GLYD_V4_SIM's default. Held on the engine's choices at the
-            // kind's bound, an A10 2026-11-25: every router choice and indexer pick apart the reference's on the engine's input or a near tie, the logits on
-            // them KL mean 6.8e-4, max 1.2e-3: past the bound, and under the reference's own noise floor with the simulation, 1.1e-3 / 1.8e-3
-            // (`tests::deepseek_v4_noise_floor`), so no engine that is not the reference bit for bit before each quantizer is held to the kind's bound
-            // here; without the simulation every body is within its kind's bound (kindcheck))
             cpu: Some(dsv4_cpu),
             vocab: 4096,
             on_choices: Some(dsv4_drive),
+            also: Some(dsv4_also),
         },
         Case {
             id: "gemma4",
@@ -1932,6 +1990,7 @@ pub fn cases() -> Vec<Case> {
             cpu: Some(described_cpu),
             vocab: 4096,
             on_choices: None,
+            also: None,
         },
         Case {
             id: "gemma4-kv",
@@ -1941,6 +2000,7 @@ pub fn cases() -> Vec<Case> {
             cpu: Some(described_cpu),
             vocab: 4096,
             on_choices: None,
+            also: None,
         },
         Case {
             id: "qwen4x",
@@ -1950,6 +2010,7 @@ pub fn cases() -> Vec<Case> {
             cpu: Some(described_cpu),
             vocab: 2048,
             on_choices: Some(ref_drive),
+            also: None,
         },
         Case {
             id: "qwen4x-cb",
@@ -1960,6 +2021,7 @@ pub fn cases() -> Vec<Case> {
             cpu: Some(described_cpu),
             vocab: 2048,
             on_choices: Some(ref_drive),
+            also: None,
         },
         Case {
             id: "qwen4x-s2",
@@ -1970,6 +2032,7 @@ pub fn cases() -> Vec<Case> {
             cpu: Some(described_cpu),
             vocab: 2048,
             on_choices: Some(ref_drive),
+            also: None,
         },
         Case {
             id: "nemotron-h",
@@ -1979,6 +2042,7 @@ pub fn cases() -> Vec<Case> {
             cpu: Some(described_cpu),
             vocab: 4096,
             on_choices: None,
+            also: None,
         },
         Case {
             id: "deepseek-v41",
@@ -1988,6 +2052,7 @@ pub fn cases() -> Vec<Case> {
             cpu: Some(described_cpu),
             vocab: 4096,
             on_choices: None,
+            also: None,
         },
         Case {
             id: "glm",
@@ -1999,6 +2064,7 @@ pub fn cases() -> Vec<Case> {
             // (its indexers keep 2 pools of up to 6 and its routers 4 experts of 16, each weighing about 0.6: near ties that rounding alone takes the other
             // way, `tests::glm_reference_with_its_residual_rounded`)
             on_choices: Some(ref_drive),
+            also: None,
         },
     ]
 }
@@ -2172,7 +2238,12 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                 };
                 // (the lossless level: the experts the engine holds are the checkpoint's, bit for bit)
                 let experts = if lb.level == "penguin" && !cpu { experts_line(&dir, run.as_mut())? } else { None };
-                let ok = chosen.unwrap_or(v.ok) && experts.as_ref().is_none_or(|e| e.0);
+                // (what the case holds beside its rows, on the reference's fixture on a GPU: its lines come before the case's)
+                let also = match (c.also, cpu, &fx.gpu) {
+                    (Some(f), false, None) => f(&dir, &fx, lb)?,
+                    _ => true,
+                };
+                let ok = chosen.unwrap_or(v.ok) && experts.as_ref().is_none_or(|e| e.0) && also;
                 let bound = match &lb.bound {
                     Bound::Bits => "bits".to_string(),
                     Bound::Kl { mean, max, top1 } => format!("KL mean <= {mean:.1e}, max <= {max:.1e}, top-1 >= {:.0}%", top1 * 100.0),
@@ -2754,6 +2825,8 @@ const LEVEL_BLOCK_CASES: [&str; 3] = ["qwen35", "gemma4", "nemotron-h"];
 fn moe_as_held(id: &str, dir: &Path) -> Result<Box<dyn Run>> {
     match id {
         "glm" => boxed(crate::dynamic::glm::load(dir, &dyn_opts(Some(Layout::Tiered)), Layout::Tiered)),
+        // (with the release's quantizations simulated, as the product runs it and as these thresholds were measured: its case's own engine is without them)
+        "deepseek-v4" => dsv4_engine_sim(dir, "penguin"),
         _ => (find_case(id)?.engine)(dir, "penguin"),
     }
 }
@@ -3140,8 +3213,8 @@ mod tests {
     /// router draw clears it short of one that takes the same experts for every token (Muse, before it was held on choices: 187 of 744 choices
     /// apart under these roundings, a floor of 2.2e-3; qwen35moe 18, one row 1.9e-4).
     ///
-    /// Each case's reference is its description's on the layer kinds (DeepSeek-V4's case is held to src/dsv4_ref.rs, its simulated quantizations
-    /// on: that reference's floor is `deepseek_v4_noise_floor`). Where a description already rounds every norm (Kimi-K3's, GLM-5.3-Flash's) and
+    /// Each case's reference is its description's on the layer kinds (DeepSeek-V4's case is held to src/dsv4_ref.rs, without its simulated
+    /// quantizations: that reference's floor is `deepseek_v4_noise_floor`). Where a description already rounds every norm (Kimi-K3's, GLM-5.3-Flash's) and
     /// scales no embedding, `stored` moves nothing: its floor is 0 and says nothing of its draw (theirs are the reference in fp32 against all its
     /// rounding points, `noise_floor_against_fp32`, `glm_noise_floor`). Not here: deepseek-v41 (no engine: its fixture's bound is the reference's own
     /// across machines), nemotron-h (an older family).
@@ -3352,14 +3425,14 @@ mod tests {
         assert!(wrong.is_empty(), "past a tenth of the kind's bound: {wrong:?}");
     }
 
-    /// DeepSeek-V4's noise floor on the reference its case is held to (src/dsv4_ref.rs, the release's quantizations simulated as the product runs them):
-    /// the reference with the release's bf16 rounding points against itself with every one of them in fp32 (`dsv4_ref::PLAIN`, its simulated
-    /// quantizations kept), on the same expert choices and indexer picks; and the same without the simulation. On the Mac, 2026-11-25: with it KL mean
-    /// 1.09e-3, max 1.78e-3, a best token changed; without it 1.11e-5 and 1.76e-5. A rounding before a quantizer moves a value near a grid point's edge
-    /// to the next one (an E4M3 step is 6 to 12% of the value, FP4's more), and such values are a fixed share of every activation whatever its scale, so
-    /// no draw lowers it: an engine that is not bit for bit the reference before each quantizer is not held to the kind's bound by this reference. Held
-    /// here: the arithmetic alone within the kind's bound, and the simulation past it (which the case's notes say). A minute: cargo test --profile ci -p
-    /// glyd-engine --lib -- --ignored deepseek_v4_noise_floor.
+    /// DeepSeek-V4's noise floor on the reference its case is held to (src/dsv4_ref.rs): the reference with the release's bf16 rounding points against itself
+    /// with every one of them in fp32 (`dsv4_ref::PLAIN`), on the same expert choices and indexer picks, without its simulated quantizations (the case's held
+    /// part: at most a tenth of the kind's bound, as the other cases' floors) and with them (`dsv4_also`'s third part, printed there and not held: it is past the
+    /// bound). On the Mac, 2026-11-25: without them KL mean 7.42e-6, max 1.06e-5 (three more draws, 7.0e-6 to 8.3e-6 and 9.3e-6 to 1.2e-5 at most), with them
+    /// 7.75e-4 and 1.04e-3. A rounding before a quantizer moves a value near a grid point's edge to the next one (an E4M3 step is 6 to 12% of the value, FP4's
+    /// more), and such values are a fixed share of every activation whatever its scale. The draw's experts were 1.8 times the other matrices' scale before
+    /// (`dsv4_ref::random`): the floor without the quantizations was 1.11e-5 and 1.76e-5 (four draws 1.08e-5 to 1.26e-5, one max at 2.62e-5), past a tenth
+    /// of the bound whatever the draw. A minute: cargo test --profile ci -p glyd-engine --lib -- --ignored deepseek_v4_noise_floor.
     #[cfg(feature = "dev")]
     #[test]
     #[ignore]
@@ -3397,8 +3470,8 @@ mod tests {
         };
         let (with, without) = (floor(true), floor(false));
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(without.mean_kl <= 1e-4 && without.max_kl <= 2.5e-4, "without the simulation, past the kind's bound: {:?}", without.notes);
-        assert!(with.mean_kl > 1e-4, "with the simulation, within the kind's bound: the case's notes say otherwise ({:.2e})", with.mean_kl);
+        assert!(without.ok, "without the simulation, past a tenth of the kind's bound: {:?}", without.notes);
+        assert!(with.mean_kl > 1e-4, "with the simulation, within the kind's bound: `dsv4_also` is to hold it then ({:.2e})", with.mean_kl);
     }
 
     /// Each Gemma 4 random case is well conditioned for the kind's bound, and its fixture is what the CPU reference makes. For each case: its attention
