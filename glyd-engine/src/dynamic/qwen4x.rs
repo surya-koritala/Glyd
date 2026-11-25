@@ -292,11 +292,13 @@ pub fn serve_check(a: &crate::args::Args) -> Result<()> {
             eprintln!("the server: {}", e.msg);
         }
     });
-    // (a request on its own connection, the whole reply read: its status and body)
+    // (a request on its own connection, the whole reply read: its status and body; the host this computer's own address, which the server's checks take)
     let ask = |method: &str, path: &str, body: &str| -> Option<(u16, String)> {
         let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
-        let head =
-            format!("{method} {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n", body.len());
+        let head = format!(
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
         c.write_all(head.as_bytes()).ok()?;
         c.write_all(body.as_bytes()).ok()?;
         let mut raw = String::new();
