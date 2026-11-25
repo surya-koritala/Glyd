@@ -2,4 +2,3 @@
 - A sequence swapped to host memory no longer holds up the next step: its copy runs beside the steps after it, and a step waits only for the part of the copy that reads blocks it takes (the first few blocks of each group are copied first).
 - A sequence on 12-bit lossless KV pages is swapped in its 12 bits: each page moves as it is, with its escape chunks and raw slab, and is lent new ones where it is loaded (GPU library C API 21: `glyd_gpu_kv_image_bytes`, `glyd_gpu_kv_save`, `glyd_gpu_kv_load`). Before, its values crossed the link as bf16.
 - Deterministic capacity on 12-bit lossless KV pages: a request is never refused because its keys and values compress worse than the calibration. Where the raw pool is short of a slab for every page the next pass writes, the newest request is paused (swapped or recomputed) and its pages' chunks and slabs go back to the pools; a request alone always fits. Part of #141 and #328.
-- Not measured on a GPU yet.
