@@ -262,9 +262,13 @@ impl RefModel {
             .collect())
     }
 
-    /// Block `b`'s body on one token's normed input `h`, with the block whose keys and values it shares where it does (`Attn::kv_from`), and a per-layer
-    /// input's branch with its token's input.
+    /// Block `b`'s body on one token's normed input `h`, with the block whose keys and values it shares where it does (`Attn::kv_from`), a compressed
+    /// attention with the parts it reads of other blocks (`CompShare`), and a per-layer input's branch with its token's input.
     pub fn body(&mut self, b: usize, seq: u32, pos: u32, token: u32, h: &[f32]) -> Result<Vec<f32>> {
+        // (V4.1's compressed attention reading other blocks' parts: theirs as they stand, which ran before it)
+        if matches!(self.layers.get(b).map(|l| &l.block.body), Some(Body::Mixer(Mixer::Compressed(Comp { share: Some(_), .. })))) {
+            self.share_into(b, seq)?;
+        }
         if let Some(Body::PerLayer(pl)) = self.layers.get(b).map(|l| l.block.body.clone()) {
             let dim = self.desc.embed.per_layer.map_or(0, |p| p.dim);
             let input = self.per_layer_input(token)?;
