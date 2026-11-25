@@ -44,6 +44,7 @@ fn attn(heads: usize, kv_heads: usize, head_dim: usize, rope: Option<Rope>) -> A
         k_eq_v: false,
         indexer: None,
         rounding: AttnRounding::F32,
+        kv_from: None,
     }
 }
 

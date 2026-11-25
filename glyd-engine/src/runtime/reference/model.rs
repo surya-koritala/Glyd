@@ -183,9 +183,17 @@ impl RefModel {
         let seqs = vec![0; tokens.len()];
         // the depth mix's sources per token, and the open group's partial sum (the embedding to begin with)
         let mut depth: Vec<Depth> = x.chunks(n * d).map(|r| Depth { sources: Vec::new(), partial: Some(r[..d].to_vec()) }).collect();
-        for l in &mut self.layers {
+        for i in 0..self.layers.len() {
+            let (before, rest) = self.layers.split_at_mut(i);
+            let l = &mut rest[0];
+            // (an attention that shares an earlier block's keys and values reads that block's cache)
+            let store = match l.kv_from() {
+                Some(j) if j < i => Some(&before[j]),
+                Some(j) => return err(format!("block {i} shares the keys and values of block {j}, not an earlier one")),
+                None => None,
+            };
             let Residual::DepthMix(dm) = l.block.residual else {
-                l.forward(&pos, &seqs, tokens, &mut x)?;
+                l.forward_with(store, &pos, &seqs, tokens, &mut x)?;
                 continue;
             };
             let (wn, wp) = (l.p.vec("mix_norm")?.to_vec(), l.p.vec("mix_proj")?.to_vec());
@@ -210,6 +218,18 @@ impl RefModel {
             );
         }
         Ok(out)
+    }
+
+    /// Block `b`'s body on one token's normed input `h`, with the block whose keys and values it shares where it does (`Attn::kv_from`).
+    pub fn body(&mut self, b: usize, seq: u32, pos: u32, token: u32, h: &[f32]) -> Result<Vec<f32>> {
+        let (before, rest) = self.layers.split_at_mut(b);
+        let l = rest.first_mut().ok_or_else(|| Error(format!("no block {b}")))?;
+        let store = match l.kv_from() {
+            Some(j) if j < b => Some(&before[j]),
+            Some(j) => return err(format!("block {b} shares the keys and values of block {j}, not an earlier one")),
+            None => None,
+        };
+        l.body_with(store, seq, pos, token, h)
     }
 
     /// The head's input for one token: its residual `xt` (its streams) collapsed into one (`Head::collapse`; Kimi-K3's from the depth mix's

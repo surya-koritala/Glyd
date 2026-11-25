@@ -975,6 +975,7 @@ mod tests {
             k_eq_v: false,
             indexer: None,
             rounding: AttnRounding::Flash,
+            kv_from: None,
         }
     }
 

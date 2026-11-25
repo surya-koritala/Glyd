@@ -243,8 +243,8 @@ pub enum AttnRounding {
 ///
 /// Roles: `q` [heads * head_dim (x2 with an `InQuery` gate), hidden], `k` [kv_heads * head_dim, hidden], `v` [kv_heads * v_head_dim,
 /// hidden] (absent with `k_eq_v`), `o` [hidden, heads * v_head_dim]; `q_bias`, `k_bias`, `v_bias` with `bias`; `q_norm`, `k_norm`
-/// [head_dim] where those norms have a weight; `g` with an `Own` gate; `sinks` [heads] with `sinks`.
-#[derive(Clone, Debug, PartialEq)]
+/// [head_dim] where those norms have a weight; `g` with an `Own` gate; `sinks` [heads] with `sinks`. With `kv_from` no `k`, `v`, `k_norm`.
+#[derive(Clone, PartialEq)]
 pub struct Attn {
     pub heads: usize,
     pub kv_heads: usize,
@@ -269,6 +269,25 @@ pub struct Attn {
     pub k_eq_v: bool,
     pub indexer: Option<Indexer>,
     pub rounding: AttnRounding,
+    /// KV sharing (Gemma 4's `num_kv_shared_layers`): the queries attend to the keys and values that block `kv_from`'s attention (an earlier
+    /// block of the same heads, window and rope) holds for the sequence; this attention has no keys or values of its own and no cache.
+    pub kv_from: Option<usize>,
+}
+
+/// The derived form, with `kv_from` said only where it is set: the other attentions' descriptions read as they did before the field (the
+/// digests of tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for Attn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("Attn");
+        s.field("heads", &self.heads).field("kv_heads", &self.kv_heads).field("head_dim", &self.head_dim).field("v_head_dim", &self.v_head_dim);
+        s.field("window", &self.window).field("sinks", &self.sinks).field("rope", &self.rope).field("q_norm", &self.q_norm).field("k_norm", &self.k_norm);
+        s.field("v_norm", &self.v_norm).field("gate", &self.gate).field("softcap", &self.softcap).field("bias", &self.bias).field("scale", &self.scale);
+        s.field("k_eq_v", &self.k_eq_v).field("indexer", &self.indexer).field("rounding", &self.rounding);
+        if let Some(j) = self.kv_from {
+            s.field("kv_from", &j);
+        }
+        s.finish()
+    }
 }
 
 /// Multi-head latent attention (DeepSeek-V2/V3 style, Kimi-K3, GLM-5.3).

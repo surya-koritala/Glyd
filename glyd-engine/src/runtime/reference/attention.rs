@@ -85,7 +85,16 @@ fn turn(r: &Rope, inv: &[f32], af: f32, x: &mut [f32], pos: u32, r16: &dyn Fn(f3
 
 /// One token's attention output (before nothing: `o` is applied) for the normed input `h` at `pos`; its key and value join the cache.
 pub fn step(a: &Attn, p: &Params, c: &mut KvCache, h: &[f32], pos: u32) -> Result<Vec<f32>> {
+    step_with(a, p, c, None, h, pos)
+}
+
+/// `step`, and for an attention that shares another block's keys and values (`Attn::kv_from`) its queries over that block's cache `store`
+/// (the entries at positions up to `pos`, in its window); such an attention adds nothing to a cache.
+pub fn step_with(a: &Attn, p: &Params, c: &mut KvCache, store: Option<&KvCache>, h: &[f32], pos: u32) -> Result<Vec<f32>> {
     let (nh, nk, hd, vd) = (a.heads, a.kv_heads, a.head_dim, a.v_head_dim);
+    if a.kv_from.is_some() != store.is_some() || (store.is_some() && a.indexer.is_some()) {
+        return err(format!("attention: keys and values from block {:?}, a cache of its own {}", a.kv_from, store.is_none()));
+    }
     if nh % nk != 0 || (a.k_eq_v && vd != hd) {
         return err(format!("attention: {nh} heads over {nk} KV heads, head dims {hd} and {vd}"));
     }
@@ -111,8 +120,8 @@ pub fn step(a: &Attn, p: &Params, c: &mut KvCache, h: &[f32], pos: u32) -> Resul
         };
         (raw_q, g)
     };
-    let raw_k = prod("k")?;
-    let mut v = if a.k_eq_v { raw_k.clone() } else { prod("v")? };
+    let raw_k = if store.is_some() { vec![0.0; nk * hd] } else { prod("k")? };
+    let mut v = if a.k_eq_v || store.is_some() { raw_k.clone() } else { prod("v")? };
     let mut k = raw_k;
     if q.len() != nh * hd || k.len() != nk * hd || v.len() != nk * vd {
         return err(format!("attention: products of {}, {} and {} values for {nh} x {hd}, {nk} x {hd}, {nk} x {vd}", q.len(), k.len(), v.len()));
@@ -141,8 +150,10 @@ pub fn step(a: &Attn, p: &Params, c: &mut KvCache, h: &[f32], pos: u32) -> Resul
     };
     let scale = if prescale { 1.0 } else { a.scale };
     prep(&mut q, &a.q_norm, "q_norm", hd, true, if prescale { a.scale } else { 1.0 });
-    prep(&mut k, &a.k_norm, "k_norm", hd, true, 1.0);
-    prep(&mut v, &a.v_norm, "v_norm", vd, false, 1.0);
+    if store.is_none() {
+        prep(&mut k, &a.k_norm, "k_norm", hd, true, 1.0);
+        prep(&mut v, &a.v_norm, "v_norm", vd, false, 1.0);
+    }
     // (the indexer's queries, normed and rotated as the attention's, and this token's raw key, from one product)
     let iq = match &a.indexer {
         None => None,
@@ -167,20 +178,19 @@ pub fn step(a: &Attn, p: &Params, c: &mut KvCache, h: &[f32], pos: u32) -> Resul
             Some((ix, inorm, q))
         }
     };
-    c.pos.push(pos);
-    c.k.push(k);
-    c.v.push(v);
-    let seen: Vec<usize> = (0..c.pos.len()).filter(|&j| c.pos[j] <= pos && a.window.is_none_or(|w| pos - c.pos[j] < w as u32)).collect();
-    let seen = match iq {
-        Some((ix, inorm, q)) => {
-            let (s, m) = mean_picks(ix, &inorm, p, c, &seen, &q, &rot, &r16, rope16)?;
-            c.margin = m;
-            s
-        }
-        None => {
-            c.margin = f32::INFINITY;
-            seen
-        }
+    if store.is_none() {
+        c.pos.push(pos);
+        c.k.push(k);
+        c.v.push(v);
+    }
+    let src: &KvCache = match store {
+        Some(st) => st,
+        None => &*c,
+    };
+    let seen: Vec<usize> = (0..src.pos.len()).filter(|&j| src.pos[j] <= pos && a.window.is_none_or(|w| pos - src.pos[j] < w as u32)).collect();
+    let (seen, margin) = match iq {
+        Some((ix, inorm, q)) => mean_picks(ix, &inorm, p, src, &seen, &q, &rot, &r16, rope16)?,
+        None => (seen, f32::INFINITY),
     };
     let sinks = if a.sinks { Some(p.vec("sinks")?) } else { None };
     // (eager: the score the bf16 of the product, then of its scale, then of the cap)
@@ -193,7 +203,7 @@ pub fn step(a: &Attn, p: &Params, c: &mut KvCache, h: &[f32], pos: u32) -> Resul
         let mut s: Vec<f32> = seen
             .iter()
             .map(|&j| {
-                let x = r_score(r_score(dot(qh, &c.k[j][kv * hd..][..hd])) * scale);
+                let x = r_score(r_score(dot(qh, &src.k[j][kv * hd..][..hd])) * scale);
                 match a.softcap {
                     Some(cap) => r_score(cap * (x / cap).tanh()),
                     None => x,
@@ -206,7 +216,7 @@ pub fn step(a: &Attn, p: &Params, c: &mut KvCache, h: &[f32], pos: u32) -> Resul
         softmax(&mut s);
         let mut o = vec![0f64; vd];
         for (&j, &pj) in seen.iter().zip(&s) {
-            for (ov, &vv) in o.iter_mut().zip(&c.v[j][kv * vd..][..vd]) {
+            for (ov, &vv) in o.iter_mut().zip(&src.v[j][kv * vd..][..vd]) {
                 *ov += r_prob(pj) as f64 * vv as f64;
             }
         }
@@ -221,6 +231,7 @@ pub fn step(a: &Attn, p: &Params, c: &mut KvCache, h: &[f32], pos: u32) -> Resul
         }
         out.extend(o);
     }
+    c.margin = margin;
     p.prod("o", &out)
 }
 
@@ -251,6 +262,7 @@ mod tests {
             k_eq_v: false,
             indexer: None,
             rounding: AttnRounding::F32,
+            kv_from: None,
         };
         let mut p = Params::new();
         let bfv = |v: Vec<f32>| v.into_iter().map(bf16).collect::<Vec<_>>();
@@ -285,6 +297,33 @@ mod tests {
             // (measured: 2.8-3.6e-3 and 2.9-3.9e-3)
             assert!(rf > 0.0 && rf < 1e-2, "head {hd}: flash {rf:.2e}");
             assert!(re > 0.0 && re < 1e-2 && eager != flash, "head {hd}: eager {re:.2e}");
+        }
+    }
+
+    /// KV sharing (`Attn::kv_from`): a layer with the store's queries on the store's inputs reads the store's cache and gives the store's outputs
+    /// bit for bit, at every rounding and with a window; it adds nothing to a cache; without the store's cache it is refused.
+    #[test]
+    fn a_shared_attention_reads_the_stores_keys_and_values() {
+        let (hidden, tokens) = (64, 10);
+        let x = fill("attn.input", tokens * hidden, -1.0, 1.0);
+        for (rounding, window) in [(AttnRounding::F32, None), (AttnRounding::Eager, Some(4)), (AttnRounding::Flash, Some(3))] {
+            let (a, p) = layer(4, 2, 128, hidden);
+            let a = Attn { rounding, window, ..a };
+            let shared = Attn { kv_from: Some(0), ..a.clone() };
+            let mut q = Params::new();
+            for r in ["q", "o", "q_norm"] {
+                q.t.insert(r.into(), p.t[r].clone());
+            }
+            let (mut store, mut own) = (KvCache::default(), KvCache::default());
+            for t in 0..tokens {
+                let h = &x[t * hidden..][..hidden];
+                let want = step(&a, &p, &mut store, h, t as u32).unwrap();
+                let got = step_with(&shared, &q, &mut own, Some(&store), h, t as u32).unwrap();
+                assert_eq!(got, want, "{rounding:?}, window {window:?}, token {t}");
+            }
+            assert!(own.pos.is_empty() && own.k.is_empty());
+            assert!(step(&shared, &q, &mut own, &x[..hidden], 0).is_err());
+            assert!(step_with(&a, &p, &mut own, Some(&store), &x[..hidden], 0).is_err());
         }
     }
 

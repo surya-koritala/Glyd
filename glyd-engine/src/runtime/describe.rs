@@ -457,6 +457,7 @@ fn llama(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>
             k_eq_v: false,
             indexer: None,
             rounding: AttnRounding::F32,
+            kv_from: None,
         };
         let p = names::HF.layer(prefix, l);
         let (ar, fr) = (
@@ -618,6 +619,7 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
                     k_eq_v: false,
                     indexer: None,
                     rounding: AttnRounding::Flash,
+                    kv_from: None,
                 };
                 let sh = vec![
                     ("q", vec![heads * hd * if gate { 2 } else { 1 }, d]),
@@ -874,6 +876,7 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
                     scale: (hd as f32).powf(-0.5),
                     k_eq_v: false,
                     rounding: AttnRounding::Flash,
+                    kv_from: None,
                     indexer: Some(ix.clone()),
                 };
                 let mut r = names::roles(part::ATTN, &p, 0, |r| r != "norm_in" && !r.ends_with("_bias"));
@@ -954,8 +957,10 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     k.expect("attention_bias", &Value::Bool(false))?;
     k.expect("enable_moe_block", &Value::Bool(false))?;
     k.expect("hidden_size_per_layer_input", &Value::from(0))?;
-    k.expect("num_kv_shared_layers", &Value::from(0))?;
-    k.expect("use_double_wide_mlp", &Value::Bool(false))?;
+    // KV sharing (E2B, E4B): the last `shared` layers' queries attend to the keys and values of the last earlier layer of their type; with the
+    // double-wide MLP those layers' intermediate width is twice the config's
+    let shared = k.opt_usize("num_kv_shared_layers")?.unwrap_or(0);
+    let wide = k.bool("use_double_wide_mlp", false)?;
     for x in ["num_experts", "top_k_experts", "moe_intermediate_size"] {
         k.expect(x, &Value::Null)?;
     }
@@ -1000,14 +1005,31 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             }
         }
     }
+    if shared >= layers {
+        return err(format!("{mt}: {shared} of {layers} layers share keys and values, where an earlier layer of each type must make them"));
+    }
+    let first_shared = layers - shared;
+    // (each shared layer's store: the last layer before the shared ones of its type; its attention block is twice its index)
+    let store = |l: usize| -> Result<Option<usize>> {
+        if l < first_shared {
+            return Ok(None);
+        }
+        match types[..first_shared].iter().rposition(|t| *t == types[l]) {
+            Some(j) => Ok(Some(2 * j)),
+            None => err(format!("{mt}: layer {l} ({}) shares keys and values, and no earlier layer of its type makes them", types[l])),
+        }
+    };
     let n = Norm::rms(eps);
     let (mut blocks, mut roles, mut shapes) = (Vec::new(), Vec::new(), std::collections::BTreeMap::new());
+    let mut unread = Vec::new();
     for (l, ty) in types.iter().enumerate() {
         let sliding = match ty.as_str() {
             "sliding_attention" => true,
             "full_attention" => false,
             o => return err(format!("{mt}: layer type {o} at layer {l}")),
         };
+        let kv_from = store(l)?;
+        let inter = if wide && kv_from.is_some() { 2 * inter } else { inter };
         let (h, kvh, kev) = if sliding { (hd, kv, false) } else { (ghd, gkv, k_eq_v) };
         let a = Attn {
             heads,
@@ -1027,9 +1049,19 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             k_eq_v: kev,
             indexer: None,
             rounding: AttnRounding::Eager,
+            kv_from,
         };
         let p = names::GEMMA.layer(prefix, l);
-        let r = [names::roles(part::ATTN, &p, 0, |r| !r.ends_with("_bias") && !(kev && r == "v")), names::roles(part::GEMMA_ATTN_OUT, &p, 0, all)].concat();
+        let own_kv = kv_from.is_none();
+        let r = [
+            names::roles(part::ATTN, &p, 0, |r| !r.ends_with("_bias") && !(kev && r == "v") && (own_kv || !matches!(r, "k" | "v" | "k_norm"))),
+            names::roles(part::GEMMA_ATTN_OUT, &p, 0, all),
+        ]
+        .concat();
+        // (a shared layer's checkpoint may still hold its key and value products and k norm: not read)
+        if !own_kv {
+            unread.extend(["k_proj.", "v_proj.", "k_norm."].map(|t| format!("{p}.self_attn.{t}")));
+        }
         let f = names::roles(part::GEMMA_MLP, &p, 0, all);
         // (the shapes: each matrix [rows, columns] as the layer's heads and widths make it, each norm and scalar its width)
         shape_roles(
@@ -1071,6 +1103,7 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     shapes.insert(out.embed.clone(), vec![vocab, d]);
     shapes.insert(out.final_norm.clone(), vec![d]);
     out.shapes = shapes;
+    out.unread.extend(unread);
     Ok(out)
 }
 
@@ -1713,6 +1746,7 @@ fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
             k_eq_v: false,
             indexer: None,
             rounding: AttnRounding::Sdpa,
+            kv_from: None,
         };
         let p = names::HF.layer(prefix, l);
         blocks.push(Block {
@@ -2064,6 +2098,7 @@ fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
             k_eq_v: false,
             indexer: None,
             rounding: AttnRounding::Flash,
+            kv_from: None,
         }
     };
     let moe_keys =
