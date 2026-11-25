@@ -397,6 +397,9 @@ impl MoeBlock for NhMoeCached {
                 }
                 Ok(())
             }
+            // (a call in waves: the store asks for the sum after each wave, and only the last wave's has every pair's parts written; the earlier sums, which
+            // the last one overwrites, are not made: they read the parts of the pairs of the waves still to come)
+            Stage::Sum if wave + 1 < waves => Ok(()),
             Stage::Sum => self.layer.experts_sum(sc, s, n, y, hy.ids, hy.extra),
         })?;
         if let Some((_, fc2)) = &self.fc {
