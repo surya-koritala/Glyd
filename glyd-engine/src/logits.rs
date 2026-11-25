@@ -1122,11 +1122,28 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
 type Pair = (&'static str, fn(&Path, &str) -> Result<Box<dyn Run>>, fn(&Path, &str) -> Result<Box<dyn Run>>);
 
 fn legacy_pairs() -> Vec<Pair> {
-    // (none: R3b retired Qwen3.5's, Gemma 4's and Nemotron-H's hand-written engines on their parity records, #410 and the R3b pull requests)
-    Vec::new()
+    // (R3b retired Qwen3.5's, Gemma 4's and Nemotron-H's hand-written engines on their parity records, #410 and the R3b pull requests; Condor's is the last, R3d)
+    vec![("qwen4x", qwen4x_old, qwen4x_desc)]
 }
 
-/// `paritycheck [CASE...] [--level L] [--scratch DIR]`: each family that still has a hand-written engine (none since R3b) on
+/// The experts of the random Qwen3.8-Flash-Next at a level: its codes (six bits at penguin, where they hold the random model's exactly, as `qwen4x_engine`).
+fn qwen4x_experts(level: &str) -> Result<Layout> {
+    Ok(level_layout(level)?.unwrap_or(Layout::Int6))
+}
+
+/// Condor's own engine (src/model_qwen4x.rs) on the random model: the other matrices lossless, the experts at the level.
+fn qwen4x_old(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
+    let o = crate::model_qwen4x::OptsQx { ctx: 1024, chunk: 64, layout: Layout::Tiered, chunked: true, ..Default::default() };
+    let make = crate::model_qwen4x::gpu_experts(qwen4x_experts(level)?);
+    Ok(Box::new(Qwen4x { e: crate::model_qwen4x::EngineQx::new(dir, &o, Some(&make))?, chunk: 64, last_chunk: 0 }))
+}
+
+/// The description executor (src/dynamic/qwen4x.rs) on the same weights as `qwen4x_old`.
+fn qwen4x_desc(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
+    boxed(crate::dynamic::qwen4x::load_level(dir, &dyn_opts(Some(Layout::Tiered)), qwen4x_experts(level)?))
+}
+
+/// `paritycheck [CASE...] [--level L] [--scratch DIR]`: each family that still has a hand-written engine (Qwen3.8-Flash-Next's, src/model_qwen4x.rs) on
 /// it and on the description executor, the same random model, prompt and decode tokens as its R7 fixture, at each level the fixture bounds
 /// that the hand-written engine runs: rows with the same bits, the same best token, KL of the description path from the hand-written one.
 /// The record R3b deletes the engines on (docs/design/runtime.md §7: no old path survives its parity record). Exit 1 where a row's best

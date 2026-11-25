@@ -31,6 +31,11 @@ pub fn lowered(dir: &Path, ctx: usize) -> Result<ModelDesc> {
 /// The model in `dir` on the executor's loader (`Dyn::new_with`: its matrices at the level asked or this GPU's, the table of n-grams and the shapes the library
 /// does not pack as saved, A_log in fp32), its experts at kestrel's six bits (Condor's block, `QxMoe`, handed over as a `ResidentMoe`).
 pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
+    load_level(dir, o, Layout::Int6)
+}
+
+/// `load` with the experts at `level` (a lossy level's codes: six, five or four bits).
+pub fn load_level(dir: &Path, o: &Opts, level: Layout) -> Result<Dyn> {
     let c = crate::qwen4x::ConfigQx::load(dir)?;
     let d = lowered(dir, o.ctx + o.chunk + 16)?;
     // (what the GPU would hold: the experts at six bits and the table of n-grams as saved; Condor's engine serves a model past that)
@@ -47,7 +52,7 @@ pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
     }
     let st = Stage::whole(d.layers.len());
     let blocks = |ck: &Checkpoint, _: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
-        (0..c.layers).map(|l| Ok(Box::new(ResidentMoe(crate::model_qwen4x::QxMoe::load(l, &c, ck, Layout::Int6)?.into_layer())) as Box<dyn MoeBlock>)).collect()
+        (0..c.layers).map(|l| Ok(Box::new(ResidentMoe(crate::model_qwen4x::QxMoe::load(l, &c, ck, level)?.into_layer())) as Box<dyn MoeBlock>)).collect()
     };
     Dyn::new_with(dir, d, None, st, o, &blocks)
 }
