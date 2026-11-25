@@ -6771,6 +6771,10 @@ mod tests {
         }
         let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plans_p2a.json");
         if std::env::var_os("GLYD_WRITE_P2A").is_some() {
+            // (the file is a build's with CUDA 13's kernels alone: one with CUDA 12's runs on more drivers, below)
+            if crate::machine::KERNELS12 {
+                panic!("write the file on a build with CUDA 13's kernels alone");
+            }
             // (a case a line)
             let lines: Vec<String> = got.iter().map(|(k, v)| format!("{}: {v}", serde_json::Value::from(k.as_str()))).collect();
             std::fs::write(&file, format!("{{\n{}\n}}\n", lines.join(",\n"))).unwrap();
@@ -6780,9 +6784,29 @@ mod tests {
         assert_eq!(got.len(), want.len(), "the cases recorded");
         let plans = want.values().filter(|v| v.get("schema").is_some()).count();
         assert!(plans > 300, "{plans} plans recorded");
+        // (the file holds a build with CUDA 13's kernels alone. A build that carries CUDA 12's too runs on a preset whose driver is below CUDA 13 and at
+        // least this build's floor (the laptop preset's 12.7): there the file's refusal of that driver is this build's plan of the case, which is held
+        // only to not refusing the driver)
+        let driver_refusal = |v: &serde_json::Value| v["refusal"][0].as_str().is_some_and(|w| w.starts_with("the driver supports CUDA"));
+        let admitted = |k: &str| {
+            let preset = k.split(' ').nth(1).and_then(Machine::preset);
+            preset.is_some_and(|m| {
+                m.devices
+                    .iter()
+                    .filter(|d| d.vendor == Vendor::Nvidia)
+                    .all(|d| d.driver < crate::machine::DRIVER_MIN && d.driver >= crate::machine::driver_min(d.cc))
+            })
+        };
+        let mut planned_here = 0;
         for (k, w) in &want {
+            if driver_refusal(w) && admitted(k) {
+                planned_here += 1;
+                assert!(got.get(k).is_some_and(|g| !driver_refusal(g)), "{k}: this build runs on the driver the file's build refused: {:?}", got.get(k));
+                continue;
+            }
             assert_eq!(got.get(k), Some(w), "{k}");
         }
+        assert!(crate::machine::KERNELS12 || planned_here == 0, "{planned_here} cases of drivers this build refuses were not compared");
     }
 
     /// `fit` prints the ladder from the level asked for: Gemma 4 12B lossless does not fit a 16 GB card, kestrel does, and the step is a lower level that asks; as JSON too.
