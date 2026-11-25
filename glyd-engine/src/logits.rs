@@ -2947,7 +2947,9 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     // (decode steps of several rows replay a CUDA graph of their padded rows where the description takes one (src/dynamic/rows.rs `rows_bucket`): with prompts one a pass, a
     // description with experts decodes a sequence a step)
     let (replays, late) = (e.rows_replays.get(), e.rows_late.get());
-    let graphs = e.rows_graphs() && !(one_a_pass && !e.rows_exact());
+    // (steps launched ahead, GLYD_ENGINE_OVERLAP=1, run as passes of parts: no graph of rows and no pieces there yet)
+    let ahead = crate::sched::ModelStep::overlaps(&e);
+    let graphs = e.rows_graphs() && !(one_a_pass && !e.rows_exact()) && !ahead;
     println!(
         "decode steps of several rows replayed from a CUDA graph: {replays}, graphs captured in a request's step: {late}{}",
         if graphs { "" } else { " (this description's steps of several rows run eager)" }
@@ -2978,7 +2980,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         let (played, rows_played) = (e.piece_replays.get() - before, e.rows_replays.get() - rows_before);
         e.pieces_for_check(false, false);
         let same = graphs.iter().zip(&eager).filter(|(a, b)| a == b).count();
-        let ok = same == prompts.len() && (played > 0 || !pieces_on);
+        let ok = same == prompts.len() && (played > 0 || !pieces_on || ahead);
         println!(
             "{} graphs on against off: {same} of {} replies at once the eager passes', token for token; {played} passes replayed their pieces, {rows_played} decode steps \
              their graph{}",

@@ -2894,6 +2894,8 @@ impl Dyn {
     /// The selected sequence's blocks grown to hold its tokens before `upto`, where its keys and values are paged: a pass outside the scheduler (`reply`,
     /// `prefill`, `step`) wrote every token to block 0, which a table names until it grows, so a paged executor's replies were not the model's.
     fn hold_blocks(&mut self, upto: usize) -> Result<()> {
+        // (the pass before this one is queued: what its growth promised of the 12-bit pools is in their counts when `kv12_room` waits for the stream and reads them)
+        self.kv12_stepped();
         if self.paged.is_some() && !crate::sched::ModelStep::grow(self, self.seq as i32, upto)? {
             return err(format!("the paged cache has no block left for token {upto} of the sequence"));
         }

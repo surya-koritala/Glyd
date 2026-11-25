@@ -1257,7 +1257,7 @@ impl Dyn {
             self.gaps = Some(Gaps::new()?);
         }
         let Some(e) = self.big.mats[self.big.d.embed].packed_opt().map(|p| p.pack) else { return Ok(()) };
-        if !crate::sched::overlap_asked()
+        if !crate::sched::overlap_forced()
             || !ModelStep::one_step(self)
             || !self.stores().is_empty()
             || self.big.ram.is_some()
@@ -1416,6 +1416,8 @@ impl Dyn {
         if graph {
             lasts.clear();
         }
+        // (what the step's growths promised of the 12-bit pools: in their counts once the stream is waited for, as `kv12_room` does before it reads them)
+        self.kv12_stepped();
         let head = self.head_room();
         let evs = self.prof.as_ref().map(|p| std::mem::take(&mut *p.borrow_mut())).unwrap_or_default();
         let lanes = self.lanes.as_mut().expect("lanes");
@@ -1751,7 +1753,7 @@ impl ModelStep for Dyn {
     }
     /// A served model whose description runs the round as one step on one GPU, bf16 pages, no expert cache and no layer in the computer's memory (their host work is in the
     /// pass): `Lanes`, made by `serve_rows`. A recurrent model's states are copied at a mark or a boundary as the next step is launched (the scheduler asks then: `launch`),
-    /// and the operations that read the tokens (an n-gram embedding, routing by token) read the ids `step_ids` makes. GLYD_ENGINE_OVERLAP=0: none.
+    /// and the operations that read the tokens (an n-gram embedding, routing by token) read the ids `step_ids` makes. Only with GLYD_ENGINE_OVERLAP=1 (`make_lanes`).
     fn overlaps(&self) -> bool {
         self.lanes.is_some()
     }

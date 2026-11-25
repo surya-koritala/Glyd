@@ -483,7 +483,8 @@ for the step in flight's sequences (`Sched::launch`), so the copies are of the s
 (the void pages a step made) is copied into the lane with the samples and read from there (`kv12_lost`). The operations that read the
 tokens (an n-gram embedding, routing by token) read the int32 ids `step_ids` writes beside the embedding's. The executor overlaps on one
 GPU where no layer's experts are in a cache and no layer's matrices are in the computer's memory (both do host work inside the pass);
-`GLYD_ENGINE_OVERLAP=0` turns it off. `GLYD_PROF=1` and `GLYD_ENGINE_STEP_PROF=1` time
+`GLYD_ENGINE_OVERLAP=1` turns it on: it is off by default, since a launched step does not yet take the decode rows' one launch a layer,
+their graphs or the pieces. `GLYD_PROF=1` and `GLYD_ENGINE_STEP_PROF=1` time
 each step's GPU work and the GPU's idle time before it from events at its first and last work (`Gaps`).
 
 The models that ran one request at a time through a loop of their own (`server::work_gen`) are the scheduler's steps of one slot: stages

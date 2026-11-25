@@ -665,6 +665,13 @@ pub(crate) fn overlap_asked() -> bool {
     *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_OVERLAP").is_none_or(|v| v != "0"))
 }
 
+/// Whether launching steps ahead is asked for outright (GLYD_ENGINE_OVERLAP=1). The executor launches its steps ahead only then: a launched step runs its rows as a pass
+/// of parts, not `pass`'s rows that decode in one launch a layer, their graphs or the pieces (src/dynamic/rows.rs `make_lanes`), which are the default until it takes them.
+pub(crate) fn overlap_forced() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_OVERLAP").is_some_and(|v| v == "1"))
+}
+
 /// The most tokens a prompt pass has for the round's decode step to wait on the prompts that are coming in, and the most rounds in a row it does.
 const SHORT_PASS: usize = 256;
 const MAX_SKIPS: u32 = 4;
