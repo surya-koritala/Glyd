@@ -5,11 +5,21 @@
 //! - the packed products' way (glyd_gpu_mma_way, glyd_gpu_mma12_way: which kernel, or W decoded for a dense product, takes W [O, K] for M
 //!   tokens on a GPU) and the GPU's code those ways are keyed by (glyd_gpu_gpu: compute capability plus a class by name). These are the
 //!   measured per-GPU choices between Glyd's fused kernels and cuBLAS (V8a, #255: glyd-engine/docs/design/kernel-libraries.md);
-//! - the paged KV cache's sizes (glyd_gpu_kv_leaf_bytes, _extra_bytes, _second_bytes) and its decode's workspace
-//!   (glyd_gpu_kv_decode_workspace).
+//! - the paged KV cache's sizes (glyd_gpu_kv_leaf_bytes, _extra_bytes, _second_bytes), a page's image (glyd_gpu_kv_image_bytes) and its
+//!   decode's workspace (glyd_gpu_kv_decode_workspace).
 //!
-//! Kernels (step 1): the mma layouts' unpacking (glyd_gpu_mma_unpack, glyd_gpu_mma12_unpack), from the library's own source
-//! (gpu/glyd_gpu_kernels.h) in the engine's fatbin (kernels/fold.cu), launched here as the library launches it.
+//! Kernels, from the library's own source (gpu/glyd_gpu_kernels.h) in the engine's fatbin (kernels/fold.cu), launched here as the library's
+//! host code launches them (the same grids, splits and workspaces, from the occupancy of the engine's own kernels):
+//! - the mma layouts' unpacking and rows by id (glyd_gpu_mma_unpack, _mma_rows and the 12-bit layout's);
+//! - the packed products (glyd_gpu_mma_linear, _mma12_linear): the step product to 64 tokens, the prompt kernel in its grid and stream-K
+//!   forms, the 12-bit layout's route MID, and Hopper's TMA and wgmma routes;
+//! - the experts' plan (glyd_gpu_moe_way) and products (glyd_gpu_mma_moe, _mma12_moe, _mma_moe_placed): the step products, the prompt
+//!   kernel, Hopper's wgmma product;
+//! - the 12-bit KV pages: write, unpack, gather, the decode and prompt attention (and over a bf16 cache), and release, save and load;
+//! - the lossless FP8 format: size, pack, unpack and its products (both layouts, the experts').
+//!
+//! A call the library refuses, a plan a development build's tuning variable asks for, and an AMD build go to the library still (each
+//! function here says false and `ffi::Lib` calls it).
 
 use crate::device::{Attr, CudaDevice as D, Device};
 use crate::ffi::{Error, Kind, Pack, Result, Stream, Words};
@@ -3159,6 +3169,8 @@ pub fn check(only: Option<&str>) -> Result<()> {
         ("the step product (route GEMM, 1 to 64 tokens), the engine's kernels against the library's, and its workspace", linear_check),
         ("the mma layouts' unpacking and rows by id, the engine's kernels against the library's (every bf16 of each layout, whole and a row block)", unpack_check),
     ];
+    // (a census of the launches: which of kernels/fold.cu's kernels these checks ran on this GPU)
+    crate::dev::kprof_start();
     for (what, run) in checks {
         if only.is_some_and(|w| !what.contains(w)) {
             continue;
@@ -3167,6 +3179,15 @@ pub fn check(only: Option<&str>) -> Result<()> {
         std::io::Write::flush(&mut std::io::stdout()).ok();
         let (n, bad) = run(&dev, &lib)?;
         say(what, n, bad);
+    }
+    // a kernel of a route another GPU's class takes (stream-K on GeForce Ada, an A100's tiles, Hopper's TMA and wgmma), or of a shape these checks do not
+    // reach on this one, is compared where that GPU runs this command: said here, so a kernel no check launches anywhere is seen
+    let ran: std::collections::BTreeSet<String> = crate::dev::kprof_stop().into_iter().map(|k| k.0).collect();
+    let all: Vec<&str> = crate::kt::NAMES.iter().filter(|k| k.1 == "fold.cu").map(|k| k.0).collect();
+    let idle: Vec<&str> = all.iter().copied().filter(|k| !ran.contains(*k)).collect();
+    println!("foldcheck: {} of the {} kernels of kernels/fold.cu launched on this GPU", all.len() - idle.len(), all.len());
+    if !idle.is_empty() {
+        println!("  not launched here: {}", idle.join(" "));
     }
     if fails > 0 {
         return crate::ffi::err(format!("foldcheck: {fails} failed"));

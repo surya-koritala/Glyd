@@ -235,5 +235,11 @@ pub fn generate(sources: &[(String, String)]) -> Result<String, String> {
         ));
     }
     out.push_str(&format!("/// The kernels: {}.\npub const COUNT: usize = {};\n", all.len(), all.len()));
+    // (each kernel with its file: a check's census of what it launched says which of a file's kernels it did not)
+    out.push_str("/// Each kernel's name and its file of kernels/.\npub const NAMES: &[(&str, &str)] = &[\n");
+    for (name, (_, file)) in &all {
+        out.push_str(&format!("    (\"{name}\", \"{file}\"),\n"));
+    }
+    out.push_str("];\n");
     Ok(out)
 }

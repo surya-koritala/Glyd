@@ -259,7 +259,8 @@ extern "C" __global__ void __launch_bounds__(128) fold_kv_load(const uint8_t* im
 // glyd_gpu_mma_moe, _mma12_moe and _mma_moe_placed (mma_moe_run) at a decode step's and a few rows' sizes: mma_moe_body for MT tiles of 16 pairs (1, 2, 4),
 // the activation (0 none, 1 SiLU, 2 GELU) and the step loop's variant the library takes by default on each GPU class (0; 2: the m-tiles with pairs alone, an H100's
 // and an A100's; 8 and 10: two steps loaded ahead, an HBM GPU's one-token products), and mma_moe_rows_body (no gate, a warp a row block over the whole K: MT 2
-// and 4) and moe_sum_body (the weighted sum of a token's choices). The prompt kernel (many pairs an expert), the wgmma route and the variants a tuning variable asks
+// and 4) and moe_sum_body (the weighted sum of a token's choices). The prompt kernel (many pairs an expert: fold_big_*_moe) and Hopper's wgmma route
+// (fold_moe_wg_*) are further down; the variants a development build's tuning variable asks for are the library's still.
 #define FOLD_MOE_TIERED(MT, ACT, V, MINB) \
     extern "C" __global__ void __launch_bounds__(256, MINB) fold_moe_tiered_##MT##_##ACT##_##V(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, uint32_t s1, uint32_t s2, uint32_t s3, int64_t O, int64_t K, const int* plan, int E, int64_t k, int gather, const __nv_bfloat16* X, const __nv_bfloat16* bias, const void* w, int wf32, __nv_bfloat16* Y, float* Y32, int64_t P, float* parts, int* done, int pf) { \
         glib::mma_moe_body<glib::Tiered, MT, ACT, V>(glib::Tiered{data, blocks, block_base, glib::Tiers{s1, s2, s3}}, O, K, plan, E, k, gather, X, bias, w, wf32, Y, Y32, P, parts, done, pf); \
