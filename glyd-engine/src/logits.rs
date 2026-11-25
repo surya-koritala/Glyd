@@ -1004,18 +1004,16 @@ impl Run for Qwen4x {
     }
 }
 
-/// The experts of Qwen3.8-Flash-Next at penguin are lossless, at kestrel six-bit codes (the random model's are on that grid, as tools/qwen4x_ref.py makes them, so both
-/// hold its weights exactly). At penguin: the description executor (src/dynamic/qwen4x.rs, every matrix lossless); at the other levels Condor's own engine, whose
-/// bits the sm89 fixture holds, until `paritycheck qwen4x` retires it. The penguin fixture's bound is the kind's (the Qwen3.5 layout's fixture's: KL mean 1e-4, max
-/// 2.5e-4), and the case asks to be held on its routers' choices (`Case::on_choices`): the random model's 16 experts, 4 a token, leave choices within 1e-2 of the
-/// next expert (`reference::ffn::margin`), which a bf16 engine may take either way, and one taken the other way moves its row and the rows after it by more than
-/// the bound allows arithmetic. Such a choice is counted as a near tie only by the reference's own ranks, and the logits are held, at the same bound, to the
-/// reference taking the engine's choices (`held_on_choices`); the figures against the reference's own choices are printed beside them.
+/// Qwen3.8-Flash-Next on the description executor (src/dynamic/qwen4x.rs) at every level, as the other cases' engines: the matrices at the level (penguin's lossless
+/// packs where none is), the experts lossless at penguin and in a lossy level's codes at the others. Condor's own engine runs no level of the case: the family is held to
+/// the CPU reference of the kinds, not to that engine's bits (its kestrel rows on an RTX 4080 SUPER are its record, tests/fixtures/qwen4x_condor_rows.json.gz, which
+/// the reference's own test reads), and `paritycheck` runs the two side by side while that engine exists. The penguin fixture's bound is the kind's (the Qwen3.5
+/// layout's fixture's: KL mean 1e-4, max 2.5e-4), and the case asks to be held on its routers' choices (`Case::on_choices`): the random model's 16 experts, 4 a token,
+/// leave choices within 1e-2 of the next expert (`reference::ffn::margin`), which a bf16 engine may take either way, and one taken the other way moves its row and
+/// the rows after it by more than the bound allows arithmetic. Such a choice is counted as a near tie only by the reference's own ranks, and the logits are held, at
+/// the same bound, to the reference taking the engine's choices (`held_on_choices`); the figures against the reference's own choices are printed beside them.
 fn qwen4x_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
-    let Some(experts) = level_layout(level)? else { return boxed(crate::dynamic::qwen4x::load(dir, &dyn_opts(None))) };
-    let o = crate::model_qwen4x::OptsQx { ctx: 1024, chunk: 64, layout: Layout::Tiered, chunked: true, ..Default::default() };
-    let make = crate::model_qwen4x::gpu_experts(experts);
-    Ok(Box::new(Qwen4x { e: crate::model_qwen4x::EngineQx::new(dir, &o, Some(&make))?, chunk: 64, last_chunk: 0, routed: None }))
+    boxed(crate::dynamic::qwen4x::load(dir, &dyn_opts(level_layout(level)?)))
 }
 
 /// The random tiny Qwen3.8-Flash-Next of tools/qwen4x_ref.py (8 layers: three Gated DeltaNet and one indexed attention, twice; a layer with per-layer embeddings; 16 experts; hyper-connections): its tensors'
