@@ -278,6 +278,7 @@ pub(crate) fn latent(c: &ConfigGlm) -> MlaOp {
             weights: 0,
             ape: 0,
             gate: 0,
+            key: super::KeyNorm::Layer(1e-6),
         }),
     }
 }
