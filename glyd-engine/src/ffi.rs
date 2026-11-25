@@ -994,6 +994,18 @@ impl Lib {
     /// # Safety
     /// As `linear`; `ids` holds n int64 on the device, `out` room for n rows.
     pub unsafe fn rows(&self, w: &Pack, ids: u64, n: i64, out: u64, cs: Stream) -> Result<()> {
+        // (the engine's own kernels, from the library's source: R17's `fold`)
+        if crate::fold::on() && crate::fold::rows(w, ids, n, out, cs)? {
+            return Ok(());
+        }
+        self.library_rows(w, ids, n, out, cs)
+    }
+
+    /// `rows` by the library's own kernels (glyd_gpu_mma_rows, glyd_gpu_mma12_rows): the oracle of the engine's (`fold::rows`).
+    ///
+    /// # Safety
+    /// As `rows`.
+    pub(crate) unsafe fn library_rows(&self, w: &Pack, ids: u64, n: i64, out: u64, cs: Stream) -> Result<()> {
         let r = match w.words {
             Words::Tiered { blocks, block_base, tiers } => (self.api.glyd_gpu_mma_rows)(
                 w.data as *const u8,

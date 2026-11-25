@@ -478,6 +478,53 @@ pub unsafe fn unpack(u: Unpacker, w: &Pack, row0: i64, rows: i64, out: u64, cs: 
     }
 }
 
+/// Rows `ids` [n] (int64 on the device) of W into `out` [n, cols] bf16 by the engine's kernel of W's layout (`unpacker`), on `cs`: a warp a (row, step),
+/// blocks of 256 threads, as glyd_gpu_mma_rows and _mma12_rows launch their own (mma_rows_run). False where the library takes the call: arguments it
+/// refuses (the layout of v0.27 and before among them), with its own words for them.
+///
+/// # Safety
+/// As `Lib::rows`; a context with the engine's module is current.
+pub unsafe fn rows(w: &Pack, ids: u64, n: i64, out: u64, cs: Stream) -> Result<bool> {
+    use crate::dev::here;
+    use crate::kt;
+    use crate::launch;
+    let Ok(u) = unpacker(w) else { return Ok(false) };
+    let (k, r) = (w.cols, w.rows);
+    if cfg!(glyd_hip) || u == Unpacker::V1 || k < 16 || k % 16 != 0 || r < 0 || r % 64 != 0 || n < 0 || ((ids == 0 || out == 0) && n != 0) {
+        return Ok(false);
+    }
+    let warps = n * (k / 16);
+    if warps == 0 {
+        return Ok(true);
+    }
+    if (warps + 7) / 8 >= 1 << 31 {
+        return Ok(false);
+    }
+    let (g, b) = ([((warps + 7) / 8) as u32, 1, 1], [256u32, 1, 1]);
+    match (u, w.words) {
+        (Unpacker::Tiered, Words::Tiered { blocks, block_base, tiers: t }) => {
+            launch!(here::<kt::fold_rows_tiered>()?, g, b, cs; w.data, blocks, block_base, t[0], t[1], t[2], k, r, ids, n, out)
+        }
+        (Unpacker::Compact, Words::Tiered { blocks, block_base, tiers: t }) => {
+            launch!(here::<kt::fold_rows_compact>()?, g, b, cs; w.data, blocks, block_base, t[0], t[1], t[2], k, r, ids, n, out)
+        }
+        (Unpacker::Int6, Words::Tiered { blocks, .. }) => launch!(here::<kt::fold_rows_int6>()?, g, b, cs; w.data, blocks, k, r, ids, n, out),
+        (Unpacker::Int5, Words::Tiered { blocks, .. }) => launch!(here::<kt::fold_rows_int5>()?, g, b, cs; w.data, blocks, k, r, ids, n, out),
+        (Unpacker::Int4, Words::Tiered { blocks, .. }) => launch!(here::<kt::fold_rows_int4>()?, g, b, cs; w.data, blocks, k, r, ids, n, out),
+        (Unpacker::Int4H(base), Words::Tiered { blocks, .. }) => launch!(here::<kt::fold_rows_int4h>()?, g, b, cs; w.data, blocks, base, k, r, ids, n, out),
+        (Unpacker::Fp4, Words::Tiered { blocks, .. }) => launch!(here::<kt::fold_rows_fp4>()?, g, b, cs; w.data, blocks, k, r, ids, n, out),
+        (Unpacker::Fp4R { ks, mg, sh }, Words::Tiered { blocks, .. }) => {
+            launch!(here::<kt::fold_rows_fp4r>()?, g, b, cs; w.data, blocks, ks, mg, sh, k, r, ids, n, out)
+        }
+        (Unpacker::Int3, Words::Tiered { blocks, .. }) => launch!(here::<kt::fold_rows_int3>()?, g, b, cs; w.data, blocks, k, r, ids, n, out),
+        (Unpacker::Twelve { hb4, xmax }, Words::Twelve { exc, exc_base, .. }) => {
+            launch!(here::<kt::fold_rows_twelve>()?, g, b, cs; w.data, exc, exc_base, hb4, xmax, k, r, ids, n, out)
+        }
+        _ => return Ok(false),
+    }?;
+    Ok(true)
+}
+
 /// The plan of `pairs` pairs sorted by their experts' ids (glyd_gpu_moe_way, `GpuOps::moe_way`) by the engine's kernels, as the library launches its own: from
 /// GLYD_GPU_ROUTE_MIN pairs (512; a development build reads it, 0 or less: never) one block of up to 32 warps, its counts a warp an expert in 48 KiB of
 /// shared memory (at least 8 warps), else the one warp.
@@ -3110,7 +3157,7 @@ pub fn check(only: Option<&str>) -> Result<()> {
         ("the FP8 products (each kind of scales, both layouts, 1 to 64 tokens, the experts'), the engine's kernels against the library's", f8_product_check),
         ("the grouped experts' step products (no activation, SiLU, GELU, gathered, weighted), the engine's kernels against the library's", moe_check),
         ("the step product (route GEMM, 1 to 64 tokens), the engine's kernels against the library's, and its workspace", linear_check),
-        ("the mma layouts' unpacking, the engine's kernels against the library's (every bf16 of each layout, whole and a row block)", unpack_check),
+        ("the mma layouts' unpacking and rows by id, the engine's kernels against the library's (every bf16 of each layout, whole and a row block)", unpack_check),
     ];
     for (what, run) in checks {
         if only.is_some_and(|w| !what.contains(w)) {
@@ -4289,7 +4336,8 @@ fn f8_product_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usi
 }
 
 /// `foldcheck`'s unpacking: random weights of each layout packed by glyd-gpu's packers, unpacked by the library's kernel and by the engine's, whole and
-/// rows 64-127, every bf16 compared; a pack of a layout number neither knows refused by both. (compared, differences)
+/// rows 64-127, every bf16 compared; 37 rows by id (some ids outside the matrix: rows of zeros) by both, every bf16 compared; a pack of a layout number
+/// neither knows refused by both. (compared, differences)
 #[cfg(feature = "dev")]
 fn unpack_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
     use crate::dev::Buf;
@@ -4333,15 +4381,60 @@ fn unpack_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, 
                     bad.push(format!("{name} {rows} x {cols} rows {row0}+{nr}: {differ} of {} bf16 differ", va.len()));
                 }
             }
-            // a layout number neither knows: both refuse
+            // rows by id (an embedding's lookup): ids in W's rows, some below and past them (rows of zeros), by both kernels; and no ids at all
+            let ids: Vec<i64> = (0..37)
+                .map(|i| match i % 9 {
+                    7 => -1 - (next() % 3) as i64,
+                    8 => rows as i64 + (next() % 5) as i64,
+                    _ => (next() % rows as u64) as i64,
+                })
+                .collect();
+            let idb = Buf::new(8 * ids.len())?;
+            idb.write(0, &ids)?;
+            a.fill_async(0xA5, dev.stream)?;
+            b.fill_async(0x5A, dev.stream)?;
+            // SAFETY: the pack's buffers, the ids and two outputs of ids x cols bf16 (the buffers hold rows x cols), live; the same stream.
+            let ra = unsafe { lib.library_rows(&pb.pack, idb.ptr, ids.len() as i64, a.ptr, dev.stream) };
+            synced(dev, || format!("the library's rows by id, {name} {rows} x {cols}"))?;
+            // SAFETY: as above.
+            let rb = unsafe { self::rows(&pb.pack, idb.ptr, ids.len() as i64, b.ptr, dev.stream) };
+            synced(dev, || format!("the engine's rows by id, {name} {rows} x {cols}"))?;
+            // SAFETY: no ids: nothing is launched.
+            let none = unsafe { (lib.library_rows(&pb.pack, idb.ptr, 0, a.ptr, dev.stream).is_ok(), self::rows(&pb.pack, idb.ptr, 0, b.ptr, dev.stream)) };
+            n += 2;
+            if !matches!(none, (true, Ok(true))) {
+                bad.push(format!("{name} {rows} x {cols}: rows by id, no ids: the library {}, the engine {:?}", none.0, none.1.map_err(|e| e.msg)));
+            }
+            match (ra, rb) {
+                (Ok(()), Ok(true)) => {
+                    let (mut va, mut vb) = (vec![0u16; ids.len() * cols], vec![0u16; ids.len() * cols]);
+                    a.read(0, &mut va)?;
+                    b.read(0, &mut vb)?;
+                    let differ = va.iter().zip(&vb).filter(|(x, y)| x != y).count();
+                    if differ > 0 {
+                        bad.push(format!("{name} {rows} x {cols}: rows by id: {differ} of {} bf16 differ", va.len()));
+                    }
+                }
+                (ra, rb) => bad.push(format!(
+                    "{name} {rows} x {cols}: rows by id: the library {:?}, the engine took it: {:?}",
+                    ra.map_err(|e| e.msg),
+                    rb.map_err(|e| e.msg)
+                )),
+            }
+            // a layout number neither knows: both refuse (the engine leaves the rows' call to the library, which refuses it)
             let mut odd = pb.pack;
             if let Words::Tiered { ref mut tiers, .. } = odd.words {
                 tiers[0] = (99 << 24) | (tiers[0] & 0xFF_FFFF);
-                n += 1;
+                n += 2;
                 // SAFETY: refused before anything is launched.
                 let (ra, rb) = unsafe { (lib.library_unpack(&odd, 0, 64, a.ptr, dev.stream), unpacker(&odd).map(|_| ())) };
                 if ra.is_ok() || rb.is_ok() {
                     bad.push(format!("{name}: an unknown layout number: the library {}, the engine {}", ra.is_ok(), rb.is_ok()));
+                }
+                // SAFETY: as above.
+                let (ra, rb) = unsafe { (lib.library_rows(&odd, idb.ptr, 1, a.ptr, dev.stream), self::rows(&odd, idb.ptr, 1, b.ptr, dev.stream)) };
+                if ra.is_ok() || !matches!(rb, Ok(false)) {
+                    bad.push(format!("{name}: rows by id of an unknown layout number: the library {}, the engine {:?}", ra.is_ok(), rb.map_err(|e| e.msg)));
                 }
             }
         }

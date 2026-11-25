@@ -66,6 +66,58 @@ extern "C" __global__ void fold_unpack_twelve(const uint8_t* data, const uint32_
     glib::mma_unpack_body<glib::Nib>(glib::Nib{data, exc, exc_base, hb4, xmax}, K, row0, rows, out, nullptr);
 }
 
+// glyd_gpu_mma_rows and glyd_gpu_mma12_rows: rows of W [rows, K] by id (ids int64 [n] on the device; one outside W's rows: a row of zeros) into out [n, K], a
+// warp a (row, step), blocks of 256 threads (mma_rows_body). A layout's kernel each, its words read as the unpackers' are.
+extern "C" __global__ void fold_rows_tiered(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, uint32_t s1, uint32_t s2, uint32_t s3, int64_t K, int64_t rows, const int64_t* ids,
+                                            int64_t n, uint16_t* out) {
+    glib::mma_rows_body<glib::Tiered>(glib::Tiered{data, blocks, block_base, glib::Tiers{s1, s2, s3}}, K, rows, ids, n, out);
+}
+
+extern "C" __global__ void fold_rows_compact(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, uint32_t s1, uint32_t s2, uint32_t s3, int64_t K, int64_t rows, const int64_t* ids,
+                                             int64_t n, uint16_t* out) {
+    glib::mma_rows_body<glib::Compact>(glib::Compact{data, blocks, block_base, glib::Tiers{s1, s2, s3}}, K, rows, ids, n, out);
+}
+
+extern "C" __global__ void fold_rows_int6(const uint8_t* data, const uint8_t* scales, int64_t K, int64_t rows, const int64_t* ids,
+                                          int64_t n, uint16_t* out) {
+    glib::mma_rows_body<glib::Int6>(glib::Int6{data, scales}, K, rows, ids, n, out);
+}
+
+extern "C" __global__ void fold_rows_int5(const uint8_t* data, const uint8_t* scales, int64_t K, int64_t rows, const int64_t* ids,
+                                          int64_t n, uint16_t* out) {
+    glib::mma_rows_body<glib::Int5>(glib::Int5{data, scales}, K, rows, ids, n, out);
+}
+
+extern "C" __global__ void fold_rows_int4(const uint8_t* data, const uint8_t* scales, int64_t K, int64_t rows, const int64_t* ids,
+                                          int64_t n, uint16_t* out) {
+    glib::mma_rows_body<glib::Int4>(glib::Int4{data, scales}, K, rows, ids, n, out);
+}
+
+extern "C" __global__ void fold_rows_int4h(const uint8_t* data, const uint8_t* scales, uint32_t base, int64_t K, int64_t rows, const int64_t* ids,
+                                           int64_t n, uint16_t* out) {
+    glib::mma_rows_body<glib::Int4H>(glib::Int4H{{data, scales}, base}, K, rows, ids, n, out);
+}
+
+extern "C" __global__ void fold_rows_fp4(const uint8_t* data, const uint8_t* scales, int64_t K, int64_t rows, const int64_t* ids,
+                                         int64_t n, uint16_t* out) {
+    glib::mma_rows_body<glib::Fp4>(glib::Fp4{data, scales}, K, rows, ids, n, out);
+}
+
+extern "C" __global__ void fold_rows_fp4r(const uint8_t* data, const uint8_t* scales, uint32_t ks, uint32_t mg, uint32_t sh, int64_t K, int64_t rows, const int64_t* ids,
+                                          int64_t n, uint16_t* out) {
+    glib::mma_rows_body<glib::Fp4R>(glib::Fp4R{data, scales, ks, mg, sh}, K, rows, ids, n, out);
+}
+
+extern "C" __global__ void fold_rows_int3(const uint8_t* data, const uint8_t* scales, int64_t K, int64_t rows, const int64_t* ids,
+                                          int64_t n, uint16_t* out) {
+    glib::mma_rows_body<glib::Int3>(glib::Int3{data, scales}, K, rows, ids, n, out);
+}
+
+extern "C" __global__ void fold_rows_twelve(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, uint32_t hb4, int xmax, int64_t K, int64_t rows, const int64_t* ids,
+                                            int64_t n, uint16_t* out) {
+    glib::mma_rows_body<glib::Nib>(glib::Nib{data, exc, exc_base, hb4, xmax}, K, rows, ids, n, out);
+}
+
 // glyd_gpu_moe_way: the plan of a mixture of experts' pairs sorted by expert (moe_route_body: one warp; moe_route_block_body: one block of up to 32
 // warps for a prompt's thousands of pairs, the same plan bit for bit). Which one, and its shared memory, as the library chooses (src/fold.rs).
 extern "C" __global__ void fold_moe_route(const int64_t* ids, int64_t P, int E, int* plan) {
