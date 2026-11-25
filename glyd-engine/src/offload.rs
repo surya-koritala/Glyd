@@ -1369,6 +1369,9 @@ struct Resident {
     stats: LayerStats,
     // the layer's places as the GPU plans its decode calls (src/devplan.rs; `Offload::device`), None where the host plans every call
     dplan: Option<crate::devplan::DevPlan>,
+    // (development) the pairs of the layer's last call the host computed (`ExpertStore::host_pairs`)
+    #[cfg(feature = "dev")]
+    host_pairs: Vec<usize>,
 }
 
 struct Cuda {
@@ -2190,13 +2193,16 @@ fn place(cuda: &mut Cuda, ly: &mut Resident, loads: &[(u16, u32)], stats: &mut S
 }
 
 /// What a layer's call hands the store: the device buffers of the router's choices (int64 `pairs`), their weights (fp32), the experts' input z (bf16, `tokens` rows), the buffer the pairs' places go to (int64) and the one
-/// the host's sums come to (fp32, `tokens` rows of the layer's hidden size, `CPU_TOKENS` rows at most).
+/// the host's sums come to (fp32, `tokens` rows of the layer's hidden size, `CPU_TOKENS` rows at most); and `rows`, where the layer's sum adds each pair's own weighted row (fp32 [pairs, hidden], pair j's at row j: a
+/// block layout's weighted second product keeps its pairs' there), the buffer the host's pairs' rows go to instead, each at its pair's row, so that a token's pairs are added in the order of its choices and rounded once
+/// whichever computed them (0: none; the host's rows go up summed by token to `part`).
 pub struct Call {
     pub ids: u64,
     pub wts: u64,
     pub z: u64,
     pub way: u64,
     pub part: u64,
+    pub rows: u64,
     pub tokens: usize,
     pub pairs: usize,
 }
@@ -2209,12 +2215,14 @@ pub enum Stage {
 }
 
 /// What a stage is told: `gpu`, whether any pair has a place (else the products are not run), and for the sum the device address of the ids it is of (the pairs' places: -1 for a pair the host computed; 0: the router's
-/// choices) and of the host's sums (0: none).
+/// choices) and of the host's sums (0: none); `rows`, that the host's pairs' rows are in the call's `rows` beside the GPU's (`Call::rows`), and the sum is of each pair `ids` names (the router's choices, -1 for a pair
+/// left out), a token's in the order of its choices, rounded once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hybrid {
     pub gpu: bool,
     pub ids: u64,
     pub extra: u64,
+    pub rows: bool,
 }
 
 /// A model layer whose experts are in groups, each a layer of the store (the Hummingbird level's two bit widths): the store's layer of each group (None: the group is all on the GPU, and not the store's), and each
@@ -2250,6 +2258,52 @@ unsafe fn send_sums(cuda: &mut Cuda, tokens_of: impl Iterator<Item = usize>, hid
         sums[t * hidden..][..hidden].iter_mut().zip(row).for_each(|(a, b)| *a += *b);
     }
     copy_h2d_async(part, cuda.part.ptr, tokens * hidden * 4, s)
+}
+
+/// The host's pairs `mine` of a call (rising), as runs of pairs one after another: each run's first pair, its first row among `mine`'s, and its length.
+fn runs(mine: &[usize]) -> Vec<(usize, usize, usize)> {
+    let mut v: Vec<(usize, usize, usize)> = Vec::new();
+    for (r, &j) in mine.iter().enumerate() {
+        match v.last_mut() {
+            Some((j0, _, n)) if *j0 + *n == j => *n += 1,
+            _ => v.push((j, r, 1)),
+        }
+    }
+    v
+}
+
+/// The ids a call's sum adds where every pair's row is the layer's own (`Hybrid::rows`): each pair's choice (`ids`) where the GPU computed it (a place in `way`) or the host did (`mine`), -1 where neither did (a pair left
+/// out).
+fn sum_ids(ids: &[i64], way: &[i64], mine: &[usize]) -> Vec<i64> {
+    let mut v: Vec<i64> = ids.iter().zip(way).map(|(&e, &w)| if w >= 0 { e } else { -1 }).collect();
+    mine.iter().for_each(|&j| v[j] = ids[j]);
+    v
+}
+
+/// The host's rows of a call's pairs `mine` (`cuda.out`: `hidden` fp32 each, in `mine`'s order, rising) sent to the device on `s` as `call` asks, and what its sum is to be told: where the layer's sum adds each pair's own
+/// row (`Call::rows`), each into its pair's row there (from the pinned `part`, a copy a run of pairs one after another) and the ids the sum adds into `call.way` (`sum_ids`, after the products, which read the places
+/// there), the sum then of every pair a token's choices name, in their order, rounded once; else summed by token into `call.part` (`send_sums`), the sum's ids the pairs' places (`way`: -1 for the host's).
+///
+/// # Safety
+/// As `send_sums`; `call.rows`, where it is not 0, a live device buffer of `call.pairs` rows of `hidden` floats, and `call.way` one of `call.pairs` int64 that nothing queued after the products reads; the pinned
+/// buffers made for the call (`Cuda::reserve`); `ids` and `way` the call's choices and places.
+#[allow(clippy::too_many_arguments)]
+unsafe fn send_host(cuda: &mut Cuda, call: &Call, mine: &[usize], ids: &[i64], way: &[i64], hidden: usize, gpu: bool, s: Stream) -> Result<Hybrid> {
+    let k = call.pairs / call.tokens;
+    if call.rows == 0 {
+        send_sums(cuda, mine.iter().map(|&j| j / k), hidden, call.tokens, call.part, s)?;
+        return Ok(Hybrid { gpu, ids: call.way, extra: call.part, rows: false });
+    }
+    let staged = std::slice::from_raw_parts_mut(cuda.part.ptr as *mut f32, mine.len() * hidden);
+    staged.copy_from_slice(&cuda.out[..mine.len() * hidden]);
+    for (j0, r0, n) in runs(mine) {
+        copy_h2d_async(call.rows + (j0 * hidden * 4) as u64, (cuda.part.ptr as *const f32).add(r0 * hidden) as *const _, n * hidden * 4, s)?;
+    }
+    // (the sum's ids in the way buffer's second section: the first, the places, may not yet be read by its copy)
+    let sum = std::slice::from_raw_parts_mut((cuda.way.ptr as *mut i64).add(call.pairs), call.pairs);
+    sum.copy_from_slice(&sum_ids(ids, way, mine));
+    copy_h2d_async(call.way, sum.as_ptr() as *const _, call.pairs * 8, s)?;
+    Ok(Hybrid { gpu, ids: call.way, extra: 0, rows: true })
 }
 
 impl ExpertStore {
@@ -2570,6 +2624,8 @@ impl ExpertStore {
             index: layer,
             stats: LayerStats::default(),
             dplan: None,
+            #[cfg(feature = "dev")]
+            host_pairs: Vec::new(),
         });
         let inner = &mut *inner;
         if inner.offload.device {
@@ -2683,6 +2739,12 @@ impl ExpertStore {
             p.dev = dev;
         }
         Ok(())
+    }
+
+    /// (development) The pairs of layer `layer`'s last call that the host computed, numbers into the call's pairs, rising (`moe::JOINS`).
+    #[cfg(feature = "dev")]
+    pub fn host_pairs(&self, layer: usize) -> Vec<usize> {
+        self.inner.borrow().layers.get(layer).and_then(Option::as_ref).map_or_else(Vec::new, |l| l.host_pairs.clone())
     }
 
     /// The place each expert of `layer` is in on the GPU (-1: none), after the engine's stream `s` has been told to wait for the copies of the layer that are pending.
@@ -2801,7 +2863,8 @@ impl ExpertStore {
     ///
     /// Where the layer has a host half, the mode is not `Copy` and the call has at most `CPU_TOKENS` tokens, the weights and z are read back with the choices and the misses are served as `plan` says: the copies are
     /// queued, `Stage::Products` is run for the pairs that have a place (one wave; a miss computed by the host is a pair with no place), the host computes the pairs of the experts it keeps and their sums go up to
-    /// `call.part`, and `Stage::Sum` is run with them (`Hybrid::extra`) and the ids that leave the host's pairs out (`Hybrid::ids`).
+    /// `call.part`, and `Stage::Sum` is run with them (`Hybrid::extra`) and the ids that leave the host's pairs out (`Hybrid::ids`); or, where the call names the rows its layer's sum adds (`Call::rows`), each
+    /// pair's row goes into its pair's row there and `Stage::Sum` adds every pair, a token's in the order of its choices, rounded once (`Hybrid::rows`): the call's sum whichever computed its pairs.
     ///
     /// # Safety
     /// The addresses of `call` are live device buffers of the sizes it names; the engine's stream is `dev`'s, and `body` queues work on it alone.
@@ -2891,12 +2954,16 @@ impl ExpertStore {
             let cuda = inner.cuda.as_mut().ok_or_else(|| Error("the expert cache has no layers".into()))?;
             cuda.use_worker = inner.offload.async_copies;
             let ly = inner.layers.get_mut(layer).and_then(Option::as_mut).ok_or_else(|| Error(format!("no layer {layer} in the expert cache")))?;
+            #[cfg(feature = "dev")]
+            ly.host_pairs.clear();
             let hidden = ly.hidden();
             let hybrid = mode != Mode::Copy
                 && ly.cpu.as_ref().is_some_and(|c| matches!(c.half, HostHalf::Rows(_) | HostHalf::Cb2(..) | HostHalf::Fp4 { .. }))
                 && (1..=CPU_TOKENS).contains(&call.tokens)
                 && pairs.is_multiple_of(call.tokens);
-            cuda.reserve(pairs, if hybrid { call.tokens * hidden * 2 } else { 0 }, if hybrid { call.tokens * hidden * 4 } else { 0 }, at)?;
+            // (the host's sums by token, or its pairs' rows where the layer's sum adds each pair's own: `send_host`)
+            let part = if call.rows != 0 { pairs } else { call.tokens } * hidden * 4;
+            cuda.reserve(pairs, if hybrid { call.tokens * hidden * 2 } else { 0 }, if hybrid { part } else { 0 }, at)?;
             crate::tmark!(s, "store: choices requested");
             copy_d2h_async(cuda.ids.ptr, call.ids, pairs * 8, s)?;
             if hybrid {
@@ -2934,12 +3001,14 @@ impl ExpertStore {
             (needed, host_ids, host_wts, hybrid)
         };
         if hybrid {
+            // (the codebook rows' layers sum the host's sums by token, their own way: `Call::rows` is not theirs)
             let overlap = {
                 let inner = self.inner.borrow();
                 let ly = inner.layers[layer].as_ref().expect("a layer");
                 inner.offload.async_copies
                     && inner.predict.is_none()
                     && ly.tier.is_none()
+                    && call.rows == 0
                     && matches!(ly.cpu.as_ref().map(|c| &c.half), Some(HostHalf::Cb2(..)))
             };
             if overlap {
@@ -2997,7 +3066,7 @@ impl ExpertStore {
                 // (after this layer's own copies on the copy stream, and before its products are queued)
                 self.predicted(layer, &needed, [Some(layer), None])?;
             }
-            let all = Hybrid { gpu: true, ids: 0, extra: 0 };
+            let all = Hybrid { gpu: true, ids: 0, extra: 0, rows: false };
             body(Stage::Products, w, waves.len(), &all)?;
             body(Stage::Sum, w, waves.len(), &all)?;
             let mut guard = self.inner.borrow_mut();
@@ -3111,7 +3180,7 @@ impl ExpertStore {
             ly.wait_ready(s)?;
             copy_h2d_async(call.way, cuda.way.ptr, pairs * 8, s)?;
             crate::tmark!(s, "store: planned");
-            body(Stage::Products, 0, 1, &Hybrid { gpu: gpu > 0, ids: 0, extra: 0 })?;
+            body(Stage::Products, 0, 1, &Hybrid { gpu: gpu > 0, ids: 0, extra: 0, rows: false })?;
             crate::tmark!(s, "store: products queued");
             ly.done.record(s)?;
             let backlog = cuda.backlog(inner.expert_bytes, &inner.costs);
@@ -3126,7 +3195,7 @@ impl ExpertStore {
         // (the host's pairs are waited for even if the rest failed: they write into `out`, which the call keeps)
         let host_result = pending.map(|rx| recv_spin(&rx));
         products?;
-        let hy = Hybrid { gpu: gpu > 0, ids: 0, extra: 0 };
+        let hy = Hybrid { gpu: gpu > 0, ids: 0, extra: 0, rows: false };
         let Some(joined) = host_result else {
             // (no pair left for the host: the pairs left out have no place and no host sum, and the sum leaves them out by their places)
             ly.stats.hosted(0, 0, dropped, 0, 0.0);
@@ -3154,7 +3223,7 @@ impl ExpertStore {
         if parts {
             return Ok(());
         }
-        body(Stage::Sum, 0, 1, &Hybrid { gpu: hy.gpu, ids: call.way, extra: call.part })?;
+        body(Stage::Sum, 0, 1, &Hybrid { gpu: hy.gpu, ids: call.way, extra: call.part, rows: false })?;
         crate::tmark!(s, "store: sum queued");
         Ok(())
     }
@@ -3526,10 +3595,12 @@ impl ExpertStore {
             inner.stats.skipped += dropped as u64;
             let (host_experts, host_bytes) = ly.host_reads(host_ids, &mine);
             ly.stats.hosted(host_experts, mine.len(), dropped, host_bytes, 0.0);
+            #[cfg(feature = "dev")]
+            ly.host_pairs.clone_from(&mine);
             (gpu, mine, served.promote)
         };
         self.predicted(layer, needed, [Some(layer), None])?;
-        let hy = Hybrid { gpu: gpu > 0, ids: 0, extra: 0 };
+        let hy = Hybrid { gpu: gpu > 0, ids: 0, extra: 0, rows: false };
         crate::tmark!(s, "store: planned");
         body(Stage::Products, 0, 1, &hy)?;
         crate::tmark!(s, "store: products queued");
@@ -3555,6 +3626,7 @@ impl ExpertStore {
             crate::tmark!(s, "store: sum queued");
             return Ok(());
         }
+        let sum;
         {
             let mut guard = self.inner.borrow_mut();
             let inner = &mut *guard;
@@ -3601,10 +3673,12 @@ impl ExpertStore {
             if !inner.frozen {
                 inner.costs.computed(ly.host_reads(host_ids, &mine).0, mine.len(), us);
             }
-            send_sums(cuda, mine.iter().map(|&j| j / k), hidden, call.tokens, call.part, s)?;
+            // SAFETY: the way buffer's first section holds the call's places (`fill_way` above), which nothing has written since.
+            let way = std::slice::from_raw_parts(cuda.way.ptr as *const i64, pairs).to_vec();
+            sum = send_host(cuda, call, &mine, host_ids, &way, hidden, hy.gpu, s)?;
             crate::tmark!(s, "store: host sums sent");
         }
-        body(Stage::Sum, 0, 1, &Hybrid { gpu: hy.gpu, ids: call.way, extra: call.part })?;
+        body(Stage::Sum, 0, 1, &sum)?;
         crate::tmark!(s, "store: sum queued");
         Ok(())
     }
@@ -3740,7 +3814,7 @@ impl ExpertStore {
         let any = gpu.iter().any(|&b| b);
         for g in 0..2 {
             let Some(l) = layers[g] else { continue };
-            body(Stage::Products, g, &Hybrid { gpu: gpu[g], ids: 0, extra: 0 })?;
+            body(Stage::Products, g, &Hybrid { gpu: gpu[g], ids: 0, extra: 0, rows: false })?;
             // (the places are free of this group's products once they have run: the copies behind it wait for them)
             self.inner.borrow().layers[l].as_ref().expect("a layer").done.record(s)?;
         }
@@ -3762,7 +3836,7 @@ impl ExpertStore {
             cuda.count(&mut inner.stats, &mut inner.costs, inner.expert_bytes, false)?;
         }
         if placed.mine.is_empty() {
-            return body(Stage::Sum, 0, &Hybrid { gpu: any, ids: 0, extra: 0 });
+            return body(Stage::Sum, 0, &Hybrid { gpu: any, ids: 0, extra: 0, rows: false });
         }
         {
             let mut guard = self.inner.borrow_mut();
@@ -3842,7 +3916,7 @@ impl ExpertStore {
             }
             send_sums(cuda, placed.mine.iter().map(|&(_, j)| j / k), hidden, call.tokens, call.part, s)?;
         }
-        body(Stage::Sum, 0, &Hybrid { gpu: any, ids: call.sum_ids, extra: call.part })
+        body(Stage::Sum, 0, &Hybrid { gpu: any, ids: call.sum_ids, extra: call.part, rows: false })
     }
 
     /// A step's end (the engine's, after the step's results are read): the copies that have run are counted, and each layer's stats since the step began become the last step's (`last_step`) and are added to the
@@ -4027,6 +4101,24 @@ mod tests {
         let mut rows = vec![2, 4, 5, 7];
         tail_skip_rows(&mut rows, &ids, &wts, 4, 1, 3);
         assert_eq!(rows, vec![2, 4]);
+    }
+
+    /// Where the layer's sum adds each pair's own row (`Call::rows`), the host's rows go to their pairs' rows a copy for each run of pairs one after another, and the
+    /// sum adds the pairs the GPU or the host computed, by their choices, and leaves out a pair neither did: a token's pairs in the order of its choices whoever
+    /// computed them, as copy mode's sum adds them.
+    #[test]
+    fn the_hosts_rows_go_to_their_pairs_and_the_sum_is_of_every_pair_computed() {
+        // two tokens of 4 choices: pairs 1, 2, 3 and 6 the host's, 0, 4 and 5 the GPU's, 7 left out (no place and not the host's)
+        let mine = [1usize, 2, 3, 6];
+        assert_eq!(runs(&mine), vec![(1, 0, 3), (6, 3, 1)]);
+        assert_eq!(runs(&[]), Vec::<(usize, usize, usize)>::new());
+        assert_eq!(runs(&[0, 1, 2, 3]), vec![(0, 0, 4)]);
+        let ids = [5i64, 9, 2, 7, 3, 5, 11, 0];
+        let way = [0i64, -1, -1, -1, 1, 0, -1, -1];
+        assert_eq!(sum_ids(&ids, &way, &mine), vec![5, 9, 2, 7, 3, 5, 11, -1]);
+        // (every pair the host's, or none: the router's choices, the pairs left out apart)
+        assert_eq!(sum_ids(&ids, &[-1; 8], &[0, 1, 2, 3, 4, 5, 6, 7]), ids.to_vec());
+        assert_eq!(sum_ids(&ids, &way, &[]), vec![5, -1, -1, -1, 3, 5, -1, -1]);
     }
     use flate2::read::DeflateDecoder;
     use std::io::Read;

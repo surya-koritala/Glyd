@@ -564,7 +564,8 @@ extern "C" __global__ void v4_ogather(const bf16* mid, bf16* out, int n, int G, 
 }
 
 // ---- the experts -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-// out [rows, I] = the experts' activation with each pair's weight in it, as the release computes it: bf16(w silu(min(g, lim)) clamp(u, -lim, lim)) of gu [rows, 2 I] (gate then up), then where `fp8` each block
+// out [rows, I] = the experts' activation with each pair's weight in it, as the release computes it: bf16(w silu(min(g, lim)) clamp(u, -lim, lim)) of gu [rows, 2 I] (gate then up; silu's exp moe.cu's
+// moe_exp), then where `fp8` each block
 // of 128 rounded to E4M3 (the second product's input). Row r is the plan's r-th pair (plan [2 + 2E + P]: the pairs sorted by expert, glyd_gpu_moe_way's) and w its weight wts[pair]; no plan: w = 1 (the shared
 // expert). A row past the pairs the plan routes is none (a call in waves routes a wave's pairs alone: the plan's order holds nothing past them) and is left as it is. A warp a block of 128:
 // block (row, 4 blocks), 128 threads; I a multiple of 128.
@@ -577,7 +578,7 @@ extern "C" __global__ void v4_moe_act(const bf16* gu, bf16* out, const int* plan
 #pragma unroll
     for (int i = 0; i < 4; i++) {
         const float g = fminf(b2f(gu[(size_t)r * 2 * I + c + i]), lim), u = fminf(fmaxf(b2f(gu[(size_t)r * 2 * I + I + c + i]), -lim), lim);
-        v[i] = b2f(f2b(wt * (g / (1.f + expf(-g)) * u)));
+        v[i] = b2f(f2b(__fmul_rn(wt, __fmul_rn(__fdiv_rn(g, __fadd_rn(1.f, moe_exp(-g))), u))));  // (the host's to the bit: src/cpu_fp4.rs `release`)
     }
     if (fp8) v4_fp8_group(v, 4, 32);
 #pragma unroll

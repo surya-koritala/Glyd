@@ -539,13 +539,13 @@ impl Dyn {
             }
             Op::MambaConv { w, bias, state, cd, row, x_off } => {
                 let x = p.slot(Slot::Mix) + (x_off * 2) as u64;
-                self.knh.conv_rows(s, x, row as i32, p.small[w].ptr, p.small[bias].ptr, sts(state), ss, p.slot(Slot::Xc), ru, cd as i32)?;
+                self.kmamba.conv_rows(s, x, row as i32, p.small[w].ptr, p.small[bias].ptr, sts(state), ss, p.slot(Slot::Xc), ru, cd as i32)?;
                 self.mark("Mamba-2: convolution")
             }
             Op::MambaScan { dt_bias, a_log, d, state, cd, row, dt_off, nh, ng } => {
                 let (xc, dtr, core) = (p.slot(Slot::Xc), p.slot(Slot::Mix) + (dt_off * 2) as u64, p.slot(Slot::Core));
                 let (dtb, al, dd) = (p.small[dt_bias].ptr, p.small[a_log].ptr, p.small[d].ptr);
-                self.knh.ssm_rows(s, xc, cd as i32, dtr, row as i32, dtb, al, dd, sts(state), ss, core, ru, nh as i32, ng as i32, 0.0)?;
+                self.kmamba.ssm_rows(s, xc, cd as i32, dtr, row as i32, dtb, al, dd, sts(state), ss, core, ru, nh as i32, ng as i32, 0.0)?;
                 self.mark("Mamba-2: scan")
             }
             _ => err(format!("{op:?}: no kernel takes a step's rows that decode, each through its own state")),
@@ -920,9 +920,11 @@ impl Dyn {
     /// step runs eager. GLYD_ENGINE_ROWS_GRAPH=0 (a development build's) runs every such step eager, to compare.
     fn rows_bucket(&self, n: usize) -> Option<usize> {
         let rt = self.paged.as_ref()?.rows.as_ref().filter(|rt| rt.graphs)?;
+        // (a traced pass runs eager: no graph holds a layer's end)
         if self.graphs_off.get()
             || super::tp::comm().is_some()
             || crate::hb_usage::recording()
+            || self.tracing()
             || crate::tune!("GLYD_ENGINE_ROWS_GRAPH").is_some_and(|v| v == "0")
         {
             return None;
@@ -1937,6 +1939,12 @@ impl ModelStep for Dyn {
         self.owed = 0;
         self.stores().iter().try_for_each(|st| st.cold(&self.dev))
     }
+    fn trace_choices(&mut self, on: bool) {
+        self.trace_row_routes(on);
+    }
+    fn row_choices(&self, slot: i32, pos: usize) -> Option<Vec<super::RowRoute>> {
+        self.row_route(slot as usize, pos)
+    }
     fn masks(&mut self, masks: Vec<Option<crate::constrain::MaskHandle>>) {
         self.row_masks = masks;
     }
@@ -2011,6 +2019,8 @@ impl ModelStep for Dyn {
             // (a slot being copied back from the host: the copy done first)
             self.swap_settle(p as usize)?;
             self.empty(p as usize)?;
+            // (a check's trace of rows' choices: the sequence's rows forgotten with it)
+            self.trace_forget(p as usize);
             // (what this step's growths promised it of the 12-bit pools goes with it)
             self.kv12_unpromise(p as usize);
             if let Some(pg) = &mut self.paged {
@@ -2197,6 +2207,8 @@ impl ModelStep for Dyn {
             self.set_seq_n(t, to_n);
             self.dev.sync()?;
             self.upload_tables(t)?;
+            // (a check's trace of rows' choices: the start's rows are `from`'s)
+            self.trace_share(f, t, to_n);
         }
         Ok(to_n)
     }

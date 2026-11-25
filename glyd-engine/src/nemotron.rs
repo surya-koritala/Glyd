@@ -86,11 +86,21 @@ pub fn skipped(name: &str) -> bool {
 /// directory is read in the layout each entry names (`weights::read_v7`): one with a block layout's down matrices runs the dense product. At the Hummingbird level the routed experts are the level's own (the codebook rows
 /// of the calibration, c3r or c2r by expert: src/moe_hb.rs reads them from the directory, nothing packs them from bf16) and every other matrix is six-bit, as at wren.
 pub fn pack_layout(level: Layout, key: &str) -> Layout {
-    let own = if matches!(level, Layout::Int4 | Layout::Hummingbird) && !key.contains(".mixer.experts.") { Layout::Int6 } else { level };
+    let own = if key.contains(".mixer.experts.") { level } else { dense_layout(level) };
     if key.contains(".mixer.experts.") && key.ends_with(".down_proj") && crate::tune!("GLYD_ENGINE_DENSE_DOWN").is_none() {
         own.row_of().unwrap_or(own)
     } else {
         own
+    }
+}
+
+/// `pack_layout` of every matrix but the routed experts' (the layers', the latent projections', the shared experts', the embedding and the head): the level's,
+/// six-bit codes at wren and hummingbird. What the executor's loader packs them in (src/dynamic/nemotron.rs).
+pub fn dense_layout(level: Layout) -> Layout {
+    if matches!(level, Layout::Int4 | Layout::Hummingbird) {
+        Layout::Int6
+    } else {
+        level
     }
 }
 
