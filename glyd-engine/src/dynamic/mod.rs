@@ -1034,6 +1034,9 @@ pub struct Dyn {
     pub prof: Option<std::cell::RefCell<Vec<(&'static str, Ev)>>>,
     gmarks: Vec<(&'static str, Ev)>,
     spare: std::cell::RefCell<Vec<Ev>>,
+    /// A development build's GLYD_OP_DUMP=PATH: after each operation of a pass, every slot's rows of the pass hashed into PATH.N (N this engine's number in the
+    /// process), a line each: the pass, the layer, the operation, its kind, the slot, the hash; two engines' files compared show the first operation they differ at.
+    dump: Option<std::cell::RefCell<(std::fs::File, usize)>>,
     /// Whether the last pass was the step graph's replay (its events are then `gmarks`), whether the step graph is being captured, and the host's time to queue
     /// the last eager pass (ms).
     replayed: std::cell::Cell<bool>,
@@ -1560,6 +1563,15 @@ impl Dyn {
             prof: prof::on().then(Default::default),
             gmarks: Vec::new(),
             spare: Default::default(),
+            dump: match crate::tune!("GLYD_OP_DUMP") {
+                Some(path) => {
+                    static ENGINES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                    let n = ENGINES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let f = std::fs::File::create(format!("{path}.{n}")).map_err(|e| Error(format!("{path}.{n}: {e}")))?;
+                    Some(std::cell::RefCell::new((f, 0)))
+                }
+                None => None,
+            },
             replayed: std::cell::Cell::new(false),
             capturing: std::cell::Cell::new(false),
             queued: std::cell::Cell::new(0.0),
@@ -2291,6 +2303,27 @@ impl Dyn {
 
     /// Part `p`'s layers on the n rows (positions `pos`), then on the last `head` rows its post projection (a draft model's, into Hid), its LM head, the
     /// soft-cap and the argmax (its logits, tok, val a row each).
+    /// GLYD_OP_DUMP's line of each slot after operation `i` of layer `l` (`usize::MAX`: the first operation) on the pass's `n` rows: its bytes hashed (FNV-1a).
+    fn dump_op(&self, p: &Part, l: usize, i: usize, op: &Op, n: usize) -> Result<()> {
+        let Some(d) = &self.dump else { return Ok(()) };
+        use std::io::Write;
+        self.dev.sync()?;
+        let mut d = d.borrow_mut();
+        let pass = d.1;
+        let name = rows::op_name(op);
+        for (k, b) in p.slots.iter().enumerate() {
+            let w = (n * p.d.widths[k]).min(b.bytes / 2);
+            if w == 0 {
+                continue;
+            }
+            let mut v = vec![0u16; w];
+            b.read(0, &mut v)?;
+            let h = v.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &x| (h ^ x as u64).wrapping_mul(0x0100_0000_01b3));
+            writeln!(d.0, "{pass} {} {i} {name} {k} {h:016x}", if l == usize::MAX { -1 } else { l as i64 }).map_err(|e| Error(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     unsafe fn forward(&self, p: &Part, n: usize, pos: (u64, u64), head: usize) -> Result<()> {
         let (s, queue) = (self.dev.stream, std::time::Instant::now());
         // (a pass of pieces (src/dynamic/pieces.rs): a capture queues nothing but its pieces' operations, captured; a replay launches each piece's graph in its place)
@@ -2308,8 +2341,16 @@ impl Dyn {
             self.pass_prepare(p, n, pos)?;
         }
         let head = if st.last { head } else { 0 };
+        // (GLYD_OP_DUMP: a pass's number; a capture's operations are not run, so not hashed)
+        let dump = self.dump.is_some() && !capture;
+        if let Some(d) = self.dump.as_ref().filter(|_| dump) {
+            d.borrow_mut().1 += 1;
+        }
         if st.first && !self.in_piece(&mut pc, p, 0, 0, &p.d.first, n, pos, head)? {
             self.op(p, 0, 0, &p.d.first, n, pos, head)?;
+            if dump {
+                self.dump_op(p, usize::MAX, 0, &p.d.first, n)?;
+            }
         }
         // (a development build's GLYD_OP_PROBE: after each op, the slots' first rows read back; the first op that leaves a slot not finite named)
         let probe = crate::tune!("GLYD_OP_PROBE").is_some();
@@ -2365,6 +2406,9 @@ impl Dyn {
                     continue;
                 }
                 self.op(p, l, i, op, n, pos, head)?;
+                if dump {
+                    self.dump_op(p, l, i, op, n)?;
+                }
                 if crate::hb_usage::recording() && std::ptr::eq(p, &self.big) {
                     self.record_routes(p, l, op, n)?;
                 }
