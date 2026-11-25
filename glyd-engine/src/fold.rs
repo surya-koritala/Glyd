@@ -2860,7 +2860,7 @@ pub unsafe fn f8_moe(
     if (ctas > 1 && done == 0) || !fits(ws, ws_bytes, need) || (need > 0 && ws % 16 != 0) {
         return Ok(false);
     }
-    let mut p = F8Lin {
+    let p = F8Lin {
         core,
         heads,
         var,
