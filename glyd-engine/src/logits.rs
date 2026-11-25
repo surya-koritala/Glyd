@@ -2917,7 +2917,7 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
-/// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR [--places N [--mode M] [--device-plan]] | --ctx C] [--prompt-tokens P] [--stagger D]` (gemma4, qwen35, muse, kimi, glm, nemotron): the case's random model on the
+/// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR [--places N [--mode M] [--device-plan]] | --ctx C] [--prompt-tokens P] [--stagger D]` (gemma4, qwen35, muse, kimi, glm): the case's random model on the
 /// description executor (or the model in DIR, with `--places` its experts in the expert cache; with `--ctx` a context of C tokens; with `--prompt-tokens` prompts of P (k + 1) / N tokens), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
 /// the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts one a pass, decode steps of the rows that decode: 16 or fewer here, whose bits
 /// are each row's own pass's). With prompts run together the replies that differ are counted, not refused (a step of more than 16 rows is another kernel's; a random model's near ties turn on its last

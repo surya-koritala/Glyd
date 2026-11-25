@@ -1,17 +1,17 @@
 //! Pack-format compatibility (R10, #231): every pack format Glyd has written loads, on every merge, to the logits recorded for it. Two sets:
 //!
-//! - The saved checkpoints of `tests/data/packs` (glyd-gpu's `pack_compat.rs` says what each holds and who wrote it: a tiny Qwen3, one layer of 128, in every format version and layout,
+//! - The saved checkpoints of `tests/data/packs` (glyd-gpu's `pack_compat.rs` says what each holds and who wrote it: a tiny random dense decoder, one layer of 128, that each release packed, in every format version and layout,
 //!   glyd-v1 to glyd-v7; and matrices alone for the formats no model of it holds). Each is read as a reader of the save reads it (glyd-gpu's `save::decoded`: every check
 //!   `glyd verify` makes, then each pack decoded and cut into its tensors) and run on the CPU reference of the layer kinds (`runtime::reference`, the model's description
 //!   from `TINY_CONFIG`). Every fixture's tensors are first held bit for bit to their sha256 in `tests/packs/tensors.json`, then a model's rows to `tests/packs/NAME.json.gz`
 //!   within the bounds, both recorded from the same (`packcheck --record`). On the CPU on every merge (the unit test below,
 //!   which ci.yml's engine tests run) and with the GPU library's decode on the GPU runner (`packcheck --gpu`).
 //! - The formats the engine reads a saved directory in, as the glyd/* repos and the engine's cache hold them (`packcheck --engine`, the GPU job): glyd-v7 at penguin,
-//!   kestrel, swift and wren (glyd-v4 and glyd-v3 with the dense Qwen3 engine's `engine.safetensors` went with that engine, R3c #139: such a cache is packed again). Each is
-//!   made here from a logits case's random model of a family published in it (Qwen3.5's layout, Gemma 4, Nemotron-H; the plain dense kind for the engine's cache) by the packer that made those repos (`pack::run`), loaded from the saved directory as
+//!   kestrel, swift and wren (glyd-v4 and glyd-v3 with the earlier dense engine's `engine.safetensors` went with that engine, R3c #139: such a cache is packed again). Each is
+//!   made here from a logits case's random model of a family published in it (Qwen3.5's layout, Gemma 4, the glyd/nemotron-3-* repos' layout; the plain dense kind for the engine's cache) by the packer that made those repos (`pack::run`), loaded from the saved directory as
 //!   `run` loads a pre-packed repo, and its rows held to the case's logits fixtures at that level (`tests/logits`, src/logits.rs): the same bits as the engine's own run
 //!   of the model packed as it loads (`CASE.GPU[.LEVEL].json.gz`, on the GPU generation that recorded them) and within the bound of the case's reference. And glyd-v7 at
-//!   hummingbird (glyd/nemotron-3-hummingbird: the experts in codebook rows), from a random Nemotron-H with latent experts and a random export of them: no level packs it as
+//!   hummingbird (glyd/nemotron-3-hummingbird: the experts in codebook rows), from a random model of that repo's layout with latent experts and a random export of them: no level packs it as
 //!   it loads, so its digest is the engine's own bits on the saved directory (`HB_DIGEST`).
 //!
 //! Comparable mechanisms (llama.cpp's GGUF: a type id is never reused and a file names its version, which a
@@ -30,14 +30,14 @@ pub const PACKS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/data/pack
 /// Their recorded rows.
 pub const DIGESTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/packs");
 
-/// The tiny Qwen3 of tests/data/packs as transformers' config of it reads (the fixtures' own config.json, which a release's `glyd pack` copied, names the architecture and the
-/// layers alone): 128 wide, 4 query heads and 2 key-value heads of 32, an MLP of 128, a vocabulary of 128, the output layer tied.
+/// The tiny dense decoder of tests/data/packs as transformers' config of it reads (the fixtures' own config.json, which a release's `glyd pack` copied, names the architecture and the
+/// layers alone; the architecture's name is here because the released fixtures hold it): 128 wide, 4 query heads and 2 key-value heads of 32, an MLP of 128, a vocabulary of 128, the output layer tied.
 pub const TINY_CONFIG: &str = r#"{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "hidden_size": 128, "intermediate_size": 128, "num_hidden_layers": 1,
 "num_attention_heads": 4, "num_key_value_heads": 2, "head_dim": 32, "vocab_size": 128, "rms_norm_eps": 1e-6, "rope_theta": 1000000.0, "max_position_embeddings": 4096,
 "tie_word_embeddings": true, "hidden_act": "silu"}"#;
 
 /// What a fixture's rows on the CPU reference must be within of its recorded ones: the same arithmetic on the same weights, so a difference is the last bits of another
-/// system's exp and sum order, and a reader that gives another weight is far past it. The tiny Qwen3's random weights make logits of a hundred or more and a softmax of one
+/// system's exp and sum order, and a reader that gives another weight is far past it. The tiny model's random weights make logits of a hundred or more and a softmax of one
 /// token, where a KL tells little: each recorded logit is also held to `CPU_DLOGIT` of the row's largest magnitude.
 pub const CPU_BOUND: Bound = Bound::Kl { mean: 1e-9, max: 1e-8, top1: 1.0 };
 pub const CPU_DLOGIT: f32 = 1e-5;
@@ -58,7 +58,7 @@ fn tokens() -> (Vec<u32>, Vec<u32>) {
     (logits::token_list(12, 128, 0), logits::token_list(4, 128, 12))
 }
 
-/// Whether a saved checkpoint holds the tiny Qwen3 (its first layer's attention packed), rather than matrices alone.
+/// Whether a saved checkpoint holds the tiny dense decoder (its first layer's attention packed), rather than matrices alone.
 fn holds_model(dir: &Path) -> bool {
     std::fs::read_to_string(dir.join("glyd.json")).is_ok_and(|t| t.contains("\"model.layers.0.self_attn.q_proj\""))
 }
@@ -120,7 +120,7 @@ pub fn read(dir: &Path, decoder: &Decoder) -> Result<Decoded> {
     glyd_gpu::save::decoded(dir, threads, decoder).map_err(|e| Error(format!("{}: {e}", dir.display())))
 }
 
-/// The tiny Qwen3 of `t` run on the CPU reference over the fixed tokens: each pass's last logits.
+/// The tiny dense decoder of `t` run on the CPU reference over the fixed tokens: each pass's last logits.
 pub fn rows_of(t: Decoded) -> Result<Vec<Vec<f32>>> {
     let tensors = t.into_iter().map(|(n, s, v)| (n, (s.iter().map(|&d| d as usize).collect(), v))).collect();
     let (prompt, decode) = tokens();
@@ -215,7 +215,7 @@ fn digest_of(name: &str, rows: &[Vec<f32>], what: &str) -> Result<Fixture> {
     provenance.insert("tokens".into(), "src/logits.rs token_list over the vocabulary of 128: a prompt of 12, then 4 steps".into());
     Ok(Fixture {
         case: name.into(),
-        family: "the tiny Qwen3 of tests/data/packs (src/packcheck.rs TINY_CONFIG)".into(),
+        family: "the tiny dense decoder of tests/data/packs (src/packcheck.rs TINY_CONFIG)".into(),
         model: name.into(),
         provenance,
         gpu: None,
@@ -246,7 +246,7 @@ fn line(name: &str, n: usize, fx: &Fixture, rows: &[Vec<f32>]) -> (bool, String)
 }
 
 /// Every saved checkpoint of tests/data/packs against its digests, its packs decoded by `decoder`: first each tensor bit for bit (`TENSORS`), then, where it holds the tiny
-/// Qwen3, its logits on the CPU reference within the bounds (`within`). The lines, and the names that failed.
+/// dense decoder, its logits on the CPU reference within the bounds (`within`). The lines, and the names that failed.
 pub fn check_saved(decoder: &Decoder) -> Result<(Vec<String>, Vec<String>)> {
     let recorded = read_tensor_digests()?;
     let (mut lines, mut failed) = (Vec::new(), Vec::new());
@@ -357,9 +357,9 @@ pub const SAVED: &[(&str, &str, &str, &str)] = &[
     ("gemma4", "kestrel", "i6", "glyd-v7 i6: Gemma 4 at kestrel"),
     ("gemma4", "swift", "i5", "glyd-v7 i5: Gemma 4 at swift"),
     ("gemma4", "wren", "i4", "glyd-v7 i4: Gemma 4 at wren (a checkpoint not trained to four bits)"),
-    ("nemotron-h", "kestrel", "i6", "glyd-v7 i6: Nemotron-H at kestrel"),
-    ("nemotron-h", "swift", "i5", "glyd-v7 i5: Nemotron-H at swift"),
-    ("nemotron-h", "wren", "i4", "glyd-v7 i4: Nemotron-H at wren"),
+    ("nemotron-h", "kestrel", "i6", "glyd-v7 i6: the published glyd/nemotron-3-* repos' format at kestrel"),
+    ("nemotron-h", "swift", "i5", "glyd-v7 i5: the same at swift"),
+    ("nemotron-h", "wren", "i4", "glyd-v7 i4: the same at wren"),
 ];
 
 /// The case's fixtures (`tests/logits`, or --fixtures DIR) that bound `level`, and the bound each gives it there.
@@ -469,7 +469,8 @@ fn digest_missing(path: &Path, record: bool) -> Option<String> {
 /// The Hummingbird level's digest: the engine's own bits (no level packs it as it loads, its codes being an export's), on the GPU generation that recorded them.
 pub const HB_DIGEST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/packs/nemotron-h-hb.json.gz");
 
-/// Nemotron-H at the Hummingbird level, as glyd/nemotron-3-hummingbird is saved: a random Nemotron-H with Super's latent experts (`kcheck_nh::random`, a latent of 1,024, 16
+/// The Hummingbird level's saved format, as the published glyd/nemotron-3-hummingbird holds it (a compatibility check of that repo's format, no model's): a random
+/// model of its layout with latent experts (`kcheck_nh::random`, a latent of 1,024, 16
 /// experts), a random export of its experts (`hbpack::toy_export`, as `hbtoy` makes one: 40 percent at three bits, the rest at two) and the glyd-v7 directory `hbpack::run`
 /// saves from them, loaded as `run` loads the repo; its rows against `HB_DIGEST` (written where `record`). Whether it passed (a digest of another GPU generation: skipped).
 fn hummingbird(scratch: &Path, record: bool) -> Result<bool> {
@@ -504,7 +505,7 @@ fn hummingbird(scratch: &Path, record: bool) -> Result<bool> {
         provenance.insert("tokens".into(), "src/logits.rs token_list over the vocabulary of 4,096: a prompt of 24, 12 steps, a long prompt of 150".into());
         let fx = Fixture {
             case: "nemotron-h-hb".into(),
-            family: "Nemotron-H with latent experts at the Hummingbird level (src/packcheck.rs hummingbird)".into(),
+            family: "the published glyd/nemotron-3-hummingbird repo's format: latent experts in codebook rows (src/packcheck.rs hummingbird)".into(),
             model: "random (kcheck_nh::random, latent 1024, 16 experts), its experts from hbpack::toy_export (seed 1, 40 percent at 3 bits)".into(),
             provenance,
             gpu: Some(gpu),
@@ -543,7 +544,7 @@ fn hummingbird(scratch: &Path, record: bool) -> Result<bool> {
 mod tests {
     use super::*;
 
-    /// Every saved checkpoint of tests/data/packs loads (every check of `glyd verify`, then its packs decoded on the CPU) and, where it holds the tiny Qwen3, its rows on the CPU
+    /// Every saved checkpoint of tests/data/packs loads (every check of `glyd verify`, then its packs decoded on the CPU) and, where it holds the tiny dense decoder, its rows on the CPU
     /// reference are its recorded digest's: on every merge (ci.yml's engine tests).
     /// A format whose digest is not recorded fails the check with a line that says how to record it, and does not stop the other formats' checks.
     #[test]

@@ -1603,7 +1603,7 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
         absorbed: true,
         indexer: None,
     };
-    // Kimi-K3.1's sparse attention (`dsa_config`): on the latent attention layers it names (1-based), DeepSeek-V3.2's indexer of a key a token, the
+    // Kimi-K3.1's sparse attention (`dsa_config`): on the latent attention layers it names (1-based), the sparse attention's indexer of a key a token, the
     // gated form, its keys RMS-normed at the model's eps or LayerNorm-ed with a bias (`index_k_norm_type`); the indexer's query from the q latent
     let dsa = match k.raw("dsa_config") {
         None | Some(Value::Null) => None,
