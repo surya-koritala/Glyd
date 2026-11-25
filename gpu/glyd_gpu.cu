@@ -2971,13 +2971,14 @@ static int mma_moe_wg(const Nib& f, int64_t E, int64_t O, int64_t K, const uint1
 
 template <class Fmt>
 // wO, wE: the whole layer's rows an expert and experts where this call holds a part of them (a GPU's slice of each expert's rows, an expert cache's places;
-// 0: the call's own). The work is cut as the whole layer's call cuts it (its K split, its kernel), so each row's sum is the whole layer's, bit for bit.
+// 0: the call's own). K is split over blocks by the layer's shape alone (an expert's whole rows and the layer's experts), never by the pairs the call holds:
+// a pair's sum is the same whatever shares its call (a row alone or beside others, a GPU's slice, a wave of the cache's places), bit for bit.
 static int mma_moe_run(Fmt f, int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* ws, size_t ws_bytes, int* done, cudaStream_t cs, size_t* need, int64_t wO = 0, int64_t wE = 0) {
     if (E < 1 || E > 12288 || O < 64 || O % 64 || K < 16 || K % 16 || T < 0 || k < 1 || act < 0 || act > 2 || (act && (O % 128 || w))) return cudaErrorInvalidValue;
     if (wO < 0 || (wO && (wO < O || wO % 64)) || wE < 0 || (wE && wE < E)) return cudaErrorInvalidValue;
     const int64_t sO = wO ? wO : O, sE = wE ? wE : E;
     int64_t P = T * k, MT = T <= 16 ? 1 : T <= 32 ? 2 : 4, units = act ? O / 128 : O / 64, hits = std::min(E, P);
-    int64_t splits = P ? moe_splits((act ? sO / 128 : sO / 64) * std::min(sE, P), K) : 1;
+    int64_t splits = P ? moe_splits((act ? sO / 128 : sO / 64) * sE, K) : 1;
     size_t bytes = ((w ? 1 : 0) + (splits > 1 ? splits : 0)) * (size_t)(P * O) * sizeof(float);  // [Y32][parts]
     bool wg = false;  // the wgmma route (Hopper, the 12-bit layout, GLYD_GPU_MOE_WG tokens a step and more)
     if constexpr (std::is_same_v<Fmt, Nib>) {

@@ -2268,7 +2268,8 @@ pub fn moe_workspace(twelve: bool, experts: i64, o: i64, cols: i64, t: i64, k: i
     let (hbm, h100, _) = moe_gpu()?;
     let p = t * k;
     let units = if act != 0 { o / 128 } else { o / 64 };
-    let splits = if p > 0 { moe_splits(units * experts.min(p), cols, hbm)? } else { 1 };
+    // (K's split by the layer's shape alone, never the pairs: mma_moe_run's)
+    let splits = if p > 0 { moe_splits(units * experts, cols, hbm)? } else { 1 };
     let mut bytes = (weighted as i64 + if splits > 1 { splits } else { 0 }) * p * o * 4;
     // (the 12-bit layout's wgmma route on Hopper: Y32, then the tiles' records and, with the gate, the pairs' rows of X)
     if twelve && moe_wg_from(h100) > 0 && p > 0 && hopper_gpu()? {
@@ -2313,7 +2314,8 @@ pub unsafe fn moe(
         return Ok(false);
     }
     let (so, se) = (if whole_o > 0 { whole_o } else { o }, if whole_e > 0 { whole_e } else { experts });
-    let splits = if p > 0 { moe_splits(if act != 0 { so / 128 } else { so / 64 } * se.min(p), kk, hbm)? } else { 1 };
+    // (K's split by the layer's shape alone, never the pairs the call holds: a pair's sum the same whatever shares its call)
+    let splits = if p > 0 { moe_splits(if act != 0 { so / 128 } else { so / 64 } * se, kk, hbm)? } else { 1 };
     if (need > 0 && (ws == 0 || ws_bytes < need)) || (weights != 0 && ids == 0) || (splits > 1 && done == 0) {
         return Ok(false);
     }
