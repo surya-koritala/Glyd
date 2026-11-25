@@ -132,6 +132,8 @@ pub struct RefModel {
     pub layers: Vec<RefLayer>,
     /// The model's own roles (`Described::extra`).
     pub p: Params,
+    /// Where Some: `forward` adds the residual (every token's streams) after each block that ends a layer (a feed-forward), a check's view of each layer.
+    pub record: Option<Vec<Vec<f32>>>,
 }
 
 impl RefModel {
@@ -159,7 +161,7 @@ impl RefModel {
             let (shape, v) = load(src, role, s)?;
             p.put(role, &shape, v);
         }
-        Ok(RefModel { final_norm: get(src, &d.final_norm)?.1, embed, head, layers, desc, p })
+        Ok(RefModel { final_norm: get(src, &d.final_norm)?.1, embed, head, layers, desc, p, record: None })
     }
 
     /// The tokens of one sequence (slot 0) from position `start`: each token's logits.
@@ -200,6 +202,11 @@ impl RefModel {
             }
             let Residual::DepthMix(dm) = l.block.residual else {
                 l.forward(&pos, &seqs, tokens, &mut x)?;
+                if matches!(l.block.body, Body::Ffn(_)) {
+                    if let Some(r) = self.record.as_mut() {
+                        r.push(x.clone());
+                    }
+                }
                 continue;
             };
             let (wn, wp) = (l.p.vec("mix_norm")?.to_vec(), l.p.vec("mix_proj")?.to_vec());
@@ -344,6 +351,7 @@ mod tests {
             head: fill("lag.head", 16 * D, -0.5, 0.5),
             layers,
             p: Params::new(),
+            record: None,
         }
     }
 
@@ -377,5 +385,20 @@ mod tests {
         assert!(own.iter().zip(&got).all(|(a, b)| a != b));
         // (a lagged block alone has no input weights to take)
         assert!(block(0, s).pre(&vec![0.5; N * D]).is_err());
+    }
+
+    /// Where asked, the forward pass keeps the residual after each layer's last block (its feed-forward): every token's streams, the last the head's input.
+    #[test]
+    fn a_recorded_pass_keeps_each_layers_residual() {
+        let tokens = [3u32, 7, 1];
+        let mut m = model(streams(false), Collapse::Mean);
+        m.record = Some(Vec::new());
+        let logits = m.forward(&tokens, 0).unwrap();
+        let r = m.record.take().unwrap();
+        assert_eq!((r.len(), r[0].len()), (2, tokens.len() * N * D));
+        assert_ne!(r[0], r[1]);
+        let mut again = model(streams(false), Collapse::Mean);
+        assert_eq!(again.forward(&tokens, 0).unwrap(), logits, "recording leaves the logits as they are");
+        assert!(again.record.is_none());
     }
 }

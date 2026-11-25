@@ -139,7 +139,7 @@ impl Pieces {
 
 impl super::Dyn {
     /// Whether passes run their pieces as graphs: the engine captures graphs (no block of experts that reads the host), on one GPU, no layer in the computer's memory, no
-    /// corpus pass recording the routes, no probe, and not turned off (GLYD_ENGINE_PIECES=0, a check's, or a capture that failed).
+    /// corpus pass recording the routes, no probe or trace of the layers (`trace_layers`), and not turned off (GLYD_ENGINE_PIECES=0, a check's, or a capture that failed).
     fn pieces_on(&self) -> bool {
         static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let off = *OFF.get_or_init(|| crate::tune!("GLYD_ENGINE_PIECES").is_some_and(|v| v == "0") || crate::tune!("GLYD_OP_PROBE").is_some());
@@ -151,6 +151,7 @@ impl super::Dyn {
             && self.stage.last
             && super::tp::comm().is_none()
             && !crate::hb_usage::recording()
+            && !self.tracing()
     }
 
     /// Whether a pass of `n` rows runs in pieces where pieces are on: not where its products take cuBLAS (more than 64 rows, the decoded way, with cuBLAS found: the A10's

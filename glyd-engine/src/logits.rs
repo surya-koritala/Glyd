@@ -360,6 +360,14 @@ pub trait Run {
     fn prefill(&mut self, tokens: &[u32]) -> Result<()>;
     fn step(&mut self, token: u32) -> Result<()>;
     fn logits(&mut self) -> Result<Vec<f32>>;
+    /// The residual (every token's streams) after each layer of `tokens` as a prompt from a reset: an engine's view of each layer, where it has one.
+    fn layers(&mut self, _tokens: &[u32]) -> Result<Option<Vec<Vec<f32>>>> {
+        Ok(None)
+    }
+}
+
+fn widen(v: Vec<Vec<u16>>) -> Vec<Vec<f32>> {
+    v.into_iter().map(|r| r.into_iter().map(|h| f32::from_bits((h as u32) << 16)).collect()).collect()
 }
 
 impl Run for Dyn {
@@ -377,6 +385,14 @@ impl Run for Dyn {
     }
     fn logits(&mut self) -> Result<Vec<f32>> {
         Dyn::logits(self)
+    }
+    fn layers(&mut self, t: &[u32]) -> Result<Option<Vec<Vec<f32>>>> {
+        Dyn::reset(self)?;
+        self.trace_layers(true);
+        let r = Dyn::prefill(self, t);
+        let got = self.trace_layers(false);
+        r?;
+        Ok(Some(widen(got)))
     }
 }
 
@@ -631,6 +647,22 @@ impl Run for Qwen4x {
     fn step(&mut self, t: u32) -> Result<()> {
         self.last_chunk = 0;
         self.e.step(t).map(|_| ())
+    }
+    fn layers(&mut self, t: &[u32]) -> Result<Option<Vec<Vec<f32>>>> {
+        let got = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let (g, w) = (got.clone(), self.e.w.cfg.hc * self.e.w.cfg.hidden);
+        // (the streams after each layer, read where the engine's trace looks: a prompt's chunk of n rows at a time)
+        self.e.trace = Some(Box::new(move |e: &crate::model_qwen4x::EngineQx, _l: usize, n: usize, _start: usize| {
+            let mut v = vec![0u16; n * w];
+            if e.dev.sync().is_ok() && e.x.read(0, &mut v).is_ok() {
+                g.borrow_mut().push(v);
+            }
+        }));
+        let r = self.reset().and_then(|_| self.prefill(t));
+        self.e.trace = None;
+        r?;
+        let got = std::mem::take(&mut *got.borrow_mut());
+        Ok(Some(widen(got)))
     }
     fn logits(&mut self) -> Result<Vec<f32>> {
         if self.last_chunk == 0 {
@@ -1168,6 +1200,12 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
                 }
             }
         }
+        // (the CPU f32 reference's rows and layers, where the case's fixture is its: each engine is held to it as well as to the other)
+        let cpu_fx = fixture_files(&fixtures, id)?.iter().map(|p| Fixture::read(p)).collect::<Result<Vec<_>>>()?.into_iter().find(|f| f.gpu.is_none());
+        let cpu_layers = match c.cpu {
+            Some(_) => Some(cpu_layers(&dir, &fx.prompt)?),
+            None => None,
+        };
         for level in levels {
             let mut old = match legacy(&dir, &level) {
                 Ok(r) => r,
@@ -1177,9 +1215,25 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
                 }
             };
             let old_rows = drive(old.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
+            let old_layers = old.layers(&fx.prompt)?;
             drop(old);
             let mut new = desc(&dir, &level)?;
             let new_rows = drive(new.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
+            let new_layers = new.layers(&fx.prompt)?;
+            drop(new);
+            if let Some(cf) = &cpu_fx {
+                let b = Bound::Kl { mean: 1e-4, max: 5e-4, top1: 0.85 };
+                for (who, rows) in [("the old engine", &old_rows), ("the executor", &new_rows)] {
+                    let v = compare(cf, &b, rows);
+                    println!(
+                        "     {who} against the CPU reference: bits-equal {}/{}, KL mean {:.2e} max {:.2e}, best token {}/{} with a lead",
+                        v.identical, v.rows, v.mean_kl, v.max_kl, v.top1.0, v.top1.1
+                    );
+                }
+            }
+            if let (Some(ol), Some(nl)) = (&old_layers, &new_layers) {
+                layer_lines(ol, nl, cpu_layers.as_deref());
+            }
             let arg = |v: &[f32]| v.iter().enumerate().fold(0, |b, (j, &x)| if x > v[b] { j } else { b });
             let (mut same_bits, mut same_best, mut max_kl, mut max_d) = (0usize, 0usize, 0f64, 0f32);
             let mut off = Vec::new();
@@ -1221,6 +1275,44 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
         println!("OFF: {}", failed.join(", "));
         drop(scratch);
         std::process::exit(1);
+    }
+}
+
+/// The CPU f32 reference's residual after each layer of a prompt of the model in `dir` (from its description).
+fn cpu_layers(dir: &Path, tokens: &[u32]) -> Result<Vec<Vec<f32>>> {
+    use crate::runtime::reference::model::{checkpoint_tensor, RefModel};
+    let cfg: Value = serde_json::from_str(&io(std::fs::read_to_string(dir.join("config.json")))?).map_err(|e| Error(format!("config.json: {e}")))?;
+    let desc = crate::runtime::describe::describe(&cfg)?;
+    let ck = io(glyd_gpu::safetensors::Checkpoint::open(dir))?;
+    let mut m = RefModel::load(&desc, &|n: &str| checkpoint_tensor(&ck, n))?;
+    m.record = Some(Vec::new());
+    m.forward(tokens, 0)?;
+    Ok(m.record.take().unwrap_or_default())
+}
+
+/// Two engines' residuals after each layer of the same prompt, and the CPU reference's where given: per layer the values with the same bits, the largest
+/// difference over the largest magnitude between them, and each against the reference; the first layer apart named.
+fn layer_lines(old: &[Vec<f32>], new: &[Vec<f32>], cpu: Option<&[Vec<f32>]>) {
+    let rel = |a: &[f32], b: &[f32]| {
+        let scale = b.iter().fold(0f32, |m, v| m.max(v.abs())).max(1e-30);
+        a.iter().zip(b).fold(0f32, |m, (x, y)| m.max((x - y).abs())) / scale
+    };
+    if old.len() != new.len() {
+        println!("     layers: the old engine traced {}, the executor {}", old.len(), new.len());
+    }
+    let mut first = None;
+    for (l, (o, n)) in old.iter().zip(new).enumerate() {
+        let same = o.iter().zip(n).filter(|(x, y)| x.to_bits() == y.to_bits()).count();
+        if same != o.len() && first.is_none() {
+            first = Some(l);
+        }
+        let c = cpu.and_then(|c| c.get(l)).filter(|c| c.len() == o.len());
+        let refs = c.map_or(String::new(), |c| format!("; against the CPU reference: old {:.2e}, executor {:.2e}", rel(o, c), rel(n, c)));
+        println!("     layer {l}: {same}/{} values the same bits, apart by {:.2e}{refs}", o.len(), rel(n, o));
+    }
+    match first {
+        Some(l) => println!("     the first layer apart: {l}"),
+        None => println!("     every layer the same bits"),
     }
 }
 

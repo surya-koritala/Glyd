@@ -1048,6 +1048,9 @@ pub struct Dyn {
     ones: Option<Buf>,
     /// kernels/qwen4x.cu's, and the unweighted picks' room, where the description has the gated residuals, the n-gram embedding or the mean-pooled indexer.
     kqx: Option<crate::model_qwen4x::KernQx>,
+    /// Where Some: each eager pass adds the residual (mHC's or the gated residuals' streams S, else X) of its rows after each layer, a check's view of each layer
+    /// (`trace_layers`).
+    trace: std::cell::RefCell<Option<Vec<Vec<u16>>>>,
     picks: Option<picked::PickRun>,
     /// The latent attentions' scratch, where the model has one.
     mla: Option<mla::MlaRun>,
@@ -1251,6 +1254,17 @@ impl crate::kern_nh::NhHost for Dyn {
 }
 
 impl Dyn {
+    /// Each layer's residual (bf16, the pass's rows) after the passes run between `trace_layers(true)` and `trace_layers(false)`, which returns them: a
+    /// check's view of each layer (the passes eager: no graph or piece holds a layer's end).
+    pub fn trace_layers(&self, on: bool) -> Vec<Vec<u16>> {
+        std::mem::replace(&mut *self.trace.borrow_mut(), on.then(Vec::new)).unwrap_or_default()
+    }
+
+    /// Whether the layers are traced (`trace_layers`): every pass eager.
+    pub(crate) fn tracing(&self) -> bool {
+        self.trace.borrow().is_some()
+    }
+
     /// A description's model from `dir` by the generic loader (`ModelDesc::mats`, `small`, `ropes`), and a draft model's.
     pub fn new(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, o: &Opts) -> Result<Dyn> {
         let st = Stage::whole(d.layers.len());
@@ -1567,6 +1581,7 @@ impl Dyn {
             tok,
             ones,
             kqx,
+            trace: std::cell::RefCell::new(None),
             picks,
             mla,
             verify: None,
@@ -2370,6 +2385,15 @@ impl Dyn {
                             seen = true;
                         }
                     }
+                }
+            }
+            if std::ptr::eq(p, &self.big) && self.tracing() {
+                let r = if p.d.width(Slot::S) > 0 { Slot::S } else { Slot::X };
+                let mut v = vec![0u16; n * p.d.width(r)];
+                copy_d2h_async(v.as_mut_ptr() as *mut _, p.slot(r), v.len() * 2, s)?;
+                self.dev.sync()?;
+                if let Some(t) = self.trace.borrow_mut().as_mut() {
+                    t.push(v);
                 }
             }
         }
