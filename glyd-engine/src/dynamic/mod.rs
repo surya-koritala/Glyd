@@ -396,6 +396,9 @@ pub enum StreamsMix {
     /// mHC (`Residual::Streams`): the mixing weights of S by the projection `f` (small, [24, 4 hidden]: fp32 where the rounding is `Once`, else bf16), `base` and
     /// `scale`, made doubly stochastic (the model's `hc`), and the collapse normed by the op's `norm` into H.
     Hc { f: usize, base: usize, scale: usize },
+    /// Lagged mHC (`StreamsP::lagged`): `Hc`'s weights made, the collapse by the previous lagged block's input weights (one-hot on stream 0 where `first`), this block's own kept for the
+    /// next (kernels/residual.cu hc_lag).
+    HcLagged { f: usize, base: usize, scale: usize, first: bool },
     /// The gated residuals (`Residual::GatedStreams`): each stream of S normed by the op's `norm` ((1 + w), a weight a stream) into Hq; the bottleneck's products
     /// `down` (Hq into Mid), silu of a quarter, `up` (Mid into Cp); H the mean over the streams of sigmoid(Cp) Hq; the streams' weights 2 sigmoid(`inject` Hq / 4)
     /// (`inject`'s product into Kv) kept for StreamsPost. Four streams (kernels/qwen4x.cu's).
@@ -411,6 +414,8 @@ pub enum HeadMix {
     Weighted([usize; 3]),
     /// The gated residuals' mix of them, normed a stream at a time by the op's `norm` (`Collapse::GatedMix`): `StreamsMix::Gated` with no inject.
     Gated { down: usize, up: usize },
+    /// Lagged mHC's: weighed by the last lagged block's input weights, then the final norm (`Collapse::LastPre`).
+    LastPre,
 }
 
 /// Where an RMS norm's weight goes (`kinds::NormWeight` as the loader holds the small tensor: a (1 + w) it may hold already added).
@@ -1028,6 +1033,8 @@ pub struct Dyn {
     /// The residual rules' kernels, a block's mixing weights of the streams (fp32 [chunk, 24]) and the split mixing projection's partial sums (`residual::part_words`).
     kres: residual::KernRes,
     hcp: Buf,
+    /// Lagged mHC's input weights of each row, from block to block of a pass ([rows, 4] fp32).
+    hc_lag: Buf,
     hc_part: Buf,
     /// Muse Spark's kernels.
     kmuse: muse::KernMuse,
@@ -1439,6 +1446,7 @@ impl Dyn {
         let done = Buf::zeroed(4 << 18)?;
         let host = Pinned::new(4096)?;
         let (kglm, kmoe, hcp) = (crate::kern_glm::KernGlm::load(&dev)?, crate::moe::MoeKern::load(&dev)?, Buf::zeroed(ch * 24 * 4)?);
+        let hc_lag = Buf::zeroed(ch * 4 * 4)?;
         // (the split mixing projection's sums: as the model's streams round, one buffer for every block's)
         let round = d.layers.iter().flatten().find_map(|op| if let Op::StreamsPre { round, .. } = *op { Some(round) } else { None });
         let hc_part = Buf::zeroed(round.map_or(Ok(1), |r| residual::part_words(r, ch, d.hidden))? * 4)?;
@@ -1544,6 +1552,7 @@ impl Dyn {
             kmoe,
             kres,
             hcp,
+            hc_lag,
             hc_part,
             kmuse,
             moe_inv,
@@ -2061,6 +2070,18 @@ impl Dyn {
                 let (fp, bp, sp) = (p.small[f].ptr, p.small[base].ptr, p.small[scale].ptr);
                 let (h, nw, (hc_eps, iters)) = (p.slot(Slot::H), p.small[norm].ptr, p.d.hc);
                 self.kres.pre(s, p.slot(Slot::S), (fp, bp, sp), nw, h, self.hcp.ptr, self.hc_part.ptr, nu, hid, (eps, hc_eps, iters), round)?;
+                self.mark("hyper-connections")
+            }
+            Op::StreamsPre { mix: StreamsMix::HcLagged { f, base, scale, first }, norm, round } => {
+                let (fp, bp, sp) = (p.small[f].ptr, p.small[base].ptr, p.small[scale].ptr);
+                let (h, nw, (hc_eps, iters)) = (p.slot(Slot::H), p.small[norm].ptr, p.d.hc);
+                self.kres.pre(s, p.slot(Slot::S), (fp, bp, sp), nw, h, self.hcp.ptr, self.hc_part.ptr, nu, hid, (eps, hc_eps, iters), round)?;
+                // (H again, from the previous lagged block's weights; this block's kept in hc_lag for the next)
+                self.kres.lag(s, p.slot(Slot::S), self.hc_lag.ptr, self.hcp.ptr, nw, h, nu, hid, eps, (first, true), round)?;
+                self.mark("hyper-connections")
+            }
+            Op::StreamsHead { mix: HeadMix::LastPre, norm, round } => {
+                self.kres.lag(s, p.slot(Slot::S), self.hc_lag.ptr, self.hcp.ptr, p.small[norm].ptr, p.slot(Slot::H), nu, hid, eps, (false, false), round)?;
                 self.mark("hyper-connections")
             }
             Op::StreamsPre { mix: StreamsMix::Gated { down, up, inject }, norm, .. } => {

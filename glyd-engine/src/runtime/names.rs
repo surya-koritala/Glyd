@@ -24,7 +24,8 @@ pub struct Convention {
     pub head: &'static str,
     /// The model's roles besides the embedding, the final norm and the head (under `{p}`).
     pub extra: Roles,
-    /// Parts of a checkpoint that the language model does not run (vision and audio towers, their projectors, the draft layers): prefixes.
+    /// Parts of a checkpoint that the language model does not run (vision and audio towers, their projectors, the draft layers): prefixes, or a
+    /// suffix written after `*`.
     pub unread: &'static [&'static str],
 }
 
@@ -88,6 +89,18 @@ pub const DEEPSEEK: Convention = Convention {
     head: "head.weight",
     extra: &[("out_hc_fn", "hc_head_fn"), ("out_hc_base", "hc_head_base"), ("out_hc_scale", "hc_head_scale")],
     unread: &["mtp."],
+};
+
+/// DeepSeek-V4.1 as released (DeepSeek's names, as V4's): no hyper-head (lagged mHC collapses with the last block's weights); the draft layers, the
+/// vision tower, its aligner and image markers, and the image tokens' choice bias of each router not read by the text model.
+pub const DEEPSEEK_V41: Convention = Convention {
+    name: "DeepSeek-V4.1 (release)",
+    layers: "layers.",
+    embed: "embed.weight",
+    final_norm: "norm.weight",
+    head: "head.weight",
+    extra: &[],
+    unread: &["mtp.", "vision.", "aligner.", "image_", "*.ffn.gate.bias_vl"],
 };
 
 /// DeepSeek-V4 as transformers saves it.
@@ -348,6 +361,18 @@ pub mod part {
         ("idx_q_b", "attn.indexer.wq_b.weight"),
         ("idx_weights", "attn.indexer.weights_proj.weight"),
     ];
+    /// DeepSeek-V4.1's compressor (ratio 1: no gate; no window bias) and its indexer: the queries and weights on an index source, the key product and
+    /// its norm on one that is a kv source too.
+    pub const V41_COMP: Roles =
+        &[("comp_kv", "attn.compressor.wkv.weight"), ("comp_gate", "attn.compressor.wgate.weight"), ("comp_norm", "attn.compressor.norm.weight")];
+    pub const V41_INDEXER: Roles = &[
+        ("idx_q_b", "attn.indexer.wq_b.weight"),
+        ("idx_weights", "attn.indexer.weights_proj.weight"),
+        ("idx_k", "attn.indexer.wk.weight"),
+        ("idx_k_norm", "attn.indexer.k_norm.weight"),
+    ];
+    /// DeepSeek-V4.1's Engram: the n-gram tables, the key and value product (keys first), the gate's two weights (the streams' norm's, the keys').
+    pub const ENGRAM: Roles = &[("ngram", "engram.embed.weight"), ("kv", "engram.wkv.weight"), ("norm_in", "engram.q_weight"), ("norm_key", "engram.k_weight")];
     pub const V4_MOE: Roles = &[
         ("norm_in", "ffn_norm.weight"),
         ("router", "ffn.gate.weight"),

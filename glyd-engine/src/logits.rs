@@ -19,6 +19,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 pub const FORMAT: &str = "glyd-logits/1";
+/// The words of a case's engine that is not built yet (its fixture the CPU reference's): logitscheck skips its levels.
+pub const NOT_ON_EXECUTOR: &str = "not on the executor yet";
 /// The largest logits a row keeps.
 pub const TOPK: usize = 64;
 /// A reference's lead of its best logit over its second that counts for the greedy-token check (the bf16 roundings of two near ties decide those).
@@ -507,6 +509,16 @@ fn described_cpu(dir: &Path) -> Result<Box<dyn Run>> {
         let desc = crate::runtime::describe::describe(&cfg)?;
         let ck = io(glyd_gpu::safetensors::Checkpoint::open(&d))?;
         let mut m = RefModel::load(&desc, &|n: &str| checkpoint_tensor(&ck, n))?;
+        // (Engram's compressed vocabulary, where the model has Engram layers)
+        if let Some(map) = engram_token_map(&d)? {
+            for l in m
+                .layers
+                .iter_mut()
+                .filter(|l| matches!(l.block.body, crate::runtime::kinds::Body::Ngram(g) if g.form == crate::runtime::kinds::NgramForm::Engram))
+            {
+                l.p.put("ngram_map", &[map.len()], map.clone());
+            }
+        }
         let mut pos = 0u32;
         Ok(move |t: u32| {
             let l = m.forward(&[t], pos).unwrap_or_else(|e| panic!("the reference at position {pos}: {}", e.msg)).pop().expect("a token's logits");
@@ -763,6 +775,69 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
     Ok(())
 }
 
+/// A small DeepSeek-V4.1 (tests/fixtures/deepseek_v41_tiny_config.json: six layers at DeepSeek-V4's kernels' widths, ratios 0, 2, 2, 1, 1, 1 sharing their
+/// compressors, indexers and candidate blocks, Engram before layers 1 and 4, lagged mHC over four streams, one DSpark layer): every tensor of its description at
+/// its shape, at random from a fixed seed (the matrices about U(-a, a), a = sqrt(3 / cols); the norms' weights about 1; the mixing projections small), bf16 but
+/// the mixers' and the sinks' and choice biases' fp32 as released; and the compressed vocabulary Engram hashes (`engram_token_map.json`: a token's id mod its size).
+pub fn deepseek_v41_random(out: &Path) -> Result<()> {
+    let text = include_str!("../tests/fixtures/deepseek_v41_tiny_config.json");
+    let cfg: Value = serde_json::from_str(text).map_err(|e| Error(e.to_string()))?;
+    let d = crate::runtime::describe::describe(&cfg)?;
+    let mut r = 0x2026_1124_0000_0041u64;
+    let mut uni = move |a: f32, b: f32| {
+        r ^= r << 13;
+        r ^= r >> 7;
+        r ^= r << 17;
+        a + (b - a) * ((r >> 40) as f32 / (1u64 << 24) as f32)
+    };
+    let bf = |x: f32| -> u16 {
+        let b = x.to_bits();
+        ((b.wrapping_add(0x7fff + ((b >> 16) & 1))) >> 16) as u16
+    };
+    let mut tensors: Vec<(String, &str, Vec<u64>, Vec<u8>)> = Vec::new();
+    for name in d.names() {
+        let shape = d.shapes.get(&name).cloned().ok_or_else(|| Error(format!("DeepSeek-V4.1's description has no shape for {name}")))?;
+        let n: usize = shape.iter().product();
+        let cols = *shape.last().unwrap_or(&1) as f32;
+        let leaf = name.rsplit('.').next().unwrap_or("");
+        let (lo, hi) = if name.contains("hc_") && name.ends_with("_fn") {
+            (-0.02, 0.02)
+        } else if name.contains("hc_") && name.ends_with("_scale") {
+            (0.5, 1.5)
+        } else if name.contains("hc_") || name.ends_with("attn_sink") || name.ends_with("gate.bias") {
+            (-0.5, 0.5)
+        } else if name.contains("norm") || name.ends_with("q_weight") || name.ends_with("k_weight") {
+            (0.9, 1.1)
+        } else if name == d.embed || name.ends_with("engram.embed.weight") {
+            (-1.0, 1.0)
+        } else {
+            let a = (3.0 / cols).sqrt();
+            (-a, a)
+        };
+        let vals: Vec<f32> = (0..n).map(|_| uni(lo, hi)).collect();
+        let f32s = name.contains("hc_") || name.ends_with("attn_sink") || name.ends_with("gate.bias") || leaf == "q_weight" || leaf == "k_weight";
+        let bytes = if f32s { vals.iter().flat_map(|x| x.to_le_bytes()).collect() } else { vals.iter().flat_map(|&x| bf(x).to_le_bytes()).collect() };
+        tensors.push((name, if f32s { "F32" } else { "BF16" }, shape.iter().map(|&x| x as u64).collect(), bytes));
+    }
+    io(std::fs::create_dir_all(out))?;
+    io(std::fs::write(out.join("config.json"), text))?;
+    let (vocab, map) = (d.desc.vocab, cfg["text_config"]["engram_compressed_vocab_size"].as_u64().unwrap_or(1) as usize);
+    io(std::fs::write(out.join("engram_token_map.json"), serde_json::to_string(&(0..vocab).map(|t| t % map).collect::<Vec<_>>()).unwrap_or_default()))?;
+    let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = tensors.iter().map(|(n, t, s, b)| (n.as_str(), *t, s.clone(), &b[..])).collect();
+    crate::pack::write_safetensors(&out.join("model.safetensors"), &[("format", "pt".to_string())], &refs)?;
+    println!("{}: a random DeepSeek-V4.1, {} tensors, {:.0} MB", out.display(), tensors.len(), tensors.iter().map(|t| t.3.len()).sum::<usize>() as f64 / 1e6);
+    Ok(())
+}
+
+/// The compressed vocabulary DeepSeek-V4.1's Engram hashes (`kinds::NgramForm::Engram`): the model directory's `engram_token_map.json` (a list, the compressed id of
+/// each token), which the loader makes from the tokenizer; None where the directory has none.
+pub fn engram_token_map(dir: &Path) -> Result<Option<Vec<f32>>> {
+    let p = dir.join("engram_token_map.json");
+    let Ok(text) = std::fs::read_to_string(&p) else { return Ok(None) };
+    let v: Vec<u32> = serde_json::from_str(&text).map_err(|e| Error(format!("{}: {e}", p.display())))?;
+    Ok(Some(v.into_iter().map(|x| x as f32).collect()))
+}
+
 fn qwen35_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     boxed(crate::dynamic::qwen35::load(dir, &dyn_opts(level_layout(level)?)))
 }
@@ -836,6 +911,14 @@ pub fn cases() -> Vec<Case> {
             family: "Nemotron-H (Mamba-2, attention, mixture of experts)",
             weights: Weights::Random(|d| crate::kcheck_nh::random(d, 0, 16)),
             engine: nemotron_engine,
+            cpu: Some(described_cpu),
+            vocab: 4096,
+        },
+        Case {
+            id: "deepseek-v41",
+            family: "DeepSeek-V4.1 (CSA2's shared compressed attention, lagged mHC, Engram, mixture of experts)",
+            weights: Weights::Random(deepseek_v41_random),
+            engine: |_, _| err(format!("DeepSeek-V4.1 is {NOT_ON_EXECUTOR}: its CPU reference alone (logitscheck --cpu-ref)")),
             cpu: Some(described_cpu),
             vocab: 4096,
         },
@@ -981,7 +1064,14 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                         None => continue,
                     }
                 } else {
-                    (c.engine)(&dir, &lb.level)?
+                    match (c.engine)(&dir, &lb.level) {
+                        // (a family whose CPU reference stands before its engine: its fixture is the reference's, checked with --cpu-ref)
+                        Err(e) if e.msg.contains(NOT_ON_EXECUTOR) => {
+                            println!("SKIP {:12} {}: {}", c.id, lb.level, e.msg);
+                            continue;
+                        }
+                        r => r?,
+                    }
                 };
                 let load = t0.elapsed().as_secs_f64();
                 let got = drive(run.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
@@ -1312,7 +1402,7 @@ pub fn record(a: &crate::args::Args) -> Result<()> {
         "source".into(),
         match from {
             // (Nemotron-H has no reference of its own: its description on the reference of the layer kinds)
-"cpu" if c.id == "nemotron-h" || c.id == "qwen4x" => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
+"cpu" if matches!(c.id, "nemotron-h" | "qwen4x" | "deepseek-v41") => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
             "cpu" => format!(
                 "the CPU reference of src/{}_ref.rs, fp32 inside, on this case's random model (seed fixed in the generator)",
                 c.id.replace("deepseek-", "ds").replace('-', "")
@@ -1555,8 +1645,13 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
 
 /// The case's random model, made in a directory of its own and loaded.
 pub(crate) fn random_dyn(case: &str, level: &str, tag: &str) -> Result<Dyn> {
+    random_dyn_at(case, level, level_layout(level)?, tag)
+}
+
+/// `random_dyn` with its packs in `layout` (None: the GPU's choice).
+pub(crate) fn random_dyn_at(case: &str, level: &str, layout: Option<Layout>, tag: &str) -> Result<Dyn> {
     let dir = std::env::temp_dir().join(format!("glyd-{tag}-{case}-{}", std::process::id()));
-    let o = dyn_opts(level_layout(level)?);
+    let o = dyn_opts(layout);
     let e: Result<Dyn> = (|| {
         match case {
             "gemma4" => gemma4_random(&dir)?,
@@ -1574,6 +1669,62 @@ pub(crate) fn random_dyn(case: &str, level: &str, tag: &str) -> Result<Dyn> {
     })();
     let _ = std::fs::remove_dir_all(&dir);
     e
+}
+
+/// `splitcheck CASE [--split CUT,..] [--devices GPU,..] [--level L | --layout mma12] [--tokens T]` (development): the case's random model on the dynamic route as `run` opens it
+/// (`split::open`: its family's loader, any family of that route), once on one GPU and once with its layers cut into stages (by default before its middle
+/// layer, both stages on GPU 0: the hand-over through host memory checked on a machine with one GPU). A prompt of 24 tokens, then T greedy steps fed the
+/// one-GPU run's tokens: every pass's logits the same bits both ways.
+pub fn split_check(a: &crate::args::Args) -> Result<()> {
+    let case = a.need(1, "CASE")?;
+    let level = a.flag("level").unwrap_or("penguin");
+    let tokens: usize = a.num("tokens", 12usize)?;
+    let Weights::Random(make) = find_case(case)?.weights else { return err(format!("{case}: a real model, not a random one")) };
+    let dir = std::env::temp_dir().join(format!("glyd-splitcheck-{case}-{}", std::process::id()));
+    let r = (|| -> Result<()> {
+        make(&dir)?;
+        let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(e.to_string()))?;
+        if crate::dynamic::split::family(&text).is_none() {
+            return err(format!("{case}: its family is not on the dynamic route (`run` cuts no layers of it)"));
+        }
+        let config = |k: &str| crate::dynamic::split::config_num(&text, k).unwrap_or(0);
+        let (nl, vocab) = (config("num_hidden_layers"), config("vocab_size"));
+        let (cuts, devices) = match crate::dynamic::split::split_args(a)? {
+            (c, _) if c.is_empty() => (vec![nl / 2], vec![0, 0]),
+            x => x,
+        };
+        // (penguin's packs in the smallest layout, or the 12-bit one with --layout mma12, as an HBM GPU's plan holds them)
+        let o = dyn_opts(a.layout()?.or(level_layout(level)?).or(Some(Layout::Tiered)));
+        let prompt = token_list(24, vocab, 0);
+        // (each pass's logits, the steps fed `feed` where given, else the run's own greedy tokens)
+        let run = |cuts: &[usize], devices: &[i32], feed: Option<&[u32]>| -> Result<(Vec<Vec<f32>>, Vec<u32>)> {
+            let mut e = crate::dynamic::split::open(&dir, &o, cuts, devices)?;
+            let mut s = e.prefill(&prompt)?;
+            let (mut rows, mut fed) = (vec![e.logits()?], Vec::new());
+            for i in 0..tokens {
+                let t = feed.map_or(s.token, |f| f[i]);
+                fed.push(t);
+                s = e.step(t)?;
+                rows.push(e.logits()?);
+            }
+            Ok((rows, fed))
+        };
+        let (one, fed) = run(&[], &devices[..1], None)?;
+        let (staged, _) = run(&cuts, &devices, Some(&fed))?;
+        let differ: Vec<usize> = (0..one.len()).filter(|&i| one[i].iter().map(|x| x.to_bits()).ne(staged[i].iter().map(|x| x.to_bits()))).collect();
+        println!(
+            "{case} at {level}: {nl} layers, cut before {cuts:?} on GPUs {devices:?}; {} passes (a prompt of {}, {tokens} steps), {} with logits that differ from the one-GPU run's",
+            one.len(),
+            prompt.len(),
+            differ.len()
+        );
+        if !differ.is_empty() {
+            return err(format!("{case}: the passes {differ:?} differ between one GPU and the stages"));
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    r
 }
 
 /// `twomodels [A B] [--level L] [--tokens T]` (R16: two models in one process): two cases' random models (gemma4 and qwen35 unless named) loaded on this GPU in this process, each with a scheduler
@@ -2457,6 +2608,8 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let tokens: usize = a.num("tokens", 24usize)?;
     let long: Option<usize> = a.flag("prompt-tokens").map(|v| v.parse().map_err(|_| Error(format!("--prompt-tokens {v}: not a number")))).transpose()?;
     let len = |k: usize| long.map_or(5 + 29 * k, |p| (p * (k + 1) / users).max(1));
+    // (--layout mma|mma12: penguin's packs in that layout, where the GPU's choice is another)
+    let layout = a.layout()?.or(level_layout(level)?);
     let mut e: Dyn = match (a.flag("dir"), a.num("places", 0usize)?) {
         // (`--places N`: the model in DIR with its experts in the expert cache, N places a layer and every expert in the computer's memory (src/offload.rs; `--mode`, copy by default, `--device`: the
         // decode calls planned on the GPU, src/devplan.rs): a model larger than the GPU, its replies alone against its replies at once)
@@ -2465,7 +2618,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
                 Some(m) => crate::offload::Mode::parse(m).ok_or_else(|| Error(format!("--mode {m}: copy, cpu, split or auto")))?,
                 None => crate::offload::Mode::Copy,
             };
-            let o = DynOpts { ctx: (len(users - 1) + tokens + 64).next_multiple_of(256), chunk: 256, graph: true, device: 0, layout: level_layout(level)? };
+            let o = DynOpts { ctx: (len(users - 1) + tokens + 64).next_multiple_of(256), chunk: 256, graph: true, device: 0, layout };
             let offload = crate::offload::Offload { mode, device: a.has("device"), ..Default::default() };
             let caching = crate::hbg_store::HbCaching { places, ram: None, offload, dense: 0 };
             match crate::dynamic::split::open_cached(Path::new(d), &o, &[], &[0], vec![caching])? {
@@ -2481,11 +2634,12 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             }
         }
         (Some(d), _) => {
-            let o = DynOpts { ctx: (len(users - 1) + tokens + 64).next_multiple_of(256), chunk: 256, graph: true, device: 0, layout: level_layout(level)? };
+            let o = DynOpts { ctx: (len(users - 1) + tokens + 64).next_multiple_of(256), chunk: 256, graph: true, device: 0, layout };
             load_dyn(case, Path::new(d), &o, level)?
         }
-        (None, _) => random_dyn(case, level, "usercheck")?,
+        (None, _) => random_dyn_at(case, level, layout, "usercheck")?,
     };
+    println!("{case} at {level}: layout {:?}", e.layout);
     let vocab = e.desc().vocab as u32;
     let prompts: Vec<Vec<u32>> = (0..users).map(|k| (0..len(k) as u32).map(|i| 3 + (i * 7919 + k as u32 * 104_729) % (vocab - 3)).collect()).collect();
     let reply = Reply {

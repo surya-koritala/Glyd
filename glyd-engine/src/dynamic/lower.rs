@@ -430,6 +430,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
             Body::Ngram(n) => {
                 let Ngram { order, heads, dim, conv, dilation, streams, eos: end, .. } = *n;
                 if (order, conv, dilation, streams) != (3, 4, 3, 4)
+                    || n.form != crate::runtime::kinds::NgramForm::Condor
                     || n.norm.weight != NormWeight::PlusOne
                     || dim % (2 * heads) != 0
                     || b.residual != Residual::Add
@@ -1074,8 +1075,8 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
     }
     let layers = m.blocks.len() / 2;
     let (hc, round) = match &m.blocks[0].residual {
-        Residual::Streams(s) => ((s.eps, s.sinkhorn_iters as i32), s.rounding),
-        r => return err(format!("GLM-5.3-Flash: a residual of {r:?}, not the streams")),
+        Residual::Streams(s) if !s.lagged => ((s.eps, s.sinkhorn_iters as i32), s.rounding),
+        r => return err(format!("GLM-5.3-Flash: a residual of {r:?}, not mHC's streams")),
     };
     let lin = m.blocks.iter().find_map(|b| match &b.body {
         Body::Mixer(Mixer::Linear(x)) => Some(x),
@@ -1241,6 +1242,11 @@ pub fn deepseek_v4(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Sta
             Body::Mixer(Mixer::Compressed(c)) => c,
             b => return err(format!("DeepSeek-V4: layer {l}'s mixer is {b:?}")),
         };
+        if !c.ape || !c.q_head_norm || c.share.is_some() {
+            return err(format!(
+                "DeepSeek-V4: layer {l} is V4.1's compressed sparse attention (no window bias, parts shared across layers): no operation of this executor yet"
+            ));
+        }
         if c.indexer.is_some() != (c.ratio == 4) {
             return err(format!(
                 "DeepSeek-V4: layer {l} compresses by {} with{} an indexer: this engine runs the indexer on the layers of ratio 4 alone",
@@ -1257,8 +1263,8 @@ pub fn deepseek_v4(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Sta
         };
         for b in [ab, eb] {
             match &b.residual {
-                Residual::Streams(s) => hc = (s.eps, s.sinkhorn_iters, s.streams, s.rounding),
-                r => return err(format!("DeepSeek-V4: layer {l}'s residual is {r:?}, not the streams")),
+                Residual::Streams(s) if !s.lagged => hc = (s.eps, s.sinkhorn_iters, s.streams, s.rounding),
+                r => return err(format!("DeepSeek-V4: layer {l}'s residual is {r:?}, not mHC's streams (lagged mHC has no operation yet)")),
             }
         }
         ratios.push(c.ratio);
