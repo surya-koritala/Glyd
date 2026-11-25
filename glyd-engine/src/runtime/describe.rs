@@ -840,7 +840,7 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             conv: taps,
             dilation: order,
             norm: pn,
-            form: NgramForm::Condor,
+            form: NgramForm::Segmented,
         })
     };
     for &l in &ple {

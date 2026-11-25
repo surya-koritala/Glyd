@@ -16,7 +16,7 @@ fn splitmix64(v: u64) -> u64 {
 }
 
 /// The multipliers of n-gram layer `n.index`, one an order position: odd, and below (2^63 - 1) / vocab, so that a token times one is a
-/// positive int64. Condor's from splitmix64; Engram's numpy's draws (`NgramForm::Engram`).
+/// positive int64. The segmented form's from splitmix64; Engram's numpy's draws (`NgramForm::Engram`).
 pub fn multipliers(n: &Ngram) -> Result<Vec<u64>> {
     let half = ((i64::MAX as u64) / n.vocab.max(1) as u64 / 2).max(1);
     if n.form == NgramForm::Engram {
@@ -145,7 +145,7 @@ pub fn rows(n: &Ngram, pad: usize) -> usize {
 /// between (the segment's start); else `eos`.
 pub fn context(n: &Ngram, before: &[u32], t: u32) -> Vec<u32> {
     // (Engram's has no segments: only the sequence's start reads as its pad id)
-    let segments = n.form == NgramForm::Condor;
+    let segments = n.form == NgramForm::Segmented;
     let mut out = vec![t];
     let mut cut = false;
     for p in 1..n.order {
@@ -194,7 +194,7 @@ pub fn step(n: &Ngram, p: &Params, st: &mut NgramState, q: &[f32], token: u32) -
     }
     // (Engram's hash reads the compressed vocabulary's ids)
     let token = match n.form {
-        NgramForm::Condor => token,
+        NgramForm::Segmented => token,
         NgramForm::Engram => {
             let m = p.vec("ngram_map")?;
             match m.get(token as usize).map(|&v| v as u32) {
@@ -231,8 +231,8 @@ pub fn step(n: &Ngram, p: &Params, st: &mut NgramState, q: &[f32], token: u32) -
     let mut g = Vec::with_capacity(w);
     for i in 0..s {
         let x = dot(&k[i * d..][..d], &q[i * d..][..d]) / (d as f32).sqrt();
-        // (Condor's root of 0 is 0; Engram's the clamp's, sqrt(1e-6))
-        let x = if x == 0.0 && n.form == NgramForm::Condor { 0.0 } else { x.abs().max(1e-6).sqrt() * x.signum() };
+        // (the segmented form's root of 0 is 0; Engram's the clamp's, sqrt(1e-6))
+        let x = if x == 0.0 && n.form == NgramForm::Segmented { 0.0 } else { x.abs().max(1e-6).sqrt() * x.signum() };
         g.extend(v.iter().map(|&vv| sigmoid(x) * vv));
     }
     if n.conv == 0 {
@@ -286,7 +286,7 @@ mod tests {
             conv: 4,
             dilation: 3,
             norm: Norm::rms_plus_one(1e-6),
-            form: NgramForm::Condor,
+            form: NgramForm::Segmented,
         }
     }
 
@@ -366,7 +366,7 @@ mod tests {
         };
         let m = multipliers(&n).unwrap();
         assert!(m.iter().all(|&x| x % 2 == 1 && (x as u128) * 10 < (1u128 << 63)), "{m:?}");
-        assert_ne!(m, multipliers(&Ngram { form: NgramForm::Condor, ..n }).unwrap());
+        assert_ne!(m, multipliers(&Ngram { form: NgramForm::Segmented, ..n }).unwrap());
         let (sizes, offsets) = tables(&n);
         let rows = rows(&n, 4);
         let mut p = Params::new();
@@ -417,7 +417,7 @@ mod tests {
             conv: 2,
             dilation: 3,
             norm: Norm::rms_plus_one(1e-6),
-            form: NgramForm::Condor,
+            form: NgramForm::Segmented,
         };
         let (sizes, _) = tables(&n);
         let rows = rows(&n, 4);

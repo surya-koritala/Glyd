@@ -1809,7 +1809,8 @@ pub fn qwen35_wide_random(out: &Path) -> Result<()> {
     )
 }
 
-/// A random model of a manifest's tensors (names, types and shapes from a real checkpoint's header, cut down), their values from a fixed seed by the rules of tools/qwen4x_ref.py for each kind of tensor.
+/// A random model of a manifest's tensors (names and shapes from a real checkpoint's header, cut down), their values from a fixed seed by the rules of tools/qwen4x_ref.py for each kind of tensor.
+/// Every drawn tensor is stored in bf16, the embedding too (the manifest's dtype is read for its int64 tensors alone), so no tensor is held wider than a release holds its matrices.
 /// `dense_norms`: the norms' weights are the scales themselves (0.5 to 1.5) and not the (1 + w) of the other families (-0.5 to 0.5).
 fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, what: &str) -> Result<()> {
     let m: Value = serde_json::from_str(manifest).map_err(|e| Error(e.to_string()))?;
@@ -3136,6 +3137,31 @@ mod tests {
         }
     }
 
+    /// The random checkpoint stores what its manifest lists as bf16 in bf16, the tied embedding first (a release stores it so), whatever the draw's scale: the
+    /// `qwen35` case's floor (`NOISE_FLOOR_OPEN`) is not that of a tensor held wider than a release holds it. Read back from the file's header, on a manifest cut
+    /// down to an embedding, a norm and two matrices; a tensor the manifest lists as int64 is stored as listed.
+    #[test]
+    fn the_random_checkpoint_stores_a_manifests_bf16_tensors_in_bf16() {
+        let tensors = json!([
+            ["model.embed_tokens.weight", "BF16", [64, 32]],
+            ["model.layers.0.input_layernorm.weight", "BF16", [32]],
+            ["model.layers.0.mlp.gate_proj.weight", "BF16", [48, 32]],
+            ["model.layers.0.self_attn.q_proj.weight", "BF16", [32, 32]],
+            ["model.layers.0.ngram_embedding.ids", "I64", [3], [1, 2, 3]],
+        ]);
+        let dir = std::env::temp_dir().join(format!("glyd-bf16-writer-{}", std::process::id()));
+        manifest_random(&json!({"config": "{}", "tensors": tensors}).to_string(), &dir, 0x2026_1125_0000_0777, false, "bf16 writer").unwrap();
+        let file = glyd_gpu::safetensors::File::open(&dir.join("model.safetensors")).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        for e in tensors.as_array().unwrap() {
+            let (name, listed) = (e[0].as_str().unwrap(), e[1].as_str().unwrap());
+            let held = file.get(name).unwrap_or_else(|| panic!("{name}: not written"));
+            assert_eq!(held.dtype, listed, "{name}");
+            assert_eq!(held.shape, e[2].as_array().unwrap().iter().map(|x| x.as_u64().unwrap()).collect::<Vec<_>>(), "{name}");
+        }
+        assert_eq!(file.get("model.embed_tokens.weight").unwrap().bytes, 64 * 32 * 2, "the embedding two bytes a value");
+    }
+
     /// A case's noise floor: the CPU reference of the layer kinds against itself with `stored`'s roundings, on the fixture's tokens, as `compare`
     /// measures an engine against `bound`; where the case is held on its routers' choices (`Case::on_choices`), the rounded run takes the
     /// reference's own.
@@ -3260,9 +3286,10 @@ mod tests {
     /// machine's libm). Its draw is its family's owner's to fix, never its bound.
     const NOISE_FLOOR_OPEN: [(&str, &str); 1] = [(
         "qwen35",
-        "1.04e-5 in KL mean against 1.0e-5, four more seeds 8.3e-6 to 1.05e-5, its checkpoint bf16 as a release's: 70% of it is layer 0's input, as \
-         Qwen3.5 adds its tied embedding unscaled and the first block's output is all of the residual; an embedding wide enough to share the residual \
-         makes a token's own row the head's largest (19.9, the softmax a point), so no honest draw lowers it",
+        "1.04e-5 in KL mean against 1.0e-5, four more seeds 8.3e-6 to 1.05e-5; its checkpoint holds nothing wider than a release does (the writer stores \
+         the embedding and every drawn tensor in bf16: `the_random_checkpoint_stores_a_manifests_bf16_tensors_in_bf16`), so no f32 tensor to narrow: 70% of \
+         it is layer 0's input, as Qwen3.5 adds its tied embedding unscaled and the first block's output is all of the residual; an embedding wide enough \
+         to share the residual makes a token's own row the head's largest (19.9, the softmax a point), so no honest draw lowers it",
     )];
 
     /// Every case a CPU reference holds is well conditioned for its bound: its noise floor (`noise_floor`) is at most a tenth of its reference
@@ -4445,14 +4472,20 @@ fn random_model(case: &str, dir: &Path) -> Result<()> {
     }
 }
 
-/// The context the planner gives the case's random model on this GPU for one user (`serve`'s plan of it), or why it gives none.
-fn planned_context(case: &str) -> Result<usize> {
+/// The context the planner gives the case's random model on this GPU for one user (`serve`'s plan of it), the bytes of keys and values it plans there and their
+/// format (`LoadPlan::kv_format`: an estimate's is bf16); or why it gives none.
+fn planned_context(case: &str) -> Result<(usize, u64, &'static str)> {
     let dir = std::env::temp_dir().join(format!("glyd-planned-{case}-{}", std::process::id()));
-    let got = (|| -> Result<usize> {
+    let got = (|| -> Result<(usize, u64, &'static str)> {
         random_model(case, &dir)?;
         let words = ["serve".to_string(), dir.display().to_string(), "--users".into(), "1".into(), "--no-draft".into()];
         let f = crate::plan::planned(&crate::args::Args::from(words)).map_err(|r| Error(format!("the planner: {}", r.what)))?;
-        f.plan.chosen.as_ref().map(|c| c.context).filter(|&c| c > 0).ok_or_else(|| Error(format!("the planner has no plan for the random {case} model")))
+        f.plan
+            .chosen
+            .as_ref()
+            .map(|c| (c.context, c.kv, c.load.as_ref().map_or("bf16", |l| l.kv_format())))
+            .filter(|c| c.0 > 0)
+            .ok_or_else(|| Error(format!("the planner has no plan for the random {case} model")))
     })();
     let _ = std::fs::remove_dir_all(&dir);
     got
@@ -5890,14 +5923,23 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let level = a.flag("level").unwrap_or("penguin");
     let users: usize = a.num("users", 4usize)?;
     let tokens: usize = a.num("tokens", 24usize)?;
-    // (--ctx plan: the random model at the context the planner gives it on this GPU, each prompt filling it to within half a chunk with its reply: the long-context check)
+    // (--ctx plan: the random model at the context the planner gives it on this GPU, each prompt filling it to within half a chunk with its reply: the long-context check;
+    // with --kv12 the plan of a server whose keys and values are in 12-bit pages, as GLYD_KV=lossless asks `serve` for them)
+    let kv12 = a.has("kv12");
+    if kv12 && a.flag("ctx") == Some("plan") {
+        std::env::set_var("GLYD_KV", "lossless");
+    }
     let planned = if a.flag("ctx") == Some("plan") { Some(planned_context(case)?) } else { None };
-    if let Some(c) = planned {
+    if let Some((c, kv, format)) = planned {
         println!(
-            "the random {case} model at the planner's context for this GPU: {c} tokens, prompts of up to {} and {tokens} made",
+            "the random {case} model at the planner's context for this GPU{}: {c} tokens ({:.1} MiB of keys and values planned in {format}{}), prompts of up to {} and {tokens} made",
+            if kv12 { " with GLYD_KV=lossless" } else { "" },
+            kv as f64 / (1u64 << 20) as f64,
+            if kv12 && format != "12-bit" { ": the 12-bit pages would reserve more there; the check runs them as asked" } else { "" },
             c.saturating_sub(tokens + 32)
         );
     }
+    let planned = planned.map(|p| p.0);
     let long: Option<usize> = match (a.flag("prompt-tokens"), planned) {
         (Some(v), _) => Some(v.parse().map_err(|_| Error(format!("--prompt-tokens {v}: not a number")))?),
         (None, Some(c)) => Some(c.saturating_sub(tokens + 32).max(1)),
@@ -5973,7 +6015,6 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         prompts.iter().map(|p| crate::sched::ModelStep::cold(&mut e).and_then(|()| e.reply(p, &reply, &mut |_| true).map(|r| r.0))).collect::<Result<_>>()?;
     // (--kv12: the scheduler's cache in 12-bit lossless pages, of tables made on these prompts; with GLYD_KV12_POOL's small pools the newest sequence is paused where the
     // raw slabs run short, and no page is made void)
-    let kv12 = a.has("kv12");
     if kv12 {
         let t = crate::dynamic::kv12::calibrate(&mut e, &prompts, "usercheck")?;
         e.set_kv12(Some(t));
@@ -6419,21 +6460,35 @@ fn cands_check(step: &mut dyn crate::sched::ModelStep, prompts: &[Vec<u32>]) -> 
         Ok(())
     };
     let mut next = Vec::new();
-    for (j, p) in prompts.iter().take(k).enumerate() {
+    // (a sequence's room grown before each of its passes, as the scheduler grows it (`Sched::ensure_pages`): a sliding group holds the blocks the next pass reads and
+    // writes, and a pass's rows are never written past the blocks their sequence holds. Where the step has no room for a pass (the 12-bit pages' raw slabs all taken,
+    // where the scheduler pauses the newest sequence), that sequence is given up and the check takes no more: it runs on the sequences before it)
+    'prompts: for (j, p) in prompts.iter().take(k).enumerate() {
         if !step.grow(j as i32, p.len() + 2)? {
             break;
         }
         // (in the step's chunks, as the scheduler runs a prompt: a pass holds `chunk` tokens at most)
-        let mut s = None;
-        for (i, c) in p.chunks(step.chunk().max(1)).enumerate() {
-            s = step.prefill(&[j as i32], i * step.chunk().max(1), c, (i + 1) * step.chunk().max(1) >= p.len())?;
+        let (mut s, chunk) = (None, step.chunk().max(1));
+        for (i, c) in p.chunks(chunk).enumerate() {
+            if !step.grow(j as i32, i * chunk + c.len())? {
+                step.release(&[j as i32])?;
+                break 'prompts;
+            }
+            s = step.prefill(&[j as i32], i * chunk, c, (i + 1) * chunk >= p.len())?;
         }
         let s = s.ok_or_else(|| Error("a prompt's last chunk gave no sample".into()))?;
         check(step, 0, &format!("after prompt {j}"))?;
         next.push(s.token);
     }
-    let pages: Vec<[i32; 1]> = (0..next.len()).map(|j| [j as i32]).collect();
-    let decode: Vec<crate::sched::Row> = next.iter().enumerate().map(|(j, &t)| crate::sched::Row::new(t, prompts[j].len(), &pages[j])).collect();
+    // (a decode row for each sequence whose room grows for it, likewise)
+    let mut ready = Vec::new();
+    for j in 0..next.len() {
+        if step.grow(j as i32, prompts[j].len() + 1)? {
+            ready.push(j);
+        }
+    }
+    let pages: Vec<[i32; 1]> = ready.iter().map(|&j| [j as i32]).collect();
+    let decode: Vec<crate::sched::Row> = ready.iter().zip(&pages).map(|(&j, page)| crate::sched::Row::new(next[j], prompts[j].len(), page)).collect();
     if !decode.is_empty() {
         step.decode(&decode)?;
         for r in 0..decode.len() {

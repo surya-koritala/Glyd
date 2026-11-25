@@ -637,6 +637,12 @@ them up (`glyd_gpu_kv_release`: its chunks and slabs back). Each raw pool holds 
 `usercheck --kv12` with `GLYD_KV12_SHIFT=60 GLYD_KV12_POOL=1,0` (no step taken back, no request ended). Left: a copy back's pages take
 their chunks beside the steps that run meanwhile, which may take them first; such a page is void and its sequence taken back as before.
 
+As planned (#332): the planner counts what the pools take, a token's share of its page, escape room and raw slabs (`kv12::token_bytes`),
+and, once for all users, one sequence's raw slabs and the rows a pass unpacks (`kv12::once_bytes`). It makes each level's plan in both
+formats and takes the 12-bit pages only where they reserve no more than bf16 for the plan (`sizing::one_gpu_pages`; one format for the
+whole cache, not per layer group). One user at a long context then keeps bf16, and several users share the 12-bit pages' fixed cost.
+The plan says which (`kv_format`), and the loader takes the plan's word.
+
 The kernels of 2026-11-20 took head dim 128 and GQA groups of at most 8 (`kv.rs:224-230`), which covered no recent family; widening them to head
 dims 256 and 512 and to MLA latents (576 values a token for Kimi-K3) was its own piece of work (#332; as built, 12-bit pages hold heads of 128,
 256 and 512: `kvshapes`). **As built for latents (`dynamic/kvpages.rs`):** a latent attention's ring is one stream (`KV_ONE_STREAM`: the keys' tiles

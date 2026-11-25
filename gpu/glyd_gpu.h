@@ -487,7 +487,9 @@ int glyd_gpu_kv_second_bytes(int64_t nslabs, int64_t H, int64_t* bytes);
  * chunk or slab that is freed), [8] the raw pool's slabs taken now, [9] the most taken at once, [10] the pages made raw, [11] the
  * pages made void (no slab for them: the pages written hold a value not as it was; the caller fails what holds them), [12] the
  * ring's head: the number of blocks lost so far, the block of the n-th is [16 + n % ring] - 1, [13] the raw ring's head: the blocks
- * that have a raw page, the block of the n-th is [16 + ring + n % ring] - 1 (ring: 1 to 2^24 places each, status has 16 + 2 ring words). lost, nlost: a bitmap of nlost bits (uint32
+ * that have a raw page, the block of the n-th is [16 + ring + n % ring] - 1, [14] the runs of a call that named a page another run of the same
+ * call named (tokens of one page that do not follow one another): none of them is written, so the page and the pools stay as they were, and [15]
+ * the last such page + 1 (ring: 1 to 2^24 places each, status has 16 + 2 ring words). lost, nlost: a bitmap of nlost bits (uint32
  * words, zero before the first call; null, 0: none), two bits a block (2 b: it has a void page, 2 b + 1: a raw page), that makes each ring name a
  * block once while it stays so; the bits are cleared when the block's first token of layer 0 is written again. escape,
  * nchunks: the escape pool (nchunks 0: none: a page's entries are its arena's), raw, nslabs: the raw pool (nslabs 0: none:

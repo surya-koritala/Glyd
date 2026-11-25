@@ -3,7 +3,7 @@
 #   tools/serve.sh [--fast | --best] [PORT]   precise mode by default; --fast or --best uses those experts (tools/download.sh --fast or --best)
 #   GLYD_CTX=65536 tools/serve.sh         the context in tokens (default 32768, up to 262144)
 #   GLYD_USERS=2 tools/serve.sh           requests answered at once (default 4, 1 to 8)
-#   GLYD_GPUS=0,1 tools/serve.sh          split the layers over two cards (the second card's VRAM holds more experts)
+#   GLYD_GPUS=1 tools/serve.sh            the card to run on (default 0); one GPU in this release, a list of more is refused
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "${GLYD_QWEN:-$HOME/.glyd-qwen-3.8-flash}/env.sh"

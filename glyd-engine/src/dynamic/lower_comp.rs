@@ -541,7 +541,7 @@ fn ngram(
             eos: g.eos,
             order: g.order,
             map,
-            segments: g.form == NgramForm::Condor,
+            segments: g.form == NgramForm::Segmented,
         }),
         kv.op(Slot::In, Slot::Gu, "n-gram block: key and value product"),
         Op::NgramAdd(NgramAdd { q, k, conv, plus_one: g.norm.weight == NormWeight::PlusOne, eps: g.norm.eps }),

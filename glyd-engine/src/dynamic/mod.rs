@@ -19,6 +19,9 @@ mod kvpages;
 pub use kvpages::check as kvpages_check;
 #[cfg(feature = "dev")]
 pub(crate) use kvpages::room_of as kv12_room;
+#[cfg(all(test, feature = "dev"))]
+pub(crate) use rows::pool_blocks;
+pub(crate) use rows::seq_blocks;
 pub mod lower;
 pub mod lower_comp;
 pub mod mla;

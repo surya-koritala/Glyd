@@ -1426,14 +1426,14 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: 
         };
         let mut e = crate::dynamic::Dyn::new(dir, crate::dynamic::gemma4::lowered(dir, &c).map_err(cannot)?, spec, &o).map_err(oom)?;
         if draft.is_none() {
-            twelve_bit_pages(&mut e, dir, name, ui)?;
+            twelve_bit_pages(&mut e, plan, dir, name, ui)?;
         }
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
     } else if plan.kind == Kind::Qwen3 {
         // the executor (R3c, #139): a Llama-style dense model's description from its config, its products at the plan's level
         let mut e = crate::dynamic::dense::load(dir, &o).map_err(|e| engine_refusal(e, name, plan, gpu))?;
-        twelve_bit_pages(&mut e, dir, name, ui)?;
+        twelve_bit_pages(&mut e, plan, dir, name, ui)?;
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
     } else if plan.kind == Kind::NemotronH {
@@ -1483,10 +1483,10 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: 
     })
 }
 
-/// The 12-bit lossless KV pages for `e` where the scheduler pages its cache and GLYD_KV=lossless asks for them (off unless asked for: admission does not reserve their room): the tables made on
-/// the model's first run and kept in the cache.
-fn twelve_bit_pages(e: &mut crate::dynamic::Dyn, dir: &Path, name: &str, ui: &RefCell<Ui>) -> Done<()> {
-    if std::env::var("GLYD_KV").as_deref() != Ok("lossless") {
+/// The 12-bit lossless KV pages for `e` where its plan has them (`LoadPlan::kv12`: GLYD_KV=lossless asked for them, and they reserve no more than bf16 for the
+/// plan; off unless asked for): the tables made on the model's first run and kept in the cache.
+fn twelve_bit_pages(e: &mut crate::dynamic::Dyn, plan: &LoadPlan, dir: &Path, name: &str, ui: &RefCell<Ui>) -> Done<()> {
+    if !plan.kv12 {
         return Ok(());
     }
     let t0 = std::time::Instant::now();
