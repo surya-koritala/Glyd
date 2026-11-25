@@ -294,7 +294,7 @@ fn released_glm53_config() {
         assert_eq!(shape(n).as_ref(), Some(s), "the shape of {n}");
     }
     let scaled: BTreeSet<String> = want.iter().filter_map(|n| n.strip_suffix("_scale_inv").map(str::to_string)).collect();
-    let fp8: BTreeSet<String> = d.scales.iter().map(|(w, _)| w.clone()).collect();
+    let fp8: BTreeSet<String> = d.scales.keys().cloned().collect();
     assert_eq!(fp8, scaled, "the FP8 matrices");
     let mla: Vec<_> = d.desc.blocks.iter().filter_map(|b| if let Body::Mixer(Mixer::Mla(m)) = &b.body { Some(m) } else { None }).collect();
     let shared: Vec<bool> = mla.iter().map(|m| m.indexer.as_ref().unwrap().shared).collect();

@@ -69,7 +69,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
 /// FP8 matrices (the release's) is refused, in words: this loader reads them bf16 (its random case).
 pub fn load_plain(dir: &Path, o: &Opts) -> Result<Dyn> {
     let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
-    if let Some((w, _)) = kinds.scales.iter().next() {
+    if let Some(w) = kinds.scales.keys().next() {
         return err(format!(
             "{label}: {} FP8 matrices ({w}, ...): the full-size layout's loader reads bf16 checkpoints; the release's FP8 is not loaded yet",
             kinds.scales.len()
