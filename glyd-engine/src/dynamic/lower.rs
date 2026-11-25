@@ -876,7 +876,7 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
 /// block's, read apart.
 pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
     use super::nemotron::per_layer;
-    use crate::kern_nh::{NH_N, NH_P};
+    use crate::kern::{MAMBA2_HEAD, MAMBA2_STATE};
     use crate::nemotron::NhKind;
     let m = &d.desc;
     let one = |roles: &[(String, Source)], r: &str| match role(roles, r) {
@@ -904,9 +904,9 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
     }
     let mb = mamba.ok_or_else(|| Error("Nemotron-H: no Mamba-2 layer".into()))?;
     let (nq, nk, hd) = att.map_or((0, 0, 128), |a| (a.heads, a.kv_heads, a.head_dim));
-    if mb.head_dim != NH_P || mb.state != NH_N || mb.conv != 4 || hd != 128 {
+    if mb.head_dim != MAMBA2_HEAD || mb.state != MAMBA2_STATE || mb.conv != 4 || hd != 128 {
         return err(format!(
-            "Mamba-2 heads of {} channels with a state of {}, a convolution of {}, attention heads of {hd}: this engine runs heads of {NH_P}, a state of {NH_N}, a convolution of 4 and attention heads of 128",
+            "Mamba-2 heads of {} channels with a state of {}, a convolution of {}, attention heads of {hd}: this engine runs heads of {MAMBA2_HEAD}, a state of {MAMBA2_STATE}, a convolution of 4 and attention heads of 128",
             mb.head_dim, mb.state, mb.conv
         ));
     }
@@ -941,7 +941,7 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
                 }
                 let (conv, ssm) = (states.len(), states.len() + 1);
                 states.push(3 * cd * 2);
-                states.push(mb.heads * NH_P * NH_N * 4);
+                states.push(mb.heads * MAMBA2_HEAD * MAMBA2_STATE * 4);
                 ops.extend([
                     Op::Linear { w: b, x: Slot::H, y: Slot::Mix, name: "Mamba-2: in product" },
                     Op::MambaConv { w: s0 + 1, bias: s0 + 2, state: conv, cd, row, x_off: di },
@@ -2320,7 +2320,7 @@ mod tests {
     /// kind's only description in the tree), a plain dense config, Gemma 4's draft.
     #[cfg(feature = "dev")]
     fn every_family(tag: &str) -> Vec<ModelDesc> {
-        use super::super::{deepseek_v4, gemma4, glm, kimi, muse, nemotron, qwen35, qwen4x, Stage};
+        use super::super::{deepseek_v4, gemma4, glm, kimi, muse, qwen35, qwen4x, Stage};
         // (a directory of each caller's own: the tests run at once)
         let dir = |x: &str| std::env::temp_dir().join(format!("glyd-by-op-{tag}-{x}-{}", std::process::id()));
         let mut v = Vec::new();
@@ -2344,7 +2344,7 @@ mod tests {
         let d = dir("glm");
         crate::glm::random(&d, false, None).unwrap();
         let c = crate::glm::ConfigGlm::load(&d).unwrap();
-        v.push(glm::describe(&c, &Stage::whole(c.layers)).unwrap());
+        v.push(glm::lowered(&d, &c, &Stage::whole(c.layers)).unwrap());
         let d = dir("v4");
         crate::dsv4_ref::random(&d, None).unwrap();
         let (layers, eos, max_pos) = deepseek_v4::ends(&d).unwrap();
@@ -2357,7 +2357,8 @@ mod tests {
         for f in ["nemotron_h_config.json", "nemotron_h_moetoy_config.json"] {
             let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(f)).unwrap();
             let c = crate::nemotron::ConfigNemotronH::parse(&text, f, None).unwrap();
-            v.extend(nemotron::describe(&c, &Stage::whole(c.layers)));
+            let kinds = crate::runtime::describe::describe(&serde_json::from_str(&text).unwrap()).unwrap();
+            v.extend(nemotron(&kinds, c.eos.clone(), c.max_pos, &Stage::whole(c.layers)));
         }
         v.push(dense(&crate::runtime::describe::describe(&dense_config("llama", serde_json::json!({}))).unwrap(), vec![2], 4096).unwrap());
         for x in ["q35", "g4", "muse", "kimi", "glm", "v4", "qx"] {
@@ -2546,15 +2547,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The descriptions the executor's loader can read (`Dyn::new_with`: Gemma 4, its draft, the plain dense models, Qwen3.5, Muse Spark, Kimi-K3,
-    /// Qwen3.8-Flash-Next) name every matrix their operations use; the others name none yet, their families' loaders filling them by index, and the executor's
-    /// loader refuses them in words.
+    /// The descriptions the executor's loader reads (`Dyn::new_placed`: Gemma 4, its draft, the plain dense models, Qwen3.5, Muse Spark, Kimi-K3, GLM-5.3-Flash,
+    /// Nemotron-H, Qwen3.8-Flash-Next) name every matrix their operations use. DeepSeek-V4's, which its own loader fills by its lowering's plan
+    /// (src/dynamic/deepseek_v4.rs), names none, and the executor's loader refuses it in words.
     #[cfg(feature = "dev")]
     #[test]
     fn the_executors_loader_reads_only_descriptions_that_name_their_tensors() {
-        use super::super::{dense::FAMILY as DENSE, qwen4x::FAMILY as QX, unnamed};
-        for d in every_family("named") {
-            let named = matches!(d.family, "Gemma 4" | "Gemma 4 draft" | "Qwen3.5" | "Muse Spark" | "Kimi-K3" | DENSE | QX);
+        use super::super::unnamed;
+        let all = every_family("named");
+        assert!(all.iter().any(|d| d.family == "DeepSeek-V4") && all.iter().filter(|d| d.family == "Nemotron-H").count() == 2);
+        for d in all {
+            let named = d.family != "DeepSeek-V4";
             assert_eq!(unnamed(&d).is_none(), named, "{}: {:?} of {} matrices named", d.family, unnamed(&d), d.mats.len());
         }
     }

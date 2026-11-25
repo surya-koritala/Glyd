@@ -46,8 +46,9 @@ use crate::gpu_ops::{Gemm, GpuOps};
 use crate::kern::{embed_plan, TopGpu};
 use crate::kern::{norm_threads, Kern};
 use crate::kern::{pf_kib, KernG4, NextPf};
+use crate::kern::{KernMamba2, SsdWs};
 use crate::kern35::{Kern35, Mat};
-use crate::kern_nh::{KernNh, MoeBlock, SsdWs};
+use crate::kern_nh::MoeBlock;
 use crate::launch;
 use crate::runtime::kinds::Rounding;
 use crate::sched::Sample;
@@ -1193,7 +1194,7 @@ pub struct Dyn {
     kern: Kern,
     kg: KernG4,
     k35: Kern35,
-    knh: KernNh,
+    kmamba: KernMamba2,
     /// The attention layer kind's kernels (`Op::Attn`) and the library's decode where its shapes take it; the latent attention kind's and the
     /// indexer's (`Op::Mla`, `Op::IdxPick`).
     ka: attn::KernAttn,
@@ -1807,7 +1808,7 @@ impl Dyn {
         let kern = Kern::load(&dev)?;
         let kg = KernG4::load(&dev)?;
         let k35 = Kern35::load(&dev)?;
-        let knh = KernNh::load(&dev)?;
+        let kmamba = KernMamba2::load(&dev)?;
         let ka = attn::KernAttn::load(&dev)?;
         let skinny = crate::skinny::SkinnyKern::load(&dev)?;
         let ch = o.chunk.max(1);
@@ -1950,7 +1951,7 @@ impl Dyn {
             kern,
             kg,
             k35,
-            knh,
+            kmamba,
             ka,
             ldec,
             km,
@@ -2514,7 +2515,7 @@ impl Dyn {
             }
             Op::MambaConv { w, bias, state, cd, row, x_off } => {
                 // (in a pass over several sequences: this sequence's rows and its state)
-                self.knh.conv(
+                self.kmamba.conv(
                     s,
                     p.slot(Slot::Mix) + self.rows_before(row) + (x_off * 2) as u64,
                     row as i32,
@@ -2530,17 +2531,17 @@ impl Dyn {
             Op::MambaScan { dt_bias, a_log, d, state, cd, row, dt_off, nh, ng } => {
                 let (dtr, st) = (p.slot(Slot::Mix) + self.rows_before(row) + (dt_off * 2) as u64, self.state(state));
                 let (dtb, al, dd) = (p.small[dt_bias].ptr, p.small[a_log].ptr, p.small[d].ptr);
-                let (core, xc) = (p.slot(Slot::Core) + self.rows_before(nh * crate::kern::NH_P), p.slot(Slot::Xc) + self.rows_before(cd));
+                let (core, xc) = (p.slot(Slot::Core) + self.rows_before(nh * crate::kern::MAMBA2_HEAD), p.slot(Slot::Xc) + self.rows_before(cd));
                 match &self.ssd {
                     Some(ws) if self.chunked && n > 1 => {
-                        self.knh.ssd(s, ws, xc, cd as i32, dtr, row as i32, dtb, al, dd, st, core, n as i32, nh as i32, ng as i32, 0.0)?
+                        self.kmamba.ssd(s, ws, xc, cd as i32, dtr, row as i32, dtb, al, dd, st, core, n as i32, nh as i32, ng as i32, 0.0)?
                     }
-                    _ => self.knh.ssm(s, xc, cd as i32, dtr, row as i32, dtb, al, dd, st, core, n as i32, nh as i32, ng as i32, 0.0)?,
+                    _ => self.kmamba.ssm(s, xc, cd as i32, dtr, row as i32, dtb, al, dd, st, core, n as i32, nh as i32, ng as i32, 0.0)?,
                 }
                 self.mark("Mamba-2: scan")
             }
             Op::MambaNorm { w, row, di, ng } => {
-                self.knh.gated_norm(s, p.slot(Slot::Core), p.slot(Slot::Mix), row as i32, p.small[w].ptr, nu, di as i32, ng as i32, eps)?;
+                self.kmamba.gated_norm(s, p.slot(Slot::Core), p.slot(Slot::Mix), row as i32, p.small[w].ptr, nu, di as i32, ng as i32, eps)?;
                 self.mark("Mamba-2: gated norm")
             }
             Op::Moe(ref m) => self.moe(p, m, n),

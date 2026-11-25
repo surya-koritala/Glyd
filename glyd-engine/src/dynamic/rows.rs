@@ -527,13 +527,13 @@ impl Dyn {
             }
             Op::MambaConv { w, bias, state, cd, row, x_off } => {
                 let x = p.slot(Slot::Mix) + (x_off * 2) as u64;
-                self.knh.conv_rows(s, x, row as i32, p.small[w].ptr, p.small[bias].ptr, sts(state), ss, p.slot(Slot::Xc), ru, cd as i32)?;
+                self.kmamba.conv_rows(s, x, row as i32, p.small[w].ptr, p.small[bias].ptr, sts(state), ss, p.slot(Slot::Xc), ru, cd as i32)?;
                 self.mark("Mamba-2: convolution")
             }
             Op::MambaScan { dt_bias, a_log, d, state, cd, row, dt_off, nh, ng } => {
                 let (xc, dtr, core) = (p.slot(Slot::Xc), p.slot(Slot::Mix) + (dt_off * 2) as u64, p.slot(Slot::Core));
                 let (dtb, al, dd) = (p.small[dt_bias].ptr, p.small[a_log].ptr, p.small[d].ptr);
-                self.knh.ssm_rows(s, xc, cd as i32, dtr, row as i32, dtb, al, dd, sts(state), ss, core, ru, nh as i32, ng as i32, 0.0)?;
+                self.kmamba.ssm_rows(s, xc, cd as i32, dtr, row as i32, dtb, al, dd, sts(state), ss, core, ru, nh as i32, ng as i32, 0.0)?;
                 self.mark("Mamba-2: scan")
             }
             _ => err(format!("{op:?}: no kernel takes a step's rows that decode, each through its own state")),

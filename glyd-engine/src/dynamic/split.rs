@@ -57,8 +57,7 @@ impl Split {
         Split::with(nl, eos, cuts, devices, o, std::sync::Arc::new(move |st: Stage, o: &Opts| Dyn::new_stage(&dir, d.clone(), None, st, o)))
     }
 
-    /// A model of `nl` layers whose stage `make` builds on the GPU of the options it is given (a family's own loader: `qwen35::load_stage`,
-    /// `nemotron::load_stage`).
+    /// A model of `nl` layers whose stage `make` builds on the GPU of the options it is given (a loader of the dynamic route's: `StageLoad`).
     pub fn with(nl: usize, eos: Vec<i64>, cuts: &[usize], devices: &[i32], o: &Opts, make: MakeStage) -> Result<Split> {
         if devices.len() != cuts.len() + 1 || cuts.windows(2).any(|w| w[0] >= w[1]) || cuts.iter().any(|&c| c == 0 || c >= nl) {
             return err(format!("cuts {cuts:?} over {nl} layers on GPUs {devices:?}: ascending cuts inside the layers, one GPU more than cuts"));
@@ -462,18 +461,11 @@ pub fn sched_reply(e: &mut Run, prompt: &[u32], tokens: usize) -> Result<(Vec<u3
     }
 }
 
-/// The families the dynamic engine runs from their release's directory through `open`, by the config's text (None: another path's model).
+/// The name of the support row of the model whose config.json is `text`, where the row's layers split over GPUs on the dynamic route (`Support::split_levels`:
+/// the families this module opens from their release's directory); None for another path's model.
 pub fn family(text: &str) -> Option<&'static str> {
-    use crate::support::Family;
-    match crate::runtime::config::family_of(text)? {
-        Family::Muse => Some("Muse Spark"),
-        Family::Kimi => Some("Kimi-K3"),
-        Family::Glm => Some("GLM-5.3-Flash"),
-        Family::NemotronH => Some("Nemotron-H"),
-        Family::DeepSeekV4 => Some("DeepSeek-V4"),
-        Family::Qwen35 => Some("Qwen3.5"),
-        _ => None,
-    }
+    let row = crate::support::row(crate::runtime::config::family_of(text)?);
+    (!row.split_levels.is_empty()).then_some(row.name)
 }
 
 /// The model of `dir` as `plan` says it loads (src/plan.rs `size_dynamic`): its layers cut over the plan's GPUs (`Spread::cuts`, `devices`) or across them
@@ -515,52 +507,96 @@ fn latent_experts_of(d: &crate::runtime::describe::Described) -> bool {
         .any(|b| matches!(&b.body, Body::Ffn(Ffn::Moe(m)) if m.latent.as_ref().is_some_and(|l| l.norm_out.is_some() && l.expert_norm.is_none())))
 }
 
-/// The model of `dir` on the dynamic engine, by its config's family: on one GPU where `cuts` is empty, else in stages (`devices`: one more than `cuts`).
-/// GLM's and Nemotron-H's experts at `o.layout`'s level (penguin's lossless where none is given); DeepSeek-V4's and Muse's as the release has them, exact;
-/// the Qwen3.5 layout's bf16 matrices at `o.layout` (penguin's lossless packs).
+/// The model of `dir` on the dynamic engine, by its description's loader (`loader`): on one GPU where `cuts` is empty, else in stages (`devices`: one more than
+/// `cuts`). The experts at `o.layout`'s level where the loader takes a level (penguin's lossless where none is given), else as the release has them, exact.
 pub fn open(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32]) -> Result<Run> {
-    let (nl, eos, make) = maker(dir, o)?;
+    let (nl, eos, make) = maker(dir)?;
     Run::new(nl, eos, cuts, devices, o, make)
 }
 
 /// The model of `dir` with every layer across `devices` (src/dynamic/tp.rs).
 pub fn open_tp(dir: &Path, o: &Opts, devices: &[i32]) -> Result<Run> {
-    let (nl, eos, make) = maker(dir, o)?;
+    let (nl, eos, make) = maker(dir)?;
     Ok(Run::Tp(super::tp::Tp::with(nl, eos, devices, o, make)?))
 }
 
-/// The family's layers, end tokens and loader of a stage, by the config of `dir`.
-fn maker(dir: &Path, o: &Opts) -> Result<(usize, Vec<i64>, MakeStage)> {
-    let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
-    let owned = dir.to_path_buf();
-    let level = o.layout.unwrap_or(crate::weights::Layout::Tiered);
-    Ok(match family(&text) {
-        Some("Muse Spark") => {
-            let c = crate::muse::ConfigMuse::load(dir)?;
-            (c.layers, c.eos.clone(), std::sync::Arc::new(move |st, o: &Opts| super::muse::load_stage(&owned, o, st)))
+/// The layers, end tokens and loader of a stage of the model of `dir` (its description's loader's, every expert as the stage's level holds it).
+fn maker(dir: &Path) -> Result<(usize, Vec<i64>, MakeStage)> {
+    let (nl, eos, load) = cached_stage(dir)?;
+    Ok((nl, eos, std::sync::Arc::new(move |st, o: &Opts| load(st, o, None))))
+}
+
+/// What loads a stage of a model on the dynamic route, the same for every description: the stage's layers on the options' GPU, the experts at the options'
+/// level where the loader takes one (penguin's lossless where none is given), in the expert cache as the caching says where one is given. A loader whose
+/// experts the expert cache does not take refuses a caching, in words.
+pub type StageLoad = fn(&Path, &Opts, Stage, Option<&crate::hbg_store::HbCaching>) -> Result<Dyn>;
+
+/// A loader of the dynamic route: the model's layers and end tokens, from its directory (`ends`), and a stage of it (`stage`).
+#[derive(Clone, Copy)]
+pub struct Loader {
+    pub ends: fn(&Path) -> Result<(usize, Vec<i64>)>,
+    pub stage: StageLoad,
+}
+
+/// The layer kinds a loader of the dynamic route lowers, as a description tells them apart (`lowering`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lowering {
+    /// A compressed attention (src/dynamic/lower_comp.rs; DeepSeek-V4's).
+    Compressed,
+    /// Mamba-2, attention without a positional encoding and experts, a block a layer, plain residuals (`lower::nemotron`; Nemotron-H's).
+    Mamba2,
+    /// The Kimi delta attention and the latent attention with residual streams (`lower::glm`; GLM-5.3-Flash's).
+    DeltaStreams,
+    /// The Kimi delta attention and the latent attention with the blocks' depth mix (`lower::kimi`; Kimi-K3's).
+    DeltaDepth,
+    /// Gated residuals (`lower::muse`; Muse Spark's).
+    GatedResidual,
+    /// The gated delta rule with plain residuals, the feed-forwards dense or experts (`lower::qwen35`; the Qwen3.5 layout's).
+    GatedDelta,
+}
+
+/// The lowering of the description `d`, by the layer kinds it holds, in this order: a compressed attention; Mamba-2 with plain residuals; the Kimi delta attention
+/// with residual streams, or with the blocks' depth mix; gated residuals; the gated delta rule with plain residuals. A description of other kinds is refused in
+/// words: no loader of the dynamic route lowers them.
+fn lowering(d: &crate::runtime::describe::Described) -> Result<Lowering> {
+    use crate::runtime::kinds::{Body, LinearKind, Mixer, Residual};
+    let blocks = &d.desc.blocks;
+    let mixer = |f: &dyn Fn(&Mixer) -> bool| blocks.iter().any(|b| matches!(&b.body, Body::Mixer(m) if f(m)));
+    let residual = |f: &dyn Fn(&Residual) -> bool| blocks.iter().any(|b| f(&b.residual));
+    let linear = |k: LinearKind| mixer(&|m| matches!(m, Mixer::Linear(l) if l.kind == k));
+    let plain = blocks.iter().all(|b| matches!(b.residual, Residual::Add));
+    Ok(if mixer(&|m| matches!(m, Mixer::Compressed(_))) {
+        Lowering::Compressed
+    } else if mixer(&|m| matches!(m, Mixer::Mamba2(_))) && plain {
+        Lowering::Mamba2
+    } else if linear(LinearKind::KimiDelta) && residual(&|r| matches!(r, Residual::Streams(_))) {
+        Lowering::DeltaStreams
+    } else if linear(LinearKind::KimiDelta) && residual(&|r| matches!(r, Residual::DepthMix(_))) {
+        Lowering::DeltaDepth
+    } else if residual(&|r| matches!(r, Residual::Gated(_))) {
+        Lowering::GatedResidual
+    } else if linear(LinearKind::GatedDeltaNet) && plain {
+        Lowering::GatedDelta
+    } else {
+        return err(
+            "no loader of the dynamic route lowers its layer kinds (a compressed attention; Mamba-2 with plain residuals; the Kimi delta attention with residual \
+             streams or the blocks' depth mix; gated residuals; the gated delta rule with plain residuals)",
+        );
+    })
+}
+
+/// The loader of the model whose description is `d`: the one that lowers the layer kinds it holds (`lowering`), its config's layers and end tokens as that
+/// lowering's reader takes them.
+pub fn loader(d: &crate::runtime::describe::Described) -> Result<Loader> {
+    Ok(match lowering(d)? {
+        Lowering::Compressed => {
+            Loader { ends: |dir| crate::deepseek_v4::ConfigV4::load(dir).map(|c| (c.layers, c.eos)), stage: super::deepseek_v4::load_stage_hb }
         }
-        Some("Kimi-K3") => {
-            let c = crate::kimi::ConfigKimi::load(dir)?;
-            // (a development build's GLYD_KIMI_PLACES: the experts of a layer on the GPU, the rest in the expert cache's host tier)
-            let places = crate::tune!("GLYD_KIMI_PLACES").and_then(|v| v.parse::<usize>().ok());
-            (c.layers, c.eos.clone(), std::sync::Arc::new(move |st, o: &Opts| super::kimi::load_with_places(&owned, o, st, places)))
-        }
-        Some("GLM-5.3-Flash") => {
-            let c = crate::glm::ConfigGlm::load(dir)?;
-            (c.layers, c.eos.clone(), std::sync::Arc::new(move |st, o: &Opts| super::glm::load_stage(&owned, o, level, st)))
-        }
-        Some("Nemotron-H") => {
-            let (nl, eos) = (config_num(&text, "num_hidden_layers").unwrap_or(0), config_eos(&text));
-            (nl, eos, std::sync::Arc::new(move |st, o: &Opts| super::nemotron::load_stage(&owned, o, level, st)))
-        }
-        Some("Qwen3.5") => {
-            let c = crate::qwen35::Config35::load(dir)?;
-            (c.layers, c.eos.clone(), std::sync::Arc::new(move |st, o: &Opts| super::qwen35::load_stage(&owned, o, st)))
-        }
-        _ => {
-            let c = crate::deepseek_v4::ConfigV4::load(dir)?;
-            (c.layers, c.eos.clone(), std::sync::Arc::new(move |st, o: &Opts| super::deepseek_v4::load_stage(&owned, o, st)))
-        }
+        Lowering::Mamba2 => Loader { ends: |dir| crate::nemotron::ConfigNemotronH::load(dir).map(|c| (c.layers, c.eos)), stage: super::nemotron::stage },
+        Lowering::DeltaStreams => Loader { ends: |dir| crate::glm::ConfigGlm::load(dir).map(|c| (c.layers, c.eos)), stage: super::glm::stage },
+        Lowering::DeltaDepth => Loader { ends: |dir| crate::kimi::ConfigKimi::load(dir).map(|c| (c.layers, c.eos)), stage: super::kimi::stage },
+        Lowering::GatedResidual => Loader { ends: |dir| crate::muse::ConfigMuse::load(dir).map(|c| (c.layers, c.eos)), stage: super::muse::load_stage_hb },
+        Lowering::GatedDelta => Loader { ends: |dir| crate::qwen35::Config35::load(dir).map(|c| (c.layers, c.eos)), stage: super::qwen35::stage },
     })
 }
 
@@ -570,15 +606,6 @@ pub fn config_num(text: &str, key: &str) -> Option<usize> {
     c.top.get(key).or(c.text.get(key))?.as_u64().map(|x| x as usize)
 }
 
-fn config_eos(text: &str) -> Vec<i64> {
-    let Some(v) = glyd_gpu::json::parse(text).ok() else { return Vec::new() };
-    match v.get("eos_token_id") {
-        Some(glyd_gpu::json::Value::Array(a)) => a.iter().filter_map(|x| x.as_i64()).collect(),
-        Some(x) => x.as_i64().map(|x| vec![x]).unwrap_or_default(),
-        None => Vec::new(),
-    }
-}
-
 /// Where the dynamic route's layers go and how many of their experts each GPU holds: the planner's (src/plan.rs `sizing`).
 pub use crate::plan::sizing::{
     fit, fit_table, fit_table_with, hb_layer_bytes, layer_bytes, layer_bytes_table, layer_bytes_where, layer_bytes_with, places_plan, places_plan_dense,
@@ -586,9 +613,9 @@ pub use crate::plan::sizing::{
 };
 
 /// A model of the dynamic route in stages (`open`'s), stage k's layers with their experts in the expert cache as `cachings[k]` says: a hummingbird directory's (src/hbg_store.rs: places on its GPU, the computer's memory, the disk),
-/// or the release's where its experts are each the same bytes (src/tiering.rs, R12: DeepSeek-V4's FP4).
+/// or the release's where its experts are each the same bytes (src/tiering.rs, R12: DeepSeek-V4's FP4). A loader whose experts the cache does not take refuses it.
 pub fn open_cached(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], cachings: Vec<crate::hbg_store::HbCaching>) -> Result<Run> {
-    let (nl, eos, load) = cached_stage(dir, o)?;
+    let (nl, eos, load) = cached_stage(dir)?;
     let firsts: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).collect();
     let make: MakeStage = std::sync::Arc::new(move |st, o: &Opts| {
         let k = firsts.iter().position(|&f| f == st.layers.0).unwrap_or(0);
@@ -600,43 +627,20 @@ pub fn open_cached(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], cachin
 /// The model of `dir` with every layer across `devices` (src/dynamic/tp.rs), its experts in the expert cache as `caching` says: `places` of a layer's in each
 /// GPU's slices of its places, the rest in the cache's host tier, shared by the group (src/dynamic/tp_cache.rs).
 pub fn open_tp_cached(dir: &Path, o: &Opts, devices: &[i32], caching: crate::hbg_store::HbCaching) -> Result<Run> {
-    let (nl, eos, load) = cached_stage(dir, o)?;
+    let (nl, eos, load) = cached_stage(dir)?;
     Ok(Run::Tp(super::tp::Tp::with(nl, eos, devices, o, std::sync::Arc::new(move |st, o: &Opts| load(st, o, Some(&caching))))?))
 }
 
-/// A stage of a model with its experts as a caching says, by its config's family's loader.
+/// A stage of a model with its experts as a caching says (none: as the stage's level holds them).
 type CachedStage = std::sync::Arc<dyn Fn(Stage, &Opts, Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> + Send + Sync>;
 
-/// The layers, end tokens and cached stage loader (`CachedStage`) of the model of `dir`, by its config's family: the ones whose experts the expert cache takes.
-fn cached_stage(dir: &Path, o: &Opts) -> Result<(usize, Vec<i64>, CachedStage)> {
-    let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
-    let level = o.layout.unwrap_or(crate::weights::Layout::Tiered);
+/// The layers, end tokens and stage loader (`CachedStage`) of the model of `dir`, by its description's loader (`loader`).
+fn cached_stage(dir: &Path) -> Result<(usize, Vec<i64>, CachedStage)> {
+    let (d, label) = crate::runtime::describe::describe_dir(dir)?;
+    let l = loader(&d).map_err(|e| e.context(&label))?;
+    let (nl, eos) = (l.ends)(dir)?;
     let owned = dir.to_path_buf();
-    Ok(match family(&text) {
-        Some("Muse Spark") => {
-            let c = crate::muse::ConfigMuse::load(dir)?;
-            (c.layers, c.eos.clone(), std::sync::Arc::new(move |st, o: &Opts, c| super::muse::load_stage_hb(&owned, o, st, c)))
-        }
-        Some("Kimi-K3") => {
-            let c = crate::kimi::ConfigKimi::load(dir)?;
-            (c.layers, c.eos.clone(), std::sync::Arc::new(move |st, o: &Opts, c| super::kimi::load_stage_hb(&owned, o, st, c)))
-        }
-        Some("GLM-5.3-Flash") => {
-            let c = crate::glm::ConfigGlm::load(dir)?;
-            (c.layers, c.eos.clone(), std::sync::Arc::new(move |st, o: &Opts, c| super::glm::load_stage_hb(&owned, o, level, st, c)))
-        }
-        Some("DeepSeek-V4") => {
-            let c = crate::deepseek_v4::ConfigV4::load(dir)?;
-            (c.layers, c.eos.clone(), std::sync::Arc::new(move |st, o: &Opts, c| super::deepseek_v4::load_stage_hb(&owned, o, st, c)))
-        }
-        f => {
-            return err(format!(
-                "{}: {} is not a family whose experts the expert cache takes (Kimi-K3, DeepSeek-V4, GLM-5.3-Flash, Muse Spark)",
-                dir.display(),
-                f.unwrap_or("its family")
-            ))
-        }
-    })
+    Ok((nl, eos, std::sync::Arc::new(move |st, o: &Opts, c| (l.stage)(&owned, o, st, c))))
 }
 
 #[cfg(test)]
@@ -688,6 +692,42 @@ mod tests {
         assert!(super::latent_experts_of(&describe(&config("headers/Kimi-K3.json"))));
         assert!(!super::latent_experts_of(&describe(&fixture("glm5_next_config.json"))));
         assert!(!super::latent_experts_of(&describe(&config("headers/DeepSeek-V4-Flash-0731.json"))));
+    }
+
+    /// The dynamic route's loader is chosen by the layer kinds a description holds, not by a family's name: each released config (the random models' where none
+    /// is here) is lowered by the loader of its kinds, and a description of kinds no loader of the route lowers (Gemma 4's, the plain dense kind's,
+    /// Qwen3.8-Flash-Next's) is refused in words. The family a support row names is its row's (its layers split on the route).
+    #[test]
+    fn the_loader_is_chosen_by_the_descriptions_kinds() {
+        use super::Lowering::*;
+        let fixture = |f: &str| std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(f)).unwrap();
+        let header = |f: &str| {
+            let h: serde_json::Value = serde_json::from_str(&fixture(f)).unwrap();
+            h["config"].as_str().unwrap().to_string()
+        };
+        let lowering = |text: &str| super::lowering(&crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap());
+        let q35: serde_json::Value = serde_json::from_str(&fixture("qwen35_configs.json")).unwrap();
+        let q38 = q35["Qwen/Qwen3.8-27B"].to_string();
+        for (text, want) in [
+            (header("headers/DeepSeek-V4-Flash-0731.json"), Compressed),
+            (fixture("nemotron_h_config.json"), Mamba2),
+            (fixture("nemotron_h_moetoy_config.json"), Mamba2),
+            (fixture("glm5_next_config.json"), DeltaStreams),
+            (fixture("glm5_next_tiny_config.json"), DeltaStreams),
+            (header("headers/Kimi-K3.json"), DeltaDepth),
+            (q38.clone(), GatedDelta),
+            (fixture("qwen35moe_tiny_config.json"), GatedDelta),
+        ] {
+            assert_eq!(lowering(&text).unwrap(), want, "{}", &text[..text.len().min(120)]);
+        }
+        #[cfg(feature = "dev")]
+        assert_eq!(lowering(crate::muse_ref::RANDOM_CONFIG).unwrap(), GatedResidual);
+        let (gemma, dense) = (header("headers/gemma-4-12B-it.json"), header("dense_tiny_manifest.json"));
+        for text in [&gemma, &dense, &fixture("qwen4x_config.json")] {
+            assert!(lowering(text).unwrap_err().msg.contains("no loader of the dynamic route lowers its layer kinds"));
+        }
+        assert_eq!((super::family(&q38), super::family(&fixture("nemotron_h_config.json"))), (Some("Qwen3.5"), Some("Nemotron-H")));
+        assert_eq!((super::family(&gemma), super::family(&dense)), (None, None));
     }
 
     /// The expert cache's plan: the dense bytes cut over every GPU (even where one would hold them), each stage's room after them as places for its experts.
