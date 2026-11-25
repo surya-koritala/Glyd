@@ -1,22 +1,21 @@
 //! GLM-5.3-Flash (`Glm5NextForConditionalGeneration`) as a description: the four streams mixed around each layer's two blocks (transformers' rounding), Kimi delta attention or the latent attention over the
 //! keys its indexer picks (the layer kind's, `Op::Mla`: src/dynamic/mla.rs), a dense MLP in the first layers and a mixture of experts in the rest, the mean of the streams and the final norm. Its weights load by
-//! model_glm.rs's loader (a latent attention's by mla_glm.rs's `MlaWeights`) and the experts' blocks by their factory, handed over as they are; the arithmetic is kernels/glm.cu's and kernels/mla.cu's, as
-//! model_glm.rs runs it (`glmdyn` checks the two against each other).
+//! src/kern_glm.rs's loader (a latent attention's by its `MlaWeights`) and the experts' layers by src/moe_glm.rs, handed over as they are; the arithmetic is kernels/glm.cu's and kernels/mla.cu's.
 
 use super::{Dyn, HeadMix, IdxKeys, IdxPick, IdxScore, Loaded, MlaIn, MlaIndexer, MlaOp, ModelDesc, MoeOp, Op, Opts, Ring, Slot, Stage, StreamsMix, View};
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result};
 use crate::glm::{ConfigGlm, GlmKind};
 use crate::kern35::Mat;
+use crate::kern_glm::{WeightsGlm, GM_D};
 use crate::kern_nh::{MoeBlock, NhHost};
-use crate::model_glm::{WeightsGlm, GM_D};
 use crate::moe::{Act, MoeLayer};
 use crate::runtime::kinds::Rounding;
 use crate::weights::Layout;
 use std::path::Path;
 
 /// A GLM block of experts on the dynamic engine: its core's layer, run by `Op::Moe` (the router, the experts, the shared expert).
-struct GlmMoeIn(Box<dyn crate::model_glm::MoeBlock>);
+struct GlmMoeIn(Box<MoeLayer>);
 
 impl MoeBlock for GlmMoeIn {
     unsafe fn forward(&self, _: &dyn NhHost, _: u64, _: usize, _: u64) -> Result<()> {
@@ -26,10 +25,10 @@ impl MoeBlock for GlmMoeIn {
         true
     }
     fn bytes(&self) -> usize {
-        self.0.bytes()
+        self.0.weights_bytes()
     }
     fn resident(&self) -> Option<(&MoeLayer, Option<(&Mat, &Mat)>)> {
-        self.0.layer().map(|l| (l, None))
+        Some((&self.0, None))
     }
 }
 
@@ -51,7 +50,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
     let only: Vec<usize> = (st.layers.0..st.layers.1).collect();
     let whole = st.first && st.last;
     let w = {
-        let moe = crate::moe_glm::factory_cached(level, &dev, &lib8, caching.copied());
+        let moe = crate::moe_glm::layers_cached(level, &dev, &lib8, caching.copied());
         WeightsGlm::load_ends(
             dir,
             threads,
@@ -61,7 +60,6 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
             (!whole).then_some(&only[..]),
             Some((st.first, st.last)),
             Some(&moe),
-            None,
         )?
     };
     // (the latent attention layers' weights: the kind's operation's matrices and small tensors)
@@ -90,14 +88,14 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
         };
         let [ha, hf] = ly.hc;
         let (na, nf) = (put(&mut l_.small, ly.norm_a), put(&mut l_.small, ly.norm_f));
-        let pre = |small: &mut Vec<Buf>, h: crate::model_glm::Hc, norm: usize| Op::StreamsPre {
+        let pre = |small: &mut Vec<Buf>, h: crate::kern_glm::Hc, norm: usize| Op::StreamsPre {
             mix: StreamsMix::Hc { f: put(small, h.proj), base: put(small, h.base), scale: put(small, h.scale) },
             norm,
             round: Rounding::Twice,
         };
         let mut ops = vec![pre(&mut l_.small, ha, na)];
         // (a latent attention layer's four matrices first, then the loader's: the dense MLP's)
-        let latent_w = if ly.kind == GlmKind::Mla { Some(crate::mla_glm::MlaWeights::load(l, &c, &ck, layout)?) } else { None };
+        let latent_w = if ly.kind == GlmKind::Mla { Some(crate::kern_glm::MlaWeights::load(l, &c, &ck, layout)?) } else { None };
         let m0 = l_.mats.len();
         let nm = ly.mats.len() + if latent_w.is_some() { 4 } else { 0 };
         let (want_m, want_s) = (per_layer(ly.kind, ly.moe.is_some()), if ly.kind == GlmKind::Kda { 4 } else { 0 });
@@ -141,9 +139,6 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
         ops.extend([Op::StreamsPost { round: Rounding::Twice, gated: false }, pre(&mut l_.small, hf, nf)]);
         match ly.moe {
             Some(b) => {
-                if b.layer().is_none() {
-                    return err(format!("layer {l}: a block of experts that is not all on the GPU: the dynamic engine runs those alone"));
-                }
                 ops.push(Op::Moe(MoeOp::of(l_.moe.len())));
                 l_.moe.push(Box::new(GlmMoeIn(b)));
             }

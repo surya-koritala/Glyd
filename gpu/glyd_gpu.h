@@ -61,8 +61,9 @@ typedef hipStream_t cudaStream_t;
  *    tokens with the weights as they are held; 17 from glyd_gpu_mma_moe_placed, the experts' product over an expert cache's places;
  * 18 from glyd_gpu_kv_decode_from, the decode attention over the tokens from a sequence's first one on (a sliding window's);
  * 19 from glyd_gpu_kv_prefill, a prompt chunk's attention over its sequence's pages and its own bf16 rows;
- * 20 from glyd_gpu_kv_prefill_bf16 and glyd_gpu_kv_decode_bf16, the same attentions over a bf16 cache. */
-#define GLYD_GPU_API_VERSION 20
+ * 20 from glyd_gpu_kv_prefill_bf16 and glyd_gpu_kv_decode_bf16, the same attentions over a bf16 cache; 21 from glyd_gpu_kv_unpack's
+ * skipping a negative page number (a list as long as the most a sequence can need, filled on the device). */
+#define GLYD_GPU_API_VERSION 21
 
 #ifdef __cplusplus
 extern "C" {
@@ -477,7 +478,7 @@ int glyd_gpu_kv_write(const uint16_t* key, int64_t key_stride, const uint16_t* v
 int glyd_gpu_kv_release(uint8_t* pool, int64_t page_stride, int64_t nblocks, const int32_t* blocks, int64_t n, int64_t H, int64_t D, int64_t A, uint8_t* escape, int64_t nchunks, uint8_t* raw,
                         int64_t nslabs, int64_t layer, uint32_t* status, uint32_t* lost, int64_t nlost, cudaStream_t cs);
 
-/* The pages pages[0 .. n) (int32) back to bf16: out_k and out_v [n, 16, H, D]. */
+/* The pages pages[0 .. n) (int32) back to bf16: out_k and out_v [n, 16, H, D]; a negative pages[j] is a place no page is in: nothing is written for it. */
 int glyd_gpu_kv_unpack(const uint8_t* pool, int64_t page_stride, const int32_t* pages, int64_t n, const uint8_t* kbase,
                        const uint8_t* vbase, int64_t H, int64_t D, int64_t A, const uint8_t* escape, int64_t nchunks,
                        const uint8_t* raw, int64_t nslabs, uint16_t* out_k, uint16_t* out_v, cudaStream_t cs);

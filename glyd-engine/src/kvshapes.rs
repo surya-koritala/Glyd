@@ -560,7 +560,9 @@ fn decode_batch(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize, round: bool)
 }
 
 /// One stream: a tensor [n][h][d] held in the keys' layout alone (a latent padded to 5 heads of 128: Kimi-K3's 576 values; keys that are the values: Gemma's global layers), written with no value, read back
-/// into one tensor and compared bit for bit; its page is smaller by the V tiles; and the calls that cannot take it refuse it.
+/// into one tensor and compared bit for bit; its page is smaller by the V tiles; and the calls that cannot take it refuse it. Written twice: the tokens in one call (a prompt's), and one token a call (a decode
+/// step's, the write's path for a token alone in its page); and read back through a list whose places past the pages are -1 (as a latent attention lists a sequence's pages on the device), those places'
+/// output left as it was.
 fn one_stream(lib: &Lib, dev: &Dev, h: usize, d: usize, pad: usize) -> Result<bool> {
     const A: i64 = 15;
     const RING: i64 = 256;
@@ -577,7 +579,9 @@ fn one_stream(lib: &Lib, dev: &Dev, h: usize, d: usize, pad: usize) -> Result<bo
     let geom = KvGeom { heads: h as i64, dim: d as i64 | KV_ONE_STREAM, arena: A, page_stride: one, escape: escape.ptr, nchunks, raw: raw.ptr, nslabs };
     let mut r = Rng(0xA5A5_5A5A_1234_4321 ^ (h * 1000 + d) as u64);
     let mut bad = 0;
-    for (label, far, wild) in [("tame", 15, 0), ("wild", 15, 5)] {
+    for (label, far, wild, alone) in
+        [("tame", 15, 0, false), ("wild", 15, 5, false), ("tame, a token a call", 15, 0, true), ("wild, a token a call", 15, 5, true)]
+    {
         let mut k = values(&mut r, n, h, d, far, wild);
         // (the padding of a latent: the last `pad` channels of every token are zero)
         for t in 0..n {
@@ -594,21 +598,50 @@ fn one_stream(lib: &Lib, dev: &Dev, h: usize, d: usize, pad: usize) -> Result<bo
         sl.write(0, &slots)?;
         let stride = (h * d) as i64;
         // SAFETY: live buffers of the sizes the kernels read and write; the stream is synchronized before the results are read.
-        unsafe { lib.kv_write(&geom, pool.ptr, kbase.ptr, 0, 0, kbuf.ptr, stride, 0, 0, sl.ptr, n as i64, status.ptr, 0, 0, RING, dev.stream)? };
-        let ids: Vec<i32> = (0..blocks as i32).collect();
-        let pages = Buf::new(4 * blocks)?;
+        unsafe {
+            if alone {
+                for t in 0..n {
+                    lib.kv_write(
+                        &geom,
+                        pool.ptr,
+                        kbase.ptr,
+                        0,
+                        0,
+                        kbuf.ptr + (t * h * d * 2) as u64,
+                        stride,
+                        0,
+                        0,
+                        sl.ptr + 8 * t as u64,
+                        1,
+                        status.ptr,
+                        0,
+                        0,
+                        RING,
+                        dev.stream,
+                    )?;
+                }
+            } else {
+                lib.kv_write(&geom, pool.ptr, kbase.ptr, 0, 0, kbuf.ptr, stride, 0, 0, sl.ptr, n as i64, status.ptr, 0, 0, RING, dev.stream)?;
+            }
+        }
+        // (the pages listed, then three places no page is in)
+        let ids: Vec<i32> = (0..blocks as i32).chain([-1, -1, -1]).collect();
+        let pages = Buf::new(4 * ids.len())?;
         pages.write(0, &ids)?;
-        let out = Buf::zeroed(2 * blocks * 16 * h * d)?;
-        unsafe { lib.kv_unpack(&geom, pool.ptr, kbase.ptr, 0, pages.ptr, blocks as i64, out.ptr, 0, dev.stream)? };
+        let out = Buf::new(2 * ids.len() * 16 * h * d)?;
+        out.fill_async(0xA5, dev.stream)?;
+        unsafe { lib.kv_unpack(&geom, pool.ptr, kbase.ptr, 0, pages.ptr, ids.len() as i64, out.ptr, 0, dev.stream)? };
         dev.sync()?;
         let mut head = [0u32; 16];
         status.read(0, &mut head)?;
-        let mut back = vec![0u16; blocks * 16 * h * d];
+        let mut back = vec![0u16; ids.len() * 16 * h * d];
         out.read(0, &mut back)?;
         let diff = back[..n * h * d].iter().zip(&k).filter(|(a, b)| a != b).count();
-        let ok = diff == 0 && head[11] == 0;
+        let touched = back[blocks * 16 * h * d..].iter().filter(|&&x| x != 0xA5A5).count();
+        let ok = diff == 0 && touched == 0 && head[11] == 0;
         println!(
-            "{} one stream {h} heads x {d} ({hp} pages' heads, {pad} padding channels), {label}: {} values read back, {diff} differ; page {one} bytes against {two} for two streams; raw pages {}, void pages {}",
+            "{} one stream {h} heads x {d} ({hp} pages' heads, {pad} padding channels), {label}: {} values read back, {diff} differ; {touched} values written for the list's places past \
+             the pages; page {one} bytes against {two} for two streams; raw pages {}, void pages {}",
             if ok { "ok  " } else { "FAIL" },
             n * h * d,
             head[10],

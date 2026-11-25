@@ -7,7 +7,10 @@
 //!
 //! The cache is the executor's: a ring of keys alone (`Ring::values` false) of the key-value latent and the shared key part a token, and with an indexer a second
 //! one of its normed key and gate score a token, a complete pool's key written over its last token's key. Paged (src/dynamic/pages.rs), they take blocks from
-//! the pools as every attention's keys and values do, so a latent attention is served with the same page budget, swap and prefix sharing.
+//! the pools as every attention's keys and values do, so a latent attention is served with the same page budget, swap and prefix sharing. Where the model has 12-bit
+//! tables the latents' ring is 12-bit pages of one stream (src/dynamic/kvpages.rs): the latents are written to the staging rows and from there to their pages, and the
+//! attention reads a sequence's pages unpacked to bf16 rows (`kv12_latents`), the same values as the bf16 ring's: the same kernels give the same bits. The indexer's
+//! ring stays bf16.
 //!
 //! The indexer's pick (`IdxPick`) is every indexer's, DeepSeek-V4's (`Op::IdxPick`) too: the score of each complete entry, sum_h w_h relu(q_h . k), the best `top_k`
 //! kept in order (kernels/mla.cu `idx_pick`); GLM-5.3's entries are pools of tokens, which the pick gives as their tokens and the open pool's after them. The scores'
@@ -26,8 +29,8 @@ use crate::runtime::kinds;
 /// Bytes of the indexer's scores and of the latent outputs a block of attention rows may take.
 const SUB_SCORES: usize = 256 << 20;
 const SUB_OLAT: usize = 64 << 20;
-/// Rows at most that the attention of one call cuts its tokens into eight runs for (a decode step, the rows of a verified draft): `model_glm::HC_FEW`.
-const FEW: u32 = crate::model_glm::HC_FEW;
+/// Rows at most that the attention of one call cuts its tokens into eight runs for (a decode step, the rows of a verified draft): `kern_glm::HC_FEW`.
+const FEW: u32 = crate::kern_glm::HC_FEW;
 
 /// Where a latent layer's input products are.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -314,12 +317,14 @@ pub(crate) struct KernMla {
     expand: crate::kt::mla_expand_v,
     gate: crate::kt::mla_gate,
     dense_cnt: crate::kt::mla_dense_cnt,
+    /// The pages a 12-bit latent ring unpacks for a sequence (`Dyn::kv12_latents`).
+    pub(super) pages: crate::kt::ml_pages,
 }
 
 impl KernMla {
     pub fn load(dev: &Dev) -> Result<KernMla> {
         // (the attention's tokens a pass, two words a token, are in shared memory: as much as the GPU gives a block)
-        let (attn, smem) = (dev.typed::<crate::kt::mla_attn>()?, crate::model_glm::mla_smem(dev)?);
+        let (attn, smem) = (dev.typed::<crate::kt::mla_attn>()?, crate::kern_glm::mla_smem(dev)?);
         attn.allow_smem(smem)?;
         Ok(KernMla {
             rms2: dev.typed()?,
@@ -338,6 +343,7 @@ impl KernMla {
             expand: dev.typed()?,
             gate: dev.typed()?,
             dense_cnt: dev.typed()?,
+            pages: dev.typed()?,
         })
     }
 
@@ -497,13 +503,27 @@ impl Dyn {
                 (x, p.mats[kv_a].whole_rows())
             }
         };
+        // (12-bit pages: a row of the call to its staging row, `pw` wide, the channels past the latent's zero; then the rows into their pages)
+        let staged = self.pages12(p, a.ring).map(|rp| (rp.shape.heads * rp.shape.channels, self.lossless.as_ref().expect("pages").rows_k.ptr));
+        if let Some((pw, rows)) = staged.filter(|x| x.0 > ks) {
+            crate::dev::memset_async(rows, 0, n * pw * 2, s)?;
+        }
         for &(r0, m, kc, slot) in &seqs {
-            let (lat, tab) = self.ring_at(kc, slot, a.ring);
             let (xr, p0, mr) = (kv + (r0 * kv_row * 2) as u64, pos + (r0 * 4) as u64, m as u32);
-            launch!(k.rms2, [mr, 1, 1], [256, 1, 1], s; xr, kv_row as i32, p.small[a.kv_norm].ptr, lat, ks as i32, p0, tab, kr as i32, a.eps)?;
+            let (lat, tab, ys, at) = match staged {
+                Some((pw, rows)) => (rows + (r0 * pw * 2) as u64, 0, pw, 0),
+                None => {
+                    let (lat, tab) = self.ring_at(kc, slot, a.ring);
+                    (lat, tab, ks, p0)
+                }
+            };
+            launch!(k.rms2, [mr, 1, 1], [256, 1, 1], s; xr, kv_row as i32, p.small[a.kv_norm].ptr, lat, ys as i32, at, tab, kr as i32, a.eps)?;
             if a.rope > 0 {
-                launch!(k.scatter, [mr, 1, 1], [256, 1, 1], s; xr + (kr * 2) as u64, kv_row as i32, lat + (kr * 2) as u64, ks as i32, p0, tab, a.rope as i32)?;
+                launch!(k.scatter, [mr, 1, 1], [256, 1, 1], s; xr + (kr * 2) as u64, kv_row as i32, lat + (kr * 2) as u64, ys as i32, at, tab, a.rope as i32)?;
             }
+        }
+        if staged.is_some() {
+            self.kv12_write(a.ring, n)?;
         }
         self.mark("latent attention: the latents into the cache")?;
         // the indexer: queries and head weights for the rows, keys and gate scores into its cache, the pools the rows complete keyed
@@ -534,8 +554,21 @@ impl Dyn {
         // the attention, a block of rows at a time
         let (sub, tmax, pmax) = (a.rows_at_once(self.chunk, self.ctx), a.tmax(self.ctx), a.pmax(self.ctx));
         let wkv = p.small[a.kv_b].ptr;
-        for &(first, rows, kc, slot) in &seqs {
-            let (lat, tab) = self.ring_at(kc, slot, a.ring);
+        // (12-bit pages: each sequence's rows' positions end here at most: its part's, or the selected sequence's from its length or the pass's start; a step's graph
+        // being captured, the context)
+        let ends: Vec<usize> = match (self.capturing.get(), self.parts.is_empty()) {
+            (true, _) => vec![self.ctx; seqs.len()],
+            (false, true) => vec![self.start.get().max(self.n) + n],
+            (false, false) => self.parts.iter().map(|q| q.start + q.rows).collect(),
+        };
+        for (&(first, rows, kc, slot), &end) in seqs.iter().zip(&ends) {
+            let (lat, tab, ls) = match staged {
+                Some((pw, _)) => (self.kv12_latents(a.ring, slot, pos + ((first + rows - 1) * 4) as u64, end.div_ceil(16))?, 0, pw),
+                None => {
+                    let (lat, tab) = self.ring_at(kc, slot, a.ring);
+                    (lat, tab, ks)
+                }
+            };
             let mut r0 = first;
             while r0 < first + rows {
                 let m = sub.min(first + rows - r0);
@@ -568,7 +601,7 @@ impl Dyn {
                         0
                     }
                 };
-                self.mla_attn(r, lat, tab, sel, tmax, a, m)?;
+                self.mla_attn(r, (lat, ls), tab, sel, tmax, a, m)?;
                 launch!(k.expand, [nh as u32, (m as u32).div_ceil(4), 1], [256, 1, 1], smem (4 * kr * 4) as u32, s;
                     r.olat.ptr, wkv, r.ov.ptr + (r0 * nh * a.v * 2) as u64, m as i32, nh as i32, a.nope as i32, a.v as i32, kr as i32)?;
                 r0 += m;
@@ -584,15 +617,15 @@ impl Dyn {
     }
 
     /// olat [m, heads, kv_rank] fp32: each row's and head's softmax attention over the tokens the counts (and picks, `sel`; 0: every position up to the row's) give,
-    /// of the latents of the ring `lat` (through `tab`). A few rows (at most `FEW`) cut their tokens into 8 runs over blocks and merge them; more rows are parallel
-    /// enough by themselves.
-    unsafe fn mla_attn(&self, r: &MlaRun, lat: u64, tab: u64, sel: u64, tmax: usize, a: &MlaOp, m: usize) -> Result<()> {
+    /// of the latents `lat.0` (rows `lat.1` apart: the ring's, through `tab`, or a 12-bit ring's pages unpacked, position p at row p). A few rows (at most `FEW`) cut
+    /// their tokens into 8 runs over blocks and merge them; more rows are parallel enough by themselves.
+    unsafe fn mla_attn(&self, r: &MlaRun, lat: (u64, usize), tab: u64, sel: u64, tmax: usize, a: &MlaOp, m: usize) -> Result<()> {
         let (s, k) = (self.dev.stream, &self.km);
         let (nh, kr, ks) = (a.heads as i32, a.kv_rank as i32, (a.kv_rank + a.rope) as i32);
         let splits: i32 = if m as u32 <= FEW { 8 } else { 1 };
         let tmax = tmax as i32;
         // (a block's tokens a tile at a time: as many as its shared memory holds, two words a token besides the query's KS)
-        let mut tile = ((tmax + splits - 1) / splits).min(crate::model_glm::mla_positions(k.smem, ks) as i32).max(1);
+        let mut tile = ((tmax + splits - 1) / splits).min(crate::kern_glm::mla_positions(k.smem, ks) as i32).max(1);
         if tile < 64 && tile < (tmax + splits - 1) / splits {
             return err(format!("latent attention with scores over {ks} channels: {} bytes of shared memory a block hold too few tokens a pass", k.smem));
         }
@@ -602,7 +635,7 @@ impl Dyn {
         }
         let smem = ((ks + 2 * tile) * 4) as u32;
         launch!(k.attn, [nh as u32, m as u32, splits as u32], [256, 1, 1], smem smem, s;
-            r.qa.ptr, lat, tab, sel, r.cnt.ptr, r.olat.ptr, r.part.ptr, tmax, nh, kr, ks, a.scale, splits, tile)?;
+            r.qa.ptr, lat.0, lat.1 as i32, tab, sel, r.cnt.ptr, r.olat.ptr, r.part.ptr, tmax, nh, kr, ks, a.scale, splits, tile)?;
         if splits > 1 {
             launch!(k.merge, [nh as u32, m as u32, 1], [256, 1, 1], s; r.part.ptr, r.olat.ptr, nh, kr, splits)?;
         }

@@ -398,13 +398,14 @@ impl Dyn {
                 per[group[r]] += twelve[r].map_or(ring.token_bytes(), |b| b.ceil() as usize);
             }
         }
-        // (the 12-bit pages' step buffers: a prompt chunk's pages unpacked to bf16, keys and values, a ring at a time)
+        // (the 12-bit pages' step buffers: a prompt chunk's pages unpacked to bf16, keys and values (a latent's alone, its row in heads of 128), a ring at a time)
         let unpacked: usize = rings
             .iter()
             .zip(&twelve)
             .filter(|(_, t)| t.is_some())
             .map(|(ring, _)| {
-                2 * if ring.window > 0 { (ring.window + self.chunk).div_ceil(BLOCK) + 2 } else { self.ctx.div_ceil(BLOCK) + 1 } * BLOCK * ring.nk * ring.d * 2
+                let blocks = if ring.window > 0 { (ring.window + self.chunk).div_ceil(BLOCK) + 2 } else { self.ctx.div_ceil(BLOCK) + 1 };
+                (1 + ring.values as usize) * blocks * BLOCK * ring.nk * ring.d.div_ceil(128) * 128 * 2
             })
             .max()
             .unwrap_or(0);
@@ -465,7 +466,7 @@ impl Dyn {
                 self.split_rows.max(users),
                 self.ctx,
                 self.chunk,
-                self.ldec.as_ref().map(|d| d.splits).ok_or_else(|| crate::ffi::Error("12-bit pages for a model the library's decode does not take".into()))?,
+                self.ldec.as_ref().map(|d| d.splits),
             )?);
         }
         let tlen = self.ctx.div_ceil(BLOCK);

@@ -175,6 +175,16 @@ jobs:
         run: |
           "$E" kv12check --case qwen3
           "$E" usercheck qwen3 --users 8 --level penguin --kv12
+      - name: The 12-bit lossless KV pages of the latent attention kind (random Kimi-K3 and GLM-5.3-Flash made here; kvpages.rs kv12check, logits.rs usercheck --kv12)
+        run: |
+          # (a latent is one stream of the pages, its row in heads of 128; its attention reads a sequence's pages unpacked to bf16, so every token reads back and every reply is the bf16 cache's)
+          "$E" kv12check --case kimi
+          "$E" kv12check --case glm
+          "$E" usercheck kimi --users 4 --level penguin --kv12
+          "$E" usercheck glm --users 4 --level penguin --kv12
+          # (pools too small, so steps are taken back: the random model's two latent rings hold 2 + 4 + 6 + 8 pages each for the four replies, 40 raw pages at once with the
+          # bases moved, and the longest alone 16: 24 slabs overflow together and hold any one alone; gemma4's 40 never overflow here)
+          GLYD_KV12_SHIFT=60 GLYD_KV12_POOL=1,24 "$E" usercheck kimi --users 4 --level penguin --kv12
       - name: Logits of every model family against the stored references (glyd-engine/tests/logits, src/logits.rs)
         run: |
           # (a random model of each family's layout with its layer kinds, made here: only models released in the last six months are used, and those are larger than a 16 GB card holds; a fixture's bound is the

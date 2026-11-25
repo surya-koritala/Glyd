@@ -1,4 +1,4 @@
-// The latent attention layer kind's kernels (src/dynamic/mla.rs runs them for every family with one, Kimi-K3 and GLM-5.3-Flash; src/model_glm.rs's frozen engine too) and the sparse-attention indexer's,
+// The latent attention layer kind's kernels (src/dynamic/mla.rs runs them for every family with one, Kimi-K3 and GLM-5.3-Flash) and the sparse-attention indexer's,
 // whose pick DeepSeek-V4's compressed attention takes as well. Included by engine.cu after glm.cu (GM_PER, GM_DYN_FLOATS) and qwen35.cu (warp_max).
 // A token's cache is its latent c (kv_lora_rank wide: the key-value down product's, normed) and the key part the heads share (rope channels, Kimi-K3's 64; GLM-5.3's none), which is its key and, through kv_b_proj, its
 // value, so the attention runs in the latent space (the absorbed form): the query q_h becomes q_abs = Wk_h^T q_h, the scores are q_abs . c_t, the output is (sum_t p_t c_t) multiplied by Wv_h at the end. An indexer
@@ -118,10 +118,11 @@ extern "C" __global__ void __launch_bounds__(128) layernorm_rows(const bf16* x, 
     }
 }
 
-// dst's row of position pos[i] (through tab; rows ds apart) = src row i (K bf16 each, src rows ss apart): the rows of a call into a cache at their positions. A block a row.
+// dst's row of position pos[i] (through tab; rows ds apart) = src row i (K bf16 each, src rows ss apart): the rows of a call into a cache at their positions; pos null: dst's row i (a 12-bit
+// ring's staging rows). A block a row.
 extern "C" __global__ void scatter_rows(const bf16* src, int ss, bf16* dst, int ds, const int* pos, const int* tab, int K) {
     const bf16* s = src + (size_t)blockIdx.x * ss;
-    bf16* d = dst + ml_place(tab, pos[blockIdx.x]) * ds;
+    bf16* d = dst + (pos ? ml_place(tab, pos[blockIdx.x]) : (size_t)blockIdx.x) * ds;
     for (int k = threadIdx.x; k < K; k += blockDim.x) d[k] = s[k];
 }
 
@@ -368,10 +369,10 @@ extern "C" __global__ void __launch_bounds__(1024) idx_pick(const float* scores,
 // rows' loads are in flight together, where one at a time a decode step's 2,051 tokens took 270 us), the softmax in fp32 over the block's tokens, then a thread two columns of the weighted sum, four tokens at a time.
 // With one split the block writes olat; with more, its unnormalised sum, its largest score and the sum of its exponentials to part [n][NH][splits][KR + 2] for mla_merge. Dynamic shared memory (KS + 2 tile) 4-byte
 // words: a block's tokens `tile` at a time (GLY-357: Kimi-K3's dense attention over the whole context).
-// The scores are over KS channels (qa's heads and lat's rows KS wide), the values the first KR of them (Kimi-K3: the latent's 512 and the shared key part's 64; GLM: KS = KR); sel null: every position from 0
-// (a dense attention, cnt[i] = pos + 1).
-extern "C" __global__ void __launch_bounds__(256) mla_attn(const float* qa, const bf16* lat, const int* tab, const int* sel, const int* cnt, float* olat, float* part, int Tmax, int NH, int KR, int KS, float scale, int splits,
-                                                           int tile) {
+// The scores are over KS channels (qa's heads KS wide, lat's rows ls >= KS apart), the values the first KR of them (Kimi-K3: the latent's 512 and the shared key part's 64; GLM: KS = KR); sel null: every
+// position from 0 (a dense attention, cnt[i] = pos + 1). lat is a ring (ls = KS) or a 12-bit ring's pages unpacked to bf16 (ls its padded width, tab null): the same values in the same order, the same bits.
+extern "C" __global__ void __launch_bounds__(256) mla_attn(const float* qa, const bf16* lat, int ls, const int* tab, const int* sel, const int* cnt, float* olat, float* part, int Tmax, int NH, int KR, int KS, float scale,
+                                                           int splits, int tile) {
     GM_DYN_FLOATS(sma)
     const int h = blockIdx.x, i = blockIdx.y, sp = blockIdx.z, tid = threadIdx.x, lane = tid & 31, w = tid >> 5, nw = blockDim.x >> 5;
     const int T = cnt[i], per = (T + splits - 1) / splits, t0 = min(T, sp * per), t1 = min(T, t0 + per), m_n = t1 - t0;
@@ -391,7 +392,7 @@ extern "C" __global__ void __launch_bounds__(256) mla_attn(const float* qa, cons
         for (int tb = w * 4; tb < cn; tb += nw * 4) {
             const bf16* rows[4];
 #pragma unroll
-            for (int u = 0; u < 4; u++) rows[u] = lat + (size_t)idm[min(tb + u, cn - 1)] * KS;
+            for (int u = 0; u < 4; u++) rows[u] = lat + (size_t)idm[min(tb + u, cn - 1)] * ls;
             float a[4] = {0.f, 0.f, 0.f, 0.f};
             for (int j = 2 * lane; j < KS; j += 64) {
                 float2 c[4];
@@ -430,7 +431,7 @@ extern "C" __global__ void __launch_bounds__(256) mla_attn(const float* qa, cons
             for (int u = 0; u < 8; u++) {
                 const bool ok = tb + u < cn;
                 p[u] = ok ? sc[tb + u] : 0.f;
-                v[u] = j2 < KR ? bf2(*reinterpret_cast<const uint32_t*>(lat + (size_t)idm[ok ? tb + u : cn - 1] * KS + j2)) : make_float2(0.f, 0.f);
+                v[u] = j2 < KR ? bf2(*reinterpret_cast<const uint32_t*>(lat + (size_t)idm[ok ? tb + u : cn - 1] * ls + j2)) : make_float2(0.f, 0.f);
             }
 #pragma unroll
             for (int u = 0; u < 8; u++) {
@@ -512,6 +513,13 @@ extern "C" __global__ void mla_gate(bf16* o, const bf16* g, int gs, int W, int n
     const size_t r = e / W, c = e % W;
     const float s = b2f(f2b(1.f / (1.f + expf(-b2f(g[r * gs + c])))));
     o[e] = f2b(b2f(o[e]) * s);
+}
+
+// list [maxp] = the blocks of a sequence's first pos[0] / 16 + 1 pages through its table tab, -1 past them: the pages a 12-bit latent ring unpacks for rows whose last position is
+// pos[0] (glyd_gpu_kv_unpack skips a negative page), from a position read on the device (a decode step's graph holds it). A thread an entry.
+extern "C" __global__ void ml_pages(const int* tab, const int* pos, int maxp, int* list) {
+    const int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j < maxp) list[j] = j <= (pos[0] >> 4) ? tab[j] : -1;
 }
 
 // cnt [n] = pos[i] + 1: a dense attention's token counts (every position up to the row's own; mla_attn without a selection).

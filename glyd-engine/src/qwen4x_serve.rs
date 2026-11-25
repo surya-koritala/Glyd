@@ -1,14 +1,14 @@
 //! `glyd-engine qwenserve CKPT PACK`: Qwen3.8-Flash-Next with its routed experts from a glyd-hbr-codes/2 directory (src/moe_qwen4x.rs), loaded once, then one request a line on the standard input, one answer a line on the standard
-//! output, glmserve's protocol: `{"ids":[...], "max_new":N, "stop":[...], "top":K}` -> `{"ids":[...], "prefill_ms":x, "decode_ms":y, "token_ms":[...], "top":[[id,p],...]}` (greedy; the model's end tokens stop it too, and the
+//! output, the protocol GLM's development server had: `{"ids":[...], "max_new":N, "stop":[...], "top":K}` -> `{"ids":[...], "prefill_ms":x, "decode_ms":y, "token_ms":[...], "top":[[id,p],...]}` (greedy; the model's end tokens stop it too, and the
 //! stop token is in the answer); `{"set": {"mode": "auto", "cpu_threads": 16, "skip": 0.3, "async": true, "topk": 8}}` changes the session's settings. Flags: `--layout i6|i5|i4` (the always-on matrices, packed as they load;
 //! default i6), `--cache-gb G` (the GPU memory for the experts' places; default: what fits), `--chunk N` (prompt tokens a pass, default 1024), `--ctx N` (positions a sequence may reach, default 33000), `--mode`,
-//! `--cpu-threads`, `--skip`, `--async-copies` (the expert cache's, as glmserve's). `--gpus 0,1` splits the layers over those GPUs (`--split K`: the second GPU's first layer, by default where the places a layer come
+//! `--cpu-threads`, `--skip`, `--async-copies` (the expert cache's). `--gpus 0,1` splits the layers over those GPUs (`--split K`: the second GPU's first layer, by default where the places a layer come
 //! out most alike; `--p2p`: the streams GPU to GPU, not through pinned host memory; `--gpus 0,0`: the split's check on one GPU).
 
 use crate::args::Args;
+use crate::cb_pack::CbPack;
 use crate::ffi::{err, Error, Result};
 use crate::model_qwen4x::{EngineQx, MtpRun, OptsQx, SeqQx, SPEC_ROWS};
-use crate::moe_glm_cb::CbPack;
 use crate::moe_qwen4x::{factory, QxCbShared};
 use crate::offload::{ExpertStore, Mode, Offload, Stats};
 use crate::qwen4x::ConfigQx;
@@ -1437,10 +1437,10 @@ fn one(
     ))
 }
 
-/// A traced generation's timeline, in a development build (src/glm_serve.rs); a release build has no tracing to print.
-fn print_trace(steps: &[crate::draft_loop::TracedStep]) {
+/// A traced generation's timeline, in a development build (src/trace.rs); a release build has no tracing to print.
+fn print_trace(steps: &[crate::trace::TracedStep]) {
     #[cfg(feature = "dev")]
-    crate::glm_serve::print_trace(steps);
+    crate::trace::print_trace(steps);
     #[cfg(not(feature = "dev"))]
     let _ = steps;
 }

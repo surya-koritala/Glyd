@@ -6442,6 +6442,7 @@ __global__ void __launch_bounds__(128) unpack_kernel(const uint8_t* __restrict__
     if (wl >= n * H) return;
     const int lane = threadIdx.x & 31, g = lane >> 2, q = lane & 3;
     const int j = wl / H, h = wl % H;
+    if (pages[j] < 0) return;  // (a place of the list no page is in: nothing written for it)
     const uint8_t* pg = pool + (int64_t)pages[j] * page_stride;
     const uint4 hd = *reinterpret_cast<const uint4*>(pg + 16 * h);
     const uint32_t* pg32 = reinterpret_cast<const uint32_t*>(pg + 16 * H);

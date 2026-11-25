@@ -3,10 +3,15 @@
 //! go from a staging buffer of its rows into their pages; a decode row's attention reads the pages (`kv_decode_from`: a sliding layer's window
 //! from its first token); a prompt chunk's reads them where they are (`kv_prefill`, the kernel the bf16 cache's prompt attention is too). A verify pass's rows and
 //! the warp kernels read them unpacked into a bf16 ring (`kv12_stage`).
+//!
+//! A latent attention's latents (`Op::Mla`, f:mla-cache:kv_cache:6) are one stream: a row a token that is its key and, through kv_b_proj, its value, held in the keys'
+//! layout alone (`KV_ONE_STREAM`; Kimi-K3's 512 + 64 as 5 heads of 128, the last 64 channels zero; GLM-5.3's 512 as 4). Its attention reads the pages unpacked to bf16
+//! rows (`kv12_latents`), as every project's decompressed prefill gathers a cached latent into a 16-bit workspace (h:mla-cache:attention:14), and runs the kernel the
+//! bf16 ring's attention runs on the same values in the same order: the same bits. The decode's reading the 12-bit latent in place (h:mla-cache:kernel:15) is not built.
 use super::kv12::{shapes, KvShape, Tables};
 use super::{Dyn, Op, Part};
 use crate::dev::Buf;
-use crate::ffi::{err, KvGeom, Lib, Result};
+use crate::ffi::{err, KvGeom, Lib, Result, KV_ONE_STREAM};
 
 /// A page's entries in its own arena, past its heads' inline ones.
 pub const ARENA: i64 = 15;
@@ -35,7 +40,8 @@ pub(super) struct RingPages {
     pub g: usize,
     /// The bf16 ring a prompt chunk's pages are unpacked into: blocks of it (block b at b modulo this).
     pub stage_blocks: usize,
-    /// Its decode's kind (`Lossless::kinds`: its window and its calls' sequences a row), whose lengths and first tokens a pass makes once.
+    /// Its decode's kind (`Lossless::kinds`: its window and its calls' sequences a row), whose lengths and first tokens a pass makes once (none for one
+    /// stream: a latent's attention reads its pages unpacked).
     pub kind: usize,
 }
 
@@ -58,6 +64,8 @@ pub(super) struct Lossless {
     pub first: Vec<Buf>,
     pub stage_k: Buf,
     pub stage_v: Buf,
+    /// The pages a latent's attention unpacks for a sequence (`kv12_latents`): its blocks up to its rows' last position, -1 past them; a context's blocks.
+    pub list: Buf,
     pub ws: Buf,
     pub splits: i64,
     /// Device bytes of the pages, the pools and the step's buffers.
@@ -65,14 +73,20 @@ pub(super) struct Lossless {
     pub bytes: usize,
 }
 
-/// A ring's layer and query heads: the layer whose attention writes it, and its query heads.
+/// A ring's layer and query heads: the layer whose attention writes it, and its query heads (a latent attention's latents: 1, its one stream read unpacked).
 fn writer(d: &super::ModelDesc, ring: usize) -> Option<(usize, usize)> {
     d.layers.iter().enumerate().find_map(|(l, ops)| {
         ops.iter().find_map(|op| match op {
             Op::Attn(a) if a.writes && a.ring == ring => Some((l, a.nq)),
+            Op::Mla(a) if a.ring == ring => Some((l, 1)),
             _ => None,
         })
     })
+}
+
+/// The library's head dim argument of a ring's pages: its channels, with KV_ONE_STREAM where it is one stream.
+fn dim_arg(s: &KvShape) -> i64 {
+    s.channels as i64 | if s.one { KV_ONE_STREAM } else { 0 }
 }
 
 /// The share of a page's values outside their windows its escape room is made for, at the least. Measured on gemma-4-12B: 0.035% in the worst layer
@@ -84,7 +98,7 @@ const ROOM_SHARE: f64 = 0.005;
 /// at least what ROOM_SHARE of its values outside their windows takes (the pool runs dry where the text is not the calibration's: later positions,
 /// other languages).
 fn chunks_per_page(s: &KvShape, t: &Tables, l: usize) -> f64 {
-    let values = 16.0 * (s.heads * s.channels) as f64 * 2.0;
+    let values = 16.0 * (s.heads * s.channels) as f64 * if s.one { 1.0 } else { 2.0 };
     let inline = 3.0 * (s.heads * s.channels / 128) as f64 + ARENA as f64;
     let room = ((values * ROOM_SHARE - inline).max(0.0) / CHUNK).ceil();
     (t.chunks.get(l).map_or(0.0, |c| c.0) * 2.0).max(room).max(0.125)
@@ -95,22 +109,25 @@ impl Lossless {
     /// decode attention takes its shape; None: the ring stays bf16.
     pub fn token_bytes(lib: &Lib, d: &super::ModelDesc, t: &Tables, ring: usize) -> Option<f64> {
         let (l, nq) = writer(d, ring)?;
-        let s = shapes(d)[l]?;
+        let s = shapes(d)[l].filter(|s| s.ring == ring)?;
         let lt = t.layers.get(l)?.as_ref()?;
-        if (lt.heads, lt.channels) != (s.heads, s.channels) || s.one || nq % s.heads != 0 {
+        if (lt.heads, lt.channels, lt.one) != (s.heads, s.channels, s.one) {
             return None;
         }
-        let g = nq / s.heads;
-        if g > MAX_G && (s.heads != 1 || g % MAX_G != 0) {
-            return None; // (more query heads to a kv head than the decode takes, split only where they are contiguous: one kv head)
+        if !s.one {
+            let g = nq / s.heads;
+            if nq % s.heads != 0 || (g > MAX_G && (s.heads != 1 || g % MAX_G != 0)) {
+                return None; // (more query heads to a kv head than the decode takes, split only where they are contiguous: one kv head)
+            }
         }
-        let page = lib.kv_page_bytes(s.heads as i64, s.channels as i64, ARENA).ok()? as f64;
+        let page = lib.kv_page_bytes(s.heads as i64, dim_arg(&s), ARENA).ok()? as f64;
         let chunk = lib.kv_escape_bytes(1).ok()? as f64;
         Some((page + chunks_per_page(&s, t, l) * chunk) / 16.0)
     }
 
     /// The pages of the rings `token_bytes` takes: `blocks[g]` blocks in group g (block 0 too, which no sequence holds), `ring_cap` the rings in use,
-    /// `rows` the most rows a step writes, `decode_rows` the most a decode attention reads, `ctx` and `chunk` the executor's.
+    /// `rows` the most rows a step writes, `decode_rows` the most a decode attention reads, `ctx` and `chunk` the executor's, `splits` the library decode's
+    /// (None where the model has no attention it decodes: then only one stream's rings, a latent attention's, take pages).
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         lib: &Lib,
@@ -123,7 +140,7 @@ impl Lossless {
         decode_rows: usize,
         ctx: usize,
         chunk: usize,
-        splits: i64,
+        splits: Option<i64>,
     ) -> Result<Lossless> {
         let lay = shapes(d);
         let groups = blocks.len();
@@ -147,6 +164,11 @@ impl Lossless {
         if rings.iter().all(Option::is_none) {
             return err("no ring of this model has 12-bit tables it can use");
         }
+        let two = rings.iter().flatten().any(|x| !x.2.one);
+        let splits = match (two, splits) {
+            (true, None) => return err("12-bit pages of keys and values for a model the library's decode does not take"),
+            (_, s) => s.unwrap_or(1),
+        };
         // (a development build's GLYD_KV12_POOL=CHUNKS,SLABS: pools that small, to make pages void on purpose: usercheck --kv12)
         let squeeze: Option<(i64, i64)> = crate::tune!("GLYD_KV12_POOL").and_then(|v| {
             let (c, s) = v.split_once(',')?;
@@ -172,10 +194,10 @@ impl Lossless {
             };
             let lt = t.layers[l].as_ref().expect("token_bytes found it");
             let (h, dd) = (s.heads as i64, s.channels as i64);
-            let page = lib.kv_page_bytes(h, dd, ARENA)?;
+            let page = lib.kv_page_bytes(h, dim_arg(&s), ARENA)?;
             let hp = h * dd / 128;
             let (_, slabs, raw) = raws.iter().find(|x| x.0 == hp).expect("sized above");
-            let geom = KvGeom { heads: h, dim: dd, arena: ARENA, page_stride: page, escape: escape.ptr, nchunks, raw: raw.ptr, nslabs: *slabs };
+            let geom = KvGeom { heads: h, dim: dim_arg(&s), arena: ARENA, page_stride: page, escape: escape.ptr, nchunks, raw: raw.ptr, nslabs: *slabs };
             let pool = Buf::zeroed(n * page as usize)?;
             let (kbase, vbase) = (Buf::new(lt.k.len())?, Buf::new(lt.v.len())?);
             // (a development build's GLYD_KV12_SHIFT=N: every base moved N, so that nearly every value is outside its window and a page goes raw:
@@ -185,36 +207,52 @@ impl Lossless {
             kbase.write(0, &moved(&lt.k))?;
             vbase.write(0, &moved(&lt.v))?;
             bytes += pool.bytes + kbase.bytes + vbase.bytes;
-            let g = nq / s.heads;
-            let parts = g.div_ceil(MAX_G);
-            most_g = most_g.max(g / parts);
+            // (one stream: its attention reads its pages unpacked, not by the library's decode, so no split of query heads and no kind of decode)
+            let (g, parts) = if s.one { (1, 1) } else { (nq / s.heads, (nq / s.heads).div_ceil(MAX_G)) };
             widest = widest.max(s.heads * s.channels);
             let stage_blocks = if s.window > 0 { (s.window + chunk).div_ceil(16) + 2 } else { ctx.div_ceil(16) + 1 };
             let kind = match kinds.iter().position(|&k| k == (s.window, parts)) {
+                _ if s.one => 0,
                 Some(i) => i,
                 None => {
                     kinds.push((s.window, parts));
                     kinds.len() - 1
                 }
             };
+            if !s.one {
+                most_g = most_g.max(g / parts);
+            }
             out.push(Some(RingPages { geom, pool, kbase, vbase, layer: l as i64, group: group[r], shape: s, parts, g: g / parts, stage_blocks, kind }));
         }
-        let parts = out.iter().flatten().map(|x| x.parts).max().unwrap_or(1);
-        let stage = out.iter().flatten().map(|x| x.stage_blocks * 16 * x.shape.heads * x.shape.channels * 2).max().unwrap_or(0);
-        let (rows_k, rows_v) = (Buf::new(rows * widest * 2)?, Buf::new(rows * widest * 2)?);
+        let parts = out.iter().flatten().filter(|x| !x.shape.one).map(|x| x.parts).max().unwrap_or(1);
+        // (the values' buffers for two streams' rings alone)
+        let stage = |v: bool| {
+            out.iter().flatten().filter(|x| !(v && x.shape.one)).map(|x| x.stage_blocks * 16 * x.shape.heads * x.shape.channels * 2).max().unwrap_or(0)
+        };
+        let wide_v = out.iter().flatten().filter(|x| !x.shape.one).map(|x| x.shape.heads * x.shape.channels).max().unwrap_or(0);
+        let (rows_k, rows_v) = (Buf::new(rows * widest * 2)?, Buf::new(rows * wide_v * 2)?);
         let slots: Vec<Buf> = (0..groups).map(|_| Buf::new(8 * rows)).collect::<Result<_>>()?;
         let lens: Vec<Buf> = kinds.iter().map(|k| Buf::new(4 * rows * k.1)).collect::<Result<_>>()?;
         let first: Vec<Buf> = kinds.iter().map(|k| Buf::new(4 * rows * k.1)).collect::<Result<_>>()?;
-        let (stage_k, stage_v) = (Buf::new(stage)?, Buf::new(stage)?);
+        let (stage_k, stage_v) = (Buf::new(stage(false))?, Buf::new(stage(true))?);
+        let list = Buf::new(4 * (ctx.div_ceil(16) + 1))?;
         // the decode's plan: the same splits for every call (a sequence's bits depend on them), the bf16 cache's decode's (attn::LibDecode)
-        let heads = out.iter().flatten().map(|x| x.shape.heads).max().unwrap_or(1) as i64;
-        let _ = ctx;
-        let dmax = out.iter().flatten().map(|x| x.shape.channels).max().unwrap_or(128) as i64;
-        let ws_bytes = lib.kv_decode_workspace((decode_rows * parts) as i64, heads, most_g as i64, dmax, splits)?;
-        let ws = Buf::zeroed(ws_bytes)?;
+        let decoded = || out.iter().flatten().filter(|x| !x.shape.one);
+        let heads = decoded().map(|x| x.shape.heads).max().unwrap_or(1) as i64;
+        let dmax = decoded().map(|x| x.shape.channels).max().unwrap_or(128) as i64;
+        let ws = match two {
+            true => Buf::zeroed(lib.kv_decode_workspace((decode_rows * parts) as i64, heads, most_g as i64, dmax, splits)?)?,
+            false => Buf::zeroed(16)?,
+        };
         // (no lost bitmap: the void ring names a page each time it is made void, which a block reused by another sequence may be again)
         let status: Vec<Buf> = (0..groups).map(|_| Buf::zeroed(4 * (16 + 2 * RING as usize))).collect::<Result<_>>()?;
-        bytes += rows_k.bytes * 2 + stage_k.bytes * 2 + ws.bytes + slots.iter().chain(&lens).chain(&first).chain(&status).map(|b| b.bytes).sum::<usize>();
+        bytes += rows_k.bytes
+            + rows_v.bytes
+            + stage_k.bytes
+            + stage_v.bytes
+            + list.bytes
+            + ws.bytes
+            + slots.iter().chain(&lens).chain(&first).chain(&status).map(|b| b.bytes).sum::<usize>();
         Ok(Lossless {
             rings: out,
             _escape: escape,
@@ -229,6 +267,7 @@ impl Lossless {
             first,
             stage_k,
             stage_v,
+            list,
             ws,
             splits,
             bytes,
@@ -395,6 +434,20 @@ impl Dyn {
         )
     }
 
+    /// A latent attention's latents of the sequence in `slot` (ring `ring`, one stream) as bf16 rows of the pages' width, position p's at row p: its pages from the first up to
+    /// the one of position `last` (a device pointer to its rows' last position) unpacked in order into the staging ring, whose address this returns. The pages are listed on
+    /// the device (`ml_pages`) as many as `bound` (the host's count where it knows the rows' positions, a context's while a step's graph is captured), and the library
+    /// skips the list's places past the sequence's. The step's own rows are in their pages already (`kv12_write`), so they are unpacked too.
+    pub(super) unsafe fn kv12_latents(&self, ring: usize, slot: usize, last: u64, bound: usize) -> Result<u64> {
+        let lx = self.lossless.as_ref().expect("a ring with pages");
+        let rp = lx.rings[ring].as_ref().expect("a ring with pages");
+        let s = self.dev.stream;
+        let bound = bound.min(rp.stage_blocks).max(1);
+        crate::launch!(self.km.pages, [(bound as u32).div_ceil(256), 1, 1], [256, 1, 1], s; self.table_of(slot, ring), last, bound as i32, lx.list.ptr)?;
+        self.lib.kv_unpack(&rp.geom, rp.pool.ptr, rp.kbase.ptr, rp.vbase.ptr, lx.list.ptr, bound as i64, lx.stage_k.ptr, lx.stage_v.ptr, s)?;
+        Ok(lx.stage_k.ptr)
+    }
+
     /// A prompt chunk's keys and values for the attention kind's prompt kernel: the pages of its tokens' blocks (from its window's first, `start` and n rows on) unpacked into
     /// the bf16 ring, block b at b modulo the ring's blocks; returns the ring's keys, values and capacity in tokens (tokens at position modulo it, no table).
     pub(super) unsafe fn kv12_stage(&self, ring: usize, start: usize, n: usize) -> Result<(u64, u64, usize)> {
@@ -508,14 +561,18 @@ impl Dyn {
         let first = n.saturating_sub(keep);
         let (_, _, cap) = self.kv12_stage(ring, n - 1, 1)?;
         self.dev.sync()?;
-        let (mut sk, mut sv) = (vec![0u16; cap * w], vec![0u16; cap * w]);
+        // (one stream: the keys alone, as `kv_rows` reads it)
+        let one = rp.shape.one;
+        let (mut sk, mut sv) = (vec![0u16; cap * w], vec![0u16; if one { 0 } else { cap * w }]);
         lx.stage_k.read(0, &mut sk)?;
         lx.stage_v.read(0, &mut sv)?;
-        let (mut k, mut v) = (Vec::with_capacity((n - first) * w), Vec::with_capacity((n - first) * w));
+        let (mut k, mut v) = (Vec::with_capacity((n - first) * w), Vec::with_capacity(if one { 0 } else { (n - first) * w }));
         for p in first..n {
             let at = (p % cap) * w;
             k.extend_from_slice(&sk[at..at + w]);
-            v.extend_from_slice(&sv[at..at + w]);
+            if !one {
+                v.extend_from_slice(&sv[at..at + w]);
+            }
         }
         Ok((k, v, first))
     }
@@ -617,7 +674,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     let (mut most, mut sum) = (0f64, 0f64);
     let layer_of = |r: usize| lay.iter().position(|x| x.is_some_and(|x| x.ring == r));
     for (((_, s), (k, v, _)), lt) in rings.iter().zip(&bf).zip(rings.iter().map(|(r, _)| layer_of(*r).and_then(|l| tables.layers[l].as_ref()))) {
-        let mut h = super::kv12::Hist::new(s.heads, s.channels, false);
+        let mut h = super::kv12::Hist::new(s.heads, s.channels, s.one);
         h.add(k, v);
         if let Some(lt) = lt {
             let o = h.outside(lt);
@@ -666,11 +723,13 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                 return err(format!("ring {r}: read back from token {f2} ({} values), the plain ring from {f} ({})", k2.len(), k.len()));
             }
             let w = s.heads * s.channels;
+            let streams = if s.one { 1 } else { 2 };
             for (t, p) in (*f..n).enumerate() {
                 let (a, b) = (t * w, (t + 1) * w);
-                let bad = k[a..b].iter().zip(&k2[a..b]).filter(|(x, y)| x != y).count() + v[a..b].iter().zip(&v2[a..b]).filter(|(x, y)| x != y).count();
+                let bad = k[a..b].iter().zip(&k2[a..b]).filter(|(x, y)| x != y).count()
+                    + if s.one { 0 } else { v[a..b].iter().zip(&v2[a..b]).filter(|(x, y)| x != y).count() };
                 if p < prompt.len() {
-                    (differ, values) = (differ + bad, values + 2 * w);
+                    (differ, values) = (differ + bad, values + streams * w);
                 } else {
                     (later, later_same) = (later + 1, later_same + (bad == 0) as usize);
                 }
@@ -701,11 +760,10 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
             w[0], w[4], w[5], w[8], w[9], w[10], w[11]
         );
     }
-    let bf16: usize = rings.iter().map(|(_, s)| 2 * s.heads * s.channels * 2).sum();
-    let twelve: f64 = rings
-        .iter()
-        .map(|(r, s)| e.kv12.as_ref().and_then(|t| Lossless::token_bytes(&e.lib, &e.big.d, t, *r)).unwrap_or((2 * s.heads * s.channels * 2) as f64))
-        .sum();
+    // (a ring's bf16 bytes a token: two streams of heads x channels, or one of its width)
+    let plain = |s: &super::kv12::KvShape| if s.one { s.width * 2 } else { 2 * s.heads * s.channels * 2 };
+    let bf16: usize = rings.iter().map(|(_, s)| plain(s)).sum();
+    let twelve: f64 = rings.iter().map(|(r, s)| e.kv12.as_ref().and_then(|t| Lossless::token_bytes(&e.lib, &e.big.d, t, *r)).unwrap_or(plain(s) as f64)).sum();
     println!(
         "a token in every ring: {bf16} bytes in bf16, {twelve:.0} in 12-bit pages ({:.1}%); the pages' memory {:.2} GiB",
         100.0 * twelve / bf16 as f64,
@@ -715,4 +773,55 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         return err("the 12-bit pages do not hold what the bf16 ones do");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::kv12::{shapes, LayerTable, Tables};
+    use super::*;
+
+    /// Kimi-K3's and GLM-5.3-Flash's releases' latents (f:mla-cache:kv_cache:6): each latent attention layer's ring is one stream of its kv_rank + rope values in heads
+    /// of 128 (576 as 5, the last 64 channels padding; 512 as 4), written by its layer's operation; GLM-5.3's indexer ring has no 12-bit shape and stays bf16.
+    #[test]
+    fn a_latent_ring_is_one_stream_in_heads_of_128() {
+        let fixture = |f: &str| std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(f)).unwrap();
+        let h: serde_json::Value = serde_json::from_str(&fixture("headers/Kimi-K3.json")).unwrap();
+        let kc = crate::kimi::ConfigKimi::parse(h["config"].as_str().unwrap(), "Kimi-K3", None).unwrap();
+        let kimi = super::super::kimi::describe(&kc, &super::super::Stage::whole(kc.layers), &vec![(true, true); kc.layers], false).unwrap();
+        let gc = crate::glm::ConfigGlm::parse(&fixture("glm5_next_config.json"), "GLM-5.3-Flash", None).unwrap();
+        let glm = super::super::glm::describe(&gc, &super::super::Stage::whole(gc.layers)).unwrap();
+        for (d, layers, heads, width) in [(&kimi, 24, 5, 576), (&glm, 11, 4, 512)] {
+            let sh = shapes(d);
+            let mut seen = 0;
+            for (l, ops) in d.layers.iter().enumerate() {
+                let Some(a) = ops.iter().find_map(|o| if let Op::Mla(a) = o { Some(a) } else { None }) else { continue };
+                let s = sh[l].unwrap_or_else(|| panic!("{} layer {l}: no shape", d.family));
+                assert_eq!((s.ring, s.heads, s.channels, s.one, s.window, s.width), (a.ring, heads, 128, true, 0, width), "{} layer {l}", d.family);
+                assert_eq!(writer(d, a.ring), Some((l, 1)));
+                if a.indexer.is_some() {
+                    assert_eq!(writer(d, a.ring + 1), None, "the indexer's ring is not a latent's");
+                }
+                seen += 1;
+            }
+            assert_eq!(seen, layers, "{}", d.family);
+        }
+    }
+
+    /// A one-stream page's escape room is for its one tile a head-page: half the values of two streams' at the same heads.
+    #[test]
+    fn one_streams_escape_room_counts_its_values_once() {
+        let shape = |one: bool| super::super::kv12::KvShape { ring: 0, heads: 5, channels: 128, one, window: 0, scale: 1.0, round: false, width: 576 };
+        let t = Tables {
+            layers: vec![Some(LayerTable { heads: 5, channels: 128, one: true, k: vec![0; 640], v: Vec::new() })],
+            positions: 0,
+            model: String::new(),
+            outside: vec![0.0],
+            chunks: vec![(0.0, 0)],
+        };
+        // (no chunks taken on the tables' prompts: the room ROOM_SHARE of the values outside their windows makes, less the inline entries and the arena)
+        let room = |values: f64| ((values * ROOM_SHARE - (3.0 * 5.0 + ARENA as f64)).max(0.0) / CHUNK).ceil().max(0.125);
+        assert_eq!(chunks_per_page(&shape(true), &t, 0), room(16.0 * 640.0));
+        assert_eq!(chunks_per_page(&shape(false), &t, 0), room(2.0 * 16.0 * 640.0));
+        assert!(chunks_per_page(&shape(true), &t, 0) < chunks_per_page(&shape(false), &t, 0));
+    }
 }

@@ -61,7 +61,7 @@
 //!                                                             logits equal bit for bit (the experts' second matrices in the row layout, the sparse product; GLYD_ENGINE_DENSE_DOWN=1: the block layout, the dense one); with a mode that computes the pairs of missed
 //!                                                             experts on the CPU, within two places of bf16 of the largest logit (`logits_within`); --host-memory (a Hummingbird directory): the same passes again with every expert in the computer's
 //!                                                             memory and with no more than that many GiB of them (the rest read from the directory), every logit the same to the bit in the mode asked for
-//!   glyd-engine glmkernels IN_DIR OUT_DIR                     GLM-5.3-Flash's kernels on the inputs tools/glm_ref.py wrote (src/kcheck_glm.rs); glmlayers DIR IO_DIR: whole layers of the real model or of a random tiny one; glmtoy DIR IO_DIR: the tiny model whole; glmmtpreal SNAPSHOT REF_DIR OUT_DIR --layout i6|i5|i4: the real MTP head on the reference's hidden states; glmreal SNAPSHOT REF_DIR OUT_DIR --layers FIRST:END --layout i6|i5|i4 [--teacher]: the real model's layers one at a time against a reference's streams; glmmtp DIR IO_DIR: the MTP head on the tiny model's hidden states; glmspec DIR IO_DIR: a draft verified in one pass and the delta rules rewound after it, the tokens the same as greedy decode's whatever the drafts; glmprof DIR --layers L,L [--ctx N] [--reps N]: where a decode step of a layer spends its time, stage by stage in a graph's replay; glmdequant DIR OUT_DIR [--match TEXT]: its FP8 matrices as the loader reads them (bf16); glmdecode DIR OUT_DIR --layers L,L --layout i6|i5|i4: the packs of a mixture-of-experts layer's block decoded to bf16
+//!   glyd-engine glmrandom OUT [--fp8] [--real --layers N --experts N]  a random GLM-5.3-Flash in Hub format (src/glm.rs `random`): the executor's logits, user, 12-bit and tier checks' model
 //!
 //! `generate`, `check`, `microbench` and `sampletime` run a Qwen3.5 model or a Llama-style dense one (Qwen3; its config.json says which: a directory in the Hub's layout or a glyd-v7 one, or a Hub
 //! id in the cache) on the description executor (src/dynamic/qwen35.rs, src/dynamic/dense.rs), one sequence, packed in memory as it loads (--layout auto|mma|mma12|i6|i5|i4).
@@ -247,46 +247,11 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
                 layers.split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--layers {x}: not a number")))).collect::<Result<_>>()?;
             glyd_engine::kcheck_nh::decode(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "OUT_DIR")?), &layers, a.num("tokens", 333usize)?)
         }
-        "glmkernels" => glyd_engine::kcheck_glm::kernels(Path::new(a.need(1, "IN_DIR")?), Path::new(a.need(2, "OUT_DIR")?)),
-        "glmlayers" => glyd_engine::kcheck_glm::layers(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "IO_DIR")?)),
-        "glmdyn" => {
-            let (cuts, devices) = glyd_engine::dynamic::split::split_args(&a)?;
-            glyd_engine::kcheck_glm::dyn_check(
-                Path::new(a.need(1, "DIR")?),
-                a.num("tokens", 48)?,
-                a.has("old"),
-                a.layout()?.unwrap_or(glyd_engine::weights::Layout::Int6),
-                &cuts,
-                &devices,
-            )
-        }
-        "glmrandom" => glyd_engine::kcheck_glm::random(
+        "glmrandom" => glyd_engine::glm::random(
             Path::new(a.need(1, "OUT")?),
             a.has("fp8"),
             if a.has("real") { Some((a.num("layers", 4)?, a.num("experts", 32)?)) } else { None },
         ),
-        "glmtoy" => glyd_engine::kcheck_glm::toy(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "IO_DIR")?)),
-        "glmmtpreal" => {
-            let level = a.layout()?.ok_or_else(|| Error("glmmtpreal needs --layout i6, i5 or i4".into()))?;
-            glyd_engine::kcheck_glm::mtp_real(Path::new(a.need(1, "SNAPSHOT")?), Path::new(a.need(2, "REF_DIR")?), Path::new(a.need(3, "OUT_DIR")?), level)
-        }
-        "glmreal" => {
-            let range = a.flag("layers").ok_or_else(|| Error("glmreal needs --layers FIRST:END".into()))?;
-            let (first, end) = range
-                .split_once(':')
-                .and_then(|(x, y)| Some((x.parse::<usize>().ok()?, y.parse::<usize>().ok()?)))
-                .ok_or_else(|| Error(format!("--layers {range}: not FIRST:END")))?;
-            let level = a.layout()?.ok_or_else(|| Error("glmreal needs --layout i6, i5 or i4".into()))?;
-            glyd_engine::kcheck_glm::real(
-                Path::new(a.need(1, "SNAPSHOT")?),
-                Path::new(a.need(2, "REF_DIR")?),
-                Path::new(a.need(3, "OUT_DIR")?),
-                first,
-                end,
-                level,
-                a.flag("teacher").is_some(),
-            )
-        }
         "qxlayers" => {
             if !glyd_engine::kcheck_qwen4x::layers(Path::new(a.need(1, "MODEL")?), Path::new(a.need(2, "REF")?), a)? {
                 std::process::exit(1);
@@ -315,26 +280,6 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
                 std::process::exit(1);
             }
             Ok(())
-        }
-        "glmserve" => glyd_engine::glm_serve::serve(Path::new(a.need(1, "CKPT")?), Path::new(a.need(2, "PACK")?), a),
-        "glmcbtest" => glyd_engine::glm_serve::cb_test(Path::new(a.need(1, "PACK")?), Path::new(a.need(2, "TESTVEC")?)),
-        "glmcbblock" => glyd_engine::glm_serve::cb_block(Path::new(a.need(1, "CKPT")?), Path::new(a.need(2, "PACK")?), a),
-        "glmmtp" => glyd_engine::kcheck_glm::mtp(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "IO_DIR")?)),
-        "glmspec" => glyd_engine::kcheck_glm::spec(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "IO_DIR")?)),
-        "glmprof" => {
-            let layers = a.flag("layers").ok_or_else(|| Error("glmprof needs --layers L,L,...".into()))?;
-            let layers: Vec<usize> =
-                layers.split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--layers {x}: not a number")))).collect::<Result<_>>()?;
-            let num = |k: &str, d: usize| -> Result<usize> { a.flag(k).map_or(Ok(d), |v| v.parse().map_err(|_| Error(format!("--{k} {v}: not a number")))) };
-            glyd_engine::kcheck_glm::prof(Path::new(a.need(1, "DIR")?), &layers, num("ctx", 2600)?, num("reps", 20)?)
-        }
-        "glmdequant" => glyd_engine::kcheck_glm::fp8(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "OUT_DIR")?), a.flag("match")),
-        "glmdecode" => {
-            let layers = a.flag("layers").ok_or_else(|| Error("glmdecode needs --layers L,L,...".into()))?;
-            let layers: Vec<usize> =
-                layers.split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--layers {x}: not a number")))).collect::<Result<_>>()?;
-            let level = a.layout()?.ok_or_else(|| Error("glmdecode needs --layout i6, i5 or i4".into()))?;
-            glyd_engine::kcheck_glm::decode(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "OUT_DIR")?), &layers, level)
         }
         _ => err("usage: glyd-engine run|serve|doctor|login|supports|fetch|prepare, or a development command (see the top of src/devcmd.rs)"),
     }
