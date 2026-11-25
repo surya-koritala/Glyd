@@ -144,7 +144,7 @@ goes after the others' for that long; it is a preference among what is kept and 
 3600 with `ttl: "1h"`). A request that begins as an earlier one did has that start without running it, where the model allows: on the models whose keys and values are paged (Gemma 4 and Muse Spark)
 the server finds the blocks of 16 tokens a prompt begins with by what they hold, whether the request that ran them is still running, is kept, has grown far past them or has ended,
 for as long as their memory has not been needed for something else; the Qwen3.5 layout (its Gated DeltaNet layers beside paged attention) finds the start any earlier request ran by the
-states it keeps at every chunk of a prompt, in a pool of fixed size made at load (512 MB by default, `GLYD_ENGINE_STATE_SNAP_MB`; boundaries every chunk, `GLYD_ENGINE_STATE_EVERY`); Nemotron-H does not yet.
+states it keeps at every chunk of a prompt, in a pool of fixed size made at load (512 MB by default, boundaries every chunk; a development build's `GLYD_ENGINE_STATE_SNAP_MB` and `GLYD_ENGINE_STATE_EVERY` set them); Nemotron-H does not yet.
 A request that comes while another still runs the start waits for it rather than running the same tokens beside it. `GLYD_ENGINE_KEEP=0` empties a finished request's slot at once, so
 nothing is kept for a conversation's next turn.
 
