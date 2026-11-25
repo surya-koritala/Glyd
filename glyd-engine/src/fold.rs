@@ -2269,6 +2269,9 @@ pub unsafe fn moe(
         if tuned(crate::tune!("GLYD_GPU_BIG_TM"), 128) == 256 {
             return Ok(false);
         }
+        if crate::tune!("GLYD_GPU_MOE_TRACE").is_some_and(|v| v != "0") {
+            eprintln!("moe-kernel fold big T={t} k={k} E={experts} O={o} K={kk} act={act} splits={splits}");
+        }
         let kname = leaked(format!("fold_big_{lname}_moe"));
         let (threads, tm, smem) = big_shape(4, 4, 3, 2, 64);
         per_sm(kname, threads, smem)?;
@@ -2293,6 +2296,7 @@ pub unsafe fn moe(
         }
         return Ok(true);
     }
+    let trace = crate::tune!("GLYD_GPU_MOE_TRACE").is_some_and(|v| v != "0");
     let pf = tuned(crate::tune!("GLYD_GPU_PF"), 0).clamp(0, 16);
     let patch_b = tuned(crate::tune!("GLYD_GPU_PATCH_B"), 0) != 0;
     let skip = tuned(crate::tune!("GLYD_GPU_NA"), (h100 || a100) as i64) != 0;
@@ -2312,6 +2316,9 @@ pub unsafe fn moe(
         _ => 33,
     };
     let rows = act == 0 && mt >= 2 && t >= rows_from;
+    if trace {
+        eprintln!("moe-kernel fold {} T={t} k={k} E={experts} O={o} K={kk} act={act} splits={splits}", if rows { "rows" } else { "step" });
+    }
     let o_args = |s: Slots| s.i64(o).i64(kk).p(plan).i32(experts as i32).i64(k).i32(gather as i32).p(x).p(0).p(weights).i32(1).p(y).p(y32);
     if rows {
         let kname = leaked(format!("fold_moe_rows_{lname}_{mt}_{v}"));

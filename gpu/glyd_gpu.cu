@@ -3080,7 +3080,12 @@ static int mma_moe_run(Fmt f, int64_t E, int64_t O, int64_t K, const uint16_t* x
         constexpr int M = decltype(mt)::value;
         with_variant([&](auto vv) { mma_moe_rows_launch<Fmt, M, decltype(vv)::value>(f, E, O, K, x, k, gather, plan, bias, w, wf32, y, y32, hits, cs); });
     };
-    if (T * k >= big * sE && K % 64 == 0 && (uintptr_t)x % 16 == 0) mma_moe_big(f, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, y, y32, cs);
+    const bool big_call = T * k >= big * sE && K % 64 == 0 && (uintptr_t)x % 16 == 0;
+    // (GLYD_GPU_MOE_TRACE=1: each call's kernel and shape on stderr, the checks' record of which kernel a pair's sum took)
+    if (TUNING_INT("GLYD_GPU_MOE_TRACE", 0))
+        fprintf(stderr, "moe-kernel lib %s T=%lld k=%lld E=%lld O=%lld K=%lld act=%lld splits=%lld\n", big_call ? "big" : rows ? "rows" : "step", (long long)T, (long long)k, (long long)E,
+                (long long)O, (long long)K, (long long)act, (long long)splits);
+    if (big_call) mma_moe_big(f, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, y, y32, cs);
     else if (rows && MT == 1) go_rows(std::integral_constant<int, 1>());
     else if (rows && MT == 2) go_rows(std::integral_constant<int, 2>());
     else if (rows) go_rows(std::integral_constant<int, 4>());
