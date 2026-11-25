@@ -1345,7 +1345,7 @@ mod tests {
         let all: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
         let mut seen = 0;
         for (repo, cfg) in all.as_object().unwrap() {
-            // (the mixtures of experts are refused by the family's reader, and not lowered yet)
+            // (the mixtures of experts are refused by the family's reader: lowered from their kinds alone, with no description of the reader's to hold them to)
             let Ok(c) = crate::qwen35::Config35::parse(&cfg.to_string(), repo, None) else { continue };
             if c.head_dim != 256 {
                 continue;
