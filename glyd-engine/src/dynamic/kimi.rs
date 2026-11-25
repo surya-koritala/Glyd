@@ -1033,7 +1033,7 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
     };
     l_.ram = ram.finish(&mut l_.mats)?;
     // (the loader's own operations, as it indexed what it loaded, held to the layer kinds' description of the config: one model, or it is not loaded)
-    let d = super::lower::agree(lowered(dir, &c, &st, &w32, early)?, &d, &dir.join("config.json").display().to_string())?;
+    let d = super::lower::agree(nameless(&lowered(dir, &c, &st, &w32, early)?), &d, &dir.join("config.json").display().to_string())?;
     Dyn::from_parts(dev, d, l_, Vec::new(), layout, st, o)
 }
 
@@ -1096,9 +1096,12 @@ pub(crate) fn latent_at(c: &ConfigKimi, l: usize) -> MlaOp {
     op
 }
 
-/// A fused product's rows (several tensors' stacked): padded with zero rows to a multiple of 512, 64 a GPU in groups of up to 8.
+/// A fused product's rows (several tensors' stacked) are padded with zero rows to a multiple of this: 64 a GPU in groups of up to 8.
+pub(crate) const FUSED_ROWS: usize = 512;
+
+/// A fused product's rows (several tensors' stacked): padded with zero rows to a multiple of `FUSED_ROWS`.
 pub(crate) fn fused(rows: usize) -> usize {
-    rows.div_ceil(512) * 512
+    rows.div_ceil(FUSED_ROWS) * FUSED_ROWS
 }
 
 /// Each layer's (convolutions fp32, gated norm fp32) as the checkpoint holds them (F32 or BF16; any other type refused), a delta layer's three convolutions alike;
@@ -1132,12 +1135,19 @@ pub(crate) fn dtypes(ck: &Checkpoint, c: &ConfigKimi) -> Result<Vec<(bool, bool)
         .collect()
 }
 
-/// Kimi-K3's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::kimi`), held to `describe`. `w32` the delta
-/// layers' dtypes (`dtypes`), `early` whether the cached experts are guessed and copied ahead (the `MoeEarly` step).
+/// Kimi-K3's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::kimi`, every tensor named), held to
+/// `describe` with the names left out (the loader's own description names none). `w32` the delta layers' dtypes (`dtypes`), `early` whether the cached experts
+/// are guessed and copied ahead (the `MoeEarly` step).
 pub fn lowered(dir: &Path, c: &ConfigKimi, st: &Stage, w32: &[(bool, bool)], early: bool) -> Result<ModelDesc> {
     let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
     let lowered = super::lower::kimi(&kinds, c.eos.clone(), c.max_pos, st, w32, early)?;
-    super::lower::agree(lowered, &describe(c, st, w32, early)?, &label)
+    super::lower::agree(nameless(&lowered), &describe(c, st, w32, early)?, &label)?;
+    Ok(lowered)
+}
+
+/// `d` with no tensor named (its operations, slots, rings and states alone).
+pub(crate) fn nameless(d: &ModelDesc) -> ModelDesc {
+    ModelDesc { mats: Vec::new(), small: Vec::new(), forms: Vec::new(), ..d.clone() }
 }
 
 /// The executor's description of Kimi-K3 for stage `st`, as the loader indexes what it loads. Each layer's small tensors: its input and post-attention norms, the
