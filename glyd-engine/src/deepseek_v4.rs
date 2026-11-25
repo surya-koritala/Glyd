@@ -7,6 +7,7 @@
 //! the release's inference/model.py and kernel.py (the arithmetic, and where it rounds; src/dsv4_ref.rs is ours).
 
 use crate::ffi::{err, Error, Result};
+use crate::runtime::config::ModelConfig;
 use crate::weights::{eos_ids, num};
 use glyd_gpu::json::{self, Value};
 use std::path::Path;
@@ -78,7 +79,13 @@ impl ConfigV4 {
     }
 
     pub fn parse(text: &str, label: &str, generation: Option<&str>) -> Result<ConfigV4> {
-        let v = json::parse(text).map_err(|e| Error(format!("{label}: {e}")))?;
+        ConfigV4::of(&ModelConfig::parse(text).map_err(|e| e.context(label))?, label, generation)
+    }
+
+    /// `parse` of a config.json parsed once (`ModelConfig`).
+    pub fn of(c: &ModelConfig, label: &str, generation: Option<&str>) -> Result<ConfigV4> {
+        use serde_json::Value;
+        let v = &c.top;
         let arch = v.get("architectures").and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_str).unwrap_or("");
         if arch != "DeepseekV4ForCausalLM" {
             return err(format!("{label}: {arch}: not a DeepSeek-V4 model"));
@@ -127,7 +134,7 @@ impl ConfigV4 {
         if layers > crate::plan::MAX_LAYERS {
             return err(format!("{label}: num_hidden_layers {layers}, where no model has more than {}", crate::plan::MAX_LAYERS));
         }
-        let ratios: Vec<usize> = match v.get("compress_ratios").and_then(Value::as_u64s) {
+        let ratios: Vec<usize> = match v.get("compress_ratios").and_then(crate::runtime::config::u64s) {
             Some(r) => r.iter().map(|&x| x as usize).collect(),
             None => return err(format!("{label}: no compress_ratios")),
         };
@@ -144,7 +151,7 @@ impl ConfigV4 {
             let method = q.get("quant_method").and_then(Value::as_str).unwrap_or("");
             let fmt = q.get("fmt").and_then(Value::as_str).unwrap_or("e4m3");
             let sfmt = q.get("scale_fmt").and_then(Value::as_str).unwrap_or("");
-            let block = q.get("weight_block_size").and_then(Value::as_u64s);
+            let block = q.get("weight_block_size").and_then(crate::runtime::config::u64s);
             if method != "fp8" || fmt != "e4m3" || sfmt != "ue8m0" || block.as_deref() != Some(&[128, 128]) {
                 return refuse(&format!(
                     "a quantization of {method} {fmt}, scales {sfmt:?}, blocks {block:?} (the release's is fp8 e4m3, ue8m0 scales of 128 x 128 blocks)"
@@ -170,7 +177,7 @@ impl ConfigV4 {
         if heads % o_groups != 0 || rope_dim % 2 != 0 || rope_dim > head_dim || rope_dim > idx_dim || head_dim % 64 != 0 || !idx_dim.is_power_of_two() {
             return err(format!("{label}: {heads} heads in {o_groups} groups, heads of {head_dim} with {rope_dim} rotary, indexer heads of {idx_dim}"));
         }
-        let mut eos = eos_ids(&v, generation);
+        let mut eos = eos_ids(v, generation);
         eos.dedup();
         Ok(ConfigV4 {
             hidden: u("hidden_size")?,

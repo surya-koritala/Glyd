@@ -275,26 +275,31 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
         ]);
         let ratio = c.ratio;
         let wscale = (idim as f32).powf(-0.5) * (ih as f32).powf(-0.5);
-        // a compressor of the layer's own (`pre`'s roles: the products of its tokens, their gate, the window bias, the norm) at width `dd`: its op, its cache's state
-        let compressor = |plan: &mut Plan, states: &mut Vec<usize>, pre: &str, dd: usize, indexer: bool, raw: bool| -> Result<(Op, usize)> {
-            let coff = 1 + c.overlap as usize;
-            let w = coff * dd;
-            // (a window of one token has no gate: zeros, whose softmax over the one token is 1; a window with no bias, zeros)
-            let gate =
-                if ratio > 1 || has(roles, &format!("{pre}_gate")) { Piece::Tensor(one(roles, &format!("{pre}_gate"), ab)?) } else { Piece::Zeros(w * d_ * 2) };
-            let wb = plan.small(vec![Piece::Tensor(one(roles, &format!("{pre}_kv"), ab)?), gate]);
-            let ape = plan.small(vec![if c.ape { Piece::Tensor(one(roles, &format!("{pre}_ape"), ab)?) } else { Piece::Zeros(ratio * w * 4) }]);
-            let norm = plan.small(vec![Piece::Tensor(one(roles, &format!("{pre}_norm"), ab)?)]);
-            let cache = states.len();
-            states.push((vo.ctx / ratio + 2) * dd * 2);
-            states.push(coff * ratio * coff * dd * 4);
-            states.push(coff * ratio * coff * dd * 4);
-            let raw = raw.then(|| {
-                states.push((vo.ctx / ratio + 2) * dd * 4);
-                states.len() - 1
-            });
-            Ok((Op::Compress { w: wb, ape, norm, d: dd, ratio, overlap: c.overlap, rope, cache, state: cache + 1, indexer, raw }, cache))
-        };
+        // a compressor of the layer's own (`pre`'s roles: the products of its tokens, their gate, the window bias, the norm) at width `dd`: its op and its entries' ring (paged as
+        // any keys; its raw entries' a ring of the same group), its state the open windows' rows
+        let compressor =
+            |plan: &mut Plan, rings: &mut Vec<Ring>, states: &mut Vec<usize>, pre: &str, dd: usize, indexer: bool, raw: bool| -> Result<(Op, usize)> {
+                let coff = 1 + c.overlap as usize;
+                let w = coff * dd;
+                // (a window of one token has no gate: zeros, whose softmax over the one token is 1; a window with no bias, zeros)
+                let gate = if ratio > 1 || has(roles, &format!("{pre}_gate")) {
+                    Piece::Tensor(one(roles, &format!("{pre}_gate"), ab)?)
+                } else {
+                    Piece::Zeros(w * d_ * 2)
+                };
+                let wb = plan.small(vec![Piece::Tensor(one(roles, &format!("{pre}_kv"), ab)?), gate]);
+                let ape = plan.small(vec![if c.ape { Piece::Tensor(one(roles, &format!("{pre}_ape"), ab)?) } else { Piece::Zeros(ratio * w * 4) }]);
+                let norm = plan.small(vec![Piece::Tensor(one(roles, &format!("{pre}_norm"), ab)?)]);
+                let (cache, state) = (rings.len(), states.len());
+                rings.push(Ring::entries(dd, ratio));
+                states.push(coff * ratio * coff * dd * 4);
+                states.push(coff * ratio * coff * dd * 4);
+                let raw = raw.then(|| {
+                    rings.push(Ring::entries(dd, ratio));
+                    rings.len() - 1
+                });
+                Ok((Op::Compress { w: wb, ape, norm, d: dd, ratio, overlap: c.overlap, rope, cache, state, indexer, raw }, cache))
+            };
         let mut cache = None;
         // (DeepSeek-V4's indexer: its own compressor over windows that overlap, its own queries)
         if let (None, Some(_)) = (&c.share, &c.indexer) {
@@ -304,7 +309,7 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
             let iq = plan.lin(&mut n, vo, one(roles, "idx_q_b", ab)?, (ih * idim, ql, 0), None);
             plan.lins.push(LinLoad { name: one(roles, "idx_weights", ab)?, form: LinForm::Bf16 { slice: true }, f8: false });
             let iw = Lin::next(&mut n, false);
-            let (ic, icache) = compressor(&mut plan, &mut states, "idx", idim, true, false)?;
+            let (ic, icache) = compressor(&mut plan, &mut rings, &mut states, "idx", idim, true, false)?;
             ops.extend([
                 iq.op(Slot::Proj, Slot::Iq, "indexer: q"),
                 Op::IdxQ { rope, heads: ih },
@@ -317,7 +322,7 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
         if ratio > 0 && c.share.is_none_or(|s| s.entries.is_none()) {
             // (a V4.1 kv source with the indexer's key product: its entries before their rotation kept for the keys)
             let keys = c.share.is_some() && has(roles, "idx_k");
-            let (mc, k) = compressor(&mut plan, &mut states, "comp", hd, false, keys)?;
+            let (mc, k) = compressor(&mut plan, &mut rings, &mut states, "comp", hd, false, keys)?;
             let Op::Compress { raw, .. } = mc else { unreachable!() };
             cache = Some(k);
             ops.push(mc);
@@ -326,8 +331,8 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
             if let Some(raw) = raw {
                 let w = plan.small(t("idx_k")?);
                 let norm = plan.small(t("idx_k_norm")?);
-                let keys = states.len();
-                states.push((vo.ctx / ratio + 2) * idim * 2);
+                let keys = rings.len();
+                rings.push(Ring::entries(idim, ratio));
                 ops.push(Op::IdxKeys { w, norm, rope, ratio, raw, keys });
                 made[ab].keys = Some(keys);
             }
@@ -464,6 +469,7 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
         widths,
         mats: Vec::new(),
         small: Vec::new(),
+        forms: Vec::new(),
         ropes: Vec::new(),
         rings,
         first: Op::Streams,
@@ -486,7 +492,7 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
 
 /// The pick of an indexer of `heads` over entries of `ratio` tokens (state `keys`), its `top_k` best kept as entries, its scores the release's bf16 arithmetic.
 fn pick(heads: usize, ratio: usize, top_k: usize, wscale: f32, keys: usize, cand: Option<Cand>) -> IdxPick {
-    IdxPick { heads, ratio, top_k, expand: false, tail: false, wscale, score: IdxScore::Release, keys: IdxKeys::State(keys), weighted: true, cand }
+    IdxPick { heads, ratio, top_k, expand: false, tail: false, wscale, score: IdxScore::Release, keys: IdxKeys::Entries(keys), weighted: true, cand }
 }
 
 /// An n-gram block on the streams (`Body::Ngram`) of block `b`: its rows of the tables into In, their key and value product into Gu, the gated add into the streams.
@@ -644,7 +650,8 @@ mod v4_today {
     }
 
     /// DeepSeek-V4-Flash-0731 lowered at each level's options, whole and as the two halves of a split, is the executor's description it was before V4.1's forms
-    /// (recorded 2026-11-24 from the family's own reader of the config, which the lowering then equalled to the byte, and which this replaces).
+    /// (recorded 2026-11-25 from the family's own reader of the config with its entries in paged rings, which the lowering then equalled to the byte on this
+    /// config and on the random V4, and which this replaces).
     #[test]
     fn deepseek_v4s_lowering_is_the_one_it_had() {
         let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers/DeepSeek-V4-Flash-0731.json");
@@ -658,18 +665,18 @@ mod v4_today {
             }
         }
         let want: [u64; 12] = [
-            18422551062040035380,
-            6625411268502415007,
-            9232789565698451512,
-            17872061318360417240,
-            11387171587237353403,
-            4201236335893943514,
-            11540255576005560982,
-            4992030368343270575,
-            15590549217866133773,
-            16061404301489326487,
-            5702790324434666943,
-            6394119236911243400,
+            6274911006358578454,
+            7960358971613121486,
+            2375456957471879598,
+            9886925887969473836,
+            13957852289930100916,
+            11897994103295081470,
+            11060615554011635558,
+            9430456114592192634,
+            3180334719980402341,
+            7432593811500680815,
+            1689972873128606854,
+            2749147499816240112,
         ];
         assert_eq!(got, want, "{got:#x?}");
     }

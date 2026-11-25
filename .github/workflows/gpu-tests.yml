@@ -71,7 +71,8 @@ jobs:
           "$E" kv12check --case gemma4
           # (the scheduler on 12-bit pages, then with pools made too small for four at once: void pages taken back and run again, every reply the one alone)
           "$E" usercheck gemma4 --users 4 --kv12
-          GLYD_KV12_SHIFT=60 GLYD_KV12_POOL=1,40 "$E" usercheck gemma4 --users 4 --kv12
+          # (values that do not compress, pools of one chunk and the least slabs: the newest sequence paused, no page void, no request failed)
+          GLYD_KV12_SHIFT=60 GLYD_KV12_POOL=1,0 "$E" usercheck gemma4 --users 8 --kv12
       # (its layers are toy ones: tens of megabytes of weights and scratch a case. The GPU's memory is sampled while it runs, the peak printed, and a peak of more than 12,000 MiB of the card's 16,376 fails it:
       # the margin a 16 GB card needs for the driver and the next step)
       - name: Every pack format in tests/data/packs decodes on this GPU to its release's sha256 and its recorded logits (packcheck.rs)
@@ -83,6 +84,9 @@ jobs:
           done
           # (each save that holds the tiny Qwen3, its packs decoded by the GPU library, on the CPU reference against its digest in glyd-engine/tests/packs)
           "$E" packcheck --gpu
+          # (the formats the engine loads a saved directory in, as the glyd/* repos are saved: glyd-v7 at penguin, kestrel, swift, wren and hummingbird, each made from a logits
+          # case's random model by the repos' packer, loaded from the directory and held to the case's fixtures in tests/logits and the Hummingbird digest in tests/packs)
+          "$E" packcheck --engine --scratch "$RUNNER_TEMP/packcheck"
       - name: MoE kernel checks (blocking; the peak GPU memory is printed and held under 12,000 MiB)
         run: |
           base=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1)
@@ -172,6 +176,16 @@ jobs:
         run: |
           "$E" kv12check --case qwen3
           "$E" usercheck qwen3 --users 8 --level penguin --kv12
+      - name: The 12-bit lossless KV pages of the latent attention kind (random Kimi-K3 and GLM-5.3-Flash made here; kvpages.rs kv12check, logits.rs usercheck --kv12)
+        run: |
+          # (a latent is one stream of the pages, its row in heads of 128; its attention reads a sequence's pages unpacked to bf16, so every token reads back and every reply is the bf16 cache's)
+          "$E" kv12check --case kimi
+          "$E" kv12check --case glm
+          "$E" usercheck kimi --users 4 --level penguin --kv12
+          "$E" usercheck glm --users 4 --level penguin --kv12
+          # (pools too small, so steps are taken back: the random model's two latent rings hold 2 + 4 + 6 + 8 pages each for the four replies, 40 raw pages at once with the
+          # bases moved, and the longest alone 16: 24 slabs overflow together and hold any one alone; gemma4's 40 never overflow here)
+          GLYD_KV12_SHIFT=60 GLYD_KV12_POOL=1,24 "$E" usercheck kimi --users 4 --level penguin --kv12
       - name: Logits of every model family against the stored references (glyd-engine/tests/logits, src/logits.rs)
         run: |
           # (a random model of each family's layout with its layer kinds, made here: only models released in the last six months are used, and those are larger than a 16 GB card holds; a fixture's bound is the

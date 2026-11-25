@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Several users at once against a served model (the GPU job's check of the scheduler, issue #138).
 
-Asks each prompt alone, one after another (greedy, the reference), then all of them at once, and compares: with --same every reply at once must be
-the reply alone, token for token (GLYD_ENGINE_BATCH_PREFILL=0); otherwise at least --least of them must be, and none may fail or come back empty
-(prompts run together may take another product route, whose last bits can change a later greedy token). It also checks that the server says it runs
+Asks each prompt alone, one after another (greedy, the reference), then all of them at once, and compares their token ids (log-probabilities with
+`return_tokens_as_token_ids`): with --same every reply at once must be the reply alone, token for token (GLYD_ENGINE_BATCH_PREFILL=0); otherwise at least
+--least of them must be, and none may fail or come back with no token (prompts run together may take another product route, whose last bits can change a
+later greedy token). A reply's text is not what is compared: a random model's tokens can all be ones its tokenizer spells as nothing, alone as at once. It also checks that the server says it runs
 that many at once (/v1/glyd/info, limits.concurrency) and that its decode steps had several rows (/stats, steps_by_rows). The times are printed, not judged: a speed bar
 needs a GPU of its own (glyd-engine/docs/bench.md).
 
@@ -41,6 +42,9 @@ def ask(url, model, prompt, tokens):
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": tokens,
             "temperature": 0,
+            "logprobs": True,
+            "top_logprobs": 0,
+            "return_tokens_as_token_ids": True,
             "chat_template_kwargs": {"enable_thinking": False},
         }
     ).encode()
@@ -48,7 +52,9 @@ def ask(url, model, prompt, tokens):
     t = time.monotonic()
     with urllib.request.urlopen(req, timeout=600) as r:
         out = json.loads(r.read())
-    return out["choices"][0]["message"]["content"], out["usage"]["completion_tokens"], time.monotonic() - t
+    c = out["choices"][0]
+    ids = [x["token"] for x in (c.get("logprobs") or {}).get("content") or []]
+    return c["message"]["content"] or "", out["usage"]["completion_tokens"], time.monotonic() - t, ids
 
 
 def main():
@@ -91,15 +97,16 @@ def main():
     after = get(url + "/stats")
     same = 0
     for i, (p, a1, a2) in enumerate(zip(prompts, alone, together)):
-        if isinstance(a2, Exception) or not a2[0]:
+        if isinstance(a2, Exception) or a2[1] == 0 or not a2[3]:
             print(f"FAIL {i}: {p!r}: {a2!r}")
             fails += 1
             continue
-        eq = a1[0] == a2[0]
+        eq = a1[3] == a2[3]
         same += eq
         print(f"{'same' if eq else 'DIFF'} {i}: {a1[1]} tokens alone in {a1[2]:.2f} s, {a2[1]} at once in {a2[2]:.2f} s: {a2[0][:80]!r}")
         if not eq:
-            print(f"     alone: {a1[0][:200]!r}\n     once:  {a2[0][:200]!r}")
+            k = next((j for j, (x, y) in enumerate(zip(a1[3], a2[3])) if x != y), min(len(a1[3]), len(a2[3])))
+            print(f"     first different token: {k}; alone: {a1[0][:200]!r}\n     once:  {a2[0][:200]!r}")
     rows = [x - y for x, y in zip(after.get("steps_by_rows", []), before.get("steps_by_rows", []))]
     several = sum(rows[2:])
     total = sum(x[1] for x in together if not isinstance(x, Exception))

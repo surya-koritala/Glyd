@@ -6,14 +6,14 @@
 use super::lower_comp::{LinForm, MoeLoad, Piece};
 use super::{Cand, Dyn, IdxPick, ModelDesc, Op, Opts, ResidentMoe, Stage, V4Dims};
 use crate::deepseek_v4::{fp4_runs, freqs};
-use crate::runtime::describe::Source;
-use crate::runtime::kinds::Body;
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result};
 use crate::kern35::Mat;
 use crate::kern_nh::MoeBlock;
 use crate::moe::{Act, ExpertStack, Joined, MoeCfg, MoeLayer, MoeWeights, Router, Scoring, Shared};
 use crate::moe_rows::Down;
+use crate::runtime::describe::Source;
+use crate::runtime::kinds::Body;
 use crate::weights::{as_bytes, pack_words, upload_bytes, upload_packed, Layout, PackBuf};
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
@@ -152,18 +152,21 @@ fn tables(f: &[f32], mp: usize) -> Result<(Buf, Buf)> {
 
 /// The model's layers (its compressed attention blocks), its end tokens (generation_config.json's, else the config's) and its context, from its config.
 pub fn ends(dir: &Path) -> Result<(usize, Vec<i64>, usize)> {
-    use glyd_gpu::json::Value;
     let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
     let layers = kinds.desc.blocks.iter().filter(|b| matches!(b.body, Body::Mixer(_))).count();
-    let top = glyd_gpu::json::parse(&io(std::fs::read_to_string(dir.join("config.json")))?).map_err(|e| Error(format!("{label}: {e}")))?;
-    let tc = top.get("text_config").cloned().unwrap_or_else(|| top.clone());
+    let c = crate::runtime::config::ModelConfig::load(dir)?;
     let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
-    let mut eos = crate::weights::eos_ids(&tc, generation.as_deref());
+    let mut eos = crate::runtime::config::eos_ids(&c.text, generation.as_deref());
     if eos.is_empty() {
-        eos = crate::weights::eos_ids(&top, None);
+        eos = crate::runtime::config::eos_ids(&c.top, None);
     }
     eos.dedup();
-    let max_pos = tc.get("max_position_embeddings").or(top.get("max_position_embeddings")).and_then(Value::as_u64).ok_or_else(|| Error(format!("{label}: no max_position_embeddings")))?;
+    let max_pos = c
+        .text
+        .get("max_position_embeddings")
+        .or(c.top.get("max_position_embeddings"))
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| Error(format!("{label}: no max_position_embeddings")))?;
     Ok((layers, eos, max_pos as usize))
 }
 
@@ -277,7 +280,10 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
                 }
                 let (sc, b) = scaled(&x.name, all, cols)?.ok_or_else(|| Error(format!("{}: held FP8, and it has no scales", x.name)))?;
                 if b != [128, 128] {
-                    return err(format!("{}: FP8 in blocks of {b:?}: the library's FP8 products take blocks of 128 (GLYD_V4_F8=0 holds it as its bf16)", x.name));
+                    return err(format!(
+                        "{}: FP8 in blocks of {b:?}: the library's FP8 products take blocks of 128 (GLYD_V4_F8=0 holds it as its bf16)",
+                        x.name
+                    ));
                 }
                 let q = read(&x.name)?;
                 let gc = cols.div_ceil(128);
@@ -309,7 +315,13 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
         }
     }
     if mats.len() != desc.lm + 1 || f8.len() != plan.lins.iter().filter(|x| x.f8).count() {
-        return err(format!("{label}: {} matrices and {} FP8 ones loaded for a description of {} and {}", mats.len(), f8.len(), desc.lm + 1, plan.lins.iter().filter(|x| x.f8).count()));
+        return err(format!(
+            "{label}: {} matrices and {} FP8 ones loaded for a description of {} and {}",
+            mats.len(),
+            f8.len(),
+            desc.lm + 1,
+            plan.lins.iter().filter(|x| x.f8).count()
+        ));
     }
     // the small tensors: each its pieces one after another (a tensor as stored, zeros, the lowering's numbers, the tokenizer's compressed vocabulary)
     let token_map = || -> Result<Vec<u8>> {
@@ -340,7 +352,13 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
     let mut moe: Vec<Box<dyn MoeBlock>> = Vec::new();
     for ml in &plan.moe {
         crate::status::STATUS.beat();
-        moe.push(experts(&ExpertsAt { ck: &ck, kinds: &kinds, dev: &dev, lib: &lib, hb: hb.as_ref(), caching, store: store.as_ref(), threads, tpr, exact8, sim: vo.sim }, ml, d, &pack, &dense)?);
+        moe.push(experts(
+            &ExpertsAt { ck: &ck, kinds: &kinds, dev: &dev, lib: &lib, hb: hb.as_ref(), caching, store: store.as_ref(), threads, tpr, exact8, sim: vo.sim },
+            ml,
+            d,
+            &pack,
+            &dense,
+        )?);
     }
     let mp = ctx + ch + 16;
     let ropes = plan.ropes.iter().map(|r| tables(&freqs_of(r), mp)).collect::<Result<Vec<_>>>()?;
@@ -371,7 +389,8 @@ type DenseFn<'a> = &'a dyn Fn(&str, usize, usize) -> Result<Vec<u16>>;
 fn experts(x: &ExpertsAt, ml: &MoeLoad, d: usize, pack: PackFn, dense: DenseFn) -> Result<Box<dyn MoeBlock>> {
     // (what the experts' packing threads read: the checkpoint, the scales' names, this GPU's place in a group)
     let (ck, l, m, scales, tpr) = (x.ck, ml.layer, &ml.moe, &x.kinds.scales, x.tpr);
-    if m.router.score != crate::runtime::kinds::RouterScore::SqrtSoftplus || m.router.groups.is_some() || !m.expert.gated || m.shared_gate || m.latent.is_some() {
+    if m.router.score != crate::runtime::kinds::RouterScore::SqrtSoftplus || m.router.groups.is_some() || !m.expert.gated || m.shared_gate || m.latent.is_some()
+    {
         return err(format!("layer {l}'s experts: {m:?}: these experts run the sqrt-softplus router and SwiGLU experts with a shared one"));
     }
     let read = |name: &str| io(ck.read(name));
@@ -388,7 +407,8 @@ fn experts(x: &ExpertsAt, ml: &MoeLoad, d: usize, pack: PackFn, dense: DenseFn) 
             s => err(format!("layer {l}'s experts: role {r} is {s:?}")),
         }
     };
-    let scale_of = |w: &str| scales.get(w).cloned().ok_or_else(|| Error(format!("{w}: an expert stored without its scales: the FP4 layouts take the release's")));
+    let scale_of =
+        |w: &str| scales.get(w).cloned().ok_or_else(|| Error(format!("{w}: an expert stored without its scales: the FP4 layouts take the release's")));
     let (ups, downs) = (per_expert("experts_gate_up")?, per_expert("experts_down")?);
     let (e, k) = (m.experts, m.router.top_k);
     if ups.len() != e || downs.len() != e || ups.iter().any(|u| u.len() != 2) {
@@ -520,7 +540,15 @@ fn experts(x: &ExpertsAt, ml: &MoeLoad, d: usize, pack: PackFn, dense: DenseFn) 
             // (a group of GPUs: this GPU's rows, in whole blocks of 128 of the scales)
             if let Some((rank, n)) = x.tpr.filter(|&(_, n)| rows % (128 * n) == 0) {
                 let (r0, rn, gc) = (rank * rows / n, rows / n, cols.div_ceil(128));
-                let mut m = crate::f8::F8Mat::pack(x.dev, x.lib, &q[r0 * cols..(r0 + rn) * cols], &sc[r0 / 128 * gc..(r0 + rn) / 128 * gc], rn, cols, cfg!(feature = "dev"))?;
+                let mut m = crate::f8::F8Mat::pack(
+                    x.dev,
+                    x.lib,
+                    &q[r0 * cols..(r0 + rn) * cols],
+                    &sc[r0 / 128 * gc..(r0 + rn) / 128 * gc],
+                    rn,
+                    cols,
+                    cfg!(feature = "dev"),
+                )?;
                 m.tp_rows = rows;
                 return Ok(m);
             }
@@ -540,7 +568,12 @@ fn experts(x: &ExpertsAt, ml: &MoeLoad, d: usize, pack: PackFn, dense: DenseFn) 
                     Mat::Dense(..) => err(format!("{name}: rows of a block layout are wanted")),
                 }
             };
-            Shared { inter: i, up: packed(&su, 2 * i, d, &format!("layers.{l}.ffn.shared_experts.w13"))?, down: packed(&dense(&sd, 0, d)?, d, i, sd.trim_end_matches(".weight"))?, gate: None }
+            Shared {
+                inter: i,
+                up: packed(&su, 2 * i, d, &format!("layers.{l}.ffn.shared_experts.w13"))?,
+                down: packed(&dense(&sd, 0, d)?, d, i, sd.trim_end_matches(".weight"))?,
+                gate: None,
+            }
         }
     };
     let cfg = MoeCfg {

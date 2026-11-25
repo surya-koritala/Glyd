@@ -3,9 +3,10 @@
 //!   glyd-engine pack MODEL OUT [--threads N] [--layout auto|mma|mma12|i6|i5|i4]   pack a checkpoint (every matrix, the embedding too); i6, i5 and i4: a lossy level's glyd-v7 directory (Qwen3.5, Nemotron 3 Super: at i4 its experts in four-bit codes, every other matrix in six-bit ones; GLM-5.3-Flash)
 //!   glyd-engine calibrate-experts MODEL OUT [--tokens 32768] [--devices 0,1 --split CUTS] [--context 4096] [--synthetic]   hummingbird's corpus pass (src/hb_usage.rs): the model on the engine over the
 //!                                                             calibration corpus, each MoE layer's router choices counted per expert into the usage file OUT
-//!   glyd-engine tiercheck MODEL [--places 2] [--tokens 24] [--mode copy] [--layout i6] [--dense N]   the dynamic route's model with every expert on GPU 0, then in the expert cache (src/tiering.rs; --dense: its last N layers'
+//!   glyd-engine tiercheck MODEL [--places 2] [--tokens 24] [--mode copy] [--layout i6] [--dense N] [--device]   the dynamic route's model with every expert on GPU 0, then in the expert cache (src/tiering.rs; --dense: its last N layers'
 //!                                                             dense matrices in the computer's memory too, src/dense_ram.rs): every position's logits compared, the same bits in copy mode
-//!   glyd-engine storebench MODEL [--places 16] [--rows 1,8,32] [--steps 8] [--mode auto] [--out FILE]   batched decode through the expert cache: each count of rows' step time and layer statistics (bytes read for
+//!                                                             (--device: the decode calls planned on the GPU, src/devplan.rs, and the decode step one graph, checked)
+//!   glyd-engine storebench MODEL [--places 16] [--rows 1,8,32] [--steps 8] [--mode auto] [--device] [--out FILE]   batched decode through the expert cache: each count of rows' step time and layer statistics (bytes read for
 //!                                                             the misses against the distinct missed experts'), FILE's JSON lines for ceiling --stats (src/tiering.rs)
 //!   glyd-engine pack MODEL OUT --layout hummingbird --usage FILE [--threads N]   a mixture of experts the description builder maps (Kimi-K3, DeepSeek-V4, GLM-5.3, Muse Spark, Qwen3.5/3.8 MoE) at the
 //!                                                             hummingbird level (src/hb_pack.rs): each expert's bits from FILE's counts (calibrate-experts), its rows coded in Rust, the rest copied
@@ -33,13 +34,14 @@
 //!   glyd-engine microbench DIR [--prompt N[,N...]] [--new N] [--ctx N] [--chunk N] [--reps N] [--no-graph] [--layout L]
 //!   glyd-engine kvshapes                                     the lossless KV cache of head dims 128, 256 and 512 (no model): values written, read back bit for bit, and decode and prompt attention against the host's
 //!   glyd-engine kvprefill [--chunk 256] [--prefixes 0,1024,4096,8192] [--reps 20]   the prompt attention over 12-bit pages at gemma-4-12B's shapes against the pages unpacked to a bf16 ring and the bf16 kernel on it
+//!   glyd-engine kvdecode [--lens 40,1024,4096] [--ctx 32768] [--reps 100]   a decode row's attention over 12-bit pages against a bf16 cache of the same values, and its token's 12-bit write, us a call (Qwen3-8B's, gemma-4-12B's, the Qwen3.5 layout's shapes)
 //!   glyd-engine topkcheck                                     the sampling kernels' 64 largest logits of a row and sum of its exponentials against the host's
 //!   glyd-engine sampletime DIR PROMPT [--new N] [--ctx N]     a Qwen3.5 or Nemotron-H model's decode speed by greedy steps, by sampled ones from the GPU's candidates and from the row on the host (the same tokens)
 //!   glyd-engine logitscheck [CASE...] [--fixtures DIR] [--cpu-ref] [--level L] [--list-cases]   each model's engine logits against its fixture in tests/logits (src/logits.rs); logitsrecord CASE --from cpu|engine --out FILE: a fixture made; logitsbound FIXTURE LEVEL=BOUND...: its bounds set; logitsmodel CASE DIR: the case's random model made; usercheck CASE [--users 4] [--level L]: the case's random model (gemma4, qwen35) served by the scheduler, each reply alone and at once against the one-at-a-time reply; paritycheck [CASE...] [--level L]: the hand-written Qwen3.5, Gemma 4 and Nemotron-H engines against the description executor on their R7 fixtures' tokens (R3b); levelcheck [CASE...] [--level L]: each lossy level's KL from penguin on the Qwen3.5, Gemma 4 and Nemotron-H random models, against the per-level thresholds
 //!   glyd-engine packcheck [--gpu] [--record] [--engine [--scratch DIR]]   every pack format of tests/data/packs read and run on the CPU reference against its digest in tests/packs (--gpu: decoded by the GPU library; --record: the digests written); --engine: the formats the engine reads (glyd-v7 penguin, kestrel, swift, wren) made from the logits cases' random models, loaded from the saved directory, against the case's fixtures (src/packcheck.rs)
 //!   glyd-engine kcheck IN_DIR OUT_DIR                        the kernels on inputs tools/kcheck.py wrote
-//!   glyd-engine usercheck CASE [--users N] [--tokens T] [--dir DIR --prompt-tokens P]       a random model of the case (gemma4, qwen35, muse, kimi, glm, nemotron), or the model in DIR, on the description executor: each reply through the scheduler alone and all at once, against the reply alone; with GLYD_ENGINE_PAGES too few for all at once, at once again swapping sequences sent back for room always, by cost, and never (R4d), each run's first-token and between-token times
-//!   glyd-engine roundcheck CASE [--dir MODEL --ctx N --chunk N] [--kl BOUND]   a sequence's logits by what its step holds beside it (other sequences' rows, a prompt's chunk; 2 rows to a chunk's), against its row alone: the bits
+//!   glyd-engine usercheck CASE [--users N] [--tokens T] [--dir DIR --prompt-tokens P [--places N [--mode M] [--device]]] [--stagger D]       a random model of the case (gemma4, qwen35, muse, kimi, glm, nemotron), or the model in DIR, on the description executor: each reply through the scheduler alone and all at once, against the reply alone; with GLYD_ENGINE_PAGES too few for all at once, at once again swapping sequences sent back for room always, by cost, and never (R4d), each run's first-token and between-token times
+//!   glyd-engine roundcheck CASE [--dir MODEL --ctx N --chunk N] [--kl BOUND]   a sequence's logits by what its step holds beside it (other sequences' rows, a prompt's chunk, other prompts in one pass; 2 rows to a chunk's), against its row alone: the bits
 //!                                                             that differ, the largest difference, the KL; and that what the other sequence holds changes nothing (src/logits.rs)
 //!   glyd-engine keepcheck CASE                                a finished sequence kept in its slot and gone on with (a conversation's next turn): against a sequence that ran the same tokens without ending, bit for bit
 //!   glyd-engine twomodels [A B]                               two cases' random models in this process, each with a scheduler and a runtime context of its own: each reply beside the other model against alone
@@ -60,7 +62,7 @@
 //!                                                             logits equal bit for bit (the experts' second matrices in the row layout, the sparse product; GLYD_ENGINE_DENSE_DOWN=1: the block layout, the dense one); with a mode that computes the pairs of missed
 //!                                                             experts on the CPU, within two places of bf16 of the largest logit (`logits_within`); --host-memory (a Hummingbird directory): the same passes again with every expert in the computer's
 //!                                                             memory and with no more than that many GiB of them (the rest read from the directory), every logit the same to the bit in the mode asked for
-//!   glyd-engine glmkernels IN_DIR OUT_DIR                     GLM-5.3-Flash's kernels on the inputs tools/glm_ref.py wrote (src/kcheck_glm.rs); glmlayers DIR IO_DIR: whole layers of the real model or of a random tiny one; glmtoy DIR IO_DIR: the tiny model whole; glmmtpreal SNAPSHOT REF_DIR OUT_DIR --layout i6|i5|i4: the real MTP head on the reference's hidden states; glmreal SNAPSHOT REF_DIR OUT_DIR --layers FIRST:END --layout i6|i5|i4 [--teacher]: the real model's layers one at a time against a reference's streams; glmmtp DIR IO_DIR: the MTP head on the tiny model's hidden states; glmspec DIR IO_DIR: a draft verified in one pass and the delta rules rewound after it, the tokens the same as greedy decode's whatever the drafts; glmprof DIR --layers L,L [--ctx N] [--reps N]: where a decode step of a layer spends its time, stage by stage in a graph's replay; glmdequant DIR OUT_DIR [--match TEXT]: its FP8 matrices as the loader reads them (bf16); glmdecode DIR OUT_DIR --layers L,L --layout i6|i5|i4: the packs of a mixture-of-experts layer's block decoded to bf16
+//!   glyd-engine glmrandom OUT [--fp8] [--real --layers N --experts N]  a random GLM-5.3-Flash in Hub format (src/glm.rs `random`): the executor's logits, user, 12-bit and tier checks' model
 //!
 //! `generate`, `check`, `microbench` and `sampletime` run a Qwen3.5 model or a Llama-style dense one (Qwen3; its config.json says which: a directory in the Hub's layout or a glyd-v7 one, or a Hub
 //! id in the cache) on the description executor (src/dynamic/qwen35.rs, src/dynamic/dense.rs), one sequence, packed in memory as it loads (--layout auto|mma|mma12|i6|i5|i4).
@@ -96,6 +98,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
             Ok(())
         }
         "kvprefill" => glyd_engine::kvshapes::bench(a),
+        "kvdecode" => glyd_engine::kvshapes::decode_bench(a),
         // the planner's predictions against this machine, gated, and a calibration record a case (src/plancheck.rs)
         "plancheck" => std::process::exit(glyd_engine::plancheck::cmd(a)),
         "bandwidth" => {
@@ -246,46 +249,11 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
                 layers.split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--layers {x}: not a number")))).collect::<Result<_>>()?;
             glyd_engine::kcheck_nh::decode(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "OUT_DIR")?), &layers, a.num("tokens", 333usize)?)
         }
-        "glmkernels" => glyd_engine::kcheck_glm::kernels(Path::new(a.need(1, "IN_DIR")?), Path::new(a.need(2, "OUT_DIR")?)),
-        "glmlayers" => glyd_engine::kcheck_glm::layers(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "IO_DIR")?)),
-        "glmdyn" => {
-            let (cuts, devices) = glyd_engine::dynamic::split::split_args(&a)?;
-            glyd_engine::kcheck_glm::dyn_check(
-                Path::new(a.need(1, "DIR")?),
-                a.num("tokens", 48)?,
-                a.has("old"),
-                a.layout()?.unwrap_or(glyd_engine::weights::Layout::Int6),
-                &cuts,
-                &devices,
-            )
-        }
-        "glmrandom" => glyd_engine::kcheck_glm::random(
+        "glmrandom" => glyd_engine::glm::random(
             Path::new(a.need(1, "OUT")?),
             a.has("fp8"),
             if a.has("real") { Some((a.num("layers", 4)?, a.num("experts", 32)?)) } else { None },
         ),
-        "glmtoy" => glyd_engine::kcheck_glm::toy(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "IO_DIR")?)),
-        "glmmtpreal" => {
-            let level = a.layout()?.ok_or_else(|| Error("glmmtpreal needs --layout i6, i5 or i4".into()))?;
-            glyd_engine::kcheck_glm::mtp_real(Path::new(a.need(1, "SNAPSHOT")?), Path::new(a.need(2, "REF_DIR")?), Path::new(a.need(3, "OUT_DIR")?), level)
-        }
-        "glmreal" => {
-            let range = a.flag("layers").ok_or_else(|| Error("glmreal needs --layers FIRST:END".into()))?;
-            let (first, end) = range
-                .split_once(':')
-                .and_then(|(x, y)| Some((x.parse::<usize>().ok()?, y.parse::<usize>().ok()?)))
-                .ok_or_else(|| Error(format!("--layers {range}: not FIRST:END")))?;
-            let level = a.layout()?.ok_or_else(|| Error("glmreal needs --layout i6, i5 or i4".into()))?;
-            glyd_engine::kcheck_glm::real(
-                Path::new(a.need(1, "SNAPSHOT")?),
-                Path::new(a.need(2, "REF_DIR")?),
-                Path::new(a.need(3, "OUT_DIR")?),
-                first,
-                end,
-                level,
-                a.flag("teacher").is_some(),
-            )
-        }
         "qxlayers" => {
             if !glyd_engine::kcheck_qwen4x::layers(Path::new(a.need(1, "MODEL")?), Path::new(a.need(2, "REF")?), a)? {
                 std::process::exit(1);
@@ -314,26 +282,6 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
                 std::process::exit(1);
             }
             Ok(())
-        }
-        "glmserve" => glyd_engine::glm_serve::serve(Path::new(a.need(1, "CKPT")?), Path::new(a.need(2, "PACK")?), a),
-        "glmcbtest" => glyd_engine::glm_serve::cb_test(Path::new(a.need(1, "PACK")?), Path::new(a.need(2, "TESTVEC")?)),
-        "glmcbblock" => glyd_engine::glm_serve::cb_block(Path::new(a.need(1, "CKPT")?), Path::new(a.need(2, "PACK")?), a),
-        "glmmtp" => glyd_engine::kcheck_glm::mtp(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "IO_DIR")?)),
-        "glmspec" => glyd_engine::kcheck_glm::spec(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "IO_DIR")?)),
-        "glmprof" => {
-            let layers = a.flag("layers").ok_or_else(|| Error("glmprof needs --layers L,L,...".into()))?;
-            let layers: Vec<usize> =
-                layers.split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--layers {x}: not a number")))).collect::<Result<_>>()?;
-            let num = |k: &str, d: usize| -> Result<usize> { a.flag(k).map_or(Ok(d), |v| v.parse().map_err(|_| Error(format!("--{k} {v}: not a number")))) };
-            glyd_engine::kcheck_glm::prof(Path::new(a.need(1, "DIR")?), &layers, num("ctx", 2600)?, num("reps", 20)?)
-        }
-        "glmdequant" => glyd_engine::kcheck_glm::fp8(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "OUT_DIR")?), a.flag("match")),
-        "glmdecode" => {
-            let layers = a.flag("layers").ok_or_else(|| Error("glmdecode needs --layers L,L,...".into()))?;
-            let layers: Vec<usize> =
-                layers.split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--layers {x}: not a number")))).collect::<Result<_>>()?;
-            let level = a.layout()?.ok_or_else(|| Error("glmdecode needs --layout i6, i5 or i4".into()))?;
-            glyd_engine::kcheck_glm::decode(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "OUT_DIR")?), &layers, level)
         }
         _ => err("usage: glyd-engine run|serve|doctor|login|supports|fetch|prepare, or a development command (see the top of src/devcmd.rs)"),
     }

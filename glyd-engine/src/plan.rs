@@ -773,57 +773,98 @@ const SYNC_PER_MOE_LAYER: f64 = 0.165e-3;
 /// tokens/s, Qwen3.5-0.8B at kestrel 27,073 (two constants from two runs: fitted, in-sample).
 const PROMPT_EFF: f64 = 0.92;
 const PROMPT_LAYER_S: f64 = 1.11e-6;
+/// The same products' time said against the GPU's streamed memory rate, as the figures are fitted (`Consts::f`): the RTX 4080 SUPER's 104.5 TFLOPS at
+/// `PROMPT_EFF` over its 697.35 GB/s. Across classes the engine's prompt products follow the memory rate more closely than the tensor rate a maker gives:
+/// each class's prompt runs predicted from the other classes' records came to a mean 18-25% off said against the stream (RTX 4080 SUPER, A100 SXM4 40GB,
+/// A10, with Qwen3-8B's runs among them), 27-42% against the tensor rate.
+const PROMPT_F: f64 = 697.35e9 / (PROMPT_EFF * 104.5e12);
 /// The band a prediction is given in where no run on the GPU was observed (p10 and p90 against the prediction): the runs these figures are calibrated on (above, and
 /// `predictions_match_what_was_measured`'s) came to 0.91-1.02 of their predictions on the GPUs they were measured on; another GPU's kernels may differ more.
 pub const SPREAD: [f64; 3] = [0.90, 1.0, 1.10];
 
 // ---- the calibration records: each GPU class's figures -------------------------------------------------------------------------------------------------------------------
 
-/// The figures a decode step and a prompt token are predicted with, for a GPU class. A decode step takes: its weights' bytes over the streamed rate times `w`, its
-/// keys' and values' bytes over that rate times `kv` (attention reads them at its own share of the rate), and a floor of `layer_s` + `width_s` x the hidden width a
-/// layer (its kernels' launches and their least times). A prompt token takes: its products over the tensor rate times `f`, `prompt_layer_s` a layer, and its
-/// attention's reads (the keys and values of the positions before it) over the streamed rate times `attn`. (`w`, `kv`, `f`, `attn`: the inverse of the share of
-/// the rate each reaches.)
+/// The figures a decode step and a prompt token are predicted with, for a GPU class. A decode step of `rows` sequences takes: its weights' bytes, read once for
+/// all of them, over the streamed rate times `w` (`wl` for the lossless layout, decoded in the product), every sequence's keys' and values' bytes over that rate
+/// times `kv` (attention reads them at its own share of the rate), a floor of `layer_s` + `width_s` x the hidden width a layer (its kernels' launches and their
+/// least times), and `row_s` a layer for each row past the first (a row's attention and the work of its own the weights do not share). A prompt token takes: its
+/// products over the tensor rate times `f`, `prompt_layer_s` a layer, and its attention's reads (the keys and values of the positions before it) over the
+/// streamed rate times `attn`. (`w`, `wl`, `kv`, `f`, `attn`: the inverse of the share of the rate each reaches.)
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Consts {
     pub w: f64,
+    pub wl: f64,
     pub kv: f64,
     pub layer_s: f64,
     pub width_s: f64,
+    pub row_s: f64,
+    /// the 12-bit lossless layout's weights (a layout and kernels of their own: Qwen3-8B on the A100 and the A10 read a byte faster than their packs; no shipped
+    /// record has it, so it is the packs' share until a recent release's penguin run is recorded)
+    pub w12: f64,
     pub f: f64,
     pub prompt_layer_s: f64,
     pub attn: f64,
 }
 
 impl Consts {
-    fn decode(&self) -> [f64; 4] {
-        [self.w, self.kv, self.layer_s, self.width_s]
+    fn decode(&self) -> [f64; 7] {
+        [self.w, self.wl, self.kv, self.layer_s, self.width_s, self.row_s, self.w12]
     }
     fn prompt(&self) -> [f64; 3] {
         [self.f, self.prompt_layer_s, self.attn]
     }
 
-    /// A decode step's seconds: `weights` and `kv` bytes read at `rate` (bytes a second; the lossless layout's weights at `EFF_LOSSLESS`'s share), `layers` of
-    /// `hidden` width.
-    pub fn step_s(&self, rate: f64, weights: f64, kv: f64, layers: f64, hidden: f64, lossless: bool) -> f64 {
-        let w = if lossless { self.w * EFF_LOSSY / EFF_LOSSLESS } else { self.w };
-        (weights * w + kv * self.kv) / rate + layers * (self.layer_s + self.width_s * hidden)
+    /// A decode step's seconds from its row of features (`rows_of`'s).
+    fn decode_s(&self, x: &[f64; 7]) -> f64 {
+        self.decode().iter().zip(x).map(|(c, x)| c * x).sum()
     }
 
-    /// A prompt token's seconds: `flops` of products at `tflops`, `layers`, `attn` bytes of attention's reads at `rate`.
-    pub fn token_s(&self, tflops: f64, flops: f64, layers: f64, attn: f64, rate: f64) -> f64 {
-        flops * self.f / (tflops * 1e12) + layers * self.prompt_layer_s + attn * self.attn / rate
+    /// The weights' share of the rate a step reads them at: the packs', the tiered lossless layout's or the 12-bit one's.
+    fn w_of(&self, read: Read) -> f64 {
+        match read {
+            Read::Packs => self.w,
+            Read::Tiered => self.wl,
+            Read::Twelve => self.w12,
+        }
+    }
+
+    /// A decode step's seconds: `weights` and `kv` bytes read at `rate` (bytes a second), `layers` of `hidden` width, `rows` sequences (their keys and values in
+    /// `kv`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn step_s(&self, rate: f64, weights: f64, kv: f64, layers: f64, hidden: f64, read: Read, rows: f64) -> f64 {
+        (weights * self.w_of(read) + kv * self.kv) / rate + self.floor_s(layers, hidden, rows)
+    }
+
+    /// A decode step's time besides its reads: `layers` of `hidden` width, `rows` sequences.
+    fn floor_s(&self, layers: f64, hidden: f64, rows: f64) -> f64 {
+        layers * (self.layer_s + self.width_s * hidden + self.row_s * (rows - 1.0).max(0.0))
+    }
+
+    /// A prompt token's seconds: `flops` of products and `attn` bytes of attention's reads, each at its share of the streamed `rate`, and `layers`.
+    pub fn token_s(&self, flops: f64, layers: f64, attn: f64, rate: f64) -> f64 {
+        (flops * self.f + attn * self.attn) / rate + layers * self.prompt_layer_s
     }
 }
 
 /// The figures where no record says otherwise: the RTX 4080 SUPER's (sm89), fitted on its runs (above).
-pub const DEFAULT_CONSTS: Consts =
-    Consts { w: 1.0 / EFF_LOSSY, kv: 1.0 / EFF_LOSSY, layer_s: LAYER_S, width_s: 0.0, f: 1.0 / PROMPT_EFF, prompt_layer_s: PROMPT_LAYER_S, attn: 0.0 };
+/// (No run of several rows on it: no time a row besides its reads.)
+pub const DEFAULT_CONSTS: Consts = Consts {
+    w: 1.0 / EFF_LOSSY,
+    wl: 1.0 / EFF_LOSSLESS,
+    kv: 1.0 / EFF_LOSSY,
+    layer_s: LAYER_S,
+    width_s: 0.0,
+    row_s: 0.0,
+    w12: 1.0 / EFF_LOSSY,
+    f: PROMPT_F,
+    prompt_layer_s: PROMPT_LAYER_S,
+    attn: 0.0,
+};
 /// How far a figure may move from the one it starts from for each unit of evidence against it: the ridge of the fit (`fit_rows`), in the figure's own scale.
 const RIDGE: f64 = 0.001;
 /// The scale of each decode and prompt figure, for the ridge (a figure that starts at 0 is held near 0 on this scale).
-const DECODE_SCALE: [f64; 4] = [1.0, 4.0, 35e-6, 1e-8];
-const PROMPT_SCALE: [f64; 3] = [1.0, 1.0e-6, 10.0];
+const DECODE_SCALE: [f64; 7] = [1.0, 1.0, 4.0, 35e-6, 1e-8, 35e-6, 1.0];
+const PROMPT_SCALE: [f64; 3] = [0.01, 1.0e-6, 10.0];
 
 /// `glyd-engine plancheck`'s records (`glyd-calib/1`, a JSON object a line), the ones shipped: the runs measured on each GPU class so far. More are collected
 /// from other machines' `plancheck` files and added here.
@@ -910,10 +951,21 @@ fn fit_rows<const N: usize>(rows: &[([f64; N], f64)], prior: [f64; N], scale: [f
     }
 }
 
+/// The seconds of other users' prompts in the median user's decode, where `n` users send a prompt of `prompt` tokens at once (bench's loads): the scheduler reads
+/// the prompts in turn, and each user's reply runs beside the prompts read after its own, (n - 1) / 2 of them for the median one. Measured on an A100 (m2-stage2):
+/// Qwen3.5-0.8B's 8 users took 154.5 tokens/s each on short prompts and 127.3 on 1k ones, where 127 steps of the first and 3.5 prompts of 994 tokens at
+/// 20,206 tokens/s come to 127.8.
+pub fn prompt_wait(n: usize, prompt: f64, prefill: f64) -> f64 {
+    if n <= 1 || prefill <= 0.0 {
+        return 0.0;
+    }
+    (n - 1) as f64 / 2.0 * prompt / prefill
+}
+
 /// The decode and prompt rows of records (features against seconds): a decode step for the runs whose weights were all on the GPU (a drafting run's tokens a step
-/// divided out), a prompt token for the runs of one user.
+/// divided out; the weights' bytes the lossless layout's or the packs', and the rows past the first a layer), a prompt token for the runs of one user.
 #[allow(clippy::type_complexity)]
-fn rows_of(records: &[&serde_json::Value]) -> (Vec<([f64; 4], f64)>, Vec<([f64; 3], f64)>) {
+fn rows_of(records: &[&serde_json::Value]) -> (Vec<([f64; 7], f64)>, Vec<([f64; 3], f64)>) {
     let (mut dec, mut pre) = (Vec::new(), Vec::new());
     for r in records {
         let f = |k: &str| r["features"][k].as_f64();
@@ -923,26 +975,46 @@ fn rows_of(records: &[&serde_json::Value]) -> (Vec<([f64; 4], f64)>, Vec<([f64; 
         }
         let hidden = f("hidden").unwrap_or(0.0);
         if let (Some(w), Some(kv), Some(tok_s)) = (f("weight_bytes"), f("kv_bytes"), r["measured"]["decode"].as_f64()) {
-            let w = if r["features"]["lossless"] == true { w * EFF_LOSSY / EFF_LOSSLESS } else { w };
-            if tok_s > 0.0 {
-                dec.push(([w / rate, kv / rate, layers, layers * hidden], f("gain").unwrap_or(1.0) / tok_s));
+            let (w, wl, w12) = match (r["features"]["lossless"] == true, r["features"]["twelve"] == true) {
+                (true, true) => (0.0, 0.0, w),
+                (true, false) => (0.0, w, 0.0),
+                _ => (w, 0.0, 0.0),
+            };
+            let users = r["users"].as_u64().unwrap_or(1) as usize;
+            // (a step's time: where the users sent their prompts at once, a reply's seconds less the other users' prompts it waited for, over its steps)
+            let made = r["made"].as_f64().map(|m| m - 1.0).filter(|m| *m > 0.0);
+            let wait = match (made, r["measured"]["prompt_tokens"].as_f64(), r["measured"]["prefill"].as_f64()) {
+                (Some(m), Some(p), Some(pf)) => prompt_wait(users, p, pf) / m,
+                _ => 0.0,
+            };
+            let step = 1.0 / tok_s - wait;
+            if tok_s > 0.0 && step > 0.0 {
+                let more = (users.max(1) - 1) as f64 * layers;
+                dec.push(([w / rate, wl / rate, kv / rate, layers, layers * hidden, more, w12 / rate], f("gain").unwrap_or(1.0) * step));
             }
         }
-        if let (Some(t), Some(flops), Some(tok_s)) = (r["tflops"].as_f64(), f("prompt_flops"), r["measured"]["prefill"].as_f64()) {
-            if t > 0.0 && tok_s > 0.0 && r["users"].as_u64() == Some(1) {
-                pre.push(([flops / (t * 1e12), layers, f("attn_bytes").unwrap_or(0.0) / rate], 1.0 / tok_s));
+        if let (Some(flops), Some(tok_s)) = (f("prompt_flops"), r["measured"]["prefill"].as_f64()) {
+            if tok_s > 0.0 && r["users"].as_u64() == Some(1) {
+                pre.push(([flops / rate, layers, f("attn_bytes").unwrap_or(0.0) / rate], 1.0 / tok_s));
             }
         }
     }
     (dec, pre)
 }
 
-/// The figures `records` fit, starting from `prior`.
+/// The figures `records` fit, starting from `prior`. Records with no run of a lossless layout keep its share in the prior's ratio to the packs': the layout
+/// moves with the class's reads, not apart from them.
 pub fn fit_consts(records: &[&serde_json::Value], prior: Consts) -> Consts {
     let (dec, pre) = rows_of(records);
-    let d = if dec.is_empty() { prior.decode() } else { fit_rows(&dec, prior.decode(), DECODE_SCALE) };
+    let mut d = if dec.is_empty() { prior.decode() } else { fit_rows(&dec, prior.decode(), DECODE_SCALE) };
+    let p0 = prior.decode();
+    for i in [1, 6] {
+        if !dec.iter().any(|(x, _)| x[i] > 0.0) {
+            d[i] = d[0] * p0[i] / p0[0];
+        }
+    }
     let p = if pre.is_empty() { prior.prompt() } else { fit_rows(&pre, prior.prompt(), PROMPT_SCALE) };
-    Consts { w: d[0], kv: d[1], layer_s: d[2], width_s: d[3], f: p[0], prompt_layer_s: p[1], attn: p[2] }
+    Consts { w: d[0], wl: d[1], kv: d[2], layer_s: d[3], width_s: d[4], row_s: d[5], w12: d[6], f: p[0], prompt_layer_s: p[1], attn: p[2] }
 }
 
 /// Where a class's figures come from: its own records (a fitted point), the other classes' (an extrapolation), or none (the defaults).
@@ -966,7 +1038,7 @@ pub struct Prior {
 /// Measured over predicted, decode, for records predicted from `c`.
 fn ratios(records: &[&serde_json::Value], c: Consts) -> Vec<f64> {
     let (dec, _) = rows_of(records);
-    dec.iter().map(|(x, y)| (c.w * x[0] + c.kv * x[1] + c.layer_s * x[2] + c.width_s * x[3]) / y).collect()
+    dec.iter().map(|(x, y)| c.decode_s(x) / y).collect()
 }
 
 /// p10, p50 and p90 of ratios (`SPREAD` where there are fewer than three).
@@ -995,7 +1067,7 @@ fn quantiles(mut x: Vec<f64>) -> [f64; 3] {
 pub fn prior_from(records: &[serde_json::Value], class: &str) -> Prior {
     let of = |k: &str| records.iter().filter(|r| r["class"].as_str() == Some(k)).collect::<Vec<_>>();
     let others = others_of(records, class);
-    let base = if others.is_empty() { DEFAULT_CONSTS } else { fit_consts(&others, DEFAULT_CONSTS) };
+    let base = base_of(records, class);
     let own = of(class);
     if own.is_empty() {
         // (leave-one-class-out over the classes that have records)
@@ -1004,9 +1076,8 @@ pub fn prior_from(records: &[serde_json::Value], class: &str) -> Prior {
         classes.dedup();
         let mut x = Vec::new();
         for k in classes {
-            let rest = others_of(records, k);
-            if !rest.is_empty() {
-                x.extend(ratios(&of(k), fit_consts(&rest, DEFAULT_CONSTS)));
+            if records.iter().any(|r| r["class"].as_str() != Some(k)) {
+                x.extend(ratios(&of(k), base_of(records, k)));
             }
         }
         let source = if others.is_empty() { Source::Default } else { Source::Others };
@@ -1020,6 +1091,25 @@ pub fn prior_from(records: &[serde_json::Value], class: &str) -> Prior {
         x.extend(ratios(&own[i..=i], fit_consts(&rest, base)));
     }
     Prior { consts: fit_consts(&own, base), source: Source::Own, records: own.len(), band: quantiles(x) }
+}
+
+/// The figures a class starts from before its own records: the decode figures the classes `others_of` gives it fit (from the defaults), and the prompt figures
+/// every other class's records fit (a kin's few prompts leave its three figures loose: the A10's prompts from the RTX 4080 SUPER's four came out 120% off on
+/// the mean, from every other class's 19%; its decode from the kin 17.6%, from every other class 10.8%, but the 4080 SUPER's from every other 23.9% against
+/// 14.5% from its kin: decode keeps the kin. Those with Qwen3-8B's runs among the records; without them, prompts 17.7%). Where none of the kin ran a step of several rows, a row's time is the one every other class's records fit.
+fn base_of(records: &[serde_json::Value], class: &str) -> Consts {
+    let kin = others_of(records, class);
+    if kin.is_empty() {
+        return DEFAULT_CONSTS;
+    }
+    let rest: Vec<&serde_json::Value> = records.iter().filter(|r| r["class"].as_str() != Some(class)).collect();
+    let all = fit_consts(&rest, DEFAULT_CONSTS);
+    let mut base = fit_consts(&kin, DEFAULT_CONSTS);
+    (base.f, base.prompt_layer_s, base.attn) = (all.f, all.prompt_layer_s, all.attn);
+    if !kin.iter().any(|r| r["users"].as_u64().is_some_and(|u| u > 1)) {
+        base.row_s = all.row_s;
+    }
+    base
 }
 
 /// The records a class with none of its own is fitted on: the other classes of its kind of memory (`hbm_class`) where there are any, else every other class.
@@ -1053,7 +1143,7 @@ pub fn score_classes(records: &[serde_json::Value]) -> Vec<(String, Vec<f64>, Ve
     classes.dedup();
     let err = |rs: &[&serde_json::Value], c: Consts| -> (Vec<f64>, Vec<f64>) {
         let (dec, pre) = rows_of(rs);
-        let d = dec.iter().map(|(x, y)| y / (c.w * x[0] + c.kv * x[1] + c.layer_s * x[2] + c.width_s * x[3]) - 1.0).collect();
+        let d = dec.iter().map(|(x, y)| y / c.decode_s(x) - 1.0).collect();
         let p = pre.iter().map(|(x, y)| y / (c.f * x[0] + c.prompt_layer_s * x[1] + c.attn * x[2]) - 1.0).collect();
         (d, p)
     };
@@ -1061,8 +1151,7 @@ pub fn score_classes(records: &[serde_json::Value]) -> Vec<(String, Vec<f64>, Ve
         .into_iter()
         .map(|k| {
             let own: Vec<&serde_json::Value> = records.iter().filter(|r| r["class"].as_str() == Some(k.as_str())).collect();
-            let rest = others_of(records, &k);
-            let base = if rest.is_empty() { DEFAULT_CONSTS } else { fit_consts(&rest, DEFAULT_CONSTS) };
+            let base = base_of(records, &k);
             let (dec, pre) = err(&own, base);
             let mut loo = Vec::new();
             for i in 0..own.len() {
@@ -1074,8 +1163,34 @@ pub fn score_classes(records: &[serde_json::Value]) -> Vec<(String, Vec<f64>, Ve
         .collect()
 }
 
-/// The share of expert reads a cache holding a share `f` of the experts serves: experts are used unevenly (Condor: 70-76% at about a quarter).
-const HIT_EXPONENT: f64 = 0.23;
+/// The share of expert reads a cache holding a share `f` of the experts serves at one row, f^HIT_EXPONENT: experts are used unevenly and a sequence uses its own again (Condor: 70-76% at about a quarter;
+/// the Nemotron 3 Super decode traces' least-recently-used places: 61, 73 and 80% at 17, 32 and 46%, where this says 67, 77 and 84: offload.rs's test). A router that chooses uniformly (a random model's) is 1.
+pub const HIT_EXPONENT: f64 = 0.23;
+/// How fast the reuse of the places between steps goes as a step's rows' distinct experts fill them (`step_hit`), fitted to the Nemotron 3 Super decode traces at 4 to 20 rows (offload.rs's test).
+const ROWS_DECAY: f64 = 0.55;
+
+/// The distinct experts `users` rows choose a step in a layer of `experts` choosing `topk` each, in one row's experts (k): E (1 - (1 - k/E)^U) / k, as a router choosing uniformly makes them, and at least one row's.
+pub fn step_distinct(experts: usize, topk: usize, users: usize) -> f64 {
+    if experts == 0 || topk == 0 || users <= 1 {
+        return 1.0;
+    }
+    let (e, k) = (experts as f64, topk as f64);
+    (e * (1.0 - (1.0 - k / e).powf(users.max(1) as f64)) / k).max(1.0)
+}
+
+/// The share of a step's distinct experts a layer's cache of `places` of its `experts` finds there, for `users` rows (`topk` each): f^s at one row (f the places' share, s `skew`: `HIT_EXPONENT` for a release's
+/// router, 1 for a uniform one), the exponent going to 1 as the step's distinct experts D fill the places, s + (1 - s)(1 - exp(-ROWS_DECAY (D - k) / places)): what the places keep between steps is what the step's
+/// other rows have not taken. A uniform router's share is f at any rows.
+pub fn step_hit(experts: usize, topk: usize, places: usize, users: usize, skew: f64) -> f64 {
+    let f = (places as f64 / experts.max(1) as f64).min(1.0);
+    let fill = (step_distinct(experts, topk, users) - 1.0) * topk as f64 / places.max(1) as f64;
+    f.powf(skew + (1.0 - skew) * (1.0 - (-ROWS_DECAY * fill).exp()))
+}
+
+/// A step's distinct missed experts of a layer in one row's experts (k), each read once for all its rows: `step_distinct` (1 - `step_hit`); 1 - f^s at one row.
+pub fn step_misses(experts: usize, topk: usize, places: usize, users: usize, skew: f64) -> f64 {
+    step_distinct(experts, topk, users) * (1.0 - step_hit(experts, topk, places, users, skew))
+}
 /// The rate an expert's bytes come from an NVMe disk in direct reads of whole experts, 16 in flight (src/disk.rs), GB/s: a planning figure.
 pub const DISK_GBS: f64 = 3.0;
 
@@ -1295,7 +1410,7 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
         let experts = sh.routed * ebits / 8.0;
         let weights = rest + experts;
         let (wb, kvb) = reads_of(sh, bits, ebits, ask.positions(), 1.0);
-        let w_share = if lossless(level, sh) { d0.consts.w * EFF_LOSSY / EFF_LOSSLESS } else { d0.consts.w };
+        let w_share = d0.consts.w_of(read_of(level, sh, d0, None));
         let (read, eff) = (wb + kvb * d0.consts.kv / w_share, 1.0 / w_share);
         // the largest context that fits in `budget` bytes once `fixed` are placed
         let ctx_in = |budget: f64, fixed: f64| -> Option<usize> {
@@ -1592,6 +1707,16 @@ impl LoadPlan {
     }
 }
 
+/// The bits a weight of each part takes in plan `lp` on `d`: the level's (`level_bits`), and at penguin the layout the loader took (`LoadPlan::layout`: the 12-bit
+/// one where it decodes faster and fits, `best_layout`; Qwen3-8B on an A10 loaded 11.10 GB in it, where the level's 10.75 bits counted 10.17).
+fn plan_bits(lp: &LoadPlan, sh: &Shape, d: &Device) -> Option<(f64, f64)> {
+    let (bits, ebits) = level_bits(lp.level, sh, d)?;
+    Some(match lp.layout {
+        crate::weights::Layout::Twelve | crate::weights::Layout::Tiered if lossless(lp.level, sh) => (sizing::bits(lp.layout), ebits),
+        _ => (bits, ebits),
+    })
+}
+
 /// Bytes a decode step of `users` sequences reads at `bits` (`ebits` the routed experts') at `positions` positions each: the weights (the matrices it reads whole:
 /// the head, the embedding where it is tied, the dense ones; and the routed experts the sequences' tokens choose, as many as uniform choices make between them),
 /// and every sequence's keys and values.
@@ -1611,15 +1736,36 @@ fn kv_at(sh: &Shape, positions: f64) -> f64 {
     sh.kv_full * positions + sh.kv_sliding * positions.min(sh.window.max(1) as f64)
 }
 
-/// Whether `level` is the lossless layout of a bf16 release (its weights decoded in the product: `EFF_LOSSLESS`).
+/// Whether `level` is the lossless layout of a bf16 release (its weights decoded in the product).
 fn lossless(level: &str, sh: &Shape) -> bool {
     level == "penguin" && sh.release_bits > 8.0
+}
+
+/// Which of a class's weight shares a step reads at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Read {
+    Packs,
+    Tiered,
+    Twelve,
+}
+
+/// The share level `level` reads its weights at on `d` (`layout`: the plan's, where there is one; else the level's rule, `level_bits`'s).
+fn read_of(level: &str, sh: &Shape, d: &Device, layout: Option<crate::weights::Layout>) -> Read {
+    if !lossless(level, sh) {
+        return Read::Packs;
+    }
+    match layout {
+        Some(crate::weights::Layout::Twelve) => Read::Twelve,
+        Some(crate::weights::Layout::Tiered) => Read::Tiered,
+        _ if matches!(d.cc, (8, 0) | (9, 0) | (10, 0)) => Read::Twelve,
+        _ => Read::Tiered,
+    }
 }
 
 /// A decode step's seconds for `users` at `positions` on `d` with every weight on it.
 fn step_on(sh: &Shape, d: &Device, level: &str, bits: f64, ebits: f64, positions: f64, users: usize) -> f64 {
     let (w, kv) = reads_of(sh, bits, ebits, positions, users as f64);
-    d.consts.step_s(d.rate(), w, kv, sh.layers as f64, sh.hidden as f64, lossless(level, sh))
+    d.consts.step_s(d.rate(), w, kv, sh.layers as f64, sh.hidden as f64, read_of(level, sh, d, None), users as f64)
 }
 
 /// A prompt token's attention reads at a prompt of `n` tokens: the keys and values of the positions before it, on the mean (half the prompt).
@@ -1634,7 +1780,7 @@ pub fn prefill_of(sh: &Shape, d: &Device) -> Option<f64> {
 
 /// A prompt of `n` tokens' tokens a second on `d` (its class's figures): None where the GPU's tensor rate is not known.
 pub fn prefill_at(sh: &Shape, d: &Device, n: f64) -> Option<f64> {
-    (d.tflops > 0.0).then(|| 1.0 / d.consts.token_s(d.tflops, 2.0 * (sh.dense + sh.routed_active()), sh.layers as f64, attn_bytes(sh, n), d.rate()))
+    (d.tflops > 0.0).then(|| 1.0 / d.consts.token_s(2.0 * (sh.dense + sh.routed_active()), sh.layers as f64, attn_bytes(sh, n), d.rate()))
 }
 
 /// Decode tokens/s of a plan `run` loads at `positions` positions, from the model's parameters and the machine's rates (the planner's model, for a placement the
@@ -1643,16 +1789,23 @@ fn speed_at(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan, positions: f64)
     speed_users(sh, m, main, lp, positions, 1)
 }
 
-/// `speed_at` for each of `users` sequences decoded together (one step reads the weights once for all of them, and each one's keys and values).
+/// `speed_at` for each of `users` sequences decoded together: one step reads the weights once for all of them, and each one's keys and values, and takes its
+/// class's time a layer for each row past the first.
 pub fn speed_users(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan, positions: f64, users: usize) -> f64 {
+    speed_routed(sh, m, main, lp, positions, users, HIT_EXPONENT)
+}
+
+/// `speed_users` for a router whose choices have the skew `skew` (`step_hit`: `HIT_EXPONENT` for a release's, 1 for a uniform one, a random model's): a step of `users` rows reads each of its distinct missed
+/// experts once (`step_misses`).
+pub fn speed_routed(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan, positions: f64, users: usize, skew: f64) -> f64 {
     let d0 = &m.devices[main];
-    let Some((bits, ebits)) = level_bits(lp.level, sh, d0) else { return 0.0 };
+    let Some((bits, ebits)) = plan_bits(lp, sh, d0) else { return 0.0 };
     let gain = gain_of(sh, lp.kind == Kind::Condor);
     // (the step's floor, and its reads at the class's shares of the rate: the weights' share and the keys' and values')
     let (wb, kvb) = reads_of(sh, bits, ebits, positions, users as f64);
     let c = &d0.consts;
-    let step = sh.layers as f64 * (c.layer_s + c.width_s * sh.hidden as f64);
-    let w_share = if lossless(lp.level, sh) { c.w * EFF_LOSSY / EFF_LOSSLESS } else { c.w };
+    let step = c.floor_s(sh.layers as f64, sh.hidden as f64, users as f64);
+    let w_share = c.w_of(read_of(lp.level, sh, d0, Some(lp.layout)));
     // (a byte of weights at the class's share; the keys' and values' bytes counted as weights' at the same time)
     let read = wb + kvb * c.kv / w_share;
     let eff = 1.0 / w_share;
@@ -1661,19 +1814,19 @@ pub fn speed_users(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan, position
         let rates: Vec<f64> = sp.devices.iter().filter_map(|&d| m.devices.get(d as usize)).map(Device::rate).collect();
         let n = rates.len().max(1) as f64;
         let active = sh.routed_active() * ebits / 8.0;
-        let hit = if sp.host_bytes > 0 {
-            (sp.places.iter().min().copied().unwrap_or(0) as f64 / sp.experts_per_layer.max(1) as f64).min(1.0).powf(HIT_EXPONENT)
+        let missed = if sp.host_bytes > 0 {
+            active * step_misses(sp.experts_per_layer, sh.topk, sp.places.iter().min().copied().unwrap_or(0), users, skew)
         } else {
-            1.0
+            0.0
         };
-        let on_gpu = read - active * (1.0 - hit);
+        let on_gpu = read - missed;
         let gpu_t = if sp.across {
             on_gpu / (n * rates.iter().copied().fold(f64::MAX, f64::min) * eff)
         } else {
             rates.iter().map(|r| on_gpu / n / (r * eff)).sum::<f64>()
         } + step
             + 0.1e-3 * (n - 1.0);
-        let cpu_t = active * (1.0 - hit) / (m.ram_bandwidth * GB * EFF_CPU);
+        let cpu_t = missed / (m.ram_bandwidth * GB * EFF_CPU);
         // (the last layers' dense matrices in the computer's memory, src/dense_ram.rs: each copied to the GPU before it runs, every token)
         let link_t = sp.dense_bytes as f64 / (LINK_GBS * GB);
         return gain / (gpu_t.max(cpu_t) + link_t + if sp.host_bytes > 0 { SYNC_PER_MOE_LAYER * sh.moe_layers as f64 } else { 0.0 });
@@ -1681,10 +1834,9 @@ pub fn speed_users(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan, position
     match &lp.experts {
         None => gain / (read / (d0.rate() * eff) + step),
         Some(c) => {
-            let hit = (c.slots as f64 / c.experts.max(1) as f64).min(1.0).powf(HIT_EXPONENT);
-            let active = sh.routed_active() * ebits / 8.0;
-            let gpu_t = (read - active * (1.0 - hit)) / (d0.rate() * eff) + step;
-            let cpu_t = active * (1.0 - hit) / (m.ram_bandwidth * GB * EFF_CPU);
+            let missed = sh.routed_active() * ebits / 8.0 * step_misses(c.experts, sh.topk, c.slots, users, skew);
+            let gpu_t = (read - missed) / (d0.rate() * eff) + step;
+            let cpu_t = missed / (m.ram_bandwidth * GB * EFF_CPU);
             gain / (gpu_t.max(cpu_t) + SYNC_PER_MOE_LAYER * sh.moe_layers as f64)
         }
     }
@@ -1695,12 +1847,13 @@ pub fn speed_users(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan, position
 /// the GPUs: what `fit_consts` fits the figures on.
 pub fn features(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan, positions: f64, users: usize) -> serde_json::Value {
     let d0 = &m.devices[main];
-    let (bits, ebits) = level_bits(lp.level, sh, d0).unwrap_or((16.0, 16.0));
+    let (bits, ebits) = plan_bits(lp, sh, d0).unwrap_or((16.0, 16.0));
     let in_vram = lp.experts.is_none() && lp.spread.as_ref().is_none_or(|s| s.host_bytes == 0 && s.dense == 0);
     let (w, kv) = reads_of(sh, bits, ebits, positions, users as f64);
     serde_json::json!({
         "weight_bytes": w, "kv_bytes": kv, "layers": sh.layers, "hidden": sh.hidden, "prompt_flops": 2.0 * (sh.dense + sh.routed_active()),
-        "attn_bytes": attn_bytes(sh, (positions - 64.0).max(0.0)), "gain": gain_of(sh, lp.kind == Kind::Condor), "lossless": lossless(lp.level, sh), "in_vram": in_vram,
+        "attn_bytes": attn_bytes(sh, (positions - 64.0).max(0.0)), "gain": gain_of(sh, lp.kind == Kind::Condor), "lossless": lossless(lp.level, sh),
+        "twelve": read_of(lp.level, sh, d0, Some(lp.layout)) == Read::Twelve, "in_vram": in_vram,
     })
 }
 
@@ -2497,6 +2650,9 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
 fn fit(a: &crate::args::Args) -> Result<(), crate::ui::Refusal> {
     let f = planned(a)?;
     let (model, p) = (f.model.as_str(), &f.plan);
+    // each level's quality against the lossless level, as its card says (R14: src/quality.rs)
+    let shown: Vec<&str> = p.options.iter().map(|o| o.level).collect();
+    let (quality_text, quality_json) = crate::quality::fit_block(model, &shown);
     if a.has("json") {
         let mut v: serde_json::Value = match &p.chosen {
             Some(c) => serde_json::from_str(&c.json(model, &f.machine)).unwrap_or_default(),
@@ -2504,11 +2660,15 @@ fn fit(a: &crate::args::Args) -> Result<(), crate::ui::Refusal> {
         };
         v["degrade"] = f.ladder.as_ref().map_or(serde_json::Value::Null, Ladder::json);
         v["positions"] = serde_json::json!(f.positions);
+        v["quality"] = quality_json;
         println!("{v}");
     } else {
         print!("{}", text(model, &f.shape, &f.machine, p));
         if let Some(l) = &f.ladder {
             print!("{}", l.report());
+        }
+        if !shown.is_empty() {
+            print!("{quality_text}");
         }
         if let Some(n) = p.chosen.as_ref().and_then(|c| remembered(&crate::store::cache_root(), model, c)) {
             println!("note: {n}");
@@ -2558,6 +2718,7 @@ pub mod sizing {
     use crate::nemotron::{pack_layout, ConfigNemotronH, NhKind};
     use crate::offload::CachePlan;
     use crate::qwen35::{Config35, Pack35};
+    use crate::runtime::config::ModelConfig;
     use crate::store;
     use crate::ui::{gib, Done, Refusal};
     use crate::weights::{packed_bytes, Config, Layout};
@@ -2799,6 +2960,261 @@ pub mod sizing {
                 dense: 0,
                 dense_bytes: 0,
             }),
+        }
+    }
+
+    /// Condor's load as the plan makes it (`qwenserve`, src/qwen4x_serve.rs `load`, which allocates what it says): the GPUs (`--gpus`) and the parts over them
+    /// (`--split`, `--cache-gb`), the plan of them, and the free bytes it was made from (every part's GPU together).
+    pub struct CondorLoad {
+        pub gpus: Vec<i32>,
+        pub parts: Vec<(i32, (usize, usize), usize, f64)>,
+        pub plan: LoadPlan,
+        pub free: u64,
+    }
+
+    /// Condor's GPUs (`--gpus 0,1`: the layers split over those GPUs, each with its layers' matrices, states, caches and places; a GPU named twice: the split's
+    /// check on one GPU, each part after the first in a context of its own), for a model of `layers` layers.
+    pub fn condor_gpus(a: &Args, layers: usize) -> crate::ffi::Result<Vec<i32>> {
+        let gpus: Vec<i32> = a
+            .flag("gpus")
+            .unwrap_or("0")
+            .split(',')
+            .map(|x| x.trim().parse::<i32>())
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|_| crate::ffi::Error("--gpus: GPU numbers, comma-separated (0,1)".into()))?;
+        if gpus.is_empty() || gpus.len() > layers / 2 {
+            return crate::ffi::err("--gpus: one GPU or more, at most one for every two layers");
+        }
+        Ok(gpus)
+    }
+
+    /// `CondorLoad` of the model `c` on `gpus` (`free` GiB free on the one, or `frees` on each part's: a GPU's own shared among the parts on it) at `layout`
+    /// (`hi`: the attention layers' and the head's where they differ), prompts in chunks of `chunk` rows (`whole` rows layer by layer at most; 0: every prompt in
+    /// chunks, its experts streamed through a ring unless `--no-stream`), `ctx` tokens of context, the MTP head's layer where `mtp`; the pack's places of `place`
+    /// bytes, `held` layers of experts, `host` bytes of experts in the computer's memory; `--headroom-gb` more kept free.
+    #[allow(clippy::too_many_arguments)]
+    pub fn condor_load(
+        a: &Args,
+        c: &crate::qwen4x::ConfigQx,
+        (gpus, free, frees): (Vec<i32>, f64, Vec<f64>),
+        layout: Layout,
+        hi: Option<Layout>,
+        (chunk, ctx, whole): (usize, usize, usize),
+        mtp: bool,
+        (place, held, host): (usize, usize, u64),
+    ) -> crate::ffi::Result<CondorLoad> {
+        use crate::ffi::Error;
+        let gib = (1u64 << 30) as f64;
+        // (the always-on matrices at the layout and what the first calls make: measured at i6 with 0.28 GiB left free after the load, i5 and i4 short of that; i6
+        // 0.15 more since the drafts' graphs ran out at 0.11-0.15 GiB free on the 4080 (2026-10-19: a trellis pack's two more places a layer were enough to fail
+        // cuGraphInstantiate))
+        let always = super::condor_always_gib(layout, hi.is_some_and(|h| h != layout));
+        // (a prompt's buffers taken layer by layer, and the streaming prefill's, are made for the prompt and freed after it, the last layers' places lent to them
+        // where the GPU has not the room: no reserve; a chunk's streamed call (whole 0) keeps its ring)
+        let stream = if !a.has("no-stream") && whole == 0 { crate::cb2_prefill::Cb2Kern::device_bytes(chunk * c.top_k, place) as f64 / gib } else { 0.0 };
+        // (measured on the 4080 at chunk 1024, ctx 33000, i6: 1.5 GiB was left free with 1.2 more reserved than this; chunk 128 against 1024: 0.28 GiB more left
+        // free after a prompt, so a row of the chunk holds 0.335 MB and the rest of the old 1.2 GB is the room the first prompt and decode use)
+        let headroom = a.num("headroom-gb", 0.0f64)?;
+        let cuts = match a.flag("split") {
+            Some(s) => Some(
+                s.split(',')
+                    .map(|x| x.trim().parse::<usize>())
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(|_| Error("--split: the first layer of each GPU's part after the first, comma-separated".into()))?,
+            ),
+            None => None,
+        };
+        let cache_gb = if a.has("cache-gb") { Some(a.num("cache-gb", 0.0f64)?) } else { None };
+        let (reserve, fixed) = condor_reserve(always, chunk, ctx, stream, headroom);
+        let room = CondorRoom {
+            free,
+            frees: &frees,
+            always,
+            fixed,
+            reserve,
+            ctx,
+            // (the LM head at six bits a weight)
+            head: c.vocab as f64 * c.hidden as f64 * 0.75 / gib,
+            place,
+            experts: c.experts,
+        };
+        // (the n-gram embedding's layer and those before it on the first part)
+        let least = c.ple.as_ref().map_or(1, |x| x.layer + 1);
+        let parts = condor_parts(&gpus, &room, c.layers, held, mtp, least, cuts, cache_gb).map_err(|e| match e {
+            CondorShort::NoSplit => {
+                Error(format!("--gpus {}: no split of the {} layers leaves every GPU a place a layer", a.flag("gpus").unwrap_or(""), c.layers))
+            }
+            CondorShort::BadSplit(cuts) => Error(format!("--split {cuts:?}: {} first layers in order between {least} and {}", gpus.len() - 1, c.layers - 1)),
+        })?;
+        let start = if gpus.len() == 1 { free * gib } else { frees.iter().sum::<f64>() * gib };
+        let plan = condor_plan(layout, always, &parts, ctx, chunk, stream, headroom, start, host, c.experts);
+        Ok(CondorLoad { gpus, parts, plan, free: start as u64 })
+    }
+
+    // ---- what each family's tensors take: the bytes the plans count (the loaders' lists of tensors are the families') ----
+
+    impl crate::qwen35::Config35 {
+        /// What one sequence holds besides its KV: every linear layer's fp32 state and bf16 convolution state.
+        pub fn state_bytes(&self) -> u64 {
+            let per = self.lin_v_heads * self.lin_k_dim * self.lin_v_dim * 4 + self.conv_dim() * (self.conv_kernel - 1) * 2;
+            (self.linear_layers() * per) as u64
+        }
+
+        /// A token's keys and values in bf16, over the full-attention layers.
+        pub fn kv_bytes_per_token(&self) -> u64 {
+            (self.full_layers() * 2 * self.kv_heads * self.head_dim * 2) as u64
+        }
+    }
+
+    impl ConfigNemotronH {
+        /// What one sequence holds besides its KV: every Mamba-2 layer's fp32 state and bf16 convolution state.
+        pub fn state_bytes(&self) -> u64 {
+            let per = self.m_heads * self.m_head_dim * self.m_state * 4 + self.conv_dim() * (self.conv_kernel - 1) * 2;
+            (self.layers_of(NhKind::Mamba) * per) as u64
+        }
+
+        /// A token's keys and values in bf16, over the attention layers.
+        pub fn kv_bytes_per_token(&self) -> u64 {
+            (self.layers_of(NhKind::Attention) * 2 * self.kv_heads * self.head_dim * 2) as u64
+        }
+    }
+
+    impl crate::gemma4::ConfigG4 {
+        /// The bytes on the GPU of the weights at `layout` (`saved`: a glyd-v7 directory's, read as saved) and of the bf16 model: the matrices and the small tensors
+        /// (norms, scalars).
+        pub fn weight_bytes(&self, layout: Layout, saved: Option<&glyd_gpu::safetensors::Checkpoint>) -> (u64, u64) {
+            let (mut w, mut bf16) = (0u64, 0u64);
+            for it in self.items() {
+                let b = (it.rows * it.cols * 2) as u64;
+                bf16 += b;
+                let key = it.members[0].trim_end_matches(".weight");
+                w += saved.and_then(|ck| packed_bytes(ck, key)).unwrap_or((b as f64 * bits(layout) / 16.0) as u64);
+            }
+            let small = (self.layers * (4 * self.hidden + 2 * self.global_head_dim + 1) + self.hidden) as u64 * 2;
+            (w + small, bf16 + small)
+        }
+
+        /// The keys and values: (the sliding layers' rings, fixed: the window and a chunk each, or the context where it is shorter; a position's bytes in the global
+        /// layers). `twelve`: in the executor's 12-bit lossless pages (a sixteenth of a page a token), else bf16.
+        pub fn kv_bytes(&self, chunk: usize, ctx: usize, twelve: bool) -> (u64, u64) {
+            use crate::gemma4::KindG4;
+            let cap_s = (self.window + chunk).min(ctx) as u64;
+            let (mut fixed, mut per) = (0u64, 0u64);
+            for &k in &self.kinds {
+                let (d, nk, _) = self.attn_of(k);
+                let b = if twelve { crate::dynamic::kv12::page_bytes(nk, d).div_ceil(16) } else { (nk * d * 2 * 2) as u64 };
+                match k {
+                    KindG4::Sliding => fixed += cap_s * b,
+                    KindG4::Global => per += b,
+                }
+            }
+            (fixed, per)
+        }
+    }
+
+    // ---- the dynamic route's layers' bytes (moved from src/dynamic/split.rs, which re-exports them) ----
+
+    /// An FP8 matrix's bytes on the GPU, in hundredths of the release's: layout H's plain packs (an HBM GPU's default) 9 bits a value (a patch's row blocks 0-2
+    /// in its 7-bit core, the 4th in var: 112.5%); coded packs about 7.1 bits (layout H; layout c 6.75), 90 a bound. ponytail: fixed shares; the matrices' own
+    /// sizes (`f8_size`) where a release codes worse.
+    pub const PLAIN_PCT: u64 = 113;
+    pub const CODED_PCT: u64 = 90;
+    /// A bf16 matrix's bytes on the GPU at the penguin level, in hundredths of the release's: the smallest lossless layout (tiered, about 10.8 bits a value)
+    /// 72, the 12-bit one (about 12.0 and its exceptions) 78. The 12-bit layout's one-token product reads at about 80% of an H100's rate where the tiered
+    /// one's reads at 30-45% (research/fp4-one-h100-2026-10-22), so an HBM GPU holds bf16 matrices in it where they fit.
+    pub const TIERED_PCT: u64 = 72;
+    pub const TWELVE_PCT: u64 = 78;
+
+    /// The bytes each of the `nl` layers holds on a GPU, and the rest's (embedding, head, final norm): the release's tensors as they are, an FP8 matrix at
+    /// `f8_pct` hundredths of its bytes, a bf16 matrix at penguin's 72% (about 11.5 bits a weight, an upper bound). Not counted: the tensors no description
+    /// loads (a multi-token-prediction layer, a vision or audio tower).
+    pub fn layer_bytes(dir: &Path, nl: usize, f8_pct: u64) -> crate::ffi::Result<(Vec<u64>, u64)> {
+        layer_bytes_where(dir, nl, f8_pct, TIERED_PCT, &|_| true)
+    }
+
+    /// As `layer_bytes`, of the tensors whose names `keep` keeps.
+    pub fn layer_bytes_where(dir: &Path, nl: usize, f8_pct: u64, bf16_pct: u64, keep: &dyn Fn(&str) -> bool) -> crate::ffi::Result<(Vec<u64>, u64)> {
+        layer_bytes_with(dir, nl, f8_pct, bf16_pct, keep, true)
+    }
+
+    /// `layer_bytes_where`, a hummingbird directory's experts (their files of their own) counted in each layer's bytes only where `experts`.
+    pub fn layer_bytes_with(
+        dir: &Path,
+        nl: usize,
+        f8_pct: u64,
+        bf16_pct: u64,
+        keep: &dyn Fn(&str) -> bool,
+        experts: bool,
+    ) -> crate::ffi::Result<(Vec<u64>, u64)> {
+        let table = crate::sizes::Table::from_dir(dir).map_err(crate::ffi::Error)?;
+        let (mut per, base) = layer_bytes_table(&table, nl, f8_pct, bf16_pct, keep);
+        if experts {
+            per.iter_mut().zip(hb_layer_bytes(dir, nl)?).for_each(|(p, b)| *p += b);
+        }
+        Ok((per, base))
+    }
+
+    /// The bytes of routed experts each of the `nl` layers of a hummingbird directory holds in files of its own (src/hb_pack.rs: by the description's block, decoder layer l's are block
+    /// 2 l + 1); zeros for any other directory.
+    pub fn hb_layer_bytes(dir: &Path, nl: usize) -> crate::ffi::Result<Vec<u64>> {
+        let mut per = vec![0u64; nl];
+        if let Some(hb) = crate::hb_pack::HbDir::open(dir)? {
+            for (l, bytes) in hb.layer_bytes() {
+                if l < nl {
+                    per[l] += bytes;
+                }
+            }
+        }
+        Ok(per)
+    }
+
+    /// `layer_bytes_where` of a table of tensors (src/sizes.rs: a directory's, or the Hub's by ranges before the files are here).
+    pub fn layer_bytes_table(table: &crate::sizes::Table, nl: usize, f8_pct: u64, bf16_pct: u64, keep: &dyn Fn(&str) -> bool) -> (Vec<u64>, u64) {
+        table.per_layer(nl, &|r| keep(&r.name), &|r| {
+            let matrix = r.shape.len() == 2 && r.shape.iter().all(|&d| d >= 256);
+            match r.dtype.as_str() {
+                "BF16" if matrix => r.bytes * bf16_pct / 100,
+                "F8_E4M3" if matrix => r.bytes * f8_pct / 100,
+                _ => r.bytes,
+            }
+        })
+    }
+
+    /// Each of the model's `nl` layers' bytes that its family's loader can keep in the computer's memory (src/dense_ram.rs: its packed linears there), at the packing `layer_bytes_where` counts: Muse Spark's attention and
+    /// latent projections, Kimi-K3's delta attention's three; zeros for the others (their attention is in blocks of their own, or FP8).
+    pub fn ram_bytes(dir: &Path, nl: usize, family: &str, f8_pct: u64, bf16_pct: u64) -> crate::ffi::Result<Vec<u64>> {
+        if !matches!(family, "Kimi-K3" | "Muse Spark") {
+            return Ok(vec![0; nl]);
+        }
+        let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| crate::ffi::Error(format!("{}: {e}", dir.display())))?;
+        ram_bytes_table(&crate::sizes::Table::from_dir(dir).map_err(crate::ffi::Error)?, &text, nl, family, f8_pct, bf16_pct)
+    }
+
+    /// `ram_bytes` of a table of tensors and the model's config.json (src/sizes.rs: before the files are here too).
+    pub fn ram_bytes_table(table: &crate::sizes::Table, text: &str, nl: usize, family: &str, f8_pct: u64, bf16_pct: u64) -> crate::ffi::Result<Vec<u64>> {
+        let kda: Vec<bool> = match family {
+            "Kimi-K3" => crate::kimi::ConfigKimi::parse(text, "config.json", None)?.kinds.iter().map(|k| matches!(k, crate::glm::GlmKind::Kda)).collect(),
+            "Muse Spark" => Vec::new(),
+            _ => return Ok(vec![0; nl]),
+        };
+        Ok(layer_bytes_table(table, nl, f8_pct, bf16_pct, &|n| in_ram(family, &kda, n)).0)
+    }
+
+    /// Whether the tensor `name` is one of the matrices `family`'s loader keeps in the computer's memory for a layer there (src/dense_ram.rs; `kda`: Kimi-K3's layers of delta attention).
+    pub(crate) fn in_ram(family: &str, kda: &[bool], name: &str) -> bool {
+        let layer = name.split("layers.").nth(1).and_then(|r| r.split('.').next()).and_then(|x| x.parse::<usize>().ok());
+        match family {
+            "Muse Spark" => {
+                (name.contains(".self_attn.") && name.ends_with("_proj.weight")) || name.contains(".pre_expert_proj.") || name.contains(".post_expert_proj.")
+            }
+            "Kimi-K3" => {
+                layer.is_some_and(|l| kda.get(l) == Some(&true))
+                    && name.contains(".self_attn.")
+                    && ["q_proj", "k_proj", "v_proj", "g_proj", "f_a_proj", "b_proj", "o_proj", "f_b_proj"]
+                        .iter()
+                        .any(|x| name.ends_with(&format!(".{x}.weight")))
+            }
+            _ => false,
         }
     }
 
@@ -3076,7 +3492,14 @@ pub mod sizing {
         }
         let left = free.saturating_sub(n.weights + n.draft + reserve + users * (n.per_seq + ctx as u64 * per));
         let chunk = n.chunks.iter().copied().find(|c| c.1 <= left).or(n.chunks.last().copied()).unwrap_or((512, 0));
-        Ok(n.plan_at(ctx, chunk, free, gpu))
+        let mut p = n.plan_at(ctx, chunk, free, gpu);
+        if n.fewer {
+            // (a scheduler of rooms in pools of blocks holds what the GPU has left, at most every user's context, at least one's: src/dynamic/rows.rs `page`.
+            // On an A10 (23 GB) Qwen3-8B for 8 users at 16,384 tokens was planned at 31,867 MiB, the context of all eight; the server took 21,889)
+            let one = n.per_seq + ctx as u64 * per;
+            p.kv = p.kv.min(free.saturating_sub(p.weights + p.draft + p.work + p.reserve)).max(one);
+        }
+        Ok(p)
     }
 
     impl Needs {
@@ -3460,13 +3883,14 @@ pub mod sizing {
         if crate::gemma4::is_gemma4(text) {
             return gemma_plan(a, &name, tag, layout, text, gen, free, gpu, packed);
         }
-        // the matrices and the tensors kept as they are, what a sequence holds (its states, a token's KV) and the longest context
-        let nemotron = crate::nemotron::is_nemotron_h(text);
+        // the matrices and the tensors kept as they are, what a sequence holds (its states, a token's KV) and the longest context (config.json parsed once)
+        let m = ModelConfig::parse(text).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
+        let nemotron = m.family() == Some(crate::support::Family::NemotronH);
         let (packs, kept, state, per, max_pos) = if nemotron {
             if !matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Hummingbird) {
                 return Err(Refusal::unsupported(format!("{name}: the {tag} level is not built for Nemotron 3 Super, whose experts are held at the kestrel, swift and wren levels, or at the hummingbird level"), format!("Run it at the wren, swift or kestrel level: glyd run {model}:wren")));
             }
-            let cfg = ConfigNemotronH::parse(text, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
+            let cfg = ConfigNemotronH::of(&m, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
             // (the hummingbird kernels take experts on a latent that is a power of two from 128 to 1,024, Nemotron 3 Super's: src/moe_hb.rs; the
             // experts of a model with no latent, Nemotron 3.5 Lightning's, read its width)
             let l = cfg.moe.latent;
@@ -3484,7 +3908,7 @@ pub mod sizing {
                     "Run it at the kestrel, swift or wren level: glyd run MODEL:swift",
                 ));
             }
-            let cfg = Config35::parse(text, "config.json", gen).map_err(|e| {
+            let cfg = Config35::of(&m, "config.json", gen).map_err(|e| {
                 Refusal::unsupported(
                     format!("{name}: the {tag} level runs {} models so far ({})", "Qwen3.5, Qwen3.6, Qwen3.8 and Nemotron 3 Super", e.msg),
                     format!("Run it lossless: glyd run {model}"),
@@ -3520,6 +3944,9 @@ pub mod sizing {
         let asked = if a.has("context") || a.has("ctx") { Some(a.either("context", "ctx", 0usize)?) } else { None };
         let fam = if nemotron { crate::support::Family::NemotronH } else { crate::support::Family::Qwen35 };
         crate::support::context_check(&name, crate::support::row(fam), max_pos, asked)?;
+        // (served, the executor gives each of --users a sequence of its own in pools of blocks that hold up to the context of each (src/dynamic/rows.rs `page`): the
+        // plan counts them, as Gemma 4's does; neither path drafts. Measured on an A100: Qwen3.5-0.8B served to 8 took 5,054 MiB, planned for one at 3,037)
+        let users = if a.pos.first().is_some_and(|c| c == "serve") { users_of(a)? } else { 1 };
         let n = Needs {
             kind: if nemotron { Kind::NemotronH } else { Kind::Qwen35 },
             family: if nemotron { "Nemotron-H" } else { "Qwen3.5" },
@@ -3528,8 +3955,8 @@ pub mod sizing {
             bf16,
             per_seq: state,
             per_token: per.max(1),
-            users: 1,
-            fewer: false,
+            users,
+            fewer: true,
             draft: 0,
             chunks: vec![(2048, LOSSY_WORK)],
             want: LOSSY_CTX,
@@ -3549,9 +3976,13 @@ pub mod sizing {
         }
         let mut also = String::new();
         if nemotron && (fitted.is_err() || cache.is_some()) {
-            let cfg = ConfigNemotronH::parse(text, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
+            let cfg = ConfigNemotronH::of(&m, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
             match offloaded(&cfg, layout, weights, state, n.per_token, free, host, asked, cache, host_asked, gpu) {
-                Ok((ctx, plan)) => return Ok(LoadPlan { experts: Some(plan), ..n.plan_at(ctx, n.chunks[0], free, gpu) }),
+                // (its context sized for one sequence: `offloaded`'s)
+                Ok((ctx, plan)) => {
+                    let one = n.per_seq + ctx as u64 * n.per_token;
+                    return Ok(LoadPlan { experts: Some(plan), users: 1, kv: one, ..n.plan_at(ctx, n.chunks[0], free, gpu) });
+                }
                 Err(why) if cache.is_some() => {
                     return Err(Refusal::unsupported(
                         format!("{name} at the {tag} level with --expert-cache: {why}"),
@@ -4498,6 +4929,15 @@ mod tests {
         assert!(chosen(&plan(&gemma_sh, &odd, Ask { level: Some("wren"), ..Default::default() })).prefill.is_none());
     }
 
+    /// `one_gpu_plan` in the layout the run loaded: at penguin the 12-bit one but on Ada (`best_layout`; the A100's and the A10's Qwen3-8B, 11.10 GB both).
+    fn loaded(kind: Kind, level: &'static str, cc: [i32; 2]) -> LoadPlan {
+        let mut p = one_gpu_plan(kind, level);
+        if level == "penguin" && !crate::weights::smallest_is_fastest((cc[0], cc[1])) {
+            p.layout = crate::weights::Layout::Twelve;
+        }
+        p
+    }
+
     /// A plan of `level` with every weight on one GPU, as the calibration records describe one (`features` reads its kind, level and placement alone).
     fn one_gpu_plan(kind: Kind, level: &'static str) -> LoadPlan {
         LoadPlan {
@@ -4546,16 +4986,48 @@ mod tests {
     }
 
     /// The shipped calibration records (calibration/records.jsonl), with the features the planner reads of them: the RTX 4080 SUPER's runs (g1 and g2 of
-    /// 2026-11-23, bench --loads 1k:1 --no-draft, the median of 3; prompts of 936 and 1,002 tokens, 128 made) and the A100 SXM4 40GB's first six (plancheck at
-    /// 2136bfee as the coordinator reported them, 2026-11-23: their positions the loads' nominal ones, to be replaced by its full records). `GLYD_WRITE_CALIB=1`
-    /// writes the file anew; the other machines' `plancheck` records are added to it.
+    /// 2026-11-23, bench --loads 1k:1 --no-draft, the median of 3; prompts of 936 and 1,002 tokens, 128 made) and the A100 SXM4 40GB's runs of m2-stage3 63bdcdcb
+    /// (session 3, 2026-11-24, bench's gate suite with GLYD_KV=bf16, the median of 3, 128 made: one user and eight on short prompts, one at 1k and 4k; the
+    /// prompts of the short loads too short to time a prompt, so their prompt rates are not kept; the rate the A100's probe measured in session 2), and the A10's
+    /// plancheck runs of session 5 (15: 8 users, Qwen3.5-0.8B kestrel, gemma-4-12B wren and swift at 1k, 4k, 8k, 1k for eight and 85% of the context). Only
+    /// releases of the last six months: the Qwen3-8B runs measured beside them are not kept. `GLYD_WRITE_CALIB=1` writes the file anew; the other machines'
+    /// `plancheck` records are added to it.
     #[test]
     fn the_shipped_records_are_the_measured_runs() {
         let (gemma_sh, q08_sh) = measured_shapes();
         let mut lines = String::new();
         let (g, q) = ("google/gemma-4-12B-it", "Qwen/Qwen3.5-0.8B");
-        for (gpu, preset, class, cc, sms, stream, ram, tflops, source, nominal, runs) in [
+        type Run<'a> = (&'a str, &'a Shape, Kind, &'static str, &'a str, f64, usize, f64, Option<f64>);
+        let a100: Vec<Run> = vec![
+            (g, &gemma_sh, Kind::Gemma4, "wren", "short:1", 38.0, 1, 86.972518, None),
+            (g, &gemma_sh, Kind::Gemma4, "wren", "short:8", 37.5, 8, 48.504754, None),
+            (g, &gemma_sh, Kind::Gemma4, "wren", "1k:1", 935.0, 1, 84.771883, Some(5070.099763)),
+            (g, &gemma_sh, Kind::Gemma4, "wren", "4k:1", 3753.0, 1, 83.624592, Some(4436.882222)),
+            (q, &q08_sh, Kind::Qwen35, "kestrel", "short:1", 37.0, 1, 454.88434, None),
+            (q, &q08_sh, Kind::Qwen35, "kestrel", "short:8", 36.0, 8, 189.34745, None),
+            (q, &q08_sh, Kind::Qwen35, "kestrel", "1k:1", 1005.0, 1, 451.127571, Some(20317.583028)),
+            (q, &q08_sh, Kind::Qwen35, "kestrel", "4k:1", 4012.0, 1, 439.503543, Some(19963.700121)),
+        ];
+        let a10: Vec<Run> = vec![
+            (q, &q08_sh, Kind::Qwen35, "kestrel", "1k:1", 995.0, 1, 399.443361, Some(17034.02874)),
+            (q, &q08_sh, Kind::Qwen35, "kestrel", "4k:1", 4010.0, 1, 385.092413, Some(17844.658907)),
+            (q, &q08_sh, Kind::Qwen35, "kestrel", "8k:1", 8005.0, 1, 369.578705, Some(16368.974123)),
+            (q, &q08_sh, Kind::Qwen35, "kestrel", "1k:8", 994.5, 8, 152.281159, Some(17351.977334)),
+            (q, &q08_sh, Kind::Qwen35, "kestrel", "27852t:1", 27220.0, 1, 300.336779, Some(11598.584925)),
+            (g, &gemma_sh, Kind::Gemma4, "wren", "1k:1", 935.0, 1, 57.028112, Some(2178.736128)),
+            (g, &gemma_sh, Kind::Gemma4, "wren", "4k:1", 3754.0, 1, 56.254122, Some(2060.675388)),
+            (g, &gemma_sh, Kind::Gemma4, "wren", "8k:1", 7511.0, 1, 55.140277, Some(1878.440661)),
+            (g, &gemma_sh, Kind::Gemma4, "wren", "1k:8", 935.0, 8, 23.383665, Some(2096.645192)),
+            (g, &gemma_sh, Kind::Gemma4, "wren", "27852t:1", 25548.0, 1, 51.465418, Some(1334.308805)),
+            (g, &gemma_sh, Kind::Gemma4, "swift", "1k:1", 935.0, 1, 50.202928, Some(2182.203677)),
+            (g, &gemma_sh, Kind::Gemma4, "swift", "4k:1", 3754.0, 1, 49.525424, Some(2055.072626)),
+            (g, &gemma_sh, Kind::Gemma4, "swift", "8k:1", 7511.0, 1, 48.866016, Some(1883.56461)),
+            (g, &gemma_sh, Kind::Gemma4, "swift", "1k:8", 935.0, 8, 22.060678, Some(2095.481739)),
+            (g, &gemma_sh, Kind::Gemma4, "swift", "27852t:1", 25548.0, 1, 46.112267, Some(1340.026958)),
+        ];
+        for (at, gpu, preset, class, cc, sms, stream, ram, tflops, source, runs) in [
             (
+                "2026-11-23",
                 "NVIDIA GeForce RTX 4080 SUPER",
                 "rtx4080s",
                 "sm89",
@@ -4565,44 +5037,48 @@ mod tests {
                 73.91,
                 104.5,
                 "glyd-pc g1/g2: bench --loads 1k:1 --no-draft, the median of 3",
-                false,
                 vec![
-                    (g, &gemma_sh, Kind::Gemma4, "wren", 936.0, 1usize, 86.167488, 3570.250176),
-                    (g, &gemma_sh, Kind::Gemma4, "kestrel", 936.0, 1, 63.290554, 3579.659425),
-                    (q, &q08_sh, Kind::Qwen35, "kestrel", 1002.0, 1, 561.9, 27073.4),
-                    (q, &q08_sh, Kind::Qwen35, "wren", 1002.0, 1, 657.9, 27372.1),
+                    (g, &gemma_sh, Kind::Gemma4, "wren", "1k:1", 936.0, 1usize, 86.167488, Some(3570.250176)),
+                    (g, &gemma_sh, Kind::Gemma4, "kestrel", "1k:1", 936.0, 1, 63.290554, Some(3579.659425)),
+                    (q, &q08_sh, Kind::Qwen35, "kestrel", "1k:1", 1002.0, 1, 561.9, Some(27073.4)),
+                    (q, &q08_sh, Kind::Qwen35, "wren", "1k:1", 1002.0, 1, 657.9, Some(27372.1)),
                 ],
             ),
             (
+                "2026-11-24",
                 "NVIDIA A100-SXM4-40GB",
                 "a100-80g",
                 "sm80",
                 [8, 0],
                 108,
-                1290.0,
-                58.9,
+                1274.41,
+                61.49,
                 312.0,
-                "Lambda A100 SXM4 40GB: plancheck at 2136bfee, the coordinator's report (positions nominal)",
-                true,
-                vec![
-                    (g, &gemma_sh, Kind::Gemma4, "wren", 1024.0, 1, 81.7, 5070.0),
-                    (g, &gemma_sh, Kind::Gemma4, "swift", 1024.0, 1, 75.4, 4989.0),
-                    (q, &q08_sh, Kind::Qwen35, "kestrel", 1024.0, 1, 443.0, 19976.0),
-                    (q, &q08_sh, Kind::Qwen35, "swift", 1024.0, 1, 449.7, 19951.0),
-                    (q, &q08_sh, Kind::Qwen35, "kestrel", 4096.0, 1, 404.7, 19908.0),
-                    (q, &q08_sh, Kind::Qwen35, "kestrel", 8192.0, 1, 360.5, 18590.0),
-                ],
+                "Lambda A100 SXM4 40GB, session 3: bench at m2-stage3 63bdcdcb, gate suite, GLYD_KV=bf16, the median of 3",
+                a100,
+            ),
+            (
+                "2026-11-24",
+                "NVIDIA A10",
+                "a6000",
+                "sm86",
+                [8, 6],
+                72,
+                518.53,
+                116.68,
+                125.0,
+                "Lambda A10, session 5: plancheck at m2-y 87023bbc, 8 users, the median of 3",
+                a10,
             ),
         ] {
             let m = Machine::preset(preset).unwrap();
-            for (model, sh, kind, level, prompt, users, decode, prefill) in runs {
+            for (model, sh, kind, level, load, prompt, users, decode, prefill) in runs {
                 let positions = prompt + 64.0;
-                let load = if nominal { format!("{}k:{users}", prompt as usize / 1024) } else { format!("1k:{users}") };
                 let r = serde_json::json!({
-                    "schema": CALIB_SCHEMA, "at": "2026-11-23", "source": source, "gpu": gpu, "cc": cc, "class": class, "driver": null, "sms": sms,
+                    "schema": CALIB_SCHEMA, "at": at, "source": source, "gpu": gpu, "cc": cc, "class": class, "driver": null, "sms": sms,
                     "stream_gbs": stream, "measured_rate": true, "ram_gbs": ram, "tflops": tflops, "model": model, "level": level, "load": load, "users": users,
-                    "positions": positions, "positions_nominal": nominal, "features": features(sh, &m, 0, &one_gpu_plan(kind, level), positions, users),
-                    "predicted": null, "measured": {"decode": decode, "prefill": prefill, "prompt_tokens": if nominal { serde_json::Value::Null } else { prompt.into() }},
+                    "positions": positions, "features": features(sh, &m, 0, &loaded(kind, level, cc), positions, users),
+                    "made": 128, "predicted": null, "measured": {"decode": decode, "prefill": prefill, "prompt_tokens": prompt},
                 });
                 lines += &format!("{r}\n");
             }
@@ -4618,8 +5094,17 @@ mod tests {
         }
     }
 
-    /// Records of a class made at figures `c` from the features of real plans (gemma-4-12B, Qwen3.5-0.8B and 9B at two levels, 1k and 8k positions, one and eight
-    /// users): what `fit_consts` reads.
+    /// The share a record's features say its weights were read at.
+    fn read_in(f: &serde_json::Value) -> Read {
+        match (f["lossless"] == true, f["twelve"] == true) {
+            (true, true) => Read::Twelve,
+            (true, false) => Read::Tiered,
+            _ => Read::Packs,
+        }
+    }
+
+    /// Records of a class made at figures `c` from the features of real plans (gemma-4-12B, Qwen3.5-0.8B and 9B at two lossy levels and lossless, 1k and 8k
+    /// positions, one and eight users): what `fit_consts` reads.
     fn records_at(class: &str, c: Consts) -> Vec<serde_json::Value> {
         let q35 = json::parse(&fixture("qwen35_configs.json")).unwrap();
         let shapes = [
@@ -4631,11 +5116,12 @@ mod tests {
         let (stream, tflops) = (700.0, 100.0);
         let mut out = Vec::new();
         for sh in &shapes {
-            for (level, users, positions) in [("wren", 1, 1088.0), ("kestrel", 1, 8256.0), ("wren", 8, 1088.0), ("kestrel", 1, 1088.0)] {
+            for (level, users, positions) in [("wren", 1, 1088.0), ("kestrel", 1, 8256.0), ("wren", 8, 1088.0), ("kestrel", 1, 1088.0), ("penguin", 1, 1088.0)]
+            {
                 let f = features(sh, &m, 0, &one_gpu_plan(Kind::Qwen35, level), positions, users);
                 let x = |k: &str| f[k].as_f64().unwrap();
-                let decode = 1.0 / c.step_s(stream * GB, x("weight_bytes"), x("kv_bytes"), x("layers"), x("hidden"), false);
-                let prefill = 1.0 / c.token_s(tflops, x("prompt_flops"), x("layers"), x("attn_bytes"), stream * GB);
+                let decode = 1.0 / c.step_s(stream * GB, x("weight_bytes"), x("kv_bytes"), x("layers"), x("hidden"), read_in(&f), users as f64);
+                let prefill = 1.0 / c.token_s(x("prompt_flops"), x("layers"), x("attn_bytes"), stream * GB);
                 out.push(serde_json::json!({"schema": CALIB_SCHEMA, "class": class, "stream_gbs": stream, "tflops": tflops, "users": users, "features": f,
                     "measured": {"decode": decode, "prefill": prefill}}));
             }
@@ -4649,38 +5135,40 @@ mod tests {
     /// (leave-one-class-out): here two classes made at figures 40% apart, so it is wide. No records at all: the defaults and `SPREAD`.
     #[test]
     fn a_class_is_its_own_records_fit_and_an_unseen_one_the_others_with_their_error() {
-        let a = Consts { w: 1.0, kv: 1.5, layer_s: 35e-6, width_s: 0.0, f: 1.1, prompt_layer_s: 1.1e-6, attn: 0.0 };
-        let b = Consts { w: 1.6, kv: 6.0, layer_s: 60e-6, width_s: 8e-9, f: 2.8, prompt_layer_s: 2e-6, attn: 3.0 };
+        let a = Consts { w: 1.0, wl: 1.4, kv: 1.5, layer_s: 35e-6, width_s: 0.0, row_s: 20e-6, w12: 1.0, f: 0.008, prompt_layer_s: 1.1e-6, attn: 0.0 };
+        let b = Consts { w: 1.6, wl: 1.1, kv: 6.0, layer_s: 60e-6, width_s: 8e-9, row_s: 50e-6, w12: 1.0, f: 0.02, prompt_layer_s: 2e-6, attn: 3.0 };
         let mut records = records_at("smA", a);
         records.extend(records_at("smB", b));
         let rows = |k: &str| records.iter().filter(|r| r["class"] == k).collect::<Vec<_>>();
         for (k, truth) in [("smA", a), ("smB", b)] {
             let p = prior_from(&records, k);
-            assert_eq!((p.source, p.records), (Source::Own, 12), "{k}");
+            assert_eq!((p.source, p.records), (Source::Own, 15), "{k}");
             for r in rows(k) {
                 let f = |n: &str| r["features"][n].as_f64().unwrap();
+                let (read, users) = (read_in(&r["features"]), r["users"].as_f64().unwrap());
                 let (want, got) = (
-                    truth.step_s(700e9, f("weight_bytes"), f("kv_bytes"), f("layers"), f("hidden"), false),
-                    p.consts.step_s(700e9, f("weight_bytes"), f("kv_bytes"), f("layers"), f("hidden"), false),
+                    truth.step_s(700e9, f("weight_bytes"), f("kv_bytes"), f("layers"), f("hidden"), read, users),
+                    p.consts.step_s(700e9, f("weight_bytes"), f("kv_bytes"), f("layers"), f("hidden"), read, users),
                 );
                 assert!((got / want - 1.0).abs() < 0.05, "{k}: {got} against {want}");
                 let (want, got) = (
-                    truth.token_s(100.0, f("prompt_flops"), f("layers"), f("attn_bytes"), 700e9),
-                    p.consts.token_s(100.0, f("prompt_flops"), f("layers"), f("attn_bytes"), 700e9),
+                    truth.token_s(f("prompt_flops"), f("layers"), f("attn_bytes"), 700e9),
+                    p.consts.token_s(f("prompt_flops"), f("layers"), f("attn_bytes"), 700e9),
                 );
                 assert!((got / want - 1.0).abs() < 0.05, "{k} prompt: {got} against {want}");
             }
             assert!(p.band[0] < 1.05 && p.band[2] > 0.95 && p.band[2] / p.band[0] < 1.3, "{k}: {:?}", p.band);
         }
         let unseen = prior_from(&records, "smC");
-        assert_eq!((unseen.source, unseen.records), (Source::Others, 24));
+        assert_eq!((unseen.source, unseen.records), (Source::Others, 30));
         assert!(unseen.band[2] / unseen.band[0] > 1.5, "the other classes disagree: {:?}", unseen.band);
         let none = prior_from(&[], "smA");
         assert_eq!((none.source, none.consts, none.band), (Source::Default, DEFAULT_CONSTS, SPREAD));
-        // the score: each class from the other's figures (far off) and from its own less the one predicted (close)
+        // the score: each class from the other's figures (far off) and from its own less the one predicted (close: within 12%, a run of eight rows predicted
+        // from the two other models' at 10.2%)
         for (k, dec, pre, loo) in score_classes(&records) {
             assert!(dec.iter().any(|e| e.abs() > 0.2) && pre.iter().any(|e| e.abs() > 0.2), "{k}: {dec:?}");
-            assert!(loo.iter().all(|e| e.abs() < 0.10), "{k}: {loo:?}");
+            assert!(loo.iter().all(|e| e.abs() < 0.12), "{k}: {loo:?}");
         }
         // (the shipped records: the 4080 SUPER and the A100 are fitted points, a class with no record the others' fit)
         assert_eq!(prior_for((8, 9)).source, Source::Own);
@@ -4689,20 +5177,85 @@ mod tests {
         assert_eq!(Machine::preset("h100").unwrap().devices[0].prior, prior_for((9, 0)));
     }
 
-    /// The A100's six runs the coordinator reported, which the RTX 4080 SUPER's figures predicted 53-97% too fast: its own figures predict them now (a fitted
-    /// point, in-sample), and the leave-one-class-out score says how far the other class's figures were (the error an unseen class may expect).
+    /// The A100's runs (one user and eight, lossy and lossless), which the RTX 4080 SUPER's figures predicted far too fast: its own figures predict each within
+    /// 15% (a fitted point, in-sample), and the leave-one-class-out score says how far the other class's figures were (the error an unseen class may expect).
     #[test]
     fn the_a100s_runs_are_its_figures_fit() {
         let records = records_of(CALIBRATION);
         let p = prior_from(&records, "sm80");
         let (dec, _) = rows_of(&records.iter().filter(|r| r["class"] == "sm80").collect::<Vec<_>>());
         for (x, y) in &dec {
-            let t = p.consts.w * x[0] + p.consts.kv * x[1] + p.consts.layer_s * x[2] + p.consts.width_s * x[3];
+            let t = p.consts.decode_s(x);
             assert!((t / y - 1.0).abs() < 0.15, "{t} against {y}");
         }
+        // (the 4080 SUPER's figures predict the A100's packs 60-283% too fast; its lossless runs, the A100's 12-bit layout, 12-14% too slow at one user)
         let s = score_classes(&records);
         let a100 = s.iter().find(|c| c.0 == "sm80").unwrap();
-        assert!(a100.1.iter().all(|e| *e > 0.3), "the 4080 SUPER's figures predict the A100 too fast: {:?}", a100.1);
+        let sm80: Vec<&serde_json::Value> = records.iter().filter(|r| r["class"] == "sm80").collect();
+        for (r, e) in sm80.iter().zip(&a100.1) {
+            assert!(r["features"]["lossless"] == true || *e > 0.3, "the 4080 SUPER's figures predict the A100's packs too fast: {} {e}", r["load"]);
+        }
+    }
+
+    /// Condor's load is sized here alone (`sizing::condor_load`, what src/qwen4x_serve.rs `load` allocates): on one GPU the places take what the reserve leaves
+    /// (the always-on matrices, the first prompt's and a chunk's scratch, the context's cache, the margin), so the plan adds up to the free memory; `--cache-gb`
+    /// caps them; over two GPUs (one named twice: the split's check) each part has places, and a split that is not one, or more GPUs than half the layers, is
+    /// refused in words.
+    #[test]
+    fn condor_is_sized_by_the_plan() {
+        use crate::weights::Layout;
+        let c = crate::qwen4x::ConfigQx::parse(&fixture("qwen4x_config.json"), "config.json", None).unwrap();
+        let (free, ctx, chunk, place) = (15.2f64, 33536usize, 128usize, 2_000_000usize);
+        let load = |words: &[&str], gpus: Vec<i32>, frees: Vec<f64>| {
+            sizing::condor_load(&args(words), &c, (gpus, free, frees), Layout::Int4, Some(Layout::Int5), (chunk, ctx, 32768), true, (place, c.layers, 60 << 30))
+        };
+        let one = load(&["qwenserve"], vec![0], vec![]).unwrap();
+        let always = condor_always_gib(Layout::Int4, true);
+        let (reserve, _) = sizing::condor_reserve(always, chunk, ctx, 0.0, 0.0);
+        let gb = (free - reserve) * GIB / 1e9;
+        assert_eq!(one.parts, vec![(0, (0, c.layers), (gb * 1e9 / ((c.layers + 1) * place) as f64) as usize, gb)]);
+        assert!((one.plan.gpu_total() as f64 - free * GIB).abs() < (1 << 20) as f64, "{}", one.plan.text());
+        assert_eq!((one.plan.kind, one.plan.context, one.plan.chunk, one.free), (Kind::Condor, ctx, chunk, (free * GIB) as u64));
+        assert_eq!(load(&["qwenserve", "--cache-gb", "4"], vec![0], vec![]).unwrap().parts[0].3, 4.0);
+        let two = load(&["qwenserve", "--gpus", "0,0"], vec![0, 0], vec![free / 2.0; 2]).unwrap();
+        assert!(two.parts.len() == 2 && two.parts.iter().all(|p| p.2 > 0) && two.plan.spread.as_ref().unwrap().cuts.len() == 1, "{:?}", two.parts);
+        let e = load(&["qwenserve", "--gpus", "0,0", "--split", "0"], vec![0, 0], vec![free / 2.0; 2]).err().unwrap();
+        assert!(e.msg.starts_with("--split [0]"), "{}", e.msg);
+        let many = (0..c.layers).map(|g| g.to_string()).collect::<Vec<_>>().join(",");
+        assert!(sizing::condor_gpus(&args(&["qwenserve", "--gpus", &many]), c.layers).is_err());
+        assert_eq!(sizing::condor_gpus(&args(&["qwenserve"]), c.layers).unwrap(), vec![0]);
+    }
+
+    /// A step of several rows reads the weights once for all of them: each row past the first adds its keys' and values' reads and its class's time a layer, no
+    /// weights. On the A100 (its records: one user and eight, m2-stage3) eight users at 1k positions are each predicted at 1 / (the one user's step + 7 rows).
+    #[test]
+    fn a_step_of_several_rows_reads_the_weights_once() {
+        let (_, q08) = measured_shapes();
+        let m = Machine::preset("a100-80g").unwrap();
+        let (c, rate, layers) = (m.devices[0].consts, m.devices[0].rate(), q08.layers as f64);
+        assert!(c.row_s > 5e-6, "the A100's records hold steps of eight rows: {c:?}");
+        let lp = one_gpu_plan(Kind::Qwen35, "kestrel");
+        let (one, eight) = (speed_users(&q08, &m, 0, &lp, 1088.0, 1), speed_users(&q08, &m, 0, &lp, 1088.0, 8));
+        let more = 7.0 * (layers * c.row_s + kv_at(&q08, 1088.0) * c.kv / rate);
+        assert!((1.0 / eight - 1.0 / one - more).abs() < 1e-9, "{one} {eight}");
+        // (the weights' bytes a step reads are the same for one row and eight)
+        let (w1, _) = reads_of(&q08, 6.5, 6.5, 1088.0, 1.0);
+        let (w8, kv8) = reads_of(&q08, 6.5, 6.5, 1088.0, 8.0);
+        assert_eq!((w1, kv8), (w8, 8.0 * kv_at(&q08, 1088.0)));
+    }
+
+    /// Users who send their prompts at once each wait in their replies for the prompts read after theirs (`prompt_wait`): on the A100 at m2-stage2, Qwen3.5-0.8B's
+    /// eight users took 127.3 tokens/s each on 1k prompts (994 tokens, 20,206 tokens/s) and 154.5 on short ones; the first, its wait taken out of its 127 steps,
+    /// is the second within 1%. A record of such a run is fitted on its steps.
+    #[test]
+    fn the_prompts_a_user_waits_for_are_not_its_steps() {
+        let step = 1.0 / 127.3 - prompt_wait(8, 994.0, 20206.0) / 127.0;
+        assert!((1.0 / step / 154.5 - 1.0).abs() < 0.01, "{}", 1.0 / step);
+        assert_eq!((prompt_wait(1, 994.0, 20206.0), prompt_wait(8, 994.0, 0.0)), (0.0, 0.0));
+        let r = serde_json::json!({"stream_gbs": 1000.0, "users": 8, "made": 128, "features": {"weight_bytes": 1e9, "kv_bytes": 1e8, "layers": 24, "hidden": 1024, "in_vram": true},
+            "measured": {"decode": 127.3, "prefill": 20206.0, "prompt_tokens": 994.0}});
+        let (dec, _) = rows_of(&[&r]);
+        assert!((dec[0].1 - step).abs() < 1e-12 && dec[0].0[5] == 7.0 * 24.0, "{dec:?}");
     }
 
     /// The prediction is for `Ask::positions` positions (fit's `GLYD_FIT_POSITIONS` in a development build): a longer conversation reads more keys and values a step,
@@ -4853,6 +5406,56 @@ mod tests {
 
     fn gpu_of(d: &Device, ordinal: i32) -> crate::dev::Gpu {
         crate::dev::Gpu { name: d.name.clone(), cc: d.cc, sms: 0, total: d.total, free: d.free, driver: d.driver, count: 1, ordinal }
+    }
+
+    /// A plan whose users share pools of blocks holds at most what the GPU has left for them (at least one's context): on an A10 (23 GB) Qwen3-8B served to 8 at
+    /// 16,384 tokens was planned at 31,867 MiB, eight full contexts, where the server took 21,889. And its decode reads penguin's weights in the layout it loads
+    /// (the 12-bit one off Ada: 11.10 GB measured on the A10 and the A100, where the level's tiered 10.75 bits counted 10.17), at that layout's share.
+    #[test]
+    fn a_shared_pool_is_planned_within_the_gpu() {
+        let dir = model_dir("pool", "Qwen3-8B", QWEN3_8B);
+        let m = dir.to_str().unwrap();
+        for machine in ["l4", "rtx4090", "a6000"] {
+            let p = planned(&args(&["serve", m, "--users", "8", "--ctx", "16384", "--machine", machine])).unwrap().plan.chosen.and_then(|c| c.load).unwrap();
+            let one = p.kv / 8;
+            assert!(p.gpu_total() <= p.free && p.users == 8 && p.context == 16384, "{machine}: {}", p.text());
+            assert!(p.kv >= 16384 * crate::plan::sizing::kv_per_token(&crate::weights::Config::parse(QWEN3_8B, "c", None).unwrap(), false) && one > 0);
+        }
+        let sh = Shape::from_config(QWEN3_8B).unwrap();
+        let m = Machine::preset("a6000").unwrap();
+        let mut lp = one_gpu_plan(Kind::Qwen3, "penguin");
+        lp.layout = crate::weights::Layout::Twelve;
+        let f = features(&sh, &m, 0, &lp, 1088.0, 1);
+        assert_eq!((f["lossless"].as_bool(), f["twelve"].as_bool()), (Some(true), Some(true)));
+        let (w12, _) = reads_of(&sh, 12.04, 12.04, 1088.0, 1.0);
+        assert_eq!(f["weight_bytes"].as_f64(), Some(w12));
+        lp.layout = crate::weights::Layout::Tiered;
+        assert_eq!(features(&sh, &m, 0, &lp, 1088.0, 1)["twelve"].as_bool(), Some(false));
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    /// A Qwen3.5 model served to --users N is planned with N sequences, each up to the context (the executor's pools hold up to that, src/dynamic/rows.rs `page`):
+    /// on an A100 40GB Qwen3.5-0.8B served to 8 took 5,054 MiB where its plan for one said 3,037. Run, and serve to one, plan one sequence as before; a GPU too small
+    /// for N at the full context gives each the context the room leaves them.
+    #[test]
+    fn a_qwen35_server_is_planned_for_its_users() {
+        let q35: serde_json::Value = serde_json::from_str(&fixture("qwen35_configs.json")).unwrap();
+        let dir = model_dir("q35users", "Qwen3.5-0.8B", &q35["Qwen/Qwen3.5-0.8B"].to_string());
+        let m = dir.to_str().unwrap();
+        let plan_of = |words: &[&str]| planned(&args(words)).unwrap().plan.chosen.and_then(|c| c.load).unwrap();
+        let tag = format!("{m}:kestrel");
+        let one = plan_of(&["run", &tag, "--machine", "a100-80g"]);
+        let eight = plan_of(&["serve", &tag, "--users", "8", "--machine", "a100-80g"]);
+        assert_eq!((one.users, eight.users, eight.context), (1, 8, one.context));
+        assert_eq!(eight.kv, 8 * one.kv, "each of the eight's states and context");
+        assert_eq!(eight.gpu_total() - eight.kv, one.gpu_total() - one.kv);
+        assert_eq!(plan_of(&["serve", &tag, "--users", "1", "--machine", "a100-80g"]).kv, one.kv);
+        // (Qwen3.5-9B to 64 users on a 24 GB card: the context the room gives each, within what is free)
+        let dir9 = model_dir("q35users", "Qwen3.5-9B", &q35["Qwen/Qwen3.5-9B"].to_string());
+        let tag9 = format!("{}:wren", dir9.to_str().unwrap());
+        let many = plan_of(&["serve", &tag9, "--users", "64", "--machine", "rtx4090"]);
+        assert!(many.users == 64 && many.context < LOSSY_CTX && many.context >= LOSSY_MIN_CTX && many.gpu_total() <= many.free, "{}", many.text());
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
     /// What `fit` prints for each family at each level it runs at, on each NVIDIA preset, is the plan `run` builds from the same GPU (the functions

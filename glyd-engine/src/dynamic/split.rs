@@ -348,11 +348,116 @@ impl crate::conv::Gen for Run {
             Run::Split(_) | Run::Tp(_) => None,
         }
     }
-    /// One GPU: the engine's own step (src/dynamic/rows.rs); stages and layers across GPUs run one sequence at a time.
+    /// One GPU: the engine's own step (src/dynamic/rows.rs); stages and layers across GPUs: a step of one sequence at a time (`ModelStep for Run`), its slot empty (what a
+    /// reply before this left in the cache is not a scheduler's sequence, which begins at its first token: `serve_rows` empties the executor's the same way).
     fn as_step(&mut self, users: usize) -> Result<Option<(usize, &mut dyn crate::sched::ModelStep)>> {
         match self {
             Run::One(e) => crate::conv::Gen::as_step(e, users),
-            Run::Split(_) | Run::Tp(_) => Ok(None),
+            Run::Split(_) | Run::Tp(_) => {
+                self.reset()?;
+                Ok(Some((1, self as &mut dyn crate::sched::ModelStep)))
+            }
+        }
+    }
+}
+
+impl Run {
+    /// Tokens in the cache.
+    fn held(&self) -> usize {
+        match self {
+            Run::One(e) => e.n,
+            Run::Split(e) => e.n,
+            Run::Tp(e) => e.held(),
+        }
+    }
+}
+
+/// Stages or layers across GPUs as a scheduler's step of one sequence at a time (R4a #138: every model is served by `Sched`, none by a loop of its own): one slot, emptied
+/// at the sequence's end; a prompt in one call (the stages run it a chunk at a time), a token a decode step, a draw read from the last stage's logits row. Batching across
+/// GPUs (stage_rows and the gathers with several sequences) is the next piece for these.
+impl crate::sched::ModelStep for Run {
+    fn window(&self) -> usize {
+        crate::conv::Gen::capacity(self)
+    }
+    fn chunk(&self) -> usize {
+        crate::conv::Gen::capacity(self)
+    }
+    fn pages(&self) -> usize {
+        0
+    }
+    fn slots(&self) -> Option<usize> {
+        Some(1)
+    }
+    fn eos(&self) -> Vec<i64> {
+        match self {
+            Run::One(e) => e.desc().eos.clone(),
+            Run::Split(e) => e.eos().to_vec(),
+            Run::Tp(e) => e.eos().to_vec(),
+        }
+    }
+    fn prefill(&mut self, _pages: &[i32], start: usize, tokens: &[u32], last: bool) -> Result<Option<Sample>> {
+        if start != self.held() {
+            return err(format!("a chunk at {start} of a sequence that holds {}", self.held()));
+        }
+        let s = Run::prefill(self, tokens)?;
+        Ok(last.then_some(s))
+    }
+    fn decode(&mut self, rows: &[crate::sched::Row]) -> Result<Vec<Sample>> {
+        match rows {
+            [r] if r.pos == self.held() => Ok(vec![Run::step(self, r.token)?]),
+            [r] => err(format!("a token at {} of a sequence that holds {}", r.pos, self.held())),
+            _ => err(format!("a step of {} rows on a model that runs one sequence at a time", rows.len())),
+        }
+    }
+    fn logits(&mut self, _row: usize) -> Result<Vec<f32>> {
+        Run::logits(self)
+    }
+    fn release(&mut self, _pages: &[i32]) -> Result<()> {
+        self.reset()
+    }
+}
+
+/// A greedy reply of `tokens` tokens to `prompt` from the model alone (`Gen::reply`), and the same through the scheduler with the model as its step (`as_step`: across GPUs, a
+/// step of one slot): both, for a check that they are the same (`tpcheck`).
+#[cfg(feature = "dev")]
+pub fn sched_reply(e: &mut Run, prompt: &[u32], tokens: usize) -> Result<(Vec<u32>, Vec<u32>)> {
+    use crate::conv::Gen;
+    use crate::sched::{Ev, Reply, Sched, Submit};
+    let reply = Reply {
+        params: crate::sampler::Params { temperature: 0.0, ..Default::default() },
+        max_new: tokens,
+        ignore_eos: true,
+        logprobs: None,
+        stop_ids: Vec::new(),
+    };
+    let (alone, _) = e.reply(prompt, &reply, &mut |_| true)?;
+    let Some((k, step)) = e.as_step(1)? else { return err("no scheduler's step") };
+    let mut s = Sched::new(step, k);
+    let (tx, rx) = channel();
+    s.submit(Submit {
+        prompt: prompt.to_vec(),
+        reply,
+        out: tx,
+        abort: Default::default(),
+        resumed: Default::default(),
+        cached: Default::default(),
+        created: Default::default(),
+        salt: 0,
+        pin: 0,
+        images: Vec::new(),
+    });
+    while !s.idle() {
+        s.tick()?;
+    }
+    let mut via = Vec::new();
+    loop {
+        match rx.recv().map_err(|_| Error("the scheduler dropped the sequence".into()))? {
+            Ev::Token(t) => via.push(t),
+            Ev::Lp(_) => {}
+            Ev::End(r) => {
+                r?;
+                return Ok((alone, via));
+            }
         }
     }
 }
@@ -435,67 +540,11 @@ fn config_eos(text: &str) -> Vec<i64> {
     }
 }
 
-/// An FP8 matrix's bytes on the GPU, in hundredths of the release's: layout H's plain packs (an HBM GPU's default) 9 bits a value (a patch's row blocks 0-2
-/// in its 7-bit core, the 4th in var: 112.5%); coded packs about 7.1 bits (layout H; layout c 6.75), 90 a bound. ponytail: fixed shares; the matrices' own
-/// sizes (`f8_size`) where a release codes worse.
-pub const PLAIN_PCT: u64 = 113;
-pub const CODED_PCT: u64 = 90;
-/// A bf16 matrix's bytes on the GPU at the penguin level, in hundredths of the release's: the smallest lossless layout (tiered, about 10.8 bits a value)
-/// 72, the 12-bit one (about 12.0 and its exceptions) 78. The 12-bit layout's one-token product reads at about 80% of an H100's rate where the tiered
-/// one's reads at 30-45% (research/fp4-one-h100-2026-10-22), so an HBM GPU holds bf16 matrices in it where they fit.
-pub const TIERED_PCT: u64 = 72;
-pub const TWELVE_PCT: u64 = 78;
-
-/// The bytes each of the `nl` layers holds on a GPU, and the rest's (embedding, head, final norm): the release's tensors as they are, an FP8 matrix at
-/// `f8_pct` hundredths of its bytes, a bf16 matrix at penguin's 72% (about 11.5 bits a weight, an upper bound). Not counted: the tensors no description
-/// loads (a multi-token-prediction layer, a vision or audio tower).
-pub fn layer_bytes(dir: &Path, nl: usize, f8_pct: u64) -> Result<(Vec<u64>, u64)> {
-    layer_bytes_where(dir, nl, f8_pct, TIERED_PCT, &|_| true)
-}
-
-/// As `layer_bytes`, of the tensors whose names `keep` keeps.
-pub fn layer_bytes_where(dir: &Path, nl: usize, f8_pct: u64, bf16_pct: u64, keep: &dyn Fn(&str) -> bool) -> Result<(Vec<u64>, u64)> {
-    layer_bytes_with(dir, nl, f8_pct, bf16_pct, keep, true)
-}
-
-/// `layer_bytes_where`, a hummingbird directory's experts (their files of their own) counted in each layer's bytes only where `experts`.
-pub fn layer_bytes_with(dir: &Path, nl: usize, f8_pct: u64, bf16_pct: u64, keep: &dyn Fn(&str) -> bool, experts: bool) -> Result<(Vec<u64>, u64)> {
-    let table = crate::sizes::Table::from_dir(dir).map_err(Error)?;
-    let (mut per, base) = layer_bytes_table(&table, nl, f8_pct, bf16_pct, keep);
-    if experts {
-        per.iter_mut().zip(hb_layer_bytes(dir, nl)?).for_each(|(p, b)| *p += b);
-    }
-    Ok((per, base))
-}
-
-/// The bytes of routed experts each of the `nl` layers of a hummingbird directory holds in files of its own (src/hb_pack.rs: by the description's block, decoder layer l's are block
-/// 2 l + 1); zeros for any other directory.
-pub fn hb_layer_bytes(dir: &Path, nl: usize) -> Result<Vec<u64>> {
-    let mut per = vec![0u64; nl];
-    if let Some(hb) = crate::hb_pack::HbDir::open(dir)? {
-        for (l, bytes) in hb.layer_bytes() {
-            if l < nl {
-                per[l] += bytes;
-            }
-        }
-    }
-    Ok(per)
-}
-
-/// `layer_bytes_where` of a table of tensors (src/sizes.rs: a directory's, or the Hub's by ranges before the files are here).
-pub fn layer_bytes_table(table: &crate::sizes::Table, nl: usize, f8_pct: u64, bf16_pct: u64, keep: &dyn Fn(&str) -> bool) -> (Vec<u64>, u64) {
-    table.per_layer(nl, &|r| keep(&r.name), &|r| {
-        let matrix = r.shape.len() == 2 && r.shape.iter().all(|&d| d >= 256);
-        match r.dtype.as_str() {
-            "BF16" if matrix => r.bytes * bf16_pct / 100,
-            "F8_E4M3" if matrix => r.bytes * f8_pct / 100,
-            _ => r.bytes,
-        }
-    })
-}
-
 /// Where the dynamic route's layers go and how many of their experts each GPU holds: the planner's (src/plan.rs `sizing`).
-pub use crate::plan::sizing::{fit, fit_table, fit_table_with, places_plan, places_plan_dense, plan_cuts};
+pub use crate::plan::sizing::{
+    fit, fit_table, fit_table_with, hb_layer_bytes, layer_bytes, layer_bytes_table, layer_bytes_where, layer_bytes_with, places_plan, places_plan_dense,
+    plan_cuts, ram_bytes, ram_bytes_table, CODED_PCT, PLAIN_PCT, TIERED_PCT, TWELVE_PCT,
+};
 
 /// Kimi-K3 in stages (`open`'s) with `places[k]` of a layer's experts on stage k's GPU, the rest in the expert cache's host tier.
 pub fn open_kimi(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], places: Vec<usize>, dense: usize) -> Result<Run> {
@@ -516,42 +565,6 @@ pub fn open_kimi(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], places: 
             super::kimi::load_with_caching(&owned, o, st, places.get(k).copied(), caching.as_ref())
         }),
     )
-}
-
-/// Each of the model's `nl` layers' bytes that its family's loader can keep in the computer's memory (src/dense_ram.rs: its packed linears there), at the packing `layer_bytes_where` counts: Muse Spark's attention and
-/// latent projections, Kimi-K3's delta attention's three; zeros for the others (their attention is in blocks of their own, or FP8).
-pub fn ram_bytes(dir: &Path, nl: usize, family: &str, f8_pct: u64, bf16_pct: u64) -> Result<Vec<u64>> {
-    if !matches!(family, "Kimi-K3" | "Muse Spark") {
-        return Ok(vec![0; nl]);
-    }
-    let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
-    ram_bytes_table(&crate::sizes::Table::from_dir(dir).map_err(Error)?, &text, nl, family, f8_pct, bf16_pct)
-}
-
-/// `ram_bytes` of a table of tensors and the model's config.json (src/sizes.rs: before the files are here too).
-pub fn ram_bytes_table(table: &crate::sizes::Table, text: &str, nl: usize, family: &str, f8_pct: u64, bf16_pct: u64) -> Result<Vec<u64>> {
-    let kda: Vec<bool> = match family {
-        "Kimi-K3" => crate::kimi::ConfigKimi::parse(text, "config.json", None)?.kinds.iter().map(|k| matches!(k, crate::glm::GlmKind::Kda)).collect(),
-        "Muse Spark" => Vec::new(),
-        _ => return Ok(vec![0; nl]),
-    };
-    Ok(layer_bytes_table(table, nl, f8_pct, bf16_pct, &|n| in_ram(family, &kda, n)).0)
-}
-
-/// Whether the tensor `name` is one of the matrices `family`'s loader keeps in the computer's memory for a layer there (src/dense_ram.rs; `kda`: Kimi-K3's layers of delta attention).
-fn in_ram(family: &str, kda: &[bool], name: &str) -> bool {
-    let layer = name.split("layers.").nth(1).and_then(|r| r.split('.').next()).and_then(|x| x.parse::<usize>().ok());
-    match family {
-        "Muse Spark" => {
-            (name.contains(".self_attn.") && name.ends_with("_proj.weight")) || name.contains(".pre_expert_proj.") || name.contains(".post_expert_proj.")
-        }
-        "Kimi-K3" => {
-            layer.is_some_and(|l| kda.get(l) == Some(&true))
-                && name.contains(".self_attn.")
-                && ["q_proj", "k_proj", "v_proj", "g_proj", "f_a_proj", "b_proj", "o_proj", "f_b_proj"].iter().any(|x| name.ends_with(&format!(".{x}.weight")))
-        }
-        _ => false,
-    }
 }
 
 /// A model of the dynamic route in stages (`open`'s), stage k's layers with their experts in the expert cache as `cachings[k]` says: a hummingbird directory's (src/hbg_store.rs: places on its GPU, the computer's memory, the disk),
@@ -634,19 +647,19 @@ mod tests {
     /// attention's, whose blocks keep their own), none of DeepSeek-V4's.
     #[test]
     fn the_matrices_a_layer_keeps_in_memory_are_its_loaders() {
-        let m = |n: &str| super::in_ram("Muse Spark", &[], n);
+        let m = |n: &str| crate::plan::sizing::in_ram("Muse Spark", &[], n);
         assert!(m("model.language_model.layers.3.self_attn.q_proj.weight") && m("model.language_model.layers.3.self_attn.o_proj.weight"));
         assert!(m("model.language_model.layers.0.mlp.pre_expert_proj.weight") && m("model.language_model.layers.0.mlp.post_expert_proj.weight"));
         assert!(!m("model.language_model.layers.0.self_attn.q_norm.weight") && !m("model.language_model.layers.0.mlp.experts.gate_up_proj"));
         assert!(!m("model.language_model.layers.0.mlp.gate.weight") && !m("model.language_model.embed_tokens.weight"));
         let kda = [true, true, true, false];
-        let k = |n: &str| super::in_ram("Kimi-K3", &kda, n);
+        let k = |n: &str| crate::plan::sizing::in_ram("Kimi-K3", &kda, n);
         assert!(k("language_model.model.layers.2.self_attn.f_a_proj.weight") && k("language_model.model.layers.0.self_attn.o_proj.weight"));
         assert!(!k("language_model.model.layers.3.self_attn.o_proj.weight"), "a latent attention layer's block keeps its own");
         assert!(
             !k("language_model.model.layers.1.self_attn.q_conv1d.weight") && !k("language_model.model.layers.1.block_sparse_moe.shared_experts.up_proj.weight")
         );
-        assert!(!super::in_ram("DeepSeek-V4", &[], "model.layers.0.self_attn.wo.weight"));
+        assert!(!crate::plan::sizing::in_ram("DeepSeek-V4", &[], "model.layers.0.self_attn.wo.weight"));
     }
 
     /// The expert cache's plan: the dense bytes cut over every GPU (even where one would hold them), each stage's room after them as places for its experts.

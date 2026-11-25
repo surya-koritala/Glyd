@@ -56,7 +56,9 @@ impl SsdWs {
 /// Nemotron's kernels with typed launches.
 pub struct KernNh {
     conv: crate::kt::nh_conv,
+    conv_rows: crate::kt::nh_conv_rows,
     ssm: crate::kt::nh_ssm,
+    ssm_rows: crate::kt::nh_ssm_rows,
     cum: crate::kt::nh_ssd_cum,
     gmat: crate::kt::nh_ssd_g,
     states: crate::kt::nh_ssd_states,
@@ -70,7 +72,9 @@ impl KernNh {
     pub fn load(dev: &Dev) -> Result<KernNh> {
         Ok(KernNh {
             conv: dev.typed()?,
+            conv_rows: dev.typed()?,
             ssm: dev.typed()?,
+            ssm_rows: dev.typed()?,
             cum: dev.typed()?,
             gmat: dev.typed()?,
             states: dev.typed()?,
@@ -88,6 +92,41 @@ impl KernNh {
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn conv(&self, s: Stream, x: u64, xs: i32, w: u64, bias: u64, st: u64, y: u64, n: i32, c: i32) -> Result<()> {
         launch!(self.conv, [(c as u32).div_ceil(256), 1, 1], [256, 1, 1], s; x, xs, w, bias, st, y, n, c)
+    }
+
+    /// `conv` of `rows` sequences' rows, a token each: row r's state at the address `sts` holds at entry r ss (0: a padding row, its output zeroed).
+    ///
+    /// # Safety
+    /// As `conv`; `sts` holds `rows` entries `ss` apart, each 0 or a live state of the convolution's.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn conv_rows(&self, s: Stream, x: u64, xs: i32, w: u64, bias: u64, sts: u64, ss: i32, y: u64, rows: u32, c: i32) -> Result<()> {
+        launch!(self.conv_rows, [(c as u32).div_ceil(256), rows, 1], [256, 1, 1], s; x, xs, w, bias, sts, ss, y, c)
+    }
+
+    /// `ssm` of `rows` sequences' rows, a token each: row r's state at the address `sts` holds at entry r ss (0: a padding row, its output zeroed).
+    ///
+    /// # Safety
+    /// As `conv_rows`.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn ssm_rows(
+        &self,
+        s: Stream,
+        xc: u64,
+        cs: i32,
+        dtr: u64,
+        dts: i32,
+        dt_bias: u64,
+        a_log: u64,
+        d: u64,
+        sts: u64,
+        ss: i32,
+        y: u64,
+        rows: u32,
+        nh: i32,
+        ng: i32,
+        dt_min: f32,
+    ) -> Result<()> {
+        launch!(self.ssm_rows, [nh as u32, (NH_P / 8) as u32, rows], [256, 1, 1], s; xc, cs, dtr, dts, dt_bias, a_log, d, sts, ss, y, nh, ng, dt_min)
     }
 
     /// The selective state update of n rows, one token after another (a decode step: n = 1): xc [n, cs] the convolution's output, dtr the dt columns of the in_proj's output (rows `dts` apart),

@@ -1,7 +1,7 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 
-use glyd_engine::{glm_cb, weights};
+use glyd_engine::weights;
 
 thread_local! {
     static DIR: glyd_fuzz::Scratch = glyd_fuzz::Scratch::new("pack_dir");
@@ -20,7 +20,4 @@ fuzz_target!(|data: &[u8]| {
         let _ = weights::plan(d.path());
         let _ = weights::earlier_format(d.path());
     });
-    if let Ok(t) = std::str::from_utf8(p[1]) {
-        let _ = glm_cb::CbManifest::from_json(t);
-    }
 });

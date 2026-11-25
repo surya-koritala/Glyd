@@ -79,6 +79,8 @@ const SWITCHES: &[&str] = &[
     "insecure-no-auth",
     "yes",
     "kv12",
+    "card",
+    "table",
 ];
 #[cfg(not(feature = "dev"))]
 const SWITCHES: &[&str] = &[
@@ -104,6 +106,8 @@ const SWITCHES: &[&str] = &[
     "no-draft",
     "insecure-no-auth",
     "yes",
+    "card",
+    "table",
 ];
 
 #[derive(Clone)]

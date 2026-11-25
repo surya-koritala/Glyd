@@ -213,7 +213,7 @@ pub fn family(cfg_text: &str, name: &str) -> Result<Family, Refusal> {
     let c = crate::runtime::config::ModelConfig::parse(cfg_text).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), ""))?;
     if c.family() == Some(Family::Gemma4) {
         // (the 26B-A4B mixture of experts and the E models are refused whatever the level)
-        if let Err(e) = crate::gemma4::ConfigG4::parse(cfg_text, None, false) {
+        if let Err(e) = crate::gemma4::ConfigG4::of(&c, None, false) {
             if e.msg.contains("not in this engine yet") {
                 return Err(Refusal::unsupported(format!("{name}: {}", e.msg), "Run Gemma 4 12B or 31B: glyd run google/gemma-4-12B-it"));
             }
