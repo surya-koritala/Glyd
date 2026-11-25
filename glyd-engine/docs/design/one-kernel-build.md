@@ -64,13 +64,13 @@ Each step lands alone, keeps `libglyd_gpu` loadable (the Python package needs it
   the step product to 64 tokens (route GEMM, and the step product of the routes MID and WG for the layouts that take it); the prompt
   kernel (routes BIG, DECODE, AHEAD and SPLIT: mma_gemm_big in its three default shapes and, on GeForce Ada, its stream-K form, with
   split-K's finish); the 12-bit layout's route MID (mma12_mid, and the A100's mma12_ws); the grouped experts' step products, which
-  every call takes (C API 26: their prompt kernel and rows kernel, which a development build's variables alone ask for now, are the
-  library's and left the engine's fatbin), and the expert cache's places; the 12-bit KV pages' write, unpack, gather, decode and prompt attention (and over a
+  every call takes (C API 26: their prompt kernel, rows kernel and Hopper's wgmma product, which a development build's variables alone
+  ask for now, are the library's and left the engine's fatbin), and the expert cache's places; the 12-bit KV pages' write, unpack, gather, decode and prompt attention (and over a
   bf16 cache); the lossless FP8 format's size, pack and unpack and its products (both layouts, every kind of scales, the experts').
   Their grids are the library's: occupancy of the engine's own kernels (`cuOccupancyMaxActiveBlocksPerMultiprocessor` in the device
   layer) and the same split rules, so the sums' order and the bits are the library's. A development build's variables that ask for
-  another plan keep the library's. Hopper's kernels (the 12-bit layout's TMA and wgmma products, the tiered layout's TMA product, the
-  experts' wgmma product) are in the fatbin, built for sm_90a, with their launches (tensor maps from the driver's
+  another plan keep the library's. Hopper's kernels (the 12-bit layout's TMA and wgmma products, the tiered layout's TMA product) are in
+  the fatbin, built for sm_90a, with their launches (tensor maps from the driver's
   `cuTensorMapEncodeTiled`, clusters); they have run on no H100 yet.
 - **Step 5.** The folded kernels are in `kernels/engine.cu`'s fatbin, so the CUDA 12 fatbin (`NVCC12`) carries them as it carries the rest.
 - **Step 6.** The HIP build compiles `engine.cu`, so `fold.cu` and the header with it: the header is the library's own HIP-compiling source.
