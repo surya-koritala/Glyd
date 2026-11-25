@@ -831,6 +831,13 @@ fn unnamed(d: &ModelDesc) -> Option<usize> {
     std::iter::once(&d.first).chain(d.layers.iter().flatten()).flat_map(Op::mats).chain([d.embed, d.lm]).find(|&k| k >= d.mats.len())
 }
 
+/// The checkpoint's tensors of the matrices layer `l`'s operations multiply by (`ModelDesc::mats`' members; a fused product's zero rows are none): what the
+/// executor's loader keeps in the computer's memory for a layer there (`Placing::ram`), each one it packs (the planner's test holds its figures to them).
+#[cfg(test)]
+pub(crate) fn layer_tensors(d: &ModelDesc, l: usize) -> Vec<String> {
+    d.layers[l].iter().flat_map(Op::mats).filter_map(|k| d.mats.get(k)).flat_map(|it| it.members.iter().filter(|m| !m.is_empty()).cloned()).collect()
+}
+
 /// Whether matrix `k` of `d` is held as saved (bf16), not packed: a table an operation reads by row (`Op::NgramRows`), or a shape the library does not pack
 /// (columns not a multiple of 16, or a member's rows, `rows_of` it where the checkpoint holds it, not a multiple of 64: a save keeps such a merge as its parts;
 /// an item padded with zero rows is one matrix of its own rows, whatever its members').

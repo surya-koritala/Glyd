@@ -100,10 +100,10 @@ pub enum ExpertCache {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RamLinears {
     None,
-    /// The attention's projections and the experts' latent projections, of every layer.
-    Attention,
-    /// The delta attention's projections, of the layers that have one.
-    DeltaAttention,
+    /// Every matrix the executor's loader packs for a layer's own products (src/dynamic/mod.rs `Placing::ram` keeps each of them there): the attention's
+    /// projections (a delta attention's or a latent one's: not a latent attention's kv_b nor its indexer's, small tensors it holds as saved), a dense MLP's
+    /// three, and the experts' latent projections where they are the layer's products (a block of experts keeps its own matrices on the GPU).
+    Products,
 }
 
 /// A family on one GPU with nothing kept off it: what the other rows differ from.
@@ -185,7 +185,7 @@ pub static TABLE: [Support; 9] = [
             bf16_twelve: true,
             across: Across::Default,
             expert_cache: ExpertCache::Packed,
-            ram_linears: RamLinears::DeltaAttention,
+            ram_linears: RamLinears::Products,
         },
     },
     Support {
@@ -222,7 +222,7 @@ pub static TABLE: [Support; 9] = [
         split_levels: PENGUIN_HB,
         experts_in_ram_levels: PENGUIN_HB,
         drafts: false,
-        route: Route { sizing: Sizing::Dynamic, across: Across::Asked, expert_cache: ExpertCache::Release, ram_linears: RamLinears::Attention, ..ONE_GPU },
+        route: Route { sizing: Sizing::Dynamic, across: Across::Asked, expert_cache: ExpertCache::Release, ram_linears: RamLinears::Products, ..ONE_GPU },
     },
     Support {
         family: Family::FlashNext,

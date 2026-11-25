@@ -672,23 +672,24 @@ mod tests {
         assert_eq!(layer_of("lm_head.weight"), None);
     }
 
-    /// The matrices a layer in the computer's memory keeps there (src/dense_ram.rs) are the ones its family's loader puts there: Muse Spark's attention and latent projections, Kimi-K3's delta attention's (not its latent
-    /// attention's, whose blocks keep their own), none of DeepSeek-V4's.
+    /// The matrices a layer in the computer's memory keeps there (src/dense_ram.rs) are the ones the executor's loader puts there: every matrix of the layer's
+    /// own products, Muse Spark's attention and latent projections, Kimi-K3's delta and latent attention's and its dense MLP's (not a latent attention's kv_b
+    /// or indexer, small tensors, nor a block of experts' own matrices); none of DeepSeek-V4's.
     #[test]
     fn the_matrices_a_layer_keeps_in_memory_are_its_loaders() {
-        let m = |n: &str| crate::plan::sizing::in_ram("Muse Spark", &[], n);
+        let m = |n: &str| crate::plan::sizing::in_ram("Muse Spark", n);
         assert!(m("model.language_model.layers.3.self_attn.q_proj.weight") && m("model.language_model.layers.3.self_attn.o_proj.weight"));
         assert!(m("model.language_model.layers.0.mlp.pre_expert_proj.weight") && m("model.language_model.layers.0.mlp.post_expert_proj.weight"));
         assert!(!m("model.language_model.layers.0.self_attn.q_norm.weight") && !m("model.language_model.layers.0.mlp.experts.gate_up_proj"));
         assert!(!m("model.language_model.layers.0.mlp.gate.weight") && !m("model.language_model.embed_tokens.weight"));
-        let kda = [true, true, true, false];
-        let k = |n: &str| crate::plan::sizing::in_ram("Kimi-K3", &kda, n);
-        assert!(k("language_model.model.layers.2.self_attn.f_a_proj.weight") && k("language_model.model.layers.0.self_attn.o_proj.weight"));
-        assert!(!k("language_model.model.layers.3.self_attn.o_proj.weight"), "a latent attention layer's block keeps its own");
-        assert!(
-            !k("language_model.model.layers.1.self_attn.q_conv1d.weight") && !k("language_model.model.layers.1.block_sparse_moe.shared_experts.up_proj.weight")
-        );
-        assert!(!crate::plan::sizing::in_ram("DeepSeek-V4", &[], "model.layers.0.self_attn.wo.weight"));
+        let k = |n: &str| crate::plan::sizing::in_ram("Kimi-K3", n);
+        let l = |x: &str| format!("language_model.model.layers.{x}");
+        assert!(k(&l("2.self_attn.f_a_proj.weight")) && k(&l("0.self_attn.o_proj.weight")) && k(&l("0.mlp.gate_proj.weight")));
+        assert!(k(&l("3.self_attn.q_a_proj.weight")) && k(&l("3.self_attn.kv_a_proj_with_mqa.weight")) && k(&l("3.self_attn.o_proj.weight")));
+        assert!(!k(&l("3.self_attn.kv_b_proj.weight")) && !k(&l("3.self_attn.indexer.wq_b.weight")) && !k(&l("3.self_attn.indexer.weights_proj.weight")));
+        assert!(!k(&l("1.self_attn.q_conv1d.weight")) && !k(&l("1.block_sparse_moe.shared_experts.up_proj.weight")));
+        assert!(!k(&l("1.block_sparse_moe.routed_expert_down_proj.weight")) && !k(&l("1.block_sparse_moe.experts.0.w1.weight_packed")));
+        assert!(!crate::plan::sizing::in_ram("DeepSeek-V4", "model.layers.0.self_attn.wo.weight"));
     }
 
     /// The expert cache's plan: the dense bytes cut over every GPU (even where one would hold them), each stage's room after them as places for its experts.
