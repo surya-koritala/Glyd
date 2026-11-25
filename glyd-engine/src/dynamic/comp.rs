@@ -1,7 +1,8 @@
 //! The compressed attention layer kind (`runtime::kinds::Comp`: DeepSeek-V4's) as the executor's operations, each a mechanism: the queries (`Op::CompQ`), the window's
 //! key-value row (`Op::CompKv`), the compressed keys and values (`Op::Compress`, the attention's and the indexer's), the indexer's queries (`Op::IdxQ`) and pick
 //! (`Op::IdxPick`, every indexer's: src/dynamic/mla.rs), the attention over the window and the compressed entries (`Op::CompAttn`), and the output's grouped low rank
-//! (`Op::OGroupLora`, `Op::OGroupLoraStack`). The arithmetic is kernels/dsv4.cu's (the release's), its buffers `V4Run`'s.
+//! (`Op::OGroupLora`, `Op::OGroupLoraStack`). The arithmetic is kernels/dsv4.cu's (the release's), its buffers `V4Run`'s. The window and the compressed entries are rings
+//! (`Ring::keys`, `Ring::entries`), read and written through the sequence's block tables where they are paged.
 
 use super::mla::PickAt;
 use super::{Dyn, IdxKeys, Op, Part, Slot};
@@ -29,20 +30,21 @@ impl Dyn {
             Op::CompKv { norm, rope: r, ring } => {
                 let (c, sn) = rope(r);
                 let kv = p.slot(Slot::Kv) + self.rows_before(p.d.width(Slot::Kv));
-                launch!(k.kv_prep, [nu, 1, 1], [128, 1, 1], s; kv, p.small[norm].ptr, c, sn, pos, self.cache(ring).0, self.ring_cap[ring] as i32, eps, v.dims.sim as i32)?;
+                launch!(k.kv_prep, [nu, 1, 1], [128, 1, 1], s; kv, p.small[norm].ptr, c, sn, pos, self.cache(ring).0, self.ring_cap[ring] as i32, self.table(ring), eps, v.dims.sim as i32)?;
                 self.mark("attention: kv norm, rotary, cache")
             }
             Op::Compress { w, ape, norm, d, ratio, rope: r, cache, state, indexer } => {
                 let wd = if ratio == 4 { 2 * d } else { d };
                 let (c, sn) = rope(r);
-                let (h, cache, st0, st1) = (p.slot(Slot::H) + self.rows_before(p.d.hidden), self.state(cache), self.state(state), self.state(state + 1));
+                let (h, st0, st1) = (p.slot(Slot::H) + self.rows_before(p.d.hidden), self.state(state), self.state(state + 1));
+                let (tab, cache) = (self.table(cache), self.cache(cache).0);
                 if n == 1 && hid % 256 == 0 && hid <= 8192 {
                     launch!(k.lin32_1, [((2 * wd) as u32).div_ceil(8), 1, 1], [256, 1, 1], s; h, p.small[w].ptr, p.slot(Slot::Cp), hid, (2 * wd) as i32)?;
                 } else {
                     launch!(k.lin32, [((2 * wd) as u32).div_ceil(8), nu.div_ceil(8), 1], [256, 1, 1], s; h, p.small[w].ptr, p.slot(Slot::Cp), n as i32, hid, (2 * wd) as i32)?;
                 }
                 launch!(k.comp_pool, [(d as u32).div_ceil(128), 1, 1], [128, 1, 1], s; p.slot(Slot::Cp), p.small[ape].ptr, st0, st1, v.pooled.ptr, pos, n as i32, ratio as i32, d as i32, (ratio == 4) as i32)?;
-                launch!(k.comp_out, [(n / ratio + 1) as u32, 1, 1], [128, 1, 1], s; v.pooled.ptr, p.small[norm].ptr, c, sn, pos, n as i32, cache, ratio as i32, d as i32, indexer as i32, eps, v.dims.sim as i32)?;
+                launch!(k.comp_out, [(n / ratio + 1) as u32, 1, 1], [128, 1, 1], s; v.pooled.ptr, p.small[norm].ptr, c, sn, pos, n as i32, cache, tab, ratio as i32, d as i32, indexer as i32, eps, v.dims.sim as i32)?;
                 self.mark(if indexer { "indexer: compressor" } else { "attention: compressor" })
             }
             Op::IdxQ { rope: r, heads } => {
@@ -51,15 +53,16 @@ impl Dyn {
                 self.mark("indexer: q")
             }
             Op::IdxPick(ref x) => {
-                let IdxKeys::State(cache) = x.keys else { return err("a compressed attention's indexer whose keys are not its compressor's entries") };
-                let (iq, iw, entries) = (p.slot(Slot::Iq) + self.rows_before(x.heads * 128), p.slot(Slot::Iw) + self.rows_before(x.heads), self.state(cache));
+                let IdxKeys::Entries(cache) = x.keys else { return err("a compressed attention's indexer whose keys are not its compressor's entries") };
+                let (iq, iw, entries, tab) =
+                    (p.slot(Slot::Iq) + self.rows_before(x.heads * 128), p.slot(Slot::Iw) + self.rows_before(x.heads), self.cache(cache).0, self.table(cache));
                 for r0 in (0..n).step_by(v.ra) {
                     let at = PickAt {
                         q: iq + (r0 * x.heads * 128 * 2) as u64,
                         w: iw + (r0 * x.heads * 2) as u64,
                         keys: entries,
                         stride: 128,
-                        tab: 0,
+                        tab,
                         pos: pos + (r0 * 4) as u64,
                         rows: v.ra.min(n - r0),
                         scores: v.isc.ptr,
@@ -74,8 +77,8 @@ impl Dyn {
             }
             Op::CompAttn { ring, cache, ratio, sink, rope: r, heads, hpg } => {
                 let (c, sn) = rope(r);
-                let (kc, cap, window) = (self.cache(ring).0, self.ring_cap[ring] as i32, p.d.rings[ring].window as i32);
-                let cache = cache.map_or(0, |x| self.state(x));
+                let (kc, cap, ktab, window) = (self.cache(ring).0, self.ring_cap[ring] as i32, self.table(ring), p.d.rings[ring].window as i32);
+                let (cache, ctab) = cache.map_or((0, 0), |x| (self.cache(x).0, self.table(x)));
                 let (topk, picked) = (v.dims.topk, ratio == 4);
                 let scale = (512f32).powf(-0.5);
                 for r0 in (0..n).step_by(v.ra) {
@@ -86,10 +89,10 @@ impl Dyn {
                         if picked { v.cnt.ptr + ((row0 + r0) * 4) as u64 } else { 0 },
                     );
                     let q = p.slot(Slot::Qo) + self.rows_before(heads * 512) + (r0 * heads * 512 * 2) as u64;
-                    launch!(k.attn_scores, [rn, (v.lmax as u32).div_ceil(32), (heads as u32).div_ceil(16)], [256, 1, 1], s; q, kc, cap, cache, sel, cnt, topk as i32, pr, v.sc.ptr, heads as i32, v.lmax as i32, window, ratio as i32, scale)?;
+                    launch!(k.attn_scores, [rn, (v.lmax as u32).div_ceil(32), (heads as u32).div_ceil(16)], [256, 1, 1], s; q, kc, cap, ktab, cache, ctab, sel, cnt, topk as i32, pr, v.sc.ptr, heads as i32, v.lmax as i32, window, ratio as i32, scale)?;
                     launch!(k.attn_soft, [rn, (heads as u32).div_ceil(8), 1], [256, 1, 1], s; v.sc.ptr, p.small[sink].ptr, v.den.ptr, pr, cnt, heads as i32, v.lmax as i32, window, ratio as i32)?;
                     // (kernels/dsv4.cu V4_AQ: 8 warps a head, a head a block)
-                    launch!(k.attn_out, [rn, heads as u32, 1], [256, 1, 1], s; v.sc.ptr, v.den.ptr, kc, cap, cache, sel, cnt, topk as i32, pr, c, sn, p.slot(Slot::Att), rows as i32, heads as i32, hpg as i32, v.lmax as i32, window, ratio as i32, (row0 + r0) as i32)?;
+                    launch!(k.attn_out, [rn, heads as u32, 1], [256, 1, 1], s; v.sc.ptr, v.den.ptr, kc, cap, ktab, cache, ctab, sel, cnt, topk as i32, pr, c, sn, p.slot(Slot::Att), rows as i32, heads as i32, hpg as i32, v.lmax as i32, window, ratio as i32, (row0 + r0) as i32)?;
                 }
                 self.mark("attention: attention")
             }

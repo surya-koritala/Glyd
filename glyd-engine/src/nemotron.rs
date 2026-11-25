@@ -4,8 +4,8 @@
 
 use crate::ffi::{err, Error, Result};
 use crate::qwen35::{Pack35, Tensor35};
+use crate::runtime::config::ModelConfig;
 use crate::weights::{eos_ids, num, saved_parts, Layout};
-use glyd_gpu::json::{self, Value};
 use glyd_gpu::safetensors::Checkpoint;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -109,7 +109,13 @@ impl ConfigNemotronH {
 
     /// A config.json's text (and a generation_config.json's, where there is one): `label` names the file in an error.
     pub fn parse(text: &str, label: &str, generation: Option<&str>) -> Result<ConfigNemotronH> {
-        let v = json::parse(text).map_err(|e| Error(format!("{label}: {e}")))?;
+        ConfigNemotronH::of(&ModelConfig::parse(text).map_err(|e| e.context(label))?, label, generation)
+    }
+
+    /// `parse` of a config.json parsed once (`ModelConfig`).
+    pub fn of(c: &ModelConfig, label: &str, generation: Option<&str>) -> Result<ConfigNemotronH> {
+        use serde_json::Value;
+        let v = &c.top;
         let arch = v.get("architectures").and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_str).unwrap_or("");
         if arch != "NemotronHForCausalLM" {
             return err(format!("{label}: {arch}: not a NemotronH model"));
@@ -202,7 +208,7 @@ impl ConfigNemotronH {
                 return refuse("other than one shared expert");
             }
         }
-        let eos = eos_ids(&v, generation);
+        let eos = eos_ids(v, generation);
         let mut eps = 1e-5;
         if let Some(e) = v.get("layer_norm_epsilon").or_else(|| v.get("norm_eps")) {
             eps = num(e, "layer_norm_epsilon")? as f32;
@@ -262,17 +268,6 @@ impl ConfigNemotronH {
     /// what softplus and exp amplify, so a level may want them kept bf16 (a row range of the tensor read apart, or a saver that splits it) once a level's quality asks.
     pub fn in_rows(&self) -> usize {
         self.inner() + self.conv_dim() + self.m_heads
-    }
-
-    /// What one sequence holds besides its KV: every Mamba-2 layer's fp32 state and bf16 convolution state.
-    pub fn state_bytes(&self) -> u64 {
-        let per = self.m_heads * self.m_head_dim * self.m_state * 4 + self.conv_dim() * (self.conv_kernel - 1) * 2;
-        (self.layers_of(NhKind::Mamba) * per) as u64
-    }
-
-    /// A token's keys and values in bf16, over the attention layers.
-    pub fn kv_bytes_per_token(&self) -> u64 {
-        (self.layers_of(NhKind::Attention) * 2 * self.kv_heads * self.head_dim * 2) as u64
     }
 
     fn layer_name(&self, l: usize) -> String {
@@ -462,6 +457,7 @@ impl ConfigNemotronH {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use glyd_gpu::json::{self, Value};
 
     fn text() -> &'static str {
         include_str!("../tests/fixtures/nemotron_h_config.json")

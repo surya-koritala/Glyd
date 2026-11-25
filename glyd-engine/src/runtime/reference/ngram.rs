@@ -4,7 +4,7 @@
 
 use super::{dot, norm_groups, sigmoid, silu, Params};
 use crate::ffi::{err, Result};
-use crate::runtime::kinds::Ngram;
+use crate::runtime::kinds::{Ngram, NgramForm};
 
 const GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
 
@@ -16,11 +16,96 @@ fn splitmix64(v: u64) -> u64 {
 }
 
 /// The multipliers of n-gram layer `n.index`, one an order position: odd, and below (2^63 - 1) / vocab, so that a token times one is a
-/// positive int64.
-pub fn multipliers(n: &Ngram) -> Vec<u64> {
+/// positive int64. Condor's from splitmix64; Engram's numpy's draws (`NgramForm::Engram`).
+pub fn multipliers(n: &Ngram) -> Result<Vec<u64>> {
     let half = ((i64::MAX as u64) / n.vocab.max(1) as u64 / 2).max(1);
+    if n.form == NgramForm::Engram {
+        let mut r = NumpyRng::new(n.seed);
+        return (0..n.order).map(|_| Ok(2 * r.below(half)? + 1)).collect();
+    }
     let base = n.seed.wrapping_add(10007u64.wrapping_mul(n.index as u64));
-    (0..n.order as u64).map(|i| 2 * (splitmix64(base.wrapping_add(GAMMA.wrapping_mul(i + 1))) % half) + 1).collect()
+    Ok((0..n.order as u64).map(|i| 2 * (splitmix64(base.wrapping_add(GAMMA.wrapping_mul(i + 1))) % half) + 1).collect())
+}
+
+/// numpy's `default_rng(seed)`: its SeedSequence's state (a pool of four 32-bit words hashed from the seed) seeding PCG64, whose 64-bit draws are
+/// the XSL-RR output of a 128-bit LCG; and `integers(0, high)` of int64 by Lemire's bounded multiplication. Engram's hash multipliers (DeepSeek-V4.1)
+/// are its draws.
+pub struct NumpyRng {
+    state: u128,
+    inc: u128,
+}
+
+impl NumpyRng {
+    const MUL: u128 = (0x2360_ED05_1FC6_5DA4u128 << 64) | 0x4385_DF64_9FCC_F645;
+
+    pub fn new(seed: u64) -> NumpyRng {
+        // (SeedSequence: the seed's 32-bit words, mixed into a pool of 4, then 8 words drawn from it)
+        let (init_a, mult_a, init_b, mult_b) = (0x43b0_d7e5u32, 0x931e_8875u32, 0x8b51_f9ddu32, 0x58f3_8dedu32);
+        let entropy: Vec<u32> = if seed >> 32 == 0 { vec![seed as u32] } else { vec![seed as u32, (seed >> 32) as u32] };
+        let mut hc = init_a;
+        let mut hashmix = |v: u32| {
+            let mut v = v ^ hc;
+            hc = hc.wrapping_mul(mult_a);
+            v = v.wrapping_mul(hc);
+            v ^ (v >> 16)
+        };
+        let mix = |x: u32, y: u32| {
+            let r = 0xca01_f9ddu32.wrapping_mul(x).wrapping_sub(0x4973_f715u32.wrapping_mul(y));
+            r ^ (r >> 16)
+        };
+        let mut pool = [0u32; 4];
+        for (i, p) in pool.iter_mut().enumerate() {
+            *p = hashmix(entropy.get(i).copied().unwrap_or(0));
+        }
+        for src in 0..4 {
+            for dst in 0..4 {
+                if src != dst {
+                    let h = hashmix(pool[src]);
+                    pool[dst] = mix(pool[dst], h);
+                }
+            }
+        }
+        let mut hb = init_b;
+        let words: Vec<u32> = (0..8)
+            .map(|i| {
+                let mut v = pool[i % 4] ^ hb;
+                hb = hb.wrapping_mul(mult_b);
+                v = v.wrapping_mul(hb);
+                v ^ (v >> 16)
+            })
+            .collect();
+        let w = |k: usize| words[2 * k] as u64 | (words[2 * k + 1] as u64) << 32;
+        let (s, i) = ((w(0) as u128) << 64 | w(1) as u128, (w(2) as u128) << 64 | w(3) as u128);
+        let mut r = NumpyRng { state: 0, inc: (i << 1) | 1 };
+        r.step();
+        r.state = r.state.wrapping_add(s);
+        r.step();
+        r
+    }
+
+    fn step(&mut self) {
+        self.state = self.state.wrapping_mul(Self::MUL).wrapping_add(self.inc);
+    }
+
+    pub fn next_u64(&mut self) -> u64 {
+        self.step();
+        (((self.state >> 64) as u64) ^ self.state as u64).rotate_right((self.state >> 122) as u32)
+    }
+
+    /// `integers(0, high)`: a draw below `high`, which is past 2^32 (numpy takes 32-bit draws below that).
+    pub fn below(&mut self, high: u64) -> Result<u64> {
+        if high <= 1 << 32 {
+            return err(format!("numpy's bounded draw below {high}: the 32-bit path is not this one"));
+        }
+        let mut m = self.next_u64() as u128 * high as u128;
+        if (m as u64) < high {
+            let threshold = high.wrapping_neg() % high;
+            while (m as u64) < threshold {
+                m = self.next_u64() as u128 * high as u128;
+            }
+        }
+        Ok((m >> 64) as u64)
+    }
 }
 
 fn is_prime(v: u64) -> bool {
@@ -59,11 +144,13 @@ pub fn rows(n: &Ngram, pad: usize) -> usize {
 /// the sequence's start), `t` its own. Each order position p (0: the token itself) the token p places back, where no `eos` lies
 /// between (the segment's start); else `eos`.
 pub fn context(n: &Ngram, before: &[u32], t: u32) -> Vec<u32> {
+    // (Engram's has no segments: only the sequence's start reads as its pad id)
+    let segments = n.form == NgramForm::Condor;
     let mut out = vec![t];
     let mut cut = false;
     for p in 1..n.order {
         let v = if cut { n.eos } else { before.len().checked_sub(p).map_or(n.eos, |i| before[i]) };
-        cut |= v == n.eos;
+        cut |= segments && v == n.eos;
         out.push(v);
     }
     out
@@ -91,7 +178,7 @@ pub struct NgramState {
 
 impl NgramState {
     pub fn new(n: &Ngram, width: usize) -> NgramState {
-        NgramState { before: Vec::new(), conv: vec![vec![0.0; width]; (n.conv - 1) * n.dilation] }
+        NgramState { before: Vec::new(), conv: vec![vec![0.0; width]; n.conv.saturating_sub(1) * n.dilation] }
     }
 }
 
@@ -105,29 +192,51 @@ pub fn step(n: &Ngram, p: &Params, st: &mut NgramState, q: &[f32], token: u32) -
     if s * d != w || row * heads != n.dim || table.shape.len() != 2 {
         return err(format!("n-gram embedding: {w} values over {s} streams, a table of {:?} for {heads} tables of {}", table.shape, n.dim));
     }
+    // (Engram's hash reads the compressed vocabulary's ids)
+    let token = match n.form {
+        NgramForm::Condor => token,
+        NgramForm::Engram => {
+            let m = p.vec("ngram_map")?;
+            match m.get(token as usize).map(|&v| v as u32) {
+                Some(v) if (v as usize) < n.vocab => v,
+                v => return err(format!("Engram: token {token} maps to {v:?}, in a compressed vocabulary of {}", n.vocab)),
+            }
+        }
+    };
     let ctx = context(n, &st.before, token);
     st.before.push(token);
     let keep = st.before.len().saturating_sub(n.order - 1);
     st.before.drain(..keep);
     let (sizes, offsets) = tables(n);
     let mut e = Vec::with_capacity(n.dim);
-    for id in ids(n, &multipliers(n), &sizes, &offsets, &ctx) {
+    for id in ids(n, &multipliers(n)?, &sizes, &offsets, &ctx) {
         let r = id as usize;
         if r >= table.shape[0] {
             return err(format!("n-gram embedding: row {r} of a table of {}", table.shape[0]));
         }
         e.extend_from_slice(&table.data[r * row..][..row]);
     }
-    let k = norm_groups(&n.norm, &p.prod("key", &e)?, p.opt("norm_key"), d);
-    let v = p.prod("value", &e)?;
+    // (the key and the value as one product: the keys' rows first)
+    let (k, v) = if p.has("kv") {
+        let mut kv = p.prod("kv", &e)?;
+        let v = kv.split_off(w.min(kv.len()));
+        (kv, v)
+    } else {
+        (p.prod("key", &e)?, p.prod("value", &e)?)
+    };
+    let k = norm_groups(&n.norm, &k, p.opt("norm_key"), d);
     if k.len() != w || v.len() != d {
         return err(format!("n-gram embedding: key {} and value {} values for {s} streams of {d}", k.len(), v.len()));
     }
     let mut g = Vec::with_capacity(w);
     for i in 0..s {
         let x = dot(&k[i * d..][..d], &q[i * d..][..d]) / (d as f32).sqrt();
-        let x = if x == 0.0 { 0.0 } else { x.abs().max(1e-6).sqrt() * x.signum() };
+        // (Condor's root of 0 is 0; Engram's the clamp's, sqrt(1e-6))
+        let x = if x == 0.0 && n.form == NgramForm::Condor { 0.0 } else { x.abs().max(1e-6).sqrt() * x.signum() };
         g.extend(v.iter().map(|&vv| sigmoid(x) * vv));
+    }
+    if n.conv == 0 {
+        return Ok(g);
     }
     let gn = norm_groups(&n.norm, &g, p.opt("norm_conv"), d);
     let cw = p.vec("conv")?;
@@ -153,8 +262,32 @@ mod tests {
     use crate::runtime::kinds::Norm;
     use crate::runtime::reference::testing::fill;
 
+    /// numpy's generator: `np.random.default_rng(42).random(3)` is 0.7739560485559633, 0.4388784397520523, 0.8585979199113825 (each draw's top
+    /// 53 bits over 2^53).
+    #[test]
+    fn numpys_default_rng_draws() {
+        let mut r = NumpyRng::new(42);
+        let got: Vec<f64> = (0..3).map(|_| (r.next_u64() >> 11) as f64 / (1u64 << 53) as f64).collect();
+        assert_eq!(got[0], 0.7739560485559633, "{got:?}");
+        assert!((got[1] - 0.4388784397520523).abs() < 1e-15 && (got[2] - 0.8585979199113825).abs() < 1e-15, "{got:?}");
+    }
+
     fn kind(base: u64, vocab: usize, index: usize) -> Ngram {
-        Ngram { order: 3, heads: 8, dim: 256, base, vocab, seed: 1234, index, eos: 2000, streams: 4, conv: 4, dilation: 3, norm: Norm::rms_plus_one(1e-6) }
+        Ngram {
+            order: 3,
+            heads: 8,
+            dim: 256,
+            base,
+            vocab,
+            seed: 1234,
+            index,
+            eos: 2000,
+            streams: 4,
+            conv: 4,
+            dilation: 3,
+            norm: Norm::rms_plus_one(1e-6),
+            form: NgramForm::Condor,
+        }
     }
 
     /// The hash's numbers are the ones transformers saved with the tiny Qwen3.8-Flash-Next of tests/fixtures/qwen4x_tiny_manifest.json (its
@@ -168,7 +301,7 @@ mod tests {
             t[3].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect()
         };
         let n = kind(1000, 2048, 0);
-        assert_eq!(multipliers(&n), ints("layer_multipliers"));
+        assert_eq!(multipliers(&n).unwrap(), ints("layer_multipliers"));
         let (sizes, offsets) = tables(&n);
         assert_eq!((sizes, offsets), (ints("ngram_heads_vocab_sizes"), ints("ngram_heads_offsets")));
         // (16,826 rows in 128 shards of 132)
@@ -180,7 +313,7 @@ mod tests {
         // (a second n-gram layer's tables are the 16 primes after the first's)
         let (last, next) = (sizes[15], tables(&kind(20_000_000, 248_320, 1)).0[0]);
         assert!(next > last && is_prime(next) && (last + 1..next).all(|v| !is_prime(v)));
-        assert!(multipliers(&real).iter().all(|&m| m % 2 == 1 && (m as u128) * 248_320 < (1u128 << 63)));
+        assert!(multipliers(&real).unwrap().iter().all(|&m| m % 2 == 1 && (m as u128) * 248_320 < (1u128 << 63)));
     }
 
     /// A position's context stops at the segment's start: the end token itself is read, what lies before it is not; the sequence's start
@@ -201,12 +334,67 @@ mod tests {
     #[test]
     fn the_rows_by_hand() {
         let n = kind(1000, 2048, 0);
-        let (m, (sizes, offsets)) = (multipliers(&n), tables(&n));
+        let (m, (sizes, offsets)) = (multipliers(&n).unwrap(), tables(&n));
         for ctx in [[7u32, 5, 4], [0, 2000, 2000], [2047, 2046, 2045]] {
             let bi = (ctx[0] as u64).wrapping_mul(m[0]) ^ (ctx[1] as u64).wrapping_mul(m[1]);
             let tri = bi ^ (ctx[2] as u64).wrapping_mul(m[2]);
             let want: Vec<u64> = (0..16).map(|h| (if h < 8 { bi } else { tri }) % sizes[h] + offsets[h]).collect();
             assert_eq!(ids(&n, &m, &sizes, &offsets, &ctx), want);
+        }
+    }
+
+    /// Engram (DeepSeek-V4.1) by hand on three tokens: each token's compressed id (the map), the n-grams over those ids with no segment (the
+    /// pad id only before the sequence: the end token cuts nothing), numpy's multipliers (odd, bounded, seeded by 10007 times the layer), the
+    /// key and value of one product, and no convolution: the output is the gated value.
+    #[test]
+    fn engram_by_hand() {
+        let (d, s) = (8usize, 2usize);
+        let n = Ngram {
+            order: 3,
+            heads: 1,
+            dim: 4,
+            base: 5,
+            vocab: 10,
+            seed: 10007 * 14,
+            index: 0,
+            eos: 9,
+            streams: s,
+            conv: 0,
+            dilation: 1,
+            norm: Norm::rms(1e-6),
+            form: NgramForm::Engram,
+        };
+        let m = multipliers(&n).unwrap();
+        assert!(m.iter().all(|&x| x % 2 == 1 && (x as u128) * 10 < (1u128 << 63)), "{m:?}");
+        assert_ne!(m, multipliers(&Ngram { form: NgramForm::Condor, ..n }).unwrap());
+        let (sizes, offsets) = tables(&n);
+        let rows = rows(&n, 4);
+        let mut p = Params::new();
+        p.put("ngram", &[rows, 2], fill("eg.table", rows * 2, -1.0, 1.0));
+        p.put("kv", &[(s + 1) * d, 4], fill("eg.kv", (s + 1) * d * 4, -0.5, 0.5));
+        p.put("norm_key", &[s * d], fill("eg.nk", s * d, 0.5, 1.5));
+        // (a vocabulary of 16 onto 10 ids; token 2, the model's end token, is a token like another)
+        p.put("ngram_map", &[16], (0..16).map(|t| (t % 10) as f32).collect());
+        let mut st = NgramState::new(&n, s * d);
+        let toks = [13u32, 2, 7];
+        let qs: Vec<Vec<f32>> = (0..3).map(|i| fill(&format!("eg.q{i}"), s * d, -1.0, 1.0)).collect();
+        let outs: Vec<Vec<f32>> = toks.iter().zip(&qs).map(|(&t, q)| step(&n, &p, &mut st, q, t).unwrap()).collect();
+        assert_eq!(st.before, [2, 7], "the compressed ids kept");
+        for (i, ctx) in [[3u32, 9, 9], [2, 3, 9], [7, 2, 3]].iter().enumerate() {
+            let bi = (ctx[0] as u64).wrapping_mul(m[0]) ^ (ctx[1] as u64).wrapping_mul(m[1]);
+            let tri = bi ^ (ctx[2] as u64).wrapping_mul(m[2]);
+            let tab = p.vec("ngram").unwrap();
+            let e: Vec<f32> = [bi % sizes[0] + offsets[0], tri % sizes[1] + offsets[1]].iter().flat_map(|&r| tab[r as usize * 2..][..2].to_vec()).collect();
+            let kv = p.prod("kv", &e).unwrap();
+            let k = norm_groups(&n.norm, &kv[..s * d], p.opt("norm_key"), d);
+            let want: Vec<f32> = (0..s)
+                .flat_map(|j| {
+                    let x = dot(&k[j * d..][..d], &qs[i][j * d..][..d]) / (d as f32).sqrt();
+                    let x = x.signum() * x.abs().max(1e-6).sqrt();
+                    kv[s * d..].iter().map(move |vv| sigmoid(x) * vv).collect::<Vec<_>>()
+                })
+                .collect();
+            assert_eq!(outs[i], want, "token {i}");
         }
     }
 
@@ -229,6 +417,7 @@ mod tests {
             conv: 2,
             dilation: 3,
             norm: Norm::rms_plus_one(1e-6),
+            form: NgramForm::Condor,
         };
         let (sizes, _) = tables(&n);
         let rows = rows(&n, 4);
@@ -243,7 +432,7 @@ mod tests {
         let qs = [fill("ng.q0", s * d, -1.0, 1.0), fill("ng.q1", s * d, -1.0, 1.0)];
         let outs: Vec<Vec<f32>> = [3u32, 9].iter().zip(&qs).map(|(&t, q)| step(&n, &p, &mut st, q, t).unwrap()).collect();
         assert_eq!((st.before.clone(), st.conv.len()), (vec![3, 9], 3));
-        let (m, (_, offsets)) = (multipliers(&n), tables(&n));
+        let (m, (_, offsets)) = (multipliers(&n).unwrap(), tables(&n));
         let mut inputs = Vec::new();
         for (i, ctx) in [[3u32, 15, 15], [9, 3, 15]].iter().enumerate() {
             let bi = ((ctx[0] as u64 * m[0]) ^ (ctx[1] as u64 * m[1])) % sizes[0] + offsets[0];

@@ -20,7 +20,6 @@ on:
       - 'glyd-engine/src/tools.rs'
       - 'glyd-engine/src/weights.rs'
       - 'glyd-engine/src/plan.rs'
-      - 'glyd-engine/src/glm_cb.rs'
       - 'glyd-engine/src/glm.rs'
       - 'glyd-engine/src/kimi.rs'
       - 'glyd-engine/src/muse.rs'

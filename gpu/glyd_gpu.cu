@@ -6129,6 +6129,144 @@ __global__ void __launch_bounds__(32) release_kernel(uint8_t* pool, int64_t page
     }
 }
 
+// ---- a page moved whole (glyd_gpu_kv_save, glyd_gpu_kv_load: a sequence swapped to the host and back in its 12 bits) --------------------------------------------------------------------------
+// A page's image: its bytes (pb, page_bytes), then the entries of the escape pool's chunks its directory names, CH words a chunk at the directory's place (ND places), then
+// its raw slab's bytes where it is raw (plane_bytes): image_bytes apart. Only what the page holds is written: its bytes, its chunks, its slab.
+__host__ __device__ constexpr int64_t image_bytes(int64_t pb, int HP) { return pb + (int64_t)ND * CH * 4 + plane_bytes(HP); }
+
+// Page pages[j] of the pool into image j (a CTA a page, 128 threads); moved[j], where given: the bytes written. A page whose chunks or slab its pools do not list as its own
+// (a page never written, a void one) has PG_VOID set in its image's `used` word: loaded, it is void.
+__global__ void __launch_bounds__(128) save_kernel(const uint8_t* pool, int64_t page_stride, int64_t nblocks, const int32_t* pages, int64_t pb, int64_t ib, int HP, EscapePool esc, RawPool raw,
+                                                   uint32_t layer_tag, uint8_t* img, uint32_t* moved) {
+    __shared__ int s_bad, s_n;
+    const int j = blockIdx.x;
+    const int64_t block = pages[j];
+    uint8_t* out = img + (int64_t)j * ib;
+    uint32_t* out32 = reinterpret_cast<uint32_t*>(out + 16 * HP);
+    if (block < 0 || block >= nblocks) {
+        if (threadIdx.x == 0) {
+            out32[0] = PG_VOID;
+            if (moved) moved[j] = 4u;
+        }
+        return;
+    }
+    const uint8_t* pg = pool + block * page_stride;
+    const uint32_t* pg32 = reinterpret_cast<const uint32_t*>(pg + 16 * HP);
+    const uint32_t tag = layer_tag | (uint32_t)(block & 0xFFFFFF);
+    for (int64_t o = threadIdx.x * 16; o < pb; o += 128 * 16) *reinterpret_cast<uint4*>(out + o) = *reinterpret_cast<const uint4*>(pg + o);
+    const uint32_t used = pg32[0];
+    if (threadIdx.x == 0) {
+        s_bad = (used & PG_VOID) != 0;
+        s_n = 0;
+    }
+    __syncthreads();
+    uint8_t* extra = out + pb;
+    if (used & PG_RAW) {
+        const uint32_t d = pg32[1];
+        if (d - 1 < (uint32_t)raw.ns && raw.owner[d - 1] == tag) {
+            const uint8_t* src = raw.data + (size_t)(d - 1) * (size_t)raw.plane;
+            uint8_t* dst = extra + (int64_t)ND * CH * 4;
+            for (int64_t o = threadIdx.x * 16; o < raw.plane; o += 128 * 16) *reinterpret_cast<uint4*>(dst + o) = *reinterpret_cast<const uint4*>(src + o);
+            if (threadIdx.x == 0) s_n = (int)raw.plane;
+        } else if (threadIdx.x == 0) {
+            s_bad = 1;
+        }
+    } else if (!(used & PG_VOID)) {
+        // (a chunk is CH words, 16 loads of 16 bytes: a thread a load)
+        constexpr int Q = CH * 4 / 16;
+        for (int i = threadIdx.x; i < ND * Q; i += 128) {
+            const int c = i / Q, q = i % Q;
+            const uint32_t d = pg32[1 + c];
+            if (!d) continue;
+            if (d - 1 < (uint32_t)esc.nc && esc.owner[d - 1] == tag) {
+                *reinterpret_cast<uint4*>(extra + (int64_t)c * CH * 4 + q * 16) = *reinterpret_cast<const uint4*>(esc.ent + (size_t)(d - 1) * CH + q * 4);
+                if (q == 0) atomicAdd(&s_n, CH * 4);
+            } else {
+                atomicExch(&s_bad, 1);
+            }
+        }
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        if (s_bad) out32[0] = used | PG_VOID;
+        if (moved) moved[j] = (uint32_t)(pb + s_n);
+    }
+}
+
+// Image j into the page of block dst[j] (a CTA a page, 128 threads): the page's loans given back first, as a first token's clear gives them (only what the pools list as the
+// page's), then its bytes, and for each chunk its image names a chunk of the escape pool taken for this block (its entries, the directory naming it), or for a raw page a slab of
+// the raw pool. A page whose image is void, or that finds no chunk or slab, is void, its block named in the status's ring (as glyd_gpu_kv_write names one); a raw one in the raw ring.
+__global__ void __launch_bounds__(128) load_kernel(const uint8_t* img, const int32_t* dst, int64_t pb, int64_t ib, uint8_t* pool, int64_t page_stride, int64_t nblocks, int HP, EscapePool esc,
+                                                   RawPool raw, uint32_t layer_tag, uint32_t* status, uint32_t ring) {
+    __shared__ int s_void, s_slab;
+    const int j = blockIdx.x;
+    const int64_t block = dst[j];
+    if (block < 0 || block >= nblocks) return;
+    const uint8_t* in = img + (int64_t)j * ib;
+    const uint32_t* in32 = reinterpret_cast<const uint32_t*>(in + 16 * HP);
+    uint8_t* pg = pool + block * page_stride;
+    uint32_t* pg32 = reinterpret_cast<uint32_t*>(pg + 16 * HP);
+    const uint32_t tag = layer_tag | (uint32_t)(block & 0xFFFFFF);
+    const bool wasraw = (*(volatile uint32_t*)pg32 & PG_RAW) != 0;
+    if (threadIdx.x < ND) {
+        const uint32_t d = pg32[1 + threadIdx.x];
+        if (d) {
+            if (wasraw) {
+                if (threadIdx.x == 0 && d - 1 < (uint32_t)raw.ns && raw.owner[d - 1] == tag) raw_free(raw, (int)(d - 1), status);
+                else atomicAdd(status + ST_STALE, 1u);
+            } else if (d - 1 < (uint32_t)esc.nc && esc.owner[d - 1] == tag) {
+                esc_free(esc, (int)(d - 1), status);
+            } else {
+                atomicAdd(status + ST_STALE, 1u);
+            }
+        }
+    }
+    __syncthreads();
+    for (int64_t o = threadIdx.x * 16; o < pb; o += 128 * 16) *reinterpret_cast<uint4*>(pg + o) = *reinterpret_cast<const uint4*>(in + o);
+    const uint32_t used = in32[0];
+    if (threadIdx.x == 0) {
+        s_void = (used & PG_VOID) != 0;
+        s_slab = -1;
+        if (!s_void && (used & PG_RAW)) {
+            s_slab = raw.ns ? raw_alloc(raw, tag, tag * 2654435761u, status) : -1;
+            if (s_slab < 0) s_void = 1;
+        }
+    }
+    __syncthreads();
+    const uint8_t* extra = in + pb;
+    if (!s_void && (used & PG_RAW)) {
+        uint8_t* plane = raw.data + (size_t)s_slab * (size_t)raw.plane;
+        for (int64_t o = threadIdx.x * 16; o < raw.plane; o += 128 * 16) *reinterpret_cast<uint4*>(plane + o) = *reinterpret_cast<const uint4*>(extra + (int64_t)ND * CH * 4 + o);
+        if (threadIdx.x == 0) pg32[1] = (uint32_t)s_slab + 1u;
+    } else if (!s_void) {
+        if (threadIdx.x < ND && in32[1 + threadIdx.x]) {
+            const int c = esc.nc ? esc_alloc(esc, tag, tag * 2654435761u + threadIdx.x * 40503u, status) : -1;
+            pg32[1 + threadIdx.x] = c < 0 ? 0u : (uint32_t)c + 1u;
+            if (c < 0) atomicExch(&s_void, 1);
+        }
+        __syncthreads();
+        constexpr int Q = CH * 4 / 16;
+        for (int i = threadIdx.x; i < ND * Q; i += 128) {
+            const int c = i / Q, q = i % Q;
+            const uint32_t d = pg32[1 + c];
+            if (d && in32[1 + c]) *reinterpret_cast<uint4*>(esc.ent + (size_t)(d - 1) * CH + q * 4) = *reinterpret_cast<const uint4*>(extra + (int64_t)c * CH * 4 + q * 16);
+        }
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        if (s_void) {
+            // (the chunks it took are this block's: its next clear gives them back)
+            pg32[0] = PG_VOID;
+            atomicAdd(status + ST_VOID, 1u);
+            const uint32_t idx = atomicAdd(status + ST_RING_HEAD, 1u);
+            status[ST_RING + idx % ring] = (uint32_t)block + 1u;
+        } else if (used & PG_RAW) {
+            const uint32_t idx = atomicAdd(status + ST_RAW_RING_HEAD, 1u);
+            status[ST_RING + ring + idx % ring] = (uint32_t)block + 1u;
+        }
+    }
+}
+
 // A page's first token clears its headers and its arena and gives its chunks back to the pool before any entry is appended (every thread of the CTA calls it, and it ends in a barrier: a warp
 // appends to every head's).
 __device__ __forceinline__ void first_token_clear(const WriteParams& P, uint8_t* pg, uint32_t* pg32, uint32_t pg0, uint32_t tag, uint32_t block) {
@@ -6442,6 +6580,7 @@ __global__ void __launch_bounds__(128) unpack_kernel(const uint8_t* __restrict__
     if (wl >= n * H) return;
     const int lane = threadIdx.x & 31, g = lane >> 2, q = lane & 3;
     const int j = wl / H, h = wl % H;
+    if (pages[j] < 0) return;  // (a place of the list no page is in: nothing written for it)
     const uint8_t* pg = pool + (int64_t)pages[j] * page_stride;
     const uint4 hd = *reinterpret_cast<const uint4*>(pg + 16 * h);
     const uint32_t* pg32 = reinterpret_cast<const uint32_t*>(pg + 16 * H);
@@ -11666,6 +11805,39 @@ GLYD_GPU_INTERNAL int glyd_gpu_kv_release(uint8_t* pool, int64_t page_stride, in
     if (!blocks) return cudaErrorInvalidValue;
     const int HP = kv_heads(H, D);
     kvc::release_kernel<<<(unsigned)n, 32, 0, cs>>>(pool, page_stride, nblocks, blocks, HP, kvc::esc_of(escape, nchunks), kvc::raw_of(raw, nslabs, HP), (uint32_t)(layer + 1) << 24, status, nlost ? lost : nullptr, nlost);
+    return cudaGetLastError();
+}
+
+GLYD_GPU_INTERNAL int glyd_gpu_kv_image_bytes(int64_t H, int64_t D, int64_t A, int64_t* bytes) {
+    int64_t pb;
+    if (!bytes || glyd_gpu_kv_leaf_bytes(H, D, A, &pb)) return cudaErrorInvalidValue;
+    *bytes = kvc::image_bytes(pb, kv_heads(H, D));
+    return 0;
+}
+
+GLYD_GPU_INTERNAL int glyd_gpu_kv_save(const uint8_t* pool, int64_t page_stride, int64_t nblocks, const int32_t* pages, int64_t n, int64_t H, int64_t D, int64_t A, const uint8_t* escape, int64_t nchunks,
+                                  const uint8_t* raw, int64_t nslabs, int64_t layer, uint8_t* out, uint32_t* moved, cudaStream_t cs) {
+    int64_t pb;
+    if (glyd_gpu_kv_leaf_bytes(H, D, A, &pb) || n < 0 || n > INT32_MAX || nblocks < 0 || page_stride < pb || page_stride % 16 || (uintptr_t)pool % 16) return cudaErrorInvalidValue;
+    if (!kv_escape_ok(escape, nchunks) || !kv_raw_ok(raw, nslabs) || layer < 0 || layer > 254) return cudaErrorInvalidValue;
+    if (!n) return 0;
+    if (!pages || !out || (uintptr_t)out % 16 || (moved && (uintptr_t)moved % 4)) return cudaErrorInvalidValue;
+    const int HP = kv_heads(H, D);
+    kvc::save_kernel<<<(unsigned)n, 128, 0, cs>>>(pool, page_stride, nblocks, pages, pb, kvc::image_bytes(pb, HP), HP, kvc::esc_of((uint8_t*)escape, nchunks), kvc::raw_of((uint8_t*)raw, nslabs, HP),
+                                                (uint32_t)(layer + 1) << 24, out, moved);
+    return cudaGetLastError();
+}
+
+GLYD_GPU_INTERNAL int glyd_gpu_kv_load(const uint8_t* img, const int32_t* dst, int64_t n, uint8_t* pool, int64_t page_stride, int64_t nblocks, int64_t H, int64_t D, int64_t A, uint8_t* escape, int64_t nchunks,
+                                  uint8_t* raw, int64_t nslabs, int64_t layer, uint32_t* status, int64_t ring, cudaStream_t cs) {
+    int64_t pb;
+    if (glyd_gpu_kv_leaf_bytes(H, D, A, &pb) || n < 0 || n > INT32_MAX || nblocks < 0 || !status || page_stride < pb || page_stride % 16 || (uintptr_t)pool % 16) return cudaErrorInvalidValue;
+    if (!kv_escape_ok(escape, nchunks) || !kv_raw_ok(raw, nslabs) || layer < 0 || layer > 254 || ring < 1 || ring > (1 << 24)) return cudaErrorInvalidValue;
+    if (!n) return 0;
+    if (!img || !dst || (uintptr_t)img % 16) return cudaErrorInvalidValue;
+    const int HP = kv_heads(H, D);
+    kvc::load_kernel<<<(unsigned)n, 128, 0, cs>>>(img, dst, pb, kvc::image_bytes(pb, HP), pool, page_stride, nblocks, HP, kvc::esc_of(escape, nchunks), kvc::raw_of(raw, nslabs, HP), (uint32_t)(layer + 1) << 24,
+                                                status, (uint32_t)ring);
     return cudaGetLastError();
 }
 

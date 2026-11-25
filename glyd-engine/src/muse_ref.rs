@@ -299,16 +299,19 @@ impl RefMuse {
     }
 }
 
-/// A small Muse Spark of the release's layout in `out` (bf16, the routers fp32; random weights): four layers (the window's, every position's, the window's twice), a window of 32, 16 experts of which 4,
-/// a latent of 512.
-pub fn random(out: &Path) -> Result<()> {
-    let text = r#"{"architectures": ["MuseSparkForConditionalGeneration"], "model_type": "muse_spark", "text_config": {"model_type": "muse_spark_text", "hidden_size": 1024, "num_hidden_layers": 4,
+/// `random`'s config.json.
+pub(crate) const RANDOM_CONFIG: &str = r#"{"architectures": ["MuseSparkForConditionalGeneration"], "model_type": "muse_spark", "text_config": {"model_type": "muse_spark_text", "hidden_size": 1024, "num_hidden_layers": 4,
         "num_attention_heads": 16, "num_key_value_heads": 2, "head_dim": 64, "intermediate_size": 2048, "moe_hidden_size": 512, "moe_intermediate_size": 512, "num_local_experts": 16,
         "num_experts_per_tok": 4, "num_shared_experts": 0, "vocab_size": 4096, "max_position_embeddings": 65536, "sliding_window": 32, "hidden_act": "silu", "attention_bias": false,
         "layer_types": ["sliding_attention", "full_attention", "sliding_attention", "sliding_attention"], "layer_rope_theta": [500000.0, 0, 500000.0, 500000.0],
         "mlp_layer_types": ["sparse", "sparse", "sparse", "sparse"], "rope_parameters": {"rope_theta": 500000.0, "rope_type": "default"}, "rms_norm_eps": 1e-05, "post_norm_eps": 1e-08,
         "qk_scale_factor": 5.4730064863875, "output_multiplier": 0.5, "final_logit_softcapping": 20.0, "residual_gate_temperature": 0.3, "routed_scaling_factor": 1.0,
         "bos_token_id": 0, "eos_token_id": 1, "tie_word_embeddings": false}}"#;
+
+/// A small Muse Spark of the release's layout in `out` (bf16, the routers fp32; random weights): four layers (the window's, every position's, the window's twice), a window of 32, 16 experts of which 4,
+/// a latent of 512.
+pub fn random(out: &Path) -> Result<()> {
+    let text = RANDOM_CONFIG;
     let c = ConfigMuse::parse(text, "random", None)?;
     let mut r = 0x2026_1018_0000_0003u64;
     let mut uni = move |a: f32, b: f32| {
