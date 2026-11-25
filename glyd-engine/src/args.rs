@@ -81,6 +81,7 @@ const SWITCHES: &[&str] = &[
     "kv12",
     "card",
     "table",
+    "device-plan",
 ];
 #[cfg(not(feature = "dev"))]
 const SWITCHES: &[&str] = &[

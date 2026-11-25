@@ -5,13 +5,19 @@ descriptions compose, the seam where vendors plug in, the scheduler and KV cache
 pipelines move onto it, and the per-step ceiling it is measured against. Numbers are measured where a record is named, derived where the
 formula is given. Written 2026-11-20 against main ea26239f; revised the same day for the owner's scope rule below.
 
+**Reading this document.** "Top gaps" and section 1 are the tree the design was written against (main ea26239f, 2026-11-20): the
+files, line numbers and limits they cite are that tree's. Since then the hand-written engines (`model.rs`, `model35.rs`,
+`model_gemma4.rs`, Nemotron-H's and the GLM development engine) have been deleted, and every family runs on the description executor
+through the one scheduler (Qwen3.8-Flash-Next's release is still served by Condor's own engine, `model_qwen4x.rs`). What was built is
+marked **As built** or **Built** where it differs from the text around it.
+
 **Scope.** What M2 tests and optimises for are the models released in the last six months (cutoff 2026-05-20): Qwen3.8 (27B dense,
 Flash-Next, 2.4T-A95B), GLM-5.3 (and -Flash), Muse-Spark-Open-816B-A42B, Kimi-K3 (and K3.1-Pro), gemma-4-12B, DeepSeek-V4 (Flash and Pro,
 with their DSpark drafters). Qwen3 (2025), Qwen3.5/3.6, Nemotron-3-Super and gemma-4-31B are legacy: they move onto the runtime so their
 pipelines can be deleted, with parity and nothing more. Batching and paged KV exist today only on the legacy Qwen3 path; giving them to
 the recent families is the first priority.
 
-## Top gaps for the recent families
+## Top gaps for the recent families (2026-11-20, when the design was written)
 
 1. **Qwen3.8 dense (27B) has no lossless level on the engine.** The Qwen3.5 code path it runs on accepts kestrel, swift and wren only
    (`support.rs`, the `Qwen3.5` row: `levels: LOSSY`); penguin runs only through the frozen vLLM plugin. Its penguin pack is ~38 GiB
@@ -23,6 +29,11 @@ the recent families is the first priority.
    families use head dims 256 and 512 (Qwen3.8, Gemma 4), 64 (Muse), MLA latents (Kimi-K3, GLM-5.3) and DeepSeek-V4's compressed entries (#332).
 4. **Recent releases the engine does not load yet:** GLM-5.3 (the full `GlmMoeDsa` model; -Flash runs), Qwen3.8-2.4T-A95B (refused as a
    Qwen3.5 MoE, `qwen35.rs:492`), Kimi-K3.1-Pro, DeepSeek-V4.1-Flash, and the DSpark drafters (parsed MTP is unused on DeepSeek-V4) (#333).
+
+**As built.** Gap 1: the Qwen3.5 layout runs at penguin and at the lossy levels on the engine (`support.rs`, the `Qwen3.5` row),
+penguin on one GPU or with its layers cut over several. Gap 2: every family runs several sequences at once through the scheduler,
+its keys and values in pages (`glyd-engine usercheck CASE --users 4` and `8`, in the GPU job). Gap 3: the 12-bit lossless pages hold
+heads of 128, 256 and 512 and the latent attention's rows (`kvshapes`, `kv12check`). Gap 4 is #333's.
 
 ## Decisions
 
@@ -71,28 +82,29 @@ the recent families is the first priority.
 
 ### Two executors and a handful of engines
 
-Today a model runs on one of two kinds of code:
+When the design was written a model ran on one of two kinds of code:
 
 - **Hand-written engines.** `model.rs` (Qwen3 dense), `model35.rs` (Qwen3.5/3.8), `model_gemma4.rs`,
   `model_qwen4x.rs` (Condor's Qwen3.8-Flash-Next) and the GLM development engine (`model_glm.rs`, `mla_glm.rs`, `mtp_glm.rs`). Each has
   its own step, cache and sampling. **As built (R13, #234):** the GLM development engine is gone (`model_glm.rs`, `mla_glm.rs`, `mtp_glm.rs`,
   `kcheck_glm.rs`, `glm_serve.rs`, `glm_cb.rs`, `draft_loop.rs`, the codes block of `moe_glm_cb.rs`): GLM-5.3-Flash runs on the executor
-  alone; what the executor and Condor load GLM by is `kern_glm.rs` (the kernel table, the layers' weights, a latent layer's) and
+  alone; what the executor and Condor load GLM by is `kern/glm.rs` (the kernel table), `kern_glm.rs` (the layers' weights, a latent layer's) and
   `moe_glm.rs` (the experts' layer); its experts are tiered by hummingbird and the block levels (R12). Its MTP drafting went with it:
   R6 (#145) puts the MtpHead kind on the executor (its CPU reference is `runtime/reference/mtp.rs`).
 - **The description executor** (`dynamic/mod.rs`). A `ModelDesc` (`mod.rs:518-558`) is a list of `Op`s per layer over 25 activation slots;
   `Dyn::op` is a `match` over 60 `Op` variants (`mod.rs:85-482`, `1428-1870`). Ops are named by family more than by kind (`Prep35`,
   `AttnNh`, `V4Attn`, `GlmPre`, `KimiMixNorm`, `MuseQk`; M2 moves them onto the kinds' operations: the residual streams, the depth mix,
   the gated residual, the norms, the gated activation and the experts are one operation each, their family differences the kinds'
-  parameters, `StreamsP::rounding` among them). The executor imports the hand-written engines' kernel tables (`Kern35`,
-  `KernG4`, `KernNh`, `KernGlm`, `mod.rs:22-24`). Qwen3.5, Gemma 4, Nemotron-H, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark run
+  parameters, `StreamsP::rounding` among them; as built, `Op` has 47 operations named by kind and none of those six). The executor imported
+  the hand-written engines' kernel tables (`Kern35`, `KernG4`, `KernNh`, `KernGlm`, `mod.rs:22-24`; as built, the tables are `src/kern/`'s). Qwen3.5, Gemma 4, Nemotron-H, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark run
   on it. It holds one contiguous bf16 cache per sequence and swaps sequences with `select` (`mod.rs:2383-2399`); more than one sequence
   is refused for every family but Qwen3.5 (`mod.rs:2352`). Multi-GPU runs as a layer split with activations handed over through host
   memory (`dynamic/split.rs:1-4`) or as row slices with an all-gather after each product (`dynamic/tp.rs`, `tp.cu`); `range.rs` runs a
   stage as its own process for other machines.
 
-Only `model.rs` batches (up to `MAX_ROWS = 8`, `model.rs:71`) and only it has the paged lossless KV cache. Every engine samples on the host
-from GPU top-k candidates (`TopGpu`), and syncs the device every step.
+Only `model.rs` batched (up to `MAX_ROWS = 8`, `model.rs:71`) and only it had the paged lossless KV cache. Every engine sampled on the host
+from GPU top-k candidates (`TopGpu`), and synced the device every step. As built: `model.rs` is deleted, and the executor batches every
+family's rows over paged keys and values (`dynamic/rows.rs`, `dynamic/pages.rs`).
 
 Kernels live in two places. Every `kernels/*.cu` is included into `kernels/engine.cu` (lines 1006-1021) and built into the engine's fatbin;
 the `Kern*` structs call it. The packed dense products (`mma`, `mma12` and unpack), FP8 products, the grouped MoE (`moe`, `moe_way`)
@@ -103,15 +115,15 @@ and the whole lossless KV cache (`kv_write`, `kv_gather`, `kv_decode`, ...) are 
 
 | family (code) | attention | position | norm and residual | FFN | other | KV and state | weights |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Qwen3.8 dense 27B** (also legacy Qwen3.5/3.6) (`model35.rs`, `dynamic/qwen35.rs`) | 3 of 4 layers Gated DeltaNet (conv 4, fp32 state [nv,128,128], chunk 64); 1 of 4 GQA hd 256 with sigmoid output gate | partial rope 64/256, θ 1e7; mrope read as plain for text | (1+w) RMSNorm | SiLU-gated (MoE refused) | MTP and vision not loaded | bf16 contiguous, 1 sequence (Qwen3.5 can hold several and select) | library layouts; penguin on the dynamic route (one GPU, or its layers cut over several), the lossy levels on one GPU |
+| **Qwen3.8 dense 27B** (also legacy Qwen3.5/3.6) (`dynamic/qwen35.rs`; `model35.rs` then, removed in R3b) | 3 of 4 layers Gated DeltaNet (conv 4, fp32 state [nv,128,128], chunk 64); 1 of 4 GQA hd 256 with sigmoid output gate | partial rope 64/256, θ 1e7; mrope read as plain for text | (1+w) RMSNorm | SiLU-gated (MoE refused) | MTP and vision not loaded | bf16 contiguous, 1 sequence (Qwen3.5 can hold several and select) | library layouts; penguin on the dynamic route (one GPU, or its layers cut over several), the lossy levels on one GPU |
 | **Qwen3.8-Flash-Next** (Condor, `model_qwen4x.rs`) | 36 GDN layers; 12 sparse attention layers (24 q / 2 kv heads, hd 256; indexer picks 2,048 tokens by 4-token blocks; sigmoid gate) | partial rope 64/256, θ 1e7; M-RoPE for images | four residual streams joined by gated residuals, (1+w); n-gram embedding at layer 1 | MoE: softmax top-10 of 512, SwiGLU, Hadamard-rotated input; gated shared expert 640 | 1 MTP layer (verifies up to 8 rows); vision tower (27 blocks) | bf16 KV, indexer keys, GDN state; sequences swapped, not batched | Int6/5/4 dense, int8 shared and residual, codebook experts cb2/3/4/ternary decoded in `qx_cb_*` |
-| **gemma-4-12B** (also legacy 31B) (`model_gemma4.rs`, `dynamic/gemma4.rs`) | 5 of 6 sliding (hd 256, ring window+chunk); global hd 512, K=V option; q/k norm, weightless v norm | full θ 1e4 (sliding); proportional 64/256, θ 1e6 (global) | sandwich RMSNorm, per-layer scalar | GELU-tanh-gated | embed x sqrt(hidden), tied head, softcap 30, separate "assistant" draft model | bf16 contiguous, ring for sliding | library layouts; Int4-6 via `skinny.cu` for 1-16 rows |
+| **gemma-4-12B** (also legacy 31B) (`dynamic/gemma4.rs`; `model_gemma4.rs` then, removed in R3b) | 5 of 6 sliding (hd 256, ring window+chunk); global hd 512, K=V option; q/k norm, weightless v norm | full θ 1e4 (sliding); proportional 64/256, θ 1e6 (global) | sandwich RMSNorm, per-layer scalar | GELU-tanh-gated | embed x sqrt(hidden), tied head, softcap 30, separate "assistant" draft model | bf16 contiguous, ring for sliding | library layouts; Int4-6 via `skinny.cu` for 1-16 rows |
 | **Kimi-K3** (`dynamic/kimi.rs`) | 69 of 93 layers Kimi delta attention (KDA, fp32 state 96x128x128, conv 4); 24 MLA (q 1536, kv 512, nope 128 + 64 shared, v 128, absorbed, sigmoid gate) | none (no rope anywhere) | KimiRMSNorm (two roundings); depth mix: each block's input is a softmax over the embedding and completed 12-layer blocks | layer 0 dense (situ); MoE: sigmoid + bias, top-16 of 896, latent 3584, situ; 2 shared experts as one MLP | - | MLA latent [ctx, 576] bf16 plus KDA state, contiguous | experts MXFP4 as released; rest lossless `Tiered`; expert cache with device-side plan (`dc_plan`, `dc_fill`) |
-| **GLM-5.3-Flash** (`dynamic/glm.rs`, `kern_glm.rs`) | 34 of 45 KDA; 11 MLA (nope 256, v 256) with pooled-key indexer (top 2,048) | none (refused) | mHC: 4 streams, Sinkhorn mixing (20 iterations) | layers 0-2 dense SwiGLU clamp 10; MoE: sigmoid + bias, top-8 of 288, x2.5, 1 shared | 1 MTP head (not loaded; R6 #145) | latent 512 + indexer keys + KDA state, contiguous | FP8 128x128 blocks as released; Int6/5/4 or codebook experts on the hand-written path |
+| **GLM-5.3-Flash** (`dynamic/glm.rs`, `kern_glm.rs`, `kern/glm.rs`) | 34 of 45 KDA; 11 MLA (nope 256, v 256) with pooled-key indexer (top 2,048) | none (refused) | mHC: 4 streams, Sinkhorn mixing (20 iterations) | layers 0-2 dense SwiGLU clamp 10; MoE: sigmoid + bias, top-8 of 288, x2.5, 1 shared | 1 MTP head (not loaded; R6 #145) | latent 512 + indexer keys + KDA state, contiguous | FP8 128x128 blocks as released; Int6/5/4 or codebook experts on the hand-written path (removed in R13) |
 | **DeepSeek-V4** Flash, Pro (`dynamic/deepseek_v4.rs`) | one shared KV head of 512; window 128 ring plus a per-layer compressed cache (ratio 4 with an FP4-simulated indexer, or every entry); learned sink; grouped low-rank output | partial rope 64/512; YaRN on compressed layers | mHC, 4 streams; FP8 quantized product inputs | every layer MoE: sqrt-softplus + bias, hash routing (token id) in the first layers, SwiGLU limit, 1 FP8 shared | MTP parsed, unused | window ring (E4M3-simulated) + compressed caches + fp32 pooling state | FP8 large matrices kept, FP4 experts exact |
 | **Muse Spark** 816B-A42B (`dynamic/muse.rs`) | GQA hd 64, sliding (rope) and global (no rope); weightless q/k norm, gated output with per-head norm | full rope on sliding layers only | centred (1+w) RMSNorm; learned residual gates X = aX + bO; sandwich | every layer MoE in a latent, sigmoid + bias, per-expert output norm, no shared | logit softcap with multiplier | bf16 rings | bf16, lossless `Tiered` |
-| legacy: Qwen3 dense (`model.rs`) | GQA, hd 128, q/k norm fused with rope (`qk_norm_rope`) | rope, full, no scaling (refused) | RMSNorm pre-norm, residual fused in `rmsnorm_add` | SiLU-gated | tied allowed | paged 12-bit lossless, 16-token pages, 8 rows | `mma`/`mma12` decoded in the library product; long prompts unpack then GEMM |
-| Nemotron-3-Super / Nemotron-H (`dynamic/nemotron.rs`; the hand-written engine is retired, `kern_nh.rs` holds the kernel table and weights) | pattern of Mamba-2 (SSD chunk 128, fp32 state [heads,64,128]) and GQA hd 128 | none | RMSNorm, `x + mixer(norm(x))` | MoE: sigmoid + bias, top-22 of 512, renorm, x5; latent 1024 (Super); relu^2, no gate; full-width shared expert | MTP not loaded | bf16 contiguous plus SSM and conv state | Int6/5/4, hb40 codebook; expert cache with CPU misses (`moe_nh.rs:273-319`) |
+| legacy: Qwen3 dense (`model.rs` then; as built `dynamic/dense.rs`, the plain dense kind) | GQA, hd 128, q/k norm fused with rope (`qk_norm_rope`) | rope, full, no scaling (refused) | RMSNorm pre-norm, residual fused in `rmsnorm_add` | SiLU-gated | tied allowed | paged 12-bit lossless, 16-token pages, 8 rows | `mma`/`mma12` decoded in the library product; long prompts unpack then GEMM |
+| Nemotron-3-Super / Nemotron-H (`dynamic/nemotron.rs`; the hand-written engine is retired, `kern/nemotron.rs` holds the kernel table and `kern_nh.rs` the weights) | pattern of Mamba-2 (SSD chunk 128, fp32 state [heads,64,128]) and GQA hd 128 | none | RMSNorm, `x + mixer(norm(x))` | MoE: sigmoid + bias, top-22 of 512, renorm, x5; latent 1024 (Super); relu^2, no gate; full-width shared expert | MTP not loaded | bf16 contiguous plus SSM and conv state | Int6/5/4, hb40 codebook; expert cache with CPU misses (`moe_nh.rs:273-319`) |
 
 Recent families first, in bold; legacy rows last.
 
@@ -214,8 +226,8 @@ pub struct StepSpec {
 ```
 
 `launch` and `finish` are split so the scheduler's CPU work overlaps the device. At 17 ms a decode step on the 4080 SUPER the host has
-the whole step to admit, page, hash and build the next batch; today `model.rs:990` syncs the device every step and the dynamic path syncs
-inside `sample` (`dynamic/mod.rs:2402-2536`). `Tok::Prev` is how a decode row names a token the host has not seen yet; the device writes
+the whole step to admit, page, hash and build the next batch; when this was written `model.rs:990` synced the device every step and the
+dynamic path synced inside `sample` (`dynamic/mod.rs:2402-2536`). `Tok::Prev` is how a decode row names a token the host has not seen yet; the device writes
 step N's sampled ids into a ring that step N+1's embedding reads. This is SGLang's overlap scheduler and vLLM's async scheduling. A
 stop condition found one step late costs one wasted row-step, which the scheduler discards.
 
@@ -393,7 +405,8 @@ R1a (#134, CUDA in M2), R1b (#446, HIP in M5b) and R15 carry the detail; the des
   A step takes workspace from a bump arena that resets when the step's fence passes, so no buffer can be freed while queued work
   reads it, which is what makes the safe API sound without reference counts per launch (R15 lists the unsound functions).
 - **Typed launches.** Each kernel takes one argument struct by value. The struct is defined once in Rust (`#[repr(C)]`, `DevPtr<T>`
-  fields), and `build.rs` writes `kernels/args.h` that the CUDA and HIP sources include. CUDA and HIP pass kernel parameters up to
+  fields), and `build.rs` writes `kernels/args.h` that the CUDA and HIP sources include (not built: the launches are typed in Rust,
+  `src/kern/`, and no header is generated). CUDA and HIP pass kernel parameters up to
   4 KB by value, more than any of today's signatures need; the 255 untyped call sites become one generated function each. Metal gets
   the same structs as argument buffers.
 - **Graphs per bucket.** Captured once per row bucket at load; replay costs ~0.5 µs a launch (`docs/ceiling.md`, measured on the 4080).
@@ -409,17 +422,17 @@ CUDA kind every launch is a direct call on `Device`.
 
 ## 5. The scheduler and the KV cache
 
-### What exists
+### What existed (2026-11-20)
 
-`sched.rs` already does most of the right things for one model: it admits sequences, finds a prompt's pages by a chain of page keys
+`sched.rs` already did most of the right things for one model: it admits sequences, finds a prompt's pages by a chain of page keys
 (`kv::chain_key`, `Pager::lookup`), runs prompt chunks, decodes up to `MAX_ROWS = 8` rows, preempts the newest sequence by recompute
-when pages run out, and retries sequences whose lossless blocks were lost (`MAX_TRIES = 6`). Its 20 tests run on a `Fake` backend. Two
-things tie it to Qwen3: it imports `Row`, `Sample`, `Reply`, `Finish` and `MAX_ROWS` from `model.rs`, and its round is "one prompt pass,
-then one decode step". R4a moves it into `runtime::sched` with its own types and the `ModelStep` above, and keeps the tests.
+when pages run out, and retries sequences whose lossless blocks were lost (`MAX_TRIES = 6`). Its 20 tests ran on a `Fake` backend. Two
+things tied it to Qwen3: it imported `Row`, `Sample`, `Reply`, `Finish` and `MAX_ROWS` from `model.rs`, and its round was "one prompt pass,
+then one decode step". R4a gave it its own types and the `ModelStep` above, and kept the tests (as built it is still `src/sched.rs`).
 
 ### A round is one step
 
-The only batched path today is the legacy Qwen3 one, and its 4080 SUPER records of 2026-11-20 measured what the round structure costs
+The only batched path when this was written was the legacy Qwen3 one, and its 4080 SUPER records of 2026-11-20 measured what the round structure costs
 (Qwen3-8B, `benchmarks/gpu/rtx4080s-batched-prefill-2026-11-20`, `rtx4080s-bar-2026-11-20`). The recent families get the rule these
 measurements lead to, not the old round:
 
@@ -482,8 +495,12 @@ prompt's end (`mark`) and at a block boundary (`name`) are copied as the next st
 for the step in flight's sequences (`Sched::launch`), so the copies are of the states after that step's tokens. The 12-bit pages' status
 (the void pages a step made) is copied into the lane with the samples and read from there (`kv12_lost`). The operations that read the
 tokens (an n-gram embedding, routing by token) read the int32 ids `step_ids` writes beside the embedding's. The executor overlaps on one
-GPU where no layer's experts are in a cache and no layer's matrices are in the computer's memory (both do host work inside the pass);
-`GLYD_ENGINE_OVERLAP=1` turns it on: it is off by default, since a launched step does not yet take the decode rows' one launch a layer,
+GPU where no layer's matrices are in the computer's memory and no block of experts reads the router's choices on the host (the blocks a
+decode graph captures): an expert cache's layers planned on the GPU (`--device`, src/devplan.rs) queue a decode call of up to eight rows
+whole, and a call the store plans on the host (a prompt's chunk) synchronizes the stream itself. The store's end of a step
+(`ExpertStore::end_step`) reads what the GPU counted and writes the plan's next settings, so it runs only when a step lands with none
+queued after it: after 16 steps landed with a later one out, the step asks to be quiet (`ModelStep::quiet`) and the scheduler lands it
+before launching the next. `GLYD_ENGINE_OVERLAP=1` turns it on: it is off by default, since a launched step does not yet take the decode rows' one launch a layer,
 their graphs or the pieces. `GLYD_PROF=1` and `GLYD_ENGINE_STEP_PROF=1` time
 each step's GPU work and the GPU's idle time before it from events at its first and last work (`Gaps`).
 
@@ -491,7 +508,8 @@ The models that ran one request at a time through a loop of their own (`server::
 and layers across GPUs (`ModelStep for Run`: a prompt in one call, a token a step, the logits read for a draw) and a model with a draft
 model (`ModelStep::draft`: a decode step is a drafting round, `spec_round`, each of its tokens sent and added as a step's; a request that
 asks for log-probabilities or a least length has plain steps). Condor's own engine (`qwenserve`, `qwen4x_serve.rs`'s `Qx` over
-`EngineQx`) is not the executor's and keeps its loop until R3d (#140) moves Condor onto the executor.
+`EngineQx`) is not the executor's and keeps its loop. As built (R3d, #140): the family's description runs on the executor and through the
+scheduler (the random case `qwen4x`, `dynamic/qwen4x.rs`); the release is still served by Condor's engine.
 
 ### Rows sized by memory
 
@@ -570,9 +588,9 @@ them up (`glyd_gpu_kv_release`: its chunks and slabs back). Each raw pool holds 
 `usercheck --kv12` with `GLYD_KV12_SHIFT=60 GLYD_KV12_POOL=1,0` (no step taken back, no request ended). Left: a copy back's pages take
 their chunks beside the steps that run meanwhile, which may take them first; such a page is void and its sequence taken back as before.
 
-Today's kernels take head dim 128 and GQA groups of at most 8 (`kv.rs:224-230`), which covers no recent family; widening them to head
-dims 256 and 512 and to MLA latents (576 values a token for Kimi-K3) is its own piece of work (#332), and until it lands those families
-use bf16 pages. **As built for latents (`dynamic/kvpages.rs`):** a latent attention's ring is one stream (`KV_ONE_STREAM`: the keys' tiles
+The kernels of 2026-11-20 took head dim 128 and GQA groups of at most 8 (`kv.rs:224-230`), which covered no recent family; widening them to head
+dims 256 and 512 and to MLA latents (576 values a token for Kimi-K3) was its own piece of work (#332; as built, 12-bit pages hold heads of 128,
+256 and 512: `kvshapes`). **As built for latents (`dynamic/kvpages.rs`):** a latent attention's ring is one stream (`KV_ONE_STREAM`: the keys' tiles
 alone), its row in heads of 128 (Kimi-K3's 512 + 64 as 5 with 64 zero channels, GLM-5.3's 512 as 4); the step's
 latents go to staging rows and from there to their pages, and the attention reads a sequence's pages unpacked to bf16 rows (listed on the
 device, so a decode step's graph holds it), then runs the bf16 ring's kernel: the same values in the same order, the same bits. Every
@@ -627,7 +645,7 @@ Built (R4d, #328): `ModelStep::swap_out` / `swap_in` / `swap_ready` / `swap_drop
 sliding group's window, a shared start's floor: `Pages::held_entries`, `restore`), its recurrent states and their copy at its mark. bf16
 rings move as their bytes, by one launch of a copy kernel over the blocks of every layer; 12-bit rings move as their pages are, in their 12
 bits: an image of each page (its bytes, the escape chunks it holds, its raw slab: `glyd_gpu_kv_save`), loaded into new pages with chunks
-and slabs lent to their new blocks, the directory naming them (`glyd_gpu_kv_load`, C API 21); a page that finds none is void, as one
+and slabs lent to their new blocks, the directory naming them (`glyd_gpu_kv_load`, C API 22); a page that finds none is void, as one
 written is. The host end is pinned memory mapped into the device's addresses: no GPU staging. Out: the copy runs beside the next steps in
 two parts, the first `head` blocks of each group (the sequences: the most blocks a decode step takes of a group), then the rest and the
 states. The blocks given back keep the part that reads them as a fence (`Pages::release_fenced`); a fenced block is taken after every
@@ -723,7 +741,7 @@ What is built (R12b, #327):
 - **`storebench`** runs batched decode through the cache and writes each count of rows' statistics; `ceiling --stats` predicts the
   step from them (`docs/ceiling.md`: DeepSeek-V4 and Kimi-K3 at the release's widths, 18 GB each on the 4080 SUPER, at 1, 8 and 32 rows).
 - **The plan on the GPU** (`devplan.rs`, kernels/moe.cu `xp_plan`/`xp_fill`/`xp_wait`/`xp_take`; `Offload::device`, a development
-  build's `--device-plan`, `tiercheck`/`storebench --device`): a layer whose host half is FP4 experts (DeepSeek-V4's, Kimi-K3's) keeps
+  build's `--device-plan`, `tiercheck`/`storebench --device-plan`): a layer whose host half is FP4 experts (DeepSeek-V4's, Kimi-K3's) keeps
   its places in a table on the GPU; a decode call's plan, its misses' copies (read through the host tier's mapped addresses), the
   products, the promotions behind them and the wait for the host's pairs are kernels on the engine's stream, and the host's pairs
   are a thread of the store's that answers the GPU's requests through mapped host memory (a request's number written last, its
@@ -738,7 +756,7 @@ What is built (R12b, #327):
   (`LayerCache`) still plans a prompt's chunks: before such a call the GPU's table is read into it, after it written back.
   On the Nemotron 3 Super decode traces its clock finds 0.5 to 0.6 points fewer of the pairs in places than the least-recently-used
   cache at one row (60.7, 72.8 and 79.4% at 17, 32 and 46% of the experts), and at 8 rows 5.1 more to 0.6 fewer.
-  Its GPU check (`tiercheck --device`, `storebench --device`) is not run yet.
+  Its GPU check (`tiercheck --device-plan`, `storebench --device-plan`) is not run yet.
 - **The slot policy and the hit-rate model at many rows**, checked on the Nemotron 3 Super decode traces (20 generations, 1 to 20
   rows side by side): a call's experts are asked for in the order of their pairs, fewest first (`by_rows`), so the busiest stay in
   places across waves (1 to 7 points more pairs found at 16 and 20 rows, never fewer); the planner prices a step's misses as its
@@ -786,7 +804,7 @@ Recent families first; the legacy pipelines move last, at parity, so they can be
 | 12 | legacy at parity: Qwen3.5/3.6 and gemma-4-31B (same code as step 5), Nemotron-3-Super/Nemotron-H, Qwen3 dense with its lossless paged KV | R3b #137, R3c #139 | pipelines deleted; no optimisation beyond parity | `model35.rs`, `model_gemma4.rs`, `model_nh.rs`, `model.rs` |
 
 Steps 5 and 6 run in parallel once step 4 has landed, and step 7 can start with 5. The legacy Qwen3 path served until step 12;
-its measured numbers (59.9 tok/s at 1 user, 452.7 at 8 on the 4080 SUPER) are the parity bar there and the reference for what batching
+its measured numbers (Qwen3-8B, 59.9 tok/s at 1 user, 452.7 in all at 8, on the 4080 SUPER, 2026-11-20: `benchmarks/gpu/rtx4080s-bar-2026-11-20`) are the parity bar there and the reference for what batching
 must give the recent families in step 5. Step 12's Qwen3 part is R3c (#139): Qwen3 dense, and every config the description builder's
 `llama` reading takes, lowered to the shared operations (`lower::dense`) and served by the scheduler with paged keys and values;
 `model.rs` and what only it used are deleted. Its parity against that bar is the GPU check's to measure.
@@ -916,13 +934,13 @@ tied; 10.9 B body parameters and a 1.0 B head. A token reads 6.74 GB (the tied e
 copy rate (736 on the spec sheet), ~104 TFLOPS bf16 with fp32 accumulation; wren's 4-bit weights are decoded to bf16 for the tensor
 cores, so flops are at the bf16 rate. Flops a token: 23.8 GFLOP, plus attention (0.67 GFLOP a token in the sliding layers once the window
 is full, and 0.26 MFLOP per token of context in the global ones). KV a token: 327,680 bytes in the sliding layers (up to the window),
-8,192 in the global ones, bf16 (no 12-bit tables for these head dims yet).
+8,192 in the global ones, bf16 (there were no 12-bit tables for these head dims when this was measured).
 
 | step | bytes (weights + KV) | at 702 GB/s | flops | at 104 TFLOPS | ceiling | measured |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
 | decode, 1 row, ~30 tokens of context | 6.74 GB | 9.60 ms | 24 GFLOP | 0.23 ms | 104 tok/s | 11.22 ms, 89 tok/s (86%) |
-| decode, 8 rows, 4,096 context | 6.74 + 2.95 GB | 13.81 ms | 0.20 TFLOP | 1.97 ms | 72 tok/s a user, 579 total | not possible today (one sequence) |
-| decode, 64 rows, ~370 context | 6.74 + 7.52 GB | 20.32 ms | 1.54 TFLOP | 14.85 ms | 49 tok/s a user, 3,150 total | not possible today (the M2 gate) |
+| decode, 8 rows, 4,096 context | 6.74 + 2.95 GB | 13.81 ms | 0.20 TFLOP | 1.97 ms | 72 tok/s a user, 579 total | not possible when written (one sequence); not measured since |
+| decode, 64 rows, ~370 context | 6.74 + 7.52 GB | 20.32 ms | 1.54 TFLOP | 14.85 ms | 49 tok/s a user, 3,150 total | not possible when written (the M2 gate); not measured since |
 | prompt, 8 x 30 tokens | 6.74 GB | 9.6 ms | 5.7 TFLOP | 55 ms | 55 ms | one prompt at a time |
 | prompt, 2,000 tokens | 6.74 GB | 9.6 ms | 49 TFLOP | 473 ms | 473 ms | not recorded |
 | prompt, 4,000 tokens | 6.74 GB | 9.6 ms | 100 TFLOP | 959 ms | 959 ms | not recorded |

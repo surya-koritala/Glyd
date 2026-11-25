@@ -1772,24 +1772,42 @@ pub(crate) fn random_dyn_at(case: &str, level: &str, layout: Option<Layout>, tag
     let dir = std::env::temp_dir().join(format!("glyd-{tag}-{case}-{}", std::process::id()));
     let o = DynOpts { ctx: ctx.unwrap_or(1024), ..dyn_opts(layout) };
     let e: Result<Dyn> = (|| {
-        match case {
-            "gemma4" => gemma4_random(&dir)?,
-            "qwen35" => qwen35_random(&dir)?,
-            "qwen35-wide" => qwen35_wide_random(&dir)?,
-            "qwen35moe" => qwen35moe_random(&dir)?,
-            "dense" => dense_random(&dir)?,
-            "muse" => crate::muse_ref::random(&dir)?,
-            "kimi" => crate::kimi_ref::random(&dir, 1, true, 8)?,
-            "glm" => crate::glm::random(&dir, false, None)?,
-            "nemotron" => crate::kcheck_nh::random(&dir, 0, 16)?,
-            "deepseek-v4" => crate::dsv4_ref::random(&dir, None)?,
-            "qwen4x" => qwen4x_random(&dir)?,
-            other => return err(format!("{other}: gemma4, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
-        }
+        random_model(case, &dir)?;
         load_dyn(case, &dir, &o, level)
     })();
     let _ = std::fs::remove_dir_all(&dir);
     e
+}
+
+/// The case's random model written to `dir`.
+fn random_model(case: &str, dir: &Path) -> Result<()> {
+    match case {
+        "gemma4" => gemma4_random(dir),
+        "qwen35" => qwen35_random(dir),
+        "qwen35-wide" => qwen35_wide_random(dir),
+        "qwen35moe" => qwen35moe_random(dir),
+        "dense" => dense_random(dir),
+        "muse" => crate::muse_ref::random(dir),
+        "kimi" => crate::kimi_ref::random(dir, 1, true, 8),
+        "glm" => crate::glm::random(dir, false, None),
+        "nemotron" => crate::kcheck_nh::random(dir, 0, 16),
+        "deepseek-v4" => crate::dsv4_ref::random(dir, None),
+        "qwen4x" => qwen4x_random(dir),
+        other => err(format!("{other}: gemma4, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
+    }
+}
+
+/// The context the planner gives the case's random model on this GPU for one user (`serve`'s plan of it), or why it gives none.
+fn planned_context(case: &str) -> Result<usize> {
+    let dir = std::env::temp_dir().join(format!("glyd-planned-{case}-{}", std::process::id()));
+    let got = (|| -> Result<usize> {
+        random_model(case, &dir)?;
+        let words = ["serve".to_string(), dir.display().to_string(), "--users".into(), "1".into(), "--no-draft".into()];
+        let f = crate::plan::planned(&crate::args::Args::from(words)).map_err(|r| Error(format!("the planner: {}", r.what)))?;
+        f.plan.chosen.as_ref().map(|c| c.context).filter(|&c| c > 0).ok_or_else(|| Error(format!("the planner has no plan for the random {case} model")))
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    got
 }
 
 /// `splitcheck CASE [--split CUT,..] [--devices GPU,..] [--level L | --layout mma12] [--tokens T]` (development): the case's random model on the dynamic route as `run` opens it
@@ -2759,7 +2777,7 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
-/// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR [--places N [--mode M] [--device]] | --ctx C] [--prompt-tokens P] [--stagger D]` (gemma4, qwen35, muse, kimi, glm, nemotron): the case's random model on the
+/// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR [--places N [--mode M] [--device-plan]] | --ctx C] [--prompt-tokens P] [--stagger D]` (gemma4, qwen35, muse, kimi, glm, nemotron): the case's random model on the
 /// description executor (or the model in DIR, with `--places` its experts in the expert cache; with `--ctx` a context of C tokens; with `--prompt-tokens` prompts of P (k + 1) / N tokens), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
 /// the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts one a pass, decode steps of the rows that decode: 16 or fewer here, whose bits
 /// are each row's own pass's). With prompts run together the replies that differ are counted, not refused (a step of more than 16 rows is another kernel's; a random model's near ties turn on its last
@@ -2781,12 +2799,24 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let level = a.flag("level").unwrap_or("penguin");
     let users: usize = a.num("users", 4usize)?;
     let tokens: usize = a.num("tokens", 24usize)?;
-    let long: Option<usize> = a.flag("prompt-tokens").map(|v| v.parse().map_err(|_| Error(format!("--prompt-tokens {v}: not a number")))).transpose()?;
+    // (--ctx plan: the random model at the context the planner gives it on this GPU, each prompt filling it to within half a chunk with its reply: the long-context check)
+    let planned = if a.flag("ctx") == Some("plan") { Some(planned_context(case)?) } else { None };
+    if let Some(c) = planned {
+        println!(
+            "the random {case} model at the planner's context for this GPU: {c} tokens, prompts of up to {} and {tokens} made",
+            c.saturating_sub(tokens + 32)
+        );
+    }
+    let long: Option<usize> = match (a.flag("prompt-tokens"), planned) {
+        (Some(v), _) => Some(v.parse().map_err(|_| Error(format!("--prompt-tokens {v}: not a number")))?),
+        (None, Some(c)) => Some(c.saturating_sub(tokens + 32).max(1)),
+        (None, None) => None,
+    };
     let len = |k: usize| long.map_or(5 + 29 * k, |p| (p * (k + 1) / users).max(1));
     // (--layout mma|mma12: penguin's packs in that layout, where the GPU's choice is another)
     let layout = a.layout()?.or(level_layout(level)?);
     let mut e: Dyn = match (a.flag("dir"), a.num("places", 0usize)?) {
-        // (`--places N`: the model in DIR with its experts in the expert cache, N places a layer and every expert in the computer's memory (src/offload.rs; `--mode`, copy by default, `--device`: the
+        // (`--places N`: the model in DIR with its experts in the expert cache, N places a layer and every expert in the computer's memory (src/offload.rs; `--mode`, copy by default, `--device-plan`: the
         // decode calls planned on the GPU, src/devplan.rs): a model larger than the GPU, its replies alone against its replies at once)
         (Some(d), places) if places > 0 => {
             let mode = match a.flag("mode") {
@@ -2794,7 +2824,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
                 None => crate::offload::Mode::Copy,
             };
             let o = DynOpts { ctx: (len(users - 1) + tokens + 64).next_multiple_of(256), chunk: 256, graph: true, device: 0, layout };
-            let offload = crate::offload::Offload { mode, device: a.has("device"), ..Default::default() };
+            let offload = crate::offload::Offload { mode, device: a.has("device-plan"), ..Default::default() };
             let caching = crate::hbg_store::HbCaching { places, ram: None, offload, dense: 0 };
             match crate::dynamic::split::open_cached(Path::new(d), &o, &[], &[0], vec![caching])? {
                 crate::dynamic::split::Run::One(e) => {
@@ -2818,7 +2848,10 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             level,
             layout,
             "usercheck",
-            a.flag("ctx").map(|v| v.parse().map_err(|_| Error(format!("--ctx {v}: not a number")))).transpose()?,
+            match planned {
+                Some(c) => Some(c),
+                None => a.flag("ctx").map(|v| v.parse().map_err(|_| Error(format!("--ctx {v}: not a number")))).transpose()?,
+            },
         )?,
     };
     println!("{case} at {level}: layout {:?}", e.layout);
@@ -2841,6 +2874,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     }
     let (batchable, exact) = (e.batchable(), e.rows_exact());
     let Some((k, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
+    let chunk = crate::sched::ModelStep::chunk(step);
     // (no finished sequence kept: the same prompts come again below, and each is to run from its first token, in passes with the others)
     let mut s = Sched::new(step, k).keeping(false);
     // (the prompts `gap` scheduler rounds apart: 0, all of them before the first round)
@@ -3063,8 +3097,13 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     // (a round that is one step, unless GLYD_ENGINE_ONE_STEP=0 or the prompts go one a pass: the longest prompt joins after the first three are decoding, so some step holds both)
     if std::env::var_os("GLYD_ENGINE_ONE_STEP").is_none_or(|v| v != "0") && !strict && !squeezed {
         let both = s.context().sched[28].load(std::sync::atomic::Ordering::Relaxed);
-        println!("steps of rows that decode and a prompt's chunk together: {both}");
-        if batchable && k > 1 && both == 0 {
+        // (prompts that fit one step's chunk together can all run before any row decodes: a step that holds both is not asked of them)
+        let fit_one = prompts.iter().map(Vec::len).sum::<usize>() <= chunk;
+        println!(
+            "steps of rows that decode and a prompt's chunk together: {both}{}",
+            if fit_one { " (the prompts fit one step's chunk together: not asked)" } else { "" }
+        );
+        if batchable && k > 1 && both == 0 && !fit_one {
             println!("FAIL no step held both rows that decode and a prompt's chunk");
             fails += 1;
         }
@@ -3077,6 +3116,9 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let (replays, late) = (e.rows_replays.get(), e.rows_late.get());
     // (steps launched ahead, GLYD_ENGINE_OVERLAP=1, run as passes of parts: no graph of rows and no pieces there yet)
     let ahead = crate::sched::ModelStep::overlaps(&e);
+    if crate::sched::overlap_asked() {
+        println!("steps launched before the step before lands (GLYD_ENGINE_OVERLAP=1): {}", if ahead { "yes" } else { "no, this model's steps land first" });
+    }
     let graphs = e.rows_graphs() && !(one_a_pass && !e.rows_exact()) && !ahead;
     println!(
         "decode steps of several rows replayed from a CUDA graph: {replays}, graphs captured in a request's step: {late}{}",
@@ -3096,7 +3138,13 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     // same rows in the same order, so the replies are the same token for token, and where pieces can run, passes replayed them. Not where sequences are sent back for room,
     // which turns on timings)
     let pieces_on = e.pieces_for_check(true, true);
-    if !squeezed && std::env::var_os("GLYD_KV12_POOL").is_none() && (pieces_on || e.graphs_taken()) {
+    // (not where the host computes pairs (--places with --mode cpu, split or auto, or the plan on the GPU, which sends the host a call's misses the places cannot take): which pairs are
+    // its turns on the cache's history, which the second run starts from where the first left it, and its sums differ from the GPU's in their last bits (src/tiering.rs `check`))
+    let hosted = a.num("places", 0usize)? > 0 && (a.flag("mode").is_some_and(|m| m != "copy") || a.has("device-plan"));
+    if hosted && !squeezed && (pieces_on || e.graphs_taken()) {
+        println!("graphs on against off: not compared (the host's pairs turn on the cache's history; --mode copy without --device-plan compares them)");
+    }
+    if !hosted && !squeezed && std::env::var_os("GLYD_KV12_POOL").is_none() && (pieces_on || e.graphs_taken()) {
         let run = |e: &mut Dyn| -> Result<Vec<Vec<u32>>> {
             let Some((_, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
             ask(&mut Sched::new(step, k).keeping(false), &prompts, 0)

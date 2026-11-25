@@ -486,6 +486,42 @@ extern "C" __global__ void expsum_bf16(const bf16* logits, int V, const float* m
     }
 }
 
+// A row's draw over all of its vocabulary without the row read on the host (src/sampler.rs `sample_hist`): each token's quotient q = (x - max) / temp in float, as the host's
+// draw takes it, its exp(q) in double summed by bucket of q, bucket b = min(B - 1, floor(-q * per)) (the largest logits in bucket 0), with the bucket's count. sums and counts:
+// B a row, zeroed before; row blockIdx.x.
+extern "C" __global__ void __launch_bounds__(1024) exp_hist_bf16(const bf16* logits, int V, const float* maxv, float temp, int B, float per, double* sums, unsigned* counts) {
+    logits += (size_t)blockIdx.x * V;
+    sums += (size_t)blockIdx.x * B;
+    counts += (size_t)blockIdx.x * B;
+    const float mx = maxv[blockIdx.x];
+    for (int i = threadIdx.x; i < V; i += blockDim.x) {
+        const float q = __fdiv_rn(b2f(logits[i]) - mx, temp);
+        const int b = max(0, (int)fminf((float)(B - 1), floorf(-q * per)));
+        atomicAdd(&sums[b], exp((double)q));
+        atomicAdd(&counts[b], 1u);
+    }
+}
+
+// The tokens of bucket want[row] of `exp_hist_bf16`'s (the same quotient, the same bucket): token and logit into tok and val, cap a row at most, and how many there are into n
+// (more than cap: some left out). n zeroed before; row blockIdx.x.
+extern "C" __global__ void __launch_bounds__(1024) hist_bucket_bf16(const bf16* logits, int V, const float* maxv, float temp, int B, float per, const int* want, int cap, unsigned* n, int* tok, float* val) {
+    logits += (size_t)blockIdx.x * V;
+    const float mx = maxv[blockIdx.x];
+    const int w = want[blockIdx.x];
+    for (int i = threadIdx.x; i < V; i += blockDim.x) {
+        const float x = b2f(logits[i]);
+        const float q = __fdiv_rn(x - mx, temp);
+        const int b = max(0, (int)fminf((float)(B - 1), floorf(-q * per)));
+        if (b == w) {
+            const unsigned j = atomicAdd(&n[blockIdx.x], 1u);
+            if (j < (unsigned)cap) {
+                tok[(size_t)blockIdx.x * cap + j] = i;
+                val[(size_t)blockIdx.x * cap + j] = x;
+            }
+        }
+    }
+}
+
 // The 16-bit values of a [n] (a page's [16, H, 2 D]) that are not b's: added to count[0] (all of them) and, by head and by key or value, to count[1 + 2 h + half] (the KV cache's check against a bf16 copy).
 extern "C" __global__ void count_diff_u16(const unsigned short* a, const unsigned short* b, size_t n, unsigned long long* count, int H, int D) {
     __shared__ unsigned long long sc[17];
