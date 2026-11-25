@@ -548,8 +548,7 @@ pub struct MoeKern {
     act: crate::kt::moe_act,
     add: crate::kt::moe_add,
     add_f32: crate::kt::moe_add_f32,
-    // a block layout's routed sum, each token's pairs' weighted rows in the order of its choices, rounded once: the product's own (kernels/fold.cu), and with the host's sums by token
-    sum: crate::kt::fold_moe_sum,
+    // a block layout's routed sum, each token's pairs' weighted rows in the order of its choices, rounded once, as the product's own sum adds them, and the host's sums by token where given
     sum_host: crate::kt::moe_sum_host,
     // the weighed experts' activation, each pair's weight in it, and the routing by token (kernels/dsv4.cu: the release's, DeepSeek-V4's)
     act_w: crate::kt::v4_moe_act,
@@ -594,7 +593,6 @@ impl MoeKern {
             act: dev.typed()?,
             add: dev.typed()?,
             add_f32: dev.typed()?,
-            sum: dev.typed()?,
             sum_host: dev.typed()?,
             act_w: dev.typed()?,
             hash: dev.typed()?,
@@ -1611,8 +1609,8 @@ impl MoeLayer {
     }
 
     /// The routed sum of a block layout where each pair's weighted row is in the scratch's workspace (the second product's, and the expert cache's host's put beside them: `offload::Hybrid::rows`): y [t, hidden] =
-    /// each token's pairs whose id in `ids` (int64 [t, k]; 0: the router's choices) is an expert, added in the order of its choices and rounded once, as the second product's own sum adds them (kernels/fold.cu's
-    /// fold_moe_sum): the call's sum whichever computed its pairs.
+    /// each token's pairs whose id in `ids` (int64 [t, k]; 0: the router's choices) is an expert, added in the order of its choices and rounded once, as the second product's own sum adds them (the library's
+    /// moe_sum_body; kernels/moe.cu's moe_sum_host with no host sums): the call's sum whichever computed its pairs.
     ///
     /// # Safety
     /// As `experts_via`; the workspace holds the rows of every pair `ids` names.
@@ -1623,7 +1621,7 @@ impl MoeLayer {
             return Ok(());
         }
         let ids = if ids == 0 { sc.ids.ptr } else { ids };
-        launch!(sc.k.sum, [((t * o / 4) as u32).div_ceil(256), 1, 1], [256, 1, 1], s; sc.ws.ptr, ids, self.cfg.experts as i32, t as i64, k as i64, o as i64, y)
+        launch!(sc.k.sum_host, [((t * o / 4) as u32).div_ceil(256), 1, 1], [256, 1, 1], s; sc.ws.ptr, ids, self.cfg.experts as i32, t as i64, k as i64, o as i64, 0u64, y)
     }
 
     /// A hummingbird layer in the expert cache (`hb_cache`), for `t` tokens of x [t, hidden] (bf16) whose choices `route` (or the family's router) made: in calls of at most `offload::CPU_TOKENS` tokens, each R x (the host reads it

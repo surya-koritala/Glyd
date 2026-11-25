@@ -228,9 +228,10 @@ extern "C" __global__ void moe_add_f32(bf16* y, const float* x, long long n) {
     if (i < n) y[i] = f2b(b2f(y[i]) + x[i]);
 }
 
-// The routed sum of a block layout's weighted second product and the host's: y [T, O] = each token's pairs that `ids` [T k] names (an id below E) added in the order of its choices in fp32 from
-// their weighted rows y32 [T k, O] (the product's, kept in its workspace), as the product's own sum adds them (the library's moe_sum_body), then the host's sum of the token's pairs it computed
-// (x [T, O], fp32), rounded once: not the product's sum rounded and the host's added and rounded again. 4 columns a thread; O a multiple of 4.
+// The routed sum of a block layout's weighted second product: y [T, O] = each token's pairs that `ids` [T k] names (an id below E) added in the order of its choices in fp32 from their weighted
+// rows y32 [T k, O] (the product's, kept in its workspace, and the expert cache's host's put beside them), as the product's own sum adds them (the library's moe_sum_body, which an AMD build
+// does not carry), then, where x is given, the host's sums by token of the pairs it computed (x [T, O], fp32), rounded once: not the product's sum rounded and the host's added and rounded
+// again. 4 columns a thread; O a multiple of 4.
 extern "C" __global__ void moe_sum_host(const float* y32, const long long* ids, int E, long long T, long long k, long long O, const float* x, bf16* y) {
     const long long i = ((long long)blockIdx.x * blockDim.x + threadIdx.x) * 4;
     if (i >= T * O) return;
@@ -245,11 +246,17 @@ extern "C" __global__ void moe_sum_host(const float* y32, const long long* ids, 
         v.z += u.z;
         v.w += u.w;
     }
-    const float4 h = *reinterpret_cast<const float4*>(x + i);
-    y[i] = f2b(v.x + h.x);
-    y[i + 1] = f2b(v.y + h.y);
-    y[i + 2] = f2b(v.z + h.z);
-    y[i + 3] = f2b(v.w + h.w);
+    if (x) {
+        const float4 h = *reinterpret_cast<const float4*>(x + i);
+        v.x += h.x;
+        v.y += h.y;
+        v.z += h.z;
+        v.w += h.w;
+    }
+    y[i] = f2b(v.x);
+    y[i + 1] = f2b(v.y);
+    y[i + 2] = f2b(v.z);
+    y[i + 3] = f2b(v.w);
 }
 
 // The heads of an FP8 stack's places in the expert cache (src/f8.rs F8Places): n heads of 8 words, `per` a place, each place's var `vmax` words after the one before. A head the store copied into place s
