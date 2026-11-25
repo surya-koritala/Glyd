@@ -1769,7 +1769,8 @@ pub fn qwen35_wide_random(out: &Path) -> Result<()> {
     )
 }
 
-/// A random model of a manifest's tensors (names, types and shapes from a real checkpoint's header, cut down), their values from a fixed seed by the rules of tools/qwen4x_ref.py for each kind of tensor.
+/// A random model of a manifest's tensors (names and shapes from a real checkpoint's header, cut down), their values from a fixed seed by the rules of tools/qwen4x_ref.py for each kind of tensor.
+/// Every drawn tensor is stored in bf16, the embedding too (the manifest's dtype is read for its int64 tensors alone), so no tensor is held wider than a release holds its matrices.
 /// `dense_norms`: the norms' weights are the scales themselves (0.5 to 1.5) and not the (1 + w) of the other families (-0.5 to 0.5).
 fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, what: &str) -> Result<()> {
     let m: Value = serde_json::from_str(manifest).map_err(|e| Error(e.to_string()))?;
@@ -3093,6 +3094,31 @@ mod tests {
         }
     }
 
+    /// The random checkpoint stores what its manifest lists as bf16 in bf16, the tied embedding first (a release stores it so), whatever the draw's scale: the
+    /// `qwen35` case's floor (`NOISE_FLOOR_OPEN`) is not that of a tensor held wider than a release holds it. Read back from the file's header, on a manifest cut
+    /// down to an embedding, a norm and two matrices; a tensor the manifest lists as int64 is stored as listed.
+    #[test]
+    fn the_random_checkpoint_stores_a_manifests_bf16_tensors_in_bf16() {
+        let tensors = json!([
+            ["model.embed_tokens.weight", "BF16", [64, 32]],
+            ["model.layers.0.input_layernorm.weight", "BF16", [32]],
+            ["model.layers.0.mlp.gate_proj.weight", "BF16", [48, 32]],
+            ["model.layers.0.self_attn.q_proj.weight", "BF16", [32, 32]],
+            ["model.layers.0.ngram_embedding.ids", "I64", [3], [1, 2, 3]],
+        ]);
+        let dir = std::env::temp_dir().join(format!("glyd-bf16-writer-{}", std::process::id()));
+        manifest_random(&json!({"config": "{}", "tensors": tensors}).to_string(), &dir, 0x2026_1125_0000_0777, false, "bf16 writer").unwrap();
+        let file = glyd_gpu::safetensors::File::open(&dir.join("model.safetensors")).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        for e in tensors.as_array().unwrap() {
+            let (name, listed) = (e[0].as_str().unwrap(), e[1].as_str().unwrap());
+            let held = file.get(name).unwrap_or_else(|| panic!("{name}: not written"));
+            assert_eq!(held.dtype, listed, "{name}");
+            assert_eq!(held.shape, e[2].as_array().unwrap().iter().map(|x| x.as_u64().unwrap()).collect::<Vec<_>>(), "{name}");
+        }
+        assert_eq!(file.get("model.embed_tokens.weight").unwrap().bytes, 64 * 32 * 2, "the embedding two bytes a value");
+    }
+
     /// A case's noise floor: the CPU reference of the layer kinds against itself with `stored`'s roundings, on the fixture's tokens, as `compare`
     /// measures an engine against `bound`; where the case is held on its routers' choices (`Case::on_choices`), the rounded run takes the
     /// reference's own.
@@ -3167,9 +3193,10 @@ mod tests {
     /// machine's libm). Its draw is its family's owner's to fix, never its bound.
     const NOISE_FLOOR_OPEN: [(&str, &str); 1] = [(
         "qwen35",
-        "1.04e-5 in KL mean against 1.0e-5, four more seeds 8.3e-6 to 1.05e-5, its checkpoint bf16 as a release's: 70% of it is layer 0's input, as \
-         Qwen3.5 adds its tied embedding unscaled and the first block's output is all of the residual; an embedding wide enough to share the residual \
-         makes a token's own row the head's largest (19.9, the softmax a point), so no honest draw lowers it",
+        "1.04e-5 in KL mean against 1.0e-5, four more seeds 8.3e-6 to 1.05e-5; its checkpoint holds nothing wider than a release does (the writer stores \
+         the embedding and every drawn tensor in bf16: `the_random_checkpoint_stores_a_manifests_bf16_tensors_in_bf16`), so no f32 tensor to narrow: 70% of \
+         it is layer 0's input, as Qwen3.5 adds its tied embedding unscaled and the first block's output is all of the residual; an embedding wide enough \
+         to share the residual makes a token's own row the head's largest (19.9, the softmax a point), so no honest draw lowers it",
     )];
 
     /// Every case a CPU reference holds is well conditioned for its bound: its noise floor (`noise_floor`) is at most a tenth of its reference
