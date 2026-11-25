@@ -1457,11 +1457,13 @@ pub fn qwen4x_cb_random(out: &Path) -> Result<()> {
 /// The random case's model on the expert cache (`dynamic::qwen4x::load_cached`): the matrices at the level, the routed experts from the case's pack (`PackMode::Best`,
 /// which skips none) in `QWEN4X_CB_PLACES` places a layer, the misses computed by the host.
 fn qwen4x_cb_load(dir: &Path, o: &DynOpts) -> Result<Dyn> {
-    use crate::dynamic::qwen4x::{load_cached, lowered, Caching, PackMode};
-    let d = lowered(dir, o.ctx + o.chunk + 16)?;
-    let mut k = Caching::new(&dir.join("pack"), PackMode::Best, &d, 4);
-    k.places = Some(QWEN4X_CB_PLACES);
-    load_cached(dir, o, &k)
+    crate::dynamic::qwen4x::load_cached(dir, o, &qwen4x_cb_caching(dir))
+}
+
+/// The expert cache's random case's caching: its pack served as best (none skipped), `QWEN4X_CB_PLACES` places a layer, room for 4 sequences.
+fn qwen4x_cb_caching(dir: &Path) -> crate::dynamic::qwen4x::Caching {
+    use crate::dynamic::qwen4x::{Caching, PackMode};
+    Caching { places: Some(QWEN4X_CB_PLACES), ..Caching::new(&dir.join("pack"), PackMode::Best, 4) }
 }
 
 fn qwen4x_cb_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
@@ -4398,14 +4400,17 @@ fn planned_context(case: &str) -> Result<(usize, u64, &'static str)> {
     got
 }
 
-/// `splitcheck CASE [--split CUT,..] [--devices GPU,..] [--level L | --layout mma12] [--tokens T]` (development): the case's random model on the dynamic route as `run` opens it
-/// (`split::open`: its family's loader, any family of that route), once on one GPU and once with its layers cut into stages (by default before its middle
-/// layer, both stages on GPU 0: the hand-over through host memory checked on a machine with one GPU). A prompt of 24 tokens, then T greedy steps fed the
-/// one-GPU run's tokens: every pass's logits the same bits both ways.
+/// `splitcheck CASE [--split CUT,..] [--devices GPU,..] [--level L | --layout mma12] [--tokens T] [--mode M]` (development): the case's random model on the dynamic route as `run` opens it
+/// (`split::open`: its family's loader, any family of that route; the expert cache's case, `qwen4x-cb`, its pack in an expert cache a stage, its misses as `--mode` says: `split_open`), once on
+/// one GPU and once with its layers cut into stages (by default before its middle layer, both stages on GPU 0 or on the two `--devices` names: the hand-over
+/// through host memory checked on a machine with one GPU). A prompt of 24 tokens and one past two chunks (150), each then T greedy steps fed the one-GPU run's tokens: every pass's logits the
+/// same bits both ways.
 pub fn split_check(a: &crate::args::Args) -> Result<()> {
     let case = a.need(1, "CASE")?;
     let level = a.flag("level").unwrap_or("penguin");
     let tokens: usize = a.num("tokens", 12usize)?;
+    let mode =
+        a.flag("mode").map_or(Some(crate::offload::Mode::Cpu), crate::offload::Mode::parse).ok_or_else(|| Error("--mode: copy, cpu, split or auto".into()))?;
     let Weights::Random(make) = find_case(case)?.weights else { return err(format!("{case}: a real model, not a random one")) };
     let dir = std::env::temp_dir().join(format!("glyd-splitcheck-{case}-{}", std::process::id()));
     let r = (|| -> Result<()> {
@@ -4416,23 +4421,29 @@ pub fn split_check(a: &crate::args::Args) -> Result<()> {
         }
         let config = |k: &str| crate::dynamic::split::config_num(&text, k).unwrap_or(0);
         let (nl, vocab) = (config("num_hidden_layers"), config("vocab_size"));
+        // (no cut asked: before the middle layer, on the two GPUs `--devices` names, else both on GPU 0)
         let (cuts, devices) = match crate::dynamic::split::split_args(a)? {
-            (c, _) if c.is_empty() => (vec![nl / 2], vec![0, 0]),
+            (c, d) if c.is_empty() => (vec![nl / 2], if d.len() == 2 { d } else { vec![0, 0] }),
             x => x,
         };
         // (penguin's packs in the smallest layout, or the 12-bit one with --layout mma12, as an HBM GPU's plan holds them)
         let o = dyn_opts(a.layout()?.or(level_layout(level)?).or(Some(Layout::Tiered)));
-        let prompt = token_list(24, vocab, 0);
-        // (each pass's logits, the steps fed `feed` where given, else the run's own greedy tokens)
+        let (short, _, long) = standard_tokens(vocab);
+        let prompts = [short, long];
+        // (each pass's logits, a prompt after the other in one sequence each, the steps fed `feed` where given, else the run's own greedy tokens)
         let run = |cuts: &[usize], devices: &[i32], feed: Option<&[u32]>| -> Result<(Vec<Vec<f32>>, Vec<u32>)> {
-            let mut e = crate::dynamic::split::open(&dir, &o, cuts, devices)?;
-            let mut s = e.prefill(&prompt)?;
-            let (mut rows, mut fed) = (vec![e.logits()?], Vec::new());
-            for i in 0..tokens {
-                let t = feed.map_or(s.token, |f| f[i]);
-                fed.push(t);
-                s = e.step(t)?;
+            let mut e = split_open(case, mode, &dir, &o, cuts, devices)?;
+            let (mut rows, mut fed) = (Vec::new(), Vec::new());
+            for prompt in &prompts {
+                e.reset()?;
+                let mut s = e.prefill(prompt)?;
                 rows.push(e.logits()?);
+                for _ in 0..tokens {
+                    let t = feed.map_or(s.token, |f| f[fed.len()]);
+                    fed.push(t);
+                    s = e.step(t)?;
+                    rows.push(e.logits()?);
+                }
             }
             Ok((rows, fed))
         };
@@ -4440,9 +4451,11 @@ pub fn split_check(a: &crate::args::Args) -> Result<()> {
         let (staged, _) = run(&cuts, &devices, Some(&fed))?;
         let differ: Vec<usize> = (0..one.len()).filter(|&i| one[i].iter().map(|x| x.to_bits()).ne(staged[i].iter().map(|x| x.to_bits()))).collect();
         println!(
-            "{case} at {level}: {nl} layers, cut before {cuts:?} on GPUs {devices:?}; {} passes (a prompt of {}, {tokens} steps), {} with logits that differ from the one-GPU run's",
+            "{case} at {level}{}: {nl} layers, cut before {cuts:?} on GPUs {devices:?}; {} passes (prompts of {} and {}, {tokens} steps after each), {} with logits that differ from the one-GPU run's",
+            if case == "qwen4x-cb" { format!(", the expert cache's misses by {}", mode.name()) } else { String::new() },
             one.len(),
-            prompt.len(),
+            prompts[0].len(),
+            prompts[1].len(),
             differ.len()
         );
         if !differ.is_empty() {
@@ -4452,6 +4465,18 @@ pub fn split_check(a: &crate::args::Args) -> Result<()> {
     })();
     let _ = std::fs::remove_dir_all(&dir);
     r
+}
+
+/// The case's random model as `splitcheck` opens it: on the dynamic route by its family's loader (`split::open`), or for the expert cache's case (`qwen4x-cb`)
+/// its pack in an expert cache a stage (`dynamic::qwen4x::open_cached`, the case's places a layer each), its misses served as `mode` says (the host computes
+/// them in `cpu`, the case's own; `copy` copies each into a place first); on one GPU where `cuts` is empty.
+fn split_open(case: &str, mode: crate::offload::Mode, dir: &Path, o: &DynOpts, cuts: &[usize], devices: &[i32]) -> Result<crate::dynamic::split::Run> {
+    if case == "qwen4x-cb" {
+        let mut k = qwen4x_cb_caching(dir);
+        k.offload.mode = mode;
+        return crate::dynamic::qwen4x::open_cached(dir, o, &k, cuts, devices);
+    }
+    crate::dynamic::split::open(dir, o, cuts, devices)
 }
 
 /// `twomodels [A B] [--level L] [--tokens T]` (R16: two models in one process): two cases' random models (gemma4 and qwen35 unless named) loaded on this GPU in this process, each with a scheduler

@@ -1,9 +1,11 @@
 //! A model split across several GPUs in one machine (GLY-300 part 1): each GPU runs a stage of the layers (`Stage`) on a thread of its own, which
 //! holds that stage's engine (`Dyn::new_stage`: its layers' matrices, caches and states, the embedding on the first, the head on the last). A pass
 //! goes stage by stage; the rows' slots (the residual and what the next layer reads) are handed over through host memory, not copied between the
-//! GPUs (some machines' direct copies are not to be trusted).
+//! GPUs (some machines' direct copies are not to be trusted). A draft head of the model drafts on the last stage (src/dynamic/head.rs): a round's
+//! drafts there, its verify pass through every stage (`Dyn::verify_rows`), every stage gone back to the drafts kept (`Dyn::rewind`), the head again
+//! on the kept rows there; the tokens are the steps' one at a time, as on one GPU.
 
-use super::{Dyn, ModelDesc, Opts, Stage};
+use super::{Dyn, HeadOut, ModelDesc, Opts, Stage};
 use crate::ffi::{err, Error, Result};
 use crate::sched::Sample;
 use std::path::Path;
@@ -11,7 +13,38 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 
 enum Cmd {
     Reset,
-    Rows { tokens: Vec<u32>, at: usize, io: Vec<u16>, head: bool },
+    /// Rows through the stage; `chunk`: a prompt's chunk (the stage that drafts runs its head on its rows too).
+    Rows {
+        tokens: Vec<u32>,
+        at: usize,
+        io: Vec<u16>,
+        head: bool,
+        chunk: bool,
+    },
+    /// A round's verify pass through the stage (the head on every row on the last).
+    Verify {
+        tokens: Vec<u32>,
+        at: usize,
+        io: Vec<u16>,
+    },
+    /// The drafting stage's drafts after a token (or the ones given, after its head's own first pass).
+    Drafts {
+        last: u32,
+        given: Option<Vec<u32>>,
+    },
+    /// The last pass's head on its last rows (each row's greedy token and logit; its logits where asked).
+    HeadOut {
+        rows: usize,
+        words: bool,
+    },
+    Rewind(usize),
+    /// The drafting stage's head again on a round's kept rows.
+    HeadAgain {
+        at: usize,
+        kept: usize,
+        next: Vec<u32>,
+    },
+    Drafting,
     Sample,
     Logits,
     Logprob(f32),
@@ -21,6 +54,9 @@ enum Cmd {
 enum Out {
     Done(Result<()>),
     Rows(Result<Vec<u16>>),
+    Tokens(Result<Vec<u32>>),
+    Head(Result<HeadOut>),
+    Flag(bool),
     Sample(Result<Sample>),
     Logits(Result<Vec<f32>>),
     Logprob(Result<f32>),
@@ -43,6 +79,8 @@ pub struct Split {
     ctx: usize,
     chunk: usize,
     eos: Vec<i64>,
+    /// The last stage drafts with a head of the model (`spec_round`).
+    drafting: bool,
 }
 
 fn gone() -> Error {
@@ -85,7 +123,16 @@ impl Split {
                     while let Ok(c) = crx.recv() {
                         let out = match c {
                             Cmd::Reset => Out::Done(e.reset()),
-                            Cmd::Rows { tokens, at, mut io, head } => Out::Rows(e.stage_rows(&tokens, at, &mut io, head as usize).map(|_| io)),
+                            Cmd::Rows { tokens, at, mut io, head, chunk } => Out::Rows(
+                                if chunk { e.stage_chunk(&tokens, at, &mut io, head as usize) } else { e.stage_rows(&tokens, at, &mut io, head as usize) }
+                                    .map(|_| io),
+                            ),
+                            Cmd::Verify { tokens, at, mut io } => Out::Rows(e.verify_rows(&tokens, at, &mut io, tokens.len()).map(|_| io)),
+                            Cmd::Drafts { last, given } => Out::Tokens(e.stage_drafts(last, given.as_deref())),
+                            Cmd::HeadOut { rows, words } => Out::Head(e.head_out(rows, words)),
+                            Cmd::Rewind(keep) => Out::Done(e.rewind(keep)),
+                            Cmd::HeadAgain { at, kept, next } => Out::Done(e.stage_head_again(at, kept, &next)),
+                            Cmd::Drafting => Out::Flag(e.drafts_with_head()),
                             Cmd::Sample => Out::Sample(e.sample()),
                             Cmd::Logits => Out::Logits(e.logits()),
                             Cmd::Logprob(l) => Out::Logprob(e.logprob(l)),
@@ -106,7 +153,10 @@ impl Split {
                 _ => return Err(gone()),
             }
         }
-        Ok(Split { w, n: 0, ctx: o.ctx.div_ceil(16) * 16, chunk: o.chunk.max(1), eos })
+        let mut s = Split { w, n: 0, ctx: o.ctx.div_ceil(16) * 16, chunk: o.chunk.max(1), eos, drafting: false };
+        let last = s.w.len() - 1;
+        s.drafting = matches!(s.ask(last, Cmd::Drafting)?, Out::Flag(true));
+        Ok(s)
     }
 
     fn ask(&self, k: usize, c: Cmd) -> Result<Out> {
@@ -114,11 +164,22 @@ impl Split {
         self.w[k].rx.recv().map_err(|_| gone())
     }
 
-    /// The rows through every stage in turn, the first at `at`; the head on the last row where `head`.
-    fn rows(&mut self, tokens: &[u32], at: usize, head: bool) -> Result<()> {
+    /// A command every stage runs in turn that returns nothing.
+    fn each(&self, c: &dyn Fn() -> Cmd) -> Result<()> {
+        for k in 0..self.w.len() {
+            match self.ask(k, c())? {
+                Out::Done(r) => r?,
+                _ => return Err(gone()),
+            }
+        }
+        Ok(())
+    }
+
+    /// The rows through every stage in turn, the first at `at`; the head on the last row where `head`; `chunk`: a prompt's chunk.
+    fn rows(&mut self, tokens: &[u32], at: usize, head: bool, chunk: bool) -> Result<()> {
         let mut io = Vec::new();
         for k in 0..self.w.len() {
-            match self.ask(k, Cmd::Rows { tokens: tokens.to_vec(), at, io, head })? {
+            match self.ask(k, Cmd::Rows { tokens: tokens.to_vec(), at, io, head, chunk })? {
                 Out::Rows(r) => io = r?,
                 _ => return Err(gone()),
             }
@@ -127,14 +188,58 @@ impl Split {
     }
 
     pub fn reset(&mut self) -> Result<()> {
+        self.each(&|| Cmd::Reset)?;
+        self.n = 0;
+        Ok(())
+    }
+
+    /// Whether the last stage drafts with a head of the model (`spec_round`).
+    pub fn drafting(&self) -> bool {
+        self.drafting
+    }
+
+    /// One drafting round, as `Dyn::spec_round` runs it on one GPU: from `last` (the token after the cache's, not in it yet) the last stage's head drafts
+    /// (or `given` stand for its drafts), every stage runs `last` and them as one verify pass (each row a step's), the drafts are kept up to the model's first
+    /// disagreement and its own token there (greedy) or each by `sampler`, every stage goes back to the rows kept and the head runs again on them. The tokens
+    /// returned (1 to k + 1) are what steps would give one by one; the cache then holds `last` and the kept drafts.
+    pub fn spec_round_with(&mut self, last: u32, given: Option<&[u32]>, sampler: Option<&mut crate::sampler::Sampler>) -> Result<Vec<u32>> {
+        let (n0, end) = (self.n, self.w.len() - 1);
+        let drafts = match self.ask(end, Cmd::Drafts { last, given: given.map(<[u32]>::to_vec) })? {
+            Out::Tokens(r) => r?,
+            _ => return Err(gone()),
+        };
+        let seq: Vec<u32> = std::iter::once(last).chain(drafts).collect();
+        let mut io = Vec::new();
         for k in 0..self.w.len() {
-            match self.ask(k, Cmd::Reset)? {
-                Out::Done(r) => r?,
+            match self.ask(k, Cmd::Verify { tokens: seq.clone(), at: n0, io })? {
+                Out::Rows(r) => io = r?,
                 _ => return Err(gone()),
             }
         }
-        self.n = 0;
-        Ok(())
+        let (rows, words) = self.head_out(seq.len(), sampler.is_some())?;
+        let big: Vec<u32> = rows.iter().map(|r| r.0).collect();
+        let (out, kept) = super::accept(&seq, &big, &words, words.len() / seq.len(), sampler);
+        self.each(&|| Cmd::Rewind(kept + 1))?;
+        let next: Vec<u32> = seq[1..=kept].iter().copied().chain(out.last().copied()).collect();
+        match self.ask(end, Cmd::HeadAgain { at: n0, kept, next })? {
+            Out::Done(r) => r?,
+            _ => return Err(gone()),
+        }
+        self.n = n0 + kept + 1;
+        Ok(out)
+    }
+
+    /// `spec_round_with` of the head's own drafts.
+    pub fn spec_round(&mut self, last: u32, sampler: Option<&mut crate::sampler::Sampler>) -> Result<Vec<u32>> {
+        self.spec_round_with(last, None, sampler)
+    }
+
+    /// The last pass's head on its last `rows` rows (the last stage's `Dyn::head_out`): each row's greedy token and logit, and where `words` the rows' logits.
+    pub fn head_out(&self, rows: usize, words: bool) -> Result<HeadOut> {
+        match self.ask(self.w.len() - 1, Cmd::HeadOut { rows, words })? {
+            Out::Head(r) => r,
+            _ => Err(gone()),
+        }
     }
 
     /// The prompt after the tokens already in the cache, in chunks; the token that follows it.
@@ -148,7 +253,7 @@ impl Split {
         let mut at = 0;
         while at < tokens.len() {
             let n = self.chunk.min(tokens.len() - at);
-            self.rows(&tokens[at..at + n], self.n, at + n == tokens.len())?;
+            self.rows(&tokens[at..at + n], self.n, at + n == tokens.len(), true)?;
             self.n += n;
             at += n;
         }
@@ -160,7 +265,7 @@ impl Split {
         if self.n + 1 > self.ctx {
             return err("the cache is full");
         }
-        self.rows(&[token], self.n, true)?;
+        self.rows(&[token], self.n, true, false)?;
         self.n += 1;
         self.sample()
     }
@@ -298,7 +403,7 @@ pub fn split_args(a: &crate::args::Args) -> Result<(Vec<usize>, Vec<i32>)> {
 }
 
 impl Split {
-    /// A reply as `Dyn::reply` gives one, without drafting; a sampled token from the last stage's logits row on the host.
+    /// A reply as `Dyn::reply` gives one (drafted a round at a time where the last stage drafts); a sampled token from the last stage's logits row on the host.
     fn reply(&mut self, prompt: &[u32], o: &crate::sched::Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, crate::sched::Finish)> {
         use crate::sched::Finish;
         if prompt.is_empty() || prompt.len() + 1 > self.ctx {
@@ -309,6 +414,26 @@ impl Split {
         let mut sampler = crate::sampler::Sampler::new(o.params.clone(), prompt);
         let mut s = self.prefill(prompt)?;
         let mut out = Vec::new();
+        if self.drafting {
+            // drafted: the model's tokens a round at a time (the last of a round is not in the cache yet: the next round starts from it)
+            let first = if greedy { s.token } else { sampler.sample_with(None, || self.logits())? };
+            let mut pending = std::collections::VecDeque::from([first]);
+            while let Some(tok) = pending.pop_front() {
+                if !o.ignore_eos && (self.eos.contains(&(tok as i64)) || o.stop_ids.contains(&tok)) {
+                    return Ok((out, Finish::Stop));
+                }
+                out.push(tok);
+                if !each(tok) {
+                    return Ok((out, Finish::Stopped));
+                }
+                if out.len() >= o.max_new || self.n + 1 > self.ctx {
+                    return Ok((out, Finish::Length));
+                }
+                if pending.is_empty() {
+                    pending.extend(self.spec_round(tok, if greedy { None } else { Some(&mut sampler) })?);
+                }
+            }
+        }
         loop {
             let tok = if greedy { s.token } else { sampler.sample_with(None, || self.logits())? };
             if !o.ignore_eos && (self.eos.contains(&(tok as i64)) || o.stop_ids.contains(&tok)) {
@@ -413,6 +538,18 @@ impl crate::sched::ModelStep for Run {
     }
     fn release(&mut self, _pages: &[i32]) -> Result<()> {
         self.reset()
+    }
+    /// Stages whose last drafts with a head of the model: the sequence's decode a drafting round (`Split::spec_round`), as a reply alone runs it.
+    fn draft(&mut self, row: &crate::sched::Row, sampler: Option<&mut crate::sampler::Sampler>) -> Result<Option<Vec<u32>>> {
+        match self {
+            Run::Split(e) if e.drafting() => {
+                if row.pos != e.n {
+                    return err(format!("a token at {} of a sequence that holds {}", row.pos, e.n));
+                }
+                e.spec_round(row.token, sampler).map(Some)
+            }
+            _ => Ok(None),
+        }
     }
 }
 
