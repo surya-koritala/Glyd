@@ -43,6 +43,21 @@ pub fn experts_at(layout: Option<Layout>) -> Layout {
     }
 }
 
+/// The dynamic route's stage loader of the family (`split::loader`: the gated residuals' streams): the whole model on one GPU, its experts all on it at the level
+/// `o.layout` names (`load`). A stage of a model split across GPUs, and its experts in the expert cache as a hummingbird directory's caching says, are refused in
+/// words: the family's cache is its pack of codebook rows (`load_cached`, `qwenserve CKPT PACK`).
+pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+    if !(st.first && st.last) {
+        return err(format!("{FAMILY}: a stage of layers {}..{} of a model split across GPUs: the family loads on one GPU yet", st.layers.0, st.layers.1));
+    }
+    if caching.is_some() {
+        return err(format!(
+            "{FAMILY}: its experts in the expert cache are a pack of codebook rows (qwenserve CKPT PACK), not a hummingbird directory's places"
+        ));
+    }
+    load(dir, o)
+}
+
 /// The draft head of the model in `dir` (its MTP layers: `lower::qwen4x_head`) for sequences of up to `ctx` positions; None where its config has none.
 pub fn head_lowered(dir: &Path, ctx: usize) -> Result<Option<ModelDesc>> {
     let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
