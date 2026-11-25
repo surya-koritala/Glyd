@@ -373,6 +373,9 @@ pub const SAVED: &[(&str, &str, &str, &str)] = &[
     ("qwen35", "kestrel", "i6", "glyd-v7 i6: glyd/Qwen3.5-*, Qwen3.6-27B and Qwen3.8-27B -kestrel"),
     ("qwen35", "swift", "i5", "glyd-v7 i5: the same at swift"),
     ("qwen35", "wren", "i4", "glyd-v7 i4: the same at wren"),
+    ("qwen35moe", "kestrel", "i6", "glyd-v7 i6: the Qwen3.5 layout with experts at kestrel, each expert's gate and up one pack and its down another"),
+    ("qwen35moe", "swift", "i5", "glyd-v7 i5: the same at swift"),
+    ("qwen35moe", "wren", "i4", "glyd-v7 i4: the same at wren"),
     ("gemma4", "penguin", "mma", "glyd-v7 at penguin: glyd/gemma-4-12B-penguin, -31B-penguin"),
     ("gemma4", "kestrel", "i6", "glyd-v7 i6: Gemma 4 at kestrel"),
     ("gemma4", "swift", "i5", "glyd-v7 i5: Gemma 4 at swift"),
@@ -465,8 +468,10 @@ fn check_engine(scratch: &Path, fixtures: &Path) -> Result<(Vec<String>, usize, 
         } else {
             failed.push(name.clone());
         }
-        // (and every reference of the case that bounds the level; a pin is logitscheck's)
-        for (path, fx, bound) in level_fixtures(fixtures, case, level)?.into_iter().filter(|x| x.1.held() == logits::Held::Reference) {
+        // (and every reference of the case that bounds the level; a pin is logitscheck's, and so is the reference of a case held on its routers' own choices
+        // (`Case::on_choices`): its rows against the reference's choices are not what bounds it)
+        for (path, fx, bound) in level_fixtures(fixtures, case, level)?.into_iter().filter(|x| x.1.held() == logits::Held::Reference && c.on_choices.is_none())
+        {
             let rows = logits::drive(run.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
             let v = logits::compare(&fx, &bound, &rows);
             tally.add(logits::Held::Reference);

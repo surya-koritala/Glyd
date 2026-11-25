@@ -628,8 +628,8 @@ pub fn config_num(text: &str, key: &str) -> Option<usize> {
 
 /// Where the dynamic route's layers go and how many of their experts each GPU holds: the planner's (src/plan.rs `sizing`).
 pub use crate::plan::sizing::{
-    fit, fit_table, fit_table_with, hb_layer_bytes, layer_bytes, layer_bytes_table, layer_bytes_where, layer_bytes_with, places_plan, places_plan_dense,
-    plan_cuts, ram_bytes, ram_bytes_table, CODED_PCT, PLAIN_PCT, TIERED_PCT, TWELVE_PCT,
+    fit, fit_table, fit_table_with, hb_layer_bytes, layer_bytes, layer_bytes_table, layer_bytes_where, layer_bytes_with, places_plan, places_plan_at,
+    places_plan_dense, plan_cuts, ram_bytes, ram_bytes_table, CODED_PCT, PLAIN_PCT, TIERED_PCT, TWELVE_PCT,
 };
 
 /// A model of the dynamic route in stages (`open`'s), stage k's layers with their experts in the expert cache as `cachings[k]` says: a hummingbird directory's (src/hbg_store.rs: places on its GPU, the computer's memory, the disk),
@@ -775,14 +775,14 @@ mod tests {
         // (one GPU too small for a token's experts besides the layers' weights: the last layers' dense matrices in the computer's memory, as few as fit, and one slot of the largest on the GPU)
         let ram = vec![3u64; dense.len()];
         assert_eq!(
-            places_plan_dense(&dense, 4, &moe, &[(0, 100)], 2, 64, 4, &ram).map(|p| p.3),
+            places_plan_dense(&dense, 4, &moe, &[(0, 100)], 2, 64, 4, &ram, &[]).map(|p| p.3),
             places_plan(&dense, 4, &moe, &[(0, 100)], 2, 64, 4).map(|_| 0)
         );
         let tight = dense.iter().sum::<u64>() + 4 + moe.iter().filter(|&&m| m).count() as u64 * 4 * 2 - 7;
-        let got = places_plan_dense(&dense, 4, &moe, &[(0, tight)], 2, 64, 4, &ram).expect("fits with dense layers in the computer's memory");
+        let got = places_plan_dense(&dense, 4, &moe, &[(0, tight)], 2, 64, 4, &ram, &[]).expect("fits with dense layers in the computer's memory");
         assert!(places_plan(&dense, 4, &moe, &[(0, tight)], 2, 64, 4).is_none());
         assert!(got.3 >= 1 && got.4 == 3 * got.3 as u64 - 3, "{got:?}");
-        assert_eq!(places_plan_dense(&dense, 4, &moe, &[(0, 10)], 2, 64, 4, &ram), None);
+        assert_eq!(places_plan_dense(&dense, 4, &moe, &[(0, 10)], 2, 64, 4, &ram, &[]), None);
     }
 
     /// An FP8 release on HBM GPUs: plain where that fits, coded where only that does, no cut where neither; coded alone on other GPUs.

@@ -1060,6 +1060,12 @@ fn small_width(d: &ModelDesc, i: usize, dtype: &str) -> u64 {
     }
 }
 
+/// Whether the loader holds small tensor `i` of `d` in fp32, whatever the checkpoint's type (`small_width`'s four bytes): what a save's sizer counts it at
+/// (src/pack.rs `described`).
+pub(crate) fn small_f32(d: &ModelDesc, i: usize) -> bool {
+    small_width(d, i, "BF16") == 4
+}
+
 /// A saved directory's layout and manifest: a glyd-v7 one's, or a lossless glyd-v4 save's (the tiered layout); None: a Hub-format directory.
 fn stored(dir: &Path) -> Result<Option<(Layout, glyd_gpu::json::Value)>> {
     Ok(match crate::weights::v7_manifest(dir)? {
