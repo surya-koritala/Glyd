@@ -667,6 +667,9 @@ pub enum SmallForm {
     /// A residual gate's two factors of its parameter at temperature T (`muse::residual_gate`): alpha, and beta.
     GateAlpha(f32),
     GateBeta(f32),
+    /// Several tensors one after another, each as saved and all of one type: the small tensor's name lists them, `|` between them (a delta attention layer's
+    /// three convolutions as the one its kernel reads).
+    Joined,
 }
 
 /// The layers one GPU runs of a model split across several (`split::Split`): layers `layers.0..layers.1`, the embedding where `first`, the final norm
@@ -688,7 +691,7 @@ impl Op {
     /// The matrix the operation multiplies by, the ring it reads or writes, the state it carries.
     fn mats(&self) -> Vec<usize> {
         match *self {
-            Op::Linear { w, .. } | Op::GateUpSilu { w, .. } | Op::OGroupLora { w, in_f8: false, .. } => vec![w],
+            Op::Linear { w, .. } | Op::LinearAt { w, .. } | Op::GateUpSilu { w, .. } | Op::OGroupLora { w, in_f8: false, .. } => vec![w],
             Op::StreamsPre { mix: StreamsMix::Gated { down, up, inject }, .. } => vec![down, up, inject],
             Op::StreamsHead { mix: HeadMix::Gated { down, up }, .. } => vec![down, up],
             Op::NgramRows(x) => vec![x.table],
@@ -829,17 +832,66 @@ fn unnamed(d: &ModelDesc) -> Option<usize> {
 }
 
 /// Whether matrix `k` of `d` is held as saved (bf16), not packed: a table an operation reads by row (`Op::NgramRows`), or a shape the library does not pack
-/// (columns not a multiple of 16, or a member's rows, `rows_of` it where the checkpoint holds it, not a multiple of 64: a save keeps such a merge as its parts).
+/// (columns not a multiple of 16, or a member's rows, `rows_of` it where the checkpoint holds it, not a multiple of 64: a save keeps such a merge as its parts;
+/// an item padded with zero rows is one matrix of its own rows, whatever its members').
 fn held_as_saved(d: &ModelDesc, k: usize, rows_of: &dyn Fn(&str) -> Option<usize>) -> bool {
     let it = &d.mats[k];
+    let padded = it.members.last().is_some_and(|m| m == crate::weights::ZERO_ROWS);
     !it.cols.is_multiple_of(16)
-        || it.members.iter().any(|m| rows_of(m).is_some_and(|r| r == 0 || !r.is_multiple_of(64)))
+        || if padded { !it.rows.is_multiple_of(64) } else { it.members.iter().any(|m| rows_of(m).is_some_and(|r| r == 0 || !r.is_multiple_of(64))) }
         || d.layers.iter().flatten().any(|op| matches!(op, Op::NgramRows(x) if x.table == k))
 }
 
-/// The small tensors an operation reads in fp32 (the delta rule's A_log): a bf16 one is widened.
+/// The small tensors an operation reads in fp32 (the gated delta rule's A_log; the Kimi delta rule's A_log and dt_bias): a bf16 one is widened.
 fn read_f32(d: &ModelDesc) -> Vec<usize> {
-    d.layers.iter().flatten().filter_map(|op| if let Op::GdnDelta { a_log, .. } = op { Some(*a_log) } else { None }).collect()
+    d.layers
+        .iter()
+        .flatten()
+        .flat_map(|op| match *op {
+            Op::GdnDelta { a_log, .. } => vec![a_log],
+            Op::KdaDelta { a_log, dt_bias, .. } => vec![a_log, dt_bias],
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+/// The small tensors an operation reads as saved in the type its own flag says (fp32 where true, else bf16: the Kimi delta attention's convolutions and gated
+/// norm, which a release holds in either): a tensor of the other type is refused.
+fn read_typed(d: &ModelDesc) -> Vec<(usize, bool)> {
+    d.layers
+        .iter()
+        .flatten()
+        .filter_map(|op| match *op {
+            Op::KdaConv { w, w32, .. } | Op::KdaOut { w, w32, .. } => Some((w, w32)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The values a small tensor's operation reads of it at least, where the operation says (a shorter tensor would be read past its end on the GPU; a longer one
+/// is read in its first values, as a release's A_log of more heads than the model has): the Kimi delta rule's A_log a head and dt_bias a channel, its gated
+/// norm a head's channels (a head's channels: the recurrence's state holds heads x channels x channels fp32), its convolutions' taps a channel (the row's own
+/// and the state's, bf16).
+fn read_at_least(d: &ModelDesc) -> Vec<(usize, usize)> {
+    let mut v = Vec::new();
+    for ops in &d.layers {
+        let kd = ops
+            .iter()
+            .find_map(|op| match *op {
+                Op::KdaDelta { state, heads, .. } => Some((d.states.get(state).copied().unwrap_or(0) / (4 * heads.max(1))).isqrt()),
+                _ => None,
+            })
+            .unwrap_or(0);
+        for op in ops {
+            match *op {
+                Op::KdaDelta { a_log, dt_bias, heads, .. } => v.extend([(a_log, heads), (dt_bias, heads * kd)]),
+                Op::KdaConv { w, state, c, .. } => v.push((w, c + d.states.get(state).map_or(0, |b| b / 2))),
+                Op::KdaOut { w, .. } => v.push((w, kd)),
+                _ => {}
+            }
+        }
+    }
+    v
 }
 
 /// The small tensors an operation reads in fp32 with the values the model's dtype holds (the silu-gated norm's weight, `Op::GatedNorm` not `sigmoid`, as vLLM
@@ -877,13 +929,36 @@ fn small_of(ck: &Checkpoint, name: &str, f: SmallForm) -> Result<Vec<u16>> {
         SmallForm::PlusOne => crate::muse::plus_one(&vals()?),
         SmallForm::GateAlpha(t) => crate::muse::residual_gate(&vals()?, t).0,
         SmallForm::GateBeta(t) => crate::muse::residual_gate(&vals()?, t).1,
+        SmallForm::Joined => return err(format!("{name}: several tensors as one are read as saved, not made from their values")),
     };
     Ok(v.into_iter().map(crate::gemma4::bf16_bits).collect())
 }
 
+/// Small tensor `name` as its checkpoint holds it, its type and bytes; `joined`: the tensors the name lists (`SmallForm::Joined`), one after another, all of one type.
+fn small_saved(ck: &Checkpoint, name: &str, joined: bool) -> Result<(String, Vec<u8>)> {
+    let one = |n: &str| -> Result<(String, Vec<u8>)> {
+        let (_, t) = ck.get(n).ok_or_else(|| Error(format!("no tensor {n}")))?;
+        Ok((t.dtype.clone(), ck.read(n).map_err(|e| Error(format!("{n}: {e}")))?))
+    };
+    if !joined {
+        return one(name);
+    }
+    let (mut dtype, mut bytes, mut each) = (String::new(), Vec::new(), 0);
+    for n in name.split('|') {
+        let (dt, b) = one(n)?;
+        if dtype.is_empty() {
+            (dtype, each) = (dt, b.len());
+        } else if dt != dtype || b.len() != each {
+            return err(format!("{n}: {dt} of {} bytes, where the tensors read as one with it are {dtype} of {each}", b.len()));
+        }
+        bytes.extend(b);
+    }
+    Ok((dtype, bytes))
+}
+
 /// Bytes a value of small tensor `i` takes on the GPU, stored as `dtype`.
 fn small_width(d: &ModelDesc, i: usize, dtype: &str) -> u64 {
-    if read_f32(d).contains(&i) || read_f32_as_bf16(d).contains(&i) {
+    if read_f32(d).contains(&i) || read_f32_as_bf16(d).contains(&i) || read_typed(d).contains(&(i, true)) {
         4
     } else if dtype == "I64" {
         8
@@ -998,23 +1073,41 @@ fn load_part(
         }
     }
     let ram = ram.finish(&mut mats)?;
-    let (f32s, as_bf16) = (read_f32(&d), read_f32_as_bf16(&d));
+    let (f32s, as_bf16, typed, least) = (read_f32(&d), read_f32_as_bf16(&d), read_typed(&d), read_at_least(&d));
     let small: Vec<Buf> = d
         .small
         .iter()
         .enumerate()
         .map(|(i, name)| {
-            if let Some(&(_, f)) = d.forms.iter().find(|x| x.0 == i) {
+            let form = d.forms.iter().find(|x| x.0 == i).map(|x| x.1);
+            if let Some(f) = form.filter(|&f| f != SmallForm::Joined) {
                 return upload_bytes(crate::weights::as_bytes(&small_of(&ck, name, f)?));
             }
-            let (_, t) = ck.get(name).ok_or_else(|| Error(format!("no tensor {name}")))?;
-            let b = ck.read(name).map_err(|e| Error(format!("{name}: {e}")))?;
+            // (the tensor as saved; several as one, each as saved and all of one type)
+            let (dtype, b) = small_saved(&ck, name, form == Some(SmallForm::Joined))?;
             let wide = f32s.contains(&i) || as_bf16.contains(&i);
-            if t.dtype == "F32" && as_bf16.contains(&i) {
+            let values = b.len()
+                / if dtype == "F32" {
+                    4
+                } else if dtype == "I64" {
+                    8
+                } else {
+                    2
+                };
+            if let Some(&(_, n)) = least.iter().find(|x| x.0 == i && values < x.1) {
+                return err(format!("{name}: {values} values, where its operation reads {n}"));
+            }
+            if let Some(&(_, w32)) = typed.iter().find(|x| x.0 == i) {
+                return match (dtype.as_str(), w32) {
+                    ("F32", true) | ("BF16", false) => upload_bytes(&b),
+                    (dt, _) => err(format!("{name}: {dt}, where its operation reads {}", if w32 { "fp32" } else { "bf16" })),
+                };
+            }
+            if dtype == "F32" && as_bf16.contains(&i) {
                 let v: Vec<f32> = b.as_chunks::<4>().0.iter().map(|x| crate::kern35::bf16_round(f32::from_le_bytes(*x))).collect();
                 return upload_bytes(crate::weights::as_bytes(&v));
             }
-            match (t.dtype.as_str(), wide) {
+            match (dtype.as_str(), wide) {
                 ("BF16", true) => {
                     let v: Vec<f32> = b.chunks_exact(2).map(|x| f32::from_bits((u16::from_le_bytes([x[0], x[1]]) as u32) << 16)).collect();
                     upload_bytes(crate::weights::as_bytes(&v))
@@ -1386,8 +1479,13 @@ impl Dyn {
         let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
         let bytes = |k: usize| (d.mats[k].rows * d.mats[k].cols * 2) as u64;
         let (saved, packed): (Vec<usize>, Vec<usize>) = (0..d.mats.len()).partition(|&k| held_as_saved(&d, k, &rows_of));
-        let small: u64 =
-            d.small.iter().enumerate().map(|(i, n)| ck.get(n).map_or(0, |(_, t)| t.shape.iter().product::<u64>() * small_width(&d, i, &t.dtype))).sum();
+        let small: u64 = d
+            .small
+            .iter()
+            .enumerate()
+            .flat_map(|(i, n)| n.split('|').map(move |m| (i, m)))
+            .map(|(i, n)| ck.get(n).map_or(0, |(_, t)| t.shape.iter().product::<u64>() * small_width(&d, i, &t.dtype)))
+            .sum();
         let (matrix_bytes, other) = (packed.into_iter().map(bytes).sum(), saved.into_iter().map(bytes).sum::<u64>() + small);
         let layout = match stored(dir)? {
             Some((l, _)) => l,
@@ -3399,6 +3497,54 @@ pub fn prodbench(a: &crate::args::Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Kimi delta attention's small tensors as the executor's loader holds them, on the random Kimi-K3's description: A_log and dt_bias read in fp32,
+    /// the convolutions and the gated norm in the type their operations' flags say, each at least as long as its operation reads (a head, a channel, a
+    /// convolution's taps a channel, a head's channels); the forget gate's second product, multiplied by where the first leaves its input, is one of the
+    /// stage's matrices; and the three convolutions are read as one, each as saved, refused where they are not alike.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_kimi_delta_attentions_small_tensors_are_read_as_its_operations_say() {
+        use crate::runtime::describe::Source;
+        let dir = std::env::temp_dir().join(format!("glyd-kda-small-{}", std::process::id()));
+        crate::kimi_ref::random(&dir, 1, true, 8).unwrap();
+        let c = crate::kimi::ConfigKimi::load(&dir).unwrap();
+        let ck = Checkpoint::open(&dir).unwrap();
+        let w32 = kimi::dtypes(&ck, &c).unwrap();
+        let st = Stage::whole(c.layers);
+        let d = kimi::describe(&c, &st, &w32, false).unwrap();
+        let (nh, kd, taps) = (c.kda.heads, c.kda.dim, c.kda.conv_kernel);
+        let (f32s, typed, least) = (read_f32(&d), read_typed(&d), read_at_least(&d));
+        let mut seen = 0;
+        for ops in &d.layers {
+            for op in ops {
+                match *op {
+                    Op::KdaDelta { a_log, dt_bias, .. } => {
+                        assert!(f32s.contains(&a_log) && f32s.contains(&dt_bias));
+                        assert!(least.contains(&(a_log, nh)) && least.contains(&(dt_bias, nh * kd)), "{least:?}");
+                        seen += 1;
+                    }
+                    Op::KdaConv { w, w32, .. } => assert!(typed.contains(&(w, w32)) && least.contains(&(w, 3 * nh * kd * taps)), "{least:?}"),
+                    Op::KdaOut { w, w32, .. } => assert!(typed.contains(&(w, w32)) && least.contains(&(w, kd)), "{least:?}"),
+                    Op::LinearAt { w, .. } => assert!(op.mats() == [w] && d.wanted(&st)[w]),
+                    _ => {}
+                }
+            }
+        }
+        assert!(seen > 0 && typed.iter().all(|x| x.1), "the random model's delta layers, their convolutions and gated norms fp32");
+        assert_eq!((small_width(&d, typed[0].0, "F32"), small_width(&d, f32s[0], "BF16")), (4, 4));
+        // (a delta layer's three convolutions, by the description's role: one small tensor, each as saved)
+        let (kinds, _) = crate::runtime::describe::describe_dir(&dir).unwrap();
+        let role = |r: &str| kinds.blocks.iter().find_map(|b| b.iter().find(|x| x.0 == r).map(|x| x.1.clone()));
+        let (Some(Source::Rows(conv)), Some(Source::Tensor(a_log))) = (role("conv"), role("a_log")) else { panic!("no delta layer's convolutions") };
+        let (dtype, bytes) = small_saved(&ck, &conv.join("|"), true).unwrap();
+        assert_eq!((dtype.as_str(), bytes.len()), ("F32", 3 * nh * kd * taps * 4));
+        let own: Vec<u8> = conv.iter().flat_map(|n| ck.read(n).unwrap()).collect();
+        assert_eq!(bytes, own);
+        assert!(small_saved(&ck, &format!("{}|{a_log}", conv[0]), true).unwrap_err().msg.contains("read as one"));
+        assert_eq!(small_saved(&ck, &a_log, false).unwrap().1.len(), ck.read(&a_log).unwrap().len());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A route table as glyd_gpu.cu's `route_for` gives it past 64 rows: the prompt kernel, and from `dec` rows the decoded way (None: never).
     fn table(dec: Option<(i64, i32)>) -> impl Fn(i64) -> Result<i32> {
