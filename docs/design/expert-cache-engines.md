@@ -20,8 +20,11 @@ fixed. The comparison itself is a measurement on the issue's GPU, not made yet; 
 
 - Glyd's copy mode multiplies over places with the resident layer's kernels: the same logits to the bit as every expert on the GPU
   (`tiercheck --mode copy`, DeepSeek-V4's and Kimi-K3's experts; GLM-5.3-Flash's FP8 and Muse Spark's lossless experts for a short
-  prompt). With the host's half, the host's pairs are its own arithmetic over the same bytes (`tiercheck --mode auto|cpu` prints the
-  largest difference).
+  prompt). With the host's half, each host pair's weighted row goes into the layer's own sum beside the GPU's, and a token's pairs are added in the
+  order of its choices and rounded once, whoever computed them; the activations the host computes (Kimi-K3's `situ`, DeepSeek-V4's SiLU) use one exp and tanh on
+  both sides (`actcheck` holds the host's against the GPU kernels' on every bf16 input up to 64), so a host pair is the GPU's to the bit for DeepSeek-V4's
+  and Kimi-K3's FP4 experts (`tiercheck --join`: each call through a host half against copy mode from the same inputs; `tiercheck --mode auto|cpu` prints the
+  largest difference). Checked on an A10 with random models: a reply beside others is the reply alone to the bit in both modes.
 - llama.cpp's cache uploads the GGUF's own blocks, so its uploaded experts are the all-GPU path's bits; its CPU misses are the CPU
   backend's products of the same blocks.
 - KTransformers' CPU experts are a second, requantized copy: not the release's bits by construction.
