@@ -1010,7 +1010,7 @@ pub fn decode_bench(a: &crate::args::Args) -> Result<()> {
     );
     // (what, kv heads, head, query heads, window, the scores in bf16, the model's most kv heads: the engine plans its splits for them)
     let shapes: [(&str, usize, usize, usize, usize, bool, usize); 4] = [
-        ("Qwen3-8B (8 x 128, 32 queries)", 8, 128, 32, 0, false, 8),
+        ("the plain dense kind (8 x 128, 32 queries)", 8, 128, 32, 0, false, 8),
         ("gemma-4-12B sliding (8 x 256, 16 queries, window 1024)", 8, 256, 16, 1024, true, 8),
         ("gemma-4-12B global (1 x 512, 16 queries)", 1, 512, 16, 0, true, 8),
         ("the Qwen3.5 layout (2 x 256, 8 queries)", 2, 256, 8, 0, false, 2),
