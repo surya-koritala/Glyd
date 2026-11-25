@@ -6,9 +6,24 @@
 use crate::ffi::{err, Error, Result};
 use crate::glm::GlmKind;
 use crate::kimi::ConfigKimi;
-use crate::qwen35_ref::bf16;
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
+
+#[cfg(test)]
+thread_local! {
+    /// A test's switch: every bf16 rounding of this reference off on this thread, so that its arithmetic is held term by term to the kinds' reference in
+    /// fp32 (`logits::tests::kimi_references_compute_the_same_function`).
+    pub(crate) static PLAIN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The bf16 value of `x`, where the release holds a bf16 tensor (`x` itself on a thread of a test that set `PLAIN`).
+fn bf16(x: f32) -> f32 {
+    #[cfg(test)]
+    if PLAIN.with(|p| p.get()) {
+        return x;
+    }
+    crate::qwen35_ref::bf16(x)
+}
 
 fn io<T>(r: std::io::Result<T>) -> Result<T> {
     r.map_err(|e| Error(e.to_string()))
@@ -181,6 +196,9 @@ pub struct RefKimi {
     pub margin: std::cell::Cell<f32>,
     /// Where set, each step's state after each layer: the partial sum and the completed blocks (`kimilayers`).
     pub trace: Option<Vec<(Vec<f32>, Vec<Vec<f32>>)>>,
+    /// Each mixture-of-experts layer's experts (in the model's order) for the tokens to come, each token's in turn, taken in the place of its router's own
+    /// choice (their weights its router's scores): a comparison's, which runs another reference on the same choices. Empty: the router's.
+    pub take: std::cell::RefCell<Vec<std::collections::VecDeque<Vec<usize>>>>,
     embed: Vec<f32>,
     head: Mat,
     norm: Vec<f32>,
@@ -271,6 +289,7 @@ impl RefKimi {
             c,
             margin: std::cell::Cell::new(f32::INFINITY),
             trace: None,
+            take: Default::default(),
         })
     }
 
@@ -375,7 +394,8 @@ impl RefKimi {
         w[2].mul(&g.iter().zip(&u).map(|(&a, &b)| situ(a, b, self.c.situ)).collect::<Vec<_>>())
     }
 
-    fn moe(&self, m: &Moe, x: &[f32]) -> Vec<f32> {
+    /// The `i`-th mixture-of-experts layer (in the model's order) on its normed input.
+    fn moe(&self, i: usize, m: &Moe, x: &[f32]) -> Vec<f32> {
         let e = &self.c.experts;
         let s: Vec<f32> = m.gate.w.chunks(m.gate.cols).map(|r| sigmoid(r.iter().zip(x).map(|(&a, &b)| a as f64 * b as f64).sum::<f64>() as f32)).collect();
         let mut idx: Vec<usize> = (0..e.experts).collect();
@@ -386,6 +406,9 @@ impl RefKimi {
             self.margin.set(self.margin.get().min(gap));
         }
         idx.truncate(e.top_k);
+        if let Some(t) = self.take.borrow_mut().get_mut(i).and_then(|q| q.pop_front()).filter(|t| !t.is_empty()) {
+            idx = t;
+        }
         let sum: f32 = idx.iter().map(|&i| s[i]).sum::<f32>() + 1e-20;
         let z = m.down.mul(x);
         let mut y = vec![0f64; e.latent];
@@ -442,7 +465,7 @@ impl RefKimi {
             let yn = rms(&y, &ly.post_norm, self.c.eps);
             let m = match &ly.ffn {
                 Ffn::Dense(w) => self.mlp(w, &yn),
-                Ffn::Moe(m) => self.moe(m, &yn),
+                Ffn::Moe(m) => self.moe(self.c.moe[..l].iter().filter(|&&x| x).count(), m, &yn),
             };
             p = Some(add(Some(pv), m));
             if let Some(t) = &mut self.trace {
@@ -475,7 +498,7 @@ impl RefKimi {
     pub(crate) fn ffn_of(&self, l: usize, x: &[f32]) -> Vec<f32> {
         match &self.layers[l].ffn {
             Ffn::Dense(w) => self.mlp(w, x),
-            Ffn::Moe(m) => self.moe(m, x),
+            Ffn::Moe(m) => self.moe(self.c.moe[..l].iter().filter(|&&x| x).count(), m, x),
         }
     }
 }
@@ -488,13 +511,21 @@ impl RefKimi {
 /// `dense`: the layers before which are dense MLPs (1 as released; 8: no experts); `mla`: the latent attention layers (false: every layer delta attention), to check
 /// the parts alone; `real`: Some(experts) for the release's widths instead (`random_real`).
 pub fn random(out: &Path, dense: usize, mla: bool, layers: usize) -> Result<()> {
-    random_with(out, dense, mla, layers, None, false)
+    random_with(out, dense, mla, layers, None, false, RANDOM_SEED)
+}
+
+/// The seed of the random models' draws.
+pub const RANDOM_SEED: u64 = 0x2026_1021_0000_0001;
+
+/// The case's shape (`random` of 8 layers, or `random_dsa`'s where `dsa`) drawn from `seed` (not 0): its noise floor's other draws.
+pub fn random_seeded(out: &Path, dsa: bool, seed: u64) -> Result<()> {
+    random_with(out, 1, true, 8, None, dsa, seed)
 }
 
 /// `random` of 8 layers with the newer config's sparse attention (`dsa_config`): on its two latent attention layers an indexer of a key a token (4 heads of 64,
 /// the keys RMS-normed, the best 16 tokens attended to), its tensors as the release names them. The family's second shape.
 pub fn random_dsa(out: &Path) -> Result<()> {
-    random_with(out, 1, true, 8, None, true)
+    random_with(out, 1, true, 8, None, true, RANDOM_SEED)
 }
 
 /// `random` at the release's widths (a width of 7,168, 96 delta heads of 128, experts of 3,072 neurons on a latent of 3,584, 16 of `experts` a token, 2 shared), every layer
@@ -502,10 +533,10 @@ pub fn random_dsa(out: &Path) -> Result<()> {
 /// (4 layers, 3 of 320 experts: 18 GB) to run through the expert cache. Its router is not the small model's decisive one: the scores spread and a bias of 0.01 at most, so that
 /// the choices spread over the experts as a trained router's do over a batch.
 pub fn random_real(out: &Path, layers: usize, experts: usize) -> Result<()> {
-    random_with(out, 1, false, layers.min(8), Some(experts), false)
+    random_with(out, 1, false, layers.min(8), Some(experts), false, RANDOM_SEED)
 }
 
-fn random_with(out: &Path, dense: usize, mla: bool, layers: usize, real: Option<usize>, dsa: bool) -> Result<()> {
+fn random_with(out: &Path, dense: usize, mla: bool, layers: usize, real: Option<usize>, dsa: bool, seed: u64) -> Result<()> {
     let text = r#"{"architectures": ["KimiK3ForConditionalGeneration"], "model_type": "kimi_k3", "bos_token_id": 1, "eos_token_id": 2,
         "text_config": {"model_type": "kimi_linear", "hidden_act": "situ", "activation_situ_beta": 4.0, "activation_situ_linear_beta": 25.0, "attn_res_block_size": 3, "bos_token_id": 1,
         "eos_token_id": 2, "first_k_dense_replace": 1, "hidden_size": 256, "intermediate_size": 512, "kv_lora_rank": 128, "latent_moe_use_norm": true,
@@ -560,7 +591,7 @@ fn random_with(out: &Path, dense: usize, mla: bool, layers: usize, real: Option<
     if dsa != c.dsa.is_some() {
         return err("the random model's sparse attention is not in its config");
     }
-    let mut r = 0x2026_1021_0000_0001u64;
+    let mut r = seed;
     let mut uni = move |a: f32, b: f32| {
         r ^= r << 13;
         r ^= r >> 7;
@@ -582,12 +613,24 @@ fn random_with(out: &Path, dense: usize, mla: bool, layers: usize, real: Option<
         let (sh, a) = lin(rows, cols);
         bf(t, format!("{name}.weight"), sh, -a, a, uni);
     };
+    // (the small model's draw is held to its noise floor, `logits::tests::noise_floor_against_fp32`: the CPU reference with its rounding points against itself
+    // in fp32 on the same choices, at most a tenth of the kind's bound, on this draw and three other seeds. Three scales make it so; before them the floor was
+    // KL mean 1.5e-5, max 6.0e-5 (the second shape's 3.2e-4, 2.8e-3), 1e-4 to 1.8e-3 on other seeds; after them 2.3e-6 to 4.2e-6, max 1.5e-5:
+    //  - `mix`: the depth mix's projections U(-0.05, 0.05), not U(-0.5, 0.5), whose scores' RMS of about 4.6 made a softmax so sharp that one rounding of a
+    //    source moved a block's input by up to half of it;
+    //  - `values`: the delta attention's value products 32 times a product's draw: at once the head outputs' mean square was below the gated norm's eps (1e-5)
+    //    in 94% of the heads and steps, so the norm scaled instead of norming, as a real model's does not;
+    //  - `decay`: its dt_bias U(-4, -2), not U(-1, 1), the state kept over tokens: at U(-1, 1) it forgot a token in about a step, so a head's output was one
+    //    or two terms whose query-key products, near 0 for random queries and keys, set its direction, and a rounding of the input swung it by tens of
+    //    percent. The release's model at random would show the same (none of the three is an identity: the mix still weighs its sources apart, the
+    //    norm still norms, the decay still differs by channel from 0.3 to near 1).)
+    let (mix, values, decay) = if real.is_none() { (0.05, 32.0, -3.0) } else { (0.5, 1.0, 0.0) };
     bf(&mut t, format!("{p}embed_tokens.weight"), vec![c.vocab as u64, h], -1.0, 1.0, &mut uni);
     bf(&mut t, "language_model.lm_head.weight".into(), vec![c.vocab as u64, h], -0.05, 0.05, &mut uni);
     for n in ["norm", "output_attn_res_norm"] {
         bf(&mut t, format!("{p}{n}.weight"), vec![h], 0.9, 1.1, &mut uni);
     }
-    bf(&mut t, format!("{p}output_attn_res_proj.weight"), vec![1, h], -0.5, 0.5, &mut uni);
+    bf(&mut t, format!("{p}output_attn_res_proj.weight"), vec![1, h], -mix, mix, &mut uni);
     let (w, dd) = (c.kda.heads * c.kda.dim, c.kda.dim);
     for l in 0..c.layers {
         let q = format!("{p}layers.{l}");
@@ -595,13 +638,15 @@ fn random_with(out: &Path, dense: usize, mla: bool, layers: usize, real: Option<
             bf(&mut t, format!("{q}.{n}.weight"), vec![h], 0.9, 1.1, &mut uni);
         }
         for n in ["self_attention_res_proj", "mlp_res_proj"] {
-            bf(&mut t, format!("{q}.{n}.weight"), vec![1, h], -0.5, 0.5, &mut uni);
+            bf(&mut t, format!("{q}.{n}.weight"), vec![1, h], -mix, mix, &mut uni);
         }
         let a = format!("{q}.self_attn");
         match c.kinds[l] {
             GlmKind::Kda => {
                 for n in ["q_proj", "k_proj", "v_proj", "g_proj"] {
-                    m(&mut t, format!("{a}.{n}"), w, c.hidden, &mut uni);
+                    let (sh, r) = lin(w, c.hidden);
+                    let r = if n == "v_proj" { r * values } else { r };
+                    bf(&mut t, format!("{a}.{n}.weight"), sh, -r, r, &mut uni);
                 }
                 // (the convolutions' and the gated norm's weights fp32, values no bf16 holds, as Kimi-K3 releases them)
                 for n in ["q", "k", "v"] {
@@ -618,7 +663,7 @@ fn random_with(out: &Path, dense: usize, mla: bool, layers: usize, real: Option<
                 m(&mut t, format!("{a}.b_proj"), c.kda.heads, c.hidden, &mut uni);
                 m(&mut t, format!("{a}.o_proj"), c.hidden, w, &mut uni);
                 t.push((format!("{a}.o_norm.weight"), "F32", vec![dd as u64], (0..dd).flat_map(|_| uni(0.9, 1.1).to_le_bytes()).collect()));
-                for (n, len, lo, hi) in [("A_log", c.kda.heads, -1.0, 1.0), ("dt_bias", w, -1.0, 1.0)] {
+                for (n, len, lo, hi) in [("A_log", c.kda.heads, -1.0, 1.0), ("dt_bias", w, decay - 1.0, decay + 1.0)] {
                     t.push((format!("{a}.{n}"), "F32", vec![len as u64], (0..len).flat_map(|_| uni(lo, hi).to_le_bytes()).collect()));
                 }
             }

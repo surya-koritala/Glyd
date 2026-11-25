@@ -8,9 +8,25 @@ use crate::deepseek_v4::{fp4_runs, fp8_bf16, ConfigV4};
 use crate::dev::Buf;
 use crate::ffi::{err, Error, Result};
 use crate::gpu_ops::GpuOps;
-use crate::qwen35_ref::bf16;
+use crate::runtime::reference::{ffn::Routed, mla::Picked};
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
+
+#[cfg(test)]
+thread_local! {
+    /// A test's switch: every bf16 rounding of this reference off on this thread (its simulated quantizations kept), the arithmetic between its rounding
+    /// points in fp32: its noise floor's other side (`logits::tests::noise_floor_against_fp32`).
+    pub(crate) static PLAIN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The bf16 value of `x`, where the release holds a bf16 tensor (`x` itself on a thread of a test that set `PLAIN`).
+fn bf16(x: f32) -> f32 {
+    #[cfg(test)]
+    if PLAIN.with(|p| p.get()) {
+        return x;
+    }
+    crate::qwen35_ref::bf16(x)
+}
 
 fn io<T>(r: std::io::Result<T>) -> Result<T> {
     r.map_err(|e| Error(e.to_string()))
@@ -362,6 +378,14 @@ pub struct RefV4 {
     pub margin: std::cell::Cell<(f32, f32)>,
     /// each layer's attention input (normed) and output, its experts' input (normed) and output, and the streams after it, of the last step, where kept
     pub trace: Option<Vec<[Vec<f32>; 5]>>,
+    /// Each mixture-of-experts layer's experts for the tokens to come, each token's in turn, taken in the place of its router's own choice (their
+    /// weights its router's scores), and each indexer's picks (the compressed entries a query reads, the indexed layers in order) in the place of its
+    /// own: a comparison's, which runs another reference on the same choices. Empty: the router's, the indexer's.
+    pub take: std::cell::RefCell<Vec<std::collections::VecDeque<Vec<usize>>>>,
+    pub take_picks: Vec<std::collections::VecDeque<Vec<usize>>>,
+    /// Where Some: each step's routing in each mixture-of-experts layer and each indexer's choice (the indexed layers in order) as the kinds' reference
+    /// records them (`Routed`, `Picked`, an entry a pool of its own), the router's and the indexer's own beside the choice taken: a check's view.
+    pub chose: std::cell::RefCell<Option<(Vec<Vec<Routed>>, Vec<Vec<Picked>>)>>,
 }
 
 impl RefV4 {
@@ -436,6 +460,9 @@ impl RefV4 {
             sim: act_fp8,
             trace: None,
             margin: std::cell::Cell::new((f32::INFINITY, f32::INFINITY)),
+            take: Default::default(),
+            take_picks: Vec::new(),
+            chose: Default::default(),
         })
     }
 
@@ -502,12 +529,22 @@ impl RefV4 {
                     (bf16(s), t)
                 })
                 .collect();
+            let score: Vec<f32> = sc.iter().map(|x| x.0).collect();
             sc.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
             if sc.len() > c.idx_topk {
                 let (m, g) = (self.margin.get(), (sc[c.idx_topk - 1].0 - sc[c.idx_topk].0) / sc[0].0.abs().max(1e-6));
                 self.margin.set((m.0, m.1.min(g)));
             }
-            picked = sc.iter().take(c.idx_topk).map(|&(_, t)| t).collect();
+            // (the entries in their order, as the engine's pick leaves them; a check's picks in the place of its own)
+            let mut own: Vec<usize> = sc.iter().take(c.idx_topk).map(|&(_, t)| t).collect();
+            own.sort_unstable();
+            let at = c.ratios[..l].iter().filter(|&&r| r == 4).count();
+            picked = self.take_picks.get_mut(at).and_then(|q| q.pop_front()).filter(|t| !t.is_empty()).unwrap_or_else(|| own.clone());
+            if let Some((_, p)) = self.chose.borrow_mut().as_mut() {
+                p.resize_with(p.len().max(at + 1), Vec::new);
+                let gap = crate::runtime::reference::ffn::margin(&score, c.idx_topk);
+                p[at].push(Picked { picks: picked.clone(), own, gap, score, block: 1 });
+            }
         } else if ratio > 0 {
             picked = (0..(pos + 1) / ratio).collect();
         }
@@ -551,8 +588,8 @@ impl RefV4 {
     fn moe(&self, l: usize, x: &[f32], token: u32) -> Vec<f32> {
         let (c, m) = (&self.c, &self.layers[l].moe);
         let scores: Vec<f32> = m.gate.mul(x).iter().map(|&v| (if v > 20.0 { v } else { v.exp().ln_1p() }).sqrt()).collect();
-        let idx: Vec<usize> = match (&m.tid2eid, &m.bias) {
-            (Some(t), _) => t[token as usize * c.top_k..][..c.top_k].iter().map(|&e| e as usize).collect(),
+        let (own, rank): (Vec<usize>, Vec<f32>) = match (&m.tid2eid, &m.bias) {
+            (Some(t), _) => (t[token as usize * c.top_k..][..c.top_k].iter().map(|&e| e as usize).collect(), scores.clone()),
             (None, Some(b)) => {
                 let mut o: Vec<usize> = (0..c.experts).collect();
                 o.sort_by(|&i, &j| (scores[j] + b[j]).total_cmp(&(scores[i] + b[i])).then(i.cmp(&j)));
@@ -560,11 +597,18 @@ impl RefV4 {
                 let g = (scores[o[c.top_k - 1]] + b[o[c.top_k - 1]]) - (scores[o[c.top_k]] + b[o[c.top_k]]);
                 self.margin.set((m.0.min(g), m.1));
                 o.truncate(c.top_k);
-                o
+                (o, scores.iter().zip(b).map(|(s, b)| s + b).collect())
             }
             (None, None) => unreachable!(),
         };
+        // (a check's experts in the place of the router's own)
+        let idx = self.take.borrow_mut().get_mut(l).and_then(|q| q.pop_front()).filter(|t| !t.is_empty()).unwrap_or_else(|| own.clone());
         let sum: f32 = idx.iter().map(|&e| scores[e]).sum();
+        if let Some((r, _)) = self.chose.borrow_mut().as_mut() {
+            r.resize_with(r.len().max(l + 1), Vec::new);
+            let gap = if m.tid2eid.is_some() { f32::INFINITY } else { crate::runtime::reference::ffn::margin(&rank, c.top_k) };
+            r[l].push(Routed { w: idx.iter().map(|&e| scores[e] / sum * c.route_scale).collect(), ids: idx.clone(), own, gap, rank });
+        }
         let lim = c.swiglu_limit;
         let expert = |w: &[Mat; 3], wt: Option<f32>| -> Vec<f32> {
             let g = self.q_lin(&w[0], x);
