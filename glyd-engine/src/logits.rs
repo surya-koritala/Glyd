@@ -832,15 +832,20 @@ fn ref_model_with(d: &Path, edit: fn(&mut crate::runtime::describe::Described)) 
     edit(&mut desc);
     let ck = io(glyd_gpu::safetensors::Checkpoint::open(d))?;
     let mut m = RefModel::load(&desc, &|n: &str| checkpoint_tensor(&ck, n))?;
-    // (Engram's compressed vocabulary, where the model has Engram layers)
-    if let Some(map) = engram_token_map(d)? {
+    put_token_map(&mut m, d)?;
+    Ok(m)
+}
+
+/// Engram's compressed vocabulary (`engram_token_map`) into the reference's Engram blocks (role `ngram_map`), where the model in `dir` has them.
+pub(crate) fn put_token_map(m: &mut crate::runtime::reference::model::RefModel, dir: &Path) -> Result<()> {
+    if let Some(map) = engram_token_map(dir)? {
         for l in
             m.layers.iter_mut().filter(|l| matches!(l.block.body, crate::runtime::kinds::Body::Ngram(g) if g.form == crate::runtime::kinds::NgramForm::Engram))
         {
             l.p.put("ngram_map", &[map.len()], map.clone());
         }
     }
-    Ok(m)
+    Ok(())
 }
 
 /// `ref_model` a token at a time: the reference of every case with no hand-written one.

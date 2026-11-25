@@ -733,6 +733,8 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
     let d = crate::runtime::describe::describe(&cfg)?;
     let ck = glyd_gpu::safetensors::Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
     let mut m = RefModel::load(&d, &|n: &str| checkpoint_tensor(&ck, n))?;
+    // (Engram's compressed vocabulary, which the directory holds beside the weights)
+    crate::logits::put_token_map(&mut m, dir)?;
     let layers = dy.big.d.layers.len();
     let starts = block_starts(&dy.big.d.layers);
     if layers == 0 || starts[layers] != m.layers.len() {
@@ -754,7 +756,11 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
         {
             return err(format!("{id}: --sequence is not for a depth mix or lagged mHC"));
         }
-        Passes::Sequence => Some((RefModel::load(&d, &|n: &str| checkpoint_tensor(&ck, n))?, crate::logits::token_list(prompt + steps, m.desc.vocab, 0))),
+        Passes::Sequence => {
+            let mut alone = RefModel::load(&d, &|n: &str| checkpoint_tensor(&ck, n))?;
+            crate::logits::put_token_map(&mut alone, dir)?;
+            Some((alone, crate::logits::token_list(prompt + steps, m.desc.vocab, 0)))
+        }
     };
     let sw = dy.kc_width(dy.kc_state());
     let lagged = m.layers.iter().any(|b| matches!(b.block.residual, Residual::Streams(StreamsP { lagged: true, .. })));
