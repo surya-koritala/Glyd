@@ -192,6 +192,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "dsv4prof" => glyd_engine::dsv4_ref::prof(&a),
         "dsv4ref" => glyd_engine::dsv4_ref::cmd(&a),
         "dsv4check" => glyd_engine::dsv4_ref::check(&a),
+        "v4qcheck" => glyd_engine::dsv4_ref::qcheck(&a),
         "dsv4prompt" => glyd_engine::dsv4_ref::prompt(&a),
         "dsv4layers" => glyd_engine::dsv4_ref::layers(&a),
         "dsv4pack" => glyd_engine::dsv4_ref::pack_check(&a),
