@@ -7,6 +7,7 @@
 use super::mla::PickAt;
 use super::{Dyn, IdxKeys, Op, Part, Slot};
 use crate::ffi::{err, Error, Result};
+use crate::gpu_ops::GpuOps;
 use crate::launch;
 
 impl Dyn {

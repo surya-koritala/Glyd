@@ -1,0 +1,745 @@
+{
+  "schema": "glyd-bench/1",
+  "label": "v8a-own",
+  "recorded_unix": 1795490684,
+  "machine": {
+    "gpu": "NVIDIA A100-SXM4-40GB",
+    "driver": "570.148.08",
+    "memory_mib": 40960.0,
+    "max_sm_mhz": 1410.0,
+    "max_mem_mhz": 1215.0,
+    "power_limit_w": 400.0,
+    "compute_capability": "8.0",
+    "cpu": "AMD EPYC 7J13 64-Core Processor",
+    "cpu_threads": 30,
+    "os": "linux",
+    "arch": "x86_64"
+  },
+  "model": {
+    "id": "Qwen/Qwen3-8B",
+    "argument": "Qwen/Qwen3-8B",
+    "level": "penguin",
+    "weights_bytes": 11101706419.0,
+    "weights_source": "/v1/glyd/info"
+  },
+  "bandwidth": {
+    "gbs": 1555.0,
+    "source": "spec sheet"
+  },
+  "versions": {
+    "glyd_engine": "0.34.2",
+    "git": null,
+    "server": "0.34.2"
+  },
+  "server": {
+    "against": null,
+    "started_by_bench": true,
+    "users": 1
+  },
+  "config": {
+    "suite": "loads",
+    "loads": [
+      "512t:1",
+      "1k:1",
+      "4k:1"
+    ],
+    "runs": 3,
+    "warmup": 1,
+    "max_tokens": 128
+  },
+  "contention": {
+    "busy_before": false,
+    "utilization_median_pct": 0.0,
+    "before": {
+      "memory_used_mib": 0.0,
+      "utilization_pct": 0.0,
+      "sm_mhz": 210.0,
+      "mem_mhz": 1215.0,
+      "load_1m": 1.33
+    },
+    "after": {
+      "memory_used_mib": 13233.0,
+      "utilization_pct": 98.0,
+      "sm_mhz": 1410.0,
+      "mem_mhz": 1215.0,
+      "load_1m": 1.73
+    }
+  },
+  "idle_mib": 0.0,
+  "peak_mib": 13233,
+  "quality": null,
+  "cells": [
+    {
+      "prompt": "512t",
+      "conc": 1,
+      "prompt_tokens": 498.0,
+      "errors": 0,
+      "ttft_s": {
+        "mean": 0.067477,
+        "sd": 0.000197,
+        "median": 0.067379,
+        "min": 0.067349,
+        "max": 0.067703,
+        "runs": [
+          0.067379,
+          0.067349,
+          0.067703
+        ]
+      },
+      "decode_tps_per_user": {
+        "mean": 72.929045,
+        "sd": 0.058959,
+        "median": 72.931531,
+        "min": 72.868883,
+        "max": 72.986722,
+        "runs": [
+          72.986722,
+          72.931531,
+          72.868883
+        ]
+      },
+      "itl_ms": {
+        "mean": 13.711964,
+        "sd": 0.011086,
+        "median": 13.711491,
+        "min": 13.701122,
+        "max": 13.723279,
+        "runs": [
+          13.701122,
+          13.711491,
+          13.723279
+        ]
+      },
+      "itl_p99_ms": {
+        "mean": 13.872048,
+        "sd": 0.104421,
+        "median": 13.83041,
+        "min": 13.79487,
+        "max": 13.990864,
+        "runs": [
+          13.990864,
+          13.79487,
+          13.83041
+        ]
+      },
+      "agg_tps": {
+        "mean": 72.929045,
+        "sd": 0.058959,
+        "median": 72.931531,
+        "min": 72.868883,
+        "max": 72.986722,
+        "runs": [
+          72.986722,
+          72.931531,
+          72.868883
+        ]
+      },
+      "prefill_tps": {
+        "mean": 7370.421051,
+        "sd": 33.843564,
+        "median": 7385.199511,
+        "min": 7331.70157,
+        "max": 7394.362072,
+        "runs": [
+          7331.70157,
+          7394.362072,
+          7385.199511
+        ]
+      },
+      "ceiling_tps_per_user": 140.07,
+      "pct_of_ceiling": 0.5207,
+      "gpu_profile": {
+        "passes": [
+          {
+            "kind": "prompt, 257-512 prompt tokens",
+            "rows": 0,
+            "prompt_tokens": 497.333,
+            "passes": 3,
+            "graphs": 0,
+            "gpu_ms": 64.937,
+            "queued_ms": 2.363,
+            "ops": [
+              {
+                "op": "embedding",
+                "ms": 0.58,
+                "share": 0.009
+              },
+              {
+                "op": "attention: the rows' lengths",
+                "ms": 0.008,
+                "share": 0.0
+              },
+              {
+                "op": "norms",
+                "ms": 1.876,
+                "share": 0.029
+              },
+              {
+                "op": "products: a matrix decoded to bf16 for the dense product",
+                "ms": 18.793,
+                "share": 0.289
+              },
+              {
+                "op": "attention: qkv product",
+                "ms": 4.375,
+                "share": 0.067
+              },
+              {
+                "op": "attention: preparation (norms, rotary, cache write)",
+                "ms": 0.988,
+                "share": 0.015
+              },
+              {
+                "op": "attention (global)",
+                "ms": 4.061,
+                "share": 0.063
+              },
+              {
+                "op": "attention: o product",
+                "ms": 4.233,
+                "share": 0.065
+              },
+              {
+                "op": "MLP: gate and up product, SiLU",
+                "ms": 17.272,
+                "share": 0.266
+              },
+              {
+                "op": "MLP: down product",
+                "ms": 11.408,
+                "share": 0.176
+              },
+              {
+                "op": "head",
+                "ms": 1.343,
+                "share": 0.021
+              }
+            ]
+          },
+          {
+            "kind": "decode, 1 row",
+            "rows": 1,
+            "prompt_tokens": 0.0,
+            "passes": 381,
+            "graphs": 381,
+            "gpu_ms": 13.41,
+            "queued_ms": null,
+            "ops": [
+              {
+                "op": "attention: the rows' lengths",
+                "ms": 0.007,
+                "share": 0.001
+              },
+              {
+                "op": "norms",
+                "ms": 0.834,
+                "share": 0.062
+              },
+              {
+                "op": "attention: qkv product",
+                "ms": 1.565,
+                "share": 0.117
+              },
+              {
+                "op": "attention: preparation (norms, rotary, cache write)",
+                "ms": 0.367,
+                "share": 0.027
+              },
+              {
+                "op": "attention (global)",
+                "ms": 0.721,
+                "share": 0.054
+              },
+              {
+                "op": "attention: o product",
+                "ms": 1.257,
+                "share": 0.094
+              },
+              {
+                "op": "MLP: gate and up product, SiLU",
+                "ms": 4.745,
+                "share": 0.354
+              },
+              {
+                "op": "MLP: down product",
+                "ms": 2.573,
+                "share": 0.192
+              },
+              {
+                "op": "head",
+                "ms": 1.341,
+                "share": 0.1
+              }
+            ]
+          }
+        ],
+        "steps": [
+          {
+            "kind": "prompt, 257-512 prompt tokens",
+            "calls": 3,
+            "wall_ms": 65.266,
+            "gpu_ms": 64.937,
+            "host_ms": 0.329,
+            "between_ms": 2.712
+          },
+          {
+            "kind": "decode, 1 row",
+            "calls": 381,
+            "wall_ms": 13.7,
+            "gpu_ms": 13.41,
+            "host_ms": 0.29,
+            "between_ms": 0.013
+          }
+        ]
+      }
+    },
+    {
+      "prompt": "1k",
+      "conc": 1,
+      "prompt_tokens": 1001.0,
+      "errors": 0,
+      "ttft_s": {
+        "mean": 0.105327,
+        "sd": 0.0004,
+        "median": 0.105329,
+        "min": 0.104926,
+        "max": 0.105726,
+        "runs": [
+          0.105329,
+          0.104926,
+          0.105726
+        ]
+      },
+      "decode_tps_per_user": {
+        "mean": 73.019136,
+        "sd": 0.051857,
+        "median": 73.010674,
+        "min": 72.972031,
+        "max": 73.074703,
+        "runs": [
+          72.972031,
+          73.010674,
+          73.074703
+        ]
+      },
+      "itl_ms": {
+        "mean": 13.695045,
+        "sd": 0.009724,
+        "median": 13.696627,
+        "min": 13.684626,
+        "max": 13.703881,
+        "runs": [
+          13.703881,
+          13.696627,
+          13.684626
+        ]
+      },
+      "itl_p99_ms": {
+        "mean": 13.841479,
+        "sd": 0.044841,
+        "median": 13.826839,
+        "min": 13.805788,
+        "max": 13.89181,
+        "runs": [
+          13.89181,
+          13.805788,
+          13.826839
+        ]
+      },
+      "agg_tps": {
+        "mean": 73.019136,
+        "sd": 0.051857,
+        "median": 73.010674,
+        "min": 72.972031,
+        "max": 73.074703,
+        "runs": [
+          72.972031,
+          73.010674,
+          73.074703
+        ]
+      },
+      "prefill_tps": {
+        "mean": 9452.968302,
+        "sd": 96.898635,
+        "median": 9467.874971,
+        "min": 9349.480137,
+        "max": 9541.549799,
+        "runs": [
+          9541.549799,
+          9349.480137,
+          9467.874971
+        ]
+      },
+      "ceiling_tps_per_user": 140.07,
+      "pct_of_ceiling": 0.5212,
+      "gpu_profile": {
+        "passes": [
+          {
+            "kind": "prompt, 513-1024 prompt tokens",
+            "rows": 0,
+            "prompt_tokens": 995.667,
+            "passes": 3,
+            "graphs": 0,
+            "gpu_ms": 101.969,
+            "queued_ms": 2.375,
+            "ops": [
+              {
+                "op": "embedding",
+                "ms": 0.617,
+                "share": 0.006
+              },
+              {
+                "op": "attention: the rows' lengths",
+                "ms": 0.007,
+                "share": 0.0
+              },
+              {
+                "op": "norms",
+                "ms": 3.166,
+                "share": 0.031
+              },
+              {
+                "op": "products: a matrix decoded to bf16 for the dense product",
+                "ms": 18.918,
+                "share": 0.186
+              },
+              {
+                "op": "attention: qkv product",
+                "ms": 8.266,
+                "share": 0.081
+              },
+              {
+                "op": "attention: preparation (norms, rotary, cache write)",
+                "ms": 1.631,
+                "share": 0.016
+              },
+              {
+                "op": "attention (global)",
+                "ms": 10.77,
+                "share": 0.106
+              },
+              {
+                "op": "attention: o product",
+                "ms": 6.213,
+                "share": 0.061
+              },
+              {
+                "op": "MLP: gate and up product, SiLU",
+                "ms": 34.052,
+                "share": 0.334
+              },
+              {
+                "op": "MLP: down product",
+                "ms": 16.972,
+                "share": 0.166
+              },
+              {
+                "op": "head",
+                "ms": 1.356,
+                "share": 0.013
+              }
+            ]
+          },
+          {
+            "kind": "decode, 1 row",
+            "rows": 1,
+            "prompt_tokens": 0.0,
+            "passes": 381,
+            "graphs": 381,
+            "gpu_ms": 13.398,
+            "queued_ms": null,
+            "ops": [
+              {
+                "op": "attention: the rows' lengths",
+                "ms": 0.007,
+                "share": 0.001
+              },
+              {
+                "op": "norms",
+                "ms": 0.828,
+                "share": 0.062
+              },
+              {
+                "op": "attention: qkv product",
+                "ms": 1.562,
+                "share": 0.117
+              },
+              {
+                "op": "attention: preparation (norms, rotary, cache write)",
+                "ms": 0.364,
+                "share": 0.027
+              },
+              {
+                "op": "attention (global)",
+                "ms": 0.718,
+                "share": 0.054
+              },
+              {
+                "op": "attention: o product",
+                "ms": 1.257,
+                "share": 0.094
+              },
+              {
+                "op": "MLP: gate and up product, SiLU",
+                "ms": 4.751,
+                "share": 0.355
+              },
+              {
+                "op": "MLP: down product",
+                "ms": 2.571,
+                "share": 0.192
+              },
+              {
+                "op": "head",
+                "ms": 1.341,
+                "share": 0.1
+              }
+            ]
+          }
+        ],
+        "steps": [
+          {
+            "kind": "prompt, 513-1024 prompt tokens",
+            "calls": 3,
+            "wall_ms": 102.324,
+            "gpu_ms": 101.969,
+            "host_ms": 0.355,
+            "between_ms": 3.607
+          },
+          {
+            "kind": "decode, 1 row",
+            "calls": 381,
+            "wall_ms": 13.682,
+            "gpu_ms": 13.398,
+            "host_ms": 0.284,
+            "between_ms": 0.014
+          }
+        ]
+      }
+    },
+    {
+      "prompt": "4k",
+      "conc": 1,
+      "prompt_tokens": 4003.0,
+      "errors": 0,
+      "ttft_s": {
+        "mean": 0.380597,
+        "sd": 0.001937,
+        "median": 0.379555,
+        "min": 0.379404,
+        "max": 0.382832,
+        "runs": [
+          0.379404,
+          0.379555,
+          0.382832
+        ]
+      },
+      "decode_tps_per_user": {
+        "mean": 70.676601,
+        "sd": 0.147881,
+        "median": 70.720025,
+        "min": 70.511869,
+        "max": 70.797908,
+        "runs": [
+          70.720025,
+          70.511869,
+          70.797908
+        ]
+      },
+      "itl_ms": {
+        "mean": 14.148996,
+        "sd": 0.02963,
+        "median": 14.140267,
+        "min": 14.124711,
+        "max": 14.182009,
+        "runs": [
+          14.140267,
+          14.182009,
+          14.124711
+        ]
+      },
+      "itl_p99_ms": {
+        "mean": 14.295612,
+        "sd": 0.042908,
+        "median": 14.310033,
+        "min": 14.247351,
+        "max": 14.329452,
+        "runs": [
+          14.329452,
+          14.310033,
+          14.247351
+        ]
+      },
+      "agg_tps": {
+        "mean": 70.676601,
+        "sd": 0.147881,
+        "median": 70.720025,
+        "min": 70.511869,
+        "max": 70.797908,
+        "runs": [
+          70.720025,
+          70.511869,
+          70.797908
+        ]
+      },
+      "prefill_tps": {
+        "mean": 10514.393325,
+        "sd": 61.639369,
+        "median": 10549.198076,
+        "min": 10443.22401,
+        "max": 10550.757891,
+        "runs": [
+          10550.757891,
+          10549.198076,
+          10443.22401
+        ]
+      },
+      "ceiling_tps_per_user": 140.07,
+      "pct_of_ceiling": 0.5049,
+      "gpu_profile": {
+        "passes": [
+          {
+            "kind": "prompt, 2049-4096 prompt tokens",
+            "rows": 0,
+            "prompt_tokens": 4001.667,
+            "passes": 3,
+            "graphs": 0,
+            "gpu_ms": 371.912,
+            "queued_ms": 2.355,
+            "ops": [
+              {
+                "op": "embedding",
+                "ms": 0.835,
+                "share": 0.002
+              },
+              {
+                "op": "attention: the rows' lengths",
+                "ms": 0.008,
+                "share": 0.0
+              },
+              {
+                "op": "norms",
+                "ms": 11.066,
+                "share": 0.03
+              },
+              {
+                "op": "products: a matrix decoded to bf16 for the dense product",
+                "ms": 18.828,
+                "share": 0.051
+              },
+              {
+                "op": "attention: qkv product",
+                "ms": 29.14,
+                "share": 0.078
+              },
+              {
+                "op": "attention: preparation (norms, rotary, cache write)",
+                "ms": 5.813,
+                "share": 0.016
+              },
+              {
+                "op": "attention (global)",
+                "ms": 111.098,
+                "share": 0.299
+              },
+              {
+                "op": "attention: o product",
+                "ms": 20.684,
+                "share": 0.056
+              },
+              {
+                "op": "MLP: gate and up product, SiLU",
+                "ms": 115.432,
+                "share": 0.31
+              },
+              {
+                "op": "MLP: down product",
+                "ms": 57.645,
+                "share": 0.155
+              },
+              {
+                "op": "head",
+                "ms": 1.364,
+                "share": 0.004
+              }
+            ]
+          },
+          {
+            "kind": "decode, 1 row",
+            "rows": 1,
+            "prompt_tokens": 0.0,
+            "passes": 381,
+            "graphs": 381,
+            "gpu_ms": 13.851,
+            "queued_ms": null,
+            "ops": [
+              {
+                "op": "attention: the rows' lengths",
+                "ms": 0.007,
+                "share": 0.001
+              },
+              {
+                "op": "norms",
+                "ms": 0.832,
+                "share": 0.06
+              },
+              {
+                "op": "attention: qkv product",
+                "ms": 1.564,
+                "share": 0.113
+              },
+              {
+                "op": "attention: preparation (norms, rotary, cache write)",
+                "ms": 0.365,
+                "share": 0.026
+              },
+              {
+                "op": "attention (global)",
+                "ms": 1.135,
+                "share": 0.082
+              },
+              {
+                "op": "attention: o product",
+                "ms": 1.271,
+                "share": 0.092
+              },
+              {
+                "op": "MLP: gate and up product, SiLU",
+                "ms": 4.762,
+                "share": 0.344
+              },
+              {
+                "op": "MLP: down product",
+                "ms": 2.573,
+                "share": 0.186
+              },
+              {
+                "op": "head",
+                "ms": 1.342,
+                "share": 0.097
+              }
+            ]
+          }
+        ],
+        "steps": [
+          {
+            "kind": "prompt, 2049-4096 prompt tokens",
+            "calls": 3,
+            "wall_ms": 372.26,
+            "gpu_ms": 371.912,
+            "host_ms": 0.348,
+            "between_ms": 8.889
+          },
+          {
+            "kind": "decode, 1 row",
+            "calls": 381,
+            "wall_ms": 14.136,
+            "gpu_ms": 13.851,
+            "host_ms": 0.286,
+            "between_ms": 0.015
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -12,6 +12,7 @@ use super::kv12::{shapes, KvShape, Tables};
 use super::{Dyn, Op, Part};
 use crate::dev::Buf;
 use crate::ffi::{err, KvGeom, Lib, Result, KV_ONE_STREAM};
+use crate::gpu_ops::GpuOps;
 
 /// A page's entries in its own arena, past its heads' inline ones.
 pub const ARENA: i64 = 15;
