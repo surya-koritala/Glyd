@@ -49,13 +49,13 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
     let hb = crate::hb_pack::HbDir::open(dir)?;
     let store = caching.map(crate::hbg_store::store_for);
     let f8 = (crate::tune!("GLYD_GLM_F8").as_deref() != Some("0")).then_some(super::experts::F8 { scales: &kinds.scales, dev: &dev, lib: &lib });
-    let held = super::experts::Held { hb: hb.as_ref(), cache: caching.zip(store.as_ref()), ordinal: o.device, f8 };
+    let held = super::experts::Held { hb: hb.as_ref(), cache: caching.zip(store.as_ref()), ordinal: o.device, f8, dense: None, codebooks: None };
     let hidden = kinds.desc.hidden;
     let experts = |ck: &Checkpoint, _: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
-        super::experts::of_layers(&kinds, st.layers)
-            .map(|(l, m, roles)| {
+        super::experts::of_layers(&kinds, st.layers, 2)
+            .map(|(ix, m, roles)| {
                 crate::status::STATUS.beat();
-                Ok(Box::new(ResidentMoe(super::experts::held(m, roles, hidden, ck, level, Some((l, &held)))?)) as Box<dyn MoeBlock>)
+                Ok(Box::new(ResidentMoe(super::experts::held(m, roles, hidden, ck, level, Some((ix, &held)))?)) as Box<dyn MoeBlock>)
             })
             .collect()
     };
@@ -87,10 +87,10 @@ pub fn load_plain(dir: &Path, o: &Opts) -> Result<Dyn> {
         dev: &dev,
         lib: &lib,
     });
-    let held = super::experts::Held { hb: None, cache: None, ordinal: o.device, f8 };
+    let held = super::experts::Held { hb: None, cache: None, ordinal: o.device, f8, dense: None, codebooks: None };
     let experts = |ck: &Checkpoint, level: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
-        super::experts::of_layers(&kinds, st.layers)
-            .map(|(l, m, roles)| Ok(Box::new(ResidentMoe(super::experts::held(m, roles, hidden, ck, level, Some((l, &held)))?)) as Box<dyn MoeBlock>))
+        super::experts::of_layers(&kinds, st.layers, 2)
+            .map(|(ix, m, roles)| Ok(Box::new(ResidentMoe(super::experts::held(m, roles, hidden, ck, level, Some((ix, &held)))?)) as Box<dyn MoeBlock>))
             .collect()
     };
     Dyn::new_with(dir, d, None, st, o, &experts)

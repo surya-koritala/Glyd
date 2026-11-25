@@ -83,7 +83,7 @@ pub fn qwen35_plan(c: &Config35, f32: &dyn Fn(&str) -> bool) -> String {
 /// The plan of a NemotronH model (`ConfigNemotronH::packs` and `kept`) saved at the level `level`: its matrices, every expert's two among them, packed, each in the layout `pack_layout` gives it (the level's, but at
 /// wren the experts in four-bit codes and every other matrix in six-bit ones: those linears say so); its small tensors (the norms, Mamba-2's convolution, `A_log`, `D`, `dt_bias` and gated norm, the routers) copied
 /// as the checkpoint has them; none for the MTP head. The router's score-correction bias is fp32 in the checkpoint and is cast to bf16 by the saver, which holds nothing else: the layer's loader widens it back
-/// (src/moe_nh.rs), so a saved directory chooses its experts by the bias rounded to bf16 (a near tie between two experts may fall the other way).
+/// (src/dynamic/experts.rs `held`), so a saved directory chooses its experts by the bias rounded to bf16 (a near tie between two experts may fall the other way).
 pub fn nemotron_plan(c: &ConfigNemotronH, level: Layout, f32: &dyn Fn(&str) -> bool) -> String {
     plan_json(&c.packs(), &c.kept(), f32, &|p| Some(pack_layout(level, &p.key)).filter(|l| *l != level))
 }

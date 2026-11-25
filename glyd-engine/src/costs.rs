@@ -212,7 +212,9 @@ impl Family {
     fn estimate(&self, level: Layout, p: &Pack35) -> Result<u64> {
         let weights = (p.rows() * p.cols) as u64;
         match self {
-            Family::Nemotron(c) if level == Layout::Hummingbird && p.key.contains(".mixer.experts.") => Ok(crate::moe_hb::expert_bytes_mean(c)? / 2),
+            Family::Nemotron(c) if level == Layout::Hummingbird && p.key.contains(".mixer.experts.") => {
+                Ok(crate::moe_hb::expert_bytes_mean(c.moe.experts, c.moe.inter, c.moe.latent)? / 2)
+            }
             Family::Nemotron(_) => Ok((weights as f64 * crate::plan::sizing::bits(crate::nemotron::pack_layout(level, &p.key)) / 8.0) as u64),
             Family::Qwen(_) => Ok((weights as f64 * crate::plan::sizing::bits(level) / 8.0) as u64),
         }

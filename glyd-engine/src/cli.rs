@@ -1465,14 +1465,10 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: 
             }
         }
         store.set_offload(offload);
-        let (plain, cached) = (crate::moe_nh::factory(plan.layout), plan.experts.map(|c| crate::moe_nh::factory_cached(plan.layout, c.slots, &store)));
-        let make: crate::kern_nh::MoeFactory<'_> = match &cached {
-            Some(f) => f,
-            None => &plain,
-        };
-        // the executor (GLY-354): Nemotron-H's description, its blocks of experts (an expert cache's) as `make` makes them
+        // the executor (GLY-354): Nemotron-H's description, its blocks of experts the Moe kind's, in the expert cache of the plan's places where it has one
         let layers = crate::nemotron::ConfigNemotronH::load(dir).map_err(cannot)?.layers;
-        let e = crate::dynamic::nemotron::load_with(dir, &o, make, crate::dynamic::Stage::whole(layers)).map_err(oom)?;
+        let cache = plan.experts.map(|c| (c.slots, &store));
+        let e = crate::dynamic::nemotron::load_cached(dir, &o, plan.layout, cache, crate::dynamic::Stage::whole(layers)).map_err(oom)?;
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
     } else {
