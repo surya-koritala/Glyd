@@ -3041,7 +3041,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("glyd-muse-refs-{}", std::process::id()));
         crate::muse_ref::random(&dir).unwrap();
         let fx = Fixture::read(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits/muse.json.gz")).unwrap();
-        let desc = ref_drive(&dir, &fx, None).unwrap();
+        let desc = ref_drive(&dir, &fx, None, None).unwrap();
         let take: Choices = desc.routed.iter().map(|l| l.iter().map(|r| r.ids.clone()).collect()).collect();
         let first: Vec<u32> = fx.prompt.iter().chain(&fx.decode).copied().collect();
         let (mut rows, mut at) = (Vec::new(), 0usize);
