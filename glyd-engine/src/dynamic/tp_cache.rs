@@ -849,7 +849,7 @@ pub fn replay_bench(a: &crate::args::Args) -> Result<()> {
 #[cfg(feature = "dev")]
 pub fn fill_bench(a: &crate::args::Args) -> Result<()> {
     let dev = crate::dev::Dev::new(0)?;
-    let k = crate::dynamic::kimi::KernKimi::load(&dev)?;
+    let k = crate::dynamic::experts::KernLatent::load(&dev)?;
     let fills: usize = a.num("fills", 16usize)?;
     let len = ((a.num("mb", 2.19f64)? * 1e6) as usize).next_multiple_of(16).max(16);
     let host = Pinned::portable(fills * len)?;
