@@ -135,6 +135,14 @@
     "plan": "e3e006b041b50b55",
     "family": "refused: m is a Qwen3_5MoeForCausalLM model, and this engine runs Qwen3 models so far"
   },
+  "qwen35moe_tiny_config.json": {
+    "blocks": 8,
+    "tensors": 448,
+    "kinds": "d9e0c20fa47bcabc",
+    "weights": "694faae469d31951",
+    "plan": "5d3d8adeef04c317",
+    "family": "refused: m is a Qwen3_5MoeForCausalLM model, and this engine runs Qwen3 models so far"
+  },
   "qwen4x_config.json": {
     "blocks": 97,
     "tensors": 1294,
@@ -194,7 +202,7 @@
   "runtime/glm53_model.json": {
     "blocks": 6,
     "tensors": 106,
-    "kinds": "8900d3cff626270e",
+    "kinds": "baf29761e58110b8",
     "weights": "80edc8fdd35186b0",
     "plan": "86e0271d8683bd94",
     "family": "refused: m is a GlmMoeDsaForCausalLM model, and this engine runs Qwen3 models so far"

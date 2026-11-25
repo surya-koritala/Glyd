@@ -192,6 +192,7 @@ impl MlaOp {
         let indexer = match &k.indexer {
             None => None,
             Some(x) if x.shared => return err("a latent attention that reuses another layer's picks: not an operation of this executor"),
+            Some(x) if x.rope > 0 => return err("a latent attention's indexer whose queries and keys are rotated: not an operation of this executor"),
             Some(x) => {
                 // (the keys' norm as the kind's form gives it: a LayerNorm with its bias, or an RMS norm with a weight; the mean-pooled form is an attention's)
                 let key = match x.form {
@@ -763,6 +764,7 @@ mod tests {
                 block: 4,
                 shared: false,
                 form: crate::runtime::kinds::IndexForm::LAYER_KEYS,
+                rope: 0,
             }),
         }
     }
