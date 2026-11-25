@@ -226,6 +226,22 @@ pub trait Device {
     /// # Safety
     /// `args` point to values of the kernel's parameter types, in order, live for the call; device addresses are of live buffers.
     unsafe fn launch(f: Self::Function, grid: [u32; 3], block: [u32; 3], smem: u32, s: Self::Stream, args: &mut [*mut c_void]) -> Result<()>;
+
+    // Hopper (compute capability 9.0): its kernels' tensor maps and clusters. An AMD build: not supported.
+
+    /// A tensor map of a bf16 matrix at `base` of `rows` rows of `cols` values, rows `row_bytes` apart, read in boxes of `box_cols` by `box_rows` with the
+    /// 128-byte swizzle and L2's 256-byte promotion, rows past the matrix read as zeros (cuTensorMapEncodeTiled): the 128 bytes a kernel takes as its parameter.
+    fn tensor_map(base: u64, shape: (u64, u64, u64), boxes: (u32, u32)) -> Result<[u64; 16]>;
+    /// The clusters of `cluster` blocks of `threads` and `smem` the GPU runs at once of `f`, for a grid of `grid` blocks (cuOccupancyMaxActiveClusters).
+    ///
+    /// # Safety
+    /// As `occupancy`.
+    unsafe fn max_clusters(f: Self::Function, grid: u32, threads: u32, smem: u32, cluster: u32) -> Result<i32>;
+    /// `launch` of a grid in clusters of `cluster` blocks along x (cuLaunchKernelEx with the cluster's dimension).
+    ///
+    /// # Safety
+    /// As `launch`.
+    unsafe fn launch_clusters(f: Self::Function, grid: u32, threads: u32, smem: u32, cluster: u32, s: Self::Stream, args: &mut [*mut c_void]) -> Result<()>;
 }
 
 /// NVIDIA's device layer over libcuda's driver API, and AMD's over HIP's runtime in an AMD build (`cfg(glyd_hip)`: the same table, HIP's
@@ -561,6 +577,95 @@ impl Device for CudaDevice {
             )
         }
     }
+
+    #[cfg(not(glyd_hip))]
+    fn tensor_map(base: u64, (cols, rows, row_bytes): (u64, u64, u64), (box_cols, box_rows): (u32, u32)) -> Result<[u64; 16]> {
+        let h = crate::ffi::hopper()?;
+        let mut map = [0u64; 16];
+        let (dims, strides, boxes, unit) = ([cols, rows], [row_bytes], [box_cols, box_rows], [1u32, 1]);
+        // SAFETY: a map of 128 bytes the driver writes (16 u64: 8-byte aligned, as the driver asks of a CUtensorMap's start: 64 where a kernel reads it, which
+        // the caller's copy gives); the arrays of the rank's lengths. 9: bf16, 0: no interleave, 3: the 128-byte swizzle, 3: L2's 256-byte promotion, 0: no NaN fill.
+        unsafe {
+            cu(
+                "cuTensorMapEncodeTiled",
+                (h.cuTensorMapEncodeTiled)(
+                    map.as_mut_ptr() as *mut c_void,
+                    9,
+                    2,
+                    base as *mut c_void,
+                    dims.as_ptr(),
+                    strides.as_ptr(),
+                    boxes.as_ptr(),
+                    unit.as_ptr(),
+                    0,
+                    3,
+                    3,
+                    0,
+                ),
+            )?
+        };
+        Ok(map)
+    }
+
+    #[cfg(glyd_hip)]
+    fn tensor_map(_: u64, _: (u64, u64, u64), _: (u32, u32)) -> Result<[u64; 16]> {
+        crate::ffi::err("tensor maps are Hopper's: not in an AMD build")
+    }
+
+    #[cfg(not(glyd_hip))]
+    unsafe fn max_clusters(f: CuFunction, grid: u32, threads: u32, smem: u32, cluster: u32) -> Result<i32> {
+        let h = crate::ffi::hopper()?;
+        let mut attr = LaunchAttribute { id: 0, _pad: 0, value: [0; 16] };
+        let cfg = cluster_config(grid, threads, smem, cluster, Stream(std::ptr::null_mut()), &mut attr);
+        let mut n = 0;
+        // SAFETY: a function of a loaded module (the caller's contract); the configuration and its attribute live for the call; a host out-pointer.
+        unsafe { cu("cuOccupancyMaxActiveClusters", (h.cuOccupancyMaxActiveClusters)(&mut n, f, &cfg as *const LaunchConfig as *const c_void))? };
+        Ok(n)
+    }
+
+    #[cfg(glyd_hip)]
+    unsafe fn max_clusters(_: CuFunction, _: u32, _: u32, _: u32, _: u32) -> Result<i32> {
+        crate::ffi::err("clusters are Hopper's: not in an AMD build")
+    }
+
+    #[cfg(not(glyd_hip))]
+    unsafe fn launch_clusters(f: CuFunction, grid: u32, threads: u32, smem: u32, cluster: u32, s: Stream, args: &mut [*mut c_void]) -> Result<()> {
+        let h = crate::ffi::hopper()?;
+        let mut attr = LaunchAttribute { id: 0, _pad: 0, value: [0; 16] };
+        let cfg = cluster_config(grid, threads, smem, cluster, s, &mut attr);
+        // SAFETY: the caller's arguments (its contract); the configuration and its attribute live for the call.
+        unsafe { cu("cuLaunchKernelEx", (h.cuLaunchKernelEx)(&cfg as *const LaunchConfig as *const c_void, f, args.as_mut_ptr(), std::ptr::null_mut())) }
+    }
+
+    #[cfg(glyd_hip)]
+    unsafe fn launch_clusters(_: CuFunction, _: u32, _: u32, _: u32, _: u32, _: Stream, _: &mut [*mut c_void]) -> Result<()> {
+        crate::ffi::err("clusters are Hopper's: not in an AMD build")
+    }
+}
+
+/// cuda.h's CUlaunchConfig and CUlaunchAttribute (one: the cluster's dimension, CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION 4), as cuLaunchKernelEx and
+/// cuOccupancyMaxActiveClusters take them.
+#[repr(C)]
+struct LaunchConfig {
+    grid: [u32; 3],
+    block: [u32; 3],
+    smem: u32,
+    stream: Stream,
+    attrs: *const LaunchAttribute,
+    num_attrs: u32,
+}
+
+#[repr(C)]
+struct LaunchAttribute {
+    id: u32,
+    _pad: u32,
+    value: [u32; 16],
+}
+
+fn cluster_config(grid: u32, threads: u32, smem: u32, cluster: u32, s: Stream, attr: &mut LaunchAttribute) -> LaunchConfig {
+    *attr = LaunchAttribute { id: 4, _pad: 0, value: [0; 16] };
+    attr.value[..3].copy_from_slice(&[cluster, 1, 1]);
+    LaunchConfig { grid: [grid, 1, 1], block: [threads, 1, 1], smem, stream: s, attrs: attr, num_attrs: 1 }
 }
 
 #[cfg(test)]
@@ -573,6 +678,9 @@ mod tests {
         let attrs = [(Attr::WarpSize, 10), (Attr::Sms, 16), (Attr::Tcc, 17), (Attr::CcMajor, 75), (Attr::CcMinor, 76), (Attr::SmemOptin, 97)];
         assert!(attrs.iter().all(|&(a, n)| a as i32 == n));
         assert_eq!([HostMem::Pinned as u32, HostMem::Portable as u32, HostMem::Mapped as u32], [0, 1, 2]);
+        // cuda.h's launch configuration and attribute: 56 and 72 bytes (the stream at 32, the attributes at 40)
+        assert_eq!((std::mem::size_of::<super::LaunchConfig>(), std::mem::size_of::<super::LaunchAttribute>()), (56, 72));
+        assert_eq!((std::mem::offset_of!(super::LaunchConfig, stream), std::mem::offset_of!(super::LaunchConfig, num_attrs)), (32, 48));
     }
 
     /// Where there is no driver (a machine with no GPU, a CPU runner), a call is an error of the kind that says so, not a crash.
