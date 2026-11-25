@@ -2316,7 +2316,7 @@ mod tests {
     /// kind's only description in the tree), a plain dense config, Gemma 4's draft.
     #[cfg(feature = "dev")]
     fn every_family(tag: &str) -> Vec<ModelDesc> {
-        use super::super::{deepseek_v4, gemma4, glm, kimi, muse, nemotron, qwen35, qwen4x, Stage};
+        use super::super::{deepseek_v4, gemma4, glm, kimi, muse, qwen35, qwen4x, Stage};
         // (a directory of each caller's own: the tests run at once)
         let dir = |x: &str| std::env::temp_dir().join(format!("glyd-by-op-{tag}-{x}-{}", std::process::id()));
         let mut v = Vec::new();
