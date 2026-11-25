@@ -6,7 +6,7 @@
 //! Sliding layers (5 of 6): head 256, keys and values of the last `window` positions (a ring), the full rotary at theta 1e4. Global layers: head 512, the keys' projection
 //! as the values too where the config says K = V, the proportional rotary (64 of 256 pairs) at theta 1e6. Attention scale 1. The logits soft-capped (30 tanh(l / 30)).
 
-use crate::dev::{Buf, Dev};
+use crate::dev::Buf;
 use crate::ffi::{err, Error, Result};
 use crate::runtime::config::ModelConfig;
 use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload_packed, Item, Layout, PackBuf};
@@ -844,7 +844,7 @@ pub fn i4x_check(a: &crate::args::Args) -> Result<()> {
     let dir = Path::new(a.need(1, "MODEL")?);
     let cfg = ConfigG4::load(dir)?;
     let ck = Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
-    let dev = Dev::new(0)?;
+    let dev = crate::dev::Dev::new(0)?;
     let lib = Lib::find()?;
     let p = &cfg.prefix;
     let mut names: Vec<(String, usize)> = Vec::new();
