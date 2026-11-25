@@ -3599,7 +3599,7 @@ GLYD_GPU_INTERNAL int glyd_gpu_f8h_unpack(const uint8_t* core, const uint32_t* h
 // 8 tokens, on compute capability 12.x where the code loaded was compiled for it; mx and ds32 never. Its error is about 15x bf16 X's, and the X scales are
 // this kernel's own (vLLM quantizes X a token and 128 columns for block scales, a token for channel scales, and with the checkpoint's input scale for tensor).
 // Not on Ada: an RTX 4090's e4m3 MMA sums fell outside check_f8.py's bound (one output in 1,690, 1% off where the sum of |x w| was 100 times it; 851cf2e8).
-// Development builds, for the checks and for measuring: GLYD_F8_LIN_GRID = c > 0, c CTAs; GLYD_F8_LIN_MIN = m > 1, at least m patches a CTA;
+// Development builds, for the checks and for measuring: GLYD_F8_LIN_GRID = c > 0, c CTAs (else a CTA a row group: f8_lin_ctas);
 // GLYD_F8_LIN_AHEAD = 1 (17-64 tokens); GLYD_F8_LIN_DENSE = 1; GLYD_F8_LIN_A8 = 1.
 static int f8_lin_ntl(int64_t M) { return M <= 8 ? 1 : M <= 16 ? 2 : M <= 32 ? 4 : 8; }
 static int f8_lin_cc(int dev) { return attribute(cudaDevAttrComputeCapabilityMajor, dev) * 10 + attribute(cudaDevAttrComputeCapabilityMinor, dev); }
@@ -3680,39 +3680,23 @@ static void f8_lin_allow() {  // the kernel's limit of shared memory raised to i
                          (int)f8_lin_shared(64, DENSE, (KIND & f8c::F8_A8) != 0));
     if (dev < 64) allowed.fetch_or(1ull << dev);
 }
-// The grid for kind (0-4; -1: the most of the five's).
-static int64_t f8_lin_ctas(int64_t N, int64_t K, int64_t M, int64_t kind, int dev) {
-    static std::atomic<int> resident[64][2][2][10][65];  // device, ahead, dense, kind (+ 5: a8), M: the CTAs an SM (0: not asked yet)
-    const int64_t W = f8c::f8_cdiv(f8c::f8_cdiv(N, f8c::PR) * 4, f8c::LW) * f8c::f8_cdiv(K, f8c::PC);
+// One matrix's grid, every kind's and layout's: a CTA a row group of 128 rows, which adds all of the row group's K in order (the experts' product's rule,
+// f8_moe_ctas). It follows from the matrix's shape alone, so a row's sum is the same whatever shares its call (its rows, a decode's one-token kernel on the
+// same plan, a GPU's slice of the rows) and no parts are kept. It took as many CTAs as the GPU held at once of the kernel for the call's rows, so a row group's
+// K split between CTAs by the rows the call held: other sums than one CTA's (each part rounded, then the parts added). GLYD_F8_LIN_GRID (a development
+// build's): that grid.
+static int64_t f8_lin_ctas(int64_t N, int64_t K) {
+    const int64_t KT = f8c::f8_cdiv(K, f8c::PC), W = f8c::f8_cdiv(f8c::f8_cdiv(N, f8c::PR) * 4, f8c::LW) * KT;
     const int64_t c = TUNING_INT("GLYD_F8_LIN_GRID", 0);
     if (c > 0) return std::min<int64_t>(c, W);
-    if (kind < 0) {
-        int64_t most = 1;
-        for (int k = 0; k < 5; k++) most = std::max(most, f8_lin_ctas(N, K, M, k, dev));
-        return most;
-    }
-    const int a8 = f8_lin_a8(kind, dev), ahead = f8_lin_ahead(M, a8), dense = f8_lin_dense(a8);
-    int r = dev < 64 ? resident[dev][ahead][dense][kind + 5 * a8][M].load(std::memory_order_relaxed) : 0;
-    if (!r) {
-        const int sl = f8_lin_slots(M, a8, ahead, dense);
-        r = f8_lin_kind(kind, a8, f8_lin_ntl(M), ahead, dense, [&]<int N_, int K_, int A_, int D_>() {
-            int nb = 0;
-            if constexpr (N_ == 1 && A_ == 0 && D_ == 0 && !(K_ & f8c::F8_A8))
-                if (sl == 3) {
-                    cudaFuncSetAttribute((const void*)f8c::f8_linear_kernel<N_, K_, A_, D_, 0, 3>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)f8_lin_shared<3>(64, 0, 0));
-                    if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&nb, (const void*)f8c::f8_linear_kernel<N_, K_, A_, D_, 0, 3>, f8c::LNT, f8_lin_shared<3>(M, 0, 0)) != cudaSuccess) nb = 1;
-                    return std::max(nb, 1);
-                }
-            f8_lin_allow<N_, K_, A_, D_>();
-            if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&nb, (const void*)f8c::f8_linear_kernel<N_, K_, A_, D_>, f8c::LNT, f8_lin_shared(M, D_, a8)) != cudaSuccess) nb = 1;
-            return std::max(nb, 1);
-        });
-        if (dev < 64) resident[dev][ahead][dense][kind + 5 * a8][M].store(r, std::memory_order_relaxed);
-    }
-    const int64_t least = std::max<int64_t>(1, TUNING_INT("GLYD_F8_LIN_MIN", 1));
-    return std::max<int64_t>(1, std::min<int64_t>(sm_count(dev) * r, W / least));
+    return std::max<int64_t>(1, W / KT);
 }
 static size_t f8_lin_parts(int64_t ctas, int64_t M) { return ctas > 1 ? (size_t)ctas * 2 * M * 128 * 4 : 0; }  // (a CTA's first and last row group's sums)
+// The parts a grid of `ctas` keeps for M tokens: none where each CTA holds whole row groups.
+static size_t f8_lin_need(int64_t N, int64_t K, int64_t M, int64_t ctas) {
+    const int64_t RG = f8c::f8_cdiv(f8c::f8_cdiv(N, f8c::PR) * 4, f8c::LW);
+    return RG % ctas == 0 ? 0 : (f8_lin_parts(ctas, M) + 15) / 16 * 16;
+}
 // Layout H's one-token kernel (f8h_lin1_kernel; development builds: GLYD_F8H_ONE=0 runs f8_linear_kernel for one token as before).
 // GLYD_F8H_ONE: 1 f8h_lin1_kernel (a step's copies a step ahead), 2 f8h_lin2_kernel (two steps ahead), 0 f8_linear_kernel as before. Being measured on HBM GPUs.
 static int f8h_one() {
@@ -3736,6 +3720,7 @@ static const void* f8h_one_kernel(int g) {
 }
 template <int G>
 static void f8h_one_launch(const f8c::F8Lin& P1, dim3 grid, cudaStream_t cs) {
+    cudaFuncSetAttribute(f8h_one_kernel(G), cudaFuncAttributeMaxDynamicSharedMemorySize, (int)f8h_one_shared());
     const int c = f8h_one_c();
     if (f8h_one() == 4) {
         if (c == 2) f8c::f8h_lin3_kernel<G, 2><<<grid, f8c::LNT, f8h_one_shared(), cs>>>(P1);
@@ -3751,25 +3736,10 @@ static void f8h_one_launch(const f8c::F8Lin& P1, dim3 grid, cudaStream_t cs) {
         else f8c::f8h_lin1_kernel<G, 3><<<grid, f8c::LNT, f8h_one_shared(), cs>>>(P1);
     }
 }
-static int64_t f8h_one_ctas(int64_t N, int64_t K, int64_t slots, int dev) {  // its grid a slot: the CTAs the GPU holds at once, at most a patch each
-    static std::atomic<int> resident[64][2][2][4];
-    const int g = slots > 0 ? 1 : 0, c = f8h_one_c() - 2, m = f8h_one() == 4 ? 3 : f8h_one() == 3 ? 2 : f8h_one() == 2 ? 1 : 0;
-    int r = dev < 64 ? resident[dev][g][c][m].load(std::memory_order_relaxed) : 0;
-    if (!r) {
-        const void* k = f8h_one_kernel(g);
-        cudaFuncSetAttribute(k, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)f8h_one_shared());
-        if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&r, k, f8c::LNT, f8h_one_shared()) != cudaSuccess) r = 1;
-        r = std::max(r, 1);
-        if (dev < 64) resident[dev][g][c][m].store(r, std::memory_order_relaxed);
-    }
-    const int64_t W = f8c::f8_cdiv(f8c::f8_cdiv(N, f8c::PR) * 4, f8c::LW) * f8c::f8_cdiv(K, f8c::PC);
-    return std::max<int64_t>(1, std::min<int64_t>(sm_count(dev) * r / std::max<int64_t>(slots, 1), W));
-}
-
 GLYD_GPU_INTERNAL int glyd_gpu_f8_linear_workspace(int64_t N, int64_t K, int64_t M, size_t* bytes) {
     if (!bytes || M < 1 || M > 64 || !f8_shape(N, K, nullptr)) return cudaErrorInvalidValue;
     const int dev = current_device();
-    *bytes = (f8_lin_parts(std::max(f8_lin_ctas(N, K, M, -1, dev), M == 1 ? f8h_one_ctas(N, K, 0, dev) : 1), M) + 15) / 16 * 16 + (f8_lin_a8(0, dev) ? f8_lin_xq(K, M) : 0);
+    *bytes = f8_lin_need(N, K, M, f8_lin_ctas(N, K)) + (f8_lin_a8(0, dev) ? f8_lin_xq(K, M) : 0);
     return 0;
 }
 
@@ -3786,9 +3756,9 @@ GLYD_GPU_INTERNAL int glyd_gpu_f8_linear(const uint8_t* core, const uint32_t* he
     if ((kind == 0 && (lds < f8c::f8_cdiv(K, 128) || (uintptr_t)scale % 4)) || ((kind == 2 || kind == 3) && lds < f8c::f8_cdiv(K, 32)) || ((kind == 1 || kind == 4) && (uintptr_t)scale % 4))
         return cudaErrorInvalidValue;
     const int dev = current_device();
-    const int64_t ctas = f8_lin_ctas(N, K, M, kind, dev), KT = f8c::f8_cdiv(K, f8c::PC);
+    const int64_t ctas = f8_lin_ctas(N, K), KT = f8c::f8_cdiv(K, f8c::PC);
     const int a8 = f8_lin_a8(kind, dev), ahead = f8_lin_ahead(M, a8), dense = f8_lin_dense(a8);
-    const size_t parts = (f8_lin_parts(ctas, M) + 15) / 16 * 16, need = parts + (a8 ? f8_lin_xq(K, M) : 0);
+    const size_t parts = f8_lin_need(N, K, M, ctas), need = parts + (a8 ? f8_lin_xq(K, M) : 0);
     if ((ctas > 1 && !done) || !fits(workspace, workspace_bytes, need) || (need && (uintptr_t)workspace % 16)) return cudaErrorInvalidValue;
     uint8_t* xq = a8 ? (uint8_t*)workspace + parts : nullptr;
     float* sx = a8 ? (float*)(xq + (size_t)M * KT * f8c::PC) : nullptr;
@@ -3869,40 +3839,20 @@ GLYD_GPU_INTERNAL int glyd_gpu_f8_moe(const uint8_t* core, const uint32_t* heads
 
 // Layout H's products (block scales alone: kind 0), as glyd_gpu_f8_linear's and glyd_gpu_f8_moe's: the same workspaces (their grids at most those above's); one token
 // goes to f8h_lin1_kernel (the same plan and sums, a warp's own copies).
-template <int G>
-static int f8h_resident(int64_t M, int dev) {  // the CTAs an SM of the kernel for M tokens
-    static std::atomic<int> resident[64][65];
-    int r = dev < 64 ? resident[dev][M].load(std::memory_order_relaxed) : 0;
-    if (!r) {
-        r = f8_lin_with<f8c::F8_BLOCK | f8c::F8_H>(f8_lin_ntl(M), 0, 0, [&]<int N_, int K_, int A_, int D_>() {
-            int nb = 0;
-            cudaFuncSetAttribute((const void*)f8c::f8_linear_kernel<N_, K_, 0, 0, G>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)f8_lin_shared<2, true>(64, 0, 0));
-            if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&nb, (const void*)f8c::f8_linear_kernel<N_, K_, 0, 0, G>, f8c::LNT, f8_lin_shared<2, true>(M, 0, 0)) != cudaSuccess) nb = 1;
-            return std::max(nb, 1);
-        });
-        if (dev < 64) resident[dev][M].store(r, std::memory_order_relaxed);
-    }
-    return r;
-}
-
 GLYD_GPU_INTERNAL int glyd_gpu_f8h_linear(const uint8_t* core, const uint32_t* heads, const uint32_t* var, int64_t N, int64_t K, int64_t kind, const void* scale, int64_t lds,
                                           const uint16_t* x, int64_t ldx, int64_t M, uint16_t* y, int64_t ldy, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
     int64_t patches;
     if (!core || !heads || !var || !scale || !x || !y || !f8_shape(N, K, &patches) || M < 1 || M > 64 || kind != 0 || ldx < K || ldy < N || lds < f8c::f8_cdiv(K, 128) ||
         (uintptr_t)core % 16 || (uintptr_t)heads % 16 || (uintptr_t)var % 4 || (uintptr_t)scale % 4 || (uintptr_t)x % 2 || (uintptr_t)y % 2)
         return cudaErrorInvalidValue;
-    const int dev = current_device();
-    const int64_t W = f8c::f8_cdiv(f8c::f8_cdiv(N, f8c::PR) * 4, f8c::LW) * f8c::f8_cdiv(K, f8c::PC);
-    const int64_t ctas = std::min<int64_t>(f8_lin_ctas(N, K, M, 0, dev), std::max<int64_t>(1, std::min<int64_t>(sm_count(dev) * f8h_resident<0>(M, dev), W)));
-    const size_t need = (f8_lin_parts(ctas, M) + 15) / 16 * 16;
+    // (the grid as layout C's: a CTA a row group, the one-token kernel on the same plan, so its sums are the others' to the bit)
+    const int64_t ctas = f8_lin_ctas(N, K);
+    const size_t need = f8_lin_need(N, K, M, ctas);
     if ((ctas > 1 && !done) || !fits(workspace, workspace_bytes, need) || (need && (uintptr_t)workspace % 16)) return cudaErrorInvalidValue;
     const f8c::F8Lin P{core, heads, var, scale, x, y, nullptr, nullptr, (float*)workspace, done, lds, ldx, ldy, (int)M, (int)N, (int)K, (int)f8c::f8_cdiv(K, f8c::PC),
                        (int)f8c::f8_cdiv(f8c::f8_cdiv(N, f8c::PR) * 4, f8c::LW), (int)ctas, ((uintptr_t)x % 16 == 0 && ldx % 8 == 0) ? 1 : 0};
     if (M == 1 && f8h_one()) {
-        f8c::F8Lin P1 = P;
-        P1.ctas = (int)f8h_one_ctas(N, K, 0, dev);
-        if ((P1.ctas > 1 && !done) || !fits(workspace, workspace_bytes, (f8_lin_parts(P1.ctas, 1) + 15) / 16 * 16)) return cudaErrorInvalidValue;
-        f8h_one_launch<0>(P1, dim3((unsigned)P1.ctas), cs);
+        f8h_one_launch<0>(P, dim3((unsigned)P.ctas), cs);
         return (int)cudaGetLastError();
     }
     const size_t shared = f8_lin_shared<2, true>(M, 0, 0);
