@@ -8,6 +8,8 @@
 
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result};
+#[cfg(feature = "dev")]
+use crate::gpu_ops::GpuOps;
 use crate::runtime::config::ModelConfig;
 use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload_packed, Item, Layout, PackBuf};
 #[cfg(feature = "dev")]

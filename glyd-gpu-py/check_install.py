@@ -73,6 +73,6 @@ else:
             assert r.returncode == 1 and r.stderr == "" and open(why).read() == "no prompt: standard input is empty\n", (r.returncode, r.stderr)
     from glyd_gpu import engine  # (the hand-off's own reading of where the program is, in the compiled module: beside the library, not on any PATH)
 
-    assert engine.find() == eng and engine.model_of(["Qwen/Qwen3-8B", "--prompt", "hi"]) == "Qwen/Qwen3-8B", engine.find()
+    assert engine.find() == eng and engine.model_of(["Qwen/Qwen3.8-27B", "--prompt", "hi"]) == "Qwen/Qwen3.8-27B", engine.find()
     print("glyd-engine", said.split()[1], "runs here:", os.path.getsize(eng), "bytes")
 print("glyd-gpu", want, "installed in", d)
