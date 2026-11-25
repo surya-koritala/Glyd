@@ -607,8 +607,12 @@ pub fn gemma4_random(out: &Path) -> Result<()> {
 }
 
 /// A random model of a Gemma 4 config `text`, every tensor at the shape its description gives (`Described::shapes`) and drawn from `seed` in the order of
-/// their names: the embedding in [-1, 1], norms in [0.5, 1.5], layer scalars in [0.5, 1], every other matrix in +-sqrt(3 / its columns). The sizes the
-/// E2B and E4B releases add (KV sharing, the double-wide MLP) come from the description, so each config's model is its own shape.
+/// their names: the embedding in [-1, 1], the q and k norms' weights in [0.1, 0.3], the other norms in [0.5, 1.5], layer scalars in [0.5, 1], every other
+/// matrix in +-sqrt(3 / its columns). The sizes the E2B and E4B releases add (KV sharing, the double-wide MLP) come from the description, so each config's
+/// model is its own shape. (Gemma 4's scores are not scaled: the q and k norms set them. With those weights in [0.5, 1.5] a random model's scores reach
+/// about +-16 at heads of 256, its softmax is nearly one-hot and the engine's bf16 rounding can move a near tie: on an A10, eight-layer models of six seeds
+/// were 2e-3 to 3.2e-1 in KL mean from the CPU reference, their largest logit differences up to 13, with KV sharing and without alike; at [0.1, 0.3] every
+/// one was 6e-4 to 1.3e-3, at most 2.3e-3 a row and 0.37 a logit.)
 pub fn gemma4_shaped_random(out: &Path, text: &str, seed: u64) -> Result<()> {
     let cfg: Value = serde_json::from_str(text).map_err(|e| Error(format!("config.json: {e}")))?;
     let d = crate::runtime::describe::describe(&cfg)?;
@@ -629,6 +633,8 @@ pub fn gemma4_shaped_random(out: &Path, text: &str, seed: u64) -> Result<()> {
             (-1.0, 1.0)
         } else if name.ends_with("layer_scalar") {
             (0.5, 1.0)
+        } else if name.ends_with("q_norm.weight") || name.ends_with("k_norm.weight") {
+            (0.1, 0.3)
         } else if shape.len() == 1 {
             (0.5, 1.5)
         } else {
