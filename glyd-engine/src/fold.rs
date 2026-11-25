@@ -3175,8 +3175,11 @@ pub fn check(only: Option<&str>) -> Result<()> {
         ("the lossless FP8 format's size, pack and unpack (both layouts), the engine's kernels against the library's", f8_check),
         ("the FP8 products (each kind of scales, both layouts, 1 to 64 tokens, the experts'), the engine's kernels against the library's", f8_product_check),
         ("layout H's packs plain and coded by the process's choice: the FP8 format and its products under each, against the library's", f8h_plain_check),
-        ("the grouped experts' step products (no activation, SiLU, GELU, gathered, weighted), the engine's kernels against the library's", moe_check),
-        ("the step product (route GEMM, 1 to 64 tokens), the engine's kernels against the library's, and its workspace", linear_check),
+        ("the grouped experts' products (the step products and the prompt kernel: no activation, SiLU, GELU, gathered, weighted), the engine's kernels against the library's", moe_check),
+        (
+            "the packed products (1 to 1,000 tokens: the step product, and this GPU's routes for a prompt), the engine's kernels against the library's, and their workspace",
+            linear_check,
+        ),
         ("the mma layouts' unpacking and rows by id, the engine's kernels against the library's (every bf16 of each layout, whole and a row block)", unpack_check),
     ];
     // (a census of the launches: which of kernels/fold.cu's kernels these checks ran on this GPU)
@@ -3314,8 +3317,11 @@ fn test_packs(rows: usize, cols: usize, next: &mut impl FnMut() -> u64) -> Vec<(
     packs
 }
 
-/// `foldcheck`'s step product: Y [m, o] = X W^T for every layout at 1 to 64 tokens, by the library's kernels and by the engine's where the GPU's route is
-/// GEMM (the others are still the library's), every bf16 compared, and the workspace each asks, at 256 x 1024 and 128 x 4096. (compared, differences)
+/// `foldcheck`'s packed products: Y [m, o] = X W^T for every layout at 1 to 1,000 tokens, by the library's kernels and by the engine's: to 64 tokens the
+/// step product (route GEMM, and the step product of MID and WG), past 64 this GPU's route for a prompt (the prompt kernel on BIG, DECODE, AHEAD and
+/// SPLIT, in its grid or stream-K form; the 12-bit layout's route MID); every bf16 compared, and the workspace each asks, at 256 x 1024 and
+/// 128 x 4096. A product the engine's kernels do not take on this GPU is the library's and is not compared: the line printed says how many were.
+/// (compared, differences)
 #[cfg(feature = "dev")]
 fn linear_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
     use crate::dev::Buf;
@@ -3383,7 +3389,7 @@ fn linear_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, 
             }
         }
     }
-    println!("  (the step product: {folded} products by the engine's kernels, the rest the library's route on this GPU)");
+    println!("  (the packed products: {folded} products by the engine's kernels, the rest the library's route on this GPU)");
     Ok((n, bad))
 }
 
@@ -4007,10 +4013,11 @@ fn f8h_plain_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usiz
     Ok((n, bad))
 }
 
-/// `foldcheck`'s grouped experts: 8 experts of 128 x 1024 in each layout the products take, a plan of random choices (2 a token) for 1 to 64 tokens, the
-/// products with no activation, SiLU and GELU, gathered and not, and weighted sums: by the library's kernels and by the engine's where the plan takes the
-/// step products (the prompt kernel and the wgmma route are the library's still), every bf16 compared; and the expert cache's places (moe_placed), the
-/// tiered stack cut per expert as the store cuts it. (compared, differences)
+/// `foldcheck`'s grouped experts: 8 experts of 128 x 1024 in each layout the products take, a plan of random choices (2 a token) for 1 to 300 tokens, the
+/// products with no activation, SiLU and GELU, gathered and not, and weighted sums: by the library's kernels and by the engine's (the step products,
+/// and from 48 pairs an expert hit, 64 on an A100 and 96 on an H100, the prompt kernel; Hopper's wgmma product where the GPU takes it), every bf16
+/// compared; and the expert cache's places (moe_placed), the tiered stack cut per expert as the store cuts it. A product the engine's kernels do not
+/// take is the library's and is not compared: the line printed says how many were. (compared, differences)
 #[cfg(feature = "dev")]
 fn moe_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
     use crate::dev::Buf;
