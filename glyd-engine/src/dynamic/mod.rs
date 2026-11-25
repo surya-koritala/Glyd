@@ -811,6 +811,15 @@ impl Part {
     }
 }
 
+/// Where a stage's packed matrices are held beyond its GPU's own memory. `across`: every layer across the thread's group of GPUs where it has one
+/// (src/dynamic/tp.rs), this GPU holding its slice of the rows of each matrix big enough to slice (a Hub-format directory's, packed here). `ram`: the layers
+/// whose packed matrices are in the computer's memory, copied into one slot on the GPU before each runs (src/dense_ram.rs).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Placing {
+    pub across: bool,
+    pub ram: crate::dense_ram::Placer,
+}
+
 /// What reads a description's blocks of experts (`Op::Moe`'s, in its order) from its checkpoint, the matrices' layout given.
 pub type Experts<'a> = dyn Fn(&Checkpoint, Layout) -> Result<Vec<Box<dyn MoeBlock>>> + 'a;
 
@@ -893,11 +902,38 @@ fn stored(dir: &Path) -> Result<Option<(Layout, glyd_gpu::json::Value)>> {
 
 /// `d`'s weights from `dir`: a saved directory's packs as saved (under the first member's name where the save merged the members, else each member's), a matrix
 /// it holds as bf16 packed here, a Hub-format directory's packed here at `layout`; the matrices `held_as_saved` names as saved; the small tensors in the type
-/// their operations read (`read_f32`, `read_f32_as_bf16`; int64 as saved, a hash's numbers); the experts by `experts`.
+/// their operations read (`read_f32`, `read_f32_as_bf16`; int64 as saved, a hash's numbers); the experts by `experts`. `placing`: where the packed matrices
+/// are held beyond the GPU's own memory (this GPU's slice of a matrix's rows, a layer's matrices in the computer's memory).
 #[allow(clippy::too_many_arguments)]
-fn load_part(dir: &Path, d: ModelDesc, layout: Layout, threads: usize, rows: usize, out: usize, want: Option<&[bool]>, experts: &Experts) -> Result<Part> {
+fn load_part(
+    dir: &Path,
+    d: ModelDesc,
+    layout: Layout,
+    threads: usize,
+    rows: usize,
+    out: usize,
+    want: Option<&[bool]>,
+    experts: &Experts,
+    placing: &Placing,
+) -> Result<Part> {
     let ck = Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
     let v7 = stored(dir)?;
+    // (every layer across a group of GPUs: this GPU's slice of the rows of a matrix a product multiplies by, packed here; the embedding, read by row, whole)
+    let sl = if placing.across && v7.is_none() { tp::slicer() } else { None };
+    if sl.is_some() && placing.ram.count() > 0 {
+        return err(format!("{}: dense layers in the computer's memory: a stage on one GPU, not sliced across GPUs", d.family));
+    }
+    let slice = |k: usize| sl.filter(|t| k != d.embed && t.slices(d.mats[k].rows, d.mats[k].cols));
+    // (the layer whose operations multiply by each matrix: a layer in the computer's memory keeps its packed matrices there, src/dense_ram.rs)
+    let mut layer_of: Vec<Option<usize>> = vec![None; d.mats.len()];
+    for (l, ops) in d.layers.iter().enumerate() {
+        for k in ops.iter().flat_map(Op::mats) {
+            if let Some(x) = layer_of.get_mut(k) {
+                *x = Some(l);
+            }
+        }
+    }
+    let in_ram = |k: usize| layer_of[k].filter(|&l| placing.ram.in_ram(l));
     let has = |k: &str| ck.get(&format!("{k}.glyd_data")).is_some();
     let pack_rows = |k: &str| -> usize {
         v7.as_ref().and_then(|(_, m)| m.get("packs")?.get(k)?.get("shape")?.as_u64s()).and_then(|s| s.first().copied()).unwrap_or(0) as usize
@@ -914,37 +950,54 @@ fn load_part(dir: &Path, d: ModelDesc, layout: Layout, threads: usize, rows: usi
         } else {
             Vec::new()
         };
-        match &v7 {
-            Some((Layout::Tiered, m)) if !parts.is_empty() => crate::weights::read_lossless_parts(&ck, m, &parts, it.cols),
-            Some((l, m)) if !parts.is_empty() => crate::weights::read_v7(&ck, m, *l, &parts, it.cols),
+        match (&v7, slice(k)) {
+            (Some((Layout::Tiered, m)), _) if !parts.is_empty() => crate::weights::read_lossless_parts(&ck, m, &parts, it.cols),
+            (Some((l, m)), _) if !parts.is_empty() => crate::weights::read_v7(&ck, m, *l, &parts, it.cols),
+            (_, Some(t)) => {
+                let (r0, rn) = t.rows(it.rows);
+                let w = crate::weights::item_words(&ck, it)?;
+                crate::weights::pack_words(&w[r0 * it.cols..(r0 + rn) * it.cols], rn, it.cols, layout, &it.members.join(" + "))
+            }
             _ => pack_item_map(&ck, it, layout, &|_| {}),
         }
     };
     let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
     let saved: Vec<bool> = (0..d.mats.len()).map(|k| held_as_saved(&d, k, &rows_of)).collect();
     let mut packed: Vec<Option<PackBuf>> = (0..d.mats.len()).map(|_| None).collect();
+    let mut hosted: Vec<Option<crate::weights::Packed>> = (0..d.mats.len()).map(|_| None).collect();
     // (a stage of a split model loads only the matrices its layers multiply by)
     let ks: Vec<usize> = (0..d.mats.len()).filter(|&k| want.is_none_or(|w| w[k]) && !saved[k]).collect();
     ordered(ks.len(), threads, 2 * threads.max(1), &|i| one(ks[i]), |i, pk| {
         crate::status::STATUS.beat();
-        packed[ks[i]] = Some(upload_packed(pk)?);
+        let k = ks[i];
+        if in_ram(k).is_some() {
+            hosted[k] = Some(pk);
+            return Ok(());
+        }
+        let mut b = upload_packed(pk)?;
+        if slice(k).is_some() {
+            b.tp_rows = d.mats[k].rows;
+        }
+        packed[k] = Some(b);
         Ok(())
     })?;
     // ponytail: a matrix another stage holds is an empty dense one here (never multiplied by); a Mat variant of its own if one is ever read by mistake
-    let mats: Vec<Mat> = packed
-        .into_iter()
-        .enumerate()
-        .map(|(k, x)| {
-            Ok(match x {
-                Some(p) => Mat::Packed(p),
-                None if want.is_none_or(|w| w[k]) && saved[k] => {
-                    let it = &d.mats[k];
-                    Mat::Dense(upload_bytes(crate::weights::as_bytes(&crate::weights::item_words(&ck, it)?))?, it.rows, it.cols)
-                }
-                None => Mat::Dense(Buf::new(2)?, 0, 0),
-            })
-        })
-        .collect::<Result<_>>()?;
+    let mut ram = crate::dense_ram::RamBuilder::new(placing.ram);
+    let mut mats: Vec<Mat> = Vec::with_capacity(d.mats.len());
+    for (k, (x, h)) in packed.into_iter().zip(hosted).enumerate() {
+        match (x, h, in_ram(k)) {
+            (Some(p), _, _) => mats.push(Mat::Packed(p)),
+            (None, Some(p), Some(l)) => {
+                ram.push(l, &mut mats, p)?;
+            }
+            (None, _, _) if want.is_none_or(|w| w[k]) && saved[k] => {
+                let it = &d.mats[k];
+                mats.push(Mat::Dense(upload_bytes(crate::weights::as_bytes(&crate::weights::item_words(&ck, it)?))?, it.rows, it.cols));
+            }
+            _ => mats.push(Mat::Dense(Buf::new(2)?, 0, 0)),
+        }
+    }
+    let ram = ram.finish(&mut mats)?;
     let (f32s, as_bf16) = (read_f32(&d), read_f32_as_bf16(&d));
     let small: Vec<Buf> = d
         .small
@@ -972,7 +1025,7 @@ fn load_part(dir: &Path, d: ModelDesc, layout: Layout, threads: usize, rows: usi
         })
         .collect::<Result<_>>()?;
     let moe = experts(&ck, layout)?;
-    Part::from_loaded(d, Loaded { mats, small, moe, ..Loaded::default() }, rows, out)
+    Part::from_loaded(d, Loaded { mats, small, moe, ram, ..Loaded::default() }, rows, out)
 }
 
 /// What a family's loader puts on the GPU for its description: the matrices, the FP8 ones, the small tensors, the blocks of experts.
@@ -1308,6 +1361,12 @@ impl Dyn {
 
     /// `new_stage` of a description with experts: `experts` reads its blocks of experts (`Op::Moe`'s, in its order) from the checkpoint.
     pub fn new_with(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts, experts: &Experts) -> Result<Dyn> {
+        Dyn::new_placed(dir, d, draft, st, o, experts, &Placing::default())
+    }
+
+    /// `new_with`, the stage's packed matrices held as `placing` says.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_placed(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts, experts: &Experts, placing: &Placing) -> Result<Dyn> {
         if draft.is_some() && !(st.first && st.last) {
             return err("drafting with a model split across GPUs: not yet");
         }
@@ -1347,11 +1406,15 @@ impl Dyn {
             })
             .collect::<Result<_>>()?;
         let want = d.wanted(&st);
-        let big = load_part(dir, d, layout, threads, ch, rows_out, Some(&want), experts)?;
+        let big = load_part(dir, d, layout, threads, ch, rows_out, Some(&want), experts, placing)?;
         // (a draft model is packed lossy here: the big model checks every draft token, so its precision moves only how many are kept)
         let draft = match draft {
             None => None,
-            Some(x) => Some(Draft { p: load_part(x.dir, x.desc, Layout::Int6, threads, 1, 1, None, &|_, _| Ok(Vec::new()))?, k: x.k, pos: Buf::zeroed(8)? }),
+            Some(x) => Some(Draft {
+                p: load_part(x.dir, x.desc, Layout::Int6, threads, 1, 1, None, &|_, _| Ok(Vec::new()), &Placing::default())?,
+                k: x.k,
+                pos: Buf::zeroed(8)?,
+            }),
         };
         Dyn::build(dev, big, draft, ropes, layout, st, o)
     }

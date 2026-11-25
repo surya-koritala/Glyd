@@ -976,7 +976,8 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
 
 /// Muse Spark: pairs of blocks, the gated attention (q, k, v and the gate in one product, heads of 64, the rotary on the window's layers alone) with its input-scaled
 /// norms and residual gate, then the experts in the latent with theirs; the embedding normed without a weight, the soft-capped head times the output multiplier.
-/// The matrices, small tensors and blocks are dynamic/muse.rs's loader's (`dynamic::muse::describe` indexes them in its order).
+/// Every matrix and small tensor is named from the description's roles, in the order the operations index them, a small tensor made from its values where its
+/// operation reads it so (`SmallForm`): the executor's loader reads them (`dynamic::muse`), each layer's experts its kind's block (`dynamic::experts`).
 pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
     let m = &d.desc;
     if m.blocks.len() % 2 != 0 {
@@ -984,13 +985,13 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
     }
     let layers = m.blocks.len() / 2;
     let mut atts = Vec::with_capacity(layers);
-    let (mut lat, mut mult) = (None, 1.0);
+    let (mut lat, mut mult, mut top_k) = (None, 1.0, 0);
     for l in 0..layers {
         match (&m.blocks[2 * l].body, &m.blocks[2 * l + 1].body) {
             (Body::Mixer(Mixer::Attention(a)), Body::Ffn(Ffn::Moe(e))) => {
                 atts.push(a);
                 lat = lat.or(e.latent.as_ref().map(|x| x.dim));
-                mult = e.router.logit_scale;
+                (mult, top_k) = (e.router.logit_scale, top_k.max(e.router.top_k));
             }
             (a, f) => return err(format!("Muse Spark: layer {l} is {a:?} and {f:?}")),
         }
@@ -998,9 +999,9 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
     let a0 = atts.first().ok_or_else(|| Error("Muse Spark: no layers".into()))?;
     let (nq, nk, hd, lat) = (a0.heads, a0.kv_heads, a0.head_dim, lat.ok_or_else(|| Error("Muse Spark: experts without a latent".into()))?);
     let (eps, post_eps) = (m.blocks[0].norm_in.eps, m.blocks[0].norm_out.map_or(1e-6, |n| n.eps));
-    if hd != 64 || m.hidden > 8192 || lat > 4096 {
+    if hd != 64 || m.hidden > 8192 || lat > 4096 || top_k > 32 {
         return err(format!(
-            "heads of {hd}, a width of {}, a latent of {lat}: this engine runs heads of 64, widths up to 8192 and latents up to 4096",
+            "heads of {hd}, a width of {}, a latent of {lat}, {top_k} experts a token: this engine runs heads of 64, widths up to 8192, latents up to 4096 and up to 32 experts a token",
             m.hidden
         ));
     }
@@ -1072,7 +1073,7 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
             Op::RmsNorm { x: Slot::X, w: s0 + 3, y: Slot::H, weight: NormW::Plain, eps },
             Op::Linear { w: m0 + 2, x: Slot::H, y: Slot::Proj, name: "experts: latent in" },
             Op::RmsNorm { x: Slot::Proj, w: s0 + 4, y: Slot::Xc, weight: NormW::Plain, eps },
-            Op::Moe(super::muse::latent_moe(block, s0 + 5, post_eps, mult)),
+            Op::Moe(super::experts::latent_normed(block, s0 + 5, post_eps, mult)),
             Op::Linear { w: m0 + 3, x: Slot::M, y: Slot::O, name: "experts: latent out" },
             Op::RmsNorm { x: Slot::O, w: s0 + 6, y: Slot::O, weight: NormW::Input, eps: post_eps },
             Op::GatedResidual { alpha: s0 + 7, beta: s0 + 8 },
@@ -1417,26 +1418,6 @@ mod tests {
         let lowered = gemma4(&kinds, &|n: &str| kinds.shapes.get(n).cloned(), c.eos.clone(), c.max_pos).unwrap();
         let e = agree(lowered, &own, "the test's config.json").unwrap_err().msg;
         assert!(e.contains("describe different models") && e.contains("not loaded"), "{e}");
-    }
-
-    /// Muse Spark lowered from the random model's config the logits checks run, whole and as a split's stages, is the executor's own description of it.
-    #[cfg(feature = "dev")]
-    #[test]
-    fn the_random_muse_lowers_as_its_own_description() {
-        let dir = std::env::temp_dir().join(format!("glyd-lower-muse-{}", std::process::id()));
-        crate::muse_ref::random(&dir).unwrap();
-        let c = crate::muse::ConfigMuse::load(&dir).unwrap();
-        let half = c.layers / 2;
-        for st in [
-            super::super::Stage::whole(c.layers),
-            super::super::Stage { layers: (0, half), first: true, last: false },
-            super::super::Stage { layers: (half, c.layers), first: false, last: true },
-        ] {
-            let (own, lowered) =
-                (super::super::muse::describe(&c, &st).unwrap(), super::super::muse::lowered(&dir, &c, &st).unwrap_or_else(|e| panic!("{}", e.msg)));
-            assert_eq!(format!("{own:#?}"), format!("{lowered:#?}"));
-        }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// GLM-5.3-Flash lowered from its released config and the tiny and toy ones, whole and as a split's stages, is the executor's own description of it; each
@@ -1804,7 +1785,7 @@ mod tests {
         let d = dir("muse");
         crate::muse_ref::random(&d).unwrap();
         let c = crate::muse::ConfigMuse::load(&d).unwrap();
-        v.push(muse::describe(&c, &Stage::whole(c.layers)).unwrap());
+        v.push(muse::lowered(&d, &crate::runtime::describe::describe_dir(&d).unwrap().0, &Stage::whole(c.layers)).unwrap());
         let d = dir("kimi");
         crate::kimi_ref::random(&d, 1, true, 8).unwrap();
         let c = crate::kimi::ConfigKimi::load(&d).unwrap();
