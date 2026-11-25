@@ -398,6 +398,7 @@ mod tests {
             head: fill("csa2.head", 32 * D, -0.5, 0.5),
             layers,
             p: Params::new(),
+            record: None,
         };
         let tokens: Vec<u32> = (0..14).map(|t| (t * 7 + 3) % 32).collect();
         let logits = m.forward(&tokens, 0).unwrap();

@@ -12,6 +12,7 @@ use crate::model_qwen4x::{EngineQx, MtpRun, OptsQx, SeqQx, SPEC_ROWS};
 use crate::moe_qwen4x::{factory, QxCbShared};
 use crate::offload::{ExpertStore, Mode, Offload, Stats};
 use crate::qwen4x::ConfigQx;
+use crate::qwen4x::PackMode;
 use crate::sched::{Ev, Submit};
 use crate::sched::{Finish, Reply};
 use crate::server::{self, Job, Shared};
@@ -145,13 +146,8 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
     // (--side A,B: several, a later one's copy of an expert over an earlier one's)
     let sides: Vec<std::path::PathBuf> = match a.flag("side") {
         Some(list) => list.split(',').filter(|x| !x.is_empty()).map(std::path::PathBuf::from).collect(),
-        // (--precise: the pack's cb3hot (its cb3 and cb4 experts as they are, the hottest at three bits; KL to the bf16 model as the pack's own), fewer places, slower; else the fast mode's cb2side)
-        None => (if a.has("precise") { &["hot"][..] } else { &["fast", "hot"][..] })
-            .iter()
-            .map(|x| pack_dir.join(x))
-            .find(|d| d.join("meta.json").exists() && !a.has("no-side"))
-            .into_iter()
-            .collect(),
+        // (the mode's sidecar: `PackMode::side`)
+        None => PackMode::of(pack_dir, a.has("precise")).side(pack_dir).filter(|_| !a.has("no-side")).into_iter().collect(),
     };
     for d in sides {
         log(&format!("the GPU copies {}", d.display()));
@@ -218,19 +214,8 @@ pub fn load(snap: &Path, pack_dir: &Path, a: &Args) -> Result<(EngineQx, Caches)
     // (the host's experts for the misses by default, the copies on a thread of their own: --mode, --no-async-copies)
     let mode = a.flag("mode").map_or(Some(Mode::Cpu), Mode::parse).ok_or_else(|| Error("--mode: copy, cpu, split or auto".into()))?;
     let od = Offload::default();
-    // (--skip-rank: 1 in precise mode, the most skipping that keeps its pack's numbers against the bf16 model (Strata's set: top-64 KL 0.137, top-1 88.1%, against
-    // 0.152 and 87.0% at 3); 0 with best's experts (the folder qwenget --best makes): none skipped, its pack's 0.099 and 89.6% (0.105 at 1, 0.117 at 3); 3 elsewhere)
-    let best = pack_dir.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("best"));
-    let skip_rank = a.num(
-        "skip-rank",
-        if a.has("precise") {
-            1usize
-        } else if best {
-            0
-        } else {
-            3
-        },
-    )?;
+    // (--skip-rank: the mode's by default, `PackMode::skip_rank`)
+    let skip_rank = a.num("skip-rank", PackMode::of(pack_dir, a.has("precise")).skip_rank())?;
     let offload = Offload {
         mode,
         threads: a.num("cpu-threads", 16usize)?.max(1),
@@ -409,13 +394,7 @@ pub fn http(snap: &Path, pack_dir: &Path, a: &Args) -> Result<()> {
     }
     let window = ctx - 2;
     // (the mode the Monitor and qwenbench name: best's experts are the folder qwenget --best makes)
-    let mode = if a.has("precise") {
-        "precise"
-    } else if pack_dir.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("best")) {
-        "best"
-    } else {
-        "fast"
-    };
+    let mode = PackMode::of(pack_dir, a.has("precise")).name();
     crate::monitor::start(mode, ctx);
     server::STANDALONE.store(true, std::sync::atomic::Ordering::Relaxed);
     if let Some(d) = a.flag("page") {

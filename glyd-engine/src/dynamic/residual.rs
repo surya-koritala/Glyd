@@ -65,12 +65,12 @@ impl KernRes {
         })
     }
 
-    /// x [n, 4, d] <- the embedding rows e [n, d] four times.
+    /// x [n, ns, d] <- the embedding rows e [n, d] ns times.
     ///
     /// # Safety
     /// Live device buffers of the sizes the kernels read and write (their comments in kernels/residual.cu), on stream `s`.
-    pub unsafe fn streams(&self, s: Stream, e: u64, x: u64, n: u32, d: i32) -> Result<()> {
-        launch!(self.streams, [n, (d as u32).div_ceil(256), 1], [256, 1, 1], s; e, x, d)
+    pub unsafe fn streams(&self, s: Stream, e: u64, x: u64, n: u32, d: i32, ns: usize) -> Result<()> {
+        launch!(self.streams, [n, (d as u32).div_ceil(256), 1], [256, 1, 1], s; e, x, d, ns as i32)
     }
 
     /// The split projection of the streams x [n, 4, d] by `f` ([np, 4d], fp32 where `round` is `Once`, else bf16) into `part`: the number of parts a row.

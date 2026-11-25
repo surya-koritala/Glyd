@@ -98,6 +98,16 @@ pub enum KeyNorm {
     Rms(f32),
 }
 
+impl IdxPick {
+    /// A head's values (the release's score: 128).
+    pub fn dim(&self) -> usize {
+        match self.score {
+            IdxScore::F32 { dim, .. } => dim,
+            IdxScore::Release => 128,
+        }
+    }
+}
+
 /// A latent attention's indexer: its pick, and its small tensors (bf16 as released): the queries' product `q_b` [heads dim, q_rank] (of the normed q latent), the
 /// keys' `k` [dim, hidden], their norm's weight [dim] and, with a LayerNorm (`key`), its bias, the head weights' product [heads, hidden]; and where an entry is a
 /// pool of tokens (`pick.ratio` above 1) the pooling bias `ape` [ratio, dim] and the gate's product [dim, hidden]. With a key a token (`pick.ratio` 1) there are no

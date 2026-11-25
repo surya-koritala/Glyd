@@ -891,7 +891,8 @@ fn condors_released_config() {
 }
 
 /// Condor's model from its config.json alone, on the CPU reference of the layer kinds, against Condor's own engine: the random tiny Qwen3.8-Flash-Next of the `qwen4x`
-/// logits case (src/logits.rs `qwen4x_random`) and the rows its engine recorded on an RTX 4080 SUPER at kestrel (tests/logits/qwen4x.sm89.json.gz), where the random
+/// logits case (src/logits.rs `qwen4x_random`) and the rows its engine recorded on an RTX 4080 SUPER at kestrel (tests/fixtures/qwen4x_condor_rows.json.gz, that engine's
+/// record: no logits case reads it, as the family is held to this reference and not to that engine's bits), where the random
 /// model's experts are on the six-bit grid kestrel holds them on and the engine's other matrices are lossless: the engine runs this model's weights, its activations
 /// bf16. The two implementations share no code. The prompt of 24 and the 12 decode steps (the prompt of 150 takes 50 s more here, and measured KL 4.0e-5): KL mean 8.5e-6, max 5.0e-5, the
 /// best token 6 of 6 where it leads clearly, the largest logit difference 0.097 (measured 2026-11-23). It counts: with the indexer keeping every token the KL mean is
@@ -907,7 +908,7 @@ fn condors_model_on_the_reference_against_condors_engine() {
     let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
     let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
     let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
-    let mut fx = Fixture::read(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/logits/qwen4x.sm89.json.gz")).unwrap();
+    let mut fx = Fixture::read(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/qwen4x_condor_rows.json.gz")).unwrap();
     // (the long prompt's row left out)
     fx.rows.pop();
     fx.long.clear();
