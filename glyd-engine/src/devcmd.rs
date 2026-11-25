@@ -64,8 +64,9 @@
 //!                                                             experts on the CPU, within two places of bf16 of the largest logit (`logits_within`); --host-memory (a Hummingbird directory): the same passes again with every expert in the computer's
 //!                                                             memory and with no more than that many GiB of them (the rest read from the directory), every logit the same to the bit in the mode asked for
 //!   glyd-engine glmrandom OUT [--fp8] [--real --layers N --experts N]  a random GLM-5.3-Flash in Hub format (src/glm.rs `random`): the executor's logits, user, 12-bit and tier checks' model
-//!   glyd-engine kindcheck [CASE...] [--prompt N] [--steps N] [--sequence] [--scratch DIR]   every layer kind of the families' random models, the executor's kernels against the CPU f32 reference kind by kind (src/dynamic/kindcheck.rs);
-//!                                                             --sequence: on one sequence's rows (the logits cases' tokens), and each layer's residual against the reference's own run of them
+//!   glyd-engine kindcheck [CASE...] [--prompt N] [--steps N] [--chain | --sequence] [--scratch DIR]   every layer kind of the families' random models, the executor's kernels against the CPU f32 reference kind by kind (src/dynamic/kindcheck.rs);
+//!                                                             --chain: each layer from the residual the executor's layer before it left; --sequence: the same on one sequence's rows (the logits cases'
+//!                                                             tokens), and each layer's residual against the reference's own run of them
 //!   glyd-engine kv12check [--dir DIR] [--case gemma4] [--level L] [--positions N] [--prompts K] [--prompt-tokens P] [--new T]   a model the executor runs (the case's random one, or DIR's) in bf16 pages and in the lossless 12-bit ones: the same bits (src/dynamic/kvpages.rs)
 //!   glyd-engine tpcheck DIR [--tp 0,0] [--split CUT] [--tokens 24] [--chunk 64] [--ctx 1024]   the model of DIR on one GPU, then with every layer across the GPUs of --tp (src/dynamic/tp.rs)
 //!   glyd-engine seamcheck [--gpu N]                           the backend seam on a GPU: the dense MLP block through it against the reference, and what `supports` refuses (src/runtime/cuda.rs)
@@ -193,6 +194,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "dsv4prof" => glyd_engine::dsv4_ref::prof(&a),
         "dsv4ref" => glyd_engine::dsv4_ref::cmd(&a),
         "dsv4check" => glyd_engine::dsv4_ref::check(&a),
+        "v4qcheck" => glyd_engine::dsv4_ref::qcheck(&a),
         "dsv4prompt" => glyd_engine::dsv4_ref::prompt(&a),
         "dsv4layers" => glyd_engine::dsv4_ref::layers(&a),
         "dsv4pack" => glyd_engine::dsv4_ref::pack_check(&a),

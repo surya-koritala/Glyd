@@ -1,4 +1,4 @@
-//! `kindcheck [CASE...] [--prompt N] [--steps N] [--sequence] [--scratch DIR]` (R2, #135): every layer kind of the recent families run by the executor's CUDA
+//! `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain | --sequence]` (R2, #135): every layer kind of the recent families run by the executor's CUDA
 //! kernels against its CPU f32 reference (`runtime::reference`), kind by kind, on each logits case's random model (Gemma 4, the Qwen3.5 layout,
 //! Nemotron-H, Muse Spark, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4) at the lossless level.
 //!
@@ -159,6 +159,7 @@ fn label(b: &Block) -> (Class, String) {
             (Class::Moe, s)
         }
         Body::Ngram(n) => (Class::Residual, format!("n-gram embedding: orders up to {}, {} tables each, {} streams", n.order, n.heads, n.streams)),
+        Body::PerLayer(pl) => (Class::Mlp, format!("per-layer input {}: {:?} gate", pl.layer, pl.act)),
     }
 }
 
@@ -172,6 +173,7 @@ fn residual_label(b: Option<&Block>) -> String {
         (NormKind::Rms, _) => "RMS",
         (NormKind::Layer, _) => "LayerNorm",
         (NormKind::L2, _) => "l2",
+        (NormKind::Identity, _) => "none",
     };
     let rule = match &b.residual {
         Residual::Add => "add".to_string(),
@@ -435,7 +437,7 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, per: usize, rows: Rows, rng: &mut 
         let o = dy.kc_get(out, n)?;
         let (mut want, mut margin) = (Vec::with_capacity(n * d), Vec::with_capacity(n));
         for t in 0..n {
-            want.extend(m.layers[b].body(0, (at + t) as u32, tok[t], &h[t * d..][..d])?);
+            want.extend(m.body(b, 0, (at + t) as u32, tok[t], &h[t * d..][..d])?);
             margin.push(m.layers[b].margin);
         }
         // (each row's largest difference over the pass's scale; a row past the bound whose choice was near a tie is left out, and named)
@@ -484,9 +486,26 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, per: usize, rows: Rows, rng: &mut 
     Ok((got, dy.kc_get(state, n)?))
 }
 
+/// The tokens of a pass of n rows at `at` (DeepSeek-V4's hash routing and the per-layer inputs read them; `--chain` embeds them).
+fn tokens(n: usize, at: usize, vocab: usize) -> Vec<u32> {
+    (0..n).map(|t| (((at + t) * 37 + 11) % vocab) as u32).collect()
+}
+
+/// How a case's passes are made: each layer's residual at random, or one run of the model (`--chain`, `--sequence`).
+#[derive(Clone, Copy, PartialEq)]
+enum Passes {
+    Random,
+    /// a layer's residual the one the GPU's layer before made (the first's the tokens' scaled embedding rows): the whole model's sequence of caches and
+    /// positions, each block still on the GPU's own inputs
+    Chain,
+    /// the module's note
+    Sequence,
+}
+
 /// A case's model made (its logits case's random one), loaded lossless, described and loaded on the reference; every layer through `pass`, a pass
-/// (the prompt's rows, then each step's) at a time. `sequence`: one sequence's passes (the module's note).
-fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, sequence: bool) -> Result<Vec<Line>> {
+/// (the prompt's rows, then each step's) at a time, in a model's order.
+fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) -> Result<Vec<Line>> {
+    let chain = how == Passes::Chain;
     let c = crate::logits::find_case(id)?;
     if !dir.join("config.json").exists() {
         match c.weights {
@@ -494,7 +513,8 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, sequence: boo
             crate::logits::Weights::Hub(h) => return err(format!("{id}: a Hub model ({h}), not a random one")),
         }
     }
-    let o = Opts { ctx: 256, chunk: 64, graph: false, device: 0, layout: Some(Layout::Tiered) };
+    // (--chain: the logits cases' options, a context of 1,024 and the GPU's layout at the lossless level)
+    let o = Opts { ctx: if chain { 1024 } else { 256 }, chunk: 64, graph: false, device: 0, layout: if chain { None } else { Some(Layout::Tiered) } };
     let mut dy = match id {
         // (its logits case runs the experts lossy; here the lossless level's)
         "glm" => super::glm::load(dir, &o, Layout::Tiered)?,
@@ -515,17 +535,20 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, sequence: boo
     if prompt + steps + 1 > o.ctx || prompt > o.chunk {
         return err(format!("a prompt of {prompt} and {steps} steps: a chunk of {} and a cache of {}", o.chunk, o.ctx));
     }
+    if chain && (dy.kc_width(Slot::S) > 0 || dy.kc_width(Slot::Blk) > 0) {
+        return err(format!("{id}: --chain takes a model of one residual stream"));
+    }
     // (--sequence: the reference alone, a second copy, and the sequence's tokens)
-    let mut alone = match sequence {
-        false => None,
-        true if m
-            .layers
-            .iter()
-            .any(|b| matches!(b.block.residual, Residual::DepthMix(_) | Residual::Streams(crate::runtime::kinds::StreamsP { lagged: true, .. }))) =>
+    let mut alone = match how {
+        Passes::Random | Passes::Chain => None,
+        Passes::Sequence
+            if m.layers
+                .iter()
+                .any(|b| matches!(b.block.residual, Residual::DepthMix(_) | Residual::Streams(crate::runtime::kinds::StreamsP { lagged: true, .. }))) =>
         {
             return err(format!("{id}: --sequence is not for a depth mix or lagged mHC"));
         }
-        true => Some((RefModel::load(&d, &|n: &str| checkpoint_tensor(&ck, n))?, crate::logits::token_list(prompt + steps, m.desc.vocab, 0))),
+        Passes::Sequence => Some((RefModel::load(&d, &|n: &str| checkpoint_tensor(&ck, n))?, crate::logits::token_list(prompt + steps, m.desc.vocab, 0))),
     };
     let sw = dy.kc_width(dy.kc_state());
     let mut rngs: Vec<Rng> = (0..layers)
@@ -534,16 +557,21 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, sequence: boo
     let mut lines: Vec<Vec<Line>> = (0..layers).map(|_| Vec::new()).collect();
     // (each layer's residual from the reference's own after it: the prompt's, the steps' worst)
     let mut apart = vec![(0f32, 0f32); layers];
+    let (hd, scale) = (m.desc.hidden, m.desc.embed.scale);
     for (at, n) in std::iter::once((0, prompt)).chain((0..steps).map(|s| (prompt + s, 1))) {
         let tok: Vec<u32> = match &alone {
             Some((_, t)) => t[at..at + n].to_vec(),
-            None => (0..n).map(|t| (((at + t) * 37 + 11) % m.desc.vocab) as u32).collect(),
+            None => tokens(n, at, m.desc.vocab),
         };
         let mut own: Vec<Vec<f32>> = Vec::new();
         if let Some((m2, _)) = alone.as_mut() {
             m2.forward_seen(&tok, at as u32, &mut |x| own.push(x.to_vec()))?;
         }
-        let mut x = own.first().cloned();
+        // (the first layer's residual: --chain the tokens' scaled embedding rows, --sequence the reference's own; at random each layer's otherwise)
+        let mut x = match how {
+            Passes::Chain => Some(tok.iter().flat_map(|&t| m.embed[t as usize * hd..][..hd].iter().map(|&v| bf16(v * bf16(scale)))).collect::<Vec<f32>>()),
+            _ => own.first().cloned(),
+        };
         for l in 0..layers {
             let x0 = match x.take() {
                 Some(x) => x,
@@ -563,6 +591,8 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, sequence: boo
                     }
                 }
                 apart[l] = if at == 0 { (v, 0.0) } else { (apart[l].0, apart[l].1.max(v)) };
+            }
+            if how != Passes::Random {
                 x = Some(after);
             }
             if at == 0 {
@@ -605,15 +635,22 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, sequence: boo
     Ok(lines.into_iter().flatten().collect())
 }
 
-/// `kindcheck [CASE...] [--prompt N] [--steps N] [--sequence] [--scratch DIR]`: the cases (all unless named), then each class's worst against its bound.
+/// `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain | --sequence]`: the cases (all unless named), then each class's worst against its bound.
 pub fn run(a: &crate::args::Args) -> Result<()> {
-    const ALL: [&str; 11] = ["gemma4", "qwen35", "qwen35-wide", "qwen35moe", "dense", "nemotron-h", "muse", "kimi", "kimi-dsa", "glm", "deepseek-v4"];
+    const ALL: [&str; 12] =
+        ["gemma4", "gemma4-kv", "qwen35", "qwen35-wide", "qwen35moe", "dense", "nemotron-h", "muse", "kimi", "kimi-dsa", "glm", "deepseek-v4"];
     let want: Vec<&str> = a.pos.iter().skip(1).map(String::as_str).collect();
     if let Some(w) = want.iter().find(|w| !ALL.contains(w)) {
         return err(format!("no case {w}: {}", ALL.join(", ")));
     }
     let ids: Vec<&'static str> = ALL.iter().copied().filter(|c| want.is_empty() || want.contains(c)).collect();
     let (prompt, steps) = (a.num("prompt", 48usize)?, a.num("steps", 4usize)?);
+    let how = match (a.has("chain"), a.has("sequence")) {
+        (true, true) => return err("--chain or --sequence, not both".to_string()),
+        (true, false) => Passes::Chain,
+        (false, true) => Passes::Sequence,
+        (false, false) => Passes::Random,
+    };
     // (GLYD_KINDCHECK_SIM=1 keeps the release's simulated quantizations on: each body then measures how far they take the executor from the kinds' f32
     // reference, which has none)
     if std::env::var_os("GLYD_KINDCHECK_SIM").is_none() {
@@ -626,7 +663,7 @@ pub fn run(a: &crate::args::Args) -> Result<()> {
     let mut all: Vec<Line> = Vec::new();
     let mut failed: Vec<String> = Vec::new();
     for id in ids {
-        match case(id, &scratch.join(id), prompt, steps, a.has("sequence")) {
+        match case(id, &scratch.join(id), prompt, steps, how) {
             Ok(l) => all.extend(l),
             Err(e) => {
                 println!("FAIL {id}: {}", e.msg);

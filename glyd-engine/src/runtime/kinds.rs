@@ -25,6 +25,8 @@ pub enum NormKind {
     Layer,
     /// x / sqrt(sum(x^2) + eps)
     L2,
+    /// No norm: the value itself (a branch that reads the residual as it is, as the per-layer input's does).
+    Identity,
 }
 
 /// How a norm's weight (role `w`, [dim]) scales the normed value.
@@ -258,8 +260,8 @@ pub enum AttnRounding {
 ///
 /// Roles: `q` [heads * head_dim (x2 with an `InQuery` gate), hidden], `k` [kv_heads * head_dim, hidden], `v` [kv_heads * v_head_dim,
 /// hidden] (absent with `k_eq_v`), `o` [hidden, heads * v_head_dim]; `q_bias`, `k_bias`, `v_bias` with `bias`; `q_norm`, `k_norm`
-/// [head_dim] where those norms have a weight; `g` with an `Own` gate; `sinks` [heads] with `sinks`.
-#[derive(Clone, Debug, PartialEq)]
+/// [head_dim] where those norms have a weight; `g` with an `Own` gate; `sinks` [heads] with `sinks`. With `kv_from` no `k`, `v`, `k_norm`.
+#[derive(Clone, PartialEq)]
 pub struct Attn {
     pub heads: usize,
     pub kv_heads: usize,
@@ -284,6 +286,25 @@ pub struct Attn {
     pub k_eq_v: bool,
     pub indexer: Option<Indexer>,
     pub rounding: AttnRounding,
+    /// KV sharing (Gemma 4's `num_kv_shared_layers`): the queries attend to the keys and values that block `kv_from`'s attention (an earlier
+    /// block of the same heads, window and rope) holds for the sequence; this attention has no keys or values of its own and no cache.
+    pub kv_from: Option<usize>,
+}
+
+/// The derived form, with `kv_from` said only where it is set: the other attentions' descriptions read as they did before the field (the
+/// digests of tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for Attn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("Attn");
+        s.field("heads", &self.heads).field("kv_heads", &self.kv_heads).field("head_dim", &self.head_dim).field("v_head_dim", &self.v_head_dim);
+        s.field("window", &self.window).field("sinks", &self.sinks).field("rope", &self.rope).field("q_norm", &self.q_norm).field("k_norm", &self.k_norm);
+        s.field("v_norm", &self.v_norm).field("gate", &self.gate).field("softcap", &self.softcap).field("bias", &self.bias).field("scale", &self.scale);
+        s.field("k_eq_v", &self.k_eq_v).field("indexer", &self.indexer).field("rounding", &self.rounding);
+        if let Some(j) = self.kv_from {
+            s.field("kv_from", &j);
+        }
+        s.finish()
+    }
 }
 
 /// Multi-head latent attention (DeepSeek-V2/V3 style, Kimi-K3, GLM-5.3).
@@ -604,11 +625,32 @@ impl std::fmt::Debug for Ngram {
     }
 }
 
+/// Per-layer inputs (Gemma 4's E2B and E4B, `hidden_size_per_layer_input`): beside its residual each token carries `layers` vectors of `dim` values, made at
+/// the embedding from the token and its scaled embedding e: the token's part `ple_embed`[token] (role [vocab, layers dim]) times sqrt(dim); the context's
+/// `ple_proj` e (role [layers dim, hidden]) times hidden^-0.5, each layer's `dim` values normed by `norm` (weight `ple_norm` [dim]); the input their sum
+/// times 2^-0.5. A token past `vocab` has no token's part (the context's alone). Roles of the model (`Described::extra`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PerLayerIn {
+    pub dim: usize,
+    pub layers: usize,
+    pub vocab: usize,
+    pub norm: Norm,
+}
+
+/// The gated branch of a per-layer input: o = `proj` (act(`gate` x) input[`layer`]), x the block's input (its `norm_in` `NormKind::Identity`: the residual
+/// as it is). Roles `gate` [dim, hidden], `proj` [hidden, dim].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PerLayer {
+    pub layer: usize,
+    pub act: Act,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Body {
     Mixer(Mixer),
     Ffn(Ffn),
     Ngram(Ngram),
+    PerLayer(PerLayer),
 }
 
 /// Muse's gated residual X = a X + b O, the factors from role `res_gate` [hidden] and the temperature.
@@ -700,7 +742,7 @@ pub struct Block {
     pub residual: Residual,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Embed {
     /// Gemma: x sqrt(hidden).
     pub scale: f32,
@@ -708,6 +750,21 @@ pub struct Embed {
     pub norm: Option<Norm>,
     /// Residual streams the embedding is copied into (mHC: 4); 1 for a plain residual.
     pub streams: usize,
+    /// The per-layer inputs made beside the residual (Gemma 4's E2B, E4B).
+    pub per_layer: Option<PerLayerIn>,
+}
+
+/// The derived form, with `per_layer` said only where it is set: the other descriptions read as they did before the field (the digests of
+/// tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for Embed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("Embed");
+        s.field("scale", &self.scale).field("norm", &self.norm).field("streams", &self.streams);
+        if let Some(p) = &self.per_layer {
+            s.field("per_layer", p);
+        }
+        s.finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -2648,6 +2648,24 @@ impl ExpertStore {
         Ok(())
     }
 
+    /// (development) Layer `layer`'s places emptied where they are (the copies queued waited for): its next call finds no expert in one (`moe::PAIRS`: every pair the host's in
+    /// cpu mode). Not for a layer the GPU plans.
+    #[cfg(feature = "dev")]
+    pub fn empty_places(&self, layer: usize) -> Result<()> {
+        let mut guard = self.inner.borrow_mut();
+        let ly = guard.layers.get_mut(layer).and_then(Option::as_mut).ok_or_else(|| Error(format!("no layer {layer} in the expert cache")))?;
+        if ly.dplan.is_some() {
+            return err(format!("layer {layer}'s places are planned on the GPU"));
+        }
+        ly.join_job()?;
+        if ly.pending {
+            ly.ready.wait_host()?;
+        }
+        ly.forget();
+        ly.place.fill(-1);
+        Ok(())
+    }
+
     /// Layer `layer`'s places from now on `slots` at `dev` (made again in another number, the first ones' bytes moved there by the caller after `drain`): the experts in places past them leave the cache
     /// (`LayerCache::resize`), the others stay.
     pub fn resize_places(&self, layer: usize, slots: usize, dev: [u64; 2]) -> Result<()> {
@@ -2690,7 +2708,7 @@ impl ExpertStore {
             ly.calls = 0;
             if let Some(dp) = ly.dplan.as_mut() {
                 dp.upload(&ly.cache.expert_in())?;
-                dp.counters()?;
+                dp.reset()?;
             }
             if let Some(c) = ly.cpu.as_mut() {
                 c.last.fill(0);
@@ -2704,6 +2722,10 @@ impl ExpertStore {
         }
         inner.stats = Stats::default();
         inner.costs = Costs::default();
+        // (and the plan on the GPU weighs its calls by those times from its first call on: else the calls before the first end of a step plan by the times before)
+        if let Some(m) = inner.mail.as_mut() {
+            m.set_params(crate::devplan::Params::of(&inner.offload, &inner.costs))?;
+        }
         for ly in inner.layers.iter_mut().flatten() {
             ly.stats = LayerStats::default();
         }

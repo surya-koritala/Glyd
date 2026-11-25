@@ -1590,3 +1590,161 @@ mod tests {
         assert_eq!(x, vec![2.0, 0.0, 0.0, 0.0]);
     }
 }
+
+/// `v4qcheck [--rows N]` (development): each operation of DeepSeek-V4's (and V4.1's) compressed attention and experts that quantizes as the release
+/// does, fed the same input as this reference's own function for it, against that function bit for bit: the activations to E4M3 in blocks of 128
+/// and 64 (`v4_fp8` against `fp8_sim`), the window's key-value row (`v4_kv_prep`: its norm, its rotary, its first channels to E4M3), the compressed
+/// entries (`v4_comp_out`: the attention's E4M3, the indexer's Hadamard rotation and E2M1), the indexer's queries (`v4_idx_q`), the grouped
+/// output's E4M3 (`v4_ogather`). A norm's input is a sign a channel with a mean square of 1 and an epsilon of 0, so that its root is exact on
+/// both sides and every value the quantization reads is the weight's: what differs past that is the quantization's rule (its block, scale,
+/// rounding, clamp) or the rotary's arithmetic. Prints each operation's count of elements whose bits differ; exit 1 where one is not 0.
+pub fn qcheck(a: &crate::args::Args) -> Result<()> {
+    use crate::launch;
+    let n: usize = a.num("rows", 64usize)?;
+    let dev = crate::dev::Dev::new(0)?;
+    let s = dev.stream;
+    let mut seed = 0x2026_1125_0000_0001u64;
+    let mut uni = move |lo: f32, hi: f32| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        lo + (hi - lo) * ((seed >> 40) as f32 / (1u64 << 24) as f32)
+    };
+    // (values over five decades, a quarter of them of four significant bits: E4M3's rounding ties where their block's scale meets them)
+    let mut val = |i: usize| -> f32 {
+        let m = uni(-1.0, 1.0) * 10f32.powf(uni(-3.0, 2.0));
+        if i % 4 == 1 {
+            let q = f32::from_bits(((((m.abs().to_bits() >> 23) & 0xff) as i32 - 3).max(1) as u32) << 23);
+            bf16(((m / q).trunc() + 0.5) * q)
+        } else {
+            bf16(m)
+        }
+    };
+    let bits = |v: &[f32]| -> Vec<u16> { v.iter().map(|x| (x.to_bits() >> 16) as u16).collect() };
+    let up = |v: &[f32]| -> Result<Buf> { crate::weights::upload_bytes(crate::weights::as_bytes(&bits(v))) };
+    let up32 = |v: &[f32]| -> Result<Buf> { crate::weights::upload_bytes(crate::weights::as_bytes(v)) };
+    let upi = |v: &[i32]| -> Result<Buf> { crate::weights::upload_bytes(crate::weights::as_bytes(v)) };
+    let down = |b: &Buf, k: usize| -> Result<Vec<u16>> {
+        crate::dev::sync_stream(s)?;
+        let mut out = vec![0u16; k];
+        b.read(0, &mut out)?;
+        Ok(out)
+    };
+    let differ = |got: &[u16], want: &[u16]| got.iter().zip(want).filter(|(a, b)| a != b).count();
+    let (hd, rd, idx) = (512usize, 64usize, 128usize);
+    let f = crate::deepseek_v4::freqs(rd, 10_000.0, None);
+    let mp = 4 * n + 64;
+    let (mut cs, mut sn) = (Vec::new(), Vec::new());
+    for p in 0..mp {
+        for &fr in &f {
+            let (x, c) = ((p as f32 * fr) as f64).sin_cos();
+            cs.push(c as f32);
+            sn.push(x as f32);
+        }
+    }
+    let (csb, snb) = (up32(&cs)?, up32(&sn)?);
+    let mut bad: Vec<String> = Vec::new();
+    let mut report = |what: &str, d: usize, of: usize| {
+        println!("{} {what}: {d} of {of} elements differ", if d == 0 { "PASS" } else { "FAIL" });
+        if d > 0 {
+            bad.push(what.to_string());
+        }
+    };
+    // the activations to E4M3 (act_quant), blocks of 128 (every FP8 product's input) and of 64
+    for block in [128usize, 64] {
+        let w = 2048;
+        let x: Vec<f32> = (0..n * w).map(&mut val).collect();
+        let (xb, yb) = (up(&x)?, Buf::new(n * w * 2)?);
+        let k: crate::kt::v4_fp8 = dev.typed()?;
+        // SAFETY: every buffer is as large as the kernel reads and writes for these rows.
+        unsafe { launch!(k, [n as u32, ((w / block) as u32).div_ceil(4), 1], [128, 1, 1], s; xb.ptr, yb.ptr, w as i32, block as i32) }?;
+        let mut want = x.clone();
+        for r in want.chunks_mut(w) {
+            fp8_sim(r, block);
+        }
+        report(&format!("v4_fp8, blocks of {block}"), differ(&down(&yb, n * w)?, &bits(&want)), n * w);
+    }
+    // the window's key-value row at positions 0..n: norm (weight w, the input's signs), rotary on the last 64, the first 448 to E4M3 in blocks of 64
+    {
+        let kv: Vec<f32> = (0..n * hd).map(|_| if val(0) < 0.0 { -1.0 } else { 1.0 }).collect();
+        let w: Vec<f32> = (0..hd).map(&mut val).collect();
+        let pos: Vec<i32> = (0..n as i32).collect();
+        let (kb, wb, pb, ring) = (up(&kv)?, up(&w)?, upi(&pos)?, Buf::new(n * hd * 2)?);
+        let k: crate::kt::v4_kv_prep = dev.typed()?;
+        // SAFETY: every buffer is as large as the kernel reads and writes for these rows.
+        unsafe { launch!(k, [n as u32, 1, 1], [128, 1, 1], s; kb.ptr, wb.ptr, csb.ptr, snb.ptr, pb.ptr, ring.ptr, n as i32, 0u64, 0f32, 1i32) }?;
+        let mut want = Vec::with_capacity(n * hd);
+        for (t, r) in kv.chunks(hd).enumerate() {
+            let mut o = rms(r, &w, 0.0);
+            rope(&mut o[hd - rd..], &f, t, false);
+            fp8_sim(&mut o[..hd - rd], 64);
+            want.extend(o);
+        }
+        report("v4_kv_prep (norm, rotary, E4M3 in 64s)", differ(&down(&ring, n * hd)?, &bits(&want)), n * hd);
+    }
+    // the compressed entries of ratio 1 at positions 0..n: the attention's (d 512: E4M3 in 64s) and the indexer's (d 128: Hadamard, E2M1)
+    for (d, mode) in [(hd, 0i32), (idx, 1)] {
+        let pooled: Vec<f32> = (0..n * d).map(|_| if val(0) < 0.0 { -1.0 } else { 1.0 }).collect();
+        let w: Vec<f32> = (0..d).map(&mut val).collect();
+        let pos: Vec<i32> = (0..n as i32).collect();
+        let (pb, wb, posb, cache) = (up32(&pooled)?, up(&w)?, upi(&pos)?, Buf::new(n * d * 2)?);
+        let k: crate::kt::v4_comp_out = dev.typed()?;
+        // SAFETY: every buffer is as large as the kernel reads and writes for these rows.
+        unsafe {
+            launch!(k, [(n + 1) as u32, 1, 1], [128, 1, 1], s; pb.ptr, wb.ptr, csb.ptr, snb.ptr, posb.ptr, n as i32, cache.ptr, 0u64, 1i32, d as i32, mode, 0f32, 1i32, 0u64)
+        }?;
+        let mut want = Vec::with_capacity(n * d);
+        for (g, r) in pooled.chunks(d).enumerate() {
+            let mut o = rms(r, &w, 0.0);
+            rope(&mut o[d - rd..], &f, g, false);
+            if mode == 1 {
+                hadamard(&mut o);
+                fp4_sim(&mut o);
+            } else {
+                fp8_sim(&mut o[..d - rd], 64);
+            }
+            want.extend(o);
+        }
+        let what = if mode == 1 { "v4_comp_out, the indexer's (Hadamard, E2M1)" } else { "v4_comp_out, the attention's (E4M3 in 64s)" };
+        report(what, differ(&down(&cache, n * d)?, &bits(&want)), n * d);
+    }
+    // the indexer's queries: 8 heads of 128 at positions 0..n, rotary on the last 64, Hadamard, E2M1
+    {
+        let heads = 8;
+        let q: Vec<f32> = (0..n * heads * idx).map(&mut val).collect();
+        let pos: Vec<i32> = (0..n as i32).collect();
+        let (qb, pb) = (up(&q)?, upi(&pos)?);
+        let k: crate::kt::v4_idx_q = dev.typed()?;
+        // SAFETY: every buffer is as large as the kernel reads and writes for these rows.
+        unsafe { launch!(k, [n as u32, heads as u32, 1], [128, 1, 1], s; qb.ptr, csb.ptr, snb.ptr, pb.ptr, 1i32) }?;
+        let mut want = q.clone();
+        for (i, h) in want.chunks_mut(idx).enumerate() {
+            rope(&mut h[idx - rd..], &f, i / heads, false);
+            hadamard(h);
+            fp4_sim(h);
+        }
+        report("v4_idx_q (rotary, Hadamard, E2M1)", differ(&down(&qb, n * heads * idx)?, &bits(&want)), n * heads * idx);
+    }
+    // the grouped output's gather: 4 groups of 256 a row, each row to E4M3 in blocks of 128
+    {
+        let (g, ol) = (4usize, 256usize);
+        let mid: Vec<f32> = (0..g * n * ol).map(&mut val).collect();
+        let (mb, ob) = (up(&mid)?, Buf::new(n * g * ol * 2)?);
+        let k: crate::kt::v4_ogather = dev.typed()?;
+        // SAFETY: every buffer is as large as the kernel reads and writes for these rows.
+        unsafe { launch!(k, [n as u32, ((g * ol / 128) as u32).div_ceil(4), 1], [128, 1, 1], s; mb.ptr, ob.ptr, n as i32, g as i32, ol as i32, 1i32) }?;
+        let mut want = Vec::with_capacity(n * g * ol);
+        for t in 0..n {
+            let mut row: Vec<f32> = (0..g).flat_map(|j| mid[(j * n + t) * ol..][..ol].to_vec()).collect();
+            fp8_sim(&mut row, 128);
+            want.extend(row);
+        }
+        report("v4_ogather (E4M3 in 128s)", differ(&down(&ob, n * g * ol)?, &bits(&want)), n * g * ol);
+    }
+    if bad.is_empty() {
+        println!("v4qcheck: every quantizing operation the same bits as the reference's on the same input");
+        Ok(())
+    } else {
+        err(format!("v4qcheck: {} differ: {}", bad.len(), bad.join("; ")))
+    }
+}

@@ -1,10 +1,15 @@
 //! Qwen3.5 (dense: 9B, 27B; Qwen3.6-27B, Qwen3.8-27B) as a description: Gated DeltaNet layers and gated full-attention layers, the (1 + w) norms,
-//! the SiLU MLP, the final norm on the last row (models/qwen3_5; the arithmetic is the kernels', as src/kern35.rs names them). Its description names its
-//! tensors in kern35's loader's order and the executor's loader reads them (the small matrices dense, the fp32 parameters, the gated norm's weight as vLLM holds it).
+//! the SiLU MLP, the final norm on the last row (models/qwen3_5; the arithmetic is the kernels', as src/kern35.rs names them). It loads from its layer kinds
+//! lowered (`lower::qwen35`), the executor's loader reading the tensors the lowered description names (the small matrices dense, the fp32 parameters, the
+//! gated norm's weight as vLLM holds it).
 
 use super::attn::{AttnOp, GateAt, QkNorm, RopeAt};
-use super::{Dyn, ModelDesc, NormW, Op, Opts, ResidentMoe, Ring, Rope, Slot, Stage};
-use crate::ffi::{err, Error, Result};
+use super::{Dyn, ModelDesc, Opts, ResidentMoe, Slot, Stage};
+#[cfg(test)]
+use super::{NormW, Op, Ring, Rope};
+#[cfg(test)]
+use crate::ffi::err;
+use crate::ffi::{Error, Result};
 use crate::kern_nh::MoeBlock;
 use crate::qwen35::Kind;
 use crate::runtime::describe::Described;
@@ -73,24 +78,23 @@ pub(crate) fn per_layer(k: Kind) -> (usize, usize) {
 }
 
 /// Qwen3.5's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::qwen35`); `c` the same config as the
-/// family's reader takes it, for its end tokens and its context. What the loader runs; `describe` below is the description it is held to.
+/// family's reader takes it, for its end tokens and its context. What the loader runs (the tests hold it to `describe` below).
 pub fn lowered(dir: &Path, c: &crate::qwen35::Config35, st: &Stage) -> Result<ModelDesc> {
     let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
-    let lowered = super::lower::qwen35(&kinds, c.eos.clone(), c.max_pos, st)?;
-    super::lower::agree(lowered, &describe(c, st)?, &label)
+    super::lower::qwen35(&kinds, c.eos.clone(), c.max_pos, st).map_err(|e| e.context(&label))
 }
 
-/// The Qwen3.5 layout's gated attention (Qwen3.5, Qwen3.8 dense; Condor's, src/model_qwen4x.rs): heads of 256, each query head with its gate in Mix's rows; the
-/// (1 + w) q and k norms (small tensors `qk`) and the rotary on the first `rotary` dims in fp32 with one rounding; scale 256^-0.5, the scores fp32; the output times
+/// The Qwen3.5 layout's gated attention (Qwen3.5, Qwen3.8 dense; Condor's, src/model_qwen4x.rs): heads of `d`, each query head with its gate in Mix's rows; the
+/// (1 + w) q and k norms (small tensors `qk`) and the rotary on the first `rotary` dims in fp32 with one rounding; scale d^-0.5, the scores fp32; the output times
 /// sigmoid(gate). Ring `ring`.
-pub(crate) fn attention(nq: usize, nk: usize, rotary: usize, qk: (usize, usize), ring: usize) -> AttnOp {
+pub(crate) fn attention(d: usize, nq: usize, nk: usize, rotary: usize, qk: (usize, usize), ring: usize) -> AttnOp {
     AttnOp {
         src: Slot::Mix,
-        stride: 2 * nq * 256 + 2 * nk * 256,
-        q_step: 512,
-        k_off: nq * 512,
-        v_off: Some(nq * 512 + nk * 256),
-        d: 256,
+        stride: 2 * nq * d + 2 * nk * d,
+        q_step: 2 * d,
+        k_off: nq * 2 * d,
+        v_off: Some(nq * 2 * d + nk * d),
+        d,
         nq,
         nk,
         writes: true,
@@ -100,16 +104,17 @@ pub(crate) fn attention(nq: usize, nk: usize, rotary: usize, qk: (usize, usize),
         v_norm: false,
         rope: Some(RopeAt { table: 0, span: rotary, pairs: rotary / 2 }),
         q_scale: 1.0,
-        scale: 1.0 / 16.0,
+        scale: (d as f32).powf(-0.5),
         softcap: 0.0,
-        gate: Some(GateAt { off: 256, step: 512, norm: false }),
+        gate: Some(GateAt { off: d, step: 2 * d, norm: false }),
         round: false,
         sbf16: false,
         picked: false,
     }
 }
 
-/// The executor's description of Qwen3.5's layout for stage `st` (src/kern35.rs's loader fills its matrices and small tensors; they are indexed here in its order).
+/// The executor's description of Qwen3.5's layout for stage `st`, written by hand: what the tests hold the lowering of its layer kinds to (`lowered`).
+#[cfg(test)]
 pub fn describe(c: &crate::qwen35::Config35, st: &Stage) -> Result<ModelDesc> {
     if c.head_dim != 256 || c.lin_k_dim != 128 || c.lin_v_dim != 128 || c.conv_kernel != 4 {
         return err(format!(
@@ -158,7 +163,7 @@ pub fn describe(c: &crate::qwen35::Config35, st: &Stage) -> Result<ModelDesc> {
                 rings.push(Ring::kv(256, nk, 0));
                 ops.extend([
                     Op::Linear { w: b, x: Slot::H, y: Slot::Mix, name: "attention: qkv product" },
-                    Op::Attn(attention(nq, nk, c.rotary_dim, (s0 + 2, s0 + 3), ring)),
+                    Op::Attn(attention(256, nq, nk, c.rotary_dim, (s0 + 2, s0 + 3), ring)),
                     Op::Linear { w: b + 1, x: Slot::Att, y: Slot::O, name: "attention: o product" },
                 ]);
                 b + 2

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """The record of the engine on glyd-v4 packs (each matrix in the smaller of Glyd's two layouts) and the library of C API 15: python record_layouts.py FETCHED_DIR OUT_DIR
 
+It wrote benchmarks/gpu/engine-mvp-2026-10-03/layouts. The checks whose outputs it reads (`rowcheck`, `kvtest`) were commands of the dense engine of that release and were removed with it
+(R3c, #139): the tool makes that record again from those runs' kept outputs, and reads nothing a current build prints.
+
 FETCHED_DIR holds what the runs left on the box: t2b/ (the checks' outputs: check*.json, rowcheck*.out, kvtest8-after.out, bench8-*.out), t2b-hold11.out (the first-use run), t2b_pack.out (the packing), layout-counts.txt. OUT_DIR gets the README and the files
 the numbers come from, cleaned of terminal codes; a word of the engine's own vocabulary in any of them stops the run (the record says what was measured, not how)."""
 import json
