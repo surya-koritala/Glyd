@@ -1731,8 +1731,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The tensors the Kimi family's lowering names are the ones its loader reads, in the loader's order and at the checkpoint's shapes (the random models of
-    /// both shapes, whole and as a split's stages): each layer's six depth-mix and norm tensors, then a delta layer's convolutions (the three as one), A_log,
+    /// The tensors the Kimi family's lowering names are the ones its own loader read before the executor's loader took them over, in that loader's order and at
+    /// the checkpoint's shapes (the random models of both shapes, whole and as a split's stages): each layer's six depth-mix and norm tensors, then a delta
+    /// layer's convolutions (the three as one), A_log,
     /// dt_bias and gated norm, or a latent layer's two norms, kv_b and its indexer's five; the last stage's output mix and final norm. Matrices: a delta
     /// layer's six as one (zero rows to 512s), o, the forget gate's second; a latent layer's q_a, the gate and kv_a as one, q_b, o; a dense MLP's gate and up as
     /// one, down; the embedding and the head. Each operation's index names the tensor it reads.

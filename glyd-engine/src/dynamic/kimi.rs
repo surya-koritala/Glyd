@@ -62,18 +62,6 @@ fn io<T>(r: std::io::Result<T>) -> Result<T> {
     r.map_err(|e| Error(e.to_string()))
 }
 
-/// A tensor's bf16 words (an fp32 one rounded: none of the matrices is).
-pub(crate) fn words(ck: &Checkpoint, name: &str) -> Result<(Vec<u16>, Vec<u64>)> {
-    let (_, t) = ck.get(name).ok_or_else(|| Error(format!("no tensor {name}")))?;
-    let (dtype, shape) = (t.dtype.clone(), t.shape.clone());
-    let b = io(ck.read(name))?;
-    let w = match dtype.as_str() {
-        "BF16" => b.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect(),
-        d => return err(format!("{name}: {d}, where a bf16 matrix is read")),
-    };
-    Ok((w, shape))
-}
-
 /// An fp32 vector (A_log, dt_bias, the router's bias), from fp32 or widened exactly from bf16.
 fn f32s(ck: &Checkpoint, name: &str) -> Result<Buf> {
     let (_, t) = ck.get(name).ok_or_else(|| Error(format!("no tensor {name}")))?;
