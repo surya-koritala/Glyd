@@ -3764,7 +3764,12 @@ pub mod sizing {
     /// The layout and the fit of a model on a GPU: what `prepare` settles before it downloads a thing, and `preflight` before it says the engine will run the model. `packed`: the layout of a
     /// directory `pack` made, which is the layout there.
     pub(crate) fn qwen3_plan(a: &Args, cfg: &Config, name: &str, gpu: &Gpu, packed: Option<Layout>, users: usize) -> Done<(Layout, String, LoadPlan)> {
-        dense_plan(a, cfg, dense_row(), name, &target(gpu), packed, users)
+        dense_plan_on(a, cfg, name, &target(gpu), packed, users)
+    }
+
+    /// `qwen3_plan` on the target `t` (a machine's GPU with its own word on cuBLAS, `Target::cublas`).
+    pub(crate) fn dense_plan_on(a: &Args, cfg: &Config, name: &str, t: &Target, packed: Option<Layout>, users: usize) -> Done<(Layout, String, LoadPlan)> {
+        dense_plan(a, cfg, dense_row(), name, t, packed, users)
     }
 
     /// The layout and the plan of a dense model of the family `row` on the GPU `t` (`dense_fit`), with the flags of `a`.
@@ -5761,8 +5766,10 @@ mod tests {
                         crate::support::Family::Qwen3 => {
                             let cfg = crate::weights::Config::parse(text, "config.json", None).unwrap();
                             let layout = crate::levels::layout_of(level).filter(|l| *l != crate::weights::Layout::Tiered);
-                            sizing::qwen3_plan(&args(&["run", model]), &cfg, &crate::cli::short_name(model), &gpu, layout, 1).map(|p| p.2)
-                            // (on Windows the name of a path is the whole path)
+                            // (run's plan on the preset's GPU with the preset's word on cuBLAS, as run on that machine plans it; on Windows the name of a path
+                            // is the whole path)
+                            let t = Target { cublas: d.cublas, ..sizing::target(&gpu) };
+                            sizing::dense_plan_on(&args(&["run", model]), &cfg, &crate::cli::short_name(model), &t, layout, 1).map(|p| p.2)
                         }
                         _ => {
                             let layout = crate::levels::layout_for(model, crate::levels::layout_of(level).unwrap());

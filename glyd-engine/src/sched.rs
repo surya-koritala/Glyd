@@ -772,7 +772,7 @@ pub struct Sched<B: ModelStep> {
     pub chosen: Option<Vec<(u64, u32, f32)>>,
     /// A check's record of the whole row of logits each token was chosen from, by sequence, with the routers' choices of that row where the step keeps them
     /// (`recording_rows`): two runs held to a bound row for row where their last bits may part (experts computed on the host).
-    pub rows: Option<Vec<(u64, Vec<f32>, Option<Vec<crate::dynamic::RowRoute>>)>>,
+    pub rows: Option<Vec<(u64, Vec<f32>, Option<Vec<Vec<crate::dynamic::RowRoute>>>)>>,
     overlap: bool,
     relanded: bool,
 }
@@ -1807,10 +1807,17 @@ impl<B: ModelStep> Sched<B> {
             c.push((self.active[i].id, sample.token, sample.logit));
         }
         if self.rows.is_some() {
-            // (the row's token is the sequence's last in the cache; on a slot step its first page is its slot)
+            // (the row's token is the sequence's last in the cache; on a slot step its first page is its slot: the sequence's discrete choices up to the row, the
+            // history a check judges the row by)
             let l = self.be.logits(row)?;
             let s = &self.active[i];
-            let choices = if self.free.is_some() { s.done.checked_sub(1).and_then(|at| self.be.row_choices(s.pages[0], at)) } else { None };
+            let choices = match (self.free.is_some(), s.done.checked_sub(1)) {
+                (true, Some(at)) => {
+                    let h: Vec<Option<Vec<crate::dynamic::RowRoute>>> = (0..=at).map(|p| self.be.row_choices(s.pages[0], p)).collect();
+                    h.iter().any(Option::is_some).then(|| h.into_iter().map(Option::unwrap_or_default).collect())
+                }
+                _ => None,
+            };
             if let Some(r) = self.rows.as_mut() {
                 r.push((s.id, l, choices));
             }

@@ -3332,10 +3332,13 @@ mod tests {
         assert!(!b.finite && !b.held(true) && !b.held(false));
     }
 
-    /// The coordinator's rule for rows where the host computes experts: a row within the bound is held; past it, reported where the two runs took other experts at
-    /// a near tie on each one's own router input, failed where they took the same experts; a choice apart by NEAR or more fails even within the bound.
+    /// The causal rule for rows where the host computes experts: the first discrete choice the two runs made apart in the row's history decides. None apart:
+    /// the row is held to the kind's bound; the first apart a near tie on each run's own input: reported, whatever comes after it in the history; not a near
+    /// tie: failed, whatever the logits; no history seen and past the bound: failed. An indexer's pick is measured by its pools' scores, a router's by its
+    /// input through the description's router.
     #[test]
-    fn a_row_past_the_bound_is_reported_only_for_a_near_tie_taken_the_other_way() {
+    fn the_first_choice_apart_in_a_rows_history_decides() {
+        use crate::dynamic::{Choice, ChoiceFrom, ChoiceKind, RowRoute};
         use crate::runtime::kinds::{Act, Mlp, Moe, Router, RouterScore};
         let m = Moe {
             router: Router { score: RouterScore::Softmax, logit_scale: 1.0, bias: false, groups: None, top_k: 1, renorm: true, scale: 1.0, hash: false },
@@ -3350,25 +3353,49 @@ mod tests {
         p.put("router", &[2, 2], vec![1.0, 0.0, 0.0, 1.0]);
         let routers = Routers([(5usize, (m, p))].into_iter().collect());
         let bf = |a: f32, b: f32| vec![crate::weights::bf16_bits(a), crate::weights::bf16_bits(b)];
-        // (expert 0 against expert 1: a tie at 1.0 / 0.996 on the first run's input and 0.996 / 1.0 on the second's; 1.0 against 0.0 is no tie)
-        let (tie_a, tie_b, far) = (vec![(5, vec![0i64], bf(1.0, 0.996))], vec![(5, vec![1i64], bf(0.996, 1.0))], vec![(5, vec![1i64], bf(0.0, 1.0))]);
+        let route =
+            |e: i64, x: Vec<u16>| -> RowRoute { std::rc::Rc::new(Choice { layer: 5, kind: ChoiceKind::Route, chosen: vec![e], from: ChoiceFrom::Router(x) }) };
+        let pick =
+            |q: i64, s: Vec<f32>| -> RowRoute { std::rc::Rc::new(Choice { layer: 5, kind: ChoiceKind::Pick, chosen: vec![q], from: ChoiceFrom::Scores(s) }) };
+        // (expert 0 against 1: a near tie at 1.0 / 0.996 either way; 0.0 / 1.0 is none. Pool 0 against 1: 1.0 / 0.999 a near tie, 1.0 / 0.5 none)
+        let (same, tie_a, tie_b, far_b) = (route(0, bf(1.0, 0.996)), route(0, bf(1.0, 0.996)), route(1, bf(0.996, 1.0)), route(1, bf(0.0, 1.0)));
+        let (pick_a, pick_tie, pick_far) = (pick(0, vec![1.0, 0.999]), pick(1, vec![0.999, 1.0]), pick(1, vec![0.5, 1.0]));
+        let h = |v: Vec<Vec<RowRoute>>| Some(v);
         let mut alone = logits(64, 9);
         alone[3] = 20.0;
         let mut off = alone.clone();
         off[3] = 10.0;
-        let same = vec![(5usize, vec![0i64], bf(1.0, 0.996))];
         let rows = [
-            Judged { alone: &alone, beside: &alone, choices: (Some(same.clone()), Some(same.clone())) },
-            Judged { alone: &alone, beside: &off, choices: (Some(tie_a.clone()), Some(tie_b.clone())) },
-            Judged { alone: &alone, beside: &off, choices: (Some(same.clone()), Some(same.clone())) },
-            Judged { alone: &alone, beside: &alone, choices: (Some(tie_a.clone()), Some(far.clone())) },
+            Judged { alone: &alone, beside: &alone, choices: (h(vec![vec![same.clone()]]), h(vec![vec![same.clone()]])) },
+            Judged {
+                alone: &alone,
+                beside: &off,
+                choices: (h(vec![vec![same.clone()], vec![tie_a.clone()]]), h(vec![vec![same.clone()], vec![tie_b.clone()]])),
+            },
+            Judged { alone: &alone, beside: &off, choices: (h(vec![vec![same.clone()]]), h(vec![vec![same.clone()]])) },
+            Judged { alone: &alone, beside: &alone, choices: (h(vec![vec![tie_a.clone()]]), h(vec![vec![far_b.clone()]])) },
             Judged { alone: &alone, beside: &off, choices: (None, None) },
+            Judged { alone: &alone, beside: &off, choices: (h(vec![vec![pick_a.clone(), tie_a.clone()]]), h(vec![vec![pick_tie.clone(), far_b.clone()]])) },
+            Judged {
+                alone: &alone,
+                beside: &off,
+                choices: (h(vec![vec![pick_a.clone()], vec![tie_a.clone()]]), h(vec![vec![pick_far.clone()], vec![tie_b.clone()]])),
+            },
         ];
         let j = Judge::of(&rows, Some(&routers)).unwrap();
-        assert_eq!((j.held, j.reported, j.failed), (1, 1, 3), "{:?}", j.notes);
-        assert!(!j.ok() && j.notes.iter().any(|n| n.contains("row 1: reported, a near tie taken the other way")), "{:?}", j.notes);
-        assert!(j.notes.iter().any(|n| n.contains("row 3: FAILED, a choice of experts apart by NEAR or more")), "{:?}", j.notes);
-        assert!(j.notes.iter().any(|n| n.contains("row 1, layer 5: the first run took [0] where the second took [1]") && n.contains("a near tie")));
+        assert_eq!((j.held, j.reported, j.failed), (1, 2, 4), "{:?}", j.notes);
+        let said = |i: usize, w: &str| j.notes.iter().any(|n| n.starts_with(&format!("row {i}: {w}")));
+        assert!(
+            said(1, "reported") && said(5, "reported") && said(2, "FAILED, past the kind's bound with no choice apart") && said(4, "FAILED"),
+            "{:?}",
+            j.notes
+        );
+        assert!(said(3, "FAILED, the first choice apart is not a near tie") && said(6, "FAILED, the first choice apart is not a near tie"), "{:?}", j.notes);
+        assert!(j
+            .notes
+            .iter()
+            .any(|n| n.starts_with("row 1:") && n.contains("position 1, layer 5, the router's experts: the first run chose [0], the second [1]")));
+        assert!(j.notes.iter().any(|n| n.starts_with("row 5:") && n.contains("position 0, layer 5, the indexer's pools")));
         let j = Judge::of(&rows[..2], Some(&routers)).unwrap();
         assert!(j.ok() && (j.held, j.reported, j.failed) == (1, 1, 0) && j.words().contains("1 reported: a near tie taken the other way"));
     }
@@ -3819,60 +3846,105 @@ impl Routers {
     }
 }
 
-/// A choice of experts two runs of one row made apart: the layer, the experts only the first run took and only the second, and how far apart the two choices
-/// are on each run's own router input (`Routers::margin`: below `kindcheck::NEAR`, a near tie).
+/// A sequence's history of discrete choices as a check takes it from a step (`ModelStep::row_choices`), position by position from its first token: each
+/// position's choices (an indexer's picks, a router's experts, a layer each), empty where none was seen.
+pub(crate) type Hist = Vec<Vec<crate::dynamic::RowRoute>>;
+
+/// The first discrete choice two runs of one sequence made apart (`first_apart`), in causal order: its position, layer and kind, what each run chose there,
+/// and how far apart the two are on each run's own input (`Routers::margin` for a router's experts, the pools' scores for an indexer's pick: below
+/// `kindcheck::NEAR`, a near tie).
 #[derive(Clone, Debug)]
-pub(crate) struct ChoiceApart {
+pub(crate) struct FirstApart {
+    pub pos: usize,
     pub layer: usize,
-    pub first: Vec<usize>,
-    pub second: Vec<usize>,
+    pub kind: crate::dynamic::ChoiceKind,
+    pub first: Vec<i64>,
+    pub second: Vec<i64>,
     pub margins: (f32, f32),
 }
 
-impl ChoiceApart {
+impl FirstApart {
     fn near(&self) -> bool {
         self.margins.0 < crate::dynamic::kindcheck::NEAR && self.margins.1 < crate::dynamic::kindcheck::NEAR
     }
+
+    fn words(&self) -> String {
+        format!(
+            "position {}, layer {}, {}: the first run chose {:?}, the second {:?}; margin {:.2e} on the first run's own input, {:.2e} on the second's",
+            self.pos,
+            self.layer,
+            match self.kind {
+                crate::dynamic::ChoiceKind::Pick => "the indexer's pools",
+                crate::dynamic::ChoiceKind::Route => "the router's experts",
+            },
+            self.first,
+            self.second,
+            self.margins.0,
+            self.margins.1
+        )
+    }
 }
 
-/// The choices apart of two runs of one row (each its `RowRoute`s, a layer each), measured by `routers` on each run's own input; a layer one run recorded and
-/// the other did not is an error.
-fn choices_apart(routers: &Routers, a: &[crate::dynamic::RowRoute], b: &[crate::dynamic::RowRoute]) -> Result<Vec<ChoiceApart>> {
-    let mut out = Vec::new();
-    let widen = |x: &[u16]| x.iter().map(|&h| f32::from_bits((h as u32) << 16)).collect::<Vec<f32>>();
-    for (l, ia, xa) in a {
-        let Some((_, ib, xb)) = b.iter().find(|r| r.0 == *l) else { return err(format!("layer {l}: the second run recorded no choice")) };
-        let (sa, sb): (Vec<usize>, Vec<usize>) = (ia.iter().map(|&e| e as usize).collect(), ib.iter().map(|&e| e as usize).collect());
-        let (mut u, mut v) = (sa.clone(), sb.clone());
-        (u.sort_unstable(), v.sort_unstable());
-        if u == v {
+/// The first choice two runs' histories of one sequence hold apart: over the positions both saw, the earliest position, then the earliest layer, an
+/// indexer's pick before the layer's experts; with the positions before it that one of the two runs did not see. A router's choice is measured by
+/// `routers` (none: not measured, NaN, never a near tie), an indexer's by its pools' scores (`ffn::margin_between` on them).
+fn first_apart(routers: Option<&Routers>, a: &Hist, b: &Hist) -> Result<(Option<FirstApart>, usize)> {
+    use crate::dynamic::{ChoiceFrom, ChoiceKind};
+    use crate::runtime::reference::ffn::margin_between;
+    let mut unseen = 0;
+    let ids = |v: &[i64]| v.iter().map(|&e| e as usize).collect::<Vec<usize>>();
+    for (pos, (ca, cb)) in a.iter().zip(b).enumerate() {
+        if ca.is_empty() || cb.is_empty() {
+            unseen += 1;
             continue;
         }
-        let only = |x: &[usize], y: &[usize]| x.iter().copied().filter(|e| !y.contains(e)).collect::<Vec<usize>>();
-        let margins = (routers.margin(*l, &widen(xa), &sa, &sb)?, routers.margin(*l, &widen(xb), &sb, &sa)?);
-        out.push(ChoiceApart { layer: *l, first: only(&sa, &sb), second: only(&sb, &sa), margins });
+        let mut keys: Vec<(usize, ChoiceKind)> = ca.iter().chain(cb).map(|c| (c.layer, c.kind)).collect();
+        (keys.sort_unstable(), keys.dedup());
+        for (layer, kind) in keys {
+            let find = |h: &[crate::dynamic::RowRoute]| h.iter().find(|c| c.layer == layer && c.kind == kind).cloned();
+            let (Some(x), Some(y)) = (find(ca), find(cb)) else {
+                unseen += 1;
+                continue;
+            };
+            let (mut u, mut v) = (x.chosen.clone(), y.chosen.clone());
+            (u.sort_unstable(), v.sort_unstable());
+            if u == v {
+                continue;
+            }
+            let (sa, sb) = (ids(&x.chosen), ids(&y.chosen));
+            let on = |c: &crate::dynamic::Choice, own: &[usize], other: &[usize]| -> Result<f32> {
+                Ok(match (&c.from, kind) {
+                    (ChoiceFrom::Router(input), ChoiceKind::Route) => match routers {
+                        Some(r) => r.margin(layer, &input.iter().map(|&h| f32::from_bits((h as u32) << 16)).collect::<Vec<f32>>(), own, other)?,
+                        None => f32::NAN,
+                    },
+                    (ChoiceFrom::Scores(s), ChoiceKind::Pick) => margin_between(s, own, other).abs(),
+                    _ => f32::NAN,
+                })
+            };
+            let margins = (on(&x, &sa, &sb)?, on(&y, &sb, &sa)?);
+            return Ok((Some(FirstApart { pos, layer, kind, first: x.chosen.clone(), second: y.chosen.clone(), margins }), unseen));
+        }
     }
-    if b.len() != a.len() {
-        return err(format!("{} layers' choices in the first run, {} in the second", a.len(), b.len()));
-    }
-    Ok(out)
+    Ok((None, unseen))
 }
 
 /// One row run beside others and the same row alone, as a host-experts check holds them (`Judge`): the alone row's logits and the beside row's, and each run's
-/// choices of the routers for that row (None: not seen).
+/// history of the row's sequence up to the row (None: not seen).
 pub(crate) struct Judged<'a> {
     pub alone: &'a [f32],
     pub beside: &'a [f32],
-    pub choices: (Option<Vec<crate::dynamic::RowRoute>>, Option<Vec<crate::dynamic::RowRoute>>),
+    pub choices: (Option<Hist>, Option<Hist>),
 }
 
-/// Rows beside others held to the rows alone where the engine computes experts on the host (the coordinator's rule, 2026-11-25), row by row:
-///   - held: within the kind's bound (KL at most `BESIDE_KL`'s max, the best token the same where the alone row's lead clears `CLEAR_LEAD`), no choice apart by
-///     `NEAR` or more; the held rows' KL mean within the bound's mean too;
-///   - reported, a near tie taken the other way: past the bound, the two runs' choices of experts differ at some layer of the row, and each choice apart is a near
-///     tie on each run's own router input (below `NEAR`);
-///   - failed: past the bound with no choice apart (or none seen), a choice apart by `NEAR` or more on either input (a fault, not a tie), or a logit that is not a
-///     number.
+/// Rows beside others held to the rows alone where the engine computes experts on the host (the coordinator's causal rule, 2026-11-25), row by row, by the
+/// first discrete choice the two runs made apart in the history of the row's sequence up to the row (`first_apart`: experts' routes and indexers' picks,
+/// every layer and position, in causal order):
+///   - none apart: held to the kind's bound (KL at most `BESIDE_KL`'s max, the best token the same where the alone row's lead clears `CLEAR_LEAD`), always;
+///     the held rows' KL mean within the bound's mean too;
+///   - the first apart a near tie on each run's own input (below `NEAR`): reported, not failed, with that choice (position, layer, kind, both margins); every
+///     later row of the sequence sees the same first choice, and is reported too;
+///   - the first apart not a near tie: failed (a fault, not a tie); and a row past the bound whose history shows none apart: failed.
 #[derive(Debug, Default)]
 pub(crate) struct Judge {
     pub held: usize,
@@ -3881,50 +3953,45 @@ pub(crate) struct Judge {
     held_kl: f64,
     /// Every row's figures, held or not (the line's words).
     pub all: Beside,
-    /// A line for each row reported or failed, and for each choice apart.
+    /// A line for each row reported or failed.
     pub notes: Vec<String>,
 }
 
 impl Judge {
-    /// The rows judged: `routers` measure the choices apart (None: no choice can be judged, and a row past the bound fails).
+    /// The rows judged: `routers` measure a router's choice apart (None: such a choice is never a near tie).
     pub(crate) fn of(rows: &[Judged], routers: Option<&Routers>) -> Result<Judge> {
         let pairs: Vec<(&[f32], &[f32])> = rows.iter().map(|r| (r.alone, r.beside)).collect();
         let mut j = Judge { all: Beside::of(&pairs), ..Default::default() };
         for (i, r) in rows.iter().enumerate() {
             let b = Beside::of(&[(r.alone, r.beside)]);
             let within = b.finite && b.kl_max <= BESIDE_KL.1 && b.top_same == b.clear;
-            let apart = match (&r.choices, routers) {
-                ((Some(a), Some(c)), Some(rt)) => Some(choices_apart(rt, a, c)?),
-                _ => None,
+            let (first, unseen) = match &r.choices {
+                (Some(a), Some(c)) => first_apart(routers, a, c)?,
+                _ => (None, usize::MAX),
             };
-            let far = apart.iter().flatten().any(|c| !c.near());
-            let ties = apart.as_ref().is_some_and(|a| !a.is_empty() && a.iter().all(ChoiceApart::near));
-            let said =
-                |what: &str| format!("row {i}: {what}: KL {:.3e}, the largest difference {:.3e}, the best token the same: {}", b.kl_max, b.max, b.top_all == 1);
-            if within && !far {
-                j.held += 1;
-                j.held_kl += b.kl_max;
-            } else if !within && !far && ties && b.finite {
-                j.reported += 1;
-                j.notes.push(said("reported, a near tie taken the other way"));
-            } else {
-                j.failed += 1;
-                j.notes.push(said(match (within, far, &apart) {
-                    (_, true, _) => "FAILED, a choice of experts apart by NEAR or more",
-                    (false, _, None) => "FAILED, past the bound and no choice of experts seen",
-                    _ => "FAILED, past the bound with the same experts",
-                }));
-            }
-            for c in apart.iter().flatten() {
-                j.notes.push(format!(
-                    "  row {i}, layer {}: the first run took {:?} where the second took {:?}; margin {:.2e} on the first run's own router input, {:.2e} on the second's ({})",
-                    c.layer,
-                    c.first,
-                    c.second,
-                    c.margins.0,
-                    c.margins.1,
-                    if c.near() { "a near tie" } else { "NOT a near tie" }
-                ));
+            let figures = format!("KL {:.3e}, the largest difference {:.3e}, the best token the same: {}", b.kl_max, b.max, b.top_all == 1);
+            let seen = match unseen {
+                0 => String::new(),
+                usize::MAX => " (no history of choices seen)".to_string(),
+                n => format!(" ({n} choices before it not seen in both runs)"),
+            };
+            match first {
+                Some(f) if f.near() && b.finite => {
+                    j.reported += 1;
+                    j.notes.push(format!("row {i}: reported, a near tie taken the other way first at {}{seen}; {figures}", f.words()));
+                }
+                Some(f) => {
+                    j.failed += 1;
+                    j.notes.push(format!("row {i}: FAILED, the first choice apart is not a near tie: {}{seen}; {figures}", f.words()));
+                }
+                None if within => {
+                    j.held += 1;
+                    j.held_kl += b.kl_max;
+                }
+                None => {
+                    j.failed += 1;
+                    j.notes.push(format!("row {i}: FAILED, past the kind's bound with no choice apart in its history{seen}; {figures}"));
+                }
             }
         }
         Ok(j)
@@ -3957,8 +4024,9 @@ impl Judge {
     }
 }
 
-/// A reply as a check sees it: its tokens, and for each the row of logits it was chosen from with the routers' choices of that row (None: not seen).
-pub(crate) type Seen = (Vec<u32>, Vec<(Vec<f32>, Option<Vec<crate::dynamic::RowRoute>>)>);
+/// A reply as a check sees it: its tokens, and for each the row of logits it was chosen from with the history of discrete choices up to that row (None: not
+/// seen).
+pub(crate) type Seen = (Vec<u32>, Vec<(Vec<f32>, Option<Hist>)>);
 
 /// Replies run beside others against the same replies alone (`Seen`): each reply's rows compared while its tokens are the alone reply's, the row where a token
 /// first differs too (its inputs are the same), none after it (the tokens fed differ). The rows compared (`Judged`), and each reply that parts from alone: its
@@ -4020,13 +4088,20 @@ fn fill(s: &mut dyn crate::sched::ModelStep, slot: i32, t: &[u32], by: usize, la
     fill_from(s, slot, 0, t, by, last)
 }
 
-/// The routers' choices of one row, where the step keeps them (`ModelStep::row_choices`).
-type Ch = Option<Vec<crate::dynamic::RowRoute>>;
+/// A row's history of discrete choices, where the step keeps them (`Hist`).
+type Ch = Option<Hist>;
 
-/// `fill_from` to the logits after `t`, with the routers' choices of its last row (where the step traces them, `ModelStep::trace_choices`).
+/// The history of the sequence in `slot` up to and with position `upto`, as the step keeps it now (`ModelStep::row_choices`, while it traces them): None where
+/// it keeps none.
+fn hist(s: &dyn crate::sched::ModelStep, slot: i32, upto: usize) -> Ch {
+    let h: Vec<Option<Vec<crate::dynamic::RowRoute>>> = (0..=upto).map(|p| s.row_choices(slot, p)).collect();
+    h.iter().any(Option::is_some).then(|| h.into_iter().map(Option::unwrap_or_default).collect())
+}
+
+/// `fill_from` to the logits after `t`, with the history of discrete choices up to its last row (where the step traces them, `ModelStep::trace_choices`).
 fn fill_last(s: &mut dyn crate::sched::ModelStep, slot: i32, start: usize, t: &[u32], by: usize) -> Result<(Vec<f32>, Ch)> {
     let l = fill_from(s, slot, start, t, by, true)?.ok_or_else(|| Error("no logits after the last chunk".into()))?;
-    Ok((l, s.row_choices(slot, start + t.len() - 1)))
+    Ok((l, hist(s, slot, start + t.len() - 1)))
 }
 
 /// `roundcheck CASE [--level L] [--tokens T] [--users N] [--dir MODEL --ctx N --chunk N [--random-tokens]] [--kl BOUND]` (gemma4, qwen35, muse, kimi, glm; R4a's round that is one step): what a sequence's logits are by
@@ -4089,7 +4164,7 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
     // (where the engine computes experts on the host, the routers' choices of every row kept by sequence and place: each compared row's in each run, taken right after
     // the run (`row_choices`), judge a row past the kind's bound)
     s.trace_choices(host);
-    let chosen = |s: &dyn ModelStep, slot: i32, from: usize, n: usize| -> Vec<Ch> { (from..from + n).map(|p| s.row_choices(slot, p)).collect() };
+    let chosen = |s: &dyn ModelStep, slot: i32, from: usize, n: usize| -> Vec<Ch> { (from..from + n).map(|p| hist(s, slot, p)).collect() };
     let toks = |n: usize, seed: u32| -> Vec<u32> { (0..n as u32).map(|i| 3 + (i * 7919 + seed * 104_729) % (vocab - 3)).collect() };
     let passage = |n: usize, from: usize| -> Option<Vec<u32>> { text.as_ref().map(|t| (0..n).map(|i| t[(from + i) % t.len()]).collect()) };
     let (pa, fa) = (passage(40, 0).unwrap_or_else(|| toks(40, 1)), passage(steps, 40).unwrap_or_else(|| toks(steps, 2)));
@@ -4210,7 +4285,7 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
                     after = s.logits(1)?;
                 }
             }
-            let (ch, last) = (chosen(s, 0, pa.len(), n), s.row_choices(1, n * c - 1));
+            let (ch, last) = (chosen(s, 0, pa.len(), n), hist(s, 1, n * c - 1));
             s.release(&[0, 1])?;
             Ok((got, after, ch, last))
         };
@@ -4224,7 +4299,7 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
         report(&format!("{rows} rows a step, the row with another prompt of {c} beside it, against the first"), exact, &pairs, &[])?;
         // the prompt's side: the same chunks alone, and whole chunks alone
         let alone = fill(s, 1, &px, c, true)?.expect("the last chunk's logits");
-        let alone_ch = s.row_choices(1, px.len() - 1);
+        let alone_ch = hist(s, 1, px.len() - 1);
         s.release(&[1])?;
         report(
             &format!("{rows} rows a step, a prompt of {} ({kind}) in chunks of {c} beside the row, against the chunks alone", px.len()),
@@ -4245,7 +4320,7 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
         room(s, 0, p.len() + 2)?;
         s.decode(&[Row { token: fa[0], pos: p.len(), pages: &[0], after: None }])?;
         let next = s.logits(0)?;
-        let ch = [s.row_choices(0, p.len() - 1), s.row_choices(0, p.len())];
+        let ch = [hist(s, 0, p.len() - 1), hist(s, 0, p.len())];
         s.release(&[0])?;
         Ok((after, next, ch))
     };
@@ -4260,7 +4335,7 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
         let mut out = Vec::new();
         for ((p, sl), a) in ps.iter().zip(&slots).zip(after) {
             s.decode(&[Row { token: fa[0], pos: p.len(), pages: sl, after: None }])?;
-            let ch = [s.row_choices(sl[0], p.len() - 1), s.row_choices(sl[0], p.len())];
+            let ch = [hist(s, sl[0], p.len() - 1), hist(s, sl[0], p.len())];
             out.push((a, s.logits(0)?, ch));
         }
         s.release(&slots.concat())?;
@@ -5039,7 +5114,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         by.into_values().collect()
     };
     // (the last run's rows of logits each token was chosen from, each sequence's in the order the prompts were given: recorded where the engine computes experts on the host)
-    type RowsOf = Vec<(Vec<f32>, Option<Vec<crate::dynamic::RowRoute>>)>;
+    type RowsOf = Vec<(Vec<f32>, Option<Hist>)>;
     let seen_rows = |s: &Sched<&mut dyn crate::sched::ModelStep>| -> Vec<RowsOf> {
         let mut by: std::collections::BTreeMap<u64, RowsOf> = Default::default();
         for (id, l, c) in s.rows.iter().flatten() {

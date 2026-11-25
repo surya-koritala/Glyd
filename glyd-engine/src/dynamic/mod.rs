@@ -771,9 +771,32 @@ pub type HeadOut = (Vec<(u32, f32)>, Vec<u16>);
 /// router's input rows (bf16, [rows, the input's width]).
 pub type Routes = (usize, usize, Vec<i64>, Vec<u16>);
 
-/// One row's choice in one mixture-of-experts layer as `Dyn::trace_row_routes` keeps it: the layer, the experts the row took (the router's order) and the router's
-/// input row (bf16).
-pub type RowRoute = (usize, Vec<i64>, Vec<u16>);
+/// One discrete choice a pass made for one row, as `Dyn::trace_row_routes` keeps it: its layer, its kind, what was chosen (a router's experts in its order; an
+/// indexer's pools, ascending) and what it was chosen from (the router's input row, bf16; the scores of the pools the row could pick, f32).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Choice {
+    pub layer: usize,
+    pub kind: ChoiceKind,
+    pub chosen: Vec<i64>,
+    pub from: ChoiceFrom,
+}
+
+/// A discrete choice's kind, in the order a layer makes them: its attention's indexer picks pools before its experts are routed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ChoiceKind {
+    Pick,
+    Route,
+}
+
+/// What a choice was made from (`Choice::from`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChoiceFrom {
+    Router(Vec<u16>),
+    Scores(Vec<f32>),
+}
+
+/// A row's choice as `Dyn::trace_row_routes` keeps it, shared by every check that takes the row's history.
+pub type RowRoute = std::rc::Rc<Choice>;
 
 /// A draft model to give `Dyn::new`: its directory (bf16, packed here), its description, and its tokens a round.
 pub struct DraftSpec<'a> {
@@ -1508,14 +1531,44 @@ impl Dyn {
         self.row_routes.borrow().as_ref().and_then(|m| m.get(&(slot, pos)).cloned())
     }
 
-    /// The sequence (slot) and place of each of a pass's first `n` rows: by the pass's parts where it is over several sequences, else the selected sequence's
-    /// from the tokens it held before the pass.
+    /// The sequence (slot) and place of each of the `n` rows an operation runs on: an operation on one sequence's rows in a pass over several, that sequence's;
+    /// else by the pass's parts where it is over several sequences; else the selected sequence's from the tokens it held before the pass.
     fn row_tags(&self, n: usize) -> Vec<(usize, usize)> {
-        if self.parts.is_empty() {
-            (0..n).map(|r| (self.seq, self.n + r)).collect()
-        } else {
-            self.parts.iter().flat_map(|p| (0..p.rows).map(move |r| (p.slot, p.start + r))).take(n).collect()
+        match self.at.get() {
+            Some(k) => (0..n).map(|r| (self.parts[k].slot, self.parts[k].start + r)).collect(),
+            None if self.parts.is_empty() => (0..n).map(|r| (self.seq, self.n + r)).collect(),
+            None => self.parts.iter().flat_map(|p| (0..p.rows).map(move |r| (p.slot, p.start + r))).take(n).collect(),
         }
+    }
+
+    /// `trace_row_routes`' record of an indexer's pick of pools of `ratio` tokens (`Op::IdxPick` with `IdxKeys::Pools`) of layer `l` on n rows of one sequence,
+    /// the first at `row0` of the pass (`picked::PickRun`'s room): each row's pools picked (its picked tokens' whole pools, not the open one) and the scores of
+    /// the whole pools it could pick.
+    fn trace_picks(&self, p: &Part, l: usize, ratio: usize, n: usize, row0: usize) -> Result<()> {
+        if !std::ptr::eq(p, &self.big) || self.row_routes.borrow().is_none() {
+            return Ok(());
+        }
+        let r = self.picks.as_ref().ok_or_else(|| Error("an indexer's pick in a model loaded without its room".into()))?;
+        self.dev.sync()?;
+        let (mut sel, mut cnt, mut sc) = (vec![0i32; n * r.sk], vec![0i32; n], vec![0f32; n * r.emax]);
+        r.sel.read(row0 * r.sk * 4, &mut sel)?;
+        r.cnt.read(row0 * 4, &mut cnt)?;
+        r.scores.read(0, &mut sc)?;
+        let tags = self.row_tags(n);
+        if let Some(m) = self.row_routes.borrow_mut().as_mut() {
+            for (i, (slot, pos)) in tags.into_iter().enumerate() {
+                let whole = ((pos + 1) / ratio.max(1)).min(r.emax);
+                let taken = (cnt[i].max(0) as usize).min(r.sk);
+                let mut pools: Vec<i64> =
+                    sel[i * r.sk..][..taken].iter().map(|&t| t as i64 / ratio.max(1) as i64).filter(|&q| q >= 0 && (q as usize) < whole).collect();
+                (pools.sort_unstable(), pools.dedup());
+                let v = m.entry((slot, pos)).or_default();
+                v.retain(|c| !(c.layer == l && c.kind == ChoiceKind::Pick));
+                let from = ChoiceFrom::Scores(sc[i * r.emax..][..whole].to_vec());
+                v.push(std::rc::Rc::new(Choice { layer: l, kind: ChoiceKind::Pick, chosen: pools, from }));
+            }
+        }
+        Ok(())
     }
 
     /// The routers' choices in the passes run between `trace_routes(true)` and `trace_routes(false)`, which returns them: for each mixture-of-experts
@@ -1570,8 +1623,9 @@ impl Dyn {
             let w = input.len() / n.max(1);
             for (r, tag) in self.row_tags(n).into_iter().enumerate() {
                 let v = m.entry(tag).or_default();
-                v.retain(|x| x.0 != l);
-                v.push((l, ids[r * k..(r + 1) * k].to_vec(), input[r * w..(r + 1) * w].to_vec()));
+                v.retain(|c| !(c.layer == l && c.kind == ChoiceKind::Route));
+                let from = ChoiceFrom::Router(input[r * w..(r + 1) * w].to_vec());
+                v.push(std::rc::Rc::new(Choice { layer: l, kind: ChoiceKind::Route, chosen: ids[r * k..(r + 1) * k].to_vec(), from }));
             }
         }
         if let Some(t) = self.route_trace.borrow_mut().as_mut() {
@@ -2505,7 +2559,7 @@ impl Dyn {
             Op::IdxMean { heads, dim, block, q_norm, k_norm, rope, keys, pools } => {
                 self.idx_mean(p, (heads, dim, block), q_norm, k_norm, rope, keys, pools, n, pos.0)
             }
-            Op::IdxPick(ref x) if matches!(x.keys, IdxKeys::Pools(_)) => self.idx_pick_pools(p, x, n, pos.0),
+            Op::IdxPick(ref x) if matches!(x.keys, IdxKeys::Pools(_)) => self.idx_pick_pools(p, l, x, n, pos.0),
             Op::NgramRows(ref x) => self.ngram_rows(p, x, n),
             Op::NgramAdd(ref x) => self.ngram_add(p, x, n),
             Op::KdaConv { w, state, c, row, w32 } => {
