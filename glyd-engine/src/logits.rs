@@ -3966,6 +3966,142 @@ mod tests {
         }
         assert!(kl_of(&r, &shifted) > 1e-3);
     }
+
+    /// A row beside others against the row alone: held bit for bit where every expert is on the GPU, at the kind's bound where the host computes experts. One
+    /// last place apart passes the bound and fails the bits; a best token taken the other way at a clear lead fails both, at a near tie only the bits; a logit
+    /// that is not a number fails both; and the words say which held and why.
+    #[test]
+    fn a_row_beside_others_is_held_bit_for_bit_or_at_the_kinds_bound_where_the_host_computes_experts() {
+        let mut alone = logits(2000, 3);
+        alone[7] = 40.0;
+        alone[8] = 30.0;
+        let mut ulp = alone.clone();
+        ulp[100] = f32::from_bits(ulp[100].to_bits() + 1);
+        let b = Beside::of(&[(&alone[..], &ulp[..])]);
+        assert!((b.differ, b.rows, b.clear, b.top_same) == (1, 1, 1, 1) && b.kl_max < 1e-9 && b.bound());
+        assert!(!b.held(false) && b.held(true));
+        assert!(b.words(true).contains("experts computed on the host: bits not held, the kind's bound held") && !b.words(false).contains("host"));
+        assert!(Beside::of(&[(&alone[..], &alone[..])]).held(false));
+        // (the best token another at a lead of 10: past the bound, and the best token at a clear lead)
+        let mut other = alone.clone();
+        other[8] = 50.0;
+        let b = Beside::of(&[(&alone[..], &other[..])]);
+        assert!(!b.held(true) && b.top_same == 0 && b.words(true).contains("the kind's bound NOT held"));
+        // (a near tie, 1e-3 apart, taken the other way by a last place: the best token is not asked there, and the KL is within the bound)
+        let mut tie = alone.clone();
+        tie[8] = 40.0 - 1e-3;
+        let mut flipped = tie.clone();
+        (flipped[7], flipped[8]) = (tie[8], tie[7]);
+        let b = Beside::of(&[(&tie[..], &flipped[..])]);
+        assert!(b.clear == 0 && b.top_all == 0 && b.kl_max < BESIDE_KL.1 && b.held(true) && !b.held(false));
+        // (KL past the bound with the best token the same, a lead of 1 kept; and a logit that is not a number)
+        let mut spread = logits(2000, 3);
+        spread[7] = 9.0;
+        let mut far = spread.clone();
+        for x in far.iter_mut().skip(200).take(400) {
+            *x += 0.5;
+        }
+        let b = Beside::of(&[(&spread[..], &far[..])]);
+        assert!(b.top_same == 1 && b.clear == 1 && b.kl_max > BESIDE_KL.1 && !b.held(true), "{}", b.words(true));
+        let mut nan = alone.clone();
+        nan[5] = f32::NAN;
+        let b = Beside::of(&[(&alone[..], &nan[..])]);
+        assert!(!b.finite && !b.held(true) && !b.held(false));
+    }
+
+    /// The causal rule for rows where the host computes experts: the first discrete choice the two runs made apart in the row's history decides. None apart:
+    /// the row is held to the kind's bound; the first apart a near tie on each run's own input: reported, whatever comes after it in the history; not a near
+    /// tie: failed, whatever the logits; no history seen and past the bound: failed. An indexer's pick is measured by its pools' scores, a router's by its
+    /// input through the description's router.
+    #[test]
+    fn the_first_choice_apart_in_a_rows_history_decides() {
+        use crate::dynamic::{Choice, ChoiceFrom, ChoiceKind, RowRoute};
+        use crate::runtime::kinds::{Act, Mlp, Moe, Router, RouterScore};
+        let m = Moe {
+            router: Router { score: RouterScore::Softmax, logit_scale: 1.0, bias: false, groups: None, top_k: 1, renorm: true, scale: 1.0, hash: false },
+            experts: 2,
+            expert: Mlp { act: Act::Silu, gated: true, bias: false, clamp: None },
+            shared: None,
+            shared_gate: false,
+            latent: None,
+        };
+        // (a router of 2 experts on inputs of 2: the logits are the input's two values)
+        let mut p = crate::runtime::reference::Params::new();
+        p.put("router", &[2, 2], vec![1.0, 0.0, 0.0, 1.0]);
+        let routers = Routers([(5usize, (m, p))].into_iter().collect());
+        let bf = |a: f32, b: f32| vec![crate::weights::bf16_bits(a), crate::weights::bf16_bits(b)];
+        let route =
+            |e: i64, x: Vec<u16>| -> RowRoute { std::rc::Rc::new(Choice { layer: 5, kind: ChoiceKind::Route, chosen: vec![e], from: ChoiceFrom::Router(x) }) };
+        let pick =
+            |q: i64, s: Vec<f32>| -> RowRoute { std::rc::Rc::new(Choice { layer: 5, kind: ChoiceKind::Pick, chosen: vec![q], from: ChoiceFrom::Scores(s) }) };
+        // (expert 0 against 1: a near tie at 1.0 / 0.996 either way; 0.0 / 1.0 is none. Pool 0 against 1: 1.0 / 0.999 a near tie, 1.0 / 0.5 none)
+        let (same, tie_a, tie_b, far_b) = (route(0, bf(1.0, 0.996)), route(0, bf(1.0, 0.996)), route(1, bf(0.996, 1.0)), route(1, bf(0.0, 1.0)));
+        let (pick_a, pick_tie, pick_far) = (pick(0, vec![1.0, 0.999]), pick(1, vec![0.999, 1.0]), pick(1, vec![0.5, 1.0]));
+        let h = |v: Vec<Vec<RowRoute>>| Some(v);
+        let mut alone = logits(64, 9);
+        alone[3] = 20.0;
+        let mut off = alone.clone();
+        off[3] = 10.0;
+        let rows = [
+            Judged { alone: &alone, beside: &alone, choices: (h(vec![vec![same.clone()]]), h(vec![vec![same.clone()]])) },
+            Judged {
+                alone: &alone,
+                beside: &off,
+                choices: (h(vec![vec![same.clone()], vec![tie_a.clone()]]), h(vec![vec![same.clone()], vec![tie_b.clone()]])),
+            },
+            Judged { alone: &alone, beside: &off, choices: (h(vec![vec![same.clone()]]), h(vec![vec![same.clone()]])) },
+            Judged { alone: &alone, beside: &alone, choices: (h(vec![vec![tie_a.clone()]]), h(vec![vec![far_b.clone()]])) },
+            Judged { alone: &alone, beside: &off, choices: (None, None) },
+            Judged { alone: &alone, beside: &off, choices: (h(vec![vec![pick_a.clone(), tie_a.clone()]]), h(vec![vec![pick_tie.clone(), far_b.clone()]])) },
+            Judged {
+                alone: &alone,
+                beside: &off,
+                choices: (h(vec![vec![pick_a.clone()], vec![tie_a.clone()]]), h(vec![vec![pick_far.clone()], vec![tie_b.clone()]])),
+            },
+        ];
+        let j = Judge::of(&rows, Some(&routers)).unwrap();
+        assert_eq!((j.held, j.reported, j.failed), (1, 2, 4), "{:?}", j.notes);
+        let said = |i: usize, w: &str| j.notes.iter().any(|n| n.starts_with(&format!("row {i}: {w}")));
+        assert!(
+            said(1, "reported") && said(5, "reported") && said(2, "FAILED, past the kind's bound with no choice apart") && said(4, "FAILED"),
+            "{:?}",
+            j.notes
+        );
+        assert!(said(3, "FAILED, the first choice apart is not a near tie") && said(6, "FAILED, the first choice apart is not a near tie"), "{:?}", j.notes);
+        assert!(j
+            .notes
+            .iter()
+            .any(|n| n.starts_with("row 1:") && n.contains("position 1, layer 5, the router's experts: the first run chose [0], the second [1]")));
+        assert!(j.notes.iter().any(|n| n.starts_with("row 5:") && n.contains("position 0, layer 5, the indexer's pools")));
+        let j = Judge::of(&rows[..2], Some(&routers)).unwrap();
+        assert!(j.ok() && (j.held, j.reported, j.failed) == (1, 1, 0) && j.words().contains("1 reported: a near tie taken the other way"));
+    }
+
+    /// Replies beside others against alone, row for row while their tokens are the same: the row where a token first differs is compared and said, with alone's
+    /// lead there, and none after it.
+    #[test]
+    fn replies_beside_others_are_compared_row_for_row_until_a_token_parts() {
+        let row = |seed: u32, best: usize, lead: f32| {
+            let mut l = logits(64, seed);
+            l[best] = 30.0;
+            l[(best + 1) % 64] = 30.0 - lead;
+            l
+        };
+        let seen = |l: Vec<f32>| (l, None);
+        let alone: Vec<Seen> = vec![
+            (vec![3, 4, 5], vec![seen(row(1, 3, 1.0)), seen(row(2, 4, 1.0)), seen(row(3, 5, 1.0))]),
+            (vec![9, 9], vec![seen(row(4, 9, 1e-3)), seen(row(5, 9, 1.0))]),
+        ];
+        let mut beside = alone.clone();
+        // (reply 1 takes the near tie's other token at its first row; its second row is on other tokens and far from alone's)
+        beside[1].0[0] = 10;
+        beside[1].1[1] = seen(row(6, 20, 1.0));
+        let (rows, parted) = replies_beside(&alone, &beside);
+        assert_eq!(rows.len(), 4);
+        assert_eq!(parted, vec![(1, 0, lead_of(&alone[1].1[0].0))]);
+        let j = Judge::of(&rows, None).unwrap();
+        assert!(parted[0].2 < CLEAR_LEAD && j.ok() && (j.held, j.reported, j.failed) == (4, 0, 0), "{}", j.words());
+    }
 }
 
 /// The case's model in `dir` on the description executor.
@@ -4001,14 +4137,36 @@ pub(crate) fn random_dyn(case: &str, level: &str, tag: &str) -> Result<Dyn> {
 
 /// `random_dyn` with its packs in `layout` (None: the GPU's choice) and a context of `ctx` tokens (None: the cases' 1,024).
 pub(crate) fn random_dyn_at(case: &str, level: &str, layout: Option<Layout>, tag: &str, ctx: Option<usize>) -> Result<Dyn> {
+    random_dyn_routed(case, level, layout, tag, ctx).map(|x| x.0)
+}
+
+/// `random_dyn_at`, and where the engine computes experts on the host (`host_experts`) its routers (`Routers`), read before the model's directory goes.
+pub(crate) fn random_dyn_routed(case: &str, level: &str, layout: Option<Layout>, tag: &str, ctx: Option<usize>) -> Result<(Dyn, Option<Routers>)> {
     let dir = std::env::temp_dir().join(format!("glyd-{tag}-{case}-{}", std::process::id()));
     let o = DynOpts { ctx: ctx.unwrap_or(1024), ..dyn_opts(layout) };
-    let e: Result<Dyn> = (|| {
+    let e: Result<(Dyn, Option<Routers>)> = (|| {
         random_model(case, &dir)?;
-        load_dyn(case, &dir, &o, level)
+        let e = load_dyn(case, &dir, &o, level)?;
+        let r = routers_of(&dir, &e)?;
+        Ok((e, r))
     })();
     let _ = std::fs::remove_dir_all(&dir);
     e
+}
+
+/// The routers of the model in `dir` where `e` computes experts on the host (`Routers`), else none. Routers that cannot be read are said, and none are
+/// given: a row past the bound then fails, as one whose choices no one saw.
+fn routers_of(dir: &Path, e: &Dyn) -> Result<Option<Routers>> {
+    if !host_experts(e) {
+        return Ok(None);
+    }
+    match Routers::load(dir, e) {
+        Ok(r) => Ok(Some(r)),
+        Err(x) => {
+            println!("the routers of {} could not be read ({}): a row past the kind's bound fails, its choices unjudged", dir.display(), x.msg);
+            Ok(None)
+        }
+    }
 }
 
 /// The case's random model written to `dir`.
@@ -4207,13 +4365,361 @@ pub fn two_models_check(a: &crate::args::Args) -> Result<()> {
 }
 
 /// One logits row against the reference's: the logits that differ, the largest difference, KL(reference || this) of their softmaxes, and whether the largest logit is the same token's.
+/// A KL that is not a number (a logit that is not one) stays one.
 fn row_diff(want: &[f32], got: &[f32]) -> (usize, f32, f64, bool) {
-    let differ = want.iter().zip(got).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+    let differ = want.iter().zip(got).filter(|(a, b)| a.to_bits() != b.to_bits()).count() + want.len().abs_diff(got.len());
     let max = want.iter().zip(got).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
     let (lw, lg) = (lse_of(want), lse_of(got));
     let kl: f64 = want.iter().zip(got).map(|(&a, &b)| ((a as f64 - lw).exp()) * ((a as f64 - lw) - (b as f64 - lg))).sum();
     let top = |l: &[f32]| l.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).map(|x| x.0);
-    (differ, max, kl.max(0.0), top(want) == top(got))
+    (differ, max, if kl.is_nan() { kl } else { kl.max(0.0) }, top(want) == top(got))
+}
+
+/// A row's lead: its largest logit less its second.
+fn lead_of(l: &[f32]) -> f32 {
+    let (mut a, mut b) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for &x in l {
+        if x > a {
+            (a, b) = (x, a);
+        } else if x > b {
+            b = x;
+        }
+    }
+    a - b
+}
+
+/// The kind's lossless bound (the experts kind's fixtures': KL mean, max) a row run beside others is held to against the row alone where the engine computes
+/// experts on the host (`host_experts`), its best token the same wherever the alone row's lead clears `CLEAR_LEAD`.
+pub const BESIDE_KL: (f64, f64) = (1e-4, 2.5e-4);
+
+/// Whether the engine's blocks of experts have the host compute pairs of a call: an expert cache whose mode gives the host its misses (cpu, split, auto; the
+/// codebook cache's misses). The host and the GPU sum a pair in different orders, and which share of a call the host takes turns on what shares the call and on
+/// the places' state, so a row's last bits turn on the rows beside it and on the calls before it. There the batch checks (`usercheck` with prompts one a pass,
+/// `keepcheck`, `roundcheck`) hold a row beside others to the row alone at the kind's lossless bound (`Beside::held`), not bit for bit; everywhere else (every
+/// expert on the GPU, copy mode, resident) bit for bit (the lead's ruling, 2026-11-25).
+pub(crate) fn host_experts(e: &Dyn) -> bool {
+    e.stores().iter().any(|s| s.wants_cpu())
+}
+
+/// Rows run beside others (or after other calls, or in other passes) against the same rows alone, as (alone, beside) pairs of whole rows of logits: the logits
+/// that differ, the largest difference, the KL (alone || beside) over the whole vocabulary at most and on average, the rows whose alone lead clears `CLEAR_LEAD`
+/// and those of them whose best token is the same, and whether every logit is a number.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Beside {
+    pub rows: usize,
+    pub logits: usize,
+    pub differ: usize,
+    pub max: f32,
+    pub kl_max: f64,
+    pub kl_mean: f64,
+    pub clear: usize,
+    pub top_same: usize,
+    /// The rows whose best token is the same, of all of them.
+    pub top_all: usize,
+    pub finite: bool,
+}
+
+impl Beside {
+    pub(crate) fn of(pairs: &[(&[f32], &[f32])]) -> Beside {
+        let mut b = Beside { rows: pairs.len(), finite: true, ..Default::default() };
+        let mut sum = 0f64;
+        for (w, g) in pairs {
+            let (differ, max, kl, top) = row_diff(w, g);
+            b.logits += w.len();
+            b.differ += differ;
+            b.max = b.max.max(max);
+            b.finite &= kl.is_finite() && g.iter().all(|x| x.is_finite());
+            b.kl_max = if kl.is_nan() { kl } else { b.kl_max.max(kl) };
+            sum += kl;
+            b.top_all += top as usize;
+            if lead_of(w) > CLEAR_LEAD {
+                b.clear += 1;
+                b.top_same += top as usize;
+            }
+        }
+        b.kl_mean = sum / pairs.len().max(1) as f64;
+        b
+    }
+
+    /// Within the kind's lossless bound (`BESIDE_KL`), the best token the same at every clear lead.
+    pub(crate) fn bound(&self) -> bool {
+        self.finite && self.kl_max <= BESIDE_KL.1 && self.kl_mean <= BESIDE_KL.0 && self.top_same == self.clear
+    }
+
+    /// Held as the engine allows: bit for bit, or the kind's bound where it computes experts on the host (`host_experts`).
+    pub(crate) fn held(&self, host: bool) -> bool {
+        if host {
+            self.bound()
+        } else {
+            self.finite && self.differ == 0
+        }
+    }
+
+    /// What it found, in words: the logits that differ and the largest difference, the KL, the best tokens; where `host`, why the bits are not held and whether the
+    /// kind's bound is.
+    pub(crate) fn words(&self, host: bool) -> String {
+        let mut s = format!(
+            "{} of {} logits differ, the largest by {:e}, KL at most {:e} (mean {:e}), the largest logit the same token's in {} of {} (where the lead clears {CLEAR_LEAD}: {} of {})",
+            self.differ, self.logits, self.max, self.kl_max, self.kl_mean, self.top_all, self.rows, self.top_same, self.clear
+        );
+        if !self.finite {
+            s += "; a logit is not a number";
+        }
+        if host {
+            s += &format!(
+                "; experts computed on the host: bits not held, the kind's bound {} (KL mean <= {:e}, max <= {:e}, the best token the same where the lead clears {CLEAR_LEAD})",
+                if self.bound() { "held" } else { "NOT held" },
+                BESIDE_KL.0,
+                BESIDE_KL.1
+            );
+        }
+        s
+    }
+}
+
+/// Each mixture-of-experts layer's router as the description reads it (its matrix, hash table and choice bias, f32, from the checkpoint), by the executor's layer
+/// number: what a check measures a choice of experts by on an engine's own router input (`ffn::route_of`). Loaded only where the engine computes experts on the
+/// host, for the batch checks' choices apart (`Judge`).
+pub(crate) struct Routers(BTreeMap<usize, (crate::runtime::kinds::Moe, crate::runtime::reference::Params)>);
+
+impl Routers {
+    /// The routers of the model in `dir`, keyed by the layers of `e`'s description whose operations hold a block of experts (in order, the description's
+    /// mixture-of-experts blocks in order).
+    pub(crate) fn load(dir: &Path, e: &Dyn) -> Result<Routers> {
+        use crate::runtime::kinds::{Body, Ffn};
+        use crate::runtime::reference::{model, Params};
+        let (desc, label) = crate::runtime::describe::describe_dir(dir)?;
+        let ck = io(glyd_gpu::safetensors::Checkpoint::open(dir))?;
+        let src = |n: &str| model::checkpoint_tensor(&ck, n);
+        let layers: Vec<usize> =
+            e.desc().layers.iter().enumerate().filter(|(_, ops)| ops.iter().any(|op| matches!(op, crate::dynamic::Op::Moe(_)))).map(|x| x.0).collect();
+        let mut blocks = Vec::new();
+        for (b, roles) in desc.desc.blocks.iter().zip(&desc.blocks) {
+            let Body::Ffn(Ffn::Moe(m)) = &b.body else { continue };
+            let mut p = Params::new();
+            for (role, src_of) in
+                roles.iter().filter(|(r, _)| matches!(r.as_str(), "router" | "router_bias" | "router_a" | "router_b" | "hash" | "choice_bias"))
+            {
+                let (shape, v) = model::load(&src, role, src_of).map_err(|e| e.context(&label))?;
+                p.put(role, &shape, v);
+            }
+            blocks.push((m.clone(), p));
+        }
+        if blocks.len() != layers.len() {
+            return err(format!("{label}: {} blocks of experts in the description, {} layers of the executor's with experts", blocks.len(), layers.len()));
+        }
+        Ok(Routers(layers.into_iter().zip(blocks).collect()))
+    }
+
+    /// How far apart choices `own` and `other` of one token are on the router input `x` of layer `layer` (`ffn::margin_between` on its ranks, unsigned); a
+    /// hash-routed layer's choice is the token's, never a tie (infinite).
+    fn margin(&self, layer: usize, x: &[f32], own: &[usize], other: &[usize]) -> Result<f32> {
+        let (m, p) = self.0.get(&layer).ok_or_else(|| Error(format!("layer {layer}: no router of a block of experts")))?;
+        if m.router.hash {
+            return Ok(f32::INFINITY);
+        }
+        let r = crate::runtime::reference::ffn::route_of(m, p, x, 0, None)?;
+        Ok(crate::runtime::reference::ffn::margin_between(&r.rank, own, other).abs())
+    }
+}
+
+/// A sequence's history of discrete choices as a check takes it from a step (`ModelStep::row_choices`), position by position from its first token: each
+/// position's choices (an indexer's picks, a router's experts, a layer each), empty where none was seen.
+pub(crate) type Hist = Vec<Vec<crate::dynamic::RowRoute>>;
+
+/// The first discrete choice two runs of one sequence made apart (`first_apart`), in causal order: its position, layer and kind, what each run chose there,
+/// and how far apart the two are on each run's own input (`Routers::margin` for a router's experts, the pools' scores for an indexer's pick: below
+/// `kindcheck::NEAR`, a near tie).
+#[derive(Clone, Debug)]
+pub(crate) struct FirstApart {
+    pub pos: usize,
+    pub layer: usize,
+    pub kind: crate::dynamic::ChoiceKind,
+    pub first: Vec<i64>,
+    pub second: Vec<i64>,
+    pub margins: (f32, f32),
+}
+
+impl FirstApart {
+    fn near(&self) -> bool {
+        self.margins.0 < crate::dynamic::kindcheck::NEAR && self.margins.1 < crate::dynamic::kindcheck::NEAR
+    }
+
+    fn words(&self) -> String {
+        format!(
+            "position {}, layer {}, {}: the first run chose {:?}, the second {:?}; margin {:.2e} on the first run's own input, {:.2e} on the second's",
+            self.pos,
+            self.layer,
+            match self.kind {
+                crate::dynamic::ChoiceKind::Pick => "the indexer's pools",
+                crate::dynamic::ChoiceKind::Route => "the router's experts",
+            },
+            self.first,
+            self.second,
+            self.margins.0,
+            self.margins.1
+        )
+    }
+}
+
+/// The first choice two runs' histories of one sequence hold apart: over the positions both saw, the earliest position, then the earliest layer, an
+/// indexer's pick before the layer's experts; with the positions before it that one of the two runs did not see. A router's choice is measured by
+/// `routers` (none: not measured, NaN, never a near tie), an indexer's by its pools' scores (`ffn::margin_between` on them).
+fn first_apart(routers: Option<&Routers>, a: &Hist, b: &Hist) -> Result<(Option<FirstApart>, usize)> {
+    use crate::dynamic::{ChoiceFrom, ChoiceKind};
+    use crate::runtime::reference::ffn::margin_between;
+    let mut unseen = 0;
+    let ids = |v: &[i64]| v.iter().map(|&e| e as usize).collect::<Vec<usize>>();
+    for (pos, (ca, cb)) in a.iter().zip(b).enumerate() {
+        if ca.is_empty() || cb.is_empty() {
+            unseen += 1;
+            continue;
+        }
+        let mut keys: Vec<(usize, ChoiceKind)> = ca.iter().chain(cb).map(|c| (c.layer, c.kind)).collect();
+        (keys.sort_unstable(), keys.dedup());
+        for (layer, kind) in keys {
+            let find = |h: &[crate::dynamic::RowRoute]| h.iter().find(|c| c.layer == layer && c.kind == kind).cloned();
+            let (Some(x), Some(y)) = (find(ca), find(cb)) else {
+                unseen += 1;
+                continue;
+            };
+            let (mut u, mut v) = (x.chosen.clone(), y.chosen.clone());
+            (u.sort_unstable(), v.sort_unstable());
+            if u == v {
+                continue;
+            }
+            let (sa, sb) = (ids(&x.chosen), ids(&y.chosen));
+            let on = |c: &crate::dynamic::Choice, own: &[usize], other: &[usize]| -> Result<f32> {
+                Ok(match (&c.from, kind) {
+                    (ChoiceFrom::Router(input), ChoiceKind::Route) => match routers {
+                        Some(r) => r.margin(layer, &input.iter().map(|&h| f32::from_bits((h as u32) << 16)).collect::<Vec<f32>>(), own, other)?,
+                        None => f32::NAN,
+                    },
+                    (ChoiceFrom::Scores(s), ChoiceKind::Pick) => margin_between(s, own, other).abs(),
+                    _ => f32::NAN,
+                })
+            };
+            let margins = (on(&x, &sa, &sb)?, on(&y, &sb, &sa)?);
+            return Ok((Some(FirstApart { pos, layer, kind, first: x.chosen.clone(), second: y.chosen.clone(), margins }), unseen));
+        }
+    }
+    Ok((None, unseen))
+}
+
+/// One row run beside others and the same row alone, as a host-experts check holds them (`Judge`): the alone row's logits and the beside row's, and each run's
+/// history of the row's sequence up to the row (None: not seen).
+pub(crate) struct Judged<'a> {
+    pub alone: &'a [f32],
+    pub beside: &'a [f32],
+    pub choices: (Option<Hist>, Option<Hist>),
+}
+
+/// Rows beside others held to the rows alone where the engine computes experts on the host (the coordinator's causal rule, 2026-11-25), row by row, by the
+/// first discrete choice the two runs made apart in the history of the row's sequence up to the row (`first_apart`: experts' routes and indexers' picks,
+/// every layer and position, in causal order):
+///   - none apart: held to the kind's bound (KL at most `BESIDE_KL`'s max, the best token the same where the alone row's lead clears `CLEAR_LEAD`), always;
+///     the held rows' KL mean within the bound's mean too;
+///   - the first apart a near tie on each run's own input (below `NEAR`): reported, not failed, with that choice (position, layer, kind, both margins); every
+///     later row of the sequence sees the same first choice, and is reported too;
+///   - the first apart not a near tie: failed (a fault, not a tie); and a row past the bound whose history shows none apart: failed.
+#[derive(Debug, Default)]
+pub(crate) struct Judge {
+    pub held: usize,
+    pub reported: usize,
+    pub failed: usize,
+    held_kl: f64,
+    /// Every row's figures, held or not (the line's words).
+    pub all: Beside,
+    /// A line for each row reported or failed.
+    pub notes: Vec<String>,
+}
+
+impl Judge {
+    /// The rows judged: `routers` measure a router's choice apart (None: such a choice is never a near tie).
+    pub(crate) fn of(rows: &[Judged], routers: Option<&Routers>) -> Result<Judge> {
+        let pairs: Vec<(&[f32], &[f32])> = rows.iter().map(|r| (r.alone, r.beside)).collect();
+        let mut j = Judge { all: Beside::of(&pairs), ..Default::default() };
+        for (i, r) in rows.iter().enumerate() {
+            let b = Beside::of(&[(r.alone, r.beside)]);
+            let within = b.finite && b.kl_max <= BESIDE_KL.1 && b.top_same == b.clear;
+            let (first, unseen) = match &r.choices {
+                (Some(a), Some(c)) => first_apart(routers, a, c)?,
+                _ => (None, usize::MAX),
+            };
+            let figures = format!("KL {:.3e}, the largest difference {:.3e}, the best token the same: {}", b.kl_max, b.max, b.top_all == 1);
+            let seen = match unseen {
+                0 => String::new(),
+                usize::MAX => " (no history of choices seen)".to_string(),
+                n => format!(" ({n} choices before it not seen in both runs)"),
+            };
+            match first {
+                Some(f) if f.near() && b.finite => {
+                    j.reported += 1;
+                    j.notes.push(format!("row {i}: reported, a near tie taken the other way first at {}{seen}; {figures}", f.words()));
+                }
+                Some(f) => {
+                    j.failed += 1;
+                    j.notes.push(format!("row {i}: FAILED, the first choice apart is not a near tie: {}{seen}; {figures}", f.words()));
+                }
+                None if within => {
+                    j.held += 1;
+                    j.held_kl += b.kl_max;
+                }
+                None => {
+                    j.failed += 1;
+                    j.notes.push(format!("row {i}: FAILED, past the kind's bound with no choice apart in its history{seen}; {figures}"));
+                }
+            }
+        }
+        Ok(j)
+    }
+
+    /// Whether the rows hold: none failed, and the held rows' KL mean within the bound's.
+    pub(crate) fn ok(&self) -> bool {
+        self.failed == 0 && self.held_kl / self.held.max(1) as f64 <= BESIDE_KL.0
+    }
+
+    /// The counts in words, and the held rows' KL mean.
+    pub(crate) fn words(&self) -> String {
+        format!(
+            "experts computed on the host: bits not held; {} rows held to the kind's bound (KL mean {:.3e}, at most {:e}; max at most {:e}; the best token where the lead clears {CLEAR_LEAD}), {} reported: a near tie taken the other way, {} failed",
+            self.held,
+            self.held_kl / self.held.max(1) as f64,
+            BESIDE_KL.0,
+            BESIDE_KL.1,
+            self.reported,
+            self.failed
+        )
+    }
+
+    /// The line, PASS or FAIL as `ok` says (`ok()`, and what else the check holds), and its notes printed.
+    pub(crate) fn print(&self, what: &str, ok: bool) {
+        println!("{} {what}: {}; {}", if ok { "PASS" } else { "FAIL" }, self.all.words(false), self.words());
+        for n in &self.notes {
+            println!("  {n}");
+        }
+    }
+}
+
+/// A reply as a check sees it: its tokens, and for each the row of logits it was chosen from with the history of discrete choices up to that row (None: not
+/// seen).
+pub(crate) type Seen = (Vec<u32>, Vec<(Vec<f32>, Option<Hist>)>);
+
+/// Replies run beside others against the same replies alone (`Seen`): each reply's rows compared while its tokens are the alone reply's, the row where a token
+/// first differs too (its inputs are the same), none after it (the tokens fed differ). The rows compared (`Judged`), and each reply that parts from alone: its
+/// number, the token where, and the alone row's lead there.
+pub(crate) fn replies_beside<'a>(alone: &'a [Seen], beside: &'a [Seen]) -> (Vec<Judged<'a>>, Vec<(usize, usize, f32)>) {
+    let (mut rows, mut parted): (Vec<Judged>, Vec<(usize, usize, f32)>) = (Vec::new(), Vec::new());
+    for (i, ((ta, ra), (tb, rb))) in alone.iter().zip(beside).enumerate() {
+        for (j, (a, b)) in ra.iter().zip(rb).enumerate() {
+            rows.push(Judged { alone: &a.0, beside: &b.0, choices: (a.1.clone(), b.1.clone()) });
+            if ta.get(j) != tb.get(j) {
+                parted.push((i, j, lead_of(&a.0)));
+                break;
+            }
+        }
+    }
+    (rows, parted)
 }
 
 /// Room in a step's slot for its sequence's first `upto` tokens, as the scheduler asks for it before a pass.
@@ -4259,6 +4765,22 @@ fn fill(s: &mut dyn crate::sched::ModelStep, slot: i32, t: &[u32], by: usize, la
     fill_from(s, slot, 0, t, by, last)
 }
 
+/// A row's history of discrete choices, where the step keeps them (`Hist`).
+type Ch = Option<Hist>;
+
+/// The history of the sequence in `slot` up to and with position `upto`, as the step keeps it now (`ModelStep::row_choices`, while it traces them): None where
+/// it keeps none.
+fn hist(s: &dyn crate::sched::ModelStep, slot: i32, upto: usize) -> Ch {
+    let h: Vec<Option<Vec<crate::dynamic::RowRoute>>> = (0..=upto).map(|p| s.row_choices(slot, p)).collect();
+    h.iter().any(Option::is_some).then(|| h.into_iter().map(Option::unwrap_or_default).collect())
+}
+
+/// `fill_from` to the logits after `t`, with the history of discrete choices up to its last row (where the step traces them, `ModelStep::trace_choices`).
+fn fill_last(s: &mut dyn crate::sched::ModelStep, slot: i32, start: usize, t: &[u32], by: usize) -> Result<(Vec<f32>, Ch)> {
+    let l = fill_from(s, slot, start, t, by, true)?.ok_or_else(|| Error("no logits after the last chunk".into()))?;
+    Ok((l, hist(s, slot, start + t.len() - 1)))
+}
+
 /// `roundcheck CASE [--level L] [--tokens T] [--users N] [--dir MODEL --ctx N --chunk N [--random-tokens]] [--kl BOUND]` (gemma4, qwen35, muse, kimi, glm; R4a's round that is one step): what a sequence's logits are by
 /// what its step holds beside it. The case's random model (or the model in MODEL, a real one) as a scheduler's step, and one sequence whose tokens are given, not sampled, so that every way
 /// runs the same tokens: its row alone in a step (the reference: a reply alone), with other sequences' rows (decode steps of 2 to 64 rows), and with another sequence's prompt chunk in the
@@ -4273,7 +4795,9 @@ fn fill(s: &mut dyn crate::sched::ModelStep, slot: i32, t: &[u32], by: usize, la
 ///
 /// Required: in a step of 16 rows or fewer every logit is the reference's, bit for bit (what the kernels give at those sizes on every family); the other sequence's content changes nothing
 /// on a model with no mixture of experts; and every KL within --kl where one is given (a real model: a random model's logits are near ties that last bits move far). With
-/// GLYD_ENGINE_BATCH_PREFILL=0 (every reply to be the reply alone) only the decode steps are run, and not a bit may differ at any size.
+/// GLYD_ENGINE_BATCH_PREFILL=0 (every reply to be the reply alone) only the decode steps are run, and not a bit may differ at any size. Where the engine computes experts on the
+/// host (`host_experts`: which pairs the host takes turns on the call and the places' state, and the host sums a pair in another order than the GPU), what is required bit for
+/// bit is held at the kind's lossless bound instead (`Beside`), and the line says why.
 pub fn round_check(a: &crate::args::Args) -> Result<()> {
     use crate::conv::Gen;
     use crate::sched::{ModelStep, PrefillJob, Row};
@@ -4281,14 +4805,16 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
     let level = a.flag("level").unwrap_or("penguin");
     let steps: usize = a.num("tokens", 8usize)?;
     let bound: Option<f64> = a.flag("kl").map(|b| b.parse().map_err(|_| Error(format!("--kl {b}: a number")))).transpose()?;
-    let mut e: Dyn = match a.flag("dir") {
+    let (mut e, routers): (Dyn, Option<Routers>) = match a.flag("dir") {
         Some(dir) => {
             let o = DynOpts { ctx: a.num("ctx", 4096usize)?, chunk: a.num("chunk", 512usize)?, graph: true, device: 0, layout: level_layout(level)? };
-            load_dyn(case, Path::new(dir), &o, level)?
+            let e = load_dyn(case, Path::new(dir), &o, level)?;
+            let r = routers_of(Path::new(dir), &e)?;
+            (e, r)
         }
-        None => random_dyn(case, level, "roundcheck")?,
+        None => random_dyn_routed(case, level, level_layout(level)?, "roundcheck", None)?,
     };
-    let (vocab, exact) = (e.desc().vocab as u32, e.rows_exact());
+    let (vocab, exact, host) = (e.desc().vocab as u32, e.rows_exact(), host_experts(&e));
     // (a real model's sequence is a text's tokens, the tokens given after the prompt the text's own next ones: what a reply looks like; the bench's passage, begun again where it ends)
     let text: Option<Vec<u32>> = match a.flag("dir").filter(|_| !a.has("random-tokens")) {
         Some(dir) => {
@@ -4312,6 +4838,10 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
     // (GLYD_ENGINE_BATCH_PREFILL=0: the round is two passes and every reply is to be the reply alone, so only the steps of rows that decode are run, and at every size not a bit may differ)
     let strict = !s.one_step();
     let (chunk, window) = (s.chunk(), s.window());
+    // (where the engine computes experts on the host, the routers' choices of every row kept by sequence and place: each compared row's in each run, taken right after
+    // the run (`row_choices`), judge a row past the kind's bound)
+    s.trace_choices(host);
+    let chosen = |s: &dyn ModelStep, slot: i32, from: usize, n: usize| -> Vec<Ch> { (from..from + n).map(|p| hist(s, slot, p)).collect() };
     let toks = |n: usize, seed: u32| -> Vec<u32> { (0..n as u32).map(|i| 3 + (i * 7919 + seed * 104_729) % (vocab - 3)).collect() };
     let passage = |n: usize, from: usize| -> Option<Vec<u32>> { text.as_ref().map(|t| (0..n).map(|i| t[(from + i) % t.len()]).collect()) };
     let (pa, fa) = (passage(40, 0).unwrap_or_else(|| toks(40, 1)), passage(steps, 40).unwrap_or_else(|| toks(steps, 2)));
@@ -4323,6 +4853,7 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
         s.decode(&[Row::new(f, pa.len() + t, &[0])])?;
         reference.push(s.logits(0)?);
     }
+    let ref_ch = chosen(s, 0, pa.len(), steps);
     s.release(&[0])?;
     let margin = reference
         .iter()
@@ -4333,7 +4864,7 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
         })
         .fold(f32::INFINITY, f32::min);
     println!(
-        "{case} at {level}: {steps} steps of a sequence after {} prompt tokens ({}); no mixture of experts: {exact}; a chunk {chunk}, a sequence {window}",
+        "{case} at {level}: {steps} steps of a sequence after {} prompt tokens ({}); no mixture of experts: {exact}; experts computed on the host: {host}; a chunk {chunk}, a sequence {window}",
         pa.len(),
         if text.is_some() { "a text's tokens, the bench's passage" } else { "tokens by a rule, not a text's" }
     );
@@ -4342,31 +4873,36 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
         text.as_ref().map_or(String::new(), |t| format!("; the text is {} tokens", t.len()))
     );
     let mut fails = 0;
-    // (`bits`: not one logit may differ; None: counted)
-    let mut report = |what: &str, bits: bool, pairs: &[(&[f32], &[f32])]| {
-        let d: Vec<_> = pairs.iter().map(|(w, g)| row_diff(w, g)).collect();
-        let (differ, max, kl, top) = (
-            d.iter().map(|x| x.0).sum::<usize>(),
-            d.iter().map(|x| x.1).fold(0f32, f32::max),
-            d.iter().map(|x| x.2).fold(0f64, f64::max),
-            d.iter().filter(|x| x.3).count(),
-        );
-        let mean = d.iter().map(|x| x.2).sum::<f64>() / d.len().max(1) as f64;
-        let bad = (bits && differ > 0) || bound.is_some_and(|b| kl > b) || kl.is_nan();
+    // (`held`: not one logit may differ, or where the engine computes experts on the host each row held to the kind's bound or reported for a near tie taken the other
+    // way (`Judge`, by the rows' choices `ch`, each pair's); else counted)
+    let mut report = |what: &str, held: bool, pairs: &[(&[f32], &[f32])], ch: &[(Ch, Ch)]| -> Result<()> {
+        if host && held {
+            let rows: Vec<Judged> =
+                pairs.iter().enumerate().map(|(i, (w, g))| Judged { alone: w, beside: g, choices: ch.get(i).cloned().unwrap_or((None, None)) }).collect();
+            let j = Judge::of(&rows, routers.as_ref())?;
+            let bad = !j.ok() || bound.is_some_and(|k| j.all.kl_max > k);
+            fails += bad as usize;
+            j.print(what, !bad);
+            return Ok(());
+        }
+        let b = Beside::of(pairs);
+        let bad = (held && !b.held(host)) || bound.is_some_and(|k| b.kl_max > k) || !b.finite;
         fails += bad as usize;
         println!(
-            "{} {what}: {differ} of {} logits differ, the largest by {max:e}, KL at most {kl:e} (mean {mean:e}), the largest logit the same token's in {top} of {}",
+            "{} {what}: {}",
             if bad {
                 "FAIL"
-            } else if bits || bound.is_some() {
+            } else if held || bound.is_some() {
                 "PASS"
             } else {
                 "    "
             },
-            pairs.len() * vocab as usize,
-            pairs.len()
+            b.words(false)
         );
+        Ok(())
     };
+    // (each pair's choices: the reference's and another run's, row for row)
+    let paired = |a: &[Ch], b: &[Ch]| -> Vec<(Ch, Ch)> { a.iter().cloned().zip(b.iter().cloned()).collect() };
     // with other sequences' rows: decode steps of 2, 8, 16, 32 and 64 rows
     for n in [2usize, 8, 16, 32, 48, 63, 64].into_iter().filter(|&n| n <= k) {
         fill(s, 0, &pa, chunk, false)?;
@@ -4386,11 +4922,13 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
             s.decode(&rows)?;
             got.push(s.logits(0)?);
         }
+        let got_ch = chosen(s, 0, pa.len(), steps);
         s.release(&slots.concat())?;
         let pairs: Vec<(&[f32], &[f32])> = reference.iter().zip(&got).map(|(w, g)| (&w[..], &g[..])).collect();
-        report(&format!("{n} rows a step, the row with {} other sequences' rows, against alone", n - 1), n <= 16 || strict, &pairs);
+        report(&format!("{n} rows a step, the row with {} other sequences' rows, against alone", n - 1), n <= 16 || strict, &pairs, &paired(&ref_ch, &got_ch))?;
     }
     if strict {
+        s.trace_choices(false);
         sizes_done(case, fails)?;
         return Ok(());
     }
@@ -4410,8 +4948,8 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
         };
         let n = px.len() / c;
         let rows = c + 1;
-        // the row beside a prompt's chunks, and the prompt's logits after its last
-        let beside = |s: &mut dyn ModelStep, prompt: &[u32]| -> Result<(Vec<Vec<f32>>, Vec<f32>)> {
+        // the row beside a prompt's chunks, and the prompt's logits after its last; the row's choices and the prompt's last row's
+        let beside = |s: &mut dyn ModelStep, prompt: &[u32]| -> Result<(Vec<Vec<f32>>, Vec<f32>, Vec<Ch>, Ch)> {
             fill(s, 0, &pa, chunk, false)?;
             let (mut got, mut after) = (Vec::new(), Vec::new());
             for t in 0..n {
@@ -4424,40 +4962,46 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
                     after = s.logits(1)?;
                 }
             }
+            let (ch, last) = (chosen(s, 0, pa.len(), n), hist(s, 1, n * c - 1));
             s.release(&[0, 1])?;
-            Ok((got, after))
+            Ok((got, after, ch, last))
         };
         let py = toks(n * c, 1005 + c as u32);
-        let (gx, after) = beside(s, &px)?;
-        let (gy, _) = beside(s, &py)?;
+        let (gx, after, gx_ch, after_ch) = beside(s, &px)?;
+        let (gy, _, _, _) = beside(s, &py)?;
         let pairs: Vec<(&[f32], &[f32])> = reference.iter().zip(&gx).map(|(w, g)| (&w[..], &g[..])).collect();
-        report(&format!("{rows} rows a step, the row with a prompt's chunk of {c}, against alone"), rows <= 16, &pairs);
+        report(&format!("{rows} rows a step, the row with a prompt's chunk of {c}, against alone"), rows <= 16, &pairs, &paired(&ref_ch, &gx_ch))?;
         let kind = if of_text { "the text's" } else { "tokens by a rule" };
         let pairs: Vec<(&[f32], &[f32])> = gx.iter().zip(&gy).map(|(w, g)| (&w[..], &g[..])).collect();
-        report(&format!("{rows} rows a step, the row with another prompt of {c} beside it, against the first"), exact, &pairs);
+        report(&format!("{rows} rows a step, the row with another prompt of {c} beside it, against the first"), exact, &pairs, &[])?;
         // the prompt's side: the same chunks alone, and whole chunks alone
         let alone = fill(s, 1, &px, c, true)?.expect("the last chunk's logits");
+        let alone_ch = hist(s, 1, px.len() - 1);
         s.release(&[1])?;
         report(
             &format!("{rows} rows a step, a prompt of {} ({kind}) in chunks of {c} beside the row, against the chunks alone", px.len()),
             rows <= 16,
             &[(&alone[..], &after[..])],
-        );
+            &[(alone_ch, after_ch)],
+        )?;
         let whole = fill(s, 1, &px, chunk, true)?.expect("the last chunk's logits");
         s.release(&[1])?;
-        report(&format!("(yardstick) that prompt alone in chunks of {c}, against alone in chunks of {chunk}"), false, &[(&whole[..], &alone[..])]);
+        report(&format!("(yardstick) that prompt alone in chunks of {c}, against alone in chunks of {chunk}"), false, &[(&whole[..], &alone[..])], &[])?;
     }
     // prompts of different lengths in one pass (`prefill_many`: prompts that come in together), each prompt's logits after its last token and after the step that follows it
     // (its state and cache as the pass left them), against the prompt alone; the first prompt beside other prompts of the same lengths, against beside the first ones
-    let alone_then_step = |s: &mut dyn ModelStep, p: &[u32]| -> Result<(Vec<f32>, Vec<f32>)> {
+    // (each with its two rows' choices: the prompt's last row's, the step's)
+    type Two = (Vec<f32>, Vec<f32>, [Ch; 2]);
+    let alone_then_step = |s: &mut dyn ModelStep, p: &[u32]| -> Result<Two> {
         let after = fill(s, 0, p, chunk, true)?.expect("the prompt's logits");
         room(s, 0, p.len() + 2)?;
         s.decode(&[Row { token: fa[0], pos: p.len(), pages: &[0], after: None }])?;
         let next = s.logits(0)?;
+        let ch = [hist(s, 0, p.len() - 1), hist(s, 0, p.len())];
         s.release(&[0])?;
-        Ok((after, next))
+        Ok((after, next, ch))
     };
-    let together = |s: &mut dyn ModelStep, ps: &[Vec<u32>]| -> Result<Vec<(Vec<f32>, Vec<f32>)>> {
+    let together = |s: &mut dyn ModelStep, ps: &[Vec<u32>]| -> Result<Vec<Two>> {
         let slots: Vec<[i32; 1]> = (0..ps.len() as i32).map(|j| [j]).collect();
         for (p, sl) in ps.iter().zip(&slots) {
             room(s, sl[0], p.len() + 2)?;
@@ -4468,7 +5012,8 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
         let mut out = Vec::new();
         for ((p, sl), a) in ps.iter().zip(&slots).zip(after) {
             s.decode(&[Row { token: fa[0], pos: p.len(), pages: sl, after: None }])?;
-            out.push((a, s.logits(0)?));
+            let ch = [hist(s, sl[0], p.len() - 1), hist(s, sl[0], p.len())];
+            out.push((a, s.logits(0)?, ch));
         }
         s.release(&slots.concat())?;
         Ok(out)
@@ -4487,22 +5032,26 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
         }
         let rows: usize = lens.iter().sum();
         let ps: Vec<Vec<u32>> = lens.iter().enumerate().map(|(j, &l)| toks(l, 3000 + j as u32)).collect();
-        let alone: Vec<(Vec<f32>, Vec<f32>)> = ps.iter().map(|p| alone_then_step(s, p)).collect::<Result<_>>()?;
+        let alone: Vec<Two> = ps.iter().map(|p| alone_then_step(s, p)).collect::<Result<_>>()?;
         let got = together(s, &ps)?;
         let pairs: Vec<(&[f32], &[f32])> = alone.iter().zip(&got).flat_map(|(w, g)| [(&w.0[..], &g.0[..]), (&w.1[..], &g.1[..])]).collect();
+        let ch: Vec<(Ch, Ch)> = alone.iter().zip(&got).flat_map(|(w, g)| [(w.2[0].clone(), g.2[0].clone()), (w.2[1].clone(), g.2[1].clone())]).collect();
         report(
             &format!("prompts of {lens:?} in one pass ({rows} rows), each one's logits after it and after its next step, against alone"),
             rows <= crate::dynamic::EXACT_ROWS,
             &pairs,
-        );
+            &ch,
+        )?;
         let others: Vec<Vec<u32>> = std::iter::once(ps[0].clone()).chain(lens[1..].iter().enumerate().map(|(j, &l)| toks(l, 4000 + j as u32))).collect();
         let beside = together(s, &others)?;
         report(
             &format!("prompts of {lens:?} in one pass, the first beside other prompts of those lengths, against beside the first ones"),
             exact,
             &[(&got[0].0[..], &beside[0].0[..]), (&got[0].1[..], &beside[0].1[..])],
-        );
+            &[],
+        )?;
     }
+    s.trace_choices(false);
     sizes_done(case, fails)
 }
 
@@ -4517,7 +5066,7 @@ fn sizes_done(case: &str, fails: usize) -> Result<()> {
 
 /// `keepcheck CASE [--level L] [--dir MODEL --ctx N --chunk N]` (gemma4, qwen35, muse, kimi, glm; R4c's first step): a finished sequence kept in its slot and gone on with, as a
 /// conversation's next turn does (`ModelStep::resume` and `mark`, src/dynamic/rows.rs), on the case's random model, or the model in MODEL (a real one). Every comparison is of logits, bit for bit, against a second slot that ran the same tokens
-/// in the same passes and was never resumed:
+/// in the same passes and was never resumed (where the engine computes experts on the host, at the kind's lossless bound: `host_experts`, `Beside`):
 ///   - the whole of a sequence (a prompt, then tokens a step at a time) gone on with a further chunk: every family;
 ///   - the sequence asked to go on from inside the tokens it wrote a step at a time: from there where the model has no recurrent state; from its prompt's end, which was
 ///     marked, where it has recurrent states (their copy put back; a latent cache is paged as any keys are); refused, the slot left empty, where its states are not kept at a
@@ -4528,7 +5077,7 @@ fn sizes_done(case: &str, fails: usize) -> Result<()> {
 ///     the states are not kept at a mark; the sharer and the sequence it shared from both go on as sequences that shared nothing do, and the sharer too after the other has ended;
 ///   - through the scheduler: a conversation's second turn (the first's prompt and reply and more) goes on from all the first left, another's second turn that leaves the reply
 ///     out goes on from the prompt's end where the model can, and a conversation that begins as another does shares its start; the prompt tokens found are counted, and each
-///     reply is, token for token, what the same passes give by hand.
+///     reply is, token for token, what the same passes give by hand (where the engine computes experts on the host, a token apart only where the row's lead is a near tie).
 pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     use crate::conv::Gen;
     use crate::sched::{Ev, Finish, ModelStep, Reply, Row, Sched, Submit};
@@ -4536,14 +5085,16 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     use std::sync::Arc;
     let case = a.need(1, "CASE")?;
     let level = a.flag("level").unwrap_or("penguin");
-    let mut e: Dyn = match a.flag("dir") {
+    let (mut e, routers): (Dyn, Option<Routers>) = match a.flag("dir") {
         Some(dir) => {
             let o = DynOpts { ctx: a.num("ctx", 4096usize)?, chunk: a.num("chunk", 256usize)?, graph: true, device: 0, layout: level_layout(level)? };
-            load_dyn(case, Path::new(dir), &o, level)?
+            let e = load_dyn(case, Path::new(dir), &o, level)?;
+            let r = routers_of(Path::new(dir), &e)?;
+            (e, r)
         }
-        None => random_dyn(case, level, "keepcheck")?,
+        None => random_dyn_routed(case, level, level_layout(level)?, "keepcheck", None)?,
     };
-    let (vocab, cuts, marks, window) = (e.desc().vocab as u32, e.cuts(), e.can_mark(), e.least_window());
+    let (vocab, cuts, marks, window, host) = (e.desc().vocab as u32, e.cuts(), e.can_mark(), e.least_window(), host_experts(&e));
     // (a model with recurrent states keeps them at boundaries (src/dynamic/snaps.rs); this check's prompts are short, so at boundaries 32 tokens apart, or as far apart as the
     // largest blocks: DeepSeek-V4's compressed entries' are found by name whole)
     if !cuts && marks {
@@ -4554,6 +5105,9 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     if k < 3 || !s.keeps() {
         return err(format!("{case}: {k} sequences, a step that keeps: {}", s.keeps()));
     }
+    // (where the engine computes experts on the host, the routers' choices of every row kept by sequence and place: each compared row's, taken right after its run
+    // (`fill_last`), judge a row past the kind's bound)
+    s.trace_choices(host);
     let chunk = s.chunk();
     // (the boundaries the step keeps recurrent states at, where the scheduler ends a prompt's pieces: 0 none)
     let every = s.snap_every();
@@ -4579,24 +5133,31 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         }
         Ok(())
     }
-    // (0 or 1: whether the logits differ from the other slot's)
-    let same = |what: &str, want: &[f32], got: &[f32]| -> usize {
-        let (differ, max, _, _) = row_diff(want, got);
-        println!(
-            "{} {what}: {differ} of {} logits differ from a sequence that ran the same tokens on its own, the largest by {max:e}",
-            if differ == 0 { "PASS" } else { "FAIL" },
-            want.len()
-        );
-        (differ > 0) as usize
+    // (0 or 1: whether the logits are not the other slot's: bit for bit, or where the engine computes experts on the host the row held to the kind's bound or reported
+    // for a near tie taken the other way (`Judge`, by the two runs' choices of the row))
+    let same = |what: &str, want: &(Vec<f32>, Ch), got: &(Vec<f32>, Ch)| -> Result<usize> {
+        let what = format!("{what}: against a sequence that ran the same tokens on its own");
+        if host {
+            let j = Judge::of(&[Judged { alone: &want.0, beside: &got.0, choices: (want.1.clone(), got.1.clone()) }], routers.as_ref())?;
+            let ok = j.ok();
+            j.print(&what, ok);
+            return Ok((!ok) as usize);
+        }
+        let b = Beside::of(&[(&want.0[..], &got.0[..])]);
+        let ok = b.held(false);
+        println!("{} {what}, {}", if ok { "PASS" } else { "FAIL" }, b.words(false));
+        Ok((!ok) as usize)
     };
     // a slot that should hold nothing: a prompt begins in it as in another empty one
     let empty = |s: &mut dyn ModelStep, slot: i32, other: i32, what: &str, t: &[u32]| -> Result<usize> {
-        let got = fill(s, slot, t, chunk, true)?.expect("the logits");
-        let want = fill(s, other, t, chunk, true)?.expect("the logits");
-        Ok(same(what, &want, &got))
+        let got = fill_last(s, slot, 0, t, chunk)?;
+        let want = fill_last(s, other, 0, t, chunk)?;
+        same(what, &want, &got)
     };
     let mut fails = 0;
-    println!("{case} at {level}: a chunk {chunk}; a kept sequence can be cut back anywhere: {cuts}; its states are kept at a mark: {marks}");
+    println!(
+        "{case} at {level}: a chunk {chunk}; a kept sequence can be cut back anywhere: {cuts}; its states are kept at a mark: {marks}; experts computed on the host: {host}"
+    );
     let (p, g, tail, alt) = (toks(40, 1), toks(24, 2), toks(20, 3), toks(30, 4));
     let n = p.len() + g.len();
     // the whole of it
@@ -4607,11 +5168,11 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         println!("FAIL the whole of a sequence of {n} tokens: {kept} kept");
         fails += 1;
     } else {
-        let got = fill_from(s, 0, n, &tail, chunk, true)?.expect("the logits");
+        let got = fill_last(s, 0, n, &tail, chunk)?;
         fill(s, 1, &p, chunk, false)?;
         steps(s, 1, p.len(), &g)?;
-        let want = fill_from(s, 1, n, &tail, chunk, true)?.expect("the logits");
-        fails += same(&format!("the whole of a sequence of {n} tokens, then {} more", tail.len()), &want, &got);
+        let want = fill_last(s, 1, n, &tail, chunk)?;
+        fails += same(&format!("the whole of a sequence of {n} tokens, then {} more", tail.len()), &want, &got)?;
     }
     s.release(&[0, 1])?;
     // inside the steps: from there, from the prompt's end (marked), or not at all
@@ -4631,21 +5192,21 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         println!("FAIL a sequence of {n} tokens asked to go on within {cut}: {kept} kept, where {should} should be");
         fails += 1;
     } else if kept > 0 {
-        let got = fill_from(s, 0, kept, &alt, chunk, true)?.expect("the logits");
+        let got = fill_last(s, 0, kept, &alt, chunk)?;
         fill(s, 1, &p, chunk, false)?;
         steps(s, 1, p.len(), &g[..kept - p.len()])?;
-        let want = fill_from(s, 1, kept, &alt, chunk, true)?.expect("the logits");
+        let want = fill_last(s, 1, kept, &alt, chunk)?;
         let place = if kept == cut { "there".to_string() } else { format!("its prompt's end, {kept}, where its states were kept") };
-        fails += same(&format!("a sequence of {n} tokens asked to go on within {cut}: from {place}, then {} others", alt.len()), &want, &got);
+        fails += same(&format!("a sequence of {n} tokens asked to go on within {cut}: from {place}, then {} others", alt.len()), &want, &got)?;
     } else {
         // refused, and nothing of it changed: it goes on from its end as one that was never asked
         let whole = s.resume(0, n)?;
-        let got = fill_from(s, 0, n, &tail, chunk, true)?.expect("the logits");
+        let got = fill_last(s, 0, n, &tail, chunk)?;
         fill(s, 1, &p, chunk, false)?;
         steps(s, 1, p.len(), &g)?;
-        let want = fill_from(s, 1, n, &tail, chunk, true)?.expect("the logits");
+        let want = fill_last(s, 1, n, &tail, chunk)?;
         let what = format!("a sequence of {n} tokens asked to go on within {cut}: refused (its states are what they are after the last token, and not kept at a mark) and as it was ({whole} held); from its end, {} more", tail.len());
-        fails += same(&what, &want, &got) | (whole != n) as usize;
+        fails += same(&what, &want, &got)? | (whole != n) as usize;
     }
     s.release(&[0, 1])?;
     // a long sequence: 9 chunks, then 24 steps
@@ -4665,23 +5226,23 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
             steps(s, 0, long.len(), &g)?;
             let kept = s.resume(0, ask)?;
             if kept == to {
-                let got = fill_from(s, 0, to, &alt, chunk, true)?.expect("the logits");
+                let got = fill_last(s, 0, to, &alt, chunk)?;
                 fill(s, 1, &long[..to.min(long.len())], chunk, false)?;
                 steps(s, 1, long.len(), &g[..by_hand])?;
-                let want = fill_from(s, 1, to, &alt, chunk, true)?.expect("the logits");
-                fails += same(&format!("a sequence of {all} tokens asked to go on within {ask}: from {to}, then {} others", alt.len()), &want, &got);
+                let want = fill_last(s, 1, to, &alt, chunk)?;
+                fails += same(&format!("a sequence of {all} tokens asked to go on within {ask}: from {to}, then {} others", alt.len()), &want, &got)?;
             } else if kept == 0 && !must {
                 // refused, and nothing of it changed: it goes on from its end
                 let whole = s.resume(0, all)?;
-                let got = fill_from(s, 0, all, &alt, chunk, true)?.expect("the logits");
+                let got = fill_last(s, 0, all, &alt, chunk)?;
                 fill(s, 1, &long, chunk, false)?;
                 steps(s, 1, long.len(), &g)?;
-                let want = fill_from(s, 1, all, &alt, chunk, true)?.expect("the logits");
+                let want = fill_last(s, 1, all, &alt, chunk)?;
                 let what = format!(
                     "a sequence of {all} tokens asked to go on within {ask}: refused (the sliding layers' blocks behind it were given back) and as it was ({whole} held); from its end, {} more",
                     alt.len()
                 );
-                fails += same(&what, &want, &got) | (whole != all) as usize;
+                fails += same(&what, &want, &got)? | (whole != all) as usize;
             } else {
                 println!("FAIL a sequence of {all} tokens asked to go on within {ask}: {kept} kept");
                 fails += 1;
@@ -4713,30 +5274,30 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
             fails +=
                 empty(s, 1, 2, "a start is not shared (its states are not kept at a mark); the slot it was asked for is empty still: a prompt in it", &alt)?;
             s.release(&[1, 2])?;
-            let source = fill_from(s, 0, n, &tail, chunk, true)?.expect("the logits");
+            let source = fill_last(s, 0, n, &tail, chunk)?;
             fill(s, 1, &p, chunk, false)?;
             steps(s, 1, p.len(), &g)?;
-            let alone = fill_from(s, 1, n, &tail, chunk, true)?.expect("the logits");
-            fails += same(&format!("the sequence the start was asked of, gone on with {} more", tail.len()), &alone, &source);
+            let alone = fill_last(s, 1, n, &tail, chunk)?;
+            fails += same(&format!("the sequence the start was asked of, gone on with {} more", tail.len()), &alone, &source)?;
         } else {
             // the sharer goes on, then the sequence it shared from; each against a slot that ran the same tokens and shared nothing
-            let sharer = fill_from(s, 1, got, &alt, chunk, true)?.expect("the logits");
-            let source = fill_from(s, 0, n, &tail, chunk, true)?.expect("the logits");
+            let sharer = fill_last(s, 1, got, &alt, chunk)?;
+            let source = fill_last(s, 0, n, &tail, chunk)?;
             fill(s, 2, &p, chunk, false)?;
             steps(s, 2, p.len(), &g[..got - p.len()])?;
-            let want = fill_from(s, 2, got, &alt, chunk, true)?.expect("the logits");
-            fails += same(&format!("a start of {cut} tokens shared from a sequence of {n}: {got} of them, then {} others", alt.len()), &want, &sharer);
+            let want = fill_last(s, 2, got, &alt, chunk)?;
+            fails += same(&format!("a start of {cut} tokens shared from a sequence of {n}: {got} of them, then {} others", alt.len()), &want, &sharer)?;
             s.release(&[2])?;
             fill(s, 2, &p, chunk, false)?;
             steps(s, 2, p.len(), &g)?;
-            let alone = fill_from(s, 2, n, &tail, chunk, true)?.expect("the logits");
-            fails += same(&format!("the sequence the start was shared from, gone on with {} more", tail.len()), &alone, &source);
+            let alone = fill_last(s, 2, n, &tail, chunk)?;
+            fails += same(&format!("the sequence the start was shared from, gone on with {} more", tail.len()), &alone, &source)?;
             s.release(&[0, 1, 2])?;
             // the sequence it shared from ends first: what the two held together stays the sharer's
             let again = begin(s)?;
             s.release(&[0])?;
-            let after = fill_from(s, 1, again, &alt, chunk, true)?.expect("the logits");
-            fails += same("the same start, after the sequence it was shared from has ended", &want, &after);
+            let after = fill_last(s, 1, again, &alt, chunk)?;
+            fails += same("the same start, after the sequence it was shared from has ended", &want, &after)?;
         }
         s.release(&[0, 1, 2])?;
         // of a long sequence: layers whose attention slides keep a window and a chunk behind the sequence's end and give back the blocks before, so a step at the start
@@ -4754,14 +5315,14 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
                 let what = format!("a start of {cut} tokens is not shared from a sequence of {} (its sliding layers gave back the blocks a step there reads); a prompt in the slot asked for", long.len());
                 fails += empty(s, 1, 2, &what, &alt)?;
             } else {
-                let sharer = fill_from(s, 1, got, &alt, chunk, true)?.expect("the logits");
+                let sharer = fill_last(s, 1, got, &alt, chunk)?;
                 fill(s, 2, &long[..got], chunk, false)?;
-                let want = fill_from(s, 2, got, &alt, chunk, true)?.expect("the logits");
+                let want = fill_last(s, 2, got, &alt, chunk)?;
                 fails += same(
                     &format!("a start of {cut} tokens shared from a sequence of {}: {got} of them, then {} others", long.len(), alt.len()),
                     &want,
                     &sharer,
-                );
+                )?;
             }
             s.release(&[0, 1, 2])?;
             // a sequence that shared a start holds its sliding layers' blocks from the window before that start on, and none earlier: asked to go on from before the
@@ -4781,25 +5342,25 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
                 fails += 1;
             } else if kept == 0 {
                 let held = s.resume(1, whole)?;
-                let sharer = fill_from(s, 1, whole, &tail, chunk, true)?.expect("the logits");
+                let sharer = fill_last(s, 1, whole, &tail, chunk)?;
                 fill(s, 2, &long[..at], chunk, false)?;
                 fill_from(s, 2, at, &alt, chunk, false)?;
-                let want = fill_from(s, 2, whole, &tail, chunk, true)?.expect("the logits");
+                let want = fill_last(s, 2, whole, &tail, chunk)?;
                 let what = format!(
                     "a sequence that shared a start of {at} tokens, asked to go on within {ask}: refused (it holds its sliding layers' blocks from the window before that start, none earlier) and as it was ({held} held); from its end, {} more",
                     tail.len()
                 );
-                fails += same(&what, &want, &sharer) | (held != whole) as usize;
+                fails += same(&what, &want, &sharer)? | (held != whole) as usize;
             } else {
-                let sharer = fill_from(s, 1, to, &tail, chunk, true)?.expect("the logits");
+                let sharer = fill_last(s, 1, to, &tail, chunk)?;
                 fill(s, 2, &long[..at], chunk, false)?;
                 let cut = s.resume(2, to)?;
-                let want = fill_from(s, 2, to, &tail, chunk, true)?.expect("the logits");
+                let want = fill_last(s, 2, to, &tail, chunk)?;
                 let what = format!(
                     "a sequence that shared a start of {at} tokens, asked to go on within {ask}: from {to}, the start of the block both hold, then {} others",
                     tail.len()
                 );
-                fails += same(&what, &want, &sharer) | (cut != to) as usize;
+                fails += same(&what, &want, &sharer)? | (cut != to) as usize;
             }
             s.release(&[0, 1, 2])?;
         }
@@ -4828,11 +5389,11 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
             println!("FAIL a start of 48 tokens looked for by name after the sequence that ran it has ended: {got} found");
             fails += 1;
         } else {
-            let finder = fill_from(s, 1, got, &alt, chunk, true)?.expect("the logits");
+            let finder = fill_last(s, 1, got, &alt, chunk)?;
             fill(s, 2, &p, chunk, false)?;
             steps(s, 2, p.len(), &g[..got - p.len()])?;
-            let want = fill_from(s, 2, got, &alt, chunk, true)?.expect("the logits");
-            fails += same(&format!("a start of 48 tokens found by name after the sequence that ran it has ended, then {} others", alt.len()), &want, &finder);
+            let want = fill_last(s, 2, got, &alt, chunk)?;
+            fails += same(&format!("a start of 48 tokens found by name after the sequence that ran it has ended, then {} others", alt.len()), &want, &finder)?;
         }
         s.release(&[0, 1, 2])?;
         // a long sequence, named as it grows: a start of six chunks is found though the sequence no longer holds all a step there reads (its sliding layers gave blocks
@@ -4847,20 +5408,20 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
                 println!("FAIL a start of {at} tokens looked for by name while the sequence that ran it holds {}: {got} found", long.len());
                 fails += 1;
             } else {
-                let finder = fill_from(s, 1, at, &alt, chunk, true)?.expect("the logits");
+                let finder = fill_last(s, 1, at, &alt, chunk)?;
                 fill(s, 2, &long[..at], chunk, false)?;
-                let want = fill_from(s, 2, at, &alt, chunk, true)?.expect("the logits");
+                let want = fill_last(s, 2, at, &alt, chunk)?;
                 let what = format!(
                     "a start of {at} tokens found by name while the sequence that ran it holds {} (it gave back blocks a step there reads; they wait by their names), then {} others",
                     long.len(),
                     alt.len()
                 );
-                fails += same(&what, &want, &finder);
+                fails += same(&what, &want, &finder)?;
                 s.release(&[1, 2])?;
-                let source = fill_from(s, 0, long.len(), &tail, chunk, true)?.expect("the logits");
+                let source = fill_last(s, 0, long.len(), &tail, chunk)?;
                 fill(s, 2, &long, chunk, false)?;
-                let alone = fill_from(s, 2, long.len(), &tail, chunk, true)?.expect("the logits");
-                fails += same(&format!("the sequence that ran it, gone on with {} more", tail.len()), &alone, &source);
+                let alone = fill_last(s, 2, long.len(), &tail, chunk)?;
+                fails += same(&format!("the sequence that ran it, gone on with {} more", tail.len()), &alone, &source)?;
             }
             s.release(&[0, 1, 2])?;
         }
@@ -4925,38 +5486,65 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     };
     s.release(&[0, 1, 2])?;
     // the same passes by hand, each token the step's own choice (the tokens given are the scheduler's, so one that differs does not move the ones after it): the chunks one after
-    // another from `start`, the last one's sample, then the reply's tokens a step at a time
-    let replay_in = |s: &mut dyn ModelStep, slot: i32, start: usize, chunks: &[&[u32]], reply: &[u32]| -> Result<Vec<u32>> {
+    // another from `start`, the last one's sample, then the reply's tokens a step at a time. Where the engine computes experts on the host the scheduler's passes and these
+    // are not the same calls of the expert cache (its places' state differs), so a token may differ where the row's lead is a near tie: such a token is taken as the
+    // scheduler's (`Picks`), and one past `CLEAR_LEAD` is not
+    struct Picks {
+        tokens: Vec<u32>,
+        leads: Vec<f32>,
+    }
+    let replay_in = |s: &mut dyn ModelStep, slot: i32, start: usize, chunks: &[&[u32]], reply: &[u32]| -> Result<Picks> {
         let (mut at, mut first) = (start, None);
         for (i, c) in chunks.iter().enumerate() {
             room(s, slot, at + c.len() + 1)?;
             first = s.prefill(&[slot], at, c, i + 1 == chunks.len())?;
             at += c.len();
         }
-        let mut out = vec![first.ok_or_else(|| Error("no sample after a chunk".into()))?.token];
+        let mut out = Picks { tokens: vec![first.ok_or_else(|| Error("no sample after a chunk".into()))?.token], leads: Vec::new() };
+        if host {
+            out.leads.push(lead_of(&s.logits(0)?));
+        }
         for (i, &t) in reply[..reply.len() - 1].iter().enumerate() {
             room(s, slot, at + i + 2)?;
-            out.push(s.decode(&[Row::new(t, at + i, &[slot])])?[0].token);
+            out.tokens.push(s.decode(&[Row::new(t, at + i, &[slot])])?[0].token);
+            if host {
+                out.leads.push(lead_of(&s.logits(0)?));
+            }
         }
         Ok(out)
+    };
+    // (whether the scheduler's reply is the passes' by hand: token for token, or where the engine computes experts on the host every token apart a near tie of the row's;
+    // and in words)
+    let as_by_hand = |by_hand: &Picks, r: &[u32]| -> bool {
+        by_hand.tokens.len() == r.len()
+            && by_hand.tokens.iter().zip(r).enumerate().all(|(j, (a, b))| a == b || (host && by_hand.leads.get(j).is_some_and(|&l| l <= CLEAR_LEAD)))
+    };
+    let told = |by_hand: &Picks, r: &[u32]| -> String {
+        let apart = by_hand.tokens.iter().zip(r).filter(|(a, b)| a != b).count();
+        if by_hand.tokens == r {
+            "is the same passes' by hand, token for token".to_string()
+        } else if as_by_hand(by_hand, r) {
+            format!(
+                "is the same passes' by hand but at {apart} tokens, each where the row's lead is {CLEAR_LEAD} or less (experts computed on the host: bits not held, a near tie taken either way)"
+            )
+        } else {
+            format!("{r:?} against {:?} by hand", by_hand.tokens)
+        }
     };
     let replay = |s: &mut dyn ModelStep, start: usize, chunks: &[&[u32]], reply: &[u32]| replay_in(s, 0, start, chunks, reply);
     // (the first turn left the prompt and its reply but the last token in the slot)
     let held = p.len() + r1.len() - 1;
-    let first = replay(s, 0, &pieces(&p, 0, chunk, every), &r1)? == r1;
+    let first = as_by_hand(&replay(s, 0, &pieces(&p, 0, chunk, every), &r1)?, &r1);
     let second = replay(s, held, &pieces(&p2, held, chunk, every), &r2)?;
     s.release(&[0])?;
-    let ok = hit == held && first && second == r2;
+    let ok = hit == held && first && as_by_hand(&second, &r2);
     fails += !ok as usize;
     println!(
-        "{} a conversation's second turn through the scheduler: it went on from {hit} of its {} prompt tokens (the slot held {held}); its reply {}",
+        "{} a conversation's second turn through the scheduler: it went on from {hit} of its {} prompt tokens (the slot held {held}); its reply {}{}",
         if ok { "PASS" } else { "FAIL" },
         p2.len(),
-        if second == r2 {
-            "is the same passes' by hand, token for token".to_string()
-        } else {
-            format!("{r2:?} against {second:?} by hand (the first turn's the same: {first})")
-        }
+        told(&second, &r2),
+        if first { "" } else { " (the first turn's is not)" }
     );
     // the turn that leaves the reply out: from the prompt's end where the model can (two passes by hand: the prompt, the rest), else from its first token (one)
     let should = if cuts || marks { q.len() } else { 0 };
@@ -4966,13 +5554,13 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         replay(s, 0, &pieces(&q2, 0, chunk, every), &rq)?
     };
     s.release(&[0])?;
-    let ok = hit_q == should && by_hand == rq;
+    let ok = hit_q == should && as_by_hand(&by_hand, &rq);
     fails += !ok as usize;
     println!(
         "{} a second turn that leaves the reply out: it went on from {hit_q} of its {} prompt tokens (it should from {should}); its reply {}",
         if ok { "PASS" } else { "FAIL" },
         q2.len(),
-        if by_hand == rq { "is the same passes' by hand, token for token".to_string() } else { format!("{rq:?} against {by_hand:?} by hand") }
+        told(&by_hand, &rq)
     );
     // the conversation that begins as another does: the start's full blocks shared where the model has no state; a recurrent model's states kept at the newest boundary
     // within it (the other's mark is past what the two share); with no states kept (DeepSeek-V4): from its first token there. By hand: the other conversation as the
@@ -4984,36 +5572,38 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     } else {
         0
     };
+    let none = || Picks { tokens: Vec::new(), leads: Vec::new() };
     let by_hand = if hit_y > 0 && !cuts {
-        let first = replay(s, 0, &pieces(&xa, 0, chunk, every), &rx)? == rx;
+        let first = as_by_hand(&replay(s, 0, &pieces(&xa, 0, chunk, every), &rx)?, &rx);
         let y = replay_in(s, 1, 0, &pieces(&yb, 0, chunk, every), &ry)?;
         if first {
             y
         } else {
-            Vec::new()
+            none()
         }
     } else if hit_y > 0 {
         let chunks = pieces(&xa, 0, chunk, every);
-        let first = replay(s, 0, &chunks, &rx)? == rx;
+        let first = as_by_hand(&replay(s, 0, &chunks, &rx)?, &rx);
         let got = s.share(0, 1, xs.len())?;
         let y = replay_in(s, 1, got, &[&yb[got..]], &ry)?;
         if first && got == hit_y {
             y
         } else {
-            Vec::new()
+            none()
         }
     } else {
         replay(s, 0, &pieces(&yb, 0, chunk, every), &ry)?
     };
     s.release(&[0, 1])?;
-    let ok = hit_y == should && by_hand == ry;
+    let ok = hit_y == should && as_by_hand(&by_hand, &ry);
     fails += !ok as usize;
     println!(
         "{} a conversation that begins as another does, through the scheduler: {hit_y} of its {} prompt tokens shared (it should {should}); its reply {}",
         if ok { "PASS" } else { "FAIL" },
         yb.len(),
-        if by_hand == ry { "is the same passes' by hand, token for token".to_string() } else { format!("{ry:?} against {by_hand:?} by hand") }
+        told(&by_hand, &ry)
     );
+    s.trace_choices(false);
     if fails > 0 {
         return err(format!("keepcheck {case}: {fails} failed"));
     }
@@ -5030,7 +5620,9 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
 /// (src/dynamic/pieces.rs): the replies the same token for token and each sample's logit to the bit, and where pieces can run, some pass replayed them. With
 /// GLYD_ENGINE_OVERLAP=1, where steps are launched ahead, the prompts at once launched ahead and not: the same tokens and logits. With `--places` every run (each reference, alone,
 /// at once, each side of each comparison) begins from the expert cache's cold state with its planner's times held (`ExpertStore::cold`, `hold_costs`), so two runs of the
-/// same calls find the same experts in places and plan alike, in every mode.
+/// same calls find the same experts in places and plan alike, in every mode. Where the engine computes experts on the host (`host_experts`: a cache whose mode gives the
+/// host pairs, the codebook cache), at once is not alone's calls (the host's share of a call turns on what shares it and on the places' state, and the host sums a pair in
+/// another order than the GPU): with prompts one a pass the replies at once are held to alone row for row at the kind's lossless bound (`replies_beside`), not bit for bit.
 /// With --stagger D the prompts then come D scheduler rounds apart, as a server's requests do: with prompts one a pass every reply is the reply alone, and with no mixture of
 /// experts each reply is the same when every other prompt's tokens are changed (a row's sums may turn on its passes' row counts, never on the other rows' content).
 ///
@@ -5067,7 +5659,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         Some(m) => crate::offload::Mode::parse(m).ok_or_else(|| Error(format!("--mode {m}: copy, cpu, split or auto")))?,
         None => crate::offload::Mode::Copy,
     };
-    let mut e: Dyn = match (a.flag("dir"), places) {
+    let (mut e, routers): (Dyn, Option<Routers>) = match (a.flag("dir"), places) {
         // (`--places N`: the model in DIR with its experts in the expert cache, N places a layer and every expert in the computer's memory (src/offload.rs; `--mode`, copy by default, `--device-plan`: the
         // decode calls planned on the GPU, src/devplan.rs): a model larger than the GPU, its replies alone against its replies at once)
         (Some(d), places) if places > 0 => {
@@ -5085,7 +5677,8 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
                         if a.has("device-plan") { format!(", the decode calls of {planned} layers planned on the GPU") } else { String::new() },
                         if e.has_graph() { ", the decode step one graph" } else { "" }
                     );
-                    e
+                    let r = routers_of(Path::new(d), &e)?;
+                    (e, r)
                 }
                 _ => return err("the model on one GPU was asked for"),
             }
@@ -5093,14 +5686,16 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         (Some(d), _) => {
             let o = DynOpts { ctx: (len(users - 1) + tokens + 64).next_multiple_of(256), chunk: 256, graph: true, device: 0, layout };
             // (--pack P [--precise]: Condor's experts from its pack of codebook rows in the expert cache)
-            match a.flag("pack") {
+            let e = match a.flag("pack") {
                 Some(p) if case == "qwen4x" => crate::dynamic::qwen4x::load_pack(Path::new(d), Path::new(p), a.has("precise"), users, &o)?,
                 Some(_) => return err("--pack: the qwen4x case's pack of experts"),
                 None => load_dyn(case, Path::new(d), &o, level)?,
-            }
+            };
+            let r = routers_of(Path::new(d), &e)?;
+            (e, r)
         }
         // (--ctx N: the random model with a context of N tokens, for a long prompt's check: --prompt-tokens)
-        (None, _) => random_dyn_at(
+        (None, _) => random_dyn_routed(
             case,
             level,
             layout,
@@ -5131,17 +5726,21 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         let t = crate::dynamic::kv12::calibrate(&mut e, &prompts, "usercheck")?;
         e.set_kv12(Some(t));
     }
-    let (batchable, exact) = (e.batchable(), e.rows_exact());
+    let (batchable, exact, host) = (e.batchable(), e.rows_exact(), host_experts(&e));
     let Some((k, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
     let chunk = crate::sched::ModelStep::chunk(step);
-    // (no finished sequence kept: the same prompts come again below, and each is to run from its first token, in passes with the others)
-    let mut s = Sched::new(step, k).keeping(false).recording(true);
+    // (no finished sequence kept: the same prompts come again below, and each is to run from its first token, in passes with the others; where the engine computes experts
+    // on the host, every row a token is chosen from recorded too, for the kind's bound)
+    let mut s = Sched::new(step, k).keeping(false).recording(true).recording_rows(host);
     // (the prompts `gap` scheduler rounds apart: 0, all of them before the first round; from the expert cache's cold state, its planner's times held, so that every run
     // begins from one state and the same calls find the same experts in places)
     let ask = |s: &mut Sched<&mut dyn crate::sched::ModelStep>, ps: &[Vec<u32>], gap: usize| -> Result<Vec<Vec<u32>>> {
         s.cold()?;
         if let Some(c) = s.chosen.as_mut() {
             c.clear();
+        }
+        if let Some(r) = s.rows.as_mut() {
+            r.clear();
         }
         let mut rx = Vec::new();
         for p in ps {
@@ -5191,11 +5790,42 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         }
         by.into_values().collect()
     };
+    // (the last run's rows of logits each token was chosen from, each sequence's in the order the prompts were given: recorded where the engine computes experts on the host)
+    type RowsOf = Vec<(Vec<f32>, Option<Hist>)>;
+    let seen_rows = |s: &Sched<&mut dyn crate::sched::ModelStep>| -> Vec<RowsOf> {
+        let mut by: std::collections::BTreeMap<u64, RowsOf> = Default::default();
+        for (id, l, c) in s.rows.iter().flatten() {
+            by.entry(*id).or_default().push((l.clone(), c.clone()));
+        }
+        by.into_values().collect()
+    };
+    // (where the engine computes experts on the host, replies beside others against alone row for row at the kind's bound (`replies_beside`): its line, and whether held;
+    // each reply's rows must be as many as its tokens)
+    let rows_held = |what: &str, alone: &[Seen], beside: &[Seen]| -> Result<bool> {
+        let whole = |r: &[Seen]| r.len() == prompts.len() && r.iter().all(|(t, l)| t.len() == l.len());
+        if !whole(alone) || !whole(beside) {
+            println!("FAIL {what}: the rows of logits the tokens were chosen from were not recorded for every token");
+            return Ok(false);
+        }
+        let (rows, parted) = replies_beside(alone, beside);
+        let j = Judge::of(&rows, routers.as_ref())?;
+        let ok = j.ok();
+        j.print(&format!("{what}, row for row while the tokens are the same ({} rows)", rows.len()), ok);
+        for (i, j, lead) in parted {
+            println!(
+                "  reply {i} parts from alone at its token {j}, where alone's lead is {lead:e}: {}",
+                if lead > CLEAR_LEAD { "a clear lead" } else { "a near tie (the rest of the reply runs on other tokens: not compared)" }
+            );
+        }
+        Ok(ok)
+    };
     let mut fails = 0;
     let mut alone_logits = Vec::new();
+    let mut alone_rows: Vec<Seen> = Vec::new();
     for (i, p) in prompts.iter().enumerate() {
         let got = ask(&mut s, std::slice::from_ref(p), 0)?.remove(0);
         alone_logits.push(seen(&s).pop().unwrap_or_default());
+        alone_rows.push((got.clone(), seen_rows(&s).pop().unwrap_or_default()));
         let same = got == reference[i];
         fails += !same as usize;
         println!(
@@ -5208,6 +5838,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let together = ask(&mut s, &prompts, 0)?;
     let same = together.iter().zip(&reference).filter(|(a, b)| a == b).count();
     let same_logits = seen(&s).iter().zip(&alone_logits).filter(|(a, b)| a == b).count();
+    let together_rows: Vec<Seen> = together.iter().cloned().zip(seen_rows(&s)).collect();
     // (with a page budget too small for all of them at once (GLYD_ENGINE_PAGES), sequences give their blocks back and run again from their tokens, the generated ones as a prompt: the
     // replies are then counted, not required to be the same)
     let squeezed = std::env::var_os("GLYD_ENGINE_PAGES").is_some();
@@ -5282,7 +5913,11 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         for (mode, name) in [(SwapMode::Always, "swap always"), (SwapMode::ByCost, "swap by cost"), (SwapMode::Never, "recompute only")] {
             s.set_swapping(mode);
             let (back, swapped) = (s.stats.preempted, s.stats.swapped);
+            if let Some(r) = s.rows.as_mut() {
+                r.clear();
+            }
             let (got, first, gap, wall) = timed(&mut s, &prompts)?;
+            let got_rows: Vec<Seen> = got.iter().cloned().zip(seen_rows(&s)).collect();
             let (back, swapped) = (s.stats.preempted - back, s.stats.swapped - swapped);
             let same = got.iter().zip(&reference).filter(|(a, b)| a == b).count();
             println!(
@@ -5303,7 +5938,14 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
                 fails += 1;
             }
             // (swapped, a sequence goes on from the cache it had; recomputed, its generated tokens run again as a prompt, whose kernels round them otherwise)
-            if mode == SwapMode::Always && one_a_pass && same < prompts.len() {
+            if mode == SwapMode::Always
+                && one_a_pass
+                && host
+                && !rows_held("swap always: replies against alone with prompts one a pass", &alone_rows, &got_rows)?
+            {
+                fails += 1;
+            }
+            if mode == SwapMode::Always && one_a_pass && !host && same < prompts.len() {
                 println!("FAIL swap always: replies differ from alone with prompts one a pass");
                 fails += 1;
             }
@@ -5338,17 +5980,17 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         }
     }
     println!("  at once against alone, logit for logit: {same_logits} of {} replies' every sample logit the same bits", prompts.len());
-    // (an expert cache whose mode gives the host pairs (cpu, split, auto): which of a call's misses the host computes, and which are copied or promoted, turns on how many pairs each
-    // expert has in the call (xp_plan, `plan`), so a row's sums turn on the rows beside it and alone against at once is counted; runs of the same calls are held to the bit)
-    let host_pairs = places > 0 && mode != crate::offload::Mode::Copy;
-    if strict && host_pairs {
-        println!("  (mode {}: the host's share of a call is planned by all of its rows' pairs, so at once is not alone's calls: counted)", mode.name());
+    // (where the engine computes experts on the host (an expert cache whose mode gives the host pairs, `host_experts`): which of a call's misses the host computes, and which are
+    // copied or promoted, turns on the call's pairs and the places' state, and the host sums a pair in another order than the GPU, so a row's last bits turn on the rows beside
+    // it: at once is held to alone at the kind's bound, row for row; runs of the same calls are held to the bit)
+    if strict && host && !rows_held("replies at once against alone with prompts one a pass", &alone_rows, &together_rows)? {
+        fails += 1;
     }
-    if strict && !host_pairs && same < prompts.len() {
+    if strict && !host && same < prompts.len() {
         println!("FAIL replies at once differ from alone with prompts one a pass");
         fails += 1;
     }
-    if strict && !host_pairs && same == prompts.len() && same_logits < prompts.len() {
+    if strict && !host && same == prompts.len() && same_logits < prompts.len() {
         println!("FAIL replies at once take other logits than alone with prompts one a pass");
         fails += 1;
     }
@@ -5359,6 +6001,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         let d: usize = d.parse().map_err(|_| Error(format!("--stagger {d}: a number of rounds")))?;
         let got = ask(&mut s, &prompts, d)?;
         let alone = got.iter().zip(&reference).filter(|(a, b)| a == b).count();
+        let got_rows: Vec<Seen> = got.iter().cloned().zip(seen_rows(&s)).collect();
         let mut beside = 0;
         for i in 0..prompts.len() {
             let others: Vec<Vec<u32>> = prompts
@@ -5372,7 +6015,10 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             "staggered {d} rounds apart: {alone} of {n} replies the reply alone, {beside} of {n} the same beside other prompts' tokens",
             n = prompts.len()
         );
-        if strict && alone < prompts.len() {
+        if strict && host && !rows_held("staggered replies against alone with prompts one a pass", &alone_rows, &got_rows)? {
+            fails += 1;
+        }
+        if strict && !host && alone < prompts.len() {
             println!("FAIL staggered replies differ from alone with prompts one a pass");
             fails += 1;
         }
@@ -5401,6 +6047,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     }
     // (the sampler's candidates the step makes on the GPU (src/dynamic/rows.rs `Cands`), against its rows' logits)
     let swapped = s.stats.swapped;
+    s.stop_rows();
     drop(s);
     // (decode steps of several rows replay a CUDA graph of their padded rows where the description takes one (src/dynamic/rows.rs `rows_bucket`): with prompts one a pass, a
     // description with experts decodes a sequence a step)

@@ -766,6 +766,11 @@ impl MoeBlock for LatentCached {
         !self.store.device_on(self.index)
     }
 
+    /// The experts a token takes: `forward` routes into the experts' scratch, whose choices stay there after the call for a check to read (`Dyn::trace_routes`).
+    fn top_k(&self) -> Option<usize> {
+        Some(self.moe.layer.cfg.router.top_k)
+    }
+
     fn bytes(&self) -> usize {
         self.moe.bytes()
     }
@@ -846,6 +851,11 @@ impl MoeBlock for LatentTp {
 
     fn graphable(&self) -> bool {
         self.dev.is_some()
+    }
+
+    /// As `LatentCached`'s: `forward` routes into the experts' scratch.
+    fn top_k(&self) -> Option<usize> {
+        Some(self.moe.layer.cfg.router.top_k)
     }
 
     fn bytes(&self) -> usize {

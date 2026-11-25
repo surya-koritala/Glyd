@@ -46,8 +46,9 @@ use crate::gpu_ops::{Gemm, GpuOps};
 use crate::kern::{embed_plan, TopGpu};
 use crate::kern::{norm_threads, Kern};
 use crate::kern::{pf_kib, KernG4, NextPf};
+use crate::kern::{KernMamba2, SsdWs};
 use crate::kern35::{Kern35, Mat};
-use crate::kern_nh::{KernNh, MoeBlock, SsdWs};
+use crate::kern_nh::MoeBlock;
 use crate::launch;
 use crate::runtime::kinds::Rounding;
 use crate::sched::Sample;
@@ -771,6 +772,33 @@ pub type HeadOut = (Vec<(u32, f32)>, Vec<u16>);
 /// router's input rows (bf16, [rows, the input's width]).
 pub type Routes = (usize, usize, Vec<i64>, Vec<u16>);
 
+/// One discrete choice a pass made for one row, as `Dyn::trace_row_routes` keeps it: its layer, its kind, what was chosen (a router's experts in its order; an
+/// indexer's pools, ascending) and what it was chosen from (the router's input row, bf16; the scores of the pools the row could pick, f32).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Choice {
+    pub layer: usize,
+    pub kind: ChoiceKind,
+    pub chosen: Vec<i64>,
+    pub from: ChoiceFrom,
+}
+
+/// A discrete choice's kind, in the order a layer makes them: its attention's indexer picks pools before its experts are routed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ChoiceKind {
+    Pick,
+    Route,
+}
+
+/// What a choice was made from (`Choice::from`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChoiceFrom {
+    Router(Vec<u16>),
+    Scores(Vec<f32>),
+}
+
+/// A row's choice as `Dyn::trace_row_routes` keeps it, shared by every check that takes the row's history.
+pub type RowRoute = std::rc::Rc<Choice>;
+
 /// A draft model to give `Dyn::new`: its directory (bf16, packed here), its description, and its tokens a round.
 pub struct DraftSpec<'a> {
     pub dir: &'a Path,
@@ -1166,7 +1194,7 @@ pub struct Dyn {
     kern: Kern,
     kg: KernG4,
     k35: Kern35,
-    knh: KernNh,
+    kmamba: KernMamba2,
     /// The attention layer kind's kernels (`Op::Attn`) and the library's decode where its shapes take it; the latent attention kind's and the
     /// indexer's (`Op::Mla`, `Op::IdxPick`).
     ka: attn::KernAttn,
@@ -1269,6 +1297,8 @@ pub struct Dyn {
     /// Where Some: each eager pass adds, after each mixture-of-experts operation whose block leaves its choices in the experts' scratch
     /// (`MoeBlock::top_k`: a resident block, the expert cache's codebook block), its layer, its router's choices and its router's input rows (`trace_routes`).
     route_trace: std::cell::RefCell<Option<Vec<Routes>>>,
+    /// Where Some: each eager pass keeps its rows' choices of those operations by the row's sequence and place, the last pass's that ran it (`trace_row_routes`).
+    row_routes: std::cell::RefCell<Option<std::collections::HashMap<(usize, usize), Vec<RowRoute>>>>,
     picks: Option<picked::PickRun>,
     /// The latent attentions' scratch, where the model has one.
     mla: Option<mla::MlaRun>,
@@ -1485,9 +1515,82 @@ impl Dyn {
         std::mem::replace(&mut *self.trace.borrow_mut(), on.then(Vec::new)).unwrap_or_default()
     }
 
-    /// Whether the layers are traced (`trace_layers`, `trace_ops`, `trace_routes`): every pass eager, a decode step too.
+    /// Whether the layers are traced (`trace_layers`, `trace_ops`, `trace_routes`, `trace_row_routes`): every pass eager, a decode step too.
     pub(crate) fn tracing(&self) -> bool {
-        self.trace.borrow().is_some() || self.op_trace.borrow().is_some() || self.route_trace.borrow().is_some() || self.pick_trace.borrow().is_some()
+        self.trace.borrow().is_some() || self.op_trace.borrow().is_some() || self.routes_traced() || self.pick_trace.borrow().is_some()
+    }
+
+    /// Whether the routers' choices are traced (`trace_routes`, `trace_row_routes`).
+    fn routes_traced(&self) -> bool {
+        self.route_trace.borrow().is_some() || self.row_routes.borrow().is_some()
+    }
+
+    /// Each row's choices of the routers in the passes run between `trace_row_routes(true)` and `trace_row_routes(false)`, which returns them: kept by the row's
+    /// sequence (its slot) and place in it, a mixture-of-experts layer each (`RowRoute`), the last pass's that ran the row. What a check compares two runs of one
+    /// sequence by, whatever ran beside it. A layer whose block leaves no choices in the experts' scratch adds nothing; traced passes run eager.
+    pub fn trace_row_routes(&self, on: bool) -> std::collections::HashMap<(usize, usize), Vec<RowRoute>> {
+        std::mem::replace(&mut *self.row_routes.borrow_mut(), on.then(Default::default)).unwrap_or_default()
+    }
+
+    /// The choices `trace_row_routes` keeps of row `pos` of sequence `slot`, while it traces.
+    pub fn row_route(&self, slot: usize, pos: usize) -> Option<Vec<RowRoute>> {
+        self.row_routes.borrow().as_ref().and_then(|m| m.get(&(slot, pos)).cloned())
+    }
+
+    /// `trace_row_routes` told that the sequence in `slot` is gone (its slot released): its rows' choices are forgotten, so that a sequence that takes the slot
+    /// next is not judged by them.
+    pub(super) fn trace_forget(&self, slot: usize) {
+        if let Some(m) = self.row_routes.borrow_mut().as_mut() {
+            m.retain(|k, _| k.0 != slot);
+        }
+    }
+
+    /// `trace_row_routes` told that the sequence in `to` now begins with the first `upto` tokens of `from`'s (a start shared): those rows' choices are `from`'s.
+    pub(super) fn trace_share(&self, from: usize, to: usize, upto: usize) {
+        if let Some(m) = self.row_routes.borrow_mut().as_mut() {
+            let shared: Vec<((usize, usize), Vec<RowRoute>)> = (0..upto).filter_map(|p| m.get(&(from, p)).map(|v| ((to, p), v.clone()))).collect();
+            m.extend(shared);
+        }
+    }
+
+    /// The sequence (slot) and place of each of the `n` rows an operation runs on: an operation on one sequence's rows in a pass over several, that sequence's;
+    /// else by the pass's parts where it is over several sequences; else the selected sequence's from the tokens it held before the pass.
+    fn row_tags(&self, n: usize) -> Vec<(usize, usize)> {
+        match self.at.get() {
+            Some(k) => (0..n).map(|r| (self.parts[k].slot, self.parts[k].start + r)).collect(),
+            None if self.parts.is_empty() => (0..n).map(|r| (self.seq, self.n + r)).collect(),
+            None => self.parts.iter().flat_map(|p| (0..p.rows).map(move |r| (p.slot, p.start + r))).take(n).collect(),
+        }
+    }
+
+    /// `trace_row_routes`' record of an indexer's pick of pools of `ratio` tokens (`Op::IdxPick` with `IdxKeys::Pools`) of layer `l` on n rows of one sequence,
+    /// the first at `row0` of the pass (`picked::PickRun`'s room): each row's pools picked (its picked tokens' whole pools, not the open one) and the scores of
+    /// the whole pools it could pick.
+    fn trace_row_picks(&self, p: &Part, l: usize, ratio: usize, n: usize, row0: usize) -> Result<()> {
+        if !std::ptr::eq(p, &self.big) || self.row_routes.borrow().is_none() {
+            return Ok(());
+        }
+        let r = self.picks.as_ref().ok_or_else(|| Error("an indexer's pick in a model loaded without its room".into()))?;
+        self.dev.sync()?;
+        let (mut sel, mut cnt, mut sc) = (vec![0i32; n * r.sk], vec![0i32; n], vec![0f32; n * r.emax]);
+        r.sel.read(row0 * r.sk * 4, &mut sel)?;
+        r.cnt.read(row0 * 4, &mut cnt)?;
+        r.scores.read(0, &mut sc)?;
+        let tags = self.row_tags(n);
+        if let Some(m) = self.row_routes.borrow_mut().as_mut() {
+            for (i, (slot, pos)) in tags.into_iter().enumerate() {
+                let whole = ((pos + 1) / ratio.max(1)).min(r.emax);
+                let taken = (cnt[i].max(0) as usize).min(r.sk);
+                let mut pools: Vec<i64> =
+                    sel[i * r.sk..][..taken].iter().map(|&t| t as i64 / ratio.max(1) as i64).filter(|&q| q >= 0 && (q as usize) < whole).collect();
+                (pools.sort_unstable(), pools.dedup());
+                let v = m.entry((slot, pos)).or_default();
+                v.retain(|c| !(c.layer == l && c.kind == ChoiceKind::Pick));
+                let from = ChoiceFrom::Scores(sc[i * r.emax..][..whole].to_vec());
+                v.push(std::rc::Rc::new(Choice { layer: l, kind: ChoiceKind::Pick, chosen: pools, from }));
+            }
+        }
+        Ok(())
     }
 
     /// The routers' choices in the passes run between `trace_routes(true)` and `trace_routes(false)`, which returns them: for each mixture-of-experts
@@ -1516,7 +1619,7 @@ impl Dyn {
     /// the router reads whatever its experts read (`Dyn::moe`: a latent block's experts read the normed latent, Muse Spark's Xc).
     fn route_input(&self, p: &Part, op: &Op, n: usize) -> Result<Option<Vec<u16>>> {
         let Op::Moe(MoeOp { block, .. }) = *op else { return Ok(None) };
-        if !std::ptr::eq(p, &self.big) || self.route_trace.borrow().is_none() || p.moe[block].top_k().is_none() {
+        if !std::ptr::eq(p, &self.big) || !self.routes_traced() || p.moe[block].top_k().is_none() {
             return Ok(None);
         }
         self.dev.sync()?;
@@ -1525,10 +1628,11 @@ impl Dyn {
         Ok(Some(v))
     }
 
-    /// `trace_routes`' record of `op` of layer `l` on n rows, with its router's input (`route_input`, read before it ran).
+    /// `trace_routes`' record of `op` of layer `l` on n rows, with its router's input (`route_input`, read before it ran); and each row's, by its sequence and place
+    /// (`trace_row_routes`).
     fn trace_route(&self, p: &Part, l: usize, op: &Op, n: usize, input: Option<Vec<u16>>) -> Result<()> {
         let Op::Moe(MoeOp { block, .. }) = *op else { return Ok(()) };
-        if !std::ptr::eq(p, &self.big) || self.route_trace.borrow().is_none() {
+        if !std::ptr::eq(p, &self.big) || !self.routes_traced() {
             return Ok(());
         }
         let Some(k) = p.moe[block].top_k() else { return Ok(()) };
@@ -1537,6 +1641,15 @@ impl Dyn {
         let mut ids = vec![0i64; n * k];
         sc.ids.read(0, &mut ids)?;
         let input = input.ok_or_else(|| Error(format!("layer {l}: the router's input was not read before its experts ran")))?;
+        if let Some(m) = self.row_routes.borrow_mut().as_mut() {
+            let w = input.len() / n.max(1);
+            for (r, tag) in self.row_tags(n).into_iter().enumerate() {
+                let v = m.entry(tag).or_default();
+                v.retain(|c| !(c.layer == l && c.kind == ChoiceKind::Route));
+                let from = ChoiceFrom::Router(input[r * w..(r + 1) * w].to_vec());
+                v.push(std::rc::Rc::new(Choice { layer: l, kind: ChoiceKind::Route, chosen: ids[r * k..(r + 1) * k].to_vec(), from }));
+            }
+        }
         if let Some(t) = self.route_trace.borrow_mut().as_mut() {
             t.push((l, k, ids, input));
         }
@@ -1696,7 +1809,7 @@ impl Dyn {
         let kern = Kern::load(&dev)?;
         let kg = KernG4::load(&dev)?;
         let k35 = Kern35::load(&dev)?;
-        let knh = KernNh::load(&dev)?;
+        let kmamba = KernMamba2::load(&dev)?;
         let ka = attn::KernAttn::load(&dev)?;
         let skinny = crate::skinny::SkinnyKern::load(&dev)?;
         let ch = o.chunk.max(1);
@@ -1839,7 +1952,7 @@ impl Dyn {
             kern,
             kg,
             k35,
-            knh,
+            kmamba,
             ka,
             ldec,
             km,
@@ -1917,6 +2030,7 @@ impl Dyn {
             trace: std::cell::RefCell::new(None),
             op_trace: std::cell::RefCell::new(None),
             route_trace: std::cell::RefCell::new(None),
+            row_routes: std::cell::RefCell::new(None),
             picks,
             mla,
             verify: None,
@@ -2403,7 +2517,7 @@ impl Dyn {
             }
             Op::MambaConv { w, bias, state, cd, row, x_off } => {
                 // (in a pass over several sequences: this sequence's rows and its state)
-                self.knh.conv(
+                self.kmamba.conv(
                     s,
                     p.slot(Slot::Mix) + self.rows_before(row) + (x_off * 2) as u64,
                     row as i32,
@@ -2419,17 +2533,17 @@ impl Dyn {
             Op::MambaScan { dt_bias, a_log, d, state, cd, row, dt_off, nh, ng } => {
                 let (dtr, st) = (p.slot(Slot::Mix) + self.rows_before(row) + (dt_off * 2) as u64, self.state(state));
                 let (dtb, al, dd) = (p.small[dt_bias].ptr, p.small[a_log].ptr, p.small[d].ptr);
-                let (core, xc) = (p.slot(Slot::Core) + self.rows_before(nh * crate::kern::NH_P), p.slot(Slot::Xc) + self.rows_before(cd));
+                let (core, xc) = (p.slot(Slot::Core) + self.rows_before(nh * crate::kern::MAMBA2_HEAD), p.slot(Slot::Xc) + self.rows_before(cd));
                 match &self.ssd {
                     Some(ws) if self.chunked && n > 1 => {
-                        self.knh.ssd(s, ws, xc, cd as i32, dtr, row as i32, dtb, al, dd, st, core, n as i32, nh as i32, ng as i32, 0.0)?
+                        self.kmamba.ssd(s, ws, xc, cd as i32, dtr, row as i32, dtb, al, dd, st, core, n as i32, nh as i32, ng as i32, 0.0)?
                     }
-                    _ => self.knh.ssm(s, xc, cd as i32, dtr, row as i32, dtb, al, dd, st, core, n as i32, nh as i32, ng as i32, 0.0)?,
+                    _ => self.kmamba.ssm(s, xc, cd as i32, dtr, row as i32, dtb, al, dd, st, core, n as i32, nh as i32, ng as i32, 0.0)?,
                 }
                 self.mark("Mamba-2: scan")
             }
             Op::MambaNorm { w, row, di, ng } => {
-                self.knh.gated_norm(s, p.slot(Slot::Core), p.slot(Slot::Mix), row as i32, p.small[w].ptr, nu, di as i32, ng as i32, eps)?;
+                self.kmamba.gated_norm(s, p.slot(Slot::Core), p.slot(Slot::Mix), row as i32, p.small[w].ptr, nu, di as i32, ng as i32, eps)?;
                 self.mark("Mamba-2: gated norm")
             }
             Op::Moe(ref m) => self.moe(p, m, n),
@@ -2476,7 +2590,7 @@ impl Dyn {
             Op::IdxMean { heads, dim, block, q_norm, k_norm, rope, keys, pools } => {
                 self.idx_mean(p, (heads, dim, block), q_norm, k_norm, rope, keys, pools, n, pos.0)
             }
-            Op::IdxPick(ref x) if matches!(x.keys, IdxKeys::Pools(_)) => self.idx_pick_pools(p, x, n, pos.0),
+            Op::IdxPick(ref x) if matches!(x.keys, IdxKeys::Pools(_)) => self.idx_pick_pools(p, l, x, n, pos.0),
             Op::NgramRows(ref x) => self.ngram_rows(p, x, n),
             Op::NgramAdd(ref x) => self.ngram_add(p, x, n),
             Op::KdaConv { w, state, c, row, w32 } => {

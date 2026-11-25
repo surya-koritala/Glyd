@@ -173,7 +173,8 @@ pub fn activate(a: &Act, gu: &[u16], out: &mut [u16]) {
             for (i, o) in out.iter_mut().enumerate() {
                 let (g, u) = (f32_of(gu[i]), f32_of(gu[inter + i]));
                 *o = bf16(match *a {
-                    Act::Situ { beta, linear } => beta * (g / beta).tanh() / (1.0 + (-g).exp()) * linear * (u / linear).tanh(),
+                    // (situ as the GPU's moe_act computes it, to the bit: src/cpu_fp4.rs)
+                    Act::Situ { beta, linear } => crate::cpu_fp4::situ_f32(g, u, beta, linear),
                     _ => {
                         let (g, u) = (g.min(lim), u.max(-lim).min(lim));
                         let act =
@@ -595,7 +596,7 @@ mod tests {
         let gelu = |g: f32| 0.5 * g * (1.0 + (0.797_884_6 * (g + 0.044_715 * g * g * g)).tanh());
         assert_eq!(f(out[1]), f(b(gelu(-2.0) * 0.5)));
         activate(&Act::Situ { beta: 4.0, linear: 25.0 }, &gu, &mut out);
-        let situ = |g: f32, u: f32| 4.0 * (g / 4.0).tanh() / (1.0 + (-g).exp()) * 25.0 * (u / 25.0).tanh();
+        let situ = |g: f32, u: f32| 4.0 * crate::cpu_fp4::tanh_one(g / 4.0) / (1.0 + crate::cpu_fp4::exp_one(-g)) * 25.0 * crate::cpu_fp4::tanh_one(u / 25.0);
         assert_eq!(f(out[0]), f(b(situ(1.0, 3.0))));
         assert_eq!(f(out[2]), f(b(situ(20.0, -30.0))));
     }

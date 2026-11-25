@@ -1,7 +1,9 @@
 //! Kimi-K3's experts on the host, read where the expert cache's host tier holds them (GLY-330): MXFP4 matrices in the GPU's exact FP4 block layouts
 //! (glyd_gpu::pack's Fp4 and Fp4R: Int4's steps of 64 rows x 16 columns of codes, a row's scale for each run of 32 columns, as released or packed). A weight is
 //! its E2M1 code times its run's power of two (exact in fp32); the sums are fp32, rounded where the GPU's are: the first product to bf16, the activation (situ)
-//! to bf16, the second product to bf16, then times the pair's weight.
+//! to bf16, and the second product's fp32 sum times the pair's weight, as the GPU's weighted second product writes a pair's row (src/moe.rs `rows_sum`), not rounded
+//! first. The activations' exp and tanh are the GPU kernels' own (`exp_one`, `tanh_one`: kernels/moe.cu's moe_exp and moe_tanh), so a pair is the GPU's to the bit
+//! where the products' sums are.
 
 use crate::cpu_experts::Kernel;
 use crate::ffi::{err, Result};
@@ -322,7 +324,8 @@ pub struct Fp4Pair<'a> {
 /// The activation between a pair's two products and where its weight goes, as the GPU's kernel of the layer computes them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Act {
-    /// Kimi-K3's situ (moe.cu's MOE_SITU): the first product rounded to bf16, situ(gate, up) rounded to bf16, the second product rounded to bf16, then times the weight.
+    /// Kimi-K3's situ (moe.cu's MOE_SITU): the first product rounded to bf16, situ(gate, up) rounded to bf16, the second product's fp32 sum times the weight, as the
+    /// GPU's weighted second product writes a pair's row (unrounded: the layer's sum rounds a token's pairs once).
     Situ { beta: f32, linear: f32 },
     /// DeepSeek-V4's release (kernels/dsv4.cu's v4_moe_act): bf16(weight silu(min(gate, lim)) clamp(up, -lim, lim)) of the first product as bf16, each block of 128 rounded to E4M3 at its power-of-two scale where
     /// `fp8`; the second product (fp32) is the pair's output, its weight already in it.
@@ -333,9 +336,68 @@ pub(crate) fn bf16(v: f32) -> f32 {
     f32::from_bits((((v.to_bits() as u64 + 0x7FFF + ((v.to_bits() >> 16) & 1) as u64) as u32) >> 16) << 16)
 }
 
-/// situ(a, b) = beta tanh(a / beta) sigmoid(a) x linear tanh(b / linear), in fp32, rounded to bf16 (moe.cu's MOE_SITU, kimi_ref's situ).
+/// Cephes' expf and tanhf constants as the f32 they round to, by their bits (kernels/moe.cu's moe_exp and moe_tanh write the same bits): the exponent's bounds (where e^x
+/// leaves the normal numbers), log2 e, ln 2 in two parts (high exact; ln 2 = high - low), the exp polynomial's and the tanh polynomial's coefficients from the highest power down,
+/// and where tanh is 1.
+const EXP_MAX: f32 = f32::from_bits(0x42b1_7218);
+const EXP_MIN: f32 = f32::from_bits(0xc2ae_ac50);
+const LOG2E: f32 = f32::from_bits(0x3fb8_aa3b);
+const LN2_HI: f32 = f32::from_bits(0x3f31_8000);
+const LN2_LO: f32 = f32::from_bits(0x395e_8083);
+const EXP_P: [u32; 6] = [0x3950_6967, 0x3ab7_43ce, 0x3c08_8908, 0x3d2a_a9c1, 0x3e2a_aaaa, 0x3f00_0000];
+const TANH_MAX: f32 = f32::from_bits(0x4231_7218);
+const TANH_P: [u32; 5] = [0xbbba_f0ea, 0x3ca9_134e, 0xbd5c_1e2d, 0x3e08_8393, 0xbeaa_aa99];
+
+/// e^x as kernels/moe.cu's moe_exp computes it, to the bit: Cephes' expf (n = x log2 e rounded to an integer, x - n ln 2 in two parts by fused multiply-adds, a degree-6
+/// polynomial by Horner's rule in fused multiply-adds, times 2^n in two exact halves), every step an IEEE operation rounded to nearest. Its relative error is about 1e-7, as the
+/// CUDA library's expf (2 last places at most), which the release's activations are computed with and which the host cannot reproduce. Past `EXP_MAX`: infinite; below
+/// `EXP_MIN` (under the least normal number): 0.
+pub(crate) fn exp_one(x: f32) -> f32 {
+    if x > EXP_MAX {
+        return f32::INFINITY;
+    }
+    if x < EXP_MIN {
+        return 0.0;
+    }
+    let n = (x * LOG2E).round_ties_even();
+    let r = n.mul_add(LN2_LO, n.mul_add(-LN2_HI, x));
+    let p = EXP_P[1..].iter().fold(f32::from_bits(EXP_P[0]), |p, &c| p.mul_add(r, f32::from_bits(c)));
+    let y = p.mul_add(r * r, r) + 1.0;
+    let n = n as i32;
+    y * f32::from_bits(((n / 2 + 127) as u32) << 23) * f32::from_bits(((n - n / 2 + 127) as u32) << 23)
+}
+
+/// tanh(x) as kernels/moe.cu's moe_tanh computes it, to the bit: Cephes' tanhf (an odd polynomial below 0.625 in size, 1 - 2 / (e^2|x| + 1) by `exp_one` from there, 1 past
+/// `TANH_MAX`), every step an IEEE operation rounded to nearest; its relative error is about 1e-7, as the CUDA library's tanhf.
+pub(crate) fn tanh_one(x: f32) -> f32 {
+    let z = x.abs();
+    if z > TANH_MAX {
+        return 1f32.copysign(x);
+    }
+    if z >= 0.625 {
+        return (1.0 - 2.0 / (exp_one(z + z) + 1.0)).copysign(x);
+    }
+    let s = x * x;
+    let p = TANH_P[1..].iter().fold(f32::from_bits(TANH_P[0]), |p, &c| p.mul_add(s, f32::from_bits(c)));
+    (p * s).mul_add(x, x)
+}
+
+/// situ(a, b) = beta tanh(a / beta) sigmoid(a) x linear tanh(b / linear) in fp32, unrounded, as kernels/moe.cu's moe_situ computes it to the bit: its operations in that
+/// order (the sigmoid a division), its tanh and exp the GPU's own (`tanh_one`, `exp_one`).
+pub(crate) fn situ_f32(a: f32, b: f32, beta: f32, linear: f32) -> f32 {
+    beta * tanh_one(a / beta) / (1.0 + exp_one(-a)) * linear * tanh_one(b / linear)
+}
+
+/// `situ_f32` rounded to bf16 (moe.cu's MOE_SITU).
 fn situ(a: f32, b: f32, (beta, linear): (f32, f32)) -> f32 {
-    bf16(beta * (a / beta).tanh() * (1.0 / (1.0 + (-a).exp())) * linear * (b / linear).tanh())
+    bf16(situ_f32(a, b, beta, linear))
+}
+
+/// The release's weighted activation of a pair's gate and up (bf16 values; kernels/dsv4.cu's v4_moe_act, to the bit): bf16(w silu(min(g, lim)) clamp(u, -lim, lim)), its exp the
+/// GPU's own (`exp_one`).
+fn release(g: f32, u: f32, w: f32, lim: f32) -> f32 {
+    let (g, u) = (g.min(lim), u.clamp(-lim, lim));
+    bf16(w * (g / (1.0 + exp_one(-g)) * u))
 }
 
 /// kernel.py's power-of-two scale: 2^ceil(log2(amax / max)), from the f32 bits.
@@ -395,7 +457,7 @@ impl Out {
     }
 }
 
-/// out[p latent ..] = pair p's output with its weight (`act`): the second matrix times the activation of [gate | up], the first matrix times its token's row of z (bf16),
+/// out[p latent ..] = pair p's output with its weight (`act`), fp32 as the GPU's weighted second product keeps a pair's row: the second matrix times the activation of [gate | up], the first matrix times its token's row of z (bf16),
 /// on `threads` threads (the crew of src/cpu_experts.rs; `pin`: its threads each kept to a core). An item of work is a block of 64 rows of an expert's matrix for every pair of
 /// that expert (`by_expert`), so a call reads each expert's bytes from memory once whatever its pairs (the block stays in the core's cache between them); each pair's sums are
 /// the ones it has alone, to the bit.
@@ -445,8 +507,7 @@ pub fn experts(kernel: Kernel, z: &[u16], pairs: &[Fp4Pair], out: &mut [f32], ac
             Act::Release { lim, fp8 } => {
                 let w = pairs[p].weight;
                 for (i, v) in h.iter_mut().enumerate() {
-                    let (g, u) = (bf16(g[i]).min(lim), bf16(u[i]).clamp(-lim, lim));
-                    *v = bf16(w * (g / (1.0 + (-g).exp()) * u));
+                    *v = release(bf16(g[i]), bf16(u[i]), w, lim);
                 }
                 if fp8 {
                     fp8_sim(h, 128);
@@ -464,10 +525,69 @@ pub fn experts(kernel: Kernel, z: &[u16], pairs: &[Fp4Pair], out: &mut [f32], ac
             rows(kernel, &pairs[p].expert.down, &a[p * inter..(p + 1) * inter], 64 * b, 64 * b + 64, y);
             if let Act::Situ { .. } = act {
                 let w = pairs[p].weight;
-                y.iter_mut().for_each(|v| *v = bf16(*v) * w);
+                y.iter_mut().for_each(|v| *v *= w);
             }
         }
     });
+    Ok(())
+}
+
+/// `actcheck` (development): the activations the expert cache's host computes beside the GPU, each as the GPU's kernel computes it and as the host does (`experts`), on the same bf16
+/// inputs: Kimi-K3's situ (kernels/moe.cu's moe_act) and the release's weighted SiLU of DeepSeek-V4 (kernels/dsv4.cu's v4_moe_act, a weight of one, no E4M3 step). The inputs: every
+/// gate bf16 holds from -64 to 64 against ups of each size, and every such up against gates of each size; the outputs (bf16) that differ, the most last places apart, and the first.
+#[cfg(feature = "dev")]
+pub fn act_check(_a: &crate::args::Args) -> Result<()> {
+    use crate::dev::Buf;
+    let dev = crate::dev::Dev::new(0)?;
+    let k = crate::moe::MoeKern::load(&dev)?;
+    let release_k: crate::kt::v4_moe_act = dev.typed()?;
+    let s = dev.stream;
+    let f = |b: u16| f32::from_bits((b as u32) << 16);
+    // (every bf16 of size at most 64, both signs; a spread of the other input)
+    let all: Vec<u16> = (0..=u16::MAX).filter(|&b| f(b).is_finite() && f(b).abs() <= 64.0).collect();
+    let spread: Vec<u16> =
+        [-40.0f32, -17.0, -3.0, -0.75, -0.0625, 0.0078125, 0.5, 1.0, 2.5, 6.0, 23.0, 50.0].iter().map(|&v| (bf16(v).to_bits() >> 16) as u16).collect();
+    let mut pairs: Vec<(u16, u16)> = all.iter().flat_map(|&g| spread.iter().map(move |&u| (g, u))).collect();
+    pairs.extend(all.iter().flat_map(|&u| spread.iter().map(move |&g| (g, u))));
+    const I: usize = 1024;
+    let rows = pairs.len().div_ceil(I);
+    pairs.resize(rows * I, (0, 0));
+    let mut gu = vec![0u16; rows * 2 * I];
+    for (n, &(g, u)) in pairs.iter().enumerate() {
+        (gu[n / I * 2 * I + n % I], gu[n / I * 2 * I + I + n % I]) = (g, u);
+    }
+    let (din, dout) = (Buf::new(gu.len() * 2)?, Buf::new(rows * I * 2)?);
+    din.write(0, &gu)?;
+    let ord = |b: u16| if b & 0x8000 != 0 { -((b & 0x7fff) as i32) } else { b as i32 };
+    let mut out = vec![0u16; rows * I];
+    for name in ["situ", "the release's SiLU"] {
+        // SAFETY: the buffers hold `rows` rows of [2 I] and [I] bf16; the stream is the Dev's.
+        unsafe {
+            if name == "situ" {
+                k.act(s, din.ptr, dout.ptr, rows, I, &crate::moe::Act::Situ { beta: 4.0, linear: 25.0 })?;
+            } else {
+                crate::launch!(release_k, [rows as u32, (I / 512) as u32, 1], [128, 1, 1], s; din.ptr, dout.ptr, 0u64, 0u64, 0i32, I as i32, f32::INFINITY, 0i32)?;
+            }
+        }
+        dev.sync()?;
+        dout.read(0, &mut out)?;
+        let (mut differ, mut most, mut first) = (0usize, 0u32, None);
+        for (n, &(g, u)) in pairs.iter().enumerate() {
+            let host = if name == "situ" { situ(f(g), f(u), (4.0, 25.0)) } else { release(f(g), f(u), 1.0, f32::INFINITY) };
+            let h = (host.to_bits() >> 16) as u16;
+            let d = (ord(h) - ord(out[n])).unsigned_abs();
+            if d > 0 {
+                differ += 1;
+                most = most.max(d);
+                first.get_or_insert((f(g), f(u), f(out[n]), host));
+            }
+        }
+        println!(
+            "{name}: {} inputs, the GPU's kernel against the host's: {differ} outputs differ, the most {most} last places apart{}",
+            pairs.len(),
+            first.map_or(String::new(), |(g, u, a, b)| format!("; the first: gate {g:e}, up {u:e}: the GPU {a:e}, the host {b:e}"))
+        );
+    }
     Ok(())
 }
 
@@ -606,7 +726,36 @@ mod tests {
         }
     }
 
-    /// A pair's output is the second matrix times situ of the first's halves, times its weight; the threads change nothing.
+    /// The activations' exp and tanh (`exp_one`, `tanh_one`: the GPU kernels' own) against the true values (f64) over every 1,021st f32 up to 88 in size (exp where its result
+    /// is a normal number: from `EXP_MIN`; tanh to 50): the most last places apart of each, within the CUDA library's expf's and tanhf's documented 2.
+    #[test]
+    fn the_activations_exp_and_tanh_are_as_close_as_the_cuda_librarys() {
+        let ulps = |got: f32, want: f64| {
+            let w = (want as f32).abs();
+            (got as f64 - want).abs() / (f32::from_bits(w.to_bits() + 1) - w) as f64
+        };
+        let (mut e, mut t) = ((0f64, 0f32), (0f64, 0f32));
+        for b in (0..0x42b0_0000u32).step_by(1021) {
+            for x in [f32::from_bits(b), -f32::from_bits(b)] {
+                let u = if x >= EXP_MIN { ulps(exp_one(x), (x as f64).exp()) } else { 0.0 };
+                if u > e.0 {
+                    e = (u, x);
+                }
+                if x.abs() <= 50.0 && x != 0.0 {
+                    let u = ulps(tanh_one(x), (x as f64).tanh());
+                    if u > t.0 {
+                        t = (u, x);
+                    }
+                }
+            }
+        }
+        eprintln!("exp_one: the most {:.3} last places apart (at {:e}); tanh_one: {:.3} (at {:e})", e.0, e.1, t.0, t.1);
+        assert!(e.0 <= 2.0 && t.0 <= 2.0, "exp {e:?}, tanh {t:?}");
+        assert_eq!((exp_one(0.0), exp_one(-200.0), exp_one(100.0), tanh_one(0.0), tanh_one(-60.0)), (1.0, 0.0, f32::INFINITY, 0.0, -1.0));
+    }
+
+    /// A pair's output is the second matrix times situ of the first's halves, its fp32 sum times its weight with no rounding between (the GPU's weighted second
+    /// product's row); the threads change nothing.
     #[test]
     fn a_pair_is_its_two_products_and_situ() {
         let (latent, inter) = (128, 64);
@@ -627,8 +776,10 @@ mod tests {
         let a: Vec<f32> = (0..inter).map(|i| situ(bf16(gu[i]), bf16(gu[inter + i]), (4.0, 25.0))).collect();
         let mut d = vec![0f32; latent];
         rows(Kernel::Scalar, &ex.down, &a, 0, latent, &mut d);
-        let want: Vec<f32> = d.iter().map(|&v| bf16(v) * 0.25).collect();
+        let want: Vec<f32> = d.iter().map(|&v| v * 0.25).collect();
         assert_eq!(&one[..latent], &want[..]);
+        // (a sum rounded before its weight is another row: the host's pair is the GPU's only where it rounds where the GPU does)
+        assert!(d.iter().any(|&v| bf16(v) * 0.25 != v * 0.25));
         let mut four = vec![0f32; 2 * latent];
         experts(Kernel::Scalar, &z, &pairs, &mut four, act, 4, false).unwrap();
         assert_eq!(one, four);
@@ -686,7 +837,7 @@ mod tests {
         let mut h: Vec<f32> = (0..inter)
             .map(|i| {
                 let (g, u) = (bf16(gu[i]).min(lim), bf16(gu[inter + i]).clamp(-lim, lim));
-                bf16(w * (g / (1.0 + (-g).exp()) * u))
+                bf16(w * (g / (1.0 + exp_one(-g)) * u))
             })
             .collect();
         fp8_sim(&mut h, 128);

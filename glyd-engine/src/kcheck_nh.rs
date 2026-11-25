@@ -11,7 +11,7 @@
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result, Words};
 use crate::kcheck::top_vs_row;
-use crate::kern_nh::{KernNh, SsdWs, NH_N, NH_P};
+use crate::kern::{KernMamba2, SsdWs, MAMBA2_HEAD, MAMBA2_STATE};
 use crate::moe_nh::factory;
 use crate::nemotron::{pack_layout, ConfigNemotronH, NhKind};
 use crate::offload::{CachePlan, HostMemory, Mode, Offload};
@@ -74,11 +74,11 @@ fn level_of(bits: Option<usize>) -> Result<Layout> {
 pub fn kernels(ind: &Path, outd: &Path) -> Result<()> {
     io(std::fs::create_dir_all(outd))?;
     let dev = Dev::new(0)?;
-    let k = KernNh::load(&dev)?;
+    let k = KernMamba2::load(&dev)?;
     let s = dev.stream;
     let m = nums(ind, "mamba.txt")?;
     let (nh, ng, n, eps, dt_min, split) = (m[0] as usize, m[1] as usize, m[2] as usize, m[3] as f32, m[4] as f32, m[5] as usize);
-    let (di, cd) = (nh * NH_P, nh * NH_P + 2 * ng * NH_N);
+    let (di, cd) = (nh * MAMBA2_HEAD, nh * MAMBA2_HEAD + 2 * ng * MAMBA2_STATE);
     let w = di + cd + nh;
     let (mix, cw, cb, alog, dd, dtb, nw) = (
         load(ind, "mix.bin")?,

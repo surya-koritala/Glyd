@@ -31,6 +31,15 @@ fn with_experts(dir: &Path) -> Option<(Described, String)> {
     crate::runtime::describe::describe_dir(dir).ok().filter(|(k, _)| k.desc.blocks.iter().any(|b| matches!(b.body, Body::Ffn(Ffn::Moe(_)))))
 }
 
+/// The dynamic route's stage (src/dynamic/split.rs `StageLoad`): `load_stage`, every expert on the GPU where the layout has experts. A caching is refused: the
+/// layout's experts are not in the expert cache.
+pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+    if caching.is_some() {
+        return crate::ffi::err(format!("{}: the Qwen3.5 layout's experts are all on the GPU: no expert cache", dir.display()));
+    }
+    load_stage(dir, o, st)
+}
+
 /// Stage `st` of it (a model split across GPUs: its layers, the embedding where it is the first, the head where the last; a layer of another
 /// stage is an empty one here), on the executor's loader (`Dyn::new_stage`: the b and a gates' small parts held as saved, A_log and the gated norm's
 /// weight in fp32, a saved directory's packs as saved). A model whose feed-forwards are mixtures of experts (the layout with experts, `Qwen3_5MoeForCausalLM`) loads by its

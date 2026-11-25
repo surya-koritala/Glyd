@@ -27,6 +27,11 @@ pub fn load_stage(dir: &Path, o: &Opts, level: Layout, st: Stage) -> Result<Dyn>
     load_stage_hb(dir, o, level, st, None)
 }
 
+/// The dynamic route's stage (src/dynamic/split.rs `StageLoad`): `load_stage_hb` with its experts at `o.layout`'s level (penguin's lossless where none is given).
+pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+    load_stage_hb(dir, o, o.layout.unwrap_or(Layout::Tiered), st, caching)
+}
+
 /// `load_stage` with its experts as `caching` says, where it is given (the stage's places and memory, src/hbg_store.rs): a hummingbird directory's in the expert
 /// cache, the release's in the cache's places (FP8 as released each packed on its own; at a block level each expert's packs). Loaded by the executor's loader
 /// from the lowered description (`lower::glm`, every tensor named); each layer's experts the Moe kind's block (`experts::held`). Every layer is across the

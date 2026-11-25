@@ -3,7 +3,7 @@
 //! gate; the shared expert reads the model's width and its output is added to the experts' once they are back at it. The arithmetic and its roundings are `tools/nemotron_ref.py`'s `moe_mixer` (checked against
 //! transformers' own NemotronHMoE there); `NhMoe::forward` is its launches in order.
 //!
-//! The layer's tensors are read here, not by `WeightsNh::load`: the router and its fp32 score-correction bias as the checkpoint has them, and the latent projections, the shared expert and the experts as packs in
+//! The layer's tensors are read here, not by the executor's loader: the router and its fp32 score-correction bias as the checkpoint has them, and the latent projections, the shared expert and the experts as packs in
 //! a block layout (`level`: Int6, Int5 or Int4; at Int4 the experts alone are four-bit codes and the dense matrices six-bit ones, `pack_layout`), packed as they load from the bf16 checkpoint or read from a glyd-v7
 //! directory where it holds them saved, each in the layout its entry names (a bias saved there is bf16: the saver holds no fp32). The experts' second matrices (down) are in the row layout of their bits where the
 //! directory has them so or the checkpoint is packed here (`pack_layout`): the layer then runs the sparse product (src/moe_rows.rs); a directory saved with them in the block layout runs the library's dense
@@ -386,7 +386,7 @@ impl MoeBlock for NhMoeCached {
             None => (h, out),
         };
         self.layer.route(sc, s, h, c.router_hidden, n)?;
-        let call = Call { ids: sc.ids.ptr, wts: sc.wts.ptr, z, way: sc.way.ptr, part: sc.cpu.ptr, tokens: n, pairs: n * c.router.top_k };
+        let call = Call { ids: sc.ids.ptr, wts: sc.wts.ptr, z, way: sc.way.ptr, part: sc.cpu.ptr, rows: 0, tokens: n, pairs: n * c.router.top_k };
         self.store.run(self.index, e.dev(), &call, &mut |stage, wave, waves, hy| match stage {
             Stage::Products => {
                 if wave == 0 {
@@ -397,6 +397,9 @@ impl MoeBlock for NhMoeCached {
                 }
                 Ok(())
             }
+            // (a call in waves: the store asks for the sum after each wave, and only the last wave's has every pair's parts written; the earlier sums, which
+            // the last one overwrites, are not made: they read the parts of the pairs of the waves still to come)
+            Stage::Sum if wave + 1 < waves => Ok(()),
             Stage::Sum => self.layer.experts_sum(sc, s, n, y, hy.ids, hy.extra),
         })?;
         if let Some((_, fc2)) = &self.fc {
@@ -427,7 +430,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::kern_nh::{NH_N, NH_P};
+    use crate::kern::{MAMBA2_HEAD, MAMBA2_STATE};
     use crate::moe::expert_strides;
     use crate::nemotron::tests::{bf16_bytes, checkpoint};
     use crate::pack::nemotron_plan;
@@ -536,8 +539,8 @@ mod tests {
         let c = ConfigNemotronH::parse(include_str!("../tests/fixtures/nemotron_h_moetoy_config.json"), "moetoy", None).unwrap();
         assert_eq!(c.kinds, [NhKind::Mamba, NhKind::Moe, NhKind::Attention, NhKind::Moe, NhKind::Mamba, NhKind::Moe]);
         assert!(
-            c.m_head_dim == NH_P
-                && c.m_state == NH_N
+            c.m_head_dim == MAMBA2_HEAD
+                && c.m_state == MAMBA2_STATE
                 && c.conv_kernel == 4
                 && c.head_dim == 128
                 && c.inner() / c.m_groups <= 1024
