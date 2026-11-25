@@ -75,6 +75,25 @@ pub struct Top {
     pub mass: Option<f64>,
 }
 
+/// A row's whole distribution in buckets, as a GPU makes it for a draw over all of the row (`Sampler::sample_hist`): each token's e = exp((x - max) / temperature), the quotient
+/// in f32 as the host's draw takes it, summed by bucket of the quotient, bucket b holding the quotients in (-(b + 1) / per, -b / per] (the last bucket every one below), with
+/// the bucket's count; `max` the row's largest logit the sums are about.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hist {
+    pub max: f32,
+    pub per: f32,
+    pub sums: Vec<f64>,
+    pub counts: Vec<u32>,
+}
+
+/// The buckets a `Hist` has, and how many a unit of the quotient spans: the last bucket begins at a quotient of -32 (exp -32: 1e-14 of the largest token's weight).
+pub const HIST_BUCKETS: usize = 1024;
+pub const HIST_PER: f32 = 32.0;
+
+/// How near (relative to the row's sum) the draw's point may come to a token's or a bucket's edge before a draw from the buckets is not trusted: the buckets' sums are added
+/// in another order than the host's, which moves them by about 1e-16 of the sum a token.
+const HIST_EDGE: f64 = 1e-10;
+
 /// Draws made by `Sampler::sample_with` from the whole row and from the GPU's largest logits alone.
 pub static DRAWS: [std::sync::atomic::AtomicU64; 2] = [const { std::sync::atomic::AtomicU64::new(0) }; 2];
 
@@ -443,6 +462,93 @@ impl Sampler {
         } else {
             self.finish_draw(pool[..k].iter().map(|c| c.0).collect(), pool[..k].iter().map(|c| c.1).collect())
         };
+        self.note(tok);
+        Some(tok)
+    }
+
+    /// The temperature of a draw over all of the row the candidates cannot hold, which a row's buckets can (`sample_hist`): a temperature above 0, no top-k or one past the
+    /// candidates, no top-p and no min-p, nothing that changes the row (no penalties, bias, allowed tokens, grammar or tokens taken out). None otherwise.
+    pub fn hist_need(&self) -> Option<f32> {
+        let p = &self.p;
+        let plain = p.repetition_penalty == 1.0
+            && p.presence_penalty == 0.0
+            && p.frequency_penalty == 0.0
+            && p.logit_bias.is_empty()
+            && p.allowed.is_empty()
+            && self.gram.is_none()
+            && !self.suppressing();
+        (plain && p.temperature > 0.0 && p.top_p >= 1.0 && p.min_p == 0.0 && (p.top_k == 0 || p.top_k > crate::kern::TOPK)).then_some(p.temperature)
+    }
+
+    /// The next token from a row's buckets (`Hist`, at `hist_need`'s temperature) and the tokens of the buckets the draw lands in (`bucket`: a bucket's tokens and logits, all
+    /// of them; None where it cannot give them), never the whole row: the top-k cut (where one is asked) and the draw's point found bucket by bucket, then token by token in the
+    /// bucket sorted as the host's draw sorts the row (the larger logit first, the smaller token of equal ones). The token `sample` gives from the whole row, where the point
+    /// is not within HIST_EDGE of a token's edge (the buckets' sums are added in another order); None there, or where a bucket cannot be had, the generator untouched.
+    pub fn sample_hist(&mut self, h: &Hist, bucket: &mut dyn FnMut(usize) -> Option<Vec<(u32, f32)>>) -> Option<u32> {
+        let t = self.hist_need()?;
+        let n = h.sums.len();
+        if n == 0 || h.counts.len() != n || h.sums.iter().any(|x| !x.is_finite()) {
+            return None;
+        }
+        let weight = |x: f32| (((x - h.max) / t) as f64).exp();
+        let sorted = |mut v: Vec<(u32, f32)>| {
+            v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+            v
+        };
+        let got = |bucket: &mut dyn FnMut(usize) -> Option<Vec<(u32, f32)>>, b: usize| bucket(b).filter(|v| v.len() == h.counts[b] as usize).map(sorted);
+        // the top-k cut: every bucket before the one the k-th token is in, and the first of that one's tokens
+        let (mut cut_at, mut cut_tokens) = (n, None);
+        if self.p.top_k > 0 {
+            let mut seen = 0usize;
+            for b in 0..n {
+                if seen + h.counts[b] as usize >= self.p.top_k {
+                    let v = got(bucket, b)?;
+                    cut_tokens = Some(v[..self.p.top_k - seen].to_vec());
+                    cut_at = b;
+                    break;
+                }
+                seen += h.counts[b] as usize;
+            }
+        }
+        let partial: f64 = cut_tokens.as_ref().map_or(0.0, |v| v.iter().map(|&(_, x)| weight(x)).sum());
+        let total: f64 = h.sums[..cut_at].iter().sum::<f64>() + partial;
+        if !(total > 0.0) || !total.is_finite() {
+            return None;
+        }
+        let mut rng = Rng(self.rng.0);
+        let target = rng.unit() * total;
+        let edge = HIST_EDGE * total;
+        // the bucket the point lands in, then the token in it
+        let mut acc = 0.0;
+        let mut tokens = None;
+        for b in 0..cut_at {
+            if acc + h.sums[b] >= target {
+                if acc + h.sums[b] - target < edge || target - acc < edge {
+                    return None;
+                }
+                tokens = Some(got(bucket, b)?);
+                break;
+            }
+            acc += h.sums[b];
+        }
+        let tokens = match tokens {
+            Some(v) => v,
+            None => cut_tokens?,
+        };
+        let mut tok = None;
+        for (u, x) in tokens {
+            let e = weight(x);
+            if acc + e >= target {
+                if acc + e - target < edge || target - acc < edge {
+                    return None;
+                }
+                tok = Some(u);
+                break;
+            }
+            acc += e;
+        }
+        let tok = tok?;
+        self.rng = rng;
         self.note(tok);
         Some(tok)
     }

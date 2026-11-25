@@ -24,13 +24,13 @@ bird: penguin, kestrel, swift, wren, hummingbird.
 - [ ] Every lossy pack in the release has a quality card that says publish (`quality.json` in the pack; docs/quality.md); `ship` will not upload one without it.
 - [ ] Consumer benchmarks: `scripts/consumer_bench.sh` on each owned GPU's tier (or the `Consumer bench` workflow), the results and page in
       `benchmarks/consumer/vX.Y.Z/`; the 1x H100 occupancy check held to the last one (benchmarks/consumer/README.md).
-- [ ] Binaries built on Ubuntu 22.04 (glibc 2.35 or older), sha256 written down.
+- [ ] Binaries: the tag's workflows build Linux in the manylinux_2_28 image (glibc 2.28) and write each sha256 (step 3).
 - [ ] Clean-install check on a fresh machine: `pip install glyd==X.Y.Z`, `glyd run` each new model, `glyd verify` it.
 - [ ] Plain style everywhere (first person, raw numbers, no adjectives, no comparisons with other projects).
 
 ## Release day (one repository: surya-koritala/Glyd)
 
-1. `scripts/bump_version.py X.Y.Z` (every Cargo.toml, both pyproject.toml, the installer's pin), CHANGELOG `## Unreleased` → `## vX.Y.Z`,
+1. `scripts/bump_version.py X.Y.Z` (the four Cargo.toml and their Cargo.lock entries, both pyproject.toml and `__init__.py`, both installers' pins), CHANGELOG `## Unreleased` → `## vX.Y.Z`,
    with every `changelog.d/*.md` entry put under it and the files removed.
    PR to main, CI green.
 2. `scripts/release_ready.sh X.Y.Z` on the merge commit, then tag `vX.Y.Z` there, push the tag, and right away

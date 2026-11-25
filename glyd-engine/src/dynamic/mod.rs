@@ -1158,8 +1158,8 @@ pub struct Dyn {
     lanes: Option<rows::Lanes>,
     /// GLYD_ENGINE_STEP_PROF=1 or GLYD_PROF=1 on a served model: the GPU's time of each step and its idle time before it (src/dynamic/rows.rs `Gaps`).
     gaps: Option<rows::Gaps>,
-    /// Whether a row of the next launched step draws from its candidates (`ModelStep::draws`): they are queued with the step.
-    draws: bool,
+    /// What the sampled rows of the next launched step ask of it (`ModelStep::draws`): their candidates and sums are queued with the step.
+    draws: Vec<Option<f32>>,
     /// The 12-bit pages' status as the lane of the step landed last copied it (src/dynamic/kvpages.rs `kv12_lost` reads it once); None: the GPU's own.
     status_from: Option<*const u32>,
     /// The grammar masks of the next step's sampled rows (`ModelStep::masks`), put on the rows before their candidates' top-k (`masker`), and the room for a row's sum of
@@ -1167,6 +1167,8 @@ pub struct Dyn {
     row_masks: Vec<Option<crate::constrain::MaskHandle>>,
     masker: Option<crate::kern::MaskGpu>,
     sums: Option<Buf>,
+    /// Launched steps landed with a later one queued, whose expert cache's end of a step is owed (src/dynamic/rows.rs `quiet`).
+    owed: usize,
 }
 
 /// A sequence's own buffers and place, while another is selected (`Dyn::select`): its keys and values, its states, its position, the verify pass it can go back
@@ -1657,11 +1659,12 @@ impl Dyn {
             swap: None,
             lanes: None,
             gaps: None,
-            draws: false,
+            draws: Vec::new(),
             status_from: None,
             row_masks: Vec::new(),
             masker: None,
             sums: None,
+            owed: 0,
         };
         // (a group of GPUs: every one's engine made before any one's first pass, src/dynamic/tp.rs)
         if let Some(c) = tp::comm() {

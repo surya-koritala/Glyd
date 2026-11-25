@@ -302,6 +302,29 @@ table! {
     }
 }
 
+#[cfg(not(glyd_hip))]
+table! {
+    pub struct Hopper {
+        fn cuTensorMapEncodeTiled(*mut c_void, c_int, c_uint, *mut c_void, *const u64, *const u64, *const u32, *const u32, c_int, c_int, c_int, c_int) -> c_int;
+        fn cuLaunchKernelEx(*const c_void, CuFunction, *mut *mut c_void, *mut *mut c_void) -> c_int;
+        fn cuOccupancyMaxActiveClusters(*mut c_int, CuFunction, *const c_void) -> c_int;
+    }
+}
+
+/// The driver's calls for Hopper's kernels (tensor maps, clusters: CUDA 12 on), from the driver the table came from; an error where it has none.
+#[cfg(not(glyd_hip))]
+pub fn hopper() -> Result<&'static Hopper> {
+    static H: OnceLock<std::result::Result<Hopper, String>> = OnceLock::new();
+    H.get_or_init(|| {
+        driver().map_err(|e| e.msg)?;
+        let h = dl::open(CUDA_DRIVER)?;
+        // SAFETY: libcuda's functions of these names and signatures (cuda.h, CUDA 12.0 on).
+        unsafe { Hopper::resolve(h) }.map_err(|e| format!("{CUDA_DRIVER}: {e} (a driver of CUDA 12 or later has them)"))
+    })
+    .as_ref()
+    .map_err(|e| Error::of(Kind::NoDriver, e.clone()))
+}
+
 /// AMD GPUs: a build with GLYD_HIP=1 (build.rs: the kernels by hipcc, cfg `glyd_hip`) takes the driver's table from HIP's runtime, libamdhip64, whose functions take
 /// the driver API's calls with the same arguments and flags (the numbers of the flags the engine passes are the same in HIP: a non-blocking stream 1, a relaxed capture 2,
 /// portable pinned memory 1, mapped 2, an event without timing 2, an external record 1, "not ready" 600). Two calls differ: a device's attributes go by HIP's numbers, and a kernel
@@ -482,7 +505,7 @@ pub fn cu(call: &str, status: c_int) -> Result<()> {
 }
 
 /// The C API version this binding is written for (glyd_gpu.h's GLYD_GPU_API_VERSION).
-pub const API_VERSION: c_int = 24;
+pub const API_VERSION: c_int = 25;
 
 /// The name a library call goes by in an error: the function's own.
 macro_rules! call {

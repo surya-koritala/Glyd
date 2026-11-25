@@ -4,7 +4,7 @@
     "tensors": 95776,
     "kinds": "044b67799952d235",
     "weights": "6632c8ed94397f3f",
-    "plan": "91334ef4fb4cb111",
+    "plan": "39e8df4cd78eaef2",
     "family": "refused: m is a DeepseekV41ForCausalLM model, and this engine runs Qwen3 models so far"
   },
   "deepseek_v41_tiny_config.json": {
@@ -12,7 +12,7 @@
     "tensors": 495,
     "kinds": "a87ae48a5e8c7e9a",
     "weights": "1d8cfb81bf165049",
-    "plan": "18df70ff8acbf70c",
+    "plan": "8d7a33826478033d",
     "family": "refused: m is a DeepseekV41ForCausalLM model, and this engine runs Qwen3 models so far"
   },
   "gemma4_12b_config.json": {
@@ -156,7 +156,7 @@
     "tensors": 72317,
     "kinds": "cf796315f77d38a2",
     "weights": "dcc4ccb3b29d9720",
-    "plan": "501adcefbd0f834c",
+    "plan": "7a6646d6bba3af10",
     "family": "DeepSeekV4"
   },
   "headers/Kimi-K3.json": {
