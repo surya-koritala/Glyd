@@ -8,6 +8,7 @@
 use crate::args::Args;
 use crate::dev::{Buf, Dev, Timer};
 use crate::ffi::{err, Error, Lib, Result};
+use crate::gpu_ops::GpuOps;
 use crate::moe_hb::{HbHost, HbKern, HbPlace, HbStack};
 use glyd_gpu::codebook::{decode_codebook_rows, pack_codebook_rows, CbRows};
 

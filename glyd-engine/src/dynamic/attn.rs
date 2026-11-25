@@ -16,7 +16,8 @@
 use super::{Dyn, Part, Slot};
 use crate::dev::Dev;
 use crate::ffi::{err, Result, Stream};
-use crate::gemma4::G4Pf;
+use crate::gpu_ops::GpuOps;
+use crate::kern::G4Pf;
 use crate::launch;
 use crate::runtime::kinds;
 

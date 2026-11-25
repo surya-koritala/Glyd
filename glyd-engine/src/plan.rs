@@ -529,6 +529,10 @@ impl Shape {
         let arch = if c.arch.is_empty() { model_type.clone() } else { c.arch.clone() };
         let mut sh = Shape { arch, layers: kinds.len(), hidden: h, experts, topk, ..Default::default() };
         sh.window = s.sliding_window.unwrap_or(0);
+        // (compressed attention, DeepSeek-V4's (src/dynamic/deepseek_v4.rs): a layer keeps a window of keys that are its values, and where its ratio r is not 0 one compressed
+        // entry of every r tokens, its indexer's entry of every 4 beside it where r is 4)
+        let ratios: Option<Vec<usize>> =
+            c.text.get("compress_ratios").and_then(serde_json::Value::as_array).map(|a| a.iter().map(|v| v.as_u64().unwrap_or(0) as usize).collect());
         for (i, kind) in kinds.iter().enumerate() {
             match kind.as_str() {
                 "linear_attention" => {
@@ -544,7 +548,17 @@ impl Shape {
                     let sliding = k.contains("sliding") && sh.window > 0;
                     let (p, kv) = attention(!sliding && pattern.is_none() && s.global_head_dim.is_some());
                     sh.dense += p;
-                    if sliding {
+                    if let Some(r) = &ratios {
+                        let (ratio, d, idim) = (r.get(i).copied().unwrap_or(0), hd as usize, s.index_head_dim.unwrap_or(0));
+                        let entries = |w: usize, every: usize| (w * 2).div_ceil(every) as f64;
+                        sh.kv_sliding += (d * 2) as f64;
+                        if ratio > 0 {
+                            sh.kv_full += entries(d, ratio);
+                        }
+                        if ratio == 4 {
+                            sh.kv_full += entries(idim, 4);
+                        }
+                    } else if sliding {
                         sh.kv_sliding += kv
                     } else {
                         sh.kv_full += kv
@@ -952,7 +966,7 @@ fn fit_rows<const N: usize>(rows: &[([f64; N], f64)], prior: [f64; N], scale: [f
 }
 
 /// The seconds of other users' prompts in the median user's decode, where `n` users send a prompt of `prompt` tokens at once (bench's loads): the scheduler reads
-/// the prompts in turn, and each user's reply runs beside the prompts read after its own, (n - 1) / 2 of them for the median one. Measured on an A100 (m2-stage2):
+/// the prompts in turn, and each user's reply runs beside the prompts read after its own, (n - 1) / 2 of them for the median one. Measured on an A100:
 /// Qwen3.5-0.8B's 8 users took 154.5 tokens/s each on short prompts and 127.3 on 1k ones, where 127 steps of the first and 3.5 prompts of 994 tokens at
 /// 20,206 tokens/s come to 127.8.
 pub fn prompt_wait(n: usize, prompt: f64, prefill: f64) -> f64 {
@@ -1558,6 +1572,9 @@ pub struct Spread {
     pub places: Vec<usize>,
     pub experts_per_layer: usize,
     pub host_bytes: u64,
+    /// Each stage's share of `host_bytes`: the experts of its own layers (one entry where `across`; zeros where nothing is in the computer's memory). They add
+    /// up to `host_bytes`.
+    pub host_per_stage: Vec<u64>,
     /// The bytes the GPUs hold of the model (its weights, and the places' experts).
     pub gpu_bytes: u64,
     /// The last layers whose dense matrices are in the computer's memory (src/dense_ram.rs: one stage, P2d's rung after the experts), and their bytes there.
@@ -1638,7 +1655,7 @@ impl LoadPlan {
             "experts": experts,
             "spread": self.spread.as_ref().map(|s| serde_json::json!({
                 "cuts": s.cuts, "devices": s.devices, "across": s.across, "coded": s.coded, "twelve": s.twelve,
-                "places": s.places, "experts_per_layer": s.experts_per_layer, "host_bytes": s.host_bytes,
+                "places": s.places, "experts_per_layer": s.experts_per_layer, "host_bytes": s.host_bytes, "host_per_stage": s.host_per_stage,
             })),
         })
         .to_string()
@@ -2461,7 +2478,7 @@ pub fn text(model: &str, sh: &Shape, m: &Machine, p: &Plan) -> String {
         s += &format!("note: {n}\n");
     }
     s += &format!(
-        "(decode speeds are predictions for one user at about 1,000 positions: the GPU's memory rate {}, each class's floor a step and shares of that rate; prompts' from its tensor rate)\n",
+        "(decode speeds are predictions for one user at about 1,000 positions: the GPU's memory rate {}, each class's floor a step and shares of that rate; prompts' a share of it too)\n",
         if m.devices.iter().any(|d| d.stream.is_some()) { "as measured here" } else { "by the maker's figure" },
     );
     s
@@ -2752,7 +2769,17 @@ pub mod sizing {
 
     /// A token's keys and values in the executor's cache, all layers: bf16, or in its 12-bit lossless pages (`twelve`) 12 bits a value and a page's header.
     pub fn kv_per_token(cfg: &Config, twelve: bool) -> u64 {
-        ((cfg.layers * 2 * cfg.kv_heads * cfg.head_dim) as f64 * if twelve { 1.5 * 1.06 } else { 2.0 }) as u64
+        ((cfg.layers * 2 * cfg.kv_heads * cfg.head_dim) as f64 * kv_value_bytes(twelve)) as u64
+    }
+
+    /// A key's or value's bytes as `kv_per_token` plans them: 2 in bf16; in the 12-bit pages 1.5 and 6% for the page's headers, escape room and raw slabs (a pool of
+    /// heads of 128 holds within 5% of it: src/dynamic/kvpages.rs's tokens-a-GiB test).
+    pub fn kv_value_bytes(twelve: bool) -> f64 {
+        if twelve {
+            1.5 * 1.06
+        } else {
+            2.0
+        }
     }
 
     /// The activations of a chunk of `chunk` tokens (the buffers of one forward pass), the decoded matrix a cuBLAS product reads, and the fixed workspaces.
@@ -2956,6 +2983,11 @@ pub mod sizing {
                 places: parts.iter().map(|p| p.2).collect(),
                 experts_per_layer: experts,
                 host_bytes,
+                host_per_stage: stage_shares(
+                    &parts.iter().flat_map(|p| std::iter::repeat_n(1u64, (p.1).1 - (p.1).0)).collect::<Vec<_>>(),
+                    &parts.iter().skip(1).map(|p| (p.1).0).collect::<Vec<_>>(),
+                    host_bytes,
+                ),
                 gpu_bytes,
                 dense: 0,
                 dense_bytes: 0,
@@ -3049,6 +3081,20 @@ pub mod sizing {
         let start = if gpus.len() == 1 { free * gib } else { frees.iter().sum::<f64>() * gib };
         let plan = condor_plan(layout, always, &parts, ctx, chunk, stream, headroom, start, host, c.experts);
         Ok(CondorLoad { gpus, parts, plan, free: start as u64 })
+    }
+
+    /// `host` bytes in the computer's memory split over the stages that `cuts` make of layers holding `per_layer` bytes each (of what goes there): each stage's
+    /// share by its layers', the rounding the last stage's, so that they add up to `host` exactly; all of it the first's where no layer holds any.
+    pub fn stage_shares(per_layer: &[u64], cuts: &[usize], host: u64) -> Vec<u64> {
+        let bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(per_layer.len())).collect();
+        let n = per_layer.len();
+        let of: Vec<u128> = bounds.windows(2).map(|w| per_layer[w[0].min(n)..w[1].clamp(w[0].min(n), n)].iter().map(|&b| b as u128).sum()).collect();
+        let all: u128 = of.iter().sum();
+        let mut out: Vec<u64> = of.iter().map(|&b| if all == 0 { 0 } else { (host as u128 * b / all) as u64 }).collect();
+        let given: u64 = out.iter().sum();
+        let at = if all == 0 { 0 } else { out.len() - 1 };
+        out[at] += host - given;
+        out
     }
 
     // ---- what each family's tensors take: the bytes the plans count (the loaders' lists of tensors are the families') ----
@@ -4467,6 +4513,16 @@ pub mod sizing {
                 ram,
             }
         });
+        // (each stage's layers' experts: a hummingbird directory's files, else the table's expert tensors)
+        let host_per_stage = crate::plan::sizing::stage_shares(
+            &if hb_experts.is_empty() {
+                crate::dynamic::split::layer_bytes_table(table, nl, 100, 100, &|n| n.contains(".experts.")).0
+            } else {
+                hb_experts.clone()
+            },
+            if across { &[] } else { &cuts },
+            host_bytes,
+        );
         Ok(LoadPlan {
             kind: Kind::Dynamic,
             family,
@@ -4493,6 +4549,7 @@ pub mod sizing {
                 places: cache.as_ref().map_or(Vec::new(), |k| k.2.clone()),
                 experts_per_layer: cache.as_ref().map_or(0, |k| k.5),
                 host_bytes,
+                host_per_stage,
                 gpu_bytes: total,
                 dense: dense_ram.0,
                 dense_bytes: dense_ram.1,
@@ -4636,6 +4693,49 @@ pub mod sizing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The planner's keys and values a token (`Shape::kv_full`, `kv_sliding`) against what the executor's pools take a token (each ring's `token_bytes`, bf16), for a random case of each
+    /// attention kind: plain and sliding attention (Gemma 4's), the gated attention beside recurrent layers (Qwen3.5's layout), latent attention with its indexer's sparse keys
+    /// (GLM-5.3-Flash's toy case, as glmrandom makes it), compressed entries beside a window and an indexer (DeepSeek-V4's small random case). The same bytes, exactly.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_planners_keys_and_values_a_token_are_the_pools() {
+        use crate::dynamic::Stage;
+        let fixture = |f: &str| std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(f)).unwrap();
+        let qwen35: serde_json::Value = serde_json::from_str(&fixture("qwen35_tiny_manifest.json")).unwrap();
+        let q35 = qwen35["config"].as_str().unwrap().to_string();
+        let glm = fixture("glm5_next_toy_config.json");
+        let cases: Vec<(&str, String, crate::dynamic::ModelDesc)> = vec![
+            ("plain and sliding attention", crate::logits::GEMMA4_RANDOM_CONFIG.to_string(), {
+                crate::dynamic::gemma4::describe(&crate::gemma4::ConfigG4::parse(crate::logits::GEMMA4_RANDOM_CONFIG, None, false).unwrap())
+            }),
+            ("gated attention beside recurrent layers", q35.clone(), {
+                let c = crate::qwen35::Config35::parse(&q35, "qwen35", None).unwrap();
+                crate::dynamic::qwen35::describe(&c, &Stage::whole(c.layers)).unwrap()
+            }),
+            ("latent attention and its indexer's keys", glm.clone(), {
+                let c = crate::glm::ConfigGlm::parse(&glm, "GLM-5.3-Flash", None).unwrap();
+                crate::dynamic::glm::describe(&c, &Stage::whole(c.layers)).unwrap()
+            }),
+            ("compressed entries, a window and an indexer", crate::dsv4_ref::SMALL_CONFIG.to_string(), {
+                let c = crate::deepseek_v4::ConfigV4::parse(crate::dsv4_ref::SMALL_CONFIG, "random", None).unwrap();
+                let vo = crate::dynamic::deepseek_v4::V4Opts::of(crate::weights::Layout::Tiered, 1024);
+                let kinds = crate::runtime::describe::describe(&serde_json::from_str(crate::dsv4_ref::SMALL_CONFIG).unwrap()).unwrap();
+                crate::dynamic::lower::deepseek_v4(&kinds, vec![1], 1 << 20, &Stage::whole(c.layers), &vo).unwrap()
+            }),
+        ];
+        let mut bad = Vec::new();
+        for (kind, text, d) in &cases {
+            let sh = Shape::from_config(text).unwrap();
+            let full: usize = d.rings.iter().filter(|r| r.window == 0).map(|r| r.token_bytes()).sum();
+            let sliding: usize = d.rings.iter().filter(|r| r.window > 0).map(|r| r.token_bytes()).sum();
+            eprintln!("{kind}: the pools {full} + {sliding} (sliding) bytes a token, the planner {} + {}", sh.kv_full, sh.kv_sliding);
+            if (sh.kv_full, sh.kv_sliding) != (full as f64, sliding as f64) {
+                bad.push(format!("{kind}: the pools {full} + {sliding}, the planner {} + {}", sh.kv_full, sh.kv_sliding));
+            }
+        }
+        assert!(bad.is_empty(), "{bad:?}");
+    }
 
     fn fixture(name: &str) -> String {
         std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)).unwrap()
@@ -4986,7 +5086,7 @@ mod tests {
     }
 
     /// The shipped calibration records (calibration/records.jsonl), with the features the planner reads of them: the RTX 4080 SUPER's runs (g1 and g2 of
-    /// 2026-11-23, bench --loads 1k:1 --no-draft, the median of 3; prompts of 936 and 1,002 tokens, 128 made) and the A100 SXM4 40GB's runs of m2-stage3 63bdcdcb
+    /// 2026-11-23, bench --loads 1k:1 --no-draft, the median of 3; prompts of 936 and 1,002 tokens, 128 made) and the A100 SXM4 40GB's runs at 63bdcdcb
     /// (session 3, 2026-11-24, bench's gate suite with GLYD_KV=bf16, the median of 3, 128 made: one user and eight on short prompts, one at 1k and 4k; the
     /// prompts of the short loads too short to time a prompt, so their prompt rates are not kept; the rate the A100's probe measured in session 2), and the A10's
     /// plancheck runs of session 5 (15: 8 users, Qwen3.5-0.8B kestrel, gemma-4-12B wren and swift at 1k, 4k, 8k, 1k for eight and 85% of the context). Only
@@ -5054,7 +5154,7 @@ mod tests {
                 1274.41,
                 61.49,
                 312.0,
-                "Lambda A100 SXM4 40GB, session 3: bench at m2-stage3 63bdcdcb, gate suite, GLYD_KV=bf16, the median of 3",
+                "Lambda A100 SXM4 40GB, session 3: bench at 63bdcdcb, gate suite, GLYD_KV=bf16, the median of 3",
                 a100,
             ),
             (
@@ -5067,7 +5167,7 @@ mod tests {
                 518.53,
                 116.68,
                 125.0,
-                "Lambda A10, session 5: plancheck at m2-y 87023bbc, 8 users, the median of 3",
+                "Lambda A10, session 5: plancheck at 87023bbc, 8 users, the median of 3",
                 a10,
             ),
         ] {
@@ -5227,7 +5327,7 @@ mod tests {
     }
 
     /// A step of several rows reads the weights once for all of them: each row past the first adds its keys' and values' reads and its class's time a layer, no
-    /// weights. On the A100 (its records: one user and eight, m2-stage3) eight users at 1k positions are each predicted at 1 / (the one user's step + 7 rows).
+    /// weights. On the A100 (its records: one user and eight, at 63bdcdcb) eight users at 1k positions are each predicted at 1 / (the one user's step + 7 rows).
     #[test]
     fn a_step_of_several_rows_reads_the_weights_once() {
         let (_, q08) = measured_shapes();
@@ -5244,7 +5344,7 @@ mod tests {
         assert_eq!((w1, kv8), (w8, 8.0 * kv_at(&q08, 1088.0)));
     }
 
-    /// Users who send their prompts at once each wait in their replies for the prompts read after theirs (`prompt_wait`): on the A100 at m2-stage2, Qwen3.5-0.8B's
+    /// Users who send their prompts at once each wait in their replies for the prompts read after theirs (`prompt_wait`): on the A100, Qwen3.5-0.8B's
     /// eight users took 127.3 tokens/s each on 1k prompts (994 tokens, 20,206 tokens/s) and 154.5 on short ones; the first, its wait taken out of its 127 steps,
     /// is the second within 1%. A record of such a run is fitted on its steps.
     #[test]
@@ -5406,6 +5506,19 @@ mod tests {
 
     fn gpu_of(d: &Device, ordinal: i32) -> crate::dev::Gpu {
         crate::dev::Gpu { name: d.name.clone(), cc: d.cc, sms: 0, total: d.total, free: d.free, driver: d.driver, count: 1, ordinal }
+    }
+
+    /// Each stage's share of what the computer's memory holds goes by its layers' bytes there and adds up to all of it exactly, the rounding the last stage's; none
+    /// where nothing is there, all on the first where no layer holds any.
+    #[test]
+    fn the_stages_shares_of_the_computers_memory_add_up() {
+        use sizing::stage_shares;
+        assert_eq!(stage_shares(&[1, 1, 2, 2], &[2], 600), vec![200, 400]);
+        assert_eq!(stage_shares(&[3, 3, 3], &[1, 2], 100), vec![33, 33, 34]);
+        assert_eq!(stage_shares(&[0, 5, 5, 0], &[2], 1001).iter().sum::<u64>(), 1001);
+        assert_eq!(stage_shares(&[0, 0], &[1], 9), vec![9, 0]);
+        assert_eq!(stage_shares(&[4, 4], &[], 0), vec![0]);
+        assert_eq!(stage_shares(&[u64::MAX / 2, u64::MAX / 2], &[1], u64::MAX - 1), vec![(u64::MAX - 1) / 2, (u64::MAX - 1) / 2]);
     }
 
     /// A plan whose users share pools of blocks holds at most what the GPU has left for them (at least one's context): on an A10 (23 GB) Qwen3-8B served to 8 at
@@ -5609,8 +5722,8 @@ mod tests {
         use crate::weights::Layout;
         let root = std::env::temp_dir().join(format!("glyd-plan-pack-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let (q3, q35) = (root.join("qwen3"), root.join("qwen35"));
-        crate::logits::qwen3_random(&q3).unwrap();
+        let (q3, q35) = (root.join("dense"), root.join("qwen35"));
+        crate::logits::dense_random(&q3).unwrap();
         crate::logits::qwen35_random(&q35).unwrap();
         let near = |got: u64, want: u64, what: &str| assert!((got as f64 / want as f64 - 1.0).abs() < 0.03, "{what}: planned {got}, written {want}");
         // Qwen3 dense, lossless
@@ -6288,6 +6401,7 @@ mod tests {
             places: vec![26],
             experts_per_layer: 512,
             host_bytes: 40 * 512 * (3 << 20),
+            host_per_stage: vec![40 * 512 * (3 << 20)],
             gpu_bytes: base.weights,
             dense,
             dense_bytes,

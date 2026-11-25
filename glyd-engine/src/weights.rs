@@ -100,18 +100,6 @@ impl Config {
     }
 }
 
-/// The layout a packed directory (`glyd.json` beside its shards) was packed for: its own label ("mma", the smallest: each matrix in the smaller of
-/// the two layouts; "mma12": every matrix in the 12-bit one), else its first matrix's.
-pub fn packed_layout(dir: &Path) -> Option<Layout> {
-    let v = json::parse(&std::fs::read_to_string(dir.join("glyd.json")).ok()?).ok()?;
-    let name = |s: &str| match s {
-        "mma" => Some(Layout::Tiered),
-        "mma12" => Some(Layout::Twelve),
-        _ => None,
-    };
-    v.get("layout").and_then(Value::as_str).and_then(name).or_else(|| name(v.get("packs")?.get("model.layers.0.self_attn.q_proj")?.get("layout")?.as_str()?))
-}
-
 /// How a directory that is not read is said to be: made by a glyd whose tiered layout was the earlier one (0.27 and before), which the library no longer multiplies by.
 pub const EARLIER_FORMAT: &str = "packed by glyd 0.27 or before, in a layout the library no longer reads";
 

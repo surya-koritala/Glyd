@@ -7,6 +7,7 @@
 use crate::deepseek_v4::{fp4_runs, fp8_bf16, ConfigV4};
 use crate::dev::Buf;
 use crate::ffi::{err, Error, Result};
+use crate::gpu_ops::GpuOps;
 use crate::qwen35_ref::bf16;
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
@@ -639,6 +640,15 @@ fn e4m3_byte(v: f32) -> u8 {
 /// alone, overlapping pools of 4 with an indexer, pools of 16, and again), the first routed by token, a window of 32 and an indexer picking 8, so that a few hundred tokens reach every path.
 /// `real`: (layers, experts) at the release's widths (DeepSeek-V4-Flash's heads, latents, indexer, windows and compressors, the experts' sizes and 6 a token, its vocabulary; the layers' compression
 /// ratios its first ones'), for timing a step on one GPU.
+/// The small random DeepSeek-V4 model's config (`random` without `real`): five layers of two compression ratios, 16 experts.
+pub(crate) const SMALL_CONFIG: &str = r#"{"architectures": ["DeepseekV4ForCausalLM"], "model_type": "deepseek_v4", "hidden_size": 1024, "num_hidden_layers": 5, "vocab_size": 4096, "rms_norm_eps": 1e-6, "max_position_embeddings": 65536,
+        "bos_token_id": 0, "eos_token_id": 1, "num_attention_heads": 16, "num_key_value_heads": 1, "head_dim": 512, "qk_rope_head_dim": 64, "q_lora_rank": 256, "o_lora_rank": 256, "o_groups": 4,
+        "sliding_window": 32, "compress_ratios": [0, 4, 16, 4, 0, 0], "index_n_heads": 16, "index_head_dim": 128, "index_topk": 8, "n_routed_experts": 16, "num_experts_per_tok": 4,
+        "moe_intermediate_size": 256, "n_shared_experts": 1, "num_hash_layers": 1, "routed_scaling_factor": 1.5, "swiglu_limit": 10.0, "scoring_func": "sqrtsoftplus", "topk_method": "noaux_tc",
+        "norm_topk_prob": true, "hc_mult": 4, "hc_sinkhorn_iters": 20, "hc_eps": 1e-6, "rope_theta": 10000, "compress_rope_theta": 160000, "hidden_act": "silu", "tie_word_embeddings": false,
+        "rope_scaling": {"beta_fast": 32, "beta_slow": 1, "factor": 16, "original_max_position_embeddings": 65536, "type": "yarn"}, "num_nextn_predict_layers": 0, "expert_dtype": "fp4",
+        "quantization_config": {"activation_scheme": "dynamic", "fmt": "e4m3", "quant_method": "fp8", "scale_fmt": "ue8m0", "weight_block_size": [128, 128]}}"#;
+
 pub fn random(out: &Path, real: Option<(usize, usize)>) -> Result<()> {
     let real_text = real.map(|(layers, experts)| {
         let ratios: Vec<String> = (0..=layers).map(|l| if l == layers || l == 0 { "0".to_string() } else if l % 2 == 1 { "4".to_string() } else { "128".to_string() }).collect();
@@ -653,13 +663,7 @@ pub fn random(out: &Path, real: Option<(usize, usize)>) -> Result<()> {
             ratios.join(", ")
         )
     });
-    let small_text = r#"{"architectures": ["DeepseekV4ForCausalLM"], "model_type": "deepseek_v4", "hidden_size": 1024, "num_hidden_layers": 5, "vocab_size": 4096, "rms_norm_eps": 1e-6, "max_position_embeddings": 65536,
-        "bos_token_id": 0, "eos_token_id": 1, "num_attention_heads": 16, "num_key_value_heads": 1, "head_dim": 512, "qk_rope_head_dim": 64, "q_lora_rank": 256, "o_lora_rank": 256, "o_groups": 4,
-        "sliding_window": 32, "compress_ratios": [0, 4, 16, 4, 0, 0], "index_n_heads": 16, "index_head_dim": 128, "index_topk": 8, "n_routed_experts": 16, "num_experts_per_tok": 4,
-        "moe_intermediate_size": 256, "n_shared_experts": 1, "num_hash_layers": 1, "routed_scaling_factor": 1.5, "swiglu_limit": 10.0, "scoring_func": "sqrtsoftplus", "topk_method": "noaux_tc",
-        "norm_topk_prob": true, "hc_mult": 4, "hc_sinkhorn_iters": 20, "hc_eps": 1e-6, "rope_theta": 10000, "compress_rope_theta": 160000, "hidden_act": "silu", "tie_word_embeddings": false,
-        "rope_scaling": {"beta_fast": 32, "beta_slow": 1, "factor": 16, "original_max_position_embeddings": 65536, "type": "yarn"}, "num_nextn_predict_layers": 0, "expert_dtype": "fp4",
-        "quantization_config": {"activation_scheme": "dynamic", "fmt": "e4m3", "quant_method": "fp8", "scale_fmt": "ue8m0", "weight_block_size": [128, 128]}}"#;
+    let small_text = SMALL_CONFIG;
     let text = real_text.as_deref().unwrap_or(small_text);
     let c = ConfigV4::parse(text, "random", None)?;
     let mut r = 0x2026_1018_0000_0001u64;

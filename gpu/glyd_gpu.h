@@ -63,8 +63,11 @@ typedef hipStream_t cudaStream_t;
  * 19 from glyd_gpu_kv_prefill, a prompt chunk's attention over its sequence's pages and its own bf16 rows;
  * 20 from glyd_gpu_kv_prefill_bf16 and glyd_gpu_kv_decode_bf16, the same attentions over a bf16 cache; 21 from glyd_gpu_kv_unpack's
  * skipping a negative page number (a list as long as the most a sequence can need, filled on the device);
- * 22 from glyd_gpu_kv_image_bytes, glyd_gpu_kv_save and glyd_gpu_kv_load, pages moved whole to another place and back (their escape chunks and raw slabs lent anew). */
-#define GLYD_GPU_API_VERSION 22
+ * 22 from glyd_gpu_kv_image_bytes, glyd_gpu_kv_save and glyd_gpu_kv_load, pages moved whole to another place and back (their escape chunks and raw slabs lent anew);
+ * 23 from glyd_gpu_kv_decode_workspace's partial outputs on a 16-byte line (the workspace up to 8 bytes larger: an odd count of partials faulted before);
+ * 24 from glyd_gpu_mma_moe_as, glyd_gpu_mma_moe_placed_as and glyd_gpu_mma12_moe_as (and their workspaces): the experts' product of a part of a layer
+ *    (a GPU's slice of each expert's rows, an expert cache's places) cut as the whole layer's, so each row's sum is the whole layer's, bit for bit. */
+#define GLYD_GPU_API_VERSION 24
 
 #ifdef __cplusplus
 extern "C" {
@@ -372,6 +375,25 @@ int glyd_gpu_mma_moe_placed(const uint8_t* data, const uint8_t* blocks, const in
                             int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan,
                             int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace,
                             size_t workspace_bytes, int* done, cudaStream_t cs);
+/* The same three (and their workspaces) for a call that holds a part of a layer: wO the rows an expert has in the whole layer (this call's O a GPU's
+ * slice of them), wE the layer's experts (this call's E an expert cache's places); 0: the call's own. The work is cut as the whole layer's call would
+ * cut it (its split of K over blocks, its kernel), so each row of the output is the whole layer's sum, bit for bit. */
+int glyd_gpu_mma_moe_as_workspace(int64_t E, int64_t O, int64_t K, int64_t T, int64_t k, int64_t act, int64_t weighted, int64_t wO, int64_t wE,
+                                  size_t* bytes);
+int glyd_gpu_mma_moe_as(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t E, int64_t O,
+                        int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias,
+                        const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace, size_t workspace_bytes, int* done,
+                        cudaStream_t cs, int64_t wO, int64_t wE);
+int glyd_gpu_mma_moe_placed_as(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t stride,
+                               int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan,
+                               int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace,
+                               size_t workspace_bytes, int* done, cudaStream_t cs, int64_t wO, int64_t wE);
+int glyd_gpu_mma12_moe_as_workspace(int64_t E, int64_t O, int64_t K, int64_t T, int64_t k, int64_t act, int64_t weighted, int64_t wO, int64_t wE,
+                                    size_t* bytes);
+int glyd_gpu_mma12_moe_as(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t E, int64_t O,
+                          int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias,
+                          const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace, size_t workspace_bytes, int* done,
+                          cudaStream_t cs, int64_t wO, int64_t wE);
 int glyd_gpu_mma12_moe_workspace(int64_t E, int64_t O, int64_t K, int64_t T, int64_t k, int64_t act, int64_t weighted,
                                  size_t* bytes);
 int glyd_gpu_mma12_moe(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4],

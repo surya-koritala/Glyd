@@ -5,7 +5,7 @@
 
 use crate::ffi::{err, Error, Result};
 use crate::runtime::config::ModelConfig;
-use crate::weights::{eos_ids, num};
+use crate::weights::eos_ids;
 use std::path::Path;
 
 #[derive(Clone, Debug)]
@@ -39,6 +39,34 @@ pub struct ConfigMuse {
     pub prefix: String,
 }
 
+/// Muse Spark's own keys of its text model (the shared ones are `runtime::config::Shared`'s), typed from the one parse of its config.json.
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct Keys {
+    hidden_act: Option<String>,
+    attention_bias: Option<bool>,
+    num_shared_experts: Option<usize>,
+    mlp_layer_types: Option<Vec<String>>,
+    layer_rope_theta: Option<Vec<f64>>,
+    rope_parameters: Option<RopeKeys>,
+    rms_norm_eps: Option<f64>,
+    post_norm_eps: Option<f64>,
+    qk_scale_factor: Option<f64>,
+    output_multiplier: Option<f64>,
+    final_logit_softcapping: Option<f64>,
+    residual_gate_temperature: Option<f64>,
+    routed_scaling_factor: Option<f64>,
+    bos_token_id: Option<serde_json::Value>,
+    eos_token_id: Option<serde_json::Value>,
+}
+
+/// A rotary's parameters as a config gives them: its type.
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct RopeKeys {
+    rope_type: Option<String>,
+}
+
 pub fn is_muse(text: &str) -> bool {
     crate::runtime::config::family_of(text) == Some(crate::support::Family::Muse)
 }
@@ -55,52 +83,36 @@ impl ConfigMuse {
         ConfigMuse::of(&ModelConfig::parse(text).map_err(|e| e.context(label))?, label, generation)
     }
 
-    /// `parse` of a config.json parsed once (`ModelConfig`).
+    /// `parse` of a config.json parsed once (`ModelConfig`): the shared keys typed there (`Shared`), Muse Spark's own typed here (`Keys`).
     pub fn of(c: &ModelConfig, label: &str, generation: Option<&str>) -> Result<ConfigMuse> {
-        use serde_json::Value;
-        let v = &c.top;
         if c.family() != Some(crate::support::Family::Muse) {
             return err(format!("{label}: not a Muse Spark model"));
         }
-        let t = v.get("text_config").and_then(Value::as_object).ok_or_else(|| Error(format!("{label}: no text_config")))?;
-        let get = |k: &str| t.get(k).ok_or_else(|| Error(format!("{label}: no {k}")));
-        let u = |k: &str| -> Result<usize> { get(k)?.as_u64().map(|x| x as usize).ok_or_else(|| Error(format!("{label}: {k}: not an integer"))) };
-        let f = |k: &str| -> Result<f64> { num(get(k)?, k) };
-        let f_or = |k: &str, d: f64| -> Result<f64> {
-            if t.get(k).is_some_and(|x| *x != Value::Null) {
-                f(k)
-            } else {
-                Ok(d)
-            }
-        };
+        if !c.nested {
+            return err(format!("{label}: no text_config"));
+        }
+        let (s, k): (&crate::runtime::config::Shared, Keys) = (&c.shared, c.own(label)?);
+        let need = |v: Option<usize>, key: &str| ModelConfig::need(v, label, key);
         let refuse = |what: &str| err(format!("{label}: {what}, which the engine does not run"));
-        if t.get("hidden_act").and_then(Value::as_str).is_some_and(|a| a != "silu") {
+        if k.hidden_act.as_deref().is_some_and(|a| a != "silu") {
             return refuse("an activation other than silu");
         }
-        if t.get("attention_bias").and_then(Value::as_bool) == Some(true) {
+        if k.attention_bias == Some(true) {
             return refuse("biases in the attention");
         }
-        if u("num_shared_experts").unwrap_or(0) != 0 {
+        if k.num_shared_experts.unwrap_or(0) != 0 {
             return refuse("shared experts");
         }
-        let layers = u("num_hidden_layers")?;
+        let layers = need(s.num_hidden_layers, "num_hidden_layers")?;
         if layers > crate::plan::MAX_LAYERS {
             return err(format!("{label}: num_hidden_layers {layers}, where no model has more than {}", crate::plan::MAX_LAYERS));
         }
-        let strs = |k: &str| -> Result<Vec<String>> {
-            Ok(get(k)?.as_array().ok_or_else(|| Error(format!("{label}: {k}: not a list")))?.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect())
-        };
-        let types = strs("layer_types")?;
-        let mlp = strs("mlp_layer_types")?;
+        let types = s.layer_types.clone().ok_or_else(|| Error(format!("{label}: no layer_types")))?;
+        let mlp = k.mlp_layer_types.ok_or_else(|| Error(format!("{label}: no mlp_layer_types")))?;
         if types.len() != layers || mlp.len() != layers || mlp.iter().any(|m| m != "sparse") {
             return refuse("layer types other than one per layer, every MLP sparse");
         }
-        let thetas: Vec<f64> = get("layer_rope_theta")?
-            .as_array()
-            .ok_or_else(|| Error(format!("{label}: layer_rope_theta: not a list")))?
-            .iter()
-            .map(|x| num(x, "layer_rope_theta"))
-            .collect::<Result<_>>()?;
+        let thetas = k.layer_rope_theta.ok_or_else(|| Error(format!("{label}: no layer_rope_theta")))?;
         let sliding: Vec<bool> = types.iter().map(|s| s == "sliding_attention").collect();
         let theta = thetas.iter().copied().find(|&x| x > 0.0).unwrap_or(0.0);
         // (the rotary is on the window's layers and off on the others, at one base)
@@ -110,42 +122,44 @@ impl ConfigMuse {
         {
             return refuse("a rotary that is not on exactly the window's layers, at one base");
         }
-        if t.get("rope_parameters").and_then(|r| r.get("rope_type")).and_then(Value::as_str).is_some_and(|r| r != "default") {
+        if k.rope_parameters.and_then(|r| r.rope_type).is_some_and(|r| r != "default") {
             return refuse("a rotary scaling");
         }
-        let (heads, kv_heads, head_dim) = (u("num_attention_heads")?, u("num_key_value_heads")?, u("head_dim")?);
+        let (heads, kv_heads, head_dim) =
+            (need(s.num_attention_heads, "num_attention_heads")?, need(s.num_key_value_heads, "num_key_value_heads")?, need(s.head_dim, "head_dim")?);
         if kv_heads == 0 || heads % kv_heads != 0 {
             return err(format!("{label}: {heads} heads over {kv_heads} key-value heads"));
         }
-        let (latent, hidden) = (u("moe_hidden_size")?, u("hidden_size")?);
-        let mut eos = eos_ids(t, generation);
+        let (latent, hidden) = (need(s.moe_hidden_size, "moe_hidden_size")?, need(s.hidden_size, "hidden_size")?);
+        let mut eos = eos_ids(&c.text, generation);
         if eos.is_empty() {
-            eos = t.get("eos_token_id").and_then(Value::as_i64).into_iter().collect();
+            eos = k.eos_token_id.as_ref().and_then(serde_json::Value::as_i64).into_iter().collect();
         }
+        let or = |v: Option<f64>, d: f64| v.unwrap_or(d) as f32;
         Ok(ConfigMuse {
             hidden,
             layers,
-            vocab: u("vocab_size")?,
+            vocab: need(s.vocab_size, "vocab_size")?,
             heads,
             kv_heads,
             head_dim,
-            window: u("sliding_window")?,
+            window: need(s.sliding_window, "sliding_window")?,
             sliding,
             rope_theta: theta,
-            experts: u("num_local_experts")?,
-            top_k: u("num_experts_per_tok")?,
+            experts: need(s.num_local_experts, "num_local_experts")?,
+            top_k: need(s.num_experts_per_tok, "num_experts_per_tok")?,
             latent,
-            inter: u("moe_intermediate_size")?,
-            eps: f_or("rms_norm_eps", 1e-5)? as f32,
-            post_eps: f_or("post_norm_eps", 1e-8)? as f32,
-            qk_scale: f_or("qk_scale_factor", 1.0)? as f32,
-            out_mult: f_or("output_multiplier", 1.0)? as f32,
-            softcap: f_or("final_logit_softcapping", 0.0)? as f32,
-            gate_temp: f_or("residual_gate_temperature", 1.0)? as f32,
-            route_scale: f_or("routed_scaling_factor", 1.0)? as f32,
-            max_pos: u("max_position_embeddings")?,
+            inter: need(s.moe_intermediate_size, "moe_intermediate_size")?,
+            eps: or(k.rms_norm_eps, 1e-5),
+            post_eps: or(k.post_norm_eps, 1e-8),
+            qk_scale: or(k.qk_scale_factor, 1.0),
+            out_mult: or(k.output_multiplier, 1.0),
+            softcap: or(k.final_logit_softcapping, 0.0),
+            gate_temp: or(k.residual_gate_temperature, 1.0),
+            route_scale: or(k.routed_scaling_factor, 1.0),
+            max_pos: need(s.max_position_embeddings, "max_position_embeddings")?,
             eos,
-            bos: t.get("bos_token_id").and_then(Value::as_u64).map(|b| b as u32),
+            bos: k.bos_token_id.as_ref().and_then(serde_json::Value::as_u64).map(|b| b as u32),
             prefix: "model.language_model.".to_string(),
         })
     }
@@ -196,5 +210,25 @@ mod tests {
         assert_eq!(b[0], 0.5);
         assert_eq!(a[0], bf(0.75f32.sqrt()));
         assert_eq!(plus_one(&[0.0, 1.0]), vec![1.0, 2.0]);
+    }
+}
+
+// (the random model's config is the development build's: `muse_ref`)
+#[cfg(all(test, feature = "dev"))]
+mod reader_tests {
+    use super::*;
+
+    /// Muse Spark's reader takes its keys from the one parse of config.json, typed: the random model's config reads; a key of another type than its field's is
+    /// refused with its name, and a shared key the model needs, missing or null, is named as missing.
+    #[test]
+    fn the_keys_are_read_typed_from_the_one_parse() {
+        let c = ConfigMuse::parse(crate::muse_ref::RANDOM_CONFIG, "random", None).unwrap();
+        assert_eq!((c.hidden, c.layers, c.sliding.len(), c.prefix.as_str()), (1024, 4, 4, "model.language_model."));
+        let mut v: serde_json::Value = serde_json::from_str(crate::muse_ref::RANDOM_CONFIG).unwrap();
+        v["text_config"]["rms_norm_eps"] = serde_json::json!("small");
+        assert!(ConfigMuse::parse(&v.to_string(), "c", None).unwrap_err().msg.contains("rms_norm_eps"));
+        let mut v: serde_json::Value = serde_json::from_str(crate::muse_ref::RANDOM_CONFIG).unwrap();
+        v["text_config"]["hidden_size"] = serde_json::Value::Null;
+        assert_eq!(ConfigMuse::parse(&v.to_string(), "c", None).unwrap_err().msg, "c: no hidden_size");
     }
 }

@@ -1,5 +1,15 @@
 //! The engine's own kernels (kernels/engine.cu) with typed launches. Device addresses are `u64`.
 
+pub mod gemma4;
+pub mod glm;
+pub mod nemotron;
+pub mod qwen35;
+
+pub(crate) use gemma4::{pf_kib, G4Pf, KernG4};
+pub use glm::{mla_positions, mla_smem, Hc, KernGlm, GM_CHUNK_SMEM, GM_D, GM_HC, GM_L, GM_NP, HC_FEW};
+pub use nemotron::{KernNh, SsdWs, NH_L, NH_N, NH_P};
+pub use qwen35::Kern35;
+
 use crate::dev::{copy_d2h_async, copy_h2d_async, ArgsOf, Buf, ByArgs, Dev, Pinned, Typed};
 use crate::ffi::{Result, Stream};
 use crate::launch;

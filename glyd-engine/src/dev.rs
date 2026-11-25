@@ -1,8 +1,10 @@
 //! A GPU as the engine uses it: its primary context made current on this thread, one non-blocking stream, device
 //! memory with an owner, the engine's own kernels (the fatbin build.rs made) and CUDA graphs. One `Dev` a thread.
+//! What it asks of the driver goes through the device layer's trait (`device::Device`, NVIDIA's or, in an AMD build, HIP's).
 
-use crate::ffi::{cu, driver, err, CuEvent, CuFunction, CuGraph, CuGraphExec, CuModule, Result, Stream};
-use std::ffi::{c_char, c_int, c_void};
+use crate::device::{Attr, CudaDevice as D, Device, HostMem};
+use crate::ffi::{err, CuEvent, CuFunction, CuGraph, CuGraphExec, CuModule, Result, Stream};
+use std::ffi::c_void;
 use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering::Relaxed};
 
 #[cfg(not(no_kernels))]
@@ -84,24 +86,13 @@ impl Dev {
         if cfg!(glyd_hip) {
             return Ok(64 << 10);
         }
-        let d = driver()?;
-        let (mut dev, mut v) = (0, 0);
-        // SAFETY: host out-pointers; 97 is the attribute's number.
-        unsafe {
-            cu("cuDeviceGet", (d.cuDeviceGet)(&mut dev, self.ordinal))?;
-            cu("cuDeviceGetAttribute", (d.cuDeviceGetAttribute)(&mut v, 97, dev))?;
-        }
-        Ok(v as u32)
+        Ok(D::attribute(D::device(self.ordinal)?, Attr::SmemOptin)? as u32)
     }
 
     /// Whether GPU `ordinal` runs under Windows' WDDM (the display driver model: the memory it has is the card's and, past that, system memory the driver pages in without an error): on Windows, a
     /// GPU that is not in the TCC mode (CU_DEVICE_ATTRIBUTE_TCC_DRIVER, 17). False elsewhere and where the driver does not say.
     pub fn wddm(ordinal: i32) -> bool {
-        let Ok(d) = driver() else { return false };
-        let (mut dev, mut tcc) = (0, -1);
-        // SAFETY: host out-pointers; 17 is the TCC attribute's number.
-        let ok = unsafe { (d.cuDeviceGet)(&mut dev, ordinal) == 0 && (d.cuDeviceGetAttribute)(&mut tcc, 17, dev) == 0 };
-        wddm_from(cfg!(windows), ok.then_some(tcc))
+        wddm_from(cfg!(windows), D::device(ordinal).and_then(|dev| D::attribute(dev, Attr::Tcc)).ok())
     }
 
     /// The compute capability as a pair (major, minor).
@@ -111,36 +102,18 @@ impl Dev {
 
     /// The GPU `ordinal`: its name, compute capability, memory (total and free now) and the driver's CUDA version.
     pub fn probe(ordinal: i32) -> Result<Gpu> {
-        let d = driver()?;
-        let (mut count, mut version) = (0, 0);
-        // SAFETY: host out-pointers.
-        unsafe {
-            cu("cuDeviceGetCount", (d.cuDeviceGetCount)(&mut count))?;
-            cu("cuDriverGetVersion", (d.cuDriverGetVersion)(&mut version))?;
-        }
+        let (count, version) = (D::count()?, D::version()?);
         if count == 0 || ordinal >= count {
             return err(format!("no GPU {ordinal}: the driver sees {count}"));
         }
-        let (mut dev, mut ctx) = (0, std::ptr::null_mut());
-        // SAFETY: host out-pointers; the primary context stays retained for the process, as `new` does.
-        unsafe {
-            cu("cuDeviceGet", (d.cuDeviceGet)(&mut dev, ordinal))?;
-            cu("cuDevicePrimaryCtxRetain", (d.cuDevicePrimaryCtxRetain)(&mut ctx, dev))?;
-            cu("cuCtxSetCurrent", (d.cuCtxSetCurrent)(ctx))?;
-        }
-        let mut b = [0 as c_char; 256];
-        let (mut major, mut minor, mut sms) = (0, 0, 0);
-        let (mut total, mut free) = (0usize, 0usize);
-        // SAFETY: host buffers of the sizes passed; 75 and 76 are the compute capability's attributes, 16 the SM count.
-        unsafe {
-            cu("cuDeviceGetName", (d.cuDeviceGetName)(b.as_mut_ptr(), b.len() as c_int, dev))?;
-            cu("cuDeviceGetAttribute", (d.cuDeviceGetAttribute)(&mut major, 75, dev))?;
-            cu("cuDeviceGetAttribute", (d.cuDeviceGetAttribute)(&mut minor, 76, dev))?;
-            cu("cuDeviceGetAttribute", (d.cuDeviceGetAttribute)(&mut sms, 16, dev))?;
-            cu("cuMemGetInfo", (d.cuMemGetInfo_v2)(&mut free, &mut total))?;
-        }
-        // SAFETY: NUL-terminated within the buffer.
-        let name = unsafe { std::ffi::CStr::from_ptr(b.as_ptr()) }.to_string_lossy().into_owned();
+        let dev = D::device(ordinal)?;
+        // (the primary context stays retained for the process, as `new` does)
+        let ctx = D::primary_ctx(dev)?;
+        // SAFETY: the context just retained.
+        unsafe { D::set_current(ctx)? };
+        let name = D::name(dev)?;
+        let (major, minor, sms) = (D::attribute(dev, Attr::CcMajor)?, D::attribute(dev, Attr::CcMinor)?, D::attribute(dev, Attr::Sms)?);
+        let (free, total) = D::mem_info()?;
         Ok(Gpu { name, cc: (major, minor), sms, total: total as u64, free: free as u64, driver: version, count, ordinal })
     }
 
@@ -160,10 +133,7 @@ impl Dev {
     }
 
     fn probe_all_now() -> Result<Vec<Gpu>> {
-        let d = driver()?;
-        let mut count = 0;
-        // SAFETY: a host out-pointer.
-        unsafe { cu("cuDeviceGetCount", (d.cuDeviceGetCount)(&mut count))? };
+        let count = D::count()?;
         let all: Vec<Gpu> = (0..count).filter_map(|i| Dev::probe(i).ok()).collect();
         if all.is_empty() {
             return Dev::probe(0).map(|g| vec![g]);
@@ -175,14 +145,9 @@ impl Dev {
 
     /// The context `probe` made on GPU `ordinal` let go (the memory it held is the GPU's again).
     pub fn release(ordinal: i32) {
-        if let Ok(d) = driver() {
-            let mut dev = 0;
-            // SAFETY: a host out-pointer; a context `probe` retained, released once.
-            unsafe {
-                if (d.cuDeviceGet)(&mut dev, ordinal) == 0 {
-                    (d.cuDevicePrimaryCtxRelease_v2)(dev);
-                }
-            }
+        // (a context `probe` retained, released once)
+        if let Ok(dev) = D::device(ordinal) {
+            let _ = D::release_primary(dev);
         }
     }
 
@@ -198,7 +163,7 @@ impl Dev {
     /// This Dev's context made current on this thread: its work and the memory made for it go to its GPU (a model split over GPUs runs each GPU's part in turn on one thread).
     pub fn make_current(&self) -> Result<()> {
         // SAFETY: a context this Dev retained or made, alive for the process.
-        unsafe { cu("cuCtxSetCurrent", (driver()?.cuCtxSetCurrent)(self.ctx)) }
+        unsafe { D::set_current(self.ctx) }
     }
 
     /// This Dev's GPU may read and write GPU `peer`'s memory directly from now on (peer access); already on is no error. The error names the two where the GPUs cannot
@@ -208,72 +173,42 @@ impl Dev {
             return err(format!("GPU {} cannot reach GPU {peer} directly (no peer access)", self.ordinal));
         }
         self.make_current()?;
-        let d = driver()?;
-        let (mut pd, mut ctx) = (0, std::ptr::null_mut());
-        // SAFETY: host out-pointers; the peer's primary context is retained for the process, as `Dev::new` does; 704: access already on.
-        unsafe {
-            cu("cuDeviceGet", (d.cuDeviceGet)(&mut pd, peer))?;
-            cu("cuDevicePrimaryCtxRetain", (d.cuDevicePrimaryCtxRetain)(&mut ctx, pd))?;
-            let r = (d.cuCtxEnablePeerAccess)(ctx, 0);
-            if r != 0 && r != 704 {
-                cu("cuCtxEnablePeerAccess", r)?;
-            }
-        }
+        // (the peer's primary context is retained for the process, as `Dev::new` does)
+        let ctx = D::primary_ctx(D::device(peer)?)?;
+        // SAFETY: the context just retained.
+        unsafe { D::enable_peer(ctx)? };
         self.make_current()
     }
 
     fn open(ordinal: i32, own: bool) -> Result<Dev> {
-        let d = driver()?;
-        let (mut dev, mut ctx) = (0, std::ptr::null_mut());
-        // SAFETY: host out-pointers; the primary context (or the one made) stays for the process; cuCtxCreate makes its context current.
-        unsafe {
-            cu("cuDeviceGet", (d.cuDeviceGet)(&mut dev, ordinal))?;
-            if own {
-                cu("cuCtxCreate", (d.cuCtxCreate_v2)(&mut ctx, 0, dev))?;
-            } else {
-                cu("cuDevicePrimaryCtxRetain", (d.cuDevicePrimaryCtxRetain)(&mut ctx, dev))?;
-            }
-            cu("cuCtxSetCurrent", (d.cuCtxSetCurrent)(ctx))?;
-        }
+        let dev = D::device(ordinal)?;
+        // (the primary context, or the one made, stays for the process)
+        let ctx = if own { D::new_ctx(dev)? } else { D::primary_ctx(dev)? };
+        // SAFETY: the context just retained or made.
+        unsafe { D::set_current(ctx)? };
         // (the context's counts named by its GPU)
         if let Some(c) = count(ctx as usize) {
             c.gpu.store(ordinal, Relaxed);
         }
-        let mut b = [0 as c_char; 256];
-        let (mut major, mut minor, mut sms) = (0, 0, 0);
-        let mut total = 0usize;
-        // SAFETY: host buffers of the sizes passed; 75 and 76 are the compute capability's attributes, 16 the SM count.
-        unsafe {
-            cu("cuDeviceGetName", (d.cuDeviceGetName)(b.as_mut_ptr(), b.len() as c_int, dev))?;
-            cu("cuDeviceGetAttribute", (d.cuDeviceGetAttribute)(&mut major, 75, dev))?;
-            cu("cuDeviceGetAttribute", (d.cuDeviceGetAttribute)(&mut minor, 76, dev))?;
-            cu("cuDeviceGetAttribute", (d.cuDeviceGetAttribute)(&mut sms, 16, dev))?;
-            cu("cuDeviceTotalMem", (d.cuDeviceTotalMem_v2)(&mut total, dev))?;
-        }
-        // SAFETY: NUL-terminated within the buffer.
-        let name = unsafe { std::ffi::CStr::from_ptr(b.as_ptr()) }.to_string_lossy().into_owned();
+        let name = D::name(dev)?;
+        let (major, minor, sms, total) =
+            (D::attribute(dev, Attr::CcMajor)?, D::attribute(dev, Attr::CcMinor)?, D::attribute(dev, Attr::Sms)?, D::total_mem(dev)?);
         #[cfg(glyd_hip)]
         {
             // (an AMD build: the kernels are written for 32-lane warps, RDNA 3 and 4 in wave32; a GPU of 64-lane waves, CDNA or GCN, is not one they run on)
-            let mut lanes = 0;
-            // SAFETY: a host out-pointer; 10 is the warp size's attribute.
-            unsafe { cu("cuDeviceGetAttribute", (d.cuDeviceGetAttribute)(&mut lanes, 10, dev))? };
+            let lanes = D::attribute(dev, Attr::WarpSize)?;
             if lanes != 32 {
                 return err(format!("{name}: waves of {lanes} lanes, where the engine's AMD kernels are written for 32 (RDNA 3 and 4)"));
             }
         }
-        let mut s = Stream::DEFAULT;
-        // SAFETY: a host out-pointer; 1: CU_STREAM_NON_BLOCKING.
-        unsafe { cu("cuStreamCreate", (d.cuStreamCreate)(&mut s, 1))? };
+        let s = D::stream()?;
         let mut module = std::ptr::null_mut();
-        let mut version = 0;
-        // SAFETY: a host out-pointer.
-        unsafe { cu("cuDriverGetVersion", (d.cuDriverGetVersion)(&mut version))? };
         let force12 = std::env::var("GLYD_ENGINE_CUDA").is_ok_and(|v| v.trim() == "12");
-        let fatbin = pick_fatbin(version, force12, FATBIN, FATBIN12);
+        let fatbin = pick_fatbin(D::version()?, force12, FATBIN, FATBIN12);
         if !fatbin.is_empty() {
             // SAFETY: the fatbin nvcc made, which lives for the process.
-            unsafe { cu("cuModuleLoadData", (d.cuModuleLoadData)(&mut module, fatbin.as_ptr() as *const c_void))? };
+            module = unsafe { D::module_load(fatbin.as_ptr() as *const c_void)? };
+            MODULES.lock().unwrap_or_else(|e| e.into_inner()).push((ctx as usize, module as usize));
         }
         Ok(Dev { ordinal, name, cc: (major, minor), sms, total_mem: total, stream: s, module, ctx })
     }
@@ -293,29 +228,17 @@ impl Dev {
         if self.module.is_null() {
             return err("this build has no CUDA kernels (it was built without nvcc: set NVCC or CUDA_HOME and build again)");
         }
-        let c = crate::ffi::cstr(name);
-        let mut f = std::ptr::null_mut();
-        // SAFETY: a host out-pointer and a NUL-terminated name.
-        unsafe { cu(name, (driver()?.cuModuleGetFunction)(&mut f, self.module, c.as_ptr()))? };
-        kprof_table()
-            .lock()
-            .map_err(|_| crate::ffi::Error("the kernel census is poisoned".into()))?
-            .entry(f as usize)
-            .or_insert_with(|| (name.to_string(), 0, 0.0));
-        Ok(Kernel(f))
+        // SAFETY: the module this Dev loaded, for the process.
+        unsafe { function_in(self.module, name) }
     }
 
     pub fn sync(&self) -> Result<()> {
-        // SAFETY: a stream this Dev made.
-        unsafe { cu("cuStreamSynchronize", (driver()?.cuStreamSynchronize)(self.stream)) }
+        D::stream_sync(self.stream)
     }
 
     /// (free, total) device memory in bytes.
     pub fn mem_info(&self) -> Result<(usize, usize)> {
-        let (mut f, mut t) = (0usize, 0usize);
-        // SAFETY: host out-pointers.
-        unsafe { cu("cuMemGetInfo", (driver()?.cuMemGetInfo_v2)(&mut f, &mut t))? };
-        Ok((f, t))
+        D::mem_info()
     }
 
     /// The work queued on the stream captured into a graph: `body` runs with the stream capturing, nothing in it executes.
@@ -330,25 +253,65 @@ impl Dev {
 
     /// The work queued on this stream from now on captured, not run, until `end_capture` (relaxed mode: other threads' calls are not refused).
     pub fn begin_capture(&self) -> Result<()> {
-        // SAFETY: the stream is this Dev's; 2: CU_STREAM_CAPTURE_MODE_RELAXED.
-        unsafe { cu("cuStreamBeginCapture", (driver()?.cuStreamBeginCapture_v2)(self.stream, 2)) }
+        D::begin_capture(self.stream)
     }
 
     /// The work captured since `begin_capture`, as a graph to launch; the stream runs what is queued again (also where the capture failed: an error then).
     pub fn end_capture(&self) -> Result<Graph> {
-        let d = driver()?;
-        let mut g: CuGraph = std::ptr::null_mut();
-        // SAFETY: ends the capture `begin_capture` began on this stream.
-        cu("cuStreamEndCapture", unsafe { (d.cuStreamEndCapture)(self.stream, &mut g) })?;
-        let mut x: CuGraphExec = std::ptr::null_mut();
+        let g = D::end_capture(self.stream)?;
         // SAFETY: a captured graph.
-        if let Err(e) = cu("cuGraphInstantiate", unsafe { (d.cuGraphInstantiateWithFlags)(&mut x, g, 0) }) {
-            // SAFETY: the graph just captured, which nothing else holds.
-            unsafe { (d.cuGraphDestroy)(g) };
-            return Err(e);
-        }
+        let x = match unsafe { D::instantiate(g) } {
+            Ok(x) => x,
+            Err(e) => {
+                // SAFETY: the graph just captured, which nothing else holds.
+                let _ = unsafe { D::graph_free(g) };
+                return Err(e);
+            }
+        };
         Ok(Graph { graph: g, exec: x })
     }
+}
+
+/// Kernel `name` of `module`, counted in the census.
+///
+/// # Safety
+/// `module` is a module a `Dev` loaded, for the process.
+unsafe fn function_in(module: CuModule, name: &str) -> Result<Kernel> {
+    // SAFETY: the caller's module.
+    let f = unsafe { D::function(module, name)? };
+    kprof_table()
+        .lock()
+        .map_err(|_| crate::ffi::Error("the kernel census is poisoned".into()))?
+        .entry(f as usize)
+        .or_insert_with(|| (name.to_string(), 0, 0.0));
+    Ok(Kernel(f))
+}
+
+/// The engine's modules by context, as the Devs loaded them (a module is kept for the process).
+static MODULES: std::sync::Mutex<Vec<(usize, usize)>> = std::sync::Mutex::new(Vec::new());
+
+type Found = std::sync::Mutex<std::collections::HashMap<(usize, &'static str), usize>>;
+
+/// A kernel of the engine's by its type, in a module of the context current on this thread: what code with no `Dev` at hand launches (the library's
+/// operations the engine runs from its own fatbin, `fold.rs`). Looked up once a context and kept.
+pub fn here<T: Typed>() -> Result<T> {
+    here_named(T::NAME).map(T::of)
+}
+
+/// `here` by the kernel's name alone (an untyped kernel: for its occupancy, not a launch).
+pub fn here_named(name: &'static str) -> Result<Kernel> {
+    static FOUND: std::sync::OnceLock<Found> = std::sync::OnceLock::new();
+    let ctx = current_ctx()?;
+    let found = FOUND.get_or_init(Default::default);
+    if let Some(&f) = found.lock().unwrap_or_else(|e| e.into_inner()).get(&(ctx, name)) {
+        return Ok(Kernel(f as CuFunction));
+    }
+    let module = MODULES.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|m| m.0 == ctx).map(|m| m.1);
+    let Some(module) = module else { return err(format!("{name}: no engine module in this context (no Dev opened it, or a build without kernels)")) };
+    // SAFETY: a module a Dev loaded in this context, kept for the process.
+    let k = unsafe { function_in(module as CuModule, name)? };
+    found.lock().unwrap_or_else(|e| e.into_inner()).insert((ctx, name), k.0 as usize);
+    Ok(k)
 }
 
 /// A kernel of the engine's module.
@@ -368,22 +331,7 @@ impl Kernel {
     /// As `launch`.
     pub unsafe fn launch_smem(&self, grid: [u32; 3], block: [u32; 3], smem: u32, stream: Stream, args: &mut [*mut c_void]) -> Result<()> {
         let mut go = || {
-            let r = cu(
-                "cuLaunchKernel",
-                (driver()?.cuLaunchKernel)(
-                    self.0,
-                    grid[0],
-                    grid[1],
-                    grid[2],
-                    block[0],
-                    block[1],
-                    block[2],
-                    smem,
-                    stream,
-                    args.as_mut_ptr(),
-                    std::ptr::null_mut(),
-                ),
-            );
+            let r = D::launch(self.0, grid, block, smem, stream, args);
             // (a development build names the kernel and its launch where it fails)
             if cfg!(feature = "dev") {
                 if let Err(e) = r {
@@ -413,10 +361,39 @@ impl Kernel {
         })
     }
 
+    /// The blocks of `threads` threads with `smem` bytes of dynamic shared memory an SM holds at once of this kernel, its shared memory allowed first (at
+    /// least 1): what the GPU library's `per_sm` asks of the runtime, for the plans folded from it (`fold`).
+    pub fn blocks_per_sm(&self, threads: u32, smem: u32) -> Result<i64> {
+        self.allow_smem(smem)?;
+        self.blocks_per_sm_allowed(threads, smem)
+    }
+
+    /// The clusters of `cluster` blocks of `threads` and `smem` (allowed first) the GPU holds at once of this kernel, for a grid of `grid` blocks (at least 1).
+    pub fn max_clusters(&self, grid: u32, threads: u32, smem: u32, cluster: u32) -> Result<i64> {
+        self.allow_smem(smem)?;
+        // SAFETY: a function of the loaded module.
+        Ok(unsafe { D::max_clusters(self.0, grid, threads, smem, cluster)? }.max(1) as i64)
+    }
+
+    /// A launch of `grid` blocks in clusters of `cluster` along x (Hopper's).
+    ///
+    /// # Safety
+    /// As `launch`.
+    pub unsafe fn launch_clusters(&self, grid: u32, threads: u32, smem: u32, cluster: u32, stream: Stream, args: &mut [*mut c_void]) -> Result<()> {
+        // SAFETY: the caller's arguments (its contract).
+        unsafe { D::launch_clusters(self.0, grid, threads, smem, cluster, stream, args) }
+    }
+
+    /// `blocks_per_sm` where the kernel's shared memory is already allowed (`allow_smem`) to `smem` bytes or more.
+    pub fn blocks_per_sm_allowed(&self, threads: u32, smem: u32) -> Result<i64> {
+        // SAFETY: a function of the loaded module.
+        Ok(unsafe { D::occupancy(self.0, threads, smem)? }.max(1) as i64)
+    }
+
     /// The most dynamic shared memory a launch of this kernel may ask for (CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES).
     pub fn allow_smem(&self, bytes: u32) -> Result<()> {
-        // SAFETY: a function of the loaded module and a plain integer.
-        cu("cuFuncSetAttribute", unsafe { (driver()?.cuFuncSetAttribute)(self.0, 8, bytes as c_int) })
+        // SAFETY: a function of the loaded module.
+        unsafe { D::allow_smem(self.0, bytes) }
     }
 }
 
@@ -607,7 +584,7 @@ unsafe impl<T: Plain, const N: usize> Plain for [T; N] {}
 pub unsafe fn read_dev<T: Plain>(src: u64, out: &mut [T]) -> Result<()> {
     let n = std::mem::size_of_val(out);
     // SAFETY: n bytes of host memory from n of device memory the caller names (its contract); T takes any bytes.
-    unsafe { cu("cuMemcpyDtoH", (driver()?.cuMemcpyDtoH_v2)(out.as_mut_ptr() as *mut c_void, src, n)) }
+    unsafe { D::d2h(out.as_mut_ptr() as *mut c_void, src, n) }
 }
 
 /// Device memory, freed when dropped. It belongs to the context it was made in (its GPU's, for a model split over GPUs or a second model of the process): what it
@@ -623,10 +600,7 @@ pub struct Buf {
 
 /// The context current on this thread (0: none).
 fn current_ctx() -> Result<usize> {
-    let mut c = std::ptr::null_mut();
-    // SAFETY: a host out-pointer.
-    unsafe { cu("cuCtxGetCurrent", (driver()?.cuCtxGetCurrent)(&mut c))? };
-    Ok(c as usize)
+    Ok(D::current()? as usize)
 }
 
 /// `f` run with context `ctx` current (as it was again after; `ctx` 0: as it is).
@@ -636,10 +610,10 @@ fn in_ctx<R>(ctx: usize, f: impl FnOnce() -> Result<R>) -> Result<R> {
         return f();
     }
     // SAFETY: a context a Dev retained or made for the process (a buffer's), then the thread's own again.
-    unsafe { cu("cuCtxSetCurrent", (driver()?.cuCtxSetCurrent)(ctx as *mut c_void))? };
+    unsafe { D::set_current(ctx as *mut c_void)? };
     let r = f();
     // SAFETY: as above.
-    unsafe { cu("cuCtxSetCurrent", (driver()?.cuCtxSetCurrent)(now as *mut c_void))? };
+    unsafe { D::set_current(now as *mut c_void)? };
     r
 }
 
@@ -741,9 +715,8 @@ impl Buf {
     /// `bytes` bytes of device memory in the context current on this thread.
     pub fn new(bytes: usize) -> Result<Buf> {
         let ctx = current_ctx()?;
-        let mut p = 0u64;
-        // SAFETY: a host out-pointer; at least one byte is taken.
-        unsafe { cu("cuMemAlloc", (driver()?.cuMemAlloc_v2)(&mut p, bytes.max(1)))? };
+        // (at least one byte is taken)
+        let p = D::alloc(bytes)?;
         held_add(ctx, bytes as u64, false);
         Ok(Buf { ptr: p, bytes, at: p, len: bytes, ctx })
     }
@@ -767,7 +740,7 @@ impl Buf {
         }
         in_ctx(self.ctx, || {
             // SAFETY: n bytes of host memory to n of this buffer's (checked above), in its context.
-            unsafe { cu("cuMemcpyHtoD", (driver()?.cuMemcpyHtoD_v2)(self.at + offset as u64, data.as_ptr() as *const c_void, n))? };
+            unsafe { D::h2d(self.at + offset as u64, data.as_ptr() as *const c_void, n)? };
             settle()
         })
     }
@@ -780,7 +753,7 @@ impl Buf {
         }
         in_ctx(self.ctx, || {
             // SAFETY: n of this buffer's bytes (checked above) to n of host memory, in its context; T takes any bytes.
-            unsafe { cu("cuMemcpyDtoH", (driver()?.cuMemcpyDtoH_v2)(out.as_mut_ptr() as *mut c_void, self.at + offset as u64, n)) }
+            unsafe { D::d2h(out.as_mut_ptr() as *mut c_void, self.at + offset as u64, n) }
         })
     }
 
@@ -800,7 +773,7 @@ impl Buf {
         }
         in_ctx(self.ctx, || {
             // SAFETY: the buffer's own bytes (at least the one byte allocated), in its context.
-            unsafe { cu("cuMemsetD8", (driver()?.cuMemsetD8_v2)(self.at, 0, self.len.max(1)))? };
+            unsafe { D::memset(self.at, 0, self.len.max(1))? };
             settle()
         })
     }
@@ -809,8 +782,8 @@ impl Buf {
 /// The legacy stream waited for. `Buf::write`'s copy from pageable memory returns once the data is staged, before it reaches the GPU, and `cuMemsetD8` returns at once; both run
 /// on the legacy stream, which a kernel on a `Dev`'s stream (a non-blocking one) is not ordered after.
 fn settle() -> Result<()> {
-    // SAFETY: the null stream is the context's legacy stream (these functions are not the per-thread-stream variants).
-    unsafe { cu("cuStreamSynchronize", (driver()?.cuStreamSynchronize)(Stream::DEFAULT)) }
+    // (the null stream is the context's legacy stream: these functions are not the per-thread-stream variants)
+    D::stream_sync(Stream::DEFAULT)
 }
 
 impl Drop for Buf {
@@ -820,7 +793,7 @@ impl Drop for Buf {
         }
         let free = || {
             // SAFETY: allocated by Buf::new, freed once.
-            unsafe { cu("cuMemFree", (driver()?.cuMemFree_v2)(self.at)) }
+            unsafe { D::free(self.at) }
         };
         // (in its context; where the thread's context cannot be read, as it is)
         let _ = match current_ctx() {
@@ -839,26 +812,17 @@ pub struct Pinned {
 
 impl Pinned {
     pub fn new(bytes: usize) -> Result<Pinned> {
-        let mut p = std::ptr::null_mut();
-        // SAFETY: a host out-pointer; 0: no flags.
-        unsafe { cu("cuMemHostAlloc", (driver()?.cuMemHostAlloc)(&mut p, bytes.max(1), 0))? };
-        Ok(Pinned { ptr: p, bytes })
+        Ok(Pinned { ptr: D::host_alloc(bytes, HostMem::Pinned)?, bytes })
     }
 
     /// Pinned host memory mapped into the device's address space (CU_MEMHOSTALLOC_DEVICEMAP; with unified addressing a kernel writes it through the same pointer): what a kernel hands the host without a copy.
     pub fn mapped(bytes: usize) -> Result<Pinned> {
-        let mut p = std::ptr::null_mut();
-        // SAFETY: a host out-pointer; 2: CU_MEMHOSTALLOC_DEVICEMAP.
-        unsafe { cu("cuMemHostAlloc", (driver()?.cuMemHostAlloc)(&mut p, bytes.max(1), 2))? };
-        Ok(Pinned { ptr: p, bytes })
+        Ok(Pinned { ptr: D::host_alloc(bytes, HostMem::Mapped)?, bytes })
     }
 
     /// Pinned host memory every context takes as pinned (CU_MEMHOSTALLOC_PORTABLE): what two GPUs copy through.
     pub fn portable(bytes: usize) -> Result<Pinned> {
-        let mut p = std::ptr::null_mut();
-        // SAFETY: a host out-pointer; 1: CU_MEMHOSTALLOC_PORTABLE.
-        unsafe { cu("cuMemHostAlloc", (driver()?.cuMemHostAlloc)(&mut p, bytes.max(1), 1))? };
-        Ok(Pinned { ptr: p, bytes })
+        Ok(Pinned { ptr: D::host_alloc(bytes, HostMem::Portable)?, bytes })
     }
 
     pub fn as_slice_mut<T: Plain>(&mut self) -> &mut [T] {
@@ -870,10 +834,8 @@ impl Pinned {
 
 impl Drop for Pinned {
     fn drop(&mut self) {
-        if let Ok(d) = driver() {
-            // SAFETY: allocated by Pinned::new, freed once.
-            unsafe { (d.cuMemFreeHost)(self.ptr) };
-        }
+        // SAFETY: allocated by Pinned::new, freed once.
+        let _ = unsafe { D::host_free(self.ptr) };
     }
 }
 
@@ -882,13 +844,13 @@ impl Drop for Pinned {
 /// # Safety
 /// `src` stays valid until the stream has run the copy.
 pub unsafe fn copy_h2d_async(dst: u64, src: *const c_void, bytes: usize, s: Stream) -> Result<()> {
-    cu("cuMemcpyHtoDAsync", (driver()?.cuMemcpyHtoDAsync_v2)(dst, src, bytes, s))
+    D::h2d_async(dst, src, bytes, s)
 }
 
 /// # Safety
 /// `dst` stays valid until the stream has run the copy.
 pub unsafe fn copy_d2h_async(dst: *mut c_void, src: u64, bytes: usize, s: Stream) -> Result<()> {
-    cu("cuMemcpyDtoHAsync", (driver()?.cuMemcpyDtoHAsync_v2)(dst, src, bytes, s))
+    D::d2h_async(dst, src, bytes, s)
 }
 
 /// A device-to-device copy on `s`.
@@ -896,7 +858,7 @@ pub unsafe fn copy_d2h_async(dst: *mut c_void, src: u64, bytes: usize, s: Stream
 /// # Safety
 /// Two live device ranges of `bytes` that do not overlap, valid until the stream has run the copy.
 pub unsafe fn copy_d2d_async(dst: u64, src: u64, bytes: usize, s: Stream) -> Result<()> {
-    cu("cuMemcpyDtoDAsync", (driver()?.cuMemcpyDtoDAsync_v2)(dst, src, bytes, s))
+    D::d2d_async(dst, src, bytes, s)
 }
 
 /// `bytes` bytes of device memory at `dst` set to `v`, queued on `s` (a whole buffer: `Buf::fill_async`).
@@ -905,7 +867,7 @@ pub unsafe fn copy_d2d_async(dst: u64, src: u64, bytes: usize, s: Stream) -> Res
 /// `dst .. dst + bytes` is device memory the caller may write, and nothing queued reads it before this runs unless it is to see the bytes set.
 pub unsafe fn memset_async(dst: u64, v: u8, bytes: usize, s: Stream) -> Result<()> {
     // SAFETY: the caller's device range (its contract).
-    unsafe { cu("cuMemsetD8Async", (driver()?.cuMemsetD8Async)(dst, v, bytes, s)) }
+    unsafe { D::memset_async(dst, v, bytes, s) }
 }
 
 // A development census of the kernels' launches (`kprof_start`, `kprof_stop`): each launch timed alone on its stream, by kernel. Off, it costs a launch an atomic load.
@@ -952,19 +914,14 @@ impl Graph {
     /// Every buffer, table and kernel the capture used is still alive and still holds what the captured work expects there (the graph holds none of them).
     pub unsafe fn launch(&self, s: Stream) -> Result<()> {
         // SAFETY: an instantiated graph; what it reads and writes is alive (the caller's contract).
-        unsafe { cu("cuGraphLaunch", (driver()?.cuGraphLaunch)(self.exec, s)) }
+        unsafe { D::graph_launch(self.exec, s) }
     }
 }
 
 impl Drop for Graph {
     fn drop(&mut self) {
-        if let Ok(d) = driver() {
-            // SAFETY: made by capture, destroyed once.
-            unsafe {
-                (d.cuGraphExecDestroy)(self.exec);
-                (d.cuGraphDestroy)(self.graph);
-            }
-        }
+        // SAFETY: made by capture, destroyed once.
+        let _ = unsafe { D::graph_destroy(self.graph, self.exec) };
     }
 }
 
@@ -976,66 +933,47 @@ pub struct Timer {
 
 impl Timer {
     pub fn new() -> Result<Timer> {
-        let d = driver()?;
-        let (mut a, mut b) = (std::ptr::null_mut(), std::ptr::null_mut());
-        // SAFETY: host out-pointers; 0: default flags.
-        unsafe {
-            cu("cuEventCreate", (d.cuEventCreate)(&mut a, 0))?;
-            cu("cuEventCreate", (d.cuEventCreate)(&mut b, 0))?;
-        }
-        Ok(Timer { a, b })
+        Ok(Timer { a: D::event(true)?, b: D::event(true)? })
     }
 
     pub fn start(&self, s: Stream) -> Result<()> {
         // SAFETY: an event of this timer.
-        unsafe { cu("cuEventRecord", (driver()?.cuEventRecord)(self.a, s)) }
+        unsafe { D::record(self.a, s) }
     }
 
     /// Milliseconds from `start` to now on the stream.
     pub fn stop(&self, s: Stream) -> Result<f32> {
-        let d = driver()?;
-        let mut ms = 0f32;
-        // SAFETY: events of this timer; a host out-pointer.
+        // SAFETY: events of this timer.
         unsafe {
-            cu("cuEventRecord", (d.cuEventRecord)(self.b, s))?;
-            cu("cuEventSynchronize", (d.cuEventSynchronize)(self.b))?;
-            cu("cuEventElapsedTime", (d.cuEventElapsedTime)(&mut ms, self.a, self.b))?;
+            D::record(self.b, s)?;
+            D::event_sync(self.b)?;
+            D::elapsed(self.a, self.b)
         }
-        Ok(ms)
     }
 }
 
 impl Drop for Timer {
     fn drop(&mut self) {
-        if let Ok(d) = driver() {
-            // SAFETY: made in new, destroyed once.
-            unsafe {
-                (d.cuEventDestroy_v2)(self.a);
-                (d.cuEventDestroy_v2)(self.b);
-            }
+        // SAFETY: made in new, destroyed once.
+        unsafe {
+            let _ = D::event_destroy(self.a);
+            let _ = D::event_destroy(self.b);
         }
     }
 }
 
 /// Whether GPU `a` can read and write GPU `b`'s memory directly (peer access; `Dev::reach_peer` turns it on). False where the driver cannot say.
 pub fn can_reach(a: i32, b: i32) -> bool {
-    let Ok(d) = driver() else { return false };
-    let mut can = 0;
-    // SAFETY: a host out-pointer.
-    unsafe { (d.cuDeviceCanAccessPeer)(&mut can, a, b) == 0 && can != 0 }
+    D::can_access_peer(a, b).unwrap_or(false)
 }
 
 /// The calling thread works on GPU `ordinal` from now on, in its primary context (the one `Dev::new` retains for the process): a thread of the engine's that copies
 /// for it (the expert stores' copy threads).
 pub fn bind_thread(ordinal: i32) -> Result<()> {
-    let d = driver()?;
-    let (mut dev, mut ctx) = (0, std::ptr::null_mut());
-    // SAFETY: host out-pointers; the device's primary context, which the engine retains for the process.
-    unsafe {
-        cu("cuDeviceGet", (d.cuDeviceGet)(&mut dev, ordinal))?;
-        cu("cuDevicePrimaryCtxRetain", (d.cuDevicePrimaryCtxRetain)(&mut ctx, dev))?;
-        cu("cuCtxSetCurrent", (d.cuCtxSetCurrent)(ctx))
-    }
+    // (the device's primary context, which the engine retains for the process)
+    let ctx = D::primary_ctx(D::device(ordinal)?)?;
+    // SAFETY: the context just retained.
+    unsafe { D::set_current(ctx) }
 }
 
 /// Host memory `[ptr, ptr + bytes)` (page-aligned) registered with the driver, so that copies from it go at the link's speed without a pinned copy (`flags`: the driver's
@@ -1045,7 +983,7 @@ pub fn bind_thread(ordinal: i32) -> Result<()> {
 /// The range is the caller's, stays mapped until `unregister_host`, and is registered once.
 pub unsafe fn register_host(ptr: *mut c_void, bytes: usize, flags: u32) -> Result<()> {
     // SAFETY: as the caller promises.
-    unsafe { cu("cuMemHostRegister", (driver()?.cuMemHostRegister_v2)(ptr, bytes, flags)) }
+    unsafe { D::host_register(ptr, bytes, flags) }
 }
 
 /// The registration of `register_host` at `ptr` undone.
@@ -1054,7 +992,7 @@ pub unsafe fn register_host(ptr: *mut c_void, bytes: usize, flags: u32) -> Resul
 /// `ptr` was registered, and no copy from it is still queued.
 pub unsafe fn unregister_host(ptr: *mut c_void) -> Result<()> {
     // SAFETY: as the caller promises.
-    unsafe { cu("cuMemHostUnregister", (driver()?.cuMemHostUnregister)(ptr)) }
+    unsafe { D::host_unregister(ptr) }
 }
 
 /// An event: a timing one (`new`), or one that only orders work (`untimed`, which the driver records more cheaply).
@@ -1062,63 +1000,50 @@ pub struct Ev(CuEvent);
 
 impl Ev {
     pub fn new() -> Result<Ev> {
-        Ev::with_flags(0)
+        Ok(Ev(D::event(true)?))
     }
 
     /// An event with no timing (CU_EVENT_DISABLE_TIMING): for ordering work between streams and threads.
     pub fn untimed() -> Result<Ev> {
-        Ev::with_flags(2)
-    }
-
-    fn with_flags(flags: u32) -> Result<Ev> {
-        let mut e = std::ptr::null_mut();
-        // SAFETY: a host out-pointer.
-        unsafe { cu("cuEventCreate", (driver()?.cuEventCreate)(&mut e, flags))? };
-        Ok(Ev(e))
+        Ok(Ev(D::event(false)?))
     }
 
     pub fn record(&self, s: Stream) -> Result<()> {
         // SAFETY: an event of this wrapper.
-        unsafe { cu("cuEventRecord", (driver()?.cuEventRecord)(self.0, s)) }
+        unsafe { D::record(self.0, s) }
     }
 
     /// The event recorded as a node of the graph being captured on `s` (CU_EVENT_RECORD_EXTERNAL), which a replay records again: its time can be read after the replay (outside a capture the driver refuses it: CUDA_ERROR_ILLEGAL_STATE).
     pub fn record_in_graph(&self, s: Stream) -> Result<()> {
-        // SAFETY: an event of this wrapper; 1 is CU_EVENT_RECORD_EXTERNAL.
-        unsafe { cu("cuEventRecordWithFlags", (driver()?.cuEventRecordWithFlags)(self.0, s, 1)) }
+        // SAFETY: an event of this wrapper.
+        unsafe { D::record_in_graph(self.0, s) }
     }
 
     /// Work queued on `s` from now on waits for the work this event was recorded after (a no-op for an event not recorded yet).
     pub fn wait(&self, s: Stream) -> Result<()> {
         // SAFETY: an event of this wrapper and a stream of the caller's.
-        unsafe { cu("cuStreamWaitEvent", (driver()?.cuStreamWaitEvent)(s, self.0, 0)) }
+        unsafe { D::wait_event(s, self.0) }
     }
 
     /// The calling thread waits until the work this event was recorded after has run (the engine's stream may have more queued after it).
     pub fn wait_host(&self) -> Result<()> {
         // SAFETY: an event of this wrapper.
-        unsafe { cu("cuEventSynchronize", (driver()?.cuEventSynchronize)(self.0)) }
+        unsafe { D::event_sync(self.0) }
     }
 
     /// Whether the work this event was recorded after has run (an event not recorded yet has).
     pub fn done(&self) -> Result<bool> {
-        // SAFETY: an event of this wrapper; 600 is CUDA_ERROR_NOT_READY.
-        match unsafe { (driver()?.cuEventQuery)(self.0) } {
-            0 => Ok(true),
-            600 => Ok(false),
-            e => cu("cuEventQuery", e).map(|_| false),
-        }
+        // SAFETY: an event of this wrapper.
+        unsafe { D::event_done(self.0) }
     }
 
     /// Milliseconds from `earlier` to this event (both recorded and complete).
     pub fn since(&self, earlier: &Ev) -> Result<f32> {
-        let mut ms = 0f32;
-        // SAFETY: events of this wrapper; a host out-pointer.
+        // SAFETY: events of this wrapper.
         unsafe {
-            cu("cuEventSynchronize", (driver()?.cuEventSynchronize)(self.0))?;
-            cu("cuEventElapsedTime", (driver()?.cuEventElapsedTime)(&mut ms, earlier.0, self.0))?;
+            D::event_sync(self.0)?;
+            D::elapsed(earlier.0, self.0)
         }
-        Ok(ms)
     }
 }
 
@@ -1129,18 +1054,18 @@ pub struct EvRef(usize);
 impl EvRef {
     pub fn record(&self, s: Stream) -> Result<()> {
         // SAFETY: the handle of an event that is alive (the caller keeps it so).
-        unsafe { cu("cuEventRecord", (driver()?.cuEventRecord)(self.0 as CuEvent, s)) }
+        unsafe { D::record(self.0 as CuEvent, s) }
     }
 
     pub fn wait(&self, s: Stream) -> Result<()> {
         // SAFETY: as above.
-        unsafe { cu("cuStreamWaitEvent", (driver()?.cuStreamWaitEvent)(s, self.0 as CuEvent, 0)) }
+        unsafe { D::wait_event(s, self.0 as CuEvent) }
     }
 
     /// The calling thread waits until the work the event was last recorded after has run (a no-op for an event not recorded yet).
     pub fn wait_host(&self) -> Result<()> {
         // SAFETY: as above.
-        unsafe { cu("cuEventSynchronize", (driver()?.cuEventSynchronize)(self.0 as CuEvent)) }
+        unsafe { D::event_sync(self.0 as CuEvent) }
     }
 }
 
@@ -1156,10 +1081,8 @@ impl Ev {
 
 impl Drop for Ev {
     fn drop(&mut self) {
-        if let Ok(d) = driver() {
-            // SAFETY: made in new, destroyed once.
-            unsafe { (d.cuEventDestroy_v2)(self.0) };
-        }
+        // SAFETY: made in new, destroyed once.
+        let _ = unsafe { D::event_destroy(self.0) };
     }
 }
 
@@ -1199,16 +1122,13 @@ impl Side {
         if let Some(s) = SPARE.lock().unwrap_or_else(|e| e.into_inner()).take(ctx) {
             return Ok(Side { stream: Stream(s as *mut c_void), ctx });
         }
-        let mut s = Stream::DEFAULT;
-        // SAFETY: a host out-pointer; 1: CU_STREAM_NON_BLOCKING.
-        unsafe { cu("cuStreamCreate", (driver()?.cuStreamCreate)(&mut s, 1))? };
+        let s = D::stream()?;
         SIDES_MADE.fetch_add(1, Relaxed);
         Ok(Side { stream: s, ctx })
     }
 
     pub fn sync(&self) -> Result<()> {
-        // SAFETY: a stream this wrapper made.
-        unsafe { cu("cuStreamSynchronize", (driver()?.cuStreamSynchronize)(self.stream)) }
+        D::stream_sync(self.stream)
     }
 }
 
@@ -1333,8 +1253,7 @@ mod pick_tests {
 
 /// Waits for the work queued on stream `s` (a Dev's, or a wrapper's) to finish.
 pub fn sync_stream(s: Stream) -> Result<()> {
-    // SAFETY: a stream a Dev or a wrapper made, live while its owner is.
-    unsafe { cu("cuStreamSynchronize", (driver()?.cuStreamSynchronize)(s)) }
+    D::stream_sync(s)
 }
 
 #[cfg(test)]

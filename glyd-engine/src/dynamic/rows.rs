@@ -28,6 +28,7 @@ use super::snaps;
 use super::{Dyn, Op};
 use crate::dev::{copy_d2d_async, Buf};
 use crate::ffi::{err, Result};
+use crate::gpu_ops::GpuOps;
 use crate::sched::{ModelStep, PrefillJob, Row, Sample, FUSED_ROWS};
 
 /// Paged keys and values: the blocks every sequence holds, each ring's layer group, and each sequence's block tables on the GPU (a buffer a group: every slot's row of `tlen`
@@ -413,6 +414,7 @@ fn by_sequence(op: &Op) -> bool {
             | Op::MambaScan { .. }
             | Op::CompKv { .. }
             | Op::Compress { .. }
+            | Op::IdxKeys { .. }
             | Op::IdxPick(_)
             | Op::CompAttn { .. }
             | Op::IdxMean { .. }

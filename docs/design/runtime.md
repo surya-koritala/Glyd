@@ -738,7 +738,7 @@ What is built (R12b, #327):
   A copy is priced at the link's time for an expert, measured once at load (the GPU's own copies are not timed). Calls of up to
   `DEV_ROWS` (8) rows are planned on the GPU; more rows are the host's plan, whose waves copy every miss where the misses
   outnumber the places. (The first rule, a miss copied wherever a copy cost less than the host's pairs, ignored that the two run
-  at once and copied every miss at 1 and 8 rows: 62-80% slower than the host's plan on an A10, session 5z2.) The store's own plan
+  at once and copied every miss at 1 and 8 rows: 62-80% slower than the host's plan on an A10.) The store's own plan
   (`LayerCache`) still plans a prompt's chunks: before such a call the GPU's table is read into it, after it written back.
   On the Nemotron 3 Super decode traces its clock finds 0.5 to 0.6 points fewer of the pairs in places than the least-recently-used
   cache at one row (60.7, 72.8 and 79.4% at 17, 32 and 46% of the experts), and at 8 rows 5.1 more to 0.6 fewer.
