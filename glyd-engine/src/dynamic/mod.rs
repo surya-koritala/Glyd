@@ -3485,8 +3485,8 @@ impl Dyn {
                     }
                 }
                 // (the n-gram embedding: its convolution's last inputs those before the pass and the kept rows' (`qx_ple_conv`: oldest first), its last tokens the
-                // two before the pass and the kept rows' (`qx_ngram_hist`: each token + 1, oldest first))
-                for (l, ops) in p.d.layers.iter().enumerate() {
+                // two before the pass and the kept rows' (`qx_ngram_hist`: each token + 1, oldest first); this stage's layers', another stage holds the others' states)
+                for (l, ops) in p.d.layers.iter().enumerate().take(self.stage.layers.1).skip(self.stage.layers.0) {
                     for op in ops {
                         match *op {
                             Op::NgramAdd(x) => {
