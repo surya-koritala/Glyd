@@ -364,7 +364,7 @@ mod tests {
         let (mut a, mut p) = layer(2, 1, 16, 32);
         let n = Norm::rms_plus_one(1e-6);
         (a.rope, a.q_norm, a.k_norm, a.v_norm) = (Some(Rope::plain(1e4, 8)), Some(n), Some(n), None);
-        a.indexer = Some(Indexer { heads: 2, head_dim: 16, top_k: 4, block: 2, shared: false, form: IndexForm::Mean { norm: n } });
+        a.indexer = Some(Indexer { heads: 2, head_dim: 16, top_k: 4, block: 2, shared: false, form: IndexForm::Mean { norm: n }, rope: 0 });
         p.put("index_qk", &[48, 32], fill("qsa.qk", 48 * 32, -0.5, 0.5));
         p.put("index_q_norm", &[16], fill("qsa.qn", 16, -0.3, 0.3));
         p.put("index_k_norm", &[16], fill("qsa.kn", 16, -0.3, 0.3));

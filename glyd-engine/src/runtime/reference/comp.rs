@@ -281,6 +281,7 @@ mod tests {
                 block: ratio,
                 shared: false,
                 form: IndexForm::Gated { key: Norm::rms(1e-6) },
+                rope: 0,
             }),
             norm_eps: 1e-6,
             ape: false,

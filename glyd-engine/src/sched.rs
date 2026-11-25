@@ -259,16 +259,21 @@ pub trait ModelStep {
         };
         Ok(Launched { done: Some(done), tag: 0 })
     }
-    /// Whether a row of the next step `launch` queues draws its token from its candidates or reads its logits (a sequence that is not greedy, or asks for
-    /// log-probabilities): a step that makes the candidates on the GPU (`top`) then queues them with the step's work and their copy with its samples, and `top` waits
-    /// for nothing.
-    fn draws(&mut self, _on: bool) {}
+    /// What the sampled rows of the next step `launch` queues ask of it, one for each in the order of their samples: None where the row takes its largest logit; Some(t)
+    /// where it draws from its candidates or reads its log-probabilities, and asks for its row's sum of exponentials at temperature t (`mass`; 0: none). A step that makes
+    /// them on the GPU queues them with its work and copies them with its samples, so `top` and `mass` wait for nothing.
+    fn draws(&mut self, _asks: &[Option<f32>]) {}
     /// The samples of a step `launch` queued, once its work has run (the wait is for that step, not for the GPU's whole queue).
     fn finish(&mut self, l: Launched) -> Result<Samples> {
         l.done.ok_or_else(|| crate::ffi::Error("a step launched to run at once has no samples".into()))
     }
     /// The steps launched and not finished given up (the scheduler ends every sequence: `Sched::fail`): their samples are not asked for.
     fn abandon(&mut self) {}
+    /// Whether the next step is to be launched after the step in flight lands, though it could be launched before (host work between steps that no queued step may run
+    /// beside: an expert cache's end of a step).
+    fn quiet(&self) -> bool {
+        false
+    }
     /// A drafting step's decode of the one sequence that decodes (a draft model proposes tokens and the model checks them in one pass: src/dynamic/mod.rs `spec_round`): the
     /// tokens after the row's, 1 to the draft's length and one more, as steps one at a time would choose them (drawn by `sampler` where given, else the largest logits); the
     /// cache then holds the row's token and each of them but the last. None: the step does not draft (its decode is one token a row).
@@ -299,6 +304,20 @@ pub trait ModelStep {
     /// The sampler's candidates for row `row` of the last step: the largest logits of its row, largest first (None: the backend has none, the logits are read).
     fn top(&mut self, _row: usize) -> Option<Vec<(u32, f32)>> {
         None
+    }
+    /// Row `row`'s whole distribution at `temperature` in buckets (`sampler::Hist`, HIST_BUCKETS of HIST_PER a unit), made where the logits are: a draw over all of the row
+    /// the candidates cannot hold (`Sampler::sample_hist`). None: the backend has none, the row is read.
+    fn hist(&mut self, _row: usize, _temperature: f32) -> Option<crate::sampler::Hist> {
+        None
+    }
+    /// The tokens of bucket `bucket` of `hist(row, temperature)`'s (token and logit), all of them; None where there are more than `cap`, or the backend has none.
+    fn hist_bucket(&mut self, _row: usize, _temperature: f32, _bucket: usize, _cap: usize) -> Option<Vec<(u32, f32)>> {
+        None
+    }
+    /// The row's own largest logits, as `top` gives them where no grammar's mask was put on the row before them (a step that made them with a mask: before it); the
+    /// log-probabilities' top. By default `top`'s.
+    fn top_raw(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
+        self.top(row)
     }
     /// The sum over row `row`'s logits of exp((logit - largest) / temperature), made where the logits are (a top-p over the whole row with no top-k; at temperature 1,
     /// the row's log-sum-exp for log-probabilities). None: the backend has none, the logits are read.
@@ -495,8 +514,11 @@ impl ModelStep for &mut dyn ModelStep {
     fn abandon(&mut self) {
         (**self).abandon()
     }
-    fn draws(&mut self, on: bool) {
-        (**self).draws(on)
+    fn quiet(&self) -> bool {
+        (**self).quiet()
+    }
+    fn draws(&mut self, asks: &[Option<f32>]) {
+        (**self).draws(asks)
     }
     fn draft(&mut self, row: &Row, sampler: Option<&mut Sampler>) -> Result<Option<Vec<u32>>> {
         (**self).draft(row, sampler)
@@ -527,6 +549,15 @@ impl ModelStep for &mut dyn ModelStep {
     }
     fn mass(&mut self, row: usize, temperature: f32) -> Option<f64> {
         (**self).mass(row, temperature)
+    }
+    fn top_raw(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
+        (**self).top_raw(row)
+    }
+    fn hist(&mut self, row: usize, temperature: f32) -> Option<crate::sampler::Hist> {
+        (**self).hist(row, temperature)
+    }
+    fn hist_bucket(&mut self, row: usize, temperature: f32, bucket: usize, cap: usize) -> Option<Vec<(u32, f32)>> {
+        (**self).hist_bucket(row, temperature, bucket, cap)
     }
     fn gather(&mut self, row: usize, tokens: &[u32]) -> Result<Vec<(u32, f32)>> {
         (**self).gather(row, tokens)
@@ -598,6 +629,9 @@ impl Seq {
         }
     }
 }
+
+/// The most tokens of a bucket a draw over the whole row takes from the GPU (`ModelStep::hist_bucket`); one with more is drawn from the row.
+const HIST_CAP: usize = 4096;
 
 /// The most sequences a slot step runs at once (the rows of a pass's head).
 pub const MAX_USERS: usize = 64;
@@ -1732,10 +1766,21 @@ impl<B: ModelStep> Sched<B> {
             let raw = self.be.gather(row, &ts)?;
             tok = self.active[i].sampler.sample_listed(&raw);
         }
-        // (log-probabilities: the token's logit and the k likeliest from the candidates, the log-sum-exp from the row's sum at temperature 1 about its largest logit, the first's; not where a
-        // grammar's mask made the candidates, which are then the allowed tokens', not the row's likeliest)
-        let lp = match (want, tok, top.as_deref()) {
-            (Some(k), Some(t), Some(c)) if k <= c.len() && self.active[i].sampler.mask_handle().is_none() => {
+        // (a draw over all of the row (no top-k, or one past the candidates): from the row's buckets and the tokens of the ones it lands in)
+        if let (None, Some(t)) = (tok, self.active[i].sampler.hist_need()) {
+            if let Some(h) = self.be.hist(row, t) {
+                let (be, sampler) = (&mut self.be, &mut self.active[i].sampler);
+                tok = sampler.sample_hist(&h, &mut |b| be.hist_bucket(row, t, b, HIST_CAP));
+            }
+        }
+        // (log-probabilities: the token's logit and the k likeliest from the row's own candidates (where a grammar's mask made the draw's, those from before it), the log-sum-exp
+        // from the row's sum at temperature 1 about its largest logit, the first's)
+        let own = match (want, self.active[i].sampler.mask_handle()) {
+            (Some(_), Some(_)) => self.be.top_raw(row),
+            _ => top.clone(),
+        };
+        let lp = match (want, tok, own.as_deref()) {
+            (Some(k), Some(t), Some(c)) if k <= c.len() => {
                 let x = match c.iter().find(|x| x.0 == t) {
                     Some(x) => Some(x.1),
                     None => self.be.gather(row, &[t])?.first().map(|x| x.1),
@@ -1891,7 +1936,7 @@ impl<B: ModelStep> Sched<B> {
     /// samples in the step before takes its largest logit (greedy, no log-probabilities): otherwise that step lands first, its tokens drawn on the host, and this one is launched after. A
     /// sequence that ends in a step has had its row in the next one run too (the end is seen only when it lands); that row's output is not taken.
     fn round_one_step(&mut self) -> Result<()> {
-        if self.flight.as_ref().is_some_and(|f| !(self.overlap && f.on_device)) {
+        if self.flight.as_ref().is_some_and(|f| !(self.overlap && f.on_device) || self.be.quiet()) {
             let f = self.flight.take().expect("a step in flight");
             self.land(f)?;
         }
@@ -2023,9 +2068,21 @@ impl<B: ModelStep> Sched<B> {
             plan.rows.iter().map(|r| r.0).chain(picks.iter().filter(|p| p.2).map(|p| p.0)).filter_map(|id| at(&self.active, id)).collect();
         let masks: Vec<_> = sampled.iter().map(|&i| self.active[i].sampler.mask_handle()).collect();
         let on_device = sampled.iter().all(|&i| self.active[i].greedy && self.active[i].reply.logprobs.is_none());
+        // (what each sampled row asks of the step beside its token: its candidates, and the sum of its row's exponentials a top-p with no top-k takes, or log-probabilities)
+        let asks: Vec<Option<f32>> = sampled
+            .iter()
+            .map(|&i| {
+                let s = &self.active[i];
+                (!(s.greedy && s.reply.logprobs.is_none())).then(|| match s.sampler.top_need() {
+                    Some(n) if n.mass => n.temperature,
+                    _ if s.reply.logprobs.is_some() => 1.0,
+                    _ => 0.0,
+                })
+            })
+            .collect();
         let (t, t0) = (std::time::Instant::now(), crate::monitor::clock());
         self.be.masks(masks);
-        self.be.draws(!on_device);
+        self.be.draws(&asks);
         let l = self.be.launch(&rows, &jobs)?;
         drop((rows, jobs));
         Ok(Flight { l, rows: plan.rows.iter().map(|r| r.0).collect(), picks, used: plan.used, t, t0, on_device })
@@ -2449,6 +2506,32 @@ pub(crate) mod tests {
             let r = self.rows.get(row).ok_or_else(|| crate::ffi::Error("no logits".into()))?;
             Ok(tokens.iter().filter_map(|&t| r.get(t as usize).map(|&x| (t, x))).collect())
         }
+        // (as a GPU's buckets of the row, where it has candidates)
+        fn hist(&mut self, row: usize, temperature: f32) -> Option<crate::sampler::Hist> {
+            let r = self.rows.get(row).filter(|_| self.gpu_top)?;
+            let max = r.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let (n, per) = (crate::sampler::HIST_BUCKETS, crate::sampler::HIST_PER);
+            let (mut sums, mut counts) = (vec![0f64; n], vec![0u32; n]);
+            for &x in r {
+                let q = (x - max) / temperature;
+                let b = ((-q * per).floor().min((n - 1) as f32) as usize).min(n - 1);
+                sums[b] += (q as f64).exp();
+                counts[b] += 1;
+            }
+            Some(crate::sampler::Hist { max, per, sums, counts })
+        }
+        fn hist_bucket(&mut self, row: usize, temperature: f32, bucket: usize, cap: usize) -> Option<Vec<(u32, f32)>> {
+            let r = self.rows.get(row).filter(|_| self.gpu_top)?;
+            let max = r.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let (n, per) = (crate::sampler::HIST_BUCKETS, crate::sampler::HIST_PER);
+            let v: Vec<(u32, f32)> = r
+                .iter()
+                .enumerate()
+                .filter(|(_, &x)| (((-(x - max) / temperature) * per).floor().min((n - 1) as f32) as usize).min(n - 1) == bucket)
+                .map(|(t, &x)| (t as u32, x))
+                .collect();
+            (v.len() <= cap).then_some(v)
+        }
         // (as a GPU's sum of the row, where it has candidates)
         fn mass(&mut self, row: usize, temperature: f32) -> Option<f64> {
             let r = self.rows.get(row).filter(|_| self.gpu_top)?;
@@ -2555,6 +2638,9 @@ pub(crate) mod tests {
             Reply { logprobs: Some(3), ..reply(6) },
             Reply { params: Params { temperature: 0.7, top_k: 5, seed: 3, ..Params::default() }, logprobs: Some(2), ..reply(6) },
             Reply { params: Params { temperature: 0.9, top_p: 0.9, seed: 5, ..Params::default() }, ..reply(6) },
+            // (over all of the row: temperature alone, and a top-k past the candidates; hot enough that the draws land in the bucket of the row's 2,046 equal logits)
+            Reply { params: Params { temperature: 8.0, seed: 9, ..Params::default() }, ..reply(8) },
+            Reply { params: Params { temperature: 6.0, top_k: 100, seed: 13, ..Params::default() }, ..reply(8) },
         ];
         let run_with = |gpu_top: bool| {
             let mut be = Fake::new(64, 32);
@@ -2589,6 +2675,8 @@ pub(crate) mod tests {
             }
         }
         assert!(on[0].1.len() == 6 && on[1].1.len() == 6 && on[2].1.is_empty());
+        // (the hot draws reached the row's low tokens: a draw over all of it)
+        assert!(on[3].0.iter().chain(&on[4].0).any(|&t| t > 1001), "{:?}", (&on[3].0, &on[4].0));
     }
 
     /// A round that is one step (`ModelStep::one_step`): every sequence gives the tokens it gives alone, whatever the mix of lengths, a shared start, sampling from the logits' rows and a pool
@@ -2725,6 +2813,22 @@ pub(crate) mod tests {
         assert_eq!((on, ahead), (drawn(false).0, 0));
     }
 
+    /// A step that asks to be quiet (`ModelStep::quiet`: an expert cache's end of a step owed) has the step in flight land before the next is launched: the same replies, none
+    /// launched ahead.
+    #[test]
+    fn a_quiet_step_lands_before_the_next_is_launched() {
+        let mut f = launching(3, 16, None);
+        f.quiet = true;
+        let mut s = Sched::new(f, 3).overlapping(true);
+        let reqs: Vec<(Vec<u32>, usize)> = (0..5).map(|k| (prompt(k + 1, 9 + 7 * k as usize), 12)).collect();
+        let rx: Vec<_> = reqs.iter().map(|(p, n)| add(&mut s, p.clone(), *n).0).collect();
+        run(&mut s);
+        for ((p, n), rx) in reqs.iter().zip(&rx) {
+            assert_eq!(collect(rx), (reference(p, *n), Finish::Length));
+        }
+        assert_eq!(s.be.ahead, 0);
+    }
+
     /// A conversation's next turn goes on in the slot its last turn finished in where steps are launched ahead too, with the same replies and the same tokens found; and a
     /// scheduler that fails while a step is out gives that step up (`abandon`), every request ending with the error and every slot empty.
     #[test]
@@ -2756,7 +2860,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// #138: the models that ran one request at a time through a loop of their own (`server::work_gen`, gone) are the scheduler's steps of one slot. A drafted model's decode
+    /// #138: the models that ran one request at a time through a loop of their own are the scheduler's steps of one slot. A drafted model's decode
     /// step is a drafting round (`ModelStep::draft`), its tokens each sent and added as a step's would be; a request that asks for log-probabilities or a least length has plain
     /// steps (a round reads no row's whole logits); a request that draws gives the round its sampler. Every reply is the one it gives alone, ended by its length or a stop.
     #[test]
@@ -3579,6 +3683,8 @@ pub(crate) mod tests {
         pub drafts: usize,
         pub rounds: usize,
         pub drawn_rounds: usize,
+        /// Asks that the next step be launched after the step in flight lands (`quiet`: an expert cache's end of a step).
+        pub quiet: bool,
     }
 
     impl SlotFake {
@@ -3638,6 +3744,7 @@ pub(crate) mod tests {
                 drafts: 0,
                 rounds: 0,
                 drawn_rounds: 0,
+                quiet: false,
             }
         }
         /// `new` on the executor's blocks: pools as `Dyn::page` sizes them for `slots` sequences of `window` tokens, a full group and a sliding one of `slide` tokens.
@@ -3845,6 +3952,9 @@ pub(crate) mod tests {
         fn abandon(&mut self) {
             self.abandoned += self.out.len();
             self.out.clear();
+        }
+        fn quiet(&self) -> bool {
+            self.quiet
         }
         fn draft(&mut self, row: &Row, sampler: Option<&mut Sampler>) -> Result<Option<Vec<u32>>> {
             if self.drafts == 0 {

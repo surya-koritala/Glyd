@@ -761,7 +761,7 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             if ih == 0 || idim == 0 || ratio == 0 || budget == 0 || budget % ratio != 0 || rp.dim > idim {
                 return err(format!("{mt}: an indexer of {ih} heads of {idim} keeping {budget} tokens in pools of {ratio}, under a rotary of {}", rp.dim));
             }
-            Some(Indexer { heads: ih, head_dim: idim, top_k: budget, block: ratio, shared: false, form: IndexForm::Mean { norm: pn } })
+            Some(Indexer { heads: ih, head_dim: idim, top_k: budget, block: ratio, shared: false, form: IndexForm::Mean { norm: pn }, rope: 0 })
         }
         [None, None, None, None, None] => None,
         _ => return err(format!("{mt}: the indexer's keys come together ({}), and some are missing", IX.join(", "))),
@@ -1418,7 +1418,12 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
                     if !shared {
                         r.extend(names::roles(part::MLA_INDEXER, &p, 0, |x| flash || !x.starts_with("indexer_pool")));
                     }
-                    Some(Indexer { heads: h, head_dim: dim, top_k: top, block: pool, shared, form: IndexForm::LAYER_KEYS })
+                    // (with a rotary the indexer's queries and keys turn their first channels by it too: transformers' GlmMoeDsaIndexer)
+                    let turned = if rope.is_some() { rd } else { 0 };
+                    if turned > dim {
+                        return err(format!("{mt}: an indexer of heads of {dim} under a rotary of {turned} channels"));
+                    }
+                    Some(Indexer { heads: h, head_dim: dim, top_k: top, block: pool, shared, form: IndexForm::LAYER_KEYS, rope: turned })
                 }
                 _ => None,
             };
@@ -1630,6 +1635,7 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
                 block: 1,
                 shared: false,
                 form: IndexForm::Gated { key },
+                rope: 0,
             };
             dk.finish()?;
             Some((on, ix))
@@ -2042,6 +2048,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
                 block: ratio,
                 shared: false,
                 form: IndexForm::Gated { key: Norm::rms(eps) },
+                rope: 0,
             }),
             norm_eps: eps,
             ape: true,
@@ -2364,6 +2371,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
                 block: ratio,
                 shared: false,
                 form: IndexForm::Gated { key: Norm::rms(eps) },
+                rope: 0,
             }),
             norm_eps: eps,
             ape: false,

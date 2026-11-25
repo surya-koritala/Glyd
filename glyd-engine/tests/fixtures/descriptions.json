@@ -4,7 +4,7 @@
     "tensors": 95776,
     "kinds": "044b67799952d235",
     "weights": "6632c8ed94397f3f",
-    "plan": "91334ef4fb4cb111",
+    "plan": "39e8df4cd78eaef2",
     "family": "refused: m is a DeepseekV41ForCausalLM model, and this engine runs Qwen3 models so far"
   },
   "deepseek_v41_tiny_config.json": {
@@ -12,7 +12,7 @@
     "tensors": 495,
     "kinds": "a87ae48a5e8c7e9a",
     "weights": "1d8cfb81bf165049",
-    "plan": "18df70ff8acbf70c",
+    "plan": "8d7a33826478033d",
     "family": "refused: m is a DeepseekV41ForCausalLM model, and this engine runs Qwen3 models so far"
   },
   "gemma4_12b_config.json": {
@@ -135,6 +135,14 @@
     "plan": "e3e006b041b50b55",
     "family": "refused: m is a Qwen3_5MoeForCausalLM model, and this engine runs Qwen3 models so far"
   },
+  "qwen35moe_tiny_config.json": {
+    "blocks": 8,
+    "tensors": 448,
+    "kinds": "d9e0c20fa47bcabc",
+    "weights": "694faae469d31951",
+    "plan": "5d3d8adeef04c317",
+    "family": "refused: m is a Qwen3_5MoeForCausalLM model, and this engine runs Qwen3 models so far"
+  },
   "qwen4x_config.json": {
     "blocks": 97,
     "tensors": 1294,
@@ -148,7 +156,7 @@
     "tensors": 72317,
     "kinds": "cf796315f77d38a2",
     "weights": "dcc4ccb3b29d9720",
-    "plan": "501adcefbd0f834c",
+    "plan": "7a6646d6bba3af10",
     "family": "DeepSeekV4"
   },
   "headers/Kimi-K3.json": {
@@ -194,7 +202,7 @@
   "runtime/glm53_model.json": {
     "blocks": 6,
     "tensors": 106,
-    "kinds": "8900d3cff626270e",
+    "kinds": "baf29761e58110b8",
     "weights": "80edc8fdd35186b0",
     "plan": "86e0271d8683bd94",
     "family": "refused: m is a GlmMoeDsaForCausalLM model, and this engine runs Qwen3 models so far"

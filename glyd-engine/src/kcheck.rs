@@ -107,7 +107,7 @@ fn host_mass(row: &[u16], t: f32) -> f64 {
     row.iter().map(|&b| (((at(b) - max) / t) as f64).exp()).sum()
 }
 
-/// A step's candidates (what the sampler is given, `crate::model::TopGpu`) against the row of bf16 bits they were made from: the 64 largest as the host orders them, token and logit bit for bit, and where the answer has a sum of the row's
+/// A step's candidates (what the sampler is given, `crate::kern::TopGpu`) against the row of bf16 bits they were made from: the 64 largest as the host orders them, token and logit bit for bit, and where the answer has a sum of the row's
 /// exponentials at temperature `t`, that within 2e-6 of the host's in fp64 (the sampler allows 1e-5). The first difference, in words.
 pub fn top_vs_row(top: &crate::sampler::Top, row: &[u16], t: f32) -> std::result::Result<(), String> {
     let want = host_top(row);

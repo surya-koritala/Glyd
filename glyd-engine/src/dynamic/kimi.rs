@@ -483,7 +483,7 @@ pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) 
 pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
     let c = ConfigKimi::load(dir)?;
     let (kd, md) = (&c.kda, &c.mla);
-    if kd.dim != crate::kern_glm::GM_D || c.hidden % 64 != 0 || c.hidden > 8192 || md.kv_rank > 512 || (md.kv_rank + md.rope) % 64 != 0 {
+    if kd.dim != crate::kern::GM_D || c.hidden % 64 != 0 || c.hidden > 8192 || md.kv_rank > 512 || (md.kv_rank + md.rope) % 64 != 0 {
         return err(format!("delta heads of {}, a width of {}, latents of {} + {}: this engine runs heads of 128, widths of 64s up to 8,192 and latents up to 512 (with the shared part, in 64s)", kd.dim, c.hidden, md.kv_rank, md.rope));
     }
     let dev = Dev::new(o.device)?;
@@ -597,7 +597,6 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
         return err("Kimi-K3's dense layers in the computer's memory: a stage on one GPU, not every layer across GPUs");
     }
     let (mut states, mut layers, mut rings) = (Vec::new(), Vec::new(), Vec::new());
-    let mla = latent(&c);
     let put = |v: &mut Vec<Buf>, b: Buf| {
         v.push(b);
         v.len() - 1
@@ -716,7 +715,16 @@ pub fn load_with_caching(dir: &Path, o: &Opts, st: Stage, places: Option<usize>,
                     one(format!("{a}.o_proj"))?,
                 ]);
                 l_.small.extend([small(&format!("{a}.q_a_layernorm.weight"))?, small(&format!("{a}.kv_a_layernorm.weight"))?, upload_bytes(as_bytes(&wkv))?]);
-                let op = mla.placed(m0, s0, ring);
+                // (the newer config's indexer on the layers it names: its queries' and keys' products, the keys' norm and the head weights' product, bf16 as saved)
+                if let Some(d) = c.dsa.as_ref().filter(|d| d.layers.contains(&l)) {
+                    let ix = format!("{a}.indexer");
+                    l_.small.extend([small(&format!("{ix}.wq_b.weight"))?, small(&format!("{ix}.wk.weight"))?, small(&format!("{ix}.k_norm.weight"))?]);
+                    if d.layer_norm {
+                        l_.small.push(small(&format!("{ix}.k_norm.bias"))?);
+                    }
+                    l_.small.push(small(&format!("{ix}.weights_proj.weight"))?);
+                }
+                let op = latent_at(&c, l).placed(m0, s0, ring);
                 rings.extend(op.rings());
                 ops.push(Op::Mla(op));
             }
@@ -1055,6 +1063,39 @@ pub(crate) fn latent(c: &ConfigKimi) -> MlaOp {
     }
 }
 
+/// Layer `l`'s latent attention: `latent`, and on a layer the newer config's sparse attention names (`ConfigKimi::dsa`) the kind's indexer of a key a token: its
+/// keys RMS-normed or LayerNorm-ed at the model's epsilon, the heads' scores weighed, the best `top_k` tokens attended to.
+pub(crate) fn latent_at(c: &ConfigKimi, l: usize) -> MlaOp {
+    let mut op = latent(c);
+    if let Some(d) = c.dsa.as_ref().filter(|d| d.layers.contains(&l)) {
+        let ix = super::MlaIndexer {
+            pick: super::IdxPick {
+                heads: d.heads,
+                ratio: 1,
+                top_k: d.top_k,
+                expand: true,
+                tail: false,
+                wscale: (d.heads as f32).powf(-0.5),
+                score: super::IdxScore::F32 { dim: d.dim, scale: (d.dim as f32).powf(-0.5) },
+                keys: super::IdxKeys::Ring(1),
+                weighted: true,
+                cand: None,
+            },
+            dim: d.dim,
+            q_b: 0,
+            k: 0,
+            k_norm: 0,
+            k_bias: 0,
+            weights: 0,
+            ape: 0,
+            gate: 0,
+            key: if d.layer_norm { super::KeyNorm::Layer(c.eps) } else { super::KeyNorm::Rms(c.eps) },
+        };
+        op.indexer = Some(ix.at(3, 1));
+    }
+    op
+}
+
 /// A fused product's rows (several tensors' stacked): padded with zero rows to a multiple of 512, 64 a GPU in groups of up to 8.
 pub(crate) fn fused(rows: usize) -> usize {
     rows.div_ceil(512) * 512
@@ -1109,10 +1150,13 @@ pub fn describe(c: &ConfigKimi, st: &Stage, w32: &[(bool, bool)], early: bool) -
     let (h, qd, nh) = (c.hidden, kd.heads * kd.dim, kd.heads);
     let starts: Vec<bool> = (0..c.layers).map(|l| l % c.res_block == 0).collect();
     let moe_rows = e.latent + 2 * e.shared * e.inter;
-    let kinds: Vec<KimiLayer> =
-        (0..c.layers).map(|l| KimiLayer { kda: c.kinds[l] == GlmKind::Kda, moe: c.moe[l], w32: w32.get(l).copied().unwrap_or_default() }).collect();
+    let indexed = |l: usize| c.kinds[l] == GlmKind::Mla && c.dsa.as_ref().is_some_and(|d| d.layers.contains(&l));
+    let kinds: Vec<KimiLayer> = (0..c.layers)
+        .map(|l| KimiLayer { kda: c.kinds[l] == GlmKind::Kda, moe: c.moe[l], w32: w32.get(l).copied().unwrap_or_default(), ix: indexed(l) })
+        .collect();
+    let mla_ix = (0..c.layers).find(|&l| indexed(l)).map(|l| latent_at(c, l));
     Ok(kimi_desc(
-        &KimiDims { h, qd, nh, kd: kd.dim, bound: kd.bound, inter: c.inter, situ: c.situ, eps: c.eps, moe_rows, mla: Some(latent(c)) },
+        &KimiDims { h, qd, nh, kd: kd.dim, bound: kd.bound, inter: c.inter, situ: c.situ, eps: c.eps, moe_rows, mla: Some(latent(c)), mla_ix },
         &kinds,
         &starts,
         st,
@@ -1123,16 +1167,18 @@ pub fn describe(c: &ConfigKimi, st: &Stage, w32: &[(bool, bool)], early: bool) -
     ))
 }
 
-/// What a Kimi-K3 layer is to the executor: delta attention or latent attention, a mixture of experts or a dense MLP, its delta layer's dtypes.
+/// What a Kimi-K3 layer is to the executor: delta attention or latent attention, a mixture of experts or a dense MLP, its delta layer's dtypes, and whether its
+/// latent attention has the indexer (`KimiDims::mla_ix`).
 pub(crate) struct KimiLayer {
     pub kda: bool,
     pub moe: bool,
     pub w32: (bool, bool),
+    pub ix: bool,
 }
 
 /// Kimi-K3's widths and constants as the executor's operations take them: the width, the delta heads' channels, heads and size, the forget gate's bound, the dense
 /// MLP's width, SiTU's two betas, the norms' epsilon, the rows of a mixture of experts' first product (the latent's down projection and the shared experts' gate and up),
-/// and the latent attention (`latent`, unplaced).
+/// and the latent attention (`latent`, unplaced) without and with the newer config's indexer.
 pub(crate) struct KimiDims {
     pub h: usize,
     pub qd: usize,
@@ -1144,6 +1190,7 @@ pub(crate) struct KimiDims {
     pub eps: f32,
     pub moe_rows: usize,
     pub mla: Option<MlaOp>,
+    pub mla_ix: Option<MlaOp>,
 }
 
 /// Kimi-K3's executor description: its layers `ls`, the depth mix's groups starting where `starts` says, for stage `st`.
@@ -1188,7 +1235,7 @@ pub(crate) fn kimi_desc(k: &KimiDims, ls: &[KimiLayer], starts: &[bool], st: &St
                 Op::Linear { w: m0 + 1, x: Slot::Att, y: Slot::O, name: "delta attention: o product" },
             ]);
         } else {
-            let op = k.mla.as_ref().expect("a latent attention layer's kind").placed(n_mats, n_small, rings.len());
+            let op = (if ly.ix { &k.mla_ix } else { &k.mla }).as_ref().expect("a latent attention layer's kind").placed(n_mats, n_small, rings.len());
             (n_mats, n_small) = (n_mats + op.mat_count(), n_small + op.small_count());
             rings.extend(op.rings());
             ops.push(Op::Mla(op));

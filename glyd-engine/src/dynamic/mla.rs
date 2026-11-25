@@ -30,7 +30,7 @@ use crate::runtime::kinds;
 const SUB_SCORES: usize = 256 << 20;
 const SUB_OLAT: usize = 64 << 20;
 /// Rows at most that the attention of one call cuts its tokens into eight runs for (a decode step, the rows of a verified draft): `kern_glm::HC_FEW`.
-const FEW: u32 = crate::kern_glm::HC_FEW;
+const FEW: u32 = crate::kern::HC_FEW;
 
 /// Where a latent layer's input products are.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -77,11 +77,32 @@ pub struct IdxPick {
     pub keys: IdxKeys,
     /// The heads' scores weighed by the head weights' product (Iw); else summed alone (the mean-pooled indexer's).
     pub weighted: bool,
+    /// A shared compressed attention's candidate blocks (`kinds::CompShare`); None: every visible entry is a candidate.
+    pub cand: Option<Cand>,
+}
+
+/// Candidate blocks (`kinds::CompShare::publish`, `candidates`): the candidate source's pick publishes, for each query, the best `top` blocks of `block` entries (a
+/// block's score its best entry's; the block of the query's newest visible entry kept whatever its score), in order; an index source after it (`Inside`) scores the
+/// entries inside the blocks its query was published alone, the rest out of its top-k.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Cand {
+    Publish { block: usize, top: usize },
+    Inside { block: usize, top: usize },
+}
+
+/// How an indexer norms each token's key (`runtime::kinds::IndexForm::Gated`'s `key`), at its eps: nn.LayerNorm with its bias (GLM-5.3's, DeepSeek-V3.2's), or an
+/// RMS norm with a weight and no bias (the normed value rounded, times the weight, rounded again: Kimi-K3.1's `rmsnorm`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum KeyNorm {
+    Layer(f32),
+    Rms(f32),
 }
 
 /// A latent attention's indexer: its pick, and its small tensors (bf16 as released): the queries' product `q_b` [heads dim, q_rank] (of the normed q latent), the
-/// keys' `k` [dim, hidden], their LayerNorm's weight and bias [dim], the head weights' product [heads, hidden], the pooling bias `ape` [ratio, dim] and the gate's
-/// product [dim, hidden]. Its cache is the pick's ring (`IdxKeys::Ring`), 2 dim a token.
+/// keys' `k` [dim, hidden], their norm's weight [dim] and, with a LayerNorm (`key`), its bias, the head weights' product [heads, hidden]; and where an entry is a
+/// pool of tokens (`pick.ratio` above 1) the pooling bias `ape` [ratio, dim] and the gate's product [dim, hidden]. With a key a token (`pick.ratio` 1) there are no
+/// pooling tensors: a token's normed key is its entry's. `k_bias` without a LayerNorm, and `ape` and `gate` without pools, are no tensors of the operation and are
+/// not read. Its cache is the pick's ring (`IdxKeys::Ring`), 2 dim a token.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MlaIndexer {
     pub pick: IdxPick,
@@ -93,6 +114,36 @@ pub struct MlaIndexer {
     pub weights: usize,
     pub ape: usize,
     pub gate: usize,
+    pub key: KeyNorm,
+}
+
+impl MlaIndexer {
+    /// Whether an entry is a pool of tokens (the pooling bias and the gate's product are then its tensors).
+    pub fn pooled(&self) -> bool {
+        self.pick.ratio > 1
+    }
+
+    /// Its small tensors: the four every indexer has, a LayerNorm's bias, a pooled indexer's two.
+    pub fn small_count(&self) -> usize {
+        4 + matches!(self.key, KeyNorm::Layer(_)) as usize + 2 * self.pooled() as usize
+    }
+
+    /// The same indexer with its small tensors from `s`, in the order a loader holds them (q_b, k, the key norm's weight, its bias where it has one, the head
+    /// weights, then a pooled indexer's bias and gate), and its cache the ring `ring`.
+    pub fn at(&self, s: usize, ring: usize) -> MlaIndexer {
+        let w = s + 3 + matches!(self.key, KeyNorm::Layer(_)) as usize;
+        MlaIndexer {
+            pick: IdxPick { keys: IdxKeys::Ring(ring), ..self.pick.clone() },
+            q_b: s,
+            k: s + 1,
+            k_norm: s + 2,
+            k_bias: s + 3,
+            weights: w,
+            ape: w + 1,
+            gate: w + 2,
+            ..self.clone()
+        }
+    }
 }
 
 /// `Op::Mla`: the latent attention of H into O. Matrices `input`'s, `q_b` [heads (nope + rope), q_rank] and `o` [hidden, heads v]; small tensors the q latent's
@@ -126,7 +177,7 @@ pub struct MlaOp {
 
 impl MlaOp {
     /// The operation of layer kind `k` whose input products are `input`, its other matrices `q_b` and `o`, its small tensors from `s0` (the q latent's norm, the
-    /// key-value latent's, kv_b_proj, then an indexer's seven in `MlaIndexer`'s order), its caches the rings `ring` and `ring + 1`. A gate takes a fused product.
+    /// key-value latent's, kv_b_proj, then an indexer's in `MlaIndexer::at`'s order), its caches the rings `ring` and `ring + 1`. A gate takes a fused product.
     #[allow(clippy::too_many_arguments)]
     pub fn of(k: &kinds::Mla, input: MlaIn, q_b: usize, o: usize, s0: usize, ring: usize, tail: bool) -> Result<MlaOp> {
         let q_rank = k.q_lora.ok_or_else(|| Error("a latent attention whose query has no low rank: not an operation of this executor".into()))?;
@@ -141,16 +192,22 @@ impl MlaOp {
         let indexer = match &k.indexer {
             None => None,
             Some(x) if x.shared => return err("a latent attention that reuses another layer's picks: not an operation of this executor"),
-            // (the key kernel LayerNorms each key with its bias at 1e-6: an RMS-normed key, Kimi-K3.1's, is not its operation yet)
-            Some(x) if x.form != kinds::IndexForm::LAYER_KEYS => {
-                return err(format!("a latent attention's indexer of {:?}: the kernels take keys LayerNorm-ed with a bias at 1e-6", x.form))
-            }
+            Some(x) if x.rope > 0 => return err("a latent attention's indexer whose queries and keys are rotated: not an operation of this executor"),
             Some(x) => {
-                let s = s0 + 3;
-                Some(MlaIndexer {
+                // (the keys' norm as the kind's form gives it: a LayerNorm with its bias, or an RMS norm with a weight; the mean-pooled form is an attention's)
+                let key = match x.form {
+                    kinds::IndexForm::Gated { key } if key.weight == kinds::NormWeight::Plain && key.kind == kinds::NormKind::Layer => KeyNorm::Layer(key.eps),
+                    kinds::IndexForm::Gated { key } if key.weight == kinds::NormWeight::Plain && key.kind == kinds::NormKind::Rms => KeyNorm::Rms(key.eps),
+                    form => {
+                        return err(format!(
+                            "a latent attention's indexer of {form:?}: the kernels take keys LayerNorm-ed with a bias or RMS-normed with a weight"
+                        ))
+                    }
+                };
+                let ix = MlaIndexer {
                     pick: IdxPick {
                         heads: x.heads,
-                        ratio: x.block,
+                        ratio: x.block.max(1),
                         top_k: x.top_k / x.block.max(1),
                         expand: true,
                         tail,
@@ -158,16 +215,19 @@ impl MlaOp {
                         score: IdxScore::F32 { dim: x.head_dim, scale: (x.head_dim as f32).powf(-0.5) },
                         keys: IdxKeys::Ring(ring + 1),
                         weighted: true,
+                        cand: None,
                     },
                     dim: x.head_dim,
-                    q_b: s,
-                    k: s + 1,
-                    k_norm: s + 2,
-                    k_bias: s + 3,
-                    weights: s + 4,
-                    ape: s + 5,
-                    gate: s + 6,
-                })
+                    q_b: 0,
+                    k: 0,
+                    k_norm: 0,
+                    k_bias: 0,
+                    weights: 0,
+                    ape: 0,
+                    gate: 0,
+                    key,
+                };
+                Some(ix.at(s0 + 3, ring + 1))
             }
         };
         let a = MlaOp {
@@ -194,9 +254,9 @@ impl MlaOp {
         Ok(a)
     }
 
-    /// The small tensors the operation reads: the three of the latent, and an indexer's seven.
+    /// The small tensors the operation reads: the three of the latent, and an indexer's (`MlaIndexer::small_count`).
     pub fn small_count(&self) -> usize {
-        3 + if self.indexer.is_some() { 7 } else { 0 }
+        3 + self.indexer.as_ref().map_or(0, MlaIndexer::small_count)
     }
 
     /// The matrices it multiplies by, in the order a loader holds them: a fused input product, q_b, o; or q_a, q_b, kv_a, o.
@@ -207,11 +267,6 @@ impl MlaOp {
         }
     }
 
-    /// The rings it keeps: the latents', and an indexer's.
-    pub fn ring_count(&self) -> usize {
-        1 + self.indexer.is_some() as usize
-    }
-
     /// The same operation with its matrices from `m0` (`mat_count`'s order), its small tensors from `s0` (`MlaOp::of`'s order) and its rings from `ring`: a layer's
     /// place in its description.
     pub fn placed(&self, m0: usize, s0: usize, ring: usize) -> MlaOp {
@@ -219,18 +274,7 @@ impl MlaOp {
             MlaIn::Fused { .. } => (MlaIn::Fused { w: m0 }, m0 + 1, m0 + 2),
             MlaIn::Apart { .. } => (MlaIn::Apart { q_a: m0, kv_a: m0 + 2 }, m0 + 1, m0 + 3),
         };
-        let s = s0 + 3;
-        let indexer = self.indexer.as_ref().map(|x| MlaIndexer {
-            pick: IdxPick { keys: IdxKeys::Ring(ring + 1), ..x.pick.clone() },
-            q_b: s,
-            k: s + 1,
-            k_norm: s + 2,
-            k_bias: s + 3,
-            weights: s + 4,
-            ape: s + 5,
-            gate: s + 6,
-            ..x.clone()
-        });
+        let indexer = self.indexer.as_ref().map(|x| x.at(s0 + 3, ring + 1));
         MlaOp { input, q_b, o, q_norm: s0, kv_norm: s0 + 1, kv_b: s0 + 2, ring, indexer, ..self.clone() }
     }
 
@@ -261,11 +305,10 @@ impl MlaOp {
         }
         if let Some(x) = &self.indexer {
             let (p, kp) = (&x.pick, x.pick.ratio);
-            if x.dim == 0 || x.dim > 256 || kp == 0 || kp > 8 || p.top_k == 0 || self.rope > 0 {
+            if x.dim == 0 || x.dim > 256 || kp == 0 || kp > 8 || p.top_k == 0 {
                 return err(format!(
-                    "an indexer of channels {} picking {} groups of {kp} keys (beside a shared key part of {}): the kernels take indexer channels up to 256, groups \
-                     up to 8 keys, and no shared key part",
-                    x.dim, p.top_k, self.rope
+                    "an indexer of channels {} picking {} groups of {kp} keys: the kernels take indexer channels up to 256 and groups up to 8 keys",
+                    x.dim, p.top_k
                 ));
             }
             // (the indexer's scores' dynamic shared memory must fit the 48 KiB a launch may take without an opt-in)
@@ -314,6 +357,8 @@ pub(crate) struct KernMla {
     score: crate::kt::idx_score,
     score_bf16: crate::kt::idx_score_bf16,
     pick: crate::kt::idx_pick,
+    blocks: crate::kt::idx_blocks,
+    inside: crate::kt::idx_inside,
     attn: crate::kt::mla_attn,
     /// The shared memory a block of `attn` may take here (the GPU's most, opted in to at load).
     smem: u32,
@@ -328,7 +373,7 @@ pub(crate) struct KernMla {
 impl KernMla {
     pub fn load(dev: &Dev) -> Result<KernMla> {
         // (the attention's tokens a pass, two words a token, are in shared memory: as much as the GPU gives a block)
-        let (attn, smem) = (dev.typed::<crate::kt::mla_attn>()?, crate::kern_glm::mla_smem(dev)?);
+        let (attn, smem) = (dev.typed::<crate::kt::mla_attn>()?, crate::kern::mla_smem(dev)?);
         attn.allow_smem(smem)?;
         Ok(KernMla {
             rms2: dev.typed()?,
@@ -341,6 +386,8 @@ impl KernMla {
             score: dev.typed()?,
             score_bf16: dev.typed()?,
             pick: dev.typed()?,
+            blocks: dev.typed()?,
+            inside: dev.typed()?,
             attn,
             smem,
             merge: dev.typed()?,
@@ -431,6 +478,18 @@ pub(crate) struct PickAt {
     pub sel: u64,
     pub sk: usize,
     pub cnt: u64,
+    /// The candidate blocks' room (`IdxPick::cand`): the rows' published blocks and their counts, the blocks' scores (`bmax` a row) and their counts.
+    pub cand: CandAt,
+}
+
+/// Where a pick's candidate blocks are (`IdxPick::cand`; all 0 without them).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CandAt {
+    pub blocks: u64,
+    pub nblocks: u64,
+    pub bsc: u64,
+    pub bmax: usize,
+    pub nent: u64,
 }
 
 impl Dyn {
@@ -471,8 +530,21 @@ impl Dyn {
                     at.q, at.w, x.wscale, at.keys, at.tab, at.pos, at.scores, x.heads as i32, x.ratio as i32, at.emax as i32)?;
             }
         }
+        // (the candidate source: the best blocks of its scores published; an index source after it: its scores outside them out of its candidates)
+        let c = &at.cand;
+        match x.cand {
+            Some(Cand::Publish { block, top }) => {
+                launch!(k.blocks, [n, 1, 1], [256, 1, 1], s; at.scores, at.emax as i32, at.pos, x.ratio as i32, block as i32, c.bsc, c.bmax as i32, c.nent)?;
+                launch!(k.pick, [n, 1, 1], [1024, 1, 1], s; c.bsc, c.bmax as i32, at.pos, 1i32, top as i32, 1i32, 0i32, c.blocks, top as i32, c.nblocks, c.nent, 0i32)?;
+            }
+            Some(Cand::Inside { block, top }) => {
+                launch!(k.inside, [n, 1, 1], [256, 1, 1], s; at.scores, at.emax as i32, at.pos, x.ratio as i32, block as i32, c.blocks, top as i32, c.nblocks)?;
+            }
+            None => {}
+        }
+        let masked = matches!(x.cand, Some(Cand::Inside { .. })) as i32;
         let expand = if x.expand { x.ratio } else { 1 } as i32;
-        launch!(k.pick, [n, 1, 1], [1024, 1, 1], s; at.scores, at.emax as i32, at.pos, x.ratio as i32, x.top_k as i32, expand, x.tail as i32, at.sel, at.sk as i32, at.cnt)
+        launch!(k.pick, [n, 1, 1], [1024, 1, 1], s; at.scores, at.emax as i32, at.pos, x.ratio as i32, x.top_k as i32, expand, x.tail as i32, at.sel, at.sk as i32, at.cnt, 0u64, masked)
     }
 
     /// `Op::Mla` (of part `p`) on n rows at positions `pos`: the input products, the q latent's norm and q's product; each sequence's key-value latents normed into its
@@ -536,22 +608,35 @@ impl Dyn {
             let sm = |i: usize| p.small[i].ptr;
             k.small_linear(s, r.qr.ptr, a.q_rank, sm(ix.q_b), r.iq.ptr, ih * id, n, ih * id, a.q_rank)?;
             k.small_linear(s, h, hid, sm(ix.k), r.ix.ptr, id, n, id, hid)?;
+            // (each token's key normed into its cache's row, as the kind's form says: a LayerNorm with its bias, or the weighted RMS norm)
             for &(r0, m, kc, slot) in &seqs {
                 let (ring, tab) = self.ring_at(kc, slot, a.ring + 1);
-                launch!(k.layernorm, [m as u32, 1, 1], [128, 1, 1], s;
-                    r.ix.ptr + (r0 * id * 2) as u64, id as i32, sm(ix.k_norm), sm(ix.k_bias), ring, (2 * id) as i32, pos + (r0 * 4) as u64, tab, id as i32, 1e-6f32)?;
+                let (x, at) = (r.ix.ptr + (r0 * id * 2) as u64, pos + (r0 * 4) as u64);
+                match ix.key {
+                    KeyNorm::Layer(eps) => {
+                        launch!(k.layernorm, [m as u32, 1, 1], [128, 1, 1], s; x, id as i32, sm(ix.k_norm), sm(ix.k_bias), ring, (2 * id) as i32, at, tab, id as i32, eps)?
+                    }
+                    KeyNorm::Rms(eps) => {
+                        launch!(k.rms2, [m as u32, 1, 1], [256, 1, 1], s; x, id as i32, sm(ix.k_norm), ring, (2 * id) as i32, at, tab, id as i32, eps)?
+                    }
+                }
             }
-            k.small_linear(s, h, hid, sm(ix.gate), r.ix.ptr, id, n, id, hid)?;
-            for &(r0, m, kc, slot) in &seqs {
-                let (ring, tab) = self.ring_at(kc, slot, a.ring + 1);
-                launch!(k.scatter, [m as u32, 1, 1], [256, 1, 1], s; r.ix.ptr + (r0 * id * 2) as u64, id as i32, ring + (id * 2) as u64, (2 * id) as i32, pos + (r0 * 4) as u64, tab, id as i32)?;
+            // (pools: each token's gate scores beside its key, then the keys of the pools these rows complete; a key a token is its entry's as it is)
+            if ix.pooled() {
+                k.small_linear(s, h, hid, sm(ix.gate), r.ix.ptr, id, n, id, hid)?;
+                for &(r0, m, kc, slot) in &seqs {
+                    let (ring, tab) = self.ring_at(kc, slot, a.ring + 1);
+                    launch!(k.scatter, [m as u32, 1, 1], [256, 1, 1], s; r.ix.ptr + (r0 * id * 2) as u64, id as i32, ring + (id * 2) as u64, (2 * id) as i32, pos + (r0 * 4) as u64, tab, id as i32)?;
+                }
             }
             k.small_linear(s, h, hid, sm(ix.weights), r.wts.ptr, ih, n, ih, hid)?;
-            for &(r0, m, kc, slot) in &seqs {
-                let (ring, tab) = self.ring_at(kc, slot, a.ring + 1);
-                let w2 = (2 * id) as i32;
-                launch!(k.pool, [(m as u32).div_ceil(kp as u32) + 1, 1, 1], [128, 1, 1], s;
-                    ring, w2, ring + (id * 2) as u64, w2, sm(ix.ape), ring, w2, kp as i32, kp as i32 - 1, tab, pos + (r0 * 4) as u64, m as i32, id as i32, kp as i32)?;
+            if ix.pooled() {
+                for &(r0, m, kc, slot) in &seqs {
+                    let (ring, tab) = self.ring_at(kc, slot, a.ring + 1);
+                    let w2 = (2 * id) as i32;
+                    launch!(k.pool, [(m as u32).div_ceil(kp as u32) + 1, 1, 1], [128, 1, 1], s;
+                        ring, w2, ring + (id * 2) as u64, w2, sm(ix.ape), ring, w2, kp as i32, kp as i32 - 1, tab, pos + (r0 * 4) as u64, m as i32, id as i32, kp as i32)?;
+                }
             }
             self.mark("latent attention: the indexer's products and pools")?;
         }
@@ -596,6 +681,7 @@ impl Dyn {
                             sel: r.sel.ptr,
                             sk: tmax,
                             cnt: r.cnt.ptr,
+                            cand: CandAt::default(),
                         };
                         self.idx_pick(&ix.pick, &at)?;
                         r.sel.ptr
@@ -629,7 +715,7 @@ impl Dyn {
         let splits: i32 = if m as u32 <= FEW { 8 } else { 1 };
         let tmax = tmax as i32;
         // (a block's tokens a tile at a time: as many as its shared memory holds, two words a token besides the query's KS)
-        let mut tile = ((tmax + splits - 1) / splits).min(crate::kern_glm::mla_positions(k.smem, ks) as i32).max(1);
+        let mut tile = ((tmax + splits - 1) / splits).min(crate::kern::mla_positions(k.smem, ks) as i32).max(1);
         if tile < 64 && tile < (tmax + splits - 1) / splits {
             return err(format!("latent attention with scores over {ks} channels: {} bytes of shared memory a block hold too few tokens a pass", k.smem));
         }
@@ -673,6 +759,7 @@ mod tests {
                 block: 4,
                 shared: false,
                 form: crate::runtime::kinds::IndexForm::LAYER_KEYS,
+                rope: 0,
             }),
         }
     }
@@ -704,9 +791,9 @@ mod tests {
         // (DeepSeek-V4: its window is a ring of keys alone, its keys its values; its compressed entries, the attention's and the indexer's, rings of an entry a row
         // (`Ring::entries`), so paged; its states are its compressors' open windows alone; its indexer's pick every indexer's, over its entries' ring)
         let v4h: serde_json::Value = serde_json::from_str(&fixture("headers/DeepSeek-V4-Flash-0731.json")).unwrap();
-        let vc = crate::deepseek_v4::ConfigV4::parse(v4h["config"].as_str().unwrap(), "DeepSeek-V4", None).unwrap();
+        let kinds = crate::runtime::describe::describe(&serde_json::from_str(v4h["config"].as_str().unwrap()).unwrap()).unwrap();
         let vo = super::super::deepseek_v4::V4Opts { exact8: true, f8_min: 16 << 20, ostack: true, sim: true, ctx: 4096 };
-        let v4 = super::super::deepseek_v4::describe(&vc, &super::super::Stage::whole(vc.layers), &vo).unwrap();
+        let v4 = super::super::lower_comp::lower(&kinds, vec![1], 1 << 20, &super::super::Stage::whole(43), &vo).unwrap().0;
         assert!(v4.rings.iter().all(|r| !r.values) && super::super::rows::pages_all(&v4));
         let ratios: std::collections::BTreeSet<usize> = v4.rings.iter().map(|r| r.ratio).collect();
         assert_eq!(ratios.into_iter().collect::<Vec<_>>(), vec![1, 4, 128]);
@@ -757,9 +844,34 @@ mod tests {
         let x = g.indexer.as_ref().unwrap();
         assert_eq!((x.q_b, x.gate, x.pick.top_k, x.pick.keys, g.small_count(), g.q_round), (23, 29, 2, IdxKeys::Ring(7), 10, twice_not));
         assert_eq!((g.tmax(1024), g.pmax(1024), g.rows_at_once(64, 1024)), (2 * 4 + 3, 257, 64));
-        // (a gate with two products, a rotated shared part, a shared key part beside an indexer)
+        // (a key a token, RMS-normed: no bias, no pooling tensors; its four small tensors follow the latent's three. LayerNorm-ed: its bias too)
+        let per_token = |key: Norm| {
+            let ix = Indexer { block: 1, top_k: 8, form: kinds::IndexForm::Gated { key }, ..kind(0, false, true).indexer.unwrap() };
+            MlaOp::of(&kinds::Mla { indexer: Some(ix), ..kind(0, false, false) }, MlaIn::Fused { w: 0 }, 1, 2, 20, 6, false).unwrap()
+        };
+        let r = per_token(Norm::rms(1e-5));
+        let x = r.indexer.as_ref().unwrap();
+        assert_eq!(
+            (x.key, x.pooled(), x.q_b, x.k, x.k_norm, x.weights, r.small_count(), x.pick.ratio, x.pick.top_k),
+            (KeyNorm::Rms(1e-5), false, 23, 24, 25, 26, 7, 1, 8)
+        );
+        let l = per_token(Norm { kind: kinds::NormKind::Layer, ..Norm::rms(1e-5) });
+        let x = l.indexer.as_ref().unwrap();
+        assert_eq!((x.key, x.k_bias, x.weights, l.small_count()), (KeyNorm::Layer(1e-5), 26, 27, 8));
+        // (a pooled indexer placed elsewhere keeps its order; the form of GLM-5.3's is the LayerNorm at 1e-6)
+        let moved = g.placed(40, 50, 9);
+        let x = moved.indexer.as_ref().unwrap();
+        assert_eq!((x.key, x.q_b, x.k_bias, x.weights, x.ape, x.gate, x.pick.keys), (KeyNorm::Layer(1e-6), 53, 56, 57, 58, 59, IdxKeys::Ring(10)));
+        // (an RMS norm whose weight is (1 + w), and the mean-pooled form, are not the latent attention's indexer's)
+        let odd = |form| Indexer { form, ..kind(0, false, true).indexer.unwrap() };
+        for form in [kinds::IndexForm::Gated { key: Norm::rms_plus_one(1e-6) }, kinds::IndexForm::Mean { norm: Norm::rms(1e-6) }] {
+            assert!(MlaOp::of(&kinds::Mla { indexer: Some(odd(form)), ..kind(0, false, false) }, MlaIn::Apart { q_a: 1, kv_a: 2 }, 3, 4, 0, 0, true).is_err());
+        }
+        // (an indexer beside a shared key part, not rotated: the attention's scores are over the latent and the shared part of the tokens it picks)
+        let both = MlaOp::of(&kind(64, false, true), MlaIn::Fused { w: 0 }, 1, 2, 0, 0, false).unwrap();
+        assert_eq!((both.rope, both.indexer.as_ref().map(|x| x.pick.ratio), both.rings().len()), (64, Some(4), 2));
+        // (a gate with two products, a rotated shared part)
         assert!(MlaOp::of(&kind(0, true, false), MlaIn::Apart { q_a: 1, kv_a: 2 }, 3, 4, 0, 0, false).is_err());
         assert!(MlaOp::of(&kinds::Mla { rope: Some(kinds::Rope::plain(1e4, 64)), ..kind(64, false, false) }, MlaIn::Fused { w: 0 }, 1, 2, 0, 0, false).is_err());
-        assert!(MlaOp::of(&kind(64, false, true), MlaIn::Fused { w: 0 }, 1, 2, 0, 0, false).is_err());
     }
 }

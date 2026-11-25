@@ -1,6 +1,5 @@
 //! Packed matrices on the GPU (`PackBuf`) and how a checkpoint's matrices become them: packed as they load in a level's layout (`pack_item_map`), or read as a glyd-v7
 //! or a lossless glyd-v4 directory saved them (`read_v7`, `read_lossless`); a Qwen3 config as the planner reads it (`Config`), the rotary tables, the layouts' choice.
-//! The dense Qwen3 engine's own loader (its glyd-v4/v3 directories with `engine.safetensors`) went with that engine (R3c, #139).
 
 use crate::dev::Buf;
 use crate::ffi::Words;
@@ -98,18 +97,6 @@ impl Config {
         let layer = (self.heads as u64 + 2 * kv) * d * h + h * self.heads as u64 * d + 2 * i * h + h * i;
         2 * (self.layers as u64 * layer + self.vocab as u64 * h * if self.tie { 1 } else { 2 })
     }
-}
-
-/// The layout a packed directory (`glyd.json` beside its shards) was packed for: its own label ("mma", the smallest: each matrix in the smaller of
-/// the two layouts; "mma12": every matrix in the 12-bit one), else its first matrix's.
-pub fn packed_layout(dir: &Path) -> Option<Layout> {
-    let v = json::parse(&std::fs::read_to_string(dir.join("glyd.json")).ok()?).ok()?;
-    let name = |s: &str| match s {
-        "mma" => Some(Layout::Tiered),
-        "mma12" => Some(Layout::Twelve),
-        _ => None,
-    };
-    v.get("layout").and_then(Value::as_str).and_then(name).or_else(|| name(v.get("packs")?.get("model.layers.0.self_attn.q_proj")?.get("layout")?.as_str()?))
 }
 
 /// How a directory that is not read is said to be: made by a glyd whose tiered layout was the earlier one (0.27 and before), which the library no longer multiplies by.
@@ -839,7 +826,6 @@ mod tests {
         assert_eq!(e.to_string(), "seventeen");
     }
 
-    /// The layout a GPU is given (the plugin's best_layout): Ada the tiered one, every other GPU the 12-bit one, the tiered one where only it fits; `--layout` wins.
     #[test]
     fn config_of_a_qwen3() {
         let dir = std::env::temp_dir().join(format!("glyd-engine-cfg-{}", std::process::id()));

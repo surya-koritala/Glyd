@@ -253,7 +253,7 @@ extern "C" __global__ void moe_add(bf16* y, const bf16* sh, const float* gate, i
 // y [T, H] = each token's rows [P, H] times its choices' weights wts [T k], summed in fp32 in the order of its choices, rounded once. A thread a pair; a thread 8 columns of a token.
 extern "C" __global__ void moe_inv(const int* plan, int* inv, int P, int E) {
     const int r = blockIdx.x * blockDim.x + threadIdx.x;
-    if (r < P) inv[plan[2 + 2 * E + r]] = r;
+    if (r < P && r < plan[1 + E + plan[0]]) inv[plan[2 + 2 * E + r]] = r;  // (a row past the routed pairs is none)
 }
 extern "C" __global__ void moe_wsum(const bf16* rows, const int* inv, const float* wts, bf16* y, int k, int H) {
     const int t = blockIdx.x, c = (blockIdx.y * blockDim.x + threadIdx.x) * 8;
@@ -273,7 +273,7 @@ extern "C" __global__ void moe_wsum(const bf16* rows, const int* inv, const floa
     *(uint4*)(y + (size_t)t * H + c) = o;
 }
 
-// ---- the expert cache planned on the GPU (src/offload.rs's device path, `DevPlan`): a decode call's choices looked up in its layer's table of places, each miss either copied into a place or sent to
+// ---- the expert cache planned on the GPU (src/devplan.rs, `DevPlan`): a decode call's choices looked up in its layer's table of places, each miss either copied into a place or sent to
 // the host's thread, so that no host waits inside a call and a step of such calls is one graph. One block: the tables in shared memory while the first thread decides, then written back.
 // A layer's table: place_of [experts] int, expert_of [slots] int, last [slots] uint (the step a place was last used in), hostlast [experts] uint (the step the host last computed an expert), refb [slots]
 // uchar; meta [16] uint: 0 step, 1 hand, 2 experts asked for, 3 found, 4 copied, 5 the host's experts, 6 the host's pairs, 7 promoted (counted over the calls), 8 this call's copies, 9 its promotions,
@@ -281,7 +281,7 @@ extern "C" __global__ void moe_wsum(const bf16* rows, const int* inv, const floa
 // store's `Costs`), the mode (0 copy, 1 cpu, 2 split, 3 auto), the window, the most promotions a call. The misses are copied as the store's `plan` copies them: the ones with the most pairs (the hot ones first
 // among equals), as many as make the longer of the copies and the host's pairs shortest (auto; split: the two the same), within the places the call's hits leave; a hot miss (the host computed it within
 // `window` calls before) that stays the host's is promoted (a place found for it, filled behind the call's products) while the copies so far leave the host's time room for its copy.
-// The request (mapped host memory the host's thread reads, src/offload.rs `DevMail`): words 0 its number (written last), 1 the layer, 2 tokens, 3 pairs, 4 z's width, 5 choices a token; from word XP_HDR
+// The request (mapped host memory the host's thread reads, src/devplan.rs `DevMail`): words 0 its number (written last), 1 the layer, 2 tokens, 3 pairs, 4 z's width, 5 choices a token; from word XP_HDR
 // the host's pairs (expert, token, weight's bits), `max_pairs` of room; after them the tokens' rows of z (bf16 [tokens, width]).
 #define XP_MAX 1024
 #define XP_HDR 16

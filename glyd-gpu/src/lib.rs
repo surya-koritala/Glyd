@@ -38,7 +38,7 @@ pub mod v1;
 /// The C API this crate calls (glyd_gpu.h's `GLYD_GPU_API_VERSION`): a
 /// library of another version is refused, as a C FFI does not see a call's
 /// arguments.
-pub const API_VERSION: i32 = 23;
+pub const API_VERSION: i32 = 25;
 /// A GPU's class by name in its code ([`Library::gpu`]): "GeForce" in its name.
 pub const GEFORCE: i32 = 1000;
 /// A GPU's class by name in its code: "A10" in its name as a word (an A10, not an A10G, A100 or A40).
@@ -246,6 +246,12 @@ api! { Api, DECLARED;
     fn glyd_gpu_mma_moe_placed(data: *const u8, blocks: *const u8, block_base: *const i32, tiers: *const u32, stride: i64, e: i64, o: i64, k: i64, x: *const u16, t: i64, topk: i64, gather: i64, plan: *const i32, act: i64, bias: *const u16, w: *const c_void, wf32: i64, ids: *const i64, y: *mut u16, workspace: *mut c_void, workspace_bytes: usize, done: *mut c_int, cs: Stream) -> c_int;
     fn glyd_gpu_mma12_moe_workspace(e: i64, o: i64, k: i64, t: i64, topk: i64, act: i64, weighted: i64, bytes: *mut usize) -> c_int;
     fn glyd_gpu_mma12_moe(data: *const u8, exc: *const u32, exc_base: *const i32, sym: *const u32, e: i64, o: i64, k: i64, x: *const u16, t: i64, topk: i64, gather: i64, plan: *const i32, act: i64, bias: *const u16, w: *const c_void, wf32: i64, ids: *const i64, y: *mut u16, workspace: *mut c_void, workspace_bytes: usize, done: *mut c_int, cs: Stream) -> c_int;
+    // (the same three for a part of a layer, cut as the whole layer's call: wo the rows an expert has in the whole layer, we the layer's experts; 0: the call's own)
+    fn glyd_gpu_mma_moe_as_workspace(e: i64, o: i64, k: i64, t: i64, topk: i64, act: i64, weighted: i64, wo: i64, we: i64, bytes: *mut usize) -> c_int;
+    fn glyd_gpu_mma_moe_as(data: *const u8, blocks: *const u8, block_base: *const i32, tiers: *const u32, e: i64, o: i64, k: i64, x: *const u16, t: i64, topk: i64, gather: i64, plan: *const i32, act: i64, bias: *const u16, w: *const c_void, wf32: i64, ids: *const i64, y: *mut u16, workspace: *mut c_void, workspace_bytes: usize, done: *mut c_int, cs: Stream, wo: i64, we: i64) -> c_int;
+    fn glyd_gpu_mma_moe_placed_as(data: *const u8, blocks: *const u8, block_base: *const i32, tiers: *const u32, stride: i64, e: i64, o: i64, k: i64, x: *const u16, t: i64, topk: i64, gather: i64, plan: *const i32, act: i64, bias: *const u16, w: *const c_void, wf32: i64, ids: *const i64, y: *mut u16, workspace: *mut c_void, workspace_bytes: usize, done: *mut c_int, cs: Stream, wo: i64, we: i64) -> c_int;
+    fn glyd_gpu_mma12_moe_as_workspace(e: i64, o: i64, k: i64, t: i64, topk: i64, act: i64, weighted: i64, wo: i64, we: i64, bytes: *mut usize) -> c_int;
+    fn glyd_gpu_mma12_moe_as(data: *const u8, exc: *const u32, exc_base: *const i32, sym: *const u32, e: i64, o: i64, k: i64, x: *const u16, t: i64, topk: i64, gather: i64, plan: *const i32, act: i64, bias: *const u16, w: *const c_void, wf32: i64, ids: *const i64, y: *mut u16, workspace: *mut c_void, workspace_bytes: usize, done: *mut c_int, cs: Stream, wo: i64, we: i64) -> c_int;
     fn glyd_gpu_mma_moe_unpack(data: *const u8, blocks: *const u8, block_base: *const i32, tiers: *const u32, e: i64, o: i64, k: i64, p: i64, plan: *const i32, out: *mut u16, cs: Stream) -> c_int;
     fn glyd_gpu_mma12_moe_unpack(data: *const u8, exc: *const u32, exc_base: *const i32, sym: *const u32, e: i64, o: i64, k: i64, p: i64, plan: *const i32, out: *mut u16, cs: Stream) -> c_int;
 

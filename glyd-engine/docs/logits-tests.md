@@ -1,6 +1,6 @@
 # Logits tests
 
-Every model family the engine runs has a fixture of reference logits, and `glyd-engine logitscheck` compares the engine's logits with it. The GPU job (`.github/workflows/gpu-tests.yml`) runs it on every merge to main and on every pull request labeled `gpu`; on the RTX 4080 SUPER runner the whole suite takes about 25 s (no checkpoint is downloaded: every case is a random model). The code is `src/logits.rs`, the fixtures are `tests/logits/`.
+Every model family the engine runs has a fixture of reference logits, and `glyd-engine logitscheck` compares the engine's logits with it. The GPU job (`.github/workflows/gpu-tests.yml`) runs it on merges to main that touch the engine, the GPU library or the lockfile, and on every pull request labeled `gpu`; on the RTX 4080 SUPER runner the whole suite takes about 25 s (no checkpoint is downloaded: every case is a random model). The code is `src/logits.rs`, the fixtures are `tests/logits/`.
 
 ## What is compared
 
@@ -15,17 +15,20 @@ A fixture holds fixed tokens: a prompt of 24, 12 decode steps (each fed the toke
 
 | Case | Family | Model | Reference | Levels |
 | :--- | :--- | :--- | :--- | :--- |
-| `qwen3` | Qwen3 dense (the dense engine's architecture; no recent release uses it) | random, Qwen3-0.6B's layout, 4 layers | transformers, bf16 on the same random weights | penguin (KL) |
+| `dense` | The plain dense kind (one attention and one gated MLP a layer, on the executor; the kind's case, no release's) | random, 4 layers | transformers, bf16 on the same random weights | penguin (KL) |
 | `qwen35` | Qwen3.5 family (Gated DeltaNet and gated attention: Qwen3.8-27B's layout) | random, 0.8B's widths, 4 layers | transformers, bf16 on the same random weights | penguin, kestrel, swift, wren (KL) |
+| `qwen35-wide` | Qwen3.5 family, a second shape | random | the layer kinds' CPU reference, `src/runtime/reference` | penguin (KL) |
+| `qwen35moe` | Qwen3.5 family with experts (softmax-routed, a gated shared expert) | random | the layer kinds' CPU reference | penguin (KL) |
 | `muse` | Muse Spark | random, 4 layers, 16 experts | the CPU reference, `src/muse_ref.rs` | penguin (KL) |
 | `kimi` | Kimi-K3 (delta attention, latent attention, MoE) | random, 8 layers | `src/kimi_ref.rs` | penguin (KL) |
 | `deepseek-v4` | DeepSeek-V4 | random, 5 layers | `src/dsv4_ref.rs` | penguin (KL) |
 | `gemma4` | Gemma 4 (sliding, global K = V, soft-capped head) | random, 4 layers, heads 256 and 512 | the engine's own bits | penguin (bits) |
-| `nemotron-h` | Nemotron-H (Mamba-2, attention, MoE) | random, 4 layers | the engine's own bits | penguin, kestrel (bits) |
+| `nemotron-h` | Nemotron-H (Mamba-2, attention, MoE) | random, 4 layers | the layer kinds' CPU reference; the engine's own bits | penguin (KL); penguin, kestrel (bits) |
 | `glm` | GLM-5.3-Flash | random toy, experts at kestrel | the engine's own bits | kestrel (bits) |
-| `qwen4x` | Qwen3.8-Flash-Next | random tiny of `tools/qwen4x_ref.py`'s layout, experts at kestrel | the engine's own bits | kestrel (bits) |
+| `qwen4x` | Qwen3.8-Flash-Next | random tiny of `tools/qwen4x_ref.py`'s layout | the layer kinds' CPU reference; the engine's own bits | penguin (KL); kestrel (bits) |
+| `deepseek-v41` | DeepSeek-V4.1 | random | the layer kinds' CPU reference (`--cpu-ref` alone: the family is not on the executor yet) | penguin (KL) |
 
-Only models released in the last six months are tested, and those are all larger than a 16 GB card holds (Qwen3.8-27B, Qwen3.8-Flash-Next, GLM-5.3-Flash, Muse-Spark-Open, Kimi-K3, DeepSeek-V4, Gemma 4 12B), so every case is a random model of the layout. The big releases do not fit a 16 GB card (Muse, Kimi, DeepSeek, GLM, Nemotron 3 Super, Gemma 4 12B and 31B), so a random model of the family's layout stands in, with a fixed seed: the layer kinds, the routers and the heads are the real ones, the weights are not. A random model's logits are close to flat and its expert choices have near ties, so the CPU references agree with the engine on the best token less often than a trained model's do (the existing `musecheck`, `kimicheck`, `dsv4check` print the same); the KL bounds for those are wide and the bits fixtures carry the sensitivity. Where the case has no reference of another implementation (gemma4, nemotron-h, glm, qwen4x) the fixture is the engine's own output at the commit that recorded it, and says so: it guards a rewrite against changing the numbers, it does not say the numbers are right. The families' kernel checks against transformers (`kcheck*`, `qxtoy`, `g4check`, `nhtoy`; for the latent and delta attention kinds `kindcheck` against the CPU reference) say that.
+Only models released in the last six months are tested, and those are all larger than a 16 GB card holds (Qwen3.8-27B, Qwen3.8-Flash-Next, GLM-5.3-Flash, Muse-Spark-Open, Kimi-K3, DeepSeek-V4, Gemma 4 12B), so every case is a random model of the layout. The big releases do not fit a 16 GB card (Muse, Kimi, DeepSeek, GLM, Nemotron 3 Super, Gemma 4 12B and 31B), so a random model of the family's layout stands in, with a fixed seed: the layer kinds, the routers and the heads are the real ones, the weights are not. A random model's logits are close to flat and its expert choices have near ties, so the CPU references agree with the engine on the best token less often than a trained model's do (the existing `musecheck`, `kimicheck`, `dsv4check` print the same); the KL bounds for those are wide and the bits fixtures carry the sensitivity. Where the case has no reference of another implementation (gemma4, glm) the fixture is the engine's own output at the commit that recorded it, and says so: it guards a rewrite against changing the numbers, it does not say the numbers are right. The families' kernel checks against transformers (`kcheck*`, `qxtoy`, `g4check`, `nhtoy`; for the latent and delta attention kinds `kindcheck` against the CPU reference) say that.
 
 ## Commands
 
@@ -33,14 +36,14 @@ Only models released in the last six months are tested, and those are all larger
     glyd-engine logitscheck muse kimi deepseek-v4 --cpu-ref                     the CPU references against their own fixtures (no GPU): has the reference moved
     glyd-engine logitsrecord CASE --from cpu|engine --out DIR [--level L] [--bound bits|kl:MEAN:MAX:TOP1] [--tokens FILE] [--note TEXT] [--date D]
     glyd-engine logitsbound FIXTURE LEVEL=BOUND...                              a fixture's bounds replaced
-    python3 glyd-engine/tools/logits_ref_hf.py CASE MODEL_ID OUT.json.gz [--bound LEVEL=kl:...]    a fixture from transformers (GPU lock on glyd-pc)
+    python3 glyd-engine/tools/logits_ref_hf.py CASE MODEL_ID OUT.json.gz [--bound LEVEL=kl:...]    a fixture from transformers (on the project's GPU machine)
 
-Record on glyd-pc (take `~/glyd-scratch/gpu.lock`, no CI container running), in the CI image, with the same build as the job. To record the engine's own bits for a new GPU generation, run `logitsrecord CASE --from engine --out tests/logits` there; the file is named `CASE.smNN.json.gz`.
+Record on the project's GPU machine (with no CI job running), in the CI image, with the same build as the job. To record the engine's own bits for a new GPU generation, run `logitsrecord CASE --from engine --out tests/logits` there; the file is named `CASE.smNN.json.gz`.
 
 ## Adding a model
 
 1. A case in `cases()`: a Hub id or a generator of a random model, the engine's loader at a level, the CPU reference where there is one.
-2. A reference: `logits_ref_hf.py` for a Hub model, `logitsrecord --from cpu` where the family has a `*_ref.rs`, and `logitsrecord --from engine` for the bits.
+2. A reference: `logits_ref_hf.py` for a Hub model, `logitsrecord --from cpu` where the case has a CPU reference (a `*_ref.rs`, or the layer kinds' `src/runtime/reference`), and `logitsrecord --from engine` for the bits.
 3. Bounds from a measured run (`logitscheck` prints each row set's KL and best-token counts), about twice the measurement, with `logitsbound`.
 4. `cargo test -p glyd-engine --lib logits::` reads every fixture and checks its shape.
 
