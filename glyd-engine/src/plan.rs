@@ -4807,7 +4807,7 @@ mod tests {
         // experts released at hummingbird's bits or fewer: nothing to gain
         let low = Shape { expert_release_bits: 2.5, ..d.clone() };
         assert!(level_bits("hummingbird", &low, dev).is_none());
-        // Nemotron-H: the kernels' latent (Nemotron 3 Super's 1,024) takes it, Nemotron 3.5 Lightning's width of 2,688 does not
+        // the Nemotron-H family: experts on a latent of 1,024 (a power of two from 128 to 1,024, the kernels') take it, experts on a width of 2,688 (no latent) do not
         let nh = Shape { arch: "NemotronHForCausalLM".into(), expert_width: 1024, release_bits: 16.0, expert_release_bits: 0.0, ..d.clone() };
         assert_eq!(level_bits("hummingbird", &nh, dev), Some((6.0, 2.9)));
         assert!(level_bits("hummingbird", &Shape { expert_width: 2688, ..nh }, dev).is_none());
