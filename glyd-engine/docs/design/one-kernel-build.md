@@ -63,8 +63,9 @@ Each step lands alone, keeps `libglyd_gpu` loadable (the Python package needs it
 - **Step 3, order.** Folded (each compared bit for bit with the library by `foldcheck` in the GPU job): the unpackers; the experts' plan;
   the step product to 64 tokens (route GEMM, and the step product of the routes MID and WG for the layouts that take it); the prompt
   kernel (routes BIG, DECODE, AHEAD and SPLIT: mma_gemm_big in its three default shapes and, on GeForce Ada, its stream-K form, with
-  split-K's finish); the 12-bit layout's route MID (mma12_mid, and the A100's mma12_ws); the grouped experts' step products, their
-  prompt kernel and the expert cache's places; the 12-bit KV pages' write, unpack, gather, decode and prompt attention (and over a
+  split-K's finish); the 12-bit layout's route MID (mma12_mid, and the A100's mma12_ws); the grouped experts' step products, which
+  every call takes (C API 26: their prompt kernel and rows kernel, which a development build's variables alone ask for now, are the
+  library's and left the engine's fatbin), and the expert cache's places; the 12-bit KV pages' write, unpack, gather, decode and prompt attention (and over a
   bf16 cache); the lossless FP8 format's size, pack and unpack and its products (both layouts, every kind of scales, the experts').
   Their grids are the library's: occupancy of the engine's own kernels (`cuOccupancyMaxActiveBlocksPerMultiprocessor` in the device
   layer) and the same split rules, so the sums' order and the bits are the library's. A development build's variables that ask for
@@ -87,8 +88,8 @@ Each step lands alone, keeps `libglyd_gpu` loadable (the Python package needs it
   What is left before the engine stops loading the library: every `GpuOps` method of `Lib` still ends in a `library_*` call for
   what its `fold` function does not take. Those are, by kind: arguments the library refuses (the engine has to refuse them itself, in
   the same words); an AMD build (its fold functions say false: nothing of them has run on an AMD GPU); a development build's tuning
-  variable that asks for a plan not folded (a release build reads none); the layout of v0.27 and before in `unpack`; a part of a
-  layer on the experts' prompt kernel; and Hopper's routes, which are written and have run on no H100 yet. Then `Lib::find()`'s
+  variable that asks for a plan not folded (a release build reads none); the layout of v0.27 and before in `unpack`; and Hopper's
+  routes, which are written and have run on no H100 yet. Then `Lib::find()`'s
   callers, `GLYD_GPU_LIB`, the bundle's libraries and `install.sh`'s copy go, and `foldcheck` keeps the library as a development
   build's oracle.
 - **The builds' time** (measured 2026-11-25 on a rented A10 machine of 30 processors, nvcc 12.8, a development build for sm_80 and
