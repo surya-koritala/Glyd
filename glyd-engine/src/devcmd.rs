@@ -39,7 +39,7 @@
 //!   glyd-engine kvdecode [--lens 40,1024,4096] [--ctx 32768] [--reps 100]   a decode row's attention over 12-bit pages against a bf16 cache of the same values, and its token's 12-bit write, us a call (8 kv heads of 128 with 32 query heads, gemma-4-12B's and the Qwen3.5 layout's shapes)
 //!   glyd-engine topkcheck                                     the sampling kernels' 64 largest logits of a row and sum of its exponentials against the host's
 //!   glyd-engine sampletime DIR PROMPT [--new N] [--ctx N]     a Qwen3.5 or Nemotron-H model's decode speed by greedy steps, by sampled ones from the GPU's candidates and from the row on the host (the same tokens)
-//!   glyd-engine logitscheck [CASE...] [--fixtures DIR] [--cpu-ref] [--level L] [--list-cases]   each model's engine logits against its fixture in tests/logits (src/logits.rs); logitsrecord CASE --from cpu|engine --out FILE: a fixture made; logitsbound FIXTURE LEVEL=BOUND...: its bounds set; logitsmodel CASE DIR: the case's random model made; paritycheck [CASE...] [--level L] [--choice ROW:LAYER]: each case of a family that still has a hand-written engine (Qwen3.8-Flash-Next's: qwen4x, qwen4x-s2; R3d) on the description executor, held to the CPU reference of the layer kinds on its own routers' choices, and beside the hand-written engine where that runs the case (--choice: no engine; the reference alone with the nearest other choice taken in that row's pass and layer, and what it leaves in the rows after); levelcheck [CASE...] [--level L]: each lossy level's KL from penguin on its families' random models, against the thresholds of the family and level (qwen35, gemma4 and nemotron-h at kestrel, swift and wren; deepseek-v4 and muse at hummingbird; kimi and glm at hummingbird printed as open)
+//!   glyd-engine logitscheck [CASE...] [--fixtures DIR] [--cpu-ref] [--level L] [--list-cases]   each model's engine logits against its fixture in tests/logits (src/logits.rs); logitsrecord CASE --from cpu|engine --out FILE: a fixture made; logitsbound FIXTURE LEVEL=BOUND...: its bounds set; logitsmodel CASE DIR: the case's random model made; paritycheck [CASE...] [--level L] [--choice ROW:LAYER]: Qwen3.8-Flash-Next's cases (qwen4x, qwen4x-s2) on the description executor, held to the CPU reference of the layer kinds on its own routers' choices, its layers beside the reference's (--choice: no engine; the reference alone with the nearest other choice taken in that row's pass and layer, and what it leaves in the rows after); levelcheck [CASE...] [--level L]: each lossy level's KL from penguin on its families' random models, against the thresholds of the family and level (qwen35, gemma4 and nemotron-h at kestrel, swift and wren; deepseek-v4 and muse at hummingbird; kimi and glm at hummingbird printed as open)
 //!   glyd-engine packcheck [--gpu] [--record] [--engine [--scratch DIR]]   every pack format of tests/data/packs read and run on the CPU reference against its digest in tests/packs (--gpu: decoded by the GPU library; --record: the digests written); --engine: the formats the engine reads (glyd-v7 penguin, kestrel, swift, wren) made from the logits cases' random models, loaded from the saved directory, against the same model packed as it loads in the same layout (bits) and the case's reference where one bounds the level, and the Hummingbird level against this GPU generation's digest in tests/packs (--engine --record: that digest written, on a GPU of the generation); a row or a digest with nothing recorded for this GPU fails (src/packcheck.rs)
 //!   glyd-engine kcheck IN_DIR OUT_DIR                        the kernels on inputs tools/kcheck.py wrote
 //!   glyd-engine usercheck CASE [--users N] [--tokens T] [--dir DIR --prompt-tokens P [--places N [--mode M] [--device-plan]]] [--stagger D]       a random model of the case (gemma4, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, glm, nemotron, deepseek-v4, qwen4x), or the model in DIR, on the description executor: each reply through the scheduler alone and all at once, against the reply alone; with GLYD_ENGINE_PAGES too few for all at once, at once again swapping sequences sent back for room always, by cost, and never (R4d), each run's first-token and between-token times
@@ -182,6 +182,8 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "foldcheck" => glyd_engine::fold::check(a.flag("only")),
         "seamcheck" => glyd_engine::runtime::cuda::check(&a),
         "kindcheck" => glyd_engine::dynamic::kindcheck::run(&a),
+        "draftcheck" => glyd_engine::dynamic::head::check(&a),
+        "servecheck" => glyd_engine::dynamic::qwen4x::serve_check(&a),
         "roundcheck" => glyd_engine::logits::round_check(a),
         "keepcheck" => glyd_engine::logits::keep_check(a),
         "kv12cal" => glyd_engine::dynamic::kv12::cmd(a),
@@ -269,35 +271,14 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
             if a.has("real") { Some((a.num("layers", 4)?, a.num("experts", 32)?)) } else { None },
             a.num("seed", glyd_engine::glm::RANDOM_SEED)?,
         ),
-        "qxlayers" => {
-            if !glyd_engine::kcheck_qwen4x::layers(Path::new(a.need(1, "MODEL")?), Path::new(a.need(2, "REF")?), a)? {
-                std::process::exit(1);
-            }
-            Ok(())
-        }
-        "qxcb" => {
-            if !glyd_engine::kcheck_qwen4x::cb(Path::new(a.need(1, "MODEL")?), Path::new(a.need(2, "PACK")?), Path::new(a.need(3, "REF")?), a)? {
-                std::process::exit(1);
-            }
-            Ok(())
-        }
         "g4check" => glyd_engine::gemma4::check(a),
         "i4xcheck" => glyd_engine::gemma4::i4x_check(a),
         "g4spec" => glyd_engine::gemma4::spec_check(a),
         "g4tok" => glyd_engine::gemma4::tok_check(a),
         "g4score" => glyd_engine::gemma4::score(a),
         "g4prefill" => glyd_engine::gemma4::prefill_prof(a),
-        "qxbench" => glyd_engine::kcheck_qwen4x::bench(a),
-        "qxprod" => glyd_engine::kcheck_qwen4x::bench_products(a),
         "qxtq" => glyd_engine::qx_trellis::cmd(a),
         "qxvision" => glyd_engine::vision::check(a),
-        "qxhost" => glyd_engine::kcheck_qwen4x::host_bench(Path::new(a.need(1, "PACK")?), a),
-        "qxtoy" => {
-            if !glyd_engine::kcheck_qwen4x::toy(Path::new(a.need(1, "MODEL")?), Path::new(a.need(2, "REF")?), a)? {
-                std::process::exit(1);
-            }
-            Ok(())
-        }
         _ => err("usage: glyd-engine run|serve|doctor|login|supports|fetch|prepare, or a development command (see the top of src/devcmd.rs)"),
     }
 }

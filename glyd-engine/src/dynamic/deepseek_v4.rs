@@ -199,10 +199,21 @@ fn scale_blocks(rows: usize, cols: usize, shape: &[u64]) -> Option<[usize; 2]> {
 /// `load_stage` with a hummingbird directory's experts in the expert cache (`caching`: the stage's places and memory, src/hbg_store.rs). The model's layer kinds
 /// lowered (`lower_comp::lower`), each index of its operations loaded as the plan says, in the release's formats.
 pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+    load_stage_with(dir, o, st, caching, V4Opts::of(o.layout.unwrap_or(Layout::Tiered), o.ctx))
+}
+
+/// The whole model with the release's simulated quantizations on or off (`V4Opts::sim`, which GLYD_V4_SIM sets in every other load): a check's engine of
+/// either kind (src/logits.rs) without the environment's say.
+pub fn load_sim(dir: &Path, o: &Opts, sim: bool) -> Result<Dyn> {
+    let vo = V4Opts { sim, ..V4Opts::of(o.layout.unwrap_or(Layout::Tiered), o.ctx) };
+    load_stage_with(dir, o, Stage::whole(ends(dir)?.0), None, vo)
+}
+
+/// `load_stage_hb` with the options `vo` given.
+pub fn load_stage_with(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>, vo: V4Opts) -> Result<Dyn> {
     let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
     let (_, eos, max_pos) = ends(dir)?;
     let layout = o.layout.unwrap_or(Layout::Tiered);
-    let vo = V4Opts::of(layout, o.ctx);
     let (desc, plan) = super::lower_comp::lower(&kinds, eos, max_pos, &st, &vo).map_err(|e| e.context(&label))?;
     let cfg = crate::runtime::config::ModelConfig::load(dir)?;
     let inter = cfg.text.get("moe_intermediate_size").and_then(|v| v.as_u64()).ok_or_else(|| Error(format!("{label}: no moe_intermediate_size")))? as usize;
@@ -578,7 +589,7 @@ fn experts(x: &ExpertsAt, ml: &MoeLoad, d: usize, pack: PackFn, dense: DenseFn) 
             let packed = |w: &[u16], rows: usize, cols: usize, name: &str| -> Result<PackBuf> {
                 match pack(w, rows, cols, name)? {
                     Mat::Packed(p) => Ok(p),
-                    Mat::Dense(..) => err(format!("{name}: rows of a block layout are wanted")),
+                    Mat::Dense(..) | Mat::F8(_) => err(format!("{name}: rows of a block layout are wanted")),
                 }
             };
             Shared {

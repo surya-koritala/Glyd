@@ -388,6 +388,7 @@ fn glm53_mtp_head() {
         norm_hidden: twice,
         final_norm: Norm::rms(1e-5),
         dspark: None,
+        input: MtpInput::Joined,
     };
     let pa = params(
         &f,

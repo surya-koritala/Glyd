@@ -461,11 +461,12 @@ pub fn sched_reply(e: &mut Run, prompt: &[u32], tokens: usize) -> Result<(Vec<u3
     }
 }
 
-/// The name of the support row of the model whose config.json is `text`, where the row's layers split over GPUs on the dynamic route (`Support::split_levels`:
-/// the families this module opens from their release's directory); None for another path's model.
+/// The name of the support row of the model whose config.json is `text`, where the row's layers split over GPUs on the dynamic route (`Support::split_levels`)
+/// or the row is sized as the dynamic route's on one GPU (`Sizing::Dynamic`): the families this module opens from their release's directory; None for another
+/// path's model.
 pub fn family(text: &str) -> Option<&'static str> {
     let row = crate::support::row(crate::runtime::config::family_of(text)?);
-    (!row.split_levels.is_empty()).then_some(row.name)
+    (!row.split_levels.is_empty() || row.route.sizing == crate::support::Sizing::Dynamic).then_some(row.name)
 }
 
 /// The model of `dir` as `plan` says it loads (src/plan.rs `size_dynamic`): its layers cut over the plan's GPUs (`Spread::cuts`, `devices`) or across them
@@ -551,13 +552,15 @@ enum Lowering {
     DeltaDepth,
     /// Gated residuals (`lower::muse`; Muse Spark's).
     GatedResidual,
+    /// The gated residuals' streams (`lower::qwen4x`; Qwen3.8-Flash-Next's).
+    GatedStreams,
     /// The gated delta rule with plain residuals, the feed-forwards dense or experts (`lower::qwen35`; the Qwen3.5 layout's).
     GatedDelta,
 }
 
 /// The lowering of the description `d`, by the layer kinds it holds, in this order: a compressed attention; Mamba-2 with plain residuals; the Kimi delta attention
-/// with residual streams, or with the blocks' depth mix; gated residuals; the gated delta rule with plain residuals. A description of other kinds is refused in
-/// words: no loader of the dynamic route lowers them.
+/// with residual streams, or with the blocks' depth mix; gated residuals; the gated residuals' streams; the gated delta rule with plain residuals. A description of
+/// other kinds is refused in words: no loader of the dynamic route lowers them.
 fn lowering(d: &crate::runtime::describe::Described) -> Result<Lowering> {
     use crate::runtime::kinds::{Body, LinearKind, Mixer, Residual};
     let blocks = &d.desc.blocks;
@@ -575,12 +578,14 @@ fn lowering(d: &crate::runtime::describe::Described) -> Result<Lowering> {
         Lowering::DeltaDepth
     } else if residual(&|r| matches!(r, Residual::Gated(_))) {
         Lowering::GatedResidual
+    } else if residual(&|r| matches!(r, Residual::GatedStreams(_))) {
+        Lowering::GatedStreams
     } else if linear(LinearKind::GatedDeltaNet) && plain {
         Lowering::GatedDelta
     } else {
         return err(
             "no loader of the dynamic route lowers its layer kinds (a compressed attention; Mamba-2 with plain residuals; the Kimi delta attention with residual \
-             streams or the blocks' depth mix; gated residuals; the gated delta rule with plain residuals)",
+             streams or the blocks' depth mix; gated residuals; the gated residuals' streams; the gated delta rule with plain residuals)",
         );
     })
 }
@@ -596,6 +601,7 @@ pub fn loader(d: &crate::runtime::describe::Described) -> Result<Loader> {
         Lowering::DeltaStreams => Loader { ends: |dir| crate::glm::ConfigGlm::load(dir).map(|c| (c.layers, c.eos)), stage: super::glm::stage },
         Lowering::DeltaDepth => Loader { ends: |dir| crate::kimi::ConfigKimi::load(dir).map(|c| (c.layers, c.eos)), stage: super::kimi::stage },
         Lowering::GatedResidual => Loader { ends: |dir| crate::muse::ConfigMuse::load(dir).map(|c| (c.layers, c.eos)), stage: super::muse::load_stage_hb },
+        Lowering::GatedStreams => Loader { ends: |dir| crate::qwen4x::ConfigQx::load(dir).map(|c| (c.layers, c.eos)), stage: super::qwen4x::stage },
         Lowering::GatedDelta => Loader { ends: |dir| crate::qwen35::Config35::load(dir).map(|c| (c.layers, c.eos)), stage: super::qwen35::stage },
     })
 }
@@ -695,8 +701,8 @@ mod tests {
     }
 
     /// The dynamic route's loader is chosen by the layer kinds a description holds, not by a family's name: each released config (the random models' where none
-    /// is here) is lowered by the loader of its kinds, and a description of kinds no loader of the route lowers (Gemma 4's, the plain dense kind's,
-    /// Qwen3.8-Flash-Next's) is refused in words. The family a support row names is its row's (its layers split on the route).
+    /// is here) is lowered by the loader of its kinds, and a description of kinds no loader of the route lowers (Gemma 4's, the plain dense kind's) is refused
+    /// in words. The family a support row names is its row's (its layers split on the route).
     #[test]
     fn the_loader_is_chosen_by_the_descriptions_kinds() {
         use super::Lowering::*;
@@ -717,13 +723,14 @@ mod tests {
             (header("headers/Kimi-K3.json"), DeltaDepth),
             (q38.clone(), GatedDelta),
             (fixture("qwen35moe_tiny_config.json"), GatedDelta),
+            (fixture("qwen4x_config.json"), GatedStreams),
         ] {
             assert_eq!(lowering(&text).unwrap(), want, "{}", &text[..text.len().min(120)]);
         }
         #[cfg(feature = "dev")]
         assert_eq!(lowering(crate::muse_ref::RANDOM_CONFIG).unwrap(), GatedResidual);
         let (gemma, dense) = (header("headers/gemma-4-12B-it.json"), header("dense_tiny_manifest.json"));
-        for text in [&gemma, &dense, &fixture("qwen4x_config.json")] {
+        for text in [&gemma, &dense] {
             assert!(lowering(text).unwrap_err().msg.contains("no loader of the dynamic route lowers its layer kinds"));
         }
         assert_eq!((super::family(&q38), super::family(&fixture("nemotron_h_config.json"))), (Some("Qwen3.5"), Some("Nemotron-H")));

@@ -329,8 +329,8 @@ mod tests {
         assert_eq!(context(&n, &[9, 4, 5], 2000), [2000, 5, 4]);
     }
 
-    /// Condor's engine hashes a position as (token, the one before, the one before that unless the one before is the end token) with its
-    /// own arithmetic (src/model_qwen4x.rs `Ngram::ids`, unsigned): the same rows, each order's mixed value XOR'd from the token up.
+    /// The family's own engine (deleted in R3d) hashed a position as (token, the one before, the one before that unless the one before is the end token) with
+    /// its own arithmetic (unsigned): the same rows, each order's mixed value XOR'd from the token up.
     #[test]
     fn the_rows_by_hand() {
         let n = kind(1000, 2048, 0);

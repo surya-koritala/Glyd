@@ -503,7 +503,9 @@ fn split_of(a: &crate::args::Args, dir: &Path, desc: crate::dynamic::ModelDesc, 
 fn load_dyn(dir: &Path, ctx: usize, chunk: usize, graph: bool, layout: Option<Layout>, draft: Option<(&Path, usize)>) -> Result<crate::dynamic::Dyn> {
     let c = ConfigG4::load(dir)?;
     let spec = match draft {
-        Some((d, k)) => Some(crate::dynamic::DraftSpec { dir: d, desc: crate::dynamic::gemma4::describe_draft(&ConfigG4::load_for(d, true)?, &c), k }),
+        Some((d, k)) => {
+            Some(crate::dynamic::DraftSpec { dir: d, desc: crate::dynamic::gemma4::describe_draft(&ConfigG4::load_for(d, true)?, &c), k, experts: None })
+        }
         None => None,
     };
     crate::dynamic::Dyn::new(dir, crate::dynamic::gemma4::lowered(dir, &c)?, spec, &crate::dynamic::Opts { ctx, chunk, graph, device: 0, layout })

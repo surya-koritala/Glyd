@@ -4,10 +4,18 @@
 //! final_norm; the model's LM head turns the result into the draft, and the result is the next draft's `h`.
 //!
 //! Roles: `eh_proj` [hidden, 2 hidden], `norm_embed`, `norm_hidden`, `final_norm` [hidden]; each block's roles as a block of the model.
+//!
+//! The head of the model's streams (`MtpInput::Streams`, Qwen3.8-Flash-Next's): for the model's last streams S (n of hidden, before its collapse) at
+//! position j and the token t after it, each stream x_s = `fc_hidden` (norm_hidden(S) as one vector of n hidden)_s + `fc_embedding`
+//! norm_embed(embedding(t)); the head's blocks on those streams by the model's residual rule, with caches of their own; the streams after them are
+//! the next draft's S; the head's input to the model's head is its own final mixer of them (`gated_mix` with `final_norm` on each stream,
+//! `out_mix_down`, `out_mix_up`). Roles `norm_embed` [hidden], `norm_hidden` [n hidden], `fc_embedding`, `fc_hidden` [hidden, hidden],
+//! `final_norm` [n hidden], `out_mix_down` [rank, n hidden], `out_mix_up` [n hidden, rank].
 
-use super::{comp, dot, hc_weights, matvec, norm::norm, sigmoid, Params, RefLayer};
+use super::{comp, dot, gated_mix, hc_weights, matvec, norm::norm, sigmoid, Params, RefLayer, SeqState};
 use crate::ffi::{err, Result};
-use crate::runtime::kinds::{Body, Collapse, Mixer, MtpHead, Residual};
+use crate::runtime::describe::Described;
+use crate::runtime::kinds::{Body, Collapse, Mixer, MtpHead, MtpInput, Residual};
 
 pub struct RefMtp {
     pub head: MtpHead,
@@ -23,6 +31,55 @@ impl RefMtp {
             return err("an MTP head's layers are not its blocks");
         }
         Ok(RefMtp { head, hidden, p, blocks })
+    }
+
+    /// Draft head `i` of the description `d` with its weights from `src` (its blocks' roles and its own, `Described::mtp`).
+    pub fn load(d: &Described, i: usize, src: super::model::Tensors) -> Result<RefMtp> {
+        let (Some(head), Some((blocks, own))) = (d.desc.mtp.get(i), d.mtp.get(i)) else {
+            return err(format!("no draft head {i} named in the description ({} heads, {} named)", d.desc.mtp.len(), d.mtp.len()));
+        };
+        let params = |roles: &[(String, crate::runtime::describe::Source)]| -> Result<Params> {
+            let mut p = Params::new();
+            for (role, s) in roles {
+                let (shape, v) = super::model::load(src, role, s)?;
+                p.put(role, &shape, v);
+            }
+            Ok(p)
+        };
+        let layers = head.blocks.iter().zip(blocks).map(|(b, r)| Ok(RefLayer::new(b.clone(), d.desc.hidden, params(r)?))).collect::<Result<Vec<_>>>()?;
+        RefMtp::new(head.clone(), d.desc.hidden, params(own)?, layers)
+    }
+
+    /// One row of a head of the model's streams (`MtpInput::Streams`): the next token `token` and its embedding row, the streams the row continues
+    /// ([n hidden]: the model's last streams at the position, or the head's own after its draft before), at `pos` of sequence `seq`. The head's streams
+    /// after its blocks (the next draft's input) and its input to the model's head (its final mixer of them). A row at a position the head's caches
+    /// hold already takes its place and the later ones' (a draft's rows are run again on the model's own streams once the model has checked them).
+    pub fn step_streams(&mut self, seq: u32, pos: u32, token: u32, embedding: &[f32], streams: &[f32]) -> Result<(Vec<f32>, Vec<f32>)> {
+        let d = self.hidden;
+        let n = streams.len() / d.max(1);
+        if self.head.input != MtpInput::Streams || embedding.len() != d || n == 0 || n * d != streams.len() {
+            return err(format!(
+                "a draft head of {:?} on an embedding of {} and streams of {} values for width {d}",
+                self.head.input,
+                embedding.len(),
+                streams.len()
+            ));
+        }
+        let o = self.p.prod("fc_embedding", &norm(&self.head.norm_embed, embedding, self.p.opt("norm_embed"), None))?;
+        let hn = norm(&self.head.norm_hidden, streams, self.p.opt("norm_hidden"), None);
+        let mut x = Vec::with_capacity(n * d);
+        for s in hn.chunks(d) {
+            x.extend(self.p.prod("fc_hidden", s)?.iter().zip(&o).map(|(a, b)| a + b));
+        }
+        for b in &mut self.blocks {
+            if let Some(SeqState::Attention(c)) = b.seqs.get_mut(&seq) {
+                let keep = c.pos.iter().take_while(|&&q| q < pos).count();
+                (c.pos.truncate(keep), c.k.truncate(keep), c.v.truncate(keep), c.ikey.truncate(keep));
+            }
+            b.forward(&[pos], &[seq], &[token], &mut x)?;
+        }
+        let h = gated_mix(n, &self.head.final_norm, self.p.vec("final_norm")?, self.p.vec("out_mix_down")?, self.p.vec("out_mix_up")?, None, &x)?.0;
+        Ok((x, h))
     }
 
     /// One row: the embedding of the next token, the model's hidden state before it, at `pos` of sequence `seq`; the head's normed hidden
@@ -159,7 +216,7 @@ impl RefDSpark {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::kinds::{Act, Block, Comp, DSpark, Ffn, Mlp, Norm, Rope, RopeScaling, RopeStyle, Rounding, StreamsP};
+    use crate::runtime::kinds::{Act, Attn, Block, Comp, DSpark, Ffn, Mlp, Norm, Rope, RopeScaling, RopeStyle, Rounding, StreamsP};
     use crate::runtime::reference::testing::fill;
 
     const D: usize = 16;
@@ -218,8 +275,118 @@ mod tests {
         p.put("main_norm", &[D], fill("ds.main_norm", D, 0.5, 1.5));
         p.put("final_norm", &[D], fill("ds.final_norm", D, 0.5, 1.5));
         let dspark = DSpark { block, noise: 23, targets: vec![5, 6], markov_rank: 4, confidence: true };
-        let h = MtpHead { blocks, norm_embed: Norm::rms(1e-6), norm_hidden: Norm::rms(1e-6), final_norm: Norm::rms(1e-6), dspark: Some(dspark) };
+        let h = MtpHead {
+            blocks,
+            norm_embed: Norm::rms(1e-6),
+            norm_hidden: Norm::rms(1e-6),
+            final_norm: Norm::rms(1e-6),
+            dspark: Some(dspark),
+            input: MtpInput::Joined,
+        };
         RefDSpark { head: h, hidden: D, p, blocks: layers, collapse: Collapse::LastPre }
+    }
+
+    /// A head of `n` streams of `D` (`MtpInput::Streams`) of `blocks` (each a gated-residual attention of 2 heads of 8 over 1 key head, no rotary),
+    /// its own front and final mixer of rank 3.
+    fn streams_head(n: usize, blocks: usize) -> RefMtp {
+        use crate::runtime::kinds::{AttnRounding, GatedStreamsP};
+        let w = n * D;
+        let a = Attn {
+            heads: 2,
+            kv_heads: 1,
+            head_dim: 8,
+            v_head_dim: 8,
+            window: None,
+            sinks: false,
+            rope: None,
+            q_norm: None,
+            k_norm: None,
+            v_norm: None,
+            gate: None,
+            softcap: None,
+            bias: false,
+            scale: 8f32.powf(-0.5),
+            k_eq_v: false,
+            indexer: None,
+            rounding: AttnRounding::F32,
+            kv_from: None,
+        };
+        let block = Block {
+            norm_in: Norm::rms_plus_one(1e-6),
+            body: Body::Mixer(Mixer::Attention(a)),
+            norm_out: None,
+            residual: Residual::GatedStreams(GatedStreamsP { streams: n, lowrank: 3 }),
+        };
+        let layers: Vec<RefLayer> = (0..blocks)
+            .map(|k| {
+                let mut p = Params::new();
+                for (role, shape) in
+                    [("q", [16, D]), ("k", [8, D]), ("v", [8, D]), ("o", [D, 16]), ("mix_down", [3, w]), ("mix_up", [w, 3]), ("inject", [n, w])]
+                {
+                    p.put(role, &shape, fill(&format!("st{k}.{role}"), shape[0] * shape[1], -0.4, 0.4));
+                }
+                p.put("norm_in", &[w], fill(&format!("st{k}.norm_in"), w, -0.5, 0.5));
+                RefLayer::new(block.clone(), D, p)
+            })
+            .collect();
+        let mut p = Params::new();
+        for (role, shape) in [("fc_embedding", [D, D]), ("fc_hidden", [D, D]), ("out_mix_down", [3, w]), ("out_mix_up", [w, 3])] {
+            p.put(role, &shape, fill(&format!("st.{role}"), shape[0] * shape[1], -0.4, 0.4));
+        }
+        for (role, k) in [("norm_embed", D), ("norm_hidden", w), ("final_norm", w)] {
+            p.put(role, &[k], fill(&format!("st.{role}"), k, -0.5, 0.5));
+        }
+        let pn = Norm::rms_plus_one(1e-6);
+        let head = MtpHead { blocks: vec![block; blocks], norm_embed: pn, norm_hidden: pn, final_norm: pn, dspark: None, input: MtpInput::Streams };
+        RefMtp::new(head, D, p, layers).unwrap()
+    }
+
+    /// The head of the model's streams by its parts: each stream fc_hidden of its part of the streams normed as one vector, plus fc_embedding of the
+    /// normed embedding (with no blocks, that is the head's streams), and its input to the model's head its own final mixer of them.
+    #[test]
+    fn a_streams_head_projects_each_stream_and_adds_the_embedding() {
+        let n = 3;
+        let (e, st) = (fill("st.e", D, -1.0, 1.0), fill("st.s", n * D, -1.0, 1.0));
+        let mut h = streams_head(n, 0);
+        let (x, y) = h.step_streams(0, 0, 5, &e, &st).unwrap();
+        let p = &h.p;
+        let pn = Norm::rms_plus_one(1e-6);
+        let o = matvec(p.vec("fc_embedding").unwrap(), D, &norm(&pn, &e, p.opt("norm_embed"), None));
+        let hn = norm(&pn, &st, p.opt("norm_hidden"), None);
+        let want: Vec<f32> =
+            (0..n).flat_map(|s| matvec(p.vec("fc_hidden").unwrap(), D, &hn[s * D..][..D]).into_iter().zip(o.clone()).map(|(a, b)| a + b)).collect();
+        assert_eq!(x, want);
+        let mixed = gated_mix(n, &pn, p.vec("final_norm").unwrap(), p.vec("out_mix_down").unwrap(), p.vec("out_mix_up").unwrap(), None, &x).unwrap().0;
+        assert_eq!((y.len(), y), (D, mixed));
+        // (the hidden norm is over all the streams at once: scaling one stream moves the others' share)
+        let mut st2 = st.clone();
+        st2[..D].iter_mut().for_each(|v| *v *= 3.0);
+        assert_ne!(h.step_streams(0, 1, 5, &e, &st2).unwrap().0[D..], x[D..]);
+    }
+
+    /// A row run at a position the head's cache holds takes its place and drops the later ones: after rows at 0, 1 and 2, the row at 1 again (other
+    /// streams) and then 2 give what a fresh head gives for 0, the new 1 and 2.
+    #[test]
+    fn a_row_run_again_takes_its_place_in_the_heads_cache() {
+        let n = 2;
+        let e: Vec<Vec<f32>> = (0..4).map(|i| fill(&format!("st.e{i}"), D, -1.0, 1.0)).collect();
+        let st: Vec<Vec<f32>> = (0..4).map(|i| fill(&format!("st.s{i}"), n * D, -1.0, 1.0)).collect();
+        let mut a = streams_head(n, 1);
+        for i in 0..3 {
+            a.step_streams(0, i, 1, &e[i as usize], &st[i as usize]).unwrap();
+        }
+        a.step_streams(0, 1, 1, &e[3], &st[3]).unwrap();
+        let again = a.step_streams(0, 2, 1, &e[2], &st[2]).unwrap();
+        let mut b = streams_head(n, 1);
+        b.step_streams(0, 0, 1, &e[0], &st[0]).unwrap();
+        b.step_streams(0, 1, 1, &e[3], &st[3]).unwrap();
+        assert_eq!(again, b.step_streams(0, 2, 1, &e[2], &st[2]).unwrap());
+        // (and the row at 1 matters to the row at 2)
+        let mut c = streams_head(n, 1);
+        for i in 0..3 {
+            c.step_streams(0, i, 1, &e[i as usize], &st[i as usize]).unwrap();
+        }
+        assert_ne!(again, c.step_streams(0, 2, 1, &e[2], &st[2]).unwrap());
     }
 
     fn ctx(t: usize) -> Vec<Vec<f32>> {

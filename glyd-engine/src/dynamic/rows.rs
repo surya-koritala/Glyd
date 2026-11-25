@@ -821,10 +821,8 @@ impl Dyn {
         unsafe {
             self.embed(tokens)?;
             self.pieces_pass(n, (pp, pp), last as usize)?;
-            if let (true, Some(dr)) = (last, &self.draft) {
-                // (the draft model's first input: the hidden state of the prompt's last position, as `prefill` hands it)
-                self.kern.copy_row(self.dev.stream, self.big.slot(super::Slot::H), n as i32 - 1, self.big.d.hidden as i32, dr.p.slot(super::Slot::Hid))?;
-            }
+            // (a draft's part of the chunk, as `prefill` hands it: a draft model's first input, a draft head's rows)
+            self.draft_after_chunk(self.n, tokens, last)?;
         }
         self.n += n;
         self.prof_pass(0, n)?;
