@@ -2860,7 +2860,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// #138: the models that ran one request at a time through a loop of their own (`server::work_gen`, gone) are the scheduler's steps of one slot. A drafted model's decode
+    /// #138: the models that ran one request at a time through a loop of their own are the scheduler's steps of one slot. A drafted model's decode
     /// step is a drafting round (`ModelStep::draft`), its tokens each sent and added as a step's would be; a request that asks for log-probabilities or a least length has plain
     /// steps (a round reads no row's whole logits); a request that draws gives the round its sampler. Every reply is the one it gives alone, ended by its length or a stop.
     #[test]
