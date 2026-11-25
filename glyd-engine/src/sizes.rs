@@ -582,6 +582,12 @@ pub(crate) mod tests {
             match crate::plan::sizing::size_dynamic(&args, name, &table, None, config, family, &devs, Some(m.ram_free), &|_| true) {
                 Ok(p) => {
                     assert!(p.gpu_total() <= p.free && p.spread.is_some(), "{name}");
+                    // (each stage's share of the computer's memory: one a stage, adding up to all of it)
+                    let sp = p.spread.as_ref().unwrap();
+                    let stages = if sp.across { 1 } else { sp.cuts.len() + 1 };
+                    assert_eq!(sp.host_per_stage.len(), stages, "{name}");
+                    assert_eq!(sp.host_per_stage.iter().sum::<u64>(), sp.host_bytes, "{name}: {:?} of {}", sp.host_per_stage, sp.host_bytes);
+                    assert!(sp.host_bytes == 0 || sp.host_per_stage.iter().filter(|&&b| b > 0).count() == stages.min(sp.places.len().max(1)), "{name}: {sp:?}");
                     planned += 1;
                 }
                 Err(r) => assert!(r.what.contains(name), "{name}: {}", r.what),
