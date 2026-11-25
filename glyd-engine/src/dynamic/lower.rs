@@ -667,24 +667,38 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
     })
 }
 
-/// The draft head of a model of Qwen3.8-Flash-Next's kinds (`kinds::MtpInput::Streams`, the description's first) as a draft part on the shared operations: its
-/// blocks lowered as the model's layers are (`qwen4x` on a model of the head's blocks: the gated residuals around the sparse attention and the experts, the head's
-/// own final mixer `HeadMix::Gated`), after `Op::MtpIn`, which makes the head's streams from the model's last streams (Hid) and the next token's embedding (the
-/// model's X). The model's embedding and LM head are named (the executor shares the model's, never loading them twice: `DraftSpec`); its rings are its own,
-/// from 0 (the executor puts them after the model's).
-pub fn qwen4x_head(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> {
-    use crate::runtime::kinds::{MtpInput, NormWeight};
-    let what = "Qwen3.8-Flash-Next's draft head";
+/// A model's lowering of its blocks (its family's: `qwen4x`, or `latent_moe` of the whole model): what a draft head's blocks are lowered by.
+pub type Blocks = fn(&Described, Vec<i64>, usize) -> Result<ModelDesc>;
+
+/// The description's first draft head (`kinds::MtpHead`) as a draft part on the shared operations, for every family that has one: its blocks lowered as the
+/// model's layers are (`blocks`, the model's lowering, on a model of the head's blocks and final norm), after `Op::MtpIn`, the head's input from the model's
+/// state its row continues (Hid) and the next token's embedding (the model's X), by the head's form (`MtpFront`):
+/// - `MtpInput::Streams` (Qwen3.8-Flash-Next's): the head's streams from the model's last streams, its own final mixer (the model's collapse with the head's
+///   roles, `HeadMix::Gated`) into the model's LM head; its norms (1 + w).
+/// - `MtpInput::Joined` (DeepSeek-V3's, GLM-5.3's): its residual from eh_proj of the two normed rows joined; the first block's norm then reads it as the
+///   model's first layer's reads the embedding; its final norm's output the LM head's input and the next draft's state; its norms plain, rounded as
+///   transformers' bf16 RMSNorm (`Rounding::Twice`).
+///
+/// The model's embedding and LM head are named (the executor shares the model's, never loading them twice: `DraftSpec`); its rings are its own, from 0 (the
+/// executor puts them after the model's).
+pub fn draft_head(d: &Described, eos: Vec<i64>, max_pos: usize, blocks: Blocks) -> Result<ModelDesc> {
+    use super::MtpFront;
+    use crate::runtime::kinds::{MtpInput, NormKind, NormWeight, Rounding};
+    let what = "a draft head";
     let (Some(h), Some((roles, own))) = (d.desc.mtp.first(), d.mtp.first()) else {
         return err(format!("{what}: the description names no draft head"));
     };
-    if h.input != MtpInput::Streams || h.dspark.is_some() {
-        return err(format!("{what}: a head of {:?}, where the kernels take the model's streams as its input", h.input));
+    if h.dspark.is_some() {
+        return err(format!("{what}: DSpark's form, whose blocks draft a block of tokens in one pass, is not this operation's"));
     }
     let eps = d.desc.final_norm.eps;
-    for (n, at) in [(&h.norm_embed, "its embedding's norm"), (&h.norm_hidden, "its streams' norm")] {
-        if n.weight != NormWeight::PlusOne || n.eps != eps {
-            return err(format!("{what}: {at} is {n:?}, where the kernels take a (1 + w) RMS norm, eps {eps}"));
+    let (weight, rounding) = match h.input {
+        MtpInput::Streams => (NormWeight::PlusOne, h.norm_embed.rounding),
+        MtpInput::Joined => (NormWeight::Plain, Rounding::Twice),
+    };
+    for (n, at) in [(&h.norm_embed, "its embedding's norm"), (&h.norm_hidden, "its state's norm")] {
+        if n.kind != NormKind::Rms || n.weight != weight || n.rounding != rounding || n.eps != eps {
+            return err(format!("{what}: {at} is {n:?}, where the kernels take an RMS norm of a {weight:?} weight rounded {rounding:?}, eps {eps}"));
         }
     }
     let one = |r: &str| -> Result<String> {
@@ -693,29 +707,49 @@ pub fn qwen4x_head(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<Model
             other => err(format!("{what}: the role {r} is {other:?}, where one tensor is")),
         }
     };
-    // (the head as a model of its blocks: its final mixer the model's collapse with its own roles)
+    // (the head as a model of its blocks and its final norm; a head of streams' final mixer the model's collapse with its own roles)
     let mut hd = d.clone();
     hd.desc.blocks = h.blocks.clone();
     hd.desc.final_norm = h.final_norm;
     hd.desc.mtp = Vec::new();
     hd.blocks = roles.clone();
     hd.final_norm = one("final_norm")?;
-    hd.extra = vec![("out_mix_down".into(), Source::Tensor(one("out_mix_down")?)), ("out_mix_up".into(), Source::Tensor(one("out_mix_up")?))];
+    if h.input == MtpInput::Streams {
+        hd.extra = vec![("out_mix_down".into(), Source::Tensor(one("out_mix_down")?)), ("out_mix_up".into(), Source::Tensor(one("out_mix_up")?))];
+    }
     hd.mtp = Vec::new();
-    let mut m = qwen4x(&hd, eos, max_pos).map_err(|e| e.context(what))?;
+    let mut m = blocks(&hd, eos, max_pos).map_err(|e| e.context(what))?;
     let shape = |n: &str| d.shapes.get(n).cloned();
     let (ne, nh) = (m.small.len(), m.small.len() + 1);
     m.small.extend([one("norm_embed")?, one("norm_hidden")?]);
-    let (fe, fh) = (m.mats.len(), m.mats.len() + 1);
-    m.mats.extend([item(vec![one("fc_embedding")?], &shape)?, item(vec![one("fc_hidden")?], &shape)?]);
-    for (k, cols) in [(fe, m.hidden), (fh, m.hidden)] {
-        if (m.mats[k].rows, m.mats[k].cols) != (m.hidden, cols) {
-            return err(format!("{what}: {} of {}x{}, where the head's front is {}x{cols}", m.mats[k].members[0], m.mats[k].rows, m.mats[k].cols, m.hidden));
+    let k0 = m.mats.len();
+    let fronts: Vec<(&str, usize)> = match h.input {
+        MtpInput::Streams => vec![("fc_embedding", m.hidden), ("fc_hidden", m.hidden)],
+        MtpInput::Joined => vec![("eh_proj", 2 * m.hidden)],
+    };
+    for (k, &(r, cols)) in fronts.iter().enumerate() {
+        m.mats.push(item(vec![one(r)?], &shape)?);
+        let it = &m.mats[k0 + k];
+        if (it.rows, it.cols) != (m.hidden, cols) {
+            return err(format!("{what}: {} of {}x{}, where the head's front is {}x{cols}", it.members[0], it.rows, it.cols, m.hidden));
         }
     }
-    m.first = Op::MtpIn { norm_embed: ne, embed: fe, norm_hidden: nh, hidden: fh };
-    m.widths[Slot::Hid as usize] = m.width(Slot::S);
-    m.family = "Qwen3.8-Flash-Next draft head";
+    let front = match h.input {
+        MtpInput::Streams => {
+            m.widths[Slot::Hid as usize] = m.width(Slot::S);
+            MtpFront::Streams { embed: k0, hidden: k0 + 1 }
+        }
+        MtpInput::Joined => {
+            // (the head's input is its residual, as the embedding is the model's: the lowered first operation, the first block's norm of it, runs after it)
+            let first = std::mem::replace(&mut m.first, Op::Nop);
+            if !matches!(first, Op::Nop) {
+                m.layers.first_mut().ok_or_else(|| Error(format!("{what}: no blocks")))?.insert(0, first);
+            }
+            (m.widths[Slot::Hid as usize], m.widths[Slot::In as usize]) = (m.hidden, 2 * m.hidden);
+            MtpFront::Joined { eh: k0 }
+        }
+    };
+    m.first = Op::MtpIn { norm_embed: ne, norm_hidden: nh, front };
     Ok(m)
 }
 
@@ -2019,6 +2053,55 @@ mod tests {
         assert!(latent_moe(&kinds, vec![1], 4096, &Stage { layers: (0, 2), first: true, last: false }).is_ok());
         let e = latent_moe(&kinds, vec![1], 4096, &Stage { layers: (2, 4), first: false, last: true }).unwrap_err().msg;
         assert!(e.contains("another stage"), "{e}");
+    }
+
+    /// GLM-5.3's draft head (its MTP layer, DeepSeek-V3's joined form) lowers by the model's own lowering (`latent_moe`) to a draft part: `Op::MtpIn`'s joined
+    /// front (the two norms and eh_proj [hidden, 2 hidden] of the layer after the model's), then the head's layer as the model's (its first norm, the latent
+    /// attention with an indexer of its own, the experts, the head's final norm), two rings of its own (its latents', its indexer's keys) that move after the
+    /// model's, the model's embedding and LM head named; beside the model it fits. The release's head is the same operations at its shapes.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_glm_draft_head_lowers_to_a_draft_part() {
+        use super::super::{head, MtpFront, Stage};
+        let fixture = |f: &str| -> serde_json::Value {
+            serde_json::from_str(&std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(f)).unwrap()).unwrap()
+        };
+        let mut toy = fixture("glm_moe_dsa_toy_config.json");
+        toy["num_nextn_predict_layers"] = 1.into();
+        for (f, c, at) in [("toy", toy, 4), ("release", fixture("glm_moe_dsa_config.json"), 78)] {
+            let d = crate::runtime::describe::describe(&c).unwrap();
+            let layers = d.desc.blocks.len() / 2;
+            let big = latent_moe(&d, vec![1], 4096, &Stage::whole(layers)).unwrap();
+            let whole = |d: &Described, eos: Vec<i64>, mp: usize| latent_moe(d, eos, mp, &Stage::whole(d.desc.blocks.len() / 2));
+            let mut h = draft_head(&d, vec![1], 4096, whole).unwrap_or_else(|e| panic!("{f}: {}", e.msg));
+            let Op::MtpIn { norm_embed, norm_hidden, front: MtpFront::Joined { eh } } = h.first else { panic!("{f}: {:?}", h.first) };
+            let p = format!("model.layers.{at}");
+            assert_eq!(
+                (h.small[norm_embed].as_str(), h.small[norm_hidden].as_str(), h.mats[eh].members[0].as_str()),
+                (format!("{p}.enorm.weight").as_str(), format!("{p}.hnorm.weight").as_str(), format!("{p}.eh_proj.weight").as_str())
+            );
+            assert_eq!((h.mats[eh].rows, h.mats[eh].cols, h.width(Slot::Hid), h.width(Slot::In)), (h.hidden, 2 * h.hidden, h.hidden, 2 * h.hidden), "{f}");
+            let names: Vec<String> = h.layers[0].iter().map(super::super::rows::op_name).collect();
+            assert_eq!(names, ["RmsNorm", "Mla", "Add", "RmsNorm", "Moe", "Add", "RmsNorm"], "{f}");
+            let Some(Op::RmsNorm { w, .. }) = h.layers[0].last() else { panic!() };
+            assert_eq!(h.small[*w], format!("{p}.shared_head.norm.weight"), "{f}");
+            assert!(matches!(&h.layers[0][1], Op::Mla(a) if a.indexer.is_some() && a.lent.is_none()), "{f}");
+            assert!(h
+                .mats
+                .iter()
+                .flat_map(|it| &it.members)
+                .all(|n| n.starts_with(&p) || n == &big.mats[big.embed].members[0] || n == &big.mats[big.lm].members[0]));
+            assert_eq!(
+                (h.mats[h.embed].members.clone(), h.mats[h.lm].members.clone()),
+                (big.mats[big.embed].members.clone(), big.mats[big.lm].members.clone())
+            );
+            head::fits(&big, &h).unwrap();
+            head::shift_rings(&mut h, big.rings.len()).unwrap();
+            let rings: Vec<usize> = h.layers[0].iter().flat_map(|op| op.rings()).collect();
+            assert_eq!(rings, [big.rings.len(), big.rings.len() + 1], "{f}");
+            let Op::Mla(a) = &h.layers[0][1] else { unreachable!() };
+            assert_eq!(a.indexer.as_ref().map(|x| x.pick.keys), Some(super::super::IdxKeys::Ring(big.rings.len() + 1)), "{f}");
+        }
     }
 
     /// The executor's GLM head is the product's output in bf16, as the release's lm_head gives the logits: a description whose head rounds otherwise is

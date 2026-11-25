@@ -161,14 +161,12 @@ pub enum Op {
     DraftIn {
         scale: f32,
     },
-    /// A draft head's input from the model's last streams (`kinds::MtpInput::Streams`): the next token's embedding row (the big model's X, as `embed` left it)
-    /// normed (1 + w, `norm_embed`) into H and its product by `embed` into O; the streams the row continues (Hid: n of the hidden width) normed as one vector
-    /// (1 + w, `norm_hidden`) into Hq and each stream's part multiplied by `hidden` into S; then O added to each stream of S.
+    /// A draft head's input (`kinds::MtpHead`, `lower::draft_head`): the next token's embedding row (the big model's X, as `embed` left it) normed by
+    /// `norm_embed`, the model's state the row continues (Hid) normed by `norm_hidden`, then the head's front (`MtpFront`).
     MtpIn {
         norm_embed: usize,
-        embed: usize,
         norm_hidden: usize,
-        hidden: usize,
+        front: MtpFront,
     },
     /// The RMS norm kind (`Norm` with `NormKind::Rms`): y = bf16(rmsnorm(x) w) with its `eps`, the weight `w` where `weight` says (`NormW`; a weightless norm's is ones).
     RmsNorm {
@@ -472,6 +470,17 @@ pub enum NormW {
     Rounded,
 }
 
+/// A draft head's front (`Op::MtpIn`), by the head's form (`kinds::MtpInput`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MtpFront {
+    /// `MtpInput::Streams`: the embedding normed (1 + w) into H and its product by `embed` into O; the model's last streams (Hid: n of the hidden width)
+    /// normed as one vector (1 + w) into Hq and each stream's part multiplied by `hidden` into S; then O added to each stream of S, the head's streams.
+    Streams { embed: usize, hidden: usize },
+    /// `MtpInput::Joined`: the embedding and the model's final normed hidden state (Hid) each normed (plain weight, rounded as `NormW::Rounded`) into
+    /// the halves of In's row [2 hidden], the embedding's first; eh_proj (`eh`) of it into X, the head's residual.
+    Joined { eh: usize },
+}
+
 /// A mixture of experts (the part's block `block`): the router reads H, the experts and the shared expert `x` (H; the release's FP8-rounded H, Hq; a latent
 /// MoE's normed latent, Xc), their sum into `y` (O, or the latent's M). The kind's variants: hash routing by the token (`Router::hash`: the table, small
 /// int64 [vocab, k]); the router's logits times `logit_scale` (`Router::logit_scale`; its weights fp32 then); each expert's output normed before it is
@@ -712,7 +721,8 @@ impl Op {
     fn mats(&self) -> Vec<usize> {
         match *self {
             Op::Linear { w, .. } | Op::LinearAt { w, .. } | Op::GateUpSilu { w, .. } | Op::OGroupLora { w, in_f8: false, .. } => vec![w],
-            Op::MtpIn { embed, hidden, .. } => vec![embed, hidden],
+            Op::MtpIn { front: MtpFront::Streams { embed, hidden }, .. } => vec![embed, hidden],
+            Op::MtpIn { front: MtpFront::Joined { eh }, .. } => vec![eh],
             Op::StreamsPre { mix: StreamsMix::Gated { down, up, inject }, .. } => vec![down, up, inject],
             Op::StreamsHead { mix: HeadMix::Gated { down, up }, .. } => vec![down, up],
             Op::NgramRows(x) => vec![x.table],
@@ -813,7 +823,7 @@ pub enum ChoiceFrom {
 pub type RowRoute = std::rc::Rc<Choice>;
 
 /// A draft model to give `Dyn::new`: its directory (bf16, packed here), its description, and its tokens a round; `experts` reads its blocks of experts
-/// (`Op::Moe`'s) where it has any. A draft head of the model itself (its description begins with `Op::MtpIn`: the model's MTP layers, `lower::qwen4x_head`)
+/// (`Op::Moe`'s) where it has any. A draft head of the model itself (its description begins with `Op::MtpIn`: the model's MTP layers, `lower::draft_head`)
 /// is packed at the model's layout, its keys and values in rings after the model's, its LM head and embedding the model's own (named, not loaded twice).
 pub struct DraftSpec<'a> {
     pub dir: &'a Path,
@@ -1526,6 +1536,9 @@ fn unverifiable_op(d: &ModelDesc) -> Option<&Op> {
         // rows past the kept ones wrote is written again before a row reads it)
         Op::Attn(_) | Op::IdxMean { .. } => false,
         Op::IdxPick(x) => x.weighted || !matches!(x.keys, IdxKeys::Pools(_)),
+        // (the latent attention: each row's latents and indexer key written first, then its own query over the positions it sees, its picks its own or the ones
+        // the layer before made for it in the pass; a verified draft's rows cut their tokens as a step's (`mla::FEW`))
+        Op::Mla(_) => false,
         // (the plain experts (the router's input, its own scale, no norm of the experts' outputs, no weighed activations, no hash): each row as a step where
         // every expert of the block is on the GPU, which `verify_rows` asks of the blocks themselves; the other forms run other kernels, not checked so)
         Op::Moe(m) => m.expert_norm.is_some() || m.weigh_act || m.hash.is_some() || m.fp8 || m.x != Slot::H || m.logit_scale != 1.0,
@@ -2098,9 +2111,9 @@ impl Dyn {
             None => None,
         };
         let bytes = big.bytes() + draft.as_ref().map_or(0, |x| x.p.bytes());
-        // (a draft head's input adds the embedding's product to each stream: weights of one, fp32 [chunk, streams])
+        // (a draft head of the model's streams adds the embedding's product to each stream: weights of one, fp32 [chunk, streams])
         let head_ones = match &draft {
-            Some(x) if x.head.is_some() => {
+            Some(x) if matches!(x.p.d.first, Op::MtpIn { front: MtpFront::Streams { .. }, .. }) => {
                 let w = ch * x.p.d.streams().max(1);
                 let b = Buf::new(w * 4)?;
                 b.write(0, &vec![1f32; w])?;
@@ -2608,7 +2621,7 @@ impl Dyn {
                 let bh = self.big.d.hidden as i32;
                 launch!(self.kg.draft_in, [((2 * bh) as u32).div_ceil(256).min(64), 1, 1], [256, 1, 1], s; self.big.slot(Slot::X), scale, p.slot(Slot::Hid), p.slot(Slot::In), bh)
             }
-            Op::MtpIn { norm_embed, embed, norm_hidden, hidden } => {
+            Op::MtpIn { norm_embed, norm_hidden, front: MtpFront::Streams { embed, hidden } } => {
                 let (k, d, hc) = (self.kqx()?, p.d.hidden, p.d.streams());
                 let ones = self.head_ones.as_ref().ok_or_else(|| Error("a draft head's input in an engine without its weights of one".into()))?;
                 self.k35.rmsnorm(s, self.big.slot(Slot::X), p.small[norm_embed].ptr, p.slot(Slot::H), nu, hid, eps)?;
@@ -2616,6 +2629,14 @@ impl Dyn {
                 k.norm4(s, p.slot(Slot::Hid), p.small[norm_hidden].ptr, p.slot(Slot::Hq), n, d, eps, true, hc)?;
                 self.lin(&p.mats[hidden], p.slot(Slot::Hq), hc * n, p.slot(Slot::S))?;
                 k.hc_post(s, p.slot(Slot::S), p.slot(Slot::O), ones.ptr, n, d, hc)?;
+                self.mark("draft head: input")
+            }
+            Op::MtpIn { norm_embed, norm_hidden, front: MtpFront::Joined { eh } } => {
+                // (the two normed rows side by side in In, rows 2 hidden apart: the embedding's, then the model's state's)
+                let (cat, w) = (p.slot(Slot::In), 2 * hid);
+                launch!(self.km.rms2_512, [nu, 1, 1], [512, 1, 1], s; self.big.slot(Slot::X), hid, p.small[norm_embed].ptr, cat, w, hid, eps)?;
+                launch!(self.km.rms2_512, [nu, 1, 1], [512, 1, 1], s; p.slot(Slot::Hid), hid, p.small[norm_hidden].ptr, cat + (hid * 2) as u64, w, hid, eps)?;
+                self.lin(&p.mats[eh], cat, n, p.slot(Slot::X))?;
                 self.mark("draft head: input")
             }
             Op::RmsNorm { x, w, y, weight, eps } => {

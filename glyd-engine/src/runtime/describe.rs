@@ -1493,7 +1493,12 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
     let hc = streams.map(|s| s.streams).unwrap_or(0);
     let hc_shapes = [("hc_fn", vec![(2 + hc) * hc, hc * d]), ("hc_base", vec![(2 + hc) * hc]), ("hc_scale", vec![3])];
     let (mut blocks, mut roles) = (Vec::new(), Vec::new());
-    for (l, &is_lin) in types.iter().enumerate() {
+    // (the draft layers after the model's, GLM-5.3's: each a draft head of DeepSeek-V3's form (`MtpInput::Joined`), its block a latent attention with an
+    // indexer of its own, then the experts, on a plain residual; GLM-5.3-Flash's sits in a model of streams and is left unread)
+    let drafts = if streams.is_none() { mtp_layers } else { 0 };
+    let (mut head_blocks, mut head_roles) = (Vec::new(), Vec::new());
+    for (l, is_lin) in types.iter().copied().chain(std::iter::repeat_n(false, drafts)).enumerate() {
+        let (blocks, roles) = if l < layers { (&mut blocks, &mut roles) } else { (&mut head_blocks, &mut head_roles) };
         let p = names::HF.layer(prefix, l);
         let residual = |table: names::Roles, r: &mut Vec<(String, Source)>| -> Residual {
             match streams {
@@ -1599,6 +1604,15 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
         blocks.push(Block { norm_in: n, body, norm_out: None, residual: res });
         roles.push(r);
     }
+    // (each draft head: its layer's two blocks, its own roles beside them (vLLM deepseek_mtp.py, SGLang deepseek_nextn.py: enorm, hnorm, eh_proj,
+    // shared_head.norm; the model's embedding and LM head))
+    let (mut mtp, mut mtp_roles) = (Vec::new(), Vec::new());
+    for (j, (bs, rs)) in head_blocks.chunks(2).zip(head_roles.chunks(2)).enumerate() {
+        let own = names::roles(part::MTP_LAYER, &names::HF.layer(prefix, layers + j), 0, all);
+        shape_roles(&mut shapes, &own, &[("eh_proj", vec![d, 2 * d]), ("norm_embed", vec![d]), ("norm_hidden", vec![d]), ("final_norm", vec![d])]);
+        mtp.push(MtpHead { blocks: bs.to_vec(), norm_embed: n, norm_hidden: n, final_norm: n, dspark: None, input: MtpInput::Joined });
+        mtp_roles.push((rs.to_vec(), own));
+    }
     let desc = ModelDesc {
         hidden: d,
         vocab,
@@ -1607,7 +1621,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
         final_norm: n,
         // (the logits in bf16: the release's lm_head is a bf16 product, its output the logits (modeling_glm5_next.py, modeling_glm_moe_dsa.py))
         head: Head { tied, softcap: None, scale: 1.0, collapse: if streams.is_some() { Collapse::Mean } else { Collapse::None }, rounding: Rounding::Once },
-        mtp: Vec::new(),
+        mtp,
         vision: None,
         rope,
     };
@@ -1619,8 +1633,9 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
         shapes.insert(h.clone(), vec![vocab, d]);
     }
     out.shapes = shapes;
-    // (the draft layers follow the model's, under the same names)
-    out.unread.extend((0..mtp_layers).map(|i| format!("{}.", names::HF.layer(prefix, layers + i))));
+    // (the draft layers follow the model's, under the same names: the ones described as heads are read)
+    out.unread.extend((drafts..mtp_layers).map(|i| format!("{}.", names::HF.layer(prefix, layers + i))));
+    out.mtp = mtp_roles;
     let _ = fp8.map(|f| f.block);
     Ok(out)
 }

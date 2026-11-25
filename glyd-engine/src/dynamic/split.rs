@@ -556,11 +556,13 @@ enum Lowering {
     GatedStreams,
     /// The gated delta rule with plain residuals, the feed-forwards dense or experts (`lower::qwen35`; the Qwen3.5 layout's).
     GatedDelta,
+    /// The latent attention with plain residuals, the feed-forwards dense or experts (`lower::latent_moe`; GLM-5.3's).
+    LatentPlain,
 }
 
 /// The lowering of the description `d`, by the layer kinds it holds, in this order: a compressed attention; Mamba-2 with plain residuals; the Kimi delta attention
-/// with residual streams, or with the blocks' depth mix; gated residuals; the gated residuals' streams; the gated delta rule with plain residuals. A description of
-/// other kinds is refused in words: no loader of the dynamic route lowers them.
+/// with residual streams, or with the blocks' depth mix; gated residuals; the gated residuals' streams; the gated delta rule with plain residuals; the latent
+/// attention with plain residuals. A description of other kinds is refused in words: no loader of the dynamic route lowers them.
 fn lowering(d: &crate::runtime::describe::Described) -> Result<Lowering> {
     use crate::runtime::kinds::{Body, LinearKind, Mixer, Residual};
     let blocks = &d.desc.blocks;
@@ -582,10 +584,13 @@ fn lowering(d: &crate::runtime::describe::Described) -> Result<Lowering> {
         Lowering::GatedStreams
     } else if linear(LinearKind::GatedDeltaNet) && plain {
         Lowering::GatedDelta
+    } else if mixer(&|m| matches!(m, Mixer::Mla(_))) && plain {
+        Lowering::LatentPlain
     } else {
         return err(
             "no loader of the dynamic route lowers its layer kinds (a compressed attention; Mamba-2 with plain residuals; the Kimi delta attention with residual \
-             streams or the blocks' depth mix; gated residuals; the gated residuals' streams; the gated delta rule with plain residuals)",
+             streams or the blocks' depth mix; gated residuals; the gated residuals' streams; the gated delta rule with plain residuals; the latent attention \
+             with plain residuals)",
         );
     })
 }
@@ -603,6 +608,7 @@ pub fn loader(d: &crate::runtime::describe::Described) -> Result<Loader> {
         Lowering::GatedResidual => Loader { ends: |dir| crate::muse::ConfigMuse::load(dir).map(|c| (c.layers, c.eos)), stage: super::muse::load_stage_hb },
         Lowering::GatedStreams => Loader { ends: |dir| crate::qwen4x::ConfigQx::load(dir).map(|c| (c.layers, c.eos)), stage: super::qwen4x::stage },
         Lowering::GatedDelta => Loader { ends: |dir| crate::qwen35::Config35::load(dir).map(|c| (c.layers, c.eos)), stage: super::qwen35::stage },
+        Lowering::LatentPlain => Loader { ends: super::glm::plain_ends, stage: super::glm::stage_plain },
     })
 }
 

@@ -2,7 +2,7 @@
 //! (`lower::qwen4x`) and loaded here: the matrices packed at the level asked (penguin's lossless packs where none is), the ones the library does not pack and the table of n-grams
 //! held as saved (bf16), the small tensors as saved but A_log in fp32 (the delta rule reads it so). The experts either all on the GPU at the level asked (`load`:
 //! `moe_qwen4x::QxMoe`, handed over as a `ResidentMoe`), or from a pack of codebook rows in the shared expert store (`load_cached`: the codebook block,
-//! `QxMoeCb`, the misses on the host). The MTP layer is a draft head of the model (`load_drafting`: `lower::qwen4x_head`, src/dynamic/head.rs). Not on the
+//! `QxMoeCb`, the misses on the host). The MTP layer is a draft head of the model (`load_drafting`: `lower::draft_head`, src/dynamic/head.rs). Not on the
 //! executor yet: the vision tower, and the table of n-grams read from the disk in place of the GPU (the family's own engine did both; R3d deleted it).
 
 use super::{Dyn, ModelDesc, Op, Opts, ResidentMoe, Stage};
@@ -58,14 +58,15 @@ pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store:
     load(dir, o)
 }
 
-/// The draft head of the model in `dir` (its MTP layers: `lower::qwen4x_head`) for sequences of up to `ctx` positions; None where its config has none.
+/// The draft head of the model in `dir` (its MTP layers: `lower::draft_head` of the family's lowering) for sequences of up to `ctx` positions; None where its
+/// config has none.
 pub fn head_lowered(dir: &Path, ctx: usize) -> Result<Option<ModelDesc>> {
     let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
     if kinds.desc.mtp.is_empty() {
         return Ok(None);
     }
     let c = crate::qwen4x::ConfigQx::agrees(crate::qwen4x::ConfigQx::load(dir)?, &kinds).map_err(|e| e.context(&label))?;
-    super::lower::qwen4x_head(&kinds, c.eos.clone(), ctx.min(c.max_pos)).map(Some).map_err(|e| e.context(&label))
+    super::lower::draft_head(&kinds, c.eos.clone(), ctx.min(c.max_pos), super::lower::qwen4x).map(Some).map_err(|e| e.context(&label))
 }
 
 /// `load` with the experts at `level` (lossless, or a lossy level's codes: six, five or four bits).
@@ -692,8 +693,8 @@ mod tests {
         let c: serde_json::Value = serde_json::from_str(m["config"].as_str().unwrap()).unwrap();
         let d = describe(&c).unwrap();
         let big = super::super::lower::qwen4x(&d, vec![2000], 1100).unwrap();
-        let mut h = super::super::lower::qwen4x_head(&d, vec![2000], 1100).unwrap();
-        let Op::MtpIn { norm_embed, embed, norm_hidden, hidden } = h.first else { panic!("{:?}", h.first) };
+        let mut h = super::super::lower::draft_head(&d, vec![2000], 1100, super::super::lower::qwen4x).unwrap();
+        let Op::MtpIn { norm_embed, norm_hidden, front: super::super::MtpFront::Streams { embed, hidden } } = h.first else { panic!("{:?}", h.first) };
         assert_eq!((h.small[norm_embed].as_str(), h.small[norm_hidden].as_str()), ("mtp.pre_fc_norm_embedding.weight", "mtp.pre_fc_norm_hidden.weight"));
         assert_eq!((h.mats[embed].members[0].as_str(), h.mats[hidden].members[0].as_str()), ("mtp.fc_embedding.weight", "mtp.fc_hidden.weight"));
         assert_eq!((h.layers.len(), h.rings.len(), h.width(Slot::Hid), h.width(Slot::S)), (1, 3, 1024, 1024));
@@ -718,7 +719,10 @@ mod tests {
         // (a model without the MTP layer has no head)
         let mut plain = c.clone();
         plain["text_config"].as_object_mut().unwrap().remove("mtp_num_hidden_layers");
-        assert!(super::super::lower::qwen4x_head(&describe(&plain).unwrap(), vec![2000], 1100).unwrap_err().msg.contains("names no draft head"));
+        assert!(super::super::lower::draft_head(&describe(&plain).unwrap(), vec![2000], 1100, super::super::lower::qwen4x)
+            .unwrap_err()
+            .msg
+            .contains("names no draft head"));
     }
 
     /// A model whose experts the codebook kernels do not take (the tiny one: 128 neurons over 256) is refused by the expert cache's loader before it reads

@@ -89,6 +89,15 @@ pub fn of_layers(d: &Described, layers: (usize, usize)) -> impl Iterator<Item = 
     })
 }
 
+/// The blocks of experts of draft head `i` of `d` (`Described::mtp`), in order: each one's block number in the head, its kind and its roles.
+pub fn of_head(d: &Described, i: usize) -> impl Iterator<Item = (usize, &kinds::Moe, &[(String, Source)])> {
+    let (blocks, roles) = (d.desc.mtp.get(i).map_or(&[][..], |h| &h.blocks[..]), d.mtp.get(i).map_or(&[][..], |r| &r.0[..]));
+    blocks.iter().zip(roles).enumerate().filter_map(|(b, (blk, r))| match &blk.body {
+        Body::Ffn(Ffn::Moe(m)) => Some((b, m, r.as_slice())),
+        _ => None,
+    })
+}
+
 /// How a stage holds its blocks of experts beyond their level: a hummingbird directory's (src/hb_pack.rs; None: the release's), the expert cache (the stage's
 /// caching and its store: src/hbg_store.rs, src/tiering.rs), on the GPU `ordinal`; FP8 matrices as released where `f8` is given (`F8`). A layer of a stage
 /// so held is across the thread's group of GPUs where it has one (src/dynamic/tp.rs): this GPU's rows of each expert's.
