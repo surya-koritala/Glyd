@@ -157,9 +157,9 @@ impl super::Dyn {
     }
 
     /// Whether a pass of `n` rows runs in pieces where pieces are on: not where its products take cuBLAS (more than 64 rows, the decoded way, with cuBLAS found: the A10's
-    /// and A100's prompt passes). Measured on the A10 (gemma-4-12B at wren, 1k x8, full passes of 512 rows in pieces against eager): the GPU's time a pass 0.7% more
-    /// (208.4 against 207.0 ms, 212.7 against 211.1 with decode rows), the host's time to queue one 18 against 26 ms, which a pass of 200 ms of the GPU's does not
-    /// wait on. Whether cuBLAS takes its eager algorithm in a capture is not measured, so a replay's bits are not shown to be the eager pass's there (usercheck's random
+    /// and A100's prompt passes). Measured on an A10, 2026-11-23, in a run whose record was not kept (gemma-4-12B at wren, 1k x8, full passes of 512 rows in pieces
+    /// against eager): the GPU's time a pass 0.7% more (208.4 against 207.0 ms, 212.7 against 211.1 with decode rows), the host's time to queue one 18 against
+    /// 26 ms, which a pass of 200 ms of the GPU's does not wait on. Whether cuBLAS takes its eager algorithm in a capture is not measured, so a replay's bits are not shown to be the eager pass's there (usercheck's random
     /// models have passes of 64 rows at most, which never take cuBLAS). GLYD_ENGINE_PIECES=1 (a development build's) takes them anyway, to measure.
     fn pieces_take(&self, n: usize) -> bool {
         takes(self.blas.is_some(), n, crate::tune!("GLYD_ENGINE_PIECES").is_some_and(|v| v == "1"))

@@ -52,38 +52,11 @@ pub fn load(src: Tensors, role: &str, s: &Source) -> Result<(Vec<usize>, Vec<f32
     Ok((shape, data))
 }
 
-/// A checkpoint's tensor as f32: bf16 and f32 as stored; a hash table's expert ids (int64); and in a development build DeepSeek-V4's FP8
-/// matrices and FP4 experts decoded with their scales, and an MXFP4 matrix (`.weight_packed`, `.weight_scale`: Kimi-K3's experts) decoded
-/// where its `.weight` is asked for. Another type: none.
+/// A checkpoint's tensor as f32, by the type it is stored in (`formats::tensor`): bf16 and f32 as stored, a hash table's expert ids (int64), and a
+/// quantized matrix decoded with the scales stored beside it (FP8 a block a power-of-two scale, FP4 a run of 32 one, as a release names them or as
+/// compressed-tensors packs them), whatever the model is called. Another type: none.
 pub fn checkpoint_tensor(ck: &glyd_gpu::safetensors::Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
-    let Some((_, t)) = ck.get(name) else { return mxfp4(ck, name) };
-    let shape: Vec<usize> = t.shape.iter().map(|&d| d as usize).collect();
-    let v = match t.dtype.as_str() {
-        "BF16" => ck.read(name).ok()?.chunks_exact(2).map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)).collect(),
-        "F32" => ck.read(name).ok()?.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect(),
-        "I64" => ck.read(name).ok()?.chunks_exact(8).map(|c| i64::from_le_bytes(c.try_into().unwrap_or_default()) as f32).collect(),
-        #[cfg(feature = "dev")]
-        "F8_E4M3" | "I8" => {
-            let (sh, v) = crate::dsv4_ref::tensor_of(ck, name).ok()?;
-            return Some((sh.iter().map(|&d| d as usize).collect(), v));
-        }
-        _ => return None,
-    };
-    Some((shape, v))
-}
-
-#[cfg(feature = "dev")]
-fn mxfp4(ck: &glyd_gpu::safetensors::Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
-    let base = name.strip_suffix(".weight")?;
-    let (_, t) = ck.get(&format!("{base}.weight_packed"))?;
-    let (rows, cols) = (t.shape[0] as usize, t.shape[1] as usize * 2);
-    let w = crate::kimi_ref::mxfp4(&ck.read(&format!("{base}.weight_packed")).ok()?, &ck.read(&format!("{base}.weight_scale")).ok()?, rows, cols).ok()?;
-    Some((vec![rows, cols], w))
-}
-
-#[cfg(not(feature = "dev"))]
-fn mxfp4(_: &glyd_gpu::safetensors::Checkpoint, _: &str) -> Option<(Vec<usize>, Vec<f32>)> {
-    None
+    crate::formats::tensor(ck, name)
 }
 
 /// Kimi-K3's depth mix for one token: the completed groups' sums (the sources) and the open group's partial sum.

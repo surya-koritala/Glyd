@@ -831,13 +831,35 @@ mod tests {
         );
     }
 
-    /// The scores' factor the kind gives is the one each family's own block took: Kimi-K3's 1 / sqrt(nope + rope) and GLM-5.3's nope^-0.5 at their releases' and
-    /// their random models' widths.
+    /// The scores' factor is the releases' own, to the bit: each latent attention the description builder reads from Kimi-K3's and GLM-5.3-Flash's released configs has
+    /// 1 / sqrt(nope + rope) (GLM-5.3's rope part is 0: nope^-0.5), and the operation takes the kind's factor as it is.
     #[test]
-    fn the_scores_factor_is_the_old_blocks() {
-        for qw in [64usize, 192, 256] {
-            assert_eq!((qw as f32).powf(-0.5).to_bits(), (1.0 / (qw as f32).sqrt()).to_bits(), "{qw}");
+    fn the_scores_factor_is_the_releases() {
+        use crate::runtime::kinds::{Body, Mixer};
+        let fixture = |f: &str| -> serde_json::Value {
+            serde_json::from_str(&std::fs::read_to_string(format!("{}/tests/fixtures/{f}", env!("CARGO_MANIFEST_DIR"))).unwrap()).unwrap()
+        };
+        let kimi: serde_json::Value = serde_json::from_str(fixture("headers/Kimi-K3.json")["config"].as_str().unwrap()).unwrap();
+        for (name, cfg, width) in [("Kimi-K3", kimi, 128 + 64), ("GLM-5.3-Flash", fixture("glm5_next_config.json"), 256)] {
+            let tc = cfg.get("text_config").unwrap_or(&cfg);
+            assert_eq!(tc["qk_nope_head_dim"].as_u64().unwrap() + tc["qk_rope_head_dim"].as_u64().unwrap(), width, "{name}");
+            let d = crate::runtime::describe::describe(&cfg).unwrap_or_else(|e| panic!("{name}: {}", e.msg));
+            let mlas: Vec<&kinds::Mla> = d
+                .desc
+                .blocks
+                .iter()
+                .filter_map(|b| match &b.body {
+                    Body::Mixer(Mixer::Mla(m)) => Some(m),
+                    _ => None,
+                })
+                .collect();
+            assert!(!mlas.is_empty(), "{name}: no latent attention described");
+            for m in mlas {
+                assert_eq!(m.scale.to_bits(), (1.0 / (width as f32).sqrt()).to_bits(), "{name}: {}", m.scale);
+            }
         }
+        let k = kind(64, true, false);
+        assert_eq!(MlaOp::of(&k, MlaIn::Fused { w: 5 }, 6, 7, 10, 2, false).unwrap().scale.to_bits(), k.scale.to_bits());
     }
 
     /// The kind's parameters land where the kernels read them: a fused product with its gate (Kimi-K3), two products and an indexer (GLM-5.3) whose small tensors

@@ -106,6 +106,104 @@ impl Fixture {
     pub fn expected_rows(&self) -> usize {
         1 + self.decode.len() + (!self.long.is_empty()) as usize
     }
+
+    /// What a comparison with this fixture shows (`Held`): a fixture with a GPU generation is the engine's own recorded output, a pin.
+    pub fn held(&self) -> Held {
+        if self.gpu.is_some() {
+            Held::Pin
+        } else {
+            Held::Reference
+        }
+    }
+}
+
+/// What a fixture holds the engine to. `Reference`: another implementation's numbers (a CPU reference, transformers), within a bound: it shows the logits are right
+/// to that bound. `Pin`: the engine's own output as one GPU generation recorded it, bit for bit: it shows the logits have not moved since, and nothing of whether
+/// they were right when recorded. A case with pins alone is said to be pinned only, never within bounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Held {
+    Reference,
+    Pin,
+}
+
+impl Held {
+    /// The word a passing line starts with: PASS for a reference's bound kept, PIN for recorded bits unchanged.
+    pub fn passed(self) -> &'static str {
+        match self {
+            Held::Reference => "PASS",
+            Held::Pin => "PIN ",
+        }
+    }
+    /// The tag a line's bound carries.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Held::Reference => "a reference",
+            Held::Pin => "a pin: the engine's own recorded output",
+        }
+    }
+}
+
+/// A run's comparisons counted by what held them, and the cases nothing or a pin alone held.
+#[derive(Default, Debug)]
+pub struct Tally {
+    pub refs: usize,
+    pub pins: usize,
+    /// Cases whose only comparisons were pins.
+    pub pinned_only: Vec<String>,
+    /// Cases with nothing compared, each with why: failures.
+    pub none: Vec<(String, String)>,
+    /// Cases whose engine is not built: named, not held.
+    pub waits: Vec<String>,
+}
+
+impl Tally {
+    pub fn add(&mut self, h: Held) {
+        match h {
+            Held::Reference => self.refs += 1,
+            Held::Pin => self.pins += 1,
+        }
+    }
+    /// A case's end: `refs` and `pins` its comparisons, `waiting` its engine not built, `others` the GPU generations whose bits it has and this GPU cannot be held to.
+    /// The line to print for a case no reference held, if any.
+    pub fn case(&mut self, id: &str, refs: usize, pins: usize, waiting: bool, others: &[String]) -> Option<String> {
+        if refs > 0 {
+            return None;
+        }
+        if pins > 0 {
+            self.pinned_only.push(id.to_string());
+            return Some(format!(
+                "PIN  {id:12} pinned only: no reference holds this case; its fixtures are the engine's own recorded bits, which show a change and not that the logits are right"
+            ));
+        }
+        if waiting {
+            self.waits.push(id.to_string());
+            return None;
+        }
+        if others.is_empty() {
+            return None;
+        }
+        let why = format!("its fixtures are the bits of {}", others.join(", "));
+        self.none.push((id.to_string(), why.clone()));
+        Some(format!("FAIL {id:12} nothing compared: {why}, another GPU generation"))
+    }
+    /// The cases that fail for having nothing compared.
+    pub fn failed(&self) -> Vec<String> {
+        self.none.iter().map(|(c, why)| format!("{c}: nothing compared ({why})")).collect()
+    }
+    /// "N held to a reference, M pinned, K not held", then the cases pinned only and not held by name.
+    pub fn summary(&self) -> String {
+        let mut s = format!("{} held to a reference, {} pinned, {} not held", self.refs, self.pins, self.none.len() + self.waits.len());
+        if !self.pinned_only.is_empty() {
+            s += &format!("; pinned only (no reference): {}", self.pinned_only.join(", "));
+        }
+        if !self.none.is_empty() {
+            s += &format!("; not held: {}", self.none.iter().map(|x| x.0.as_str()).collect::<Vec<_>>().join(", "));
+        }
+        if !self.waits.is_empty() {
+            s += &format!("; not held, no engine yet: {}", self.waits.join(", "));
+        }
+        s
+    }
 }
 
 use serde_json::{json, Value};
@@ -444,16 +542,18 @@ impl Run for Dyn {
     }
 }
 
-/// A CPU reference one token at a time: its `step` is every pass's way in, and a prompt is its tokens one after another.
+/// A CPU reference one token at a time: its `step` is every pass's way in, and a prompt is its tokens one after another. `source`: which reference it is, in
+/// the words a fixture's provenance gives it.
 struct CpuRef<F: FnMut(u32) -> Vec<f32>> {
     load: Box<dyn Fn() -> Result<F>>,
     m: Option<F>,
     last: Vec<f32>,
+    source: &'static str,
 }
 
 impl<F: FnMut(u32) -> Vec<f32>> Run for CpuRef<F> {
     fn describe(&self) -> String {
-        "the CPU reference".into()
+        self.source.into()
     }
     fn reset(&mut self) -> Result<()> {
         self.m = Some((self.load)()?);
@@ -526,7 +626,7 @@ pub fn token_list(n: usize, vocab: usize, offset: usize) -> Vec<u32> {
     (0..n).map(|i| if i + offset == 0 { 2 } else { (((i + offset - 1) as u32) * 37 + 11) % vocab as u32 }).collect()
 }
 
-fn standard_tokens(vocab: usize) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+pub(crate) fn standard_tokens(vocab: usize) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
     // (a prompt of 24, then 12 steps; a long prompt of 150 crosses the chunk of 64 twice)
     (token_list(24, vocab, 0), token_list(12, vocab, 24), token_list(150, vocab, 0))
 }
@@ -545,7 +645,8 @@ fn muse_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
 
 fn muse_cpu(dir: &Path) -> Result<Box<dyn Run>> {
     let d = dir.to_path_buf();
-    Ok(Box::new(CpuRef { load: Box::new(move || crate::muse_ref::RefMuse::load(&d).map(|mut m| move |t| m.step(t))), m: None, last: Vec::new() }))
+    let load = move || crate::muse_ref::RefMuse::load(&d).map(|mut m| move |t| m.step(t));
+    Ok(Box::new(CpuRef { load: Box::new(load), m: None, last: Vec::new(), source: "the CPU reference of src/muse_ref.rs" }))
 }
 
 fn kimi_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
@@ -554,7 +655,8 @@ fn kimi_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
 
 fn kimi_cpu(dir: &Path) -> Result<Box<dyn Run>> {
     let d = dir.to_path_buf();
-    Ok(Box::new(CpuRef { load: Box::new(move || crate::kimi_ref::RefKimi::load(&d).map(|mut m| move |t| m.step(t))), m: None, last: Vec::new() }))
+    let load = move || crate::kimi_ref::RefKimi::load(&d).map(|mut m| move |t| m.step(t));
+    Ok(Box::new(CpuRef { load: Box::new(load), m: None, last: Vec::new(), source: "the CPU reference of src/kimi_ref.rs" }))
 }
 
 fn dsv4_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
@@ -563,7 +665,8 @@ fn dsv4_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
 
 fn dsv4_cpu(dir: &Path) -> Result<Box<dyn Run>> {
     let d = dir.to_path_buf();
-    Ok(Box::new(CpuRef { load: Box::new(move || crate::dsv4_ref::RefV4::load(&d, true).map(|mut m| move |t| m.step(t))), m: None, last: Vec::new() }))
+    let load = move || crate::dsv4_ref::RefV4::load(&d, true).map(|mut m| move |t| m.step(t));
+    Ok(Box::new(CpuRef { load: Box::new(load), m: None, last: Vec::new(), source: "the CPU reference of src/dsv4_ref.rs" }))
 }
 
 /// A model directory's description (`runtime::describe`) on the CPU reference of the layer kinds: its weights read as they are stored (bf16 or f32).
@@ -590,7 +693,7 @@ fn ref_model_with(d: &Path, edit: fn(&mut crate::runtime::describe::Described)) 
     Ok(m)
 }
 
-/// `ref_model` a token at a time: the reference of a family that has no hand-written one.
+/// `ref_model` a token at a time: the reference of every case with no hand-written one.
 fn described_cpu(dir: &Path) -> Result<Box<dyn Run>> {
     described_cpu_with(dir, |_| {})
 }
@@ -607,7 +710,8 @@ fn described_cpu_with(dir: &Path, edit: fn(&mut crate::runtime::describe::Descri
             l
         })
     };
-    Ok(Box::new(CpuRef { load: Box::new(load), m: None, last: Vec::new() }))
+    let source = "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference)";
+    Ok(Box::new(CpuRef { load: Box::new(load), m: None, last: Vec::new(), source }))
 }
 
 /// The CPU reference of the layer kinds on a fixture's tokens, as `drive` runs an engine (the prompt and each decode token; then, from a reset, the long
@@ -743,7 +847,7 @@ pub fn apart(run: &RefRun, choices: &Choices) -> Vec<Apart> {
 
 /// What `held_on_choices` found: whether the reference's router, on the engine's own input, takes the engine's choice or one a near tie from it at
 /// every choice apart (b1), whether the logits are within the bound of the reference on the engine's choices (b2), and the choices apart.
-pub struct Held {
+pub struct OnChoices {
     pub routing: bool,
     pub logits: bool,
     pub apart: Vec<Apart>,
@@ -764,7 +868,7 @@ pub struct Held {
 ///     everything else is the reference's math.
 ///
 /// Each row's KL against the reference's own choices is printed beside the one against the engine's, and each choice apart with both margins.
-pub fn held_on_choices(who: &str, dir: &Path, fx: &Fixture, bound: &Bound, rows: &[Vec<f32>], routing: &Routing, own: &RefRun) -> Result<Held> {
+pub fn held_on_choices(who: &str, dir: &Path, fx: &Fixture, bound: &Bound, rows: &[Vec<f32>], routing: &Routing, own: &RefRun) -> Result<OnChoices> {
     use crate::dynamic::kindcheck::NEAR;
     use crate::runtime::kinds::{Body, Ffn};
     use crate::runtime::reference::ffn::{margin_between, route_of};
@@ -837,12 +941,32 @@ pub fn held_on_choices(who: &str, dir: &Path, fx: &Fixture, bound: &Bound, rows:
             }
         );
     }
-    Ok(Held { routing: far == 0, logits: v.ok, apart: diffs })
+    Ok(OnChoices { routing: far == 0, logits: v.ok, apart: diffs })
 }
 
 fn nemotron_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
-    let layout = level_layout(level)?;
+    nemotron_at(dir, level_layout(level)?)
+}
+
+fn nemotron_at(dir: &Path, layout: Option<Layout>) -> Result<Box<dyn Run>> {
     boxed(crate::dynamic::nemotron::load(dir, &dyn_opts(layout), layout.unwrap_or(Layout::Tiered)))
+}
+
+/// The case's engine on the model in `dir` at `level` with its packs in `layout`: as the case's own engine (`Case::engine`) runs it, the layout given where the level
+/// leaves it to the GPU (penguin: the tiered layout on Ada, the 12-bit one on other GPUs). `packcheck --engine` loads a saved directory and the model it was saved
+/// from this way, so that both are in the layout the directory was saved in on any GPU. The cases of `packcheck::SAVED`.
+pub(crate) fn engine_at(case: &str, dir: &Path, level: &str, layout: Layout) -> Result<Box<dyn Run>> {
+    if let Some(l) = level_layout(level)?.filter(|&l| l != layout) {
+        return err(format!("{case} at {level} is packed {}, not {}", l.name(), layout.name()));
+    }
+    let o = dyn_opts(Some(layout));
+    match case {
+        "gemma4" | "gemma4-kv" => gemma4_at(dir, Some(layout)),
+        "qwen35" | "qwen35-wide" | "qwen35moe" => boxed(crate::dynamic::qwen35::load(dir, &o)),
+        "dense" => boxed(crate::dynamic::dense::load(dir, &o)),
+        "nemotron-h" => nemotron_at(dir, Some(layout)),
+        other => err(format!("{other}: no saved format of this case is checked (packcheck::SAVED)")),
+    }
 }
 
 /// GLM-5.3-Flash has no lossless level (its experts are FP8 in the release): its levels are the lossy ones, the experts at six, five or four bits.
@@ -851,11 +975,14 @@ fn glm_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     boxed(crate::dynamic::glm::load(dir, &dyn_opts(Some(Layout::Tiered)), experts))
 }
 
-/// Gemma 4 on the hand-written dense engine.
 /// Gemma 4 on the description executor, as `serve` runs it (no draft model).
 fn gemma4_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
+    gemma4_at(dir, level_layout(level)?)
+}
+
+fn gemma4_at(dir: &Path, layout: Option<Layout>) -> Result<Box<dyn Run>> {
     let c = crate::gemma4::ConfigG4::load(dir)?;
-    let o = DynOpts { ctx: 1024, chunk: 64, graph: false, device: 0, layout: level_layout(level)? };
+    let o = DynOpts { ctx: 1024, chunk: 64, graph: false, device: 0, layout };
     boxed(crate::dynamic::gemma4::lowered(dir, &c).and_then(|d| Dyn::new(dir, d, None, &o)))
 }
 
@@ -1339,7 +1466,7 @@ pub fn deepseek_v41_random(out: &Path) -> Result<()> {
 }
 
 /// The compressed vocabulary DeepSeek-V4.1's Engram hashes (`kinds::NgramForm::Engram`): the model directory's `engram_token_map.json` (a list, the compressed id of
-/// each token), which the loader makes from the tokenizer; None where the directory has none.
+/// each token), which `deepseek_v41_random` writes for the random model (no loader makes one from a release's tokenizer); None where the directory has none.
 pub fn engram_token_map(dir: &Path) -> Result<Option<Vec<f32>>> {
     let p = dir.join("engram_token_map.json");
     let Ok(text) = std::fs::read_to_string(&p) else { return Ok(None) };
@@ -1585,7 +1712,10 @@ fn fixtures_dir(a: &crate::args::Args) -> PathBuf {
     a.flag("fixtures").map(PathBuf::from).unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits"))
 }
 
-/// `logitscheck [CASE...] [--fixtures DIR] [--scratch DIR] [--cpu-ref] [--level L]`: each case's engine (or CPU reference) against its fixture at each level the fixture bounds. Exit 1 where one is not within.
+/// `logitscheck [CASE...] [--fixtures DIR] [--scratch DIR] [--cpu-ref] [--level L]`: each case's engine (or CPU reference) against its fixture at each level the fixture bounds. Exit 1 where one is not within,
+/// and where a case had no fixture this GPU can be held to (every one of them another GPU generation's bits): a case with nothing compared is not one within its bounds.
+/// A line says what held it (`Held`): PASS a reference's bound kept, PIN the engine's own recorded bits unchanged. The last lines count them apart ("N held to a
+/// reference, M pinned, K not held") and name the cases pinned only (no reference of another implementation: Gemma 4's and GLM-5.3's cases today) and not held.
 pub fn check(a: &crate::args::Args) -> Result<()> {
     let fixtures = fixtures_dir(a);
     let want: Vec<&str> = a.pos.iter().skip(1).map(String::as_str).collect();
@@ -1605,10 +1735,13 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     let (cpu, only_level) = (a.has("cpu-ref"), a.flag("level"));
     let scratch = Scratch::new(a)?;
     let (mut failed, mut ran) = (Vec::new(), 0usize);
+    let mut tally = Tally::default();
     let t_all = std::time::Instant::now();
     let gpu = gpu_label().ok();
     for c in &all {
         let dir = model_dir(c, &scratch.dir)?;
+        let (mut others, mut waiting) = (Vec::new(), false);
+        let (refs_before, pins_before) = (tally.refs, tally.pins);
         for path in fixture_files(&fixtures, c.id)? {
             let fx = Fixture::read(&path)?;
             if cpu && fx.gpu.is_some() {
@@ -1617,6 +1750,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
             if let (Some(want), Some(have)) = (&fx.gpu, &gpu) {
                 if want != have && !cpu {
                     println!("SKIP {:12} {}: its bits are {want}'s, this GPU is {have}", c.id, path.file_name().unwrap_or_default().to_string_lossy());
+                    others.push(want.clone());
                     continue;
                 }
             }
@@ -1633,6 +1767,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                         // (a family whose CPU reference stands before its engine: its fixture is the reference's, checked with --cpu-ref)
                         Err(e) if e.msg.contains(NOT_ON_EXECUTOR) => {
                             println!("SKIP {:12} {}: {}", c.id, lb.level, e.msg);
+                            waiting = true;
                             continue;
                         }
                         r => r?,
@@ -1642,8 +1777,11 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                 let got = drive(run.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
                 let v = compare(&fx, &lb.bound, &got);
                 ran += 1;
+                // (under --cpu-ref the reference runs against its own fixture: a reference's line)
+                let held = fx.held();
+                tally.add(held);
                 // (a case that asks: the verdict is the engine's on its own routers' choices; the line below still has its rows against the reference's own)
-                let held = if c.on_choices && !cpu && fx.gpu.is_none() && lb.bound != Bound::Bits {
+                let chosen = if c.on_choices && !cpu && fx.gpu.is_none() && lb.bound != Bound::Bits {
                     run.choices(true)?;
                     let traced = drive(run.as_mut(), &fx.prompt, &fx.decode, &fx.long);
                     let h = match run.choices(false)? {
@@ -1656,15 +1794,16 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                 };
                 // (the lossless level: the experts the engine holds are the checkpoint's, bit for bit)
                 let experts = if lb.level == "penguin" && !cpu { experts_line(&dir, run.as_mut())? } else { None };
-                let ok = held.unwrap_or(v.ok) && experts.as_ref().is_none_or(|e| e.0);
+                let ok = chosen.unwrap_or(v.ok) && experts.as_ref().is_none_or(|e| e.0);
                 let bound = match &lb.bound {
                     Bound::Bits => "bits".to_string(),
                     Bound::Kl { mean, max, top1 } => format!("KL mean <= {mean:.1e}, max <= {max:.1e}, top-1 >= {:.0}%", top1 * 100.0),
                 };
+                let bound = format!("{bound}; {}", held.tag());
                 let name = path.file_name().unwrap_or_default().to_string_lossy().replace(".json.gz", "");
                 println!(
                     "{} {:20} {:8} {:3} rows: bits-equal {}, KL mean {:.2e} max {:.2e}, best token {}/{} with a lead, largest logit difference {:.4}  [{bound}{}] ({load:.1} s to load, {:.1} s)",
-                    if ok { "PASS" } else { "FAIL" },
+                    if ok { held.passed() } else { "FAIL" },
                     name,
                     lb.level,
                     v.rows,
@@ -1674,7 +1813,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                     v.top1.0,
                     v.top1.1,
                     v.max_dlogit,
-                    match held {
+                    match chosen {
                         Some(h) => format!(
                             "; these figures are against the reference's own choices ({}), the verdict is on the engine's choices ({}): the lines above",
                             if v.ok { "within the bound" } else { "PAST the bound" },
@@ -1695,10 +1834,26 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                 }
             }
         }
+        // (a case no reference held: pinned only; its engine not built; or nothing compared, every fixture it has being another GPU generation's bits)
+        others.dedup();
+        if let Some(line) = tally.case(c.id, tally.refs - refs_before, tally.pins - pins_before, waiting, &others) {
+            let how = if line.starts_with("FAIL") {
+                format!(
+                    "; this GPU is {} (logitsrecord {} --from engine --out {} records this generation's pin)",
+                    gpu.as_deref().unwrap_or("unknown"),
+                    c.id,
+                    fixtures.display()
+                )
+            } else {
+                String::new()
+            };
+            println!("{line}{how}");
+        }
     }
-    println!("{ran} comparisons in {:.1} s against {}", t_all.elapsed().as_secs_f64(), fixtures.display());
+    failed.extend(tally.failed());
+    println!("{ran} comparisons in {:.1} s against {}: {}", t_all.elapsed().as_secs_f64(), fixtures.display(), tally.summary());
     if failed.is_empty() {
-        println!("all logits within their bounds");
+        println!("every comparison made is kept: a reference's bound, or a pin's bits unchanged (a pin does not show the logits are right)");
         Ok(())
     } else {
         println!("OFF: {}", failed.join(", "));
@@ -2471,12 +2626,8 @@ pub fn record(a: &crate::args::Args) -> Result<()> {
     provenance.insert(
         "source".into(),
         match from {
-            // (Nemotron-H has no reference of its own: its description on the reference of the layer kinds)
-"cpu" if matches!(c.id, "nemotron-h" | "qwen4x" | "qwen4x-s2" | "deepseek-v41" | "qwen35" | "qwen35-wide" | "dense" | "qwen35moe" | "kimi-dsa") => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
-            "cpu" => format!(
-                "the CPU reference of src/{}_ref.rs, fp32 inside, on this case's random model (seed fixed in the generator)",
-                c.id.replace("deepseek-", "ds").replace('-', "")
-            ),
+            // (the reference's own words: the description's on the layer kinds' reference, or a hand-written one's file; `CpuRef::source`)
+            "cpu" => format!("{}, fp32 inside, on this case's random model (seed fixed in the generator)", run.describe()),
             _ => format!(
                 "glyd-engine {} at {} ({}, level {}): the engine's own output, no reference of another implementation",
                 env!("CARGO_PKG_VERSION"),
@@ -2521,6 +2672,31 @@ pub fn record(a: &crate::args::Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fixture's provenance is its CPU reference's own words, not a list of case ids: every case on the description's reference says so (the two Gemma 4
+    /// cases too, which such a list had left out, so that gemma4-kv's fixture named a src/gemma4kv_ref.rs that never was), and a hand-written reference
+    /// names its file, which is in the tree. (The references load on the first reset: nothing is read here.)
+    #[test]
+    fn a_cpu_references_provenance_is_its_own() {
+        let described = "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference)";
+        let mut on_description = Vec::new();
+        for c in cases() {
+            let Some(cpu) = c.cpu else { continue };
+            let source = cpu(Path::new("no-such-model")).unwrap().describe();
+            match source.strip_prefix("the CPU reference of ") {
+                Some(file) => assert!(Path::new(env!("CARGO_MANIFEST_DIR")).join(file).is_file(), "{}: {source}", c.id),
+                None => {
+                    assert_eq!(source, described, "{}", c.id);
+                    on_description.push(c.id);
+                }
+            }
+        }
+        for id in ["gemma4", "gemma4-kv", "dense", "qwen35", "nemotron-h"] {
+            assert!(on_description.contains(&id), "{id}: {on_description:?}");
+        }
+        let kv = Fixture::read(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits/gemma4-kv.json.gz")).unwrap();
+        assert!(kv.provenance["source"].starts_with(described), "{}", kv.provenance["source"]);
+    }
 
     /// The CPU reference of each Gemma 4 random case against the fixtures the engine and the reference recorded, row by row: the plain case's against the
     /// engine's own bits (gemma4.sm89.json.gz), the KV-sharing case's against its fixture. Minutes on an unoptimized build: cargo test -- --ignored
@@ -2659,6 +2835,35 @@ mod tests {
             long: vec![],
             rows: rows.iter().map(|r| Row::from_logits(r).unwrap()).collect(),
         }
+    }
+
+    /// logitscheck counts apart what a reference held and what a pin held. A case with pins alone is said to be pinned only; one with nothing compared is a failure
+    /// where its fixtures are all another GPU generation's bits, and is named where its engine is not built: none of the three reads as a case within its bounds.
+    #[test]
+    fn a_case_no_reference_held_is_said_and_one_with_nothing_compared_fails() {
+        let fx = |gpu: Option<&str>| Fixture { gpu: gpu.map(str::to_string), ..fixture(vec![logits(100, 1), logits(100, 2)]) };
+        assert_eq!((fx(None).held(), fx(Some("sm89")).held()), (Held::Reference, Held::Pin));
+        assert_eq!((Held::Reference.passed(), Held::Pin.passed()), ("PASS", "PIN "));
+        let mut t = Tally::default();
+        // a case a reference held, with a pin beside it: nothing to say
+        for h in [Held::Reference, Held::Reference, Held::Pin] {
+            t.add(h);
+        }
+        assert!(t.case("qwen35", 2, 1, false, &[]).is_none());
+        // a case with pins alone
+        t.add(Held::Pin);
+        let line = t.case("gemma4", 0, 1, false, &[]).unwrap();
+        assert!(line.starts_with("PIN  gemma4") && line.contains("pinned only") && !line.contains("within"), "{line}");
+        // a case whose fixtures are another generation's bits, one whose engine is not built, one with no fixture at this level
+        let line = t.case("glm", 0, 0, false, &["sm89".to_string()]).unwrap();
+        assert!(line.starts_with("FAIL glm") && line.contains("nothing compared") && line.contains("sm89"), "{line}");
+        assert!(t.case("deepseek-v41", 0, 0, true, &[]).is_none() && t.case("dense", 0, 0, false, &[]).is_none());
+        assert_eq!(t.failed(), vec!["glm: nothing compared (its fixtures are the bits of sm89)".to_string()]);
+        assert_eq!(
+            t.summary(),
+            "2 held to a reference, 2 pinned, 2 not held; pinned only (no reference): gemma4; not held: glm; not held, no engine yet: deepseek-v41"
+        );
+        assert_eq!(Tally::default().summary(), "0 held to a reference, 0 pinned, 0 not held");
     }
 
     #[test]
@@ -3383,10 +3588,16 @@ pub fn round_check(a: &crate::args::Args) -> Result<()> {
         s.release(&slots.concat())?;
         Ok(out)
     };
-    // (15 rows in all: the products' kernels of a pass alone, so every bit is required; then 74 rows, another kernel's sums, counted)
-    for lens in [&[7usize, 5, 3][..], &[37, 9, 23, 5]] {
-        let lens: Vec<usize> = lens.iter().copied().take(k.min(s.prefill_rows())).filter(|&l| l + 2 < window).collect();
+    // (15 rows in all: the products' kernels of a pass alone, so every bit is required; then 56 rows, which a pass of 64 holds, and 74: another kernel's sums, counted.
+    // A set this step cannot run is said, not passed over: a run that left one out did not hold it)
+    for set in [&[7usize, 5, 3][..], &[23, 9, 19, 5], &[37, 9, 23, 5]] {
+        let lens: Vec<usize> = set.iter().copied().take(k.min(s.prefill_rows())).filter(|&l| l + 2 < window).collect();
         if lens.len() < 2 || lens.iter().sum::<usize>() > chunk {
+            println!(
+                "SKIP prompts of {set:?} in one pass: {} of them fit ({k} sequences, {} prompts a pass, a sequence of {window}), and a pass holds {chunk} rows",
+                lens.len(),
+                s.prefill_rows()
+            );
             continue;
         }
         let rows: usize = lens.iter().sum();
@@ -4233,6 +4444,11 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         // run short, no page is made void and no request fails)
         if std::env::var_os("GLYD_KV12_POOL").is_some() && (back > 0 || s.stats.ended_lost > 0) {
             println!("FAIL small pools (GLYD_KV12_POOL): a step taken back for a void page, or a request ended, where the newest sequence is to be paused");
+            fails += 1;
+        }
+        // (and the pools did run short: with no sequence sent back for room the run shows nothing of what a short pool does)
+        if std::env::var_os("GLYD_KV12_POOL").is_some() && resumed == 0 {
+            println!("FAIL small pools (GLYD_KV12_POOL): no sequence was sent back for room, so the pools never ran short and the run does not show what they do then");
             fails += 1;
         }
     }

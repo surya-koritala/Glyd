@@ -159,6 +159,13 @@ fn err_of(pred: Option<f64>, meas: Option<f64>) -> Option<f64> {
     }
 }
 
+/// Whether a case's speeds are within the gate: decode's, predicted and measured, and the prompts' where one is predicted. A predicted speed bench has no
+/// figure for is not within: nothing was held.
+fn speeds_within(decode: (Option<f64>, Option<f64>), prefill: (Option<f64>, Option<f64>)) -> bool {
+    let within = |(p, m): (Option<f64>, Option<f64>)| err_of(p, m).is_some_and(|e| e.abs() <= GATE);
+    within(decode) && (prefill.0.is_none() || within(prefill))
+}
+
 fn run(a: &Args) -> Result<bool, String> {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let out = PathBuf::from(a.flag("out").map_or_else(|| format!("plancheck-{now}"), str::to_string));
@@ -241,7 +248,7 @@ fn run(a: &Args) -> Result<bool, String> {
             let (decode, prefill, ttft) = (med("decode_tps_per_user"), med("prefill_tps"), med("ttft_s"));
             let failed = cl.map_or(1, |c| c["errors"].as_u64().unwrap_or(0));
             let (ed, ep, et) = (err_of(c["decode"].as_f64(), decode), err_of(c["prefill"].as_f64(), prefill), err_of(c["ttft"].as_f64(), ttft));
-            let speed_ok = ed.is_some_and(|e| e.abs() <= GATE) && ep.is_none_or(|e| e.abs() <= GATE);
+            let speed_ok = speeds_within((c["decode"].as_f64(), decode), (c["prefill"].as_f64(), prefill));
             let ok = status.success() && failed == 0 && speed_ok && memory_ok;
             pass &= ok;
             let r = json!({
@@ -330,6 +337,19 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("config.json"), config).unwrap();
         d.to_str().unwrap().to_string()
+    }
+
+    /// The speed gate holds what is predicted: decode always, the prompt's speed where there is a prediction, and a prediction with no measurement beside it
+    /// (bench had no prompt figure: a null median) is not within the gate, where it once passed.
+    #[test]
+    fn a_predicted_speed_with_no_measurement_is_not_within_the_gate() {
+        assert!(speeds_within((Some(100.0), Some(95.0)), (Some(3000.0), Some(3300.0))));
+        assert!(speeds_within((Some(100.0), Some(95.0)), (None, None)));
+        assert!(speeds_within((Some(100.0), Some(95.0)), (None, Some(3300.0))));
+        assert!(!speeds_within((Some(100.0), Some(95.0)), (Some(3000.0), None)));
+        assert!(!speeds_within((Some(100.0), Some(95.0)), (Some(3000.0), Some(0.0))));
+        assert!(!speeds_within((Some(100.0), Some(95.0)), (Some(3000.0), Some(4000.0))));
+        assert!(!speeds_within((Some(100.0), None), (None, None)) && !speeds_within((Some(100.0), Some(80.0)), (None, None)));
     }
 
     /// Every prediction is made and saved before anything is measured (`--predict-only` stops there): each model's plan for `serve --users 8 --no-draft` (its level,

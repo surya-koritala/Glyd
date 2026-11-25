@@ -356,11 +356,21 @@ pub(crate) fn shape_checks(name: &str, cfg: &Config, fit: &LoadPlan) -> Done<()>
     }
 }
 
+/// The bytes of the packed copy a first run writes into the engine's cache: `pack` (the plan's weights), and none where the copy is made already (a glyd-v7 save at
+/// the layout in the model's place in the cache).
+fn first_run_pack_bytes(pack: u64, layout: Layout, source: Option<&Source>) -> u64 {
+    let made = source.is_some_and(|s| store::cached_pack(&store::packed_dir(s, layout), layout));
+    if made {
+        0
+    } else {
+        pack
+    }
+}
+
 /// What a first run writes (the download, and the packed copy of `pack` bytes: the plan's weights) against the disks: refused before anything is downloaded. `source`: the model
 /// where it is on this computer already; `download`: the bytes still to fetch.
 fn first_run_checks(name: &str, pack: u64, layout: Layout, source: Option<&Source>, download: u64) -> Done<()> {
-    let made = source.is_some_and(|s| store::cached_pack(&store::packed_dir(s, layout), layout));
-    let pack = if made { 0 } else { pack };
+    let pack = first_run_pack_bytes(pack, layout, source);
     let (models, cache) = (store::existing_ancestor(&hub::hub_cache()), store::existing_ancestor(&store::cache_root()));
     if let Some(r) = machine::disk_refusal(name, hub::disk_free(&models), hub::disk_free(&cache), store::same_filesystem(&models, &cache), download, pack) {
         return Err(r);
@@ -1473,7 +1483,7 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: 
     })
 }
 
-/// The 12-bit lossless KV pages for `e` where the scheduler pages its cache and GLYD_KV=lossless asks for them (until admission reserves their room): the tables made on
+/// The 12-bit lossless KV pages for `e` where the scheduler pages its cache and GLYD_KV=lossless asks for them (off unless asked for: admission does not reserve their room): the tables made on
 /// the model's first run and kept in the cache.
 fn twelve_bit_pages(e: &mut crate::dynamic::Dyn, dir: &Path, name: &str, ui: &RefCell<Ui>) -> Done<()> {
     if std::env::var("GLYD_KV").as_deref() != Ok("lossless") {
@@ -3286,11 +3296,19 @@ mod tests {
         // (the packed copy's bytes: the plan's weights at the level)
         let pack = (Config::parse(DENSE, "config.json", None).unwrap().matrix_bytes() as f64 * bits(Layout::Tiered) / 16.0) as u64;
         let source = Source { dir: "/x".into(), repo: "org/model".into(), revision: Some("0123456789abcdef0123456789abcdef01234567".into()) };
+        // (not made yet: the copy's bytes are counted, and a disk that has not that much left over refuses the run)
+        assert!(pack > 0 && first_run_pack_bytes(pack, Layout::Tiered, Some(&source)) == pack && first_run_pack_bytes(pack, Layout::Tiered, None) == pack);
+        assert!(machine::disk_refusal("model", Some(pack), Some(pack), true, 0, pack).is_some());
         assert!(first_run_checks("model", pack, Layout::Tiered, Some(&source), 0).is_ok());
         let d = store::packed_dir(&source, Layout::Tiered);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("glyd.json"), r#"{"format": "glyd-v7", "layout": "mma", "level": "penguin", "packs": {}}"#).unwrap();
-        assert!(store::cached_pack(&d, Layout::Tiered) && first_run_checks("model", pack, Layout::Tiered, Some(&source), 0).is_ok());
+        // (made: nothing is counted for it, at that layout alone, and the same disk takes the run)
+        assert!(store::cached_pack(&d, Layout::Tiered));
+        assert_eq!(first_run_pack_bytes(pack, Layout::Tiered, Some(&source)), 0);
+        assert_eq!(first_run_pack_bytes(pack, Layout::Int6, Some(&source)), pack);
+        assert!(machine::disk_refusal("model", Some(pack), Some(pack), true, 0, 0).is_none());
+        assert!(first_run_checks("model", pack, Layout::Tiered, Some(&source), 0).is_ok());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

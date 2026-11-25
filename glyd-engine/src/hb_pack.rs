@@ -93,7 +93,7 @@ pub fn fp4_f32(q: &[u8], scales: &[u8], rows: usize, cols: usize) -> Result<Vec<
     }
     let mut out = Vec::with_capacity(rows * cols);
     for (i, &b) in q.iter().enumerate() {
-        let s = crate::deepseek_v4::e8m0(scales[i * 2 / 32]);
+        let s = crate::formats::e8m0(scales[i * 2 / 32]);
         if s.is_nan() {
             return err(format!("an FP4 run's scale is NaN (run {})", i * 2 / 32));
         }
@@ -109,7 +109,7 @@ fn fp8_e8m0_f32(q: &[u8], scales: &[u8], rows: usize, cols: usize) -> Result<Vec
     if q.len() != rows * cols || scales.len() != gr * gc {
         return err(format!("{} bytes and {} scales for an FP8 matrix of {rows} x {cols} in blocks of 128", q.len(), scales.len()));
     }
-    Ok((0..rows * cols).map(|i| glyd_gpu::fp8::e4m3(q[i]) * crate::deepseek_v4::e8m0(scales[(i / cols / 128) * gc + (i % cols) / 128])).collect())
+    Ok((0..rows * cols).map(|i| glyd_gpu::fp8::e4m3(q[i]) * crate::formats::e8m0(scales[(i / cols / 128) * gc + (i % cols) / 128])).collect())
 }
 
 /// A release matrix as f32 [rows, cols]: BF16 or F32 as it is; F8_E4M3 with its `_scale_inv` blocks (as transformers dequantizes it, to

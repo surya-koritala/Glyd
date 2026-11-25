@@ -74,20 +74,7 @@ impl WeightsGlm {
     /// final norm, where None) checked against the weight map, their matrices packed here by `threads` workers in `layout` (None: the GPU's) and copied to the GPU as they are done. A glyd-v7 directory is at one level
     /// (`layout` None, or the same): the packs it holds saved are read as they are, the rest (a matrix the packer does not take) as the Hub's. A latent attention layer holds its norms and mixing weights (its own weights are
     /// `MlaWeights`); a mixture-of-experts layer the same and `moe`'s experts' layer, which gets the checkpoint and the layout and loads what it needs of the layer's tensors.
-    #[allow(clippy::too_many_arguments)]
-    pub fn load(
-        dir: &Path,
-        threads: usize,
-        layout: Option<Layout>,
-        cc: (i32, i32),
-        total_mem: u64,
-        only: Option<&[usize]>,
-        moe: Option<Make<'_>>,
-    ) -> Result<WeightsGlm> {
-        WeightsGlm::load_ends(dir, threads, layout, cc, total_mem, only, None, moe)
-    }
-
-    /// `load`, with the ends asked for apart from the layers: `ends` (the embedding; the LM head and the final norm) for a stage of a model split across GPUs, None for `load`'s (with the whole model, or with no
+    /// The ends are asked for apart from the layers: `ends` (the embedding; the LM head and the final norm) for a stage of a model split across GPUs, None for a whole load's (with the whole model, or with no
     /// layer: the MTP head's).
     #[allow(clippy::too_many_arguments)]
     pub fn load_ends(
@@ -227,11 +214,6 @@ impl WeightsGlm {
 
     pub fn lm_head(&self) -> Option<&PackBuf> {
         self.head.as_ref().or(self.embed.as_ref())
-    }
-
-    /// Whether every layer, the embedding, the head and the final norm are here.
-    pub fn whole(&self) -> bool {
-        self.layers.iter().all(Option::is_some) && self.embed.is_some() && self.norm_f.is_some()
     }
 }
 
@@ -381,10 +363,7 @@ mod tests {
         let define_mla = |n: &str| -> Option<usize> {
             MLA_SRC.lines().find_map(|l| l.strip_prefix(&format!("#define {n} "))).and_then(|v| v.split_whitespace().next()).and_then(|v| v.parse().ok())
         };
-        assert_eq!(
-            (define_mla("GM_NOPE_MAX"), define_mla("GM_KSEL_MAX"), define_mla("GM_IDX_W"), define_mla("GM_RB"), define_mla("GM_VB")),
-            (Some(256), Some(1024), Some(8), Some(8), Some(4))
-        );
+        assert_eq!((define_mla("GM_NOPE_MAX"), define_mla("GM_IDX_W"), define_mla("GM_RB"), define_mla("GM_VB")), (Some(256), Some(8), Some(8), Some(4)));
         for name in ["rms2_rows", "layernorm_rows", "scatter_rows", "mla_absorb", "idx_pool", "idx_score", "idx_pick", "mla_attn", "mla_expand_v"] {
             assert!(
                 MLA_SRC.contains(&format!("extern \"C\" __global__ void {name}(")) || MLA_SRC.contains(&format!(") {name}(")),
@@ -470,7 +449,7 @@ mod tests {
     }
 
     /// What the loader holds of each layer: nine matrices for a Kimi delta layer with a dense MLP (the delta attention's seven, the MLP's two), seven where the feed-forward is a block of experts, none for a latent attention
-    /// layer (its block's); and in the order `delta` and `dense_mlp` index them by.
+    /// layer (its block's); and in the order the executor's description indexes them by (src/dynamic/glm.rs).
     #[test]
     fn the_matrices_a_layer_holds() {
         let c = crate::glm::tests::parse();
@@ -495,7 +474,7 @@ mod tests {
         assert_eq!(keys(44), keys(1)[..7]);
         assert!(layer_matrices(&c, 3).is_empty() && layer_matrices(&c, 43).is_empty());
         assert_eq!((0..c.layers).map(|l| layer_matrices(&c, l).len()).sum::<usize>(), 3 * 9 + 31 * 7);
-        // (rows and columns: the products' shapes, as `delta` multiplies by them)
+        // (rows and columns: the products' shapes, as the delta attention's products take them)
         let shapes: Vec<(usize, usize)> = layer_matrices(&c, 0).iter().map(|p| (p.rows(), p.cols)).collect();
         assert_eq!(shapes, [(24576, 4096), (4096, 8192), (128, 4096), (8192, 128), (128, 4096), (8192, 128), (64, 4096), (24576, 4096), (4096, 12288)]);
     }

@@ -1406,8 +1406,7 @@ const ROUTE_AHEAD: i32 = 5;
 
 /// Rows from which a prompt's product of a layout the route table has no crossover for on the GPU (an A100's tiered layout: the fused prompt kernel at any length)
 /// is decoded and multiplied dense: the lowest crossover measured for the tiered layout elsewhere (an A10's 512, GeForce Ada's 513: gpu/glyd_gpu.cu `ahead_min`).
-/// Not measured on those GPUs: by arithmetic, a weight's tiered decode at the A100's prompt tile of 256
-/// tokens uses most of the SM's issue slots, where unpacking W once and cuBLAS's product cost about 2.5 ps a weight plus the product at about 70% of peak.
+/// Not measured on an A100, an Ampere GeForce or a Blackwell card with a model of the last six months: the crossover measured on the other GPUs stands for them.
 const DECODE_FROM: usize = 512;
 
 /// The profile's stage for a matrix unpacked to bf16 before its dense product (GLYD_PROF=1: the product's own stage then is the dense product alone).

@@ -714,13 +714,31 @@ pub struct KvGeom {
     pub nslabs: i64,
 }
 
-/// The library, loaded (never unloaded) and of this binding's C API version.
+/// The engine's GPU operations (`GpuOps`): its own kernels (`fold`), and for what they do not take the library, loaded (never unloaded) and of this
+/// binding's C API version; or no library (`GLYD_GPU_LIB=none`), where such a call fails in words.
 pub struct Lib {
-    api: Api,
+    api: Option<Api>,
     pub path: String,
 }
 
 impl Lib {
+    /// No library: the engine's own kernels alone (`GLYD_GPU_LIB=none`); a call they do not take fails, naming the library's function it needed.
+    pub fn own() -> Lib {
+        Lib { api: None, path: "none (GLYD_GPU_LIB=none: the engine's own kernels alone)".to_string() }
+    }
+
+    /// Whether a library is loaded (not `GLYD_GPU_LIB=none`).
+    pub fn loaded(&self) -> bool {
+        self.api.is_some()
+    }
+
+    /// The library's table, or, with no library loaded, the error of a call the engine's own kernels did not take (`name`: the library's function).
+    fn api(&self, name: &str) -> Result<&Api> {
+        self.api
+            .as_ref()
+            .ok_or_else(|| Error(format!("{name}: the engine's own kernels do not take this call, and no GPU library is loaded (GLYD_GPU_LIB=none)")))
+    }
+
     /// The library at `path`.
     pub fn load(path: &str) -> Result<Lib> {
         let h = dl::open(path).map_err(Error)?;
@@ -740,14 +758,14 @@ impl Lib {
         // the functions by their names
         // SAFETY: `h` is the library's handle; its functions have the signatures declared in `Api` at this version.
         let api = unsafe { Api::resolve(h) }.map_err(|e| Error(format!("{path}: {e}")))?;
-        Ok(Lib { api, path: path.to_string() })
+        Ok(Lib { api: Some(api), path: path.to_string() })
     }
 
-    /// `$GLYD_GPU_LIB`, else libglyd_gpu_cuda13.so or _cuda12.so beside the executable, else the loader's search
+    /// `$GLYD_GPU_LIB` (`none`: no library, `Lib::own`), else libglyd_gpu_cuda13.so or _cuda12.so beside the executable, else the loader's search
     /// (cuda13 where the driver supports CUDA 13).
     pub fn find() -> Result<Lib> {
         if let Ok(p) = std::env::var("GLYD_GPU_LIB") {
-            return Lib::load(&p);
+            return if p == "none" { Ok(Lib::own()) } else { Lib::load(&p) };
         }
         let mut names = GPU_LIB.to_vec();
         if let Ok(d) = driver() {
@@ -775,9 +793,10 @@ impl Lib {
         err(format!("Glyd's GPU library not found (set GLYD_GPU_LIB): {}", why.join("; ")))
     }
 
-    pub fn cuda_version(&self) -> i32 {
+    /// The CUDA runtime the library was built with; None where no library is loaded (`GLYD_GPU_LIB=none`).
+    pub fn cuda_version(&self) -> Option<i32> {
         // SAFETY: no arguments.
-        unsafe { (self.api.glyd_gpu_cuda_version)() }
+        self.api.as_ref().map(|a| unsafe { (a.glyd_gpu_cuda_version)() })
     }
 
     fn ck(&self, call: &str, status: c_int) -> Result<()> {
@@ -786,7 +805,7 @@ impl Lib {
         }
         // SAFETY: the library's static text.
         let t = unsafe {
-            let p = (self.api.glyd_gpu_error_string)(status);
+            let p = self.api.as_ref().map_or(std::ptr::null(), |a| (a.glyd_gpu_error_string)(status));
             if p.is_null() {
                 String::new()
             } else {
@@ -796,29 +815,31 @@ impl Lib {
         Err(Error::of(Kind::of_status(status), format!("{call}: {t} ({status})")))
     }
 
-    /// `GpuOps::linear_workspace` by the library's own plans: the oracle of the engine's (`fold::linear_workspace`), and every route it has not folded.
-    pub(crate) fn library_linear_workspace(&self, twelve: bool, o: i64, k: i64, m: i64) -> Result<usize> {
+    /// `GpuOps::linear_workspace` by the library's own plans (`route`: the GPU's own where negative, else the route given): the oracle of the engine's
+    /// (`fold::linear_workspace`), and every route it has not folded.
+    pub(crate) fn library_linear_workspace(&self, twelve: bool, o: i64, k: i64, m: i64, route: i64) -> Result<usize> {
         let mut b = 0usize;
         // SAFETY: a host out-pointer.
         let r = unsafe {
             if twelve {
-                (self.api.glyd_gpu_mma12_linear_workspace)(o, k, m, -1, &mut b)
+                (self.api("glyd_gpu_mma12_linear_workspace")?.glyd_gpu_mma12_linear_workspace)(o, k, m, route, &mut b)
             } else {
-                (self.api.glyd_gpu_mma_linear_workspace)(o, k, m, -1, &mut b)
+                (self.api("glyd_gpu_mma_linear_workspace")?.glyd_gpu_mma_linear_workspace)(o, k, m, route, &mut b)
             }
         };
         self.ck(call!("linear_workspace"), r)?;
         Ok(b)
     }
 
-    /// `GpuOps::linear` by the library's own kernels: the oracle of the engine's (`fold::linear`), and every route it has not folded.
+    /// `GpuOps::linear` by the library's own kernels (`route` as `library_linear_workspace`'s): the oracle of the engine's (`fold::linear`), and every
+    /// route it has not folded.
     ///
     /// # Safety
     /// As `GpuOps::linear`.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) unsafe fn library_linear(&self, w: &Pack, x: u64, m: i64, y: u64, ws: u64, ws_bytes: usize, done: u64, cs: Stream) -> Result<()> {
+    pub(crate) unsafe fn library_linear(&self, w: &Pack, x: u64, m: i64, y: u64, ws: u64, ws_bytes: usize, done: u64, route: i64, cs: Stream) -> Result<()> {
         let r = match w.words {
-            Words::Tiered { blocks, block_base, tiers } => (self.api.glyd_gpu_mma_linear)(
+            Words::Tiered { blocks, block_base, tiers } => (self.api("glyd_gpu_mma_linear")?.glyd_gpu_mma_linear)(
                 w.data as *const u8,
                 blocks as *const u8,
                 block_base as *const i32,
@@ -829,13 +850,13 @@ impl Lib {
                 m,
                 std::ptr::null(),
                 y as *mut u16,
-                -1,
+                route,
                 ws as *mut c_void,
                 ws_bytes,
                 done as *mut c_int,
                 cs,
             ),
-            Words::Twelve { exc, exc_base, sym } => (self.api.glyd_gpu_mma12_linear)(
+            Words::Twelve { exc, exc_base, sym } => (self.api("glyd_gpu_mma12_linear")?.glyd_gpu_mma12_linear)(
                 w.data as *const u8,
                 exc as *const u32,
                 exc_base as *const i32,
@@ -846,7 +867,7 @@ impl Lib {
                 m,
                 std::ptr::null(),
                 y as *mut u16,
-                -1,
+                route,
                 ws as *mut c_void,
                 ws_bytes,
                 done as *mut c_int,
@@ -860,7 +881,7 @@ impl Lib {
     pub(crate) fn library_kv_decode_splits(&self, b: i64, h: i64, max_pages: i64) -> Result<i64> {
         let mut s = 0;
         // SAFETY: a host out-pointer.
-        let r = unsafe { (self.api.glyd_gpu_kv_decode_shares)(b, h, max_pages, &mut s) };
+        let r = unsafe { (self.api("glyd_gpu_kv_decode_shares")?.glyd_gpu_kv_decode_shares)(b, h, max_pages, &mut s) };
         self.ck(call!("kv_decode_shares"), r)?;
         Ok(s)
     }
@@ -868,7 +889,7 @@ impl Lib {
     /// `GpuOps::kv_floor_set` by the library's own kernels and plan: the oracle of the engine's (`fold`).
     pub(crate) fn library_kv_floor_set(&self, floor: i32) -> Result<()> {
         // SAFETY: a plain value.
-        let r = unsafe { (self.api.glyd_gpu_kv_floor_set)(floor) };
+        let r = unsafe { (self.api("glyd_gpu_kv_floor_set")?.glyd_gpu_kv_floor_set)(floor) };
         self.ck(call!("kv_floor_set"), r)
     }
 
@@ -898,7 +919,7 @@ impl Lib {
         ws_bytes: usize,
         cs: Stream,
     ) -> Result<()> {
-        let r = (self.api.glyd_gpu_kv_decode)(
+        let r = (self.api("glyd_gpu_kv_decode")?.glyd_gpu_kv_decode)(
             q as *const u16,
             q_stride,
             pool as *const u8,
@@ -956,7 +977,7 @@ impl Lib {
         ws_bytes: usize,
         cs: Stream,
     ) -> Result<()> {
-        let r = (self.api.glyd_gpu_kv_decode_from)(
+        let r = (self.api("glyd_gpu_kv_decode_from")?.glyd_gpu_kv_decode_from)(
             q as *const u16,
             q_stride,
             pool as *const u8,
@@ -1007,7 +1028,7 @@ impl Lib {
     /// As `rows`.
     pub(crate) unsafe fn library_rows(&self, w: &Pack, ids: u64, n: i64, out: u64, cs: Stream) -> Result<()> {
         let r = match w.words {
-            Words::Tiered { blocks, block_base, tiers } => (self.api.glyd_gpu_mma_rows)(
+            Words::Tiered { blocks, block_base, tiers } => (self.api("glyd_gpu_mma_rows")?.glyd_gpu_mma_rows)(
                 w.data as *const u8,
                 blocks as *const u8,
                 block_base as *const i32,
@@ -1019,7 +1040,7 @@ impl Lib {
                 out as *mut u16,
                 cs,
             ),
-            Words::Twelve { exc, exc_base, sym } => (self.api.glyd_gpu_mma12_rows)(
+            Words::Twelve { exc, exc_base, sym } => (self.api("glyd_gpu_mma12_rows")?.glyd_gpu_mma12_rows)(
                 w.data as *const u8,
                 exc as *const u32,
                 exc_base as *const i32,
@@ -1065,7 +1086,7 @@ impl Lib {
         status: u64,
         cs: Stream,
     ) -> Result<()> {
-        let r = (self.api.glyd_gpu_kv_release)(
+        let r = (self.api("glyd_gpu_kv_release")?.glyd_gpu_kv_release)(
             pool as *mut u8,
             g.page_stride,
             nblocks,
@@ -1123,7 +1144,7 @@ impl Lib {
         moved: u64,
         cs: Stream,
     ) -> Result<()> {
-        let r = (self.api.glyd_gpu_kv_save)(
+        let r = (self.api("glyd_gpu_kv_save")?.glyd_gpu_kv_save)(
             pool as *const u8,
             g.page_stride,
             nblocks,
@@ -1188,7 +1209,7 @@ impl Lib {
         ring: i64,
         cs: Stream,
     ) -> Result<()> {
-        let r = (self.api.glyd_gpu_kv_load)(
+        let r = (self.api("glyd_gpu_kv_load")?.glyd_gpu_kv_load)(
             img as *const u8,
             dst as *const i32,
             n,
@@ -1228,7 +1249,7 @@ impl Lib {
         (workspace, workspace_bytes): (u64, usize),
         cs: Stream,
     ) -> Result<()> {
-        let r = (self.api.glyd_gpu_kv_decode_bf16)(
+        let r = (self.api("glyd_gpu_kv_decode_bf16")?.glyd_gpu_kv_decode_bf16)(
             q as *const u16,
             q_stride,
             kc as *const u16,
@@ -1282,7 +1303,7 @@ impl Lib {
         cs: Stream,
     ) -> Result<()> {
         let (key, key_stride, value, value_stride) = rows.unwrap_or((0, 0, 0, 0));
-        let r = (self.api.glyd_gpu_kv_prefill)(
+        let r = (self.api("glyd_gpu_kv_prefill")?.glyd_gpu_kv_prefill)(
             q as *const u16,
             q_stride,
             key as *const u16,
@@ -1333,7 +1354,7 @@ impl Lib {
         out_stride: i64,
         cs: Stream,
     ) -> Result<()> {
-        let r = (self.api.glyd_gpu_kv_prefill_bf16)(
+        let r = (self.api("glyd_gpu_kv_prefill_bf16")?.glyd_gpu_kv_prefill_bf16)(
             q as *const u16,
             q_stride,
             kc as *const u16,
@@ -1381,7 +1402,7 @@ impl Lib {
         ring: i64,
         cs: Stream,
     ) -> Result<()> {
-        let r = (self.api.glyd_gpu_kv_write)(
+        let r = (self.api("glyd_gpu_kv_write")?.glyd_gpu_kv_write)(
             key as *const u16,
             key_stride,
             value as *const u16,
@@ -1426,7 +1447,7 @@ impl Lib {
         out_v: u64,
         cs: Stream,
     ) -> Result<()> {
-        let r = (self.api.glyd_gpu_kv_unpack)(
+        let r = (self.api("glyd_gpu_kv_unpack")?.glyd_gpu_kv_unpack)(
             pool as *const u8,
             g.page_stride,
             pages as *const i32,
@@ -1464,7 +1485,7 @@ impl Lib {
         out: u64,
         cs: Stream,
     ) -> Result<()> {
-        let r = (self.api.glyd_gpu_kv_gather)(
+        let r = (self.api("glyd_gpu_kv_gather")?.glyd_gpu_kv_gather)(
             pool as *const u8,
             g.page_stride,
             pages as *const i32,
@@ -1492,9 +1513,9 @@ impl Lib {
         // SAFETY: a host out-pointer.
         let r = unsafe {
             if twelve {
-                (self.api.glyd_gpu_mma12_moe_workspace)(experts, o, cols, t, k, act, weighted as i64, &mut b)
+                (self.api("glyd_gpu_mma12_moe_workspace")?.glyd_gpu_mma12_moe_workspace)(experts, o, cols, t, k, act, weighted as i64, &mut b)
             } else {
-                (self.api.glyd_gpu_mma_moe_workspace)(experts, o, cols, t, k, act, weighted as i64, &mut b)
+                (self.api("glyd_gpu_mma_moe_workspace")?.glyd_gpu_mma_moe_workspace)(experts, o, cols, t, k, act, weighted as i64, &mut b)
             }
         };
         self.ck(call!("moe_workspace"), r)?;
@@ -1528,7 +1549,7 @@ impl Lib {
         let o = w.rows / experts;
         let (wf, nul) = (weights as *const c_void, std::ptr::null());
         let r = match w.words {
-            Words::Tiered { blocks, block_base, tiers } => (self.api.glyd_gpu_mma_moe_as)(
+            Words::Tiered { blocks, block_base, tiers } => (self.api("glyd_gpu_mma_moe_as")?.glyd_gpu_mma_moe_as)(
                 w.data as *const u8,
                 blocks as *const u8,
                 block_base as *const i32,
@@ -1554,7 +1575,7 @@ impl Lib {
                 whole.0,
                 whole.1,
             ),
-            Words::Twelve { exc, exc_base, sym } => (self.api.glyd_gpu_mma12_moe_as)(
+            Words::Twelve { exc, exc_base, sym } => (self.api("glyd_gpu_mma12_moe_as")?.glyd_gpu_mma12_moe_as)(
                 w.data as *const u8,
                 exc as *const u32,
                 exc_base as *const i32,
@@ -1612,7 +1633,7 @@ impl Lib {
         let Words::Tiered { blocks, block_base, tiers } = w.words else {
             return err("an expert cache's places of a 12-bit pack: the tiered layout alone is placed");
         };
-        let r = (self.api.glyd_gpu_mma_moe_placed_as)(
+        let r = (self.api("glyd_gpu_mma_moe_placed_as")?.glyd_gpu_mma_moe_placed_as)(
             w.data as *const u8,
             blocks as *const u8,
             block_base as *const i32,
@@ -1650,7 +1671,7 @@ impl Lib {
     pub(crate) unsafe fn library_f8_size(&self, h: bool, w: u64, ld: i64, o: i64, k: i64, heads: u64, ws: u64, ws_bytes: usize, cs: Stream) -> Result<i64> {
         self.library_f8h_told()?;
         let mut words = 0i64;
-        let f = if h { self.api.glyd_gpu_f8h_size } else { self.api.glyd_gpu_f8_size };
+        let f = if h { self.api("glyd_gpu_f8h_size")?.glyd_gpu_f8h_size } else { self.api("glyd_gpu_f8_size")?.glyd_gpu_f8_size };
         let r = f(w as *const u8, ld, o, k, heads as *mut u32, ws as *mut c_void, ws_bytes, &mut words, cs);
         self.ck(call!("f8_size"), r)?;
         Ok(words)
@@ -1660,7 +1681,8 @@ impl Lib {
     /// its copy (glyd_gpu_f8h_plain: the library's state for the process).
     fn library_f8h_told(&self) -> Result<()> {
         // SAFETY: a value argument.
-        let r = unsafe { (self.api.glyd_gpu_f8h_plain)(crate::fold::f8h_plain_choice().map_or(-1, |p| p as c_int)) };
+        let Some(api) = &self.api else { return Ok(()) };
+        let r = unsafe { (api.glyd_gpu_f8h_plain)(crate::fold::f8h_plain_choice().map_or(-1, |p| p as c_int)) };
         self.ck(call!("f8h_plain"), r)
     }
 
@@ -1669,7 +1691,7 @@ impl Lib {
     pub(crate) fn library_f8_size_workspace(&self, o: i64, k: i64) -> Result<usize> {
         let mut b = 0usize;
         // SAFETY: a host out-pointer.
-        let r = unsafe { (self.api.glyd_gpu_f8_size_workspace)(o, k, &mut b) };
+        let r = unsafe { (self.api("glyd_gpu_f8_size_workspace")?.glyd_gpu_f8_size_workspace)(o, k, &mut b) };
         self.ck(call!("f8_size_workspace"), r)?;
         Ok(b)
     }
@@ -1693,7 +1715,7 @@ impl Lib {
         cs: Stream,
     ) -> Result<()> {
         self.library_f8h_told()?;
-        let f = if h { self.api.glyd_gpu_f8h_pack } else { self.api.glyd_gpu_f8_pack };
+        let f = if h { self.api("glyd_gpu_f8h_pack")?.glyd_gpu_f8h_pack } else { self.api("glyd_gpu_f8_pack")?.glyd_gpu_f8_pack };
         let r = f(w as *const u8, ld, o, k, heads as *const u32, core as *mut u8, var as *mut u32, var_words, cs);
         self.ck(call!("f8_pack"), r)
     }
@@ -1705,7 +1727,7 @@ impl Lib {
     #[allow(clippy::too_many_arguments)]
     pub(crate) unsafe fn library_f8_unpack(&self, h: bool, core: u64, heads: u64, var: u64, o: i64, k: i64, out: u64, ld: i64, cs: Stream) -> Result<()> {
         self.library_f8h_told()?;
-        let f = if h { self.api.glyd_gpu_f8h_unpack } else { self.api.glyd_gpu_f8_unpack };
+        let f = if h { self.api("glyd_gpu_f8h_unpack")?.glyd_gpu_f8h_unpack } else { self.api("glyd_gpu_f8_unpack")?.glyd_gpu_f8_unpack };
         let r = f(core as *const u8, heads as *const u32, var as *const u32, o, k, out as *mut u8, ld, cs);
         self.ck(call!("f8_unpack"), r)
     }
@@ -1715,7 +1737,7 @@ impl Lib {
         self.library_f8h_told()?;
         let mut b = 0usize;
         // SAFETY: a host out-pointer.
-        let r = unsafe { (self.api.glyd_gpu_f8_linear_workspace)(n, k, m, &mut b) };
+        let r = unsafe { (self.api("glyd_gpu_f8_linear_workspace")?.glyd_gpu_f8_linear_workspace)(n, k, m, &mut b) };
         self.ck(call!("f8_linear_workspace"), r)?;
         Ok(b)
     }
@@ -1745,7 +1767,7 @@ impl Lib {
         cs: Stream,
     ) -> Result<()> {
         self.library_f8h_told()?;
-        let f = if h { self.api.glyd_gpu_f8h_linear } else { self.api.glyd_gpu_f8_linear };
+        let f = if h { self.api("glyd_gpu_f8h_linear")?.glyd_gpu_f8h_linear } else { self.api("glyd_gpu_f8_linear")?.glyd_gpu_f8_linear };
         let r = f(
             core as *const u8,
             heads as *const u32,
@@ -1773,7 +1795,7 @@ impl Lib {
         self.library_f8h_told()?;
         let mut b = 0usize;
         // SAFETY: a host out-pointer.
-        let r = unsafe { (self.api.glyd_gpu_f8_moe_workspace)(n, k, m, slots, &mut b) };
+        let r = unsafe { (self.api("glyd_gpu_f8_moe_workspace")?.glyd_gpu_f8_moe_workspace)(n, k, m, slots, &mut b) };
         self.ck(call!("f8_moe_workspace"), r)?;
         Ok(b)
     }
@@ -1806,7 +1828,7 @@ impl Lib {
         cs: Stream,
     ) -> Result<()> {
         self.library_f8h_told()?;
-        let f = if h { self.api.glyd_gpu_f8h_moe } else { self.api.glyd_gpu_f8_moe };
+        let f = if h { self.api("glyd_gpu_f8h_moe")?.glyd_gpu_f8h_moe } else { self.api("glyd_gpu_f8_moe")?.glyd_gpu_f8_moe };
         let r = f(
             core as *const u8,
             heads as *const u32,
@@ -1838,7 +1860,7 @@ impl Lib {
     /// # Safety
     /// As `GpuOps::moe_way`.
     pub(crate) unsafe fn library_moe_way(&self, ids: u64, pairs: i64, experts: i64, plan: u64, cs: Stream) -> Result<()> {
-        let r = (self.api.glyd_gpu_moe_way)(ids as *const i64, pairs, experts, plan as *mut i32, cs);
+        let r = (self.api("glyd_gpu_moe_way")?.glyd_gpu_moe_way)(ids as *const i64, pairs, experts, plan as *mut i32, cs);
         self.ck(call!("moe_way"), r)
     }
 
@@ -1848,7 +1870,7 @@ impl Lib {
     /// As `GpuOps::unpack`.
     pub(crate) unsafe fn library_unpack(&self, w: &Pack, row0: i64, rows: i64, out: u64, cs: Stream) -> Result<()> {
         let r = match w.words {
-            Words::Tiered { blocks, block_base, tiers } => (self.api.glyd_gpu_mma_unpack)(
+            Words::Tiered { blocks, block_base, tiers } => (self.api("glyd_gpu_mma_unpack")?.glyd_gpu_mma_unpack)(
                 w.data as *const u8,
                 blocks as *const u8,
                 block_base as *const i32,
@@ -1860,7 +1882,7 @@ impl Lib {
                 0,
                 cs,
             ),
-            Words::Twelve { exc, exc_base, sym } => (self.api.glyd_gpu_mma12_unpack)(
+            Words::Twelve { exc, exc_base, sym } => (self.api("glyd_gpu_mma12_unpack")?.glyd_gpu_mma12_unpack)(
                 w.data as *const u8,
                 exc as *const u32,
                 exc_base as *const i32,
@@ -1893,7 +1915,7 @@ impl GpuOps for Lib {
                 return Ok(b);
             }
         }
-        self.library_linear_workspace(twelve, o, k, m)
+        self.library_linear_workspace(twelve, o, k, m, -1)
     }
 
     unsafe fn linear(&self, w: &Pack, x: u64, m: i64, y: u64, ws: u64, ws_bytes: usize, done: u64, cs: Stream) -> Result<()> {
@@ -1901,7 +1923,7 @@ impl GpuOps for Lib {
         if crate::fold::on() && crate::fold::linear(w, x, m, y, ws, ws_bytes, done, cs)? {
             return Ok(());
         }
-        self.library_linear(w, x, m, y, ws, ws_bytes, done, cs)
+        self.library_linear(w, x, m, y, ws, ws_bytes, done, -1, cs)
     }
 
     unsafe fn f8_size(&self, h: bool, w: u64, ld: i64, o: i64, k: i64, heads: u64, ws: u64, ws_bytes: usize, cs: Stream) -> Result<i64> {
@@ -2161,8 +2183,11 @@ impl GpuOps for Lib {
     }
 
     fn kv_floor_set(&self, floor: i32) -> Result<()> {
-        // (both: the engine's decode plans by it, and the library's, which the engine's is held to)
+        // (both: the engine's decode plans by it, and the library's where one is loaded, which the engine's is held to)
         crate::fold::kv_floor_set(floor)?;
+        if self.api.is_none() {
+            return Ok(());
+        }
         self.library_kv_floor_set(floor)
     }
 
@@ -2354,7 +2379,7 @@ impl Lib {
     pub fn oracle_gpu(&self) -> Result<i32> {
         let mut g = 0;
         // SAFETY: a host out-pointer.
-        let r = unsafe { (self.api.glyd_gpu_gpu)(&mut g) };
+        let r = unsafe { (self.api("glyd_gpu_gpu")?.glyd_gpu_gpu)(&mut g) };
         self.ck(call!("gpu"), r)?;
         Ok(g)
     }
@@ -2364,9 +2389,9 @@ impl Lib {
         // SAFETY: host out-pointers.
         let s = unsafe {
             if twelve {
-                (self.api.glyd_gpu_mma12_way)(gpu, o, k, m, &mut r, &mut last)
+                (self.api("glyd_gpu_mma12_way")?.glyd_gpu_mma12_way)(gpu, o, k, m, &mut r, &mut last)
             } else {
-                (self.api.glyd_gpu_mma_way)(gpu, o, k, m, &mut r, &mut last)
+                (self.api("glyd_gpu_mma_way")?.glyd_gpu_mma_way)(gpu, o, k, m, &mut r, &mut last)
             }
         };
         self.ck(call!("way"), s)?;
@@ -2376,7 +2401,7 @@ impl Lib {
     pub fn oracle_kv_page_bytes(&self, h: i64, d: i64, a: i64) -> Result<i64> {
         let mut b = 0;
         // SAFETY: a host out-pointer.
-        let r = unsafe { (self.api.glyd_gpu_kv_leaf_bytes)(h, d, a, &mut b) };
+        let r = unsafe { (self.api("glyd_gpu_kv_leaf_bytes")?.glyd_gpu_kv_leaf_bytes)(h, d, a, &mut b) };
         self.ck(call!("kv_leaf_bytes"), r)?;
         Ok(b)
     }
@@ -2384,7 +2409,7 @@ impl Lib {
     pub fn oracle_kv_image_bytes(&self, h: i64, d: i64, a: i64) -> Result<i64> {
         let mut b = 0;
         // SAFETY: a host out-pointer.
-        let r = unsafe { (self.api.glyd_gpu_kv_image_bytes)(h, d, a, &mut b) };
+        let r = unsafe { (self.api("glyd_gpu_kv_image_bytes")?.glyd_gpu_kv_image_bytes)(h, d, a, &mut b) };
         self.ck(call!("kv_image_bytes"), r)?;
         Ok(b)
     }
@@ -2392,7 +2417,7 @@ impl Lib {
     pub fn oracle_kv_escape_bytes(&self, nchunks: i64) -> Result<i64> {
         let mut b = 0;
         // SAFETY: a host out-pointer.
-        let r = unsafe { (self.api.glyd_gpu_kv_extra_bytes)(nchunks, &mut b) };
+        let r = unsafe { (self.api("glyd_gpu_kv_extra_bytes")?.glyd_gpu_kv_extra_bytes)(nchunks, &mut b) };
         self.ck(call!("kv_extra_bytes"), r)?;
         Ok(b)
     }
@@ -2400,7 +2425,7 @@ impl Lib {
     pub fn oracle_kv_raw_bytes(&self, nslabs: i64, h: i64) -> Result<i64> {
         let mut b = 0;
         // SAFETY: a host out-pointer.
-        let r = unsafe { (self.api.glyd_gpu_kv_second_bytes)(nslabs, h, &mut b) };
+        let r = unsafe { (self.api("glyd_gpu_kv_second_bytes")?.glyd_gpu_kv_second_bytes)(nslabs, h, &mut b) };
         self.ck(call!("kv_second_bytes"), r)?;
         Ok(b)
     }
@@ -2408,7 +2433,7 @@ impl Lib {
     pub fn oracle_kv_decode_workspace(&self, b: i64, h: i64, g: i64, d: i64, splits: i64) -> Result<usize> {
         let mut n = 0usize;
         // SAFETY: a host out-pointer.
-        let r = unsafe { (self.api.glyd_gpu_kv_decode_workspace)(b, h, g, d, splits, &mut n) };
+        let r = unsafe { (self.api("glyd_gpu_kv_decode_workspace")?.glyd_gpu_kv_decode_workspace)(b, h, g, d, splits, &mut n) };
         self.ck(call!("kv_decode_workspace"), r)?;
         Ok(n)
     }
@@ -2559,5 +2584,19 @@ mod tests {
         let words = "cuMemAlloc: out of memory (2)".to_string();
         let far = std::thread::spawn(move || Error(words)).join().unwrap();
         assert!(far.kind == Kind::Other && far.status() == Some(2) && far.out_of_memory());
+    }
+
+    /// With no library (`GLYD_GPU_LIB=none`) the engine says so, and a call its own kernels did not take fails naming the library's function it needed,
+    /// before anything is launched; telling a library of layout H's choice is nothing to do.
+    #[test]
+    fn no_library_fails_in_words_naming_the_call() {
+        let own = Lib::own();
+        assert!(!own.loaded() && own.cuda_version().is_none() && own.path.contains("GLYD_GPU_LIB=none"));
+        // SAFETY: refused before any pointer is read.
+        let e = unsafe { own.library_moe_way(0, 8, 8, 0, Stream(std::ptr::null_mut())) }.unwrap_err();
+        assert!(e.msg.starts_with("glyd_gpu_moe_way: ") && e.msg.contains("no GPU library is loaded"), "{e:?}");
+        let e = own.library_linear_workspace(true, 64, 64, 16, -1).unwrap_err();
+        assert!(e.msg.starts_with("glyd_gpu_mma12_linear_workspace: "), "{e:?}");
+        assert!(own.library_f8h_told().is_ok());
     }
 }

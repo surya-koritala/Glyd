@@ -9,10 +9,12 @@
 //! - The formats the engine reads a saved directory in, as the glyd/* repos and the engine's cache hold them (`packcheck --engine`, the GPU job): glyd-v7 at penguin,
 //!   kestrel, swift and wren (glyd-v4 and glyd-v3 with the earlier dense engine's `engine.safetensors` went with that engine, R3c #139: such a cache is packed again). Each is
 //!   made here from a logits case's random model of a family published in it (Qwen3.5's layout, Gemma 4, the glyd/nemotron-3-* repos' layout; the plain dense kind for the engine's cache) by the packer that made those repos (`pack::run`), loaded from the saved directory as
-//!   `run` loads a pre-packed repo, and its rows held to the case's logits fixtures at that level (`tests/logits`, src/logits.rs): the same bits as the engine's own run
-//!   of the model packed as it loads (`CASE.GPU[.LEVEL].json.gz`, on the GPU generation that recorded them) and within the bound of the case's reference. And glyd-v7 at
+//!   `run` loads a pre-packed repo, in the layout it was saved in; its rows held to the same bits as the engine's own run of the model packed as it loads in that layout,
+//!   made in the same run (on any GPU generation, nothing recorded: what a saved directory is for), and within the bound of the case's reference at that level where it
+//!   has one (`tests/logits`, src/logits.rs: another implementation's numbers, which say the logits are right to that bound). And glyd-v7 at
 //!   hummingbird (glyd/nemotron-3-hummingbird: the experts in codebook rows), from a random model of that repo's layout with latent experts and a random export of them: no level packs it as
-//!   it loads, so its digest is the engine's own bits on the saved directory (`HB_DIGEST`).
+//!   it loads, so its digest is the engine's own bits on the saved directory, one file a GPU generation (`hb_digest`: `tests/packs/nemotron-h-hb.smNN.json.gz`,
+//!   recorded by `packcheck --engine --record` on a GPU of that generation). A GPU whose generation has no digest fails the line: nothing was compared.
 //!
 //! Comparable mechanisms (llama.cpp's GGUF: a type id is never reused and a file names its version, which a
 //! reader refuses past what it knows; vLLM: a checkpoint's quantization_config picks the reader). Glyd's saves name
@@ -278,8 +280,12 @@ pub fn check_saved(decoder: &Decoder) -> Result<(Vec<String>, Vec<String>)> {
 
 /// `packcheck [--gpu [--device N]] [--record] [--engine [--scratch DIR]]`: every saved checkpoint of tests/data/packs on the CPU reference against its digest (its packs decoded on
 /// the CPU, or by the GPU library with --gpu); --engine the formats the engine reads, each made from a random model, loaded from the saved directory and held to its fixtures
-/// (`check_engine`). --record writes the digests instead (from the CPU's decode; with --engine, the Hummingbird level's from this GPU). Exit 1 where one is not within.
+/// (`check_engine`). --record writes the saved checkpoints' digests instead (from the CPU's decode); --engine --record writes the Hummingbird level's digest of this GPU's
+/// generation and no other (a recording on a GPU leaves the CPU's digests as they are). Exit 1 where one is not within.
 pub fn check(a: &crate::args::Args) -> Result<()> {
+    if a.has("record") && a.has("engine") {
+        return with_scratch(a, |scratch| hummingbird(scratch, true).map(|_| ()));
+    }
     if a.has("record") {
         let mut all = FixtureDigests::new();
         for (name, dir) in fixtures()? {
@@ -294,9 +300,6 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         }
         write_tensor_digests(&all)?;
         println!("{TENSORS}: the tensors of {} fixtures", all.len());
-        if a.has("engine") {
-            with_scratch(a, |scratch| hummingbird(scratch, true).map(|_| ()))?;
-        }
         return Ok(());
     }
     let mut failed = Vec::new();
@@ -311,13 +314,28 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     failed.extend(f);
     if a.has("engine") {
         let fixtures = a.flag("fixtures").map(PathBuf::from).unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits"));
-        failed.extend(with_scratch(a, |scratch| {
-            let mut f = check_engine(scratch, &fixtures)?;
-            if !hummingbird(scratch, false)? {
-                f.push("nemotron-h-hb".into());
+        let (f, same, tally) = with_scratch(a, |scratch| {
+            let (mut f, same, mut tally) = check_engine(scratch, &fixtures)?;
+            // (the Hummingbird level's digest is the engine's own bits: a pin where it is compared)
+            match hummingbird(scratch, false)? {
+                Some(true) => tally.add(logits::Held::Pin),
+                Some(false) => {
+                    tally.add(logits::Held::Pin);
+                    f.push("nemotron-h-hb".into());
+                }
+                None => {
+                    tally.none.push(("nemotron-h-hb".into(), "no digest of this GPU generation".into()));
+                    f.push("nemotron-h-hb".into());
+                }
             }
-            Ok(f)
-        })?);
+            Ok((f, same, tally))
+        })?;
+        println!(
+            "the formats the engine reads: {same} of {} saved directories the bits of the model packed as it loads; the comparisons beside: {}",
+            SAVED.len(),
+            tally.summary()
+        );
+        failed.extend(f);
     }
     if failed.is_empty() {
         println!("every pack format loads to its recorded logits");
@@ -347,7 +365,9 @@ fn threads() -> usize {
 }
 
 /// The formats the engine reads a saved directory in, each as a published repo or the engine's cache holds it: the logits case of a family published in it, the level it
-/// runs at, the layout `pack::run` saves it in, and what it is.
+/// runs at, the layout `pack::run` saves it in, and what it is. Each row is held to the engine's own run of its model packed as it loads in the same layout, bit for bit
+/// (`check_engine`), and to the bound of its case's reference where one bounds the level: the plain dense kind's and the Qwen3.5 layout's have one, Gemma 4's and
+/// the glyd/nemotron-3-* repos' layout's levels do not.
 pub const SAVED: &[(&str, &str, &str, &str)] = &[
     ("dense", "penguin", "mma", "glyd-v7 at penguin: a plain dense model in the engine's cache (the executor's, src/dynamic/dense.rs)"),
     ("qwen35", "kestrel", "i6", "glyd-v7 i6: glyd/Qwen3.5-*, Qwen3.6-27B and Qwen3.8-27B -kestrel"),
@@ -358,8 +378,6 @@ pub const SAVED: &[(&str, &str, &str, &str)] = &[
     ("gemma4", "swift", "i5", "glyd-v7 i5: Gemma 4 at swift"),
     ("gemma4", "wren", "i4", "glyd-v7 i4: Gemma 4 at wren (a checkpoint not trained to four bits)"),
     ("nemotron-h", "kestrel", "i6", "glyd-v7 i6: the published glyd/nemotron-3-* repos' format at kestrel"),
-    ("nemotron-h", "swift", "i5", "glyd-v7 i5: the same at swift"),
-    ("nemotron-h", "wren", "i4", "glyd-v7 i4: the same at wren"),
 ];
 
 /// The case's fixtures (`tests/logits`, or --fixtures DIR) that bound `level`, and the bound each gives it there.
@@ -380,104 +398,130 @@ fn level_fixtures(dir: &Path, case: &str, level: &str) -> Result<Vec<(PathBuf, F
     Ok(v)
 }
 
-/// `--engine`: each of `SAVED` made from its case's random model (made once in `scratch`), packed by `pack::run` into a directory of its own, loaded from it by the case's engine at
-/// the level, and its rows held to every fixture of the case in `fixtures` that bounds the level: the bits of one recorded on this GPU generation (one of another is skipped),
-/// the bound of a reference's. A format with no such fixture fails: it has no digest. The names that failed.
-fn check_engine(scratch: &Path, fixtures: &Path) -> Result<Vec<String>> {
+/// `--engine`: each of `SAVED` made from its case's random model (made once in `scratch`), packed by `pack::run` into a directory of its own and loaded from it by the
+/// case's engine at the level, in the layout it was saved in (`logits::engine_at`). Its rows are held, bit for bit, to the engine's own run of the same model packed as it
+/// loads in that layout, made in this run: what a saved directory is for (the same model as the engine makes of the checkpoint), on any GPU generation, with nothing
+/// recorded. And to the bound of every reference of the case in `fixtures` that bounds the level (another implementation's numbers: `logits::Held::Reference`). The
+/// engine's own recorded bits (`CASE.smNN[.LEVEL].json.gz`, pins) are `logitscheck`'s, not held here. The names that failed, the rows held to the model packed as it
+/// loads, and the reference comparisons counted (`logits::Tally`).
+fn check_engine(scratch: &Path, fixtures: &Path) -> Result<(Vec<String>, usize, logits::Tally)> {
     let gpu = logits::gpu_label()?;
-    let mut failed = Vec::new();
-    {
-        for &(case, level, layout, what) in SAVED {
-            let c = logits::find_case(case)?;
-            let model = scratch.join(case);
-            if !model.join("config.json").exists() {
-                match c.weights {
-                    logits::Weights::Random(make) => make(&model)?,
-                    logits::Weights::Hub(id) => return err(format!("{case}: a Hub model ({id}), not a random one")),
-                }
+    let (mut failed, mut same) = (Vec::new(), 0usize);
+    let mut tally = logits::Tally::default();
+    for &(case, level, layout, what) in SAVED {
+        let c = logits::find_case(case)?;
+        let model = scratch.join(case);
+        if !model.join("config.json").exists() {
+            match c.weights {
+                logits::Weights::Random(make) => make(&model)?,
+                logits::Weights::Hub(id) => return err(format!("{case}: a Hub model ({id}), not a random one")),
             }
-            let out = scratch.join(format!("{case}-{layout}"));
-            let l = glyd_gpu::save::Layout::by_name(layout).ok_or_else(|| Error(format!("layout {layout}")))?;
-            if !out.join("glyd.json").exists() {
-                crate::pack::run_with(&model.to_string_lossy(), &out, threads(), l, true)?;
+        }
+        let out = scratch.join(format!("{case}-{layout}"));
+        let l = glyd_gpu::save::Layout::by_name(layout).ok_or_else(|| Error(format!("layout {layout}")))?;
+        if !out.join("glyd.json").exists() {
+            crate::pack::run_with(&model.to_string_lossy(), &out, threads(), l, true)?;
+        }
+        let format = std::fs::read_to_string(out.join("glyd.json"))
+            .ok()
+            .and_then(|t| glyd_gpu::json::parse(&t).ok())
+            .and_then(|m| m.get("format").and_then(glyd_gpu::json::Value::as_str).map(str::to_string))
+            .unwrap_or_default();
+        let name = format!("{case}-{layout}");
+        // (the model packed as it loads, then the saved directory: one engine on the GPU at a time)
+        let (prompt, decode, long) = logits::standard_tokens(c.vocab);
+        let want = {
+            let mut live = logits::engine_at(case, &model, level, l)?;
+            logits::drive(live.as_mut(), &prompt, &decode, &long)?
+        };
+        let mut run = logits::engine_at(case, &out, level, l)?;
+        let got = logits::drive(run.as_mut(), &prompt, &decode, &long)?;
+        let live = Fixture {
+            case: case.into(),
+            family: c.family.into(),
+            model: format!("random {case} model, packed as it loads in {layout}"),
+            provenance: BTreeMap::new(),
+            gpu: Some(gpu.clone()),
+            bounds: vec![LevelBound { level: level.into(), bound: Bound::Bits }],
+            prompt,
+            decode,
+            long,
+            rows: want.iter().map(|r| Row::from_logits(r)).collect::<Result<_>>()?,
+        };
+        let v = logits::compare(&live, &Bound::Bits, &got);
+        println!(
+            "{} {name:16} {format} at {level} ({what}) against the model packed as it loads in {layout}, this run: bits-equal {}/{}, best token {}/{}",
+            if v.ok { "PASS" } else { "FAIL" },
+            v.identical,
+            v.rows,
+            v.top1.0,
+            v.top1.1
+        );
+        for n in v.notes.iter().take(4) {
+            println!("       {n}");
+        }
+        if v.ok {
+            same += 1;
+        } else {
+            failed.push(name.clone());
+        }
+        // (and every reference of the case that bounds the level; a pin is logitscheck's)
+        for (path, fx, bound) in level_fixtures(fixtures, case, level)?.into_iter().filter(|x| x.1.held() == logits::Held::Reference) {
+            let rows = logits::drive(run.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
+            let v = logits::compare(&fx, &bound, &rows);
+            tally.add(logits::Held::Reference);
+            println!(
+                "{} {name:16} {format} at {level} against {} ({}): bits-equal {}/{}, KL mean {:.2e} max {:.2e}, best token {}/{}",
+                if v.ok { "PASS" } else { "FAIL" },
+                path.file_name().unwrap_or_default().to_string_lossy(),
+                logits::Held::Reference.tag(),
+                v.identical,
+                v.rows,
+                v.mean_kl,
+                v.max_kl,
+                v.top1.0,
+                v.top1.1
+            );
+            for n in v.notes.iter().take(4) {
+                println!("       {n}");
             }
-            let format = std::fs::read_to_string(out.join("glyd.json"))
-                .ok()
-                .and_then(|t| glyd_gpu::json::parse(&t).ok())
-                .and_then(|m| m.get("format").and_then(glyd_gpu::json::Value::as_str).map(str::to_string))
-                .unwrap_or_default();
-            let fxs = level_fixtures(fixtures, case, level)?;
-            let name = format!("{case}-{layout}");
-            if fxs.is_empty() {
-                println!(
-                    "FAIL {name:16} {format} at {level}: no fixture of {case} bounds {level} (logitsrecord {case} --from engine --level {level} records one)"
-                );
-                failed.push(name);
-                continue;
-            }
-            let mut run = (c.engine)(&out, level)?;
-            let mut ran = 0;
-            for (path, fx, bound) in fxs {
-                if fx.gpu.as_ref().is_some_and(|g| *g != gpu) {
-                    println!(
-                        "SKIP {name:16} {}: its bits are {}'s, this GPU is {gpu}",
-                        path.file_name().unwrap_or_default().to_string_lossy(),
-                        fx.gpu.as_deref().unwrap_or("")
-                    );
-                    continue;
-                }
-                let rows = logits::drive(run.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
-                let v = logits::compare(&fx, &bound, &rows);
-                ran += 1;
-                println!(
-                    "{} {name:16} {format} at {level} ({what}) against {}: bits-equal {}/{}, KL mean {:.2e} max {:.2e}, best token {}/{}",
-                    if v.ok { "PASS" } else { "FAIL" },
-                    path.file_name().unwrap_or_default().to_string_lossy(),
-                    v.identical,
-                    v.rows,
-                    v.mean_kl,
-                    v.max_kl,
-                    v.top1.0,
-                    v.top1.1
-                );
-                for n in v.notes.iter().take(4) {
-                    println!("       {n}");
-                }
-                if !v.ok {
-                    failed.push(name.clone());
-                }
-            }
-            if ran == 0 {
-                println!("FAIL {name:16} {format} at {level}: no fixture of this GPU generation or of a reference bounds it");
-                failed.push(name);
+            if !v.ok && !failed.contains(&name) {
+                failed.push(name.clone());
             }
         }
     }
-    Ok(failed)
+    Ok((failed, same, tally))
 }
 
-/// Where a digest the check holds a format to is not recorded (and this is no recording): the line that says so, a failure, before any model is made or loaded.
+/// Where the digest the check holds the Hummingbird level to on this GPU generation is not recorded (and this is no recording): the line that says so, a failure, before
+/// any model is made or loaded. A digest of another generation does not stand in: its bits are that generation's kernels', and a line that compared nothing is not a pass.
 fn digest_missing(path: &Path, record: bool) -> Option<String> {
     (!record && !path.exists()).then(|| {
         format!(
-            "FAIL nemotron-h-hb     glyd-v7 at hummingbird: no digest recorded ({}): packcheck --engine --record on the GPU generation the GPU job runs on",
+            "FAIL nemotron-h-hb     glyd-v7 at hummingbird: no digest of this GPU generation recorded ({}), so nothing is compared: packcheck --engine --record on a GPU of it",
             path.file_name().unwrap_or_default().to_string_lossy()
         )
     })
 }
 
-/// The Hummingbird level's digest: the engine's own bits (no level packs it as it loads, its codes being an export's), on the GPU generation that recorded them.
-pub const HB_DIGEST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/packs/nemotron-h-hb.json.gz");
+/// The Hummingbird level's digest on the GPU generation `gpu` (`logits::gpu_label`: sm89): the engine's own bits (no level packs it as it loads, its codes being an
+/// export's), which another generation's kernels do not make to the last bit, so each generation has its own file, as the logits fixtures of an engine's bits do.
+pub fn hb_digest(gpu: &str) -> PathBuf {
+    Path::new(DIGESTS).join(format!("nemotron-h-hb.{gpu}.json.gz"))
+}
 
 /// The Hummingbird level's saved format, as the published glyd/nemotron-3-hummingbird holds it (a compatibility check of that repo's format, no model's): a random
 /// model of its layout with latent experts (`kcheck_nh::random`, a latent of 1,024, 16
 /// experts), a random export of its experts (`hbpack::toy_export`, as `hbtoy` makes one: 40 percent at three bits, the rest at two) and the glyd-v7 directory `hbpack::run`
-/// saves from them, loaded as `run` loads the repo; its rows against `HB_DIGEST` (written where `record`). Whether it passed (a digest of another GPU generation: skipped).
-fn hummingbird(scratch: &Path, record: bool) -> Result<bool> {
+/// saves from them, loaded as `run` loads the repo; its rows against this GPU generation's digest (`hb_digest`, written where `record`). Whether it passed; None where
+/// nothing was compared (no digest of this generation, or one that names another): a failure too.
+fn hummingbird(scratch: &Path, record: bool) -> Result<Option<bool>> {
     use glyd_gpu::save::Layout;
-    if let Some(line) = digest_missing(Path::new(HB_DIGEST), record) {
+    let gpu = logits::gpu_label()?;
+    let digest = hb_digest(&gpu);
+    if let Some(line) = digest_missing(&digest, record) {
         println!("{line}");
-        return Ok(false);
+        return Ok(None);
     }
     let (model, export, out) = (scratch.join("nemotron-h-latent"), scratch.join("nemotron-h-export"), scratch.join("nemotron-h-hb"));
     if !model.join("config.json").exists() {
@@ -487,7 +531,6 @@ fn hummingbird(scratch: &Path, record: bool) -> Result<bool> {
         crate::hbpack::toy_export(&crate::nemotron::ConfigNemotronH::load(&model)?, &export, 1, 40)?;
         crate::hbpack::run(&model.to_string_lossy(), &out, threads(), &export)?;
     }
-    let gpu = logits::gpu_label()?;
     let o = crate::dynamic::Opts { ctx: 1024, chunk: 64, graph: true, device: 0, layout: Some(Layout::Hummingbird) };
     let mut run = crate::dynamic::nemotron::load(&out, &o, Layout::Hummingbird)?;
     let (prompt, decode, long) = (logits::token_list(24, 4096, 0), logits::token_list(12, 4096, 24), logits::token_list(150, 4096, 0));
@@ -515,20 +558,25 @@ fn hummingbird(scratch: &Path, record: bool) -> Result<bool> {
             long,
             rows: rows.iter().map(|r| Row::from_logits(r)).collect::<Result<_>>()?,
         };
-        fx.write(Path::new(HB_DIGEST))?;
-        println!("{HB_DIGEST}: {} rows", fx.rows.len());
-        return Ok(true);
+        fx.write(&digest)?;
+        println!("{}: {} rows", digest.display(), fx.rows.len());
+        return Ok(Some(true));
     }
-    let fx = Fixture::read(Path::new(HB_DIGEST))?;
+    let fx = Fixture::read(&digest)?;
     if fx.gpu.as_deref() != Some(gpu.as_str()) {
-        println!("SKIP nemotron-h-hb     glyd-v7 at hummingbird: its digest's bits are {}'s, this GPU is {gpu}", fx.gpu.as_deref().unwrap_or("none"));
-        return Ok(true);
+        println!(
+            "FAIL nemotron-h-hb     glyd-v7 at hummingbird: {} says its bits are {}'s, this GPU is {gpu}",
+            digest.file_name().unwrap_or_default().to_string_lossy(),
+            fx.gpu.as_deref().unwrap_or("no generation")
+        );
+        return Ok(None);
     }
     let v = logits::compare(&fx, &Bound::Bits, &rows);
     println!(
-        "{} nemotron-h-hb     glyd-v7 at hummingbird (glyd/nemotron-3-hummingbird: the experts in codebook rows c3r and c2r) against {}: bits-equal {}/{}, best token {}/{}",
-        if v.ok { "PASS" } else { "FAIL" },
-        Path::new(HB_DIGEST).file_name().unwrap_or_default().to_string_lossy(),
+        "{} nemotron-h-hb     glyd-v7 at hummingbird (glyd/nemotron-3-hummingbird: the experts in codebook rows c3r and c2r) against {} ({}): bits-equal {}/{}, best token {}/{}",
+        if v.ok { logits::Held::Pin.passed() } else { "FAIL" },
+        digest.file_name().unwrap_or_default().to_string_lossy(),
+        logits::Held::Pin.tag(),
         v.identical,
         v.rows,
         v.top1.0,
@@ -537,15 +585,13 @@ fn hummingbird(scratch: &Path, record: bool) -> Result<bool> {
     for n in v.notes.iter().take(4) {
         println!("       {n}");
     }
-    Ok(v.ok)
+    Ok(Some(v.ok))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Every saved checkpoint of tests/data/packs loads (every check of `glyd verify`, then its packs decoded on the CPU) and, where it holds the tiny dense decoder, its rows on the CPU
-    /// reference are its recorded digest's: on every merge (ci.yml's engine tests).
     /// A format whose digest is not recorded fails the check with a line that says how to record it, and does not stop the other formats' checks.
     #[test]
     fn a_digest_not_recorded_fails_and_says_how_to_record_it() {
@@ -553,8 +599,14 @@ mod tests {
         let line = digest_missing(&gone, false).unwrap();
         assert!(line.starts_with("FAIL nemotron-h-hb") && line.contains("packcheck --engine --record"), "{line}");
         assert!(digest_missing(&gone, true).is_none() && digest_missing(Path::new(env!("CARGO_MANIFEST_DIR")), false).is_none());
+        // (a generation's digest is its own file: another generation's never stands in for it, so a GPU with none recorded fails the line)
+        assert_ne!(hb_digest("sm86"), hb_digest("sm89"));
+        assert!(hb_digest("sm89").ends_with("tests/packs/nemotron-h-hb.sm89.json.gz"));
+        assert!(digest_missing(&hb_digest("sm00"), false).is_some());
     }
 
+    /// Every saved checkpoint of tests/data/packs loads (every check of `glyd verify`, then its packs decoded on the CPU) and, where it holds the tiny dense decoder, its rows on the CPU
+    /// reference are its recorded digest's: on every merge (ci.yml's engine tests).
     #[test]
     fn every_saved_pack_format_loads_to_its_recorded_logits() {
         let (lines, failed) = check_saved(&Decoder::Cpu).unwrap();

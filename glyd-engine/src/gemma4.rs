@@ -126,6 +126,7 @@ impl ConfigG4 {
         let mut eos = eos;
         // (generation_config adds <|tool_response> (50): the model hands a tool call back to its caller)
         if let Some(gtext) = gen {
+            // (a file that is there and does not parse is an error: read as none, its end tokens would be dropped and a reply would not stop at them)
             let gc = serde_json::from_str::<Value>(gtext).map_err(|e| Error(format!("generation_config.json: {e}")))?;
             if let Some(Value::Array(a)) = gc.get("eos_token_id") {
                 for x in a.iter().filter_map(Value::as_u64) {
