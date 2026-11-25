@@ -181,6 +181,12 @@ mod tests {
         refused(&|m| m.router.logit_scale = 2.0, "logit scale");
         refused(&|m| m.router.bias = true, "choice bias");
         refused(&|m| m.expert.bias = true, "no biases");
-        refused(&|m| m.expert.act = kinds::Act::Gelu, "SwiGLU");
+        refused(
+            &|m| {
+                m.expert.act = kinds::Act::Gelu;
+                m.shared = Some(m.expert);
+            },
+            "SwiGLU",
+        );
     }
 }
