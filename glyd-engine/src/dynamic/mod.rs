@@ -767,6 +767,10 @@ impl Default for Opts {
 /// The head's rows as `Dyn::head_out` reads them: each row's greedy token and its logit, and the rows' logits as bf16 words.
 pub type HeadOut = (Vec<(u32, f32)>, Vec<u16>);
 
+/// One mixture-of-experts call as `Dyn::trace_routes` records it: its layer, the experts a row takes (k), its rows' experts ([rows, k]) and its
+/// router's input rows (bf16, [rows, the input's width]).
+pub type Routes = (usize, usize, Vec<i64>, Vec<u16>);
+
 /// A draft model to give `Dyn::new`: its directory (bf16, packed here), its description, and its tokens a round.
 pub struct DraftSpec<'a> {
     pub dir: &'a Path,
@@ -1253,9 +1257,9 @@ pub struct Dyn {
     trace: std::cell::RefCell<Option<Vec<Vec<u16>>>>,
     /// Where Some: the layer whose operations each eager pass records (`trace_ops`), and after each of them its name and the bf16 values of the slots `TRACED`.
     op_trace: std::cell::RefCell<Option<(usize, Vec<(String, Vec<Vec<u16>>)>)>>,
-    /// Where Some: each eager pass adds, after each mixture-of-experts operation whose experts are all on the GPU, its layer and its router's choices
-    /// (`trace_routes`).
-    route_trace: std::cell::RefCell<Option<Vec<(usize, usize, Vec<i64>)>>>,
+    /// Where Some: each eager pass adds, after each mixture-of-experts operation whose experts are all on the GPU, its layer, its router's choices
+    /// and its router's input rows (`trace_routes`).
+    route_trace: std::cell::RefCell<Option<Vec<Routes>>>,
     picks: Option<picked::PickRun>,
     /// The latent attentions' scratch, where the model has one.
     mla: Option<mla::MlaRun>,
@@ -1476,9 +1480,9 @@ impl Dyn {
     }
 
     /// The routers' choices in the passes run between `trace_routes(true)` and `trace_routes(false)`, which returns them: for each mixture-of-experts
-    /// operation in the order run, its layer, the experts a row takes (k) and its rows' experts ([rows, k], each row's in the router's order). A layer
-    /// whose experts are in a cache that routes on its own adds nothing.
-    pub fn trace_routes(&self, on: bool) -> Vec<(usize, usize, Vec<i64>)> {
+    /// operation in the order run, its layer, the experts a row takes (k), its rows' experts ([rows, k], each row's in the router's order) and the
+    /// router's input as the operation read it (bf16, [rows, its width]). A layer whose experts are in a cache that routes on its own adds nothing.
+    pub fn trace_routes(&self, on: bool) -> Vec<Routes> {
         std::mem::replace(&mut *self.route_trace.borrow_mut(), on.then(Vec::new)).unwrap_or_default()
     }
 
@@ -1497,8 +1501,21 @@ impl Dyn {
         Ok((!v.is_empty()).then_some(v))
     }
 
-    /// `trace_routes`' record of `op` of layer `l` on n rows.
-    fn trace_route(&self, p: &Part, l: usize, op: &Op, n: usize) -> Result<()> {
+    /// The router's input of `op` on n rows, read before it runs, where `trace_routes` records its call (a mixture-of-experts operation whose
+    /// experts are all on the GPU): its input slot's rows, bf16.
+    fn route_input(&self, p: &Part, op: &Op, n: usize) -> Result<Option<Vec<u16>>> {
+        let Op::Moe(MoeOp { block, x, .. }) = *op else { return Ok(None) };
+        if !std::ptr::eq(p, &self.big) || self.route_trace.borrow().is_none() || p.moe[block].resident().is_none() {
+            return Ok(None);
+        }
+        self.dev.sync()?;
+        let mut v = vec![0u16; n * p.d.width(x)];
+        p.slots[x as usize].read(0, &mut v)?;
+        Ok(Some(v))
+    }
+
+    /// `trace_routes`' record of `op` of layer `l` on n rows, with its router's input (`route_input`, read before it ran).
+    fn trace_route(&self, p: &Part, l: usize, op: &Op, n: usize, input: Option<Vec<u16>>) -> Result<()> {
         let Op::Moe(MoeOp { block, .. }) = *op else { return Ok(()) };
         if !std::ptr::eq(p, &self.big) || self.route_trace.borrow().is_none() {
             return Ok(());
@@ -1509,8 +1526,9 @@ impl Dyn {
         let k = layer.cfg.router.top_k;
         let mut ids = vec![0i64; n * k];
         sc.ids.read(0, &mut ids)?;
+        let input = input.ok_or_else(|| Error(format!("layer {l}: the router's input was not read before its experts ran")))?;
         if let Some(t) = self.route_trace.borrow_mut().as_mut() {
-            t.push((l, k, ids));
+            t.push((l, k, ids, input));
         }
         Ok(())
     }
@@ -2710,9 +2728,10 @@ impl Dyn {
                     self.trace_op(p, l, op, n)?;
                     continue;
                 }
+                let input = self.route_input(p, op, n)?;
                 self.op(p, l, i, op, n, pos, head)?;
                 self.trace_op(p, l, op, n)?;
-                self.trace_route(p, l, op, n)?;
+                self.trace_route(p, l, op, n, input)?;
                 if dump {
                     self.dump_op(p, l, i, op, n)?;
                 }

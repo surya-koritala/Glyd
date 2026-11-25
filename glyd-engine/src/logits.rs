@@ -364,9 +364,10 @@ pub trait Run {
     fn layers(&mut self, _tokens: &[u32]) -> Result<Option<Vec<Vec<f32>>>> {
         Ok(None)
     }
-    /// The routers' choices of the passes run between `choices(true)` and `choices(false)`, which returns them: for each mixture-of-experts layer in
-    /// the model's order, each token's experts in the order the tokens ran. None: the engine has no view of them. (Traced passes run eager.)
-    fn choices(&mut self, _on: bool) -> Result<Option<Choices>> {
+    /// The routers of the passes run between `choices(true)` and `choices(false)`, which returns them (`Routing`): for each mixture-of-experts layer
+    /// in the model's order, each token's experts and the router's input the engine made, in the order the tokens ran. None: the engine has no view
+    /// of them. (Traced passes run eager.)
+    fn choices(&mut self, _on: bool) -> Result<Option<Routing>> {
         Ok(None)
     }
     /// Each mixture-of-experts block's routed experts as the GPU holds them, decoded on the host (the first products' rows, the second's), where
@@ -380,16 +381,31 @@ pub trait Run {
 /// Each mixture-of-experts layer's choices, in the model's order: each token's experts, in the order the tokens ran.
 pub type Choices = Vec<Vec<Vec<usize>>>;
 
-/// `Choices` of the calls an engine made: (the layer, the experts a row takes, the rows' experts [rows, k]) in the order run.
-fn choices_of(calls: Vec<(usize, usize, Vec<i64>)>) -> Result<Choices> {
-    let mut by: BTreeMap<usize, Vec<Vec<usize>>> = BTreeMap::new();
-    for (l, k, ids) in calls {
+/// An engine's routers in the passes a check traced: each mixture-of-experts layer's choices and, beside each token's, the router's input row as
+/// the engine made it (the block's normed input, its bf16 values), in the same order.
+pub struct Routing {
+    pub choices: Choices,
+    pub inputs: Vec<Vec<Vec<f32>>>,
+}
+
+/// `Routing` of the calls an engine made (`dynamic::Routes`: the layer, the experts a row takes, the rows' experts [rows, k], the router's input
+/// rows) in the order run.
+fn choices_of(calls: Vec<crate::dynamic::Routes>) -> Result<Routing> {
+    let mut by: BTreeMap<usize, (Vec<Vec<usize>>, Vec<Vec<f32>>)> = BTreeMap::new();
+    for (l, k, ids, input) in calls {
         if k == 0 || ids.len() % k != 0 || ids.iter().any(|&e| e < 0) {
             return err(format!("layer {l}: {} choices of {k} experts a row, or one below 0", ids.len()));
         }
-        by.entry(l).or_default().extend(ids.chunks(k).map(|r| r.iter().map(|&e| e as usize).collect::<Vec<usize>>()));
+        let rows = ids.len() / k;
+        if rows == 0 || input.len() % rows != 0 || input.is_empty() {
+            return err(format!("layer {l}: a router's input of {} values for {rows} rows", input.len()));
+        }
+        let at = by.entry(l).or_default();
+        at.0.extend(ids.chunks(k).map(|r| r.iter().map(|&e| e as usize).collect::<Vec<usize>>()));
+        at.1.extend(input.chunks(input.len() / rows).map(|r| r.iter().map(|&h| f32::from_bits((h as u32) << 16)).collect::<Vec<f32>>()));
     }
-    Ok(by.into_values().collect())
+    let (choices, inputs) = by.into_values().unzip();
+    Ok(Routing { choices, inputs })
 }
 
 fn widen(v: Vec<Vec<u16>>) -> Vec<Vec<f32>> {
@@ -420,7 +436,7 @@ impl Run for Dyn {
         r?;
         Ok(Some(widen(got)))
     }
-    fn choices(&mut self, on: bool) -> Result<Option<Choices>> {
+    fn choices(&mut self, on: bool) -> Result<Option<Routing>> {
         choices_of(self.trace_routes(on)).map(Some)
     }
     fn held_experts(&mut self) -> Result<Option<Vec<(Vec<u16>, Vec<u16>)>>> {
@@ -725,8 +741,8 @@ pub fn apart(run: &RefRun, choices: &Choices) -> Vec<Apart> {
     v
 }
 
-/// What `held_on_choices` found: whether every choice apart is a near tie (b1), whether the logits are within the bound of the reference on the
-/// engine's choices (b2), and the choices apart.
+/// What `held_on_choices` found: whether the reference's router, on the engine's own input, takes the engine's choice or one a near tie from it at
+/// every choice apart (b1), whether the logits are within the bound of the reference on the engine's choices (b2), and the choices apart.
 pub struct Held {
     pub routing: bool,
     pub logits: bool,
@@ -734,33 +750,66 @@ pub struct Held {
 }
 
 /// An engine held to the CPU reference of the layer kinds on the engine's own routers' choices, where a difference past the bound may be a router's
-/// near tie taken the other way and not arithmetic. `rows` and `choices` are the engine's on `fx`'s tokens (`drive`, `Run::choices`); `own` the
+/// choice taken the other way and not arithmetic. `rows` and `routing` are the engine's on `fx`'s tokens (`drive`, `Run::choices`); `own` the
 /// reference's own run (`ref_drive` with no choices). Two things are required, and neither has a figure of this run in it:
-///   - routing: every choice of the engine that is not the reference's own (after the engine's earlier choices) is nearer to it than `kindcheck::NEAR`
-///     by the reference's ranks. One further apart is a router that differs, not a tie.
-///   - logits: the engine's rows are within `bound` of the reference run again taking the engine's choices, every row.
+///   - routing: wherever the engine's choice is not the reference's own (the reference's after the engine's earlier choices), the reference's router
+///     (fp32) is run on the ENGINE's own input row for that token and layer (the block's normed input as the engine made it, `Routing::inputs`).
+///     Its choice there must be the engine's, or differ from it by less than `kindcheck::NEAR` by its ranks on that same input. A choice that
+///     differs by `NEAR` or more on the same input is a router that differs: a fault of the router, not of the arithmetic before it.
+///     Why not the margin on the reference's own input: `NEAR` is kindcheck's, where every body runs on the reference's own input, so a choice
+///     taken the other way can only come from the body's own arithmetic. In a whole model a later layer's router sees an input that already
+///     carries the earlier layers' bf16 roundings (the first random case's fifth layer is 2.3e-2 from fp32 on both of the family's engines),
+///     so how near the two choices are on the reference's own input says nothing of the router. That margin is printed, as information.
+///   - logits: the engine's rows are within `bound` of the reference run again taking the engine's choices, every row: given the same choices,
+///     everything else is the reference's math.
 ///
-/// Each row's KL against the reference's own choices is printed beside the one against the engine's, and each choice apart with its margin.
-pub fn held_on_choices(who: &str, dir: &Path, fx: &Fixture, bound: &Bound, rows: &[Vec<f32>], choices: &Choices, own: &RefRun) -> Result<Held> {
+/// Each row's KL against the reference's own choices is printed beside the one against the engine's, and each choice apart with both margins.
+pub fn held_on_choices(who: &str, dir: &Path, fx: &Fixture, bound: &Bound, rows: &[Vec<f32>], routing: &Routing, own: &RefRun) -> Result<Held> {
     use crate::dynamic::kindcheck::NEAR;
+    use crate::runtime::kinds::{Body, Ffn};
+    use crate::runtime::reference::ffn::{margin_between, route_of};
+    let choices = &routing.choices;
     let taken = ref_drive(dir, fx, Some(choices))?;
     let (diffs, raw_diffs) = (apart(&taken, choices), apart(own, choices).len());
     let on_taken = Fixture { rows: taken.rows.iter().map(|l| Row::from_logits(l)).collect::<Result<Vec<_>>>()?, ..fx.clone() };
     let v = compare(&on_taken, bound, rows);
-    let far = diffs.iter().filter(|d| d.margin.is_nan() || d.margin >= NEAR).count();
+    // (b1: the reference's router on the engine's own input row of each choice apart)
+    let m = ref_model(dir)?;
+    let moe: Vec<usize> = (0..m.layers.len()).filter(|&b| matches!(m.layers[b].block.body, Body::Ffn(Ffn::Moe(_)))).collect();
+    let tokens: Vec<u32> = fx.prompt.iter().chain(&fx.decode).chain(&fx.long).copied().collect();
+    let mut judged = Vec::with_capacity(diffs.len());
+    for d in &diffs {
+        let (Some(&b), Some(x), Some(engine), Some(&t)) = (
+            moe.get(d.layer),
+            routing.inputs.get(d.layer).and_then(|l| l.get(d.token)),
+            choices.get(d.layer).and_then(|l| l.get(d.token)),
+            tokens.get(d.token),
+        ) else {
+            return err(format!("{who}: no router's input of token {} in mixture-of-experts layer {}", d.token, d.layer));
+        };
+        let Body::Ffn(Ffn::Moe(k)) = &m.layers[b].block.body else { return err(format!("block {b} is not a mixture of experts")) };
+        let r = route_of(k, &m.layers[b].p, x, t, None)?;
+        judged.push((r.own.clone(), margin_between(&r.rank, &r.own, engine)));
+    }
+    let wrong = |s: f32| s.is_nan() || s >= NEAR;
+    let (same, near, far) = (
+        judged.iter().filter(|(_, s)| *s == 0.0).count(),
+        judged.iter().filter(|(_, s)| *s > 0.0 && !wrong(*s)).count(),
+        judged.iter().filter(|(_, s)| wrong(*s)).count(),
+    );
     println!(
-        "     {who} on its own routers' choices: {} of its choices are not the reference's own there ({raw_diffs} against the reference's own run), {far} of them {NEAR:e} or more apart by the reference's ranks",
+        "     {who} on its own routers' choices: {} of its choices are not the reference's own there ({raw_diffs} against the reference's own run); on the engine's own router inputs the reference's router takes the engine's choice at {same} of them, a near tie (below {NEAR:e}) at {near}, and differs by {NEAR:e} or more at {far}",
         diffs.len()
     );
-    for d in &diffs {
+    for (d, (on_x, s)) in diffs.iter().zip(&judged) {
         println!(
-            "       {}, layer {}: the engine took {:?} where the reference takes {:?}, margin {:.2e}{}",
+            "       {}, layer {}: the engine took {:?} where the reference takes {:?} (margin {:.2e} on the reference's own input, information); on the engine's input the reference's router takes {on_x:?}, margin {s:.2e}{}",
             row_of_token(fx, d.token).1,
             d.layer,
             d.engine,
             d.reference,
             d.margin,
-            if d.margin.is_nan() || d.margin >= NEAR { ": not a near tie" } else { "" }
+            if wrong(*s) { ": a router that differs" } else { "" }
         );
     }
     println!(
@@ -939,8 +988,8 @@ struct Qwen4x {
     routed: Option<RoutedCalls>,
 }
 
-/// An engine's routers' calls as a hook of it adds them: (the layer, the experts a row takes, the rows' experts).
-type RoutedCalls = std::rc::Rc<std::cell::RefCell<Vec<(usize, usize, Vec<i64>)>>>;
+/// An engine's routers' calls as a hook of it adds them (`dynamic::Routes`: the layer, the experts a row takes, the rows' experts, the router's input rows).
+type RoutedCalls = std::rc::Rc<std::cell::RefCell<Vec<crate::dynamic::Routes>>>;
 
 impl Run for Qwen4x {
     fn describe(&self) -> String {
@@ -977,16 +1026,20 @@ impl Run for Qwen4x {
         let got = std::mem::take(&mut *got.borrow_mut());
         Ok(Some(widen(got)))
     }
-    fn choices(&mut self, on: bool) -> Result<Option<Choices>> {
-        // (the engine's hook after each layer: the layer's experts ran last, so the scratch holds its rows' choices; a pass with a hook runs whole and eager)
+    fn choices(&mut self, on: bool) -> Result<Option<Routing>> {
+        // (the engine's hook after each layer: the layer's experts ran last, so the scratch holds its rows' choices and `h` its experts' input, which
+        // nothing after them in the layer writes; a pass with a hook runs whole and eager)
         let was = self.routed.take();
         self.e.trace = None;
         if on {
             let got: RoutedCalls = Default::default();
-            let (g, k) = (got.clone(), self.e.w.cfg.top_k);
+            let (g, k, hid) = (got.clone(), self.e.w.cfg.top_k, self.e.w.cfg.hidden);
             self.e.trace = Some(Box::new(move |e: &crate::model_qwen4x::EngineQx, l: usize, n: usize, _start: usize| {
                 if let Ok((ids, _)) = crate::model_qwen4x::QxMoe::routed(e, n, k) {
-                    g.borrow_mut().push((l, k, ids));
+                    let mut h = vec![0u16; n * hid];
+                    if e.h.read(0, &mut h).is_ok() {
+                        g.borrow_mut().push((l, k, ids, h));
+                    }
                 }
             }));
             self.routed = Some(got);
@@ -1010,8 +1063,8 @@ impl Run for Qwen4x {
 /// the reference's own test reads), and `paritycheck` runs the two side by side while that engine exists. The penguin fixture's bound is the kind's (the Qwen3.5
 /// layout's fixture's: KL mean 1e-4, max 2.5e-4), and the case asks to be held on its routers' choices (`Case::on_choices`): the random model's 16 experts, 4 a token,
 /// leave choices within 1e-2 of the next expert (`reference::ffn::margin`), which a bf16 engine may take either way, and one taken the other way moves its row and
-/// the rows after it by more than the bound allows arithmetic. Such a choice is counted as a near tie only by the reference's own ranks, and the logits are held, at
-/// the same bound, to the reference taking the engine's choices (`held_on_choices`); the figures against the reference's own choices are printed beside them.
+/// the rows after it by more than the bound allows arithmetic. Such a choice is judged by the reference's router on the engine's own input row, and the logits are
+/// held, at the same bound, to the reference taking the engine's choices (`held_on_choices`); the figures against the reference's own choices are printed beside them.
 fn qwen4x_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     boxed(crate::dynamic::qwen4x::load(dir, &dyn_opts(level_layout(level)?)))
 }
@@ -1625,7 +1678,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                         Some(h) => format!(
                             "; these figures are against the reference's own choices ({}), the verdict is on the engine's choices ({}): the lines above",
                             if v.ok { "within the bound" } else { "PAST the bound" },
-                            if h { "its choices apart all near ties, its logits within the bound" } else { "not held" }
+                            if h { "on its own router inputs its choices apart the reference router's or near ties, its logits within the bound" } else { "not held" }
                         ),
                         None => String::new(),
                     },
@@ -1692,7 +1745,8 @@ const SHARED_STAGES: usize = 7;
 /// of one kind, the delta rule (the executor's is the kind's: fp32 sums over normed q and k rounded to bf16; the hand-written engine's sums pairs of
 /// bf16 values), so their bits part at that stage and no bound between the two engines is a fact of either. Required of the executor:
 ///   1. where the hand-written engine runs the case, layer 0's stages before the delta rule (the first `SHARED_STAGES`) have the same bits on both;
-///   2. every choice of its routers that is not the reference's own is a near tie by the reference's ranks (`held_on_choices`);
+///   2. wherever its router's choice is not the reference's own, the reference's router on the executor's own input row for that token and layer
+///      takes the executor's choice, or one less than `NEAR` from it by its ranks on that input (`held_on_choices`: why the same input);
 ///   3. its logits are within the kind's bound for the lossless level of the reference taking its choices, every row. The bound is the case's
 ///      fixture's, which must be the one the Qwen3.5 layout's fixture holds (tests/logits/qwen35.json.gz): a family has no bound of its own;
 ///   4. its best token is the reference's own on every row where the reference's lead clears `CLEAR_LEAD`; a row below it is printed, not required.
@@ -1763,7 +1817,7 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
         let cpu_layers = cpu_layers(&dir, &cf.prompt)?;
         let arg = |v: &[f32]| v.iter().enumerate().fold(0, |b, (j, &x)| if x > v[b] { j } else { b });
         // (an engine's rows, its rows again with its routers' choices read (those passes eager) and the choices, its layers after the prompt)
-        type Ran = (Vec<Vec<f32>>, Vec<Vec<f32>>, Option<Choices>, Option<Vec<Vec<f32>>>);
+        type Ran = (Vec<Vec<f32>>, Vec<Vec<f32>>, Option<Routing>, Option<Vec<Vec<f32>>>);
         let ran = |r: &mut dyn Run| -> Result<Ran> {
             let rows = drive(r, &cf.prompt, &cf.decode, &cf.long)?;
             let layers = r.layers(&cf.prompt)?;
@@ -1866,7 +1920,7 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
                     let h = held_on_choices("the executor", &dir, cf, &bound, &new_traced, ch, &own)?;
                     if !h.routing {
                         ok = false;
-                        why.push("a router's choice differs from the reference's by more than a near tie".into());
+                        why.push("on its own input a router's choice differs from the reference router's by more than a near tie".into());
                     }
                     if !h.logits {
                         ok = false;
@@ -1885,8 +1939,8 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
             if let Some((_, old_traced, Some(ch), _)) = &old {
                 match held_on_choices("the hand-written engine (its record, not required)", &dir, cf, &bound, old_traced, ch, &own) {
                     Ok(h) => println!(
-                        "     the hand-written engine's record: its choices apart {}, its logits on its choices {}",
-                        if h.routing { "all near ties" } else { "NOT all near ties" },
+                        "     the hand-written engine's record: on its own router inputs its choices apart {}, its logits on its choices {}",
+                        if h.routing { "the reference router's or near ties" } else { "NOT all the reference router's or near ties" },
                         if h.logits { "within the bound" } else { "PAST the bound" }
                     ),
                     Err(e) => println!("     the hand-written engine's record on its choices was not made: {}", e.msg),
@@ -2672,6 +2726,23 @@ mod tests {
     fn short(case: &str, prompt: usize, decode: usize) -> Fixture {
         let f = Fixture::read(&Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/logits/{case}.json.gz"))).unwrap();
         Fixture { prompt: f.prompt[..prompt].to_vec(), decode: f.decode[..decode].to_vec(), long: Vec::new(), rows: Vec::new(), ..f }
+    }
+
+    /// An engine's calls (`dynamic::Routes`) become each layer's tokens in the order run, each token's experts beside its router's input row
+    /// (widened from bf16), whatever the calls' sizes; a call whose input is not a whole number of rows is refused.
+    #[test]
+    fn an_engine_s_calls_are_each_token_s_choice_and_router_input() {
+        let bf = |x: f32| (x.to_bits() >> 16) as u16;
+        let calls = vec![
+            (1, 2, vec![3, 1, 0, 2], vec![bf(1.0), bf(2.0), bf(3.0), bf(4.0)]),
+            (0, 2, vec![5, 4], vec![bf(-1.0), bf(0.5)]),
+            (1, 2, vec![2, 3], vec![bf(8.0), bf(-8.0)]),
+        ];
+        let r = choices_of(calls).unwrap();
+        assert_eq!(r.choices, vec![vec![vec![5, 4]], vec![vec![3, 1], vec![0, 2], vec![2, 3]]]);
+        assert_eq!(r.inputs, vec![vec![vec![-1.0, 0.5]], vec![vec![1.0, 2.0], vec![3.0, 4.0], vec![8.0, -8.0]]]);
+        assert!(choices_of(vec![(0, 2, vec![1, 2, 3, 4], vec![bf(1.0); 3])]).is_err());
+        assert!(choices_of(vec![(0, 2, vec![1, -1], vec![bf(1.0); 2])]).is_err());
     }
 
     /// The reference of the experts kind taking choices: its own choices give its own rows, bit for bit, and none apart; the nearest other choice

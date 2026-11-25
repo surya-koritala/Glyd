@@ -161,8 +161,10 @@ pub fn moe_routed(m: &Moe, p: &Params, x: &[f32], token: u32) -> Result<(Vec<f32
     moe_taking(m, p, x, token, None).map(|(y, c)| (y, c.ids, c.gap))
 }
 
-/// `moe` with the token's experts `take` in the place of the router's own choice where given (`route_taking`), and the token's routing.
-pub fn moe_taking(m: &Moe, p: &Params, x: &[f32], token: u32, take: Option<&[usize]>) -> Result<(Vec<f32>, Routed)> {
+/// The block's router alone on the input `x` (the block's normed input; `token`: its id, for hash routing), with the experts `take` in the
+/// place of its own choice where given (`route_taking`): the token's routing. A check holds an engine's router to it on the engine's own
+/// input row (`logits::held_on_choices`).
+pub fn route_of(m: &Moe, p: &Params, x: &[f32], token: u32, take: Option<&[usize]>) -> Result<Routed> {
     let logits = p.prod("router", x)?;
     if logits.len() != m.experts {
         return err(format!("a router of {} logits for {} experts", logits.len(), m.experts));
@@ -179,7 +181,12 @@ pub fn moe_taking(m: &Moe, p: &Params, x: &[f32], token: u32, take: Option<&[usi
         None
     };
     let bias = if m.router.bias { Some(p.vec("choice_bias")?) } else { None };
-    let c = route_taking(&m.router, &logits, bias, hash, take)?;
+    route_taking(&m.router, &logits, bias, hash, take)
+}
+
+/// `moe` with the token's experts `take` in the place of the router's own choice where given (`route_taking`), and the token's routing.
+pub fn moe_taking(m: &Moe, p: &Params, x: &[f32], token: u32, take: Option<&[usize]>) -> Result<(Vec<f32>, Routed)> {
+    let c = route_of(m, p, x, token, take)?;
     // the experts' input: x, or its latent projection
     let z = match &m.latent {
         Some(l) => {
