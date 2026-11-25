@@ -2009,7 +2009,9 @@ fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
         embed: Embed { scale: 1.0, norm: Some(bare), streams: 1, per_layer: None },
         blocks,
         final_norm: Norm::rms(eps),
-        head: Head { tied, softcap, scale: out_mult, collapse: Collapse::None, rounding: Rounding::F32 },
+        // (the release's head is bf16: its product, the output multiplier's product and the soft-cap's three operations each rounded, as muse_ref.rs and the
+        // engine's muse_softcap compute them)
+        head: Head { tied, softcap, scale: out_mult, collapse: Collapse::None, rounding: Rounding::Twice },
         mtp: Vec::new(),
         vision: None,
         rope: None,

@@ -91,6 +91,15 @@ pub(super) struct Lossless {
     pub bytes: usize,
 }
 
+/// The chunk's own keys and values a 12-bit prompt attention reads (`Dyn::kv12_prefill`): the staging rows its preparation wrote (`rows_k`, `rows_v`, rows
+/// `width` wide), at the rows of the part it runs on (from `row0`); None for an attention that shares an earlier layer's keys and values (`AttnOp::writes`
+/// false), whose preparation wrote none: the library reads the chunk's from the pages, which that layer wrote before it in the pass. (Read from the staging
+/// rows, such a layer took the last writing layer's: Gemma 4's KV-sharing layers, 2026-11-25.)
+fn chunk_rows(writes: bool, (rows_k, rows_v): (u64, u64), row0: usize, width: usize) -> Option<(u64, i64, u64, i64)> {
+    let at = (row0 * width * 2) as u64;
+    writes.then_some((rows_k + at, width as i64, rows_v + at, width as i64))
+}
+
 /// A ring's layer and query heads: the layer whose attention writes it, and its query heads (a latent attention's latents: 1, its one stream read unpacked).
 fn writer(d: &super::ModelDesc, ring: usize) -> Option<(usize, usize)> {
     d.layers.iter().enumerate().find_map(|(l, ops)| {
@@ -517,15 +526,13 @@ impl Dyn {
     }
 
     /// A prompt chunk's attention over ring `ring`'s 12-bit pages (glyd_gpu_kv_prefill, after the step's `kv12_write`): the n rows at `start` (the pass's) .. of the
-    /// part an operation runs on now, queries `q` and out `out` [n, nq d]; the keys before `start` read from the pages through the sequence's table, the chunk's own from
-    /// the staging rows the preparation wrote; every query head of a kv head in one call (no parts). The bf16 cache's prompt attention is the same kernel
-    /// (glyd_gpu_kv_prefill_bf16): the same bits.
+    /// part an operation runs on now, queries `q` and out `out` [n, nq d]; the keys before `start` read from the pages through the sequence's table, the chunk's own as
+    /// `chunk_rows` says; every query head of a kv head in one call (no parts). The bf16 cache's prompt attention is the same kernel (glyd_gpu_kv_prefill_bf16): the
+    /// same bits.
     pub(super) unsafe fn kv12_prefill(&self, a: &super::AttnOp, n: usize, q: u64, out: u64) -> Result<()> {
         let lx = self.lossless.as_ref().expect("a ring with pages");
         let rp = lx.rings[a.ring].as_ref().expect("a ring with pages");
-        let w = rp.shape.heads * rp.shape.channels;
-        let at = (self.row0() * w * 2) as u64;
-        let rows = Some((lx.rows_k.ptr + at, w as i64, lx.rows_v.ptr + at, w as i64));
+        let rows = chunk_rows(a.writes, (lx.rows_k.ptr, lx.rows_v.ptr), self.row0(), rp.shape.heads * rp.shape.channels);
         let qs = (a.nq * a.d) as i64;
         self.lib.kv_prefill(
             &rp.geom,
@@ -1061,6 +1068,29 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
 mod tests {
     use super::super::kv12::{shapes, LayerTable, Tables};
     use super::*;
+
+    /// A 12-bit prompt attention reads its chunk's own keys and values from the staging rows where its preparation wrote them (the part's rows on), and
+    /// from the pages where it shares an earlier layer's: the KV-sharing layers of Gemma 4's E sizes write none (`AttnOp::writes` false), and every such
+    /// attention over 12-bit pages is one of those (the lowering's; a draft model's pass pages nothing).
+    #[cfg(feature = "dev")]
+    #[test]
+    fn an_attention_that_shares_its_keys_reads_its_chunk_from_the_pages() {
+        let (k, v) = (1 << 20, 3 << 20);
+        assert_eq!(chunk_rows(true, (k, v), 3, 256), Some((k + 3 * 256 * 2, 256, v + 3 * 256 * 2, 256)));
+        assert_eq!(chunk_rows(false, (k, v), 3, 256), None);
+        // (the gemma4-kv case's description: the four shared layers write nothing, and read the rings their store layers write)
+        let dir = std::env::temp_dir().join(format!("glyd-kvpages-shared-{}", std::process::id()));
+        crate::logits::gemma4_kv_random(&dir).unwrap();
+        let c = crate::gemma4::ConfigG4::load(&dir).unwrap();
+        let d = super::super::gemma4::lowered(&dir, &c).unwrap_or_else(|e| panic!("{}", e.msg));
+        let _ = std::fs::remove_dir_all(&dir);
+        let atts: Vec<&super::super::AttnOp> =
+            d.layers.iter().filter_map(|ops| ops.iter().find_map(|o| if let Op::Attn(a) = o { Some(a) } else { None })).collect();
+        assert_eq!(atts.iter().map(|a| a.writes).collect::<Vec<_>>(), [true, true, true, true, false, false, false, false]);
+        for a in atts.iter().filter(|a| !a.writes) {
+            assert!(writer(&d, a.ring).is_some_and(|(l, _)| l < 4), "ring {}", a.ring);
+        }
+    }
 
     /// Kimi-K3's and GLM-5.3-Flash's releases' latents: each latent attention layer's ring is one stream of its kv_rank + rope values in heads
     /// of 128 (576 as 5, the last 64 channels padding; 512 as 4), written by its layer's operation; GLM-5.3's indexer ring has no 12-bit shape and stays bf16.

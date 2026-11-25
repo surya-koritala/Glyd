@@ -64,8 +64,9 @@ impl Dyn {
         self.mark("indexer: queries and pools")
     }
 
-    /// `Op::IdxPick` of pooled keys (`IdxKeys::Pools`) on n rows of one sequence at positions `pos`: into the picks' room at the sequence's rows.
-    pub(super) unsafe fn idx_pick_pools(&self, p: &Part, x: &IdxPick, n: usize, pos: u64) -> Result<()> {
+    /// `Op::IdxPick` of pooled keys (`IdxKeys::Pools`) of layer `l` on n rows of one sequence at positions `pos`: into the picks' room at the sequence's rows
+    /// (and each row's pick kept where a check traces them, `trace_row_picks`).
+    pub(super) unsafe fn idx_pick_pools(&self, p: &Part, l: usize, x: &IdxPick, n: usize, pos: u64) -> Result<()> {
         let r = self.picks.as_ref().ok_or_else(|| Error("an indexer's pick in a model loaded without its room".into()))?;
         let IdxKeys::Pools(pools) = x.keys else { return err("not an indexer of pooled keys") };
         let row0 = self.rows_before(1) as usize / 2;
@@ -85,6 +86,7 @@ impl Dyn {
             cand: super::mla::CandAt::default(),
         };
         self.idx_pick(x, &at)?;
+        self.trace_row_picks(p, l, x.ratio, n, row0)?;
         self.mark("indexer: picks")
     }
 

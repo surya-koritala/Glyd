@@ -1,15 +1,16 @@
-//! Nemotron-H's kernels (kernels/nemotron.cu) with typed launches: the Mamba-2 scan, its convolution and norms (`KernNh`) and the chunked scan's buffers (`SsdWs`), which the
-//! executor's Nemotron-H description runs.
+//! The Mamba-2 layer kind's kernels (kernels/nemotron.cu) with typed launches: the scan, its convolution and gated norm (`KernMamba2`) and the chunked scan's
+//! buffers (`SsdWs`), which the executor's `Op::MambaConv`, `Op::MambaScan` and `Op::MambaNorm` run for any family whose description has the kind. The kernels
+//! compile in the kind's limits they run: heads of `MAMBA2_HEAD` channels, a state of `MAMBA2_STATE` a channel, prompts scanned in chunks of `MAMBA2_CHUNK`
+//! tokens, a convolution of 4 taps; a description of other sizes is refused where it is lowered (`lower::nemotron`).
 
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Result, Stream};
 use crate::launch;
-use crate::nemotron::ConfigNemotronH;
 
-/// A Mamba-2 head's channels, the state a channel has, the tokens of a chunk of the chunked scan (kernels/nemotron.cu).
-pub const NH_P: usize = 64;
-pub const NH_N: usize = 128;
-pub const NH_L: usize = 128;
+/// The kernels' limits (kernels/nemotron.cu compiles them in): a Mamba-2 head's channels, the state a channel has, the tokens of a chunk of the chunked scan.
+pub const MAMBA2_HEAD: usize = 64;
+pub const MAMBA2_STATE: usize = 128;
+pub const MAMBA2_CHUNK: usize = 128;
 
 /// The Mamba-2 chunked scan's buffers for up to `rows` tokens a call: dt and its running sum, C B^T of every chunk and group, every chunk's own state.
 pub struct SsdWs {
@@ -21,19 +22,15 @@ pub struct SsdWs {
 }
 
 impl SsdWs {
-    pub fn new(c: &ConfigNemotronH, rows: usize) -> Result<SsdWs> {
-        SsdWs::sized(c.m_heads, c.m_groups, rows)
-    }
-
     /// For `heads` heads in `groups` groups.
     pub fn sized(heads: usize, groups: usize, rows: usize) -> Result<SsdWs> {
-        let nch = rows.div_ceil(NH_L).max(1);
+        let nch = rows.div_ceil(MAMBA2_CHUNK).max(1);
         Ok(SsdWs {
             rows,
-            dtv: Buf::new(nch * NH_L * heads * 4)?,
-            acum: Buf::new(nch * NH_L * heads * 4)?,
-            g: Buf::new(nch * groups * NH_L * NH_L * 4)?,
-            st: Buf::new(nch * heads * NH_P * NH_N * 4)?,
+            dtv: Buf::new(nch * MAMBA2_CHUNK * heads * 4)?,
+            acum: Buf::new(nch * MAMBA2_CHUNK * heads * 4)?,
+            g: Buf::new(nch * groups * MAMBA2_CHUNK * MAMBA2_CHUNK * 4)?,
+            st: Buf::new(nch * heads * MAMBA2_HEAD * MAMBA2_STATE * 4)?,
         })
     }
 
@@ -42,8 +39,8 @@ impl SsdWs {
     }
 }
 
-/// Nemotron's kernels with typed launches.
-pub struct KernNh {
+/// The Mamba-2 kind's kernels with typed launches.
+pub struct KernMamba2 {
     conv: crate::kt::nh_conv,
     conv_rows: crate::kt::nh_conv_rows,
     ssm: crate::kt::nh_ssm,
@@ -56,9 +53,9 @@ pub struct KernNh {
     gnorm: crate::kt::nh_gated_norm,
 }
 
-impl KernNh {
-    pub fn load(dev: &Dev) -> Result<KernNh> {
-        Ok(KernNh {
+impl KernMamba2 {
+    pub fn load(dev: &Dev) -> Result<KernMamba2> {
+        Ok(KernMamba2 {
             conv: dev.typed()?,
             conv_rows: dev.typed()?,
             ssm: dev.typed()?,
@@ -113,7 +110,7 @@ impl KernNh {
         ng: i32,
         dt_min: f32,
     ) -> Result<()> {
-        launch!(self.ssm_rows, [nh as u32, (NH_P / 8) as u32, rows], [256, 1, 1], s; xc, cs, dtr, dts, dt_bias, a_log, d, sts, ss, y, nh, ng, dt_min)
+        launch!(self.ssm_rows, [nh as u32, (MAMBA2_HEAD / 8) as u32, rows], [256, 1, 1], s; xc, cs, dtr, dts, dt_bias, a_log, d, sts, ss, y, nh, ng, dt_min)
     }
 
     /// The selective state update of n rows, one token after another (a decode step: n = 1): xc [n, cs] the convolution's output, dtr the dt columns of the in_proj's output (rows `dts` apart),
@@ -139,10 +136,10 @@ impl KernNh {
         ng: i32,
         dt_min: f32,
     ) -> Result<()> {
-        launch!(self.ssm, [nh as u32, (NH_P / 8) as u32, 1], [256, 1, 1], s; xc, cs, dtr, dts, dt_bias, a_log, d, state, y, n, nh, ng, dt_min)
+        launch!(self.ssm, [nh as u32, (MAMBA2_HEAD / 8) as u32, 1], [256, 1, 1], s; xc, cs, dtr, dts, dt_bias, a_log, d, state, y, n, nh, ng, dt_min)
     }
 
-    /// The same for a prompt, in chunks of NH_L tokens (state-space duality); `ws` holds at least n rows.
+    /// The same for a prompt, in chunks of MAMBA2_CHUNK tokens (state-space duality); `ws` holds at least n rows.
     ///
     /// # Safety
     /// As `conv`.
@@ -168,11 +165,11 @@ impl KernNh {
         if n as usize > ws.rows {
             return err(format!("{n} rows in a scan that has buffers for {}", ws.rows));
         }
-        let nch = (n as u32).div_ceil(NH_L as u32);
+        let nch = (n as u32).div_ceil(MAMBA2_CHUNK as u32);
         launch!(self.cum, [nch, (nh as u32).div_ceil(128), 1], [128, 1, 1], s; dtr, dts, dt_bias, a_log, ws.dtv.ptr, ws.acum.ptr, n, nh, dt_min)?;
         launch!(self.gmat, [nch, ng as u32, 1], [256, 1, 1], s; xc, cs, ws.g.ptr, n, nh, ng)?;
         launch!(self.states, [nch, nh as u32, 1], [256, 1, 1], s; xc, cs, ws.dtv.ptr, ws.acum.ptr, ws.st.ptr, n, nh, ng)?;
-        launch!(self.pass, [((nh as usize * NH_P * NH_N) as u32).div_ceil(256), 1, 1], [256, 1, 1], s; ws.acum.ptr, ws.st.ptr, state, n, nh, nch as i32)?;
+        launch!(self.pass, [((nh as usize * MAMBA2_HEAD * MAMBA2_STATE) as u32).div_ceil(256), 1, 1], [256, 1, 1], s; ws.acum.ptr, ws.st.ptr, state, n, nh, nch as i32)?;
         launch!(self.scan_y, [nch, nh as u32, 2], [256, 1, 1], s; xc, cs, ws.dtv.ptr, ws.acum.ptr, ws.g.ptr, ws.st.ptr, d, y, n, nh, ng)
     }
 

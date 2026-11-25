@@ -2,12 +2,12 @@
 
 pub mod gemma4;
 pub mod glm;
-pub mod nemotron;
+pub mod mamba2;
 pub mod qwen35;
 
 pub(crate) use gemma4::KernG4;
 pub use glm::{mla_positions, mla_smem, Hc, KernGlm, GM_CHUNK_SMEM, GM_D, GM_HC, GM_L, GM_NP};
-pub use nemotron::{KernNh, SsdWs, NH_L, NH_N, NH_P};
+pub use mamba2::{KernMamba2, SsdWs, MAMBA2_CHUNK, MAMBA2_HEAD, MAMBA2_STATE};
 pub use qwen35::Kern35;
 
 use crate::dev::{copy_d2h_async, copy_h2d_async, ArgsOf, Buf, ByArgs, Dev, Pinned, Typed};

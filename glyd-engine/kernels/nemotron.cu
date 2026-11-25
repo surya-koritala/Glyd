@@ -1,4 +1,4 @@
-// Nemotron-H's own kernels (included by engine.cu after qwen35.cu; src/kern/nemotron.rs's table runs them): the Mamba-2 layer (the causal convolution with its bias, the selective state
+// Nemotron-H's own kernels (included by engine.cu after qwen35.cu; src/kern/mamba2.rs's table runs them): the Mamba-2 layer (the causal convolution with its bias, the selective state
 // update as a recurrence and in chunks by the state-space duality, the gated norm over groups). Its attention layers are the attention kind's (kernels/attn.cu). bf16 in memory, fp32 inside; the rounding points are vLLM's (nemotron_h.py, mamba_mixer2.py). Reference: tools/nemotron_ref.py.
 // Shapes: a head has NH_P = 64 channels, the state NH_N = 128 per channel; B and C are shared by the nh / ng heads of a group. The in_proj's output rows are [z | x B C | dt]; the convolution's
 // output rows are [x (nh 64) | B (ng 128) | C (ng 128)].

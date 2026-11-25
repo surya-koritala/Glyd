@@ -5,7 +5,9 @@
 //!                                                             calibration corpus, each MoE layer's router choices counted per expert into the usage file OUT
 //!   glyd-engine tiercheck MODEL [--places 2] [--tokens 24] [--mode copy] [--layout i6] [--dense N] [--device-plan] [--against copy]   the dynamic route's model with every expert on GPU 0, then in the expert cache (src/tiering.rs; --dense: its last N layers'
 //!                                                             dense matrices in the computer's memory too, src/dense_ram.rs): every position's logits compared, the same bits in copy mode
-//!                                                             (--device-plan: the decode calls planned on the GPU, src/devplan.rs, and the decode step one graph, checked)
+//!                                                             (--device-plan: the decode calls planned on the GPU, src/devplan.rs, and the decode step one graph, checked; --pairs: each host pair against
+//!                                                             the GPU's; --join: each call through a host half against copy mode from the same inputs)
+//!   glyd-engine actcheck   the activations the expert cache's host computes beside the GPU (situ, the release's SiLU), the host's against the GPU kernels' on every bf16 input up to 64 (src/cpu_fp4.rs)
 //!   glyd-engine storebench MODEL [--places 16] [--rows 1,8,32] [--steps 8] [--mode auto] [--device-plan] [--out FILE]   batched decode through the expert cache: each count of rows' step time and layer statistics (bytes read for
 //!                                                             the misses against the distinct missed experts'), FILE's JSON lines for ceiling --stats (src/tiering.rs)
 //!   glyd-engine pack MODEL OUT --layout hummingbird --usage FILE [--threads N]   a mixture of experts the description builder maps (Kimi-K3, DeepSeek-V4, GLM-5.3, Muse Spark, Qwen3.5/3.8 MoE) at the
@@ -161,6 +163,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "prodbench" => glyd_engine::dynamic::prodbench(a),
         "prodcheck" => glyd_engine::dynamic::prodcheck(a),
         "fp4bench" => glyd_engine::cpu_fp4::bench(&a),
+        "actcheck" => glyd_engine::cpu_fp4::act_check(&a),
         "rangecheck" => glyd_engine::dynamic::range::rangecheck(a),
         "cb2check" => glyd_engine::cpu_cb::check_pack(Path::new(a.need(1, "PACK_DIR")?), a.num("layer", 3usize)?, a.num("expert", 0usize)?),
         "nhkernels" => glyd_engine::kcheck_nh::kernels(Path::new(a.need(1, "IN_DIR")?), Path::new(a.need(2, "OUT_DIR")?)),

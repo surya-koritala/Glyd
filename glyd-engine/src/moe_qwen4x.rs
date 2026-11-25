@@ -663,7 +663,7 @@ impl QxMoeCb {
         }
         let tc = self.tc(cs, n);
         let split = if tc { 1 } else { runs_for(pairs) };
-        let call = Call { ids: cs.gids.ptr, wts: sc.wts.ptr, z: cs.xrb.ptr, way: sc.way.ptr, part: sc.cpu.ptr, tokens: n, pairs };
+        let call = Call { ids: cs.gids.ptr, wts: sc.wts.ptr, z: cs.xrb.ptr, way: sc.way.ptr, part: sc.cpu.ptr, rows: 0, tokens: n, pairs };
         let places = self.place_ptrs();
         let mut early = || {
             self.shared_out(e, cs, h, n, cs.sh.ptr)?;
@@ -992,7 +992,8 @@ impl MoeBlockQx for QxMoeCb {
             return next();
         }
         let (sc, cs) = self.scratch(e)?;
-        let call = Call { ids: cs.gids.ptr, wts: sc.wts.ptr, z: cs.xrb.ptr, way: sc.way.ptr, part: sc.cpu.ptr, tokens: n, pairs: n * self.cfg.router.top_k };
+        let call =
+            Call { ids: cs.gids.ptr, wts: sc.wts.ptr, z: cs.xrb.ptr, way: sc.way.ptr, part: sc.cpu.ptr, rows: 0, tokens: n, pairs: n * self.cfg.router.top_k };
         // (the front's graph has moved the host's word once more: waited for by looking at it)
         let want = cs.kern.seen.get().wrapping_add(1);
         cs.kern.seen.set(want);
@@ -1033,7 +1034,7 @@ impl MoeBlockQx for QxMoeCb {
         let (sc, cs) = self.scratch(e)?;
         let (k, s) = (self.cfg.router.top_k, e.dev.stream);
         let pairs = n * k;
-        let call = Call { ids: cs.gids.ptr, wts: sc.wts.ptr, z: cs.xrb.ptr, way: sc.way.ptr, part: sc.cpu.ptr, tokens: n, pairs };
+        let call = Call { ids: cs.gids.ptr, wts: sc.wts.ptr, z: cs.xrb.ptr, way: sc.way.ptr, part: sc.cpu.ptr, rows: 0, tokens: n, pairs };
         let places = self.place_ptrs();
         let mut early = || {
             self.shared_out(e, cs, e.h.ptr, n, cs.sh.ptr)?;
