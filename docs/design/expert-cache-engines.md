@@ -2,7 +2,7 @@
 
 What each engine does with the experts of a mixture of experts that the GPU does not hold, read from their sources (llama.cpp at commit
 0b51bb2f, 2026-11-22; KTransformers through SGLang's integration of it at de41ccfa, 2026-11-23), and what a same-bits, same-GPU comparison has to hold
-fixed. The comparison itself is a measurement on the issue's GPU, still to be made; this note is what it compares.
+fixed. The comparison itself is a measurement on the issue's GPU, not made yet; this note is what it compares.
 
 ## The three designs
 
@@ -28,5 +28,5 @@ fixed. The comparison itself is a measurement on the issue's GPU, still to be ma
 
 A same-bits comparison therefore holds the weights fixed as GGUF blocks both engines read (a Glyd level whose experts are a GGUF
 type, `gguf.rs`), compares copy-only runs first (all misses uploaded or copied: logits bit for bit against each engine's all-GPU
-run), then each engine's host share, and only then times (the step at 1, 8 and 32 rows on the 4080 SUPER, with each
+run), then each engine's host share, and only then times (not measured yet: the step at 1, 8 and 32 rows on the 4080 SUPER, with each
 engine's cache the same bytes).

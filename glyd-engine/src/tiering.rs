@@ -181,7 +181,7 @@ pub fn cached_tiered(
     Ok((u, d, ExpertCache { store: store.clone(), layer, ordinal }))
 }
 
-/// `glyd-engine tiercheck MODEL [--places N] [--tokens N] [--mode copy|cpu|auto] [--layout i6|i5|i4] [--dense N] [--report]`: the model of the dynamic route (a release whose experts the cache takes, or a hummingbird
+/// `glyd-engine tiercheck MODEL [--places N] [--tokens N] [--mode copy|cpu|auto] [--device-plan] [--against copy] [--layout i6|i5|i4] [--dense N] [--report]`: the model of the dynamic route (a release whose experts the cache takes, or a hummingbird
 /// directory) on GPU 0 with every expert there, then with its experts in the expert cache (`--places` a layer, every expert in the computer's memory; `--mode` the misses', copy by default): the same prompt and decode
 /// steps, and every position's logits compared; the positions that differ are named.
 ///
@@ -190,7 +190,8 @@ pub fn cached_tiered(
 /// Spark's). A longer prompt through those two differs in its last bits: the library splits a product's K over blocks by the size of the call, and the sums are added in another order (on an RTX 4080, 2026-11-22, the
 /// random models' largest differences: 0.031 and 0.051 of a logit). A hummingbird directory's cache is the resident layer's bits where every pair of a call has a place (`--places 15 --tokens 6` on the random
 /// DeepSeek-V4: none differs); the pairs whose experts find none are the host's in copy mode too (`ExpertStore::run_groups_at`), and differ as `--mode cpu`'s do (up to 2.7 of a logit there, with 2 places).
-/// `--report` prints such differences and does not refuse them; without it a difference in copy mode fails the check. With the host computing some pairs the largest difference is printed.
+/// `--report` prints such differences and does not refuse them; without it a difference in copy mode fails the check. With the host computing some pairs the largest difference is printed, and each
+/// position's cosine of the two rows of logits about their means. `--against copy`: the reference is the cache in copy mode (the resident layer's bits), for a model larger than the GPU.
 #[cfg(feature = "dev")]
 pub fn check(a: &crate::args::Args) -> Result<()> {
     use crate::ffi::Error;
@@ -207,15 +208,24 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     let vocab = crate::dynamic::split::config_num(&text, "vocab_size").unwrap_or(1000).max(16);
     let n = a.num("tokens", 24usize)?.max(6);
     let tokens: Vec<u32> = (0..n).map(|i| ((i * 7919 + 13) % (vocab - 4) + 2) as u32).collect();
-    // (`--device`: the decode calls planned on the GPU, src/devplan.rs, and the decode step captured in a graph, which it must be)
-    let device = a.has("device");
+    // (`--device-plan`: the decode calls planned on the GPU, src/devplan.rs, and the decode step captured in a graph, which it must be)
+    let device = a.has("device-plan");
     // (`--layout`: the level a family's loader packs at, GLM's experts at a block level among them)
     let o = crate::dynamic::Opts { ctx: n + 64, chunk: 256, graph: device, device: 0, layout: a.layout()? };
     let (graphed, planned) = (std::cell::Cell::new(false), std::cell::Cell::new(0usize));
+    // (`--against copy`: the reference the same cache in copy mode with the host's plan, the resident layer's bits (above), for a model larger than the GPU)
+    let against_copy = match a.flag("against") {
+        None => false,
+        Some("copy") => true,
+        Some(x) => return err(format!("--against {x}: copy")),
+    };
     let run = |cached: bool| -> Result<Vec<Vec<f32>>> {
+        let caching =
+            |mode, device| crate::hbg_store::HbCaching { places, ram: None, offload: crate::offload::Offload { mode, device, ..Default::default() }, dense };
         let mut e = if cached {
-            let caching = crate::hbg_store::HbCaching { places, ram: None, offload: crate::offload::Offload { mode, device, ..Default::default() }, dense };
-            crate::dynamic::split::open_cached(dir, &o, &[], &[0], vec![caching])?
+            crate::dynamic::split::open_cached(dir, &o, &[], &[0], vec![caching(mode, device)])?
+        } else if against_copy {
+            crate::dynamic::split::open_cached(dir, &o, &[], &[0], vec![caching(crate::offload::Mode::Copy, false)])?
         } else {
             crate::dynamic::split::open(dir, &o, &[], &[0])?
         };
@@ -235,7 +245,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         Ok(out)
     };
     let (resident, cached) = (run(false)?, run(true)?);
-    let (mut differ, mut worst) = (0usize, 0f32);
+    let (mut differ, mut worst, mut least_cos) = (0usize, 0f32, 1f64);
     for (i, (r, c)) in resident.iter().zip(&cached).enumerate() {
         let (mut d, mut w) = (0usize, 0f32);
         for (x, y) in r.iter().zip(c) {
@@ -244,16 +254,33 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                 w = w.max((x - y).abs());
             }
         }
+        // (the two rows' cosine about their means and the reference's spread: a difference of rounding leaves the cosine near 1, a product of another expert's or of no expert does not)
+        let n = r.len().max(1) as f64;
+        let (mr, mc) = (r.iter().map(|&x| x as f64).sum::<f64>() / n, c.iter().map(|&x| x as f64).sum::<f64>() / n);
+        let (mut rc, mut rr, mut cc) = (0f64, 0f64, 0f64);
+        for (&x, &y) in r.iter().zip(c) {
+            let (x, y) = (x as f64 - mr, y as f64 - mc);
+            (rc, rr, cc) = (rc + x * y, rr + x * x, cc + y * y);
+        }
+        let cos = if rr > 0.0 && cc > 0.0 { rc / (rr * cc).sqrt() } else { 1.0 };
+        least_cos = least_cos.min(cos);
         if d > 0 {
             // (which pass it was: the prompt's last row, or a decode step's one row; a step of one token has few pairs, where the library splits a product's K over blocks)
-            println!("  position {i} ({}): {d} of {} logits differ, the largest by {w:e}", if i == 0 { "the prompt's" } else { "a decode step's" }, r.len());
+            println!(
+                "  position {i} ({}): {d} of {} logits differ, the largest by {w:e} (the reference's spread {:.3}; cosine {cos:.6})",
+                if i == 0 { "the prompt's" } else { "a decode step's" },
+                r.len(),
+                (rr / n).sqrt()
+            );
         }
         (differ, worst) = (differ + d, worst.max(w));
     }
     let total: usize = resident.iter().map(Vec::len).sum();
     println!(
-        "{}: {} logits of {} positions, resident against the expert cache ({places} places a layer, {mode:?}): {differ} differ, the largest by {worst:e}",
+        "{}: {} logits of {} positions, {} against the expert cache ({places} places a layer, {mode:?}{}): {differ} differ, the largest by {worst:e}, the least cosine {least_cos:.6}",
         dir.display(),
+        if against_copy { "the cache in copy mode" } else { "resident" },
+        if device { ", the decode calls planned on the GPU" } else { "" },
         total,
         resident.len()
     );
@@ -269,16 +296,17 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
             );
         }
         if planned.get() > 0 && !graphed.get() {
-            return err("--device: the cached model's decode step was not captured in a graph");
+            return err("--device-plan: the cached model's decode step was not captured in a graph");
         }
     }
+    // (copy mode with the plan on the GPU: a decode call whose experts the places cannot all take sends the rest to the host, which the plan on the host would take in waves)
     if mode == crate::offload::Mode::Copy && differ > 0 && !report && !device {
         return err(format!("{differ} logits differ in copy mode, where the products over the places are the resident layer's"));
     }
     Ok(())
 }
 
-/// `glyd-engine storebench MODEL [--places N] [--rows 1,8,32] [--steps 8] [--warm 3] [--prompt 16] [--mode copy|cpu|split|auto] [--device] [--plan] [--out FILE]` (development): batched decode through the expert cache on GPU 0
+/// `glyd-engine storebench MODEL [--places N] [--rows 1,8,32] [--steps 8] [--warm 3] [--prompt 16] [--mode copy|cpu|split|auto] [--device-plan] [--plan] [--out FILE]` (development): batched decode through the expert cache on GPU 0
 /// (the dynamic route's model, `--places` of a layer's experts on the GPU and every expert in the computer's memory, as `tiercheck` opens it): for each count of rows, that many sequences of `--prompt` tokens each,
 /// `--warm` decode steps of all of them together, then `--steps` timed steps, each step's layer statistics (`ModelStep::expert_stats`). Prints a line for each count: the step's time, the experts asked for, found,
 /// copied and computed by the host a step, the bytes read from the computer's memory for the misses against the distinct missed experts' bytes, and the rates the copies and the host ran at. `--out`: a JSON line
@@ -302,8 +330,8 @@ pub fn bench(a: &crate::args::Args) -> Result<()> {
     let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
     let vocab = crate::dynamic::split::config_num(&text, "vocab_size").unwrap_or(1000).max(16);
     let o = crate::dynamic::Opts { ctx: plen + warm + steps + 64, chunk: plen.max(64), graph: false, device: 0, layout: a.layout()? };
-    // (`--device`: the decode calls planned on the GPU, src/devplan.rs)
-    let offload = crate::offload::Offload { mode: mode.unwrap_or(crate::offload::Mode::Auto), device: a.has("device"), ..Default::default() };
+    // (`--device-plan`: the decode calls planned on the GPU, src/devplan.rs)
+    let offload = crate::offload::Offload { mode: mode.unwrap_or(crate::offload::Mode::Auto), device: a.has("device-plan"), ..Default::default() };
     let caching = crate::hbg_store::HbCaching { places, ram: None, offload, dense: 0 };
     let crate::dynamic::split::Run::One(mut e) = crate::dynamic::split::open_cached(dir, &o, &[], &[0], vec![caching])? else {
         return err("the model on one GPU was asked for");

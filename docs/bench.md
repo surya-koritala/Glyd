@@ -1,7 +1,7 @@
 # glyd bench
 
 One harness for the speed of a server, one JSON format for the result, and a gate that holds a change to the last result on the same GPU. The code is `glyd-engine/src/bench.rs`; the command is
-`glyd-engine bench` (and `glyd bench` where the `glyd` program passes it on). The earlier `glyd-engine bench DIR` (one sequence, each decode step timed on the host, `--profile`) is `glyd-engine microbench DIR`.
+`glyd-engine bench` (and `glyd bench` where the `glyd` program passes it on). The earlier `glyd-engine bench DIR` (one sequence, each decode step timed on the host) is `glyd-engine microbench DIR`.
 
 ## Measure
 
@@ -126,7 +126,7 @@ slowdown. A result taken while the GPU was busy (other jobs of the runner do not
 
 ### Where the noise band is
 
-From the runs of the workflow itself: glyd-pc runs GitHub Actions jobs only (a model is measured in CI, or on a rented GPU, never by hand on it), so main's results keep in `history-GPU/` as the merges come, and
+From the runs of the workflow itself: the project's GPU machine runs GitHub Actions jobs only (a model is measured in CI, or on a rented GPU, never by hand on it), so main's results keep in `history-GPU/` as the merges come, and
 from the third on the gate's band takes in the spread from one session to another. Until then it is the spread of the runs of the two files with a floor of 0.3%. An earlier measurement of five sessions
 on Qwen3-8B (not a recent model, so not kept in the tree) had decode within 0.03-0.12% from session to session, the prefill of a long prompt and a single request's first token within 0.15-0.4%.
 
