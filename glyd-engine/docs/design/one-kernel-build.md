@@ -100,7 +100,10 @@ Each step lands alone, keeps `libglyd_gpu` loadable (the Python package needs it
   the engine's time and not the library's. `scripts/ci_gpu_build.sh` now builds the library beside cargo's build, the engine's
   architectures at once (`GLYD_ENGINE_NVCC_THREADS=0`), and the library for the engine's architectures alone (`GLYD_GPU_ARCHS`): the
   library for sm_80 and sm_86 alone carries the same machine code for both, byte for byte, as the six built at once, and the whole
-  build took 830 s (the library's nvcc 829 s beside cargo's build, the engine's kernels 391 s in it). Six architectures at once are
+  build took 841 s (the library's nvcc 840 s beside cargo's build of 462 s, the engine's kernels 395 s in it; again with the library
+  kept, 392 s). The engine's kernels compiled with their architectures at once (`--threads 0`) are the same bytes as compiled one
+  after the other: four compiles of one source, two of each kind and cargo's among them, every architecture's machine code and the
+  PTX alike. Six architectures at once are
   already six processes side by side, so a compile an architecture would end no sooner: the longest, sm_90a, is 540 s of `cicc` and
   326 s of `ptxas`. nvcc's `--split-compile` does not help: with 15 threads an architecture's `cicc` took 576 s against 523 (15
   threads for about 50 s, then one thread for the code generation), in twice the memory, and the machine code it made was not the
