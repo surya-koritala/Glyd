@@ -360,6 +360,80 @@ pub trait Run {
     fn prefill(&mut self, tokens: &[u32]) -> Result<()>;
     fn step(&mut self, token: u32) -> Result<()>;
     fn logits(&mut self) -> Result<Vec<f32>>;
+    /// The indexers' picks of the passes run between `picks(true)` and `picks(false)`, which returns them, with the inputs each was made from (`Picks`).
+    /// None: the engine has no view of them. (Traced passes run eager.)
+    fn picks(&mut self, _on: bool) -> Result<Option<Picks>> {
+        Ok(None)
+    }
+}
+
+/// One row of an engine's indexer in a traced pass (`dynamic::PickTrace`): its position, its picks (the positions its query attends to, in order), and the
+/// inputs they were made from as the engine held them: its queries [heads dim], its head weights' product [heads], and the keys of the complete entries
+/// its pass's last row sees (its own the first (position + 1) / block of them).
+pub struct PickRow {
+    pub pos: usize,
+    pub picks: Vec<usize>,
+    pub q: Vec<f32>,
+    pub w: Vec<f32>,
+    pub keys: std::rc::Rc<Vec<Vec<f32>>>,
+}
+
+/// An engine's picks: for each latent attention with an indexer, in the model's order, its rows in the order they ran.
+pub type Picks = Vec<Vec<PickRow>>;
+
+/// `Picks` of an engine's traced passes (`Dyn::trace_picks`), by layer.
+fn picks_of(traces: Vec<crate::dynamic::PickTrace>) -> Picks {
+    let mut by: BTreeMap<usize, Vec<PickRow>> = BTreeMap::new();
+    for t in traces {
+        let keys = std::rc::Rc::new(t.keys);
+        let rows = t.pos.into_iter().zip(t.picks).zip(t.q.into_iter().zip(t.w));
+        by.entry(t.layer).or_default().extend(rows.map(|((pos, picks), (q, w))| PickRow { pos, picks, q, w, keys: keys.clone() }));
+    }
+    by.into_values().collect()
+}
+
+/// A row where an engine's picks are not the reference's own (in a run that took the engine's earlier choices): the token (in the order the rows ran), the
+/// layer among the latent attentions with an indexer, the pools only the reference took and only the engine took, how far apart the two are on the
+/// reference's own inputs (`Picked::margin_between`: information), and the reference's indexer on the engine's own inputs for that row (`mla::choose` on
+/// its traced queries, head weights and keys): how far its choice is from the engine's there (0: the same).
+pub struct PickApart {
+    pub token: usize,
+    pub layer: usize,
+    pub reference: Vec<usize>,
+    pub engine: Vec<usize>,
+    pub own_margin: f32,
+    pub margin: f32,
+}
+
+/// Where the engine's `picks` are not the reference's own choices `picked` (each layer's records, a token at a time, of the reference run that took the
+/// engine's picks), each judged by the reference's indexer on the engine's own inputs (`PickApart`); `kinds` the layers' indexers.
+pub fn picks_apart(picked: &[Vec<crate::runtime::reference::mla::Picked>], picks: &Picks, kinds: &[crate::runtime::kinds::Indexer]) -> Vec<PickApart> {
+    use crate::runtime::reference::mla::choose;
+    let mut v = Vec::new();
+    for (l, ((r, e), ix)) in picked.iter().zip(picks).zip(kinds).enumerate() {
+        let b = ix.block.max(1);
+        for (t, (r, e)) in r.iter().zip(e).enumerate() {
+            if r.own == e.picks {
+                continue;
+            }
+            let on = choose(ix, &e.q, &e.w, &e.keys[..((e.pos + 1) / b).min(e.keys.len())], &(0..=e.pos).collect::<Vec<usize>>());
+            let pools = |a: &[usize], z: &[usize]| {
+                let n = r.score.len().max(on.score.len());
+                let mut p: Vec<usize> = a.iter().filter(|x| !z.contains(x) && **x < n * b).map(|x| x / b).collect();
+                p.dedup();
+                p
+            };
+            v.push(PickApart {
+                token: t,
+                layer: l,
+                reference: pools(&r.own, &e.picks),
+                engine: pools(&e.picks, &r.own),
+                own_margin: r.margin_between(&e.picks),
+                margin: if on.own == e.picks { 0.0 } else { on.margin_between(&e.picks) },
+            });
+        }
+    }
+    v
 }
 
 impl Run for Dyn {
@@ -377,6 +451,9 @@ impl Run for Dyn {
     }
     fn logits(&mut self) -> Result<Vec<f32>> {
         Dyn::logits(self)
+    }
+    fn picks(&mut self, on: bool) -> Result<Option<Picks>> {
+        Ok(Some(picks_of(self.trace_picks(on))))
     }
 }
 
@@ -1774,6 +1851,41 @@ mod tests {
                 );
             }
             let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// An engine's picks apart from the reference's own, each judged by the reference's indexer on the engine's own inputs: a choice that is the
+    /// reference's there has margin 0 (whatever the reference's own inputs gave), a near tie there its small margin, a choice no score there explains
+    /// a margin past `NEAR`; the margin on the reference's own inputs is kept beside it.
+    #[test]
+    fn picks_apart_are_judged_on_the_engines_inputs() {
+        use crate::runtime::kinds::{IndexForm, Indexer};
+        use crate::runtime::reference::mla::{choose, Picked};
+        let ix = Indexer { heads: 2, head_dim: 4, top_k: 2, block: 1, shared: false, form: IndexForm::LAYER_KEYS, rope: 0 };
+        // (a key a token, scores rising with its first channel: tokens 3 and 4 the best two of 0..=4, token 2 near token 3 where `near`)
+        let row = |near: bool, picks: Vec<usize>| {
+            let s = [0.1f32, 0.2, if near { 0.6999 } else { 0.3 }, 0.7, 0.9];
+            let keys: Vec<Vec<f32>> = s.iter().map(|&x| vec![x, 0.0, 0.0, 0.0]).collect();
+            PickRow { pos: 4, picks, q: vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], w: vec![1.0, 1.0], keys: std::rc::Rc::new(keys) }
+        };
+        let seen: Vec<usize> = (0..5).collect();
+        let own = |keys: &[Vec<f32>]| choose(&ix, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], &[1.0, 1.0], keys, &seen);
+        // (the reference's own inputs: token 2 well below token 3; its own choice 3 and 4)
+        let refk: Vec<Vec<f32>> = [0.1f32, 0.2, 0.3, 0.7, 0.9].iter().map(|&x| vec![x, 0.0, 0.0, 0.0]).collect();
+        let r: Picked = own(&refk);
+        assert_eq!(r.own, vec![3, 4]);
+        let cases = [(row(true, vec![3, 4]), None), (row(true, vec![2, 4]), Some(false)), (row(false, vec![2, 4]), Some(true))];
+        for (e, far) in cases {
+            let taken = Picked { picks: e.picks.clone(), ..r.clone() };
+            let got = picks_apart(&[vec![taken]], &vec![vec![e]], std::slice::from_ref(&ix));
+            match far {
+                None => assert!(got.is_empty(), "the reference's own choice"),
+                Some(far) => {
+                    assert_eq!((got.len(), got[0].reference.clone(), got[0].engine.clone()), (1, vec![3], vec![2]));
+                    assert!(got[0].own_margin > 0.3, "{}", got[0].own_margin);
+                    assert_eq!(got[0].margin >= crate::dynamic::kindcheck::NEAR, far, "{}", got[0].margin);
+                }
+            }
         }
     }
 
