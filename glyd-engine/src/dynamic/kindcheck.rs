@@ -29,9 +29,10 @@
 
 use super::{Dyn, Op, Opts, Slot};
 use crate::ffi::{err, Error, Result};
-use crate::runtime::kinds::{AttnRounding, Block, Body, Ffn, LinearKind, Mixer, NormKind, NormWeight, Residual};
+use crate::runtime::kinds::{AttnRounding, Block, Body, Ffn, Indexer, LinearKind, Mixer, NormKind, NormWeight, Residual};
+use crate::runtime::reference::mla::{LatentCache, Picked};
 use crate::runtime::reference::model::{checkpoint_tensor, Depth, RefModel};
-use crate::runtime::reference::{bf16, Hc};
+use crate::runtime::reference::{bf16, Hc, RefLayer, SeqState};
 use crate::weights::Layout;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -61,8 +62,8 @@ pub fn bound(c: Class) -> f32 {
     }
 }
 
-/// One comparison: where (case, layer, block), its kind, its worst on the prompt's pass and on the steps', and the rows left out as near a
-/// tie (`NEAR`).
+/// One comparison: where (case, layer, block), its kind, its worst on the prompt's pass and on the steps', the rows left out as near a
+/// tie (`NEAR`), and the indexer's choices apart that no near tie explains (`apart`).
 struct Line {
     case: &'static str,
     at: String,
@@ -73,12 +74,14 @@ struct Line {
     near: Vec<String>,
     /// The rows this comparison saw (the prompt's and each step's), of which `near` were left out.
     rows: usize,
+    /// Rows whose indexer picks are not the reference's own and not a near tie from them on the engine's own input (`indexer_apart`).
+    apart: Vec<String>,
 }
 
 impl Line {
-    /// Within its kind's bound on the prompt and on the steps, with no more rows left out than `near_within` allows.
+    /// Within its kind's bound on the prompt and on the steps, with no more rows left out than `near_within` allows and no choice apart.
     fn ok(&self) -> bool {
-        self.prompt <= bound(self.class) && self.steps <= bound(self.class) && near_within(self.near.len(), self.rows)
+        self.prompt <= bound(self.class) && self.steps <= bound(self.class) && near_within(self.near.len(), self.rows) && self.apart.is_empty()
     }
 }
 
@@ -337,13 +340,52 @@ impl Dyn {
             // SAFETY: the engine's own buffers, sized for a chunk (n rows at most a chunk); its slots hold the rows the operation reads (written above or by the
             // operations before it), and the stream orders the launches; it is synchronized before a slot is read.
             unsafe { self.op(&self.big, l, i, &self.big.d.layers[l][i], n, (pp, pp), 0)? };
+            self.trace_pick(&self.big, l, &self.big.d.layers[l][i], n, pp)?;
         }
         self.dev.sync()
     }
 }
 
-/// What one pass of a layer compares: the comparisons' (where, kind, class, value, the rows near a tie).
-type Got = Vec<(String, String, Class, f32, Vec<String>)>;
+/// Sequence `seq`'s latent cache in a block of the reference (made where the block has not run it yet).
+fn latent_cache(b: &mut RefLayer, seq: u32) -> Result<&mut LatentCache> {
+    match b.seqs.entry(seq).or_insert_with(|| SeqState::Mla(LatentCache::default())) {
+        SeqState::Mla(c) => Ok(c),
+        _ => err("a latent attention's sequence state is not a latent cache"),
+    }
+}
+
+/// A latent attention's indexer of its own in a block (none for a shared one, which takes the picks of the layer before).
+fn own_indexer(b: &RefLayer) -> Option<Indexer> {
+    match &b.block.body {
+        Body::Mixer(Mixer::Mla(x)) => x.indexer.clone().filter(|ix| !ix.shared),
+        _ => None,
+    }
+}
+
+/// The rows of a body's pass where the engine's indexer picks (`rows`, traced with their inputs) are not the reference's own (`picked`, the reference's
+/// records of the same rows, taking the engine's picks): each judged by the reference's indexer on the engine's own input (`logits::picks_apart`, the rule
+/// the logits checks hold an engine to), and named; those whose choice there differs by `NEAR` or more (or that no tie explains: NaN) are returned.
+fn indexer_apart(ix: &Indexer, picked: Vec<Picked>, rows: Vec<crate::logits::PickRow>, at: usize, l: usize, b: usize) -> Vec<String> {
+    let mut bad = Vec::new();
+    for a in crate::logits::picks_apart(&[picked], &vec![rows], std::slice::from_ref(ix)) {
+        let line = format!(
+            "position {} (pools only the reference's own {:?}, only the engine's {:?}: {:.1e} apart on the engine's own input, {:.1e} on the reference's)",
+            at + a.token,
+            a.reference,
+            a.engine,
+            a.margin,
+            a.own_margin
+        );
+        println!("     L{l} B{b} the engine's picks are not the reference's own at {line}");
+        if !(a.margin < NEAR) {
+            bad.push(line);
+        }
+    }
+    bad
+}
+
+/// What one pass of a layer compares: the comparisons' (where, kind, class, value, the rows near a tie, the indexer's choices apart).
+type Got = Vec<(String, String, Class, f32, Vec<String>, Vec<String>)>;
 
 /// A pass's rows: their tokens, the first's position, and each row's residual before the layer.
 struct Rows<'a> {
@@ -354,7 +396,9 @@ struct Rows<'a> {
 
 /// Layer `l` of the executor (blocks `starts[l]..starts[l + 1]`, `block_starts`) on `rows` (the depth mix's completed groups made by `rng`). With what it
 /// compared, the residual the layer left (as the slot holds it).
-fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng: &mut Rng) -> Result<(Got, Vec<f32>)> {
+/// `lend`: the picks the last latent attention with an indexer of its own took for the pass's rows (each row's entries), which a layer whose indexer is
+/// shared attends to, as the engine's does (`MlaOp::lent`); set by such a body here.
+fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng: &mut Rng, lend: &mut Option<Vec<Vec<usize>>>) -> Result<(Got, Vec<f32>)> {
     let Rows { at, tok, x0 } = rows;
     let (d, layers, n) = (m.desc.hidden, dy.big.d.layers.len(), tok.len());
     let (first, per) = (starts[l], starts[l + 1] - starts[l]);
@@ -390,7 +434,7 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng:
         rows.push(Row { x, depth: dp, hc: None });
     }
     let mut got: Got = Vec::new();
-    let mut put = |at: String, kind: String, class: Class, v: f32, near: Vec<String>| got.push((at, kind, class, v, near));
+    let mut put = |at: String, kind: String, class: Class, v: f32, near: Vec<String>, apart: Vec<String>| got.push((at, kind, class, v, near, apart));
     // the reference's input to block b (or the final norm's, b = None), from each row's residual: H as the reference makes it
     let pre = |m: &RefModel, rows: &mut Vec<Row>, b: Option<usize>| -> Result<Vec<f32>> {
         let mut h = Vec::with_capacity(n * d);
@@ -469,7 +513,7 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng:
                 let h = pre(m, &mut rows, Some(b))?;
                 state_rel(&rows)?.max(rel(&dy.kc_get(Slot::H, n)?, &h))
             };
-            put(format!("L{l} before B{b}"), residual_label(Some(&m.layers[b].block)), Class::Residual, v, Vec::new());
+            put(format!("L{l} before B{b}"), residual_label(Some(&m.layers[b].block)), Class::Residual, v, Vec::new(), Vec::new());
             continue;
         }
         if body >= per {
@@ -498,7 +542,7 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng:
             let want: Vec<f32> = rows.iter().flat_map(|r| r.x.clone()).collect();
             let own = |v: &[f32]| v.iter().zip(&before).map(|(a, b)| a - b).collect::<Vec<f32>>();
             println!("     L{l} B{b} {kind}: its own output (the streams' change) {:.2e} of its largest magnitude, not judged", rel(&own(&got), &own(&want)));
-            put(format!("L{l} B{b}"), kind, class, rel(&got, &want), Vec::new());
+            put(format!("L{l} B{b}"), kind, class, rel(&got, &want), Vec::new(), Vec::new());
             body += 1;
             continue;
         }
@@ -508,18 +552,62 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng:
             dy.kc_put(Slot::H, &h)?;
         }
         let h = dy.kc_get(Slot::H, n)?;
+        // (a latent attention with an indexer of its own: the engine's picks traced with the inputs it made them from, and the reference taking them, so
+        // that each row is compared on the engine's choice and each choice apart is judged on the engine's own input: `indexer_apart`)
+        let ix = own_indexer(&m.layers[b]);
+        dy.trace_picks(ix.is_some());
         dy.kc_ops(l, r.clone(), n, at, &tok)?;
+        let traced = dy.trace_picks(false);
         last_ran = false;
         let out = out_slot(&dy.big.d.layers[l][r.end - 1])?;
         if dy.kc_width(out) != d {
             return err(format!("layer {l}: a body's output slot {out:?} of {} values, not {d}", dy.kc_width(out)));
         }
         let o = dy.kc_get(out, n)?;
+        let rows_picked: Vec<crate::logits::PickRow> = traced
+            .into_iter()
+            .flat_map(|t| {
+                let keys = std::rc::Rc::new(t.keys);
+                t.pos.into_iter().zip(t.picks).zip(t.q.into_iter().zip(t.w)).map(move |((pos, picks), (q, w))| crate::logits::PickRow {
+                    pos,
+                    picks,
+                    q,
+                    w,
+                    keys: keys.clone(),
+                })
+            })
+            .collect();
+        if ix.is_some() {
+            if rows_picked.len() != n {
+                return err(format!("L{l} B{b}: the picks of {} rows traced, where the pass has {n}", rows_picked.len()));
+            }
+            let c = latent_cache(&mut m.layers[b], 0)?;
+            (c.take, c.picked) = (rows_picked.iter().map(|r| r.picks.clone()).collect(), Some(Vec::new()));
+            *lend = Some(rows_picked.iter().map(|r| r.picks.clone()).collect());
+        }
+        // (a layer whose indexer is shared: each row attends to the picks the latent attention with an indexer before it took for that row)
+        let shared = matches!(&m.layers[b].block.body, Body::Mixer(Mixer::Mla(x)) if x.indexer.as_ref().is_some_and(|i| i.shared));
+        if shared && lend.as_ref().is_none_or(|p| p.len() != n) {
+            return err(format!("L{l} B{b}: a shared indexer's layer, with no picks of this pass's {n} rows lent to it"));
+        }
         let (mut want, mut margin) = (Vec::with_capacity(n * d), Vec::with_capacity(n));
         for t in 0..n {
+            if let Some(p) = lend.as_ref().filter(|_| shared) {
+                latent_cache(&mut m.layers[b], 0)?.lent = std::iter::once(p[t].clone()).collect();
+            }
             want.extend(m.body(b, 0, (at + t) as u32, tok[t], &h[t * d..][..d])?);
-            margin.push(m.layers[b].margin);
+            // (a row on the engine's own picks is compared whatever the reference's own margin: none is left out as near a tie)
+            margin.push(if ix.is_some() { f32::INFINITY } else { m.layers[b].margin });
         }
+        let apart = match &ix {
+            Some(ix) => {
+                let c = latent_cache(&mut m.layers[b], 0)?;
+                let picked = c.picked.take().unwrap_or_default();
+                c.take.clear();
+                indexer_apart(ix, picked, rows_picked, at, l, b)
+            }
+            None => Vec::new(),
+        };
         // (each row's largest difference over the pass's scale; a row past the bound whose choice was near a tie is left out, and named)
         let (class, kind) = label(&m.layers[b].block);
         let scale = want.iter().fold(0f32, |a, v| a.max(v.abs())).max(1e-30);
@@ -536,7 +624,7 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng:
                 worst = worst.max(r);
             }
         }
-        put(format!("L{l} B{b}"), kind, class, worst, near);
+        put(format!("L{l} B{b}"), kind, class, worst, near, apart);
         pending = Some((b, o));
         body += 1;
     }
@@ -561,7 +649,7 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng:
             }
         };
         let what = b.map_or("the final norm".to_string(), |b| format!("B{b}"));
-        put(format!("L{l} before {what}"), residual_label(b.map(|b| &m.layers[b].block)), Class::Residual, v, Vec::new());
+        put(format!("L{l} before {what}"), residual_label(b.map(|b| &m.layers[b].block)), Class::Residual, v, Vec::new(), Vec::new());
     }
     Ok((got, dy.kc_get(state, n)?))
 }
@@ -648,6 +736,8 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
             m2.forward_seen(&tok, at as u32, &mut |x| own.push(x.to_vec()))?;
         }
         // (the first layer's residual: --chain the tokens' scaled embedding rows, --sequence the reference's own; at random each layer's otherwise)
+        // (the picks a layer whose indexer is shared takes: the last latent attention's with one of its own, on this pass's rows)
+        let mut lend = None;
         let mut x = match how {
             Passes::Chain => Some(tok.iter().flat_map(|&t| m.embed[t as usize * hd..][..hd].iter().map(|&v| bf16(v * bf16(scale)))).collect::<Vec<f32>>()),
             _ => own.first().cloned(),
@@ -657,7 +747,7 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
                 Some(x) => x,
                 None => rngs[l].v(n * sw),
             };
-            let (got, after) = pass(&dy, &mut m, l, &starts, Rows { at, tok: &tok, x0 }, &mut rngs[l])?;
+            let (got, after) = pass(&dy, &mut m, l, &starts, Rows { at, tok: &tok, x0 }, &mut rngs[l], &mut lend)?;
             if alone.is_some() {
                 let want = &own[starts[l + 1]];
                 let v = rel(&after, want);
@@ -678,16 +768,17 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
             if at == 0 {
                 lines[l] = got
                     .into_iter()
-                    .map(|(w, kind, class, v, near)| Line { case: id, at: w, kind, class, prompt: v, steps: 0.0, near, rows: prompt + steps })
+                    .map(|(w, kind, class, v, near, apart)| Line { case: id, at: w, kind, class, prompt: v, steps: 0.0, near, rows: prompt + steps, apart })
                     .collect();
                 continue;
             }
             if got.len() != lines[l].len() {
                 return err(format!("{id} layer {l}: a step compared {} things, the prompt {}", got.len(), lines[l].len()));
             }
-            for (line, (_, _, _, v, near)) in lines[l].iter_mut().zip(got) {
+            for (line, (_, _, _, v, near, apart)) in lines[l].iter_mut().zip(got) {
                 line.steps = line.steps.max(v);
                 line.near.extend(near);
+                line.apart.extend(apart);
             }
         }
     }
@@ -701,8 +792,13 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
             } else {
                 format!("; {} of its {} rows past the bound near a tie and not compared, more than one in sixteen: {}", x.near.len(), x.rows, x.near.join(", "))
             };
+            let apart = if x.apart.is_empty() {
+                String::new()
+            } else {
+                format!("; the indexer's picks apart from the reference's on the engine's own input, by NEAR or more: {}", x.apart.join(", "))
+            };
             println!(
-                "{} {:11} {:22} {}: prompt {:.2e}, steps {:.2e} (bound {:.0e}){near}",
+                "{} {:11} {:22} {}: prompt {:.2e}, steps {:.2e} (bound {:.0e}){near}{apart}",
                 if ok { "ok  " } else { "FAIL" },
                 x.case,
                 x.at,
@@ -726,7 +822,7 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
 
 /// `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain | --sequence]`: the cases (all unless named), then each class's worst against its bound.
 pub fn run(a: &crate::args::Args) -> Result<()> {
-    const ALL: [&str; 14] = [
+    const ALL: [&str; 15] = [
         "gemma4",
         "gemma4-kv",
         "qwen35",
@@ -738,6 +834,7 @@ pub fn run(a: &crate::args::Args) -> Result<()> {
         "kimi",
         "kimi-dsa",
         "glm",
+        "glm-dsa",
         "deepseek-v4",
         "qwen4x",
         "qwen4x-s2",
@@ -825,14 +922,18 @@ mod tests {
             steps: 0.0,
             near: vec!["position 0".to_string(); near],
             rows,
+            apart: Vec::new(),
         };
         assert!(line(0, 52).ok() && line(1, 52).ok() && line(3, 52).ok());
         assert!(!line(4, 52).ok() && !line(52, 52).ok());
         assert!(line(1, 5).ok() && !line(2, 5).ok());
-        // (and a bound still fails with nothing left out)
+        // (and a bound still fails with nothing left out, as an indexer's choice apart does within it)
         let mut past = line(0, 52);
         past.steps = 2.5e-2;
         assert!(!past.ok());
+        let mut apart = line(0, 52);
+        apart.apart.push("position 3".to_string());
+        assert!(!apart.ok());
     }
 
     /// Qwen3.8-Flash-Next's tiny model: the n-gram embedding's three operations before the second layer's mixer are a run of their own (its add ends it), so

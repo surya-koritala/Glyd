@@ -8,9 +8,6 @@ use crate::ffi::{err, Result, Stream};
 use crate::launch;
 use crate::runtime::kinds::Rounding;
 
-/// Rows of streams up to which a bf16 mixing projection is split over many blocks (a decode step, a verified draft's rows); more take a block a row.
-pub const HC_FEW: u32 = 8;
-
 /// Rows of a mixing projection (kernels/residual.cu HC_NP: the collapse weights, the spreading weights, the 4 x 4 mixing matrix) and the streams (HC_N).
 pub const HC_NP: usize = 24;
 pub const HC_N: usize = 4;
@@ -24,12 +21,16 @@ fn cpb(round: Rounding) -> Result<usize> {
     }
 }
 
-/// The partial sums the split projection writes for `rows` rows of streams `d` wide (fp32 words): every row's where the projection is fp32 (it is always split),
-/// HC_FEW rows' where it is bf16.
+/// The partial sums the split projection writes for `rows` rows of streams `d` wide (fp32 words): every row's, whatever its rounding.
 pub fn part_words(round: Rounding, rows: usize, d: usize) -> Result<usize> {
-    let c = cpb(round)?;
-    let parts = if round == Rounding::Once { rows * (HC_N * d / c).max(1) } else { HC_FEW as usize * 64 };
-    Ok(parts * (HC_NP + 1))
+    Ok(rows * (HC_N * d / cpb(round)?).max(1) * (HC_NP + 1))
+}
+
+/// Whether a block's mixing weights of streams `d` wide are the split projection's (`hc_proj_*` then `hc_fin`), else `hc_mix`'s (a block a row): by the
+/// layer's shape and rounding alone, never by the rows of the call, so that a row's sums are those of its own pass whatever shares it (the two kernels add
+/// a row's products in different orders: a prompt of 7 rows alone took one, the same rows in a pass of 15 the other, and the logits came apart).
+fn split(round: Rounding, d: usize) -> Result<bool> {
+    Ok(round == Rounding::Once || (HC_N * d).is_multiple_of(cpb(round)?))
 }
 
 pub struct KernRes {
@@ -107,9 +108,8 @@ impl KernRes {
             return err(format!("streams of {d} values: not supported"));
         }
         let single = (round == Rounding::Once) as i32;
-        // (an fp32 projection, and a bf16 one's few rows (a decode step): split over many blocks, then its rest; a bf16 one's more rows: a block a row)
-        let k = HC_N * d as usize;
-        if round == Rounding::Once || (n <= HC_FEW && k.is_multiple_of(cpb(round)?) && k / cpb(round)? <= 64) {
+        // (split over many blocks, then its rest; a block a row where the shape does not split)
+        if split(round, d as usize)? {
             let ks = self.proj(s, x, f, part, n, d, HC_NP as i32, round)?;
             return launch!(self.fin, [n, 1, 1], [512, 1, 1], s; x, part, ks as i32, base, scale, nw, h, hcp, d, eps, hc_eps, iters, single, single);
         }
@@ -266,11 +266,21 @@ mod tests {
         }
     }
 
-    /// The split projection's sums: every row's where the projection is fp32 (the release's, always split), the few rows' where it is bf16; none where nothing is rounded.
+    /// The split projection's sums: every row's, by the rounding's columns a block; none where nothing is rounded.
     #[test]
     fn the_partial_sums_are_sized_by_the_rounding() {
         assert_eq!(part_words(Rounding::Once, 64, 4096).unwrap(), 64 * 64 * 25);
-        assert_eq!(part_words(Rounding::Twice, 64, 4096).unwrap(), HC_FEW as usize * 64 * 25);
+        assert_eq!(part_words(Rounding::Twice, 64, 4096).unwrap(), 64 * 32 * 25);
         assert!(part_words(Rounding::F32, 1, 4096).is_err());
+    }
+
+    /// Which kernel makes a block's mixing weights is the layer's (its width and rounding), never the call's rows: a streams width the bf16 projection's
+    /// blocks divide is split, one they do not is a block a row, at every row count.
+    #[test]
+    fn the_mixing_kernel_is_chosen_by_the_shape_alone() {
+        assert!(split(Rounding::Once, 4096).unwrap());
+        assert!(split(Rounding::Twice, 4096).unwrap() && split(Rounding::Twice, 256).unwrap());
+        assert!(!split(Rounding::Twice, 4000).unwrap());
+        assert!(split(Rounding::F32, 4096).is_err());
     }
 }
