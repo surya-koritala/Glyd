@@ -623,7 +623,7 @@ design keeps it, with two changes:
 - **Deterministic capacity (R4b).** Admission reserves each block's worst-case escape chunks (the tables' `worst_chunks`) for the tokens the
   request may write; the pool is the sum of reservations, not a share of the cache. An admitted request never fails because its keys
   compressed worse than expected. If the reservation leaves less than the bf16 cache would hold, those layers store bf16 pages instead:
-  the planner picks per layer group the format that holds more tokens.
+  the planner picks the format that holds more tokens (as built, one format for the whole cache, not one per layer group: "As planned" below).
 - **Lost blocks become impossible, not rare.** With reservations, `Lost` remains only as a checked invariant: the kernel still writes the
   status word, and a lost block is a bug reported as an error, not a retry.
 
@@ -1068,7 +1068,7 @@ with expert parallelism across nodes (D4). That is a planner fact, not a runtime
 | risk | effect | what we do |
 | :--- | :--- | :--- |
 | The generic executor loses fusions the hand-written engines have (Qwen3's fused `gemm3f` epilogue, Kimi's six-product KDA) | decode a few percent slower; the bench gate blocks the move | fusions live inside a block's `LayerImpl`, where they are today; a kind may take its neighbour's norm and residual |
-| Worst-case escape reservation eats the lossless KV's gain | fewer tokens than bf16 for some models | measure per model in R4b; the planner picks bf16 pages for a group where they hold more |
+| Worst-case escape reservation eats the lossless KV's gain | fewer tokens than bf16 for some models | measure per model in R4b; the planner takes bf16 pages where the 12-bit pages reserve more (one format for the plan: `kv_format`) |
 | A host-planned expert store breaks the step graph | ~10-20 µs a MoE layer on consumer cards | the device plan where copies dominate; the host plan only where host compute is the common case |
 | Recurrent-state snapshots are large (434 MB a sequence for Kimi-K3) | prefix reuse costs memory on KDA/GDN models | snapshots at turn ends only, LRU, counted in the plan |
 | MLX's lazy graph and our explicit queues disagree on when work runs | the Metal backend is slower than MLX alone | the spike (step 0) runs a kind through `mlx-c` before R2 lands |

@@ -33,6 +33,9 @@ HF_HUB_OFFLINE=1 GLYD_API_KEY=... glyd-engine serve /path/to/models--glyd--Qwen3
   without it, what fits, up to 32,768 at a level (served to several users, what fits each of them, at least 4,096). `--users N`
   (4 if not given) is how many requests run at once: 1 to 64 for a model on one GPU, as many as the GPU's memory holds (the server says how many); a model
   with a draft model, a model split across GPUs, or one with an operation that takes one sequence, runs one request at a time (the others wait in order).
+- The keys and values are in bf16 pages, or in the lossless 12-bit pages where `GLYD_KV=lossless` asks for them (Gemma 4 with `--no-draft`; the plain dense kind) and the plan finds that
+  they reserve no more than bf16 pages for the context and users asked: both formats are lossless, so the plan never takes a lower level for the 12-bit pages. The plan chooses and the loader
+  follows it. The start's `Plan:` line says which (`keys and values in bf16` / `in 12-bit pages`) and `fit --json` has it as `kv_format` (`bf16` or `12-bit`).
 - `--with MODEL2` serves a second model from the same process, on the same GPU: MODEL on its port and MODEL2 on `--with-port N`, else the next
   free port after MODEL's. Each is a server of its own (its scheduler, its `/v1/glyd/info`, `/metrics` and requests); the first loads as it would alone and takes
   up to half of the memory left for its keys and values, then the second loads in what is left and takes the rest. Both are models the description executor serves (each loads as `serve` would load it alone, as MODEL:wren).
