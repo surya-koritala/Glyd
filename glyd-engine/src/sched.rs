@@ -259,10 +259,10 @@ pub trait ModelStep {
         };
         Ok(Launched { done: Some(done), tag: 0 })
     }
-    /// Whether a row of the next step `launch` queues draws its token from its candidates or reads its logits (a sequence that is not greedy, or asks for
-    /// log-probabilities): a step that makes the candidates on the GPU (`top`) then queues them with the step's work and their copy with its samples, and `top` waits
-    /// for nothing.
-    fn draws(&mut self, _on: bool) {}
+    /// What the sampled rows of the next step `launch` queues ask of it, one for each in the order of their samples: None where the row takes its largest logit; Some(t)
+    /// where it draws from its candidates or reads its log-probabilities, and asks for its row's sum of exponentials at temperature t (`mass`; 0: none). A step that makes
+    /// them on the GPU queues them with its work and copies them with its samples, so `top` and `mass` wait for nothing.
+    fn draws(&mut self, _asks: &[Option<f32>]) {}
     /// The samples of a step `launch` queued, once its work has run (the wait is for that step, not for the GPU's whole queue).
     fn finish(&mut self, l: Launched) -> Result<Samples> {
         l.done.ok_or_else(|| crate::ffi::Error("a step launched to run at once has no samples".into()))
@@ -495,8 +495,8 @@ impl ModelStep for &mut dyn ModelStep {
     fn abandon(&mut self) {
         (**self).abandon()
     }
-    fn draws(&mut self, on: bool) {
-        (**self).draws(on)
+    fn draws(&mut self, asks: &[Option<f32>]) {
+        (**self).draws(asks)
     }
     fn draft(&mut self, row: &Row, sampler: Option<&mut Sampler>) -> Result<Option<Vec<u32>>> {
         (**self).draft(row, sampler)
@@ -2016,9 +2016,21 @@ impl<B: ModelStep> Sched<B> {
             plan.rows.iter().map(|r| r.0).chain(picks.iter().filter(|p| p.2).map(|p| p.0)).filter_map(|id| at(&self.active, id)).collect();
         let masks: Vec<_> = sampled.iter().map(|&i| self.active[i].sampler.mask_handle()).collect();
         let on_device = sampled.iter().all(|&i| self.active[i].greedy && self.active[i].reply.logprobs.is_none());
+        // (what each sampled row asks of the step beside its token: its candidates, and the sum of its row's exponentials a top-p with no top-k takes, or log-probabilities)
+        let asks: Vec<Option<f32>> = sampled
+            .iter()
+            .map(|&i| {
+                let s = &self.active[i];
+                (!(s.greedy && s.reply.logprobs.is_none())).then(|| match s.sampler.top_need() {
+                    Some(n) if n.mass => n.temperature,
+                    _ if s.reply.logprobs.is_some() => 1.0,
+                    _ => 0.0,
+                })
+            })
+            .collect();
         let (t, t0) = (std::time::Instant::now(), crate::monitor::clock());
         self.be.masks(masks);
-        self.be.draws(!on_device);
+        self.be.draws(&asks);
         let l = self.be.launch(&rows, &jobs)?;
         drop((rows, jobs));
         Ok(Flight { l, rows: plan.rows.iter().map(|r| r.0).collect(), picks, used: plan.used, t, t0, on_device })

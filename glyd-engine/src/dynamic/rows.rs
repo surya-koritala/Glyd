@@ -42,12 +42,15 @@ pub(super) struct Cands {
     bufs: Option<(Buf, Buf, crate::dev::Pinned, usize)>,
     rows: usize,
     made: bool,
+    /// Each head row's sum of exponentials made with the step (a launched one's, `ModelStep::draws`): the temperature and the sum.
+    sums: Vec<Option<(f32, f64)>>,
 }
 
 impl Cands {
     /// A step that wrote `rows` head rows ran: its candidates are not made yet.
     fn fresh(&mut self, rows: usize) {
         (self.rows, self.made) = (rows, false);
+        self.sums.clear();
     }
 }
 
@@ -91,6 +94,9 @@ struct Lane {
     drawn: bool,
     /// The 12-bit pages' status words of each group after the step (its void pages' ring, `kv12_lost`), copied with its samples.
     status: crate::dev::Pinned,
+    /// The head rows' sums of exponentials the step was asked for (f64 a row), and the asks.
+    sums: crate::dev::Pinned,
+    asks: Vec<Option<f32>>,
 }
 
 impl Lanes {
@@ -111,6 +117,8 @@ impl Lanes {
                     evs: Vec::new(),
                     drawn: false,
                     status: crate::dev::Pinned::new(4 * status_words)?,
+                    sums: crate::dev::Pinned::new(8 * head)?,
+                    asks: Vec::new(),
                 })
             })
             .collect::<Result<_>>()?;
@@ -1026,13 +1034,43 @@ impl Dyn {
             crate::dev::copy_d2h_async(lane.outs.ptr, self.big.tok.ptr, 4 * asked, s)?;
             crate::dev::copy_d2h_async((lane.outs.ptr as *mut u8).add(4 * head) as *mut _, self.big.val.ptr, 4 * asked, s)?;
         }
-        // (a step whose rows draw from their candidates: those queued with its work, read once its event is waited for; the top-k kernel takes the vocabulary)
-        let drawn = self.draws && !self.top.off && self.big.d.vocab.is_multiple_of(8) && self.big.d.vocab >= crate::kern::TOPK;
+        // (a step whose rows draw from their candidates: those queued with its work, and the sums of exponentials its rows ask for, read once its event is waited for; the
+        // top-k kernel takes the vocabulary)
+        let v = self.big.d.vocab;
+        let asks = std::mem::take(&mut self.draws);
+        let drawn = asks.iter().any(Option::is_some) && !self.top.off && v.is_multiple_of(8) && v >= crate::kern::TOPK;
         if drawn {
             self.queue_cands(asked)?;
+            if asks.iter().flatten().any(|&t| t > 0.0) && self.sums.as_ref().is_none_or(|b| b.bytes < 8 * head) {
+                self.sums = Some(Buf::zeroed(8 * head)?);
+            }
+            let out = self.sums.as_ref().map_or(0, |b| b.ptr);
+            for (r, &t) in asks.iter().enumerate().take(asked) {
+                if let Some(t) = t.filter(|&t| t > 0.0) {
+                    // SAFETY: head row r of v logits and its largest (f32) in val; its f64 sum at row r of the sums' room (a head's rows).
+                    unsafe {
+                        self.kern.exp_sum_rows(
+                            s,
+                            self.big.logits.ptr + (r * v * 2) as u64,
+                            v as i32,
+                            1,
+                            self.big.val.ptr + (4 * r) as u64,
+                            t,
+                            out + (8 * r) as u64,
+                        )?
+                    };
+                }
+            }
         }
         let lanes = self.lanes.as_mut().expect("lanes");
         let lane = &mut lanes.lane[k];
+        if drawn && asks.iter().flatten().any(|&t| t > 0.0) {
+            if let Some(b) = &self.sums {
+                // SAFETY: the sums' room holds `asked` f64 (the head's rows); the lane's pinned room `head` of them, read after its event.
+                unsafe { crate::dev::copy_d2h_async(lane.sums.ptr, b.ptr, 8 * asked, s)? };
+            }
+        }
+        lane.asks = if drawn { asks } else { Vec::new() };
         if let Some(lx) = &self.lossless {
             // (the 12-bit pages' status after the step: its void ring, read when it lands, not as the next step writes it)
             for (g, b) in lx.status.iter().enumerate() {
@@ -1084,11 +1122,15 @@ impl Dyn {
             self.replayed.set(false);
         }
         let drawn = lane.drawn;
+        // SAFETY: the lane's pinned sums, written by the step's copies (its event waited for) for the rows that asked.
+        let sums: Vec<Option<(f32, f64)>> =
+            lane.asks.iter().enumerate().map(|(r, a)| a.filter(|&t| t > 0.0).map(|t| (t, unsafe { *(lane.sums.ptr as *const f64).add(r) }))).collect();
         // (the step's own status for the lost blocks the scheduler asks for next, `kv12_lost`)
         self.status_from = Some(lane.status.ptr as *const u32);
         self.cands.fresh(asked);
         // (made with the step where it draws: its event covers their copy)
         self.cands.made = drawn;
+        self.cands.sums = sums;
         self.end_expert_step()?;
         // (GLYD_PROF=1: the pass's operations, by its own events; a graph's replay only where no later replay has recorded its events again)
         if super::prof::on() && self.prof.is_some() {
@@ -1165,7 +1207,7 @@ impl Dyn {
             return Ok(None);
         }
         if self.sums.is_none() {
-            self.sums = Some(Buf::zeroed(8)?);
+            self.sums = Some(Buf::zeroed(8 * self.head_room())?);
         }
         let out = self.sums.as_ref().expect("made above").ptr;
         // SAFETY: the step's head row `row` of v logits and its largest (f32) in val; one f64 out; read after the synchronize.
@@ -1373,13 +1415,19 @@ impl ModelStep for Dyn {
             (l.out, l.stale) = (0, false);
         }
     }
-    fn draws(&mut self, on: bool) {
-        self.draws = on;
+    fn draws(&mut self, asks: &[Option<f32>]) {
+        self.draws = asks.to_vec();
     }
     fn masks(&mut self, masks: Vec<Option<crate::constrain::MaskHandle>>) {
         self.row_masks = masks;
     }
     fn mass(&mut self, row: usize, temperature: f32) -> Option<f64> {
+        // (made with the step where it asked for this one; else made now)
+        if let Some(&Some((t, m))) = self.cands.sums.get(row).filter(|_| self.lanes.as_ref().is_none_or(|l| !l.stale)) {
+            if t == temperature {
+                return Some(m);
+            }
+        }
         self.row_mass(row, temperature).unwrap_or(None)
     }
     /// The candidates the GPU makes of the step's head rows (`Cands`); where it cannot (an error), the row is read as without them.
