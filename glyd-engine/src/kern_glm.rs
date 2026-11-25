@@ -5,7 +5,7 @@
 use crate::ffi::{err, Error, Result};
 use glyd_gpu::safetensors::Checkpoint;
 
-pub use crate::kern::glm::{mla_positions, mla_smem, Hc, KernGlm, GM_CHUNK_SMEM, GM_D, GM_HC, GM_L, GM_NP, HC_FEW};
+pub use crate::kern::glm::{mla_positions, mla_smem, Hc, KernGlm, GM_CHUNK_SMEM, GM_D, GM_HC, GM_L, GM_NP};
 
 /// A tensor's bytes as fp32 (a checkpoint's fp32 parameters, which a glyd-v7 directory may hold as bf16: widened exactly).
 pub(crate) fn f32_bytes(ck: &Checkpoint, name: &str) -> Result<Vec<u8>> {

@@ -20,8 +20,9 @@ use crate::runtime::kinds::{IndexForm, Indexer, Mla, NormKind, Rope};
 
 /// A sequence's latents in one layer: per token the normed latent (kv_lora values) then the shared key part (rope_dim, rotated); and where
 /// the layer has an indexer of its own, per token its normed key and its pool gate's scores; and the last query's pick `margin`. `picks`:
-/// the entries the last query attended to, where the layer has an indexer; `lent`: for a layer whose indexer is `shared`, the picks of the
-/// latent attention before it for the query about to run (the model lends them: `RefModel::share_into`), taken by that query. `take`: the
+/// the entries the last query attended to, where the layer has an indexer, and `made` each query's of the model's current call, in order;
+/// `lent`: for a layer whose indexer is `shared`, the picks of the latent attention before it for the queries about to run, each query's in
+/// turn (the model lends them a call's: `RefModel::share_into`; a check, one query's), taken by those queries. `take`: the
 /// picks of the queries to come, each query's in turn, in the place of the indexer's own (a check's: another engine's picks, the entries each
 /// query attends to; an empty list: the indexer's own); `picked`: each query's record in turn (`Picked`), where a check reads them.
 #[derive(Default)]
@@ -32,7 +33,8 @@ pub struct LatentCache {
     pub igate: Vec<Vec<f32>>,
     pub margin: f32,
     pub picks: Vec<usize>,
-    pub lent: Option<Vec<usize>>,
+    pub made: Vec<Vec<usize>>,
+    pub lent: std::collections::VecDeque<Vec<usize>>,
     pub take: std::collections::VecDeque<Vec<usize>>,
     pub picked: Option<Vec<Picked>>,
 }
@@ -220,7 +222,7 @@ pub fn step(m: &Mla, p: &Params, c: &mut LatentCache, h: &[f32], pos: u32) -> Re
     let seen: Vec<usize> = (0..c.pos.len()).filter(|&j| c.pos[j] <= pos).collect();
     let (seen, margin) = match &m.indexer {
         // (a shared indexer runs none: the query attends to what the latent attention before it picked for it, transformers' `prev_topk_indices`)
-        Some(ix) if ix.shared => match c.lent.take() {
+        Some(ix) if ix.shared => match c.lent.pop_front() {
             Some(lent) => (lent, f32::INFINITY),
             None => return err("MLA: a shared indexer attends to the picks of the latent attention before it, and none were lent to it"),
         },
@@ -244,6 +246,7 @@ pub fn step(m: &Mla, p: &Params, c: &mut LatentCache, h: &[f32], pos: u32) -> Re
     c.margin = margin;
     if m.indexer.is_some() {
         c.picks = seen.clone();
+        c.made.push(seen.clone());
     }
     let mut out = Vec::with_capacity(nh * vd);
     for head in 0..nh {
@@ -547,9 +550,9 @@ mod tests {
             let x = step(&m, &p, &mut a, h, t as u32).unwrap();
             chose |= a.picks.len() < t + 1;
             assert_eq!(a.picks.len(), (t + 1).min(4), "token {t}");
-            b.lent = Some(a.picks.clone());
+            b.lent.push_back(a.picks.clone());
             let y = step(&shared, &ps, &mut b, h, t as u32).unwrap();
-            assert_eq!((x, b.picks.clone(), b.lent.is_none(), b.ikey.len()), (y, a.picks.clone(), true, 0), "token {t}");
+            assert_eq!((x, b.picks.clone(), b.lent.is_empty(), b.ikey.len()), (y, a.picks.clone(), true, 0), "token {t}");
         }
         assert!(chose, "the indexer kept every token");
         let e = step(&shared, &ps, &mut b, &inputs(13)[12], 12).unwrap_err().msg;

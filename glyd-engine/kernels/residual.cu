@@ -123,8 +123,9 @@ __device__ __forceinline__ void hc_tail(const bf16* xr, const float* base, const
 // the 24 results into pre = sigmoid(w scale0 + base) + hc_eps (4), post = 2 sigmoid(w scale1 + base) (4) and comb = softmax(w scale2 + base) + hc_eps (4 x 4: each row of the softmax over its 4 columns), which `iters`
 // rounds of Sinkhorn-Knopp make doubly stochastic (the columns' sums divided out first, once even where `iters` is 0, then iters - 1 rounds of the rows' and the columns': every division by sum + hc_eps); hcp [n, 24]
 // takes pre, post and comb (fp32). The row collapses to the layer's input, sum over streams of pre * x rounded to bf16, which is normed with the weight nw [D] (`single`: rounded once; else the normed value rounded
-// to bf16, times the weight, rounded again) into h [n, D]. A block a row, 512 threads; the projection is a thread's share of the 4D columns for all 24 rows at once. The many rows of a prompt with a bf16 projection;
-// a few rows, and every fp32 projection, take hc_proj_* and hc_fin.
+// to bf16, times the weight, rounded again) into h [n, D]. A block a row, 512 threads; the projection is a thread's share of the 4D columns for all 24 rows at once. Streams whose 4D the bf16 projection's
+// blocks do not divide (src/dynamic/residual.rs `split`: the layer's shape, never the call's rows, so a row's sums are its own pass's); every other width, bf16 or fp32, takes hc_proj_* and hc_fin (another
+// order of the sums).
 extern "C" __global__ void __launch_bounds__(512) hc_mix(const bf16* x, const bf16* fn, const float* base, const float* scale, const bf16* nw, bf16* h, float* hcp, int D, float eps, float hc_eps, int iters, int single) {
     const int t = blockIdx.x, tid = threadIdx.x, lane = tid & 31, w = tid >> 5, nwarps = blockDim.x >> 5;
     const int K = HC_N * D;

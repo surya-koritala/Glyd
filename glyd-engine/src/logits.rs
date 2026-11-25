@@ -1119,6 +1119,11 @@ fn glm_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     boxed(crate::dynamic::glm::load(dir, &dyn_opts(Some(Layout::Tiered)), level_layout(level)?.unwrap_or(Layout::Tiered)))
 }
 
+/// GLM-5.3's layout by its kinds alone (`dynamic::glm::load_plain`), the experts at the level asked (penguin's: bf16, as the random model holds them).
+fn glm_dsa_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
+    boxed(crate::dynamic::glm::load_plain(dir, &dyn_opts(level_layout(level)?)))
+}
+
 /// Gemma 4 on the description executor, as `serve` runs it (no draft model).
 fn gemma4_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     gemma4_at(dir, level_layout(level)?)
@@ -1497,6 +1502,74 @@ pub fn qwen35moe_random(out: &Path) -> Result<()> {
     manifest_random(&json!({"config": text, "tensors": tensors}).to_string(), out, 0x2026_1124_0000_0333, false, "Qwen3.5-family mixture of experts")
 }
 
+/// GLM-5.3's layout as a small random model (tests/fixtures/glm_moe_dsa_toy_config.json, `glm_moe_dsa`: four layers 256 wide of the latent attention, two heads
+/// of 64 + 64 rotated channels, its indexer of 4 heads of 128 keeping 8 tokens and turning the first 64 of each key and query, its own in the first two layers
+/// and shared in the last two; a dense MLP, then 16 experts of which a token takes 4 and the shared one): every tensor of its description at its shape, drawn as
+/// GLM-5.3-Flash's random case is (`glm::random`): each matrix U(+-sqrt(3 / its columns)), the embedding U(-1, 1), the head at half the matrices' scale, the
+/// norms' weights about 1, the indexer's key norm's bias and the choice bias small (the choice bias fp32, as released), bf16 else.
+pub fn glm_dsa_random(out: &Path) -> Result<()> {
+    glm_dsa_random_seeded(out, GLM_DSA_SEED)
+}
+
+/// The seed of `glm_dsa_random`'s draw.
+pub const GLM_DSA_SEED: u64 = 0x2026_1125_0000_0053;
+
+/// `glm_dsa_random` drawn from `seed` (not 0).
+pub fn glm_dsa_random_seeded(out: &Path, seed: u64) -> Result<()> {
+    let text = include_str!("../tests/fixtures/glm_moe_dsa_toy_config.json");
+    let d = crate::runtime::describe::describe(&serde_json::from_str(text).map_err(|e| Error(e.to_string()))?)?;
+    if seed == 0 {
+        return err("a seed of 0 draws nothing but zeros");
+    }
+    let mut r = seed;
+    let mut uni = move |a: f32, b: f32| {
+        r ^= r << 13;
+        r ^= r >> 7;
+        r ^= r << 17;
+        a + (b - a) * ((r >> 40) as f32 / (1u64 << 24) as f32)
+    };
+    let bf = |x: f32| -> u16 {
+        let b = x.to_bits();
+        ((b.wrapping_add(0x7fff + ((b >> 16) & 1))) >> 16) as u16
+    };
+    let mut tensors: Vec<(String, &str, Vec<u64>, Vec<u8>)> = Vec::new();
+    for name in d.names() {
+        let shape = d.shapes.get(&name).cloned().ok_or_else(|| Error(format!("GLM-5.3's description has no shape for {name}")))?;
+        let n: usize = shape.iter().product();
+        let a = (3.0 / *shape.last().unwrap_or(&1) as f32).sqrt();
+        let (lo, hi) = if name.ends_with("e_score_correction_bias") {
+            (0.0, 0.1)
+        } else if name.ends_with("k_norm.bias") {
+            (-0.1, 0.1)
+        } else if name.ends_with("norm.weight") || name.ends_with("layernorm.weight") {
+            (0.9, 1.1)
+        } else if name == d.embed {
+            (-1.0, 1.0)
+        } else if d.head.as_ref() == Some(&name) {
+            (-0.5 * a, 0.5 * a)
+        } else {
+            (-a, a)
+        };
+        let (dtype, bytes): (&str, Vec<u8>) = if name.ends_with("e_score_correction_bias") {
+            ("F32", (0..n).flat_map(|_| uni(lo, hi).to_le_bytes()).collect())
+        } else {
+            ("BF16", (0..n).flat_map(|_| bf(uni(lo, hi)).to_le_bytes()).collect())
+        };
+        tensors.push((name, dtype, shape.iter().map(|&x| x as u64).collect(), bytes));
+    }
+    io(std::fs::create_dir_all(out))?;
+    io(std::fs::write(out.join("config.json"), text))?;
+    let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = tensors.iter().map(|(n, d, s, b)| (n.as_str(), *d, s.clone(), &b[..])).collect();
+    crate::pack::write_safetensors(&out.join("model.safetensors"), &[("format", "pt".to_string())], &refs)?;
+    println!(
+        "{}: a random model of GLM-5.3's layout, {} tensors, {:.0} MB",
+        out.display(),
+        tensors.len(),
+        tensors.iter().map(|t| t.3.len()).sum::<usize>() as f64 / 1e6
+    );
+    Ok(())
+}
+
 /// The Qwen3.5 family's layout in the shape its larger checkpoints have and `qwen35_random` lacks (Qwen3_5ForConditionalGeneration: the text model under `text_config`, its
 /// tensors under `model.language_model.`): three Gated DeltaNet layers and a gated full-attention one, twice; three value heads to a key head in the linear attention and
 /// six query heads to a key-value head; a head of its own (no tied embedding); an MTP layer and a part of a vision tower in the checkpoint, which the engine counts or leaves.
@@ -1751,6 +1824,15 @@ pub fn cases() -> Vec<Case> {
             cpu: Some(described_cpu),
             vocab: 4096,
             on_choices: false,
+        },
+        Case {
+            id: "glm-dsa",
+            family: "GLM-5.3's layout (glm_moe_dsa: the latent attention with its rotary on every layer, indexers of their own and shared, the plain residual, a dense MLP and experts)",
+            weights: Weights::Random(glm_dsa_random),
+            engine: glm_dsa_engine,
+            cpu: Some(described_cpu),
+            vocab: 2048,
+            on_choices: true,
         },
         Case {
             id: "deepseek-v4",
@@ -3234,68 +3316,93 @@ mod tests {
     #[test]
     #[ignore]
     fn glm_noise_floor() {
-        use crate::runtime::kinds::{Body, Ffn, Mixer};
-        use crate::runtime::reference::{mla::LatentCache, model::checkpoint_tensor, model::RefModel, SeqState};
-        let (prompt, decode, long) = standard_tokens(2048);
         let mut worst = 0f64;
         for k in 0..6u64 {
             let dir = std::env::temp_dir().join(format!("glyd-glmfloor-{k}-{}", std::process::id()));
             crate::glm::random_seeded(&dir, false, None, crate::glm::RANDOM_SEED ^ (k << 32)).unwrap();
-            let cfg: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
-            let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
-            // (each sequence a token at a time from a fresh model: its rows, and every block's choices in the order taken)
-            let run = |rounded: bool, take: Option<&Vec<Vec<Vec<usize>>>>| -> (Vec<Vec<f32>>, Vec<Vec<Vec<usize>>>) {
-                let mut d = crate::runtime::describe::describe(&cfg).unwrap();
-                if !rounded {
-                    d.desc.f32_arithmetic();
-                }
-                let (mut rows, mut chose) = (Vec::new(), Vec::new());
-                for (i, seq) in [[prompt.clone(), decode.clone()].concat(), long.clone()].iter().enumerate() {
-                    let mut m = RefModel::load(&d, &|n: &str| checkpoint_tensor(&ck, n)).unwrap();
-                    let at = chose.first().map_or(0, |c: &Vec<Vec<usize>>| c.len());
-                    chose.resize_with(m.layers.len(), Vec::new);
-                    for (b, l) in m.layers.iter_mut().enumerate() {
-                        let given: std::collections::VecDeque<Vec<usize>> =
-                            take.map(|t| t[b][at..at + seq.len()].iter().cloned().collect()).unwrap_or_default();
-                        match &l.block.body {
-                            Body::Ffn(Ffn::Moe(_)) => (l.take, l.routed) = (given, Some(Vec::new())),
-                            Body::Mixer(Mixer::Mla(_)) => {
-                                l.seqs.insert(0, SeqState::Mla(LatentCache { take: given, picked: Some(Vec::new()), ..Default::default() }));
-                            }
-                            _ => {}
-                        }
-                    }
-                    for (t, &tok) in seq.iter().enumerate() {
-                        let r = m.forward(&[tok], t as u32).unwrap().pop().unwrap();
-                        if (i == 0 && t + 1 >= prompt.len()) || (i == 1 && t + 1 == seq.len()) {
-                            rows.push(r);
-                        }
-                    }
-                    for (b, l) in m.layers.iter_mut().enumerate() {
-                        let got: Vec<Vec<usize>> = match (&l.block.body, l.seqs.get_mut(&0)) {
-                            (Body::Ffn(Ffn::Moe(_)), _) => l.routed.take().unwrap_or_default().into_iter().map(|r| r.ids).collect(),
-                            (_, Some(SeqState::Mla(c))) => c.picked.take().unwrap_or_default().into_iter().map(|p| p.picks).collect(),
-                            _ => vec![Vec::new(); seq.len()],
-                        };
-                        chose[b].extend(got);
-                    }
-                }
-                (rows, chose)
-            };
-            let (a, choices) = run(true, None);
-            let (b, _) = run(false, Some(&choices));
-            let kls: Vec<f64> = a.iter().zip(&b).map(|(w, g)| kl_of(&Row::from_logits(w).unwrap(), g)).collect();
-            let mean = kls.iter().sum::<f64>() / kls.len() as f64;
-            let rms = (a.iter().flatten().map(|&x| (x as f64).powi(2)).sum::<f64>() / a.iter().map(Vec::len).sum::<usize>() as f64).sqrt();
-            println!(
-                "glm seed {k}: the noise floor KL mean {mean:.2e} max {:.2e} over {} rows (the logits' RMS {rms:.2})",
-                kls.iter().cloned().fold(0f64, f64::max),
-                kls.len()
-            );
-            worst = worst.max(mean);
+            worst = worst.max(rounded_against_f32(&dir, &format!("glm seed {k}")));
             let _ = std::fs::remove_dir_all(&dir);
         }
         assert!(worst <= 1e-5, "a noise floor of KL {worst:.2e}, past a tenth of the bound");
+    }
+
+    /// GLM-5.3's layout (the glm-dsa case): its noise floor as `glm_noise_floor` measures GLM-5.3-Flash's (the rounding points its description gives, the
+    /// RMS norms' `Twice`, against every one in fp32, on the same experts and picks), on the case's model and two of other seeds, each at most a tenth of the
+    /// lossless bound. cargo test --profile ci -- --ignored glm_dsa_noise_floor.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore]
+    fn glm_dsa_noise_floor() {
+        let mut worst = 0f64;
+        for k in 0..3u64 {
+            let dir = std::env::temp_dir().join(format!("glyd-glmdsafloor-{k}-{}", std::process::id()));
+            glm_dsa_random_seeded(&dir, GLM_DSA_SEED ^ (k << 32)).unwrap();
+            worst = worst.max(rounded_against_f32(&dir, &format!("glm-dsa seed {k}")));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        assert!(worst <= 1e-5, "a noise floor of KL {worst:.2e}, past a tenth of the bound");
+    }
+
+    /// The CPU reference of the model in `dir` with its description's rounding points against itself with every one in fp32 (`ModelDesc::f32_arithmetic`),
+    /// the f32 run taking the rounded run's experts and indexer picks, on the standard tokens (each sequence a token at a time from a fresh model): the KL
+    /// mean over the rows, printed with its max (as `what`).
+    #[cfg(feature = "dev")]
+    fn rounded_against_f32(dir: &Path, what: &str) -> f64 {
+        use crate::runtime::kinds::{Body, Ffn, Mixer};
+        use crate::runtime::reference::{mla::LatentCache, model::checkpoint_tensor, model::RefModel, SeqState};
+        let cfg: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+        let (prompt, decode, long) = standard_tokens(crate::runtime::describe::describe(&cfg).unwrap().desc.vocab);
+        let ck = glyd_gpu::safetensors::Checkpoint::open(dir).unwrap();
+        // (each sequence a token at a time from a fresh model: its rows, and every block's choices in the order taken)
+        let run = |rounded: bool, take: Option<&Vec<Vec<Vec<usize>>>>| -> (Vec<Vec<f32>>, Vec<Vec<Vec<usize>>>) {
+            let mut d = crate::runtime::describe::describe(&cfg).unwrap();
+            if !rounded {
+                d.desc.f32_arithmetic();
+            }
+            let (mut rows, mut chose) = (Vec::new(), Vec::new());
+            for (i, seq) in [[prompt.clone(), decode.clone()].concat(), long.clone()].iter().enumerate() {
+                let mut m = RefModel::load(&d, &|n: &str| checkpoint_tensor(&ck, n)).unwrap();
+                let at = chose.first().map_or(0, |c: &Vec<Vec<usize>>| c.len());
+                chose.resize_with(m.layers.len(), Vec::new);
+                for (b, l) in m.layers.iter_mut().enumerate() {
+                    let given: std::collections::VecDeque<Vec<usize>> = take.map(|t| t[b][at..at + seq.len()].iter().cloned().collect()).unwrap_or_default();
+                    match &l.block.body {
+                        Body::Ffn(Ffn::Moe(_)) => (l.take, l.routed) = (given, Some(Vec::new())),
+                        Body::Mixer(Mixer::Mla(_)) => {
+                            l.seqs.insert(0, SeqState::Mla(LatentCache { take: given, picked: Some(Vec::new()), ..Default::default() }));
+                        }
+                        _ => {}
+                    }
+                }
+                for (t, &tok) in seq.iter().enumerate() {
+                    let r = m.forward(&[tok], t as u32).unwrap().pop().unwrap();
+                    if (i == 0 && t + 1 >= prompt.len()) || (i == 1 && t + 1 == seq.len()) {
+                        rows.push(r);
+                    }
+                }
+                for (b, l) in m.layers.iter_mut().enumerate() {
+                    let got: Vec<Vec<usize>> = match (&l.block.body, l.seqs.get_mut(&0)) {
+                        (Body::Ffn(Ffn::Moe(_)), _) => l.routed.take().unwrap_or_default().into_iter().map(|r| r.ids).collect(),
+                        (_, Some(SeqState::Mla(c))) => c.picked.take().unwrap_or_default().into_iter().map(|p| p.picks).collect(),
+                        _ => vec![Vec::new(); seq.len()],
+                    };
+                    // (a layer whose indexer is shared records no choice of its own: it takes the one before it, whatever is given)
+                    chose[b].extend(if got.len() == seq.len() { got } else { vec![Vec::new(); seq.len()] });
+                }
+            }
+            (rows, chose)
+        };
+        let (a, choices) = run(true, None);
+        let (b, _) = run(false, Some(&choices));
+        let kls: Vec<f64> = a.iter().zip(&b).map(|(w, g)| kl_of(&Row::from_logits(w).unwrap(), g)).collect();
+        let mean = kls.iter().sum::<f64>() / kls.len() as f64;
+        let rms = (a.iter().flatten().map(|&x| (x as f64).powi(2)).sum::<f64>() / a.iter().map(Vec::len).sum::<usize>() as f64).sqrt();
+        println!(
+            "{what}: the noise floor KL mean {mean:.2e} max {:.2e} over {} rows (the logits' RMS {rms:.2})",
+            kls.iter().cloned().fold(0f64, f64::max),
+            kls.len()
+        );
+        mean
     }
 
     /// The reference taking an engine's picks (`ref_drive` with `Picks`) on the glm case's model: its own picks taken give its own rows bit for bit;
@@ -3867,6 +3974,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
         "dense" => crate::dynamic::dense::load(dir, o)?,
         "muse" => crate::dynamic::muse::load(dir, o)?,
         "kimi" | "kimi-dsa" => crate::dynamic::kimi::load(dir, o)?,
+        "glm-dsa" => crate::dynamic::glm::load_plain(dir, o)?,
         // (its experts at a lossy level, as its logits case: kestrel where penguin is asked)
         "glm" => crate::dynamic::glm::load(dir, &DynOpts { layout: Some(Layout::Tiered), ..o.clone() }, level_layout(level)?.unwrap_or(Layout::Int6))?,
         // (its experts at the level asked: the lossless one where none is)
@@ -3876,7 +3984,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
         "qwen4x-cb" => qwen4x_cb_load(dir, o)?,
         other => {
             return err(format!(
-                "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, nemotron, deepseek-v4, qwen4x, qwen4x-s2 or qwen4x-cb"
+                "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, glm-dsa, nemotron, deepseek-v4, qwen4x, qwen4x-s2 or qwen4x-cb"
             ))
         }
     })
@@ -3934,13 +4042,14 @@ fn random_model(case: &str, dir: &Path) -> Result<()> {
         "kimi" => crate::kimi_ref::random(dir, 1, true, 8),
         "kimi-dsa" => crate::kimi_ref::random_dsa(dir),
         "glm" => crate::glm::random(dir, false, None),
+        "glm-dsa" => glm_dsa_random(dir),
         "nemotron" => crate::kcheck_nh::random(dir, 0, 16),
         "deepseek-v4" => crate::dsv4_ref::random(dir, None),
         "qwen4x" => qwen4x_random(dir),
         "qwen4x-s2" => qwen4x_s2_random(dir),
         "qwen4x-cb" => qwen4x_cb_random(dir),
         other => err(format!(
-            "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, nemotron, deepseek-v4, qwen4x, qwen4x-s2 or qwen4x-cb"
+            "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, glm-dsa, nemotron, deepseek-v4, qwen4x, qwen4x-s2 or qwen4x-cb"
         )),
     }
 }
