@@ -176,8 +176,45 @@ extern "C" __global__ void __launch_bounds__(128) moe_select32(const float* logi
 }
 
 // ---- between the experts' two products, and after them ------------------------------------------------------------------------------------
+// One exp and one tanh that the GPU and the expert cache's host compute to the bit (src/cpu_fp4.rs `exp_one`, `tanh_one`: the same constants by their bits, the same
+// operations in the same order), for the activations the host computes beside the GPU (situ, the release's weighted SiLU): Cephes' expf and tanhf, relative error about 1e-7,
+// as the CUDA library's expf and tanhf, which the release computes these activations with (in fp32) and which the host cannot reproduce. Every step is an IEEE operation
+// rounded to nearest, the fused multiply-adds written as such and nothing else fused (__fmul_rn, __fadd_rn: nvcc contracts none of them).
+__device__ __forceinline__ float moe_exp(float x) {
+    if (x > __int_as_float(0x42b17218)) return INFINITY;
+    if (x < __int_as_float((int)0xc2aeac50u)) return 0.f;  // (under the least normal number)
+    const float n = rintf(__fmul_rn(x, __int_as_float(0x3fb8aa3b)));
+    const float r = __fmaf_rn(n, __int_as_float(0x395e8083), __fmaf_rn(n, -__int_as_float(0x3f318000), x));
+    float p = __int_as_float(0x39506967);
+    p = __fmaf_rn(p, r, __int_as_float(0x3ab743ce));
+    p = __fmaf_rn(p, r, __int_as_float(0x3c088908));
+    p = __fmaf_rn(p, r, __int_as_float(0x3d2aa9c1));
+    p = __fmaf_rn(p, r, __int_as_float(0x3e2aaaaa));
+    p = __fmaf_rn(p, r, __int_as_float(0x3f000000));
+    const float y = __fadd_rn(__fmaf_rn(p, __fmul_rn(r, r), r), 1.f);
+    const int k = (int)n;
+    return __fmul_rn(__fmul_rn(y, __int_as_float((k / 2 + 127) << 23)), __int_as_float((k - k / 2 + 127) << 23));
+}
+__device__ __forceinline__ float moe_tanh(float x) {
+    const float z = fabsf(x);
+    if (z > __int_as_float(0x42317218)) return copysignf(1.f, x);
+    if (z >= 0.625f) return copysignf(__fsub_rn(1.f, __fdiv_rn(2.f, __fadd_rn(moe_exp(__fadd_rn(z, z)), 1.f))), x);
+    const float s = __fmul_rn(x, x);
+    float p = __int_as_float((int)0xbbbaf0eau);
+    p = __fmaf_rn(p, s, __int_as_float(0x3ca9134e));
+    p = __fmaf_rn(p, s, __int_as_float((int)0xbd5c1e2du));
+    p = __fmaf_rn(p, s, __int_as_float(0x3e088393));
+    p = __fmaf_rn(p, s, __int_as_float((int)0xbeaaaa99u));
+    return __fmaf_rn(__fmul_rn(p, s), x, x);
+}
+// situ(g, u) = lim tanh(g / lim) / (1 + e^-g) x lin tanh(u / lin) in fp32, in that order (src/cpu_fp4.rs `situ_f32`, to the bit).
+__device__ __forceinline__ float moe_situ(float g, float u, float lim, float lin) {
+    const float a = __fdiv_rn(__fmul_rn(lim, moe_tanh(__fdiv_rn(g, lim))), __fadd_rn(1.f, moe_exp(-g)));
+    return __fmul_rn(__fmul_rn(a, lin), moe_tanh(__fdiv_rn(u, lin)));
+}
+
 // out [rows, I]: MOE_SILU or MOE_GELU (tanh): act(min(g, lim)) * clamp(u, -lim, lim) of gu [rows, 2 I] (the gate in the first I columns, the up in the next I; lim = INFINITY: no clamp, GLM-5.x's is 10);
-// MOE_SITU: lim tanh(g / lim) sigmoid(g) x lin tanh(u / lin) of the same halves; MOE_RELU2: relu(x)^2 of gu [rows, I] (in place where out = gu). One rounding (MOE_SILU_R: silu(g) rounded before the
+// MOE_SITU: lim tanh(g / lim) sigmoid(g) x lin tanh(u / lin) of the same halves (moe_situ: the host's to the bit); MOE_RELU2: relu(x)^2 of gu [rows, I] (in place where out = gu). One rounding (MOE_SILU_R: silu(g) rounded before the
 // product too). I a multiple of 8; a thread takes
 // 8 columns, block (row, chunk of 256 threads' columns). With an experts' plan (`plan` of E experts, not null) the rows are its order's: a row past the pairs it routes is none (no
 // product wrote it), as in v4_moe_act.
@@ -204,8 +241,7 @@ extern "C" __global__ void moe_act(const bf16* gu, bf16* out, int I, int mode, f
 #pragma unroll
         for (int k = 0; k < 8; k++) {
             if (mode == MOE_SITU) {
-                const float g = b2f(gp[k]), u = b2f(up[k]);
-                op[k] = f2b(lim * tanhf(g / lim) / (1.f + expf(-g)) * lin * tanhf(u / lin));
+                op[k] = f2b(moe_situ(b2f(gp[k]), b2f(up[k]), lim, lin));
                 continue;
             }
             if (mode == MOE_SILU_R) {
@@ -221,10 +257,42 @@ extern "C" __global__ void moe_act(const bf16* gu, bf16* out, int I, int mode, f
     *reinterpret_cast<uint4*>(out + r * I + i) = ov;
 }
 
-// y [n] (bf16) += x [n] (fp32): the sums the host made of the pairs it computed, added to the routed sum of the GPU's (a block layout's, already rounded once).
+// y [n] (bf16) += x [n] (fp32): the sums the host made of the pairs it computed, added to the routed sum of the GPU's (a block layout's, already rounded once: a GPU's slice of a layer across
+// GPUs, whose rows a gather put together).
 extern "C" __global__ void moe_add_f32(bf16* y, const float* x, long long n) {
     const long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) y[i] = f2b(b2f(y[i]) + x[i]);
+}
+
+// The routed sum of a block layout's weighted second product: y [T, O] = each token's pairs that `ids` [T k] names (an id below E) added in the order of its choices in fp32 from their weighted
+// rows y32 [T k, O] (the product's, kept in its workspace, and the expert cache's host's put beside them), as the product's own sum adds them (the library's moe_sum_body, which an AMD build
+// does not carry), then, where x is given, the host's sums by token of the pairs it computed (x [T, O], fp32), rounded once: not the product's sum rounded and the host's added and rounded
+// again. 4 columns a thread; O a multiple of 4.
+extern "C" __global__ void moe_sum_host(const float* y32, const long long* ids, int E, long long T, long long k, long long O, const float* x, bf16* y) {
+    const long long i = ((long long)blockIdx.x * blockDim.x + threadIdx.x) * 4;
+    if (i >= T * O) return;
+    const long long tok = i / O, c = i - tok * O;
+    float4 v = make_float4(0.f, 0.f, 0.f, 0.f);
+    for (long long j = tok * k; j < tok * k + k; j++) {
+        const long long e = ids[j];
+        if (e < 0 || e >= E) continue;
+        const float4 u = *reinterpret_cast<const float4*>(y32 + j * O + c);
+        v.x += u.x;
+        v.y += u.y;
+        v.z += u.z;
+        v.w += u.w;
+    }
+    if (x) {
+        const float4 h = *reinterpret_cast<const float4*>(x + i);
+        v.x += h.x;
+        v.y += h.y;
+        v.z += h.z;
+        v.w += h.w;
+    }
+    y[i] = f2b(v.x);
+    y[i + 1] = f2b(v.y);
+    y[i + 2] = f2b(v.z);
+    y[i + 3] = f2b(v.w);
 }
 
 // The heads of an FP8 stack's places in the expert cache (src/f8.rs F8Places): n heads of 8 words, `per` a place, each place's var `vmax` words after the one before. A head the store copied into place s

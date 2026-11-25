@@ -386,7 +386,7 @@ impl MoeBlock for NhMoeCached {
             None => (h, out),
         };
         self.layer.route(sc, s, h, c.router_hidden, n)?;
-        let call = Call { ids: sc.ids.ptr, wts: sc.wts.ptr, z, way: sc.way.ptr, part: sc.cpu.ptr, tokens: n, pairs: n * c.router.top_k };
+        let call = Call { ids: sc.ids.ptr, wts: sc.wts.ptr, z, way: sc.way.ptr, part: sc.cpu.ptr, rows: 0, tokens: n, pairs: n * c.router.top_k };
         self.store.run(self.index, e.dev(), &call, &mut |stage, wave, waves, hy| match stage {
             Stage::Products => {
                 if wave == 0 {

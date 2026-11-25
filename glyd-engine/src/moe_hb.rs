@@ -971,7 +971,7 @@ impl NhMoeHb {
         shared_mlp_with(c, Some(&self.shared), lib, sc, s, h, t)?;
         for (g, layer) in layers.iter().enumerate().filter_map(|(g, l)| l.map(|l| (g, l))) {
             hs.kern.group_ids(s, sc.ids.ptr, self.group_of.ptr, self.local_of.ptr, g, hs.gids.ptr, pairs, c.experts)?;
-            let call = Call { ids: hs.gids.ptr, wts: sc.wts.ptr, z, way: sc.way.ptr, part: sc.cpu.ptr, tokens: t, pairs };
+            let call = Call { ids: hs.gids.ptr, wts: sc.wts.ptr, z, way: sc.way.ptr, part: sc.cpu.ptr, rows: 0, tokens: t, pairs };
             store.run(layer, dev, &call, &mut |stage, _, _, _| {
                 if stage == Stage::Products {
                     self.products(lib, sc, hs, g, sc.way.ptr, pairs, split, s)

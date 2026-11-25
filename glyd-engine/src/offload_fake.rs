@@ -192,7 +192,7 @@ fn copy_call(rig: &Rig, dev: &Dev, host: &HbLayerHost, b: &Buffers, base: usize,
     // the pairs' numbers in the group (-1: another group's), as `hb_group_ids` makes them
     let local: Vec<i64> = ids.iter().map(|&e| if host.group_of[e as usize] as usize == g { host.local_of[e as usize] as i64 } else { -1 }).collect();
     b.ids.write(0, &local).unwrap();
-    let c = Call { ids: b.ids.ptr, wts: b.wts.ptr, z: b.z.ptr, way: b.ways[0].ptr, part: b.part.ptr, tokens: pairs / 4, pairs };
+    let c = Call { ids: b.ids.ptr, wts: b.wts.ptr, z: b.z.ptr, way: b.ways[0].ptr, part: b.part.ptr, rows: 0, tokens: pairs / 4, pairs };
     let mut waves = 0;
     let mut body = |stage: Stage, _w: usize, n: usize, _hy: &Hybrid| -> Result<()> {
         if stage == Stage::Products {
