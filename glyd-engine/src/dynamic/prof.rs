@@ -43,12 +43,14 @@ impl Key {
     }
 }
 
-/// One kind of pass's sums: passes, those that were a graph's replay, prompt tokens, the attention's decode calls (a launch of the parts kernel or a call of the library's
-/// decode; a graph's as it was captured), the GPU's time, the host's time to queue the eager ones, and each operation's time (ms).
+/// One kind of pass's sums: passes, those that were a graph's replay, the pieces' graphs replayed (src/dynamic/pieces.rs), prompt tokens, the attention's decode calls (a launch
+/// of the parts kernel or a call of the library's decode; a graph's as it was captured), the GPU's time, the host's time to queue the ones not a whole graph's, and each
+/// operation's time (ms).
 #[derive(Default)]
 struct Passes {
     n: u64,
     graphs: u64,
+    pieces: u64,
     tokens: u64,
     calls: u64,
     gpu: f64,
@@ -95,8 +97,8 @@ fn entry<T: Default>(v: &mut Vec<(Key, T)>, k: Key) -> &mut T {
 }
 
 /// A pass of `rows` decode rows and `prompt` prompt tokens: its operations' times (ms, in order, a label more than once summed), whether it was a graph's replay,
-/// the host's time to queue it (ms; None for a replay), and its attention's decode calls.
-pub fn pass(rows: usize, prompt: usize, ops: &[(&'static str, f64)], graph: bool, queued: Option<f64>, calls: usize) {
+/// the host's time to queue it (ms; None for a replay), its attention's decode calls, and the pieces' graphs it replayed.
+pub fn pass(rows: usize, prompt: usize, ops: &[(&'static str, f64)], graph: bool, queued: Option<f64>, calls: usize, pieces: usize) {
     let gpu: f64 = ops.iter().map(|x| x.1).sum();
     with(|a| {
         if a.in_step {
@@ -105,6 +107,7 @@ pub fn pass(rows: usize, prompt: usize, ops: &[(&'static str, f64)], graph: bool
         let p = entry(&mut a.passes, Key::of(rows, prompt));
         (p.n, p.graphs, p.tokens, p.gpu, p.queued, p.calls) =
             (p.n + 1, p.graphs + graph as u64, p.tokens + prompt as u64, p.gpu + gpu, p.queued + queued.unwrap_or(0.0), p.calls + calls as u64);
+        p.pieces += pieces as u64;
         for &(k, ms) in ops {
             match p.ops.iter_mut().find(|x| x.0 == k) {
                 Some(x) => x.1 += ms,
@@ -164,7 +167,8 @@ pub fn snapshot(reset: bool) -> Value {
             "passes": passes.iter().map(|(k, p)| {
                 let n = p.n.max(1) as f64;
                 let eager = (p.n - p.graphs).max(1) as f64;
-                json!({"kind": k.words(), "rows": k.rows, "prompt_tokens": r3(p.tokens as f64 / n), "passes": p.n, "graphs": p.graphs, "decode_calls": r3(p.calls as f64 / n),
+                json!({"kind": k.words(), "rows": k.rows, "prompt_tokens": r3(p.tokens as f64 / n), "passes": p.n, "graphs": p.graphs, "pieces": r3(p.pieces as f64 / n),
+                    "decode_calls": r3(p.calls as f64 / n),
                     "gpu_ms": r3(p.gpu / n), "queued_ms": if p.graphs < p.n { json!(r3(p.queued / eager)) } else { Value::Null },
                     "ops": p.ops.iter().map(|(op, ms)| json!({"op": op, "ms": r3(ms / n), "share": r3(if p.gpu > 0.0 { ms / p.gpu } else { 0.0 })})).collect::<Vec<_>>()})
             }).collect::<Vec<_>>(),
@@ -197,14 +201,15 @@ pub fn text(v: &Value) -> String {
             g if g == n => "its graph".to_string(),
             g => format!("{g} in a graph"),
         };
-        let (prompt, calls) = (f(&p["prompt_tokens"]), f(&p["decode_calls"]));
+        let (prompt, calls, pieces) = (f(&p["prompt_tokens"]), f(&p["decode_calls"]), f(&p["pieces"]));
         out.push_str(&format!(
-            "{}: {n} passes ({how}){}; GPU {:.3} ms a pass{}{}\n",
+            "{}: {n} passes ({how}){}; GPU {:.3} ms a pass{}{}{}\n",
             p["kind"].as_str().unwrap_or(""),
             if prompt > 0.0 { format!(", {prompt:.0} prompt tokens on average") } else { String::new() },
             f(&p["gpu_ms"]),
-            p["queued_ms"].as_f64().map_or(String::new(), |q| format!(" (the host queued an eager one in {q:.3} ms)")),
-            if calls > 0.0 { format!("; {calls:.0} attention decode calls a pass") } else { String::new() }
+            p["queued_ms"].as_f64().map_or(String::new(), |q| format!(" (the host queued one not a graph's in {q:.3} ms)")),
+            if calls > 0.0 { format!("; {calls:.0} attention decode calls a pass") } else { String::new() },
+            if pieces > 0.0 { format!("; {pieces:.1} piece graphs replayed a pass") } else { String::new() }
         ));
         let mut ops: Vec<&Value> = p["ops"].as_array().map_or(Vec::new(), |a| a.iter().collect());
         ops.sort_by(|a, b| f(&b["ms"]).total_cmp(&f(&a["ms"])));
@@ -233,10 +238,10 @@ pub fn text(v: &Value) -> String {
 }
 
 /// The times between consecutive events (ms), each by the later one's label: `evs` recorded in order on one stream, all of them complete.
-pub(crate) fn between(evs: &[(&'static str, crate::dev::Ev)]) -> crate::ffi::Result<Vec<(&'static str, f64)>> {
+pub(crate) fn between(evs: &[(&'static str, &crate::dev::Ev)]) -> crate::ffi::Result<Vec<(&'static str, f64)>> {
     let mut out: Vec<(&'static str, f64)> = Vec::new();
     for w in evs.windows(2) {
-        let ms = w[1].1.since(&w[0].1)? as f64;
+        let ms = w[1].1.since(w[0].1)? as f64;
         match out.iter_mut().find(|(k, _)| *k == w[1].0) {
             Some(x) => x.1 += ms,
             None => out.push((w[1].0, ms)),
@@ -256,10 +261,10 @@ mod tests {
     fn passes_are_summed_by_kind_and_label_and_reset() {
         let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         snapshot(true);
-        pass(1, 0, &[("norms", 0.5), ("attention", 1.0), ("norms", 0.25)], true, None, 36);
-        pass(1, 0, &[("norms", 0.25), ("attention", 3.0)], true, None, 36);
-        pass(0, 1000, &[("attention", 40.0)], false, Some(2.0), 0);
-        pass(8, 0, &[("attention", 8.0)], false, Some(6.0), 288);
+        pass(1, 0, &[("norms", 0.5), ("attention", 1.0), ("norms", 0.25)], true, None, 36, 0);
+        pass(1, 0, &[("norms", 0.25), ("attention", 3.0)], true, None, 36, 0);
+        pass(0, 1000, &[("attention", 40.0)], false, Some(2.0), 0, 37);
+        pass(8, 0, &[("attention", 8.0)], false, Some(6.0), 288, 0);
         let v = snapshot(true);
         let p = v["passes"].as_array().unwrap();
         // (ordered by kind: prompt alone (0 rows), then 1 row, then 8)
@@ -273,10 +278,19 @@ mod tests {
         let t = text(&v);
         assert!(t.contains("decode, 1 row: 2 passes (its graph); GPU 2.500 ms a pass; 36 attention decode calls a pass"), "{t}");
         assert!(
-            t.contains("decode, 8 rows: 1 passes (eager); GPU 8.000 ms a pass (the host queued an eager one in 6.000 ms); 288 attention decode calls a pass"),
+            t.contains(
+                "decode, 8 rows: 1 passes (eager); GPU 8.000 ms a pass (the host queued one not a graph's in 6.000 ms); 288 attention decode calls a pass"
+            ),
             "{t}"
         );
-        assert!(t.contains("prompt, 513-1024 prompt tokens: 1 passes (eager), 1000 prompt tokens on average; GPU 40.000 ms a pass (the host queued an eager one in 2.000 ms)\n"), "{t}");
+        // (a pass in pieces: its piece graphs counted, the host's time to queue it kept)
+        assert!(
+            t.contains(
+                "prompt, 513-1024 prompt tokens: 1 passes (eager), 1000 prompt tokens on average; GPU 40.000 ms a pass (the host queued one not a graph's in 2.000 ms); 37.0 piece graphs replayed a pass\n"
+            ),
+            "{t}"
+        );
+        assert_eq!(p[0]["pieces"].as_f64(), Some(37.0));
         // (the largest operation first)
         assert!(t.find("2.000  80.0%  attention").unwrap() < t.find("0.500  20.0%  norms").unwrap(), "{t}");
     }
@@ -291,15 +305,15 @@ mod tests {
             Some(Step(Instant::now()))
         };
         let s = mark();
-        pass(1, 0, &[("a", 0.5)], true, None, 0);
+        pass(1, 0, &[("a", 0.5)], true, None, 0, 0);
         std::thread::sleep(std::time::Duration::from_millis(2));
         end(s, 1, 0);
         std::thread::sleep(std::time::Duration::from_millis(1));
         let s = mark();
-        pass(1, 0, &[("a", 0.5)], true, None, 0);
+        pass(1, 0, &[("a", 0.5)], true, None, 0, 0);
         end(s, 1, 0);
         // (a pass outside a step: counted as a pass, not in a step)
-        pass(1, 0, &[("a", 0.5)], true, None, 0);
+        pass(1, 0, &[("a", 0.5)], true, None, 0, 0);
         let v = snapshot(true);
         let st = &v["steps"][0];
         assert_eq!((st["kind"].as_str(), st["calls"].as_u64(), st["gpu_ms"].as_f64()), (Some("decode, 1 row"), Some(2), Some(0.5)));

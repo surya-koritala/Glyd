@@ -244,6 +244,19 @@ eagerly or piecewise (attention outside the graph, products inside), as vLLM's p
 choices on the host (an expert store without a device path) splits the graph at that layer; `dynamic/mod.rs:1201` already refuses to
 capture such a step.
 
+Built (#329): a decode-only step's rows are padded to 2, 4, 8, ... and replay one graph where every operation acts row by row, is an
+attention layer, or is a recurrent layer's convolution or recurrence (Gated DeltaNet, Mamba-2), each row through its own block table and
+its own state (a table of the rows' state addresses the host writes per step, as vLLM's state indices; a padding row's entry is 0 and
+touches no state). Every other pass (a prompt's chunk, prompts together, decode rows with prompt chunks, decode rows of a description with
+no whole graph) runs in pieces (`dynamic/pieces.rs`): the runs of row-wise operations between the attention and recurrent operations are
+graphs, the rest eager between them. Pieces are captured for a pass's exact row count, not a padded bucket, because a product's kernel
+(the library's route, cuBLAS's algorithm) turns on its rows: a replay is the eager pass bit for bit. The one size captured is a full
+pass's (the chunk's rows: the prompt budget fills a mixed step to it), when the scheduler's step is made, as the decode graphs are, and for
+descriptions whose decode steps take no whole graph (latent attention, picked attention, DeepSeek-V4) the decode steps' of 2 to 16, 32 and 64
+rows; the step's metadata (positions, slots, the state table) is one buffer written in one copy, which every graph reads. A pass of another
+size runs eager, and so does a pass whose products take cuBLAS (on the A10, full gemma-4-12B passes in pieces took 0.7% more
+GPU time than eager, and whether cuBLAS keeps its eager algorithm in a capture is not measured).
+
 ## 3. The layer-kind interface
 
 ### Kinds are data

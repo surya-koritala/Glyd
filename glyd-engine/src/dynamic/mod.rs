@@ -22,6 +22,7 @@ pub mod nemotron;
 pub mod ngram;
 pub mod pages;
 mod picked;
+mod pieces;
 pub mod prof;
 pub mod qwen35;
 pub mod qwen4x;
@@ -927,6 +928,19 @@ pub struct Dyn {
     rplayed: std::cell::Cell<Option<usize>>,
     pub(crate) rows_replays: std::cell::Cell<u64>,
     pub(crate) rows_late: std::cell::Cell<u64>,
+    /// Piecewise graphs of the passes no whole graph takes (src/dynamic/pieces.rs): the sets captured, how `forward` runs the pass being made, the pieces a capture makes,
+    /// whether a piece's capture is open (to end it on an error), the set the last pass replayed and where its pieces' events go among the eager ones (`prof_take`), the
+    /// pieces the last pass replayed, and the passes replayed so (`usercheck` counts them).
+    pieces: pieces::Pieces,
+    pmode: std::cell::Cell<pieces::Mode>,
+    pcap: std::cell::RefCell<Vec<pieces::Piece>>,
+    popen: std::cell::Cell<bool>,
+    pplayed: std::cell::Cell<Option<usize>>,
+    psplice: std::cell::RefCell<Vec<(usize, usize)>>,
+    pcount: std::cell::Cell<usize>,
+    pub(crate) piece_replays: std::cell::Cell<u64>,
+    /// usercheck's switch: no graph replayed or captured (the one-row step's, the decode steps', the pieces'), every pass eager, to hold the graphs' replies to.
+    graphs_off: std::cell::Cell<bool>,
     /// The attention's decode calls of the pass being made or last made (a launch of the parts kernel or a call of the library's decode: GLYD_PROF's count), and the one-row
     /// step graph's as it was captured.
     dcalls: std::cell::Cell<usize>,
@@ -1305,6 +1319,15 @@ impl Dyn {
             rgraph_on: false,
             rplayed: std::cell::Cell::new(None),
             rows_replays: std::cell::Cell::new(0),
+            pieces: Default::default(),
+            pmode: std::cell::Cell::new(pieces::Mode::Eager),
+            pcap: Default::default(),
+            popen: std::cell::Cell::new(false),
+            pplayed: std::cell::Cell::new(None),
+            psplice: Default::default(),
+            pcount: std::cell::Cell::new(0),
+            piece_replays: std::cell::Cell::new(0),
+            graphs_off: std::cell::Cell::new(false),
             rows_late: std::cell::Cell::new(0),
             dcalls: std::cell::Cell::new(0),
             gcalls: 0,
@@ -1416,6 +1439,7 @@ impl Dyn {
     pub fn prof_in_graph(&mut self) -> Result<()> {
         self.prof = Some(std::cell::RefCell::new(Vec::new()));
         self.rgraphs.clear();
+        self.pieces.clear();
         if self.graph.take().is_some() {
             self.capture_graph()?;
         }
@@ -1426,13 +1450,19 @@ impl Dyn {
     /// graph's replay, its last replay's (the graph's events kept).
     pub fn prof_take(&self) -> Result<Vec<(&'static str, f64)>> {
         let (replayed, rows) = (self.replayed.replace(false), self.rplayed.replace(None));
+        let (set, splice) = (self.pplayed.replace(None), std::mem::take(&mut *self.psplice.borrow_mut()));
         let Some(p) = &self.prof else { return Ok(Vec::new()) };
         self.dev.sync()?;
         let evs = std::mem::take(&mut *p.borrow_mut());
-        let out = match (replayed, rows) {
-            (true, Some(i)) => prof::between(&self.rgraphs[i].marks)?,
-            (true, None) => prof::between(&self.gmarks)?,
-            _ => prof::between(&evs)?,
+        fn refs<'a>(v: &'a [(&'static str, Ev)]) -> Vec<(&'static str, &'a Ev)> {
+            v.iter().map(|(l, e)| (*l, e)).collect()
+        }
+        let out = match (replayed, rows, set.and_then(|i| self.pieces.sets.get(i))) {
+            (true, Some(i), _) => prof::between(&refs(&self.rgraphs[i].marks))?,
+            (true, None, _) => prof::between(&refs(&self.gmarks))?,
+            // (a pass of pieces: each piece's events where its replay was queued among the eager ones)
+            (_, _, Some(set)) => prof::between(&pieces::splice(&evs, &splice, |k| &set.pieces[k].marks))?,
+            _ => prof::between(&refs(&evs))?,
         };
         self.spare.borrow_mut().extend(evs.into_iter().map(|x| x.1));
         Ok(out)
@@ -1444,9 +1474,9 @@ impl Dyn {
         if !prof::on() || self.prof.is_none() {
             return Ok(());
         }
-        let graph = self.replayed.get();
+        let (graph, pieces) = (self.replayed.get(), self.pcount.get());
         let ops = self.prof_take()?;
-        prof::pass(rows, prompt, &ops, graph, (!graph).then(|| self.queued.get()), self.dcalls.get());
+        prof::pass(rows, prompt, &ops, graph, (!graph).then(|| self.queued.get()), self.dcalls.get(), pieces);
         Ok(())
     }
 
@@ -1952,30 +1982,45 @@ impl Dyn {
     /// soft-cap and the argmax (its logits, tok, val a row each).
     unsafe fn forward(&self, p: &Part, n: usize, pos: (u64, u64), head: usize) -> Result<()> {
         let (s, queue) = (self.dev.stream, std::time::Instant::now());
-        self.dcalls.set(0);
-        self.mark("embedding")?;
+        // (a pass of pieces (src/dynamic/pieces.rs): a capture queues nothing but its pieces' operations, captured; a replay launches each piece's graph in its place)
+        let mode = if std::ptr::eq(p, &self.big) { self.pmode.get() } else { pieces::Mode::Eager };
+        // (a capture or a warm-up of the pieces queues nothing but their operations: no preparation, no operation between them, no head)
+        let capture = matches!(mode, pieces::Mode::Capture | pieces::Mode::Warm);
+        let mut pc = pieces::Run { mode, k: 0, open: false };
+        self.pcount.set(0);
+        if !capture {
+            self.dcalls.set(0);
+            self.mark("embedding")?;
+        }
         let st = if std::ptr::eq(p, &self.big) { self.stage } else { Stage::whole(p.d.layers.len()) };
-        self.pass_prepare(p, n, pos)?;
+        if !capture {
+            self.pass_prepare(p, n, pos)?;
+        }
         let head = if st.last { head } else { 0 };
-        if st.first {
+        if st.first && !self.in_piece(&mut pc, p, 0, 0, &p.d.first, n, pos, head)? {
             self.op(p, 0, 0, &p.d.first, n, pos, head)?;
         }
         // (a development build's GLYD_OP_PROBE: after each op, the slots' first rows read back; the first op that leaves a slot not finite named)
         let probe = crate::tune!("GLYD_OP_PROBE").is_some();
         let mut seen = false;
         for (l, ops) in p.d.layers.iter().enumerate().take(st.layers.1).skip(st.layers.0) {
-            // (a layer whose matrices are in the computer's memory: copied into the slot on this stream first, a node of the step's graph)
+            // (a layer whose matrices are in the computer's memory: copied into the slot on this stream first, a node of the step's graph; no pass of pieces has such layers)
             if let Some(r) = &p.ram {
                 r.fetch(l, s)?;
             }
             for (i, op) in ops.iter().enumerate() {
+                if self.in_piece(&mut pc, p, l, i, op, n, pos, head)? {
+                    continue;
+                }
                 // (a preparation whose keys and values go to 12-bit pages writes staging rows and no sequence's ring: the pass's rows at once, and one
                 // write of them; the slots of each sequence's rows the pass made)
                 if !self.parts.is_empty() && !rows::row_wise(op) {
-                    // (the pass's first rows that decode, a token of a sequence each: an attention layer's for all of them at once, each through its own table, which is what
-                    // each row's own pass computes, bit for bit (the decode's plan is a sequence's own: h:attn-backends:attention:2))
+                    // (the pass's first rows that decode, a token of a sequence each: an attention layer's, or a recurrent layer's operation that takes them (`rows::rows_state`),
+                    // for all of them at once, each through its own table or state, which is what each row's own pass computes, bit for bit (the decode's plan is a sequence's
+                    // own: h:attn-backends:attention:2; the recurrent kernels the one-sequence ones' on a token))
                     let lead = match op {
                         Op::Attn(a) if a.picked.is_none() => self.lead.get(),
+                        op if rows::rows_state(op) => self.lead.get(),
                         _ => 0,
                     };
                     let mut r = Ok(());
@@ -1987,6 +2032,8 @@ impl Dyn {
                         if lead > 0 {
                             r = self.attn_lead(p, l, i, a, (lead, n), pos, head);
                         }
+                    } else if lead > 0 {
+                        r = self.state_lead(p, op, lead);
                     }
                     // (an operation on a sequence's cache or state: each sequence's rows by themselves, as a pass of that sequence alone runs them)
                     for (k, part) in self.parts.iter().enumerate().skip(lead) {
@@ -2024,6 +2071,11 @@ impl Dyn {
                     }
                 }
             }
+        }
+        self.piece_close(&mut pc)?;
+        if capture {
+            // (the pieces end at the last layer: the head is eager, its rows the pass's own)
+            return Ok(());
         }
         if head > 0 {
             // (a pass over several sequences: the rows the head reads, the last of each sequence that asks for a token, moved to the pass's last rows in order)
@@ -2217,7 +2269,7 @@ impl Dyn {
                 }
             }
             match &self.graph {
-                Some(g) if one => {
+                Some(g) if one && !self.graphs_off.get() => {
                     g.launch(self.dev.stream)?;
                     self.replayed.set(true);
                     self.rplayed.set(None);
@@ -2464,6 +2516,7 @@ impl Dyn {
             ld.grow(&self.lib, rows)?;
         }
         self.rgraphs.clear();
+        self.pieces.clear();
         if let Some(lm) = self.big.mats[self.big.d.lm].packed_opt() {
             let mut need = 0;
             for m in 1..=rows as i64 {
@@ -2587,13 +2640,13 @@ impl Dyn {
         unsafe {
             self.embed(&[token])?;
             match &self.graph {
-                Some(g) => {
+                Some(g) if !self.graphs_off.get() => {
                     g.launch(self.dev.stream)?;
                     self.replayed.set(true);
                     self.rplayed.set(None);
                     self.dcalls.set(self.gcalls);
                 }
-                None => self.forward(&self.big, 1, (st, st), 1)?,
+                _ => self.forward(&self.big, 1, (st, st), 1)?,
             }
         }
         self.n += 1;
