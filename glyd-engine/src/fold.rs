@@ -2909,7 +2909,9 @@ pub fn check(only: Option<&str>) -> Result<()> {
     let dev = crate::dev::Dev::new(0)?;
     let lib = crate::ffi::Lib::find()?;
     if !lib.loaded() {
-        return crate::ffi::err("foldcheck holds the engine's kernels to the library's: it needs the library, and GLYD_GPU_LIB=none loads none");
+        return crate::ffi::err(
+            "foldcheck holds the engine's kernels to the library's: it needs the library, which GLYD_GPU_LIB=PATH loads (gpu/build_lib.sh builds it)",
+        );
     }
     let mut fails = 0;
     let mut say = |what: &str, n: usize, bad: Vec<String>| {

@@ -63,7 +63,7 @@ jobs:
           "$E" topkcheck
           "$E" kvshapes
           # (R17: what the engine folded from the GPU library's host side, the packed products' ways for every GPU code, the GPU's class and the KV cache's sizes, against the library's own)
-          "$E" foldcheck
+          GLYD_GPU_LIB="$GLYD_GPU_LIB_BUILT" "$E" foldcheck
           "$E" kcheck35
           # (the attention kind's kernels, every family's head width and arithmetic, against an fp64 attention: prompt rows on the tensor cores and a warp a head, decode rows in parts)
           "$E" attncheck
@@ -82,10 +82,10 @@ jobs:
           # (the row and codebook layouts on the CPU, as verify does)
           cargo build --release --locked -p glyd-gpu --bin glyd-gpu
           for d in tests/data/packs/*/; do
-            "$CARGO_TARGET_DIR/release/glyd-gpu" verify "$d" --device cuda:0
+            GLYD_GPU_LIB="$GLYD_GPU_LIB_BUILT" "$CARGO_TARGET_DIR/release/glyd-gpu" verify "$d" --device cuda:0
           done
           # (each save that holds the fixtures' tiny dense model, its packs decoded by the GPU library, on the CPU reference against its digest in glyd-engine/tests/packs)
-          "$E" packcheck --gpu
+          GLYD_GPU_LIB="$GLYD_GPU_LIB_BUILT" "$E" packcheck --gpu
           # (the formats the engine loads a saved directory in, as the glyd/* repos are saved: glyd-v7 at penguin, kestrel, swift, wren and hummingbird, each made from a logits
           # case's random model by the repos' packer, loaded from the directory and held to the same model packed as it loads in the same layout, bit for bit, and to the
           # case's reference in tests/logits where one bounds the level; the Hummingbird level to this GPU generation's digest in tests/packs, which fails where none is recorded)
