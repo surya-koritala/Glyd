@@ -1651,15 +1651,19 @@ unsafe fn moe_tp(
     ws: &Buf,
     s: Stream,
 ) -> Result<()> {
+    // (a GPU's slice of each expert's rows: its work cut as the whole layer's call cuts it (its split of K by the whole expert's rows), so each row's sum is
+    // the whole layer's, bit for bit)
+    // (a development build's GLYD_ENGINE_MOE_WHOLE=0: cut as the call's own shape, the check's other arm)
+    let whole = (if crate::tune!("GLYD_ENGINE_MOE_WHOLE").as_deref() == Some("0") { 0 } else { st.tp_rows as i64 }, 0);
     if st.placed > 0 {
-        return lib.moe_placed(&st.pack, st.placed, e, x, t, k, first, plan, act, wts, ids, y, ws.ptr, ws.bytes, sc.done.ptr, s);
+        return lib.moe_placed(&st.pack, st.placed, e, x, t, k, first, plan, act, wts, ids, y, ws.ptr, ws.bytes, sc.done.ptr, s, whole);
     }
     if st.tp_rows == 0 {
-        return lib.moe(&st.pack, e, x, t, k, first, plan, act, wts, ids, y, ws.ptr, ws.bytes, sc.done.ptr, s);
+        return lib.moe(&st.pack, e, x, t, k, first, plan, act, wts, ids, y, ws.ptr, ws.bytes, sc.done.ptr, s, whole);
     }
     let c = crate::dynamic::tp::comm().ok_or_else(|| crate::ffi::Error("experts sliced across GPUs, on a thread of no group of them".into()))?;
     let tmp = c.temp(s, rows * st.rows * 2)?;
-    lib.moe(&st.pack, e, x, t, k, first, plan, act, wts, ids, tmp, ws.ptr, ws.bytes, sc.done.ptr, s)?;
+    lib.moe(&st.pack, e, x, t, k, first, plan, act, wts, ids, tmp, ws.ptr, ws.bytes, sc.done.ptr, s, whole)?;
     c.gather(s, tmp, rows, st.rows, y, st.tp_rows)
 }
 
