@@ -340,11 +340,29 @@ fn dims_of(ck: &Checkpoint, v7: V7, n: &str) -> Result<(usize, usize)> {
     Ok(if transposed { (s[1] as usize, s[0] as usize) } else { (s[0] as usize, s[1] as usize) })
 }
 
+/// Each of `members`' [rows, cols] (`dims_of`), where a glyd-v7 directory holds them as one pack under the first's name (a save fuses an expert's gate and
+/// up so, `pack::described`): each its tensor's shape as that pack's entry names it.
+fn dims_all(ck: &Checkpoint, v7: V7, members: &[String]) -> Result<Vec<(usize, usize)>> {
+    let fused = match (v7, members) {
+        (Some((_, m)), [first, _, ..]) if ck.get(first).is_none() => m.get("packs").and_then(|p| p.get(Pack35::saved(first))),
+        _ => None,
+    };
+    let Some(e) = fused else { return members.iter().map(|n| dims_of(ck, v7, n)).collect() };
+    let tensors = e.get("tensors").and_then(Value::as_array).unwrap_or(&[]);
+    let shape = |n: &str| tensors.iter().find(|t| t.get("name").and_then(Value::as_str) == Some(n)).and_then(|t| t.get("shape")).and_then(Value::as_u64s);
+    members
+        .iter()
+        .map(|n| match shape(n).as_deref() {
+            Some(&[r, c]) => Ok((r as usize, c as usize)),
+            _ => err(format!("glyd.json: the pack {} names no matrix {n}", Pack35::saved(&members[0]))),
+        })
+        .collect()
+}
+
 /// Matrices stacked along their rows: their rows' sum and their columns.
 fn rows_cols(ck: &Checkpoint, v7: V7, members: &[String]) -> Result<(usize, usize)> {
     let (mut rows, mut cols) = (0, 0);
-    for n in members {
-        let (r, c) = dims_of(ck, v7, n)?;
+    for (n, (r, c)) in members.iter().zip(dims_all(ck, v7, members)?) {
         if cols != 0 && cols != c {
             return err(format!("{n}: {r} x {c}, where a matrix of {cols} columns is stacked"));
         }
@@ -357,7 +375,7 @@ fn rows_cols(ck: &Checkpoint, v7: V7, members: &[String]) -> Result<(usize, usiz
 /// else packed here from its weights.
 pub(crate) fn pack_of(ck: &Checkpoint, v7: V7, members: &[String], layout: Layout) -> Result<Packed> {
     let (_, cols) = rows_cols(ck, v7, members)?;
-    let parts = members.iter().map(|n| Ok((n.clone(), dims_of(ck, v7, n)?.0))).collect::<Result<Vec<_>>>()?;
+    let parts = members.iter().cloned().zip(dims_all(ck, v7, members)?.into_iter().map(|d| d.0)).collect();
     read_pack(ck, v7, &Pack35 { key: Pack35::saved(&members[0]).to_string(), parts, cols }, layout)
 }
 
@@ -512,9 +530,10 @@ pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Chec
     let shared = match m.shared {
         None => None,
         Some(_) => {
-            let s_up = one("shared_up")?;
-            let (inter, _) = rows_cols(ck, v7, std::slice::from_ref(&s_up))?;
-            let first = if gated { vec![one("shared_gate")?, s_up] } else { vec![s_up] };
+            let first = if gated { vec![one("shared_gate")?, one("shared_up")?] } else { vec![one("shared_up")?] };
+            // (its width: its first matrices' rows, a gate's and an up's where gated, as a glyd-v7 directory holds them too: one pack)
+            let (rows, _) = rows_cols(ck, v7, &first)?;
+            let inter = if gated { rows / 2 } else { rows };
             let second = vec![one("shared_down")?];
             let gate = if m.shared_gate { Some(upload_bytes(&bf16(&one("shared_router")?)?)?) } else { None };
             let as_f8 = f8.filter(|_| f8x.is_some() || at.is_some_and(|(_, h)| h.hb.is_some()));
@@ -1466,6 +1485,62 @@ mod tests {
             shared_gate: true,
             latent: None,
         }
+    }
+
+    /// The Qwen3.5 layout with experts saved at a block level (`pack::run_with`: each expert's gate and up one pack under the gate's name, its down another, the
+    /// shared expert's two) is read back as the same packs the loader makes of the release's weights at that level (`block_packs`, `pack_of`), and its widths
+    /// as the release's: the experts' and the shared expert's first matrices' rows, a gate's and an up's.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_saved_directorys_fused_experts_are_the_packs_of_the_release() {
+        use super::{block_packs, pack_of, rows_cols, Source, Stacked};
+        use crate::weights::Layout;
+        let dir = std::env::temp_dir().join(format!("glyd-experts-v7-{}", std::process::id()));
+        let (src, out) = (dir.join("src"), dir.join("i5"));
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::logits::qwen35moe_random(&src).unwrap();
+        crate::pack::run_with(src.to_str().unwrap(), &out, 4, glyd_gpu::save::Layout::Int5, true).unwrap();
+        let (d, _) = crate::runtime::describe::describe_dir(&src).unwrap();
+        let (a, b) = (glyd_gpu::safetensors::Checkpoint::open(&src).unwrap(), glyd_gpu::safetensors::Checkpoint::open(&out).unwrap());
+        let v7 = crate::weights::v7_manifest(&out).unwrap();
+        assert_eq!(v7.as_ref().map(|x| x.0), Some(Layout::Int5));
+        let mut blocks = 0;
+        for (_, m, roles) in super::of_layers(&d, (0, 4), 2) {
+            let find = |r: &str| roles.iter().find(|(n, _)| n == r).map(|(_, s)| s);
+            let (up, down) = (Stacked::of(find("experts_gate_up"), m.experts, "up").unwrap(), Stacked::of(find("experts_down"), m.experts, "down").unwrap());
+            let (ra, rb) = (
+                rows_cols(
+                    &a,
+                    None,
+                    match find("experts_gate_up") {
+                        Some(Source::Experts(v)) => &v[0],
+                        _ => panic!("an expert's tensors"),
+                    },
+                )
+                .unwrap(),
+                up.dims(&b, v7.as_ref(), m.experts).unwrap(),
+            );
+            assert_eq!((ra, rb), ((256, 1024), (256, 1024)), "the experts' first matrices: a gate's and an up's rows");
+            let ((ja, da), (jb, db)) = (
+                block_packs(&up, &down, &a, None, m.experts, Layout::Int5, m.expert.act).unwrap(),
+                block_packs(&up, &down, &b, v7.as_ref(), m.experts, Layout::Int5, m.expert.act).unwrap(),
+            );
+            assert!(ja.data == jb.data && ja.scales == jb.scales && (ja.rows, ja.cols, ja.experts) == (jb.rows, jb.cols, jb.experts));
+            assert!(da.bytes() == db.bytes(), "the experts' second matrices");
+            let one = |r: &str| match find(r) {
+                Some(Source::Tensor(n)) => n.clone(),
+                _ => panic!("{r}"),
+            };
+            let first = vec![one("shared_gate"), one("shared_up")];
+            assert_eq!((rows_cols(&a, None, &first).unwrap(), rows_cols(&b, v7.as_ref(), &first).unwrap()), ((256, 1024), (256, 1024)));
+            for members in [first, vec![one("shared_down")]] {
+                let (pa, pb) = (pack_of(&a, None, &members, Layout::Int5).unwrap(), pack_of(&b, v7.as_ref(), &members, Layout::Int5).unwrap());
+                assert!(pa.data == pb.data && pa.b1 == pb.b1 && pa.b2 == pb.b2 && (pa.rows, pa.cols) == (pb.rows, pb.cols), "{members:?}");
+            }
+            blocks += 1;
+        }
+        assert_eq!(blocks, 4);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The kind's router and activation as the core's layer takes them: a softmax router's logits bf16, a sigmoid's scores fp32 with its scale, the SwiGLU clamp.
