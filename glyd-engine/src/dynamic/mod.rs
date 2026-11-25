@@ -1119,6 +1119,8 @@ pub struct Dyn {
     row_masks: Vec<Option<crate::constrain::MaskHandle>>,
     masker: Option<crate::kern::MaskGpu>,
     sums: Option<Buf>,
+    /// Launched steps landed with a later one queued, whose expert cache's end of a step is owed (src/dynamic/rows.rs `quiet`).
+    owed: usize,
 }
 
 /// A sequence's own buffers and place, while another is selected (`Dyn::select`): its keys and values, its states, its position, the verify pass it can go back
@@ -1603,6 +1605,7 @@ impl Dyn {
             row_masks: Vec::new(),
             masker: None,
             sums: None,
+            owed: 0,
         };
         // (a group of GPUs: every one's engine made before any one's first pass, src/dynamic/tp.rs)
         if let Some(c) = tp::comm() {

@@ -191,6 +191,9 @@ impl Cands {
     }
 }
 
+/// The steps launched ahead after which a model with an expert cache has one land before the next is launched, for the store's end of a step (`ModelStep::quiet`).
+const QUIET_EVERY: usize = 16;
+
 /// How many steps' rooms `Lanes` keeps: one running, the next queued behind it, and the one before them, whose GPU times `Gaps` still reads.
 const LANES: usize = 3;
 
@@ -1277,7 +1280,7 @@ impl Dyn {
         let Some(e) = self.big.mats[self.big.d.embed].packed_opt().map(|p| p.pack) else { return Ok(()) };
         if !crate::sched::overlap_forced()
             || !ModelStep::one_step(self)
-            || !self.stores().is_empty()
+            || self.big.moe.iter().any(|b| b.reads_host())
             || self.big.ram.is_some()
             || !self.kern.has_step_ids()
             || self.tok.as_ref().is_some_and(|b| b.bytes < 4 * self.chunk)
@@ -1542,7 +1545,14 @@ impl Dyn {
         // (made with the step where it draws: its event covers their copy)
         self.cands.made = drawn;
         self.cands.sums = sums;
-        self.end_expert_step()?;
+        // (the expert cache's end of a step reads the GPU's counters and writes the plan's next settings: never while a later step is queued, whose calls read them; owed until
+        // a step lands with none after it, which `quiet` asks for every QUIET_EVERY steps)
+        if later {
+            self.owed += 1;
+        } else {
+            self.end_expert_step()?;
+            self.owed = 0;
+        }
         // (GLYD_PROF=1: the pass's operations, by its own events; a graph's replay only where no later replay has recorded its events again)
         if super::prof::on() && self.prof.is_some() {
             fn refs<'a>(v: &'a [(&'static str, crate::dev::Ev)]) -> Vec<(&'static str, &'a crate::dev::Ev)> {
@@ -1916,6 +1926,10 @@ impl ModelStep for Dyn {
     }
     fn draws(&mut self, asks: &[Option<f32>]) {
         self.draws = asks.to_vec();
+    }
+    /// An expert cache's end of a step owed for QUIET_EVERY steps launched ahead (`land_step`): the next step is launched after this one lands.
+    fn quiet(&self) -> bool {
+        self.owed >= QUIET_EVERY && !self.stores().is_empty()
     }
     fn masks(&mut self, masks: Vec<Option<crate::constrain::MaskHandle>>) {
         self.row_masks = masks;

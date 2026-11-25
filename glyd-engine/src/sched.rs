@@ -269,6 +269,11 @@ pub trait ModelStep {
     }
     /// The steps launched and not finished given up (the scheduler ends every sequence: `Sched::fail`): their samples are not asked for.
     fn abandon(&mut self) {}
+    /// Whether the next step is to be launched after the step in flight lands, though it could be launched before (host work between steps that no queued step may run
+    /// beside: an expert cache's end of a step).
+    fn quiet(&self) -> bool {
+        false
+    }
     /// A drafting step's decode of the one sequence that decodes (a draft model proposes tokens and the model checks them in one pass: src/dynamic/mod.rs `spec_round`): the
     /// tokens after the row's, 1 to the draft's length and one more, as steps one at a time would choose them (drawn by `sampler` where given, else the largest logits); the
     /// cache then holds the row's token and each of them but the last. None: the step does not draft (its decode is one token a row).
@@ -508,6 +513,9 @@ impl ModelStep for &mut dyn ModelStep {
     }
     fn abandon(&mut self) {
         (**self).abandon()
+    }
+    fn quiet(&self) -> bool {
+        (**self).quiet()
     }
     fn draws(&mut self, asks: &[Option<f32>]) {
         (**self).draws(asks)
@@ -1928,7 +1936,7 @@ impl<B: ModelStep> Sched<B> {
     /// samples in the step before takes its largest logit (greedy, no log-probabilities): otherwise that step lands first, its tokens drawn on the host, and this one is launched after. A
     /// sequence that ends in a step has had its row in the next one run too (the end is seen only when it lands); that row's output is not taken.
     fn round_one_step(&mut self) -> Result<()> {
-        if self.flight.as_ref().is_some_and(|f| !(self.overlap && f.on_device)) {
+        if self.flight.as_ref().is_some_and(|f| !(self.overlap && f.on_device) || self.be.quiet()) {
             let f = self.flight.take().expect("a step in flight");
             self.land(f)?;
         }
@@ -2805,6 +2813,22 @@ pub(crate) mod tests {
         assert_eq!((on, ahead), (drawn(false).0, 0));
     }
 
+    /// A step that asks to be quiet (`ModelStep::quiet`: an expert cache's end of a step owed) has the step in flight land before the next is launched: the same replies, none
+    /// launched ahead.
+    #[test]
+    fn a_quiet_step_lands_before_the_next_is_launched() {
+        let mut f = launching(3, 16, None);
+        f.quiet = true;
+        let mut s = Sched::new(f, 3).overlapping(true);
+        let reqs: Vec<(Vec<u32>, usize)> = (0..5).map(|k| (prompt(k + 1, 9 + 7 * k as usize), 12)).collect();
+        let rx: Vec<_> = reqs.iter().map(|(p, n)| add(&mut s, p.clone(), *n).0).collect();
+        run(&mut s);
+        for ((p, n), rx) in reqs.iter().zip(&rx) {
+            assert_eq!(collect(rx), (reference(p, *n), Finish::Length));
+        }
+        assert_eq!(s.be.ahead, 0);
+    }
+
     /// A conversation's next turn goes on in the slot its last turn finished in where steps are launched ahead too, with the same replies and the same tokens found; and a
     /// scheduler that fails while a step is out gives that step up (`abandon`), every request ending with the error and every slot empty.
     #[test]
@@ -3659,6 +3683,8 @@ pub(crate) mod tests {
         pub drafts: usize,
         pub rounds: usize,
         pub drawn_rounds: usize,
+        /// Asks that the next step be launched after the step in flight lands (`quiet`: an expert cache's end of a step).
+        pub quiet: bool,
     }
 
     impl SlotFake {
@@ -3718,6 +3744,7 @@ pub(crate) mod tests {
                 drafts: 0,
                 rounds: 0,
                 drawn_rounds: 0,
+                quiet: false,
             }
         }
         /// `new` on the executor's blocks: pools as `Dyn::page` sizes them for `slots` sequences of `window` tokens, a full group and a sliding one of `slide` tokens.
@@ -3925,6 +3952,9 @@ pub(crate) mod tests {
         fn abandon(&mut self) {
             self.abandoned += self.out.len();
             self.out.clear();
+        }
+        fn quiet(&self) -> bool {
+            self.quiet
         }
         fn draft(&mut self, row: &Row, sampler: Option<&mut Sampler>) -> Result<Option<Vec<u32>>> {
             if self.drafts == 0 {
