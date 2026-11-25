@@ -267,7 +267,7 @@ jobs:
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
         with:
           path: .fatbin
-          key: engine-fatbin-${{ matrix.name }}-cuda13.0.3-12.9-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/hip.h', 'gpu/warp_emu.h') }}-v1
+          key: engine-fatbin-${{ matrix.name }}-cuda13.0.3-12.9-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/hip.h', 'gpu/warp_emu.h', 'gpu/glyd_gpu_kernels.h') }}-v1
       - name: Build
         run: |
           set -e
@@ -305,7 +305,7 @@ jobs:
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
         with:
           path: .fatbin
-          key: engine-fatbin-${{ matrix.name }}-cuda13.0.3-12.9-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/hip.h', 'gpu/warp_emu.h') }}-v1
+          key: engine-fatbin-${{ matrix.name }}-cuda13.0.3-12.9-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/hip.h', 'gpu/warp_emu.h', 'gpu/glyd_gpu_kernels.h') }}-v1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: glyd-engine-${{ matrix.name }}
@@ -464,7 +464,7 @@ jobs:
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
         with:
           path: .fatbin
-          key: engine-fatbin-windows-cuda13.0.3-12.9.1-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/hip.h', 'gpu/warp_emu.h') }}-v1
+          key: engine-fatbin-windows-cuda13.0.3-12.9.1-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/hip.h', 'gpu/warp_emu.h', 'gpu/glyd_gpu_kernels.h') }}-v1
       - name: The CUDA toolkits (13.0.3 and 12.9.1; the compiler and the runtime)
         run: |
           ./.github/scripts/cuda-windows.ps1 -Version 13.0.3 -Sha256 6b544a8cfea2ca18cc816dacda92064dcf821a201b35185e6c14ca17ccbc026f
@@ -492,7 +492,7 @@ jobs:
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
         with:
           path: .fatbin
-          key: engine-fatbin-windows-cuda13.0.3-12.9.1-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/hip.h', 'gpu/warp_emu.h') }}-v1
+          key: engine-fatbin-windows-cuda13.0.3-12.9.1-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/hip.h', 'gpu/warp_emu.h', 'gpu/glyd_gpu_kernels.h') }}-v1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: glyd-exe-windows
