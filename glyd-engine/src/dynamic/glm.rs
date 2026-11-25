@@ -63,6 +63,36 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
     Dyn::new_placed(dir, d, None, st, o, &experts, &placing)
 }
 
+/// GLM-5.3 (`glm_moe_dsa`, the full-size layout: no streams; the latent attention on every layer, its rotary and its indexer its own or shared) from `dir`, by
+/// its layer kinds alone: the description lowered (`lower::latent_moe`), each layer's experts the Moe kind's resident block (`experts::resident`: the sigmoid
+/// router with its choice bias and scale, the experts and the shared expert at the level of the other matrices); every expert on the GPU. A checkpoint with
+/// FP8 matrices (the release's) is refused, in words: this loader reads them bf16 (its random case).
+pub fn load_plain(dir: &Path, o: &Opts) -> Result<Dyn> {
+    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
+    if let Some(w) = kinds.scales.keys().next() {
+        return err(format!(
+            "{label}: {} FP8 matrices ({w}, ...): the full-size layout's loader reads bf16 checkpoints; the release's FP8 is not loaded yet",
+            kinds.scales.len()
+        ));
+    }
+    let cfg = crate::runtime::config::ModelConfig::load(dir)?;
+    let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
+    let mut eos = crate::runtime::config::eos_ids(&cfg.text, generation.as_deref());
+    if eos.is_empty() {
+        eos = crate::runtime::config::eos_ids(&cfg.top, None);
+    }
+    let max_pos = cfg.shared.max_position_embeddings.ok_or_else(|| Error("no max_position_embeddings".into()))?;
+    let st = Stage::whole(kinds.desc.blocks.len() / 2);
+    let d = super::lower::latent_moe(&kinds, eos, max_pos, &st).map_err(|e| e.context(&label))?;
+    let hidden = kinds.desc.hidden;
+    let experts = |ck: &Checkpoint, level: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
+        super::experts::of_layers(&kinds, st.layers)
+            .map(|(_, m, roles)| Ok(Box::new(ResidentMoe(super::experts::resident(m, roles, hidden, ck, level)?)) as Box<dyn MoeBlock>))
+            .collect()
+    };
+    Dyn::new_with(dir, d, None, st, o, &experts)
+}
+
 /// A layer's matrices as the loader holds them: a Kimi delta layer's seven (qkv, o, f_a, f_b, g_a, g_b, b) or a latent attention layer's four (q_a, q_b, kv_a, o),
 /// then a dense MLP's gate and up and its down; a mixture of experts' are its block's.
 pub(crate) fn per_layer(kind: GlmKind, moe: bool) -> usize {
@@ -92,6 +122,8 @@ pub(crate) fn latent(c: &ConfigGlm) -> MlaOp {
         scale: (m.nope as f32).powf(-0.5),
         eps: c.eps,
         ring: 0,
+        rot: None,
+        lent: None,
         indexer: Some(MlaIndexer {
             pick: IdxPick {
                 heads: ix.heads,

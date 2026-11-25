@@ -125,6 +125,20 @@ extern "C" __global__ void scatter_rows(const bf16* src, int ss, bf16* dst, int 
     for (int k = threadIdx.x; k < K; k += blockDim.x) d[k] = s[k];
 }
 
+// The rotary of interleaved pairs in place (DeepSeek's layout, transformers' apply_rotary_pos_emb_interleave): for row i, at position pos[i], and head h, channels
+// off + 2j and off + 2j + 1 (pair j < pairs) of x's row (rows xs apart, heads hs apart) turned by pair j's angle at that position, (a, b) -> (a cos - b sin, b cos + a sin)
+// in fp32 and rounded once; cos and sin bf16 [positions, pairs] (the executor's rotary tables, transformers' bf16 cos and sin). The latent attention's queries and shared
+// key part, and its indexer's queries and keys, before they are cached or scored. Grid (rows, heads), a thread a pair.
+extern "C" __global__ void mla_rope(bf16* x, int xs, int hs, int off, const int* pos, const bf16* cs, const bf16* sn, int pairs) {
+    const int j = threadIdx.x;
+    if (j >= pairs) return;
+    bf16* p = x + (size_t)blockIdx.x * xs + (size_t)blockIdx.y * hs + off + 2 * j;
+    const size_t t = (size_t)pos[blockIdx.x] * pairs + j;
+    const float c = b2f(cs[t]), s = b2f(sn[t]), a = b2f(p[0]), b = b2f(p[1]);
+    p[0] = f2b(a * c - b * s);
+    p[1] = f2b(b * c + a * s);
+}
+
 // qa [n, NH, KR] fp32 = for each row and head, Wk_h^T q_h: qa[i][h][j] = sum over d < nope of q[i][h nope + d] * wkv[h (nope + vd) + d][j] (wkv = kv_b_proj, bf16 [NH (nope + vd), KR]). A block a head and GM_RB rows (grid NH x
 // ceil(n / GM_RB)), 256 threads: KR / 8 threads a group, each 8 columns of a row of the matrix (one 16-byte load), the groups down the head's nope rows by turns, so that a head's 256 rows are read by 4 groups (KR = 512) or
 // 32 (KR = 64) at once (a thread a column would read them one after another); the groups' sums are added in order through shared memory. KR a multiple of 64 up to 512.

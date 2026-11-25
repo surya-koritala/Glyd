@@ -183,6 +183,9 @@ impl RefModel {
         let mut lag: Vec<Vec<f32>> = vec![(0..n).map(|j| (j == 0) as u32 as f32).collect(); tokens.len()];
         for b in 0..self.layers.len() {
             seen(&mut x);
+            if let Some(SeqState::Mla(c)) = self.layers[b].seqs.get_mut(&0) {
+                c.made.clear();
+            }
             self.share_into(b, 0)?;
             let (before, rest) = self.layers.split_at_mut(b);
             let l = &mut rest[0];
@@ -280,20 +283,21 @@ impl RefModel {
     /// V4.1's compressed attention of block `b` reading other blocks' parts (`kinds::CompShare`): sequence `seq`'s entries (and their indexer
     /// keys), picks and candidate blocks copied from the blocks that make them, which ran before it. A query reads only what its position sees.
     fn share_into(&mut self, b: usize, seq: u32) -> Result<()> {
-        // (a latent attention whose indexer is `shared`: the picks the latent attention of the layer before it made for this token, as transformers hands
-        // the next layer `prev_topk_indices`; a layer before it that picks nothing lends none)
+        // (a latent attention whose indexer is `shared`: the picks the latent attention of the layer before it made for each token of this call, in order,
+        // as transformers hands the next layer `prev_topk_indices` (a token's own each: a call of a prompt's tokens runs a layer for them all before the
+        // next layer); a layer before it that picks nothing lends none. Each latent attention's picks of a call start empty: `forward_seen`)
         if let Body::Mixer(Mixer::Mla(Mla { indexer: Some(ix), .. })) = &self.layers[b].block.body {
             if ix.shared {
                 let before = (0..b).rev().find(|&s| matches!(self.layers[s].block.body, Body::Mixer(_)));
                 let lent = match before.and_then(|s| self.layers[s].seqs.get(&seq)) {
                     Some(SeqState::Mla(c)) if matches!(&self.layers[before.unwrap_or(0)].block.body, Body::Mixer(Mixer::Mla(Mla { indexer: Some(_), .. }))) => {
-                        c.picks.clone()
+                        c.made.clone()
                     }
                     _ => return err(format!("block {b}: a shared indexer after a layer whose attention picks nothing")),
                 };
                 let st = self.layers[b].seqs.entry(seq).or_insert_with(|| SeqState::Mla(super::mla::LatentCache::default()));
                 let SeqState::Mla(st) = st else { return err(format!("block {b}: a sequence's state is not a latent cache")) };
-                st.lent = Some(lent);
+                st.lent = lent.into();
             }
             return Ok(());
         }

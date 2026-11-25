@@ -458,6 +458,8 @@ pub enum NormW {
     PlusOne,
     /// y = bf16(rmsnorm(bf16(x w))): the weight scales the input, the norm has none (`NormWeight::InputPlusOne`)
     Input,
+    /// y = bf16(bf16(rmsnorm(x)) w): the normed value rounded before the weight (`Rounding::Twice`, transformers' RMSNorm in bf16: GLM's)
+    Rounded,
 }
 
 /// A mixture of experts (the part's block `block`): the router reads H, the experts and the shared expert `x` (H; the release's FP8-rounded H, Hq; a latent
@@ -2443,6 +2445,7 @@ impl Dyn {
                     NormW::Plain => self.kern.rmsnorm(s, x, w, y, nu, k, eps)?,
                     NormW::PlusOne => self.k35.rmsnorm(s, x, w, y, nu, k, eps)?,
                     NormW::Input => self.kres.rms_in(s, x, w, y, nu, k, eps)?,
+                    NormW::Rounded => launch!(self.km.rms2_512, [nu, 1, 1], [512, 1, 1], s; x, k, w, y, k, k, eps)?,
                 }
                 self.mark("norms")
             }
@@ -2756,29 +2759,45 @@ impl Dyn {
         }
     }
 
-    /// Part `p`'s layers on the n rows (positions `pos`), then on the last `head` rows its post projection (a draft model's, into Hid), its LM head, the
-    /// soft-cap and the argmax (its logits, tok, val a row each).
-    /// GLYD_OP_DUMP's line of each slot after operation `i` of layer `l` (`usize::MAX`: the first operation) on the pass's `n` rows: its bytes hashed (FNV-1a).
+    /// GLYD_OP_DUMP's line of each slot after operation `i` of layer `l` (`usize::MAX`: the first operation) on the pass's `n` rows: the rows' bytes hashed
+    /// together (FNV-1a), then each row's alone (32 bits), so that a row of a pass of several sequences is compared with the same row in a pass of its
+    /// own; after a streams operation the block's mixing weights (`hcp`, fp32 [n, 24]) as slot `hcp`. GLYD_OP_DUMP_ROWS=N,M,..: only passes of those rows.
     fn dump_op(&self, p: &Part, l: usize, i: usize, op: &Op, n: usize) -> Result<()> {
         let Some(d) = &self.dump else { return Ok(()) };
         use std::io::Write;
         self.dev.sync()?;
         let mut d = d.borrow_mut();
-        let pass = d.1;
-        let name = rows::op_name(op);
+        let (pass, name, at) = (d.1, rows::op_name(op), if l == usize::MAX { -1 } else { l as i64 });
+        let fnv = |v: &[u16]| v.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &x| (h ^ x as u64).wrapping_mul(0x0100_0000_01b3));
+        let mut line = |k: &str, v: &[u16], w: usize| -> Result<()> {
+            let rows: Vec<String> = v.chunks(w.max(1)).map(|r| format!("{:08x}", fnv(r) as u32)).collect();
+            writeln!(d.0, "{pass} {at} {i} {name} {k} {:016x} {}", fnv(v), rows.join(",")).map_err(|e| Error(e.to_string()))
+        };
         for (k, b) in p.slots.iter().enumerate() {
-            let w = (n * p.d.widths[k]).min(b.bytes / 2);
-            if w == 0 {
+            let w = p.d.widths[k];
+            let all = (n * w).min(b.bytes / 2);
+            if all == 0 {
                 continue;
             }
-            let mut v = vec![0u16; w];
+            let mut v = vec![0u16; all];
             b.read(0, &mut v)?;
-            let h = v.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &x| (h ^ x as u64).wrapping_mul(0x0100_0000_01b3));
-            writeln!(d.0, "{pass} {} {i} {name} {k} {h:016x}", if l == usize::MAX { -1 } else { l as i64 }).map_err(|e| Error(e.to_string()))?;
+            line(&k.to_string(), &v, w)?;
+        }
+        if matches!(op, Op::StreamsPre { .. } | Op::StreamsPost { .. }) && self.hcp.bytes >= n * 24 * 4 {
+            let mut v = vec![0u16; n * 48];
+            self.hcp.read(0, &mut v)?;
+            line("hcp", &v, 48)?;
         }
         Ok(())
     }
 
+    /// Whether GLYD_OP_DUMP dumps a pass of `n` rows (GLYD_OP_DUMP_ROWS, the passes' rows to dump; every pass without it).
+    fn dump_rows(n: usize) -> bool {
+        crate::tune!("GLYD_OP_DUMP_ROWS").is_none_or(|v| v.split(',').any(|r| r.trim().parse() == Ok(n)))
+    }
+
+    /// Part `p`'s layers on the n rows (positions `pos`), then on the last `head` rows its post projection (a draft model's, into Hid), its LM head, the
+    /// soft-cap and the argmax (its logits, tok, val a row each).
     unsafe fn forward(&self, p: &Part, n: usize, pos: (u64, u64), head: usize) -> Result<()> {
         let (s, queue) = (self.dev.stream, std::time::Instant::now());
         // (a pass of pieces (src/dynamic/pieces.rs): a capture queues nothing but its pieces' operations, captured; a replay launches each piece's graph in its place)
@@ -2797,7 +2816,7 @@ impl Dyn {
         }
         let head = if st.last { head } else { 0 };
         // (GLYD_OP_DUMP: a pass's number; a capture's operations are not run, so not hashed: the pieces' and the step graphs')
-        let dump = self.dump.is_some() && !capture && !self.capturing.get();
+        let dump = self.dump.is_some() && !capture && !self.capturing.get() && Self::dump_rows(n);
         if let Some(d) = self.dump.as_ref().filter(|_| dump) {
             d.borrow_mut().1 += 1;
         }
@@ -2859,6 +2878,9 @@ impl Dyn {
                     self.prepped.set(false);
                     r?;
                     self.trace_op(p, l, op, n)?;
+                    if dump {
+                        self.dump_op(p, l, i, op, n)?;
+                    }
                     continue;
                 }
                 let input = self.route_input(p, op, n)?;
