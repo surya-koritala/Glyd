@@ -168,7 +168,7 @@ pub(super) fn bucket(n: usize, most: usize) -> Option<usize> {
 }
 
 /// The sampler's candidates of a step's rows (`ModelStep::top`): the `kern::TOPK` largest logits of each head row of the last step, made by one launch for all
-/// of them at the first ask after the step and copied to the host, where the scheduler would read the whole row (Qwen3's 151,936 logits, Gemma 4's 262,144) to
+/// of them at the first ask after the step and copied to the host, where the scheduler would read the whole row (Qwen3.5's 248,320 logits, Gemma 4's 262,144) to
 /// copy, widen and draw from on the host. The dense engine had them in its step (its `candidates`). `rows`: the last step's head rows; `made`: whether its
 /// candidates are; `bufs`: the GPU's and the host's room (tokens, logits; for `cap` rows), made at the first ask.
 #[derive(Default)]

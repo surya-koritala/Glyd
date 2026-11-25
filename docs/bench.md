@@ -64,7 +64,7 @@ holds its own events). `bench` starts its server with the variable, reads the se
 under the load's line and keeps them in the load's cell (`gpu_profile`); `glyd-engine run` prints them when it ends.
 
 ```bash
-GLYD_PROF=1 glyd-engine bench Qwen/Qwen3-8B --loads short:1,short:8,1k:1,4k:1 --runs 3 --no-draft --out prof.json
+GLYD_PROF=1 glyd-engine bench google/gemma-4-12B-it:wren --loads short:1,short:8,1k:1,4k:1 --runs 3 --no-draft --out prof.json
 ```
 
 For each kind of pass (decode rows alone, a prompt's chunk alone, or both in one pass; prompts grouped by the power of two above their tokens) it gives the passes, how many
