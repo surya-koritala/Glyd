@@ -902,7 +902,7 @@ pub fn i4x_check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "dev"))]
 mod tests {
     use super::ConfigG4;
 

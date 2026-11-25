@@ -502,11 +502,17 @@ fn dsv4_cpu(dir: &Path) -> Result<Box<dyn Run>> {
 /// A model directory's description (`runtime::describe`) on the CPU reference of the layer kinds, a token at a time: the reference of a family that has no hand-written one
 /// (Nemotron-H). Its weights are read as they are stored (bf16 or f32).
 fn described_cpu(dir: &Path) -> Result<Box<dyn Run>> {
+    described_cpu_with(dir, |_| {})
+}
+
+/// `described_cpu` of the description `edit` changes (a test's: another rounding point, say).
+fn described_cpu_with(dir: &Path, edit: fn(&mut crate::runtime::describe::Described)) -> Result<Box<dyn Run>> {
     use crate::runtime::reference::model::{checkpoint_tensor, RefModel};
     let d = dir.to_path_buf();
     let load = move || {
         let cfg: Value = serde_json::from_str(&io(std::fs::read_to_string(d.join("config.json")))?).map_err(|e| Error(format!("config.json: {e}")))?;
-        let desc = crate::runtime::describe::describe(&cfg)?;
+        let mut desc = crate::runtime::describe::describe(&cfg)?;
+        edit(&mut desc);
         let ck = io(glyd_gpu::safetensors::Checkpoint::open(&d))?;
         let mut m = RefModel::load(&desc, &|n: &str| checkpoint_tensor(&ck, n))?;
         // (Engram's compressed vocabulary, where the model has Engram layers)
@@ -1672,6 +1678,31 @@ mod tests {
                 v.top1.1,
                 kls.join(" ")
             );
+            // (the reference with each norm's output rounded to bf16, as transformers' Gemma4RMSNorm casts it back to a bf16 input's type and the engine holds it)
+            let once = |d: &mut crate::runtime::describe::Described| {
+                use crate::runtime::kinds::Rounding;
+                for b in d.desc.blocks.iter_mut() {
+                    b.norm_in.rounding = Rounding::Once;
+                    if let Some(n) = b.norm_out.as_mut() {
+                        n.rounding = Rounding::Once;
+                    }
+                }
+                d.desc.final_norm.rounding = Rounding::Once;
+            };
+            make(&dir).unwrap();
+            let got2 = drive(described_cpu_with(&dir, once).unwrap().as_mut(), &fx.prompt, &fx.decode, &fx.long).unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            let v = compare(&fx, &Bound::Kl { mean: 1e-4, max: 2.5e-4, top1: 0.9 }, &got2);
+            println!("{case} reference, its norms' outputs rounded to bf16, against {file}: KL mean {:.2e} max {:.2e}", v.mean_kl, v.max_kl);
+            // (the same logits through the engine's head arithmetic: the product's output bf16, then its soft-cap's three roundings, kernels/gemma4.cu g4_softcap)
+            let b = crate::runtime::reference::bf16;
+            let cap = 30.0f32;
+            let r16: Vec<Vec<f32>> = got
+                .iter()
+                .map(|r| r.iter().map(|&l| cap * (l / cap).clamp(-1.0 + 1e-7, 1.0 - 1e-7).atanh()).map(|z| b(b(b(b(z) / cap).tanh()) * cap)).collect())
+                .collect();
+            let v = compare(&fx, &Bound::Kl { mean: 1e-4, max: 2.5e-4, top1: 0.9 }, &r16);
+            println!("{case} reference, its head rounded as the engine's, against {file}: KL mean {:.2e} max {:.2e}", v.mean_kl, v.max_kl);
         }
     }
 
