@@ -220,10 +220,14 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         Some(x) => return err(format!("--against {x}: copy")),
     };
     // (the router's choices of the run's passes, an eager run's: each selection read back, `moe::ROUTES`, from the prompt on)
-    let tap = |on: Option<Vec<(usize, Vec<i64>)>>| {
-        crate::moe::ROUTES.lock().map(|mut r| std::mem::replace(&mut *r, on)).map_err(|_| Error("the routes' lock".into()))
-    };
-    type Routes = Option<Vec<(usize, Vec<i64>)>>;
+    let tap =
+        |on: Option<Vec<crate::moe::Seen>>| crate::moe::ROUTES.lock().map(|mut r| std::mem::replace(&mut *r, on)).map_err(|_| Error("the routes' lock".into()));
+    type Routes = Option<Vec<crate::moe::Seen>>;
+    // (`--pairs`: in the cached run each layer's pairs computed by the host and by the GPU from the same inputs and compared, `moe::PAIRS`; a mode with a host half)
+    let pairs = a.has("pairs");
+    if pairs && mode == crate::offload::Mode::Copy {
+        return err("--pairs: a mode whose layers have a host half (cpu, split or auto)");
+    }
     let run = |cached: bool| -> Result<(Vec<Vec<f32>>, Routes)> {
         let caching =
             |mode, device| crate::hbg_store::HbCaching { places, ram: None, offload: crate::offload::Offload { mode, device, ..Default::default() }, dense };
@@ -241,6 +245,9 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
             }
         }
         tap((!device).then(Vec::new))?;
+        if cached && pairs {
+            *crate::moe::PAIRS.lock().map_err(|_| Error("the pairs' lock".into()))? = Some(Default::default());
+        }
         let passes = (|| -> Result<Vec<Vec<f32>>> {
             let mut out = Vec::new();
             e.prefill(&tokens[..n - 4])?;
@@ -257,23 +264,48 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     let ((resident, routes_r), (cached, routes_c)) = (run(false)?, run(true)?);
     // (each position's pass's tokens routed to other experts in some layer: the prompt's pass is the first selections' tokens, each decode step's one token; None: not compared)
     let passes = resident.len();
+    // (each pass's tokens routed to other experts in some layer; at each such choice the reference's margin between the experts that changed places (the key of the one it chose
+    // less the key of the one the cache's run chose, `moe::Seen::keys`) and how far that gap moved; and the most any expert's key moved where the choices stayed)
+    let mut flips: Vec<(usize, usize, usize, f32, f32, f32)> = Vec::new();
+    let mut moved_same = 0f32;
     let routing: Option<Vec<(usize, usize)>> = match (&routes_r, &routes_c) {
         (Some(a), Some(b)) if a.len() == b.len() && !a.is_empty() && a.len() % passes == 0 => {
             let per = a.len() / passes;
             Some(
                 (0..passes)
                     .map(|i| {
-                        let calls = (i * per..(i + 1) * per).map(|j| (&a[j], &b[j]));
                         let mut other = std::collections::BTreeSet::new();
                         let mut tokens = 0;
-                        for ((k, x), (_, y)) in calls {
-                            tokens = x.len() / k;
-                            for (tk, (u, v)) in x.chunks(*k).zip(y.chunks(*k)).enumerate() {
-                                let (mut u, mut v) = (u.to_vec(), v.to_vec());
+                        for j in i * per..(i + 1) * per {
+                            let (x, y) = (&a[j], &b[j]);
+                            let (k, e) = (x.k, x.keys.len() / (x.ids.len() / x.k).max(1));
+                            tokens = x.ids.len() / k;
+                            for tk in 0..tokens {
+                                let (mut u, mut v) = (x.ids[tk * k..(tk + 1) * k].to_vec(), y.ids[tk * k..(tk + 1) * k].to_vec());
                                 (u.sort_unstable(), v.sort_unstable());
-                                if u != v {
-                                    other.insert(tk);
+                                let (kr, kc) = (&x.keys[tk * e..(tk + 1) * e], &y.keys[tk * e..(tk + 1) * e]);
+                                let moved = kr.iter().zip(kc).map(|(p, q)| (p - q).abs()).fold(0f32, f32::max);
+                                if u == v {
+                                    moved_same = moved_same.max(moved);
+                                    continue;
                                 }
+                                other.insert(tk);
+                                // (the closest of the swaps: an expert the reference chose and the cache's run did not, against one the other way)
+                                let (mut margin, mut shift) = (f32::INFINITY, 0f32);
+                                for &p in u.iter().filter(|p| !v.contains(p)) {
+                                    for &q in v.iter().filter(|q| !u.contains(q)) {
+                                        let (p, q) = (p as usize, q as usize);
+                                        let m = kr[p] - kr[q];
+                                        if m.abs() < margin.abs() {
+                                            (margin, shift) = (m, m - (kc[p] - kc[q]));
+                                        }
+                                    }
+                                }
+                                let spread = {
+                                    let mean = kr.iter().sum::<f32>() / e as f32;
+                                    (kr.iter().map(|x| (x - mean) * (x - mean)).sum::<f32>() / e as f32).sqrt()
+                                };
+                                flips.push((i, j - i * per, tk, margin, shift, spread));
                             }
                         }
                         (other.len(), tokens)
@@ -319,6 +351,15 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         (differ, worst) = (differ + d, worst.max(w));
     }
     let total: usize = resident.iter().map(Vec::len).sum();
+    for (i, sel, tk, margin, shift, spread) in &flips {
+        println!(
+            "  a choice changed: pass {i}, selection {sel}, token {tk}: the reference's margin {margin:.3e}, the gap moved {shift:.3e} (the keys' spread {spread:.3e}, {:.2e} of it)",
+            margin.abs() / spread.max(1e-30)
+        );
+    }
+    if routing.is_some() {
+        println!("  where the choices stayed, an expert's key moved {moved_same:.3e} at most");
+    }
     match &routing {
         Some(r) => println!(
             "  the routing differs at {} of {passes} positions' passes ({} tokens in all)",
@@ -336,6 +377,27 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         if against_copy { "the cache in copy mode" } else { "resident" },
         if device { ", the decode calls planned on the GPU" } else { "" }
     );
+    if pairs {
+        let all = crate::moe::PAIRS.lock().map_err(|_| Error("the pairs' lock".into()))?.take().unwrap_or_default();
+        if all.is_empty() {
+            println!("  pairs: none compared (no layer's calls through the store with a host half)");
+        }
+        for (layer, p) in &all {
+            println!(
+                "  pairs of layer {layer}, the host's against the GPU's from the same inputs: {} pairs of {} calls, {} values; the most {} last places apart; {} values more than 1, {} more than 4, {} more than 16; the largest difference {:.2e} of the pair's largest value; {} pairs more than 16 apart somewhere{}",
+                p.pairs,
+                p.calls,
+                p.values,
+                p.most,
+                p.over[0],
+                p.over[1],
+                p.over[2],
+                p.worst,
+                p.far,
+                p.first.map_or(String::new(), |(c, t, j, e, u)| format!(", the first: call {c}, token {t}, choice {j}, expert {e}, {u} last places"))
+            );
+        }
+    }
     if device {
         // (the plan on the GPU takes layers whose host half is FP4 experts; another family's layers are the host's plan, said and not failed)
         if planned.get() == 0 {
