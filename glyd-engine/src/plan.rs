@@ -6219,6 +6219,57 @@ mod tests {
         assert!(planned_ok >= 3, "{planned_ok}");
     }
 
+    /// Qwen3.8-Flash-Next at penguin is cut over the GPUs as the route cuts any family's layers: a model of the release's shapes whose layers two GPUs hold
+    /// between them (its table of n-grams cut to one shard of the release's 128) is planned on two H200s in two stages, each inside its GPU's room, and
+    /// `--split` asking that cut is that plan; one H100 refuses it with the memory it needs. The release itself is refused even on eight H100s: its table of n-grams is
+    /// one layer's, 90 GiB of it, more than any of them holds (the table read from the disk is not on the executor yet).
+    #[test]
+    fn the_newest_qwen_family_is_cut_over_the_gpus_at_penguin() {
+        let text = fixture("qwen4x_config.json");
+        let nl = crate::dynamic::split::config_num(&text, "num_hidden_layers").unwrap();
+        let released = json::parse(&fixture("qwen4x_tensors.json")).unwrap();
+        let mut cut = released.clone();
+        if let Value::Object(top) = &mut cut {
+            for (k, v) in top.iter_mut().filter(|(k, _)| k == "tensors") {
+                let Value::Object(t) = v else { panic!("{k}") };
+                t.retain(|(n, _)| !n.contains(".ngram_embedding.shard_") || n.ends_with(".shard_0.weight"));
+            }
+        }
+        let dir = model_dir("qx-split", "Qwen3.8-Flash-Next", &text);
+        header_only_checkpoint(&dir, &json::to_compact(&cut));
+        let h200 = r#"{"name": "NVIDIA H200", "cc": [9, 0], "total_gib": 141, "free_gib": 139.5}"#;
+        let two = dir.parent().unwrap().join("2xh200.json");
+        std::fs::write(&two, format!(r#"{{"name": "2xh200", "gpus": [{h200}, {h200}], "ram_free_gib": 400}}"#)).unwrap();
+        let penguin = format!("{}:penguin", dir.to_str().unwrap());
+        let fit = |machine: &str, more: &[&str]| {
+            let mut w = vec!["fit", penguin.as_str(), "--machine", machine];
+            w.extend(more);
+            planned(&args(&w)).unwrap()
+        };
+        let m = Machine::from_json(&std::fs::read_to_string(&two).unwrap()).unwrap();
+        let f = fit(two.to_str().unwrap(), &[]);
+        let p = f.plan.chosen.as_ref().and_then(|c| c.load.clone()).unwrap_or_else(|| panic!("{:?}", f.refusal));
+        let sp = p.spread.as_ref().unwrap();
+        assert_eq!((p.family, p.level, sp.devices.as_slice(), sp.cuts.len()), ("Qwen3.8-Flash-Next", "penguin", &[0, 1][..], 1));
+        let bf16 = if sp.twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
+        let (per, base) = crate::dynamic::split::layer_bytes_where(&dir, nl, crate::dynamic::split::CODED_PCT, bf16, &|_| true).unwrap();
+        let c = sp.cuts[0];
+        for (k, held) in [per[..c].iter().sum::<u64>() + base / 2, per[c..].iter().sum::<u64>() + base - base / 2].into_iter().enumerate() {
+            assert!(held <= crate::plan::dynamic_room_of(m.devices[k].free), "stage {k} holds {held}");
+        }
+        assert!(p.gpu_total() <= p.free);
+        // (the cut asked for is the one loaded: the same plan)
+        let asked = fit(two.to_str().unwrap(), &["--split", &c.to_string(), "--devices", "0,1"]);
+        assert_eq!(asked.plan.chosen.and_then(|x| x.load), Some(p.clone()));
+        let r = fit("h100", &[]).refusal.unwrap();
+        assert!(r.what.contains("needs about") && r.what.contains("at penguin"), "{r:?}");
+        let rel = model_dir("qx-release", "Qwen3.8-Flash-Next", &text);
+        header_only_checkpoint(&rel, &json::to_compact(&released));
+        let r = planned(&args(&["fit", &format!("{}:penguin", rel.to_str().unwrap()), "--machine", "8xh100"])).unwrap().refusal.unwrap();
+        assert!(r.what.contains("needs about") && r.what.contains("the 8 GPUs here"), "{r:?}");
+        let _ = (std::fs::remove_dir_all(dir.parent().unwrap()), std::fs::remove_dir_all(rel.parent().unwrap()));
+    }
+
     /// The dynamic route reads a family's row, never its name: a row of another name with GLM-5.3-Flash's fields plans GLM-5.3-Flash's checkpoint as its own
     /// row does, on every machine; a row that says no expert cache is refused where the cache was the plan; and a name the table has no row for is refused.
     #[test]

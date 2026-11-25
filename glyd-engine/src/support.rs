@@ -30,8 +30,9 @@ pub enum Family {
     GlmDsa,
     DeepSeekV4,
     Muse,
-    /// Qwen3.8-Flash-Next (the Qwen 4 preview, `qwen4_exp`): penguin on the dynamic route on one GPU, every expert on it (src/dynamic/qwen4x.rs `stage`).
-    /// Its packs of codebook experts (Condor's precise, best and fast) are served by `qwenserve CKPT PACK --port` until `glyd run` resolves them (ROADMAP P8).
+    /// Qwen3.8-Flash-Next (the Qwen 4 preview, `qwen4_exp`): penguin on the dynamic route, every expert on the GPUs: one, or its layers cut over several
+    /// (src/dynamic/qwen4x.rs `stage`, src/dynamic/split.rs). Its packs of codebook experts (Condor's precise, best and fast) are served by
+    /// `qwenserve CKPT PACK --port` (one GPU, or `--gpus 0,1`) until `glyd run` resolves them (ROADMAP P8).
     FlashNext,
 }
 
@@ -253,7 +254,7 @@ pub static TABLE: [Support; 10] = [
         hummingbird_packed_only: false,
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
-        split_levels: NONE,
+        split_levels: PENGUIN,
         experts_in_ram_levels: NONE,
         drafts: true,
         route: Route { sizing: Sizing::Dynamic, ..ONE_GPU },
@@ -471,14 +472,15 @@ mod tests {
         }
         assert!(check(&q38, "Qwen/Qwen3.8-27B", "Qwen3.8-27B", "hummingbird").is_err());
         assert_eq!(row(Family::Qwen35).split_levels, ["penguin"], "its layers cut over the GPUs at penguin, as the dynamic route cuts them");
-        // (Qwen3.8-Flash-Next: penguin on the dynamic route, on one GPU; its packs of codebook experts are not a level of glyd run yet)
+        // (Qwen3.8-Flash-Next: penguin on the dynamic route, its layers cut over the GPUs as the route cuts them; its packs of codebook experts are not a level of
+        // glyd run yet)
         let x = fixture("qwen4x_config.json");
         assert!(check(&x, "Qwen/X", "X", "penguin").is_ok());
         for l in ["kestrel", "hummingbird"] {
             let r = check(&x, "Qwen/X", "X", l).unwrap_err();
             assert_eq!(r.what, format!("X (Qwen3.8-Flash-Next) runs at the penguin level in this engine, not {l}"), "{r:?}");
         }
-        assert!(row(Family::FlashNext).split_levels.is_empty() && row(Family::FlashNext).route.sizing == Sizing::Dynamic);
+        assert!(row(Family::FlashNext).split_levels == ["penguin"] && row(Family::FlashNext).route.sizing == Sizing::Dynamic);
         assert_eq!(crate::dynamic::split::family(&x), Some("Qwen3.8-Flash-Next"), "opened by the dynamic route from its release's directory");
         let g = fixture("gemma4_12b_config.json");
         assert!(check(&g, "google/gemma-4-12B-it", "gemma-4-12B-it", "wren").is_ok(), "a QAT checkpoint's wren runs in every build");
