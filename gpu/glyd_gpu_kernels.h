@@ -2962,9 +2962,11 @@ __device__ __forceinline__ void v_one_store(const VCalc& c, const VOne& r, uint8
 }
 
 // Whether another run of the call names the page of the run that begins at token i (its slot `mine`): a call's runs are written by CTAs at once, so two runs of
-// one page would clear, fill and make raw that page together, and take chunks and slabs that no page names and no release gives back (the pools' counts then
-// say they are used for good). Each such run writes nothing; the status counts them (ST_CLASH) and names the page (its block + 1 in ST_CLASH_PAGE), so the
-// caller can refuse the call's pass. Every thread of the CTA calls it (a barrier). A call whose tokens of one page follow one another, as glyd_gpu.h asks, has none.
+// one page would clear, fill and make raw that page together: a chunk or a slab given back twice, or taken and named by no page, and the pools' counts no longer
+// what is taken (on an A10, runs of one call into one page left a group's count of raw slabs taken 1 to 5 below zero and of escape chunks 6,137 to 6,240
+// below, unsigned: 2^32 less those). Each such run writes nothing; the status counts them (ST_CLASH) and names the page (its block + 1 in ST_CLASH_PAGE), so
+// the caller can refuse the call's pass. Every thread of the CTA calls it (a barrier). A call whose tokens of one page follow one another, as glyd_gpu.h asks,
+// has none.
 __device__ __noinline__ bool run_clashes(const WriteParams& P, int i, int64_t mine) {
     const int64_t page = mine >> 4;
     int found = 0;

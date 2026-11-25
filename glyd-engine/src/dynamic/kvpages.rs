@@ -565,9 +565,9 @@ impl Dyn {
 }
 
 /// An error where a write of group `g` (status words `w`) had runs that named a page another run of the same call named: the write kernel lets no two
-/// of a call's runs write one page (their CTAs would clear, fill and make raw one page at once, and take chunks and slabs no page names, which no
-/// release gives back), so each such run wrote nothing and was counted. A pass's rows name one page twice only where a table names a block at two
-/// places, or where rows are written past the blocks their sequence holds (no row is written to block 0: `kv12_rows`).
+/// of a call's runs write one page (their CTAs would clear, fill and make raw one page at once, giving a chunk or a slab back twice, so that the pools'
+/// counts say too few are taken, or more than are), so each such run wrote nothing and was counted. A pass's rows name one page twice only where a table
+/// names a block at two places, or where rows are written past the blocks their sequence holds (no row is written to block 0: `kv12_rows`).
 fn clash(g: usize, w: &[u32]) -> Result<()> {
     if w[ST_CLASH] == 0 {
         return Ok(());

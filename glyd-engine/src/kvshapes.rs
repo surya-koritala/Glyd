@@ -783,9 +783,10 @@ fn one_stream(lib: &Lib, dev: &Dev, h: usize, d: usize, pad: usize) -> Result<bo
 }
 
 /// A write whose tokens of one page do not follow one another, made so on purpose: tokens 0-7 to page 0, 8-15 to page 1, 16-23 to page 0 again, values that make
-/// pages raw. Two runs of one call name page 0, so neither is written (the write's CTAs would clear, fill and make raw one page at once, and take chunks and slabs
-/// no page names): the status counts both and names the page, page 0 stays as it was, page 1 holds its tokens. Then the same tokens in a call that is right (every
-/// page's tokens one after another): no run refused, every value read back. Each time, the pages released give every chunk and slab back (a leak would stay counted).
+/// pages raw. Two runs of one call name page 0, so neither is written (the write's CTAs would clear, fill and make raw one page at once, and give its chunks and
+/// slabs back twice): the status counts both and names the page, page 0 stays as it was, page 1 holds its tokens. Then the same tokens in a call that is right (every
+/// page's tokens one after another): no run refused, every value read back. Each time, the pages released give every chunk and slab back and no count goes below
+/// zero (a chunk or slab taken twice or given back twice would show).
 fn clashing_runs(lib: &Lib, dev: &Dev) -> Result<bool> {
     const A: i64 = 15;
     const RING: i64 = 64;
