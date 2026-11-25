@@ -58,6 +58,11 @@ pub trait MoeBlock {
     fn resident(&self) -> Option<(&crate::moe::MoeLayer, Option<(&Mat, &Mat)>)> {
         None
     }
+    /// The core's layer whose router leaves a call's choices in the experts' scratch (`MoeScratch::ids`), where every expert of it is on the GPU: what the corpus
+    /// pass counts (src/hb_usage.rs). A resident block's; a block that makes its own launches over such a layer gives it too.
+    fn core(&self) -> Option<&crate::moe::MoeLayer> {
+        self.resident().map(|(l, _)| l)
+    }
     /// Whether a call reads the router's choices on the host (a layer of hummingbird experts in the expert cache, `MoeLayer::reads_host`): no graph captures a step with it.
     fn reads_host(&self) -> bool {
         self.resident().is_some_and(|(l, _)| l.reads_host())

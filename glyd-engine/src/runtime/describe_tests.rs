@@ -650,6 +650,32 @@ fn kimi_k31s_sparse_attention_is_the_gated_indexer_with_its_key_norm() {
     }
 }
 
+/// Kimi-K3's matrices' shapes as the builder makes them from the config are the released checkpoint's (the header fixture's index): each layer's delta
+/// attention's (q, k, v, the full-rank gate, the forget gate's two, beta, o), its latent attention's (q_a, q_b, the gate, kv_a, kv_b, o), the dense MLP's,
+/// the router's, the latent's two projections and the shared experts' three, the embedding and the head: every matrix of the text model but the experts'.
+/// The lowering to the executor sizes every product by them and names its tensors with them.
+#[test]
+fn kimi_k3s_matrices_shapes_are_the_released_checkpoints() {
+    let h = fixture("headers/Kimi-K3.json");
+    let d = describe(&serde_json::from_str(h["config"].as_str().unwrap()).unwrap()).unwrap();
+    let mut header = std::collections::BTreeMap::new();
+    for g in h["groups"].as_array().unwrap() {
+        let (mask, shape) = (g["mask"].as_str().unwrap(), g["shape"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect::<Vec<_>>());
+        let layers: Vec<u64> = g["layers"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap()).collect();
+        if layers.is_empty() {
+            header.insert(mask.to_string(), shape);
+        } else if !mask.contains("{E}") {
+            header.extend(layers.iter().map(|l| (mask.replace("{L}", &l.to_string()), shape.clone())));
+        }
+    }
+    for (n, sh) in &d.shapes {
+        assert_eq!(header.get(n), Some(sh), "{n}");
+    }
+    let matrices = header.iter().filter(|(n, s)| s.len() == 2 && s[0] > 1 && n.starts_with("language_model."));
+    let unsaid: Vec<&String> = matrices.filter(|(n, _)| !d.shapes.contains_key(*n)).map(|x| x.0).collect();
+    assert!(unsaid.is_empty(), "matrices of the text model with no shape said: {unsaid:?}");
+}
+
 /// Kimi-K3's experts as released (MXFP4 in groups of 32): each expert matrix is its packed codes and its scales; a quantization the description does not read is
 /// refused with what differs, never read as bf16.
 #[test]
