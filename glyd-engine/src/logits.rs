@@ -672,7 +672,7 @@ pub fn qwen35_random(out: &Path) -> Result<()> {
     manifest_random(include_str!("../tests/fixtures/qwen35_tiny_manifest.json"), out, 0x2026_1120_0000_0007, false, "Qwen3.5-family")
 }
 
-/// A small model of Qwen3.8-2.4T-A95B's layout (`Qwen3_5MoeForCausalLM`; tests/fixtures/qwen35moe_tiny_config.json: its released config at 1024 wide and four layers, three
+/// A small model of the Qwen3.5 layout with experts (`Qwen3_5MoeForCausalLM`; tests/fixtures/qwen35moe_tiny_config.json: the family's config keys at 1024 wide and four layers, three
 /// Gated DeltaNet and a gated full-attention one, each followed by 32 experts of which a token takes 10 and the gated shared expert): every tensor of its description at its
 /// shape, its values by `manifest_random`'s rules for each kind of tensor.
 pub fn qwen35moe_random(out: &Path) -> Result<()> {
@@ -882,7 +882,7 @@ pub fn cases() -> Vec<Case> {
         },
         Case {
             id: "qwen35moe",
-            family: "Qwen3.5 family with experts (softmax-routed experts and a gated shared expert: Qwen3.8-2.4T-A95B's layout)",
+            family: "Qwen3.5 family with experts (Gated DeltaNet, gated attention, softmax-routed experts with a gated shared expert)",
             weights: Weights::Random(qwen35moe_random),
             engine: qwen35_engine,
             cpu: Some(described_cpu),

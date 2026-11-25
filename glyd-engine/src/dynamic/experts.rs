@@ -79,7 +79,7 @@ pub fn resident(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &
     };
     let gated = m.expert.gated;
     let (up, down) = (each(if gated { "experts_gate_up" } else { "experts_up" })?, each("experts_down")?);
-    let (up_rows, _) = dims(&up[0])?;
+    let (up_rows, _) = dims(up.first().ok_or_else(|| Error("a mixture of no experts".into()))?)?;
     let c = cfg(m, hidden, if gated { up_rows / 2 } else { up_rows })?;
     let packed = |members: Vec<String>| -> Result<crate::weights::PackBuf> {
         let (rows, cols) = dims(&members)?;

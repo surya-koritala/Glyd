@@ -28,7 +28,7 @@ fn with_experts(dir: &Path) -> Option<(Described, String)> {
 
 /// Stage `st` of it (a model split across GPUs: its layers, the embedding where it is the first, the head where the last; a layer of another
 /// stage is an empty one here), on the executor's loader (`Dyn::new_stage`: the b and a gates' small parts held as saved, A_log and the gated norm's
-/// weight in fp32, a saved directory's packs as saved). A model whose feed-forwards are mixtures of experts (Qwen3.8-2.4T-A95B's layout) loads by its
+/// weight in fp32, a saved directory's packs as saved). A model whose feed-forwards are mixtures of experts (the layout with experts, `Qwen3_5MoeForCausalLM`) loads by its
 /// layer kinds alone (`load_experts`).
 pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
     if let Some((kinds, label)) = with_experts(dir) {
