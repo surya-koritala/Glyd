@@ -771,6 +771,10 @@ pub type HeadOut = (Vec<(u32, f32)>, Vec<u16>);
 /// router's input rows (bf16, [rows, the input's width]).
 pub type Routes = (usize, usize, Vec<i64>, Vec<u16>);
 
+/// One row's choice in one mixture-of-experts layer as `Dyn::trace_row_routes` keeps it: the layer, the experts the row took (the router's order) and the router's
+/// input row (bf16).
+pub type RowRoute = (usize, Vec<i64>, Vec<u16>);
+
 /// A draft model to give `Dyn::new`: its directory (bf16, packed here), its description, and its tokens a round.
 pub struct DraftSpec<'a> {
     pub dir: &'a Path,
@@ -1267,6 +1271,8 @@ pub struct Dyn {
     /// Where Some: each eager pass adds, after each mixture-of-experts operation whose block leaves its choices in the experts' scratch
     /// (`MoeBlock::top_k`: a resident block, the expert cache's codebook block), its layer, its router's choices and its router's input rows (`trace_routes`).
     route_trace: std::cell::RefCell<Option<Vec<Routes>>>,
+    /// Where Some: each eager pass keeps its rows' choices of those operations by the row's sequence and place, the last pass's that ran it (`trace_row_routes`).
+    row_routes: std::cell::RefCell<Option<std::collections::HashMap<(usize, usize), Vec<RowRoute>>>>,
     picks: Option<picked::PickRun>,
     /// The latent attentions' scratch, where the model has one.
     mla: Option<mla::MlaRun>,
@@ -1480,9 +1486,36 @@ impl Dyn {
         std::mem::replace(&mut *self.trace.borrow_mut(), on.then(Vec::new)).unwrap_or_default()
     }
 
-    /// Whether the layers are traced (`trace_layers`, `trace_ops`, `trace_routes`): every pass eager, a decode step too.
+    /// Whether the layers are traced (`trace_layers`, `trace_ops`, `trace_routes`, `trace_row_routes`): every pass eager, a decode step too.
     pub(crate) fn tracing(&self) -> bool {
-        self.trace.borrow().is_some() || self.op_trace.borrow().is_some() || self.route_trace.borrow().is_some()
+        self.trace.borrow().is_some() || self.op_trace.borrow().is_some() || self.routes_traced()
+    }
+
+    /// Whether the routers' choices are traced (`trace_routes`, `trace_row_routes`).
+    fn routes_traced(&self) -> bool {
+        self.route_trace.borrow().is_some() || self.row_routes.borrow().is_some()
+    }
+
+    /// Each row's choices of the routers in the passes run between `trace_row_routes(true)` and `trace_row_routes(false)`, which returns them: kept by the row's
+    /// sequence (its slot) and place in it, a mixture-of-experts layer each (`RowRoute`), the last pass's that ran the row. What a check compares two runs of one
+    /// sequence by, whatever ran beside it. A layer whose block leaves no choices in the experts' scratch adds nothing; traced passes run eager.
+    pub fn trace_row_routes(&self, on: bool) -> std::collections::HashMap<(usize, usize), Vec<RowRoute>> {
+        std::mem::replace(&mut *self.row_routes.borrow_mut(), on.then(Default::default)).unwrap_or_default()
+    }
+
+    /// The choices `trace_row_routes` keeps of row `pos` of sequence `slot`, while it traces.
+    pub fn row_route(&self, slot: usize, pos: usize) -> Option<Vec<RowRoute>> {
+        self.row_routes.borrow().as_ref().and_then(|m| m.get(&(slot, pos)).cloned())
+    }
+
+    /// The sequence (slot) and place of each of a pass's first `n` rows: by the pass's parts where it is over several sequences, else the selected sequence's
+    /// from the tokens it held before the pass.
+    fn row_tags(&self, n: usize) -> Vec<(usize, usize)> {
+        if self.parts.is_empty() {
+            (0..n).map(|r| (self.seq, self.n + r)).collect()
+        } else {
+            self.parts.iter().flat_map(|p| (0..p.rows).map(move |r| (p.slot, p.start + r))).take(n).collect()
+        }
     }
 
     /// The routers' choices in the passes run between `trace_routes(true)` and `trace_routes(false)`, which returns them: for each mixture-of-experts
@@ -1511,7 +1544,7 @@ impl Dyn {
     /// rows, bf16.
     fn route_input(&self, p: &Part, op: &Op, n: usize) -> Result<Option<Vec<u16>>> {
         let Op::Moe(MoeOp { block, x, .. }) = *op else { return Ok(None) };
-        if !std::ptr::eq(p, &self.big) || self.route_trace.borrow().is_none() || p.moe[block].top_k().is_none() {
+        if !std::ptr::eq(p, &self.big) || !self.routes_traced() || p.moe[block].top_k().is_none() {
             return Ok(None);
         }
         self.dev.sync()?;
@@ -1520,10 +1553,11 @@ impl Dyn {
         Ok(Some(v))
     }
 
-    /// `trace_routes`' record of `op` of layer `l` on n rows, with its router's input (`route_input`, read before it ran).
+    /// `trace_routes`' record of `op` of layer `l` on n rows, with its router's input (`route_input`, read before it ran); and each row's, by its sequence and place
+    /// (`trace_row_routes`).
     fn trace_route(&self, p: &Part, l: usize, op: &Op, n: usize, input: Option<Vec<u16>>) -> Result<()> {
         let Op::Moe(MoeOp { block, .. }) = *op else { return Ok(()) };
-        if !std::ptr::eq(p, &self.big) || self.route_trace.borrow().is_none() {
+        if !std::ptr::eq(p, &self.big) || !self.routes_traced() {
             return Ok(());
         }
         let Some(k) = p.moe[block].top_k() else { return Ok(()) };
@@ -1532,6 +1566,14 @@ impl Dyn {
         let mut ids = vec![0i64; n * k];
         sc.ids.read(0, &mut ids)?;
         let input = input.ok_or_else(|| Error(format!("layer {l}: the router's input was not read before its experts ran")))?;
+        if let Some(m) = self.row_routes.borrow_mut().as_mut() {
+            let w = input.len() / n.max(1);
+            for (r, tag) in self.row_tags(n).into_iter().enumerate() {
+                let v = m.entry(tag).or_default();
+                v.retain(|x| x.0 != l);
+                v.push((l, ids[r * k..(r + 1) * k].to_vec(), input[r * w..(r + 1) * w].to_vec()));
+            }
+        }
         if let Some(t) = self.route_trace.borrow_mut().as_mut() {
             t.push((l, k, ids, input));
         }
@@ -1912,6 +1954,7 @@ impl Dyn {
             trace: std::cell::RefCell::new(None),
             op_trace: std::cell::RefCell::new(None),
             route_trace: std::cell::RefCell::new(None),
+            row_routes: std::cell::RefCell::new(None),
             picks,
             mla,
             verify: None,

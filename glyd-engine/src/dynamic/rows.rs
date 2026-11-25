@@ -920,9 +920,11 @@ impl Dyn {
     /// step runs eager. GLYD_ENGINE_ROWS_GRAPH=0 (a development build's) runs every such step eager, to compare.
     fn rows_bucket(&self, n: usize) -> Option<usize> {
         let rt = self.paged.as_ref()?.rows.as_ref().filter(|rt| rt.graphs)?;
+        // (a traced pass runs eager: no graph holds a layer's end)
         if self.graphs_off.get()
             || super::tp::comm().is_some()
             || crate::hb_usage::recording()
+            || self.tracing()
             || crate::tune!("GLYD_ENGINE_ROWS_GRAPH").is_some_and(|v| v == "0")
         {
             return None;
@@ -1936,6 +1938,12 @@ impl ModelStep for Dyn {
     fn cold(&mut self) -> Result<()> {
         self.owed = 0;
         self.stores().iter().try_for_each(|st| st.cold(&self.dev))
+    }
+    fn trace_choices(&mut self, on: bool) {
+        self.trace_row_routes(on);
+    }
+    fn row_choices(&self, slot: i32, pos: usize) -> Option<Vec<super::RowRoute>> {
+        self.row_route(slot as usize, pos)
     }
     fn masks(&mut self, masks: Vec<Option<crate::constrain::MaskHandle>>) {
         self.row_masks = masks;

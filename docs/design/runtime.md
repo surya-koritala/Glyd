@@ -466,7 +466,11 @@ Two details the records found that the policy keeps:
   row count. On the description executor the kernels change at 16 rows and at 64 (`glyd-engine roundcheck`, 2026-11-22): in a step of
   16 rows or fewer each row's logits are its own pass's bit for bit, on every family; in a larger one they differ by the rounding of
   bf16 values (gemma-4-12B at wren, a text's tokens: a KL of 0.002 to 0.005 from the row alone on average, at most 0.04), whether the
-  other rows are a prompt's chunk or other sequences that decode. What the other sequences hold never changes a row's bits. So the
+  other rows are a prompt's chunk or other sequences that decode. What the other sequences hold never changes a row's bits, except where
+  the host computes some experts' pairs (the expert cache's cpu, split and auto modes, the codebook cache): the host sums a pair in another
+  order than the GPU, and which pairs it takes turns on the call and on the places' state, so the checks (`usercheck`, `keepcheck`,
+  `roundcheck`) hold such a row to the row alone at the kind's lossless bound, and report a row past it only where a router's near tie (below
+  1e-2 on each run's own input) was taken the other way. So the
   round that is one step re-rolls that rounding for a reply whenever a prompt runs beside it; so does decoding beside more than 16
   others, and so does cutting a prompt into other chunks (the same 224 to 376 token prompt alone, in chunks of 7 to 127 against one
   pass: 0.0008 to 0.05, and 0.36 at one place where it ends).
