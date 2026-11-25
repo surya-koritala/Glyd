@@ -182,6 +182,205 @@ pub fn load_pack(dir: &Path, pack: &Path, precise: bool, users: usize, o: &Opts)
     load_cached(dir, o, &Caching::new(pack, PackMode::of(pack, precise), &d, users))
 }
 
+/// `qwenserve CKPT PACK --port P [--host H] [--page DIR] [--name NAME] [--users N] [--ctx N] [--chunk N] [--places N] [--precise] [--layout L]`: the HTTP server
+/// (src/server.rs: the chat page, the OpenAI and Anthropic APIs, the Monitor's numbers) on the description executor, the model's routed experts from its pack of
+/// codebook rows in the expert cache (`load_cached`: `--places N` a layer, else what the GPU has free past the reserve), the always-on matrices at the level asked
+/// (four bits where none is), its requests through the common scheduler (`server::work_with`), up to N at once. It listens while the model loads (/health is 503
+/// until it is loaded). Thinking is off where a request does not ask for it; the sampling defaults are the model's, at a temperature of 0.5 at most with min-p
+/// 0.1. Not on the executor yet: the vision tower, and the draft head over the expert cache (its verify pass takes experts held whole on the GPU: src/dynamic/head.rs).
+pub fn http(snap: &Path, pack: &Path, a: &crate::args::Args) -> Result<()> {
+    use crate::server;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    let name = a.flag("name").unwrap_or("qwen3.8-flash-next").to_string();
+    let ctx = a.num("ctx", 33536usize)?;
+    let users = a.num("users", 4usize)?;
+    if !(1..=crate::sched::MAX_ROWS).contains(&users) {
+        return err(format!("--users {users}: 1 to {} requests at once", crate::sched::MAX_ROWS));
+    }
+    let mode = PackMode::of(pack, a.has("precise"));
+    crate::monitor::start(mode.name(), ctx);
+    server::STANDALONE.store(true, Ordering::Relaxed);
+    if let Some(d) = a.flag("page") {
+        let _ = server::PAGE_DIR.set(d.into());
+    }
+    let tok = crate::tok::Tok::load(snap)?;
+    let chat = crate::chat::Chat::load(snap)?;
+    let mut defaults = crate::sampler::generation_defaults(snap);
+    if defaults.temperature > 0.0 {
+        // (one-shot games of ~15K tokens in precise mode, browser-tested: the model's own temperature (1.0) ended about one answer in four early; 0.5 with min-p 0.1 made
+        // 3 in 6, with no loop or early end. A request's own values win.)
+        defaults.temperature = defaults.temperature.min(0.5);
+        defaults.min_p = 0.1;
+    }
+    let host = a.flag("host").unwrap_or("127.0.0.1");
+    let port: u16 = a.num("port", 8080u16)?;
+    let key = std::env::var("GLYD_API_KEY").ok().filter(|k| !k.is_empty());
+    if let Some(why) = server::bind_refusal(host, key.is_some(), a.has("insecure-no-auth")) {
+        return err(why);
+    }
+    server::set_access(server::parse_access(a.flag("allowed-origins"), a.flag("allowed-hosts")).map_err(crate::ffi::Error)?);
+    let (tx, rx) = std::sync::mpsc::channel();
+    // (/health says "loading" until the model can serve: a script that waits for it does not send its first request into the load)
+    let loading = Arc::new(AtomicBool::new(true));
+    crate::ops::drain_on_sigterm(crate::ops::Life::global(), std::time::Duration::from_secs(a.num("drain-timeout", crate::ops::DRAIN_SECONDS)?), |_| {});
+    let addr = server::listen_loading(&format!("{host}:{port}"), &name, ctx - 2, key, server::is_loopback_addr(host), tx.clone(), loading.clone())?;
+    println!("Qwen3.8-Flash-Next on Glyd: the chat at http://{addr}/, the API at http://{addr}/v1 (OpenAI and Anthropic). Loading the model...");
+    // (the always-on matrices at four bits by default, as the release has been served; `--layout` another level's)
+    let o = Opts { ctx, chunk: a.num("chunk", 1024usize)?, graph: true, device: 0, layout: a.layout()?.or(Some(Layout::Int4)) };
+    let mut k = Caching::new(pack, mode, &lowered(snap, o.ctx + o.chunk + 16)?, users);
+    if let Some(p) = a.flag("places") {
+        k.places = Some(p.parse().map_err(|_| crate::ffi::Error(format!("--places {p}: a number of places a layer")))?);
+    }
+    let mut e = load_cached(snap, &o, &k)?;
+    let vocab = e.desc().vocab;
+    let Some((n, step)) = crate::conv::Gen::as_step(&mut e, users)? else { return err(format!("{FAMILY}: the engine is not a scheduler's step")) };
+    let window = crate::sched::ModelStep::window(step).min(ctx - 2);
+    let rt = crate::runtime::context::Context::process().clone();
+    let shared = Arc::new(server::Shared { tok, chat, name, defaults, window, vocab, thinking: Some(false), refused: &[], rt });
+    crate::monitor::ready();
+    loading.store(false, Ordering::Relaxed);
+    println!("Ready: up to {n} requests at once.");
+    server::work_with(&mut crate::sched::Sched::new(step, n), shared, &rx, &tx);
+    Ok(())
+}
+
+/// `glyd-engine servecheck CASE [--tokens N]`: the family's HTTP server (`http`) on the expert cache's random case (`logits::qwen4x_cb_random`, CASE `qwen4x-cb`:
+/// its pack, a tokenizer and chat template made for it) against the common scheduler in this process on the same model, pack and places (`load_cached` as
+/// `http` loads it): for a short prompt and one past a chunk, the served completion's tokens (greedy, N of them, by their ids) the scheduler's for the same
+/// tokens. An error where one differs.
+#[cfg(feature = "dev")]
+pub fn serve_check(a: &crate::args::Args) -> Result<()> {
+    use crate::sched::{Ev, Finish, Reply, Sched, Submit};
+    use std::io::{Read, Write};
+    let case = a.need(1, "CASE")?;
+    if case != "qwen4x-cb" {
+        return err(format!("servecheck {case}: the served case is qwen4x-cb (the family's random model with its pack of experts)"));
+    }
+    let tokens = a.num("tokens", 16usize)?;
+    let dir = std::env::temp_dir().join(format!("glyd-servecheck-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| crate::ffi::Error(e.to_string()))?;
+    crate::logits::qwen4x_cb_random(&dir)?;
+    crate::logits::write_serving_files(&dir, include_str!("../../tests/fixtures/chat_qwen38_tools.jinja"))?;
+    let pack = dir.join("pack");
+    let (ctx, chunk, places, users) = (1024usize, 64usize, 3usize, 2usize);
+    let port = std::net::TcpListener::bind("127.0.0.1:0").and_then(|l| l.local_addr()).map_err(|e| crate::ffi::Error(e.to_string()))?.port();
+    let words: Vec<String> = ["qwenserve", &dir.display().to_string(), &pack.display().to_string(), "--port", &port.to_string()]
+        .into_iter()
+        .map(String::from)
+        .chain(["--ctx", &ctx.to_string(), "--chunk", &chunk.to_string(), "--places", &places.to_string(), "--users", &users.to_string()].map(String::from))
+        .collect();
+    let served = crate::args::Args::from(words);
+    let (d2, p2) = (dir.clone(), pack.clone());
+    std::thread::spawn(move || {
+        if let Err(e) = http(&d2, &p2, &served) {
+            eprintln!("the server: {}", e.msg);
+        }
+    });
+    // (a request on its own connection, the whole reply read: its status and body)
+    let ask = |method: &str, path: &str, body: &str| -> Option<(u16, String)> {
+        let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
+        let head =
+            format!("{method} {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n", body.len());
+        c.write_all(head.as_bytes()).ok()?;
+        c.write_all(body.as_bytes()).ok()?;
+        let mut raw = String::new();
+        c.read_to_string(&mut raw).ok()?;
+        let (h, rest) = raw.split_once("\r\n\r\n")?;
+        Some((h.split_whitespace().nth(1)?.parse().ok()?, rest.to_string()))
+    };
+    let t0 = std::time::Instant::now();
+    while ask("GET", "/health", "").is_none_or(|r| r.0 != 200) {
+        if t0.elapsed().as_secs() > 600 {
+            return err("servecheck: the server did not say it was ready in 600 s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    println!("the server is ready at port {port} after {:.1} s", t0.elapsed().as_secs_f64());
+    // (the prompts as ids: a short one, and one past the chunk of 64)
+    let prompts: Vec<Vec<u32>> = vec![(0..9).map(|i| 40 + 3 * i).collect(), (0..150).map(|i| (37 * i + 11) % 2000).collect()];
+    let mut got = Vec::new();
+    for p in &prompts {
+        let list = p.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+        let body = format!(
+            r#"{{"model":"m","prompt":[{list}],"max_tokens":{tokens},"temperature":0,"ignore_eos":true,"logprobs":0,"return_tokens_as_token_ids":true}}"#
+        );
+        let (status, reply) = ask("POST", "/v1/completions", &body).ok_or_else(|| crate::ffi::Error("servecheck: the completion was not read".into()))?;
+        let v =
+            glyd_gpu::json::parse(&reply).map_err(|e| crate::ffi::Error(format!("servecheck: a reply of status {status} that is not JSON ({e}): {reply}")))?;
+        let ids: Vec<u32> = v
+            .get("choices")
+            .and_then(|c| c.as_array())
+            .and_then(|c| c.first())
+            .and_then(|c| c.get("logprobs"))
+            .and_then(|l| l.get("tokens"))
+            .and_then(|t| t.as_array())
+            .map(|t| t.iter().filter_map(|x| x.as_str()?.strip_prefix("token_id:")?.parse().ok()).collect())
+            .unwrap_or_default();
+        if status != 200 || ids.len() != tokens {
+            return err(format!("servecheck: status {status}, {} token ids where {tokens} were asked: {reply}", ids.len()));
+        }
+        got.push(ids);
+    }
+    // the same model, pack and places on the scheduler in this process, the same prompts one after another
+    let o = Opts { ctx, chunk, graph: true, device: 0, layout: Some(Layout::Int4) };
+    let mut k = Caching::new(&pack, PackMode::of(&pack, false), &lowered(&dir, o.ctx + o.chunk + 16)?, users);
+    k.places = Some(places);
+    let mut e = load_cached(&dir, &o, &k)?;
+    let Some((n, step)) = crate::conv::Gen::as_step(&mut e, users)? else { return err("servecheck: no scheduler's step") };
+    let mut s = Sched::new(step, n);
+    let reply = Reply {
+        params: crate::sampler::Params { temperature: 0.0, ..Default::default() },
+        max_new: tokens,
+        ignore_eos: true,
+        logprobs: None,
+        stop_ids: Vec::new(),
+    };
+    let mut ok = true;
+    for (p, served) in prompts.iter().zip(&got) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        s.submit(Submit {
+            prompt: p.clone(),
+            reply: reply.clone(),
+            out: tx,
+            abort: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            resumed: Default::default(),
+            cached: Default::default(),
+            created: Default::default(),
+            salt: 0,
+            pin: 0,
+            images: Vec::new(),
+        });
+        while !s.idle() {
+            s.tick()?;
+        }
+        let mut mine = Vec::new();
+        while let Ok(ev) = rx.recv() {
+            match ev {
+                Ev::Token(t) => mine.push(t),
+                Ev::Lp(_) => {}
+                Ev::End(Ok(Finish::Length)) => break,
+                Ev::End(f) => return err(format!("servecheck: the scheduler's sequence ended {f:?} before its {tokens} tokens")),
+            }
+        }
+        let same = mine == *served;
+        ok &= same;
+        println!(
+            "{} a served prompt of {} tokens: its {tokens} tokens {} the scheduler's here{}",
+            if same { "PASS" } else { "FAIL" },
+            p.len(),
+            if same { "are" } else { "are NOT" },
+            if same { String::new() } else { format!(" (served {served:?}, here {mine:?})") }
+        );
+    }
+    std::fs::remove_dir_all(&dir).ok();
+    if !ok {
+        return err("servecheck qwen4x-cb: a served reply is not the scheduler's");
+    }
+    println!("PASS servecheck {case}");
+    Ok(())
+}
+
 /// The matrices held as saved: the tables of n-grams (`Op::NgramRows` reads their rows).
 fn held_as_saved(d: &ModelDesc) -> Vec<usize> {
     d.layers.iter().flatten().filter_map(|op| if let Op::NgramRows(x) = op { Some(x.table) } else { None }).collect()

@@ -141,7 +141,7 @@ pub fn run(prog: &str, mut a: Args, dev: Dev) -> Result<()> {
         Some("qwenmcp") => crate::qwen_tools::mcp(&a),
         Some("qwenget") => crate::qwen4x_serve::get(a.need(1, "REPO")?, std::path::Path::new(a.need(2, "DIR")?), &a),
         Some("qwenserve") if a.has("port") || a.has("host") => {
-            crate::qwen4x_serve::http(std::path::Path::new(a.need(1, "CKPT")?), std::path::Path::new(a.need(2, "PACK")?), &a)
+            crate::dynamic::qwen4x::http(std::path::Path::new(a.need(1, "CKPT")?), std::path::Path::new(a.need(2, "PACK")?), &a)
         }
         Some("qwenserve") => crate::qwen4x_serve::serve(std::path::Path::new(a.need(1, "CKPT")?), std::path::Path::new(a.need(2, "PACK")?), &a),
         Some(c) if dev.is_some() => (dev.unwrap())(c, &a),

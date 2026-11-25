@@ -160,45 +160,59 @@ impl Dyn {
     }
 
     /// One drafting round with a draft head: from `last` (the token after the cache's, not in it yet), the head's first draft (its waiting row given `last`, or
-    /// the draft it made after `last` at the end of the round before), its next ones each from its own streams; the model checks `last` and the drafts in one
-    /// verify pass (each row as its step) and keeps them up to its first disagreement and its own token there (greedy), or checks each by `sampler`; the states
-    /// go back to after the rows kept, and the head runs again on those rows' streams with the token after each, its last row's draft the next round's first.
-    /// The tokens returned (1 to k + 1) are what steps would give one by one; the cache then holds `last` and the kept drafts.
+    /// the draft it made after `last` at the end of the round before), its next ones each from its own streams (`head_drafts`); the model checks `last` and the
+    /// drafts in one verify pass (`verify_drafts`). The tokens returned (1 to k + 1) are what steps would give one by one; the cache then holds `last` and the
+    /// kept drafts.
     pub(super) fn spec_round_head(&mut self, dr: &Draft, last: u32, sampler: Option<&mut crate::sampler::Sampler>) -> Result<Vec<u32>> {
-        let hs = dr.head.as_ref().ok_or_else(|| Error("a head's round on a draft model".into()))?;
         let n0 = self.n;
         if n0 == 0 {
             return err("spec_round before a prompt");
         }
         let k = dr.k.min(VERIFY_ROWS - 1).min(self.ctx.saturating_sub(n0 + 1));
-        let (s, w) = (self.dev.stream, dr.p.d.width(Slot::Hid) * 2);
+        let drafts = self.head_drafts(dr, last, k)?;
+        self.verify_drafts(dr, last, &drafts, sampler)
+    }
+
+    /// The head's k drafts after `last`: its first from its waiting row given `last` (a prompt's last row), or the one it made after `last` at the end of the round
+    /// before; each next from its own streams of the draft before, at the next position.
+    fn head_drafts(&self, dr: &Draft, last: u32, k: usize) -> Result<Vec<u32>> {
+        let hs = dr.head.as_ref().ok_or_else(|| Error("a head's drafts from a draft model".into()))?;
+        let (n0, s, w) = (self.n, self.dev.stream, dr.p.d.width(Slot::Hid) * 2);
         let mut drafts = Vec::with_capacity(k);
-        if k > 0 {
-            // (the first draft: the waiting row given `last`, or the draft the head made after `last`)
-            let mut at = match hs.pending.take() {
-                Some(p) if p + 1 == n0 => {
-                    // SAFETY: the waiting row's streams are in the head's Hid (`draft_after_chunk`).
-                    unsafe { self.head_pass(dr, p, &[last])? };
-                    hs.last.get().ok_or_else(|| Error("a head's pass that left no draft".into()))?
-                }
-                Some(p) => return err(format!("a draft head's row at {p} waits, where the sequence holds {n0}")),
-                None => match hs.last.get() {
-                    Some(l) if l.token == last && l.pos + 1 == n0 => l,
-                    l => return err(format!("no draft after token {last} at {n0}: the head's last pass {l:?} (a prompt not run through `prefill`?)")),
-                },
-            };
-            drafts.push(at.draft);
-            while drafts.len() < k {
-                // SAFETY: the head's last pass left its rows' streams in its S; its Hid takes the last of them.
-                unsafe {
-                    copy_d2d_async(dr.p.slot(Slot::Hid), dr.p.slot(Slot::S) + (at.row * w) as u64, w, s)?;
-                    self.head_pass(dr, at.pos + 1, &[at.draft])?;
-                }
-                at = hs.last.get().ok_or_else(|| Error("a head's pass that left no draft".into()))?;
-                drafts.push(at.draft);
-            }
+        if k == 0 {
+            return Ok(drafts);
         }
-        let seq: Vec<u32> = std::iter::once(last).chain(drafts).collect();
+        let mut at = match hs.pending.take() {
+            Some(p) if p + 1 == n0 => {
+                // SAFETY: the waiting row's streams are in the head's Hid (`draft_after_chunk`).
+                unsafe { self.head_pass(dr, p, &[last])? };
+                hs.last.get().ok_or_else(|| Error("a head's pass that left no draft".into()))?
+            }
+            Some(p) => return err(format!("a draft head's row at {p} waits, where the sequence holds {n0}")),
+            None => match hs.last.get() {
+                Some(l) if l.token == last && l.pos + 1 == n0 => l,
+                l => return err(format!("no draft after token {last} at {n0}: the head's last pass {l:?} (a prompt not run through `prefill`?)")),
+            },
+        };
+        drafts.push(at.draft);
+        while drafts.len() < k {
+            // SAFETY: the head's last pass left its rows' streams in its S; its Hid takes the last of them.
+            unsafe {
+                copy_d2d_async(dr.p.slot(Slot::Hid), dr.p.slot(Slot::S) + (at.row * w) as u64, w, s)?;
+                self.head_pass(dr, at.pos + 1, &[at.draft])?;
+            }
+            at = hs.last.get().ok_or_else(|| Error("a head's pass that left no draft".into()))?;
+            drafts.push(at.draft);
+        }
+        Ok(drafts)
+    }
+
+    /// `last` and `drafts` checked by the model in one verify pass (each row as its step: `verify_rows`), kept up to its first disagreement and its own token there
+    /// (greedy), or each by `sampler`; the states go back to after the rows kept (`rewind`), and the head runs again on those rows' streams with the token after
+    /// each, its rows there in place of its drafts', its last row's draft the next round's first.
+    fn verify_drafts(&mut self, dr: &Draft, last: u32, drafts: &[u32], sampler: Option<&mut crate::sampler::Sampler>) -> Result<Vec<u32>> {
+        let (n0, s, w) = (self.n, self.dev.stream, dr.p.d.width(Slot::Hid) * 2);
+        let seq: Vec<u32> = std::iter::once(last).chain(drafts.iter().copied()).collect();
         let n = seq.len();
         let mut io = Vec::new();
         self.verify_rows(&seq, n0, &mut io, n)?;
@@ -206,7 +220,6 @@ impl Dyn {
         let big: Vec<u32> = rows.iter().map(|r| r.0).collect();
         let (out, kept) = super::accept(&seq, &big, &words, self.big.d.vocab, sampler);
         self.rewind(kept + 1)?;
-        // (the head on the kept rows' streams, the verify pass's, with the token after each: its rows there in place of its drafts')
         let next: Vec<u32> = seq[1..=kept].iter().copied().chain(out.last().copied()).collect();
         // SAFETY: the model's S holds the verify pass's rows (`rewind` writes other slots); the copy is queued before the head's pass.
         unsafe {
@@ -215,6 +228,22 @@ impl Dyn {
         }
         self.prof_pass(n, 0)?;
         Ok(out)
+    }
+
+    /// A drafting round with `drafts` in place of the head's (its waiting row given `last` all the same, as a round takes it): a check's way to every count of drafts
+    /// kept, which a random head's own drafts seldom reach.
+    #[cfg(feature = "dev")]
+    pub fn spec_round_given(&mut self, last: u32, drafts: &[u32]) -> Result<Vec<u32>> {
+        let Some(dr) = self.draft.take() else { return err("no draft model") };
+        let r = match &dr.head {
+            None => err("drafts given to a round of a draft model: a draft head's round takes them"),
+            Some(_) if self.n == 0 || drafts.len() > dr.k.min(VERIFY_ROWS - 1) => {
+                err(format!("{} drafts given after {} tokens: 1 to {} after a prompt", drafts.len(), self.n, dr.k.min(VERIFY_ROWS - 1)))
+            }
+            Some(_) => self.head_drafts(&dr, last, 1).and_then(|_| self.verify_drafts(&dr, last, drafts, None)),
+        };
+        self.draft = Some(dr);
+        r
     }
 }
 
@@ -266,7 +295,8 @@ fn check_on(dir: &std::path::Path, level: &str, k: usize, tokens: usize) -> Resu
         plain.reset()?;
         let mut s = plain.prefill(prompt)?;
         let (mut want, mut want_rows) = (vec![s.token], vec![plain.logit_words()?]);
-        while want.len() < tokens {
+        // (k more than asked: the drafts given below)
+        while want.len() < tokens + k + 1 {
             s = plain.step(s.token)?;
             want.push(s.token);
             want_rows.push(plain.logit_words()?);
@@ -288,7 +318,7 @@ fn check_on(dir: &std::path::Path, level: &str, k: usize, tokens: usize) -> Resu
         got_rows.truncate(tokens);
         let same = got_rows.iter().zip(&want_rows).filter(|(a, b)| a == b).count();
         let first = got.iter().zip(&want).position(|(a, b)| a != b);
-        let ok = got == want && same == tokens;
+        let ok = got[..] == want[..tokens] && same == tokens;
         bits_ok &= ok;
         if !ok {
             // (where a round's verify rows part from the steps': the first operation whose rows do, layer by layer)
@@ -302,10 +332,39 @@ fn check_on(dir: &std::path::Path, level: &str, k: usize, tokens: usize) -> Resu
         println!(
                 "{} drafted {what}, {tokens} tokens: {} the model's alone, rows of logits the same bits {same} of {tokens}{}; {rounds} rounds of {k} drafts, {kept} drafts kept ({:.2} tokens a round)",
                 if ok { "PASS" } else { "FAIL" },
-                if got == want { "every token" } else { "NOT" },
+                if got[..] == want[..tokens] { "every token" } else { "NOT" },
                 first.map_or(String::new(), |i| format!(" (the first token apart: {i}, {} against {})", got[i], want[i])),
                 tokens as f64 / rounds.max(1) as f64
             );
+        // drafts given: the model's own next tokens, round r's (r mod (k + 1))-th changed (none where that is k), so that every count of drafts kept, 0 to k, is
+        // gone back to (a random head's own drafts are seldom the model's)
+        drafted.reset()?;
+        let s = drafted.prefill(prompt)?;
+        let (mut got, mut got_rows) = (vec![s.token], vec![drafted.logit_words()?]);
+        let (mut rounds, mut kept_by) = (0, vec![0usize; k + 1]);
+        while got.len() < tokens {
+            let at = got.len();
+            let mut d: Vec<u32> = want[at..at + k].to_vec();
+            if let Some(x) = d.get_mut(rounds % (k + 1)) {
+                *x = (*x + 1) % vocab as u32;
+            }
+            let out = drafted.spec_round_given(*got.last().unwrap_or(&0), &d)?;
+            let (_, words) = drafted.head_out(out.len(), true)?;
+            kept_by[(out.len() - 1).min(k)] += 1;
+            rounds += 1;
+            got_rows.extend(words.chunks(vocab).map(<[u16]>::to_vec));
+            got.extend(out);
+        }
+        got.truncate(tokens);
+        got_rows.truncate(tokens);
+        let same = got_rows.iter().zip(&want_rows).filter(|(a, b)| a == b).count();
+        let ok = got[..] == want[..tokens] && same == tokens && kept_by.iter().all(|&c| c > 0);
+        bits_ok &= ok;
+        println!(
+            "{} drafts given, {what}, {tokens} tokens: {} the model's alone, rows of logits the same bits {same} of {tokens}; {rounds} rounds, of each count of drafts kept 0 to {k}: {kept_by:?}",
+            if ok { "PASS" } else { "FAIL" },
+            if got[..] == want[..tokens] { "every token" } else { "NOT" },
+        );
     }
     // the head against the reference, a row of each pass on the streams and the token it read
     let passes = drafted.trace_head(false);

@@ -29,3 +29,7 @@
   and embedding shared). A drafting round checks the drafts in one verify pass whose rows are the steps', then goes back to the rows kept: the delta
   rule's and its convolution's states and now the n-gram embedding's last tokens and convolution. `glyd-engine draftcheck qwen4x` holds a drafted
   greedy generation to the model's alone bit for bit and the head to the CPU reference at the family's bound. Part of #140.
+- `qwenserve CKPT PACK --port P` serves Qwen3.8-Flash-Next on the description executor through the common scheduler (the server every model of the executor
+  has), its routed experts from the pack in the expert cache (`--places N` a layer, else what the GPU has free); Condor's own request loop (`Qx`) is gone.
+  Not on the executor yet: the vision tower, and drafting over the expert cache (a verify pass takes experts held whole on the GPU). `glyd-engine
+  servecheck qwen4x-cb` holds a served greedy completion to the same tokens through the scheduler in one process. Part of #140.
