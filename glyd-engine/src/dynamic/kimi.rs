@@ -46,6 +46,15 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
     load_with_places(dir, o, st, None)
 }
 
+/// The dynamic route's stage (src/dynamic/split.rs `StageLoad`): `load_stage_hb` with the caching given; with none, a development build's GLYD_KIMI_PLACES (the
+/// experts of a layer on the GPU, the rest in the expert cache's host tier: `load_with_places`).
+pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+    if caching.is_some() {
+        return load_stage_hb(dir, o, st, caching);
+    }
+    load_with_places(dir, o, st, crate::tune!("GLYD_KIMI_PLACES").and_then(|v| v.parse::<usize>().ok()))
+}
+
 /// Stage `st` with `places` of each mixture-of-experts layer's experts on the GPU (None, or as many as it has: all; fewer: the expert cache, its host tier pinned),
 /// nothing else of the expert cache asked: `load_stage_hb`'s.
 pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) -> Result<Dyn> {

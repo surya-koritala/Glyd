@@ -15,6 +15,18 @@ use crate::weights::Layout;
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 
+/// The dynamic route's stage (src/dynamic/split.rs `StageLoad`): `load_stage` with its experts at `o.layout`'s level (penguin's lossless where none is given),
+/// all on the GPU. A caching is refused: its experts' cache is its blocks' own (`moe_nh::factory_cached`, which the lossy route's loader gives `load_with`).
+pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+    if caching.is_some() {
+        return err(format!(
+            "{}: Nemotron-H's experts are cached by their own blocks (moe_nh.rs `factory_cached`), not as the dynamic route's caching says",
+            dir.display()
+        ));
+    }
+    load_stage(dir, o, o.layout.unwrap_or(Layout::Tiered), st)
+}
+
 /// The model in `dir` with its matrices at `layout` and its experts at `level` (the experts all on the GPU).
 pub fn load(dir: &Path, o: &Opts, level: Layout) -> Result<Dyn> {
     let layers = crate::nemotron::ConfigNemotronH::load(dir)?.layers;
