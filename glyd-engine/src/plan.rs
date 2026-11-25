@@ -5004,6 +5004,10 @@ mod tests {
         let glm = fixture("glm5_next_toy_config.json");
         let gc = crate::glm::ConfigGlm::parse(&glm, "GLM-5.3-Flash", None).unwrap();
         let gd = crate::dynamic::glm::describe(&gc, &Stage::whole(gc.layers)).unwrap();
+        // (GLM-5.3's full-size layout, its random case's config: the latent attention on every layer, its indexer's ring bf16)
+        let dsa = fixture("glm_moe_dsa_toy_config.json");
+        let dk = crate::runtime::describe::describe(&serde_json::from_str(&dsa).unwrap()).unwrap();
+        let dd = crate::dynamic::lower::latent_moe(&dk, Vec::new(), 4096, &Stage::whole(dk.desc.blocks.len() / 2)).unwrap_or_else(|e| panic!("{}", e.msg));
         let (g4, g12, q, qw, dn) = (
             crate::logits::GEMMA4_RANDOM_CONFIG.to_string(),
             fixture("gemma4_12b_config.json"),
@@ -5019,6 +5023,7 @@ mod tests {
             ("dense (random)", dn.clone(), dense(&dn)),
             ("Kimi-K3", kimi, rings(&kd)),
             ("glm (random)", glm, rings(&gd)),
+            ("glm-dsa (random)", dsa, rings(&dd)),
         ]
     }
 
@@ -5055,7 +5060,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(cases.len(), 7);
+        assert_eq!(cases.len(), 8);
     }
 
     /// The rule (R4b, #332): a plan never promises more tokens than the pool it sizes holds, in bf16 pages and in 12-bit pages. Gemma 4's load plan (the random case's
