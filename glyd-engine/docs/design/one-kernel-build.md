@@ -63,8 +63,9 @@ Each step lands alone, keeps `libglyd_gpu` loadable (the Python package needs it
 - **Step 3, order.** Folded (each compared bit for bit with the library by `foldcheck` in the GPU job): the unpackers; the experts' plan;
   the step product to 64 tokens (route GEMM, and the step product of the routes MID and WG for the layouts that take it); the prompt
   kernel (routes BIG, DECODE, AHEAD and SPLIT: mma_gemm_big in its three default shapes and, on GeForce Ada, its stream-K form, with
-  split-K's finish); the 12-bit layout's route MID (mma12_mid, and the A100's mma12_ws); the grouped experts' step products, their
-  prompt kernel and the expert cache's places; the 12-bit KV pages' write, unpack, gather, decode and prompt attention (and over a
+  split-K's finish); the 12-bit layout's route MID (mma12_mid, and the A100's mma12_ws); the grouped experts' step products, which
+  every call takes (C API 26: their prompt kernel and rows kernel, which a development build's variables alone ask for now, are the
+  library's and left the engine's fatbin), and the expert cache's places; the 12-bit KV pages' write, unpack, gather, decode and prompt attention (and over a
   bf16 cache); the lossless FP8 format's size, pack and unpack and its products (both layouts, every kind of scales, the experts').
   Their grids are the library's: occupancy of the engine's own kernels (`cuOccupancyMaxActiveBlocksPerMultiprocessor` in the device
   layer) and the same split rules, so the sums' order and the bits are the library's. A development build's variables that ask for
@@ -79,12 +80,16 @@ Each step lands alone, keeps `libglyd_gpu` loadable (the Python package needs it
   pages' release, save into an image and load from one (`fold_kv_release`, `_save`, `_load`), with an image's size (a host formula).
   Layout H's plain or coded choice (`f8h_plain`) is the engine's own state; the library is told it before each FP8 call of its own.
   `foldcheck` ends with the kernels of `kernels/fold.cu` it launched on the GPU it ran on and the names of those it did not (the routes
-  of another GPU's class: stream-K on GeForce Ada, an A100's tiles of the 12-bit route MID, Hopper's TMA and wgmma products).
+  of another GPU's class: stream-K on GeForce Ada, an A100's tiles of the 12-bit route MID, Hopper's TMA and wgmma products). Its case
+  of the 12-bit route MID given (the library's product takes a route) runs the route's tiles that no GPU's own route reaches with the
+  default plans: the 16-token one (a development build's `GLYD_MID_MIN` under 17 alone asks it) on any GPU of the route, and the four
+  warpgroups' where a block's shared memory holds 153 KB (an H100). `GLYD_GPU_LIB=none` loads no library: the engine's own kernels
+  alone, and a call they do not take fails naming the library's function it needed (`foldcheck`, which needs the library, refuses).
   What is left before the engine stops loading the library: every `GpuOps` method of `Lib` still ends in a `library_*` call for
   what its `fold` function does not take. Those are, by kind: arguments the library refuses (the engine has to refuse them itself, in
   the same words); an AMD build (its fold functions say false: nothing of them has run on an AMD GPU); a development build's tuning
-  variable that asks for a plan not folded (a release build reads none); the layout of v0.27 and before in `unpack`; a part of a
-  layer on the experts' prompt kernel; and Hopper's routes, which are written and have run on no H100 yet. Then `Lib::find()`'s
+  variable that asks for a plan not folded (a release build reads none); the layout of v0.27 and before in `unpack`; and Hopper's
+  routes, which are written and have run on no H100 yet. Then `Lib::find()`'s
   callers, `GLYD_GPU_LIB`, the bundle's libraries and `install.sh`'s copy go, and `foldcheck` keeps the library as a development
   build's oracle.
 - **The builds' time** (measured 2026-11-25 on a rented A10 machine of 30 processors, nvcc 12.8, a development build for sm_80 and
@@ -93,9 +98,16 @@ Each step lands alone, keeps `libglyd_gpu` loadable (the Python package needs it
   `ptxas` 101 and 102 s). `gpu/build_lib.sh` ran the library's six at once: 914 s (`cicc` 465 to 540 s, `ptxas` 269 to 326 s, then
   44 s of host compile), 24 of the 30 processors idle throughout; the library of the tree before the fold took 915 s, so the fold added
   the engine's time and not the library's. `scripts/ci_gpu_build.sh` now builds the library beside cargo's build, the engine's
-  architectures at once (`GLYD_ENGINE_NVCC_THREADS=0`), and the library for the engine's architectures alone (`GLYD_GPU_ARCHS`).
-  nvcc's `--split-compile` does not help: with 15 threads an architecture's `cicc` took 576 s against 523 (15 threads for about 50 s,
-  then one thread for the code generation), in twice the memory, and the machine code it made was not the same bytes. What would:
-  several translation units an architecture, each its own `cicc` and `ptxas`. The engine's kernels are found by name, so its fatbin can be several modules (`fold.cu` by family beside `engine.cu`); the
-  library's kernels are templates its host code launches, so a unit has to hold explicit instances that the host unit declares
-  `extern template` (nvcc 12.8 compiles and runs that, and warns that it will want `-static-global-template-stub=false`).
+  architectures at once (`GLYD_ENGINE_NVCC_THREADS=0`), and the library for the engine's architectures alone (`GLYD_GPU_ARCHS`): the
+  library for sm_80 and sm_86 alone carries the same machine code for both, byte for byte, as the six built at once, and the whole
+  build took 841 s (the library's nvcc 840 s beside cargo's build of 462 s, the engine's kernels 395 s in it; again with the library
+  kept, 392 s). The engine's kernels compiled with their architectures at once (`--threads 0`) are the same bytes as compiled one
+  after the other: four compiles of one source, two of each kind and cargo's among them, every architecture's machine code and the
+  PTX alike. Six architectures at once are
+  already six processes side by side, so a compile an architecture would end no sooner: the longest, sm_90a, is 540 s of `cicc` and
+  326 s of `ptxas`. nvcc's `--split-compile` does not help: with 15 threads an architecture's `cicc` took 576 s against 523 (15
+  threads for about 50 s, then one thread for the code generation), in twice the memory, and the machine code it made was not the
+  same bytes. What would: several translation units an architecture, each its own `cicc` and `ptxas`. The engine's kernels are found
+  by name, so its fatbin can be several modules (`fold.cu` by family beside `engine.cu`); the library's kernels are templates its
+  host code launches, so a unit has to hold explicit instances that the host unit declares `extern template` (nvcc 12.8 compiles and
+  runs that, and warns that it will want `-static-global-template-stub=false`).
