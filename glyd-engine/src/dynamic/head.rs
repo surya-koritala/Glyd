@@ -329,7 +329,12 @@ fn check_on(dir: &std::path::Path, level: &str, k: usize, tokens: usize) -> Resu
         let (r, _, routes) = crate::logits::ref_head(dir, &part.rows, |_| {})?;
         let free: Vec<HeadRow> = part.rows.iter().map(|x| HeadRow { take: None, ..x.clone() }).collect();
         let (f, _, froutes) = crate::logits::ref_head(dir, &free, |_| {})?;
-        apart += routes.iter().zip(&froutes).filter(|(a, b)| a.1 != b.0).count();
+        let set = |v: &[usize]| {
+            let mut v = v.to_vec();
+            v.sort_unstable();
+            v
+        };
+        apart += routes.iter().zip(&froutes).filter(|(a, b)| set(&a.1) != set(&b.0)).count();
         on_choices.extend(part.last.iter().map(|&i| r[i].clone()));
         own.extend(part.last.iter().map(|&i| f[i].clone()));
     }
