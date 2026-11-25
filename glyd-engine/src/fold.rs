@@ -2553,6 +2553,15 @@ pub fn f8h_plain_set(plain: Option<bool>) {
     F8H_PLAIN.store(plain.map_or(-1, |p| p as i32), std::sync::atomic::Ordering::Relaxed);
 }
 
+/// `f8h_plain_set`'s choice as it was given (None: the GPU's own), which the library is told before an FP8 call of its own.
+pub(crate) fn f8h_plain_choice() -> Option<bool> {
+    match F8H_PLAIN.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
+    }
+}
+
 /// Whether layout H's packs are plain (f8h_plain): GLYD_F8H_PLAIN (development builds), else `f8h_plain_set`'s, else an HBM GPU's own (plain).
 fn f8h_plain() -> Result<bool> {
     let set = F8H_PLAIN.load(std::sync::atomic::Ordering::Relaxed);
@@ -3153,7 +3162,7 @@ pub fn check(only: Option<&str>) -> Result<()> {
     }
     say("the KV cache's sizes, a page's image and the decode's workspace", n, bad);
     type Check = fn(&crate::dev::Dev, &crate::ffi::Lib) -> Result<(usize, Vec<String>)>;
-    let checks: [(&str, Check); 8] = [
+    let checks: [(&str, Check); 9] = [
         ("the experts' plan (moe_way), the engine's kernels against the library's (one warp and one block, ids out of range among them)", route_check),
         (
             "the 12-bit pages' write, unpack and gather, and the decode and prompt attention over them and over a bf16 cache: the engine's kernels against the library's",
@@ -3165,6 +3174,7 @@ pub fn check(only: Option<&str>) -> Result<()> {
         ),
         ("the lossless FP8 format's size, pack and unpack (both layouts), the engine's kernels against the library's", f8_check),
         ("the FP8 products (each kind of scales, both layouts, 1 to 64 tokens, the experts'), the engine's kernels against the library's", f8_product_check),
+        ("layout H's packs plain and coded by the process's choice: the FP8 format and its products under each, against the library's", f8h_plain_check),
         ("the grouped experts' step products (no activation, SiLU, GELU, gathered, weighted), the engine's kernels against the library's", moe_check),
         ("the step product (route GEMM, 1 to 64 tokens), the engine's kernels against the library's, and its workspace", linear_check),
         ("the mma layouts' unpacking and rows by id, the engine's kernels against the library's (every bf16 of each layout, whole and a row block)", unpack_check),
@@ -3971,6 +3981,28 @@ fn kv_pages_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize
             }
         }
         synced(dev, || format!("the refused KV calls, {h} x {d}"))?;
+    }
+    Ok((n, bad))
+}
+
+/// `foldcheck`'s choice of layout H's packs (`GpuOps::f8h_plain`: the engine holds it and tells the library before each FP8 call of the library's own):
+/// plain, then coded, the FP8 format's size, pack and unpack and its products under each by both, as `f8_check` and `f8_product_check` compare them
+/// (the GPU's own choice is theirs, run before). A choice that reached one side alone would give packs of two kinds. (compared, differences)
+#[cfg(feature = "dev")]
+fn f8h_plain_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
+    use crate::gpu_ops::GpuOps;
+    let runs: [fn(&crate::dev::Dev, &crate::ffi::Lib) -> Result<(usize, Vec<String>)>; 2] = [f8_check, f8_product_check];
+    let (mut n, mut bad) = (0, Vec::new());
+    for plain in [true, false] {
+        for run in runs {
+            lib.f8h_plain(Some(plain))?;
+            let r = run(dev, lib);
+            // (the GPU's own again, whatever the check said)
+            lib.f8h_plain(None)?;
+            let (m, b) = r?;
+            n += m;
+            bad.extend(b.into_iter().map(|x| format!("packs {}: {x}", if plain { "plain" } else { "coded" })));
+        }
     }
     Ok((n, bad))
 }

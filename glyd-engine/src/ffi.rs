@@ -1648,6 +1648,7 @@ impl Lib {
     /// As `GpuOps::f8_size`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) unsafe fn library_f8_size(&self, h: bool, w: u64, ld: i64, o: i64, k: i64, heads: u64, ws: u64, ws_bytes: usize, cs: Stream) -> Result<i64> {
+        self.library_f8h_told()?;
         let mut words = 0i64;
         let f = if h { self.api.glyd_gpu_f8h_size } else { self.api.glyd_gpu_f8_size };
         let r = f(w as *const u8, ld, o, k, heads as *mut u32, ws as *mut c_void, ws_bytes, &mut words, cs);
@@ -1655,10 +1656,11 @@ impl Lib {
         Ok(words)
     }
 
-    /// `GpuOps::f8h_plain` by the library's own kernels: the oracle of the engine's (`fold`).
-    pub(crate) fn library_f8h_plain(&self, plain: Option<bool>) -> Result<()> {
+    /// The library told the engine's choice for layout H's packs (`GpuOps::f8h_plain`, held by `fold`): before each FP8 call of the library's own, which reads
+    /// its copy (glyd_gpu_f8h_plain: the library's state for the process).
+    fn library_f8h_told(&self) -> Result<()> {
         // SAFETY: a value argument.
-        let r = unsafe { (self.api.glyd_gpu_f8h_plain)(plain.map_or(-1, |p| p as c_int)) };
+        let r = unsafe { (self.api.glyd_gpu_f8h_plain)(crate::fold::f8h_plain_choice().map_or(-1, |p| p as c_int)) };
         self.ck(call!("f8h_plain"), r)
     }
 
@@ -1690,6 +1692,7 @@ impl Lib {
         var_words: i64,
         cs: Stream,
     ) -> Result<()> {
+        self.library_f8h_told()?;
         let f = if h { self.api.glyd_gpu_f8h_pack } else { self.api.glyd_gpu_f8_pack };
         let r = f(w as *const u8, ld, o, k, heads as *const u32, core as *mut u8, var as *mut u32, var_words, cs);
         self.ck(call!("f8_pack"), r)
@@ -1701,6 +1704,7 @@ impl Lib {
     /// As `GpuOps::f8_unpack`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) unsafe fn library_f8_unpack(&self, h: bool, core: u64, heads: u64, var: u64, o: i64, k: i64, out: u64, ld: i64, cs: Stream) -> Result<()> {
+        self.library_f8h_told()?;
         let f = if h { self.api.glyd_gpu_f8h_unpack } else { self.api.glyd_gpu_f8_unpack };
         let r = f(core as *const u8, heads as *const u32, var as *const u32, o, k, out as *mut u8, ld, cs);
         self.ck(call!("f8_unpack"), r)
@@ -1708,6 +1712,7 @@ impl Lib {
 
     /// `GpuOps::f8_linear_workspace` by the library (glyd_gpu_f8_linear_workspace): the oracle of the engine's (`fold::f8_linear_workspace`).
     pub(crate) fn library_f8_linear_workspace(&self, n: i64, k: i64, m: i64) -> Result<usize> {
+        self.library_f8h_told()?;
         let mut b = 0usize;
         // SAFETY: a host out-pointer.
         let r = unsafe { (self.api.glyd_gpu_f8_linear_workspace)(n, k, m, &mut b) };
@@ -1739,6 +1744,7 @@ impl Lib {
         done: u64,
         cs: Stream,
     ) -> Result<()> {
+        self.library_f8h_told()?;
         let f = if h { self.api.glyd_gpu_f8h_linear } else { self.api.glyd_gpu_f8_linear };
         let r = f(
             core as *const u8,
@@ -1764,6 +1770,7 @@ impl Lib {
 
     /// `GpuOps::f8_moe_workspace` by the library (glyd_gpu_f8_moe_workspace): the oracle of the engine's (`fold::f8_moe_workspace`).
     pub(crate) fn library_f8_moe_workspace(&self, n: i64, k: i64, m: i64, slots: i64) -> Result<usize> {
+        self.library_f8h_told()?;
         let mut b = 0usize;
         // SAFETY: a host out-pointer.
         let r = unsafe { (self.api.glyd_gpu_f8_moe_workspace)(n, k, m, slots, &mut b) };
@@ -1798,6 +1805,7 @@ impl Lib {
         done: u64,
         cs: Stream,
     ) -> Result<()> {
+        self.library_f8h_told()?;
         let f = if h { self.api.glyd_gpu_f8h_moe } else { self.api.glyd_gpu_f8_moe };
         let r = f(
             core as *const u8,
@@ -1907,9 +1915,9 @@ impl GpuOps for Lib {
     }
 
     fn f8h_plain(&self, plain: Option<bool>) -> Result<()> {
-        // (both: the engine's packs read it, and the library's, which they are held to)
+        // (the engine's own state: its packs and products read it; the library is told it where an FP8 call of its own is made, `library_f8h_told`)
         crate::fold::f8h_plain_set(plain);
-        self.library_f8h_plain(plain)
+        Ok(())
     }
 
     fn f8_size_workspace(&self, o: i64, k: i64) -> Result<usize> {
