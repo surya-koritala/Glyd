@@ -2741,7 +2741,7 @@ impl Dyn {
                 self.op(p, l, i, op, n, pos, head)?;
                 self.trace_op(p, l, op, n)?;
                 self.trace_route(p, l, op, n, input)?;
-                self.trace_pick(p, l, op, n)?;
+                self.trace_pick(p, l, op, n, pos.0)?;
                 if dump {
                     self.dump_op(p, l, i, op, n)?;
                 }

@@ -533,8 +533,9 @@ impl Dyn {
 
     /// `Dyn::trace_picks`' record of `op` of layer `l` on n rows, a latent attention with an indexer (`PickTrace`): each row's picks as the attention left them (`MlaRun`'s
     /// sel and cnt, which hold every row of a pass of one sequence whose rows the attention takes at once: `rows_at_once`), its queries and head weights (iq, wts)
-    /// and the keys of the complete entries in the ring (unpaged); another pass is an error.
-    pub(super) fn trace_pick(&self, p: &Part, l: usize, op: &Op, n: usize) -> Result<()> {
+    /// and the keys of the complete entries in the ring (unpaged); another pass is an error. `pos`: the rows' positions as the operation read them (a decode step's
+    /// are in its own buffer, not the pass's start).
+    pub(super) fn trace_pick(&self, p: &Part, l: usize, op: &Op, n: usize, pos: u64) -> Result<()> {
         let Op::Mla(a @ MlaOp { indexer: Some(ix), .. }) = op else { return Ok(()) };
         if !std::ptr::eq(p, &self.big) || self.pick_trace.borrow().is_none() {
             return Ok(());
@@ -548,12 +549,19 @@ impl Dyn {
             ));
         }
         let r = self.mla.as_ref().ok_or_else(|| Error("a latent attention in a model loaded without its buffers".into()))?;
-        let (tmax, ih, id, kp, at) = (a.tmax(self.ctx), ix.pick.heads, ix.dim, ix.pick.ratio, self.start.get());
-        let (mut cnt, mut sel, mut q, mut w) = (vec![0i32; n], vec![0i32; n * tmax], vec![0u16; n * ih * id], vec![0u16; n * ih]);
-        // (the ring's rows of the complete entries the last row sees: [key | gate score] a token, a pool's key in its last token's row)
-        let entries = (at + n) / kp;
-        let mut ring = vec![0u16; entries * kp * 2 * id];
+        let (tmax, ih, id, kp) = (a.tmax(self.ctx), ix.pick.heads, ix.dim, ix.pick.ratio);
+        let (mut cnt, mut sel, mut q, mut w, mut at) = (vec![0i32; n], vec![0i32; n * tmax], vec![0u16; n * ih * id], vec![0u16; n * ih], vec![0i32; n]);
         self.dev.sync()?;
+        // SAFETY: the n positions the operation read (a buffer of the pass's), into host memory of n of them; the stream is synchronized after.
+        unsafe { crate::dev::copy_d2h_async(at.as_mut_ptr() as *mut _, pos, n * 4, self.dev.stream)? };
+        self.dev.sync()?;
+        if at.iter().any(|&x| x < 0) || at.windows(2).any(|w| w[1] != w[0] + 1) {
+            return err(format!("layer {l}: picks traced on rows at positions {at:?}, where a pass's rows are one sequence's in order"));
+        }
+        // (the ring's rows of the complete entries the last row sees: [key | gate score] a token, a pool's key in its last token's row)
+        let last = at.last().map_or(0, |&x| x as usize);
+        let entries = (last + 1) / kp;
+        let mut ring = vec![0u16; entries * kp * 2 * id];
         r.cnt.read(0, &mut cnt)?;
         r.sel.read(0, &mut sel)?;
         r.iq.read(0, &mut q)?;
@@ -570,7 +578,7 @@ impl Dyn {
         }
         let rec = PickTrace {
             layer: l,
-            pos: (at..at + n).collect(),
+            pos: at.iter().map(|&x| x as usize).collect(),
             picks,
             q: q.chunks(ih * id).map(f).collect(),
             w: w.chunks(ih).map(f).collect(),
