@@ -2310,7 +2310,7 @@ mod tests {
                 (mid + 1, hi)
             }
         });
-        let gpu = Target { ordinal: 0, name: "NVIDIA GeForce RTX 4080 SUPER".into(), cc: (8, 9), total: free.1, free: free.1, host: None };
+        let gpu = Target { ordinal: 0, name: "NVIDIA GeForce RTX 4080 SUPER".into(), cc: (8, 9), total: free.1, free: free.1, host: None, cublas: Some(false) };
         let host = Some(all + HOST_MARGIN + (1 << 30));
         let p = size_dynamic(&args(&["run", "tiny", "--context", "16"]), "tiny", &table, Some(&dir), &text, "DeepSeek-V4", &[gpu], host, &|_| false).unwrap();
         let c = p.experts.expect("a release's expert cache is in the plan");

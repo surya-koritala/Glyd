@@ -11,3 +11,6 @@
   figures against the reference's own choices are printed beside them. At penguin the checks also read the experts back from the GPU and hold them
   to the checkpoint's bits, and the second random case's experts are no longer on the six-bit grid, so a lossy load under the lossless level's name
   fails. Part of #140.
+- `fit --machine NAME` no longer turns on the computer that plans it: a preset says whether it has NVIDIA's cuBLAS (none of them: the engine never ships
+  it), and a machine described in JSON says so with `cublas`. DGX Spark's plans had a long prompt's chunk of 4,096 tokens when planned on a computer with
+  cuBLAS and 2,048 elsewhere. Part of #140.

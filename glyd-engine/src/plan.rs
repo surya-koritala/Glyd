@@ -50,6 +50,10 @@ pub struct Device {
     /// The GPU shares the computer's memory (Apple Silicon, DGX Spark, Jetson, Strix Halo): its memory is not a tier apart
     /// from RAM, so experts are never "moved to RAM" and the computer's free memory is not counted twice.
     pub unified: bool,
+    /// Whether the computer has NVIDIA's cuBLAS for a long prompt's decoded product (`ffi::Blas`, opened at run time, never shipped): a preset's or a
+    /// described machine's own word, so that its plan never turns on the computer that plans it; None for a GPU of this computer, whose loader is asked
+    /// (`Blas::present`) when a plan needs it.
+    pub cublas: Option<bool>,
 }
 
 #[derive(Clone, Debug)]
@@ -195,6 +199,7 @@ impl Device {
             consts: prior_for(cc).consts,
             prior: prior_for(cc),
             unified: is_unified(&name, vendor),
+            cublas: None,
             name,
             vendor,
             cc,
@@ -251,6 +256,7 @@ fn gpu(name: &str, vendor: Vendor, cc: (i32, i32), total_gib: f64, free_gib: f64
         prior: prior_for(cc),
         driver,
         unified: is_unified(name, vendor),
+        cublas: Some(false),
     }
 }
 
@@ -299,7 +305,8 @@ impl Machine {
         "strix-halo-128g",
     ];
 
-    /// A machine described in JSON: {"name", "ram_free_gib", "ram_bandwidth", "cores", "gpus": [{"name", "vendor", "cc": [8, 9], "total_gib", "free_gib", "bandwidth", "driver", "unified"}]}.
+    /// A machine described in JSON: {"name", "ram_free_gib", "ram_bandwidth", "cores", "gpus": [{"name", "vendor", "cc": [8, 9], "total_gib", "free_gib", "bandwidth", "driver", "unified",
+    /// "cublas"}]} ("cublas": whether it has NVIDIA's cuBLAS, false where it does not say).
     pub fn from_json(text: &str) -> Result<Machine, String> {
         let v = json::parse(text)?;
         let gpus = v.get("gpus").and_then(Value::as_array).ok_or("no \"gpus\" array")?;
@@ -323,6 +330,9 @@ impl Machine {
             }
             if let Some(u) = g.get("unified").and_then(Value::as_bool) {
                 d.unified = u;
+            }
+            if let Some(b) = g.get("cublas").and_then(Value::as_bool) {
+                d.cublas = Some(b);
             }
             devices.push(d);
         }
@@ -1560,11 +1570,13 @@ pub struct Target {
     pub free: u64,
     /// The computer's memory the experts may take (None: it does not say, and is taken to have enough).
     pub host: Option<u64>,
+    /// Whether the computer has cuBLAS (`Device::cublas`): None for this computer, whose loader is asked.
+    pub cublas: Option<bool>,
 }
 
 impl Target {
     pub fn of(d: &Device, ordinal: i32, host: Option<u64>) -> Target {
-        Target { ordinal, name: d.name.clone(), cc: d.cc, total: d.total, free: d.free, host }
+        Target { ordinal, name: d.name.clone(), cc: d.cc, total: d.total, free: d.free, host, cublas: d.cublas }
     }
 }
 
@@ -3737,14 +3749,16 @@ pub mod sizing {
         std::env::var("GLYD_KV").as_deref() == Ok("lossless") && a.pos.first().is_some_and(|c| c == "serve")
     }
 
-    /// A dense product for the long prompts (cuBLAS where it is, else the engine's own on Ampere, Ada and Hopper): the decoded matrix and the larger chunk that goes with it.
-    pub(crate) fn dense_product(cc: (i32, i32)) -> bool {
-        Blas::present() || (matches!(cc.0, 8 | 9) && crate::tune!("GLYD_ENGINE_GEMM").map_or(true, |v| v != "lib"))
+    /// A dense product for the long prompts (cuBLAS where the computer has it, else the engine's own on Ampere, Ada and Hopper): the decoded matrix and the larger
+    /// chunk that goes with it. `cublas`: the target's word on cuBLAS (`Target::cublas`: a preset's or a described machine's), None for this computer (its loader
+    /// is asked): a plan for a machine one does not have never turns on the computer that plans it.
+    pub(crate) fn dense_product(cc: (i32, i32), cublas: Option<bool>) -> bool {
+        cublas.unwrap_or_else(Blas::present) || (matches!(cc.0, 8 | 9) && crate::tune!("GLYD_ENGINE_GEMM").map_or(true, |v| v != "lib"))
     }
 
     /// The GPU `run` picked, as a plan sees it, and the computer's memory the experts may take.
     pub(crate) fn target(gpu: &Gpu) -> Target {
-        Target { ordinal: gpu.ordinal, name: gpu.name.clone(), cc: gpu.cc, total: gpu.total, free: gpu.free, host: crate::offload::host_memory() }
+        Target { ordinal: gpu.ordinal, name: gpu.name.clone(), cc: gpu.cc, total: gpu.total, free: gpu.free, host: crate::offload::host_memory(), cublas: None }
     }
 
     /// The layout and the fit of a model on a GPU: what `prepare` settles before it downloads a thing, and `preflight` before it says the engine will run the model. `packed`: the layout of a
@@ -3771,7 +3785,7 @@ pub mod sizing {
         };
         // (what the last load of this model here took beyond its plan is planned as already taken: `calibrated`)
         let extra = calibration(name, levels::name_of(layout), &t.name);
-        let mut fit = dense_fit(cfg, row, name, &t.name, t.free.saturating_sub(extra), layout, asked, users, dense_product(t.cc), twelve_pages(a))?;
+        let mut fit = dense_fit(cfg, row, name, &t.name, t.free.saturating_sub(extra), layout, asked, users, dense_product(t.cc, t.cublas), twelve_pages(a))?;
         calibrated(&mut fit, t.free, extra);
         Ok((layout, why, fit))
     }
@@ -6082,7 +6096,7 @@ mod tests {
                 (mid + 1, hi)
             }
         });
-        let gpu = Target { ordinal: 0, name: "NVIDIA GeForce RTX 4080 SUPER".into(), cc: (8, 9), total: free, free, host: None };
+        let gpu = Target { ordinal: 0, name: "NVIDIA GeForce RTX 4080 SUPER".into(), cc: (8, 9), total: free, free, host: None, cublas: Some(false) };
         let ttable = crate::sizes::Table::from_dir(&tiny).unwrap();
         let v4 = crate::support::row_named("DeepSeek-V4").unwrap();
         let (renamed, bare) = (row("Renamed", v4.route), row("Bare", Route { expert_cache: ExpertCache::None, ..v4.route }));
@@ -6828,6 +6842,23 @@ mod tests {
             assert_eq!(got.get(k), Some(w), "{k}");
         }
         assert!(crate::machine::KERNELS12 || planned_here == 0, "{planned_here} cases of drivers this build refuses were not compared");
+    }
+
+    /// A machine one does not have says itself whether it has cuBLAS, so its plan never turns on the computer that plans it: every preset says it has none (the
+    /// engine never ships cuBLAS; a computer has it where NVIDIA's toolkit is installed), a described machine says so where its JSON does, and this computer's GPU
+    /// leaves it to its loader. A preset off Ampere, Ada and Hopper (DGX Spark's GB10) takes the decoded product and its larger chunk only where it says it has cuBLAS.
+    #[test]
+    fn a_machine_one_does_not_have_says_whether_it_has_cublas() {
+        for name in Machine::PRESETS {
+            let m = Machine::preset(name).unwrap();
+            assert!(m.devices.iter().all(|d| d.cublas == Some(false) && Target::of(d, 0, None).cublas == Some(false)), "{name}");
+        }
+        let spark = Machine::preset("dgx-spark").unwrap().devices[0].cc;
+        assert!(!sizing::dense_product(spark, Some(false)) && sizing::dense_product(spark, Some(true)));
+        let said = r#"{"name": "x", "gpus": [{"name": "NVIDIA GB10", "cc": [12, 1], "total_gib": 119, "cublas": true}, {"name": "NVIDIA GB10", "cc": [12, 1], "total_gib": 119}]}"#;
+        let m = Machine::from_json(said).unwrap();
+        assert_eq!(m.devices.iter().map(|d| d.cublas).collect::<Vec<_>>(), vec![Some(true), Some(false)]);
+        assert_eq!(Device::listed("NVIDIA GB10".into(), Vendor::Nvidia, (12, 1), 1, 1, 13000).cublas, None);
     }
 
     /// `fit` prints the ladder from the level asked for: Gemma 4 12B lossless does not fit a 16 GB card, kestrel does, and the step is a lower level that asks; as JSON too.
