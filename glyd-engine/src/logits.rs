@@ -549,13 +549,16 @@ fn gemma4_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
 }
 
 /// A small Gemma 4 of the 12B's layer kinds (sliding layers, and a global one whose keys are its values), the heads the engine runs (256 and 512), a soft-capped tied head, at random (a fixed seed).
-pub fn gemma4_random(out: &Path) -> Result<()> {
-    let text = r#"{"architectures": ["Gemma4ForConditionalGeneration"], "model_type": "gemma4", "eos_token_id": [1, 106],
+/// The random Gemma 4 model's config (`gemma4_random`): three sliding layers and a global one.
+pub(crate) const GEMMA4_RANDOM_CONFIG: &str = r#"{"architectures": ["Gemma4ForConditionalGeneration"], "model_type": "gemma4", "eos_token_id": [1, 106],
         "text_config": {"model_type": "gemma4_text", "hidden_size": 512, "num_hidden_layers": 4, "num_attention_heads": 4, "num_key_value_heads": 2, "num_global_key_value_heads": 1,
         "attention_k_eq_v": true, "head_dim": 256, "global_head_dim": 512, "intermediate_size": 1024, "vocab_size": 4096, "rms_norm_eps": 1e-6, "sliding_window": 32,
         "layer_types": ["sliding_attention", "sliding_attention", "sliding_attention", "full_attention"], "final_logit_softcapping": 30.0, "max_position_embeddings": 4096,
         "enable_moe_block": false, "hidden_size_per_layer_input": 0, "hidden_activation": "gelu_pytorch_tanh",
         "rope_parameters": {"sliding_attention": {"rope_theta": 10000.0, "rope_type": "default"}, "full_attention": {"rope_theta": 1000000.0, "partial_rotary_factor": 0.25, "rope_type": "proportional"}}}}"#;
+
+pub fn gemma4_random(out: &Path) -> Result<()> {
+    let text = GEMMA4_RANDOM_CONFIG;
     let c = crate::gemma4::ConfigG4::parse(text, None, false)?;
     let mut r = 0x2026_1120_0000_0004u64;
     let mut uni = move |a: f32, b: f32| {
