@@ -2340,7 +2340,7 @@ mod tests {
         let d = dir("glm");
         crate::glm::random(&d, false, None).unwrap();
         let c = crate::glm::ConfigGlm::load(&d).unwrap();
-        v.push(glm::describe(&c, &Stage::whole(c.layers)).unwrap());
+        v.push(glm::lowered(&d, &c, &Stage::whole(c.layers)).unwrap());
         let d = dir("v4");
         crate::dsv4_ref::random(&d, None).unwrap();
         let (layers, eos, max_pos) = deepseek_v4::ends(&d).unwrap();
@@ -2353,7 +2353,8 @@ mod tests {
         for f in ["nemotron_h_config.json", "nemotron_h_moetoy_config.json"] {
             let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(f)).unwrap();
             let c = crate::nemotron::ConfigNemotronH::parse(&text, f, None).unwrap();
-            v.extend(nemotron::describe(&c, &Stage::whole(c.layers)));
+            let kinds = crate::runtime::describe::describe(&serde_json::from_str(&text).unwrap()).unwrap();
+            v.extend(nemotron(&kinds, c.eos.clone(), c.max_pos, &Stage::whole(c.layers)));
         }
         v.push(dense(&crate::runtime::describe::describe(&dense_config("llama", serde_json::json!({}))).unwrap(), vec![2], 4096).unwrap());
         for x in ["q35", "g4", "muse", "kimi", "glm", "v4", "qx"] {
@@ -2542,15 +2543,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The descriptions the executor's loader can read (`Dyn::new_with`: Gemma 4, its draft, the plain dense models, Qwen3.5, Muse Spark, Kimi-K3,
-    /// Qwen3.8-Flash-Next) name every matrix their operations use; the others name none yet, their families' loaders filling them by index, and the executor's
-    /// loader refuses them in words.
+    /// The descriptions the executor's loader reads (`Dyn::new_placed`: Gemma 4, its draft, the plain dense models, Qwen3.5, Muse Spark, Kimi-K3, GLM-5.3-Flash,
+    /// Nemotron-H, Qwen3.8-Flash-Next) name every matrix their operations use. DeepSeek-V4's, which its own loader fills by its lowering's plan
+    /// (src/dynamic/deepseek_v4.rs), names none, and the executor's loader refuses it in words.
     #[cfg(feature = "dev")]
     #[test]
     fn the_executors_loader_reads_only_descriptions_that_name_their_tensors() {
-        use super::super::{dense::FAMILY as DENSE, qwen4x::FAMILY as QX, unnamed};
-        for d in every_family("named") {
-            let named = matches!(d.family, "Gemma 4" | "Gemma 4 draft" | "Qwen3.5" | "Muse Spark" | "Kimi-K3" | DENSE | QX);
+        use super::super::unnamed;
+        let all = every_family("named");
+        assert!(all.iter().any(|d| d.family == "DeepSeek-V4") && all.iter().filter(|d| d.family == "Nemotron-H").count() == 2);
+        for d in all {
+            let named = d.family != "DeepSeek-V4";
             assert_eq!(unnamed(&d).is_none(), named, "{}: {:?} of {} matrices named", d.family, unnamed(&d), d.mats.len());
         }
     }
