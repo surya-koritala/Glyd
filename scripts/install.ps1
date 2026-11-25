@@ -36,17 +36,20 @@ try {
     if (-not $want -or $got -ne $want) { throw "the download is not the file the release lists (its sha256 is $got, the release says '$want'). Run this again; if it happens again, tell the Glyd project." }
     Expand-Archive -LiteralPath (Join-Path $Tmp "$Name.zip") -DestinationPath $Tmp -Force
     $src = Join-Path $Tmp $Name
-    foreach ($f in 'glyd.exe', 'libglyd_gpu_cuda13.dll', 'libglyd_gpu_cuda12.dll', 'LICENSE') {
+    foreach ($f in 'glyd.exe', 'LICENSE') {
         if (-not (Test-Path -LiteralPath (Join-Path $src $f))) { throw "the zip is not laid out as this installer expects ($Name\$f is missing): run this again, or take it from $Repo/releases." }
     }
     New-Item -ItemType Directory -Force $Home_ | Out-Null
-    foreach ($f in 'glyd.exe', 'libglyd_gpu_cuda13.dll', 'libglyd_gpu_cuda12.dll') {
+    # (a release before the engine took its kernels in holds the GPU library DLLs too; a later one, none)
+    $files = @('glyd.exe') + @('libglyd_gpu_cuda13.dll', 'libglyd_gpu_cuda12.dll' | Where-Object { Test-Path -LiteralPath (Join-Path $src $_) })
+    foreach ($f in $files) {
         # (a running glyd.exe cannot be overwritten: move it aside first)
         $dest = Join-Path $Home_ $f
         if (Test-Path -LiteralPath $dest) { Move-Item -Force -LiteralPath $dest "$dest.old" }
         Copy-Item -Force -LiteralPath (Join-Path $src $f) $dest
         Remove-Item -Force -ErrorAction SilentlyContinue "$dest.old"
     }
+    foreach ($f in 'libglyd_gpu_cuda13.dll', 'libglyd_gpu_cuda12.dll') { if ($files -notcontains $f) { Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $Home_ $f) } }
     Copy-Item -Force -LiteralPath (Join-Path $src 'LICENSE') (Join-Path $Home_ 'LICENSE-engine')
     # glyd-engine.exe: the engine's old command line, which glyd takes the name it is started by for
     Copy-Item -Force -LiteralPath (Join-Path $Home_ 'glyd.exe') (Join-Path $Home_ 'glyd-engine.exe')

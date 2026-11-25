@@ -246,6 +246,13 @@ pub struct Failure {
     pub fix: &'static str,
 }
 
+/// The fix of a GPU library that does not load: a CUDA build loads one only where GLYD_GPU_LIB names it (its kernels are its own); an AMD build's
+/// operations are the library's still.
+#[cfg(not(glyd_hip))]
+const LIBRARY_FIX: &str = "Unset GLYD_GPU_LIB, which names a GPU library that does not load: the engine runs its own kernels without one";
+#[cfg(glyd_hip)]
+const LIBRARY_FIX: &str = "bash gpu/build_lib_hip.sh target/release, or GLYD_GPU_LIB=/path/to/libglyd_gpu_hip.so";
+
 pub const MATRIX: &[Failure] = &[
     Failure {
         class: "no NVIDIA driver, or no GPU visible to the process",
@@ -254,11 +261,7 @@ pub const MATRIX: &[Failure] = &[
     },
     Failure { class: "GPU older than Ampere", check: "gpu-age", fix: "Nothing on this card: RTX 30 series and later, A10, A100, L4, L40S and H100 run" },
     Failure { class: "driver older than the engine's kernels", check: "driver", fix: "Update the NVIDIA driver to the version `glyd doctor` names (sudo ubuntu-drivers install, then reboot)" },
-    Failure {
-        class: "GPU library not found",
-        check: "gpu-library",
-        fix: "bash gpu/build_lib.sh target/release, or GLYD_GPU_LIB=/path/to/libglyd_gpu_cuda13.so",
-    },
+    Failure { class: "GPU library not found", check: "gpu-library", fix: LIBRARY_FIX },
     Failure {
         class: "AMD or Apple GPU, or an Arm computer",
         check: "machine",
@@ -810,7 +813,7 @@ mod tests {
             os: "linux".into(),
             arch: "x86_64".into(),
             gpus: Ok(vec![gpu("NVIDIA GeForce RTX 4080 SUPER", (8, 9), 16, 15, 13000)]),
-            library: Ok("/usr/lib/libglyd_gpu_cuda13.so".into()),
+            library: Ok("none: the engine runs its own kernels".into()),
             cublas: Some("/usr/lib/libcublas.so.13".into()),
             ram: Some((64 << 30, 56 << 30)),
             cache: Dir { path: "/home/u/.cache/glyd".into(), free: Some(500 << 30) },
@@ -896,7 +899,7 @@ mod tests {
         );
         assert!(get(&checks(&healthy()), "wddm").is_empty());
         let mut f = healthy();
-        f.library = Err("libglyd_gpu_cuda13.so is not beside the program".into());
+        f.library = Err("/tmp/x.so: cannot open shared object file (GLYD_GPU_LIB names it)".into());
         case("no library", f, "gpu-library", Status::Fail);
         // (aarch64 is planned as x86_64: a healthy computer passes on it; an architecture the engine is not built for fails)
         let mut f = healthy();

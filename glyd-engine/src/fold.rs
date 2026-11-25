@@ -13,8 +13,8 @@
 //! - the mma layouts' unpacking and rows by id (glyd_gpu_mma_unpack, _mma_rows and the 12-bit layout's);
 //! - the packed products (glyd_gpu_mma_linear, _mma12_linear): the step product to 64 tokens, the prompt kernel in its grid and stream-K
 //!   forms, the 12-bit layout's route MID, and Hopper's TMA and wgmma routes;
-//! - the experts' plan (glyd_gpu_moe_way) and products (glyd_gpu_mma_moe, _mma12_moe, _mma_moe_placed): the step products, the prompt
-//!   kernel, Hopper's wgmma product;
+//! - the experts' plan (glyd_gpu_moe_way) and products (glyd_gpu_mma_moe, _mma12_moe, _mma_moe_placed): the step products, which every
+//!   call takes;
 //! - the 12-bit KV pages: write, unpack, gather, the decode and prompt attention (and over a bf16 cache), and release, save and load;
 //! - the lossless FP8 format: size, pack, unpack and its products (both layouts, the experts').
 //!
@@ -1086,18 +1086,6 @@ fn tmat_smem(nt: i64) -> u32 {
         _ => 230_656,
     }
 }
-fn wm12_smem(nt: i64, act: bool) -> u32 {
-    match (nt, act) {
-        (16, false) => 140_416,
-        (16, true) => 144_512,
-        (32, false) => 156_800,
-        (32, true) => 164_992,
-        (64, false) => 189_568,
-        (64, true) => 205_952,
-        (_, false) => 224_368,
-        (_, true) => 226_400,
-    }
-}
 const HOP_THREADS: u32 = 288;
 const WGP_THREADS: u32 = 384;
 
@@ -1291,87 +1279,6 @@ fn wg_need(u: Unpacker, o: i64, k: i64, m: i64) -> Result<Option<usize>> {
         }
         _ => Ok(None),
     }
-}
-
-/// The experts' wgmma product's tile of pairs (wg_tile: the smallest that holds an expert's pairs on average and 1.5 standard deviations more; GLYD_GPU_MOE_WG_NT
-/// forces one).
-fn wg_tile(p: i64, e: i64) -> i64 {
-    let forced = tuned(crate::tune!("GLYD_GPU_MOE_WG_NT"), 0);
-    if matches!(forced, 16 | 32 | 64 | 128) {
-        return forced;
-    }
-    let hit = e.min(p).max(1) as f64;
-    let mean = p as f64 / hit;
-    let need = mean + 1.5 * mean.sqrt();
-    if need <= 16.0 {
-        16
-    } else if need <= 32.0 {
-        32
-    } else if need <= 64.0 {
-        64
-    } else {
-        128
-    }
-}
-
-/// The experts' wgmma product's workspace after Y32 (wg_tail): the tiles' records, then (where X is the tokens') the pairs' rows of X in the order's.
-fn wg_records(e: i64, p: i64) -> i64 {
-    ((1 + e.min(p) + (p + 15) / 16) * 16 + 255) & !255
-}
-fn wg_tail(e: i64, k: i64, p: i64, rows: bool) -> i64 {
-    wg_records(e, p) + if rows { (p * k * 2 + 255) & !255 } else { 0 }
-}
-
-/// The experts' wgmma product on Hopper (mma_moe_wg), the 12-bit layout's; Ok(false) where it does not take the call (the library's mma_moe_wg refusals:
-/// the other kernels take it then).
-///
-/// # Safety
-/// As `moe`.
-#[allow(clippy::too_many_arguments)]
-unsafe fn moe_wg(
-    w: &Pack,
-    experts: i64,
-    (o, kk): (i64, i64),
-    (x, t, k, gather): (u64, i64, i64, bool),
-    (plan, act, weights): (u64, i64, u64),
-    y: u64,
-    (ws, ws_bytes): (u64, usize),
-    cs: Stream,
-) -> Result<bool> {
-    let p = t * k;
-    let rows = act != 0 || gather;
-    let head = if weights != 0 { p * o * 4 } else { 0 };
-    let Words::Twelve { exc, .. } = w.words else { return Ok(false) };
-    if !fits(ws, ws_bytes, head + wg_tail(experts, kk, p, rows)) || act > 1 || kk % 64 != 0 || o % if act != 0 { 128 } else { 64 } != 0 {
-        return Ok(false);
-    }
-    if x % 16 != 0 || w.data % 16 != 0 || exc % 16 != 0 {
-        return Ok(false);
-    }
-    use crate::kt;
-    use crate::launch;
-    let tail = ws + head as u64;
-    let nt = wg_tile(p, experts);
-    launch!(crate::dev::here::<kt::fold_moe_wg_tiles>()?, [1, 1, 1], [1024, 1, 1], cs; plan, experts as i32, nt as i32, tail)?;
-    let mut xs = x;
-    if gather {
-        let g = tail + wg_records(experts, p) as u64;
-        launch!(crate::dev::here::<kt::fold_moe_wg_gather>()?, [p.min(4096) as u32, 1, 1], [128, 1, 1], cs; x, plan, experts as i32, k, kk / 8, g)?;
-        xs = g;
-    }
-    let ru = if act != 0 { o / 128 } else { (o / 64 + 1) / 2 };
-    let name = leaked(format!("fold_moe_wg_{nt}_{}", (act != 0) as u8));
-    let smem = wm12_smem(nt, act != 0);
-    let (per, sms) = per_sm(name, HOP_THREADS, smem)?;
-    let records = experts.min(p) + (p + nt - 1) / nt;
-    let nb = (per * sms).min(ru * records).max(1);
-    let r = HopRun { name, blocks: nb, cluster: 1, threads: HOP_THREADS, smem, box_rows: nt as u32, wgp: None, need: 0 };
-    let Ok(u) = unpacker(w) else { return Ok(false) };
-    let Some(lead) = layout_args(u, w, None) else { return Ok(false) };
-    let y32 = if weights != 0 { ws } else { 0 };
-    let a = lead.i64(o).i64(kk).i32(experts as i32).p(plan).p(tail).i32(ru as i32).p(0).p(weights).i32(1).p(y).p(y32);
-    hop_launch(&r, xs, kk, p, a, cs)?;
-    Ok(true)
 }
 
 /// kvc::RawPool (gpu/glyd_gpu_kernels.h), field for field: the raw-slab pool as a kernel takes it.
@@ -2314,8 +2221,8 @@ fn moe_wg_from(_h100: bool) -> i64 {
     tuned(crate::tune!("GLYD_GPU_MOE_WG"), 0)
 }
 
-/// `GpuOps::moe_workspace` by the library's plan (mma_moe_run's need: the weighted sums' Y32 and the splits' parts, [P][O] floats each), where the 12-bit
-/// layout's wgmma route cannot be taken (a GPU of compute capability 9.0 keeps the library's: the route's tail); None: the library's.
+/// `GpuOps::moe_workspace` by the library's plan (mma_moe_run's need: the weighted sums' Y32 and the splits' parts, [P][O] floats each); None: the
+/// library's (Hopper's wgmma route where a development build's GLYD_GPU_MOE_WG asks for it, a call it refuses).
 pub fn moe_workspace(twelve: bool, experts: i64, o: i64, cols: i64, t: i64, k: i64, act: i64, weighted: bool) -> Result<Option<usize>> {
     if cfg!(glyd_hip) || !(1..=12288).contains(&experts) || o < 64 || o % 64 != 0 || cols < 16 || cols % 16 != 0 || t < 0 || k < 1 || !(0..=2).contains(&act) {
         return Ok(None);
@@ -2328,10 +2235,10 @@ pub fn moe_workspace(twelve: bool, experts: i64, o: i64, cols: i64, t: i64, k: i
     let units = if act != 0 { o / 128 } else { o / 64 };
     // (K's split by the layer's shape alone, never the pairs: mma_moe_run's)
     let splits = if p > 0 { moe_splits(units * experts, cols, hbm)? } else { 1 };
-    let mut bytes = (weighted as i64 + if splits > 1 { splits } else { 0 }) * p * o * 4;
-    // (the 12-bit layout's wgmma route on Hopper: Y32, then the tiles' records and, with the gate, the pairs' rows of X)
+    let bytes = (weighted as i64 + if splits > 1 { splits } else { 0 }) * p * o * 4;
+    // (the 12-bit layout's wgmma route on Hopper, which GLYD_GPU_MOE_WG asks for: the library's, its tail its own)
     if twelve && moe_wg_from(h100) > 0 && p > 0 && hopper_gpu()? {
-        bytes = bytes.max(if weighted { p * o * 4 } else { 0 } + wg_tail(experts, cols, p, act != 0));
+        return Ok(None);
     }
     Ok(Some(bytes as usize))
 }
@@ -2380,19 +2287,9 @@ pub unsafe fn moe(
     if p == 0 {
         return Ok(true);
     }
-    // the 12-bit layout's wgmma route on Hopper (mma_moe_wg), where it takes the call; else the other kernels, as the library's (but GLYD_GPU_MOE_WG_STRICT's refusal)
+    // (the 12-bit layout's wgmma route on Hopper, mma_moe_wg, which a development build's GLYD_GPU_MOE_WG asks for: the library's)
     if twelve && moe_wg_from(h100) > 0 && t >= moe_wg_from(h100) && kk % 64 == 0 && o % if act != 0 { 128 } else { 64 } == 0 && act <= 1 && hopper_gpu()? {
-        if moe_wg(w, experts, (o, kk), (x, t, k, gather), (plan, act, weights), y, (ws, ws_bytes), cs)? {
-            if weights != 0 {
-                use crate::kt;
-                use crate::launch;
-                launch!(crate::dev::here::<kt::fold_moe_sum>()?, [((t * o / 4 + 255) / 256) as u32, 1, 1], [256, 1, 1], cs; ws, ids, experts as i32, t, k, o, y)?;
-            }
-            return Ok(true);
-        }
-        if tuned(crate::tune!("GLYD_GPU_MOE_WG_STRICT"), 0) != 0 {
-            return Ok(false);
-        }
+        return Ok(false);
     }
     // the plan's choices as mma_moe_run makes them, the variables at their defaults
     let mt = if t <= 16 {
@@ -3012,7 +2909,9 @@ pub fn check(only: Option<&str>) -> Result<()> {
     let dev = crate::dev::Dev::new(0)?;
     let lib = crate::ffi::Lib::find()?;
     if !lib.loaded() {
-        return crate::ffi::err("foldcheck holds the engine's kernels to the library's: it needs the library, and GLYD_GPU_LIB=none loads none");
+        return crate::ffi::err(
+            "foldcheck holds the engine's kernels to the library's: it needs the library, which GLYD_GPU_LIB=PATH loads (gpu/build_lib.sh builds it)",
+        );
     }
     let mut fails = 0;
     let mut say = |what: &str, n: usize, bad: Vec<String>| {

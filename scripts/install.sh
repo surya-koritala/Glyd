@@ -216,12 +216,19 @@ install_engine() {
   # A release from 0.33 holds glyd itself with the engine linked (and glyd-engine as a link to it): the one program, which replaces the compression program
   # of the same release beside it. An earlier release's tarball holds the engine as a program of its own, which stays beside glyd.
   if tar -tzf "$tmp/$ename.tar.gz" "$ename/glyd" >/dev/null 2>&1; then one=glyd; else one=glyd-engine; fi
-  tar -xzf "$tmp/$ename.tar.gz" -C "$tmp/e" "$ename/$one" "$ename/libglyd_gpu_cuda13.so" "$ename/LICENSE" \
+  tar -xzf "$tmp/$ename.tar.gz" -C "$tmp/e" "$ename/$one" "$ename/LICENSE" \
     || die "the engine's tarball is not laid out as this installer expects ($ename/$one, ...): run this again, or take it from $REPO/releases."
-  cp "$tmp/e/$ename/libglyd_gpu_cuda13.so" "$cli"/ && cp "$tmp/e/$ename/LICENSE" "$cli/LICENSE-engine" || die "could not write to $cli."
-  # a release from 0.33.2 also holds the CUDA 12 library (not compressed), which the engine loads on a driver older than CUDA 13 (down to R535)
-  if tar -xzf "$tmp/$ename.tar.gz" -C "$tmp/e" "$ename/libglyd_gpu_cuda12.so" >/dev/null 2>&1; then
-    cp "$tmp/e/$ename/libglyd_gpu_cuda12.so" "$cli"/ || die "could not write to $cli."
+  cp "$tmp/e/$ename/LICENSE" "$cli/LICENSE-engine" || die "could not write to $cli."
+  if tar -tzf "$tmp/$ename.tar.gz" "$ename/libglyd_gpu_cuda13.so" >/dev/null 2>&1; then
+    # (a release before the engine took its kernels in: its GPU library beside it, the CUDA 12 one too from 0.33.2, for a driver down to R535)
+    tar -xzf "$tmp/$ename.tar.gz" -C "$tmp/e" "$ename/libglyd_gpu_cuda13.so" && cp "$tmp/e/$ename/libglyd_gpu_cuda13.so" "$cli"/ || die "could not write to $cli."
+    if tar -xzf "$tmp/$ename.tar.gz" -C "$tmp/e" "$ename/libglyd_gpu_cuda12.so" >/dev/null 2>&1; then
+      cp "$tmp/e/$ename/libglyd_gpu_cuda12.so" "$cli"/ || die "could not write to $cli."
+      ENGINE_DRIVER_MIN=535  # (CUDA 12.2: Blackwell GPUs need 570)
+    fi
+  else
+    # (the engine's kernels are in the program, CUDA 12's among them: no GPU library, a driver down to R535)
+    rm -f "$cli/libglyd_gpu_cuda13.so" "$cli/libglyd_gpu_cuda12.so"
     ENGINE_DRIVER_MIN=535  # (CUDA 12.2: Blackwell GPUs need 570)
   fi
   if [ "$one" = glyd ]; then

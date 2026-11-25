@@ -1,6 +1,6 @@
 # R17: one kernel build
 
-Status: step 0 done; steps 1 to 6 begun (see "Progress" at the end): the library's operations run from the engine's fatbin (Hopper's wgmma and TMA products are written and have run on no H100 yet), and the engine still loads the library for what its own kernels do not take (step 4). Decided 2026-11-21: CUDA 12 stays (step 5); HIP stays a compile-only job until M5b, and the CUDA fold keeps the HIP path building (step 6); step 0 is R1a, #134. Each step carries its own bit-for-bit check in the GPU job (`gpu-tests.yml`, on the project's GPU runner): every step is compared bit for bit with the library on a GPU.
+Status: step 0 done; steps 1 to 6 begun (see "Progress" at the end): the library's operations run from the engine's fatbin (Hopper's wgmma and TMA products are written and have run on no H100 yet), and a CUDA build loads no library: its own kernels take every call (step 4; an AMD build loads it as before). Decided 2026-11-21: CUDA 12 stays (step 5); HIP stays a compile-only job until M5b, and the CUDA fold keeps the HIP path building (step 6); step 0 is R1a, #134. Each step carries its own bit-for-bit check in the GPU job (`gpu-tests.yml`, on the project's GPU runner): every step is compared bit for bit with the library on a GPU.
 
 ## What there was when this was written (2026-11-21)
 
@@ -64,13 +64,13 @@ Each step lands alone, keeps `libglyd_gpu` loadable (the Python package needs it
   the step product to 64 tokens (route GEMM, and the step product of the routes MID and WG for the layouts that take it); the prompt
   kernel (routes BIG, DECODE, AHEAD and SPLIT: mma_gemm_big in its three default shapes and, on GeForce Ada, its stream-K form, with
   split-K's finish); the 12-bit layout's route MID (mma12_mid, and the A100's mma12_ws); the grouped experts' step products, which
-  every call takes (C API 26: their prompt kernel and rows kernel, which a development build's variables alone ask for now, are the
-  library's and left the engine's fatbin), and the expert cache's places; the 12-bit KV pages' write, unpack, gather, decode and prompt attention (and over a
+  every call takes (C API 26: their prompt kernel, rows kernel and Hopper's wgmma product, which a development build's variables alone
+  ask for now, are the library's and left the engine's fatbin), and the expert cache's places; the 12-bit KV pages' write, unpack, gather, decode and prompt attention (and over a
   bf16 cache); the lossless FP8 format's size, pack and unpack and its products (both layouts, every kind of scales, the experts').
   Their grids are the library's: occupancy of the engine's own kernels (`cuOccupancyMaxActiveBlocksPerMultiprocessor` in the device
   layer) and the same split rules, so the sums' order and the bits are the library's. A development build's variables that ask for
-  another plan keep the library's. Hopper's kernels (the 12-bit layout's TMA and wgmma products, the tiered layout's TMA product, the
-  experts' wgmma product) are in the fatbin, built for sm_90a, with their launches (tensor maps from the driver's
+  another plan keep the library's. Hopper's kernels (the 12-bit layout's TMA and wgmma products, the tiered layout's TMA product) are in
+  the fatbin, built for sm_90a, with their launches (tensor maps from the driver's
   `cuTensorMapEncodeTiled`, clusters); they have run on no H100 yet.
 - **Step 5.** The folded kernels are in `kernels/engine.cu`'s fatbin, so the CUDA 12 fatbin (`NVCC12`) carries them as it carries the rest.
 - **Step 6.** The HIP build compiles `engine.cu`, so `fold.cu` and the header with it: the header is the library's own HIP-compiling source.
@@ -83,15 +83,14 @@ Each step lands alone, keeps `libglyd_gpu` loadable (the Python package needs it
   of another GPU's class: stream-K on GeForce Ada, an A100's tiles of the 12-bit route MID, Hopper's TMA and wgmma products). Its case
   of the 12-bit route MID given (the library's product takes a route) runs the route's tiles that no GPU's own route reaches with the
   default plans: the 16-token one (a development build's `GLYD_MID_MIN` under 17 alone asks it) on any GPU of the route, and the four
-  warpgroups' where a block's shared memory holds 153 KB (an H100). `GLYD_GPU_LIB=none` loads no library: the engine's own kernels
-  alone, and a call they do not take fails naming the library's function it needed (`foldcheck`, which needs the library, refuses).
-  What is left before the engine stops loading the library: every `GpuOps` method of `Lib` still ends in a `library_*` call for
-  what its `fold` function does not take. Those are, by kind: arguments the library refuses (the engine has to refuse them itself, in
-  the same words); an AMD build (its fold functions say false: nothing of them has run on an AMD GPU); a development build's tuning
-  variable that asks for a plan not folded (a release build reads none); the layout of v0.27 and before in `unpack`; and Hopper's
-  routes, which are written and have run on no H100 yet. Then `Lib::find()`'s
-  callers, `GLYD_GPU_LIB`, the bundle's libraries and `install.sh`'s copy go, and `foldcheck` keeps the library as a development
-  build's oracle.
+  warpgroups' where a block's shared memory holds 153 KB (an H100).
+  A CUDA build loads no library (`Lib::find` without `GLYD_GPU_LIB`): with none, the tree's checks on an A10 passed all but the ones
+  that compare with the library or check it, and named no call the engine's kernels did not take (2026-11-25). A call they do not
+  take is refused as the library refuses one (cudaErrorInvalidValue, the call named as the library names it): an argument the
+  library refuses too, the layout of v0.27 and before in `unpack`, or a plan a development build's tuning variable asks for (a
+  release build reads none). `GLYD_GPU_LIB=PATH` loads the library: `foldcheck` needs it as its reference, and the GPU job's checks
+  of the library itself (`packcheck --gpu`, `glyd-gpu verify`) take it from `GLYD_GPU_LIB_BUILT`. Not run yet: Hopper's routes on an
+  H100. An AMD build loads `libglyd_gpu_hip` as before: its fold functions say false, nothing of them having run on an AMD GPU.
 - **The builds' time** (measured 2026-11-25 on a rented A10 machine of 30 processors, nvcc 12.8, a development build for sm_80 and
   sm_86; a `ps` sample a second). Both compiles are one translation unit each, and an architecture of a unit is one `cicc` followed by
   one `ptxas`, each a single thread. `build.rs` ran the engine's two architectures one after the other: 501 s (`cicc` 149 and 148 s,
