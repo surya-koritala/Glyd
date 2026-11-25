@@ -723,7 +723,7 @@ What is built (R12b, #327):
 - **`storebench`** runs batched decode through the cache and writes each count of rows' statistics; `ceiling --stats` predicts the
   step from them (`docs/ceiling.md`: DeepSeek-V4 and Kimi-K3 at the release's widths, 18 GB each on the 4080 SUPER, at 1, 8 and 32 rows).
 - **The plan on the GPU** (`devplan.rs`, kernels/moe.cu `xp_plan`/`xp_fill`/`xp_wait`/`xp_take`; `Offload::device`, a development
-  build's `--device-plan`, `tiercheck`/`storebench --device`): a layer whose host half is FP4 experts (DeepSeek-V4's, Kimi-K3's) keeps
+  build's `--device-plan`, `tiercheck`/`storebench --device-plan`): a layer whose host half is FP4 experts (DeepSeek-V4's, Kimi-K3's) keeps
   its places in a table on the GPU; a decode call's plan, its misses' copies (read through the host tier's mapped addresses), the
   products, the promotions behind them and the wait for the host's pairs are kernels on the engine's stream, and the host's pairs
   are a thread of the store's that answers the GPU's requests through mapped host memory (a request's number written last, its
@@ -738,7 +738,7 @@ What is built (R12b, #327):
   (`LayerCache`) still plans a prompt's chunks: before such a call the GPU's table is read into it, after it written back.
   On the Nemotron 3 Super decode traces its clock finds 0.5 to 0.6 points fewer of the pairs in places than the least-recently-used
   cache at one row (60.7, 72.8 and 79.4% at 17, 32 and 46% of the experts), and at 8 rows 5.1 more to 0.6 fewer.
-  Its GPU check (`tiercheck --device`, `storebench --device`) is not run yet.
+  Its GPU check (`tiercheck --device-plan`, `storebench --device-plan`) is not run yet.
 - **The slot policy and the hit-rate model at many rows**, checked on the Nemotron 3 Super decode traces (20 generations, 1 to 20
   rows side by side): a call's experts are asked for in the order of their pairs, fewest first (`by_rows`), so the busiest stay in
   places across waves (1 to 7 points more pairs found at 16 and 20 rows, never fewer); the planner prices a step's misses as its
