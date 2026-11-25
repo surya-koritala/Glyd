@@ -2019,6 +2019,8 @@ impl ModelStep for Dyn {
             // (a slot being copied back from the host: the copy done first)
             self.swap_settle(p as usize)?;
             self.empty(p as usize)?;
+            // (a check's trace of rows' choices: the sequence's rows forgotten with it)
+            self.trace_forget(p as usize);
             // (what this step's growths promised it of the 12-bit pools goes with it)
             self.kv12_unpromise(p as usize);
             if let Some(pg) = &mut self.paged {
@@ -2205,6 +2207,8 @@ impl ModelStep for Dyn {
             self.set_seq_n(t, to_n);
             self.dev.sync()?;
             self.upload_tables(t)?;
+            // (a check's trace of rows' choices: the start's rows are `from`'s)
+            self.trace_share(f, t, to_n);
         }
         Ok(to_n)
     }

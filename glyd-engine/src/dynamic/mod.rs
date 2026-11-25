@@ -1533,6 +1533,22 @@ impl Dyn {
         self.row_routes.borrow().as_ref().and_then(|m| m.get(&(slot, pos)).cloned())
     }
 
+    /// `trace_row_routes` told that the sequence in `slot` is gone (its slot released): its rows' choices are forgotten, so that a sequence that takes the slot
+    /// next is not judged by them.
+    pub(super) fn trace_forget(&self, slot: usize) {
+        if let Some(m) = self.row_routes.borrow_mut().as_mut() {
+            m.retain(|k, _| k.0 != slot);
+        }
+    }
+
+    /// `trace_row_routes` told that the sequence in `to` now begins with the first `upto` tokens of `from`'s (a start shared): those rows' choices are `from`'s.
+    pub(super) fn trace_share(&self, from: usize, to: usize, upto: usize) {
+        if let Some(m) = self.row_routes.borrow_mut().as_mut() {
+            let shared: Vec<((usize, usize), Vec<RowRoute>)> = (0..upto).filter_map(|p| m.get(&(from, p)).map(|v| ((to, p), v.clone()))).collect();
+            m.extend(shared);
+        }
+    }
+
     /// The sequence (slot) and place of each of the `n` rows an operation runs on: an operation on one sequence's rows in a pass over several, that sequence's;
     /// else by the pass's parts where it is over several sequences; else the selected sequence's from the tokens it held before the pass.
     fn row_tags(&self, n: usize) -> Vec<(usize, usize)> {
