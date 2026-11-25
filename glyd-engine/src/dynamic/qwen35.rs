@@ -218,7 +218,7 @@ pub fn describe(c: &crate::qwen35::Config35, st: &Stage) -> Result<ModelDesc> {
         mats,
         small,
         forms: Vec::new(),
-        ropes: vec![Rope { theta: c.rope_theta, dim: c.rotary_dim, pairs: c.rotary_dim / 2 }],
+        ropes: vec![Rope { theta: c.rope_theta, dim: c.rotary_dim, pairs: c.rotary_dim / 2, trig64: false }],
         rings,
         // (a later stage never runs the first operation)
         first: first.unwrap_or(Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, weight: NormW::PlusOne, eps: c.eps }),

@@ -16,7 +16,10 @@ pub mod kv12;
 mod kvpages;
 #[cfg(feature = "dev")]
 pub use kvpages::check as kvpages_check;
+#[cfg(feature = "dev")]
+pub(crate) use kvpages::room_of as kv12_room;
 pub mod lower;
+pub mod lower_comp;
 pub mod mla;
 pub mod muse;
 pub mod nemotron;
@@ -38,10 +41,11 @@ pub mod tp_cache;
 
 use crate::dev::{copy_d2d_async, copy_d2h_async, copy_h2d_async, Buf, Dev, Ev, Graph, Pinned};
 use crate::ffi::{err, Error, Lib, Result};
-use crate::gemma4::{pf_kib, rotary, G4Pf, KernG4, EMBED_GROUPS};
+use crate::gemma4::{rotary, EMBED_GROUPS};
 use crate::gpu_ops::{Gemm, GpuOps};
 use crate::kern::{embed_plan, TopGpu};
 use crate::kern::{norm_threads, Kern};
+use crate::kern::{pf_kib, G4Pf, KernG4};
 use crate::kern35::{Kern35, Mat};
 use crate::kern_nh::{KernNh, MoeBlock, SsdWs};
 use crate::launch;
@@ -50,7 +54,7 @@ use crate::sched::Sample;
 use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload_packed, Item, Layout, PackBuf};
 pub use attn::AttnOp;
 use glyd_gpu::safetensors::Checkpoint;
-pub use mla::{IdxKeys, IdxPick, IdxScore, KeyNorm, MlaIn, MlaIndexer, MlaOp};
+pub use mla::{Cand, IdxKeys, IdxPick, IdxScore, KeyNorm, MlaIn, MlaIndexer, MlaOp};
 #[cfg(feature = "dev")]
 pub(crate) use rows::EXACT_ROWS;
 use std::path::Path;
@@ -252,10 +256,12 @@ pub enum Op {
         y: Slot,
         block: usize,
     },
-    /// The compressed attention's (`runtime::kinds::Comp`; src/dynamic/comp.rs, kernels/dsv4.cu): its queries Qo (`heads` of 512), each normed in bf16 arithmetic, the rotary of table `rope`.
+    /// The compressed attention's (`runtime::kinds::Comp`; src/dynamic/comp.rs, kernels/dsv4.cu): its queries Qo (`heads` of 512), each normed in bf16 arithmetic where `norm`
+    /// (`Comp::q_head_norm`), the rotary of table `rope`.
     CompQ {
         rope: usize,
         heads: usize,
+        norm: bool,
     },
     /// Its key-value row Kv (keys = values): normed by `norm`, the rotary of `rope`, its first 448 channels to E4M3; into ring `ring` (the window).
     CompKv {
@@ -265,17 +271,33 @@ pub enum Op {
     },
     /// Compressed keys and values: a compressor of H, its two products by `w` (small: [2 W, hidden] bf16, kv's rows then the gate's) in fp32 into Cp, the pooling of every `ratio` rows with `ape` (small,
     /// fp32) and its state (states `state` and `state` + 1: the kv rows and the scores), each completed window's entry normed by `norm`, the rotary of `rope`, quantized (`indexer`: rotated, E2M1; else
-    /// E4M3) into ring `cache` (`Ring::entries`: an entry a row).
+    /// E4M3) into ring `cache` (`Ring::entries`: an entry a row); where `raw`, each entry as normed before its rotation too (exact in bf16) into ring `raw` (`Ring::entries`
+    /// of the same ratio: the cache's group, one block table): the indexer's keys of a shared compressed attention are made of these (`Op::IdxKeys`). `overlap`: windows of
+    /// 2 `ratio` rows, the previous window's first half of the channels (`Comp::overlap`).
     Compress {
         w: usize,
         ape: usize,
         norm: usize,
         d: usize,
         ratio: usize,
+        overlap: bool,
         rope: usize,
         cache: usize,
         state: usize,
         indexer: bool,
+        raw: Option<usize>,
+    },
+    /// The indexer's keys of a shared compressed attention's entries (`CompShare`: a kv source with the indexer's key product): each entry the call completes, of state
+    /// ring `raw` (`Op::Compress`'s, normed, before its rotation), by the key product `w` (small, bf16 [128, 512]), normed by `norm` (small [128]), rotated by table `rope`
+    /// at its window's first position, rounded as the indexer's entries (E2M1 where the release's quantizations are simulated) into ring `keys` (`Ring::entries` of 128;
+    /// both rings of the entries' group).
+    IdxKeys {
+        w: usize,
+        norm: usize,
+        rope: usize,
+        ratio: usize,
+        raw: usize,
+        keys: usize,
     },
     /// The indexer's queries Iq (`heads` of 128): the rotary of `rope`, the rotation, E2M1.
     IdxQ {
@@ -302,10 +324,12 @@ pub enum Op {
     NgramAdd(ngram::NgramAdd),
     /// The attention of Qo over the window (ring `ring`) and the compressed entries (ring `cache`: ratio 4, the indexer's picks; another, every complete entry) with the sink (small, fp32), the
     /// rotary of `rope` taken off its output; into Att in the grouped low rank's order (`hpg` heads a group).
+    /// `picked`: the entries the latest indexer's pick chose (its picks' buffer: the layer's own, or the index source's it shares), else every complete entry.
     CompAttn {
         ring: usize,
         cache: Option<usize>,
         ratio: usize,
+        picked: bool,
         sink: usize,
         rope: usize,
         heads: usize,
@@ -503,6 +527,8 @@ pub struct V4Dims {
     pub sim: bool,
     /// the attention output's low-rank groups
     pub o_groups: usize,
+    /// the smallest ratio of a layer with an indexer (its entries a chunk makes and a query scores at most; 0: none)
+    pub idx_ratio: usize,
 }
 
 /// cos and sin [positions, pairs] of pairs i < `pairs` of a head of `dim`: inv_freq_i = theta^(-2i / dim).
@@ -511,6 +537,8 @@ pub struct Rope {
     pub theta: f64,
     pub dim: usize,
     pub pairs: usize,
+    /// Each angle (fp32) through f64 trig, rounded to fp32 then bf16 (transformers' cos and sin in the activations' type, Muse Spark's); else fp32 trig.
+    pub trig64: bool,
 }
 
 /// A layer's keys and values, `nk` heads of `d`: a ring of the window and a chunk where `window` > 0, else the whole context. `values` false: keys alone, in kc
@@ -679,7 +707,8 @@ impl Op {
             Op::Mla(ref a) => std::iter::once(a.ring).chain(a.indexer.as_ref().map(|_| a.ring + 1)).collect(),
             Op::CompKv { ring, .. } => vec![ring],
             Op::CompAttn { ring, cache, .. } => std::iter::once(ring).chain(cache).collect(),
-            Op::Compress { cache, .. } => vec![cache],
+            Op::Compress { cache, raw, .. } => std::iter::once(cache).chain(raw).collect(),
+            Op::IdxKeys { raw, keys, .. } => vec![raw, keys],
             Op::IdxPick(IdxPick { keys: IdxKeys::Entries(r) | IdxKeys::Pools(r), .. }) => vec![r],
             _ => Vec::new(),
         }
@@ -691,7 +720,7 @@ impl Op {
             Op::Compress { state, .. } => vec![state, state + 1],
             Op::KdaConv { state, .. } | Op::KdaDelta { state, .. } => vec![state],
             Op::NgramRows(x) => vec![x.hist],
-            Op::NgramAdd(x) => vec![x.conv],
+            Op::NgramAdd(x) => x.conv.map(|c| c.state).into_iter().collect(),
             _ => Vec::new(),
         }
     }
@@ -808,6 +837,20 @@ fn read_f32(d: &ModelDesc) -> Vec<usize> {
 /// holds it): an fp32 one rounded to bf16, kept four bytes wide; a bf16 one widened.
 fn read_f32_as_bf16(d: &ModelDesc) -> Vec<usize> {
     d.layers.iter().flatten().filter_map(|op| if let Op::GatedNorm { w, sigmoid: false, .. } = op { Some(*w) } else { None }).collect()
+}
+
+/// cos and sin [positions, pairs] as `rotary` makes them, each angle (fp32) through f64 trig and rounded to fp32 then bf16 (`Rope::trig64`).
+fn rotary64(theta: f64, dim: usize, pairs: usize, max_pos: usize) -> (Vec<u16>, Vec<u16>) {
+    let inv: Vec<f32> = (0..pairs).map(|i| 1.0f32 / (theta as f32).powf((2 * i) as f32 / dim as f32)).collect();
+    let (mut c, mut s) = (Vec::with_capacity(max_pos * pairs), Vec::with_capacity(max_pos * pairs));
+    for p in 0..max_pos {
+        for &f in &inv {
+            let (s_, c_) = ((p as f32 * f) as f64).sin_cos();
+            c.push(crate::gemma4::bf16_bits(c_ as f32));
+            s.push(crate::gemma4::bf16_bits(s_ as f32));
+        }
+    }
+    (c, s)
 }
 
 /// Small tensor `name` made in form `f` from its checkpoint's bf16 values: bf16 words.
@@ -1020,6 +1063,9 @@ pub struct Dyn {
     pub prof: Option<std::cell::RefCell<Vec<(&'static str, Ev)>>>,
     gmarks: Vec<(&'static str, Ev)>,
     spare: std::cell::RefCell<Vec<Ev>>,
+    /// A development build's GLYD_OP_DUMP=PATH: after each operation of a pass, every slot's rows of the pass hashed into PATH.N (N this engine's number in the
+    /// process), a line each: the pass, the layer, the operation, its kind, the slot, the hash; two engines' files compared show the first operation they differ at.
+    dump: Option<std::cell::RefCell<(std::fs::File, usize)>>,
     /// Whether the last pass was the step graph's replay (its events are then `gmarks`), whether the step graph is being captured, and the host's time to queue
     /// the last eager pass (ms).
     replayed: std::cell::Cell<bool>,
@@ -1032,7 +1078,7 @@ pub struct Dyn {
     /// DeepSeek-V4's buffers, where the model is one.
     v4: Option<deepseek_v4::V4Run>,
     /// GLM's kernels and the experts' activation.
-    kglm: crate::kern_glm::KernGlm,
+    kglm: crate::kern::KernGlm,
     kmoe: crate::moe::MoeKern,
     /// The residual rules' kernels, a block's mixing weights of the streams (fp32 [chunk, 24]) and the split mixing projection's partial sums (`residual::part_words`).
     kres: residual::KernRes,
@@ -1296,7 +1342,7 @@ impl Dyn {
             .ropes
             .iter()
             .map(|r| {
-                let (c, s) = rotary(r.theta, r.dim, r.pairs, mp);
+                let (c, s) = if r.trig64 { rotary64(r.theta, r.dim, r.pairs, mp) } else { rotary(r.theta, r.dim, r.pairs, mp) };
                 Ok((upload_bytes(crate::weights::as_bytes(&c))?, upload_bytes(crate::weights::as_bytes(&s))?))
             })
             .collect::<Result<_>>()?;
@@ -1451,7 +1497,7 @@ impl Dyn {
         let ws = Buf::zeroed(need)?;
         let done = Buf::zeroed(4 << 18)?;
         let host = Pinned::new(4096)?;
-        let (kglm, kmoe, hcp) = (crate::kern_glm::KernGlm::load(&dev)?, crate::moe::MoeKern::load(&dev)?, Buf::zeroed(ch * 24 * 4)?);
+        let (kglm, kmoe, hcp) = (crate::kern::KernGlm::load(&dev)?, crate::moe::MoeKern::load(&dev)?, Buf::zeroed(ch * 24 * 4)?);
         let hc_lag = Buf::zeroed(ch * 4 * 4)?;
         // (the split mixing projection's sums: as the model's streams round, one buffer for every block's)
         let round = d.layers.iter().flatten().find_map(|op| if let Op::StreamsPre { round, .. } = *op { Some(round) } else { None });
@@ -1548,6 +1594,15 @@ impl Dyn {
             prof: prof::on().then(Default::default),
             gmarks: Vec::new(),
             spare: Default::default(),
+            dump: match crate::tune!("GLYD_OP_DUMP") {
+                Some(path) => {
+                    static ENGINES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                    let n = ENGINES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let f = std::fs::File::create(format!("{path}.{n}")).map_err(|e| Error(format!("{path}.{n}: {e}")))?;
+                    Some(std::cell::RefCell::new((f, 0)))
+                }
+                None => None,
+            },
             replayed: std::cell::Cell::new(false),
             capturing: std::cell::Cell::new(false),
             queued: std::cell::Cell::new(0.0),
@@ -2057,7 +2112,7 @@ impl Dyn {
             Op::MambaScan { dt_bias, a_log, d, state, cd, row, dt_off, nh, ng } => {
                 let (dtr, st) = (p.slot(Slot::Mix) + self.rows_before(row) + (dt_off * 2) as u64, self.state(state));
                 let (dtb, al, dd) = (p.small[dt_bias].ptr, p.small[a_log].ptr, p.small[d].ptr);
-                let (core, xc) = (p.slot(Slot::Core) + self.rows_before(nh * crate::kern_nh::NH_P), p.slot(Slot::Xc) + self.rows_before(cd));
+                let (core, xc) = (p.slot(Slot::Core) + self.rows_before(nh * crate::kern::NH_P), p.slot(Slot::Xc) + self.rows_before(cd));
                 match &self.ssd {
                     Some(ws) if self.chunked && n > 1 => {
                         self.knh.ssd(s, ws, xc, cd as i32, dtr, row as i32, dtb, al, dd, st, core, n as i32, nh as i32, ng as i32, 0.0)?
@@ -2207,6 +2262,7 @@ impl Dyn {
             | Op::CompKv { .. }
             | Op::Compress { .. }
             | Op::IdxQ { .. }
+            | Op::IdxKeys { .. }
             | Op::IdxPick(_)
             | Op::CompAttn { .. }
             | Op::OGroupLora { .. }
@@ -2279,6 +2335,27 @@ impl Dyn {
 
     /// Part `p`'s layers on the n rows (positions `pos`), then on the last `head` rows its post projection (a draft model's, into Hid), its LM head, the
     /// soft-cap and the argmax (its logits, tok, val a row each).
+    /// GLYD_OP_DUMP's line of each slot after operation `i` of layer `l` (`usize::MAX`: the first operation) on the pass's `n` rows: its bytes hashed (FNV-1a).
+    fn dump_op(&self, p: &Part, l: usize, i: usize, op: &Op, n: usize) -> Result<()> {
+        let Some(d) = &self.dump else { return Ok(()) };
+        use std::io::Write;
+        self.dev.sync()?;
+        let mut d = d.borrow_mut();
+        let pass = d.1;
+        let name = rows::op_name(op);
+        for (k, b) in p.slots.iter().enumerate() {
+            let w = (n * p.d.widths[k]).min(b.bytes / 2);
+            if w == 0 {
+                continue;
+            }
+            let mut v = vec![0u16; w];
+            b.read(0, &mut v)?;
+            let h = v.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &x| (h ^ x as u64).wrapping_mul(0x0100_0000_01b3));
+            writeln!(d.0, "{pass} {} {i} {name} {k} {h:016x}", if l == usize::MAX { -1 } else { l as i64 }).map_err(|e| Error(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     unsafe fn forward(&self, p: &Part, n: usize, pos: (u64, u64), head: usize) -> Result<()> {
         let (s, queue) = (self.dev.stream, std::time::Instant::now());
         // (a pass of pieces (src/dynamic/pieces.rs): a capture queues nothing but its pieces' operations, captured; a replay launches each piece's graph in its place)
@@ -2296,8 +2373,16 @@ impl Dyn {
             self.pass_prepare(p, n, pos)?;
         }
         let head = if st.last { head } else { 0 };
+        // (GLYD_OP_DUMP: a pass's number; a capture's operations are not run, so not hashed)
+        let dump = self.dump.is_some() && !capture;
+        if let Some(d) = self.dump.as_ref().filter(|_| dump) {
+            d.borrow_mut().1 += 1;
+        }
         if st.first && !self.in_piece(&mut pc, p, 0, 0, &p.d.first, n, pos, head)? {
             self.op(p, 0, 0, &p.d.first, n, pos, head)?;
+            if dump {
+                self.dump_op(p, usize::MAX, 0, &p.d.first, n)?;
+            }
         }
         // (a development build's GLYD_OP_PROBE: after each op, the slots' first rows read back; the first op that leaves a slot not finite named)
         let probe = crate::tune!("GLYD_OP_PROBE").is_some();
@@ -2353,6 +2438,9 @@ impl Dyn {
                     continue;
                 }
                 self.op(p, l, i, op, n, pos, head)?;
+                if dump {
+                    self.dump_op(p, l, i, op, n)?;
+                }
                 if crate::hb_usage::recording() && std::ptr::eq(p, &self.big) {
                     self.record_routes(p, l, op, n)?;
                 }

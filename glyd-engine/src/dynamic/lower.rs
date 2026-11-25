@@ -92,7 +92,7 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
         let sliding = a.window.is_some();
         let slot = if sliding { &mut sliding_rope } else { &mut global_rope };
         let r = *slot.get_or_insert_with(|| {
-            ropes.push(Rope { theta: rope.theta, dim: rope.dim, pairs: rope.freqs });
+            ropes.push(Rope { theta: rope.theta, dim: rope.dim, pairs: rope.freqs, trig64: false });
             ropes.len() - 1
         });
         let (dh, nk, has_v) = (a.head_dim, a.kv_heads, !a.k_eq_v);
@@ -249,7 +249,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
                 return err(format!("{what}: layer {l}'s rope is {r:?}, where the executor's tables are the plain rotary's"));
             }
             Some(r) => {
-                let t = Rope { theta: r.theta, dim: r.dim, pairs: r.freqs };
+                let t = Rope { theta: r.theta, dim: r.dim, pairs: r.freqs, trig64: false };
                 Some(match ropes.iter().position(|x| (x.theta, x.dim, x.pairs) == (t.theta, t.dim, t.pairs)) {
                     Some(i) => i,
                     None => {
@@ -447,10 +447,21 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                 let norms = [name(&mut small, one(roles, "norm_in")?), name(&mut small, one(roles, "norm_key")?), name(&mut small, one(roles, "norm_conv")?)];
                 let taps = name(&mut small, one(roles, "conv")?);
                 let (hist, cv) = (state(&mut states, 8), state(&mut states, 9 * 4 * d_ * 2));
+                let conv = super::ngram::NgramConv { norm: norms[2], taps, state: cv, taps_n: conv, dilation };
                 layer.extend([
-                    Op::NgramRows(super::ngram::NgramRows { table, hash, hist, per: heads, row: dim / (2 * heads), eos: end }),
+                    Op::NgramRows(super::ngram::NgramRows {
+                        table,
+                        hash,
+                        hist,
+                        per: heads,
+                        row: dim / (2 * heads),
+                        eos: end,
+                        order,
+                        map: None,
+                        segments: true,
+                    }),
                     Op::Linear { w: kv, x: Slot::In, y: Slot::Gu, name: "n-gram embedding: key and value product" },
-                    Op::NgramAdd(super::ngram::NgramAdd { norms, taps, conv: cv }),
+                    Op::NgramAdd(super::ngram::NgramAdd { q: norms[0], k: norms[1], conv: Some(conv), plus_one: true, eps: n.norm.eps }),
                 ]);
                 ple_w = ple_w.max(dim);
             }
@@ -498,7 +509,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                                 "{what}: a rotary of {r:?} and an indexer of {ix:?}: the kernels take the plain rotary, index heads of 128 and pools of 4"
                             ));
                         }
-                        let rt = Rope { theta: r.theta, dim: r.dim, pairs: r.freqs };
+                        let rt = Rope { theta: r.theta, dim: r.dim, pairs: r.freqs, trig64: false };
                         let table = match ropes.iter().position(|x| (x.theta, x.dim, x.pairs) == (rt.theta, rt.dim, rt.pairs)) {
                             Some(i) => i,
                             None => {
@@ -530,6 +541,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                             score: super::IdxScore::F32 { dim: 128, scale: (128f32).powf(-0.5) },
                             keys: super::IdxKeys::Pools(pools),
                             weighted: false,
+                            cand: None,
                         };
                         layer.extend([
                             Op::Linear { w: qkv, x: Slot::H, y: Slot::Mix, name: "attention: qkv product" },
@@ -810,7 +822,7 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
         mats,
         small,
         forms: Vec::new(),
-        ropes: vec![Rope { theta: rope.theta, dim: rotary, pairs: rotary / 2 }],
+        ropes: vec![Rope { theta: rope.theta, dim: rotary, pairs: rotary / 2, trig64: false }],
         rings,
         first: first.unwrap_or(Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, weight: NormW::PlusOne, eps }),
         layers: ops_all,
@@ -995,10 +1007,48 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
     let row = (2 * nq + 2 * nk) * hd;
     let ones = 0;
     let (mut n_small, mut n_mats, mut n_moe, mut rings, mut ops_all) = (1, 0, 0, Vec::new(), Vec::new());
+    // (the tensors, named in the order the operations index them; the small tensors made from their values: the ones, the centered norms' 1 + w, the gates' factors)
+    use super::SmallForm::{GateAlpha, GateBeta, Ones, PlusOne};
+    // (sized by the kinds' widths: the describer gives no shapes for this family's tensors)
+    let it = |members: Vec<String>, rows: usize, cols: usize| Item { members, rows, cols };
+    let one = |roles: &[(String, Source)], r: &str| -> Result<String> {
+        match role(roles, r) {
+            Some(Source::Tensor(n)) => Ok(n.clone()),
+            other => err(format!("Muse Spark: the role {r} is {other:?}, where one tensor is")),
+        }
+    };
+    let (mut mats, mut small, mut forms) = (Vec::new(), vec![String::new()], vec![(0, Ones(m.hidden.max(lat)))]);
     for (l, a) in atts.iter().enumerate() {
         if !(st.layers.0..st.layers.1).contains(&l) {
             ops_all.push(Vec::new());
             continue;
+        }
+        let (ar, fr) = (&d.blocks[2 * l], &d.blocks[2 * l + 1]);
+        mats.push(it(["q", "k", "v", "g"].iter().map(|r| one(ar, r)).collect::<Result<_>>()?, row, m.hidden));
+        mats.push(it(vec![one(ar, "o")?], m.hidden, nq * hd));
+        mats.push(it(vec![one(fr, "latent_down")?], lat, m.hidden));
+        mats.push(it(vec![one(fr, "latent_up")?], m.hidden, lat));
+        let temp = |b: &crate::runtime::kinds::Block| match b.residual {
+            crate::runtime::kinds::Residual::Gated(g) => Ok(g.temperature),
+            ref r => err(format!("Muse Spark: layer {l}'s residual is {r:?}, where a gated one is")),
+        };
+        let (ta, tf) = (temp(&m.blocks[2 * l])?, temp(&m.blocks[2 * l + 1])?);
+        for (n, f) in [
+            (one(ar, "norm_in")?, PlusOne),
+            (one(ar, "res_gate")?, GateAlpha(ta)),
+            (one(ar, "res_gate")?, GateBeta(ta)),
+            (one(fr, "norm_in")?, PlusOne),
+            (one(fr, "latent_norm_in")?, PlusOne),
+            (one(fr, "expert_norm")?, PlusOne),
+            (one(fr, "norm_out")?, PlusOne),
+            (one(fr, "res_gate")?, GateAlpha(tf)),
+            (one(fr, "res_gate")?, GateBeta(tf)),
+        ] {
+            forms.push((small.len(), f));
+            small.push(n);
+        }
+        if st.last && l + 1 == layers {
+            small.push(d.final_norm.clone());
         }
         let s0 = n_small;
         n_small += 9;
@@ -1033,6 +1083,8 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
         }
         ops_all.push(ops);
     }
+    mats.push(it(vec![d.embed.clone()], m.vocab, m.hidden));
+    mats.push(it(vec![d.head.clone().ok_or_else(|| Error("Muse Spark: no head of its own".into()))?], m.vocab, m.hidden));
     let d_ = m.hidden;
     let mut widths = [0usize; SLOTS];
     for (s, w) in [
@@ -1055,10 +1107,10 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
         eps,
         max_pos,
         widths,
-        mats: Vec::new(),
-        small: Vec::new(),
-        forms: Vec::new(),
-        ropes: Vec::new(),
+        mats,
+        small,
+        forms,
+        ropes: vec![Rope { theta: atts.iter().find_map(|a| a.rope.as_ref()).map_or(0.0, |r| r.theta), dim: hd, pairs: hd / 2, trig64: true }],
         rings,
         first: Op::RmsNorm { x: Slot::X, w: ones, y: Slot::X, weight: NormW::Plain, eps },
         layers: ops_all,
@@ -1083,7 +1135,7 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
 pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
     use super::glm::{dense_ops, glm_desc, kda_ops, per_layer};
     use crate::glm::GlmKind;
-    use crate::kern_glm::GM_D;
+    use crate::kern::GM_D;
     use crate::runtime::kinds::{Decay, Residual};
     let m = &d.desc;
     if m.blocks.len() % 2 != 0 || m.embed.streams != 4 {
@@ -1242,78 +1294,10 @@ pub fn kimi(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, w32
     Ok(kimi_desc(&KimiDims { h: m.hidden, qd, nh, kd, bound, inter, situ, eps, moe_rows, mla }, &ls, &starts, st, early, m.vocab, max_pos, eos))
 }
 
-/// DeepSeek-V4: the compressed attention (the window, and on a compressing layer its compressor's entries; on a ratio-4 layer the overlapping windows and the indexer's
-/// choice of them), the queries' and the output's low ranks in groups, then the experts (their block's; hash-routed in the first layers), around each block the four
-/// streams' mix; the weighted hyper-head. `vo` what the level and the switches make of its products and caches. The matrices, small tensors and blocks are
-/// dynamic/deepseek_v4.rs's loader's (`dynamic::deepseek_v4::describe` indexes them in its order).
+/// A model of compressed attention layers (DeepSeek-V4's and V4.1's forms of the kind; `lower_comp::lower`, which gives its loader's plan too). `vo` what the level and
+/// the switches make of its products and caches.
 pub fn deepseek_v4(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, vo: &super::deepseek_v4::V4Opts) -> Result<ModelDesc> {
-    use super::deepseek_v4::{v4_desc, V4Shape};
-    use crate::runtime::kinds::Residual;
-    let m = &d.desc;
-    if m.blocks.len() % 2 != 0 {
-        return err(format!("DeepSeek-V4: {} blocks, where each layer is an attention block and an experts block", m.blocks.len()));
-    }
-    let layers = m.blocks.len() / 2;
-    let (mut ratios, mut hash) = (Vec::with_capacity(layers), Vec::with_capacity(layers));
-    let (mut first, mut idx, mut hc) = (None, (0, 0, 0), (0.0, 0, 0, crate::runtime::kinds::Rounding::Once));
-    for l in 0..layers {
-        let (ab, eb) = (&m.blocks[2 * l], &m.blocks[2 * l + 1]);
-        let c = match &ab.body {
-            Body::Mixer(Mixer::Compressed(c)) => c,
-            b => return err(format!("DeepSeek-V4: layer {l}'s mixer is {b:?}")),
-        };
-        if !c.ape || !c.q_head_norm || c.share.is_some() {
-            return err(format!(
-                "DeepSeek-V4: layer {l} is V4.1's compressed sparse attention (no window bias, parts shared across layers): no operation of this executor yet"
-            ));
-        }
-        if c.indexer.is_some() != (c.ratio == 4) {
-            return err(format!(
-                "DeepSeek-V4: layer {l} compresses by {} with{} an indexer: this engine runs the indexer on the layers of ratio 4 alone",
-                c.ratio,
-                if c.indexer.is_some() { "" } else { "out" }
-            ));
-        }
-        if let Some(x) = &c.indexer {
-            idx = (x.heads, x.head_dim, x.top_k);
-        }
-        let e = match &eb.body {
-            Body::Ffn(Ffn::Moe(e)) => e,
-            b => return err(format!("DeepSeek-V4: layer {l}'s feed-forward is {b:?}")),
-        };
-        for b in [ab, eb] {
-            match &b.residual {
-                Residual::Streams(s) if !s.lagged => hc = (s.eps, s.sinkhorn_iters, s.streams, s.rounding),
-                r => return err(format!("DeepSeek-V4: layer {l}'s residual is {r:?}, not mHC's streams (lagged mHC has no operation yet)")),
-            }
-        }
-        ratios.push(c.ratio);
-        hash.push(e.router.hash);
-        first = first.or(Some(c));
-    }
-    let c = first.ok_or_else(|| Error("DeepSeek-V4: no layers".into()))?;
-    let s = V4Shape {
-        d: m.hidden,
-        vocab: m.vocab,
-        eps: m.blocks[0].norm_in.eps,
-        max_pos,
-        eos,
-        nh: c.heads,
-        hd: c.head_dim,
-        rope_dim: c.rope.dim,
-        q_lora: c.q_lora,
-        ol: c.o_lora,
-        og: c.o_groups,
-        wo_cols: c.heads * c.head_dim / c.o_groups.max(1),
-        idx,
-        window: c.window,
-        ratios,
-        hash,
-        streams: hc.2,
-        hc: (hc.0, hc.1),
-        round: hc.3,
-    };
-    v4_desc(&s, st, vo)
+    super::lower_comp::lower(d, eos, max_pos, st, vo).map(|x| x.0)
 }
 
 #[cfg(test)]
@@ -1619,93 +1603,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// DeepSeek-V4 lowered from its released config (the header fixture's), whole and as a split's stages, at the lossless level and another, the output groups
-    /// stacked and not, every FP8 matrix held FP8 and the default's, is the executor's own description of it.
-    #[test]
-    fn deepseek_v4_lowered_is_the_executors_own_description() {
-        use super::super::deepseek_v4::V4Opts;
-        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers/DeepSeek-V4-Flash-0731.json");
-        let h: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
-        let text = h["config"].as_str().unwrap();
-        let c = crate::deepseek_v4::ConfigV4::parse(text, "DeepSeek-V4-Flash", None).unwrap_or_else(|e| panic!("{}", e.msg));
-        let kinds = crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap();
-        let half = c.layers / 2;
-        let base = V4Opts { exact8: true, f8_min: 16 << 20, ostack: true, sim: true, ctx: 4096 };
-        for vo in [base, V4Opts { exact8: false, ..base }, V4Opts { ostack: false, ..base }, V4Opts { f8_min: 0, sim: false, ..base }] {
-            for st in [
-                super::super::Stage::whole(c.layers),
-                super::super::Stage { layers: (0, half), first: true, last: false },
-                super::super::Stage { layers: (half, c.layers), first: false, last: true },
-            ] {
-                let own = super::super::deepseek_v4::describe(&c, &st, &vo).unwrap();
-                let lowered = deepseek_v4(&kinds, c.eos.clone(), c.max_pos, &st, &vo).unwrap_or_else(|e| panic!("{}", e.msg));
-                let (a, b) = (format!("{own:#?}"), format!("{lowered:#?}"));
-                if a != b {
-                    let first = a.lines().zip(b.lines()).enumerate().find(|(_, (x, y))| x != y);
-                    panic!("{vo:?}: the lowered description differs at line {first:?}");
-                }
-            }
-        }
-    }
-
-    /// The streams' operations round as the kind says (`StreamsP::rounding`): DeepSeek-V4 described with transformers' bf16 rounding lowers to other operations
-    /// than its loader's (the release's), and is not loaded; every stream operation of the release's description carries `Once`.
+    /// The streams' operations round as the kind says (`StreamsP::rounding`): DeepSeek-V4-Flash's release (`Once`) on every stream operation, and the same
+    /// description with transformers' bf16 rounding (`Twice`) on every one.
     #[test]
     fn the_streams_round_as_their_kind() {
         use super::super::deepseek_v4::V4Opts;
         use crate::runtime::kinds::{Residual, Rounding};
         let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers/DeepSeek-V4-Flash-0731.json");
         let h: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
-        let text = h["config"].as_str().unwrap();
-        let c = crate::deepseek_v4::ConfigV4::parse(text, "DeepSeek-V4-Flash", None).unwrap_or_else(|e| panic!("{}", e.msg));
-        let mut kinds = crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap();
-        let (vo, st) = (V4Opts { exact8: true, f8_min: 16 << 20, ostack: true, sim: true, ctx: 4096 }, super::super::Stage::whole(c.layers));
-        let own = super::super::deepseek_v4::describe(&c, &st, &vo).unwrap();
-        let rounds: Vec<Rounding> = own
-            .layers
-            .iter()
-            .flatten()
-            .filter_map(|op| match *op {
-                Op::StreamsPre { round, .. } | Op::StreamsPost { round, .. } | Op::StreamsHead { round, .. } => Some(round),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(rounds.len(), 4 * c.layers + 1);
-        assert!(rounds.iter().all(|&r| r == Rounding::Once));
+        let mut kinds = crate::runtime::describe::describe(&serde_json::from_str(h["config"].as_str().unwrap()).unwrap()).unwrap();
+        let (vo, st) = (V4Opts { exact8: true, f8_min: 16 << 20, ostack: true, sim: true, ctx: 4096 }, super::super::Stage::whole(43));
+        let rounds = |m: &ModelDesc| -> Vec<Rounding> {
+            m.layers
+                .iter()
+                .flatten()
+                .filter_map(|op| match *op {
+                    Op::StreamsPre { round, .. } | Op::StreamsPost { round, .. } | Op::StreamsHead { round, .. } => Some(round),
+                    _ => None,
+                })
+                .collect()
+        };
+        let once = rounds(&deepseek_v4(&kinds, vec![1], 1 << 20, &st, &vo).unwrap());
+        assert!(once.len() == 4 * 43 + 1 && once.iter().all(|&r| r == Rounding::Once));
         for b in &mut kinds.desc.blocks {
             if let Residual::Streams(s) = &mut b.residual {
                 s.rounding = Rounding::Twice;
             }
         }
-        let lowered = deepseek_v4(&kinds, c.eos.clone(), c.max_pos, &st, &vo).unwrap();
-        let e = agree(lowered, &own, "the test's config.json").unwrap_err().msg;
-        assert!(e.contains("describe different models") && e.contains("Twice"), "{e}");
-    }
-
-    /// The random DeepSeek-V4 the logits and GPU checks run, lowered whole and as a split's stages, is the executor's own description of it.
-    #[cfg(feature = "dev")]
-    #[test]
-    fn the_random_deepseek_v4_lowers_as_its_own_description() {
-        use super::super::deepseek_v4::V4Opts;
-        let dir = std::env::temp_dir().join(format!("glyd-lower-v4-{}", std::process::id()));
-        crate::dsv4_ref::random(&dir, None).unwrap();
-        let c = crate::deepseek_v4::ConfigV4::load(&dir).unwrap();
-        let half = c.layers / 2;
-        let base = V4Opts { exact8: true, f8_min: 16 << 20, ostack: true, sim: true, ctx: 512 };
-        for vo in [base, V4Opts { f8_min: 0, ..base }] {
-            for st in [
-                super::super::Stage::whole(c.layers),
-                super::super::Stage { layers: (0, half), first: true, last: false },
-                super::super::Stage { layers: (half, c.layers), first: false, last: true },
-            ] {
-                let (own, lowered) = (
-                    super::super::deepseek_v4::describe(&c, &st, &vo).unwrap(),
-                    super::super::deepseek_v4::lowered(&dir, &c, &st, &vo).unwrap_or_else(|e| panic!("{}", e.msg)),
-                );
-                assert_eq!(format!("{own:#?}"), format!("{lowered:#?}"));
-            }
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+        let twice = rounds(&deepseek_v4(&kinds, vec![1], 1 << 20, &st, &vo).unwrap());
+        assert!(twice.len() == 4 * 43 + 1 && twice.iter().all(|&r| r == Rounding::Twice));
     }
 
     /// A Llama-style config (model_type, the attention's settings) of `layers` layers of hidden 256, 4 query heads over 2 of 64, an MLP of 512, a vocabulary of 1,024:
@@ -1728,7 +1654,7 @@ mod tests {
         use super::super::attn::{QkNorm, RopeAt};
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let manifest: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/qwen3_tiny_manifest.json")).unwrap()).unwrap();
+            serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/dense_tiny_manifest.json")).unwrap()).unwrap();
         let tiny_text = manifest["config"].as_str().unwrap().to_string();
         let tiny_shapes: std::collections::HashMap<String, Vec<usize>> = manifest["tensors"]
             .as_array()
@@ -1753,7 +1679,7 @@ mod tests {
             let eps = cfg["rms_norm_eps"].as_f64().unwrap() as f32;
             assert_eq!((d.family, d.hidden, d.vocab, d.eps, d.layers.len()), (super::super::dense::FAMILY, hid, n("vocab_size"), eps, layers), "{what}");
             let theta = cfg["rope_theta"].as_f64().unwrap();
-            assert_eq!(format!("{:?}", d.ropes), format!("{:?}", [Rope { theta, dim: hd, pairs: hd / 2 }]), "{what}");
+            assert_eq!(format!("{:?}", d.ropes), format!("{:?}", [Rope { theta, dim: hd, pairs: hd / 2, trig64: false }]), "{what}");
             // (the small tensors: each layer's two norms, its q and k norms where it has them; then the final norm)
             let per = if qk { 4 } else { 2 };
             assert_eq!(d.small.len(), per * layers + 1, "{what}");
@@ -1890,9 +1816,10 @@ mod tests {
         v.push(glm::describe(&c, &Stage::whole(c.layers)).unwrap());
         let d = dir("v4");
         crate::dsv4_ref::random(&d, None).unwrap();
-        let c = crate::deepseek_v4::ConfigV4::load(&d).unwrap();
+        let (layers, eos, max_pos) = deepseek_v4::ends(&d).unwrap();
         let vo = deepseek_v4::V4Opts { exact8: true, f8_min: 16 << 20, ostack: true, sim: true, ctx: 512 };
-        v.push(deepseek_v4::describe(&c, &Stage::whole(c.layers), &vo).unwrap());
+        let (kinds, _) = crate::runtime::describe::describe_dir(&d).unwrap();
+        v.push(super::super::lower_comp::lower(&kinds, eos, max_pos, &Stage::whole(layers), &vo).unwrap().0);
         let d = dir("qx");
         crate::logits::qwen4x_random(&d).unwrap();
         v.push(qwen4x::lowered(&d, 1024).unwrap_or_else(|e| panic!("{}", e.msg)));
@@ -2077,14 +2004,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The descriptions the executor's loader reads (`Dyn::new_with`: Gemma 4, its draft, the Llama-style dense models, Qwen3.5, Qwen3.8-Flash-Next) name every matrix
+    /// The descriptions the executor's loader can read (`Dyn::new_with`: Gemma 4, its draft, the Llama-style dense models, Qwen3.5, Muse Spark, Qwen3.8-Flash-Next) name every matrix
     /// their operations use; the others name none yet, their families' loaders filling them by index, and the executor's loader refuses them in words.
     #[cfg(feature = "dev")]
     #[test]
     fn the_executors_loader_reads_only_descriptions_that_name_their_tensors() {
         use super::super::{dense::FAMILY as DENSE, qwen4x::FAMILY as QX, unnamed};
         for d in every_family("named") {
-            let named = matches!(d.family, "Gemma 4" | "Gemma 4 draft" | "Qwen3.5" | DENSE | QX);
+            let named = matches!(d.family, "Gemma 4" | "Gemma 4 draft" | "Qwen3.5" | "Muse Spark" | DENSE | QX);
             assert_eq!(unnamed(&d).is_none(), named, "{}: {:?} of {} matrices named", d.family, unnamed(&d), d.mats.len());
         }
     }

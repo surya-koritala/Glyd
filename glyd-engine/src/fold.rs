@@ -1610,6 +1610,7 @@ pub unsafe fn moe(
     y: u64,
     (ws, ws_bytes, done): (u64, usize, u64),
     cs: Stream,
+    (whole_o, whole_e): (i64, i64),
 ) -> Result<bool> {
     let Ok(u) = unpacker(w) else { return Ok(false) };
     let Some(name) = moe_name(u) else { return Ok(false) };
@@ -1623,7 +1624,12 @@ pub unsafe fn moe(
     let units = if act != 0 { o / 128 } else { o / 64 };
     let hits = experts.min(p);
     let (hbm, h100, a100) = moe_gpu()?;
-    let splits = if p > 0 { moe_splits(units * hits, kk, hbm)? } else { 1 };
+    // (a part of a layer, `whole`: cut as the whole layer's call is, mma_moe_run's wO and wE)
+    if whole_o < 0 || (whole_o > 0 && (whole_o < o || whole_o % 64 != 0)) || whole_e < 0 || (whole_e > 0 && whole_e < experts) {
+        return Ok(false);
+    }
+    let (so, se) = (if whole_o > 0 { whole_o } else { o }, if whole_e > 0 { whole_e } else { experts });
+    let splits = if p > 0 { moe_splits(if act != 0 { so / 128 } else { so / 64 } * se.min(p), kk, hbm)? } else { 1 };
     if (need > 0 && (ws == 0 || ws_bytes < need)) || (weights != 0 && ids == 0) || (splits > 1 && done == 0) {
         return Ok(false);
     }
@@ -1649,7 +1655,7 @@ pub unsafe fn moe(
         48
     };
     let big = if act != 0 { tuned(crate::tune!("GLYD_GPU_MOE_BIG_GU"), big_default) } else { tuned(crate::tune!("GLYD_GPU_MOE_BIG_DN"), big_default) };
-    if p >= big * experts && kk % 64 == 0 && x % 16 == 0 {
+    if p >= big * se && kk % 64 == 0 && x % 16 == 0 {
         return Ok(false);
     }
     let pf = tuned(crate::tune!("GLYD_GPU_PF"), 0).clamp(0, 16);
@@ -2949,9 +2955,9 @@ fn moe_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec
                 let (wp, ip) = if weighted { (wb.ptr, idb.ptr) } else { (0, 0) };
                 // SAFETY: the stack, X [64 2, K], the plan, the weights and ids, a workspace of the library's size, zeroed counters each, Y each; one stream.
                 let (ra, rb) = unsafe {
-                    let ra = lib.library_moe(&pb.pack, e, xb.ptr, t, k, gather, plan.ptr, act, wp, ip, ya.ptr, ws.ptr, ws_bytes, da.ptr, dev.stream);
+                    let ra = lib.library_moe(&pb.pack, e, xb.ptr, t, k, gather, plan.ptr, act, wp, ip, ya.ptr, ws.ptr, ws_bytes, da.ptr, dev.stream, (0, 0));
                     synced(dev, || format!("the library's experts, {what}"))?;
-                    (ra, moe(&pb.pack, None, e, (xb.ptr, t, k, gather), (plan.ptr, act, wp, ip), yb.ptr, (ws.ptr, ws_bytes, db.ptr), dev.stream))
+                    (ra, moe(&pb.pack, None, e, (xb.ptr, t, k, gather), (plan.ptr, act, wp, ip), yb.ptr, (ws.ptr, ws_bytes, db.ptr), dev.stream, (0, 0)))
                 };
                 synced(dev, || format!("the engine's experts, {what}"))?;
                 n += 1;
@@ -3003,9 +3009,10 @@ fn moe_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec
             let stride = places.stride as u64;
             // SAFETY: the places, X, the plan, a workspace of the library's size, zeroed counters each, Y each; one stream.
             let (ra, rb) = unsafe {
-                let ra = lib.library_moe_placed(&pb.pack, stride, e, xb.ptr, t, k, true, plan.ptr, act, 0, 0, ya.ptr, ws.ptr, ws_bytes, da.ptr, dev.stream);
+                let ra =
+                    lib.library_moe_placed(&pb.pack, stride, e, xb.ptr, t, k, true, plan.ptr, act, 0, 0, ya.ptr, ws.ptr, ws_bytes, da.ptr, dev.stream, (0, 0));
                 synced(dev, || format!("the library's expert cache's places, {t} tokens, act {act}"))?;
-                (ra, moe(&pb.pack, Some(stride as i64), e, (xb.ptr, t, k, true), (plan.ptr, act, 0, 0), yb.ptr, (ws.ptr, ws_bytes, db.ptr), dev.stream))
+                (ra, moe(&pb.pack, Some(stride as i64), e, (xb.ptr, t, k, true), (plan.ptr, act, 0, 0), yb.ptr, (ws.ptr, ws_bytes, db.ptr), dev.stream, (0, 0)))
             };
             synced(dev, || format!("the engine's expert cache's places, {t} tokens, act {act}"))?;
             n += 1;

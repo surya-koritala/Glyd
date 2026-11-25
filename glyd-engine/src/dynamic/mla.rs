@@ -30,7 +30,7 @@ use crate::runtime::kinds;
 const SUB_SCORES: usize = 256 << 20;
 const SUB_OLAT: usize = 64 << 20;
 /// Rows at most that the attention of one call cuts its tokens into eight runs for (a decode step, the rows of a verified draft): `kern_glm::HC_FEW`.
-const FEW: u32 = crate::kern_glm::HC_FEW;
+const FEW: u32 = crate::kern::HC_FEW;
 
 /// Where a latent layer's input products are.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -77,6 +77,17 @@ pub struct IdxPick {
     pub keys: IdxKeys,
     /// The heads' scores weighed by the head weights' product (Iw); else summed alone (the mean-pooled indexer's).
     pub weighted: bool,
+    /// A shared compressed attention's candidate blocks (`kinds::CompShare`); None: every visible entry is a candidate.
+    pub cand: Option<Cand>,
+}
+
+/// Candidate blocks (`kinds::CompShare::publish`, `candidates`): the candidate source's pick publishes, for each query, the best `top` blocks of `block` entries (a
+/// block's score its best entry's; the block of the query's newest visible entry kept whatever its score), in order; an index source after it (`Inside`) scores the
+/// entries inside the blocks its query was published alone, the rest out of its top-k.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Cand {
+    Publish { block: usize, top: usize },
+    Inside { block: usize, top: usize },
 }
 
 /// How an indexer norms each token's key (`runtime::kinds::IndexForm::Gated`'s `key`), at its eps: nn.LayerNorm with its bias (GLM-5.3's, DeepSeek-V3.2's), or an
@@ -203,6 +214,7 @@ impl MlaOp {
                         score: IdxScore::F32 { dim: x.head_dim, scale: (x.head_dim as f32).powf(-0.5) },
                         keys: IdxKeys::Ring(ring + 1),
                         weighted: true,
+                        cand: None,
                     },
                     dim: x.head_dim,
                     q_b: 0,
@@ -350,6 +362,8 @@ pub(crate) struct KernMla {
     score: crate::kt::idx_score,
     score_bf16: crate::kt::idx_score_bf16,
     pick: crate::kt::idx_pick,
+    blocks: crate::kt::idx_blocks,
+    inside: crate::kt::idx_inside,
     attn: crate::kt::mla_attn,
     /// The shared memory a block of `attn` may take here (the GPU's most, opted in to at load).
     smem: u32,
@@ -364,7 +378,7 @@ pub(crate) struct KernMla {
 impl KernMla {
     pub fn load(dev: &Dev) -> Result<KernMla> {
         // (the attention's tokens a pass, two words a token, are in shared memory: as much as the GPU gives a block)
-        let (attn, smem) = (dev.typed::<crate::kt::mla_attn>()?, crate::kern_glm::mla_smem(dev)?);
+        let (attn, smem) = (dev.typed::<crate::kt::mla_attn>()?, crate::kern::mla_smem(dev)?);
         attn.allow_smem(smem)?;
         Ok(KernMla {
             rms2: dev.typed()?,
@@ -377,6 +391,8 @@ impl KernMla {
             score: dev.typed()?,
             score_bf16: dev.typed()?,
             pick: dev.typed()?,
+            blocks: dev.typed()?,
+            inside: dev.typed()?,
             attn,
             smem,
             merge: dev.typed()?,
@@ -467,6 +483,18 @@ pub(crate) struct PickAt {
     pub sel: u64,
     pub sk: usize,
     pub cnt: u64,
+    /// The candidate blocks' room (`IdxPick::cand`): the rows' published blocks and their counts, the blocks' scores (`bmax` a row) and their counts.
+    pub cand: CandAt,
+}
+
+/// Where a pick's candidate blocks are (`IdxPick::cand`; all 0 without them).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CandAt {
+    pub blocks: u64,
+    pub nblocks: u64,
+    pub bsc: u64,
+    pub bmax: usize,
+    pub nent: u64,
 }
 
 impl Dyn {
@@ -507,8 +535,21 @@ impl Dyn {
                     at.q, at.w, x.wscale, at.keys, at.tab, at.pos, at.scores, x.heads as i32, x.ratio as i32, at.emax as i32)?;
             }
         }
+        // (the candidate source: the best blocks of its scores published; an index source after it: its scores outside them out of its candidates)
+        let c = &at.cand;
+        match x.cand {
+            Some(Cand::Publish { block, top }) => {
+                launch!(k.blocks, [n, 1, 1], [256, 1, 1], s; at.scores, at.emax as i32, at.pos, x.ratio as i32, block as i32, c.bsc, c.bmax as i32, c.nent)?;
+                launch!(k.pick, [n, 1, 1], [1024, 1, 1], s; c.bsc, c.bmax as i32, at.pos, 1i32, top as i32, 1i32, 0i32, c.blocks, top as i32, c.nblocks, c.nent, 0i32)?;
+            }
+            Some(Cand::Inside { block, top }) => {
+                launch!(k.inside, [n, 1, 1], [256, 1, 1], s; at.scores, at.emax as i32, at.pos, x.ratio as i32, block as i32, c.blocks, top as i32, c.nblocks)?;
+            }
+            None => {}
+        }
+        let masked = matches!(x.cand, Some(Cand::Inside { .. })) as i32;
         let expand = if x.expand { x.ratio } else { 1 } as i32;
-        launch!(k.pick, [n, 1, 1], [1024, 1, 1], s; at.scores, at.emax as i32, at.pos, x.ratio as i32, x.top_k as i32, expand, x.tail as i32, at.sel, at.sk as i32, at.cnt)
+        launch!(k.pick, [n, 1, 1], [1024, 1, 1], s; at.scores, at.emax as i32, at.pos, x.ratio as i32, x.top_k as i32, expand, x.tail as i32, at.sel, at.sk as i32, at.cnt, 0u64, masked)
     }
 
     /// `Op::Mla` (of part `p`) on n rows at positions `pos`: the input products, the q latent's norm and q's product; each sequence's key-value latents normed into its
@@ -645,6 +686,7 @@ impl Dyn {
                             sel: r.sel.ptr,
                             sk: tmax,
                             cnt: r.cnt.ptr,
+                            cand: CandAt::default(),
                         };
                         self.idx_pick(&ix.pick, &at)?;
                         r.sel.ptr
@@ -678,7 +720,7 @@ impl Dyn {
         let splits: i32 = if m as u32 <= FEW { 8 } else { 1 };
         let tmax = tmax as i32;
         // (a block's tokens a tile at a time: as many as its shared memory holds, two words a token besides the query's KS)
-        let mut tile = ((tmax + splits - 1) / splits).min(crate::kern_glm::mla_positions(k.smem, ks) as i32).max(1);
+        let mut tile = ((tmax + splits - 1) / splits).min(crate::kern::mla_positions(k.smem, ks) as i32).max(1);
         if tile < 64 && tile < (tmax + splits - 1) / splits {
             return err(format!("latent attention with scores over {ks} channels: {} bytes of shared memory a block hold too few tokens a pass", k.smem));
         }
@@ -753,9 +795,9 @@ mod tests {
         // (DeepSeek-V4: its window is a ring of keys alone, its keys its values; its compressed entries, the attention's and the indexer's, rings of an entry a row
         // (`Ring::entries`), so paged; its states are its compressors' open windows alone; its indexer's pick every indexer's, over its entries' ring)
         let v4h: serde_json::Value = serde_json::from_str(&fixture("headers/DeepSeek-V4-Flash-0731.json")).unwrap();
-        let vc = crate::deepseek_v4::ConfigV4::parse(v4h["config"].as_str().unwrap(), "DeepSeek-V4", None).unwrap();
+        let kinds = crate::runtime::describe::describe(&serde_json::from_str(v4h["config"].as_str().unwrap()).unwrap()).unwrap();
         let vo = super::super::deepseek_v4::V4Opts { exact8: true, f8_min: 16 << 20, ostack: true, sim: true, ctx: 4096 };
-        let v4 = super::super::deepseek_v4::describe(&vc, &super::super::Stage::whole(vc.layers), &vo).unwrap();
+        let v4 = super::super::lower_comp::lower(&kinds, vec![1], 1 << 20, &super::super::Stage::whole(43), &vo).unwrap().0;
         assert!(v4.rings.iter().all(|r| !r.values) && super::super::rows::pages_all(&v4));
         let ratios: std::collections::BTreeSet<usize> = v4.rings.iter().map(|r| r.ratio).collect();
         assert_eq!(ratios.into_iter().collect::<Vec<_>>(), vec![1, 4, 128]);
