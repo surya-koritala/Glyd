@@ -37,7 +37,7 @@ fit. [Serving](serve.md) and [connecting tools](tools.md) to use it from other p
 - The families are on the [Models](models.md) page, generated from the code.
 - A 180B mixture of experts on one 12-16 GB GPU: [Condor](condor.md).
 
-Not yet: Windows, macOS, aarch64 and CPU-only engines. AMD is a development build.
+Not yet: macOS and CPU-only engines. Windows is a preview and aarch64 is built but not yet measured. AMD is a development build.
 
 ## Pages
 
