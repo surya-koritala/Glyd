@@ -120,11 +120,24 @@ pub struct Rope {
     pub freq_dim: usize,
     pub style: RopeStyle,
     pub scaling: RopeScaling,
-    /// M-RoPE: the angles split into sections for temporal, height and width positions (Qwen3.8 vision); text positions use one.
+    /// M-RoPE: the angles split into sections for temporal, height and width positions (Qwen3.8 vision); text positions use one. The sections
+    /// interleave (`mrope_axis`): a config whose sections follow one another (no `mrope_interleaved`) is refused where its positions differ,
+    /// with a vision tower.
     pub mrope: Option<[usize; 3]>,
 }
 
 impl Rope {
+    /// The position an M-RoPE angle `i` turns by: 0 the temporal one, 1 the row's, 2 the column's. The sections interleave as transformers'
+    /// `apply_interleaved_mrope` lays them (Qwen3-VL's, Qwen3.5's and Qwen 4's `mrope_interleaved`): angle i takes the row where i mod 3 is 1 and
+    /// i < 3 sections[1], the column where i mod 3 is 2 and i < 3 sections[2], else the temporal position. 0 for every angle of a rope with no sections.
+    pub fn mrope_axis(&self, i: usize) -> usize {
+        match self.mrope {
+            Some([_, h, _]) if i % 3 == 1 && i < 3 * h => 1,
+            Some([_, _, w]) if i % 3 == 2 && i < 3 * w => 2,
+            _ => 0,
+        }
+    }
+
     /// Plain rope over `dim` dimensions of each head (partial when `dim` is less than the head dim).
     pub fn plain(theta: f64, dim: usize) -> Rope {
         Rope { theta, dim, freqs: dim / 2, freq_dim: dim, style: RopeStyle::Half, scaling: RopeScaling::None, mrope: None }
@@ -875,9 +888,41 @@ pub struct DSpark {
     pub confidence: bool,
 }
 
+/// A vision tower: the Qwen-VL vision transformer (Qwen3.8-Flash-Next's `Qwen4ExpVisionModel`). An image's patches of `channels` x `frames` x `patch` x `patch`
+/// pixels projected to `hidden` (role `patch`, a bias), plus the learned position table of `table` x `table` rows (role `pos`) resampled bilinearly (corners
+/// aligned) to the image's grid of patches; `blocks` pre-norm blocks (LayerNorms with a bias, eps `eps`) of full attention over the image's patches (`heads` of
+/// hidden / heads, q, k and v one product with a bias, a 2-D axial rotary: a quarter of a head's channels turning by the patch's row, a quarter by its column,
+/// twice over (`rotate_half`), frequencies theta^(-4j / head) for `theta`) and of an MLP (`inter` neurons, `act`, biases); then the merger: a LayerNorm, each
+/// `merge` x `merge` block of patches as one row, two products with a bias and a GELU (erf) between, into `out` (the text model's width): the image's tokens,
+/// `image_token` in the text, one a row, in their blocks' order. Its tensors are the description's `vision` roles (`names::part::VISION`, `VISION_BLOCK`).
+/// In the text its tokens take M-RoPE positions (the attention's `Rope::mrope`): see `vision::positions`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VisionDesc {
     pub blocks: usize,
+    pub hidden: usize,
+    pub heads: usize,
+    pub inter: usize,
+    pub act: Act,
+    pub channels: usize,
+    pub patch: usize,
+    pub frames: usize,
+    pub merge: usize,
+    pub out: usize,
+    pub table: usize,
+    pub theta: f64,
+    pub eps: f32,
+    pub image_token: u32,
+}
+
+impl VisionDesc {
+    pub fn head_dim(&self) -> usize {
+        self.hidden / self.heads
+    }
+
+    /// A patch's pixels, as the patch product reads them: channels x frames x patch x patch.
+    pub fn patch_dim(&self) -> usize {
+        self.channels * self.frames * self.patch * self.patch
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -472,6 +472,14 @@ impl crate::conv::Gen for Run {
             Run::Split(_) | Run::Tp(_) => None,
         }
     }
+    /// One GPU: the engine's own images (src/dynamic/images.rs); stages and layers across GPUs read none yet.
+    fn see(&mut self, images: Vec<std::sync::Arc<crate::vision::Image>>) -> Result<()> {
+        match self {
+            Run::One(e) => crate::conv::Gen::see(e, images),
+            Run::Split(_) | Run::Tp(_) if images.is_empty() => Ok(()),
+            Run::Split(_) | Run::Tp(_) => err("a model across GPUs reads no images yet"),
+        }
+    }
     /// One GPU: the engine's own step (src/dynamic/rows.rs); stages and layers across GPUs: a step of one sequence at a time (`ModelStep for Run`), its slot empty (what a
     /// reply before this left in the cache is not a scheduler's sequence, which begins at its first token: `serve_rows` empties the executor's the same way).
     fn as_step(&mut self, users: usize) -> Result<Option<(usize, &mut dyn crate::sched::ModelStep)>> {

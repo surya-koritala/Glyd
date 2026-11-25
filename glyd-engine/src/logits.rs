@@ -2941,8 +2941,14 @@ fn tiny_tokens() -> Vec<(String, bool)> {
 /// A random model's directory made servable: `tokenizer.json` (a character-level one over `tiny_tokens`), `tokenizer_config.json` with `template` as its chat template and `<|im_end|>` as its end token, and
 /// `generation_config.json` (the end token's id).
 pub fn write_serving_files(dir: &Path, template: &str) -> Result<()> {
+    write_serving_files_with(dir, template, &[])
+}
+
+/// `write_serving_files` with `extra` special tokens after the others (a model that reads images: its image's markers and place).
+pub fn write_serving_files_with(dir: &Path, template: &str, extra: &[&str]) -> Result<()> {
     let io = |r: std::io::Result<()>| r.map_err(|e| Error(format!("{}: {e}", dir.display())));
-    let tokens = tiny_tokens();
+    let mut tokens = tiny_tokens();
+    tokens.extend(extra.iter().map(|t| (t.to_string(), true)));
     let vocab: serde_json::Map<String, Value> = tokens.iter().enumerate().map(|(i, (n, _))| (n.clone(), json!(i))).collect();
     let added: Vec<Value> = tokens
         .iter()
