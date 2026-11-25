@@ -618,20 +618,44 @@ fn step_grid(u: Unpacker, p: StepK, o: i64, k: i64, m: i64) -> Result<Option<(&'
     Ok(Some((name, threads, smem, nb, ((nb + rb) * m * 64 * 4) as usize)))
 }
 
-/// Whether the engine's kernels take W [o, k] (the 12-bit layout or not) for `m` tokens on this GPU: the route GEMM, the library's default plans, a CUDA build.
-fn gemm_route(twelve: bool, o: i64, k: i64, m: i64) -> Result<bool> {
-    if cfg!(glyd_hip) || o % 64 != 0 || k % 16 != 0 || !(0..=64).contains(&m) {
-        return Ok(false);
+/// The route the library takes W [o, k] (the 12-bit layout or not) for `m` tokens on this GPU (route_for, as mma_linear_run asks it); None in an AMD build
+/// (the library's own path there) or where it refuses the shape.
+fn this_route(twelve: bool, o: i64, k: i64, m: i64) -> Result<Option<i32>> {
+    if cfg!(glyd_hip) || m < 0 {
+        return Ok(None);
     }
-    Ok(route(this_gpu()?, twelve, o, k, m).is_ok_and(|r| r == ROUTE_GEMM))
+    Ok(route(this_gpu()?, twelve, o, k, m).ok())
+}
+
+/// Whether the step product (mma_gemm_run) takes W [o, k] for `m` tokens: rows a multiple of 64, columns of 16, 0 to 64 tokens.
+fn step_ok(o: i64, k: i64, m: i64) -> bool {
+    o % 64 == 0 && k % 16 == 0 && (0..=64).contains(&m)
+}
+
+/// The workspace of layout `u`'s product of W [o, k] for `m` tokens by route `r` (mma_linear_run's need); None: the library's (a route or plan not folded,
+/// a call it refuses).
+fn product_need(u: Unpacker, r: i32, o: i64, k: i64, m: i64) -> Result<Option<usize>> {
+    let twelve = matches!(u, Unpacker::Twelve { .. });
+    let step = || -> Result<Option<usize>> {
+        if !step_ok(o, k, m) {
+            return Ok(None);
+        }
+        let Some(p) = step_plan(u, k, m) else { return Ok(None) };
+        Ok(step_grid(u, p, o, k, m)?.map(|g| g.4))
+    };
+    match r {
+        ROUTE_GEMM => step(),
+        ROUTE_MID if twelve => Ok(mid12_runs(o, k, m)?.map(|(_, need)| need)),
+        ROUTE_MID | ROUTE_WG if !twelve && u != Unpacker::Tiered && m <= 64 => step(),
+        ROUTE_DECODE | ROUTE_AHEAD | ROUTE_SPLIT | ROUTE_BIG if k % 64 == 0 && o % 64 == 0 => Ok(prompt_run(u, o, k, m)?.map(|r| r.bytes)),
+        _ => Ok(None),
+    }
 }
 
 /// `GpuOps::linear_workspace` by the engine's plans where every layout's product of that size is the engine's (glyd_gpu_mma_linear_workspace: the most of
 /// the tiered, compact, Int6, Int5, Int4 and Int3 layouts' workspaces; glyd_gpu_mma12_linear_workspace: the 12-bit layout's); None: the library's.
 pub fn linear_workspace(twelve: bool, o: i64, k: i64, m: i64) -> Result<Option<usize>> {
-    if !gemm_route(twelve, o, k, m)? {
-        return Ok(None);
-    }
+    let Some(r) = this_route(twelve, o, k, m)? else { return Ok(None) };
     let layouts: &[Unpacker] = if twelve {
         &[Unpacker::Twelve { hb4: 0, xmax: 4 }]
     } else {
@@ -639,8 +663,7 @@ pub fn linear_workspace(twelve: bool, o: i64, k: i64, m: i64) -> Result<Option<u
     };
     let mut most = 0;
     for &u in layouts {
-        let Some(p) = step_plan(u, k, m) else { return Ok(None) };
-        let Some((.., bytes)) = step_grid(u, p, o, k, m)? else { return Ok(None) };
+        let Some(bytes) = product_need(u, r, o, k, m)? else { return Ok(None) };
         most = most.max(bytes);
     }
     Ok(Some(most))
@@ -653,15 +676,33 @@ pub fn linear_workspace(twelve: bool, o: i64, k: i64, m: i64) -> Result<Option<u
 /// As `GpuOps::linear`; a context with the engine's module is current.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn linear(w: &Pack, x: u64, m: i64, y: u64, ws: u64, ws_bytes: usize, done: u64, cs: Stream) -> Result<bool> {
-    use crate::dev::here;
-    use crate::kt;
-    use crate::launch;
     let (o, k) = (w.rows, w.cols);
     let u = match unpacker(w) {
         Ok(Unpacker::V1) | Err(_) => return Ok(false),
         Ok(u) => u,
     };
-    if !gemm_route(w.is_twelve(), o, k, m)? {
+    let twelve = w.is_twelve();
+    let Some(r) = this_route(twelve, o, k, m)? else { return Ok(false) };
+    match r {
+        ROUTE_GEMM => step_linear(u, w, x, m, y, (ws, ws_bytes, done), cs),
+        ROUTE_MID if twelve => mid12_linear(u, w, x, m, y, (ws, ws_bytes, done), cs),
+        ROUTE_MID | ROUTE_WG if !twelve && u != Unpacker::Tiered && m <= 64 => step_linear(u, w, x, m, y, (ws, ws_bytes, done), cs),
+        ROUTE_DECODE | ROUTE_AHEAD | ROUTE_SPLIT | ROUTE_BIG if k % 64 == 0 => prompt_linear(u, w, x, m, y, (ws, ws_bytes, done), cs),
+        // (Hopper's TMA and wgmma kernels, and what the library refuses: the library's)
+        _ => Ok(false),
+    }
+}
+
+/// The step product (mma_gemm_run, the route GEMM: 1 to 64 tokens) by the engine's kernels at the library's default plan.
+///
+/// # Safety
+/// As `linear`.
+unsafe fn step_linear(u: Unpacker, w: &Pack, x: u64, m: i64, y: u64, (ws, ws_bytes, done): (u64, usize, u64), cs: Stream) -> Result<bool> {
+    use crate::dev::here;
+    use crate::kt;
+    use crate::launch;
+    let (o, k) = (w.rows, w.cols);
+    if !step_ok(o, k, m) {
         return Ok(false);
     }
     let Some(p) = step_plan(u, k, m) else { return Ok(false) };
@@ -709,6 +750,11 @@ pub unsafe fn linear(w: &Pack, x: u64, m: i64, y: u64, ws: u64, ws_bytes: usize,
     Ok(true)
 }
 
+/// CUtensorMap (cuda.h): a tensor map as the driver's cuTensorMapEncodeTiled writes it, 128 bytes on a 64-byte line, passed to Hopper's kernels by value.
+#[repr(C, align(64))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TensorMap(pub [u64; 16]);
+
 /// MoePairs (gpu/glyd_gpu_kernels.h), field for field: the prompt kernel's experts' plan (56 bytes); one matrix's product passes the library's
 /// MoePairs{} (`Default`: `skip` 1, the rest zero).
 #[repr(C)]
@@ -730,6 +776,224 @@ impl Default for MoePairs {
     fn default() -> Self {
         MoePairs { plan: 0, e: 0, k: 0, gather: 0, act: 0, w: 0, wf32: 0, xahead: 0, pf: 0, skip: 1 }
     }
+}
+
+/// The prompt kernel's shape (Big<CW, PW, NB, RBB, CR>): its threads, tokens a block and shared memory (NB stages of X's tile and W's fragments).
+fn big_shape(cw: i64, pw: i64, nb: i64, rbb: i64, cr: i64) -> (u32, i64, u32) {
+    let tm = cr * cw / rbb;
+    ((32 * (cw + pw)) as u32, tm, (nb * (tm * 64 * 2 + rbb * 4 * 4 * 32 * 16)) as u32)
+}
+
+/// A layout's name in the prompt kernels' (fold_big_*, fold_sk_*).
+fn big_name(u: Unpacker) -> Option<&'static str> {
+    Some(match u {
+        Unpacker::Compact => "compact",
+        Unpacker::Int3 => "int3",
+        u => moe_name(u)?,
+    })
+}
+
+/// The prompt kernel's plan for W [o, k] of layout `u` and `m` tokens on this GPU (mma_gemm_big_any, variant 0: blocks of 128 tokens by two row blocks, of 256 by
+/// one past 128 tokens where the last block of 256 is more than half full or past the layout's most, the 12-bit layout's 256 by two on an A100; on GeForce Ada
+/// stream-K): its kernel, launch and workspace (mma_gemm_grid_run, mma_gemm_big_run). None: no kernel of the layout.
+struct PromptRun {
+    name: &'static str,
+    grid: [u32; 3],
+    threads: u32,
+    smem: u32,
+    /// A grid's K split: the splits and the stages of each (the stream-K kernel: 0, 0)
+    splits: i64,
+    per: i64,
+    /// stream-K: a unit's stages in several blocks (the counters needed)
+    shared: bool,
+    bytes: usize,
+}
+
+fn prompt_run(u: Unpacker, o: i64, k: i64, m: i64) -> Result<Option<PromptRun>> {
+    let Some(tag) = big_name(u) else { return Ok(None) };
+    let twelve = matches!(u, Unpacker::Twelve { .. });
+    let dev = D::current_device()?;
+    let cc = (D::attribute(dev, Attr::CcMajor)?, D::attribute(dev, Attr::CcMinor)?);
+    let ada = cc == (8, 9) && D::name(dev)?.contains("GeForce");
+    let a100 = twelve && cc == (8, 0);
+    let most = if a100 {
+        640
+    } else if twelve {
+        4224
+    } else {
+        1024
+    };
+    let variant = if m > 128 && (m % 256 == 0 || m % 256 > 128 || m > most || !(ada || a100)) {
+        if a100 {
+            3
+        } else {
+            2
+        }
+    } else {
+        1
+    };
+    // (CW, PW, NB, RBB, CR, the kernel's tag; stream-K or a grid)
+    let (cw, pw, nb, rbb, cr, v, sk) = match (variant, ada) {
+        (3, _) if twelve => (8, 4, 2, 2, 64, "v3", false),
+        (2, false) => (4, 4, 2, 1, 64, "v2", false),
+        (_, false) => (4, 4, 3, 2, 64, "v1", false),
+        (2, true) => (8, 4, 2, 1, 32, "v2", true),
+        (_, true) if twelve => (8, 4, 2, 2, 32, "v1", true),
+        _ => (4, 4, 3, 2, 64, "v1", true),
+    };
+    let name = leaked(format!("fold_{}_{tag}_{v}", if sk { "sk" } else { "big" }));
+    let (threads, tm, smem) = big_shape(cw, pw, nb, rbb, cr);
+    let (per_sm_blocks, sms) = per_sm(name, threads, smem)?;
+    let stages = k / 16 / 4;
+    let row_units = (o / 64 + rbb - 1) / rbb;
+    let tiles = (m + tm - 1) / tm;
+    if sk {
+        let total = tiles * row_units * stages;
+        let blocks = (per_sm_blocks * sms).min((8 * tiles * row_units).min(total / 4));
+        let blocks = if total > 0 { blocks.max(1) } else { 0 };
+        let shared = blocks > 0 && (total % blocks != 0 || total / blocks % stages != 0);
+        let bytes = if shared { (2 * blocks * tm * 64 * rbb * 4) as usize } else { 0 };
+        return Ok(Some(PromptRun { name, grid: [blocks as u32, 1, 1], threads, smem, splits: 0, per: 0, shared, bytes }));
+    }
+    // K split so the blocks fill their last wave: the fewest splits that leave under 15% of it idle (25% with eight consumer warps), else the fullest
+    let cap = per_sm_blocks * sms;
+    let (mut splits, mut best) = (1i64, 0f64);
+    for sp in 1..=(stages / 4).max(1) {
+        let nblocks = row_units * tiles * sp;
+        let fill = nblocks as f64 / (((nblocks + cap - 1) / cap) * cap) as f64;
+        if fill > best + 1e-9 {
+            (best, splits) = (fill, sp);
+        }
+        if fill >= if cw >= 8 { 0.75 } else { 0.85 } {
+            break;
+        }
+    }
+    let per = (stages + splits - 1) / splits;
+    let splits = (stages + per - 1) / per;
+    let bytes = if splits > 1 { (splits * m * o * 4) as usize } else { 0 };
+    Ok(Some(PromptRun { name, grid: [tiles as u32, row_units as u32, splits as u32], threads, smem, splits, per, shared: false, bytes }))
+}
+
+/// A launch of an engine kernel by name with its arguments in `a` (and the prompt kernel's plan last, where given).
+///
+/// # Safety
+/// The arguments are the kernel's, and the buffers they name are live; a context with the engine's module is current.
+unsafe fn launch_slots(name: &'static str, grid: [u32; 3], threads: u32, smem: u32, mut a: Slots, plan: Option<MoePairs>, cs: Stream) -> Result<()> {
+    let mut plan = plan;
+    let mut ptrs = crate::dev::KernelArgs::ptrs(&mut a);
+    if let Some(p) = plan.as_mut() {
+        ptrs.push(p as *mut MoePairs as *mut std::ffi::c_void);
+    }
+    crate::dev::here_named(name)?.launch_smem(grid, [threads, 1, 1], smem, cs, &mut ptrs)
+}
+
+/// The prompt kernel (mma_gemm_big_any: the routes BIG, DECODE, AHEAD and SPLIT) by the engine's kernels at the library's default plan; false where the library
+/// takes it (a call it refuses: its own error then).
+///
+/// # Safety
+/// As `linear`.
+unsafe fn prompt_linear(u: Unpacker, w: &Pack, x: u64, m: i64, y: u64, (ws, ws_bytes, done): (u64, usize, u64), cs: Stream) -> Result<bool> {
+    use crate::dev::here;
+    use crate::kt;
+    use crate::launch;
+    let (o, k) = (w.rows, w.cols);
+    if o % 64 != 0 || k < 1 || k % 64 != 0 || m < 0 || x % 16 != 0 {
+        return Ok(false);
+    }
+    let Some(r) = prompt_run(u, o, k, m)? else { return Ok(false) };
+    let Some(lead) = layout_args(u, w, None) else { return Ok(false) };
+    if !fits(ws, ws_bytes, r.bytes as i64) || (r.shared && done == 0) {
+        return Ok(false);
+    }
+    if r.per == 0 {
+        if r.grid[0] > 0 {
+            launch_slots(r.name, r.grid, r.threads, r.smem, lead.i64(o).i64(k).i64(m).p(x).p(0).p(y).p(ws).p(done), None, cs)?;
+        }
+        return Ok(true);
+    }
+    let y32 = if r.splits > 1 { ws } else { 0 };
+    launch_slots(r.name, r.grid, r.threads, r.smem, lead.i64(o).i64(k).i64(m).i64(r.per).p(x).p(0).p(y).p(y32), Some(MoePairs::default()), cs)?;
+    if r.splits > 1 {
+        launch!(here::<kt::fold_finish>()?, [((m * o + 255) / 256) as u32, 1, 1], [256, 1, 1], cs; y32, r.splits, 0u64, m, o, y)?;
+    }
+    Ok(true)
+}
+
+/// The 12-bit layout's route MID (mma12_mid_any): its launches, 64 tokens each (an A100: 128, mma12_ws_kernel's four tiles), the smallest tile that holds
+/// each one's tokens, and the workspace of the largest; None where the GPU has no such kernel (compute capability under 8). Each: (kernel, threads, shared
+/// memory, blocks, first token, tokens).
+#[allow(clippy::type_complexity)]
+fn mid12_runs(o: i64, k: i64, m: i64) -> Result<Option<(Vec<(&'static str, u32, u32, i64, i64, i64)>, usize)>> {
+    let dev = D::current_device()?;
+    let cc = (D::attribute(dev, Attr::CcMajor)?, D::attribute(dev, Attr::CcMinor)?);
+    if cc.0 < 8 || o % 64 != 0 || k < 1 || k % 64 != 0 || m < 0 {
+        return Ok(None);
+    }
+    let (mut runs, mut need) = (Vec::new(), 0usize);
+    if cc == (8, 0) {
+        // (Ws12: tokens a unit, threads, shared memory; two row blocks a unit)
+        for m0 in (0..m).step_by(128) {
+            let mc = (m - m0).min(128);
+            let (name, tm, threads, smem) = match mc {
+                ..=32 => ("fold_ws12_32", 32, 384, 149_248),
+                33..=64 => ("fold_ws12_64", 64, 384, 152_192),
+                65..=96 => ("fold_ws12_96", 96, 384, 139_904),
+                _ => ("fold_ws12_128", 128, 512, 152_192),
+            };
+            let (per, sms) = per_sm(name, threads, smem)?;
+            let units = (o / 64 + 1) / 2 * ((mc + tm - 1) / tm);
+            let nb = (per * sms).min(units * (k / 64) / 8).max(1);
+            need = need.max(((nb + units) * tm * 64 * 2 * 4) as usize);
+            runs.push((name, threads, smem, nb, m0, mc));
+        }
+        return Ok(Some((runs, need)));
+    }
+    // four warpgroups where 153 KB a block fit (Mid12<64, 4>), else two
+    let wg = if D::attribute(dev, Attr::SmemOptin)? as i64 >= 156_352 { 4 } else { 2 };
+    for m0 in (0..m).step_by(64) {
+        let mc = (m - m0).min(64);
+        let nt = match mc {
+            ..=16 => 16,
+            17..=32 => 32,
+            _ => 64,
+        };
+        let smem = match (nt, wg) {
+            (16, 2) => 70_336,
+            (16, _) => 131_776,
+            (32, 2) => 78_528,
+            (32, _) => 139_968,
+            (_, 2) => 94_912,
+            _ => 156_352,
+        };
+        let (name, threads) = (leaked(format!("fold_mid12_{nt}_{wg}")), (128 * wg + 32) as u32);
+        let (per, sms) = per_sm(name, threads, smem)?;
+        let nb = (per * sms).min((o / 64 + wg - 1) / wg * (k / 64) / 8).max(1);
+        need = need.max((2 * nb * nt * 64 * wg * 4) as usize);
+        runs.push((name, threads, smem, nb, m0, mc));
+    }
+    Ok(Some((runs, need)))
+}
+
+/// The 12-bit layout's route MID by the engine's kernels (glyd_gpu_mma12_linear on it: mma12_mid_any by staged_run); false where the library takes it.
+///
+/// # Safety
+/// As `linear`.
+unsafe fn mid12_linear(u: Unpacker, w: &Pack, x: u64, m: i64, y: u64, (ws, ws_bytes, done): (u64, usize, u64), cs: Stream) -> Result<bool> {
+    let (o, k) = (w.rows, w.cols);
+    let Words::Twelve { exc, .. } = w.words else { return Ok(false) };
+    if x % 16 != 0 || w.data % 16 != 0 || exc % 16 != 0 {
+        return Ok(false);
+    }
+    let Some((runs, need)) = mid12_runs(o, k, m)? else { return Ok(false) };
+    if !fits(ws, ws_bytes, need as i64) || done == 0 {
+        return Ok(false);
+    }
+    for (name, threads, smem, nb, m0, mc) in runs {
+        let Some(lead) = layout_args(u, w, None) else { return Ok(false) };
+        let a = lead.i64(o).i64(k).i64(mc).p(x + (m0 * k * 2) as u64).p(0).p(y + (m0 * o * 2) as u64).p(ws).p(done);
+        launch_slots(name, [nb as u32, 1, 1], threads, smem, a, None, cs)?;
+    }
+    Ok(true)
 }
 
 /// kvc::RawPool (gpu/glyd_gpu_kernels.h), field for field: the raw-slab pool as a kernel takes it.
@@ -1535,7 +1799,8 @@ fn layout_args(u: Unpacker, w: &Pack, placed: Option<(i64, i64)>) -> Option<Slot
                 None => s,
             }
         }
-        (Unpacker::Int6 | Unpacker::Int5 | Unpacker::Int4 | Unpacker::Fp4, Words::Tiered { blocks, .. }) => s.p(blocks),
+        (Unpacker::Compact, Words::Tiered { blocks, block_base, tiers: t }) => s.p(blocks).p(block_base).u32(t[0]).u32(t[1]).u32(t[2]),
+        (Unpacker::Int6 | Unpacker::Int5 | Unpacker::Int4 | Unpacker::Fp4 | Unpacker::Int3, Words::Tiered { blocks, .. }) => s.p(blocks),
         (Unpacker::Int4H(base), Words::Tiered { blocks, .. }) => s.p(blocks).u32(base),
         (Unpacker::Fp4R { ks, mg, sh }, Words::Tiered { blocks, .. }) => s.p(blocks).u32(ks).u32(mg).u32(sh),
         (Unpacker::Twelve { hb4, xmax }, Words::Twelve { exc, exc_base, .. }) => s.p(exc).p(exc_base).u32(hb4).i32(xmax),
@@ -1649,8 +1914,38 @@ pub unsafe fn moe(
         48
     };
     let big = if act != 0 { tuned(crate::tune!("GLYD_GPU_MOE_BIG_GU"), big_default) } else { tuned(crate::tune!("GLYD_GPU_MOE_BIG_DN"), big_default) };
+    let lname = if placed.is_some() { "placed" } else { name };
+    let per_stride = placed.map(|stride| (o * kk / 1024, stride));
+    let Some(lead) = layout_args(u, w, per_stride) else { return Ok(false) };
+    let y32 = if weights != 0 { ws } else { 0 };
     if p >= big * experts && kk % 64 == 0 && x % 16 == 0 {
-        return Ok(false);
+        // the prompt kernel (mma_moe_big: 128 pairs by two row blocks a block, blockIdx.z the experts hit; GLYD_GPU_BIG_TM=256, a development build's, the library's)
+        if tuned(crate::tune!("GLYD_GPU_BIG_TM"), 128) == 256 {
+            return Ok(false);
+        }
+        let kname = leaked(format!("fold_big_{lname}_moe"));
+        let (threads, tm, smem) = big_shape(4, 4, 3, 2, 64);
+        per_sm(kname, threads, smem)?;
+        let plan_args = MoePairs {
+            plan,
+            e: experts as i32,
+            k,
+            gather: gather as i32,
+            act: act as i32,
+            w: weights,
+            wf32: 1,
+            xahead: tuned(crate::tune!("GLYD_GPU_BIG_XAHEAD"), 0) as i32,
+            pf: tuned(crate::tune!("GLYD_GPU_BIG_PF"), 0).clamp(0, 8) as i32,
+            skip: (tuned(crate::tune!("GLYD_GPU_BIG_SKIP"), 1) != 0) as i32,
+        };
+        let grid = [((t + tm - 1) / tm) as u32, (if act != 0 { o / 128 } else { (o / 64 + 1) / 2 }) as u32, hits as u32];
+        launch_slots(kname, grid, threads, smem, lead.i64(o).i64(kk).i64(0).i64(0).p(x).p(0).p(y).p(y32), Some(plan_args), cs)?;
+        if weights != 0 {
+            use crate::kt;
+            use crate::launch;
+            launch!(crate::dev::here::<kt::fold_moe_sum>()?, [((t * o / 4 + 255) / 256) as u32, 1, 1], [256, 1, 1], cs; ws, ids, experts as i32, t, k, o, y)?;
+        }
+        return Ok(true);
     }
     let pf = tuned(crate::tune!("GLYD_GPU_PF"), 0).clamp(0, 16);
     let patch_b = tuned(crate::tune!("GLYD_GPU_PATCH_B"), 0) != 0;
@@ -1671,11 +1966,7 @@ pub unsafe fn moe(
         _ => 33,
     };
     let rows = act == 0 && mt >= 2 && t >= rows_from;
-    let o_args =
-        |s: Slots| s.i64(o).i64(kk).p(plan).i32(experts as i32).i64(k).i32(gather as i32).p(x).p(0).p(weights).i32(1).p(y).p(if weights != 0 { ws } else { 0 });
-    let lname = if placed.is_some() { "placed" } else { name };
-    let per_stride = placed.map(|stride| (o * kk / 1024, stride));
-    let Some(lead) = layout_args(u, w, per_stride) else { return Ok(false) };
+    let o_args = |s: Slots| s.i64(o).i64(kk).p(plan).i32(experts as i32).i64(k).i32(gather as i32).p(x).p(0).p(weights).i32(1).p(y).p(y32);
     if rows {
         let kname = leaked(format!("fold_moe_rows_{lname}_{mt}_{v}"));
         let mut a = o_args(lead).i32(pf as i32);
@@ -2505,9 +2796,10 @@ fn linear_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, 
         seed
     };
     let (mut n, mut bad, mut folded) = (0, Vec::new(), 0);
-    let ms = [1i64, 2, 7, 8, 9, 15, 16, 17, 24, 32, 33, 48, 64];
+    // (1 to 64 tokens: the step product and the route MID; past 64 a prompt's: the prompt kernel by route BIG, DECODE or AHEAD, and the A100's MID to 128)
+    let ms = [1i64, 2, 7, 8, 9, 15, 16, 17, 24, 32, 33, 48, 64, 65, 100, 128, 129, 200, 256, 300, 640, 1000];
     for (rows, cols) in [(256usize, 1024usize), (128, 4096)] {
-        let x: Vec<u16> = (0..64 * cols).map(|_| (((next() >> 40) as f32 / (1u64 << 24) as f32 - 0.5).to_bits() >> 16) as u16).collect();
+        let x: Vec<u16> = (0..1000 * cols).map(|_| (((next() >> 40) as f32 / (1u64 << 24) as f32 - 0.5).to_bits() >> 16) as u16).collect();
         let xb = Buf::new(x.len() * 2)?;
         xb.write(0, &x)?;
         for twelve in [false, true] {
@@ -2532,7 +2824,7 @@ fn linear_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, 
                 let (ya, yb) = (Buf::new(m as usize * rows * 2)?, Buf::new(m as usize * rows * 2)?);
                 ya.fill_async(0xA5, dev.stream)?;
                 yb.fill_async(0x5A, dev.stream)?;
-                // SAFETY: the pack, X [64, cols], the workspace of the library's size (the engine's is the same or the product is the library's), zeroed
+                // SAFETY: the pack, X [1000, cols], the workspace of the library's size (the engine's is the same or the product is the library's), zeroed
                 // counters of each, Y [m, rows] each; one stream.
                 let (ra, rb) = unsafe {
                     let ra = lib.library_linear(&pb.pack, xb.ptr, m, ya.ptr, ws.ptr, ws_bytes, da.ptr, dev.stream);
@@ -2911,7 +3203,7 @@ fn moe_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec
     };
     let (e, o, kk) = (8i64, 128i64, 1024usize);
     let (mut n, mut bad, mut folded) = (0, Vec::new(), 0);
-    let x: Vec<u16> = (0..64 * 2 * kk).map(|_| (((next() >> 40) as f32 / (1u64 << 24) as f32 - 0.5).to_bits() >> 16) as u16).collect();
+    let x: Vec<u16> = (0..300 * 2 * kk).map(|_| (((next() >> 40) as f32 / (1u64 << 24) as f32 - 0.5).to_bits() >> 16) as u16).collect();
     let xb = Buf::new(2 * x.len())?;
     xb.write(0, &x)?;
     for (name, p) in test_packs((e * o) as usize, kk, &mut next) {
@@ -2920,7 +3212,8 @@ fn moe_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec
             continue;
         }
         let pb = upload_packed(p)?;
-        for t in [1i64, 4, 16, 17, 32, 33, 64] {
+        // (from 48 pairs an expert on average, 64 on an A100, 96 on an H100: the experts' prompt kernel)
+        for t in [1i64, 4, 16, 17, 32, 33, 64, 200, 300] {
             let k = 2i64;
             let ids: Vec<i64> = (0..t * k).map(|_| (next() % e as u64) as i64).collect();
             let wts: Vec<f32> = (0..t * k).map(|_| (next() % 1000) as f32 / 1000.0).collect();
@@ -2947,7 +3240,7 @@ fn moe_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec
                 ya.fill_async(0xA5, dev.stream)?;
                 yb.fill_async(0x5A, dev.stream)?;
                 let (wp, ip) = if weighted { (wb.ptr, idb.ptr) } else { (0, 0) };
-                // SAFETY: the stack, X [64 2, K], the plan, the weights and ids, a workspace of the library's size, zeroed counters each, Y each; one stream.
+                // SAFETY: the stack, X [300 2, K], the plan, the weights and ids, a workspace of the library's size, zeroed counters each, Y each; one stream.
                 let (ra, rb) = unsafe {
                     let ra = lib.library_moe(&pb.pack, e, xb.ptr, t, k, gather, plan.ptr, act, wp, ip, ya.ptr, ws.ptr, ws_bytes, da.ptr, dev.stream);
                     synced(dev, || format!("the library's experts, {what}"))?;
@@ -2985,7 +3278,7 @@ fn moe_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec
         rows: (e * o) as usize,
         cols: kk,
     })?;
-    for t in [1i64, 4, 17, 33, 64] {
+    for t in [1i64, 4, 17, 33, 64, 300] {
         let k = 2i64;
         let ids: Vec<i64> = (0..t * k).map(|_| (next() % e as u64) as i64).collect();
         let (idb, plan) = (Buf::new(8 * ids.len())?, Buf::new(4 * (2 + 2 * e + t * k) as usize)?);
@@ -3529,6 +3822,7 @@ mod tests {
         assert_eq!((offset_of!(F8Pk, plain), offset_of!(F8Un, o), offset_of!(F8Un, vec)), (32, 56, 76));
         // f8c::F8Lin's offsets as a host compiler lays it out (gpu/fp8/emu_f8.cpp's build of the f8c block, 2026-11-23): 168 bytes
         assert_eq!(size_of::<F8Lin>(), 168);
+        assert_eq!((size_of::<TensorMap>(), std::mem::align_of::<TensorMap>()), (128, 64));
         assert_eq!((size_of::<MoePairs>(), offset_of!(MoePairs, k), offset_of!(MoePairs, w), offset_of!(MoePairs, skip)), (56, 16, 32, 52));
         let at =
             [offset_of!(F8Lin, lds), offset_of!(F8Lin, m), offset_of!(F8Lin, xvec), offset_of!(F8Lin, plan), offset_of!(F8Lin, e), offset_of!(F8Lin, gather)];

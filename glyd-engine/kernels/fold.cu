@@ -699,3 +699,57 @@ FOLD_WS12(4, 4, 5, 2, 1, 32)
 FOLD_WS12(4, 4, 4, 2, 2, 64)
 FOLD_WS12(4, 3, 4, 2, 3, 96)
 FOLD_WS12(8, 3, 4, 2, 2, 128)
+
+// Hopper's (sm_90a) products as the library launches them by default: the 12-bit layout's route WG to 128 tokens (mma12_tma_body in tiles of 16 to
+// 128 tokens, two warpgroups) and past 128 (mma12_wgp_body, clusters of two, tiles of 192 and 256), the tiered layout's route WG (tiered_tma_body,
+// tiles of 16, 32 and 64 tokens, two warpgroups, a block an SM), and the experts' wgmma product (mma12_moe_wg_body, tiles of 16 to 128 pairs, with
+// the gate's SiLU and without; moe_wg_tiles_body, moe_wg_gather_body). X reaches them through a tensor map (a __grid_constant__ parameter, made by
+// the host with the driver's cuTensorMapEncodeTiled). Compiled for sm_90a; elsewhere their bodies trap and the host never launches them.
+#define FOLD_TMA12(NT) \
+    extern "C" __global__ void __launch_bounds__((glib::Tma12<NT, 2>::THREADS), 1) fold_tma12_##NT(const __grid_constant__ CUtensorMap xmap, const uint8_t* data, \
+        const uint32_t* exc, const int32_t* exc_base, uint32_t hb4, int xmax, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* bias, __nv_bfloat16* Y, float* parts, int* done) { \
+        glib::mma12_tma_body<NT, 2>(xmap, glib::Nib{data, exc, exc_base, hb4, xmax}, O, K, M, bias, Y, parts, done); \
+    }
+FOLD_TMA12(16)
+FOLD_TMA12(32)
+FOLD_TMA12(64)
+FOLD_TMA12(96)
+FOLD_TMA12(112)
+FOLD_TMA12(128)
+#define FOLD_WGP12(NT) \
+    extern "C" __global__ void __launch_bounds__((glib::Wgp12<NT, 2>::THREADS), 1) fold_wgp12_##NT(const __grid_constant__ CUtensorMap xmap, const uint8_t* data, \
+        const uint32_t* exc, const int32_t* exc_base, uint32_t hb4, int xmax, int64_t O, int64_t K, int64_t M, int64_t D, int ncs, const __nv_bfloat16* bias, \
+        __nv_bfloat16* Y, float* parts, int* done) { \
+        glib::mma12_wgp_body<NT, 2>(xmap, glib::Nib{data, exc, exc_base, hb4, xmax}, O, K, M, D, ncs, bias, Y, parts, done); \
+    }
+FOLD_WGP12(192)
+FOLD_WGP12(256)
+#define FOLD_TMAT(NT) \
+    extern "C" __global__ void __launch_bounds__((glib::TmaT<NT, 2, 1>::THREADS), 1) fold_tmat_##NT(const __grid_constant__ CUtensorMap xmap, const uint8_t* data, \
+        const uint8_t* blocks, const int32_t* block_base, uint32_t s1, uint32_t s2, uint32_t s3, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* bias, \
+        __nv_bfloat16* Y, float* parts, int* done, int bb) { \
+        glib::tiered_tma_body<NT, 2, 1, true>(xmap, glib::Tiered{data, blocks, block_base, glib::Tiers{s1, s2, s3}}, O, K, M, bias, Y, parts, done, bb); \
+    }
+FOLD_TMAT(16)
+FOLD_TMAT(32)
+FOLD_TMAT(64)
+#define FOLD_MOE_WG(NT, ACT) \
+    extern "C" __global__ void __launch_bounds__((glib::Wm12<NT, ACT>::THREADS), 1) fold_moe_wg_##NT##_##ACT(const __grid_constant__ CUtensorMap xmap, const uint8_t* data, \
+        const uint32_t* exc, const int32_t* exc_base, uint32_t hb4, int xmax, int64_t O, int64_t K, int E, const int* plan, const int4* tiles, int RU, \
+        const __nv_bfloat16* bias, const void* wts, int wf32, __nv_bfloat16* Y, float* Y32) { \
+        glib::mma12_moe_wg_body<NT, ACT>(xmap, glib::Nib{data, exc, exc_base, hb4, xmax}, O, K, E, plan, tiles, RU, bias, wts, wf32, Y, Y32); \
+    }
+FOLD_MOE_WG(16, 0)
+FOLD_MOE_WG(16, 1)
+FOLD_MOE_WG(32, 0)
+FOLD_MOE_WG(32, 1)
+FOLD_MOE_WG(64, 0)
+FOLD_MOE_WG(64, 1)
+FOLD_MOE_WG(128, 0)
+FOLD_MOE_WG(128, 1)
+extern "C" __global__ void __launch_bounds__(1024) fold_moe_wg_tiles(const int* plan, int E, int NT, int4* tiles) {
+    glib::moe_wg_tiles_body(plan, E, NT, tiles);
+}
+extern "C" __global__ void fold_moe_wg_gather(const uint4* x, const int* plan, int E, int64_t k, int64_t K8, uint4* out) {
+    glib::moe_wg_gather_body(x, plan, E, k, K8, out);
+}
