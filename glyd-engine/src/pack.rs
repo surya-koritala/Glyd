@@ -882,7 +882,7 @@ mod tests {
 
     /// A plain dense model (the logits checks' random one) packed at penguin is a glyd-v7 save the executor reads as saved: each matrix of its lowered description (q, k
     /// and v under q's name; gate and up under gate's; the embedding, the head) a lossless pack under its first member's name at the description's rows and columns, each small
-    /// tensor copied as bf16, and no sidecar of the dense Qwen3 engine's.
+    /// tensor copied as bf16, and no sidecar of the earlier dense engine's.
     #[cfg(feature = "dev")]
     #[test]
     fn a_dense_model_at_penguin_is_a_glyd_v7_save_of_its_description() {

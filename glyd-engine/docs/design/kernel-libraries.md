@@ -44,8 +44,6 @@ top of it (`Dyn::decodes`).
 
 ## What is left
 
-- Not measured, by row: the dense products on GPUs but the RTX 4080 SUPER and the A100, the A100 tiered prompt crossover below 493 rows, FlashInfer prefill and decode
+- Not measured, by row: the dense products on a recent dense release (every GPU), the A100 tiered prompt crossover below 493 rows, FlashInfer prefill and decode
   (needs the compiled-in integration first), MLA on Hopper and Blackwell, sampling, Blackwell's products.
-- The A100's decoded prompt spends 18.9 ms a pass decoding the matrices (32% of a 498-token pass with cuBLAS): a decode beside the products before it
-  (ROUTE_AHEAD, as GeForce Ada, the A10 and the L40S take) is the next measurement there.
 - The L4 rows of the table are the 2026-09-29 measurement; a rerun is due with the executor's paths (the old measurement ran the Python package).

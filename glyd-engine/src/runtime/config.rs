@@ -98,7 +98,7 @@ impl Shared {
         [self.num_experts_per_tok, self.num_experts_per_token].into_iter().flatten().max().unwrap_or(0)
     }
 
-    /// The experts' width where they run in a latent (Nemotron 3 Super's `moe_latent_size`, Kimi-K3's `routed_expert_hidden_size`, Muse Spark's `moe_hidden_size`).
+    /// The experts' width where they run in a latent (the Nemotron-H layout's `moe_latent_size`, Kimi-K3's `routed_expert_hidden_size`, Muse Spark's `moe_hidden_size`).
     pub fn latent(&self) -> Option<usize> {
         self.moe_latent_size.or(self.routed_expert_hidden_size).or(self.moe_hidden_size)
     }

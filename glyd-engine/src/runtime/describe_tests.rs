@@ -482,7 +482,7 @@ fn header_names(h: &serde_json::Value) -> BTreeSet<String> {
 }
 
 /// #333, Kimi-K3.1: its sparse attention (`text_config.dsa_config`, the keys of vLLM's `KimiLinearDSAConfig`; the release's own config.json is not in the
-/// fixtures yet) on Kimi-K3's released config: each latent attention layer it names takes DeepSeek-V3.2's indexer of a key a token in the gated form, its
+/// fixtures yet) on Kimi-K3's released config: each latent attention layer it names takes the sparse attention's indexer of a key a token in the gated form, its
 /// keys RMS-normed at the model's eps (LayerNorm-ed with a bias where `index_k_norm_type` says so), and reads the indexer's tensors; the delta attention layers
 /// are as they were. What is not described is refused: an indexer rotary, picks shared across layers, a layer that is no latent attention.
 #[test]

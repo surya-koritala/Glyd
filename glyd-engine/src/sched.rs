@@ -8,7 +8,7 @@
 //! alone twice, or six times, ends with an error in words. Lost and heavy blocks are never kept in the prefix cache.
 //!
 //! The scheduler is the same for every model: it drives a `ModelStep` (docs/design/runtime.md, section 2). A step keeps its cache one of two ways: pages shared by every sequence (with the prefix cache and
-//! preemption above: the scheduler's own tests' steps, since the dense Qwen3 engine went onto the executor), or a room of the whole context for each of a few sequences (`ModelStep::slots`: the description executor, `src/dynamic`), where a sequence holds one slot from
+//! preemption above: the scheduler's own tests' steps, since the earlier dense engine went onto the executor), or a room of the whole context for each of a few sequences (`ModelStep::slots`: the description executor, `src/dynamic`), where a sequence holds one slot from
 //! its admission to its end, nothing is shared and nothing is preempted for room.
 
 use crate::ffi::{Error, Kind, Result};

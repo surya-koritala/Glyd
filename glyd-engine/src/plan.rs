@@ -1574,7 +1574,7 @@ pub const SCHEMA: &str = "glyd-plan/1";
 /// The engine path that loads a plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// Qwen3 dense (and every Llama-style dense model the description builder reads) on the executor: src/dynamic/dense.rs, at penguin, kestrel, swift and wren.
+    /// The plain dense kind (every pre-norm dense decoder the description builder's `llama` reading takes) on the executor: src/dynamic/dense.rs, at penguin, kestrel, swift and wren.
     Qwen3,
     /// Qwen3.5, 3.6 and 3.8 dense at a lossy level.
     Qwen35,
@@ -2611,7 +2611,7 @@ pub struct Planned {
 }
 
 /// Whether the run of `a` holds its keys and values in the executor's 12-bit lossless pages (GLYD_KV=lossless), as the family's load plan sizes them: Gemma 4 with no draft model,
-/// dense Qwen3 served (`sizing::twelve_pages`); the loaders that take them (src/cli.rs `twelve_bit_pages`).
+/// a plain dense decoder served (`sizing::twelve_pages`); the loaders that take them (src/cli.rs `twelve_bit_pages`).
 fn takes_twelve(a: &crate::args::Args, f: crate::support::Family) -> bool {
     use crate::support::Family;
     let lossless = std::env::var("GLYD_KV").as_deref() == Ok("lossless");
@@ -3861,7 +3861,7 @@ pub mod sizing {
         Ok(lossy_plan_with(&Args::from(["run".to_string(), name.clone()]), &name, layout, &text, generation.as_deref(), free, gpu, packed, host)?.experts)
     }
 
-    /// Nemotron 3 Super with its experts in the computer's memory (pinned) and a cache of them on the GPU: the context, and the cache, which takes what the GPU has left besides the rest of the model, the states, the
+    /// A model of the Nemotron-H layout with its experts in the computer's memory (pinned) and a cache of them on the GPU: the context, and the cache, which takes what the GPU has left besides the rest of the model, the states, the
     /// workspaces and the context's keys and values (or `asked` bytes of it); why not, in words, where the GPU cannot hold even that rest and the least cache (a step's choices and as many again; the choices alone for
     /// an asked cache), or the computer cannot hold the experts. At the Hummingbird level a computer that cannot hold them all (or `--host-memory`, `asked_host`, that gives it less) keeps the rest in the packed directory:
     /// `CachePlan::ram` is what it holds, refused where that is less than a step's choices in each width of each layer.
@@ -3923,7 +3923,7 @@ pub mod sizing {
         Ok((ctx, CachePlan { ram, ..plan }))
     }
 
-    /// The model's config as a lossy level reads it (Qwen3.5, Qwen3.6 and Qwen3.8 dense: their config says `qwen3_5`; Nemotron 3 Super: `nemotron_h`, at the kestrel, swift and wren levels), and what it takes in `layout` of
+    /// The model's config as a lossy level reads it (Qwen3.5, Qwen3.6 and Qwen3.8 dense: their config says `qwen3_5`; the Nemotron-H layout: `nemotron_h`, at the kestrel, swift and wren levels), and what it takes in `layout` of
     /// `free` bytes of GPU memory at the context asked for (else up to LOSSY_CTX, as much as fits): refused where it does not fit at LOSSY_MIN_CTX. A pack is sized in its own layout (`pack_layout`: Nemotron's experts
     /// alone are four-bit at wren). `packed`: the glyd-v7 directory the model is, where its packs' bytes are the ones it holds.
     pub(crate) fn lossy_plan(
@@ -3982,15 +3982,18 @@ pub mod sizing {
         let nemotron = m.family() == Some(crate::support::Family::NemotronH);
         let (packs, kept, state, per, max_pos) = if nemotron {
             if !matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Hummingbird) {
-                return Err(Refusal::unsupported(format!("{name}: the {tag} level is not built for Nemotron 3 Super, whose experts are held at the kestrel, swift and wren levels, or at the hummingbird level"), format!("Run it at the wren, swift or kestrel level: glyd run {model}:wren")));
+                return Err(Refusal::unsupported(format!("{name}: the {tag} level is not built for the Nemotron-H layout, whose experts are held at the kestrel, swift and wren levels, or at the hummingbird level"), format!("Run it at the wren, swift or kestrel level: glyd run {model}:wren")));
             }
             let cfg = ConfigNemotronH::of(&m, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
-            // (the hummingbird kernels take experts on a latent that is a power of two from 128 to 1,024, Nemotron 3 Super's: src/moe_hb.rs; the
-            // experts of a model with no latent, Nemotron 3.5 Lightning's, read its width)
+            // (the hummingbird kernels take experts on a latent that is a power of two from 128 to 1,024: src/moe_hb.rs; the experts of a model
+            // with no latent read its width)
             let l = cfg.moe.latent;
             if layout == Layout::Hummingbird && !(l.is_power_of_two() && (128..=1024).contains(&l)) {
                 return Err(Refusal::unsupported(
-                    format!("{name}: the hummingbird level takes Nemotron-H experts on a latent of 128 to 1,024 (Nemotron 3 Super's); this model's experts read its width of {}", cfg.hidden),
+                    format!(
+                        "{name}: the hummingbird level takes Nemotron-H experts on a latent of 128 to 1,024; this model's experts read its width of {}",
+                        cfg.hidden
+                    ),
                     format!("Run it at the swift or kestrel level: glyd run {model}:swift"),
                 ));
             }
@@ -3998,13 +4001,13 @@ pub mod sizing {
         } else {
             if layout == Layout::Hummingbird {
                 return Err(Refusal::unsupported(
-                    format!("{name}: the hummingbird level is built for Nemotron 3 Super alone"),
+                    format!("{name}: the hummingbird level on this path is built for the Nemotron-H layout alone"),
                     "Run it at the kestrel, swift or wren level: glyd run MODEL:swift",
                 ));
             }
             let cfg = Config35::of(&m, "config.json", gen).map_err(|e| {
                 Refusal::unsupported(
-                    format!("{name}: the {tag} level runs {} models so far ({})", "Qwen3.5, Qwen3.6, Qwen3.8 and Nemotron 3 Super", e.msg),
+                    format!("{name}: the {tag} level on this path takes the Qwen3.5 and Nemotron-H layouts ({})", e.msg),
                     format!("Run it lossless: glyd run {model}"),
                 )
             })?;
@@ -4062,11 +4065,17 @@ pub mod sizing {
         let fitted = one_gpu(&n, free, asked, gpu);
         let cache = cache_flag(a)?;
         if cache.is_some() && !nemotron {
-            return Err(Refusal::new(format!("--expert-cache: {name} has no experts to keep in the computer's memory"), "It is for Nemotron 3 Super"));
+            return Err(Refusal::new(
+                format!("--expert-cache: {name} has no experts to keep in the computer's memory"),
+                "It is for a model of the Nemotron-H layout, whose experts it keeps there",
+            ));
         }
         let host_asked = host_flag(a)?;
         if host_asked.is_some() && !nemotron {
-            return Err(Refusal::new(format!("--host-memory: {name} has no experts to keep in the computer's memory"), "It is for Nemotron 3 Super"));
+            return Err(Refusal::new(
+                format!("--host-memory: {name} has no experts to keep in the computer's memory"),
+                "It is for a model of the Nemotron-H layout, whose experts it keeps there",
+            ));
         }
         let mut also = String::new();
         if nemotron && (fitted.is_err() || cache.is_some()) {

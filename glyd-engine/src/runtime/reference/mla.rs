@@ -342,7 +342,7 @@ mod tests {
         assert!(rel(&got_out, &out) < 1e-6, "the attention over the picks");
     }
 
-    /// The indexer's rotary (the full-size GLM's and DeepSeek-V3.2's: transformers' `GlmMoeDsaIndexer`): the first `rope` channels of each query head and
+    /// The indexer's rotary (the full-size GLM's: transformers' `GlmMoeDsaIndexer`): the first `rope` channels of each query head and
     /// of each token's key turned by the attention's rotary to their positions before the scores. By hand for one query; other picks than the same
     /// keys unturned; and refused where the attention has no rotary of that many channels.
     #[test]

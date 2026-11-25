@@ -449,7 +449,7 @@ fn prepare(a: &Args, ui: &RefCell<Ui>) -> Done<PathBuf> {
     Ok(dir)
 }
 
-/// Sequences a server runs at once: --users, else 4 (1 to MAX_USERS; the dense Qwen3 engine takes at most MAX_ROWS of them, a level's engine as many as its memory holds).
+/// Sequences a server runs at once: --users, else 4 (1 to MAX_USERS; a level's engine as many as its memory holds).
 pub(crate) fn users_of(a: &Args) -> Done<usize> {
     use crate::sched::MAX_USERS;
     let n: usize = a.num("users", 4usize).map_err(|e| Refusal::new(e.msg, format!("Give a number from 1 to {MAX_USERS}: --users 4")))?;
@@ -1226,7 +1226,7 @@ fn chat_loop(tx: mpsc::Sender<Job>, defaults: Params, mut thinking: Option<bool>
     let _ = tx.send(Job::Stop);
 }
 
-// ---- the lossy levels: a Qwen3.5-family or Nemotron 3 Super model at about 6.5 bits per weight (:kestrel, which --lossy is: six-bit block codes), 5.5 (:swift: five-bit) or 4.5 (:wren: four-bit; Nemotron's experts alone, the rest six-bit), one user at a time ------
+// ---- the lossy levels: a model of a family whose row has them (the plain dense kind, Gemma 4, the Qwen3.5 layout, the Nemotron-H layout) at about 6.5 bits per weight (:kestrel, which --lossy is: six-bit block codes), 5.5 (:swift: five-bit) or 4.5 (:wren: four-bit; the Nemotron-H layout's experts alone, the rest six-bit), one user at a time ------
 
 // (the lossy paths' work, context bounds, host margin and Gemma's draft and chunk are src/plan.rs's constants, with the one reserve)
 
@@ -1297,7 +1297,7 @@ fn plan_level(a: &Args, model: &str, layout: Layout, text: &str, gen: Option<&st
     Ok(p)
 }
 
-/// The level's engine as `run` loads it (Gemma 4's, Qwen3's, Qwen3.5's or Nemotron 3 Super's), with its tokenizer, chat template and sampling defaults, the size of its vocabulary, the line that says it is ready, and what
+/// The level's engine as `run` loads it (Gemma 4's, the plain dense kind's, the Qwen3.5 layout's or the Nemotron-H layout's), with its tokenizer, chat template and sampling defaults, the size of its vocabulary, the line that says it is ready, and what
 /// /v1/glyd/info says of it served as `served` (MODEL as typed).
 #[allow(clippy::type_complexity)]
 fn load_lossy(
@@ -2830,7 +2830,7 @@ mod tests {
             let r = lossy_plan(&a, "org/dense-36l", layout, DENSE, None, 80 << 30, "NVIDIA A100", None).err().unwrap();
             assert!(
                 r.code == CANNOT
-                    && r.what.starts_with(&format!("dense-36l: the {level} level runs Qwen3.5"))
+                    && r.what.starts_with(&format!("dense-36l: the {level} level on this path takes the Qwen3.5 and Nemotron-H layouts"))
                     && r.fix == "Run it lossless: glyd run org/dense-36l",
                 "{r}"
             );
@@ -3009,7 +3009,7 @@ mod tests {
         assert!(asked("262144").is_err());
         // the three-bit layout is no level of it
         let r = plan(Layout::Int3, 140).err().unwrap();
-        assert!(r.code == CANNOT && r.what.contains("the i3 level is not built for Nemotron 3 Super") && r.fix.ends_with(&format!("{model}:wren")), "{r}");
+        assert!(r.code == CANNOT && r.what.contains("the i3 level is not built for the Nemotron-H layout") && r.fix.ends_with(&format!("{model}:wren")), "{r}");
         // a config the engine does not run (here one with a convolution without its bias) is said in the config's own words
         let r = plan_of(&a, model, text.replace("\"use_conv_bias\": true", "\"use_conv_bias\": false")).err().unwrap();
         assert!(r.code == CANNOT && r.what.contains("a convolution without its bias"), "{r}");
