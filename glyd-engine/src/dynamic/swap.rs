@@ -12,7 +12,7 @@
 //! group), then the rest and the states. The blocks given back keep the part that reads them as a fence (`Pages::release_fenced`) and are taken after every free block
 //! that has none, the sequence's first entries first; a step that takes one waits for its part alone (`Dyn::fence_wait`). The slot's states are emptied when the slot
 //! is used again, after the copy (`Dyn::empty`). Back: the copy runs beside the other sequences' steps, into blocks no one else holds, and the sequence steps once it is
-//! done (`ModelStep::swap_ready`). (A development build's GLYD_ENGINE_SWAP_HOLD=1: the next step waits for the whole copy out, as before; usercheck compares the two.)
+//! done (`ModelStep::swap_ready`). (A development build's GLYD_ENGINE_SWAP_HOLD=1: the next step waits for the whole copy out; usercheck compares the two.)
 //!
 //! The area is pinned as it is needed, in segments, up to what the plan gives it (`plan::swap_area`: twice the GPU cache it backs, within what the computer has free
 //! after the expert store's host tier). A sequence the area has no room for is run again from its tokens, as before.
@@ -397,7 +397,7 @@ impl Dyn {
         let ticket = sw.next + 1;
         let (f0, f1) = (2 * ticket, 2 * ticket + 1);
         if crate::tune!("GLYD_ENGINE_SWAP_HOLD").is_some_and(|v| v == "1") {
-            // (the next step waits for the whole copy, as before the parts)
+            // (the next step waits for the whole copy)
             end.wait(self.dev.stream)?;
         }
         sw.outs.extend([(f0, mid), (f1, end)]);
