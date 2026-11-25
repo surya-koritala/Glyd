@@ -1934,6 +1934,10 @@ impl ModelStep for Dyn {
     fn quiet(&self) -> bool {
         self.owed >= QUIET_EVERY && !self.stores().is_empty()
     }
+    fn cold(&mut self) -> Result<()> {
+        self.owed = 0;
+        self.stores().iter().try_for_each(|st| st.cold(&self.dev))
+    }
     fn masks(&mut self, masks: Vec<Option<crate::constrain::MaskHandle>>) {
         self.row_masks = masks;
     }

@@ -174,6 +174,12 @@ impl super::Dyn {
         on
     }
 
+    /// Whether a capture of pieces failed and passes run eager from there (usercheck: an expert cache's chunk plans its calls on the host).
+    #[cfg(feature = "dev")]
+    pub(crate) fn pieces_refused(&self) -> bool {
+        self.pieces.off
+    }
+
     /// Whether the engine replays graphs at all (the one-row step's is captured).
     #[cfg(feature = "dev")]
     pub(crate) fn graphs_taken(&self) -> bool {

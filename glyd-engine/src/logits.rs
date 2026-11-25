@@ -2783,7 +2783,10 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
 /// are each row's own pass's). With prompts run together the replies that differ are counted, not refused (a step of more than 16 rows is another kernel's; a random model's near ties turn on its last
 /// bits: `roundcheck` measures the logits). The round is one step of the rows that decode and the prompts' chunks unless GLYD_ENGINE_ONE_STEP=0, and some step must then have held both.
 /// Then the prompts at once twice more, with no graph at all (every pass eager) and with every graph on and every pass that is no whole graph's in pieces
-/// (src/dynamic/pieces.rs): the replies the same token for token, and where pieces can run, some pass replayed them.
+/// (src/dynamic/pieces.rs): the replies the same token for token and each sample's logit to the bit, and where pieces can run, some pass replayed them. With
+/// GLYD_ENGINE_OVERLAP=1, where steps are launched ahead, the prompts at once launched ahead and not: the same tokens and logits. With `--places` every run (each reference, alone,
+/// at once, each side of each comparison) begins from the expert cache's cold state with its planner's times held (`ExpertStore::cold`, `hold_costs`), so two runs of the
+/// same calls find the same experts in places and plan alike, in every mode.
 /// With --stagger D the prompts then come D scheduler rounds apart, as a server's requests do: with prompts one a pass every reply is the reply alone, and with no mixture of
 /// experts each reply is the same when every other prompt's tokens are changed (a row's sums may turn on its passes' row counts, never on the other rows' content).
 ///
@@ -2828,9 +2831,13 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             let caching = crate::hbg_store::HbCaching { places, ram: None, offload, dense: 0 };
             match crate::dynamic::split::open_cached(Path::new(d), &o, &[], &[0], vec![caching])? {
                 crate::dynamic::split::Run::One(e) => {
+                    // (the planner's times held where they start, so that two runs from one state plan alike: each run below starts from the cold cache, `Sched::cold`)
+                    e.stores().iter().for_each(|st| st.hold_costs());
+                    let planned: usize = e.stores().iter().map(|st| st.device_layers()).sum();
                     println!(
-                        "{d}: its experts in the expert cache, {places} places a layer, mode {}{}",
+                        "{d}: its experts in the expert cache, {places} places a layer, mode {}{}{}",
                         mode.name(),
+                        if a.has("device-plan") { format!(", the decode calls of {planned} layers planned on the GPU") } else { String::new() },
                         if e.has_graph() { ", the decode step one graph" } else { "" }
                     );
                     e
@@ -2864,7 +2871,9 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         logprobs: None,
         stop_ids: Vec::new(),
     };
-    let reference: Vec<Vec<u32>> = prompts.iter().map(|p| e.reply(p, &reply, &mut |_| true).map(|r| r.0)).collect::<Result<_>>()?;
+    // (each reply from the expert cache's cold state, as every run below: the same calls then find the same experts in places)
+    let reference: Vec<Vec<u32>> =
+        prompts.iter().map(|p| crate::sched::ModelStep::cold(&mut e).and_then(|()| e.reply(p, &reply, &mut |_| true).map(|r| r.0))).collect::<Result<_>>()?;
     // (--kv12: the scheduler's cache in 12-bit lossless pages, of tables made on these prompts; with GLYD_KV12_POOL's small pools the newest sequence is paused where the
     // raw slabs run short, and no page is made void)
     let kv12 = a.has("kv12");
@@ -2876,9 +2885,14 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let Some((k, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
     let chunk = crate::sched::ModelStep::chunk(step);
     // (no finished sequence kept: the same prompts come again below, and each is to run from its first token, in passes with the others)
-    let mut s = Sched::new(step, k).keeping(false);
-    // (the prompts `gap` scheduler rounds apart: 0, all of them before the first round)
+    let mut s = Sched::new(step, k).keeping(false).recording(true);
+    // (the prompts `gap` scheduler rounds apart: 0, all of them before the first round; from the expert cache's cold state, its planner's times held, so that every run
+    // begins from one state and the same calls find the same experts in places)
     let ask = |s: &mut Sched<&mut dyn crate::sched::ModelStep>, ps: &[Vec<u32>], gap: usize| -> Result<Vec<Vec<u32>>> {
+        s.cold()?;
+        if let Some(c) = s.chosen.as_mut() {
+            c.clear();
+        }
         let mut rx = Vec::new();
         for p in ps {
             let (tx, r) = std::sync::mpsc::channel();
@@ -2919,9 +2933,19 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             })
             .collect()
     };
+    // (the last run's sample logits, each sequence's in the order the prompts were given (its id rises with the submits), as bits)
+    let seen = |s: &Sched<&mut dyn crate::sched::ModelStep>| -> Vec<Vec<u32>> {
+        let mut by: std::collections::BTreeMap<u64, Vec<u32>> = Default::default();
+        for &(id, _, l) in s.chosen.iter().flatten() {
+            by.entry(id).or_default().push(l.to_bits());
+        }
+        by.into_values().collect()
+    };
     let mut fails = 0;
+    let mut alone_logits = Vec::new();
     for (i, p) in prompts.iter().enumerate() {
         let got = ask(&mut s, std::slice::from_ref(p), 0)?.remove(0);
+        alone_logits.push(seen(&s).pop().unwrap_or_default());
         let same = got == reference[i];
         fails += !same as usize;
         println!(
@@ -2933,6 +2957,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     }
     let together = ask(&mut s, &prompts, 0)?;
     let same = together.iter().zip(&reference).filter(|(a, b)| a == b).count();
+    let same_logits = seen(&s).iter().zip(&alone_logits).filter(|(a, b)| a == b).count();
     // (with a page budget too small for all of them at once (GLYD_ENGINE_PAGES), sequences give their blocks back and run again from their tokens, the generated ones as a prompt: the
     // replies are then counted, not required to be the same)
     let squeezed = std::env::var_os("GLYD_ENGINE_PAGES").is_some();
@@ -3057,8 +3082,13 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             fails += 1;
         }
     }
+    println!("  at once against alone, logit for logit: {same_logits} of {} replies' every sample logit the same bits", prompts.len());
     if strict && same < prompts.len() {
         println!("FAIL replies at once differ from alone with prompts one a pass");
+        fails += 1;
+    }
+    if strict && same == prompts.len() && same_logits < prompts.len() {
+        println!("FAIL replies at once take other logits than alone with prompts one a pass");
         fails += 1;
     }
     // (--stagger D: the prompts D scheduler rounds apart, as requests reach a server, each joining while those before it decode (GLYD_ENGINE_STEP_TOKENS cuts a prompt
@@ -3138,31 +3168,51 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     // same rows in the same order, so the replies are the same token for token, and where pieces can run, passes replayed them. Not where sequences are sent back for room,
     // which turns on timings)
     let pieces_on = e.pieces_for_check(true, true);
-    // (not where the host computes pairs (--places with --mode cpu, split or auto, or the plan on the GPU, which sends the host a call's misses the places cannot take): which pairs are
-    // its turns on the cache's history, which the second run starts from where the first left it, and its sums differ from the GPU's in their last bits (src/tiering.rs `check`))
-    let hosted = a.num("places", 0usize)? > 0 && (a.flag("mode").is_some_and(|m| m != "copy") || a.has("device-plan"));
-    if hosted && !squeezed && (pieces_on || e.graphs_taken()) {
-        println!("graphs on against off: not compared (the host's pairs turn on the cache's history; --mode copy without --device-plan compares them)");
-    }
-    if !hosted && !squeezed && std::env::var_os("GLYD_KV12_POOL").is_none() && (pieces_on || e.graphs_taken()) {
-        let run = |e: &mut Dyn| -> Result<Vec<Vec<u32>>> {
-            let Some((_, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
-            ask(&mut Sched::new(step, k).keeping(false), &prompts, 0)
-        };
-        let eager = run(&mut e)?;
+    // (a run of the prompts at once, its replies and its sample logits: launched ahead or not where the step can be, `overlapping`)
+    let run = |e: &mut Dyn, ahead: bool| -> Result<(Vec<Vec<u32>>, Vec<Vec<u32>>)> {
+        let Some((_, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
+        let mut s = Sched::new(step, k).keeping(false).recording(true).overlapping(ahead);
+        let got = ask(&mut s, &prompts, 0)?;
+        Ok((got, seen(&s)))
+    };
+    let same = |a: &(Vec<Vec<u32>>, Vec<Vec<u32>>), b: &(Vec<Vec<u32>>, Vec<Vec<u32>>)| {
+        (a.0.iter().zip(&b.0).filter(|(x, y)| x == y).count(), a.1.iter().zip(&b.1).filter(|(x, y)| x == y).count())
+    };
+    if !squeezed && std::env::var_os("GLYD_KV12_POOL").is_none() && (pieces_on || e.graphs_taken()) {
+        let eager = run(&mut e, ahead)?;
         e.pieces_for_check(true, false);
         let (before, rows_before) = (e.piece_replays.get(), e.rows_replays.get());
-        let graphs = run(&mut e)?;
+        let graphs = run(&mut e, ahead)?;
         let (played, rows_played) = (e.piece_replays.get() - before, e.rows_replays.get() - rows_before);
+        // (with an expert cache a pass of a prompt's chunk plans its calls on the host, which waits for the router's choices: no such pass is captured, and passes run eager)
+        let refused = e.pieces_refused() && !e.stores().is_empty();
         e.pieces_for_check(false, false);
-        let same = graphs.iter().zip(&eager).filter(|(a, b)| a == b).count();
-        let ok = same == prompts.len() && (played > 0 || !pieces_on || ahead);
+        let (same_t, same_l) = same(&graphs, &eager);
+        let ok = same_t == prompts.len() && same_l == prompts.len() && (played > 0 || !pieces_on || ahead || refused);
         println!(
-            "{} graphs on against off: {same} of {} replies at once the eager passes', token for token; {played} passes replayed their pieces, {rows_played} decode steps \
-             their graph{}",
+            "{} graphs on against off: {same_t} of {} replies at once the eager passes', token for token, {same_l} logit for logit; {played} passes replayed their pieces, \
+             {rows_played} decode steps their graph{}",
             if ok { "PASS" } else { "FAIL" },
             prompts.len(),
-            if pieces_on { "" } else { " (no pieces here)" }
+            if refused {
+                " (the expert cache's chunks are planned on the host: no pass is captured in pieces)"
+            } else if pieces_on {
+                ""
+            } else {
+                " (no pieces here)"
+            }
+        );
+        fails += !ok as usize;
+    }
+    // (launched ahead against not, GLYD_ENGINE_OVERLAP=1: the same steps, each landed before the next is launched in the second run)
+    if ahead && !squeezed {
+        let (on, off) = (run(&mut e, true)?, run(&mut e, false)?);
+        let (same_t, same_l) = same(&on, &off);
+        let ok = same_t == prompts.len() && same_l == prompts.len();
+        println!(
+            "{} launched ahead against not: {same_t} of {} replies at once token for token, {same_l} logit for logit",
+            if ok { "PASS" } else { "FAIL" },
+            prompts.len()
         );
         fails += !ok as usize;
     }
