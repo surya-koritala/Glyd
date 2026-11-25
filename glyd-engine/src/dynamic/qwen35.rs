@@ -3,22 +3,63 @@
 //! tensors in kern35's loader's order and the executor's loader reads them (the small matrices dense, the fp32 parameters, the gated norm's weight as vLLM holds it).
 
 use super::attn::{AttnOp, GateAt, QkNorm, RopeAt};
-use super::{Dyn, ModelDesc, NormW, Op, Opts, Ring, Rope, Slot, Stage};
-use crate::ffi::{err, Result};
+use super::{Dyn, ModelDesc, NormW, Op, Opts, ResidentMoe, Ring, Rope, Slot, Stage};
+use crate::ffi::{err, Error, Result};
+use crate::kern_nh::MoeBlock;
 use crate::qwen35::Kind;
+use crate::runtime::describe::Described;
+use crate::runtime::kinds::{Body, Ffn};
+use crate::weights::Layout;
+use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 
 pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
-    let layers = crate::qwen35::Config35::load(dir)?.layers;
+    let layers = match with_experts(dir) {
+        Some((kinds, _)) => kinds.desc.blocks.len() / 2,
+        None => crate::qwen35::Config35::load(dir)?.layers,
+    };
     load_stage(dir, o, Stage::whole(layers))
+}
+
+/// The description of the model in `dir` and its label, where a layer's feed-forward is a mixture of experts (None: the dense layout, or no description).
+fn with_experts(dir: &Path) -> Option<(Described, String)> {
+    crate::runtime::describe::describe_dir(dir).ok().filter(|(k, _)| k.desc.blocks.iter().any(|b| matches!(b.body, Body::Ffn(Ffn::Moe(_)))))
 }
 
 /// Stage `st` of it (a model split across GPUs: its layers, the embedding where it is the first, the head where the last; a layer of another
 /// stage is an empty one here), on the executor's loader (`Dyn::new_stage`: the b and a gates' small parts held as saved, A_log and the gated norm's
-/// weight in fp32, a saved directory's packs as saved).
+/// weight in fp32, a saved directory's packs as saved). A model whose feed-forwards are mixtures of experts (the layout with experts, `Qwen3_5MoeForCausalLM`) loads by its
+/// layer kinds alone (`load_experts`).
 pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
+    if let Some((kinds, label)) = with_experts(dir) {
+        return load_experts(dir, o, st, &kinds).map_err(|e| e.context(&label));
+    }
     let c = crate::qwen35::Config35::load(dir)?;
     Dyn::new_stage(dir, lowered(dir, &c, &st)?, None, st, o)
+}
+
+/// The layout with experts: its kinds lowered (`lower::qwen35`), each layer's experts the kind's resident block (`experts::resident`: the softmax router, the
+/// experts and the gated shared expert at the level of the other matrices), the stage's layers' in order. Every expert is on the GPU.
+fn load_experts(dir: &Path, o: &Opts, st: Stage, kinds: &Described) -> Result<Dyn> {
+    let cfg = crate::runtime::config::ModelConfig::load(dir)?;
+    let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
+    let mut eos = crate::runtime::config::eos_ids(&cfg.text, generation.as_deref());
+    if eos.is_empty() {
+        eos = crate::runtime::config::eos_ids(&cfg.top, None);
+    }
+    let max_pos = cfg.shared.max_position_embeddings.ok_or_else(|| Error("no max_position_embeddings".into()))?;
+    let d = super::lower::qwen35(kinds, eos, max_pos, &st)?;
+    let (hidden, blocks) = (kinds.desc.hidden, &kinds.desc.blocks);
+    let mine = || {
+        blocks.iter().zip(&kinds.blocks).enumerate().filter_map(|(b, (blk, roles))| match &blk.body {
+            Body::Ffn(Ffn::Moe(m)) if (st.layers.0..st.layers.1).contains(&(b / 2)) => Some((m, roles)),
+            _ => None,
+        })
+    };
+    let experts = |ck: &Checkpoint, level: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
+        mine().map(|(m, roles)| Ok(Box::new(ResidentMoe(super::experts::resident(m, roles, hidden, ck, level)?)) as Box<dyn MoeBlock>)).collect()
+    };
+    Dyn::new_with(dir, d, None, st, o, &experts)
 }
 
 /// A layer's matrices and small tensors as the loader holds them: a linear-attention layer's qkvz, ba and out products and its MLP's two; its input and
@@ -196,4 +237,57 @@ pub fn describe(c: &crate::qwen35::Config35, st: &Stage) -> Result<ModelDesc> {
         hc: (0.0, 0),
         logit_mult: 0.0,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{MoeOp, Op, Slot, Stage};
+    use crate::runtime::describe::describe;
+
+    fn tiny() -> serde_json::Value {
+        serde_json::from_str(include_str!("../../tests/fixtures/qwen35moe_tiny_config.json")).unwrap()
+    }
+
+    /// The layout with experts, lowered from its kinds: each layer's mixer as the dense layout's, then the post-attention norm and `Op::Moe` in the MLP's place
+    /// (block k the k-th layer's, the experts' sum the layer's update); no MLP matrix is named (the experts' tensors are their block's), every matrix and
+    /// small tensor named is the description's, and no slot of the MLP's is sized.
+    #[test]
+    fn a_layer_of_experts_runs_the_experts_operation_in_the_mlps_place() {
+        let d = describe(&tiny()).unwrap();
+        let m = super::super::lower::qwen35(&d, vec![2], 1100, &Stage::whole(4)).unwrap();
+        assert_eq!((m.layers.len(), m.hidden, m.rings.len(), m.states.len()), (4, 1024, 1, 6));
+        for (l, ops) in m.layers.iter().enumerate() {
+            let n = ops.len();
+            assert!(matches!(ops[n - 2], Op::NormAdd { y: Slot::O, plus1: true, .. }), "{:?}", ops[n - 2]);
+            assert!(matches!(ops[n - 1], Op::Moe(x) if x == MoeOp { y: Slot::D, ..MoeOp::of(l) }), "{:?}", ops[n - 1]);
+            assert!(!ops.iter().any(|op| matches!(op, Op::GateUpSilu { .. })));
+        }
+        // (three Gated DeltaNet layers' qkvz, ba and out products, the attention layer's qkv and o, the embedding and the head)
+        assert_eq!(m.mats.len(), 3 * 3 + 2 + 2);
+        assert_eq!((m.width(Slot::Gu), m.width(Slot::M), m.width(Slot::D)), (0, 0, 1024));
+        assert!(m.wanted(&Stage::whole(4)).iter().all(|&w| w), "a matrix no operation multiplies by");
+        let names = d.names();
+        assert!(m.mats.iter().all(|it| it.members.iter().all(|n| names.contains(n))) && m.small.iter().all(|n| names.contains(n)));
+        assert!(m.mats.iter().all(|it| it.members.iter().all(|n| !n.contains(".mlp."))));
+    }
+
+    /// A stage of a model split across GPUs counts its blocks of experts from its own first layer, as its loader reads them.
+    #[test]
+    fn a_stages_blocks_of_experts_count_from_its_first_layer() {
+        let d = describe(&tiny()).unwrap();
+        let m = super::super::lower::qwen35(&d, vec![2], 1100, &Stage { layers: (2, 4), first: false, last: true }).unwrap();
+        let blocks: Vec<Vec<usize>> =
+            m.layers.iter().map(|ops| ops.iter().filter_map(|op| if let Op::Moe(x) = op { Some(x.block) } else { None }).collect()).collect();
+        assert_eq!(blocks, [vec![], vec![], vec![0], vec![1]]);
+    }
+
+    /// The dense layout lowers as it did: its MLP's two products, no block of experts.
+    #[test]
+    fn the_dense_layout_keeps_its_mlp() {
+        let man: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/qwen35_tiny_manifest.json")).unwrap();
+        let d = describe(&serde_json::from_str(man["config"].as_str().unwrap()).unwrap()).unwrap();
+        let m = super::super::lower::qwen35(&d, vec![2], 1100, &Stage::whole(4)).unwrap();
+        assert!(m.layers.iter().all(|ops| ops.iter().any(|op| matches!(op, Op::GateUpSilu { .. })) && !ops.iter().any(|op| matches!(op, Op::Moe(_)))));
+        assert_eq!((m.mats.len(), m.width(Slot::Gu), m.width(Slot::M)), (3 * 5 + 4 + 1, 2 * 3584, 3584));
+    }
 }

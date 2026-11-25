@@ -6,6 +6,7 @@ pub mod attn;
 mod comp;
 pub mod deepseek_v4;
 pub mod dense;
+pub mod experts;
 pub mod gemma4;
 pub mod glm;
 pub mod kimi;
@@ -53,7 +54,7 @@ use crate::sched::Sample;
 use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload_packed, Item, Layout, PackBuf};
 pub use attn::AttnOp;
 use glyd_gpu::safetensors::Checkpoint;
-pub use mla::{Cand, IdxKeys, IdxPick, IdxScore, MlaIn, MlaIndexer, MlaOp};
+pub use mla::{Cand, IdxKeys, IdxPick, IdxScore, KeyNorm, MlaIn, MlaIndexer, MlaOp};
 #[cfg(feature = "dev")]
 pub(crate) use rows::EXACT_ROWS;
 use std::path::Path;
