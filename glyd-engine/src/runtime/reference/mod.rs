@@ -236,6 +236,7 @@ fn roles(b: &Block) -> Vec<String> {
         Body::Mixer(Mixer::Compressed(_)) => &["q_a", "q_b", "kv", "o_a", "o_b", "comp_kv", "comp_gate", "idx_kv", "idx_gate", "idx_q_b", "idx_weights"],
         Body::Mixer(Mixer::Mamba2(_)) => &["in", "o"],
         Body::Ngram(_) => &["key", "value"],
+        Body::PerLayer(_) => &["gate", "proj"],
         Body::Ffn(_) => &[
             "gate",
             "up",
@@ -477,6 +478,7 @@ impl RefLayer {
                 let SeqState::Mamba(s) = st else { return err("a sequence's state is not a Mamba-2 state") };
                 mamba::step(m, p, s, h)
             }
+            Body::PerLayer(pl) => err(format!("the per-layer input {}'s branch reads its token's input: it runs in the model (`RefModel::body`)", pl.layer)),
             Body::Ngram(n) => {
                 let st = self.seqs.entry(seq).or_insert_with(|| SeqState::Ngram(ngram::NgramState::new(n, h.len())));
                 let SeqState::Ngram(s) = st else { return err("a sequence's state is not an n-gram embedding's") };
@@ -672,7 +674,8 @@ impl Backend for Ref {
             | KindRef::Mamba2
             | KindRef::Mlp
             | KindRef::Moe
-            | KindRef::Ngram => Support::Slower("the f32 reference".into()),
+            | KindRef::Ngram
+            | KindRef::PerLayer => Support::Slower("the f32 reference".into()),
         }
     }
 

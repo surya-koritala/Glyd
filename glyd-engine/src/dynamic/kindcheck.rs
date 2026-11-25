@@ -152,6 +152,7 @@ fn label(b: &Block) -> (Class, String) {
             (Class::Moe, s)
         }
         Body::Ngram(n) => (Class::Residual, format!("n-gram embedding: orders up to {}, {} tables each, {} streams", n.order, n.heads, n.streams)),
+        Body::PerLayer(pl) => (Class::Mlp, format!("per-layer input {}: {:?} gate", pl.layer, pl.act)),
     }
 }
 
@@ -165,6 +166,7 @@ fn residual_label(b: Option<&Block>) -> String {
         (NormKind::Rms, _) => "RMS",
         (NormKind::Layer, _) => "LayerNorm",
         (NormKind::L2, _) => "l2",
+        (NormKind::Identity, _) => "none",
     };
     let rule = match &b.residual {
         Residual::Add => "add".to_string(),

@@ -57,6 +57,9 @@ fn bf16_round(x: f32) -> f32 {
 /// embedding scaled and normed into the first layer, the tied and soft-capped head. `eos` and `max_pos` are the generation config's and the config's.
 pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> {
     let m = &d.desc;
+    if m.embed.per_layer.is_some() {
+        return err("Gemma 4: per-layer inputs (E2B, E4B): not an operation of the executor yet");
+    }
     if m.blocks.len() % 2 != 0 {
         return err(format!("Gemma 4: {} blocks, where each layer is an attention block and an MLP block", m.blocks.len()));
     }
@@ -1861,6 +1864,58 @@ mod tests {
         assert_eq!(attn[4..], [(false, 2, 4 * 256), (false, 2, 4 * 256), (false, 2, 4 * 256), (false, 3, 4 * 512)]);
         assert!(attn[..4].iter().all(|a| a.0));
         assert_eq!((d.mats[2].rows, d.mats[4 * 4 + 2].rows), (2 * 512, 4 * 512));
+    }
+
+    /// Per-layer inputs (E2B, E4B) on the CPU reference: a random Gemma 4 with them describes as three blocks a layer (the branch's after the MLP, the layer
+    /// scalar moved onto it), its inputs are the formula by hand for a token, the whole model runs, and the executor's lowering refuses it by name.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn gemma4_per_layer_inputs_on_the_reference() {
+        use crate::runtime::kinds::{Body, Residual};
+        use crate::runtime::reference::{matvec, model::RefModel, norm::norm};
+        let text = r#"{"architectures": ["Gemma4ForConditionalGeneration"], "model_type": "gemma4", "eos_token_id": [1, 106],
+            "text_config": {"model_type": "gemma4_text", "hidden_size": 128, "num_hidden_layers": 3, "num_attention_heads": 2, "num_key_value_heads": 1,
+            "head_dim": 256, "global_head_dim": 512, "intermediate_size": 128, "vocab_size": 512, "rms_norm_eps": 1e-6, "sliding_window": 16,
+            "layer_types": ["sliding_attention", "sliding_attention", "full_attention"], "hidden_size_per_layer_input": 32, "vocab_size_per_layer_input": 512,
+            "final_logit_softcapping": 30.0, "max_position_embeddings": 4096, "hidden_activation": "gelu_pytorch_tanh",
+            "rope_parameters": {"sliding_attention": {"rope_theta": 10000.0, "rope_type": "default"}, "full_attention": {"rope_theta": 1000000.0, "partial_rotary_factor": 0.25, "rope_type": "proportional"}}}}"#;
+        let dir = std::env::temp_dir().join(format!("glyd-lower-g4ple-{}", std::process::id()));
+        crate::logits::gemma4_shaped_random(&dir, text, 7).unwrap();
+        let d = crate::runtime::describe::describe_dir(&dir).unwrap().0;
+        let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
+        let src = |n: &str| crate::runtime::reference::model::checkpoint_tensor(&ck, n);
+        let mut m = RefModel::load(&d, &src).unwrap();
+        assert_eq!(d.desc.blocks.len(), 9);
+        for l in 0..3 {
+            let (f, g) = (&d.desc.blocks[3 * l + 1], &d.desc.blocks[3 * l + 2]);
+            assert!(matches!(f.residual, Residual::Add) && matches!(g.residual, Residual::AddThenScale));
+            assert!(matches!(g.body, Body::PerLayer(p) if p.layer == l));
+        }
+        // (token 9's inputs by hand: its row of the table times sqrt(32), plus the normed context, times 2^-0.5)
+        let (e, pl) = (src(&d.embed).unwrap().1, d.desc.embed.per_layer.unwrap());
+        let row: Vec<f32> = e[9 * 128..][..128].iter().map(|&x| x * d.desc.embed.scale).collect();
+        let get = |r: &str| {
+            src(match &d.extra.iter().find(|(n, _)| n == r).unwrap().1 {
+                crate::runtime::describe::Source::Tensor(n) => n,
+                s => panic!("{s:?}"),
+            })
+            .unwrap()
+            .1
+        };
+        let ctx: Vec<f32> = matvec(&get("ple_proj"), 128, &row).iter().map(|v| v / 128f32.sqrt()).collect();
+        let (t, w) = (get("ple_embed"), get("ple_norm"));
+        let mut want = Vec::new();
+        for l in 0..3 {
+            let c = norm(&pl.norm, &ctx[l * 32..][..32], Some(&w), None);
+            want.extend((0..32).map(|i| (c[i] + t[9 * 96 + l * 32 + i] * 32f32.sqrt()) * std::f32::consts::FRAC_1_SQRT_2));
+        }
+        let got = m.per_layer_input(9).unwrap();
+        assert!(got.iter().zip(&want).all(|(a, b)| (a - b).abs() <= 1e-5 * b.abs().max(1.0)), "{:?} {:?}", &got[..4], &want[..4]);
+        let logits = m.forward(&[2, 9, 40, 77], 0).unwrap();
+        assert!(logits.len() == 4 && logits.iter().flatten().all(|v| v.is_finite()));
+        let e = gemma4(&d, &|n: &str| d.shapes.get(n).cloned(), vec![1], 4096).unwrap_err().msg;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(e.contains("per-layer inputs"), "{e}");
     }
 
     /// Gemma 4 lowered from its released config's kinds, sized by the shapes the description gives, is to the last field the executor's own description of it

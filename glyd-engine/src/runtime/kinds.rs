@@ -25,6 +25,8 @@ pub enum NormKind {
     Layer,
     /// x / sqrt(sum(x^2) + eps)
     L2,
+    /// No norm: the value itself (a branch that reads the residual as it is, as the per-layer input's does).
+    Identity,
 }
 
 /// How a norm's weight (role `w`, [dim]) scales the normed value.
@@ -616,11 +618,32 @@ impl std::fmt::Debug for Ngram {
     }
 }
 
+/// Per-layer inputs (Gemma 4's E2B and E4B, `hidden_size_per_layer_input`): beside its residual each token carries `layers` vectors of `dim` values, made at
+/// the embedding from the token and its scaled embedding e: the token's part `ple_embed`[token] (role [vocab, layers dim]) times sqrt(dim); the context's
+/// `ple_proj` e (role [layers dim, hidden]) times hidden^-0.5, each layer's `dim` values normed by `norm` (weight `ple_norm` [dim]); the input their sum
+/// times 2^-0.5. A token past `vocab` has no token's part (the context's alone). Roles of the model (`Described::extra`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PerLayerIn {
+    pub dim: usize,
+    pub layers: usize,
+    pub vocab: usize,
+    pub norm: Norm,
+}
+
+/// The gated branch of a per-layer input: o = `proj` (act(`gate` x) input[`layer`]), x the block's input (its `norm_in` `NormKind::Identity`: the residual
+/// as it is). Roles `gate` [dim, hidden], `proj` [hidden, dim].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PerLayer {
+    pub layer: usize,
+    pub act: Act,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Body {
     Mixer(Mixer),
     Ffn(Ffn),
     Ngram(Ngram),
+    PerLayer(PerLayer),
 }
 
 /// Muse's gated residual X = a X + b O, the factors from role `res_gate` [hidden] and the temperature.
@@ -712,7 +735,7 @@ pub struct Block {
     pub residual: Residual,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Embed {
     /// Gemma: x sqrt(hidden).
     pub scale: f32,
@@ -720,6 +743,21 @@ pub struct Embed {
     pub norm: Option<Norm>,
     /// Residual streams the embedding is copied into (mHC: 4); 1 for a plain residual.
     pub streams: usize,
+    /// The per-layer inputs made beside the residual (Gemma 4's E2B, E4B).
+    pub per_layer: Option<PerLayerIn>,
+}
+
+/// The derived form, with `per_layer` said only where it is set: the other descriptions read as they did before the field (the digests of
+/// tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for Embed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("Embed");
+        s.field("scale", &self.scale).field("norm", &self.norm).field("streams", &self.streams);
+        if let Some(p) = &self.per_layer {
+            s.field("per_layer", p);
+        }
+        s.finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
