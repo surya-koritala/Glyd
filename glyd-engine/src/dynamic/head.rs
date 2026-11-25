@@ -1,7 +1,7 @@
-//! A draft head of the model itself on the executor (`kinds::MtpInput::Streams`, Qwen3.8-Flash-Next's MTP layer; `lower::qwen4x_head`): a draft part whose
-//! input is the model's last streams of a row and the token after it (`Op::MtpIn`), its blocks the model's kinds, its keys and values in rings after the model's,
-//! the model's own LM head. A head's row at position p reads the model's streams at p and the token at p + 1, and drafts the token at p + 2; its own streams
-//! after its blocks are the next draft's input.
+//! A draft head of the model itself on the executor (`kinds::MtpHead`, `lower::draft_head`: Qwen3.8-Flash-Next's MTP layer of the model's streams, GLM-5.3's
+//! of DeepSeek-V3's joined form): a draft part whose input is the model's state of a row and the token after it (`Op::MtpIn`), its blocks the model's kinds,
+//! its keys and values in rings after the model's, the model's own LM head. A head's row at position p reads the model's state at p (its last streams, or
+//! its final normed hidden state: `state`) and the token at p + 1, and drafts the token at p + 2; its own state after its blocks is the next draft's input.
 //!
 //! The head runs a row behind the model: after each prompt chunk, on the chunk's rows whose next token is known (the row the last chunk left waiting, then this
 //! chunk's but its last, which waits in the head's Hid for the token the model picks); a drafting round (`spec_round_head`) gives the waiting row that token
@@ -9,15 +9,15 @@
 //! step: `Dyn::verify_rows`, the states gone back to after the rows kept: `Dyn::rewind`), and runs the head again on the kept rows' streams, its rows at those
 //! positions in place of its drafts' (what its caches held past them is written again before a row reads it).
 //!
-//! A model split across GPUs (src/dynamic/split.rs) drafts with the head on its last stage, which holds the model's last streams, its LM head and the embedding
+//! A model split across GPUs (src/dynamic/split.rs) drafts with the head on its last stage, which holds the model's last state, its LM head and the embedding
 //! the head reads: the same steps, a round's in its parts (`stage_chunk`, `stage_drafts`, every stage's verify pass and rewind, `stage_head_again`).
 
-use super::{copy_d2d_async, copy_d2h_async, Draft, Dyn, HeadLast, IdxKeys, IdxPick, ModelDesc, Op, Slot, VERIFY_ROWS};
+use super::{copy_d2d_async, copy_d2h_async, Draft, Dyn, HeadLast, IdxKeys, IdxPick, ModelDesc, MtpFront, Op, Slot, VERIFY_ROWS};
 use crate::ffi::{err, Error, Result};
 
 /// One pass of the head as `Dyn::trace_head` keeps it: the position of its first row, each row's token (the one after the model's row it continues), the
-/// streams each row read (bf16, [rows, streams hidden]), its experts' choices ([rows, k], the router's order; empty where the block leaves none), the last
-/// row's logits (bf16 words) and its draft.
+/// state each row read (bf16, [rows, the state's width]: `state`), its experts' choices ([rows, k], the router's order; empty where the block leaves none),
+/// its indexers' picks (`mla::PickTrace`, a latent attention's with an indexer), the last row's logits (bf16 words) and its draft.
 #[derive(Clone, Debug)]
 pub struct HeadPass {
     pub pos: usize,
@@ -25,8 +25,18 @@ pub struct HeadPass {
     pub streams: Vec<u16>,
     pub routes: Vec<i64>,
     pub k: usize,
+    pub picks: Vec<super::PickTrace>,
     pub logits: Vec<u16>,
     pub draft: u32,
+}
+
+/// The slot of the state a draft head's row continues, the model's and the head's own alike: the residual streams (a head of the model's streams), or the
+/// final normed hidden state (a joined head: its final norm's output, which the LM head reads).
+pub(super) fn state(h: &ModelDesc) -> Slot {
+    match h.first {
+        Op::MtpIn { front: MtpFront::Joined { .. }, .. } => Slot::H,
+        _ => Slot::S,
+    }
 }
 
 /// Whether a draft head's description `h` runs beside the model's `big`: the model's width, vocabulary and streams, its rotary tables the model's (it names
@@ -50,13 +60,22 @@ pub(super) fn fits(big: &ModelDesc, h: &ModelDesc) -> Result<()> {
     Ok(())
 }
 
-/// The rings `d`'s operations name moved `by` places (a draft head's after the model's): its attention's, its indexer's keys and pools. An operation of another
-/// ring kind is refused.
+/// The rings `d`'s operations name moved `by` places (a draft head's after the model's): its attention's, its indexer's keys and pools, a latent attention's
+/// latents and its indexer's keys. An operation of another ring kind is refused.
 pub(super) fn shift_rings(d: &mut ModelDesc, by: usize) -> Result<()> {
     let family = d.family;
+    let moved = |k: &mut IdxKeys| match k {
+        IdxKeys::Ring(r) | IdxKeys::Entries(r) | IdxKeys::Pools(r) => *r += by,
+    };
     for op in std::iter::once(&mut d.first).chain(d.layers.iter_mut().flatten()) {
         match op {
             Op::Attn(a) => a.ring += by,
+            Op::Mla(a) => {
+                a.ring += by;
+                for p in a.indexer.as_mut().map(|x| &mut x.pick).into_iter().chain(a.lent.as_mut()) {
+                    moved(&mut p.keys);
+                }
+            }
             Op::IdxMean { keys, pools, .. } => (*keys, *pools) = (*keys + by, *pools + by),
             Op::IdxPick(IdxPick { keys: IdxKeys::Pools(r), .. }) => *r += by,
             op if !op.rings().is_empty() => return err(format!("{family}: a draft head's {} names rings of a kind not moved", super::rows::op_name(op))),
@@ -86,7 +105,7 @@ impl Dyn {
         if n == 0 {
             return Ok(());
         }
-        let (s, w) = (self.dev.stream, dr.p.d.width(Slot::Hid) * 2);
+        let (s, w, at) = (self.dev.stream, dr.p.d.width(Slot::Hid) * 2, self.big.slot(state(&dr.p.d)));
         let pend = hs.pending.take();
         if pend.is_some_and(|p| p + 1 != start) {
             return err(format!("a draft head's row at {pend:?} waits, where the chunk begins at {start}"));
@@ -94,10 +113,10 @@ impl Dyn {
         let first = pend.is_some() as usize;
         let next: Vec<u32> = pend.map(|_| tokens[0]).into_iter().chain(tokens[1..].iter().copied()).collect();
         if !next.is_empty() {
-            copy_d2d_async(dr.p.slot(Slot::Hid) + (first * w) as u64, self.big.slot(Slot::S), (n - 1) * w, s)?;
+            copy_d2d_async(dr.p.slot(Slot::Hid) + (first * w) as u64, at, (n - 1) * w, s)?;
             self.head_pass(dr, pend.unwrap_or(start), &next)?;
         }
-        copy_d2d_async(dr.p.slot(Slot::Hid), self.big.slot(Slot::S) + ((n - 1) * w) as u64, w, s)?;
+        copy_d2d_async(dr.p.slot(Slot::Hid), at + ((n - 1) * w) as u64, w, s)?;
         hs.pending.set(Some(start + n - 1));
         Ok(())
     }
@@ -124,7 +143,11 @@ impl Dyn {
         }
         self.embed(next)?;
         let pp = self.pos.ptr;
-        self.forward(&dr.p, m, (pp, pp), 1)?;
+        // (a traced pass records its indexers' picks apart from any the model's passes record)
+        let others = traced.then(|| self.pick_trace.replace(Some(Vec::new())));
+        let run = self.forward(&dr.p, m, (pp, pp), 1);
+        let picks = others.map_or(Vec::new(), |o| self.pick_trace.replace(o).unwrap_or_default());
+        run?;
         copy_d2h_async(self.host.ptr, dr.p.tok.ptr, 4, s)?;
         self.dev.sync()?;
         let draft = *(self.host.ptr as *const i32) as u32;
@@ -138,7 +161,7 @@ impl Dyn {
             let mut logits = vec![0u16; dr.p.d.vocab];
             dr.p.logits.read(0, &mut logits)?;
             if let Some(t) = hs.trace.borrow_mut().as_mut() {
-                t.push(HeadPass { pos, tokens: next.to_vec(), streams, routes, k, logits, draft });
+                t.push(HeadPass { pos, tokens: next.to_vec(), streams, routes, k, picks, logits, draft });
             }
         }
         Ok(draft)
@@ -150,7 +173,7 @@ impl Dyn {
         std::mem::replace(&mut *hs.trace.borrow_mut(), on.then(Vec::new)).unwrap_or_default()
     }
 
-    /// Whether the engine drafts with a head of the model itself (`lower::qwen4x_head`).
+    /// Whether the engine drafts with a head of the model itself (`lower::draft_head`).
     pub fn drafts_with_head(&self) -> bool {
         self.draft.as_ref().is_some_and(|d| d.head.is_some())
     }
@@ -199,9 +222,9 @@ impl Dyn {
         };
         drafts.push(at.draft);
         while drafts.len() < k {
-            // SAFETY: the head's last pass left its rows' streams in its S; its Hid takes the last of them.
+            // SAFETY: the head's last pass left its rows' state in its slot (`state`); its Hid takes the last of them.
             unsafe {
-                copy_d2d_async(dr.p.slot(Slot::Hid), dr.p.slot(Slot::S) + (at.row * w) as u64, w, s)?;
+                copy_d2d_async(dr.p.slot(Slot::Hid), dr.p.slot(state(&dr.p.d)) + (at.row * w) as u64, w, s)?;
                 self.head_pass(dr, at.pos + 1, &[at.draft])?;
             }
             at = hs.last.get().ok_or_else(|| Error("a head's pass that left no draft".into()))?;
@@ -233,9 +256,9 @@ impl Dyn {
     /// after it (`next`), its rows there in place of its drafts', its last row's draft the next round's first.
     fn head_again(&self, dr: &Draft, n0: usize, kept: usize, next: &[u32]) -> Result<()> {
         let (s, w) = (self.dev.stream, dr.p.d.width(Slot::Hid) * 2);
-        // SAFETY: the model's S holds the verify pass's rows (`rewind` writes other slots); the copy is queued before the head's pass.
+        // SAFETY: the model's state slot holds the verify pass's rows (`rewind` writes other slots); the copy is queued before the head's pass.
         unsafe {
-            copy_d2d_async(dr.p.slot(Slot::Hid), self.big.slot(Slot::S), (kept + 1) * w, s)?;
+            copy_d2d_async(dr.p.slot(Slot::Hid), self.big.slot(state(&dr.p.d)), (kept + 1) * w, s)?;
             self.head_pass(dr, n0, next)?;
         }
         Ok(())
@@ -290,26 +313,33 @@ impl Dyn {
     }
 }
 
-/// `glyd-engine draftcheck CASE [--level L] [--k K] [--tokens N] [--split CUT,.. --devices GPU,..]`: the family's draft head on the executor, on the random case
-/// with its MTP layer (`logits::qwen4x_mtp_random`, CASE `qwen4x`: the `qwen4x` case's model to the bit and its head), for a short prompt and one past two
-/// chunks: (1) the drafted greedy generation against the model alone, N tokens: every token and every one of its rows of logits the same bits (the round's
-/// verify rows are the steps'), the drafts and how many were kept said; (2) the head held to the CPU reference of the kinds (`RefMtp::step_streams`) on
-/// the streams and tokens it read: each of its passes' last row against the reference's on the head's own expert choices, at the bound the family is
-/// held to (`tests/logits/qwen4x.json.gz`'s), the figures on the reference's own choices printed beside them. With `--split`, (1) again with the model's
-/// layers in stages (src/dynamic/split.rs; GPU 0 for each where `--devices` is not given), its head on the last: the tokens and rows the model's alone,
-/// and each round's tokens the one-GPU drafted engine's (the head drafts there as on one GPU). An error where any fails.
+/// `glyd-engine draftcheck CASE [--level L] [--k K] [--tokens N] [--split CUT,.. --devices GPU,..]`: a family's draft head on the executor (`lower::draft_head`), on its random case with its
+/// MTP layer: CASE `qwen4x` (`logits::qwen4x_mtp_random`: the `qwen4x` case's model to the bit and its head of the model's streams), `glm-dsa` and
+/// `glm-dsa-f8` (`logits::glm_dsa_mtp_random`: those cases' models to the bit, bf16 and as released in FP8, and their joined head: a latent attention with an
+/// indexer of its own and the experts). For a short prompt and one past two chunks: (1) the drafted greedy generation against the model alone, N tokens:
+/// every token and every one of its rows of logits the same bits (the round's verify rows are the steps'), the drafts and how many were kept said; (2)
+/// the head held to the CPU reference of the kinds (`RefMtp::step_streams`, `RefMtp::step`) on the states and tokens it read: each of its passes' last row
+/// against the reference's on the head's own choices (its experts, its indexer's picks), at the bound the family is held to (the case's fixture's,
+/// tests/logits/CASE.json.gz), the figures on the reference's own choices printed beside them. With `--split` (the `qwen4x` case), (1) again with the model's
+/// layers in stages (src/dynamic/split.rs; GPU 0 for each where `--devices` is not given), its head on the last: the tokens and rows the model's alone, and
+/// each round's tokens the one-GPU drafted engine's (the head drafts there as on one GPU). An error where any fails.
 #[cfg(feature = "dev")]
 pub fn check(a: &crate::args::Args) -> Result<()> {
     let case = a.need(1, "CASE")?;
-    if case != "qwen4x" {
-        return err(format!("draftcheck {case}: the draft head's case is qwen4x (the family's random model with its MTP layer)"));
-    }
+    let make: fn(&std::path::Path) -> Result<()> = match case {
+        "qwen4x" => crate::logits::qwen4x_mtp_random,
+        "glm-dsa" => |d| crate::logits::glm_dsa_mtp_random(d, false),
+        "glm-dsa-f8" => |d| crate::logits::glm_dsa_mtp_random(d, true),
+        _ => {
+            return err(format!("draftcheck {case}: the draft heads' cases are qwen4x, glm-dsa and glm-dsa-f8 (each family's random model with its MTP layer)"))
+        }
+    };
     let level = a.flag("level").unwrap_or("penguin");
     let (k, tokens): (usize, usize) = (a.num("k", 3usize)?, a.num("tokens", 24usize)?);
     let split = super::split::split_args(a)?;
     let dir = std::env::temp_dir().join(format!("glyd-draftcheck-{}", std::process::id()));
-    crate::logits::qwen4x_mtp_random(&dir)?;
-    let r = check_on(&dir, level, k, tokens, &split);
+    make(&dir)?;
+    let r = check_on(case, &dir, level, k, tokens, &split);
     std::fs::remove_dir_all(&dir).ok();
     let (bits_ok, held_ok) = r?;
     if !(bits_ok && held_ok) {
@@ -387,23 +417,36 @@ fn drafted_run(
     Ok((got, rows, rounds))
 }
 
-/// `check`'s parts on the model in `dir`: whether the drafted generations are the model's alone, bit for bit (and across the stages of `split` where it cuts
-/// any: the one GPU's rounds too), and whether the head is within its bound.
+/// The model of `case` in `dir` alone, and drafting with its head `k` tokens a round, each by its family's loader.
 #[cfg(feature = "dev")]
-fn check_on(dir: &std::path::Path, level: &str, k: usize, tokens: usize, split: &(Vec<usize>, Vec<i32>)) -> Result<(bool, bool)> {
-    use crate::logits::{compare, level_layout, Bound, Fixture, HeadRow, Row};
+fn engines(case: &str, dir: &std::path::Path, o: &super::Opts, k: usize) -> Result<(Dyn, Dyn)> {
+    Ok(match case {
+        "qwen4x" => {
+            let experts = super::qwen4x::experts_at(o.layout);
+            (super::qwen4x::load_level(dir, o, experts)?, super::qwen4x::load_drafting(dir, o, experts, k)?)
+        }
+        _ => (super::glm::load_plain(dir, o)?, super::glm::load_plain_drafting(dir, o, k)?),
+    })
+}
+
+/// `check`'s parts on the model of `case` in `dir`: whether the drafted generations are the model's alone, bit for bit (and across the stages of `split`
+/// where it cuts any: the one GPU's rounds too), and whether the head is within its bound.
+#[cfg(feature = "dev")]
+fn check_on(case: &str, dir: &std::path::Path, level: &str, k: usize, tokens: usize, split: &(Vec<usize>, Vec<i32>)) -> Result<(bool, bool)> {
+    use crate::logits::{compare, level_layout, Bound, Fixture, HeadRef, HeadRow, Row};
     let layout = level_layout(level)?;
-    let experts = super::qwen4x::experts_at(layout);
     let o = super::Opts { ctx: 1024, chunk: 64, graph: true, device: 0, layout };
-    let fx = Fixture::read(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits/qwen4x.json.gz"))?;
-    let bound = fx.bounds.first().map(|b| b.bound.clone()).ok_or_else(|| Error("the qwen4x fixture has no bound".into()))?;
-    let (vocab, mut plain, mut drafted) = (2048, super::qwen4x::load_level(dir, &o, experts)?, super::qwen4x::load_drafting(dir, &o, experts, k)?);
+    let fx = Fixture::read(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/logits/{case}.json.gz")))?;
+    let bound = fx.bounds.first().map(|b| b.bound.clone()).ok_or_else(|| Error(format!("the {case} fixture has no bound")))?;
+    let (mut plain, mut drafted) = engines(case, dir, &o, k)?;
+    let vocab = plain.big.d.vocab;
     let mut staged = match split {
         (cuts, _) if cuts.is_empty() => None,
-        (cuts, devices) => match super::qwen4x::open_split(dir, &o, experts, cuts, devices, Some(k))? {
+        (cuts, devices) if case == "qwen4x" => match super::qwen4x::open_split(dir, &o, super::qwen4x::experts_at(o.layout), cuts, devices, Some(k))? {
             super::split::Run::Split(s) if s.drafting() => Some(s),
             _ => return err(format!("draftcheck --split {cuts:?}: the stages do not draft")),
         },
+        _ => return err(format!("draftcheck {case} --split: the check across stages takes the qwen4x case")),
     };
     let (short, _, long) = crate::logits::standard_tokens(vocab);
     let (mut bits_ok, mut held_ok) = (true, true);
@@ -498,7 +541,7 @@ fn check_on(dir: &std::path::Path, level: &str, k: usize, tokens: usize, split: 
             );
         }
     }
-    // the head against the reference, a row of each pass on the streams and the token it read
+    // the head against the reference, a row of each pass on the state and the token it read, its experts and its indexer's picks the head's own
     let passes = drafted.trace_head(false);
     let w = passes.first().map_or(0, |p| p.streams.len() / p.tokens.len().max(1));
     let widen = |v: &[u16]| -> Vec<f32> { v.iter().map(|&x| f32::from_bits((x as u32) << 16)).collect() };
@@ -507,7 +550,8 @@ fn check_on(dir: &std::path::Path, level: &str, k: usize, tokens: usize, split: 
     for p in &passes {
         for (i, &t) in p.tokens.iter().enumerate() {
             let take = (p.k > 0).then(|| p.routes[i * p.k..(i + 1) * p.k].iter().map(|&e| e as usize).collect());
-            rows.push(HeadRow { pos: (p.pos + i) as u32, token: t, streams: widen(&p.streams[i * w..(i + 1) * w]), take });
+            let picks = p.picks.first().and_then(|x| x.picks.get(i).cloned());
+            rows.push(HeadRow { pos: (p.pos + i) as u32, token: t, streams: widen(&p.streams[i * w..(i + 1) * w]), take, picks });
         }
         last_of.push(rows.len() - 1);
     }
@@ -515,17 +559,18 @@ fn check_on(dir: &std::path::Path, level: &str, k: usize, tokens: usize, split: 
     // (a prompt run after the other begins a new sequence: the reference's head too)
     let mut on_choices = Vec::new();
     let mut own = Vec::new();
-    let mut apart = 0;
+    let (mut apart, mut picks_apart) = (0, 0);
     for part in split_sequences(&rows, &last_of) {
-        let (r, _, routes) = crate::logits::ref_head(dir, &part.rows, |_| {})?;
-        let free: Vec<HeadRow> = part.rows.iter().map(|x| HeadRow { take: None, ..x.clone() }).collect();
-        let (f, _, froutes) = crate::logits::ref_head(dir, &free, |_| {})?;
+        let HeadRef { logits: r, routes, .. } = crate::logits::ref_head(dir, &part.rows, |_| {})?;
+        let free: Vec<HeadRow> = part.rows.iter().map(|x| HeadRow { take: None, picks: None, ..x.clone() }).collect();
+        let HeadRef { logits: f, routes: froutes, picks: fpicks, .. } = crate::logits::ref_head(dir, &free, |_| {})?;
         let set = |v: &[usize]| {
             let mut v = v.to_vec();
             v.sort_unstable();
             v
         };
         apart += routes.iter().zip(&froutes).filter(|(a, b)| set(&a.1) != set(&b.0)).count();
+        picks_apart += part.rows.iter().zip(&fpicks).filter(|(x, p)| x.picks.as_ref().is_some_and(|e| *e != p.0)).count();
         on_choices.extend(part.last.iter().map(|&i| r[i].clone()));
         own.extend(part.last.iter().map(|&i| f[i].clone()));
     }
@@ -552,7 +597,7 @@ fn check_on(dir: &std::path::Path, level: &str, k: usize, tokens: usize, split: 
             if v.notes.is_empty() { String::new() } else { format!(" ({})", v.notes.join("; ")) }
         );
     println!(
-        "     on the reference's own choices: KL mean {:.2e} max {:.2e}, best token {}/{}; its experts apart from the head's at {apart} of {} rows",
+        "     on the reference's own choices: KL mean {:.2e} max {:.2e}, best token {}/{}; its experts apart from the head's at {apart} of {} rows, its indexer's picks at {picks_apart}",
         raw.mean_kl,
         raw.max_kl,
         raw.top1.0,

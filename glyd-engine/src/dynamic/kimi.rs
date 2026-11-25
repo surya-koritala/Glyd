@@ -140,7 +140,8 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
     let experts = |ck: &Checkpoint, layout: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
         let k = Rc::new(KernLatent::load(&dev)?);
         let mut blocks: Vec<Box<dyn MoeBlock>> = Vec::new();
-        for (l, m, roles) in super::experts::of_layers(&kinds, st.layers) {
+        for (ix, m, roles) in super::experts::of_layers(&kinds, st.layers, 2) {
+            let l = ix.layer;
             crate::status::STATUS.beat();
             // (the stage's first cached layer reports its store where a development build asks: GLYD_KIMI_STATS)
             let first = !blocks.iter().any(|b| b.resident().is_none());

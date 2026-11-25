@@ -101,7 +101,7 @@ mod tests {
         assert_eq!(c.indexer, IndexerDims { heads: 4, dim: 32, topk: 8, kpool: 4, tail: true });
         // (its experts' core layer as the Moe kind's block makes it)
         let kinds = crate::runtime::describe::describe(&serde_json::from_str(include_str!("../tests/fixtures/glm5_next_toy_config.json")).unwrap()).unwrap();
-        for (_, m, _) in crate::dynamic::experts::of_layers(&kinds, (0, c.layers)) {
+        for (_, m, _) in crate::dynamic::experts::of_layers(&kinds, (0, c.layers), 2) {
             crate::dynamic::experts::cfg(m, c.hidden, c.experts.inter).unwrap().check().unwrap();
         }
         for l in 0..c.layers {

@@ -103,7 +103,7 @@ fn truth(host: &HbLayerHost, e: usize) -> (usize, &[u8], &[u8], &HbHost) {
     (g, &h.data[k * h.place.data..(k + 1) * h.place.data], &h.meta[k * h.place.meta..(k + 1) * h.place.meta], h)
 }
 
-/// One call of a layer, in the way `NhMoeHb::experts` makes it for a small call: `run_groups`, the kernels played by `body`. `ids`, `wts` and `z` are what the router and the rotation left. Returns what the kernels were shown.
+/// One call of a layer, in the way `HbMoe::experts` makes it for a small call: `run_groups`, the kernels played by `body`. `ids`, `wts` and `z` are what the router and the rotation left. Returns what the kernels were shown.
 fn call(rig: &Rig, dev: &Dev, host: &HbLayerHost, b: &Buffers, base: usize, (ids, wts, z): (&[i64], &[f32], &[f32]), tokens: usize) -> Shown {
     let pairs = ids.len();
     let hidden = z.len() / tokens;
@@ -255,8 +255,9 @@ fn fake_gpu_the_expert_cache_with_experts_on_the_disk_is_the_expert_cache_with_a
     let ck = glyd_gpu::safetensors::Checkpoint::open(&out).unwrap();
     let (_, manifest) = crate::weights::v7_manifest(&out).unwrap().unwrap();
     let l = 1;
-    let (host, ix) = (read_layer(&ck, &manifest, &c, l).unwrap(), index_layer(&manifest, &c, l).unwrap());
-    let disk = Arc::new(HbDisk::open(&ck, &c, l, &ix).unwrap());
+    let x = c.hb_names(l);
+    let (host, ix) = (read_layer(&ck, &manifest, &x).unwrap(), index_layer(&manifest, &x).unwrap());
+    let disk = Arc::new(HbDisk::open(&ck, &x, &ix).unwrap());
     let dev = Dev::new(0).unwrap();
     let hidden = c.moe.latent;
     let bufs = || Buffers {

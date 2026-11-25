@@ -1,25 +1,28 @@
 //! A mixture of experts' block from its layer kind (`runtime::kinds::Moe`) and its roles' tensors: the core's layer (src/moe.rs: the router, the experts, the
 //! shared expert and its gate), which `Op::Moe` runs. For any family whose description names its experts: the kind says the router's scores, the experts'
-//! activation, whether they work in a latent and whether each one's output is normed, and whether the shared expert is gated; the roles say where each matrix is,
-//! a tensor (or its rows) an expert or one tensor of them all stacked. The experts and the shared expert are held at the level asked: a lossless level's stacked
-//! and packed as one matrix each (the packer's check: it decodes to the weights bit for bit), a block level's (kestrel, swift, wren) an expert at a time. A
-//! stage can hold them otherwise (`Held`): this GPU's slice of each expert's rows where every layer is across a group of GPUs, a hummingbird directory's codebook
-//! rows, the expert cache's places.
+//! activation, whether they work in a latent (with projections of the block's own where the latent has no norm) and whether each one's output is normed, and
+//! whether the shared expert is gated; the roles say where each matrix is, a tensor (or its rows) an expert or one tensor of them all stacked. The experts and
+//! the shared expert are held at the level asked: a lossless level's stacked and packed as one matrix each (the packer's check: it decodes to the weights bit
+//! for bit), a block level's (kestrel, swift, wren) an expert at a time, relu squared experts' second matrices in the level's row layout (the sparse product);
+//! a glyd-v7 directory's packs as saved. A stage can hold them otherwise (`Held`): this GPU's slice of each expert's rows where every layer is across a group
+//! of GPUs, a hummingbird directory's codebook rows, the expert cache's places.
 
-use super::{MoeOp, Slot};
+use super::{MoeOp, ResidentMoe, Slot};
 use crate::dev::{Buf, Dev};
-use crate::ffi::{err, Error, Result, Stream};
+use crate::ffi::{err, Error, Result, Stream, Words};
 use crate::hb_pack::HbDir;
 use crate::hbg_store::HbCaching;
 use crate::kern35::Mat;
 use crate::kern_nh::{MoeBlock, NhHost};
 use crate::launch;
 use crate::moe::{Act, ExpertStack, Joined, MoeCfg, MoeLayer, MoeScratch, MoeWeights, Router, Scoring, Shared};
-use crate::moe_rows::Down;
-use crate::offload::{ExpertStore, PinnedPack};
+use crate::moe_rows::{Down, DownHost, RowsJoined};
+use crate::offload::{ExpertStore, HostHalf, PinnedPack};
+use crate::qwen35::Pack35;
 use crate::runtime::describe::{Described, Source};
 use crate::runtime::kinds::{self, Body, Ffn, NormKind, NormWeight, RouterScore};
-use crate::weights::{as_bytes, item_words, ordered, pack_item_map, pack_words, upload_bytes, upload_packed, Item, Layout, PackBuf};
+use crate::weights::{as_bytes, item_words, ordered, pack_words, read_pack, upload_bytes, upload_packed, Item, Layout, PackBuf, Packed};
+use glyd_gpu::json::Value;
 use glyd_gpu::pack::Tiered;
 use glyd_gpu::safetensors::Checkpoint;
 use std::rc::Rc;
@@ -80,24 +83,53 @@ pub(crate) fn latent_normed(block: usize, post_w: usize, eps: f32, mult: f32) ->
     MoeOp { x: Slot::Xc, y: Slot::M, logit_scale: mult, expert_norm: Some((post_w, eps)), ..MoeOp::of(block) }
 }
 
-/// The blocks of experts of the layers `layers` of a model of two blocks a layer (a mixer, then its feed-forward), in `Op::Moe`'s order: each one's layer, its
-/// kind and its roles.
-pub fn of_layers(d: &Described, layers: (usize, usize)) -> impl Iterator<Item = (usize, &kinds::Moe, &[(String, Source)])> {
-    d.desc.blocks.iter().zip(&d.blocks).enumerate().filter_map(move |(b, (blk, roles))| match &blk.body {
-        Body::Ffn(Ffn::Moe(m)) if (layers.0..layers.1).contains(&(b / 2)) => Some((b / 2, m, roles.as_slice())),
+/// A block of experts' place in its model: its decoder layer (a hummingbird directory's record is its, src/hb_pack.rs) and its number among the model's blocks
+/// of experts (its layer in the expert cache: the next block of experts is the next layer there, which a predictor hints).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ix {
+    pub layer: usize,
+    pub moe: usize,
+}
+
+/// The blocks of experts of the decoder layers `layers` of a model of `per` blocks a layer (two: a mixer, then its feed-forward block; one: each block a layer
+/// of its own), in `Op::Moe`'s order: each one's place, its kind and its roles.
+pub fn of_layers(d: &Described, layers: (usize, usize), per: usize) -> impl Iterator<Item = (Ix, &kinds::Moe, &[(String, Source)])> {
+    let per = per.max(1);
+    d.desc
+        .blocks
+        .iter()
+        .zip(&d.blocks)
+        .enumerate()
+        .filter_map(move |(b, (blk, roles))| match &blk.body {
+            Body::Ffn(Ffn::Moe(m)) => Some((b / per, m, roles.as_slice())),
+            _ => None,
+        })
+        .enumerate()
+        .filter_map(move |(moe, (layer, m, roles))| (layers.0..layers.1).contains(&layer).then_some((Ix { layer, moe }, m, roles)))
+}
+
+/// The blocks of experts of draft head `i` of `d` (`Described::mtp`), in order: each one's block number in the head, its kind and its roles.
+pub fn of_head(d: &Described, i: usize) -> impl Iterator<Item = (usize, &kinds::Moe, &[(String, Source)])> {
+    let (blocks, roles) = (d.desc.mtp.get(i).map_or(&[][..], |h| &h.blocks[..]), d.mtp.get(i).map_or(&[][..], |r| &r.0[..]));
+    blocks.iter().zip(roles).enumerate().filter_map(|(b, (blk, r))| match &blk.body {
+        Body::Ffn(Ffn::Moe(m)) => Some((b, m, r.as_slice())),
         _ => None,
     })
 }
 
 /// How a stage holds its blocks of experts beyond their level: a hummingbird directory's (src/hb_pack.rs; None: the release's), the expert cache (the stage's
-/// caching and its store: src/hbg_store.rs, src/tiering.rs), on the GPU `ordinal`; FP8 matrices as released where `f8` is given (`F8`). A layer of a stage
-/// so held is across the thread's group of GPUs where it has one (src/dynamic/tp.rs): this GPU's rows of each expert's.
+/// caching and its store: src/hbg_store.rs, src/tiering.rs; a cache of as many places as a layer has experts holds them all on the GPU), on the GPU `ordinal`;
+/// FP8 matrices as released where `f8` is given (`F8`); the block's matrices besides the routed experts' (the shared expert's, a latent's own projections) at
+/// `dense` where it is given, else at the experts' level; a glyd-v7 directory's codebook rows at its hummingbird level sharing `codebooks`' scratch (src/moe_hb.rs).
+/// A layer of a stage so held is across the thread's group of GPUs where it has one (src/dynamic/tp.rs): this GPU's rows of each expert's.
 #[derive(Clone, Copy)]
 pub struct Held<'a> {
     pub hb: Option<&'a HbDir>,
     pub cache: Option<(&'a HbCaching, &'a Rc<ExpertStore>)>,
     pub ordinal: i32,
     pub f8: Option<F8<'a>>,
+    pub dense: Option<Layout>,
+    pub codebooks: Option<&'a Rc<crate::moe_hb::HbShared>>,
 }
 
 /// The experts and the shared expert held in the library's FP8 format as released (src/f8.rs: E4M3 bytes bit for bit, their 128 x 128 block scales), where the
@@ -253,10 +285,10 @@ impl Stacked<'_> {
         }
     }
 
-    /// An expert's rows and its columns.
-    fn dims(&self, ck: &Checkpoint, experts: usize) -> Result<(usize, usize)> {
+    /// An expert's rows and its columns (where a glyd-v7 directory holds it packed, `v7`, its pack's shape).
+    fn dims(&self, ck: &Checkpoint, v7: V7, experts: usize) -> Result<(usize, usize)> {
         match self {
-            Stacked::Each(v) => rows_cols(ck, &v[0]),
+            Stacked::Each(v) => rows_cols(ck, v7, &v[0]),
             Stacked::One(n) => {
                 let (_, t) = ck.get(n).ok_or_else(|| Error(format!("no tensor {n}")))?;
                 if t.dtype != "BF16" || t.shape.len() != 3 || t.shape[0] as usize != experts {
@@ -269,7 +301,7 @@ impl Stacked<'_> {
 
     /// Every expert's matrix, stacked [experts rows, cols]: bf16 words.
     fn words(&self, ck: &Checkpoint, experts: usize) -> Result<Vec<u16>> {
-        let (rows, cols) = self.dims(ck, experts)?;
+        let (rows, cols) = self.dims(ck, None, experts)?;
         match self {
             Stacked::Each(v) => item_words(ck, &Item { members: v.iter().flatten().cloned().collect(), rows: experts * rows, cols }),
             Stacked::One(n) => {
@@ -289,17 +321,105 @@ impl Stacked<'_> {
     }
 }
 
+/// A glyd-v7 directory's level and glyd.json, where the checkpoint is one (`weights::v7_manifest`): the packs it holds are read as saved.
+type V7<'a> = Option<&'a (Layout, Value)>;
+
+/// Tensor `n`'s [rows, cols]: its shape, or where a glyd-v7 directory holds it packed (`v7`) its weight's as its pack's entry says (a row layout's pack is the
+/// weight's transpose).
+fn dims_of(ck: &Checkpoint, v7: V7, n: &str) -> Result<(usize, usize)> {
+    if let Some((_, t)) = ck.get(n) {
+        return match t.shape[..] {
+            [r, c] => Ok((r as usize, c as usize)),
+            _ => err(format!("{n}: {:?}, where a matrix is read", t.shape)),
+        };
+    }
+    let key = Pack35::saved(n);
+    let e = v7.and_then(|(_, m)| m.get("packs")?.get(key)).ok_or_else(|| Error(format!("{}: no tensor {n} and no pack {key}", ck.dir.display())))?;
+    let s = e.get("shape").and_then(Value::as_u64s).filter(|s| s.len() == 2).ok_or_else(|| Error(format!("glyd.json: {key}: no shape")))?;
+    let transposed = e.get("layout").and_then(Value::as_str).and_then(crate::weights::entry_layout).is_some_and(|l| l.row_bits().is_some());
+    Ok(if transposed { (s[1] as usize, s[0] as usize) } else { (s[0] as usize, s[1] as usize) })
+}
+
 /// Matrices stacked along their rows: their rows' sum and their columns.
-fn rows_cols(ck: &Checkpoint, members: &[String]) -> Result<(usize, usize)> {
+fn rows_cols(ck: &Checkpoint, v7: V7, members: &[String]) -> Result<(usize, usize)> {
     let (mut rows, mut cols) = (0, 0);
     for n in members {
-        let (_, t) = ck.get(n).ok_or_else(|| Error(format!("no tensor {n}")))?;
-        if t.shape.len() != 2 || (cols != 0 && cols != t.shape[1] as usize) {
-            return err(format!("{n}: {:?}, where a matrix of {cols} columns is stacked", t.shape));
+        let (r, c) = dims_of(ck, v7, n)?;
+        if cols != 0 && cols != c {
+            return err(format!("{n}: {r} x {c}, where a matrix of {cols} columns is stacked"));
         }
-        (rows, cols) = (rows + t.shape[0] as usize, t.shape[1] as usize);
+        (rows, cols) = (rows + r, c);
     }
     Ok((rows, cols))
+}
+
+/// The matrix of `members` stacked by rows at `layout`, as the checkpoint holds it: a glyd-v7 directory's pack as saved, in the layout its entry names (`v7`),
+/// else packed here from its weights.
+pub(crate) fn pack_of(ck: &Checkpoint, v7: V7, members: &[String], layout: Layout) -> Result<Packed> {
+    let (_, cols) = rows_cols(ck, v7, members)?;
+    let parts = members.iter().map(|n| Ok((n.clone(), dims_of(ck, v7, n)?.0))).collect::<Result<Vec<_>>>()?;
+    read_pack(ck, v7, &Pack35 { key: Pack35::saved(&members[0]).to_string(), parts, cols }, layout)
+}
+
+/// Expert `e`'s matrix of `s` ([rows, cols]; `all` every expert's, where the checkpoint holds them as one tensor) as a pack of `layout` (a row layout: its
+/// transpose, a row a neuron), as the checkpoint holds it (`pack_of`).
+#[allow(clippy::too_many_arguments)]
+fn expert_pack(ck: &Checkpoint, v7: V7, s: &Stacked, e: usize, all: &[u16], rows: usize, cols: usize, layout: Layout) -> Result<Tiered> {
+    let p = match s {
+        Stacked::Each(v) => pack_of(ck, v7, &v[e], layout),
+        Stacked::One(_) => pack_words(&s.expert(ck, e, all, rows, cols)?, rows, cols, layout, &s.name_of(e)),
+    }?;
+    let Words::Tiered { tiers, .. } = p.words else { return err(format!("{}: an expert that is not in a block or row layout", s.name_of(e))) };
+    Ok(Tiered { rows: p.rows, cols: p.cols, data: p.data, blocks: p.b1, block_base: Vec::new(), tiers })
+}
+
+/// A block level's experts (`up`, `down`: their roles' tensors, `e` of them), each expert's two packs at `level` joined (`Joined`, `DownHost`), as the checkpoint
+/// holds them (`pack_of`): where the experts' activation is relu squared (`act`), their second matrices in the level's row layout, the transpose a row a neuron
+/// (the sparse product skips the neurons relu squared leaves at zero, src/moe_rows.rs; a development build's GLYD_ENGINE_DENSE_DOWN keeps the block layout).
+/// Where the checkpoint holds a matrix of every expert as one tensor, it is read once and cut per expert.
+fn block_packs(up: &Stacked, down: &Stacked, ck: &Checkpoint, v7: V7, e: usize, level: Layout, act: kinds::Act) -> Result<(Joined, DownHost)> {
+    let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
+    let all = |s: &Stacked| match s {
+        Stacked::One(_) => s.words(ck, e),
+        Stacked::Each(_) => Ok(Vec::new()),
+    };
+    let (all_up, all_down) = (all(up)?, all(down)?);
+    let (du, dd) = (up.dims(ck, v7, e)?, down.dims(ck, v7, e)?);
+    let rows = act == kinds::Act::Relu2 && crate::tune!("GLYD_ENGINE_DENSE_DOWN").is_none();
+    let down_layout = if rows { level.row_of().unwrap_or(level) } else { level };
+    let (mut ups, mut downs): (Vec<Tiered>, Vec<Tiered>) = (Vec::new(), Vec::new());
+    ordered(
+        2 * e,
+        threads,
+        2 * threads,
+        &|k| {
+            let (s, all, (r, c), layout) = if k % 2 == 0 { (up, &all_up, du, level) } else { (down, &all_down, dd, down_layout) };
+            expert_pack(ck, v7, s, k / 2, all, r, c, layout)
+        },
+        |k, t| {
+            (if k % 2 == 0 { &mut ups } else { &mut downs }).push(t);
+            Ok(())
+        },
+    )?;
+    Ok((Joined::of(&ups.iter().collect::<Vec<_>>())?, DownHost::of(&downs)?))
+}
+
+/// The host's half of a layer in the expert cache whose second matrices are in a row layout (`down`): the host computes the pairs of the experts that have no
+/// place from the rows of both matrices (src/cpu_experts.rs), the first's (`up`) a copy in rows the store holds.
+fn rows_half(up: &Joined, down: &RowsJoined) -> Result<HostHalf> {
+    let (data, scales) = crate::cpu_experts::rows_of_experts(up.tag, up.experts, up.rows, up.cols, &up.data, &up.scales, 0)?;
+    let bits = glyd_gpu::pack::rows_bits(down.tag).ok_or_else(|| Error(format!("a second matrix of tag {}: not a row layout", down.tag)))?;
+    Ok(HostHalf::Rows(crate::offload::CpuRows { bits, inter: up.rows, hidden: up.cols, data, scales }))
+}
+
+/// A router's vector read as fp32 bytes (the choice bias; the router of experts whose outputs are normed): from an fp32 tensor as it is, from a bf16 one (a
+/// glyd-v7 directory's) widened exactly.
+pub(crate) fn bias_f32(dtype: &str, bytes: &[u8]) -> Result<Vec<u8>> {
+    match dtype {
+        "F32" => Ok(bytes.to_vec()),
+        "BF16" => Ok(bytes.chunks_exact(2).flat_map(|b| ((u16::from_le_bytes([b[0], b[1]]) as u32) << 16).to_le_bytes()).collect()),
+        other => err(format!("a router's vector of {other}, where F32 or BF16 is read")),
+    }
 }
 
 /// The block of the kind `m` whose tensors `roles` names, read from `ck`, its experts and shared expert at `level`, every expert on the GPU.
@@ -307,16 +427,30 @@ pub fn resident(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &
     held(m, roles, hidden, ck, level, None)
 }
 
-/// `resident`, the experts of decoder layer `at.0` held as the stage holds them (`at.1`): a hummingbird directory's in place of the release's (in the expert
-/// cache where the stage has one), the release's in the expert cache's places, or on the GPU, this GPU's rows of each expert's where the layer is across a group
-/// of GPUs. At the lossless level, experts released in FP8 whose scales the description names are held as released where the stage asks (`Held::f8`: in the
-/// cache's places each packed on its own), and the shared expert too where its matrices are FP8 (as it is beside a hummingbird directory's experts); other
-/// experts in the cache are each stack's one lossless pack in the tiered layout cut per expert, or at a block level each expert's packs.
-pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Checkpoint, level: Layout, at: Option<(usize, &Held)>) -> Result<MoeLayer> {
+/// `resident`, the experts of the block at `at.0` held as the stage holds them (`at.1`): a hummingbird directory's in place of the release's (in the expert
+/// cache where the stage has one), the release's in the expert cache's places (the cache's layer the block's number among the blocks of experts), or on the
+/// GPU, this GPU's rows of each expert's where the layer is across a group of GPUs. At the lossless level, experts released in FP8 whose scales the description
+/// names are held as released where the stage asks (`Held::f8`: in the cache's places each packed on its own), and the shared expert too where its matrices are
+/// FP8 (as it is beside a hummingbird directory's experts); other experts in the cache are each stack's one lossless pack in the tiered layout cut per expert,
+/// or at a block level each expert's packs (`block_packs`: relu squared experts' second matrices in a row layout, which the host computes misses from where the
+/// store's mode has it compute). A glyd-v7 directory's packs are read as saved, at its own level (no lossless level of its experts is read).
+pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Checkpoint, level: Layout, at: Option<(Ix, &Held)>) -> Result<MoeLayer> {
     let lossless = matches!(level, Layout::Tiered | Layout::Twelve);
     if !lossless && !matches!(level, Layout::Int6 | Layout::Int5 | Layout::Int4) {
         return err(format!("the experts are held at the penguin, kestrel, swift and wren levels: {} is asked", level.name()));
     }
+    let v7 = crate::weights::v7_manifest(&ck.dir)?;
+    if let Some((got, _)) = &v7 {
+        if *got != level || lossless {
+            return err(format!(
+                "{}: packed in the {} layout, where the experts are asked at {} (a glyd-v7 directory's experts are read at its own block level)",
+                ck.dir.display(),
+                got.name(),
+                level.name()
+            ));
+        }
+    }
+    let v7 = v7.as_ref();
     let find = |r: &str| roles.iter().find(|(n, _)| n == r).map(|(_, s)| s);
     let one = |r: &str| match find(r) {
         Some(Source::Tensor(n)) => Ok(n.clone()),
@@ -334,10 +468,10 @@ pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Chec
     let up_role = if gated { "experts_gate_up" } else { "experts_up" };
     let (up, down) = (Stacked::of(find(up_role), e, up_role)?, Stacked::of(find("experts_down"), e, "experts_down")?);
     // (the experts' width: a hummingbird directory's record's, which holds no matrix of theirs; else their first matrix's rows)
-    let inter = match at.and_then(|(l, h)| h.hb.map(|d| (d, l))) {
+    let inter = match at.and_then(|(x, h)| h.hb.map(|d| (d, x.layer))) {
         Some((d, l)) => d.layer(2 * l + 1).ok_or_else(|| Error(format!("{}: no experts for decoder layer {l}", d.dir.display())))?.inter,
         None => {
-            let (rows, _) = up.dims(ck, e)?;
+            let (rows, _) = up.dims(ck, v7, e)?;
             if gated {
                 rows / 2
             } else {
@@ -346,21 +480,20 @@ pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Chec
         }
     };
     let c = cfg(m, hidden, inter)?;
-    let packed = |members: Vec<String>| -> Result<crate::weights::PackBuf> {
-        let (rows, cols) = rows_cols(ck, &members)?;
-        upload_packed(pack_item_map(ck, &Item { members, rows, cols }, level, &|_| {})?)
-    };
+    // (the shared expert's matrices at the stage's layout of the block's other matrices, where it gives one)
+    let dense = at.and_then(|(_, h)| h.dense).unwrap_or(level);
+    let packed = |members: Vec<String>| -> Result<PackBuf> { upload_packed(pack_of(ck, v7, &members, dense)?) };
     // (the normed experts' router is read by its fp32 weights, `MoeLayer::forward_normed`; another's is a bf16 product)
     let router = {
         let n = one("router")?;
         match norm {
-            Some(_) => upload_bytes(&crate::moe_nh::bias_f32(&dtype(&n)?, &read(&n)?)?)?,
+            Some(_) => upload_bytes(&bias_f32(&dtype(&n)?, &read(&n)?)?)?,
             None => upload_bytes(&bf16(&n)?)?,
         }
     };
     let bias = if m.router.bias {
         let n = one("choice_bias")?;
-        Some(upload_bytes(&crate::moe_nh::bias_f32(&dtype(&n)?, &read(&n)?)?)?)
+        Some(upload_bytes(&bias_f32(&dtype(&n)?, &read(&n)?)?)?)
     } else {
         None
     };
@@ -380,7 +513,7 @@ pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Chec
         None => None,
         Some(_) => {
             let s_up = one("shared_up")?;
-            let (inter, _) = rows_cols(ck, std::slice::from_ref(&s_up))?;
+            let (inter, _) = rows_cols(ck, v7, std::slice::from_ref(&s_up))?;
             let first = if gated { vec![one("shared_gate")?, s_up] } else { vec![s_up] };
             let second = vec![one("shared_down")?];
             let gate = if m.shared_gate { Some(upload_bytes(&bf16(&one("shared_router")?)?)?) } else { None };
@@ -402,40 +535,10 @@ pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Chec
         Some((u, d)) => l.with_shared8(u, d),
         None => Ok(l),
     };
-    // (a block level's experts: each expert's two packs, joined; where the checkpoint holds a matrix of every expert as one tensor, read once, cut per expert)
-    let blocks = || -> Result<(Joined, Joined)> {
-        let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
-        let all = |s: &Stacked| match s {
-            Stacked::One(_) => s.words(ck, e),
-            Stacked::Each(_) => Ok(Vec::new()),
-        };
-        let (all_up, all_down) = (all(&up)?, all(&down)?);
-        let (du, dd) = (up.dims(ck, e)?, down.dims(ck, e)?);
-        let (mut ups, mut downs): (Vec<Tiered>, Vec<Tiered>) = (Vec::new(), Vec::new());
-        ordered(
-            2 * e,
-            threads,
-            2 * threads,
-            &|k| {
-                let (s, all, (rows, cols)) = if k % 2 == 0 { (&up, &all_up, du) } else { (&down, &all_down, dd) };
-                let w = s.expert(ck, k / 2, all, rows, cols)?;
-                let p = match level {
-                    Layout::Int6 => glyd_gpu::pack::pack_int6(&w, rows, cols),
-                    Layout::Int5 => glyd_gpu::pack::pack_int5(&w, rows, cols),
-                    _ => glyd_gpu::pack::pack_int4(&w, rows, cols),
-                };
-                p.ok_or_else(|| Error(format!("{}: not packable at {}", s.name_of(k / 2), level.name())))
-            },
-            |k, t| {
-                (if k % 2 == 0 { &mut ups } else { &mut downs }).push(t);
-                Ok(())
-            },
-        )?;
-        Ok((Joined::of(&ups.iter().collect::<Vec<_>>())?, Joined::of(&downs.iter().collect::<Vec<_>>())?))
-    };
+    let blocks = || block_packs(&up, &down, ck, v7, e, level, m.expert.act);
     // (a stage that holds its experts its own way has its layers across the thread's group of GPUs, where it is one's)
     let across = at.and_then(|_| super::tp::slicer());
-    if let Some((l, h)) = at {
+    if let Some((ix, h)) = at {
         if h.hb.is_some() {
             let finish = match norm {
                 Some(n) => {
@@ -453,36 +556,41 @@ pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Chec
                 // (outputs not normed: each pair's rotation undone as its row is summed)
                 None => crate::cpu_hbg::Finish::Rotated,
             };
-            if let Some(x) = crate::hbg_store::hb_layer(h.hb, l, across.is_some(), h.cache, c.act, finish, h.ordinal, c.router.top_k)? {
+            if let Some(x) = crate::hbg_store::hb_layer(h.hb, ix.layer, across.is_some(), h.cache, c.act, finish, h.ordinal, c.router.top_k)? {
                 return with8(x.into_layer(c, router, bias, None, shared)?, shared8);
             }
         }
-        // (R12: the release's experts in the expert cache, every one in the computer's memory)
-        if let Some((cg, store)) = h.cache {
+        // (R12: the release's experts in the expert cache, every one in the computer's memory; places for every expert of the layer hold them all on the GPU)
+        if let Some((cg, store)) = h.cache.filter(|(cg, _)| cg.places < e) {
             if across.is_some() || cg.ram.is_some() {
                 return err("the release's experts in the expert cache: a layer on one GPU, every expert in the computer's memory (the disk holds hummingbird directories' experts alone)");
             }
             // (FP8 as released: each expert packed on its own, places for some on the GPU, the heads made the place's after the store's copies)
             if let Some((f, u, d, (ur, uc), (dr, dc))) = f8x {
                 let (pu, pd) = (f.places(ck, u, ur, uc)?, f.places(ck, d, dr, dc)?);
-                let (x, cache) = crate::tiering::cached_f8(&pu, &pd, cg.places, store, l, h.ordinal)?;
+                let (x, cache) = crate::tiering::cached_f8(&pu, &pd, cg.places, store, ix.moe, h.ordinal)?;
                 return with8(MoeLayer::new_f8(c, router, bias, x, shared)?, shared8)?.with_cache(cache);
             }
-            // (a block level's: each expert's packs in places of the level's layout)
+            // (a block level's: each expert's packs in places of the level's layout; the host computes the misses from rows where the second matrices are in
+            // rows and the store's mode has it compute)
             if !lossless {
                 let (ju, jd) = blocks()?;
-                let (up, down, cache) = crate::tiering::cached_stacks(&ju, &jd, cg.places, store, l, h.ordinal, None)?;
-                return with8(MoeLayer::new(c, MoeWeights { router, bias, escale: None, up, down: Down::Block(down) }, shared)?, shared8)?.with_cache(cache);
+                let cpu = match &jd {
+                    DownHost::Rows(r) if store.wants_cpu() => Some(rows_half(&ju, r)?),
+                    _ => None,
+                };
+                let (up, down, cache) = crate::tiering::cached_stacks(&ju, &jd, cg.places, store, ix.moe, h.ordinal, cpu)?;
+                return with8(MoeLayer::new(c, MoeWeights { router, bias, escale: None, up, down }, shared)?, shared8)?.with_cache(cache);
             }
             // (lossless bf16: each stack's one lossless pack in the tiered layout, whatever the level of the rest, cut per expert)
             let places = |s: &Stacked| -> Result<crate::tiering::TieredPlaces> {
-                let (rows, cols) = s.dims(ck, e)?;
+                let (rows, cols) = s.dims(ck, v7, e)?;
                 let p = glyd_gpu::pack::pack_tiered_checked(&s.words(ck, e)?, e * rows, cols)
                     .ok_or_else(|| Error(format!("{}: decoded to other bits than its weights", s.name())))?;
                 crate::tiering::TieredPlaces::of(&p, e)
             };
             let (pu, pd) = (places(&up)?, places(&down)?);
-            let (up, down, cache) = crate::tiering::cached_tiered(&pu, &pd, cg.places, store, l, h.ordinal)?;
+            let (up, down, cache) = crate::tiering::cached_tiered(&pu, &pd, cg.places, store, ix.moe, h.ordinal)?;
             return with8(MoeLayer::new(c, MoeWeights { router, bias, escale: None, up, down: Down::Block(down) }, shared)?, shared8)?.with_cache(cache);
         }
     }
@@ -493,7 +601,7 @@ pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Chec
     }
     let (up, down) = if lossless {
         let stack = |s: &Stacked| -> Result<ExpertStack> {
-            let (rows, cols) = s.dims(ck, e)?;
+            let (rows, cols) = s.dims(ck, v7, e)?;
             let w = s.words(ck, e)?;
             let Some(t) = across else {
                 return ExpertStack::lossless(upload_packed(pack_words(&w, e * rows, cols, level, &s.name())?)?, e);
@@ -511,9 +619,81 @@ pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Chec
         (stack(&up)?, Down::Block(stack(&down)?))
     } else {
         let (ju, jd) = blocks()?;
-        (ExpertStack::upload(&ju)?, Down::Block(ExpertStack::upload(&jd)?))
+        (ExpertStack::upload(&ju)?, jd.upload()?)
     };
     with8(MoeLayer::new(c, MoeWeights { router, bias, escale: None, up, down }, shared)?, shared8)
+}
+
+/// A latent of the block's own projections (`kinds::Latent` with no norm): the down projection of the layer's input the experts read, the up projection of
+/// their sum back (`latent_down`, `latent_up`), which `Op::Moe` runs around the experts (src/dynamic/mod.rs `moe`). None where the kind has no latent, or
+/// one with a norm: its operations are the lowering's (`latent_normed`) or the latent block's (`latent_block`).
+fn own_latent(m: &kinds::Moe) -> Option<&kinds::Latent> {
+    m.latent.as_ref().filter(|l| l.norm_in.is_none() && l.expert_norm.is_none() && l.norm_out.is_none())
+}
+
+/// The Moe kind's block of the layer at `at.0` as `Op::Moe` runs it, its experts held as the stage holds them (`held`): the core's layer (`ResidentMoe`), and
+/// around it the latent's own projections where the kind's latent has no norm (`own_latent`: `Projected`), packed at the stage's layout of the block's other
+/// matrices (`Held::dense`) as the checkpoint holds them; at the hummingbird level of a glyd-v7 directory, its experts' codebook rows (src/moe_hb.rs `HbMoe`,
+/// in the expert cache where the stage has one).
+pub fn block(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Checkpoint, level: Layout, at: (Ix, &Held)) -> Result<Box<dyn MoeBlock>> {
+    let (ix, h) = at;
+    let dense = h.dense.unwrap_or(level);
+    if level == Layout::Hummingbird {
+        let common = h.codebooks.ok_or_else(|| Error("a glyd-v7 directory's codebook rows without the stage's scratch for them".into()))?;
+        let cache = h.cache.filter(|(cg, _)| cg.places < m.experts).map(|(cg, st)| (cg.places, st));
+        return Ok(Box::new(crate::moe_hb::HbMoe::load(m, roles, hidden, ck, dense, ix.moe, cache, common)?));
+    }
+    let fc = match own_latent(m) {
+        Some(_) => {
+            let v7 = crate::weights::v7_manifest(&ck.dir)?;
+            let mat = |r: &str| -> Result<Mat> {
+                let n = match roles.iter().find(|(x, _)| x == r).map(|(_, s)| s) {
+                    Some(Source::Tensor(n)) => n.clone(),
+                    other => return err(format!("the latent's role {r} is {other:?}, where one tensor is")),
+                };
+                Ok(Mat::Packed(upload_packed(pack_of(ck, v7.as_ref(), &[n], dense)?)?))
+            };
+            Some((mat("latent_down")?, mat("latent_up")?))
+        }
+        None => None,
+    };
+    let layer = held(m, roles, hidden, ck, level, Some(at))?;
+    Ok(match fc {
+        Some(fc) => Box::new(Projected { layer, fc }),
+        None => Box::new(ResidentMoe(layer)),
+    })
+}
+
+/// A block whose experts work in a latent of its own (`own_latent`): the core's layer and the latent's two projections, which `Op::Moe` runs: the router and the
+/// shared expert on the layer's input, the experts on its down projection, the up projection of their sum (src/dynamic/mod.rs `moe`).
+struct Projected {
+    layer: MoeLayer,
+    fc: (Mat, Mat),
+}
+
+impl MoeBlock for Projected {
+    unsafe fn forward(&self, _: &dyn NhHost, _: u64, _: usize, _: u64) -> Result<()> {
+        err("these experts run on the dynamic engine")
+    }
+
+    fn graphable(&self) -> bool {
+        true
+    }
+
+    fn bytes(&self) -> usize {
+        self.layer.weights_bytes() + self.fc.0.bytes() + self.fc.1.bytes()
+    }
+
+    fn pack_shapes(&self) -> Vec<(i64, i64, bool)> {
+        [&self.fc.0, &self.fc.1]
+            .iter()
+            .filter_map(|m| if let Mat::Packed(p) = m { Some((p.pack.rows, p.pack.cols, p.pack.is_twelve())) } else { None })
+            .collect()
+    }
+
+    fn resident(&self) -> Option<(&MoeLayer, Option<(&Mat, &Mat)>)> {
+        Some((&self.layer, Some((&self.fc.0, &self.fc.1))))
+    }
 }
 
 fn io<T>(r: std::io::Result<T>) -> Result<T> {
@@ -1380,5 +1560,179 @@ mod tests {
             },
             "SwiGLU",
         );
+    }
+
+    /// A model of one mixture-of-experts layer with a latent (8 experts of 3 a token, a latent of 64, a model width of 128), small enough to pack in a test and
+    /// with every matrix in whole blocks of the block layouts.
+    const SMALL: &str = r#"{"architectures": ["NemotronHForCausalLM"], "model_type": "nemotron_h", "hidden_size": 128, "num_hidden_layers": 1, "hybrid_override_pattern": "E", "vocab_size": 64,
+        "layer_norm_epsilon": 1e-5, "max_position_embeddings": 256, "mamba_num_heads": 64, "mamba_head_dim": 64, "n_groups": 1, "ssm_state_size": 128, "conv_kernel": 4, "num_attention_heads": 2,
+        "num_key_value_heads": 1, "head_dim": 128, "n_routed_experts": 8, "num_experts_per_tok": 3, "moe_intermediate_size": 128, "moe_shared_expert_intermediate_size": 64, "moe_latent_size": 64,
+        "routed_scaling_factor": 5.0, "norm_topk_prob": true, "n_group": 1, "topk_group": 1, "n_shared_experts": 1, "mlp_hidden_act": "relu2", "tie_word_embeddings": false, "eos_token_id": 2}"#;
+
+    /// A block of relu squared experts in a latent of its own, read from the bf16 checkpoint as the packers make it at the three block levels (each expert's first
+    /// matrix packed alone, joined: the stacked pack of the packer; each second matrix as the row layout of its transpose, joined; the latent's projections and the
+    /// shared expert at the stage's layout of them, six-bit at wren); the same block saved as a glyd-v7 directory read to the same bytes; a directory saved with the
+    /// second matrices in the block layout (a directory of before the row layouts) read in it, as the stacked pack of the packer; a directory of another level, and
+    /// a level the experts are not held at, refused before anything is read.
+    #[test]
+    fn a_block_is_read_from_bf16_and_from_a_saved_directory_alike() {
+        use crate::moe_rows::{DownHost, RowsJoined};
+        use crate::nemotron::tests::checkpoint;
+        use crate::nemotron::ConfigNemotronH;
+        use crate::pack::nemotron_plan;
+        use crate::runtime::describe::Source;
+        use crate::weights::{Layout, Packed};
+        use glyd_gpu::pack::{pack_int4, pack_int5, pack_int6, pack_rows, transpose, Tiered, INT4_TAG, INT5_TAG, INT6_TAG};
+        use glyd_gpu::safetensors::Checkpoint;
+        use glyd_gpu::save::{self, Source as Src};
+        let dir = std::env::temp_dir().join(format!("glyd-engine-experts-block-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let c = ConfigNemotronH::parse(SMALL, "small", None).unwrap();
+        let src = dir.join("src");
+        let w = checkpoint(&src, SMALL, &c);
+        let ck = Checkpoint::open(&src).unwrap();
+        let kinds = crate::runtime::describe::describe(&serde_json::from_str(SMALL).unwrap()).unwrap();
+        let (ix, m, roles) = super::of_layers(&kinds, (0, 1), 1).next().unwrap();
+        assert_eq!((ix, super::own_latent(m).map(|l| l.dim)), (super::Ix { layer: 0, moe: 0 }, Some(64)));
+        let find = |r: &str| roles.iter().find(|(n, _)| n == r).map(|(_, s)| s);
+        let one = |r: &str| match find(r) {
+            Some(Source::Tensor(n)) => n.clone(),
+            x => panic!("{r}: {x:?}"),
+        };
+        let (up, down) =
+            (super::Stacked::of(find("experts_up"), 8, "experts_up").unwrap(), super::Stacked::of(find("experts_down"), 8, "experts_down").unwrap());
+        let p = "backbone.layers.0.mixer";
+        let (e, lat, inter, hid, sh) = (8usize, 64usize, 128usize, 128usize, 64usize);
+        let stacked = |name: &dyn Fn(usize) -> String| -> Vec<u16> { (0..e).flat_map(|i| w[&name(i)].clone()).collect() };
+        let (up_w, down_w) = (stacked(&|i| format!("{p}.experts.{i}.up_proj.weight")), stacked(&|i| format!("{p}.experts.{i}.down_proj.weight")));
+        let parts = |d: &DownHost| match d {
+            DownHost::Block(j) => (j.tag, j.experts, j.rows, j.cols, j.data.clone(), j.scales.clone()),
+            DownHost::Rows(j) => (j.tag, j.experts, j.rows, j.cols, j.data.clone(), j.scales.clone()),
+        };
+        let tag_of = |p: &Packed| match p.words {
+            crate::ffi::Words::Tiered { tiers, .. } => tiers[0] >> 24,
+            crate::ffi::Words::Twelve { .. } => 0,
+        };
+        type Pack = fn(&[u16], usize, usize) -> Option<Tiered>;
+        for (level, pack, dense_pack, tags) in [
+            (Layout::Int6, pack_int6 as Pack, pack_int6 as Pack, (INT6_TAG, INT6_TAG)),
+            (Layout::Int5, pack_int5 as Pack, pack_int5 as Pack, (INT5_TAG, INT5_TAG)),
+            (Layout::Int4, pack_int4 as Pack, pack_int6 as Pack, (INT4_TAG, INT6_TAG)),
+        ] {
+            let dense = crate::nemotron::dense_layout(level);
+            let read = |ck: &Checkpoint| {
+                let v7 = crate::weights::v7_manifest(&ck.dir).unwrap();
+                let (ju, jd) = super::block_packs(&up, &down, ck, v7.as_ref(), e, level, m.expert.act).unwrap();
+                let mats: Vec<Packed> = ["latent_down", "latent_up", "shared_up", "shared_down"]
+                    .iter()
+                    .map(|r| super::pack_of(ck, v7.as_ref(), &[one(r)], dense).unwrap())
+                    .collect();
+                (ju, jd, mats)
+            };
+            let (ju, jd, mats) = read(&ck);
+            // the experts: the stacked pack of the packer, the codes and the scales; the second matrices as the row layout of each one's transpose
+            let bits = level.row_of().unwrap().row_bits().unwrap();
+            let want_up = pack(&up_w, e * inter, lat).unwrap();
+            let rows_packs: Vec<Tiered> =
+                (0..e).map(|i| pack_rows(bits, &transpose(&down_w[i * lat * inter..(i + 1) * lat * inter], lat, inter), inter, lat).unwrap()).collect();
+            let want_down = RowsJoined::of(&rows_packs.iter().collect::<Vec<_>>()).unwrap();
+            assert_eq!((ju.tag, tag_of(&mats[0]), tag_of(&mats[2])), (tags.0, tags.1, tags.1), "{level:?}: the layouts");
+            assert!(
+                ju.data == want_up.data && ju.scales == want_up.blocks && (ju.experts, ju.rows, ju.cols) == (e, inter, lat),
+                "{level:?}: the first matrices"
+            );
+            assert!(matches!(jd, DownHost::Rows(_)), "{level:?}: relu squared experts' second matrices are in the row layout");
+            assert_eq!(parts(&jd), (want_down.tag, e, inter, lat, want_down.data.clone(), want_down.scales.clone()), "{level:?}: the second matrices");
+            for (got, name, rows, cols) in [
+                (&mats[0], "fc1_latent_proj", lat, hid),
+                (&mats[1], "fc2_latent_proj", hid, lat),
+                (&mats[2], "shared_experts.up_proj", sh, hid),
+                (&mats[3], "shared_experts.down_proj", hid, sh),
+            ] {
+                let want = dense_pack(&w[&format!("{p}.{name}.weight")], rows, cols).unwrap();
+                assert!(got.data == want.data && got.b1 == want.blocks && (got.rows, got.cols) == (rows, cols), "{level:?}: {name}");
+            }
+            // saved as a glyd-v7 directory, read back: the same bytes
+            let out = dir.join(level.name());
+            let have = &|n: &str| ck.get(n).is_some_and(|(_, t)| t.dtype == "F32");
+            save::save_planned(&Src::find(src.to_str().unwrap()).unwrap(), &out, 2, 5 << 30, level, &nemotron_plan(&c, level, have)).unwrap();
+            let saved = Checkpoint::open(&out).unwrap();
+            assert!(saved.get(&format!("{p}.experts.7.down_proj.glyd_data")).is_some() && saved.get(&format!("{p}.experts.7.down_proj.weight")).is_none());
+            let (su, sd, smats) = read(&saved);
+            assert!(su.data == ju.data && su.scales == ju.scales && parts(&sd) == parts(&jd), "{level:?}: the experts of the saved directory");
+            for (a, b) in smats.iter().zip(&mats) {
+                assert!(a.data == b.data && a.b1 == b.b1 && (a.rows, a.cols) == (b.rows, b.cols), "{level:?}: a matrix of the saved directory");
+            }
+            // a directory saved before the row layouts (the second matrices in the level's block layout): read in it, as the stacked pack of the packer
+            let plan = nemotron_plan(&c, level, have);
+            let old_plan = plan.replace(&format!(", \"layout\": \"{}\"", level.row_of().unwrap().name()), "");
+            assert!(plan.contains(&format!("\"layout\": \"{}\"", level.row_of().unwrap().name())) && old_plan != plan);
+            let before = dir.join(format!("{}-before", level.name()));
+            save::save_planned(&Src::find(src.to_str().unwrap()).unwrap(), &before, 2, 5 << 30, level, &old_plan).unwrap();
+            let (bu, bd, _) = read(&Checkpoint::open(&before).unwrap());
+            let want_down = pack(&down_w, e * lat, inter).unwrap();
+            assert!(matches!(bd, DownHost::Block(_)), "{level:?}: the second matrices of a directory of before are in the block layout");
+            assert_eq!(parts(&bd), (tags.0, e, lat, inter, want_down.data.clone(), want_down.blocks.clone()), "{level:?}: a directory of before");
+            assert!(bu.data == ju.data, "{level:?}: and the first");
+            // (a directory of another level is refused, before anything is read)
+            let other = if level == Layout::Int6 { Layout::Int5 } else { Layout::Int6 };
+            let said = super::held(m, roles, hid, &saved, other, None).err().unwrap().msg;
+            assert!(said.contains("packed in"), "{said}");
+        }
+        let said = super::held(m, roles, hid, &ck, Layout::Int3, None).err().unwrap().msg;
+        assert!(said.contains("penguin, kestrel, swift and wren levels"), "{said}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// What a tiny model of grid weights relies on of the packers (all three block layouts): weights that are integers of at most the layout's largest code
+    /// times a power of two, with the largest code in every run of 32, come back exactly (the fit of the scale lands on the power of two).
+    #[test]
+    fn weights_on_the_grid_are_held_exactly() {
+        use glyd_gpu::pack::{pack_int4, pack_int5, pack_int6, unpack_int4, unpack_int5, unpack_int6, Tiered};
+        let (rows, cols) = (128usize, 96usize);
+        let mut x = 7u64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        type Pack = fn(&[u16], usize, usize) -> Option<Tiered>;
+        type Unpack = fn(&Tiered, &mut [u16]) -> bool;
+        for (kmax, pack, unpack, power) in [
+            (31i32, pack_int6 as Pack, unpack_int6 as Unpack, -8),
+            (15, pack_int5 as Pack, unpack_int5 as Unpack, -7),
+            (7, pack_int4 as Pack, unpack_int4 as Unpack, -6),
+        ] {
+            let w: Vec<u16> = (0..rows * cols)
+                .map(|i| {
+                    let k = if i % 32 == 0 {
+                        if next() & 1 == 0 {
+                            kmax
+                        } else {
+                            -kmax
+                        }
+                    } else {
+                        (next() % (2 * kmax as u64 + 1)) as i32 - kmax
+                    };
+                    let v = k as f32 * 2f32.powi(power);
+                    (v.to_bits() >> 16) as u16 // (a code of at most 5 bits times a power of two: bf16 holds it)
+                })
+                .collect();
+            let p = pack(&w, rows, cols).unwrap();
+            let mut back = vec![0u16; rows * cols];
+            assert!(unpack(&p, &mut back));
+            assert!(back == w, "kmax {kmax}: the grid's weights did not come back");
+        }
+    }
+
+    #[test]
+    fn a_bias_is_read_as_fp32_from_fp32_or_bf16() {
+        let w = [0x3f80u16, 0xbf00, 0x3dcd];
+        let widened: Vec<u8> = w.iter().flat_map(|&x| ((x as u32) << 16).to_le_bytes()).collect();
+        let bf16: Vec<u8> = w.iter().flat_map(|x| x.to_le_bytes()).collect();
+        assert_eq!(super::bias_f32("F32", &widened).unwrap(), widened);
+        assert_eq!(super::bias_f32("BF16", &bf16).unwrap(), widened);
+        assert!(super::bias_f32("F16", &[0; 4]).unwrap_err().msg.contains("F32 or BF16"));
     }
 }

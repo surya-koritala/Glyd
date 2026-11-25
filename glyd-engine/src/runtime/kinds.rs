@@ -918,6 +918,9 @@ impl ModelDesc {
                 s.rounding = Rounding::F32;
             }
         }
+        for m in self.mtp.iter_mut() {
+            (m.norm_embed.rounding, m.norm_hidden.rounding, m.final_norm.rounding) = (Rounding::F32, Rounding::F32, Rounding::F32);
+        }
         self.head.rounding = Rounding::F32;
     }
 }

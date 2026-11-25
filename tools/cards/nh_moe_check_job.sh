@@ -8,7 +8,7 @@
 #   4. tiny       for each level (6: six-bit codes, 5: five-bit, 4: wren, the experts four-bit and the latent projections and shared expert six-bit) a random tiny NemotronH of the pattern M E * E M E
 #                 (nemotron_ref.py moetoy: no Hub read; the experts, latent projections and shared expert are on the grid of the layouts the engine holds them in, so that its packs hold them exactly: an expert's down
 #                 matrix on the grid of both its block layout and its row layout), then
-#                 layers  glyd-engine nhlayers on its three mixture-of-experts layers (src/moe_nh.rs through the engine's own code): the prompt in one call and in odd pieces, single steps one by one and replayed from
+#                 layers  glyd-engine nhlayers on its three mixture-of-experts layers (the Moe kind's block, src/dynamic/experts.rs, through the engine's own code): the prompt in one call and in odd pieces, single steps one by one and replayed from
 #                         a CUDA graph, a prompt then steps; every stage (fc1_latent_proj, the router's choices and weights against the reference's, the experts' sum, fc2_latent_proj with the shared expert);
 #                         the experts' down matrices are packed in the row layout as the engine loads them, so these cases run the sparse product; then again with GLYD_ENGINE_DENSE_DOWN=1 (the block layout: the
 #                         library's dense product) against the same reference

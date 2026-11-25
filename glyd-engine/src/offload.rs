@@ -5657,9 +5657,10 @@ mod tests {
         let mut x = Pick(0xFACE_FEED);
         let (mut found, mut read_in) = (0usize, 0usize);
         for l in [1usize, 3, 5] {
-            let host = read_layer(&ck, &manifest, &c, l).unwrap();
-            let ix = index_layer(&manifest, &c, l).unwrap();
-            let disk = Arc::new(crate::moe_hb::HbDisk::open(&ck, &c, l, &ix).unwrap());
+            let names = c.hb_names(l);
+            let host = read_layer(&ck, &manifest, &names).unwrap();
+            let ix = index_layer(&manifest, &names).unwrap();
+            let disk = Arc::new(crate::moe_hb::HbDisk::open(&ck, &names, &ix).unwrap());
             let _: &HbDisk = &disk;
             for g in 0..2 {
                 let h = host.groups[g].as_ref().unwrap();

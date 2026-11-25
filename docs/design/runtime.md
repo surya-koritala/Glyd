@@ -125,7 +125,7 @@ and the whole lossless KV cache (`kv_write`, `kv_gather`, `kv_decode`, ...) are 
 | **DeepSeek-V4** Flash, Pro (`dynamic/deepseek_v4.rs`) | one shared KV head of 512; window 128 ring plus a per-layer compressed cache (ratio 4 with an FP4-simulated indexer, or every entry); learned sink; grouped low-rank output | partial rope 64/512; YaRN on compressed layers | mHC, 4 streams; FP8 quantized product inputs | every layer MoE: sqrt-softplus + bias, hash routing (token id) in the first layers, SwiGLU limit, 1 FP8 shared | MTP parsed, unused | window ring (E4M3-simulated) + compressed caches + fp32 pooling state | FP8 large matrices kept, FP4 experts exact |
 | **Muse Spark** 816B-A42B (`dynamic/muse.rs`) | GQA hd 64, sliding (rope) and global (no rope); weightless q/k norm, gated output with per-head norm | full rope on sliding layers only | centred (1+w) RMSNorm; learned residual gates X = aX + bO; sandwich | every layer MoE in a latent, sigmoid + bias, per-expert output norm, no shared | logit softcap with multiplier | bf16 rings | bf16, lossless `Tiered` |
 | legacy: the earlier dense engine (`model.rs` then; as built `dynamic/dense.rs`, the plain dense kind) | GQA, hd 128, q/k norm fused with rope (`qk_norm_rope`) | rope, full, no scaling (refused) | RMSNorm pre-norm, residual fused in `rmsnorm_add` | SiLU-gated | tied allowed | paged 12-bit lossless, 16-token pages, 8 rows | `mma`/`mma12` decoded in the library product; long prompts unpack then GEMM |
-| Nemotron-3-Super / Nemotron-H (`dynamic/nemotron.rs`, loaded by the executor's loader from its lowered description; the hand-written engine is retired; its Mamba-2 layers run the kind's kernel table, `kern/mamba2.rs`) | pattern of Mamba-2 (SSD chunk 128, fp32 state [heads,64,128]) and GQA hd 128 | none | RMSNorm, `x + mixer(norm(x))` | MoE: sigmoid + bias, top-22 of 512, renorm, x5; latent 1024 (Super); relu^2, no gate; full-width shared expert | MTP not loaded | bf16 contiguous plus SSM and conv state | Int6/5/4, hb40 codebook; expert cache with CPU misses (`moe_nh.rs:273-319`) |
+| Nemotron-3-Super / Nemotron-H (`dynamic/nemotron.rs`, loaded by the executor's loader from its lowered description; the hand-written engine is retired; its Mamba-2 layers run the kind's kernel table, `kern/mamba2.rs`) | pattern of Mamba-2 (SSD chunk 128, fp32 state [heads,64,128]) and GQA hd 128 | none | RMSNorm, `x + mixer(norm(x))` | MoE: sigmoid + bias, top-22 of 512, renorm, x5; latent 1024 (Super); relu^2, no gate; full-width shared expert | MTP not loaded | bf16 contiguous plus SSM and conv state | Int6/5/4, hb40 codebook; the Moe kind's block with its latent's own projections and the row layout of relu^2 experts, expert cache with CPU misses (`dynamic/experts.rs` `block`, `held`; `moe_hb.rs` `HbMoe`) |
 
 Recent families first, in bold; legacy rows last.
 
@@ -623,7 +623,7 @@ design keeps it, with two changes:
 - **Deterministic capacity (R4b).** Admission reserves each block's worst-case escape chunks (the tables' `worst_chunks`) for the tokens the
   request may write; the pool is the sum of reservations, not a share of the cache. An admitted request never fails because its keys
   compressed worse than expected. If the reservation leaves less than the bf16 cache would hold, those layers store bf16 pages instead:
-  the planner picks per layer group the format that holds more tokens.
+  the planner picks the format that holds more tokens (as built, one format for the whole cache, not one per layer group: "As planned" below).
 - **Lost blocks become impossible, not rare.** With reservations, `Lost` remains only as a checked invariant: the kernel still writes the
   status word, and a lost block is a bug reported as an error, not a retry.
 
@@ -1068,7 +1068,7 @@ with expert parallelism across nodes (D4). That is a planner fact, not a runtime
 | risk | effect | what we do |
 | :--- | :--- | :--- |
 | The generic executor loses fusions the hand-written engines have (Qwen3's fused `gemm3f` epilogue, Kimi's six-product KDA) | decode a few percent slower; the bench gate blocks the move | fusions live inside a block's `LayerImpl`, where they are today; a kind may take its neighbour's norm and residual |
-| Worst-case escape reservation eats the lossless KV's gain | fewer tokens than bf16 for some models | measure per model in R4b; the planner picks bf16 pages for a group where they hold more |
+| Worst-case escape reservation eats the lossless KV's gain | fewer tokens than bf16 for some models | measure per model in R4b; the planner takes bf16 pages where the 12-bit pages reserve more (one format for the plan: `kv_format`) |
 | A host-planned expert store breaks the step graph | ~10-20 µs a MoE layer on consumer cards | the device plan where copies dominate; the host plan only where host compute is the common case |
 | Recurrent-state snapshots are large (434 MB a sequence for Kimi-K3) | prefix reuse costs memory on KDA/GDN models | snapshots at turn ends only, LRU, counted in the plan |
 | MLX's lazy graph and our explicit queues disagree on when work runs | the Metal backend is slower than MLX alone | the spike (step 0) runs a kind through `mlx-c` before R2 lands |

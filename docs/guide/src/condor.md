@@ -45,8 +45,7 @@ because the experts that miss the GPU's cache run on it.
 - Chat: `http://127.0.0.1:8080`. OpenAI API at `http://127.0.0.1:8080/v1` (any key, any model name), Anthropic API at `/v1/messages`.
 - Context up to 262,144 tokens; the default is 32,768 (`GLYD_CTX=65536 tools/serve.sh` for more).
 - Two NVIDIA cards: `GLYD_GPUS=0,1 tools/serve.sh` cuts the layers over them, each card holding its layers and a cache of their experts (more of
-  them stay on the GPUs than one card holds). Its replies are one card's, token for token; it answers one request at a time. `GLYD_GPUS=1` runs on
-  the second card alone.
+  them stay on the GPUs than one card holds); it answers one request at a time. `GLYD_GPUS=1` runs on the second card alone.
 - 4 requests at once by default (`GLYD_USERS=N`, 1 to 8).
 
 More: [condor/README.md](https://github.com/surya-koritala/Glyd/blob/main/condor/README.md),

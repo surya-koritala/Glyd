@@ -12,7 +12,7 @@
 //! `out_mix_down`, `out_mix_up`). Roles `norm_embed` [hidden], `norm_hidden` [n hidden], `fc_embedding`, `fc_hidden` [hidden, hidden],
 //! `final_norm` [n hidden], `out_mix_down` [rank, n hidden], `out_mix_up` [n hidden, rank].
 
-use super::{comp, dot, gated_mix, hc_weights, matvec, norm::norm, sigmoid, Params, RefLayer, SeqState};
+use super::{comp, dot, gated_mix, hc_weights, matvec, norm::norm, sigmoid, Params, RefLayer};
 use crate::ffi::{err, Result};
 use crate::runtime::describe::Described;
 use crate::runtime::kinds::{Body, Collapse, Mixer, MtpHead, MtpInput, Residual};
@@ -72,28 +72,27 @@ impl RefMtp {
             x.extend(self.p.prod("fc_hidden", s)?.iter().zip(&o).map(|(a, b)| a + b));
         }
         for b in &mut self.blocks {
-            if let Some(SeqState::Attention(c)) = b.seqs.get_mut(&seq) {
-                let keep = c.pos.iter().take_while(|&&q| q < pos).count();
-                (c.pos.truncate(keep), c.k.truncate(keep), c.v.truncate(keep), c.ikey.truncate(keep));
-            }
+            b.forget_from(seq, pos);
             b.forward(&[pos], &[seq], &[token], &mut x)?;
         }
         let h = gated_mix(n, &self.head.final_norm, self.p.vec("final_norm")?, self.p.vec("out_mix_down")?, self.p.vec("out_mix_up")?, None, &x)?.0;
         Ok((x, h))
     }
 
-    /// One row: the embedding of the next token, the model's hidden state before it, at `pos` of sequence `seq`; the head's normed hidden
-    /// state out.
-    pub fn step(&mut self, seq: u32, pos: u32, embedding: &[f32], hidden: &[f32]) -> Result<Vec<f32>> {
+    /// One row: the next token `token` and its embedding row, the model's hidden state before it (its final normed one, or the head's output after
+    /// its draft before), at `pos` of sequence `seq`; the head's normed hidden state out (the model's head's input and the next draft's state). A row
+    /// at a position the head's caches hold already takes its place and the later ones' (as `step_streams`).
+    pub fn step(&mut self, seq: u32, pos: u32, token: u32, embedding: &[f32], hidden: &[f32]) -> Result<Vec<f32>> {
         let d = self.hidden;
-        if embedding.len() != d || hidden.len() != d {
-            return err(format!("an MTP row of {} and {} values for width {d}", embedding.len(), hidden.len()));
+        if self.head.input != MtpInput::Joined || embedding.len() != d || hidden.len() != d {
+            return err(format!("a draft head of {:?} on an MTP row of {} and {} values for width {d}", self.head.input, embedding.len(), hidden.len()));
         }
         let mut cat = norm(&self.head.norm_embed, embedding, self.p.opt("norm_embed"), None);
         cat.extend(norm(&self.head.norm_hidden, hidden, self.p.opt("norm_hidden"), None));
         let mut x = self.p.prod("eh_proj", &cat)?;
         for b in &mut self.blocks {
-            b.forward(&[pos], &[seq], &[], &mut x)?;
+            b.forget_from(seq, pos);
+            b.forward(&[pos], &[seq], &[token], &mut x)?;
         }
         Ok(norm(&self.head.final_norm, &x, self.p.opt("final_norm"), None))
     }

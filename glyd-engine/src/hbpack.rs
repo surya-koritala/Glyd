@@ -209,7 +209,7 @@ pub(crate) mod tests {
         c.check(&have, &c.saved(&ck)).unwrap();
         // the layers read back
         for (k, &l) in [1usize, 3, 5].iter().enumerate() {
-            let h = read_layer(&ck, &manifest, &c, l).unwrap();
+            let h = read_layer(&ck, &manifest, &c.hb_names(l)).unwrap();
             assert_eq!(h.signs, ex.layers[k].signs);
             let counts: Vec<usize> = h.groups.iter().map(|g| g.as_ref().map_or(0, |g| g.experts)).collect();
             assert_eq!(counts.iter().sum::<usize>(), 16);

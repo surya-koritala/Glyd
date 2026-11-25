@@ -425,7 +425,7 @@ fn glm53_mtp_head() {
     let got: Vec<f32> = prev
         .chunks(64)
         .enumerate()
-        .flat_map(|(j, h)| m.step(0, j as u32, &embed[toks[j] * 64..][..64].iter().map(|&v| super::bf16(v)).collect::<Vec<_>>(), h).unwrap())
+        .flat_map(|(j, h)| m.step(0, j as u32, toks[j] as u32, &embed[toks[j] * 64..][..64].iter().map(|&v| super::bf16(v)).collect::<Vec<_>>(), h).unwrap())
         .collect();
     assert_close(&got, &f.f32s("output"), BF16_TOL, "GLM-5.3 MTP head against glm_ref.py");
 }

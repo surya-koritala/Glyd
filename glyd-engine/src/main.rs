@@ -21,7 +21,10 @@
 //!   glyd-engine rangeworker --model MODEL[:LEVEL] --layers A..B [--ctx N] [--chunk N] [--head-rows N] [--sessions N] [--device D]
 //!                                                             one range of a Qwen3.5 model's layers on this GPU, its frames on the standard input and output: one model across
 //!                                                             processes or machines (docs/range-worker.md, glyd-range/1)
+//!   glyd-engine connect | pull | ls | rm | names | service | ps | stop | verify | bench   the rest of the commands about models
 //!   glyd-engine --version
+//!
+//! The commands about models, their flags and each one's page (`glyd-engine help COMMAND`) are one table: src/cmdtable.rs, which this list does not repeat.
 //!
 //! A development build (the default features) has the checks and the measurements too: src/devcmd.rs.
 

@@ -1719,11 +1719,7 @@ impl LoadPlan {
 
     /// The keys and values' format: "12-bit" (the executor's lossless 12-bit pages, `kv12`) or "bf16".
     pub fn kv_format(&self) -> &'static str {
-        if self.kv12 {
-            "12-bit"
-        } else {
-            "bf16"
-        }
+        kv_format_of(self.kv12)
     }
 
     /// The plan in words, for the line `run` says before it loads and `fit` prints.
@@ -2641,6 +2637,16 @@ pub struct Planned {
     pub positions: f64,
 }
 
+/// The words for the keys and values' format, the plan's (`LoadPlan::kv_format`: `fit`'s JSON) and the loaded engine's (`/v1/glyd/info`'s `precision.kv`):
+/// "12-bit" where the executor holds them in its lossless 12-bit pages, else "bf16".
+pub fn kv_format_of(twelve: bool) -> &'static str {
+    if twelve {
+        "12-bit"
+    } else {
+        "bf16"
+    }
+}
+
 /// Whether the run of `a` holds its keys and values in the executor's 12-bit lossless pages (GLYD_KV=lossless), as the family's load plan sizes them: Gemma 4 with no draft model,
 /// a plain dense decoder served (`sizing::twelve_pages`); the loaders that take them (src/cli.rs `twelve_bit_pages`).
 fn takes_twelve(a: &crate::args::Args, f: crate::support::Family) -> bool {
@@ -3033,8 +3039,9 @@ pub mod sizing {
     pub const TWELVE_PCT: u64 = 78;
 
     /// The bytes each of the `nl` layers holds on a GPU, and the rest's (embedding, head, final norm): the release's tensors as they are, an FP8 matrix at
-    /// `f8_pct` hundredths of its bytes, a bf16 matrix at penguin's 72% (about 11.5 bits a weight, an upper bound). Not counted: the tensors no description
-    /// loads (a multi-token-prediction layer, a vision or audio tower).
+    /// `f8_pct` hundredths of its bytes, a bf16 matrix at penguin's 72% (about 11.5 bits a weight, an upper bound), a latent attention's small tensor released
+    /// in FP8 at its values in bf16 (twice its bytes: `mla::f8_small_name`). Not counted: the tensors no description loads (a multi-token-prediction layer, a
+    /// vision or audio tower).
     pub fn layer_bytes(dir: &Path, nl: usize, f8_pct: u64) -> crate::ffi::Result<(Vec<u64>, u64)> {
         layer_bytes_where(dir, nl, f8_pct, TIERED_PCT, &|_| true)
     }
@@ -3080,6 +3087,8 @@ pub mod sizing {
         table.per_layer(nl, &|r| keep(&r.name), &|r| {
             let matrix = r.shape.len() == 2 && r.shape.iter().all(|&d| d >= 256);
             match r.dtype.as_str() {
+                // (a latent attention's kv_b_proj and indexer products released in FP8: the loader holds their E4M3 values in bf16, `Part::scales`)
+                "F8_E4M3" if crate::dynamic::mla::f8_small_name(&r.name) => r.bytes * 2,
                 "BF16" if matrix => r.bytes * bf16_pct / 100,
                 "F8_E4M3" if matrix => r.bytes * f8_pct / 100,
                 _ => r.bytes,
@@ -3142,7 +3151,7 @@ pub mod sizing {
         hbm: bool,
         twelve: bool,
     ) -> crate::ffi::Result<((Vec<u64>, u64), Option<(Vec<usize>, Vec<i32>)>, bool, bool)> {
-        Ok(fit_table_with(&crate::sizes::Table::from_dir(dir).map_err(crate::ffi::Error)?, nl, room, hbm, twelve, &split::hb_layer_bytes(dir, nl)?))
+        Ok(fit_table_with(&crate::sizes::Table::from_dir(dir).map_err(crate::ffi::Error)?, nl, room, hbm, twelve, &split::hb_layer_bytes(dir, nl)?, &[]))
     }
 
     /// `fit` of a table of tensors (src/sizes.rs).
@@ -3154,10 +3163,11 @@ pub mod sizing {
         hbm: bool,
         twelve: bool,
     ) -> ((Vec<u64>, u64), Option<(Vec<usize>, Vec<i32>)>, bool, bool) {
-        fit_table_with(table, nl, room, hbm, twelve, &[])
+        fit_table_with(table, nl, room, hbm, twelve, &[], &[])
     }
 
-    /// `fit_table`, each layer's bytes more by `extra`'s (a hummingbird directory's experts, which no table lists: `split::hb_layer_bytes`).
+    /// `fit_table`, each layer's bytes more by `extra`'s (a hummingbird directory's experts, which no table lists: `split::hb_layer_bytes`), a stage beginning
+    /// only at a layer `starts` keeps (`plan_cuts_at`; every layer where it is empty).
     #[allow(clippy::type_complexity)]
     pub fn fit_table_with(
         table: &crate::sizes::Table,
@@ -3166,6 +3176,7 @@ pub mod sizing {
         hbm: bool,
         twelve: bool,
         extra: &[u64],
+        starts: &[bool],
     ) -> ((Vec<u64>, u64), Option<(Vec<usize>, Vec<i32>)>, bool, bool) {
         let bytes = |f8: u64, bf16: u64| {
             let (mut per, base) = split::layer_bytes_table(table, nl, f8, bf16, &|_| true);
@@ -3175,13 +3186,13 @@ pub mod sizing {
         if hbm {
             for (f8, twelve) in [(split::PLAIN_PCT, twelve), (split::PLAIN_PCT, false), (split::CODED_PCT, twelve)] {
                 let b = bytes(f8, if twelve { split::TWELVE_PCT } else { split::TIERED_PCT });
-                if let Some(c) = plan_cuts(&b.0, b.1, room) {
+                if let Some(c) = plan_cuts_at(&b.0, b.1, room, starts) {
                     return (b, Some(c), f8 == split::CODED_PCT, twelve);
                 }
             }
         }
         let coded = bytes(split::CODED_PCT, split::TIERED_PCT);
-        let cut = plan_cuts(&coded.0, coded.1, room);
+        let cut = plan_cuts_at(&coded.0, coded.1, room, starts);
         let switched = hbm && cut.is_some();
         (coded, cut, switched, false)
     }
@@ -3284,6 +3295,32 @@ pub mod sizing {
         cut_by_share(per, base, room)
     }
 
+    /// `plan_cuts` where a stage begins only at a layer `starts` keeps (the first always; every layer where it is empty): the layers grouped from each such layer
+    /// to the next, the groups cut, a cut at a group's first layer.
+    pub fn plan_cuts_at(per: &[u64], base: u64, room: &[(i32, u64)], starts: &[bool]) -> Option<(Vec<usize>, Vec<i32>)> {
+        let firsts: Vec<usize> = (0..per.len()).filter(|&l| l == 0 || starts.get(l).copied().unwrap_or(true)).collect();
+        let groups: Vec<u64> = firsts.iter().enumerate().map(|(i, &f)| per[f..firsts.get(i + 1).copied().unwrap_or(per.len())].iter().sum()).collect();
+        let (cuts, devices) = plan_cuts(&groups, base, room)?;
+        Some((cuts.into_iter().map(|c| firsts[c]).collect(), devices))
+    }
+
+    /// The layers a stage of the model whose config.json is `text` may begin at, of its `nl`: every one but a layer whose latent attention takes the picks of
+    /// the one before it (its indexer `shared`: `lower::latent_moe` keeps the two in one stage); empty (every one) where the config describes no such layer.
+    pub fn stage_starts(text: &str, nl: usize) -> Vec<bool> {
+        use crate::runtime::kinds::{Body, Mixer};
+        let Some(d) = serde_json::from_str(text).ok().and_then(|v| crate::runtime::describe::describe(&v).ok()) else { return Vec::new() };
+        let nb = d.desc.blocks.len();
+        let lent = |b: &crate::runtime::kinds::Block| matches!(&b.body, Body::Mixer(Mixer::Mla(m)) if m.indexer.as_ref().is_some_and(|i| i.shared));
+        if nl == 0 || nb < nl || !d.desc.blocks.iter().any(lent) {
+            return Vec::new();
+        }
+        let mut starts = vec![true; nl];
+        for b in (0..nb).filter(|&b| lent(&d.desc.blocks[b])) {
+            starts[b * nl / nb] = false;
+        }
+        starts
+    }
+
     /// The layers over every GPU of `room`, in order, each GPU's share of the bytes as its share of the room (`plan_cuts` where one GPU does not hold them).
     pub(crate) fn cut_by_share(per: &[u64], base: u64, room: &[(i32, u64)]) -> Option<(Vec<usize>, Vec<i32>)> {
         let total = per.iter().sum::<u64>() + base;
@@ -3325,7 +3362,7 @@ pub mod sizing {
     /// The expert cache that `budget` bytes of the GPU's memory buy for the model `c` at `level`: places a layer for each of its mixture-of-experts layers, as many as fit (all of a layer's experts at most); None where
     /// fewer than `least` fit.
     pub fn cache_plan(c: &ConfigNemotronH, level: Layout, budget: u64, least: usize) -> crate::ffi::Result<Option<CachePlan>> {
-        let (layers, experts, expert_bytes) = (c.layers_of(NhKind::Moe), c.moe.experts, crate::moe_nh::expert_bytes(c, level)?);
+        let (layers, experts, expert_bytes) = (c.layers_of(NhKind::Moe), c.moe.experts, c.expert_bytes(level)?);
         Ok(places_for(budget, layers, expert_bytes, experts, least).map(|slots| CachePlan {
             layers,
             experts,
@@ -3789,7 +3826,7 @@ pub mod sizing {
         gpu: &str,
     ) -> Result<(usize, CachePlan), String> {
         let (layers, experts, k) = (cfg.layers_of(NhKind::Moe), cfg.moe.experts, cfg.moe.top_k);
-        let each = crate::moe_nh::expert_bytes(cfg, layout).map_err(|e| e.msg)?;
+        let each = cfg.expert_bytes(layout).map_err(|e| e.msg)?;
         let experts_bytes = (layers * experts) as u64 * each;
         let ctx = ctx.unwrap_or(LOSSY_CTX).min(cfg.max_pos.max(LOSSY_MIN_CTX));
         // (the plan's weights are at `bits` a weight, a little over the experts' exact bytes: the rest of the model is taken as what is left)
@@ -3810,7 +3847,7 @@ pub mod sizing {
         let disk = layout == Layout::Hummingbird;
         let ram = held_in_memory(experts_bytes, asked_host, host);
         let least_ram = if disk { (layers * 2 * k) as u64 * each } else { experts_bytes };
-        let Some(plan) = crate::moe_nh::cache_plan(cfg, layout, budget, least).map_err(|e| e.msg)?.filter(|p| p.gpu_bytes() + rest <= free) else {
+        let Some(plan) = cache_plan(cfg, layout, budget, least).map_err(|e| e.msg)?.filter(|p| p.gpu_bytes() + rest <= free) else {
             return Err(format!(
                 "with its experts in the computer's memory it needs at least {} of GPU memory (and {} of the computer's)",
                 gib(need),
@@ -4425,7 +4462,9 @@ pub mod sizing {
         let takes_twelve = route.bf16_twelve;
         let no_f8 = !table.rows.iter().any(|r| r.dtype == "F8_E4M3");
         let twelve_faster = hbm || (no_f8 && !devs.is_empty() && devs.iter().all(|t| !crate::weights::smallest_is_fastest(t.cc)));
-        let ((per, base), cut, coded, mut twelve) = crate::dynamic::split::fit_table_with(table, nl, &room, twelve_faster, takes_twelve, &hb_experts);
+        // (a stage begins at a layer that takes nothing from the one before it: `stage_starts`)
+        let starts = stage_starts(text, nl);
+        let ((per, base), cut, coded, mut twelve) = crate::dynamic::split::fit_table_with(table, nl, &room, twelve_faster, takes_twelve, &hb_experts, &starts);
         let mut total = per.iter().sum::<u64>() + base;
         let chosen = a.flag("split").is_some() || a.flag("devices").is_some();
         let model_max = crate::dynamic::split::config_num(text, "max_position_embeddings").unwrap_or(usize::MAX);
@@ -6923,6 +6962,43 @@ mod tests {
         // a path not sized by its loader: the ladder says nothing
         let l = go("swift", 32768, vec![("swift", Ok(None))]);
         assert!(l.plan.is_none() && l.steps.is_empty() && l.refusal.is_none());
+    }
+
+    /// GLM-5.3's release (tests/fixtures/glm_moe_dsa_tensors.json, its headers): each layer's bytes count its latent attention's kv_b_proj and its indexer's
+    /// products, released in FP8, at the bf16 the loader holds them as (two bytes a value: 23.9 MB more on a layer with its own indexer, 14.7 MB on one
+    /// lent its picks); a stage begins only at a layer whose indexer is its own (layers 0, 1, 2, then every fourth: `stage_starts`), and the cuts over
+    /// eight GPUs of 136 GB are at such layers.
+    #[test]
+    fn glm53_stages_begin_where_an_indexer_picks() {
+        let t = json::parse(&fixture("glm_moe_dsa_tensors.json")).unwrap();
+        let row = |name: String, v: &Value| {
+            let (dtype, shape) = (v.as_array().unwrap()[0].as_str().unwrap().to_string(), v.as_array().unwrap()[1].as_u64s().unwrap());
+            let width = match dtype.as_str() {
+                "F8_E4M3" => 1,
+                "BF16" => 2,
+                _ => 4,
+            };
+            crate::sizes::Row { bytes: shape.iter().product::<u64>() * width, name, dtype, shape }
+        };
+        let mut rows: Vec<crate::sizes::Row> = t.get("tensors").and_then(Value::as_object).unwrap().iter().map(|(n, v)| row(n.clone(), v)).collect();
+        for run in t.get("runs").and_then(Value::as_array).unwrap() {
+            let p = run.get("prefix").and_then(Value::as_str).unwrap();
+            for e in 0..run.get("count").and_then(Value::as_u64).unwrap() {
+                rows.extend(run.get("tensors").and_then(Value::as_object).unwrap().iter().map(|(n, v)| row(format!("{p}{e}.{n}"), v)));
+            }
+        }
+        let table = crate::sizes::Table { rows };
+        let (per, _) = crate::dynamic::split::layer_bytes_table(&table, 78, 100, 100, &|_| true);
+        let raw = |l: usize| table.rows.iter().filter(|r| crate::sizes::layer_of(&r.name) == Some(l)).map(|r| r.bytes).sum::<u64>();
+        assert_eq!((per[2] - raw(2), per[3] - raw(3)), (28672 * 512 + 4096 * 2048 + 128 * 6144, 28672 * 512));
+        let text = fixture("glm_moe_dsa_config.json");
+        let starts = sizing::stage_starts(&text, 78);
+        let firsts: Vec<usize> = (0..78).filter(|&l| starts[l]).collect();
+        assert_eq!(firsts, [0, 1, 2].into_iter().chain((6..78).step_by(4)).collect::<Vec<usize>>());
+        let room: Vec<(i32, u64)> = (0..8).map(|g| (g, 136_000_000_000)).collect();
+        let (_, cut, _, _) = crate::dynamic::split::fit_table_with(&table, 78, &room, true, false, &[], &starts);
+        let (cuts, devices) = cut.expect("eight GPUs of 136 GB hold it");
+        assert!(devices.len() > 1 && cuts.iter().all(|&c| starts[c]), "{cuts:?}");
     }
 
     /// A snapshot of the planner's own plans (tests/fixtures/plans_p2a.json): each family's fixture, on every preset, at every level this build has, alone and

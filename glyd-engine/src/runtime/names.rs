@@ -218,6 +218,10 @@ pub mod part {
         ("out_mix_down", "hyper_connection_mixer.input_mix_weight_down.weight"),
         ("out_mix_up", "hyper_connection_mixer.input_mix_weight_up.weight"),
     ];
+    /// A draft head's own roles in a layer after the model's (`kinds::MtpInput::Joined`, DeepSeek-V3's layout that GLM-5.3 keeps: `model.layers.{L}.` from
+    /// L = the model's layers): the next token's embedding's norm and the model's hidden state's, their joined product, the head's final norm.
+    pub const MTP_LAYER: Roles =
+        &[("eh_proj", "eh_proj.weight"), ("norm_embed", "enorm.weight"), ("norm_hidden", "hnorm.weight"), ("final_norm", "shared_head.norm.weight")];
     /// The n-gram embedding's block; its table's role `ngram` is the shards of `QX_NGRAM_SHARD` stacked (`shards`).
     pub const QX_NGRAM: Roles = &[
         ("norm_in", "ple.norm_query.weight"),

@@ -461,12 +461,7 @@ fn open_nh(
     // the layers are loaded with a host half if any variant uses it; the first variant is the one set when the engine is ready
     let loading = variants.iter().copied().find(|v| v.mode != Mode::Copy).unwrap_or(variants[0]);
     store.set_offload(loading);
-    let (plain, cached) = (glyd_engine::moe_nh::factory(level), places.map(|p| glyd_engine::moe_nh::factory_cached(level, p.slots, &store)));
-    let make: glyd_engine::kern_nh::MoeFactory<'_> = match &cached {
-        Some(f) => f,
-        None => &plain,
-    };
-    let e = glyd_engine::dynamic::nemotron::load_with(dir, &o, make, glyd_engine::dynamic::Stage::whole(cfg.layers))?;
+    let e = glyd_engine::dynamic::nemotron::load_cached(dir, &o, level, places.map(|p| (p.slots, &store)), glyd_engine::dynamic::Stage::whole(cfg.layers))?;
     store.set_offload(variants[0]);
     Ok((e, t0.elapsed().as_secs_f64(), places.map(|_| store), variants))
 }

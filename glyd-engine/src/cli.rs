@@ -1465,14 +1465,10 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: 
             }
         }
         store.set_offload(offload);
-        let (plain, cached) = (crate::moe_nh::factory(plan.layout), plan.experts.map(|c| crate::moe_nh::factory_cached(plan.layout, c.slots, &store)));
-        let make: crate::kern_nh::MoeFactory<'_> = match &cached {
-            Some(f) => f,
-            None => &plain,
-        };
-        // the executor (GLY-354): Nemotron-H's description, its blocks of experts (an expert cache's) as `make` makes them
+        // the executor (GLY-354): Nemotron-H's description, its blocks of experts the Moe kind's, in the expert cache of the plan's places where it has one
         let layers = crate::nemotron::ConfigNemotronH::load(dir).map_err(cannot)?.layers;
-        let e = crate::dynamic::nemotron::load_with(dir, &o, make, crate::dynamic::Stage::whole(layers)).map_err(oom)?;
+        let cache = plan.experts.map(|c| (c.slots, &store));
+        let e = crate::dynamic::nemotron::load_cached(dir, &o, plan.layout, cache, crate::dynamic::Stage::whole(layers)).map_err(oom)?;
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
     } else {
@@ -3467,5 +3463,23 @@ mod tests {
         assert_eq!(nv_version("NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  595.91.07  Release Build  (dvs-builder@U22-I3-AF03-09-1)  Thu Sep 11 22:53:16 UTC 2025\nGCC version:  gcc version 13.2.0"), Some("595.91.07".to_string()));
         assert_eq!(nv_version("NVRM version: NVIDIA UNIX x86_64 Kernel Module  580.65.06  Sun Jul 27 07:09:24 UTC 2025"), Some("580.65.06".to_string()));
         assert_eq!(nv_version(""), None);
+    }
+
+    /// /v1/glyd/info's `precision.kv` is the format the keys and values were loaded in, in the words of the plan's `kv_format` (`fit --json`): `bf16`, or `12-bit` where the engine holds them in
+    /// the executor's lossless 12-bit pages (`Dyn::held`: the tables the loader set from the plan's `kv12`). Before, it said `bf16` for every model.
+    #[test]
+    fn the_info_says_the_format_the_keys_and_values_were_loaded_in() {
+        let root = std::env::temp_dir().join(format!("glyd-engine-cli-kvformat-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let said = |twelve: bool| {
+            let held = crate::dev::Held { kv_type: crate::plan::kv_format_of(twelve), state_type: "fp32", ..Default::default() };
+            let v = crate::tools::obj(about("m", &root, None, "penguin", true, "w", Some(&held), &gpu("g", (8, 9), 15)));
+            v.get("precision").and_then(|p| p.get("kv")).cloned()
+        };
+        assert_eq!((said(false), said(true)), (Some(Value::from("bf16")), Some(Value::from("12-bit"))));
+        // (no engine's account of itself: null, as before)
+        let none = crate::tools::obj(about("m", &root, None, "penguin", true, "w", None, &gpu("g", (8, 9), 15)));
+        assert_eq!(none.get("precision").and_then(|p| p.get("kv")), Some(&Value::Null));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

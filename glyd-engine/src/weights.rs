@@ -433,7 +433,7 @@ fn block_layout(name: &str) -> Option<Layout> {
 }
 
 /// A pack's layout by its name in a glyd-v7 entry: a block layout, or a row layout (`i6r`, `i5r`, `i4r`: the weight's transpose, a row for each of its inputs).
-fn entry_layout(name: &str) -> Option<Layout> {
+pub(crate) fn entry_layout(name: &str) -> Option<Layout> {
     block_layout(name).or_else(|| Layout::by_name(name).filter(|l| l.row_bits().is_some()))
 }
 

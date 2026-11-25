@@ -1,6 +1,7 @@
-// glyd-engine's own small kernels: the pieces of a Qwen3 layer that are not a packed matrix product or the KV
-// cache's attention (those are the library's). bf16 in memory, fp32 inside, one rounding where vLLM's native path
-// rounds once. Built by build.rs into a fatbin and loaded with the driver.
+// glyd-engine's shared kernels: the small pieces of a layer of any family that are not a packed matrix product or the KV
+// cache's attention (those are fold.cu's and attn.cu's; each family's own pieces are in its file: qwen35.cu, gemma4.cu, ...): row copies, the norms
+// and the rotary, the gated activation, the logits' top-k and sums, the KV pages' tools, and dense bf16 products and a prompt's attention of their own.
+// bf16 in memory, fp32 inside, one rounding where vLLM's native path rounds once. Built by build.rs into a fatbin and loaded with the driver.
 #if defined(__HIPCC__)
 #include "../../gpu/hip.h"  // AMD GPUs through HIP (build.rs, GLYD_HIP=1): the CUDA names the kernels use
 #else

@@ -49,11 +49,11 @@
   },
   "glm_moe_dsa_config.json": {
     "blocks": 156,
-    "tensors": 117060,
-    "kinds": "19459482563010f5",
-    "weights": "48a69ccda964cc85",
+    "tensors": 118629,
+    "kinds": "4c3bab0d5b848251",
+    "weights": "2b82199e295ec1af",
     "plan": "18f44eb778d0f0d0",
-    "family": "refused: m is a GlmMoeDsaForCausalLM model, which this engine has no description of yet"
+    "family": "GlmDsa"
   },
   "glm_moe_dsa_toy_config.json": {
     "blocks": 8,
@@ -61,7 +61,7 @@
     "kinds": "7a69c2a2d0ba79e8",
     "weights": "48030b1c4c060000",
     "plan": "736bdcdbee68fd66",
-    "family": "refused: m is a GlmMoeDsaForCausalLM model, which this engine has no description of yet"
+    "family": "GlmDsa"
   },
   "nemotron_h_config.json": {
     "blocks": 88,
@@ -221,7 +221,7 @@
     "kinds": "d925ba4e319e1f55",
     "weights": "95e1bb9c29503b78",
     "plan": "6e7bf52cf867a631",
-    "family": "refused: m is a GlmMoeDsaForCausalLM model, which this engine has no description of yet"
+    "family": "GlmDsa"
   },
   "runtime/glm53flash_model.json": {
     "blocks": 8,
