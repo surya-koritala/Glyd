@@ -73,14 +73,14 @@ were a graph's replay, the GPU time a pass and each operation's share (`norms`, 
 one before it, so a host slower than the GPU shows as GPU time: `queued_ms`, the host's time to queue the pass, close to its GPU time says the pass waits on the host.
 For each kind of step (a call of the scheduler's step) it gives the wall time, the GPU time of its passes, the rest (the host's work, the copies and the waits around the
 passes) and the time from one call's end to the next one's start (the scheduler, the sampler, the server; for prompts it holds the time no request was waiting). The
-events cost a little (about 2 µs each in a graph on an RTX 4080 SUPER, docs/ceiling.md): read the speeds from a run without the variable. Operations an executor family runs with no event of their own are
+events cost a little (about 2 µs each in a graph on an RTX 4080 SUPER, measured 2026-10-22: docs/ceiling.md): read the speeds from a run without the variable. Operations an executor family runs with no event of their own are
 counted in the next operation that has one.
 
 ## The ceiling
 
 `pct_of_ceiling` of a load is its decode tokens/s a user over the ceiling: the memory's bandwidth over the weights' bytes a token. The bandwidth is the spec sheet's for the GPU's name (`bench::spec_bandwidth`:
 736 GB/s for an RTX 4080 SUPER, 3,352 for an H100 SXM; `--bandwidth-gbs` for any other) and the bytes are what the server says it holds (`/v1/glyd/info`, `memory.weights_bytes`) or `--weights-gib` (Gemma 4 12B at the wren
-level in the engine: 6.3 GiB, a ceiling of 108.8 tokens/s on the RTX 4080 SUPER). KV reads are not counted, so a long prompt's share is lower than its ceiling would make it. The engine drafts for
+level in the engine: 6.28 GiB, 6,745,502,052 bytes in the records of 2026-11-22 under `benchmarks/gpu/rtx4080-step-profile-2026-11-22`, a ceiling of 109.1 tokens/s on the RTX 4080 SUPER). KV reads are not counted, so a long prompt's share is lower than its ceiling would make it. The engine drafts for
 Gemma 4 (speculative decoding, 8 tokens a round), which can pass the ceiling: `--no-draft` starts the server without it, and the gate's results are taken that way.
 
 ## The format: `glyd-bench/1`
@@ -112,7 +112,8 @@ and the band is measured, not a percentage chosen:
 
 - the spread of the runs: `z` (3) times 1.25 times the square root of the sum of each file's (standard deviation over its mean)^2 over its runs: the standard error of the two medians;
 - where `--history` holds three or more earlier results on the same GPU and model, the spread of their medians from one session to another (`z` times its relative standard deviation times the square root of 1 + 1/k): runs
-  within a session do not see the GPU's clocks, the host's load or the server's restart, sessions do; the band is the larger of the two;
+  within a session do not see the GPU's clocks, the host's load or the server's restart, sessions do; the band is the larger of the two, and the base each load's metric is held to is the median of those
+  results (BASE's own for fewer than three), so one odd run of main is not what every change after it is judged by;
 - a floor of 0.3% (`--floor`), the resolution of the figures.
 
 Exit 0: within the band. Exit 1: a regression (or failed requests). Exit 2: not decided, the candidate was measured on a busy GPU. Results of different GPUs or models are refused: a gate compares a GPU with itself.
@@ -120,15 +121,16 @@ Exit 0: within the band. Exit 1: a regression (or failed requests). Exit 2: not 
 
 ### In CI
 
-`.github/workflows/gpu-bench.yml` runs on the self-hosted GPU machine (the repository variable `GPU_RUNNER`): on a merge to main it measures the gate's loads on Gemma 4 12B at the wren level (released 2026-05-23; the model is a recent one, as every model we test or benchmark is) and keeps the result in the runner's volume as
+`.github/workflows/gpu-bench.yml` runs on the self-hosted GPU machine (the repository variable `GPU_RUNNER`): on a merge to main it measures the gate's loads on Gemma 4 12B at the wren level (released 2026-05-23, the tree's one named model; it passed the speed bar's 183 days on 2026-11-23, so `bench --bar` takes a result of it only with `--stale-ok`, while the gate, which compares a GPU with itself, does not look at a model's age) and keeps the result in the runner's volume as
 main's last on that GPU (`/cache/bench/main-GPU.json`, with the last 20 in `history-GPU/`); on a pull request labeled `gpu` it measures the same and runs `bench --compare` against main's last, then the synthetic
 slowdown. A result taken while the GPU was busy (other jobs of the runner do not wait for it) is taken again, up to 20 times 45 s apart.
 
 ### Where the noise band is
 
 From the runs of the workflow itself: the project's GPU machine runs GitHub Actions jobs only (a model is measured in CI, or on a rented GPU, never by hand on it), so main's results keep in `history-GPU/` as the merges come, and
-from the third on the gate's band takes in the spread from one session to another. Until then it is the spread of the runs of the two files with a floor of 0.3%. An earlier measurement of five sessions
-on Qwen3-8B (not a recent model, so not kept in the tree) had decode within 0.03-0.12% from session to session, the prefill of a long prompt and a single request's first token within 0.15-0.4%.
+from the third on the gate's band takes in the spread from one session to another. Until then it is the spread of the runs of the two files with a floor of 0.3%. The floor of 0.3% was chosen from an earlier
+measurement of five sessions on a model older than six months (decode within 0.03-0.12% from session to session, the prefill of a long prompt and a single request's first token within 0.15-0.4%); its GPU, date
+and data were not kept, so no record in the tree backs those figures.
 
 ## The speed bar
 
