@@ -266,6 +266,65 @@ fn released_glm53_flash_config() {
     assert_eq!((d.mtp_layers, d.desc.embed.streams), (1, 4));
 }
 
+/// GLM-5.3's released config (`glm_moe_dsa`) describes its released checkpoint exactly: every tensor (the experts from the fixture's runs), less the MTP
+/// layer, each at the checkpoint's shape where the description gives one; the FP8 matrices are the ones the checkpoint holds with block scales; the
+/// indexers' schedule is the config's (a `full` layer every fourth after the first three, `shared` between); the latent attention turns 64 channels
+/// of interleaved pairs, its indexer the same first 64 of its keys and queries.
+#[test]
+fn released_glm53_config() {
+    use super::kinds::{Body, Mixer};
+    let d = describe(&fixture("glm_moe_dsa_config.json")).unwrap_or_else(|e| panic!("{}", e.msg));
+    let t = fixture("glm_moe_dsa_tensors.json");
+    let mtp = format!("model.layers.{}.", d.desc.blocks.len() / 2);
+    let want: BTreeSet<String> = names_with_runs(&t).into_iter().filter(|n| !n.starts_with(&mtp)).collect();
+    let got = d.names();
+    let missing: Vec<_> = want.difference(&got).take(8).collect();
+    let extra: Vec<_> = got.difference(&want).take(8).collect();
+    assert!(missing.is_empty() && extra.is_empty(), "not described: {missing:?}; not in the checkpoint: {extra:?}");
+    let shape = |n: &str| -> Option<Vec<usize>> {
+        let s = t["tensors"].get(n).map(|v| v[1].clone()).or_else(|| {
+            t["runs"].as_array().unwrap().iter().find_map(|r| {
+                let rest = n.strip_prefix(r["prefix"].as_str().unwrap())?;
+                r["tensors"].get(rest.split_once('.')?.1).map(|v| v[1].clone())
+            })
+        })?;
+        Some(s.as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect())
+    };
+    for (n, s) in &d.shapes {
+        assert_eq!(shape(n).as_ref(), Some(s), "the shape of {n}");
+    }
+    let scaled: BTreeSet<String> = want.iter().filter_map(|n| n.strip_suffix("_scale_inv").map(str::to_string)).collect();
+    let fp8: BTreeSet<String> = d.scales.iter().map(|(w, _)| w.clone()).collect();
+    assert_eq!(fp8, scaled, "the FP8 matrices");
+    let mla: Vec<_> = d.desc.blocks.iter().filter_map(|b| if let Body::Mixer(Mixer::Mla(m)) = &b.body { Some(m) } else { None }).collect();
+    let shared: Vec<bool> = mla.iter().map(|m| m.indexer.as_ref().unwrap().shared).collect();
+    assert_eq!(shared, (0..78).map(|l| l >= 3 && (l - 2) % 4 != 0).collect::<Vec<bool>>());
+    let (m, ix) = (mla[0], mla[0].indexer.as_ref().unwrap());
+    assert_eq!((m.rope_dim, m.rope.as_ref().map(|r| (r.dim, r.style)), ix.rope, ix.top_k, ix.block), (64, Some((64, super::kinds::RopeStyle::Interleaved)), 64, 2048, 1));
+    assert_eq!((d.mtp_layers, d.desc.embed.streams, d.desc.head.rounding), (1, 1, super::kinds::Rounding::Once));
+}
+
+/// The indexers' schedule where a config lists no `indexer_types`: transformers' GlmMoeDsaConfig makes it from `index_topk_pattern`, else from
+/// `index_topk_freq` and `index_skip_topk_offset`; listed, they are the list (the release lists them and the schedule both).
+#[test]
+fn glm_indexer_types_follow_the_releases_schedule() {
+    use super::kinds::{Body, Mixer};
+    let shared = |cfg: &serde_json::Value| -> Vec<bool> {
+        let d = describe(cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+        d.desc.blocks.iter().filter_map(|b| if let Body::Mixer(Mixer::Mla(m)) = &b.body { m.indexer.as_ref().map(|x| x.shared) } else { None }).collect()
+    };
+    let release = fixture("glm_moe_dsa_config.json");
+    let mut cfg = release.clone();
+    cfg.as_object_mut().unwrap().remove("indexer_types");
+    assert_eq!(shared(&cfg), shared(&release));
+    cfg["index_topk_pattern"] = "FSF".into();
+    cfg["num_hidden_layers"] = 3.into();
+    cfg["mlp_layer_types"] = serde_json::json!(["dense", "sparse", "sparse"]);
+    assert_eq!(shared(&cfg), [false, true, false]);
+    cfg["index_topk_pattern"] = "SFF".into();
+    assert!(describe(&cfg).unwrap_err().msg.contains("first layer's indexer is shared"));
+}
+
 /// GLM's logits are its bf16 lm_head's output (modeling_glm5_next.py and modeling_glm_moe_dsa.py: `self.lm_head(hidden_states)` of a bf16 model, not
 /// cast): the head rounds once, in both layouts.
 #[test]
@@ -1210,3 +1269,4 @@ fn deepseek_v41s_tiny_model_runs_on_the_reference() {
     assert_eq!(a, b);
     assert!(a.len() == 12 && a.iter().flatten().all(|v| v.is_finite()));
 }
+

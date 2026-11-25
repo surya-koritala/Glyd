@@ -33,19 +33,27 @@
   },
   "glm5_next_tiny_config.json": {
     "blocks": 10,
-    "tensors": 287,
+    "tensors": 291,
     "kinds": "ac55ffc51bea2b6f",
-    "weights": "960dd97a1611e84b",
+    "weights": "60535d82d53cd6c0",
     "plan": "c7101a664acb48dd",
     "family": "Glm"
   },
   "glm5_next_toy_config.json": {
     "blocks": 16,
-    "tensors": 787,
+    "tensors": 791,
     "kinds": "3766399df1420c20",
-    "weights": "b946d4939ed131f8",
+    "weights": "213d2902a9d97a81",
     "plan": "23566ee950a2eee9",
     "family": "Glm"
+  },
+  "glm_moe_dsa_config.json": {
+    "blocks": 156,
+    "tensors": 117060,
+    "kinds": "19459482563010f5",
+    "weights": "48a69ccda964cc85",
+    "plan": "51461fae19b4c2d8",
+    "family": "refused: m is a GlmMoeDsaForCausalLM model, which this engine has no description of yet"
   },
   "nemotron_h_config.json": {
     "blocks": 88,

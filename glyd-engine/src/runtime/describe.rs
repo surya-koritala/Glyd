@@ -1225,6 +1225,36 @@ fn glm_types(k: &Keys, layers: usize, mt: &str) -> Result<Vec<bool>> {
     Ok(vec![false; layers])
 }
 
+/// Each layer's indexer, `full` (its own) or `shared` (the picks of the layer before), as transformers' GlmMoeDsaConfig reads them: `indexer_types` where the
+/// config lists them; else the schedule they are made from, `index_topk_pattern` (a string of F and S, or a list), else `index_topk_freq` and
+/// `index_skip_topk_offset` (layer i's own where max(i - offset + 1, 0) is a multiple of freq; 1 and 2 where absent). A config with neither: every one full.
+fn indexer_types(k: &Keys, layers: usize, mt: &str) -> Result<Vec<String>> {
+    let pattern = k.raw("index_topk_pattern").filter(|v| !v.is_null());
+    let (freq, offset) = (k.opt_usize("index_topk_freq")?, k.opt_usize("index_skip_topk_offset")?);
+    let kind = |x: &Value| match x.as_str() {
+        Some(t @ ("full" | "shared")) => Ok(t.to_string()),
+        Some("F") => Ok("full".to_string()),
+        Some("S") => Ok("shared".to_string()),
+        o => err(format!("{mt}: an indexer of type {o:?}")),
+    };
+    let types: Vec<String> = match (k.raw("indexer_types").filter(|v| !v.is_null()), pattern) {
+        (Some(Value::Array(a)), _) => a.iter().map(kind).collect::<Result<_>>()?,
+        (Some(v), _) => return err(format!("{mt}: indexer_types {v}")),
+        (None, Some(Value::String(p))) => p.chars().map(|c| kind(&Value::from(c.to_string()))).collect::<Result<_>>()?,
+        (None, Some(Value::Array(a))) => a.iter().map(kind).collect::<Result<_>>()?,
+        (None, Some(v)) => return err(format!("{mt}: index_topk_pattern {v}")),
+        (None, None) if freq.is_none() && offset.is_none() => return Ok(Vec::new()),
+        (None, None) => {
+            let (f, o) = (freq.unwrap_or(1).max(1), offset.unwrap_or(2));
+            (0..layers).map(|i| if (i + 1).saturating_sub(o) % f == 0 { "full" } else { "shared" }.to_string()).collect()
+        }
+    };
+    if types.first().is_some_and(|t| t == "shared") {
+        return err(format!("{mt}: the first layer's indexer is shared, with no layer before it to take picks from"));
+    }
+    Ok(types)
+}
+
 fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, quant: Option<&Value>) -> Result<Described> {
     let k = Keys::new(tc, mt);
     let flash = mt != "glm_moe_dsa";
@@ -1322,11 +1352,11 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
     let mla_eps = if flash { eps } else { 1e-6 };
     let (ih, idim, itop) = (k.opt_usize("index_n_heads")?, k.opt_usize("index_head_dim")?, k.opt_usize("index_topk")?);
     let pool = k.opt_usize("index_kpool")?.unwrap_or(1);
-    for x in ["index_kpool_always_select_tail", "index_kpool_compress", "index_share_for_mtp_iteration", "indexer_rope_interleave"] {
+    // (the release's flags that its model's code has no other way of: transformers' GlmMoeDsaIndexer and attention turn interleaved pairs whatever they say)
+    for x in ["index_kpool_always_select_tail", "index_kpool_compress", "index_share_for_mtp_iteration", "indexer_rope_interleave", "rope_interleave"] {
         k.bool(x, true)?;
     }
-    let itypes: Vec<String> =
-        k.raw("indexer_types").and_then(|v| v.as_array()).map(|a| a.iter().map(|x| x.as_str().unwrap_or("full").to_string()).collect()).unwrap_or_default();
+    let itypes = indexer_types(&k, layers, mt)?;
     // the feed-forward
     let first_dense = k.opt_usize("first_k_dense_replace")?;
     let mlp_types: Option<Vec<bool>> = k.raw("mlp_layer_types").and_then(|v| v.as_array()).map(|a| a.iter().map(|x| x.as_str() == Some("sparse")).collect());
@@ -1534,9 +1564,12 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
     Ok(out)
 }
 
-/// The roles whose matrices a release may hold in FP8 (GLM's `quantization_config`): the products of the attention and the feed-forward, not the routers,
-/// the norms, the convolutions or the indexer's.
+/// The roles whose matrices a release may hold in FP8 (GLM's `quantization_config`): the products of the attention and the feed-forward, and the indexer's
+/// query and key products (GLM-5.3 holds them so; GLM-5.3-Flash's list leaves its attention out); not the routers, the norms, the convolutions or the
+/// indexer's head weights (bf16 in both releases, fp32 in transformers: GlmMoeDsaPreTrainedModel's `_keep_in_fp32_modules`).
 const FP8_ROLES: &[&str] = &[
+    "indexer_wq_b",
+    "indexer_wk",
     "q",
     "k",
     "v",
