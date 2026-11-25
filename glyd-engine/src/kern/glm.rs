@@ -144,7 +144,7 @@ impl KernGlm {
     /// The tokens each of n rows attends to: sel [n, tmax] int32 (the first cnt[i] of a row), from the scores.
     ///
     /// # Safety
-    /// As `streams`; ksel at most 1,024: this entry's own bound, as Condor's own pick's (src/model_qwen4x.rs `select`); the kernel here, `idx_pick`, takes any count.
+    /// As `streams`; ksel at most 1,024: this entry's own bound; the kernel here, `idx_pick`, takes any count.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn select(
         &self,

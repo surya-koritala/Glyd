@@ -97,8 +97,6 @@ pub mod kcheck_hb;
 pub mod kcheck_moe;
 #[cfg(feature = "dev")]
 pub mod kcheck_nh;
-#[cfg(feature = "dev")]
-pub mod kcheck_qwen4x;
 pub mod kern;
 pub mod kern35;
 pub mod kern_glm;
@@ -116,7 +114,6 @@ pub mod levels;
 pub mod logits;
 pub mod machine;
 pub mod mapped;
-pub mod model_qwen4x;
 pub mod models;
 pub mod moe;
 pub mod moe_hb;
@@ -147,7 +144,6 @@ pub mod qwen35;
 #[cfg(feature = "dev")]
 pub mod qwen35_ref;
 pub mod qwen4x;
-pub mod qwen4x_serve;
 pub mod qwen_tools;
 #[cfg(feature = "dev")]
 pub mod qx_trellis;

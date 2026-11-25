@@ -4,6 +4,7 @@ pub mod gemma4;
 pub mod glm;
 pub mod mamba2;
 pub mod qwen35;
+pub mod qwen4x;
 
 pub(crate) use gemma4::KernG4;
 pub use glm::{mla_positions, mla_smem, Hc, KernGlm, GM_CHUNK_SMEM, GM_D, GM_HC, GM_L, GM_NP};

@@ -148,7 +148,6 @@ const BY_COMMAND: &[(&str, &str, bool)] = &[
     ("tiercheck", "report", false),
     ("storebench", "plan", false),
     ("calibrate-experts", "synthetic", false),
-    ("qxbench", "check", false),
     ("ceiling", "fp8", true),
     ("quality", "bar", true),
     ("seamcheck", "gpu", true),
@@ -300,7 +299,7 @@ mod tests {
             assert_eq!((a.pos.len(), a.flag(s), a.flag("context")), (2, Some(""), Some("4096")), "--{s}");
         }
         // (a switch of one command that names a value in another: `packcheck --engine --scratch DIR` beside `bench --engine NAME`)
-        for (cmd, s) in [("packcheck", "engine"), ("tiercheck", "report"), ("storebench", "plan"), ("calibrate-experts", "synthetic"), ("qxbench", "check")] {
+        for (cmd, s) in [("packcheck", "engine"), ("tiercheck", "report"), ("storebench", "plan"), ("calibrate-experts", "synthetic")] {
             let a = Args::from([cmd, &format!("--{s}"), "--scratch", "d"].map(String::from));
             assert_eq!((a.flag(s), a.flag("scratch")), (Some(""), Some("d")), "{cmd} --{s}");
         }

@@ -1,5 +1,5 @@
 //! The codes pack (glyd-hbr-codes/2: a model's routed experts as rows of codebook codes in a rotated basis, as research/qwen-data/qwen_pack.py writes it; kernels/glm_cb.cu has the arithmetic)
-//! as Condor's engine reads it (src/moe_qwen4x.rs, src/qwen4x_serve.rs): its `meta.json`, each layer's file mapped into memory as it is (the pack's tensors are two runs of bytes there,
+//! as the expert cache's codebook block reads it (src/moe_qwen4x.rs): its `meta.json`, each layer's file mapped into memory as it is (the pack's tensors are two runs of bytes there,
 //! the codebooks of the kept experts and then their codes, an expert's downT before its up; unpinned page cache, which the system takes back when it needs the memory), and where each
 //! kept expert's bytes are (`LayerMap`) for the expert cache's places and the streaming prefill. GLM-5.3-Flash's own block over these packs went with its development engine's serving
 //! (R13, #234): the executor tiers GLM's experts by hummingbird and the block levels (R12).

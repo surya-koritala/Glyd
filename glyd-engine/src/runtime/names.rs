@@ -208,6 +208,16 @@ pub mod part {
         ("shared_down", "mlp.shared_expert.down_proj.weight"),
         ("shared_router", "mlp.shared_expert_gate.weight"),
     ];
+    /// The draft head's own roles (`kinds::MtpInput::Streams`) under `mtp`: its front's two norms and two products, its final mixer.
+    pub const QX_MTP: Roles = &[
+        ("norm_embed", "pre_fc_norm_embedding.weight"),
+        ("norm_hidden", "pre_fc_norm_hidden.weight"),
+        ("fc_embedding", "fc_embedding.weight"),
+        ("fc_hidden", "fc_hidden.weight"),
+        ("final_norm", "hyper_connection_mixer.hc_norm.weight"),
+        ("out_mix_down", "hyper_connection_mixer.input_mix_weight_down.weight"),
+        ("out_mix_up", "hyper_connection_mixer.input_mix_weight_up.weight"),
+    ];
     /// The n-gram embedding's block; its table's role `ngram` is the shards of `QX_NGRAM_SHARD` stacked (`shards`).
     pub const QX_NGRAM: Roles = &[
         ("norm_in", "ple.norm_query.weight"),
