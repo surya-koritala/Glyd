@@ -63,6 +63,11 @@ pub trait MoeBlock {
     fn core(&self) -> Option<&crate::moe::MoeLayer> {
         self.resident().map(|(l, _)| l)
     }
+    /// The experts a token takes, where a call leaves its rows' choices in the experts' scratch (`MoeScratch::ids`) for a check to read
+    /// (`Dyn::trace_routes`): a resident block's (`core`), or a block that routes into it itself.
+    fn top_k(&self) -> Option<usize> {
+        self.core().map(|l| l.cfg.router.top_k)
+    }
     /// Whether a call reads the router's choices on the host (a layer of hummingbird experts in the expert cache, `MoeLayer::reads_host`): no graph captures a step with it.
     fn reads_host(&self) -> bool {
         self.resident().is_some_and(|(l, _)| l.reads_host())

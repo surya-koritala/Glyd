@@ -463,8 +463,20 @@ mod tests {
         other.arch = "riscv64".into();
         let r = machine(&other).unwrap();
         assert!(r.what.contains("riscv64") && r.fix.contains("x86_64 and aarch64"), "{r:?}");
+        // (a driver below this build's floor, read from the build: CUDA 12.7 where it carries CUDA 13's kernels alone, 12.1 where it carries CUDA 12's
+        // too, which run from 12.2; the refusal names the driver's version and the floor's)
         let mut old = Machine::preset("rtx4080s").unwrap();
-        old.devices[0].driver = 12070;
-        assert!(machine(&old).unwrap().what.contains("CUDA 12.7"));
+        let (cc, floor) = (old.devices[0].cc, crate::machine::driver_min(old.devices[0].cc));
+        old.devices[0].driver = if floor > 12070 { 12070 } else { floor - 10 };
+        let r = machine(&old).unwrap();
+        let said = format!("CUDA {}.{}", old.devices[0].driver / 1000, old.devices[0].driver % 1000 / 10);
+        assert!(r.what.contains(&said) && r.what.contains(&crate::machine::driver_need(cc)), "{r:?}");
+        // (and a driver at the floor runs: CUDA 12.7 does where the build carries CUDA 12's kernels)
+        old.devices[0].driver = floor;
+        assert!(machine(&old).is_none());
+        if crate::machine::KERNELS12 {
+            old.devices[0].driver = 12070;
+            assert!(machine(&old).is_none());
+        }
     }
 }
