@@ -123,7 +123,7 @@ jobs:
           assert libs == ["libglyd_gpu_cuda12.so", "libglyd_gpu_cuda13.so"], libs
           print("glyd-gpu", v, "came with glyd[gpu]:", libs)
           EOF
-          python -m glyd_gpu fit Qwen/Qwen3-0.6B --gpu 16GB
+          python -m glyd_gpu fit Qwen/Qwen3.5-0.8B --gpu 16GB
 
   # glyd[vllm]==V as a user installs it (no GPU on the runner): vLLM registers the plugin's quantization method from the
   # entry point of the glyd-gpu wheel it brings, of this version. The plugin's tests run in glyd-gpu's own repository, against
@@ -204,7 +204,7 @@ jobs:
           glyd --max a.txt -o a.glyd
           glyd -d a.glyd -o b.txt
           cmp a.txt b.txt
-          out=$(glyd run Qwen/Qwen3-8B 2>&1) && { echo "glyd run succeeded with no GPU"; exit 1; } || true
+          out=$(glyd run Qwen/Qwen3.8-27B 2>&1) && { echo "glyd run succeeded with no GPU"; exit 1; } || true
           echo "$out" | head -4
           echo "$out" | grep -qE 'needs Linux with an NVIDIA GPU|not installed here' || { echo "glyd run did not say what it needs"; exit 1; }
           echo "installer: glyd $V, round trip ok, glyd run says what it needs"

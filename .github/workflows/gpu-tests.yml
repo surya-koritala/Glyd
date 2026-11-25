@@ -172,10 +172,10 @@ jobs:
           wait "$server" 2> /dev/null || true
           [ "$status" = 0 ] || tail -40 /tmp/tiny-serve.log
           exit "$status"
-      - name: The 12-bit lossless KV pages of a Llama-style dense model (a random Qwen3 made here, on the executor; kvpages.rs kv12check, logits.rs usercheck --kv12)
+      - name: The 12-bit lossless KV pages of a dense model with recurrent layers between its attention ones (a random Qwen3.5-layout model made here, on the executor; kvpages.rs kv12check, logits.rs usercheck --kv12)
         run: |
-          "$E" kv12check --case qwen3
-          "$E" usercheck qwen3 --users 8 --level penguin --kv12
+          "$E" kv12check --case qwen35
+          "$E" usercheck qwen35 --users 8 --level penguin --kv12
       - name: The 12-bit lossless KV pages of the latent attention kind (random Kimi-K3 and GLM-5.3-Flash made here; kvpages.rs kv12check, logits.rs usercheck --kv12)
         run: |
           # (a latent is one stream of the pages, its row in heads of 128; its attention reads a sequence's pages unpacked to bf16, so every token reads back and every reply is the bf16 cache's)
@@ -194,10 +194,10 @@ jobs:
       - name: Each lossy level's KL from penguin against its threshold (Qwen3.5, Gemma 4 and Nemotron-H random models; kestrel, swift, wren; logits.rs levelcheck)
         run: |
           "$E" levelcheck --fixtures glyd-engine/tests/logits
-      - name: Several sequences at once on the description executor (random Gemma 4, Qwen3.5-layout, Qwen3, Muse Spark, Kimi-K3 and GLM-5.3 models, each reply against the one-at-a-time reply; logits.rs usercheck)
+      - name: Several sequences at once on the description executor (random Gemma 4, Qwen3.5-layout, Muse Spark, Kimi-K3 and GLM-5.3 models, each reply against the one-at-a-time reply; logits.rs usercheck)
         run: |
           # (prompts one a pass: every reply at once the reply alone, token for token; prompts together: counted)
-          for c in gemma4 qwen35 qwen3 muse kimi glm; do
+          for c in gemma4 qwen35 muse kimi glm; do
             GLYD_ENGINE_BATCH_PREFILL=0 "$E" usercheck "$c" --users 4 --level penguin
             # (a round is one step: the rows that decode and the prompts' chunks in one pass; some step holds both. Then at 64 rows a step, and the round of two passes)
             "$E" usercheck "$c" --users 4 --level penguin
