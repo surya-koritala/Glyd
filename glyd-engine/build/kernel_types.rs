@@ -24,7 +24,7 @@ const TYPES: [(&str, &str); 29] = [
     ("signed char", "i8"),
     ("unsigned char", "u8"),
     ("bool", "bool"),
-    ("G4Pf", "crate::kern::G4Pf"),
+    ("NextPf", "crate::kern::NextPf"),
     ("C2Segs", "crate::cb2_prefill::Segs"),
     ("AttnArgs", "crate::dynamic::attn::AttnArgs"),
     ("glib::kvc::AttnParams", "crate::fold::KvAttnParams"),

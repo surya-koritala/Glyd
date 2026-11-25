@@ -2903,21 +2903,21 @@ __device__ __forceinline__ void v_one_store(const VCalc& c, const VOne& r, uint8
 }
 
 // The write kernel: a CTA a token. A token that is the only one of its run goes through the decode step's path (the rest of this kernel); a longer run's first token runs write_run; the
-// run's other tokens return at once. (P.lean 0: write_run for every run.)
+// run's other tokens return at once. (P.lean 0: write_run for every run.) A row with no slot (a bucket's padding row, whose keys and values nobody made) is not read.
 __device__ __forceinline__ void write_body(const WriteParams& P) {
     const int i = blockIdx.x;
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int64_t mine = P.slots[i];
+    if (mine < 0) return;
     const int64_t prv = i > 0 ? P.slots[i - 1] : -1, nxt = i + 1 < P.N ? P.slots[i + 1] : -1;
     KOne ko;
     VOne vo;
     KCalc kc;
     VCalc vc;
-    if (warp < P.H) {  // (the first round's head: its inputs do not wait for the slot)
+    if (warp < P.H) {  // (the first round's head)
         k_one_in(ko, P.key + (int64_t)i * P.key_stride + warp * D, P.kbase + warp * D, lane);
         if (!P.one) v_one_in(vo, P.value + (int64_t)i * P.value_stride + warp * D, P.vbase + warp * D, lane);
     }
-    if (mine < 0) return;
     if (i > 0 && prv >= 0 && prv + 1 == mine && (mine & 15) != 0) return;  // (not the first token of its run)
     if (!P.lean || (nxt == mine + 1 && (mine & 15) != 15)) {  // (a run of more than one token)
         write_run(P);

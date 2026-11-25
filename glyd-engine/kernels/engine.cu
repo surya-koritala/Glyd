@@ -1137,6 +1137,31 @@ extern "C" __global__ void __launch_bounds__(256, 1) gemm3f_256x128_s3(const bf1
 extern "C" __global__ void __launch_bounds__(256, 1) gemm3f_128x256_b64_s2(const bf16* X, const bf16* W, bf16* Y, int M, int N, int K) { gemm3_nt_t<128, 256, 64, 2, 4, 2, 8, true>(X, W, Y, M, N, K); }
 extern "C" __global__ void __launch_bounds__(256, 1) gemm3f_128x256_s3(const bf16* X, const bf16* W, bf16* Y, int M, int N, int K) { gemm3_nt_t<128, 256, 32, 2, 4, 3, 8, true>(X, W, Y, M, N, K); }
 
+// ---- the next product's bytes into L2 (every kind's small kernels: a norm, the attention's preparation, an activation) -----------------------------------------------------------------------------------------
+// The memory is idle while a small kernel (a norm, the q/k/v preparation and the attention after it, gelu) runs; its spare blocks (blockIdx.y or .z above 0) ask L2 for
+// the start of each first-wave block of the skinny product that comes next (kernels/skinny.cu: block r's steps at data + r dstride, its scales at scales + r sstride),
+// dhead and shead bytes of them (multiples of 128), a prefetch every 2^shift bytes, so that the product starts on L2's copies. data null: nothing.
+struct NextPf {
+    const unsigned char* data;
+    const unsigned char* scales;
+    long long dstride, sstride;
+    int dhead, shead, regions, shift;
+};
+
+__device__ __forceinline__ void next_pf(const NextPf& p, int b, int nb) {
+    if (!p.data) return;
+    const int dl = p.dhead >> p.shift, per = dl + (p.shead >> p.shift);
+    for (int i = b * blockDim.x + threadIdx.x; i < p.regions * per; i += nb * blockDim.x) {
+        const int r = i / per, j = i - r * per;
+        const unsigned char* a = j < dl ? p.data + r * p.dstride + ((size_t)j << p.shift) : p.scales + r * p.sstride + ((size_t)(j - dl) << p.shift);
+#if defined(__HIP_PLATFORM_AMD__)
+        (void)a;  // (RDNA has no prefetch into L2)
+#else
+        asm volatile("prefetch.global.L2::evict_last [%0];" ::"l"(a));
+#endif
+    }
+}
+
 #include "qwen35.cu"  // Qwen3.5's kernels
 #include "moe.cu"     // the mixture-of-experts layer's (the router, the activations between the experts' products)
 #include "residual.cu"  // the residual rules' and the input-scaled norm's, every family's (after qwen35.cu: its helpers)

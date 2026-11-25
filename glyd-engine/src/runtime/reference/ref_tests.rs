@@ -192,6 +192,7 @@ fn muse_attention_against_muse_ref() {
             k_eq_v: false,
             indexer: None,
             rounding: AttnRounding::Sdpa,
+            kv_from: None,
         };
         let mut p = Params::new();
         for (i, (role, shape)) in

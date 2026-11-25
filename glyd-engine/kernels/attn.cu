@@ -2,7 +2,7 @@
 // of every family). One set, its arithmetic and shapes in `AttnArgs`: the preparation (the q and k norms, the rotary, the cache write, the values' norm), the decode
 // step's attention (the keys in parts, then combined), a prompt chunk's attention for heads of 64 and 128 on the tensor cores (heads of 256 and 512: the GPU library's
 // glyd_gpu_kv_prefill_bf16, the kernel of its 12-bit pages too), a warp-per-head kernel for any shape, and the output gate. Head widths 64, 128, 256 and 512 are template
-// instances. Included by engine.cu after gemma4.cu (its G4Pf prefetch) and qwen35.cu (bf2, warp_max).
+// instances. Included by engine.cu after qwen35.cu (bf2, warp_max); the next product's prefetch (NextPf) is engine.cu's.
 //
 // Arithmetic (the kind's rounding points, src/runtime/kinds.rs `AttnRounding`): bf16 in memory, fp32 inside. `round` (Eager, Sdpa): transformers' bf16 rounding
 // points in the preparation and the gate (a norm rounds once, the queries' scale rounds, each rotary product and their sum round, the gate's sigmoid rounds before
@@ -130,20 +130,20 @@ __device__ __forceinline__ void attn_prep_t(const AttnArgs& a) {
     ov[t + H] = f2b(u1);
 }
 
-#define AT_PF if (blockIdx.z > 0) return g4_pf(pf, (blockIdx.z - 1) * gridDim.x * gridDim.y + blockIdx.y * gridDim.x + blockIdx.x, (gridDim.z - 1) * gridDim.x * gridDim.y)
-extern "C" __global__ void __launch_bounds__(32) attn_prep64(AttnArgs a, G4Pf pf) {
+#define AT_PF if (blockIdx.z > 0) return next_pf(pf, (blockIdx.z - 1) * gridDim.x * gridDim.y + blockIdx.y * gridDim.x + blockIdx.x, (gridDim.z - 1) * gridDim.x * gridDim.y)
+extern "C" __global__ void __launch_bounds__(32) attn_prep64(AttnArgs a, NextPf pf) {
     AT_PF;
     attn_prep_t<64>(a);
 }
-extern "C" __global__ void __launch_bounds__(64) attn_prep128(AttnArgs a, G4Pf pf) {
+extern "C" __global__ void __launch_bounds__(64) attn_prep128(AttnArgs a, NextPf pf) {
     AT_PF;
     attn_prep_t<128>(a);
 }
-extern "C" __global__ void __launch_bounds__(128) attn_prep256(AttnArgs a, G4Pf pf) {
+extern "C" __global__ void __launch_bounds__(128) attn_prep256(AttnArgs a, NextPf pf) {
     AT_PF;
     attn_prep_t<256>(a);
 }
-extern "C" __global__ void __launch_bounds__(256) attn_prep512(AttnArgs a, G4Pf pf) {
+extern "C" __global__ void __launch_bounds__(256) attn_prep512(AttnArgs a, NextPf pf) {
     AT_PF;
     attn_prep_t<512>(a);
 }
