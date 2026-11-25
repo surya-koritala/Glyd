@@ -731,6 +731,16 @@ impl ConfigGlm {
 /// `real`: (layers, experts) at the release's widths (GLM-5.3-Flash's config: its heads, latents, indexer, experts' sizes and choices, vocabulary), every MLP a block of experts, the layers' attention
 /// kinds its first ones' with a sparse attention layer last; for timing a step on one GPU (the experts in FP8 as released).
 pub fn random(out: &std::path::Path, fp8: bool, real: Option<(usize, usize)>) -> crate::ffi::Result<()> {
+    random_seeded(out, fp8, real, RANDOM_SEED)
+}
+
+#[cfg(feature = "dev")]
+/// The seed of `random`'s draw.
+pub const RANDOM_SEED: u64 = 0x2026_1018_0000_0002;
+
+#[cfg(feature = "dev")]
+/// `random` drawn from `seed` (not 0): a model of the same shape and rules (`glmrandom --seed`).
+pub fn random_seeded(out: &std::path::Path, fp8: bool, real: Option<(usize, usize)>, seed: u64) -> crate::ffi::Result<()> {
     use crate::ffi::Error;
     use glyd_gpu::json::{self, Value};
     let io = |r: std::io::Result<()>| r.map_err(|e| Error(e.to_string()));
@@ -792,7 +802,10 @@ pub fn random(out: &std::path::Path, fp8: bool, real: Option<(usize, usize)>) ->
     }
     let text = json::to_python(&v, 2);
     let c = ConfigGlm::parse(&text, "random", None)?;
-    let mut r = 0x2026_1018_0000_0002u64;
+    if seed == 0 {
+        return Err(Error("a seed of 0 draws nothing but zeros".into()));
+    }
+    let mut r = seed;
     let mut uni = |a: f32, b: f32| {
         r ^= r << 13;
         r ^= r >> 7;

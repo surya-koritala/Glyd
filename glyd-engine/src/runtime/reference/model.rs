@@ -168,8 +168,9 @@ impl RefModel {
     }
 
     /// `forward`, with the tokens' residual (each token's streams, one token after another) shown to `seen` before each block and after the last: what a
-    /// check holds another backend's residual to, block by block. (A depth mix's residual is its sources and partial sums, which this does not show.)
-    pub fn forward_seen(&mut self, tokens: &[u32], start: u32, seen: &mut dyn FnMut(&[f32])) -> Result<Vec<Vec<f32>>> {
+    /// check holds another backend's residual to, block by block, or rounds as another backend stores it. (A depth mix's residual is its sources and
+    /// partial sums, which this does not show.)
+    pub fn forward_seen(&mut self, tokens: &[u32], start: u32, seen: &mut dyn FnMut(&mut [f32])) -> Result<Vec<Vec<f32>>> {
         let (d, v, n) = (self.desc.hidden, self.desc.vocab, self.desc.embed.streams.max(1));
         let e = &self.desc.embed;
         let mut x: Vec<f32> = Vec::with_capacity(tokens.len() * n * d);
@@ -194,7 +195,7 @@ impl RefModel {
         // (lagged mHC: each token's input weights from the last lagged block; one-hot on stream 0 before the first)
         let mut lag: Vec<Vec<f32>> = vec![(0..n).map(|j| (j == 0) as u32 as f32).collect(); tokens.len()];
         for b in 0..self.layers.len() {
-            seen(&x);
+            seen(&mut x);
             self.share_into(b, 0)?;
             let (before, rest) = self.layers.split_at_mut(b);
             let l = &mut rest[0];
@@ -234,7 +235,7 @@ impl RefModel {
                 dt.add(&o);
             }
         }
-        seen(&x);
+        seen(&mut x);
         let h = &self.desc.head;
         let mut out = Vec::with_capacity(tokens.len());
         for (t, xt) in x.chunks(n * d).enumerate() {

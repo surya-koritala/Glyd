@@ -1706,6 +1706,77 @@ mod tests {
         }
     }
 
+    /// GLM-5.3-Flash's random case on its CPU reference with the residual rounded to bf16 before each block (the executor holds its streams bf16),
+    /// against the reference as it is: how far that rounding alone moves the case's logits, for the case's model and five of other seeds, the
+    /// indexer as drawn and keeping every key; each row with the nearest choice (an indexer's picks, a router's experts) of the tokens it ran.
+    /// Minutes on an unoptimized build: cargo test -- --ignored glm_reference_with. What it showed (2026-11-25): KL mean 5.3e-3 (max 2.6e-2) for
+    /// the case's model and 4.1e-4 to 7.0e-3 for the others; with every key kept 1.2e-5 for two seeds and 2.1e-4 to 7.0e-3 for four, whose rows
+    /// moved where a router's choice at or before them was within 2e-3 of another. Rounding alone takes such choices the other way, so the case's
+    /// engine is held to this reference on the engine's own choices, not on the reference's.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore]
+    fn glm_reference_with_its_residual_rounded() {
+        use crate::runtime::kinds::{Body, Mixer};
+        use crate::runtime::reference::{bf16, model::checkpoint_tensor, model::RefModel};
+        fn step(m: &mut RefModel, pos: &mut u32, t: u32, round: bool, near: &mut f32) -> Vec<f32> {
+            let l = m.forward_seen(&[t], *pos, &mut |x| x.iter_mut().filter(|_| round).for_each(|v| *v = bf16(*v))).unwrap().pop().unwrap();
+            *pos += 1;
+            *near = m.layers.iter().fold(*near, |a, l| a.min(l.margin));
+            l
+        }
+        let (prompt, decode, long) = standard_tokens(2048);
+        for k in 0..6u64 {
+            let dir = std::env::temp_dir().join(format!("glyd-glmref-{k}-{}", std::process::id()));
+            crate::glm::random_seeded(&dir, false, None, crate::glm::RANDOM_SEED ^ (k << 32)).unwrap();
+            let cfg: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+            let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
+            for every in [false, true] {
+                let mut d = crate::runtime::describe::describe(&cfg).unwrap();
+                for b in d.desc.blocks.iter_mut() {
+                    if let (true, Body::Mixer(Mixer::Mla(m))) = (every, &mut b.body) {
+                        m.indexer.iter_mut().for_each(|ix| ix.top_k = 1 << 20);
+                    }
+                }
+                // (as `drive`: the prompt, each decode token, then from a fresh model the long prompt; each pass's last logits and its nearest choice)
+                let run = |round: bool| -> Vec<(Vec<f32>, f32)> {
+                    let load = || RefModel::load(&d, &|n: &str| checkpoint_tensor(&ck, n)).unwrap();
+                    let (mut m, mut pos, mut near, mut out) = (load(), 0u32, f32::INFINITY, Vec::new());
+                    let mut last = Vec::new();
+                    for &t in &prompt {
+                        last = step(&mut m, &mut pos, t, round, &mut near);
+                    }
+                    out.push((last, std::mem::replace(&mut near, f32::INFINITY)));
+                    for &t in &decode {
+                        let l = step(&mut m, &mut pos, t, round, &mut near);
+                        out.push((l, std::mem::replace(&mut near, f32::INFINITY)));
+                    }
+                    (m, pos) = (load(), 0);
+                    let mut last = Vec::new();
+                    for &t in &long {
+                        last = step(&mut m, &mut pos, t, round, &mut near);
+                    }
+                    out.push((last, near));
+                    out
+                };
+                let (a, b) = (run(false), run(true));
+                let kls: Vec<f64> = a.iter().zip(&b).map(|((w, _), (g, _))| kl_of(&Row::from_logits(w).unwrap(), g)).collect();
+                let best = |r: &[f32]| (0..r.len()).max_by(|&i, &j| r[i].total_cmp(&r[j])).unwrap();
+                let same = a.iter().zip(&b).filter(|((w, _), (g, _))| best(w) == best(g)).count();
+                let rows: Vec<String> = kls.iter().zip(&a).map(|(k, (_, n))| format!("{k:.1e}[{n:.0e}]")).collect();
+                println!(
+                    "glm seed {k}, the indexer {}: KL mean {:.2e} max {:.2e}, best token the same at {same}/{}; rows KL[nearest choice]: {}",
+                    if every { "keeping every key" } else { "as drawn" },
+                    kls.iter().sum::<f64>() / kls.len() as f64,
+                    kls.iter().cloned().fold(0f64, f64::max),
+                    a.len(),
+                    rows.join(" ")
+                );
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
     /// The CPU's candidates usercheck holds the step's to: the largest first, equal logits by the smaller token, as the sampler's `sample_top` takes them.
     #[test]
     fn host_top_orders_by_logit_then_token() {
