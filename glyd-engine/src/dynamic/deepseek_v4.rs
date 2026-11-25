@@ -3,15 +3,17 @@
 //! The weights load exactly: an FP8 matrix as the bf16 it is (packed at the level asked, lossless by default), the FP4 experts as five-bit runs (their codes and power-of-two scales: the same values),
 //! the rest as the checkpoint holds it. The arithmetic is kernels/dsv4.cu's, the streams' the streams kind's (kernels/residual.cu); src/dsv4_ref.rs is the CPU reference it is checked against (`dsv4check`).
 
-use super::{Cand, Dyn, HeadMix, IdxKeys, IdxPick, IdxScore, ModelDesc, MoeOp, NormW, Op, Opts, ResidentMoe, Ring, Slot, Stage, StreamsMix, V4Dims};
-use crate::deepseek_v4::{fp4_runs, fp8_bf16, ConfigV4};
+use super::lower_comp::{LinForm, MoeLoad, Piece};
+use super::{Cand, Dyn, IdxPick, ModelDesc, Op, Opts, ResidentMoe, Stage, V4Dims};
+use crate::deepseek_v4::{fp4_runs, freqs};
+use crate::runtime::describe::Source;
+use crate::runtime::kinds::Body;
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result};
 use crate::kern35::Mat;
 use crate::kern_nh::MoeBlock;
 use crate::moe::{Act, ExpertStack, Joined, MoeCfg, MoeLayer, MoeWeights, Router, Scoring, Shared};
 use crate::moe_rows::Down;
-use crate::runtime::kinds::Rounding;
 use crate::weights::{as_bytes, pack_words, upload_bytes, upload_packed, Layout, PackBuf};
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
@@ -131,39 +133,6 @@ impl V4Run {
     }
 }
 
-/// A ratio-4 layer's indexer's pick: every indexer's (`Op::IdxPick`), its entries the indexer's compressor's (state `cache`), its scores the release's bf16 arithmetic, the
-/// entries kept as they are.
-fn pick(cache: usize, ratio: usize, heads: usize, top_k: usize, wscale: f32) -> Op {
-    Op::IdxPick(IdxPick {
-        heads,
-        ratio,
-        top_k,
-        expand: false,
-        tail: false,
-        wscale,
-        score: IdxScore::Release,
-        keys: IdxKeys::State(cache),
-        weighted: true,
-        cand: None,
-    })
-}
-
-/// A product's matrix: in the matrices' list, or the FP8 matrices'.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Lin {
-    Mat(usize),
-    F8(usize),
-}
-
-impl Lin {
-    fn op(self, x: Slot, y: Slot, name: &'static str) -> Op {
-        match self {
-            Lin::Mat(w) => Op::Linear { w, x, y, name },
-            Lin::F8(w) => Op::F8Lin { w, x, y, name },
-        }
-    }
-}
-
 fn io<T>(r: std::io::Result<T>) -> Result<T> {
     r.map_err(|e| Error(e.to_string()))
 }
@@ -181,9 +150,25 @@ fn tables(f: &[f32], mp: usize) -> Result<(Buf, Buf)> {
     Ok((upload_bytes(as_bytes(&c))?, upload_bytes(as_bytes(&s))?))
 }
 
+/// The model's layers (its compressed attention blocks), its end tokens (generation_config.json's, else the config's) and its context, from its config.
+pub fn ends(dir: &Path) -> Result<(usize, Vec<i64>, usize)> {
+    use glyd_gpu::json::Value;
+    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
+    let layers = kinds.desc.blocks.iter().filter(|b| matches!(b.body, Body::Mixer(_))).count();
+    let top = glyd_gpu::json::parse(&io(std::fs::read_to_string(dir.join("config.json")))?).map_err(|e| Error(format!("{label}: {e}")))?;
+    let tc = top.get("text_config").cloned().unwrap_or_else(|| top.clone());
+    let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
+    let mut eos = crate::weights::eos_ids(&tc, generation.as_deref());
+    if eos.is_empty() {
+        eos = crate::weights::eos_ids(&top, None);
+    }
+    eos.dedup();
+    let max_pos = tc.get("max_position_embeddings").or(top.get("max_position_embeddings")).and_then(Value::as_u64).ok_or_else(|| Error(format!("{label}: no max_position_embeddings")))?;
+    Ok((layers, eos, max_pos as usize))
+}
+
 pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
-    let layers = ConfigV4::load(dir)?.layers;
-    load_stage(dir, o, Stage::whole(layers))
+    load_stage(dir, o, Stage::whole(ends(dir)?.0))
 }
 
 /// Stage `st` of the model (its layers; the embedding where it is the first, the head where the last).
@@ -191,37 +176,70 @@ pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
     load_stage_hb(dir, o, st, None)
 }
 
-/// `load_stage` with a hummingbird directory's experts in the expert cache (`caching`: the stage's places and memory, src/hbg_store.rs).
+/// A rotary table's frequencies from its kind: model.py's (`freqs`), YaRN's stretch where the kind has it.
+fn freqs_of(r: &crate::runtime::kinds::Rope) -> Vec<f32> {
+    let yarn = match r.scaling {
+        crate::runtime::kinds::RopeScaling::Yarn { factor, original_max, beta_fast, beta_slow, .. } => {
+            Some(crate::deepseek_v4::Yarn { factor, orig: original_max as usize, beta_fast, beta_slow })
+        }
+        _ => None,
+    };
+    freqs(r.dim, r.theta, yarn)
+}
+
+/// The blocks of rows and columns a quantized matrix of `rows` x `cols` has one scale of, from its scales' shape (one row of scales a row, or blocks of 32 or 128).
+fn scale_blocks(rows: usize, cols: usize, shape: &[u64]) -> Option<[usize; 2]> {
+    let (sr, sc) = (shape.first().copied()? as usize, shape.get(1).copied().unwrap_or(1) as usize);
+    let of = |n: usize, k: usize| [128usize, 32, 1].into_iter().find(|&b| n.div_ceil(b) == k);
+    Some([of(rows, sr)?, of(cols, sc)?])
+}
+
+/// `load_stage` with a hummingbird directory's experts in the expert cache (`caching`: the stage's places and memory, src/hbg_store.rs). The model's layer kinds
+/// lowered (`lower_comp::lower`), each index of its operations loaded as the plan says, in the release's formats.
 pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
-    let c = ConfigV4::load(dir)?;
-    if c.head_dim != 512
-        || c.rope_dim != 64
-        || c.idx_dim != 128
-        || c.hc_mult != 4
-        || c.hidden % 512 != 0
-        || c.q_lora % 128 != 0
-        || c.o_lora % 128 != 0
-        || c.inter % 128 != 0
-    {
-        return err(format!("heads of {} ({} rotary), indexer heads of {}, {} streams, widths {} / {} / {} / {}: this engine runs heads of 512 (64 rotary), indexer heads of 128, 4 streams and widths of 128s", c.head_dim, c.rope_dim, c.idx_dim, c.hc_mult, c.hidden, c.q_lora, c.o_lora, c.inter));
-    }
-    if c.idx_heads > 64 {
-        return err(format!("{} indexer heads: this engine runs up to 64", c.idx_heads));
-    }
+    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
+    let (_, eos, max_pos) = ends(dir)?;
+    let layout = o.layout.unwrap_or(Layout::Tiered);
+    let vo = V4Opts::of(layout, o.ctx);
+    let (desc, plan) = super::lower_comp::lower(&kinds, eos, max_pos, &st, &vo).map_err(|e| e.context(&label))?;
     let dev = Dev::new(o.device)?;
     let ck = io(Checkpoint::open(dir))?;
     // (a hummingbird directory, src/hb_pack.rs: the routed experts' codebook rows in place of the release's)
     let hb = crate::hb_pack::HbDir::open(dir)?;
     let store = caching.map(crate::hbg_store::store_for);
     let threads = std::thread::available_parallelism().map_or(8, |n| n.get());
-    let layout = o.layout.unwrap_or(Layout::Tiered);
-    let (d, hd, nh, ch) = (c.hidden, c.head_dim, c.heads, o.chunk.max(1));
+    let (d, ch) = (desc.hidden, o.chunk.max(1));
     let ctx = o.ctx.div_ceil(16) * 16;
     let read = |name: &str| io(ck.read(name));
-    let fp8 = |name: &str| -> Result<(Vec<u16>, usize, usize)> {
-        let (_, t) = ck.get(&format!("{name}.weight")).ok_or_else(|| Error(format!("no tensor {name}.weight")))?;
-        let (rows, cols) = (t.shape[0] as usize, t.shape[1] as usize);
-        Ok((fp8_bf16(&read(&format!("{name}.weight"))?, &read(&format!("{name}.scale"))?, rows, cols)?, rows, cols))
+    let dims = |name: &str| -> Result<(usize, usize)> {
+        let (_, t) = ck.get(name).ok_or_else(|| Error(format!("no tensor {name}")))?;
+        Ok((t.shape[0] as usize, t.shape.get(1).copied().unwrap_or(1) as usize))
+    };
+    // a quantized matrix's scales (E8M0 bytes) and the blocks they are of; None: the matrix is stored as the bf16 it is
+    let scaled = |name: &str, rows: usize, cols: usize| -> Result<Option<(Vec<u8>, [usize; 2])>> {
+        let Some(sn) = kinds.scales.get(name) else { return Ok(None) };
+        let (_, t) = ck.get(sn).ok_or_else(|| Error(format!("no tensor {sn}")))?;
+        let b = scale_blocks(rows, cols, &t.shape).ok_or_else(|| Error(format!("{sn}: scales of {:?} for {rows} x {cols}", t.shape)))?;
+        Ok(Some((read(sn)?, b)))
+    };
+    let words = |b: &[u8]| -> Vec<u16> { b.chunks(2).map(|x| u16::from_le_bytes([x[0], x[1]])).collect() };
+    // rows [r0, r1) of matrix `name` as bf16 words: an FP8 one decoded with its scales (exact), a bf16 one as stored
+    let dense = |name: &str, r0: usize, r1: usize| -> Result<Vec<u16>> {
+        let (rows, cols) = dims(name)?;
+        let q = read(name)?;
+        match scaled(name, rows, cols)? {
+            None => Ok(words(&q[r0 * cols * 2..r1 * cols * 2])),
+            Some((sc, [br, bc])) => {
+                if r0 % br != 0 {
+                    return err(format!("{name}: rows from {r0}, inside a block of {br} scales"));
+                }
+                let gc = cols.div_ceil(bc);
+                let s: Vec<f32> = sc[r0 / br * gc..r1.div_ceil(br) * gc].iter().map(|&x| crate::deepseek_v4::e8m0(x)).collect();
+                let mut out = vec![0u16; (r1 - r0) * cols];
+                glyd_gpu::fp8::dequant(&q[r0 * cols..r1 * cols], &s, r1 - r0, cols, [br, bc], &mut out).map_err(Error)?;
+                Ok(out)
+            }
+        }
     };
     // (every layer across a group of GPUs: this GPU's slice of a big matrix's rows, of each expert's: src/dynamic/tp.rs)
     let tp = super::tp::comm();
@@ -240,439 +258,317 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
         Ok(Mat::Packed(upload_packed(pack_words(w, rows, cols, layout, name)?)?))
     };
     let pack = |w: &[u16], rows: usize, cols: usize, name: &str| pack_as(w, rows, cols, name, true);
-    let small = |name: &str| -> Result<Buf> { upload_bytes(&read(name)?) };
-    // the lossless level holds the large FP8 matrices in the library's FP8 format, as released (6.7 bits a weight, read as they are), the rest as the bf16 they decode to, packed lossless; another
-    // level packs the bf16 of every one
-    let vo = V4Opts::of(layout, o.ctx);
     let exact8 = vo.exact8;
     let lib = crate::ffi::Lib::find()?;
-    let mut f8: Vec<crate::f8::F8Mat> = Vec::new();
-    // rows [r0, r1) of FP8 matrix `name` (128-row blocks): the FP8 list's index, or the matrices'
-    // (`groups`: the rows a stack of that many groups' matrices, each sliced on its own across a group of GPUs)
-    let mut fp8_mat = |mats: &mut Vec<Mat>, name: &str, rows: Option<(usize, usize)>, groups: usize| -> Result<Lin> {
-        let (_, t) = ck.get(&format!("{name}.weight")).ok_or_else(|| Error(format!("no tensor {name}.weight")))?;
-        let (all, cols) = (t.shape[0] as usize, t.shape[1] as usize);
-        let (r0, r1) = rows.unwrap_or((0, all));
-        let (q, sc) = (read(&format!("{name}.weight"))?, read(&format!("{name}.scale"))?);
-        let gc = cols.div_ceil(128);
-        let what = if rows.is_some() { format!("{name} rows {r0}..{r1}") } else { name.to_string() };
-        // (the FP8 format where it is the faster: a large matrix, whose fewer bytes outrun its heavier decode; 2026-10-18 on the 4080 SUPER, a token's product read from memory: 33M weights
-        // 55-59 us against the bf16 pack's 70, 8M and fewer as fast or slower; GLYD_V4_F8_MIN: the weights from which, 0 every one)
-        if vo.f8(r1 - r0, cols, r0) {
-            // (a group of GPUs: this GPU's rows of each group's, whole blocks of 128 for the scales)
-            let per = (r1 - r0) / groups.max(1);
-            let parts: Vec<(usize, usize)> = match tpr.filter(|&(_, n)| per % (128 * n) == 0 && tp.as_ref().is_some_and(|t| t.slices(r1 - r0, cols))) {
-                Some((rank, n)) => (0..groups).map(|g| (r0 + g * per + rank * per / n, r0 + g * per + (rank + 1) * per / n)).collect(),
-                None => vec![(r0, r1)],
-            };
-            let (mut qq, mut ss) = (Vec::new(), Vec::new());
-            for &(a, b) in &parts {
-                qq.extend_from_slice(&q[a * cols..b * cols]);
-                ss.extend(sc[a / 128 * gc..b.div_ceil(128) * gc].iter().map(|&x| crate::deepseek_v4::e8m0(x)));
-            }
-            let rows_here = parts.iter().map(|p| p.1 - p.0).sum();
-            let mut m = crate::f8::F8Mat::pack(&dev, &lib, &qq, &ss, rows_here, cols, cfg!(feature = "dev"))?;
-            m.tp_rows = if parts.len() > 1 || rows_here < r1 - r0 { per } else { 0 };
-            f8.push(m);
-            return Ok(Lin::F8(f8.len() - 1));
-        }
-        let (q, sc) = (&q[r0 * cols..r1 * cols], &sc[r0 / 128 * gc..r1.div_ceil(128) * gc]);
-        mats.push(pack(&fp8_bf16(q, sc, r1 - r0, cols)?, r1 - r0, cols, &what)?);
-        Ok(Lin::Mat(mats.len() - 1))
-    };
-    let (mut mats, mut sm, mut moe, mut rings, mut states, mut layers): (Vec<Mat>, Vec<Buf>, Vec<Box<dyn MoeBlock>>, Vec<Ring>, Vec<usize>, Vec<Vec<Op>>) =
-        Default::default();
-    let put = |sm: &mut Vec<Buf>, b: Buf| {
-        sm.push(b);
-        sm.len() - 1
-    };
-    let (ol, hpg) = (c.o_lora, nh / c.o_groups);
-    for l in 0..c.layers {
-        if !(st.layers.0..st.layers.1).contains(&l) {
-            layers.push(Vec::new());
-            continue;
-        }
+    let (mut mats, mut f8): (Vec<Mat>, Vec<crate::f8::F8Mat>) = Default::default();
+    // the products' matrices, in the plan's order: the large FP8 ones held FP8 as released where the lowering says (`LinLoad::f8`: the level and their size), the rest as
+    // the bf16 they are or decode to, packed lossless (or at the level asked)
+    for x in &plan.lins {
         crate::status::STATUS.beat();
-        let (p, a) = (format!("layers.{l}"), format!("layers.{l}.attn"));
-        let ratio = c.ratios[l];
-        let rope = (ratio != 0) as usize;
-        let hc = |sm: &mut Vec<Buf>, b: &str| -> Result<[usize; 3]> {
-            Ok([put(sm, small(&format!("{p}.hc_{b}_fn"))?), put(sm, small(&format!("{p}.hc_{b}_base"))?), put(sm, small(&format!("{p}.hc_{b}_scale"))?)])
-        };
-        let [fa, ba, sa] = hc(&mut sm, "attn")?;
-        let attn_norm = put(&mut sm, small(&format!("{p}.attn_norm.weight"))?);
-        let q_norm = put(&mut sm, small(&format!("{a}.q_norm.weight"))?);
-        let kv_norm = put(&mut sm, small(&format!("{a}.kv_norm.weight"))?);
-        let sink = put(&mut sm, small(&format!("{a}.attn_sink"))?);
-        let wq_a = fp8_mat(&mut mats, &format!("{a}.wq_a"), None, 1)?;
-        let wq_b = fp8_mat(&mut mats, &format!("{a}.wq_b"), None, 1)?;
-        let wkv = fp8_mat(&mut mats, &format!("{a}.wkv"), None, 1)?;
-        // the groups' matrices: as one FP8 stack where the level holds FP8 as released (every group's product in one launch), else each its own, one after another in their list
-        // (the stack where its whole matrix is held FP8: asked for otherwise, it would be packed, found not FP8 and left unused on the GPU)
-        let wo_cols = ck.get(&format!("{a}.wo_a.weight")).map(|(_, t)| t.shape[1] as usize).ok_or_else(|| Error(format!("no tensor {a}.wo_a.weight")))?;
-        let stack = if vo.stack(c.o_groups * ol, wo_cols, ol) {
-            Some(fp8_mat(&mut mats, &format!("{a}.wo_a"), None, c.o_groups)?).filter(|x| matches!(x, Lin::F8(_)))
-        } else {
-            None
-        };
-        let (wo_a0, wo_a_f8) = match stack {
-            Some(Lin::F8(i)) => (i, true),
-            _ => {
-                let groups: Vec<Lin> =
-                    (0..c.o_groups).map(|g| fp8_mat(&mut mats, &format!("{a}.wo_a"), Some((g * ol, (g + 1) * ol)), 1)).collect::<Result<_>>()?;
-                let first = match groups[0] {
-                    Lin::F8(i) => (i, true),
-                    Lin::Mat(i) => (i, false),
-                };
-                if groups.iter().enumerate().any(|(g, x)| *x != if first.1 { Lin::F8(first.0 + g) } else { Lin::Mat(first.0 + g) }) {
-                    return err(format!("{a}.wo_a: its groups' matrices are not one after another"));
+        let label = x.name.trim_end_matches(".weight");
+        match x.form {
+            LinForm::Fp8 { rows, groups } => {
+                let (all, cols) = dims(&x.name)?;
+                let (r0, r1) = rows.unwrap_or((0, all));
+                let what = if rows.is_some() { format!("{label} rows {r0}..{r1}") } else { label.to_string() };
+                if !x.f8 {
+                    mats.push(pack(&dense(&x.name, r0, r1)?, r1 - r0, cols, &what)?);
+                    continue;
                 }
-                first
+                let (sc, b) = scaled(&x.name, all, cols)?.ok_or_else(|| Error(format!("{}: held FP8, and it has no scales", x.name)))?;
+                if b != [128, 128] {
+                    return err(format!("{}: FP8 in blocks of {b:?}: the library's FP8 products take blocks of 128 (GLYD_V4_F8=0 holds it as its bf16)", x.name));
+                }
+                let q = read(&x.name)?;
+                let gc = cols.div_ceil(128);
+                // (a group of GPUs: this GPU's rows of each group's, whole blocks of 128 for the scales)
+                let per = (r1 - r0) / groups.max(1);
+                let parts: Vec<(usize, usize)> = match tpr.filter(|&(_, n)| per % (128 * n) == 0 && tp.as_ref().is_some_and(|t| t.slices(r1 - r0, cols))) {
+                    Some((rank, n)) => (0..groups).map(|g| (r0 + g * per + rank * per / n, r0 + g * per + (rank + 1) * per / n)).collect(),
+                    None => vec![(r0, r1)],
+                };
+                let (mut qq, mut ss) = (Vec::new(), Vec::new());
+                for &(a, b) in &parts {
+                    qq.extend_from_slice(&q[a * cols..b * cols]);
+                    ss.extend(sc[a / 128 * gc..b.div_ceil(128) * gc].iter().map(|&x| crate::deepseek_v4::e8m0(x)));
+                }
+                let rows_here = parts.iter().map(|p| p.1 - p.0).sum();
+                let mut m = crate::f8::F8Mat::pack(&dev, &lib, &qq, &ss, rows_here, cols, cfg!(feature = "dev"))?;
+                m.tp_rows = if parts.len() > 1 || rows_here < r1 - r0 { per } else { 0 };
+                f8.push(m);
             }
-        };
-        let wo_b = fp8_mat(&mut mats, &format!("{a}.wo_b"), None, 1)?;
-        let ring = rings.len();
-        rings.push(Ring::keys(hd, 1, c.window));
-        let mut ops = vec![
-            Op::StreamsPre { mix: StreamsMix::Hc { f: fa, base: ba, scale: sa }, norm: attn_norm, round: Rounding::Once },
-            Op::Fp8 { x: Slot::H, y: Slot::Hq, block: 128 },
-            wq_a.op(Slot::Hq, Slot::Proj, "attention: q down"),
-            Op::RmsNorm { x: Slot::Proj, w: q_norm, y: Slot::Qr, weight: NormW::Plain, eps: c.eps },
-            Op::Fp8 { x: Slot::Qr, y: Slot::Proj, block: 128 },
-            wq_b.op(Slot::Proj, Slot::Qo, "attention: q up"),
-            Op::CompQ { rope, heads: nh, norm: true },
-            wkv.op(Slot::Hq, Slot::Kv, "attention: kv"),
-            Op::CompKv { norm: kv_norm, rope, ring },
-        ];
-        // a compressor: its two products stacked (kv's rows, then the gate's), its pooling's offsets, its norm; its cache and state
-        let comp = |sm: &mut Vec<Buf>, states: &mut Vec<usize>, q: &str, dd: usize, indexer: bool| -> Result<Op> {
-            let coff = 1 + (ratio == 4) as usize;
-            let mut wb = read(&format!("{q}.wkv.weight"))?;
-            wb.extend(read(&format!("{q}.wgate.weight"))?);
-            let w = put(sm, upload_bytes(&wb)?);
-            let ape = put(sm, small(&format!("{q}.ape"))?);
-            let norm = put(sm, small(&format!("{q}.norm.weight"))?);
-            let cache = states.len();
-            states.push((ctx / ratio + 2) * dd * 2);
-            states.push(coff * ratio * coff * dd * 4);
-            states.push(coff * ratio * coff * dd * 4);
-            Ok(Op::Compress { w, ape, norm, d: dd, ratio, overlap: ratio == 4, rope, cache, state: cache + 1, indexer, raw: None })
-        };
-        let mut cache = None;
-        if ratio == 4 {
-            let iq = fp8_mat(&mut mats, &format!("{a}.indexer.wq_b"), None, 1)?;
-            let wp: Vec<u16> = read(&format!("{a}.indexer.weights_proj.weight"))?.chunks(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
-            let iw = mats.len();
-            mats.push(pack(&wp, c.idx_heads, d, &format!("{a}.indexer.weights_proj"))?);
-            let ic = comp(&mut sm, &mut states, &format!("{a}.indexer.compressor"), c.idx_dim, true)?;
-            let Op::Compress { cache: icache, .. } = ic else { unreachable!() };
-            let wscale = (c.idx_dim as f32).powf(-0.5) * (c.idx_heads as f32).powf(-0.5);
-            ops.extend([
-                iq.op(Slot::Proj, Slot::Iq, "indexer: q"),
-                Op::IdxQ { rope, heads: c.idx_heads },
-                ic,
-                Op::Linear { w: iw, x: Slot::H, y: Slot::Iw, name: "indexer: weights" },
-                pick(icache, ratio, c.idx_heads, c.idx_topk, wscale),
-            ]);
+            LinForm::Bf16 { slice } => {
+                let (rows, cols) = dims(&x.name)?;
+                mats.push(pack_as(&words(&read(&x.name)?), rows, cols, label, slice)?);
+            }
+            LinForm::Table => {
+                let (rows, cols) = dims(&x.name)?;
+                mats.push(Mat::Dense(upload_bytes(as_bytes(&dense(&x.name, 0, rows)?))?, rows, cols));
+            }
+            LinForm::Absent => mats.push(Mat::Dense(Buf::new(2)?, 0, 0)),
         }
-        if ratio > 0 {
-            let mc = comp(&mut sm, &mut states, &format!("{a}.compressor"), hd, false)?;
-            if let Op::Compress { cache: k, .. } = mc {
-                cache = Some(k);
-            }
-            ops.push(mc);
-        }
-        ops.extend([
-            Op::CompAttn { ring, cache, ratio, picked: ratio == 4, sink, rope, heads: nh, hpg },
-            if stack.is_some() {
-                Op::OGroupLoraStack { w: wo_a0, groups: c.o_groups, ol, y: Slot::M, fp8: true }
-            } else {
-                Op::OGroupLora { w: wo_a0, in_f8: wo_a_f8, groups: c.o_groups, hpg, ol, y: Slot::M, fp8: true }
-            },
-            wo_b.op(Slot::M, Slot::O, "attention: o"),
-            Op::StreamsPost { round: Rounding::Once, gated: false },
-        ]);
-        // the mixture of experts
-        let [ff, bf, sf] = hc(&mut sm, "ffn")?;
-        let ffn_norm = put(&mut sm, small(&format!("{p}.ffn_norm.weight"))?);
-        let f = format!("{p}.ffn");
-        let (e, k, i) = (c.experts, c.top_k, c.inter);
-        // each expert's two matrices in the smallest layout that holds the layer's experts exactly (one pack for the stack, so one layout for all of them): the FP4 layout with packed scales (4.07
-        // bits a weight), else the FP4 layout as released (4.25), else five-bit runs (5.5; GLYD_V4_FP4=0 asks for them); packed on all the cores (an expert's pack is its rows of the stacked matrix's:
-        // block layouts have fixed strides), then joined
-        // (a group of GPUs: the FP4 layouts alone, each expert's rows sliced)
-        // (the host's pairs of the cache: the release's SwiGLU with its clamp, weighed after the second product, where the GPU weighs the activation and rounds it to FP8)
-        let act = Act::SwiGlu { limit: (c.swiglu_limit > 0.0).then_some(c.swiglu_limit) };
-        let hbx =
-            crate::hbg_store::hb_layer(hb.as_ref(), l, tpr.is_some(), caching.zip(store.as_ref()), act, crate::cpu_hbg::Finish::Rotated, dev.ordinal, c.top_k)?;
-        let mut tiered = None;
-        let (up, down) = if hbx.is_some() {
-            (ExpertStack::shape_only(e, 2 * i, d), ExpertStack::shape_only(e, d, i))
-        } else {
-            let kinds: &[u8] = if tpr.is_some() {
-                &[2, 1]
-            } else if crate::tune!("GLYD_V4_FP4").as_deref() != Some("0") {
-                &[2, 1, 0]
-            } else {
-                &[0]
-            };
-            let one = |x: usize, kind: u8| -> Result<Option<(glyd_gpu::pack::Tiered, glyd_gpu::pack::Tiered)>> {
-                let raw = |wn: &str| -> Result<(Vec<u8>, Vec<u8>)> {
-                    let q = format!("{f}.experts.{x}.{wn}");
-                    Ok((read(&format!("{q}.weight"))?, read(&format!("{q}.scale"))?))
-                };
-                if kind > 0 {
-                    let pack = if kind == 2 { glyd_gpu::pack::pack_fp4r_checked } else { glyd_gpu::pack::pack_fp4_checked };
-                    let ((mut uq, mut ue), (gq, ge), (dq, de)) = (raw("w1")?, raw("w3")?, raw("w2")?);
-                    // (an expert's first matrix: w1's rows, the gate, then w3's, the up)
-                    uq.extend(gq);
-                    ue.extend(ge);
-                    // (a group of GPUs: this GPU's rows of each, codes half a byte a value and a scale a run of 32)
-                    let rows_of = |q: Vec<u8>, sc: Vec<u8>, rows: usize, cols: usize| -> (Vec<u8>, Vec<u8>, usize) {
-                        match tpr {
-                            Some((rank, n)) => {
-                                let (r0, rn) = (rank * rows / n, rows / n);
-                                (q[r0 * cols / 2..(r0 + rn) * cols / 2].to_vec(), sc[r0 * cols / 32..(r0 + rn) * cols / 32].to_vec(), rn)
-                            }
-                            None => (q, sc, rows),
-                        }
-                    };
-                    let (uq, ue, ur) = rows_of(uq, ue, 2 * i, d);
-                    let (dq, de, dr) = rows_of(dq, de, d, i);
-                    return Ok(pack(&uq, &ue, ur, d).zip(pack(&dq, &de, dr, i)));
-                }
-                let runs = |wn: &str, rows: usize, cols: usize| -> Result<(Vec<i8>, Vec<u16>)> {
-                    let (q, s) = raw(wn)?;
-                    fp4_runs(&q, &s, rows, cols)
-                };
-                let ((mut uc, mut us), (gc, gs)) = (runs("w1", i, d)?, runs("w3", i, d)?);
-                uc.extend(gc);
-                us.extend(gs);
-                let (dc, ds) = runs("w2", d, i)?;
-                let bad = || Error(format!("{f}.experts.{x}: not five-bit runs"));
-                Ok(Some((
-                    glyd_gpu::pack::pack_int5_runs_checked(&uc, &us, 2 * i, d).ok_or_else(bad)?,
-                    glyd_gpu::pack::pack_int5_runs_checked(&dc, &ds, d, i).ok_or_else(bad)?,
-                )))
-            };
-            let (mut ups, mut downs) = (Vec::with_capacity(e), Vec::with_capacity(e));
-            for &kind in kinds {
-                (ups.clear(), downs.clear());
-                let mut all = true;
-                crate::weights::ordered(e, threads, 2 * threads, &|x| one(x, kind), |_, p| {
-                    match p {
-                        Some((u, dn)) => (ups.push(u), downs.push(dn)),
-                        None => (all = false, ()),
-                    };
-                    Ok(())
-                })?;
-                if all {
-                    break;
-                }
-            }
-            if ups.len() != e {
-                return err(format!(
-                    "{f}: experts the FP4 layouts do not hold exactly{}",
-                    if tpr.is_some() { " (across GPUs, the five-bit runs are not taken)" } else { "" }
-                ));
-            }
-            let (ju, jd) = (Joined::of(&ups.iter().collect::<Vec<_>>())?, Joined::of(&downs.iter().collect::<Vec<_>>())?);
-            drop((ups, downs));
-            match caching.zip(store.as_ref()) {
-                // (the expert cache, R12: places for `places` experts a layer, every expert in the computer's memory, the misses copied in)
-                Some((cg, st)) => {
-                    if tpr.is_some() || cg.ram.is_some() {
-                        return err("DeepSeek-V4's experts in the expert cache: on one GPU a stage, every expert in the computer's memory (the disk holds hummingbird directories' experts alone)");
-                    }
-                    // (the host computes the misses the plan gives it where the experts are in an exact FP4 layout, as the GPU's act_w does: src/cpu_fp4.rs)
-                    let fp4 = [glyd_gpu::pack::FP4_TAG, glyd_gpu::pack::FP4R_TAG].contains(&ju.tag);
-                    let half = (fp4 && st.wants_cpu()).then_some(crate::offload::HostHalf::Fp4 {
-                        inter: i,
-                        latent: d,
-                        packed: ju.tag == glyd_gpu::pack::FP4R_TAG,
-                        act: crate::cpu_fp4::Act::Release { lim: if c.swiglu_limit > 0.0 { c.swiglu_limit } else { f32::INFINITY }, fp8: vo.sim },
-                    });
-                    let (u, d, cache) = crate::tiering::cached_stacks(&ju, &jd, cg.places, st, l, dev.ordinal, half)?;
-                    tiered = Some(cache);
-                    (u, d)
-                }
-                None => {
-                    let (mut up, mut down) = (ExpertStack::upload(&ju)?, ExpertStack::upload(&jd)?);
-                    if let Some((_, n)) = tpr {
-                        (up.tp_rows, down.tp_rows) = (up.rows * n, down.rows * n);
-                    }
-                    (up, down)
-                }
-            }
-        };
-        // the shared expert: as released in the FP8 format where the level holds FP8 so (its gate and up stacked, its down), else the bf16 it decodes to, packed
-        let shared8 = if exact8 {
-            let f8 = |names: &[&str], rows: usize, cols: usize| -> Result<crate::f8::F8Mat> {
-                let (mut q, mut sc) = (Vec::new(), Vec::new());
-                for n in names {
-                    q.extend(read(&format!("{f}.shared_experts.{n}.weight"))?);
-                    sc.extend(read(&format!("{f}.shared_experts.{n}.scale"))?.iter().map(|&b| crate::deepseek_v4::e8m0(b)));
-                }
-                // (a group of GPUs: this GPU's rows, in whole blocks of 128 of the scales)
-                if let Some((rank, n)) = tpr.filter(|&(_, n)| rows % (128 * n) == 0) {
-                    let (r0, rn, gc) = (rank * rows / n, rows / n, cols.div_ceil(128));
-                    let mut m = crate::f8::F8Mat::pack(
-                        &dev,
-                        &lib,
-                        &q[r0 * cols..(r0 + rn) * cols],
-                        &sc[r0 / 128 * gc..(r0 + rn) / 128 * gc],
-                        rn,
-                        cols,
-                        cfg!(feature = "dev"),
-                    )?;
-                    m.tp_rows = rows;
-                    return Ok(m);
-                }
-                crate::f8::F8Mat::pack(&dev, &lib, &q, &sc, rows, cols, cfg!(feature = "dev"))
-            };
-            Some((f8(&["w1", "w3"], 2 * i, d)?, f8(&["w2"], d, i)?))
-        } else {
-            None
-        };
-        let shared = match &shared8 {
-            Some(_) => Shared { inter: i, up: PackBuf::shape_only(2 * i, d)?, down: PackBuf::shape_only(d, i)?, gate: None },
-            None => {
-                let (w1, _, _) = fp8(&format!("{f}.shared_experts.w1"))?;
-                let (w3, _, _) = fp8(&format!("{f}.shared_experts.w3"))?;
-                let (w2, _, _) = fp8(&format!("{f}.shared_experts.w2"))?;
-                let su = [w1, w3].concat();
-                let packed = |w: &[u16], rows: usize, cols: usize, name: &str| -> Result<PackBuf> {
-                    match pack(w, rows, cols, name)? {
-                        Mat::Packed(p) => Ok(p),
-                        Mat::Dense(..) => err(format!("{name}: rows of a block layout are wanted")),
-                    }
-                };
-                Shared {
-                    inter: i,
-                    up: packed(&su, 2 * i, d, &format!("{f}.shared_experts.w13"))?,
-                    down: packed(&w2, d, i, &format!("{f}.shared_experts.w2"))?,
-                    gate: None,
-                }
-            }
-        };
-        let hash = l < c.hash_layers;
-        let cfg = MoeCfg {
-            experts: e,
-            router_hidden: d,
-            hidden: d,
-            inter: i,
-            router: Router { scoring: Scoring::SqrtSoftplus, top_k: k, renorm: true, scale: c.route_scale, bf16_logits: false },
-            act: Act::SwiGlu { limit: (c.swiglu_limit > 0.0).then_some(c.swiglu_limit) },
-        };
-        let w = MoeWeights {
-            router: small(&format!("{f}.gate.weight"))?,
-            bias: if hash { None } else { Some(small(&format!("{f}.gate.bias"))?) },
-            escale: None,
-            up,
-            down: Down::Block(down),
-        };
-        let block = moe.len();
-        let layer = match hbx {
-            Some(x) => x.into_layer(cfg, w.router, w.bias, None, Some(shared))?,
-            None => match tiered {
-                Some(cache) => MoeLayer::new(cfg, w, Some(shared))?.with_cache(cache)?,
-                None => MoeLayer::new(cfg, w, Some(shared))?,
-            },
-        };
-        moe.push(Box::new(ResidentMoe(match shared8 {
-            Some((u, dn)) => layer.with_shared8(u, dn)?,
-            None => layer,
-        })));
-        let hash = if hash { Some(put(&mut sm, small(&format!("{f}.gate.tid2eid"))?)) } else { None };
-        ops.extend([
-            Op::StreamsPre { mix: StreamsMix::Hc { f: ff, base: bf, scale: sf }, norm: ffn_norm, round: Rounding::Once },
-            Op::Fp8 { x: Slot::H, y: Slot::Hq, block: 128 },
-            Op::Moe(v4_moe(block, hash, vo.sim)),
-            Op::StreamsPost { round: Rounding::Once, gated: false },
-        ]);
-        layers.push(ops);
     }
-    // the ends: the embedding where this stage is the first, the head (its mixing, the norm, the LM head) where the last; another stage's are empty places
-    let placeholder = || -> Result<Mat> { Ok(Mat::Dense(Buf::new(2)?, 0, 0)) };
-    let words = |name: &str| -> Result<Vec<u16>> { Ok(read(name)?.chunks(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect()) };
-    let embed = mats.len();
-    // (the embedding whole on every GPU: a token's row is read from it)
-    mats.push(if st.first { pack_as(&words("embed.weight")?, c.vocab, d, "embed", false)? } else { placeholder()? });
-    let lm = mats.len();
-    mats.push(if st.last { pack(&words("head.weight")?, c.vocab, d, "head")? } else { placeholder()? });
-    if st.last {
-        let f = put(&mut sm, small("hc_head_fn")?);
-        let b = put(&mut sm, small("hc_head_base")?);
-        let s = put(&mut sm, small("hc_head_scale")?);
-        let norm = put(&mut sm, small("norm.weight")?);
-        layers[c.layers - 1].push(Op::StreamsHead { mix: HeadMix::Weighted([f, b, s]), norm, round: Rounding::Once });
+    if mats.len() != desc.lm + 1 || f8.len() != plan.lins.iter().filter(|x| x.f8).count() {
+        return err(format!("{label}: {} matrices and {} FP8 ones loaded for a description of {} and {}", mats.len(), f8.len(), desc.lm + 1, plan.lins.iter().filter(|x| x.f8).count()));
+    }
+    // the small tensors: each its pieces one after another (a tensor as stored, zeros, the lowering's numbers, the tokenizer's compressed vocabulary)
+    let token_map = || -> Result<Vec<u8>> {
+        let p = dir.join("engram_token_map.json");
+        let v: Vec<i64> = serde_json::from_str(&io(std::fs::read_to_string(&p))?).map_err(|e| Error(format!("{}: {e}", p.display())))?;
+        if v.len() != desc.vocab {
+            return err(format!("{}: {} ids for a vocabulary of {}", p.display(), v.len(), desc.vocab));
+        }
+        Ok(v.iter().flat_map(|&t| (t as i32).to_le_bytes()).collect())
+    };
+    let sm: Vec<Buf> = plan
+        .small
+        .iter()
+        .map(|pieces| {
+            let mut b = Vec::new();
+            for p in pieces {
+                match p {
+                    Piece::Tensor(t) => b.extend(read(t)?),
+                    Piece::Zeros(n) => b.resize(b.len() + n, 0),
+                    Piece::I64(v) => b.extend(v.iter().flat_map(|x| x.to_le_bytes())),
+                    Piece::TokenMap => b.extend(token_map()?),
+                }
+            }
+            upload_bytes(&b)
+        })
+        .collect::<Result<_>>()?;
+    // the experts, block by block
+    let mut moe: Vec<Box<dyn MoeBlock>> = Vec::new();
+    for ml in &plan.moe {
+        crate::status::STATUS.beat();
+        moe.push(experts(&ExpertsAt { ck: &ck, kinds: &kinds, dev: &dev, lib: &lib, hb: hb.as_ref(), caching, store: store.as_ref(), threads, tpr, exact8, sim: vo.sim }, ml, d, &pack, &dense)?);
     }
     let mp = ctx + ch + 16;
-    let ropes = vec![
-        tables(&crate::deepseek_v4::freqs(c.rope_dim, c.rope_theta, None), mp)?,
-        tables(&crate::deepseek_v4::freqs(c.rope_dim, c.compress_theta, Some(c.yarn)), mp)?,
-    ];
-    let mut widths = [0usize; super::SLOTS];
-    let wmax = if c.ratios.contains(&4) { 2 * hd } else { hd };
-    for (s, w) in [
-        (Slot::X, d),
-        (Slot::S, 4 * d),
-        (Slot::H, d),
-        (Slot::Hq, d),
-        (Slot::Proj, c.q_lora),
-        (Slot::Qr, c.q_lora),
-        (Slot::Qo, nh * hd),
-        (Slot::Kv, hd),
-        (Slot::Cp, 4 * wmax),
-        (Slot::Iq, c.idx_heads * c.idx_dim),
-        (Slot::Iw, c.idx_heads),
-        (Slot::Att, nh * hd),
-        (Slot::Mid, c.o_groups * ol),
-        (Slot::M, c.o_groups * ol),
-        (Slot::O, d),
-    ] {
-        widths[s as usize] = w;
-    }
-    let all_ratio = c.ratios.iter().copied().filter(|&r| r != 0 && r != 4).min().unwrap_or(0);
-    let desc = ModelDesc {
-        family: "DeepSeek-V4",
-        hidden: d,
-        vocab: c.vocab,
-        eps: c.eps,
-        max_pos: c.max_pos,
-        widths,
-        mats: Vec::new(),
-        small: Vec::new(),
-        ropes: Vec::new(),
-        rings,
-        first: Op::Streams,
-        layers,
-        states,
-        final_norm: None,
-        decoded: false,
-        skinny: false,
-        embed,
-        lm,
-        softcap: 0.0,
-        eos: c.eos.clone(),
-        post: None,
-        hc: (c.hc_eps, c.hc_iters as i32),
-        logit_mult: 0.0,
-        v4: Some(V4Dims {
-            heads: nh,
-            idx_heads: c.idx_heads,
-            topk: c.idx_topk,
-            window: c.window,
-            all_ratio,
-            sim: vo.sim,
-            o_groups: c.o_groups,
-            idx_ratio: if c.ratios.contains(&4) { 4 } else { 0 },
-        }),
-    };
-    drop(fp8_mat);
-    // (the loader's own operations, as it indexed what it loaded, held to the layer kinds' description of the config: one model, or it is not loaded)
-    let desc = super::lower::agree(lowered(dir, &c, &st, &vo)?, &desc, &dir.join("config.json").display().to_string())?;
+    let ropes = plan.ropes.iter().map(|r| tables(&freqs_of(r), mp)).collect::<Result<Vec<_>>>()?;
     Dyn::from_loaded_f8(dev, desc, mats, f8, sm, moe, ropes, layout, st, o)
+}
+
+/// What a layer's experts are loaded with: the checkpoint and its description, the GPU and the library, a hummingbird directory and the expert cache where
+/// there are, the host's threads, this GPU's place in a group, the level's FP8 and its simulated quantizations.
+struct ExpertsAt<'a> {
+    ck: &'a Checkpoint,
+    kinds: &'a crate::runtime::describe::Described,
+    dev: &'a Dev,
+    lib: &'a crate::ffi::Lib,
+    hb: Option<&'a crate::hb_pack::HbDir>,
+    caching: Option<&'a crate::hbg_store::HbCaching>,
+    store: Option<&'a std::rc::Rc<crate::offload::ExpertStore>>,
+    threads: usize,
+    tpr: Option<(usize, usize)>,
+    exact8: bool,
+    sim: bool,
+}
+
+/// A layer's experts (`MoeLoad`): the routed ones in the smallest layout that holds them exactly, the shared one as released or as its bf16, the router's weights.
+/// (`pack`: a bf16 matrix packed at the level; `dense`: rows of a matrix as the bf16 it is or decodes to)
+type PackFn<'a> = &'a dyn Fn(&[u16], usize, usize, &str) -> Result<Mat>;
+type DenseFn<'a> = &'a dyn Fn(&str, usize, usize) -> Result<Vec<u16>>;
+
+fn experts(x: &ExpertsAt, ml: &MoeLoad, d: usize, pack: PackFn, dense: DenseFn) -> Result<Box<dyn MoeBlock>> {
+    // (what the experts' packing threads read: the checkpoint, the scales' names, this GPU's place in a group)
+    let (ck, l, m, scales, tpr) = (x.ck, ml.layer, &ml.moe, &x.kinds.scales, x.tpr);
+    if m.router.score != crate::runtime::kinds::RouterScore::SqrtSoftplus || m.router.groups.is_some() || !m.expert.gated || m.shared_gate || m.latent.is_some() {
+        return err(format!("layer {l}'s experts: {m:?}: these experts run the sqrt-softplus router and SwiGLU experts with a shared one"));
+    }
+    let read = |name: &str| io(ck.read(name));
+    let role = |r: &str| ml.roles.iter().find(|(n, _)| n == r).map(|(_, s)| s).ok_or_else(|| Error(format!("layer {l}'s experts: no role {r}")));
+    let tensor = |r: &str| -> Result<String> {
+        match role(r)? {
+            Source::Tensor(t) => Ok(t.clone()),
+            s => err(format!("layer {l}'s experts: role {r} is {s:?}")),
+        }
+    };
+    let per_expert = |r: &str| -> Result<Vec<Vec<String>>> {
+        match role(r)? {
+            Source::Experts(v) => Ok(v.clone()),
+            s => err(format!("layer {l}'s experts: role {r} is {s:?}")),
+        }
+    };
+    let scale_of = |w: &str| scales.get(w).cloned().ok_or_else(|| Error(format!("{w}: an expert stored without its scales: the FP4 layouts take the release's")));
+    let (ups, downs) = (per_expert("experts_gate_up")?, per_expert("experts_down")?);
+    let (e, k) = (m.experts, m.router.top_k);
+    if ups.len() != e || downs.len() != e || ups.iter().any(|u| u.len() != 2) {
+        return err(format!("layer {l}: {} and {} experts' matrices for {e} experts, each gate and up", ups.len(), downs.len()));
+    }
+    let i = {
+        let (_, t) = ck.get(&downs[0][0]).ok_or_else(|| Error(format!("no tensor {}", downs[0][0])))?;
+        // (the down matrix's columns: two FP4 values a byte where it has scales)
+        t.shape[1] as usize * if x.kinds.scales.contains_key(&downs[0][0]) { 2 } else { 1 }
+    };
+    if i % 128 != 0 {
+        return err(format!("experts of width {i}: this engine runs widths of 128s"));
+    }
+    let limit = m.expert.clamp.filter(|&c| c > 0.0);
+    // each expert's two matrices in the smallest layout that holds the layer's experts exactly (one pack for the stack, so one layout for all of them): the FP4 layout with packed scales (4.07
+    // bits a weight), else the FP4 layout as released (4.25), else five-bit runs (5.5; GLYD_V4_FP4=0 asks for them); packed on all the cores (an expert's pack is its rows of the stacked matrix's:
+    // block layouts have fixed strides), then joined
+    // (a group of GPUs: the FP4 layouts alone, each expert's rows sliced)
+    // (the host's pairs of the cache: the release's SwiGLU with its clamp, weighed after the second product, where the GPU weighs the activation and rounds it to FP8)
+    let act = Act::SwiGlu { limit };
+    let hbx = crate::hbg_store::hb_layer(x.hb, l, x.tpr.is_some(), x.caching.zip(x.store), act, crate::cpu_hbg::Finish::Rotated, x.dev.ordinal, k)?;
+    let mut tiered = None;
+    let (up, down) = if hbx.is_some() {
+        (ExpertStack::shape_only(e, 2 * i, d), ExpertStack::shape_only(e, d, i))
+    } else {
+        let kinds: &[u8] = if x.tpr.is_some() {
+            &[2, 1]
+        } else if crate::tune!("GLYD_V4_FP4").as_deref() != Some("0") {
+            &[2, 1, 0]
+        } else {
+            &[0]
+        };
+        let one = |ex: usize, kind: u8| -> Result<Option<(glyd_gpu::pack::Tiered, glyd_gpu::pack::Tiered)>> {
+            let raw = |w: &str| -> Result<(Vec<u8>, Vec<u8>)> { Ok((read(w)?, read(&scale_of(w)?)?)) };
+            let (g, u, dn) = (&ups[ex][0], &ups[ex][1], &downs[ex][0]);
+            if kind > 0 {
+                let pack = if kind == 2 { glyd_gpu::pack::pack_fp4r_checked } else { glyd_gpu::pack::pack_fp4_checked };
+                let ((mut uq, mut ue), (gq, ge), (dq, de)) = (raw(g)?, raw(u)?, raw(dn)?);
+                // (an expert's first matrix: the gate's rows, then the up's)
+                uq.extend(gq);
+                ue.extend(ge);
+                // (a group of GPUs: this GPU's rows of each, codes half a byte a value and a scale a run of 32)
+                let rows_of = |q: Vec<u8>, sc: Vec<u8>, rows: usize, cols: usize| -> (Vec<u8>, Vec<u8>, usize) {
+                    match tpr {
+                        Some((rank, n)) => {
+                            let (r0, rn) = (rank * rows / n, rows / n);
+                            (q[r0 * cols / 2..(r0 + rn) * cols / 2].to_vec(), sc[r0 * cols / 32..(r0 + rn) * cols / 32].to_vec(), rn)
+                        }
+                        None => (q, sc, rows),
+                    }
+                };
+                let (uq, ue, ur) = rows_of(uq, ue, 2 * i, d);
+                let (dq, de, dr) = rows_of(dq, de, d, i);
+                return Ok(pack(&uq, &ue, ur, d).zip(pack(&dq, &de, dr, i)));
+            }
+            let runs = |w: &str, rows: usize, cols: usize| -> Result<(Vec<i8>, Vec<u16>)> {
+                let (q, s) = raw(w)?;
+                fp4_runs(&q, &s, rows, cols)
+            };
+            let ((mut uc, mut us), (gc, gs)) = (runs(g, i, d)?, runs(u, i, d)?);
+            uc.extend(gc);
+            us.extend(gs);
+            let (dc, ds) = runs(dn, d, i)?;
+            let bad = || Error(format!("layer {l}'s expert {ex}: not five-bit runs"));
+            Ok(Some((
+                glyd_gpu::pack::pack_int5_runs_checked(&uc, &us, 2 * i, d).ok_or_else(bad)?,
+                glyd_gpu::pack::pack_int5_runs_checked(&dc, &ds, d, i).ok_or_else(bad)?,
+            )))
+        };
+        let (mut ups, mut downs) = (Vec::with_capacity(e), Vec::with_capacity(e));
+        for &kind in kinds {
+            (ups.clear(), downs.clear());
+            let mut all = true;
+            crate::weights::ordered(e, x.threads, 2 * x.threads, &|ex| one(ex, kind), |_, p| {
+                match p {
+                    Some((u, dn)) => (ups.push(u), downs.push(dn)),
+                    None => (all = false, ()),
+                };
+                Ok(())
+            })?;
+            if all {
+                break;
+            }
+        }
+        if ups.len() != e {
+            return err(format!(
+                "layer {l}: experts the FP4 layouts do not hold exactly{}",
+                if x.tpr.is_some() { " (across GPUs, the five-bit runs are not taken)" } else { "" }
+            ));
+        }
+        let (ju, jd) = (Joined::of(&ups.iter().collect::<Vec<_>>())?, Joined::of(&downs.iter().collect::<Vec<_>>())?);
+        drop((ups, downs));
+        match x.caching.zip(x.store) {
+            // (the expert cache, R12: places for `places` experts a layer, every expert in the computer's memory, the misses copied in)
+            Some((cg, st)) => {
+                if x.tpr.is_some() || cg.ram.is_some() {
+                    return err("DeepSeek-V4's experts in the expert cache: on one GPU a stage, every expert in the computer's memory (the disk holds hummingbird directories' experts alone)");
+                }
+                // (the host computes the misses the plan gives it where the experts are in an exact FP4 layout, as the GPU's act_w does: src/cpu_fp4.rs)
+                let fp4 = [glyd_gpu::pack::FP4_TAG, glyd_gpu::pack::FP4R_TAG].contains(&ju.tag);
+                let half = (fp4 && st.wants_cpu()).then_some(crate::offload::HostHalf::Fp4 {
+                    inter: i,
+                    latent: d,
+                    packed: ju.tag == glyd_gpu::pack::FP4R_TAG,
+                    act: crate::cpu_fp4::Act::Release { lim: limit.unwrap_or(f32::INFINITY), fp8: x.sim },
+                });
+                let (u, dd, cache) = crate::tiering::cached_stacks(&ju, &jd, cg.places, st, l, x.dev.ordinal, half)?;
+                tiered = Some(cache);
+                (u, dd)
+            }
+            None => {
+                let (mut up, mut down) = (ExpertStack::upload(&ju)?, ExpertStack::upload(&jd)?);
+                if let Some((_, n)) = x.tpr {
+                    (up.tp_rows, down.tp_rows) = (up.rows * n, down.rows * n);
+                }
+                (up, down)
+            }
+        }
+    };
+    // the shared expert: as released in the FP8 format where the level holds FP8 so and it is stored so (its gate and up stacked, its down), else the bf16 it is or decodes to, packed
+    let (sg, su, sd) = (tensor("shared_gate")?, tensor("shared_up")?, tensor("shared_down")?);
+    let shared8 = if x.exact8 && [&sg, &su, &sd].iter().all(|w| x.kinds.scales.contains_key(*w)) {
+        let f8 = |names: &[&String], rows: usize, cols: usize| -> Result<crate::f8::F8Mat> {
+            let (mut q, mut sc) = (Vec::new(), Vec::new());
+            for n in names {
+                q.extend(read(n)?);
+                sc.extend(read(&scale_of(n)?)?.iter().map(|&b| crate::deepseek_v4::e8m0(b)));
+            }
+            // (a group of GPUs: this GPU's rows, in whole blocks of 128 of the scales)
+            if let Some((rank, n)) = x.tpr.filter(|&(_, n)| rows % (128 * n) == 0) {
+                let (r0, rn, gc) = (rank * rows / n, rows / n, cols.div_ceil(128));
+                let mut m = crate::f8::F8Mat::pack(x.dev, x.lib, &q[r0 * cols..(r0 + rn) * cols], &sc[r0 / 128 * gc..(r0 + rn) / 128 * gc], rn, cols, cfg!(feature = "dev"))?;
+                m.tp_rows = rows;
+                return Ok(m);
+            }
+            crate::f8::F8Mat::pack(x.dev, x.lib, &q, &sc, rows, cols, cfg!(feature = "dev"))
+        };
+        Some((f8(&[&sg, &su], 2 * i, d)?, f8(&[&sd], d, i)?))
+    } else {
+        None
+    };
+    let shared = match &shared8 {
+        Some(_) => Shared { inter: i, up: PackBuf::shape_only(2 * i, d)?, down: PackBuf::shape_only(d, i)?, gate: None },
+        None => {
+            let su = [dense(&sg, 0, i)?, dense(&su, 0, i)?].concat();
+            let packed = |w: &[u16], rows: usize, cols: usize, name: &str| -> Result<PackBuf> {
+                match pack(w, rows, cols, name)? {
+                    Mat::Packed(p) => Ok(p),
+                    Mat::Dense(..) => err(format!("{name}: rows of a block layout are wanted")),
+                }
+            };
+            Shared { inter: i, up: packed(&su, 2 * i, d, &format!("layers.{l}.ffn.shared_experts.w13"))?, down: packed(&dense(&sd, 0, d)?, d, i, sd.trim_end_matches(".weight"))?, gate: None }
+        }
+    };
+    let cfg = MoeCfg {
+        experts: e,
+        router_hidden: d,
+        hidden: d,
+        inter: i,
+        router: Router { scoring: Scoring::SqrtSoftplus, top_k: k, renorm: m.router.renorm, scale: m.router.scale, bf16_logits: false },
+        act,
+    };
+    let w = MoeWeights {
+        router: upload_bytes(&read(&tensor("router")?)?)?,
+        bias: if m.router.bias { Some(upload_bytes(&read(&tensor("choice_bias")?)?)?) } else { None },
+        escale: None,
+        up,
+        down: Down::Block(down),
+    };
+    let layer = match hbx {
+        Some(h) => h.into_layer(cfg, w.router, w.bias, None, Some(shared))?,
+        None => match tiered {
+            Some(cache) => MoeLayer::new(cfg, w, Some(shared))?.with_cache(cache)?,
+            None => MoeLayer::new(cfg, w, Some(shared))?,
+        },
+    };
+    Ok(Box::new(ResidentMoe(match shared8 {
+        Some((u, dn)) => layer.with_shared8(u, dn)?,
+        None => layer,
+    })))
 }
 
 /// What the level and the switches make of DeepSeek-V4's products and caches: the large FP8 matrices held FP8 as released where the level is the lossless one
@@ -711,270 +607,4 @@ impl V4Opts {
     pub(crate) fn stack(&self, rows: usize, cols: usize, ol: usize) -> bool {
         self.ostack && ol % 64 == 0 && self.f8(rows, cols, 0)
     }
-}
-
-/// A DeepSeek-V4 layer's experts (block `block`; the first layers' table of experts by token, small int64 [vocab, k], `hash`): the router reads H, the experts the FP8-rounded
-/// Hq, each pair's weight in its activation before the second product (rounded to FP8 where `fp8`), into O.
-pub(crate) fn v4_moe(block: usize, hash: Option<usize>, fp8: bool) -> MoeOp {
-    MoeOp { x: Slot::Hq, hash, weigh_act: true, fp8, ..MoeOp::of(block) }
-}
-
-/// DeepSeek-V4's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::deepseek_v4`), held to `describe`.
-pub fn lowered(dir: &Path, c: &ConfigV4, st: &Stage, vo: &V4Opts) -> Result<ModelDesc> {
-    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
-    let lowered = super::lower::deepseek_v4(&kinds, c.eos.clone(), c.max_pos, st, vo)?;
-    super::lower::agree(lowered, &describe(c, st, vo)?, &label)
-}
-
-/// The executor's description of DeepSeek-V4 for stage `st` with the options `vo`, as the loader indexes what it loads (`v4_desc`).
-pub fn describe(c: &ConfigV4, st: &Stage, vo: &V4Opts) -> Result<ModelDesc> {
-    if c.inter % 128 != 0 {
-        return err(format!("experts of width {}: this engine runs widths of 128s", c.inter));
-    }
-    let s = V4Shape {
-        d: c.hidden,
-        vocab: c.vocab,
-        eps: c.eps,
-        max_pos: c.max_pos,
-        eos: c.eos.clone(),
-        nh: c.heads,
-        hd: c.head_dim,
-        rope_dim: c.rope_dim,
-        q_lora: c.q_lora,
-        ol: c.o_lora,
-        og: c.o_groups,
-        wo_cols: c.heads * c.head_dim / c.o_groups.max(1),
-        idx: (c.idx_heads, c.idx_dim, c.idx_topk),
-        window: c.window,
-        ratios: c.ratios.clone(),
-        hash: (0..c.layers).map(|l| l < c.hash_layers).collect(),
-        streams: c.hc_mult,
-        hc: (c.hc_eps, c.hc_iters),
-        round: Rounding::Once,
-    };
-    v4_desc(&s, st, vo)
-}
-
-/// DeepSeek-V4's widths and layers as the executor takes them: the width, vocabulary, norms' epsilon, context and end tokens; the heads, their size and rotary
-/// part; the queries' low rank, the output's groups (rank, count, columns); the indexer's heads, their size and its choices; the window, each layer's compression
-/// ratio and whether its experts are hash-routed; the streams, their mix's epsilon and iterations.
-pub(crate) struct V4Shape {
-    pub d: usize,
-    pub vocab: usize,
-    pub eps: f32,
-    pub max_pos: usize,
-    pub eos: Vec<i64>,
-    pub nh: usize,
-    pub hd: usize,
-    pub rope_dim: usize,
-    pub q_lora: usize,
-    pub ol: usize,
-    pub og: usize,
-    pub wo_cols: usize,
-    pub idx: (usize, usize, usize),
-    pub window: usize,
-    pub ratios: Vec<usize>,
-    pub hash: Vec<bool>,
-    pub streams: usize,
-    pub hc: (f32, usize),
-    /// The streams' arithmetic (`StreamsP::rounding`: the release's, `Once`).
-    pub round: Rounding,
-}
-
-/// The executor's DeepSeek-V4 for stage `st`. Each layer's small tensors: the attention's stream mix (projection, base, scale), its norm, the queries' and keys' norms,
-/// the sink; a ratio-4 layer's indexer compressor's (its two products stacked, its offsets, its norm), a compressing layer's compressor's; the experts' stream mix and
-/// norm, and a hash-routed layer's token-to-expert table; the last stage's head mix and final norm after the last layer's. Its matrices, the FP8 ones in their own list
-/// where `vo` holds them FP8: the queries' down and up products, the keys' and values', the output groups' (one stack, or one a group), the output's; a ratio-4 layer's
-/// indexer queries' and weights' products; then the embedding and the head. A layer's experts are their block's.
-pub(crate) fn v4_desc(s: &V4Shape, st: &Stage, vo: &V4Opts) -> Result<ModelDesc> {
-    let (d, nh, hd, ol, og) = (s.d, s.nh, s.hd, s.ol, s.og);
-    let (ih, idim, itop) = s.idx;
-    if hd != 512 || s.rope_dim != 64 || idim != 128 || s.streams != 4 || d % 512 != 0 || s.q_lora % 128 != 0 || ol % 128 != 0 {
-        return err(format!(
-            "heads of {hd} ({} rotary), indexer heads of {idim}, {} streams, widths {d} / {} / {ol}: this engine runs heads of 512 (64 rotary), indexer heads of 128, 4 streams and widths of 128s",
-            s.rope_dim, s.streams, s.q_lora
-        ));
-    }
-    if ih > 64 {
-        return err(format!("{ih} indexer heads: this engine runs up to 64"));
-    }
-    let hpg = nh / og;
-    let layers_n = s.ratios.len();
-    #[derive(Default)]
-    struct Count {
-        mats: usize,
-        f8: usize,
-        small: usize,
-    }
-    let lin = |n: &mut Count, rows: usize, cols: usize, r0: usize| -> Lin {
-        if vo.f8(rows, cols, r0) {
-            n.f8 += 1;
-            Lin::F8(n.f8 - 1)
-        } else {
-            n.mats += 1;
-            Lin::Mat(n.mats - 1)
-        }
-    };
-    let small = |n: &mut Count, k: usize| -> usize {
-        n.small += k;
-        n.small - k
-    };
-    let (mut n, mut n_moe, mut rings, mut states, mut layers) = (Count::default(), 0, Vec::new(), Vec::new(), Vec::new());
-    for l in 0..layers_n {
-        if !(st.layers.0..st.layers.1).contains(&l) {
-            layers.push(Vec::new());
-            continue;
-        }
-        let ratio = s.ratios[l];
-        let rope = (ratio != 0) as usize;
-        let a = small(&mut n, 7);
-        let (fa, ba, sa, attn_norm, q_norm, kv_norm, sink) = (a, a + 1, a + 2, a + 3, a + 4, a + 5, a + 6);
-        let wq_a = lin(&mut n, s.q_lora, d, 0);
-        let wq_b = lin(&mut n, nh * hd, s.q_lora, 0);
-        let wkv = lin(&mut n, hd, d, 0);
-        let stack = vo.stack(og * ol, s.wo_cols, ol);
-        let (wo_a0, wo_a_f8) = if stack {
-            n.f8 += 1;
-            (n.f8 - 1, true)
-        } else {
-            let first = lin(&mut n, ol, s.wo_cols, 0);
-            for g in 1..og {
-                lin(&mut n, ol, s.wo_cols, g * ol);
-            }
-            match first {
-                Lin::F8(i) => (i, true),
-                Lin::Mat(i) => (i, false),
-            }
-        };
-        let wo_b = lin(&mut n, d, og * ol, 0);
-        let ring = rings.len();
-        rings.push(Ring::keys(hd, 1, s.window));
-        let mut ops = vec![
-            Op::StreamsPre { mix: StreamsMix::Hc { f: fa, base: ba, scale: sa }, norm: attn_norm, round: s.round },
-            Op::Fp8 { x: Slot::H, y: Slot::Hq, block: 128 },
-            wq_a.op(Slot::Hq, Slot::Proj, "attention: q down"),
-            Op::RmsNorm { x: Slot::Proj, w: q_norm, y: Slot::Qr, weight: NormW::Plain, eps: s.eps },
-            Op::Fp8 { x: Slot::Qr, y: Slot::Proj, block: 128 },
-            wq_b.op(Slot::Proj, Slot::Qo, "attention: q up"),
-            Op::CompQ { rope, heads: nh, norm: true },
-            wkv.op(Slot::Hq, Slot::Kv, "attention: kv"),
-            Op::CompKv { norm: kv_norm, rope, ring },
-        ];
-        let comp = |n: &mut Count, states: &mut Vec<usize>, dd: usize, indexer: bool| -> Op {
-            let coff = 1 + (ratio == 4) as usize;
-            let w = small(n, 3);
-            let cache = states.len();
-            states.push((vo.ctx / ratio + 2) * dd * 2);
-            states.push(coff * ratio * coff * dd * 4);
-            states.push(coff * ratio * coff * dd * 4);
-            Op::Compress { w, ape: w + 1, norm: w + 2, d: dd, ratio, overlap: ratio == 4, rope, cache, state: cache + 1, indexer, raw: None }
-        };
-        if ratio == 4 {
-            let iq = lin(&mut n, ih * idim, s.q_lora, 0);
-            let iw = n.mats;
-            n.mats += 1;
-            let icache = states.len();
-            let ic = comp(&mut n, &mut states, idim, true);
-            let wscale = (idim as f32).powf(-0.5) * (ih as f32).powf(-0.5);
-            ops.extend([
-                iq.op(Slot::Proj, Slot::Iq, "indexer: q"),
-                Op::IdxQ { rope, heads: ih },
-                ic,
-                Op::Linear { w: iw, x: Slot::H, y: Slot::Iw, name: "indexer: weights" },
-                pick(icache, ratio, ih, itop, wscale),
-            ]);
-        }
-        let mut cache = None;
-        if ratio > 0 {
-            cache = Some(states.len());
-            ops.push(comp(&mut n, &mut states, hd, false));
-        }
-        ops.extend([
-            Op::CompAttn { ring, cache, ratio, picked: ratio == 4, sink, rope, heads: nh, hpg },
-            if stack {
-                Op::OGroupLoraStack { w: wo_a0, groups: og, ol, y: Slot::M, fp8: true }
-            } else {
-                Op::OGroupLora { w: wo_a0, in_f8: wo_a_f8, groups: og, hpg, ol, y: Slot::M, fp8: true }
-            },
-            wo_b.op(Slot::M, Slot::O, "attention: o"),
-            Op::StreamsPost { round: s.round, gated: false },
-        ]);
-        let f = small(&mut n, 4);
-        let block = n_moe;
-        n_moe += 1;
-        let hash = s.hash[l].then(|| small(&mut n, 1));
-        ops.extend([
-            Op::StreamsPre { mix: StreamsMix::Hc { f, base: f + 1, scale: f + 2 }, norm: f + 3, round: s.round },
-            Op::Fp8 { x: Slot::H, y: Slot::Hq, block: 128 },
-            Op::Moe(v4_moe(block, hash, vo.sim)),
-            Op::StreamsPost { round: s.round, gated: false },
-        ]);
-        layers.push(ops);
-    }
-    let (embed, lm) = (n.mats, n.mats + 1);
-    if st.last {
-        let h = small(&mut n, 4);
-        layers.last_mut().ok_or_else(|| Error("a model of no layers".into()))?.push(Op::StreamsHead {
-            mix: HeadMix::Weighted([h, h + 1, h + 2]),
-            norm: h + 3,
-            round: s.round,
-        });
-    }
-    let mut widths = [0usize; super::SLOTS];
-    let wmax = if s.ratios.contains(&4) { 2 * hd } else { hd };
-    for (sl, w) in [
-        (Slot::X, d),
-        (Slot::S, 4 * d),
-        (Slot::H, d),
-        (Slot::Hq, d),
-        (Slot::Proj, s.q_lora),
-        (Slot::Qr, s.q_lora),
-        (Slot::Qo, nh * hd),
-        (Slot::Kv, hd),
-        (Slot::Cp, 4 * wmax),
-        (Slot::Iq, ih * idim),
-        (Slot::Iw, ih),
-        (Slot::Att, nh * hd),
-        (Slot::Mid, og * ol),
-        (Slot::M, og * ol),
-        (Slot::O, d),
-    ] {
-        widths[sl as usize] = w;
-    }
-    let all_ratio = s.ratios.iter().copied().filter(|&r| r != 0 && r != 4).min().unwrap_or(0);
-    Ok(ModelDesc {
-        family: "DeepSeek-V4",
-        hidden: d,
-        vocab: s.vocab,
-        eps: s.eps,
-        max_pos: s.max_pos,
-        widths,
-        mats: Vec::new(),
-        small: Vec::new(),
-        ropes: Vec::new(),
-        rings,
-        first: Op::Streams,
-        layers,
-        states,
-        final_norm: None,
-        decoded: false,
-        skinny: false,
-        embed,
-        lm,
-        softcap: 0.0,
-        eos: s.eos.clone(),
-        post: None,
-        hc: (s.hc.0, s.hc.1 as i32),
-        logit_mult: 0.0,
-        v4: Some(V4Dims {
-            heads: nh,
-            idx_heads: ih,
-            topk: itop,
-            window: s.window,
-            all_ratio,
-            sim: vo.sim,
-            o_groups: og,
-            idx_ratio: if s.ratios.contains(&4) { 4 } else { 0 },
-        }),
-    })
 }
