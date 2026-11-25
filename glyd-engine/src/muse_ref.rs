@@ -88,6 +88,9 @@ pub struct RefMuse {
     pub pos: usize,
     /// The step's closest expert choice: the smallest gap, over its layers, between the k-th choice's score (plus bias) and the next one's.
     pub margin: std::cell::Cell<f32>,
+    /// Each layer's experts for the tokens to come, each token's in turn, taken in the place of its router's own choice (their weights its router's
+    /// scores): a comparison's, which runs another reference on the same choices. Empty: the router's.
+    pub take: std::cell::RefCell<Vec<std::collections::VecDeque<Vec<usize>>>>,
 }
 
 impl RefMuse {
@@ -131,6 +134,7 @@ impl RefMuse {
             c,
             pos: 0,
             margin: std::cell::Cell::new(f32::INFINITY),
+            take: Default::default(),
         })
     }
 
@@ -204,6 +208,9 @@ impl RefMuse {
             self.margin.set(self.margin.get().min(gap));
         }
         ord.truncate(c.top_k);
+        if let Some(t) = self.take.borrow_mut().get_mut(l).and_then(|q| q.pop_front()).filter(|t| !t.is_empty()) {
+            ord = t;
+        }
         let tot: f32 = ord.iter().map(|&e| s[e]).sum::<f32>() + 1e-15;
         let x = rms_w(&mul(&ly.pre, d, h).into_iter().map(bf).collect::<Vec<_>>(), &ly.w_pre, c.eps);
         let mut acc = vec![0f32; lat];
@@ -275,7 +282,16 @@ impl RefMuse {
                 vals: Vec::new(),
             })
             .collect();
-        RefMuse { c, embed: Vec::new(), head: Vec::new(), norm: Vec::new(), layers, pos: 0, margin: std::cell::Cell::new(f32::INFINITY) }
+        RefMuse {
+            c,
+            embed: Vec::new(),
+            head: Vec::new(),
+            norm: Vec::new(),
+            layers,
+            pos: 0,
+            margin: std::cell::Cell::new(f32::INFINITY),
+            take: Default::default(),
+        }
     }
 
     /// A model of MoE layers only, from each layer's router, choice bias, pre-expert projection and norm, experts' gate-up and down,
@@ -299,13 +315,17 @@ impl RefMuse {
     }
 }
 
-/// `random`'s config.json.
+/// `random`'s config.json. Its `qk_scale_factor` is 1.5, not the release's 5.473: Muse's q and k norms have no weight, so on a random model's queries and
+/// keys the scores' RMS is the factor itself, and at 5.47 a softmax that sharp left the CPU reference 1.2e-4 in KL mean from itself with the engine's
+/// storage roundings (on its own expert choices), past the kind's bound. 1.5 is the smallest of the factors tried (1.5, 2) that brings that under a
+/// tenth of the bound: 2.9e-6 mean, 5.9e-6 at most (2: 6.4e-6 and 1.6e-5; 3: 2.1e-5 and 5.3e-5); not 1, where a multiply skipped or made twice would
+/// change nothing.
 pub(crate) const RANDOM_CONFIG: &str = r#"{"architectures": ["MuseSparkForConditionalGeneration"], "model_type": "muse_spark", "text_config": {"model_type": "muse_spark_text", "hidden_size": 1024, "num_hidden_layers": 4,
         "num_attention_heads": 16, "num_key_value_heads": 2, "head_dim": 64, "intermediate_size": 2048, "moe_hidden_size": 512, "moe_intermediate_size": 512, "num_local_experts": 16,
         "num_experts_per_tok": 4, "num_shared_experts": 0, "vocab_size": 4096, "max_position_embeddings": 65536, "sliding_window": 32, "hidden_act": "silu", "attention_bias": false,
         "layer_types": ["sliding_attention", "full_attention", "sliding_attention", "sliding_attention"], "layer_rope_theta": [500000.0, 0, 500000.0, 500000.0],
         "mlp_layer_types": ["sparse", "sparse", "sparse", "sparse"], "rope_parameters": {"rope_theta": 500000.0, "rope_type": "default"}, "rms_norm_eps": 1e-05, "post_norm_eps": 1e-08,
-        "qk_scale_factor": 5.4730064863875, "output_multiplier": 0.5, "final_logit_softcapping": 20.0, "residual_gate_temperature": 0.3, "routed_scaling_factor": 1.0,
+        "qk_scale_factor": 1.5, "output_multiplier": 0.5, "final_logit_softcapping": 20.0, "residual_gate_temperature": 0.3, "routed_scaling_factor": 1.0,
         "bos_token_id": 0, "eos_token_id": 1, "tie_word_embeddings": false}}"#;
 
 /// A small Muse Spark of the release's layout in `out` (bf16, the routers fp32; random weights): four layers (the window's, every position's, the window's twice), a window of 32, 16 experts of which 4,

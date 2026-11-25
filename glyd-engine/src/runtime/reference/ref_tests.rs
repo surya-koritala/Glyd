@@ -442,27 +442,29 @@ fn kimi_k3_model_described() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Muse Spark's whole random model, as `whole_model` holds Kimi-K3's, but on the same expert choices: the description's, taken by the per-family
+/// reference (`RefMuse::take`) in the place of its routers' own, so no prompt need route clear of rounding (the case's model has routers whose
+/// near ties the two references' roundings take either way).
 #[test]
 fn muse_spark_model_described() {
     use crate::muse_ref::{random, RefMuse};
+    use crate::runtime::kinds::{Body, Ffn};
+    use crate::runtime::{describe::describe, reference::model::RefModel};
     let dir = std::env::temp_dir().join(format!("glyd-runtime-muse-model-{}", std::process::id()));
     random(&dir).unwrap();
-    let vocab = RefMuse::load(&dir).unwrap().c.vocab;
-    whole_model(
-        &dir,
-        &mut || {
-            let d2 = dir.clone();
-            let mut r = RefMuse::load(&d2).unwrap();
-            Box::new(move |t| {
-                let l = r.step(t);
-                (l, r.margin.get())
-            })
-        },
-        vocab,
-        10,
-        WHOLE_TOL,
-        "Muse Spark",
-    );
+    let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    let ck = Checkpoint::open(&dir).unwrap();
+    let mut m = RefModel::load(&d, &checkpoint_source(&ck)).unwrap_or_else(|e| panic!("{}", e.msg));
+    let moe: Vec<usize> = (0..m.layers.len()).filter(|&b| matches!(m.layers[b].block.body, Body::Ffn(Ffn::Moe(_)))).collect();
+    moe.iter().for_each(|&b| m.layers[b].routed = Some(Vec::new()));
+    let toks = [7u32, 1108, 2209];
+    let ours = m.forward(&toks, 0).unwrap();
+    let mut r = RefMuse::load(&dir).unwrap();
+    *r.take.borrow_mut() = moe.iter().map(|&b| m.layers[b].routed.take().unwrap().into_iter().map(|c| c.ids).collect()).collect();
+    for (i, &t) in toks.iter().enumerate() {
+        assert_close(&ours[i], &r.step(t), WHOLE_TOL, &format!("Muse Spark: prompt {toks:?}, position {i}, on the same expert choices"));
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
