@@ -30,9 +30,6 @@ pub struct KernGlm {
     select: crate::kt::idx_pick,
 }
 
-/// Rows at most that the mixing weights' split projection takes (a decode step, the rows of a verified draft).
-pub const HC_FEW: u32 = crate::dynamic::residual::HC_FEW;
-
 /// The dynamic shared memory `mla_attn` (kernels/mla.cu) may take on `dev`: the GPU's most a block, less a KiB for the kernel's own (its block sums' 256 bytes).
 pub fn mla_smem(dev: &Dev) -> Result<u32> {
     Ok(dev.smem_optin()?.saturating_sub(1 << 10))
