@@ -213,7 +213,7 @@ mod tests {
     }
 }
 
-// (the random model's config is the development build's: src/muse_ref.rs)
+// (the random model's config is the development build's: `muse_ref`)
 #[cfg(all(test, feature = "dev"))]
 mod reader_tests {
     use super::*;

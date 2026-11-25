@@ -6,7 +6,7 @@
 use crate::ffi::{err, Error, Result};
 use crate::qwen35::{Pack35, Tensor35};
 use crate::runtime::config::ModelConfig;
-use crate::weights::{eos_ids, num, saved_parts};
+use crate::weights::{eos_ids, saved_parts};
 use glyd_gpu::fp8;
 use glyd_gpu::safetensors::Checkpoint;
 use std::collections::{HashMap, HashSet};
@@ -105,6 +105,72 @@ pub fn is_glm(text: &str) -> bool {
     crate::runtime::config::family_of(text) == Some(crate::support::Family::Glm)
 }
 
+/// GLM-5.3-Flash's own keys of its text model (the shared ones are `runtime::config::Shared`'s), typed from the one parse of its config.json.
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct Keys {
+    hidden_act: Option<String>,
+    attention_bias: Option<bool>,
+    mhc: Option<bool>,
+    mlp_layer_types: Option<Vec<String>>,
+    linear_attn_config: Option<LinearAttn>,
+    linear_lower_bound: crate::runtime::config::Given<f64>,
+    linear_num_heads: Option<usize>,
+    linear_head_dim: Option<usize>,
+    linear_conv_kernel_dim: Option<usize>,
+    index_n_heads: Option<usize>,
+    index_topk: Option<usize>,
+    index_kpool: Option<usize>,
+    index_kpool_always_select_tail: Option<bool>,
+    indexer_types: Option<Vec<serde_json::Value>>,
+    routed_scaling_factor: Option<f64>,
+    norm_topk_prob: Option<bool>,
+    swiglu_limit: Option<f64>,
+    n_group: Option<usize>,
+    topk_group: Option<usize>,
+    scoring_func: Option<String>,
+    topk_method: Option<String>,
+    moe_router_dtype: Option<String>,
+    hc_mult: Option<usize>,
+    hc_eps: Option<f64>,
+    hc_sinkhorn_iters: Option<usize>,
+    rms_norm_eps: Option<f64>,
+    tie_word_embeddings: Option<bool>,
+    eos_token_id: crate::runtime::config::Given<serde_json::Value>,
+}
+
+/// The delta attention's keys (`linear_attn_config`).
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct LinearAttn {
+    kda_layers: Option<Vec<u64>>,
+    full_attn_layers: Option<Vec<u64>>,
+    num_heads: Option<usize>,
+    head_dim: Option<usize>,
+    short_conv_kernel_size: Option<usize>,
+    gate_lower_bound: Option<f64>,
+    safe_gate: Option<bool>,
+}
+
+/// GLM-5.3-Flash's keys of the top level: how its weights are stored, the tied head, the end tokens, the vision tower.
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct Top {
+    quantization_config: Option<Fp8Keys>,
+    tie_word_embeddings: Option<bool>,
+    eos_token_id: Option<serde_json::Value>,
+    vision_config: Option<serde_json::Value>,
+}
+
+/// A quantization's keys as GLM-5.3-Flash's release gives them.
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct Fp8Keys {
+    quant_method: Option<String>,
+    fmt: Option<String>,
+    weight_block_size: Option<Vec<u64>>,
+}
+
 impl ConfigGlm {
     pub fn load(dir: &Path) -> Result<ConfigGlm> {
         let p = dir.join("config.json");
@@ -119,90 +185,77 @@ impl ConfigGlm {
         ConfigGlm::of(&ModelConfig::parse(text).map_err(|e| e.context(label))?, label, generation)
     }
 
-    /// `parse` of a config.json parsed once (`ModelConfig`).
+    /// `parse` of a config.json parsed once (`ModelConfig`): the shared keys typed there (`Shared`), GLM-5.3-Flash's own typed here (`Keys`, `Top`).
     pub fn of(c: &ModelConfig, label: &str, generation: Option<&str>) -> Result<ConfigGlm> {
-        use serde_json::Value;
-        let v = &c.top;
-        let arch = v.get("architectures").and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_str).unwrap_or("");
-        if arch != "Glm5NextForConditionalGeneration" {
-            return err(format!("{label}: {arch}: not a GLM-5.3-Flash model"));
+        use crate::runtime::config::Given;
+        if c.arch != "Glm5NextForConditionalGeneration" {
+            return err(format!("{label}: {}: not a GLM-5.3-Flash model", c.arch));
         }
-        if let Some(kind) = v.get("model_type").and_then(Value::as_str).filter(|k| *k != "glm5_next") {
-            return err(format!("{label}: the model is {kind:?}, where GLM-5.3-Flash has glm5_next"));
+        if !c.model_type.is_empty() && c.model_type != "glm5_next" {
+            return err(format!("{label}: the model is {:?}, where GLM-5.3-Flash has glm5_next", c.model_type));
         }
-        let t = v.get("text_config").and_then(Value::as_object).ok_or_else(|| Error(format!("{label}: no text_config")))?;
-        let kind = t.get("model_type").and_then(Value::as_str).unwrap_or("");
-        if kind != "glm5_next_text" {
-            return err(format!("{label}: the text model is {kind:?}, where GLM-5.3-Flash has glm5_next_text"));
+        if !c.nested {
+            return err(format!("{label}: no text_config"));
         }
-        let get = |k: &str| t.get(k).ok_or_else(|| Error(format!("{label}: no {k}")));
-        let u = |k: &str| -> Result<usize> { get(k)?.as_u64().map(|x| x as usize).ok_or_else(|| Error(format!("{label}: {k}: not an integer"))) };
-        let f = |k: &str| -> Result<f64> { num(get(k)?, k) };
-        // a key that may be left out: its value, else the default
-        let u_or = |k: &str, d: usize| -> Result<usize> {
-            if t.get(k).is_some_and(|x| *x != Value::Null) {
-                u(k)
-            } else {
-                Ok(d)
-            }
-        };
-        let f_or = |k: &str, d: f64| -> Result<f64> {
-            if t.get(k).is_some_and(|x| *x != Value::Null) {
-                f(k)
-            } else {
-                Ok(d)
-            }
-        };
-        let flag = |k: &str, d: bool| t.get(k).and_then(Value::as_bool).unwrap_or(d);
-        let text_is = |k: &str, want: &str| t.get(k).and_then(Value::as_str).is_none_or(|a| a == want);
+        if c.text_type != "glm5_next_text" {
+            return err(format!("{label}: the text model is {:?}, where GLM-5.3-Flash has glm5_next_text", c.text_type));
+        }
+        let (s, k, top): (&crate::runtime::config::Shared, Keys, Top) = (&c.shared, c.own(label)?, c.own_top(label)?);
+        let need = |v: Option<usize>, key: &str| ModelConfig::need(v, label, key);
         let refuse = |what: &str| err(format!("{label}: {what}, which the engine does not run"));
-        if !text_is("hidden_act", "silu") {
+        let is = |v: &Option<String>, want: &str| v.as_deref().is_none_or(|a| a == want);
+        if !is(&k.hidden_act, "silu") {
             return refuse("an activation other than silu");
         }
-        if flag("attention_bias", false) {
+        if k.attention_bias.unwrap_or(false) {
             return refuse("biases in the attention");
         }
-        if t.get("mhc").and_then(Value::as_bool) == Some(false) {
+        if k.mhc == Some(false) {
             return refuse("a model without its hyper-connections");
         }
-        if u_or("qk_rope_head_dim", 0)? != 0 {
+        if s.qk_rope_head_dim.unwrap_or(0) != 0 {
             return refuse("a rotary in the latent attention");
         }
-        let layers = u("num_hidden_layers")?;
+        let layers = need(s.num_hidden_layers, "num_hidden_layers")?;
         if layers > crate::plan::MAX_LAYERS {
             return err(format!("{label}: num_hidden_layers {layers}, where no model has more than {}", crate::plan::MAX_LAYERS));
         }
-        let (heads, kv_heads) = (u("num_attention_heads")?, u_or("num_key_value_heads", u("num_attention_heads")?)?);
+        let heads = need(s.num_attention_heads, "num_attention_heads")?;
+        let kv_heads = s.num_key_value_heads.unwrap_or(heads);
         if heads == 0 || kv_heads != heads {
             return err(format!("{label}: {heads} query heads to {kv_heads} KV heads, where the latent attention has as many"));
         }
         // the schedule of the mixers: transformers' layer_types (the checkpoint's name for latent attention is deepseek_sparse_attention), else every fourth layer from the fourth
-        let kinds: Vec<GlmKind> = match t.get("layer_types").and_then(Value::as_array) {
+        let kinds: Vec<GlmKind> = match &s.layer_types {
             Some(a) => {
                 if a.len() != layers {
                     return err(format!("{label}: {} layer_types for {layers} layers", a.len()));
                 }
                 a.iter()
                     .map(|k| match k.as_str() {
-                        Some("linear_attention") => Ok(GlmKind::Kda),
-                        Some("deepseek_sparse_attention" | "indexed_attention" | "full_attention") => Ok(GlmKind::Mla),
-                        other => err(format!("{label}: a layer of type {other:?}, where this model has linear_attention and deepseek_sparse_attention")),
+                        "linear_attention" => Ok(GlmKind::Kda),
+                        "deepseek_sparse_attention" | "indexed_attention" | "full_attention" => Ok(GlmKind::Mla),
+                        other => {
+                            err(format!("{label}: a layer of type {:?}, where this model has linear_attention and deepseek_sparse_attention", Some(other)))
+                        }
                     })
                     .collect::<Result<_>>()?
             }
             None => (0..layers).map(|i| if i % 4 == 3 { GlmKind::Mla } else { GlmKind::Kda }).collect(),
         };
-        let attn = t.get("linear_attn_config");
-        let listed = |k: &str| attn.and_then(|a| a.get(k)).and_then(crate::runtime::config::u64s);
-        for (key, kind) in [("kda_layers", GlmKind::Kda), ("full_attn_layers", GlmKind::Mla)] {
+        let attn = k.linear_attn_config.as_ref();
+        for (key, kind, listed) in [
+            ("kda_layers", GlmKind::Kda, attn.and_then(|a| a.kda_layers.clone())),
+            ("full_attn_layers", GlmKind::Mla, attn.and_then(|a| a.full_attn_layers.clone())),
+        ] {
             let want: Vec<u64> = (0..layers as u64).filter(|&i| kinds[i as usize] == kind).collect();
-            if listed(key).is_some_and(|l| l != want) {
+            if listed.is_some_and(|l| l != want) {
                 return err(format!("{label}: linear_attn_config.{key} is not the layers layer_types gives"));
             }
         }
         // the schedule of the feed-forwards: mlp_layer_types, and first_k_dense_replace where both are given
-        let dense = t.get("first_k_dense_replace").and_then(Value::as_u64).map(|n| n as usize);
-        let moe: Vec<bool> = match t.get("mlp_layer_types").and_then(Value::as_array) {
+        let dense = s.first_k_dense_replace;
+        let moe: Vec<bool> = match &k.mlp_layer_types {
             Some(a) => {
                 if a.len() != layers {
                     return err(format!("{label}: {} mlp_layer_types for {layers} layers", a.len()));
@@ -210,9 +263,9 @@ impl ConfigGlm {
                 let moe: Vec<bool> = a
                     .iter()
                     .map(|k| match k.as_str() {
-                        Some("dense") => Ok(false),
-                        Some("sparse") => Ok(true),
-                        other => err(format!("{label}: a feed-forward of type {other:?}, where this model has dense and sparse")),
+                        "dense" => Ok(false),
+                        "sparse" => Ok(true),
+                        other => err(format!("{label}: a feed-forward of type {:?}, where this model has dense and sparse", Some(other))),
                     })
                     .collect::<Result<_>>()?;
                 if dense.is_some_and(|d| moe != (0..layers).map(|i| i >= d).collect::<Vec<_>>()) {
@@ -223,40 +276,41 @@ impl ConfigGlm {
             None => (0..layers).map(|i| i >= dense.unwrap_or(3)).collect(),
         };
         // Kimi delta attention: linear_attn_config's numbers (transformers' flat keys where it has none); the forget gate's lower bound, the safe gate's -5 where it is null
-        let ka = |k: &str, flat: &str, d: usize| -> Result<usize> {
-            match attn.and_then(|a| a.get(k)).filter(|x| **x != Value::Null) {
-                Some(x) => x.as_u64().map(|x| x as usize).ok_or_else(|| Error(format!("{label}: linear_attn_config.{k}: not an integer"))),
-                None => u_or(flat, d),
-            }
-        };
-        let bound = match attn.and_then(|a| a.get("gate_lower_bound")).filter(|x| **x != Value::Null) {
-            Some(b) => num(b, "gate_lower_bound")?,
-            None if attn.and_then(|a| a.get("safe_gate")).and_then(Value::as_bool) == Some(false) => return refuse("a forget gate without its lower bound"),
-            None if attn.is_none() && t.get("linear_lower_bound").is_some_and(|x| *x == Value::Null) => return refuse("a forget gate without its lower bound"),
-            None => f_or("linear_lower_bound", -5.0)?,
+        let ka = |v: Option<usize>, flat: Option<usize>, d: usize| v.or(flat).unwrap_or(d);
+        let bound = match attn.and_then(|a| a.gate_lower_bound) {
+            Some(b) => b,
+            None if attn.and_then(|a| a.safe_gate) == Some(false) => return refuse("a forget gate without its lower bound"),
+            None if attn.is_none() && matches!(k.linear_lower_bound, Given::Null) => return refuse("a forget gate without its lower bound"),
+            None => k.linear_lower_bound.value().unwrap_or(-5.0),
         };
         let kda = KdaDims {
-            heads: ka("num_heads", "linear_num_heads", 64)?,
-            dim: ka("head_dim", "linear_head_dim", 128)?,
-            conv_kernel: ka("short_conv_kernel_size", "linear_conv_kernel_dim", 4)?,
+            heads: ka(attn.and_then(|a| a.num_heads), k.linear_num_heads, 64),
+            dim: ka(attn.and_then(|a| a.head_dim), k.linear_head_dim, 128),
+            conv_kernel: ka(attn.and_then(|a| a.short_conv_kernel_size), k.linear_conv_kernel_dim, 4),
             bound: bound as f32,
         };
         if kda.heads == 0 || kda.dim == 0 || kda.conv_kernel == 0 {
             return err(format!("{label}: Kimi delta attention of {} heads of {} channels, a convolution of {} taps", kda.heads, kda.dim, kda.conv_kernel));
         }
-        let mla = MlaDims { heads, q_rank: u("q_lora_rank")?, kv_rank: u("kv_lora_rank")?, nope: u("qk_nope_head_dim")?, v: u("v_head_dim")? };
+        let mla = MlaDims {
+            heads,
+            q_rank: need(s.q_lora_rank, "q_lora_rank")?,
+            kv_rank: need(s.kv_lora_rank, "kv_lora_rank")?,
+            nope: need(s.qk_nope_head_dim, "qk_nope_head_dim")?,
+            v: need(s.v_head_dim, "v_head_dim")?,
+        };
         let indexer = IndexerDims {
-            heads: u("index_n_heads")?,
-            dim: u("index_head_dim")?,
-            topk: u("index_topk")?,
-            kpool: u("index_kpool")?,
-            tail: flag("index_kpool_always_select_tail", true),
+            heads: need(k.index_n_heads, "index_n_heads")?,
+            dim: need(s.index_head_dim, "index_head_dim")?,
+            topk: need(k.index_topk, "index_topk")?,
+            kpool: need(k.index_kpool, "index_kpool")?,
+            tail: k.index_kpool_always_select_tail.unwrap_or(true),
         };
         if indexer.kpool == 0 || !indexer.topk.is_multiple_of(indexer.kpool) {
             return err(format!("{label}: index_topk {} does not divide by index_kpool {}", indexer.topk, indexer.kpool));
         }
         // indexer_types says per layer whether the layer runs its indexer (full) or reuses the one before it (shared); only the first is run
-        if let Some(a) = t.get("indexer_types").and_then(Value::as_array) {
+        if let Some(a) = &k.indexer_types {
             if a.len() != layers {
                 return err(format!("{label}: {} indexer_types for {layers} layers", a.len()));
             }
@@ -264,85 +318,91 @@ impl ConfigGlm {
                 return refuse("a latent attention layer that shares another's indexer");
             }
         }
-        let shared = u_or("n_shared_experts", 1)?;
+        let shared = s.n_shared_experts.unwrap_or(1);
+        let inter_e = need(s.moe_intermediate_size, "moe_intermediate_size")?;
         let experts = GlmMoeDims {
-            experts: u("n_routed_experts")?,
-            top_k: u("num_experts_per_tok")?,
-            inter: u("moe_intermediate_size")?,
-            shared_inter: u("moe_intermediate_size")? * shared,
-            scale: f("routed_scaling_factor")? as f32,
-            norm_topk: flag("norm_topk_prob", true),
-            limit: f_or("swiglu_limit", 10.0)? as f32,
+            experts: need(s.n_routed_experts, "n_routed_experts")?,
+            top_k: need(s.num_experts_per_tok, "num_experts_per_tok")?,
+            inter: inter_e,
+            shared_inter: inter_e * shared,
+            scale: k.routed_scaling_factor.ok_or_else(|| Error(format!("{label}: no routed_scaling_factor")))? as f32,
+            norm_topk: k.norm_topk_prob.unwrap_or(true),
+            limit: k.swiglu_limit.unwrap_or(10.0) as f32,
         };
         if moe.contains(&true) {
             if experts.top_k == 0 || experts.top_k > experts.experts {
                 return err(format!("{label}: {} experts a token of {}", experts.top_k, experts.experts));
             }
-            if u_or("n_group", 1)? != 1 || u_or("topk_group", 1)? != 1 {
+            if k.n_group.unwrap_or(1) != 1 || k.topk_group.unwrap_or(1) != 1 {
                 return refuse("group-limited routing");
             }
             if shared == 0 {
                 return refuse("mixture-of-experts layers without a shared expert");
             }
-            if !text_is("scoring_func", "sigmoid") {
+            if !is(&k.scoring_func, "sigmoid") {
                 return refuse("routing scores other than sigmoid");
             }
-            if !text_is("topk_method", "noaux_tc") {
+            if !is(&k.topk_method, "noaux_tc") {
                 return refuse("a selection other than noaux_tc");
             }
-            if !text_is("moe_router_dtype", "float32") {
+            if !is(&k.moe_router_dtype, "float32") {
                 return refuse("a router that is not computed in float32");
             }
         }
-        let hc = HcDims { mult: u("hc_mult")?, eps: f_or("hc_eps", 1e-6)? as f32, iters: u_or("hc_sinkhorn_iters", 20)? };
+        let hc = HcDims { mult: need(k.hc_mult, "hc_mult")?, eps: k.hc_eps.unwrap_or(1e-6) as f32, iters: k.hc_sinkhorn_iters.unwrap_or(20) };
         if hc.mult == 0 {
             return err(format!("{label}: hc_mult 0"));
         }
         // the FP8 source: block-scaled E4M3 weights (any other quantization is refused); activations are quantised at run time in the original, which a dequantised matrix leaves out
-        let fp8_block = match v.get("quantization_config").filter(|q| **q != Value::Null) {
+        let fp8_block = match &top.quantization_config {
             None => None,
             Some(q) => {
-                let method = q.get("quant_method").and_then(Value::as_str).unwrap_or("");
+                let method = q.quant_method.as_deref().unwrap_or("");
                 if method != "fp8" {
                     return refuse(&format!("a quantization of type {method:?}"));
                 }
-                if let Some(fmt) = q.get("fmt").and_then(Value::as_str).filter(|f| *f != "e4m3") {
+                if let Some(fmt) = q.fmt.as_deref().filter(|f| *f != "e4m3") {
                     return refuse(&format!("FP8 of format {fmt}"));
                 }
-                match q.get("weight_block_size").and_then(crate::runtime::config::u64s).as_deref() {
+                match q.weight_block_size.as_deref() {
                     Some(&[m, n]) if m > 0 && n > 0 => Some([m as usize, n as usize]),
                     _ => return err(format!("{label}: an FP8 quantization with no weight_block_size of two sizes")),
                 }
             }
         };
-        let mut eos = eos_ids(t, generation);
+        let mut eos = eos_ids(&c.text, generation);
         if eos.is_empty() {
             // (the config's own end tokens are a list here, which eos_ids reads in a generation config alone)
-            eos = t
-                .get("eos_token_id")
-                .or_else(|| v.get("eos_token_id"))
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(Value::as_i64).collect())
-                .unwrap_or_default();
+            let given = match &k.eos_token_id {
+                Given::Missing => top.eos_token_id.as_ref(),
+                Given::Null => None,
+                Given::Some(v) => Some(v),
+            };
+            eos = given.and_then(serde_json::Value::as_array).map(|a| a.iter().filter_map(serde_json::Value::as_i64).collect()).unwrap_or_default();
         }
+        let inter = match &s.intermediate_size {
+            Some(crate::runtime::config::Width::One(n)) => *n,
+            Some(crate::runtime::config::Width::PerLayer(_)) => return err(format!("{label}: intermediate_size: not an integer")),
+            None => return err(format!("{label}: no intermediate_size")),
+        };
         Ok(ConfigGlm {
-            hidden: u("hidden_size")?,
+            hidden: need(s.hidden_size, "hidden_size")?,
             layers,
-            vocab: u("vocab_size")?,
-            eps: num(get("rms_norm_eps")?, "rms_norm_eps")? as f32,
-            max_pos: u("max_position_embeddings")?,
-            tie: v.get("tie_word_embeddings").or_else(|| t.get("tie_word_embeddings")).and_then(Value::as_bool).unwrap_or(false),
+            vocab: need(s.vocab_size, "vocab_size")?,
+            eps: k.rms_norm_eps.ok_or_else(|| Error(format!("{label}: no rms_norm_eps")))? as f32,
+            max_pos: need(s.max_position_embeddings, "max_position_embeddings")?,
+            tie: top.tie_word_embeddings.or(k.tie_word_embeddings).unwrap_or(false),
             eos,
             kinds,
             moe,
-            inter: u("intermediate_size")?,
+            inter,
             kda,
             mla,
             indexer,
             experts,
             hc,
-            mtp_layers: u_or("num_nextn_predict_layers", 0)?,
-            vision: v.get("vision_config").is_some_and(|x| *x != Value::Null),
+            mtp_layers: s.num_nextn_predict_layers.unwrap_or(0),
+            vision: top.vision_config.is_some(),
             fp8_block,
             prefix: "model.language_model.",
         })
@@ -1505,5 +1565,25 @@ pub(crate) mod tests {
             (bytes(&expert[0], INT6_STEP_BYTES) + bytes(&expert[1], INT6_STEP_BYTES), bytes(&expert[0], INT5_STEP_BYTES) + bytes(&expert[1], INT5_STEP_BYTES)),
             (20_545_544, 17_399_816)
         );
+    }
+}
+
+#[cfg(test)]
+mod reader_tests {
+    use super::*;
+
+    /// GLM-5.3-Flash's reader takes its keys from the one parse of config.json, typed: the release's config reads; a key of another type than its field's is
+    /// refused with its name; a needed key that is null is named as missing; a null lower bound of the delta rule's gate is refused as before (missing: -5).
+    #[test]
+    fn the_keys_are_read_typed_from_the_one_parse() {
+        let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/glm5_next_config.json")).unwrap();
+        let c = ConfigGlm::parse(&text, "GLM-5.3-Flash", None).unwrap();
+        assert_eq!((c.layers, c.kinds.len(), c.fp8_block), (45, 45, Some([128, 128])));
+        let mut v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        v["text_config"]["hc_eps"] = serde_json::json!("tiny");
+        assert!(ConfigGlm::parse(&v.to_string(), "c", None).unwrap_err().msg.contains("hc_eps"));
+        let mut v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        v["text_config"]["kv_lora_rank"] = serde_json::Value::Null;
+        assert_eq!(ConfigGlm::parse(&v.to_string(), "c", None).unwrap_err().msg, "c: no kv_lora_rank");
     }
 }

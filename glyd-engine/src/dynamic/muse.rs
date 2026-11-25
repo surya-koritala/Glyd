@@ -281,6 +281,8 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_sto
     ] {
         widths[s as usize] = w;
     }
+    // (the tensors' names, forms and rotary as the description gives them; this loader's buffers are indexed in that order)
+    let (names_m, names_s, forms) = names(&c, &st);
     let desc = ModelDesc {
         family: "Muse Spark",
         hidden: d,
@@ -288,10 +290,10 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_sto
         eps: c.eps,
         max_pos: c.max_pos,
         widths,
-        mats: Vec::new(),
-        small: Vec::new(),
-        forms: Vec::new(),
-        ropes: Vec::new(),
+        mats: names_m,
+        small: names_s,
+        forms,
+        ropes: vec![super::Rope { theta: c.rope_theta, dim: c.head_dim, pairs: c.head_dim / 2, trig64: true }],
         rings,
         // (the embedding's row normed without a weight, in place)
         first: Op::RmsNorm { x: Slot::X, w: ones, y: Slot::X, weight: NormW::Plain, eps: c.eps },
@@ -371,6 +373,7 @@ pub fn describe(c: &ConfigMuse, st: &Stage) -> Result<ModelDesc> {
         layers.push(ops);
     }
     let (embed, lm) = (n_mats, n_mats + 1);
+    let (mats, small, forms) = names(c, st);
     let mut widths = [0usize; super::SLOTS];
     for (s, w) in [
         (Slot::X, d),
@@ -392,10 +395,10 @@ pub fn describe(c: &ConfigMuse, st: &Stage) -> Result<ModelDesc> {
         eps: c.eps,
         max_pos: c.max_pos,
         widths,
-        mats: Vec::new(),
-        small: Vec::new(),
-        forms: Vec::new(),
-        ropes: Vec::new(),
+        mats,
+        small,
+        forms,
+        ropes: vec![super::Rope { theta: c.rope_theta, dim: c.head_dim, pairs: c.head_dim / 2, trig64: true }],
         rings,
         first: Op::RmsNorm { x: Slot::X, w: ones, y: Slot::X, weight: NormW::Plain, eps: c.eps },
         layers,
@@ -412,4 +415,45 @@ pub fn describe(c: &ConfigMuse, st: &Stage) -> Result<ModelDesc> {
         hc: (0.0, 0),
         logit_mult: c.out_mult,
     })
+}
+
+/// Muse Spark's tensors for stage `st`, named in the order `describe` indexes them, and the small tensors made from their values: the weightless norm's ones
+/// first; each layer's nine (its centered norms' 1 + w, its residual gates' alpha and beta at the model's temperature); the final norm after the last
+/// layer's, as saved; each layer's four matrices (q, k, v and the gate stacked; o; the latent in and out), then the embedding and the head.
+#[allow(clippy::type_complexity)]
+fn names(c: &ConfigMuse, st: &Stage) -> (Vec<crate::weights::Item>, Vec<String>, Vec<(usize, super::SmallForm)>) {
+    use super::SmallForm::{GateAlpha, GateBeta, Ones, PlusOne};
+    let (d, nq, nk, hd, lat) = (c.hidden, c.heads, c.kv_heads, c.head_dim, c.latent);
+    let item = |members: Vec<String>, rows: usize, cols: usize| crate::weights::Item { members, rows, cols };
+    let (mut mats, mut small, mut forms) = (Vec::new(), vec![String::new()], vec![(0, Ones(d.max(lat)))]);
+    for l in st.layers.0..st.layers.1.min(c.layers) {
+        let p = format!("{}layers.{l}", c.prefix);
+        let (a, m) = (format!("{p}.self_attn"), format!("{p}.mlp"));
+        mats.push(item(["q_proj", "k_proj", "v_proj", "gate_proj"].map(|n| format!("{a}.{n}.weight")).to_vec(), (2 * nq + 2 * nk) * hd, d));
+        mats.push(item(vec![format!("{a}.o_proj.weight")], d, nq * hd));
+        mats.push(item(vec![format!("{m}.pre_expert_proj.weight")], lat, d));
+        mats.push(item(vec![format!("{m}.post_expert_proj.weight")], d, lat));
+        let (ga, gf) = (format!("{p}.post_attention_residual_gate.gate"), format!("{p}.post_feedforward_residual_gate.gate"));
+        let t = c.gate_temp;
+        for (n, f) in [
+            (format!("{p}.input_layernorm.weight"), PlusOne),
+            (ga.clone(), GateAlpha(t)),
+            (ga, GateBeta(t)),
+            (format!("{p}.pre_feedforward_layernorm.weight"), PlusOne),
+            (format!("{m}.pre_expert_norm.weight"), PlusOne),
+            (format!("{m}.experts.post_expert_norm.weight"), PlusOne),
+            (format!("{p}.post_feedforward_layernorm.weight"), PlusOne),
+            (gf.clone(), GateAlpha(t)),
+            (gf, GateBeta(t)),
+        ] {
+            forms.push((small.len(), f));
+            small.push(n);
+        }
+        if st.last && l + 1 == c.layers {
+            small.push(format!("{}norm.weight", c.prefix));
+        }
+    }
+    mats.push(item(vec![format!("{}embed_tokens.weight", c.prefix)], c.vocab, d));
+    mats.push(item(vec!["lm_head.weight".into()], c.vocab, d));
+    (mats, small, forms)
 }

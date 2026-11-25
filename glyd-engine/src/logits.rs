@@ -549,13 +549,16 @@ fn gemma4_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
 }
 
 /// A small Gemma 4 of the 12B's layer kinds (sliding layers, and a global one whose keys are its values), the heads the engine runs (256 and 512), a soft-capped tied head, at random (a fixed seed).
-pub fn gemma4_random(out: &Path) -> Result<()> {
-    let text = r#"{"architectures": ["Gemma4ForConditionalGeneration"], "model_type": "gemma4", "eos_token_id": [1, 106],
+/// The random Gemma 4 model's config (`gemma4_random`): three sliding layers and a global one.
+pub(crate) const GEMMA4_RANDOM_CONFIG: &str = r#"{"architectures": ["Gemma4ForConditionalGeneration"], "model_type": "gemma4", "eos_token_id": [1, 106],
         "text_config": {"model_type": "gemma4_text", "hidden_size": 512, "num_hidden_layers": 4, "num_attention_heads": 4, "num_key_value_heads": 2, "num_global_key_value_heads": 1,
         "attention_k_eq_v": true, "head_dim": 256, "global_head_dim": 512, "intermediate_size": 1024, "vocab_size": 4096, "rms_norm_eps": 1e-6, "sliding_window": 32,
         "layer_types": ["sliding_attention", "sliding_attention", "sliding_attention", "full_attention"], "final_logit_softcapping": 30.0, "max_position_embeddings": 4096,
         "enable_moe_block": false, "hidden_size_per_layer_input": 0, "hidden_activation": "gelu_pytorch_tanh",
         "rope_parameters": {"sliding_attention": {"rope_theta": 10000.0, "rope_type": "default"}, "full_attention": {"rope_theta": 1000000.0, "partial_rotary_factor": 0.25, "rope_type": "proportional"}}}}"#;
+
+pub fn gemma4_random(out: &Path) -> Result<()> {
+    let text = GEMMA4_RANDOM_CONFIG;
     let c = crate::gemma4::ConfigG4::parse(text, None, false)?;
     let mut r = 0x2026_1120_0000_0004u64;
     let mut uni = move |a: f32, b: f32| {
@@ -671,6 +674,20 @@ pub fn dense_random(out: &Path) -> Result<()> {
 /// A small Qwen3.5-family text model (Qwen3_5ForCausalLM: three Gated DeltaNet layers and a gated full-attention one, 1024 wide, a vocabulary of 4096): the layout of Qwen3.8-27B and the releases of its family at 0.8B's widths.
 pub fn qwen35_random(out: &Path) -> Result<()> {
     manifest_random(include_str!("../tests/fixtures/qwen35_tiny_manifest.json"), out, 0x2026_1120_0000_0007, false, "Qwen3.5-family")
+}
+
+/// A small model of the Qwen3.5 layout with experts (`Qwen3_5MoeForCausalLM`; tests/fixtures/qwen35moe_tiny_config.json: the family's config keys at 1024 wide and four layers, three
+/// Gated DeltaNet and a gated full-attention one, each followed by 32 experts of which a token takes 10 and the gated shared expert): every tensor of its description at its
+/// shape, its values by `manifest_random`'s rules for each kind of tensor.
+pub fn qwen35moe_random(out: &Path) -> Result<()> {
+    let text = include_str!("../tests/fixtures/qwen35moe_tiny_config.json");
+    let d = crate::runtime::describe::describe(&serde_json::from_str(text).map_err(|e| Error(e.to_string()))?)?;
+    let tensors = d
+        .names()
+        .into_iter()
+        .map(|n| d.shapes.get(&n).map(|s| json!([n, "BF16", s])).ok_or_else(|| Error(format!("the description has no shape for {n}"))))
+        .collect::<Result<Vec<Value>>>()?;
+    manifest_random(&json!({"config": text, "tensors": tensors}).to_string(), out, 0x2026_1124_0000_0333, false, "Qwen3.5-family mixture of experts")
 }
 
 /// The Qwen3.5 family's layout in the shape its larger checkpoints have and `qwen35_random` lacks (Qwen3_5ForConditionalGeneration: the text model under `text_config`, its
@@ -884,6 +901,14 @@ pub fn cases() -> Vec<Case> {
             id: "qwen35-wide",
             family: "Qwen3.5 family, the wide shape (three value heads to a key head, a head of its own, the text model of a checkpoint with a vision tower)",
             weights: Weights::Random(qwen35_wide_random),
+            engine: qwen35_engine,
+            cpu: Some(described_cpu),
+            vocab: 4096,
+        },
+        Case {
+            id: "qwen35moe",
+            family: "Qwen3.5 family with experts (Gated DeltaNet, gated attention, softmax-routed experts with a gated shared expert)",
+            weights: Weights::Random(qwen35moe_random),
             engine: qwen35_engine,
             cpu: Some(described_cpu),
             vocab: 4096,
@@ -1222,45 +1247,116 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
 pub const LEVEL_KL: [(&str, f64, f64); 3] = [("kestrel", 0.006, 0.015), ("swift", 0.025, 0.05), ("wren", 0.09, 0.14)];
 pub const LEVEL_KL_GEMMA4: [(&str, f64, f64); 3] = [("kestrel", 0.045, 0.21), ("swift", 0.075, 0.21), ("wren", 0.19, 0.46)];
 
-/// `levelcheck [CASE...] [--level L] [--scratch DIR]`: each family with lossy levels (Qwen3.5, Gemma 4, Nemotron-H: Nemotron 3.5
-/// Lightning's layout) on its random model at penguin and at each lossy level, the same tokens as its R7 fixture, and the KL of the
-/// lossy level's rows from penguin's against `LEVEL_KL` (`LEVEL_KL_GEMMA4` for Gemma 4). Exit 1 where one is past its threshold.
+/// The hummingbird level's KL thresholds from the lossless one (mean, max over rows), per mixture-of-experts family's random model: the
+/// model's routed experts coded at 3 and 2 bits by use (src/hb_pack.rs) from a corpus pass over made-up documents (src/hb_usage.rs,
+/// `synthetic`), every other matrix as released. Each is twice its family's first measured run, to two figures, as Gemma 4's above
+/// (A10, 2026-11-25, the same figures in two runs: mean/max KL DeepSeek-V4 9.32e-2/1.30e-1, Muse Spark 2.10e-2/2.69e-2).
+pub const LEVEL_KL_HB: [(&str, f64, f64); 2] = [("deepseek-v4", 0.19, 0.26), ("muse", 0.042, 0.054)];
+
+/// The mixture-of-experts families that run at hummingbird (src/support.rs) and whose hummingbird directory this tree does not make or
+/// load on a random model, with what stops it. The check runs each and holds it to that: one that runs after all fails the check with
+/// its figures, to be given a threshold in `LEVEL_KL_HB` and taken out of here.
+pub const LEVEL_HB_OPEN: [(&str, &str); 2] = [
+    ("kimi", "the corpus pass counts none of its layers (src/dynamic/mod.rs record_routes reads a resident layer's router, which src/dynamic/kimi.rs KimiMoe is not)"),
+    ("glm", "its directory does not load (src/glm.rs check_layers wants the experts' matrices, which the directory holds as codes)"),
+];
+
+/// The families held at the block levels of every weight (kestrel, swift, wren: `LEVEL_KL`); `LEVEL_KL_HB`'s are held at hummingbird.
+const LEVEL_BLOCK_CASES: [&str; 3] = ["qwen35", "gemma4", "nemotron-h"];
+
+/// A mixture-of-experts case's model in `dir` with every matrix as `dir` holds it: the release's lossless, or a hummingbird directory's
+/// experts in their codes. (GLM-5.3-Flash's logits case runs its experts at a block level; here they are lossless, as kindcheck loads them.)
+fn moe_as_held(id: &str, dir: &Path) -> Result<Box<dyn Run>> {
+    match id {
+        "glm" => boxed(crate::dynamic::glm::load(dir, &dyn_opts(Some(Layout::Tiered)), Layout::Tiered)),
+        _ => (find_case(id)?.engine)(dir, "penguin"),
+    }
+}
+
+/// The model in `dir` at the hummingbird level in `out`, as its two commands make it (`calibrate-experts --synthetic`, then
+/// `pack --layout hummingbird --usage`): each expert's use counted on this GPU over made-up documents, its rows coded from the counts.
+fn hummingbird_dir(dir: &Path, out: &Path) -> Result<()> {
+    if out.join("glyd.json").exists() {
+        return Ok(());
+    }
+    let (model, usage) = (dir.to_string_lossy(), out.with_extension("usage.json"));
+    crate::hb_usage::run_with(&model, &usage, 512, &[0], &[], 256, true)?;
+    crate::hb_pack::run(&model, out, std::thread::available_parallelism().map_or(8, |n| n.get()), &usage)
+}
+
+/// `levelcheck [CASE...] [--level L] [--scratch DIR]`: each family on its random model at penguin and at each lossy level it runs, the
+/// same tokens as its R7 fixture, and the KL of the lossy level's rows from penguin's against the level's threshold: Qwen3.5, Gemma 4 and
+/// the state-space case at kestrel, swift and wren (`LEVEL_KL`, `LEVEL_KL_GEMMA4` for Gemma 4); DeepSeek-V4 and Muse Spark at
+/// hummingbird (`LEVEL_KL_HB`, the directory made here). Exit 1 where one is past its threshold, or does not load: a level that does
+/// not run is not one within its threshold. Kimi-K3 and GLM-5.3-Flash at hummingbird are `LEVEL_HB_OPEN`'s: printed as not held, with
+/// what stops each, and a failure the day one runs without a threshold.
 pub fn level_check(a: &crate::args::Args) -> Result<()> {
     let want: Vec<&str> = a.pos.iter().skip(1).map(String::as_str).collect();
-    let ids: Vec<&str> = ["qwen35", "gemma4", "nemotron-h"].into_iter().filter(|c| want.is_empty() || want.contains(c)).collect();
+    let all: Vec<&str> = LEVEL_BLOCK_CASES.iter().copied().chain(LEVEL_KL_HB.iter().map(|x| x.0)).chain(LEVEL_HB_OPEN.iter().map(|x| x.0)).collect();
+    let ids: Vec<&str> = all.iter().copied().filter(|c| want.is_empty() || want.contains(c)).collect();
     if !want.is_empty() && ids.len() != want.len() {
-        return err("cases: qwen35, gemma4, nemotron-h");
+        return err(format!("cases: {}", all.join(", ")));
     }
     let (fixtures, scratch, only_level) = (fixtures_dir(a), Scratch::new(a)?, a.flag("level"));
-    let mut failed = Vec::new();
+    let (mut failed, mut not_held) = (Vec::new(), Vec::new());
     for id in ids {
+        let open = LEVEL_HB_OPEN.iter().find(|x| x.0 == id).map(|x| x.1);
+        let hb = LEVEL_KL_HB.iter().find(|x| x.0 == id).map(|x| (x.1, x.2)).or(open.map(|_| (f64::NAN, f64::NAN)));
+        let levels: Vec<(&str, f64, f64)> = match hb {
+            Some((mean, max)) => vec![("hummingbird", mean, max)],
+            None if id == "gemma4" => LEVEL_KL_GEMMA4.to_vec(),
+            None => LEVEL_KL.to_vec(),
+        };
+        let levels: Vec<(&str, f64, f64)> = levels.into_iter().filter(|l| only_level.is_none_or(|o| o == l.0)).collect();
+        if levels.is_empty() {
+            continue;
+        }
         let c = find_case(id)?;
         let dir = model_dir(&c, &scratch.dir)?;
         let fx = Fixture::read(&fixture_files(&fixtures, id)?[0])?;
         let engine = c.engine;
-        let mut base = match engine(&dir, "penguin") {
+        let lossless = if hb.is_some() { moe_as_held(id, &dir) } else { engine(&dir, "penguin") };
+        let mut base = match lossless {
             Ok(r) => r,
             Err(e) => {
-                println!("SKIP {id:12} penguin, the base: {}", e.msg);
+                println!("FAIL {id:12} penguin, the base, does not load: {}", e.msg);
+                failed.push(format!("{id} at penguin"));
                 continue;
             }
         };
         let base_rows = drive(base.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
         drop(base);
-        for (level, mean_bound, max_bound) in if id == "gemma4" { LEVEL_KL_GEMMA4 } else { LEVEL_KL } {
-            if only_level.is_some_and(|l| l != level) {
-                continue;
-            }
-            let mut run = match engine(&dir, level) {
-                Ok(r) => r,
-                Err(e) => {
-                    println!("SKIP {id:12} {level:8} {}", e.msg);
+        for (level, mean_bound, max_bound) in levels {
+            let lossy = if hb.is_some() {
+                let out = scratch.dir.join(format!("{id}-hummingbird"));
+                hummingbird_dir(&dir, &out).and_then(|()| moe_as_held(id, &out))
+            } else {
+                engine(&dir, level)
+            };
+            let mut run = match (lossy, open) {
+                (Ok(r), _) => r,
+                (Err(e), Some(why)) => {
+                    println!("OPEN {id:12} {level:8} not held: {why}. It said: {}", e.msg.chars().take(200).collect::<String>());
+                    not_held.push(format!("{id} at {level}"));
+                    continue;
+                }
+                (Err(e), None) => {
+                    println!("FAIL {id:12} {level:8} does not load: {}", e.msg);
+                    failed.push(format!("{id} at {level}"));
                     continue;
                 }
             };
             let rows = drive(run.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
             let kls: Vec<f64> = base_rows.iter().zip(&rows).map(|(b, r)| Row::from_logits(b).map(|b| kl_of(&b, r))).collect::<Result<_>>()?;
             let (mean, max) = (kls.iter().sum::<f64>() / kls.len() as f64, kls.iter().cloned().fold(0f64, f64::max));
+            if open.is_some() {
+                println!(
+                    "FAIL {id:12} {level:8} {:3} rows: KL from penguin mean {mean:.2e}, max {max:.2e}: it runs now, so it takes a threshold in LEVEL_KL_HB and leaves LEVEL_HB_OPEN",
+                    kls.len()
+                );
+                failed.push(format!("{id} at {level}"));
+                continue;
+            }
             let ok = mean <= mean_bound && max <= max_bound;
             println!(
                 "{} {id:12} {level:8} {:3} rows: KL from penguin mean {mean:.2e} (at most {mean_bound:.1e}), max {max:.2e} (at most {max_bound:.1e})",
@@ -1273,7 +1369,8 @@ pub fn level_check(a: &crate::args::Args) -> Result<()> {
         }
     }
     if failed.is_empty() {
-        println!("every lossy level within its KL threshold");
+        let open = if not_held.is_empty() { String::new() } else { format!("; not held: {}", not_held.join(", ")) };
+        println!("every lossy level held is within its KL threshold{open}");
         Ok(())
     } else {
         println!("OFF: {}", failed.join(", "));
@@ -1424,7 +1521,7 @@ pub fn record(a: &crate::args::Args) -> Result<()> {
         "source".into(),
         match from {
             // (Nemotron-H has no reference of its own: its description on the reference of the layer kinds)
-"cpu" if matches!(c.id, "nemotron-h" | "qwen4x" | "deepseek-v41" | "qwen35" | "qwen35-wide" | "dense") => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
+"cpu" if matches!(c.id, "nemotron-h" | "qwen4x" | "deepseek-v41" | "qwen35" | "qwen35-wide" | "dense" | "qwen35moe") => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
             "cpu" => format!(
                 "the CPU reference of src/{}_ref.rs, fp32 inside, on this case's random model (seed fixed in the generator)",
                 c.id.replace("deepseek-", "ds").replace('-', "")
@@ -1651,7 +1748,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
             let c = crate::gemma4::ConfigG4::load(dir)?;
             Dyn::new(dir, crate::dynamic::gemma4::lowered(dir, &c)?, None, o)?
         }
-        "qwen35" | "qwen35-wide" => crate::dynamic::qwen35::load(dir, o)?,
+        "qwen35" | "qwen35-wide" | "qwen35moe" => crate::dynamic::qwen35::load(dir, o)?,
         "dense" => crate::dynamic::dense::load(dir, o)?,
         "muse" => crate::dynamic::muse::load(dir, o)?,
         "kimi" => crate::dynamic::kimi::load(dir, o)?,
@@ -1661,7 +1758,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
         "nemotron" => crate::dynamic::nemotron::load(dir, o, level_layout(level)?.unwrap_or(Layout::Tiered))?,
         "deepseek-v4" => crate::dynamic::deepseek_v4::load(dir, o)?,
         "qwen4x" => crate::dynamic::qwen4x::load(dir, o)?,
-        other => return err(format!("{other}: gemma4, qwen35, qwen35-wide, dense, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
+        other => return err(format!("{other}: gemma4, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
     })
 }
 
@@ -1679,6 +1776,7 @@ pub(crate) fn random_dyn_at(case: &str, level: &str, layout: Option<Layout>, tag
             "gemma4" => gemma4_random(&dir)?,
             "qwen35" => qwen35_random(&dir)?,
             "qwen35-wide" => qwen35_wide_random(&dir)?,
+            "qwen35moe" => qwen35moe_random(&dir)?,
             "dense" => dense_random(&dir)?,
             "muse" => crate::muse_ref::random(&dir)?,
             "kimi" => crate::kimi_ref::random(&dir, 1, true, 8)?,
@@ -1686,7 +1784,7 @@ pub(crate) fn random_dyn_at(case: &str, level: &str, layout: Option<Layout>, tag
             "nemotron" => crate::kcheck_nh::random(&dir, 0, 16)?,
             "deepseek-v4" => crate::dsv4_ref::random(&dir, None)?,
             "qwen4x" => qwen4x_random(&dir)?,
-            other => return err(format!("{other}: gemma4, qwen35, qwen35-wide, dense, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
+            other => return err(format!("{other}: gemma4, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
         }
         load_dyn(case, &dir, &o, level)
     })();
@@ -2979,6 +3077,9 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let (replays, late) = (e.rows_replays.get(), e.rows_late.get());
     // (steps launched ahead, GLYD_ENGINE_OVERLAP=1, run as passes of parts: no graph of rows and no pieces there yet)
     let ahead = crate::sched::ModelStep::overlaps(&e);
+    if crate::sched::overlap_asked() {
+        println!("steps launched before the step before lands (GLYD_ENGINE_OVERLAP=1): {}", if ahead { "yes" } else { "no, this model's steps land first" });
+    }
     let graphs = e.rows_graphs() && !(one_a_pass && !e.rows_exact()) && !ahead;
     println!(
         "decode steps of several rows replayed from a CUDA graph: {replays}, graphs captured in a request's step: {late}{}",
