@@ -592,10 +592,10 @@ fn rounding_allowed(n: usize) -> usize {
 /// Tokens a GiB of a filled pool against the planner's (#332): `n` pages of a ring of `h` heads of `d` channels (two streams, or one: a latent of `width` values in heads of
 /// 128, the rest zero), with the escape chunks and raw slabs the executor gives such a pool (`kvpages::room_of`), filled with every token of values whose share outside
 /// their windows is 3 in a thousand (`values`' `far`); the library's sizes are first held to kv12.rs's replicas the planner uses. Ok: the sizes the same, no page void,
-/// every value read back, and the pool's tokens a GiB (its pages, escape and raw pools, as allocated) within 5% of `kv12::planned_token_bytes`'s (heads of 128 in two
-/// streams: the planner's `kv_value_bytes`).
+/// every value read back, and the pool's tokens a GiB (its pages, escape and raw pools, as allocated) never fewer than the planner's (`plan::sizing::kv12_token_bytes`,
+/// every planner's: a pool never holds fewer tokens than a plan promised) and at most 1% more.
 fn filled(lib: &Lib, dev: &Dev, h: usize, d: usize, one: bool, width: usize, label: &str) -> Result<bool> {
-    use crate::dynamic::kv12::{escape_bytes, page_bytes_of, planned_token_bytes, raw_bytes, KvShape};
+    use crate::dynamic::kv12::{escape_bytes, page_bytes_of, raw_bytes, KvShape};
     const A: i64 = 15;
     const RING: i64 = 256;
     let n: usize = 256;
@@ -661,9 +661,9 @@ fn filled(lib: &Lib, dev: &Dev, h: usize, d: usize, one: bool, width: usize, lab
     let bytes = (page as usize * n) as f64 + esc as f64 + raw_b as f64 + (kb.len() + vb.len()) as f64;
     let gib = (1u64 << 30) as f64;
     let held = tokens as f64 / (bytes / gib);
-    let planned_b = if !one && d == 128 { crate::plan::sizing::kv_value_bytes(true) * (2 * h * d) as f64 } else { planned_token_bytes(&s) };
+    let planned_b = crate::plan::sizing::kv12_token_bytes(h, d, one) as f64;
     let off = held / (gib / planned_b) - 1.0;
-    let ok = sizes && differ == 0 && st[11] == 0 && off.abs() < 0.05;
+    let ok = sizes && differ == 0 && st[11] == 0 && (0.0..0.01).contains(&off);
     println!(
         "{} tokens a GiB, {label}: {held:.0} held by a filled pool of {n} pages ({nchunks} escape chunks, {nslabs} raw slabs; {} pages raw, {} void, {differ} values differ), {:.0} planned ({:+.2}%); \
          the library's sizes {} kv12.rs's",
@@ -779,6 +779,113 @@ fn one_stream(lib: &Lib, dev: &Dev, h: usize, d: usize, pad: usize) -> Result<bo
     if !refused {
         bad += 1;
     }
+    Ok(bad == 0)
+}
+
+/// A write whose tokens of one page do not follow one another, made so on purpose: tokens 0-7 to page 0, 8-15 to page 1, 16-23 to page 0 again, values that make
+/// pages raw. Two runs of one call name page 0, so neither is written (the write's CTAs would clear, fill and make raw one page at once, and give its chunks and
+/// slabs back twice): the status counts both and names the page, page 0 stays as it was, page 1 holds its tokens. Then the same tokens in a call that is right (every
+/// page's tokens one after another): no run refused, every value read back. Each time, the pages released give every chunk and slab back and no count goes below
+/// zero (a chunk or slab taken twice or given back twice would show).
+fn clashing_runs(lib: &Lib, dev: &Dev) -> Result<bool> {
+    const A: i64 = 15;
+    const RING: i64 = 64;
+    let (h, d, n) = (2usize, 128usize, 24usize);
+    let hp = (h * d / 128) as i64;
+    let page = lib.kv_page_bytes(h as i64, d as i64, A)?;
+    let (nchunks, nslabs) = (64i64, 8i64);
+    let pool = Buf::zeroed(page as usize * 2)?;
+    let escape = Buf::zeroed(lib.kv_escape_bytes(nchunks)? as usize)?;
+    let raw = Buf::zeroed(lib.kv_raw_bytes(nslabs, hp)? as usize)?;
+    let status = Buf::zeroed(4 * (16 + 2 * RING) as usize)?;
+    let geom = KvGeom { heads: h as i64, dim: d as i64, arena: A, page_stride: page, escape: escape.ptr, nchunks, raw: raw.ptr, nslabs };
+    let mut r = Rng(0xC1A5_4000_0000_0001);
+    let (k, v) = (values(&mut r, n, h, d, 15, 5), values(&mut r, n, h, d, 15, 5));
+    let (kb, vb) = (bases(&k, n, h, d), bases(&v, n, h, d));
+    let (kbuf, vbuf, kbase, vbase) = (Buf::new(2 * k.len())?, Buf::new(2 * v.len())?, Buf::new(kb.len())?, Buf::new(vb.len())?);
+    kbuf.write(0, &k)?;
+    vbuf.write(0, &v)?;
+    kbase.write(0, &kb)?;
+    vbase.write(0, &vb)?;
+    let stride = (h * d) as i64;
+    let (sl, ids, both) = (Buf::new(8 * n)?, Buf::new(8)?, Buf::new(4 * 2)?);
+    ids.write(0, &[0i32, 1])?;
+    both.write(0, &[0i32, 1])?;
+    let (out_k, out_v) = (Buf::new(2 * 2 * 16 * h * d)?, Buf::new(2 * 2 * 16 * h * d)?);
+    let words = |b: &Buf| -> Result<[u32; 16]> {
+        let mut w = [0u32; 16];
+        b.read(0, &mut w)?;
+        Ok(w)
+    };
+    let mut bad = 0;
+    // (the write of `slots`, the two pages read back, then released: the status before the release, the values back, the status after)
+    let write = |slots: &[i64]| -> Result<([u32; 16], Vec<u16>, Vec<u16>, [u32; 16])> {
+        sl.write(0, slots)?;
+        // SAFETY: live buffers of the sizes the kernels read and write; the stream is synchronized before the results are read.
+        unsafe {
+            lib.kv_write(&geom, pool.ptr, kbase.ptr, vbase.ptr, 0, kbuf.ptr, stride, vbuf.ptr, stride, sl.ptr, n as i64, status.ptr, 0, 0, RING, dev.stream)?;
+            lib.kv_unpack(&geom, pool.ptr, kbase.ptr, vbase.ptr, ids.ptr, 2, out_k.ptr, out_v.ptr, dev.stream)?;
+        }
+        dev.sync()?;
+        let before = words(&status)?;
+        let (mut bk, mut bv) = (vec![0u16; 2 * 16 * h * d], vec![0u16; 2 * 16 * h * d]);
+        out_k.read(0, &mut bk)?;
+        out_v.read(0, &mut bv)?;
+        // SAFETY: the pool's two pages, which no call reads meanwhile; waited for.
+        unsafe { lib.kv_release(&geom, pool.ptr, 2, both.ptr, 2, 0, status.ptr, dev.stream)? };
+        dev.sync()?;
+        Ok((before, bk, bv, words(&status)?))
+    };
+    let w = h * d;
+    // (token t's row of the page it went to: page p's row o at (p 16 + o) w)
+    let same = |back: &[u16], src: &[u16], tokens: std::ops::Range<usize>, row0: usize| {
+        tokens.clone().all(|t| back[(row0 + t - tokens.start) * w..][..w] == src[t * w..][..w])
+    };
+    // (page 0's bytes as the write left them, before the release clears it)
+    let page0 = || -> Result<bool> {
+        let mut b = vec![0u8; page as usize];
+        pool.read(0, &mut b)?;
+        Ok(b.iter().all(|&x| x == 0))
+    };
+    let clash: Vec<i64> = (0..8).chain(16..24).chain(8..16).collect();
+    sl.write(0, &clash)?;
+    // SAFETY: as in `write`.
+    unsafe {
+        lib.kv_write(&geom, pool.ptr, kbase.ptr, vbase.ptr, 0, kbuf.ptr, stride, vbuf.ptr, stride, sl.ptr, n as i64, status.ptr, 0, 0, RING, dev.stream)?
+    };
+    dev.sync()?;
+    let untouched = page0()?;
+    // (the same call again through `write`: refused again, page 1 rewritten from its first token, both pages read back and released)
+    let (st, bk, bv, after) = write(&clash)?;
+    let page1 = same(&bk, &k, 8..16, 16) && same(&bv, &v, 8..16, 16);
+    let ok = st[14] == 4 && st[15] == 1 && page1 && untouched && after[4] == 0 && after[8] == 0;
+    println!(
+        "{} two runs of one write name page 0 (tokens 0-7 and 16-23; 8-15 to page 1), twice: {} runs refused, the page named {}; page 0 {}; page 1 read back {}; the pools after \
+         the release: {} chunks, {} slabs taken",
+        if ok { "ok  " } else { "FAIL" },
+        st[14],
+        st[15] as i64 - 1,
+        if untouched { "untouched" } else { "WRITTEN" },
+        if page1 { "whole" } else { "NOT whole" },
+        after[4],
+        after[8]
+    );
+    bad += !ok as usize;
+    // (the right call: every page's tokens one after another, tokens 0-15 to page 0 and 16-23 to page 1)
+    let right: Vec<i64> = (0..n as i64).collect();
+    let (st2, bk2, bv2, after2) = write(&right)?;
+    let whole = same(&bk2, &k, 0..16, 0) && same(&bk2, &k, 16..24, 16) && same(&bv2, &v, 0..16, 0) && same(&bv2, &v, 16..24, 16);
+    let ok2 = st2[14] == 4 && whole && after2[4] == 0 && after2[8] == 0;
+    println!(
+        "{} the same tokens, page 0's one after another: no run refused ({} as before), every value read back {}; pages raw {}; the pools after the release: {} chunks, {} slabs taken",
+        if ok2 { "ok  " } else { "FAIL" },
+        st2[14],
+        if whole { "the same" } else { "NOT the same" },
+        st2[10],
+        after2[4],
+        after2[8]
+    );
+    bad += !ok2 as usize;
     Ok(bad == 0)
 }
 
@@ -1327,6 +1434,8 @@ pub fn run() -> Result<bool> {
     for (h, d, pad) in [(5, 128, 64), (2, 512, 0), (1, 256, 0)] {
         ok &= one_stream(&lib, &dev, h, d, pad)?;
     }
+    // a write whose tokens of one page do not follow one another: its runs of that page refused and counted, nothing of the pools lost
+    ok &= clashing_runs(&lib, &dev)?;
     // tokens a GiB of a filled pool of each format against the planner's (#332): heads of 128, 256, 512 (K=V), and the latents of Kimi-K3 and GLM-5.3 (one stream)
     for (h, d, one, width, label) in [
         (8, 128, false, 1024, "8 heads of 128"),

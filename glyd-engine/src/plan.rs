@@ -417,9 +417,13 @@ pub struct Shape {
     pub kv_full: f64,
     pub kv_sliding: f64,
     /// The same in the executor's 12-bit lossless pages: a ring that takes them (src/dynamic/kv12.rs `shapes`) at the planner's bytes a token there (`sizing::kv12_token_bytes`),
-    /// the others as bf16 (`in_twelve`).
+    /// the others as bf16 (`in_twelve`); and the rings that take them, for what their pools spend once at a context (`kv12::once_bytes`).
     pub kv12_full: f64,
     pub kv12_sliding: f64,
+    pub kv12_rings: Vec<crate::dynamic::kv12::KvShape>,
+    /// Whether the keys and values are in the 12-bit pages (`in_twelve`): `kv_full` and `kv_sliding` are then `kv12_full`'s and `kv12_sliding`'s, and the
+    /// plan counts `kv12_rings`' once-only bytes.
+    pub twelve: bool,
     pub window: usize,
     /// Recurrent state per sequence (linear attention, Mamba), bytes.
     pub state: f64,
@@ -433,6 +437,9 @@ pub struct Shape {
     /// A draft head (multi-token prediction) the engine drafts with.
     pub mtp: bool,
 }
+
+/// The largest prompt chunk a loader takes (the plain dense kind's with cuBLAS): the general plan's chunk for what the 12-bit pages spend once (`Shape::kv_once`).
+const ONCE_CHUNK: usize = 4096;
 
 /// The most layers a config.json may say (the deepest models have a few hundred): every family's parser refuses more, for a layer is an entry of a list it makes.
 pub const MAX_LAYERS: usize = 10_000;
@@ -477,8 +484,18 @@ impl Shape {
     /// From a config.json parsed once: its shared keys, typed (`runtime::config::Shared`), the families' names for one thing read as one.
     /// The shape with its keys and values in the executor's 12-bit lossless pages (`kv12_full`, `kv12_sliding`), as a run that takes them holds them (`takes_twelve`).
     pub fn in_twelve(mut self) -> Shape {
-        (self.kv_full, self.kv_sliding) = (self.kv12_full, self.kv12_sliding);
+        (self.kv_full, self.kv_sliding, self.twelve) = (self.kv12_full, self.kv12_sliding, true);
         self
+    }
+
+    /// What the keys and values take once whatever the users at `ctx` tokens of context (`kv12::once_bytes` of the 12-bit pages' rings, with the largest
+    /// prompt chunk a loader takes): nothing in bf16.
+    pub fn kv_once(&self, ctx: usize) -> f64 {
+        if self.twelve {
+            crate::dynamic::kv12::once_bytes(&self.kv12_rings, ctx, ONCE_CHUNK) as f64
+        } else {
+            0.0
+        }
     }
 
     pub fn from_model(c: &ModelConfig) -> Result<Shape, String> {
@@ -535,17 +552,19 @@ impl Shape {
         let (g_kv, g_hd) = (f(s.num_global_key_value_heads).unwrap_or(kv_heads), f(s.global_head_dim).unwrap_or(hd));
         // (the 12-bit pages take a latent's one stream, and keys and values of heads of a multiple of 128 channels with no softcap of the scores; a latent attention's indexer stays bf16)
         let softcap = c.text.get("attn_logit_softcapping").and_then(serde_json::Value::as_f64).is_some_and(|v| v != 0.0);
-        let twelve = |global: bool| -> f64 {
-            let pages = |heads: usize, channels: usize, one: bool| sizing::kv12_token_bytes(heads, channels, one) as f64;
-            if kv_lora > 0.0 {
-                pages(((kv_lora + rope) as usize).div_ceil(128), 128, true) + indexer * 4.0
+        // (a layer's ring as the 12-bit pages take it, `window` its sliding window or 0, and its bytes a token there (the indexer's beside a latent, bf16); a ring the
+        // pages do not take at its bf16 bytes)
+        let twelve = |global: bool, window: usize| -> (f64, Option<crate::dynamic::kv12::KvShape>) {
+            let ring = if kv_lora > 0.0 {
+                Some(crate::dynamic::kv12::latent_shape((kv_lora + rope) as usize))
             } else {
                 let (kv, d) = if global { (g_kv, g_hd) } else { (kv_heads, hd) };
-                if (d as usize) % 128 == 0 && !softcap {
-                    pages(kv as usize, d as usize, false)
-                } else {
-                    2.0 * kv * d * 2.0
-                }
+                crate::dynamic::kv12::ring_shape(kv as usize, d as usize, heads, window, softcap)
+            };
+            let (kv, d) = if global { (g_kv, g_hd) } else { (kv_heads, hd) };
+            match ring {
+                Some(r) => (sizing::kv12_token_bytes(r.heads, r.channels, r.one) as f64 + indexer * 4.0, Some(r)),
+                None => (2.0 * kv * d * 2.0, None),
             }
         };
         let attention = |global: bool| -> (f64, f64) {
@@ -597,10 +616,14 @@ impl Shape {
                         }
                         (sh.kv_full, sh.kv_sliding, sh.kv12_full, sh.kv12_sliding) =
                             (sh.kv_full + full, sh.kv_sliding + slid, sh.kv12_full + full, sh.kv12_sliding + slid);
-                    } else if sliding {
-                        (sh.kv_sliding, sh.kv12_sliding) = (sh.kv_sliding + kv, sh.kv12_sliding + twelve(global));
                     } else {
-                        (sh.kv_full, sh.kv12_full) = (sh.kv_full + kv, sh.kv12_full + twelve(global));
+                        let (b, ring) = twelve(global, if sliding { sh.window } else { 0 });
+                        sh.kv12_rings.extend(ring);
+                        if sliding {
+                            (sh.kv_sliding, sh.kv12_sliding) = (sh.kv_sliding + kv, sh.kv12_sliding + b);
+                        } else {
+                            (sh.kv_full, sh.kv12_full) = (sh.kv_full + kv, sh.kv12_full + b);
+                        }
                     }
                 }
                 _ => {}
@@ -1424,7 +1447,7 @@ pub fn plan(sh: &Shape, m: &Machine, ask: Ask) -> Plan {
     // src/dynamic/snaps.rs: as the loader makes them; a latent cache is paged as any keys are, so a latent attention's model keeps them too)
     let marked = if sh.state > 0.0 { sh.state } else { 0.0 };
     let pool = if marked > 0.0 { crate::dynamic::snaps::count(sh.state as usize) as f64 * sh.state } else { 0.0 };
-    let kv_at = |ctx: usize| (sh.kv_full * ctx as f64 + sh.kv_sliding * ctx.min(sh.window.max(1)) as f64 + sh.state + marked) * users + pool;
+    let kv_at = |ctx: usize| (sh.kv_full * ctx as f64 + sh.kv_sliding * ctx.min(sh.window.max(1)) as f64 + sh.state + marked) * users + pool + sh.kv_once(ctx);
     let same: Vec<usize> = (0..m.devices.len()).filter(|&i| m.devices[i].vendor == d0.vendor).collect();
     // (the draft head counts where the family's path drafts with it; a model no path runs yet is taken to)
     let gain = gain_of(sh, fam.is_none_or(|f| f.drafts));
@@ -1620,6 +1643,9 @@ pub struct LoadPlan {
     pub bf16: u64,
     /// Keys, values, rings and states of `users` sequences of `context` tokens.
     pub kv: u64,
+    /// The keys and values in the executor's 12-bit lossless pages (GLYD_KV=lossless asked for them, and they reserve no more than bf16 for this plan:
+    /// `sizing::one_gpu_pages`), else bf16. The loader takes the plan's word (src/cli.rs `twelve_bit_pages`).
+    pub kv12: bool,
     /// Activations and workspaces of the engine, and a draft model's memory.
     pub work: u64,
     pub draft: u64,
@@ -1669,7 +1695,7 @@ impl LoadPlan {
             "context": self.context, "users": self.users, "chunk": self.chunk,
             "gpu": self.gpu, "free_bytes": self.free,
             "weights_bytes": self.weights, "weights_on_gpu_bytes": self.weights_on_gpu(),
-            "kv_bytes": self.kv, "work_bytes": self.work, "draft_bytes": self.draft,
+            "kv_bytes": self.kv, "kv_format": self.kv_format(), "work_bytes": self.work, "draft_bytes": self.draft,
             "reserve_bytes": self.reserve, "gpu_total_bytes": self.gpu_total(),
             "experts": experts,
             "spread": self.spread.as_ref().map(|s| serde_json::json!({
@@ -1691,15 +1717,25 @@ impl LoadPlan {
         .to_string()
     }
 
+    /// The keys and values' format: "12-bit" (the executor's lossless 12-bit pages, `kv12`) or "bf16".
+    pub fn kv_format(&self) -> &'static str {
+        if self.kv12 {
+            "12-bit"
+        } else {
+            "bf16"
+        }
+    }
+
     /// The plan in words, for the line `run` says before it loads and `fit` prints.
     pub fn text(&self) -> String {
         let mut s = format!(
-            "{} level, {} tokens of context{}: {} of weights on the GPU, {} of cache, {} for the engine's work{}, {} kept free; {} of the {}'s {} free",
+            "{} level, {} tokens of context{}: {} of weights on the GPU, {} of cache ({}), {} for the engine's work{}, {} kept free; {} of the {}'s {} free",
             self.level,
             self.context,
             if self.users > 1 { format!(" for each of {} users", self.users) } else { String::new() },
             gb(self.weights_on_gpu()),
             gb(self.kv),
+            if self.kv12 { "keys and values in 12-bit pages" } else { "keys and values in bf16" },
             gb(self.work),
             if self.draft > 0 { format!(", {} for the draft model", gb(self.draft)) } else { String::new() },
             gb(self.reserve),
@@ -2609,7 +2645,7 @@ pub struct Planned {
 /// a plain dense decoder served (`sizing::twelve_pages`); the loaders that take them (src/cli.rs `twelve_bit_pages`).
 fn takes_twelve(a: &crate::args::Args, f: crate::support::Family) -> bool {
     use crate::support::Family;
-    let lossless = std::env::var("GLYD_KV").as_deref() == Ok("lossless");
+    let lossless = sizing::lossless_asked();
     match f {
         Family::Gemma4 => lossless && a.has("no-draft"),
         Family::Qwen3 => sizing::twelve_pages(a),
@@ -2810,24 +2846,43 @@ pub mod sizing {
         (cfg.matrix_bytes() as f64 * bits(layout) / 16.0) as u64 + (cfg.layers * cfg.hidden * 4 * 2) as u64 + (cfg.max_pos * cfg.head_dim * 4) as u64
     }
 
-    /// A token's keys and values in the executor's cache, all layers: bf16, or in its 12-bit lossless pages (`twelve`) 12 bits a value and a page's header.
+    /// A token's keys and values in the executor's cache, all layers: bf16, or in its 12-bit lossless pages (`twelve`) where they take the layers' heads
+    /// (`kv12_token_bytes`; what they spend once is `dense_once`).
     pub fn kv_per_token(cfg: &Config, twelve: bool) -> u64 {
-        ((cfg.layers * 2 * cfg.kv_heads * cfg.head_dim) as f64 * kv_value_bytes(twelve)) as u64
+        let layer = match dense_ring(cfg, twelve) {
+            Some(s) => kv12_token_bytes(s.heads, s.channels, s.one),
+            None => (2 * cfg.kv_heads * cfg.head_dim * 2) as u64,
+        };
+        cfg.layers as u64 * layer
     }
 
-    /// A token's bytes in a ring of the executor's 12-bit lossless pages as the planner sizes them: a sixteenth of the ring's page (`kv12::page_bytes_of`; `kv12check` compares it with
-    /// the pages' own, their share of the escape pool in).
+    /// A plain dense model's layer's 12-bit ring where its keys and values are in the 12-bit pages (`twelve`) and the pages take its heads; else None (bf16).
+    fn dense_ring(cfg: &Config, twelve: bool) -> Option<crate::dynamic::kv12::KvShape> {
+        crate::dynamic::kv12::ring_shape(cfg.kv_heads, cfg.head_dim, cfg.heads, 0, false).filter(|_| twelve)
+    }
+
+    /// The 12-bit rings of a plain dense model whose keys and values are in its 12-bit pages (`twelve`; none where the pages do not take its heads).
+    pub fn dense_rings(cfg: &Config, twelve: bool) -> Vec<crate::dynamic::kv12::KvShape> {
+        dense_ring(cfg, twelve).map_or(Vec::new(), |s| vec![s; cfg.layers])
+    }
+
+    /// A token's bytes in a ring of the executor's 12-bit lossless pages as the planner sizes them: the pool's own (`kv12::token_bytes`: a sixteenth of the
+    /// ring's page, its escape room and its share of the raw slabs; `kv12check` holds it to the pages' own by the library's sizes, never less).
     pub fn kv12_token_bytes(heads: usize, channels: usize, one: bool) -> u64 {
-        crate::dynamic::kv12::page_bytes_of(heads, channels, one).div_ceil(16)
+        crate::dynamic::kv12::token_bytes(heads, channels, one)
     }
 
-    /// A key's or value's bytes as `kv_per_token` plans them: 2 in bf16; in the 12-bit pages 1.5 and 6% for the page's headers, escape room and raw slabs (a pool of
-    /// heads of 128 holds within 5% of it: src/dynamic/kvpages.rs's tokens-a-GiB test).
-    pub fn kv_value_bytes(twelve: bool) -> f64 {
-        if twelve {
-            1.5 * 1.06
-        } else {
-            2.0
+    /// What a plan's keys and values take once, whatever its users, at a context (`Needs::once`): the 12-bit pages' pools' `kv12::once_bytes` (one sequence's
+    /// raw slabs, the unpacked ring, the escape pool's least) for prompt chunks of `chunk`; nothing for bf16 rings (no `rings`).
+    #[derive(Clone, Debug, Default)]
+    pub(crate) struct Once {
+        pub rings: Vec<crate::dynamic::kv12::KvShape>,
+        pub chunk: usize,
+    }
+
+    impl Once {
+        pub fn at(&self, ctx: usize) -> u64 {
+            crate::dynamic::kv12::once_bytes(&self.rings, ctx, self.chunk)
         }
     }
 
@@ -2928,20 +2983,39 @@ pub mod sizing {
         }
 
         /// The keys and values: (the sliding layers' rings, fixed: the window and a chunk each, or the context where it is shorter; a position's bytes in the global
-        /// layers). `twelve`: in the executor's 12-bit lossless pages (a sixteenth of a page a token), else bf16.
+        /// layers). `twelve`: in the executor's 12-bit lossless pages where they take a layer's ring (`kv12_token_bytes`; what they spend once is `rings12`'s
+        /// `kv12::once_bytes`), else bf16.
         pub fn kv_bytes(&self, chunk: usize, ctx: usize, twelve: bool) -> (u64, u64) {
             use crate::gemma4::KindG4;
-            let cap_s = (self.window + chunk).min(ctx) as u64;
+            // (a sliding layer's tokens a sequence holds, as the pools give them out: the blocks of the window and a chunk and the one they straddle,
+            // src/dynamic/rows.rs `page`)
+            let cap_s = (crate::dynamic::seq_blocks(Some(self.window + chunk), ctx, 16) * 16) as u64;
             let (mut fixed, mut per) = (0u64, 0u64);
             for &k in &self.kinds {
                 let (d, nk, _) = self.attn_of(k);
-                let b = if twelve { crate::plan::sizing::kv12_token_bytes(nk, d, false) } else { (nk * d * 2 * 2) as u64 };
+                let b = match self.ring12(k).filter(|_| twelve) {
+                    Some(s) => kv12_token_bytes(s.heads, s.channels, s.one),
+                    None => (nk * d * 2 * 2) as u64,
+                };
                 match k {
                     KindG4::Sliding => fixed += cap_s * b,
                     KindG4::Global => per += b,
                 }
             }
             (fixed, per)
+        }
+
+        /// A layer kind's ring as the executor's 12-bit pages take it (two streams: a K = V global layer's values are its keys normed apart, which the
+        /// cache holds; a sliding layer's window), None where they do not.
+        fn ring12(&self, k: crate::gemma4::KindG4) -> Option<crate::dynamic::kv12::KvShape> {
+            let (d, nk, _) = self.attn_of(k);
+            let window = if matches!(k, crate::gemma4::KindG4::Sliding) { self.window } else { 0 };
+            crate::dynamic::kv12::ring_shape(nk, d, self.heads, window, false)
+        }
+
+        /// Its layers' rings in the executor's 12-bit pages, for what their pools spend once (`kv12::once_bytes`).
+        pub fn rings12(&self) -> Vec<crate::dynamic::kv12::KvShape> {
+            self.kinds.iter().filter_map(|&k| self.ring12(k)).collect()
         }
     }
 
@@ -3273,6 +3347,8 @@ pub mod sizing {
         /// A sequence's bytes besides its tokens' (recurrent states, sliding layers' rings), and a token's keys and values in one sequence.
         pub per_seq: u64,
         pub per_token: u64,
+        /// What the keys and values take once whatever the users, at the context (the 12-bit pages' pools': `kv12::once_bytes`; nothing for bf16 rings).
+        pub once: Once,
         pub users: usize,
         /// The engine takes fewer sequences where the room holds fewer than `users` of the context (rooms its scheduler gives out), so a context is sized for one;
         /// else every one of them holds it.
@@ -3304,9 +3380,27 @@ pub mod sizing {
         let (users, per) = (n.users.max(1) as u64, n.per_token.max(1));
         let reserve = reserve_of(free);
         let fixed = n.weights + n.draft + n.chunks.last().map_or(0, |c| c.1) + reserve;
+        let kv = |seqs: u64, ctx: usize| n.kv(seqs, ctx);
+        // (the tokens each of `seqs` sequences has room for beside `fixed`; where something is once and grows with the context, the most that fits, found by halves
+        // below the bound without it)
+        let most = |seqs: u64| -> usize {
+            let top = (free.saturating_sub(fixed + n.per_seq * seqs) / (per * seqs)) as usize;
+            if n.once.rings.is_empty() {
+                return top;
+            }
+            let (mut lo, mut hi) = (0usize, top);
+            while lo < hi {
+                let mid = lo + (hi - lo).div_ceil(2);
+                if fixed + kv(seqs, mid) <= free {
+                    lo = mid;
+                } else {
+                    hi = mid - 1;
+                }
+            }
+            lo
+        };
         // (the tokens each sequence has room for where all `users` hold the context, and where one does)
-        let all = (free.saturating_sub(fixed + n.per_seq * users) / (per * users)) as usize;
-        let one = (free.saturating_sub(fixed + n.per_seq) / per) as usize;
+        let (all, one) = (most(users), most(1));
         let room = if n.fewer { one } else { all };
         let want = n.want.min(n.cap);
         let ctx = match asked {
@@ -3323,21 +3417,48 @@ pub mod sizing {
             let most = (room.min(n.cap) / n.page * n.page).min(asked.unwrap_or(usize::MAX));
             // (a scheduler of rooms is refused where one sequence does not fit: its need is one's)
             let seqs = if n.fewer { 1 } else { users };
-            return Err(Short { need: fixed + seqs * (n.per_seq + at as u64 * per), at, most });
+            return Err(Short { need: fixed + kv(seqs, at), at, most });
         }
-        let left = free.saturating_sub(n.weights + n.draft + reserve + users * (n.per_seq + ctx as u64 * per));
+        let left = free.saturating_sub(n.weights + n.draft + reserve + kv(users, ctx));
         let chunk = n.chunks.iter().copied().find(|c| c.1 <= left).or(n.chunks.last().copied()).unwrap_or((512, 0));
         let mut p = n.plan_at(ctx, chunk, free, gpu);
         if n.fewer {
             // (a scheduler of rooms in pools of blocks holds what the GPU has left, at most every user's context, at least one's: src/dynamic/rows.rs `page`.
             // On an A10 (23 GB) a dense model of 36 layers of 4,096 for 8 users at 16,384 tokens was planned at 31,867 MiB, the context of all eight; the server took 21,889)
-            let one = n.per_seq + ctx as u64 * per;
-            p.kv = p.kv.min(free.saturating_sub(p.weights + p.draft + p.work + p.reserve)).max(one);
+            p.kv = p.kv.min(free.saturating_sub(p.weights + p.draft + p.work + p.reserve)).max(kv(1, ctx));
         }
         Ok(p)
     }
 
+    /// The plan of `n` (its keys and values bf16) or of `twelve` (the same model and level, its keys and values in the executor's 12-bit pages, where
+    /// GLYD_KV=lossless asks for them), as `one_gpu` makes each: both are lossless, so the 12-bit pages are taken only where they reserve no more than bf16
+    /// for the plan, that is where their plan gives more context than bf16's, or the same in no more bytes for its users (`Needs::kv`: the pages' worst case
+    /// beside their tokens, a raw slab for every page of one sequence and the rows a pass unpacks, `kv12::once_bytes`, which one user at a long context pays
+    /// for and many users share). Else bf16's plan, so a level is never planned lower for the 12-bit pages than bf16 holds it.
+    pub(crate) fn one_gpu_pages(n: &Needs, twelve: Option<&Needs>, free: u64, asked: Option<usize>, gpu: &str) -> Result<LoadPlan, Short> {
+        let bf16 = one_gpu(n, free, asked, gpu);
+        let Some(t) = twelve.filter(|t| t.twelve()) else { return bf16 };
+        match (bf16, one_gpu(t, free, asked, gpu)) {
+            (Ok(b), Ok(p)) => {
+                let seqs = n.users.max(1) as u64;
+                Ok(if p.context > b.context || (p.context == b.context && t.kv(seqs, p.context) <= n.kv(seqs, b.context)) { p } else { b })
+            }
+            (Err(_), Ok(p)) => Ok(p),
+            (bf16, _) => bf16,
+        }
+    }
+
     impl Needs {
+        /// The keys and values of `seqs` sequences at `ctx` tokens: each one's, and what the 12-bit pages take once whatever the sequences (`Once`).
+        pub(crate) fn kv(&self, seqs: u64, ctx: usize) -> u64 {
+            seqs * (self.per_seq + ctx as u64 * self.per_token.max(1)) + self.once.at(ctx)
+        }
+
+        /// Whether the keys and values are in the executor's 12-bit pages (a ring of them takes the pages: what they spend once is counted).
+        pub(crate) fn twelve(&self) -> bool {
+            !self.once.rings.is_empty()
+        }
+
         /// The plan at `ctx` tokens of context and the prompt chunk `chunk` (its tokens, its work).
         pub(crate) fn plan_at(&self, ctx: usize, chunk: (usize, u64), free: u64, gpu: &str) -> LoadPlan {
             let users = self.users.max(1) as u64;
@@ -3351,7 +3472,8 @@ pub mod sizing {
                 chunk: chunk.0,
                 weights: self.weights,
                 bf16: self.bf16,
-                kv: users * (self.per_seq + ctx as u64 * self.per_token.max(1)),
+                kv: self.kv(users, ctx),
+                kv12: self.twelve(),
                 work: chunk.1,
                 draft: self.draft,
                 reserve: reserve_of(free),
@@ -3407,6 +3529,7 @@ pub mod sizing {
             bf16: cfg.matrix_bytes(),
             per_seq: 0,
             per_token: kv_per_token(cfg, twelve),
+            once: Once { rings: dense_rings(cfg, twelve), chunk: first },
             users: users.max(1),
             fewer: true,
             draft: 0,
@@ -3420,7 +3543,8 @@ pub mod sizing {
     }
 
     /// The plan of a dense model of the family `row` on a GPU that has `free` bytes (`gpu` its name), for `users` sequences at once, at the context `asked`, else the
-    /// model's own up to `CTX_WANT`, less where the room is short (not below `CTX_MIN`); its keys and values bf16, or in the 12-bit pages where `twelve`.
+    /// model's own up to `CTX_WANT`, less where the room is short (not below `CTX_MIN`); its keys and values bf16, or in the 12-bit pages where `twelve` asks for
+    /// them and they reserve no more for the plan (`one_gpu_pages`).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn dense_fit(
         cfg: &Config,
@@ -3434,8 +3558,9 @@ pub mod sizing {
         cublas: bool,
         twelve: bool,
     ) -> Result<LoadPlan, Refusal> {
-        let n = dense_needs(cfg, row.name, layout, users, cublas, twelve);
-        one_gpu(&n, free, asked, gpu).map_err(|s| too_big(name, level_name(layout), gpu, free, n.users, &s, asked, false, None))
+        let n = dense_needs(cfg, row.name, layout, users, cublas, false);
+        let pages = twelve.then(|| dense_needs(cfg, row.name, layout, users, cublas, true));
+        one_gpu_pages(&n, pages.as_ref(), free, asked, gpu).map_err(|s| too_big(name, level_name(layout), gpu, free, n.users, &s, asked, false, None))
     }
 
     /// The row of the one family whose configs take the dense sizing today (`Sizing::Dense`): what `qwen3_fit` and `qwen3_plan`, which are given no config's
@@ -3462,7 +3587,30 @@ pub mod sizing {
     /// Whether a run of `a` puts its keys and values in the executor's 12-bit lossless pages: a server's (whose scheduler pages the cache) where GLYD_KV=lossless asks for
     /// them, as Gemma 4's (src/dynamic/kvpages.rs).
     pub(crate) fn twelve_pages(a: &Args) -> bool {
-        std::env::var("GLYD_KV").as_deref() == Ok("lossless") && a.pos.first().is_some_and(|c| c == "serve")
+        lossless_asked() && a.pos.first().is_some_and(|c| c == "serve")
+    }
+
+    /// Whether GLYD_KV=lossless asks for the executor's 12-bit lossless pages (a test's thread says so for itself alone: `asking_lossless`).
+    pub(crate) fn lossless_asked() -> bool {
+        #[cfg(test)]
+        if let Some(on) = LOSSLESS.with(std::cell::Cell::get) {
+            return on;
+        }
+        std::env::var("GLYD_KV").as_deref() == Ok("lossless")
+    }
+
+    #[cfg(test)]
+    thread_local! {
+        static LOSSLESS: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    }
+
+    /// `f` run with GLYD_KV=lossless asked (`on`) or not, as this test's thread alone sees it: the tests share one process's environment.
+    #[cfg(test)]
+    pub(crate) fn asking_lossless<T>(on: bool, f: impl FnOnce() -> T) -> T {
+        LOSSLESS.with(|c| c.set(Some(on)));
+        let got = f();
+        LOSSLESS.with(|c| c.set(None));
+        got
     }
 
     /// A dense product for the long prompts (cuBLAS where the computer has it, else the engine's own on Ampere, Ada and Hopper): the decoded matrix and the larger
@@ -3813,6 +3961,7 @@ pub mod sizing {
             bf16,
             per_seq: state,
             per_token: per.max(1),
+            once: Once::default(),
             users,
             fewer: true,
             draft: 0,
@@ -3866,6 +4015,38 @@ pub mod sizing {
         })
     }
 
+    /// Gemma 4's needs on one GPU for `users` sequences: its weights, draft model and their bf16 bytes as given, its sliding layers' rings for a context of `ctx`
+    /// (fixed: a window and a chunk) and its global layers' keys and values a token, in the 12-bit pages where `twelve` (with what their pools spend once).
+    pub(crate) fn gemma_needs(
+        cfg: &crate::gemma4::ConfigG4,
+        layout: Layout,
+        (weights, bf16, draft): (u64, u64, u64),
+        users: usize,
+        ctx: usize,
+        twelve: bool,
+    ) -> Needs {
+        let (rings, per) = cfg.kv_bytes(GEMMA_CHUNK, ctx, twelve);
+        Needs {
+            kind: Kind::Gemma4,
+            family: "Gemma 4",
+            layout,
+            weights,
+            bf16,
+            per_seq: rings,
+            per_token: per.max(1),
+            once: Once { rings: if twelve { cfg.rings12() } else { Vec::new() }, chunk: GEMMA_CHUNK },
+            users,
+            fewer: true,
+            draft,
+            chunks: vec![(GEMMA_CHUNK, LOSSY_WORK)],
+            want: LOSSY_CTX,
+            least: LOSSY_MIN_CTX,
+            cap: cfg.max_pos.max(LOSSY_MIN_CTX),
+            grain: 1,
+            page: 16,
+        }
+    }
+
     /// `lossy_plan` for a Gemma 4 dense model: its packed weights (as a glyd-v7 directory holds them, else at `layout`), the sliding layers' rings, a draft model where one is found, and the
     /// context the rest of the GPU holds in the global layers' keys and values.
     #[allow(clippy::too_many_arguments)]
@@ -3895,31 +4076,16 @@ pub mod sizing {
         let draft = if gemma_draft(a, packed).is_some() || draft_to_come { GEMMA_DRAFT_BYTES } else { 0 };
         let asked = if a.has("context") || a.has("ctx") { Some(a.either("context", "ctx", 0usize)?) } else { None };
         crate::support::context_check(name, crate::support::row(crate::support::Family::Gemma4), cfg.max_pos, asked)?;
-        // (12-bit lossless pages where the run asks for them and has no draft model, whose executor then pages its cache: src/dynamic/kvpages.rs)
-        let twelve = std::env::var("GLYD_KV").as_deref() == Ok("lossless") && a.has("no-draft");
-        let (rings, per) = cfg.kv_bytes(GEMMA_CHUNK, asked.unwrap_or(LOSSY_CTX).max(LOSSY_MIN_CTX), twelve);
+        // (12-bit lossless pages where the run asks for them and has no draft model, whose executor then pages its cache (src/dynamic/kvpages.rs), and they reserve
+        // no more than bf16 for the plan: `one_gpu_pages`)
+        let twelve = lossless_asked() && a.has("no-draft");
         // (served with no draft model, the scheduler gives each of --users a room of its own, its sliding layers' rings and its context (src/dynamic/rows.rs): the context not asked for is what the room gives
         // each of them, at least LOSSY_MIN_CTX (where that leaves room for fewer, the server takes fewer))
         let users = if draft == 0 && a.pos.first().is_some_and(|c| c == "serve") { users_of(a)? } else { 1 };
-        let n = Needs {
-            kind: Kind::Gemma4,
-            family: "Gemma 4",
-            layout,
-            weights,
-            bf16,
-            per_seq: rings,
-            per_token: per.max(1),
-            users,
-            fewer: true,
-            draft,
-            chunks: vec![(GEMMA_CHUNK, LOSSY_WORK)],
-            want: LOSSY_CTX,
-            least: LOSSY_MIN_CTX,
-            cap: cfg.max_pos.max(LOSSY_MIN_CTX),
-            grain: 1,
-            page: 16,
-        };
-        one_gpu(&n, free, asked, gpu).map_err(|s| {
+        let needs = |twelve: bool| gemma_needs(&cfg, layout, (weights, bf16, draft), users, asked.unwrap_or(LOSSY_CTX).max(LOSSY_MIN_CTX), twelve);
+        let (n, pages) = (needs(false), twelve.then(|| needs(true)));
+        let rings = n.per_seq;
+        one_gpu_pages(&n, pages.as_ref(), free, asked, gpu).map_err(|s| {
             // (penguin that does not fit, of a model with a wren repo that does: that repo first, with its draft model, at the shortest context a plan takes)
             let wren = gemma_wren(typed).filter(|_| layout == Layout::Tiered).and_then(|repo| {
                 let need =
@@ -4395,6 +4561,7 @@ pub mod sizing {
             weights: total + host_bytes + dense_ram.1,
             bf16: 0,
             kv: 0,
+            kv12: false,
             work,
             draft: 0,
             reserve: used.len() as u64 * crate::plan::CONTEXT_FLOOR,
@@ -4529,6 +4696,7 @@ pub mod sizing {
                 bf16: 0,
                 per_seq: 100,
                 per_token: 10,
+                once: Once::default(),
                 users,
                 fewer,
                 draft: 0,
@@ -4595,11 +4763,7 @@ mod tests {
                 bad.push(format!("{kind}: the pools {full} + {sliding}, the planner {} + {}", sh.kv_full, sh.kv_sliding));
             }
             // (in 12-bit pages: each ring the pages take (kv12::shapes) at the planner's bytes a token there, which kv12check holds to the pages' own; the others as bf16)
-            let mut taken: Vec<Option<crate::dynamic::kv12::KvShape>> = vec![None; d.rings.len()];
-            for k in crate::dynamic::kv12::shapes(d).into_iter().flatten() {
-                let r = k.ring;
-                taken[r] = Some(k);
-            }
+            let taken: Vec<Option<crate::dynamic::kv12::KvShape>> = (0..d.rings.len()).map(|r| crate::dynamic::kv12::pages_shape(d, r)).collect();
             let bytes = |i: usize| taken[i].as_ref().map_or(d.rings[i].token_bytes(), |k| sizing::kv12_token_bytes(k.heads, k.channels, k.one) as usize);
             let full12: usize = (0..d.rings.len()).filter(|&i| d.rings[i].window == 0).map(bytes).sum();
             let sliding12: usize = (0..d.rings.len()).filter(|&i| d.rings[i].window > 0).map(bytes).sum();
@@ -4609,6 +4773,214 @@ mod tests {
             }
         }
         assert!(bad.is_empty(), "{bad:?}");
+    }
+
+    /// The rings of each family whose description the 12-bit pages take, as the planner reads them from the config and as the executor's pools take them
+    /// (`kv12::pages_shape`): a random case of Gemma 4 (sliding rings of 256 channels, K = V global ones of 512) and the gemma-4-12B release's config, the Qwen3.5
+    /// layout's gated attention (and its wide case), the plain dense kind, Kimi-K3's and GLM-5.3-Flash's latents: (heads, channels, one stream, window) each.
+    #[cfg(feature = "dev")]
+    fn twelve_bit_cases() -> Vec<(&'static str, String, Vec<(usize, usize, bool, usize)>)> {
+        use crate::dynamic::Stage;
+        let manifest = |f: &str| -> String {
+            let v: serde_json::Value = serde_json::from_str(&fixture(f)).unwrap();
+            v["config"].as_str().map(String::from).unwrap_or_else(|| v["config"].to_string())
+        };
+        let rings = |d: &crate::dynamic::ModelDesc| -> Vec<(usize, usize, bool, usize)> {
+            let mut v: Vec<_> =
+                (0..d.rings.len()).filter_map(|r| crate::dynamic::kv12::pages_shape(d, r)).map(|s| (s.heads, s.channels, s.one, s.window)).collect();
+            v.sort_unstable();
+            v
+        };
+        let gemma = |text: &str| rings(&crate::dynamic::gemma4::describe(&crate::gemma4::ConfigG4::parse(text, None, false).unwrap()));
+        let q35 = |text: &str| {
+            let c = crate::qwen35::Config35::parse(text, "qwen35", None).unwrap();
+            rings(&crate::dynamic::qwen35::describe(&c, &Stage::whole(c.layers)).unwrap())
+        };
+        let dense = |text: &str| {
+            let dir = std::env::temp_dir().join(format!("glyd-plan-twelve-dense-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("config.json"), text).unwrap();
+            let d = crate::dynamic::dense::lowered(&dir).unwrap_or_else(|e| panic!("{}", e.msg));
+            let _ = std::fs::remove_dir_all(&dir);
+            rings(&d)
+        };
+        let kimi: serde_json::Value = serde_json::from_str(&fixture("headers/Kimi-K3.json")).unwrap();
+        let kimi = kimi["config"].as_str().unwrap().to_string();
+        let kc = crate::kimi::ConfigKimi::parse(&kimi, "Kimi-K3", None).unwrap();
+        let kd = crate::dynamic::kimi::describe(&kc, &Stage::whole(kc.layers), &vec![(true, true); kc.layers], false).unwrap();
+        let glm = fixture("glm5_next_toy_config.json");
+        let gc = crate::glm::ConfigGlm::parse(&glm, "GLM-5.3-Flash", None).unwrap();
+        let gd = crate::dynamic::glm::describe(&gc, &Stage::whole(gc.layers)).unwrap();
+        // (GLM-5.3's full-size layout, its random case's config: the latent attention on every layer, its indexer's ring bf16)
+        let dsa = fixture("glm_moe_dsa_toy_config.json");
+        let dk = crate::runtime::describe::describe(&serde_json::from_str(&dsa).unwrap()).unwrap();
+        let dd = crate::dynamic::lower::latent_moe(&dk, Vec::new(), 4096, &Stage::whole(dk.desc.blocks.len() / 2)).unwrap_or_else(|e| panic!("{}", e.msg));
+        let (g4, g12, q, qw, dn) = (
+            crate::logits::GEMMA4_RANDOM_CONFIG.to_string(),
+            fixture("gemma4_12b_config.json"),
+            manifest("qwen35_tiny_manifest.json"),
+            manifest("qwen35_wide_tiny_manifest.json"),
+            manifest("dense_tiny_manifest.json"),
+        );
+        vec![
+            ("gemma4 (random)", g4.clone(), gemma(&g4)),
+            ("gemma-4-12B", g12.clone(), gemma(&g12)),
+            ("qwen35 (random)", q.clone(), q35(&q)),
+            ("qwen35-wide (random)", qw.clone(), q35(&qw)),
+            ("dense (random)", dn.clone(), dense(&dn)),
+            ("Kimi-K3", kimi, rings(&kd)),
+            ("glm (random)", glm, rings(&gd)),
+            ("glm-dsa (random)", dsa, rings(&dd)),
+        ]
+    }
+
+    /// The planner's 12-bit rings from a config hold the executor's pools' (`twelve_bit_cases`), every family whose description the pages take, each at the pool's
+    /// bytes a token and once-only bytes (`kv12::token_bytes`, `kv12::once_bytes`, the pool's own functions): the load plans of the families whose runs put their
+    /// keys and values in the pages (Gemma 4's `ConfigG4::rings12`, the plain dense kind's `sizing::dense_rings`) are the pools' rings exactly; the general plan's
+    /// (`Shape::kv12_rings`) every pool ring at least (Kimi-K3's config names its delta-attention layers in its own key, which the general plan does not read: it
+    /// counts every layer a latent attention, more bytes and never fewer).
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_planners_twelve_bit_rings_are_the_pools() {
+        let tuples = |v: &[crate::dynamic::kv12::KvShape]| {
+            let mut t: Vec<_> = v.iter().map(|s| (s.heads, s.channels, s.one, s.window)).collect();
+            t.sort_unstable();
+            t
+        };
+        let cases = twelve_bit_cases();
+        for (name, text, pools) in &cases {
+            assert!(!pools.is_empty(), "{name}: no ring in 12-bit pages");
+            let mut planned = tuples(&Shape::from_config(text).unwrap().kv12_rings);
+            eprintln!("{name}: {} rings in 12-bit pages, the general plan counts {}", pools.len(), planned.len());
+            for r in pools {
+                let at = planned.iter().position(|x| x == r).unwrap_or_else(|| panic!("{name}: the general plan does not count a ring {r:?}"));
+                planned.remove(at);
+            }
+            if name.contains("gemma") {
+                assert_eq!(&tuples(&crate::gemma4::ConfigG4::parse(text, None, false).unwrap().rings12()), pools, "{name}: Gemma 4's load plan's rings");
+            }
+            if name.starts_with("dense") {
+                assert_eq!(
+                    &tuples(&sizing::dense_rings(&crate::weights::Config::parse(text, "c", None).unwrap(), true)),
+                    pools,
+                    "{name}: the dense load plan's rings"
+                );
+            }
+        }
+        assert_eq!(cases.len(), 8);
+    }
+
+    /// The rule (R4b, #332): a plan never promises more tokens than the pool it sizes holds, in bf16 pages and in 12-bit pages. Gemma 4's load plan (the random case's
+    /// config and gemma-4-12B's: sliding rings of 256, K = V global ones of 512) and the plain dense kind's (the random case's config and the 36-layer shape), for one user
+    /// and eight, on GPUs whose memory binds the context: a pool made by the executor's rule (`Dyn::page`: what the 12-bit pages spend once off the top, then
+    /// `rows::pool_blocks` over each group's bytes a token, every sliding group a window and a chunk a sequence) from the plan's keys and values holds one sequence's
+    /// planned context (the plan's users share the pool: `fewer`), and the plan's reserve over the executor's (`Dyn::page`'s 512 MiB) holds the block tables.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_plan_never_promises_more_tokens_than_its_pool_holds() {
+        use crate::dynamic::kv12;
+        let gib = 1u64 << 30;
+        // (the pool of a plan: groups (bytes a token, its sliding window or 0) of 12-bit rings where `twelve`, else bf16; what the pages spend once; one sequence's context
+        // held, every group)
+        let pool_holds = |p: &LoadPlan, groups: &[(u64, usize)], rings: &[kv12::KvShape]| -> bool {
+            let (once, chunk) = (kv12::once_bytes(rings, p.context, p.chunk), p.chunk);
+            let per: Vec<usize> = groups.iter().map(|g| g.0 as usize).collect();
+            let keep: Vec<Option<usize>> = groups.iter().map(|g| (g.1 > 0).then_some(g.1 + chunk)).collect();
+            let covers = vec![16; groups.len()];
+            let most: Vec<usize> = keep.iter().map(|&k| p.users * crate::dynamic::seq_blocks(k, p.context, 16)).collect();
+            let tables = (p.users * groups.len() * p.context.div_ceil(16) * 4) as u64;
+            let budget = p.kv.saturating_sub(once) as usize;
+            let least: Vec<usize> = keep.iter().map(|&k| crate::dynamic::seq_blocks(k, p.context, 16)).collect();
+            let blocks = crate::dynamic::pool_blocks(budget, &per, &covers, &keep, &most, &least);
+            tables <= reserve_of(0) - (512 << 20)
+                && blocks.iter().zip(&keep).all(|(&b, k)| match k {
+                    Some(k) => b >= crate::dynamic::seq_blocks(Some(*k), p.context, 16),
+                    None => b * 16 >= p.context,
+                })
+        };
+        let mut checked: Vec<(u32, bool, usize)> = Vec::new();
+        for text in [crate::logits::GEMMA4_RANDOM_CONFIG.to_string(), fixture("gemma4_12b_config.json")] {
+            let cfg = crate::gemma4::ConfigG4::parse(&text, None, false).unwrap();
+            for (twelve, users) in [(false, 1), (true, 1), (false, 8), (true, 8)] {
+                for room in [2u64 << 20, 8 << 20, 32 << 20, 64 << 20, 256 << 20, gib, 6 * gib, 16 * gib] {
+                    let n = sizing::gemma_needs(&cfg, crate::weights::Layout::Tiered, (0, 0, 0), users, LOSSY_CTX, twelve);
+                    let free = reserve_of(0) + LOSSY_WORK + room;
+                    let Ok(p) = sizing::one_gpu(&n, free, None, "g") else { continue };
+                    let bytes = |k: crate::gemma4::KindG4| {
+                        let (d, nk, _) = cfg.attn_of(k);
+                        let s = kv12::ring_shape(nk, d, cfg.heads, 0, false).filter(|_| twelve);
+                        s.map_or((nk * d * 4) as u64, |s| kv12::token_bytes(s.heads, s.channels, s.one))
+                    };
+                    let count = |k: crate::gemma4::KindG4| cfg.kinds.iter().filter(|&&x| x == k).count() as u64;
+                    let groups = [
+                        (count(crate::gemma4::KindG4::Sliding) * bytes(crate::gemma4::KindG4::Sliding), cfg.window),
+                        (count(crate::gemma4::KindG4::Global) * bytes(crate::gemma4::KindG4::Global), 0),
+                    ];
+                    let rings = if twelve { cfg.rings12() } else { Vec::new() };
+                    assert!(
+                        pool_holds(&p, &groups, &rings),
+                        "Gemma 4 ({} layers), {} pages, {users} users, {room} bytes: {p:?}",
+                        cfg.layers,
+                        if twelve { "12-bit" } else { "bf16" }
+                    );
+                    checked.push((cfg.layers as u32, twelve, users));
+                }
+            }
+        }
+        let dense_case: serde_json::Value = serde_json::from_str(&fixture("dense_tiny_manifest.json")).unwrap();
+        for text in [dense_case["config"].as_str().map(String::from).unwrap_or_else(|| dense_case["config"].to_string()), DENSE_36L.to_string()] {
+            let cfg = crate::weights::Config::parse(&text, "c", None).unwrap_or_else(|e| panic!("{}", e.msg));
+            for (twelve, users) in [(false, 1), (true, 1), (false, 8), (true, 8)] {
+                for room in [2u64 << 20, 8 << 20, 32 << 20, 64 << 20, 256 << 20, gib, 6 * gib, 16 * gib] {
+                    let n = sizing::dense_needs(&cfg, "dense", crate::weights::Layout::Tiered, users, false, twelve);
+                    let free = n.weights + reserve_of(0) + n.chunks.last().unwrap().1 + room;
+                    let Ok(p) = sizing::one_gpu(&n, free, None, "g") else { continue };
+                    let groups = [(sizing::kv_per_token(&cfg, twelve), 0)];
+                    assert!(
+                        pool_holds(&p, &groups, &sizing::dense_rings(&cfg, twelve)),
+                        "dense ({} layers), {} pages, {users} users, {room} bytes: {p:?}",
+                        cfg.layers,
+                        if twelve { "12-bit" } else { "bf16" }
+                    );
+                    checked.push((1000 + cfg.layers as u32, twelve, users));
+                }
+            }
+        }
+        checked.dedup();
+        // (every config, page format and user count: some plan of each checked)
+        assert_eq!(checked.len(), 16, "{checked:?}");
+    }
+
+    /// Both formats of the keys and values are lossless, so a plan takes the 12-bit pages GLYD_KV=lossless asks for only where they reserve no more than bf16
+    /// (`sizing::one_gpu_pages`). One user at gemma-4-12B's whole context (262,144 tokens) reserves more in them than in bf16 (their worst case beside the tokens:
+    /// a raw slab for every page of the sequence and the rows a pass unpacks): on an L4 and an RTX 4080 SUPER the plan is bf16's, its level bf16's (penguin on
+    /// the L4, as the plan was before that worst case was counted; swift on the 4080 SUPER, where the 12-bit pages were planned at kestrel in fewer bytes than
+    /// their pools take). Eight users share the worst case: on the L4 the 12-bit pages plan more tokens each than bf16, at the same level. The plan says which.
+    #[test]
+    fn the_twelve_bit_pages_are_planned_only_where_they_reserve_no_more_than_bf16() {
+        let text = fixture("gemma4_12b_config.json");
+        let cfg = crate::gemma4::ConfigG4::parse(&text, None, false).unwrap();
+        let (w, bf16) = cfg.weight_bytes(crate::weights::Layout::Tiered, None);
+        let kv = |twelve: bool, users: usize, ctx: usize| {
+            sizing::gemma_needs(&cfg, crate::weights::Layout::Tiered, (w, bf16, 0), users, ctx, twelve).kv(users as u64, ctx)
+        };
+        assert!(kv(true, 1, 262_144) > kv(false, 1, 262_144) && kv(true, 8, 19_680) < kv(false, 8, 19_680));
+        let dir = model_dir("kvformat", "gemma-4-12B", &text);
+        let m = dir.to_str().unwrap();
+        let plan = |lossless: bool, words: &[&str]| -> LoadPlan {
+            sizing::asking_lossless(lossless, || planned(&args(words))).unwrap().plan.chosen.and_then(|c| c.load).expect("a plan")
+        };
+        for (preset, level) in [("l4", "penguin"), ("rtx4080s", "swift")] {
+            let words = ["serve", m, "--machine", preset, "--users", "1", "--no-draft", "--context", "262144"];
+            let (b, t) = (plan(false, &words), plan(true, &words));
+            assert_eq!(t, b, "{preset}: one user at the whole context is planned as in bf16");
+            assert_eq!((t.level, t.context, t.kv_format()), (level, 262_144, "bf16"), "{preset}");
+            assert!(t.json(m).contains(r#""kv_format":"bf16""#) && t.text().contains("keys and values in bf16"), "{}", t.text());
+        }
+        let words = ["serve", m, "--machine", "l4", "--users", "8", "--no-draft"];
+        let (b, t) = (plan(false, &words), plan(true, &words));
+        assert!(t.kv12 && !b.kv12 && t.level == b.level && t.context > b.context, "bf16 {b:?}, 12-bit {t:?}");
+        assert!(t.json(m).contains(r#""kv_format":"12-bit""#) && t.text().contains("keys and values in 12-bit pages"), "{}", t.text());
     }
 
     fn fixture(name: &str) -> String {
@@ -4944,6 +5316,7 @@ mod tests {
             weights: 0,
             bf16: 0,
             kv: 0,
+            kv12: false,
             work: 0,
             draft: 0,
             reserve: 0,
