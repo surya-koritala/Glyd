@@ -219,11 +219,6 @@ impl MlaOp {
         }
     }
 
-    /// The rings it keeps: the latents', and an indexer's.
-    pub fn ring_count(&self) -> usize {
-        1 + self.indexer.is_some() as usize
-    }
-
     /// The same operation with its matrices from `m0` (`mat_count`'s order), its small tensors from `s0` (`MlaOp::of`'s order) and its rings from `ring`: a layer's
     /// place in its description.
     pub fn placed(&self, m0: usize, s0: usize, ring: usize) -> MlaOp {

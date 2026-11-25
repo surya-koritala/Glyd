@@ -195,11 +195,6 @@ impl CbPack {
         self.layers.iter().find(|(x, _)| *x == l).map(|(_, m)| m)
     }
 
-    /// Whether any expert of the pack has a matrix of format `f`.
-    pub fn has_fmt(&self, f: Fmt) -> bool {
-        self.layers.iter().any(|(_, m)| m.fmts.iter().any(|&(u, d)| u == f || d == f))
-    }
-
     /// The bytes of the layers' files together.
     pub fn file_bytes(&self) -> u64 {
         self.layers.iter().filter_map(|(_, m)| std::fs::metadata(self.dir.join(&m.file)).ok()).map(|m| m.len()).sum()
