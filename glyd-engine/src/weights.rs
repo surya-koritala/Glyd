@@ -202,6 +202,12 @@ fn words_of(layout: Layout, e: &Value, name: &str) -> Result<([u64; 3], [u32; 4]
     }
 }
 
+/// `x` rounded to bf16 (to nearest, ties to even), its bits.
+pub(crate) fn bf16_bits(x: f32) -> u16 {
+    let b = x.to_bits();
+    (b.wrapping_add(0x7fff + ((b >> 16) & 1)) >> 16) as u16
+}
+
 /// The rotary tables as torch computes them, in fp32, then rounded to bf16 as vLLM's cache is: cos and sin [max_pos, dim / 2].
 pub fn rope_tables(theta: f64, dim: usize, max_pos: usize) -> (Vec<u16>, Vec<u16>) {
     let half = dim / 2;

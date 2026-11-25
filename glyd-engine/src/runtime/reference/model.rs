@@ -182,25 +182,43 @@ impl RefModel {
         }
         let pos: Vec<u32> = (0..tokens.len() as u32).map(|i| start + i).collect();
         let seqs = vec![0; tokens.len()];
+        let ple: Vec<Vec<f32>> = tokens.iter().map(|&t| self.per_layer_input(t)).collect::<Result<_>>()?;
+        let ple_dim = e.per_layer.map_or(0, |p| p.dim);
         // the depth mix's sources per token, and the open group's partial sum (the embedding to begin with)
         let mut depth: Vec<Depth> = x.chunks(n * d).map(|r| Depth { sources: Vec::new(), partial: Some(r[..d].to_vec()) }).collect();
         // (lagged mHC: each token's input weights from the last lagged block; one-hot on stream 0 before the first)
         let mut lag: Vec<Vec<f32>> = vec![(0..n).map(|j| (j == 0) as u32 as f32).collect(); tokens.len()];
         for b in 0..self.layers.len() {
             self.share_into(b, 0)?;
-            let l = &mut self.layers[b];
+            let (before, rest) = self.layers.split_at_mut(b);
+            let l = &mut rest[0];
+            // (an attention that shares an earlier block's keys and values reads that block's cache)
+            let store = match l.kv_from() {
+                Some(j) if j < b => Some(&before[j]),
+                Some(j) => return err(format!("block {b} shares the keys and values of block {j}, not an earlier one")),
+                None => None,
+            };
+            // (a per-layer input's branch: each token's residual and its layer's input)
+            if let Body::PerLayer(pl) = l.block.body {
+                for (t, xt) in x.chunks_mut(n * d).enumerate() {
+                    let input = &ple[t][pl.layer * ple_dim..][..ple_dim];
+                    let o = l.norm_out(super::ffn::per_layer(&pl, &l.p, xt, input)?);
+                    l.post(xt, &o, None)?;
+                }
+                continue;
+            }
             if let Residual::Streams(s @ StreamsP { lagged: true, .. }) = l.block.residual {
                 for (t, xt) in x.chunks_mut(n * d).enumerate() {
                     let (pre, post, comb) = super::hc_weights(&s, &l.p, xt)?;
                     let input: Vec<f32> = (0..d).map(|i| (0..n).map(|j| lag[t][j] * xt[j * d + i]).sum()).collect();
-                    let o = l.output(seqs[t], pos[t], tokens[t], &input)?;
+                    let o = l.output_with(store, seqs[t], pos[t], tokens[t], &input)?;
                     l.post(xt, &o, Some((post, comb)))?;
                     lag[t] = pre;
                 }
                 continue;
             }
             let Residual::DepthMix(dm) = l.block.residual else {
-                l.forward(&pos, &seqs, tokens, &mut x)?;
+                l.forward_with(store, &pos, &seqs, tokens, &mut x)?;
                 continue;
             };
             let (wn, wp) = (l.p.vec("mix_norm")?.to_vec(), l.p.vec("mix_proj")?.to_vec());
@@ -225,6 +243,46 @@ impl RefModel {
             );
         }
         Ok(out)
+    }
+
+    /// The token's per-layer inputs (`kinds::PerLayerIn`), every layer's in order (none where the model has none): its row of `ple_embed` times sqrt(dim),
+    /// plus its scaled embedding's product by `ple_proj` times hidden^-0.5 normed a layer at a time by `ple_norm`, the sum times 2^-0.5.
+    pub fn per_layer_input(&self, token: u32) -> Result<Vec<f32>> {
+        let (d, e) = (self.desc.hidden, &self.desc.embed);
+        let Some(pl) = e.per_layer else { return Ok(Vec::new()) };
+        let n = pl.layers * pl.dim;
+        if token as usize >= pl.vocab {
+            return err(format!("token {token} past the per-layer inputs' vocabulary of {}", pl.vocab));
+        }
+        let row: Vec<f32> = self.embed[token as usize * d..][..d].iter().map(|&x| x * e.scale).collect();
+        let s = (d as f32).powf(-0.5);
+        let ctx: Vec<f32> = super::matvec(self.p.vec("ple_proj")?, d, &row).into_iter().map(|v| v * s).collect();
+        let w = self.p.vec("ple_norm")?;
+        let own = &self.p.vec("ple_embed")?[token as usize * n..][..n];
+        let (r, k) = ((pl.dim as f32).sqrt(), std::f32::consts::FRAC_1_SQRT_2);
+        Ok(ctx
+            .chunks(pl.dim)
+            .zip(own.chunks(pl.dim))
+            .flat_map(|(c, o)| norm(&pl.norm, c, Some(w), None).into_iter().zip(o).map(move |(c, &o)| (c + o * r) * k))
+            .collect())
+    }
+
+    /// Block `b`'s body on one token's normed input `h`, with the block whose keys and values it shares where it does (`Attn::kv_from`), and a per-layer
+    /// input's branch with its token's input.
+    pub fn body(&mut self, b: usize, seq: u32, pos: u32, token: u32, h: &[f32]) -> Result<Vec<f32>> {
+        if let Some(Body::PerLayer(pl)) = self.layers.get(b).map(|l| l.block.body.clone()) {
+            let dim = self.desc.embed.per_layer.map_or(0, |p| p.dim);
+            let input = self.per_layer_input(token)?;
+            return super::ffn::per_layer(&pl, &self.layers[b].p, h, &input[pl.layer * dim..][..dim]);
+        }
+        let (before, rest) = self.layers.split_at_mut(b);
+        let l = rest.first_mut().ok_or_else(|| Error(format!("no block {b}")))?;
+        let store = match l.kv_from() {
+            Some(j) if j < b => Some(&before[j]),
+            Some(j) => return err(format!("block {b} shares the keys and values of block {j}, not an earlier one")),
+            None => None,
+        };
+        l.body_with(store, seq, pos, token, h)
     }
 
     /// V4.1's compressed attention of block `b` reading other blocks' parts (`kinds::CompShare`): sequence `seq`'s entries (and their indexer
@@ -347,7 +405,7 @@ mod tests {
         let desc = ModelDesc {
             hidden: D,
             vocab: 16,
-            embed: Embed { scale: 1.0, norm: None, streams: N },
+            embed: Embed { scale: 1.0, norm: None, streams: N, per_layer: None },
             blocks: layers.iter().map(|l| l.block.clone()).collect(),
             final_norm: Norm::rms(1e-6),
             head: Head { tied: false, softcap: None, scale: 1.0, collapse },

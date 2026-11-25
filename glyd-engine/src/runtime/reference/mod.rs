@@ -236,6 +236,7 @@ fn roles(b: &Block) -> Vec<String> {
         Body::Mixer(Mixer::Compressed(_)) => &["q_a", "q_b", "kv", "o_a", "o_b", "comp_kv", "comp_gate", "idx_kv", "idx_gate", "idx_q_b", "idx_weights"],
         Body::Mixer(Mixer::Mamba2(_)) => &["in", "o"],
         Body::Ngram(_) => &["key", "value"],
+        Body::PerLayer(_) => &["gate", "proj"],
         Body::Ffn(_) => &[
             "gate",
             "up",
@@ -425,13 +426,31 @@ impl RefLayer {
 
     /// The body on the normed inputs of one token (the sequence's state advanced).
     pub fn body(&mut self, seq: u32, pos: u32, token: u32, h: &[f32]) -> Result<Vec<f32>> {
+        self.body_with(None, seq, pos, token, h)
+    }
+
+    /// The sequence's attention cache in this block, where it has one.
+    pub fn kv_cache(&self, seq: u32) -> Option<&attention::KvCache> {
+        match self.seqs.get(&seq) {
+            Some(SeqState::Attention(c)) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// `body`, with the block whose keys and values an attention shares (`Attn::kv_from`): `store`, its sequence's cache read, never written.
+    pub fn body_with(&mut self, store: Option<&RefLayer>, seq: u32, pos: u32, token: u32, h: &[f32]) -> Result<Vec<f32>> {
         let p = &self.p;
         self.margin = f32::INFINITY;
         match &self.block.body {
             Body::Mixer(Mixer::Attention(a)) => {
+                let shared = match (a.kv_from, store) {
+                    (None, _) => None,
+                    (Some(_), Some(s)) => Some(s.kv_cache(seq).ok_or_else(|| Error(format!("sequence {seq}: no keys and values in the block it shares")))?),
+                    (Some(j), None) => return err(format!("an attention that shares block {j}'s keys and values runs with that block (`body_with`)")),
+                };
                 let st = self.seqs.entry(seq).or_insert_with(|| SeqState::Attention(attention::KvCache::default()));
                 let SeqState::Attention(c) = st else { return err("a sequence's state is not an attention cache") };
-                let y = attention::step(a, p, c, h, pos);
+                let y = attention::step_with(a, p, c, shared, h, pos);
                 self.margin = c.margin;
                 y
             }
@@ -459,6 +478,7 @@ impl RefLayer {
                 let SeqState::Mamba(s) = st else { return err("a sequence's state is not a Mamba-2 state") };
                 mamba::step(m, p, s, h)
             }
+            Body::PerLayer(pl) => err(format!("the per-layer input {}'s branch reads its token's input: it runs in the model (`RefModel::body`)", pl.layer)),
             Body::Ngram(n) => {
                 let st = self.seqs.entry(seq).or_insert_with(|| SeqState::Ngram(ngram::NgramState::new(n, h.len())));
                 let SeqState::Ngram(s) = st else { return err("a sequence's state is not an n-gram embedding's") };
@@ -548,6 +568,11 @@ impl RefLayer {
     /// The block on the tokens of `x` ([tokens, hidden]), in order: pre-norm, body, post-norm, residual. `tokens` (the ids) may be empty
     /// for a block that does not read them.
     pub fn forward(&mut self, positions: &[u32], seqs: &[u32], tokens: &[u32], x: &mut [f32]) -> Result<()> {
+        self.forward_with(None, positions, seqs, tokens, x)
+    }
+
+    /// `forward`, with the block whose keys and values the attention shares (`body_with`).
+    pub fn forward_with(&mut self, store: Option<&RefLayer>, positions: &[u32], seqs: &[u32], tokens: &[u32], x: &mut [f32]) -> Result<()> {
         if seqs.len() != positions.len() {
             return err(format!("{} sequence slots for {} tokens", seqs.len(), positions.len()));
         }
@@ -557,7 +582,7 @@ impl RefLayer {
         }
         for (t, xt) in x.chunks_mut(width).enumerate() {
             let (input, hc) = self.pre(xt)?;
-            let o = self.output(seqs[t], positions[t], tokens.get(t).copied().unwrap_or(0), &input)?;
+            let o = self.output_with(store, seqs[t], positions[t], tokens.get(t).copied().unwrap_or(0), &input)?;
             self.post(xt, &o, hc)?;
         }
         Ok(())
@@ -565,9 +590,21 @@ impl RefLayer {
 
     /// The block's output for one token's input (before the residual rule): pre-norm, body, post-norm.
     pub fn output(&mut self, seq: u32, pos: u32, token: u32, input: &[f32]) -> Result<Vec<f32>> {
+        self.output_with(None, seq, pos, token, input)
+    }
+
+    pub fn output_with(&mut self, store: Option<&RefLayer>, seq: u32, pos: u32, token: u32, input: &[f32]) -> Result<Vec<f32>> {
         let h = self.norm_in(input);
-        let o = self.body(seq, pos, token, &h)?;
+        let o = self.body_with(store, seq, pos, token, &h)?;
         Ok(self.norm_out(o))
+    }
+
+    /// The block whose keys and values this one's attention shares (`Attn::kv_from`).
+    pub fn kv_from(&self) -> Option<usize> {
+        match &self.block.body {
+            Body::Mixer(Mixer::Attention(a)) => a.kv_from,
+            _ => None,
+        }
     }
 
     /// The block's pre-norm of its input: each stream on its own where the input is the streams (an n-gram embedding's); none where the gated
@@ -637,7 +674,8 @@ impl Backend for Ref {
             | KindRef::Mamba2
             | KindRef::Mlp
             | KindRef::Moe
-            | KindRef::Ngram => Support::Slower("the f32 reference".into()),
+            | KindRef::Ngram
+            | KindRef::PerLayer => Support::Slower("the f32 reference".into()),
         }
     }
 

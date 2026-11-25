@@ -5,11 +5,21 @@
 //! - the packed products' way (glyd_gpu_mma_way, glyd_gpu_mma12_way: which kernel, or W decoded for a dense product, takes W [O, K] for M
 //!   tokens on a GPU) and the GPU's code those ways are keyed by (glyd_gpu_gpu: compute capability plus a class by name). These are the
 //!   measured per-GPU choices between Glyd's fused kernels and cuBLAS (V8a, #255: glyd-engine/docs/design/kernel-libraries.md);
-//! - the paged KV cache's sizes (glyd_gpu_kv_leaf_bytes, _extra_bytes, _second_bytes) and its decode's workspace
-//!   (glyd_gpu_kv_decode_workspace).
+//! - the paged KV cache's sizes (glyd_gpu_kv_leaf_bytes, _extra_bytes, _second_bytes), a page's image (glyd_gpu_kv_image_bytes) and its
+//!   decode's workspace (glyd_gpu_kv_decode_workspace).
 //!
-//! Kernels (step 1): the mma layouts' unpacking (glyd_gpu_mma_unpack, glyd_gpu_mma12_unpack), from the library's own source
-//! (gpu/glyd_gpu_kernels.h) in the engine's fatbin (kernels/fold.cu), launched here as the library launches it.
+//! Kernels, from the library's own source (gpu/glyd_gpu_kernels.h) in the engine's fatbin (kernels/fold.cu), launched here as the library's
+//! host code launches them (the same grids, splits and workspaces, from the occupancy of the engine's own kernels):
+//! - the mma layouts' unpacking and rows by id (glyd_gpu_mma_unpack, _mma_rows and the 12-bit layout's);
+//! - the packed products (glyd_gpu_mma_linear, _mma12_linear): the step product to 64 tokens, the prompt kernel in its grid and stream-K
+//!   forms, the 12-bit layout's route MID, and Hopper's TMA and wgmma routes;
+//! - the experts' plan (glyd_gpu_moe_way) and products (glyd_gpu_mma_moe, _mma12_moe, _mma_moe_placed): the step products, the prompt
+//!   kernel, Hopper's wgmma product;
+//! - the 12-bit KV pages: write, unpack, gather, the decode and prompt attention (and over a bf16 cache), and release, save and load;
+//! - the lossless FP8 format: size, pack, unpack and its products (both layouts, the experts').
+//!
+//! A call the library refuses, a plan a development build's tuning variable asks for, and an AMD build go to the library still (each
+//! function here says false and `ffi::Lib` calls it).
 
 use crate::device::{Attr, CudaDevice as D, Device};
 use crate::ffi::{Error, Kind, Pack, Result, Stream, Words};
@@ -323,6 +333,13 @@ pub fn kv_raw_bytes(nslabs: i64, h: i64) -> Result<i64> {
     Ok(pool_head_bytes(nslabs) + nslabs * h * 2048)
 }
 
+/// A page's image for `h` heads of `d` channels with an arena of `a` entries (glyd_gpu_kv_image_bytes): the page's bytes, a place for each chunk of the escape
+/// pool its header can name, and its raw slab's.
+pub fn kv_image_bytes(h: i64, d: i64, a: i64) -> Result<i64> {
+    let page = kv_page_bytes(h, d, a).map_err(|_| invalid("kv_image_bytes"))?;
+    Ok(page + KV_ND * KV_CH * 4 + h * (kv_dim(d) / KV_D) * 2048)
+}
+
 /// The decode attention's workspace for `b` sequences of `h` kv heads of `g` query heads each, heads of `d` channels, split `splits` ways
 /// (glyd_gpu_kv_decode_workspace): the counters, then each split's partial outputs and their two sums.
 pub fn kv_decode_workspace(b: i64, h: i64, g: i64, d: i64, splits: i64) -> Result<usize> {
@@ -469,6 +486,53 @@ pub unsafe fn unpack(u: Unpacker, w: &Pack, row0: i64, rows: i64, out: u64, cs: 
         }
         (u, _) => crate::ffi::err(format!("unpack: {u:?} has no kernel of the engine's for these words")),
     }
+}
+
+/// Rows `ids` [n] (int64 on the device) of W into `out` [n, cols] bf16 by the engine's kernel of W's layout (`unpacker`), on `cs`: a warp a (row, step),
+/// blocks of 256 threads, as glyd_gpu_mma_rows and _mma12_rows launch their own (mma_rows_run). False where the library takes the call: arguments it
+/// refuses (the layout of v0.27 and before among them), with its own words for them.
+///
+/// # Safety
+/// As `Lib::rows`; a context with the engine's module is current.
+pub unsafe fn rows(w: &Pack, ids: u64, n: i64, out: u64, cs: Stream) -> Result<bool> {
+    use crate::dev::here;
+    use crate::kt;
+    use crate::launch;
+    let Ok(u) = unpacker(w) else { return Ok(false) };
+    let (k, r) = (w.cols, w.rows);
+    if cfg!(glyd_hip) || u == Unpacker::V1 || k < 16 || k % 16 != 0 || r < 0 || r % 64 != 0 || n < 0 || ((ids == 0 || out == 0) && n != 0) {
+        return Ok(false);
+    }
+    let warps = n * (k / 16);
+    if warps == 0 {
+        return Ok(true);
+    }
+    if (warps + 7) / 8 >= 1 << 31 {
+        return Ok(false);
+    }
+    let (g, b) = ([((warps + 7) / 8) as u32, 1, 1], [256u32, 1, 1]);
+    match (u, w.words) {
+        (Unpacker::Tiered, Words::Tiered { blocks, block_base, tiers: t }) => {
+            launch!(here::<kt::fold_rows_tiered>()?, g, b, cs; w.data, blocks, block_base, t[0], t[1], t[2], k, r, ids, n, out)
+        }
+        (Unpacker::Compact, Words::Tiered { blocks, block_base, tiers: t }) => {
+            launch!(here::<kt::fold_rows_compact>()?, g, b, cs; w.data, blocks, block_base, t[0], t[1], t[2], k, r, ids, n, out)
+        }
+        (Unpacker::Int6, Words::Tiered { blocks, .. }) => launch!(here::<kt::fold_rows_int6>()?, g, b, cs; w.data, blocks, k, r, ids, n, out),
+        (Unpacker::Int5, Words::Tiered { blocks, .. }) => launch!(here::<kt::fold_rows_int5>()?, g, b, cs; w.data, blocks, k, r, ids, n, out),
+        (Unpacker::Int4, Words::Tiered { blocks, .. }) => launch!(here::<kt::fold_rows_int4>()?, g, b, cs; w.data, blocks, k, r, ids, n, out),
+        (Unpacker::Int4H(base), Words::Tiered { blocks, .. }) => launch!(here::<kt::fold_rows_int4h>()?, g, b, cs; w.data, blocks, base, k, r, ids, n, out),
+        (Unpacker::Fp4, Words::Tiered { blocks, .. }) => launch!(here::<kt::fold_rows_fp4>()?, g, b, cs; w.data, blocks, k, r, ids, n, out),
+        (Unpacker::Fp4R { ks, mg, sh }, Words::Tiered { blocks, .. }) => {
+            launch!(here::<kt::fold_rows_fp4r>()?, g, b, cs; w.data, blocks, ks, mg, sh, k, r, ids, n, out)
+        }
+        (Unpacker::Int3, Words::Tiered { blocks, .. }) => launch!(here::<kt::fold_rows_int3>()?, g, b, cs; w.data, blocks, k, r, ids, n, out),
+        (Unpacker::Twelve { hb4, xmax }, Words::Twelve { exc, exc_base, .. }) => {
+            launch!(here::<kt::fold_rows_twelve>()?, g, b, cs; w.data, exc, exc_base, hb4, xmax, k, r, ids, n, out)
+        }
+        _ => return Ok(false),
+    }?;
+    Ok(true)
 }
 
 /// The plan of `pairs` pairs sorted by their experts' ids (glyd_gpu_moe_way, `GpuOps::moe_way`) by the engine's kernels, as the library launches its own: from
@@ -1904,6 +1968,15 @@ pub struct KvWriteParams {
     pub one: i32,
 }
 
+/// The escape pool as esc_of makes it: its bitmap, its owners and its chunks' entries, from the pool's base.
+fn kv_escape_pool(base: u64, nc: i64) -> KvEscapePool {
+    if nc == 0 || base == 0 {
+        return KvEscapePool::default();
+    }
+    let bits = ((nc + 31) / 32 + 3) / 4 * 16;
+    KvEscapePool { bits: base, owner: base + bits as u64, ent: base + pool_head_bytes(nc) as u64, nc: nc as i32 }
+}
+
 /// The pool checks the library makes of a KV call (kv_escape_ok, kv_raw_ok, the page's bytes and alignment); false where it refuses them.
 fn kv_pools_ok(g: &crate::ffi::KvGeom, pool: u64) -> bool {
     let esc_ok = (0..=1 << 30).contains(&g.nchunks) && (g.nchunks == 0 || (g.escape != 0 && g.escape % 16 == 0));
@@ -1945,12 +2018,7 @@ pub unsafe fn kv_write(
         return Ok(false);
     }
     let hp = h * (dm / KV_D);
-    let esc = if g.nchunks == 0 || g.escape == 0 {
-        KvEscapePool::default()
-    } else {
-        let bits = ((g.nchunks + 31) / 32 + 3) / 4 * 16;
-        KvEscapePool { bits: g.escape, owner: g.escape + bits as u64, ent: g.escape + pool_head_bytes(g.nchunks) as u64, nc: g.nchunks as i32 }
-    };
+    let esc = kv_escape_pool(g.escape, g.nchunks);
     let p = KvWriteParams {
         key,
         value,
@@ -2049,6 +2117,94 @@ pub unsafe fn kv_gather(g: &crate::ffi::KvGeom, (pool, kbase, vbase): (u64, u64,
             launch!(here::<kt::fold_kv_gather_4>()?, grid, blk, cs; args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7, args.8, args.9, args.10, args.11, args.12)
         }
     }?;
+    Ok(true)
+}
+
+/// The pages of the blocks `blocks` [n] of the layer's pool cleared by the engine's kernel (glyd_gpu_kv_release: a warp a block, its chunks or its slab back to
+/// their pools by owner; no lost blocks' bits, as the engine calls it). False where the library takes it.
+///
+/// # Safety
+/// As `Lib::kv_release`; a context with the engine's module is current.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn kv_release(g: &crate::ffi::KvGeom, pool: u64, nblocks: i64, blocks: u64, n: i64, layer: i64, status: u64, cs: Stream) -> Result<bool> {
+    use crate::dev::here;
+    use crate::kt;
+    use crate::launch;
+    if cfg!(glyd_hip) || !(0..=i32::MAX as i64).contains(&n) || nblocks < 0 || status == 0 || !kv_pools_ok(g, pool) || !(0..=254).contains(&layer) {
+        return Ok(false);
+    }
+    if n == 0 {
+        return Ok(true);
+    }
+    if blocks == 0 {
+        return Ok(false);
+    }
+    let hp = g.heads * (kv_dim(g.dim) / KV_D);
+    let (esc, raw, tag) = (kv_escape_pool(g.escape, g.nchunks), kv_raw(g.raw, g.nslabs, hp), ((layer + 1) as u32) << 24);
+    launch!(here::<kt::fold_kv_release>()?, [n as u32, 1, 1], [32, 1, 1], cs; pool, g.page_stride, nblocks, blocks, hp as i32, esc, raw, tag, status, 0u64, 0i64)?;
+    Ok(true)
+}
+
+/// The pages of the blocks `pages` [n] of the layer's pool into n images at `out` (`kv_image_bytes` apart) by the engine's kernel (glyd_gpu_kv_save: a CTA a
+/// page, 128 threads); `moved` [n] (0: none) the bytes written for each. False where the library takes it.
+///
+/// # Safety
+/// As `Lib::kv_save`; a context with the engine's module is current.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn kv_save(g: &crate::ffi::KvGeom, pool: u64, nblocks: i64, pages: u64, n: i64, layer: i64, (out, moved): (u64, u64), cs: Stream) -> Result<bool> {
+    use crate::dev::here;
+    use crate::kt;
+    use crate::launch;
+    if cfg!(glyd_hip) || !(0..=i32::MAX as i64).contains(&n) || nblocks < 0 || !kv_pools_ok(g, pool) || !(0..=254).contains(&layer) {
+        return Ok(false);
+    }
+    if n == 0 {
+        return Ok(true);
+    }
+    if pages == 0 || out == 0 || out % 16 != 0 || moved % 4 != 0 {
+        return Ok(false);
+    }
+    let hp = g.heads * (kv_dim(g.dim) / KV_D);
+    let (pb, ib) = (kv_page_bytes(g.heads, g.dim, g.arena)?, kv_image_bytes(g.heads, g.dim, g.arena)?);
+    let (esc, raw, tag) = (kv_escape_pool(g.escape, g.nchunks), kv_raw(g.raw, g.nslabs, hp), ((layer + 1) as u32) << 24);
+    launch!(here::<kt::fold_kv_save>()?, [n as u32, 1, 1], [128, 1, 1], cs; pool, g.page_stride, nblocks, pages, pb, ib, hp as i32, esc, raw, tag, out, moved)?;
+    Ok(true)
+}
+
+/// The images `img` [n] (`kv_save`'s) into the pages of the blocks `dst` [n] of the layer's pool by the engine's kernel (glyd_gpu_kv_load: a CTA a page, 128
+/// threads; a page that finds no chunk or slab is void, named in `status`'s ring of `ring` places). False where the library takes it.
+///
+/// # Safety
+/// As `Lib::kv_load`; a context with the engine's module is current.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn kv_load(
+    g: &crate::ffi::KvGeom,
+    (img, dst, n): (u64, u64, i64),
+    pool: u64,
+    nblocks: i64,
+    layer: i64,
+    (status, ring): (u64, i64),
+    cs: Stream,
+) -> Result<bool> {
+    use crate::dev::here;
+    use crate::kt;
+    use crate::launch;
+    if cfg!(glyd_hip) || !(0..=i32::MAX as i64).contains(&n) || nblocks < 0 || status == 0 || !kv_pools_ok(g, pool) {
+        return Ok(false);
+    }
+    if !(0..=254).contains(&layer) || !(1..=1 << 24).contains(&ring) {
+        return Ok(false);
+    }
+    if n == 0 {
+        return Ok(true);
+    }
+    if img == 0 || dst == 0 || img % 16 != 0 {
+        return Ok(false);
+    }
+    let hp = g.heads * (kv_dim(g.dim) / KV_D);
+    let (pb, ib) = (kv_page_bytes(g.heads, g.dim, g.arena)?, kv_image_bytes(g.heads, g.dim, g.arena)?);
+    let (esc, raw, tag) = (kv_escape_pool(g.escape, g.nchunks), kv_raw(g.raw, g.nslabs, hp), ((layer + 1) as u32) << 24);
+    launch!(here::<kt::fold_kv_load>()?, [n as u32, 1, 1], [128, 1, 1], cs; img, dst, pb, ib, pool, g.page_stride, nblocks, hp as i32, esc, raw, tag, status, ring as u32)?;
     Ok(true)
 }
 
@@ -2389,6 +2545,15 @@ static F8H_PLAIN: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::n
 /// Layout H's packs plain or coded (glyd_gpu_f8h_plain): Some(true) plain, Some(false) coded, None the GPU's own.
 pub fn f8h_plain_set(plain: Option<bool>) {
     F8H_PLAIN.store(plain.map_or(-1, |p| p as i32), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// `f8h_plain_set`'s choice as it was given (None: the GPU's own), which the library is told before an FP8 call of its own.
+pub(crate) fn f8h_plain_choice() -> Option<bool> {
+    match F8H_PLAIN.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
+    }
 }
 
 /// Whether layout H's packs are plain (f8h_plain): GLYD_F8H_PLAIN (development builds), else `f8h_plain_set`'s, else an HBM GPU's own (plain).
@@ -2879,9 +3044,10 @@ fn synced(dev: &crate::dev::Dev, what: impl FnOnce() -> String) -> Result<()> {
 /// `foldcheck` (R17): each folded piece against the library's on this GPU, the library the oracle: the GPU's code; the way of every GPU code the
 /// library knows (with and without SPLIT), both layouts, matrices of every kind of K and size, at token counts on each side of every threshold;
 /// the KV cache's sizes and decode workspace over valid and refused shapes; the experts' plan and the unpacking of every layout by the engine's own
-/// kernels (`route_check`, `unpack_check`). Every answer the same, refusals included.
+/// kernels (`route_check`, `unpack_check`). Every answer the same, refusals included. `only`: of the kernels' checks, those whose line has this word (a
+/// memory checker's pass over one family of kernels).
 #[cfg(feature = "dev")]
-pub fn check() -> Result<()> {
+pub fn check(only: Option<&str>) -> Result<()> {
     use crate::gpu_ops::GpuOps;
     let dev = crate::dev::Dev::new(0)?;
     let lib = crate::ffi::Lib::find()?;
@@ -2965,6 +3131,7 @@ pub fn check() -> Result<()> {
         for &d in &ds {
             for &a in &aa {
                 cmp(format!("page of {h} heads of {d}, arena {a}"), kv_page_bytes(h, d, a), lib.oracle_kv_page_bytes(h, d, a));
+                cmp(format!("image of a page of {h} heads of {d}, arena {a}"), kv_image_bytes(h, d, a), lib.oracle_kv_image_bytes(h, d, a));
             }
         }
     }
@@ -2987,25 +3154,47 @@ pub fn check() -> Result<()> {
             }
         }
     }
-    say("the KV cache's sizes and the decode's workspace", n, bad);
+    say("the KV cache's sizes, a page's image and the decode's workspace", n, bad);
     type Check = fn(&crate::dev::Dev, &crate::ffi::Lib) -> Result<(usize, Vec<String>)>;
-    let checks: [(&str, Check); 7] = [
+    let checks: [(&str, Check); 9] = [
         ("the experts' plan (moe_way), the engine's kernels against the library's (one warp and one block, ids out of range among them)", route_check),
         (
             "the 12-bit pages' write, unpack and gather, and the decode and prompt attention over them and over a bf16 cache: the engine's kernels against the library's",
             kv_check,
         ),
+        (
+            "the 12-bit pages saved into images, loaded into other blocks and released (escape chunks, raw slabs, void images): the engine's kernels against the library's",
+            kv_pages_check,
+        ),
         ("the lossless FP8 format's size, pack and unpack (both layouts), the engine's kernels against the library's", f8_check),
         ("the FP8 products (each kind of scales, both layouts, 1 to 64 tokens, the experts'), the engine's kernels against the library's", f8_product_check),
-        ("the grouped experts' step products (no activation, SiLU, GELU, gathered, weighted), the engine's kernels against the library's", moe_check),
-        ("the step product (route GEMM, 1 to 64 tokens), the engine's kernels against the library's, and its workspace", linear_check),
-        ("the mma layouts' unpacking, the engine's kernels against the library's (every bf16 of each layout, whole and a row block)", unpack_check),
+        ("layout H's packs plain and coded by the process's choice: the FP8 format and its products under each, against the library's", f8h_plain_check),
+        ("the grouped experts' products (the step products and the prompt kernel: no activation, SiLU, GELU, gathered, weighted), the engine's kernels against the library's", moe_check),
+        (
+            "the packed products (1 to 1,000 tokens: the step product, and this GPU's routes for a prompt), the engine's kernels against the library's, and their workspace",
+            linear_check,
+        ),
+        ("the mma layouts' unpacking and rows by id, the engine's kernels against the library's (every bf16 of each layout, whole and a row block)", unpack_check),
     ];
+    // (a census of the launches: which of kernels/fold.cu's kernels these checks ran on this GPU)
+    crate::dev::kprof_start();
     for (what, run) in checks {
+        if only.is_some_and(|w| !what.contains(w)) {
+            continue;
+        }
         println!("foldcheck: starting {what}");
         std::io::Write::flush(&mut std::io::stdout()).ok();
         let (n, bad) = run(&dev, &lib)?;
         say(what, n, bad);
+    }
+    // a kernel of a route another GPU's class takes (stream-K on GeForce Ada, an A100's tiles, Hopper's TMA and wgmma), or of a shape these checks do not
+    // reach on this one, is compared where that GPU runs this command: said here, so a kernel no check launches anywhere is seen
+    let ran: std::collections::BTreeSet<String> = crate::dev::kprof_stop().into_iter().map(|k| k.0).collect();
+    let all: Vec<&str> = crate::kt::NAMES.iter().filter(|k| k.1 == "fold.cu").map(|k| k.0).collect();
+    let idle: Vec<&str> = all.iter().copied().filter(|k| !ran.contains(*k)).collect();
+    println!("foldcheck: {} of the {} kernels of kernels/fold.cu launched on this GPU", all.len() - idle.len(), all.len());
+    if !idle.is_empty() {
+        println!("  not launched here: {}", idle.join(" "));
     }
     if fails > 0 {
         return crate::ffi::err(format!("foldcheck: {fails} failed"));
@@ -3122,8 +3311,11 @@ fn test_packs(rows: usize, cols: usize, next: &mut impl FnMut() -> u64) -> Vec<(
     packs
 }
 
-/// `foldcheck`'s step product: Y [m, o] = X W^T for every layout at 1 to 64 tokens, by the library's kernels and by the engine's where the GPU's route is
-/// GEMM (the others are still the library's), every bf16 compared, and the workspace each asks, at 256 x 1024 and 128 x 4096. (compared, differences)
+/// `foldcheck`'s packed products: Y [m, o] = X W^T for every layout at 1 to 1,000 tokens, by the library's kernels and by the engine's: to 64 tokens the
+/// step product (route GEMM, and the step product of MID and WG), past 64 this GPU's route for a prompt (the prompt kernel on BIG, DECODE, AHEAD and
+/// SPLIT, in its grid or stream-K form; the 12-bit layout's route MID); every bf16 compared, and the workspace each asks, at 256 x 1024 and
+/// 128 x 4096. A product the engine's kernels do not take on this GPU is the library's and is not compared: the line printed says how many were.
+/// (compared, differences)
 #[cfg(feature = "dev")]
 fn linear_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
     use crate::dev::Buf;
@@ -3191,7 +3383,7 @@ fn linear_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, 
             }
         }
     }
-    println!("  (the step product: {folded} products by the engine's kernels, the rest the library's route on this GPU)");
+    println!("  (the packed products: {folded} products by the engine's kernels, the rest the library's route on this GPU)");
     Ok((n, bad))
 }
 
@@ -3526,10 +3718,300 @@ fn kv_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<
     Ok((n, bad))
 }
 
-/// `foldcheck`'s grouped experts: 8 experts of 128 x 1024 in each layout the products take, a plan of random choices (2 a token) for 1 to 64 tokens, the
-/// products with no activation, SiLU and GELU, gathered and not, and weighted sums: by the library's kernels and by the engine's where the plan takes the
-/// step products (the prompt kernel and the wgmma route are the library's still), every bf16 compared; and the expert cache's places (moe_placed), the
-/// tiered stack cut per expert as the store cuts it. (compared, differences)
+/// `foldcheck`'s pages moved whole: 12-bit pages written by the library, some with escape chunks and some raw (their values with no common exponent), then
+/// saved into images by the library's kernel and by the engine's (every byte and every count, a block outside the pool among them); the images loaded into
+/// two fresh pools, one by each, and read back by the library's unpack (every bf16 the page's own, the pools' counters and the rings' names the same, a void
+/// image among them); the loaded pages released, one pool by each, some under another layer's tag (the pages' bytes and the counters the same); and
+/// arguments the library refuses, left to it. (compared, differences)
+#[cfg(feature = "dev")]
+fn kv_pages_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
+    use crate::dev::Buf;
+    use crate::ffi::KvGeom;
+    let mut seed = 0xD6E8_FEB8_6659_FD93u64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let (mut n, mut bad) = (0, Vec::new());
+    const A: i64 = 15;
+    const RING: i64 = 64;
+    const LAYER: i64 = 3;
+    // (the status words the kernels count in: kvc's ST_POOL_USED, ST_RAW_USED, and the rings from ST_RING)
+    const POOL_USED: usize = 4;
+    const RAW_USED: usize = 8;
+    const RINGS: usize = 16;
+    let bytes = |b: &Buf, len: usize| -> Result<Vec<u8>> {
+        let mut v = vec![0u8; len];
+        b.read(0, &mut v)?;
+        Ok(v)
+    };
+    let words = |b: &Buf, len: usize| -> Result<Vec<u32>> {
+        let mut v = vec![0u32; len];
+        b.read(0, &mut v)?;
+        Ok(v)
+    };
+    for (h, d) in [(8usize, 128usize), (4, 256), (2, 512), (1, 128)] {
+        let (tokens, blocks, raw_from) = (16 * 9 + 5usize, 10usize, 16 * 6usize);
+        let hp = (h * d / 128) as i64;
+        let page = kv_page_bytes(h as i64, d as i64, A)? as usize;
+        let image = kv_image_bytes(h as i64, d as i64, A)? as usize;
+        let (nchunks, nslabs) = (4096i64, 64i64);
+        let nb = blocks + 1;
+        let pools = || -> Result<[Buf; 4]> {
+            Ok([
+                Buf::zeroed(page * nb)?,
+                Buf::zeroed(kv_escape_bytes(nchunks)? as usize)?,
+                Buf::zeroed(kv_raw_bytes(nslabs, hp)? as usize)?,
+                Buf::zeroed(4 * (16 + 2 * RING) as usize)?,
+            ])
+        };
+        let [pool, escape, raw, status] = pools()?;
+        let geom = KvGeom { heads: h as i64, dim: d as i64, arena: A, page_stride: page as i64, escape: escape.ptr, nchunks, raw: raw.ptr, nslabs };
+        // values [tokens][h][d]: the first blocks' around an exponent a channel with 1% far from it (escape chunks), the last blocks' of any exponent (raw pages)
+        let mut vals = || -> Vec<u16> {
+            (0..tokens * h * d)
+                .map(|i| {
+                    let mu = 124 + (i % (h * d)) as u64 % 7;
+                    let far = i / (h * d) >= raw_from || next() % 100 == 0;
+                    let e = if far { 3 + next() % 240 } else { mu + next() % 3 - 1 };
+                    (((next() & 1) << 15) | (e << 7) | (next() % 128)) as u16
+                })
+                .collect()
+        };
+        let (k, v) = (vals(), vals());
+        let bases = |x: &[u16]| -> Vec<u8> {
+            (0..h * d)
+                .map(|c| {
+                    let mut hist = [0u32; 128];
+                    for t in 0..raw_from {
+                        hist[((x[t * h * d + c] >> 8) & 0x7F) as usize] += 1;
+                    }
+                    (0..=120usize).max_by_key(|&s| hist[s..s + 8].iter().sum::<u32>()).unwrap_or(0) as u8
+                })
+                .collect()
+        };
+        let (kb, vb) = (Buf::new(h * d)?, Buf::new(h * d)?);
+        kb.write(0, &bases(&k))?;
+        vb.write(0, &bases(&v))?;
+        let (kbuf, vbuf, sl) = (Buf::new(2 * k.len())?, Buf::new(2 * v.len())?, Buf::new(8 * tokens)?);
+        kbuf.write(0, &k)?;
+        vbuf.write(0, &v)?;
+        sl.write(0, &(0..tokens as i64).collect::<Vec<i64>>())?;
+        let stride = (h * d) as i64;
+        // SAFETY: the pool and its tables, the tokens' rows and slots, live; one stream.
+        unsafe {
+            lib.library_kv_write(
+                &geom,
+                pool.ptr,
+                kb.ptr,
+                vb.ptr,
+                LAYER,
+                kbuf.ptr,
+                stride,
+                vbuf.ptr,
+                stride,
+                sl.ptr,
+                tokens as i64,
+                status.ptr,
+                0,
+                0,
+                RING,
+                dev.stream,
+            )?
+        };
+        synced(dev, || format!("the library's KV write, {h} x {d}"))?;
+        let st = words(&status, 16)?;
+        n += 1;
+        if st[POOL_USED] == 0 || st[RAW_USED] == 0 {
+            bad.push(format!("{h} x {d}: the test's pages hold {} escape chunks and {} raw slabs: both kinds are wanted", st[POOL_USED], st[RAW_USED]));
+        }
+        // the pages into images, and two that are no block of the pool (their images void)
+        let ni = blocks + 2;
+        let list: Vec<i32> = (0..blocks as i32).chain([nb as i32 + 3, -1]).collect();
+        let pages = Buf::new(4 * ni)?;
+        pages.write(0, &list)?;
+        let (ia, ib, ma, mb) = (Buf::zeroed(image * ni)?, Buf::zeroed(image * ni)?, Buf::zeroed(4 * ni)?, Buf::zeroed(4 * ni)?);
+        // SAFETY: the pool and its tables, the list of `ni` pages, images and counts of `ni` each; one stream.
+        let took = unsafe {
+            lib.library_kv_save(&geom, pool.ptr, nb as i64, pages.ptr, ni as i64, LAYER, ia.ptr, ma.ptr, dev.stream)?;
+            synced(dev, || format!("the library's KV save, {h} x {d}"))?;
+            let t = kv_save(&geom, pool.ptr, nb as i64, pages.ptr, ni as i64, LAYER, (ib.ptr, mb.ptr), dev.stream)?;
+            synced(dev, || format!("the engine's KV save, {h} x {d}"))?;
+            t
+        };
+        n += 1;
+        if !took {
+            bad.push(format!("{h} x {d}: the engine's save did not take the call"));
+        } else {
+            let diff = bytes(&ia, image * ni)?.iter().zip(&bytes(&ib, image * ni)?).filter(|(x, y)| x != y).count();
+            let (wa, wb) = (words(&ma, ni)?, words(&mb, ni)?);
+            if diff > 0 || wa != wb {
+                bad.push(format!("{h} x {d}: save: {diff} bytes of the images differ; bytes moved {wb:?} against {wa:?}"));
+            }
+        }
+        // the library's images into fresh pools, the blocks in the other order, a void image into a block of its own and one into no block
+        let dst: Vec<i32> = (0..blocks as i32).rev().chain([blocks as i32, -1]).collect();
+        let db = Buf::new(4 * ni)?;
+        db.write(0, &dst)?;
+        let ([p1, e1, r1, s1], [p2, e2, r2, s2]) = (pools()?, pools()?);
+        let (g1, g2) = (KvGeom { escape: e1.ptr, raw: r1.ptr, ..geom }, KvGeom { escape: e2.ptr, raw: r2.ptr, ..geom });
+        let cells = blocks * 16 * h * d;
+        let unpacked = |g: &KvGeom, pool: &Buf, list: &Buf, what: &str| -> Result<Vec<u16>> {
+            let (uk, uv) = (Buf::zeroed(2 * cells)?, Buf::zeroed(2 * cells)?);
+            // SAFETY: the pool and its tables, a list of `blocks` pages, outputs of `blocks` pages each; one stream.
+            unsafe { lib.library_kv_unpack(g, pool.ptr, kb.ptr, vb.ptr, list.ptr, blocks as i64, uk.ptr, uv.ptr, dev.stream)? };
+            synced(dev, || format!("the library's KV unpack of {what}, {h} x {d}"))?;
+            let mut out = vec![0u16; 2 * cells];
+            uk.read(0, &mut out[..cells])?;
+            uv.read(0, &mut out[cells..])?;
+            Ok(out)
+        };
+        // SAFETY: the images, the destinations' list, the fresh pools and their tables; one stream.
+        let took = unsafe {
+            lib.library_kv_load(&g1, ia.ptr, db.ptr, ni as i64, p1.ptr, nb as i64, LAYER, s1.ptr, RING, dev.stream)?;
+            synced(dev, || format!("the library's KV load, {h} x {d}"))?;
+            let t = kv_load(&g2, (ia.ptr, db.ptr, ni as i64), p2.ptr, nb as i64, LAYER, (s2.ptr, RING), dev.stream)?;
+            synced(dev, || format!("the engine's KV load, {h} x {d}"))?;
+            t
+        };
+        n += 2;
+        if !took {
+            bad.push(format!("{h} x {d}: the engine's load did not take the call"));
+        } else {
+            // (image j is page j, now in block dst[j]: read in that order, the pages as they were)
+            let was = unpacked(&geom, &pool, &pages, "the pages saved")?;
+            let (u1, u2) = (unpacked(&g1, &p1, &db, "the library's load")?, unpacked(&g2, &p2, &db, "the engine's load")?);
+            let (d1, d2) = (was.iter().zip(&u1).filter(|(x, y)| x != y).count(), was.iter().zip(&u2).filter(|(x, y)| x != y).count());
+            if d1 + d2 > 0 {
+                bad.push(format!("{h} x {d}: pages loaded and read back: {d2} bf16 differ from the pages saved (the library's load: {d1})"));
+            }
+            let (mut w1, mut w2) = (words(&s1, 16 + 2 * RING as usize)?, words(&s2, 16 + 2 * RING as usize)?);
+            for w in [&mut w1, &mut w2] {
+                // (a ring's names in any order: the pages are loaded at once)
+                w[RINGS..RINGS + RING as usize].sort_unstable();
+                w[RINGS + RING as usize..].sort_unstable();
+            }
+            if w1 != w2 {
+                bad.push(format!("{h} x {d}: load: the pools' counters {:?} against the library's {:?}", &w2[..16], &w1[..16]));
+            }
+        }
+        // the loaded pages released: three under another layer's tag (theirs is not the pools' name for them: counted, not given back), then all, and two blocks outside
+        let (other, all): (Vec<i32>, Vec<i32>) = (vec![0, 5, 9], (0..nb as i32).chain([nb as i32 + 5, -1]).collect());
+        let (ob, ab) = (Buf::new(4 * other.len())?, Buf::new(4 * all.len())?);
+        ob.write(0, &other)?;
+        ab.write(0, &all)?;
+        // SAFETY: the pools and their tables, the lists of blocks; one stream.
+        let took = unsafe {
+            lib.library_kv_release(&g1, p1.ptr, nb as i64, ob.ptr, other.len() as i64, LAYER + 1, s1.ptr, dev.stream)?;
+            lib.library_kv_release(&g1, p1.ptr, nb as i64, ab.ptr, all.len() as i64, LAYER, s1.ptr, dev.stream)?;
+            synced(dev, || format!("the library's KV release, {h} x {d}"))?;
+            let t = kv_release(&g2, p2.ptr, nb as i64, ob.ptr, other.len() as i64, LAYER + 1, s2.ptr, dev.stream)?
+                && kv_release(&g2, p2.ptr, nb as i64, ab.ptr, all.len() as i64, LAYER, s2.ptr, dev.stream)?;
+            synced(dev, || format!("the engine's KV release, {h} x {d}"))?;
+            t
+        };
+        n += 1;
+        if !took {
+            bad.push(format!("{h} x {d}: the engine's release did not take the call"));
+        } else {
+            let diff = bytes(&p1, page * nb)?.iter().zip(&bytes(&p2, page * nb)?).filter(|(x, y)| x != y).count();
+            let (w1, w2) = (words(&s1, 16)?, words(&s2, 16)?);
+            if diff > 0 || w1 != w2 {
+                bad.push(format!("{h} x {d}: release: {diff} bytes of the pages differ; the pools' counters {w2:?} against the library's {w1:?}"));
+            }
+        }
+        // what the library refuses is left to it (its own words for it), and a call of no pages launches nothing
+        // SAFETY: refused before any launch, or of no pages.
+        unsafe {
+            let cases: [(&str, bool, bool); 9] = [
+                (
+                    "release, layer 255",
+                    kv_release(&g2, p2.ptr, nb as i64, ab.ptr, 1, 255, s2.ptr, dev.stream)?,
+                    lib.library_kv_release(&g1, p1.ptr, nb as i64, ab.ptr, 1, 255, s1.ptr, dev.stream).is_ok(),
+                ),
+                (
+                    "release, no status",
+                    kv_release(&g2, p2.ptr, nb as i64, ab.ptr, 1, LAYER, 0, dev.stream)?,
+                    lib.library_kv_release(&g1, p1.ptr, nb as i64, ab.ptr, 1, LAYER, 0, dev.stream).is_ok(),
+                ),
+                (
+                    "release, no blocks",
+                    kv_release(&g2, p2.ptr, nb as i64, ab.ptr, 0, LAYER, s2.ptr, dev.stream)?,
+                    lib.library_kv_release(&g1, p1.ptr, nb as i64, ab.ptr, 0, LAYER, s1.ptr, dev.stream).is_ok(),
+                ),
+                (
+                    "save, images not on a 16-byte line",
+                    kv_save(&geom, pool.ptr, nb as i64, pages.ptr, 1, LAYER, (ib.ptr + 8, mb.ptr), dev.stream)?,
+                    lib.library_kv_save(&geom, pool.ptr, nb as i64, pages.ptr, 1, LAYER, ia.ptr + 8, ma.ptr, dev.stream).is_ok(),
+                ),
+                (
+                    "save, a count below zero",
+                    kv_save(&geom, pool.ptr, nb as i64, pages.ptr, -1, LAYER, (ib.ptr, mb.ptr), dev.stream)?,
+                    lib.library_kv_save(&geom, pool.ptr, nb as i64, pages.ptr, -1, LAYER, ia.ptr, ma.ptr, dev.stream).is_ok(),
+                ),
+                (
+                    "save, no pages",
+                    kv_save(&geom, pool.ptr, nb as i64, pages.ptr, 0, LAYER, (ib.ptr, mb.ptr), dev.stream)?,
+                    lib.library_kv_save(&geom, pool.ptr, nb as i64, pages.ptr, 0, LAYER, ia.ptr, ma.ptr, dev.stream).is_ok(),
+                ),
+                (
+                    "load, a ring of no places",
+                    kv_load(&g2, (ia.ptr, db.ptr, 1), p2.ptr, nb as i64, LAYER, (s2.ptr, 0), dev.stream)?,
+                    lib.library_kv_load(&g1, ia.ptr, db.ptr, 1, p1.ptr, nb as i64, LAYER, s1.ptr, 0, dev.stream).is_ok(),
+                ),
+                (
+                    "load, a pool of pages too small",
+                    kv_load(&KvGeom { page_stride: page as i64 - 16, ..g2 }, (ia.ptr, db.ptr, 1), p2.ptr, nb as i64, LAYER, (s2.ptr, RING), dev.stream)?,
+                    lib.library_kv_load(&KvGeom { page_stride: page as i64 - 16, ..g1 }, ia.ptr, db.ptr, 1, p1.ptr, nb as i64, LAYER, s1.ptr, RING, dev.stream)
+                        .is_ok(),
+                ),
+                (
+                    "load, no images",
+                    kv_load(&g2, (ia.ptr, db.ptr, 0), p2.ptr, nb as i64, LAYER, (s2.ptr, RING), dev.stream)?,
+                    lib.library_kv_load(&g1, ia.ptr, db.ptr, 0, p1.ptr, nb as i64, LAYER, s1.ptr, RING, dev.stream).is_ok(),
+                ),
+            ];
+            for (what, ours, theirs) in cases {
+                n += 1;
+                if ours != theirs {
+                    bad.push(format!("{h} x {d}: {what}: the engine took it: {ours}, the library: {theirs}"));
+                }
+            }
+        }
+        synced(dev, || format!("the refused KV calls, {h} x {d}"))?;
+    }
+    Ok((n, bad))
+}
+
+/// `foldcheck`'s choice of layout H's packs (`GpuOps::f8h_plain`: the engine holds it and tells the library before each FP8 call of the library's own):
+/// plain, then coded, the FP8 format's size, pack and unpack and its products under each by both, as `f8_check` and `f8_product_check` compare them
+/// (the GPU's own choice is theirs, run before). A choice that reached one side alone would give packs of two kinds. (compared, differences)
+#[cfg(feature = "dev")]
+fn f8h_plain_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
+    use crate::gpu_ops::GpuOps;
+    let runs: [fn(&crate::dev::Dev, &crate::ffi::Lib) -> Result<(usize, Vec<String>)>; 2] = [f8_check, f8_product_check];
+    let (mut n, mut bad) = (0, Vec::new());
+    for plain in [true, false] {
+        for run in runs {
+            lib.f8h_plain(Some(plain))?;
+            let r = run(dev, lib);
+            // (the GPU's own again, whatever the check said)
+            lib.f8h_plain(None)?;
+            let (m, b) = r?;
+            n += m;
+            bad.extend(b.into_iter().map(|x| format!("packs {}: {x}", if plain { "plain" } else { "coded" })));
+        }
+    }
+    Ok((n, bad))
+}
+
+/// `foldcheck`'s grouped experts: 8 experts of 128 x 1024 in each layout the products take, a plan of random choices (2 a token) for 1 to 300 tokens, the
+/// products with no activation, SiLU and GELU, gathered and not, and weighted sums: by the library's kernels and by the engine's (the step products,
+/// and from 48 pairs an expert hit, 64 on an A100 and 96 on an H100, the prompt kernel; Hopper's wgmma product where the GPU takes it), every bf16
+/// compared; and the expert cache's places (moe_placed), the tiered stack cut per expert as the store cuts it. A product the engine's kernels do not
+/// take is the library's and is not compared: the line printed says how many were. (compared, differences)
 #[cfg(feature = "dev")]
 fn moe_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
     use crate::dev::Buf;
@@ -3908,7 +4390,8 @@ fn f8_product_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usi
 }
 
 /// `foldcheck`'s unpacking: random weights of each layout packed by glyd-gpu's packers, unpacked by the library's kernel and by the engine's, whole and
-/// rows 64-127, every bf16 compared; a pack of a layout number neither knows refused by both. (compared, differences)
+/// rows 64-127, every bf16 compared; 37 rows by id (some ids outside the matrix: rows of zeros) by both, every bf16 compared; a pack of a layout number
+/// neither knows refused by both. (compared, differences)
 #[cfg(feature = "dev")]
 fn unpack_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
     use crate::dev::Buf;
@@ -3952,15 +4435,60 @@ fn unpack_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, 
                     bad.push(format!("{name} {rows} x {cols} rows {row0}+{nr}: {differ} of {} bf16 differ", va.len()));
                 }
             }
-            // a layout number neither knows: both refuse
+            // rows by id (an embedding's lookup): ids in W's rows, some below and past them (rows of zeros), by both kernels; and no ids at all
+            let ids: Vec<i64> = (0..37)
+                .map(|i| match i % 9 {
+                    7 => -1 - (next() % 3) as i64,
+                    8 => rows as i64 + (next() % 5) as i64,
+                    _ => (next() % rows as u64) as i64,
+                })
+                .collect();
+            let idb = Buf::new(8 * ids.len())?;
+            idb.write(0, &ids)?;
+            a.fill_async(0xA5, dev.stream)?;
+            b.fill_async(0x5A, dev.stream)?;
+            // SAFETY: the pack's buffers, the ids and two outputs of ids x cols bf16 (the buffers hold rows x cols), live; the same stream.
+            let ra = unsafe { lib.library_rows(&pb.pack, idb.ptr, ids.len() as i64, a.ptr, dev.stream) };
+            synced(dev, || format!("the library's rows by id, {name} {rows} x {cols}"))?;
+            // SAFETY: as above.
+            let rb = unsafe { self::rows(&pb.pack, idb.ptr, ids.len() as i64, b.ptr, dev.stream) };
+            synced(dev, || format!("the engine's rows by id, {name} {rows} x {cols}"))?;
+            // SAFETY: no ids: nothing is launched.
+            let none = unsafe { (lib.library_rows(&pb.pack, idb.ptr, 0, a.ptr, dev.stream).is_ok(), self::rows(&pb.pack, idb.ptr, 0, b.ptr, dev.stream)) };
+            n += 2;
+            if !matches!(none, (true, Ok(true))) {
+                bad.push(format!("{name} {rows} x {cols}: rows by id, no ids: the library {}, the engine {:?}", none.0, none.1.map_err(|e| e.msg)));
+            }
+            match (ra, rb) {
+                (Ok(()), Ok(true)) => {
+                    let (mut va, mut vb) = (vec![0u16; ids.len() * cols], vec![0u16; ids.len() * cols]);
+                    a.read(0, &mut va)?;
+                    b.read(0, &mut vb)?;
+                    let differ = va.iter().zip(&vb).filter(|(x, y)| x != y).count();
+                    if differ > 0 {
+                        bad.push(format!("{name} {rows} x {cols}: rows by id: {differ} of {} bf16 differ", va.len()));
+                    }
+                }
+                (ra, rb) => bad.push(format!(
+                    "{name} {rows} x {cols}: rows by id: the library {:?}, the engine took it: {:?}",
+                    ra.map_err(|e| e.msg),
+                    rb.map_err(|e| e.msg)
+                )),
+            }
+            // a layout number neither knows: both refuse (the engine leaves the rows' call to the library, which refuses it)
             let mut odd = pb.pack;
             if let Words::Tiered { ref mut tiers, .. } = odd.words {
                 tiers[0] = (99 << 24) | (tiers[0] & 0xFF_FFFF);
-                n += 1;
+                n += 2;
                 // SAFETY: refused before anything is launched.
                 let (ra, rb) = unsafe { (lib.library_unpack(&odd, 0, 64, a.ptr, dev.stream), unpacker(&odd).map(|_| ())) };
                 if ra.is_ok() || rb.is_ok() {
                     bad.push(format!("{name}: an unknown layout number: the library {}, the engine {}", ra.is_ok(), rb.is_ok()));
+                }
+                // SAFETY: as above.
+                let (ra, rb) = unsafe { (lib.library_rows(&odd, idb.ptr, 1, a.ptr, dev.stream), self::rows(&odd, idb.ptr, 1, b.ptr, dev.stream)) };
+                if ra.is_ok() || !matches!(rb, Ok(false)) {
+                    bad.push(format!("{name}: rows by id of an unknown layout number: the library {}, the engine {:?}", ra.is_ok(), rb.map_err(|e| e.msg)));
                 }
             }
         }
@@ -4065,6 +4593,11 @@ mod tests {
         assert!(kv_escape_bytes(-1).is_err() && kv_escape_bytes((1 << 30) + 1).is_err());
         assert_eq!(kv_raw_bytes(3, 8).unwrap(), 16 + 16 + 3 * 8 * 2048);
         assert!(kv_raw_bytes(1, 0).is_err() && kv_raw_bytes(1, 33).is_err());
+        // (a page's image: the page, 16 chunks of 64 entries, a slab of 2048 bytes a head-page)
+        assert_eq!(kv_image_bytes(8, 128, 0).unwrap(), 256 + 8 * 6144 + 4096 + 8 * 2048);
+        assert_eq!(kv_image_bytes(4, 256, 15).unwrap(), kv_page_bytes(4, 256, 15).unwrap() + 4096 + 8 * 2048);
+        assert_eq!(kv_image_bytes(1, 512 | KV_ONE, 33).unwrap(), 384 + 4 * 3072 + 4096 + 4 * 2048);
+        assert_eq!(kv_image_bytes(33, 128, 0).unwrap_err().kind, Kind::of_status(1));
         assert_eq!(kv_decode_workspace(2, 8, 4, 128, 3).unwrap(), (1 << 20) + 2 * 8 * 3 * 4 * 130 * 4);
         // an odd count of partials: their sums padded to 16 bytes, so the partial outputs after them are float4-aligned
         assert_eq!(kv_decode_workspace(1, 1, 1, 128, 1).unwrap(), (1 << 20) + 4 * 4 + 128 * 4);

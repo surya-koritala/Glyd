@@ -754,45 +754,6 @@ __global__ void mma_unpack_kernel(Fmt f, int64_t K, int64_t row0, int64_t rows, 
     mma_unpack_body<Fmt, MOE, FEW>(f, K, row0, rows, out, plan);
 }
 
-// Rows of W [., K] by id (an embedding's lookup; the ids on the device, so a batch's lookup is one launch whatever they
-// are, and a CUDA graph can hold it) into out [n, K]: a warp a (row, step), the step decoded as mma_unpack_kernel decodes
-// it, and only the picked row's 16 weights written. Row r of its block of 64 is row 8 m + g of the step (r = 8 m + g), in
-// the lanes 4 g to 4 g + 3: R[2 m] and R[2 m + 1] of each, its columns 2 t, 2 t + 1 and 8 + 2 t, 9 + 2 t. An id outside
-// [0, rows) has no row: zeros (nothing is read).
-template <class Fmt>
-__global__ void mma_rows_kernel(Fmt f, int64_t K, int64_t rows, const int64_t* __restrict__ ids, int64_t n, uint16_t* __restrict__ out) {
-    __shared__ uint32_t tab[Fmt::kTable ? 256 : 1];
-    if constexpr (Fmt::kTable) fill_groups(tab);
-    __syncthreads();
-    __shared__ uint4 scratch[8][Fmt::kTable ? S2_BYTES / 16 : 1];
-    int64_t KS = K / 16, unit = (blockIdx.x * (int64_t)blockDim.x + threadIdx.x) >> 5;
-    if (unit >= n * KS) return;  // (a whole warp: a unit is a warp's)
-    int lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
-    int64_t row = unit / KS, s = unit % KS, id = (int64_t)__ldg((const long long*)ids + row);
-    uint32_t* o = (uint32_t*)out + (row * K + s * 16) / 2;
-    if ((uint64_t)id >= (uint64_t)rows) {
-        if (lane < 8) o[lane] = 0;
-        return;
-    }
-    int r = (int)(id % 64), pick = r >> 3;
-    uint32_t R[16];
-    typename Fmt::St st;
-    f.load(st, id / 64 * KS + s, lane);
-    f.decode(st, lane, (uint32_t*)scratch[threadIdx.x >> 5], tab, R);
-    if (g == (r & 7)) {
-        uint32_t a = 0, b = 0;
-#pragma unroll
-        for (int m = 0; m < 8; m++) {
-            if (m == pick) {
-                a = R[2 * m];
-                b = R[2 * m + 1];
-            }
-        }
-        o[t] = a;
-        o[4 + t] = b;
-    }
-}
-
 // Option 2's decode (the route SPLIT: glyd_gpu_mma12_unpack_part, glyd_gpu_mma12_ring_*): the 12-bit layout's rows
 // [row0, row0 + rows) into out [rows, K] on the few SMs a green context sets apart for it, the products on the rest. A
 // warp takes units of 4 steps of a row block (64 rows x 64 columns), grid-stride, the next unit's steps loaded into

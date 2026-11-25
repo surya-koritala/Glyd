@@ -472,6 +472,7 @@ fn llama(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>
             k_eq_v: false,
             indexer: None,
             rounding: AttnRounding::F32,
+            kv_from: None,
         };
         let p = names::HF.layer(prefix, l);
         let (ar, fr) = (
@@ -505,7 +506,7 @@ fn llama(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: 1 },
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None },
         blocks,
         final_norm: Norm::rms(eps),
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None },
@@ -635,6 +636,7 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
                     k_eq_v: false,
                     indexer: None,
                     rounding: AttnRounding::Flash,
+                    kv_from: None,
                 };
                 let sh = vec![
                     ("q", vec![heads * hd * if gate { 2 } else { 1 }, d]),
@@ -686,7 +688,7 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: 1 },
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None },
         blocks,
         final_norm: pn,
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None },
@@ -920,6 +922,7 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
                     scale: (hd as f32).powf(-0.5),
                     k_eq_v: false,
                     rounding: AttnRounding::Flash,
+                    kv_from: None,
                     indexer: Some(ix.clone()),
                 };
                 let mut r = names::roles(part::ATTN, &p, 0, |r| r != "norm_in" && !r.ends_with("_bias"));
@@ -961,7 +964,7 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: hc },
+        embed: Embed { scale: 1.0, norm: None, streams: hc, per_layer: None },
         blocks,
         final_norm: pn,
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::GatedMix },
@@ -999,9 +1002,13 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     let max_pos = k.opt_usize("max_position_embeddings")?;
     k.expect("attention_bias", &Value::Bool(false))?;
     k.expect("enable_moe_block", &Value::Bool(false))?;
-    k.expect("hidden_size_per_layer_input", &Value::from(0))?;
-    k.expect("num_kv_shared_layers", &Value::from(0))?;
-    k.expect("use_double_wide_mlp", &Value::Bool(false))?;
+    // per-layer inputs (E2B, E4B): `ple` values a layer for each token, from a second table of `vocab_size_per_layer_input` rows
+    let ple = k.opt_usize("hidden_size_per_layer_input")?.unwrap_or(0);
+    let ple_vocab = k.opt_usize("vocab_size_per_layer_input")?;
+    // KV sharing (E2B, E4B): the last `shared` layers' queries attend to the keys and values of the last earlier layer of their type; with the
+    // double-wide MLP those layers' intermediate width is twice the config's
+    let shared = k.opt_usize("num_kv_shared_layers")?.unwrap_or(0);
+    let wide = k.bool("use_double_wide_mlp", false)?;
     for x in ["num_experts", "top_k_experts", "moe_intermediate_size"] {
         k.expect(x, &Value::Null)?;
     }
@@ -1046,14 +1053,31 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             }
         }
     }
+    if shared >= layers {
+        return err(format!("{mt}: {shared} of {layers} layers share keys and values, where an earlier layer of each type must make them"));
+    }
+    let first_shared = layers - shared;
+    // (each shared layer's store: the last layer before the shared ones of its type; its attention block is twice its index)
+    let store = |l: usize| -> Result<Option<usize>> {
+        if l < first_shared {
+            return Ok(None);
+        }
+        match types[..first_shared].iter().rposition(|t| *t == types[l]) {
+            Some(j) => Ok(Some(2 * j)),
+            None => err(format!("{mt}: layer {l} ({}) shares keys and values, and no earlier layer of its type makes them", types[l])),
+        }
+    };
     let n = Norm::rms(eps);
     let (mut blocks, mut roles, mut shapes) = (Vec::new(), Vec::new(), std::collections::BTreeMap::new());
+    let mut unread = Vec::new();
     for (l, ty) in types.iter().enumerate() {
         let sliding = match ty.as_str() {
             "sliding_attention" => true,
             "full_attention" => false,
             o => return err(format!("{mt}: layer type {o} at layer {l}")),
         };
+        let kv_from = store(l)?;
+        let inter = if wide && kv_from.is_some() { 2 * inter } else { inter };
         let (h, kvh, kev) = if sliding { (hd, kv, false) } else { (ghd, gkv, k_eq_v) };
         let a = Attn {
             heads,
@@ -1073,10 +1097,21 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             k_eq_v: kev,
             indexer: None,
             rounding: AttnRounding::Eager,
+            kv_from,
         };
         let p = names::GEMMA.layer(prefix, l);
-        let r = [names::roles(part::ATTN, &p, 0, |r| !r.ends_with("_bias") && !(kev && r == "v")), names::roles(part::GEMMA_ATTN_OUT, &p, 0, all)].concat();
-        let f = names::roles(part::GEMMA_MLP, &p, 0, all);
+        let own_kv = kv_from.is_none();
+        let r = [
+            names::roles(part::ATTN, &p, 0, |r| !r.ends_with("_bias") && !(kev && r == "v") && (own_kv || !matches!(r, "k" | "v" | "k_norm"))),
+            names::roles(part::GEMMA_ATTN_OUT, &p, 0, all),
+        ]
+        .concat();
+        // (a shared layer's checkpoint may still hold its key and value products and k norm: not read)
+        if !own_kv {
+            unread.extend(["k_proj.", "v_proj.", "k_norm."].map(|t| format!("{p}.self_attn.{t}")));
+        }
+        // (with per-layer inputs the layer scalar follows their branch, the MLP's residual a plain add)
+        let f = names::roles(part::GEMMA_MLP, &p, 0, |r| ple == 0 || r != "res_scale");
         // (the shapes: each matrix [rows, columns] as the layer's heads and widths make it, each norm and scalar its width)
         shape_roles(
             &mut shapes,
@@ -1099,13 +1134,22 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         );
         blocks.push(Block { norm_in: n, body: Body::Mixer(Mixer::Attention(a)), norm_out: Some(n), residual: Residual::Add });
         roles.push(r);
-        blocks.push(Block { norm_in: n, body: Body::Ffn(Ffn::Mlp(gated(act))), norm_out: Some(n), residual: Residual::AddThenScale });
+        let mlp_res = if ple == 0 { Residual::AddThenScale } else { Residual::Add };
+        blocks.push(Block { norm_in: n, body: Body::Ffn(Ffn::Mlp(gated(act))), norm_out: Some(n), residual: mlp_res });
         roles.push(f);
+        if ple > 0 {
+            let g = names::roles(part::GEMMA_PER_LAYER, &p, 0, all);
+            shape_roles(&mut shapes, &g, &[("gate", vec![ple, d]), ("proj", vec![d, ple]), ("norm_out", vec![d]), ("res_scale", vec![1])]);
+            let norm_in = Norm { kind: NormKind::Identity, weight: NormWeight::None, eps, rounding: Rounding::F32 };
+            blocks.push(Block { norm_in, body: Body::PerLayer(PerLayer { layer: l, act }), norm_out: Some(n), residual: Residual::AddThenScale });
+            roles.push(g);
+        }
     }
+    let per_layer = (ple > 0).then(|| PerLayerIn { dim: ple, layers, vocab: ple_vocab.unwrap_or(vocab), norm: n });
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: (d as f32).sqrt(), norm: None, streams: 1 },
+        embed: Embed { scale: (d as f32).sqrt(), norm: None, streams: 1, per_layer },
         blocks,
         final_norm: n,
         head: Head { tied, softcap, scale: 1.0, collapse: Collapse::None },
@@ -1116,7 +1160,13 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     let mut out = finish(&k, desc, &names::GEMMA, prefix, roles, 0)?;
     shapes.insert(out.embed.clone(), vec![vocab, d]);
     shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(pl) = per_layer {
+        let x = names::roles(part::GEMMA_PER_LAYER_IN, prefix.trim_end_matches('.'), 0, all);
+        shape_roles(&mut shapes, &x, &[("ple_embed", vec![pl.vocab, layers * ple]), ("ple_proj", vec![layers * ple, d]), ("ple_norm", vec![ple])]);
+        out.extra.extend(x);
+    }
     out.shapes = shapes;
+    out.unread.extend(unread);
     Ok(out)
 }
 
@@ -1420,7 +1470,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: streams.map_or(1, |s| s.streams) },
+        embed: Embed { scale: 1.0, norm: None, streams: streams.map_or(1, |s| s.streams), per_layer: None },
         blocks,
         final_norm: n,
         head: Head { tied, softcap: None, scale: 1.0, collapse: if streams.is_some() { Collapse::Mean } else { Collapse::None } },
@@ -1721,7 +1771,7 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: 1 },
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None },
         blocks,
         final_norm: n,
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::DepthMix },
@@ -1855,6 +1905,7 @@ fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
             k_eq_v: false,
             indexer: None,
             rounding: AttnRounding::Sdpa,
+            kv_from: None,
         };
         let p = names::HF.layer(prefix, l);
         blocks.push(Block {
@@ -1875,7 +1926,7 @@ fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: Some(bare), streams: 1 },
+        embed: Embed { scale: 1.0, norm: Some(bare), streams: 1, per_layer: None },
         blocks,
         final_norm: Norm::rms(eps),
         head: Head { tied, softcap, scale: out_mult, collapse: Collapse::None },
@@ -2095,7 +2146,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: streams.streams },
+        embed: Embed { scale: 1.0, norm: None, streams: streams.streams, per_layer: None },
         blocks,
         final_norm: Norm::rms(eps),
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::Weighted { eps: streams.eps, norm_eps: eps } },
@@ -2424,7 +2475,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: streams.streams },
+        embed: Embed { scale: 1.0, norm: None, streams: streams.streams, per_layer: None },
         blocks,
         final_norm: Norm::rms(eps),
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::LastPre },
@@ -2648,6 +2699,7 @@ fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
             k_eq_v: false,
             indexer: None,
             rounding: AttnRounding::Flash,
+            kv_from: None,
         }
     };
     let moe_keys =
@@ -2704,7 +2756,7 @@ fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: 1 },
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None },
         blocks,
         final_norm: n,
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None },

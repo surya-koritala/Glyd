@@ -502,11 +502,17 @@ fn dsv4_cpu(dir: &Path) -> Result<Box<dyn Run>> {
 /// A model directory's description (`runtime::describe`) on the CPU reference of the layer kinds, a token at a time: the reference of a family that has no hand-written one
 /// (Nemotron-H). Its weights are read as they are stored (bf16 or f32).
 fn described_cpu(dir: &Path) -> Result<Box<dyn Run>> {
+    described_cpu_with(dir, |_| {})
+}
+
+/// `described_cpu` of the description `edit` changes (a test's: another rounding point, say).
+fn described_cpu_with(dir: &Path, edit: fn(&mut crate::runtime::describe::Described)) -> Result<Box<dyn Run>> {
     use crate::runtime::reference::model::{checkpoint_tensor, RefModel};
     let d = dir.to_path_buf();
     let load = move || {
         let cfg: Value = serde_json::from_str(&io(std::fs::read_to_string(d.join("config.json")))?).map_err(|e| Error(format!("config.json: {e}")))?;
-        let desc = crate::runtime::describe::describe(&cfg)?;
+        let mut desc = crate::runtime::describe::describe(&cfg)?;
+        edit(&mut desc);
         let ck = io(glyd_gpu::safetensors::Checkpoint::open(&d))?;
         let mut m = RefModel::load(&desc, &|n: &str| checkpoint_tensor(&ck, n))?;
         // (Engram's compressed vocabulary, where the model has Engram layers)
@@ -607,6 +613,65 @@ pub fn gemma4_random(out: &Path) -> Result<()> {
     crate::pack::write_safetensors(&out.join("model.safetensors"), &[("format", "pt".to_string())], &refs)?;
     println!("{}: a random Gemma 4, {} tensors, {:.0} MB", out.display(), t.len(), t.iter().map(|t| t.2.len()).sum::<usize>() as f64 / 1e6);
     Ok(())
+}
+
+/// A random model of a Gemma 4 config `text`, every tensor at the shape its description gives (`Described::shapes`) and drawn from `seed` in the order of
+/// their names: the embedding in [-1, 1], the q and k norms' weights in [0.1, 0.3], the other norms in [0.5, 1.5], layer scalars in [0.5, 1], every other
+/// matrix in +-sqrt(3 / its columns). The sizes the E2B and E4B releases add (KV sharing, the double-wide MLP) come from the description, so each config's
+/// model is its own shape. (Gemma 4's scores are not scaled: the q and k norms set them. With those weights in [0.5, 1.5] a random model's scores reach
+/// about +-16 at heads of 256, its softmax is nearly one-hot and the engine's bf16 rounding can move a near tie: on an A10, eight-layer models of six seeds
+/// were 2e-3 to 3.2e-1 in KL mean from the CPU reference, their largest logit differences up to 13, with KV sharing and without alike; at [0.1, 0.3] every
+/// one was 6e-4 to 1.3e-3, at most 2.3e-3 a row and 0.37 a logit.)
+pub fn gemma4_shaped_random(out: &Path, text: &str, seed: u64) -> Result<()> {
+    let cfg: Value = serde_json::from_str(text).map_err(|e| Error(format!("config.json: {e}")))?;
+    let d = crate::runtime::describe::describe(&cfg)?;
+    let mut r = seed;
+    let mut uni = move |a: f32, b: f32| {
+        r ^= r << 13;
+        r ^= r >> 7;
+        r ^= r << 17;
+        a + (b - a) * ((r >> 40) as f32 / (1u64 << 24) as f32)
+    };
+    let bf = |x: f32| {
+        let b = x.to_bits();
+        ((b + 0x7fff + ((b >> 16) & 1)) >> 16) as u16
+    };
+    let mut t: Vec<(String, Vec<u64>, Vec<u8>)> = Vec::new();
+    for (name, shape) in &d.shapes {
+        let (lo, hi) = if *name == d.embed {
+            (-1.0, 1.0)
+        } else if name.ends_with("layer_scalar") {
+            (0.5, 1.0)
+        } else if name.ends_with("q_norm.weight") || name.ends_with("k_norm.weight") {
+            (0.1, 0.3)
+        } else if shape.len() == 1 {
+            (0.5, 1.5)
+        } else {
+            let a = (3.0 / shape[shape.len() - 1] as f32).sqrt();
+            (-a, a)
+        };
+        let n: usize = shape.iter().product();
+        t.push((name.clone(), shape.iter().map(|&x| x as u64).collect(), (0..n).flat_map(|_| bf(uni(lo, hi)).to_le_bytes()).collect()));
+    }
+    io(std::fs::create_dir_all(out))?;
+    io(std::fs::write(out.join("config.json"), text))?;
+    let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = t.iter().map(|(n, s, b)| (n.as_str(), "BF16", s.clone(), &b[..])).collect();
+    crate::pack::write_safetensors(&out.join("model.safetensors"), &[("format", "pt".to_string())], &refs)?;
+    println!("{}: a random Gemma 4, {} tensors, {:.0} MB", out.display(), t.len(), t.iter().map(|t| t.2.len()).sum::<usize>() as f64 / 1e6);
+    Ok(())
+}
+
+/// A small Gemma 4 with the E2B and E4B releases' KV sharing and double-wide MLP: eight layers, the last four (three sliding, one global) reading the
+/// keys and values of the last sliding and the last global layer before them, their MLPs twice as wide; no K = V (the E sizes have none).
+pub fn gemma4_kv_random(out: &Path) -> Result<()> {
+    let text = r#"{"architectures": ["Gemma4ForConditionalGeneration"], "model_type": "gemma4", "eos_token_id": [1, 106],
+        "text_config": {"model_type": "gemma4_text", "hidden_size": 512, "num_hidden_layers": 8, "num_attention_heads": 4, "num_key_value_heads": 1,
+        "attention_k_eq_v": false, "head_dim": 256, "global_head_dim": 512, "intermediate_size": 512, "vocab_size": 4096, "rms_norm_eps": 1e-6, "sliding_window": 32,
+        "layer_types": ["sliding_attention", "sliding_attention", "sliding_attention", "full_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention"],
+        "num_kv_shared_layers": 4, "use_double_wide_mlp": true, "final_logit_softcapping": 30.0, "max_position_embeddings": 4096,
+        "enable_moe_block": false, "hidden_size_per_layer_input": 0, "hidden_activation": "gelu_pytorch_tanh",
+        "rope_parameters": {"sliding_attention": {"rope_theta": 10000.0, "rope_type": "default"}, "full_attention": {"rope_theta": 1000000.0, "partial_rotary_factor": 0.25, "rope_type": "proportional"}}}}"#;
+    gemma4_shaped_random(out, text, 0x2026_1123_0000_00e2)
 }
 
 /// Qwen3.8-Flash-Next on its own engine: a prompt in chunks (the last chunk's last row through the head), the logits of a step.
@@ -950,7 +1015,15 @@ pub fn cases() -> Vec<Case> {
             family: "Gemma 4 (sliding and global attention, K = V, soft-capped head)",
             weights: Weights::Random(gemma4_random),
             engine: gemma4_engine,
-            cpu: None,
+            cpu: Some(described_cpu),
+            vocab: 4096,
+        },
+        Case {
+            id: "gemma4-kv",
+            family: "Gemma 4 E2B/E4B layers (KV sharing across layers, the double-wide MLP)",
+            weights: Weights::Random(gemma4_kv_random),
+            engine: gemma4_engine,
+            cpu: Some(described_cpu),
             vocab: 4096,
         },
         Case {
@@ -1579,6 +1652,60 @@ pub fn record(a: &crate::args::Args) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// The CPU reference of each Gemma 4 random case against the fixtures the engine and the reference recorded, row by row: the plain case's against the
+    /// engine's own bits (gemma4.sm89.json.gz), the KV-sharing case's against its fixture. Minutes on an unoptimized build: cargo test -- --ignored
+    /// gemma4_reference_against.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore]
+    fn gemma4_reference_against_the_fixtures() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits");
+        for (case, file, make) in
+            [("gemma4", "gemma4.sm89.json.gz", gemma4_random as fn(&Path) -> Result<()>), ("gemma4-kv", "gemma4-kv.json.gz", gemma4_kv_random)]
+        {
+            let dir = std::env::temp_dir().join(format!("glyd-g4ref-{case}-{}", std::process::id()));
+            make(&dir).unwrap();
+            let fx = Fixture::read(&fixtures.join(file)).unwrap();
+            let got = drive(described_cpu(&dir).unwrap().as_mut(), &fx.prompt, &fx.decode, &fx.long).unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            let kls: Vec<String> = fx.rows.iter().zip(&got).map(|(w, g)| format!("{:.1e}", kl_of(w, g))).collect();
+            let v = compare(&fx, &Bound::Kl { mean: 1e-4, max: 2.5e-4, top1: 0.9 }, &got);
+            println!(
+                "{case} reference against {file}: KL mean {:.2e} max {:.2e}, best token {}/{}; rows {}",
+                v.mean_kl,
+                v.max_kl,
+                v.top1.0,
+                v.top1.1,
+                kls.join(" ")
+            );
+            // (the reference with each norm's output rounded to bf16, as transformers' Gemma4RMSNorm casts it back to a bf16 input's type and the engine holds it)
+            let once = |d: &mut crate::runtime::describe::Described| {
+                use crate::runtime::kinds::Rounding;
+                for b in d.desc.blocks.iter_mut() {
+                    b.norm_in.rounding = Rounding::Once;
+                    if let Some(n) = b.norm_out.as_mut() {
+                        n.rounding = Rounding::Once;
+                    }
+                }
+                d.desc.final_norm.rounding = Rounding::Once;
+            };
+            make(&dir).unwrap();
+            let got2 = drive(described_cpu_with(&dir, once).unwrap().as_mut(), &fx.prompt, &fx.decode, &fx.long).unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            let v = compare(&fx, &Bound::Kl { mean: 1e-4, max: 2.5e-4, top1: 0.9 }, &got2);
+            println!("{case} reference, its norms' outputs rounded to bf16, against {file}: KL mean {:.2e} max {:.2e}", v.mean_kl, v.max_kl);
+            // (the same logits through the engine's head arithmetic: the product's output bf16, then its soft-cap's three roundings, kernels/gemma4.cu g4_softcap)
+            let b = crate::runtime::reference::bf16;
+            let cap = 30.0f32;
+            let r16: Vec<Vec<f32>> = got
+                .iter()
+                .map(|r| r.iter().map(|&l| cap * (l / cap).clamp(-1.0 + 1e-7, 1.0 - 1e-7).atanh()).map(|z| b(b(b(b(z) / cap).tanh()) * cap)).collect())
+                .collect();
+            let v = compare(&fx, &Bound::Kl { mean: 1e-4, max: 2.5e-4, top1: 0.9 }, &r16);
+            println!("{case} reference, its head rounded as the engine's, against {file}: KL mean {:.2e} max {:.2e}", v.mean_kl, v.max_kl);
+        }
+    }
+
     /// The CPU's candidates usercheck holds the step's to: the largest first, equal logits by the smaller token, as the sampler's `sample_top` takes them.
     #[test]
     fn host_top_orders_by_logit_then_token() {
@@ -1751,7 +1878,7 @@ mod tests {
 /// The case's model in `dir` on the description executor.
 pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Result<Dyn> {
     Ok(match case {
-        "gemma4" => {
+        "gemma4" | "gemma4-kv" => {
             let c = crate::gemma4::ConfigG4::load(dir)?;
             Dyn::new(dir, crate::dynamic::gemma4::lowered(dir, &c)?, None, o)?
         }
@@ -1765,7 +1892,11 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
         "nemotron" => crate::dynamic::nemotron::load(dir, o, level_layout(level)?.unwrap_or(Layout::Tiered))?,
         "deepseek-v4" => crate::dynamic::deepseek_v4::load(dir, o)?,
         "qwen4x" => crate::dynamic::qwen4x::load(dir, o)?,
-        other => return err(format!("{other}: gemma4, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, nemotron, deepseek-v4 or qwen4x")),
+        other => {
+            return err(format!(
+                "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, nemotron, deepseek-v4 or qwen4x"
+            ))
+        }
     })
 }
 
@@ -1790,6 +1921,7 @@ pub(crate) fn random_dyn_at(case: &str, level: &str, layout: Option<Layout>, tag
 fn random_model(case: &str, dir: &Path) -> Result<()> {
     match case {
         "gemma4" => gemma4_random(dir),
+        "gemma4-kv" => gemma4_kv_random(dir),
         "qwen35" => qwen35_random(dir),
         "qwen35-wide" => qwen35_wide_random(dir),
         "qwen35moe" => qwen35moe_random(dir),
@@ -1801,7 +1933,7 @@ fn random_model(case: &str, dir: &Path) -> Result<()> {
         "nemotron" => crate::kcheck_nh::random(dir, 0, 16),
         "deepseek-v4" => crate::dsv4_ref::random(dir, None),
         "qwen4x" => qwen4x_random(dir),
-        other => err(format!("{other}: gemma4, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, nemotron, deepseek-v4 or qwen4x")),
+        other => err(format!("{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, nemotron, deepseek-v4 or qwen4x")),
     }
 }
 

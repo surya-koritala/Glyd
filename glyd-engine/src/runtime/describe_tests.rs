@@ -165,6 +165,49 @@ fn released_gemma4_config() {
     assert!(d.head.is_none());
 }
 
+/// KV sharing and the double-wide MLP (E2B, E4B): the last `num_kv_shared_layers` layers' attentions read the keys and values of the last earlier layer of
+/// their type (`Attn::kv_from`, that layer's attention block), name no k, v or k norm (a checkpoint's are left unread), and their MLPs are twice as wide.
+#[test]
+fn gemma4_kv_sharing_and_the_double_wide_mlp() {
+    use super::kinds::*;
+    let mut g = fixture("gemma4_12b_config.json");
+    let t = &mut g["text_config"];
+    let types = [
+        "sliding_attention",
+        "sliding_attention",
+        "full_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "full_attention",
+        "sliding_attention",
+        "full_attention",
+    ];
+    t["layer_types"] = serde_json::json!(types);
+    (t["num_hidden_layers"], t["num_kv_shared_layers"], t["use_double_wide_mlp"]) = (8.into(), 4.into(), true.into());
+    let inter = t["intermediate_size"].as_u64().unwrap() as usize;
+    let d = describe(&g).unwrap();
+    let from: Vec<Option<usize>> = (0..8)
+        .map(|l| match &d.desc.blocks[2 * l].body {
+            Body::Mixer(Mixer::Attention(a)) => a.kv_from,
+            b => panic!("{b:?}"),
+        })
+        .collect();
+    assert_eq!(from, [None, None, None, None, Some(6), Some(4), Some(6), Some(4)]);
+    let p = "model.language_model.layers";
+    for l in 0..8 {
+        let names: BTreeSet<String> = d.blocks[2 * l].iter().map(|(r, _)| r.clone()).collect();
+        assert_eq!(names.contains("k") && names.contains("k_norm"), l < 4, "layer {l}: {names:?}");
+        assert_eq!(d.shapes[&format!("{p}.{l}.mlp.gate_proj.weight")][0], if l < 4 { inter } else { 2 * inter }, "layer {l}");
+        assert_eq!(d.unread.contains(&format!("{p}.{l}.self_attn.k_proj.")), l >= 4);
+    }
+    // (the double-wide MLP is on the shared layers alone; with no shared layers there is none)
+    g["text_config"]["num_kv_shared_layers"] = 0.into();
+    assert!(describe(&g).unwrap().shapes.iter().filter(|(n, _)| n.ends_with("gate_proj.weight")).all(|(_, s)| s[0] == inter));
+    // (every layer shared: none makes the keys and values)
+    g["text_config"]["num_kv_shared_layers"] = 8.into();
+    assert!(describe(&g).is_err());
+}
+
 /// A key the builder does not know fails with its name; a setting it does not support says so.
 #[test]
 fn unknown_keys_are_named() {

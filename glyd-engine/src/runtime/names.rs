@@ -224,6 +224,15 @@ pub mod part {
 
     // ---- Gemma 4: sandwich norms and the layer's scalar
     pub const GEMMA_ATTN_OUT: Roles = &[("norm_out", "post_attention_layernorm.weight")];
+    /// A layer's per-layer input branch (Gemma 4's E2B, E4B), and the model's tables of the inputs.
+    pub const GEMMA_PER_LAYER: Roles = &[
+        ("gate", "per_layer_input_gate.weight"),
+        ("proj", "per_layer_projection.weight"),
+        ("norm_out", "post_per_layer_input_norm.weight"),
+        ("res_scale", "layer_scalar"),
+    ];
+    pub const GEMMA_PER_LAYER_IN: Roles =
+        &[("ple_embed", "embed_tokens_per_layer.weight"), ("ple_proj", "per_layer_model_projection.weight"), ("ple_norm", "per_layer_projection_norm.weight")];
     pub const GEMMA_MLP: Roles = &[
         ("norm_in", "pre_feedforward_layernorm.weight"),
         ("gate", "mlp.gate_proj.weight"),
