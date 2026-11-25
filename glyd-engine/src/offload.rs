@@ -2708,7 +2708,7 @@ impl ExpertStore {
             ly.calls = 0;
             if let Some(dp) = ly.dplan.as_mut() {
                 dp.upload(&ly.cache.expert_in())?;
-                dp.counters()?;
+                dp.reset()?;
             }
             if let Some(c) = ly.cpu.as_mut() {
                 c.last.fill(0);
@@ -2722,6 +2722,10 @@ impl ExpertStore {
         }
         inner.stats = Stats::default();
         inner.costs = Costs::default();
+        // (and the plan on the GPU weighs its calls by those times from its first call on: else the calls before the first end of a step plan by the times before)
+        if let Some(m) = inner.mail.as_mut() {
+            m.set_params(crate::devplan::Params::of(&inner.offload, &inner.costs))?;
+        }
         for ly in inner.layers.iter_mut().flatten() {
             ly.stats = LayerStats::default();
         }

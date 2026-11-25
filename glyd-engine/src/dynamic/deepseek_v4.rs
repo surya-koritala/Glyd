@@ -520,9 +520,10 @@ fn experts(x: &ExpertsAt, ml: &MoeLoad, d: usize, pack: PackFn, dense: DenseFn) 
                 if x.tpr.is_some() || cg.ram.is_some() {
                     return err("DeepSeek-V4's experts in the expert cache: on one GPU a stage, every expert in the computer's memory (the disk holds hummingbird directories' experts alone)");
                 }
-                // (the host computes the misses the plan gives it where the experts are in an exact FP4 layout, as the GPU's act_w does: src/cpu_fp4.rs)
+                // (the host computes the misses the plan gives it where the experts are in an exact FP4 layout, as the GPU's act_w does: src/cpu_fp4.rs; the plan on the GPU
+                // copies from the host tier through the same half, in copy mode too)
                 let fp4 = [glyd_gpu::pack::FP4_TAG, glyd_gpu::pack::FP4R_TAG].contains(&ju.tag);
-                let half = (fp4 && st.wants_cpu()).then_some(crate::offload::HostHalf::Fp4 {
+                let half = (fp4 && (st.wants_cpu() || st.offload().device)).then_some(crate::offload::HostHalf::Fp4 {
                     inter: i,
                     latent: d,
                     packed: ju.tag == glyd_gpu::pack::FP4R_TAG,
