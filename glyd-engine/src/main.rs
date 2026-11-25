@@ -1,4 +1,4 @@
-//! glyd-engine: Glyd's own engine for Qwen3 on CUDA.
+//! glyd-engine: Glyd's own inference engine (the families of src/support.rs on CUDA).
 //!
 //!   glyd-engine run MODEL[:LEVEL] [--prompt TEXT] [--no-think] [--context N] [--users N] [--port N] [--host H] [--temp T] [--layout auto|mma|mma12] [--expert-cache GIB] [--host-memory GIB]
 //!                                                             what `glyd run` starts: the model made ready on the first run (downloaded, packed for this GPU,

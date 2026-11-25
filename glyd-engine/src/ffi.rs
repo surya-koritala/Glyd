@@ -1,6 +1,6 @@
-//! The binding: the CUDA driver and Glyd's GPU library (the C API of gpu/glyd_gpu.h, version 16), both loaded at run
-//! time; nothing is linked at build time. This is the only module that names a symbol: the library's functions are
-//! resolved in `Lib::load` by their names (every function of glyd_gpu.h is exported by its name). The declarations are held to
+//! The binding: the CUDA driver (and cuBLAS) and, where `GLYD_GPU_LIB` names it or an AMD build looks for it, Glyd's GPU library (the C API of gpu/glyd_gpu.h, version
+//! 26), loaded at run time; nothing is linked at build time. A CUDA build loads no library (`Lib::own`: its own kernels take every call). This is the only module that
+//! names a symbol: the library's functions are resolved in `Lib::load` by their names (every function of glyd_gpu.h is exported by its name). The declarations are held to
 //! gpu/glyd_gpu.h by a test (`declarations_are_the_header`).
 //!
 //! Device memory is a `u64` address (the driver's CUdeviceptr); the library takes it as a pointer. Every call returns

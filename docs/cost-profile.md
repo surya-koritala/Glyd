@@ -1,7 +1,7 @@
 # Cost profiles: glyd-costs/1
 
 What a model at a level holds on each layer, what a decoded token reads, and a prediction of decode speed from the machine's
-memory tiers (Linear GLY-236). For `glyd run`'s planner, the fit page and Glyd-Compute's scheduler. The numbers come from the
+memory tiers. For `glyd run`'s planner, the fit page and Glyd-Compute's scheduler. The numbers come from the
 packed directory's own files, not from a formula: config.json, glyd.json and the safetensors headers, pack by pack, which are the
 bytes the loader uploads. A formula is used only where the files are not there (a model not packed yet), and the document says so.
 
