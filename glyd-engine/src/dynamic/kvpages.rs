@@ -1031,8 +1031,25 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         100.0 * twelve / bf16 as f64,
         lx.bytes as f64 / (1u64 << 30) as f64
     );
+    // (the planner's bytes a token where a ring takes 12-bit pages (`plan::sizing::kv12_token_bytes`), against the pages' own with their share of the escape pool: within 5%)
+    let planned: f64 = rings
+        .iter()
+        .map(|(r, s)| match e.kv12.as_ref().and_then(|t| Lossless::token_bytes(&e.lib, &e.big.d, t, *r)) {
+            Some(_) => crate::plan::sizing::kv12_token_bytes(s.heads, s.channels, s.one) as f64,
+            None => plain(s) as f64,
+        })
+        .sum();
+    let off = twelve / planned - 1.0;
+    println!(
+        "{} the planner's {planned:.0} bytes a token in 12-bit pages against the pages' {twelve:.0} ({:+.1}%)",
+        if off.abs() <= 0.05 { "ok  " } else { "FAIL" },
+        100.0 * off
+    );
     if differ != 0 || want.first() != got.first() || lx.status()?.iter().any(|w| w[11] != 0) {
         return err("the 12-bit pages do not hold what the bf16 ones do");
+    }
+    if off.abs() > 0.05 {
+        return err(format!("the planner's bytes a token in 12-bit pages are {:+.1}% off the pages'", 100.0 * off));
     }
     if moved_differ != 0 || moved_pages == 0 {
         return err("the 12-bit pages moved whole do not hold what they held");
