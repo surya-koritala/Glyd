@@ -2101,7 +2101,7 @@ impl Dyn {
             Op::Moe(MoeOp { block, .. }) => block,
             _ => return Ok(()),
         };
-        let Some((layer, _)) = p.moe[block].resident() else {
+        let Some(layer) = p.moe[block].core() else {
             crate::hb_usage::missed(l);
             return Ok(());
         };

@@ -54,7 +54,7 @@ pub fn load(src: Tensors, role: &str, s: &Source) -> Result<(Vec<usize>, Vec<f32
 
 /// A checkpoint's tensor as f32: bf16 and f32 as stored; a hash table's expert ids (int64); and in a development build DeepSeek-V4's FP8
 /// matrices and FP4 experts decoded with their scales, and an MXFP4 matrix (`.weight_packed`, `.weight_scale`: Kimi-K3's experts) decoded
-/// where its `.weight` is asked for. Another type: none.
+/// where its codes or its `.weight` are asked for. Another type: none.
 pub fn checkpoint_tensor(ck: &glyd_gpu::safetensors::Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
     let Some((_, t)) = ck.get(name) else { return mxfp4(ck, name) };
     let shape: Vec<usize> = t.shape.iter().map(|&d| d as usize).collect();
@@ -62,6 +62,7 @@ pub fn checkpoint_tensor(ck: &glyd_gpu::safetensors::Checkpoint, name: &str) -> 
         "BF16" => ck.read(name).ok()?.chunks_exact(2).map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)).collect(),
         "F32" => ck.read(name).ok()?.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect(),
         "I64" => ck.read(name).ok()?.chunks_exact(8).map(|c| i64::from_le_bytes(c.try_into().unwrap_or_default()) as f32).collect(),
+        "U8" if name.ends_with(".weight_packed") => return mxfp4(ck, name),
         #[cfg(feature = "dev")]
         "F8_E4M3" | "I8" => {
             let (sh, v) = crate::dsv4_ref::tensor_of(ck, name).ok()?;
@@ -74,7 +75,7 @@ pub fn checkpoint_tensor(ck: &glyd_gpu::safetensors::Checkpoint, name: &str) -> 
 
 #[cfg(feature = "dev")]
 fn mxfp4(ck: &glyd_gpu::safetensors::Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
-    let base = name.strip_suffix(".weight")?;
+    let base = name.strip_suffix(".weight_packed").or_else(|| name.strip_suffix(".weight"))?;
     let (_, t) = ck.get(&format!("{base}.weight_packed"))?;
     let (rows, cols) = (t.shape[0] as usize, t.shape[1] as usize * 2);
     let w = crate::kimi_ref::mxfp4(&ck.read(&format!("{base}.weight_packed")).ok()?, &ck.read(&format!("{base}.weight_scale")).ok()?, rows, cols).ok()?;

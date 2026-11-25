@@ -2006,7 +2006,7 @@ mod tests {
         crate::kimi_ref::random(&d, 1, true, 8).unwrap();
         let c = crate::kimi::ConfigKimi::load(&d).unwrap();
         let w32 = kimi::dtypes(&glyd_gpu::safetensors::Checkpoint::open(&d).unwrap(), &c).unwrap();
-        v.push(kimi::describe(&c, &Stage::whole(c.layers), &w32, false).unwrap());
+        v.push(kimi::lowered(&d, &c, &Stage::whole(c.layers), &w32, false).unwrap());
         let d = dir("glm");
         crate::glm::random(&d, false, None).unwrap();
         let c = crate::glm::ConfigGlm::load(&d).unwrap();
@@ -2201,14 +2201,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The descriptions the executor's loader can read (`Dyn::new_with`: Gemma 4, its draft, the Llama-style dense models, Qwen3.5, Muse Spark, Qwen3.8-Flash-Next) name every matrix
-    /// their operations use; the others name none yet, their families' loaders filling them by index, and the executor's loader refuses them in words.
+    /// The descriptions the executor's loader can read (`Dyn::new_with`: Gemma 4, its draft, the Llama-style dense models, Qwen3.5, Muse Spark, Kimi-K3,
+    /// Qwen3.8-Flash-Next) name every matrix their operations use; the others name none yet, their families' loaders filling them by index, and the executor's
+    /// loader refuses them in words.
     #[cfg(feature = "dev")]
     #[test]
     fn the_executors_loader_reads_only_descriptions_that_name_their_tensors() {
         use super::super::{dense::FAMILY as DENSE, qwen4x::FAMILY as QX, unnamed};
         for d in every_family("named") {
-            let named = matches!(d.family, "Gemma 4" | "Gemma 4 draft" | "Qwen3.5" | "Muse Spark" | DENSE | QX);
+            let named = matches!(d.family, "Gemma 4" | "Gemma 4 draft" | "Qwen3.5" | "Muse Spark" | "Kimi-K3" | DENSE | QX);
             assert_eq!(unnamed(&d).is_none(), named, "{}: {:?} of {} matrices named", d.family, unnamed(&d), d.mats.len());
         }
     }
