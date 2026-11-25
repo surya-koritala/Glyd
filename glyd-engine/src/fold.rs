@@ -709,6 +709,29 @@ pub unsafe fn linear(w: &Pack, x: u64, m: i64, y: u64, ws: u64, ws_bytes: usize,
     Ok(true)
 }
 
+/// MoePairs (gpu/glyd_gpu_kernels.h), field for field: the prompt kernel's experts' plan (56 bytes); one matrix's product passes the library's
+/// MoePairs{} (`Default`: `skip` 1, the rest zero).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MoePairs {
+    pub plan: u64,
+    pub e: i32,
+    pub k: i64,
+    pub gather: i32,
+    pub act: i32,
+    pub w: u64,
+    pub wf32: i32,
+    pub xahead: i32,
+    pub pf: i32,
+    pub skip: i32,
+}
+
+impl Default for MoePairs {
+    fn default() -> Self {
+        MoePairs { plan: 0, e: 0, k: 0, gather: 0, act: 0, w: 0, wf32: 0, xahead: 0, pf: 0, skip: 1 }
+    }
+}
+
 /// kvc::RawPool (gpu/glyd_gpu_kernels.h), field for field: the raw-slab pool as a kernel takes it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -3506,6 +3529,7 @@ mod tests {
         assert_eq!((offset_of!(F8Pk, plain), offset_of!(F8Un, o), offset_of!(F8Un, vec)), (32, 56, 76));
         // f8c::F8Lin's offsets as a host compiler lays it out (gpu/fp8/emu_f8.cpp's build of the f8c block, 2026-11-23): 168 bytes
         assert_eq!(size_of::<F8Lin>(), 168);
+        assert_eq!((size_of::<MoePairs>(), offset_of!(MoePairs, k), offset_of!(MoePairs, w), offset_of!(MoePairs, skip)), (56, 16, 32, 52));
         let at =
             [offset_of!(F8Lin, lds), offset_of!(F8Lin, m), offset_of!(F8Lin, xvec), offset_of!(F8Lin, plan), offset_of!(F8Lin, e), offset_of!(F8Lin, gather)];
         assert_eq!(at, [80, 104, 128, 136, 152, 160]);

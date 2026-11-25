@@ -577,3 +577,125 @@ FOLD_F8H_ONE(coded, f8h_lin1_body, 0)
 FOLD_F8H_ONE(coded, f8h_lin1_body, 1)
 FOLD_F8H_ONE(plain, f8b_lin1_body, 0)
 FOLD_F8H_ONE(plain, f8b_lin1_body, 1)
+
+// glyd_gpu_mma_linear's and _mma12_linear's prompt kernel (mma_gemm_big_any: the routes BIG, DECODE, AHEAD and SPLIT, K a multiple of 64) at the library's
+// default plans: mma_gemm_big_body in blocks of 128 tokens by two row blocks (v1), of 256 by one (v2) and, the 12-bit layout's on an A100, of 256 by two
+// with eight consumer warps (v3), K split over blocks as mma_gemm_grid_run splits it (finish_body adds the splits); on GeForce Ada mma_gemm_sk_body
+// (stream-K) in its two shapes; the experts' prompt kernel (mma_moe_big: v1 with the plan, MOE); and the 12-bit layout's route MID (mma12_mid_any:
+// mma12_mid_body in tiles of 16, 32 and 64 tokens and two or four warpgroups, mma12_ws_body in an A100's four tiles of 32 to 128 tokens).
+// Their grids, splits and workspaces are Rust (src/fold.rs), as the library's host code makes them.
+extern "C" __global__ void fold_finish(const float* y32, int64_t split, const __nv_bfloat16* bias, int64_t M, int64_t O, __nv_bfloat16* y) {
+    glib::finish_body(y32, split, bias, M, O, y);
+}
+#define FOLD_BIG_T(NAME, FMT, CW, PW, NB, RBB, MOE, TAG) \
+    extern "C" __global__ void __launch_bounds__(32 * (CW + PW), 1) fold_big_##NAME##_##TAG(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, uint32_t s1, uint32_t s2, uint32_t s3, int64_t O, int64_t K, int64_t M, int64_t stages_per_split, const __nv_bfloat16* X, const __nv_bfloat16* bias, __nv_bfloat16* Y, float* Y32, const glib::MoePairs moe) { \
+        glib::mma_gemm_big_body<glib::FMT, CW, PW, NB, RBB, MOE>(glib::FMT{data, blocks, block_base, glib::Tiers{s1, s2, s3}}, O, K, M, stages_per_split, X, bias, Y, Y32, moe); \
+    }
+#define FOLD_SK_T(NAME, FMT, CW, PW, NB, RBB, CR, TAG) \
+    extern "C" __global__ void __launch_bounds__(32 * (CW + PW), 1) fold_sk_##NAME##_##TAG(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, uint32_t s1, uint32_t s2, uint32_t s3, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* X, const __nv_bfloat16* bias, __nv_bfloat16* Y, float* parts, int* done) { \
+        glib::mma_gemm_sk_body<glib::FMT, CW, PW, NB, RBB, CR, false>(glib::FMT{data, blocks, block_base, glib::Tiers{s1, s2, s3}}, O, K, M, X, bias, Y, parts, done); \
+    }
+#define FOLD_BIG_P(NAME, FMT, CW, PW, NB, RBB, MOE, TAG) \
+    extern "C" __global__ void __launch_bounds__(32 * (CW + PW), 1) fold_big_##NAME##_##TAG(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, uint32_t s1, uint32_t s2, uint32_t s3, int64_t per, int64_t stride, int64_t O, int64_t K, int64_t M, int64_t stages_per_split, const __nv_bfloat16* X, const __nv_bfloat16* bias, __nv_bfloat16* Y, float* Y32, const glib::MoePairs moe) { \
+        glib::mma_gemm_big_body<glib::FMT, CW, PW, NB, RBB, MOE>(glib::FMT{data, blocks, block_base, glib::Tiers{s1, s2, s3}, per, stride}, O, K, M, stages_per_split, X, bias, Y, Y32, moe); \
+    }
+#define FOLD_BIG_B(NAME, FMT, CW, PW, NB, RBB, MOE, TAG) \
+    extern "C" __global__ void __launch_bounds__(32 * (CW + PW), 1) fold_big_##NAME##_##TAG(const uint8_t* data, const uint8_t* scales, int64_t O, int64_t K, int64_t M, int64_t stages_per_split, const __nv_bfloat16* X, const __nv_bfloat16* bias, __nv_bfloat16* Y, float* Y32, const glib::MoePairs moe) { \
+        glib::mma_gemm_big_body<glib::FMT, CW, PW, NB, RBB, MOE>(glib::FMT{data, scales}, O, K, M, stages_per_split, X, bias, Y, Y32, moe); \
+    }
+#define FOLD_SK_B(NAME, FMT, CW, PW, NB, RBB, CR, TAG) \
+    extern "C" __global__ void __launch_bounds__(32 * (CW + PW), 1) fold_sk_##NAME##_##TAG(const uint8_t* data, const uint8_t* scales, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* X, const __nv_bfloat16* bias, __nv_bfloat16* Y, float* parts, int* done) { \
+        glib::mma_gemm_sk_body<glib::FMT, CW, PW, NB, RBB, CR, false>(glib::FMT{data, scales}, O, K, M, X, bias, Y, parts, done); \
+    }
+#define FOLD_BIG_4H(NAME, FMT, CW, PW, NB, RBB, MOE, TAG) \
+    extern "C" __global__ void __launch_bounds__(32 * (CW + PW), 1) fold_big_##NAME##_##TAG(const uint8_t* data, const uint8_t* scales, uint32_t base, int64_t O, int64_t K, int64_t M, int64_t stages_per_split, const __nv_bfloat16* X, const __nv_bfloat16* bias, __nv_bfloat16* Y, float* Y32, const glib::MoePairs moe) { \
+        glib::mma_gemm_big_body<glib::FMT, CW, PW, NB, RBB, MOE>(glib::FMT{{data, scales}, base}, O, K, M, stages_per_split, X, bias, Y, Y32, moe); \
+    }
+#define FOLD_SK_4H(NAME, FMT, CW, PW, NB, RBB, CR, TAG) \
+    extern "C" __global__ void __launch_bounds__(32 * (CW + PW), 1) fold_sk_##NAME##_##TAG(const uint8_t* data, const uint8_t* scales, uint32_t base, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* X, const __nv_bfloat16* bias, __nv_bfloat16* Y, float* parts, int* done) { \
+        glib::mma_gemm_sk_body<glib::FMT, CW, PW, NB, RBB, CR, false>(glib::FMT{{data, scales}, base}, O, K, M, X, bias, Y, parts, done); \
+    }
+#define FOLD_BIG_4R(NAME, FMT, CW, PW, NB, RBB, MOE, TAG) \
+    extern "C" __global__ void __launch_bounds__(32 * (CW + PW), 1) fold_big_##NAME##_##TAG(const uint8_t* data, const uint8_t* scales, uint32_t ks, uint32_t mg, uint32_t sh, int64_t O, int64_t K, int64_t M, int64_t stages_per_split, const __nv_bfloat16* X, const __nv_bfloat16* bias, __nv_bfloat16* Y, float* Y32, const glib::MoePairs moe) { \
+        glib::mma_gemm_big_body<glib::FMT, CW, PW, NB, RBB, MOE>(glib::FMT{data, scales, ks, mg, sh}, O, K, M, stages_per_split, X, bias, Y, Y32, moe); \
+    }
+#define FOLD_SK_4R(NAME, FMT, CW, PW, NB, RBB, CR, TAG) \
+    extern "C" __global__ void __launch_bounds__(32 * (CW + PW), 1) fold_sk_##NAME##_##TAG(const uint8_t* data, const uint8_t* scales, uint32_t ks, uint32_t mg, uint32_t sh, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* X, const __nv_bfloat16* bias, __nv_bfloat16* Y, float* parts, int* done) { \
+        glib::mma_gemm_sk_body<glib::FMT, CW, PW, NB, RBB, CR, false>(glib::FMT{data, scales, ks, mg, sh}, O, K, M, X, bias, Y, parts, done); \
+    }
+#define FOLD_BIG_12(NAME, FMT, CW, PW, NB, RBB, MOE, TAG) \
+    extern "C" __global__ void __launch_bounds__(32 * (CW + PW), 1) fold_big_##NAME##_##TAG(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, uint32_t hb4, int xmax, int64_t O, int64_t K, int64_t M, int64_t stages_per_split, const __nv_bfloat16* X, const __nv_bfloat16* bias, __nv_bfloat16* Y, float* Y32, const glib::MoePairs moe) { \
+        glib::mma_gemm_big_body<glib::FMT, CW, PW, NB, RBB, MOE>(glib::FMT{data, exc, exc_base, hb4, xmax}, O, K, M, stages_per_split, X, bias, Y, Y32, moe); \
+    }
+#define FOLD_SK_12(NAME, FMT, CW, PW, NB, RBB, CR, TAG) \
+    extern "C" __global__ void __launch_bounds__(32 * (CW + PW), 1) fold_sk_##NAME##_##TAG(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, uint32_t hb4, int xmax, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* X, const __nv_bfloat16* bias, __nv_bfloat16* Y, float* parts, int* done) { \
+        glib::mma_gemm_sk_body<glib::FMT, CW, PW, NB, RBB, CR, false>(glib::FMT{data, exc, exc_base, hb4, xmax}, O, K, M, X, bias, Y, parts, done); \
+    }
+FOLD_BIG_T(tiered, Tiered, 4, 4, 3, 2, false, v1)
+FOLD_BIG_T(tiered, Tiered, 4, 4, 2, 1, false, v2)
+FOLD_BIG_T(tiered, Tiered, 4, 4, 3, 2, true, moe)
+FOLD_SK_T(tiered, Tiered, 4, 4, 3, 2, 64, v1)
+FOLD_SK_T(tiered, Tiered, 8, 4, 2, 1, 32, v2)
+FOLD_BIG_T(compact, Compact, 4, 4, 3, 2, false, v1)
+FOLD_BIG_T(compact, Compact, 4, 4, 2, 1, false, v2)
+FOLD_SK_T(compact, Compact, 4, 4, 3, 2, 64, v1)
+FOLD_SK_T(compact, Compact, 8, 4, 2, 1, 32, v2)
+FOLD_BIG_B(int6, Int6, 4, 4, 3, 2, false, v1)
+FOLD_BIG_B(int6, Int6, 4, 4, 2, 1, false, v2)
+FOLD_BIG_B(int6, Int6, 4, 4, 3, 2, true, moe)
+FOLD_SK_B(int6, Int6, 4, 4, 3, 2, 64, v1)
+FOLD_SK_B(int6, Int6, 8, 4, 2, 1, 32, v2)
+FOLD_BIG_B(int5, Int5, 4, 4, 3, 2, false, v1)
+FOLD_BIG_B(int5, Int5, 4, 4, 2, 1, false, v2)
+FOLD_BIG_B(int5, Int5, 4, 4, 3, 2, true, moe)
+FOLD_SK_B(int5, Int5, 4, 4, 3, 2, 64, v1)
+FOLD_SK_B(int5, Int5, 8, 4, 2, 1, 32, v2)
+FOLD_BIG_B(int4, Int4, 4, 4, 3, 2, false, v1)
+FOLD_BIG_B(int4, Int4, 4, 4, 2, 1, false, v2)
+FOLD_BIG_B(int4, Int4, 4, 4, 3, 2, true, moe)
+FOLD_SK_B(int4, Int4, 4, 4, 3, 2, 64, v1)
+FOLD_SK_B(int4, Int4, 8, 4, 2, 1, 32, v2)
+FOLD_BIG_4H(int4h, Int4H, 4, 4, 3, 2, false, v1)
+FOLD_BIG_4H(int4h, Int4H, 4, 4, 2, 1, false, v2)
+FOLD_BIG_4H(int4h, Int4H, 4, 4, 3, 2, true, moe)
+FOLD_SK_4H(int4h, Int4H, 4, 4, 3, 2, 64, v1)
+FOLD_SK_4H(int4h, Int4H, 8, 4, 2, 1, 32, v2)
+FOLD_BIG_B(fp4, Fp4, 4, 4, 3, 2, false, v1)
+FOLD_BIG_B(fp4, Fp4, 4, 4, 2, 1, false, v2)
+FOLD_BIG_B(fp4, Fp4, 4, 4, 3, 2, true, moe)
+FOLD_SK_B(fp4, Fp4, 4, 4, 3, 2, 64, v1)
+FOLD_SK_B(fp4, Fp4, 8, 4, 2, 1, 32, v2)
+FOLD_BIG_4R(fp4r, Fp4R, 4, 4, 3, 2, false, v1)
+FOLD_BIG_4R(fp4r, Fp4R, 4, 4, 2, 1, false, v2)
+FOLD_BIG_4R(fp4r, Fp4R, 4, 4, 3, 2, true, moe)
+FOLD_SK_4R(fp4r, Fp4R, 4, 4, 3, 2, 64, v1)
+FOLD_SK_4R(fp4r, Fp4R, 8, 4, 2, 1, 32, v2)
+FOLD_BIG_B(int3, Int3, 4, 4, 3, 2, false, v1)
+FOLD_BIG_B(int3, Int3, 4, 4, 2, 1, false, v2)
+FOLD_SK_B(int3, Int3, 4, 4, 3, 2, 64, v1)
+FOLD_SK_B(int3, Int3, 8, 4, 2, 1, 32, v2)
+FOLD_BIG_12(twelve, Nib, 4, 4, 3, 2, false, v1)
+FOLD_BIG_12(twelve, Nib, 4, 4, 2, 1, false, v2)
+FOLD_BIG_12(twelve, Nib, 8, 4, 2, 2, false, v3)
+FOLD_BIG_12(twelve, Nib, 4, 4, 3, 2, true, moe)
+FOLD_SK_12(twelve, Nib, 8, 4, 2, 2, 32, v1)
+FOLD_SK_12(twelve, Nib, 8, 4, 2, 1, 32, v2)
+FOLD_BIG_P(placed, TieredPlaced, 4, 4, 3, 2, true, moe)
+#define FOLD_MID12(NT, WG) \
+    extern "C" __global__ void __launch_bounds__(128 * WG + 32, 1) fold_mid12_##NT##_##WG(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, uint32_t hb4, int xmax, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* X, const __nv_bfloat16* bias, __nv_bfloat16* Y, float* parts, int* done) { \
+        glib::mma12_mid_body<NT, WG>(glib::Nib{data, exc, exc_base, hb4, xmax}, O, K, M, X, bias, Y, parts, done); \
+    }
+FOLD_MID12(16, 2)
+FOLD_MID12(16, 4)
+FOLD_MID12(32, 2)
+FOLD_MID12(32, 4)
+FOLD_MID12(64, 2)
+FOLD_MID12(64, 4)
+#define FOLD_WS12(CW, NB, NW, RBB, MT, TM) \
+    extern "C" __global__ void __launch_bounds__(32 * (CW + 4 * RBB), 1) fold_ws12_##TM(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, uint32_t hb4, int xmax, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* X, const __nv_bfloat16* bias, __nv_bfloat16* Y, float* parts, int* done) { \
+        glib::mma12_ws_body<CW, NB, NW, RBB, MT>(glib::Nib{data, exc, exc_base, hb4, xmax}, O, K, M, X, bias, Y, parts, done); \
+    }
+FOLD_WS12(4, 4, 5, 2, 1, 32)
+FOLD_WS12(4, 4, 4, 2, 2, 64)
+FOLD_WS12(4, 3, 4, 2, 3, 96)
+FOLD_WS12(8, 3, 4, 2, 2, 128)
