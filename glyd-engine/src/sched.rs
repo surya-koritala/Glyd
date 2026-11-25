@@ -278,6 +278,14 @@ pub trait ModelStep {
     fn cold(&mut self) -> Result<()> {
         Ok(())
     }
+    /// A check's: the routers' choices of the rows run from now on kept by sequence and place (`on`, what was kept before forgotten), or no longer (`row_choices`). A
+    /// step with no view of them keeps none.
+    fn trace_choices(&mut self, _on: bool) {}
+    /// A check's: the routers' choices of row `pos` of the sequence in `slot`, the last pass's that ran it while traced (`trace_choices`), a mixture-of-experts layer
+    /// each (the layer, the experts taken, the router's input row); None where none was kept.
+    fn row_choices(&self, _slot: i32, _pos: usize) -> Option<Vec<crate::dynamic::RowRoute>> {
+        None
+    }
     /// A drafting step's decode of the one sequence that decodes (a draft model proposes tokens and the model checks them in one pass: src/dynamic/mod.rs `spec_round`): the
     /// tokens after the row's, 1 to the draft's length and one more, as steps one at a time would choose them (drawn by `sampler` where given, else the largest logits); the
     /// cache then holds the row's token and each of them but the last. None: the step does not draft (its decode is one token a row).
@@ -524,6 +532,12 @@ impl ModelStep for &mut dyn ModelStep {
     fn cold(&mut self) -> Result<()> {
         (**self).cold()
     }
+    fn trace_choices(&mut self, on: bool) {
+        (**self).trace_choices(on)
+    }
+    fn row_choices(&self, slot: i32, pos: usize) -> Option<Vec<crate::dynamic::RowRoute>> {
+        (**self).row_choices(slot, pos)
+    }
     fn draws(&mut self, asks: &[Option<f32>]) {
         (**self).draws(asks)
     }
@@ -756,6 +770,9 @@ pub struct Sched<B: ModelStep> {
     flight: Option<Flight>,
     /// A check's record of every token chosen, with its sample's logit, by sequence (`recording`): two runs compared logit for logit.
     pub chosen: Option<Vec<(u64, u32, f32)>>,
+    /// A check's record of the whole row of logits each token was chosen from, by sequence, with the routers' choices of that row where the step keeps them
+    /// (`recording_rows`): two runs held to a bound row for row where their last bits may part (experts computed on the host).
+    pub rows: Option<Vec<(u64, Vec<f32>, Option<Vec<Vec<crate::dynamic::RowRoute>>>)>>,
     overlap: bool,
     relanded: bool,
 }
@@ -809,6 +826,7 @@ impl<B: ModelStep> Sched<B> {
             keep,
             flight: None,
             chosen: None,
+            rows: None,
             overlap,
             relanded: false,
         }
@@ -818,6 +836,22 @@ impl<B: ModelStep> Sched<B> {
     pub fn recording(mut self, on: bool) -> Sched<B> {
         self.chosen = on.then(Vec::new);
         self
+    }
+
+    /// The scheduler recording the whole row of logits each token is chosen from, and the routers' choices of that row (`rows`, `ModelStep::trace_choices`), or not;
+    /// recording, it lands each step before it launches the next (a row is read when its token is chosen, before another step writes the logits).
+    pub fn recording_rows(mut self, on: bool) -> Sched<B> {
+        self.rows = on.then(Vec::new);
+        self.overlap &= !on;
+        self.be.trace_choices(on);
+        self
+    }
+
+    /// The rows no longer recorded, nor the routers' choices traced.
+    pub fn stop_rows(&mut self) {
+        if self.rows.take().is_some() {
+            self.be.trace_choices(false);
+        }
     }
 
     /// A check's: the step in flight landed, then the step's expert cache back to its start (`ModelStep::cold`).
@@ -832,7 +866,7 @@ impl<B: ModelStep> Sched<B> {
     /// the executor's step can only with GLYD_ENGINE_OVERLAP=1 (`overlap_forced`, src/dynamic/rows.rs `make_lanes`): a served model launches no step ahead unless
     /// asked to.
     pub fn overlapping(mut self, on: bool) -> Sched<B> {
-        self.overlap = on && self.be.one_step() && self.be.overlaps();
+        self.overlap = on && self.be.one_step() && self.be.overlaps() && self.rows.is_none();
         self
     }
 
@@ -1771,6 +1805,22 @@ impl<B: ModelStep> Sched<B> {
     fn pick(&mut self, i: usize, sample: Sample, row: usize) -> Result<(u32, Option<Lp>)> {
         if let Some(c) = self.chosen.as_mut() {
             c.push((self.active[i].id, sample.token, sample.logit));
+        }
+        if self.rows.is_some() {
+            // (the row's token is the sequence's last in the cache; on a slot step its first page is its slot: the sequence's discrete choices up to the row, the
+            // history a check judges the row by)
+            let l = self.be.logits(row)?;
+            let s = &self.active[i];
+            let choices = match (self.free.is_some(), s.done.checked_sub(1)) {
+                (true, Some(at)) => {
+                    let h: Vec<Option<Vec<crate::dynamic::RowRoute>>> = (0..=at).map(|p| self.be.row_choices(s.pages[0], p)).collect();
+                    h.iter().any(Option::is_some).then(|| h.into_iter().map(Option::unwrap_or_default).collect())
+                }
+                _ => None,
+            };
+            if let Some(r) = self.rows.as_mut() {
+                r.push((s.id, l, choices));
+            }
         }
         let want = self.active[i].reply.logprobs;
         if self.active[i].greedy && want.is_none() {
@@ -2857,6 +2907,24 @@ pub(crate) mod tests {
             for (k, rx) in rx.iter().enumerate() {
                 let mine: Vec<u32> = chosen.iter().filter(|c| c.0 == k as u64 + 1).map(|c| c.1).collect();
                 assert_eq!(mine, collect(rx).0, "sequence {k}, ahead {ahead}");
+            }
+        }
+    }
+
+    /// A scheduler recording rows keeps, beside every token chosen, the row of logits it was chosen from, by sequence (`rows`: a check's comparison at a bound), and lands
+    /// each step before it launches the next, asked to launch ahead or not (the fake step refuses a row read after a later step was launched over it).
+    #[test]
+    fn a_recording_of_rows_keeps_each_tokens_row_and_launches_nothing_ahead() {
+        for ahead in [false, true] {
+            let mut s = Sched::new(launching(3, 16, None), 3).recording(true).recording_rows(true).overlapping(ahead);
+            let reqs: Vec<(Vec<u32>, usize)> = (0..3).map(|k| (prompt(k + 1, 9 + 7 * k as usize), 6)).collect();
+            let rx: Vec<_> = reqs.iter().map(|(p, n)| add(&mut s, p.clone(), *n).0).collect();
+            run(&mut s);
+            assert!(!s.overlap && s.be.ahead == 0, "ahead {ahead}");
+            let rows = s.rows.as_ref().unwrap();
+            for (k, rx) in rx.iter().enumerate() {
+                let mine = rows.iter().filter(|r| r.0 == k as u64 + 1).count();
+                assert_eq!(mine, collect(rx).0.len(), "sequence {k}, ahead {ahead}");
             }
         }
     }

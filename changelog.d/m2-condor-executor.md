@@ -11,3 +11,14 @@
   figures against the reference's own choices are printed beside them. At penguin the checks also read the experts back from the GPU and hold them
   to the checkpoint's bits, and the second random case's experts are no longer on the six-bit grid, so a lossy load under the lossless level's name
   fails. Part of #140.
+- Where the engine computes experts on the host (an expert cache whose mode gives the host its misses: cpu, split or auto, and the codebook cache),
+  `usercheck` with prompts one a pass, `keepcheck` and `roundcheck` hold each row run beside others to the same row alone at the kind's lossless bound (KL
+  mean 1e-4, max 2.5e-4; the best token the same wherever the lead clears 0.1), not bit for bit, and say why: the host and the GPU sum a pair in different
+  orders, and which share of a call the host takes turns on what shares the call and on the places' state. Each row is judged by the first discrete
+  choice the two runs made apart in its sequence's history (an expert route or an indexer's pick of pools, every layer and step, in causal order): none
+  apart, the row is held to the bound; a near tie (below 1e-2 on each run's own input), the row and every later one are reported, not failed, with that
+  choice; anything wider fails. The lines count rows held, reported and failed apart. Everywhere else (every expert on the GPU, copy mode) they stay
+  bit for bit. Before, those checks failed on the codebook cache's bits alone. Part of #140.
+- `fit --machine NAME` no longer turns on the computer that plans it: a preset says whether it has NVIDIA's cuBLAS (none of them: the engine never ships
+  it), and a machine described in JSON says so with `cublas`. DGX Spark's plans had a long prompt's chunk of 4,096 tokens when planned on a computer with
+  cuBLAS and 2,048 elsewhere. Part of #140.
