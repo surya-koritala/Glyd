@@ -139,13 +139,17 @@ const SWITCHES: &[&str] = &[
 ];
 
 /// A flag that one command reads the other way than its name is read elsewhere: (the command, the flag, whether it takes a value there).
-/// `packcheck --engine` is a switch where `bench --engine NAME` names an engine.
+/// `packcheck --engine` is a switch where `bench --engine NAME` names an engine; `ceiling --fp8 PCT` takes a percent where `glmrandom --fp8` is a switch.
 const BY_COMMAND: &[(&str, &str, bool)] = &[
     ("packcheck", "engine", false),
     ("tiercheck", "report", false),
     ("storebench", "plan", false),
     ("calibrate-experts", "synthetic", false),
     ("qxbench", "check", false),
+    ("ceiling", "fp8", true),
+    ("quality", "bar", true),
+    ("seamcheck", "gpu", true),
+    ("dsv4gen", "score", true),
 ];
 
 #[derive(Clone)]
@@ -318,7 +322,14 @@ mod tests {
         files(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut all);
         let mut names = std::collections::BTreeSet::new();
         for f in all {
-            let t = std::fs::read_to_string(&f).unwrap();
+            // (a call the formatter broke after its bracket is one call: the white space there is dropped)
+            let (mut t, mut open) = (String::new(), false);
+            for c in std::fs::read_to_string(&f).unwrap().chars() {
+                if !(open && c.is_whitespace()) {
+                    open = c == '(';
+                    t.push(c);
+                }
+            }
             for (at, _) in t.match_indices(call) {
                 // (`a.has(`, the arguments' own name everywhere, and not `data.has(`)
                 let whole = !call.starts_with('a') || !t[..at].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_');
@@ -338,5 +349,32 @@ mod tests {
         let valued: std::collections::BTreeSet<String> = [".flag(\"", ".num(\"", ".either(\""].iter().flat_map(|c| read_by(c)).collect();
         let lone: Vec<String> = read_by("a.has(\"").into_iter().filter(|n| !valued.contains(n) && !SWITCHES.contains(&n.as_str())).collect();
         assert!(lone.is_empty(), "read with has() alone and not in SWITCHES: {lone:?}");
+    }
+    /// A switch that one command reads for a value takes it there: `ceiling MODEL --fp8 80` read no percent (`--fp8` is `glmrandom`'s switch), and
+    /// `quality --card REF CAND --bar wren` no level (`--bar` is `bench`'s).
+    #[test]
+    fn a_command_takes_the_value_of_a_flag_that_is_a_switch_elsewhere() {
+        let c = Args::from(["ceiling", "m", "--fp8", "80", "--gpus", "8"].map(String::from));
+        assert_eq!((c.pos.len(), c.num("fp8", 0u64).unwrap(), c.flag("gpus")), (2, 80, Some("8")));
+        // (where it stays a switch: `glmrandom`'s, a development build's command and list)
+        if cfg!(feature = "dev") {
+            let g = Args::from(["glmrandom", "out", "--fp8", "--real", "--layers", "4"].map(String::from));
+            assert_eq!((g.pos.len(), g.flag("fp8"), g.has("real"), g.flag("layers")), (2, Some(""), true, Some("4")));
+        }
+        let q = Args::from(["quality", "--card", "ref.json", "q4.json", "--level", "Q4_K_M", "--bar", "wren", "--out", "card.json"].map(String::from));
+        assert_eq!((q.pos.len(), q.flag("bar"), q.flag("out")), (3, Some("wren"), Some("card.json")));
+        let b = Args::from(["bench", "--bar", "a.json", "b.json"].map(String::from));
+        assert_eq!((b.pos.len(), b.flag("bar")), (3, Some("")));
+        assert_eq!(Args::from(["seamcheck", "--gpu", "1"].map(String::from)).num("gpu", 0i32).unwrap(), 1);
+        assert_eq!(Args::from(["dsv4gen", "dir", "--score", "text.txt"].map(String::from)).flag("score"), Some("text.txt"));
+    }
+
+    /// Every switch the sources also read for a value names the command that does in `BY_COMMAND`.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn every_switch_read_for_a_value_names_its_command() {
+        let valued: std::collections::BTreeSet<String> = [".flag(\"", ".num(\""].iter().flat_map(|c| read_by(c)).collect();
+        let lone: Vec<&str> = SWITCHES.iter().copied().filter(|s| valued.contains(*s) && !BY_COMMAND.iter().any(|x| x.1 == *s && x.2)).collect();
+        assert!(lone.is_empty(), "in SWITCHES and read for a value by a command BY_COMMAND does not name: {lone:?}");
     }
 }
