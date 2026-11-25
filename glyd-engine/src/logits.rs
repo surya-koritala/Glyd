@@ -724,6 +724,11 @@ pub struct RefRun {
 /// `RefRun` of the model in `dir` on `fx`'s tokens. With `take`, each token's experts in each block are those (an engine's `Choices`; a token's empty
 /// list: the router's own) in the place of the router's own choice: the reference of the experts kind on another engine's choices.
 pub fn ref_drive(dir: &Path, fx: &Fixture, take: Option<&Choices>) -> Result<RefRun> {
+    ref_drive_with(dir, fx, take, |_| {})
+}
+
+/// `ref_drive` of the description `edit` changes (another rounding point, say).
+fn ref_drive_with(dir: &Path, fx: &Fixture, take: Option<&Choices>, edit: fn(&mut crate::runtime::describe::Described)) -> Result<RefRun> {
     use crate::runtime::kinds::{Body, Ffn};
     let first: Vec<u32> = fx.prompt.iter().chain(&fx.decode).copied().collect();
     let mut out = RefRun { rows: Vec::new(), routed: Vec::new() };
@@ -732,7 +737,7 @@ pub fn ref_drive(dir: &Path, fx: &Fixture, take: Option<&Choices>) -> Result<Ref
         if tokens.is_empty() {
             continue;
         }
-        let mut m = ref_model(dir)?;
+        let mut m = ref_model_with(dir, edit)?;
         let moe: Vec<usize> = (0..m.layers.len()).filter(|&b| matches!(m.layers[b].block.body, Body::Ffn(Ffn::Moe(_)))).collect();
         if let Some(t) = take {
             if t.len() != moe.len() || t.iter().any(|l| l.len() < at + tokens.len()) {
@@ -996,65 +1001,27 @@ pub(crate) const GEMMA4_RANDOM_CONFIG: &str = r#"{"architectures": ["Gemma4ForCo
         "rope_parameters": {"sliding_attention": {"rope_theta": 10000.0, "rope_type": "default"}, "full_attention": {"rope_theta": 1000000.0, "partial_rotary_factor": 0.25, "rope_type": "proportional"}}}}"#;
 
 pub fn gemma4_random(out: &Path) -> Result<()> {
-    let text = GEMMA4_RANDOM_CONFIG;
-    let c = crate::gemma4::ConfigG4::parse(text, None, false)?;
-    let mut r = 0x2026_1120_0000_0004u64;
-    let mut uni = move |a: f32, b: f32| {
-        r ^= r << 13;
-        r ^= r >> 7;
-        r ^= r << 17;
-        a + (b - a) * ((r >> 40) as f32 / (1u64 << 24) as f32)
-    };
-    let bf = |x: f32| {
-        let b = x.to_bits();
-        ((b + 0x7fff + ((b >> 16) & 1)) >> 16) as u16
-    };
-    let mut t: Vec<(String, Vec<u64>, Vec<u8>)> = Vec::new();
-    let mut put = |name: String, shape: Vec<u64>, lo: f32, hi: f32| {
-        let n: u64 = shape.iter().product();
-        let bytes: Vec<u8> = (0..n).flat_map(|_| bf(uni(lo, hi)).to_le_bytes()).collect();
-        t.push((name, shape, bytes));
-    };
-    let a = |cols: usize| (3.0 / cols as f32).sqrt();
-    let (h, p) = (c.hidden, c.prefix.clone());
-    put(format!("{p}embed_tokens.weight"), vec![c.vocab as u64, h as u64], -1.0, 1.0);
-    put(format!("{p}norm.weight"), vec![h as u64], 0.5, 1.5);
-    for (l, &k) in c.kinds.iter().enumerate() {
-        let (d, _, _) = c.attn_of(k);
-        let pl = format!("{p}layers.{l}");
-        for n in ["input_layernorm", "post_attention_layernorm", "pre_feedforward_layernorm", "post_feedforward_layernorm"] {
-            put(format!("{pl}.{n}.weight"), vec![h as u64], 0.5, 1.5);
-        }
-        put(format!("{pl}.self_attn.q_norm.weight"), vec![d as u64], 0.5, 1.5);
-        put(format!("{pl}.self_attn.k_norm.weight"), vec![d as u64], 0.5, 1.5);
-        put(format!("{pl}.layer_scalar"), vec![1], 0.5, 1.0);
-        let (_, nk, has_v) = c.attn_of(k);
-        put(format!("{pl}.self_attn.q_proj.weight"), vec![(c.heads * d) as u64, h as u64], -a(h), a(h));
-        put(format!("{pl}.self_attn.k_proj.weight"), vec![(nk * d) as u64, h as u64], -a(h), a(h));
-        if has_v {
-            put(format!("{pl}.self_attn.v_proj.weight"), vec![(nk * d) as u64, h as u64], -a(h), a(h));
-        }
-        put(format!("{pl}.self_attn.o_proj.weight"), vec![h as u64, (c.heads * d) as u64], -a(c.heads * d), a(c.heads * d));
-        put(format!("{pl}.mlp.gate_proj.weight"), vec![c.inter as u64, h as u64], -a(h), a(h));
-        put(format!("{pl}.mlp.up_proj.weight"), vec![c.inter as u64, h as u64], -a(h), a(h));
-        put(format!("{pl}.mlp.down_proj.weight"), vec![h as u64, c.inter as u64], -a(c.inter), a(c.inter));
-    }
-    io(std::fs::create_dir_all(out))?;
-    io(std::fs::write(out.join("config.json"), text))?;
-    let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = t.iter().map(|(n, s, b)| (n.as_str(), "BF16", s.clone(), &b[..])).collect();
-    crate::pack::write_safetensors(&out.join("model.safetensors"), &[("format", "pt".to_string())], &refs)?;
-    println!("{}: a random Gemma 4, {} tensors, {:.0} MB", out.display(), t.len(), t.iter().map(|t| t.2.len()).sum::<usize>() as f64 / 1e6);
-    Ok(())
+    gemma4_shaped_random(out, GEMMA4_RANDOM_CONFIG, 0x2026_1120_0000_0004)
 }
 
 /// A random model of a Gemma 4 config `text`, every tensor at the shape its description gives (`Described::shapes`) and drawn from `seed` in the order of
-/// their names: the embedding in [-1, 1], the q and k norms' weights in [0.1, 0.3], the other norms in [0.5, 1.5], layer scalars in [0.5, 1], every other
-/// matrix in +-sqrt(3 / its columns). The sizes the E2B and E4B releases add (KV sharing, the double-wide MLP) come from the description, so each config's
-/// model is its own shape. (Gemma 4's scores are not scaled: the q and k norms set them. With those weights in [0.5, 1.5] a random model's scores reach
-/// about +-16 at heads of 256, its softmax is nearly one-hot and the engine's bf16 rounding can move a near tie: on an A10, eight-layer models of six seeds
-/// were 2e-3 to 3.2e-1 in KL mean from the CPU reference, their largest logit differences up to 13, with KV sharing and without alike; at [0.1, 0.3] every
-/// one was 6e-4 to 1.3e-3, at most 2.3e-3 a row and 0.37 a logit.)
+/// their names: the q and k norms' weights in [0.1, 0.3], the other norms in [0.5, 1.5], layer scalars in [0.5, 1], every matrix in +-sqrt(3 / its
+/// columns), the embedding (the tied head) too. The sizes the E2B and E4B releases add (KV sharing, the double-wide MLP) come from the description, so
+/// each config's model is its own shape. Both are the draw's conditioning (`tests::gemma4_reference_and_its_draws` measures it):
+/// - Gemma 4's scores are not scaled: the q and k norms set them. With those weights in [0.5, 1.5] a random model's scores are about +-17 (RMS) at heads
+///   of 256 and +-24 at 512, its softmax nearly one-hot, and a near tie moves under 2^-9 of rounding: on an A10, eight-layer models of six seeds were 2e-3
+///   to 3.2e-1 in KL mean from the CPU reference, with KV sharing and without alike.
+/// - The embedding in [-1, 1] made the scaled embedding's RMS 13 against the layers' outputs' 1, and the tied head's largest logit 30.00 after the
+///   soft-cap (four seeds), where the release's bf16 logits are 1/8 apart: with the q and k norms in [0.1, 0.3] it alone left the CPU reference 8e-5
+///   to 1.1e-4 in KL mean from itself with the engine's storage roundings (the norms' outputs and the embedding's scale bf16), 8e-6 to 1.2e-5 with an
+///   f32 head. With both draws it was 3e-4 to 1.1e-3; with these ranges, 6e-6 to 1.1e-5.
 pub fn gemma4_shaped_random(out: &Path, text: &str, seed: u64) -> Result<()> {
+    gemma4_drawn(out, text, seed, (0.1, 0.3), None)
+}
+
+/// `gemma4_shaped_random` with the q and k norms' weights in `qk` and the embedding in +-`emb` where given (the draws `gemma4_shaped_random` replaced,
+/// which the conditioning test measures).
+fn gemma4_drawn(out: &Path, text: &str, seed: u64, qk: (f32, f32), emb: Option<f32>) -> Result<()> {
     let cfg: Value = serde_json::from_str(text).map_err(|e| Error(format!("config.json: {e}")))?;
     let d = crate::runtime::describe::describe(&cfg)?;
     let mut r = seed;
@@ -1070,12 +1037,12 @@ pub fn gemma4_shaped_random(out: &Path, text: &str, seed: u64) -> Result<()> {
     };
     let mut t: Vec<(String, Vec<u64>, Vec<u8>)> = Vec::new();
     for (name, shape) in &d.shapes {
-        let (lo, hi) = if *name == d.embed {
-            (-1.0, 1.0)
+        let (lo, hi) = if let Some(e) = emb.filter(|_| *name == d.embed) {
+            (-e, e)
         } else if name.ends_with("layer_scalar") {
             (0.5, 1.0)
         } else if name.ends_with("q_norm.weight") || name.ends_with("k_norm.weight") {
-            (0.1, 0.3)
+            qk
         } else if shape.len() == 1 {
             (0.5, 1.5)
         } else {
@@ -1822,7 +1789,7 @@ fn fixtures_dir(a: &crate::args::Args) -> PathBuf {
 /// `logitscheck [CASE...] [--fixtures DIR] [--scratch DIR] [--cpu-ref] [--level L]`: each case's engine (or CPU reference) against its fixture at each level the fixture bounds. Exit 1 where one is not within,
 /// and where a case had no fixture this GPU can be held to (every one of them another GPU generation's bits): a case with nothing compared is not one within its bounds.
 /// A line says what held it (`Held`): PASS a reference's bound kept, PIN the engine's own recorded bits unchanged. The last lines count them apart ("N held to a
-/// reference, M pinned, K not held") and name the cases pinned only (no reference of another implementation: Gemma 4's and GLM-5.3's cases today) and not held.
+/// reference, M pinned, K not held") and name the cases pinned only (no reference of another implementation: GLM-5.3's case today) and not held.
 pub fn check(a: &crate::args::Args) -> Result<()> {
     let fixtures = fixtures_dir(a);
     let want: Vec<&str> = a.pos.iter().skip(1).map(String::as_str).collect();
@@ -2454,9 +2421,10 @@ fn layer_lines(old: &[Vec<f32>], new: &[Vec<f32>], cpu: Option<&[Vec<f32>]>) {
 
 /// The per-level KL thresholds of a lossy level from the lossless one (mean, max over rows), per family's random model: Qwen3.5's and
 /// Nemotron-H's are the bounds the qwen35 fixture holds for the engine against transformers in bf16 (tests/logits/qwen35.json.gz, about
-/// twice a measured run); Gemma 4's random model moves more under every rounding, kestrel too (its levels have shipped since v0.30), so
+/// twice a measured run); Gemma 4's random model moved more under every rounding, kestrel too (its levels have shipped since v0.30), so
 /// its thresholds are about twice its own first measured run (RTX 4080 SUPER, 2026-11-21: mean/max KL kestrel 2.15e-2/1.03e-1, swift
-/// 3.70e-2/1.01e-1, wren 9.55e-2/2.27e-1; Nemotron-H's wren 8.5e-4/6.2e-3, its experts alone four-bit).
+/// 3.70e-2/1.01e-1, wren 9.55e-2/2.27e-1; Nemotron-H's wren 8.5e-4/6.2e-3, its experts alone four-bit). (Measured on the draw before
+/// `gemma4_shaped_random`'s, whose scores and head are well conditioned: they hold this one as upper bounds.)
 pub const LEVEL_KL: [(&str, f64, f64); 3] = [("kestrel", 0.006, 0.015), ("swift", 0.025, 0.05), ("wren", 0.09, 0.14)];
 pub const LEVEL_KL_GEMMA4: [(&str, f64, f64); 3] = [("kestrel", 0.045, 0.21), ("swift", 0.075, 0.21), ("wren", 0.19, 0.46)];
 
@@ -2804,58 +2772,190 @@ mod tests {
         assert!(kv.provenance["source"].starts_with(described), "{}", kv.provenance["source"]);
     }
 
-    /// The CPU reference of each Gemma 4 random case against the fixtures the engine and the reference recorded, row by row: the plain case's against the
-    /// engine's own bits (gemma4.sm89.json.gz), the KV-sharing case's against its fixture. Minutes on an unoptimized build: cargo test -- --ignored
-    /// gemma4_reference_against.
+    /// The storage roundings every engine makes and the CPU reference of the layer kinds does not, where the description keeps the value in f32:
+    /// each block's norms' outputs and the final norm's rounded once (an engine holds its activations in bf16), and the embedding's scale its bf16.
+    fn stored(d: &mut crate::runtime::describe::Described) {
+        use crate::runtime::kinds::{Norm, Rounding};
+        let once = |n: &mut Norm| {
+            if n.rounding == Rounding::F32 {
+                n.rounding = Rounding::Once;
+            }
+        };
+        for b in d.desc.blocks.iter_mut() {
+            once(&mut b.norm_in);
+            if let Some(n) = b.norm_out.as_mut() {
+                once(n);
+            }
+        }
+        once(&mut d.desc.final_norm);
+        d.desc.embed.scale = crate::runtime::reference::bf16(d.desc.embed.scale);
+    }
+
+    /// A case's noise floor: the CPU reference of the layer kinds against itself with `stored`'s roundings, on the fixture's tokens, as `compare`
+    /// measures an engine against `bound`; where the case is held on its routers' choices (`Case::on_choices`), the rounded run takes the
+    /// reference's own.
+    fn noise_floor(dir: &Path, fx: &Fixture, on_choices: bool, bound: &Bound) -> Result<Verdict> {
+        let base = ref_drive(dir, fx, None)?;
+        let take: Option<Choices> = on_choices.then(|| base.routed.iter().map(|l| l.iter().map(|r| r.ids.clone()).collect()).collect());
+        let rounded = ref_drive_with(dir, fx, take.as_ref(), stored)?;
+        let own = Fixture { rows: base.rows.iter().map(|r| Row::from_logits(r)).collect::<Result<_>>()?, ..fx.clone() };
+        Ok(compare(&own, bound, &rounded.rows))
+    }
+
+    /// The cases past a tenth of their bound today (on a Mac, 2026-11-25), each to have its draw fixed by its family's owner, never its bound.
+    /// Printed, not held to the line: a case near it may read either side of it on another machine's libm.
+    const NOISE_FLOOR_OPEN: [(&str, &str); 3] = [
+        ("qwen35", "KL mean 1.04e-5 against a tenth of its bound, 1.0e-5"),
+        ("qwen35moe", "KL max 1.87e-4 in one row, a logit 0.126 apart (an expert's choice, likely), against 2.5e-5"),
+        ("muse", "KL mean 2.16e-3 and max 1.31e-2, the best token 5 of 8, against 1.2e-3 and 3.0e-3"),
+    ];
+
+    /// Every case a CPU reference holds is well conditioned for its bound: its noise floor (`noise_floor`) is at most a tenth of its reference
+    /// fixture's bound, in KL mean and max, the best token kept where the bound asks it. A random case whose draw cannot tell a fault from rounding
+    /// (Gemma 4's were 3e-4 to 1.1e-3 against a bound of 1e-4) fails here, and its draw is fixed, not its bound (`NOISE_FLOOR_OPEN`). Each case's
+    /// reference is its description's on the layer kinds (a family with a hand-written reference too: the same function). Where a description
+    /// already rounds every norm (Kimi-K3's) and scales no embedding, `stored` moves nothing: its floor is 0 and says nothing of its draw. Not here:
+    /// glm (no CPU reference), deepseek-v41 (no engine: its fixture's bound is the reference's own across machines), nemotron-h (an older family).
     #[cfg(feature = "dev")]
     #[test]
-    #[ignore]
-    fn gemma4_reference_against_the_fixtures() {
+    fn every_case_held_to_a_reference_is_well_conditioned() {
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits");
-        for (case, file, make) in
-            [("gemma4", "gemma4.sm89.json.gz", gemma4_random as fn(&Path) -> Result<()>), ("gemma4-kv", "gemma4-kv.json.gz", gemma4_kv_random)]
-        {
-            let dir = std::env::temp_dir().join(format!("glyd-g4ref-{case}-{}", std::process::id()));
-            make(&dir).unwrap();
-            let fx = Fixture::read(&fixtures.join(file)).unwrap();
-            let got = drive(described_cpu(&dir).unwrap().as_mut(), &fx.prompt, &fx.decode, &fx.long).unwrap();
-            let _ = std::fs::remove_dir_all(&dir);
-            let kls: Vec<String> = fx.rows.iter().zip(&got).map(|(w, g)| format!("{:.1e}", kl_of(w, g))).collect();
-            let v = compare(&fx, &Bound::Kl { mean: 1e-4, max: 2.5e-4, top1: 0.9 }, &got);
+        let all: Vec<Case> = cases().into_iter().filter(|c| c.cpu.is_some() && !["glm", "deepseek-v41", "nemotron-h"].contains(&c.id)).collect();
+        let floors: Vec<(&str, Result<(Verdict, Bound)>)> = std::thread::scope(|s| {
+            let fixtures = &fixtures;
+            let runs: Vec<_> = all
+                .iter()
+                .map(|c| {
+                    s.spawn(move || {
+                        let dir = std::env::temp_dir().join(format!("glyd-floor-{}-{}", c.id, std::process::id()));
+                        let r = (|| {
+                            let Weights::Random(make) = &c.weights else { return err("a Hub model") };
+                            make(&dir)?;
+                            let fx = Fixture::read(&fixtures.join(format!("{}.json.gz", c.id)))?;
+                            let tenth = match fx.bounds[0].bound {
+                                Bound::Kl { mean, max, top1 } => Bound::Kl { mean: mean / 10.0, max: max / 10.0, top1 },
+                                Bound::Bits => return err("a reference fixture of bits"),
+                            };
+                            Ok((noise_floor(&dir, &fx, c.on_choices, &tenth)?, tenth))
+                        })();
+                        std::fs::remove_dir_all(&dir).ok();
+                        (c.id, r)
+                    })
+                })
+                .collect();
+            runs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let mut wrong = Vec::new();
+        for (id, r) in &floors {
+            let (v, tenth) = r.as_ref().unwrap_or_else(|e| panic!("{id}: {}", e.msg));
+            let Bound::Kl { mean, max, .. } = tenth else { unreachable!() };
+            let open = NOISE_FLOOR_OPEN.iter().find(|o| o.0 == *id);
             println!(
-                "{case} reference against {file}: KL mean {:.2e} max {:.2e}, best token {}/{}; rows {}",
+                "{} {id:12} noise floor: KL mean {:.2e} max {:.2e}, best token {}/{}, largest logit difference {:.4}; a tenth of its bound: mean {mean:.1e}, max {max:.1e}{}",
+                if v.ok { "PASS" } else if open.is_some() { "OPEN" } else { "FAIL" },
                 v.mean_kl,
                 v.max_kl,
                 v.top1.0,
                 v.top1.1,
-                kls.join(" ")
+                v.max_dlogit,
+                match open {
+                    Some(o) if v.ok => format!(" (open, {}: within it here, off the list once it is on every machine)", o.1),
+                    Some(o) => format!(" (open: {}, its draw its owner's to fix)", o.1),
+                    None => String::new(),
+                }
             );
-            // (the reference with each norm's output rounded to bf16, as transformers' Gemma4RMSNorm casts it back to a bf16 input's type and the engine holds it)
-            let once = |d: &mut crate::runtime::describe::Described| {
-                use crate::runtime::kinds::Rounding;
-                for b in d.desc.blocks.iter_mut() {
-                    b.norm_in.rounding = Rounding::Once;
-                    if let Some(n) = b.norm_out.as_mut() {
-                        n.rounding = Rounding::Once;
+            if !v.ok && open.is_none() {
+                wrong.push(*id);
+            }
+        }
+        assert!(wrong.is_empty(), "past a tenth of the bound: {wrong:?} (a draw to fix, not a bound)");
+    }
+
+    /// Each Gemma 4 random case is well conditioned for the kind's bound, and its fixture is what the CPU reference makes. For each case: its attention
+    /// scores' scale (each layer's queries against the prompt's keys, before the rope), and the CPU reference against itself with storage roundings the
+    /// engine makes and the reference does not (each norm's output and the embedding's scale bf16), within the kind's bound; the draw the plain case
+    /// had before (the q and k norms' weights in [0.5, 1.5], the embedding in [-1, 1]) is past it. Then the reference against the case's fixture, at its
+    /// bound. A minute on an optimized build: cargo test --profile ci -p glyd-engine --lib -- --ignored gemma4_reference_and_its_draws.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore]
+    fn gemma4_reference_and_its_draws() {
+        use crate::runtime::describe::Described;
+        use crate::runtime::kinds::{Body, Mixer};
+        use crate::runtime::reference::{dot, norm::norm};
+        let kind = Bound::Kl { mean: 1e-4, max: 2.5e-4, top1: 0.85 };
+        let (prompt, decode, long) = standard_tokens(4096);
+        let rows_of = |dir: &Path, edit: fn(&mut Described)| drive(described_cpu_with(dir, edit).unwrap().as_mut(), &prompt, &decode, &long).unwrap();
+        let as_fx = |rows: &[Vec<f32>]| Fixture {
+            rows: rows.iter().map(|r| Row::from_logits(r).unwrap()).collect(),
+            prompt: prompt.clone(),
+            decode: decode.clone(),
+            long: long.clone(),
+            ..fixture(vec![vec![0.0; 2]])
+        };
+        // (each attention layer's scores over the prompt, before the rope: their RMS and the largest)
+        let scores = |dir: &Path| -> String {
+            let mut m = ref_model(dir).unwrap();
+            m.record = Some(Vec::new());
+            m.forward(&prompt, 0).unwrap();
+            let rec = m.record.take().unwrap();
+            let d = m.desc.hidden;
+            let x0: Vec<f32> =
+                prompt.iter().flat_map(|&t| m.embed[t as usize * d..][..d].iter().map(|&x| x * m.desc.embed.scale).collect::<Vec<_>>()).collect();
+            let (mut out, mut keys) = (Vec::new(), BTreeMap::new());
+            for l in 0..rec.len() {
+                let la = &m.layers[2 * l];
+                let Body::Mixer(Mixer::Attention(a)) = &la.block.body else { continue };
+                let (x, hd) = (if l == 0 { &x0 } else { &rec[l - 1] }, a.head_dim);
+                let heads = |role: &str, w: &str, n: &Option<crate::runtime::kinds::Norm>, xt: &[f32]| -> Vec<f32> {
+                    la.p.prod(role, &la.norm_in(xt)).unwrap().chunks(hd).flat_map(|c| norm(n.as_ref().unwrap(), c, la.p.opt(w), None)).collect()
+                };
+                let qs: Vec<Vec<f32>> = x.chunks(d).map(|xt| heads("q", "q_norm", &a.q_norm, xt)).collect();
+                // (a layer that shares an earlier one's keys: that layer's)
+                if a.kv_from.is_none() {
+                    keys.insert(2 * l, x.chunks(d).map(|xt| heads("k", "k_norm", &a.k_norm, xt)).collect::<Vec<_>>());
+                }
+                let ks = &keys[&a.kv_from.unwrap_or(2 * l)];
+                let (mut s2, mut n, mut big) = (0f64, 0usize, 0f32);
+                for i in 0..qs.len() {
+                    for k in &ks[..=i] {
+                        for h in 0..a.heads {
+                            let s = dot(&qs[i][h * hd..][..hd], &k[h / (a.heads / a.kv_heads) * hd..][..hd]);
+                            (s2, n, big) = (s2 + (s as f64).powi(2), n + 1, big.max(s.abs()));
+                        }
                     }
                 }
-                d.desc.final_norm.rounding = Rounding::Once;
-            };
+                out.push(format!("layer {l} (heads of {hd}) RMS {:.2}, largest {:.1}", (s2 / n as f64).sqrt(), big));
+            }
+            out.join("; ")
+        };
+        let conditioned = |what: &str, dir: &Path| -> Verdict {
+            let v = compare(&as_fx(&rows_of(dir, |_| {})), &kind, &rows_of(dir, stored));
+            println!("{what}: the scores {}", scores(dir));
+            println!(
+                "{what}: the reference against itself with the storage roundings: KL mean {:.2e} max {:.2e}, best token {}/{}, largest logit difference {:.4}",
+                v.mean_kl, v.max_kl, v.top1.0, v.top1.1, v.max_dlogit
+            );
+            v
+        };
+        let tmp = |tag: &str| std::env::temp_dir().join(format!("glyd-g4draw-{tag}-{}", std::process::id()));
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits");
+        for (case, make) in [("gemma4", gemma4_random as fn(&Path) -> Result<()>), ("gemma4-kv", gemma4_kv_random)] {
+            let dir = tmp(case);
             make(&dir).unwrap();
-            let got2 = drive(described_cpu_with(&dir, once).unwrap().as_mut(), &fx.prompt, &fx.decode, &fx.long).unwrap();
-            let _ = std::fs::remove_dir_all(&dir);
-            let v = compare(&fx, &Bound::Kl { mean: 1e-4, max: 2.5e-4, top1: 0.9 }, &got2);
-            println!("{case} reference, its norms' outputs rounded to bf16, against {file}: KL mean {:.2e} max {:.2e}", v.mean_kl, v.max_kl);
-            // (the same logits through the engine's head arithmetic: the product's output bf16, then its soft-cap's three roundings, kernels/gemma4.cu g4_softcap)
-            let b = crate::runtime::reference::bf16;
-            let cap = 30.0f32;
-            let r16: Vec<Vec<f32>> = got
-                .iter()
-                .map(|r| r.iter().map(|&l| cap * (l / cap).clamp(-1.0 + 1e-7, 1.0 - 1e-7).atanh()).map(|z| b(b(b(b(z) / cap).tanh()) * cap)).collect())
-                .collect();
-            let v = compare(&fx, &Bound::Kl { mean: 1e-4, max: 2.5e-4, top1: 0.9 }, &r16);
-            println!("{case} reference, its head rounded as the engine's, against {file}: KL mean {:.2e} max {:.2e}", v.mean_kl, v.max_kl);
+            let v = conditioned(case, &dir);
+            let fx = Fixture::read(&fixtures.join(format!("{case}.json.gz"))).unwrap();
+            let r = compare(&fx, &fx.bounds[0].bound, &drive(described_cpu(&dir).unwrap().as_mut(), &fx.prompt, &fx.decode, &fx.long).unwrap());
+            std::fs::remove_dir_all(&dir).ok();
+            println!("{case}: the reference against {case}.json.gz: bits-equal {}/{}, KL mean {:.2e} max {:.2e}", r.identical, r.rows, r.mean_kl, r.max_kl);
+            assert!(v.ok, "{case}: {:?}", v.notes);
+            assert!(r.ok && fx.gpu.is_none(), "{case}: {:?}", r.notes);
         }
+        let dir = tmp("before");
+        gemma4_drawn(&dir, GEMMA4_RANDOM_CONFIG, 0x2026_1120_0000_0004, (0.5, 1.5), Some(1.0)).unwrap();
+        let v = conditioned("gemma4 drawn as before", &dir);
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(!v.ok, "the earlier draw is within the bound");
     }
 
     /// The CPU's candidates usercheck holds the step's to: the largest first, equal logits by the smaller token, as the sampler's `sample_top` takes them.
