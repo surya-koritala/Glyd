@@ -1051,8 +1051,8 @@ enum Read {
 /// `d`'s weights from `dir`: a saved directory's packs as saved (under the first member's name where the save merged the members, else each member's), a matrix
 /// it holds as bf16 packed here, a Hub-format directory's packed here at `layout`, but at a lossless level a matrix released in FP8 with fp32 block scales
 /// (`f8::released_shape`), held as released (`Mat::F8`, packed on `dev`); the matrices `held_as_saved` names as saved; the small tensors in the type their
-/// operations read (`read_f32`, `read_f32_as_bf16`; int64 as saved, a hash's numbers; an FP8 one as its E4M3 values in bf16, exact, its scales beside it
-/// `read_f32`'s); the experts by `experts`. `placing`: where the packed matrices are held beyond the GPU's own memory (this GPU's slice of a matrix's rows,
+/// operations read (`read_f32`, `read_f32_as_bf16`; int64 as saved, a hash's numbers; an FP8 one an operation takes so (`f8_small`) as its E4M3 values in
+/// bf16, exact, with its fp32 block scales, `Part::scales`); the experts by `experts`. `placing`: where the packed matrices are held beyond the GPU's own memory (this GPU's slice of a matrix's rows,
 /// a layer's matrices in the computer's memory).
 #[allow(clippy::too_many_arguments)]
 fn load_part(

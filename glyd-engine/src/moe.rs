@@ -912,12 +912,12 @@ impl MoeLayer {
         }
     }
 
-    /// The layer with its experts in the FP8 format (`f8`): the router and its bias, the shared expert, as `new`'s. The first matrices' rows must hold the second's outputs (the second product's rows go
-    /// where the first's were).
+    /// The layer with its experts in the FP8 format (`f8`): the router and its bias, the shared expert, as `new`'s. The second product's rows go where the first's were (the scratch's
+    /// rows a pair the wider of the two: `Shape::f8`), so an expert's first matrices may have fewer rows than the layer is wide (GLM-5.3's: 4,096 of 6,144).
     pub fn new_f8(cfg: MoeCfg, router: Buf, bias: Option<Buf>, f8: crate::f8::F8Experts, shared: Option<Shared>) -> Result<MoeLayer> {
         let (e, up_rows) = (cfg.experts, cfg.up_rows());
-        if !cfg.act.gated() || cfg.fused() != 0 || up_rows < cfg.hidden || !cfg.hidden.is_multiple_of(8) {
-            return err("FP8 experts: a gated activation of its own kernel, the first matrices' rows at least the width, a width divisible by 8");
+        if !cfg.act.gated() || cfg.fused() != 0 || !cfg.hidden.is_multiple_of(8) {
+            return err("FP8 experts: a gated activation of its own kernel, a width divisible by 8");
         }
         // (a stack of this GPU's slices of each expert's rows: the whole experts' shapes, src/dynamic/tp.rs; the expert cache's places: an expert's rows)
         let whole = |m: &crate::f8::F8Mat| match m.place {
@@ -2259,6 +2259,8 @@ pub struct Shape {
     /// the width of the rows of hummingbird experts (src/moe_hbg.rs: their products are kernels of their own, not the library's: the first product's rows are never fused with the activation, and the scratch holds the rotated inputs and
     /// the parts); 0: the experts are in another format
     pub hb: usize,
+    /// the experts in the FP8 format (`MoeLayer::new_f8`): their second product's rows go where the first's were, so the scratch holds a pair's row of the wider of the two
+    pub f8: bool,
 }
 
 /// The scratch's buffers in bytes, and the library's calls whose workspace it must hold (asked for every count of tokens): the largest of what the layers ask, not their sum.
@@ -2297,7 +2299,17 @@ impl Sizes {
             z.logits = z.logits.max(max_tokens * c.experts * 4);
             z.pairs = z.pairs.max(pairs);
             z.plan = z.plan.max((2 + 2 * c.experts + pairs) * 4);
-            z.a = z.a.max(pairs * (if fused != 0 { c.inter } else { c.up_rows() }) * 2);
+            z.a = z.a.max(
+                pairs
+                    * (if fused != 0 {
+                        c.inter
+                    } else if sh.f8 {
+                        c.up_rows().max(c.hidden)
+                    } else {
+                        c.up_rows()
+                    })
+                    * 2,
+            );
             if c.act.gated() && fused == 0 {
                 z.h = z.h.max(pairs * c.inter * 2);
             }
@@ -2370,6 +2382,7 @@ impl MoeScratch {
                     l.shared.as_ref().filter(|x| x.up.tp_rows > 0).map_or(1, |x| x.up.tp_rows / x.up.pack.rows as usize)
                 },
                 hb: l.hb.as_ref().map_or(0, |h| h.shape.width),
+                f8: l.f8.is_some(),
             })
             .collect();
         let (mut f8, mut beside) = (0, 0);
@@ -2756,6 +2769,7 @@ mod tests {
             sparse: false,
             slice: 1,
             hb: 0,
+            f8: false,
         };
         let nemo = Shape {
             cfg: MoeCfg { experts: 512, router_hidden: 4096, hidden: 1024, inter: 2688, router: Router::sigmoid(22, 5.0), act: Act::Relu2 },
@@ -2765,6 +2779,7 @@ mod tests {
             sparse: false,
             slice: 1,
             hb: 0,
+            f8: false,
         };
         let one = Sizes::of(&[glm], 2048);
         assert_eq!(Sizes::of(&[glm; 42], 2048), one, "42 layers of one shape");
@@ -2782,6 +2797,10 @@ mod tests {
         assert_eq!(both.grouped.len(), 4);
         // the counters: a unit a row block of the first product (128 rows with a fused activation), by the experts a pair can hit
         assert_eq!(both.units, 1 << 18); // (the dense products' floor: the grouped ones need 42 * 512 and 64 * 288)
+                                         // FP8 experts narrower than the width (GLM-5.3's: 4,096 rows of a first product over 6,144): the second product's rows, where the first's were, the wider
+        let wide = MoeCfg { hidden: 6144, router_hidden: 6144, experts: 256, ..glm.cfg };
+        let (f8, bf) = (Sizes::of(&[Shape { cfg: wide, f8: true, ..glm }], 64), Sizes::of(&[Shape { cfg: wide, ..glm }], 64));
+        assert_eq!((f8.a, bf.a), (64 * 8 * 6144 * 2, 64 * 8 * 4096 * 2));
     }
 
     /// A hummingbird layer's scratch: the first product's rows are never fused with the activation (a SwiGLU layer whose library product would fuse them has rows of 2 inter and a buffer for the activation), the rotated inputs, the parts and the
@@ -2790,7 +2809,7 @@ mod tests {
     fn the_scratch_of_hummingbird_experts() {
         // Qwen3.5-like: 256 experts of 512 neurons over 2,048 values, SwiGLU with no clamp (fused in the library's product)
         let cfg = MoeCfg { experts: 256, router_hidden: 2048, hidden: 2048, inter: 512, router: Router::softmax(8), act: Act::SwiGlu { limit: None } };
-        let plain = Shape { cfg, twelve: false, shared: None, expert_rows: 1024, sparse: false, slice: 1, hb: 0 };
+        let plain = Shape { cfg, twelve: false, shared: None, expert_rows: 1024, sparse: false, slice: 1, hb: 0, f8: false };
         let hb = Shape { hb: 2048, ..plain };
         let (a, b) = (Sizes::of(&[plain], 2048), Sizes::of(&[hb], 2048));
         let pairs = 2048 * 8;
@@ -2807,6 +2826,7 @@ mod tests {
             sparse: false,
             slice: 1,
             hb: 1024,
+            f8: false,
         };
         let n = Sizes::of(&[nemo], 64);
         assert_eq!((n.a, n.h, n.hb_xr, n.hb_part), (64 * 22 * 2688 * 2, 16, 64 * 1024 * 4, 64 * 22 * 1024 * 4));
