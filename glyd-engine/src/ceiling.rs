@@ -263,6 +263,23 @@ fn product_of(base: &str, mla: Option<bool>) -> String {
     }
 }
 
+/// An FP8 matrix's bytes as the engine holds it, in hundredths of the release's, where `--fp8` does not say: 100 for a checkpoint whose FP8 matrices
+/// carry their scales beside them as powers of two (`X.scale`, `F8_E8M0`) a block of 128 x 128, which the loader holds as released, exact (the library's
+/// FP8 products take those blocks: src/dynamic/deepseek_v4.rs); else `packed`, the share of the library's packs of an FP8 matrix (plain or coded). Read
+/// from the checkpoint's own tensors, whatever the model is called.
+fn f8_held_pct(ts: &[(String, String, Vec<u64>, u64)], packed: u64) -> u64 {
+    let by_name: std::collections::HashMap<&str, (&str, &[u64])> = ts.iter().map(|t| (t.0.as_str(), (t.1.as_str(), &t.2[..]))).collect();
+    let held = |(name, dtype, shape, _): &(String, String, Vec<u64>, u64)| {
+        let scale = name.strip_suffix(".weight").and_then(|b| by_name.get(format!("{b}.scale").as_str()));
+        dtype == "F8_E4M3" && shape.len() == 2 && scale.is_some_and(|(st, ss)| *st == "F8_E8M0" && *ss == [shape[0].div_ceil(128), shape[1].div_ceil(128)])
+    };
+    if ts.iter().any(held) {
+        100
+    } else {
+        packed
+    }
+}
+
 /// The tensors' bytes as the engine holds them and reads them a token, over `n` GPUs (every layer across them; 1: one GPU, or a split's, whose
 /// stages read in turn).
 fn step(cfg: &Value, ts: &[(String, String, Vec<u64>, u64)], n: usize, bf16_share: f64, f8_pct: u64, pos: usize) -> Result<Step> {
@@ -557,13 +574,12 @@ pub fn cmd(a: &Args) -> Result<()> {
     let n: usize = a.num("gpus", b.gpus)?;
     let pos: usize = a.num("pos", 512)?;
     let (cfg, ts) = tensors(model)?;
-    let mt = cfg.get("model_type").and_then(Value::as_str).unwrap_or("");
     // (--stats FILE: decode steps through the expert cache on one GPU, each line a count of rows' layer statistics and measured step (storebench --out); --fixed-us: ours' fixed time a step, else the
     // first line's unexplained, and the others predicted from it)
     if let Some(f) = a.flag("stats") {
         let text = std::fs::read_to_string(f).map_err(|e| Error(format!("{f}: {e}")))?;
         let runs: Vec<Run> = text.lines().filter(|l| !l.trim().is_empty()).map(Run::parse).collect::<Result<_>>()?;
-        let f8_pct: u64 = a.num("fp8", if mt == "deepseek_v4" { 100 } else { CODED_PCT })?;
+        let f8_pct: u64 = a.num("fp8", f8_held_pct(&ts, CODED_PCT))?;
         let bf16_share: f64 = a.num("bf16-pct", 100.0 * if b.hbm { TWELVE_ACTUAL } else { TIERED_ACTUAL })? / 100.0;
         let s = step(&cfg, &ts, 1, bf16_share, f8_pct, pos)?;
         let shares = (b.ours.0, b.ours.1, b.ours.2);
@@ -577,14 +593,7 @@ pub fn cmd(a: &Args) -> Result<()> {
             (None, Some(c)) => {
                 let (cm, cf) = c.split_once(':').ok_or_else(|| Error(format!("--calibrate {c}: MODEL:FILE")))?;
                 let (ccfg, cts) = tensors(cm)?;
-                let cs = step(
-                    &ccfg,
-                    &cts,
-                    1,
-                    bf16_share,
-                    a.num("fp8", if ccfg.get("model_type").and_then(Value::as_str) == Some("deepseek_v4") { 100 } else { CODED_PCT })?,
-                    pos,
-                )?;
+                let cs = step(&ccfg, &cts, 1, bf16_share, a.num("fp8", f8_held_pct(&cts, CODED_PCT))?, pos)?;
                 let ctext = std::fs::read_to_string(cf).map_err(|e| Error(format!("{cf}: {e}")))?;
                 let cruns: Vec<Run> = ctext.lines().filter(|l| !l.trim().is_empty()).map(Run::parse).collect::<Result<_>>()?;
                 let pts: Vec<(usize, f64)> = cruns.iter().map(|r| (r.rows, unexplained(&cs, b, shares, r))).collect();
@@ -611,17 +620,8 @@ pub fn cmd(a: &Args) -> Result<()> {
         }
         return Ok(());
     }
-    // (DeepSeek-V4's FP8 matrices are held exact, as released; elsewhere layout H's plain packs on HBM, coded on the others)
-    let f8_pct: u64 = a.num(
-        "fp8",
-        if mt == "deepseek_v4" {
-            100
-        } else if b.hbm {
-            PLAIN_PCT
-        } else {
-            CODED_PCT
-        },
-    )?;
+    // (FP8 matrices released with their block scales are held exact, as released; elsewhere layout H's plain packs on HBM, coded on the others)
+    let f8_pct: u64 = a.num("fp8", f8_held_pct(&ts, if b.hbm { PLAIN_PCT } else { CODED_PCT }))?;
     let across = if split { 1 } else { n };
     let bf16_share: f64 = a.num("bf16-pct", 100.0 * if b.hbm { TWELVE_ACTUAL } else { TIERED_ACTUAL })? / 100.0;
     let s = step(&cfg, &ts, across, bf16_share, f8_pct, pos)?;
@@ -739,6 +739,48 @@ pub fn cmd(a: &Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An FP8 matrix's held share is read from the checkpoint's tensors: power-of-two scales a block of 128 x 128 beside the matrix mean held as released,
+    /// in any model that has them; FP8 matrices with other scales (blocks of 32, floats) are the library's packs, at the share the caller gives.
+    #[test]
+    fn the_fp8_share_is_the_checkpoints_own() {
+        let t = |name: &str, dtype: &str, shape: [u64; 2]| (name.to_string(), dtype.to_string(), shape.to_vec(), shape[0] * shape[1]);
+        let blocks = |prefix: &str, scale: &str, scales: [u64; 2]| {
+            vec![t(&format!("{prefix}.weight"), "F8_E4M3", [1024, 4096]), t(&format!("{prefix}.{scale}"), "F8_E8M0", scales)]
+        };
+        // (two families' names for a matrix with its blocks' scales: the same share)
+        for prefix in ["layers.0.attn.wq_a", "model.layers.0.self_attn.q_proj"] {
+            let held = blocks(prefix, "scale", [8, 32]);
+            assert_eq!((f8_held_pct(&held, CODED_PCT), f8_held_pct(&held, PLAIN_PCT)), (100, 100), "{prefix}");
+            // (blocks of 32, which the library's products do not take, and scales under another name: packed)
+            assert_eq!(f8_held_pct(&blocks(prefix, "scale", [32, 128]), CODED_PCT), CODED_PCT, "{prefix}");
+            assert_eq!(f8_held_pct(&blocks(prefix, "weight_scale_inv", [8, 32]), CODED_PCT), CODED_PCT, "{prefix}");
+        }
+        let plain = vec![
+            t("model.layers.0.mlp.experts.0.down_proj.weight", "F8_E4M3", [1024, 4096]),
+            t("model.layers.0.mlp.experts.0.down_proj.weight_scale_inv", "F32", [8, 32]),
+        ];
+        assert_eq!((f8_held_pct(&plain, CODED_PCT), f8_held_pct(&plain, PLAIN_PCT)), (CODED_PCT, PLAIN_PCT));
+        // (FP4 experts' power-of-two scales, a byte a run of 32, are no FP8 matrix's)
+        let fp4 = vec![t("layers.0.ffn.experts.0.w1.weight", "I8", [2048, 2048]), t("layers.0.ffn.experts.0.w1.scale", "F8_E8M0", [2048, 128])];
+        assert_eq!(f8_held_pct(&fp4, CODED_PCT), CODED_PCT);
+        assert_eq!(f8_held_pct(&[t("model.embed_tokens.weight", "BF16", [1024, 4096])], CODED_PCT), CODED_PCT);
+        // (the released index of a model with those scales, tests/fixtures/headers, at its tensors' shapes: as its family's name gave it before)
+        let h =
+            json::parse(&std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers/DeepSeek-V4-Flash-0731.json")).unwrap())
+                .unwrap();
+        let ts: Vec<_> = h
+            .get("groups")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .map(|g| {
+                let shape: Vec<u64> = g.get("shape").and_then(Value::as_array).unwrap().iter().map(|x| x.as_u64().unwrap()).collect();
+                (g.get("mask").and_then(Value::as_str).unwrap().to_string(), g.get("dtype").and_then(Value::as_str).unwrap().to_string(), shape, 0)
+            })
+            .collect();
+        assert_eq!(f8_held_pct(&ts, CODED_PCT), 100);
+    }
 
     /// A two-layer model: a dense layer (q, k, v, o, gate, up, down) and a MoE layer (o and four experts), across two GPUs: the products the engine
     /// gathers (q, k and v one, gate and up one, the experts two) and the bytes each GPU reads.

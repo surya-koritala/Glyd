@@ -240,65 +240,12 @@ pub fn freqs(dim: usize, base: f64, yarn: Option<Yarn>) -> Vec<f32> {
     f
 }
 
-/// An E8M0 scale's value: 2^(b - 127); 255 is NaN.
-pub fn e8m0(b: u8) -> f32 {
-    match b {
-        255 => f32::NAN,
-        // (2^-127 is an f32 subnormal)
-        0 => f32::from_bits(0x0040_0000),
-        _ => f32::from_bits((b as u32) << 23),
-    }
-}
-
-/// E2M1's values, the low three bits the magnitude and the fourth the sign.
-pub const E2M1: [f32; 16] = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0];
-
-/// An FP4 matrix [rows, cols] (two weights a byte, the first in the low four bits; `bytes` rows x cols / 2) with its E8M0 scales (one per 32 weights of a row) as five-bit runs: each weight's code (twice its
-/// E2M1 value, -12 to 12) and each run's bf16 scale (half its E8M0 scale), so that code x scale is the weight exactly. An Err where a scale is NaN or past bf16.
-pub fn fp4_runs(bytes: &[u8], scales: &[u8], rows: usize, cols: usize) -> Result<(Vec<i8>, Vec<u16>)> {
-    if cols % 32 != 0 || bytes.len() * 2 != rows * cols || scales.len() * 32 != rows * cols {
-        return err(format!("{} bytes and {} scales for a {rows} x {cols} FP4 matrix", bytes.len(), scales.len()));
-    }
-    const CODE: [i8; 16] = [0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12];
-    let code: Vec<i8> = bytes.iter().flat_map(|&b| [CODE[(b & 15) as usize], CODE[(b >> 4) as usize]]).collect();
-    let scale = scales
-        .iter()
-        .enumerate()
-        .map(|(i, &e)| match e {
-            255 => err(format!("run {i}'s scale is NaN")),
-            // 2^(e - 128): bf16's exponent e - 1, or below its normal range a subnormal (2^-133 times 2^(e + 5))
-            2.. => Ok(((e - 1) as u16) << 7),
-            _ => Ok(1u16 << (e + 5)),
-        })
-        .collect::<Result<_>>()?;
-    Ok((code, scale))
-}
-
-/// An FP8 matrix [rows, cols] with its E8M0 block scales (128 x 128 blocks) as bf16 words, exactly (`glyd_gpu::fp8::dequant`).
-pub fn fp8_bf16(q: &[u8], scales: &[u8], rows: usize, cols: usize) -> Result<Vec<u16>> {
-    let s: Vec<f32> = scales.iter().map(|&b| e8m0(b)).collect();
-    let mut out = vec![0u16; rows * cols];
-    glyd_gpu::fp8::dequant(q, &s, rows, cols, [128, 128], &mut out).map_err(Error)?;
-    Ok(out)
-}
+// (the release's formats decoded: src/formats.rs, the one decoder of each format)
+pub use crate::formats::{e8m0, fp4_runs, fp8_bf16, E2M1};
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn fp4_runs_are_the_weights_exactly() {
-        for e in [0u8, 1, 2, 100, 120, 127, 128, 200, 254] {
-            let bytes: Vec<u8> = (0..16u8).map(|i| i | (15 - i) << 4).collect();
-            let (code, scale) = fp4_runs(&bytes, &[e], 1, 32).unwrap();
-            let s = f32::from_bits((scale[0] as u32) << 16);
-            for (k, &c) in code.iter().enumerate() {
-                let nib = if k % 2 == 0 { bytes[k / 2] & 15 } else { bytes[k / 2] >> 4 };
-                assert_eq!(c as f32 * s, E2M1[nib as usize] * e8m0(e), "scale {e}, weight {k}");
-            }
-        }
-        assert!(fp4_runs(&[0; 16], &[255], 1, 32).is_err());
-    }
 
     #[test]
     fn freqs_are_yarns() {

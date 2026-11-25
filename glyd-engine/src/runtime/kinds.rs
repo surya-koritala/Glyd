@@ -195,7 +195,7 @@ pub struct Indexer {
     pub shared: bool,
     pub form: IndexForm,
     /// The gated form's rotary: the first `rope` channels of each query head and of each token's key rotated to their positions by the attention's rotary
-    /// (the full-size GLM's and DeepSeek-V3.2's indexer, their `qk_rope_head_dim`); 0: none (GLM-5.3-Flash, Kimi-K3.1, DeepSeek-V4). The mean form's
+    /// (the full-size GLM's indexer, its `qk_rope_head_dim`); 0: none (GLM-5.3-Flash, Kimi-K3.1, DeepSeek-V4). The mean form's
     /// queries and pools are rotated as `IndexForm::Mean` says, whatever this is.
     pub rope: usize,
 }
@@ -221,7 +221,7 @@ impl std::fmt::Debug for Indexer {
 pub enum IndexForm {
     /// Queries and a key a token from their own products, each token's key normed by `key` (role `indexer_k_norm`, and with a LayerNorm its
     /// bias `indexer_k_norm_bias`); a pool's key the softmax(gate + ape)-weighted sum of its tokens' keys; the heads' scores weighed by a learned
-    /// product of the block's input. The key's norm: a LayerNorm at 1e-6 (GLM-5.3-Flash, GLM-5, DeepSeek-V3.2: `LAYER_KEYS`), an RMS norm at the
+    /// product of the block's input. The key's norm: a LayerNorm at 1e-6 (GLM-5.3-Flash and the full-size GLM: `LAYER_KEYS`), an RMS norm at the
     /// model's eps (Kimi-K3.1's `dsa_config.index_k_norm_type` rmsnorm, its LayerNorm otherwise; DeepSeek-V4's compressed entries, normed by
     /// their compressor's `idx_norm`).
     Gated { key: Norm },
@@ -234,7 +234,7 @@ pub enum IndexForm {
 }
 
 impl IndexForm {
-    /// The gated form whose keys are LayerNorm-ed with a bias at 1e-6 (GLM-5.3-Flash's, GLM-5's, DeepSeek-V3.2's).
+    /// The gated form whose keys are LayerNorm-ed with a bias at 1e-6 (GLM-5.3-Flash's and the full-size GLM's).
     pub const LAYER_KEYS: IndexForm = IndexForm::Gated { key: Norm { kind: NormKind::Layer, weight: NormWeight::Plain, eps: 1e-6, rounding: Rounding::F32 } };
 }
 

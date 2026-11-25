@@ -272,7 +272,7 @@ pub fn pack(source: &Source, model: &str, layout: Layout, expect: u64, ui: &RefC
     let name = model.rsplit('/').next().unwrap_or(model);
     if old {
         ui.borrow_mut().line(&format!(
-            "The packed copy of {name} is of a format this glyd does not read (the dense Qwen3 engine's, or glyd 0.27's): packing it again for this GPU ({}), once: {}",
+            "The packed copy of {name} is of a format this glyd does not read (the earlier dense engine's, or glyd 0.27's): packing it again for this GPU ({}), once: {}",
             layout.name(),
             dir.display()
         ));
