@@ -134,7 +134,7 @@ dynamic at the layer-kind boundary; nothing is generic over the backend engine-w
 
 The engine opens the driver at run time (`glyd-engine/src/ffi.rs`), but the vendor is a build-time choice today
 (`cfg(glyd_hip)`). The release carries the engine's kernels twice, built with CUDA 13 (compressed) and CUDA 12.9 (not compressed, so that a driver of
-CUDA 12.2 reads them), and the GPU library for both; the driver's version picks (`dev.rs`, `ffi.rs`), and the release build adds the compute_89 PTX so
+CUDA 12.2 reads them), and no GPU library (a CUDA build loads none); the driver's version picks the kernels (`dev.rs`), and the release build adds the compute_89 PTX so
 a GPU newer than the machine code still runs (P6). The target is a small core that downloads the signed kernel bundle for the machine's vendor (P7b).
 
 ## Build or reuse (split execution bottom)
@@ -159,7 +159,7 @@ compute-bound standard dense/FP8/NVFP4 ops to proven vendor libraries.
 | FP8 / FP4 / MXFP4 releases | as released | yes | kept as the release's codes; FP8 also in a ~7-bit lossless coding |
 | kestrel / swift / wren | 6.5 / 5.5 / 4.5 | no | Int6 / Int5 / Int4; wren keeps QAT 4-bit releases exactly |
 | hummingbird | ~2-3.4 on experts | no | experts' bits by use; attention 4-6 bits |
-| KV cache | 12 (bf16 16) | yes | per-model tables; paged on the Qwen3 path today, every model in M2 |
+| KV cache | 12 (bf16 16) | yes | per-model tables; the executor's pages are bf16, or 12-bit with `GLYD_KV=lossless` (`run` and `serve` take it for Gemma 4 and the plain dense kind; `kv12check` and `usercheck --kv12` hold the Qwen3.5 layout's too) |
 
 `glyd verify` checks a lossless pack tensor by tensor against the source's sha256.
 

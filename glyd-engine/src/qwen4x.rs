@@ -231,22 +231,6 @@ impl ConfigQx {
         Ok(c)
     }
 
-    /// The release's own shape, which the family's own engine (deleted in R3d) was written for: four streams, index heads of 128 over blocks of 4 tokens, bigrams and
-    /// trigrams with a convolution of 4. The description executor takes the family's other shapes by its kinds (`dynamic::lower::qwen4x` refuses what its
-    /// kernels do not take).
-    pub fn release_shape(&self, label: &str) -> Result<()> {
-        if self.hc != 4 || self.ix_dim != 128 || self.ix_block != 4 || self.ple.as_ref().is_some_and(|p| p.ngram != 3 || p.kernel != 4) {
-            return err(format!(
-                "{label}: {} streams, index heads of {} over blocks of {}, an n-gram embedding of {:?}: Condor's engine runs the release's shape alone",
-                self.hc,
-                self.ix_dim,
-                self.ix_block,
-                self.ple.as_ref().map(|p| (p.ngram, p.kernel))
-            ));
-        }
-        Ok(())
-    }
-
     /// What this engine reads of a model, from the model's description (`runtime::describe`: its layer kinds, and the experts' widths from the
     /// shapes it says), with what no description holds from `own` (this engine's reading of the same config: the end tokens, with the generation
     /// config's, the longest context, the tensors' prefix). Held to `own` (`agrees`, at the executor's load: `dynamic::qwen4x::lowered`), it is the

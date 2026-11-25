@@ -2,14 +2,14 @@
 
 ## What Glyd does
 
-Glyd compresses an LLM and runs it. It packs the weights and the KV cache losslessly and decodes them inside the GPU kernels,
-so a model that does not fit your GPU in bf16 often fits and answers exactly as before. When lossless is not enough there are
+Glyd compresses an LLM and runs it. It packs the weights losslessly and decodes them inside the GPU kernels (the KV cache
+too, in 12-bit lossless pages, where `GLYD_KV=lossless` asks for them), so a model that does not fit your GPU in bf16 often fits and answers exactly as before. When lossless is not enough there are
 lossy levels, experts kept in RAM, and more GPUs. It is one program written in Rust, from the compressed file to the
 tokens, with an OpenAI and Anthropic compatible server and a chat page.
 
 ## Features
 
-- Lossless weights and KV cache, bit for bit, decoded in the kernels.
+- Lossless weights, bit for bit, decoded in the kernels; the KV cache in 12-bit lossless pages where asked (`GLYD_KV=lossless`, for Gemma 4 and the plain dense kind in `run` and `serve`), else bf16.
 - Four lossy levels (kestrel, swift, wren, hummingbird) for when a model still does not fit.
 - Mixture-of-experts models with their experts in RAM or on the SSD.
 - One model across the GPUs of a machine, and across machines with Starlings (beta).
@@ -20,7 +20,7 @@ tokens, with an OpenAI and Anthropic compatible server and a chat page.
 
 1. You name a model: `gemma4:12b`, `google/gemma-4-12B-it`, or a path.
 2. `fit` reads the model's config and plans a level, where the weights go and how much context fits.
-3. On the first run Glyd downloads the model, packs it for your GPU and builds the KV tables.
+3. On the first run Glyd downloads the model and packs it for your GPU (and, where `GLYD_KV=lossless` asks for the 12-bit KV pages, builds their tables once).
 4. The kernels read the packed weights and decode them as they compute. Nothing is unpacked into memory first.
 5. `run` gives a chat in the terminal and at `http://localhost:8000`. `serve` gives the same server for programs.
 
@@ -37,7 +37,7 @@ fit. [Serving](serve.md) and [connecting tools](tools.md) to use it from other p
 - The families are on the [Models](models.md) page, generated from the code.
 - A 180B mixture of experts on one 12-16 GB GPU: [Condor](condor.md).
 
-Not yet: Windows, macOS, aarch64 and CPU-only engines. AMD is a development build.
+Not yet: macOS and CPU-only engines. Windows is a preview and aarch64 is built but not yet measured. AMD is a development build.
 
 ## Pages
 

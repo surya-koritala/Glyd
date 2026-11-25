@@ -1,6 +1,6 @@
 # The MoE grouped products at 768 to 8,192 tokens a step (2026-10-03, second version)
 
-Design note, private. The first version (the same day) was written from the H100's sweep alone and listed its hypotheses as "none profiled". This one adds what has been measured since: Nsight Compute on the H100's grouped gate and up product (`benchmarks/gpu/h100-moe-v028-2026-10-03/prof`), the A100's two runs (`benchmarks/gpu/a100-moe-v028-2026-10-03`: `README-first-run.md`, then `README.md`, the final numbers), and three captures on an L4, which runs the A100's tiled kernel as it is (`.../l4-tiled`). Numbers are measured where they say so; a gain is an estimate where it says so. The A100's second run is the last section but one.
+Design note. The first version (the same day) was written from the H100's sweep alone and listed its hypotheses as "none profiled". This one adds what has been measured since: Nsight Compute on the H100's grouped gate and up product (`benchmarks/gpu/h100-moe-v028-2026-10-03/prof`), the A100's two runs (`benchmarks/gpu/a100-moe-v028-2026-10-03`: `README-first-run.md`, then `README.md`, the final numbers), and three captures on an L4, which runs the A100's tiled kernel as it is (`.../l4-tiled`). Numbers are measured where they say so; a gain is an estimate where it says so. The A100's second run is the last section but one.
 
 ## What the sweeps say
 

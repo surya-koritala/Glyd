@@ -1,5 +1,5 @@
-//! glyd-engine: Glyd's own inference engine. Qwen3 dense on CUDA from Glyd-packed weights with every matrix
-//! compressed, the lossless KV cache, a chat and an OpenAI-compatible API. See README.md.
+//! glyd-engine: Glyd's own inference engine. The families of `support.rs` as descriptions of layer kinds run by one executor (`dynamic/`) through one scheduler
+//! (`sched.rs`), on NVIDIA GPUs from Glyd-packed weights or the release's own, with a chat and the OpenAI, Anthropic and Ollama APIs. See REFERENCE.md.
 
 /// A tuning variable of a development build (the `dev` feature, on by default): its value from the process's environment. A release build
 /// (`--no-default-features`) reads none: this is `None` there, and its binary does not name the variable.

@@ -1,7 +1,7 @@
-//! An OpenAI-compatible server for one user at a time (HTTP/1.1 on a socket of its own: no framework): `GET /` the chat page, `GET /v1/models`, `POST /v1/chat/completions` and
-//! `POST /v1/completions` (streamed as server-sent events or whole), `GET /health`. Connections are read on threads of their own (a browser's idle connection waits for no one), the
-//! page, the health check and the model's name answered there, and the completions handed to the engine's thread, which runs one reply at a time in the order they come (the
-//! terminal's chat sends its replies the same way).
+//! The server (HTTP/1.1 on sockets of its own: no framework; `server/frontend.rs` has the connections): `GET /` the chat page, `GET /v1/models`, `POST /v1/chat/completions` and
+//! `POST /v1/completions` (streamed as server-sent events or whole), `GET /health`, and the other APIs of docs/serve-api.md. A request is read and answered on a thread of its own (the
+//! page, the health check and the model's name answered there), and what it asks of the model goes to the engine's thread, which runs the scheduler's rounds (`work_with`): the
+//! sequences of several requests at once, up to `--users` (the terminal's chat sends its replies the same way).
 
 use crate::chat::{Chat, Message};
 use crate::choice::{Cfg, Choice, Delta, Done, ToolsCfg};

@@ -17,9 +17,12 @@ HF_HUB_OFFLINE=1 GLYD_API_KEY=... glyd-engine serve /path/to/models--glyd--Qwen3
 
 - `MODEL:level` takes penguin (lossless), kestrel, swift, wren and hummingbird (the level of a mixture of experts: Kimi-K3, GLM-5.3-Flash, DeepSeek-V4, Muse Spark, the Nemotron-H layout). A tag that names no level is refused (exit 1). A level the engine does not run
   for the model, or a model that does not fit, is refused with the reason (exit 3, on stderr and in the status file).
-  Nothing is changed for you: the model, the level and the precision are the ones asked for, or the start fails.
-- `glyd serve` of a level, a glyd-v7 directory or a glyd/ repo vLLM cannot read goes to the engine without GLYD_ENGINE=1.
-  `glyd serve` of a lossless model is vLLM's unless GLYD_ENGINE=1, as before.
+  The model and the level are the ones asked for, or the start does not go on without your word: where the level does not load as asked, the first lines say
+  which steps would take it there and what each costs, and the start is refused (exit 3) unless `--yes` (or `GLYD_DEGRADE=yes`) takes them; a lower level, or a step that
+  costs more than 30% of the speed, is such a step (`glyd run` at a terminal asks instead). Two steps are taken and said in those lines, with no word asked: a shorter
+  context than the one asked for, and the experts or the dense layers of a large model kept in the computer's memory where that costs no more than 30%.
+- `glyd serve` of a level, of a Gemma 4 model, of a glyd-v7 directory or of a glyd/ repo vLLM cannot read goes to the engine without GLYD_ENGINE=1.
+  `glyd serve` of any other lossless model is vLLM's unless GLYD_ENGINE=1, as before.
 - A Hub name with a level reads the base model's config.json (the cache, else the Hub) and loads glyd/NAME-LEVEL from the
   cache (else downloads it). Offline, give the snapshot directory: nothing else is read.
 - The address is 127.0.0.1:8000, or the next free port up to 8020; `--port N` is that port or a refusal. `--host H`
@@ -32,7 +35,7 @@ HF_HUB_OFFLINE=1 GLYD_API_KEY=... glyd-engine serve /path/to/models--glyd--Qwen3
   with a draft model, a model split across GPUs, or one with an operation that takes one sequence, runs one request at a time (the others wait in order).
 - `--with MODEL2` serves a second model from the same process, on the same GPU: MODEL on its port and MODEL2 on `--with-port N`, else the next
   free port after MODEL's. Each is a server of its own (its scheduler, its `/v1/glyd/info`, `/metrics` and requests); the first loads as it would alone and takes
-  up to half of the memory left for its keys and values, then the second loads in what is left and takes the rest. Both are models of the level engines (a lossy level, as MODEL:wren).
+  up to half of the memory left for its keys and values, then the second loads in what is left and takes the rest. Both are models the description executor serves (each loads as `serve` would load it alone, as MODEL:wren).
   The status file says ready when both serve; a model that fails to load, or whose server does not start, ends the start of both. A GPU error after
   which the GPU cannot be used ends the process, both models with it, as it ends a server of one.
 - A model too big for one GPU (Kimi-K3, DeepSeek-V4, GLM-5.3-Flash, Muse Spark) uses all the GPUs shown. On datacenter
@@ -40,10 +43,13 @@ HF_HUB_OFFLINE=1 GLYD_API_KEY=... glyd-engine serve /path/to/models--glyd--Qwen3
   each GPU holds a slice of every big matrix and the slices are gathered GPU to GPU, so every GPU works on every token.
   The start checks two gathers of known values and refuses (exit 3) where the GPUs' writes to each other arrive wrong.
   Elsewhere, or with `--split CUTS --devices GPUS`, the layers are split between the GPUs (one at work at a time). The
-  numbers: [research/tp-8xa100-2026-10-22](../research/tp-8xa100-2026-10-22/README.md).
-- The environment it reads: GLYD_API_KEY (or VLLM_API_KEY; `--api-key` works but `ps` shows it), GLYD_GPU_LIB where the
-  GPU library is not beside the program, HF_HUB_CACHE or HF_HOME for a Hub name, HF_HUB_OFFLINE=1. A directory needs
-  nothing else.
+  numbers: [research/tp-8xa100-2026-10-22](../research/tp-8xa100-2026-10-22/README.md). The Qwen3.5 layout and Nemotron-H are cut over the GPUs at penguin too.
+  Qwen3.8-Flash-Next (penguin, `glyd run`, `serve` and `fit`) runs on the one GPU with the most room: its layers are not cut over GPUs on the executor yet, so `--split` and a
+  `--devices` of more than one are refused in words (`Leave out --split; --devices 1 picks the GPU`), as is `qwenserve --gpus 0,1`; a model that does not fit that one GPU is refused with the memory it needs.
+- The environment it reads: GLYD_API_KEY (or VLLM_API_KEY; `--api-key` works but `ps` shows it), HF_HUB_CACHE or HF_HOME
+  for a Hub name, HF_HUB_OFFLINE=1. A directory needs nothing else: a CUDA build loads no GPU library (its kernels are its own),
+  so there is none to find (`GLYD_GPU_LIB=PATH` loads Glyd's library for the checks that compare with it; an AMD build looks for
+  `libglyd_gpu_hip` beside the program).
 
 States:
 
@@ -118,8 +124,9 @@ Every API front end (OpenAI's completions, Anthropic's Messages, OpenAI's Respon
 A method an API path does not take is 405 (the health, readiness, metrics, stats and events paths answer 404 to it), a path there is not 404.
 
 Every error is OpenAI's: `{"error": {"message", "type", "param", "code"}}` with the status a client keys on. `type` is `invalid_request_error` (400, 404, 405, 413),
-`authentication_error` (401), `permission_error` (403), `rate_limit_error` (429) or `server_error` (5xx); `code` is null except `invalid_api_key` (401) and
-`context_length_exceeded` (a prompt, or a prompt and its length, past the context). `stream_options.include_usage` puts `"usage": null` in every chunk of a stream and the usage in a
+`authentication_error` (401), `rate_limit_error` (429) or `server_error` (5xx); `code` is null except `invalid_api_key` (401) and
+`context_length_exceeded` (a prompt, or a prompt and its length, past the context). The Host and Origin refusals (421 and 403) have a body of their own, `{"error": {"message", "type": "Forbidden", "code": 421}}`
+with the status as a number in `code` (the last sample of Replies, below): no 403 is `permission_error`. `stream_options.include_usage` puts `"usage": null` in every chunk of a stream and the usage in a
 last chunk with no choices, as OpenAI's does. Where the server found some of a prompt's tokens in its cache (a conversation's earlier turns, a prompt it has run before), the usage has
 `prompt_tokens_details.cached_tokens`: they are among `prompt_tokens`, and were not run again. The Responses API has them as `input_tokens_details.cached_tokens`.
 
@@ -134,10 +141,12 @@ null, and `/metrics` has no `glyd_prefix_cache_hit_tokens_total`, unless the ser
 
 What a finished request leaves is kept until the server needs its place, the oldest going first. `cache_pin_seconds` (a number up to 3600) asks that what this request leaves
 goes after the others' for that long; it is a preference among what is kept and never makes another request wait. The Anthropic endpoint sets it from `cache_control` (300, or
-3600 with `ttl: "1h"`). A request that begins as an earlier one did has that start without running it, where the model allows: on Gemma 4 and Muse Spark the server finds the blocks of
-16 tokens a prompt begins with by what they hold, whether the request that ran them is still running, is kept, has grown far past them or has ended, for as long as their memory
-has not been needed for something else; the Qwen3.5 layout shares a prompt another request ran to its end, from a sequence that is still there. A request that comes while another
-still runs the start waits for it rather than running the same tokens beside it.
+3600 with `ttl: "1h"`). A request that begins as an earlier one did has that start without running it, where the model allows: on the models whose keys and values are paged (Gemma 4 and Muse Spark)
+the server finds the blocks of 16 tokens a prompt begins with by what they hold, whether the request that ran them is still running, is kept, has grown far past them or has ended,
+for as long as their memory has not been needed for something else; the Qwen3.5 layout (its Gated DeltaNet layers beside paged attention) finds the start any earlier request ran by the
+states it keeps at every chunk of a prompt, in a pool of fixed size made at load (512 MB by default, boundaries every chunk; a development build's `GLYD_ENGINE_STATE_SNAP_MB` and `GLYD_ENGINE_STATE_EVERY` set them); Nemotron-H does not yet.
+A request that comes while another still runs the start waits for it rather than running the same tokens beside it. `GLYD_ENGINE_KEEP=0` empties a finished request's slot at once, so
+nothing is kept for a conversation's next turn.
 
 ## Connecting tools
 
@@ -252,23 +261,26 @@ From the record (served by its Hub name; the file list cut to two of sixteen):
   (the download checked it), else the file read at the start where it is 64 MiB or smaller, else null.
 - `level.requested` is the tag, `--lossy` (kestrel), or a glyd/NAME-LEVEL name; null where nothing asked for one (a
   directory runs at its own level). `effective` is the level loaded.
-- `precision`: `sums` is the products' accumulation. `kv` and `state` are null for a model across several GPUs, which does not say.
+- `precision`: `sums` is the products' accumulation. `kv` and `state` are null for a model across several GPUs, which does not say. `kv` is `bf16` for every model of the
+  executor, 12-bit pages too (`GLYD_KV=lossless`): the field does not say which pages are on.
 - `fields`: `read` are the request fields this server reads (some values of some are refused, below), `no_effect` change
-  nothing here, `refused` are refused when set to anything but null or the value that means "not asked" (false, 0, []).
+  nothing here, `refused` are refused when set to anything but null or the value that means "not asked" (false, 0, []). The record's lists had 38, 12 and 38
+  names; this tree's have 49, 12 and 28 (`DONE`, `NO_EFFECT`, and `NOT_DONE` with `CONSTRAINED`, in `glyd-engine/src/server.rs`).
 - Times are Unix seconds, to the millisecond.
 - `memory.devices` (not in the record above, added after it): the engine's buffers by GPU, one entry a CUDA context the engine opened or held a buffer
   in (`gpu`, `engine_bytes`, `peak_bytes`, `peak_at`); `engine_bytes` and `peak_bytes` above are every GPU's together.
 - `costs` (not in the record above, added after it): the model's cost profile at the level, as `glyd-engine costs DIR` prints it, with `allocated` (the
   engine's counters at load) beside the sizes from the files: what each layer holds by component, the bytes a decoded token reads, the KV and state
   bytes a token and a session. The fields are in [docs/cost-profile.md](cost-profile.md). Where the profile cannot be made (a family it does not
-  describe), `costs` is `{"status": "unavailable", "error": "..."}`.
+  describe), `costs` is `{"status": "unavailable", "error": "..."}`. A model on the dynamic route (Kimi-K3, GLM-5.3-Flash, DeepSeek-V4, Muse Spark, Qwen3.8-Flash-Next, and the Qwen3.5
+  layout and Nemotron-H at penguin) has no `costs` key: it is there for the models the one-GPU path of the levels loads (Gemma 4, the plain dense kind, the lossy levels of the Qwen3.5 layout and Nemotron-H).
 
 ### Memory
 
 - `engine_bytes`: every buffer the engine holds on the GPU now, counted where the engine allocates and frees device memory
   (the sizes it asks for, not the driver's rounding).
 - `weights_bytes`, `kv_bytes`, `state_bytes`: what the model holds, made once at load and kept: the weights (the same
-  number as the start's "GiB of weights" line), the keys and values for the whole context (bf16, `--ctx` positions, used
+  number as the start's "GiB of weights" line), the keys and values for the whole context (bf16, or 12-bit pages where `GLYD_KV=lossless` asks for them; `--ctx` positions, used
   or not), the states a sequence carries (zeroed at each request). `scratch_bytes` is the rest of `engine_bytes`: the
   activations, the products' workspaces, the logits, the rotary tables. Null where the engine does not say (a model across several GPUs).
 - `peak_bytes`, `peak_at`: the most `engine_bytes` has been since the process started, and when. Never reset.
@@ -317,7 +329,7 @@ curl -s -H "Authorization: Bearer $GLYD_API_KEY" -H 'Content-Type: application/j
 The body is the request's (`messages`: a chat's; else `prompt`: a plain completion's), read by the same code as the
 request: the tokenizer, the chat template, the special tokens and the thinking setting are the reply's. It refuses what the
 request would be refused for, runs nothing, and its count is the reply's `usage.prompt_tokens` (17 and 17 in the record).
-Waiting for a reply that runs: it is answered between replies on a level's engine.
+It does not wait for the replies that run: the count is made on the request's own thread, not in the scheduler's.
 
 ### Usage
 
@@ -392,14 +404,15 @@ curl -s -X POST -H "Authorization: Bearer $GLYD_API_KEY" http://127.0.0.1:8238/v
 | `cancelling` | asked to end (`cancel`: `asked` by the endpoint, or `client gone`), and the engine is not done with it yet |
 | `ended` | the engine is done with every sequence of it: what they used is the next request's. `how`: `finished`, `cancelled`, or `failed: ...` |
 
-- A cancel stops each sequence at its next token; one that waits for its turn is not run. A level's engine reads the whole
-  prompt before it looks at a cancel: 0.633 s for a cancel 0.2 s into a 3,790-token prompt in the record, 0.016 s during a reply.
+- A cancel stops each sequence at its next token; one that waits for its turn is not run. The scheduler looks at what is asked to end at the start of each round, a prompt
+  chunk or a decode step, so a cancel during a prompt is seen after the chunk in progress. The record's 0.633 s for a cancel 0.2 s into a 3,790-token prompt (0.016 s during a reply) is
+  of the engine of that day, which read the whole prompt first; it has not been measured on this one.
 - A client that closes its connection is cancelled the same way, seen at the next write or within a second: `ended` 0.031 s
   after curl was killed in the record.
 - A cancelled request whose client still reads gets the end of a client's stop: finish_reason `stop`, the usage, `[DONE]`.
   The status says `cancelled`.
 - `ended` is said once every choice's thread has seen its sequence's end from the engine, before the reply's last bytes go
-  out. On a level's engine nothing is freed then: the KV and the state are made at load and the next request uses them.
+  out. Nothing is freed then: the KV and the state are made at load and the next request uses them (what a finished request leaves is kept for its conversation's next turn).
 - The last 64 ended requests are kept; an id given again names the new request. Ids are matched as the path has them (no
   percent-decoding): give `request_id`s of letters, digits, `-` and `_`.
 
@@ -421,8 +434,9 @@ curl -s -H "Authorization: Bearer $GLYD_API_KEY" 'http://127.0.0.1:8238/v1/glyd/
 - `after`: the newest batch already read (0: all kept); `wait`: seconds to wait for a batch where none is new yet (at most 10).
   Pass `next` as the next call's `after`.
 - A block's name is 32 hexadecimal digits: the first 16 bytes of SHA-256 over the name of the block before it and its 16 token
-  ids, a request's chain beginning at its scope's root (`cache_salt`). `parent` null: the first stored block is its
-  sequence's first.
+  ids (the earlier block's 16 digest bytes as they came, then each id as 4 bytes, little-endian), the 16 bytes read as a little-endian 128-bit number and written
+  as 32 digits, so the digits are the digest's bytes in reverse (`kv::block_hash`). A request's chain begins at its scope's root (`cache_salt`):
+  the same hash over the text `glyd-kv-1` and the scope's key as 8 bytes, little-endian (`kv::block_root`; the key is 0 for no `cache_salt`, else the first 8 bytes of the salt's SHA-256 read little-endian, with the lowest bit set: `salt_of` in `src/server.rs`). `parent` null: the first stored block is its sequence's first.
 - Batch 1 is `{"type":"cleared"}`: the cache holds nothing when the server starts. The last 1,024 batches are kept; `gap: true`
   says some after `after` are not, and a reader takes what it knew as cleared.
 - The schema is part of `glyd-serve/1`: a change that breaks it is a new API version.
@@ -434,8 +448,8 @@ past them); the request's head is read within 30 s and its body within 120 s. No
 
 ## Differences from Glyd-Compute's service adapter
 
-Against docs/service-adapter.md at Sigbound/glyd-compute 24baad6dba877e37e4d80a53ea8b341bc8115079, what an adapter must do
-on purpose:
+What an adapter written for a vLLM-like server must do on purpose here (the adapter's own contract is
+[starlings/docs/service-adapter.md](../starlings/docs/service-adapter.md)):
 
 1. Loading: the port is bound only once the model is loaded. Before that a connection is refused; there is no 503 while
    loading. The status file (`--status-file`) says `ready`, or the reason of a refusal.
@@ -450,8 +464,8 @@ on purpose:
 8. A cancelled stream ends with finish_reason `stop`, the usage and `[DONE]`; `/v1/glyd/requests/ID` says it was cancelled.
 9. Cancel by id (`POST /v1/glyd/requests/ID/cancel`), then `ended` before the memory is reused, in place of stopping the
    process; stopping the process still frees everything.
-10. The key's variable is GLYD_API_KEY (or VLLM_API_KEY). With the environment not inherited, give GLYD_GPU_LIB where the
-    library is not beside the program, and HF_HUB_OFFLINE=1.
+10. The key's variable is GLYD_API_KEY (or VLLM_API_KEY). With the environment not inherited, give HF_HUB_OFFLINE=1 where
+    the model is a directory; a CUDA build needs no GPU library, so no path to one.
 11. Every engine refuses a `max_tokens` the context has no room
     for, rather than cutting it.
 
@@ -460,6 +474,6 @@ on purpose:
 - A model across several GPUs gives no memory parts or KV and state
   precision (null); its `engine_bytes` and peak are counted.
 - `/v1/messages` requests are not tracked by id; they stop when their client goes.
-- A Hub name needs the network for the base model's config.json; offline, serve the directory.
+- A Hub name needs the network only where the base model's config.json is not in the Hugging Face cache (and a level's pre-packed repo is not either); offline, serve the directory.
 - A model split across GPUs is served one request at a time.
 - `completion_tokens` is not split into the thinking and the answer.

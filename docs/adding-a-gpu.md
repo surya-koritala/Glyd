@@ -1,10 +1,8 @@
 # Adding a (GPU, family) to the engine's list
 
-`glyd run` hands a model to `glyd-engine` where the pair of its GPU and its model family is in `GPUS` (`glyd-engine/src/machine.rs`: one line a GPU, naming the families), and to vLLM on every other where vLLM is installed (`GLYD_WITH_VLLM=1`). With the Rust install alone, the installer's default, there is nothing to choose between: the engine runs on every GPU it supports, listed or not. A pair goes in
-where the engine has been measured at least as fast as vLLM at every load it would serve there, with less memory: the speed bar. It is per family because families differ in what the engine does with several users: the
-Qwen3 dense models (`machine::QWEN3`, the family `glyd run` hands to the engine by default) batch up to 8 requests at once, a family that serves one request at a time (Gemma 4, Qwen3.5 and the other lossy-level
-families) loses to vLLM at 4 and 8 users and is not listed (benchmarks/gpu/rtx4080s-gemma4-12b-2026-11-20). The lossy levels (`:kestrel`, `:swift`) are the engine's whenever the user asks for them (vLLM has none), and the
-list is not looked at for them.
+`glyd run` hands a plain dense model at penguin to `glyd-engine` where the pair of its GPU and the family `machine::QWEN3` (the name the code gives the plain dense kind) is in `GPUS` (`glyd-engine/src/machine.rs`: one line a GPU, naming the families), and to vLLM on every other GPU where vLLM is installed (`GLYD_WITH_VLLM=1`). With the Rust install alone, the installer's default, there is nothing to choose between: the engine runs on every GPU it supports, listed or not. A pair goes in
+where the engine has been measured at least as fast as vLLM at every load it would serve there, with less memory: the speed bar. It is per family because families differ in what the engine does with several users. When the list was made a family that served one request at a time (Gemma 4, Qwen3.5 and the other lossy-level
+families) lost to vLLM at 4 and 8 users and was not listed (benchmarks/gpu/rtx4080s-gemma4-12b-2026-11-20); the description executor batches every family now, and the list is looked up for the plain dense kind at penguin alone (`check_lossy` in `glyd-engine/src/cli.rs`): every other family and level is the engine's whatever the list (and the lossy levels, `:kestrel` and the rest, are the engine's whenever the user asks for them, as vLLM has none).
 
 The model measured must have been released within the last 6 months (the Hub's `createdAt`, https://huggingface.co/api/models/ID), and the bar says so: `--released DATE` (or the result file's own), exit 2 for an
 older model, `--stale-ok` for a family that has no newer one (it says so).

@@ -1,4 +1,4 @@
-// Qwen3.8-Flash-Next's own kernels (included by engine.cu after qwen35.cu and glm.cu; src/model_qwen4x.rs runs them): the Gated Residual of the four streams (the per-stream norm, the mixing weights' activation,
+// Qwen3.8-Flash-Next's own kernels (included by engine.cu after qwen35.cu and glm.cu; the description executor runs them through src/kern/qwen4x.rs's table): the Gated Residual of the four streams (the per-stream norm, the mixing weights' activation,
 // the mix into a block's input, the update of the streams from its output), the GDN's gated norm with a sigmoid gate, the n-gram embedding's gate and dilated convolution (PLE), the QSA indexer's query and block keys,
 // and the attention over the tokens the indexer picked. bf16 in memory, fp32 inside; the rounding points are transformers 5.19.0's (modeling_qwen4_exp.py), which rounds every elementwise op of a bf16 tensor.
 // Reference: tools/qwen4x_ref.py (transformers' own modules).
@@ -1389,7 +1389,7 @@ extern "C" __global__ void __launch_bounds__(1024) qx_select(const float* scores
     if (tid == 0) cnt[i] = ksel * kp + tl;
 }
 
-// ---- the routed experts as codebook rows (glyd-hbr-codes/2 at 2560 x 640: the expert cache's places; src/model_qwen4x.rs `QxMoeCb`) -----------------------------------------------------------------------------
+// ---- the routed experts as codebook rows (glyd-hbr-codes/2 at 2560 x 640: the expert cache's places; src/moe_qwen4x.rs `QxMoeCb`) -----------------------------------------------------------------------------
 // A layer's experts are held in the basis of one rotation of the hidden axis, R x = 512^-0.5 (I_5 (x) H_512) (s x): five natural-order Walsh-Hadamard transforms of 512 values each, s the layer's 2,560 signs. An expert
 // is two matrices of rows of 2,560 codes in that basis, each row its codes and its own codebook (bf16 entries, absolute): `downT` (640 rows: down transposed, row n the weights of neuron n over the outputs) then `up`
 // (1,280 rows: gate's 640 and up's 640). A row's codes by format f (0 cb2: 4 entries, 2 bits, byte b codes 4b..4b+3 low bits first; 1 cb3: 8 entries, codes 8g..8g+7 the 24-bit little-endian integer of bytes
