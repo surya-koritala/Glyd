@@ -1017,7 +1017,7 @@ __device__ __forceinline__ void mma_unpack_body(Fmt f, int64_t K, int64_t row0, 
 // the lanes 4 g to 4 g + 3: R[2 m] and R[2 m + 1] of each, its columns 2 t, 2 t + 1 and 8 + 2 t, 9 + 2 t. An id outside
 // [0, rows) has no row: zeros (nothing is read).
 template <class Fmt>
-__global__ void mma_rows_kernel(Fmt f, int64_t K, int64_t rows, const int64_t* __restrict__ ids, int64_t n, uint16_t* __restrict__ out) {
+__device__ __forceinline__ void mma_rows_body(Fmt f, int64_t K, int64_t rows, const int64_t* __restrict__ ids, int64_t n, uint16_t* __restrict__ out) {
     __shared__ uint32_t tab[Fmt::kTable ? 256 : 1];
     if constexpr (Fmt::kTable) fill_groups(tab);
     __syncthreads();
@@ -1048,6 +1048,11 @@ __global__ void mma_rows_kernel(Fmt f, int64_t K, int64_t rows, const int64_t* _
         o[t] = a;
         o[4 + t] = b;
     }
+}
+
+template <class Fmt>
+__global__ void mma_rows_kernel(Fmt f, int64_t K, int64_t rows, const int64_t* __restrict__ ids, int64_t n, uint16_t* __restrict__ out) {
+    mma_rows_body<Fmt>(f, K, rows, ids, n, out);
 }
 
 // A mixture-of-experts layer: its E experts' matrices [O, K] stacked as one matrix [E O, K] in either mma
