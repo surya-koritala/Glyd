@@ -1759,7 +1759,9 @@ pub fn cases() -> Vec<Case> {
             engine: glm_engine,
             cpu: Some(described_cpu),
             vocab: 2048,
-            on_choices: false,
+            // (its indexers keep 2 pools of up to 6 and its routers 4 experts of 16, each weighing about 0.6: near ties that rounding alone takes the other
+            // way, `tests::glm_reference_with_its_residual_rounded`)
+            on_choices: true,
         },
     ]
 }
