@@ -1221,6 +1221,10 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
         Residual::Streams(s) if !s.lagged => ((s.eps, s.sinkhorn_iters as i32), s.rounding),
         r => return err(format!("GLM-5.3-Flash: a residual of {r:?}, not mHC's streams")),
     };
+    // (the executor's head: the product's output in bf16 (the release's lm_head), unscaled and uncapped)
+    if m.head.rounding != crate::runtime::kinds::Rounding::Once || m.head.scale != 1.0 || m.head.softcap.is_some() {
+        return err(format!("GLM-5.3-Flash: a head of {:?}, where the executor's rounds the product's output to bf16, unscaled and uncapped", m.head));
+    }
     let lin = m.blocks.iter().find_map(|b| match &b.body {
         Body::Mixer(Mixer::Linear(x)) => Some(x),
         _ => None,
@@ -1716,6 +1720,20 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The executor's GLM head is the product's output in bf16, as the release's lm_head gives the logits: a description whose head rounds otherwise is
+    /// refused, named.
+    #[test]
+    fn a_glm_head_that_rounds_otherwise_is_refused() {
+        let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/glm5_next_toy_config.json")).unwrap();
+        let c = crate::glm::ConfigGlm::parse(&text, "toy", None).unwrap();
+        let mut kinds = crate::runtime::describe::describe(&serde_json::from_str(&text).unwrap()).unwrap();
+        let whole = super::super::Stage::whole(c.layers);
+        assert!(glm(&kinds, c.eos.clone(), c.max_pos, &whole).is_ok());
+        kinds.desc.head.rounding = crate::runtime::kinds::Rounding::F32;
+        let e = glm(&kinds, c.eos.clone(), c.max_pos, &whole).unwrap_err().msg;
+        assert!(e.contains("a head of") && e.contains("bf16"), "{e}");
     }
 
     /// The tensors the GLM family's lowering names are the ones its own loader read before the executor's loader took them over (src/glm.rs's `layer_packs`

@@ -266,6 +266,15 @@ fn released_glm53_flash_config() {
     assert_eq!((d.mtp_layers, d.desc.embed.streams), (1, 4));
 }
 
+/// GLM's logits are its bf16 lm_head's output (modeling_glm5_next.py and modeling_glm_moe_dsa.py: `self.lm_head(hidden_states)` of a bf16 model, not
+/// cast): the head rounds once, in both layouts.
+#[test]
+fn glm_heads_round_the_logits_once() {
+    for cfg in [fixture("glm5_next_config.json"), Fixture::load("glm53_model").j["config"].clone()] {
+        assert_eq!(describe(&cfg).unwrap().desc.head.rounding, super::kinds::Rounding::Once);
+    }
+}
+
 #[test]
 fn deepseek_v4_model() {
     model("dsv4_model", MODEL_TOL);
