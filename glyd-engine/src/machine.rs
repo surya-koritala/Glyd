@@ -337,13 +337,13 @@ pub fn config_refusal(name: &str, c: &Config) -> Option<Refusal> {
     if c.head_dim != 128 {
         return Some(cannot(
             format!("{name}: its attention heads have {} values, and the engine's KV cache takes 128", c.head_dim),
-            instead("Other models run with vLLM", "Pick a Qwen3 model, which this engine runs: glyd run Qwen/Qwen3-8B"),
+            instead("Other models run with vLLM", "Pick a model of a family this engine runs: glyd run Qwen/Qwen3.8-27B"),
         ));
     }
     if c.kv_heads == 0 || !c.heads.is_multiple_of(c.kv_heads) || c.heads / c.kv_heads > MAX_GROUP {
         return Some(cannot(
             format!("{name} has {} query heads to {} KV heads, and the engine takes up to {MAX_GROUP} to one", c.heads, c.kv_heads),
-            instead("Other models run with vLLM", "Pick a Qwen3 model, which this engine runs: glyd run Qwen/Qwen3-8B"),
+            instead("Other models run with vLLM", "Pick a model of a family this engine runs: glyd run Qwen/Qwen3.8-27B"),
         ));
     }
     None
@@ -689,7 +689,7 @@ mod tests {
             assert!(!fix.contains("vLLM") && !fix.contains("vllm"), "{fix}");
         }
         assert!(alone[0].contains("GLYD_ENGINE=1 glyd run MODEL") && alone[0].contains("install.sh"), "{}", alone[0]);
-        assert!(alone[1].contains("install.sh") && alone[3].contains("Qwen/Qwen3-8B") && alone[4].contains("--context 40960"), "{alone:?}");
+        assert!(alone[1].contains("install.sh") && alone[3].contains("Qwen/Qwen3.8-27B") && alone[4].contains("--context 40960"), "{alone:?}");
         // the driver's update is exact either way: what it has, what the engine needs, and the command
         for fix in [&alone[2], &all(true)[2]] {
             assert!(fix.contains("runs CUDA 12.8") && fix.contains("CUDA 13.0") && fix.contains("580") && fix.contains("nvidia-driver-580"), "{fix}");

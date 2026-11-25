@@ -1,7 +1,7 @@
 //! Every pre-norm dense decoder the description builder reads with its `llama` builder (Llama, Mistral, Qwen2, Qwen3: `runtime::describe::LLAMA`) on the
 //! executor (R3c, #139): the config's layer kinds lowered to the shared operations (`lower::dense`: the attention kind, the gated SiLU MLP, the RMS norms),
 //! loaded by the executor's own loader at any level its products take (penguin's lossless packs, kestrel's, swift's and wren's), served by the scheduler with
-//! paged keys and values (12-bit pages where the tables are set). It replaces the hand-written Qwen3 engine (src/model.rs, removed).
+//! paged keys and values (12-bit pages where the tables are set).
 
 use super::{Dyn, ModelDesc, Opts};
 use crate::ffi::{Error, Result};

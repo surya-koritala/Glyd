@@ -14,7 +14,7 @@
 //! A comparison is the largest difference over the reference's largest magnitude on a pass's rows; each line has its kind's bound (`bound`,
 //! the table in `runtime::reference`), and names the rows left out as near a tie (`NEAR`). Exit status 1 where one is not kept.
 //! GLYD_KINDCHECK_ROWS prints each body's rows one by one. DeepSeek-V4's simulated quantizations of the release (GLYD_V4_SIM) are turned
-//! off: no kind names them.
+//! off: no kind names them (GLYD_KINDCHECK_SIM=1 leaves them on, to see where they first take a body away from the reference).
 
 use super::{Dyn, Op, Opts, Slot};
 use crate::ffi::{err, Error, Result};
@@ -532,7 +532,11 @@ pub fn run(a: &crate::args::Args) -> Result<()> {
     }
     let ids: Vec<&'static str> = ALL.iter().copied().filter(|c| want.is_empty() || want.contains(c)).collect();
     let (prompt, steps) = (a.num("prompt", 48usize)?, a.num("steps", 4usize)?);
-    std::env::set_var("GLYD_V4_SIM", "0");
+    // (GLYD_KINDCHECK_SIM=1 keeps the release's simulated quantizations on: each body then measures how far they take the executor from the kinds' f32
+    // reference, which has none)
+    if std::env::var_os("GLYD_KINDCHECK_SIM").is_none() {
+        std::env::set_var("GLYD_V4_SIM", "0");
+    }
     let (scratch, own) = match a.flag("scratch") {
         Some(s) => (PathBuf::from(s), false),
         None => (std::env::temp_dir().join(format!("glyd-kindcheck-{}", std::process::id())), true),

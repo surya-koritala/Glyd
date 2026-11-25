@@ -1,6 +1,5 @@
 //! Packed matrices on the GPU (`PackBuf`) and how a checkpoint's matrices become them: packed as they load in a level's layout (`pack_item_map`), or read as a glyd-v7
 //! or a lossless glyd-v4 directory saved them (`read_v7`, `read_lossless`); a Qwen3 config as the planner reads it (`Config`), the rotary tables, the layouts' choice.
-//! The dense Qwen3 engine's own loader (its glyd-v4/v3 directories with `engine.safetensors`) went with that engine (R3c, #139).
 
 use crate::dev::Buf;
 use crate::ffi::Words;
@@ -827,7 +826,6 @@ mod tests {
         assert_eq!(e.to_string(), "seventeen");
     }
 
-    /// The layout a GPU is given (the plugin's best_layout): Ada the tiered one, every other GPU the 12-bit one, the tiered one where only it fits; `--layout` wins.
     #[test]
     fn config_of_a_qwen3() {
         let dir = std::env::temp_dir().join(format!("glyd-engine-cfg-{}", std::process::id()));

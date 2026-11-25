@@ -102,19 +102,6 @@ struct Keys {
     rms_norm_eps: Option<f64>,
     attn_res_block_size: Option<usize>,
     bos_token_id: Option<serde_json::Value>,
-    dsa_config: Option<Dsa>,
-}
-
-/// The sparse attention's keys (`dsa_config`).
-#[derive(Default, serde::Deserialize)]
-#[serde(default)]
-struct Dsa {
-    dsa_layers: Option<Vec<u64>>,
-    layers: Option<Vec<u64>>,
-    index_num_heads: Option<usize>,
-    index_head_dim: Option<usize>,
-    index_topk: Option<usize>,
-    index_k_norm_type: Option<String>,
 }
 
 /// The delta attention's keys (`linear_attn_config`).
@@ -216,23 +203,22 @@ impl ConfigKimi {
             v: need(s.v_head_dim, "v_head_dim")?,
         };
         // (the newer config's sparse attention: the latent attention layers it names, from 1; what of it this engine does not run the description builder refuses)
-        let dsa = match &k.dsa_config {
-            None => None,
-            Some(d) => {
-                let named = d.dsa_layers.as_ref().or(d.layers.as_ref()).ok_or_else(|| Error(format!("{label}: dsa_config names no layers")))?;
-                let layer_norm = match d.index_k_norm_type.as_deref().unwrap_or("rmsnorm") {
+        let dsa = match c.text.get("dsa_config") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::Object(o)) => {
+                let du =
+                    |k: &str| o.get(k).and_then(serde_json::Value::as_u64).map(|x| x as usize).ok_or_else(|| Error(format!("{label}: dsa_config: no {k}")));
+                let named = o.get("dsa_layers").or_else(|| o.get("layers")).and_then(serde_json::Value::as_array);
+                let named = named.ok_or_else(|| Error(format!("{label}: dsa_config names no layers")))?;
+                let on: Vec<usize> = named.iter().filter_map(serde_json::Value::as_u64).filter(|&l| l >= 1).map(|l| l as usize - 1).collect();
+                let layer_norm = match o.get("index_k_norm_type").and_then(serde_json::Value::as_str).unwrap_or("rmsnorm") {
                     "rmsnorm" => false,
                     "layernorm" => true,
                     other => return err(format!("{label}: dsa_config.index_k_norm_type {other}: rmsnorm or layernorm")),
                 };
-                Some(KimiDsa {
-                    layers: named.iter().filter(|&&l| l >= 1).map(|&l| l as usize - 1).collect(),
-                    heads: need(d.index_num_heads, "dsa_config.index_num_heads")?,
-                    dim: need(d.index_head_dim, "dsa_config.index_head_dim")?,
-                    top_k: need(d.index_topk, "dsa_config.index_topk")?,
-                    layer_norm,
-                })
+                Some(KimiDsa { layers: on, heads: du("index_num_heads")?, dim: du("index_head_dim")?, top_k: du("index_topk")?, layer_norm })
             }
+            Some(x) => return err(format!("{label}: dsa_config {x}: an object")),
         };
         let inter_e = need(s.moe_intermediate_size, "moe_intermediate_size")?;
         let experts = KimiMoe {
