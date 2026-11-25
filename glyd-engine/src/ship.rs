@@ -2,7 +2,8 @@
 //! (Gemma 4), verified bit for bit against the sha256 recorded from the source, measured through `serve` on this computer's GPU (speed, GPU memory, and with `--evals N` the GSM8K and MMLU-Pro of
 //! tools/cards/eval_run.py), a lossy level's quality card made (src/quality.rs: the suite on the pack and on the model's lossless level, `--quality-ref FILE` where that was measured on
 //! another GPU), its card written from ship_card.md.j2 with what was measured, and with `--repo glyd/NAME` uploaded by the `hf` command (private unless `--public`). A lossy pack is not
-//! uploaded without a quality card of its level that says publish (R14).
+//! uploaded without a quality card of its level that says publish (R14). The hummingbird level goes the same way: its pack step codes the experts from a corpus pass's counts
+//! (`--usage FILE`, what `glyd-engine calibrate-experts MODEL FILE` wrote; src/hb_pack.rs), and its quality card and the upload's refusal are every lossy level's.
 //!
 //! Each step that finds its output keeps it, so a run that stopped goes on where it was; `--steps measure,card` on another computer (DIR copied there) adds that GPU's numbers to the card.
 //! What was measured is kept in DIR/measured/GPU.txt, one `key=value` a line, apart from the repo.
@@ -19,7 +20,11 @@ const CARD: &str = include_str!("ship_card.md.j2");
 
 pub fn run(a: &Args) -> Result<()> {
     let (model, level, dir) = (a.need(1, "MODEL")?, a.need(2, "LEVEL")?, PathBuf::from(a.need(3, "DIR")?));
-    let layout = crate::levels::ship_layout(model, level).ok_or_else(|| Error(format!("{level}: ship packs penguin, kestrel, swift or wren")))?;
+    if crate::levels::by_name(level).is_none() {
+        return Err(Error(format!("{level}: ship packs {}", crate::levels::names_now().join(", "))));
+    }
+    // (None: hummingbird, whose experts are coded from a corpus pass's counts and not by a layout of every matrix)
+    let layout = crate::levels::ship_layout(model, level);
     let steps: Vec<&str> = a.flag("steps").map_or(STEPS.to_vec(), |s| s.split(',').map(str::trim).collect());
     if let Some(bad) = steps.iter().find(|s| !STEPS.contains(s)) {
         return Err(Error(format!("--steps {bad}: the steps are {}", STEPS.join(","))));
@@ -37,7 +42,18 @@ pub fn run(a: &Args) -> Result<()> {
                     }
                 }
             }
-            "pack" => crate::pack::run(model, &repo, a.num("threads", std::thread::available_parallelism().map_or(16, |n| n.get()))?, layout)?,
+            "pack" => {
+                let threads = a.num("threads", std::thread::available_parallelism().map_or(16, |n| n.get()))?;
+                match (layout, a.flag("usage")) {
+                    (Some(l), _) => crate::pack::run(model, &repo, threads, l)?,
+                    (None, Some(usage)) => crate::hb_pack::run(model, &repo, threads, Path::new(usage))?,
+                    (None, None) => {
+                        return Err(Error(format!(
+                            "ship pack: a {level} pack's experts are coded from a corpus pass's counts: glyd-engine calibrate-experts {model} usage.json, then --usage usage.json"
+                        )))
+                    }
+                }
+            }
             "draft" => {
                 // (the source's LICENSE and NOTICE go with the weights; a Gemma 4 model's draft model goes in draft/ unchanged, as the engine reads it there)
                 let src = source_dir(model)?;
@@ -433,5 +449,36 @@ mod tests {
         ] {
             assert!(t.contains(want), "{want} not in:\n{t}");
         }
+    }
+
+    /// The hummingbird level is shipped as every lossy level is: its pack step asks for the corpus pass's counts, and its upload is refused without a quality card of
+    /// its level that says publish (before any `hf` command runs). What is no level is refused by name.
+    #[test]
+    fn a_hummingbird_pack_goes_through_the_quality_gate() {
+        let dir = std::env::temp_dir().join(format!("glyd-ship-hb-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("repo")).unwrap();
+        let ship = |level: &str, more: &[&str]| {
+            let words = ["ship", "org/model", level, &dir.to_string_lossy()].iter().chain(more).map(|w| w.to_string()).collect::<Vec<_>>();
+            run(&Args::from(words)).map_err(|e| e.msg)
+        };
+        let e = ship("hummingbird", &["--steps", "pack"]).unwrap_err();
+        assert!(e.contains("calibrate-experts org/model usage.json") && e.contains("--usage"), "{e}");
+        let e = ship("hummingbird", &["--steps", "upload", "--repo", "glyd/model-hummingbird"]).unwrap_err();
+        assert!(e.contains("a hummingbird pack is published with its quality card"), "{e}");
+        // (a card of another level, then one under the bar: still refused; one that says publish passes the gate, and the lossless level needs none)
+        let card = |level: &str, verdict: &str| {
+            let c =
+                serde_json::json!({"schema": crate::quality::CARD_SCHEMA, "level": level, "verdict": verdict, "reasons": ["KL 0.2000 is past the bar's 0.12"]});
+            std::fs::write(dir.join("repo/quality.json"), c.to_string()).unwrap();
+        };
+        card("wren", "publish");
+        assert!(ship("hummingbird", &["--steps", "upload", "--repo", "glyd/x"]).unwrap_err().contains("the card is of"));
+        card("hummingbird", "refuse");
+        assert!(ship("hummingbird", &["--steps", "upload", "--repo", "glyd/x"]).unwrap_err().contains("under its quality bar: KL 0.2000"));
+        card("hummingbird", "publish");
+        assert!(crate::quality::publishable("hummingbird", &dir.join("repo")).is_ok());
+        assert!(ship("hummingbird", &["--steps", "upload"]).is_ok(), "no --repo: nothing uploaded");
+        assert!(ship("sparrow", &["--steps", "upload"]).unwrap_err().contains("sparrow: ship packs penguin, kestrel, swift, wren, hummingbird"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

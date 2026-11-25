@@ -4720,7 +4720,8 @@ mod tests {
             ("compressed entries, a window and an indexer", crate::dsv4_ref::SMALL_CONFIG.to_string(), {
                 let c = crate::deepseek_v4::ConfigV4::parse(crate::dsv4_ref::SMALL_CONFIG, "random", None).unwrap();
                 let vo = crate::dynamic::deepseek_v4::V4Opts::of(crate::weights::Layout::Tiered, 1024);
-                crate::dynamic::deepseek_v4::describe(&c, &Stage::whole(c.layers), &vo).unwrap()
+                let kinds = crate::runtime::describe::describe(&serde_json::from_str(crate::dsv4_ref::SMALL_CONFIG).unwrap()).unwrap();
+                crate::dynamic::lower::deepseek_v4(&kinds, vec![1], 1 << 20, &Stage::whole(c.layers), &vo).unwrap()
             }),
         ];
         let mut bad = Vec::new();
