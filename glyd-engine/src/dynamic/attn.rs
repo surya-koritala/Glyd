@@ -157,9 +157,9 @@ pub struct AttnOp {
     pub gate: Option<GateAt>,
     pub round: bool,
     pub sbf16: bool,
-    /// The keys and values in two per-sequence states [positions, nk, d] (`ModelDesc::states`) and not a ring, the attention over the tokens the indexer's
-    /// pick before it took (`Op::IdxPick`, its picks' run: src/dynamic/picked.rs): a sparse attention (`Attn::indexer`). Heads of 256, the gate in the query.
-    pub picked: Option<[usize; 2]>,
+    /// The attention over the tokens the indexer's pick before it took (`Op::IdxPick`, its picks' run: src/dynamic/picked.rs), its keys and values in its ring as
+    /// any attention's: a sparse attention (`Attn::indexer`). Heads of 256, the gate in the query.
+    pub picked: bool,
 }
 
 impl AttnOp {
@@ -245,21 +245,21 @@ impl AttnOp {
             gate,
             round,
             sbf16,
-            picked: None,
+            picked: false,
         })
     }
 
-    /// The operation of a sparse attention (`a` with an indexer: Condor's, `IndexForm::Mean`) whose keys and values are the states `kv`, over the indexer's picks
+    /// The operation of a sparse attention (`a` with an indexer: Condor's, `IndexForm::Mean`) whose keys and values are ring `ring`, over the indexer's picks
     /// (`picked`); the rest as `of`. The kernel of the picks takes heads of 256 and an in-query gate.
-    pub fn picked(a: &kinds::Attn, src: Slot, kv: [usize; 2], table: Option<usize>, qk: Option<(usize, usize)>) -> Result<AttnOp> {
+    pub fn picked(a: &kinds::Attn, src: Slot, ring: usize, table: Option<usize>, qk: Option<(usize, usize)>) -> Result<AttnOp> {
         if a.head_dim != 256 || !a.gate.is_some_and(|g| g.from == kinds::GateFrom::InQuery && g.norm.is_none()) || a.window.is_some() || a.softcap.is_some() {
             return err(format!(
                 "a sparse attention of heads of {} (a window {:?}, a soft-cap {:?}): the kernel of the picks takes heads of 256 and an in-query gate",
                 a.head_dim, a.window, a.softcap
             ));
         }
-        let mut x = AttnOp::of(&kinds::Attn { indexer: None, ..a.clone() }, src, 0, table, qk)?;
-        x.picked = Some(kv);
+        let mut x = AttnOp::of(&kinds::Attn { indexer: None, ..a.clone() }, src, ring, table, qk)?;
+        x.picked = true;
         Ok(x)
     }
 

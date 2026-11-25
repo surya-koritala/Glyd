@@ -104,7 +104,13 @@ mod tests {
         let d = describe(&tiny()).unwrap();
         let m = super::super::lower::qwen4x(&d, vec![2000], 1100).unwrap();
         assert!(matches!(m.first, Op::Streams));
-        assert_eq!((m.layers.len(), m.hidden, m.rings.len(), m.ropes.len()), (8, 256, 0, 1));
+        // (each sparse attention layer's keys and values, its indexer's raw keys and its pools' keys: three rings, paged as every attention's, R4b)
+        assert_eq!((m.layers.len(), m.hidden, m.rings.len(), m.ropes.len()), (8, 256, 6, 1));
+        for three in m.rings.chunks(3) {
+            let shapes: Vec<_> = three.iter().map(|r| (r.d, r.nk, r.window, r.values, r.ratio)).collect();
+            assert_eq!(shapes, [(256, 2, 0, true, 1), (128, 1, 0, false, 1), (128, 1, 0, false, 4)]);
+        }
+        assert!(super::super::rows::pages_all(&m));
         let kinds: Vec<Vec<&'static str>> = m
             .layers
             .iter()
@@ -122,7 +128,7 @@ mod tests {
                         Op::GatedNorm { sigmoid: true, .. } => "sigmoid norm",
                         Op::IdxMean { .. } => "index",
                         Op::IdxPick(x) if !x.weighted && matches!(x.keys, IdxKeys::Pools(_)) && (x.ratio, x.top_k, x.heads) == (4, 2, 4) => "pick",
-                        Op::Attn(a) if a.picked.is_some() && (a.nq, a.nk, a.d) == (24, 2, 256) => "picked attention",
+                        Op::Attn(a) if a.picked && (a.nq, a.nk, a.d) == (24, 2, 256) => "picked attention",
                         Op::Moe(_) => "experts",
                         o => panic!("{o:?}"),
                     })
@@ -145,8 +151,8 @@ mod tests {
         assert_eq!(rows[..9], [(64, 1024), (1024, 64), (4, 1024), (2048, 256), (12, 256), (256, 768), (64, 1024), (1024, 64), (4, 1024)]);
         let table = m.layers[1].iter().find_map(|op| if let Op::NgramRows(x) = op { Some(*x) } else { None }).unwrap();
         assert_eq!((rows[table.table], table.per, table.row, table.eos), ((128 * 132, 16), 8, 16, 2000));
-        // (the states: per GDN layer its convolution's and recurrence's; the n-gram's tokens and convolution; per attention layer its keys and values, the indexer's keys and pools)
-        assert_eq!(m.states.iter().filter(|&&b| b == 1100 * 2 * 256 * 2).count(), 4);
+        // (the states: per GDN layer its convolution's and recurrence's; the n-gram's tokens and convolution; none of an attention layer's, which are rings)
+        assert_eq!(m.states.iter().filter(|&&b| b == 1100 * 2 * 256 * 2 || b == 1100 * 128 * 2).count(), 0);
         assert_eq!(m.states.iter().filter(|&&b| b == 8).count(), 1);
         for (s, w) in
             [(Slot::S, 1024), (Slot::Hq, 1024), (Slot::Mid, 64), (Slot::Mix, 12288 + 1024), (Slot::Qr, 640), (Slot::Iq, 512), (Slot::Gu, 1280), (Slot::Kv, 4)]

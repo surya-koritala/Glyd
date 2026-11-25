@@ -97,7 +97,7 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
         });
         let (dh, nk, has_v) = (a.head_dim, a.kv_heads, !a.k_eq_v);
         let ring = rings.len();
-        rings.push(Ring { d: dh, nk, window: a.window.unwrap_or(0), values: true });
+        rings.push(Ring::kv(dh, nk, a.window.unwrap_or(0)));
         let mut qkv = vec![one(ar, "q")?, one(ar, "k")?];
         if has_v {
             qkv.push(one(ar, "v")?);
@@ -265,7 +265,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
             None => None,
         };
         let ring = rings.len();
-        rings.push(Ring { d: a.head_dim, nk: a.kv_heads, window: a.window.unwrap_or(0), values: true });
+        rings.push(Ring::kv(a.head_dim, a.kv_heads, a.window.unwrap_or(0)));
         let attn = AttnOp::of(a, Slot::Proj, ring, table, qk)?;
         let w = mats.len();
         let qkv = item(vec![one(ar, "q")?, one(ar, "k")?, one(ar, "v")?], &shape)?;
@@ -391,7 +391,8 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
     {
         return err(format!("{what}: an embedding of {:?} and a head of {:?}: the kernels take four gated streams and their mixer", m.embed, m.head));
     }
-    let (mut mats, mut small, mut states, mut ropes) = (Vec::new(), Vec::<String>::new(), Vec::<usize>::new(), Vec::<Rope>::new());
+    let (mut mats, mut small, mut states, mut ropes, mut rings) =
+        (Vec::new(), Vec::<String>::new(), Vec::<usize>::new(), Vec::<Rope>::new(), Vec::<Ring>::new());
     let mut ops: Vec<Vec<Op>> = Vec::new();
     let mut layer: Vec<Op> = Vec::new();
     let (mut mix_w, mut attn_w, mut rank_w, mut ple_w, mut n_moe) = (0, 0, 0, 0, 0);
@@ -505,9 +506,10 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                             }
                         };
                         let qk = (name(&mut small, one(roles, "q_norm")?), name(&mut small, one(roles, "k_norm")?));
-                        let kvb = max_pos * a.kv_heads * a.head_dim * 2;
-                        let kv = [state(&mut states, kvb), state(&mut states, kvb)];
-                        let att = AttnOp::picked(a, Slot::Mix, kv, Some(table), Some(qk))?;
+                        // (its keys and values, the indexer's raw keys and its pools' keys: rings of the executor's pages, as every attention kind's; the pools an entry of 4 tokens a row)
+                        let ring = rings.len();
+                        rings.extend([Ring::kv(a.head_dim, a.kv_heads, 0), Ring::keys(128, 1, 0), Ring::entries(128, 4)]);
+                        let att = AttnOp::picked(a, Slot::Mix, ring, Some(table), Some(qk))?;
                         let stride = att.stride;
                         let qkv = mat(&mut mats, vec![one(roles, "q")?, one(roles, "k")?, one(roles, "v")?])?;
                         if mats[qkv].rows != stride {
@@ -516,7 +518,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                         let index = mat(&mut mats, vec![one(roles, "index_qk")?])?;
                         let o = mat(&mut mats, vec![one(roles, "o")?])?;
                         let (iqn, ikn) = (name(&mut small, one(roles, "index_q_norm")?), name(&mut small, one(roles, "index_k_norm")?));
-                        let (keys, pools) = (state(&mut states, max_pos * 128 * 2), state(&mut states, (max_pos / 4 + 1) * 128 * 2));
+                        let (keys, pools) = (ring + 1, ring + 2);
                         let pick = super::IdxPick {
                             heads: ix.heads,
                             ratio: ix.block,
@@ -607,7 +609,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
         small,
         forms: Vec::new(),
         ropes,
-        rings: Vec::new(),
+        rings,
         first: Op::Streams,
         layers: ops,
         states,
@@ -731,7 +733,7 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
             }
             Kind::Full => {
                 let ring = rings.len();
-                rings.push(Ring { d: 256, nk, window: 0, values: true });
+                rings.push(Ring::kv(256, nk, 0));
                 let a = AttnOp::of(att, Slot::Mix, ring, Some(0), Some((s0 + 2, s0 + 3)))?;
                 if a.stride != full_w {
                     return err(format!("Qwen3.5: an attention product of {full_w} where its attention reads {}", a.stride));
@@ -875,7 +877,7 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
             }
             NhKind::Attention => {
                 let ring = rings.len();
-                rings.push(Ring { d: hd, nk, window: 0, values: true });
+                rings.push(Ring::kv(hd, nk, 0));
                 let a = att.ok_or_else(|| Error("Nemotron-H: an attention layer of no kind".into()))?;
                 let a = AttnOp::of(a, Slot::Mix, ring, None, None)?;
                 if a.stride != qkv_w {
@@ -984,7 +986,7 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
         let block = n_moe;
         n_moe += 1;
         let ring = rings.len();
-        rings.push(Ring { d: hd, nk, window: a.window.unwrap_or(0), values: true });
+        rings.push(Ring::kv(hd, nk, a.window.unwrap_or(0)));
         let attn = AttnOp::of(a, Slot::Mix, ring, Some(0), None)?;
         if attn.stride != row {
             return err(format!("Muse Spark: an attention product of {row} where its attention reads {}", attn.stride));

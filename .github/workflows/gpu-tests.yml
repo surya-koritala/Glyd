@@ -71,7 +71,8 @@ jobs:
           "$E" kv12check --case gemma4
           # (the scheduler on 12-bit pages, then with pools made too small for four at once: void pages taken back and run again, every reply the one alone)
           "$E" usercheck gemma4 --users 4 --kv12
-          GLYD_KV12_SHIFT=60 GLYD_KV12_POOL=1,40 "$E" usercheck gemma4 --users 4 --kv12
+          # (values that do not compress, pools of one chunk and the least slabs: the newest sequence paused, no page void, no request failed)
+          GLYD_KV12_SHIFT=60 GLYD_KV12_POOL=1,0 "$E" usercheck gemma4 --users 8 --kv12
       # (its layers are toy ones: tens of megabytes of weights and scratch a case. The GPU's memory is sampled while it runs, the peak printed, and a peak of more than 12,000 MiB of the card's 16,376 fails it:
       # the margin a 16 GB card needs for the driver and the next step)
       - name: Every pack format in tests/data/packs decodes on this GPU to its release's sha256 and its recorded logits (packcheck.rs)

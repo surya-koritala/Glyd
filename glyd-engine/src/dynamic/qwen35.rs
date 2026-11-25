@@ -64,7 +64,7 @@ pub(crate) fn attention(nq: usize, nk: usize, rotary: usize, qk: (usize, usize),
         gate: Some(GateAt { off: 256, step: 512, norm: false }),
         round: false,
         sbf16: false,
-        picked: None,
+        picked: false,
     }
 }
 
@@ -114,7 +114,7 @@ pub fn describe(c: &crate::qwen35::Config35, st: &Stage) -> Result<ModelDesc> {
             }
             Kind::Full => {
                 let ring = rings.len();
-                rings.push(Ring { d: 256, nk, window: 0, values: true });
+                rings.push(Ring::kv(256, nk, 0));
                 ops.extend([
                     Op::Linear { w: b, x: Slot::H, y: Slot::Mix, name: "attention: qkv product" },
                     Op::Attn(attention(nq, nk, c.rotary_dim, (s0 + 2, s0 + 3), ring)),

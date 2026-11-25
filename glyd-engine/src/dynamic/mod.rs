@@ -261,7 +261,7 @@ pub enum Op {
     },
     /// Compressed keys and values: a compressor of H, its two products by `w` (small: [2 W, hidden] bf16, kv's rows then the gate's) in fp32 into Cp, the pooling of every `ratio` rows with `ape` (small,
     /// fp32) and its state (states `state` and `state` + 1: the kv rows and the scores), each completed window's entry normed by `norm`, the rotary of `rope`, quantized (`indexer`: rotated, E2M1; else
-    /// E4M3) into state `cache` [entries, d].
+    /// E4M3) into ring `cache` (`Ring::entries`: an entry a row).
     Compress {
         w: usize,
         ape: usize,
@@ -281,8 +281,9 @@ pub enum Op {
     /// The indexer's pick (src/dynamic/mla.rs, every indexer's): Iq and Iw (its weights' product) scored against its entries, each row's best.
     IdxPick(IdxPick),
     /// The mean-pooled indexer's queries and keys (`IndexForm::Mean`; src/dynamic/picked.rs, kernels/qwen4x.cu): of the index product in Qr (`heads` + 1 heads of 128 a row),
-    /// each query head normed (`q_norm`, (1 + w)) and rotated by table `rope` into Iq; the raw key into state `keys` [positions, 128] at the row's position; then each pool
-    /// of 4 the call completes: the mean of its raw keys, normed (`k_norm`) and rotated at its first position, into state `pools` [positions / 4, 128] (`IdxKeys::Pools`).
+    /// each query head normed (`q_norm`, (1 + w)) and rotated by table `rope` into Iq; the raw key into ring `keys` at the row's position; then each pool
+    /// of 4 the call completes: the mean of its raw keys, normed (`k_norm`) and rotated at its first position, into ring `pools` (`Ring::entries`, a pool a row:
+    /// `IdxKeys::Pools`). The raw keys are ring `keys` [positions, 128]: both paged as any keys.
     IdxMean {
         heads: usize,
         q_norm: usize,
@@ -295,7 +296,7 @@ pub enum Op {
     /// streams S.
     NgramRows(ngram::NgramRows),
     NgramAdd(ngram::NgramAdd),
-    /// The attention of Qo over the window (ring `ring`) and the compressed entries (state `cache`: ratio 4, the indexer's picks; another, every complete entry) with the sink (small, fp32), the
+    /// The attention of Qo over the window (ring `ring`) and the compressed entries (ring `cache`: ratio 4, the indexer's picks; another, every complete entry) with the sink (small, fp32), the
     /// rotary of `rope` taken off its output; into Att in the grouped low rank's order (`hpg` heads a group).
     CompAttn {
         ring: usize,
@@ -504,29 +505,48 @@ pub struct Rope {
 }
 
 /// A layer's keys and values, `nk` heads of `d`: a ring of the window and a chunk where `window` > 0, else the whole context. `values` false: keys alone, in kc
-/// (a latent cache, an indexer's keys, DeepSeek-V4's window whose keys are its values), no room in vc.
+/// (a latent cache, an indexer's keys, DeepSeek-V4's window whose keys are its values), no room in vc. `ratio` > 1: a row an entry of `ratio` tokens, not a token
+/// (DeepSeek-V4's compressed entries, the attention's and the indexer's: entry e at row e), whose blocks then cover BLOCK `ratio` tokens.
 #[derive(Clone, Debug)]
 pub struct Ring {
     pub d: usize,
     pub nk: usize,
     pub window: usize,
     pub values: bool,
+    pub ratio: usize,
 }
 
 impl Ring {
     /// A ring of keys and values.
     pub const fn kv(d: usize, nk: usize, window: usize) -> Ring {
-        Ring { d, nk, window, values: true }
+        Ring { d, nk, window, values: true, ratio: 1 }
     }
 
     /// A ring of keys alone.
     pub const fn keys(d: usize, nk: usize, window: usize) -> Ring {
-        Ring { d, nk, window, values: false }
+        Ring { d, nk, window, values: false, ratio: 1 }
     }
 
-    /// Bytes a token takes in it (bf16).
+    /// The compressed entries of every `ratio` tokens, `d` wide (keys alone, the whole context).
+    pub const fn entries(d: usize, ratio: usize) -> Ring {
+        Ring { d, nk: 1, window: 0, values: false, ratio }
+    }
+
+    /// Bytes a token takes in it (bf16; an entry's over its tokens, rounded up).
     pub fn token_bytes(&self) -> usize {
-        (1 + self.values as usize) * self.nk * self.d * 2
+        ((1 + self.values as usize) * self.nk * self.d * 2).div_ceil(self.ratio.max(1))
+    }
+
+    /// Rows it holds for a context of `ctx` tokens: a window's ring the window and a chunk of `chunk`, compressed entries one for every `ratio` tokens (and two more:
+    /// a pass's last entry is written past its last complete one), else a row a token.
+    pub fn rows(&self, ctx: usize, chunk: usize) -> usize {
+        if self.ratio > 1 {
+            ctx / self.ratio + 2
+        } else if self.window > 0 {
+            (self.window + chunk).min(ctx)
+        } else {
+            ctx
+        }
     }
 }
 
@@ -645,9 +665,13 @@ impl Op {
 
     fn rings(&self) -> Vec<usize> {
         match *self {
-            Op::Attn(ref a) if a.picked.is_none() => vec![a.ring],
+            Op::Attn(ref a) => vec![a.ring],
+            Op::IdxMean { keys, pools, .. } => vec![keys, pools],
             Op::Mla(ref a) => std::iter::once(a.ring).chain(a.indexer.as_ref().map(|_| a.ring + 1)).collect(),
-            Op::CompKv { ring, .. } | Op::CompAttn { ring, .. } => vec![ring],
+            Op::CompKv { ring, .. } => vec![ring],
+            Op::CompAttn { ring, cache, .. } => std::iter::once(ring).chain(cache).collect(),
+            Op::Compress { cache, .. } => vec![cache],
+            Op::IdxPick(IdxPick { keys: IdxKeys::Entries(r) | IdxKeys::Pools(r), .. }) => vec![r],
             _ => Vec::new(),
         }
     }
@@ -655,10 +679,8 @@ impl Op {
     fn states(&self) -> Vec<usize> {
         match *self {
             Op::GdnConv { state, .. } | Op::GdnDelta { state, .. } | Op::MambaConv { state, .. } | Op::MambaScan { state, .. } => vec![state],
-            Op::Compress { cache, state, .. } => vec![cache, state, state + 1],
+            Op::Compress { state, .. } => vec![state, state + 1],
             Op::KdaConv { state, .. } | Op::KdaDelta { state, .. } => vec![state],
-            Op::IdxMean { keys, pools, .. } => vec![keys, pools],
-            Op::Attn(ref a) => a.picked.map_or(Vec::new(), |kv| kv.to_vec()),
             Op::NgramRows(x) => vec![x.hist],
             Op::NgramAdd(x) => vec![x.conv],
             _ => Vec::new(),
@@ -1096,7 +1118,7 @@ struct Seq {
 fn unverifiable_op(d: &ModelDesc) -> Option<&Op> {
     std::iter::once(&d.first).chain(d.layers.iter().flatten()).find(|op| match op {
         Op::GdnConv { .. } | Op::GdnDelta { .. } => false,
-        Op::Attn(a) => a.picked.is_some(),
+        Op::Attn(a) => a.picked,
         Op::Moe(_) | Op::MoeEarly { .. } => true,
         _ => !rows::row_wise(op) || !op.rings().is_empty() || !op.states().is_empty(),
     })
@@ -1322,13 +1344,7 @@ impl Dyn {
         let whole = stage.first && stage.last;
         let (mut ring_off, mut ring_cap, mut at, mut at_v) = (Vec::new(), Vec::new(), 0u64, 0u64);
         for (i, r) in d.rings.iter().enumerate() {
-            let cap = if !whole && !rings_used.contains(&i) {
-                0
-            } else if r.window > 0 {
-                (r.window + ch).min(ctx)
-            } else {
-                ctx
-            };
+            let cap = if !whole && !rings_used.contains(&i) { 0 } else { r.rows(ctx, ch) };
             ring_off.push((at, at_v));
             ring_cap.push(cap);
             at += (cap * r.nk * r.d * 2) as u64;
@@ -1426,7 +1442,7 @@ impl Dyn {
                     | Op::IdxMean { .. }
                     | Op::NgramRows(_)
                     | Op::NgramAdd(_)
-            ) || matches!(op, Op::Attn(a) if a.picked.is_some())
+            ) || matches!(op, Op::Attn(a) if a.picked)
         });
         let kqx = if qx { Some(crate::model_qwen4x::KernQx::load(&dev)?) } else { None };
         let picks = picked::PickRun::new(d, ch)?;
@@ -1883,8 +1899,8 @@ impl Dyn {
                 self.mark(name)
             }
             Op::Attn(ref a) => match a.picked {
-                Some(kv) => self.attn_picked(p, a, kv, n, pos.0),
-                None => self.attn(p, l, i, a, n, pos, head),
+                true => self.attn_picked(p, a, n, pos.0),
+                false => self.attn(p, l, i, a, n, pos, head),
             },
             Op::AddNorm { y, post, scalar, next } => {
                 let (nx, rows) = Self::next_linear(p, l, i, n, head);
@@ -2254,7 +2270,7 @@ impl Dyn {
                     // for all of them at once, each through its own table or state, which is what each row's own pass computes, bit for bit (the decode's plan is a sequence's
                     // own; the recurrent kernels the one-sequence ones' on a token))
                     let lead = match op {
-                        Op::Attn(a) if a.picked.is_none() => self.lead.get(),
+                        Op::Attn(a) if !a.picked => self.lead.get(),
                         op if rows::rows_state(op) => self.lead.get(),
                         _ => 0,
                     };

@@ -1961,9 +1961,11 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         None => random_dyn(case, level, "keepcheck")?,
     };
     let (vocab, cuts, marks, window) = (e.desc().vocab as u32, e.cuts(), e.can_mark(), e.least_window());
-    // (a model with recurrent states keeps them at boundaries (src/dynamic/snaps.rs); this check's prompts are short, so at boundaries 32 tokens apart)
+    // (a model with recurrent states keeps them at boundaries (src/dynamic/snaps.rs); this check's prompts are short, so at boundaries 32 tokens apart, or as far apart as the
+    // largest blocks: DeepSeek-V4's compressed entries' are found by name whole)
     if !cuts && marks {
-        e.ask_state_every(32);
+        let unit = e.whole_start();
+        e.ask_state_every(if unit % 32 == 0 { unit } else { 2 * unit });
     }
     let Some((k, s)) = e.as_step(3)? else { return err(format!("{case}: no scheduler's step")) };
     if k < 3 || !s.keeps() {
@@ -2254,7 +2256,8 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         // back as it grew: they wait by their names); and the sequence is unharmed
         if all + alt.len() < s.window() {
             let keys = crate::kv::block_names(root, &long);
-            let at = 6 * chunk;
+            // (a recurrent model's start is found at a boundary)
+            let at = (6 * chunk).next_multiple_of(every.max(1));
             fill_named(s, 0, &long, chunk, &keys)?;
             let got = s.adopt(1, &keys[..at / 16])?;
             if got != at {
@@ -2496,8 +2499,8 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         stop_ids: Vec::new(),
     };
     let reference: Vec<Vec<u32>> = prompts.iter().map(|p| e.reply(p, &reply, &mut |_| true).map(|r| r.0)).collect::<Result<_>>()?;
-    // (--kv12: the scheduler's cache in 12-bit lossless pages, of tables made on these prompts; with GLYD_KV12_POOL's small pools pages are made void, and the
-    // sequences that hold them are taken back and run again)
+    // (--kv12: the scheduler's cache in 12-bit lossless pages, of tables made on these prompts; with GLYD_KV12_POOL's small pools the newest sequence is paused where the
+    // raw slabs run short, and no page is made void)
     let kv12 = a.has("kv12");
     if kv12 {
         let t = crate::dynamic::kv12::calibrate(&mut e, &prompts, "usercheck")?;
@@ -2674,9 +2677,11 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     }
     if kv12 {
         let back = s.stats.taken_back;
-        println!("12-bit pages: {back} steps taken back for void pages, {} sequences ended for want of room", s.stats.ended_lost);
-        if std::env::var_os("GLYD_KV12_POOL").is_some() && back == 0 {
-            println!("FAIL small pools (GLYD_KV12_POOL) made no step be taken back");
+        println!("12-bit pages: {back} steps taken back for void pages, {} sequences ended for want of room, {resumed} sent back for room", s.stats.ended_lost);
+        // (R4b's deterministic capacity: small pools (GLYD_KV12_POOL), values that do not compress (GLYD_KV12_SHIFT): the newest sequence is paused where the raw slabs
+        // run short, no page is made void and no request fails)
+        if std::env::var_os("GLYD_KV12_POOL").is_some() && (back > 0 || s.stats.ended_lost > 0) {
+            println!("FAIL small pools (GLYD_KV12_POOL): a step taken back for a void page, or a request ended, where the newest sequence is to be paused");
             fails += 1;
         }
     }
@@ -2698,6 +2703,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         }
     }
     // (the sampler's candidates the step makes on the GPU (src/dynamic/rows.rs `Cands`), against its rows' logits)
+    let swapped = s.stats.swapped;
     drop(s);
     // (decode steps of several rows replay a CUDA graph of their padded rows where the description takes one (src/dynamic/rows.rs `rows_bucket`): with prompts one a pass, a
     // description with experts decodes a sequence a step)
@@ -2742,6 +2748,11 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             if pieces_on { "" } else { " (no pieces here)" }
         );
         fails += !ok as usize;
+    }
+    if squeezed {
+        // (the bytes over the link, each way)
+        let (out, back) = e.swap_moved();
+        println!("swaps: {swapped} sequences, {:.1} MiB copied out and {:.1} MiB back", out as f64 / (1 << 20) as f64, back as f64 / (1 << 20) as f64);
     }
     let Some((_, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
     let (rows, bad) = cands_check(step, &prompts)?;

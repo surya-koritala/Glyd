@@ -237,10 +237,29 @@ pub(super) fn row_wise(op: &Op) -> bool {
 }
 
 /// Whether a description's keys and values can be paged: it has a ring, and every operation that touches one reads it through a block table (the attention layer
-/// kind's, the latent attention kind's).
+/// kind's (a sparse one's too: its keys and values, its indexer's raw keys and pools), the latent attention kind's, the compressed attention kind's: its window, its
+/// compressed entries and its indexer's).
 pub(super) fn pages_all(d: &super::ModelDesc) -> bool {
-    std::iter::once(&d.first).chain(d.layers.iter().flatten()).all(|op| op.rings().is_empty() || matches!(op, Op::Attn(_) | Op::Mla(_)))
-        && d.layers.iter().flatten().any(|op| !op.rings().is_empty())
+    std::iter::once(&d.first).chain(d.layers.iter().flatten()).all(|op| {
+        op.rings().is_empty()
+            || matches!(op, Op::Attn(_) | Op::Mla(_) | Op::CompKv { .. } | Op::Compress { .. } | Op::IdxPick(_) | Op::CompAttn { .. } | Op::IdxMean { .. })
+    }) && d.layers.iter().flatten().any(|op| !op.rings().is_empty())
+}
+
+/// The blocks of each layer group's pool, from `budget` bytes: every group as many tokens' blocks (a block of group g is `covers[g]` tokens of each of its rings, `per[g]` bytes a
+/// token), none more than `most[g]`; what the groups capped there leave goes to the full groups (`keep[g]` None), as many tokens' again.
+pub(super) fn pool_blocks(budget: usize, per: &[usize], covers: &[usize], keep: &[Option<usize>], most: &[usize]) -> Vec<usize> {
+    let even = budget / per.iter().sum::<usize>().max(1);
+    let mut blocks: Vec<usize> = (0..per.len()).map(|g| (even / covers[g]).min(most[g])).collect();
+    let left = budget - (0..per.len()).map(|g| blocks[g] * covers[g] * per[g]).sum::<usize>();
+    let full: usize = (0..per.len()).filter(|&g| keep[g].is_none()).map(|g| per[g]).sum();
+    if full > 0 {
+        let more = left / full;
+        for g in (0..per.len()).filter(|&g| keep[g].is_none()) {
+            blocks[g] = (blocks[g] + more / covers[g]).min(most[g]);
+        }
+    }
+    blocks
 }
 
 /// Whether an operation on a sequence's cache or states takes its rows at an offset in a pass over several sequences (`Dyn::rows_before`, `Dyn::cache`, `Dyn::state`): the attention
@@ -388,18 +407,20 @@ impl Dyn {
     }
 
     /// The rings' keys and values moved to pools of blocks shared by `users` sequences, as large as the GPU's free memory leaves (`keep` of it kept): a sliding group no more than every
-    /// user's window and a chunk, the full groups the rest. Each ring's room in kc and vc is then its group's blocks; the sequences' tables name every entry block 0 until they grow.
+    /// user's window and a chunk, the full groups the rest. Each ring's room in kc and vc is then its group's blocks; the sequences' tables name every entry block 0 until they grow. A group is
+    /// the rings of one window and one ratio: compressed entries' (`Ring::ratio`) are blocks of BLOCK entries, which cover BLOCK `ratio` tokens.
     fn page(&mut self, users: usize) -> Result<()> {
         let rings = &self.big.d.rings;
-        let mut windows: Vec<usize> = Vec::new();
+        let mut windows: Vec<(usize, usize)> = Vec::new();
         let mut group = Vec::with_capacity(rings.len());
         for (r, ring) in rings.iter().enumerate() {
-            let w = if self.ring_cap[r] == 0 { usize::MAX } else { ring.window };
+            let w = (if self.ring_cap[r] == 0 { usize::MAX } else { ring.window }, ring.ratio.max(1));
             if !windows.contains(&w) {
                 windows.push(w);
             }
             group.push(windows.iter().position(|&x| x == w).expect("just added"));
         }
+        let covers: Vec<usize> = windows.iter().map(|w| BLOCK * w.1).collect();
         // a token's bytes in each group (its keys and values, every ring of the group: bf16, or 12-bit pages where the model has tables a ring takes)
         let twelve: Vec<Option<f64>> = (0..rings.len())
             .map(|r| self.kv12.as_ref().filter(|_| self.ring_cap[r] > 0).and_then(|t| super::kvpages::Lossless::token_bytes(&self.lib, &self.big.d, t, r)))
@@ -421,30 +442,26 @@ impl Dyn {
             })
             .max()
             .unwrap_or(0);
-        let keep: Vec<Option<usize>> = windows.iter().map(|&w| (w > 0 && w != usize::MAX).then_some(w + self.chunk)).collect();
-        let most: Vec<usize> = keep.iter().map(|k| users * (k.map_or(self.ctx, |k| k.min(self.ctx)).div_ceil(BLOCK) + 1)).collect();
+        let keep: Vec<Option<usize>> = windows.iter().map(|&(w, _)| (w > 0 && w != usize::MAX).then_some(w + self.chunk)).collect();
+        let most: Vec<usize> = keep.iter().zip(&covers).map(|(k, &c)| users * (k.map_or(self.ctx, |k| k.min(self.ctx)).div_ceil(c) + 1)).collect();
         // the old rooms given back first
         self.dev.sync()?;
         let graphed = self.graph.take().is_some();
         (self.kc, self.vc) = (Buf::zeroed(4)?, Buf::zeroed(4)?);
         let tab_bytes = users * windows.len() * self.ctx.div_ceil(BLOCK) * 4;
+        // (12-bit pages: the raw slabs one sequence alone may take, every page of it raw: `Lossless::alone_slabs`, which the raw pools hold at the least)
+        let alone: usize = match self.kv12.as_ref().filter(|_| twelve.iter().any(Option::is_some)) {
+            Some(t) => super::kvpages::Lossless::alone_slabs(&self.lib, &self.big.d, t, &self.ring_cap, self.ctx, self.chunk)
+                .iter()
+                .map(|&(hp, n)| self.lib.kv_raw_bytes(n, hp).unwrap_or(0) as usize)
+                .sum(),
+            None => 0,
+        };
         let (free, _) = self.dev.mem_info()?;
         const KEEP: usize = 512 << 20;
-        let budget = (free.saturating_sub(KEEP + tab_bytes + unpacked) as f64 * self.share) as usize;
-        // as many blocks in every group (a block of a group is BLOCK tokens of every layer in it), the sliding groups capped and what they leave to the full ones
-        let all: usize = per.iter().sum::<usize>().max(1) * BLOCK;
-        let even = budget / all;
-        let mut blocks: Vec<usize> = most.iter().map(|&m| even.min(m)).collect();
-        let left = budget - blocks.iter().zip(&per).map(|(b, p)| b * p * BLOCK).sum::<usize>();
-        let full_per: usize = keep.iter().zip(&per).filter(|(k, _)| k.is_none()).map(|(_, p)| p * BLOCK).sum();
-        if full_per > 0 {
-            let more = left / full_per;
-            for (g, k) in keep.iter().enumerate() {
-                if k.is_none() {
-                    blocks[g] = (blocks[g] + more).min(most[g]);
-                }
-            }
-        }
+        let budget = (free.saturating_sub(KEEP + tab_bytes + unpacked + alone) as f64 * self.share) as usize;
+        // as many tokens' blocks in every group (a block of a group is its `covers` tokens of every layer in it), the sliding groups capped and what they leave to the full ones
+        let mut blocks = pool_blocks(budget, &per, &covers, &keep, &most);
         // (a development build's GLYD_ENGINE_PAGES: at most that many blocks a group, to run the memory out on purpose)
         if let Some(cap) = crate::tune!("GLYD_ENGINE_PAGES").and_then(|v| v.parse::<usize>().ok()) {
             blocks.iter_mut().for_each(|b| *b = (*b).min(cap));
@@ -483,9 +500,9 @@ impl Dyn {
         }
         let tlen = self.ctx.div_ceil(BLOCK);
         let tabs = (0..windows.len()).map(|_| Buf::zeroed(users * tlen * 4)).collect::<Result<Vec<_>>>()?;
-        let rows = self.row_tabs_for(&group, &windows, users, tlen)?;
+        let rows = self.row_tabs_for(&group, windows.len(), users, tlen)?;
         let counts: Vec<u32> = blocks.iter().map(|&b| (b + 1) as u32).collect();
-        self.paged = Some(Paged { pages: Pages::new(&counts, &keep, users, self.ctx), group, tabs, tlen, rows });
+        self.paged = Some(Paged { pages: Pages::covering(&counts, &keep, &covers, users, self.ctx), group, tabs, tlen, rows });
         self.rgraphs.clear();
         self.pieces.clear();
         // (sequence 0's graph again, on the pools and its tables)
@@ -495,19 +512,19 @@ impl Dyn {
         Ok(())
     }
 
-    /// The tables of a pass's decode rows (`RowTabs`) for `users` sequences, the groups `group` makes of the rings (`windows`: one a group), tables of `tlen` entries: None where an attention layer's decode cannot take them (a layer that reads its picks, a call's sequences a row no group's copies divide).
-    fn row_tabs_for(&self, group: &[usize], windows: &[usize], users: usize, tlen: usize) -> Result<Option<RowTabs>> {
+    /// The tables of a pass's decode rows (`RowTabs`) for `users` sequences, the `groups` groups `group` makes of the rings, tables of `tlen` entries: None where an attention layer's decode cannot take them (a layer that reads its picks, a call's sequences a row no group's copies divide).
+    fn row_tabs_for(&self, group: &[usize], groups: usize, users: usize, tlen: usize) -> Result<Option<RowTabs>> {
         let d = &self.big.d;
         let attns: Vec<&super::AttnOp> = d.layers.iter().flatten().filter_map(|op| if let Op::Attn(a) = op { Some(a) } else { None }).collect();
-        if attns.is_empty() || attns.iter().any(|a| a.picked.is_some()) {
+        if attns.is_empty() || attns.iter().any(|a| a.picked) {
             return Ok(None);
         }
         // (a layer's calls of the library's decode: its query heads in dparts() sequences a row, over a bf16 cache and 12-bit pages alike)
         let sp = |a: &super::AttnOp| if self.ldec.is_some() && a.lib_decode() { a.dparts() } else { 1 };
         let pages12 = self.lossless.iter().flat_map(|lx| lx.rings.iter().enumerate()).filter_map(|(r, rp)| rp.as_ref().map(|rp| (group[r], rp.parts)));
-        let dup = row_dups(windows.len(), attns.iter().map(|a| (group[a.ring], sp(a))).chain(pages12));
+        let dup = row_dups(groups, attns.iter().map(|a| (group[a.ring], sp(a))).chain(pages12));
         // (a group's tables are copied from the first block its widest reader reads: none sliding, from the first)
-        let mut win: Vec<Option<usize>> = vec![None; windows.len()];
+        let mut win: Vec<Option<usize>> = vec![None; groups];
         let readers = attns.iter().map(|a| (group[a.ring], a.window));
         let readers12 = self.lossless.iter().flat_map(|lx| lx.rings.iter().enumerate()).filter_map(|(r, rp)| rp.as_ref().map(|rp| (group[r], rp.shape.window)));
         for (g, w) in readers.chain(readers12) {
@@ -528,8 +545,10 @@ impl Dyn {
         Ok(Some(RowTabs { tab, dup, win, meta, pcap, nst, rows: users, graphs }))
     }
 
-    /// The entries of sequence `slot`'s tables changed since they were last copied, copied to the GPU (nothing runs on them then: the steps before have been waited for).
+    /// The entries of sequence `slot`'s tables changed since they were last copied, copied to the GPU (nothing runs on them then: the steps before have been waited for);
+    /// the next step after the copies out that still read the blocks taken (`fence_wait`).
     pub(super) fn upload_tables(&mut self, slot: usize) -> Result<()> {
+        self.fence_wait()?;
         let Some(pg) = &mut self.paged else { return Ok(()) };
         for g in 0..pg.pages.groups() {
             if let Some((lo, hi)) = pg.pages.take_dirty(slot, g) {
@@ -565,6 +584,18 @@ impl Dyn {
     #[cfg(feature = "dev")]
     pub(crate) fn least_window(&self) -> Option<usize> {
         self.big.d.rings.iter().map(|r| r.window).filter(|&w| w > 0 && w != usize::MAX).min()
+    }
+
+    /// The tokens a start found by name is a whole number of: the blocks of every group whole (BLOCK, or a compressed group's BLOCK `ratio`).
+    #[cfg(feature = "dev")]
+    pub(crate) fn whole_start(&self) -> usize {
+        let gcd = |mut a: usize, mut b: usize| {
+            while b > 0 {
+                (a, b) = (b, a % b);
+            }
+            a
+        };
+        self.big.d.rings.iter().map(|r| BLOCK * r.ratio.max(1)).fold(BLOCK, |a, b| a / gcd(a, b) * b)
     }
 
     /// Whether a kept sequence can be cut back before its end (`ModelStep::resume`): no recurrent state, which is what it is after its last token. (A latent cache is
@@ -613,8 +644,9 @@ impl Dyn {
         Ok(Part { slot, row0, rows, start, kc, vc, states })
     }
 
-    /// Sequence `slot` empty again: no tokens, its states zeroed (its cache is overwritten as it runs).
+    /// Sequence `slot` empty again: no tokens, its states zeroed (its cache is overwritten as it runs). A slot swapped out: after the copy that reads its states.
     pub(super) fn empty(&mut self, slot: usize) -> Result<()> {
+        self.unsettled_wait(slot)?;
         if let Some(m) = self.snap_n.get_mut(slot) {
             *m = 0;
         }
@@ -636,6 +668,7 @@ impl Dyn {
 
     /// Sequence `slot`'s prompt chunk `tokens` (at its place in the sequence), as `prefill` runs one chunk: the head on its last row where `last`.
     fn chunk_alone(&mut self, slot: usize, tokens: &[u32], last: bool) -> Result<Option<Sample>> {
+        self.settle_slot(slot)?;
         self.select(slot)?;
         let n = tokens.len();
         if n == 0 || n > self.chunk || self.n + n + 1 > self.ctx {
@@ -669,6 +702,7 @@ impl Dyn {
         }
         let (mut parts, mut pos, mut tokens, mut head_rows) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for &(slot, t, last) in jobs {
+            self.settle_slot(slot)?;
             let start = self.seq_n(slot);
             if t.is_empty() || start + t.len() + 1 > self.ctx {
                 return err(format!("{} tokens after {start}, where the cache holds {}", t.len(), self.ctx));
@@ -938,10 +972,9 @@ impl Dyn {
     }
 
     /// Whether a served model's sequences have their states copied aside at a mark (`ModelStep::mark`), for a kept sequence to go on from: recurrent states (a latent cache
-    /// is a ring, whose blocks a mark keeps as any keys').
-    /// (not DeepSeek-V4's: its compressed entries are states that grow with the sequence, so a copy at each prompt's end would be a second cache)
+    /// is a ring, whose blocks a mark keeps as any keys'; so are DeepSeek-V4's compressed entries, whose states are its compressors' open windows alone).
     pub(crate) fn can_mark(&self) -> bool {
-        !self.states.is_empty() && self.v4.is_none()
+        !self.states.is_empty()
     }
 
     fn batch_prefill() -> bool {
@@ -1166,6 +1199,7 @@ impl ModelStep for Dyn {
         }
         let timed = super::prof::begin();
         let r = self.chunk_alone(slot, tokens, last)?;
+        self.kv12_stepped();
         self.cands.fresh(last as usize);
         self.end_expert_step()?;
         super::prof::end(timed, 0, tokens.len());
@@ -1194,6 +1228,7 @@ impl ModelStep for Dyn {
         let jobs: Vec<(usize, &[u32], bool)> = jobs.iter().map(|j| (j.pages[0] as usize, j.tokens, j.last)).collect();
         let timed = super::prof::begin();
         let r = self.pass(&jobs)?;
+        self.kv12_stepped();
         self.cands.fresh(jobs.iter().filter(|j| j.2).count());
         self.end_expert_step()?;
         super::prof::end(timed, 0, jobs.iter().map(|j| j.1.len()).sum());
@@ -1213,6 +1248,7 @@ impl ModelStep for Dyn {
         }
         let (p, timed) = (StepProf::begin(self.dev.stream), super::prof::begin());
         let r = self.round_rows(rows, jobs);
+        self.kv12_stepped();
         let prompt = jobs.iter().map(|j| j.tokens.len()).sum();
         StepProf::end(p, self.dev.stream, rows.len(), prompt);
         self.cands.fresh(rows.len() + jobs.iter().filter(|j| j.last).count());
@@ -1223,6 +1259,7 @@ impl ModelStep for Dyn {
     fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
         let (p, timed) = (StepProf::begin(self.dev.stream), super::prof::begin());
         let r = self.decode_rows(rows);
+        self.kv12_stepped();
         StepProf::end(p, self.dev.stream, rows.len(), 0);
         self.cands.fresh(rows.len());
         self.end_expert_step()?;
@@ -1270,9 +1307,14 @@ impl ModelStep for Dyn {
             self.swap_settle(p as usize)?;
             self.empty(p as usize)?;
             if let Some(pg) = &mut self.paged {
+                // (its 12-bit pages that no one reads again cleared: their chunks and slabs back to the pools, for the sequences that go on)
+                let freed = if self.lossless.is_some() { pg.pages.sole_unnamed(p as usize) } else { Vec::new() };
                 pg.pages.release(p as usize);
                 self.dev.sync()?;
                 self.upload_tables(p as usize)?;
+                for (g, f) in freed.iter().enumerate() {
+                    self.kv12_release_blocks(g, &f.iter().map(|x| x.1).collect::<Vec<u32>>())?;
+                }
             }
         }
         Ok(())
@@ -1331,6 +1373,7 @@ impl ModelStep for Dyn {
         if !self.shares_starts() || self.seq_n(t) != 0 {
             return Ok(0);
         }
+        self.settle_slot(t)?;
         let chunk = self.chunk;
         if self.cuts() {
             let n = self.paged.as_mut().expect("paged").pages.adopt(t, keys, chunk);
@@ -1369,6 +1412,7 @@ impl ModelStep for Dyn {
         if self.paged.is_none() || f == t || self.seq_n(t) != 0 || upto > self.seq_n(f) {
             return Ok(0);
         }
+        self.settle_slot(t)?;
         let chunk = self.chunk;
         let to_n = if self.cuts() {
             self.paged.as_mut().expect("paged").pages.share(f, t, upto, chunk)
@@ -1382,15 +1426,17 @@ impl ModelStep for Dyn {
                 return Ok(0);
             }
             pg.pages.share(f, t, m, chunk);
-            if !m.is_multiple_of(BLOCK) {
-                // the block the mark is in: one of `to`'s own, with `from`'s bytes in every ring
+            // the block the mark is in, in each group where it is not a whole block (a group of larger blocks, compressed entries', may have one where the others do not): one of `to`'s
+            // own, with `from`'s bytes in every ring of the group
+            let parts: Vec<Option<usize>> = (0..pg.pages.groups()).map(|g| pg.pages.partial(g, m)).collect();
+            if parts.iter().any(Option::is_some) {
                 if !pg.pages.grow(t, m) {
                     pg.pages.release(t);
                     return Ok(0);
                 }
-                let part = m / BLOCK;
-                let blocks: Vec<(usize, u32, u32)> =
-                    (0..pg.group.len()).map(|r| (r, pg.pages.table(f, pg.group[r])[part], pg.pages.table(t, pg.group[r])[part])).collect();
+                let blocks: Vec<(usize, u32, u32)> = (0..pg.group.len())
+                    .filter_map(|r| parts[pg.group[r]].map(|b| (r, pg.pages.table(f, pg.group[r])[b], pg.pages.table(t, pg.group[r])[b])))
+                    .collect();
                 for (r, src, dst) in blocks {
                     let ring = &self.big.d.rings[r];
                     let bytes = BLOCK * ring.nk * ring.d * 2;
@@ -1482,7 +1528,12 @@ impl ModelStep for Dyn {
     /// From the tokens the slot holds: the room for a whole prompt, which the scheduler takes as it lets the prompt in, holds a sliding group's blocks from where its next pass reads
     /// (`Pages::grow_from`).
     fn grow(&mut self, slot: i32, upto: usize) -> Result<bool> {
+        self.settle_slot(slot as usize)?;
         let (n, chunk) = (self.seq_n(slot as usize), self.chunk);
+        // (12-bit pages: a slab for every page its next pass writes, else the newest sequence is paused: `kv12_room`)
+        if !self.kv12_room(n, upto)? {
+            return Ok(false);
+        }
         let Some(pg) = &mut self.paged else { return Ok(true) };
         if !pg.pages.grow_from(slot as usize, n, upto, chunk) {
             return Ok(false);
@@ -1583,5 +1634,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The pools' blocks from a budget: groups of BLOCK tokens get as many blocks each (the sliding ones capped, what they leave to the full ones, as before groups of larger
+    /// blocks), and a group whose blocks cover more tokens (compressed entries') as many tokens' worth: a fourth of the blocks where a block covers four times the tokens.
+    #[test]
+    fn every_group_holds_as_many_tokens() {
+        // (bytes a token: a full group 2,048, a sliding one 1,024; 60 MiB)
+        let budget = 60 << 20;
+        let (per, keep) = ([2048, 1024], [None, Some(1024 + 256)]);
+        let b = pool_blocks(budget, &per, &[BLOCK, BLOCK], &keep, &[usize::MAX, 4 * 81]);
+        // (as many blocks a group: 60 MiB / (3,072 B x 16) = 1,280, the sliding group capped at 324 and its rest to the full group)
+        assert_eq!(b, vec![1280 + (1280 - 324) * 1024 / 2048, 324]);
+        assert!(b[0] * BLOCK * 2048 + b[1] * BLOCK * 1024 <= budget);
+        // a compressed group of 4 tokens an entry (256 bytes a token) beside them: its blocks hold 64 tokens, so a fourth as many hold as many tokens
+        let b = pool_blocks(budget, &[2048, 1024, 256], &[BLOCK, BLOCK, 4 * BLOCK], &[None, Some(1024 + 256), None], &[usize::MAX, 4 * 81, usize::MAX]);
+        // (18,904 tokens each: 1,181 blocks, 324, 295; the 6,108 tokens' bytes the sliding group leaves to the two full ones: 381 blocks and 95)
+        assert_eq!(b, vec![1181 + 381, 324, 295 + 95]);
+        assert!(b[0] * BLOCK - b[2] * 4 * BLOCK < 4 * BLOCK, "the full groups hold as many tokens, to a block");
+        assert!(b[0] * BLOCK * 2048 + b[1] * BLOCK * 1024 + b[2] * 4 * BLOCK * 256 <= budget);
     }
 }
