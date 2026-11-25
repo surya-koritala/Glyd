@@ -180,7 +180,7 @@ pub fn run(model: &str, out: &Path, threads: usize, layout: Layout) -> Result<()
 pub fn run_with(model: &str, out: &Path, threads: usize, layout: Layout, quiet: bool) -> Result<()> {
     let source = io(Source::find(model))?;
     // (a Gemma 4 model's and a plain dense one's penguin is a glyd-v7 save too: the executor reads its packs as saved)
-    let gemma = crate::gemma4::ConfigG4::load(&source.dir).is_ok()
+    let saved_penguin = crate::gemma4::ConfigG4::load(&source.dir).is_ok()
         || std::fs::read_to_string(source.dir.join("config.json")).is_ok_and(|t| crate::dynamic::dense::is_dense(&t));
     let t0 = Instant::now();
     let mut have = out.join("glyd.json").exists();
@@ -208,11 +208,12 @@ pub fn run_with(model: &str, out: &Path, threads: usize, layout: Layout, quiet: 
     } else {
         // (a lossy level of a dense Qwen3.5, a NemotronH or a GLM-5.3-Flash model: the loader's own packs and tensors, in the checkpoint's names)
         // (and penguin of a Gemma 4 model or a plain dense one: the executor reads the packs as saved, a glyd-v7 directory of level penguin)
-        let planned = if matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3) || (layout == Layout::Tiered && gemma) {
-            level_plan(&source.dir, layout)?
-        } else {
-            None
-        };
+        let planned =
+            if matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3) || (layout == Layout::Tiered && saved_penguin) {
+                level_plan(&source.dir, layout)?
+            } else {
+                None
+            };
         let s = match planned {
             Some(plan) if layout == Layout::Tiered => io(save::save_penguin(&source, out, threads, 5 << 30, &plan))?,
             Some(plan) => io(save::save_planned(&source, out, threads, 5 << 30, layout, &plan))?,
@@ -224,7 +225,7 @@ pub fn run_with(model: &str, out: &Path, threads: usize, layout: Layout, quiet: 
                 match layout {
                     Layout::Twelve => "glyd-v3",
                     Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3 => "glyd-v7",
-                    Layout::Tiered if gemma => "glyd-v7",
+                    Layout::Tiered if saved_penguin => "glyd-v7",
                     _ => "glyd-v4",
                 },
                 s.checked,
@@ -235,7 +236,7 @@ pub fn run_with(model: &str, out: &Path, threads: usize, layout: Layout, quiet: 
             );
         }
     }
-    if matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3) || gemma {
+    if matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3) || saved_penguin {
         return Ok(()); // (a glyd-v7 save holds the embedding packed: nothing of the engine's sidecar)
     }
     // the embedding
