@@ -18,6 +18,7 @@ pub fn norm(n: &Norm, x: &[f32], w: Option<&[f32]>, b: Option<&[f32]>) -> Vec<f3
     let (mean, r) = match n.kind {
         NormKind::Rms => (0.0, 1.0 / (input.iter().map(|&v| v * v).sum::<f32>() / dim + n.eps).sqrt()),
         NormKind::L2 => (0.0, 1.0 / (input.iter().map(|&v| v * v).sum::<f32>() + n.eps).sqrt()),
+        NormKind::Identity => (0.0, 1.0),
         NormKind::Layer => {
             let m = input.iter().sum::<f32>() / dim;
             (m, 1.0 / (input.iter().map(|&v| (v - m) * (v - m)).sum::<f32>() / dim + n.eps).sqrt())

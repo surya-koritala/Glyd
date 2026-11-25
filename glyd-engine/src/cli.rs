@@ -203,7 +203,7 @@ fn load_level(a: &Args, model: &str, asked: Option<Layout>) -> Done<Option<Layou
     Ok(layout)
 }
 
-/// The family of a model the dynamic engine runs from its release (DeepSeek-V4, GLM-5.3-Flash, Muse Spark, Nemotron-H, the Qwen3.5 layout; GLY-354), by
+/// The family of a model the dynamic engine runs from its release (DeepSeek-V4, GLM-5.3-Flash, Muse Spark, Nemotron-H, the Qwen3.5 layout), by
 /// its config; None for another path's, a glyd-v7 directory's, or a config not to be had (offline).
 fn dynamic_family(model: &str) -> Option<&'static str> {
     if v7_layout(model).ok().flatten().is_some() {

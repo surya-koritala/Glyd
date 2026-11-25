@@ -68,8 +68,10 @@ typedef hipStream_t cudaStream_t;
  * 24 from glyd_gpu_mma_moe_as, glyd_gpu_mma_moe_placed_as and glyd_gpu_mma12_moe_as (and their workspaces): the experts' product of a part of a layer
  *    (a GPU's slice of each expert's rows, an expert cache's places) cut as the whole layer's, so each row's sum is the whole layer's, bit for bit;
  * 25 from the experts' products splitting K by the layer's shape alone (an expert's whole rows and the layer's experts), never by the pairs a call holds:
- *    a pair's sum is the same whatever shares its call (other bits than 24's where a call of few pairs split K; the workspaces no larger). */
-#define GLYD_GPU_API_VERSION 25
+ *    a pair's sum is the same whatever shares its call (other bits than 24's where a call of few pairs split K; the workspaces no larger);
+ * 26 from the experts' products taking the step products for every call (the tiled GEMM, the rows kernel and Hopper's wgmma route where a development
+ *    build's tuning variable asks): a pair's kernel no longer turns on how many tokens share its call (other bits than 25's for prompts). */
+#define GLYD_GPU_API_VERSION 26
 
 #ifdef __cplusplus
 extern "C" {
