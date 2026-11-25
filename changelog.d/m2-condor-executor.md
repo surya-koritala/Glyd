@@ -22,3 +22,10 @@
 - `fit --machine NAME` no longer turns on the computer that plans it: a preset says whether it has NVIDIA's cuBLAS (none of them: the engine never ships
   it), and a machine described in JSON says so with `cublas`. DGX Spark's plans had a long prompt's chunk of 4,096 tokens when planned on a computer with
   cuBLAS and 2,048 elsewhere. Part of #140.
+- Qwen3.8-Flash-Next's MTP layer is a draft head on the description executor: its config's `mtp.*` are described (`MtpInput::Streams`: the model's last
+  streams normed as one vector and each stream projected by `fc_hidden`, the next token's embedding normed and projected by `fc_embedding` added to each,
+  an indexed attention and its experts in gated residuals as the model's layers, its own final mixer into the model's LM head), the CPU reference runs
+  it, and the executor loads it as a draft part (its experts held as the model's, its keys and values in rings after the model's, the model's LM head
+  and embedding shared). A drafting round checks the drafts in one verify pass whose rows are the steps', then goes back to the rows kept: the delta
+  rule's and its convolution's states and now the n-gram embedding's last tokens and convolution. `glyd-engine draftcheck qwen4x` holds a drafted
+  greedy generation to the model's alone bit for bit and the head to the CPU reference at the family's bound. Part of #140.

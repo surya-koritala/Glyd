@@ -1472,6 +1472,91 @@ pub fn qwen4x_s2_manifest() -> Result<String> {
 /// A manifest's `experts` where `manifest_random` draws its experts as its other matrices, not on the six-bit grid.
 const OFF_GRID: &str = "off the six-bit grid";
 
+/// The family's random model with its draft head (`kinds::MtpInput::Streams`): the `qwen4x` case's tiny model, each of its tensors drawn as that case draws
+/// it (the same seed, the same tensors first), and one MTP layer (an indexed attention and its experts, on the six-bit grid as the model's, in gated
+/// residuals), the head's front (its two norms and two products) and its own final mixer, every tensor of the head at the shape its description says,
+/// drawn after the model's by the same rules.
+pub fn qwen4x_mtp_manifest() -> Result<String> {
+    let mut m: Value = serde_json::from_str(include_str!("../tests/fixtures/qwen4x_tiny_manifest.json")).map_err(|e| Error(e.to_string()))?;
+    let mut c: Value = serde_json::from_str(m["config"].as_str().unwrap_or("{}")).map_err(|e| Error(e.to_string()))?;
+    c["text_config"]["mtp_num_hidden_layers"] = 1.into();
+    let d = crate::runtime::describe::describe(&c)?;
+    let (blocks, own) = d.mtp.first().ok_or_else(|| Error("the description names no draft head".into()))?;
+    let mut names: Vec<String> = blocks.iter().flatten().chain(own).flat_map(|(_, s)| s.names()).collect();
+    names.sort();
+    let head = names
+        .iter()
+        .map(|n| d.shapes.get(n).map(|s| json!([n, "BF16", s])).ok_or_else(|| Error(format!("the description has no shape for {n}"))))
+        .collect::<Result<Vec<Value>>>()?;
+    m["tensors"].as_array_mut().ok_or_else(|| Error("manifest".into()))?.extend(head);
+    m["config"] = Value::String(c.to_string());
+    Ok(m.to_string())
+}
+
+/// `qwen4x_mtp_manifest`'s model at random: the `qwen4x` case's seed, so its model's weights are that case's to the bit.
+pub fn qwen4x_mtp_random(out: &Path) -> Result<()> {
+    manifest_random(&qwen4x_mtp_manifest()?, out, 0x2026_1120_0000_0005, false, "Qwen3.8-Flash-Next of the tiny shape with its draft head")
+}
+
+/// The CPU reference of the kinds on the model in `dir` over `tokens` (one sequence from position 0): each position's residual streams after the last block
+/// (before the head's collapse), the draft head's input there.
+pub fn ref_streams(dir: &Path, tokens: &[u32]) -> Result<Vec<Vec<f32>>> {
+    let mut m = ref_model(dir)?;
+    let mut last = Vec::new();
+    m.forward_seen(tokens, 0, &mut |x| last = x.to_vec())?;
+    let w = last.len() / tokens.len().max(1);
+    Ok(last.chunks(w.max(1)).map(<[f32]>::to_vec).collect())
+}
+
+/// A draft head's row as a check gives it to the CPU reference: its position, the token it reads, the streams it continues ([n hidden]), and where the
+/// row's experts are taken in the place of its router's own (an engine's, `held on its choices`).
+#[derive(Clone, Debug)]
+pub struct HeadRow {
+    pub pos: u32,
+    pub token: u32,
+    pub streams: Vec<f32>,
+    pub take: Option<Vec<usize>>,
+}
+
+/// The draft head of the model in `dir` (its description's first, as `edit` leaves it) on the CPU reference of the kinds over `rows` in order (one
+/// sequence: a row at a position the head has run before takes its place, `RefMtp::step_streams`): each row's logits by the model's head, its streams
+/// after the head's blocks, and its experts as the head's router chose them (`ffn::Routed::own`) and as it took them.
+#[allow(clippy::type_complexity)]
+pub fn ref_head(
+    dir: &Path,
+    rows: &[HeadRow],
+    edit: fn(&mut crate::runtime::describe::Described),
+) -> Result<(Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<(Vec<usize>, Vec<usize>)>)> {
+    use crate::runtime::kinds::{Body, Ffn};
+    use crate::runtime::reference::{model::checkpoint_tensor, mtp::RefMtp};
+    let cfg: Value = serde_json::from_str(&io(std::fs::read_to_string(dir.join("config.json")))?).map_err(|e| Error(format!("config.json: {e}")))?;
+    let mut desc = crate::runtime::describe::describe(&cfg)?;
+    edit(&mut desc);
+    let ck = io(glyd_gpu::safetensors::Checkpoint::open(dir))?;
+    let src = |n: &str| checkpoint_tensor(&ck, n);
+    let m = crate::runtime::reference::model::RefModel::load(&desc, &src)?;
+    let mut h = RefMtp::load(&desc, 0, &src)?;
+    let moe: Vec<usize> = (0..h.blocks.len()).filter(|&b| matches!(h.blocks[b].block.body, Body::Ffn(Ffn::Moe(_)))).collect();
+    for &b in &moe {
+        h.blocks[b].routed = Some(Vec::new());
+    }
+    let d = desc.desc.hidden;
+    let (mut logits, mut streams, mut routes) = (Vec::with_capacity(rows.len()), Vec::with_capacity(rows.len()), Vec::with_capacity(rows.len()));
+    for r in rows {
+        for &b in &moe {
+            h.blocks[b].take = r.take.clone().into_iter().collect();
+        }
+        let e = m.embed.get(r.token as usize * d..(r.token as usize + 1) * d).ok_or_else(|| Error(format!("token {} past the vocabulary", r.token)))?;
+        let (x, y) = h.step_streams(0, r.pos, r.token, e, &r.streams)?;
+        logits
+            .push(crate::runtime::reference::matvec(&m.head, d, &y).into_iter().map(|z| crate::runtime::reference::model::logit(&desc.desc.head, z)).collect());
+        streams.push(x);
+        let c = moe.first().and_then(|&b| h.blocks[b].routed.as_mut().and_then(Vec::pop));
+        routes.push(c.map_or((Vec::new(), Vec::new()), |c| (c.own, c.ids)));
+    }
+    Ok((logits, streams, routes))
+}
+
 /// The plain dense kind's small model (a pre-norm decoder of one attention and one gated SiLU MLP a layer: 4 layers, 16 query and 8 key-value heads of 128 with normed
 /// queries and keys, a vocabulary of 4096): the kind's case, no release's.
 pub fn dense_random(out: &Path) -> Result<()> {
@@ -2930,6 +3015,16 @@ mod tests {
         }
         once(&mut d.desc.final_norm);
         d.desc.embed.scale = crate::runtime::reference::bf16(d.desc.embed.scale);
+        // (and a draft head's: its front's norms, its blocks', its final mixer's)
+        for h in d.desc.mtp.iter_mut() {
+            (once(&mut h.norm_embed), once(&mut h.norm_hidden), once(&mut h.final_norm));
+            for b in h.blocks.iter_mut() {
+                once(&mut b.norm_in);
+                if let Some(n) = b.norm_out.as_mut() {
+                    once(n);
+                }
+            }
+        }
     }
 
     /// A case's noise floor: the CPU reference of the layer kinds against itself with `stored`'s roundings, on the fixture's tokens, as `compare`
@@ -2948,6 +3043,53 @@ mod tests {
         let rounded = ref_drive_with(dir, fx, take.as_ref(), picks.as_ref(), stored)?;
         let own = Fixture { rows: base.rows.iter().map(|r| Row::from_logits(r)).collect::<Result<_>>()?, ..fx.clone() };
         Ok(compare(&own, bound, &rounded.rows))
+    }
+
+    /// The family's draft head (`qwen4x_mtp_random`: the `qwen4x` case's model with one MTP layer) is well conditioned for the bound the family is held to
+    /// (the `qwen4x` fixture's): on the reference's own streams of the fixture's prompt and decode tokens, a row a position (the streams there and the token
+    /// after it), the head with `stored`'s roundings (its norms' outputs rounded once) against the head without them, on the head's own routers' choices, is
+    /// within a tenth of the bound; and the head is no copy of the model's next-token answer (its best token is not the model's at every row).
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_draft_heads_case_is_well_conditioned() {
+        let dir = std::env::temp_dir().join(format!("glyd-floor-qwen4x-mtp-{}", std::process::id()));
+        qwen4x_mtp_random(&dir).unwrap();
+        let fx = Fixture::read(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits/qwen4x.json.gz")).unwrap();
+        let tenth = match fx.bounds[0].bound {
+            Bound::Kl { mean, max, top1 } => Bound::Kl { mean: mean / 10.0, max: max / 10.0, top1 },
+            Bound::Bits => panic!("a reference fixture of bits"),
+        };
+        let toks: Vec<u32> = fx.prompt.iter().chain(&fx.decode).copied().collect();
+        let st = ref_streams(&dir, &toks).unwrap();
+        let rows: Vec<HeadRow> = (0..toks.len() - 1).map(|i| HeadRow { pos: i as u32, token: toks[i + 1], streams: st[i].clone(), take: None }).collect();
+        let (base, _, routes) = ref_head(&dir, &rows, |_| {}).unwrap();
+        let taken: Vec<HeadRow> = rows.iter().zip(&routes).map(|(r, (own, _))| HeadRow { take: Some(own.clone()), ..r.clone() }).collect();
+        let (rounded, _, _) = ref_head(&dir, &taken, stored).unwrap();
+        // (the model itself: its own next-token rows on the same tokens)
+        let model = described_rows(&dir, &toks).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        let own = Fixture { rows: base.iter().map(|r| Row::from_logits(r)).collect::<Result<_>>().unwrap(), ..fx.clone() };
+        let v = compare(&own, &tenth, &rounded);
+        let Bound::Kl { mean, max, .. } = tenth else { unreachable!() };
+        println!(
+            "qwen4x-mtp head noise floor: KL mean {:.2e} max {:.2e}, best token {}/{}, largest logit difference {:.4} over {} rows; a tenth of the bound: mean {mean:.1e}, max {max:.1e}",
+            v.mean_kl,
+            v.max_kl,
+            v.top1.0,
+            v.top1.1,
+            v.max_dlogit,
+            base.len()
+        );
+        assert!(v.ok, "{:?}", v.notes);
+        let best = |r: &[f32]| (0..r.len()).fold(0, |b, t| if r[t] > r[b] { t } else { b });
+        let same = base.iter().zip(&model[1..]).filter(|(h, m)| best(h) == best(m)).count();
+        assert!(same < base.len(), "the head's best token is the model's next at every row");
+    }
+
+    /// The model's rows on the CPU reference of the kinds over `tokens` from position 0, a row a token.
+    #[cfg(feature = "dev")]
+    fn described_rows(dir: &Path, tokens: &[u32]) -> Result<Vec<Vec<f32>>> {
+        ref_model(dir)?.forward(tokens, 0)
     }
 
     /// The cases past a tenth of their bound today, each with why: printed, not held to the line (one near it may read either side of it on another

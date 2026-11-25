@@ -182,6 +182,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "foldcheck" => glyd_engine::fold::check(a.flag("only")),
         "seamcheck" => glyd_engine::runtime::cuda::check(&a),
         "kindcheck" => glyd_engine::dynamic::kindcheck::run(&a),
+        "draftcheck" => glyd_engine::dynamic::head::check(&a),
         "roundcheck" => glyd_engine::logits::round_check(a),
         "keepcheck" => glyd_engine::logits::keep_check(a),
         "kv12cal" => glyd_engine::dynamic::kv12::cmd(a),

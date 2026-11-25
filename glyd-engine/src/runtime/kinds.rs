@@ -815,14 +815,46 @@ pub enum Collapse {
 }
 
 /// A draft head: a few blocks after a projection of [embedding of the next token, the model's last hidden state] (R6); or DSpark's form
-/// (`dspark`), whose blocks draft a block of tokens in one pass.
-#[derive(Clone, Debug, PartialEq)]
+/// (`dspark`), whose blocks draft a block of tokens in one pass; `input` says how the head takes the model's state and the next token.
+#[derive(Clone, PartialEq)]
 pub struct MtpHead {
     pub blocks: Vec<Block>,
     pub norm_embed: Norm,
     pub norm_hidden: Norm,
     pub final_norm: Norm,
     pub dspark: Option<DSpark>,
+    pub input: MtpInput,
+}
+
+/// How a draft head (`MtpHead`) takes the model's state and the next token's embedding.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MtpInput {
+    /// `eh_proj` [hidden, 2 hidden] of [norm_embed(embedding), norm_hidden(hidden)] (the embedding first), the model's final normed hidden state the
+    /// head continues; its blocks on one residual stream, then `final_norm` into the model's head (DeepSeek-V3's form).
+    Joined,
+    /// The model's last residual streams (n of the hidden width, before its collapse): norm_hidden over the n hidden values as one vector, each
+    /// stream's part by `fc_hidden` [hidden, hidden], `fc_embedding` [hidden, hidden] of norm_embed(embedding) added to every stream; the head's
+    /// blocks on those streams (the model's residual rule), its streams after them the next draft's input; then the model's collapse with the
+    /// head's own roles (`Collapse::GatedMix`: `final_norm` on each stream, `out_mix_down`, `out_mix_up`) into the model's head (Qwen3.8-Flash-Next's
+    /// `residual_linear_shared` head: vLLM models/qwen4_exp/nvidia/mtp.py, SGLang models/qwen4_exp_mtp.py).
+    Streams,
+}
+
+/// The derived form, with `input` said only where it is not `Joined`: the other heads' descriptions read as they did before the field (the digests
+/// of tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for MtpHead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("MtpHead");
+        s.field("blocks", &self.blocks)
+            .field("norm_embed", &self.norm_embed)
+            .field("norm_hidden", &self.norm_hidden)
+            .field("final_norm", &self.final_norm)
+            .field("dspark", &self.dspark);
+        if self.input != MtpInput::Joined {
+            s.field("input", &self.input);
+        }
+        s.finish()
+    }
 }
 
 /// DSpark (DeepSeek-V4's 0731 release, DeepSeek-V4.1): `block` tokens drafted in one pass, the anchor (the last token the target chose) then

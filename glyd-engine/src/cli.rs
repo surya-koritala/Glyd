@@ -1420,7 +1420,7 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: 
         let spec = match &draft {
             Some((d, k)) => {
                 let dc = crate::gemma4::ConfigG4::load_for(d, true).map_err(cannot)?;
-                Some(crate::dynamic::DraftSpec { dir: d, desc: crate::dynamic::gemma4::describe_draft(&dc, &c), k: *k })
+                Some(crate::dynamic::DraftSpec { dir: d, desc: crate::dynamic::gemma4::describe_draft(&dc, &c), k: *k, experts: None })
             }
             None => None,
         };

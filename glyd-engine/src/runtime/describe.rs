@@ -29,7 +29,8 @@ pub enum Source {
 }
 
 impl Source {
-    fn names(&self) -> Vec<String> {
+    /// The checkpoint's tensors the source reads.
+    pub fn names(&self) -> Vec<String> {
         match self {
             Source::Tensor(n) => vec![n.clone()],
             Source::Rows(v) => v.clone(),
@@ -708,8 +709,10 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
 /// Qwen3.8-Flash-Next (`qwen4_exp_text`, Condor's model): the Qwen3.5 hybrid's Gated DeltaNet and gated attention, the attention's Qwen Sparse
 /// Attention indexer (`IndexForm::Mean`), the softmax-routed experts with the gated shared expert, every block inside gated residuals over
 /// `hc_count` streams (`Residual::GatedStreams`), the final mixer (`Collapse::GatedMix`), and the hashed n-gram embedding (`Body::Ngram`)
-/// before each layer `ple_layer_ids` names. A layer is two blocks, three with the n-gram embedding. Not read: the vision tower and the MTP
-/// layer (counted). The defaults of a key a config leaves out are transformers' (`Qwen4ExpTextConfig`). Each tensor's shape is said.
+/// before each layer `ple_layer_ids` names. A layer is two blocks, three with the n-gram embedding. The MTP layers are the draft head
+/// (`MtpInput::Streams`: each an indexed attention and its experts in gated residuals, as the model's layers, its front's norms and products
+/// and its own final mixer, `names::part::QX_MTP`). Not read: the vision tower. The defaults of a key a config leaves out are transformers'
+/// (`Qwen4ExpTextConfig`). Each tensor's shape is said.
 fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {
     let k = Keys::new(tc, mt);
     let (d, layers, vocab, eps, tied) = common(&k, tied_top)?;
@@ -845,8 +848,21 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             return err(format!("{mt}: ple_layer_ids {l} is not a linear_attention layer (one-based)"));
         }
     }
+    // (the draft head's config: its layers, each an indexed attention with its experts on the model's last streams, at the model's rotary)
     let mtp = match k.raw("mtp") {
-        Some(Value::Object(o)) => o.get("num_hidden_layers").and_then(Value::as_u64),
+        Some(Value::Object(o)) => {
+            let types = o.get("layer_types").and_then(Value::as_array).map(|a| a.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect::<Vec<_>>());
+            if let Some(t) = types.iter().flatten().find(|t| !["full_attention", "indexed_attention"].contains(&t.as_str())) {
+                return err(format!("{mt}: an MTP layer of type {t}: the draft head's layers are indexed attentions"));
+            }
+            if o.get("mtp_use_hidden_state_from_layer").is_some_and(|v| !v.is_null()) {
+                return err(format!("{mt}: an MTP head on the hidden state of a layer before the last ({})", o["mtp_use_hidden_state_from_layer"]));
+            }
+            if let Some(t) = o.get("rope_theta").and_then(Value::as_f64).filter(|&t| t != rp.theta as f64) {
+                return err(format!("{mt}: an MTP head's rotary of theta {t}, where the model's is {}", rp.theta));
+            }
+            o.get("num_hidden_layers").and_then(Value::as_u64)
+        }
         Some(v) => return err(format!("{mt}: mtp {v}")),
         None => None,
     };
@@ -858,6 +874,60 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     let gr_shapes = vec![("norm_in", vec![w]), ("mix_down", vec![rank, w]), ("mix_up", vec![w, rank]), ("inject", vec![hc, w])];
     let (kh, vh, kd, vd) = (lin.k_heads, lin.v_heads, lin.k_dim, lin.v_dim);
     let qkv = 2 * kh * kd + vh * vd;
+    // (an indexed attention block's mixer, roles and shapes under the path `p`: the model's attention layers' and the draft head's)
+    let attention = |p: &str, at: &str| -> Result<(Mixer, Vec<(String, Source)>, Vec<(&'static str, Vec<usize>)>)> {
+        let ix = indexer.clone().ok_or_else(|| Error(format!("{mt}: {at} is an indexed attention, and the config has no indexer_* keys")))?;
+        let a = Attn {
+            heads,
+            kv_heads: kv,
+            head_dim: hd,
+            v_head_dim: hd,
+            window: None,
+            sinks: false,
+            rope: Some(rp.clone()),
+            q_norm: Some(pn),
+            k_norm: Some(pn),
+            v_norm: None,
+            gate: gate.then_some(OutGate { act: Act::Sigmoid, from: GateFrom::InQuery, norm: None }),
+            softcap: None,
+            bias: false,
+            scale: (hd as f32).powf(-0.5),
+            k_eq_v: false,
+            rounding: AttnRounding::Flash,
+            kv_from: None,
+            indexer: Some(ix.clone()),
+        };
+        let mut r = names::roles(part::ATTN, p, 0, |r| r != "norm_in" && !r.ends_with("_bias"));
+        r.extend(names::roles(part::QX_INDEXER, p, 0, all));
+        let sh = vec![
+            ("q", vec![heads * hd * if gate { 2 } else { 1 }, d]),
+            ("k", vec![kv * hd, d]),
+            ("v", vec![kv * hd, d]),
+            ("o", vec![d, heads * hd]),
+            ("q_norm", vec![hd]),
+            ("k_norm", vec![hd]),
+            ("index_qk", vec![(ix.heads + 1) * ix.head_dim, d]),
+            ("index_q_norm", vec![ix.head_dim]),
+            ("index_k_norm", vec![ix.head_dim]),
+        ];
+        Ok((Mixer::Attention(a), r, sh))
+    };
+    // (the experts' block in its gated residual under the path `p`, its roles, their shapes said)
+    let experts = |p: &str, shapes: &mut std::collections::BTreeMap<String, Vec<usize>>| -> (Block, Vec<(String, Source)>) {
+        let mut f = names::roles(part::QX_MOE, p, 0, |r| moe.shared.is_some() || !r.starts_with("shared_"));
+        f.extend(names::roles(part::QX_GR_MLP, p, 0, all));
+        let fs = vec![
+            ("router", vec![ne, d]),
+            ("experts_gate_up", vec![ne, 2 * inter, d]),
+            ("experts_down", vec![ne, d, inter]),
+            ("shared_gate", vec![shared_inter, d]),
+            ("shared_up", vec![shared_inter, d]),
+            ("shared_down", vec![d, shared_inter]),
+            ("shared_router", vec![1, d]),
+        ];
+        shape_roles(shapes, &f, &[fs, gr_shapes.clone()].concat());
+        (Block { norm_in: pn, body: Body::Ffn(Ffn::Moe(moe.clone())), norm_out: None, residual: gr.clone() }, f)
+    };
     for (l, ty) in types.iter().enumerate() {
         let p = names::QWEN4X.layer(prefix, l);
         if let Some(index) = ple.iter().position(|&x| x == l + 1) {
@@ -904,41 +974,8 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
                 ],
             ),
             "full_attention" | "indexed_attention" => {
-                let ix = indexer.clone().ok_or_else(|| Error(format!("{mt}: layer {l} is an indexed attention, and the config has no indexer_* keys")))?;
-                let a = Attn {
-                    heads,
-                    kv_heads: kv,
-                    head_dim: hd,
-                    v_head_dim: hd,
-                    window: None,
-                    sinks: false,
-                    rope: Some(rp.clone()),
-                    q_norm: Some(pn),
-                    k_norm: Some(pn),
-                    v_norm: None,
-                    gate: gate.then_some(OutGate { act: Act::Sigmoid, from: GateFrom::InQuery, norm: None }),
-                    softcap: None,
-                    bias: false,
-                    scale: (hd as f32).powf(-0.5),
-                    k_eq_v: false,
-                    rounding: AttnRounding::Flash,
-                    kv_from: None,
-                    indexer: Some(ix.clone()),
-                };
-                let mut r = names::roles(part::ATTN, &p, 0, |r| r != "norm_in" && !r.ends_with("_bias"));
-                r.extend(names::roles(part::QX_INDEXER, &p, 0, all));
-                let sh = vec![
-                    ("q", vec![heads * hd * if gate { 2 } else { 1 }, d]),
-                    ("k", vec![kv * hd, d]),
-                    ("v", vec![kv * hd, d]),
-                    ("o", vec![d, heads * hd]),
-                    ("q_norm", vec![hd]),
-                    ("k_norm", vec![hd]),
-                    ("index_qk", vec![(ix.heads + 1) * ix.head_dim, d]),
-                    ("index_q_norm", vec![ix.head_dim]),
-                    ("index_k_norm", vec![ix.head_dim]),
-                ];
-                (Mixer::Attention(a), r, sh)
+                let (a, r, sh) = attention(&p, &format!("layer {l}"))?;
+                (a, r, sh)
             }
             other => return err(format!("{mt}: layer type {other} at layer {l}")),
         };
@@ -946,21 +983,40 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         shape_roles(&mut shapes, &r, &[sh, gr_shapes.clone()].concat());
         blocks.push(Block { norm_in: pn, body: Body::Mixer(mixer), norm_out: None, residual: gr.clone() });
         roles.push(r);
-        let mut f = names::roles(part::QX_MOE, &p, 0, |r| moe.shared.is_some() || !r.starts_with("shared_"));
-        f.extend(names::roles(part::QX_GR_MLP, &p, 0, all));
-        let fs = vec![
-            ("router", vec![ne, d]),
-            ("experts_gate_up", vec![ne, 2 * inter, d]),
-            ("experts_down", vec![ne, d, inter]),
-            ("shared_gate", vec![shared_inter, d]),
-            ("shared_up", vec![shared_inter, d]),
-            ("shared_down", vec![d, shared_inter]),
-            ("shared_router", vec![1, d]),
-        ];
-        shape_roles(&mut shapes, &f, &[fs, gr_shapes.clone()].concat());
-        blocks.push(Block { norm_in: pn, body: Body::Ffn(Ffn::Moe(moe.clone())), norm_out: None, residual: gr.clone() });
+        let (b, f) = experts(&p, &mut shapes);
+        blocks.push(b);
         roles.push(f);
     }
+    // the draft head (`MtpInput::Streams`): each MTP layer an indexed attention and its experts in gated residuals, as the model's layers; its own front
+    // (the two norms and the two products) and its own final mixer
+    let (mut head_blocks, mut head_roles) = (Vec::new(), Vec::new());
+    for j in 0..mtp_layers {
+        let p = format!("mtp.layers.{j}");
+        let (mixer, mut r, sh) = attention(&p, &format!("MTP layer {j}"))?;
+        r.extend(names::roles(part::QX_GR_ATTN, &p, 0, all));
+        shape_roles(&mut shapes, &r, &[sh, gr_shapes.clone()].concat());
+        head_blocks.push(Block { norm_in: pn, body: Body::Mixer(mixer), norm_out: None, residual: gr.clone() });
+        head_roles.push(r);
+        let (b, f) = experts(&p, &mut shapes);
+        head_blocks.push(b);
+        head_roles.push(f);
+    }
+    let head_own = if mtp_layers > 0 { names::roles(part::QX_MTP, "mtp", 0, all) } else { Vec::new() };
+    shape_roles(
+        &mut shapes,
+        &head_own,
+        &[
+            ("norm_embed", vec![d]),
+            ("norm_hidden", vec![w]),
+            ("fc_embedding", vec![d, d]),
+            ("fc_hidden", vec![d, d]),
+            ("final_norm", vec![w]),
+            ("out_mix_down", vec![rank, w]),
+            ("out_mix_up", vec![w, rank]),
+        ],
+    );
+    let head =
+        (mtp_layers > 0).then_some(MtpHead { blocks: head_blocks, norm_embed: pn, norm_hidden: pn, final_norm: pn, dspark: None, input: MtpInput::Streams });
     let desc = ModelDesc {
         hidden: d,
         vocab,
@@ -968,7 +1024,7 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         blocks,
         final_norm: pn,
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::GatedMix, rounding: Rounding::F32 },
-        mtp: Vec::new(),
+        mtp: head.into_iter().collect(),
         vision: None,
         rope: Some(rp),
     };
@@ -979,6 +1035,11 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     shapes.insert(out.final_norm.clone(), vec![w]);
     shape_roles(&mut shapes, &out.extra, &[("out_mix_down", vec![rank, w]), ("out_mix_up", vec![w, rank])]);
     out.shapes = shapes;
+    // (the draft head named: its tensors are read, no longer a part left)
+    if mtp_layers > 0 {
+        out.mtp = vec![(head_roles, head_own)];
+        out.unread.retain(|p| p != "mtp.");
+    }
     Ok(out)
 }
 
@@ -2233,7 +2294,14 @@ fn dspark_head(k: &Keys, layers: usize, window: Comp, moe: Moe, residual: Residu
     let dspark = DSpark { block, noise: k.usize("dspark_noise_token_id")? as u32, targets, markov_rank: k.usize("dspark_markov_rank")?, confidence: true };
     let b = |body: Body| Block { norm_in: Norm::rms(eps), body, norm_out: None, residual: residual.clone() };
     let blocks = (0..layers).flat_map(|_| [b(Body::Mixer(Mixer::Compressed(window.clone()))), b(Body::Ffn(Ffn::Moe(moe.clone())))]).collect();
-    Ok(Some(MtpHead { blocks, norm_embed: Norm::rms(eps), norm_hidden: Norm::rms(eps), final_norm: Norm::rms(eps), dspark: Some(dspark) }))
+    Ok(Some(MtpHead {
+        blocks,
+        norm_embed: Norm::rms(eps),
+        norm_hidden: Norm::rms(eps),
+        final_norm: Norm::rms(eps),
+        dspark: Some(dspark),
+        input: MtpInput::Joined,
+    }))
 }
 
 /// A DSpark drafter's tensors as DeepSeek releases name them (`mtp.{i}.`): each draft layer's attention (the window's: no compressor) and its

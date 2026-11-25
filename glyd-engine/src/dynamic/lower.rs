@@ -667,6 +667,58 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
     })
 }
 
+/// The draft head of a model of Qwen3.8-Flash-Next's kinds (`kinds::MtpInput::Streams`, the description's first) as a draft part on the shared operations: its
+/// blocks lowered as the model's layers are (`qwen4x` on a model of the head's blocks: the gated residuals around the sparse attention and the experts, the head's
+/// own final mixer `HeadMix::Gated`), after `Op::MtpIn`, which makes the head's streams from the model's last streams (Hid) and the next token's embedding (the
+/// model's X). The model's embedding and LM head are named (the executor shares the model's, never loading them twice: `DraftSpec`); its rings are its own,
+/// from 0 (the executor puts them after the model's).
+pub fn qwen4x_head(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> {
+    use crate::runtime::kinds::{MtpInput, NormWeight};
+    let what = "Qwen3.8-Flash-Next's draft head";
+    let (Some(h), Some((roles, own))) = (d.desc.mtp.first(), d.mtp.first()) else {
+        return err(format!("{what}: the description names no draft head"));
+    };
+    if h.input != MtpInput::Streams || h.dspark.is_some() {
+        return err(format!("{what}: a head of {:?}, where the kernels take the model's streams as its input", h.input));
+    }
+    let eps = d.desc.final_norm.eps;
+    for (n, at) in [(&h.norm_embed, "its embedding's norm"), (&h.norm_hidden, "its streams' norm")] {
+        if n.weight != NormWeight::PlusOne || n.eps != eps {
+            return err(format!("{what}: {at} is {n:?}, where the kernels take a (1 + w) RMS norm, eps {eps}"));
+        }
+    }
+    let one = |r: &str| -> Result<String> {
+        match role(own, r) {
+            Some(Source::Tensor(n)) => Ok(n.clone()),
+            other => err(format!("{what}: the role {r} is {other:?}, where one tensor is")),
+        }
+    };
+    // (the head as a model of its blocks: its final mixer the model's collapse with its own roles)
+    let mut hd = d.clone();
+    hd.desc.blocks = h.blocks.clone();
+    hd.desc.final_norm = h.final_norm;
+    hd.desc.mtp = Vec::new();
+    hd.blocks = roles.clone();
+    hd.final_norm = one("final_norm")?;
+    hd.extra = vec![("out_mix_down".into(), Source::Tensor(one("out_mix_down")?)), ("out_mix_up".into(), Source::Tensor(one("out_mix_up")?))];
+    hd.mtp = Vec::new();
+    let mut m = qwen4x(&hd, eos, max_pos).map_err(|e| e.context(what))?;
+    let shape = |n: &str| d.shapes.get(n).cloned();
+    let (ne, nh) = (m.small.len(), m.small.len() + 1);
+    m.small.extend([one("norm_embed")?, one("norm_hidden")?]);
+    let (fe, fh) = (m.mats.len(), m.mats.len() + 1);
+    m.mats.extend([item(vec![one("fc_embedding")?], &shape)?, item(vec![one("fc_hidden")?], &shape)?]);
+    for (k, cols) in [(fe, m.hidden), (fh, m.hidden)] {
+        if (m.mats[k].rows, m.mats[k].cols) != (m.hidden, cols) {
+            return err(format!("{what}: {} of {}x{}, where the head's front is {}x{cols}", m.mats[k].members[0], m.mats[k].rows, m.mats[k].cols, m.hidden));
+        }
+    }
+    m.first = Op::MtpIn { norm_embed: ne, embed: fe, norm_hidden: nh, hidden: fh };
+    m.widths[Slot::Hid as usize] = m.width(Slot::S);
+    m.family = "Qwen3.8-Flash-Next draft head";
+    Ok(m)
+}
+
 /// Qwen3.5's layout (dense: Qwen3.5, 3.6 and 3.8 of 256-wide heads): pairs of blocks, a Gated DeltaNet or a gated full attention, then the SiLU MLP, the (1 + w)
 /// norms, the final norm on the last row. The matrices and small tensors are named in the order the loader holds them (the tests hold the result to the
 /// hand-written `dynamic::qwen35::describe`); stage `st` of a model split across GPUs. A layer whose feed-forward is a mixture of experts (the layout's with experts: a softmax router, the gated shared expert)
@@ -2370,7 +2422,8 @@ mod tests {
     /// The decisions the executor made by a family's name, made by its description's operations now, give every family the answer the name lists gave, but
     /// where named: a second sequence for Qwen3.8-Flash-Next (`add_seqs`: every one of its operations keeps a sequence's data in its rings and states, as
     /// `batchable` said already); a verify pass for Gemma 4 and the plain dense models (attention rings and row-wise operations alone; the range worker,
-    /// verify's one caller, loads Qwen3.5 alone).
+    /// verify's caller with Qwen3.5) and for Qwen3.8-Flash-Next (its draft head's rounds, src/dynamic/head.rs: its sparse attention, its plain experts held on
+    /// the GPU, its n-gram embedding's states, which `rewind` goes back in).
     #[cfg(feature = "dev")]
     #[test]
     fn decisions_by_operation_give_the_family_lists_answers() {
@@ -2384,7 +2437,7 @@ mod tests {
             assert_eq!(rows::one_sequence_op(d).is_none(), listed || f == QX, "{f}: more sequences than one");
             assert_eq!(
                 unverifiable_op(d).is_none(),
-                matches!(f, "Qwen3.5" | "Gemma 4" | DENSE),
+                matches!(f, "Qwen3.5" | "Gemma 4" | DENSE | QX),
                 "{f}: a verify pass ({:?})",
                 unverifiable_op(d).map(rows::op_name)
             );

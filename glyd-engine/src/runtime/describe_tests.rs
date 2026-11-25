@@ -857,7 +857,8 @@ fn condors_tiny_config_describes_its_tensors() {
 }
 
 /// Condor's released config (tests/fixtures/qwen4x_config.json) describes every tensor Condor's engine loads (src/qwen4x.rs: each layer's matrices, the gated
-/// residuals' and the final mixer's, the n-gram embedding's products), the vision tower and the MTP layer left; and what it does not take is refused in words.
+/// residuals' and the final mixer's, the n-gram embedding's products; the MTP layer's, its front's and its final mixer's as the draft head), the vision tower
+/// left; and what it does not take is refused in words.
 #[test]
 fn condors_released_config() {
     use super::kinds::*;
@@ -877,10 +878,31 @@ fn condors_released_config() {
     }
     loads.extend(c.gr_packs(&c.mixer_name(false)).into_iter().flat_map(pack));
     loads.extend(c.ple_pack().into_iter().flat_map(pack));
+    // (the draft head: the MTP layer's matrices, norms and gated residuals as a layer's, its front, its own final mixer)
+    let head = c.layer_name(c.layers);
+    let packs = c.layer_packs(c.layers);
+    loads.extend(packs.into_iter().flat_map(pack));
+    for g in ["attn_hyper_connection", "mlp_hyper_connection"] {
+        let m = format!("{head}.{g}");
+        loads.extend(c.gr_packs(&m).into_iter().flat_map(pack));
+        loads.extend([format!("{m}.hc_norm.weight"), format!("{m}.block_inject_weight.weight")]);
+    }
+    for n in ["q_norm", "k_norm", "indexer.q_layernorm", "indexer.k_layernorm"] {
+        loads.push(format!("{head}.self_attn.{n}.weight"));
+    }
+    loads.extend(c.gr_packs(&c.mixer_name(true)).into_iter().flat_map(pack));
+    for n in ["pre_fc_norm_embedding", "pre_fc_norm_hidden", "fc_embedding", "fc_hidden", "hyper_connection_mixer.hc_norm"] {
+        loads.push(format!("mtp.{n}.weight"));
+    }
     let missing: Vec<&String> = loads.iter().filter(|n| !names.contains(*n)).collect();
     assert!(missing.is_empty(), "{missing:?}");
     assert_eq!((d.desc.blocks.len(), d.mtp_layers, d.desc.hidden, d.desc.vocab), (97, 1, 2560, 248320));
-    assert_eq!(d.unread, ["model.visual.", "mtp."]);
+    assert_eq!(d.unread, ["model.visual."]);
+    // (the head: one indexed attention and its experts on the model's four streams, its front of two products and its own mixer)
+    let h = &d.desc.mtp[0];
+    assert_eq!((h.blocks.len(), h.input, d.mtp.len(), d.mtp[0].0.len()), (2, MtpInput::Streams, 1, 2));
+    assert!(matches!(&h.blocks[0].body, Body::Mixer(Mixer::Attention(a)) if a.indexer.is_some()) && matches!(h.blocks[1].body, Body::Ffn(Ffn::Moe(_))));
+    assert_eq!((d.shapes["mtp.pre_fc_norm_hidden.weight"].clone(), d.shapes["mtp.fc_hidden.weight"].clone()), (vec![4 * 2560], vec![2560, 2560]));
     // (the n-gram table: 128 shards of the 16 tables' rows padded to 128)
     let shards = names.iter().filter(|n| n.contains("ngram_embedding.shard_")).count();
     let rows: usize = d.shapes.iter().filter(|(n, _)| n.contains("ngram_embedding.shard_")).map(|(_, s)| s[0]).sum();
@@ -892,6 +914,8 @@ fn condors_released_config() {
         assert!(e.contains(says), "{e}");
     };
     refused(&|t| t["indexer_kv_heads"] = 2.into(), "indexer_kv_heads");
+    refused(&|t| t["mtp"]["layer_types"] = serde_json::json!(["linear_attention"]), "MTP layer of type linear_attention");
+    refused(&|t| t["mtp"]["mtp_use_hidden_state_from_layer"] = 40.into(), "hidden state of a layer before the last");
     refused(&|t| t["indexer_budget"] = 2049.into(), "pools of 4");
     refused(&|t| _ = t.as_object_mut().unwrap().remove("indexer_head_dim"), "some are missing");
     refused(&|t| t["ple_layer_ids"] = serde_json::json!([4]), "ple_layer_ids 4");
