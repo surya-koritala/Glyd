@@ -666,6 +666,29 @@ mod tests {
         assert_eq!((p.held(0) - 32, p.table(1, 1).iter().filter(|&&b| b != 0).count()), (2, 2));
     }
 
+    /// A prompt swapped out between its passes and copied back (R4d) takes its room on to the prompt's end from what its next pass reads (`grow_from`), as it did when it was
+    /// let in: the window before its tokens, which was copied out, keeps the blocks `restore` gave it. The blocks of the end's own window (`grow`) would give that window back.
+    #[test]
+    fn a_prompt_copied_back_keeps_the_window_its_next_pass_reads() {
+        // (a window of 64 and a chunk of 32 kept behind the newest token; a prompt of 208 tokens, 126 of them run in passes of 32)
+        let mut p = Pages::new(&[200, 200], &[None, Some(64 + 32)], 2, 1024);
+        assert!(p.grow_from(0, 0, 209, 32));
+        for n in [32, 64, 96, 126] {
+            assert!(p.grow_from(0, n, 209, 32));
+        }
+        let (entries, floor) = p.held_entries(0, 126);
+        // (the next pass, tokens 126 to 158, reads from token 62: entry 3 on)
+        assert!(entries[1].contains(&3) && entries[1].contains(&7));
+        p.release(0);
+        assert!(p.restore(1, &entries, &floor));
+        assert!(p.grow_from(1, 126, 209, 32));
+        assert!(entries[1].iter().filter(|&&b| b >= 3).all(|&b| p.table(1, 1)[b] != 0), "an entry the next pass reads has no block");
+        // (the end's own window, tokens 113 on: entry 7 on, so the entries before it would go)
+        let mut q = Pages::new(&[200, 200], &[None, Some(64 + 32)], 2, 1024);
+        assert!(q.restore(0, &entries, &floor) && q.grow(0, 209));
+        assert!(q.table(0, 1)[3..7].iter().all(|&b| b == 0));
+    }
+
     /// A sequence swapped out and back (R4d): `held_entries` lists the entries it holds of its tokens' blocks (a sliding group's window alone, a shared start's floor), and `restore`
     /// gives an empty slot a block of its own for each of them and the same floors, so a step there reads what it did; where a group has too few blocks nothing changes.
     #[test]

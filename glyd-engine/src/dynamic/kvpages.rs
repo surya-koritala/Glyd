@@ -764,12 +764,14 @@ impl Dyn {
                 b.read(0, &mut v)?;
                 Ok(v)
             };
-            for (a, b) in [(0, 2), (1, 3)] {
+            // (one stream: the keys alone, as `kv12_back` reads it; nothing is unpacked into the values' room)
+            let streams = if rp.shape.one { 1 } else { 2 };
+            for (a, b) in [(0, 2), (1, 3)].into_iter().take(streams) {
                 differ += read(&outs[a])?.iter().zip(read(&outs[b])?).filter(|(x, y)| **x != *y).count();
             }
             let mut m = vec![0u32; k];
             mv.read(0, &mut m)?;
-            (pages, moved, bf16) = (pages + k, moved + m.iter().map(|&x| x as usize).sum::<usize>(), bf16 + 2 * k * per);
+            (pages, moved, bf16) = (pages + k, moved + m.iter().map(|&x| x as usize).sum::<usize>(), bf16 + streams * k * per);
         }
         Ok((pages, differ, moved, bf16))
     }

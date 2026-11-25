@@ -451,6 +451,7 @@ impl Dyn {
             let (ko, vo) = self.ring_off[r];
             let values = self.big.d.rings[r].values.then_some((self.vc.ptr + vo, v));
             for (base, host) in std::iter::once((self.kc.ptr + ko, k)).chain(values) {
+                // (an entry with no block, which a copy back's growth gave back, names block 0, that no step reads: its bytes go there, as many items as the layout counted)
                 for (j, &b) in entries[g].iter().enumerate().take(part.end).skip(part.start) {
                     let dev = base + (tab[b] as usize * per) as u64;
                     let h = sw.host(at, host + j * per);
@@ -492,7 +493,9 @@ impl Dyn {
         if !pg.pages.restore(slot, &img.entries, &img.floor) {
             return Ok(None);
         }
-        if !pg.pages.grow(slot, upto.max(img.n)) {
+        // (its room on to `upto` as `ModelStep::grow` takes a prompt's: from what its next pass reads. `upto` is the whole prompt's where it is still read in passes, and
+        // the blocks of `upto`'s own window would give back the window before its `n` tokens: the entries copied out, whose pages the copy back writes)
+        if !pg.pages.grow_from(slot, img.n, upto.max(img.n), self.chunk) {
             pg.pages.release(slot);
             return Ok(None);
         }
@@ -511,7 +514,9 @@ impl Dyn {
         let pg = self.paged.as_ref().expect("paged");
         for (g, e) in img.entries.iter().enumerate() {
             let tab = pg.pages.table(slot, g);
-            let blocks: Vec<i32> = e.iter().map(|&b| tab[b] as i32).collect();
+            // (an entry the growth above gave back, which no pass reads again: no block, and its page is not loaded. Block 0 is every such entry's: pages loaded
+            // into it together each gave its slab back, once in the pool's bitmap and once each in its count, and the pool then had fewer slabs than its count said)
+            let blocks: Vec<i32> = e.iter().map(|&b| if tab[b] == 0 { -1 } else { tab[b] as i32 }).collect();
             sw.slice::<i32>(at, lay.blocks[g], blocks.len()).copy_from_slice(&blocks);
         }
         let (items, _) = self.swap_items(sw, at, lay, &img.entries, slot, false, usize::MAX);
