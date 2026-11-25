@@ -139,7 +139,8 @@ impl Pieces {
 
 impl super::Dyn {
     /// Whether passes run their pieces as graphs: the engine captures graphs (no block of experts that reads the host), on one GPU, no layer in the computer's memory, no
-    /// corpus pass recording the routes, no probe, and not turned off (GLYD_ENGINE_PIECES=0, a check's, or a capture that failed).
+    /// expert cache (a prompt's chunk plans its calls on the host, which waits for the router's choices: no capture of it can be made), no corpus pass recording the routes,
+    /// no probe, and not turned off (GLYD_ENGINE_PIECES=0, a check's, or a capture that failed).
     fn pieces_on(&self) -> bool {
         static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let off = *OFF.get_or_init(|| crate::tune!("GLYD_ENGINE_PIECES").is_some_and(|v| v == "0") || crate::tune!("GLYD_OP_PROBE").is_some());
@@ -147,6 +148,7 @@ impl super::Dyn {
             && !self.graphs_off.get()
             && self.rgraph_on
             && self.big.ram.is_none()
+            && self.big.moe.iter().all(|b| b.store().is_none())
             && self.stage.first
             && self.stage.last
             && super::tp::comm().is_none()
@@ -172,12 +174,6 @@ impl super::Dyn {
         let on = self.pieces_on();
         self.graphs_off.set(off);
         on
-    }
-
-    /// Whether a capture of pieces failed and passes run eager from there (usercheck: an expert cache's chunk plans its calls on the host).
-    #[cfg(feature = "dev")]
-    pub(crate) fn pieces_refused(&self) -> bool {
-        self.pieces.off
     }
 
     /// Whether the engine replays graphs at all (the one-row step's is captured).

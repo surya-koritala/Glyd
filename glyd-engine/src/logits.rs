@@ -3199,20 +3199,18 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         let (before, rows_before) = (e.piece_replays.get(), e.rows_replays.get());
         let graphs = run(&mut e, ahead)?;
         let (played, rows_played) = (e.piece_replays.get() - before, e.rows_replays.get() - rows_before);
-        // (with an expert cache a pass of a prompt's chunk plans its calls on the host, which waits for the router's choices: no such pass is captured, and passes run eager)
-        let refused = e.pieces_refused() && !e.stores().is_empty();
         e.pieces_for_check(false, false);
         let (same_t, same_l) = same(&graphs, &eager);
-        let ok = same_t == prompts.len() && same_l == prompts.len() && (played > 0 || !pieces_on || ahead || refused);
+        let ok = same_t == prompts.len() && same_l == prompts.len() && (played > 0 || !pieces_on || ahead);
         println!(
             "{} graphs on against off: {same_t} of {} replies at once the eager passes', token for token, {same_l} logit for logit; {played} passes replayed their pieces, \
              {rows_played} decode steps their graph{}",
             if ok { "PASS" } else { "FAIL" },
             prompts.len(),
-            if refused {
-                " (the expert cache's chunks are planned on the host: no pass is captured in pieces)"
-            } else if pieces_on {
+            if pieces_on {
                 ""
+            } else if !e.stores().is_empty() {
+                " (no pieces with an expert cache: a prompt's chunk plans its calls on the host)"
             } else {
                 " (no pieces here)"
             }
