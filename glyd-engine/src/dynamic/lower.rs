@@ -1686,10 +1686,10 @@ mod tests {
     }
 
     /// Each form of the plain dense decoder the description builder reads (the random dense model of the logits checks; no q and k norms, a window on every
-    /// layer; q and k norms with a tied head; neither) lowers to the operations the dense engine ran (src/model.rs, removed): the input norm (then its add of the
-    /// residual), the q, k and v product, the attention kind, o, the norm with the residual, gate and up with SiLU, down, the final norm on the last rows; its
-    /// matrices the checkpoint's tensors stacked in that engine's order and sized by the description's shapes, which are the checkpoint's; its widths, heads,
-    /// rotary and norms the config's as the planner's sizes read it (`weights::Config`). A scaled rope and biases in the attention are refused, named.
+    /// layer; q and k norms with a tied head; neither) lowers to these operations, written out here by hand: the input norm (then its add of the residual),
+    /// the q, k and v product, the attention kind, o, the norm with the residual, gate and up with SiLU, down, the final norm on the last rows; its matrices
+    /// the checkpoint's tensors stacked in that order and sized by the description's shapes, which are the checkpoint's; its widths, heads, rotary and norms
+    /// the config's as the planner's sizes read it (`weights::Config`). A scaled rope and biases in the attention are refused, named.
     #[test]
     fn dense_lowered_from_each_form_of_its_config() {
         use super::super::attn::{QkNorm, RopeAt};
@@ -2020,7 +2020,7 @@ mod tests {
         crate::logits::qwen35_random(&dir).unwrap();
         let c = crate::qwen35::Config35::load(&dir).unwrap();
         let d = super::super::qwen35::lowered(&dir, &c, &super::super::Stage::whole(c.layers)).unwrap();
-        // (its tensors as kern35's loader read them, in its order: the description names the same, in the same order)
+        // (its tensors in the order the description names them)
         let packs: std::collections::HashMap<String, crate::qwen35::Pack35> = c.packs().into_iter().map(|p| (p.key.clone(), p)).collect();
         let item = |src: &crate::kern35::Src| match src {
             crate::kern35::Src::Pack(k) => Item { members: packs[k].parts.iter().map(|x| x.0.clone()).collect(), rows: packs[k].rows(), cols: packs[k].cols },

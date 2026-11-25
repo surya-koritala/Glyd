@@ -1055,9 +1055,38 @@ fn deepseek_v41_flashs_published_config_describes() {
     assert_eq!((m.experts, m.router.top_k, m.router.logit_scale, m.router.scale, m.expert.clamp), (384, 6, 1.0, 1.5, Some(10.0)));
 }
 
-/// The tiny DeepSeek-V4.1 of `v41_config`, its tensors made at random by role, on the CPU reference: its description runs as a model, CSA2's parts
-/// shared from block to block, the mHC weights handed on, Engram's tables read through a compressed vocabulary; the same tokens give the same logits
-/// twice, every one finite.
+/// DeepSeek-V4.1's Engram keys that are no model's are refused by name, on the path a user's config.json takes: a list of layers that is not one (it was read as
+/// no Engram layers, and the model described without them), an entry that is not a layer, an order under 2 (it underflowed), no heads or no head width (a
+/// division by zero), a vocabulary past any model's (the builder would keep finding primes).
+#[test]
+fn deepseek_v41s_engram_keys_that_are_no_models_are_refused() {
+    let with = |key: &str, v: serde_json::Value| {
+        let mut c = v41_config();
+        let tc = if c.get("text_config").is_some() { &mut c["text_config"] } else { &mut c };
+        assert!(tc.get(key).is_some(), "{key} is a key of the fixture");
+        tc[key] = v;
+        describe(&c).err().unwrap_or_else(|| panic!("{key}: described")).msg
+    };
+    for (key, v, says) in [
+        ("engram_layer_ids", serde_json::json!("1, 5"), "engram_layer_ids"),
+        ("engram_layer_ids", serde_json::json!([1, "five"]), "engram_layer_ids"),
+        ("engram_max_ngram_size", serde_json::json!(0), "engram_max_ngram_size 0"),
+        ("engram_max_ngram_size", serde_json::json!(1), "engram_max_ngram_size 1"),
+        ("engram_max_ngram_size", serde_json::json!(65), "engram_max_ngram_size 65"),
+        ("engram_n_heads", serde_json::json!(0), "engram_n_heads 0"),
+        ("engram_head_dim", serde_json::json!(0), "engram_head_dim 0"),
+        ("engram_vocab_size", serde_json::json!(1u64 << 41), "engram_vocab_size"),
+        ("engram_compressed_vocab_size", serde_json::json!(0), "engram_compressed_vocab_size 0"),
+    ] {
+        let e = with(key, v.clone());
+        assert!(e.contains(says), "{key} = {v}: {e}");
+    }
+}
+
+/// A smoke test, with no expected value: the tiny DeepSeek-V4.1 of `v41_config`, its tensors made at random by role, runs on the CPU reference as a model
+/// (CSA2's parts shared from block to block, the mHC weights handed on, Engram's tables read through a compressed vocabulary), the same tokens give the same
+/// logits twice, and every one is finite. It would pass with those parts wired wrongly end to end: what holds each part's values is its own test by hand
+/// (`reference::comp`, `reference::ngram`, the streams' in `reference`), and nothing here holds the whole model's logits to another implementation's.
 #[test]
 fn deepseek_v41s_tiny_model_runs_on_the_reference() {
     use super::describe::Source;

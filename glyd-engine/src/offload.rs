@@ -856,7 +856,7 @@ impl Stats {
     }
 }
 
-/// What the store did for one of its layers over a step (`ExpertStore::end_step`) or over a run (`ExpertStore::totals`; docs/design/runtime.md §6): the layer's calls and their rows and pairs, the experts they asked
+/// What the store did for one of its layers over a step (`ExpertStore::end_step`) or over a run (`process_totals`; docs/design/runtime.md §6): the layer's calls and their rows and pairs, the experts they asked
 /// for (each once a call), those found in a place, the misses copied in before the products (`copies`) and those whose pairs the host computed (`host` experts, `host_pairs` pairs), the pairs left out for their small
 /// weights, the waves past a call's first; the bytes read from the computer's memory for the misses (`copy_bytes` over the link, `host_bytes` by the host's kernels: an expert's bytes once for all its rows where the
 /// kernel groups its pairs by expert, once a pair where it does not), and for the experts copied behind the calls for later ones (promotions, hints: `ahead`, `ahead_bytes`); the copy stream's time for the layer's
@@ -1596,9 +1596,8 @@ struct Inner {
     frozen: bool,
     // the next `run_parts`' wait: a mapped host word the front's last kernel moves to the value given (`arm_ready`), looked at instead of the stream's synchronize
     ready: Option<(usize, u32)>,
-    // each layer's stats of the last step ended (`end_step`) and of every step since the store was made or made cold
+    // each layer's stats of the last step ended (`end_step`)
     last: Vec<LayerStats>,
-    totals: Vec<LayerStats>,
 }
 
 /// The computer's memory for the experts: `bytes` of the `total` bytes of all the experts of all the layers. Where it is less than the total, a group of a layer is given its share of it (`ExpertStore::host_slots`) and holds
@@ -2272,7 +2271,6 @@ impl ExpertStore {
                 frozen: false,
                 ready: None,
                 last: Vec::new(),
-                totals: Vec::new(),
             }),
         })
     }
@@ -2732,7 +2730,7 @@ impl ExpertStore {
         if let Some(c) = inner.cuda.as_mut() {
             c.layer_ms.clear();
         }
-        (inner.last, inner.totals) = (Vec::new(), Vec::new());
+        inner.last = Vec::new();
         Ok(())
     }
 
@@ -3847,8 +3845,8 @@ impl ExpertStore {
         body(Stage::Sum, 0, &Hybrid { gpu: any, ids: call.sum_ids, extra: call.part })
     }
 
-    /// A step's end (the engine's, after the step's results are read): the copies that have run are counted, and each layer's stats since the step began become the last step's (`last_step`), are added to the
-    /// store's (`totals`) and to the process's (`process_totals`, the server's /stats). Returns the step's, by the layer's number in the store (zeros for a number no layer has). Copies still running (promotions
+    /// A step's end (the engine's, after the step's results are read): the copies that have run are counted, and each layer's stats since the step began become the last step's (`last_step`) and are added to the
+    /// process's (`process_totals`, the server's /stats). Returns the step's, by the layer's number in the store (zeros for a number no layer has). Copies still running (promotions
     /// behind the last layers) count in the step that sees them done. A step of no call (an end asked for twice) leaves the last step as it was.
     pub fn end_step(&self) -> Result<Vec<LayerStats>> {
         let mut guard = self.inner.borrow_mut();
@@ -3892,7 +3890,6 @@ impl ExpertStore {
             }
             to.iter_mut().zip(&step).for_each(|(a, b)| a.add(b));
         };
-        add(&mut inner.totals);
         add(&mut TOTALS.lock().unwrap_or_else(|e| e.into_inner()));
         if step.iter().any(|l| l.calls > 0) {
             inner.last = step.clone();
@@ -3903,11 +3900,6 @@ impl ExpertStore {
     /// Each layer's stats of the last step ended (`end_step`).
     pub fn last_step(&self) -> Vec<LayerStats> {
         self.inner.borrow().last.clone()
-    }
-
-    /// Each layer's stats of every step ended since the store was made (or made `cold`).
-    pub fn totals(&self) -> Vec<LayerStats> {
-        self.inner.borrow().totals.clone()
     }
 
     /// The bytes of an expert of the layers added last (the codes and scales of all its matrices).
@@ -5652,7 +5644,7 @@ mod tests {
 
     /// The plan on the GPU (src/devplan.rs, kernels/moe.cu xp_plan: a clock over the places) over the record's decode traces, every miss copied: the share of pairs it finds in places against the
     /// store's least-recently-used cache's, a row a step and 8 rows a step (generations side by side, as `replay_rows`). The clock finds 0.5 to 0.6 points fewer at one row (60.7, 72.8 and 79.4%
-    /// against 61.3, 73.3 and 79.9), within 2.5 points as checked; at 8 rows 5.1 points more to 0.6 fewer (printed).
+    /// against 61.3, 73.3 and 79.9): held within 1 point; at 8 rows 5.1 points more to 0.6 fewer: held to no more than 1 point fewer.
     #[test]
     fn the_plan_on_the_gpu_over_the_traces() {
         let &(_, layers, k, ref ids) = trace();
@@ -5680,7 +5672,9 @@ mod tests {
                     100.0 * lru
                 );
                 if rows == 1 {
-                    assert!((clock - lru).abs() < 0.025, "{cap} places: {clock:.3} against {lru:.3}");
+                    assert!((clock - lru).abs() < 0.01, "{cap} places: {clock:.3} against {lru:.3}");
+                } else {
+                    assert!(clock >= lru - 0.01, "{cap} places, {rows} rows: {clock:.3} against {lru:.3}");
                 }
             }
         }

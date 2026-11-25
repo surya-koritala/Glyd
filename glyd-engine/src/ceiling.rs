@@ -841,9 +841,10 @@ mod tests {
     }
 
     /// The cached step against the 4080 SUPER's measured runs (storebench, 2026-11-23: random DeepSeek-V4 of 16 layers of 64 experts with 32 places, Kimi-K3 of 3 layers of 256 with 128, 18 GB each), its fixed
-    /// time fitted to each model's copy run and its auto run predicted: within 10% at 1 and 8 rows (the auto runs' copies queue behind the promotions of the layer before, which wait for its products; the formula
-    /// before counted the copy stream's whole time once and was 13.4% under DeepSeek-V4's 8 rows). These lines are averages without `whole`: at 32 rows a DeepSeek-V4 layer copied some of its calls whole in waves and
-    /// computed others on the host, which their average does not say (storebench's lines of totals do).
+    /// time fitted to each model's copy run and its auto run predicted: within 10% at 1 and 8 rows, and at Kimi-K3's 32 (the auto runs' copies queue behind the promotions of the layer before, which wait for its
+    /// products; the formula before counted the copy stream's whole time once and was 13.4% under DeepSeek-V4's 8 rows). Not held: DeepSeek-V4 at 32 rows, which the formula predicts 21.1% under (225.9 ms against
+    /// 286.5 measured; printed). These lines are averages without `whole`: at 32 rows a DeepSeek-V4 layer copied some of its calls whole in waves and computed others on the host, which their average does not
+    /// say (storebench's lines of totals do).
     #[test]
     fn the_cached_step_predicts_the_measured_auto_runs() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/storebench");
@@ -851,7 +852,7 @@ mod tests {
         let shares = (b.ours.0, b.ours.1, b.ours.2);
         let runs = |f: &str| -> Vec<Run> { std::fs::read_to_string(format!("{dir}/{f}")).unwrap().lines().map(|l| Run::parse(l).unwrap()).collect() };
         let s = Step::default();
-        let mut bad = Vec::new();
+        let (mut bad, mut held) = (Vec::new(), 0);
         for m in ["dsv4", "kimi"] {
             let pts: Vec<(usize, f64)> = runs(&format!("{m}-4080s-copy.jsonl")).iter().map(|r| (r.rows, unexplained(&s, b, shares, r))).collect();
             let fixed = Fixed::fit(&pts);
@@ -859,12 +860,15 @@ mod tests {
                 let ours = cached_step(&s, b, shares, &r, fixed).1;
                 let e = ours / r.step_ms - 1.0;
                 eprintln!("{m} auto {} rows: ours {ours:.2} ms, measured {:.2} ms ({:+.1}%), fixed {fixed:?}", r.rows, r.step_ms, 100.0 * e);
-                if r.rows <= 8 {
+                // (every line but DeepSeek-V4's 32 rows, whose average hides the calls copied whole: see above)
+                if r.rows <= 8 || m == "kimi" {
+                    held += 1;
                     bad.extend((e.abs() >= 0.10).then(|| format!("{m} at {} rows: {:+.1}%", r.rows, 100.0 * e)));
                 }
             }
         }
         assert!(bad.is_empty(), "{bad:?}");
+        assert_eq!(held, 5, "the 1 and 8 row lines of both models and Kimi-K3's 32");
     }
 
     /// Kimi-K3's packs as one product each, sliced as one whatever each tensor's size: a delta attention layer's q, k, v, gate, f_a and beta, a latent

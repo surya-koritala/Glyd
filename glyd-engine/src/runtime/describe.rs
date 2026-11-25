@@ -2239,11 +2239,11 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
         lagged: true,
     };
     let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
+    // (a list of counts: one that is not a list, or holds an entry that is not a count, is refused by name, never read as the entries that are)
     let list = |x: &str| -> Result<Vec<usize>> {
-        k.raw(x)
-            .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as usize)).collect())
-            .ok_or_else(|| Error(format!("{mt}: no {x}")))
+        let v = k.raw(x).ok_or_else(|| Error(format!("{mt}: no {x}")))?;
+        let a = v.as_array().ok_or_else(|| Error(format!("{mt}: {x} = {v} is not a list")))?;
+        a.iter().map(|e| e.as_u64().map(|n| n as usize).ok_or_else(|| Error(format!("{mt}: {x} = {v}: {e} is not a count")))).collect()
     };
     let ratios = list("compress_ratios")?;
     if ratios.len() < layers || ratios[..layers].iter().any(|r| *r > 2) {
@@ -2293,14 +2293,28 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
     let mut comp_rope = rope(&comp_m, rd, max_pos, &format!("{mt} rope_scaling"))?;
     comp_rope.style = RopeStyle::Interleaved;
     // Engram's layers, each a block before the layer's attention: its tables the next primes past engram_vocab_size, their rows engram_num_embeddings
-    let engram: Vec<usize> = list("engram_layer_ids").unwrap_or_default();
+    // (no engram_layer_ids: a model with no Engram layers; one that is there and is not a list of layers is refused, not read as none)
+    let engram: Vec<usize> = match k.raw("engram_layer_ids") {
+        None => Vec::new(),
+        Some(_) => list("engram_layer_ids")?,
+    };
     let engram_kind = |place: usize, layer: usize| -> Result<Ngram> {
+        let (order, heads, head_dim) = (k.usize("engram_max_ngram_size")?, k.usize("engram_n_heads")?, k.usize("engram_head_dim")?);
+        let (base, vocab) = (k.usize("engram_vocab_size")? as u64, k.usize("engram_compressed_vocab_size")?);
+        // (sizes that are no model's: an order under 2 has no table, no heads or head width divides by zero, and past these the builder would keep finding
+        // primes; the bounds are the other n-gram form's, above)
+        let tables = order.saturating_sub(1).saturating_mul(heads);
+        if order < 2 || order > 64 || heads == 0 || head_dim == 0 || vocab == 0 || base == 0 || base > 1 << 40 || tables.saturating_mul(place + 1) > 4096 {
+            return err(format!(
+                "{mt}: Engram of engram_max_ngram_size {order}, engram_n_heads {heads}, engram_head_dim {head_dim}, engram_vocab_size {base}, engram_compressed_vocab_size {vocab}: an order of 2 to 64, heads and widths above 0, a vocabulary up to 2^40 and at most 4096 tables"
+            ));
+        }
         let n = Ngram {
-            order: k.usize("engram_max_ngram_size")?,
-            heads: k.usize("engram_n_heads")?,
-            dim: (k.usize("engram_max_ngram_size")? - 1) * k.usize("engram_n_heads")? * k.usize("engram_head_dim")?,
-            base: k.usize("engram_vocab_size")? as u64,
-            vocab: k.usize("engram_compressed_vocab_size")?,
+            order,
+            heads,
+            dim: (order - 1) * heads * head_dim,
+            base,
+            vocab,
             seed: 10007 * layer as u64,
             index: place,
             eos: k.usize("engram_pad_token_id")? as u32,

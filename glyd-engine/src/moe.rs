@@ -23,7 +23,6 @@ use crate::offload::CPU_TOKENS;
 use crate::weights::PackBuf;
 use glyd_gpu::pack::{Tiered, FP4R_TAG, FP4_TAG, INT4_STEP_BYTES, INT4_TAG, INT5_STEP_BYTES, INT5_TAG, INT6_STEP_BYTES, INT6_TAG};
 
-// The kernels' names: those the .cu sources give them, in every build (kname!).
 /// Experts a router takes (moe_select8, 16 and 32: 256, 512 and 1,024), and choices a token has.
 pub const MAX_EXPERTS: usize = 1024;
 pub const MAX_TOPK: usize = 32;

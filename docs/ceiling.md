@@ -173,7 +173,8 @@ plans, its copies start when the copy stream has run what is queued before them,
 after its products; the host's pairs from the plan on; the next layer after the products, the host's pairs and the rest of the
 layer. A call copied whole has the host wait for its copies and products. The fixed time a layer goes with the products (the
 copies behind them wait for it), the time a row with the rest of the layer. On the lines above, calibrated on each model's copy run
-(`ceiling::tests::the_cached_step_predicts_the_measured_auto_runs`, with the GPU's dense reads left to the fixed time):
+(`ceiling::tests::the_cached_step_predicts_the_measured_auto_runs`, with the GPU's dense reads left to the fixed time; the test holds
+each line to 10% but DeepSeek-V4's at 32 rows, which it prints):
 
 | model | rows | measured | the formula before | now |
 |---|---|---|---|---|

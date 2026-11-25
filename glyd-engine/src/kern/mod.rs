@@ -15,13 +15,6 @@ use crate::ffi::{Result, Stream};
 use crate::launch;
 use crate::sampler::{Need, Top};
 
-// The kernels' names: those kernels/engine.cu gives them, in every build.
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
-
 /// Candidates the sampling kernel returns for a row of logits (kernels/engine.cu).
 pub const TOPK: usize = 64;
 
@@ -110,9 +103,10 @@ pub struct Kern {
     kv12_rows: crate::kt::kv12_rows,
     row_tables: crate::kt::row_tables,
     swap_copy: crate::kt::swap_copy,
-    /// None where the kernels have none (a step is then not launched before the one before it is read).
+    /// None in a table made without it (a step is then not launched before the one before it is read); `load` always has it.
     step_ids: Option<crate::kt::step_ids>,
-    /// A whole row's draw's buckets and a bucket's tokens (`Sampler::sample_hist`); None where the kernels have none (the row is then read).
+    /// A whole row's draw's buckets and a bucket's tokens (`Sampler::sample_hist`); None in a table made without them (the row is then read); `load` always
+    /// has them.
     hist: Option<(crate::kt::exp_hist_bf16, crate::kt::hist_bucket_bf16)>,
     expsum: crate::kt::expsum_bf16,
     logsumexp: crate::kt::logsumexp_bf16,
@@ -142,8 +136,9 @@ impl Kern {
             kv12_rows: dev.typed()?,
             row_tables: dev.typed()?,
             swap_copy: dev.typed()?,
-            step_ids: dev.typed::<crate::kt::step_ids>().ok(),
-            hist: dev.typed::<crate::kt::exp_hist_bf16>().ok().zip(dev.typed::<crate::kt::hist_bucket_bf16>().ok()),
+            // (kernels of every build of kernels/engine.cu: one that does not load is this load's error, not a table without it)
+            step_ids: Some(dev.typed()?),
+            hist: Some((dev.typed()?, dev.typed()?)),
             expsum: dev.typed()?,
             logsumexp: dev.typed()?,
             read_stream: dev.typed()?,
@@ -162,7 +157,7 @@ impl Kern {
         let want = if m >= 1536 {
             // (a long prompt: the big tile, or the smaller one where the big tile's last wave of blocks leaves the multiprocessors more idle: a block a multiprocessor, the work of a wave its tile's rows by columns;
             // the same sums either way. 128 x 128 for the 4,096-column products of a 2,000-token prompt on 80 multiprocessors: 7 waves of the smaller against 4 of the bigger, 6% of the pass)
-            let (big, small) = (kname!("gemm3_256x128_s3"), kname!("gemm3_128x128_s4"));
+            let (big, small) = ("gemm3_256x128_s3", "gemm3_128x128_s4");
             let cost = |name: &str| {
                 self.plain.iter().find(|t| t.name == name && fits(t)).map(|t| {
                     let blocks = m.div_ceil(t.bm as usize) * (n / t.bn.max(1) as usize);
@@ -174,9 +169,9 @@ impl Kern {
                 _ => big,
             }
         } else if n >= 16384 {
-            kname!("gemm3_128x256_b64_s2")
+            "gemm3_128x256_b64_s2"
         } else {
-            kname!("gemm3_128x128_b64_s3")
+            "gemm3_128x128_b64_s3"
         };
         self.plain.iter().position(|t| t.name == want && fits(t)).or_else(|| self.plain.iter().position(fits)).unwrap_or(0)
     }
@@ -214,10 +209,6 @@ impl Kern {
         launch!(t.k, [tiles, 1, 1], [t.threads, 1, 1], smem t.smem, s; x, w, y, m, n, k)
     }
 
-    pub fn tile_name(&self, i: usize) -> &'static str {
-        self.plain[i].name
-    }
-
     /// Y [m, n] = X [m, k] W^T (bf16 in and out, fp32 sums), W [n, k] row-major: the engine's own product, as cuBLAS's for a decoded matrix. n a multiple of the tile's columns, k of its step.
     ///
     /// # Safety
@@ -242,7 +233,7 @@ impl Kern {
             Some(t) if self.fused.iter().any(|x| x.name == t) => t,
             _ if m >= 1536 => {
                 // (a long prompt: of the two tiles of the same size, the one that leaves the multiprocessors less idle in the last wave of blocks: a block a multiprocessor, the same sums either way)
-                let (a, b) = (kname!("gemm3f_256x128_s3"), kname!("gemm3f_128x256_b64_s2"));
+                let (a, b) = ("gemm3f_256x128_s3", "gemm3f_128x256_b64_s2");
                 let waves = |name: &str| {
                     self.fused
                         .iter()
@@ -255,7 +246,7 @@ impl Kern {
                 }
                 .to_string()
             }
-            _ => kname!("gemm3f_128x256_b64_s2").to_string(),
+            _ => "gemm3f_128x256_b64_s2".to_string(),
         };
         let fits = |t: &Tile| (n as u32).is_multiple_of(t.bn) && (k as u32).is_multiple_of(t.bk);
         let Some(t) = self.fused.iter().find(|t| t.name == want && fits(t)).or_else(|| self.fused.iter().find(|t| fits(t))) else {
@@ -316,7 +307,8 @@ impl Kern {
         launch!(self.rmsnorm_add, [rows, 1, 1], [t, 1, 1], s; x, y, w, out, k, eps)
     }
 
-    /// Query and key heads of m qkv rows: norm and rotary embedding.
+    /// Query and key heads of m qkv rows: norm and rotary embedding. `kcheck` alone launches it (against torch's, tools/kcheck.py): no engine path has since the
+    /// attention became the layer kind's operation (src/dynamic/attn.rs, whose kernels norm and turn the heads themselves).
     ///
     /// # Safety
     /// As `copy_row`.
@@ -709,14 +701,14 @@ pub(crate) fn pf_kib(v: Option<&str>) -> Result<[usize; 3]> {
 mod tests {
     use super::*;
 
-    /// Every build looks its kernels up by the names engine.cu gives them (release builds once renamed them gk_N); no two tiles go by one name.
+    /// No two tiles go by one name, and each tile's name is a kernel kernels/engine.cu defines (the launch's type is the build's, made from that source; the name
+    /// is what a product's choice is logged and overridden by).
     #[test]
-    fn kernel_names_are_the_sources_in_every_build() {
+    fn the_tiles_names_are_kernels_of_the_source_and_no_two_are_one() {
+        const SRC: &str = include_str!("../../kernels/engine.cu");
         let tiles: Vec<&str> = PLAIN.iter().chain(FUSED.iter()).map(|t| t.0).collect();
-        for n in
-            tiles.iter().copied().chain([kname!("copy_row"), kname!("kv_hist"), kname!("prefill_attn_w4_b64"), kname!("topk64_bf16"), kname!("expsum_bf16")])
-        {
-            assert!(!(n.starts_with("gk_") && n[3..].bytes().all(|b| b.is_ascii_digit())), "{n}");
+        for n in &tiles {
+            assert!(SRC.contains(&format!(" {n}(const bf16* X, const bf16* W, bf16* Y,")), "{n} is not a product kernel of kernels/engine.cu");
         }
         assert_eq!(tiles.iter().collect::<std::collections::HashSet<_>>().len(), tiles.len());
     }

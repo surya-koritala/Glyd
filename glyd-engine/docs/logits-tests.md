@@ -8,8 +8,17 @@ A fixture holds fixed tokens: a prompt of 24, 12 decode steps (each fed the toke
 
 | Bound | Meaning |
 | :--- | :--- |
-| `bits` | every logit of every row equal to the bit (the hash). For an engine's own recorded output on one GPU generation (`gpu`: sm89): the lossless path promises the same bits run to run, and a change that moves one is a change to look at. Other GPU generations skip these. |
+| `bits` | every logit of every row equal to the bit (the hash). For an engine's own recorded output on one GPU generation (`gpu`: sm89, sm86): the lossless path promises the same bits run to run, and a change that moves one is a change to look at. A GPU of another generation skips the file; a case with no fixture its GPU can be held to fails. |
 | `kl` | KL divergence of the reference's softmax from the engine's, over the reference's 64 largest tokens and the rest as one bin: at most `max` in every row and `mean` on average, and the engine's best token the reference's wherever the reference's lead over its second is past 0.1 (a lead within the roundings is a coin's toss), `top1` of those at least. |
+
+## A reference or a pin
+
+A fixture is one of two things, and `logitscheck` says which on every line and counts them apart in its last lines ("N held to a reference, M pinned, K not held"):
+
+- A reference (`CASE.json.gz`, no `gpu`): another implementation's numbers, transformers or a CPU reference. A line within its bound starts `PASS`: the engine's logits are right to that bound.
+- A pin (`CASE.smNN[.LEVEL].json.gz`, with a `gpu`): the engine's own output as that GPU generation recorded it. A line whose bits are unchanged starts `PIN`: the logits have not moved since the recording. It says nothing of whether they were right when recorded.
+
+A case with pins alone is printed as `pinned only`, never as within bounds: `gemma4` and `glm` today, which have no reference in `tests/logits` (their layers are held to the CPU reference kind by kind by `kindcheck`, not their logits). `packcheck --engine` reads no pin: it holds each saved directory to the engine's own run of the same model packed as it loads in the same layout, made in the same run, bit for bit, and to the case's reference where one bounds the level.
 
 ## The cases
 
@@ -21,10 +30,12 @@ A fixture holds fixed tokens: a prompt of 24, 12 decode steps (each fed the toke
 | `qwen35moe` | Qwen3.5 family with experts (softmax-routed, a gated shared expert) | random | the layer kinds' CPU reference | penguin (KL) |
 | `muse` | Muse Spark | random, 4 layers, 16 experts | the CPU reference, `src/muse_ref.rs` | penguin (KL) |
 | `kimi` | Kimi-K3 (delta attention, latent attention, MoE) | random, 8 layers | `src/kimi_ref.rs` | penguin (KL) |
+| `kimi-dsa` | Kimi-K3 family, the newer config's sparse attention (an indexer of a key a token) | random | the layer kinds' CPU reference | penguin (KL) |
 | `deepseek-v4` | DeepSeek-V4 | random, 5 layers | `src/dsv4_ref.rs` | penguin (KL) |
-| `gemma4` | Gemma 4 (sliding, global K = V, soft-capped head) | random, 4 layers, heads 256 and 512 | the engine's own bits | penguin (bits) |
+| `gemma4` | Gemma 4 (sliding, global K = V, soft-capped head) | random, 4 layers, heads 256 and 512 | none: the engine's own bits, a pin | penguin (bits) |
+| `gemma4-kv` | Gemma 4's E2B/E4B layers (KV sharing across layers, the double-wide MLP) | random | the CPU reference, `src/gemma4kv_ref.rs` | penguin (KL) |
 | `nemotron-h` | Nemotron-H (Mamba-2, attention, MoE) | random, 4 layers | the layer kinds' CPU reference; the engine's own bits | penguin (KL); penguin, kestrel (bits) |
-| `glm` | GLM-5.3-Flash | random toy, experts at kestrel | the engine's own bits | kestrel (bits) |
+| `glm` | GLM-5.3-Flash | random toy, experts at kestrel | none: the engine's own bits, a pin | kestrel (bits) |
 | `qwen4x` | Qwen3.8-Flash-Next | random tiny of `tools/qwen4x_ref.py`'s layout | the layer kinds' CPU reference; the engine's own bits | penguin (KL); kestrel (bits) |
 | `deepseek-v41` | DeepSeek-V4.1 | random | the layer kinds' CPU reference (`--cpu-ref` alone: the family is not on the executor yet) | penguin (KL) |
 
@@ -38,7 +49,7 @@ Only models released in the last six months are tested, and those are all larger
     glyd-engine logitsbound FIXTURE LEVEL=BOUND...                              a fixture's bounds replaced
     python3 glyd-engine/tools/logits_ref_hf.py CASE MODEL_ID OUT.json.gz [--bound LEVEL=kl:...]    a fixture from transformers (on the project's GPU machine)
 
-Record on the project's GPU machine (with no CI job running), in the CI image, with the same build as the job. To record the engine's own bits for a new GPU generation, run `logitsrecord CASE --from engine --out tests/logits` there; the file is named `CASE.smNN.json.gz`.
+Record on the project's GPU machine (with no CI job running), in the CI image, with the same build as the job. To record the engine's own bits for a new GPU generation, run `logitsrecord CASE --from engine --out tests/logits` there; the file is named `CASE.smNN.json.gz` (a lossy level's: `--level LEVEL --out tests/logits/CASE.smNN.LEVEL.json.gz`). Such a file is a pin: record it only from an engine whose logits a reference or the layer kinds' check already holds, and never to make a failing line pass.
 
 ## Adding a model
 

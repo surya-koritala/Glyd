@@ -22,7 +22,6 @@ use crate::moe::MoeCfg;
 use crate::weights::upload_bytes;
 use glyd_gpu::codebook::{cb_strides, CbRows};
 
-// The kernels' names: those the .cu sources give them, in every build (kname!).
 /// Neurons a block of `hbg_up2` and `hbg_up3` takes, outputs a block of `hbg_down2` and `hbg_down3` takes (kernels/moe_hbg.cu defines the same: a test holds them equal).
 pub const UP_ROWS: usize = 64;
 pub const DOWN_OUT: usize = 128;
