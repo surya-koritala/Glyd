@@ -180,7 +180,7 @@ impl Facts {
         let hub_state = if hub::offline() {
             HubState::Offline
         } else {
-            match h.list("Qwen/Qwen3-0.6B", "main") {
+            match h.list("Qwen/Qwen3.5-0.8B", "main") {
                 Ok(_) => HubState::Reachable(h.endpoint().to_string()),
                 Err(e) => HubState::Unreachable(h.endpoint().to_string(), e.to_string()),
             }
