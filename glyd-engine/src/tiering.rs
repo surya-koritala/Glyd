@@ -1,7 +1,8 @@
 //! Expert tiering for every mixture of experts on the dynamic route (R12, #232; docs/design/runtime.md §6): a layer's experts in the expert cache (src/offload.rs `ExpertStore`), places for the busiest of them on the GPU and
 //! every one in the computer's memory, for the formats whose experts are each the same bytes (`moe::ExpertStack::pooled`: the block layouts, the FP4 layouts as DeepSeek-V4 and Kimi-K3 release them). `MoeLayer::with_cache`
-//! runs the layer over the places; a family's loader builds the stacks and the cache here (`cached_stacks`; FP8 experts as released, GLM-5.3-Flash's, each packed on its own: `cached_f8`; a lossless stack in the tiered layout,
-//! Muse Spark's, its one pack cut per expert: `cached_tiered`). Hummingbird's two bit widths a layer are src/hbg_store.rs's.
+//! runs the layer over the places; the Moe kind's block builds the stacks and the cache here for every family's loader (src/dynamic/experts.rs `held`: a block level's experts, `cached_stacks`; FP8 experts as released,
+//! GLM-5.3-Flash's and GLM-5.3's, each packed on its own: `cached_f8`; a lossless bf16 stack in the tiered layout, Muse Spark's and the Qwen3.5 layout with experts', its one pack cut per expert: `cached_tiered`).
+//! Hummingbird's two bit widths a layer are src/hbg_store.rs's.
 
 use crate::f8::{F8Experts, F8Places};
 use crate::ffi::{err, Result};

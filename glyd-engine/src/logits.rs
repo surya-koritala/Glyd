@@ -2900,12 +2900,12 @@ pub fn make_model(a: &crate::args::Args) -> Result<()> {
             // family's chat template where one is made: Qwen's for the Qwen3.5 layout's and Qwen3.8-Flash-Next's cases, GLM-5.3's for its layout's)
             if a.has("servable") {
                 let template = match c.id {
-                    "qwen35" | "qwen4x" | "qwen4x-s2" => include_str!("../tests/fixtures/chat_qwen38_tools.jinja"),
+                    "qwen35" | "qwen35moe" | "qwen4x" | "qwen4x-s2" => include_str!("../tests/fixtures/chat_qwen38_tools.jinja"),
                     "glm-dsa" | "glm-dsa-f8" => include_str!("../tests/fixtures/chat_glm53_tools.jinja"),
                     id => {
                         return err(format!(
-                            "--servable: only the cases whose family's chat template is made (qwen35, qwen4x, qwen4x-s2, glm-dsa, glm-dsa-f8; not {id})"
-                        ))
+                        "--servable: only the cases whose family's chat template is made (qwen35, qwen35moe, qwen4x, qwen4x-s2, glm-dsa, glm-dsa-f8; not {id})"
+                    ))
                     }
                 };
                 write_serving_files(dir, template)?;
@@ -4212,6 +4212,17 @@ mod tests {
                 assert!(form != Rounded::None || v.ok, "{case}: the chunked form in fp32 is past the kind's bound of the recurrence: {:?}", v.notes);
             }
         }
+    }
+
+    /// The Qwen3.5 layout with experts is held at every level to the bound the Qwen3.5 layout's fixture gives that level (the dense layout's): a family has no
+    /// bound of its own, and its lossy levels' were set from that fixture before any run of the case at them.
+    #[test]
+    fn the_qwen35_layout_with_experts_has_the_layouts_bounds() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits");
+        let (moe, dense) = (Fixture::read(&dir.join("qwen35moe.json.gz")).unwrap(), Fixture::read(&dir.join("qwen35.json.gz")).unwrap());
+        let levels = |f: &Fixture| f.bounds.iter().map(|b| (b.level.clone(), format!("{:?}", b.bound))).collect::<Vec<_>>();
+        assert_eq!(levels(&moe), levels(&dense));
+        assert_eq!(moe.bounds.iter().map(|b| b.level.as_str()).collect::<Vec<_>>(), ["penguin", "kestrel", "swift", "wren"]);
     }
 
     #[test]
