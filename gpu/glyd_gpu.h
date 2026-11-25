@@ -66,8 +66,10 @@ typedef hipStream_t cudaStream_t;
  * 22 from glyd_gpu_kv_image_bytes, glyd_gpu_kv_save and glyd_gpu_kv_load, pages moved whole to another place and back (their escape chunks and raw slabs lent anew);
  * 23 from glyd_gpu_kv_decode_workspace's partial outputs on a 16-byte line (the workspace up to 8 bytes larger: an odd count of partials faulted before);
  * 24 from glyd_gpu_mma_moe_as, glyd_gpu_mma_moe_placed_as and glyd_gpu_mma12_moe_as (and their workspaces): the experts' product of a part of a layer
- *    (a GPU's slice of each expert's rows, an expert cache's places) cut as the whole layer's, so each row's sum is the whole layer's, bit for bit. */
-#define GLYD_GPU_API_VERSION 24
+ *    (a GPU's slice of each expert's rows, an expert cache's places) cut as the whole layer's, so each row's sum is the whole layer's, bit for bit;
+ * 25 from the experts' products splitting K by the layer's shape alone (an expert's whole rows and the layer's experts), never by the pairs a call holds:
+ *    a pair's sum is the same whatever shares its call (other bits than 24's where a call of few pairs split K; the workspaces no larger). */
+#define GLYD_GPU_API_VERSION 25
 
 #ifdef __cplusplus
 extern "C" {
