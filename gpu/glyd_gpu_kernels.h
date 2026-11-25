@@ -1011,6 +1011,50 @@ __device__ __forceinline__ void mma_unpack_body(Fmt f, int64_t K, int64_t row0, 
     }
 }
 
+// Rows of W [., K] by id (an embedding's lookup; the ids on the device, so a batch's lookup is one launch whatever they
+// are, and a CUDA graph can hold it) into out [n, K]: a warp a (row, step), the step decoded as mma_unpack_kernel decodes
+// it, and only the picked row's 16 weights written. Row r of its block of 64 is row 8 m + g of the step (r = 8 m + g), in
+// the lanes 4 g to 4 g + 3: R[2 m] and R[2 m + 1] of each, its columns 2 t, 2 t + 1 and 8 + 2 t, 9 + 2 t. An id outside
+// [0, rows) has no row: zeros (nothing is read).
+template <class Fmt>
+__device__ __forceinline__ void mma_rows_body(Fmt f, int64_t K, int64_t rows, const int64_t* __restrict__ ids, int64_t n, uint16_t* __restrict__ out) {
+    __shared__ uint32_t tab[Fmt::kTable ? 256 : 1];
+    if constexpr (Fmt::kTable) fill_groups(tab);
+    __syncthreads();
+    __shared__ uint4 scratch[8][Fmt::kTable ? S2_BYTES / 16 : 1];
+    int64_t KS = K / 16, unit = (blockIdx.x * (int64_t)blockDim.x + threadIdx.x) >> 5;
+    if (unit >= n * KS) return;  // (a whole warp: a unit is a warp's)
+    int lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
+    int64_t row = unit / KS, s = unit % KS, id = (int64_t)__ldg((const long long*)ids + row);
+    uint32_t* o = (uint32_t*)out + (row * K + s * 16) / 2;
+    if ((uint64_t)id >= (uint64_t)rows) {
+        if (lane < 8) o[lane] = 0;
+        return;
+    }
+    int r = (int)(id % 64), pick = r >> 3;
+    uint32_t R[16];
+    typename Fmt::St st;
+    f.load(st, id / 64 * KS + s, lane);
+    f.decode(st, lane, (uint32_t*)scratch[threadIdx.x >> 5], tab, R);
+    if (g == (r & 7)) {
+        uint32_t a = 0, b = 0;
+#pragma unroll
+        for (int m = 0; m < 8; m++) {
+            if (m == pick) {
+                a = R[2 * m];
+                b = R[2 * m + 1];
+            }
+        }
+        o[t] = a;
+        o[4 + t] = b;
+    }
+}
+
+template <class Fmt>
+__global__ void mma_rows_kernel(Fmt f, int64_t K, int64_t rows, const int64_t* __restrict__ ids, int64_t n, uint16_t* __restrict__ out) {
+    mma_rows_body<Fmt>(f, K, rows, ids, n, out);
+}
+
 // A mixture-of-experts layer: its E experts' matrices [O, K] stacked as one matrix [E O, K] in either mma
 // layout (expert e's rows e O to e O + O - 1; O a multiple of 64), each multiplied by the tokens routed to it.
 // A token's k choices are its pairs (pair j: token j / k, choice j mod k; ids[j] its expert). moe_route_kernel
@@ -2504,8 +2548,8 @@ __device__ __noinline__ void raw_run(const WriteParams& P, uint8_t* pg, uint32_t
 
 // A block's page cleared as a page's first token clears it, for a block no request holds (a warp a block): its chunks or its slab (by owner tag) back to their pools, its headers, its
 // directory and its count zero, and the block's bits in the lost bitmap.
-__global__ void __launch_bounds__(32) release_kernel(uint8_t* pool, int64_t page_stride, int64_t nblocks, const int32_t* blocks, int H, EscapePool esc, RawPool raw, uint32_t layer_tag, uint32_t* status,
-                                                      uint32_t* lost, int64_t nlost) {
+__device__ __forceinline__ void release_body(uint8_t* pool, int64_t page_stride, int64_t nblocks, const int32_t* blocks, int H, EscapePool esc, RawPool raw, uint32_t layer_tag, uint32_t* status,
+                                             uint32_t* lost, int64_t nlost) {
     const int64_t block = blocks[blockIdx.x];
     if (block < 0 || block >= nblocks) return;
     uint8_t* pg = pool + block * page_stride;
@@ -2535,6 +2579,11 @@ __global__ void __launch_bounds__(32) release_kernel(uint8_t* pool, int64_t page
     }
 }
 
+__global__ void __launch_bounds__(32) release_kernel(uint8_t* pool, int64_t page_stride, int64_t nblocks, const int32_t* blocks, int H, EscapePool esc, RawPool raw, uint32_t layer_tag, uint32_t* status,
+                                                      uint32_t* lost, int64_t nlost) {
+    release_body(pool, page_stride, nblocks, blocks, H, esc, raw, layer_tag, status, lost, nlost);
+}
+
 // ---- a page moved whole (glyd_gpu_kv_save, glyd_gpu_kv_load: a sequence swapped to the host and back in its 12 bits) --------------------------------------------------------------------------
 // A page's image: its bytes (pb, page_bytes), then the entries of the escape pool's chunks its directory names, CH words a chunk at the directory's place (ND places), then
 // its raw slab's bytes where it is raw (plane_bytes): image_bytes apart. Only what the page holds is written: its bytes, its chunks, its slab.
@@ -2542,8 +2591,8 @@ __host__ __device__ constexpr int64_t image_bytes(int64_t pb, int HP) { return p
 
 // Page pages[j] of the pool into image j (a CTA a page, 128 threads); moved[j], where given: the bytes written. A page whose chunks or slab its pools do not list as its own
 // (a page never written, a void one) has PG_VOID set in its image's `used` word: loaded, it is void.
-__global__ void __launch_bounds__(128) save_kernel(const uint8_t* pool, int64_t page_stride, int64_t nblocks, const int32_t* pages, int64_t pb, int64_t ib, int HP, EscapePool esc, RawPool raw,
-                                                   uint32_t layer_tag, uint8_t* img, uint32_t* moved) {
+__device__ __forceinline__ void save_body(const uint8_t* pool, int64_t page_stride, int64_t nblocks, const int32_t* pages, int64_t pb, int64_t ib, int HP, EscapePool esc, RawPool raw,
+                                          uint32_t layer_tag, uint8_t* img, uint32_t* moved) {
     __shared__ int s_bad, s_n;
     const int j = blockIdx.x;
     const int64_t block = pages[j];
@@ -2599,11 +2648,16 @@ __global__ void __launch_bounds__(128) save_kernel(const uint8_t* pool, int64_t 
     }
 }
 
+__global__ void __launch_bounds__(128) save_kernel(const uint8_t* pool, int64_t page_stride, int64_t nblocks, const int32_t* pages, int64_t pb, int64_t ib, int HP, EscapePool esc, RawPool raw,
+                                                   uint32_t layer_tag, uint8_t* img, uint32_t* moved) {
+    save_body(pool, page_stride, nblocks, pages, pb, ib, HP, esc, raw, layer_tag, img, moved);
+}
+
 // Image j into the page of block dst[j] (a CTA a page, 128 threads): the page's loans given back first, as a first token's clear gives them (only what the pools list as the
 // page's), then its bytes, and for each chunk its image names a chunk of the escape pool taken for this block (its entries, the directory naming it), or for a raw page a slab of
 // the raw pool. A page whose image is void, or that finds no chunk or slab, is void, its block named in the status's ring (as glyd_gpu_kv_write names one); a raw one in the raw ring.
-__global__ void __launch_bounds__(128) load_kernel(const uint8_t* img, const int32_t* dst, int64_t pb, int64_t ib, uint8_t* pool, int64_t page_stride, int64_t nblocks, int HP, EscapePool esc,
-                                                   RawPool raw, uint32_t layer_tag, uint32_t* status, uint32_t ring) {
+__device__ __forceinline__ void load_body(const uint8_t* img, const int32_t* dst, int64_t pb, int64_t ib, uint8_t* pool, int64_t page_stride, int64_t nblocks, int HP, EscapePool esc, RawPool raw,
+                                          uint32_t layer_tag, uint32_t* status, uint32_t ring) {
     __shared__ int s_void, s_slab;
     const int j = blockIdx.x;
     const int64_t block = dst[j];
@@ -2671,6 +2725,11 @@ __global__ void __launch_bounds__(128) load_kernel(const uint8_t* img, const int
             status[ST_RING + ring + idx % ring] = (uint32_t)block + 1u;
         }
     }
+}
+
+__global__ void __launch_bounds__(128) load_kernel(const uint8_t* img, const int32_t* dst, int64_t pb, int64_t ib, uint8_t* pool, int64_t page_stride, int64_t nblocks, int HP, EscapePool esc,
+                                                   RawPool raw, uint32_t layer_tag, uint32_t* status, uint32_t ring) {
+    load_body(img, dst, pb, ib, pool, page_stride, nblocks, HP, esc, raw, layer_tag, status, ring);
 }
 
 // A page's first token clears its headers and its arena and gives its chunks back to the pool before any entry is appended (every thread of the CTA calls it, and it ends in a barrier: a warp

@@ -96,6 +96,7 @@ const SWITCHES: &[&str] = &[
     "record",
     "rgb",
     "servable",
+    "chain",
 ];
 #[cfg(not(feature = "dev"))]
 const SWITCHES: &[&str] = &[

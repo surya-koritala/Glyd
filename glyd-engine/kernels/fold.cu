@@ -66,6 +66,58 @@ extern "C" __global__ void fold_unpack_twelve(const uint8_t* data, const uint32_
     glib::mma_unpack_body<glib::Nib>(glib::Nib{data, exc, exc_base, hb4, xmax}, K, row0, rows, out, nullptr);
 }
 
+// glyd_gpu_mma_rows and glyd_gpu_mma12_rows: rows of W [rows, K] by id (ids int64 [n] on the device; one outside W's rows: a row of zeros) into out [n, K], a
+// warp a (row, step), blocks of 256 threads (mma_rows_body). A layout's kernel each, its words read as the unpackers' are.
+extern "C" __global__ void fold_rows_tiered(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, uint32_t s1, uint32_t s2, uint32_t s3, int64_t K, int64_t rows, const int64_t* ids,
+                                            int64_t n, uint16_t* out) {
+    glib::mma_rows_body<glib::Tiered>(glib::Tiered{data, blocks, block_base, glib::Tiers{s1, s2, s3}}, K, rows, ids, n, out);
+}
+
+extern "C" __global__ void fold_rows_compact(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, uint32_t s1, uint32_t s2, uint32_t s3, int64_t K, int64_t rows, const int64_t* ids,
+                                             int64_t n, uint16_t* out) {
+    glib::mma_rows_body<glib::Compact>(glib::Compact{data, blocks, block_base, glib::Tiers{s1, s2, s3}}, K, rows, ids, n, out);
+}
+
+extern "C" __global__ void fold_rows_int6(const uint8_t* data, const uint8_t* scales, int64_t K, int64_t rows, const int64_t* ids,
+                                          int64_t n, uint16_t* out) {
+    glib::mma_rows_body<glib::Int6>(glib::Int6{data, scales}, K, rows, ids, n, out);
+}
+
+extern "C" __global__ void fold_rows_int5(const uint8_t* data, const uint8_t* scales, int64_t K, int64_t rows, const int64_t* ids,
+                                          int64_t n, uint16_t* out) {
+    glib::mma_rows_body<glib::Int5>(glib::Int5{data, scales}, K, rows, ids, n, out);
+}
+
+extern "C" __global__ void fold_rows_int4(const uint8_t* data, const uint8_t* scales, int64_t K, int64_t rows, const int64_t* ids,
+                                          int64_t n, uint16_t* out) {
+    glib::mma_rows_body<glib::Int4>(glib::Int4{data, scales}, K, rows, ids, n, out);
+}
+
+extern "C" __global__ void fold_rows_int4h(const uint8_t* data, const uint8_t* scales, uint32_t base, int64_t K, int64_t rows, const int64_t* ids,
+                                           int64_t n, uint16_t* out) {
+    glib::mma_rows_body<glib::Int4H>(glib::Int4H{{data, scales}, base}, K, rows, ids, n, out);
+}
+
+extern "C" __global__ void fold_rows_fp4(const uint8_t* data, const uint8_t* scales, int64_t K, int64_t rows, const int64_t* ids,
+                                         int64_t n, uint16_t* out) {
+    glib::mma_rows_body<glib::Fp4>(glib::Fp4{data, scales}, K, rows, ids, n, out);
+}
+
+extern "C" __global__ void fold_rows_fp4r(const uint8_t* data, const uint8_t* scales, uint32_t ks, uint32_t mg, uint32_t sh, int64_t K, int64_t rows, const int64_t* ids,
+                                          int64_t n, uint16_t* out) {
+    glib::mma_rows_body<glib::Fp4R>(glib::Fp4R{data, scales, ks, mg, sh}, K, rows, ids, n, out);
+}
+
+extern "C" __global__ void fold_rows_int3(const uint8_t* data, const uint8_t* scales, int64_t K, int64_t rows, const int64_t* ids,
+                                          int64_t n, uint16_t* out) {
+    glib::mma_rows_body<glib::Int3>(glib::Int3{data, scales}, K, rows, ids, n, out);
+}
+
+extern "C" __global__ void fold_rows_twelve(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, uint32_t hb4, int xmax, int64_t K, int64_t rows, const int64_t* ids,
+                                            int64_t n, uint16_t* out) {
+    glib::mma_rows_body<glib::Nib>(glib::Nib{data, exc, exc_base, hb4, xmax}, K, rows, ids, n, out);
+}
+
 // glyd_gpu_moe_way: the plan of a mixture of experts' pairs sorted by expert (moe_route_body: one warp; moe_route_block_body: one block of up to 32
 // warps for a prompt's thousands of pairs, the same plan bit for bit). Which one, and its shared memory, as the library chooses (src/fold.rs).
 extern "C" __global__ void fold_moe_route(const int64_t* ids, int64_t P, int E, int* plan) {
@@ -187,10 +239,28 @@ FOLD_KV_GATHER(1)
 FOLD_KV_GATHER(2)
 FOLD_KV_GATHER(4)
 
+// glyd_gpu_kv_release (a warp a block: its page cleared, its chunks or slab back to their pools), _kv_save (a page into its image) and _kv_load (an image into a
+// page, chunks or a slab lent anew), a CTA a page of 128 threads: kvc's release_body, save_body and load_body, launched as the library launches them.
+extern "C" __global__ void __launch_bounds__(32) fold_kv_release(uint8_t* pool, int64_t page_stride, int64_t nblocks, const int32_t* blocks, int H, const glib::kvc::EscapePool esc,
+                                                                  const glib::kvc::RawPool raw, uint32_t layer_tag, uint32_t* status, uint32_t* lost, int64_t nlost) {
+    glib::kvc::release_body(pool, page_stride, nblocks, blocks, H, esc, raw, layer_tag, status, lost, nlost);
+}
+
+extern "C" __global__ void __launch_bounds__(128) fold_kv_save(const uint8_t* pool, int64_t page_stride, int64_t nblocks, const int32_t* pages, int64_t pb, int64_t ib, int HP,
+                                                                const glib::kvc::EscapePool esc, const glib::kvc::RawPool raw, uint32_t layer_tag, uint8_t* img, uint32_t* moved) {
+    glib::kvc::save_body(pool, page_stride, nblocks, pages, pb, ib, HP, esc, raw, layer_tag, img, moved);
+}
+
+extern "C" __global__ void __launch_bounds__(128) fold_kv_load(const uint8_t* img, const int32_t* dst, int64_t pb, int64_t ib, uint8_t* pool, int64_t page_stride, int64_t nblocks, int HP,
+                                                                const glib::kvc::EscapePool esc, const glib::kvc::RawPool raw, uint32_t layer_tag, uint32_t* status, uint32_t ring) {
+    glib::kvc::load_body(img, dst, pb, ib, pool, page_stride, nblocks, HP, esc, raw, layer_tag, status, ring);
+}
+
 // glyd_gpu_mma_moe, _mma12_moe and _mma_moe_placed (mma_moe_run) at a decode step's and a few rows' sizes: mma_moe_body for MT tiles of 16 pairs (1, 2, 4),
 // the activation (0 none, 1 SiLU, 2 GELU) and the step loop's variant the library takes by default on each GPU class (0; 2: the m-tiles with pairs alone, an H100's
 // and an A100's; 8 and 10: two steps loaded ahead, an HBM GPU's one-token products), and mma_moe_rows_body (no gate, a warp a row block over the whole K: MT 2
-// and 4) and moe_sum_body (the weighted sum of a token's choices). The prompt kernel (many pairs an expert), the wgmma route and the variants a tuning variable asks
+// and 4) and moe_sum_body (the weighted sum of a token's choices). The prompt kernel (many pairs an expert: fold_big_*_moe) and Hopper's wgmma route
+// (fold_moe_wg_*) are further down; the variants a development build's tuning variable asks for are the library's still.
 #define FOLD_MOE_TIERED(MT, ACT, V, MINB) \
     extern "C" __global__ void __launch_bounds__(256, MINB) fold_moe_tiered_##MT##_##ACT##_##V(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, uint32_t s1, uint32_t s2, uint32_t s3, int64_t O, int64_t K, const int* plan, int E, int64_t k, int gather, const __nv_bfloat16* X, const __nv_bfloat16* bias, const void* w, int wf32, __nv_bfloat16* Y, float* Y32, int64_t P, float* parts, int* done, int pf) { \
         glib::mma_moe_body<glib::Tiered, MT, ACT, V>(glib::Tiered{data, blocks, block_base, glib::Tiers{s1, s2, s3}}, O, K, plan, E, k, gather, X, bias, w, wf32, Y, Y32, P, parts, done, pf); \
