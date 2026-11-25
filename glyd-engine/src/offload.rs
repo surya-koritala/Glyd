@@ -2690,7 +2690,7 @@ impl ExpertStore {
             ly.calls = 0;
             if let Some(dp) = ly.dplan.as_mut() {
                 dp.upload(&ly.cache.expert_in())?;
-                dp.counters()?;
+                dp.reset()?;
             }
             if let Some(c) = ly.cpu.as_mut() {
                 c.last.fill(0);

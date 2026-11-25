@@ -163,6 +163,16 @@ impl DevPlan {
         self.tab.write(o[4], &vec![0u8; self.slots])
     }
 
+    /// The plan's own state back to its start (with `upload`, a cold cache's: `ExpertStore::cold`): no expert the host computed lately (`hostlast`), the step and the clock's hand at 0, the
+    /// counters at 0; the GPU's work before is done.
+    pub fn reset(&mut self) -> Result<()> {
+        let o = offsets(self.experts, self.slots);
+        self.tab.write(o[3], &vec![0u32; self.experts])?;
+        self.tab.write(o[5], &[0u32; 16])?;
+        self.seen = [0; 8];
+        Ok(())
+    }
+
     /// The counters since the last read (calls, hand (none), experts asked for, found, copied, the host's experts, its pairs, promoted); the GPU's work before is done.
     pub fn counters(&mut self) -> Result<[u32; 8]> {
         let mut m = [0u32; 8];

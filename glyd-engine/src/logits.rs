@@ -2818,14 +2818,15 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let len = |k: usize| long.map_or(5 + 29 * k, |p| (p * (k + 1) / users).max(1));
     // (--layout mma|mma12: penguin's packs in that layout, where the GPU's choice is another)
     let layout = a.layout()?.or(level_layout(level)?);
-    let mut e: Dyn = match (a.flag("dir"), a.num("places", 0usize)?) {
+    let places = a.num("places", 0usize)?;
+    let mode = match a.flag("mode") {
+        Some(m) => crate::offload::Mode::parse(m).ok_or_else(|| Error(format!("--mode {m}: copy, cpu, split or auto")))?,
+        None => crate::offload::Mode::Copy,
+    };
+    let mut e: Dyn = match (a.flag("dir"), places) {
         // (`--places N`: the model in DIR with its experts in the expert cache, N places a layer and every expert in the computer's memory (src/offload.rs; `--mode`, copy by default, `--device-plan`: the
         // decode calls planned on the GPU, src/devplan.rs): a model larger than the GPU, its replies alone against its replies at once)
         (Some(d), places) if places > 0 => {
-            let mode = match a.flag("mode") {
-                Some(m) => crate::offload::Mode::parse(m).ok_or_else(|| Error(format!("--mode {m}: copy, cpu, split or auto")))?,
-                None => crate::offload::Mode::Copy,
-            };
             let o = DynOpts { ctx: (len(users - 1) + tokens + 64).next_multiple_of(256), chunk: 256, graph: true, device: 0, layout };
             let offload = crate::offload::Offload { mode, device: a.has("device-plan"), ..Default::default() };
             let caching = crate::hbg_store::HbCaching { places, ram: None, offload, dense: 0 };
@@ -3083,11 +3084,17 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         }
     }
     println!("  at once against alone, logit for logit: {same_logits} of {} replies' every sample logit the same bits", prompts.len());
-    if strict && same < prompts.len() {
+    // (an expert cache whose mode gives the host pairs (cpu, split, auto): which of a call's misses the host computes, and which are copied or promoted, turns on how many pairs each
+    // expert has in the call (xp_plan, `plan`), so a row's sums turn on the rows beside it and alone against at once is counted; runs of the same calls are held to the bit)
+    let host_pairs = places > 0 && mode != crate::offload::Mode::Copy;
+    if strict && host_pairs {
+        println!("  (mode {}: the host's share of a call is planned by all of its rows' pairs, so at once is not alone's calls: counted)", mode.name());
+    }
+    if strict && !host_pairs && same < prompts.len() {
         println!("FAIL replies at once differ from alone with prompts one a pass");
         fails += 1;
     }
-    if strict && same == prompts.len() && same_logits < prompts.len() {
+    if strict && !host_pairs && same == prompts.len() && same_logits < prompts.len() {
         println!("FAIL replies at once take other logits than alone with prompts one a pass");
         fails += 1;
     }
