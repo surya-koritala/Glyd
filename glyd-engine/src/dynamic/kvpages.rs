@@ -94,14 +94,42 @@ fn dim_arg(s: &KvShape) -> i64 {
 /// page five chunks, 1.3% of its bytes.
 const ROOM_SHARE: f64 = 0.005;
 
+/// The pages a raw slab is made for (one in this many of each head count's pages may be stored raw at once), and the least slabs of a head count.
+const RAW_PAGES: i64 = 100;
+const RAW_MIN: i64 = 64;
+
+/// The bytes `n` blocks of a ring in 12-bit pages take in the pools (`Lossless::new`'s rule, by the library's layout: kv12.rs's replicas of its sizes): the pages, their
+/// escape chunks (`chunks_per_page` each), their share of the raw slabs (one in RAW_PAGES) and the layer's tables; without the pools' least sizes (1,024 chunks, RAW_MIN
+/// slabs), which a pool of a GiB and more does not notice. What a token takes besides `kv12::planned_token_bytes`, the planner's, is this less n 16 of those.
+#[cfg(test)]
+fn held_bytes(s: &KvShape, cpp: f64, n: u64) -> u64 {
+    let hp = (s.heads * s.channels / 128) as u64;
+    let tables = (s.heads * s.channels * if s.one { 1 } else { 2 }) as u64;
+    n * super::kv12::page_bytes_of(s.heads, s.channels, s.one)
+        + super::kv12::escape_bytes((n as f64 * cpp).ceil() as u64)
+        + super::kv12::raw_bytes(n.div_ceil(RAW_PAGES as u64), hp)
+        + tables
+}
+
 /// The escape chunks a page of a layer is given in the pool: twice what its pages took on the tables' prompts on average (`Tables::chunks`), and
 /// at least what ROOM_SHARE of its values outside their windows takes (the pool runs dry where the text is not the calibration's: later positions,
 /// other languages).
 fn chunks_per_page(s: &KvShape, t: &Tables, l: usize) -> f64 {
+    (t.chunks.get(l).map_or(0.0, |c| c.0) * 2.0).max(room_chunks(s)).max(0.125)
+}
+
+/// The escape chunks a page is given at the least: ROOM_SHARE of its values, less its heads' inline entries and its arena.
+fn room_chunks(s: &KvShape) -> f64 {
     let values = 16.0 * (s.heads * s.channels) as f64 * if s.one { 1.0 } else { 2.0 };
     let inline = 3.0 * (s.heads * s.channels / 128) as f64 + ARENA as f64;
-    let room = ((values * ROOM_SHARE - inline).max(0.0) / CHUNK).ceil();
-    (t.chunks.get(l).map_or(0.0, |c| c.0) * 2.0).max(room).max(0.125)
+    ((values * ROOM_SHARE - inline).max(0.0) / CHUNK).ceil()
+}
+
+/// The escape chunks and raw slabs a pool of `n` pages of a ring is given where its layer's tables counted no chunk on their prompts (`Lossless::new`'s rule without the
+/// pools' least sizes): kvshapes fills such a pool and holds its tokens a GiB to the planner's.
+#[cfg(feature = "dev")]
+pub(crate) fn room_of(s: &KvShape, n: u64) -> (u64, u64) {
+    ((n as f64 * room_chunks(s).max(0.125)).ceil() as u64, n.div_ceil(RAW_PAGES as u64))
 }
 
 impl Lossless {
@@ -179,10 +207,10 @@ impl Lossless {
             lib.kv_floor_set(DECODE_FLOOR)?;
         }
         let escape = Buf::zeroed(lib.kv_escape_bytes(nchunks)? as usize)?;
-        // (a raw slab for one page in a hundred of each head count, at least 64)
+        // (a raw slab for one page in RAW_PAGES of each head count, at least RAW_MIN)
         let mut raws = Vec::new();
         for &(hp, pages) in &heads_raw {
-            let slabs = squeeze.map_or((pages / 100).max(64), |s| s.1);
+            let slabs = squeeze.map_or((pages / RAW_PAGES).max(RAW_MIN), |s| s.1);
             raws.push((hp, slabs, Buf::zeroed(lib.kv_raw_bytes(slabs, hp)? as usize)?));
         }
         let mut bytes = escape.bytes + raws.iter().map(|r| r.2.bytes).sum::<usize>();
@@ -788,6 +816,58 @@ mod tests {
                 seen += 1;
             }
             assert_eq!(seen, layers, "{}", d.family);
+        }
+    }
+
+    /// Tokens held a GiB in each format of keys and values, as a pool of 2 GiB holds them (blocks of 16 tokens, block 0 none's), against the planner's: bf16 rings at
+    /// their row's bytes; 12-bit pages of two streams at heads of 128 (a Qwen3 dense model's 8 kv heads: the planner's `kv_per_token`), 256 and 512 (gemma-4-12B's
+    /// sliding and K=V global layers: `kv12::planned_token_bytes`, Gemma 4's planner's), one stream (Kimi-K3's and GLM-5.3's latents) with the engine's escape room and
+    /// raw slabs: within 5% of the planner's.
+    #[test]
+    fn tokens_held_a_gib_are_the_planners_within_five_percent() {
+        let gib = (1u64 << 30) as f64;
+        let shape = |heads: usize, channels: usize, one: bool, width: usize| super::super::kv12::KvShape {
+            ring: 0,
+            heads,
+            channels,
+            one,
+            window: 0,
+            scale: 1.0,
+            round: false,
+            width,
+        };
+        // (bf16: a ring's blocks are its row's bytes a token, nothing else)
+        for (nk, d, values) in [(8usize, 128usize, true), (1, 512, true), (1, 576, false), (1, 512, false)] {
+            let r = super::super::Ring::keys(d, nk, 0);
+            let r = super::super::Ring { values, ..r };
+            let per = r.token_bytes();
+            let n = (2.0 * gib / (16.0 * per as f64)) as u64;
+            let held = (n - 1) * 16;
+            assert!(((held as f64 / (n * 16 * per as u64) as f64 * gib) / (gib / per as f64) - 1.0).abs() < 0.05, "bf16 {nk} x {d}");
+        }
+        let qwen3 = crate::plan::sizing::kv_value_bytes(true) * (2 * 8 * 128) as f64;
+        for (s, planned, what) in [
+            (shape(8, 128, false, 1024), qwen3, "8 heads of 128 (Qwen3 dense's planner)"),
+            (shape(8, 256, false, 2048), 0.0, "8 heads of 256 (gemma-4-12B sliding)"),
+            (shape(1, 512, false, 512), 0.0, "1 head of 512, K=V (gemma-4-12B global)"),
+            (shape(5, 128, true, 576), 0.0, "a latent of 512 + 64 (Kimi-K3)"),
+            (shape(4, 128, true, 512), 0.0, "a latent of 512 (GLM-5.3)"),
+        ] {
+            let planned = if planned > 0.0 { planned } else { super::super::kv12::planned_token_bytes(&s) };
+            let t = Tables {
+                layers: vec![Some(LayerTable { heads: s.heads, channels: s.channels, one: s.one, k: Vec::new(), v: Vec::new() })],
+                positions: 0,
+                model: String::new(),
+                outside: vec![0.0],
+                chunks: vec![(0.0, 0)],
+            };
+            let cpp = chunks_per_page(&s, &t, 0);
+            let n = (2.0 * gib / planned / 16.0) as u64;
+            let held = ((n - 1) * 16) as f64 / (held_bytes(&s, cpp, n) as f64 / gib);
+            let want = gib / planned;
+            let off = held / want - 1.0;
+            println!("{what}: {held:.0} tokens a GiB held, {want:.0} planned ({:+.2}%)", 100.0 * off);
+            assert!(off.abs() < 0.05, "{what}: {held:.0} tokens a GiB held, {want:.0} planned ({:+.2}%)", 100.0 * off);
         }
     }
 

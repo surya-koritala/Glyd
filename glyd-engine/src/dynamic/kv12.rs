@@ -38,9 +38,30 @@ pub struct Tables {
 /// (glyd_gpu.cu: a header of 16 bytes a head-page of 128 channels, the page's used word, 16 directory words and the arena, up to a multiple of 128;
 /// then 6,144 bytes a head-page). For the planner, which has no library to ask; `Lib::kv_page_bytes` is the same number.
 pub fn page_bytes(heads: usize, channels: usize) -> u64 {
+    page_bytes_of(heads, channels, false)
+}
+
+/// `page_bytes`, or where `one` the page of one stream (a latent's, `KV_ONE_STREAM`): 3,072 bytes a head-page, its one tile.
+pub fn page_bytes_of(heads: usize, channels: usize, one: bool) -> u64 {
     let hp = (heads * channels / 128) as u64;
     let hdr = (16 * hp + 4 * (1 + 16 + super::kvpages::ARENA as u64)).div_ceil(128) * 128;
-    hdr + hp * 6144
+    hdr + hp * if one { 3072 } else { 6144 }
+}
+
+/// The library's escape pool of `nc` chunks of 64 entries (glyd_gpu.cu `esc_bytes`: its bitmap and owners in 16-byte lines, then the entries).
+pub fn escape_bytes(nc: u64) -> u64 {
+    (nc.div_ceil(32).div_ceil(4)) * 16 + nc.div_ceil(4) * 16 + nc * 64 * 4
+}
+
+/// The library's raw pool of `ns` slabs for pages of `hp` heads of 128 (glyd_gpu.cu `raw_bytes`: a slab 2,048 bytes a head-page).
+pub fn raw_bytes(ns: u64, hp: u64) -> u64 {
+    (ns.div_ceil(32).div_ceil(4)) * 16 + ns.div_ceil(4) * 16 + ns * hp * 2048
+}
+
+/// The planner's bytes of a token in a ring's 12-bit pages: a sixteenth of a page (the escape room and the raw slabs a pool adds besides are
+/// within 5% of it: kvpages.rs `held_bytes`, its tests and kvshapes' filled pools).
+pub fn planned_token_bytes(s: &KvShape) -> f64 {
+    page_bytes_of(s.heads, s.channels, s.one) as f64 / 16.0
 }
 
 /// The bucket of a bf16 value kvcal's windows are over: its exponent halved.

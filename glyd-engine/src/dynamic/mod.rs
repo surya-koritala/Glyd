@@ -15,6 +15,8 @@ pub mod kv12;
 mod kvpages;
 #[cfg(feature = "dev")]
 pub use kvpages::check as kvpages_check;
+#[cfg(feature = "dev")]
+pub(crate) use kvpages::room_of as kv12_room;
 pub mod lower;
 pub mod mla;
 pub mod muse;

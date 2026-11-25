@@ -492,6 +492,94 @@ fn decode_batch(lib: &Lib, dev: &Dev, h: usize, d: usize, g: usize, round: bool)
     Ok(bad == 0)
 }
 
+/// Tokens a GiB of a filled pool against the planner's (#332): `n` pages of a ring of `h` heads of `d` channels (two streams, or one: a latent of `width` values in heads of
+/// 128, the rest zero), with the escape chunks and raw slabs the executor gives such a pool (`kvpages::room_of`), filled with every token of values whose share outside
+/// their windows is gemma-4-12B's at 8k tokens (0.3%); the library's sizes are first held to kv12.rs's replicas the planner uses. Ok: the sizes the same, no page void,
+/// every value read back, and the pool's tokens a GiB (its pages, escape and raw pools, as allocated) within 5% of `kv12::planned_token_bytes`'s (heads of 128 in two
+/// streams: the Qwen3 planner's `kv_value_bytes`).
+fn filled(lib: &Lib, dev: &Dev, h: usize, d: usize, one: bool, width: usize, label: &str) -> Result<bool> {
+    use crate::dynamic::kv12::{escape_bytes, page_bytes_of, planned_token_bytes, raw_bytes, KvShape};
+    const A: i64 = 15;
+    const RING: i64 = 256;
+    let n: usize = 256;
+    let s = KvShape { ring: 0, heads: h, channels: d, one, window: 0, scale: 1.0, round: false, width };
+    let hp = (h * d / 128) as i64;
+    let dim = d as i64 | if one { KV_ONE_STREAM } else { 0 };
+    let page = lib.kv_page_bytes(h as i64, dim, A)?;
+    let (nchunks, nslabs) = crate::dynamic::kv12_room(&s, n as u64);
+    let (esc, raw_b) = (lib.kv_escape_bytes(nchunks as i64)?, lib.kv_raw_bytes(nslabs as i64, hp)?);
+    let sizes = page as u64 == page_bytes_of(h, d, one) && esc as u64 == escape_bytes(nchunks) && raw_b as u64 == raw_bytes(nslabs, hp as u64);
+    let pool = Buf::zeroed(page as usize * n)?;
+    let escape = Buf::zeroed(esc as usize)?;
+    let raw = Buf::zeroed(raw_b as usize)?;
+    let status = Buf::zeroed(4 * (16 + 2 * RING) as usize)?;
+    let geom = KvGeom { heads: h as i64, dim, arena: A, page_stride: page, escape: escape.ptr, nchunks: nchunks as i64, raw: raw.ptr, nslabs: nslabs as i64 };
+    let mut r = Rng(0x7E57_1D00_0000_0001 ^ (h * 1000 + d + one as usize) as u64);
+    let tokens = 16 * n;
+    let mk = |r: &mut Rng| -> Vec<u16> {
+        let mut x = values(r, tokens, h, d, 3, 0);
+        if one {
+            for t in 0..tokens {
+                for c in width..h * d {
+                    x[t * h * d + c] = 0;
+                }
+            }
+        }
+        x
+    };
+    let k = mk(&mut r);
+    let v = if one { Vec::new() } else { mk(&mut r) };
+    let (kb, vb) = (bases(&k, tokens, h, d), if one { Vec::new() } else { bases(&v, tokens, h, d) });
+    let (kbuf, vbuf, kbase, vbase) = (Buf::new(2 * k.len())?, Buf::new(2 * v.len().max(1))?, Buf::new(kb.len())?, Buf::new(vb.len().max(1))?);
+    kbuf.write(0, &k)?;
+    kbase.write(0, &kb)?;
+    if !one {
+        vbuf.write(0, &v)?;
+        vbase.write(0, &vb)?;
+    }
+    let slots: Vec<i64> = (0..tokens as i64).collect();
+    let sl = Buf::new(8 * tokens)?;
+    sl.write(0, &slots)?;
+    let stride = (h * d) as i64;
+    let ids: Vec<i32> = (0..n as i32).collect();
+    let pages = Buf::new(4 * n)?;
+    pages.write(0, &ids)?;
+    let (out_k, out_v) = (Buf::new(2 * tokens * h * d)?, Buf::new(2 * if one { 1 } else { tokens * h * d })?);
+    // SAFETY: live buffers of the sizes the kernels read and write; the stream is synchronized before the results are read.
+    unsafe {
+        let (vp, vbp) = if one { (0, 0) } else { (vbuf.ptr, vbase.ptr) };
+        lib.kv_write(&geom, pool.ptr, kbase.ptr, vbp, 0, kbuf.ptr, stride, vp, stride, sl.ptr, tokens as i64, status.ptr, 0, 0, RING, dev.stream)?;
+        lib.kv_unpack(&geom, pool.ptr, kbase.ptr, vbp, pages.ptr, n as i64, out_k.ptr, if one { 0 } else { out_v.ptr }, dev.stream)?;
+    }
+    dev.sync()?;
+    let mut st = [0u32; 16];
+    status.read(0, &mut st)?;
+    let mut back = vec![0u16; tokens * h * d];
+    out_k.read(0, &mut back)?;
+    let mut differ = back.iter().zip(&k).filter(|(a, b)| a != b).count();
+    if !one {
+        out_v.read(0, &mut back)?;
+        differ += back.iter().zip(&v).filter(|(a, b)| a != b).count();
+    }
+    let bytes = (page as usize * n) as f64 + esc as f64 + raw_b as f64 + (kb.len() + vb.len()) as f64;
+    let gib = (1u64 << 30) as f64;
+    let held = tokens as f64 / (bytes / gib);
+    let planned_b = if !one && d == 128 { crate::plan::sizing::kv_value_bytes(true) * (2 * h * d) as f64 } else { planned_token_bytes(&s) };
+    let off = held / (gib / planned_b) - 1.0;
+    let ok = sizes && differ == 0 && st[11] == 0 && off.abs() < 0.05;
+    println!(
+        "{} tokens a GiB, {label}: {held:.0} held by a filled pool of {n} pages ({nchunks} escape chunks, {nslabs} raw slabs; {} pages raw, {} void, {differ} values differ), {:.0} planned ({:+.2}%); \
+         the library's sizes {} kv12.rs's",
+        if ok { "ok  " } else { "FAIL" },
+        st[10],
+        st[11],
+        gib / planned_b,
+        100.0 * off,
+        if sizes { "are" } else { "are NOT" }
+    );
+    Ok(ok)
+}
+
 /// One stream: a tensor [n][h][d] held in the keys' layout alone (a latent padded to 5 heads of 128: Kimi-K3's 576 values; keys that are the values: Gemma's global layers), written with no value, read back
 /// into one tensor and compared bit for bit; its page is smaller by the V tiles; and the calls that cannot take it refuse it. Written twice: the tokens in one call (a prompt's), and one token a call (a decode
 /// step's, the write's path for a token alone in its page); and read back through a list whose places past the pages are -1 (as a latent attention lists a sequence's pages on the device), those places'
@@ -990,6 +1078,16 @@ pub fn run() -> Result<bool> {
     // one stream: a 576-value latent in 5 heads of 128 (64 channels of padding), keys that are the values in 2 heads of 512 and one of 256
     for (h, d, pad) in [(5, 128, 64), (2, 512, 0), (1, 256, 0)] {
         ok &= one_stream(&lib, &dev, h, d, pad)?;
+    }
+    // tokens a GiB of a filled pool of each format against the planner's (#332): heads of 128, 256, 512 (K=V), and the latents of Kimi-K3 and GLM-5.3 (one stream)
+    for (h, d, one, width, label) in [
+        (8, 128, false, 1024, "8 heads of 128"),
+        (8, 256, false, 2048, "8 heads of 256 (gemma-4-12B sliding)"),
+        (1, 512, false, 512, "1 head of 512, K=V (gemma-4-12B global)"),
+        (5, 128, true, 576, "a latent of 512 + 64 (Kimi-K3)"),
+        (4, 128, true, 512, "a latent of 512 (GLM-5.3)"),
+    ] {
+        ok &= filled(&lib, &dev, h, d, one, width, label)?;
     }
     println!("{}", if ok { "the lossless KV cache of every head dimension reads back bit for bit and decodes" } else { "FAILED" });
     Ok(ok)
