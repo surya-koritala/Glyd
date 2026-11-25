@@ -31,11 +31,14 @@
 //! | residual and norms: RMS (w, 1 + w, input-scaled, Kimi's two roundings), sandwich norms and the layer scalar, the gated residual, mHC's streams, the depth mix, each family's final norm and collapse (all seven) | 2e-2 | the residual bf16 after each add, the normed value rounded, mHC's Sinkhorn and the depth mix's softmax in fp32 on the GPU's bf16 inputs | 1.6e-2 |
 //!
 //! Not compared on the GPU: the embedding's scale and norm and the head's soft-cap (each family's logits fixture holds them,
-//! `logitscheck`); the Qwen3.5 layout's mixture of experts (not lowered to the executor yet); MTP heads (their blocks are the kinds above);
-//! Qwen3.8-Flash-Next's kinds (the gated residuals and the final mixer, the indexer on GQA, the n-gram embedding): they run on the executor
-//! (`dynamic::lower::qwen4x`), and `kindcheck` has no case of them yet. The family's two random models whole stand in: the executor's logits
-//! against `Ref`'s on the executor's own routers' choices (`logitscheck`, `paritycheck`: `logits::held_on_choices`), and `Ref` against
-//! Condor's own engine's logits fixture (`describe_tests::condors_model_on_the_reference_against_condors_engine`: KL mean 8.5e-6, max 5.0e-5).
+//! `logitscheck`); the Qwen3.5 layout's mixture of experts (not lowered to the executor yet); MTP heads (their blocks are the kinds above).
+//! Qwen3.8-Flash-Next's kinds (the gated residuals and the final mixer, the indexer on GQA, the n-gram embedding) are `kindcheck`'s cases
+//! `qwen4x` and `qwen4x-s2`: on an A10 its Gated DeltaNet 1.3e-2, its attention over the indexer's picks 4.7e-3, its experts 6.6e-3, the
+//! residuals 9.8e-3; the n-gram embedding, which adds its output into the streams in place, is compared by the streams it leaves (8.2e-3; its
+//! own output, the streams' change, 9.8e-3 of its largest magnitude, printed and not judged). The family's two random models whole are held
+//! too: the executor's logits against `Ref`'s on the executor's own routers' choices (`logitscheck`, `paritycheck`: `logits::held_on_choices`),
+//! and `Ref` against Condor's own engine's rows (`describe_tests::condors_model_on_the_reference_against_condors_engine`: KL mean 8.5e-6, max
+//! 5.0e-5).
 //!
 //! A mixture of experts' router can be told the experts to take (`RefLayer::take`, `ffn::route_taking`): a check then holds an engine to
 //! `Ref` on the engine's own choices, where a near tie taken the other way would move a row by more than arithmetic does. The choice's

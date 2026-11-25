@@ -541,6 +541,9 @@ engines are 2.3e-2 from fp32 at the fifth layer's output (its prompt), and on an
 layers (Condor's engine on `qwen4x`: 3, 1.7e-2 to 3.9e-2), while its logits on its own choices were within a KL of 3.2e-6 of the
 reference's. That margin measures the earlier layers' roundings, not the router. Given the same
 choices everything else is the reference's math (3); what is left to prove is the router itself, so it is held on the input it was given.
+On the same A10, on their own inputs the reference's router made the executor's choice at 25 of its 30 choices apart on `qwen4x` and 39
+of 40 on `qwen4x-s2`, the others near ties (1.7e-3 at most), and Condor's at 28 of its 35 (the rest near ties): every choice that was far
+from the reference's on the reference's own input, Condor's three among them, is the reference router's own on the engine's input.
 The figures against the reference's own choices and input are always printed beside them, and so are Condor's engine's by the same
 measures, its record before it is deleted.
 
