@@ -15,7 +15,7 @@ use std::path::Path;
 #[cfg(test)]
 thread_local! {
     /// A test's switch: every bf16 rounding of this reference off on this thread (its simulated quantizations kept), the arithmetic between its rounding
-    /// points in fp32: its noise floor's other side (`logits::tests::noise_floor_against_fp32`).
+    /// points in fp32: its noise floor's other side (`logits::tests::deepseek_v4_noise_floor`).
     pub(crate) static PLAIN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 

@@ -618,12 +618,13 @@ fn random_with(out: &Path, dense: usize, mla: bool, layers: usize, real: Option<
     // KL mean 1.5e-5, max 6.0e-5 (the second shape's 3.2e-4, 2.8e-3), 1e-4 to 1.8e-3 on other seeds; after them 2.3e-6 to 4.2e-6, max 1.5e-5:
     //  - `mix`: the depth mix's projections U(-0.05, 0.05), not U(-0.5, 0.5), whose scores' RMS of about 4.6 made a softmax so sharp that one rounding of a
     //    source moved a block's input by up to half of it;
-    //  - `values`: the delta attention's value products 32 times a product's draw: at once the head outputs' mean square was below the gated norm's eps (1e-5)
-    //    in 94% of the heads and steps, so the norm scaled instead of norming, as a real model's does not;
+    //  - `values`: the delta attention's value products 32 times a product's draw: at 1 time the head outputs' mean square was below the gated norm's eps
+    //    (1e-5) in 94% of the heads and steps, so the norm scaled instead of norming, as a trained model's does not (now 0.1%, its median 9.8e-3);
     //  - `decay`: its dt_bias U(-4, -2), not U(-1, 1), the state kept over tokens: at U(-1, 1) it forgot a token in about a step, so a head's output was one
     //    or two terms whose query-key products, near 0 for random queries and keys, set its direction, and a rounding of the input swung it by tens of
-    //    percent. The release's model at random would show the same (none of the three is an identity: the mix still weighs its sources apart, the
-    //    norm still norms, the decay still differs by channel from 0.3 to near 1).)
+    //    percent.
+    //  None of the three makes an operation an identity: the mix still weighs its sources apart, the norm still norms, the decay still differs by channel
+    //  from about 0.3 to near 1.)
     let (mix, values, decay) = if real.is_none() { (0.05, 32.0, -3.0) } else { (0.5, 1.0, 0.0) };
     bf(&mut t, format!("{p}embed_tokens.weight"), vec![c.vocab as u64, h], -1.0, 1.0, &mut uni);
     bf(&mut t, "language_model.lm_head.weight".into(), vec![c.vocab as u64, h], -0.05, 0.05, &mut uni);

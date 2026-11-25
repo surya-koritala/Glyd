@@ -1833,7 +1833,11 @@ pub fn cases() -> Vec<Case> {
             family: "DeepSeek-V4 (four residual streams, compressed attention, mixture of experts)",
             weights: Weights::Random(|d| crate::dsv4_ref::random(d, None)),
             engine: dsv4_engine,
-            // (the reference that simulates the release's quantizations, as the product runs them: GLYD_V4_SIM's default)
+            // (the reference that simulates the release's quantizations, as the product runs them: GLYD_V4_SIM's default. Held on the engine's choices at the
+            // kind's bound, an A10 2026-11-25: every router choice and indexer pick apart the reference's on the engine's input or a near tie, the logits on
+            // them KL mean 6.8e-4, max 1.2e-3: past the bound, and under the reference's own noise floor with the simulation, 1.1e-3 / 1.8e-3
+            // (`tests::deepseek_v4_noise_floor`), so no engine that is not the reference bit for bit before each quantizer is held to the kind's bound
+            // here; without the simulation every body is within its kind's bound (kindcheck))
             cpu: Some(dsv4_cpu),
             vocab: 4096,
             on_choices: Some(dsv4_drive),
@@ -2651,7 +2655,8 @@ pub const LEVEL_KL_GEMMA4: [(&str, f64, f64); 3] = [("kestrel", 0.045, 0.21), ("
 /// `synthetic`), every other matrix as released. Each is twice its family's first measured run, to two figures, as Gemma 4's above
 /// (A10, 2026-11-25, the same figures in two runs: mean/max KL DeepSeek-V4 9.32e-2/1.30e-1, Muse Spark 2.10e-2/2.69e-2, Kimi-K3
 /// 1.46e-2/2.92e-2, its first run once the corpus pass counted its layers; GLM-5.3-Flash 2.90e-2/4.79e-2, its first run once its
-/// directory loaded, by the executor's loader).
+/// directory loaded, by the executor's loader). Kimi-K3's was measured on the draw before `kimi_ref::random_with`'s well-conditioned one,
+/// which it holds as an upper bound (an A10, 2026-11-25: 6.17e-3/9.87e-3).
 pub const LEVEL_KL_HB: [(&str, f64, f64); 4] = [("deepseek-v4", 0.19, 0.26), ("muse", 0.042, 0.054), ("kimi", 0.029, 0.058), ("glm", 0.058, 0.096)];
 
 /// The mixture-of-experts families that run at hummingbird (src/support.rs) and whose hummingbird directory this tree does not make or
