@@ -1368,7 +1368,9 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
         None
     };
     let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
-    let n = Norm::rms(eps);
+    // (the RMS norms round as the release's do, Glm5NextTextRMSNorm and GlmMoeDsaRMSNorm in bf16: the normed value to bf16, times the bf16 weight, rounded:
+    // the blocks', the final one, the latent attention's q and key-value latents')
+    let n = Norm { rounding: Rounding::Twice, ..Norm::rms(eps) };
     // (the matrices a release holds in FP8: those of these roles that its quantization_config does not leave out; a layer's experts as its first expert's)
     let held = |w: &str| fp8.as_ref().is_some_and(|f| f.holds(w));
     let mark = |r: &[(String, Source)], out: &mut BTreeSet<String>| {
@@ -1458,8 +1460,8 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
                 rope_dim: rd,
                 v_dim: vd,
                 rope: rope.clone(),
-                q_norm: Norm::rms(mla_eps),
-                kv_norm: Norm::rms(mla_eps),
+                q_norm: Norm { rounding: Rounding::Twice, ..Norm::rms(mla_eps) },
+                kv_norm: Norm { rounding: Rounding::Twice, ..Norm::rms(mla_eps) },
                 gate: None,
                 scale,
                 absorbed: true,

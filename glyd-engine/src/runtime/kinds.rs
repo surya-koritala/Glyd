@@ -845,12 +845,20 @@ pub struct ModelDesc {
 }
 
 impl ModelDesc {
-    /// Every attention's arithmetic and the residual streams' in f32 (`AttnRounding::F32`, `StreamsP::rounding` `F32`): the description as transformers
-    /// runs it in float32, which the fixtures of `tests/runtime` were recorded in.
-    pub fn f32_attention(&mut self) {
+    /// Every rounding point a description names in f32: the attentions' (`AttnRounding::F32`), the residual streams', the norms' (the blocks', the final
+    /// one, the latent attentions' q and key-value latents'): the description as transformers runs it in float32, which the fixtures of `tests/runtime`
+    /// were recorded in.
+    pub fn f32_arithmetic(&mut self) {
+        self.final_norm.rounding = Rounding::F32;
         for b in self.blocks.iter_mut().chain(self.mtp.iter_mut().flat_map(|m| m.blocks.iter_mut())) {
-            if let Body::Mixer(Mixer::Attention(a)) = &mut b.body {
-                a.rounding = AttnRounding::F32;
+            b.norm_in.rounding = Rounding::F32;
+            if let Some(n) = b.norm_out.as_mut() {
+                n.rounding = Rounding::F32;
+            }
+            match &mut b.body {
+                Body::Mixer(Mixer::Attention(a)) => a.rounding = AttnRounding::F32,
+                Body::Mixer(Mixer::Mla(m)) => (m.q_norm.rounding, m.kv_norm.rounding) = (Rounding::F32, Rounding::F32),
+                _ => {}
             }
             if let Residual::Streams(s) = &mut b.residual {
                 s.rounding = Rounding::F32;

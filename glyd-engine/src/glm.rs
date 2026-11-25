@@ -730,6 +730,13 @@ impl ConfigGlm {
 /// `fp8`: the routed experts in FP8 as the release has them (E4M3 with fp32 scales of 128 x 128 blocks, `_scale_inv`; their intermediate size 256, a multiple of the blocks), the rest bf16.
 /// `real`: (layers, experts) at the release's widths (GLM-5.3-Flash's config: its heads, latents, indexer, experts' sizes and choices, vocabulary), every MLP a block of experts, the layers' attention
 /// kinds its first ones' with a sparse attention layer last; for timing a step on one GPU (the experts in FP8 as released).
+///
+/// The scales are calibrated by the CPU reference alone, never by an engine's output: the reference against itself with the release's rounding
+/// points (transformers' bf16: the streams' and the RMS norms' roundings), on the same choices, must move the logits by at most a tenth of the
+/// lossless bound (KL mean 1e-5 against 1e-4), so that the bound stays a fixed test of an engine and a fault must move the logits well past the
+/// rounding noise to pass. Every matrix is U(+-sqrt(3 / its columns)) but the embedding, U(-1, 1) as the other families' random models draw it, and
+/// the head, at half that scale (the logits' RMS about 0.5). Drawn with both at +-sqrt(3 / hidden) the floor was KL 7.5e-5 to 1.15e-4 on the case's
+/// model and five other seeds, the bound itself; drawn so, 3.3e-6 to 5.5e-6 (`logits::tests::glm_noise_floor`, which holds it to 1e-5).
 pub fn random(out: &std::path::Path, fp8: bool, real: Option<(usize, usize)>) -> crate::ffi::Result<()> {
     random_seeded(out, fp8, real, RANDOM_SEED)
 }
@@ -821,7 +828,12 @@ pub fn random_seeded(out: &std::path::Path, fp8: bool, real: Option<(usize, usiz
     let code: std::collections::HashMap<u32, u8> =
         (0..=255u8).filter(|b| !glyd_gpu::fp8::E4M3[*b as usize].is_nan()).map(|b| (glyd_gpu::fp8::E4M3[b as usize].to_bits(), b)).collect();
     for pk in c.packs() {
-        let a = (3.0 / pk.cols as f32).sqrt();
+        // (the embedding U(-1, 1), the head at half the matrices' scale: the noise floor's draw, `random`)
+        let a = match pk.key.as_str() {
+            "embed" => 1.0,
+            "lm_head" => 0.5 * (3.0 / pk.cols as f32).sqrt(),
+            _ => (3.0 / pk.cols as f32).sqrt(),
+        };
         for (name, rows) in &pk.parts {
             let cols = pk.cols;
             if fp8 && (name.contains(".mlp.experts.") || (real.is_some() && name.contains(".mlp.shared_experts."))) {

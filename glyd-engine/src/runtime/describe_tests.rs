@@ -20,7 +20,7 @@ fn model(case: &str, tol: f32) {
         assert_eq!(&got, s, "{case}: the shape of {n}");
     }
     // (transformers in float32: the attention's bf16 rounding points, which the description gives as the family's engine rounds, off)
-    d.desc.f32_attention();
+    d.desc.f32_arithmetic();
     let src = |n: &str| f.j["tensors"].get(n).map(|_| f.tensor(n));
     let mut m = RefModel::load(&d, &src).unwrap();
     let toks: Vec<u32> = f.j["token_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
@@ -53,7 +53,7 @@ fn glm53_model_with_fewer_picks_and_a_shared_layer_runs_on_the_reference() {
     cfg["index_topk"] = 4.into();
     cfg["indexer_types"] = serde_json::json!(["full", "shared", "full"]);
     let mut d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
-    d.desc.f32_attention();
+    d.desc.f32_arithmetic();
     let src = |n: &str| f.j["tensors"].get(n).map(|_| f.tensor(n));
     let mut m = RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{}", e.msg));
     let toks: Vec<u32> = f.j["token_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();

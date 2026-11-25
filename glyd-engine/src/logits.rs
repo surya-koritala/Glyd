@@ -2963,29 +2963,30 @@ mod tests {
         }
     }
 
-    /// GLM-5.3-Flash's streams on the CPU reference with the rounding points transformers' bf16 modeling has (`StreamsP` `Twice`: the collapse, post and
-    /// comb, each term of the update and their sum, the final mean) against the same reference with the streams in fp32, both on the same choices (the
-    /// rounded run's experts and picks taken by the other): how far those rounding points alone move the case's logits, for the case's model and five of
-    /// other seeds. Seconds on an optimized build: cargo test --profile ci -- --ignored glm_streams_rounding.
+    /// GLM-5.3-Flash's noise floor: the CPU reference against itself with the rounding points the release's bf16 modeling has and the engine keeps
+    /// (the description's: the streams' `Twice`, the RMS norms' `Twice`) and with every one of them in fp32 (`ModelDesc::f32_arithmetic`), on the same
+    /// choices (the rounded run's experts and picks taken by the other), for the case's model and five of other seeds. Each must be at most a tenth of the
+    /// lossless bound (KL mean 1e-5 against 1e-4): the draw is calibrated by the reference alone, never by an engine's output, so the bound stays a fixed
+    /// test of an engine and a fault must move the logits well past the rounding noise to pass (`glm::random`). Seconds on an optimized build: cargo test
+    /// --profile ci -- --ignored glm_noise_floor.
     #[cfg(feature = "dev")]
     #[test]
     #[ignore]
-    fn glm_streams_rounding_on_the_same_choices() {
-        use crate::runtime::kinds::{Body, Ffn, Mixer, Residual, Rounding};
+    fn glm_noise_floor() {
+        use crate::runtime::kinds::{Body, Ffn, Mixer};
         use crate::runtime::reference::{mla::LatentCache, model::checkpoint_tensor, model::RefModel, SeqState};
         let (prompt, decode, long) = standard_tokens(2048);
+        let mut worst = 0f64;
         for k in 0..6u64 {
-            let dir = std::env::temp_dir().join(format!("glyd-glmstreams-{k}-{}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("glyd-glmfloor-{k}-{}", std::process::id()));
             crate::glm::random_seeded(&dir, false, None, crate::glm::RANDOM_SEED ^ (k << 32)).unwrap();
             let cfg: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
             let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
             // (each sequence a token at a time from a fresh model: its rows, and every block's choices in the order taken)
-            let run = |f32_streams: bool, take: Option<&Vec<Vec<Vec<usize>>>>| -> (Vec<Vec<f32>>, Vec<Vec<Vec<usize>>>) {
+            let run = |rounded: bool, take: Option<&Vec<Vec<Vec<usize>>>>| -> (Vec<Vec<f32>>, Vec<Vec<Vec<usize>>>) {
                 let mut d = crate::runtime::describe::describe(&cfg).unwrap();
-                for b in d.desc.blocks.iter_mut() {
-                    if let (true, Residual::Streams(s)) = (f32_streams, &mut b.residual) {
-                        s.rounding = Rounding::F32;
-                    }
+                if !rounded {
+                    d.desc.f32_arithmetic();
                 }
                 let (mut rows, mut chose) = (Vec::new(), Vec::new());
                 for (i, seq) in [[prompt.clone(), decode.clone()].concat(), long.clone()].iter().enumerate() {
@@ -3005,7 +3006,7 @@ mod tests {
                     }
                     for (t, &tok) in seq.iter().enumerate() {
                         let r = m.forward(&[tok], t as u32).unwrap().pop().unwrap();
-                        if (i == 0 && t + 1 >= prompt.len()) || t + 1 == seq.len() {
+                        if (i == 0 && t + 1 >= prompt.len()) || (i == 1 && t + 1 == seq.len()) {
                             rows.push(r);
                         }
                     }
@@ -3018,21 +3019,22 @@ mod tests {
                         chose[b].extend(got);
                     }
                 }
-                // (the long prompt's last row once: the first sequence ends at the last decode token)
-                rows.dedup();
                 (rows, chose)
             };
-            let (a, choices) = run(false, None);
-            let (b, _) = run(true, Some(&choices));
+            let (a, choices) = run(true, None);
+            let (b, _) = run(false, Some(&choices));
             let kls: Vec<f64> = a.iter().zip(&b).map(|(w, g)| kl_of(&Row::from_logits(w).unwrap(), g)).collect();
+            let mean = kls.iter().sum::<f64>() / kls.len() as f64;
+            let rms = (a.iter().flatten().map(|&x| (x as f64).powi(2)).sum::<f64>() / a.iter().map(Vec::len).sum::<usize>() as f64).sqrt();
             println!(
-                "glm seed {k}: the streams' rounding points alone, on the same choices: KL mean {:.2e} max {:.2e} over {} rows",
-                kls.iter().sum::<f64>() / kls.len() as f64,
+                "glm seed {k}: the noise floor KL mean {mean:.2e} max {:.2e} over {} rows (the logits' RMS {rms:.2})",
                 kls.iter().cloned().fold(0f64, f64::max),
                 kls.len()
             );
+            worst = worst.max(mean);
             let _ = std::fs::remove_dir_all(&dir);
         }
+        assert!(worst <= 1e-5, "a noise floor of KL {worst:.2e}, past a tenth of the bound");
     }
 
     /// The reference taking an engine's picks (`ref_drive` with `Picks`) on the glm case's model: its own picks taken give its own rows bit for bit;

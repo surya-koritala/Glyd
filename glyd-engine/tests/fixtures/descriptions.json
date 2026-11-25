@@ -26,7 +26,7 @@
   "glm5_next_config.json": {
     "blocks": 90,
     "tensors": 74001,
-    "kinds": "d22f9b20c676bb3c",
+    "kinds": "1ba997c4c525a16f",
     "weights": "a9f5fc3dc31bc783",
     "plan": "3303afecd72e4c0d",
     "family": "Glm"
@@ -34,7 +34,7 @@
   "glm5_next_tiny_config.json": {
     "blocks": 10,
     "tensors": 287,
-    "kinds": "0d1648187cbecbdb",
+    "kinds": "3ffc380de77739dd",
     "weights": "960dd97a1611e84b",
     "plan": "c7101a664acb48dd",
     "family": "Glm"
@@ -42,7 +42,7 @@
   "glm5_next_toy_config.json": {
     "blocks": 16,
     "tensors": 787,
-    "kinds": "4183faaeb2304c38",
+    "kinds": "4239134c6875c64b",
     "weights": "b946d4939ed131f8",
     "plan": "23566ee950a2eee9",
     "family": "Glm"
@@ -202,7 +202,7 @@
   "runtime/glm53_model.json": {
     "blocks": 6,
     "tensors": 106,
-    "kinds": "baf29761e58110b8",
+    "kinds": "4bc921e040fc4f09",
     "weights": "95e1bb9c29503b78",
     "plan": "ecbb696f1cab49b6",
     "family": "refused: m is a GlmMoeDsaForCausalLM model, which this engine has no description of yet"
@@ -210,7 +210,7 @@
   "runtime/glm53flash_model.json": {
     "blocks": 8,
     "tensors": 184,
-    "kinds": "8e50c90554f0b7be",
+    "kinds": "a0cfcfb9ce032ccb",
     "weights": "01f78ecd9cef5ef8",
     "plan": "5d1e28ec859c6d30",
     "family": "Glm"

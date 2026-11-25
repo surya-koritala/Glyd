@@ -159,10 +159,9 @@ impl MlaIndexer {
 /// `Op::Mla`: the latent attention of H into O. Matrices `input`'s, `q_b` [heads (nope + rope), q_rank] and `o` [hidden, heads v]; small tensors the q latent's
 /// norm, the key-value latent's norm and kv_b_proj [heads (nope + v), kv_rank] (the absorbed form multiplies by its rows); the cache ring `ring`, kv_rank + rope a
 /// token. Scores q . k times `scale` over the latent and the shared key part (rope channels as they are: none rotated), values the latent's; sigmoid(gate) on each
-/// head's output where `gate` (its columns after q's latent in a fused product). `q_round`: the q latent's norm's rounding as the kind gives it; KimiRMSNorm's
-/// (`Rounding::Twice`: the normed value rounded, then times the weight) runs its kernel (rms2_rows512: 512 threads, Kimi-K3's order of sums), any other the
-/// transformers RMSNorm's (rms2_rows: 256 threads, which rounds the normed value as transformers in bf16 does: GLM-5.3's). Both are the function their engines had, bit
-/// for bit.
+/// head's output where `gate` (its columns after q's latent in a fused product). `q_round`: the q latent's norm's rounding as the kind gives it; `Rounding::Twice`
+/// (the normed value rounded, then times the weight, rounded: KimiRMSNorm, and transformers' RMSNorm in bf16, GLM-5.3's since its description says so) runs
+/// rms2_rows512 (512 threads, Kimi-K3's order of sums), any other rms2_rows (256 threads, the same roundings in another order of sums).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MlaOp {
     pub heads: usize,
