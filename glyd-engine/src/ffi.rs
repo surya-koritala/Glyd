@@ -433,7 +433,7 @@ mod hip {
             let t = unsafe {
                 super::table(&|n| {
                     got.borrow_mut().push(n.to_string());
-                    1usize as *mut std::ffi::c_void
+                    std::ptr::dangling_mut::<std::ffi::c_void>()
                 })
             };
             assert!(t.is_ok(), "{:?}", t.err());
