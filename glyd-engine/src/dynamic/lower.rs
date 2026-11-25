@@ -78,6 +78,8 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
     let (mut mats, mut rings, mut ropes, mut ops) = (Vec::new(), Vec::new(), Vec::<Rope>::new(), Vec::new());
     let (mut sliding_rope, mut global_rope) = (None, None);
     let (mut proj_w, mut q_w, mut inter_w) = (0, 0, 0);
+    // (each attention block's ring, for the layers that share its keys and values: `Attn::kv_from`)
+    let mut ring_of = std::collections::BTreeMap::new();
     for l in 0..layers {
         let (ab, fb) = (&m.blocks[2 * l], &m.blocks[2 * l + 1]);
         let (ar, fr) = (&d.blocks[2 * l], &d.blocks[2 * l + 1]);
@@ -96,11 +98,23 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
             ropes.len() - 1
         });
         let (dh, nk, has_v) = (a.head_dim, a.kv_heads, !a.k_eq_v);
-        let ring = rings.len();
-        rings.push(Ring { d: dh, nk, window: a.window.unwrap_or(0), values: true });
-        let mut qkv = vec![one(ar, "q")?, one(ar, "k")?];
-        if has_v {
-            qkv.push(one(ar, "v")?);
+        // (a layer that shares an earlier layer's keys and values reads that layer's ring and writes none: its product is the queries alone)
+        let ring = match a.kv_from {
+            None => {
+                rings.push(Ring { d: dh, nk, window: a.window.unwrap_or(0), values: true });
+                ring_of.insert(2 * l, rings.len() - 1);
+                rings.len() - 1
+            }
+            Some(j) => {
+                *ring_of.get(&j).ok_or_else(|| Error(format!("Gemma 4: layer {l} shares the keys and values of block {j}, which makes none before it")))?
+            }
+        };
+        let mut qkv = vec![one(ar, "q")?];
+        if a.kv_from.is_none() {
+            qkv.push(one(ar, "k")?);
+            if has_v {
+                qkv.push(one(ar, "v")?);
+            }
         }
         let w = mats.len();
         let qkv = item(qkv, shape)?;
@@ -111,11 +125,15 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
         let inter = gate_up.rows / 2;
         mats.push(gate_up);
         mats.push(item(vec![one(fr, "down")?], shape)?);
-        let (q_norm, k_norm) = (name(one(ar, "q_norm")?), name(one(ar, "k_norm")?));
+        let q_norm = name(one(ar, "q_norm")?);
+        let k_norm = if a.kv_from.is_none() { name(one(ar, "k_norm")?) } else { q_norm };
         let (post_attn, pre_ff) = (name(one(ar, "norm_out")?), name(one(fr, "norm_in")?));
         let (post_ff, scalar) = (name(one(fr, "norm_out")?), name(one(fr, "res_scale")?));
         let next = if l + 1 < layers { in_norms[l + 1] } else { final_norm };
-        let attn = AttnOp::of(a, Slot::Proj, ring, Some(r), Some((q_norm, k_norm)))?;
+        let mut attn = AttnOp::of(a, Slot::Proj, ring, Some(r), Some((q_norm, k_norm)))?;
+        if a.kv_from.is_some() {
+            (attn.stride, attn.v_off, attn.v_norm, attn.writes) = (a.heads * dh, None, false, false);
+        }
         if attn.stride != stride {
             return err(format!("Gemma 4: layer {l}'s q, k and v product is {stride} wide, where its attention reads {}", attn.stride));
         }
@@ -1776,6 +1794,31 @@ mod tests {
         let (own, lowered) = (super::super::gemma4::describe(&c), super::super::gemma4::lowered(&dir, &c).unwrap_or_else(|e| panic!("{}", e.msg)));
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(format!("{own:#?}"), format!("{lowered:#?}"));
+    }
+
+    /// KV sharing lowered (the gemma4-kv case's random model): a shared layer's attention reads its store layer's ring and writes none, its product the
+    /// queries alone; only the eight layers' first four make rings; the shared layers' MLPs are twice as wide. The model is its lowering (`gemma4::lowered`),
+    /// and the CPU reference runs it whole (every row of its logits finite).
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_kv_sharing_gemma4_reads_its_store_layers_rings() {
+        let dir = std::env::temp_dir().join(format!("glyd-lower-g4kv-{}", std::process::id()));
+        crate::logits::gemma4_kv_random(&dir).unwrap();
+        let c = crate::gemma4::ConfigG4::load(&dir).unwrap();
+        let d = super::super::gemma4::lowered(&dir, &c).unwrap_or_else(|e| panic!("{}", e.msg));
+        let kinds = crate::runtime::describe::describe_dir(&dir).unwrap().0;
+        let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
+        let mut m = crate::runtime::reference::model::RefModel::load(&kinds, &|n: &str| crate::runtime::reference::model::checkpoint_tensor(&ck, n)).unwrap();
+        let logits = m.forward(&[2, 48, 85, 122, 159], 0).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(logits.iter().flatten().all(|v| v.is_finite()) && logits.len() == 5);
+        assert_eq!(d.rings.len(), 4);
+        let attn: Vec<(bool, usize, usize)> =
+            d.layers.iter().map(|ops| ops.iter().find_map(|o| if let Op::Attn(a) = o { Some((a.writes, a.ring, a.stride)) } else { None }).unwrap()).collect();
+        // (layers 4-6 sliding read layer 2's ring, layer 7 global layer 3's; a shared layer's product is its 4 query heads)
+        assert_eq!(attn[4..], [(false, 2, 4 * 256), (false, 2, 4 * 256), (false, 2, 4 * 256), (false, 3, 4 * 512)]);
+        assert!(attn[..4].iter().all(|a| a.0));
+        assert_eq!((d.mats[2].rows, d.mats[4 * 4 + 2].rows), (2 * 512, 4 * 512));
     }
 
     /// Gemma 4 lowered from its released config's kinds, sized by the shapes the description gives, is to the last field the executor's own description of it

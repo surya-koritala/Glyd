@@ -594,6 +594,59 @@ pub fn gemma4_random(out: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A random model of a Gemma 4 config `text`, every tensor at the shape its description gives (`Described::shapes`) and drawn from `seed` in the order of
+/// their names: the embedding in [-1, 1], norms in [0.5, 1.5], layer scalars in [0.5, 1], every other matrix in +-sqrt(3 / its columns). The sizes the
+/// E2B and E4B releases add (KV sharing, the double-wide MLP) come from the description, so each config's model is its own shape.
+pub fn gemma4_shaped_random(out: &Path, text: &str, seed: u64) -> Result<()> {
+    let cfg: Value = serde_json::from_str(text).map_err(|e| Error(format!("config.json: {e}")))?;
+    let d = crate::runtime::describe::describe(&cfg)?;
+    let mut r = seed;
+    let mut uni = move |a: f32, b: f32| {
+        r ^= r << 13;
+        r ^= r >> 7;
+        r ^= r << 17;
+        a + (b - a) * ((r >> 40) as f32 / (1u64 << 24) as f32)
+    };
+    let bf = |x: f32| {
+        let b = x.to_bits();
+        ((b + 0x7fff + ((b >> 16) & 1)) >> 16) as u16
+    };
+    let mut t: Vec<(String, Vec<u64>, Vec<u8>)> = Vec::new();
+    for (name, shape) in &d.shapes {
+        let (lo, hi) = if *name == d.embed {
+            (-1.0, 1.0)
+        } else if name.ends_with("layer_scalar") {
+            (0.5, 1.0)
+        } else if shape.len() == 1 {
+            (0.5, 1.5)
+        } else {
+            let a = (3.0 / shape[shape.len() - 1] as f32).sqrt();
+            (-a, a)
+        };
+        let n: usize = shape.iter().product();
+        t.push((name.clone(), shape.iter().map(|&x| x as u64).collect(), (0..n).flat_map(|_| bf(uni(lo, hi)).to_le_bytes()).collect()));
+    }
+    io(std::fs::create_dir_all(out))?;
+    io(std::fs::write(out.join("config.json"), text))?;
+    let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = t.iter().map(|(n, s, b)| (n.as_str(), "BF16", s.clone(), &b[..])).collect();
+    crate::pack::write_safetensors(&out.join("model.safetensors"), &[("format", "pt".to_string())], &refs)?;
+    println!("{}: a random Gemma 4, {} tensors, {:.0} MB", out.display(), t.len(), t.iter().map(|t| t.2.len()).sum::<usize>() as f64 / 1e6);
+    Ok(())
+}
+
+/// A small Gemma 4 with the E2B and E4B releases' KV sharing and double-wide MLP: eight layers, the last four (three sliding, one global) reading the
+/// keys and values of the last sliding and the last global layer before them, their MLPs twice as wide; no K = V (the E sizes have none).
+pub fn gemma4_kv_random(out: &Path) -> Result<()> {
+    let text = r#"{"architectures": ["Gemma4ForConditionalGeneration"], "model_type": "gemma4", "eos_token_id": [1, 106],
+        "text_config": {"model_type": "gemma4_text", "hidden_size": 512, "num_hidden_layers": 8, "num_attention_heads": 4, "num_key_value_heads": 1,
+        "attention_k_eq_v": false, "head_dim": 256, "global_head_dim": 512, "intermediate_size": 512, "vocab_size": 4096, "rms_norm_eps": 1e-6, "sliding_window": 32,
+        "layer_types": ["sliding_attention", "sliding_attention", "sliding_attention", "full_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention"],
+        "num_kv_shared_layers": 4, "use_double_wide_mlp": true, "final_logit_softcapping": 30.0, "max_position_embeddings": 4096,
+        "enable_moe_block": false, "hidden_size_per_layer_input": 0, "hidden_activation": "gelu_pytorch_tanh",
+        "rope_parameters": {"sliding_attention": {"rope_theta": 10000.0, "rope_type": "default"}, "full_attention": {"rope_theta": 1000000.0, "partial_rotary_factor": 0.25, "rope_type": "proportional"}}}}"#;
+    gemma4_shaped_random(out, text, 0x2026_1123_0000_00e2)
+}
+
 /// Qwen3.8-Flash-Next on its own engine: a prompt in chunks (the last chunk's last row through the head), the logits of a step.
 struct Qwen4x {
     e: crate::model_qwen4x::EngineQx,
@@ -821,6 +874,14 @@ pub fn cases() -> Vec<Case> {
             weights: Weights::Random(gemma4_random),
             engine: gemma4_engine,
             cpu: None,
+            vocab: 4096,
+        },
+        Case {
+            id: "gemma4-kv",
+            family: "Gemma 4 E2B/E4B layers (KV sharing across layers, the double-wide MLP)",
+            weights: Weights::Random(gemma4_kv_random),
+            engine: gemma4_engine,
+            cpu: Some(described_cpu),
             vocab: 4096,
         },
         Case {
@@ -1535,7 +1596,7 @@ mod tests {
 /// The case's model in `dir` on the description executor.
 pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Result<Dyn> {
     Ok(match case {
-        "gemma4" => {
+        "gemma4" | "gemma4-kv" => {
             let c = crate::gemma4::ConfigG4::load(dir)?;
             Dyn::new(dir, crate::dynamic::gemma4::lowered(dir, &c)?, None, o)?
         }
@@ -1549,7 +1610,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
         "nemotron" => crate::dynamic::nemotron::load(dir, o, level_layout(level)?.unwrap_or(Layout::Tiered))?,
         "deepseek-v4" => crate::dynamic::deepseek_v4::load(dir, o)?,
         "qwen4x" => crate::dynamic::qwen4x::load(dir, o)?,
-        other => return err(format!("{other}: gemma4, qwen35, qwen3, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
+        other => return err(format!("{other}: gemma4, gemma4-kv, qwen35, qwen3, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
     })
 }
 
@@ -1560,6 +1621,7 @@ pub(crate) fn random_dyn(case: &str, level: &str, tag: &str) -> Result<Dyn> {
     let e: Result<Dyn> = (|| {
         match case {
             "gemma4" => gemma4_random(&dir)?,
+            "gemma4-kv" => gemma4_kv_random(&dir)?,
             "qwen35" => qwen35_random(&dir)?,
             "qwen3" => qwen3_random(&dir)?,
             "muse" => crate::muse_ref::random(&dir)?,
@@ -1568,7 +1630,7 @@ pub(crate) fn random_dyn(case: &str, level: &str, tag: &str) -> Result<Dyn> {
             "nemotron" => crate::kcheck_nh::random(&dir, 0, 16)?,
             "deepseek-v4" => crate::dsv4_ref::random(&dir, None)?,
             "qwen4x" => qwen4x_random(&dir)?,
-            other => return err(format!("{other}: gemma4, qwen35, qwen3, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
+            other => return err(format!("{other}: gemma4, gemma4-kv, qwen35, qwen3, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
         }
         load_dyn(case, &dir, &o, level)
     })();

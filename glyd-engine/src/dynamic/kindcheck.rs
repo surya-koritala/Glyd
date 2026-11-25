@@ -406,7 +406,7 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, per: usize, n: usize, at: usize, r
         let o = dy.kc_get(out, n)?;
         let (mut want, mut margin) = (Vec::with_capacity(n * d), Vec::with_capacity(n));
         for t in 0..n {
-            want.extend(m.layers[b].body(0, (at + t) as u32, tok[t], &h[t * d..][..d])?);
+            want.extend(m.body(b, 0, (at + t) as u32, tok[t], &h[t * d..][..d])?);
             margin.push(m.layers[b].margin);
         }
         // (each row's largest difference over the pass's scale; a row past the bound whose choice was near a tie is left out, and named)
@@ -522,7 +522,7 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize) -> Result<Vec
 
 /// `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR]`: the cases (all unless named), then each class's worst against its bound.
 pub fn run(a: &crate::args::Args) -> Result<()> {
-    const ALL: [&str; 7] = ["gemma4", "qwen35", "nemotron-h", "muse", "kimi", "glm", "deepseek-v4"];
+    const ALL: [&str; 8] = ["gemma4", "gemma4-kv", "qwen35", "nemotron-h", "muse", "kimi", "glm", "deepseek-v4"];
     let want: Vec<&str> = a.pos.iter().skip(1).map(String::as_str).collect();
     if let Some(w) = want.iter().find(|w| !ALL.contains(w)) {
         return err(format!("no case {w}: {}", ALL.join(", ")));

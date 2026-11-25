@@ -42,6 +42,15 @@ pub(crate) fn attention(c: &ConfigG4, kind: KindG4, nq: usize, q_norm: usize, k_
 pub fn lowered(dir: &std::path::Path, c: &ConfigG4) -> crate::ffi::Result<ModelDesc> {
     let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
     let lowered = super::lower::gemma4(&kinds, &|n: &str| kinds.shapes.get(n).cloned(), c.eos.clone(), c.max_pos)?;
+    // (the executor's own description below has no layers that share keys and values: such a model is its lowering alone)
+    if kinds
+        .desc
+        .blocks
+        .iter()
+        .any(|b| matches!(&b.body, crate::runtime::kinds::Body::Mixer(crate::runtime::kinds::Mixer::Attention(a)) if a.kv_from.is_some()))
+    {
+        return Ok(lowered);
+    }
     super::lower::agree(lowered, &describe(c), &label)
 }
 

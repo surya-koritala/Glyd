@@ -75,8 +75,9 @@ impl ConfigG4 {
         if c.get("enable_moe_block").and_then(Value::as_bool) == Some(true) {
             return err("Gemma 4's mixture of experts (26B-A4B) is not in this engine yet");
         }
-        if num("hidden_size_per_layer_input").unwrap_or(0) > 0 || (!draft && num("num_kv_shared_layers").unwrap_or(0) > 0) {
-            return err("Gemma 4's E models (per-layer embeddings, shared key-value layers) are not in this engine yet");
+        // (shared key-value layers and the double-wide MLP are the layer kinds' (`Attn::kv_from`): the executor runs them from the description's lowering)
+        if num("hidden_size_per_layer_input").unwrap_or(0) > 0 {
+            return err("Gemma 4's per-layer embeddings (E2B, E4B) are not in this engine yet");
         }
         let kinds: Vec<KindG4> = c
             .get("layer_types")
