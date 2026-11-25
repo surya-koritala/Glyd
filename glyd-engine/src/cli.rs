@@ -3468,4 +3468,22 @@ mod tests {
         assert_eq!(nv_version("NVRM version: NVIDIA UNIX x86_64 Kernel Module  580.65.06  Sun Jul 27 07:09:24 UTC 2025"), Some("580.65.06".to_string()));
         assert_eq!(nv_version(""), None);
     }
+
+    /// /v1/glyd/info's `precision.kv` is the format the keys and values were loaded in, in the words of the plan's `kv_format` (`fit --json`): `bf16`, or `12-bit` where the engine holds them in
+    /// the executor's lossless 12-bit pages (`Dyn::held`: the tables the loader set from the plan's `kv12`). Before, it said `bf16` for every model.
+    #[test]
+    fn the_info_says_the_format_the_keys_and_values_were_loaded_in() {
+        let root = std::env::temp_dir().join(format!("glyd-engine-cli-kvformat-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let said = |twelve: bool| {
+            let held = crate::dev::Held { kv_type: crate::plan::kv_format_of(twelve), state_type: "fp32", ..Default::default() };
+            let v = crate::tools::obj(about("m", &root, None, "penguin", true, "w", Some(&held), &gpu("g", (8, 9), 15)));
+            v.get("precision").and_then(|p| p.get("kv")).cloned()
+        };
+        assert_eq!((said(false), said(true)), (Some(Value::from("bf16")), Some(Value::from("12-bit"))));
+        // (no engine's account of itself: null, as before)
+        let none = crate::tools::obj(about("m", &root, None, "penguin", true, "w", None, &gpu("g", (8, 9), 15)));
+        assert_eq!(none.get("precision").and_then(|p| p.get("kv")), Some(&Value::Null));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }

@@ -5926,6 +5926,8 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         let t = crate::dynamic::kv12::calibrate(&mut e, &prompts, "usercheck")?;
         e.set_kv12(Some(t));
     }
+    // (what a server says of its keys and values, /v1/glyd/info's `precision.kv`, is read from the engine at load, before the pools are made: the format asked for, which the pools then hold)
+    let kv_said = crate::conv::Gen::held(&e).map_or("", |h| h.kv_type);
     let (batchable, exact, host) = (e.batchable(), e.rows_exact(), host_experts(&e));
     let Some((k, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
     let chunk = crate::sched::ModelStep::chunk(step);
@@ -6020,6 +6022,13 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         Ok(ok)
     };
     let mut fails = 0;
+    if kv_said != crate::plan::kv_format_of(kv12) {
+        println!(
+            "FAIL the engine says its keys and values are in {kv_said}, as the info reports them, where this run holds them in {}",
+            crate::plan::kv_format_of(kv12)
+        );
+        fails += 1;
+    }
     let mut alone_logits = Vec::new();
     let mut alone_rows: Vec<Seen> = Vec::new();
     for (i, p) in prompts.iter().enumerate() {

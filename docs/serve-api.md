@@ -35,7 +35,7 @@ HF_HUB_OFFLINE=1 GLYD_API_KEY=... glyd-engine serve /path/to/models--glyd--Qwen3
   with a draft model, a model split across GPUs, or one with an operation that takes one sequence, runs one request at a time (the others wait in order).
 - The keys and values are in bf16 pages, or in the lossless 12-bit pages where `GLYD_KV=lossless` asks for them (Gemma 4 with `--no-draft`; the plain dense kind) and the plan finds that
   they reserve no more than bf16 pages for the context and users asked: both formats are lossless, so the plan never takes a lower level for the 12-bit pages. The plan chooses and the loader
-  follows it. The start's `Plan:` line says which (`keys and values in bf16` / `in 12-bit pages`) and `fit --json` has it as `kv_format` (`bf16` or `12-bit`).
+  follows it. The start's `Plan:` line says which (`keys and values in bf16` / `in 12-bit pages`) and `fit --json` has it as `kv_format` (`bf16` or `12-bit`); `/v1/glyd/info`'s `precision.kv` says what was loaded.
 - `--with MODEL2` serves a second model from the same process, on the same GPU: MODEL on its port and MODEL2 on `--with-port N`, else the next
   free port after MODEL's. Each is a server of its own (its scheduler, its `/v1/glyd/info`, `/metrics` and requests); the first loads as it would alone and takes
   up to half of the memory left for its keys and values, then the second loads in what is left and takes the rest. Both are models the description executor serves (each loads as `serve` would load it alone, as MODEL:wren).
@@ -264,8 +264,8 @@ From the record (served by its Hub name; the file list cut to two of sixteen):
   (the download checked it), else the file read at the start where it is 64 MiB or smaller, else null.
 - `level.requested` is the tag, `--lossy` (kestrel), or a glyd/NAME-LEVEL name; null where nothing asked for one (a
   directory runs at its own level). `effective` is the level loaded.
-- `precision`: `sums` is the products' accumulation. `kv` and `state` are null for a model across several GPUs, which does not say. `kv` is `bf16` for every model of the
-  executor, 12-bit pages too (`GLYD_KV=lossless`): the field does not say which pages are on.
+- `precision`: `sums` is the products' accumulation. `kv` and `state` are null for a model across several GPUs, which does not say. `kv` is the format the keys and values were loaded in:
+  `bf16`, or `12-bit` where the engine holds them in the lossless 12-bit pages (`GLYD_KV=lossless`, where the plan took them: the plan's `kv_format`). The `costs` profile below counts the keys and values in bf16, its formula, whichever pages are loaded.
 - `fields`: `read` are the request fields this server reads (some values of some are refused, below), `no_effect` change
   nothing here, `refused` are refused when set to anything but null or the value that means "not asked" (false, 0, []). The record's lists had 38, 12 and 38
   names; this tree's have 49, 12 and 28 (`DONE`, `NO_EFFECT`, and `NOT_DONE` with `CONSTRAINED`, in `glyd-engine/src/server.rs`).
@@ -283,7 +283,7 @@ From the record (served by its Hub name; the file list cut to two of sixteen):
 - `engine_bytes`: every buffer the engine holds on the GPU now, counted where the engine allocates and frees device memory
   (the sizes it asks for, not the driver's rounding).
 - `weights_bytes`, `kv_bytes`, `state_bytes`: what the model holds, made once at load and kept: the weights (the same
-  number as the start's "GiB of weights" line), the keys and values for the whole context (bf16, or 12-bit pages where `GLYD_KV=lossless` asks for them; `--ctx` positions, used
+  number as the start's "GiB of weights" line), the keys and values for the whole context (bf16, or, where `precision.kv` is `12-bit`, the pages with their escape and raw pools and the buffers a pass unpacks them into; `--ctx` positions, used
   or not), the states a sequence carries (zeroed at each request). `scratch_bytes` is the rest of `engine_bytes`: the
   activations, the products' workspaces, the logits, the rotary tables. Null where the engine does not say (a model across several GPUs).
 - `peak_bytes`, `peak_at`: the most `engine_bytes` has been since the process started, and when. Never reset.
