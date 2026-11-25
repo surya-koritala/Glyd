@@ -1,0 +1,58 @@
+# DRAFT for the owner's review (2026-11-25): the M2 gate's pinned list per GPU. Nothing here has been run on a GPU; every number is the planner's, not a measurement.
+# The gate (epic #121): a pinned per-GPU list (the smallest checkpoint of each family that the plan fits) serves 64 concurrent requests through one scheduler on an
+# RTX 4080 SUPER and an L4, with logits matching the CPU Ref backend. This file says which models, at which levels and contexts, for each GPU; the run that checks it comes later.
+#
+# How the rows were chosen
+# - Families: the rows of the engine's support table (src/support.rs): plain dense, Qwen3.5 layout, Nemotron-H layout, Gemma 4, Kimi-K3, GLM-5.3-Flash, GLM-5.3, DeepSeek-V4, Muse Spark,
+#   Qwen3.8-Flash-Next. A family with no checkpoint the planner fits on a GPU has a NONE row with the planner's own refusal: why a model does not run is part of the product.
+# - Models released in the last six months only (createdAt on the Hub), from the Hub's newest models of each publisher (the 40 newest of each of Qwen, google, deepseek-ai, moonshotai, zai-org,
+#   meta-llama, mistralai, microsoft, openbmb, LiquidAI, stepfun-ai, MiniMaxAI, openai, XiaomiMiMo, inclusionAI, CohereLabs, ibm-granite, baidu, tencent, and nvidia's 100 newest). Of a family's releases
+#   that the engine takes (`glyd-engine supports`) in that set, the smallest that fits; "smallest" is among those, not every model on the Hub. Cutoff 2026-05-20, as M1's list:
+#   google/gemma-4-12B-it (2026-05-23) is six months and two days old today; it is the model of the product path's smoke and the smallest Gemma 4 the engine runs (the E2B and E4B releases
+#   are refused: per-layer embeddings are not in the engine yet). The owner decides.
+# - Fits: `glyd-engine fit MODEL[:LEVEL] --machine rtx4080s|l4` on the CPU build (rtx4080s: 15.2 GiB free of 16.0, 56 GiB of RAM; l4: 22.0 GiB free of 24, 14 GiB of RAM). `fit` counts users
+#   for the plain dense kind alone, so the 64-user plans of the others are the planner's `serve --users 64` sizing (`plan::planned` called as `serve` calls it, which is where the lossy
+#   paths and Gemma 4 without its draft model count them), at 1,024 and 4,096 tokens of context a user.
+#
+# Users: 64 on every row (the gate). Contexts: 1,024 and 4,096 tokens a user on every row (the pool the planner sizes holds that for each of the 64 users).
+# Levels: the first is the least lossy level the planner holds; the others are levels it also holds (those the plans below were made for). A * marks a level where the planner does not count 64 users (see "Planner gaps").
+# The plan: weights on the GPU + the KV pool of the 64 users (GiB), and in brackets the GPU memory the plan needs in all (with the engine's work and its reserve) of the GPU's free memory; at 1,024 / 4,096 tokens.
+#
+# RUN | GPU | MODEL | family | released | users | levels | contexts | the plan | note
+# ALT | GPU | MODEL | family | released | users | levels | contexts | the plan | note       (the owner's choice instead of the RUN row of the same family)
+# NONE | GPU | MODEL | family | released | - | - | - | the planner's refusal | note
+#
+# --- RTX 4080 SUPER (preset rtx4080s) ---
+RUN | rtx4080s | openbmb/MiniCPM5-2B | plain dense | 2026-09-06 | 64 | penguin, kestrel, swift, wren | 1024, 4096 | penguin: 3.2 + 2.6 (7.5 of 15.2) / 3.2 + 10.5 (15.2 of 15.2) | Llama-style 2.5B, the smallest plain dense release in the set
+RUN | rtx4080s | tencent/WeMM-Ecom-0.8B | Qwen3.5 layout | 2026-11-18 | 64 | penguin*, kestrel, wren | 1024, 4096 | kestrel: 0.6 + 1.9 (4.5) / 0.6 + 4.2 (6.7); wren: 0.4 + 1.9 (4.3) / 0.4 + 4.2 (6.6); penguin: 1.0 of weights, one sequence sized | 0.85B, the smallest Qwen3.5-layout release in the set (Qwen's own newest, Qwen3.8-27B, does not fit this GPU)
+RUN | rtx4080s | nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 | Nemotron-H layout | 2026-08-01 | 64 | wren*, swift*, kestrel* | 1024, 4096 | wren: 13.1 on the GPU (an 11.3 expert cache: 94 places a layer of 128), 15.4 of experts in RAM, one sequence sized (15.1 / 15.2 of 15.2) | experts in RAM: 15.4 GiB of RAM at wren, 22.2 at kestrel (the plans' figures); the only Nemotron-H-layout release in the set the engine takes
+RUN | rtx4080s | google/gemma-4-12B-it | Gemma 4 | 2026-05-23 | 64 | kestrel, wren | 1024, 4096 | kestrel (no draft model): 9.1 + 4.1 (15.2 of 15.2) at both; wren: 6.3 + 6.9 (15.2 of 15.2) at both | penguin does not fit (17.5 GiB at 1,024 tokens); 64 users need --no-draft, a drafted run is sized for one; see the date above
+NONE | rtx4080s | moonshotai/Kimi-K3 | Kimi-K3 | 2026-06-13 | - | - | - | keeps the 82432 experts the GPUs do not hold in the computer's memory: they take 1347.1 GiB, and 56.0 GiB is free | 2.78 trillion parameters on the Hub's count
+NONE | rtx4080s | zai-org/GLM-5.3-Flash | GLM-5.3-Flash | 2026-08-25 | - | - | - | keeps the experts its GPUs do not hold in the computer's memory: they take 283.6 GiB, and 56.0 GiB is free | 321B parameters
+NONE | rtx4080s | zai-org/GLM-5.3 | GLM-5.3 | 2026-08-25 | - | - | - | needs about 625.7 GiB of GPU memory at penguin, and the 1 GPU here have 15.2 GiB free | 753B parameters
+NONE | rtx4080s | deepseek-ai/DeepSeek-V4-Flash-0731 | DeepSeek-V4 | 2026-07-31 | - | - | - | keeps the experts its GPUs do not hold in the computer's memory: they take 137.1 GiB, and 56.0 GiB is free | 304B parameters
+NONE | rtx4080s | Qwen/Qwen3.8-Flash-Next | Qwen3.8-Flash-Next | 2026-08-24 | - | - | - | needs about 327.0 GiB of GPU memory at penguin on one GPU (its layers are not cut over GPUs), and the GPU here with the most has 15.2 GiB free | 180B parameters
+NONE | rtx4080s | meta-models/Muse-Spark-Open-816B-A42B | Muse Spark | 2026-09-15 | - | - | - | not asked: the repo is gated, the planner cannot read its config | 822B parameters on the Hub's count, 1.6 TB stored
+#
+# --- L4 (preset l4) ---
+RUN | l4 | openbmb/MiniCPM5-2B | plain dense | 2026-09-06 | 64 | penguin, kestrel, swift, wren | 1024, 4096 | penguin: 3.2 + 2.6 (7.5 of 22.0) / 3.2 + 10.5 (15.4 of 22.0) | as above
+RUN | l4 | tencent/WeMM-Ecom-0.8B | Qwen3.5 layout | 2026-11-18 | 64 | penguin*, kestrel, wren | 1024, 4096 | kestrel: 0.6 + 1.9 (4.5) / 0.6 + 4.2 (6.7); wren: 0.4 + 1.9 (4.3) / 0.4 + 4.2 (6.6); penguin: 1.0 of weights, one sequence sized | as above
+ALT | l4 | Qwen/Qwen3.8-27B | Qwen3.5 layout | 2026-08-05 | 64 | swift, wren | 1024, 4096 | swift: 17.3 + 2.7 (22.0 of 22.0) at both; wren: 14.2 of weights at one user | Qwen's own newest release of the layout, not the smallest; penguin and kestrel do not fit
+RUN | l4 | nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 | Nemotron-H layout | 2026-08-01 | 64 | wren | 1024, 4096 | wren: 17.2 + 2.8 (22.0 of 22.0) at both, every expert on the GPU | kestrel and swift do not fit (their experts would need 28.2 and 24.8 GiB of RAM, 14 are free)
+RUN | l4 | google/gemma-4-12B-it | Gemma 4 | 2026-05-23 | 64 | penguin, kestrel, wren | 1024, 4096 | penguin (no draft model): 15.0 + 5.0 (22.0 of 22.0); kestrel: 9.1 + 10.9 (22.0 of 22.0); wren: 6.3 + 13.7 (22.0 of 22.0); the same at both contexts | 64 users need --no-draft; see the date above
+NONE | l4 | moonshotai/Kimi-K3 | Kimi-K3 | 2026-06-13 | - | - | - | keeps the 82432 experts the GPUs do not hold in the computer's memory: they take 1347.1 GiB, and 14.0 GiB is free | 2.78 trillion parameters on the Hub's count
+NONE | l4 | zai-org/GLM-5.3-Flash | GLM-5.3-Flash | 2026-08-25 | - | - | - | keeps the experts its GPUs do not hold in the computer's memory: they take 283.6 GiB, and 14.0 GiB is free | 321B parameters
+NONE | l4 | zai-org/GLM-5.3 | GLM-5.3 | 2026-08-25 | - | - | - | needs about 625.7 GiB of GPU memory at penguin, and the 1 GPU here have 22.0 GiB free | 753B parameters
+NONE | l4 | deepseek-ai/DeepSeek-V4-Flash-0731 | DeepSeek-V4 | 2026-07-31 | - | - | - | keeps the experts its GPUs do not hold in the computer's memory: they take 137.1 GiB, and 14.0 GiB is free | 304B parameters
+NONE | l4 | Qwen/Qwen3.8-Flash-Next | Qwen3.8-Flash-Next | 2026-08-24 | - | - | - | needs about 327.0 GiB of GPU memory at penguin on one GPU (its layers are not cut over GPUs), and the GPU here with the most has 22.0 GiB free | 180B parameters
+NONE | l4 | meta-models/Muse-Spark-Open-816B-A42B | Muse Spark | 2026-09-15 | - | - | - | not asked: the repo is gated, the planner cannot read its config | 822B parameters on the Hub's count, 1.6 TB stored
+#
+# Planner gaps the run has to cover (found while making this list; the plans above are what the planner says, not what a GPU holds)
+# - The dynamic route (the Qwen3.5 layout at penguin) sizes one sequence: the WeMM-Ecom-0.8B penguin row has no 64-user plan. Its lossy levels count 64 (the kestrel and wren figures); penguin's
+#   weights are 0.4 GiB above kestrel's.
+# - The experts-in-RAM plan of the Nemotron-H layout (the 4080 SUPER's) sizes one sequence too: 64 users are not planned there. On the L4 every expert is on the GPU and 64 are counted.
+# - Gemma 4 sizes 64 users only without its draft model (--no-draft); a drafted run is sized for one.
+# - Where a plan's total equals the free memory, the planner sized the KV pool to what the GPU has left: "fits" there means the pool the planner could give the 64 users, the same at 1,024 and 4,096.
+# - The L4's 14 GiB of RAM is the preset's; a machine with more would take the Nemotron-H layout's kestrel and swift levels with experts in RAM.
+# - Smaller checkpoints of these families exist but the engine refuses them today: Gemma 4 E2B and E4B (and nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16, the same architecture): per-layer embeddings.
+#   tencent/WeMM-Ecom-2B, -4B and -9B and microsoft/Fara1.5-4B are the same Qwen3.5 layout as the 0.8B row and larger.
