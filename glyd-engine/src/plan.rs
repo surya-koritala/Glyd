@@ -529,6 +529,10 @@ impl Shape {
         let arch = if c.arch.is_empty() { model_type.clone() } else { c.arch.clone() };
         let mut sh = Shape { arch, layers: kinds.len(), hidden: h, experts, topk, ..Default::default() };
         sh.window = s.sliding_window.unwrap_or(0);
+        // (compressed attention, DeepSeek-V4's (src/dynamic/deepseek_v4.rs): a layer keeps a window of keys that are its values, and where its ratio r is not 0 one compressed
+        // entry of every r tokens, its indexer's entry of every 4 beside it where r is 4)
+        let ratios: Option<Vec<usize>> =
+            c.text.get("compress_ratios").and_then(serde_json::Value::as_array).map(|a| a.iter().map(|v| v.as_u64().unwrap_or(0) as usize).collect());
         for (i, kind) in kinds.iter().enumerate() {
             match kind.as_str() {
                 "linear_attention" => {
@@ -544,7 +548,17 @@ impl Shape {
                     let sliding = k.contains("sliding") && sh.window > 0;
                     let (p, kv) = attention(!sliding && pattern.is_none() && s.global_head_dim.is_some());
                     sh.dense += p;
-                    if sliding {
+                    if let Some(r) = &ratios {
+                        let (ratio, d, idim) = (r.get(i).copied().unwrap_or(0), hd as usize, s.index_head_dim.unwrap_or(0));
+                        let entries = |w: usize, every: usize| (w * 2).div_ceil(every) as f64;
+                        sh.kv_sliding += (d * 2) as f64;
+                        if ratio > 0 {
+                            sh.kv_full += entries(d, ratio);
+                        }
+                        if ratio == 4 {
+                            sh.kv_full += entries(idim, 4);
+                        }
+                    } else if sliding {
                         sh.kv_sliding += kv
                     } else {
                         sh.kv_full += kv
@@ -4679,6 +4693,48 @@ pub mod sizing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The planner's keys and values a token (`Shape::kv_full`, `kv_sliding`) against what the executor's pools take a token (each ring's `token_bytes`, bf16), for a random case of each
+    /// attention kind: plain and sliding attention (Gemma 4's), the gated attention beside recurrent layers (Qwen3.5's layout), latent attention with its indexer's sparse keys
+    /// (GLM-5.3-Flash's toy case, as glmrandom makes it), compressed entries beside a window and an indexer (DeepSeek-V4's small random case). The same bytes, exactly.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_planners_keys_and_values_a_token_are_the_pools() {
+        use crate::dynamic::Stage;
+        let fixture = |f: &str| std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(f)).unwrap();
+        let qwen35: serde_json::Value = serde_json::from_str(&fixture("qwen35_tiny_manifest.json")).unwrap();
+        let q35 = qwen35["config"].as_str().unwrap().to_string();
+        let glm = fixture("glm5_next_toy_config.json");
+        let cases: Vec<(&str, String, crate::dynamic::ModelDesc)> = vec![
+            ("plain and sliding attention", crate::logits::GEMMA4_RANDOM_CONFIG.to_string(), {
+                crate::dynamic::gemma4::describe(&crate::gemma4::ConfigG4::parse(crate::logits::GEMMA4_RANDOM_CONFIG, None, false).unwrap())
+            }),
+            ("gated attention beside recurrent layers", q35.clone(), {
+                let c = crate::qwen35::Config35::parse(&q35, "qwen35", None).unwrap();
+                crate::dynamic::qwen35::describe(&c, &Stage::whole(c.layers)).unwrap()
+            }),
+            ("latent attention and its indexer's keys", glm.clone(), {
+                let c = crate::glm::ConfigGlm::parse(&glm, "GLM-5.3-Flash", None).unwrap();
+                crate::dynamic::glm::describe(&c, &Stage::whole(c.layers)).unwrap()
+            }),
+            ("compressed entries, a window and an indexer", crate::dsv4_ref::SMALL_CONFIG.to_string(), {
+                let c = crate::deepseek_v4::ConfigV4::parse(crate::dsv4_ref::SMALL_CONFIG, "random", None).unwrap();
+                let vo = crate::dynamic::deepseek_v4::V4Opts::of(crate::weights::Layout::Tiered, 1024);
+                crate::dynamic::deepseek_v4::describe(&c, &Stage::whole(c.layers), &vo).unwrap()
+            }),
+        ];
+        let mut bad = Vec::new();
+        for (kind, text, d) in &cases {
+            let sh = Shape::from_config(text).unwrap();
+            let full: usize = d.rings.iter().filter(|r| r.window == 0).map(|r| r.token_bytes()).sum();
+            let sliding: usize = d.rings.iter().filter(|r| r.window > 0).map(|r| r.token_bytes()).sum();
+            eprintln!("{kind}: the pools {full} + {sliding} (sliding) bytes a token, the planner {} + {}", sh.kv_full, sh.kv_sliding);
+            if (sh.kv_full, sh.kv_sliding) != (full as f64, sliding as f64) {
+                bad.push(format!("{kind}: the pools {full} + {sliding}, the planner {} + {}", sh.kv_full, sh.kv_sliding));
+            }
+        }
+        assert!(bad.is_empty(), "{bad:?}");
+    }
 
     fn fixture(name: &str) -> String {
         std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)).unwrap()
