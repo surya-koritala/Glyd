@@ -345,7 +345,8 @@ extern "C" __global__ void qx_ngram_hist(const int* tok, int* hist, int n) {
 // The indexer's rows [n, (IH + 1) ID] (IH query heads of ID, then the token's key): each query head normed (1 + wq) and turned (the rotary on its first 2 half dims, cos and sin bf16 [max_pos, half]) into
 // iq [n, IH ID]; the key, raw, into the key cache ik [positions, ID] at the row's position (through its block table ktab where it has one: kernels/mla.cu's ml_place). The norm rounded, the rotary's products
 // and sum each rounded (the reference's bf16 ops). Block (row, head), ID threads (a multiple of 32, at most 1,024).
-extern "C" __global__ void qx_ix_prep(const bf16* qk, const bf16* wq, const bf16* cs, const bf16* sn, int half, const int* pos, bf16* iq, bf16* ik, const int* ktab, int IH, float eps, int ID) {
+extern "C" __global__ void qx_ix_prep(const bf16* qk, const bf16* wq, const bf16* cs, const bf16* sn, int half, const int* pos, const int* rpos, unsigned long long rax, bf16* iq, bf16* ik,
+                                      const int* ktab, int IH, float eps, int ID) {
     const int t = blockIdx.x, hh = blockIdx.y, i = threadIdx.x, p = pos[t];
     const bf16* x = qk + (size_t)t * (IH + 1) * ID + (size_t)hh * ID;
     if (hh == IH) {
@@ -359,8 +360,8 @@ extern "C" __global__ void qx_ix_prep(const bf16* qk, const bf16* wq, const bf16
     __syncthreads();
     float o = nrm[i];
     if (i < 2 * half) {
-        const int k = i < half ? i : i - half;
-        const float c = b2f(cs[(size_t)p * half + k]), sv = b2f(sn[(size_t)p * half + k]);
+        const int k = i < half ? i : i - half, pk = rpos ? rpos[6 * t + (int)((rax >> (2 * k)) & 3)] : p;
+        const float c = b2f(cs[(size_t)pk * half + k]), sv = b2f(sn[(size_t)pk * half + k]);
         o = i < half ? qx_r(qx_r(nrm[i] * c) - qx_r(nrm[i + half] * sv)) : qx_r(qx_r(nrm[i] * c) + qx_r(nrm[i - half] * sv));
     }
     iq[(size_t)t * IH * ID + (size_t)hh * ID + i] = f2b(o);
@@ -368,8 +369,9 @@ extern "C" __global__ void qx_ix_prep(const bf16* qk, const bf16* wq, const bf16
 
 // The keys of the pools of B tokens that the call's rows (at pos[0] .. pos[n-1], consecutive) complete: pk[b] = rotary(bf16(norm(bf16(mean of ik[B b .. B b + B - 1])) (1 + wk)), position B b), the mean
 // in fp32 (summed in order). A block a pool from pos[0] / B on (grid ceil(n / B) + 1); one whose last token is past the call's last row is left to the call that completes it. ik's rows through ktab, pk's (a
-// pool a row) through ptab, where the sequence has block tables. ID threads.
-extern "C" __global__ void qx_ix_cmp(const bf16* ik, const int* ktab, const bf16* wk, const bf16* cs, const bf16* sn, int half, const int* pos, bf16* pk, const int* ptab, int n, float eps, int ID, int B) {
+// pool a row) through ptab, where the sequence has block tables. ID threads. M-RoPE (rpos): the position of the pool's first token, which the row of its last token holds at 6 r + 3.
+extern "C" __global__ void qx_ix_cmp(const bf16* ik, const int* ktab, const bf16* wk, const bf16* cs, const bf16* sn, int half, const int* pos, const int* rpos, unsigned long long rax, bf16* pk,
+                                     const int* ptab, int n, float eps, int ID, int B) {
     const int b = pos[0] / B + blockIdx.x, i = threadIdx.x;
     if (B * b + B - 1 > pos[n - 1]) return;
     const auto k = [&](int p) { return b2f(ik[ml_place(ktab, p) * ID + i]); };
@@ -382,7 +384,7 @@ extern "C" __global__ void qx_ix_cmp(const bf16* ik, const int* ktab, const bf16
     __syncthreads();
     float o = nrm[i];
     if (i < 2 * half) {
-        const int k = i < half ? i : i - half, p = B * b;
+        const int k = i < half ? i : i - half, p = rpos ? rpos[6 * (B * b + B - 1 - pos[0]) + 3 + (int)((rax >> (2 * k)) & 3)] : B * b;
         const float c = b2f(cs[(size_t)p * half + k]), sv = b2f(sn[(size_t)p * half + k]);
         o = i < half ? qx_r(qx_r(nrm[i] * c) - qx_r(nrm[i + half] * sv)) : qx_r(qx_r(nrm[i] * c) + qx_r(nrm[i - half] * sv));
     }

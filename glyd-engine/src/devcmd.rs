@@ -19,6 +19,9 @@
 //!   glyd-engine glmfmtcheck FIXTURE_DIR   the four formats of the pack (tern, cb2, cb3, cb4) against fixtures the pack writer made (tools/fmtfix.py)
 //!   glyd-engine cb2check PACK_DIR [--layer L] [--expert E]   one expert of a glyd-hbr-codes/2 pack (src/cpu_cb.rs) against the pack's testvec.safetensors
 //!   glyd-engine hbcheck [CASE...] [--speed] [--no-check]      the Hummingbird layer's kernels (src/moe_hb.rs, kernels/moe_hb.cu) against the CPU reference on random experts at 3 and 2 bits, all there and through places, and their speed (src/kcheck_hb.rs)
+//!   glyd-engine visioncheck make|tower|logits|compare|sched ...   the vision tower kind on the executor (src/vision_check.rs): a random model of the release's shape with its tower, the
+//!                                                             tower against its CPU reference stage by stage, an image prompt's logits for the release's engine to be held to, prompts with
+//!                                                             images through the common scheduler against each alone
 //!   glyd-engine run MODEL [--prompt TEXT] [--no-think] [--context N] [--port N] [--host H] [--temp T]
 //!                                                             what `glyd run` starts: the model made ready on the first run (downloaded, packed for this GPU
 //!                                                             at its level), then a chat in the terminal, or one answer with --prompt
@@ -279,6 +282,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "g4prefill" => glyd_engine::gemma4::prefill_prof(a),
         "qxtq" => glyd_engine::qx_trellis::cmd(a),
         "qxvision" => glyd_engine::vision::check(a),
+        "visioncheck" => glyd_engine::vision_check::run(a),
         _ => err("usage: glyd-engine run|serve|doctor|login|supports|fetch|prepare, or a development command (see the top of src/devcmd.rs)"),
     }
 }

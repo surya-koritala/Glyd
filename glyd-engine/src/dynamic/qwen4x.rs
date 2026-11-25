@@ -2,8 +2,9 @@
 //! (`lower::qwen4x`) and loaded here: the matrices packed at the level asked (penguin's lossless packs where none is), the ones the library does not pack and the table of n-grams
 //! held as saved (bf16), the small tensors as saved but A_log in fp32 (the delta rule reads it so). The experts either all on the GPU at the level asked (`load`:
 //! `moe_qwen4x::QxMoe`, handed over as a `ResidentMoe`), or from a pack of codebook rows in the shared expert store (`load_cached`: the codebook block,
-//! `QxMoeCb`, the misses on the host). The MTP layer is a draft head of the model (`load_drafting`: `lower::draft_head`, src/dynamic/head.rs). Not on the
-//! executor yet: the vision tower, and the table of n-grams read from the disk in place of the GPU (the family's own engine did both; R3d deleted it).
+//! `QxMoeCb`, the misses on the host). The MTP layer is a draft head of the model (`load_drafting`: `lower::draft_head`, src/dynamic/head.rs). The vision
+//! tower is the description's (src/dynamic/images.rs: every loader of the executor opens it). Not on the executor yet: the table of n-grams read from the disk in
+//! place of the GPU (the family's own engine did it; R3d deleted it).
 
 use super::{Dyn, ModelDesc, Op, Opts, ResidentMoe, Stage};
 use crate::cb_pack::CbPack;
@@ -218,7 +219,9 @@ pub fn one_gpu(a: &crate::args::Args) -> Result<i32> {
 /// codebook rows in the expert cache (`load_cached`: `--places N` a layer, else what the GPU has free past the reserve), the always-on matrices at the level asked
 /// (four bits where none is), its requests through the common scheduler (`server::work_with`), up to N at once. It listens while the model loads (/health is 503
 /// until it is loaded). Thinking is off where a request does not ask for it; the sampling defaults are the model's, at a temperature of 0.5 at most with min-p
-/// 0.1. One GPU (`one_gpu`). Not on the executor yet: the vision tower, and the draft head over the expert cache (its verify pass takes experts held whole on the GPU: src/dynamic/head.rs).
+/// 0.1. One GPU (`one_gpu`). Images (PNG, JPEG) come as OpenAI image_url parts (a data: URL or an http(s) one) and Anthropic image blocks, read by the
+/// model's vision tower (src/dynamic/images.rs), `--image-pixels N` the most pixels each is resized to (1,048,576 by default). Not on the executor yet: the draft
+/// head over the expert cache (its verify pass takes experts held whole on the GPU: src/dynamic/head.rs).
 pub fn http(snap: &Path, pack: &Path, a: &crate::args::Args) -> Result<()> {
     use crate::server;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -231,6 +234,10 @@ pub fn http(snap: &Path, pack: &Path, a: &crate::args::Args) -> Result<()> {
     }
     let device = one_gpu(a)?;
     let mode = PackMode::of(pack, a.has("precise"));
+    if let Some(p) = a.flag("image-pixels") {
+        let n = p.parse::<usize>().ok().filter(|&n| n > 0).ok_or_else(|| crate::ffi::Error(format!("--image-pixels {p}: a number of pixels")))?;
+        let _ = super::images::MAX_PIXELS.set(n);
+    }
     crate::monitor::start(mode.name(), ctx);
     server::STANDALONE.store(true, Ordering::Relaxed);
     if let Some(d) = a.flag("page") {

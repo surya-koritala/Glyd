@@ -182,6 +182,7 @@ impl KernQx {
         sn: u64,
         half: usize,
         pos: u64,
+        rope3: (u64, u64),
         iq: u64,
         ik: (u64, u64),
         n: usize,
@@ -190,7 +191,7 @@ impl KernQx {
         dim: usize,
     ) -> Result<()> {
         index_fits(dim, 1)?;
-        launch!(self.ix_prep, [n as u32, ih as u32 + 1, 1], [dim as u32, 1, 1], s; qk, wq, cs, sn, half as i32, pos, iq, ik.0, ik.1, ih as i32, eps, dim as i32)
+        launch!(self.ix_prep, [n as u32, ih as u32 + 1, 1], [dim as u32, 1, 1], s; qk, wq, cs, sn, half as i32, pos, rope3.0, rope3.1, iq, ik.0, ik.1, ih as i32, eps, dim as i32)
     }
 
     /// The keys of the pools of `block` tokens the call's rows complete into pk, on caches of the executor's pages: the raw keys' and the pools' rows through their
@@ -208,6 +209,7 @@ impl KernQx {
         sn: u64,
         half: usize,
         pos: u64,
+        rope3: (u64, u64),
         pk: (u64, u64),
         n: usize,
         eps: f32,
@@ -215,7 +217,7 @@ impl KernQx {
         block: usize,
     ) -> Result<()> {
         index_fits(dim, block)?;
-        launch!(self.ix_cmp, [(n as u32).div_ceil(block as u32) + 1, 1, 1], [dim as u32, 1, 1], s; ik.0, ik.1, wk, cs, sn, half as i32, pos, pk.0, pk.1, n as i32, eps, dim as i32, block as i32)
+        launch!(self.ix_cmp, [(n as u32).div_ceil(block as u32) + 1, 1, 1], [dim as u32, 1, 1], s; ik.0, ik.1, wk, cs, sn, half as i32, pos, rope3.0, rope3.1, pk.0, pk.1, n as i32, eps, dim as i32, block as i32)
     }
 
     /// The gated attention of the n rows over the tokens sel/cnt picked (in `splits` parts merged by attn_merge where more than one: `part` holds n nq splits 258

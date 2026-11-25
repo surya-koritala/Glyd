@@ -10,6 +10,7 @@ pub mod experts;
 pub mod gemma4;
 pub mod glm;
 pub mod head;
+pub mod images;
 pub mod kimi;
 #[cfg(feature = "dev")]
 pub mod kindcheck;
@@ -1513,6 +1514,8 @@ pub struct Dyn {
     sums: Option<Buf>,
     /// Launched steps landed with a later one queued, whose expert cache's end of a step is owed (src/dynamic/rows.rs `quiet`).
     owed: usize,
+    /// The images of a description with a vision tower (src/dynamic/images.rs): the tower, each sequence's images and positions, the pass's rows' positions.
+    vis: Option<images::Images>,
 }
 
 /// A sequence's own buffers and place, while another is selected (`Dyn::select`): its keys and values, its states, its position, the verify pass it can go back
@@ -1922,7 +1925,50 @@ impl Dyn {
                 head: None,
             }),
         };
-        Dyn::build(dev, big, draft, ropes, layout, st, o)
+        let mut e = Dyn::build(dev, big, draft, ropes, layout, st, o)?;
+        e.see_with(dir)?;
+        Ok(e)
+    }
+
+    /// The images of the model in `dir`, where its description has a vision tower (src/dynamic/images.rs) and the model is on this GPU whole: its tower opened,
+    /// the images' bounds and token set for the requests' threads (`vision::PREP`), the step graph captured again to read the rows' positions. A tower this
+    /// engine cannot run leaves the model served for text, the reason said.
+    fn see_with(&mut self, dir: &Path) -> Result<()> {
+        if !(self.stage.first && self.stage.last) {
+            return Ok(());
+        }
+        match images::Images::open(dir, &self.big.d, self.chunk.max(VERIFY_ROWS), &self.dev) {
+            Ok(Some(v)) => {
+                eprintln!(
+                    "images: up to {} pixels each ({} tokens)",
+                    v.prep.max_pixels,
+                    v.prep.max_pixels / (v.prep.patch * v.prep.patch * v.prep.merge * v.prep.merge)
+                );
+                let _ = crate::vision::PREP.set(v.prep.clone());
+                self.vis = Some(v);
+                if self.graph.is_some() {
+                    self.capture_graph()?;
+                }
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("images are off: {}", e.msg),
+        }
+        Ok(())
+    }
+
+    /// Whether the model reads images (its description's vision tower is open).
+    pub fn sees(&self) -> bool {
+        self.vis.is_some()
+    }
+
+    /// The images of the next `reply`'s prompt (`prompt`, each image's place in it as many image tokens as its rows): read by the tower as the prompt runs. No
+    /// image: the prompt's rows at their own positions.
+    pub fn set_images(&mut self, prompt: &[u32], images: &[std::sync::Arc<crate::vision::Image>]) -> Result<()> {
+        match self.vis.as_mut() {
+            Some(v) => v.set(self.seq, prompt, images),
+            None if images.is_empty() => Ok(()),
+            None => err("this model reads no images (its description has no vision tower)"),
+        }
     }
 
     /// A model a family's own loader put on the GPU (its matrices, small tensors and rotary tables, in its description's order).
@@ -2260,6 +2306,7 @@ impl Dyn {
             masker: None,
             sums: None,
             owed: 0,
+            vis: None,
         };
         // (a group of GPUs: every one's engine made before any one's first pass, src/dynamic/tp.rs)
         if let Some(c) = tp::comm() {
@@ -3204,6 +3251,7 @@ impl Dyn {
 
     fn capture_graph(&mut self) -> Result<()> {
         self.st.write(0, &[0i32])?;
+        self.rope_write(&[(self.seq, 0)])?;
         let st = self.st.ptr;
         // SAFETY: live buffers of the engine; the stream is synchronized after.
         unsafe {
@@ -3309,6 +3357,7 @@ impl Dyn {
         } else {
             self.pos.write(0, &(0..n).map(|i| (at + i) as i32).collect::<Vec<i32>>())?;
         }
+        self.rope_write(&(0..n).map(|i| (self.seq, (at + i) as i64)).collect::<Vec<_>>())?;
         let pp = if one { self.st.ptr } else { self.pos.ptr };
         self.start.set(at);
         // SAFETY: live buffers of the engine, sized for a chunk; io holds the slots' rows (checked above); the stream orders the copies and launches, and is synchronized before io is read.
@@ -3680,12 +3729,15 @@ impl Dyn {
             let pos: Vec<i32> = (0..n).map(|i| (self.n + i) as i32).collect();
             self.dev.sync()?;
             self.pos.write(0, &pos)?;
+            self.rope_write(&pos.iter().map(|&p| (self.seq, p as i64)).collect::<Vec<_>>())?;
             let last = at + n == tokens.len();
             let pp = self.pos.ptr;
             self.start.set(self.n);
             // SAFETY: live buffers of the engine, sized for a chunk.
+            unsafe { self.embed(&tokens[at..at + n])? };
+            self.stage_images(&[(self.seq, 0, self.n, n)])?;
+            // SAFETY: as above.
             unsafe {
-                self.embed(&tokens[at..at + n])?;
                 self.forward(&self.big, n, (pp, pp), last as usize)?;
                 self.draft_after_chunk(self.n, &tokens[at..at + n], last)?;
             }
@@ -3742,6 +3794,7 @@ impl Dyn {
         self.hold_blocks(self.n + 1)?;
         self.dev.sync()?;
         self.st.write(0, &[self.n as i32])?;
+        self.rope_write(&[(self.seq, self.n as i64)])?;
         let st = self.st.ptr;
         // SAFETY: live buffers; the graph was captured on them.
         unsafe {
@@ -3799,6 +3852,7 @@ impl Dyn {
         let n = seq.len();
         let pos: Vec<i32> = (0..n).map(|i| (n0 + i) as i32).collect();
         self.pos.write(0, &pos)?;
+        self.rope_write(&pos.iter().map(|&p| (self.seq, p as i64)).collect::<Vec<_>>())?;
         let pp = self.pos.ptr;
         // SAFETY: live buffers sized for k + 1 rows; the tokens are read after the synchronize.
         unsafe {
@@ -3868,6 +3922,17 @@ impl crate::conv::Gen for Dyn {
         self.share = part.clamp(0.0, 1.0);
     }
 
+    fn see(&mut self, images: Vec<std::sync::Arc<crate::vision::Image>>) -> Result<()> {
+        match self.vis.as_mut() {
+            Some(v) => {
+                v.next = images;
+                Ok(())
+            }
+            None if images.is_empty() => Ok(()),
+            None => err("this model reads no images (its description has no vision tower)"),
+        }
+    }
+
     /// The weights (a draft model's too), the rings of keys and values for the whole context (where they are in 12-bit pages, the pages with their pools and buffers: `Lossless::bytes`),
     /// and the states; all made in `build` and kept as they are while it runs. `kv_type` is the format the loader took for the keys and values (`plan::kv_format_of`).
     fn held(&self) -> Option<crate::dev::Held> {
@@ -3893,6 +3958,11 @@ impl crate::conv::Gen for Dyn {
             return err(format!("{} prompt tokens, where the context holds {}", prompt.len(), self.ctx));
         }
         self.reset()?;
+        // (the prompt's images, where `see` gave them for this reply: none for a reply it did not)
+        if let Some(v) = self.vis.as_mut() {
+            let images = std::mem::take(&mut v.next);
+            v.set(self.seq, prompt, &images)?;
+        }
         let greedy = o.params.greedy();
         let mut sampler = crate::sampler::Sampler::new(o.params.clone(), prompt);
         self.top.ask = sampler.top_need();

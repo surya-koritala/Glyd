@@ -1038,16 +1038,23 @@ pub fn run(a: &Args) -> i32 {
             return fail(&ui, &Refusal::new("the prompt is empty", "Give one: --prompt \"Say hello\""));
         }
     }
+    // (`--image PATH`, once for each image: read with the prompt, in order, where the model reads images)
+    let images: Vec<String> = a.flags.iter().filter(|(k, _)| k == "image").filter_map(|(_, v)| v.clone()).collect();
+    if !images.is_empty() && prompt.is_none() && !piped {
+        return fail(&ui, &Refusal::new("--image is read with a prompt", "Give one: --image PATH --prompt \"What is in this picture?\""));
+    }
     sig::install();
     match layout {
-        Some(layout) => run_lossy(a, layout, &ui, prompt, piped, thinking),
+        Some(layout) => run_lossy(a, layout, &ui, prompt, piped, thinking, &images),
         None => fail(&ui, &unrun(a.pos.get(1).map_or("", String::as_str))),
     }
 }
 
-/// One answer on stdout (the thinking on stderr), and the exit status.
-fn once(talk: &mut Talk, defaults: &Params, prompt: &str, thinking: Option<bool>, ui: &RefCell<Ui>) -> i32 {
-    let messages = vec![Message::new("user", prompt)];
+/// One answer on stdout (the thinking on stderr), and the exit status. `images`: the files of the prompt's images, in order, before its text (a model with a
+/// vision tower reads them: `vision::PREP`).
+fn once(talk: &mut Talk, defaults: &Params, prompt: &str, thinking: Option<bool>, ui: &RefCell<Ui>, images: &[String]) -> i32 {
+    let content = format!("{}{prompt}", crate::tools::IMAGE_PLACE.repeat(images.len()));
+    let messages = vec![Message::new("user", &content)];
     let mut request = Request { params: defaults.clone(), thinking, ..Request::default() };
     request.params.seed = sampler::fresh_seed();
     let mut split = Splitter::new(talk.opens_thinking(&messages, &request));
@@ -1072,10 +1079,31 @@ fn once(talk: &mut Talk, defaults: &Params, prompt: &str, thinking: Option<bool>
             }
         }
     };
-    let r = talk.reply(&messages, &request, &mut |t| {
-        show(split.feed(t));
-        true
-    });
+    // (the images read, each one's place in the prompt made as long as its tokens, and given to the engine for this reply)
+    let mut seen = || -> crate::ffi::Result<Option<Vec<u32>>> {
+        if images.is_empty() {
+            return Ok(None);
+        }
+        let prep = crate::vision::PREP.get().ok_or_else(|| crate::ffi::Error("this model reads no images (no vision tower is loaded)".into()))?;
+        let read: Vec<std::sync::Arc<crate::vision::Image>> = images
+            .iter()
+            .map(|p| prep.image(&std::fs::read(p).map_err(|e| crate::ffi::Error(format!("{p}: {e}")))?).map(std::sync::Arc::new))
+            .collect::<crate::ffi::Result<_>>()?;
+        let ids = crate::vision::expand(&talk.prompt_ids(&messages, &request)?, prep.image_token, &read)?;
+        talk.e.see(read)?;
+        Ok(Some(ids))
+    };
+    let r = match seen() {
+        Ok(Some(ids)) => talk.reply_to(&ids, &request, &mut |t| {
+            show(split.feed(t));
+            true
+        }),
+        Ok(None) => talk.reply(&messages, &request, &mut |t| {
+            show(split.feed(t));
+            true
+        }),
+        Err(e) => Err(e),
+    };
     show(split.finish());
     match r {
         Ok(o) => {
@@ -1318,6 +1346,15 @@ fn load_lossy(
 ) -> Done<(Box<dyn Gen>, Tok, Option<Chat>, Params, usize, String, Option<server::Info>)> {
     let (t0, started) = (Instant::now(), crate::monitor::clock());
     let model = a.need(1, "MODEL")?.to_string();
+    // (`--image-pixels N`: the most pixels an image is resized to, where the model reads images; before the model loads its tower)
+    if let Some(p) = a.flag("image-pixels") {
+        let n = p
+            .parse::<usize>()
+            .ok()
+            .filter(|&n| n > 0)
+            .ok_or_else(|| Refusal::new(format!("--image-pixels {p}: a number of pixels"), "As --image-pixels 1048576"))?;
+        let _ = crate::dynamic::images::MAX_PIXELS.set(n);
+    }
     match dynamic_family(&model) {
         Some(family) if lossy_route(family, layout) => {}
         Some(family) => return load_dynamic(a, &model, family, hb_level(&model, layout), served, ui),
@@ -1828,7 +1865,7 @@ fn open_dynamic(a: &Args, plan: &LoadPlan, dir: &Path) -> Done<std::result::Resu
 
 /// `run MODEL:kestrel` (or `:swift`, or `--lossy`): the model (a directory in the Hub's layout, the cache's copy, else downloaded), every weight rounded and packed in `layout` once into the cache and read from there (a glyd-v7 directory: read
 /// as it is, at its level; a model with a pre-packed repo on the Hub, `glyd/NAME-LEVEL`: that is downloaded in place of the bf16 model), then one answer or the terminal's chat.
-fn run_lossy(a: &Args, layout: Layout, ui: &RefCell<Ui>, mut prompt: Option<String>, piped: bool, thinking: Option<bool>) -> i32 {
+fn run_lossy(a: &Args, layout: Layout, ui: &RefCell<Ui>, mut prompt: Option<String>, piped: bool, thinking: Option<bool>, images: &[String]) -> i32 {
     let started = load_lossy(a, layout, "", ui);
     let (mut e, tok, chat, defaults, _vocab, line, _) = match started {
         Ok(x) => x,
@@ -1851,7 +1888,7 @@ fn run_lossy(a: &Args, layout: Layout, ui: &RefCell<Ui>, mut prompt: Option<Stri
         }
     };
     if let Some(p) = prompt {
-        let code = once(&mut Talk { e: &mut *e, tok: &tok, chat: chat.as_ref() }, &defaults, p.trim(), thinking, ui);
+        let code = once(&mut Talk { e: &mut *e, tok: &tok, chat: chat.as_ref() }, &defaults, p.trim(), thinking, ui, images);
         profile();
         return code;
     }
