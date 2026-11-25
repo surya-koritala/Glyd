@@ -62,7 +62,7 @@ When a model does not load at the level asked for, `fit` prints the degrade ladd
 functions `run` and `serve` do, from the same GPU's free memory: the weights, the cache for the context and the users, the engine's work, and a
 small reserve the GPU keeps. Where `run` would refuse, `fit` refuses in the same words and exits 3. `run` prints its plan before it loads
 (`Plan: ...`). `fit --json` prints the plan as `glyd-plan/1` for scripts: `level`, `context`, `users`, the bytes of each part, `kv_format`
-(`bf16`, or `12-bit` where `GLYD_KV=lossless` asks for the lossless 12-bit pages and they reserve no more than bf16 for the plan), and `experts`
+(`bf16`, or `12-bit` where `GLYD_KV=lossless` asks for the lossless 12-bit pages and they reserve no more than bf16 for the plan; `fit` and `run` say which in their plan line, "keys and values in bf16" or "in 12-bit pages", and `run` and `serve` load what the plan says), and `experts`
 (places a layer on the GPU, bytes in the computer's memory and on the disk) where a mixture of experts keeps them off the GPU.
 
 The one size `fit` estimates is the lossless level's (penguin), which depends on how well the weights compress: 10.75 bits a weight
@@ -71,7 +71,7 @@ model's first load, `fit` and `run` plan the GPU's memory with what that load to
 
 ## run
 
-The first run downloads the model into the Hugging Face cache and packs it for this GPU (and makes the 12-bit KV tables where `GLYD_KV=lossless` asks for those pages). Later runs start
+The first run downloads the model into the Hugging Face cache and packs it for this GPU (and makes the 12-bit KV tables where its plan has those pages: `GLYD_KV=lossless` asks for them). Later runs start
 from the packed copy.
 
 - `--prompt "TEXT"` gives one answer and exits. `--no-think` turns a thinking model's thinking off.

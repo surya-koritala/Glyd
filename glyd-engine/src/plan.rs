@@ -1719,11 +1719,7 @@ impl LoadPlan {
 
     /// The keys and values' format: "12-bit" (the executor's lossless 12-bit pages, `kv12`) or "bf16".
     pub fn kv_format(&self) -> &'static str {
-        if self.kv12 {
-            "12-bit"
-        } else {
-            "bf16"
-        }
+        kv_format_of(self.kv12)
     }
 
     /// The plan in words, for the line `run` says before it loads and `fit` prints.
@@ -2639,6 +2635,16 @@ pub struct Planned {
     pub ladder: Option<Ladder>,
     /// The positions the decode predictions are for (`Ask::positions`).
     pub positions: f64,
+}
+
+/// The words for the keys and values' format, the plan's (`LoadPlan::kv_format`: `fit`'s JSON) and the loaded engine's (`/v1/glyd/info`'s `precision.kv`):
+/// "12-bit" where the executor holds them in its lossless 12-bit pages, else "bf16".
+pub fn kv_format_of(twelve: bool) -> &'static str {
+    if twelve {
+        "12-bit"
+    } else {
+        "bf16"
+    }
 }
 
 /// Whether the run of `a` holds its keys and values in the executor's 12-bit lossless pages (GLYD_KV=lossless), as the family's load plan sizes them: Gemma 4 with no draft model,
