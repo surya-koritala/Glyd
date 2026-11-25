@@ -56,7 +56,7 @@ pub fn load_level(dir: &Path, o: &Opts, level: Layout) -> Result<Dyn> {
     };
     let experts = (c.layers * c.experts * 3 * c.inter * c.hidden) as u64 * per / 8;
     let table: u64 = held_as_saved(&d).iter().map(|&k| (d.mats[k].rows * d.mats[k].cols * 2) as u64).sum();
-    let free = Dev::new(o.device)?.mem_info().map(|(f, _)| f as u64).unwrap_or(0);
+    let free = Dev::new(o.device)?.mem_info()?.0 as u64;
     if experts + table > free {
         return err(format!(
             "{FAMILY}: its experts ({:.1} GB at {per} bits) and its table of n-grams ({:.1} GB) do not fit this GPU's {:.1} GB free: a pack of its experts serves it (`load_cached`)",
@@ -129,7 +129,7 @@ pub fn load_cached(dir: &Path, o: &Opts, k: &Caching) -> Result<Dyn> {
         // (read after the always-on matrices are on the GPU: what is free now, less the reserve, is the places')
         let slots = match k.places {
             Some(p) => p,
-            None => places_for(Dev::new(dev)?.mem_info().map(|(f, _)| f as u64).unwrap_or(0), k.reserve, c.layers, place, kept),
+            None => places_for(Dev::new(dev)?.mem_info()?.0 as u64, k.reserve, c.layers, place, kept),
         };
         (0..c.layers)
             .map(|l| {
@@ -311,6 +311,7 @@ mod tests {
 
     /// The family's second random case (`logits::qwen4x_s2_random`: 2 streams, index heads of 64 over pools of 2, no n-gram embedding) lowers to the shared
     /// operations with those counts, and every matrix it multiplies by is a tensor of its manifest of the shape the lowering reads.
+    #[cfg(feature = "dev")]
     #[test]
     fn the_second_random_case_lowers_with_its_counts() {
         let m: serde_json::Value = serde_json::from_str(&crate::logits::qwen4x_s2_manifest().unwrap()).unwrap();

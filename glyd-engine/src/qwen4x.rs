@@ -249,8 +249,8 @@ impl ConfigQx {
 
     /// What this engine reads of a model, from the model's description (`runtime::describe`: its layer kinds, and the experts' widths from the
     /// shapes it says), with what no description holds from `own` (this engine's reading of the same config: the end tokens, with the generation
-    /// config's, the longest context, the tensors' prefix). Held to `own` (`agrees`), it is the check that the description says everything the
-    /// engine runs on, before the engine's work moves onto the description's kinds.
+    /// config's, the longest context, the tensors' prefix). Held to `own` (`agrees`, at the executor's load: `dynamic::qwen4x::lowered`), it is the
+    /// check that the description says everything the engine runs on.
     pub fn lowered(d: &crate::runtime::describe::Described, own: &ConfigQx) -> Result<ConfigQx> {
         use crate::runtime::describe::Source;
         use crate::runtime::kinds::{Body, Ffn, Mixer, Residual};
