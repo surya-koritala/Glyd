@@ -35,13 +35,15 @@ Short names offer models released in the last six months. An older model still w
 ## fit
 
 `fit` reads the model's `config.json` from the Hub and prints the plan: the level, where the weights go, the context, and a
-predicted speed. For Qwen3.5-9B with `--machine rtx4090`, the preset for an RTX 4090 with 23 GiB free:
+predicted speed. For gemma-4-12B with `--machine rtx4090`, the preset for an RTX 4090 with 23 GiB free (the plan line and the levels; the lines
+between them and the ones after, on quality and on where the speeds come from, are left out):
 
 ```
-Plan: kestrel (6.5 bits) · GPU 0 (NVIDIA GeForce RTX 4090) · 32768 tokens of context · ~127 tokens/s (114-139) · prompts ~7906 tokens/s
-  kestrel        6.8 GiB    32768 ctx  ~ 127 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)  <- chosen
-  swift          5.8 GiB    32768 ctx  ~ 146 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)
-  wren           4.7 GiB    32768 ctx  ~ 172 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)
+Plan: penguin (10.8 bits) · GPU 0 (NVIDIA GeForce RTX 4090) · 32768 tokens of context · ~41 tokens/s (37-45) · prompts ~4583 tokens/s
+  penguin       15.0 GiB    32768 ctx  ~  41 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)  <- chosen
+  kestrel        9.1 GiB    32768 ctx  ~  83 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)
+  swift          7.7 GiB    32768 ctx  ~  95 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)
+  wren           6.3 GiB    32768 ctx  ~ 111 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)
 ```
 
 It lists every level the model runs at with its size on your GPU, and marks the one it chose. The speeds are predictions for
