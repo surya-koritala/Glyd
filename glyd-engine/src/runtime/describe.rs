@@ -1331,7 +1331,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
     let first_dense = k.opt_usize("first_k_dense_replace")?;
     let mlp_types: Option<Vec<bool>> = k.raw("mlp_layer_types").and_then(|v| v.as_array()).map(|a| a.iter().map(|x| x.as_str() == Some("sparse")).collect());
     let dense_inter = k.usize("intermediate_size")?;
-    k.usize("moe_intermediate_size")?;
+    let moe_inter = k.usize("moe_intermediate_size")?;
     let clamp = if flash { k.opt_f64("swiglu_limit")?.map(|v| v as f32) } else { None };
     let mlp = Mlp { act, gated: true, bias: false, clamp };
     let ne = k.usize("n_routed_experts")?;
@@ -1354,6 +1354,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
         shared_gate: false,
         latent: None,
     };
+    let shared_inter = moe_inter * k.opt_usize("n_shared_experts")?.unwrap_or(0);
     // the residual streams (GLM-5.3-Flash)
     let streams = if flash && k.bool("mhc", true)? {
         Some(StreamsP {
@@ -1368,7 +1369,9 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
         None
     };
     let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
-    let n = Norm::rms(eps);
+    // (the RMS norms round as the release's do, Glm5NextTextRMSNorm and GlmMoeDsaRMSNorm in bf16: the normed value to bf16, times the bf16 weight, rounded:
+    // the blocks', the final one, the latent attention's q and key-value latents')
+    let n = Norm { rounding: Rounding::Twice, ..Norm::rms(eps) };
     // (the matrices a release holds in FP8: those of these roles that its quantization_config does not leave out; a layer's experts as its first expert's)
     let held = |w: &str| fp8.as_ref().is_some_and(|f| f.holds(w));
     let mark = |r: &[(String, Source)], out: &mut BTreeSet<String>| {
@@ -1393,7 +1396,11 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
         }
     };
     let mut fp8set = BTreeSet::new();
-    let mut dense_shapes = std::collections::BTreeMap::new();
+    // (the shapes of the tensors the full-size layout reads, which a loader by the kinds and a random model take: the norms, the latent attention and its
+    // indexer, the experts, the dense MLP; the streams' too. Not yet the delta attention's)
+    let mut shapes = std::collections::BTreeMap::new();
+    let hc = streams.map(|s| s.streams).unwrap_or(0);
+    let hc_shapes = [("hc_fn", vec![(2 + hc) * hc, hc * d]), ("hc_base", vec![(2 + hc) * hc]), ("hc_scale", vec![3])];
     let (mut blocks, mut roles) = (Vec::new(), Vec::new());
     for (l, &is_lin) in types.iter().enumerate() {
         let p = names::HF.layer(prefix, l);
@@ -1428,6 +1435,24 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
                 }
                 _ => None,
             };
+            let qw = heads * (nope + rd);
+            let mut sh = vec![("kv_a", vec![kvl + rd, d]), ("kv_a_norm", vec![kvl]), ("kv_b", vec![heads * (nope + vd), kvl]), ("o", vec![d, heads * vd])];
+            match q_lora {
+                Some(ql) => sh.extend([("q_a", vec![ql, d]), ("q_a_norm", vec![ql]), ("q_b", vec![qw, ql])]),
+                None => sh.push(("q", vec![qw, d])),
+            }
+            if let (Some(h), Some(dim)) = (ih, idim) {
+                sh.extend([
+                    ("indexer_wq_b", vec![h * dim, q_lora.unwrap_or(d)]),
+                    ("indexer_wk", vec![dim, d]),
+                    ("indexer_k_norm", vec![dim]),
+                    ("indexer_k_norm_bias", vec![dim]),
+                    ("indexer_weights", vec![h, d]),
+                    ("indexer_pool_ape", vec![pool, dim]),
+                    ("indexer_pool_gate", vec![dim, d]),
+                ]);
+            }
+            shape_roles(&mut shapes, &r, &sh);
             Mixer::Mla(Mla {
                 heads,
                 q_lora,
@@ -1436,8 +1461,8 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
                 rope_dim: rd,
                 v_dim: vd,
                 rope: rope.clone(),
-                q_norm: Norm::rms(mla_eps),
-                kv_norm: Norm::rms(mla_eps),
+                q_norm: Norm { rounding: Rounding::Twice, ..Norm::rms(mla_eps) },
+                kv_norm: Norm { rounding: Rounding::Twice, ..Norm::rms(mla_eps) },
                 gate: None,
                 scale,
                 absorbed: true,
@@ -1446,6 +1471,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
         };
         mark(&r, &mut fp8set);
         let res = residual(part::HC_ATTN, &mut r);
+        shape_roles(&mut shapes, &r, &[vec![("norm_in", vec![d])], hc_shapes.to_vec()].concat());
         blocks.push(Block { norm_in: n, body: Body::Mixer(mixer), norm_out: None, residual: res });
         roles.push(r);
         let sparse = match (&mlp_types, first_dense) {
@@ -1456,15 +1482,29 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
         let mut r = names::roles(part::NORM_POST, &p, 0, all);
         let body = if sparse {
             r.extend(names::roles(part::MOE, &p, ne, |x| moe.shared.is_some() || !x.starts_with("shared_")));
+            shape_roles(
+                &mut shapes,
+                &r,
+                &[
+                    ("router", vec![ne, d]),
+                    ("choice_bias", vec![ne]),
+                    ("experts_gate_up", vec![moe_inter, d]),
+                    ("experts_down", vec![d, moe_inter]),
+                    ("shared_gate", vec![shared_inter, d]),
+                    ("shared_up", vec![shared_inter, d]),
+                    ("shared_down", vec![d, shared_inter]),
+                ],
+            );
             Body::Ffn(Ffn::Moe(moe.clone()))
         } else {
             r.extend(names::roles(part::MLP_BODY, &p, 0, all));
             // (a dense MLP's shapes, which the lowering to the executor reads its width from)
-            shape_roles(&mut dense_shapes, &r, &[("gate", vec![dense_inter, d]), ("up", vec![dense_inter, d]), ("down", vec![d, dense_inter])]);
+            shape_roles(&mut shapes, &r, &[("gate", vec![dense_inter, d]), ("up", vec![dense_inter, d]), ("down", vec![d, dense_inter])]);
             Body::Ffn(Ffn::Mlp(mlp))
         };
         mark(&r, &mut fp8set);
         let res = residual(part::HC_FFN, &mut r);
+        shape_roles(&mut shapes, &r, &[vec![("norm_in", vec![d])], hc_shapes.to_vec()].concat());
         blocks.push(Block { norm_in: n, body, norm_out: None, residual: res });
         roles.push(r);
     }
@@ -1481,7 +1521,12 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
     };
     let mut out = finish(&k, desc, &names::HF, prefix, roles, mtp_layers)?;
     out.scales = fp8set.into_iter().map(|w| (w.clone(), format!("{w}_scale_inv"))).collect();
-    out.shapes = dense_shapes;
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(h) = &out.head {
+        shapes.insert(h.clone(), vec![vocab, d]);
+    }
+    out.shapes = shapes;
     // (the draft layers follow the model's, under the same names)
     out.unread.extend((0..mtp_layers).map(|i| format!("{}.", names::HF.layer(prefix, layers + i))));
     let _ = fp8.map(|f| f.block);
@@ -1930,7 +1975,9 @@ fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
         embed: Embed { scale: 1.0, norm: Some(bare), streams: 1, per_layer: None },
         blocks,
         final_norm: Norm::rms(eps),
-        head: Head { tied, softcap, scale: out_mult, collapse: Collapse::None, rounding: Rounding::F32 },
+        // (the release's head is bf16: its product, the output multiplier's product and the soft-cap's three operations each rounded, as muse_ref.rs and the
+        // engine's muse_softcap compute them)
+        head: Head { tied, softcap, scale: out_mult, collapse: Collapse::None, rounding: Rounding::Twice },
         mtp: Vec::new(),
         vision: None,
         rope: None,

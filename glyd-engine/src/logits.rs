@@ -476,14 +476,85 @@ pub trait Run {
     }
 }
 
+/// One row of an engine's indexer in a traced pass (`dynamic::PickTrace`): its position, its picks (the positions its query attends to, in order), and the
+/// inputs they were made from as the engine held them: its queries [heads dim], its head weights' product [heads], and the keys of the complete entries
+/// its pass's last row sees (its own the first (position + 1) / block of them).
+pub struct PickRow {
+    pub pos: usize,
+    pub picks: Vec<usize>,
+    pub q: Vec<f32>,
+    pub w: Vec<f32>,
+    pub keys: std::rc::Rc<Vec<Vec<f32>>>,
+}
+
+/// An engine's picks: for each latent attention with an indexer, in the model's order, its rows in the order they ran.
+pub type Picks = Vec<Vec<PickRow>>;
+
+/// `Picks` of an engine's traced passes (`Dyn::trace_picks`), by layer.
+fn picks_of(traces: Vec<crate::dynamic::PickTrace>) -> Picks {
+    let mut by: BTreeMap<usize, Vec<PickRow>> = BTreeMap::new();
+    for t in traces {
+        let keys = std::rc::Rc::new(t.keys);
+        let rows = t.pos.into_iter().zip(t.picks).zip(t.q.into_iter().zip(t.w));
+        by.entry(t.layer).or_default().extend(rows.map(|((pos, picks), (q, w))| PickRow { pos, picks, q, w, keys: keys.clone() }));
+    }
+    by.into_values().collect()
+}
+
+/// A row where an engine's picks are not the reference's own (in a run that took the engine's earlier choices): the token (in the order the rows ran), the
+/// layer among the latent attentions with an indexer, the pools only the reference took and only the engine took, how far apart the two are on the
+/// reference's own inputs (`Picked::margin_between`: information), and the reference's indexer on the engine's own inputs for that row (`mla::choose` on
+/// its traced queries, head weights and keys): how far its choice is from the engine's there (0: the same).
+pub struct PickApart {
+    pub token: usize,
+    pub layer: usize,
+    pub reference: Vec<usize>,
+    pub engine: Vec<usize>,
+    pub own_margin: f32,
+    pub margin: f32,
+}
+
+/// Where the engine's `picks` are not the reference's own choices `picked` (each layer's records, a token at a time, of the reference run that took the
+/// engine's picks), each judged by the reference's indexer on the engine's own inputs (`PickApart`); `kinds` the layers' indexers.
+pub fn picks_apart(picked: &[Vec<crate::runtime::reference::mla::Picked>], picks: &Picks, kinds: &[crate::runtime::kinds::Indexer]) -> Vec<PickApart> {
+    use crate::runtime::reference::mla::choose;
+    let mut v = Vec::new();
+    for (l, ((r, e), ix)) in picked.iter().zip(picks).zip(kinds).enumerate() {
+        let b = ix.block.max(1);
+        for (t, (r, e)) in r.iter().zip(e).enumerate() {
+            if r.own == e.picks {
+                continue;
+            }
+            let on = choose(ix, &e.q, &e.w, &e.keys[..((e.pos + 1) / b).min(e.keys.len())], &(0..=e.pos).collect::<Vec<usize>>());
+            let pools = |a: &[usize], z: &[usize]| {
+                let n = r.score.len().max(on.score.len());
+                let mut p: Vec<usize> = a.iter().filter(|x| !z.contains(x) && **x < n * b).map(|x| x / b).collect();
+                p.dedup();
+                p
+            };
+            v.push(PickApart {
+                token: t,
+                layer: l,
+                reference: pools(&r.own, &e.picks),
+                engine: pools(&e.picks, &r.own),
+                own_margin: r.margin_between(&e.picks),
+                margin: if on.own == e.picks { 0.0 } else { on.margin_between(&e.picks) },
+            });
+        }
+    }
+    v
+}
+
 /// Each mixture-of-experts layer's choices, in the model's order: each token's experts, in the order the tokens ran.
 pub type Choices = Vec<Vec<Vec<usize>>>;
 
 /// An engine's routers in the passes a check traced: each mixture-of-experts layer's choices and, beside each token's, the router's input row as
-/// the engine made it (the block's normed input, its bf16 values), in the same order.
+/// the engine made it (the block's normed input, its bf16 values), in the same order; and each latent attention's indexer's picks with the inputs
+/// they were made from (`Picks`: none where the model has no indexer of its own, or the engine gives no view of them).
 pub struct Routing {
     pub choices: Choices,
     pub inputs: Vec<Vec<Vec<f32>>>,
+    pub picks: Picks,
 }
 
 /// `Routing` of the calls an engine made (`dynamic::Routes`: the layer, the experts a row takes, the rows' experts [rows, k], the router's input
@@ -503,7 +574,7 @@ fn choices_of(calls: Vec<crate::dynamic::Routes>) -> Result<Routing> {
         at.1.extend(input.chunks(input.len() / rows).map(|r| r.iter().map(|&h| f32::from_bits((h as u32) << 16)).collect::<Vec<f32>>()));
     }
     let (choices, inputs) = by.into_values().unzip();
-    Ok(Routing { choices, inputs })
+    Ok(Routing { choices, inputs, picks: Vec::new() })
 }
 
 fn widen(v: Vec<Vec<u16>>) -> Vec<Vec<f32>> {
@@ -535,7 +606,8 @@ impl Run for Dyn {
         Ok(Some(widen(got)))
     }
     fn choices(&mut self, on: bool) -> Result<Option<Routing>> {
-        choices_of(self.trace_routes(on)).map(Some)
+        let picks = picks_of(self.trace_picks(on));
+        choices_of(self.trace_routes(on)).map(|r| Some(Routing { picks, ..r }))
     }
     fn held_experts(&mut self) -> Result<Option<Vec<(Vec<u16>, Vec<u16>)>>> {
         Dyn::held_experts(self)
@@ -616,8 +688,8 @@ pub struct Case {
     pub cpu: Option<fn(&Path) -> Result<Box<dyn Run>>>,
     /// The vocabulary of a random model (its fixed tokens are made from it); a Hub model's tokens come from the reference tool.
     pub vocab: usize,
-    /// Whether the engine is held to the CPU reference of the layer kinds on its own routers' choices (`held_on_choices`): asked by a case of a
-    /// described model with routers whose near ties a bf16 engine takes either way. Its rows against the reference's own are printed all the same.
+    /// Whether the engine is held to the CPU reference of the layer kinds on its own choices, its routers' and its indexers' (`held_on_choices`): asked by
+    /// a case of a described model whose near ties a bf16 engine takes either way. Its rows against the reference's own are printed all the same.
     pub on_choices: bool,
 }
 
@@ -641,12 +713,6 @@ fn boxed<T: Run + 'static>(r: Result<T>) -> Result<Box<dyn Run>> {
 
 fn muse_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     boxed(crate::dynamic::muse::load(dir, &dyn_opts(level_layout(level)?)))
-}
-
-fn muse_cpu(dir: &Path) -> Result<Box<dyn Run>> {
-    let d = dir.to_path_buf();
-    let load = move || crate::muse_ref::RefMuse::load(&d).map(|mut m| move |t| m.step(t));
-    Ok(Box::new(CpuRef { load: Box::new(load), m: None, last: Vec::new(), source: "the CPU reference of src/muse_ref.rs" }))
 }
 
 fn kimi_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
@@ -715,23 +781,34 @@ fn described_cpu_with(dir: &Path, edit: fn(&mut crate::runtime::describe::Descri
 }
 
 /// The CPU reference of the layer kinds on a fixture's tokens, as `drive` runs an engine (the prompt and each decode token; then, from a reset, the long
-/// prompt), a token a pass: each pass's last logits (`rows`), and every token's routing in each mixture-of-experts block, in the model's order (`routed`).
+/// prompt), a token a pass: each pass's last logits (`rows`), every token's routing in each mixture-of-experts block, in the model's order (`routed`), and
+/// every token's choice in each latent attention with an indexer of its own (`picked`; their indexers, `indexers`).
 pub struct RefRun {
     pub rows: Vec<Vec<f32>>,
     pub routed: Vec<Vec<crate::runtime::reference::ffn::Routed>>,
+    pub picked: Vec<Vec<crate::runtime::reference::mla::Picked>>,
+    pub indexers: Vec<crate::runtime::kinds::Indexer>,
 }
 
 /// `RefRun` of the model in `dir` on `fx`'s tokens. With `take`, each token's experts in each block are those (an engine's `Choices`; a token's empty
-/// list: the router's own) in the place of the router's own choice: the reference of the experts kind on another engine's choices.
-pub fn ref_drive(dir: &Path, fx: &Fixture, take: Option<&Choices>) -> Result<RefRun> {
-    ref_drive_with(dir, fx, take, |_| {})
+/// list: the router's own) in the place of the router's own choice; with `picks`, each token's picks in each latent attention with an indexer of its own
+/// those (an engine's `Picks`) in the place of the indexer's own: the reference of the kinds on another engine's choices.
+pub fn ref_drive(dir: &Path, fx: &Fixture, take: Option<&Choices>, picks: Option<&Picks>) -> Result<RefRun> {
+    ref_drive_with(dir, fx, take, picks, |_| {})
 }
 
 /// `ref_drive` of the description `edit` changes (another rounding point, say).
-fn ref_drive_with(dir: &Path, fx: &Fixture, take: Option<&Choices>, edit: fn(&mut crate::runtime::describe::Described)) -> Result<RefRun> {
-    use crate::runtime::kinds::{Body, Ffn};
+fn ref_drive_with(
+    dir: &Path,
+    fx: &Fixture,
+    take: Option<&Choices>,
+    picks: Option<&Picks>,
+    edit: fn(&mut crate::runtime::describe::Described),
+) -> Result<RefRun> {
+    use crate::runtime::kinds::{Body, Ffn, Mixer};
+    use crate::runtime::reference::{mla::LatentCache, SeqState};
     let first: Vec<u32> = fx.prompt.iter().chain(&fx.decode).copied().collect();
-    let mut out = RefRun { rows: Vec::new(), routed: Vec::new() };
+    let mut out = RefRun { rows: Vec::new(), routed: Vec::new(), picked: Vec::new(), indexers: Vec::new() };
     let mut at = 0usize;
     for (tokens, rows_from) in [(&first, fx.prompt.len().max(1) - 1), (&fx.long, fx.long.len().max(1) - 1)] {
         if tokens.is_empty() {
@@ -757,6 +834,30 @@ fn ref_drive_with(dir: &Path, fx: &Fixture, take: Option<&Choices>, edit: fn(&mu
                 m.layers[b].take = t[i][at..at + tokens.len()].iter().cloned().collect();
             }
         }
+        // (each latent attention with an indexer of its own: its cache of the sequence records every query's choice, and takes the engine's picks)
+        let mla: Vec<(usize, crate::runtime::kinds::Indexer)> = (0..m.layers.len())
+            .filter_map(|b| match &m.layers[b].block.body {
+                Body::Mixer(Mixer::Mla(x)) => x.indexer.clone().filter(|ix| !ix.shared).map(|ix| (b, ix)),
+                _ => None,
+            })
+            .collect();
+        if let Some(p) = picks {
+            if p.len() != mla.len() || p.iter().any(|l| l.len() < at + tokens.len()) {
+                return err(format!(
+                    "picks of {} layers of {:?} tokens, where the model has {} latent attentions with an indexer and the fixture {} tokens",
+                    p.len(),
+                    p.iter().map(Vec::len).collect::<Vec<_>>(),
+                    mla.len(),
+                    first.len() + fx.long.len()
+                ));
+            }
+        }
+        out.picked.resize_with(mla.len(), Vec::new);
+        out.indexers = mla.iter().map(|(_, ix)| ix.clone()).collect();
+        for (i, &(b, _)) in mla.iter().enumerate() {
+            let take = picks.map(|p| p[i][at..at + tokens.len()].iter().map(|r| r.picks.clone()).collect()).unwrap_or_default();
+            m.layers[b].seqs.insert(0, SeqState::Mla(LatentCache { take, picked: Some(Vec::new()), ..Default::default() }));
+        }
         for (i, &t) in tokens.iter().enumerate() {
             let l = m.forward(&[t], i as u32)?.pop().ok_or_else(|| Error("a token without logits".into()))?;
             if i >= rows_from {
@@ -765,6 +866,11 @@ fn ref_drive_with(dir: &Path, fx: &Fixture, take: Option<&Choices>, edit: fn(&mu
         }
         for (i, &b) in moe.iter().enumerate() {
             out.routed[i].extend(m.layers[b].routed.take().unwrap_or_default());
+        }
+        for (i, &(b, _)) in mla.iter().enumerate() {
+            if let Some(SeqState::Mla(c)) = m.layers[b].seqs.get_mut(&0) {
+                out.picked[i].extend(c.picked.take().unwrap_or_default());
+            }
         }
         at += tokens.len();
     }
@@ -878,7 +984,10 @@ pub fn held_on_choices(who: &str, dir: &Path, fx: &Fixture, bound: &Bound, rows:
     use crate::runtime::kinds::{Body, Ffn};
     use crate::runtime::reference::ffn::{margin_between, route_of};
     let choices = &routing.choices;
-    let taken = ref_drive(dir, fx, Some(choices))?;
+    let taken = ref_drive(dir, fx, Some(choices), Some(&routing.picks))?;
+    if routing.picks.len() != taken.indexers.len() {
+        return err(format!("{who}: picks of {} latent attentions with an indexer, where the model has {}", routing.picks.len(), taken.indexers.len()));
+    }
     let (diffs, raw_diffs) = (apart(&taken, choices), apart(own, choices).len());
     let on_taken = Fixture { rows: taken.rows.iter().map(|l| Row::from_logits(l)).collect::<Result<Vec<_>>>()?, ..fx.clone() };
     let v = compare(&on_taken, bound, rows);
@@ -921,6 +1030,30 @@ pub fn held_on_choices(who: &str, dir: &Path, fx: &Fixture, bound: &Bound, rows:
             if wrong(*s) { ": a router that differs" } else { "" }
         );
     }
+    // (the indexers' picks the same way: the reference's indexer on the engine's own queries, head weights and keys of each pick apart)
+    let picks_apart = picks_apart(&taken.picked, &routing.picks, &taken.indexers);
+    let pick_far = picks_apart.iter().filter(|d| wrong(d.margin)).count();
+    if !taken.indexers.is_empty() {
+        let raw: usize = own.picked.iter().zip(&routing.picks).map(|(r, e)| r.iter().zip(e).filter(|(r, e)| r.own != e.picks).count()).sum();
+        let same = picks_apart.iter().filter(|d| d.margin == 0.0).count();
+        println!(
+            "     {who} on its own indexers' picks: {} of its picks are not the reference's own there ({raw} against the reference's own run); on the engine's own indexer inputs the reference's indexer takes the engine's picks at {same} of them, a near tie (below {NEAR:e}) at {}, and differs by {NEAR:e} or more at {pick_far}",
+            picks_apart.len(),
+            picks_apart.len() - same - pick_far
+        );
+        for d in &picks_apart {
+            println!(
+                "       {}, indexer {}: the engine took pools {:?} where the reference takes {:?} (margin {:.2e} on the reference's own input, information); on the engine's input, margin {:.2e}{}",
+                row_of_token(fx, d.token).1,
+                d.layer,
+                d.engine,
+                d.reference,
+                d.own_margin,
+                d.margin,
+                if wrong(d.margin) { ": an indexer that differs" } else { "" }
+            );
+        }
+    }
     println!(
         "     {who} against the reference taking its choices: KL mean {:.2e} max {:.2e}, best token {}/{} with a lead ({})",
         v.mean_kl,
@@ -934,6 +1067,12 @@ pub fn held_on_choices(who: &str, dir: &Path, fx: &Fixture, bound: &Bound, rows:
             .iter()
             .filter(|d| row_of_token(fx, d.token).0 == i)
             .map(|d| format!("layer {} {:?} for {:?} ({:.1e})", d.layer, d.engine, d.reference, d.margin))
+            .chain(
+                picks_apart
+                    .iter()
+                    .filter(|d| row_of_token(fx, d.token).0 == i)
+                    .map(|d| format!("indexer {} pools {:?} for {:?} ({:.1e})", d.layer, d.engine, d.reference, d.own_margin)),
+            )
             .collect();
         println!(
             "       row {i:2}: KL {:.2e} against the reference's own choices, {:.2e} against the engine's; {}",
@@ -946,7 +1085,7 @@ pub fn held_on_choices(who: &str, dir: &Path, fx: &Fixture, bound: &Bound, rows:
             }
         );
     }
-    Ok(OnChoices { routing: far == 0, logits: v.ok, apart: diffs })
+    Ok(OnChoices { routing: far == 0 && pick_far == 0, logits: v.ok, apart: diffs })
 }
 
 fn nemotron_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
@@ -974,10 +1113,10 @@ pub(crate) fn engine_at(case: &str, dir: &Path, level: &str, layout: Layout) -> 
     }
 }
 
-/// GLM-5.3-Flash has no lossless level (its experts are FP8 in the release): its levels are the lossy ones, the experts at six, five or four bits.
+/// GLM-5.3-Flash at a level: its experts at six, five or four bits (the release's levels, as its experts are FP8 there), or at penguin as the random model holds
+/// them (bf16, the lossless layout `kindcheck` loads): the level the description's CPU reference is held to.
 fn glm_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
-    let Some(experts) = level_layout(level)? else { return err("GLM-5.3-Flash runs at kestrel, swift or wren") };
-    boxed(crate::dynamic::glm::load(dir, &dyn_opts(Some(Layout::Tiered)), experts))
+    boxed(crate::dynamic::glm::load(dir, &dyn_opts(Some(Layout::Tiered)), level_layout(level)?.unwrap_or(Layout::Tiered)))
 }
 
 /// Gemma 4 on the description executor, as `serve` runs it (no draft model).
@@ -1584,16 +1723,16 @@ pub fn cases() -> Vec<Case> {
             engine: qwen35_engine,
             cpu: Some(described_cpu),
             vocab: 4096,
-            on_choices: false,
+            on_choices: true,
         },
         Case {
             id: "muse",
             family: "Muse Spark (sliding and full attention, mixture of experts)",
             weights: Weights::Random(crate::muse_ref::random),
             engine: muse_engine,
-            cpu: Some(muse_cpu),
+            cpu: Some(described_cpu),
             vocab: 4096,
-            on_choices: false,
+            on_choices: true,
         },
         Case {
             id: "kimi",
@@ -1692,9 +1831,11 @@ pub fn cases() -> Vec<Case> {
             family: "GLM-5.3 (delta attention, sparse attention, mixture of experts)",
             weights: Weights::Random(|d| crate::glm::random(d, false, None)),
             engine: glm_engine,
-            cpu: None,
+            cpu: Some(described_cpu),
             vocab: 2048,
-            on_choices: false,
+            // (its indexers keep 2 pools of up to 6 and its routers 4 experts of 16, each weighing about 0.6: near ties that rounding alone takes the other
+            // way, `tests::glm_reference_with_its_residual_rounded`)
+            on_choices: true,
         },
     ]
 }
@@ -1859,7 +2000,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                     run.choices(true)?;
                     let traced = drive(run.as_mut(), &fx.prompt, &fx.decode, &fx.long);
                     let h = match run.choices(false)? {
-                        Some(ch) => held_on_choices("the engine", &dir, &fx, &lb.bound, &traced?, &ch, &ref_drive(&dir, &fx, None)?)?,
+                        Some(ch) => held_on_choices("the engine", &dir, &fx, &lb.bound, &traced?, &ch, &ref_drive(&dir, &fx, None, None)?)?,
                         None => return err(format!("{}: its engine gives no view of its routers' choices", c.id)),
                     };
                     Some(h.routing && h.logits)
@@ -2014,7 +2155,7 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
         // (the CPU reference's rows: what the executor is held to)
         let Some(cf) = all.iter().find(|f| f.gpu.is_none()) else { return err(format!("{id}: no fixture of the CPU reference in {}", fixtures.display())) };
         if let Some((row, layer)) = choice {
-            let own = ref_drive(&dir, cf, None)?;
+            let own = ref_drive(&dir, cf, None, None)?;
             let d = other_choice(cf, &own, row, layer)?;
             println!(
                 "{id}: the reference's choice in row {row}'s pass, layer {layer}: {:?}, the nearest other {:?} for {:?}, margin {:.2e}",
@@ -2039,7 +2180,7 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
             "{id}: the bound {bound:?}{}",
             if bound_ok { ", the Qwen3.5 layout's fixture's".to_string() } else { format!(": NOT the Qwen3.5 layout's fixture's {kind:?}") }
         );
-        let own = ref_drive(&dir, cf, None)?;
+        let own = ref_drive(&dir, cf, None, None)?;
         let same = own.rows.iter().zip(&cf.rows).filter(|(l, r)| hash_of(l) == r.hash).count();
         let drift = own.rows.iter().zip(&cf.rows).map(|(l, r)| kl_of(r, l)).fold(0f64, f64::max);
         println!("     the reference run here against its fixture: {same}/{} rows the same bits, KL at most {drift:.2e}", cf.rows.len());
@@ -2795,32 +2936,49 @@ mod tests {
     /// measures an engine against `bound`; where the case is held on its routers' choices (`Case::on_choices`), the rounded run takes the
     /// reference's own.
     fn noise_floor(dir: &Path, fx: &Fixture, on_choices: bool, bound: &Bound) -> Result<Verdict> {
-        let base = ref_drive(dir, fx, None)?;
+        let base = ref_drive(dir, fx, None, None)?;
         let take: Option<Choices> = on_choices.then(|| base.routed.iter().map(|l| l.iter().map(|r| r.ids.clone()).collect()).collect());
-        let rounded = ref_drive_with(dir, fx, take.as_ref(), stored)?;
+        // (and its indexers' picks, where it has any)
+        let picks: Option<Picks> = on_choices.then(|| {
+            base.picked
+                .iter()
+                .map(|l| l.iter().map(|r| PickRow { pos: 0, picks: r.picks.clone(), q: Vec::new(), w: Vec::new(), keys: Default::default() }).collect())
+                .collect()
+        });
+        let rounded = ref_drive_with(dir, fx, take.as_ref(), picks.as_ref(), stored)?;
         let own = Fixture { rows: base.rows.iter().map(|r| Row::from_logits(r)).collect::<Result<_>>()?, ..fx.clone() };
         Ok(compare(&own, bound, &rounded.rows))
     }
 
-    /// The cases past a tenth of their bound today (on a Mac, 2026-11-25), each to have its draw fixed by its family's owner, never its bound.
-    /// Printed, not held to the line: a case near it may read either side of it on another machine's libm.
-    const NOISE_FLOOR_OPEN: [(&str, &str); 3] = [
-        ("qwen35", "KL mean 1.04e-5 against a tenth of its bound, 1.0e-5"),
-        ("qwen35moe", "KL max 1.87e-4 in one row, a logit 0.126 apart (an expert's choice, likely), against 2.5e-5"),
-        ("muse", "KL mean 2.16e-3 and max 1.31e-2, the best token 5 of 8, against 1.2e-3 and 3.0e-3"),
-    ];
+    /// The cases past a tenth of their bound today, each with why: printed, not held to the line (one near it may read either side of it on another
+    /// machine's libm). Its draw is its family's owner's to fix, never its bound.
+    const NOISE_FLOOR_OPEN: [(&str, &str); 1] = [(
+        "qwen35",
+        "1.04e-5 in KL mean against 1.0e-5, four more seeds 8.3e-6 to 1.05e-5, its checkpoint bf16 as a release's: 70% of it is layer 0's input, as \
+         Qwen3.5 adds its tied embedding unscaled and the first block's output is all of the residual; an embedding wide enough to share the residual \
+         makes a token's own row the head's largest (19.9, the softmax a point), so no honest draw lowers it",
+    )];
 
     /// Every case a CPU reference holds is well conditioned for its bound: its noise floor (`noise_floor`) is at most a tenth of its reference
     /// fixture's bound, in KL mean and max, the best token kept where the bound asks it. A random case whose draw cannot tell a fault from rounding
-    /// (Gemma 4's were 3e-4 to 1.1e-3 against a bound of 1e-4) fails here, and its draw is fixed, not its bound (`NOISE_FLOOR_OPEN`). Each case's
-    /// reference is its description's on the layer kinds (a family with a hand-written reference too: the same function). Where a description
-    /// already rounds every norm (Kimi-K3's) and scales no embedding, `stored` moves nothing: its floor is 0 and says nothing of its draw. Not here:
-    /// glm (no CPU reference), deepseek-v41 (no engine: its fixture's bound is the reference's own across machines), nemotron-h (an older family).
+    /// (Gemma 4's were 3e-4 to 1.1e-3 against a bound of 1e-4, Muse's 1.2e-4 from its scores' scale) fails here, and its draw is fixed, not its
+    /// bound (`NOISE_FLOOR_OPEN`).
+    ///
+    /// A case with routers is measured on its reference's own expert choices where it is held on its routers' choices (`Case::on_choices`), which
+    /// is how a case with free routers must be held: a choice flips where the router's gap between the last expert chosen and the first left out is
+    /// below the change the input's rounding (about 2^-9 of it) makes in the router's scores, and both scale with the router's weights, so no
+    /// router draw clears it short of one that takes the same experts for every token (Muse, before it was held on choices: 187 of 744 choices
+    /// apart under these roundings, a floor of 2.2e-3; qwen35moe 18, one row 1.9e-4).
+    ///
+    /// Each case's reference is its description's on the layer kinds. Where a description already rounds every norm (Kimi-K3's, GLM-5.3-Flash's)
+    /// and scales no embedding, `stored` moves nothing: its floor is 0 and says nothing of its draw (GLM-5.3-Flash's is the reference in fp32
+    /// against all its rounding points, `glm_noise_floor`). Not here: deepseek-v41 (no engine: its fixture's bound is the reference's own across
+    /// machines), nemotron-h (an older family).
     #[cfg(feature = "dev")]
     #[test]
     fn every_case_held_to_a_reference_is_well_conditioned() {
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits");
-        let all: Vec<Case> = cases().into_iter().filter(|c| c.cpu.is_some() && !["glm", "deepseek-v41", "nemotron-h"].contains(&c.id)).collect();
+        let all: Vec<Case> = cases().into_iter().filter(|c| c.cpu.is_some() && !["deepseek-v41", "nemotron-h"].contains(&c.id)).collect();
         let floors: Vec<(&str, Result<(Verdict, Bound)>)> = std::thread::scope(|s| {
             let fixtures = &fixtures;
             let runs: Vec<_> = all
@@ -2869,6 +3027,43 @@ mod tests {
             }
         }
         assert!(wrong.is_empty(), "past a tenth of the bound: {wrong:?} (a draw to fix, not a bound)");
+    }
+
+    /// Muse Spark's two CPU references on the same draw and the same expert choices (the description's, which its case holds the engine to, and
+    /// src/muse_ref.rs's): the same function term by term (router, gated residuals, attention, experts, head); muse_ref.rs rounds to bf16 at every
+    /// operation of the release's eager bf16 arithmetic, the description's where its kinds say, so they part by those roundings alone: on the Mac,
+    /// 2026-11-25, KL mean 8.6e-6 and 1.3e-5 at most, within a tenth of the kind's bound, every best token (on their own choices 2.3e-3: router
+    /// flips). A minute: cargo test --profile ci -p glyd-engine --lib -- --ignored muse_references.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore]
+    fn muse_references_agree_on_the_same_choices() {
+        let dir = std::env::temp_dir().join(format!("glyd-muse-refs-{}", std::process::id()));
+        crate::muse_ref::random(&dir).unwrap();
+        let fx = Fixture::read(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits/muse.json.gz")).unwrap();
+        let desc = ref_drive(&dir, &fx, None, None).unwrap();
+        let take: Choices = desc.routed.iter().map(|l| l.iter().map(|r| r.ids.clone()).collect()).collect();
+        let first: Vec<u32> = fx.prompt.iter().chain(&fx.decode).copied().collect();
+        let (mut rows, mut at) = (Vec::new(), 0usize);
+        for (tokens, from) in [(&first, fx.prompt.len() - 1), (&fx.long, fx.long.len() - 1)] {
+            let mut m = crate::muse_ref::RefMuse::load(&dir).unwrap();
+            *m.take.borrow_mut() = take.iter().map(|l| l[at..at + tokens.len()].iter().cloned().collect()).collect();
+            for (i, &t) in tokens.iter().enumerate() {
+                let l = m.step(t);
+                if i >= from {
+                    rows.push(l);
+                }
+            }
+            at += tokens.len();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let own = Fixture { rows: desc.rows.iter().map(|r| Row::from_logits(r).unwrap()).collect(), ..fx.clone() };
+        let v = compare(&own, &Bound::Kl { mean: 1e-5, max: 2.5e-5, top1: 0.85 }, &rows);
+        println!(
+            "the description's reference against muse_ref.rs on its choices: KL mean {:.2e} max {:.2e}, best token {}/{}",
+            v.mean_kl, v.max_kl, v.top1.0, v.top1.1
+        );
+        assert!(v.ok, "{:?}", v.notes);
     }
 
     /// Each Gemma 4 random case is well conditioned for the kind's bound, and its fixture is what the CPU reference makes. For each case: its attention
@@ -2956,6 +3151,240 @@ mod tests {
         let v = conditioned("gemma4 drawn as before", &dir);
         std::fs::remove_dir_all(&dir).ok();
         assert!(!v.ok, "the earlier draw is within the bound");
+    }
+
+    /// GLM-5.3-Flash's random case on its CPU reference with the residual rounded to bf16 before each block (the executor holds its streams bf16),
+    /// against the reference as it is: how far that rounding alone moves the case's logits, for the case's model and five of other seeds, the
+    /// indexer as drawn and keeping every key; each row with the nearest choice (an indexer's picks, a router's experts) of the tokens it ran.
+    /// Minutes on an unoptimized build: cargo test -- --ignored glm_reference_with. What it showed (2026-11-25): KL mean 5.3e-3 (max 2.6e-2) for
+    /// the case's model and 4.1e-4 to 7.0e-3 for the others; with every key kept 1.2e-5 for two seeds and 2.1e-4 to 7.0e-3 for four, whose rows
+    /// moved where a router's choice at or before them was within 2e-3 of another. Rounding alone takes such choices the other way, so the case's
+    /// engine is held to this reference on the engine's own choices, not on the reference's.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore]
+    fn glm_reference_with_its_residual_rounded() {
+        use crate::runtime::kinds::{Body, Mixer};
+        use crate::runtime::reference::{bf16, model::checkpoint_tensor, model::RefModel};
+        fn step(m: &mut RefModel, pos: &mut u32, t: u32, round: bool, near: &mut f32) -> Vec<f32> {
+            let l = m.forward_seen(&[t], *pos, &mut |x| x.iter_mut().filter(|_| round).for_each(|v| *v = bf16(*v))).unwrap().pop().unwrap();
+            *pos += 1;
+            *near = m.layers.iter().fold(*near, |a, l| a.min(l.margin));
+            l
+        }
+        let (prompt, decode, long) = standard_tokens(2048);
+        for k in 0..6u64 {
+            let dir = std::env::temp_dir().join(format!("glyd-glmref-{k}-{}", std::process::id()));
+            crate::glm::random_seeded(&dir, false, None, crate::glm::RANDOM_SEED ^ (k << 32)).unwrap();
+            let cfg: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+            let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
+            for every in [false, true] {
+                let mut d = crate::runtime::describe::describe(&cfg).unwrap();
+                for b in d.desc.blocks.iter_mut() {
+                    if let (true, Body::Mixer(Mixer::Mla(m))) = (every, &mut b.body) {
+                        m.indexer.iter_mut().for_each(|ix| ix.top_k = 1 << 20);
+                    }
+                }
+                // (as `drive`: the prompt, each decode token, then from a fresh model the long prompt; each pass's last logits and its nearest choice)
+                let run = |round: bool| -> Vec<(Vec<f32>, f32)> {
+                    let load = || RefModel::load(&d, &|n: &str| checkpoint_tensor(&ck, n)).unwrap();
+                    let (mut m, mut pos, mut near, mut out) = (load(), 0u32, f32::INFINITY, Vec::new());
+                    let mut last = Vec::new();
+                    for &t in &prompt {
+                        last = step(&mut m, &mut pos, t, round, &mut near);
+                    }
+                    out.push((last, std::mem::replace(&mut near, f32::INFINITY)));
+                    for &t in &decode {
+                        let l = step(&mut m, &mut pos, t, round, &mut near);
+                        out.push((l, std::mem::replace(&mut near, f32::INFINITY)));
+                    }
+                    (m, pos) = (load(), 0);
+                    let mut last = Vec::new();
+                    for &t in &long {
+                        last = step(&mut m, &mut pos, t, round, &mut near);
+                    }
+                    out.push((last, near));
+                    out
+                };
+                let (a, b) = (run(false), run(true));
+                let kls: Vec<f64> = a.iter().zip(&b).map(|((w, _), (g, _))| kl_of(&Row::from_logits(w).unwrap(), g)).collect();
+                let best = |r: &[f32]| (0..r.len()).max_by(|&i, &j| r[i].total_cmp(&r[j])).unwrap();
+                let same = a.iter().zip(&b).filter(|((w, _), (g, _))| best(w) == best(g)).count();
+                let rows: Vec<String> = kls.iter().zip(&a).map(|(k, (_, n))| format!("{k:.1e}[{n:.0e}]")).collect();
+                println!(
+                    "glm seed {k}, the indexer {}: KL mean {:.2e} max {:.2e}, best token the same at {same}/{}; rows KL[nearest choice]: {}",
+                    if every { "keeping every key" } else { "as drawn" },
+                    kls.iter().sum::<f64>() / kls.len() as f64,
+                    kls.iter().cloned().fold(0f64, f64::max),
+                    a.len(),
+                    rows.join(" ")
+                );
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// GLM-5.3-Flash's noise floor: the CPU reference against itself with the rounding points the release's bf16 modeling has and the engine keeps
+    /// (the description's: the streams' `Twice`, the RMS norms' `Twice`) and with every one of them in fp32 (`ModelDesc::f32_arithmetic`), on the same
+    /// choices (the rounded run's experts and picks taken by the other), for the case's model and five of other seeds. Each must be at most a tenth of the
+    /// lossless bound (KL mean 1e-5 against 1e-4): the draw is calibrated by the reference alone, never by an engine's output, so the bound stays a fixed
+    /// test of an engine and a fault must move the logits well past the rounding noise to pass (`glm::random`). Seconds on an optimized build: cargo test
+    /// --profile ci -- --ignored glm_noise_floor.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore]
+    fn glm_noise_floor() {
+        use crate::runtime::kinds::{Body, Ffn, Mixer};
+        use crate::runtime::reference::{mla::LatentCache, model::checkpoint_tensor, model::RefModel, SeqState};
+        let (prompt, decode, long) = standard_tokens(2048);
+        let mut worst = 0f64;
+        for k in 0..6u64 {
+            let dir = std::env::temp_dir().join(format!("glyd-glmfloor-{k}-{}", std::process::id()));
+            crate::glm::random_seeded(&dir, false, None, crate::glm::RANDOM_SEED ^ (k << 32)).unwrap();
+            let cfg: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+            let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
+            // (each sequence a token at a time from a fresh model: its rows, and every block's choices in the order taken)
+            let run = |rounded: bool, take: Option<&Vec<Vec<Vec<usize>>>>| -> (Vec<Vec<f32>>, Vec<Vec<Vec<usize>>>) {
+                let mut d = crate::runtime::describe::describe(&cfg).unwrap();
+                if !rounded {
+                    d.desc.f32_arithmetic();
+                }
+                let (mut rows, mut chose) = (Vec::new(), Vec::new());
+                for (i, seq) in [[prompt.clone(), decode.clone()].concat(), long.clone()].iter().enumerate() {
+                    let mut m = RefModel::load(&d, &|n: &str| checkpoint_tensor(&ck, n)).unwrap();
+                    let at = chose.first().map_or(0, |c: &Vec<Vec<usize>>| c.len());
+                    chose.resize_with(m.layers.len(), Vec::new);
+                    for (b, l) in m.layers.iter_mut().enumerate() {
+                        let given: std::collections::VecDeque<Vec<usize>> =
+                            take.map(|t| t[b][at..at + seq.len()].iter().cloned().collect()).unwrap_or_default();
+                        match &l.block.body {
+                            Body::Ffn(Ffn::Moe(_)) => (l.take, l.routed) = (given, Some(Vec::new())),
+                            Body::Mixer(Mixer::Mla(_)) => {
+                                l.seqs.insert(0, SeqState::Mla(LatentCache { take: given, picked: Some(Vec::new()), ..Default::default() }));
+                            }
+                            _ => {}
+                        }
+                    }
+                    for (t, &tok) in seq.iter().enumerate() {
+                        let r = m.forward(&[tok], t as u32).unwrap().pop().unwrap();
+                        if (i == 0 && t + 1 >= prompt.len()) || (i == 1 && t + 1 == seq.len()) {
+                            rows.push(r);
+                        }
+                    }
+                    for (b, l) in m.layers.iter_mut().enumerate() {
+                        let got: Vec<Vec<usize>> = match (&l.block.body, l.seqs.get_mut(&0)) {
+                            (Body::Ffn(Ffn::Moe(_)), _) => l.routed.take().unwrap_or_default().into_iter().map(|r| r.ids).collect(),
+                            (_, Some(SeqState::Mla(c))) => c.picked.take().unwrap_or_default().into_iter().map(|p| p.picks).collect(),
+                            _ => vec![Vec::new(); seq.len()],
+                        };
+                        chose[b].extend(got);
+                    }
+                }
+                (rows, chose)
+            };
+            let (a, choices) = run(true, None);
+            let (b, _) = run(false, Some(&choices));
+            let kls: Vec<f64> = a.iter().zip(&b).map(|(w, g)| kl_of(&Row::from_logits(w).unwrap(), g)).collect();
+            let mean = kls.iter().sum::<f64>() / kls.len() as f64;
+            let rms = (a.iter().flatten().map(|&x| (x as f64).powi(2)).sum::<f64>() / a.iter().map(Vec::len).sum::<usize>() as f64).sqrt();
+            println!(
+                "glm seed {k}: the noise floor KL mean {mean:.2e} max {:.2e} over {} rows (the logits' RMS {rms:.2})",
+                kls.iter().cloned().fold(0f64, f64::max),
+                kls.len()
+            );
+            worst = worst.max(mean);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        assert!(worst <= 1e-5, "a noise floor of KL {worst:.2e}, past a tenth of the bound");
+    }
+
+    /// The reference taking an engine's picks (`ref_drive` with `Picks`) on the glm case's model: its own picks taken give its own rows bit for bit;
+    /// another choice of one query is attended to (the record keeps the indexer's own) and moves the rows from that token's on; picks of another
+    /// count of layers are refused.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_reference_takes_an_engines_picks() {
+        let dir = std::env::temp_dir().join(format!("glyd-glmpicks-{}", std::process::id()));
+        crate::glm::random(&dir, false, None).unwrap();
+        let (prompt, decode, long) = standard_tokens(2048);
+        let fx = Fixture {
+            case: "glm".into(),
+            family: String::new(),
+            model: String::new(),
+            provenance: BTreeMap::new(),
+            gpu: None,
+            bounds: Vec::new(),
+            prompt,
+            decode,
+            long,
+            rows: Vec::new(),
+        };
+        let own = ref_drive(&dir, &fx, None, None).unwrap();
+        let as_engine = |f: &dyn Fn(usize, usize, &crate::runtime::reference::mla::Picked) -> Vec<usize>| -> Picks {
+            own.picked
+                .iter()
+                .enumerate()
+                .map(|(l, v)| {
+                    v.iter().enumerate().map(|(t, r)| PickRow { pos: 0, picks: f(l, t, r), q: Vec::new(), w: Vec::new(), keys: Default::default() }).collect()
+                })
+                .collect()
+        };
+        assert_eq!(own.indexers.len(), 2);
+        let same = ref_drive(&dir, &fx, None, Some(&as_engine(&|_, _, r| r.own.clone()))).unwrap();
+        assert_eq!(same.rows, own.rows, "its own picks taken");
+        // (the first query of the prompt that chose: its weakest pool kept swapped for the best left out)
+        let (l, t) = (0..2).flat_map(|l| (0..24).map(move |t| (l, t))).find(|&(l, t)| !own.picked[l][t].score.is_empty()).unwrap();
+        let r = &own.picked[l][t];
+        let (b, sc) = (r.block, &r.score);
+        let mut kept: Vec<usize> = (0..sc.len()).filter(|&j| r.own.contains(&(j * b))).collect();
+        let low = *kept.iter().min_by(|&&x, &&y| sc[x].total_cmp(&sc[y])).unwrap();
+        let best = (0..sc.len()).filter(|j| !kept.contains(j)).max_by(|&x, &y| sc[x].total_cmp(&sc[y])).unwrap();
+        kept.retain(|&j| j != low);
+        kept.push(best);
+        kept.sort_unstable();
+        let mut other: Vec<usize> = kept.iter().flat_map(|&j| j * b..j * b + b).collect();
+        other.extend(r.own.iter().copied().filter(|&e| e >= sc.len() * b));
+        let moved = ref_drive(&dir, &fx, None, Some(&as_engine(&|ll, tt, x| if (ll, tt) == (l, t) { other.clone() } else { x.own.clone() }))).unwrap();
+        assert_eq!((&moved.picked[l][t].picks, &moved.picked[l][t].own), (&other, &r.own));
+        assert_ne!(moved.rows[0], own.rows[0], "the prompt's row after another choice");
+        assert_eq!(moved.rows[14 - 1], own.rows[14 - 1], "the long prompt, from a reset, its own");
+        assert!(ref_drive(&dir, &fx, None, Some(&Vec::new())).is_err(), "picks of no layer");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An engine's picks apart from the reference's own, each judged by the reference's indexer on the engine's own inputs: a choice that is the
+    /// reference's there has margin 0 (whatever the reference's own inputs gave), a near tie there its small margin, a choice no score there explains
+    /// a margin past `NEAR`; the margin on the reference's own inputs is kept beside it.
+    #[test]
+    fn picks_apart_are_judged_on_the_engines_inputs() {
+        use crate::runtime::kinds::{IndexForm, Indexer};
+        use crate::runtime::reference::mla::{choose, Picked};
+        let ix = Indexer { heads: 2, head_dim: 4, top_k: 2, block: 1, shared: false, form: IndexForm::LAYER_KEYS, rope: 0 };
+        // (a key a token, scores rising with its first channel: tokens 3 and 4 the best two of 0..=4, token 2 near token 3 where `near`)
+        let row = |near: bool, picks: Vec<usize>| {
+            let s = [0.1f32, 0.2, if near { 0.6999 } else { 0.3 }, 0.7, 0.9];
+            let keys: Vec<Vec<f32>> = s.iter().map(|&x| vec![x, 0.0, 0.0, 0.0]).collect();
+            PickRow { pos: 4, picks, q: vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], w: vec![1.0, 1.0], keys: std::rc::Rc::new(keys) }
+        };
+        let seen: Vec<usize> = (0..5).collect();
+        let own = |keys: &[Vec<f32>]| choose(&ix, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], &[1.0, 1.0], keys, &seen);
+        // (the reference's own inputs: token 2 well below token 3; its own choice 3 and 4)
+        let refk: Vec<Vec<f32>> = [0.1f32, 0.2, 0.3, 0.7, 0.9].iter().map(|&x| vec![x, 0.0, 0.0, 0.0]).collect();
+        let r: Picked = own(&refk);
+        assert_eq!(r.own, vec![3, 4]);
+        let cases = [(row(true, vec![3, 4]), None), (row(true, vec![2, 4]), Some(false)), (row(false, vec![2, 4]), Some(true))];
+        for (e, far) in cases {
+            let taken = Picked { picks: e.picks.clone(), ..r.clone() };
+            let got = picks_apart(&[vec![taken]], &vec![vec![e]], std::slice::from_ref(&ix));
+            match far {
+                None => assert!(got.is_empty(), "the reference's own choice"),
+                Some(far) => {
+                    assert_eq!((got.len(), got[0].reference.clone(), got[0].engine.clone()), (1, vec![3], vec![2]));
+                    assert!(got[0].own_margin > 0.3, "{}", got[0].own_margin);
+                    assert_eq!(got[0].margin >= crate::dynamic::kindcheck::NEAR, far, "{}", got[0].margin);
+                }
+            }
+        }
     }
 
     /// The CPU's candidates usercheck holds the step's to: the largest first, equal logits by the smaller token, as the sampler's `sample_top` takes them.
@@ -3162,18 +3591,18 @@ mod tests {
     #[test]
     fn the_reference_takes_an_engine_s_choices() {
         let (m, fx) = (Made::new("qwen4x", "choices"), short("qwen4x", 6, 3));
-        let own = ref_drive(&m.0, &fx, None).unwrap();
+        let own = ref_drive(&m.0, &fx, None, None).unwrap();
         assert_eq!((own.rows.len(), own.routed.len(), own.routed[0].len()), (4, 8, 9));
         let choices: Choices = own.routed.iter().map(|l| l.iter().map(|r| r.own.clone()).collect()).collect();
         // (the engine's order within a token is not the router's: the same experts are the same choice)
         let turned: Choices = choices.iter().map(|l| l.iter().map(|c| c.iter().rev().copied().collect()).collect()).collect();
-        let same = ref_drive(&m.0, &fx, Some(&turned)).unwrap();
+        let same = ref_drive(&m.0, &fx, Some(&turned), None).unwrap();
         assert!(same.rows == own.rows && apart(&same, &turned).is_empty());
         let d = other_choice(&fx, &own, 2, 3).unwrap();
         assert_eq!(d.token, 7);
         let mut other = choices.clone();
         other[3][7] = choices[3][7].iter().map(|&e| if e == d.reference[0] { d.engine[0] } else { e }).collect();
-        let moved = ref_drive(&m.0, &fx, Some(&other)).unwrap();
+        let moved = ref_drive(&m.0, &fx, Some(&other), None).unwrap();
         assert!(moved.rows[..2] == own.rows[..2] && moved.rows[2] != own.rows[2]);
         let got = apart(&moved, &other);
         assert_eq!((got[0].token, got[0].layer, &got[0].reference, &got[0].engine), (7, 3, &d.reference, &d.engine));
@@ -3181,7 +3610,7 @@ mod tests {
         assert!(got[0].margin > 0.0 && got.iter().all(|g| (g.token, g.layer) >= (7, 3)));
         // (a choice of another size is refused)
         other[3][7].pop();
-        assert!(ref_drive(&m.0, &fx, Some(&other)).is_err());
+        assert!(ref_drive(&m.0, &fx, Some(&other), None).is_err());
         carry_lines(&m.0, &fx, &own, &d).unwrap();
     }
 
@@ -3229,7 +3658,7 @@ mod tests {
         for case in ["qwen4x", "qwen4x-s2"] {
             let m = Made::new(case, "chunked");
             let fx = Fixture::read(&fixtures.join(format!("{case}.json.gz"))).unwrap();
-            let own = ref_drive(&m.0, &fx, None).unwrap().rows;
+            let own = ref_drive(&m.0, &fx, None, None).unwrap().rows;
             let recurrence = Fixture { rows: own.iter().map(|l| Row::from_logits(l).unwrap()).collect(), ..fx.clone() };
             assert!(chunked_rows(&m.0, &fx, None) == own, "{case}: a prompt in one pass is not the prompt a token a pass");
             for (what, form) in [

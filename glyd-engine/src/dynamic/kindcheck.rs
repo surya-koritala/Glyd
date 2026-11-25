@@ -1,4 +1,4 @@
-//! `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain]` (R2, #135): every layer kind the families' descriptions hold, run by the executor's CUDA
+//! `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain | --sequence]` (R2, #135): every layer kind the families' descriptions hold, run by the executor's CUDA
 //! kernels against its CPU f32 reference (`runtime::reference`), kind by kind, on each logits case's random model (Gemma 4, the Qwen3.5 layout,
 //! the plain dense block, the Mamba-2 layout, Muse Spark, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4, Qwen3.8-Flash-Next) at the lossless level.
 //!
@@ -17,6 +17,13 @@
 //! A comparison is the largest difference over the reference's largest magnitude on a pass's rows; each line has its kind's bound (`bound`,
 //! the table in `runtime::reference`), and names the rows left out as near a tie (`NEAR`), which may be few (`near_within`: a body that
 //! leaves out more of its rows fails, as one past its bound does). Exit status 1 where one is not kept.
+//!
+//! `--sequence`: the passes are one sequence's instead (the logits cases' fixed tokens, `logits::token_list`: the prompt, then each step's token).
+//! The first layer's residual is the reference's embedding of them and every later layer's is what the executor's layer before it left, so each
+//! body is compared as above on the rows a run of the model gives it; and after each layer the executor's residual is compared with the
+//! reference's own run of the same tokens (a second copy of the model, alone): how far the two are apart there, with everything before it. That
+//! figure has no bound (it is where a difference of the logits first shows, layer by layer); the bodies' and the residual rule's keep theirs.
+//! Not for a depth mix or lagged mHC, whose residual is more than the rows a block is handed.
 //! GLYD_KINDCHECK_ROWS prints each body's rows one by one. DeepSeek-V4's simulated quantizations of the release (GLYD_V4_SIM) are turned
 //! off: no kind names them (GLYD_KINDCHECK_SIM=1 leaves them on, to see where they first take a body away from the reference).
 
@@ -293,6 +300,15 @@ impl Dyn {
         self.big.d.widths[s as usize]
     }
 
+    /// Where a token's residual is: mHC's streams where the model has them, else X.
+    fn kc_state(&self) -> Slot {
+        if self.kc_width(Slot::S) > 0 {
+            Slot::S
+        } else {
+            Slot::X
+        }
+    }
+
     fn kc_put(&self, s: Slot, v: &[f32]) -> Result<()> {
         let w: Vec<u16> = v.iter().map(|&x| (bf16(x).to_bits() >> 16) as u16).collect();
         self.big.slots[s as usize].write(0, &w)
@@ -329,21 +345,26 @@ impl Dyn {
 /// What one pass of a layer compares: the comparisons' (where, kind, class, value, the rows near a tie).
 type Got = Vec<(String, String, Class, f32, Vec<String>)>;
 
-/// Layer `l` of the executor (blocks `starts[l]..starts[l + 1]`, `block_starts`) on n rows at position `at`, from a residual made by `rng` (or `x_in`, the
-/// residual the layer before made: `--chain`).
-#[allow(clippy::too_many_arguments)]
-fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], n: usize, at: usize, rng: &mut Rng, x_in: Option<&[f32]>) -> Result<Got> {
-    let (d, layers) = (m.desc.hidden, dy.big.d.layers.len());
+/// A pass's rows: their tokens, the first's position, and each row's residual before the layer.
+struct Rows<'a> {
+    at: usize,
+    tok: &'a [u32],
+    x0: Vec<f32>,
+}
+
+/// Layer `l` of the executor (blocks `starts[l]..starts[l + 1]`, `block_starts`) on `rows` (the depth mix's completed groups made by `rng`). With what it
+/// compared, the residual the layer left (as the slot holds it).
+fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng: &mut Rng) -> Result<(Got, Vec<f32>)> {
+    let Rows { at, tok, x0 } = rows;
+    let (d, layers, n) = (m.desc.hidden, dy.big.d.layers.len(), tok.len());
     let (first, per) = (starts[l], starts[l + 1] - starts[l]);
-    let tok = tokens(n, at, m.desc.vocab);
     let runs_l = runs(&dy.big.d.layers[l]);
     // (the residual: mHC's streams where the model has them, else X; the depth mix's completed groups in Blk)
-    let state = if dy.kc_width(Slot::S) > 0 { Slot::S } else { Slot::X };
+    let state = dy.kc_state();
     let sw = dy.kc_width(state);
-    let x0 = match x_in {
-        Some(x) => x.to_vec(),
-        None => rng.v(n * sw),
-    };
+    if x0.len() != n * sw {
+        return err(format!("layer {l}: a residual of {} values for {n} rows of {sw}", x0.len()));
+    }
     dy.kc_put(state, &x0)?;
     for s in [Slot::O, Slot::D] {
         if dy.kc_width(s) > 0 {
@@ -542,7 +563,7 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], n: usize, at: us
         let what = b.map_or("the final norm".to_string(), |b| format!("B{b}"));
         put(format!("L{l} before {what}"), residual_label(b.map(|b| &m.layers[b].block)), Class::Residual, v, Vec::new());
     }
-    Ok(got)
+    Ok((got, dy.kc_get(state, n)?))
 }
 
 /// The tokens of a pass of n rows at `at` (DeepSeek-V4's hash routing and the per-layer inputs read them; `--chain` embeds them).
@@ -550,10 +571,21 @@ fn tokens(n: usize, at: usize, vocab: usize) -> Vec<u32> {
     (0..n).map(|t| (((at + t) * 37 + 11) % vocab) as u32).collect()
 }
 
-/// A case's model made (its logits case's random one), loaded lossless, described and loaded on the reference; every layer through `pass`. `chain`: the passes
-/// in a model's order, each through every layer, a layer's residual the one the GPU's layer before made (the first's the tokens' scaled embedding rows): the
-/// whole model's sequence of caches and positions, each block still on the GPU's own inputs.
-fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, chain: bool) -> Result<Vec<Line>> {
+/// How a case's passes are made: each layer's residual at random, or one run of the model (`--chain`, `--sequence`).
+#[derive(Clone, Copy, PartialEq)]
+enum Passes {
+    Random,
+    /// a layer's residual the one the GPU's layer before made (the first's the tokens' scaled embedding rows): the whole model's sequence of caches and
+    /// positions, each block still on the GPU's own inputs
+    Chain,
+    /// the module's note
+    Sequence,
+}
+
+/// A case's model made (its logits case's random one), loaded lossless, described and loaded on the reference; every layer through `pass`, a pass
+/// (the prompt's rows, then each step's) at a time, in a model's order.
+fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) -> Result<Vec<Line>> {
+    let chain = how == Passes::Chain;
     let c = crate::logits::find_case(id)?;
     if !dir.join("config.json").exists() {
         match c.weights {
@@ -583,49 +615,84 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, chain: bool) 
     if prompt + steps + 1 > o.ctx || prompt > o.chunk {
         return err(format!("a prompt of {prompt} and {steps} steps: a chunk of {} and a cache of {}", o.chunk, o.ctx));
     }
-    let mut out: Vec<Line> = Vec::new();
-    // (--chain: every pass's lines by layer, the passes run in order through all layers first)
-    let mut chained: Vec<Vec<Got>> = vec![Vec::new(); layers];
-    if chain {
-        if dy.kc_width(Slot::S) > 0 || dy.kc_width(Slot::Blk) > 0 {
-            return err(format!("{id}: --chain takes a model of one residual stream"));
-        }
-        let (d, e) = (m.desc.hidden, m.desc.embed.scale);
-        let mut rng = Rng(1);
-        for (n, at) in std::iter::once((prompt, 0)).chain((0..steps).map(|s| (1, prompt + s))) {
-            let mut x: Vec<f32> = tokens(n, at, m.desc.vocab)
-                .iter()
-                .flat_map(|&t| m.embed[t as usize * d..][..d].iter().map(|&v| bf16(v * bf16(e))).collect::<Vec<_>>())
-                .collect();
-            for (l, c) in chained.iter_mut().enumerate() {
-                c.push(pass(&dy, &mut m, l, &starts, n, at, &mut rng, Some(&x))?);
-                x = dy.kc_get(Slot::X, n)?;
-            }
-        }
+    if chain && (dy.kc_width(Slot::S) > 0 || dy.kc_width(Slot::Blk) > 0) {
+        return err(format!("{id}: --chain takes a model of one residual stream"));
     }
-    for l in 0..layers {
-        let mut rng = Rng(0x2026_1123_0000_0001 ^ ((l as u64 + 1) << 32) ^ id.bytes().fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64)));
-        let mut by_pass = std::mem::take(&mut chained[l]).into_iter();
-        let first = match by_pass.next() {
-            Some(g) => g,
-            None => pass(&dy, &mut m, l, &starts, prompt, 0, &mut rng, None)?,
+    // (--sequence: the reference alone, a second copy, and the sequence's tokens)
+    let mut alone = match how {
+        Passes::Random | Passes::Chain => None,
+        Passes::Sequence
+            if m.layers
+                .iter()
+                .any(|b| matches!(b.block.residual, Residual::DepthMix(_) | Residual::Streams(crate::runtime::kinds::StreamsP { lagged: true, .. }))) =>
+        {
+            return err(format!("{id}: --sequence is not for a depth mix or lagged mHC"));
+        }
+        Passes::Sequence => Some((RefModel::load(&d, &|n: &str| checkpoint_tensor(&ck, n))?, crate::logits::token_list(prompt + steps, m.desc.vocab, 0))),
+    };
+    let sw = dy.kc_width(dy.kc_state());
+    let mut rngs: Vec<Rng> = (0..layers)
+        .map(|l| Rng(0x2026_1123_0000_0001 ^ ((l as u64 + 1) << 32) ^ id.bytes().fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64))))
+        .collect();
+    let mut lines: Vec<Vec<Line>> = (0..layers).map(|_| Vec::new()).collect();
+    // (each layer's residual from the reference's own after it: the prompt's, the steps' worst)
+    let mut apart = vec![(0f32, 0f32); layers];
+    let (hd, scale) = (m.desc.hidden, m.desc.embed.scale);
+    for (at, n) in std::iter::once((0, prompt)).chain((0..steps).map(|s| (prompt + s, 1))) {
+        let tok: Vec<u32> = match &alone {
+            Some((_, t)) => t[at..at + n].to_vec(),
+            None => tokens(n, at, m.desc.vocab),
         };
-        let mut lines: Vec<Line> =
-            first.into_iter().map(|(at, kind, class, v, near)| Line { case: id, at, kind, class, prompt: v, steps: 0.0, near, rows: prompt + steps }).collect();
-        for s in 0..steps {
-            let g = match by_pass.next() {
-                Some(g) => g,
-                None => pass(&dy, &mut m, l, &starts, 1, prompt + s, &mut rng, None)?,
+        let mut own: Vec<Vec<f32>> = Vec::new();
+        if let Some((m2, _)) = alone.as_mut() {
+            m2.forward_seen(&tok, at as u32, &mut |x| own.push(x.to_vec()))?;
+        }
+        // (the first layer's residual: --chain the tokens' scaled embedding rows, --sequence the reference's own; at random each layer's otherwise)
+        let mut x = match how {
+            Passes::Chain => Some(tok.iter().flat_map(|&t| m.embed[t as usize * hd..][..hd].iter().map(|&v| bf16(v * bf16(scale)))).collect::<Vec<f32>>()),
+            _ => own.first().cloned(),
+        };
+        for l in 0..layers {
+            let x0 = match x.take() {
+                Some(x) => x,
+                None => rngs[l].v(n * sw),
             };
-            if g.len() != lines.len() {
-                return err(format!("{id} layer {l}: a step compared {} things, the prompt {}", g.len(), lines.len()));
+            let (got, after) = pass(&dy, &mut m, l, &starts, Rows { at, tok: &tok, x0 }, &mut rngs[l])?;
+            if alone.is_some() {
+                let want = &own[starts[l + 1]];
+                let v = rel(&after, want);
+                if crate::tune!("GLYD_KINDCHECK_ROWS").is_some() {
+                    for t in 0..n.min(want.len() / sw.max(1)) {
+                        println!(
+                            "     L{l} after the layer, position {}: {:.2e} from the reference's own",
+                            at + t,
+                            rel(&after[t * sw..][..sw], &want[t * sw..][..sw])
+                        );
+                    }
+                }
+                apart[l] = if at == 0 { (v, 0.0) } else { (apart[l].0, apart[l].1.max(v)) };
             }
-            for (line, (_, _, _, v, near)) in lines.iter_mut().zip(g) {
+            if how != Passes::Random {
+                x = Some(after);
+            }
+            if at == 0 {
+                lines[l] = got
+                    .into_iter()
+                    .map(|(w, kind, class, v, near)| Line { case: id, at: w, kind, class, prompt: v, steps: 0.0, near, rows: prompt + steps })
+                    .collect();
+                continue;
+            }
+            if got.len() != lines[l].len() {
+                return err(format!("{id} layer {l}: a step compared {} things, the prompt {}", got.len(), lines[l].len()));
+            }
+            for (line, (_, _, _, v, near)) in lines[l].iter_mut().zip(got) {
                 line.steps = line.steps.max(v);
                 line.near.extend(near);
             }
         }
-        for x in &lines {
+    }
+    for (l, of) in lines.iter().enumerate() {
+        for x in of {
             let ok = x.ok();
             let near = if x.near.is_empty() {
                 String::new()
@@ -645,12 +712,19 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, chain: bool) 
                 bound(x.class)
             );
         }
-        out.extend(lines);
+        if alone.is_some() {
+            println!(
+                "     {id:11} {:22} the executor's residual from the reference's own run of the sequence: prompt {:.2e}, steps {:.2e} (no bound: everything before it included)",
+                format!("L{l} after the layer"),
+                apart[l].0,
+                apart[l].1
+            );
+        }
     }
-    Ok(out)
+    Ok(lines.into_iter().flatten().collect())
 }
 
-/// `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain]`: the cases (all unless named), then each class's worst against its bound.
+/// `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain | --sequence]`: the cases (all unless named), then each class's worst against its bound.
 pub fn run(a: &crate::args::Args) -> Result<()> {
     const ALL: [&str; 14] = [
         "gemma4",
@@ -674,6 +748,12 @@ pub fn run(a: &crate::args::Args) -> Result<()> {
     }
     let ids: Vec<&'static str> = ALL.iter().copied().filter(|c| want.is_empty() || want.contains(c)).collect();
     let (prompt, steps) = (a.num("prompt", 48usize)?, a.num("steps", 4usize)?);
+    let how = match (a.has("chain"), a.has("sequence")) {
+        (true, true) => return err("--chain or --sequence, not both".to_string()),
+        (true, false) => Passes::Chain,
+        (false, true) => Passes::Sequence,
+        (false, false) => Passes::Random,
+    };
     // (GLYD_KINDCHECK_SIM=1 keeps the release's simulated quantizations on: each body then measures how far they take the executor from the kinds' f32
     // reference, which has none)
     if std::env::var_os("GLYD_KINDCHECK_SIM").is_none() {
@@ -686,7 +766,7 @@ pub fn run(a: &crate::args::Args) -> Result<()> {
     let mut all: Vec<Line> = Vec::new();
     let mut failed: Vec<String> = Vec::new();
     for id in ids {
-        match case(id, &scratch.join(id), prompt, steps, a.has("chain")) {
+        match case(id, &scratch.join(id), prompt, steps, how) {
             Ok(l) => all.extend(l),
             Err(e) => {
                 println!("FAIL {id}: {}", e.msg);
