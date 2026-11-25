@@ -5,7 +5,7 @@
 use crate::ffi::{err, Error, Result};
 use crate::qwen35::{Pack35, Tensor35};
 use crate::runtime::config::ModelConfig;
-use crate::weights::{eos_ids, num, saved_parts, Layout};
+use crate::weights::{eos_ids, saved_parts, Layout};
 use glyd_gpu::safetensors::Checkpoint;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -99,6 +99,29 @@ pub fn is_nemotron_h(text: &str) -> bool {
     crate::runtime::config::family_of(text) == Some(crate::support::Family::NemotronH)
 }
 
+/// Nemotron-H's own keys (the shared ones are `runtime::config::Shared`'s), typed from the one parse of its config.json.
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct Keys {
+    mamba_hidden_act: Option<String>,
+    mlp_hidden_act: Option<String>,
+    use_bias: Option<bool>,
+    mlp_bias: Option<bool>,
+    attention_bias: Option<bool>,
+    mamba_proj_bias: Option<bool>,
+    use_conv_bias: Option<bool>,
+    mamba_ssm_cache_dtype: Option<String>,
+    layers_block_type: Option<Vec<String>>,
+    routed_scaling_factor: crate::runtime::config::Given<f64>,
+    norm_topk_prob: Option<bool>,
+    n_group: Option<u64>,
+    topk_group: Option<u64>,
+    layer_norm_epsilon: crate::runtime::config::Given<f64>,
+    norm_eps: crate::runtime::config::Given<f64>,
+    conv_kernel: Option<usize>,
+    chunk_size: Option<usize>,
+}
+
 impl ConfigNemotronH {
     pub fn load(dir: &Path) -> Result<ConfigNemotronH> {
         let p = dir.join("config.json");
@@ -114,41 +137,39 @@ impl ConfigNemotronH {
 
     /// `parse` of a config.json parsed once (`ModelConfig`).
     pub fn of(c: &ModelConfig, label: &str, generation: Option<&str>) -> Result<ConfigNemotronH> {
-        use serde_json::Value;
-        let v = &c.top;
-        let arch = v.get("architectures").and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_str).unwrap_or("");
-        if arch != "NemotronHForCausalLM" {
-            return err(format!("{label}: {arch}: not a NemotronH model"));
+        use crate::runtime::config::Given;
+        if c.arch != "NemotronHForCausalLM" {
+            return err(format!("{label}: {}: not a NemotronH model", c.arch));
         }
-        if let Some(kind) = v.get("model_type").and_then(Value::as_str).filter(|k| *k != "nemotron_h") {
-            return err(format!("{label}: the model is {kind:?}, where a NemotronH has nemotron_h"));
+        if !c.model_type.is_empty() && c.model_type != "nemotron_h" {
+            return err(format!("{label}: the model is {:?}, where a NemotronH has nemotron_h", c.model_type));
         }
-        let get = |k: &str| v.get(k).ok_or_else(|| Error(format!("{label}: no {k}")));
-        let u = |k: &str| -> Result<usize> { get(k)?.as_u64().map(|x| x as usize).ok_or_else(|| Error(format!("{label}: {k}: not an integer"))) };
+        let (s, k): (&crate::runtime::config::Shared, Keys) = (&c.shared, c.own(label)?);
+        let need = |v: Option<usize>, key: &str| ModelConfig::need(v, label, key);
         let refuse = |what: &str| err(format!("{label}: {what}, which the engine does not run"));
-        let text_of = |k: &str, want: &str| v.get(k).and_then(Value::as_str).is_some_and(|a| a != want);
-        if text_of("mamba_hidden_act", "silu") {
+        let not = |v: &Option<String>, want: &str| v.as_deref().is_some_and(|a| a != want);
+        if not(&k.mamba_hidden_act, "silu") {
             return refuse("a Mamba-2 activation other than silu");
         }
-        if text_of("mlp_hidden_act", "relu2") {
+        if not(&k.mlp_hidden_act, "relu2") {
             return refuse("an expert activation other than relu2");
         }
-        for k in ["use_bias", "mlp_bias", "attention_bias", "mamba_proj_bias"] {
-            if v.get(k).and_then(Value::as_bool) == Some(true) {
-                return refuse(&format!("biases ({k})"));
+        for (key, on) in [("use_bias", k.use_bias), ("mlp_bias", k.mlp_bias), ("attention_bias", k.attention_bias), ("mamba_proj_bias", k.mamba_proj_bias)] {
+            if on == Some(true) {
+                return refuse(&format!("biases ({key})"));
             }
         }
-        if v.get("use_conv_bias").and_then(Value::as_bool) == Some(false) {
+        if k.use_conv_bias == Some(false) {
             return refuse("a convolution without its bias");
         }
-        if v.get("sliding_window").is_some_and(|w| *w != Value::Null) {
+        if s.sliding_window.is_some() {
             return refuse("a sliding window");
         }
-        if text_of("mamba_ssm_cache_dtype", "float32") {
+        if not(&k.mamba_ssm_cache_dtype, "float32") {
             return refuse("a Mamba-2 state other than float32");
         }
         // the layer pattern: M Mamba-2, * attention, E latent mixture of experts, from the string or the list of types (transformers' layers_block_type)
-        let kinds: Vec<NhKind> = if let Some(p) = v.get("hybrid_override_pattern").and_then(Value::as_str) {
+        let kinds: Vec<NhKind> = if let Some(p) = &s.hybrid_override_pattern {
             p.chars()
                 .map(|c| match c {
                     'M' => Ok(NhKind::Mamba),
@@ -157,82 +178,90 @@ impl ConfigNemotronH {
                     other => err(format!("{label}: a layer {other:?} in hybrid_override_pattern, where this model has M, * and E")),
                 })
                 .collect::<Result<_>>()?
-        } else if let Some(a) = v.get("layers_block_type").or_else(|| v.get("layer_types")).and_then(Value::as_array) {
+        } else if let Some(a) = k.layers_block_type.as_ref().or(s.layer_types.as_ref()) {
             a.iter()
                 .map(|k| match k.as_str() {
                     // (Nemotron 3.5's configs name them mamba and attention)
-                    Some("linear_attention" | "mamba") => Ok(NhKind::Mamba),
-                    Some("full_attention" | "attention") => Ok(NhKind::Attention),
-                    Some("moe") => Ok(NhKind::Moe),
-                    other => {
-                        err(format!("{label}: a layer of type {other:?}, where this model has mamba (linear_attention), attention (full_attention) and moe"))
-                    }
+                    "linear_attention" | "mamba" => Ok(NhKind::Mamba),
+                    "full_attention" | "attention" => Ok(NhKind::Attention),
+                    "moe" => Ok(NhKind::Moe),
+                    other => err(format!(
+                        "{label}: a layer of type {:?}, where this model has mamba (linear_attention), attention (full_attention) and moe",
+                        Some(other)
+                    )),
                 })
                 .collect::<Result<_>>()?
         } else {
             return err(format!("{label}: no hybrid_override_pattern"));
         };
         let layers = kinds.len();
-        if layers == 0 || v.get("num_hidden_layers").and_then(Value::as_u64).is_some_and(|n| n as usize != layers) {
-            return err(format!("{label}: {layers} layers in the pattern, num_hidden_layers {:?}", v.get("num_hidden_layers").and_then(Value::as_u64)));
+        if layers == 0 || s.num_hidden_layers.is_some_and(|n| n != layers) {
+            return err(format!("{label}: {layers} layers in the pattern, num_hidden_layers {:?}", s.num_hidden_layers.map(|n| n as u64)));
         }
-        let (m_heads, m_head_dim, m_groups) = (u("mamba_num_heads")?, u("mamba_head_dim")?, u("n_groups")?);
+        let (m_heads, m_head_dim, m_groups) =
+            (need(s.mamba_num_heads, "mamba_num_heads")?, need(s.mamba_head_dim, "mamba_head_dim")?, need(s.n_groups, "n_groups")?);
         if m_heads == 0 || m_groups == 0 || !m_heads.is_multiple_of(m_groups) {
             return err(format!("{label}: {m_heads} Mamba-2 heads to {m_groups} groups"));
         }
-        let (heads, kv_heads) = (u("num_attention_heads")?, u("num_key_value_heads")?);
+        let (heads, kv_heads) = (need(s.num_attention_heads, "num_attention_heads")?, need(s.num_key_value_heads, "num_key_value_heads")?);
         if heads == 0 || kv_heads == 0 || !heads.is_multiple_of(kv_heads) {
             return err(format!("{label}: {heads} query heads to {kv_heads} KV heads"));
         }
-        let head_dim = v.get("head_dim").and_then(Value::as_u64).map(|x| x as usize).unwrap_or(u("hidden_size")? / heads);
+        let hidden = need(s.hidden_size, "hidden_size");
+        let head_dim = match s.head_dim {
+            Some(d) => d,
+            None => hidden.clone()? / heads,
+        };
         let moe = MoeDims {
-            experts: u("n_routed_experts")?,
-            top_k: u("num_experts_per_tok")?,
-            inter: u("moe_intermediate_size")?,
-            shared_inter: u("moe_shared_expert_intermediate_size")?,
-            latent: match v.get("moe_latent_size") {
-                Some(l) if *l != Value::Null => l.as_u64().map(|x| x as usize).ok_or_else(|| Error(format!("{label}: moe_latent_size: not an integer")))?,
-                _ => 0,
+            experts: need(s.n_routed_experts, "n_routed_experts")?,
+            top_k: need(s.num_experts_per_tok, "num_experts_per_tok")?,
+            inter: need(s.moe_intermediate_size, "moe_intermediate_size")?,
+            shared_inter: need(s.moe_shared_expert_intermediate_size, "moe_shared_expert_intermediate_size")?,
+            latent: s.moe_latent_size.unwrap_or(0),
+            scale: match k.routed_scaling_factor {
+                Given::Missing => 1.0,
+                Given::Null => return err(format!("{label}: routed_scaling_factor: not a number")),
+                Given::Some(x) => x as f32,
             },
-            scale: v.get("routed_scaling_factor").map_or(Ok(1.0), |s| num(s, "routed_scaling_factor"))? as f32,
-            norm_topk: v.get("norm_topk_prob").and_then(Value::as_bool).unwrap_or(true),
+            norm_topk: k.norm_topk_prob.unwrap_or(true),
         };
         if kinds.contains(&NhKind::Moe) {
             if moe.top_k == 0 || moe.top_k > moe.experts {
                 return err(format!("{label}: {} experts a token of {}", moe.top_k, moe.experts));
             }
-            if v.get("n_group").and_then(Value::as_u64).is_some_and(|g| g != 1) || v.get("topk_group").and_then(Value::as_u64).is_some_and(|g| g != 1) {
+            if k.n_group.is_some_and(|g| g != 1) || k.topk_group.is_some_and(|g| g != 1) {
                 return refuse("group-limited routing");
             }
-            if v.get("n_shared_experts").and_then(Value::as_u64).is_some_and(|g| g != 1) {
+            if s.n_shared_experts.is_some_and(|g| g != 1) {
                 return refuse("other than one shared expert");
             }
         }
-        let eos = eos_ids(v, generation);
-        let mut eps = 1e-5;
-        if let Some(e) = v.get("layer_norm_epsilon").or_else(|| v.get("norm_eps")) {
-            eps = num(e, "layer_norm_epsilon")? as f32;
-        }
+        let eos = eos_ids(&c.text, generation);
+        let eps = match (&k.layer_norm_epsilon, &k.norm_eps) {
+            (Given::Some(e), _) | (Given::Missing, Given::Some(e)) => *e as f32,
+            (Given::Null, _) | (Given::Missing, Given::Null) => return err(format!("{label}: layer_norm_epsilon: not a number")),
+            (Given::Missing, Given::Missing) => 1e-5,
+        };
         Ok(ConfigNemotronH {
-            hidden: u("hidden_size")?,
+            hidden: hidden?,
             layers,
-            vocab: u("vocab_size")?,
+            vocab: need(s.vocab_size, "vocab_size")?,
             eps,
-            max_pos: u("max_position_embeddings")?,
-            tie: v.get("tie_word_embeddings").and_then(Value::as_bool).unwrap_or(false),
+            max_pos: need(s.max_position_embeddings, "max_position_embeddings")?,
+            tie: s.tie_word_embeddings.unwrap_or(false),
             eos,
             kinds,
             m_heads,
             m_head_dim,
-            m_state: u("ssm_state_size")?,
+            m_state: need(s.ssm_state_size, "ssm_state_size")?,
             m_groups,
-            conv_kernel: u("conv_kernel")?,
-            chunk: v.get("chunk_size").and_then(Value::as_u64).map_or(128, |c| c as usize),
+            conv_kernel: need(k.conv_kernel, "conv_kernel")?,
+            chunk: k.chunk_size.unwrap_or(128),
             heads,
             kv_heads,
             head_dim,
             moe,
-            mtp_layers: v.get("num_nextn_predict_layers").and_then(Value::as_u64).unwrap_or(0) as usize,
+            mtp_layers: s.num_nextn_predict_layers.unwrap_or(0),
             prefix: "backbone.",
         })
     }
@@ -859,5 +888,28 @@ pub(crate) mod tests {
         have.retain(|t| !held.contains(Pack35::saved(&t.0)));
         assert!(c.check_layers(&have, &[0, 7], &none).unwrap_err().msg.contains("no backbone.layers.7.mixer.q_proj.weight"));
         c.check_layers(&have, &[0, 7], &held).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod reader_tests {
+    use super::*;
+
+    /// Nemotron-H's reader takes its keys from the one parse of config.json, typed: the release's config reads; a key of another type than its field's is refused
+    /// with its name; a needed key that is null is named as missing; a null norm epsilon is refused, a missing one is 1e-5.
+    #[test]
+    fn the_keys_are_read_typed_from_the_one_parse() {
+        let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/nemotron_h_config.json")).unwrap();
+        let c = ConfigNemotronH::parse(&text, "Nemotron", None).unwrap();
+        assert_eq!(c.kinds.len(), c.layers);
+        let mut v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        v["chunk_size"] = serde_json::json!("big");
+        assert!(ConfigNemotronH::parse(&v.to_string(), "c", None).unwrap_err().msg.contains("chunk_size"));
+        let mut v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        v["conv_kernel"] = serde_json::Value::Null;
+        assert_eq!(ConfigNemotronH::parse(&v.to_string(), "c", None).unwrap_err().msg, "c: no conv_kernel");
+        let mut v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        v["layer_norm_epsilon"] = serde_json::Value::Null;
+        assert!(ConfigNemotronH::parse(&v.to_string(), "c", None).unwrap_err().msg.contains("layer_norm_epsilon"));
     }
 }
