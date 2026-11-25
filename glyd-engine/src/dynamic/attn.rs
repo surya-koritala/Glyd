@@ -9,9 +9,8 @@
 //! the shape is the pages' (heads of 128 to 512, up to 8 query heads a kv head or one kv head, no soft-cap); others (Muse Spark's heads of 64, Nemotron-H's 16
 //! query heads over 2) the engine's parts kernel.
 //!
-//! The arithmetic of each family is the one its own operations had, bit for bit where the kernel is the same (the preparation, the decode and the gate of Gemma 4,
-//! the Qwen3.5 layout and Nemotron-H); a prompt chunk's is now the library's kernel for all (Gemma 4's g4_fa256, the Qwen3.5 layout's warp a head, Nemotron-H's
-//! dense-engine kernel and Muse Spark's key at a time before): the same function, sums in another order. Muse Spark's decode is the parts kernel too.
+//! One arithmetic for every family: the preparation, the decode and the gate are the kind's own kernels, a prompt chunk's sums the library's kernel, and
+//! Muse Spark's decode the parts kernel.
 
 use super::{Dyn, Part, Slot};
 use crate::dev::Dev;
@@ -178,7 +177,7 @@ impl AttnOp {
             return err(format!("{nq} query heads over {nk} key-value heads: the kernels take up to {MAX_G} a key-value head"));
         }
         if a.sinks || a.bias || a.indexer.is_some() {
-            return err("attention with sinks, a bias or an indexer: not an operation of this executor yet");
+            return err("attention with sinks, a bias or an indexer: not an operation of this executor");
         }
         let in_query = a.gate.is_some_and(|g| g.from == kinds::GateFrom::InQuery);
         let q_step = if in_query { 2 * d } else { d };
@@ -266,13 +265,12 @@ impl AttnOp {
 
     /// The kernels' arguments of this operation on n rows, the pointers null (`Dyn::attn` sets them).
     pub(crate) fn args(&self, n: usize, eps: f32) -> AttnArgs {
-        let (q, k, norm) = match self.norm {
-            QkNorm::None => (0, 0, 0),
-            QkNorm::Weight { q, k } => (q, k, 1),
-            QkNorm::Plus1 { q, k } => (q, k, 2),
-            QkNorm::Plain => (0, 0, 3),
+        let norm = match self.norm {
+            QkNorm::None => 0,
+            QkNorm::Weight { .. } => 1,
+            QkNorm::Plus1 { .. } => 2,
+            QkNorm::Plain => 3,
         };
-        let _ = (q, k);
         let g = self.gate.unwrap_or(GateAt { off: 0, step: 0, norm: false });
         AttnArgs {
             d: self.d as i32,
@@ -421,7 +419,8 @@ impl KernAttn {
             gate: dev.typed()?,
             pf64: dev.typed()?,
             pf128: dev.typed()?,
-            // (on: against transformers bf16 on gemma-4-31B QAT, wikitext 32 x 512, KLD 0.0192 where the warp kernels' is 0.0225, and a 28K prompt 2x faster)
+            // (on. The figures that chose it are the kernels' before these, research/gemma4-kld/results-fa-2026-10-15: against transformers bf16 on gemma-4-31B QAT,
+            // wikitext 32 x 512, KLD 0.0192 for g4_fa256 + g4_fa512b where g4_attn_t's was 0.0225. The kernel that runs now is not measured this way)
             fa: {
                 // (the switch back, a development build's alone: a release build reads no GLYD_ variable it does not list)
                 #[cfg(feature = "dev")]

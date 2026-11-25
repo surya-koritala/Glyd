@@ -373,8 +373,8 @@ impl Run {
 }
 
 /// Stages or layers across GPUs as a scheduler's step of one sequence at a time (R4a #138: every model is served by `Sched`, none by a loop of its own): one slot, emptied
-/// at the sequence's end; a prompt in one call (the stages run it a chunk at a time), a token a decode step, a draw read from the last stage's logits row. Batching across
-/// GPUs (stage_rows and the gathers with several sequences) is the next piece for these.
+/// at the sequence's end; a prompt in one call (the stages run it a chunk at a time), a token a decode step, a draw read from the last stage's logits row. Across
+/// GPUs a step holds one sequence: `stage_rows` and the gathers take one.
 impl crate::sched::ModelStep for Run {
     fn window(&self) -> usize {
         crate::conv::Gen::capacity(self)

@@ -1,5 +1,6 @@
-//! Every pre-norm dense decoder the description builder reads with its `llama` builder (Llama, Mistral, Qwen2, Qwen3: `runtime::describe::LLAMA`) on the
-//! executor (R3c, #139): the config's layer kinds lowered to the shared operations (`lower::dense`: the attention kind, the gated SiLU MLP, the RMS norms),
+//! The pre-norm dense decoders the description builder reads with its `llama` builder (Llama, Mistral, Qwen2, Qwen3: `runtime::describe::LLAMA`) on the
+//! executor (R3c, #139), but one with an attention bias (Qwen2's) or a scaled rope (Llama 3's), which `lower::dense` refuses by name though `is_dense` says
+//! yes to its config: the config's layer kinds lowered to the shared operations (`lower::dense`: the attention kind, the gated SiLU MLP, the RMS norms),
 //! loaded by the executor's own loader at any level its products take (penguin's lossless packs, kestrel's, swift's and wren's), served by the scheduler with
 //! paged keys and values (12-bit pages where the tables are set).
 

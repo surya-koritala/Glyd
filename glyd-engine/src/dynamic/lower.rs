@@ -1685,11 +1685,11 @@ mod tests {
         c
     }
 
-    /// Each Llama-style config of the fixtures (the random Qwen3 the logits checks run, a Mistral-layout one with a window, Qwen3's with its q and k norms
-    /// and a tied head) lowers to the operations the dense Qwen3 engine ran (src/model.rs, removed): the input norm (then its add of the residual), the q, k
-    /// and v product, the attention kind, o, the norm with the residual, gate and up with SiLU, down, the final norm on the last rows; its matrices the
-    /// checkpoint's tensors stacked in that engine's order and sized by the description's shapes, which are the checkpoint's; its widths, heads, rotary and
-    /// norms the config's as that engine read it (`weights::Config`, for Qwen3). Llama 3's scaled rope and Qwen2's biases are refused, named.
+    /// Each Llama-style config of the fixtures (the random dense model the logits checks run, a Mistral-layout one with a window, one with q and k norms
+    /// and a tied head) lowers to these operations, written out here by hand: the input norm (then its add of the residual), the q, k and v product, the
+    /// attention kind, o, the norm with the residual, gate and up with SiLU, down, the final norm on the last rows; its matrices the checkpoint's tensors
+    /// stacked in that order and sized by the description's shapes, which are the checkpoint's; its widths, heads, rotary and norms the config's
+    /// (`weights::Config`'s reading of it). Llama 3's scaled rope and Qwen2's biases are refused, named.
     #[test]
     fn dense_lowered_from_each_llama_style_config() {
         use super::super::attn::{QkNorm, RopeAt};
@@ -2023,7 +2023,7 @@ mod tests {
         crate::logits::qwen35_random(&dir).unwrap();
         let c = crate::qwen35::Config35::load(&dir).unwrap();
         let d = super::super::qwen35::lowered(&dir, &c, &super::super::Stage::whole(c.layers)).unwrap();
-        // (its tensors as kern35's loader read them, in its order: the description names the same, in the same order)
+        // (its tensors in the order the description names them)
         let packs: std::collections::HashMap<String, crate::qwen35::Pack35> = c.packs().into_iter().map(|p| (p.key.clone(), p)).collect();
         let item = |src: &crate::kern35::Src| match src {
             crate::kern35::Src::Pack(k) => Item { members: packs[k].parts.iter().map(|x| x.0.clone()).collect(), rows: packs[k].rows(), cols: packs[k].cols },

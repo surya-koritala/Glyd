@@ -828,7 +828,9 @@ impl<B: ModelStep> Sched<B> {
         self.be.cold()
     }
 
-    /// The scheduler with a step launched before the one before it lands where the step can (`ModelStep::overlaps`; on by default), or not.
+    /// The scheduler with a step launched before the one before it lands where the step can (`ModelStep::overlaps`), or not. The switch is on by default, and
+    /// the executor's step can only with GLYD_ENGINE_OVERLAP=1 (`overlap_forced`, src/dynamic/rows.rs `make_lanes`): a served model launches no step ahead unless
+    /// asked to.
     pub fn overlapping(mut self, on: bool) -> Sched<B> {
         self.overlap = on && self.be.one_step() && self.be.overlaps();
         self

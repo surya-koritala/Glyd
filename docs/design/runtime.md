@@ -270,8 +270,8 @@ graphs, the rest eager between them. Pieces are captured for a pass's exact row 
 pass's (the chunk's rows: the prompt budget fills a mixed step to it), when the scheduler's step is made, as the decode graphs are, and for
 descriptions whose decode steps take no whole graph (latent attention, picked attention, DeepSeek-V4) the decode steps' of 2 to 16, 32 and 64
 rows; the step's metadata (positions, slots, the state table) is one buffer written in one copy, which every graph reads. A pass of another
-size runs eager, and so does a pass whose products take cuBLAS (on the A10, full gemma-4-12B passes in pieces took 0.7% more
-GPU time than eager, and whether cuBLAS keeps its eager algorithm in a capture is not measured).
+size runs eager, and so does a pass whose products take cuBLAS (on an A10, 2026-11-23, in a run whose record was not kept, full
+gemma-4-12B passes in pieces took 0.7% more GPU time than eager; whether cuBLAS keeps its eager algorithm in a capture is not measured).
 
 ## 3. The layer-kind interface
 
@@ -752,11 +752,14 @@ What is built (R12b, #327):
   A copy is priced at the link's time for an expert, measured once at load (the GPU's own copies are not timed). Calls of up to
   `DEV_ROWS` (8) rows are planned on the GPU; more rows are the host's plan, whose waves copy every miss where the misses
   outnumber the places. (The first rule, a miss copied wherever a copy cost less than the host's pairs, ignored that the two run
-  at once and copied every miss at 1 and 8 rows: 62-80% slower than the host's plan on an A10.) The store's own plan
+  at once and copied every miss at 1 and 8 rows: 62-80% slower than the host's plan on an A10, 2026-11-23, in a run whose record was not kept.) The store's own plan
   (`LayerCache`) still plans a prompt's chunks: before such a call the GPU's table is read into it, after it written back.
   On the Nemotron 3 Super decode traces its clock finds 0.5 to 0.6 points fewer of the pairs in places than the least-recently-used
   cache at one row (60.7, 72.8 and 79.4% at 17, 32 and 46% of the experts), and at 8 rows 5.1 more to 0.6 fewer.
-  Its GPU check (`tiercheck --device-plan`, `storebench --device-plan`) is not run yet.
+  Its GPU check, `tiercheck --device-plan` in copy mode (the logits with the plan against the store's own, bit for bit), ran on an A10 on
+  2026-11-25 on random DeepSeek-V4 and Kimi-K3 of release width: 0 of 646,400 and 0 of 20,480 logits differ (the run's record is not
+  in this repository). In the modes where the host computes pairs its logits are not the copy mode's bits, and no bound holds
+  them. `storebench --device-plan` measures speed and is not run.
 - **The slot policy and the hit-rate model at many rows**, checked on the Nemotron 3 Super decode traces (20 generations, 1 to 20
   rows side by side): a call's experts are asked for in the order of their pairs, fewest first (`by_rows`), so the busiest stay in
   places across waves (1 to 7 points more pairs found at 16 and 20 rows, never fewer); the planner prices a step's misses as its
