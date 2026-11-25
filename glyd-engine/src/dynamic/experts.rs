@@ -90,13 +90,134 @@ pub fn of_layers(d: &Described, layers: (usize, usize)) -> impl Iterator<Item = 
 }
 
 /// How a stage holds its blocks of experts beyond their level: a hummingbird directory's (src/hb_pack.rs; None: the release's), the expert cache (the stage's
-/// caching and its store: src/hbg_store.rs, src/tiering.rs), on the GPU `ordinal`. A layer of a stage so held is across the thread's group of GPUs where it
-/// has one (src/dynamic/tp.rs): this GPU's rows of each expert's.
+/// caching and its store: src/hbg_store.rs, src/tiering.rs), on the GPU `ordinal`; FP8 matrices as released where `f8` is given (`F8`). A layer of a stage
+/// so held is across the thread's group of GPUs where it has one (src/dynamic/tp.rs): this GPU's rows of each expert's.
 #[derive(Clone, Copy)]
 pub struct Held<'a> {
     pub hb: Option<&'a HbDir>,
     pub cache: Option<(&'a HbCaching, &'a Rc<ExpertStore>)>,
     pub ordinal: i32,
+    pub f8: Option<F8<'a>>,
+}
+
+/// The experts and the shared expert held in the library's FP8 format as released (src/f8.rs: E4M3 bytes bit for bit, their 128 x 128 block scales), where the
+/// description names each matrix's scales (`Described::scales`) and the level is the lossless one; packed on `dev` by `lib`. Elsewhere (no such scales, a
+/// block level, none given) an FP8 matrix is held as the bf16 it dequantises to.
+#[derive(Clone, Copy)]
+pub struct F8<'a> {
+    pub scales: &'a std::collections::BTreeMap<String, String>,
+    pub dev: &'a Dev,
+    pub lib: &'a crate::ffi::Lib,
+}
+
+impl F8<'_> {
+    /// The matrix of `members` stacked by rows as the FP8 format takes it: its rows and columns, where every member is E4M3 with block scales of 128 x 128 that
+    /// the description names, and the rows of each and the columns are 128s; None otherwise.
+    fn shape(&self, ck: &Checkpoint, members: &[String]) -> Result<Option<(usize, usize)>> {
+        let (mut rows, mut cols) = (0, 0);
+        for n in members {
+            let (Some((_, t)), Some(s)) = (ck.get(n), self.scales.get(n)) else { return Ok(None) };
+            let Some((_, st)) = ck.get(s) else { return Ok(None) };
+            let (r, c) = match t.shape[..] {
+                [r, c] => (r as usize, c as usize),
+                _ => return Ok(None),
+            };
+            if t.dtype != "F8_E4M3"
+                || !r.is_multiple_of(128)
+                || !c.is_multiple_of(128)
+                || (cols != 0 && c != cols)
+                || st.shape != [r as u64 / 128, c as u64 / 128]
+            {
+                return Ok(None);
+            }
+            (rows, cols) = (rows + r, c);
+        }
+        Ok((rows > 0).then_some((rows, cols)))
+    }
+
+    /// `members`' E4M3 bytes stacked by rows and their fp32 block scales ([rows / 128, cols / 128] each, stacked alike), as `shape` takes them.
+    fn read(&self, ck: &Checkpoint, members: &[String]) -> Result<(Vec<u8>, Vec<f32>)> {
+        let (mut q, mut sc) = (Vec::new(), Vec::new());
+        for n in members {
+            let s = self.scales.get(n).ok_or_else(|| Error(format!("{n}: no block scales named")))?;
+            q.extend(io(ck.read(n))?);
+            sc.extend(crate::kern_glm::f32_bytes(ck, s)?.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)));
+        }
+        Ok((q, sc))
+    }
+
+    /// The matrix of `members` stacked by rows ([rows, cols], `shape`'s) packed: this GPU's slice of its rows, whole blocks of 128 for the scales, where every layer
+    /// is across a group of GPUs (`tp_rows`).
+    fn mat(&self, ck: &Checkpoint, members: &[String], rows: usize, cols: usize) -> Result<crate::f8::F8Mat> {
+        let (q, sc) = self.read(ck, members)?;
+        let (r0, rn) = f8_tp_rows(rows)?;
+        let gc = cols.div_ceil(128);
+        let mut m = crate::f8::F8Mat::pack(
+            self.dev,
+            self.lib,
+            &q[r0 * cols..(r0 + rn) * cols],
+            &sc[r0 / 128 * gc..(r0 + rn) / 128 * gc],
+            rn,
+            cols,
+            cfg!(feature = "dev"),
+        )?;
+        if rn < rows {
+            m.tp_rows = rows;
+        }
+        Ok(m)
+    }
+
+    /// Every expert's matrix (`each`: an expert's members, [rows, cols] stacked) stacked and packed as one (`F8Mat::moe`): this GPU's slice of each expert's
+    /// rows where every layer is across a group of GPUs.
+    fn stack(&self, ck: &Checkpoint, each: &[Vec<String>], rows: usize, cols: usize) -> Result<crate::f8::F8Mat> {
+        let (r0, rn) = f8_tp_rows(rows)?;
+        let gc = cols.div_ceil(128);
+        let (mut q, mut sc) = (Vec::with_capacity(each.len() * rn * cols), Vec::with_capacity(each.len() * rn / 128 * gc));
+        for m in each {
+            let (eq, es) = self.read(ck, m)?;
+            q.extend_from_slice(&eq[r0 * cols..(r0 + rn) * cols]);
+            sc.extend_from_slice(&es[r0 / 128 * gc..(r0 + rn) / 128 * gc]);
+        }
+        let mut m = crate::f8::F8Mat::pack(self.dev, self.lib, &q, &sc, each.len() * rn, cols, cfg!(feature = "dev"))?;
+        if rn < rows {
+            m.tp_rows = rows;
+        }
+        Ok(m)
+    }
+
+    /// Every expert's matrix packed on its own for the expert cache's places (`F8Places`, src/tiering.rs), on one GPU.
+    fn places(&self, ck: &Checkpoint, each: &[Vec<String>], rows: usize, cols: usize) -> Result<crate::f8::F8Places> {
+        if f8_tp_rows(rows)?.1 < rows {
+            return err("FP8 experts in the expert cache: on one GPU a layer, not sliced across GPUs");
+        }
+        crate::f8::F8Places::pack(
+            self.dev,
+            self.lib,
+            each.len(),
+            rows,
+            cols,
+            &mut |a, b| {
+                let (mut q, mut sc) = (Vec::new(), Vec::new());
+                for m in &each[a..b] {
+                    let (eq, es) = self.read(ck, m)?;
+                    q.extend(eq);
+                    sc.extend(es);
+                }
+                Ok((q, sc))
+            },
+            cfg!(feature = "dev"),
+        )
+    }
+}
+
+/// This GPU's rows of an FP8 matrix of `rows` where it is a GPU of a group (src/dynamic/tp.rs): its slice in whole blocks of 128 rows (the scales'); all of
+/// them on a GPU on its own.
+fn f8_tp_rows(rows: usize) -> Result<(usize, usize)> {
+    match super::tp::slicer() {
+        None => Ok((0, rows)),
+        Some(s) if rows.is_multiple_of(128 * s.n) => Ok(s.rows(rows)),
+        Some(s) => err(format!("an FP8 matrix of {rows} rows across {} GPUs: each GPU's rows whole blocks of 128 are wanted", s.n)),
+    }
 }
 
 /// A role's experts as the checkpoint holds them: a tensor (or its rows stacked) an expert, or one tensor of them all [experts, rows, cols].
@@ -187,8 +308,10 @@ pub fn resident(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &
 }
 
 /// `resident`, the experts of decoder layer `at.0` held as the stage holds them (`at.1`): a hummingbird directory's in place of the release's (in the expert
-/// cache where the stage has one), the release's in the expert cache's places (each matrix's one lossless pack in the tiered layout, cut per expert), or on the
-/// GPU, this GPU's rows of each expert's where the layer is across a group of GPUs.
+/// cache where the stage has one), the release's in the expert cache's places, or on the GPU, this GPU's rows of each expert's where the layer is across a group
+/// of GPUs. At the lossless level, experts released in FP8 whose scales the description names are held as released where the stage asks (`Held::f8`: in the
+/// cache's places each packed on its own), and the shared expert too where its matrices are FP8 (as it is beside a hummingbird directory's experts); other
+/// experts in the cache are each stack's one lossless pack in the tiered layout cut per expert, or at a block level each expert's packs.
 pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Checkpoint, level: Layout, at: Option<(usize, &Held)>) -> Result<MoeLayer> {
     let lossless = matches!(level, Layout::Tiered | Layout::Twelve);
     if !lossless && !matches!(level, Layout::Int6 | Layout::Int5 | Layout::Int4) {
@@ -241,74 +364,47 @@ pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Chec
     } else {
         None
     };
+    // (the experts as released in FP8, where the stage asks and the description names their scales: at the lossless level, each expert's [rows, cols] a
+    // multiple of 128s; `F8`)
+    let f8 = at.and_then(|(_, h)| h.f8);
+    let f8x = match (f8, &up, &down) {
+        (Some(f), Stacked::Each(u), Stacked::Each(d)) if lossless => match (f.shape(ck, &u[0])?, f.shape(ck, &d[0])?) {
+            (Some(a), Some(b)) => Some((f, *u, *d, a, b)),
+            _ => None,
+        },
+        _ => None,
+    };
+    // (the shared expert: FP8 as released where the experts are, or are a hummingbird directory's codes, and its own matrices are; else packed at the level)
+    let mut shared8 = None;
     let shared = match m.shared {
         None => None,
         Some(_) => {
             let s_up = one("shared_up")?;
             let (inter, _) = rows_cols(ck, std::slice::from_ref(&s_up))?;
             let first = if gated { vec![one("shared_gate")?, s_up] } else { vec![s_up] };
+            let second = vec![one("shared_down")?];
             let gate = if m.shared_gate { Some(upload_bytes(&bf16(&one("shared_router")?)?)?) } else { None };
-            Some(Shared { inter, up: packed(first)?, down: packed(vec![one("shared_down")?])?, gate })
+            let as_f8 = f8.filter(|_| f8x.is_some() || at.is_some_and(|(_, h)| h.hb.is_some()));
+            let shapes = match as_f8 {
+                Some(f) => Some((f, f.shape(ck, &first)?, f.shape(ck, &second)?)),
+                None => None,
+            };
+            match shapes {
+                Some((f, Some((ur, uc)), Some((dr, dc)))) => {
+                    shared8 = Some((f.mat(ck, &first, ur, uc)?, f.mat(ck, &second, dr, dc)?));
+                    Some(Shared { inter, up: PackBuf::shape_only(ur, uc)?, down: PackBuf::shape_only(dr, dc)?, gate })
+                }
+                _ => Some(Shared { inter, up: packed(first)?, down: packed(second)?, gate }),
+            }
         }
     };
-    // (a stage that holds its experts its own way has its layers across the thread's group of GPUs, where it is one's)
-    let across = at.and_then(|_| super::tp::slicer());
-    if let Some((l, h)) = at {
-        if h.hb.is_some() {
-            let Some(n) = norm else {
-                return err("a hummingbird directory's experts of a kind whose outputs are not normed: its family's loader reads them");
-            };
-            // (the host's pairs of the cache normed as the sum norms each expert's output: the norm's input scale as the GPU holds it, bf16)
-            let w: Vec<f32> = match h.cache {
-                Some(_) => {
-                    let b = bf16(&one("expert_norm")?)?;
-                    let w: Vec<f32> = b.as_chunks::<2>().0.iter().map(|x| crate::hb_codec::f32_of(u16::from_le_bytes(*x))).collect();
-                    crate::muse::plus_one(&w).iter().map(|&v| crate::hb_codec::f32_of(crate::hb_codec::bf16(v))).collect()
-                }
-                None => Vec::new(),
-            };
-            let finish = crate::cpu_hbg::Finish::Normed { signs: Vec::new(), rot: 0, w, eps: n.eps };
-            if let Some(x) = crate::hbg_store::hb_layer(h.hb, l, across.is_some(), h.cache, c.act, finish, h.ordinal, c.router.top_k)? {
-                return x.into_layer(c, router, bias, None, shared);
-            }
-        }
-        // (R12: the release's experts in the expert cache, every one in the computer's memory: each stack's one lossless pack in the tiered layout, whatever the level of the rest, cut per expert)
-        if let Some((cg, store)) = h.cache {
-            if across.is_some() || cg.ram.is_some() {
-                return err("the release's experts in the expert cache: a layer on one GPU, every expert in the computer's memory (the disk holds hummingbird directories' experts alone)");
-            }
-            let places = |s: &Stacked| -> Result<crate::tiering::TieredPlaces> {
-                let (rows, cols) = s.dims(ck, e)?;
-                let p = glyd_gpu::pack::pack_tiered_checked(&s.words(ck, e)?, e * rows, cols)
-                    .ok_or_else(|| Error(format!("{}: decoded to other bits than its weights", s.name())))?;
-                crate::tiering::TieredPlaces::of(&p, e)
-            };
-            let (pu, pd) = (places(&up)?, places(&down)?);
-            let (up, down, cache) = crate::tiering::cached_tiered(&pu, &pd, cg.places, store, l, h.ordinal)?;
-            return MoeLayer::new(c, MoeWeights { router, bias, escale: None, up, down: Down::Block(down) }, shared)?.with_cache(cache);
-        }
-    }
-    let (up, down) = if lossless {
-        let stack = |s: &Stacked| -> Result<ExpertStack> {
-            let (rows, cols) = s.dims(ck, e)?;
-            let w = s.words(ck, e)?;
-            let Some(t) = across else {
-                return ExpertStack::lossless(upload_packed(pack_words(&w, e * rows, cols, level, &s.name())?)?, e);
-            };
-            // (a group of GPUs: this GPU's rows of each expert's, stacked)
-            if rows % (64 * t.n) != 0 {
-                return err(format!("{}: experts of {rows} rows across {} GPUs: each GPU's rows in 64s are wanted", s.name(), t.n));
-            }
-            let (r0, rn) = t.rows(rows);
-            let mine: Vec<u16> = (0..e).flat_map(|x| w[(x * rows + r0) * cols..(x * rows + r0 + rn) * cols].iter().copied()).collect();
-            let mut st = ExpertStack::lossless(upload_packed(pack_words(&mine, e * rn, cols, level, &s.name())?)?, e)?;
-            st.tp_rows = rows;
-            Ok(st)
-        };
-        (stack(&up)?, Down::Block(stack(&down)?))
-    } else {
+    let with8 = |l: MoeLayer, s: Option<(crate::f8::F8Mat, crate::f8::F8Mat)>| match s {
+        Some((u, d)) => l.with_shared8(u, d),
+        None => Ok(l),
+    };
+    // (a block level's experts: each expert's two packs, joined; where the checkpoint holds a matrix of every expert as one tensor, read once, cut per expert)
+    let blocks = || -> Result<(Joined, Joined)> {
         let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
-        // (where the checkpoint holds a matrix of every expert as one tensor: read once, cut per expert)
         let all = |s: &Stacked| match s {
             Stacked::One(_) => s.words(ck, e),
             Stacked::Each(_) => Ok(Vec::new()),
@@ -335,10 +431,89 @@ pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Chec
                 Ok(())
             },
         )?;
-        let join = |v: &[Tiered]| Joined::of(&v.iter().collect::<Vec<_>>()).and_then(|j| ExpertStack::upload(&j));
-        (join(&ups)?, Down::Block(join(&downs)?))
+        Ok((Joined::of(&ups.iter().collect::<Vec<_>>())?, Joined::of(&downs.iter().collect::<Vec<_>>())?))
     };
-    MoeLayer::new(c, MoeWeights { router, bias, escale: None, up, down }, shared)
+    // (a stage that holds its experts its own way has its layers across the thread's group of GPUs, where it is one's)
+    let across = at.and_then(|_| super::tp::slicer());
+    if let Some((l, h)) = at {
+        if h.hb.is_some() {
+            let finish = match norm {
+                Some(n) => {
+                    // (the host's pairs of the cache normed as the sum norms each expert's output: the norm's input scale as the GPU holds it, bf16)
+                    let w: Vec<f32> = match h.cache {
+                        Some(_) => {
+                            let b = bf16(&one("expert_norm")?)?;
+                            let w: Vec<f32> = b.as_chunks::<2>().0.iter().map(|x| crate::hb_codec::f32_of(u16::from_le_bytes(*x))).collect();
+                            crate::muse::plus_one(&w).iter().map(|&v| crate::hb_codec::f32_of(crate::hb_codec::bf16(v))).collect()
+                        }
+                        None => Vec::new(),
+                    };
+                    crate::cpu_hbg::Finish::Normed { signs: Vec::new(), rot: 0, w, eps: n.eps }
+                }
+                // (outputs not normed: each pair's rotation undone as its row is summed)
+                None => crate::cpu_hbg::Finish::Rotated,
+            };
+            if let Some(x) = crate::hbg_store::hb_layer(h.hb, l, across.is_some(), h.cache, c.act, finish, h.ordinal, c.router.top_k)? {
+                return with8(x.into_layer(c, router, bias, None, shared)?, shared8);
+            }
+        }
+        // (R12: the release's experts in the expert cache, every one in the computer's memory)
+        if let Some((cg, store)) = h.cache {
+            if across.is_some() || cg.ram.is_some() {
+                return err("the release's experts in the expert cache: a layer on one GPU, every expert in the computer's memory (the disk holds hummingbird directories' experts alone)");
+            }
+            // (FP8 as released: each expert packed on its own, places for some on the GPU, the heads made the place's after the store's copies)
+            if let Some((f, u, d, (ur, uc), (dr, dc))) = f8x {
+                let (pu, pd) = (f.places(ck, u, ur, uc)?, f.places(ck, d, dr, dc)?);
+                let (x, cache) = crate::tiering::cached_f8(&pu, &pd, cg.places, store, l, h.ordinal)?;
+                return with8(MoeLayer::new_f8(c, router, bias, x, shared)?, shared8)?.with_cache(cache);
+            }
+            // (a block level's: each expert's packs in places of the level's layout)
+            if !lossless {
+                let (ju, jd) = blocks()?;
+                let (up, down, cache) = crate::tiering::cached_stacks(&ju, &jd, cg.places, store, l, h.ordinal, None)?;
+                return with8(MoeLayer::new(c, MoeWeights { router, bias, escale: None, up, down: Down::Block(down) }, shared)?, shared8)?.with_cache(cache);
+            }
+            // (lossless bf16: each stack's one lossless pack in the tiered layout, whatever the level of the rest, cut per expert)
+            let places = |s: &Stacked| -> Result<crate::tiering::TieredPlaces> {
+                let (rows, cols) = s.dims(ck, e)?;
+                let p = glyd_gpu::pack::pack_tiered_checked(&s.words(ck, e)?, e * rows, cols)
+                    .ok_or_else(|| Error(format!("{}: decoded to other bits than its weights", s.name())))?;
+                crate::tiering::TieredPlaces::of(&p, e)
+            };
+            let (pu, pd) = (places(&up)?, places(&down)?);
+            let (up, down, cache) = crate::tiering::cached_tiered(&pu, &pd, cg.places, store, l, h.ordinal)?;
+            return with8(MoeLayer::new(c, MoeWeights { router, bias, escale: None, up, down: Down::Block(down) }, shared)?, shared8)?.with_cache(cache);
+        }
+    }
+    // (FP8 as released, every expert on the GPU: each of the two matrices of all of them stacked and packed as one, this GPU's rows of each expert's)
+    if let Some((f, u, d, (ur, uc), (dr, dc))) = f8x {
+        let x = crate::f8::F8Experts { up: f.stack(ck, u, ur, uc)?, down: f.stack(ck, d, dr, dc)?, experts: e };
+        return with8(MoeLayer::new_f8(c, router, bias, x, shared)?, shared8);
+    }
+    let (up, down) = if lossless {
+        let stack = |s: &Stacked| -> Result<ExpertStack> {
+            let (rows, cols) = s.dims(ck, e)?;
+            let w = s.words(ck, e)?;
+            let Some(t) = across else {
+                return ExpertStack::lossless(upload_packed(pack_words(&w, e * rows, cols, level, &s.name())?)?, e);
+            };
+            // (a group of GPUs: this GPU's rows of each expert's, stacked)
+            if rows % (64 * t.n) != 0 {
+                return err(format!("{}: experts of {rows} rows across {} GPUs: each GPU's rows in 64s are wanted", s.name(), t.n));
+            }
+            let (r0, rn) = t.rows(rows);
+            let mine: Vec<u16> = (0..e).flat_map(|x| w[(x * rows + r0) * cols..(x * rows + r0 + rn) * cols].iter().copied()).collect();
+            let mut st = ExpertStack::lossless(upload_packed(pack_words(&mine, e * rn, cols, level, &s.name())?)?, e)?;
+            st.tp_rows = rows;
+            Ok(st)
+        };
+        (stack(&up)?, Down::Block(stack(&down)?))
+    } else {
+        let (ju, jd) = blocks()?;
+        (ExpertStack::upload(&ju)?, Down::Block(ExpertStack::upload(&jd)?))
+    };
+    with8(MoeLayer::new(c, MoeWeights { router, bias, escale: None, up, down }, shared)?, shared8)
 }
 
 fn io<T>(r: std::io::Result<T>) -> Result<T> {

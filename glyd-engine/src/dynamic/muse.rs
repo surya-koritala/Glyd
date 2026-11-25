@@ -45,7 +45,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_sto
     // (a hummingbird directory, src/hb_pack.rs: the routed experts' codebook rows in place of the release's)
     let hb = crate::hb_pack::HbDir::open(dir)?;
     let store = hc.map(crate::hbg_store::store_for);
-    let held = super::experts::Held { hb: hb.as_ref(), cache: hc.zip(store.as_ref()), ordinal: o.device };
+    let held = super::experts::Held { hb: hb.as_ref(), cache: hc.zip(store.as_ref()), ordinal: o.device, f8: None };
     let hidden = kinds.desc.hidden;
     // (the experts lossless in the tiered layout, whatever the level of the rest)
     let experts = |ck: &Checkpoint, _: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {

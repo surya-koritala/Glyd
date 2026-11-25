@@ -88,8 +88,9 @@ When the design was written a model ran on one of two kinds of code:
   `model_qwen4x.rs` (Condor's Qwen3.8-Flash-Next) and the GLM development engine (`model_glm.rs`, `mla_glm.rs`, `mtp_glm.rs`). Each has
   its own step, cache and sampling. **As built (R13, #234):** the GLM development engine is gone (`model_glm.rs`, `mla_glm.rs`, `mtp_glm.rs`,
   `kcheck_glm.rs`, `glm_serve.rs`, `glm_cb.rs`, `draft_loop.rs`, the codes block of `moe_glm_cb.rs`): GLM-5.3-Flash runs on the executor
-  alone; what the executor and Condor load GLM by is `kern/glm.rs` (the kernel table), `kern_glm.rs` (the layers' weights, a latent layer's) and
-  `moe_glm.rs` (the experts' layer); its experts are tiered by hummingbird and the block levels (R12). Its MTP drafting went with it:
+  alone; what the executor and Condor load GLM by is `kern/glm.rs` (the kernel table); since R3a (#136) its weights load by the executor's own
+  loader from its lowered description and its experts are the layer kind's block (`dynamic/experts.rs`: FP8 as released, the block levels,
+  hummingbird, the expert cache's places; `kern_glm.rs`'s weights loader and `moe_glm.rs` are gone). Its MTP drafting went with it:
   R6 (#145) puts the MtpHead kind on the executor (its CPU reference is `runtime/reference/mtp.rs`).
 - **The description executor** (`dynamic/mod.rs`). A `ModelDesc` (`mod.rs:518-558`) is a list of `Op`s per layer over 25 activation slots;
   `Dyn::op` is a `match` over 60 `Op` variants (`mod.rs:85-482`, `1428-1870`). Ops are named by family more than by kind (`Prep35`,
