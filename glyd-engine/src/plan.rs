@@ -5619,8 +5619,8 @@ mod tests {
         use crate::weights::Layout;
         let root = std::env::temp_dir().join(format!("glyd-plan-pack-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let (q3, q35) = (root.join("qwen3"), root.join("qwen35"));
-        crate::logits::qwen3_random(&q3).unwrap();
+        let (q3, q35) = (root.join("dense"), root.join("qwen35"));
+        crate::logits::dense_random(&q3).unwrap();
         crate::logits::qwen35_random(&q35).unwrap();
         let near = |got: u64, want: u64, what: &str| assert!((got as f64 / want as f64 - 1.0).abs() < 0.03, "{what}: planned {got}, written {want}");
         // Qwen3 dense, lossless
