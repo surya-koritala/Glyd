@@ -3230,6 +3230,11 @@ impl Dyn {
         unsafe {
             if self.stage.first {
                 self.embed(&[0u32])?;
+            } else {
+                // (a later stage's row of what the stage before hands it: zeros, so that the warm-up reads no memory never written)
+                for (sl, w) in self.boundary() {
+                    crate::dev::memset_async(self.big.slot(sl), 0, w * 2, self.dev.stream)?;
+                }
             }
             self.forward(&self.big, 1, (st, st), 1)?;
         }
