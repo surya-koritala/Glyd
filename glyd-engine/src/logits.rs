@@ -1293,6 +1293,15 @@ pub fn cases() -> Vec<Case> {
             on_choices: false,
         },
         Case {
+            id: "kimi-dsa",
+            family: "Kimi-K3 family with the newer config's sparse attention (latent attention over the tokens its indexer picks, a key a token, RMS-normed)",
+            weights: Weights::Random(crate::kimi_ref::random_dsa),
+            engine: kimi_engine,
+            cpu: Some(described_cpu),
+            vocab: 4096,
+            on_choices: false,
+        },
+        Case {
             id: "deepseek-v4",
             family: "DeepSeek-V4 (four residual streams, compressed attention, mixture of experts)",
             weights: Weights::Random(|d| crate::dsv4_ref::random(d, None)),
@@ -2332,7 +2341,7 @@ pub fn record(a: &crate::args::Args) -> Result<()> {
         "source".into(),
         match from {
             // (Nemotron-H has no reference of its own: its description on the reference of the layer kinds)
-"cpu" if matches!(c.id, "nemotron-h" | "qwen4x" | "qwen4x-s2" | "deepseek-v41" | "qwen35" | "qwen35-wide" | "dense" | "qwen35moe") => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
+"cpu" if matches!(c.id, "nemotron-h" | "qwen4x" | "qwen4x-s2" | "deepseek-v41" | "qwen35" | "qwen35-wide" | "dense" | "qwen35moe" | "kimi-dsa") => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
             "cpu" => format!(
                 "the CPU reference of src/{}_ref.rs, fp32 inside, on this case's random model (seed fixed in the generator)",
                 c.id.replace("deepseek-", "ds").replace('-', "")
@@ -2669,7 +2678,6 @@ mod tests {
     }
 }
 
-/// The random model of a case (gemma4, qwen35, qwen35-wide, dense, muse, kimi, glm) on the description executor at `level`, made in a directory of its own and loaded (the directory is let go).
 /// The case's model in `dir` on the description executor.
 pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Result<Dyn> {
     Ok(match case {
@@ -2680,14 +2688,18 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
         "qwen35" | "qwen35-wide" | "qwen35moe" => crate::dynamic::qwen35::load(dir, o)?,
         "dense" => crate::dynamic::dense::load(dir, o)?,
         "muse" => crate::dynamic::muse::load(dir, o)?,
-        "kimi" => crate::dynamic::kimi::load(dir, o)?,
+        "kimi" | "kimi-dsa" => crate::dynamic::kimi::load(dir, o)?,
         // (its experts at a lossy level, as its logits case: kestrel where penguin is asked)
         "glm" => crate::dynamic::glm::load(dir, &DynOpts { layout: Some(Layout::Tiered), ..o.clone() }, level_layout(level)?.unwrap_or(Layout::Int6))?,
         // (its experts at the level asked: the lossless one where none is)
         "nemotron" => crate::dynamic::nemotron::load(dir, o, level_layout(level)?.unwrap_or(Layout::Tiered))?,
         "deepseek-v4" => crate::dynamic::deepseek_v4::load(dir, o)?,
         "qwen4x" | "qwen4x-s2" => crate::dynamic::qwen4x::load(dir, o)?,
-        other => return err(format!("{other}: gemma4, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, glm, nemotron, deepseek-v4, qwen4x or qwen4x-s2")),
+        other => {
+            return err(format!(
+                "{other}: gemma4, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, nemotron, deepseek-v4, qwen4x or qwen4x-s2"
+            ))
+        }
     })
 }
 
@@ -2718,12 +2730,13 @@ fn random_model(case: &str, dir: &Path) -> Result<()> {
         "dense" => dense_random(dir),
         "muse" => crate::muse_ref::random(dir),
         "kimi" => crate::kimi_ref::random(dir, 1, true, 8),
+        "kimi-dsa" => crate::kimi_ref::random_dsa(dir),
         "glm" => crate::glm::random(dir, false, None),
         "nemotron" => crate::kcheck_nh::random(dir, 0, 16),
         "deepseek-v4" => crate::dsv4_ref::random(dir, None),
         "qwen4x" => qwen4x_random(dir),
         "qwen4x-s2" => qwen4x_s2_random(dir),
-        other => err(format!("{other}: gemma4, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, glm, nemotron, deepseek-v4, qwen4x or qwen4x-s2")),
+        other => err(format!("{other}: gemma4, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, nemotron, deepseek-v4, qwen4x or qwen4x-s2")),
     }
 }
 
@@ -4117,7 +4130,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
-/// A row's `k` largest logits, largest first, equal ones by the smaller token: the GPU's top-k (kern.rs `topk_rows`) as the CPU makes it.
+/// A row's `k` largest logits, largest first, equal ones by the smaller token: the GPU's top-k (kern/mod.rs `topk_rows`) as the CPU makes it.
 pub fn host_top(row: &[f32], k: usize) -> Vec<(u32, f32)> {
     let mut v: Vec<(u32, f32)> = row.iter().enumerate().map(|(i, &x)| (i as u32, x)).collect();
     v.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));

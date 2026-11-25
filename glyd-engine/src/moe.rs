@@ -479,6 +479,11 @@ pub struct MoeWeights {
     pub down: Down,
 }
 
+/// (development) The router's choices of every selection, in order (its k, then [tokens, k] experts), while a check holds `Some` here: `tiercheck` compares two runs' routing.
+/// An eager run's alone (a selection in a graph's capture is not read back).
+#[cfg(feature = "dev")]
+pub(crate) static ROUTES: std::sync::Mutex<Option<Vec<(usize, Vec<i64>)>>> = std::sync::Mutex::new(None);
+
 /// The layer's kernels (kernels/moe.cu) with typed launches. Device addresses are `u64`.
 pub struct MoeKern {
     logits: crate::kt::moe_logits,
@@ -573,7 +578,15 @@ impl MoeKern {
         if t == 0 {
             return Ok(());
         }
-        launch!(kern, [(t as u32).div_ceil(4), 1, 1], [128, 1, 1], s; logits, bias, escale, ids, wts, t as i32, e as i32, k as i32, r.flags(), r.scale)
+        launch!(kern, [(t as u32).div_ceil(4), 1, 1], [128, 1, 1], s; logits, bias, escale, ids, wts, t as i32, e as i32, k as i32, r.flags(), r.scale)?;
+        #[cfg(feature = "dev")]
+        if let Some(seen) = ROUTES.lock().map_err(|_| crate::ffi::Error("the routes' lock".into()))?.as_mut() {
+            crate::dev::sync_stream(s)?;
+            let mut got = vec![0i64; t * k];
+            crate::dev::read_dev(ids, &mut got)?;
+            seen.push((k, got));
+        }
+        Ok(())
     }
 
     /// out [rows, inter] = the activation of gu [rows, 2 inter] (gate then up) or, for relu squared, of gu [rows, inter] (out = gu is fine): see `Act`. inter a multiple of 8.
@@ -581,6 +594,16 @@ impl MoeKern {
     /// # Safety
     /// As `logits`.
     pub unsafe fn act(&self, s: Stream, gu: u64, out: u64, rows: usize, inter: usize, a: &Act) -> Result<()> {
+        self.act_of(s, gu, out, 0, 0, rows, inter, a)
+    }
+
+    /// `act` of an experts' products, whose rows are the order of `plan` (of `e` experts): the rows past the pairs it routes left alone (no product wrote them: a wave's, or the
+    /// pairs the host takes).
+    ///
+    /// # Safety
+    /// As `act`; `plan` the plan of the products that wrote `gu`.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn act_of(&self, s: Stream, gu: u64, out: u64, plan: u64, e: usize, rows: usize, inter: usize, a: &Act) -> Result<()> {
         if !inter.is_multiple_of(8) {
             return err(format!("intermediate size {inter}: not divisible by 8"));
         }
@@ -590,14 +613,14 @@ impl MoeKern {
             return Ok(());
         }
         let (mode, lim, lin) = a.kernel();
-        launch!(self.act, [rows as u32, (inter as u32 / 8).div_ceil(256), 1], [256, 1, 1], s; gu, out, inter as i32, mode, lim, lin)
+        launch!(self.act, [rows as u32, (inter as u32 / 8).div_ceil(256), 1], [256, 1, 1], s; gu, out, inter as i32, mode, lim, lin, plan, e as i32)
     }
 
     /// `act`'s SwiGLU as transformers computes it on bf16 tensors: out = bf16(bf16(silu(gate)) up), no clamp (the normed experts').
     ///
     /// # Safety
     /// As `logits`.
-    pub unsafe fn act_rounded(&self, s: Stream, gu: u64, out: u64, rows: usize, inter: usize) -> Result<()> {
+    pub unsafe fn act_rounded(&self, s: Stream, gu: u64, out: u64, plan: u64, e: usize, rows: usize, inter: usize) -> Result<()> {
         if !inter.is_multiple_of(8) {
             return err(format!("intermediate size {inter}: not divisible by 8"));
         }
@@ -606,7 +629,7 @@ impl MoeKern {
         if rows == 0 {
             return Ok(());
         }
-        launch!(self.act, [rows as u32, (inter as u32 / 8).div_ceil(256), 1], [256, 1, 1], s; gu, out, inter as i32, ACT_SILU_R, f32::INFINITY, 0f32)
+        launch!(self.act, [rows as u32, (inter as u32 / 8).div_ceil(256), 1], [256, 1, 1], s; gu, out, inter as i32, ACT_SILU_R, f32::INFINITY, 0f32, plan, e as i32)
     }
 
     /// y [rows, h] += g sh [rows, h], g = sigmoid(gate[row]) for an fp32 `gate` [rows] (0: g = 1).
@@ -1004,7 +1027,7 @@ impl MoeLayer {
                 }
                 lib.moe_way(sc.way.ptr, pairs as i64, e as i64, sc.plan.ptr, s)?;
                 f.up.moe(lib, e, xs, sc.plan.ptr, tn, k, true, sc.a.ptr, sc.ws.ptr, sc.ws.bytes, sc.done.ptr, s)?;
-                sc.k.act(s, sc.a.ptr, sc.h.ptr, pairs, c.inter, &c.act)?;
+                sc.k.act_of(s, sc.a.ptr, sc.h.ptr, sc.plan.ptr, e, pairs, c.inter, &c.act)?;
                 f.down.moe(lib, e, sc.h.ptr, sc.plan.ptr, tn, k, false, sc.a.ptr, sc.ws.ptr, sc.ws.bytes, sc.done.ptr, s)?;
                 sc.k.wsum(s, sc.a.ptr, sc.plan.ptr, sc.inv.ptr, wts, ys, tn, k, e, c.hidden)
             })?;
@@ -1158,7 +1181,7 @@ impl MoeLayer {
                 let (tn, ids) = ((t - t0).min(crate::f8::MOE_TOKENS), way.unwrap_or(sc.ids.ptr) + (t0 * kk * 8) as u64);
                 lib.moe_way(ids, (tn * kk) as i64, e, sc.plan.ptr, s)?;
                 f.up.moe(lib, ee, x + (t0 * c.hidden * 2) as u64, sc.plan.ptr, tn, kk, true, sc.a.ptr, sc.ws.ptr, sc.ws.bytes, sc.done.ptr, s)?;
-                sc.k.act(s, sc.a.ptr, sc.h.ptr, tn * kk, c.inter, &c.act)?;
+                sc.k.act_of(s, sc.a.ptr, sc.h.ptr, sc.plan.ptr, ee, tn * kk, c.inter, &c.act)?;
                 f.down.moe(lib, ee, sc.h.ptr, sc.plan.ptr, tn, kk, false, sc.a.ptr, sc.ws.ptr, sc.ws.bytes, sc.done.ptr, s)?;
                 sc.k.wsum(s, sc.a.ptr, sc.plan.ptr, sc.inv.ptr, sc.wts.ptr + (t0 * kk * 4) as u64, y + (t0 * c.hidden * 2) as u64, tn, kk, ee, c.hidden)?;
             }
@@ -1170,10 +1193,10 @@ impl MoeLayer {
         let rows = if c.fused() != 0 {
             sc.a.ptr
         } else if self.separate_h() {
-            sc.k.act(s, sc.a.ptr, sc.h.ptr, pairs, c.inter, &c.act)?;
+            sc.k.act_of(s, sc.a.ptr, sc.h.ptr, sc.plan.ptr, e as usize, pairs, c.inter, &c.act)?;
             sc.h.ptr
         } else {
-            sc.k.act(s, sc.a.ptr, sc.a.ptr, pairs, c.inter, &c.act)?;
+            sc.k.act_of(s, sc.a.ptr, sc.a.ptr, sc.plan.ptr, e as usize, pairs, c.inter, &c.act)?;
             sc.a.ptr
         };
         match &self.w.down {
@@ -1272,7 +1295,7 @@ impl MoeLayer {
                             sc.h.ptr
                         }
                         HbSum::Normed { .. } => {
-                            sc.k.act_rounded(s, sc.a.ptr, sc.h.ptr, pairs, c.inter)?;
+                            sc.k.act_rounded(s, sc.a.ptr, sc.h.ptr, sc.plan.ptr, e, pairs, c.inter)?;
                             sc.h.ptr
                         }
                     };
@@ -1332,7 +1355,7 @@ impl MoeLayer {
     unsafe fn hb_act(&self, sc: &MoeScratch, s: Stream, pairs: usize) -> Result<u64> {
         let c = &self.cfg;
         let out = self.rows(sc).ptr;
-        sc.k.act(s, sc.a.ptr, out, pairs, c.inter, &c.act)?;
+        sc.k.act_of(s, sc.a.ptr, out, sc.plan.ptr, c.experts, pairs, c.inter, &c.act)?;
         Ok(out)
     }
 
@@ -1439,7 +1462,7 @@ impl MoeLayer {
                     let (ei, ti, ki) = (e as i64, tn as i64, k as i64);
                     lib.moe_way(sc.way.ptr, pairs as i64, ei, sc.plan.ptr, s)?;
                     moe_tp(lib, &self.w.up, ei, xs, ti, ki, true, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, &sc.ws, s)?;
-                    sc.k.act_rounded(s, sc.a.ptr, sc.h.ptr, pairs, c.inter)?;
+                    sc.k.act_rounded(s, sc.a.ptr, sc.h.ptr, sc.plan.ptr, e, pairs, c.inter)?;
                     moe_tp(lib, down, ei, sc.h.ptr, ti, ki, false, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, &sc.ws, s)?;
                     launch!(sc.k.inv, [(pairs as u32).div_ceil(256), 1, 1], [256, 1, 1], s; sc.plan.ptr, inv, pairs as i32, e as i32)?;
                     launch!(sc.k.norm_sum, [tn as u32, 1, 1], [256, 1, 1], s; sc.a.ptr, inv, ids, wts, post_w, ys, k as i32, c.hidden as i32, eps)
@@ -1452,7 +1475,7 @@ impl MoeLayer {
         if let Some(hb) = &self.hb {
             // (hummingbird: the first product over the rotated input, the second unweighted in the rotated basis, each pair's row rotated back and rounded to bf16 where the sum norms it)
             self.hb_up(hb, sc, s, x, t, sc.ids.ptr)?;
-            sc.k.act_rounded(s, sc.a.ptr, sc.h.ptr, pairs, c.inter)?;
+            sc.k.act_rounded(s, sc.a.ptr, sc.h.ptr, sc.plan.ptr, e, pairs, c.inter)?;
             self.hb_down(hb, sc, s, sc.h.ptr, t, sc.ids.ptr)?;
             let hk = sc.hbk.as_ref().ok_or_else(|| crate::ffi::Error("the scratch was made without hummingbird layers' room".into()))?;
             hk.unrotate(s, hb, sc.hb_part.ptr, sc.plan.ptr, sc.hb_rows.ptr, pairs)?;
@@ -1460,7 +1483,7 @@ impl MoeLayer {
             return launch!(sc.k.norm_sum, [t as u32, 1, 1], [256, 1, 1], s; sc.hb_rows.ptr, inv, sc.ids.ptr, sc.wts.ptr, post_w, y, k as i32, c.hidden as i32, eps);
         }
         moe_tp(lib, &self.w.up, ei, x, tt, ki, true, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, &sc.ws, s)?;
-        sc.k.act_rounded(s, sc.a.ptr, sc.h.ptr, pairs, c.inter)?;
+        sc.k.act_rounded(s, sc.a.ptr, sc.h.ptr, sc.plan.ptr, e, pairs, c.inter)?;
         // (the second product unweighted, the pairs' rows in the plan's order: into `a`, free after the activation)
         moe_tp(lib, down, ei, sc.h.ptr, tt, ki, false, sc.plan.ptr, 0, 0, 0, sc.a.ptr, pairs, sc, &sc.ws, s)?;
         launch!(sc.k.inv, [(pairs as u32).div_ceil(256), 1, 1], [256, 1, 1], s; sc.plan.ptr, inv, pairs as i32, e as i32)?;

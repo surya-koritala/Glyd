@@ -6,7 +6,6 @@ use crate::ffi::{Result, Stream};
 use crate::kern::norm_threads;
 use crate::launch;
 
-// The kernels' names: those the .cu sources give them, in every build (kname!).
 /// Bytes of dynamic shared memory gdn_chunk takes (kernels/qwen35.cu).
 const GDN_CHUNK_SMEM: u32 = (2 * 64 * 65 + 64 * 64 + 64 * 64 + 128 * 64 + 2 * 64) * 4;
 /// Qwen3.5's kernels with typed launches.

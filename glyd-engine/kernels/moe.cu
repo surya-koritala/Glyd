@@ -179,11 +179,13 @@ extern "C" __global__ void __launch_bounds__(128) moe_select32(const float* logi
 // out [rows, I]: MOE_SILU or MOE_GELU (tanh): act(min(g, lim)) * clamp(u, -lim, lim) of gu [rows, 2 I] (the gate in the first I columns, the up in the next I; lim = INFINITY: no clamp, GLM-5.x's is 10);
 // MOE_SITU: lim tanh(g / lim) sigmoid(g) x lin tanh(u / lin) of the same halves; MOE_RELU2: relu(x)^2 of gu [rows, I] (in place where out = gu). One rounding (MOE_SILU_R: silu(g) rounded before the
 // product too). I a multiple of 8; a thread takes
-// 8 columns, block (row, chunk of 256 threads' columns).
-extern "C" __global__ void moe_act(const bf16* gu, bf16* out, int I, int mode, float lim, float lin) {
+// 8 columns, block (row, chunk of 256 threads' columns). With an experts' plan (`plan` of E experts, not null) the rows are its order's: a row past the pairs it routes is none (no
+// product wrote it), as in v4_moe_act.
+extern "C" __global__ void moe_act(const bf16* gu, bf16* out, int I, int mode, float lim, float lin, const int* plan, int E) {
     const int i = (blockIdx.y * blockDim.x + threadIdx.x) * 8;
     if (i >= I) return;
     const size_t r = blockIdx.x;
+    if (plan && (int)r >= plan[1 + E + plan[0]]) return;
     uint4 ov;
     bf16* op = reinterpret_cast<bf16*>(&ov);
     if (mode == MOE_RELU2) {
@@ -273,7 +275,7 @@ extern "C" __global__ void moe_wsum(const bf16* rows, const int* inv, const floa
     *(uint4*)(y + (size_t)t * H + c) = o;
 }
 
-// ---- the expert cache planned on the GPU (src/offload.rs's device path, `DevPlan`): a decode call's choices looked up in its layer's table of places, each miss either copied into a place or sent to
+// ---- the expert cache planned on the GPU (src/devplan.rs, `DevPlan`): a decode call's choices looked up in its layer's table of places, each miss either copied into a place or sent to
 // the host's thread, so that no host waits inside a call and a step of such calls is one graph. One block: the tables in shared memory while the first thread decides, then written back.
 // A layer's table: place_of [experts] int, expert_of [slots] int, last [slots] uint (the step a place was last used in), hostlast [experts] uint (the step the host last computed an expert), refb [slots]
 // uchar; meta [16] uint: 0 step, 1 hand, 2 experts asked for, 3 found, 4 copied, 5 the host's experts, 6 the host's pairs, 7 promoted (counted over the calls), 8 this call's copies, 9 its promotions,
@@ -281,7 +283,7 @@ extern "C" __global__ void moe_wsum(const bf16* rows, const int* inv, const floa
 // store's `Costs`), the mode (0 copy, 1 cpu, 2 split, 3 auto), the window, the most promotions a call. The misses are copied as the store's `plan` copies them: the ones with the most pairs (the hot ones first
 // among equals), as many as make the longer of the copies and the host's pairs shortest (auto; split: the two the same), within the places the call's hits leave; a hot miss (the host computed it within
 // `window` calls before) that stays the host's is promoted (a place found for it, filled behind the call's products) while the copies so far leave the host's time room for its copy.
-// The request (mapped host memory the host's thread reads, src/offload.rs `DevMail`): words 0 its number (written last), 1 the layer, 2 tokens, 3 pairs, 4 z's width, 5 choices a token; from word XP_HDR
+// The request (mapped host memory the host's thread reads, src/devplan.rs `DevMail`): words 0 its number (written last), 1 the layer, 2 tokens, 3 pairs, 4 z's width, 5 choices a token; from word XP_HDR
 // the host's pairs (expert, token, weight's bits), `max_pairs` of room; after them the tokens' rows of z (bf16 [tokens, width]).
 #define XP_MAX 1024
 #define XP_HDR 16

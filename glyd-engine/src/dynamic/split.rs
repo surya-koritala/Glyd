@@ -609,12 +609,16 @@ pub fn open_cached(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], cachin
             let c = crate::glm::ConfigGlm::load(dir)?;
             (c.layers, c.eos.clone())
         }
-        Some("Nemotron-H") | None => {
-            return err(format!("{}: not a family whose experts the expert cache takes (Kimi-K3, DeepSeek-V4, GLM-5.3-Flash, Muse Spark)", dir.display()))
-        }
-        Some(_) => {
+        Some("DeepSeek-V4") => {
             let c = crate::deepseek_v4::ConfigV4::load(dir)?;
             (c.layers, c.eos.clone())
+        }
+        f => {
+            return err(format!(
+                "{}: {} is not a family whose experts the expert cache takes (Kimi-K3, DeepSeek-V4, GLM-5.3-Flash, Muse Spark)",
+                dir.display(),
+                f.unwrap_or("its family")
+            ))
         }
     };
     let fam = family(&text).unwrap_or("");

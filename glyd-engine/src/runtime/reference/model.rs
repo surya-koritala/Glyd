@@ -4,7 +4,7 @@
 use super::{depth_mix, norm::norm, Params, RefLayer, SeqState};
 use crate::ffi::{err, Error, Result};
 use crate::runtime::describe::{Described, Source};
-use crate::runtime::kinds::{Body, Collapse, Comp, Mixer, ModelDesc, Residual, StreamsP};
+use crate::runtime::kinds::{Body, Collapse, Comp, Mixer, Mla, ModelDesc, Residual, StreamsP};
 
 /// A checkpoint's tensors by name: (shape, values as f32).
 pub type Tensors<'a> = &'a dyn Fn(&str) -> Option<(Vec<usize>, Vec<f32>)>;
@@ -236,6 +236,23 @@ impl RefModel {
     /// V4.1's compressed attention of block `b` reading other blocks' parts (`kinds::CompShare`): sequence `seq`'s entries (and their indexer
     /// keys), picks and candidate blocks copied from the blocks that make them, which ran before it. A query reads only what its position sees.
     fn share_into(&mut self, b: usize, seq: u32) -> Result<()> {
+        // (a latent attention whose indexer is `shared`: the picks the latent attention of the layer before it made for this token, as transformers hands
+        // the next layer `prev_topk_indices`; a layer before it that picks nothing lends none)
+        if let Body::Mixer(Mixer::Mla(Mla { indexer: Some(ix), .. })) = &self.layers[b].block.body {
+            if ix.shared {
+                let before = (0..b).rev().find(|&s| matches!(self.layers[s].block.body, Body::Mixer(_)));
+                let lent = match before.and_then(|s| self.layers[s].seqs.get(&seq)) {
+                    Some(SeqState::Mla(c)) if matches!(&self.layers[before.unwrap_or(0)].block.body, Body::Mixer(Mixer::Mla(Mla { indexer: Some(_), .. }))) => {
+                        c.picks.clone()
+                    }
+                    _ => return err(format!("block {b}: a shared indexer after a layer whose attention picks nothing")),
+                };
+                let st = self.layers[b].seqs.entry(seq).or_insert_with(|| SeqState::Mla(super::mla::LatentCache::default()));
+                let SeqState::Mla(st) = st else { return err(format!("block {b}: a sequence's state is not a latent cache")) };
+                st.lent = Some(lent);
+            }
+            return Ok(());
+        }
         let Body::Mixer(Mixer::Compressed(Comp { share: Some(sh), .. })) = &self.layers[b].block.body else { return Ok(()) };
         let sh = *sh;
         let entries = sh.entries.map(|e| self.comp_state(b, e, seq).map(|c| c.map(|c| (c.comp.clone(), c.ikeys.clone())))).transpose()?.flatten();

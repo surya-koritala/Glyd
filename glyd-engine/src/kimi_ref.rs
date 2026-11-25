@@ -502,7 +502,13 @@ impl RefKimi {
 /// `dense`: the layers before which are dense MLPs (1 as released; 8: no experts); `mla`: the latent attention layers (false: every layer delta attention), to check
 /// the parts alone; `real`: Some(experts) for the release's widths instead (`random_real`).
 pub fn random(out: &Path, dense: usize, mla: bool, layers: usize) -> Result<()> {
-    random_with(out, dense, mla, layers, None)
+    random_with(out, dense, mla, layers, None, false)
+}
+
+/// `random` of 8 layers with the newer config's sparse attention (`dsa_config`): on its two latent attention layers an indexer of a key a token (4 heads of 64,
+/// the keys RMS-normed, the best 16 tokens attended to), its tensors as the release names them. The family's second shape.
+pub fn random_dsa(out: &Path) -> Result<()> {
+    random_with(out, 1, true, 8, None, true)
 }
 
 /// `random` at the release's widths (a width of 7,168, 96 delta heads of 128, experts of 3,072 neurons on a latent of 3,584, 16 of `experts` a token, 2 shared), every layer
@@ -510,10 +516,10 @@ pub fn random(out: &Path, dense: usize, mla: bool, layers: usize) -> Result<()> 
 /// (4 layers, 3 of 320 experts: 18 GB) to run through the expert cache. Its router is not the small model's decisive one: the scores spread and a bias of 0.01 at most, so that
 /// the choices spread over the experts as a trained router's do over a batch.
 pub fn random_real(out: &Path, layers: usize, experts: usize) -> Result<()> {
-    random_with(out, 1, false, layers.min(8), Some(experts))
+    random_with(out, 1, false, layers.min(8), Some(experts), false)
 }
 
-fn random_with(out: &Path, dense: usize, mla: bool, layers: usize, real: Option<usize>) -> Result<()> {
+fn random_with(out: &Path, dense: usize, mla: bool, layers: usize, real: Option<usize>, dsa: bool) -> Result<()> {
     let text = r#"{"architectures": ["KimiK3ForConditionalGeneration"], "model_type": "kimi_k3", "bos_token_id": 1, "eos_token_id": 2,
         "text_config": {"model_type": "kimi_linear", "hidden_act": "situ", "activation_situ_beta": 4.0, "activation_situ_linear_beta": 25.0, "attn_res_block_size": 3, "bos_token_id": 1,
         "eos_token_id": 2, "first_k_dense_replace": 1, "hidden_size": 256, "intermediate_size": 512, "kv_lora_rank": 128, "latent_moe_use_norm": true,
@@ -551,8 +557,20 @@ fn random_with(out: &Path, dense: usize, mla: bool, layers: usize, real: Option<
             .replace(r#""num_shared_experts": 1"#, r#""num_shared_experts": 2"#),
         None => text,
     };
+    let text = if dsa {
+        text.replace(
+            r#""vocab_size": 4096}}"#,
+            r#""vocab_size": 4096, "dsa_config": {"dsa_layers": [4, 8], "index_head_dim": 64, "index_k_norm_type": "rmsnorm", "index_num_heads": 4,
+        "index_rope_dim": 0, "index_skip_topk_offset": 1, "index_topk": 16, "index_topk_freq": 1, "indexer_use_fp8": false}}}"#,
+        )
+    } else {
+        text
+    };
     let text = text.as_str();
     let c = ConfigKimi::parse(text, "random", None)?;
+    if dsa != c.dsa.is_some() {
+        return err("the random model's sparse attention is not in its config");
+    }
     let mut r = 0x2026_1021_0000_0001u64;
     let mut uni = move |a: f32, b: f32| {
         r ^= r << 13;
@@ -625,6 +643,17 @@ fn random_with(out: &Path, dense: usize, mla: bool, layers: usize, real: Option<
                 m(&mut t, format!("{a}.kv_b_proj"), d.heads * (d.nope + d.v), d.kv_rank, &mut uni);
                 m(&mut t, format!("{a}.g_proj"), d.heads * d.v, c.hidden, &mut uni);
                 m(&mut t, format!("{a}.o_proj"), c.hidden, d.heads * d.v, &mut uni);
+                // (the sparse attention's indexer on the layers the config names: the queries' product of the q latent, the keys' of the layer's input, the keys'
+                // norm, the head weights' product)
+                if let Some(x) = c.dsa.as_ref().filter(|x| x.layers.contains(&l)) {
+                    m(&mut t, format!("{a}.indexer.wq_b"), x.heads * x.dim, d.q_rank, &mut uni);
+                    m(&mut t, format!("{a}.indexer.wk"), x.dim, c.hidden, &mut uni);
+                    bf(&mut t, format!("{a}.indexer.k_norm.weight"), vec![x.dim as u64], 0.9, 1.1, &mut uni);
+                    if x.layer_norm {
+                        bf(&mut t, format!("{a}.indexer.k_norm.bias"), vec![x.dim as u64], -0.1, 0.1, &mut uni);
+                    }
+                    m(&mut t, format!("{a}.indexer.weights_proj"), x.heads, c.hidden, &mut uni);
+                }
             }
         }
         let e = &c.experts;

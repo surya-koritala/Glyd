@@ -1,6 +1,5 @@
 //! Packed matrices on the GPU (`PackBuf`) and how a checkpoint's matrices become them: packed as they load in a level's layout (`pack_item_map`), or read as a glyd-v7
 //! or a lossless glyd-v4 directory saved them (`read_v7`, `read_lossless`); a Qwen3 config as the planner reads it (`Config`), the rotary tables, the layouts' choice.
-//! The dense Qwen3 engine's own loader (its glyd-v4/v3 directories with `engine.safetensors`) went with that engine (R3c, #139).
 
 use crate::dev::Buf;
 use crate::ffi::Words;
@@ -225,7 +224,11 @@ pub fn rope_tables(theta: f64, dim: usize, max_pos: usize) -> (Vec<u16>, Vec<u16
     (cos, sin)
 }
 
-/// A matrix to pack: the checkpoint's tensors stacked by rows (q, k, v; gate, up; or one).
+/// The last member of an item whose rows are more than its tensors': it names no tensor, and the rows after them are zeros (a fused product padded so that
+/// its rows pack, and slice across a group of GPUs whatever the group: no product reads them).
+pub(crate) const ZERO_ROWS: &str = "";
+
+/// A matrix to pack: the checkpoint's tensors stacked by rows (q, k, v; gate, up; or one), zero rows after them where its last member is `ZERO_ROWS`.
 #[derive(Clone, Debug)]
 pub(crate) struct Item {
     pub members: Vec<String>,
@@ -254,11 +257,19 @@ pub(crate) fn pack_item_map(ck: &Checkpoint, it: &Item, layout: Layout, transfor
     pack_words(&w, it.rows, it.cols, layout, &it.members.join(" + "))
 }
 
-/// An item's members stacked, as bf16 words (an FP8 member as the bf16 it dequantises to).
+/// An item's members stacked, as bf16 words (an FP8 member as the bf16 it dequantises to), zeros after them where the item says so (`ZERO_ROWS`, its last
+/// member).
 pub(crate) fn item_words(ck: &Checkpoint, it: &Item) -> Result<Vec<u16>> {
     let mut w = vec![0u16; it.rows * it.cols];
     let mut at = 0usize;
-    for m in &it.members {
+    for (i, m) in it.members.iter().enumerate() {
+        if m == ZERO_ROWS {
+            if i + 1 != it.members.len() || at > w.len() {
+                return err(format!("{}: zero rows that are not after its {at} weights, within {} x {}", it.members.join(" + "), it.rows, it.cols));
+            }
+            at = w.len();
+            continue;
+        }
         let (_, t) = ck.get(m).ok_or_else(|| Error(format!("{}: no tensor {m}", ck.dir.display())))?;
         // (a bf16 matrix as it is; an FP8 one with its block scales as the bf16 it dequantises to)
         if !matches!(t.dtype.as_str(), "BF16" | "F8_E4M3") || t.shape.len() != 2 || t.shape[1] as usize != it.cols {
@@ -853,7 +864,6 @@ mod tests {
         assert_eq!(e.to_string(), "seventeen");
     }
 
-    /// The layout a GPU is given (the plugin's best_layout): Ada the tiered one, every other GPU the 12-bit one, the tiered one where only it fits; `--layout` wins.
     #[test]
     fn config_of_a_qwen3() {
         let dir = std::env::temp_dir().join(format!("glyd-engine-cfg-{}", std::process::id()));
@@ -952,6 +962,36 @@ mod tests {
 
     fn le_i32(b: &[u8]) -> Vec<i32> {
         b.chunks_exact(4).map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
+    }
+
+    /// An item whose last member is `ZERO_ROWS`: its tensors stacked, then zero rows to its own count (a fused product padded to rows the library packs,
+    /// packed here and decoded to the same words). Zero rows anywhere else, or tensors of more rows than the item's, are refused; an item without the member
+    /// still takes exactly its tensors' rows.
+    #[test]
+    fn an_item_says_the_zero_rows_after_its_tensors() {
+        let dir = std::env::temp_dir().join(format!("glyd-engine-zero-rows-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (cols, ra, rb) = (32usize, 40usize, 8usize);
+        let words = |rows: usize, k: u16| -> Vec<u16> { (0..rows * cols).map(|i| 0x3c00 + ((i as u16).wrapping_mul(7) ^ k) % 0x300).collect() };
+        let (a, b) = (words(ra, 1), words(rb, 2));
+        let (ba, bb): (Vec<u8>, Vec<u8>) = (a.iter().flat_map(|w| w.to_le_bytes()).collect(), b.iter().flat_map(|w| w.to_le_bytes()).collect());
+        let refs: Vec<(&str, &str, Vec<u64>, &[u8])> =
+            vec![("a.weight", "BF16", vec![ra as u64, cols as u64], &ba[..]), ("b.weight", "BF16", vec![rb as u64, cols as u64], &bb[..])];
+        crate::pack::write_safetensors(&dir.join("model.safetensors"), &[("format", "pt".to_string())], &refs).unwrap();
+        let ck = Checkpoint::open(&dir).unwrap();
+        let item = |members: &[&str], rows: usize| Item { members: members.iter().map(|m| m.to_string()).collect(), rows, cols };
+        let w = item_words(&ck, &item(&["a.weight", "b.weight", ZERO_ROWS], 64)).unwrap();
+        assert_eq!((&w[..ra * cols], &w[ra * cols..(ra + rb) * cols]), (&a[..], &b[..]));
+        assert!(w[(ra + rb) * cols..].iter().all(|&x| x == 0) && w.len() == 64 * cols);
+        // (no zero rows to add: the member is the tensors' rows alone)
+        assert_eq!(item_words(&ck, &item(&["a.weight", "b.weight", ZERO_ROWS], ra + rb)).unwrap().len(), (ra + rb) * cols);
+        assert!(item_words(&ck, &item(&["a.weight", ZERO_ROWS, "b.weight"], 64)).unwrap_err().msg.contains("zero rows"));
+        assert!(item_words(&ck, &item(&["a.weight", "b.weight"], 64)).unwrap_err().msg.contains("are wanted"));
+        // (packed as one matrix of its own rows: the lossless pack decodes to the padded words)
+        let p = pack_item_map(&ck, &item(&["a.weight", "b.weight", ZERO_ROWS], 64), Layout::Tiered, &|_| {}).unwrap();
+        assert_eq!((p.rows, p.cols), (64, cols));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A lossless glyd-v4 save that holds a matrix in two packs (Qwen3.5's in_proj_qkv and in_proj_z, as `glyd-gpu pack` saves them): `lossless_manifest` names the save, `read_lossless_parts` reads a pack saved
