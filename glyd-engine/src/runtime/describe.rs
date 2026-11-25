@@ -1684,17 +1684,48 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
         let mut r = names::roles(part::KIMI_ATTN_MIX, &p, 0, all);
         let mixer = if kda_l.contains(&(l as u64 + 1)) {
             let x = but(part::KDA, &p, 0, &["gate_a", "gate_b"]);
-            // (the forget gate's low rank: the delta heads' size, which the lowering to the executor sizes its slot by)
-            shape_roles(&mut shapes, &x, &[("decay_a", vec![kd, d])]);
+            // (each matrix's shape, which the lowering to the executor sizes its products by and names its tensors with; the forget gate's low rank the delta
+            // heads' size)
+            let qd = kh * kd;
+            shape_roles(
+                &mut shapes,
+                &x,
+                &[
+                    ("q", vec![qd, d]),
+                    ("k", vec![qd, d]),
+                    ("v", vec![qd, d]),
+                    ("gate", vec![qd, d]),
+                    ("decay_a", vec![kd, d]),
+                    ("beta", vec![kh, d]),
+                    ("o", vec![d, qd]),
+                    ("decay_b", vec![qd, kd]),
+                ],
+            );
             r.extend(x);
             Mixer::Linear(lin.clone())
         } else {
-            r.extend(but(part::MLA, &p, 0, &["q"]));
+            let x = but(part::MLA, &p, 0, &["q"]);
+            let (ql, hv) = (mla.q_lora.unwrap_or(0), heads * mla.v_dim);
+            shape_roles(
+                &mut shapes,
+                &x,
+                &[
+                    ("q_a", vec![ql, d]),
+                    ("g", vec![hv, d]),
+                    ("kv_a", vec![mla.kv_lora + rd, d]),
+                    ("q_b", vec![heads * (nope + rd), ql]),
+                    ("kv_b", vec![heads * (nope + mla.v_dim), mla.kv_lora]),
+                    ("o", vec![d, hv]),
+                ],
+            );
+            r.extend(x);
             let indexer = dsa.as_ref().filter(|(on, _)| on.contains(&(l as u64 + 1))).map(|(_, ix)| ix.clone());
-            if let Some(IndexForm::Gated { key }) = indexer.as_ref().map(|ix| ix.form) {
-                r.extend(names::roles(part::MLA_INDEXER, &p, 0, |x| {
-                    !x.starts_with("indexer_pool") && (key.kind == NormKind::Layer || x != "indexer_k_norm_bias")
-                }));
+            if let Some((IndexForm::Gated { key }, ix)) = indexer.as_ref().map(|ix| (ix.form, ix)) {
+                let x =
+                    names::roles(part::MLA_INDEXER, &p, 0, |x| !x.starts_with("indexer_pool") && (key.kind == NormKind::Layer || x != "indexer_k_norm_bias"));
+                let (ih, id) = (ix.heads, ix.head_dim);
+                shape_roles(&mut shapes, &x, &[("indexer_wq_b", vec![ih * id, ql]), ("indexer_wk", vec![id, d]), ("indexer_weights", vec![ih, d])]);
+                r.extend(x);
             }
             Mixer::Mla(Mla { indexer, ..mla.clone() })
         };
@@ -1703,7 +1734,7 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
         let mut r = names::roles(part::KIMI_FFN_MIX, &p, 0, all);
         let body = if l < dense {
             r.extend(names::roles(part::MLP_BODY, &p, 0, all));
-            shape_roles(&mut shapes, &r, &[("gate", vec![inter, d])]);
+            shape_roles(&mut shapes, &r, &[("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])]);
             Body::Ffn(Ffn::Mlp(mlp))
         } else {
             let mut x = names::roles(part::KIMI_MOE, &p, ne, |x| shared || !x.starts_with("shared_"));
@@ -1716,7 +1747,19 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
                     }
                 }
             }
-            shape_roles(&mut shapes, &x, &[("shared_gate", vec![n_shared * moe_inter, d])]);
+            let si = n_shared * moe_inter;
+            shape_roles(
+                &mut shapes,
+                &x,
+                &[
+                    ("router", vec![ne, d]),
+                    ("latent_down", vec![lat, d]),
+                    ("latent_up", vec![d, lat]),
+                    ("shared_gate", vec![si, d]),
+                    ("shared_up", vec![si, d]),
+                    ("shared_down", vec![d, si]),
+                ],
+            );
             r.extend(x);
             Body::Ffn(Ffn::Moe(moe.clone()))
         };
@@ -1737,6 +1780,8 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
         rope: None,
     };
     let mut out = finish(&k, desc, &names::KIMI, prefix, roles, mtp_layers)?;
+    // (the embedding's and the head's too: every matrix a product multiplies by or a token's row is read from)
+    shapes.extend(std::iter::once(&out.embed).chain(&out.head).map(|n| (n.clone(), vec![vocab, d])));
     (out.scales, out.shapes) = (scales, shapes);
     Ok(out)
 }

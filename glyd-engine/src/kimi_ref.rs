@@ -480,7 +480,8 @@ impl RefKimi {
     }
 }
 
-/// A small Kimi-K3 of the release's format in `out` (random weights; the experts MXFP4 with E8M0 scales, the rest bf16, A_log and dt_bias fp32): 8 layers in
+/// A small Kimi-K3 of the release's format in `out` (random weights; the experts MXFP4 with E8M0 scales, its config's `quantization_config` the release's
+/// saying so, the rest bf16, A_log and dt_bias fp32): 8 layers in
 /// blocks of 3 (so that the depth mix sees up to four sources), the latent attention at layers 3 and 7 (1-based 4 and 8), the dense MLP in layer 0, 16 experts of
 /// 4 a token on a latent of 128; the delta and latent attention at the release's head widths (128; nope 128, rope 64, v 128).
 ///
@@ -512,6 +513,9 @@ fn random_with(out: &Path, dense: usize, mla: bool, layers: usize, real: Option<
         "max_position_embeddings": 4096, "mla_use_nope": true, "mla_use_output_gate": true, "moe_intermediate_size": 256, "moe_layer_freq": 1, "moe_renormalize": true,
         "moe_router_activation_func": "sigmoid", "num_attention_heads": 2, "num_expert_group": 1, "num_experts": 16, "num_experts_per_token": 4, "num_hidden_layers": 8,
         "num_key_value_heads": 2, "num_shared_experts": 1, "q_lora_rank": 128, "qk_nope_head_dim": 128, "qk_rope_head_dim": 64, "rms_norm_eps": 1e-05, "routed_expert_hidden_size": 128,
+        "quantization_config": {"config_groups": {"group_0": {"format": "mxfp4-pack-quantized", "targets": ["Linear"], "weights": {"group_size": 32, "num_bits": 4,
+        "strategy": "group", "symmetric": true, "type": "float"}}}, "format": "mxfp4-pack-quantized", "ignore": ["re:.*self_attn.*", "re:.*shared_experts.*",
+        "re:.*mlp\\.(gate|up|gate_up|down)_proj.*", "re:.*lm_head.*"], "quant_method": "compressed-tensors"},
         "routed_scaling_factor": 1.0, "topk_group": 1, "topk_method": "noaux_tc", "v_head_dim": 128, "vocab_size": 4096}}"#;
     let text = text.replace(r#""first_k_dense_replace": 1"#, &format!(r#""first_k_dense_replace": {dense}"#));
     let text = if mla {

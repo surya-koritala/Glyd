@@ -2100,7 +2100,7 @@ impl Dyn {
             Op::Moe(MoeOp { block, .. }) => block,
             _ => return Ok(()),
         };
-        let Some((layer, _)) = p.moe[block].resident() else {
+        let Some(layer) = p.moe[block].core() else {
             crate::hb_usage::missed(l);
             return Ok(());
         };
@@ -3389,8 +3389,9 @@ pub fn prodcheck(a: &crate::args::Args) -> Result<()> {
     let (w, rows, cols) = match (a.flag("from"), a.flag("name")) {
         (Some(d), Some(t)) => {
             let ck = Checkpoint::open(Path::new(d)).map_err(|e| Error(e.to_string()))?;
-            let (w, sh) = kimi::words(&ck, t)?;
-            (w, sh[0] as usize, sh[1] as usize)
+            let sh = ck.get(t).map(|(_, x)| x.shape.clone()).ok_or_else(|| Error(format!("no tensor {t}")))?;
+            let (rows, cols) = (sh[0] as usize, sh.get(1).copied().unwrap_or(1) as usize);
+            (crate::weights::item_words(&ck, &crate::weights::Item { members: vec![t.to_string()], rows, cols })?, rows, cols)
         }
         _ => ((0..rows * cols).map(|_| bf(((rnd() >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 0.04)).collect(), rows, cols),
     };
