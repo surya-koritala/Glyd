@@ -548,6 +548,14 @@ from the reference's on the reference's own input, Condor's three among them, is
 The figures against the reference's own choices and input are always printed beside them, and so are Condor's engine's by the same
 measures, its record before it is deleted.
 
+An indexer's picks are choices of the same sort and are held by the same rule (`logits::held_on_choices`, a case's `on_choices`): GLM-5.3-Flash's
+random case keeps 2 pools of up to 6 by its indexers and 4 experts of 16 by its routers, each expert weighing about 0.6, and rounding its
+residual to bf16 alone moves the case's logits by a KL of 5.3e-3 on the CPU reference (4.1e-4 to 7.0e-3 on five other seeds,
+`logits::tests::glm_reference_with_its_residual_rounded`). The executor records each latent attention's picks with the inputs it scored (its
+queries, head weights and the complete entries' keys, `Dyn::trace_picks`); wherever its picks are not the reference's own, the reference's
+indexer (`reference::mla::choose`, fp32) is run on those inputs and must pick the same pools or a near tie (below `NEAR` by the pools' scores);
+the reference then takes the engine's picks with its experts (`LatentCache::take`), and the logits are held at the kind's bound.
+
 ### Rows sized by memory
 
 `max_rows` comes from the plan: KV pages and state slots that fit after weights and workspace, not a constant. Graphs are captured at row

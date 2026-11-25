@@ -66,7 +66,7 @@ use super::backend::{
     Arenas, Backend, Captured, Collective, DeviceId, DeviceInfo, Format, HostTensor, KindRef, LayerDesc, LayerImpl, Placement, StepCx, StepShape, Support,
     WeightSource,
 };
-use super::kinds::{Act, Block, Body, Ffn, Mixer, Residual};
+use super::kinds::{Act, Block, Body, Ffn, Mixer, Residual, Rounding};
 use crate::ffi::{err, Error, Result};
 use std::collections::HashMap;
 
@@ -532,7 +532,11 @@ impl RefLayer {
             Residual::Streams(s) if s.lagged => return err("a lagged mHC block runs in the model's executor (its input's weights are the previous block's)"),
             Residual::Streams(s) => {
                 let (pre, post, comb) = hc_weights(s, &self.p, xt)?;
-                let input: Vec<f32> = (0..d).map(|i| (0..s.streams).map(|j| pre[j] * xt[j * d + i]).sum()).collect();
+                let mut input: Vec<f32> = (0..d).map(|i| (0..s.streams).map(|j| pre[j] * xt[j * d + i]).sum()).collect();
+                // (`Twice`, transformers in bf16: the fp32 collapse of the bf16 streams rounded once, `.to(hidden_streams.dtype)`)
+                if s.rounding == Rounding::Twice {
+                    input.iter_mut().for_each(|v| *v = bf16(*v));
+                }
                 (input, Some((post, comb)))
             }
             Residual::GatedStreams(g) => {
@@ -564,6 +568,20 @@ impl RefLayer {
             Residual::Streams(s) => {
                 let (post, comb) = hc.ok_or_else(|| Error("mHC's residual without the weights of its input".into()))?;
                 let old = xt.to_vec();
+                if s.rounding == Rounding::Twice {
+                    // (transformers in bf16, `post.to(dtype) * out + comb.to(dtype)^T @ residual`: post and comb rounded to bf16 before they weigh, the block's
+                    // output a bf16 tensor, each term rounded (the product of two bf16 values; the product's fp32 sum over the streams), their sum rounded: the
+                    // streams stay bf16)
+                    let pb: Vec<f32> = post.iter().map(|&v| bf16(v)).collect();
+                    let cb: Vec<Vec<f32>> = comb.iter().map(|r| r.iter().map(|&v| bf16(v)).collect()).collect();
+                    for k in 0..s.streams {
+                        for i in 0..d {
+                            let m = (0..s.streams).map(|j| cb[j][k] * old[j * d + i]).sum::<f32>();
+                            xt[k * d + i] = bf16(bf16(pb[k] * bf16(o[i])) + bf16(m));
+                        }
+                    }
+                    return Ok(());
+                }
                 for k in 0..s.streams {
                     for i in 0..d {
                         xt[k * d + i] = post[k] * o[i] + (0..s.streams).map(|j| comb[j][k] * old[j * d + i]).sum::<f32>();

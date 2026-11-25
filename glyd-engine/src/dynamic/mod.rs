@@ -54,7 +54,7 @@ use crate::sched::Sample;
 use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload_packed, Item, Layout, PackBuf};
 pub use attn::AttnOp;
 use glyd_gpu::safetensors::Checkpoint;
-pub use mla::{Cand, IdxKeys, IdxPick, IdxScore, KeyNorm, MlaIn, MlaIndexer, MlaOp};
+pub use mla::{Cand, IdxKeys, IdxPick, IdxScore, KeyNorm, MlaIn, MlaIndexer, MlaOp, PickTrace};
 #[cfg(feature = "dev")]
 pub(crate) use rows::EXACT_ROWS;
 use std::path::Path;
@@ -1316,6 +1316,8 @@ pub struct Dyn {
     pub(crate) piece_replays: std::cell::Cell<u64>,
     /// usercheck's switch: no graph replayed or captured (the one-row step's, the decode steps', the pieces'), every pass eager, to hold the graphs' replies to.
     graphs_off: std::cell::Cell<bool>,
+    /// Where Some: each eager pass adds, after each latent attention with an indexer, its picks and the inputs they were made from (`trace_picks`).
+    pick_trace: std::cell::RefCell<Option<Vec<mla::PickTrace>>>,
     /// The attention's decode calls of the pass being made or last made (a launch of the parts kernel or a call of the library's decode: GLYD_PROF's count), and the one-row
     /// step graph's as it was captured.
     dcalls: std::cell::Cell<usize>,
@@ -1484,7 +1486,7 @@ impl Dyn {
 
     /// Whether the layers are traced (`trace_layers`, `trace_ops`, `trace_routes`): every pass eager, a decode step too.
     pub(crate) fn tracing(&self) -> bool {
-        self.trace.borrow().is_some() || self.op_trace.borrow().is_some() || self.route_trace.borrow().is_some()
+        self.trace.borrow().is_some() || self.op_trace.borrow().is_some() || self.route_trace.borrow().is_some() || self.pick_trace.borrow().is_some()
     }
 
     /// The routers' choices in the passes run between `trace_routes(true)` and `trace_routes(false)`, which returns them: for each mixture-of-experts
@@ -1942,6 +1944,7 @@ impl Dyn {
             pcount: std::cell::Cell::new(0),
             piece_replays: std::cell::Cell::new(0),
             graphs_off: std::cell::Cell::new(false),
+            pick_trace: std::cell::RefCell::new(None),
             rows_late: std::cell::Cell::new(0),
             dcalls: std::cell::Cell::new(0),
             gcalls: 0,
@@ -2220,6 +2223,13 @@ impl Dyn {
             done += counts[b];
         }
         Ok(())
+    }
+
+    /// The indexers' picks in the passes run between `trace_picks(true)` and `trace_picks(false)`, which returns them: for each latent attention with an
+    /// indexer, in the order run, its layer, each row's picks and the inputs they were made from (`mla::PickTrace`). Traced passes run eager (no graph
+    /// replayed or captured), each of one sequence whose rows the attention takes at once and whose ring is unpaged (another is an error).
+    pub fn trace_picks(&self, on: bool) -> Vec<mla::PickTrace> {
+        std::mem::replace(&mut *self.pick_trace.borrow_mut(), on.then(Vec::new)).unwrap_or_default()
     }
 
     /// One operation of part `p` on n rows (op `i` of layer `l`), the queries at positions `pos.0` and the keys read up to `pos.1` (the same for the big model;
@@ -2739,6 +2749,7 @@ impl Dyn {
                 self.op(p, l, i, op, n, pos, head)?;
                 self.trace_op(p, l, op, n)?;
                 self.trace_route(p, l, op, n, input)?;
+                self.trace_pick(p, l, op, n, pos.0)?;
                 if dump {
                     self.dump_op(p, l, i, op, n)?;
                 }
