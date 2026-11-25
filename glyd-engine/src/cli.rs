@@ -329,12 +329,15 @@ pub(crate) fn unrun_fix() -> String {
 /// same words, before anything is downloaded. A family of another route is that route's to check; a config the table has no family for is refused (exit 3) with what
 /// is missing: the description of its architecture (src/support.rs `family`).
 pub(crate) fn supported(name: &str, cfg_text: &str) -> Done<()> {
-    // (config.json parsed once: src/runtime/config.rs)
-    let c = crate::runtime::config::ModelConfig::parse(cfg_text).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
-    if !crate::runtime::describe::LLAMA.contains(&c.text_type.as_str()) {
-        return crate::support::family(cfg_text, name).map(|_| ());
+    supported_in(name, &crate::runtime::config::ModelConfig::parse(cfg_text).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?)
+}
+
+/// `supported` of a config.json parsed once (src/runtime/config.rs).
+pub(crate) fn supported_in(name: &str, c: &crate::runtime::config::ModelConfig) -> Done<()> {
+    if !c.is_dense() {
+        return crate::support::family_in(c, name).map(|_| ());
     }
-    let d = crate::runtime::describe::describe_config(&c).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
+    let d = crate::runtime::describe::describe_config(c).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
     let max_pos = c.shared.max_position_embeddings.unwrap_or(crate::support::DEFAULT_CTX);
     match crate::dynamic::lower::dense(&d, Vec::new(), max_pos) {
         Ok(_) => Ok(()),
@@ -1323,12 +1326,13 @@ fn pre_packed(model: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<Option<Path
 /// kind its config describes: a plain dense decoder's on the executor (`dynamic::dense::is_dense`; sized as `fit` sizes it: penguin at the layout this GPU is fastest
 /// in, a lossy level at its own; a server's sequences in shared pages), else the lossy levels' (`lossy_plan`; `packed`: the glyd-v7 directory it is).
 fn plan_level(a: &Args, model: &str, layout: Layout, text: &str, gen: Option<&str>, gpu: &Gpu, packed: Option<&Path>) -> Done<LoadPlan> {
-    if !crate::dynamic::dense::is_dense(text) {
+    // (config.json parsed once)
+    let Some(c) = crate::runtime::config::ModelConfig::parse(text).ok().filter(|c| c.is_dense()) else {
         return lossy_plan(a, model, layout, text, gen, gpu.free, &gpu.name, packed);
-    }
+    };
     let name = short_name(model);
-    supported(&name, text)?;
-    let cfg = Config::parse(text, "config.json", gen).map_err(cannot)?;
+    supported_in(&name, &c)?;
+    let cfg = Config::of(&c, "config.json", gen).map_err(cannot)?;
     let users = if a.pos.first().is_some_and(|c| c == "serve") { users_of(a)? } else { 1 };
     let (_, _, p) = qwen3_plan(a, &cfg, &name, gpu, Some(layout).filter(|l| *l != Layout::Tiered), users)?;
     shape_checks(&name, &cfg, &p)?;

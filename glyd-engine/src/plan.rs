@@ -2807,7 +2807,7 @@ fn index_total(model: &str) -> Option<f64> {
 pub mod sizing {
     use super::{reserve_of, Kind, LoadPlan, Target, GEMMA_CHUNK, GEMMA_DRAFT_BYTES, HOST_MARGIN, LOSSY_CTX, LOSSY_MIN_CTX, LOSSY_WORK, QWEN3_WORK};
     use crate::args::Args;
-    use crate::cli::{cannot, gemma_draft, gemma_wren, level, level_name, shape_checks, short_name, supported, unrun_fix, users_of};
+    use crate::cli::{cannot, gemma_draft, gemma_wren, level, level_name, shape_checks, short_name, supported_in, unrun_fix, users_of};
     use crate::dev::Gpu;
     use crate::ffi::Blas;
     use crate::levels::{self, layout_for};
@@ -3723,11 +3723,13 @@ pub mod sizing {
         users: usize,
     ) -> Done<Option<LoadPlan>> {
         let name = short_name(model);
-        let row = crate::support::row(crate::support::family(text, &name)?);
+        // (config.json parsed once)
+        let c = crate::support::parsed(text, &name)?;
+        let row = crate::support::row(crate::support::family_in(&c, &name)?);
         match row.route.sizing {
             Sizing::Dense => {
-                supported(&name, text)?;
-                let cfg = Config::parse(text, "config.json", None).map_err(cannot)?;
+                supported_in(&name, &c)?;
+                let cfg = Config::of(&c, "config.json", None).map_err(cannot)?;
                 // (penguin at the layout the GPU is fastest in, a lossy level at its own)
                 let (_, _, p) = dense_plan(a, &cfg, row, &name, t, levels::layout_of(level).filter(|l| *l != Layout::Tiered), users)?;
                 shape_checks(&name, &cfg, &p)?;
@@ -3949,6 +3951,14 @@ pub mod sizing {
                 return Err(Refusal::unsupported(
                     format!("{name}: the hummingbird level on this path is built for the Nemotron-H layout alone"),
                     "Run it at the kestrel, swift or wren level: glyd run MODEL:swift",
+                ));
+            }
+            // (the Qwen3.5 layout with experts: its loader holds them at every level, but this path packs and sizes the dense layout's tensors alone (`Config35`'s
+            // list, as `pack::qwen35_plan` packs it); its penguin is the dynamic route's)
+            if m.family() == Some(crate::support::Family::Qwen35) && m.shared.experts() > 0 {
+                return Err(Refusal::unsupported(
+                    format!("{name} (the Qwen3.5 layout with experts) runs at the penguin level in this engine, not {tag}"),
+                    format!("Run it at penguin: glyd run {model}:penguin"),
                 ));
             }
             let cfg = Config35::of(&m, "config.json", gen).map_err(|e| {
@@ -6276,7 +6286,8 @@ mod tests {
     /// matrix of the layer's own products, as its family's lowered description names them (`dynamic::layer_tensors`), on Kimi-K3's released tensors (its
     /// delta and latent attention layers and its dense MLP) and on the random models of Kimi's two shapes and Muse Spark; so a plan frees on the GPU, and
     /// holds in the computer's memory, what the load does. A row that keeps none there counts none (GLM-5.3-Flash's, whose random models load by the same
-    /// loader, which keeps none there unless the plan asks; Nemotron-H's, whose loader keeps none there).
+    /// loader, which keeps none there unless the plan asks; Nemotron-H's, whose loader keeps none there; the Qwen3.5 layout with experts' and GLM-5.3's, whose
+    /// loaders hold every expert on its GPU, at penguin, the one level their plans offer).
     #[test]
     fn the_matrices_counted_in_memory_are_the_loaders() {
         use crate::dynamic::{layer_tensors, Stage};
@@ -6355,6 +6366,47 @@ mod tests {
             let table = crate::sizes::Table::from_dir(&dir).unwrap();
             assert_eq!(by_layer(&table, c.layers, "Nemotron-H"), vec![BTreeSet::new(); c.layers]);
             assert!(sizing::ram_bytes_table(&table, c.layers, "Nemotron-H", 90, 72).iter().all(|&b| b == 0));
+            // (the families whose experts are held on their GPUs, each by its family's loader (`qwen35::stage`, `glm::stage_plain` refuse an expert cache): the
+            // Qwen3.5 layout with experts (the random case qwen35moe) and GLM-5.3 (glm-dsa). Their rows keep none of a layer's matrices in the computer's
+            // memory and count none, at penguin, the one level their plans offer: a plan there is the dynamic route's with no expert cache, on each machine; the
+            // Qwen3.5 layout's lossy levels are `run`'s refusal, which names penguin)
+            type Lowering = fn(&crate::runtime::describe::Described, Vec<i64>, usize, &Stage) -> crate::ffi::Result<crate::dynamic::ModelDesc>;
+            let held: [(&str, fn(&std::path::Path) -> crate::ffi::Result<()>, Lowering, &str); 2] = [
+                ("qwen35moe", crate::logits::qwen35moe_random, crate::dynamic::lower::qwen35, "Qwen3.5"),
+                ("glm-dsa", crate::logits::glm_dsa_random, crate::dynamic::lower::latent_moe, "GLM-5.3"),
+            ];
+            for (case, make, lower, family) in held {
+                let _ = std::fs::remove_dir_all(&dir);
+                make(&dir).unwrap();
+                let (kinds, _) = crate::runtime::describe::describe_dir(&dir).unwrap();
+                let nl = kinds.desc.blocks.len() / 2;
+                let low = lower(&kinds, vec![2], 1024, &Stage::whole(nl)).unwrap();
+                let table = crate::sizes::Table::from_dir(&dir).unwrap();
+                assert!(loaders(&low).iter().all(|l| !l.is_empty()), "{case}: every layer multiplies by matrices of its own");
+                assert_eq!(by_layer(&table, nl, family), vec![BTreeSet::new(); nl], "{case}");
+                assert!(sizing::ram_bytes_table(&table, nl, family, 90, 72).iter().all(|&b| b == 0), "{case}");
+                let (model, text) = (dir.to_str().unwrap().to_string(), std::fs::read_to_string(dir.join("config.json")).unwrap());
+                for preset in ["rtx4080s", "rtx4090", "a100-80g"] {
+                    let f = planned(&args(&["fit", &model, "--machine", preset])).unwrap();
+                    assert_eq!(f.family.name, family, "{case}");
+                    let c = f.plan.chosen.as_ref().unwrap_or_else(|| panic!("{case} {preset}: {:?}", f.plan));
+                    let lp = c.load.as_ref().unwrap_or_else(|| panic!("{case} {preset}: no loader plan"));
+                    assert!(c.level == "penguin" && lp.kind == Kind::Dynamic && lp.experts.is_none() && lp.context > 0, "{case} {preset}: {lp:?}");
+                    assert!(matches!(c.placement, Some(Placement::Gpu(_))), "{case} {preset}: {:?}", c.placement);
+                    if case != "qwen35moe" {
+                        assert!(f.plan.options.iter().all(|o| o.level == "penguin"), "{case} {preset}: a level its row does not offer");
+                        continue;
+                    }
+                    let d = &Machine::preset(preset).unwrap().devices[0];
+                    for level in ["kestrel", "swift", "wren"] {
+                        let why = f.plan.options.iter().find(|o| o.level == level).and_then(|o| o.why.clone()).unwrap_or_default();
+                        assert!(why.contains("(the Qwen3.5 layout with experts) runs at the penguin level in this engine, not"), "{preset} {level}: {why}");
+                        let layout = crate::levels::layout_of(level).unwrap();
+                        let r = sizing::lossy_plan_with(&args(&["run", &model]), &model, layout, &text, None, d.free, &d.name, None, None).unwrap_err();
+                        assert_eq!(r.what, why, "{preset} {level}: fit's words are run's");
+                    }
+                }
+            }
             let _ = std::fs::remove_dir_all(&dir);
         }
     }

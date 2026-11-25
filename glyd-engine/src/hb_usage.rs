@@ -145,16 +145,15 @@ pub fn run(model: &str, out: &std::path::Path, tokens: u64, devices: &[i32], cut
 pub fn run_with(model: &str, out: &std::path::Path, tokens: u64, devices: &[i32], cuts: &[usize], ctx: usize, synthetic: bool) -> Result<()> {
     let t0 = std::time::Instant::now();
     let dir = io(glyd_gpu::save::Source::find(model))?.dir;
-    let text = io(std::fs::read_to_string(dir.join("config.json")))?;
-    let cfg: serde_json::Value = serde_json::from_str(&text).map_err(|e| Error(format!("config.json: {e}")))?;
-    let d = crate::runtime::describe::describe(&cfg)?;
+    let cfg = crate::runtime::config::ModelConfig::load(&dir)?;
+    let d = crate::runtime::describe::describe_config(&cfg)?;
     if moe_layers(&d)?.is_empty() {
         return err(format!("{model}: no mixture of experts to count"));
     }
-    let family = crate::dynamic::split::family(&text)
+    let family = crate::dynamic::split::family_in(&cfg)
         .ok_or_else(|| Error(format!("{model}: not a model of the dynamic route (Kimi-K3, GLM-5.3-Flash, DeepSeek-V4, Muse Spark)")))?;
     let docs = if synthetic {
-        let vocab = crate::dynamic::split::config_num(&text, "vocab_size").unwrap_or(1000).max(16) as u64;
+        let vocab = cfg.num("vocab_size").unwrap_or(1000).max(16) as u64;
         let mut x = 0x9E37_79B9_7F4A_7C15u64;
         (0..16)
             .map(|d| {

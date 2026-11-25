@@ -203,8 +203,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         Some(m) => crate::offload::Mode::parse(m).ok_or_else(|| Error(format!("--mode {m}: copy, cpu, split or auto")))?,
         None => crate::offload::Mode::Copy,
     };
-    let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
-    let vocab = crate::dynamic::split::config_num(&text, "vocab_size").unwrap_or(1000).max(16);
+    let vocab = crate::runtime::config::ModelConfig::load(dir)?.num("vocab_size").unwrap_or(1000).max(16);
     let n = a.num("tokens", 24usize)?.max(6);
     let tokens: Vec<u32> = (0..n).map(|i| ((i * 7919 + 13) % (vocab - 4) + 2) as u32).collect();
     // (`--device-plan`: the decode calls planned on the GPU, src/devplan.rs, and the decode step captured in a graph, which it must be)
@@ -477,8 +476,7 @@ pub fn bench(a: &crate::args::Args) -> Result<()> {
     let (steps, warm, plen) = (a.num("steps", 8usize)?.max(1), a.num("warm", 3usize)?, a.num("prompt", 16usize)?.max(1));
     let mode = a.flag("mode").map(|m| crate::offload::Mode::parse(m).ok_or_else(|| Error(format!("--mode {m}: copy, cpu, split or auto")))).transpose()?;
     let most = rows_l.iter().copied().max().unwrap_or(1);
-    let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
-    let vocab = crate::dynamic::split::config_num(&text, "vocab_size").unwrap_or(1000).max(16);
+    let vocab = crate::runtime::config::ModelConfig::load(dir)?.num("vocab_size").unwrap_or(1000).max(16);
     let o = crate::dynamic::Opts { ctx: plen + warm + steps + 64, chunk: plen.max(64), graph: false, device: 0, layout: a.layout()? };
     // (`--device-plan`: the decode calls planned on the GPU, src/devplan.rs)
     let offload = crate::offload::Offload { mode: mode.unwrap_or(crate::offload::Mode::Auto), device: a.has("device-plan"), ..Default::default() };

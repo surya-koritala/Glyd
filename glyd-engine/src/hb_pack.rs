@@ -15,7 +15,8 @@
 
 use crate::ffi::{err, Error, Result};
 use crate::hb_codec::{self, bits_by_use, block_of, code_expert, signs, ExpertRows, LayerRows, Usage, HB40_PERCENT};
-use crate::runtime::describe::{describe, Described, Source as Src};
+use crate::runtime::config::ModelConfig;
+use crate::runtime::describe::{describe_config, Described, Source as Src};
 use crate::runtime::kinds::{Body, Ffn};
 use glyd_gpu::codebook::{cb_strides, CbRows};
 use glyd_gpu::json::{self, Value};
@@ -383,9 +384,7 @@ pub fn run(model: &str, out: &Path, threads: usize, usage: &Path) -> Result<()> 
         eprintln!("{}: already packed, keeping its files", out.display());
         return Ok(());
     }
-    let text = io(std::fs::read_to_string(source.dir.join("config.json")))?;
-    let cfg: serde_json::Value = serde_json::from_str(&text).map_err(|e| Error(format!("config.json: {e}")))?;
-    let d = describe(&cfg)?;
+    let d = describe_config(&ModelConfig::load(&source.dir)?)?;
     let layers = moe_layers(&d)?;
     if layers.is_empty() {
         return err(format!("{model}: no mixture of experts: the hummingbird level is for the experts of one"));
@@ -629,6 +628,7 @@ impl HbDir {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::runtime::describe::describe;
     use crate::runtime::reference::testing::Fixture;
 
     fn bf16_bytes(v: &[f32]) -> Vec<u8> {

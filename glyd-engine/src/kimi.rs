@@ -132,10 +132,7 @@ struct LinearAttn {
 
 impl ConfigKimi {
     pub fn load(dir: &Path) -> Result<ConfigKimi> {
-        let p = dir.join("config.json");
-        let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-        let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
-        ConfigKimi::parse(&text, &p.display().to_string(), generation.as_deref())
+        ModelConfig::read(dir, ConfigKimi::of)
     }
 
     /// A config.json's text (and a generation_config.json's, where there is one): `label` names the file in an error. What this engine does not run is refused
