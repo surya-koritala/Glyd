@@ -1163,8 +1163,34 @@ pub fn score_classes(records: &[serde_json::Value]) -> Vec<(String, Vec<f64>, Ve
         .collect()
 }
 
-/// The share of expert reads a cache holding a share `f` of the experts serves: experts are used unevenly (Condor: 70-76% at about a quarter).
-const HIT_EXPONENT: f64 = 0.23;
+/// The share of expert reads a cache holding a share `f` of the experts serves at one row, f^HIT_EXPONENT: experts are used unevenly and a sequence uses its own again (Condor: 70-76% at about a quarter;
+/// the Nemotron 3 Super decode traces' least-recently-used places: 61, 73 and 80% at 17, 32 and 46%, where this says 67, 77 and 84: offload.rs's test). A router that chooses uniformly (a random model's) is 1.
+pub const HIT_EXPONENT: f64 = 0.23;
+/// How fast the reuse of the places between steps goes as a step's rows' distinct experts fill them (`step_hit`), fitted to the Nemotron 3 Super decode traces at 4 to 20 rows (offload.rs's test).
+const ROWS_DECAY: f64 = 0.55;
+
+/// The distinct experts `users` rows choose a step in a layer of `experts` choosing `topk` each, in one row's experts (k): E (1 - (1 - k/E)^U) / k, as a router choosing uniformly makes them, and at least one row's.
+pub fn step_distinct(experts: usize, topk: usize, users: usize) -> f64 {
+    if experts == 0 || topk == 0 || users <= 1 {
+        return 1.0;
+    }
+    let (e, k) = (experts as f64, topk as f64);
+    (e * (1.0 - (1.0 - k / e).powf(users.max(1) as f64)) / k).max(1.0)
+}
+
+/// The share of a step's distinct experts a layer's cache of `places` of its `experts` finds there, for `users` rows (`topk` each): f^s at one row (f the places' share, s `skew`: `HIT_EXPONENT` for a release's
+/// router, 1 for a uniform one), the exponent going to 1 as the step's distinct experts D fill the places, s + (1 - s)(1 - exp(-ROWS_DECAY (D - k) / places)): what the places keep between steps is what the step's
+/// other rows have not taken. A uniform router's share is f at any rows.
+pub fn step_hit(experts: usize, topk: usize, places: usize, users: usize, skew: f64) -> f64 {
+    let f = (places as f64 / experts.max(1) as f64).min(1.0);
+    let fill = (step_distinct(experts, topk, users) - 1.0) * topk as f64 / places.max(1) as f64;
+    f.powf(skew + (1.0 - skew) * (1.0 - (-ROWS_DECAY * fill).exp()))
+}
+
+/// A step's distinct missed experts of a layer in one row's experts (k), each read once for all its rows: `step_distinct` (1 - `step_hit`); 1 - f^s at one row.
+pub fn step_misses(experts: usize, topk: usize, places: usize, users: usize, skew: f64) -> f64 {
+    step_distinct(experts, topk, users) * (1.0 - step_hit(experts, topk, places, users, skew))
+}
 /// The rate an expert's bytes come from an NVMe disk in direct reads of whole experts, 16 in flight (src/disk.rs), GB/s: a planning figure.
 pub const DISK_GBS: f64 = 3.0;
 
@@ -1766,6 +1792,12 @@ fn speed_at(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan, positions: f64)
 /// `speed_at` for each of `users` sequences decoded together: one step reads the weights once for all of them, and each one's keys and values, and takes its
 /// class's time a layer for each row past the first.
 pub fn speed_users(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan, positions: f64, users: usize) -> f64 {
+    speed_routed(sh, m, main, lp, positions, users, HIT_EXPONENT)
+}
+
+/// `speed_users` for a router whose choices have the skew `skew` (`step_hit`: `HIT_EXPONENT` for a release's, 1 for a uniform one, a random model's): a step of `users` rows reads each of its distinct missed
+/// experts once (`step_misses`).
+pub fn speed_routed(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan, positions: f64, users: usize, skew: f64) -> f64 {
     let d0 = &m.devices[main];
     let Some((bits, ebits)) = plan_bits(lp, sh, d0) else { return 0.0 };
     let gain = gain_of(sh, lp.kind == Kind::Condor);
@@ -1782,19 +1814,19 @@ pub fn speed_users(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan, position
         let rates: Vec<f64> = sp.devices.iter().filter_map(|&d| m.devices.get(d as usize)).map(Device::rate).collect();
         let n = rates.len().max(1) as f64;
         let active = sh.routed_active() * ebits / 8.0;
-        let hit = if sp.host_bytes > 0 {
-            (sp.places.iter().min().copied().unwrap_or(0) as f64 / sp.experts_per_layer.max(1) as f64).min(1.0).powf(HIT_EXPONENT)
+        let missed = if sp.host_bytes > 0 {
+            active * step_misses(sp.experts_per_layer, sh.topk, sp.places.iter().min().copied().unwrap_or(0), users, skew)
         } else {
-            1.0
+            0.0
         };
-        let on_gpu = read - active * (1.0 - hit);
+        let on_gpu = read - missed;
         let gpu_t = if sp.across {
             on_gpu / (n * rates.iter().copied().fold(f64::MAX, f64::min) * eff)
         } else {
             rates.iter().map(|r| on_gpu / n / (r * eff)).sum::<f64>()
         } + step
             + 0.1e-3 * (n - 1.0);
-        let cpu_t = active * (1.0 - hit) / (m.ram_bandwidth * GB * EFF_CPU);
+        let cpu_t = missed / (m.ram_bandwidth * GB * EFF_CPU);
         // (the last layers' dense matrices in the computer's memory, src/dense_ram.rs: each copied to the GPU before it runs, every token)
         let link_t = sp.dense_bytes as f64 / (LINK_GBS * GB);
         return gain / (gpu_t.max(cpu_t) + link_t + if sp.host_bytes > 0 { SYNC_PER_MOE_LAYER * sh.moe_layers as f64 } else { 0.0 });
@@ -1802,10 +1834,9 @@ pub fn speed_users(sh: &Shape, m: &Machine, main: usize, lp: &LoadPlan, position
     match &lp.experts {
         None => gain / (read / (d0.rate() * eff) + step),
         Some(c) => {
-            let hit = (c.slots as f64 / c.experts.max(1) as f64).min(1.0).powf(HIT_EXPONENT);
-            let active = sh.routed_active() * ebits / 8.0;
-            let gpu_t = (read - active * (1.0 - hit)) / (d0.rate() * eff) + step;
-            let cpu_t = active * (1.0 - hit) / (m.ram_bandwidth * GB * EFF_CPU);
+            let missed = sh.routed_active() * ebits / 8.0 * step_misses(c.experts, sh.topk, c.slots, users, skew);
+            let gpu_t = (read - missed) / (d0.rate() * eff) + step;
+            let cpu_t = missed / (m.ram_bandwidth * GB * EFF_CPU);
             gain / (gpu_t.max(cpu_t) + SYNC_PER_MOE_LAYER * sh.moe_layers as f64)
         }
     }

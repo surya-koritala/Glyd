@@ -652,8 +652,29 @@ What is built (R12b, #327):
   copied whole in waves where the host's share would take longer (`waves_quicker`, `Auto` only).
 - **`storebench`** runs batched decode through the cache and writes each count of rows' statistics; `ceiling --stats` predicts the
   step from them (`docs/ceiling.md`: DeepSeek-V4 and Kimi-K3 at the release's widths, 18 GB each on the 4080 SUPER, at 1, 8 and 32 rows).
-- Not built: a device plan that sends misses to the host (Kimi-K3's `dc_plan` copies every miss), so a step with a host half is
-  still not one graph.
+- **The plan on the GPU** (`devplan.rs`, kernels/moe.cu `xp_plan`/`xp_fill`/`xp_wait`/`xp_take`; `Offload::device`, a development
+  build's `--device-plan`, `tiercheck`/`storebench --device`): a layer whose host half is FP4 experts (DeepSeek-V4's, Kimi-K3's) keeps
+  its places in a table on the GPU; a decode call's plan, its misses' copies (read through the host tier's mapped addresses), the
+  products, the promotions behind them and the wait for the host's pairs are kernels on the engine's stream, and the host's pairs
+  are a thread of the store's that answers the GPU's requests through mapped host memory (a request's number written last, its
+  answer's number read back by `xp_wait`). No host waits inside such a call, so a decode step of them is one graph
+  (`MoeLayer::reads_host` is false, and the one-row step is captured). The misses are split as the store's `plan` splits them
+  (`Params`: the store's `Costs` and mode): the ones with the most pairs copied, as many as make the longer of the copies and the
+  host's pairs shortest, the rest the host's; a hot miss the host keeps is promoted while the host's time leaves room for its copy.
+  A copy is priced at the link's time for an expert, measured once at load (the GPU's own copies are not timed). Calls of up to
+  `DEV_ROWS` (8) rows are planned on the GPU; more rows are the host's plan, whose waves copy every miss where the misses
+  outnumber the places. (The first rule, a miss copied wherever a copy cost less than the host's pairs, ignored that the two run
+  at once and copied every miss at 1 and 8 rows: 62-80% slower than the host's plan on an A10, session 5z2.) The store's own plan
+  (`LayerCache`) still plans a prompt's chunks: before such a call the GPU's table is read into it, after it written back.
+  On the Nemotron 3 Super decode traces its clock finds 0.5 to 0.6 points fewer of the pairs in places than the least-recently-used
+  cache at one row (60.7, 72.8 and 79.4% at 17, 32 and 46% of the experts), and at 8 rows 5.1 more to 0.6 fewer.
+  Its GPU check (`tiercheck --device`, `storebench --device`) is not run yet.
+- **The slot policy and the hit-rate model at many rows**, checked on the Nemotron 3 Super decode traces (20 generations, 1 to 20
+  rows side by side): a call's experts are asked for in the order of their pairs, fewest first (`by_rows`), so the busiest stay in
+  places across waves (1 to 7 points more pairs found at 16 and 20 rows, never fewer); the planner prices a step's misses as its
+  distinct missed experts (`plan::step_misses`: the distinct experts of U rows, E (1 - (1 - k/E)^U), less the share the places
+  find, f^s at one row and going to f as the rows' experts fill the places), within 19% of the cache's at every point (it had
+  priced one row's misses at any rows: 7.4 experts a layer at 20 rows against 215).
 
 Dense layers in RAM (P2d's last rung before refusing) use the same tiers: a dense layer is a single expert every row routes to, so
 the store's copy-or-compute choice applies to it unchanged.

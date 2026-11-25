@@ -52,6 +52,7 @@ mod cpu_simd;
 pub mod deepseek_v4;
 pub mod dense_ram;
 pub mod dev;
+pub mod devplan;
 /// A type for each of the engine's kernels, with its arguments' types (R15; made by build.rs from kernels/*.cu: build/kernel_types.rs).
 #[allow(dead_code)]
 pub(crate) mod kt {
