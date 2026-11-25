@@ -126,12 +126,11 @@ impl ConfigG4 {
         let mut eos = eos;
         // (generation_config adds <|tool_response> (50): the model hands a tool call back to its caller)
         if let Some(gtext) = gen {
-            if let Ok(gc) = serde_json::from_str::<Value>(gtext) {
-                if let Some(Value::Array(a)) = gc.get("eos_token_id") {
-                    for x in a.iter().filter_map(Value::as_u64) {
-                        if !eos.contains(&(x as i64)) {
-                            eos.push(x as i64);
-                        }
+            let gc = serde_json::from_str::<Value>(gtext).map_err(|e| Error(format!("generation_config.json: {e}")))?;
+            if let Some(Value::Array(a)) = gc.get("eos_token_id") {
+                for x in a.iter().filter_map(Value::as_u64) {
+                    if !eos.contains(&(x as i64)) {
+                        eos.push(x as i64);
                     }
                 }
             }
@@ -215,11 +214,6 @@ pub struct WeightsG4 {
     pub bytes: usize,
 }
 
-pub(crate) fn bf16_bits(x: f32) -> u16 {
-    let b = x.to_bits();
-    (b.wrapping_add(0x7fff + ((b >> 16) & 1)) >> 16) as u16
-}
-
 /// cos and sin (bf16 [max_pos, pairs]) of pairs i < `pairs` of a head of `dim`: inv_freq_i = theta^(-2i / dim), as transformers' default and proportional rotaries (the
 /// latter's other pairs are cos 1, sin 0: not stored, the kernel leaves them).
 pub(crate) fn rotary(theta: f64, dim: usize, pairs: usize, max_pos: usize) -> (Vec<u16>, Vec<u16>) {
@@ -228,8 +222,8 @@ pub(crate) fn rotary(theta: f64, dim: usize, pairs: usize, max_pos: usize) -> (V
     for p in 0..max_pos {
         for &f in &inv {
             let a = p as f32 * f;
-            c.push(bf16_bits(a.cos()));
-            s.push(bf16_bits(a.sin()));
+            c.push(crate::weights::bf16_bits(a.cos()));
+            s.push(crate::weights::bf16_bits(a.sin()));
         }
     }
     (c, s)
@@ -906,4 +900,20 @@ pub fn i4x_check(a: &crate::args::Args) -> Result<()> {
         return err("the GPU's i4x decode differs from the checkpoint");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConfigG4;
+
+    /// generation_config.json's end tokens join config.json's; a file that is there and does not parse is refused by name, not passed over.
+    #[test]
+    fn a_generation_config_is_read_or_refused() {
+        let text = crate::logits::GEMMA4_RANDOM_CONFIG;
+        let c = ConfigG4::parse(text, Some(r#"{"eos_token_id": [1, 106, 50]}"#), false).unwrap();
+        assert_eq!(c.eos, [1, 106, 50]);
+        assert_eq!(ConfigG4::parse(text, None, false).unwrap().eos, [1, 106]);
+        let e = ConfigG4::parse(text, Some(r#"{"eos_token_id": [1, 106, 50"#), false).unwrap_err().msg;
+        assert!(e.contains("generation_config.json"), "{e}");
+    }
 }

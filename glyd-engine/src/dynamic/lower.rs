@@ -662,8 +662,8 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
 }
 
 /// Qwen3.5's layout (dense: Qwen3.5, 3.6 and 3.8 of 256-wide heads): pairs of blocks, a Gated DeltaNet or a gated full attention, then the SiLU MLP, the (1 + w)
-/// norms, the final norm on the last row. The matrices and small tensors are src/kern35.rs's loader's (`dynamic::qwen35::describe` indexes them in its order);
-/// stage `st` of a model split across GPUs. A layer whose feed-forward is a mixture of experts (the layout's with experts: a softmax router, the gated shared expert)
+/// norms, the final norm on the last row. The matrices and small tensors are named in the order the loader holds them (the tests hold the result to the
+/// hand-written `dynamic::qwen35::describe`); stage `st` of a model split across GPUs. A layer whose feed-forward is a mixture of experts (the layout's with experts: a softmax router, the gated shared expert)
 /// runs `Op::Moe` in the MLP's place, block k the stage's k-th such layer's (`dynamic::experts`), and names no MLP matrices.
 pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
     use super::qwen35::per_layer;

@@ -262,8 +262,8 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_sto
     for p in 0..mp {
         for &fr in &f {
             let (s_, c_) = ((p as f32 * fr) as f64).sin_cos();
-            cs.push(crate::gemma4::bf16_bits(c_ as f32));
-            sn.push(crate::gemma4::bf16_bits(s_ as f32));
+            cs.push(crate::weights::bf16_bits(c_ as f32));
+            sn.push(crate::weights::bf16_bits(s_ as f32));
         }
     }
     let ropes = vec![(upload_bytes(as_bytes(&cs))?, upload_bytes(as_bytes(&sn))?)];

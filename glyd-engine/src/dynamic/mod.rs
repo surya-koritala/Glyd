@@ -45,7 +45,7 @@ use crate::gemma4::{rotary, EMBED_GROUPS};
 use crate::gpu_ops::{Gemm, GpuOps};
 use crate::kern::{embed_plan, TopGpu};
 use crate::kern::{norm_threads, Kern};
-use crate::kern::{pf_kib, G4Pf, KernG4};
+use crate::kern::{pf_kib, KernG4, NextPf};
 use crate::kern35::{Kern35, Mat};
 use crate::kern_nh::{KernNh, MoeBlock, SsdWs};
 use crate::launch;
@@ -846,8 +846,8 @@ fn rotary64(theta: f64, dim: usize, pairs: usize, max_pos: usize) -> (Vec<u16>, 
     for p in 0..max_pos {
         for &f in &inv {
             let (s_, c_) = ((p as f32 * f) as f64).sin_cos();
-            c.push(crate::gemma4::bf16_bits(c_ as f32));
-            s.push(crate::gemma4::bf16_bits(s_ as f32));
+            c.push(crate::weights::bf16_bits(c_ as f32));
+            s.push(crate::weights::bf16_bits(s_ as f32));
         }
     }
     (c, s)
@@ -869,7 +869,7 @@ fn small_of(ck: &Checkpoint, name: &str, f: SmallForm) -> Result<Vec<u16>> {
         SmallForm::GateAlpha(t) => crate::muse::residual_gate(&vals()?, t).0,
         SmallForm::GateBeta(t) => crate::muse::residual_gate(&vals()?, t).1,
     };
-    Ok(v.into_iter().map(crate::gemma4::bf16_bits).collect())
+    Ok(v.into_iter().map(crate::weights::bf16_bits).collect())
 }
 
 /// Bytes a value of small tensor `i` takes on the GPU, stored as `dtype`.
@@ -1815,16 +1815,16 @@ impl Dyn {
     }
 
     /// The L2 prefetch of `kib` KiB of each first-wave block of `p` (where `lin` takes it skinny) and the spare blocks of `threads` that issue it (GLY-312).
-    fn pf(&self, w: &Mat, m: usize, kib: usize, threads: u32) -> (G4Pf, u32) {
-        let Mat::Packed(p) = w else { return (G4Pf::default(), 0) };
+    fn pf(&self, w: &Mat, m: usize, kib: usize, threads: u32) -> (NextPf, u32) {
+        let Mat::Packed(p) = w else { return (NextPf::default(), 0) };
         let Some((data, scales, ds, ss)) = crate::skinny::SkinnyKern::regions(&p.pack).filter(|_| kib > 0 && self.skinny_takes(p, m)) else {
-            return (G4Pf::default(), 0);
+            return (NextPf::default(), 0);
         };
         let dhead = ((kib as u64 * 1024).min(ds) / 128 * 128) as i32;
         let shead = ((dhead as u64 * ss / ds).div_ceil(128) * 128).min(ss) as i32;
         let regions = ((p.pack.rows / 64) as i32).min(2 * self.dev.sms);
         let lines = regions as u32 * ((dhead + shead) >> self.pf_shift) as u32;
-        (G4Pf { data, scales, dstride: ds as i64, sstride: ss as i64, dhead, shead, regions, shift: self.pf_shift }, lines.div_ceil(4 * threads))
+        (NextPf { data, scales, dstride: ds as i64, sstride: ss as i64, dhead, shead, regions, shift: self.pf_shift }, lines.div_ceil(4 * threads))
     }
 
     unsafe fn lin(&self, w: &Mat, x: u64, m: usize, y: u64) -> Result<()> {
