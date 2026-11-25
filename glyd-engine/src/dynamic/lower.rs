@@ -1859,7 +1859,7 @@ mod tests {
         let w32 = kimi::dtypes(&glyd_gpu::safetensors::Checkpoint::open(&d).unwrap(), &c).unwrap();
         v.push(kimi::describe(&c, &Stage::whole(c.layers), &w32, false).unwrap());
         let d = dir("glm");
-        crate::kcheck_glm::random(&d, false, None).unwrap();
+        crate::glm::random(&d, false, None).unwrap();
         let c = crate::glm::ConfigGlm::load(&d).unwrap();
         v.push(glm::describe(&c, &Stage::whole(c.layers)).unwrap());
         let d = dir("v4");
