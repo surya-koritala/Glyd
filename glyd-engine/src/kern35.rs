@@ -12,10 +12,12 @@ use crate::weights::PackBuf;
 
 pub use crate::kern::qwen35::Kern35;
 
-/// A matrix of the model: packed, or bf16 as the checkpoint has it (rows, cols) where the library does not pack it.
+/// A matrix of the model: packed, bf16 as the checkpoint has it (rows, cols) where the library does not pack it, or FP8 as released with its block scales
+/// (src/f8.rs: the E4M3 bytes bit for bit, multiplied as they are).
 pub enum Mat {
     Packed(PackBuf),
     Dense(Buf, usize, usize),
+    F8(crate::f8::F8Mat),
 }
 
 impl Mat {
@@ -23,6 +25,7 @@ impl Mat {
         match self {
             Mat::Packed(p) => p.bytes,
             Mat::Dense(b, _, _) => b.bytes,
+            Mat::F8(m) => m.bytes,
         }
     }
 
@@ -30,6 +33,7 @@ impl Mat {
         match self {
             Mat::Packed(p) => p.pack.rows as usize,
             Mat::Dense(_, r, _) => *r,
+            Mat::F8(m) => m.n,
         }
     }
 
@@ -38,13 +42,14 @@ impl Mat {
         match self {
             Mat::Packed(p) => p.whole_rows(),
             Mat::Dense(_, r, _) => *r,
+            Mat::F8(m) => m.whole_n(),
         }
     }
 
     pub(crate) fn packed_opt(&self) -> Option<&PackBuf> {
         match self {
             Mat::Packed(p) => Some(p),
-            Mat::Dense(..) => None,
+            Mat::Dense(..) | Mat::F8(_) => None,
         }
     }
 }

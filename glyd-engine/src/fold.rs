@@ -2643,30 +2643,26 @@ fn f8h_one_name(plain: bool, g: bool) -> &'static str {
     leaked(format!("fold_f8h_one_{}_{}", if plain { "plain" } else { "coded" }, g as u8))
 }
 
-/// The blocks an SM holds of kernel `which` for `m` tokens, its shared memory allowed to 64 tokens' first (f8_lin_allow, f8h_resident), and the SMs.
-fn f8_resident(which: usize, m: i64) -> Result<(i64, i64)> {
-    let h = which >= 6;
-    per_sm_most(f8_name(which, f8_ntl(m)), F8_LNT, f8_shared(m, h), f8_shared(64, h))
-}
-
-/// The grid of one matrix's product for kind `kind` (f8_lin_ctas: as many CTAs as the GPU holds at once, at most the work over GLYD_F8_LIN_MIN; GLYD_F8_LIN_GRID's
-/// in a development build; None: the most of the five kinds').
-fn f8_lin_ctas(n: i64, k: i64, m: i64, kind: Option<i64>) -> Result<i64> {
+/// One matrix's grid, every kind's and layout's (f8_lin_ctas): a CTA a row group of 128 rows, which adds all of the row group's K in order (the experts'
+/// product's rule, `f8_moe_ctas`), so a row's sum is the same whatever shares its call (its rows, the one-token kernel on the same plan, a GPU's slice of
+/// the rows) and follows from the matrix's shape alone; GLYD_F8_LIN_GRID's in a development build.
+fn f8_lin_ctas(n: i64, k: i64) -> i64 {
     let w = f8_work(n, k);
     let c = tuned(crate::tune!("GLYD_F8_LIN_GRID"), 0);
     if c > 0 {
-        return Ok(c.min(w));
+        return c.min(w);
     }
-    let Some(kind) = kind else {
-        let mut most = 1;
-        for kd in 0..5 {
-            most = most.max(f8_lin_ctas(n, k, m, Some(kd))?);
-        }
-        return Ok(most);
-    };
-    let (r, sms) = f8_resident(kind as usize, m)?;
-    let least = tuned(crate::tune!("GLYD_F8_LIN_MIN"), 1).max(1);
-    Ok((sms * r).min(w / least).max(1))
+    (w / ((k + 127) / 128)).max(1)
+}
+
+/// The parts a grid of `ctas` keeps for `m` tokens (f8_lin_need): none where each CTA holds whole row groups.
+fn f8_lin_need(n: i64, k: i64, m: i64, ctas: i64) -> i64 {
+    let rg = f8_work(n, k) / ((k + 127) / 128);
+    if rg % ctas.max(1) == 0 {
+        0
+    } else {
+        (f8_parts(ctas, m) + 15) / 16 * 16
+    }
 }
 
 /// The experts' product's CTAs a slot (f8_moe_ctas): one a row group of 128 rows of a matrix, which adds all of the row group's K in order, so a pair's sum is
@@ -2692,28 +2688,13 @@ fn f8_moe_parts(n: i64, k: i64, m: i64, slots: i64, ctas: i64) -> i64 {
     }
 }
 
-/// Layout H's grid at most (glyd_gpu_f8h_linear, _f8h_moe: the CTAs an SM of its own kernel, shared among the slots of the experts' product).
-fn f8h_ctas(n: i64, k: i64, m: i64, slots: Option<i64>) -> Result<i64> {
-    let (r, sms) = f8_resident(if slots.is_some() { 7 } else { 6 }, m)?;
-    Ok((sms * r / slots.unwrap_or(1)).min(f8_work(n, k)).max(1))
-}
-
-/// Layout H's one-token kernel's CTAs a slot (f8h_one_ctas; `slots` 0: one matrix).
-fn f8h_one_ctas(n: i64, k: i64, slots: i64) -> Result<i64> {
-    let plain = f8h_one()? == 3;
-    let smem = if plain { F8H_ONE_PLAIN } else { F8H_ONE_CODED };
-    let (r, sms) = per_sm_most(f8h_one_name(plain, slots > 0), F8_LNT, smem, smem)?;
-    Ok((sms * r / slots.max(1)).min(f8_work(n, k)).max(1))
-}
-
-/// `GpuOps::f8_linear_workspace` by the engine's plans (glyd_gpu_f8_linear_workspace: the sums of the grid of the most CTAs of the five kinds and of the
-/// one-token kernel); None: the library's (a shape or count it refuses, or a plan a variable asks for).
+/// `GpuOps::f8_linear_workspace` by the engine's plans (glyd_gpu_f8_linear_workspace: the parts of the grid, none at a CTA a row group); None: the
+/// library's (a shape or count it refuses, or a plan a variable asks for).
 pub fn f8_linear_workspace(n: i64, k: i64, m: i64) -> Result<Option<usize>> {
     if !(1..=64).contains(&m) || f8_patches(n, k).is_none() || !f8_default()? {
         return Ok(None);
     }
-    let one = if m == 1 { f8h_one_ctas(n, k, 0)? } else { 1 };
-    Ok(Some(((f8_parts(f8_lin_ctas(n, k, m, None)?.max(one), m) + 15) / 16 * 16) as usize))
+    Ok(Some(f8_lin_need(n, k, m, f8_lin_ctas(n, k)) as usize))
 }
 
 /// `GpuOps::f8_moe_workspace` by the engine's plans (glyd_gpu_f8_moe_workspace: the sums of each slot's grid); None: the library's.
@@ -2778,15 +2759,13 @@ pub unsafe fn f8_linear(
     if !scales_ok || !f8_default()? {
         return Ok(false);
     }
-    let mut ctas = f8_lin_ctas(n, k, m, Some(kind))?;
-    if h {
-        ctas = ctas.min(f8h_ctas(n, k, m, None)?);
-    }
-    let need = (f8_parts(ctas, m) + 15) / 16 * 16;
+    // (layout H's grid as layout C's: a CTA a row group; the one-token kernel on the same plan, so its sums are the others' to the bit)
+    let ctas = f8_lin_ctas(n, k);
+    let need = f8_lin_need(n, k, m, ctas);
     if (ctas > 1 && done == 0) || !fits(ws, ws_bytes, need) || (need > 0 && ws % 16 != 0) {
         return Ok(false);
     }
-    let mut p = F8Lin {
+    let p = F8Lin {
         core,
         heads,
         var,
@@ -2809,13 +2788,8 @@ pub unsafe fn f8_linear(
     };
     if h && m == 1 && f8h_one()? != 0 {
         let plain = f8h_one()? == 3;
-        let one = f8h_one_ctas(n, k, 0)?;
-        if (one > 1 && done == 0) || !fits(ws, ws_bytes, (f8_parts(one, 1) + 15) / 16 * 16) {
-            return Ok(false);
-        }
-        p.ctas = one as i32;
         let smem = if plain { F8H_ONE_PLAIN } else { F8H_ONE_CODED };
-        f8_launch(f8h_one_name(plain, false), [one as u32, 1, 1], (smem, smem), p, cs)?;
+        f8_launch(f8h_one_name(plain, false), [ctas as u32, 1, 1], (smem, smem), p, cs)?;
         return Ok(true);
     }
     let which = if h { 6 } else { kind as usize };
@@ -4230,6 +4204,8 @@ fn f8_product_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usi
                 } else {
                     sb.write(0, &(0..rows * lds).map(|i| 124 + (i % 6) as u8).collect::<Vec<u8>>())?;
                 }
+                // (a row's bits whatever shares its call: row 0's at every count against its own at one token, the library's and the engine's)
+                let mut alone: Option<Vec<u16>> = None;
                 for m in [1i64, 2, 8, 9, 16, 17, 33, 64] {
                     let what = format!("{o} x {k}{}, kind {kind}, {m} tokens", if h { ", layout H" } else { "" });
                     let ws_bytes = lib.library_f8_linear_workspace(o, k, m)?;
@@ -4263,6 +4239,14 @@ fn f8_product_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usi
                     let differ = va.iter().zip(&vb).filter(|(p, q)| p != q).count();
                     if differ > 0 {
                         bad.push(format!("{what}: {differ} of {} bf16 differ", va.len()));
+                    }
+                    let first = alone.get_or_insert_with(|| va[..o as usize].to_vec());
+                    n += 1;
+                    for (who, v) in [("library", &va), ("engine", &vb)] {
+                        let apart = v[..o as usize].iter().zip(first.iter()).filter(|(p, q)| p != q).count();
+                        if apart > 0 {
+                            bad.push(format!("{what}: the {who}'s row 0 has {apart} of {o} bf16 other than its own at one token"));
+                        }
                     }
                 }
             }

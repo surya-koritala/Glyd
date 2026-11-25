@@ -1643,18 +1643,49 @@ pub fn qwen35moe_random(out: &Path) -> Result<()> {
 /// GLM-5.3-Flash's random case is (`glm::random`): each matrix U(+-sqrt(3 / its columns)), the embedding U(-1, 1), the head at half the matrices' scale, the
 /// norms' weights about 1, the indexer's key norm's bias and the choice bias small (the choice bias fp32, as released), bf16 else.
 pub fn glm_dsa_random(out: &Path) -> Result<()> {
-    glm_dsa_random_seeded(out, GLM_DSA_SEED)
+    glm_dsa_draw(out, GLM_DSA_SEED, false)
 }
 
 /// The seed of `glm_dsa_random`'s draw.
 pub const GLM_DSA_SEED: u64 = 0x2026_1125_0000_0053;
 
-/// `glm_dsa_random` drawn from `seed` (not 0).
-pub fn glm_dsa_random_seeded(out: &Path, seed: u64) -> Result<()> {
-    let text = include_str!("../tests/fixtures/glm_moe_dsa_toy_config.json");
-    let d = crate::runtime::describe::describe(&serde_json::from_str(text).map_err(|e| Error(e.to_string()))?)?;
+/// GLM-5.3's layout as the release holds it, in FP8 (the glm-dsa-f8 case): `glm_dsa_random`'s config with the release's latent attention a head (heads of
+/// 192 + 64 rotated channels, values of 256, the key-value latent of 512) in a model 512 wide with a query latent of 256, so that the scales of every
+/// FP8 product span several blocks of 128 both ways and kv_b_proj's rows of a head cross its blocks; its quantization_config the release's (fp8, e4m3,
+/// blocks of 128 x 128, the head left out). Every matrix the description names FP8 (`Described::scales`: the attention's q_a, q_b, kv_a, kv_b and o, the
+/// indexer's wq_b and wk, the dense MLP's, the experts' and the shared expert's) is E4M3 with its fp32 block scales (`X.weight_scale_inv`), each block's
+/// scale its largest magnitude over 448 and each value the E4M3 nearest it over that scale (`glm::random`'s FP8 experts); the rest as `glm_dsa_random`'s.
+pub fn glm_dsa_f8_random(out: &Path) -> Result<()> {
+    glm_dsa_draw(out, GLM_DSA_SEED, true)
+}
+
+/// `glm_dsa_random` (`fp8`: `glm_dsa_f8_random`) drawn from `seed` (not 0).
+pub fn glm_dsa_draw(out: &Path, seed: u64, fp8: bool) -> Result<()> {
+    let mut cfg: Value = serde_json::from_str(include_str!("../tests/fixtures/glm_moe_dsa_toy_config.json")).map_err(|e| Error(e.to_string()))?;
+    if fp8 {
+        let wide = [
+            ("hidden_size", 512),
+            ("q_lora_rank", 256),
+            ("kv_lora_rank", 512),
+            ("qk_nope_head_dim", 192),
+            ("head_dim", 192),
+            ("qk_head_dim", 256),
+            ("v_head_dim", 256),
+            ("num_attention_heads", 4),
+            ("num_key_value_heads", 4),
+        ];
+        for (k, v) in wide {
+            cfg[k] = json!(v);
+        }
+        cfg["quantization_config"] = json!({"activation_scheme": "dynamic", "fmt": "e4m3", "quant_method": "fp8", "weight_block_size": [128, 128], "modules_to_not_convert": ["lm_head", "model.embed_tokens"]});
+    }
+    let text = serde_json::to_string_pretty(&cfg).map_err(|e| Error(e.to_string()))?;
+    let d = crate::runtime::describe::describe(&cfg)?;
     if seed == 0 {
         return err("a seed of 0 draws nothing but zeros");
+    }
+    if fp8 && d.scales.is_empty() {
+        return err("GLM-5.3's description in FP8 names no FP8 matrix");
     }
     let mut r = seed;
     let mut uni = move |a: f32, b: f32| {
@@ -1667,8 +1698,13 @@ pub fn glm_dsa_random_seeded(out: &Path, seed: u64) -> Result<()> {
         let b = x.to_bits();
         ((b.wrapping_add(0x7fff + ((b >> 16) & 1))) >> 16) as u16
     };
+    // (E4M3: a value rounded to it, then its byte)
+    let code: std::collections::HashMap<u32, u8> =
+        (0..=255u8).filter(|b| !glyd_gpu::fp8::E4M3[*b as usize].is_nan()).map(|b| (glyd_gpu::fp8::E4M3[b as usize].to_bits(), b)).collect();
     let mut tensors: Vec<(String, &str, Vec<u64>, Vec<u8>)> = Vec::new();
-    for name in d.names() {
+    // (an FP8 matrix's scales are drawn with it)
+    let scales: std::collections::BTreeSet<&String> = d.scales.values().collect();
+    for name in d.names().into_iter().filter(|n| !scales.contains(n)) {
         let shape = d.shapes.get(&name).cloned().ok_or_else(|| Error(format!("GLM-5.3's description has no shape for {name}")))?;
         let n: usize = shape.iter().product();
         let a = (3.0 / *shape.last().unwrap_or(&1) as f32).sqrt();
@@ -1685,6 +1721,20 @@ pub fn glm_dsa_random_seeded(out: &Path, seed: u64) -> Result<()> {
         } else {
             (-a, a)
         };
+        if let (Some(sn), &[rows, cols]) = (d.scales.get(&name), &shape[..]) {
+            let w: Vec<f32> = (0..n).map(|_| uni(lo, hi)).collect();
+            let (gr, gc) = (rows.div_ceil(128), cols.div_ceil(128));
+            let mut sc = vec![0f32; gr * gc];
+            for (i, x) in w.iter().enumerate() {
+                let b = &mut sc[(i / cols) / 128 * gc + (i % cols) / 128];
+                *b = b.max(x.abs() / 448.0);
+            }
+            let q: Vec<u8> =
+                w.iter().enumerate().map(|(i, x)| code[&crate::cpu_fp4::e4m3_round(x / sc[(i / cols) / 128 * gc + (i % cols) / 128]).to_bits()]).collect();
+            tensors.push((name.clone(), "F8_E4M3", vec![rows as u64, cols as u64], q));
+            tensors.push((sn.clone(), "F32", vec![gr as u64, gc as u64], sc.iter().flat_map(|x| x.to_le_bytes()).collect()));
+            continue;
+        }
         let (dtype, bytes): (&str, Vec<u8>) = if name.ends_with("e_score_correction_bias") {
             ("F32", (0..n).flat_map(|_| uni(lo, hi).to_le_bytes()).collect())
         } else {
@@ -1697,8 +1747,9 @@ pub fn glm_dsa_random_seeded(out: &Path, seed: u64) -> Result<()> {
     let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = tensors.iter().map(|(n, d, s, b)| (n.as_str(), *d, s.clone(), &b[..])).collect();
     crate::pack::write_safetensors(&out.join("model.safetensors"), &[("format", "pt".to_string())], &refs)?;
     println!(
-        "{}: a random model of GLM-5.3's layout, {} tensors, {:.0} MB",
+        "{}: a random model of GLM-5.3's layout{}, {} tensors, {:.0} MB",
         out.display(),
+        if fp8 { " in FP8 as released" } else { "" },
         tensors.len(),
         tensors.iter().map(|t| t.3.len()).sum::<usize>() as f64 / 1e6
     );
@@ -1971,6 +2022,16 @@ pub fn cases() -> Vec<Case> {
             id: "glm-dsa",
             family: "GLM-5.3's layout (glm_moe_dsa: the latent attention with its rotary on every layer, indexers of their own and shared, the plain residual, a dense MLP and experts)",
             weights: Weights::Random(glm_dsa_random),
+            engine: glm_dsa_engine,
+            cpu: Some(described_cpu),
+            vocab: 2048,
+            on_choices: Some(ref_drive),
+            also: None,
+        },
+        Case {
+            id: "glm-dsa-f8",
+            family: "GLM-5.3's layout as released in FP8 (the attention's, the indexer's, the dense MLP's and the experts' matrices E4M3 with fp32 block scales, held as released)",
+            weights: Weights::Random(glm_dsa_f8_random),
             engine: glm_dsa_engine,
             cpu: Some(described_cpu),
             vocab: 2048,
@@ -3561,18 +3622,19 @@ mod tests {
         assert!(worst <= 1e-5, "a noise floor of KL {worst:.2e}, past a tenth of the bound");
     }
 
-    /// GLM-5.3's layout (the glm-dsa case): its noise floor as `glm_noise_floor` measures GLM-5.3-Flash's (the rounding points its description gives, the
-    /// RMS norms' `Twice`, against every one in fp32, on the same experts and picks), on the case's model and two of other seeds, each at most a tenth of the
-    /// lossless bound. cargo test --profile ci -- --ignored glm_dsa_noise_floor.
+    /// GLM-5.3's layout (the glm-dsa and glm-dsa-f8 cases): its noise floor as `glm_noise_floor` measures GLM-5.3-Flash's (the rounding points its description
+    /// gives, the RMS norms' `Twice`, against every one in fp32, on the same experts and picks), on the case's model and two of other seeds, in bf16 and in
+    /// FP8 as released, each at most a tenth of the lossless bound. cargo test --profile ci -- --ignored glm_dsa_noise_floor.
     #[cfg(feature = "dev")]
     #[test]
     #[ignore]
     fn glm_dsa_noise_floor() {
         let mut worst = 0f64;
-        for k in 0..3u64 {
-            let dir = std::env::temp_dir().join(format!("glyd-glmdsafloor-{k}-{}", std::process::id()));
-            glm_dsa_random_seeded(&dir, GLM_DSA_SEED ^ (k << 32)).unwrap();
-            worst = worst.max(rounded_against_f32(&dir, &format!("glm-dsa seed {k}")));
+        // (and the same draws in FP8 as released, the glm-dsa-f8 case's)
+        for (k, fp8) in (0..3u64).flat_map(|k| [(k, false), (k, true)]) {
+            let dir = std::env::temp_dir().join(format!("glyd-glmdsafloor-{k}-{fp8}-{}", std::process::id()));
+            glm_dsa_draw(&dir, GLM_DSA_SEED ^ (k << 32), fp8).unwrap();
+            worst = worst.max(rounded_against_f32(&dir, &format!("glm-dsa{} seed {k}", if fp8 { "-f8" } else { "" })));
             let _ = std::fs::remove_dir_all(&dir);
         }
         assert!(worst <= 1e-5, "a noise floor of KL {worst:.2e}, past a tenth of the bound");
@@ -4209,7 +4271,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
         "dense" => crate::dynamic::dense::load(dir, o)?,
         "muse" => crate::dynamic::muse::load(dir, o)?,
         "kimi" | "kimi-dsa" => crate::dynamic::kimi::load(dir, o)?,
-        "glm-dsa" => crate::dynamic::glm::load_plain(dir, o)?,
+        "glm-dsa" | "glm-dsa-f8" => crate::dynamic::glm::load_plain(dir, o)?,
         // (its experts at a lossy level, as its logits case: kestrel where penguin is asked)
         "glm" => crate::dynamic::glm::load(dir, &DynOpts { layout: Some(Layout::Tiered), ..o.clone() }, level_layout(level)?.unwrap_or(Layout::Int6))?,
         // (its experts at the level asked: the lossless one where none is)
@@ -4219,7 +4281,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
         "qwen4x-cb" => qwen4x_cb_load(dir, o)?,
         other => {
             return err(format!(
-                "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, glm-dsa, nemotron, deepseek-v4, qwen4x, qwen4x-s2 or qwen4x-cb"
+                "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, glm-dsa, glm-dsa-f8, nemotron, deepseek-v4, qwen4x, qwen4x-s2 or qwen4x-cb"
             ))
         }
     })
@@ -4278,13 +4340,14 @@ fn random_model(case: &str, dir: &Path) -> Result<()> {
         "kimi-dsa" => crate::kimi_ref::random_dsa(dir),
         "glm" => crate::glm::random(dir, false, None),
         "glm-dsa" => glm_dsa_random(dir),
+        "glm-dsa-f8" => glm_dsa_f8_random(dir),
         "nemotron" => crate::kcheck_nh::random(dir, 0, 16),
         "deepseek-v4" => crate::dsv4_ref::random(dir, None),
         "qwen4x" => qwen4x_random(dir),
         "qwen4x-s2" => qwen4x_s2_random(dir),
         "qwen4x-cb" => qwen4x_cb_random(dir),
         other => err(format!(
-            "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, glm-dsa, nemotron, deepseek-v4, qwen4x, qwen4x-s2 or qwen4x-cb"
+            "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, glm-dsa, glm-dsa-f8, nemotron, deepseek-v4, qwen4x, qwen4x-s2 or qwen4x-cb"
         )),
     }
 }

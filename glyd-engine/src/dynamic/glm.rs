@@ -64,17 +64,13 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
 }
 
 /// GLM-5.3 (`glm_moe_dsa`, the full-size layout: no streams; the latent attention on every layer, its rotary and its indexer its own or shared) from `dir`, by
-/// its layer kinds alone: the description lowered (`lower::latent_moe`), each layer's experts the Moe kind's resident block (`experts::resident`: the sigmoid
-/// router with its choice bias and scale, the experts and the shared expert at the level of the other matrices); every expert on the GPU. A checkpoint with
-/// FP8 matrices (the release's) is refused, in words: this loader reads them bf16 (its random case).
+/// its layer kinds alone: the description lowered (`lower::latent_moe`), each layer's experts the Moe kind's resident block (`experts::held`: the sigmoid
+/// router with its choice bias and scale, the experts and the shared expert); every expert on the GPU. A checkpoint as released, in FP8 with fp32 block
+/// scales (`weight_scale_inv`), is held as released at the lossless level: the attention's and the dense MLP's matrices (`Mat::F8`), kv_b_proj and the
+/// indexer's products as their E4M3 codes and scales (`Part::scales`), the experts and the shared expert (`experts::F8`); at a block level its matrices are
+/// packed from the bf16 they dequantise to. A development build's GLYD_GLM_F8=0: the experts as that bf16 at the lossless level too.
 pub fn load_plain(dir: &Path, o: &Opts) -> Result<Dyn> {
     let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
-    if let Some(w) = kinds.scales.keys().next() {
-        return err(format!(
-            "{label}: {} FP8 matrices ({w}, ...): the full-size layout's loader reads bf16 checkpoints; the release's FP8 is not loaded yet",
-            kinds.scales.len()
-        ));
-    }
     let cfg = crate::runtime::config::ModelConfig::load(dir)?;
     let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
     let mut eos = crate::runtime::config::eos_ids(&cfg.text, generation.as_deref());
@@ -85,9 +81,16 @@ pub fn load_plain(dir: &Path, o: &Opts) -> Result<Dyn> {
     let st = Stage::whole(kinds.desc.blocks.len() / 2);
     let d = super::lower::latent_moe(&kinds, eos, max_pos, &st).map_err(|e| e.context(&label))?;
     let hidden = kinds.desc.hidden;
+    let (dev, lib) = (Dev::new(o.device)?, crate::ffi::Lib::find()?);
+    let f8 = (!kinds.scales.is_empty() && crate::tune!("GLYD_GLM_F8").as_deref() != Some("0")).then_some(super::experts::F8 {
+        scales: &kinds.scales,
+        dev: &dev,
+        lib: &lib,
+    });
+    let held = super::experts::Held { hb: None, cache: None, ordinal: o.device, f8 };
     let experts = |ck: &Checkpoint, level: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
         super::experts::of_layers(&kinds, st.layers)
-            .map(|(_, m, roles)| Ok(Box::new(ResidentMoe(super::experts::resident(m, roles, hidden, ck, level)?)) as Box<dyn MoeBlock>))
+            .map(|(l, m, roles)| Ok(Box::new(ResidentMoe(super::experts::held(m, roles, hidden, ck, level, Some((l, &held)))?)) as Box<dyn MoeBlock>))
             .collect()
     };
     Dyn::new_with(dir, d, None, st, o, &experts)

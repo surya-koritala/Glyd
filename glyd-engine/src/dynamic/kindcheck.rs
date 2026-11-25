@@ -822,7 +822,7 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
 
 /// `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain | --sequence]`: the cases (all unless named), then each class's worst against its bound.
 pub fn run(a: &crate::args::Args) -> Result<()> {
-    const ALL: [&str; 15] = [
+    const ALL: [&str; 16] = [
         "gemma4",
         "gemma4-kv",
         "qwen35",
@@ -835,6 +835,7 @@ pub fn run(a: &crate::args::Args) -> Result<()> {
         "kimi-dsa",
         "glm",
         "glm-dsa",
+        "glm-dsa-f8",
         "deepseek-v4",
         "qwen4x",
         "qwen4x-s2",

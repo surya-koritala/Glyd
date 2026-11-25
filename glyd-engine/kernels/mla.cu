@@ -143,7 +143,9 @@ extern "C" __global__ void mla_rope(bf16* x, int xs, int hs, int off, const int*
 // ceil(n / GM_RB)), 256 threads: KR / 8 threads a group, each 8 columns of a row of the matrix (one 16-byte load), the groups down the head's nope rows by turns, so that a head's 256 rows are read by 4 groups (KR = 512) or
 // 32 (KR = 64) at once (a thread a column would read them one after another); the groups' sums are added in order through shared memory. KR a multiple of 64 up to 512.
 // A head's query is qhs wide in q (its nope channels first) and KS wide in qa: past KR its channels nope .. nope + KS - KR copied as they are (Kimi-K3's key part every head shares; GLM: qhs = nope, KS = KR).
-extern "C" __global__ void __launch_bounds__(256) mla_absorb(const bf16* q, int qs, int qhs, const bf16* wkv, float* qa, int n, int NH, int nope, int vd, int KR, int KS) {
+// wsc: kv_b_proj released in FP8 (GLM-5.3's): wkv its E4M3 values (exact in bf16) and wsc their fp32 scales of 128 x 128 blocks ([ceil(NH (nope + vd) / 128), ceil(KR / 128)]), each value
+// times its block's scale once (the fp32 product the reference takes); null: wkv as it is.
+extern "C" __global__ void __launch_bounds__(256) mla_absorb(const bf16* q, int qs, int qhs, const bf16* wkv, const float* wsc, float* qa, int n, int NH, int nope, int vd, int KR, int KS) {
     const int h = blockIdx.x, r0 = blockIdx.y * GM_RB, tid = threadIdx.x;
     const int CT = KR / 8, G = 256 / CT, g = tid / CT, ct = tid % CT;
     const bool live = g < G;  // (KR / 8 need not divide 256: the threads past the last whole group take no rows)
@@ -160,9 +162,15 @@ extern "C" __global__ void __launch_bounds__(256) mla_absorb(const bf16* q, int 
 #pragma unroll
         for (int c = 0; c < 8; c++) acc[r][c] = 0.f;
     const bf16* W = wkv + (size_t)h * (nope + vd) * KR + ct * 8;
+    const int gc = (KR + 127) >> 7;
     for (int d = live ? g : nope; d < nope; d += G) {
         const uint4 u = *reinterpret_cast<const uint4*>(W + (size_t)d * KR);
-        const float2 w0 = bf2(u.x), w1 = bf2(u.y), w2 = bf2(u.z), w3 = bf2(u.w);
+        float2 w0 = bf2(u.x), w1 = bf2(u.y), w2 = bf2(u.z), w3 = bf2(u.w);
+        if (wsc) {  // (the 8 columns are one block's: 8 divides 128)
+            const float c = wsc[(size_t)((h * (nope + vd) + d) >> 7) * gc + ((ct * 8) >> 7)];
+            w0 = make_float2(__fmul_rn(w0.x, c), __fmul_rn(w0.y, c)), w1 = make_float2(__fmul_rn(w1.x, c), __fmul_rn(w1.y, c));
+            w2 = make_float2(__fmul_rn(w2.x, c), __fmul_rn(w2.y, c)), w3 = make_float2(__fmul_rn(w3.x, c), __fmul_rn(w3.y, c));
+        }
 #pragma unroll
         for (int r = 0; r < GM_RB; r++) {
             const float qv = qh[r][d];
@@ -535,7 +543,8 @@ extern "C" __global__ void __launch_bounds__(256) mla_merge(const float* part, f
 
 // ov [n, NH vd] bf16 = for each row and head, olat [n, NH, KR] times the head's value rows of kv_b_proj: ov[i][h vd + e] = sum_j olat[i][h][j] wkv[h (nope + vd) + nope + e][j], fp32 sums, one rounding. A block a head and
 // GM_VB rows (grid NH x ceil(n / GM_VB)), 256 threads: a warp a value channel e at a time, its lanes down the row of the matrix (KR a multiple of 64). Dynamic shared memory GM_VB KR floats.
-extern "C" __global__ void __launch_bounds__(256) mla_expand_v(const float* olat, const bf16* wkv, bf16* ov, int n, int NH, int nope, int vd, int KR) {
+// wsc: kv_b_proj's fp32 block scales where it is released in FP8 (mla_absorb's), each value times its block's scale once; null: wkv as it is.
+extern "C" __global__ void __launch_bounds__(256) mla_expand_v(const float* olat, const bf16* wkv, const float* wsc, bf16* ov, int n, int NH, int nope, int vd, int KR) {
     GM_DYN_FLOATS(smv)
     const int h = blockIdx.x, r0 = blockIdx.y * GM_VB, tid = threadIdx.x, lane = tid & 31, w = tid >> 5, nw = blockDim.x >> 5;
     for (int e = tid; e < GM_VB * KR; e += blockDim.x) {
@@ -543,13 +552,16 @@ extern "C" __global__ void __launch_bounds__(256) mla_expand_v(const float* olat
         smv[e] = r0 + r < n ? olat[((size_t)(r0 + r) * NH + h) * KR + j] : 0.f;
     }
     __syncthreads();
+    const int gc = (KR + 127) >> 7;
     for (int e = w; e < vd; e += nw) {
         const bf16* row = wkv + ((size_t)h * (nope + vd) + nope + e) * KR;
+        const float* rsc = wsc ? wsc + (size_t)((h * (nope + vd) + nope + e) >> 7) * gc : nullptr;
         float a[GM_VB];
 #pragma unroll
         for (int r = 0; r < GM_VB; r++) a[r] = 0.f;
         for (int j = 2 * lane; j < KR; j += 64) {
-            const float2 c = bf2(*reinterpret_cast<const uint32_t*>(row + j));
+            float2 c = bf2(*reinterpret_cast<const uint32_t*>(row + j));
+            if (rsc) c = make_float2(__fmul_rn(c.x, rsc[j >> 7]), __fmul_rn(c.y, rsc[j >> 7]));  // (j and j + 1 one block's)
 #pragma unroll
             for (int r = 0; r < GM_VB; r++) a[r] = fmaf(smv[r * KR + j], c.x, fmaf(smv[r * KR + j + 1], c.y, a[r]));
         }
@@ -558,6 +570,40 @@ extern "C" __global__ void __launch_bounds__(256) mla_expand_v(const float* olat
             const float v = warp_sum(a[r]);
             if (lane == 0 && r0 + r < n) ov[(size_t)(r0 + r) * NH * vd + h * vd + e] = f2b(v);
         }
+    }
+}
+
+// y [m, N] (rows ys apart) = x [m, K] (rows xs apart) W^T for W released in FP8 (an indexer's products, GLM-5.3's): W its E4M3 values (exact in bf16) and wsc their fp32
+// scales of 128 x 128 blocks ([ceil(N / 128), ceil(K / 128)]), each value times its block's scale once (the fp32 product the reference takes), fp32 sums, one rounding.
+// small_linear's grid and order of sums (a warp an output, 8 a block; grid m x ceil(N / 8)), 256 threads.
+extern "C" __global__ void __launch_bounds__(256) small_linear_f8s(const bf16* x, int xs, const bf16* W, const float* wsc, bf16* y, int ys, int N, int K) {
+    const bf16* xr = x + (size_t)blockIdx.x * xs;
+    const int w = threadIdx.x >> 5, lane = threadIdx.x & 31, nw = blockDim.x >> 5, gc = (K + 127) >> 7;
+    const bool wide = (K & 7) == 0 && ((reinterpret_cast<uintptr_t>(xr) | reinterpret_cast<uintptr_t>(W)) & 15) == 0;
+    for (int o = blockIdx.y * nw + w; o < N; o += nw * gridDim.y) {
+        const bf16* wr = W + (size_t)o * K;
+        const float* rsc = wsc + (size_t)(o >> 7) * gc;
+        float s = 0.f;
+        if (wide) {
+            const uint4* xv = reinterpret_cast<const uint4*>(xr);
+            const uint4* wv = reinterpret_cast<const uint4*>(wr);
+            for (int k = lane; k < (K >> 3); k += 32) {
+                const uint4 a = xv[k], b = wv[k];
+                const float c = rsc[k >> 4];  // (columns 8k .. 8k + 7: one block's)
+                const __nv_bfloat162* a2 = reinterpret_cast<const __nv_bfloat162*>(&a);
+                const __nv_bfloat162* b2 = reinterpret_cast<const __nv_bfloat162*>(&b);
+#pragma unroll
+                for (int j = 0; j < 4; j++) {
+                    const float2 fa = __bfloat1622float2(a2[j]), fb = __bfloat1622float2(b2[j]);
+                    s = fmaf(fa.x, __fmul_rn(fb.x, c), s);
+                    s = fmaf(fa.y, __fmul_rn(fb.y, c), s);
+                }
+            }
+        } else {
+            for (int k = lane; k < K; k += 32) s = fmaf(b2f(xr[k]), __fmul_rn(b2f(wr[k]), rsc[k >> 7]), s);
+        }
+        s = warp_sum(s);
+        if (lane == 0) y[(size_t)blockIdx.x * ys + o] = f2b(s);
     }
 }
 

@@ -589,7 +589,7 @@ fn experts(x: &ExpertsAt, ml: &MoeLoad, d: usize, pack: PackFn, dense: DenseFn) 
             let packed = |w: &[u16], rows: usize, cols: usize, name: &str| -> Result<PackBuf> {
                 match pack(w, rows, cols, name)? {
                     Mat::Packed(p) => Ok(p),
-                    Mat::Dense(..) => err(format!("{name}: rows of a block layout are wanted")),
+                    Mat::Dense(..) | Mat::F8(_) => err(format!("{name}: rows of a block layout are wanted")),
                 }
             };
             Shared {

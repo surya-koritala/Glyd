@@ -831,6 +831,8 @@ struct Part {
     /// The mixture-of-experts layers' blocks (`Op::Moe`'s), as the family's loader made them.
     moe: Vec<Box<dyn MoeBlock>>,
     small: Vec<Buf>,
+    /// Each small tensor's fp32 block scales where it is released in FP8 (its values then its E4M3 codes' in bf16, exact: `f8_small`); None: as read.
+    small_sc: Vec<Option<Buf>>,
     /// The layers whose matrices are in the computer's memory (src/dense_ram.rs).
     ram: Option<crate::dense_ram::DenseRam>,
     slots: Vec<Buf>,
@@ -852,10 +854,16 @@ impl Part {
         }
     }
 
+    /// Small tensor `i`'s fp32 block scales where it is released in FP8, else 0 (a kernel's null: the values as they are).
+    fn scales(&self, i: usize) -> u64 {
+        self.small_sc.get(i).and_then(Option::as_ref).map_or(0, |b| b.ptr)
+    }
+
     fn bytes(&self) -> usize {
         self.mats.iter().map(Mat::bytes).sum::<usize>()
             + self.f8.iter().map(|m| m.bytes).sum::<usize>()
             + self.small.iter().map(|b| b.bytes).sum::<usize>()
+            + self.small_sc.iter().flatten().map(|b| b.bytes).sum::<usize>()
             + self.moe.iter().map(|b| b.bytes()).sum::<usize>()
             + self.ram.as_ref().map_or(0, |r| r.bytes().0)
     }
@@ -865,7 +873,9 @@ impl Part {
         let slots: Vec<Buf> = d.widths.iter().map(|&w| Buf::new(w.max(1) * rows * 2)).collect::<Result<_>>()?;
         let logits = Buf::new(d.vocab * out * 2)?;
         let (tok, val) = (Buf::zeroed(4 * out)?, Buf::zeroed(4 * out)?);
-        Ok(Part { d, mats: l.mats, f8: l.f8, moe: l.moe, small: l.small, ram: l.ram, slots, logits, tok, val })
+        let mut small_sc = l.small_sc;
+        small_sc.resize_with(l.small.len(), || None);
+        Ok(Part { d, mats: l.mats, f8: l.f8, moe: l.moe, small: l.small, small_sc, ram: l.ram, slots, logits, tok, val })
     }
 }
 
@@ -902,6 +912,12 @@ fn held_as_saved(d: &ModelDesc, k: usize, rows_of: &dyn Fn(&str) -> Option<usize
     !it.cols.is_multiple_of(16)
         || if padded { !it.rows.is_multiple_of(64) } else { it.members.iter().any(|m| rows_of(m).is_some_and(|r| r == 0 || !r.is_multiple_of(64))) }
         || d.layers.iter().flatten().any(|op| matches!(op, Op::NgramRows(x) if x.table == k))
+}
+
+/// The small tensors whose operations take them released in FP8 with fp32 block scales (`Part::scales`): a latent attention's kv_b_proj and its indexer's
+/// products (`MlaOp::f8_small`).
+fn f8_small(d: &ModelDesc) -> Vec<usize> {
+    d.layers.iter().flatten().flat_map(|op| if let Op::Mla(a) = op { a.f8_small() } else { Vec::new() }).collect()
 }
 
 /// The small tensors an operation reads in fp32 (the gated delta rule's A_log; the Kimi delta rule's A_log and dt_bias; the mHC streams' mix's base and
@@ -1039,10 +1055,19 @@ fn stored(dir: &Path) -> Result<Option<(Layout, glyd_gpu::json::Value)>> {
     })
 }
 
+/// A matrix as `load_part`'s readers hand it on: packed on the host, or an FP8 one's bytes and scales as released (this GPU's `rows` of its `whole`), packed
+/// on the GPU by the thread that holds it.
+enum Read {
+    Packed(crate::weights::Packed),
+    F8 { q: Vec<u8>, sc: Vec<f32>, rows: usize, cols: usize, whole: usize },
+}
+
 /// `d`'s weights from `dir`: a saved directory's packs as saved (under the first member's name where the save merged the members, else each member's), a matrix
-/// it holds as bf16 packed here, a Hub-format directory's packed here at `layout`; the matrices `held_as_saved` names as saved; the small tensors in the type
-/// their operations read (`read_f32`, `read_f32_as_bf16`; int64 as saved, a hash's numbers); the experts by `experts`. `placing`: where the packed matrices
-/// are held beyond the GPU's own memory (this GPU's slice of a matrix's rows, a layer's matrices in the computer's memory).
+/// it holds as bf16 packed here, a Hub-format directory's packed here at `layout`, but at a lossless level a matrix released in FP8 with fp32 block scales
+/// (`f8::released_shape`), held as released (`Mat::F8`, packed on `dev`); the matrices `held_as_saved` names as saved; the small tensors in the type their
+/// operations read (`read_f32`, `read_f32_as_bf16`; int64 as saved, a hash's numbers; an FP8 one an operation takes so (`f8_small`) as its E4M3 values in
+/// bf16, exact, with its fp32 block scales, `Part::scales`); the experts by `experts`. `placing`: where the packed matrices are held beyond the GPU's own memory (this GPU's slice of a matrix's rows,
+/// a layer's matrices in the computer's memory).
 #[allow(clippy::too_many_arguments)]
 fn load_part(
     dir: &Path,
@@ -1054,6 +1079,7 @@ fn load_part(
     want: Option<&[bool]>,
     experts: &Experts,
     placing: &Placing,
+    dev: &Dev,
 ) -> Result<Part> {
     let ck = Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
     let v7 = stored(dir)?;
@@ -1101,14 +1127,56 @@ fn load_part(
         }
     };
     let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
-    let saved: Vec<bool> = (0..d.mats.len()).map(|k| held_as_saved(&d, k, &rows_of)).collect();
+    // (a matrix released in FP8 with its block scales, at a lossless level, on the GPU: held as released, the E4M3 bytes bit for bit; this GPU's whole
+    // blocks of its rows where every layer is across a group of GPUs)
+    let lossless = matches!(layout, Layout::Tiered | Layout::Twelve);
+    let as_f8 = |k: usize| -> Option<(usize, usize)> {
+        let it = &d.mats[k];
+        (lossless && v7.is_none() && in_ram(k).is_none() && k != d.embed).then(|| crate::f8::released_shape(&ck, &it.members)).flatten()
+    };
+    let f8_rows = |k: usize, rows: usize| -> Result<(usize, usize)> {
+        match slice(k) {
+            None => Ok((0, rows)),
+            Some(t) if rows.is_multiple_of(128 * t.n) => Ok(t.rows(rows)),
+            Some(t) => err(format!(
+                "{}: an FP8 matrix of {rows} rows across {} GPUs: each GPU's rows whole blocks of 128 are wanted",
+                d.mats[k].members.join(" + "),
+                t.n
+            )),
+        }
+    };
+    let saved: Vec<bool> = (0..d.mats.len()).map(|k| as_f8(k).is_none() && held_as_saved(&d, k, &rows_of)).collect();
     let mut packed: Vec<Option<PackBuf>> = (0..d.mats.len()).map(|_| None).collect();
     let mut hosted: Vec<Option<crate::weights::Packed>> = (0..d.mats.len()).map(|_| None).collect();
+    let mut f8s: Vec<Option<crate::f8::F8Mat>> = (0..d.mats.len()).map(|_| None).collect();
+    let lib = if (0..d.mats.len()).any(|k| want.is_none_or(|w| w[k]) && as_f8(k).is_some()) { Some(Lib::find()?) } else { None };
     // (a stage of a split model loads only the matrices its layers multiply by)
     let ks: Vec<usize> = (0..d.mats.len()).filter(|&k| want.is_none_or(|w| w[k]) && !saved[k]).collect();
-    ordered(ks.len(), threads, 2 * threads.max(1), &|i| one(ks[i]), |i, pk| {
+    let read = |k: usize| -> Result<Read> {
+        match as_f8(k) {
+            Some((rows, cols)) => {
+                let (r0, rn) = f8_rows(k, rows)?;
+                let (q, sc) = crate::f8::released(&ck, &d.mats[k].members, (r0, rn))?;
+                Ok(Read::F8 { q, sc, rows: rn, cols, whole: rows })
+            }
+            None => one(k).map(Read::Packed),
+        }
+    };
+    ordered(ks.len(), threads, 2 * threads.max(1), &|i| read(ks[i]), |i, r| {
         crate::status::STATUS.beat();
         let k = ks[i];
+        let pk = match r {
+            Read::Packed(pk) => pk,
+            Read::F8 { q, sc, rows, cols, whole } => {
+                let lib = lib.as_ref().ok_or_else(|| Error("an FP8 matrix with no library to pack it".into()))?;
+                let mut m = crate::f8::F8Mat::pack(dev, lib, &q, &sc, rows, cols, cfg!(feature = "dev"))?;
+                if rows < whole {
+                    m.tp_rows = whole;
+                }
+                f8s[k] = Some(m);
+                return Ok(());
+            }
+        };
         if in_ram(k).is_some() {
             hosted[k] = Some(pk);
             return Ok(());
@@ -1124,6 +1192,10 @@ fn load_part(
     let mut ram = crate::dense_ram::RamBuilder::new(placing.ram);
     let mut mats: Vec<Mat> = Vec::with_capacity(d.mats.len());
     for (k, (x, h)) in packed.into_iter().zip(hosted).enumerate() {
+        if let Some(f) = f8s[k].take() {
+            mats.push(Mat::F8(f));
+            continue;
+        }
         match (x, h, in_ram(k)) {
             (Some(p), _, _) => mats.push(Mat::Packed(p)),
             (None, Some(p), Some(l)) => {
@@ -1137,7 +1209,8 @@ fn load_part(
         }
     }
     let ram = ram.finish(&mut mats)?;
-    let (f32s, as_bf16, typed, least) = (read_f32(&d), read_f32_as_bf16(&d), read_typed(&d), read_at_least(&d));
+    let (f32s, as_bf16, typed, least, f8_ok) = (read_f32(&d), read_f32_as_bf16(&d), read_typed(&d), read_at_least(&d), f8_small(&d));
+    let mut small_sc: Vec<Option<Buf>> = (0..d.small.len()).map(|_| None).collect();
     let small: Vec<Buf> = d
         .small
         .iter()
@@ -1146,6 +1219,16 @@ fn load_part(
             let form = d.forms.iter().find(|x| x.0 == i).map(|x| x.1);
             if let Some(f) = form.filter(|&f| f != SmallForm::Joined) {
                 return upload_bytes(crate::weights::as_bytes(&small_of(&ck, name, f)?));
+            }
+            // (released in FP8 with fp32 block scales, where its operation takes them: its E4M3 codes' values in bf16, exact, and the scales as released)
+            if let Some(sn) = form.is_none().then(|| crate::formats::scales_beside(&ck, name)).flatten() {
+                if !f8_ok.contains(&i) {
+                    return err(format!("{name}: FP8 with block scales, where its operation reads bf16"));
+                }
+                let q = ck.read(name).map_err(|e| Error(format!("{name}: {e}")))?;
+                let v: Vec<u16> = q.iter().map(|&b| (glyd_gpu::fp8::e4m3(b).to_bits() >> 16) as u16).collect();
+                small_sc[i] = Some(upload_bytes(&ck.read(&sn).map_err(|e| Error(format!("{sn}: {e}")))?)?);
+                return upload_bytes(crate::weights::as_bytes(&v));
             }
             // (the tensor as saved; several as one, each as saved and all of one type)
             let (dtype, b) = small_saved(&ck, name, form == Some(SmallForm::Joined))?;
@@ -1182,7 +1265,7 @@ fn load_part(
         })
         .collect::<Result<_>>()?;
     let moe = experts(&ck, layout)?;
-    Part::from_loaded(d, Loaded { mats, small, moe, ram, ..Loaded::default() }, rows, out)
+    Part::from_loaded(d, Loaded { mats, small, small_sc, moe, ram, ..Loaded::default() }, rows, out)
 }
 
 /// What a family's loader puts on the GPU for its description: the matrices, the FP8 ones, the small tensors, the blocks of experts.
@@ -1193,6 +1276,8 @@ pub struct Loaded {
     pub ram: Option<crate::dense_ram::DenseRam>,
     pub f8: Vec<crate::f8::F8Mat>,
     pub small: Vec<Buf>,
+    /// The small tensors' fp32 block scales where they are released in FP8 (`Part::small_sc`); empty or None: none.
+    pub small_sc: Vec<Option<Buf>>,
     pub moe: Vec<Box<dyn MoeBlock>>,
 }
 
@@ -1799,7 +1884,7 @@ impl Dyn {
             })
             .collect::<Result<_>>()?;
         let want = d.wanted(&st);
-        let big = load_part(dir, d, layout, threads, ch, rows_out, Some(&want), experts, placing)?;
+        let big = load_part(dir, d, layout, threads, ch, rows_out, Some(&want), experts, placing, &dev)?;
         // (a draft model is packed lossy here: the big model checks every draft token, so its precision moves only how many are kept; a draft head of the model
         // at the model's layout, a chunk's rows (it reads each prompt row's streams), its rings after the model's, its LM head and embedding the model's)
         let draft = match draft {
@@ -1811,11 +1896,11 @@ impl Dyn {
                 let mut want = hd.wanted(&Stage::whole(hd.layers.len()));
                 (want[hd.embed], want[hd.lm]) = (false, false);
                 let none: &Experts = &|_, _| Ok(Vec::new());
-                let p = load_part(x.dir, hd, layout, threads, ch, 1, Some(&want), x.experts.unwrap_or(none), &Placing::default())?;
+                let p = load_part(x.dir, hd, layout, threads, ch, 1, Some(&want), x.experts.unwrap_or(none), &Placing::default(), &dev)?;
                 Some(Draft { p, k: x.k.min(VERIFY_ROWS - 1), pos: Buf::zeroed(8)?, head: Some(HeadState::default()) })
             }
             Some(x) => Some(Draft {
-                p: load_part(x.dir, x.desc, Layout::Int6, threads, 1, 1, None, x.experts.unwrap_or(&|_, _| Ok(Vec::new())), &Placing::default())?,
+                p: load_part(x.dir, x.desc, Layout::Int6, threads, 1, 1, None, x.experts.unwrap_or(&|_, _| Ok(Vec::new())), &Placing::default(), &dev)?,
                 k: x.k,
                 pos: Buf::zeroed(8)?,
                 head: None,
@@ -1854,7 +1939,7 @@ impl Dyn {
         st: Stage,
         o: &Opts,
     ) -> Result<Dyn> {
-        Dyn::from_parts(dev, d, Loaded { mats, f8, small, moe, ram: None }, ropes, layout, st, o)
+        Dyn::from_parts(dev, d, Loaded { mats, f8, small, small_sc: Vec::new(), moe, ram: None }, ropes, layout, st, o)
     }
 
     /// A model its family's loader put on the GPU, whatever it holds (`Loaded`).
@@ -1944,8 +2029,10 @@ impl Dyn {
         if let Some(lm) = big.mats[d.lm].packed_opt() {
             need = need.max(lib.linear_workspace(lm.pack.is_twelve(), lm.pack.rows, lm.pack.cols, rows_out as i64)?);
         }
-        // (the FP8 matrices' products: every row count a call takes, up to 64)
-        let mut f8_shapes: Vec<(usize, usize)> = big.f8.iter().map(|m| (m.n, m.k)).collect();
+        // (the FP8 matrices' products: every row count a call takes, up to 64; a family's own list, and the matrices held as released, the draft's too)
+        let held_f8 = |p: &Part| p.mats.iter().filter_map(|m| if let Mat::F8(f) = m { Some((f.n, f.k)) } else { None }).collect::<Vec<_>>();
+        let mut f8_shapes: Vec<(usize, usize)> =
+            big.f8.iter().map(|m| (m.n, m.k)).chain(held_f8(&big)).chain(draft.as_ref().map_or(Vec::new(), |d| held_f8(&d.p))).collect();
         f8_shapes.sort_unstable();
         f8_shapes.dedup();
         for &(n, k) in &f8_shapes {
@@ -2325,6 +2412,8 @@ impl Dyn {
         let p = match w {
             Mat::Packed(p) => p,
             Mat::Dense(b, rows, cols) => return self.k35.small_linear(s, x, *cols as i32, b.ptr, y, *rows as i32, m as u32, *rows as i32, *cols as i32),
+            // (FP8 as released: the library's product, its grid from the matrix's shape alone; this GPU's slice gathered where it holds one)
+            Mat::F8(f) => return f.linear(&self.lib, x, m, y, self.ws.ptr, self.ws.bytes, self.done.ptr, s),
         };
         // (this GPU's slice of the rows: its product, then every GPU's slices gathered into y: src/dynamic/tp.rs)
         if p.tp_rows > 0 {
