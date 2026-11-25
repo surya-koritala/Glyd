@@ -28,7 +28,6 @@ use super::snaps;
 use super::{Dyn, Op};
 use crate::dev::{copy_d2d_async, Buf};
 use crate::ffi::{err, Result};
-use crate::gpu_ops::GpuOps;
 use crate::sched::{ModelStep, PrefillJob, Row, Sample, FUSED_ROWS};
 
 /// Paged keys and values: the blocks every sequence holds, each ring's layer group, and each sequence's block tables on the GPU (a buffer a group: every slot's row of `tlen`
@@ -384,12 +383,25 @@ pub(super) fn pages_all(d: &super::ModelDesc) -> bool {
     }) && d.layers.iter().flatten().any(|op| !op.rings().is_empty())
 }
 
-/// The blocks of each layer group's pool, from `budget` bytes: every group as many tokens' blocks (a block of group g is `covers[g]` tokens of each of its rings, `per[g]` bytes a
-/// token), none more than `most[g]`; what the groups capped there leave goes to the full groups (`keep[g]` None), as many tokens' again.
-pub(super) fn pool_blocks(budget: usize, per: &[usize], covers: &[usize], keep: &[Option<usize>], most: &[usize]) -> Vec<usize> {
-    let even = budget / per.iter().sum::<usize>().max(1);
-    let mut blocks: Vec<usize> = (0..per.len()).map(|g| (even / covers[g]).min(most[g])).collect();
-    let left = budget - (0..per.len()).map(|g| blocks[g] * covers[g] * per[g]).sum::<usize>();
+/// The blocks of a layer group one sequence holds at most (`Dyn::page` caps a group's pool at this many for each user): its window and a chunk (`keep`), or the
+/// whole context (None), up to the context, in blocks of `covers` tokens, and one more (the block a window straddles). The planner sizes a sliding layer's ring
+/// by it (`plan::sizing`, Gemma 4's `kv_bytes`).
+pub(crate) fn seq_blocks(keep: Option<usize>, ctx: usize, covers: usize) -> usize {
+    keep.map_or(ctx, |k| k.min(ctx)).div_ceil(covers) + 1
+}
+
+/// The blocks of each layer group's pool, from `budget` bytes: one sequence's blocks in every group first (`least[g]`, where the budget holds them all: a sequence alone
+/// always fits, as long as the plan's context, which is sized for one where the users share the pools), then every group as many tokens' blocks again (a block of group g
+/// is `covers[g]` tokens of each of its rings, `per[g]` bytes a token), none more than `most[g]`; what the groups capped there leave goes to the full groups (`keep[g]`
+/// None), as many tokens' again. (As many tokens' blocks alone gave a sliding group, whose bytes a token are most of a model's, as many tokens as the full group
+/// where the budget was short of every user's: one sequence then held less than the context the plan gave it.)
+pub(crate) fn pool_blocks(budget: usize, per: &[usize], covers: &[usize], keep: &[Option<usize>], most: &[usize], least: &[usize]) -> Vec<usize> {
+    let bytes = |b: &[usize]| (0..per.len()).map(|g| b[g] * covers[g] * per[g]).sum::<usize>();
+    let one: Vec<usize> = (0..per.len()).map(|g| least[g].min(most[g])).collect();
+    let base = if bytes(&one) <= budget { one } else { vec![0; per.len()] };
+    let even = (budget - bytes(&base)) / per.iter().sum::<usize>().max(1);
+    let mut blocks: Vec<usize> = (0..per.len()).map(|g| (base[g] + even / covers[g]).min(most[g])).collect();
+    let left = budget - bytes(&blocks);
     let full: usize = (0..per.len()).filter(|&g| keep[g].is_none()).map(|g| per[g]).sum();
     if full > 0 {
         let more = left / full;
@@ -570,38 +582,26 @@ impl Dyn {
                 per[group[r]] += twelve[r].map_or(ring.token_bytes(), |b| b.ceil() as usize);
             }
         }
-        // (the 12-bit pages' step buffers: a prompt chunk's pages unpacked to bf16, keys and values (a latent's alone, its row in heads of 128), a ring at a time)
-        let unpacked: usize = rings
-            .iter()
-            .zip(&twelve)
-            .filter(|(_, t)| t.is_some())
-            .map(|(ring, _)| {
-                let blocks = if ring.window > 0 { (ring.window + self.chunk).div_ceil(BLOCK) + 2 } else { self.ctx.div_ceil(BLOCK) + 1 };
-                (1 + ring.values as usize) * blocks * BLOCK * ring.nk * ring.d.div_ceil(128) * 128 * 2
-            })
-            .max()
-            .unwrap_or(0);
         let keep: Vec<Option<usize>> = windows.iter().map(|&(w, _)| (w > 0 && w != usize::MAX).then_some(w + self.chunk)).collect();
-        let most: Vec<usize> = keep.iter().zip(&covers).map(|(k, &c)| users * (k.map_or(self.ctx, |k| k.min(self.ctx)).div_ceil(c) + 1)).collect();
+        let most: Vec<usize> = keep.iter().zip(&covers).map(|(&k, &c)| users * seq_blocks(k, self.ctx, c)).collect();
         // the old rooms given back first
         self.dev.sync()?;
         let graphed = self.graph.take().is_some();
         (self.kc, self.vc) = (Buf::zeroed(4)?, Buf::zeroed(4)?);
         let tab_bytes = users * windows.len() * self.ctx.div_ceil(BLOCK) * 4;
-        // (12-bit pages: the raw slabs one sequence alone may take, every page of it raw: `Lossless::alone_slabs`, which the raw pools hold at the least)
-        let alone: usize = match self.kv12.as_ref().filter(|_| twelve.iter().any(Option::is_some)) {
-            // (a size the library does not give is an error here, not a reserve of nothing that the pools then run out of)
-            Some(t) => super::kvpages::Lossless::alone_slabs(&self.lib, &self.big.d, t, &self.ring_cap, self.ctx, self.chunk)
-                .iter()
-                .map(|&(hp, n)| self.lib.kv_raw_bytes(n, hp).map(|b| b as usize))
-                .sum::<Result<usize>>()?,
+        // (12-bit pages: what their pools spend once whatever the sequences, the planner's `kv12::once_bytes`: the raw slabs one sequence alone may take, every page of it raw
+        // (`Lossless::alone_slabs`, which the raw pools hold at the least), a prompt chunk's pages unpacked to bf16 (keys and values; a latent's alone, its row in heads
+        // of 128), the escape pool's least)
+        let once = match self.kv12.as_ref().filter(|_| twelve.iter().any(Option::is_some)) {
+            Some(t) => super::kv12::once_bytes(&super::kvpages::Lossless::taken(&self.lib, &self.big.d, t, &self.ring_cap), self.ctx, self.chunk) as usize,
             None => 0,
         };
         let (free, _) = self.dev.mem_info()?;
         const KEEP: usize = 512 << 20;
-        let budget = (free.saturating_sub(KEEP + tab_bytes + unpacked + alone) as f64 * self.share) as usize;
+        let budget = (free.saturating_sub(KEEP + tab_bytes + once) as f64 * self.share) as usize;
         // as many tokens' blocks in every group (a block of a group is its `covers` tokens of every layer in it), the sliding groups capped and what they leave to the full ones
-        let mut blocks = pool_blocks(budget, &per, &covers, &keep, &most);
+        let least: Vec<usize> = keep.iter().zip(&covers).map(|(&k, &c)| seq_blocks(k, self.ctx, c)).collect();
+        let mut blocks = pool_blocks(budget, &per, &covers, &keep, &most, &least);
         // (a development build's GLYD_ENGINE_PAGES: at most that many blocks a group, to run the memory out on purpose)
         if let Some(cap) = crate::tune!("GLYD_ENGINE_PAGES").and_then(|v| v.parse::<usize>().ok()) {
             blocks.iter_mut().for_each(|b| *b = (*b).min(cap));
@@ -2367,15 +2367,26 @@ mod tests {
         // (bytes a token: a full group 2,048, a sliding one 1,024; 60 MiB)
         let budget = 60 << 20;
         let (per, keep) = ([2048, 1024], [None, Some(1024 + 256)]);
-        let b = pool_blocks(budget, &per, &[BLOCK, BLOCK], &keep, &[usize::MAX, 4 * 81]);
+        let b = pool_blocks(budget, &per, &[BLOCK, BLOCK], &keep, &[usize::MAX, 4 * 81], &[0, 0]);
         // (as many blocks a group: 60 MiB / (3,072 B x 16) = 1,280, the sliding group capped at 324 and its rest to the full group)
         assert_eq!(b, vec![1280 + (1280 - 324) * 1024 / 2048, 324]);
         assert!(b[0] * BLOCK * 2048 + b[1] * BLOCK * 1024 <= budget);
         // a compressed group of 4 tokens an entry (256 bytes a token) beside them: its blocks hold 64 tokens, so a fourth as many hold as many tokens
-        let b = pool_blocks(budget, &[2048, 1024, 256], &[BLOCK, BLOCK, 4 * BLOCK], &[None, Some(1024 + 256), None], &[usize::MAX, 4 * 81, usize::MAX]);
+        let b =
+            pool_blocks(budget, &[2048, 1024, 256], &[BLOCK, BLOCK, 4 * BLOCK], &[None, Some(1024 + 256), None], &[usize::MAX, 4 * 81, usize::MAX], &[0, 0, 0]);
         // (18,904 tokens each: 1,181 blocks, 324, 295; the 6,108 tokens' bytes the sliding group leaves to the two full ones: 381 blocks and 95)
         assert_eq!(b, vec![1181 + 381, 324, 295 + 95]);
         assert!(b[0] * BLOCK - b[2] * 4 * BLOCK < 4 * BLOCK, "the full groups hold as many tokens, to a block");
         assert!(b[0] * BLOCK * 2048 + b[1] * BLOCK * 1024 + b[2] * 4 * BLOCK * 256 <= budget);
+        // one sequence's blocks first: a sliding group of 64 times the full group's bytes a token, eight users, a budget short of every user's window: as many tokens'
+        // blocks alone gave the full group 147 (2,352 tokens), less than one sequence's context of 4,096; with the sequence's 257 and 97 first, it holds the context
+        let (per, keep, most, one) = ([2048, 64 * 2048], [None, Some(1024 + 512)], [8 * 257, 8 * 97], [257, 97]);
+        let budget = 300 << 20;
+        let b = pool_blocks(budget, &per, &[BLOCK, BLOCK], &keep, &most, &[0, 0]);
+        assert!(b[0] * BLOCK < 4096, "{b:?}");
+        let b = pool_blocks(budget, &per, &[BLOCK, BLOCK], &keep, &most, &one);
+        assert!(b[0] >= 257 && b[1] >= 97 && b[0] * BLOCK * per[0] + b[1] * BLOCK * per[1] <= budget, "{b:?}");
+        // (a budget that holds no sequence: as many tokens' blocks, as before)
+        assert_eq!(pool_blocks(1 << 20, &per, &[BLOCK, BLOCK], &keep, &most, &one), pool_blocks(1 << 20, &per, &[BLOCK, BLOCK], &keep, &most, &[0, 0]));
     }
 }

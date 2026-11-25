@@ -30,7 +30,8 @@ pub struct Tables {
     pub positions: u64,
     pub model: String,
     pub outside: Vec<f64>,
-    /// Each layer's escape chunks a page of 16 tokens took on those prompts (`page_chunks`): on average, and at most.
+    /// Each layer's escape chunks a page of 16 tokens took on those prompts (`page_chunks`): on average, and at most (kv12check prints them beside the
+    /// room the pool gives a page, `reserve_chunks`, which they do not size).
     pub chunks: Vec<(f64, u32)>,
 }
 
@@ -58,10 +59,80 @@ pub fn raw_bytes(ns: u64, hp: u64) -> u64 {
     (ns.div_ceil(32).div_ceil(4)) * 16 + ns.div_ceil(4) * 16 + ns * hp * 2048
 }
 
-/// The planner's bytes of a token in a ring's 12-bit pages: a sixteenth of a page (the escape room and the raw slabs a pool adds besides are
-/// within 5% of it: kvpages.rs `held_bytes`, its tests and kvshapes' filled pools).
-pub fn planned_token_bytes(s: &KvShape) -> f64 {
-    page_bytes_of(s.heads, s.channels, s.one) as f64 / 16.0
+/// The share of a page's values outside their windows its escape room is made for. Measured on gemma-4-12B: 0.035% in the worst layer on the
+/// calibration's first 1,024 positions, 0.31% at 8,192 tokens (later positions are farther from the windows); room for 0.5% costs a sliding page
+/// five chunks, 1.3% of its bytes.
+pub const ROOM_SHARE: f64 = 0.005;
+
+/// The pages a raw slab is made for (one in this many of a page size's pages may be raw at once), and the slabs a raw pool has at the least; beside
+/// them, one sequence's every page (`once_bytes`).
+pub const RAW_PAGES: u64 = 100;
+pub const RAW_MIN: u64 = 64;
+
+/// The escape pool's chunks at the least, whatever its pages' room.
+pub const ESCAPE_MIN: u64 = 1024;
+
+/// The escape chunks a page of `heads` kv heads of `channels` (one stream where `one`) is given: ROOM_SHARE of its values, less its heads' inline
+/// entries and its arena, in chunks of 64, at least an eighth of one. The planner counts these and the pool gives them (`token_bytes`,
+/// `Lossless::new`), whatever the tables counted on their prompts (`Tables::chunks`, which kv12check prints beside them): a page whose values need
+/// more is made raw (a slab of its raw pool), and where the slabs run short the newest sequence is paused (`Dyn::kv12_room`), so the pool never
+/// spends more escape room than the plan made.
+pub fn reserve_chunks(heads: usize, channels: usize, one: bool) -> f64 {
+    let values = 16.0 * (heads * channels) as f64 * if one { 1.0 } else { 2.0 };
+    let inline = 3.0 * (heads * channels / 128) as f64 + super::kvpages::ARENA as f64;
+    ((values * ROOM_SHARE - inline).max(0.0) / 64.0).ceil().max(0.125)
+}
+
+/// A token's bytes in a ring of 12-bit pages, the planner's and the pool's alike (`plan::sizing::kv12_token_bytes`; `Lossless::token_bytes` asks the
+/// library the same sizes, which kvshapes holds to these): a sixteenth of its page, of its page's escape room (`reserve_chunks`) and of its share of
+/// the raw slabs (one in RAW_PAGES), rounded up. A chunk and a slab are counted as a pool of one has them (its bitmap and owners in whole lines):
+/// more than a large pool's share, never less.
+pub fn token_bytes(heads: usize, channels: usize, one: bool) -> u64 {
+    let hp = (heads * channels / 128) as u64;
+    let page =
+        page_bytes_of(heads, channels, one) as f64 + reserve_chunks(heads, channels, one) * escape_bytes(1) as f64 + raw_bytes(1, hp) as f64 / RAW_PAGES as f64;
+    (page / 16.0).ceil() as u64
+}
+
+/// The pages of a 12-bit ring one sequence holds at most, at a context of `ctx` tokens and prompt chunks of `chunk` (a sliding ring's window and a
+/// chunk and the blocks they straddle, else the context), and a pass's pages more (a chunk's and the one it begins in): the raw slabs the pool keeps
+/// for one sequence alone (`Lossless::alone_slabs`), so that values that do not compress never refuse a sequence alone.
+pub fn alone_pages(s: &KvShape, ctx: usize, chunk: usize) -> u64 {
+    (stage_blocks(s, ctx, chunk) + chunk.div_ceil(16) + 1) as u64
+}
+
+/// The blocks of bf16 rows a ring's pages are unpacked into for a pass (`Dyn::kv12_stage`; a latent's attention reads them there, `kv12_latents`):
+/// a sliding ring's window and a chunk and the blocks they straddle, else the whole context.
+pub fn stage_blocks(s: &KvShape, ctx: usize, chunk: usize) -> usize {
+    if s.window > 0 {
+        (s.window + chunk).div_ceil(16) + 2
+    } else {
+        ctx.div_ceil(16) + 1
+    }
+}
+
+/// What the pools of the 12-bit rings `rings` spend once, whatever the sequences, at a context of `ctx` tokens and prompt chunks of `chunk`
+/// (`Lossless::new`'s rule, by the library's layout): the raw slabs of one sequence alone at that context (`alone_pages` of every ring of a page
+/// size, at least RAW_MIN), the bf16 rows a pass's pages are unpacked into (the widest ring's keys, and values where it has them: a full ring's
+/// whole context), and the escape pool's least. `Dyn::page` keeps it off the pools' budget, and the planner counts it once for all the users of a
+/// plan (`plan::sizing::Once`): with the pages' `token_bytes` a sequence's tokens take, it is all the pools take that grows with the context.
+pub fn once_bytes(rings: &[KvShape], ctx: usize, chunk: usize) -> u64 {
+    if rings.is_empty() {
+        return 0;
+    }
+    let mut classes: Vec<(u64, u64)> = Vec::new();
+    for s in rings {
+        let hp = (s.heads * s.channels / 128) as u64;
+        match classes.iter_mut().find(|c| c.0 == hp) {
+            Some(c) => c.1 += alone_pages(s, ctx, chunk),
+            None => classes.push((hp, alone_pages(s, ctx, chunk))),
+        }
+    }
+    let raw: u64 = classes.iter().map(|&(hp, n)| raw_bytes(n.max(RAW_MIN), hp)).sum();
+    let stage = |values: bool| {
+        rings.iter().filter(|s| !(values && s.one)).map(|s| (stage_blocks(s, ctx, chunk) * 16 * s.heads * s.channels * 2) as u64).max().unwrap_or(0)
+    };
+    raw + stage(false) + stage(true) + escape_bytes(ESCAPE_MIN)
 }
 
 /// The bucket of a bf16 value kvcal's windows are over: its exponent halved.
@@ -185,6 +256,37 @@ impl Tables {
     }
 }
 
+/// The query heads a kv head's decode over 12-bit pages takes: up to 8, more only where they are contiguous, one kv head in steps of 8 (the decode
+/// attention's split of a kv head's queries into calls).
+pub const MAX_G: usize = 8;
+
+/// Whether the decode attention over 12-bit pages takes `queries` query heads over `heads` kv heads (`MAX_G`); a ring it does not take stays bf16.
+pub fn decode_takes(heads: usize, queries: usize) -> bool {
+    let g = queries / heads.max(1);
+    heads > 0 && queries.is_multiple_of(heads) && (g <= MAX_G || (heads == 1 && g.is_multiple_of(MAX_G)))
+}
+
+/// The 12-bit shape of a ring of `heads` kv heads of `channels` in two streams that `queries` query heads read, with its sliding window (0: global), for
+/// the planner, which has a config and no description (`shapes` and `Lossless::token_bytes` are the executor's): None where the pages do not take it
+/// (channels not a multiple of 128, scores soft-capped, or query heads the decode does not take): such a ring stays bf16.
+pub fn ring_shape(heads: usize, channels: usize, queries: usize, window: usize, softcap: bool) -> Option<KvShape> {
+    (channels.is_multiple_of(128) && !softcap && decode_takes(heads, queries)).then_some(KvShape {
+        ring: 0,
+        heads,
+        channels,
+        one: false,
+        window,
+        scale: 1.0,
+        round: false,
+        width: heads * channels,
+    })
+}
+
+/// `ring_shape` of a latent attention's one stream of `width` values a token (kv_rank + rope), in heads of 128.
+pub fn latent_shape(width: usize) -> KvShape {
+    KvShape { ring: 0, heads: width.div_ceil(128), channels: 128, one: true, window: 0, scale: 1.0, round: false, width }
+}
+
 /// An attention layer's keys and values as the executor writes them: its ring, kv heads, channels, whether it has values of its own, and its
 /// sliding window (0: global); and its attention's arithmetic as the decode over 12-bit pages is to take it: the scale, and whether a score is the
 /// bf16 of its dot product (Gemma 4's) or fp32 (the Qwen3.5 layout's). `width`: the values of a token's row in the ring (heads x channels, or a
@@ -228,6 +330,26 @@ pub fn shapes(d: &super::ModelDesc) -> Vec<Option<KvShape>> {
             })
         })
         .collect()
+}
+
+/// A ring's layer and query heads: the layer whose attention writes it, and its query heads (a latent attention's latents: 1, its one stream read unpacked).
+pub fn writer(d: &super::ModelDesc, ring: usize) -> Option<(usize, usize)> {
+    d.layers.iter().enumerate().find_map(|(l, ops)| {
+        ops.iter().find_map(|op| match op {
+            Op::Attn(a) if a.writes && a.ring == ring => Some((l, a.nq)),
+            Op::Mla(a) if a.ring == ring => Some((l, 1)),
+            _ => None,
+        })
+    })
+}
+
+/// Ring `ring`'s 12-bit shape where the pages take it, from the description alone: its writer's shape (`shapes`), and its query heads the decode takes
+/// (`decode_takes`; a latent's one stream is read unpacked); None: the ring stays bf16 (and where the model's tables have no such layer:
+/// `Lossless::token_bytes`).
+pub fn pages_shape(d: &super::ModelDesc, ring: usize) -> Option<KvShape> {
+    let (l, nq) = writer(d, ring)?;
+    let s = shapes(d)[l].filter(|s| s.ring == ring)?;
+    (s.one || decode_takes(s.heads, nq)).then_some(s)
 }
 
 impl Dyn {

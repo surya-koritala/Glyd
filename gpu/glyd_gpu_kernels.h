@@ -1815,7 +1815,7 @@ constexpr uint32_t PG_RAW = 1u << 31, PG_VOID = 1u << 30, PG_COUNT = (1u << 24) 
 constexpr uint32_t HEAD_RAW = 0xFFFFFFFFu;  // a raw head-page's count word
 // the write kernel's status words (glyd_gpu.h); the two rings follow them: the blocks with a void page, the blocks with a raw page, `ring` places each
 enum { ST_OVERFLOW = 0, ST_PAGE_HW = 1, ST_ARENA_PAGES = 2, ST_ENTRIES = 3, ST_POOL_USED = 4, ST_POOL_HW = 5, ST_POOL_PAGES = 6, ST_STALE = 7, ST_RAW_USED = 8, ST_RAW_HW = 9, ST_RAW_PAGES = 10, ST_VOID = 11,
-       ST_RING_HEAD = 12, ST_RAW_RING_HEAD = 13, ST_RING = 16 };
+       ST_RING_HEAD = 12, ST_RAW_RING_HEAD = 13, ST_CLASH = 14, ST_CLASH_PAGE = 15, ST_RING = 16 };
 
 __host__ __device__ constexpr int hdr_bytes(int H, int A) { return (16 * H + 4 * (1 + ND + A) + 127) & ~127; }
 // A head-page's bytes: its K tile and its V tile, or (one stream: a tensor held in the K tile's layout alone) its one tile.
@@ -2961,8 +2961,30 @@ __device__ __forceinline__ void v_one_store(const VCalc& c, const VOne& r, uint8
     }
 }
 
+// Whether another run of the call names the page of the run that begins at token i (its slot `mine`): a call's runs are written by CTAs at once, so two runs of
+// one page would clear, fill and make raw that page together, and take chunks and slabs that no page names and no release gives back (the pools' counts then
+// say they are used for good). Each such run writes nothing; the status counts them (ST_CLASH) and names the page (its block + 1 in ST_CLASH_PAGE), so the
+// caller can refuse the call's pass. Every thread of the CTA calls it (a barrier). A call whose tokens of one page follow one another, as glyd_gpu.h asks, has none.
+__device__ __noinline__ bool run_clashes(const WriteParams& P, int i, int64_t mine) {
+    const int64_t page = mine >> 4;
+    int found = 0;
+    for (int j = threadIdx.x; j < P.N; j += blockDim.x) {
+        const int64_t s = P.slots[j];
+        if (j == i || s < 0 || (s >> 4) != page) continue;
+        const int64_t b = j > 0 ? P.slots[j - 1] : -1;
+        found |= !(j > 0 && b >= 0 && b + 1 == s && (s & 15) != 0);  // (token j begins a run of this page)
+    }
+    const bool clash = __syncthreads_or(found) != 0;
+    if (clash && threadIdx.x == 0) {
+        atomicAdd(P.status + ST_CLASH, 1u);
+        atomicExch(P.status + ST_CLASH_PAGE, (uint32_t)page + 1u);
+    }
+    return clash;
+}
+
 // The write kernel: a CTA a token. A token that is the only one of its run goes through the decode step's path (the rest of this kernel); a longer run's first token runs write_run; the
-// run's other tokens return at once. (P.lean 0: write_run for every run.) A row with no slot (a bucket's padding row, whose keys and values nobody made) is not read.
+// run's other tokens return at once. (P.lean 0: write_run for every run.) A row with no slot (a bucket's padding row, whose keys and values nobody made) is not read. A run whose page
+// another run of the call names writes nothing (run_clashes).
 __device__ __forceinline__ void write_body(const WriteParams& P) {
     const int i = blockIdx.x;
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
@@ -2978,6 +3000,7 @@ __device__ __forceinline__ void write_body(const WriteParams& P) {
         if (!P.one) v_one_in(vo, P.value + (int64_t)i * P.value_stride + warp * D, P.vbase + warp * D, lane);
     }
     if (i > 0 && prv >= 0 && prv + 1 == mine && (mine & 15) != 0) return;  // (not the first token of its run)
+    if (run_clashes(P, i, mine)) return;
     if (!P.lean || (nxt == mine + 1 && (mine & 15) != 15)) {  // (a run of more than one token)
         write_run(P);
         return;

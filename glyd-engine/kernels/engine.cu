@@ -403,13 +403,18 @@ extern "C" __global__ void __launch_bounds__(256) gather_bf16(const bf16* row, c
 
 // The 12-bit KV pages' arguments of n rows from their positions (src/dynamic/kvpages.rs): row r's slot, its block's page (tab[p / 16], or p / 16 where there is no table) times 16 plus p % 16;
 // its length p + 1 and its window's first token (p + 1 - window, at least 0; window 0: 0) for each of its S parts of query heads (entries r S .. r S + S - 1: the decode attention's
-// sequences). A padding row (a negative position) has slot -1 (not written) and length 0 (a zero output). A null output is not made. Row r's table is at tab + r tstride
-// (the decode rows of several sequences, each its own: `row_tables`; 0: one table for every row).
+// sequences). A padding row (a negative position) has slot -1 (not written) and length 0 (a zero output), and so has a row whose table names block 0 there: block 0 is no
+// sequence's (a graph's capture runs a step at position 0 of a sequence that holds nothing; a pass's rows past the blocks their sequence holds), and rows of several tokens
+// written to it at once would be runs of one page in one write (src/dynamic/kvpages.rs `clash`). A null output is not made. Row r's table is at tab + r tstride (the decode
+// rows of several sequences, each its own: `row_tables`; 0: one table for every row).
 extern "C" __global__ void __launch_bounds__(256) kv12_rows(const int* pos, int n, const int* tab, long long tstride, int window, int S, long long* slots, int* lens, int* first) {
     const int r = blockIdx.x * 256 + threadIdx.x;
     if (r >= n) return;
     const int p = pos[r];
-    if (slots) slots[r] = p < 0 ? -1 : (long long)(tab ? tab[(size_t)r * tstride + (p >> 4)] : p >> 4) * 16 + (p & 15);
+    if (slots) {
+        const int b = p < 0 ? 0 : tab ? tab[(size_t)r * tstride + (p >> 4)] : p >> 4;
+        slots[r] = p < 0 || (tab && b == 0) ? -1 : (long long)b * 16 + (p & 15);
+    }
     if (!lens) return;
     for (int s = 0; s < S; s++) {
         lens[r * S + s] = p < 0 ? 0 : p + 1;
