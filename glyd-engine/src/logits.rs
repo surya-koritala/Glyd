@@ -694,6 +694,67 @@ pub fn qwen4x_random(out: &Path) -> Result<()> {
     manifest_random(include_str!("../tests/fixtures/qwen4x_tiny_manifest.json"), out, 0x2026_1120_0000_0005, false, "Qwen3.8-Flash-Next of the tiny shape")
 }
 
+/// A second random model of the Qwen3.8-Flash-Next family (`qwen4_exp`) with other counts than the release's: the tiny model's manifest with 2 residual streams,
+/// index heads of 64 over pools of 2 and no n-gram embedding (its kernels take four streams yet); each tensor's shape the counts make (the gated residuals'
+/// [2 hidden] norms, [rank, 2 hidden] and [2 hidden, rank] products, [2, 2 hidden] inject weights; the index product's (heads + 1) 64 rows, its norms of 64).
+pub fn qwen4x_s2_random(out: &Path) -> Result<()> {
+    manifest_random(&qwen4x_s2_manifest()?, out, 0x2026_1125_0000_0002, false, "Qwen3.8-Flash-Next family of 2 streams, index heads of 64 over pools of 2")
+}
+
+/// `qwen4x_s2_random`'s manifest, from the tiny model's.
+pub fn qwen4x_s2_manifest() -> Result<String> {
+    let mut m: Value = serde_json::from_str(include_str!("../tests/fixtures/qwen4x_tiny_manifest.json")).map_err(|e| Error(e.to_string()))?;
+    let (hc, idim, ratio) = (2usize, 64usize, 2usize);
+    let mut c: Value = serde_json::from_str(m["config"].as_str().unwrap_or("{}")).map_err(|e| Error(e.to_string()))?;
+    let t = &mut c["text_config"];
+    let (hid, old_hc, old_idim, heads) = (
+        t["hidden_size"].as_u64().unwrap_or(0) as usize,
+        4usize,
+        t["indexer_head_dim"].as_u64().unwrap_or(0) as usize,
+        t["indexer_n_heads"].as_u64().unwrap_or(0) as usize,
+    );
+    t["hc_count"] = hc.into();
+    t["indexer_head_dim"] = idim.into();
+    t["indexer_compress_ratio"] = ratio.into();
+    t["ple_layer_ids"] = serde_json::json!([]);
+    t["number_of_conv_states"] = 1.into();
+    let tensors = m["tensors"].as_array().cloned().unwrap_or_default();
+    let mut kept = Vec::new();
+    for mut x in tensors {
+        let name = x[0].as_str().unwrap_or("").to_string();
+        if name.contains(".ple.") {
+            continue;
+        }
+        let shape: Vec<usize> = x[2].as_array().map(|a| a.iter().filter_map(|v| v.as_u64().map(|v| v as usize)).collect()).unwrap_or_default();
+        let new: Vec<usize> = if name.contains("hyper_connection") {
+            shape
+                .iter()
+                .map(|&d| {
+                    if d == old_hc * hid {
+                        hc * hid
+                    } else if d == old_hc {
+                        hc
+                    } else {
+                        d
+                    }
+                })
+                .collect()
+        } else if name.contains("indexer.index_qk_proj") {
+            vec![(heads + 1) * idim, shape[1]]
+        } else if name.contains("indexer.q_layernorm") || name.contains("indexer.k_layernorm") {
+            vec![idim]
+        } else {
+            shape.clone()
+        };
+        let _ = old_idim;
+        x[2] = serde_json::json!(new);
+        kept.push(x);
+    }
+    m["tensors"] = Value::Array(kept);
+    m["config"] = Value::String(c.to_string());
+    Ok(m.to_string())
+}
+
 /// A small Qwen3 dense model of Qwen3-0.6B's layout (4 layers, 16 query and 8 key-value heads of 128, a vocabulary of 4096): a Llama-style dense model, not a release (none of the Qwen3 dense releases is recent).
 pub fn qwen3_random(out: &Path) -> Result<()> {
     manifest_random(include_str!("../tests/fixtures/qwen3_tiny_manifest.json"), out, 0x2026_1120_0000_0006, true, "Qwen3 dense")
@@ -934,6 +995,14 @@ pub fn cases() -> Vec<Case> {
             id: "qwen4x",
             family: "Qwen3.8-Flash-Next (Gated DeltaNet, indexed attention, hyper-connections, per-layer embeddings, mixture of experts)",
             weights: Weights::Random(qwen4x_random),
+            engine: qwen4x_engine,
+            cpu: Some(described_cpu),
+            vocab: 2048,
+        },
+        Case {
+            id: "qwen4x-s2",
+            family: "Qwen3.8-Flash-Next family with other counts (2 streams, index heads of 64 over pools of 2, no n-gram embedding)",
+            weights: Weights::Random(qwen4x_s2_random),
             engine: qwen4x_engine,
             cpu: Some(described_cpu),
             vocab: 2048,
@@ -1241,7 +1310,8 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
                     }
                     let (o, n) = (&old_rows[i], &new_rows[i]);
                     println!(
-                        "       row {i:2}: the reference's best {b} by {:.4}; old {} KL {:.2e}; executor {} KL {:.2e}",
+                        "       row {i:2}: the reference's best {} by {:.4}; old {} KL {:.2e}; executor {} KL {:.2e}",
+                        r.ids[b],
                         r.logits[b] - second,
                         arg(o),
                         kl_of(r, o),
@@ -1306,20 +1376,21 @@ pub fn parity(a: &crate::args::Args) -> Result<()> {
 fn qwen4x_stage_lines(dir: &Path, level: &str, prompt: &[u32]) -> Result<()> {
     use crate::dynamic::Slot;
     // (Condor's stage, the executor's operation of the same output and the slot it is in)
-    const MAP: [(&str, &str, Slot); 13] = [
-        ("gated residual: norm", "StreamsPre", Slot::Hq),
-        ("gated residual: bottleneck", "StreamsPre", Slot::Mid),
-        ("gated residual: up product", "StreamsPre", Slot::Cp),
-        ("gated residual: mix", "StreamsPre", Slot::H),
-        ("linear attention: qkvz product", "linear attention: qkvz product", Slot::Mix),
-        ("linear attention: ba product", "linear attention: ba product", Slot::Ba),
-        ("linear attention: convolution", "GdnConv", Slot::Xc),
-        ("linear attention: delta rule", "GdnDelta", Slot::Core),
-        ("linear attention: gated norm", "GatedNorm", Slot::Core),
-        ("linear attention: out product", "linear attention: out product", Slot::O),
-        ("streams after the mixer", "StreamsPost", Slot::S),
-        ("experts", "Moe", Slot::O),
-        ("streams after the experts", "StreamsPost", Slot::S),
+    // (and which of the layer's operations of that name, past the stage's earlier ones: the streams' update after the experts is the layer's second)
+    const MAP: [(&str, &str, Slot, usize); 13] = [
+        ("gated residual: norm", "StreamsPre", Slot::Hq, 0),
+        ("gated residual: bottleneck", "StreamsPre", Slot::Mid, 0),
+        ("gated residual: up product", "StreamsPre", Slot::Cp, 0),
+        ("gated residual: mix", "StreamsPre", Slot::H, 0),
+        ("linear attention: qkvz product", "linear attention: qkvz product", Slot::Mix, 0),
+        ("linear attention: ba product", "linear attention: ba product", Slot::Ba, 0),
+        ("linear attention: convolution", "GdnConv", Slot::Xc, 0),
+        ("linear attention: delta rule", "GdnDelta", Slot::Core, 0),
+        ("linear attention: gated norm", "GatedNorm", Slot::Core, 0),
+        ("linear attention: out product", "linear attention: out product", Slot::O, 0),
+        ("streams after the mixer", "StreamsPost", Slot::S, 0),
+        ("experts", "Moe", Slot::O, 0),
+        ("streams after the experts", "StreamsPost", Slot::S, 1),
     ];
     let experts = qwen4x_experts(level)?;
     let old: Vec<(&'static str, Vec<u16>)> = {
@@ -1348,9 +1419,9 @@ fn qwen4x_stage_lines(dir: &Path, level: &str, prompt: &[u32]) -> Result<()> {
     let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     let mut first = None;
     for (what, ov) in &old {
-        let Some(&(_, op, slot)) = MAP.iter().find(|m| m.0 == *what) else { continue };
+        let Some(&(_, op, slot, past)) = MAP.iter().find(|m| m.0 == *what) else { continue };
         let k = seen.entry(what).or_insert(0);
-        let at = new.iter().enumerate().filter(|(_, (n, _))| n == op).nth(*k).map(|(i, _)| i);
+        let at = new.iter().enumerate().filter(|(_, (n, _))| n == op).nth(*k + past).map(|(i, _)| i);
         *k += 1;
         let Some(i) = at else {
             println!("     layer 0 {what}: the executor has no operation {op} for it");
@@ -1623,7 +1694,7 @@ pub fn record(a: &crate::args::Args) -> Result<()> {
         "source".into(),
         match from {
             // (Nemotron-H has no reference of its own: its description on the reference of the layer kinds)
-"cpu" if matches!(c.id, "nemotron-h" | "qwen4x" | "deepseek-v41") => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
+"cpu" if matches!(c.id, "nemotron-h" | "qwen4x" | "qwen4x-s2" | "deepseek-v41") => "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference), fp32 inside, on this case's random model (seed fixed in the generator)".to_string(),
             "cpu" => format!(
                 "the CPU reference of src/{}_ref.rs, fp32 inside, on this case's random model (seed fixed in the generator)",
                 c.id.replace("deepseek-", "ds").replace('-', "")
@@ -1859,8 +1930,8 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
         // (its experts at the level asked: the lossless one where none is)
         "nemotron" => crate::dynamic::nemotron::load(dir, o, level_layout(level)?.unwrap_or(Layout::Tiered))?,
         "deepseek-v4" => crate::dynamic::deepseek_v4::load(dir, o)?,
-        "qwen4x" => crate::dynamic::qwen4x::load(dir, o)?,
-        other => return err(format!("{other}: gemma4, qwen35, qwen3, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
+        "qwen4x" | "qwen4x-s2" => crate::dynamic::qwen4x::load(dir, o)?,
+        other => return err(format!("{other}: gemma4, qwen35, qwen3, muse, kimi, glm, nemotron, deepseek-v4, qwen4x or qwen4x-s2")),
     })
 }
 
@@ -1884,7 +1955,8 @@ pub(crate) fn random_dyn_at(case: &str, level: &str, layout: Option<Layout>, tag
             "nemotron" => crate::kcheck_nh::random(&dir, 0, 16)?,
             "deepseek-v4" => crate::dsv4_ref::random(&dir, None)?,
             "qwen4x" => qwen4x_random(&dir)?,
-            other => return err(format!("{other}: gemma4, qwen35, qwen3, muse, kimi, glm, nemotron, deepseek-v4 or qwen4x")),
+            "qwen4x-s2" => qwen4x_s2_random(&dir)?,
+            other => return err(format!("{other}: gemma4, qwen35, qwen3, muse, kimi, glm, nemotron, deepseek-v4, qwen4x or qwen4x-s2")),
         }
         load_dyn(case, &dir, &o, level)
     })();

@@ -309,6 +309,30 @@ mod tests {
         assert!(super::super::lower::qwen4x(&describe(&c).unwrap(), vec![2000], 1100).unwrap_err().msg.contains("multiple of 32"));
     }
 
+    /// The family's second random case (`logits::qwen4x_s2_random`: 2 streams, index heads of 64 over pools of 2, no n-gram embedding) lowers to the shared
+    /// operations with those counts, and every matrix it multiplies by is a tensor of its manifest of the shape the lowering reads.
+    #[test]
+    fn the_second_random_case_lowers_with_its_counts() {
+        let m: serde_json::Value = serde_json::from_str(&crate::logits::qwen4x_s2_manifest().unwrap()).unwrap();
+        let c: serde_json::Value = serde_json::from_str(m["config"].as_str().unwrap()).unwrap();
+        let d = super::super::lower::qwen4x(&describe(&c).unwrap(), vec![2000], 1100).unwrap();
+        assert_eq!((d.streams(), d.width(Slot::S)), (2, 512));
+        let ix = d.layers.iter().flatten().find_map(|op| if let Op::IdxMean { dim, block, .. } = *op { Some((dim, block)) } else { None });
+        assert_eq!(ix, Some((64, 2)));
+        assert!(!d.layers.iter().flatten().any(|op| matches!(op, Op::NgramRows(_))));
+        let shapes: std::collections::HashMap<String, Vec<u64>> = m["tensors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| (t[0].as_str().unwrap().to_string(), t[2].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect()))
+            .collect();
+        for it in &d.mats {
+            let rows: u64 = it.members.iter().map(|n| shapes.get(n).unwrap_or_else(|| panic!("{n}: not in the manifest"))[0]).sum();
+            let cols = *shapes[&it.members[0]].last().unwrap();
+            assert_eq!((rows as usize, cols as usize), (it.rows, it.cols), "{:?}", it.members);
+        }
+    }
+
     /// What the shared operations do not take is refused in words: a linear attention's silu gate, gated residuals over more streams than the kernels take.
     #[test]
     fn what_the_kernels_do_not_take_is_refused() {
