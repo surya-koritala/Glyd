@@ -132,7 +132,7 @@ pub fn gemma4_plan(c: &crate::gemma4::ConfigG4) -> String {
     format!("{{\"puts\": [{}]}}", puts.join(", "))
 }
 
-/// The plan of a model the executor loads by its description alone (`dynamic::ModelDesc`: the Llama-style dense ones, src/dynamic/dense.rs): each matrix packed, its members fused
+/// The plan of a model the executor loads by its description alone (`dynamic::ModelDesc`: the plain dense ones, src/dynamic/dense.rs): each matrix packed, its members fused
 /// under the first one's name as the loader reads it back (`dynamic::load_part`), each small tensor copied (one the checkpoint holds as F32, `f32`, cast to bf16).
 pub fn desc_plan(d: &crate::dynamic::ModelDesc, f32: &dyn Fn(&str) -> bool) -> String {
     let q = |n: &str| format!("\"{n}\"");
@@ -148,7 +148,7 @@ pub fn desc_plan(d: &crate::dynamic::ModelDesc, f32: &dyn Fn(&str) -> bool) -> S
     format!("{{\"puts\": [{}]}}", puts.join(", "))
 }
 
-/// The save plan of the level `level` for the model in `dir` where it is a Gemma 4, a Llama-style dense, a dense Qwen3.5, a NemotronH or a GLM-5.3-Flash one (`gemma4_plan`, `desc_plan`,
+/// The save plan of the level `level` for the model in `dir` where it is a Gemma 4, a plain dense, a dense Qwen3.5, a NemotronH or a GLM-5.3-Flash one (`gemma4_plan`, `desc_plan`,
 /// `qwen35_plan`, `nemotron_plan`, `glm_plan`), else none. A config of GLM-5.3-Flash that the engine does not run is an error that says why, not a model of no known kind.
 fn level_plan(dir: &Path, level: Layout) -> Result<Option<String>> {
     if let Ok(g) = crate::gemma4::ConfigG4::load(dir) {
@@ -179,7 +179,7 @@ pub fn run(model: &str, out: &Path, threads: usize, layout: Layout) -> Result<()
 /// `run`, saying nothing where `quiet` (a caller with a bar of its own).
 pub fn run_with(model: &str, out: &Path, threads: usize, layout: Layout, quiet: bool) -> Result<()> {
     let source = io(Source::find(model))?;
-    // (a Gemma 4 model's and a Llama-style dense one's penguin is a glyd-v7 save too: the executor reads its packs as saved)
+    // (a Gemma 4 model's and a plain dense one's penguin is a glyd-v7 save too: the executor reads its packs as saved)
     let gemma = crate::gemma4::ConfigG4::load(&source.dir).is_ok()
         || std::fs::read_to_string(source.dir.join("config.json")).is_ok_and(|t| crate::dynamic::dense::is_dense(&t));
     let t0 = Instant::now();
@@ -207,7 +207,7 @@ pub fn run_with(model: &str, out: &Path, threads: usize, layout: Layout, quiet: 
         }
     } else {
         // (a lossy level of a dense Qwen3.5, a NemotronH or a GLM-5.3-Flash model: the loader's own packs and tensors, in the checkpoint's names)
-        // (and penguin of a Gemma 4 model or a Llama-style dense one: the executor reads the packs as saved, a glyd-v7 directory of level penguin)
+        // (and penguin of a Gemma 4 model or a plain dense one: the executor reads the packs as saved, a glyd-v7 directory of level penguin)
         let planned = if matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3) || (layout == Layout::Tiered && gemma) {
             level_plan(&source.dir, layout)?
         } else {
@@ -880,7 +880,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// A Llama-style dense model (the logits checks' random plain dense model) packed at penguin is a glyd-v7 save the executor reads as saved: each matrix of its lowered description (q, k
+    /// A plain dense model (the logits checks' random one) packed at penguin is a glyd-v7 save the executor reads as saved: each matrix of its lowered description (q, k
     /// and v under q's name; gate and up under gate's; the embedding, the head) a lossless pack under its first member's name at the description's rows and columns, each small
     /// tensor copied as bf16, and no sidecar of the dense Qwen3 engine's.
     #[cfg(feature = "dev")]

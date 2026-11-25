@@ -754,10 +754,10 @@ What is built (R12b, #327):
   outnumber the places. (The first rule, a miss copied wherever a copy cost less than the host's pairs, ignored that the two run
   at once and copied every miss at 1 and 8 rows: 62-80% slower than the host's plan on an A10.) The store's own plan
   (`LayerCache`) still plans a prompt's chunks: before such a call the GPU's table is read into it, after it written back.
-  On the Nemotron 3 Super decode traces its clock finds 0.5 to 0.6 points fewer of the pairs in places than the least-recently-used
+  On the decode traces of the routing record `benchmarks/moe-skew-2026-10-09` its clock finds 0.5 to 0.6 points fewer of the pairs in places than the least-recently-used
   cache at one row (60.7, 72.8 and 79.4% at 17, 32 and 46% of the experts), and at 8 rows 5.1 more to 0.6 fewer.
   Its GPU check (`tiercheck --device-plan`, `storebench --device-plan`) is not run yet.
-- **The slot policy and the hit-rate model at many rows**, checked on the Nemotron 3 Super decode traces (20 generations, 1 to 20
+- **The slot policy and the hit-rate model at many rows**, checked on the same record's decode traces (20 generations, 1 to 20
   rows side by side): a call's experts are asked for in the order of their pairs, fewest first (`by_rows`), so the busiest stay in
   places across waves (1 to 7 points more pairs found at 16 and 20 rows, never fewer); the planner prices a step's misses as its
   distinct missed experts (`plan::step_misses`: the distinct experts of U rows, E (1 - (1 - k/E)^U), less the share the places
@@ -807,7 +807,7 @@ Steps 5 and 6 run in parallel once step 4 has landed, and step 7 can start with 
 its measured numbers (Qwen3-8B, 59.9 tok/s at 1 user, 452.7 in all at 8, on the 4080 SUPER, 2026-11-20: `benchmarks/gpu/rtx4080s-bar-2026-11-20`) are the parity bar there and the reference for what batching
 must give the recent families in step 5. Step 12's Qwen3 part is R3c (#139): Qwen3 dense, and every config the description builder's
 `llama` reading takes, lowered to the shared operations (`lower::dense`) and served by the scheduler with paged keys and values;
-`model.rs` and what only it used are deleted. Its parity against that bar is the GPU check's to measure.
+`model.rs` and what only it used are deleted.
 
 ## 8. Prior art
 

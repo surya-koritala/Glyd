@@ -803,7 +803,7 @@ pub const STREAM_OF_SPEC: f64 = 0.9475;
 /// Of the streamed rate, what decode's reads reach: the lossy levels' packs all of it, the lossless layout (decoded in the product) 0.72; and a decode step's time
 /// besides its reads, 35 µs a layer (its kernels' launches and the gaps between them). Measured on an RTX 4080 SUPER at about 1,000 positions: gemma-4-12B at wren
 /// 86.2 tokens/s and kestrel 63.3, Qwen3.5-0.8B at kestrel 561.9 and wren 657.9 (a 35 µs layer and the stream's rate predict them within 4%: fitted on them, in-sample); the lossless
-/// figure from Qwen3-32B on an RTX A6000 (11.8 tokens/s, likewise fitted).
+/// figure from a dense model of 64 layers of 5,120 on an RTX A6000 (11.8 tokens/s, likewise fitted; not measured on a recent release yet).
 const EFF_LOSSY: f64 = 1.0;
 const EFF_LOSSLESS: f64 = 0.72;
 const LAYER_S: f64 = 35e-6;
@@ -819,7 +819,7 @@ const PROMPT_LAYER_S: f64 = 1.11e-6;
 /// The same products' time said against the GPU's streamed memory rate, as the figures are fitted (`Consts::f`): the RTX 4080 SUPER's 104.5 TFLOPS at
 /// `PROMPT_EFF` over its 697.35 GB/s. Across classes the engine's prompt products follow the memory rate more closely than the tensor rate a maker gives:
 /// each class's prompt runs predicted from the other classes' records came to a mean 18-25% off said against the stream (RTX 4080 SUPER, A100 SXM4 40GB,
-/// A10, with Qwen3-8B's runs among them), 27-42% against the tensor rate.
+/// A10, with a 36-layer dense model's runs among them), 27-42% against the tensor rate.
 const PROMPT_F: f64 = 697.35e9 / (PROMPT_EFF * 104.5e12);
 /// The band a prediction is given in where no run on the GPU was observed (p10 and p90 against the prediction): the runs these figures are calibrated on (above, and
 /// `predictions_match_what_was_measured`'s) came to 0.91-1.02 of their predictions on the GPUs they were measured on; another GPU's kernels may differ more.
@@ -841,7 +841,7 @@ pub struct Consts {
     pub layer_s: f64,
     pub width_s: f64,
     pub row_s: f64,
-    /// the 12-bit lossless layout's weights (a layout and kernels of their own: Qwen3-8B on the A100 and the A10 read a byte faster than their packs; no shipped
+    /// the 12-bit lossless layout's weights (a layout and kernels of their own: a 36-layer dense model on the A100 and the A10 read a byte faster than its packs; no shipped
     /// record has it, so it is the packs' share until a recent release's penguin run is recorded)
     pub w12: f64,
     pub f: f64,
@@ -1139,7 +1139,7 @@ pub fn prior_from(records: &[serde_json::Value], class: &str) -> Prior {
 /// The figures a class starts from before its own records: the decode figures the classes `others_of` gives it fit (from the defaults), and the prompt figures
 /// every other class's records fit (a kin's few prompts leave its three figures loose: the A10's prompts from the RTX 4080 SUPER's four came out 120% off on
 /// the mean, from every other class's 19%; its decode from the kin 17.6%, from every other class 10.8%, but the 4080 SUPER's from every other 23.9% against
-/// 14.5% from its kin: decode keeps the kin. Those with Qwen3-8B's runs among the records; without them, prompts 17.7%). Where none of the kin ran a step of several rows, a row's time is the one every other class's records fit.
+/// 14.5% from its kin: decode keeps the kin. Those with a 36-layer dense model's runs among the records; without them, prompts 17.7%). Where none of the kin ran a step of several rows, a row's time is the one every other class's records fit.
 fn base_of(records: &[serde_json::Value], class: &str) -> Consts {
     let kin = others_of(records, class);
     if kin.is_empty() {
@@ -1207,9 +1207,9 @@ pub fn score_classes(records: &[serde_json::Value]) -> Vec<(String, Vec<f64>, Ve
 }
 
 /// The share of expert reads a cache holding a share `f` of the experts serves at one row, f^HIT_EXPONENT: experts are used unevenly and a sequence uses its own again (Condor: 70-76% at about a quarter;
-/// the Nemotron 3 Super decode traces' least-recently-used places: 61, 73 and 80% at 17, 32 and 46%, where this says 67, 77 and 84: offload.rs's test). A router that chooses uniformly (a random model's) is 1.
+/// the routing record benchmarks/moe-skew-2026-10-09's decode traces' least-recently-used places: 61, 73 and 80% at 17, 32 and 46%, where this says 67, 77 and 84: offload.rs's test). A router that chooses uniformly (a random model's) is 1.
 pub const HIT_EXPONENT: f64 = 0.23;
-/// How fast the reuse of the places between steps goes as a step's rows' distinct experts fill them (`step_hit`), fitted to the Nemotron 3 Super decode traces at 4 to 20 rows (offload.rs's test).
+/// How fast the reuse of the places between steps goes as a step's rows' distinct experts fill them (`step_hit`), fitted to the same record's decode traces at 4 to 20 rows (offload.rs's test).
 const ROWS_DECAY: f64 = 0.55;
 
 /// The distinct experts `users` rows choose a step in a layer of `experts` choosing `topk` each, in one row's experts (k): E (1 - (1 - k/E)^U) / k, as a router choosing uniformly makes them, and at least one row's.
@@ -1754,7 +1754,7 @@ impl LoadPlan {
 }
 
 /// The bits a weight of each part takes in plan `lp` on `d`: the level's (`level_bits`), and at penguin the layout the loader took (`LoadPlan::layout`: the 12-bit
-/// one where it decodes faster and fits, `best_layout`; Qwen3-8B on an A10 loaded 11.10 GB in it, where the level's 10.75 bits counted 10.17).
+/// one where it decodes faster and fits, `best_layout`; a dense model of 36 layers of 4,096 on an A10 loaded 11.10 GB in it, where the level's 10.75 bits counted 10.17).
 fn plan_bits(lp: &LoadPlan, sh: &Shape, d: &Device) -> Option<(f64, f64)> {
     let (bits, ebits) = level_bits(lp.level, sh, d)?;
     Some(match lp.layout {
@@ -3589,7 +3589,7 @@ pub mod sizing {
         let mut p = n.plan_at(ctx, chunk, free, gpu);
         if n.fewer {
             // (a scheduler of rooms in pools of blocks holds what the GPU has left, at most every user's context, at least one's: src/dynamic/rows.rs `page`.
-            // On an A10 (23 GB) Qwen3-8B for 8 users at 16,384 tokens was planned at 31,867 MiB, the context of all eight; the server took 21,889)
+            // On an A10 (23 GB) a dense model of 36 layers of 4,096 for 8 users at 16,384 tokens was planned at 31,867 MiB, the context of all eight; the server took 21,889)
             let one = n.per_seq + ctx as u64 * per;
             p.kv = p.kv.min(free.saturating_sub(p.weights + p.draft + p.work + p.reserve)).max(one);
         }

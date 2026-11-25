@@ -151,7 +151,7 @@ impl Kern {
     }
 
     /// The tile a dense product of `m` rows by `n` columns and `k` deep takes (an index for `gemm`): the 256x128 tile from 1,536 rows on; below, the 128x256 one (BK 64) for the widest products and
-    /// the 128x128 one (BK 64) for the rest; as measured on an L4 with Qwen3-8B's shapes (within 1.00 to 1.09 of cuBLAS's time at 1,024 and 3,500 rows). GLYD_ENGINE_TILE=name forces one.
+    /// the 128x128 one (BK 64) for the rest; as measured on an L4 at a dense model's shapes of hidden 4,096 (within 1.00 to 1.09 of cuBLAS's time at 1,024 and 3,500 rows). GLYD_ENGINE_TILE=name forces one.
     pub fn pick_tile(&self, m: usize, n: usize, k: usize) -> usize {
         if let Some(t) = crate::tune!("GLYD_ENGINE_TILE") {
             if let Some(i) = self.plain.iter().position(|x| x.name == t) {

@@ -2304,7 +2304,7 @@ mod tests {
     }
 
     /// A step of rows that decode alone is one graph where every operation acts row by row, is an attention layer, or is a recurrent layer's that takes such rows, each
-    /// through its own state (the gated delta rule's and Mamba-2's: Qwen3.5's and Nemotron-H's layers); Kimi delta attention's operations and the latent attention keep it eager.
+    /// through its own state (the gated delta rule's and Mamba-2's); Kimi delta attention's operations and the latent attention keep it eager.
     #[test]
     fn steps_of_recurrent_layers_take_graphs() {
         use super::super::Slot;

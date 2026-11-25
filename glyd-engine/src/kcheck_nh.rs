@@ -128,7 +128,7 @@ pub fn kernels(ind: &Path, outd: &Path) -> Result<()> {
         save(outd, &format!("{name}_state.bin"), &state, 0, state.bytes)?;
         save(outd, &format!("{name}_cstate.bin"), &cst, 0, cst.bytes)?;
     }
-    // the attention (the attention kind's kernels with Nemotron-H's parameters): keys and values into the cache, a decode step a row, then the prompt kernel; kv.bin as
+    // the attention (the attention kind's kernels at heads of 128, no rotary, no gate): keys and values into the cache, a decode step a row, then the prompt kernel; kv.bin as
     // the tool reads it, [tokens, kv heads, 256] (a head's 128 keys, then its 128 values)
     let a = nums(ind, "attn.txt")?;
     let (nq, nk, na) = (a[0] as usize, a[1] as usize, a[2] as usize);

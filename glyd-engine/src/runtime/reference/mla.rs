@@ -421,7 +421,7 @@ mod tests {
         assert!(e.contains("none were lent"), "{e}");
     }
 
-    /// One key a token (`block` 1, DeepSeek-V3.2's form): the best `top_k` tokens, no tail.
+    /// One key a token (`block` 1, the form Kimi-K3.1's `dsa_config` has): the best `top_k` tokens, no tail.
     #[test]
     fn a_key_a_token() {
         let (m, mut p) = layer(5, 1);
