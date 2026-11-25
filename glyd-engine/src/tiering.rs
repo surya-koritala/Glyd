@@ -181,7 +181,7 @@ pub fn cached_tiered(
     Ok((u, d, ExpertCache { store: store.clone(), layer, ordinal }))
 }
 
-/// `glyd-engine tiercheck MODEL [--places N] [--tokens N] [--mode copy|cpu|auto] [--device-plan] [--against copy] [--layout i6|i5|i4] [--dense N] [--report]`: the model of the dynamic route (a release whose experts the cache takes, or a hummingbird
+/// `glyd-engine tiercheck MODEL [--places N] [--tokens N] [--mode copy|cpu|auto] [--device-plan] [--against copy] [--layout i6|i5|i4] [--dense N] [--report] [--pairs | --join]`: the model of the dynamic route (a release whose experts the cache takes, or a hummingbird
 /// directory) on GPU 0 with every expert there, then with its experts in the expert cache (`--places` a layer, every expert in the computer's memory; `--mode` the misses', copy by default): the same prompt and decode
 /// steps, and every position's logits compared; the positions that differ are named.
 ///
@@ -192,6 +192,8 @@ pub fn cached_tiered(
 /// DeepSeek-V4: none differs); the pairs whose experts find none are the host's in copy mode too (`ExpertStore::run_groups_at`), and differ as `--mode cpu`'s do (up to 2.7 of a logit there, with 2 places).
 /// `--report` prints such differences and does not refuse them; without it a difference in copy mode fails the check. With the host computing some pairs the largest difference is printed, and each
 /// position's cosine of the two rows of logits about their means. `--against copy`: the reference is the cache in copy mode (the resident layer's bits), for a model larger than the GPU.
+/// `--pairs`: each pair the host computes against the GPU's from the same inputs (`moe::PAIRS`); `--join`: each call through a host half as the store runs it against the same
+/// call in copy mode from the same inputs, in the result's last places, and what made the first value apart (`moe::JOINS`).
 #[cfg(feature = "dev")]
 pub fn check(a: &crate::args::Args) -> Result<()> {
     use crate::ffi::Error;
@@ -228,6 +230,11 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     if pairs && mode == crate::offload::Mode::Copy {
         return err("--pairs: a mode whose layers have a host half (cpu, split or auto)");
     }
+    // (`--join`: in the cached run each call through a host half as the store runs it against the same call in copy mode from the same inputs, `moe::JOINS`)
+    let join = a.has("join");
+    if join && (mode == crate::offload::Mode::Copy || pairs) {
+        return err("--join: a mode whose layers have a host half (cpu, split or auto), and not with --pairs");
+    }
     let run = |cached: bool| -> Result<(Vec<Vec<f32>>, Routes)> {
         let caching =
             |mode, device| crate::hbg_store::HbCaching { places, ram: None, offload: crate::offload::Offload { mode, device, ..Default::default() }, dense };
@@ -247,6 +254,9 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         tap((!device).then(Vec::new))?;
         if cached && pairs {
             *crate::moe::PAIRS.lock().map_err(|_| Error("the pairs' lock".into()))? = Some(Default::default());
+        }
+        if cached && join {
+            *crate::moe::JOINS.lock().map_err(|_| Error("the joins' lock".into()))? = Some(Default::default());
         }
         let passes = (|| -> Result<Vec<Vec<f32>>> {
             let mut out = Vec::new();
@@ -395,6 +405,35 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                 p.worst,
                 p.far,
                 p.first.map_or(String::new(), |(c, t, j, e, u)| format!(", the first: call {c}, token {t}, choice {j}, expert {e}, {u} last places"))
+            );
+        }
+    }
+    if join {
+        let all = crate::moe::JOINS.lock().map_err(|_| Error("the joins' lock".into()))?.take().unwrap_or_default();
+        if all.is_empty() {
+            println!("  joins: none compared (no layer's calls through the store with a host half)");
+        }
+        for (layer, j) in &all {
+            println!(
+                "  joins of layer {layer}, each call as run against copy mode from the same inputs: {} calls ({} with pairs of the host's, {} of them with pairs of the GPU's too; {} differ), {} rows ({} with a pair of the host's), {} values: {} apart, the most {} last places of the result; {} more than 1, {} more than 4, {} more than 16; the largest difference {:.2e} of its row's largest value; the engine's sum where the host computed pairs is the join worked out on the host for {} of {} values; the host's pairs' weighted rows against the GPU's: {} pairs, the most {} fp32 last places apart{}",
+                j.calls,
+                j.hosted,
+                j.mixed,
+                j.differ,
+                j.rows,
+                j.host_rows,
+                j.values,
+                j.apart,
+                j.most,
+                j.over[0],
+                j.over[1],
+                j.over[2],
+                j.worst,
+                j.model.0,
+                j.model.1,
+                j.pairs.0,
+                j.pairs.1,
+                j.first.as_ref().map_or(String::new(), |x| format!("; the first more than 1 apart: {x}"))
             );
         }
     }

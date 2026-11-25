@@ -511,6 +511,36 @@ pub(crate) struct PairDiff {
     pub calls: usize,
 }
 
+/// (development) Each layer's calls through the expert cache in a mode that gives the host pairs, each as the store runs it against the same call in copy mode from
+/// the same inputs (`MoeLayer::join_check`), while a check holds `Some` here.
+#[cfg(feature = "dev")]
+pub(crate) static JOINS: std::sync::Mutex<Option<std::collections::BTreeMap<usize, JoinDiff>>> = std::sync::Mutex::new(None);
+
+/// (development) A layer's calls as the store ran them against copy mode's (every pair on the GPU, each token's pairs added in the order of its choices and rounded
+/// once): the calls, those the host computed pairs of, those with pairs on both, those whose sums differ; the token rows, those with a pair of the host's; the
+/// values, those apart, the most last places of the result (bf16) between the two, the values more than 1, 4 and 16 apart, the largest difference over its row's
+/// largest value; the values of rows with a pair of the host's where the engine's sum is the join as the host works it out from what the call left (the GPU's own
+/// sum, the host's share: `model`, matched of compared); the host's pairs whose weighted rows were compared with the GPU's from the same inputs (fp32 last
+/// places, the most); and the first value more than one last place apart, in words.
+#[cfg(feature = "dev")]
+#[derive(Default, Debug)]
+pub(crate) struct JoinDiff {
+    pub calls: usize,
+    pub hosted: usize,
+    pub mixed: usize,
+    pub differ: usize,
+    pub rows: usize,
+    pub host_rows: usize,
+    pub values: usize,
+    pub apart: usize,
+    pub most: u32,
+    pub over: [usize; 3],
+    pub worst: f64,
+    pub model: (usize, usize),
+    pub pairs: (usize, u32),
+    pub first: Option<String>,
+}
+
 /// The layer's kernels (kernels/moe.cu) with typed launches. Device addresses are `u64`.
 pub struct MoeKern {
     logits: crate::kt::moe_logits,
@@ -1023,6 +1053,13 @@ impl MoeLayer {
         {
             self.pair_check(store, layer, at, sc, &call, y, early, products)?;
         }
+        #[cfg(feature = "dev")]
+        if JOINS.lock().map_err(|_| crate::ffi::Error("the joins' lock".into()))?.is_some()
+            && !store.device_on(layer)
+            && store.offload().mode != crate::offload::Mode::Copy
+        {
+            return self.join_check(store, layer, at, sc, &call, y, early, products);
+        }
         if let Some(d) = store.device_args(layer, t, call.pairs) {
             if sc.cpu.bytes < t * width * 4 || sc.way.bytes < call.pairs * 8 {
                 return err(format!("{t} tokens of {width} values: the scratch has no room for the host's sums and the pairs' places"));
@@ -1127,6 +1164,132 @@ impl MoeLayer {
         }
         sc.ids.write(0, &ids)?;
         store.set_offload(was);
+        Ok(())
+    }
+
+    /// (development, `moe::JOINS`) The call as the store runs it (its mode, the places as they are) against the same call in copy mode (every pair on the GPU,
+    /// each token's pairs added in the order of its choices and rounded once) from the same inputs: each token's routed sum in bf16's last places of the result.
+    /// What made a value: the GPU's own sum of its pairs (y before the sum stage), the host's share (its sums by token, `MoeScratch::cpu`), each pair's
+    /// weighted row (the second product's, `MoeScratch::ws`). Then the layer's places (the experts it held after the call, copied in again), y and the mode as
+    /// the store's run left them: the run goes on from the call as the store made it.
+    ///
+    /// # Safety
+    /// As `via_store`.
+    #[cfg(feature = "dev")]
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn join_check(
+        &self,
+        store: &crate::offload::ExpertStore,
+        layer: usize,
+        at: crate::offload::At,
+        sc: &MoeScratch,
+        call: &crate::offload::Call,
+        y: u64,
+        early: &mut dyn FnMut() -> Result<()>,
+        products: &mut dyn FnMut(usize) -> Result<()>,
+    ) -> Result<()> {
+        use crate::offload::{Mode, Offload, Stage};
+        let (s, k, w, t, p, e) = (at.stream, self.cfg.router.top_k, self.cfg.hidden, call.tokens, call.pairs, self.cfg.experts);
+        let block = matches!(self.w.down, Down::Block(_)) && self.f8.is_none() && self.hb.is_none();
+        let was: Offload = store.offload();
+        let mut ids = vec![0i64; p];
+        crate::dev::sync_stream(s)?;
+        crate::dev::read_dev(call.ids, &mut ids)?;
+        // (one run of the call: y after it, each pair's weighted row in the workspace, y before the sum stage and the host's sums by token)
+        let mut run = |grab: bool| -> Result<(Vec<u16>, Vec<f32>, Vec<u16>, Vec<f32>)> {
+            let mut before = Vec::new();
+            store.run_early_at(layer, at, call, early, &mut |stage, _, waves, hy| match stage {
+                Stage::Products if hy.gpu => products(waves),
+                Stage::Products => crate::dev::memset_async(y, 0, t * w * 2, s),
+                Stage::Sum => {
+                    if grab {
+                        crate::dev::sync_stream(s)?;
+                        before = vec![0u16; t * w];
+                        crate::dev::read_dev(y, &mut before)?;
+                    }
+                    self.experts_sum(sc, s, t, y, hy.ids, hy.extra)
+                }
+            })?;
+            crate::dev::sync_stream(s)?;
+            // (the rows and the sums where the scratch holds them: a block layout's weighted rows, the host's sums of a call of CPU_TOKENS tokens at most)
+            let block = block && sc.ws.bytes >= p * w * 4;
+            let (mut out, mut rows, mut host) = (vec![0u16; t * w], vec![0f32; if block { p * w } else { 0 }], vec![0f32; t * w]);
+            crate::dev::read_dev(y, &mut out)?;
+            if block {
+                crate::dev::read_dev(sc.ws.ptr, &mut rows)?;
+            }
+            if sc.cpu.bytes >= t * w * 4 {
+                crate::dev::read_dev(sc.cpu.ptr, &mut host)?;
+            }
+            Ok((out, rows, before, host))
+        };
+        let (got, rows, before, host) = run(true)?;
+        let mine = store.host_pairs(layer);
+        let places = store.resident_places(layer, s)?;
+        store.set_offload(Offload { mode: Mode::Copy, ..was });
+        let copied = run(false);
+        store.set_offload(was);
+        let (want, rows_copy, _, _) = copied?;
+        // (back as the store's run left the call: its places' experts, y)
+        store.empty_places(layer)?;
+        let held: Vec<u16> = places.iter().enumerate().filter(|(_, &pl)| pl >= 0).map(|(x, _)| x as u16).collect();
+        store.hint(layer, &held)?;
+        crate::dev::copy_h2d_async(y, got.as_ptr() as *const std::ffi::c_void, t * w * 2, s)?;
+        crate::dev::sync_stream(s)?;
+        // the two compared, value for value, in the result's last places
+        let ord = |b: u16| if b & 0x8000 != 0 { -((b & 0x7fff) as i32) } else { b as i32 };
+        let f = |b: u16| f32::from_bits((b as u32) << 16);
+        let bf = |v: f32| ((v.to_bits() + 0x7fff + ((v.to_bits() >> 16) & 1)) >> 16) as u16;
+        let valid = |j: usize| ids[j] >= 0 && (ids[j] as usize) < e;
+        let mut guard = JOINS.lock().map_err(|_| crate::ffi::Error("the joins' lock".into()))?;
+        let Some(all) = guard.as_mut() else { return Ok(()) };
+        let d = all.entry(layer).or_default();
+        let call_no = d.calls;
+        d.calls += 1;
+        let gpu_pairs = (0..p).filter(|&j| valid(j) && !mine.contains(&j)).count();
+        d.hosted += !mine.is_empty() as usize;
+        d.mixed += (!mine.is_empty() && gpu_pairs > 0) as usize;
+        d.differ += (got != want) as usize;
+        for r in 0..t {
+            let hosted: Vec<usize> = mine.iter().copied().filter(|&j| j / k == r).collect();
+            d.rows += 1;
+            d.host_rows += !hosted.is_empty() as usize;
+            let big = (0..w).map(|c| f(want[r * w + c]).abs()).fold(0f32, f32::max).max(1e-30);
+            for c in 0..w {
+                let (a, b) = (want[r * w + c], got[r * w + c]);
+                let u = (ord(a) - ord(b)).unsigned_abs();
+                d.values += 1;
+                d.apart += (a != b) as usize;
+                d.most = d.most.max(u);
+                d.over[0] += (u > 1) as usize;
+                d.over[1] += (u > 4) as usize;
+                d.over[2] += (u > 16) as usize;
+                d.worst = d.worst.max(((f(a) - f(b)).abs() / big) as f64);
+                if hosted.is_empty() || rows.is_empty() || rows_copy.is_empty() || before.len() != t * w {
+                    continue;
+                }
+                // (the join as the engine makes it: the GPU's own sum, rounded, and the host's sums by token, added and rounded again)
+                let (gp, share) = (before[r * w + c], host[r * w + c]);
+                d.model.1 += 1;
+                d.model.0 += (bf(f(gp) + share) == b) as usize;
+                if u > 1 && d.first.is_none() {
+                    // (the GPU's own sum unrounded: its pairs' weighted rows added in the order of the token's choices, as the product's sum adds them)
+                    let gp32 = (r * k..r * k + k).filter(|&j| valid(j) && !hosted.contains(&j)).fold(0f32, |acc, j| acc + rows[j * w + c]);
+                    let all32 = (r * k..r * k + k).filter(|&j| valid(j)).fold(0f32, |acc, j| acc + rows_copy[j * w + c]);
+                    d.first = Some(format!(
+                        "call {call_no}, token {r} ({} of its {k} pairs the host's), column {c}: copy mode {:e}, as run {:e}: {u} last places apart; the GPU's own sum {:e} (rounded {:e}), the host's share {:e}; one rounding of the two {:e}; copy mode's pairs added unrounded {:e}",
+                        hosted.len(),
+                        f(a),
+                        f(b),
+                        gp32,
+                        f(gp),
+                        share,
+                        f(bf(gp32 + share)),
+                        all32
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 

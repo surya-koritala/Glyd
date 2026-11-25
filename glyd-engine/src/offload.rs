@@ -1369,6 +1369,9 @@ struct Resident {
     stats: LayerStats,
     // the layer's places as the GPU plans its decode calls (src/devplan.rs; `Offload::device`), None where the host plans every call
     dplan: Option<crate::devplan::DevPlan>,
+    // (development) the pairs of the layer's last call the host computed (`ExpertStore::host_pairs`)
+    #[cfg(feature = "dev")]
+    host_pairs: Vec<usize>,
 }
 
 struct Cuda {
@@ -2570,6 +2573,8 @@ impl ExpertStore {
             index: layer,
             stats: LayerStats::default(),
             dplan: None,
+            #[cfg(feature = "dev")]
+            host_pairs: Vec::new(),
         });
         let inner = &mut *inner;
         if inner.offload.device {
@@ -2683,6 +2688,12 @@ impl ExpertStore {
             p.dev = dev;
         }
         Ok(())
+    }
+
+    /// (development) The pairs of layer `layer`'s last call that the host computed, numbers into the call's pairs, rising (`moe::JOINS`).
+    #[cfg(feature = "dev")]
+    pub fn host_pairs(&self, layer: usize) -> Vec<usize> {
+        self.inner.borrow().layers.get(layer).and_then(Option::as_ref).map_or_else(Vec::new, |l| l.host_pairs.clone())
     }
 
     /// The place each expert of `layer` is in on the GPU (-1: none), after the engine's stream `s` has been told to wait for the copies of the layer that are pending.
@@ -2891,6 +2902,8 @@ impl ExpertStore {
             let cuda = inner.cuda.as_mut().ok_or_else(|| Error("the expert cache has no layers".into()))?;
             cuda.use_worker = inner.offload.async_copies;
             let ly = inner.layers.get_mut(layer).and_then(Option::as_mut).ok_or_else(|| Error(format!("no layer {layer} in the expert cache")))?;
+            #[cfg(feature = "dev")]
+            ly.host_pairs.clear();
             let hidden = ly.hidden();
             let hybrid = mode != Mode::Copy
                 && ly.cpu.as_ref().is_some_and(|c| matches!(c.half, HostHalf::Rows(_) | HostHalf::Cb2(..) | HostHalf::Fp4 { .. }))
@@ -3526,6 +3539,8 @@ impl ExpertStore {
             inner.stats.skipped += dropped as u64;
             let (host_experts, host_bytes) = ly.host_reads(host_ids, &mine);
             ly.stats.hosted(host_experts, mine.len(), dropped, host_bytes, 0.0);
+            #[cfg(feature = "dev")]
+            ly.host_pairs.clone_from(&mine);
             (gpu, mine, served.promote)
         };
         self.predicted(layer, needed, [Some(layer), None])?;
