@@ -1419,7 +1419,7 @@ impl WeightsQx {
             let mixer = gr(&mut mat, &cfg.mixer_name(false), false)?;
             let head = match mat(&Pack35 { key: "lm_head".into(), parts: vec![("lm_head.weight".into(), cfg.vocab)], cols: cfg.hidden })? {
                 Mat::Packed(p) => p,
-                Mat::Dense(..) => return err("the LM head is not packable"),
+                Mat::Dense(..) | Mat::F8(_) => return err("the LM head is not packable"),
             };
             (Some(mixer), Some(head))
         } else {
@@ -2631,6 +2631,7 @@ impl EngineQx {
         match w {
             Mat::Packed(p) => self.lin_packed(p, x, m, y),
             Mat::Dense(b, rows, cols) => self.kg.small_linear(self.dev.stream, x, *cols as i32, b.ptr, y, *rows as i32, m as u32, *rows as i32, *cols as i32),
+            Mat::F8(_) => err("an FP8 matrix in a model of this engine: the description executor holds them"),
         }
     }
 

@@ -236,6 +236,40 @@ impl F8Mat {
     }
 }
 
+/// The matrix of `members` stacked by rows as a checkpoint releases it in FP8, each member E4M3 with its fp32 scales of 128 x 128 blocks beside it
+/// (`formats::scales_beside`): its rows and columns, where every member is so held and their blocks stack (each member but the last whole blocks of rows);
+/// None otherwise. The header alone is read.
+pub fn released_shape(ck: &glyd_gpu::safetensors::Checkpoint, members: &[String]) -> Option<(usize, usize)> {
+    let (mut rows, mut cols) = (0, 0);
+    for (i, n) in members.iter().enumerate() {
+        crate::formats::scales_beside(ck, n)?;
+        let (_, t) = ck.get(n)?;
+        let (r, c) = (t.shape[0] as usize, t.shape[1] as usize);
+        if (cols != 0 && c != cols) || (i + 1 < members.len() && !r.is_multiple_of(128)) {
+            return None;
+        }
+        (rows, cols) = (rows + r, c);
+    }
+    (rows > 0).then_some((rows, cols))
+}
+
+/// Rows `r0 .. r0 + rn` of the matrix of `members` that `released_shape` takes: their E4M3 bytes and fp32 scales ([ceil(rn / 128), ceil(cols / 128)]), `r0`
+/// and, but at the end, `rn` whole blocks of 128 rows.
+pub fn released(ck: &glyd_gpu::safetensors::Checkpoint, members: &[String], (r0, rn): (usize, usize)) -> Result<(Vec<u8>, Vec<f32>)> {
+    let (mut q, mut sc) = (Vec::new(), Vec::new());
+    for n in members {
+        let s = crate::formats::scales_beside(ck, n).ok_or_else(|| crate::ffi::Error(format!("{n}: no fp32 block scales beside it")))?;
+        q.extend(ck.read(n).map_err(|e| crate::ffi::Error(format!("{n}: {e}")))?);
+        sc.extend(ck.read(&s).map_err(|e| crate::ffi::Error(format!("{s}: {e}")))?.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)));
+    }
+    let cols = members.first().and_then(|n| ck.get(n)).map_or(0, |(_, t)| t.shape[1] as usize);
+    let gc = cols.div_ceil(128);
+    if r0 % 128 != 0 || (r0 + rn) * cols > q.len() {
+        return err(format!("rows {r0} .. {} of an FP8 matrix of {} rows: a slice starts at a whole block of 128 rows", r0 + rn, q.len() / cols.max(1)));
+    }
+    Ok((q[r0 * cols..(r0 + rn) * cols].to_vec(), sc[r0 / 128 * gc..(r0 + rn).div_ceil(128) * gc].to_vec()))
+}
+
 /// A layer's experts in the FP8 format: the first matrices (gate and up of each, [2 inter, hidden]) and the second (down, [hidden, inter]) of all of them, each stacked and packed as one (`F8Mat::moe`).
 pub struct F8Experts {
     pub up: F8Mat,

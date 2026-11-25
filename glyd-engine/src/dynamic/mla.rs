@@ -291,6 +291,13 @@ impl MlaOp {
         3 + self.indexer.as_ref().map_or(0, MlaIndexer::small_count)
     }
 
+    /// The small tensors it takes released in FP8 with fp32 block scales (the release's E4M3 codes in bf16 and their scales: `Part::scales`): kv_b_proj, and
+    /// its indexer's products (its queries', keys', head weights' and a pooled indexer's gate).
+    pub fn f8_small(&self) -> Vec<usize> {
+        let ix = self.indexer.iter().flat_map(|x| [x.q_b, x.k, x.weights].into_iter().chain(x.pooled().then_some(x.gate)));
+        std::iter::once(self.kv_b).chain(ix).collect()
+    }
+
     /// The matrices it multiplies by, in the order a loader holds them: a fused input product, q_b, o; or q_a, q_b, kv_a, o.
     pub fn mat_count(&self) -> usize {
         match self.input {
@@ -406,6 +413,7 @@ pub(crate) struct KernMla {
     layernorm: crate::kt::layernorm_rows,
     scatter: crate::kt::scatter_rows,
     small: crate::kt::small_linear,
+    small_f8: crate::kt::small_linear_f8s,
     absorb: crate::kt::mla_absorb,
     pool: crate::kt::idx_pool,
     score: crate::kt::idx_score,
@@ -436,6 +444,7 @@ impl KernMla {
             layernorm: dev.typed()?,
             scatter: dev.typed()?,
             small: dev.typed()?,
+            small_f8: dev.typed()?,
             absorb: dev.typed()?,
             pool: dev.typed()?,
             score: dev.typed()?,
@@ -454,13 +463,29 @@ impl KernMla {
         })
     }
 
-    /// y [m, rows] = x [m, cols] (rows xs apart) W^T for a bf16 W, rows ys apart.
+    /// y [m, rows] = x [m, cols] (rows xs apart) W^T for a bf16 W (`w.0`), rows ys apart; where W is released in FP8, its values the E4M3 codes' and `w.1`
+    /// their fp32 scales of 128 x 128 blocks, each value times its block's scale once (`small_linear_f8s`: the same grid and order of sums); 0: as it is.
     ///
     /// # Safety
     /// Live device buffers of those sizes, on the engine's stream.
     #[allow(clippy::too_many_arguments)]
-    unsafe fn small_linear(&self, s: crate::ffi::Stream, x: u64, xs: usize, w: u64, y: u64, ys: usize, m: usize, rows: usize, cols: usize) -> Result<()> {
-        launch!(self.small, [m as u32, (rows.max(1) as u32).div_ceil(8), 1], [256, 1, 1], s; x, xs as i32, w, y, ys as i32, rows as i32, cols as i32)
+    unsafe fn small_linear(
+        &self,
+        s: crate::ffi::Stream,
+        x: u64,
+        xs: usize,
+        w: (u64, u64),
+        y: u64,
+        ys: usize,
+        m: usize,
+        rows: usize,
+        cols: usize,
+    ) -> Result<()> {
+        let grid = [m as u32, (rows.max(1) as u32).div_ceil(8), 1];
+        if w.1 != 0 {
+            return launch!(self.small_f8, grid, [256, 1, 1], s; x, xs as i32, w.0, w.1, y, ys as i32, rows as i32, cols as i32);
+        }
+        launch!(self.small, grid, [256, 1, 1], s; x, xs as i32, w.0, y, ys as i32, rows as i32, cols as i32)
     }
 }
 
@@ -748,8 +773,10 @@ impl Dyn {
         if let Some(ix) = &a.indexer {
             let (ih, id, kp, hid) = (ix.pick.heads, ix.dim, ix.pick.ratio, p.d.hidden);
             let sm = |i: usize| p.small[i].ptr;
-            k.small_linear(s, r.qr.ptr, a.q_rank, sm(ix.q_b), r.iq.ptr, ih * id, n, ih * id, a.q_rank)?;
-            k.small_linear(s, h, hid, sm(ix.k), r.ix.ptr, id, n, id, hid)?;
+            // (a product's matrix and its block scales where it is released in FP8)
+            let wt = |i: usize| (p.small[i].ptr, p.scales(i));
+            k.small_linear(s, r.qr.ptr, a.q_rank, wt(ix.q_b), r.iq.ptr, ih * id, n, ih * id, a.q_rank)?;
+            k.small_linear(s, h, hid, wt(ix.k), r.ix.ptr, id, n, id, hid)?;
             // (a rotary of the indexer's: each query head's first channels, and each key's after its norm, turned at the row's position: the keys normed in
             // place, turned, then into the cache)
             let turn = a.rot.filter(|rt| rt.index > 0);
@@ -784,13 +811,13 @@ impl Dyn {
             }
             // (pools: each token's gate scores beside its key, then the keys of the pools these rows complete; a key a token is its entry's as it is)
             if ix.pooled() {
-                k.small_linear(s, h, hid, sm(ix.gate), r.ix.ptr, id, n, id, hid)?;
+                k.small_linear(s, h, hid, wt(ix.gate), r.ix.ptr, id, n, id, hid)?;
                 for &(r0, m, kc, slot) in &seqs {
                     let (ring, tab) = self.ring_at(kc, slot, a.ring + 1);
                     launch!(k.scatter, [m as u32, 1, 1], [256, 1, 1], s; r.ix.ptr + (r0 * id * 2) as u64, id as i32, ring + (id * 2) as u64, (2 * id) as i32, pos + (r0 * 4) as u64, tab, id as i32)?;
                 }
             }
-            k.small_linear(s, h, hid, sm(ix.weights), r.wts.ptr, ih, n, ih, hid)?;
+            k.small_linear(s, h, hid, wt(ix.weights), r.wts.ptr, ih, n, ih, hid)?;
             if ix.pooled() {
                 for &(r0, m, kc, slot) in &seqs {
                     let (ring, tab) = self.ring_at(kc, slot, a.ring + 1);
@@ -803,7 +830,8 @@ impl Dyn {
         }
         // the attention, a block of rows at a time
         let (sub, tmax, pmax) = (a.rows_at_once(self.chunk, self.ctx), a.tmax(self.ctx), a.pmax(self.ctx));
-        let wkv = p.small[a.kv_b].ptr;
+        // (kv_b_proj, and its fp32 block scales where it is released in FP8: each value times its block's scale once, kernels/mla.cu)
+        let (wkv, wsc) = (p.small[a.kv_b].ptr, p.scales(a.kv_b));
         // (12-bit pages: each sequence's rows' positions end here at most: its part's, or the selected sequence's from its length or the pass's start; a step's graph
         // being captured, the context)
         let ends: Vec<usize> = match (self.capturing.get(), self.parts.is_empty()) {
@@ -826,7 +854,7 @@ impl Dyn {
                 // (the rows' picks and counts at their rows' places in the pass: a layer whose indexer is shared reads the ones the latent attention before it left)
                 let (sel_at, cnt_at) = (r.sel.ptr + (r0 * tmax * 4) as u64, r.cnt.ptr + (r0 * 4) as u64);
                 launch!(k.absorb, [nh as u32, (m as u32).div_ceil(8), 1], [256, 1, 1], s;
-                    r.q.ptr + (r0 * nh * qw * 2) as u64, (nh * qw) as i32, qw as i32, wkv, r.qa.ptr, m as i32, nh as i32, a.nope as i32, a.v as i32, kr as i32, ks as i32)?;
+                    r.q.ptr + (r0 * nh * qw * 2) as u64, (nh * qw) as i32, qw as i32, wkv, wsc, r.qa.ptr, m as i32, nh as i32, a.nope as i32, a.v as i32, kr as i32, ks as i32)?;
                 let sel = match &a.indexer {
                     Some(ix) => {
                         let (ih, id) = (ix.pick.heads, ix.dim);
@@ -857,7 +885,7 @@ impl Dyn {
                 };
                 self.mla_attn(r, (lat, ls), tab, (sel, cnt_at), tmax, a, m)?;
                 launch!(k.expand, [nh as u32, (m as u32).div_ceil(4), 1], [256, 1, 1], smem (4 * kr * 4) as u32, s;
-                    r.olat.ptr, wkv, r.ov.ptr + (r0 * nh * a.v * 2) as u64, m as i32, nh as i32, a.nope as i32, a.v as i32, kr as i32)?;
+                    r.olat.ptr, wkv, wsc, r.ov.ptr + (r0 * nh * a.v * 2) as u64, m as i32, nh as i32, a.nope as i32, a.v as i32, kr as i32)?;
                 r0 += m;
             }
         }

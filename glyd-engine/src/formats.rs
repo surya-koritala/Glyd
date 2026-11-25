@@ -75,10 +75,33 @@ pub fn scale_block(rows: usize, cols: usize, shape: &[u64]) -> Option<[usize; 2]
     Some([of(rows, sr)?, of(cols, sc)?])
 }
 
+/// The fp32 block scales stored beside the FP8 matrix `name` as transformers' fine-grained FP8 names them (`X.weight_scale_inv`, what each E4M3 value of
+/// its block is multiplied by: [ceil(rows / 128), ceil(cols / 128)]), where the checkpoint holds them so; None otherwise.
+pub fn scales_beside(ck: &Checkpoint, name: &str) -> Option<String> {
+    let (_, t) = ck.get(name)?;
+    let s = format!("{name}_scale_inv");
+    let (_, st) = ck.get(&s)?;
+    let (rows, cols) = match t.shape[..] {
+        [r, c] => (r, c),
+        _ => return None,
+    };
+    (t.dtype == "F8_E4M3" && st.dtype == "F32" && st.shape == [rows.div_ceil(128), cols.div_ceil(128)]).then_some(s)
+}
+
+/// An FP8 matrix [rows, cols] with its fp32 scales, one a block of 128 x 128 ([ceil(rows / 128), ceil(cols / 128)]): each value its E4M3 code's value
+/// times its block's scale, one fp32 product (the value the GPU's products take: an E4M3 value is exact in bf16 and f32, the product rounded once).
+pub fn fp8_scaled(q: &[u8], scales: &[f32], rows: usize, cols: usize) -> Result<Vec<f32>> {
+    let gc = cols.div_ceil(128);
+    if q.len() != rows * cols || scales.len() != rows.div_ceil(128) * gc {
+        return err(format!("{} bytes and {} scales for an FP8 matrix of {rows} x {cols} in blocks of 128", q.len(), scales.len()));
+    }
+    Ok(q.iter().enumerate().map(|(i, &b)| glyd_gpu::fp8::e4m3(b) * scales[(i / cols) / 128 * gc + (i % cols) / 128]).collect())
+}
+
 /// A checkpoint's tensor as f32, by the type it is stored in: bf16 and f32 as stored, int64 (a hash table's ids) as their values; an FP8 matrix with its
-/// scales (`X.scale`, a block each); an FP4 matrix stored as I8 with its runs' scales (`X.scale`); and where `X.weight` or its codes `X.weight_packed`
-/// are asked for and the checkpoint holds the matrix as compressed-tensors packs it, that MXFP4 matrix. Another type, or a quantized matrix without its
-/// scales: none.
+/// scales (`X.scale`, a block each, or fp32 block scales `X.weight_scale_inv`: `scales_beside`); an FP4 matrix stored as I8 with its runs' scales
+/// (`X.scale`); and where `X.weight` or its codes `X.weight_packed` are asked for and the checkpoint holds the matrix as compressed-tensors packs it, that
+/// MXFP4 matrix. Another type, or a quantized matrix without its scales: none.
 pub fn tensor(ck: &Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
     let Some((_, t)) = ck.get(name) else { return packed_fp4(ck, name) };
     let shape: Vec<usize> = t.shape.iter().map(|&d| d as usize).collect();
@@ -88,6 +111,11 @@ pub fn tensor(ck: &Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
         "F32" => ck.read(name).ok()?.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect(),
         "I64" => ck.read(name).ok()?.chunks_exact(8).map(|c| i64::from_le_bytes(c.try_into().unwrap_or_default()) as f32).collect(),
         "U8" if name.ends_with(".weight_packed") => return packed_fp4(ck, name),
+        "F8_E4M3" if shape.len() == 2 && scales_beside(ck, name).is_some() => {
+            let s = ck.read(&scales_beside(ck, name)?).ok()?;
+            let s: Vec<f32> = s.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+            fp8_scaled(&ck.read(name).ok()?, &s, shape[0], shape[1]).ok()?
+        }
         "F8_E4M3" | "I8" if shape.len() == 2 => {
             let scales = format!("{}.scale", name.strip_suffix(".weight")?);
             let (_, st) = ck.get(&scales)?;
@@ -171,6 +199,24 @@ mod tests {
             assert_eq!(tensor(&ck, name), Some((vec![rows, cols], fp8(block, s))), "{name}");
         }
         assert_eq!(tensor(&ck, "layers.2.attn.wq_a.weight"), None, "no scales beside it");
+        // (fp32 block scales as transformers' fine-grained FP8 names them, of a shape not a multiple of the block: each value one fp32 product)
+        let (r2, c2) = (192usize, 320usize);
+        let q2: Vec<u8> = (0..r2 * c2).map(|i| (i * 53 % 251) as u8).map(|b| if b & 0x7F == 0x7F { 0x7E } else { b }).collect();
+        let s2: Vec<f32> = (0..2 * 3).map(|i| 0.0137 * (i + 1) as f32).collect();
+        let names2 = [
+            ("model.layers.0.self_attn.kv_a_proj_with_mqa.weight", "F8_E4M3", vec![r2 as u64, c2 as u64], q2.clone()),
+            ("model.layers.0.self_attn.kv_a_proj_with_mqa.weight_scale_inv", "F32", vec![2, 3], s2.iter().flat_map(|x| x.to_le_bytes()).collect()),
+            ("model.layers.0.mlp.down_proj.weight", "F8_E4M3", vec![r2 as u64, c2 as u64], q2.clone()),
+            ("model.layers.0.mlp.down_proj.weight_scale_inv", "F32", vec![1, 3], vec![0u8; 12]),
+        ];
+        let dir2 = dir.join("scale_inv");
+        std::fs::create_dir_all(&dir2).unwrap();
+        let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = names2.iter().map(|(n, d, s, b)| (*n, *d, s.clone(), &b[..])).collect();
+        crate::pack::write_safetensors(&dir2.join("model.safetensors"), &[("format", "pt".to_string())], &refs).unwrap();
+        let ck2 = Checkpoint::open(&dir2).unwrap();
+        let want: Vec<f32> = (0..r2 * c2).map(|i| glyd_gpu::fp8::e4m3(q2[i]) * s2[(i / c2) / 128 * 3 + (i % c2) / 128]).collect();
+        assert_eq!(tensor(&ck2, names2[0].0), Some((vec![r2, c2], want)));
+        assert_eq!(tensor(&ck2, names2[2].0), None, "scales of another block's shape");
         let fp4: Vec<f32> = (0..fr * fc).map(|i| E2M1[((nibbles[i / 2] >> (4 * (i % 2))) & 15) as usize] * e8m0(runs[i / 32])).collect();
         assert_eq!(tensor(&ck, "layers.0.ffn.experts.0.w1.weight"), Some((vec![fr, fc], fp4.clone())));
         assert_eq!(tensor(&ck, "model.layers.0.mlp.experts.0.gate_proj.weight"), Some((vec![fr, fc], fp4.clone())));
