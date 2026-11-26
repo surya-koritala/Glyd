@@ -4782,7 +4782,8 @@ fn planned_for(case: &str, level: &str, users: usize) -> Result<crate::plan::Loa
 /// on the dynamic route as `run` opens it (`split::open`: its family's loader, any family of that route; the expert cache's case, `qwen4x-cb`, its pack in an
 /// expert cache a stage, its misses as `--mode` says: `split_open`), once on one GPU and once with its layers cut into stages (by default before its middle layer,
 /// both stages on GPU 0 or on the two `--devices` names: the hand-over through host memory checked on a machine with one GPU). A prompt of 24 tokens and one
-/// past two chunks (150), each then T greedy steps fed the one-GPU run's tokens: every pass's logits the same bits both ways. `--tables`: the one-GPU run with its
+/// past two chunks (150), each then T greedy steps fed the one-GPU run's tokens: every pass's logits the same bits both ways; and each prompt's greedy reply
+/// through the scheduler with the log-probabilities a server sends (the token's and its 5 likeliest): every one the same bits both ways. `--tables`: the one-GPU run with its
 /// tables read by rows on the GPU (src/dynamic/tables.rs `force`), the other with them where its description holds them (on the host: refused where none
 /// is), on one GPU unless `--split` cuts it: the rows copied up are the GPU's rows.
 pub fn split_check(a: &crate::args::Args) -> Result<()> {
@@ -4816,8 +4817,10 @@ pub fn split_check(a: &crate::args::Args) -> Result<()> {
         let o = dyn_opts(a.layout()?.or(level_layout(level)?).or(Some(Layout::Tiered)));
         let (short, _, long) = standard_tokens(vocab);
         let prompts = [short, long];
-        // (each pass's logits, a prompt after the other in one sequence each, the steps fed `feed` where given, else the run's own greedy tokens)
-        let run = |cuts: &[usize], devices: &[i32], feed: Option<&[u32]>| -> Result<(Vec<Vec<f32>>, Vec<u32>)> {
+        // (each pass's logits, a prompt after the other in one sequence each, the steps fed `feed` where given, else the run's own greedy tokens; then each prompt's
+        // greedy reply through the scheduler, with the log-probabilities a server sends: the token's and its 5 likeliest's)
+        type Served = Vec<(Vec<u32>, Vec<crate::sampler::Lp>)>;
+        let run = |cuts: &[usize], devices: &[i32], feed: Option<&[u32]>| -> Result<(Vec<Vec<f32>>, Vec<u32>, Served)> {
             let mut e = split_open(case, mode, &dir, &o, cuts, devices)?;
             let (mut rows, mut fed) = (Vec::new(), Vec::new());
             for prompt in &prompts {
@@ -4831,16 +4834,34 @@ pub fn split_check(a: &crate::args::Args) -> Result<()> {
                     rows.push(e.logits()?);
                 }
             }
-            Ok((rows, fed))
+            let served = prompts.iter().map(|p| crate::dynamic::split::served(&mut e, p, tokens, Some(5))).collect::<Result<Served>>()?;
+            Ok((rows, fed, served))
         };
         crate::dynamic::tables::force(tables.then_some(crate::runtime::kinds::TableAt::Gpu));
         let one = run(&[], &devices[..1], None);
         crate::dynamic::tables::force(None);
-        let (one, fed) = one?;
-        let (staged, _) = run(&cuts, &devices, Some(&fed))?;
+        let (one, fed, one_lp) = one?;
+        let (staged, _, staged_lp) = run(&cuts, &devices, Some(&fed))?;
         let differ: Vec<usize> = (0..one.len()).filter(|&i| one[i].iter().map(|x| x.to_bits()).ne(staged[i].iter().map(|x| x.to_bits()))).collect();
+        // (a served token's log-probabilities to the bit: the token, its log-probability, and each of the likeliest tokens and theirs)
+        let bits = |l: &crate::sampler::Lp| (l.token, l.logprob.to_bits(), l.top.iter().map(|&(t, x)| (t, x.to_bits())).collect::<Vec<_>>());
+        let lps: usize = one_lp.iter().map(|(_, l)| l.len()).sum();
+        let lp_differ = one_lp
+            .iter()
+            .zip(&staged_lp)
+            .map(
+                |((ta, la), (tb, lb))| {
+                    if ta != tb || la.len() != lb.len() {
+                        la.len().max(lb.len())
+                    } else {
+                        la.iter().zip(lb).filter(|(x, y)| bits(x) != bits(y)).count()
+                    }
+                },
+            )
+            .sum::<usize>();
         println!(
-            "{case} at {level}{}{}: {nl} layers, cut before {cuts:?} on GPUs {devices:?}; {} passes (prompts of {} and {}, {tokens} steps after each), {} with logits that differ from the one-GPU run's",
+            "{case} at {level}{}{}: {nl} layers, cut before {cuts:?} on GPUs {devices:?}; {} passes (prompts of {} and {}, {tokens} steps after each), {} with logits that differ from the one-GPU run's; \
+             {lps} served tokens' log-probabilities (the token's and its 5 likeliest, through the scheduler), {lp_differ} not the one-GPU run's bits",
             if case == "qwen4x-cb" { format!(", the expert cache's misses by {}", mode.name()) } else { String::new() },
             if tables { format!(", its tables read by rows ({hosted} tensors) on the GPU in the one-GPU run and on the host in the other") } else { String::new() },
             one.len(),
@@ -4850,6 +4871,9 @@ pub fn split_check(a: &crate::args::Args) -> Result<()> {
         );
         if !differ.is_empty() {
             return err(format!("{case}: the passes {differ:?} differ between one GPU and the stages"));
+        }
+        if lp_differ > 0 || lps == 0 {
+            return err(format!("{case}: {lp_differ} of {lps} served tokens' log-probabilities differ between one GPU and the stages"));
         }
         Ok(())
     })();
