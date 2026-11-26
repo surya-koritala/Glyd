@@ -6618,7 +6618,8 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let mib = |b: u64| b as f64 / (1u64 << 20) as f64;
     if let Some(lp) = &plan {
         println!(
-            "the random {case} model at the planner's plan for this GPU{}: {} tokens of context for each of {} users ({:.1} MiB of keys, values and states planned in {}{}), prompts of up to {} and {tokens} made",
+            "{} at the planner's plan for this GPU{}: {} tokens of context for each of {} users ({:.1} MiB of keys, values and states planned in {}{}), prompts of up to {} and {tokens} made",
+            a.flag("dir").map_or(format!("the random {case} model"), |d| format!("the model in {d}")),
             if kv12 { " with GLYD_KV=lossless" } else { "" },
             lp.context,
             lp.users,
