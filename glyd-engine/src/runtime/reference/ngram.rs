@@ -142,14 +142,14 @@ pub fn rows(n: &Ngram, pad: usize) -> usize {
 
 /// The tokens a position's n-grams read: `ctx` the sequence's tokens before it (the last `order` - 1 at least, oldest first; fewer at
 /// the sequence's start), `t` its own. Each order position p (0: the token itself) the token p places back, where no `eos` lies
-/// between (the segment's start); else `eos`.
-pub fn context(n: &Ngram, before: &[u32], t: u32) -> Vec<u32> {
-    // (Engram's has no segments: only the sequence's start reads as its pad id)
+/// between (the segment's start); else `eos`. Engram's (`pad`: its pad id as its compressed vocabulary has it) has no segments: only
+/// the sequence's start reads as the pad.
+pub fn context(n: &Ngram, before: &[u32], t: u32, pad: u32) -> Vec<u32> {
     let segments = n.form == NgramForm::Segmented;
     let mut out = vec![t];
     let mut cut = false;
     for p in 1..n.order {
-        let v = if cut { n.eos } else { before.len().checked_sub(p).map_or(n.eos, |i| before[i]) };
+        let v = if cut { pad } else { before.len().checked_sub(p).map_or(pad, |i| before[i]) };
         cut |= segments && v == n.eos;
         out.push(v);
     }
@@ -192,18 +192,19 @@ pub fn step(n: &Ngram, p: &Params, st: &mut NgramState, q: &[f32], token: u32) -
     if s * d != w || row * heads != n.dim || table.shape.len() != 2 {
         return err(format!("n-gram embedding: {w} values over {s} streams, a table of {:?} for {heads} tables of {}", table.shape, n.dim));
     }
-    // (Engram's hash reads the compressed vocabulary's ids)
-    let token = match n.form {
-        NgramForm::Segmented => token,
+    // (Engram's hash reads the compressed vocabulary's ids, its pad id's too: the release's `token_map[pad]`)
+    let (token, pad) = match n.form {
+        NgramForm::Segmented => (token, n.eos),
         NgramForm::Engram => {
             let m = p.vec("ngram_map")?;
-            match m.get(token as usize).map(|&v| v as u32) {
-                Some(v) if (v as usize) < n.vocab => v,
-                v => return err(format!("Engram: token {token} maps to {v:?}, in a compressed vocabulary of {}", n.vocab)),
-            }
+            let id = |t: u32| match m.get(t as usize).map(|&v| v as u32) {
+                Some(v) if (v as usize) < n.vocab => Ok(v),
+                v => err(format!("Engram: token {t} maps to {v:?}, in a compressed vocabulary of {}", n.vocab)),
+            };
+            (id(token)?, id(n.eos)?)
         }
     };
-    let ctx = context(n, &st.before, token);
+    let ctx = context(n, &st.before, token, pad);
     st.before.push(token);
     let keep = st.before.len().saturating_sub(n.order - 1);
     st.before.drain(..keep);
@@ -321,12 +322,12 @@ mod tests {
     #[test]
     fn the_context_stops_at_the_segments_start() {
         let n = kind(1000, 2048, 0);
-        assert_eq!(context(&n, &[], 7), [7, 2000, 2000]);
-        assert_eq!(context(&n, &[5], 7), [7, 5, 2000]);
-        assert_eq!(context(&n, &[4, 5], 7), [7, 5, 4]);
-        assert_eq!(context(&n, &[4, 2000], 7), [7, 2000, 2000]);
-        assert_eq!(context(&n, &[2000, 5], 7), [7, 5, 2000]);
-        assert_eq!(context(&n, &[9, 4, 5], 2000), [2000, 5, 4]);
+        assert_eq!(context(&n, &[], 7, n.eos), [7, 2000, 2000]);
+        assert_eq!(context(&n, &[5], 7, n.eos), [7, 5, 2000]);
+        assert_eq!(context(&n, &[4, 5], 7, n.eos), [7, 5, 4]);
+        assert_eq!(context(&n, &[4, 2000], 7, n.eos), [7, 2000, 2000]);
+        assert_eq!(context(&n, &[2000, 5], 7, n.eos), [7, 5, 2000]);
+        assert_eq!(context(&n, &[9, 4, 5], 2000, n.eos), [2000, 5, 4]);
     }
 
     /// The family's own engine (deleted in R3d) hashed a position as (token, the one before, the one before that unless the one before is the end token) with

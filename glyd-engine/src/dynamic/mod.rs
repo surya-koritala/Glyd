@@ -23,6 +23,9 @@ pub(crate) use kvpages::room_of as kv12_room;
 #[cfg(all(test, feature = "dev"))]
 pub(crate) use rows::pool_blocks;
 pub(crate) use rows::seq_blocks;
+#[cfg(all(test, feature = "dev"))]
+pub(crate) use rows::Hold;
+pub(crate) use rows::{layer_rooms, marks_kept, stage_holds, SeqRoom};
 pub mod lower;
 pub mod lower_comp;
 pub mod mla;
@@ -1403,6 +1406,8 @@ pub struct Dyn {
     ctx: usize,
     /// The part of the GPU's free memory `serve_rows` takes for the sequences (`Gen::share_memory`).
     share: f64,
+    /// The plan the loader took (`take_plan`): the sequences `serve_rows` holds at most and the bytes of their keys, values and states.
+    planned: Option<(usize, u64)>,
     /// Passes of up to this many rows take the decode step's split attention (1, or a drafted round's k + 1: the same kernel, so drafted = plain).
     split_rows: usize,
     pf_kib: [usize; 3],
@@ -2250,6 +2255,7 @@ impl Dyn {
             n: 0,
             chunk: ch,
             share: 1.0,
+            planned: None,
             ctx,
             split_rows: rows_out,
             pf_kib: pf_kib(crate::tune!("GLYD_G4_PF").as_deref())?,
@@ -3540,8 +3546,9 @@ impl Dyn {
                         }
                     }
                 }
-                // (the n-gram embedding: its convolution's last inputs those before the pass and the kept rows' (`qx_ple_conv`: oldest first), its last tokens the
-                // two before the pass and the kept rows' (`qx_ngram_hist`: each token + 1, oldest first); this stage's layers', another stage holds the others' states)
+                // (the n-gram embedding: its convolution's last inputs those before the pass and the kept rows' (`qx_ple_conv`: oldest first), its last ids the
+                // `order` - 1 before the pass and the kept rows' (`qx_ngram_hist`: each token's id, its compressed one where the form maps it, + 1, oldest first);
+                // this stage's layers', another stage holds the others' states)
                 for (l, ops) in p.d.layers.iter().enumerate().take(self.stage.layers.1).skip(self.stage.layers.0) {
                     for op in ops {
                         match *op {
@@ -3557,10 +3564,19 @@ impl Dyn {
                             }
                             Op::NgramRows(x) => {
                                 self.dev.sync()?;
-                                let mut h = [0i32; 2];
+                                let k = x.order - 1;
+                                let mut h = vec![0i32; k];
                                 v.snap[x.hist].read(0, &mut h)?;
-                                let all: Vec<i32> = h.iter().copied().chain(v.tokens[..keep].iter().map(|&t| t as i32 + 1)).collect();
-                                self.states[x.hist].write(0, &all[all.len() - 2..])?;
+                                let mut kept = Vec::with_capacity(keep);
+                                for &t in &v.tokens[..keep] {
+                                    let mut id = [t as i32];
+                                    if let Some(m) = x.map {
+                                        p.small[m].read(t as usize * 4, &mut id)?;
+                                    }
+                                    kept.push(id[0] + 1);
+                                }
+                                let all: Vec<i32> = h.into_iter().chain(kept).collect();
+                                self.states[x.hist].write(0, &all[all.len() - k..])?;
                             }
                             _ => {}
                         }
@@ -3961,6 +3977,10 @@ impl crate::conv::Gen for Dyn {
 
     fn share_memory(&mut self, part: f64) {
         self.share = part.clamp(0.0, 1.0);
+    }
+
+    fn take_plan(&mut self, users: usize, kv: u64) {
+        Dyn::take_plan(self, users, kv);
     }
 
     fn see(&mut self, images: Vec<std::sync::Arc<crate::vision::Image>>) -> Result<()> {

@@ -273,7 +273,8 @@ pub fn load_stage_with(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::
         Ok(Mat::Packed(upload_packed(pack_words(w, rows, cols, layout, name)?)?))
     };
     let pack = |w: &[u16], rows: usize, cols: usize, name: &str| pack_as(w, rows, cols, name, true);
-    let exact8 = vo.exact8;
+    // (the library's FP8 products take blocks of 128: a release of other blocks has its shared experts held as their bf16 too, as `lower_comp::lower` holds its matrices)
+    let exact8 = vo.exact8 && kinds.fp8_block.is_none_or(|b| b == 128);
     let lib = crate::ffi::Lib::find()?;
     let (mut mats, mut f8): (Vec<Mat>, Vec<crate::f8::F8Mat>) = Default::default();
     // the products' matrices, in the plan's order: the large FP8 ones held FP8 as released where the lowering says (`LinLoad::f8`: the level and their size), the rest as
@@ -352,6 +353,13 @@ pub fn load_stage_with(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::
             for p in pieces {
                 match p {
                     Piece::Tensor(t) => b.extend(read(t)?),
+                    Piece::Fp32(t) => match ck.get(t).map(|(_, x)| x.dtype.as_str()) {
+                        Some("F32") => b.extend(read(t)?),
+                        Some("BF16") => {
+                            b.extend(read(t)?.chunks(2).flat_map(|w| f32::from_bits((u16::from_le_bytes([w[0], w[1]]) as u32) << 16).to_le_bytes()))
+                        }
+                        d => return err(format!("{t}: {d:?}, where fp32 or bf16 is read")),
+                    },
                     Piece::Zeros(n) => b.resize(b.len() + n, 0),
                     Piece::I64(v) => b.extend(v.iter().flat_map(|x| x.to_le_bytes())),
                     Piece::TokenMap => b.extend(token_map()?),
@@ -376,7 +384,8 @@ pub fn load_stage_with(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::
                 threads,
                 tpr,
                 exact8,
-                sim: vo.sim,
+                // (the description's: a release whose quantizations the kernels do not simulate runs without them, `lower_comp::lower`)
+                sim: desc.v4.as_ref().is_some_and(|v| v.sim),
                 inter,
             },
             ml,

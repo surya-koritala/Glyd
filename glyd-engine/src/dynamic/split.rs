@@ -472,6 +472,12 @@ impl crate::conv::Gen for Run {
             Run::Split(_) | Run::Tp(_) => None,
         }
     }
+    /// One GPU: the engine's pools are the plan's (`Dyn::take_plan`); stages and layers across GPUs hold one sequence, its rings made at the load.
+    fn take_plan(&mut self, users: usize, kv: u64) {
+        if let Run::One(e) = self {
+            e.take_plan(users, kv);
+        }
+    }
     /// One GPU: the engine's own images (src/dynamic/images.rs); stages and layers across GPUs read none yet.
     fn see(&mut self, images: Vec<std::sync::Arc<crate::vision::Image>>) -> Result<()> {
         match self {
@@ -625,26 +631,35 @@ fn dynamic_row(f: crate::support::Family) -> Option<&'static str> {
 
 /// The model of `dir` as `plan` says it loads (src/plan.rs `size_dynamic`): its layers cut over the plan's GPUs (`Spread::cuts`, `devices`) or across them
 /// (`across`), its context, prompt chunk and layout (the 12-bit one where `twelve`), and where its experts are in the computer's memory each stage's places
-/// of them, the memory the plan gives them and the last layers' dense matrices there (`dense`), with the expert cache's copy-or-compute policy `offload`.
-/// Nothing is sized here.
+/// of them, the memory the plan gives them and the last layers' dense matrices there (`dense`), with the expert cache's copy-or-compute policy `offload`; on one GPU
+/// its sequences' keys, values and states in the plan's bytes (`Dyn::take_plan`). Nothing is sized here.
 pub fn open_plan(dir: &Path, plan: &crate::plan::LoadPlan, offload: crate::offload::Offload) -> Result<Run> {
     let sp = plan.spread.as_ref().ok_or_else(|| Error("a plan of the dynamic route spreads the model (Spread)".into()))?;
     let layout = if sp.twelve { crate::weights::Layout::Twelve } else { crate::weights::Layout::Tiered };
     let o = Opts { ctx: plan.context, chunk: plan.chunk, graph: true, device: sp.devices[0], layout: Some(layout) };
     let ram = plan.experts.filter(|c| c.ram < c.host_bytes()).map(|c| crate::offload::HostMemory { bytes: c.ram, total: c.host_bytes() });
     let (cuts, devices) = (&sp.cuts, &sp.devices);
-    if sp.host_bytes == 0 {
-        return if sp.across { open_tp(dir, &o, devices) } else { open(dir, &o, cuts, devices) };
-    }
-    // (each stage's experts in the expert cache: a hummingbird directory's, or the release's in places of their own; the release's experts of the latent block
-    // across the GPUs where the plan says so, their cache's host tier and plans shared: src/dynamic/tp_cache.rs)
-    let cachings: Vec<crate::hbg_store::HbCaching> =
-        sp.places.iter().map(|&places| crate::hbg_store::HbCaching { places, ram, offload, dense: sp.dense }).collect();
-    if sp.across && plan.level != "hummingbird" && latent_experts(dir)? {
-        let c = cachings.into_iter().next().ok_or_else(|| Error("a plan across GPUs with no places for its experts".into()))?;
-        return open_tp_cached(dir, &o, devices, c);
-    }
-    open_cached(dir, &o, cuts, devices, cachings)
+    let mut run = if sp.host_bytes == 0 {
+        if sp.across {
+            open_tp(dir, &o, devices)?
+        } else {
+            open(dir, &o, cuts, devices)?
+        }
+    } else {
+        // (each stage's experts in the expert cache: a hummingbird directory's, or the release's in places of their own; the release's experts of the latent block
+        // across the GPUs where the plan says so, their cache's host tier and plans shared: src/dynamic/tp_cache.rs)
+        let cachings: Vec<crate::hbg_store::HbCaching> =
+            sp.places.iter().map(|&places| crate::hbg_store::HbCaching { places, ram, offload, dense: sp.dense }).collect();
+        if sp.across && plan.level != "hummingbird" && latent_experts(dir)? {
+            let c = cachings.into_iter().next().ok_or_else(|| Error("a plan across GPUs with no places for its experts".into()))?;
+            open_tp_cached(dir, &o, devices, c)?
+        } else {
+            open_cached(dir, &o, cuts, devices, cachings)?
+        }
+    };
+    // (its sequences' keys, values and states the plan's: on one GPU their pools take its bytes, no more)
+    crate::conv::Gen::take_plan(&mut run, plan.users, plan.kv);
+    Ok(run)
 }
 
 /// Whether the model of `dir` has experts of the Moe kind's latent block (`experts::latent_block`: a latent of their own projections whose sum is normed),
@@ -753,9 +768,8 @@ fn lowering(d: &crate::runtime::describe::Described) -> Result<Lowering> {
 /// lowering's reader takes them.
 pub fn loader(d: &crate::runtime::describe::Described) -> Result<Loader> {
     Ok(match lowering(d)? {
-        Lowering::Compressed => {
-            Loader { ends: |dir| crate::deepseek_v4::ConfigV4::load(dir).map(|c| (c.layers, c.eos)), stage: super::deepseek_v4::load_stage_hb }
-        }
+        // (its layers and end tokens by the description: DeepSeek-V4's flat config and V4.1's nested one alike)
+        Lowering::Compressed => Loader { ends: |dir| super::deepseek_v4::ends(dir).map(|(l, e, _)| (l, e)), stage: super::deepseek_v4::load_stage_hb },
         Lowering::Mamba2 => Loader { ends: |dir| crate::nemotron::ConfigNemotronH::load(dir).map(|c| (c.layers, c.eos)), stage: super::nemotron::stage },
         Lowering::DeltaStreams => Loader { ends: |dir| crate::glm::ConfigGlm::load(dir).map(|c| (c.layers, c.eos)), stage: super::glm::stage },
         Lowering::DeltaDepth => Loader { ends: |dir| crate::kimi::ConfigKimi::load(dir).map(|c| (c.layers, c.eos)), stage: super::kimi::stage },
@@ -764,6 +778,26 @@ pub fn loader(d: &crate::runtime::describe::Described) -> Result<Loader> {
         Lowering::GatedDelta => Loader { ends: super::qwen35::ends, stage: super::qwen35::stage },
         Lowering::LatentPlain => Loader { ends: super::glm::plain_ends, stage: super::glm::stage_plain },
     })
+}
+
+/// The description of the model whose config is `c` lowered as its loader lowers it (`loader`), the whole model for sequences of up to `max_pos` positions, from the
+/// config alone: the rings and states its sequences take on the executor, which a plan counts before a file is here (src/plan.rs `sizing::size_dynamic_row`).
+/// The end tokens and the checkpoint's dtypes are not read (none of them changes a ring or a state).
+pub fn lowered_of(c: &crate::runtime::config::ModelConfig, max_pos: usize) -> Result<ModelDesc> {
+    use super::lower;
+    let d = crate::runtime::describe::describe_config(c)?;
+    let nl = c.num("num_hidden_layers").unwrap_or(0);
+    let st = Stage::whole(nl);
+    match lowering(&d)? {
+        Lowering::Compressed => lower::deepseek_v4(&d, Vec::new(), max_pos, &st, &super::deepseek_v4::V4Opts::of(crate::weights::Layout::Tiered, max_pos)),
+        Lowering::Mamba2 => lower::nemotron(&d, Vec::new(), max_pos, &st),
+        Lowering::DeltaStreams => lower::glm(&d, Vec::new(), max_pos, &st),
+        Lowering::DeltaDepth => lower::kimi(&d, Vec::new(), max_pos, &st, &vec![(true, true); nl], false),
+        Lowering::GatedResidual => lower::muse(&d, Vec::new(), max_pos, &st),
+        Lowering::GatedStreams => lower::qwen4x(&d, Vec::new(), max_pos),
+        Lowering::GatedDelta => lower::qwen35(&d, Vec::new(), max_pos, &st),
+        Lowering::LatentPlain => lower::latent_moe(&d, Vec::new(), max_pos, &st),
+    }
 }
 
 /// A number of the config (its `text_config`'s for a model that nests one).

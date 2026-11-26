@@ -166,13 +166,14 @@ impl super::Dyn {
     }
 
     /// usercheck's switches, the sets of pieces kept dropped: every pass eager, no graph replayed or captured (`off`: the one-row step's, the decode steps', the pieces'), or
-    /// graphs on and pieces captured the first time a size is met (`first`). Whether passes may run in pieces at all here (`pieces_on` with the switches set so).
+    /// graphs on and pieces captured the first time a size is met (`first`). Whether a chunk's pass runs in pieces here (`pieces_on` with the switches set so, and
+    /// `pieces_take` of the chunk: not a pass of more than 64 rows with cuBLAS found, as a plan's chunk of the plain dense kind on a GPU with cuBLAS is).
     #[cfg(feature = "dev")]
     pub(crate) fn pieces_for_check(&mut self, first: bool, off: bool) -> bool {
         self.pieces.clear();
         (self.pieces.first, self.pieces.off) = (first, false);
         self.graphs_off.set(false);
-        let on = self.pieces_on();
+        let on = self.pieces_on() && self.pieces_take(self.chunk);
         self.graphs_off.set(off);
         on
     }
