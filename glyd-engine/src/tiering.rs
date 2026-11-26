@@ -675,6 +675,8 @@ fn rows_run(e: &mut crate::dynamic::Dyn, n: usize, most: usize, (plen, steps, vo
 /// judges nothing). A draw past it judges no path that is not the GPU's bit for bit. `--modes none`: the floor alone.
 /// `--pairs`: in each mode with a host half, a further run of the same calls with each pair the host computes against the GPU's from the same inputs (the same rows
 /// of z, expert and weight: `moe::PAIRS`, the calls the host plans), each layer's and the worst pair's difference printed.
+/// DeepSeek-V4 with the release's simulated quantizations (its default) is held in three parts, as its logits case (`logits::dsv4_also`): every line above without
+/// them; then the quantizing operations bit for bit (`dsv4_ref::qcheck_rows`); then each mode's rows with them against the reference with them, INFO lines.
 /// At the end, the process's statistics as the server's /stats reports them (`offload::stats_field`).
 #[cfg(feature = "dev")]
 pub fn rows_check(a: &crate::args::Args) -> Result<()> {
@@ -725,9 +727,22 @@ pub fn rows_check(a: &crate::args::Args) -> Result<()> {
         Ok(e)
     };
     let shape = (plen, steps, vocab);
+    // (DeepSeek-V4 with the release's simulated quantizations, the product's default: held in three parts, as its logits case is (`logits::dsv4_also`, where
+    // the reason is written): every judged line below without them; the quantizing operations bit for bit; the whole model with them, printed, never judged)
+    let mut first = open(against_copy.then(|| caching(Mode::Copy, false)))?;
+    let was = std::env::var("GLYD_V4_SIM").ok();
+    let parts = first.simulates() == Some(true);
+    if parts {
+        println!(
+            "  DeepSeek-V4 with the release's simulated quantizations, held in three parts as its logits case is (logits::dsv4_also): 1. every line judged below runs without them (GLYD_V4_SIM=0, the reference too), at the kind's bound; 2. the operations that quantize, on the reference's own input, bit for bit (v4qcheck); 3. the whole model with them, each line printed as INFO, never a pass or fail: a rounding before a quantizer moves a value near a grid point's edge to the next one, so no path that is not the reference's bits before each quantizer is held to the kind's bound by it"
+        );
+        std::env::set_var("GLYD_V4_SIM", "0");
+        drop(first);
+        first = open(against_copy.then(|| caching(Mode::Copy, false)))?;
+    }
     // (the reference's rows, traced: a host mode's rows are judged on each run's own choices; a traced pass runs eager, whose bits are the graphs')
     let (reference, routers) = {
-        let mut e = open(against_copy.then(|| caching(Mode::Copy, false)))?;
+        let mut e = first;
         println!(
             "{}: the reference {}, {} decode steps after prompts of {plen} tokens, {:?} rows",
             dir.display(),
@@ -764,7 +779,7 @@ pub fn rows_check(a: &crate::args::Args) -> Result<()> {
             let tag = format!("{n} rows, the draw's floor (the reference again, every experts' product's sums split over K on the GPU: the same arithmetic in another fp32 order)");
             let moved = r.logits.iter().flatten().zip(f.logits.iter().flatten()).any(|(x, y)| x.iter().zip(y).any(|(p, q)| p.to_bits() != q.to_bits()));
             if !moved {
-                println!("PASS {tag}: no bit moved (no sum this model's products make is split: its K is under 512), not measured");
+                println!("PASS {tag}: no bit moved (none of this model's experts' products is split: a K under 512, or a product the library never splits, FP8's), not measured");
                 continue;
             }
             let floor_bound = (crate::logits::BESIDE_KL.0 / 10.0, crate::logits::BESIDE_KL.1 / 10.0);
@@ -921,6 +936,41 @@ pub fn rows_check(a: &crate::args::Args) -> Result<()> {
             }
             if pairs && mode != Mode::Copy {
                 pair_lines(&mut e, n, most, shape, &tag)?;
+            }
+        }
+    }
+    if parts {
+        match was {
+            Some(v) => std::env::set_var("GLYD_V4_SIM", v),
+            None => std::env::remove_var("GLYD_V4_SIM"),
+        }
+        match crate::dsv4_ref::qcheck_rows(64) {
+            Ok(()) => println!("PASS part 2: the operations that quantize as the release does, on the reference's own input: no element differs"),
+            Err(x) => {
+                println!("FAIL part 2: {}", x.msg);
+                fails.push("part 2: the quantizing operations".into());
+            }
+        }
+        let sims = if modes.is_empty() {
+            Vec::new()
+        } else {
+            let mut r = open(against_copy.then(|| caching(Mode::Copy, false)))?;
+            rows_l.iter().map(|&n| rows_run(&mut r, n, most, shape, true)).collect::<Result<Vec<_>>>()?
+        };
+        for &(mode, device) in &modes {
+            let mut e = open(Some(caching(mode, device)))?;
+            crate::conv::Gen::as_step(&mut e, most)?.ok_or_else(|| Error("no scheduler's step for this model".into()))?;
+            for (i, &n) in rows_l.iter().enumerate() {
+                let got = rows_run(&mut e, n, most, shape, true)?;
+                let (jd, _) = judge_rows(&sims[i], &got, steps, routers.as_ref(), crate::logits::BESIDE_KL)?;
+                jd.print_as(
+                    "INFO",
+                    &format!(
+                        "part 3: {n} rows, {}{}, the whole model with the release's simulated quantizations against the reference with them, on the run's own choices",
+                        mode.name(),
+                        if device { ", the decode calls planned on the GPU" } else { "" }
+                    ),
+                );
             }
         }
     }

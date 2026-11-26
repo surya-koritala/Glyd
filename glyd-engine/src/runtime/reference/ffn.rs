@@ -205,13 +205,23 @@ pub fn moe_taking(m: &Moe, p: &Params, x: &[f32], token: u32, take: Option<&[usi
     if rows * m.experts * z.len() != gu.len() || out * inter * m.experts != down.len() {
         return err(format!("experts of {} and {} values for {} experts on {} inputs", gu.len(), down.len(), m.experts, z.len()));
     }
+    // (where the reference simulates the release's quantizations and its experts are stored quantized: their input rounded as a quantized product's, and each pair's
+    // weight in its activation, which the second product's input rounds, as the release weighs it)
+    let sim = p.sim > 0 && m.latent.is_none() && p.quantized.contains(if m.expert.gated { "experts_gate_up" } else { "experts_up" });
+    let z = if sim { p.fp8(&z) } else { z };
     let mut acc = vec![0f64; out];
     for (&e, &we) in c.ids.iter().zip(&c.w) {
         let first = matvec(&gu[e * rows * z.len()..][..rows * z.len()], z.len(), &z);
-        let mut y = finish(&m.expert, &first, |h| Ok(matvec(&down[e * out * inter..][..out * inter], inter, h)))?;
+        let dn = &down[e * out * inter..][..out * inter];
+        let mut y = if sim {
+            finish(&m.expert, &first, |h| Ok(matvec(dn, inter, &p.fp8(&h.iter().map(|&v| we * v).collect::<Vec<_>>()))))?
+        } else {
+            finish(&m.expert, &first, |h| Ok(matvec(dn, inter, h)))?
+        };
         if let Some(n) = m.latent.as_ref().and_then(|l| l.expert_norm) {
             y = norm(&n, &y, p.opt("expert_norm"), None);
         }
+        let we = if sim { 1.0 } else { we };
         acc.iter_mut().zip(&y).for_each(|(a, &v)| *a += we as f64 * v as f64);
     }
     let mut y: Vec<f32> = acc.into_iter().map(|v| v as f32).collect();
