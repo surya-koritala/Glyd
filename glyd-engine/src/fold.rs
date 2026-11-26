@@ -4089,7 +4089,8 @@ fn moe_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec
 }
 
 /// `foldcheck`'s lossless FP8 format, both layouts: random e4m3 bytes (every byte a value) of three shapes packed by the library's kernels and by the engine's (the
-/// size's words, the heads, the cores and var compared byte for byte), and unpacked by both (the bytes back, and the same). (compared, differences)
+/// size's words, the heads, the cores and var compared byte for byte), and unpacked by both (the bytes back, and the same). Every buffer is filled first, the
+/// library's with one byte and the engine's with another, so a byte that a pack or an unpack leaves unwritten makes the two differ. (compared, differences)
 #[cfg(feature = "dev")]
 fn f8_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<String>)> {
     use crate::dev::Buf;
@@ -4118,7 +4119,12 @@ fn f8_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<
         }
         for h in [false, true] {
             let name = format!("{o} x {k}{}", if h { ", layout H" } else { "" });
-            let (ha, hb, ws) = (Buf::zeroed((patches * 32) as usize)?, Buf::zeroed((patches * 32) as usize)?, Buf::zeroed(16)?);
+            let filled = |len: usize, v: u8| -> Result<Buf> {
+                let b = Buf::new(len)?;
+                b.fill_async(v, dev.stream)?;
+                Ok(b)
+            };
+            let (ha, hb, ws) = (filled((patches * 32) as usize, 0xA5)?, filled((patches * 32) as usize, 0x5A)?, Buf::zeroed(16)?);
             // SAFETY: W [o, k] bytes, heads of 8 words a patch, a workspace of 16 bytes; the stream is waited for by the size.
             let (va, vb) = unsafe {
                 (lib.library_f8_size(h, wb.ptr, k, o, k, ha.ptr, ws.ptr, 16, dev.stream)?, f8_size(h, wb.ptr, k, o, k, hb.ptr, (ws.ptr, 16), dev.stream)?)
@@ -4133,8 +4139,8 @@ fn f8_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<
                 continue;
             }
             let core_bytes = (patches * if h { 7168 } else { 6144 }) as usize;
-            let (ca, cb, xa, xb) = (Buf::zeroed(core_bytes)?, Buf::zeroed(core_bytes)?, Buf::zeroed(va as usize * 4)?, Buf::zeroed(va as usize * 4)?);
-            let (oa, ob) = (Buf::zeroed(bytes.len())?, Buf::zeroed(bytes.len())?);
+            let (ca, cb, xa, xb) = (filled(core_bytes, 0xA5)?, filled(core_bytes, 0x5A)?, filled(va as usize * 4, 0xA5)?, filled(va as usize * 4, 0x5A)?);
+            let (oa, ob) = (filled(bytes.len(), 0xA5)?, filled(bytes.len(), 0x5A)?);
             // SAFETY: the heads, cores of 6,144 (layout H 7,168) bytes a patch, var of the size's words, outputs [o, k]; one stream.
             let r = unsafe {
                 lib.library_f8_pack(h, wb.ptr, k, o, k, ha.ptr, ca.ptr, xa.ptr, va, dev.stream)?;
@@ -4157,12 +4163,29 @@ fn f8_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<
                 b.read(0, &mut v)?;
                 Ok(v)
             };
-            let same = read(&ha, (patches * 32) as usize)? == read(&hb, (patches * 32) as usize)?
-                && read(&ca, core_bytes)? == read(&cb, core_bytes)?
-                && read(&xa, va as usize * 4)? == read(&xb, va as usize * 4)?;
+            // (each part's bytes apart: how many, and the first's place, a patch's byte where the part is `per` bytes a patch)
+            let apart = |part: &str, a: &Buf, b: &Buf, len: usize, per: Option<usize>| -> Result<Option<String>> {
+                let (x, y) = (read(a, len)?, read(b, len)?);
+                let n = x.iter().zip(&y).filter(|(p, q)| p != q).count();
+                let at = |i: usize| per.map_or(format!("byte {i}"), |c| format!("patch {} byte {}", i / c, i % c));
+                Ok(x.iter().zip(&y).position(|(p, q)| p != q).map(|i| format!("{part}: {n} bytes apart, the first at {}", at(i))))
+            };
+            let parts: Vec<String> = [
+                apart("heads", &ha, &hb, (patches * 32) as usize, Some(32))?,
+                apart("cores", &ca, &cb, core_bytes, Some(if h { 7168 } else { 6144 }))?,
+                apart("var", &xa, &xb, va as usize * 4, None)?,
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
             let (ua, ub) = (read(&oa, bytes.len())?, read(&ob, bytes.len())?);
-            if !same || ua != ub || ua != bytes {
-                bad.push(format!("{name}: the packs the same {same}, the unpacks the same {}, the library's unpack the bytes {}", ua == ub, ua == bytes));
+            if !parts.is_empty() || ua != ub || ua != bytes {
+                bad.push(format!(
+                    "{name}: the packs {}, the unpacks the same {}, the library's unpack the bytes {}",
+                    if parts.is_empty() { "the same".to_string() } else { parts.join("; ") },
+                    ua == ub,
+                    ua == bytes
+                ));
             }
         }
     }
@@ -4184,7 +4207,8 @@ fn f8_product_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usi
     };
     let (mut n, mut bad) = (0, Vec::new());
     let bf = |v: f32| (v.to_bits() >> 16) as u16;
-    // W [o, k] packed by the library in layout `h`: (core, heads, var)
+    // W [o, k] packed by the library in layout `h`: (core, heads, var), in buffers made as `F8Mat::pack` makes them (written by the size and the pack alone,
+    // so that a product reading a byte they did not write is one the memory checker's initcheck names)
     let pack = |o: i64, k: i64, h: bool| -> Result<(Buf, Buf, Buf)> {
         let mut r = 0xD1B5_4A32_D192_ED03u64 ^ (o * 65_537 + k) as u64;
         let w: Vec<u8> = (0..o * k)
@@ -4198,11 +4222,11 @@ fn f8_product_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usi
         let wb = Buf::new(w.len())?;
         wb.write(0, &w)?;
         let patches = f8_patches(o, k).unwrap_or(0) as usize;
-        let (heads, ws) = (Buf::zeroed(patches * 32)?, Buf::zeroed(16)?);
+        let (heads, ws) = (Buf::new(patches * 32)?, Buf::zeroed(16)?);
         // SAFETY: W [o, k], heads of 8 words a patch, the size's workspace, the core and var of its sizes; one stream (the size waits for it).
         unsafe {
             let words = lib.library_f8_size(h, wb.ptr, k, o, k, heads.ptr, ws.ptr, 16, dev.stream)?;
-            let (core, var) = (Buf::zeroed(patches * if h { 7168 } else { 6144 })?, Buf::zeroed(words as usize * 4)?);
+            let (core, var) = (Buf::new(patches * if h { 7168 } else { 6144 })?, Buf::new(words as usize * 4)?);
             lib.library_f8_pack(h, wb.ptr, k, o, k, heads.ptr, core.ptr, var.ptr, words, dev.stream)?;
             synced(dev, || format!("the library's FP8 pack of {o} x {k}"))?;
             Ok((core, heads, var))
@@ -4278,13 +4302,14 @@ fn f8_product_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usi
             }
         }
     }
-    // the experts' product: 4 experts of [128, 256] as one [512, 256], block scales [4][1][2], 2 choices a token
+    // the experts' product: 4 experts of [128, 256] as one [512, 256], block scales [4][1][2], 2 choices a token (at 64 tokens this draw gives an expert
+    // 38 and 36 pairs: the kernels of 8 tiles a warp, fold_f8_moe_8 and fold_f8_hmoe_8)
     let (e, o, k) = (4i64, 128i64, 256i64);
     let sb = Buf::new((e * 2 * 4) as usize)?;
     sb.write(0, &(0..e * 2).map(|i| 0.25 + i as f32 / 16.0).collect::<Vec<f32>>())?;
     for h in [false, true] {
         let (core, heads, var) = pack(e * o, k, h)?;
-        for t in [1i64, 3, 17, 40] {
+        for t in [1i64, 3, 17, 40, 64] {
             let ids: Vec<i64> = (0..t)
                 .flat_map(|_| {
                     let a = (next() % e as u64) as i64;
