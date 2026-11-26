@@ -2,7 +2,7 @@
 //! Those round to bf16 where vLLM or transformers hold bf16, so the tolerance is `BF16_TOL`.
 
 use super::testing::{assert_close, fill};
-use super::{attention, bf16, linear, mla, Params, BF16_TOL};
+use super::{attention, bf16, linear, mla, Libm, Params, BF16_TOL};
 use crate::runtime::kinds::*;
 use glyd_gpu::safetensors::Checkpoint;
 
@@ -95,7 +95,7 @@ fn kimi_k3_mixers_against_kimi_ref() {
         q_norm: twice,
         kv_norm: twice,
         gate: Some(OutGate { act: Act::Sigmoid, from: GateFrom::Own, norm: None }),
-        scale: 192f32.powf(-0.5),
+        scale: 192f32.lpowf(-0.5),
         absorbed: false,
         indexer: None,
     };

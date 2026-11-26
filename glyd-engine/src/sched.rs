@@ -952,6 +952,9 @@ pub struct Sched<B: ModelStep> {
     /// A check's record of the whole row of logits each token was chosen from, by sequence, with the routers' choices of that row where the step keeps them
     /// (`recording_rows`): two runs held to a bound row for row where their last bits may part (experts computed on the host).
     pub rows: Option<Vec<(u64, Vec<f32>, Option<Vec<Vec<crate::dynamic::RowRoute>>>)>>,
+    /// A check's tokens given for the sequences submitted after `forcing`, each sequence's in order, in the place of its step's samples (the first id before
+    /// them, and each one's tokens left).
+    forced: Option<(u64, Vec<VecDeque<u32>>)>,
     overlap: bool,
     relanded: bool,
 }
@@ -1006,6 +1009,7 @@ impl<B: ModelStep> Sched<B> {
             flight: None,
             chosen: None,
             rows: None,
+            forced: None,
             overlap,
             relanded: false,
         }
@@ -1030,6 +1034,13 @@ impl<B: ModelStep> Sched<B> {
     /// traced pass runs eager).
     pub fn tracing_choices(mut self, on: bool) -> Sched<B> {
         self.be.trace_choices(on);
+        self
+    }
+
+    /// A check's: the k-th sequence submitted from now on takes `tokens[k]` in order in the place of its step's samples (its rows are then the step's logits at
+    /// tokens given beforehand: `usercheck --ref-from` holds them to a reference's rows recorded at those tokens); one whose tokens run out takes its samples.
+    pub fn forcing(mut self, tokens: Vec<Vec<u32>>) -> Sched<B> {
+        self.forced = Some((self.next_id, tokens.into_iter().map(VecDeque::from).collect()));
         self
     }
 
@@ -2029,6 +2040,11 @@ impl<B: ModelStep> Sched<B> {
             if let Some(r) = self.rows.as_mut() {
                 r.push((s.id, l, choices));
             }
+        }
+        // (a token given for the sequence stands for the sample: `forcing`)
+        let id = self.active[i].id;
+        if let Some(t) = self.forced.as_mut().and_then(|(base, f)| f.get_mut(id.checked_sub(*base + 1)? as usize)).and_then(VecDeque::pop_front) {
+            return Ok((t, None));
         }
         let want = self.active[i].reply.logprobs;
         if self.active[i].greedy && want.is_none() {

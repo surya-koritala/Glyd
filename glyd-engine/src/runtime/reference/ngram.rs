@@ -215,7 +215,7 @@ pub fn step(n: &Ngram, p: &Params, st: &mut NgramState, q: &[f32], token: u32) -
         if r >= table.shape[0] {
             return err(format!("n-gram embedding: row {r} of a table of {}", table.shape[0]));
         }
-        e.extend_from_slice(&table.data[r * row..][..row]);
+        e.extend(table.w().row(r * row, row));
     }
     // (the key and the value as one product: the keys' rows first)
     let (k, v) = if p.has("kv") {

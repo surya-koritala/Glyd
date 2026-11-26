@@ -5,6 +5,7 @@
 # One line a step: PASS, FAIL, SKIP or INFO, the step, what it saw. Exit 0 only where nothing FAILs, no step is SKIPped and every required step has a result. No Python is used (jq is).
 #
 #   benchmarks/gates/m2-gate.sh [--gpu rtx4080s|l4] [--models FILE] [--glyd PATH] [--engine PATH] [--out DIR] [--ext DIR] [--limit SECONDS] [--rows REGEX] [--machine PRESET]
+#                               [--ref-dir DIR]
 #   benchmarks/gates/m2-gate.sh --plan-only --machine PRESET [--gpu rtx4080s|l4] [--models FILE] [--glyd PATH] [--rows REGEX] [--out DIR]
 #                                    the planner's answer for each row of the GPU on a described machine (glyd fit --machine PRESET), no GPU needed: a RUN row must be a plan for 64
 #                                    users at each of its levels and contexts, a NONE row must be refused (exit 3; its first line is printed)
@@ -25,14 +26,18 @@
 # 64 prompts asked at once through the one scheduler, 5 tokens each, and every row of logits a token was chosen from (the prompt's last position and 4 decode steps) held to the CPU
 # Ref backend running the model's description on the same weights, row by row: at penguin within the kind's bound on the run's own choices of experts, at a lossy level within the
 # level's threshold. Its line says how many rows were held and the worst row's KL. Without --engine it is a SKIP, which keeps the gate red: an installed glyd has no development
-# commands. The reference holds the weights in f32 (a model's parameters times 4 bytes, in the computer's memory); it is given four times --limit.
+# commands. The reference holds the weights as stored (bf16: a model's parameters times 2 bytes, a tied head once, in the computer's memory); it is given four times --limit.
+# --ref-dir DIR: the reference's rows recorded on another computer, where this one's memory does not hold the model (gemma-4-12B's ~22 GiB, Nemotron-3.5-Lightning's ~58 GiB): a file
+# DIR/MODEL.LEVEL.ref.json.gz (MODEL's / written --) made on any CPU computer by `glyd-engine usercheck --ref --record FILE --dir MODEL --level LEVEL --users 64 --tokens 5
+# --prompt-tokens 32` holds that row instead (`usercheck --ref-from FILE`: the prompts served with the tokens the file's reference chose, every row held to the file's); a file of other
+# weights, level, prompts or reference FAILS in words. A row with no file runs the reference here, and where this computer's memory does not hold it, it FAILS in words: never a skip.
 #
 # --ext DIR: files NAME.result, each a line "PASS|FAIL|SKIP<TAB>NAME<TAB>detail": parity-kimi-k3, parity-deepseek-v4, parity-glm-5.3 (single-user parity on their reference hardware),
 # bench-no-regression (`glyd bench --compare BASE.json CAND.json` against the previous record on the gate's GPU: exit 0) and packs-since-v0.29 (every published pack loads). Where --engine is
 # given, packs-since-v0.29 is not read but run: `glyd-engine packcheck --gpu --engine` (the pack-compatibility suite of the tree it was built from), and the line says so.
 set -u
 
-GPU=""; MODELS="$(dirname "$0")/m2-models.txt"; GLYD="${GLYD:-glyd}"; ENGINE=""; OUT=""; EXT=""; LIMIT=1800; ROWS=""; MACHINE=""; PLAN_ONLY=0
+GPU=""; MODELS="$(dirname "$0")/m2-models.txt"; GLYD="${GLYD:-glyd}"; ENGINE=""; OUT=""; EXT=""; LIMIT=1800; ROWS=""; MACHINE=""; PLAN_ONLY=0; REFDIR=""
 PORT="${GLYD_GATE_PORT:-18735}"; USERS=64; REPLY=128
 REQUIRED_EXT="parity-kimi-k3 parity-deepseek-v4 parity-glm-5.3 bench-no-regression packs-since-v0.29"
 NO_REF="not run: the check is a development command (glyd-engine usercheck --ref), and no --engine names a development build that has it"
@@ -43,6 +48,7 @@ while [ $# -gt 0 ]; do
     --gpu) need $# "$1"; GPU="$2"; shift 2 ;; --models) need $# "$1"; MODELS="$2"; shift 2 ;; --glyd) need $# "$1"; GLYD="$2"; shift 2 ;;
     --engine) need $# "$1"; ENGINE="$2"; shift 2 ;; --out) need $# "$1"; OUT="$2"; shift 2 ;; --ext) need $# "$1"; EXT="$2"; shift 2 ;;
     --limit) need $# "$1"; LIMIT="$2"; shift 2 ;; --rows) need $# "$1"; ROWS="$2"; shift 2 ;; --machine) need $# "$1"; MACHINE="$2"; shift 2 ;;
+    --ref-dir) need $# "$1"; REFDIR="$2"; shift 2 ;;
     --plan-only) PLAN_ONLY=1; shift ;;
     -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
     *) echo "m2-gate.sh: $1: not an option (--help)"; exit 2 ;;
@@ -52,6 +58,7 @@ case "$LIMIT" in ''|*[!0-9]*) echo "m2-gate.sh: --limit takes a number of second
 [ -f "$MODELS" ] || { echo "m2-gate.sh: $MODELS: no such file"; exit 2; }
 if [ "$PLAN_ONLY" = 1 ] && [ -z "$MACHINE" ]; then echo "m2-gate.sh: --plan-only needs --machine PRESET (rtx4080s, l4)"; exit 2; fi
 if [ -n "$ENGINE" ] && [ ! -x "$ENGINE" ]; then echo "m2-gate.sh: --engine $ENGINE: not an executable file"; exit 2; fi
+if [ -n "$REFDIR" ] && [ ! -d "$REFDIR" ]; then echo "m2-gate.sh: --ref-dir $REFDIR: no such directory"; exit 2; fi
 if [ -z "$OUT" ]; then OUT="$(mktemp -d "${TMPDIR:-/tmp}/m2-gate.XXXXXX")" || exit 2   # (a directory made new, 0700: not a name another user could have made first)
 elif [ -e "$OUT" ] && [ ! -O "$OUT" ]; then echo "m2-gate.sh: $OUT exists and is not yours"; exit 2
 else mkdir -p "$OUT" && chmod 700 "$OUT" || exit 2; fi
@@ -269,13 +276,19 @@ run_row() { # MODEL LEVELS CONTEXTS
   done
 }
 
-# logits_vs_ref MODEL LEVEL: `glyd-engine usercheck --ref` of --engine on the model at the level, 64 users: PASS or FAIL as its last verdict line says, and its exit status agrees
+# logits_vs_ref MODEL LEVEL: `glyd-engine usercheck --ref` of --engine on the model at the level, 64 users (with --ref-dir's file of the row, `--ref-from FILE`): PASS or FAIL as
+# its last verdict line says, and its exit status agrees
 logits_vs_ref() {
-  local m="$1" l="$2" log line code
+  local m="$1" l="$2" log line code src="" from=""
   if [ -z "$ENGINE" ]; then step SKIP "logits-vs-ref:$m:$l" "$NO_REF"; return; fi
   log="$OUT/ref-$(printf '%s' "$m:$l" | tr '/:@' '___').log"
-  tmo $((LIMIT * 4)) "$ENGINE" usercheck --ref --dir "$m" --level "$l" --users "$USERS" --tokens 5 --prompt-tokens 32 > "$log" 2>&1; code=$?
-  line="$(grep -E '^(PASS|FAIL) usercheck --ref' "$log" | tail -1)"
+  if [ -n "$REFDIR" ] && [ -f "$REFDIR/$(printf '%s' "$m" | sed 's|/|--|g').$l.ref.json.gz" ]; then
+    from="$REFDIR/$(printf '%s' "$m" | sed 's|/|--|g').$l.ref.json.gz"; src=" [the reference's rows from $from]"
+    tmo $((LIMIT * 4)) "$ENGINE" usercheck --ref-from "$from" --dir "$m" --level "$l" --users "$USERS" --tokens 5 --prompt-tokens 32 > "$log" 2>&1; code=$?
+  else
+    tmo $((LIMIT * 4)) "$ENGINE" usercheck --ref --dir "$m" --level "$l" --users "$USERS" --tokens 5 --prompt-tokens 32 > "$log" 2>&1; code=$?
+  fi
+  line="$(grep -E '^(PASS|FAIL) usercheck --ref' "$log" | tail -1)$src"
   case "$code:$line" in
     0:PASS*) step PASS "logits-vs-ref:$m:$l" "${line#PASS usercheck --ref }" ;;
     *:FAIL*) step FAIL "logits-vs-ref:$m:$l" "${line#FAIL usercheck --ref } (log: $log)" ;;

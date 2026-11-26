@@ -1,7 +1,8 @@
 //! A whole model on the reference backend: a description (`describe::Described`) loaded from a tensor source, one sequence's tokens to
 //! logits. The per-model check of the design (§3): tiny models built from a family's real config, logits against transformers.
 
-use super::{depth_mix, norm::norm, Params, RefLayer, SeqState};
+use super::Libm;
+use super::{depth_mix, norm::norm, Held, Params, RefLayer, SeqState};
 use crate::ffi::{err, Error, Result};
 use crate::runtime::describe::{Described, Source};
 use crate::runtime::kinds::{Body, Collapse, Comp, Head, Mixer, Mla, ModelDesc, Residual, Rounding, StreamsP};
@@ -68,7 +69,7 @@ pub fn logit(h: &Head, z: f32) -> f32 {
     };
     let r = |v: f32, at: bool| if at { super::bf16(v) } else { v };
     let z = r(r(z, product) * h.scale, ops);
-    h.softcap.map_or(z, |c| r(c * r(r(z / c, ops).tanh(), ops), ops))
+    h.softcap.map_or(z, |c| r(c * r(r(z / c, ops).ltanh(), ops), ops))
 }
 
 /// Kimi-K3's depth mix for one token: the completed groups' sums (the sources) and the open group's partial sum.
@@ -111,9 +112,11 @@ impl Depth {
 
 pub struct RefModel {
     pub desc: ModelDesc,
-    pub embed: Vec<f32>,
+    /// The embedding [vocab, hidden], held as `Held` holds a tensor (bf16 where its values are).
+    pub embed: Held,
     pub final_norm: Vec<f32>,
-    pub head: Vec<f32>,
+    /// The LM head's matrix; None where the head is the embedding (a tied head, held once).
+    pub head: Option<Held>,
     pub layers: Vec<RefLayer>,
     /// The model's own roles (`Described::extra`).
     pub p: Params,
@@ -128,9 +131,13 @@ impl RefModel {
         if es != [desc.vocab, desc.hidden] {
             return err(format!("{}: {es:?}, not [{}, {}]", d.embed, desc.vocab, desc.hidden));
         }
+        let embed = Held::new(es, embed);
         let head = match &d.head {
-            Some(h) => get(src, h)?.1,
-            None => embed.clone(),
+            Some(h) => {
+                let (s, v) = get(src, h)?;
+                Some(Held::new(s, v))
+            }
+            None => None,
         };
         let mut layers = Vec::new();
         for (b, roles) in desc.blocks.iter().zip(&d.blocks) {
@@ -147,6 +154,35 @@ impl RefModel {
             p.put(role, &shape, v);
         }
         Ok(RefModel { final_norm: get(src, &d.final_norm)?.1, embed, head, layers, desc, p, record: None })
+    }
+
+    /// Token `t`'s row of the embedding, as f32.
+    pub fn embed_row(&self, t: usize) -> Vec<f32> {
+        let d = self.desc.hidden;
+        self.embed.w().row(t * d, d)
+    }
+
+    /// The LM head's matrix as a product reads it: its own, or the embedding where the head is tied.
+    pub fn head_w(&self) -> super::W<'_> {
+        self.head.as_ref().unwrap_or(&self.embed).w()
+    }
+
+    /// Every weight held in f32, the tied head still the embedding (a check's: what the model held as stored is held to).
+    #[cfg(test)]
+    pub fn widen(&mut self) {
+        self.layers.iter_mut().for_each(|l| l.p.widen());
+        self.p.widen();
+        self.embed = self.embed.widened();
+        self.head = self.head.as_ref().map(Held::widened);
+    }
+
+    /// The bytes the model's weights hold (`Held::bytes`): every block's, the model's own roles, the embedding and the head once.
+    pub fn bytes(&self) -> usize {
+        self.layers.iter().map(|l| l.p.bytes()).sum::<usize>()
+            + self.p.bytes()
+            + self.embed.bytes()
+            + self.head.as_ref().map_or(0, Held::bytes)
+            + 4 * self.final_norm.len()
     }
 
     /// The model of `d` from here on with its release's simulated quantizations of its activations in the form of FP8 blocks of `block` (src/cpu_fp4.rs `Sim`;
@@ -180,7 +216,7 @@ impl RefModel {
             if t as usize >= v {
                 return err(format!("token {t} past the vocabulary of {v}"));
             }
-            let mut row: Vec<f32> = self.embed[t as usize * d..][..d].iter().map(|&x| x * e.scale).collect();
+            let mut row: Vec<f32> = self.embed_row(t as usize).into_iter().map(|x| x * e.scale).collect();
             if let Some(nm) = e.norm {
                 row = norm(&nm, &row, None, None);
             }
@@ -250,7 +286,7 @@ impl RefModel {
         let mut out = Vec::with_capacity(tokens.len());
         for (t, xt) in x.chunks(n * d).enumerate() {
             let y = self.final_h_with(xt, Some(&depth[t]), &lag[t])?;
-            out.push(super::matvec(&self.head, d, &y).into_iter().map(|z| logit(&h, z)).collect());
+            out.push(super::matvec_w(self.head_w(), d, &y).into_iter().map(|z| logit(&h, z)).collect());
         }
         Ok(out)
     }
@@ -264,8 +300,8 @@ impl RefModel {
         if token as usize >= pl.vocab {
             return err(format!("token {token} past the per-layer inputs' vocabulary of {}", pl.vocab));
         }
-        let row: Vec<f32> = self.embed[token as usize * d..][..d].iter().map(|&x| x * e.scale).collect();
-        let s = (d as f32).powf(-0.5);
+        let row: Vec<f32> = self.embed_row(token as usize).into_iter().map(|x| x * e.scale).collect();
+        let s = (d as f32).lpowf(-0.5);
         let ctx: Vec<f32> = super::matvec(self.p.vec("ple_proj")?, d, &row).into_iter().map(|v| v * s).collect();
         let w = self.p.vec("ple_norm")?;
         let own = &self.p.vec("ple_embed")?[token as usize * n..][..n];
@@ -407,7 +443,7 @@ impl RefModel {
 mod tests {
     use super::*;
     use crate::runtime::kinds::{Act, Block, Body, Embed, Ffn, Head, Mlp, Norm, Rounding, TableAt};
-    use crate::runtime::reference::{ffn, hc_weights, matvec, testing::fill};
+    use crate::runtime::reference::{ffn, hc_weights, matvec_w, testing::fill};
 
     const D: usize = 8;
     const N: usize = 4;
@@ -447,9 +483,9 @@ mod tests {
         };
         RefModel {
             desc,
-            embed: fill("lag.embed", 16 * D, -1.0, 1.0),
+            embed: Held::new(vec![16, D], fill("lag.embed", 16 * D, -1.0, 1.0)),
             final_norm: fill("lag.fn", D, 0.5, 1.5),
-            head: fill("lag.head", 16 * D, -0.5, 0.5),
+            head: Some(Held::new(vec![16, D], fill("lag.head", 16 * D, -0.5, 0.5))),
             layers,
             p: Params::new(),
             record: None,
@@ -529,7 +565,7 @@ mod tests {
         let n = |x: &[f32], w: Option<&[f32]>| norm(&Norm::rms(1e-6), x, w, None);
         let weigh = |w: &[f32], x: &[f32]| -> Vec<f32> { (0..D).map(|i| (0..N).map(|j| w[j] * x[j * D + i]).sum()).collect() };
         for (t, &id) in tokens.iter().enumerate() {
-            let mut x: Vec<f32> = (0..N).flat_map(|_| m.embed[id as usize * D..][..D].to_vec()).collect();
+            let mut x: Vec<f32> = (0..N).flat_map(|_| m.embed_row(id as usize)).collect();
             let mut prev = vec![1.0, 0.0, 0.0, 0.0];
             for l in &m.layers {
                 let (pre, post, comb) = hc_weights(&s, &l.p, &x).unwrap();
@@ -542,7 +578,7 @@ mod tests {
                 }
                 prev = pre;
             }
-            assert_eq!(got[t], matvec(&m.head, D, &n(&weigh(&prev, &x), Some(&m.final_norm))), "token {t}");
+            assert_eq!(got[t], matvec_w(m.head_w(), D, &n(&weigh(&prev, &x), Some(&m.final_norm))), "token {t}");
         }
         let own = model(streams(false), Collapse::Mean).forward(&tokens, 0).unwrap();
         assert!(own.iter().zip(&got).all(|(a, b)| a != b));
@@ -572,13 +608,13 @@ mod tests {
         use crate::runtime::reference::bf16;
         let h = |rounding, scale| Head { tied: true, softcap: Some(30.0), scale, collapse: Collapse::None, rounding };
         let z = 23.456_79f32;
-        assert_eq!(logit(&h(Rounding::F32, 1.0), z), 30.0 * (z / 30.0).tanh());
-        assert_eq!(logit(&h(Rounding::Once, 1.0), z), 30.0 * (bf16(z) / 30.0).tanh());
-        let release = bf16(bf16(bf16(bf16(z) / 30.0).tanh()) * 30.0);
+        assert_eq!(logit(&h(Rounding::F32, 1.0), z), 30.0 * (z / 30.0).ltanh());
+        assert_eq!(logit(&h(Rounding::Once, 1.0), z), 30.0 * (bf16(z) / 30.0).ltanh());
+        let release = bf16(bf16(bf16(bf16(z) / 30.0).ltanh()) * 30.0);
         assert_eq!(logit(&h(Rounding::Twice, 1.0), z), release);
-        assert_ne!(release, 30.0 * (z / 30.0).tanh());
+        assert_ne!(release, 30.0 * (z / 30.0).ltanh());
         // (the scale's product rounded too, before the cap)
-        assert_eq!(logit(&h(Rounding::Twice, 0.5), z), bf16(bf16(bf16(bf16(bf16(z) * 0.5) / 30.0).tanh()) * 30.0));
+        assert_eq!(logit(&h(Rounding::Twice, 0.5), z), bf16(bf16(bf16(bf16(bf16(z) * 0.5) / 30.0).ltanh()) * 30.0));
         // (no cap: the product, rounded where the head rounds)
         let bare = Head { softcap: None, ..h(Rounding::Twice, 1.0) };
         assert_eq!((logit(&bare, z), logit(&Head { rounding: Rounding::F32, ..bare }, z)), (bf16(z), z));
