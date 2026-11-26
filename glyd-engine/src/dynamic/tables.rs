@@ -147,15 +147,6 @@ impl HostTable {
         });
         Ok(())
     }
-
-    /// Bytes of the table's members in the system's page cache now (`Mapping::resident`): what reading its rows left there.
-    pub fn resident(&self) -> usize {
-        self.pieces
-            .iter()
-            .enumerate()
-            .map(|(k, (m, off, at))| m.resident(*off, (self.pieces.get(k + 1).map_or(self.held, |p| p.2) - at) * self.row_bytes))
-            .sum()
-    }
 }
 
 /// `out` (items of `size` bytes) filled by `f(i, item i)`, by up to 128 threads for many items: a row of a mapped table not in the page cache is a read from
