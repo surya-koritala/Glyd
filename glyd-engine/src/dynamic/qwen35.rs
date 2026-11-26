@@ -519,7 +519,7 @@ mod tests {
         }
         assert_eq!(shapes(&c), (256, 8, true, Some(vec![512, 1024]), Some(vec![512, 1024])));
         c["shared_expert_intermediate_size"] = 0.into();
-        assert_eq!(shapes(&c).2, false);
+        assert!(!shapes(&c).2);
     }
 
     /// A config that gives no `layer_types` has transformers': a full attention at every `full_attention_interval`-th layer (4 unless it says), the others linear; one
