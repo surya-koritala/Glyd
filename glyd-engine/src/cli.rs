@@ -1418,12 +1418,14 @@ fn load_lossy(
     if let Some(t) = a.flag("temp") {
         defaults.temperature = t.parse().map_err(|_| Refusal::new(format!("--temp {t}: not a number"), ""))?;
     }
+    // (served, the users it holds are said once its step is made: `serve_lossy`)
     let line = format!(
-        "Ready in {}: {name} on the {}, {} of weights, {} tokens of context, one user at a time.",
+        "Ready in {}: {name} on the {}, {} of weights, {} tokens of context{}.",
         fmt_time(t0.elapsed().as_secs_f64()),
         gpu.name,
         gib(bytes as u64),
-        plan.context
+        plan.context,
+        if served.is_empty() { ", one user at a time" } else { "" }
     );
     // (what /v1/glyd/info says of it, where it is served)
     let info = (!served.is_empty()).then(|| {
@@ -1870,11 +1872,13 @@ fn load_dynamic(
     }
     let distinct = devices.iter().collect::<std::collections::BTreeSet<_>>().len();
     let on = if distinct == 1 { format!("the {}", gpu_name(devices[0])) } else { format!("{distinct} GPUs") };
+    // (served, the users it holds are said once its step is made: `serve_lossy`)
     let line = format!(
-        "Ready in {}: {name} on {on}, {} of weights, {} tokens of context, one user at a time.",
+        "Ready in {}: {name} on {on}, {} of weights, {} tokens of context{}.",
         fmt_time(t0.elapsed().as_secs_f64()),
         gib(total),
-        e.capacity()
+        e.capacity(),
+        if served.is_empty() { ", one user at a time" } else { "" }
     );
     let info = (!served.is_empty()).then(|| {
         let held = e.held();
