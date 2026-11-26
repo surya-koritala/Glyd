@@ -120,6 +120,21 @@ impl Described {
         s
     }
 
+    /// The tensors of its attention blocks' own matrices (a block whose mixer attends over the context: `Mixer::Attention`, `Mla`, `Compressed`), its residual's
+    /// and its norms' roles aside, and the LM head where it is not the embedding: the matrices a second layout holds (Condor's server's `--hi`, v0.34.2's
+    /// engine's: the long context's precision kept where the rest is at fewer bits).
+    pub fn attention_and_head(&self) -> BTreeSet<String> {
+        let mut s: BTreeSet<String> = self.head.iter().cloned().collect();
+        for (b, roles) in self.desc.blocks.iter().zip(&self.blocks) {
+            if !matches!(b.body, Body::Mixer(Mixer::Attention(_) | Mixer::Mla(_) | Mixer::Compressed(_))) {
+                continue;
+            }
+            let aside = |r: &str| r == "norm_in" || r == "norm_out" || b.residual.roles().contains(&r);
+            s.extend(roles.iter().filter(|(r, _)| !aside(r)).flat_map(|(_, src)| src.names()));
+        }
+        s
+    }
+
     /// The routed experts' tensors it reads (the Moe kind's `experts_*` roles, the draft heads' too).
     pub fn routed_experts(&self) -> BTreeSet<String> {
         let heads = self.mtp.iter().flat_map(|(blocks, _)| blocks.iter());

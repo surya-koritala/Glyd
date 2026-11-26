@@ -3606,6 +3606,10 @@ pub fn make_model(a: &crate::args::Args) -> Result<()> {
     if q4 {
         tables_at_4_bits(dir, &|_| true)?;
     }
+    // (`--sidecar`: a codes pack's case with a sidecar `pack/hot/` over its pack, `codes_sidecar`)
+    if a.has("sidecar") {
+        codes_sidecar(dir)?;
+    }
     // (`--servable`: the files a server needs besides the weights, for a client to talk to it: a tokenizer, the chat template and the end token; the
     // family's chat template where one is made: Qwen's for the Qwen3.5 layout's and Qwen3.8-Flash-Next's cases, GLM-5.3's for its layout's and
     // GLM-5.3-Flash's, Kimi-K3's own (src/chat.rs `KIMI_CHAT`) for its cases, DeepSeek-V4.1's release's own (tests/fixtures/chat_deepseek_v41.jinja, its
@@ -3625,6 +3629,27 @@ pub fn make_model(a: &crate::args::Args) -> Result<()> {
         write_serving_files(dir, template)?;
     }
     Ok(())
+}
+
+/// A sidecar `hot/` beside the experts of the codes pack in `dir/pack` (`cb_random::write_side`, as a release's pack has its hottest experts again in other
+/// formats: `CbPack::with_side`): every layer's odd-numbered experts drawn again at random as three-bit codebook rows, which the expert cache's places hold in
+/// place of the pack's where the server takes the sidecar (`PackMode::side`, `--side`), and not with `--no-side`.
+pub fn codes_sidecar(dir: &Path) -> Result<()> {
+    use crate::cb_random::{write_side, CodesExpert, Rng};
+    let c = crate::runtime::config::ModelConfig::load(dir)?;
+    let (hidden, inter, nl) = (c.num("hidden_size").unwrap_or(0), c.num("moe_intermediate_size").unwrap_or(0), c.num("num_hidden_layers").unwrap_or(0));
+    let pack = crate::cb_pack::CbPack::open_dims(&dir.join("pack"), hidden, inter)?;
+    let mut rng = Rng(0x2026_1126_0000_0dc5);
+    let layers: Vec<(usize, Vec<(usize, CodesExpert)>)> = (0..=nl)
+        .filter_map(|l| pack.kept(l).map(|k| (l, k.to_vec())))
+        .map(|(l, kept)| {
+            (l, kept.into_iter().filter(|e| e % 2 == 1).map(|e| (e, CodesExpert::random(hidden, inter, (Fmt::Cb3, Fmt::Cb3), &mut rng))).collect())
+        })
+        .collect();
+    if layers.is_empty() {
+        return err(format!("--sidecar: {} has no codes pack of experts", dir.display()));
+    }
+    write_side(&dir.join("pack").join("hot"), hidden, inter, &layers)
 }
 
 /// The tokens of a servable random model: Qwen's own special ones in the places the random config's end token (id 2) wants them, then every printable ASCII character and the new line and tab, one each. A text with

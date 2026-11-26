@@ -57,7 +57,7 @@ pub fn load_stage_hb(dir: &Path, m: &ModelConfig, o: &Opts, st: Stage, hc: Optio
             })
             .collect()
     };
-    let placing = Placing { across: true, ram: crate::dense_ram::Placer::last(st.layers.0, st.layers.1, hc.map_or(0, |x| x.dense)) };
+    let placing = Placing { across: true, ram: crate::dense_ram::Placer::last(st.layers.0, st.layers.1, hc.map_or(0, |x| x.dense)), hi: None };
     let o = Opts { layout: Some(o.layout.unwrap_or(Layout::Tiered)), ..o.clone() };
     Dyn::new_placed(dir, m, d, None, st, &o, &experts, &placing)
 }

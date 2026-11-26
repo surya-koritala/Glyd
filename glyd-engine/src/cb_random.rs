@@ -247,36 +247,57 @@ pub fn write_codes(dir: &Path, hidden: usize, inter: usize, layers: &[(Vec<i8>, 
         // (a format by the pack's letters: "a" the two-bit rows, `Fmt::parse`)
         let f: Vec<String> = experts.iter().map(CodesExpert::name).collect();
         meta.insert(l.to_string(), serde_json::json!({"file": file, "s": s, "f": f}));
-        let as_bytes = |v: &[u16]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
-        let books: Vec<(String, Vec<u8>, [u64; 2])> = experts
-            .iter()
-            .enumerate()
-            .flat_map(|(e, x)| {
-                [
-                    (format!("e{e:04}.d.1"), as_bytes(&x.down_books), [inter as u64, x.down.entries() as u64]),
-                    (format!("e{e:04}.u.1"), as_bytes(&x.up_books), [2 * inter as u64, x.up.entries() as u64]),
-                ]
-            })
-            .collect();
-        let codes: Vec<(String, &[u8], [u64; 2])> = experts
-            .iter()
-            .enumerate()
-            .flat_map(|(e, x)| {
-                [
-                    (format!("e{e:04}.d.0"), &x.down_codes[..], [inter as u64, x.down.row_bytes(hidden) as u64]),
-                    (format!("e{e:04}.u.0"), &x.up_codes[..], [2 * inter as u64, x.up.row_bytes(hidden) as u64]),
-                ]
-            })
-            .collect();
-        let mut tensors: Vec<(&str, &str, Vec<u64>, &[u8])> = books.iter().map(|(n, b, sh)| (n.as_str(), "BF16", sh.to_vec(), &b[..])).collect();
-        tensors.extend(codes.iter().map(|(n, b, sh)| (n.as_str(), "U8", sh.to_vec(), *b)));
-        crate::pack::write_safetensors(&dir.join(&file), &[], &tensors)?;
+        write_layer(&dir.join(&file), hidden, inter, &experts.iter().enumerate().collect::<Vec<_>>())?;
     }
     let mut v = serde_json::json!({"format": "glyd-x/1", "layers": meta});
     if all().any(Fmt::is_tq) {
         v["q"] = serde_json::json!(if all().any(|f| matches!(f, Fmt::Tq3 | Fmt::Tq4)) { 2 } else { 1 });
     }
     std::fs::write(dir.join("meta.json"), v.to_string()).map_err(io)
+}
+
+/// `dir` written as a sidecar of a pack (`cb_pack::CbPack::with_side`: other copies of some of its experts): for each layer given (its number in the pack, and
+/// its experts there by their numbers), a file of those experts as a pack's layer holds them (`write_layer`, each named by its number in the pack), and
+/// `meta.json` (format glyd-x/1) naming each layer's file, its experts and their formats.
+pub fn write_side(dir: &Path, hidden: usize, inter: usize, layers: &[(usize, Vec<(usize, CodesExpert)>)]) -> Result<()> {
+    let io = |e: std::io::Error| Error(format!("{}: {e}", dir.display()));
+    std::fs::create_dir_all(dir).map_err(io)?;
+    let mut meta = serde_json::Map::new();
+    for (l, experts) in layers {
+        let file = format!("layer-{l:03}.safetensors");
+        write_layer(&dir.join(&file), hidden, inter, &experts.iter().map(|(e, x)| (*e, x)).collect::<Vec<_>>())?;
+        let (numbers, fmts): (Vec<usize>, Vec<String>) = experts.iter().map(|(e, x)| (*e, x.name())).unzip();
+        meta.insert(l.to_string(), serde_json::json!({"file": file, "experts": numbers, "fmts": fmts}));
+    }
+    std::fs::write(dir.join("meta.json"), serde_json::json!({"format": "glyd-x/1", "layers": meta}).to_string()).map_err(io)
+}
+
+/// A layer's file of a pack or a sidecar at `path`: every expert's entries (books), then every expert's codes, each expert's down before its up, each named
+/// by its number `e` (`eNNNN.d.1`, `.u.1`, `.d.0`, `.u.0`), as `cb_pack::CbPack::map_layer` reads a layer (of two-bit experts alone: end to end; of other
+/// formats: placed expert by expert from the header).
+fn write_layer(path: &Path, hidden: usize, inter: usize, experts: &[(usize, &CodesExpert)]) -> Result<()> {
+    let as_bytes = |v: &[u16]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+    let books: Vec<(String, Vec<u8>, [u64; 2])> = experts
+        .iter()
+        .flat_map(|&(e, x)| {
+            [
+                (format!("e{e:04}.d.1"), as_bytes(&x.down_books), [inter as u64, x.down.entries() as u64]),
+                (format!("e{e:04}.u.1"), as_bytes(&x.up_books), [2 * inter as u64, x.up.entries() as u64]),
+            ]
+        })
+        .collect();
+    let codes: Vec<(String, &[u8], [u64; 2])> = experts
+        .iter()
+        .flat_map(|&(e, x)| {
+            [
+                (format!("e{e:04}.d.0"), &x.down_codes[..], [inter as u64, x.down.row_bytes(hidden) as u64]),
+                (format!("e{e:04}.u.0"), &x.up_codes[..], [2 * inter as u64, x.up.row_bytes(hidden) as u64]),
+            ]
+        })
+        .collect();
+    let mut tensors: Vec<(&str, &str, Vec<u64>, &[u8])> = books.iter().map(|(n, b, sh)| (n.as_str(), "BF16", sh.to_vec(), &b[..])).collect();
+    tensors.extend(codes.iter().map(|(n, b, sh)| (n.as_str(), "U8", sh.to_vec(), *b)));
+    crate::pack::write_safetensors(path, &[], &tensors)
 }
 
 #[cfg(test)]
@@ -385,6 +406,25 @@ mod tests {
         for f in ["meta.json", "layer-000.safetensors"] {
             assert!(std::fs::read(a.join(f)).unwrap() == std::fs::read(b.join(f)).unwrap(), "{f}");
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A sidecar this module writes (`write_side`) is read by the pack's reader (`CbPack::with_side`): the experts it names are its copies, in its formats and
+    /// its bytes, the others the pack's own.
+    #[test]
+    fn a_written_sidecar_stands_over_the_packs_experts_it_names() {
+        let (hidden, inter) = (2560, 64);
+        let mut rng = Rng(7);
+        let s: Vec<i8> = (0..hidden).map(|i| if i % 5 == 0 { -1 } else { 1 }).collect();
+        let own: Vec<CodesExpert> = (0..4).map(|_| CodesExpert::random(hidden, inter, (Fmt::Cb2, Fmt::Cb2), &mut rng)).collect();
+        let side: Vec<(usize, CodesExpert)> = [1, 3].map(|e| (e, CodesExpert::random(hidden, inter, (Fmt::Cb3, Fmt::Cb3), &mut rng))).into();
+        let root = std::env::temp_dir().join(format!("glyd-cb-side-{}", std::process::id()));
+        write_codes(&root, hidden, inter, &[(s, own)]).unwrap();
+        write_side(&root.join("hot"), hidden, inter, &[(0, side)]).unwrap();
+        let pack = crate::cb_pack::CbPack::open_dims(&root, hidden, inter).unwrap().with_side(&root.join("hot")).unwrap();
+        let lm = pack.map_layer(0).unwrap();
+        let fmts: Vec<Fmt> = lm.descs.iter().map(|d| d.up).collect();
+        assert_eq!(fmts, [Fmt::Cb2, Fmt::Cb3, Fmt::Cb2, Fmt::Cb3]);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

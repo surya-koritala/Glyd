@@ -209,6 +209,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "kindcheck" => glyd_engine::dynamic::kindcheck::run(&a),
         "draftcheck" => glyd_engine::dynamic::head::check(&a),
         "servecheck" => glyd_engine::dynamic::qwen4x::serve_check(&a),
+        "servescore" => glyd_engine::dynamic::qwen4x::serve_score(&a),
         "roundcheck" => glyd_engine::logits::round_check(a),
         "keepcheck" => glyd_engine::logits::keep_check(a),
         "kv12cal" => glyd_engine::dynamic::kv12::cmd(a),

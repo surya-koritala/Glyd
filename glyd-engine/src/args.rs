@@ -81,6 +81,7 @@ const SWITCHES: &[&str] = &[
     "stacked",
     "no-weights",
     "ref",
+    "sidecar",
 ];
 #[cfg(not(feature = "dev"))]
 const SWITCHES: &[&str] = &[
@@ -324,8 +325,8 @@ mod tests {
     #[cfg(feature = "dev")]
     #[test]
     fn every_switch_is_read_or_passed_by_a_script() {
-        // (`tools/runpod/jobs/multigpu_job.sh` passes --p2p and --no-stream; `condor/tools/serve.sh` and `tools/oneshot/run_all.sh` --no-side)
-        const PASSED: &[&str] = &["p2p", "no-side", "no-stream"];
+        // (`tools/runpod/jobs/multigpu_job.sh` passes --p2p and --no-stream)
+        const PASSED: &[&str] = &["p2p", "no-stream"];
         let read: std::collections::BTreeSet<String> = [".has(\"", ".flag(\"", ".num(\"", ".either(\""].iter().flat_map(|c| read_by(c)).collect();
         let dead: Vec<&str> = SWITCHES.iter().copied().filter(|s| !read.contains(*s) && !PASSED.contains(s)).collect();
         assert!(dead.is_empty(), "in SWITCHES and read by no command: {dead:?}");

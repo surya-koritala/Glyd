@@ -983,11 +983,24 @@ impl Part {
 
 /// Where a stage's packed matrices are held beyond its GPU's own memory. `across`: every layer across the thread's group of GPUs where it has one
 /// (src/dynamic/tp.rs), this GPU holding its slice of the rows of each matrix big enough to slice (a Hub-format directory's, packed here). `ram`: the layers
-/// whose packed matrices are in the computer's memory, copied into one slot on the GPU before each runs (src/dense_ram.rs).
+/// whose packed matrices are in the computer's memory, copied into one slot on the GPU before each runs (src/dense_ram.rs). `hi`: the layout of the attention
+/// blocks' own matrices and the LM head (`Described::attention_and_head`), the others' the stage's (Condor's server's `--hi`).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Placing {
     pub across: bool,
     pub ram: crate::dense_ram::Placer,
+    pub hi: Option<Layout>,
+}
+
+/// Which of `d`'s matrices are at `Placing::hi`: those whose every tensor is in `hi` (`Described::attention_and_head`: the attention blocks' own, the LM head).
+pub fn at_hi(d: &ModelDesc, hi: &std::collections::BTreeSet<String>) -> Vec<bool> {
+    d.mats
+        .iter()
+        .map(|it| {
+            let mut own = it.members.iter().filter(|m| !m.is_empty() && *m != crate::weights::ZERO_ROWS).peekable();
+            own.peek().is_some() && own.all(|m| hi.contains(m))
+        })
+        .collect()
 }
 
 /// What reads a description's blocks of experts (`Op::Moe`'s, in its order) from its checkpoint, the matrices' layout given.
@@ -1187,10 +1200,16 @@ fn load_part(
     want: Option<&[bool]>,
     experts: &Experts,
     placing: &Placing,
+    hi: &[bool],
     dev: &Dev,
 ) -> Result<Part> {
     let ck = Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
     let v7 = stored(dir)?;
+    // (the matrices `hi` marks (`at_hi`: the attention blocks' own, the LM head) at `placing.hi` where it is given, each other at `layout`: packed here, not a save's)
+    if placing.hi.is_some() && v7.is_some() {
+        return err(format!("{}: a saved directory's matrices are at its saved layout, not a second one", dir.display()));
+    }
+    let level = |k: usize| placing.hi.filter(|_| hi.get(k).copied().unwrap_or(false)).unwrap_or(layout);
     // (every layer across a group of GPUs: this GPU's slice of the rows of a matrix a product multiplies by, packed here; the embedding, read by row, whole)
     let sl = if placing.across && v7.is_none() { tp::slicer() } else { None };
     if sl.is_some() && placing.ram.count() > 0 {
@@ -1229,9 +1248,9 @@ fn load_part(
             (_, Some(t)) => {
                 let (r0, rn) = t.rows(it.rows);
                 let w = crate::weights::item_words(&ck, it)?;
-                crate::weights::pack_words(&w[r0 * it.cols..(r0 + rn) * it.cols], rn, it.cols, layout, &it.members.join(" + "))
+                crate::weights::pack_words(&w[r0 * it.cols..(r0 + rn) * it.cols], rn, it.cols, level(k), &it.members.join(" + "))
             }
-            _ => pack_item_map(&ck, it, layout, &|_| {}),
+            _ => pack_item_map(&ck, it, level(k), &|_| {}),
         }
     };
     let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
@@ -1246,7 +1265,7 @@ fn load_part(
     // blocks of its rows where every layer is across a group of GPUs)
     let as_f8 = |k: usize| -> Option<(usize, usize)> {
         let it = &d.mats[k];
-        (lossless && v7.is_none() && in_ram(k).is_none() && k != d.embed && !tables::on_host(&d, k))
+        (matches!(level(k), Layout::Tiered | Layout::Twelve) && v7.is_none() && in_ram(k).is_none() && k != d.embed && !tables::on_host(&d, k))
             .then(|| crate::f8::released_shape(&ck, &it.members))
             .flatten()
     };
@@ -2098,7 +2117,12 @@ impl Dyn {
         if head_drafts {
             want[d.embed] = true;
         }
-        let big = load_part(dir, d, layout, threads, ch, rows_out, Some(&want), experts, placing, &dev)?;
+        // (the matrices at `placing.hi`: the description's attention blocks' own and its LM head, by the config parsed once)
+        let hi = match placing.hi {
+            Some(_) => at_hi(&d, &crate::runtime::describe::describe_dir_of(dir, m)?.0.attention_and_head()),
+            None => Vec::new(),
+        };
+        let big = load_part(dir, d, layout, threads, ch, rows_out, Some(&want), experts, placing, &hi, &dev)?;
         // (a draft model is packed lossy here: the big model checks every draft token, so its precision moves only how many are kept; a draft head of the model
         // at the model's layout, a chunk's rows (it reads each prompt row's streams), its rings after the model's, its LM head and embedding the model's)
         let draft = match draft {
@@ -2110,11 +2134,11 @@ impl Dyn {
                 let mut want = hd.wanted(&Stage::whole(hd.layers.len()));
                 (want[hd.embed], want[hd.lm]) = (false, false);
                 let none: &Experts = &|_, _| Ok(Vec::new());
-                let p = load_part(x.dir, hd, layout, threads, ch, 1, Some(&want), x.experts.unwrap_or(none), &Placing::default(), &dev)?;
+                let p = load_part(x.dir, hd, layout, threads, ch, 1, Some(&want), x.experts.unwrap_or(none), &Placing::default(), &[], &dev)?;
                 Some(Draft { p, k: x.k.min(VERIFY_ROWS - 1), pos: Buf::zeroed(8)?, head: Some(HeadState::default()) })
             }
             Some(x) => Some(Draft {
-                p: load_part(x.dir, x.desc, Layout::Int6, threads, 1, 1, None, x.experts.unwrap_or(&|_, _| Ok(Vec::new())), &Placing::default(), &dev)?,
+                p: load_part(x.dir, x.desc, Layout::Int6, threads, 1, 1, None, x.experts.unwrap_or(&|_, _| Ok(Vec::new())), &Placing::default(), &[], &dev)?,
                 k: x.k,
                 pos: Buf::zeroed(8)?,
                 head: None,
