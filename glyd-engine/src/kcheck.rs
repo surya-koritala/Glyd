@@ -452,7 +452,7 @@ pub fn topk_check(dev: &Dev) -> Result<bool> {
                 println!("DIFFERENT: {name}, {label}: first at {at}: host {:?}, kernel {:?}", want[at], got[at]);
             }
         }
-        // the gather (`Kern::gather_row`: the sampler's changed tokens' own logits): on every row above, the first, the last and 100 tokens of the generator's
+        // the gather (`Kern::gather_row`: a log-probability's token's own logit): on every row above, the first, the last and 100 tokens of the generator's
         // places, each the row's own value bit for bit (a bf16 widened: the zeros' signs and the infinities too)
         {
             let mut idx: Vec<i32> = vec![0, v as i32 - 1];
