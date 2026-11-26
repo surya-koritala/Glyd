@@ -731,7 +731,7 @@ pub fn rows_check(a: &crate::args::Args) -> Result<()> {
     // the reason is written): every judged line below without them; the quantizing operations bit for bit; the whole model with them, printed, never judged)
     let mut first = open(against_copy.then(|| caching(Mode::Copy, false)))?;
     let was = std::env::var("GLYD_V4_SIM").ok();
-    let parts = first.simulates() == Some(true);
+    let (parts, sim) = (first.simulates() == Some(true), first.sim());
     if parts {
         println!(
             "  DeepSeek-V4 with the release's simulated quantizations, held in three parts as its logits case is (logits::dsv4_also): 1. every line judged below runs without them (GLYD_V4_SIM=0, the reference too), at the kind's bound; 2. the operations that quantize, on the reference's own input, bit for bit (v4qcheck); 3. the whole model with them, each line printed as INFO, never a pass or fail: a rounding before a quantizer moves a value near a grid point's edge to the next one, so no path that is not the reference's bits before each quantizer is held to the kind's bound by it"
@@ -944,7 +944,7 @@ pub fn rows_check(a: &crate::args::Args) -> Result<()> {
             Some(v) => std::env::set_var("GLYD_V4_SIM", v),
             None => std::env::remove_var("GLYD_V4_SIM"),
         }
-        match crate::dsv4_ref::qcheck_rows(64) {
+        match crate::dsv4_ref::qcheck_rows(sim, 64) {
             Ok(()) => println!("PASS part 2: the operations that quantize as the release does, on the reference's own input: no element differs"),
             Err(x) => {
                 println!("FAIL part 2: {}", x.msg);
