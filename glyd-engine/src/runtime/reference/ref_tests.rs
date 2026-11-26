@@ -547,3 +547,56 @@ fn nemotron_model_described_against_the_engines_logits() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(v.ok, "{:?}", v.notes);
 }
+
+/// The Gated DeltaNet bodies of the `qwen4x-s2` case's draw against themselves with the values the GPU stores in bf16 rounded (the products q, k, v, the
+/// gates', and the core's output into `o`), on 32 sequences of a prompt of 8 rows at random (normed) then 2 decode steps, measured as `kindcheck` measures
+/// a body (the prompt's rows together, a step's row alone): each at most half the kind's bound (`kindcheck::bound`), so that the kernels have the other
+/// half. Drawn with dt_bias about N(0, 1) the state forgot a token in about a step, a step's output was a few query-key products near 0 for random
+/// queries and keys, and a last place of q or k moved a step's row by up to 4.3e-2, past the bound of 3e-2 itself (`kindcheck qwen4x-s2 --prompt 8 --steps 2`
+/// on an A10: 3.04e-2); drawn about N(-4.6, 1), as the family initializes it, at most 7.6e-3 (the prompt's rows 5.3e-3 to 7.1e-3 on both draws).
+#[test]
+fn qwen4x_s2_deltanet_floor() {
+    use crate::dynamic::kindcheck::{bound, Class};
+    use crate::runtime::reference::model::{checkpoint_tensor, RefModel};
+    let dir = std::env::temp_dir().join(format!("glyd-deltanet-floor-{}", std::process::id()));
+    crate::logits::qwen4x_s2_random(&dir).unwrap();
+    let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+    let d = crate::runtime::describe::describe(&cfg).unwrap();
+    let ck = Checkpoint::open(&dir).unwrap();
+    let m = RefModel::load(&d, &|n: &str| checkpoint_tensor(&ck, n)).unwrap();
+    let rel = |a: f32, b: f32| a / b.max(1e-30);
+    let mut bodies = 0;
+    for (bi, b) in m.layers.iter().enumerate() {
+        let Body::Mixer(Mixer::Linear(l)) = &b.block.body else { continue };
+        let p = &b.p;
+        let (mut prompt, mut steps) = (0f32, 0f32);
+        for seq in 0..32 {
+            let (mut s0, mut s1) = (linear::LinearState::new(l), linear::LinearState::new(l));
+            let (mut pd, mut pm) = (0f32, 0f32);
+            for t in 0..10 {
+                let mut h = fill(&format!("deltanet floor {seq} {t}"), b.hidden, -1.0, 1.0);
+                let rms = (h.iter().map(|x| x * x).sum::<f32>() / b.hidden as f32).sqrt();
+                h.iter_mut().for_each(|x| *x = bf16(*x / rms));
+                let want = linear::step(l, p, &mut s0, &h).unwrap();
+                let prod = |r: &str| -> Vec<f32> { p.prod(r, &h).unwrap().into_iter().map(bf16).collect() };
+                let qkv = if p.has_prod("qkv") { prod("qkv") } else { [prod("q"), prod("k"), prod("v")].concat() };
+                let o = linear::core(l, p, &mut s1, &qkv, &prod("beta"), &prod("decay"), &prod("gate")).unwrap();
+                let got = p.prod("o", &o.into_iter().map(bf16).collect::<Vec<_>>()).unwrap();
+                let diff = got.iter().zip(&want).fold(0f32, |m, (x, y)| m.max((x - y).abs()));
+                let most = want.iter().fold(0f32, |m, y| m.max(y.abs()));
+                if t < 8 {
+                    (pd, pm) = (pd.max(diff), pm.max(most));
+                } else {
+                    steps = steps.max(rel(diff, most));
+                }
+            }
+            prompt = prompt.max(rel(pd, pm));
+        }
+        println!("qwen4x-s2 block {bi}, Gated DeltaNet: the prompt's rows {prompt:.2e}, a step's row {steps:.2e}");
+        let half = bound(Class::DeltaNet) / 2.0;
+        assert!(prompt <= half && steps <= half, "block {bi}: the draw's floor (prompt {prompt:e}, steps {steps:e}) past half the kind's bound");
+        bodies += 1;
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(bodies > 0, "no Gated DeltaNet body in the qwen4x-s2 draw");
+}

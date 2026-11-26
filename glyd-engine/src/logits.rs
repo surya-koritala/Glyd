@@ -1480,7 +1480,8 @@ pub fn qwen4x_random(out: &Path) -> Result<()> {
 /// A second random model of the Qwen3.8-Flash-Next family (`qwen4_exp`) with other counts than the release's: the tiny model's manifest with 2 residual streams,
 /// index heads of 64 over pools of 2 and no n-gram embedding (its kernels take four streams yet); each tensor's shape the counts make (the gated residuals'
 /// [2 hidden] norms, [rank, 2 hidden] and [2 hidden, rank] products, [2, 2 hidden] inject weights; the index product's (heads + 1) 64 rows, its norms of 64).
-/// Its experts are drawn as its other matrices are, not on the six-bit grid the first case's sit on: only a lossless load holds them.
+/// Its experts are drawn as its other matrices are, not on the six-bit grid the first case's sit on: only a lossless load holds them; its Gated DeltaNet's
+/// decay as the family initializes it (`qwen4x_s2_manifest`).
 pub fn qwen4x_s2_random(out: &Path) -> Result<()> {
     manifest_random(&qwen4x_s2_manifest()?, out, 0x2026_1125_0000_0002, false, "Qwen3.8-Flash-Next family of 2 streams, index heads of 64 over pools of 2")
 }
@@ -1905,6 +1906,9 @@ pub fn qwen4x_s2_manifest() -> Result<String> {
     m["config"] = Value::String(c.to_string());
     // (its experts not on the six-bit grid: a lossy level's codes under the lossless level's name then move its logits and its experts' bits)
     m["experts"] = OFF_GRID.into();
+    // (its Gated DeltaNet's dt_bias about N(-4.6, 1), as the family initializes it (dt log-uniform from 0.001 to 0.1, its inverse softplus -6.9 to -2.3), not
+    // N(0, 1): there the state forgot a token in about a step, and a last place of q or k moved a step's row past the kind's bound (`ref_tests::qwen4x_s2_deltanet_floor`))
+    m["dt_bias"] = (-4.6).into();
     Ok(m.to_string())
 }
 
@@ -2083,12 +2087,12 @@ pub fn qwen35_random(out: &Path) -> Result<()> {
 /// Gated DeltaNet and a gated full-attention one, each followed by 32 experts of which a token takes 10 and the gated shared expert): every tensor of its description at its
 /// shape, its values by `manifest_random`'s rules for each kind of tensor.
 pub fn qwen35moe_random(out: &Path) -> Result<()> {
-    qwen35moe_draw(include_str!("../tests/fixtures/qwen35moe_tiny_config.json"), out)
+    qwen35moe_draw(include_str!("../tests/fixtures/qwen35moe_tiny_config.json"), out, 1.0)
 }
 
 /// The Qwen3.5 layout with experts at its release's width (tests/fixtures/qwen35_configs.json's Qwen3.5-35B-A3B: 2,048 wide, experts of 512 neurons, 8 a token, the
-/// shared expert of 512, its attention's and linear attention's heads, its kinds of layer in their order), `layers` layers of `experts` experts each, with the small
-/// case's vocabulary and rotation: drawn as `qwen35moe_random` draws its model. A model whose experts exceed a GPU's memory, for the expert cache's checks
+/// shared expert of 512, its attention's and linear attention's heads, its kinds of layer in their order; a cut of fewer layers than its run of kinds up to the first full
+/// attention, that run's last ones), `layers` layers of `experts` experts each, with the small case's vocabulary and rotation: drawn as `qwen35moe_random` draws its model. A model whose experts exceed a GPU's memory, for the expert cache's checks
 /// (`logitsmodel qwen35moe DIR --real --layers L --experts E`; `storecheck`).
 pub fn qwen35moe_random_real(out: &Path, layers: usize, experts: usize) -> Result<()> {
     let js = |t: &str| serde_json::from_str::<Value>(t).map_err(|e| Error(e.to_string()));
@@ -2113,8 +2117,14 @@ pub fn qwen35moe_random_real(out: &Path, layers: usize, experts: usize) -> Resul
     }
     let kinds = rel["layer_types"].as_array().filter(|k| !k.is_empty()).ok_or_else(|| Error("Qwen3.5-35B-A3B's config has no layer_types".into()))?;
     (c["num_hidden_layers"], c["num_experts"]) = (json!(layers.max(1)), json!(experts.max(1)));
-    c["layer_types"] = Value::Array((0..layers.max(1)).map(|l| kinds[l % kinds.len()].clone()).collect());
-    qwen35moe_draw(&c.to_string(), out)
+    // (a cut shorter than the release's run of kinds up to its first full attention takes that run's last layers, so that a cut of two holds both kinds of attention)
+    let run = kinds.iter().position(|k| k == "full_attention").map_or(1, |p| p + 1);
+    let skip = run.saturating_sub(layers.max(1));
+    c["layer_types"] = Value::Array((0..layers.max(1)).map(|l| kinds[(l + skip) % kinds.len()].clone()).collect());
+    // (its head at half the small case's scale, the logits' RMS about 0.5 as GLM-5.3's and Kimi-K3's random models draw them: at the small case's (RMS 1) a cut of two
+    // layers moved its rows with no choice apart by KL mean 1.04e-5 against itself with its experts' sums in another order, past a tenth of the kind's bound;
+    // `storecheck --floor`)
+    qwen35moe_draw(&c.to_string(), out, 0.5)
 }
 
 /// `qwen35moe_random`'s model (with `real` (layers, experts): `qwen35moe_random_real`'s) with each layer's experts written as two stacked tensors
@@ -2133,15 +2143,21 @@ pub fn qwen35moe_stacked(out: &Path, real: Option<(usize, usize)>) -> Result<()>
     std::fs::remove_dir_all(&at).map_err(|e| Error(format!("{}: {e}", at.display())))
 }
 
-/// `qwen35moe_random`'s draw of the model of config `text`.
-fn qwen35moe_draw(text: &str, out: &Path) -> Result<()> {
+/// `qwen35moe_random`'s draw of the model of config `text`, its LM head `head` times the manifest's rule.
+fn qwen35moe_draw(text: &str, out: &Path, head: f64) -> Result<()> {
     let d = crate::runtime::describe::describe(&serde_json::from_str(text).map_err(|e| Error(e.to_string()))?)?;
     let tensors = d
         .names()
         .into_iter()
         .map(|n| d.shapes.get(&n).map(|s| json!([n, "BF16", s])).ok_or_else(|| Error(format!("the description has no shape for {n}"))))
         .collect::<Result<Vec<Value>>>()?;
-    manifest_random(&json!({"config": text, "tensors": tensors}).to_string(), out, 0x2026_1124_0000_0333, false, "Qwen3.5-family mixture of experts")
+    manifest_random(
+        &json!({"config": text, "tensors": tensors, "head": head}).to_string(),
+        out,
+        0x2026_1124_0000_0333,
+        false,
+        "Qwen3.5-family mixture of experts",
+    )
 }
 
 /// A case that is another case's model in another stored form (the same weights): that case. `qwen35moe-st`: the Qwen3.5 layout with experts, each layer's
@@ -2347,6 +2363,8 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
         v
     };
     let on_grid = m["experts"] != OFF_GRID;
+    // (the Gated DeltaNet's dt_bias about N(`dt_bias`, 1), and the LM head's scale times `head`: the manifest's, else 0 and 1)
+    let (dt_bias, head) = (m["dt_bias"].as_f64().unwrap_or(0.0), m["head"].as_f64().unwrap_or(1.0));
     let tied = !m["tensors"].as_array().is_some_and(|t| t.iter().any(|e| e[0] == "lm_head.weight"));
     let mut tensors: Vec<(String, &str, Vec<u64>, Vec<u8>)> = Vec::new();
     for e in m["tensors"].as_array().ok_or_else(|| Error("manifest".into()))? {
@@ -2368,7 +2386,7 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
         } else if name.ends_with("A_log") {
             (0..n).map(|_| (u01() * 15.0 + 1.0).ln() as f32).collect()
         } else if name.ends_with("dt_bias") {
-            (0..n).map(|_| gauss(&mut u01) as f32).collect()
+            (0..n).map(|_| (gauss(&mut u01) + dt_bias) as f32).collect()
         } else if name.contains("conv1d") {
             (0..n).map(|_| (gauss(&mut u01) * 0.4) as f32).collect()
         } else if on_grid && (name.contains("experts.gate_up_proj") || name.contains("experts.down_proj")) {
@@ -2380,7 +2398,7 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
             let std = if tied && name.contains("embed_tokens") { 1.0 / (cols as f64).sqrt() } else { 1.0 };
             (0..n).map(|_| (gauss(&mut u01) * std) as f32).collect()
         } else if shape.len() == 2 || name.contains("experts.") {
-            let s = 1.0 / (cols as f64).sqrt();
+            let s = if name == "lm_head.weight" { head } else { 1.0 } / (cols as f64).sqrt();
             (0..n).map(|_| (gauss(&mut u01) * s) as f32).collect()
         } else {
             return err(format!("no rule for {name} {shape:?}"));
@@ -5943,6 +5961,9 @@ pub(crate) struct FirstApart {
     pub first: Vec<i64>,
     pub second: Vec<i64>,
     pub margins: (f32, f32),
+    /// At its position, each router's input on the two runs (its layer, the difference's RMS over the first run's), every routed layer up to its own: how far
+    /// the runs had drifted apart where they first chose apart.
+    pub drift: Vec<(usize, f32)>,
 }
 
 impl FirstApart {
@@ -5963,7 +5984,14 @@ impl FirstApart {
             self.second,
             self.margins.0,
             self.margins.1
-        )
+        ) + &if self.drift.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; the routers' inputs there apart by layer (the difference's RMS over the first run's): {}",
+                self.drift.iter().map(|(l, d)| format!("{l} {d:.1e}")).collect::<Vec<_>>().join(", ")
+            )
+        }
     }
 }
 
@@ -6005,7 +6033,20 @@ fn first_apart(routers: Option<&Routers>, a: &Hist, b: &Hist) -> Result<(Option<
                 })
             };
             let margins = (on(&x, &sa, &sb)?, on(&y, &sb, &sa)?);
-            return Ok((Some(FirstApart { pos, layer, kind, first: x.chosen.clone(), second: y.chosen.clone(), margins }), unseen));
+            // (each router's input at this position on both runs, up to this layer: the drift that moved the choice)
+            let bf = |h: &u16| f32::from_bits((*h as u32) << 16) as f64;
+            let drift = ca
+                .iter()
+                .filter(|c| c.kind == ChoiceKind::Route && c.layer <= layer)
+                .filter_map(|c| match (&c.from, cb.iter().find(|d| d.layer == c.layer && d.kind == ChoiceKind::Route).map(|d| &d.from)) {
+                    (ChoiceFrom::Router(p), Some(ChoiceFrom::Router(q))) if p.len() == q.len() => {
+                        let (d, m) = p.iter().zip(q).fold((0f64, 0f64), |(d, m), (u, v)| (d + (bf(u) - bf(v)).powi(2), m + bf(u).powi(2)));
+                        Some((c.layer, (d / m.max(1e-300)).sqrt() as f32))
+                    }
+                    _ => None,
+                })
+                .collect();
+            return Ok((Some(FirstApart { pos, layer, kind, first: x.chosen.clone(), second: y.chosen.clone(), margins, drift }), unseen));
         }
     }
     Ok((None, unseen))
@@ -6109,7 +6150,12 @@ impl Judge {
 
     /// The line, PASS or FAIL as `ok` says (`ok()`, and what else the check holds), and its notes printed.
     pub(crate) fn print(&self, what: &str, ok: bool) {
-        println!("{} {what}: {}; {}", if ok { "PASS" } else { "FAIL" }, self.all.words(false), self.words());
+        self.print_as(if ok { "PASS" } else { "FAIL" }, what)
+    }
+
+    /// The line headed `head` (PASS, FAIL, or INFO where the figures are printed and not judged), and its notes.
+    pub(crate) fn print_as(&self, head: &str, what: &str) {
+        println!("{head} {what}: {}; {}", self.all.words(false), self.words());
         for n in &self.notes {
             println!("  {n}");
         }
