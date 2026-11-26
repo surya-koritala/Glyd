@@ -4570,6 +4570,7 @@ pub mod sizing {
         let bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(nl)).collect();
         // (each GPU's stages: their layers' bytes and their share of the sequence, the rest half with the first and half with the last)
         for t in devs.iter().filter(|t| devices.contains(&t.ordinal)) {
+            let on = devices.iter().filter(|&&d| d == t.ordinal).count() as u64;
             let held: u64 = (0..devices.len())
                 .filter(|&k| devices[k] == t.ordinal)
                 .map(|k| {
@@ -4579,7 +4580,8 @@ pub mod sizing {
                         + if k + 1 == devices.len() { rest - rest / 2 } else { 0 }
                 })
                 .sum();
-            let room = t.free.saturating_sub(LOSSY_WORK + reserve_of(t.free));
+            // (each stage its own engine's work: a GPU named twice holds two)
+            let room = t.free.saturating_sub(on * LOSSY_WORK + reserve_of(t.free));
             if held > room {
                 return Err(Refusal::unsupported(
                     format!(
@@ -4643,7 +4645,8 @@ pub mod sizing {
             bf16: lv.bf16,
             kv: seq,
             kv12: false,
-            work: used.len() as u64 * LOSSY_WORK,
+            // (each stage its engine's work: a GPU named twice works for two)
+            work: devices.len() as u64 * LOSSY_WORK,
             draft: 0,
             reserve: used.iter().map(|t| reserve_of(t.free)).sum(),
             free: used.iter().map(|t| t.free).sum(),
@@ -6317,6 +6320,8 @@ mod tests {
         let chosen = plan(&["run", "q", "--split", "20", "--devices", "0,0"], &big).unwrap();
         let sp = chosen.spread.as_ref().unwrap();
         assert!(sp.cuts == [20] && sp.devices == [0, 0] && chosen.users == 1 && chosen.experts.is_none(), "{}", chosen.text());
+        // (two stages on one GPU: two engines' work, one GPU's reserve and free memory)
+        assert_eq!((chosen.work, chosen.reserve, chosen.free), (2 * LOSSY_WORK, reserve_of(40 << 30), 40 << 30));
         let bad = |w: &[&str], devs: &[Target], said: &str| {
             let r = plan(w, devs).unwrap_err();
             assert!(r.what.contains(said), "{w:?}: {r}");
