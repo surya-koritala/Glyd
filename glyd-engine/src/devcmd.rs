@@ -390,12 +390,8 @@ fn cmd_pack(a: &Args) -> Result<()> {
         return glyd_engine::hbpack::run(model, Path::new(a.need(2, "OUT")?), a.num("threads", 16usize)?, Path::new(codes));
     }
     let src = glyd_gpu::save::Source::find(model).map_err(|e| Error(e.to_string()))?;
-    // (a lossy level's layout is the one asked: the model, a Qwen3.5, a Nemotron 3 Super or a GLM-5.3-Flash, has no Qwen3 config to choose a layout by; GLM-5.3-Flash is packed at the lossy levels alone)
-    if glyd_engine::glm::is_glm(&std::fs::read_to_string(src.dir.join("config.json")).unwrap_or_default())
-        && !matches!(a.layout()?, Some(Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int3))
-    {
-        return err("GLM-5.3-Flash is packed at a lossy level: --layout i6 or i5");
-    }
+    // (a lossy level's layout is the one asked: the model, a Qwen3.5 or a Nemotron 3 Super, has no Qwen3 config to choose a layout by; a level its family's row
+    // does not run is refused by the packer, in run's words)
     // (a Gemma 4 model has no Qwen3 config either: its layout is the one asked, penguin's where none is)
     let gemma = glyd_engine::gemma4::ConfigG4::load(&src.dir).is_ok();
     let layout = match a.layout()?.filter(|l| gemma || matches!(l, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3)) {

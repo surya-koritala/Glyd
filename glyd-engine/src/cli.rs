@@ -3767,7 +3767,7 @@ mod tests {
     }
 
     /// #136: `pack` parses the model's config.json once too, a GLM-5.3-Flash release's whose keys do not parse included: it was parsed again there to say which key
-    /// (the refusal's words are the same).
+    /// (the refusal's words are the same). GLM-5.3-Flash's row runs no block level: its save at kestrel is refused in run's words, from that one parse.
     #[cfg(feature = "dev")]
     #[test]
     fn pack_parses_a_models_config_once() {
@@ -3788,6 +3788,8 @@ mod tests {
             counts.push((case, key_of_another_type, parses() - before));
             if key_of_another_type {
                 assert!(packed.unwrap_err().msg.contains("num_hidden_layers"), "the key is named");
+            } else if case == "glm" {
+                assert!(packed.unwrap_err().msg.contains("runs at the penguin and hummingbird levels in this engine, not kestrel"), "refused by its row");
             } else {
                 packed.unwrap();
             }

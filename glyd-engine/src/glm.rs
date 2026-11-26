@@ -100,11 +100,6 @@ pub struct ConfigGlm {
     pub prefix: &'static str,
 }
 
-/// Whether a config.json is a GLM-5.3-Flash's (what the dispatcher asks first).
-pub fn is_glm(text: &str) -> bool {
-    crate::runtime::config::family_of(text) == Some(crate::support::Family::Glm)
-}
-
 /// GLM-5.3-Flash's own keys of its text model (the shared ones are `runtime::config::Shared`'s), typed from the one parse of its config.json.
 #[derive(Default, serde::Deserialize)]
 #[serde(default)]
@@ -1119,7 +1114,6 @@ pub(crate) mod tests {
         // the end tokens are the config's list when there is no generation_config.json, and generation_config.json's where there is one
         assert_eq!(ConfigGlm::parse(text(), "x", None).unwrap().eos, c.eos);
         assert_eq!(ConfigGlm::parse(text(), "x", Some(r#"{"eos_token_id": [7, 8]}"#)).unwrap().eos, vec![7, 8]);
-        assert!(is_glm(text()) && !is_glm(r#"{"architectures": ["Qwen3ForCausalLM"]}"#) && !is_glm("{}"));
     }
 
     #[test]

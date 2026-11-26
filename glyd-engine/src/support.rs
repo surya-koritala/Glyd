@@ -67,7 +67,8 @@ pub struct Support {
     pub drafts: bool,
     /// How the planner sizes the family's path and what its loader takes (src/plan.rs `sizing`).
     pub route: Route,
-    /// How `glyd-engine pack` saves the family (src/pack.rs `plan`, made from the model's description); None: it saves no level of it.
+    /// How `glyd-engine pack` saves the family (src/pack.rs `plan`, made from the model's description), at the levels it runs (`levels`; another is refused:
+    /// `pack_refusal`); None: it saves no level of it.
     pub saves: Option<Saves>,
     /// What the one-GPU route's lossy levels take of it besides its model's description: the rows sized on one GPU (`Sizing::OneGpu`) have one, no other.
     pub lossy: Option<Lossy>,
@@ -408,6 +409,40 @@ impl Support {
         self.levels.contains(&level)
     }
 
+    /// The refusal `run` gives this family at `level` where it does not run it there (`check`'s words); `model`: the name asked, `name`: its short name.
+    pub fn refusal(&self, model: &str, name: &str, level: &str) -> Option<Refusal> {
+        if self.runs_at(level, model) {
+            return None;
+        }
+        let now = self.levels_now(model);
+        if now.is_empty() {
+            return Some(Refusal::unsupported(
+                format!("{name} ({}) does not run with glyd run yet", self.name),
+                "Run it with Condor: condor/README.md (glyd run takes it with ROADMAP P8)",
+            ));
+        }
+        let fix = match now[0] {
+            "penguin" => format!("Run it lossless: glyd run {model}"),
+            l => format!("Run it at the {l} level: glyd run {model}:{l}"),
+        };
+        let list = match now.as_slice() {
+            [one] => format!("the {one} level"),
+            [rest @ .., last] => format!("the {} and {last} levels", rest.join(", ")),
+            [] => unreachable!(),
+        };
+        Some(Refusal::unsupported(format!("{name} ({}) runs at {list} in this engine, not {level}", self.name), fix))
+    }
+
+    /// The refusal of `glyd-engine pack` in `layout` where its level is not one this family runs (`refusal`, `run`'s words): a save no level of it reads. A
+    /// layout's level is its name's (`levels::name_of`); the three-bit layout, which is no level, packs where the family runs a block level (its codes are
+    /// the block levels' at three bits).
+    pub fn pack_refusal(&self, layout: Layout, model: &str, name: &str) -> Option<Refusal> {
+        if layout == Layout::Int3 && ["kestrel", "swift", "wren"].iter().any(|l| self.allows(l)) {
+            return None;
+        }
+        self.refusal(model, name, crate::levels::name_of(layout))
+    }
+
     /// Whether its hummingbird level is the one-GPU route's (src/moe_hb.rs: its experts on a latent the kernels take, every other matrix six-bit, a pre-packed
     /// directory: src/hbpack.rs), not the dynamic route's (src/hb_pack.rs, src/moe_cb.rs).
     pub fn hummingbird_one_gpu(&self) -> bool {
@@ -468,26 +503,7 @@ pub fn check(cfg_text: &str, model: &str, name: &str, level: &str) -> Result<&'s
 /// `check` of a config.json parsed once.
 pub fn check_in(c: &ModelConfig, model: &str, name: &str, level: &str) -> Result<&'static Support, Refusal> {
     let s = row(family_in(c, name)?);
-    if s.runs_at(level, model) {
-        return Ok(s);
-    }
-    let now = s.levels_now(model);
-    if now.is_empty() {
-        return Err(Refusal::unsupported(
-            format!("{name} ({}) does not run with glyd run yet", s.name),
-            "Run it with Condor: condor/README.md (glyd run takes it with ROADMAP P8)",
-        ));
-    }
-    let fix = match now[0] {
-        "penguin" => format!("Run it lossless: glyd run {model}"),
-        l => format!("Run it at the {l} level: glyd run {model}:{l}"),
-    };
-    let list = match now.as_slice() {
-        [one] => format!("the {one} level"),
-        [rest @ .., last] => format!("the {} and {last} levels", rest.join(", ")),
-        [] => unreachable!(),
-    };
-    Err(Refusal::unsupported(format!("{name} ({}) runs at {list} in this engine, not {level}", s.name), fix))
+    s.refusal(model, name, level).map_or(Ok(s), Err)
 }
 
 /// The refusal `run` gives on `m`'s GPU with the most free memory (the one a run uses), or None where it runs there:
