@@ -70,22 +70,21 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
 /// indexer's products as their E4M3 codes and scales (`Part::scales`), the experts and the shared expert (`experts::F8`); at a block level its matrices are
 /// packed from the bf16 they dequantise to. A development build's GLYD_GLM_F8=0: the experts as that bf16 at the lossless level too.
 pub fn load_plain(dir: &Path, o: &Opts) -> Result<Dyn> {
-    plain(dir, o, None, None)
+    plain(dir, o, None, None, None)
 }
 
 /// `load_plain` with the model's draft head (its MTP layer, DeepSeek-V3's joined form: `lower::draft_head`, src/dynamic/head.rs) drafting `k` tokens a round
 /// (at most `VERIFY_ROWS` - 1), its experts held as the model's.
 pub fn load_plain_drafting(dir: &Path, o: &Opts, k: usize) -> Result<Dyn> {
-    plain(dir, o, None, Some(k))
+    plain(dir, o, None, Some(k), None)
 }
 
-/// The dynamic route's stage of the model (src/dynamic/split.rs `StageLoad`): stage `st`'s layers, every expert of them on its GPU; an expert cache is
-/// refused in words.
+/// The dynamic route's stage of the model (src/dynamic/split.rs `StageLoad`): stage `st`'s layers, every expert of them on its GPU, or in the expert cache as
+/// `caching` says where it is given (src/tiering.rs: its places a layer on the GPU, every expert in the computer's memory; FP8 experts as released each packed
+/// on its own, `experts::F8`). Its layers' own matrices stay on the GPU: a caching that asks for some in the computer's memory is refused (src/dense_ram.rs
+/// packs a layer's matrices there from the bf16 an FP8 one dequantises to, another product than the one as released; its row asks for none).
 pub fn stage_plain(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
-    if caching.is_some() {
-        return err("GLM-5.3's layout holds every expert of a stage on its GPU: its experts are not in the expert cache yet");
-    }
-    plain(dir, o, Some(st), None)
+    plain(dir, o, Some(st), None, caching)
 }
 
 /// The layers and end tokens of the model in `dir`, as `load_plain` reads them (the dynamic route's `Loader::ends`).
@@ -112,8 +111,18 @@ fn latent_whole(d: &crate::runtime::describe::Described, eos: Vec<i64>, max_pos:
     super::lower::latent_moe(d, eos, max_pos, &Stage::whole(d.desc.blocks.len() / 2))
 }
 
-/// `load_plain` of stage `st` (the whole model where None), with its draft head drafting `draft` tokens a round where given.
-fn plain(dir: &Path, o: &Opts, st: Option<Stage>, draft: Option<usize>) -> Result<Dyn> {
+/// `load_plain` of stage `st` (the whole model where None), with its draft head drafting `draft` tokens a round where given, its experts in the expert cache as
+/// `caching` says where it is given (not with a draft head: its verify pass takes the experts on the GPU).
+fn plain(dir: &Path, o: &Opts, st: Option<Stage>, draft: Option<usize>, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+    if draft.is_some() && caching.is_some() {
+        return err("GLM-5.3's draft head with its experts in the expert cache: its verify pass takes the experts on the GPU");
+    }
+    if let Some(c) = caching.filter(|c| c.dense > 0) {
+        return err(format!(
+            "GLM-5.3's layers keep their matrices on the GPU: {} layers of them in the computer's memory would be packed from the bf16 its FP8 matrices dequantise to",
+            c.dense
+        ));
+    }
     let (kinds, label, eos, max_pos) = plain_config(dir)?;
     let layers = kinds.desc.blocks.len() / 2;
     let st = st.unwrap_or(Stage::whole(layers));
@@ -129,10 +138,14 @@ fn plain(dir: &Path, o: &Opts, st: Option<Stage>, draft: Option<usize>) -> Resul
         dev: &dev,
         lib: &lib,
     });
-    let held = super::experts::Held { hb: None, cache: None, ordinal: o.device, f8, dense: None, codebooks: None };
+    let store = caching.map(crate::hbg_store::store_for);
+    let held = super::experts::Held { hb: None, cache: caching.zip(store.as_ref()), ordinal: o.device, f8, dense: None, codebooks: None };
     let experts = |ck: &Checkpoint, level: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
         super::experts::of_layers(&kinds, st.layers, 2)
-            .map(|(ix, m, roles)| Ok(Box::new(ResidentMoe(super::experts::held(m, roles, hidden, ck, level, Some((ix, &held)))?)) as Box<dyn MoeBlock>))
+            .map(|(ix, m, roles)| {
+                crate::status::STATUS.beat(); // (a block of experts takes seconds to read)
+                Ok(Box::new(ResidentMoe(super::experts::held(m, roles, hidden, ck, level, Some((ix, &held)))?)) as Box<dyn MoeBlock>)
+            })
             .collect()
     };
     // (the head's experts as the model's, its layer the one after the model's)

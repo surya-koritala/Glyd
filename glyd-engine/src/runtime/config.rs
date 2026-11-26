@@ -241,6 +241,7 @@ fn family_by(arch: &str, model_type: &str, nested: Option<&str>) -> Option<Famil
         _ if m == "glm_moe_dsa" => Family::GlmDsa,
         _ if a == "NemotronHForCausalLM" => Family::NemotronH,
         _ if m == "deepseek_v4" => Family::DeepSeekV4,
+        _ if m == "deepseek_v41" => Family::DeepSeekV41,
         _ if m == "qwen4_exp" => Family::FlashNext,
         _ if m.starts_with("gemma4") || nested.is_some_and(|t| t.starts_with("gemma4")) => Family::Gemma4,
         // (the plain dense kind: every model type the description builder's `llama` reading takes, whatever the release calls its architecture)

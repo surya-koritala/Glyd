@@ -348,6 +348,15 @@ pub trait Gen {
     /// The plan the loader took: `as_step` holds at most its `users` sequences, their keys, values and states in its `kv` bytes (src/plan.rs `LoadPlan`); an engine no
     /// plan sized takes what the GPU's free memory leaves.
     fn take_plan(&mut self, _users: usize, _kv: u64) {}
+    /// The images of the next `reply`'s prompt, in order (each one's place in the prompt as many image tokens as its rows): an engine whose model has a vision
+    /// tower reads them; any other refuses them.
+    fn see(&mut self, images: Vec<std::sync::Arc<crate::vision::Image>>) -> Result<()> {
+        if images.is_empty() {
+            Ok(())
+        } else {
+            err("this model reads no images")
+        }
+    }
     /// A reply's speed is this engine's own, for the planner to keep (`plan::observe`): not where the replies are a scheduler's sequences (`server::Remote`), which
     /// are timed where they run.
     fn own_speed(&self) -> bool {

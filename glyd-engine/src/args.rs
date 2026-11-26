@@ -98,6 +98,7 @@ const SWITCHES: &[&str] = &[
     "servable",
     "chain",
     "join",
+    "expect-apart",
 ];
 #[cfg(not(feature = "dev"))]
 const SWITCHES: &[&str] = &[

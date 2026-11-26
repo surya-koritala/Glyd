@@ -26,7 +26,9 @@ struct AttnArgs {
     bf16* out;         // the attention's output, rows `os` apart, head h at h d
     const bf16* gate;  // the output gate's values, head h of row t at t gs + h g_step (null: no gate)
     float* part;       // a decode step's parts [(t nq + h) S + z][d + 2]
+    const int* rpos;   // each row's M-RoPE position (t, h, w) at 6 r (src/dynamic/images.rs), each angle turning by the one `rax` names; null: qpos alone
     long long tstride; // row t's table at tab + t tstride (a pass's decode rows of several sequences: src/dynamic/rows.rs `RowTabs`); 0: one table for every row
+    unsigned long long rax; // two bits an angle: the position (0 t, 1 h, 2 w) of rpos its M-RoPE section turns by
     int d, stride, q_step, k_off, v_off;
     int norm;          // the q and k norms: 0 none, 1 x w, 2 x (1 + w), 3 no weight
     int v_norm;        // the values normed without a weight
@@ -60,15 +62,17 @@ __device__ __forceinline__ float at_score(const AttnArgs& a, float s) {
 
 // ---- the preparation --------------------------------------------------------------------------------------------------------------------------------------------------
 // Row r's head hh (a query head below nq, else key head hh - nq with its values): the norm (one block sum), the queries' scale, the rotary (value j < span with
-// its pair j +- span / 2, angle j mod span / 2 where that is below `pairs`), the query to qo, the key and the value (normed or as it is) to the ring at the
-// row's position. Block (row, head), d / 2 threads: thread t holds t and t + d / 2. Grid y: nq + nk heads, or nq where no keys are written (a draft model's).
-// blockIdx.z above 0: `pf`'s prefetch of the next product. A padding row (a negative position: a decode step padded to its graph's rows) writes nothing.
-__device__ __forceinline__ float at_rot(const AttnArgs& a, const float* xs, int j, float v, int p) {
+// its pair j +- span / 2, angle j mod span / 2 where that is below `pairs`; an M-RoPE row's angle k from the table's row of the position its section turns by),
+// the query to qo, the key and the value (normed or as it is) to the ring at the row's position. Block (row, head), d / 2 threads: thread t holds t and t + d / 2.
+// Grid y: nq + nk heads, or nq where no keys are written (a draft model's). blockIdx.z above 0: `pf`'s prefetch of the next product. A padding row (a negative
+// position: a decode step padded to its graph's rows) writes nothing.
+__device__ __forceinline__ float at_rot(const AttnArgs& a, const float* xs, int j, float v, int p, int r) {
     const int half = a.span >> 1;
     if (j >= a.span) return v;
     const bool lo = j < half;
     const int k = lo ? j : j - half;
     if (k >= a.pairs) return v;
+    if (a.rpos) p = a.rpos[6 * r + (int)((a.rax >> (2 * k)) & 3)];
     const float c = b2f(a.cs[(size_t)p * a.pairs + k]), sv = b2f(a.sn[(size_t)p * a.pairs + k]);
     const float o = xs[lo ? j + half : j - half];
     if (a.round) return lo ? b2f(f2b(b2f(f2b(v * c)) - b2f(f2b(o * sv)))) : b2f(f2b(b2f(f2b(v * c)) + b2f(f2b(o * sv))));
@@ -110,8 +114,8 @@ __device__ __forceinline__ void attn_prep_t(const AttnArgs& a) {
         xs[t] = v0;
         xs[t + H] = v1;
         __syncthreads();
-        v0 = at_rot(a, xs, t, v0, p);
-        v1 = at_rot(a, xs, t + H, v1, p);
+        v0 = at_rot(a, xs, t, v0, p, r);
+        v1 = at_rot(a, xs, t + H, v1, p, r);
     }
     const size_t slot = a.cap < 0 ? (size_t)r : at_place(a.tab ? a.tab + (size_t)r * a.tstride : nullptr, p, a.cap);
     bf16* o = isq ? a.qo + (size_t)r * a.nq * D + hh * D : a.kc + (slot * a.nk + kh) * D;

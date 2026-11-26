@@ -271,7 +271,7 @@ fn released_glm53_flash_config() {
 }
 
 /// Qwen3.8-Flash-Next's released config (tests/fixtures/qwen4x_config.json) describes its released checkpoint (tests/fixtures/qwen4x_tensors.json, the
-/// release's safetensors headers) exactly: every tensor, the MTP layer's as the draft head's, less the vision tower; each at the checkpoint's shape where the
+/// release's safetensors headers) exactly: every tensor, the MTP layer's as the draft head's, the vision tower's; each at the checkpoint's shape where the
 /// description gives one.
 #[test]
 fn released_qwen38_flash_next_config() {
@@ -714,6 +714,56 @@ fn header_names(h: &serde_json::Value) -> BTreeSet<String> {
     out
 }
 
+/// #333: DeepSeek-V4.1-Flash's weight map, described from its released config alone, is its safetensors index (DeepSeek-V4.1-Flash-1017's file headers,
+/// recorded by ranges from the Hub with no token and no weight read: 96,085 tensors in 48 files, 510,286,023,000 bytes, the index's total; the first
+/// V4.1-Flash's index names the same tensors). Every tensor the description reads is there, at the shape the description sizes it by (FP4 experts two
+/// values a byte), each quantized one with its scales; and every tensor there is read but the vision tower, its aligner, the image delimiters and the
+/// routers' image-token biases (`names::DEEPSEEK_V41`'s unread parts): the decoder's 40 layers, the Engram tables of layers 1 and 14, and the three DSpark
+/// layers of 128 experts.
+#[test]
+fn deepseek_v41_flashs_weight_map_is_its_index() {
+    let h = fixture("headers/DeepSeek-V4.1-Flash-1017.json");
+    assert_eq!((h["repo"].as_str(), h["index_total_size"].as_u64()), (Some("deepseek-ai/DeepSeek-V4.1-Flash-1017"), Some(510_286_023_000)));
+    let d = describe(&serde_json::from_str(h["config"].as_str().unwrap()).unwrap()).unwrap();
+    let have = header_names(&h);
+    assert_eq!(have.len(), 96_085);
+    d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+    let names = d.names();
+    let left: Vec<&String> = have.iter().filter(|n| !names.contains(*n)).collect();
+    let tower = |n: &str| n.starts_with("vision.") || n.starts_with("aligner.") || n.starts_with("image_") || n.ends_with(".ffn.gate.bias_vl");
+    assert!(left.iter().all(|n| tower(n)), "{:?}", left.iter().find(|n| !tower(n)));
+    assert_eq!(left.iter().filter(|n| n.ends_with(".ffn.gate.bias_vl")).count(), 43);
+    // (each tensor's shape: the header's groups by mask, layer and expert)
+    let mut shape = std::collections::BTreeMap::new();
+    for g in h["groups"].as_array().unwrap() {
+        let sh: Vec<usize> = g["shape"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect();
+        let mask = g["mask"].as_str().unwrap().to_string();
+        let ls: Vec<String> = g["layers"].as_array().unwrap().iter().map(|l| l.as_u64().unwrap().to_string()).collect();
+        for l in if mask.contains("{L}") { ls } else { vec![String::new()] } {
+            for e in 0..g["experts"].as_u64().unwrap().max(1) {
+                shape.insert(mask.replace("{L}", &l).replace("{E}", &e.to_string()), (g["dtype"].as_str().unwrap().to_string(), sh.clone()));
+            }
+        }
+    }
+    let mut sized = 0;
+    for (n, want) in &d.shapes {
+        let (dtype, got) = &shape[n];
+        let want = if dtype == "I8" { vec![want[0], want[1] / 2] } else { want.clone() };
+        assert_eq!(got, &want, "{n} ({dtype})");
+        sized += 1;
+    }
+    // (every tensor read is sized but the scales, each beside its matrix)
+    assert_eq!(sized + d.scales.len(), names.len());
+    for (w, sc) in &d.scales {
+        assert!(have.contains(w) && have.contains(sc), "{w}: {sc}");
+    }
+    // (the Engram tables: FP8 rows of 256 with a scale a run of 32, the primes past 16,000,000 counted)
+    for (l, rows) in [(1, 384_006_168usize), (14, 384_016_682)] {
+        assert_eq!(shape[&format!("layers.{l}.engram.embed.weight")], ("F8_E4M3".to_string(), vec![rows, 256]));
+        assert_eq!(shape[&format!("layers.{l}.engram.embed.scale")], ("F8_E8M0".to_string(), vec![rows, 8]));
+    }
+}
+
 /// #333, Kimi-K3.1: its sparse attention (`text_config.dsa_config`, the keys of vLLM's `KimiLinearDSAConfig`; the release's own config.json is not in the
 /// fixtures yet) on Kimi-K3's released config: each latent attention layer it names takes the sparse attention's indexer of a key a token in the gated form, its
 /// keys RMS-normed at the model's eps (LayerNorm-ed with a bias where `index_k_norm_type` says so), and reads the indexer's tensors; the delta attention layers
@@ -958,9 +1008,45 @@ fn condors_tiny_config_describes_its_tensors() {
         .all(|b| matches!(b.residual, Residual::GatedStreams(GatedStreamsP { streams: 4, lowrank: 64 })) || matches!(b.body, Body::Ngram(_))));
 }
 
+/// The vision tower kind of a multimodal config (`describe::with_tower`): the language model alone (`language_model_only`) and a config with no tower describe
+/// none; a tower whose features go into the text's layers (deepstack), a text rotary whose M-RoPE sections are not interleaved, an image token outside the
+/// vocabulary, rows of another width than the text's, and a key the builder does not know are refused in words, each naming what it is.
+#[test]
+fn a_vision_tower_is_described_or_refused_in_words() {
+    let rel = fixture("qwen4x_config.json");
+    let edited = |f: &dyn Fn(&mut serde_json::Value)| {
+        let mut c = rel.clone();
+        f(&mut c);
+        describe(&c)
+    };
+    let d = edited(&|c| c["language_model_only"] = true.into()).unwrap();
+    assert!(d.desc.vision.is_none() && d.vision.is_none() && d.unread == ["model.visual."]);
+    let d = edited(&|c| {
+        c.as_object_mut().unwrap().remove("vision_config");
+    })
+    .unwrap();
+    assert!(d.desc.vision.is_none());
+    for (f, words) in [
+        (
+            Box::new(|c: &mut serde_json::Value| c["vision_config"]["deepstack_visual_indexes"] = serde_json::json!([5, 11]))
+                as Box<dyn Fn(&mut serde_json::Value)>,
+            "deepstack",
+        ),
+        (Box::new(|c: &mut serde_json::Value| c["text_config"]["rope_parameters"]["mrope_interleaved"] = false.into()), "interleaved M-RoPE"),
+        (Box::new(|c: &mut serde_json::Value| c["image_token_id"] = 300_000.into()), "image_token_id"),
+        (Box::new(|c: &mut serde_json::Value| c["vision_config"]["out_hidden_size"] = 2048.into()), "out_hidden_size 2048"),
+        (Box::new(|c: &mut serde_json::Value| c["vision_config"]["window_size"] = 112.into()), "window_size"),
+        (Box::new(|c: &mut serde_json::Value| c["vision_config"]["num_position_embeddings"] = 2000.into()), "a square table"),
+    ] {
+        let e = edited(&*f).err().unwrap_or_else(|| panic!("{words}: described")).msg;
+        assert!(e.contains(words), "{words}: {e}");
+    }
+}
+
 /// Condor's released config (tests/fixtures/qwen4x_config.json) describes every tensor Condor's engine loads (src/qwen4x.rs: each layer's matrices, the gated
-/// residuals' and the final mixer's, the n-gram embedding's products; the MTP layer's, its front's and its final mixer's as the draft head), the vision tower
-/// left; and what it does not take is refused in words.
+/// residuals' and the final mixer's, the n-gram embedding's products; the MTP layer's, its front's and its final mixer's as the draft head) and the vision
+/// tower as the release's own engine read it (src/vision.rs: 27 blocks of 16 heads over 1,152, 4,304 neurons, a 48 x 48 position table, patches of 3 x 2 x
+/// 16 x 16 merged 2 x 2 into rows of 2,560, image token 248,056), nothing left; and what it does not take is refused in words.
 #[test]
 fn condors_released_config() {
     use super::kinds::*;
@@ -999,7 +1085,15 @@ fn condors_released_config() {
     let missing: Vec<&String> = loads.iter().filter(|n| !names.contains(*n)).collect();
     assert!(missing.is_empty(), "{missing:?}");
     assert_eq!((d.desc.blocks.len(), d.mtp_layers, d.desc.hidden, d.desc.vocab), (97, 1, 2560, 248320));
-    assert_eq!(d.unread, ["model.visual."]);
+    assert!(d.unread.is_empty(), "{:?}", d.unread);
+    let v = d.desc.vision.as_ref().expect("the release's vision tower");
+    assert_eq!(
+        (v.blocks, v.hidden, v.heads, v.head_dim(), v.inter, v.act, v.patch_dim(), v.merge, v.out, v.table, v.theta, v.image_token),
+        (27, 1152, 16, 72, 4304, Act::GeluTanh, 1536, 2, 2560, 48, 10_000.0, 248056)
+    );
+    let roles = d.vision.as_ref().unwrap();
+    assert_eq!((roles.own.len(), roles.blocks.len(), roles.tensor(Some(26), "qkv").unwrap()), (9, 27, "model.visual.blocks.26.attn.qkv.weight"));
+    assert_eq!(names.iter().filter(|n| n.starts_with("model.visual.")).count(), 9 + 27 * 12);
     // (the head: one indexed attention and its experts on the model's four streams, its front of two products and its own mixer)
     let h = &d.desc.mtp[0];
     assert_eq!((h.blocks.len(), h.input, d.mtp.len(), d.mtp[0].0.len()), (2, MtpInput::Streams, 1, 2));
@@ -1192,15 +1286,30 @@ fn deepseek_v41_describes_with_csa2_lagged_mhc_and_engram() {
     refused(&|t| t["engram_num_embeddings"][1] = 7.into(), "engram_num_embeddings");
 }
 
-/// DeepSeek-V4.1-Flash's configuration as published (tests/fixtures/deepseek_v41_config.json: the keys and defaults of the released configuration
-/// class, read by vLLM and by unsloth; rms_norm_eps, whose class default is a placeholder, V4's release's): 40 layers (2 window-only, 18 of ratio 2,
-/// 20 of ratio 1), kv sources 2, 8, 14 and 20, index sources those and 24 to 36, the candidate source 20; Engram before layers 1 and 14, whose
-/// tables are the primes past 16,000,000 that engram_num_embeddings counts (384,006,168 and 384,016,682 rows); three DSpark layers of 128 experts.
+/// DeepSeek-V4.1-Flash's configuration as published (tests/fixtures/deepseek_v41_config.json: the release's config.json, DeepSeek-V4.1-Flash-1017's, which
+/// is the first DeepSeek-V4.1-Flash's byte for byte; its rms_norm_eps 1e-20, its inference code's norm_eps too): 40 layers (2 window-only, 18 of ratio 2, 20
+/// of ratio 1), kv sources 2, 8, 14 and 20, index sources those and 24 to 36, the candidate source 20; Engram before layers 1 and 14, whose tables are the
+/// primes past 16,000,000 that engram_num_embeddings counts (384,006,168 and 384,016,682 rows); three DSpark layers of 128 experts.
 #[test]
 fn deepseek_v41_flashs_published_config_describes() {
     use super::kinds::*;
     let d = describe(&fixture("deepseek_v41_config.json")).unwrap_or_else(|e| panic!("{}", e.msg));
     assert_eq!(d.desc.blocks.len(), 2 * 40 + 2);
+    assert_eq!(d.desc.final_norm.eps, 1e-20);
+    // (the release's rounding points: its RMSNorms' outputs rounded once, the streams' too; Engram's gate in fp32; the head's product in fp32)
+    assert_eq!(
+        (d.desc.final_norm.rounding, d.desc.blocks[0].norm_in.rounding, d.desc.blocks[1].norm_in.rounding),
+        (Rounding::Once, Rounding::Once, Rounding::Once)
+    );
+    assert_eq!((d.desc.blocks[2].norm_in.rounding, d.desc.head.rounding), (Rounding::F32, Rounding::F32));
+    assert!(
+        matches!(d.desc.blocks[2].body, Body::Ngram(_))
+            && matches!(d.desc.blocks[0].residual, Residual::Streams(StreamsP { rounding: Rounding::Once, lagged: true, .. }))
+    );
+    assert_eq!(d.fp8_block, Some(32));
+    // (the release's file: the header fixture's config, recorded from the Hub)
+    let h = fixture("headers/DeepSeek-V4.1-Flash-1017.json");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(h["config"].as_str().unwrap()).unwrap(), fixture("deepseek_v41_config.json"));
     // (the block of each layer's attention: two blocks a layer, Engram's before layers 1 and 14)
     let attn = |l: usize| 2 * l + (l >= 1) as usize + (l >= 14) as usize;
     let comp = |l: usize| match &d.desc.blocks[attn(l)].body {

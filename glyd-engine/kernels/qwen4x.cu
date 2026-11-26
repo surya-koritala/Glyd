@@ -239,16 +239,19 @@ extern "C" __global__ void __launch_bounds__(128, 1) qx_gdn_rec_gn(const bf16* x
 }
 
 // ---- PLE (the n-gram embedding's injection) -----------------------------------------------------------------------------------------------------------------------------------------------
-// For a row: kv [n, 5 D] the products of its n-gram embedding (key: 4 D, value: D), x [n, 4 D] the streams. key_s = bf16(norm(key_s) (1 + wk_s)), q_s = bf16(norm(x_s) (1 + wq_s)), g_s = bf16(bf16(sum bf16(key_s q_s))
-// / sqrt(D)), g_s = bf16(sign(g) sqrt(max(|g|, 1e-6))) (each op rounded as the reference's), gv_s = bf16(bf16(sigmoid(g_s)) value) into gv [n, 4 D], and its norm per stream bf16(norm(gv_s) (1 + wc_s)) into gvn
-// [n, 4 D]. A block of 1024 threads a row, a quarter a stream (D at most 256 * 16).
-extern "C" __global__ void __launch_bounds__(1024) qx_ple_gate(const bf16* kv, const bf16* x, const bf16* wk, const bf16* wq, const bf16* wc, bf16* gv, bf16* gvn, int D, float eps) {
+// For a row: kv [n, 5 D] the products of its n-gram embedding (key: 4 D, value: D), x [n, 4 D] the streams. Condor's form (`engram` 0): key_s = bf16(norm(key_s) (1 + wk_s)), q_s = bf16(norm(x_s)
+// (1 + wq_s)), g_s = bf16(bf16(sum bf16(key_s q_s)) / sqrt(D)), g_s = bf16(sign(g) sqrt(max(|g|, 1e-6))) (each op rounded as the reference's), gv_s = bf16(bf16(sigmoid(g_s)) value) into gv [n, 4 D], and
+// its norm per stream bf16(norm(gv_s) (1 + wc_s)) into gvn [n, 4 D] for qx_ple_conv. Engram's (`engram` 1, `kinds::NgramForm::Engram`): the weights fp32 and plain (key_s = norm(key_s) wk_s, q_s = norm(x_s)
+// wq_s), the gate in fp32 (a dot of 0 gives sqrt(1e-6)), and x_s = bf16(x_s + sigmoid(g_s) value) in one store: no convolution. A block of 1024 threads a row, a quarter a stream (D at most 256 *
+// QX_PLE_COLS: DeepSeek-V4.1-Flash's 5,120 too; a thread's columns past D are zeros, which leave its sums as they were).
+#define QX_PLE_COLS 32
+extern "C" __global__ void __launch_bounds__(1024) qx_ple_gate(const bf16* kv, bf16* x, const bf16* wk, const bf16* wq, const bf16* wc, bf16* gv, bf16* gvn, int D, float eps, int engram) {
     __shared__ float sh[32];
     const int q = threadIdx.x >> 8, j = threadIdx.x & 255;
     const size_t t = blockIdx.x, krow = t * 5 * D + (size_t)q * D, vrow = t * 5 * D + 4 * (size_t)D, xrow = t * QX_HC * D + (size_t)q * D;
-    float kk[16], xx[16], ak = 0.f, ax = 0.f;
+    float kk[QX_PLE_COLS], xx[QX_PLE_COLS], ak = 0.f, ax = 0.f;
 #pragma unroll
-    for (int k = 0; k < 16; k++) {
+    for (int k = 0; k < QX_PLE_COLS; k++) {
         const int c = j + k * 256;
         kk[k] = c < D ? b2f(kv[krow + c]) : 0.f;
         xx[k] = c < D ? b2f(x[xrow + c]) : 0.f;
@@ -257,8 +260,26 @@ extern "C" __global__ void __launch_bounds__(1024) qx_ple_gate(const bf16* kv, c
     }
     const float sk = rsqrtf(qx_quarter_sum(ak, sh) / D + eps), sx = rsqrtf(qx_quarter_sum(ax, sh) / D + eps);
     float dot = 0.f;
+    if (engram) {
+        const float *wk32 = reinterpret_cast<const float*>(wk), *wq32 = reinterpret_cast<const float*>(wq);
 #pragma unroll
-    for (int k = 0; k < 16; k++) {
+        for (int k = 0; k < QX_PLE_COLS; k++) {
+            const int c = j + k * 256;
+            if (c < D) dot += (kk[k] * sk * wk32[q * D + c]) * (xx[k] * sx * wq32[q * D + c]);
+        }
+        float g = qx_quarter_sum(dot, sh) / sqrtf((float)D);
+        g = copysignf(sqrtf(fmaxf(fabsf(g), 1e-6f)), g);
+        const float sg = qx_sig(g);
+        __syncthreads();  // (every quarter has read its stream before any writes it)
+#pragma unroll
+        for (int k = 0; k < QX_PLE_COLS; k++) {
+            const int c = j + k * 256;
+            if (c < D) x[xrow + c] = f2b(xx[k] + sg * b2f(kv[vrow + c]));
+        }
+        return;
+    }
+#pragma unroll
+    for (int k = 0; k < QX_PLE_COLS; k++) {
         const int c = j + k * 256;
         if (c < D) dot += qx_r(qx_r(kk[k] * sk * (1.f + b2f(wk[q * D + c]))) * qx_r(xx[k] * sx * (1.f + b2f(wq[q * D + c]))));
     }
@@ -268,14 +289,14 @@ extern "C" __global__ void __launch_bounds__(1024) qx_ple_gate(const bf16* kv, c
     const float sg = qx_r(qx_sig(g));
     float a2 = 0.f;
 #pragma unroll
-    for (int k = 0; k < 16; k++) {
+    for (int k = 0; k < QX_PLE_COLS; k++) {
         const int c = j + k * 256;
         kk[k] = c < D ? qx_r(sg * b2f(kv[vrow + c])) : 0.f;  // (gv, kept in kk)
         a2 += kk[k] * kk[k];
     }
     const float sc = rsqrtf(qx_quarter_sum(a2, sh) / D + eps);
 #pragma unroll
-    for (int k = 0; k < 16; k++) {
+    for (int k = 0; k < QX_PLE_COLS; k++) {
         const int c = j + k * 256;
         if (c < D) {
             gv[xrow + c] = f2b(kk[k]);
@@ -284,68 +305,81 @@ extern "C" __global__ void __launch_bounds__(1024) qx_ple_gate(const bf16* kv, c
     }
 }
 
-// The dilated causal convolution of PLE and the injection: for each channel c of C (= 4 D) and row t, y = bf16(silu(bf16(sum_k w[c][k] gvn[t - 3 (3 - k)]))) (kernel 4, dilation 3; rows before the call's from
-// the state st [9, C], oldest first, which is left holding the call's last 9 rows of gvn), then x = bf16(x + bf16(gv + y)). A thread a channel.
-extern "C" __global__ void qx_ple_conv(const bf16* gvn, const bf16* gv, const bf16* w, bf16* st, bf16* x, int n, int C) {
+// The dilated causal convolution of PLE and the injection: for each channel c of C (= streams D) and row t, y = bf16(silu(bf16(sum_k w[c][k] gvn[t - dil (K - 1 - k)]))) (K taps `dil` rows apart, the
+// kind's `conv` and `dilation`; their products summed oldest first, each rounded as one fp32 op; rows before the call's from the state st [(K - 1) dil, C], oldest first, which is left holding the call's
+// last (K - 1) dil rows of gvn), then x = bf16(x + bf16(gv + y)). A thread a channel; (K - 1) dil at most QX_CONV_HIST.
+#define QX_CONV_HIST 32
+extern "C" __global__ void qx_ple_conv(const bf16* gvn, const bf16* gv, const bf16* w, bf16* st, bf16* x, int n, int C, int K, int dil) {
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= C) return;
-    const float w0 = b2f(w[c * 4]), w1 = b2f(w[c * 4 + 1]), w2 = b2f(w[c * 4 + 2]), w3 = b2f(w[c * 4 + 3]);
-    float h[9];
-#pragma unroll
-    for (int i = 0; i < 9; i++) h[i] = b2f(st[i * C + c]);  // h[i]: the input 9 - i rows back
+    const int H = (K - 1) * dil;
+    float h[QX_CONV_HIST];
+    for (int i = 0; i < H; i++) h[i] = b2f(st[(size_t)i * C + c]);  // h[i]: the input H - i rows back
     for (int t = 0; t < n; t++) {
         const float in = b2f(gvn[(size_t)t * C + c]);
-        // (taps oldest first: the inputs 9, 6, 3 and 0 rows back)
-        float acc = __fmul_rn(w0, h[0]);
-        acc = __fadd_rn(acc, __fmul_rn(w1, h[3]));
-        acc = __fadd_rn(acc, __fmul_rn(w2, h[6]));
-        acc = __fadd_rn(acc, __fmul_rn(w3, in));
+        // (taps oldest first: tap k reads the input dil (K - 1 - k) rows back, the last this row's)
+        float acc = __fmul_rn(b2f(w[(size_t)c * K]), H > 0 ? h[0] : in);
+        for (int k = 1; k < K; k++) acc = __fadd_rn(acc, __fmul_rn(b2f(w[(size_t)c * K + k]), k == K - 1 ? in : h[k * dil]));
         const float a = qx_r(acc);
         const float y = qx_r(a * qx_sig(a));
         const size_t i = (size_t)t * C + c;
         x[i] = f2b(b2f(x[i]) + qx_r(b2f(gv[i]) + y));
-#pragma unroll
-        for (int k = 0; k < 8; k++) h[k] = h[k + 1];
-        h[8] = in;
+        if (H > 0) {
+            for (int k = 0; k + 1 < H; k++) h[k] = h[k + 1];
+            h[H - 1] = in;
+        }
     }
-#pragma unroll
-    for (int i = 0; i < 9; i++) st[i * C + c] = f2b(h[i]);
+    for (int i = 0; i < H; i++) st[(size_t)i * C + c] = f2b(h[i]);
 }
 
-// The n-gram embedding's rows of a call's n rows of one sequence (the description executor's `Op::NgramRows`): row t's token tok[t], the token before it and the one before that (the call's earlier rows,
-// else the sequence's state hist [2], oldest first, each token + 1 and 0 before the sequence, which reads as the end token eos; the one before that is eos too where the one before is eos), hashed as
-// transformers' Qwen4ExpTextNGramEmbedding: bigram b = t mult[0] ^ c1 mult[1], trigram b ^ c2 mult[2] (unsigned 64-bit: each product is below 2^63, so as the reference's int64), table h of H (the first `per`
-// bigrams') the row (b or the trigram) mod sizes[h] + offsets[h]; e [n, H row] = those rows of the table [rows, row] bf16. mult [3], sizes [H], offsets [H]: the checkpoint's int64 words. Block a row.
+// The n-gram embedding's rows of a call's n rows of one sequence (the description executor's `Op::NgramRows`, `kinds::Ngram`): row t's token and the `order` - 1 before it (the call's earlier rows, else the
+// sequence's state hist [order - 1], oldest first, each id + 1 and 0 before the sequence, which reads as `eos`); each token first mapped to its compressed vocabulary's id where `map` (int32 [vocabulary]:
+// Engram's, whose pad `eos` is mapped too). With `segments` (Condor's), a token past an `eos` reads as `eos` too. Order o's hash (2 <= o <= order <= 4) mixed_o = XOR over p < o of (token p back) mult[p] (unsigned 64-bit: each product is
+// below 2^63, so as the reference's int64); table h of H (`per` an order, the bigrams' first) the row mixed_o mod sizes[h] + offsets[h]; e [n, H row] = those rows of the table [rows, row] bf16. mult [order],
+// sizes [H], offsets [H]: int64 words. Block a row.
 extern "C" __global__ void qx_ngram_rows(const int* tok, const int* hist, const unsigned long long* mult, const unsigned long long* sizes, const unsigned long long* offsets, const bf16* table, bf16* e, int H,
-                                         int per, int row, int eos) {
+                                         int per, int row, int eos, int order, const int* map, int segments) {
     const int t = blockIdx.x;
-    const int h1 = t >= 1 ? tok[t - 1] : (hist[1] > 0 ? hist[1] - 1 : eos);
-    const int h2 = t >= 2 ? tok[t - 2] : (t == 1 ? (hist[1] > 0 ? hist[1] - 1 : eos) : (hist[0] > 0 ? hist[0] - 1 : eos));
-    const unsigned long long c1 = (unsigned)h1, c2 = h1 == eos ? (unsigned long long)(unsigned)eos : (unsigned)h2;
-    const unsigned long long bi = ((unsigned long long)(unsigned)tok[t] * mult[0]) ^ (c1 * mult[1]), tri = bi ^ (c2 * mult[2]);
+    const int pad = map ? map[eos] : eos;
+    unsigned long long mixed[4];
+    bool cut = false;
+    unsigned long long m = 0;
+    for (int p = 0; p < order; p++) {
+        int v;
+        if (cut) v = eos;
+        else if (t - p >= 0) v = map ? map[tok[t - p]] : tok[t - p];
+        else {
+            const int k = order - 1 - (p - t);  // (hist[order - 2] is one back from the call's first row)
+            v = k >= 0 && hist[k] > 0 ? hist[k] - 1 : pad;
+        }
+        cut |= p > 0 && segments && v == eos;
+        m ^= (unsigned long long)(unsigned)v * mult[p];
+        if (p > 0) mixed[p] = m;  // (order p + 1's hash)
+    }
     for (int i = threadIdx.x; i < H * row; i += blockDim.x) {
         const int h = i / row;
-        const unsigned long long id = (h < per ? bi : tri) % sizes[h] + offsets[h];
+        const unsigned long long id = mixed[h / per + 1] % sizes[h] + offsets[h];
         e[(size_t)t * H * row + i] = table[id * row + i % row];
     }
 }
 
-// The sequence's state after a call's n rows: the last two tokens (+ 1), oldest first. One thread.
-extern "C" __global__ void qx_ngram_hist(const int* tok, int* hist, int n) {
-    if (n >= 2) {
-        hist[0] = tok[n - 2] + 1;
-        hist[1] = tok[n - 1] + 1;
-    } else if (n == 1) {
-        hist[0] = hist[1];
-        hist[1] = tok[0] + 1;
+// The sequence's state after a call's n rows: its last `order` - 1 ids (each mapped where `map`, + 1), oldest first. One thread.
+extern "C" __global__ void qx_ngram_hist(const int* tok, int* hist, int n, int order, const int* map) {
+    int nh[3];
+    const int k = order - 1;
+    for (int i = 0; i < k; i++) {
+        const int r = n - (k - i);
+        nh[i] = r >= 0 ? (map ? map[tok[r]] : tok[r]) + 1 : hist[i + n];
     }
+    for (int i = 0; i < k; i++) hist[i] = nh[i];
 }
 
 // ---- the QSA indexer and attention --------------------------------------------------------------------------------------------------------------------------------------------------------
 // The indexer's rows [n, (IH + 1) ID] (IH query heads of ID, then the token's key): each query head normed (1 + wq) and turned (the rotary on its first 2 half dims, cos and sin bf16 [max_pos, half]) into
 // iq [n, IH ID]; the key, raw, into the key cache ik [positions, ID] at the row's position (through its block table ktab where it has one: kernels/mla.cu's ml_place). The norm rounded, the rotary's products
 // and sum each rounded (the reference's bf16 ops). Block (row, head), ID threads (a multiple of 32, at most 1,024).
-extern "C" __global__ void qx_ix_prep(const bf16* qk, const bf16* wq, const bf16* cs, const bf16* sn, int half, const int* pos, bf16* iq, bf16* ik, const int* ktab, int IH, float eps, int ID) {
+extern "C" __global__ void qx_ix_prep(const bf16* qk, const bf16* wq, const bf16* cs, const bf16* sn, int half, const int* pos, const int* rpos, unsigned long long rax, bf16* iq, bf16* ik,
+                                      const int* ktab, int IH, float eps, int ID) {
     const int t = blockIdx.x, hh = blockIdx.y, i = threadIdx.x, p = pos[t];
     const bf16* x = qk + (size_t)t * (IH + 1) * ID + (size_t)hh * ID;
     if (hh == IH) {
@@ -359,8 +393,8 @@ extern "C" __global__ void qx_ix_prep(const bf16* qk, const bf16* wq, const bf16
     __syncthreads();
     float o = nrm[i];
     if (i < 2 * half) {
-        const int k = i < half ? i : i - half;
-        const float c = b2f(cs[(size_t)p * half + k]), sv = b2f(sn[(size_t)p * half + k]);
+        const int k = i < half ? i : i - half, pk = rpos ? rpos[6 * t + (int)((rax >> (2 * k)) & 3)] : p;
+        const float c = b2f(cs[(size_t)pk * half + k]), sv = b2f(sn[(size_t)pk * half + k]);
         o = i < half ? qx_r(qx_r(nrm[i] * c) - qx_r(nrm[i + half] * sv)) : qx_r(qx_r(nrm[i] * c) + qx_r(nrm[i - half] * sv));
     }
     iq[(size_t)t * IH * ID + (size_t)hh * ID + i] = f2b(o);
@@ -368,8 +402,9 @@ extern "C" __global__ void qx_ix_prep(const bf16* qk, const bf16* wq, const bf16
 
 // The keys of the pools of B tokens that the call's rows (at pos[0] .. pos[n-1], consecutive) complete: pk[b] = rotary(bf16(norm(bf16(mean of ik[B b .. B b + B - 1])) (1 + wk)), position B b), the mean
 // in fp32 (summed in order). A block a pool from pos[0] / B on (grid ceil(n / B) + 1); one whose last token is past the call's last row is left to the call that completes it. ik's rows through ktab, pk's (a
-// pool a row) through ptab, where the sequence has block tables. ID threads.
-extern "C" __global__ void qx_ix_cmp(const bf16* ik, const int* ktab, const bf16* wk, const bf16* cs, const bf16* sn, int half, const int* pos, bf16* pk, const int* ptab, int n, float eps, int ID, int B) {
+// pool a row) through ptab, where the sequence has block tables. ID threads. M-RoPE (rpos): the position of the pool's first token, which the row of its last token holds at 6 r + 3.
+extern "C" __global__ void qx_ix_cmp(const bf16* ik, const int* ktab, const bf16* wk, const bf16* cs, const bf16* sn, int half, const int* pos, const int* rpos, unsigned long long rax, bf16* pk,
+                                     const int* ptab, int n, float eps, int ID, int B) {
     const int b = pos[0] / B + blockIdx.x, i = threadIdx.x;
     if (B * b + B - 1 > pos[n - 1]) return;
     const auto k = [&](int p) { return b2f(ik[ml_place(ktab, p) * ID + i]); };
@@ -382,7 +417,7 @@ extern "C" __global__ void qx_ix_cmp(const bf16* ik, const int* ktab, const bf16
     __syncthreads();
     float o = nrm[i];
     if (i < 2 * half) {
-        const int k = i < half ? i : i - half, p = B * b;
+        const int k = i < half ? i : i - half, p = rpos ? rpos[6 * (B * b + B - 1 - pos[0]) + 3 + (int)((rax >> (2 * k)) & 3)] : B * b;
         const float c = b2f(cs[(size_t)p * half + k]), sv = b2f(sn[(size_t)p * half + k]);
         o = i < half ? qx_r(qx_r(nrm[i] * c) - qx_r(nrm[i + half] * sv)) : qx_r(qx_r(nrm[i] * c) + qx_r(nrm[i - half] * sv));
     }

@@ -164,6 +164,35 @@ pub fn picks(
 /// score sum_h w_h relu(q_h . key / sqrt(head_dim)), equal scores the earlier first, in order, then the open pool's tokens (`Picked`: its margin and
 /// every pool's score). `picks` runs it on this reference's own inputs; a check runs it on another engine's (`dynamic::PickTrace`).
 pub fn choose(ix: &Indexer, q: &[f32], w: &[f32], keys: &[Vec<f32>], seen: &[usize]) -> Picked {
+    choose_among(ix, q, w, keys, seen, None)
+}
+
+/// `choose`, an entry a pool (`ix.block` 1), among the entries `inside` alone where given (a candidate source's published blocks, `kinds::CompShare`:
+/// the rest scored -inf and never picked); the best `top_k` of them, in order.
+pub fn choose_among(ix: &Indexer, q: &[f32], w: &[f32], keys: &[Vec<f32>], seen: &[usize], inside: Option<&[usize]>) -> Picked {
+    let Some(inside) = inside else { return choose_pools(ix, q, w, keys, seen) };
+    let dim = ix.head_dim;
+    let w: Vec<f32> = w.iter().map(|x| x * (ix.heads as f32).powf(-0.5)).collect();
+    let sc = (dim as f32).powf(-0.5);
+    let score: Vec<f32> = keys
+        .iter()
+        .enumerate()
+        .map(|(j, key)| {
+            if inside.binary_search(&j).is_ok() {
+                (0..ix.heads).map(|hh| w[hh] * (dot(&q[hh * dim..][..dim], key) * sc).max(0.0)).sum()
+            } else {
+                f32::NEG_INFINITY
+            }
+        })
+        .collect();
+    let mut ord: Vec<usize> = inside.iter().copied().filter(|&j| j < keys.len()).collect();
+    ord.sort_by(|&x, &y| score[y].total_cmp(&score[x]).then(x.cmp(&y)));
+    ord.truncate(ix.top_k);
+    ord.sort_unstable();
+    Picked { own: ord.clone(), picks: ord, gap: super::ffn::margin(&score, ix.top_k), score, block: 1 }
+}
+
+fn choose_pools(ix: &Indexer, q: &[f32], w: &[f32], keys: &[Vec<f32>], seen: &[usize]) -> Picked {
     let (b, dim) = (ix.block.max(1), ix.head_dim);
     let (pools, keep) = (keys.len(), ix.top_k / b);
     if pools <= keep {

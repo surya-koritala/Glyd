@@ -120,30 +120,59 @@ impl KernQx {
         launch!(self.gnorm, [n as u32, nv as u32, 1], [128, 1, 1], s; core, z, zs as i32, w, nv as i32, eps)
     }
 
-    /// PLE's gate: gv and gvn [n, 4 d] from the key and value products kv [n, 5 d] and the streams x.
+    /// The n-gram embedding's gate from the key and value products kv [n, 5 d] and the streams x: Condor's form (`engram` false: gv and gvn [n, 4 d] for
+    /// `ple_conv`), or Engram's (`engram`: the gated value added into x, the weights wk and wq fp32; wc unread).
     ///
     /// # Safety
     /// As `hc_norm`.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) unsafe fn ple_gate(&self, s: Stream, kv: u64, x: u64, wk: u64, wq: u64, wc: u64, gv: u64, gvn: u64, n: usize, d: usize, eps: f32) -> Result<()> {
-        if d > 16 * 256 {
-            return err(format!("streams of {d}: PLE takes up to 4,096"));
+    pub(crate) unsafe fn ple_gate(
+        &self,
+        s: Stream,
+        kv: u64,
+        x: u64,
+        wk: u64,
+        wq: u64,
+        wc: u64,
+        gv: u64,
+        gvn: u64,
+        n: usize,
+        d: usize,
+        eps: f32,
+        engram: bool,
+    ) -> Result<()> {
+        if d > 32 * 256 {
+            return err(format!("streams of {d}: the n-gram embedding's gate takes up to 8,192"));
         }
-        launch!(self.ple_gate, [n as u32, 1, 1], [1024, 1, 1], s; kv, x, wk, wq, wc, gv, gvn, d as i32, eps)
+        launch!(self.ple_gate, [n as u32, 1, 1], [1024, 1, 1], s; kv, x, wk, wq, wc, gv, gvn, d as i32, eps, engram as i32)
     }
 
-    /// PLE's dilated convolution over the n rows (state st [9, c]) and its sum into the streams x.
+    /// PLE's dilated convolution of `taps` taps `dilation` rows apart over the n rows (state st [(taps - 1) dilation, c]) and its sum into the streams x.
     ///
     /// # Safety
     /// As `hc_norm`.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) unsafe fn ple_conv(&self, s: Stream, gvn: u64, gv: u64, w: u64, st: u64, x: u64, n: usize, c: usize) -> Result<()> {
-        launch!(self.ple_conv, [(c as u32).div_ceil(256), 1, 1], [256, 1, 1], s; gvn, gv, w, st, x, n as i32, c as i32)
+    pub(crate) unsafe fn ple_conv(
+        &self,
+        s: Stream,
+        gvn: u64,
+        gv: u64,
+        w: u64,
+        st: u64,
+        x: u64,
+        n: usize,
+        c: usize,
+        (taps, dilation): (usize, usize),
+    ) -> Result<()> {
+        if taps == 0 || (taps - 1) * dilation > 32 {
+            return err(format!("a convolution of {taps} taps {dilation} apart: the kernel keeps up to 32 rows before a row"));
+        }
+        launch!(self.ple_conv, [(c as u32).div_ceil(256), 1, 1], [256, 1, 1], s; gvn, gv, w, st, x, n as i32, c as i32, taps as i32, dilation as i32)
     }
 
-    /// The n-gram embedding's rows e [n, H row] of a call's n rows of one sequence: their tokens tok (int32), the sequence's two tokens before them hist (int32, + 1; 0:
-    /// none), the hash's numbers (`hash`: its 3 multipliers, H sizes and H offsets, int64 as the checkpoint holds them), the table [rows, row] bf16; then hist moved on
-    /// past the call (`qx_ngram_rows`, `qx_ngram_hist`).
+    /// The n-gram embedding's rows e [n, H row] of a call's n rows of one sequence: their tokens tok (int32), the sequence's `order` - 1 ids before them hist (int32, + 1;
+    /// 0: none), the hash's numbers (`hash`: its `order` multipliers, H sizes and H offsets, int64), the table [rows, row] bf16; each token its compressed id first where
+    /// `map` (int32 [vocabulary]; 0: none), a segment ended by `eos` where `segments`; then hist moved on past the call (`qx_ngram_rows`, `qx_ngram_hist`).
     ///
     /// # Safety
     /// As `hc_norm`.
@@ -161,10 +190,14 @@ impl KernQx {
         per: usize,
         row: usize,
         eos: u32,
+        (order, map, segments): (usize, u64, bool),
     ) -> Result<()> {
+        if !(2..=4).contains(&order) {
+            return err(format!("n-grams of order {order}: the kernel takes 2 to 4"));
+        }
         let [mult, sizes, offsets] = hash;
-        launch!(self.ngram_rows, [n as u32, 1, 1], [256, 1, 1], s; tok, hist, mult, sizes, offsets, table, e, h as i32, per as i32, row as i32, eos as i32)?;
-        launch!(self.ngram_hist, [1, 1, 1], [1, 1, 1], s; tok, hist, n as i32)
+        launch!(self.ngram_rows, [n as u32, 1, 1], [256, 1, 1], s; tok, hist, mult, sizes, offsets, table, e, h as i32, per as i32, row as i32, eos as i32, order as i32, map, segments as i32)?;
+        launch!(self.ngram_hist, [1, 1, 1], [1, 1, 1], s; tok, hist, n as i32, order as i32, map)
     }
 
     /// The indexer's queries (normed, turned) into iq [n, ih dim] and its raw keys into the cache of the executor's pages `ik` at the rows' positions (its
@@ -182,6 +215,7 @@ impl KernQx {
         sn: u64,
         half: usize,
         pos: u64,
+        rope3: (u64, u64),
         iq: u64,
         ik: (u64, u64),
         n: usize,
@@ -190,7 +224,7 @@ impl KernQx {
         dim: usize,
     ) -> Result<()> {
         index_fits(dim, 1)?;
-        launch!(self.ix_prep, [n as u32, ih as u32 + 1, 1], [dim as u32, 1, 1], s; qk, wq, cs, sn, half as i32, pos, iq, ik.0, ik.1, ih as i32, eps, dim as i32)
+        launch!(self.ix_prep, [n as u32, ih as u32 + 1, 1], [dim as u32, 1, 1], s; qk, wq, cs, sn, half as i32, pos, rope3.0, rope3.1, iq, ik.0, ik.1, ih as i32, eps, dim as i32)
     }
 
     /// The keys of the pools of `block` tokens the call's rows complete into pk, on caches of the executor's pages: the raw keys' and the pools' rows through their
@@ -208,6 +242,7 @@ impl KernQx {
         sn: u64,
         half: usize,
         pos: u64,
+        rope3: (u64, u64),
         pk: (u64, u64),
         n: usize,
         eps: f32,
@@ -215,7 +250,7 @@ impl KernQx {
         block: usize,
     ) -> Result<()> {
         index_fits(dim, block)?;
-        launch!(self.ix_cmp, [(n as u32).div_ceil(block as u32) + 1, 1, 1], [dim as u32, 1, 1], s; ik.0, ik.1, wk, cs, sn, half as i32, pos, pk.0, pk.1, n as i32, eps, dim as i32, block as i32)
+        launch!(self.ix_cmp, [(n as u32).div_ceil(block as u32) + 1, 1, 1], [dim as u32, 1, 1], s; ik.0, ik.1, wk, cs, sn, half as i32, pos, rope3.0, rope3.1, pk.0, pk.1, n as i32, eps, dim as i32, block as i32)
     }
 
     /// The gated attention of the n rows over the tokens sel/cnt picked (in `splits` parts merged by attn_merge where more than one: `part` holds n nq splits 258

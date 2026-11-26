@@ -56,6 +56,9 @@ pub struct Described {
     /// Matrices stored quantized (FP8 blocks as released, FP4 experts), each with the tensor of its scales. The weight map names them;
     /// decoding a stored format is the tensor source's job.
     pub scales: std::collections::BTreeMap<String, String>,
+    /// The FP8 matrices' blocks (the quantization_config's weight_block_size, square), where the config says the release's matrices are FP8 and the
+    /// builder reads it: the format a release's inference quantizes its activations to as well (DeepSeek-V4's 128, V4.1's 32).
+    pub fp8_block: Option<usize>,
     /// Each tensor's shape as the config makes it, where the builder says it (Gemma 4's: its matrices, norms and scalars; empty for the builders that do not yet):
     /// what a lowering to the executor sizes its matrices by, for a packed directory too, whose tensors are not stored at their shapes.
     pub shapes: std::collections::BTreeMap<String, Vec<usize>>,
@@ -65,6 +68,30 @@ pub struct Described {
     pub unread: Vec<String>,
     /// Per draft head of `desc.mtp` whose tensors are mapped: its blocks' roles' sources, and its own roles' (DSpark's `main_proj`, `markov_embed`, ...).
     pub mtp: Vec<(Vec<Vec<(String, Source)>>, Vec<(String, Source)>)>,
+    /// The vision tower's roles (`desc.vision`), where the description reads one.
+    pub vision: Option<VisionRoles>,
+}
+
+/// A vision tower's roles (`kinds::VisionDesc`): its own (`names::part::VISION`: the patch product, the position table, the merger), then each block's
+/// (`VISION_BLOCK`).
+#[derive(Clone, Debug, Default)]
+pub struct VisionRoles {
+    pub own: Vec<(String, Source)>,
+    pub blocks: Vec<Vec<(String, Source)>>,
+}
+
+impl VisionRoles {
+    /// Role `r`'s tensor: the tower's own (`block` None) or block `b`'s.
+    pub fn tensor(&self, block: Option<usize>, r: &str) -> Result<&str> {
+        let roles = match block {
+            None => &self.own,
+            Some(b) => self.blocks.get(b).ok_or_else(|| Error(format!("the vision tower has no block {b}")))?,
+        };
+        match roles.iter().find(|(x, _)| x == r) {
+            Some((_, Source::Tensor(n))) => Ok(n),
+            _ => err(format!("the vision tower has no tensor for its role {r}")),
+        }
+    }
 }
 
 impl Described {
@@ -82,6 +109,11 @@ impl Described {
         }
         for (blocks, own) in &self.mtp {
             for (_, src) in blocks.iter().flatten().chain(own) {
+                s.extend(src.names());
+            }
+        }
+        if let Some(v) = &self.vision {
+            for (_, src) in v.own.iter().chain(v.blocks.iter().flatten()) {
                 s.extend(src.names());
             }
         }
@@ -398,7 +430,7 @@ pub fn describe_config(c: &ModelConfig) -> Result<Described> {
     match mt {
         t if LLAMA.contains(&t) => llama(tc, prefix, mt, tied_top),
         "qwen3_5_text" | "qwen3_5_moe_text" | "qwen3_5" | "qwen3_5_moe" => qwen35(tc, prefix, mt, tied_top),
-        "qwen4_exp_text" => qwen4x(tc, prefix, mt, tied_top),
+        "qwen4_exp_text" => qwen4x(tc, prefix, mt, tied_top).and_then(|d| with_tower(d, c)),
         "gemma4_text" | "gemma4_unified_text" => gemma4(tc, prefix, mt, tied_top),
         "glm_moe_dsa" | "glm5_next_text" | "glm5_next" => glm(tc, prefix, mt, tied_top, c.top.get("quantization_config").or(tc.get("quantization_config"))),
         "" => err("config.json names no model_type"),
@@ -426,10 +458,12 @@ fn finish(k: &Keys, desc: ModelDesc, cv: &Convention, prefix: &str, blocks: Vec<
         extra: cv.extra(prefix),
         mtp_layers,
         scales: Default::default(),
+        fp8_block: None,
         shapes: Default::default(),
         convention: cv.name,
         unread: cv.unread(),
         mtp: Vec::new(),
+        vision: None,
     })
 }
 
@@ -716,8 +750,8 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
 /// `hc_count` streams (`Residual::GatedStreams`), the final mixer (`Collapse::GatedMix`), and the hashed n-gram embedding (`Body::Ngram`)
 /// before each layer `ple_layer_ids` names. A layer is two blocks, three with the n-gram embedding. The MTP layers are the draft head
 /// (`MtpInput::Streams`: each an indexed attention and its experts in gated residuals, as the model's layers, its front's norms and products
-/// and its own final mixer, `names::part::QX_MTP`). Not read: the vision tower. The defaults of a key a config leaves out are transformers'
-/// (`Qwen4ExpTextConfig`). Each tensor's shape is said.
+/// and its own final mixer, `names::part::QX_MTP`). The vision tower is the multimodal config's (`with_tower`). The defaults of a key a config leaves
+/// out are transformers' (`Qwen4ExpTextConfig`). Each tensor's shape is said.
 fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {
     let k = Keys::new(tc, mt);
     let (d, layers, vocab, eps, tied) = common(&k, tied_top)?;
@@ -1046,6 +1080,116 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         out.unread.retain(|p| p != "mtp.");
     }
     Ok(out)
+}
+
+/// The Qwen-VL vision tower of a multimodal config (`kinds::VisionDesc`, `vision_config`) added to its text model's description `d`: the kind's
+/// parameters, the image token (the top level's `image_token_id`), its roles under `model.visual` (`names::part::VISION`, `VISION_BLOCK`) and each
+/// tensor's shape; its tensors then read, no longer a part left. `d` as it is where the config has no tower, or is the language model alone
+/// (`language_model_only`). The tower's tokens take M-RoPE positions in the text: the text's rotary must have interleaved sections. A tower with
+/// deepstack layers (its features added into the text's layers too) is refused, and so is a key the builder does not know.
+fn with_tower(mut d: Described, c: &ModelConfig) -> Result<Described> {
+    let Some(v) = c.top.get("vision_config").filter(|v| !v.is_null()) else { return Ok(d) };
+    if c.top.get("language_model_only").and_then(Value::as_bool) == Some(true) {
+        return Ok(d);
+    }
+    let Value::Object(v) = v else { return err(format!("vision_config {v}: not an object")) };
+    let k = Keys::new(v, "vision_config");
+    let (blocks, hidden, heads, inter) = (k.usize("depth")?, k.usize("hidden_size")?, k.usize("num_heads")?, k.usize("intermediate_size")?);
+    let act = act(k.str("hidden_act")?.unwrap_or("gelu_pytorch_tanh"))?;
+    let (channels, patch) = (k.opt_usize("in_channels")?.unwrap_or(3), k.usize("patch_size")?);
+    let (frames, merge) = (k.opt_usize("temporal_patch_size")?.unwrap_or(2), k.opt_usize("spatial_merge_size")?.unwrap_or(2));
+    let (out, positions) = (k.usize("out_hidden_size")?, k.usize("num_position_embeddings")?);
+    match k.raw("deepstack_visual_indexes") {
+        None => {}
+        Some(Value::Array(a)) if a.is_empty() => {}
+        Some(x) => return err(format!("vision_config: deepstack_visual_indexes {x}: a tower whose features go into the text's layers too is not supported")),
+    }
+    // (transformers' newer configs say the tower's rotary: the axial one, its theta; the release's says none, the default's 10,000)
+    let theta = match k.raw("rope_parameters") {
+        None => 10_000.0,
+        Some(Value::Object(o)) => {
+            let r = Keys::new(o, "vision_config rope_parameters");
+            if r.str("rope_type")?.unwrap_or("axial") != "axial" {
+                return err(format!("vision_config: rope_parameters {}: only the axial rotary is supported", Value::Object(o.clone())));
+            }
+            let t = r.opt_f64("rope_theta")?.unwrap_or(10_000.0);
+            r.finish()?;
+            t
+        }
+        Some(x) => return err(format!("vision_config: rope_parameters {x}")),
+    };
+    k.finish()?;
+    let table = (positions as f64).sqrt().round() as usize;
+    if [blocks, hidden, heads, inter, channels, patch, frames, merge, out].contains(&0)
+        || hidden % heads != 0
+        || (hidden / heads) % 4 != 0
+        || table * table != positions
+    {
+        return err(format!(
+            "vision_config: a tower of {blocks} blocks of {heads} heads over {hidden}, {inter} neurons, {positions} positions (a square table), patches of {channels} x {frames} x {patch} x {patch}, merged {merge} x {merge}: not a tower of this kind"
+        ));
+    }
+    if out != d.desc.hidden {
+        return err(format!("vision_config: out_hidden_size {out}, where the text model's rows are {}", d.desc.hidden));
+    }
+    let image_token = match c.top.get("image_token_id").and_then(Value::as_u64) {
+        Some(t) if (t as usize) < d.desc.vocab => t as u32,
+        t => return err(format!("image_token_id {t:?}: the image token must be one of the vocabulary's {}", d.desc.vocab)),
+    };
+    // (the image's tokens take M-RoPE positions: the text's rotary has sections, interleaved)
+    let rope = d.desc.blocks.iter().find_map(|b| if let Body::Mixer(Mixer::Attention(a)) = &b.body { a.rope.clone() } else { None }).or(d.desc.rope.clone());
+    let interleaved = ["rope_parameters", "rope_scaling"].iter().find_map(|r| c.text.get(*r)?.get("mrope_interleaved")?.as_bool()) == Some(true);
+    if !rope.as_ref().is_some_and(|r| r.mrope.is_some()) || !interleaved {
+        return err(format!("vision_config: a tower whose tokens' positions the text's rotary ({rope:?}) does not turn as interleaved M-RoPE sections"));
+    }
+    let at = names::part::VISION_AT;
+    let own = names::roles(part::VISION, at, 0, all);
+    let m = hidden * merge * merge;
+    let mut shapes = std::mem::take(&mut d.shapes);
+    shape_roles(
+        &mut shapes,
+        &own,
+        &[
+            ("patch", vec![hidden, channels, frames, patch, patch]),
+            ("patch_bias", vec![hidden]),
+            ("pos", vec![positions, hidden]),
+            ("merge_norm", vec![hidden]),
+            ("merge_norm_bias", vec![hidden]),
+            ("merge_up", vec![m, m]),
+            ("merge_up_bias", vec![m]),
+            ("merge_down", vec![out, m]),
+            ("merge_down_bias", vec![out]),
+        ],
+    );
+    let roles: Vec<Vec<(String, Source)>> = (0..blocks)
+        .map(|l| {
+            let r = names::roles(part::VISION_BLOCK, &format!("{at}.blocks.{l}"), 0, all);
+            shape_roles(
+                &mut shapes,
+                &r,
+                &[
+                    ("norm1", vec![hidden]),
+                    ("norm1_bias", vec![hidden]),
+                    ("qkv", vec![3 * hidden, hidden]),
+                    ("qkv_bias", vec![3 * hidden]),
+                    ("o", vec![hidden, hidden]),
+                    ("o_bias", vec![hidden]),
+                    ("norm2", vec![hidden]),
+                    ("norm2_bias", vec![hidden]),
+                    ("up", vec![inter, hidden]),
+                    ("up_bias", vec![inter]),
+                    ("down", vec![hidden, inter]),
+                    ("down_bias", vec![hidden]),
+                ],
+            );
+            r
+        })
+        .collect();
+    d.shapes = shapes;
+    d.desc.vision = Some(VisionDesc { blocks, hidden, heads, inter, act, channels, patch, frames, merge, out, table, theta, eps: 1e-6, image_token });
+    d.vision = Some(VisionRoles { own, blocks: roles });
+    d.unread.retain(|p| p != &format!("{at}."));
+    Ok(d)
 }
 
 fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {
@@ -2122,7 +2266,8 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     k.raw("architectures");
     let released = k.m.contains_key("compress_ratios");
     let fp4 = k.str("expert_dtype")? == Some("fp4");
-    let fp8 = Fp8::parse(k.raw("quantization_config"), mt)?.is_some();
+    let fp8_block = Fp8::parse(k.raw("quantization_config"), mt)?.map(|f| f.block);
+    let fp8 = fp8_block.is_some();
     let (heads, hd, rd) = (k.usize("num_attention_heads")?, k.usize("head_dim")?, k.usize("qk_rope_head_dim")?);
     k.opt_f64("partial_rotary_factor")?;
     let (q_lora, o_lora, o_groups, window) =
@@ -2302,7 +2447,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
         (Some(c), Some(mut m)) => {
             let window = Comp { ratio: 0, overlap: false, rope: main_rope.clone(), indexer: None, ..c };
             (m.router.hash, m.router.bias) = (false, true);
-            dspark_head(&k, k.opt_usize("n_mtp_layers")?.unwrap_or(DSPARK_LAYERS), window, m, Residual::Streams(streams), eps)?
+            dspark_head(&k, k.opt_usize("n_mtp_layers")?.unwrap_or(DSPARK_LAYERS), window, m, Residual::Streams(streams), Norm::rms(eps))?
         }
         _ => None,
     };
@@ -2327,6 +2472,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
         out.mtp = vec![(blocks, own)];
     }
     out.scales = scales;
+    out.fp8_block = fp8_block;
     Ok(out)
 }
 
@@ -2338,7 +2484,7 @@ const DSPARK_LAYERS: usize = 3;
 /// A DeepSeek release's DSpark drafter (`dspark_*` keys; `kinds::DSpark`), where the config has one: `layers` draft layers, each the model's
 /// decoder layer with the window alone (the attention `window` with the model's own form, the feed-forward `moe`) on the model's residual rule,
 /// drafting `dspark_block_size` tokens from main_x of `dspark_target_layer_ids`; a Markov head of `dspark_markov_rank` and a confidence head.
-fn dspark_head(k: &Keys, layers: usize, window: Comp, moe: Moe, residual: Residual, eps: f32) -> Result<Option<MtpHead>> {
+fn dspark_head(k: &Keys, layers: usize, window: Comp, moe: Moe, residual: Residual, norm: Norm) -> Result<Option<MtpHead>> {
     let Some(block) = k.opt_usize("dspark_block_size")? else { return Ok(None) };
     let targets: Vec<usize> = k
         .raw("dspark_target_layer_ids")
@@ -2346,16 +2492,9 @@ fn dspark_head(k: &Keys, layers: usize, window: Comp, moe: Moe, residual: Residu
         .map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as usize)).collect())
         .ok_or_else(|| Error("dspark_target_layer_ids: a list of layers".into()))?;
     let dspark = DSpark { block, noise: k.usize("dspark_noise_token_id")? as u32, targets, markov_rank: k.usize("dspark_markov_rank")?, confidence: true };
-    let b = |body: Body| Block { norm_in: Norm::rms(eps), body, norm_out: None, residual: residual.clone() };
+    let b = |body: Body| Block { norm_in: norm, body, norm_out: None, residual: residual.clone() };
     let blocks = (0..layers).flat_map(|_| [b(Body::Mixer(Mixer::Compressed(window.clone()))), b(Body::Ffn(Ffn::Moe(moe.clone())))]).collect();
-    Ok(Some(MtpHead {
-        blocks,
-        norm_embed: Norm::rms(eps),
-        norm_hidden: Norm::rms(eps),
-        final_norm: Norm::rms(eps),
-        dspark: Some(dspark),
-        input: MtpInput::Joined,
-    }))
+    Ok(Some(MtpHead { blocks, norm_embed: norm, norm_hidden: norm, final_norm: norm, dspark: Some(dspark), input: MtpInput::Joined }))
 }
 
 /// A DSpark drafter's tensors as DeepSeek releases name them (`mtp.{i}.`): each draft layer's attention (the window's: no compressor) and its
@@ -2403,11 +2542,13 @@ fn dspark_roles(layers: usize, experts: usize, v41: bool) -> (Vec<Vec<(String, S
 /// layers (counted), the vision tower, the routers' image-token bias.
 fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
     let (mt, tc) = ("deepseek_v41", &c.text);
-    top_keys(&c.top, mt, &["text_config", "vision_config", "quantization_config", "architectures", "tie_word_embeddings"])?;
+    // (the image token beside the vision tower's config: the tower is not read)
+    top_keys(&c.top, mt, &["text_config", "vision_config", "quantization_config", "architectures", "tie_word_embeddings", "image_token_id"])?;
     let k = Keys::new(tc, mt);
     let (d, layers, vocab, eps, tied) = common(&k, c.top.get("tie_word_embeddings").and_then(|v| v.as_bool()))?;
     let max_pos = k.opt_usize("max_position_embeddings")?;
     k.expect("hidden_act", &Value::from("silu"))?;
+    k.expect("attention_bias", &Value::Bool(false))?;
     k.expect("scoring_func", &Value::from("sqrtsoftplus"))?;
     k.expect("topk_method", &Value::from("noaux_tc"))?;
     k.expect("num_key_value_heads", &Value::from(1))?;
@@ -2425,7 +2566,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
     k.expect("engram_block_size", &Value::from(32))?;
     k.expect("num_hash_layers", &Value::from(0))?;
     let q = c.top.get("quantization_config").or(k.raw("quantization_config"));
-    let fp8 = Fp8::parse(
+    let fp8_block = Fp8::parse(
         q.map(|v| {
             let mut o = v.as_object().cloned().unwrap_or_default();
             // (the experts' and the Engram tables' formats, said beside the dense matrices' FP8)
@@ -2435,7 +2576,8 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
         .as_ref(),
         mt,
     )?
-    .is_some();
+    .map(|f| f.block);
+    let fp8 = fp8_block.is_some();
     let fp4 = q.and_then(|v| v.get("expert_dtype")).or(k.raw("expert_dtype")).and_then(|v| v.as_str()) == Some("fp4");
     let (heads, hd, rd) = (k.usize("num_attention_heads")?, k.usize("head_dim")?, k.usize("qk_rope_head_dim")?);
     let (q_lora, o_lora, o_groups, window) =
@@ -2453,6 +2595,8 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
         rounding: Rounding::Once,
         lagged: true,
     };
+    // (the release's RMSNorm: fp32, the weight times the normed value cast to bf16 once; Engram's gate normalises in fp32 and keeps it)
+    let rn = Norm { rounding: Rounding::Once, ..Norm::rms(eps) };
     let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
     // (a list of counts: one that is not a list, or holds an entry that is not a count, is refused by name, never read as the entries that are)
     let list = |x: &str| -> Result<Vec<usize>> {
@@ -2613,7 +2757,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
             share,
         };
         comp_template = Some(comp.clone());
-        blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Compressed(comp)), norm_out: None, residual: Residual::Streams(streams) });
+        blocks.push(Block { norm_in: rn, body: Body::Mixer(Mixer::Compressed(comp)), norm_out: None, residual: Residual::Streams(streams) });
         roles.push(r);
         let mut r = names::roles(part::V4_MOE, &p, ne, |x| x != "hash");
         r.extend(names::roles(part::HC_FFN, &p, 0, all));
@@ -2636,7 +2780,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
             latent: None,
         };
         moe_template = Some(moe.clone());
-        blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Ffn(Ffn::Moe(moe)), norm_out: None, residual: Residual::Streams(streams) });
+        blocks.push(Block { norm_in: rn, body: Body::Ffn(Ffn::Moe(moe)), norm_out: None, residual: Residual::Streams(streams) });
         roles.push(r);
     }
     for x in ["rope_scaling", "rope_theta", "compress_rope_theta", "candidate_source_layer_id", "candidate_block_size", "candidate_topk_blocks", "expert_dtype"]
@@ -2660,13 +2804,13 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
     dmoe.router.top_k = k.opt_usize("dspark_num_experts_per_tok")?.unwrap_or(top_k);
     dmoe.experts = k.opt_usize("dspark_n_routed_experts")?.unwrap_or(ne);
     let n_draft = k.opt_usize("n_mtp_layers")?.unwrap_or(mtp_layers);
-    let draft = dspark_head(&k, n_draft, window_attn, dmoe, Residual::Streams(streams), eps)?;
+    let draft = dspark_head(&k, n_draft, window_attn, dmoe, Residual::Streams(streams), rn)?;
     let desc = ModelDesc {
         hidden: d,
         vocab,
         embed: Embed { scale: 1.0, norm: None, streams: streams.streams, per_layer: None },
         blocks,
-        final_norm: Norm::rms(eps),
+        final_norm: rn,
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::LastPre, rounding: Rounding::F32 },
         mtp: draft.into_iter().collect(),
         vision: None,
@@ -2682,6 +2826,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
         out.mtp = vec![(blocks, own)];
     }
     out.scales = scales;
+    out.fp8_block = fp8_block;
     out.shapes = v41_shapes(&out, k.usize("moe_intermediate_size")?);
     Ok(out)
 }
