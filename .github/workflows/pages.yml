@@ -12,29 +12,50 @@ on:
     branches: [main]
     paths:
       - "docs/**"
+      # what scripts/gen_models.py reads (glyd-engine/Cargo.toml: the version)
       - "glyd-engine/src/support.rs"
       - "glyd-engine/src/levels.rs"
       - "glyd-engine/src/machine.rs"
       - "glyd-engine/src/kvcal.rs"
+      - "glyd-engine/src/plan.rs"
+      - "glyd-engine/src/runtime/config.rs"
+      - "glyd-engine/src/runtime/describe.rs"
       - "glyd-engine/Cargo.toml"
+      # the files docs/serve-api.md links to outside docs/ (scripts/gen_reference.py stops where one is not there)
+      - "benchmarks/gpu/rtx4080s-serve-probe-2026-10-19/README.md"
+      - "research/tp-8xa100-2026-10-22/README.md"
+      - "starlings/docs/service-adapter.md"
+      # the generators, the gate check and the scripts that run them
       - "scripts/gen_models.py"
       - "scripts/gen_reference.py"
       - "scripts/check_gate_docs.py"
       - "benchmarks/gates/**"
       - "scripts/build_site.sh"
+      - "scripts/build_pages.sh"
       - ".github/workflows/pages.yml"
   pull_request:
     paths:
       - "docs/**"
+      # what scripts/gen_models.py reads (glyd-engine/Cargo.toml: the version)
       - "glyd-engine/src/support.rs"
       - "glyd-engine/src/levels.rs"
       - "glyd-engine/src/machine.rs"
       - "glyd-engine/src/kvcal.rs"
+      - "glyd-engine/src/plan.rs"
+      - "glyd-engine/src/runtime/config.rs"
+      - "glyd-engine/src/runtime/describe.rs"
+      - "glyd-engine/Cargo.toml"
+      # the files docs/serve-api.md links to outside docs/ (scripts/gen_reference.py stops where one is not there)
+      - "benchmarks/gpu/rtx4080s-serve-probe-2026-10-19/README.md"
+      - "research/tp-8xa100-2026-10-22/README.md"
+      - "starlings/docs/service-adapter.md"
+      # the generators, the gate check and the scripts that run them
       - "scripts/gen_models.py"
       - "scripts/gen_reference.py"
       - "scripts/check_gate_docs.py"
       - "benchmarks/gates/**"
       - "scripts/build_site.sh"
+      - "scripts/build_pages.sh"
       - ".github/workflows/pages.yml"
   release:
     types: [published]
