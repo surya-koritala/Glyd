@@ -18,6 +18,9 @@
 //!                                            turn about an image already read; GLYD_ENGINE_BATCH_PREFILL=0 holds them to the bit
 //!   visioncheck rope DIR IMAGE               the keys the attention and the indexer's pools turned at an image prompt's M-RoPE positions, angle by angle against the same prompt's at
 //!                                            each row's own position
+//!   visioncheck split DIR IMAGE [--split C] [--devices G,G]   the image prompt's logits and the text's, one GPU against the layers cut into stages, bit for bit
+//!   visioncheck repeat DIR IMAGE [--times N] [--engines E] [--split C --devices G,G] [--places P] [--mode M]   the image prompt and a text prompt of a chunk of more than 64
+//!                                            rows (the expert cache's streaming prefill) N times on each of E engines made one after another, every pass one GPU's first to the bit
 
 use crate::args::Args;
 use crate::dev::Dev;
@@ -36,7 +39,7 @@ const VISION_TOKENS: [&str; 3] = ["<|vision_start|>", "<|vision_end|>", "<|image
 const IMAGE_TOKEN: u32 = 107;
 
 pub fn run(a: &Args) -> Result<()> {
-    match a.need(1, "make|tower|logits|compare|sched")? {
+    match a.need(1, "make|tower|logits|compare|sched|rope|split|repeat")? {
         "make" => make(Path::new(a.need(2, "DIR")?)),
         "tower" => tower(a),
         "logits" => logits(a),
@@ -44,7 +47,8 @@ pub fn run(a: &Args) -> Result<()> {
         "sched" => sched(a),
         "rope" => rope(a),
         "split" => split(a),
-        x => err(format!("visioncheck {x}: make, tower, logits, compare, sched, rope or split")),
+        "repeat" => repeat(a),
+        x => err(format!("visioncheck {x}: make, tower, logits, compare, sched, rope, split or repeat")),
     }
 }
 
@@ -418,6 +422,108 @@ fn split(a: &Args) -> Result<()> {
         return err("the stages' logits are not one GPU's");
     }
     println!("PASS visioncheck split");
+    Ok(())
+}
+
+/// The rows of `b` whose logits are not `a`'s to the bit (a row missing counts), the first of them, and the largest difference of a logit.
+fn apart_of(a: &[Vec<f32>], b: &[Vec<f32>]) -> (usize, Option<usize>, f32) {
+    let rows: Vec<usize> = (0..a.len()).filter(|&i| b.get(i).is_none_or(|r| a[i].iter().map(|x| x.to_bits()).ne(r.iter().map(|x| x.to_bits())))).collect();
+    let most = a.iter().zip(b).flat_map(|(x, y)| x.iter().zip(y).map(|(p, q)| (p - q).abs())).fold(0f32, f32::max);
+    (rows.len(), rows.first().copied(), most)
+}
+
+/// `repeat DIR IMAGE [--times N] [--engines E] [--split CUT,..] [--devices GPU,..] [--places P] [--mode copy|cpu]`: the image prompt's teacher-forced logits
+/// (`scored`'s rows) N times on one GPU, then N times on each of E engines made after it in this process (one GPU each, or the layers cut into stages with --split:
+/// both on GPU 0 unless --devices names two), each pass against one GPU's pass of the same number, bit for bit; a text prompt of more than 64 rows a chunk (the
+/// expert cache's streaming prefill, as the image prompt's) N times on each, and the short text once, the same way. One GPU's later passes are said against its
+/// first, not judged: in the cache's own mode (cpu) a cold cache's misses are computed by the host, a warm one's are in places. `--places P`: the engines after the
+/// first hold P experts a layer on the GPU (the first, every one): the streaming prefill copies the others through its ring; `--mode`: the misses'. An error where
+/// any row is apart.
+fn repeat(a: &Args) -> Result<()> {
+    use crate::dynamic::qwen4x::{open_cached, Caching, PackMode};
+    let dir = Path::new(a.need(2, "DIR")?);
+    let image = a.need(3, "IMAGE")?;
+    let (times, engines) = (a.num("times", 4usize)?, a.num("engines", 1usize)?);
+    let o = crate::dynamic::Opts { ctx: 4096, chunk: 128, graph: true, device: 0, layout: None };
+    let mut k = Caching::new(&dir.join("pack"), PackMode::Best, 1);
+    if let Some(m) = a.flag("mode") {
+        k.offload.mode = crate::offload::Mode::parse(m).ok_or_else(|| Error(format!("--mode {m}: copy, cpu, split or auto")))?;
+    }
+    let places = a.flag("places").map(|p| p.parse::<usize>().map_err(|_| Error(format!("--places {p}: a number")))).transpose()?;
+    let (cuts, devices) = crate::dynamic::split::split_args(a)?;
+    // (one GPU's rows of each pass: the image prompt's, the short text's, the long text's)
+    let mut refs: [Vec<Vec<Vec<f32>>>; 3] = Default::default();
+    let mut apart = 0usize;
+    for en in 0..=engines {
+        let (c, d) = if en == 0 { (Vec::new(), vec![devices[0]]) } else { (cuts.clone(), devices.clone()) };
+        let held = if en == 0 { None } else { places };
+        let what = format!(
+            "{}{}",
+            if c.is_empty() { "one GPU".to_string() } else { format!("stages cut before {c:?} on GPUs {d:?}") },
+            held.map_or(String::new(), |p| format!(", {p} experts a layer on the GPU"))
+        );
+        let mut e = open_cached(dir, &o, &Caching { places: held, ..k.clone() }, &c, &d)?;
+        let prep = crate::vision::PREP.get().cloned().ok_or_else(|| Error(format!("{}: the executor opened no vision tower", dir.display())))?;
+        let img = Arc::new(prep.image(&io(std::fs::read(image), Path::new(image))?)?);
+        let (ids, from) = prompt_ids(dir, true)?;
+        let expanded = crate::vision::expand(&ids, prep.image_token, std::slice::from_ref(&img))?;
+        let (text, from_t) = prompt_ids(dir, false)?;
+        // (a text whose prompt is a chunk of more than 64 rows, as the image prompt's is: the expert cache's long chunks' way)
+        let tok = crate::tok::Tok::load(dir)?;
+        let ask = format!("<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n", "What is in this picture? ".repeat(4));
+        let (long, from_l) = (tok.encode_with(&format!("{ask}It is a red square on white."), false)?, tok.encode_with(&ask, false)?.len());
+        let mut scored = |ids: &[u32], images: &[Arc<Image>], from: usize| -> Result<Vec<Vec<f32>>> {
+            e.reset()?;
+            e.set_images(ids, images)?;
+            let mut rows = vec![{
+                e.prefill(&ids[..from])?;
+                e.logits()?
+            }];
+            for &t in &ids[from..ids.len() - 1] {
+                e.step(t)?;
+                rows.push(e.logits()?);
+            }
+            Ok(rows)
+        };
+        let row = |r: Option<usize>| r.map_or(String::new(), |r| format!(", from row {r}"));
+        let mut judge = |rows: Vec<Vec<f32>>, refs: &mut Vec<Vec<Vec<f32>>>, t: usize, what: String| {
+            let line = if en == 0 {
+                let l = match refs.first() {
+                    None => format!("{} rows, the reference", rows.len()),
+                    Some(f) => {
+                        let (n, r, most) = apart_of(f, &rows);
+                        format!(
+                            "{} rows, the reference; against this GPU's first pass {n} apart{} (largest difference {most:.3e}; said, not judged)",
+                            rows.len(),
+                            row(r)
+                        )
+                    }
+                };
+                refs.push(rows);
+                l
+            } else {
+                let (n, r, most) = apart_of(&refs[t], &rows);
+                apart += (n > 0) as usize;
+                format!("{} rows, {n} apart from one GPU's pass {t}{} (largest difference {most:.3e})", rows.len(), row(r))
+            };
+            println!("{what}: {line}");
+        };
+        let [ri, rt, rl] = &mut refs;
+        for t in 0..times {
+            let rows = scored(&expanded, std::slice::from_ref(&img), from - 1 + img.tokens())?;
+            judge(rows, ri, t, format!("engine {en} ({what}) image pass {t} ({} rows a chunk)", from - 1 + img.tokens()));
+        }
+        let rows = scored(&text, &[], from_t)?;
+        judge(rows, rt, 0, format!("engine {en} ({what}) text ({from_t} rows a chunk)"));
+        for t in 0..times {
+            let rows = scored(&long, &[], from_l)?;
+            judge(rows, rl, t, format!("engine {en} ({what}) long text pass {t} ({from_l} rows a chunk)"));
+        }
+    }
+    if apart > 0 {
+        return err(format!("{apart} passes apart from one GPU's"));
+    }
+    println!("PASS visioncheck repeat");
     Ok(())
 }
 

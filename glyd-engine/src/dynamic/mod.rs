@@ -49,6 +49,7 @@ pub mod tp;
 pub mod tp_cache;
 
 use crate::dev::{copy_d2d_async, copy_d2h_async, copy_h2d_async, Buf, Dev, Ev, Graph, Pinned};
+use crate::dynamic::experts::MoeBlock;
 use crate::ffi::{err, Error, Lib, Result};
 use crate::gemma4::{rotary, EMBED_GROUPS};
 use crate::gpu_ops::{Gemm, GpuOps};
@@ -57,7 +58,6 @@ use crate::kern::{norm_threads, Kern};
 use crate::kern::{pf_kib, KernG4, NextPf};
 use crate::kern::{KernMamba2, SsdWs};
 use crate::kern35::{Kern35, Mat};
-use crate::kern_nh::MoeBlock;
 use crate::launch;
 use crate::runtime::kinds::Rounding;
 use crate::sched::Sample;
@@ -530,7 +530,7 @@ impl MoeOp {
 pub struct ResidentMoe(pub crate::moe::MoeLayer);
 
 impl MoeBlock for ResidentMoe {
-    unsafe fn forward(&self, _: &dyn crate::kern_nh::NhHost, _: u64, _: usize, _: u64) -> Result<()> {
+    unsafe fn forward(&self, _: &dyn crate::dynamic::experts::NhHost, _: u64, _: usize, _: u64) -> Result<()> {
         err("these experts run on the dynamic engine")
     }
     fn graphable(&self) -> bool {
@@ -1225,9 +1225,15 @@ fn load_part(
         }
     };
     let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
+    let lossless = matches!(layout, Layout::Tiered | Layout::Twelve);
+    // (a layer in the computer's memory keeps its packed matrices, from the bf16 an FP8 one dequantises to: not as released, so not where one is)
+    if lossless && v7.is_none() {
+        let ram: Vec<&[String]> =
+            (0..d.mats.len()).filter(|&k| k != d.embed && want.is_none_or(|w| w[k]) && in_ram(k).is_some()).map(|k| &d.mats[k].members[..]).collect();
+        crate::dense_ram::refuse_released_f8(&ck, d.family, placing.ram.count(), &ram)?;
+    }
     // (a matrix released in FP8 with its block scales, at a lossless level, on the GPU: held as released, the E4M3 bytes bit for bit; this GPU's whole
     // blocks of its rows where every layer is across a group of GPUs)
-    let lossless = matches!(layout, Layout::Tiered | Layout::Twelve);
     let as_f8 = |k: usize| -> Option<(usize, usize)> {
         let it = &d.mats[k];
         (lossless && v7.is_none() && in_ram(k).is_none() && k != d.embed && !tables::on_host(&d, k))
@@ -1752,7 +1758,7 @@ struct Verify {
 pub const TRACED: [Slot; 10] = [Slot::H, Slot::O, Slot::S, Slot::Hq, Slot::Mid, Slot::Cp, Slot::Mix, Slot::Ba, Slot::Xc, Slot::Core];
 
 // ponytail: the big model's buffers; a draft model's own where one has a block of experts
-impl crate::kern_nh::NhHost for Dyn {
+impl crate::dynamic::experts::NhHost for Dyn {
     fn dev(&self) -> &Dev {
         &self.dev
     }

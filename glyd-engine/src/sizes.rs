@@ -52,6 +52,16 @@ pub fn layer_of(name: &str) -> Option<usize> {
     rest.split('.').next()?.parse().ok()
 }
 
+/// Whether the tensor `name` is one routed expert's (a shared expert's is not).
+fn is_routed(name: &str) -> bool {
+    !name.contains("shared_expert") && (name.contains(".experts.") || name.contains(".expert."))
+}
+
+/// The name of the weight a scale tensor (`X.scale`, `X.weight_scale`, `X.weight_scale_inv`) is of, without its `.weight`.
+fn scale_of(name: &str) -> Option<&str> {
+    ["weight_scale_inv", "weight_scale", "scale_inv", "scale"].iter().find_map(|s| name.strip_suffix(s)?.strip_suffix('.'))
+}
+
 /// The part of a model the tensor `name` is, of a model of `layers` layers (a layer past them is a multi-token-prediction one).
 pub fn classify(name: &str, layers: usize) -> Part {
     let has = |words: &[&str]| words.iter().any(|w| name.contains(w));
@@ -73,7 +83,7 @@ pub fn classify(name: &str, layers: usize) -> Part {
     }
     if has(&["shared_expert", "shared_experts"]) {
         Part::SharedExperts
-    } else if has(&[".experts.", ".expert."]) {
+    } else if is_routed(name) {
         Part::RoutedExperts
     } else if has(&["attn", "attention", "mixer", "self_attn", "ssm", "conv1d"]) {
         Part::Attention
@@ -224,11 +234,19 @@ impl Table {
         m
     }
 
-    /// The weights of each part (the tensors whose type tells them; a packed type's bytes are `packed_bits` a weight): the parameters a plan counts.
-    pub fn params_by_part(&self, layers: usize, packed_bits: f64) -> BTreeMap<Part, f64> {
+    /// The weights of each part: a tensor whose type tells them by its shape; a packed type's bytes (the packed weights and their scales together) at the bits the
+    /// release has a weight in, `expert_bits` for a routed expert's and `rest_bits` for the rest's (they differ where only the experts are 4-bit: Kimi-K3's, DeepSeek-V4's).
+    /// Not weights: the scales of weights counted by their shape, and an index table (DeepSeek-V4's hash routing).
+    pub fn params_by_part(&self, layers: usize, rest_bits: f64, expert_bits: f64) -> BTreeMap<Part, f64> {
+        let shaped: std::collections::HashSet<&str> = self.rows.iter().filter(|r| r.params().is_some()).map(|r| r.name.as_str()).collect();
+        let carried = |name: &str| scale_of(name).is_some_and(|w| shaped.contains(format!("{w}.weight").as_str()));
         let mut m = BTreeMap::new();
         for r in &self.rows {
-            let p = r.params().map_or(r.bytes as f64 * 8.0 / packed_bits, |n| n as f64);
+            let p = match r.params() {
+                Some(n) => n as f64,
+                None if r.dtype == "I64" || carried(&r.name) => 0.0,
+                None => r.bytes as f64 * 8.0 / if is_routed(&r.name) { expert_bits } else { rest_bits },
+            };
             *m.entry(classify(&r.name, layers)).or_insert(0.0) += p;
         }
         m
@@ -551,9 +569,22 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// P2b's acceptance on recorded headers of the recent families (Gemma 4 12B, Kimi-K3, DeepSeek-V4, Muse Spark, Qwen3.8-27B): the tensors the headers list are the
-    /// bytes the Hub lists for the files (their headers are all that differ: under 1%, and the index's total where there is one is exactly them); the model's
-    /// shape counted from them is within 1% of the weights in them less the vision tower and a prediction head not drafted with; and the plan sized from them is made.
+    /// The weights a tensor holds as its release stores them, counted here by the release's formats and not by `params_by_part`'s rule: a float type's by its shape, a
+    /// packed tensor's (an 8-bit word of two 4-bit weights, as the MXFP4 and FP4 experts are stored) twice its bytes; a scale and an index table (DeepSeek-V4's
+    /// hash routing) hold none.
+    fn weights_of(r: &Row) -> f64 {
+        let scale = r.name.rsplit('.').next().is_some_and(|l| l.contains("scale"));
+        match r.dtype.as_str() {
+            "BF16" | "F16" | "F32" | "F8_E4M3" => r.shape.iter().product::<u64>() as f64,
+            "U8" | "I8" if !scale => 2.0 * r.bytes as f64,
+            _ => 0.0,
+        }
+    }
+
+    /// P2b's acceptance on recorded headers of the recent families (Gemma 4 12B, Kimi-K3 and K3.1-Pro, DeepSeek-V4 and V4.1, Qwen3.8 at 27B and 2.4T): the tensors the
+    /// headers list are the bytes the Hub lists for the files (their headers are all that differ: under 1%, and the index's total where there is one is exactly them);
+    /// the model's shape counted from them holds every weight of them less the vision tower and a prediction head not drafted with, as `weights_of` counts them
+    /// (the 4-bit experts of Kimi-K3 and DeepSeek-V4 are 2.7 trillion and 0.3 trillion weights, not a fourth or a half of that); and the plan sized from them is made.
     #[test]
     fn recorded_headers_are_the_hubs_file_sizes() {
         use crate::plan::Shape;
@@ -577,10 +608,35 @@ pub(crate) mod tests {
                     Part::Mtp => sh.mtp,
                     _ => true,
                 })
-                .map(|r| r.params().unwrap_or_else(|| r.bytes * 8 / sh.release_bits.max(1.0) as u64) as f64)
+                .map(weights_of)
                 .sum();
-            assert!((sh.params() / counted - 1.0).abs() < 0.01, "{name}: {:.4e} parameters in the shape, {counted:.4e} in the tensors", sh.params());
+            assert!((sh.params() / counted - 1.0).abs() < 1e-4, "{name}: {:.4e} parameters in the shape, {counted:.4e} in the tensors", sh.params());
+            // (and what a decode step reads of them: the routed experts' share the router picks, from the same count)
+            if sh.is_moe() {
+                let routed: f64 = table.rows.iter().filter(|r| classify(&r.name, layers) == Part::RoutedExperts).map(weights_of).sum();
+                assert!((sh.routed / routed - 1.0).abs() < 1e-4, "{name}: {:.4e} routed in the shape, {routed:.4e} in the tensors", sh.routed);
+            }
         }
+    }
+
+    /// `fit` prints Kimi-K3.1-Pro's parameters from its headers: 92 layers of 896 routed experts of three 3,072 x 3,584 matrices held 4-bit (a weight and its scale at
+    /// 4.25 bits) are 2.72 trillion of its 2.78 trillion, where counting those bytes at the 16 bits of the rest gave 780 billion.
+    #[test]
+    fn kimi_k3_1_pro_counts_its_four_bit_experts_at_their_own_bits() {
+        let (name, text) = HEADER_FIXTURES.iter().find(|f| f.0 == "Kimi-K3.1-Pro").unwrap();
+        let v: serde_json::Value = serde_json::from_str(text).unwrap();
+        let table = Table::expand(&groups_of(&v));
+        let sh = crate::plan::Shape::from_config(v["config"].as_str().unwrap()).unwrap().with_table(&table);
+        let routed = (92u64 * 896 * 3 * 3072 * 3584) as f64;
+        assert!((sh.routed / routed - 1.0).abs() < 1e-9, "{name}: {:.6e} routed, {routed:.6e} in the release", sh.routed);
+        assert!((sh.params() - 2.78e12).abs() < 0.01e12, "{name}: {:.4e} parameters", sh.params());
+        assert_eq!((sh.experts, sh.topk), (896, 16), "{name}");
+        // (a table of bf16 alone is counted as it was: the experts' own bits are the packed ones')
+        let rows =
+            |dtype: &str, shape: Vec<u64>, bytes: u64| Row { name: "model.layers.0.mlp.experts.0.up_proj.weight".into(), dtype: dtype.into(), shape, bytes };
+        let one = |r: Row| Table { rows: vec![r] }.params_by_part(1, 16.0, 4.25)[&Part::RoutedExperts];
+        assert_eq!(one(rows("BF16", vec![4, 8], 64)), 32.0);
+        assert_eq!(one(rows("U8", vec![4, 8], 32)), 32.0 * 8.0 / 4.25);
     }
 
     /// The recorded headers of Kimi-K3, DeepSeek-V4 and DeepSeek-V4.1 plan over the GPUs of a machine before any file is here (or are refused, naming the model): the

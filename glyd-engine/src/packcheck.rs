@@ -14,7 +14,10 @@
 //!   has one (`tests/logits`, src/logits.rs: another implementation's numbers, which say the logits are right to that bound). And glyd-v7 at
 //!   hummingbird (glyd/nemotron-3-hummingbird: the experts in codebook rows), from a random model of that repo's layout with latent experts and a random export of them: no level packs it as
 //!   it loads, so its digest is the engine's own bits on the saved directory, one file a GPU generation (`hb_digest`: `tests/packs/nemotron-h-hb.smNN.json.gz`,
-//!   recorded by `packcheck --engine --record` on a GPU of that generation). A GPU whose generation has no digest fails the line: nothing was compared.
+//!   recorded by `packcheck --engine --record` on a GPU of that generation). A GPU whose generation has no digest fails the line: nothing was compared. And the
+//!   codes packs (glyd-x/1, src/cb_pack.rs) of glyd/Qwen3.8-Flash-Next-hummingbird, in each of its forms (precise-v2: q3 and q; best-v2: q3 and q4; fast: q; the
+//!   earlier precise: cb3 and cb2, best: cb3 and cb4, pack: cb2): a random model of the family's codebook widths with its experts in a pack of that form
+//!   (`logits::codes_form_check`), its experts resident and through the expert cache the same bits, the host's computation of the misses within the kind's bound.
 //!
 //! Comparable mechanisms (llama.cpp's GGUF: a type id is never reused and a file names its version, which a
 //! reader refuses past what it knows; vLLM: a checkpoint's quantization_config picks the reader). Glyd's saves name
@@ -330,9 +333,21 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
             }
             Ok((f, same, tally))
         })?;
+        // (the release's codes packs' forms (src/moe_cb.rs): each a random model's pack in that form, resident = through the expert cache, the host's misses at the
+        // kind's bound)
+        let mut codes = 0;
+        for name in logits::RELEASED_CODES {
+            let (ok, line) = logits::codes_form_check(name, 3, 40)?;
+            println!("{line}");
+            codes += ok as usize;
+            if !ok {
+                failed.push(format!("codes-{name}"));
+            }
+        }
         println!(
-            "the formats the engine reads: {same} of {} saved directories the bits of the model packed as it loads; the comparisons beside: {}",
+            "the formats the engine reads: {same} of {} saved directories the bits of the model packed as it loads, {codes} of {} codes packs' forms; the comparisons beside: {}",
             SAVED.len(),
+            logits::RELEASED_CODES.len(),
             tally.summary()
         );
         failed.extend(f);

@@ -7,10 +7,10 @@ use super::{
     Dyn, HeadMix, IdxKeys, IdxPick, IdxScore, MlaIn, MlaIndexer, MlaOp, ModelDesc, MoeOp, Op, Opts, Placing, ResidentMoe, Ring, Slot, Stage, StreamsMix, View,
 };
 use crate::dev::Dev;
+use crate::dynamic::experts::MoeBlock;
 use crate::ffi::{err, Error, Result};
 use crate::glm::{ConfigGlm, GlmKind};
 use crate::kern::GM_D;
-use crate::kern_nh::MoeBlock;
 use crate::moe::Act;
 use crate::runtime::kinds::Rounding;
 use crate::weights::Layout;
@@ -49,7 +49,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
     let hb = crate::hb_pack::HbDir::open(dir)?;
     let store = caching.map(crate::hbg_store::store_for);
     let f8 = (crate::tune!("GLYD_GLM_F8").as_deref() != Some("0")).then_some(super::experts::F8 { scales: &kinds.scales, dev: &dev, lib: &lib });
-    let held = super::experts::Held { hb: hb.as_ref(), cache: caching.zip(store.as_ref()), ordinal: o.device, f8, dense: None, codebooks: None };
+    let held = super::experts::Held { hb: hb.as_ref(), cache: caching.zip(store.as_ref()), ordinal: o.device, f8, dense: None, codebooks: None, codes: None };
     let hidden = kinds.desc.hidden;
     let experts = |ck: &Checkpoint, _: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
         super::experts::of_layers(&kinds, st.layers, 2)
@@ -81,8 +81,8 @@ pub fn load_plain_drafting(dir: &Path, o: &Opts, k: usize) -> Result<Dyn> {
 
 /// The dynamic route's stage of the model (src/dynamic/split.rs `StageLoad`): stage `st`'s layers, every expert of them on its GPU, or in the expert cache as
 /// `caching` says where it is given (src/tiering.rs: its places a layer on the GPU, every expert in the computer's memory; FP8 experts as released each packed
-/// on its own, `experts::F8`). Its layers' own matrices stay on the GPU: a caching that asks for some in the computer's memory is refused (src/dense_ram.rs
-/// packs a layer's matrices there from the bf16 an FP8 one dequantises to, another product than the one as released; its row asks for none).
+/// on its own, `experts::F8`), and the stage's last layers' matrices in the computer's memory where it says so (src/dense_ram.rs: refused where they are released
+/// in FP8, whichever the family).
 pub fn stage_plain(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
     plain(dir, o, Some(st), None, caching)
 }
@@ -117,12 +117,6 @@ fn plain(dir: &Path, o: &Opts, st: Option<Stage>, draft: Option<usize>, caching:
     if draft.is_some() && caching.is_some() {
         return err("GLM-5.3's draft head with its experts in the expert cache: its verify pass takes the experts on the GPU");
     }
-    if let Some(c) = caching.filter(|c| c.dense > 0) {
-        return err(format!(
-            "GLM-5.3's layers keep their matrices on the GPU: {} layers of them in the computer's memory would be packed from the bf16 its FP8 matrices dequantise to",
-            c.dense
-        ));
-    }
     let (kinds, label, eos, max_pos) = plain_config(dir)?;
     let layers = kinds.desc.blocks.len() / 2;
     let st = st.unwrap_or(Stage::whole(layers));
@@ -139,7 +133,7 @@ fn plain(dir: &Path, o: &Opts, st: Option<Stage>, draft: Option<usize>, caching:
         lib: &lib,
     });
     let store = caching.map(crate::hbg_store::store_for);
-    let held = super::experts::Held { hb: None, cache: caching.zip(store.as_ref()), ordinal: o.device, f8, dense: None, codebooks: None };
+    let held = super::experts::Held { hb: None, cache: caching.zip(store.as_ref()), ordinal: o.device, f8, dense: None, codebooks: None, codes: None };
     let experts = |ck: &Checkpoint, level: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
         super::experts::of_layers(&kinds, st.layers, 2)
             .map(|(ix, m, roles)| {
@@ -160,7 +154,8 @@ fn plain(dir: &Path, o: &Opts, st: Option<Stage>, draft: Option<usize>, caching:
             .collect()
     };
     let spec = head.zip(draft).map(|(h, k)| super::DraftSpec { dir, desc: h, k, experts: Some(&head_experts) });
-    Dyn::new_with(dir, d, spec, st, o, &experts)
+    let placing = Placing { across: false, ram: crate::dense_ram::Placer::last(st.layers.0, st.layers.1, caching.map_or(0, |x| x.dense)) };
+    Dyn::new_placed(dir, d, spec, st, o, &experts, &placing)
 }
 
 /// A layer's matrices as the loader holds them: a Kimi delta layer's seven (qkv, o, f_a, f_b, g_a, g_b, b) or a latent attention layer's four (q_a, q_b, kv_a, o),

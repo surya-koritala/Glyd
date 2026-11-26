@@ -7,14 +7,16 @@
 //! so the call to the host's copy blocks the caller's thread for about the time of the transfer, with the kernels of the micro-batch before it running meanwhile (or `GLYD_CB2_COPIERS` threads make the copies).
 //! The slot is as big as the layer's biggest expert (in the form the kernels read: a ternary row is made two-bit rows by a kernel after its copy, in a buffer of its own), and an expert copies only its own bytes.
 //!
-//! The result `yrot` (f32 [n, 4096]) is, for each token, the sum over its k pairs of weight * (activation . downT) in the rotated basis. It is summed with atomic adds in fp32 (a token's pairs come from several experts,
-//! which run at once): the same to fp32 rounding, not to the bit, from run to run.
+//! The result is each pair's row, `prow` (f32 [n * k, hid], pair p = token p / k's choice p % k, in the router's order): activation . downT in the rotated basis, not weighted, written once by one thread of the
+//! products (no atomic add); the caller sums a token's rows in the router's order with their weights (src/moe_qwen4x.rs `qx_cb_sum_rot`, the per-pair products' sum), so a token's sum is in an order the
+//! layer's shape fixes, whatever experts run at once or wherever they are: the same bits from run to run. The host's share (`HostShare`) sums its pairs by token on the CPU; the caller adds those sums first and
+//! leaves those pairs out (`HostSums`).
 //!
 //! `glyd-engine cb2prefill [--n 1024] [--k 8] [--experts 216] [--fmts cb2:0.5,tern:0.3,cb3:0.2] [--resident 0.15] [--busy 40] [--check 16] [--reps 3] [--skew 0] [--pack DIR --layer L]` (a development build's): random experts (of the formats
 //! asked for, or a layer of a pack, mapped) and tokens, the time of a call and its sums for a few tokens against src/cpu_cb.rs's.
 
 use crate::cpu_cb::Fmt;
-use crate::dev::{copy_d2h_async, copy_h2d_async, memset_async, ArgsOf, Buf, ByArgs, Dev, Ev, EvRef, Pinned, Side};
+use crate::dev::{copy_d2h_async, copy_h2d_async, ArgsOf, Buf, ByArgs, Dev, Ev, EvRef, Pinned, Side};
 use crate::ffi::{err, Error, Result, Stream};
 use crate::launch;
 use std::cell::RefCell;
@@ -189,8 +191,19 @@ struct Scratch {
     wts_h: Pinned,
     tok_h: Pinned,
     wt_h: Pinned,
+    pid_h: Pinned,
+    skip_h: Pinned,
     tok_d: Buf,
-    wt_d: Buf,
+    pid_d: Buf,
+    skip_d: Buf,
+}
+
+/// The host's share of a call as the caller's sum takes it (device addresses, valid until the next call): `extra` (fp32 [n, hid]) each token's sum of its pairs the host computed, weighted, to be added
+/// first; `skip` (int64 [n * k], the router's order) -1 where the host took the pair (its row is not in `prow`), else 0.
+#[derive(Clone, Copy, Debug)]
+pub struct HostSums {
+    pub extra: u64,
+    pub skip: u64,
 }
 
 struct Inner {
@@ -199,7 +212,7 @@ struct Inner {
     act: Option<Buf>,
     copy: Side,
     sync: Ev,
-    /// the host's share: the call's rows of x' (bf16), the host's sums (fp32), both pinned, and the sums on the device
+    /// the host's share: the call's rows of x' (bf16), the host's sums by token (fp32), both pinned, and the sums on the device
     host_x: Option<Pinned>,
     host_y: Option<Pinned>,
     host_yd: Option<Buf>,
@@ -343,13 +356,12 @@ impl Drop for Copiers {
 }
 
 /// The host's share of a call (`Cb2Kern::host`): the experts with at most `max_rows` pairs that are not on the GPU (nor among the micro-batches already on their way) computed by `threads` threads of the CPU from their
-/// bytes in host memory (src/cpu_cb.rs), while the GPU streams and multiplies the rest; their sums added to the GPU's at the end of the call.
-/// With `auto`, `max_rows` moves after each call toward the host's time being ~85% of the GPU loop's (the next layer's share like this one's: their pairs are spread alike).
+/// bytes in host memory (src/cpu_cb.rs), while the GPU streams and multiplies the rest; their sums by token are the caller's to add (`HostSums`). Which experts the host takes is the call's plan alone (its pairs,
+/// the places, the ring), never a time measured: a share moved by the calls' times made the same chunk's sums differ from run to run.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HostShare {
     pub max_rows: usize,
     pub threads: usize,
-    pub auto: bool,
 }
 
 /// What the host's share of the last call took: its experts and pairs, and the host's time and the GPU loop's (the caller's thread, from the plan to the last launch), in milliseconds.
@@ -365,7 +377,6 @@ pub struct Cb2Kern {
     /// the host's share of the next calls (None: the GPU takes every expert), and what the last call's took
     pub host: std::cell::Cell<Option<HostShare>>,
     pub took: std::cell::Cell<HostTook>,
-    add: crate::kt::c2_add_f32,
     // the products of two, three and four bits
     up: [ByArgs<ArgsOf<crate::kt::c2_up2_2>>; 3],
     down: [ByArgs<ArgsOf<crate::kt::c2_down2_2>>; 3],
@@ -457,7 +468,6 @@ impl Cb2Kern {
         Ok(Cb2Kern {
             host: std::cell::Cell::new(None),
             took: std::cell::Cell::new(HostTook::default()),
-            add: dev.typed()?,
             up,
             down,
             tern: dev.typed()?,
@@ -509,17 +519,29 @@ impl Cb2Kern {
 /// # Safety
 /// As `cb2_prefill_experts`.
 #[allow(clippy::too_many_arguments)]
-pub unsafe fn cb2_prefill(dev: &Dev, kern: &Cb2Kern, host: &Cb2Host, n: usize, k: usize, xrb: u64, ids: u64, wts: u64, yrot: u64, s: Stream) -> Result<()> {
+pub unsafe fn cb2_prefill(
+    dev: &Dev,
+    kern: &Cb2Kern,
+    host: &Cb2Host,
+    n: usize,
+    k: usize,
+    xrb: u64,
+    ids: u64,
+    wts: u64,
+    prow: u64,
+    s: Stream,
+) -> Result<Option<HostSums>> {
     if host.cstride != CODES || host.bstride != BOOKS {
         return err(format!("experts of {} and {} bytes: this format's experts are {CODES} and {BOOKS}", host.cstride, host.bstride));
     }
-    cb2_prefill_experts(dev, kern, &host.descs(), n, k, xrb, ids, wts, yrot, s)
+    cb2_prefill_experts(dev, kern, &host.descs(), n, k, xrb, ids, wts, prow, s)
 }
 
-/// The routed experts' sum for a chunk of `n` tokens with `k` pairs each: `yrot` [n, 4096] (f32, written) = sum over a token's pairs of weights[pair] * (activation . downT) for the pair's expert, in the rotated basis.
-/// `experts` are the layer's experts on the host (a pair's expert is `ids[pair]`, a number into this slice), `xrb` the tokens' rows of x' = R x (bf16 [n, 4096]), `ids` the experts (int64 [n * k]; pair p is token
-/// p / k's), `wts` their weights (f32 [n * k]). Everything is queued on `s` after what `s` has run, and the call returns when the pairs have been read back and every micro-batch's kernels are queued (not when they
-/// have run).
+/// The routed experts' rows for a chunk of `n` tokens with `k` pairs each: `prow` [n * k, hid] (f32) row p = activation . downT of pair p's expert (pair p is token p / k's choice p % k, the router's order),
+/// in the rotated basis, not weighted: every pair's row the GPU computes, each written once (the caller sums a token's rows in the router's order with their weights, `wts`). `experts` are the layer's
+/// experts on the host (a pair's expert is `ids[pair]`, a number into this slice), `xrb` the tokens' rows of x' = R x (bf16 [n, hid]), `ids` the experts (int64 [n * k]), `wts` their weights (f32 [n * k]).
+/// Where the host takes a share (`Cb2Kern::host`), its pairs' rows are not written: their weighted sums by token, and which pairs they are, are returned (`HostSums`). Everything is queued on `s` after
+/// what `s` has run, and the call returns when the pairs have been read back and every micro-batch's kernels are queued (not when they have run).
 ///
 /// For a chunk of 256 tokens or more the copies of the first micro-batches (the experts in number order, the ones already on the GPU left out) are started before the router's ids are waited for, so that they run
 /// while the GPU works through the layer's attention; the ring is as big as `RING_BYTES` holds. The pipeline is Strata's (MIT, github.com/Niko1221/Strata, prefill/prefill.cpp): the copy stream runs ahead of the
@@ -537,11 +559,11 @@ pub unsafe fn cb2_prefill_experts(
     xrb: u64,
     ids: u64,
     wts: u64,
-    yrot: u64,
+    prow: u64,
     s: Stream,
-) -> Result<()> {
+) -> Result<Option<HostSums>> {
     let pairs = n * k;
-    if n == 0 || !(1..=16).contains(&k) || experts.is_empty() || xrb % 16 != 0 || yrot % 16 != 0 {
+    if n == 0 || !(1..=16).contains(&k) || experts.is_empty() || xrb % 16 != 0 || prow % 16 != 0 {
         return err(format!(
             "a prompt chunk of {n} tokens with {k} pairs each over {} experts: tokens, 1 to 16 pairs, experts, 16-byte aligned rows",
             experts.len()
@@ -592,8 +614,11 @@ pub unsafe fn cb2_prefill_experts(
             wts_h: Pinned::new(pairs * 4)?,
             tok_h: Pinned::new(pairs * 4)?,
             wt_h: Pinned::new(pairs * 4)?,
+            pid_h: Pinned::new(pairs * 4)?,
+            skip_h: Pinned::new(pairs * 8)?,
             tok_d: Buf::new(pairs * 4)?,
-            wt_d: Buf::new(pairs * 4)?,
+            pid_d: Buf::new(pairs * 4)?,
+            skip_d: Buf::new(pairs * 8)?,
         });
     }
     let act_rows = pairs.min(CAP_ROWS);
@@ -651,17 +676,21 @@ pub unsafe fn cb2_prefill_experts(
         start[e + 1] = start[e] + count[e];
     }
     // SAFETY: as above; the plan is `pairs` long.
-    let (tok, wt) = (std::slice::from_raw_parts_mut(sc.tok_h.ptr as *mut i32, pairs), std::slice::from_raw_parts_mut(sc.wt_h.ptr as *mut f32, pairs));
+    let (tok, wt, pid) = (
+        std::slice::from_raw_parts_mut(sc.tok_h.ptr as *mut i32, pairs),
+        std::slice::from_raw_parts_mut(sc.wt_h.ptr as *mut f32, pairs),
+        std::slice::from_raw_parts_mut(sc.pid_h.ptr as *mut i32, pairs),
+    );
     let mut fill = start.clone();
     for (p, &e) in idv.iter().enumerate() {
         let pos = fill[e as usize];
         fill[e as usize] += 1;
         tok[pos] = (p / k) as i32;
         wt[pos] = wv[p];
+        pid[pos] = p as i32;
     }
     copy_h2d_async(sc.tok_d.ptr, sc.tok_h.ptr, pairs * 4, s)?;
-    copy_h2d_async(sc.wt_d.ptr, sc.wt_h.ptr, pairs * 4, s)?;
-    memset_async(yrot, 0, n * hid * 4, s)?;
+    copy_h2d_async(sc.pid_d.ptr, sc.pid_h.ptr, pairs * 4, s)?;
     crate::tmark!(s, "experts: plan");
     // the host's share: experts of few pairs that are not on the GPU and whose copies have not started (a call of every expert keeps its first micro-batches, already on their way)
     let mut on_host = vec![false; experts.len()];
@@ -721,7 +750,7 @@ pub unsafe fn cb2_prefill_experts(
                     None => launch!(ux, [tiles, (inter / NEURONS) as u32, 1], [128, 1, 1], smem smem, s; xrb, sc.tok_d.ptr, cp, bp, act.ptr, sg, kern.limit)?,
                 }
                 crate::tmark!(s, "experts: up");
-                launch!(dx, [tiles, (hid / kern.dout) as u32, 1], [kern.dout as u32, 1, 1], smem (kern.stages * downx_stage(kern.dout)) as u32, s; act.ptr, sc.tok_d.ptr, sc.wt_d.ptr, cp, bp, yrot, sg)?;
+                launch!(dx, [tiles, (hid / kern.dout) as u32, 1], [kern.dout as u32, 1, 1], smem (kern.stages * downx_stage(kern.dout)) as u32, s; act.ptr, sc.pid_d.ptr, cp, bp, prow, sg)?;
                 crate::tmark!(s, "experts: down");
                 continue;
             }
@@ -734,13 +763,13 @@ pub unsafe fn cb2_prefill_experts(
             for bits in 2..=4usize {
                 if let Some(part) = pick(&sg, |i| widths[i].1 == bits) {
                     let tiles = part.tiles[part.n as usize] as u32;
-                    launch!(kern.down[bits - 2], [tiles, (hid / OUTPUTS) as u32, 1], [128, 1, 1], smem smem, s; act.ptr, sc.tok_d.ptr, sc.wt_d.ptr, cp, bp, yrot, part)?;
+                    launch!(kern.down[bits - 2], [tiles, (hid / OUTPUTS) as u32, 1], [128, 1, 1], smem smem, s; act.ptr, sc.pid_d.ptr, cp, bp, prow, part)?;
                 }
             }
         }
         Ok(())
     };
-    // the host's share on a thread of its own (its pairs from the plan, x' from the readback), beside the GPU's loop; its sums go up and are added after the GPU's products
+    // the host's share on a thread of its own (its pairs from the plan, x' from the readback), beside the GPU's loop; its sums by token go up for the caller's sum, which adds them first
     let (hx, hy, hyd) =
         (g.host_x.as_ref().map_or(0, |b| b.ptr as usize), g.host_y.as_ref().map_or(0, |b| b.ptr as usize), g.host_yd.as_ref().map_or(0, |b| b.ptr));
     let (limit, ex) = (kern.limit, SendPtr((experts.as_ptr(), experts.len())));
@@ -821,25 +850,21 @@ pub unsafe fn cb2_prefill_experts(
         };
         Ok((r, gpu_ms))
     })?;
+    let mut sums = None;
     if let Some((experts_h, pairs_h, host_ms)) = host_res {
-        copy_h2d_async(hyd, hy as *const c_void, n * hid * 4, s)?;
-        launch!(kern.add, [((n * hid) as u32).div_ceil(256), 1, 1], [256, 1, 1], s; yrot, hyd, (n * hid) as i64)?;
         kern.took.set(HostTook { experts: experts_h, pairs: pairs_h, host_ms, gpu_ms });
-        if let Some(h) = share.filter(|h| h.auto) {
-            // (the host's time against the GPU loop's: more rows where the host waited, fewer where the GPU did)
-            let (ratio, r) = (host_ms / gpu_ms.max(1e-3), h.max_rows as f64);
-            let next = if ratio < 0.7 {
-                r * 1.2 + 1.0
-            } else if ratio > 1.0 {
-                r * 0.8
-            } else {
-                r
-            };
-            kern.host.set(Some(HostShare { max_rows: (next as usize).clamp(1, 64), ..h }));
+        if pairs_h > 0 {
+            // (the pairs the host took, in the router's order, for the caller's sum to leave out)
+            // SAFETY: the pinned buffer holds `pairs` int64; no copy reads it now (the stream waited for the last call's before the plan).
+            let skip = std::slice::from_raw_parts_mut(sc.skip_h.ptr as *mut i64, pairs);
+            idv.iter().zip(skip.iter_mut()).for_each(|(&e, x)| *x = -(on_host[e as usize] as i64));
+            copy_h2d_async(hyd, hy as *const c_void, n * hid * 4, s)?;
+            copy_h2d_async(sc.skip_d.ptr, sc.skip_h.ptr, pairs * 8, s)?;
+            sums = Some(HostSums { extra: hyd, skip: sc.skip_d.ptr });
         }
     }
     crate::tmark!(s, "experts: streamed");
-    Ok(())
+    Ok(sums)
 }
 
 /// A value sent to another thread whose owner vouches for it (a slice of the caller's expert descriptors: raw pointers to host memory that outlives the thread's scope).
@@ -1563,7 +1588,7 @@ mod bench {
                 wts[t * k + c] = r.f(0.1, 0.5);
             }
         }
-        let (xb, idb, wb, yb) = (Buf::new(x.len() * 2)?, Buf::new(ids.len() * 8)?, Buf::new(wts.len() * 4)?, Buf::zeroed(n * HID * 4)?);
+        let (xb, idb, wb, yb) = (Buf::new(x.len() * 2)?, Buf::new(ids.len() * 8)?, Buf::new(wts.len() * 4)?, Buf::zeroed(n * k * HID * 4)?);
         xb.write(0, &x)?;
         idb.write(0, &ids)?;
         wb.write(0, &wts)?;
@@ -1574,8 +1599,17 @@ mod bench {
         // --busy MS: the stream is kept busy (memory sets, about 0.75 ms each) for MS milliseconds before the call, as a layer's attention would: the copies started at the call's entry run beside it
         let busy = a.num("busy", 0.0f64)?;
         let scrap = if busy > 0.0 { Some(Buf::new(512 << 20)?) } else { None };
+        // (every call's pairs' rows the first call's, to the bit: each row is one thread's products, its place the router's order; with --resident F, a call with every expert streamed too)
+        let rows_of = |yb: &Buf| -> Result<Vec<f32>> {
+            let mut y = vec![0f32; n * k * HID];
+            yb.read(0, &mut y)?;
+            Ok(y)
+        };
+        let mut first: Option<Vec<f32>> = None;
+        let mut apart = 0usize;
         for rep in 0..reps + 1 {
             dev.sync()?;
+            yb.fill_async(0xff, dev.stream)?;
             let t0 = Instant::now();
             if let Some(b) = &scrap {
                 for _ in 0..(busy / 0.75).ceil() as usize {
@@ -1583,13 +1617,36 @@ mod bench {
                 }
             }
             // SAFETY: live buffers of the sizes the call reads and writes, host bytes that outlive it.
-            unsafe { cb2_prefill_experts(&dev, &kern, &descs, n, k, xb.ptr, idb.ptr, wb.ptr, yb.ptr, dev.stream)? };
+            let sums = unsafe { cb2_prefill_experts(&dev, &kern, &descs, n, k, xb.ptr, idb.ptr, wb.ptr, yb.ptr, dev.stream)? };
             dev.sync()?;
             let ms = t0.elapsed().as_secs_f64() * 1e3;
             if rep > 0 {
                 times.push(ms);
             }
-            println!("  call {rep}: {ms:.1} ms");
+            if sums.is_some() {
+                return err("cb2prefill: the host took a share (this check gives it none)");
+            }
+            let y = rows_of(&yb)?;
+            let same = first.as_ref().is_none_or(|f| f.iter().zip(&y).all(|(a, b)| a.to_bits() == b.to_bits()));
+            apart += !same as usize;
+            println!("  call {rep}: {ms:.1} ms{}", if same { "" } else { ", its rows NOT the first call's bits" });
+            first.get_or_insert(y);
+        }
+        if !on_gpu.is_empty() {
+            let streamed: Vec<ExpertDesc> = descs.iter().map(|d| ExpertDesc { resident: None, ..*d }).collect();
+            yb.fill_async(0xff, dev.stream)?;
+            // SAFETY: as above.
+            unsafe { cb2_prefill_experts(&dev, &kern, &streamed, n, k, xb.ptr, idb.ptr, wb.ptr, yb.ptr, dev.stream)? };
+            dev.sync()?;
+            let y = rows_of(&yb)?;
+            let same = first.as_ref().is_some_and(|f| f.iter().zip(&y).all(|(a, b)| a.to_bits() == b.to_bits()));
+            apart += !same as usize;
+            println!(
+                "{} every expert streamed through the ring against {} of them read in their places: the pairs' rows {}",
+                if same { "ok  " } else { "FAIL" },
+                on_gpu.len(),
+                if same { "the same bits" } else { "differ" }
+            );
         }
         times.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let med = times[times.len() / 2];
@@ -1601,9 +1658,8 @@ mod bench {
             moved as f64 / med / 1e6,
             moved as f64 / 1e6
         );
-        // a few tokens against the host kernels
-        let mut y = vec![0f32; n * HID];
-        yb.read(0, &mut y)?;
+        // a few tokens against the host kernels: each token's rows summed in the router's order with their weights (`qx_cb_sum_rot`'s order)
+        let y = first.unwrap_or_default();
         let mut worst = 0f64;
         let step = (n / check.max(1)).max(1);
         for t in (0..n).step_by(step).take(check) {
@@ -1637,7 +1693,7 @@ mod bench {
             let (mut e2, mut n2) = (0f64, 0f64);
             for o in 0..HID {
                 let want: f64 = (0..k).map(|c| out[c * HID + o] as f64).sum();
-                let got = y[t * HID + o] as f64;
+                let got = (0..k).fold(0f32, |acc, c| wts[t * k + c].mul_add(y[(t * k + c) * HID + o], acc)) as f64;
                 e2 += (got - want) * (got - want);
                 n2 += want * want;
             }
@@ -1646,11 +1702,12 @@ mod bench {
         }
         let ok = worst < 2e-3;
         println!("{} {} tokens against the host kernels: worst {worst:.2e} of the row's norm (bound 2e-3)", if ok { "ok  " } else { "FAIL" }, check.min(n));
+        println!("{} the pairs' rows of {} calls the first call's bits", if apart == 0 { "ok  " } else { "FAIL" }, reps + 1 + !on_gpu.is_empty() as usize);
         let _ = (&bytes_v, &on_gpu);
-        if ok {
+        if ok && apart == 0 {
             Ok(())
         } else {
-            err("the chunk's sums are not within their bound")
+            err("the chunk's sums are not within their bound, or its rows are not the same bits every call")
         }
     }
 }

@@ -1,6 +1,6 @@
 //! Nemotron 3 Super (`NemotronHForCausalLM`, 2026) as the engine reads it: its config (a hybrid of Mamba-2 layers, attention layers without any positional encoding, and latent
 //! mixture-of-experts layers, in the order of `hybrid_override_pattern`), the tensors it loads and how they are packed, and what a sequence holds. The reference: transformers 5.19.0's
-//! modeling_nemotron_h.py and vLLM's nemotron_h.py (research/nemotron3-super-offload.md has the numbers); the layers' math is tools/nemotron_ref.py, the layers on the GPU src/kern_nh.rs.
+//! modeling_nemotron_h.py and vLLM's nemotron_h.py (research/nemotron3-super-offload.md has the numbers); the layers' math is tools/nemotron_ref.py, the layers on the GPU src/dynamic/nemotron.rs.
 
 use crate::ffi::{err, Result};
 use crate::qwen35::{Pack35, Tensor35};

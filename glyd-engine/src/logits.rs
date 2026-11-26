@@ -11,6 +11,7 @@
 //! `logitscheck [CASE...] [--fixtures DIR] [--cpu-ref]` runs the engine (or, with --cpu-ref, the CPU reference, to see the fixture is still what the reference makes), `logitsrecord CASE --from cpu|engine`
 //! writes a fixture, tools/logits_ref_hf.py writes the ones whose reference is transformers. A development build's only.
 
+use crate::cpu_cb::Fmt;
 use crate::dynamic::{Dyn, Opts as DynOpts};
 use crate::ffi::{err, Error, Result};
 use crate::weights::Layout;
@@ -1392,14 +1393,49 @@ pub fn qwen4x_s2_random(out: &Path) -> Result<()> {
 /// The places a layer the expert cache's random case keeps of its 8 experts: fewer than a token takes (4), so every call has misses the host computes.
 const QWEN4X_CB_PLACES: usize = 3;
 
-/// The random case of the expert cache (`qwen4x-cb`): the tiny model's config at the codebook kernels' widths (hidden 2,560, experts of 640 neurons,
-/// `moe_qwen4x::takes`), two layers (a Gated DeltaNet one, an indexed attention one), 8 experts of which 4 a token, no n-gram embedding. Its routed experts are
-/// random two-bit experts (`cb_random`) written as a pack in `pack/`, and the checkpoint holds them in the model's basis, fp32 (`Cb2Expert::weights`), which the
-/// CPU reference reads as stored; the shared expert is on the grid the codebook block holds it on (int8 rows with a scale each: a row k 2^-m with integers k,
-/// the largest |k| 127), so the block's copy is the checkpoint's. Every other tensor of the description at random by the family's rules (`manifest_random`).
-/// A shard of each (`model.safetensors`, `experts.safetensors`) and the index that names them.
+/// The random case of the expert cache (`qwen4x-cb`): `qwen4x_codes_random` with every expert two-bit (the "cb2" form, the release's earliest fast pack's).
 pub fn qwen4x_cb_random(out: &Path) -> Result<()> {
-    use crate::cb_random::{write_pack, Cb2Expert, Rng};
+    qwen4x_codes_random(out, codes_form("cb2")?)
+}
+
+/// The forms of a codes pack the random cases are made in, each its experts' formats (up, down) in turn over a layer's 8 experts: each width alone, a mix of an
+/// expert's two matrices in two formats, and the release's packs' mixes (glyd/Qwen3.8-Flash-Next-hummingbird's meta.json, 49 layers of 512 experts each:
+/// precise-v2 22,592 q3 and 2,496 q, best-v2 14,672 q3 and 10,416 q4, fast every one q, precise 21,632 cb3 and 3,456 cb2, best 17,696 cb3 and 7,392 cb4, the
+/// earlier fast `pack` every one cb2: the "cb2" form).
+pub const CODES_FORMS: [(&str, &[(Fmt, Fmt)]); 13] = [
+    ("cb2", &[(Fmt::Cb2, Fmt::Cb2)]),
+    ("cb3", &[(Fmt::Cb3, Fmt::Cb3)]),
+    ("cb4", &[(Fmt::Cb4, Fmt::Cb4)]),
+    ("tern", &[(Fmt::Tern, Fmt::Tern)]),
+    ("q", &[(Fmt::Tq, Fmt::Tq)]),
+    ("q3", &[(Fmt::Tq3, Fmt::Tq3)]),
+    ("q4", &[(Fmt::Tq4, Fmt::Tq4)]),
+    ("mixed", &[(Fmt::Cb4, Fmt::Tq), (Fmt::Tern, Fmt::Cb3), (Fmt::Tq3, Fmt::Cb2), (Fmt::Cb2, Fmt::Tq4)]),
+    ("precise-v2", &[(Fmt::Tq3, Fmt::Tq3), (Fmt::Tq3, Fmt::Tq3), (Fmt::Tq3, Fmt::Tq3), (Fmt::Tq, Fmt::Tq)]),
+    ("best-v2", &[(Fmt::Tq3, Fmt::Tq3), (Fmt::Tq4, Fmt::Tq4)]),
+    ("fast", &[(Fmt::Tq, Fmt::Tq)]),
+    ("precise", &[(Fmt::Cb3, Fmt::Cb3), (Fmt::Cb3, Fmt::Cb3), (Fmt::Cb3, Fmt::Cb3), (Fmt::Cb2, Fmt::Cb2)]),
+    ("best", &[(Fmt::Cb3, Fmt::Cb3), (Fmt::Cb4, Fmt::Cb4)]),
+];
+
+/// The formats of the form named `name` (`CODES_FORMS`), or the refusal that lists them.
+pub fn codes_form(name: &str) -> Result<&'static [(Fmt, Fmt)]> {
+    CODES_FORMS
+        .iter()
+        .find(|f| f.0 == name)
+        .map(|f| f.1)
+        .ok_or_else(|| Error(format!("a codes form {name:?}: one of {}", CODES_FORMS.iter().map(|f| f.0).collect::<Vec<_>>().join(", "))))
+}
+
+/// A random model of the family at the codebook kernels' widths with its routed experts in a codes pack of the form `form` (`CODES_FORMS`: each expert's formats
+/// in turn): the tiny model's config at hidden 2,560, experts of 640 neurons (`moe_cb::takes`), two layers (a Gated DeltaNet one, an indexed attention one),
+/// 8 experts of which 4 a token, no n-gram embedding. Its routed experts are random experts of those formats (`cb_random::CodesExpert`) written as a pack in
+/// `pack/`, and the checkpoint holds them in the model's basis, fp32 (`CodesExpert::weights`), which the CPU reference reads as stored; the shared expert is on the
+/// grid the codes block holds it on (int8 rows with a scale each: a row k 2^-m with integers k, the largest |k| 127), so the block's copy is the checkpoint's. Every
+/// other tensor of the description at random by the family's rules (`manifest_random`). A shard of each (`model.safetensors`, `experts.safetensors`) and the index
+/// that names them. Two-bit experts are the draws of the form before the others were made (the `qwen4x-cb` case's model is the same bytes).
+pub fn qwen4x_codes_random(out: &Path, form: &[(Fmt, Fmt)]) -> Result<()> {
+    use crate::cb_random::{write_codes, CodesExpert, Rng};
     let m: Value = serde_json::from_str(include_str!("../tests/fixtures/qwen4x_tiny_manifest.json")).map_err(|e| Error(e.to_string()))?;
     let mut c: Value = serde_json::from_str(m["config"].as_str().unwrap_or("{}")).map_err(|e| Error(e.to_string()))?;
     let (hidden, inter, experts, layers) = (2560usize, 640usize, 8usize, 2usize);
@@ -1425,12 +1461,15 @@ pub fn qwen4x_cb_random(out: &Path) -> Result<()> {
     manifest_random(&manifest, out, 0x2026_1125_0000_00cb, false, "Qwen3.8-Flash-Next family at the codebook kernels' widths (all but its experts)")?;
     // (the routed experts: a pack's, and their weights in the model's basis; the shared expert on the int8 grid)
     let mut rng = Rng(0x2026_1125_0000_0cb2);
-    let mut pack: Vec<(Vec<i8>, Vec<Cb2Expert>)> = Vec::new();
+    let mut pack: Vec<(Vec<i8>, Vec<CodesExpert>)> = Vec::new();
     let mut shard: Vec<(String, &str, Vec<u64>, Vec<u8>)> = Vec::new();
     let le = |v: &[f32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
     for l in 0..layers {
         let signs: Vec<i8> = (0..hidden).map(|_| if rng.sym() < 0.0 { -1 } else { 1 }).collect();
-        let ex: Vec<Cb2Expert> = (0..experts).map(|_| Cb2Expert::random(hidden, inter, &mut rng)).collect();
+        if form.is_empty() {
+            return err("a codes form of no formats");
+        }
+        let ex: Vec<CodesExpert> = (0..experts).map(|e| CodesExpert::random(hidden, inter, form[e % form.len()], &mut rng)).collect();
         let (mut gu, mut dn) = (Vec::with_capacity(experts * 2 * inter * hidden), Vec::with_capacity(experts * hidden * inter));
         for e in &ex {
             let (g, w) = e.weights(&signs, hidden, inter);
@@ -1469,7 +1508,7 @@ pub fn qwen4x_cb_random(out: &Path) -> Result<()> {
         map.insert(n.clone(), json!(if routed(n) || shared(n) { "experts.safetensors" } else { "model.safetensors" }));
     }
     io(std::fs::write(out.join("model.safetensors.index.json"), json!({"weight_map": map}).to_string()))?;
-    write_pack(&out.join("pack"), hidden, inter, &pack)
+    write_codes(&out.join("pack"), hidden, inter, &pack)
 }
 
 /// The random case's model on the expert cache (`dynamic::qwen4x::load_cached`): the matrices at the level, the routed experts from the case's pack (`PackMode::Best`,
@@ -1486,6 +1525,110 @@ fn qwen4x_cb_caching(dir: &Path) -> crate::dynamic::qwen4x::Caching {
 
 fn qwen4x_cb_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
     boxed(qwen4x_cb_load(dir, &dyn_opts(level_layout(level)?)))
+}
+
+/// `glyd-engine codescheck [FORM..] [--places N] [--tokens N]`: the Moe kind's codes block (src/moe_cb.rs) in each form of a codes pack (`CODES_FORMS`, every one
+/// where none is named: each width alone, an expert's two matrices in two formats, the release's packs' mixes), on the family's random model at the codebook
+/// kernels' widths in that form (`qwen4x_codes_random`), its pack served with none of its pairs skipped. Its experts resident (as many places as a layer keeps:
+/// every expert on the GPU) against the expert cache (`--places` a layer, 3 by default: fewer than a token's 4, so every call misses) with each miss copied into a
+/// place, for a prompt of `--tokens` (40 by default: one pass of the per-pair products; the streaming prefill of a longer chunk sums its pairs with atomics) and 6
+/// decode steps: every logit the same bits, as everywhere the GPU computes every pair (`BESIDE_KL`'s ruling). Then the cache with the host computing its misses
+/// (src/cpu_cb.rs: the pack's arithmetic in another implementation, its own sums' order) against the resident run by the tree's causal rule (`Judge`): each
+/// row by the first discrete choice the two runs made apart in its history (the routers' experts, measured by the model's router on each run's own input; the
+/// indexer's pools, by their scores): none, the kind's lossless bound (`BESIDE_KL`) and the best token the same where the lead clears `CLEAR_LEAD`; a near
+/// tie (below `kindcheck::NEAR`), reported; wider, failed. The GPU's decode of every format is the host's to that bound. An error where a form fails.
+pub fn codes_check(a: &crate::args::Args) -> Result<()> {
+    let named: Vec<&str> = a.pos.iter().skip(1).map(String::as_str).collect();
+    let forms: Vec<&str> = if named.is_empty() { CODES_FORMS.iter().map(|f| f.0).collect() } else { named };
+    let (places, n) = (a.num("places", QWEN4X_CB_PLACES)?, a.num("tokens", 40usize)?);
+    let mut failed = Vec::new();
+    for name in forms {
+        let (ok, line) = codes_form_check(name, places, n)?;
+        println!("{line}");
+        if !ok {
+            failed.push(name);
+        }
+    }
+    if !failed.is_empty() {
+        return err(format!("codescheck: {} failed", failed.join(", ")));
+    }
+    println!("PASS codescheck");
+    Ok(())
+}
+
+/// The forms of the release's codes packs (glyd/Qwen3.8-Flash-Next-hummingbird: precise-v2, best-v2 and fast, which this engine serves, and the earlier
+/// precise, best and fast `pack`, the "cb2" form), as `packcheck --engine` loads each (`codes_form_check`).
+pub const RELEASED_CODES: [&str; 6] = ["precise-v2", "best-v2", "fast", "precise", "best", "cb2"];
+
+/// `codes_check`'s comparisons of the form `name` (`places` a layer in the cache, a prompt of `n` tokens): whether it passes, and its line.
+pub fn codes_form_check(name: &str, places: usize, n: usize) -> Result<(bool, String)> {
+    use crate::dynamic::qwen4x::{load_cached, Caching, PackMode};
+    use crate::dynamic::RowRoute;
+    use crate::offload::Mode;
+    use std::collections::HashMap;
+    if n == 0 || n >= crate::moe_cb::STREAM_MIN {
+        return err(format!("--tokens {n}: 1 to {} (one pass of the per-pair products)", crate::moe_cb::STREAM_MIN - 1));
+    }
+    let (prompt, decode) = (token_list(n, 2048, 0), token_list(6, 2048, n));
+    let form = codes_form(name)?;
+    let dir = std::env::temp_dir().join(format!("glyd-codescheck-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    qwen4x_codes_random(&dir, form)?;
+    type Choices = HashMap<(usize, usize), Vec<RowRoute>>;
+    // (the pack as best serves it: none of a call's pairs skipped; each run's discrete choices traced by row (`Dyn::trace_row_routes`: the routers' experts,
+    // the indexer's pools), and the model's routers for the margins of a choice apart (`Routers`))
+    let run = |places: usize, mode: Mode| -> Result<(Vec<Vec<f32>>, Choices, Option<Routers>)> {
+        let mut k = Caching { places: Some(places), ..Caching::new(&dir.join("pack"), PackMode::Best, 1) };
+        k.offload.mode = mode;
+        let mut e = load_cached(&dir, &dyn_opts(None), &k)?;
+        e.trace_row_routes(true);
+        let rows = (|| -> Result<Vec<Vec<f32>>> {
+            e.prefill(&prompt)?;
+            let mut rows = vec![e.logits()?];
+            for &t in &decode {
+                e.step(t)?;
+                rows.push(e.logits()?);
+            }
+            Ok(rows)
+        })();
+        let seen = e.trace_row_routes(false);
+        let routers = if mode == Mode::Cpu { None } else { Some(Routers::load(&dir, &e)?) };
+        Ok((rows?, seen, routers))
+    };
+    // (resident: as many places as a layer keeps, the form's random model's 8)
+    let runs = (|| Ok::<_, Error>((run(8, Mode::Copy)?, run(places, Mode::Copy)?, run(places, Mode::Cpu)?)))();
+    let _ = std::fs::remove_dir_all(&dir);
+    let ((resident, seen_r, routers), (copied, ..), (host, seen_h, _)) = runs?;
+    let differ: usize = resident.iter().zip(&copied).map(|(r, c)| row_diff(r, c).0).sum();
+    let total: usize = resident.iter().map(Vec::len).sum();
+    // (the host's run held to the resident run by the tree's causal rule (`Judge`): each row by the first discrete choice the two runs made apart in its
+    // sequence's history up to it, the prompt's last position then each decode step's)
+    let hist = |m: &Choices, at: usize| -> Option<Hist> {
+        let slot = m.keys().map(|k| k.0).min()?;
+        Some((0..=at).map(|p| m.get(&(slot, p)).cloned().unwrap_or_default()).collect())
+    };
+    let rows: Vec<Judged> = resident
+        .iter()
+        .zip(&host)
+        .enumerate()
+        .map(|(i, (r, h))| Judged { alone: r, beside: h, choices: (hist(&seen_r, n - 1 + i), hist(&seen_h, n - 1 + i)) })
+        .collect();
+    let j = Judge::of(&rows, routers.as_ref())?;
+    let ok = differ == 0 && resident.len() == copied.len() && j.ok();
+    let fmts: Vec<String> = form.iter().map(|&(u, d)| if u == d { u.name().to_string() } else { format!("{}+{}", u.name(), d.name()) }).collect();
+    let notes: String = j.notes.iter().map(|x| format!("\n  {x}")).collect();
+    Ok((
+        ok,
+        format!(
+            "{} codes {name} ({}): {} rows; resident against the cache's {places} places, misses copied: {differ} of {total} logits differ; the host's misses against \
+             resident: {}; {}{notes}",
+            if ok { "PASS" } else { "FAIL" },
+            fmts.join(" "),
+            resident.len(),
+            j.all.words(false),
+            j.words()
+        ),
+    ))
 }
 
 /// `qwen4x_s2_random`'s manifest, from the tiny model's.
@@ -6616,14 +6759,19 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         return users_drafted(case, level, users, tokens, k);
     }
     // (--ctx plan: the random model at the context the planner gives it on this GPU, each prompt filling it to within half a chunk with its reply: the long-context check;
-    // with --kv12 the plan of a server whose keys and values are in 12-bit pages, as GLYD_KV=lossless asks `serve` for them)
+    // with --kv12 the plan made for 12-bit pages wherever the planner makes one (GLYD_KV=lossless asks for them, and GLYD_KV12_ALWAYS takes their plan also where a
+    // server's would be bf16's, `sizing::twelve_always`), so the pages are held to the bytes planned for them)
     let kv12 = a.has("kv12");
     if kv12 && a.flag("ctx") == Some("plan") {
         std::env::set_var("GLYD_KV", "lossless");
+        std::env::set_var("GLYD_KV12_ALWAYS", "1");
     }
     // (--ctx plan: the plan `serve` makes of the random model for these users on this GPU, which the load takes (its context, chunk, layout, sequences and their bytes:
     // `take_plan`); the GPU's memory the load and the step's sequences take is held to the plan's figure, and the users to the plan's)
     let plan = if a.flag("ctx") == Some("plan") { Some(planned_for(case, level, users)?) } else { None };
+    // (whether the plan is of the pages this run holds. The planner plans no 12-bit pages for some routes (`plan::takes_twelve`): there --kv12 runs them at the
+    // bf16 plan's context in pools of what the GPU has free, and its memory is not held to that plan, which is of other pages)
+    let own_plan = plan.as_ref().is_some_and(|lp| !kv12 || lp.kv_format() == "12-bit");
     let mib = |b: u64| b as f64 / (1u64 << 20) as f64;
     if let Some(lp) = &plan {
         println!(
@@ -6633,7 +6781,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             lp.users,
             mib(lp.kv),
             lp.kv_format(),
-            if kv12 && lp.kv_format() != "12-bit" { ": the 12-bit pages would reserve more there; the check runs them as asked" } else { "" },
+            if own_plan { "" } else { ": the planner plans no 12-bit pages for this route; the check runs them in pools of what the GPU has free" },
             lp.context.saturating_sub(tokens + 32)
         );
         println!("  the plan: {}", lp.text());
@@ -6697,7 +6845,9 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             let lp = plan.as_ref().expect("a plan");
             let (mut e, r) =
                 random_dyn_with(case, level, "usercheck", &DynOpts { ctx: lp.context, chunk: lp.chunk, graph: true, device: 0, layout: Some(lp.layout) })?;
-            e.take_plan(lp.users, lp.kv);
+            if own_plan {
+                e.take_plan(lp.users, lp.kv);
+            }
             (e, r)
         }
         // (--ctx N: the random model with a context of N tokens, for a long prompt's check: --prompt-tokens)
@@ -6736,6 +6886,10 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     // (--ctx plan: the GPU memory the load and the step's sequences took, against the plan's (its weights, sequences and work: `planned_gpu_used_bytes`), and the users it holds)
     let held_to_plan = |when: &str| -> Result<bool> {
         let (Some(lp), Some(before)) = (&plan, free_before) else { return Ok(true) };
+        if !own_plan {
+            println!("  (GPU memory {when} is not held to the plan: the plan is of bf16 pages, this run's are 12-bit)");
+            return Ok(true);
+        }
         let used = before.saturating_sub(crate::dev::Dev::new(0)?.mem_info()?.0 as u64);
         let planned = lp.gpu_total() - lp.reserve;
         let ok = used <= planned;

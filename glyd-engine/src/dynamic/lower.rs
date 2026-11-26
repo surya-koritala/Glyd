@@ -1609,6 +1609,15 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
     Ok(out)
 }
 
+/// The latent attention model's name in its refusals.
+pub(crate) const LATENT: &str = "a latent attention model";
+
+/// The words for a split that puts a layer in another stage than the layer whose indexer's picks it takes: the loader's refusal of it, and the plan's (a stage begins only at a
+/// layer whose indexer is its own, `plan::sizing::stage_starts`).
+pub(crate) fn split_apart_picks(l: usize) -> String {
+    format!("{LATENT}: layer {l} takes the picks of a layer of another stage: a split must keep them together")
+}
+
 /// Blocks of a latent attention and a feed-forward on the plain residual (GLM-5.3, `glm_moe_dsa`): x += mla(norm(x)), x += ffn(norm(x)) a layer, the
 /// feed-forward a SwiGLU MLP or a block of experts (`dynamic::experts`), the final norm, the head; stage `st` (a model split across GPUs). The residual rounds
 /// to bf16 at each add and every norm rounds as the kind says (`Rounding::Twice`, transformers' bf16 RMSNorm: `NormW::Rounded`; the reference's residual
@@ -1623,7 +1632,7 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
     use crate::runtime::kinds::{Collapse, NormKind, NormWeight, Residual, Rounding};
     let m = &d.desc;
     let h = m.hidden;
-    let what = "a latent attention model";
+    let what = LATENT;
     if m.blocks.len() % 2 != 0 || m.embed.streams != 1 || m.embed.scale != 1.0 || m.embed.norm.is_some() {
         return err(format!(
             "{what}: {} blocks over {} streams, where each layer is a latent attention block and a feed-forward block on one",
@@ -1686,7 +1695,7 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
         match (&op.lent, &lender) {
             (Some(p), Some((q, here))) if p == q && (*here || !mine) => {}
             (Some(p), Some((q, _))) if p != q => return err(format!("{what}: layer {l} takes picks of {p:?} from a layer whose are {q:?}")),
-            (Some(_), Some(_)) => return err(format!("{what}: layer {l} takes the picks of a layer of another stage: a split must keep them together")),
+            (Some(_), Some(_)) => return err(split_apart_picks(l)),
             (Some(_), None) => return err(format!("{what}: layer {l}'s indexer is shared, with no latent attention with an indexer before it")),
             (None, _) => {}
         }
@@ -2199,7 +2208,7 @@ mod tests {
         let kinds = crate::runtime::describe::describe(&fixture("glm_moe_dsa_toy_config.json")).unwrap();
         assert!(latent_moe(&kinds, vec![1], 4096, &Stage { layers: (0, 2), first: true, last: false }).is_ok());
         let e = latent_moe(&kinds, vec![1], 4096, &Stage { layers: (2, 4), first: false, last: true }).unwrap_err().msg;
-        assert!(e.contains("another stage"), "{e}");
+        assert_eq!(e, split_apart_picks(2));
     }
 
     /// GLM-5.3's draft head (its MTP layer, DeepSeek-V3's joined form) lowers by the model's own lowering (`latent_moe`) to a draft part: `Op::MtpIn`'s joined

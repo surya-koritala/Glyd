@@ -10,10 +10,10 @@ use super::Slot;
 use super::{Dyn, ModelDesc, Opts, Placing, Stage};
 #[cfg(test)]
 use super::{NormW, Op, Ring, Rope};
+use crate::dynamic::experts::MoeBlock;
 #[cfg(test)]
 use crate::ffi::err;
 use crate::ffi::{Error, Result};
-use crate::kern_nh::MoeBlock;
 use crate::qwen35::Kind;
 use crate::runtime::describe::Described;
 use crate::runtime::kinds::{Body, Ffn};
@@ -92,7 +92,7 @@ fn load_experts(dir: &Path, o: &Opts, st: Stage, kinds: &Described, caching: Opt
     let (eos, max_pos) = experts_config(dir)?;
     let d = super::lower::qwen35(kinds, eos, max_pos, &st)?;
     let store = caching.map(crate::hbg_store::store_for);
-    let held = super::experts::Held { hb: None, cache: caching.zip(store.as_ref()), ordinal: o.device, f8: None, dense: None, codebooks: None };
+    let held = super::experts::Held { hb: None, cache: caching.zip(store.as_ref()), ordinal: o.device, f8: None, dense: None, codebooks: None, codes: None };
     let hidden = kinds.desc.hidden;
     let experts = |ck: &Checkpoint, level: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
         super::experts::of_layers(kinds, st.layers, 2)
