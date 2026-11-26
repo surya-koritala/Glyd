@@ -1,6 +1,9 @@
 //! `Ref`, the CPU f32 reference backend (`docs/design/runtime.md` §3, decision 6): one plain function per kind, written for clarity,
 //! the formula of the model's reference code. Products sum in f64 and round to f32; everything else is f32, rounded to bf16 only where a
-//! kind's parameters name a rounding point (`kinds::Rounding` of a norm, `kinds::AttnRounding` of an attention).
+//! kind's parameters name a rounding point (`kinds::Rounding` of a norm, `kinds::AttnRounding` of an attention). Its weights are held as
+//! stored (`Held`: a bf16 tensor's bits, each widened to its f32 where a product reads it, half the bytes; a tied head once), its sums are in
+//! a fixed order however many threads a product takes, and its exp, log, tanh, pow, sin and cos are the `libm` crate's (`Libm`): every
+//! computer makes the same bits of it (`logits::tests::the_reference_is_the_same_bits_on_every_computer`).
 //!
 //! Tolerances, per kind, against what each test compares it to:
 //!
@@ -80,6 +83,68 @@ pub const HF_TOL: f32 = 5e-6;
 /// Against a reference that rounds to bf16 between operations.
 pub const BF16_TOL: f32 = 2e-2;
 
+/// The reference's exp, log, log(1 + x), tanh, pow, sin and cos: the `libm` crate's (musl's, in Rust, plain IEEE arithmetic), so that every computer computes
+/// the same bits of them, where each system's own (the standard library's `f32::exp` and the like call it) rounds some values otherwise: Apple's and glibc's
+/// differ on most of a sweep of 4,000,000 points of each, and on 25 of the 4,096 first powers `d^-0.5`. With its sums in a fixed order, the reference is then
+/// the same bits on every computer (`logits::tests::the_reference_is_the_same_bits_on_every_computer`), and its rows recorded on one hold a run on another.
+pub trait Libm: Sized {
+    fn lexp(self) -> Self;
+    fn lln(self) -> Self;
+    fn lln_1p(self) -> Self;
+    fn ltanh(self) -> Self;
+    fn lpowf(self, y: Self) -> Self;
+    fn lsin(self) -> Self;
+    fn lcos(self) -> Self;
+}
+
+impl Libm for f32 {
+    fn lexp(self) -> f32 {
+        libm::expf(self)
+    }
+    fn lln(self) -> f32 {
+        libm::logf(self)
+    }
+    fn lln_1p(self) -> f32 {
+        libm::log1pf(self)
+    }
+    fn ltanh(self) -> f32 {
+        libm::tanhf(self)
+    }
+    fn lpowf(self, y: f32) -> f32 {
+        libm::powf(self, y)
+    }
+    fn lsin(self) -> f32 {
+        libm::sinf(self)
+    }
+    fn lcos(self) -> f32 {
+        libm::cosf(self)
+    }
+}
+
+impl Libm for f64 {
+    fn lexp(self) -> f64 {
+        libm::exp(self)
+    }
+    fn lln(self) -> f64 {
+        libm::log(self)
+    }
+    fn lln_1p(self) -> f64 {
+        libm::log1p(self)
+    }
+    fn ltanh(self) -> f64 {
+        libm::tanh(self)
+    }
+    fn lpowf(self, y: f64) -> f64 {
+        libm::pow(self, y)
+    }
+    fn lsin(self) -> f64 {
+        libm::sin(self)
+    }
+    fn lcos(self) -> f64 {
+        libm::cos(self)
+    }
+}
+
 /// `x` rounded to bf16 (to nearest, ties to even), as an f32.
 pub fn bf16(x: f32) -> f32 {
     if x.is_nan() {
@@ -90,7 +155,7 @@ pub fn bf16(x: f32) -> f32 {
 }
 
 pub fn sigmoid(x: f32) -> f32 {
-    1.0 / (1.0 + (-x).exp())
+    1.0 / (1.0 + (-x).lexp())
 }
 
 pub fn silu(x: f32) -> f32 {
@@ -102,7 +167,7 @@ pub fn softplus(x: f32) -> f32 {
     if x > 20.0 {
         x
     } else {
-        x.exp().ln_1p()
+        x.lexp().lln_1p()
     }
 }
 
@@ -111,20 +176,20 @@ pub fn act(a: Act, x: f32) -> f32 {
     match a {
         Act::Sigmoid => sigmoid(x),
         Act::Silu => silu(x),
-        Act::GeluTanh => 0.5 * x * (1.0 + ((2.0 / std::f32::consts::PI).sqrt() * (x + 0.044715 * x * x * x)).tanh()),
+        Act::GeluTanh => 0.5 * x * (1.0 + ((2.0 / std::f32::consts::PI).sqrt() * (x + 0.044715 * x * x * x)).ltanh()),
         Act::Gelu => (0.5 * x as f64 * (1.0 + erf(x as f64 / std::f64::consts::SQRT_2))) as f32,
         Act::Relu2 => {
             let r = x.max(0.0);
             r * r
         }
-        Act::Situ { beta, .. } => beta * (x / beta).tanh() * sigmoid(x),
+        Act::Situ { beta, .. } => beta * (x / beta).ltanh() * sigmoid(x),
     }
 }
 
 /// A gated pair: act(g) u, with situ's cap on the up (u -> linear tanh(u / linear)).
 pub fn gated(a: Act, g: f32, u: f32) -> f32 {
     match a {
-        Act::Situ { linear, .. } => act(a, g) * linear * (u / linear).tanh(),
+        Act::Situ { linear, .. } => act(a, g) * linear * (u / linear).ltanh(),
         _ => act(a, g) * u,
     }
 }
@@ -135,7 +200,7 @@ pub fn erf(x: f64) -> f64 {
     let t = 1.0 / (1.0 + 0.5 * z);
     let p = [-1.26551223, 1.00002368, 0.37409196, 0.09678418, -0.18628806, 0.27886807, -1.13520398, 1.48851587, -0.82215223, 0.17087277];
     let poly = p.iter().rev().fold(0.0, |acc, &c| acc * t + c);
-    let erfc = t * (-z * z + poly).exp();
+    let erfc = t * (-z * z + poly).lexp();
     if x >= 0.0 {
         1.0 - erfc
     } else {
@@ -147,14 +212,43 @@ pub fn erf(x: f64) -> f64 {
 /// weights up to the computer's cores (`matvec_on`; on an A10 machine's 30 cores, 64 rows of three random cases, the fastest in all of a thread each 2^16
 /// to 2^20 weights), each thread's rows four at a time (`rows_into`): a row's sum is the same terms in the same order whichever thread
 /// takes it and whatever rows beside it, so the result is the same bits (`tests::a_product_over_threads_is_the_same_bits`).
-pub fn matvec(w: &[f32], cols: usize, x: &[f32]) -> Vec<f32> {
+/// The weights may be held as bf16 (`Wt`): each is widened to the f32 it stands for where the sum reads it, so a product of a bf16 matrix is the bits of the
+/// same matrix held in f32.
+pub fn matvec<T: Wt>(w: &[T], cols: usize, x: &[f32]) -> Vec<f32> {
     static CORES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     let cores = *CORES.get_or_init(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
     matvec_on(w, cols, x, cores.min(w.len() >> 18))
 }
 
+/// A weight as a product reads it: an f32, or a bf16's bits (the f32 whose low half is zero: exact).
+pub trait Wt: Copy + Send + Sync {
+    fn f(self) -> f32;
+}
+
+impl Wt for f32 {
+    #[inline(always)]
+    fn f(self) -> f32 {
+        self
+    }
+}
+
+impl Wt for u16 {
+    #[inline(always)]
+    fn f(self) -> f32 {
+        f32::from_bits((self as u32) << 16)
+    }
+}
+
+/// `matvec` of a held matrix's values, as it holds them (`Held::w`).
+pub fn matvec_w(w: W, cols: usize, x: &[f32]) -> Vec<f32> {
+    match w {
+        W::F32(v) => matvec(v, cols, x),
+        W::Bf16(v) => matvec(v, cols, x),
+    }
+}
+
 /// `matvec` with its rows in `threads` runs of consecutive rows, each on a thread of its own (one or none: on this thread).
-pub fn matvec_on(w: &[f32], cols: usize, x: &[f32], threads: usize) -> Vec<f32> {
+pub fn matvec_on<T: Wt>(w: &[T], cols: usize, x: &[f32], threads: usize) -> Vec<f32> {
     debug_assert_eq!(x.len(), cols);
     let rows = w.chunks(cols).len();
     let mut out = vec![0f32; rows];
@@ -173,9 +267,9 @@ pub fn matvec_on(w: &[f32], cols: usize, x: &[f32], threads: usize) -> Vec<f32> 
 
 /// The rows of `w` (each `cols` long, the last perhaps shorter) times x into `out`, four at a time: each row's sum the terms of a row alone in the same
 /// order, from the same start (an empty sum's), the four sums kept in flight together.
-fn rows_into(w: &[f32], cols: usize, x: &[f32], out: &mut [f32]) {
+fn rows_into<T: Wt>(w: &[T], cols: usize, x: &[f32], out: &mut [f32]) {
     let zero: f64 = std::iter::empty::<f64>().sum();
-    let one = |r: &[f32]| r.iter().zip(x).fold(zero, |s, (&a, &b)| s + a as f64 * b as f64) as f32;
+    let one = |r: &[T]| r.iter().zip(x).fold(zero, |s, (&a, &b)| s + a.f() as f64 * b as f64) as f32;
     for (o, part) in out.chunks_mut(4).zip(w.chunks(4 * cols)) {
         if o.len() < 4 || part.len() < 4 * cols {
             o.iter_mut().zip(part.chunks(cols)).for_each(|(y, r)| *y = one(r));
@@ -185,10 +279,10 @@ fn rows_into(w: &[f32], cols: usize, x: &[f32], out: &mut [f32]) {
         let mut s = [zero; 4];
         for ((((&a, &b), &c), &d), &x) in a.iter().zip(b).zip(c).zip(d).zip(x) {
             let x = x as f64;
-            s[0] += a as f64 * x;
-            s[1] += b as f64 * x;
-            s[2] += c as f64 * x;
-            s[3] += d as f64 * x;
+            s[0] += a.f() as f64 * x;
+            s[1] += b.f() as f64 * x;
+            s[2] += c.f() as f64 * x;
+            s[3] += d.f() as f64 * x;
         }
         o.iter_mut().zip(s).for_each(|(y, s)| *y = s as f32);
     }
@@ -210,7 +304,7 @@ pub fn softmax(s: &mut [f32]) {
     let m = s.iter().fold(f32::NEG_INFINITY, |m, &x| m.max(x));
     let mut z = 0f64;
     for v in s.iter_mut() {
-        *v = (*v - m).exp();
+        *v = (*v - m).lexp();
         z += *v as f64;
     }
     for v in s.iter_mut() {
@@ -218,12 +312,118 @@ pub fn softmax(s: &mut [f32]) {
     }
 }
 
-/// A layer's weights by role (`kinds`), as f32; and, where the reference simulates a release's quantizations of its activations (`RefModel::simulate`), the
-/// block of their E4M3 (`sim`, 32: the form of src/cpu_fp4.rs `Sim::B32`; 0: none) and the roles whose matrices are stored quantized, whose products take
-/// their input so rounded (`quantized`).
+/// A held tensor's values as a product reads them (`Held::w`).
+#[derive(Clone, Copy, Debug)]
+pub enum W<'a> {
+    F32(&'a [f32]),
+    Bf16(&'a [u16]),
+}
+
+impl<'a> W<'a> {
+    pub fn len(&self) -> usize {
+        match self {
+            W::F32(v) => v.len(),
+            W::Bf16(v) => v.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The values `at..at + n`.
+    pub fn part(self, at: usize, n: usize) -> W<'a> {
+        match self {
+            W::F32(v) => W::F32(&v[at..][..n]),
+            W::Bf16(v) => W::Bf16(&v[at..][..n]),
+        }
+    }
+
+    /// The values `at..at + n` as f32 (a row of an embedding).
+    pub fn row(self, at: usize, n: usize) -> Vec<f32> {
+        match self.part(at, n) {
+            W::F32(v) => v.to_vec(),
+            W::Bf16(v) => v.iter().map(|&h| h.f()).collect(),
+        }
+    }
+}
+
+/// A tensor as the reference holds it: f32, or where every value is a bf16 and there are `HALF_FROM` or more of them (a checkpoint's bf16 matrices, and its
+/// FP8 and FP4 ones decoded to bf16), their bf16 bits: half the bytes, each value widened to the same f32 where a product reads it (`matvec`), so the sums are
+/// the same terms in the same order. Read whole as f32 (`f32s`), a bf16 tensor is widened once and kept.
+#[derive(Clone, Debug)]
+pub struct Held {
+    pub shape: Vec<usize>,
+    vals: Vals,
+    wide: std::sync::OnceLock<Vec<f32>>,
+}
+
+#[derive(Clone, Debug)]
+enum Vals {
+    F32(Vec<f32>),
+    Bf16(Vec<u16>),
+}
+
+/// The fewest values a tensor held as bf16 has (`Held`): a norm's weights stay f32, read whole where they are read.
+pub const HALF_FROM: usize = 1 << 16;
+
+impl Held {
+    /// `data` of `shape`, held as bf16 where `Held` says.
+    pub fn new(shape: Vec<usize>, data: Vec<f32>) -> Held {
+        let vals = if data.len() >= HALF_FROM && data.iter().all(|x| x.to_bits() & 0xffff == 0) {
+            Vals::Bf16(data.iter().map(|x| (x.to_bits() >> 16) as u16).collect())
+        } else {
+            Vals::F32(data)
+        };
+        Held { shape, vals, wide: std::sync::OnceLock::new() }
+    }
+
+    /// The values as a product reads them.
+    pub fn w(&self) -> W<'_> {
+        match &self.vals {
+            Vals::F32(v) => W::F32(v),
+            Vals::Bf16(v) => W::Bf16(v),
+        }
+    }
+
+    /// The values as f32 (a bf16 tensor's widened once, then kept).
+    pub fn f32s(&self) -> &[f32] {
+        match &self.vals {
+            Vals::F32(v) => v,
+            Vals::Bf16(v) => self.wide.get_or_init(|| v.iter().map(|&h| h.f()).collect()),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.w().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The same values held in f32 (a check's: what a bf16 tensor is held to).
+    #[cfg(test)]
+    pub fn widened(&self) -> Held {
+        Held { shape: self.shape.clone(), vals: Vals::F32(self.f32s().to_vec()), wide: std::sync::OnceLock::new() }
+    }
+
+    /// The bytes it holds: its values, and their f32 copy where one was made.
+    pub fn bytes(&self) -> usize {
+        let held = match &self.vals {
+            Vals::F32(v) => 4 * v.len(),
+            Vals::Bf16(v) => 2 * v.len(),
+        };
+        held + self.wide.get().map_or(0, |w| 4 * w.len())
+    }
+}
+
+/// A layer's weights by role (`kinds`), as `Held` holds them; and, where the reference simulates a release's quantizations of its activations
+/// (`RefModel::simulate`), the block of their E4M3 (`sim`, 32: the form of src/cpu_fp4.rs `Sim::B32`; 0: none) and the roles whose matrices are stored
+/// quantized, whose products take their input so rounded (`quantized`).
 #[derive(Clone, Debug, Default)]
 pub struct Params {
-    pub t: HashMap<String, HostTensor>,
+    pub t: HashMap<String, Held>,
     pub sim: usize,
     pub quantized: std::collections::HashSet<String>,
 }
@@ -235,7 +435,7 @@ impl Params {
 
     pub fn put(&mut self, role: &str, shape: &[usize], data: Vec<f32>) {
         assert_eq!(shape.iter().product::<usize>(), data.len(), "{role}");
-        self.t.insert(role.to_string(), HostTensor { shape: shape.to_vec(), data });
+        self.t.insert(role.to_string(), Held::new(shape.to_vec(), data));
     }
 
     pub fn has(&self, role: &str) -> bool {
@@ -243,7 +443,23 @@ impl Params {
     }
 
     pub fn opt(&self, role: &str) -> Option<&[f32]> {
-        self.t.get(role).map(|t| &t.data[..])
+        self.t.get(role).map(Held::f32s)
+    }
+
+    /// `role`'s values as a product reads them.
+    pub fn w(&self, role: &str) -> Result<W<'_>> {
+        self.t.get(role).map(Held::w).ok_or_else(|| Error(format!("no weight for role {role}")))
+    }
+
+    /// The bytes every weight holds (`Held::bytes`).
+    pub fn bytes(&self) -> usize {
+        self.t.values().map(Held::bytes).sum()
+    }
+
+    /// Every weight held in f32 (a check's).
+    #[cfg(test)]
+    pub fn widen(&mut self) {
+        self.t.values_mut().for_each(|t| *t = t.widened());
     }
 
     pub fn vec(&self, role: &str) -> Result<&[f32]> {
@@ -284,13 +500,13 @@ impl Params {
             if w.shape.len() != 2 || w.shape[1] != x.len() {
                 return err(format!("{role}: shape {:?} on an input of {}", w.shape, x.len()));
             }
-            matvec(&w.data, x.len(), x)
+            matvec_w(w.w(), x.len(), x)
         } else {
             let (a, b) = (self.t.get(&format!("{role}_a")), self.t.get(&format!("{role}_b")));
             match (a, b) {
                 (Some(a), Some(b)) => {
-                    let mid = matvec(&a.data, x.len(), x);
-                    matvec(&b.data, mid.len(), &mid)
+                    let mid = matvec_w(a.w(), x.len(), x);
+                    matvec_w(b.w(), mid.len(), &mid)
                 }
                 _ => return err(format!("no weight for role {role}")),
             }
@@ -307,7 +523,7 @@ impl WeightSource for Params {
         self.has(role).then_some(Format::F32)
     }
     fn f32(&self, role: &str) -> Option<HostTensor> {
-        self.t.get(role).cloned()
+        self.t.get(role).map(|t| HostTensor { shape: t.shape.clone(), data: t.f32s().to_vec() })
     }
 }
 
@@ -822,7 +1038,7 @@ impl Backend for Ref {
         let mut p = Params::new();
         for r in roles(b) {
             if let Some(t) = w.f32(&r) {
-                p.t.insert(r, t);
+                p.put(&r, &t.shape.clone(), t.data);
             }
         }
         Ok(Box::new(RefLayer::new(b.clone(), layer.hidden, p)))

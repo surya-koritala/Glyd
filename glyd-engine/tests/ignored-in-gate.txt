@@ -1,0 +1,24 @@
+# Every #[ignore]d test of glyd-engine and glyd-gpu, by function name, once. scripts/check_tree.sh fails on an ignored test that is not named here, and on a name here that is not ignored.
+#   run NAME                  the gate runs it (scripts/test_ignored.sh: the green box's step `test-ignored`, ci.yml's engine job): CPU only, no file, no network, minutes at most.
+#   skip NAME because REASON  not in the gate, and why.
+# The ten below hold the rule that a random test model's noise floor is at most a tenth of the kind's bound, and that the two references agree; they need the default (dev) feature.
+run muse_references_agree_on_the_same_choices
+run kimi_references_compute_the_same_function
+run kimi_references_agree_on_the_same_choices
+run noise_floor_against_fp32
+run deepseek_v41_noise_floor
+run deepseek_v4_noise_floor
+run gemma4_reference_and_its_draws
+run glm_reference_with_its_residual_rounded
+run glm_noise_floor
+run glm_dsa_noise_floor
+run nemotron_model_described_against_the_engines_logits
+skip gguf_against_the_checkpoint because it needs a real BF16 GGUF and its checkpoint (GLYD_TEST_GGUF, GLYD_TEST_CKPT)
+skip real_headers_parse_and_are_described because it needs a directory of recorded GGUF headers (GLYD_TEST_GGUF_HEADERS)
+skip tokenizers_against_the_models_own because it needs a directory of the models' tokenizer files (GLYD_TEST_TOKENIZERS)
+skip record_header_fixtures because it records fixtures from the network (GLYD_RECORD_HEADERS=1)
+skip the_releases_tokenizer_makes_its_compressed_vocabulary because it needs the release's tokenizer.json (GLYD_V41_TOKENIZER)
+skip kimi_tokens_are_tiktokens because it needs the Kimi-K3 tokenizer files (KIMI_DIR)
+skip fp4_expert_time because it is a timing (cargo test --release -- --ignored fp4_expert_time --nocapture), no check
+skip fp4r_pack_time because it is a timing (cargo test --release -- --ignored fp4r_pack_time --nocapture), no check
+skip write_pack_sources because it writes the pack fixtures and their sources (GLYD_PACK_SRC), a tool and no check
