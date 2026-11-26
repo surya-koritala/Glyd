@@ -9293,23 +9293,21 @@ pub(crate) fn draw_floor(alone: &[Served], at_once: &[Served], bound: &Bound) ->
         }
     }
     let rows: usize = at_once.iter().map(|s| s.rows.len()).sum();
-    if want.len() * 2 < rows {
-        println!(
-            "FAIL the draw's floor (each prompt served again alone, a row a step: the GPU against itself, its sums in another order): {} of {rows} rows judged ({parted} sequences part at a token apart, {apart} rows after a choice apart not judged): a draw whose rows mostly part at a choice judges nothing",
-            want.len()
-        );
-        return Ok((false, kl));
-    }
     let tag = format!(
         "the draw's floor (each prompt served again alone, a row a step: the GPU against itself, its sums in another order): {} of {rows} rows judged ({parted} sequences part at a token apart, {apart} rows after a choice apart not judged)",
         want.len()
     );
-    if moved == 0 {
+    let half = 2 * want.len() >= rows;
+    if want.is_empty() {
+        println!("FAIL {tag}: no row judged");
+        return Ok((false, kl));
+    }
+    if moved == 0 && half {
         println!("PASS {tag}: no bit moved, not measured");
         return Ok((true, kl));
     }
     let v = compare_rows(&want, &tenth, &got);
-    let ok = v.ok && 2 * want.len() >= rows;
+    let ok = v.ok && half;
     let worst = (0..want.len()).max_by(|&x, &y| kl_of(&want[x], &got[x]).total_cmp(&kl_of(&want[y], &got[y]))).map_or((0, 0), |n| at[n]);
     println!(
         "{} {tag}: KL mean {:.3e} max {:.3e} (sequence {}, row {}), the best token {}/{} where the lead clears {CLEAR_LEAD}, {moved} rows not the same bits [a tenth of the bound: {}]",
@@ -9322,7 +9320,9 @@ pub(crate) fn draw_floor(alone: &[Served], at_once: &[Served], bound: &Bound) ->
         v.top1.1,
         bound_words(&tenth)
     );
-    if !ok {
+    if !half {
+        println!("  (fewer than half the rows judged: a draw whose rows mostly part at a choice, a router's or an indexer's near tie taken the other way, judges nothing)");
+    } else if !ok {
         println!("  (a draw past a tenth of the bound against itself in another order judges no path that is not the GPU's bit for bit: its draw is to be fixed, not the bound)");
     }
     Ok((ok, kl))
