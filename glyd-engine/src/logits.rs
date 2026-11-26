@@ -2147,13 +2147,25 @@ pub fn qwen35moe_random(out: &Path) -> Result<()> {
 /// The Qwen3.5 layout with experts at its release's width (tests/fixtures/qwen35_configs.json's Qwen3.5-35B-A3B: 2,048 wide, experts of 512 neurons, 8 a token, the
 /// shared expert of 512, its attention's and linear attention's heads, its kinds of layer in their order; a cut of fewer layers than its run of kinds up to the first full
 /// attention, that run's last ones), `layers` layers of `experts` experts each, with the small case's vocabulary and rotation: drawn as `qwen35moe_random` draws its model. A model whose experts exceed a GPU's memory, for the expert cache's checks
-/// (`logitsmodel qwen35moe DIR --real --layers L --experts E`; `storecheck`).
-pub fn qwen35moe_random_real(out: &Path, layers: usize, experts: usize) -> Result<()> {
+/// (`logitsmodel qwen35moe DIR --real --layers L --experts E`; `storecheck`). `widths`: another release's config.json of the layout (or a recorded header whose
+/// `config` is one: `--widths FILE`) whose widths and kinds of layer are taken in place of Qwen3.5-35B-A3B's.
+pub fn qwen35moe_random_real(out: &Path, layers: usize, experts: usize, widths: Option<&str>) -> Result<()> {
     let js = |t: &str| serde_json::from_str::<Value>(t).map_err(|e| Error(e.to_string()));
     let mut c = js(include_str!("../tests/fixtures/qwen35moe_tiny_config.json"))?;
     let all = js(include_str!("../tests/fixtures/qwen35_configs.json"))?;
-    let rel =
-        all.get("Qwen/Qwen3.5-35B-A3B").map(|v| v.get("text_config").unwrap_or(v)).ok_or_else(|| Error("no Qwen3.5-35B-A3B config in the fixtures".into()))?;
+    // (a recorded header holds the config.json's text as its `config`)
+    let given = widths.map(js).transpose()?.map(|v| match v.get("config").and_then(Value::as_str) {
+        Some(t) => js(t),
+        None => Ok(v),
+    });
+    let given = given.transpose()?;
+    let rel = match &given {
+        Some(v) => v.get("text_config").unwrap_or(v),
+        None => all
+            .get("Qwen/Qwen3.5-35B-A3B")
+            .map(|v| v.get("text_config").unwrap_or(v))
+            .ok_or_else(|| Error("no Qwen3.5-35B-A3B config in the fixtures".into()))?,
+    };
     for k in [
         "hidden_size",
         "moe_intermediate_size",
@@ -2167,9 +2179,9 @@ pub fn qwen35moe_random_real(out: &Path, layers: usize, experts: usize) -> Resul
         "linear_key_head_dim",
         "linear_value_head_dim",
     ] {
-        c[k] = rel.get(k).cloned().ok_or_else(|| Error(format!("Qwen3.5-35B-A3B's config has no {k}")))?;
+        c[k] = rel.get(k).cloned().ok_or_else(|| Error(format!("the release's config has no {k}")))?;
     }
-    let kinds = rel["layer_types"].as_array().filter(|k| !k.is_empty()).ok_or_else(|| Error("Qwen3.5-35B-A3B's config has no layer_types".into()))?;
+    let kinds = rel["layer_types"].as_array().filter(|k| !k.is_empty()).ok_or_else(|| Error("the release's config has no layer_types".into()))?;
     (c["num_hidden_layers"], c["num_experts"]) = (json!(layers.max(1)), json!(experts.max(1)));
     // (a cut shorter than the release's run of kinds up to its first full attention takes that run's last layers, so that a cut of two holds both kinds of attention)
     let run = kinds.iter().position(|k| k == "full_attention").map_or(1, |p| p + 1);
@@ -2185,11 +2197,11 @@ pub fn qwen35moe_random_real(out: &Path, layers: usize, experts: usize) -> Resul
 /// (`mlp.experts.gate_up_proj` [experts, 2 inter, in], `mlp.experts.down_proj` [experts, out, inter]), the form Qwen3.8-2.4T-A95B is released in: the same weights
 /// to the bit (`stacked::restack`), as `logitsmodel qwen35moe DIR --stacked [--real --layers L --experts E]` makes it (the case `qwen35moe-st`: the stacked form
 /// of the case's own model).
-pub fn qwen35moe_stacked(out: &Path, real: Option<(usize, usize)>) -> Result<()> {
+pub fn qwen35moe_stacked(out: &Path, real: Option<(usize, usize, Option<String>)>) -> Result<()> {
     let at = out.join("per-expert");
     match real {
         None => qwen35moe_random(&at)?,
-        Some((layers, experts)) => qwen35moe_random_real(&at, layers, experts)?,
+        Some((layers, experts, widths)) => qwen35moe_random_real(&at, layers, experts, widths.as_deref())?,
     }
     let (named, _) = crate::runtime::describe::describe_dir(&at)?;
     let held = crate::runtime::describe::describe_stacked(&crate::runtime::config::ModelConfig::load(&at)?)?;
@@ -3537,7 +3549,7 @@ pub fn level_check(a: &crate::args::Args) -> Result<()> {
     }
 }
 
-/// `logitsmodel CASE DIR [--servable] [--real [--layers L] [--experts E]] [--stacked]`: the case's random model made in DIR (`--real`: the Qwen3.5 layout with experts at its release's width; `--stacked`: its experts stacked, `qwen35moe_stacked`) (a model to run the other checks on: `kvtest DIR`, `run DIR`); `qwen4x-rel` the
+/// `logitsmodel CASE DIR [--servable] [--real [--layers L] [--experts E] [--widths FILE]] [--stacked]`: the case's random model made in DIR (`--real`: the Qwen3.5 layout with experts at its release's width, another release's with `--widths`; `--stacked`: its experts stacked, `qwen35moe_stacked`) (a model to run the other checks on: `kvtest DIR`, `run DIR`); `qwen4x-rel` the
 /// family's release's form (`qwen4x_release_random`); `CASE+q4` with its tables on the host stored at 4 bits.
 pub fn make_model(a: &crate::args::Args) -> Result<()> {
     let id = a.need(1, "CASE")?;
@@ -3551,10 +3563,12 @@ pub fn make_model(a: &crate::args::Args) -> Result<()> {
         // Qwen3.8-2.4T-A95B holds them, `qwen35moe_stacked`)
         Ok(Weights::Random(_)) if real || stacked => match base {
             "qwen35moe" => {
-                let r = real.then(|| Ok::<_, Error>((a.num("layers", 8usize)?, a.num("experts", 256usize)?))).transpose()?;
+                // (`--widths FILE`: another release's config.json, or its recorded header, whose widths `--real` takes)
+                let widths = a.flag("widths").map(|f| std::fs::read_to_string(f).map_err(|e| Error(format!("--widths {f}: {e}")))).transpose()?;
+                let r = real.then(|| Ok::<_, Error>((a.num("layers", 8usize)?, a.num("experts", 256usize)?, widths))).transpose()?;
                 match (stacked, r) {
                     (true, r) => qwen35moe_stacked(dir, r)?,
-                    (false, Some((l, e))) => qwen35moe_random_real(dir, l, e)?,
+                    (false, Some((l, e, w))) => qwen35moe_random_real(dir, l, e, w.as_deref())?,
                     (false, None) => unreachable!("--real or --stacked"),
                 }
             }
@@ -5783,7 +5797,8 @@ fn planned_for(case: &str, level: &str, users: usize) -> Result<crate::plan::Loa
     got
 }
 
-/// `splitcheck CASE [--split CUT,..] [--devices GPU,..] [--level L | --layout mma12] [--tokens T] [--mode M] [--tables] [--decoded]` (development): the case's random model
+/// `splitcheck CASE [--dir DIR] [--split CUT,..] [--devices GPU,..] [--level L | --layout mma12] [--tokens T] [--mode M] [--tables] [--decoded]` (development): the case's random model
+/// (`--dir`: the model `logitsmodel` made in DIR, kept)
 /// on the dynamic route as `run` opens it (`split::open`: its family's loader, any family of that route; the expert cache's case, `qwen4x-cb`, its pack in an
 /// expert cache a stage, its misses as `--mode` says: `split_open`), once on one GPU and once with its layers cut into stages (by default before its middle layer,
 /// both stages on GPU 0 or on the two `--devices` names: the hand-over through host memory checked on a machine with one GPU). A prompt of 24 tokens and one
@@ -5799,11 +5814,18 @@ pub fn split_check(a: &crate::args::Args) -> Result<()> {
     let tokens: usize = a.num("tokens", 12usize)?;
     let mode =
         a.flag("mode").map_or(Some(crate::offload::Mode::Cpu), crate::offload::Mode::parse).ok_or_else(|| Error("--mode: copy, cpu, split or auto".into()))?;
-    let dir = std::env::temp_dir().join(format!("glyd-splitcheck-{}-{}", case.replace('+', "-"), std::process::id()));
-    let bf16 = dir.with_extension("decoded");
+    // (`--dir DIR`: a model made before, kept after)
+    let given = a.flag("dir").map(std::path::PathBuf::from);
+    let dir = given.clone().unwrap_or_else(|| std::env::temp_dir().join(format!("glyd-splitcheck-{}-{}", case.replace('+', "-"), std::process::id())));
+    let bf16 = std::env::temp_dir().join(format!("glyd-splitcheck-{}-{}.decoded", case.replace('+', "-"), std::process::id()));
     let decoded = a.has("decoded");
+    if given.is_some() && decoded {
+        return err("--dir and --decoded: the one-GPU run of --decoded is a random model made here");
+    }
     let r = (|| -> Result<()> {
-        random_model(case, &dir)?;
+        if given.is_none() {
+            random_model(case, &dir)?;
+        }
         // (--decoded: the same model again, its tables at 4 bits written as the bf16 rows they decode to, for the one-GPU run)
         if decoded {
             random_model(case, &bf16)?;
@@ -5893,7 +5915,9 @@ pub fn split_check(a: &crate::args::Args) -> Result<()> {
         }
         Ok(())
     })();
-    let _ = std::fs::remove_dir_all(&dir);
+    if given.is_none() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     let _ = std::fs::remove_dir_all(&bf16);
     r
 }

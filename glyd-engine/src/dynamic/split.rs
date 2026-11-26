@@ -897,15 +897,14 @@ fn dynamic_row(f: crate::support::Family) -> Option<&'static str> {
     (!row.split_levels.is_empty() || row.route.sizing == crate::support::Sizing::Dynamic).then_some(row.name)
 }
 
-/// The model of `dir` as `plan` says it loads (src/plan.rs `size_dynamic`): its layers cut over the plan's GPUs (`Spread::cuts`, `devices`) or across them
-/// (`across`), its context, prompt chunk and layout (the 12-bit one where `twelve`), and where its experts are in the computer's memory each stage's places
-/// of them, the memory the plan gives them and the last layers' dense matrices there (`dense`), with the expert cache's copy-or-compute policy `offload`; on one GPU
-/// its sequences' keys, values and states in the plan's bytes (`Dyn::take_plan`). Nothing is sized here. `m`: the directory's config.json, parsed once (the plan's):
-/// every stage's loader reads the model from it.
+/// The model of `dir` as `plan` says it loads (src/plan.rs `size_dynamic`, a lossy level's stages `sizing::lossy_stages`): its layers cut over the plan's GPUs
+/// (`Spread::cuts`, `devices`) or across them (`across`), its context, prompt chunk and layout (the plan's: penguin's 12-bit one where `twelve`, a lossy level's
+/// block layout), and where its experts are in the computer's memory each stage's places of them, the memory the plan gives them and the last layers' dense
+/// matrices there (`dense`), with the expert cache's copy-or-compute policy `offload`; on one GPU its sequences' keys, values and states in the plan's bytes
+/// (`Dyn::take_plan`). Nothing is sized here. `m`: the directory's config.json, parsed once (the plan's): every stage's loader reads the model from it.
 pub fn open_plan(dir: &Path, m: &ModelConfig, plan: &crate::plan::LoadPlan, offload: crate::offload::Offload) -> Result<Run> {
     let sp = plan.spread.as_ref().ok_or_else(|| Error("a plan of the dynamic route spreads the model (Spread)".into()))?;
-    let layout = if sp.twelve { crate::weights::Layout::Twelve } else { crate::weights::Layout::Tiered };
-    let o = Opts { ctx: plan.context, chunk: plan.chunk, graph: true, device: sp.devices[0], layout: Some(layout) };
+    let o = Opts { ctx: plan.context, chunk: plan.chunk, graph: true, device: sp.devices[0], layout: Some(plan.layout) };
     let ram = plan.experts.filter(|c| c.ram < c.host_bytes()).map(|c| crate::offload::HostMemory { bytes: c.ram, total: c.host_bytes() });
     let (cuts, devices) = (&sp.cuts, &sp.devices);
     let mut run = if sp.host_bytes == 0 {
