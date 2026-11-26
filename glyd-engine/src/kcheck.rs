@@ -125,9 +125,13 @@ fn host_top32(w: &[f32]) -> Vec<(i32, f32)> {
     idx[..crate::kern::TOPK].iter().map(|&i| (i as i32, w[i])).collect()
 }
 
-/// A row's changes for the check (src/sampler.rs `Resolved`), of kind `kind`, at random for a row of `v`: a mask of half the tokens; one of 5% with biases, the repetition penalty and
-/// the times said; no mask and the three penalties on 500 tokens with biases of the server's bounds; ten tokens allowed and two others put back at 0 (a grammar's end under a least
-/// length); none allowed and three put back; a repetition penalty below 1 and a negative frequency penalty on 300 tokens said up to 1,000 times; one token allowed and 64 changed.
+/// The kinds of `changes`.
+const CHANGES: usize = 11;
+
+/// A row's changes for the check (src/sampler.rs `Resolved`), of kind `kind` (of CHANGES), at random for a row of `v`: a mask of half the tokens; one of 5% with biases, the repetition
+/// penalty and the times said; no mask and the three penalties on 500 tokens with biases of the server's bounds; ten tokens allowed and two others put back at 0 (a grammar's end under a
+/// least length); none allowed and three put back; a repetition penalty below 1 and a negative frequency penalty on 300 tokens said up to 1,000 times; one token allowed and 64 changed;
+/// then each change alone: a bias on 100 tokens, the repetition penalty on 400, the presence penalty on 300, the frequency penalty on 300 said up to 1,000 times.
 fn changes(kind: usize, v: usize, rnd: &mut dyn FnMut() -> u64) -> crate::sampler::Resolved {
     use crate::sampler::{Entry, Resolved};
     let n = v.div_ceil(32);
@@ -144,7 +148,7 @@ fn changes(kind: usize, v: usize, rnd: &mut dyn FnMut() -> u64) -> crate::sample
     let mut ents: std::collections::BTreeMap<u32, Entry> = Default::default();
     let mut add = |t: u32, f: &dyn Fn(&mut Entry)| f(ents.entry(t).or_insert(Entry { token: t, bias: None, seen: false, said: 0, rescue: false }));
     let (mut words, mut rep, mut pres, mut freq) = (None, 1.0f32, 0.0f32, 0.0f32);
-    match kind % 7 {
+    match kind % CHANGES {
         0 => words = Some(dense(0.5, rnd)),
         1 => {
             words = Some(dense(0.05, rnd));
@@ -174,13 +178,13 @@ fn changes(kind: usize, v: usize, rnd: &mut dyn FnMut() -> u64) -> crate::sample
         }
         3 | 4 => {
             let mut w = vec![0u32; n];
-            for _ in 0..if kind % 7 == 3 { 10 } else { 0 } {
+            for _ in 0..if kind % CHANGES == 3 { 10 } else { 0 } {
                 let t = pick(rnd) as usize;
                 w[t / 32] |= 1 << (t % 32);
             }
             words = Some(w);
             (rep, pres, freq) = (1.5, 0.3, 0.2);
-            for j in 0..if kind % 7 == 3 { 2 } else { 3 } {
+            for j in 0..if kind % CHANGES == 3 { 2 } else { 3 } {
                 let t = pick(rnd);
                 add(t, &|e| {
                     e.rescue = true;
@@ -198,6 +202,26 @@ fn changes(kind: usize, v: usize, rnd: &mut dyn FnMut() -> u64) -> crate::sample
                     e.said = said;
                     e.bias = (said % 5 == 0).then_some(b);
                 });
+            }
+        }
+        7 => {
+            for j in 0..100 {
+                let (t, b) = (pick(rnd), if j % 4 == 0 { 100.0 } else { (rnd() % 2001) as f32 / 10.0 - 100.0 });
+                add(t, &|e| e.bias = Some(b));
+            }
+        }
+        8 => {
+            rep = 1.3;
+            for _ in 0..400 {
+                let t = pick(rnd);
+                add(t, &|e| e.seen = true);
+            }
+        }
+        9 | 10 => {
+            (pres, freq) = if kind % CHANGES == 9 { (0.7, 0.0) } else { (0.0, 0.35) };
+            for _ in 0..300 {
+                let (t, said) = (pick(rnd), 1 + (rnd() % 1000) as u32);
+                add(t, &|e| e.said = said);
             }
         }
         _ => {
@@ -219,8 +243,8 @@ fn changes(kind: usize, v: usize, rnd: &mut dyn FnMut() -> u64) -> crate::sample
     Resolved { words, entries: ents.into_values().collect(), repetition: rep, presence: pres, frequency: freq }
 }
 
-/// The rows the draws see (`ProcGpu`: a row's mask, penalties and bias put on it, src/sampler.rs `Resolved`) of the rows `rows` (bf16 bits, at `logits` on the device), seven rounds of
-/// changes of every kind (`changes`) so that every row has each: the GPU's row against the host's (`Resolved::apply`, which src/sampler.rs holds to `Sampler::processed`) bit for bit,
+/// The rows the draws see (`ProcGpu`: a row's mask, penalties and bias put on it, src/sampler.rs `Resolved`) of the rows `rows` (bf16 bits, at `logits` on the device), a round of
+/// changes for each kind (`changes`) so that every row has each: the GPU's row against the host's (`Resolved::apply`, which src/sampler.rs holds to `Sampler::processed`) bit for bit,
 /// its 64 largest against the host's order of it, its sum of exponentials at two temperatures (within 2e-6), its buckets (the counts exact, the sums within 1e-9) and the tokens of two of
 /// them. Returns the rows checked, those that differ, the sums checked, those beyond, and the worst sum.
 fn proc_check(
@@ -240,7 +264,7 @@ fn proc_check(
     let (tok, val) = (Buf::zeroed(4 * n * crate::kern::TOPK)?, Buf::zeroed(4 * n * crate::kern::TOPK)?);
     let (out, hs, hc, want, bn, bt, bv) =
         (Buf::zeroed(8)?, Buf::new(8 * HIST_BUCKETS)?, Buf::new(4 * HIST_BUCKETS)?, Buf::new(4)?, Buf::new(4)?, Buf::new(4 * v)?, Buf::new(4 * v)?);
-    for round in 0..7 {
+    for round in 0..CHANGES {
         let res: Vec<crate::sampler::Resolved> = (0..n).map(|i| changes(i + round, v, rnd)).collect();
         let list: Vec<(usize, &crate::sampler::Resolved)> = res.iter().enumerate().collect();
         // SAFETY: n rows of v bf16 logits, and TOPK candidates' room for each; synchronized before anything is read
@@ -251,7 +275,7 @@ fn proc_check(
         val.read(0, &mut gv)?;
         for (i, (label, _)) in rows.iter().enumerate() {
             checked += 1;
-            let what = format!("{name}, {label}, changes of kind {}", (i + round) % 7);
+            let what = format!("{name}, {label}, changes of kind {}", (i + round) % CHANGES);
             let host = res[i].apply(&raw[i]);
             let mut w = vec![0f32; v];
             let at = g.row_of(i).expect("a row made");
@@ -547,7 +571,7 @@ pub fn topk_check(dev: &Dev) -> Result<bool> {
         total / 20.0
     };
     println!(
-        "the rows the draws see: {pchecked} rows with changes of 7 kinds (masks, penalties, biases, ends put back) checked against the host's, {pbad} differ (the row bit for bit, its 64 largest, buckets and their tokens); \
+        "the rows the draws see: {pchecked} rows with changes of {CHANGES} kinds (masks, penalties, biases, ends put back, each change alone) checked against the host's, {pbad} differ (the row bit for bit, its 64 largest, buckets and their tokens); \
          {psums} sums of its exponentials, the worst {pworst:.2e} apart (the bound is 2e-6), {poff} beyond; {ms:.3} ms to make a step's {rows} rows of {v} and their candidates"
     );
     Ok(bad == 0 && off == 0 && pbad == 0 && poff == 0)

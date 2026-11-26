@@ -6065,10 +6065,12 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
 
 /// `samplecheck CASE [--users N] [--tokens T] [--level L] [--vocab V]` (development, R4a #138: sampling on the GPU): the case's random model served by the scheduler to N requests at
 /// once whose draws differ (greedy and drawn with nothing on the row; a JSON schema's grammar greedy and drawn; the repetition, presence and frequency penalties; a bias; an allowed list;
-/// a least length), the rows their draws see made on the GPU (`sampler::Proc`): every request's tokens against its own run alone and against the host's draws from the whole rows
-/// (GLYD_ENGINE_HOST_SAMPLING's), its log-probabilities against the host's, a grammar's document against its schema, and the rows the draws read (none). Then the host's time a
-/// step both ways, on this model and for 8 and 64 rows of a vocabulary of V (262,144 by default: the rows of requests with the penalties, a bias and a top-k, half of them an
-/// allowed list of half the tokens) read and drawn on the host, or made on the GPU and drawn from their candidates.
+/// a least length), the rows their draws see made on the GPU (`sampler::Proc`): every request's tokens and log-probabilities against the host's draws from the whole rows of the same
+/// steps (GLYD_ENGINE_HOST_SAMPLING's), a grammar's document against its schema, the rows each request's draws read alone (none, but where a top-p or a min-p over the whole row cuts
+/// past the 64 largest), and each request at once against its run alone: token for token where a step's rows are each their own pass's bits (prompts one a pass,
+/// GLYD_ENGINE_BATCH_PREFILL=0, and 16 users or fewer, as `usercheck` holds them), else counted (a prompt run beside others, or a step of more than 16 rows, rounds its rows' values
+/// otherwise, #528, and a drawn token may then differ). Then the host's time a step both ways, on this model and for 8 and 64 rows of a vocabulary of V (262,144 by default: the rows of
+/// requests with the penalties, a bias and a top-k, half of them an allowed list of half the tokens) read and drawn on the host, or made on the GPU and drawn from their candidates.
 pub fn sample_check(a: &crate::args::Args) -> Result<()> {
     use crate::conv::Gen;
     use crate::sampler::{Lp, Params};
@@ -6172,6 +6174,10 @@ pub fn sample_check(a: &crate::args::Args) -> Result<()> {
     let (host, st_host) = run(&mut e, &all)?;
     e.top.off = false;
     let mut fails = 0;
+    let strict = std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_some_and(|v| v == "0") && users <= 16;
+    // (the draws that never need their row: the largest, a top-k within the candidates, a draw over the whole row from its buckets)
+    let never = |p: &Params| p.temperature <= 0.0 || (1..=crate::kern::TOPK).contains(&p.top_k) || (p.top_k == 0 && p.top_p >= 1.0 && p.min_p == 0.0);
+    let (mut like_alone, mut read_alone) = (0, 0);
     let lp_off = |a: &Lp, b: &Lp| {
         let tops = a.top.iter().zip(&b.top).map(|(x, y)| if x.0 == y.0 { (x.1 - y.1).abs() } else { f64::INFINITY }).fold(0f64, f64::max);
         if a.token != b.token || a.top.len() != b.top.len() {
@@ -6181,12 +6187,17 @@ pub fn sample_check(a: &crate::args::Args) -> Result<()> {
         }
     };
     for u in 0..users {
-        let (alone, _) = run(&mut e, &[u])?;
+        let (alone, st_alone) = run(&mut e, &[u])?;
         let (name, g_, h_, a_) = (kinds[u % kinds.len()].0, &gpu[u], &host[u], &alone[0]);
         let worst = g_.1.iter().zip(&h_.1).map(|(x, y)| lp_off(x, y)).fold(0f64, f64::max);
         let mut why = Vec::new();
-        if g_.0 != a_.0 {
+        like_alone += (g_.0 == a_.0) as usize;
+        read_alone += st_alone.row_reads;
+        if g_.0 != a_.0 && strict {
             why.push(format!("at once {:?} against alone {:?}", g_.0, a_.0));
+        }
+        if st_alone.row_reads > 0 && never(&kinds[u % kinds.len()].1) {
+            why.push(format!("alone, {} of its draws read the row", st_alone.row_reads));
         }
         if g_.0 != h_.0 {
             why.push(format!("on the GPU {:?} against the host's {:?}", g_.0, h_.0));
@@ -6209,14 +6220,27 @@ pub fn sample_check(a: &crate::args::Args) -> Result<()> {
         }
         fails += !why.is_empty() as usize;
         println!(
-            "{} request {u} ({name}; {} tokens, {:?}{}): {}",
+            "{} request {u} ({name}; {} tokens, {:?}{}; alone {} rows read): {}",
             if why.is_empty() { "PASS" } else { "FAIL" },
             g_.0.len(),
             g_.2,
             if g_.1.is_empty() { String::new() } else { format!(", log-probabilities {worst:.1e} from the host's") },
-            if why.is_empty() { "alone, at once and the host's the same".into() } else { why.join("; ") }
+            st_alone.row_reads,
+            match (why.is_empty(), g_.0 == a_.0) {
+                (true, true) => "at once the host's draws and the run alone".to_string(),
+                (true, false) => "at once the host's draws; alone another reply (a step's rows rounded otherwise: counted)".to_string(),
+                _ => why.join("; "),
+            }
         );
     }
+    println!(
+        "{like_alone} of {users} replies at once the reply alone ({}); the requests alone read {read_alone} rows",
+        if strict {
+            "prompts one a pass and 16 users or fewer: each required"
+        } else {
+            "a prompt beside others or a step of more than 16 rows rounds the rows' values: counted"
+        }
+    );
     let per = |st: &crate::sched::Stats| (st.before_ns + st.after_ns) as f64 / 1e3 / st.steps.max(1) as f64;
     println!(
         "{users} requests at once on the random {case} model (a vocabulary of {v}): rows read {} with the rows made on the GPU, {} on the host; the host's time a step {:.1} us and {:.1} us ({} and {} steps)",
@@ -6227,10 +6251,6 @@ pub fn sample_check(a: &crate::args::Args) -> Result<()> {
         st_gpu.steps,
         st_host.steps
     );
-    if st_gpu.row_reads != 0 {
-        println!("FAIL a draw read its row where the GPU made the row it sees");
-        fails += 1;
-    }
     if st_host.row_reads == 0 {
         println!("FAIL the host's run read no row (GLYD_ENGINE_HOST_SAMPLING's draws were not the host's)");
         fails += 1;
