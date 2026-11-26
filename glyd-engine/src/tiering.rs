@@ -940,6 +940,90 @@ pub fn rows_check(a: &crate::args::Args) -> Result<()> {
     }
 }
 
+/// `glyd-engine floortrace MODEL [--tokens 16] [--ops L]` (development, #327): where a draw amplifies a reordering of its experts' sums. The model with every expert on
+/// GPU 0 runs a prompt twice, as made and with every experts' product's sums split over K (GLYD_GPU_MOE_SLOTS, as `storecheck --floor`), each layer's residual traced;
+/// for each layer, the two runs' residuals' difference over the first run's (each position's, the first position's and the most), and the rows whose router chose
+/// other experts there; `--ops L`: each operation of layer L the same way, slot by slot.
+#[cfg(feature = "dev")]
+pub fn floor_trace(a: &crate::args::Args) -> Result<()> {
+    let dir = std::path::Path::new(a.need(1, "MODEL")?);
+    let n = a.num("tokens", 16usize)?.max(1);
+    let ops = a.flag("ops").map(|x| x.parse::<usize>().map_err(|_| crate::ffi::Error(format!("--ops {x}: a layer")))).transpose()?;
+    let vocab = crate::runtime::config::ModelConfig::load(dir)?.num("vocab_size").unwrap_or(1000).max(16);
+    let tokens: Vec<u32> = (0..n).map(|i| ((i * 7919 + 13) % (vocab - 4) + 2) as u32).collect();
+    let o = crate::dynamic::Opts { ctx: n + 64, chunk: n.max(64), graph: false, device: 0, layout: a.layout()? };
+    type Traced = (Vec<Vec<u16>>, Vec<crate::dynamic::Routes>, Vec<(String, Vec<Vec<u16>>)>);
+    let run = |split: bool| -> Result<Traced> {
+        if split {
+            std::env::set_var("GLYD_GPU_MOE_SLOTS", "1073741824");
+        }
+        let r = (|| -> Result<Traced> {
+            let crate::dynamic::split::Run::One(mut e) = crate::dynamic::split::open(dir, &o, &[], &[0])? else {
+                return err("the model on one GPU was asked for");
+            };
+            e.trace_layers(true);
+            e.trace_routes(true);
+            e.trace_ops(ops);
+            e.prefill(&tokens)?;
+            Ok((e.trace_layers(false), e.trace_routes(false), e.trace_ops(None)))
+        })();
+        std::env::remove_var("GLYD_GPU_MOE_SLOTS");
+        r
+    };
+    let ((la, ra, oa), (lb, rb, ob)) = (run(false)?, run(true)?);
+    let f = |h: u16| f32::from_bits((h as u32) << 16) as f64;
+    // (each position's |a - b| / |a| over a row of `w` values, the first position's and the most)
+    let rel = |x: &[u16], y: &[u16], w: usize| -> (f64, f64) {
+        let per: Vec<f64> = x
+            .chunks(w)
+            .zip(y.chunks(w))
+            .map(|(p, q)| {
+                let (d, m) = p.iter().zip(q).fold((0f64, 0f64), |(d, m), (&u, &v)| (d + (f(u) - f(v)).powi(2), m + f(u).powi(2)));
+                (d / m.max(1e-300)).sqrt()
+            })
+            .collect();
+        (per.first().copied().unwrap_or(0.0), per.iter().copied().fold(0.0, f64::max))
+    };
+    println!(
+        "{}: a prompt of {n} tokens, as made against its experts' sums split over K: each layer's residual's difference (of the first run's)",
+        dir.display()
+    );
+    for (l, (x, y)) in la.iter().zip(&lb).enumerate() {
+        let w = x.len() / n;
+        let (first, most) = rel(x, y, w);
+        let flips: usize = ra
+            .iter()
+            .zip(&rb)
+            .filter(|(p, _)| p.0 == l)
+            .map(|(p, q)| {
+                let k = p.1;
+                (0..p.2.len() / k)
+                    .filter(|&t| {
+                        let (mut u, mut v) = (p.2[t * k..(t + 1) * k].to_vec(), q.2[t * k..(t + 1) * k].to_vec());
+                        (u.sort_unstable(), v.sort_unstable());
+                        u != v
+                    })
+                    .count()
+            })
+            .sum();
+        println!("  layer {l:2}: position 0 {first:.3e}, the most {most:.3e}; rows routed apart here {flips}");
+    }
+    for ((name, x), (_, y)) in oa.iter().zip(&ob) {
+        let cells: Vec<String> = x
+            .iter()
+            .zip(y)
+            .zip(crate::dynamic::TRACED.iter())
+            .filter(|((p, _), _)| !p.is_empty())
+            .map(|((p, q), sl)| {
+                let (first, most) = rel(p, q, p.len() / n);
+                format!("{sl:?} {first:.2e}/{most:.2e}")
+            })
+            .collect();
+        println!("  layer {} op {name}: {}", ops.unwrap_or(0), cells.join(", "));
+    }
+    Ok(())
+}
+
 /// `rows_check`'s judgment of a run's rows (`got`, its choices traced) against the reference's (`r`) on the run's own choices (`logits::Judge`, the rows with no choice
 /// apart at `bound`): each sequence's rows
 /// while its tokens are the reference's, and the row where they first differ; with each sequence that parts and the row where.
