@@ -181,7 +181,12 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
     // (the block whose pick ran last: the picks' buffer holds its rows)
     let mut picked_by = None;
     // (lagged streams: the model's first block collapses them one-hot; a stage after the first takes the weights of the block before it with the streams, `Slot::Lag`)
-    let (mut first_lag, mut n_moe, mut overlap_any, mut engram_w) = (st.first, 0usize, false, (0usize, 0usize));
+    let (mut first_lag, mut n_moe, mut overlap_any) = (st.first, 0usize, false);
+    // (the n-gram blocks' slots, the model's widest whatever the stage: a cut hands every stage the same slots)
+    let engram_w = at.iter().filter_map(|x| x.0).fold((0usize, 0usize), |w, b| match &m.blocks[b].body {
+        Body::Ngram(g) => (w.0.max(g.dim), w.1.max((g.streams + 1) * d_)),
+        _ => w,
+    });
     // (each n-gram block's table and where its kind holds it)
     let mut tables: Vec<(usize, crate::runtime::kinds::TableAt)> = Vec::new();
     // (the smallest ratio a query reads every entry of, and an indexer's smallest: the model's, whatever the stage, as the buffers are sized by them)
@@ -230,7 +235,6 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
             if let Some(Op::NgramRows(x)) = ops.iter().rev().find(|op| matches!(op, Op::NgramRows(_))) {
                 tables.push((x.table, g.table));
             }
-            engram_w = (engram_w.0.max(g.dim), engram_w.1.max((g.streams + 1) * d_));
         }
         let (sa, sf) = (streams(ab)?, streams(eb)?);
         let roles = &d.blocks[ab];
@@ -732,9 +736,10 @@ mod tests {
             assert!(firsts.len() == 2 * (6 - c) && firsts.iter().all(|f| !f), "{firsts:?}");
             assert_eq!(m.width(Slot::Lag), 8);
             assert!(crate::dynamic::handed_over(&m).contains(&(Slot::Lag, 8)));
+            // (what a cut hands over is the same on its two sides: the stage before, with no n-gram block of its own, sizes Engram's slots as the model)
+            let (before, _) = lower(&d, vec![1], 4096, &Stage { layers: (0, c), first: true, last: false }, &VO).unwrap();
+            assert_eq!(crate::dynamic::handed_over(&before), crate::dynamic::handed_over(&m), "a cut before {c}");
         }
-        let (head, _) = lower(&d, vec![1], 4096, &Stage { layers: (0, 1), first: true, last: false }, &VO).unwrap();
-        assert!(crate::dynamic::handed_over(&head).contains(&(Slot::Lag, 8)));
         // (Engram's tables, before layers 1 and 4, on the host: the stage that runs each holds it there)
         let (m, plan) = lower(&d, vec![1], 4096, &Stage::whole(6), &VO).unwrap();
         let rows: Vec<usize> = plan.lins.iter().filter(|x| !x.f8).enumerate().filter(|(_, x)| x.form == LinForm::Rows).map(|(k, _)| k).collect();
