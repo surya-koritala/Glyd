@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# glyd-engine runs Qwen3.5 (2026) on one GPU, unattended (glyd-engine/docs/design/plans/2026-10-06-engine-qwen35.md, tasks 10 to 12, its GPU runs batched in one):
+# glyd-engine runs Qwen3.5 (2026) on one GPU, unattended (tasks 10 to 12 of the Qwen3.5 plan, now removed; the design is glyd-engine/docs/design/specs/2026-10-06-engine-qwen35-design.md; its GPU runs batched in one):
 #   1. Qwen3.5's kernels against the CPU reference (glyd-engine kcheck35);
 #   2. Qwen/Qwen3.5-0.8B and Qwen/Qwen3.5-9B: greedy tokens of 16 short prompts and 3 long ones (the tree's README.md's first 1,030, 2,100 and 3,500 tokens; 64 tokens each) against
 #      vLLM 0.30.0 bf16 (tools/ref_vllm.py: vLLM as one batch and one prompt at a time, the floor), and the 0.8B's
