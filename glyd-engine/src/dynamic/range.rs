@@ -1578,7 +1578,9 @@ fn served(r: &mut Run, prompt: &[u32], params: Params, new: usize) -> Result<((V
             }
         }
     }
-    let rows = s.rows.take().unwrap_or_default().into_iter().map(|x| x.1).collect();
+    let rows: Vec<Vec<f32>> = s.rows.iter().flatten().map(|x| x.1.clone()).collect();
+    // (the routers' choices no longer traced: the next request's step is captured, where a trace reads them)
+    s.stop_rows();
     Ok(((toks, rows), s.stats.row_reads))
 }
 
