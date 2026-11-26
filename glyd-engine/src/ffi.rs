@@ -291,6 +291,7 @@ table! {
         fn cuEventDestroy_v2(CuEvent) -> c_int;
         fn cuModuleLoadData(*mut CuModule, *const c_void) -> c_int;
         fn cuModuleGetFunction(*mut CuFunction, CuModule, *const c_char) -> c_int;
+        fn cuModuleUnload(CuModule) -> c_int;
         fn cuFuncSetAttribute(CuFunction, c_int, c_int) -> c_int;
         fn cuOccupancyMaxActiveBlocksPerMultiprocessor(*mut c_int, CuFunction, c_int, usize) -> c_int;
         fn cuLaunchKernel(CuFunction, c_uint, c_uint, c_uint, c_uint, c_uint, c_uint, c_uint, Stream, *mut *mut c_void, *mut *mut c_void) -> c_int;
@@ -338,7 +339,7 @@ mod hip {
     const LIBS: [&str; 2] = ["amdhip64_7.dll", "amdhip64_6.dll"];
 
     /// The driver table's functions by HIP's names (ROCm 6.4 on: hipEventRecordWithFlags), all but the two adapters' below.
-    const NAMES: [(&str, &str); 51] = [
+    const NAMES: [(&str, &str); 52] = [
         ("cuInit", "hipInit"),
         ("cuDriverGetVersion", "hipDriverGetVersion"),
         ("cuDeviceGet", "hipDeviceGet"),
@@ -387,6 +388,7 @@ mod hip {
         ("cuEventDestroy_v2", "hipEventDestroy"),
         ("cuModuleLoadData", "hipModuleLoadData"),
         ("cuModuleGetFunction", "hipModuleGetFunction"),
+        ("cuModuleUnload", "hipModuleUnload"),
         ("cuLaunchKernel", "hipModuleLaunchKernel"),
         ("cuOccupancyMaxActiveBlocksPerMultiprocessor", "hipModuleOccupancyMaxActiveBlocksPerMultiprocessor"),
         ("cuGetErrorString", "hipDrvGetErrorString"),

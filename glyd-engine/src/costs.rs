@@ -1288,11 +1288,22 @@ fn quick_rates() -> Result<Rates> {
 /// GPU `ordinal`'s memory as a kernel streams it, its link from pinned host memory and the computer's memory as all its threads read it, measured now (256 MiB,
 /// 5 passes each after one more): the planner's rate probe (src/plan.rs `rates_in`, on a GPU's first use).
 pub fn probe_rates(ordinal: i32) -> Result<Rates> {
-    use crate::dev::{copy_h2d_async, Buf, Dev, Pinned};
+    // (the GPU's memory as it was after: the Dev, its module and its stream let go, so a plan made after a rate is measured reads the free memory one made
+    // before it reads; the thread's context as it was too)
+    crate::dev::keeping_context(|| {
+        let dev = crate::dev::Dev::new(ordinal)?;
+        let r = rates_on(&dev);
+        dev.let_go()?;
+        r
+    })
+}
+
+/// `probe_rates` on `dev`: what it makes there is dropped by its end.
+fn rates_on(dev: &crate::dev::Dev) -> Result<Rates> {
+    use crate::dev::{copy_h2d_async, Buf, Pinned};
     let bytes = 256usize << 20;
     let reps = 5;
-    let dev = Dev::new(ordinal)?;
-    let k = crate::kern::Kern::load(&dev)?;
+    let k = crate::kern::Kern::load(dev)?;
     let (buf, out) = (Buf::zeroed(bytes)?, Buf::zeroed(4)?);
     let blocks = (dev.sms as u32) * 16;
     let timed = |f: &dyn Fn() -> Result<()>| -> Result<f64> {

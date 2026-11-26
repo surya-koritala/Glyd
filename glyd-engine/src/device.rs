@@ -211,6 +211,11 @@ pub trait Device {
     /// # Safety
     /// `m` is a module `module_load` made, loaded still.
     unsafe fn function(m: Self::Module, name: &str) -> Result<Self::Function>;
+    /// `m` unloaded: its code's memory on the GPU given back.
+    ///
+    /// # Safety
+    /// `m` is a module `module_load` made, unloaded once, and no kernel of it is launched or looked up after.
+    unsafe fn module_unload(m: Self::Module) -> Result<()>;
     /// The most dynamic shared memory a launch of `f` may ask for (past 48 KiB: an opt-in).
     ///
     /// # Safety
@@ -541,6 +546,11 @@ impl Device for CudaDevice {
         // SAFETY: a fatbin alive for the module's life (the caller's contract); a host out-pointer.
         unsafe { cu("cuModuleLoadData", (driver()?.cuModuleLoadData)(&mut m, image))? };
         Ok(m)
+    }
+
+    unsafe fn module_unload(m: CuModule) -> Result<()> {
+        // SAFETY: a loaded module, unloaded once (the caller's contract).
+        unsafe { cu("cuModuleUnload", (driver()?.cuModuleUnload)(m)) }
     }
 
     unsafe fn function(m: CuModule, name: &str) -> Result<CuFunction> {

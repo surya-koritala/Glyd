@@ -246,6 +246,31 @@ impl Dev {
         in_ctx(self.ctx as usize, D::mem_info)
     }
 
+    /// This Dev let go of what it made in its context, its stream and the engine's module it loaded (the kernels `here` looked up there are looked up again,
+    /// from a module still loaded): the GPU's memory is what it was before the Dev, but for what the context itself holds. What a short look at a GPU opens and
+    /// leaves behind it (a rate measured, `costs::probe_rates`), so a command that measures one before its plan reads the GPU's free memory as one that does
+    /// not (`fit` reads it before it measures, `run` and `serve` after: the plans said 39.1 and 39.0 GiB free of an A100). Every buffer, event and kernel of
+    /// it are gone before.
+    pub fn let_go(self) -> Result<()> {
+        self.sync()?;
+        let (ctx, module) = (self.ctx as usize, self.module as usize);
+        MODULES.lock().unwrap_or_else(|e| e.into_inner()).retain(|&m| m != (ctx, module));
+        if let Some(f) = FOUND.get() {
+            f.lock().unwrap_or_else(|e| e.into_inner()).retain(|k, _| k.0 != ctx);
+        }
+        in_ctx(ctx, || {
+            // SAFETY: the Dev's own stream, synchronized, and its own module, of whose kernels nothing is held past this (the caller's buffers, kernels and
+            // events of it dropped; `here`'s looked up ones forgotten above); each let go once, as the Dev is consumed.
+            unsafe {
+                D::stream_destroy(self.stream)?;
+                if !self.module.is_null() {
+                    D::module_unload(self.module)?;
+                }
+            }
+            Ok(())
+        })
+    }
+
     /// The work queued on the stream captured into a graph: `body` runs with the stream capturing, nothing in it executes.
     pub fn capture(&self, body: impl FnOnce() -> Result<()>) -> Result<Graph> {
         self.begin_capture()?;
@@ -292,10 +317,13 @@ unsafe fn function_in(module: CuModule, name: &str) -> Result<Kernel> {
     Ok(Kernel(f))
 }
 
-/// The engine's modules by context, as the Devs loaded them (a module is kept for the process).
+/// The engine's modules by context, as the Devs loaded them (a module is kept for the process, but a Dev let go: `Dev::let_go`).
 static MODULES: std::sync::Mutex<Vec<(usize, usize)>> = std::sync::Mutex::new(Vec::new());
 
 type Found = std::sync::Mutex<std::collections::HashMap<(usize, &'static str), usize>>;
+
+/// The kernels `here` looked up, by context and name.
+static FOUND: std::sync::OnceLock<Found> = std::sync::OnceLock::new();
 
 /// A kernel of the engine's by its type, in a module of the context current on this thread: what code with no `Dev` at hand launches (the library's
 /// operations the engine runs from its own fatbin, `fold.rs`). Looked up once a context and kept.
@@ -305,7 +333,6 @@ pub fn here<T: Typed>() -> Result<T> {
 
 /// `here` by the kernel's name alone (an untyped kernel: for its occupancy, not a launch).
 pub fn here_named(name: &'static str) -> Result<Kernel> {
-    static FOUND: std::sync::OnceLock<Found> = std::sync::OnceLock::new();
     let ctx = current_ctx()?;
     let found = FOUND.get_or_init(Default::default);
     if let Some(&f) = found.lock().unwrap_or_else(|e| e.into_inner()).get(&(ctx, name)) {
@@ -1224,6 +1251,15 @@ pub fn buf_check() -> Result<()> {
     say(
         current_ctx()? == ctx(&b) && mine.1 == seen.total as usize,
         "a Dev's free memory read while another context is current: its GPU's, the thread's context the same".to_string(),
+    );
+    // (a rate measured left its module and stream in the GPU's context: `fit` read the free memory before it measured, `run` and `serve` after, 39.1 and
+    // 39.0 GiB of an A100's in their plans)
+    let before = Dev::probe(0)?.free;
+    crate::costs::probe_rates(0)?;
+    let after = Dev::probe(0)?.free;
+    say(
+        after == before && current_ctx()? == ctx(&b),
+        format!("a rate measured on the GPU leaves its free memory as it was: {before} bytes free before, {after} after; the thread's context the same"),
     );
     a.make_current()?;
     // a side's stream, copied, outlives the side as a stream: an event records on it, and the next side of the context takes it; a hundred sides one after
