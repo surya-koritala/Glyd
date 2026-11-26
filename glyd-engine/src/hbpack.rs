@@ -5,11 +5,10 @@
 
 use crate::ffi::{err, Error, Result};
 use crate::nemotron::{ConfigNemotronH, NhKind};
-use crate::pack::plan_puts;
 use glyd_gpu::codebook::{cb_strides, pack_codebook_rows};
 use glyd_gpu::hbexport::HbExport;
 use glyd_gpu::safetensors::Checkpoint;
-use glyd_gpu::save::{self, Layout, Source};
+use glyd_gpu::save::{self, Source};
 use std::path::Path;
 use std::time::Instant;
 
@@ -17,24 +16,16 @@ fn io<T>(r: std::io::Result<T>) -> Result<T> {
     r.map_err(|e| Error(e.to_string()))
 }
 
-/// The save plan of the model `c` at the Hummingbird level: its matrices but the routed experts', each six-bit (the linear says so: `"layout": "i6"`), its small tensors copied as the checkpoint has them (`f32` says which the
-/// checkpoint holds as F32: cast to bf16, as the saver holds nothing else), and for each mixture-of-experts layer (the export's layer k is the model's k-th) its experts' two matrices from the export (`up` and `downT`)
-/// and the signs of its rotation.
-pub fn plan(c: &ConfigNemotronH, f32: &dyn Fn(&str) -> bool) -> String {
-    let dense: Vec<_> = c.packs().into_iter().filter(|p| !p.key.contains(".mixer.experts.")).collect();
-    let mut puts = plan_puts(&dense, &c.kept(), f32, &|_| Some(Layout::Int6));
-    for (l, &(_, k)) in c.schedule().iter().enumerate().filter(|(_, (kind, _))| *kind == NhKind::Moe) {
-        for e in 0..c.moe.experts {
-            for (name, matrix) in [("up_proj", "up"), ("down_proj", "downT")] {
-                puts.push(format!(
-                    "{{\"codebook\": \"{}layers.{l}.mixer.experts.{e}.{name}\", \"layer\": {k}, \"expert\": {e}, \"matrix\": \"{matrix}\"}}",
-                    c.prefix
-                ));
-            }
-        }
-        puts.push(format!("{{\"signs\": \"{}layers.{l}.mixer.glyd_rot_signs\", \"layer\": {k}}}", c.prefix));
-    }
-    format!("{{\"puts\": [{}]}}", puts.join(", "))
+/// The save plan of the model in `dir` at the Hummingbird level, from its description (src/pack.rs `hb_plan`): its matrices but the routed experts', each in the
+/// layout its family's row gives them there (six-bit), its small tensors copied as the checkpoint has them (F32 cast to bf16), and for each block of experts
+/// (the export's layer k is the model's k-th) its experts' two matrices from the export (`up` and `downT`) and the signs of its rotation.
+pub fn plan(dir: &Path) -> Result<String> {
+    let c = crate::runtime::config::ModelConfig::load(dir)?;
+    let form = c.family().and_then(|f| crate::support::row(f).saves).ok_or_else(|| Error(format!("{}: a family the packer does not save", dir.display())))?;
+    let ck = io(Checkpoint::open(dir))?;
+    let f32 = |n: &str| ck.get(n).is_some_and(|(_, t)| t.dtype == "F32");
+    let shape = |n: &str| ck.get(n).map(|(_, t)| t.shape.iter().map(|&x| x as usize).collect());
+    crate::pack::hb_plan(&c, &form, &f32, &shape)
 }
 
 /// The export held to the model: the shape of the experts' rows, their number, the layers (the export's k-th is the model's k-th mixture-of-experts layer, by its block).
@@ -79,10 +70,8 @@ pub fn run(model: &str, out: &Path, threads: usize, export: &Path) -> Result<()>
         eprintln!("{}: already packed, keeping its files", out.display());
         return Ok(());
     }
-    let ck = io(Checkpoint::open(&source.dir))?;
-    let f32 = |n: &str| ck.get(n).is_some_and(|(_, t)| t.dtype == "F32");
     let (twos, threes) = ex.bit_counts();
-    let s = io(save::save_hummingbird(&source, out, threads, 5 << 30, &plan(&c, &f32), export))?;
+    let s = io(save::save_hummingbird(&source, out, threads, 5 << 30, &plan(&source.dir)?, export))?;
     eprintln!(
         "glyd-v7 at the hummingbird level: {} packs checked ({} of them the export's, {twos} experts at 2 bits and {threes} at 3), {} tensors hashed, {:.2} GB of bf16 read, {} shards ({:.1} s)",
         s.checked,
@@ -175,9 +164,7 @@ pub(crate) mod tests {
         checkpoint(&src, MOETOY, &c);
         toy_export(&c, &export, 11, share).unwrap();
         let source = save::Source::find(src.to_str().unwrap()).unwrap();
-        let ck = Checkpoint::open(&source.dir).unwrap();
-        let f32 = |n: &str| ck.get(n).is_some_and(|(_, t)| t.dtype == "F32");
-        save::save_hummingbird(&source, &out, 2, shard_bytes, &plan(&c, &f32), &export).unwrap();
+        save::save_hummingbird(&source, &out, 2, shard_bytes, &plan(&source.dir).unwrap(), &export).unwrap();
         (out, c)
     }
 

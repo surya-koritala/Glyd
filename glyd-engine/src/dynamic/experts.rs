@@ -1920,7 +1920,6 @@ mod tests {
         use crate::moe_rows::{DownHost, RowsJoined};
         use crate::nemotron::tests::checkpoint;
         use crate::nemotron::ConfigNemotronH;
-        use crate::pack::nemotron_plan;
         use crate::runtime::describe::Source;
         use crate::weights::{Layout, Packed};
         use glyd_gpu::pack::{pack_int4, pack_int5, pack_int6, pack_rows, transpose, Tiered, INT4_TAG, INT5_TAG, INT6_TAG};
@@ -1995,8 +1994,8 @@ mod tests {
             }
             // saved as a glyd-v7 directory, read back: the same bytes
             let out = dir.join(level.name());
-            let have = &|n: &str| ck.get(n).is_some_and(|(_, t)| t.dtype == "F32");
-            save::save_planned(&Src::find(src.to_str().unwrap()).unwrap(), &out, 2, 5 << 30, level, &nemotron_plan(&c, level, have)).unwrap();
+            let plan = crate::pack::level_plan(&src, level, crate::runtime::config::ModelConfig::load(&src).ok().as_ref(), None).unwrap().unwrap();
+            save::save_planned(&Src::find(src.to_str().unwrap()).unwrap(), &out, 2, 5 << 30, level, &plan).unwrap();
             let saved = Checkpoint::open(&out).unwrap();
             assert!(saved.get(&format!("{p}.experts.7.down_proj.glyd_data")).is_some() && saved.get(&format!("{p}.experts.7.down_proj.weight")).is_none());
             let (su, sd, smats) = read(&saved);
@@ -2005,7 +2004,6 @@ mod tests {
                 assert!(a.data == b.data && a.b1 == b.b1 && (a.rows, a.cols) == (b.rows, b.cols), "{level:?}: a matrix of the saved directory");
             }
             // a directory saved before the row layouts (the second matrices in the level's block layout): read in it, as the stacked pack of the packer
-            let plan = nemotron_plan(&c, level, have);
             let old_plan = plan.replace(&format!(", \"layout\": \"{}\"", level.row_of().unwrap().name()), "");
             assert!(plan.contains(&format!("\"layout\": \"{}\"", level.row_of().unwrap().name())) && old_plan != plan);
             let before = dir.join(format!("{}-before", level.name()));
