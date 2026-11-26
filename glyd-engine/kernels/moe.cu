@@ -351,8 +351,9 @@ extern "C" __global__ void moe_wsum(const bf16* rows, const int* inv, const floa
 // store's `Costs`), the mode (0 copy, 1 cpu, 2 split, 3 auto), the window, the most promotions a call. The misses are copied as the store's `plan` copies them: the ones with the most pairs (the hot ones first
 // among equals), as many as make the longer of the copies and the host's pairs shortest (auto; split: the two the same), within the places the call's hits leave; a hot miss (the host computed it within
 // `window` calls before) that stays the host's is promoted (a place found for it, filled behind the call's products) while the copies so far leave the host's time room for its copy.
-// The request (mapped host memory the host's thread reads, src/devplan.rs `DevMail`): words 0 its number (written last), 1 the layer, 2 tokens, 3 pairs, 4 z's width, 5 choices a token; from word XP_HDR
-// the host's pairs (expert, token, weight's bits), `max_pairs` of room; after them the tokens' rows of z (bf16 [tokens, width]).
+// The request (mapped host memory the host's thread reads, src/devplan.rs `DevMail`): words 0 its number (written last), 1 the layer, 2 tokens, 3 pairs, 4 z's width, 5 choices a token, 6 whether the
+// host answers each pair's row (`rows`: the layer's sum adds each pair's own row, xp_rows) or each token's sum (xp_take); from word XP_HDR the host's pairs (expert, the pair's number in the call (its token
+// that over the choices a token), weight's bits), `max_pairs` of room; after them the tokens' rows of z (bf16 [tokens, width]).
 #define XP_MAX 1024
 #define XP_HDR 16
 #define XP_CMAX 2048
@@ -380,7 +381,7 @@ __device__ __forceinline__ int xp_place(int* sp, int* se, unsigned* sl, unsigned
 
 extern "C" __global__ void __launch_bounds__(256) xp_plan(const long long* ids, const float* wts, const bf16* z, int tokens, int k, int width, int* place_of, int* expert_of, unsigned* last,
                                                           unsigned* hostlast, unsigned char* refb, unsigned* meta, const unsigned* params, int experts, int slots, long long* way, int2* fills,
-                                                          int2* promos, unsigned* mail, unsigned* seq, int layer, int max_pairs) {
+                                                          int2* promos, unsigned* mail, unsigned* seq, int layer, int max_pairs, int rows) {
     __shared__ int sp[XP_MAX];
     __shared__ int se[XP_MAX];
     __shared__ unsigned sl[XP_MAX];
@@ -518,7 +519,7 @@ extern "C" __global__ void __launch_bounds__(256) xp_plan(const long long* ids, 
                 __trap();
             }
             m[XP_HDR + 3 * nh] = (unsigned)e;
-            m[XP_HDR + 3 * nh + 1] = (unsigned)(p / k);
+            m[XP_HDR + 3 * nh + 1] = (unsigned)p;
             m[XP_HDR + 3 * nh + 2] = __float_as_uint(wts[p]);
             nh++;
         }
@@ -578,6 +579,7 @@ extern "C" __global__ void __launch_bounds__(256) xp_plan(const long long* ids, 
             m[3] = (unsigned)nh;
             m[4] = (unsigned)width;
             m[5] = (unsigned)k;
+            m[6] = (unsigned)(rows != 0);
             __threadfence_system();
             const unsigned s = *seq + 1 ? *seq + 1 : 1;  // (0 is no request)
             *seq = s;
@@ -641,4 +643,18 @@ extern "C" __global__ void xp_take(const unsigned* meta, const float* sums, floa
     const long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
     out[i] = meta[11] ? ((volatile const float*)sums)[i] : 0.f;
+}
+
+// The host's rows of a call's pairs (the answer's after its 16 words: fp32 [its pairs, width], in the request's order) each into its pair's row of the workspace ws [pairs, width], where the second
+// product keeps the GPU's pairs' weighted rows, and each such pair named in `way` by its expert (ids'), so that the sum adds every pair's own row in the order of its choices, rounded once
+// (moe_sum_host with no host sums): the store's host path's join (src/offload.rs `send_host`), whichever computed a pair. Grid: (blocks a row, the call's pairs); a block past this call's host
+// pairs (meta[10]), or of a call that sent the host none (meta[11] 0), does nothing.
+extern "C" __global__ void __launch_bounds__(256) xp_rows(const unsigned* meta, const unsigned* mail, const float* sums, float* ws, long long* way, const long long* ids, int width) {
+    const int i = blockIdx.y;
+    if (!meta[11] || i >= (int)meta[10]) return;
+    const long long p = (long long)((volatile const unsigned*)mail)[XP_HDR + 3 * i + 1];
+    const volatile float* src = sums + (long long)i * width;
+    float* dst = ws + p * width;
+    for (int c = blockIdx.x * blockDim.x + threadIdx.x; c < width; c += gridDim.x * blockDim.x) dst[c] = src[c];
+    if (blockIdx.x == 0 && threadIdx.x == 0) way[p] = ids[p];
 }

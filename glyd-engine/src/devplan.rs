@@ -2,7 +2,8 @@
 //! one CUDA graph. The layer's table of places is on the GPU (`DevPlan`); kernels/moe.cu's `xp_plan` looks the call's choices up in it, gives each miss a place (a clock over the places, as Kimi-K3's
 //! dc_plan) where it has pairs enough (`Params`) and copies it there (`xp_fill`, the host tier read through its mapped address), and sends the other misses' pairs and the tokens' rows of z to the host's
 //! thread through mapped host memory (`DevMail`: a request, then its number, written last); the products run over the places meanwhile, a miss the host had a short while before is promoted (filled behind
-//! the products), `xp_wait` waits on the GPU for the answer's number and `xp_take` brings the host's sums to the experts' sum. The host's thread answers each request as it comes, with the layer's host half
+//! the products), `xp_wait` waits on the GPU for the answer's number, and `xp_rows` puts each of the host's pairs' rows beside the GPU's in the workspace for a sum of every pair's own row in the order of
+//! its choices (a block layout's, as the store's host path joins them), else `xp_take` brings the host's sums by token to the experts' sum. The host's thread answers each request as it comes, with the layer's host half
 //! (`HostFp4`: the FP4 experts of the host tier, the kernels of src/cpu_fp4.rs). docs/design/expert-cache-engines.md sets this design beside
 //! llama.cpp's and KTransformers' (SGLang's integration of it).
 //!
@@ -13,8 +14,8 @@
 //! - Enable: `Offload::device` set on the store before its layers are added (`HbCaching::offload`; a development build's `--device-plan`); `ExpertStore::device_on(layer)` says which layers took
 //!   it (a host half of FP4 experts, every expert in the computer's memory), and `MoeLayer::reads_host` is false for a layer that did.
 //! - A call: `MoeLayer::via_store` (the MoE kind's; `MoeLayer::cached` and Kimi-K3's block call it), which asks `ExpertStore::device_args(layer, tokens, pairs)` and, where it gives `DevArgs`
-//!   (1 to `DEV_ROWS` rows, a decode step's of rows to `DEV_STEP_ROWS`), queues on the engine's stream alone: xp_plan, xp_fill (the copies), `early`, the products (`products(1)`), xp_fill (the promotions), xp_wait, xp_take, the
-//!   experts' sum. It reads the router's choices and weights (the scratch's `ids`, int64 [t k], and `wts`, fp32 [t k]) and z (bf16 [t, hidden]) on the device; it writes the pairs' places
+//!   (1 to `DEV_ROWS` rows, a decode step's of rows to `DEV_STEP_ROWS`), queues on the engine's stream alone: xp_plan, xp_fill (the copies), `early`, the products (`products(1)`), xp_fill (the promotions), xp_wait, xp_rows
+//!   and the sum of every pair's row (`MoeLayer::rows_sum`; a layer whose sum adds each pair's own row) or xp_take and the experts' sum. It reads the router's choices and weights (the scratch's `ids`, int64 [t k], and `wts`, fp32 [t k]) and z (bf16 [t, hidden]) on the device; it writes the pairs' places
 //!   (`way`, int64 [t k]), the layer's table and counters (`DevArgs::place_of` .. `meta`), the request (mapped host memory) and the host's sums (the scratch's `cpu`, fp32 [t, hidden]), and y.
 //!   No host call waits inside it and none reads the routing: the host's thread (`DevMail`) answers the request as the GPU posts it.
 //! - Between calls: nothing. Calls of one store follow each other on one stream (its request and answer are one each: two streams' calls at once would share them), so a step may be queued
@@ -253,8 +254,8 @@ impl HostFp4 {
 }
 
 /// The host's side of the device path, one for a store: the request (mapped host memory: `XP_HDR` words, `XP_PAIRS` pairs of three, then z, bf16 [CPU_TOKENS, XP_WIDTH]), the answer (mapped: its number,
-/// whether it failed, then the sums, fp32 [CPU_TOKENS, XP_WIDTH] from byte 64), the last request's number (on the GPU), the plan's `Params` (on the GPU), and the host's thread with the layers it computes
-/// and the time it took for each since `host_ms` was last asked.
+/// whether it failed, then the pairs' rows, fp32 [XP_PAIRS, XP_WIDTH], or the sums by token, from byte 64), the last request's number (on the GPU), the plan's `Params` (on the GPU), and the host's thread
+/// with the layers it computes and the time it took for each since `host_ms` was last asked.
 pub struct DevMail {
     stop: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
@@ -269,7 +270,7 @@ pub struct DevMail {
 
 /// The bytes of a request and of an answer.
 pub const REQ_BYTES: usize = 4 * (XP_HDR + 3 * XP_PAIRS) + 2 * crate::offload::CPU_TOKENS * XP_WIDTH;
-pub const ANS_BYTES: usize = 64 + 4 * crate::offload::CPU_TOKENS * XP_WIDTH;
+pub const ANS_BYTES: usize = 64 + 4 * XP_PAIRS * XP_WIDTH;
 
 impl DevMail {
     /// The buffers and the host's thread (`threads` of the crew, `pin`ned as the store's host half is), with `params` to start.
@@ -365,11 +366,12 @@ fn serve(req: usize, ans: usize, stop: &AtomicBool, layers: &Mutex<Vec<Option<Ho
     }
 }
 
-/// A request's pairs computed: the layer and its tokens, pairs and z's width read from `req`, each pair's product by the layer's FP4 experts (src/cpu_fp4.rs `experts`, an expert's bytes read once for its
-/// pairs), a token's pairs added in the order of the request into `sums` (fp32 [tokens, width], zeros where a token has none), as the store's host path sends them up. The layer and the ms taken.
+/// A request's pairs computed: the layer and its tokens, pairs, z's width and choices a token read from `req`, each pair's product by the layer's FP4 experts (src/cpu_fp4.rs `experts`, an expert's
+/// bytes read once for its pairs), as the store's host path sends them up: each pair's weighted row in the request's order into `sums` (fp32 [pairs, width]) where the request asks for rows (word 6:
+/// kernels/moe.cu's xp_rows puts each beside the GPU's), else a token's pairs added in the order of the request (fp32 [tokens, width], zeros where a token has none). The layer and the ms taken.
 ///
 /// # Safety
-/// `req` holds a request (`REQ_BYTES`), `sums` room for `CPU_TOKENS` x `XP_WIDTH` values, and the layers' addresses their experts.
+/// `req` holds a request (`REQ_BYTES`), `sums` room for `XP_PAIRS` x `XP_WIDTH` values, and the layers' addresses their experts.
 pub unsafe fn answer(
     req: *const u32,
     sums: *mut f32,
@@ -381,9 +383,9 @@ pub unsafe fn answer(
 ) -> Result<(usize, f64)> {
     let t0 = Instant::now();
     let w = |i: usize| std::ptr::read_volatile(req.add(i)) as usize;
-    let (layer, tokens, n, width) = (w(1), w(2), w(3), w(4));
-    if tokens == 0 || tokens > crate::offload::CPU_TOKENS || n > XP_PAIRS || width > XP_WIDTH {
-        return err(format!("a request of {tokens} tokens, {n} pairs and rows of {width}"));
+    let (layer, tokens, n, width, k, rows) = (w(1), w(2), w(3), w(4), w(5), w(6) != 0);
+    if tokens == 0 || tokens > crate::offload::CPU_TOKENS || n > XP_PAIRS || width > XP_WIDTH || k == 0 {
+        return err(format!("a request of {tokens} tokens, {n} pairs of {k} a token and rows of {width}"));
     }
     let l = layers.get(layer).copied().flatten().ok_or_else(|| Error(format!("a request for layer {layer}, which the host has no experts of")))?;
     if width != l.latent {
@@ -391,16 +393,20 @@ pub unsafe fn answer(
     }
     let mut pairs = Vec::with_capacity(n);
     for i in 0..n {
-        let (e, token, wt) = (w(XP_HDR + 3 * i), w(XP_HDR + 3 * i + 1), f32::from_bits(w(XP_HDR + 3 * i + 2) as u32));
-        if e >= l.experts || token >= tokens {
-            return err(format!("pair {i} of layer {layer}: expert {e} of {}, token {token} of {tokens}", l.experts));
+        let (e, p, wt) = (w(XP_HDR + 3 * i), w(XP_HDR + 3 * i + 1), f32::from_bits(w(XP_HDR + 3 * i + 2) as u32));
+        if e >= l.experts || p >= tokens * k {
+            return err(format!("pair {i} of layer {layer}: expert {e} of {}, the call's pair {p} of {}", l.experts, tokens * k));
         }
-        pairs.push(crate::cpu_fp4::Fp4Pair { expert: l.expert(e), token, weight: wt });
+        pairs.push(crate::cpu_fp4::Fp4Pair { expert: l.expert(e), token: p / k, weight: wt });
     }
     let z = std::slice::from_raw_parts(req.add(XP_HDR + 3 * XP_PAIRS) as *const u16, tokens * width);
     out.clear();
     out.resize(n * width, 0.0);
     crate::cpu_fp4::experts(kernel, z, &pairs, out, l.act, threads, pin)?;
+    if rows {
+        std::slice::from_raw_parts_mut(sums, n * width).copy_from_slice(out);
+        return Ok((layer, t0.elapsed().as_secs_f64() * 1e3));
+    }
     let s = std::slice::from_raw_parts_mut(sums, tokens * width);
     s.fill(0.0);
     for (row, p) in out.chunks_exact(width).zip(&pairs) {
@@ -598,12 +604,13 @@ mod tests {
         glyd_gpu::pack::pack_fp4r_checked(&q, &e, rows, cols).expect("a pack")
     }
 
-    /// The request a GPU's plan writes (words; z after the pairs), for `pairs` (expert, token, weight) of `tokens` rows of z.
-    fn request(layer: usize, tokens: usize, width: usize, pairs: &[(usize, usize, f32)], z: &[u16]) -> Vec<u32> {
+    /// The request a GPU's plan writes (words; z after the pairs), for `pairs` (expert, the pair's number in the call, weight) of `tokens` rows of z, two choices a token, each pair's row asked
+    /// for where `rows`.
+    fn request(layer: usize, tokens: usize, width: usize, pairs: &[(usize, usize, f32)], z: &[u16], rows: bool) -> Vec<u32> {
         let mut r = vec![0u32; REQ_BYTES / 4];
-        r[..6].copy_from_slice(&[7, layer as u32, tokens as u32, pairs.len() as u32, width as u32, 2]);
-        for (i, &(e, t, w)) in pairs.iter().enumerate() {
-            r[XP_HDR + 3 * i..][..3].copy_from_slice(&[e as u32, t as u32, w.to_bits()]);
+        r[..7].copy_from_slice(&[7, layer as u32, tokens as u32, pairs.len() as u32, width as u32, 2, rows as u32]);
+        for (i, &(e, p, w)) in pairs.iter().enumerate() {
+            r[XP_HDR + 3 * i..][..3].copy_from_slice(&[e as u32, p as u32, w.to_bits()]);
         }
         for (i, c) in z.chunks(2).enumerate() {
             r[XP_HDR + 3 * XP_PAIRS + i] = c[0] as u32 | (c.get(1).copied().unwrap_or(0) as u32) << 16;
@@ -612,7 +619,8 @@ mod tests {
     }
 
     /// A request is answered as the store's host path computes and sends up a call's host pairs: each pair's output by the layer's FP4 experts (read where the host tier holds them, an expert's bytes
-    /// once for its pairs), a token's pairs added in the request's order, zeros for a token with none; a request the host cannot answer is refused.
+    /// once for its pairs; a pair's token its number in the call over the choices a token), each pair's row in the request's order where it asks for rows, else a token's pairs added in the
+    /// request's order, zeros for a token with none; a request the host cannot answer is refused.
     #[test]
     fn a_request_is_answered_with_the_hosts_sums() {
         let (experts, latent, inter, tokens) = (5usize, 128usize, 64usize, 4usize);
@@ -632,8 +640,9 @@ mod tests {
             experts,
         };
         let z: Vec<u16> = (0..tokens * latent).map(|i| (crate::cpu_fp4::bf16(((i * 13 % 29) as f32 - 14.0) / 64.0).to_bits() >> 16) as u16).collect();
-        let pairs = [(2usize, 0usize, 0.5f32), (4, 1, 0.25), (2, 2, 0.125), (0, 2, 1.0), (3, 0, 0.75)];
-        let req = request(1, tokens, latent, &pairs, &z);
+        // (expert, pair, weight), two choices a token: the tokens 0, 1, 2, 2, 0
+        let pairs = [(2usize, 0usize, 0.5f32), (4, 2, 0.25), (2, 4, 0.125), (0, 5, 1.0), (3, 1, 0.75)];
+        let req = request(1, tokens, latent, &pairs, &z, false);
         let layers = vec![None, Some(h)];
         let (mut sums, mut out) = (vec![f32::NAN; crate::offload::CPU_TOKENS * XP_WIDTH], Vec::new());
         let k = crate::cpu_experts::Kernel::Scalar;
@@ -642,18 +651,29 @@ mod tests {
         assert_eq!(layer, 1);
         // (the store's host path: the pairs through src/cpu_fp4.rs, then each into its token's row, in order)
         // SAFETY: as above.
-        let fp: Vec<_> = pairs.iter().map(|&(e, token, weight)| crate::cpu_fp4::Fp4Pair { expert: unsafe { h.expert(e) }, token, weight }).collect();
+        let fp: Vec<_> = pairs.iter().map(|&(e, p, weight)| crate::cpu_fp4::Fp4Pair { expert: unsafe { h.expert(e) }, token: p / 2, weight }).collect();
         let mut want_out = vec![0f32; pairs.len() * latent];
         crate::cpu_fp4::experts(k, &z, &fp, &mut want_out, act, 1, false).unwrap();
         let mut want = vec![0f32; tokens * latent];
         for (row, p) in want_out.chunks_exact(latent).zip(&pairs) {
-            want[p.1 * latent..][..latent].iter_mut().zip(row).for_each(|(a, b)| *a += *b);
+            want[p.1 / 2 * latent..][..latent].iter_mut().zip(row).for_each(|(a, b)| *a += *b);
         }
-        assert_eq!(sums[..tokens * latent].iter().map(|x| x.to_bits()).collect::<Vec<_>>(), want.iter().map(|x| x.to_bits()).collect::<Vec<_>>());
+        let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&sums[..tokens * latent]), bits(&want));
         assert!(sums[3 * latent..4 * latent].iter().all(|&x| x == 0.0), "a token with no pair: zeros");
-        // (refused: a layer the host has no experts of, rows of another width, an expert past the layer's)
-        for (layer, width, pairs) in [(0, latent, &pairs[..]), (1, latent / 2, &pairs[..]), (1, latent, &[(9usize, 0usize, 1.0f32)][..])] {
-            let r = request(layer, tokens, width, pairs, &z);
+        // (each pair's row asked for: the rows in the request's order, the store's host path's for a sum of every pair's own row)
+        let req = request(1, tokens, latent, &pairs, &z, true);
+        // SAFETY: as above.
+        unsafe { answer(req.as_ptr(), sums.as_mut_ptr(), &layers, k, 2, false, &mut out) }.unwrap();
+        assert_eq!(bits(&sums[..pairs.len() * latent]), bits(&want_out));
+        // (refused: a layer the host has no experts of, rows of another width, an expert past the layer's, a pair past the call's)
+        for (layer, width, pairs) in [
+            (0, latent, &pairs[..]),
+            (1, latent / 2, &pairs[..]),
+            (1, latent, &[(9usize, 0usize, 1.0f32)][..]),
+            (1, latent, &[(1usize, 2 * tokens, 1.0f32)][..]),
+        ] {
+            let r = request(layer, tokens, width, pairs, &z, false);
             // SAFETY: as above.
             assert!(unsafe { answer(r.as_ptr(), sums.as_mut_ptr(), &layers, k, 1, false, &mut out) }.is_err());
         }

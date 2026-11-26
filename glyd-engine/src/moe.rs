@@ -561,11 +561,12 @@ pub struct MoeKern {
     // the normed experts' router of fp32 weights and their normed weighted sum (kernels/muse.cu: transformers', Muse Spark's)
     router_f32: crate::kt::muse_router,
     norm_sum: crate::kt::muse_moe_sum,
-    // the expert cache planned on the GPU (src/devplan.rs): the plan, the copies into places, the wait for the host's pairs, their sums brought to the GPU
+    // the expert cache planned on the GPU (src/devplan.rs): the plan, the copies into places, the wait for the host's pairs, their sums brought to the GPU (or each pair's row beside the GPU's)
     xp_plan: crate::kt::xp_plan,
     xp_fill: crate::kt::xp_fill,
     xp_wait: crate::kt::xp_wait,
     xp_take: crate::kt::xp_take,
+    xp_rows: crate::kt::xp_rows,
 }
 
 /// The select kernel for `experts` (8, 16 or 32 registers a lane: 256, 512 or 1,024 experts).
@@ -605,6 +606,7 @@ impl MoeKern {
             xp_fill: dev.typed()?,
             xp_wait: dev.typed()?,
             xp_take: dev.typed()?,
+            xp_rows: dev.typed()?,
         })
     }
 
@@ -1071,13 +1073,19 @@ impl MoeLayer {
                 return err(format!("{t} tokens of {width} values: the scratch has no room for the host's sums and the pairs' places"));
             }
             let kk = &sc.k;
-            launch!(kk.xp_plan, [1, 1, 1], [256, 1, 1], s; call.ids, call.wts, z, t as i32, k as i32, width as i32, d.place_of, d.expert_of, d.last, d.hostlast, d.refb, d.meta, d.params, d.experts as i32, d.slots as i32, sc.way.ptr, d.fills, d.promos, d.mail, d.seq, d.layer as i32, d.max_pairs as i32)?;
+            launch!(kk.xp_plan, [1, 1, 1], [256, 1, 1], s; call.ids, call.wts, z, t as i32, k as i32, width as i32, d.place_of, d.expert_of, d.last, d.hostlast, d.refb, d.meta, d.params, d.experts as i32, d.slots as i32, sc.way.ptr, d.fills, d.promos, d.mail, d.seq, d.layer as i32, d.max_pairs as i32, (rows != 0) as i32)?;
             launch!(kk.xp_fill, [16, d.slots as u32, 1], [256, 1, 1], s; d.fills, d.meta, 8i32, d.reg, d.nreg as i32)?;
             early()?;
             crate::dev::memset_async(y, 0, t * width * 2, s)?;
             products(1)?;
             launch!(kk.xp_fill, [16, d.slots as u32, 1], [256, 1, 1], s; d.promos, d.meta, 9i32, d.reg, d.nreg as i32)?;
             launch!(kk.xp_wait, [1, 1, 1], [32, 1, 1], s; d.meta, d.ans, crate::devplan::XP_LIMIT)?;
+            if rows != 0 {
+                // (a block layout's sum of each pair's own row: the host's pairs' rows beside the GPU's in the workspace, each named by its expert in the way, then every pair's row added in the
+                // order of its choices, rounded once, as the store's host path joins them (src/offload.rs `send_host`))
+                launch!(kk.xp_rows, [(width as u32).div_ceil(256).min(16), call.pairs as u32, 1], [256, 1, 1], s; d.meta, d.mail, d.sums, rows, sc.way.ptr, call.ids, width as i32)?;
+                return self.rows_sum(sc, s, t, y, sc.way.ptr);
+            }
             let n = t * width;
             launch!(kk.xp_take, [(n as u32).div_ceil(256), 1, 1], [256, 1, 1], s; d.meta, d.sums, sc.cpu.ptr, n as i64)?;
             return self.experts_sum(sc, s, t, y, sc.way.ptr, sc.cpu.ptr);
