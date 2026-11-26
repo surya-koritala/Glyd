@@ -12,6 +12,7 @@ extern "C" {
     fn mmap(addr: *mut c_void, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut c_void;
     fn munmap(addr: *mut c_void, len: usize) -> i32;
     fn madvise(addr: *mut c_void, len: usize, advice: i32) -> i32;
+    fn mincore(addr: *mut c_void, len: usize, vec: *mut u8) -> i32;
 }
 
 // (macOS has no posix_fadvise)
@@ -123,6 +124,30 @@ impl Mapping {
 }
 
 impl Mapping {
+    /// Bytes of the `len` from `offset` that are in memory now (mincore: whole pages, the range's first page from its start), a check's measure of what reads
+    /// of a mapped table left in the page cache.
+    #[cfg(unix)]
+    pub fn resident(&self, offset: usize, len: usize) -> usize {
+        let page = 4096;
+        let start = offset / page * page;
+        let end = (offset + len).min(self.len);
+        if end <= start {
+            return 0;
+        }
+        let mut vec = vec![0u8; (end - start).div_ceil(page)];
+        // SAFETY: a range inside the mapping, page aligned at its start; the vector holds a byte for each of its pages.
+        if unsafe { mincore((self.ptr as *mut u8).add(start) as *mut c_void, end - start, vec.as_mut_ptr()) } != 0 {
+            return 0;
+        }
+        vec.iter().filter(|&&b| b & 1 == 1).count() * page
+    }
+
+    /// The same on Windows, which cannot say: 0.
+    #[cfg(windows)]
+    pub fn resident(&self, _offset: usize, _len: usize) -> usize {
+        0
+    }
+
     /// Tells the system that `len` bytes from `offset` are read at random (rows of a table): a page not in memory is read alone, without the read-ahead that would fill the page cache with its neighbours.
     pub fn random(&self, offset: usize, len: usize) {
         let page = 4096;

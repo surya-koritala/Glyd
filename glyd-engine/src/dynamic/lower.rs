@@ -205,6 +205,7 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
         v4: None,
         hc: (0.0, 0),
         logit_mult: 0.0,
+        host: Vec::new(),
     })
 }
 
@@ -373,6 +374,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         v4: None,
         hc: (0.0, 0),
         logit_mult: 0.0,
+        host: Vec::new(),
     })
 }
 
@@ -380,7 +382,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
 /// with `StreamsMix::Gated`, `Op::StreamsPost` gated) over the four streams the embedding row becomes (`Op::Streams`), the final mixer (`HeadMix::Gated`); Gated DeltaNet
 /// with the sigmoid gate (`Op::GatedNorm` `sigmoid`); the sparse attention (`Op::IdxMean`, `Op::IdxPick` of `IdxKeys::Pools` unweighted, `Op::Attn` `picked`); the experts
 /// (`Op::Moe`, block k the k-th layer's); the n-gram embedding before its layer (`Op::NgramRows`, its product, `Op::NgramAdd`). The matrices are the checkpoint's by
-/// name (the table of n-grams held as saved); the small tensors as saved (A_log fp32, as the delta rule reads it: `dynamic::qwen4x`). `max_pos`: the positions
+/// name (the table of n-grams held as saved, on the GPU or on the host as its kind says, the embedding too: `tables::held`); the small tensors as saved (A_log fp32, as the delta rule reads it: `dynamic::qwen4x`). `max_pos`: the positions
 /// each sequence's states hold (the indexer's keys and pools, the sparse attention's keys and values: a row a position).
 pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> {
     use crate::runtime::kinds::{Act, Collapse, IndexForm, Ngram, NormWeight, Residual, RopeScaling};
@@ -452,6 +454,8 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
             Ok((Op::StreamsPre { mix: StreamsMix::Gated { down, up, inject }, norm, round: crate::runtime::kinds::Rounding::Twice }, g.lowrank))
         };
     let post = Op::StreamsPost { round: crate::runtime::kinds::Rounding::Twice, gated: true };
+    // (each n-gram block's table and where its kind holds it: `tables::held`)
+    let mut tables = Vec::new();
     for (b, roles) in m.blocks.iter().zip(&d.blocks) {
         match &b.body {
             Body::Ngram(n) => {
@@ -468,6 +472,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                 }
                 pn(&b.norm_in, "the n-gram embedding's query")?;
                 let table = mat(&mut mats, rows_of(roles, "ngram")?)?;
+                tables.push((table, n.table));
                 let hash =
                     [name(&mut small, one(roles, "ngram_mult")?), name(&mut small, one(roles, "ngram_sizes")?), name(&mut small, one(roles, "ngram_offsets")?)];
                 let kv = mat(&mut mats, vec![one(roles, "key")?, one(roles, "value")?])?;
@@ -664,6 +669,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
         v4: None,
         hc: (0.0, 0),
         logit_mult: 0.0,
+        host: super::tables::held(m, embed, lm, &tables),
     })
 }
 
@@ -951,6 +957,7 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
         v4: None,
         hc: (0.0, 0),
         logit_mult: 0.0,
+        host: Vec::new(),
     })
 }
 
@@ -1115,6 +1122,7 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
         v4: None,
         hc: (0.0, 0),
         logit_mult: 0.0,
+        host: Vec::new(),
     })
 }
 
@@ -1275,6 +1283,7 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
         v4: None,
         hc: (0.0, 0),
         logit_mult: m.head.scale,
+        host: Vec::new(),
     })
 }
 
@@ -1665,6 +1674,7 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
         v4: None,
         hc: (0.0, 0),
         logit_mult: 0.0,
+        host: Vec::new(),
     })
 }
 

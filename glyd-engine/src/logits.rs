@@ -4510,11 +4510,13 @@ fn planned_context(case: &str) -> Result<(usize, u64, &'static str)> {
     got
 }
 
-/// `splitcheck CASE [--split CUT,..] [--devices GPU,..] [--level L | --layout mma12] [--tokens T] [--mode M]` (development): the case's random model on the
-/// dynamic route as `run` opens it (`split::open`: its family's loader, any family of that route; the expert cache's case, `qwen4x-cb`, its pack in an expert
-/// cache a stage, its misses as `--mode` says: `split_open`), once on one GPU and once with its layers cut into stages (by default before its middle layer,
+/// `splitcheck CASE [--split CUT,..] [--devices GPU,..] [--level L | --layout mma12] [--tokens T] [--mode M] [--tables]` (development): the case's random model
+/// on the dynamic route as `run` opens it (`split::open`: its family's loader, any family of that route; the expert cache's case, `qwen4x-cb`, its pack in an
+/// expert cache a stage, its misses as `--mode` says: `split_open`), once on one GPU and once with its layers cut into stages (by default before its middle layer,
 /// both stages on GPU 0 or on the two `--devices` names: the hand-over through host memory checked on a machine with one GPU). A prompt of 24 tokens and one
-/// past two chunks (150), each then T greedy steps fed the one-GPU run's tokens: every pass's logits the same bits both ways.
+/// past two chunks (150), each then T greedy steps fed the one-GPU run's tokens: every pass's logits the same bits both ways. `--tables`: the one-GPU run with its
+/// tables read by rows on the GPU (src/dynamic/tables.rs `force`), the other with them where its description holds them (on the host: refused where none
+/// is), on one GPU unless `--split` cuts it: the rows copied up are the GPU's rows.
 pub fn split_check(a: &crate::args::Args) -> Result<()> {
     let case = a.need(1, "CASE")?;
     let level = a.flag("level").unwrap_or("penguin");
@@ -4531,8 +4533,14 @@ pub fn split_check(a: &crate::args::Args) -> Result<()> {
         }
         let config = |k: &str| crate::dynamic::split::config_num(&text, k).unwrap_or(0);
         let (nl, vocab) = (config("num_hidden_layers"), config("vocab_size"));
-        // (no cut asked: before the middle layer, on the two GPUs `--devices` names, else both on GPU 0)
+        let tables = a.has("tables");
+        let hosted = crate::dynamic::tables::host_names(&text).len();
+        if tables && hosted == 0 {
+            return err(format!("{case}: its description holds no table on the host (--tables compares the two places)"));
+        }
+        // (no cut asked: before the middle layer, on the two GPUs `--devices` names, else both on GPU 0; with --tables, none)
         let (cuts, devices) = match crate::dynamic::split::split_args(a)? {
+            (c, d) if c.is_empty() && tables => (c, d[..1].to_vec()),
             (c, d) if c.is_empty() => (vec![nl / 2], if d.len() == 2 { d } else { vec![0, 0] }),
             x => x,
         };
@@ -4557,12 +4565,16 @@ pub fn split_check(a: &crate::args::Args) -> Result<()> {
             }
             Ok((rows, fed))
         };
-        let (one, fed) = run(&[], &devices[..1], None)?;
+        crate::dynamic::tables::force(tables.then_some(crate::runtime::kinds::TableAt::Gpu));
+        let one = run(&[], &devices[..1], None);
+        crate::dynamic::tables::force(None);
+        let (one, fed) = one?;
         let (staged, _) = run(&cuts, &devices, Some(&fed))?;
         let differ: Vec<usize> = (0..one.len()).filter(|&i| one[i].iter().map(|x| x.to_bits()).ne(staged[i].iter().map(|x| x.to_bits()))).collect();
         println!(
-            "{case} at {level}{}: {nl} layers, cut before {cuts:?} on GPUs {devices:?}; {} passes (prompts of {} and {}, {tokens} steps after each), {} with logits that differ from the one-GPU run's",
+            "{case} at {level}{}{}: {nl} layers, cut before {cuts:?} on GPUs {devices:?}; {} passes (prompts of {} and {}, {tokens} steps after each), {} with logits that differ from the one-GPU run's",
             if case == "qwen4x-cb" { format!(", the expert cache's misses by {}", mode.name()) } else { String::new() },
+            if tables { format!(", {hosted} tables read by rows on the GPU in the one-GPU run and on the host in the other") } else { String::new() },
             one.len(),
             prompts[0].len(),
             prompts[1].len(),

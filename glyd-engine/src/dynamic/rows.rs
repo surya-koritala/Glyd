@@ -1295,6 +1295,7 @@ impl Dyn {
             || !ModelStep::one_step(self)
             || !self.big.moe.iter().all(|b| !b.reads_host() && (b.resident().is_some() || b.graphable()))
             || self.big.ram.is_some()
+            || self.reads_host_tables()
             || !self.kern.has_step_ids()
             || self.tok.as_ref().is_some_and(|b| b.bytes < 4 * self.chunk)
         {

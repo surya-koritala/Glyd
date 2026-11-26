@@ -2,7 +2,8 @@
 //! table from its token and the two before it in its sequence (the hash on the GPU, the sequence's last tokens a state), into In; then the product of In by the key
 //! and value matrices stacked (an `Op::Linear` into Gu); then `NgramAdd`, the per-stream gate of the value, its norm, the dilated convolution (its inputs a state)
 //! and the sum into the streams S. The kernels are kernels/qwen4x.cu's (`qx_ngram_rows`, `qx_ple_gate`, `qx_ple_conv`): four streams, bigrams and trigrams, a
-//! convolution of 4 taps 3 apart. The table is held on the GPU as saved (a model whose table does not fit is not loaded here: src/dynamic/qwen4x.rs).
+//! convolution of 4 taps 3 apart. The table is held on the GPU as saved, or on the host where its kind says (`kinds::TableAt`: the pass's rows gathered by the
+//! host and copied in, src/dynamic/tables.rs).
 
 use super::{Dyn, Part, Slot};
 use crate::ffi::{Error, Result};
@@ -53,7 +54,6 @@ impl Dyn {
         let k = self.kqx.as_ref().ok_or_else(|| Error("an n-gram embedding in a model loaded without its kernels".into()))?;
         let tok = self.tok.as_ref().ok_or_else(|| Error("an n-gram embedding without the tokens' buffer".into()))?;
         let e = p.slot(Slot::In) + self.rows_before(p.d.width(Slot::In));
-        let crate::kern35::Mat::Dense(table, ..) = &p.mats[x.table] else { return Err(Error("the n-gram table is not held as saved".into())) };
         if (x.order, x.map, x.segments) != (3, None, true) {
             return Err(Error(format!(
                 "an n-gram block of order {} (a token map: {}; segments: {}): the kernel takes Condor's trigrams alone yet",
@@ -62,8 +62,15 @@ impl Dyn {
                 x.segments
             )));
         }
+        let (s, t) = (self.dev.stream, tok.ptr + self.rows_before(2));
+        // (a table on the host: the rows staged with the pass's tokens copied in, src/dynamic/tables.rs; the same rows the GPU's hash reads)
+        if std::ptr::eq(p, &self.big) && self.ngram_rows_host(x, e, n)? {
+            k.ngram_hist(s, t, self.state(x.hist), n)?;
+            return self.mark("n-gram embedding: rows");
+        }
+        let crate::kern35::Mat::Dense(table, ..) = &p.mats[x.table] else { return Err(Error("the n-gram table is not held as saved".into())) };
         let hash = x.hash.map(|i| p.small[i].ptr);
-        k.ngram_rows(self.dev.stream, tok.ptr + self.rows_before(2), self.state(x.hist), hash, table.ptr, e, n, 2 * x.per, x.per, x.row, x.eos)?;
+        k.ngram_rows(s, t, self.state(x.hist), hash, table.ptr, e, n, 2 * x.per, x.per, x.row, x.eos)?;
         self.mark("n-gram embedding: rows")
     }
 

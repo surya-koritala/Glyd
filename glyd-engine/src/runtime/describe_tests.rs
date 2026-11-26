@@ -1140,6 +1140,7 @@ fn v41_config() -> serde_json::Value {
         dilation: 1,
         norm: super::kinds::Norm::rms(1e-6),
         form: super::kinds::NgramForm::Engram,
+        table: Default::default(),
     };
     let rows: Vec<u64> = (0..2).map(|i| super::reference::ngram::tables(&super::kinds::Ngram { index: i, ..n }).0.iter().sum()).collect();
     let mut c: serde_json::Value = serde_json::from_str(

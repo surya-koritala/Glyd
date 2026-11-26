@@ -1610,9 +1610,11 @@ fn dynamic_level_words(layout: Layout) -> &'static str {
 fn dynamic_line(name: &str, family: &str, p: &LoadPlan) -> String {
     let sp = p.spread.as_ref().expect("the dynamic route's plan spreads the model");
     let level = p.level;
+    // (the tables its description reads on the host: src/dynamic/tables.rs)
+    let tables = if sp.tables > 0 { format!(", {} of tables read by rows from the checkpoint's files", gib(sp.tables)) } else { String::new() };
     if sp.host_bytes > 0 && level == "hummingbird" {
         return format!(
-            "{name} ({family}): about {} on {} GPUs at the hummingbird level, {} of experts in the computer's memory and {} on the disk",
+            "{name} ({family}): about {} on {} GPUs at the hummingbird level, {} of experts in the computer's memory and {} on the disk{tables}",
             gib(p.weights_on_gpu()),
             sp.devices.len(),
             gib(p.ram_bytes()),
@@ -1621,14 +1623,18 @@ fn dynamic_line(name: &str, family: &str, p: &LoadPlan) -> String {
     }
     if sp.host_bytes > 0 {
         return format!(
-            "{name} ({family}): about {} on {} GPUs at the penguin level, {} of experts in the computer's memory",
+            "{name} ({family}): about {} on {} GPUs at the penguin level, {} of experts in the computer's memory{tables}",
             gib(p.weights_on_gpu()),
             sp.devices.len(),
             gib(sp.host_bytes)
         );
     }
     let n = sp.devices.len();
-    format!("{name} ({family}): about {} on {} at the {level} level", gib(p.weights_on_gpu()), if n == 1 { "one GPU".to_string() } else { format!("{n} GPUs") })
+    format!(
+        "{name} ({family}): about {} on {} at the {level} level{tables}",
+        gib(p.weights_on_gpu()),
+        if n == 1 { "one GPU".to_string() } else { format!("{n} GPUs") }
+    )
 }
 
 fn check_dynamic(a: &Args, model: &str, family: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<String> {

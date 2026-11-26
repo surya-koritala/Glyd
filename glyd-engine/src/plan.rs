@@ -1622,6 +1622,9 @@ pub struct Spread {
     /// The last layers whose dense matrices are in the computer's memory (src/dense_ram.rs: one stage, P2d's rung after the experts), and their bytes there.
     pub dense: usize,
     pub dense_bytes: u64,
+    /// The tables read by rows its description holds on the host (src/dynamic/tables.rs: the embedding's, the n-gram tables'): the checkpoint's files mapped,
+    /// the rows a pass reads in the page cache; no GPU holds them.
+    pub tables: u64,
 }
 
 /// The one plan: what `fit` prints before anything is downloaded and what `run`, `serve` and `preflight` load. Every field is bytes
@@ -1698,10 +1701,17 @@ impl LoadPlan {
             "kv_bytes": self.kv, "kv_format": self.kv_format(), "work_bytes": self.work, "draft_bytes": self.draft,
             "reserve_bytes": self.reserve, "gpu_total_bytes": self.gpu_total(),
             "experts": experts,
-            "spread": self.spread.as_ref().map(|s| serde_json::json!({
-                "cuts": s.cuts, "devices": s.devices, "across": s.across, "coded": s.coded, "twelve": s.twelve,
-                "places": s.places, "experts_per_layer": s.experts_per_layer, "host_bytes": s.host_bytes, "host_per_stage": s.host_per_stage,
-            })),
+            "spread": self.spread.as_ref().map(|s| {
+                let mut v = serde_json::json!({
+                    "cuts": s.cuts, "devices": s.devices, "across": s.across, "coded": s.coded, "twelve": s.twelve,
+                    "places": s.places, "experts_per_layer": s.experts_per_layer, "host_bytes": s.host_bytes, "host_per_stage": s.host_per_stage,
+                });
+                // (the tables read by rows on the host, where a description holds any there: the other plans read as they did before the field)
+                if s.tables > 0 {
+                    v["tables_bytes"] = s.tables.into();
+                }
+                v
+            }),
         })
         .to_string()
     }
@@ -1757,6 +1767,9 @@ impl LoadPlan {
             }
             if sp.dense > 0 {
                 s += &format!(", the last {} layers' dense matrices ({}) in the computer's memory", sp.dense, gb(sp.dense_bytes));
+            }
+            if sp.tables > 0 {
+                s += &format!(", its tables read by rows ({}) from the checkpoint's files", gb(sp.tables));
             }
             if sp.coded {
                 s += ", FP8 matrices coded";
@@ -4489,6 +4502,9 @@ pub mod sizing {
         reach: &dyn Fn(&[i32]) -> bool,
     ) -> Done<LoadPlan> {
         let (family, route) = (row.name, row.route);
+        // (the tables its description reads on the host take none of the GPUs' memory: their bytes are the computer's, the checkpoint's files mapped)
+        let (table, tables) = crate::dynamic::tables::off_gpu(table, text);
+        let table = &table;
         let nl = crate::dynamic::split::config_num(text, "num_hidden_layers").unwrap_or(0);
         let room: Vec<(i32, u64)> = devs.iter().map(|t| (t.ordinal, crate::plan::dynamic_room_of(t.free))).collect();
         let hbm = hbm_of(devs);
@@ -4646,7 +4662,7 @@ pub mod sizing {
             context: ctx,
             users: 1,
             chunk: 256,
-            weights: total + host_bytes + dense_ram.1,
+            weights: total + host_bytes + dense_ram.1 + tables,
             bf16: 0,
             kv: 0,
             kv12: false,
@@ -4669,6 +4685,7 @@ pub mod sizing {
                 gpu_bytes: total,
                 dense: dense_ram.0,
                 dense_bytes: dense_ram.1,
+                tables,
             }),
         })
     }
@@ -6219,15 +6236,33 @@ mod tests {
         assert!(planned_ok >= 3, "{planned_ok}");
     }
 
-    /// Qwen3.8-Flash-Next at penguin is cut over the GPUs as the route cuts any family's layers: a model of the release's shapes whose layers two GPUs hold
-    /// between them (its table of n-grams cut to one shard of the release's 128) is planned on two H200s in two stages, each inside its GPU's room, and
-    /// `--split` asking that cut is that plan; one H100 refuses it with the memory it needs. The release itself is refused even on eight H100s: its table of n-grams is
-    /// one layer's, 90 GiB of it, more than any of them holds (the table read from the disk is not on the executor yet).
+    /// Qwen3.8-Flash-Next at penguin is cut over the GPUs as the route cuts any family's layers, its tables read by rows on the host as its description holds
+    /// them (src/dynamic/tables.rs: the n-gram tables and the embedding, none of the GPUs' bytes): a model of the release's shapes whose layers two GPUs hold
+    /// between them (its table of n-grams cut to one shard of the release's 128) is planned on two H200s in two stages, each inside its GPU's room without the
+    /// tables, and `--split` asking that cut is that plan; one H100 refuses it with the memory it needs. The release itself, from its files' headers: its 95 GiB of
+    /// n-gram tables and its embedding are the computer's (they were one layer's on a GPU, more than any holds), so eight H100s hold the rest of it; an RTX 4080
+    /// SUPER and an L4 refuse it for the GPU memory its experts need at penguin (every one on the GPU: the family's packs are `qwenserve`'s), the tables not in it.
     #[test]
     fn the_newest_qwen_family_is_cut_over_the_gpus_at_penguin() {
         let text = fixture("qwen4x_config.json");
         let nl = crate::dynamic::split::config_num(&text, "num_hidden_layers").unwrap();
         let released = json::parse(&fixture("qwen4x_tensors.json")).unwrap();
+        let host: std::collections::HashSet<String> = crate::dynamic::tables::host_names(&text).into_iter().collect();
+        let size = |v: &Value, keep: &dyn Fn(&str) -> bool| -> u64 {
+            let t = v.get("tensors").and_then(Value::as_object).unwrap();
+            t.iter()
+                .filter(|(n, _)| keep(n))
+                .map(|(_, x)| {
+                    let a = x.as_array().unwrap();
+                    a[1].as_u64s().unwrap().iter().product::<u64>() * if a[0].as_str() == Some("I64") { 8 } else { 2 }
+                })
+                .sum()
+        };
+        // (the release's tables on the host: its 128 shards of n-grams and its embedding, 95.4 and 1.2 GiB)
+        assert_eq!(host.len(), 129, "{host:?}");
+        assert!(host.contains("model.language_model.embed_tokens.weight") && !host.contains("lm_head.weight"));
+        let tables = size(&released, &|n| host.contains(n));
+        assert_eq!(tables, 128 * 2_500_012 * 160 * 2 + 248_320 * 2_560 * 2);
         let mut cut = released.clone();
         if let Value::Object(top) = &mut cut {
             for (k, v) in top.iter_mut().filter(|(k, _)| k == "tensors") {
@@ -6251,13 +6286,15 @@ mod tests {
         let p = f.plan.chosen.as_ref().and_then(|c| c.load.clone()).unwrap_or_else(|| panic!("{:?}", f.refusal));
         let sp = p.spread.as_ref().unwrap();
         assert_eq!((p.family, p.level, sp.devices.as_slice(), sp.cuts.len()), ("Qwen3.8-Flash-Next", "penguin", &[0, 1][..], 1));
+        assert_eq!(sp.tables, size(&cut, &|n| host.contains(n)), "the cut model's tables, the computer's");
         let bf16 = if sp.twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
-        let (per, base) = crate::dynamic::split::layer_bytes_where(&dir, nl, crate::dynamic::split::CODED_PCT, bf16, &|_| true).unwrap();
+        let (per, base) = crate::dynamic::split::layer_bytes_where(&dir, nl, crate::dynamic::split::CODED_PCT, bf16, &|n| !host.contains(n)).unwrap();
         let c = sp.cuts[0];
         for (k, held) in [per[..c].iter().sum::<u64>() + base / 2, per[c..].iter().sum::<u64>() + base - base / 2].into_iter().enumerate() {
             assert!(held <= crate::plan::dynamic_room_of(m.devices[k].free), "stage {k} holds {held}");
         }
-        assert!(p.gpu_total() <= p.free);
+        assert_eq!(per.iter().sum::<u64>() + base, p.weights_on_gpu(), "the stages hold the model but its tables");
+        assert!(p.gpu_total() <= p.free && p.weights == p.weights_on_gpu() + sp.tables);
         // (the cut asked for is the one loaded: the same plan)
         let asked = fit(two.to_str().unwrap(), &["--split", &c.to_string(), "--devices", "0,1"]);
         assert_eq!(asked.plan.chosen.and_then(|x| x.load), Some(p.clone()));
@@ -6265,8 +6302,19 @@ mod tests {
         assert!(r.what.contains("needs about") && r.what.contains("at penguin"), "{r:?}");
         let rel = model_dir("qx-release", "Qwen3.8-Flash-Next", &text);
         header_only_checkpoint(&rel, &json::to_compact(&released));
-        let r = planned(&args(&["fit", &format!("{}:penguin", rel.to_str().unwrap()), "--machine", "8xh100"])).unwrap().refusal.unwrap();
-        assert!(r.what.contains("needs about") && r.what.contains("the 8 GPUs here"), "{r:?}");
+        let release = |machine: &str| planned(&args(&["fit", &format!("{}:penguin", rel.to_str().unwrap()), "--machine", machine])).unwrap();
+        let f = release("8xh100");
+        let p = f.plan.chosen.as_ref().and_then(|c| c.load.clone()).unwrap_or_else(|| panic!("{:?}", f.refusal));
+        let sp = p.spread.as_ref().unwrap();
+        assert!(sp.tables == tables && sp.devices.len() > 1 && p.gpu_total() <= p.free, "{p:?}");
+        assert!(p.weights_on_gpu() + tables <= size(&released, &|_| true), "the tables are not among the GPUs' bytes");
+        let rest = (size(&released, &|_| true) - tables) as f64 / (1u64 << 30) as f64;
+        for machine in ["rtx4080s", "l4"] {
+            let r = release(machine).refusal.unwrap_or_else(|| panic!("{machine}: planned"));
+            let need = r.what.split("needs about ").nth(1).and_then(|w| w.split(" GiB").next()).and_then(|g| g.parse::<f64>().ok()).unwrap();
+            // (the GPU memory it asks is the release's but its tables, 238.7 GiB of bf16 (its experts' 229.7 GiB), packed: not the 335.3 GiB of the files)
+            assert!(r.what.contains("of GPU memory at penguin") && need > 0.7 * rest && need < rest + 0.1, "{machine}: {r:?}");
+        }
         let _ = (std::fs::remove_dir_all(dir.parent().unwrap()), std::fs::remove_dir_all(rel.parent().unwrap()));
     }
 
@@ -7038,6 +7086,7 @@ mod tests {
             gpu_bytes: base.weights,
             dense,
             dense_bytes,
+            tables: 0,
         };
         let without = go("swift", base.context, vec![("swift", Ok(Some(LoadPlan { spread: Some(spread(0, 0)), ..base.clone() })))]);
         assert_eq!(without.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), vec![StepKind::ExpertsInRam]);

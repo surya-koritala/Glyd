@@ -251,7 +251,7 @@ pub fn step(c: &Comp, p: &Params, st: &mut CompState, x: &[f32], pos: u32) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::kinds::{Block, Body, Embed, Head, Mixer, ModelDesc, Residual, RopeScaling, RopeStyle};
+    use crate::runtime::kinds::{Block, Body, Embed, Head, Mixer, ModelDesc, Residual, RopeScaling, RopeStyle, TableAt};
     use crate::runtime::reference::{model::RefModel, testing::fill, RefLayer, SeqState};
 
     const D: usize = 16;
@@ -383,7 +383,7 @@ mod tests {
         let desc = ModelDesc {
             hidden: D,
             vocab: 32,
-            embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None },
+            embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
             blocks: layers.iter().map(|l| l.block.clone()).collect(),
             final_norm: Norm::rms(1e-6),
             head: Head {

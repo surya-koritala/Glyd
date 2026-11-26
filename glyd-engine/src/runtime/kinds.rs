@@ -583,7 +583,7 @@ pub enum Ffn {
 /// hidden, dim], `value` [hidden, dim], `norm_key` and `norm_conv` [streams hidden] (their kind `norm`, a stream at a time), `conv`
 /// [streams hidden, conv]; and the hash's own int64 tensors, what the parameters make: `ngram_mult` [order], `ngram_sizes`,
 /// `ngram_offsets` [(order - 1) heads]. A sequence's state: its last `order` - 1 tokens and the convolution's last (conv - 1) dilation
-/// inputs. `form` says where a family's differs (DeepSeek-V4.1's Engram: `NgramForm::Engram`).
+/// inputs. `form` says where a family's differs (DeepSeek-V4.1's Engram: `NgramForm::Engram`); `table` where the tables are held.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Ngram {
     pub order: usize,
@@ -599,6 +599,18 @@ pub struct Ngram {
     pub dilation: usize,
     pub norm: Norm,
     pub form: NgramForm,
+    pub table: TableAt,
+}
+
+/// Where an embedding kind's table, read by rows, is held (`Embed::table`, `Ngram::table`): on the GPU, or on the host: the checkpoint's files mapped, a
+/// row read alone where the system's page cache does not hold it (no read-ahead: a prompt's rows are at random), each pass's rows gathered by the host and
+/// copied up with it, nothing of the table on the GPU. Any description may hold a table there that no GPU holds beside its model (Qwen3.8-Flash-Next's
+/// n-gram tables, 95 GiB; its embedding with them). An embedding that is the head too stays on the GPU, which multiplies by it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TableAt {
+    #[default]
+    Gpu,
+    Host,
 }
 
 /// Where an n-gram embedding's hash and output differ, by mechanism.
@@ -614,8 +626,8 @@ pub enum NgramForm {
     Engram,
 }
 
-/// The derived form, with `form` said only where it is not `Segmented`: descriptions of that form read as they did before the field (the digests of
-/// tests/fixtures/descriptions.json are of this text).
+/// The derived form, with `form` said only where it is not `Segmented` and `table` only where it is not `Gpu`: descriptions of that form read as they did
+/// before the fields (the digests of tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for Ngram {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Ngram");
@@ -633,6 +645,9 @@ impl std::fmt::Debug for Ngram {
             .field("norm", &self.norm);
         if self.form != NgramForm::Segmented {
             s.field("form", &self.form);
+        }
+        if self.table != TableAt::Gpu {
+            s.field("table", &self.table);
         }
         s.finish()
     }
@@ -765,16 +780,21 @@ pub struct Embed {
     pub streams: usize,
     /// The per-layer inputs made beside the residual (Gemma 4's E2B, E4B).
     pub per_layer: Option<PerLayerIn>,
+    /// Where its table is held (`TableAt`).
+    pub table: TableAt,
 }
 
-/// The derived form, with `per_layer` said only where it is set: the other descriptions read as they did before the field (the digests of
-/// tests/fixtures/descriptions.json are of this text).
+/// The derived form, with `per_layer` said only where it is set and `table` only where it is not `Gpu`: the other descriptions read as they did before the
+/// fields (the digests of tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for Embed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Embed");
         s.field("scale", &self.scale).field("norm", &self.norm).field("streams", &self.streams);
         if let Some(p) = &self.per_layer {
             s.field("per_layer", p);
+        }
+        if self.table != TableAt::Gpu {
+            s.field("table", &self.table);
         }
         s.finish()
     }
