@@ -198,9 +198,10 @@ impl ConfigV4 {
             experts: u("n_routed_experts")?,
             top_k: u("num_experts_per_tok")?,
             inter: u("moe_intermediate_size")?,
-            hash_layers: u_or("num_hash_layers", 0)?,
-            route_scale: f_or("routed_scaling_factor", 1.0)? as f32,
-            swiglu_limit: f_or("swiglu_limit", 0.0)? as f32,
+            // (a key the config leaves out: transformers' DeepseekV4Config default, as the description takes it (runtime/describe.rs))
+            hash_layers: u_or("num_hash_layers", 3)?,
+            route_scale: f_or("routed_scaling_factor", 1.5)? as f32,
+            swiglu_limit: f_or("swiglu_limit", 10.0)? as f32,
             hc_mult: u("hc_mult")?,
             hc_iters: u_or("hc_sinkhorn_iters", 20)?,
             hc_eps: f_or("hc_eps", 1e-6)? as f32,

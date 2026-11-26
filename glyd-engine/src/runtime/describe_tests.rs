@@ -368,6 +368,130 @@ fn glm_heads_round_the_logits_once() {
     }
 }
 
+/// GLM's form flags: the rotary in interleaved pairs (`rope_interleave`, `indexer_rope_interleave`), the pools' keys gated (`index_kpool_compress`) and the
+/// open pool's tokens attended to (`index_kpool_always_select_tail`) are the only forms described; a config that says another is refused, the key and the
+/// value the engine runs named, where the flag changes what is computed. Where it does not (GLM-5.3-Flash has no rotary; GLM-5.3 keys a token each), the
+/// config describes as with the flag true.
+#[test]
+fn glm_form_flags_of_another_form_are_refused_in_words() {
+    let (dsa, flash) = (fixture("glm_moe_dsa_config.json"), fixture("glm5_next_config.json"));
+    let refused = |cfg: &serde_json::Value, key: &str| {
+        let e = describe(cfg).err().unwrap_or_else(|| panic!("{key} = false described")).msg;
+        assert!(e.contains(&format!("{key} = false")) && e.contains(&format!("the engine runs {key} = true")), "{key}: {e}");
+    };
+    for key in ["rope_interleave", "indexer_rope_interleave"] {
+        let mut c = dsa.clone();
+        c[key] = false.into();
+        refused(&c, key);
+        let mut c = flash.clone();
+        c["text_config"][key] = false.into();
+        assert_eq!(describe(&c).unwrap().desc, describe(&flash).unwrap().desc, "{key}: GLM-5.3-Flash turns nothing");
+    }
+    for key in ["index_kpool_compress", "index_kpool_always_select_tail"] {
+        let mut c = flash.clone();
+        c["text_config"][key] = false.into();
+        refused(&c, key);
+        let mut c = dsa.clone();
+        c[key] = false.into();
+        assert_eq!(describe(&c).unwrap().desc, describe(&dsa).unwrap().desc, "{key}: GLM-5.3 pools nothing");
+    }
+}
+
+/// Keys a GLM config leaves out take transformers' defaults, in the description and in GLM-5.3-Flash's own reader alike (`glm::ConfigGlm`): the pools of
+/// 16 (Glm5NextTextConfig's `index_kpool`), the forget gate's lower bound by `glm::gate_bound` (-5 where absent; null and no safe gate: no bound, which the
+/// reader refuses), the first three layers dense where neither `mlp_layer_types` nor `first_k_dense_replace` is given. The releases set every one.
+#[test]
+fn glm_keys_left_out_take_transformers_defaults() {
+    use super::kinds::{Body, Decay, Ffn, Mixer};
+    let flash = fixture("glm5_next_config.json");
+    let indexer_block = |cfg: &serde_json::Value| {
+        describe(cfg)
+            .unwrap()
+            .desc
+            .blocks
+            .iter()
+            .find_map(|b| if let Body::Mixer(Mixer::Mla(m)) = &b.body { m.indexer.as_ref().map(|x| x.block) } else { None })
+    };
+    let reader = |cfg: &serde_json::Value| crate::glm::ConfigGlm::parse(&cfg.to_string(), "c", None);
+    let mut c = flash.clone();
+    c["text_config"].as_object_mut().unwrap().remove("index_kpool");
+    assert_eq!((indexer_block(&flash), indexer_block(&c), reader(&c).unwrap().indexer.kpool), (Some(4), Some(16), 16));
+    // (the gate's bound: the description's decay and the reader's bound, or its refusal, for each way a config can say it)
+    let decay = |cfg: &serde_json::Value| {
+        describe(cfg).unwrap().desc.blocks.iter().find_map(|b| if let Body::Mixer(Mixer::Linear(l)) = &b.body { Some(l.decay) } else { None }).unwrap()
+    };
+    let block = |f: &dyn Fn(&mut serde_json::Map<String, serde_json::Value>)| {
+        let mut c = flash.clone();
+        f(c["text_config"]["linear_attn_config"].as_object_mut().unwrap());
+        c
+    };
+    let flat = |v: Option<serde_json::Value>| {
+        let mut c = flash.clone();
+        let t = c["text_config"].as_object_mut().unwrap();
+        t.remove("linear_attn_config");
+        // (the block's other numbers as transformers' flat keys)
+        for (k, n) in [("linear_num_heads", 64), ("linear_head_dim", 128), ("linear_conv_kernel_dim", 4)] {
+            t.insert(k.into(), n.into());
+        }
+        if let Some(v) = v {
+            t.insert("linear_lower_bound".into(), v);
+        }
+        c
+    };
+    for (what, cfg, want) in [
+        ("the release's -5", flash.clone(), Some(-5.0)),
+        (
+            "the block without the key",
+            block(&|o| {
+                o.remove("gate_lower_bound");
+            }),
+            Some(-5.0),
+        ),
+        (
+            "the block's key null, its safe gate on",
+            block(&|o| {
+                o.insert("gate_lower_bound".into(), serde_json::Value::Null);
+            }),
+            Some(-5.0),
+        ),
+        (
+            "the block's -3",
+            block(&|o| {
+                o.insert("gate_lower_bound".into(), (-3.0).into());
+            }),
+            Some(-3.0),
+        ),
+        (
+            "the block's key null, its safe gate off",
+            block(&|o| {
+                o.insert("gate_lower_bound".into(), serde_json::Value::Null);
+                o.insert("safe_gate".into(), false.into());
+            }),
+            None,
+        ),
+        ("no block, no flat key", flat(None), Some(-5.0)),
+        ("no block, the flat key -2", flat(Some((-2.0).into())), Some(-2.0)),
+        ("no block, the flat key null", flat(Some(serde_json::Value::Null)), None),
+    ] {
+        match want {
+            Some(b) => {
+                assert_eq!(decay(&cfg), Decay::Bounded(b), "{what}");
+                assert_eq!(reader(&cfg).unwrap_or_else(|e| panic!("{what}: {}", e.msg)).kda.bound, b, "{what}");
+            }
+            None => {
+                assert_eq!(decay(&cfg), Decay::Softplus, "{what}");
+                assert!(reader(&cfg).unwrap_err().msg.contains("without its lower bound"), "{what}");
+            }
+        }
+    }
+    // (the feed-forward's schedule with neither key: three dense layers, then experts)
+    let mut c = fixture("glm_moe_dsa_config.json");
+    c.as_object_mut().unwrap().retain(|k, _| k != "mlp_layer_types" && k != "first_k_dense_replace");
+    let dense: Vec<bool> =
+        describe(&c).unwrap().desc.blocks.iter().filter_map(|b| if let Body::Ffn(f) = &b.body { Some(matches!(f, Ffn::Mlp(_))) } else { None }).collect();
+    assert_eq!(dense, (0..78).map(|l| l < 3).collect::<Vec<bool>>());
+}
+
 #[test]
 fn deepseek_v4_model() {
     model("dsv4_model", MODEL_TOL);
@@ -395,6 +519,51 @@ fn deepseek_v4_compression_matters() {
     let every_entry = RefModel::load(&keep_all, &src).unwrap().forward(&toks, 0).unwrap().concat();
     assert!(super::reference::testing::rel(&window_only, &want) > 1e-3);
     assert!(super::reference::testing::rel(&every_entry, &want) > 1e-4);
+}
+
+/// Keys a DeepSeek-V4 config leaves out take transformers' DeepseekV4Config defaults (the routed weights times 1.5, the SwiGLU clamp at 10, the first three
+/// layers routed by the token): Flash-0731's config, which sets each to that value, describes the same model without them, and the release's hand-written
+/// reader (`deepseek_v4::ConfigV4`) reads the same numbers; transformers' flavour with no `mlp_layer_types` routes its first three layers by the token.
+#[test]
+fn deepseek_v4_keys_left_out_take_transformers_defaults() {
+    use super::kinds::{Body, Ffn};
+    let h = fixture("headers/DeepSeek-V4-Flash-0731.json");
+    let v4: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    let mut bare = v4.clone();
+    for k in ["routed_scaling_factor", "swiglu_limit", "num_hash_layers"] {
+        assert!(bare.as_object_mut().unwrap().remove(k).is_some(), "{k}");
+    }
+    assert_eq!(describe(&bare).unwrap().desc, describe(&v4).unwrap().desc);
+    let read = |c: &serde_json::Value| crate::deepseek_v4::ConfigV4::parse(&c.to_string(), "c", None).unwrap_or_else(|e| panic!("{}", e.msg));
+    let (a, b) = (read(&v4), read(&bare));
+    assert_eq!((b.hash_layers, b.route_scale, b.swiglu_limit), (a.hash_layers, a.route_scale, a.swiglu_limit));
+    let mut c = Fixture::load("dsv4_model").j["config"].clone();
+    c.as_object_mut().unwrap().remove("mlp_layer_types");
+    let hash: Vec<bool> =
+        describe(&c).unwrap().desc.blocks.iter().filter_map(|b| if let Body::Ffn(Ffn::Moe(m)) = &b.body { Some(m.router.hash) } else { None }).collect();
+    assert_eq!(hash, [true, true, true]);
+}
+
+/// A DeepSeek-V4 layer that compresses by 1 is refused in words, in either flavour (no release has one: vLLM and TensorRT-LLM read a 1 as the window alone,
+/// transformers maps 0, 4 and 128 only, and this builder's ratio of 1 is DeepSeek-V4.1's compressor of a token); the ratios listed past the model's layers
+/// (the draft layers', which take the window alone) are not read.
+#[test]
+fn deepseek_v4_a_ratio_of_one_is_refused() {
+    let h = fixture("headers/DeepSeek-V4-Flash-0731.json");
+    let v4: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    let mut c = v4.clone();
+    c["compress_ratios"][2] = 1.into();
+    let e = describe(&c).unwrap_err().msg;
+    assert!(e.contains("layer 2 compresses by 1, which no DeepSeek-V4 layer does"), "{e}");
+    let mut c = v4.clone();
+    for i in 43..46 {
+        c["compress_ratios"][i] = 1.into();
+    }
+    assert_eq!(describe(&c).unwrap().desc, describe(&v4).unwrap().desc);
+    let mut c = Fixture::load("dsv4_model").j["config"].clone();
+    c["compress_rates"]["heavily_compressed_attention"] = 1.into();
+    let e = describe(&c).unwrap_err().msg;
+    assert!(e.contains("layer 2 compresses by 1"), "{e}");
 }
 
 /// A checkpoint's tensor names from a fixture that holds a layer's experts as a run.
@@ -1589,6 +1758,27 @@ fn deepseek_v41_describes_with_csa2_lagged_mhc_and_engram() {
     refused(&|t| t["kv_source_layer_ids"] = serde_json::json!([2, 6]), "layer 4");
     refused(&|t| t["candidate_source_layer_id"] = 2.into(), "the candidate source 2");
     refused(&|t| t["engram_num_embeddings"][1] = 7.into(), "engram_num_embeddings");
+}
+
+/// DeepSeek-V4.1's sharing layouts past the release's are refused when described, in words that name the layer and its source, never computed: a source
+/// of another ratio, and an index source that keeps no entries of its own whose kv source is no index source (its indexer keys would be read from a layer
+/// that keeps none; before, such a layout described and failed when run).
+#[test]
+fn deepseek_v41_share_layouts_not_described_are_refused_in_words() {
+    let with = |kv: serde_json::Value, idx: serde_json::Value| {
+        let mut c = v41_config();
+        c["text_config"]["kv_source_layer_ids"] = kv;
+        c["text_config"]["index_source_layer_ids"] = idx;
+        describe(&c).map(|_| ()).map_err(|e| e.msg)
+    };
+    use serde_json::json;
+    assert_eq!(with(json!([2, 4, 6]), json!([2, 4, 5, 6])), Ok(()));
+    let e = with(json!([2, 4, 6]), json!([2, 4, 5, 7])).unwrap_err();
+    assert!(e.contains("index source 7 takes its entries from kv source 6, which is not in index_source_layer_ids"), "{e}");
+    let e = with(json!([2, 6]), json!([2, 4, 5, 6])).unwrap_err();
+    assert!(e.contains("layer 4 compresses by 1, and its source in kv_source_layer_ids, layer 2 (the most recent at or below it), by 2"), "{e}");
+    let e = with(json!([3, 4, 6]), json!([2, 4, 5, 6])).unwrap_err();
+    assert!(e.contains("layer 2 compresses by 2, and kv_source_layer_ids [3, 4, 6] has no layer at or below it"), "{e}");
 }
 
 /// DeepSeek-V4.1-Flash's configuration as published (tests/fixtures/deepseek_v41_config.json: the release's config.json, DeepSeek-V4.1-Flash-1017's, which

@@ -143,7 +143,7 @@ struct LinearAttn {
     num_heads: Option<usize>,
     head_dim: Option<usize>,
     short_conv_kernel_size: Option<usize>,
-    gate_lower_bound: Option<f64>,
+    gate_lower_bound: crate::runtime::config::Given<f64>,
     safe_gate: Option<bool>,
 }
 
@@ -164,6 +164,23 @@ struct Fp8Keys {
     quant_method: Option<String>,
     fmt: Option<String>,
     weight_block_size: Option<Vec<u64>>,
+}
+
+/// The forget gate's lower bound as transformers' Glm5NextTextConfig takes it: `linear_lower_bound` (-5 where absent, none where null), in its place the
+/// release's `linear_attn_config.gate_lower_bound` (`block`: that key, and the block's `safe_gate`) where the block has the key, and -5 again where the
+/// block's safe_gate (true where absent) finds none. None: no bound, the gate's softplus decay (Glm5NextTextForgetGate). The config's and the description's.
+pub fn gate_bound(flat: &crate::runtime::config::Given<f64>, block: Option<(&crate::runtime::config::Given<f64>, Option<bool>)>) -> Option<f64> {
+    use crate::runtime::config::Given;
+    let given = |g: &Given<f64>, missing: Option<f64>| match g {
+        Given::Missing => missing,
+        Given::Null => None,
+        Given::Some(v) => Some(*v),
+    };
+    let flat = given(flat, Some(-5.0));
+    match block {
+        None => flat,
+        Some((b, safe)) => given(b, flat).or_else(|| safe.unwrap_or(true).then_some(-5.0)),
+    }
 }
 
 impl ConfigGlm {
@@ -267,13 +284,11 @@ impl ConfigGlm {
             }
             None => (0..layers).map(|i| i >= dense.unwrap_or(3)).collect(),
         };
-        // Kimi delta attention: linear_attn_config's numbers (transformers' flat keys where it has none); the forget gate's lower bound, the safe gate's -5 where it is null
+        // Kimi delta attention: linear_attn_config's numbers (transformers' flat keys where it has none); the forget gate's lower bound by transformers' rule
+        // (`gate_bound`; the description's the same), and a gate with none (its softplus decay) refused: the kernels bound it
         let ka = |v: Option<usize>, flat: Option<usize>, d: usize| v.or(flat).unwrap_or(d);
-        let bound = match attn.and_then(|a| a.gate_lower_bound) {
-            Some(b) => b,
-            None if attn.and_then(|a| a.safe_gate) == Some(false) => return refuse("a forget gate without its lower bound"),
-            None if attn.is_none() && matches!(k.linear_lower_bound, Given::Null) => return refuse("a forget gate without its lower bound"),
-            None => k.linear_lower_bound.value().unwrap_or(-5.0),
+        let Some(bound) = gate_bound(&k.linear_lower_bound, attn.map(|a| (&a.gate_lower_bound, a.safe_gate))) else {
+            return refuse("a forget gate without its lower bound (the softplus decay)");
         };
         let kda = KdaDims {
             heads: ka(attn.and_then(|a| a.num_heads), k.linear_num_heads, 64),
@@ -295,7 +310,8 @@ impl ConfigGlm {
             heads: need(k.index_n_heads, "index_n_heads")?,
             dim: need(s.index_head_dim, "index_head_dim")?,
             topk: need(k.index_topk, "index_topk")?,
-            kpool: need(k.index_kpool, "index_kpool")?,
+            // (transformers' Glm5NextTextConfig: 16 where the key is absent)
+            kpool: k.index_kpool.unwrap_or(16),
             tail: k.index_kpool_always_select_tail.unwrap_or(true),
         };
         if indexer.kpool == 0 || !indexer.topk.is_multiple_of(indexer.kpool) {
