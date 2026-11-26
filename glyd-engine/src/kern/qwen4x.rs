@@ -238,7 +238,8 @@ impl KernQx {
     }
 
     /// `ngram_rows` of a step's `rows` rows that decode, a token of a sequence each (`qx_ngram_rows_lead`): row r's token tok[r], its sequence's state at the address `sts`
-    /// holds at entry r ss (0: a padding row, whose rows of e are zeroed and which touches no state), moved on past the row.
+    /// holds at entry r ss (0: a padding row, whose rows of e are zeroed and which touches no state), moved on past the row. `table` 0: the table is the host's, whose
+    /// rows are in e already (src/dynamic/tables.rs); the states alone are moved on.
     ///
     /// # Safety
     /// As `ngram_rows`; `sts` holds `rows` entries `ss` apart, each 0 or a live state of the embedding's.

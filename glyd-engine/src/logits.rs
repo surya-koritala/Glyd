@@ -6374,11 +6374,23 @@ fn time_rows(e: &Dyn, rows: usize, v: usize) -> Result<(f64, f64)> {
     Ok((host_t * 1e3 / steps as f64, gpu_t * 1e3 / steps as f64))
 }
 
+/// Replies' tokens and their sample logits' bits (each reply's in turn, its length first) as one SHA-256, in hex.
+fn replies_digest(tokens: &[Vec<u32>], logits: &[Vec<u32>]) -> String {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    for v in tokens.iter().chain(logits) {
+        h.update((v.len() as u64).to_le_bytes());
+        v.iter().for_each(|x| h.update(x.to_le_bytes()));
+    }
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR [--places N [--mode M] [--device-plan]] | --ctx C] [--prompt-tokens P] [--stagger D] [--pack P [--precise]]` (gemma4, qwen35, muse, kimi, glm, qwen4x, qwen4x-s2): the case's random model on the
 /// description executor (or the model in DIR, with `--places` its experts in the expert cache, with `--pack` Condor's from its pack of codebook experts; with `--ctx` a context of C tokens; with `--prompt-tokens` prompts of P (k + 1) / N tokens), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
 /// the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts one a pass, decode steps of the rows that decode: 16 or fewer here, whose bits
 /// are each row's own pass's). With prompts run together the replies that differ are counted, not refused (a step of more than 16 rows is another kernel's; a random model's near ties turn on its last
-/// bits: `roundcheck` measures the logits). The round is one step of the rows that decode and the prompts' chunks unless GLYD_ENGINE_ONE_STEP=0, and some step must then have held both.
+/// bits: `roundcheck` measures the logits); their tokens and sample logits are printed as one digest, which runs held to the same bits compare (GLYD_TABLES=gpu against
+/// host). The round is one step of the rows that decode and the prompts' chunks unless GLYD_ENGINE_ONE_STEP=0, and some step must then have held both.
 /// Then the prompts at once twice more, with no graph at all (every pass eager) and with every graph on and every pass that is no whole graph's in pieces
 /// (src/dynamic/pieces.rs): the replies the same token for token and each sample's logit to the bit, and where pieces can run, some pass replayed them. With
 /// GLYD_ENGINE_OVERLAP=1, where steps are launched ahead, the prompts at once launched ahead and not: the same tokens and logits. With `--places` every run (each reference, alone,
@@ -6661,8 +6673,9 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         );
     }
     let together = ask(&mut s, &prompts, 0)?;
+    let together_logits = seen(&s);
     let same = together.iter().zip(&reference).filter(|(a, b)| a == b).count();
-    let same_logits = seen(&s).iter().zip(&alone_logits).filter(|(a, b)| a == b).count();
+    let same_logits = together_logits.iter().zip(&alone_logits).filter(|(a, b)| a == b).count();
     let together_rows: Vec<Seen> = together.iter().cloned().zip(seen_rows(&s)).collect();
     // (with a page budget too small for all of them at once (GLYD_ENGINE_PAGES), sequences give their blocks back and run again from their tokens, the generated ones as a prompt: the
     // replies are then counted, not required to be the same)
@@ -6810,6 +6823,9 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         }
     }
     println!("  at once against alone, logit for logit: {same_logits} of {} replies' every sample logit the same bits", prompts.len());
+    // (the replies at once and their sample logits as one digest, which two runs held to the same bits compare: the tables an embedding kind reads by rows on the GPU
+    // against on the host (GLYD_TABLES), whose rows are the same bits)
+    println!("  at once, the replies' tokens and sample logits: digest {}", replies_digest(&together, &together_logits));
     // (where the engine computes experts on the host (an expert cache whose mode gives the host pairs, `host_experts`): which of a call's misses the host computes, and which are
     // copied or promoted, turns on the call's pairs and the places' state, and the host sums a pair in another order than the GPU, so a row's last bits turn on the rows beside
     // it: at once is held to alone at the kind's bound, row for row; runs of the same calls are held to the bit)

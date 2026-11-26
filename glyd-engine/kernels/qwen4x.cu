@@ -399,7 +399,8 @@ extern "C" __global__ void qx_ngram_hist(const int* tok, int* hist, int n, int o
 
 // qx_ngram_rows and then qx_ngram_hist of a step's rows that decode, a token of a sequence each (block t a row): row t's token tok[t] and its sequence's state at sts[t ss] (a table of addresses:
 // src/dynamic/rows.rs `RowTabs`; 0: a padding row, whose rows of e are zeroed and which reads and writes no state). Each row's hashes, rows and state are those of qx_ngram_rows and qx_ngram_hist on
-// that sequence's one token: every thread reads the state before the first thread moves it on.
+// that sequence's one token: every thread reads the state before the first thread moves it on. A null table: the table is the host's, whose rows of these ids are in e already (copied in before,
+// src/dynamic/tables.rs); each row's state alone is moved on (a padding row's rows zeroed).
 extern "C" __global__ void qx_ngram_rows_lead(const int* tok, const unsigned long long* sts, int ss, const unsigned long long* mult, const unsigned long long* sizes, const unsigned long long* offsets,
                                               const bf16* table, bf16* e, int H, int per, int row, int eos, int order, const int* map, int segments) {
     const int t = blockIdx.x;
@@ -408,28 +409,30 @@ extern "C" __global__ void qx_ngram_rows_lead(const int* tok, const unsigned lon
         for (int i = threadIdx.x; i < H * row; i += blockDim.x) e[(size_t)t * H * row + i] = f2b(0.f);
         return;
     }
-    const int pad = map ? map[eos] : eos;
-    unsigned long long mixed[4];
-    bool cut = false;
-    unsigned long long m = 0;
-    for (int p = 0; p < order; p++) {
-        int v;
-        if (cut) v = eos;
-        else if (p == 0) v = map ? map[tok[t]] : tok[t];
-        else {
-            const int k = order - 1 - p;  // (hist[order - 2] is one back from the row)
-            v = hist[k] > 0 ? hist[k] - 1 : pad;
+    if (table) {
+        const int pad = map ? map[eos] : eos;
+        unsigned long long mixed[4];
+        bool cut = false;
+        unsigned long long m = 0;
+        for (int p = 0; p < order; p++) {
+            int v;
+            if (cut) v = eos;
+            else if (p == 0) v = map ? map[tok[t]] : tok[t];
+            else {
+                const int k = order - 1 - p;  // (hist[order - 2] is one back from the row)
+                v = hist[k] > 0 ? hist[k] - 1 : pad;
+            }
+            cut |= p > 0 && segments && v == eos;
+            m ^= (unsigned long long)(unsigned)v * mult[p];
+            if (p > 0) mixed[p] = m;
         }
-        cut |= p > 0 && segments && v == eos;
-        m ^= (unsigned long long)(unsigned)v * mult[p];
-        if (p > 0) mixed[p] = m;
+        for (int i = threadIdx.x; i < H * row; i += blockDim.x) {
+            const int h = i / row;
+            const unsigned long long id = mixed[h / per + 1] % sizes[h] + offsets[h];
+            e[(size_t)t * H * row + i] = table[id * row + i % row];
+        }
+        __syncthreads();
     }
-    for (int i = threadIdx.x; i < H * row; i += blockDim.x) {
-        const int h = i / row;
-        const unsigned long long id = mixed[h / per + 1] % sizes[h] + offsets[h];
-        e[(size_t)t * H * row + i] = table[id * row + i % row];
-    }
-    __syncthreads();
     if (threadIdx.x == 0) {
         const int k = order - 1;
         for (int i = 0; i + 1 < k; i++) hist[i] = hist[i + 1];

@@ -316,7 +316,8 @@ impl Dyn {
         Ok(())
     }
 
-    /// `Op::NgramRows` of a table on the host on n rows of one sequence: its staged rows (`stage_ngram`) copied into `e`; false where its table is the GPU's.
+    /// `Op::NgramRows` of a table on the host on n rows of one sequence, or on a step's first n rows that decode (`ngram_rows_lead`: outside a sequence's own
+    /// operation the rows from the pass's first): their staged rows (`stage_ngram`) copied into `e`; false where its table is the GPU's.
     pub(super) unsafe fn ngram_rows_host(&self, x: &NgramRows, e: u64, n: usize) -> Result<bool> {
         let Some(g) = self.hosted.as_ref().and_then(|h| h.ngram.iter().find(|g| g.op.table == x.table)) else { return Ok(false) };
         let rb = g.sizes.len() * x.row * 2;

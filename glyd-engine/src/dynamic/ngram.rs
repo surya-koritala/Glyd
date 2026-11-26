@@ -106,16 +106,22 @@ impl Dyn {
     }
 
     /// `Op::NgramRows` on the pass's first `rows` rows, each a decode row of its own sequence (`Dyn::lead`): one launch for all of them, each row's last tokens its own
-    /// sequence's state (`rows::RowTabs`), moved on past the row.
+    /// sequence's state (`rows::RowTabs`), moved on past the row. A table on the host: the rows staged with the pass's tokens (the lead's first, a row each) copied in, a
+    /// node of the step's graph where it is one, and the launch moves the states on alone (a graph's padding rows, whose staged rows are no sequence's, zeroed by it).
     pub(super) unsafe fn ngram_rows_lead(&self, p: &Part, x: &NgramRows, rows: usize) -> Result<()> {
         let k = self.kqx.as_ref().ok_or_else(|| Error("an n-gram embedding in a model loaded without its kernels".into()))?;
         let tok = self.tok.as_ref().ok_or_else(|| Error("an n-gram embedding without the tokens' buffer".into()))?;
-        let crate::kern35::Mat::Dense(table, ..) = &p.mats[x.table] else { return Err(Error("the n-gram table is not held as saved".into())) };
+        let e = p.slot(Slot::In);
+        let table = if std::ptr::eq(p, &self.big) && self.ngram_rows_host(x, e, rows)? {
+            0
+        } else {
+            let crate::kern35::Mat::Dense(table, ..) = &p.mats[x.table] else { return Err(Error("the n-gram table is not held as saved".into())) };
+            table.ptr
+        };
         let hash = x.hash.map(|i| p.small[i].ptr);
         let map = x.map.map_or(0, |m| p.small[m].ptr);
         let h = (x.order - 1) * x.per;
-        let e = p.slot(Slot::In);
-        k.ngram_lead(self.dev.stream, tok.ptr, self.lead_states(x.hist), hash, table.ptr, e, rows, h, x.per, x.row, x.eos, (x.order, map, x.segments))?;
+        k.ngram_lead(self.dev.stream, tok.ptr, self.lead_states(x.hist), hash, table, e, rows, h, x.per, x.row, x.eos, (x.order, map, x.segments))?;
         self.mark("n-gram embedding: rows")
     }
 
