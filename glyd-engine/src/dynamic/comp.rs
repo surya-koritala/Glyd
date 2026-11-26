@@ -45,6 +45,12 @@ impl Dyn {
                 } else {
                     launch!(k.lin32, [((2 * wd) as u32).div_ceil(8), nu.div_ceil(8), 1], [256, 1, 1], s; h, p.small[w].ptr, p.slot(Slot::Cp), n as i32, hid, (2 * wd) as i32)?;
                 }
+                // (a verify pass: the rows' products kept for `rewind`, which pools the kept ones again from the open windows as they were before the pass)
+                if self.verifying.get() && std::ptr::eq(p, &self.big) {
+                    let kept = self.verify.as_ref().and_then(|v| v.comp.get(state)).and_then(Option::as_ref);
+                    let kept = kept.ok_or_else(|| Error(format!("a compressor's state {state}: no room kept for a verify pass")))?;
+                    crate::dev::copy_d2d_async(kept.ptr, p.slot(Slot::Cp), n * 2 * wd * 4, s)?;
+                }
                 launch!(k.comp_pool, [(d as u32).div_ceil(128), 1, 1], [128, 1, 1], s; p.slot(Slot::Cp), p.small[ape].ptr, st0, st1, v.pooled.ptr, pos, n as i32, ratio as i32, d as i32, overlap as i32)?;
                 launch!(k.comp_out, [(n / ratio + 1) as u32, 1, 1], [128, 1, 1], s; v.pooled.ptr, p.small[norm].ptr, c, sn, pos, n as i32, cache, tab, ratio as i32, d as i32, indexer as i32, eps, v.dims.sim as i32, raw)?;
                 self.mark(if indexer { "indexer: compressor" } else { "attention: compressor" })
@@ -92,10 +98,19 @@ impl Dyn {
             }
             Op::CompAttn { ring, cache, ratio, picked, sink, rope: r, heads, hpg } => {
                 let (c, sn) = rope(r);
-                let (kc, cap, ktab, window) = (self.cache(ring).0, self.ring_cap[ring] as i32, self.table(ring), p.d.rings[ring].window as i32);
+                let (kc, cap, ktab, window) = (self.cache(ring).0, self.ring_cap[ring] as i32, self.table(ring), self.ring_of(p, ring).window as i32);
                 let (cache, ctab) = cache.map_or((0, 0), |x| (self.cache(x).0, self.table(x)));
                 let topk = v.dims.topk;
                 let scale = (512f32).powf(-0.5);
+                // (a block draft head's pass: every row's window to the pass's last row, whose keys the pass wrote first)
+                let last = if self.ahead.get() {
+                    if n > v.ra || (n - 1) + v.dims.window > v.lmax {
+                        return err(format!("a block of {n} rows that see each other, where the attention takes {} rows and {} keys", v.ra, v.lmax));
+                    }
+                    pos + ((n - 1) * 4) as u64
+                } else {
+                    0
+                };
                 for r0 in (0..n).step_by(v.ra) {
                     let rn = v.ra.min(n - r0) as u32;
                     let (pr, sel, cnt) = (
@@ -104,10 +119,10 @@ impl Dyn {
                         if picked { v.cnt.ptr + ((row0 + r0) * 4) as u64 } else { 0 },
                     );
                     let q = p.slot(Slot::Qo) + self.rows_before(heads * 512) + (r0 * heads * 512 * 2) as u64;
-                    launch!(k.attn_scores, [rn, (v.lmax as u32).div_ceil(32), (heads as u32).div_ceil(16)], [256, 1, 1], s; q, kc, cap, ktab, cache, ctab, sel, cnt, topk as i32, pr, v.sc.ptr, heads as i32, v.lmax as i32, window, ratio as i32, scale)?;
-                    launch!(k.attn_soft, [rn, (heads as u32).div_ceil(8), 1], [256, 1, 1], s; v.sc.ptr, p.small[sink].ptr, v.den.ptr, pr, cnt, heads as i32, v.lmax as i32, window, ratio as i32)?;
+                    launch!(k.attn_scores, [rn, (v.lmax as u32).div_ceil(32), (heads as u32).div_ceil(16)], [256, 1, 1], s; q, kc, cap, ktab, cache, ctab, sel, cnt, topk as i32, pr, v.sc.ptr, heads as i32, v.lmax as i32, window, ratio as i32, scale, last)?;
+                    launch!(k.attn_soft, [rn, (heads as u32).div_ceil(8), 1], [256, 1, 1], s; v.sc.ptr, p.small[sink].ptr, v.den.ptr, pr, cnt, heads as i32, v.lmax as i32, window, ratio as i32, last)?;
                     // (kernels/dsv4.cu V4_AQ: 8 warps a head, a head a block)
-                    launch!(k.attn_out, [rn, heads as u32, 1], [256, 1, 1], s; v.sc.ptr, v.den.ptr, kc, cap, ktab, cache, ctab, sel, cnt, topk as i32, pr, c, sn, p.slot(Slot::Att), rows as i32, heads as i32, hpg as i32, v.lmax as i32, window, ratio as i32, (row0 + r0) as i32)?;
+                    launch!(k.attn_out, [rn, heads as u32, 1], [256, 1, 1], s; v.sc.ptr, v.den.ptr, kc, cap, ktab, cache, ctab, sel, cnt, topk as i32, pr, c, sn, p.slot(Slot::Att), rows as i32, heads as i32, hpg as i32, v.lmax as i32, window, ratio as i32, (row0 + r0) as i32, last)?;
                 }
                 self.mark("attention: attention")
             }

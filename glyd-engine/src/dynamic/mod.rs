@@ -171,11 +171,18 @@ pub enum Op {
         scale: f32,
     },
     /// A draft head's input (`kinds::MtpHead`, `lower::draft_head`): the next token's embedding row (the big model's X, as `embed` left it) normed by
-    /// `norm_embed`, the model's state the row continues (Hid) normed by `norm_hidden`, then the head's front (`MtpFront`).
+    /// `norm_embed`, the model's state the row continues (Hid) normed by `norm_hidden`, then the head's front (`MtpFront`). A block's front (`MtpFront::Block`)
+    /// takes the embedding rows alone; its two norms are its context's (`ModelDesc::context`: main_x's norm).
     MtpIn {
         norm_embed: usize,
         norm_hidden: usize,
         front: MtpFront,
+    },
+    /// A block draft head's tap of a layer's input (`kinds::DSpark::targets`): the mean of the row's streams S (X where the model has none), rounded, into its place
+    /// `at` of `of` in Blk (the taps of a row side by side), which the head's context reads.
+    Tap {
+        at: usize,
+        of: usize,
     },
     /// The RMS norm kind (`Norm` with `NormKind::Rms`): y = bf16(rmsnorm(x) w) with its `eps`, the weight `w` where `weight` says (`NormW`; a weightless norm's is ones).
     RmsNorm {
@@ -488,6 +495,11 @@ pub enum MtpFront {
     /// `MtpInput::Joined`: the embedding and the model's final normed hidden state (Hid) each normed (plain weight, rounded as `NormW::Rounded`) into
     /// the halves of In's row [2 hidden], the embedding's first; eh_proj (`eh`) of it into X, the head's residual.
     Joined { eh: usize },
+    /// `kinds::DSpark`'s block of `block` tokens (the last token the model chose, then `noise` tokens), drafted in one pass whose rows see each other: each
+    /// token's embedding row as the head's streams (`Op::Streams`'s copies), its keys of the context the head's own (`ModelDesc::context`, of the model's taps
+    /// `Op::Tap`); after the head's LM head, each draft's logits plus the Markov head's (`markov`: matrices [vocab, rank], the embedding of the token before it
+    /// looked up in the first, its product by the second), one draft after another.
+    Block { block: usize, noise: u32, markov: (usize, usize), rank: usize },
 }
 
 /// A mixture of experts (the part's block `block`): the router reads H, the experts and the shared expert `x` (H; the release's FP8-rounded H, Hq; a latent
@@ -664,10 +676,13 @@ pub struct ModelDesc {
     pub logit_mult: f32,
     /// The tables read by rows held on the host (src/dynamic/tables.rs: the embedding's matrix, an n-gram block's table), none of them on the GPU.
     pub host: Vec<usize>,
+    /// A block draft head's context (`MtpFront::Block`, DSpark's): its operations on the model's taps of the rows it keeps (Hid: each row's `Op::Tap`s), its
+    /// main projection and norm, then each layer's key of it into the layer's window (`Op::CompKv`), at the rows' positions; empty for any other description.
+    pub context: Vec<Op>,
 }
 
-/// The derived form, with `host` said only where a table is there: the other descriptions read as they did before the field (a lowering's recorded digest
-/// is of this text).
+/// The derived form, with `host` and `context` said only where they hold something: the other descriptions read as they did before the fields (a lowering's
+/// recorded digest is of this text).
 impl std::fmt::Debug for ModelDesc {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("ModelDesc");
@@ -698,6 +713,9 @@ impl std::fmt::Debug for ModelDesc {
             .field("logit_mult", &self.logit_mult);
         if !self.host.is_empty() {
             s.field("host", &self.host);
+        }
+        if !self.context.is_empty() {
+            s.field("context", &self.context);
         }
         s.finish()
     }
@@ -771,6 +789,7 @@ impl Op {
             Op::Linear { w, .. } | Op::LinearAt { w, .. } | Op::GateUpSilu { w, .. } | Op::OGroupLora { w, in_f8: false, .. } => vec![w],
             Op::MtpIn { front: MtpFront::Streams { embed, hidden }, .. } => vec![embed, hidden],
             Op::MtpIn { front: MtpFront::Joined { eh }, .. } => vec![eh],
+            Op::MtpIn { front: MtpFront::Block { markov: (e, h), .. }, .. } => vec![e, h],
             Op::StreamsPre { mix: StreamsMix::Gated { down, up, inject }, .. } => vec![down, up, inject],
             Op::StreamsHead { mix: HeadMix::Gated { down, up }, .. } => vec![down, up],
             Op::NgramRows(x) => vec![x.table],
@@ -812,7 +831,7 @@ impl ModelDesc {
     /// The matrices a stage multiplies by (its layers', the embedding where it is the first, the head and post projection where the last).
     fn wanted(&self, st: &Stage) -> Vec<bool> {
         let mut w = vec![false; self.mats.len().max(self.lm + 1).max(self.embed + 1)];
-        for op in self.layers[st.layers.0..st.layers.1].iter().flatten().chain(st.first.then_some(&self.first)) {
+        for op in self.layers[st.layers.0..st.layers.1].iter().flatten().chain(st.first.then_some(&self.first)).chain(&self.context) {
             for k in op.mats() {
                 w[k] = true;
             }
@@ -1397,6 +1416,10 @@ struct HeadState {
     last: std::cell::Cell<Option<HeadLast>>,
     /// Where Some: each head pass's rows as a check reads them (`Dyn::trace_head`).
     trace: std::cell::RefCell<Option<Vec<head::HeadPass>>>,
+    /// A block head's context (`MtpFront::Block`): the positions, from 0, whose keys its layers' windows hold (`Dyn::head_context`).
+    ctx: std::cell::Cell<usize>,
+    /// Where Some: a block head's passes as a check reads them (`Dyn::trace_block`).
+    blocks: std::cell::RefCell<Option<Vec<head::BlockTrace>>>,
 }
 
 /// A draft head's last pass (`HeadState::last`).
@@ -1532,6 +1555,10 @@ pub struct Dyn {
     /// A verify pass's room (made at the first one), whether a pass is one, and the last chunk's (start, rows) where it was one (`rewind` goes back in it).
     verify: Option<Verify>,
     verifying: std::cell::Cell<bool>,
+    /// A block draft head's pass (`MtpFront::Block`, DSpark's): its rows see each other's keys (the compressed attention's window to the pass's last row).
+    ahead: std::cell::Cell<bool>,
+    /// Where Some: a draft head's experts of each of its blocks of experts in the pass being made (its layer, [rows, k]), as `trace_block` keeps them.
+    head_routes: std::cell::RefCell<Option<Vec<(usize, Vec<i64>)>>>,
     pending: Option<(usize, usize)>,
     /// A verify pass's decode attention parts (VERIFY_ROWS rows; made at the first one): scratch, shared by the sequences.
     vpart: Option<Buf>,
@@ -1625,18 +1652,28 @@ struct Seq {
 /// rule's (its convolution and recurrence run again over the kept rows). None: the description verifies.
 fn unverifiable_op(d: &ModelDesc) -> Option<&Op> {
     std::iter::once(&d.first).chain(d.layers.iter().flatten()).find(|op| match op {
-        // (`rewind` goes back in their states: the delta rule's and its convolution's, the n-gram embedding's last tokens and convolution)
-        Op::GdnConv { .. } | Op::GdnDelta { .. } | Op::NgramRows(_) | Op::NgramAdd(_) => false,
+        // (`rewind` goes back in their states: the delta rule's and its convolution's, the n-gram embedding's last tokens and convolution, the compressors' open
+        // windows (their rows pooled again over the kept rows' products))
+        Op::GdnConv { .. } | Op::GdnDelta { .. } | Op::NgramRows(_) | Op::NgramAdd(_) | Op::Compress { .. } => false,
         // (an attention, the sparse one's indexer and its pick: each row's keys and values written first, then its own queries over the positions it sees; what the
         // rows past the kept ones wrote is written again before a row reads it)
         Op::Attn(_) | Op::IdxMean { .. } => false,
-        Op::IdxPick(x) => x.weighted || !matches!(x.keys, IdxKeys::Pools(_)),
+        // (the compressed attention: each row's window key, and each entry a row's window completes (the attention's, the indexer's, its keys of a shared
+        // one's), written before any row reads it, a row's picks and attention over the positions and entries it sees alone; an entry the rows past the kept
+        // ones completed is written again, by the row that completes it, before a row reads it)
+        Op::CompKv { .. } | Op::IdxKeys { .. } | Op::CompAttn { .. } => false,
+        Op::IdxPick(x) => match x.keys {
+            IdxKeys::Pools(_) => x.weighted,
+            IdxKeys::Entries(_) => x.score != IdxScore::Release,
+            IdxKeys::Ring(_) => true,
+        },
         // (the latent attention: each row's latents and indexer key written first, then its own query over the positions it sees, its picks its own or the ones
         // the layer before made for it in the pass; a verified draft's rows cut their tokens as a step's (`mla::FEW`))
         Op::Mla(_) => false,
-        // (the plain experts (the router's input, its own scale, no norm of the experts' outputs, no weighed activations, no hash): each row as a step where
-        // every expert of the block is on the GPU, which `verify_rows` asks of the blocks themselves; the other forms run other kernels, not checked so)
-        Op::Moe(m) => m.expert_norm.is_some() || m.weigh_act || m.hash.is_some() || m.fp8 || m.x != Slot::H || m.logit_scale != 1.0,
+        // (the plain experts (the router's input, its own scale, no norm of the experts' outputs, no hash) and the weighed ones (each pair's weight in its
+        // activation, FP8 where the release's quantizations are simulated, hash routing by the token: the compressed attention's model's): each row as a step
+        // where every expert of the block is on the GPU, which `verify_rows` asks of the blocks themselves; the normed experts run other kernels, not checked so)
+        Op::Moe(m) => m.expert_norm.is_some() || (!m.weigh_act && (m.hash.is_some() || m.fp8 || m.x != Slot::H || m.logit_scale != 1.0)),
         Op::MoeEarly { .. } => true,
         _ => !rows::row_wise(op) || !op.rings().is_empty() || !op.states().is_empty(),
     })
@@ -1708,11 +1745,13 @@ fn decodes_by(m: usize, twelve: bool, from: Option<usize>, route: &dyn Fn(i64) -
 
 /// What `Dyn::rewind` needs of a verify pass: the per-sequence states as they were before it (`states`' sizes), each linear-attention layer's b, a rows then its
 /// convolution's input rows (Mix's whole rows) of the pass (VERIFY_ROWS rows of each; None for another kind of layer or another stage's); each n-gram layer's
-/// convolution's input rows (its gated value normed, `ngram`); the pass's tokens (the n-gram embedding's last tokens are of them).
+/// convolution's input rows (its gated value normed, `ngram`); each compressor's two products of the pass's rows (fp32 [rows, 2 W]: its pooling's input, Cp's;
+/// by its first state, `comp`); the pass's tokens (the n-gram embedding's last tokens are of them).
 struct Verify {
     snap: Vec<Buf>,
     keep: Vec<Option<Buf>>,
     ngram: Vec<Option<Buf>>,
+    comp: Vec<Option<Buf>>,
     tokens: Vec<u32>,
 }
 
@@ -1874,6 +1913,17 @@ impl Dyn {
     /// (`trace_row_routes`).
     fn trace_route(&self, p: &Part, l: usize, op: &Op, n: usize, input: Option<Vec<u16>>) -> Result<()> {
         let Op::Moe(MoeOp { block, .. }) = *op else { return Ok(()) };
+        // (a draft head's pass whose experts a check keeps: `head_routes`)
+        if !std::ptr::eq(p, &self.big) && self.head_routes.borrow().is_some() {
+            let (Some(k), Some(sc)) = (p.moe[block].top_k(), self.moe_sc.get()) else { return Ok(()) };
+            self.dev.sync()?;
+            let mut ids = vec![0i64; n * k];
+            sc.ids.read(0, &mut ids)?;
+            if let Some(t) = self.head_routes.borrow_mut().as_mut() {
+                t.push((l, ids));
+            }
+            return Ok(());
+        }
         if !std::ptr::eq(p, &self.big) || !self.routes_traced() {
             return Ok(());
         }
@@ -2105,6 +2155,41 @@ impl Dyn {
         Dyn::build(dev, big, None, ropes, layout, st, o)
     }
 
+    /// `from_parts` with the model's draft head (`head`: its description, `lower::draft_head`'s, and its tensors as the loader made them) drafting `k` tokens a
+    /// round, as `DraftSpec` gives one to the generic loader: the whole model on one GPU, the head's rings after the model's, its LM head and embedding the model's;
+    /// its logits a row of each draft of a block (`MtpFront::Block`), else one.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts_drafting(
+        dev: Dev,
+        d: ModelDesc,
+        l: Loaded,
+        ropes: Vec<(Buf, Buf)>,
+        layout: Layout,
+        st: Stage,
+        o: &Opts,
+        head: (ModelDesc, Loaded, usize),
+    ) -> Result<Dyn> {
+        let (mut hd, hl, k) = head;
+        let (ch, k) = (o.chunk.max(1), k.min(VERIFY_ROWS - 1));
+        if !(st.first && st.last) || !matches!(hd.first, Op::MtpIn { .. }) {
+            return err("a draft head of the model's own on the whole model on one GPU");
+        }
+        // (a block's drafts' logits, a row each, and the row the Markov head's product is made in)
+        let block = match hd.first {
+            Op::MtpIn { front: MtpFront::Block { block, .. }, .. } => block,
+            _ => 0,
+        };
+        if (k + 1).max(block) > ch {
+            return err(format!("{k} draft tokens a round, a block of {block}: the chunk ({ch}) must hold them and the last token"));
+        }
+        let big = Part::from_loaded(d, l, ch, k + 1)?;
+        head::fits(&big.d, &hd)?;
+        head::shift_rings(&mut hd, big.d.rings.len())?;
+        let p = Part::from_loaded(hd, hl, ch, if block > 0 { block + 1 } else { 1 })?;
+        let draft = Draft { p, k, pos: Buf::zeroed(8)?, head: Some(HeadState::default()) };
+        Dyn::build(dev, big, Some(draft), ropes, layout, st, o)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn build(dev: Dev, big: Part, draft: Option<Draft>, ropes: Vec<(Buf, Buf)>, layout: Layout, stage: Stage, o: &Opts) -> Result<Dyn> {
         let lib = Lib::find()?;
@@ -2150,7 +2235,10 @@ impl Dyn {
         // (a block that runs its own launches makes it the first time it runs: `NhHost::moe_scratch`)
         let moe_sc = std::cell::OnceCell::new();
         if let Some((layer, _)) = big.moe.first().and_then(|b| b.resident()) {
-            let _ = moe_sc.set(crate::moe::MoeScratch::new(&dev, &lib, &[layer], ch)?);
+            // (and a draft head's blocks, of its own experts' shapes)
+            let mut layers = vec![layer];
+            layers.extend(draft.iter().flat_map(|x| x.p.moe.iter()).filter_map(|b| b.resident()).map(|x| x.0));
+            let _ = moe_sc.set(crate::moe::MoeScratch::new(&dev, &lib, &layers, ch)?);
         }
         // the decoded-then-dense way, as Qwen3.5's engine chooses it: the library's dense product off Ada, our own on Ampere and Ada; made where a matrix takes it at a
         // chunk's rows (`decodes`: the most rows a product has; past its first row count a matrix keeps that way)
@@ -2184,12 +2272,20 @@ impl Dyn {
             }
         }
         if let Some(lm) = big.mats[d.lm].packed_opt() {
-            need = need.max(lib.linear_workspace(lm.pack.is_twelve(), lm.pack.rows, lm.pack.cols, rows_out as i64)?);
+            // (and a block draft head's rows, each a draft's)
+            let rows = draft.as_ref().map_or(rows_out, |x| rows_out.max(x.p.logits.bytes / (2 * x.p.d.vocab.max(1))));
+            need = need.max(lib.linear_workspace(lm.pack.is_twelve(), lm.pack.rows, lm.pack.cols, rows as i64)?);
         }
         // (the FP8 matrices' products: every row count a call takes, up to 64; a family's own list, and the matrices held as released, the draft's too)
         let held_f8 = |p: &Part| p.mats.iter().filter_map(|m| if let Mat::F8(f) = m { Some((f.n, f.k)) } else { None }).collect::<Vec<_>>();
-        let mut f8_shapes: Vec<(usize, usize)> =
-            big.f8.iter().map(|m| (m.n, m.k)).chain(held_f8(&big)).chain(draft.as_ref().map_or(Vec::new(), |d| held_f8(&d.p))).collect();
+        let mut f8_shapes: Vec<(usize, usize)> = big
+            .f8
+            .iter()
+            .chain(draft.iter().flat_map(|d| d.p.f8.iter()))
+            .map(|m| (m.n, m.k))
+            .chain(held_f8(&big))
+            .chain(draft.as_ref().map_or(Vec::new(), |d| held_f8(&d.p)))
+            .collect();
         f8_shapes.sort_unstable();
         f8_shapes.dedup();
         for &(n, k) in &f8_shapes {
@@ -2199,13 +2295,15 @@ impl Dyn {
         }
         // (DeepSeek-V4's grouped low rank as the experts' product: each group a stack's expert)
         if let Some(g) = d.v4.as_ref().map(|v| v.o_groups).filter(|&g| g > 0) {
-            for m in big.f8.iter().filter(|m| m.n % g == 0 && (m.n / g) % 64 == 0) {
+            for m in big.f8.iter().chain(draft.iter().flat_map(|d| d.p.f8.iter())).filter(|m| m.n % g == 0 && (m.n / g) % 64 == 0) {
                 need = need.max(m.moe_workspace(&lib, g, ch.min(64), g)?);
             }
         }
         if let Some(dr) = &draft {
-            // (a draft model's products at one row; a draft head's at a chunk's rows, its streams' product at a stream a row, and its experts' own products)
-            let most = if dr.head.is_some() { ch * dr.p.d.streams().max(1) } else { 1 };
+            // (a draft model's products at one row; a draft head's at a chunk's rows, a head of the model's streams' front product at a stream a row, and its
+            // experts' own products)
+            let streams = if matches!(dr.p.d.first, Op::MtpIn { front: MtpFront::Streams { .. }, .. }) { dr.p.d.streams().max(1) } else { 1 };
+            let most = if dr.head.is_some() { ch * streams } else { 1 };
             let mut ds: Vec<(i64, i64, bool)> = dr.p.mats.iter().filter_map(Mat::packed_opt).map(|m| (m.pack.rows, m.pack.cols, m.pack.is_twelve())).collect();
             ds.extend(dr.p.moe.iter().flat_map(|b| b.pack_shapes()));
             ds.sort_unstable();
@@ -2243,7 +2341,14 @@ impl Dyn {
         let kqx = if qx { Some(crate::kern::qwen4x::KernQx::load(&dev)?) } else { None };
         let picks = picked::PickRun::new(d, ch)?;
         let ones = if moes().any(|m| m.weigh_act) {
-            let k = big.moe.iter().filter_map(|b| b.resident()).map(|(l, _)| l.cfg.router.top_k).max().unwrap_or(crate::moe::MAX_TOPK);
+            let k = big
+                .moe
+                .iter()
+                .chain(draft.iter().flat_map(|x| x.p.moe.iter()))
+                .filter_map(|b| b.resident())
+                .map(|(l, _)| l.cfg.router.top_k)
+                .max()
+                .unwrap_or(crate::moe::MAX_TOPK);
             let b = Buf::new(ch * k * 4)?;
             b.write(0, &vec![1f32; ch * k])?;
             Some(b)
@@ -2364,6 +2469,8 @@ impl Dyn {
             mla,
             verify: None,
             verifying: std::cell::Cell::new(false),
+            ahead: std::cell::Cell::new(false),
+            head_routes: std::cell::RefCell::new(None),
             pending: None,
             vpart: None,
             seqs: vec![None],
@@ -2791,6 +2898,16 @@ impl Dyn {
                 launch!(self.km.rms2_512, [nu, 1, 1], [512, 1, 1], s; p.slot(Slot::Hid), hid, p.small[norm_hidden].ptr, cat + (hid * 2) as u64, w, hid, eps)?;
                 self.lin(&p.mats[eh], cat, n, p.slot(Slot::X))?;
                 self.mark("draft head: input")
+            }
+            Op::MtpIn { front: MtpFront::Block { .. }, .. } => {
+                // (each token's embedding row, the model's X, as the head's streams)
+                self.kres.streams(s, self.big.slot(Slot::X), p.slot(Slot::S), nu, hid, p.d.streams())?;
+                self.mark("draft head: input")
+            }
+            Op::Tap { at, of } => {
+                let (x, ns) = if p.d.width(Slot::S) > 0 { (p.slot(Slot::S), p.d.streams()) } else { (p.slot(Slot::X), 1) };
+                self.kres.tap(s, x, p.slot(Slot::Blk), nu, hid, ns, at, of)?;
+                self.mark("draft head: the model's taps")
             }
             Op::RmsNorm { x, w, y, weight, eps } => {
                 // (the slot's own width: the hidden size, or a narrower activation's)
@@ -3662,6 +3779,26 @@ impl Dyn {
                         }
                     }
                 }
+                // (the compressors: their open windows back to before the pass (above), then the kept rows' products pooled again one after another, as the pass
+                // pooled them (kernels/dsv4.cu v4_comp_pool, a row's place by its position): the windows the kept rows complete are pooled into a scratch, their
+                // entries the pass wrote being the steps' already)
+                let pooled: Vec<(&Op, &Buf)> = p.d.layers[self.stage.layers.0..self.stage.layers.1]
+                    .iter()
+                    .flatten()
+                    .filter_map(|op| match *op {
+                        Op::Compress { state, .. } => v.comp.get(state).and_then(Option::as_ref).map(|b| (op, b)),
+                        _ => None,
+                    })
+                    .collect();
+                if !pooled.is_empty() {
+                    let v4 = self.v4.as_ref().ok_or_else(|| Error("a compressor in a model loaded without its buffers".into()))?;
+                    self.dev.sync()?;
+                    self.pos.write(0, &(start..start + keep).map(|x| x as i32).collect::<Vec<i32>>())?;
+                    for (op, b) in pooled {
+                        let Op::Compress { ape, d, ratio, overlap, state, .. } = *op else { continue };
+                        launch!(v4.k.comp_pool, [(d as u32).div_ceil(128), 1, 1], [128, 1, 1], s; b.ptr, p.small[ape].ptr, self.states[state].ptr, self.states[state + 1].ptr, v4.pooled.ptr, self.pos.ptr, keep as i32, ratio as i32, d as i32, overlap as i32)?;
+                    }
+                }
             }
             self.dev.sync()?;
         }
@@ -3697,7 +3834,14 @@ impl Dyn {
                 _ => Ok(None),
             })
             .collect::<Result<_>>()?;
-        Ok(Verify { snap, keep, ngram, tokens: Vec::new() })
+        // (each of this stage's compressors: VERIFY_ROWS rows of its two products, fp32 [2 W] a row, W its windows' width)
+        let mut comp: Vec<Option<Buf>> = (0..d.states.len()).map(|_| None).collect();
+        for op in d.layers[mine].iter().flatten() {
+            if let Op::Compress { d: w, overlap, state, .. } = *op {
+                comp[state] = Some(Buf::new(VERIFY_ROWS * 2 * (1 + overlap as usize) * w * 4)?);
+            }
+        }
+        Ok(Verify { snap, keep, ngram, comp, tokens: Vec::new() })
     }
 
     /// Room for `k` more sequences beside the one in use (each its own keys and values for the context, its states, its graph captured on them; the

@@ -130,6 +130,7 @@ pub fn describe(c: &ConfigG4) -> ModelDesc {
         hc: (0.0, 0),
         logit_mult: 0.0,
         host: Vec::new(),
+        context: Vec::new(),
     }
 }
 
@@ -233,5 +234,6 @@ pub fn describe_draft(dc: &ConfigG4, c: &ConfigG4) -> ModelDesc {
         hc: (0.0, 0),
         logit_mult: 0.0,
         host: Vec::new(),
+        context: Vec::new(),
     }
 }

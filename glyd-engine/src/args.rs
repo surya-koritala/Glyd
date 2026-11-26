@@ -39,6 +39,7 @@ const SWITCHES: &[&str] = &[
     "public",
     "prof",
     "plain",
+    "sim",
     "encode",
     "gpu",
     "fp8",

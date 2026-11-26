@@ -119,10 +119,40 @@ pub struct Drafted {
 }
 
 impl RefDSpark {
+    /// The description `d`'s DSpark drafter (its first draft head, `kinds::DSpark`) with its weights from `src` (its blocks' roles and its own,
+    /// `Described::mtp`), its collapse the model's (`Head::collapse`: a hyper-head of the head's own roles, or lagged mHC's last weights).
+    pub fn load(d: &Described, src: super::model::Tensors) -> Result<RefDSpark> {
+        let (Some(head), Some((blocks, own))) = (d.desc.mtp.first(), d.mtp.first()) else {
+            return err(format!("no draft head named in the description ({} heads, {} named)", d.desc.mtp.len(), d.mtp.len()));
+        };
+        if head.dspark.is_none() {
+            return err("a draft head of no DSpark form");
+        }
+        let params = |roles: &[(String, crate::runtime::describe::Source)]| -> Result<Params> {
+            let mut p = Params::new();
+            for (role, s) in roles {
+                let (shape, v) = super::model::load(src, role, s)?;
+                p.put(role, &shape, v);
+            }
+            Ok(p)
+        };
+        if blocks.len() != head.blocks.len() {
+            return err("a DSpark head's layers are not its blocks");
+        }
+        let layers = head.blocks.iter().zip(blocks).map(|(b, r)| Ok(RefLayer::new(b.clone(), d.desc.hidden, params(r)?))).collect::<Result<Vec<_>>>()?;
+        Ok(RefDSpark { head: head.clone(), hidden: d.desc.hidden, p: params(own)?, blocks: layers, collapse: d.desc.head.collapse })
+    }
+
     /// The block after the context `ctx` (for each position before the anchor, the target's attention inputs at the head's target layers,
     /// concatenated), the anchor `anchor` at position ctx.len(); `embed` and `head` the model's [vocab, hidden]. Greedy: each position's token the
     /// largest of its logits (the first of equals).
     pub fn draft(&mut self, ctx: &[Vec<f32>], anchor: u32, embed: &[f32], head: &[f32]) -> Result<Drafted> {
+        self.draft_taking(ctx, anchor, embed, head, &[])
+    }
+
+    /// `draft`, the tokens of the block's first positions `take` in the place of its own choices (a check's, which holds an engine to the reference on the
+    /// engine's own choices: each later position's Markov bias is then of the engine's token before it); a MoE block's experts as its `take` gives them.
+    pub fn draft_taking(&mut self, ctx: &[Vec<f32>], anchor: u32, embed: &[f32], head: &[f32], take: &[u32]) -> Result<Drafted> {
         let Some(ds) = self.head.dspark.clone() else { return err("a draft head without DSpark's form") };
         let (d, p0) = (self.hidden, ctx.len() as u32);
         let main: Vec<Vec<f32>> =
@@ -204,7 +234,7 @@ impl RefDSpark {
             let e =
                 w1.get(prev as usize * rank..(prev as usize + 1) * rank).ok_or_else(|| crate::ffi::Error(format!("token {prev} past the Markov embedding")))?;
             let logits: Vec<f32> = base.iter().zip(matvec(w2, rank, e)).map(|(a, b)| a + b).collect();
-            let tok = (0..logits.len()).fold(0, |best, t| if logits[t] > logits[best] { t } else { best }) as u32;
+            let tok = take.get(j).copied().unwrap_or_else(|| (0..logits.len()).fold(0, |best, t| if logits[t] > logits[best] { t } else { best }) as u32);
             if ds.confidence {
                 let cat: Vec<f32> = h.iter().chain(e).copied().collect();
                 out.confidence.push(sigmoid(dot(self.p.vec("confidence")?, &cat)));

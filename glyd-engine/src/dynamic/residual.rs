@@ -35,6 +35,7 @@ fn split(round: Rounding, d: usize) -> Result<bool> {
 
 pub struct KernRes {
     streams: crate::kt::hc_streams,
+    tap: crate::kt::hc_tap,
     mix: crate::kt::hc_mix,
     proj_f32: crate::kt::hc_proj_f32,
     proj_bf16: crate::kt::hc_proj_bf16,
@@ -52,6 +53,7 @@ impl KernRes {
     pub fn load(dev: &Dev) -> Result<KernRes> {
         Ok(KernRes {
             streams: dev.typed()?,
+            tap: dev.typed()?,
             mix: dev.typed()?,
             proj_f32: dev.typed()?,
             proj_bf16: dev.typed()?,
@@ -72,6 +74,12 @@ impl KernRes {
     /// Live device buffers of the sizes the kernels read and write (their comments in kernels/residual.cu), on stream `s`.
     pub unsafe fn streams(&self, s: Stream, e: u64, x: u64, n: u32, d: i32, ns: usize) -> Result<()> {
         launch!(self.streams, [n, (d as u32).div_ceil(256), 1], [256, 1, 1], s; e, x, d, ns as i32)
+    }
+
+    /// The mean of each row's `ns` streams x [n, ns, d] into its place `at` of out's rows of `of` places [n, of, d] (`Op::Tap`).
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn tap(&self, s: Stream, x: u64, out: u64, n: u32, d: i32, ns: usize, at: usize, of: usize) -> Result<()> {
+        launch!(self.tap, [n, (d as u32).div_ceil(256), 1], [256, 1, 1], s; x, out, d, ns as i32, at as i32, of as i32)
     }
 
     /// The split projection of the streams x [n, 4, d] by `f` ([np, 4d], fp32 where `round` is `Once`, else bf16) into `part`: the number of parts a row.
