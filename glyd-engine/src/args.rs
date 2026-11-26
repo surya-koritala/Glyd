@@ -18,9 +18,6 @@ const SWITCHES: &[&str] = &[
     "list-cases",
     "p2p",
     "ignore-eos",
-    "logprobs",
-    "profile-prefill",
-    "attn-decode",
     "no-think",
     "help",
     "quiet",
@@ -33,36 +30,17 @@ const SWITCHES: &[&str] = &[
     "hb",
     "glm",
     "pin",
-    "compare",
-    "twice",
-    "renorm",
     "huge",
     "cb2",
     "copy",
-    "async-copies",
-    "segmented",
-    "skinny",
-    "no-pin",
-    "mtp",
-    "spec",
-    "no-read-ahead",
-    "inventory",
-    "stream",
     "no-side",
-    "no-mtp",
-    "populate",
-    "no-segmented",
-    "no-skinny",
-    "no-async-copies",
     "no-stream",
     "precise",
     "public",
-    "dynamic",
     "prof",
     "plain",
     "encode",
     "gpu",
-    "old",
     "fp8",
     "real",
     "predict",
@@ -85,9 +63,6 @@ const SWITCHES: &[&str] = &[
     "stale-ok",
     "no-logs",
     "best",
-    "dec",
-    "gdn",
-    "router",
     "last",
     "no-mla",
     "no-speed",
@@ -133,12 +108,7 @@ const SWITCHES: &[&str] = &[
     "device-plan",
     "p2p",
     "no-side",
-    "no-mtp",
-    "no-pin",
-    "no-async-copies",
     "no-stream",
-    "no-segmented",
-    "no-skinny",
 ];
 
 /// A flag that one command reads the other way than its name is read elsewhere: (the command, the flag, whether it takes a value there).
@@ -279,21 +249,7 @@ mod tests {
         let a = Args::from(["bench", "--bar", "a.json", "b.json", "--stale-ok", "--noise", "0.03"].map(String::from));
         assert_eq!((a.pos.len(), a.has("stale-ok"), a.flag("noise")), (3, true, Some("0.03")));
         // (the switches of the commands a release build has too: doctor, qwenget, run and serve's expert cache, qwenserve)
-        let both = [
-            "stale-ok",
-            "no-logs",
-            "best",
-            "cpu-pin",
-            "device-plan",
-            "p2p",
-            "no-side",
-            "no-mtp",
-            "no-pin",
-            "no-async-copies",
-            "no-stream",
-            "no-segmented",
-            "no-skinny",
-        ];
+        let both = ["stale-ok", "no-logs", "best", "cpu-pin", "device-plan", "p2p", "no-side", "no-stream"];
         for s in both {
             let a = Args::from(["run", "m", &format!("--{s}"), "--context", "4096"].map(String::from));
             assert_eq!((a.pos.len(), a.flag(s), a.flag("context")), (2, Some(""), Some("4096")), "--{s}");
@@ -352,6 +308,18 @@ mod tests {
         let lone: Vec<String> = read_by("a.has(\"").into_iter().filter(|n| !valued.contains(n) && !SWITCHES.contains(&n.as_str())).collect();
         assert!(lone.is_empty(), "read with has() alone and not in SWITCHES: {lone:?}");
     }
+    /// Every switch is read by a command, or is passed by a script that the parser must keep it a switch for (the word after it is not its value): a switch nothing reads is
+    /// removed (twenty-four were, with nothing in the tree naming them).
+    #[cfg(feature = "dev")]
+    #[test]
+    fn every_switch_is_read_or_passed_by_a_script() {
+        // (`tools/runpod/jobs/multigpu_job.sh` passes --p2p and --no-stream; `condor/tools/serve.sh` and `tools/oneshot/run_all.sh` --no-side)
+        const PASSED: &[&str] = &["p2p", "no-side", "no-stream"];
+        let read: std::collections::BTreeSet<String> = [".has(\"", ".flag(\"", ".num(\"", ".either(\""].iter().flat_map(|c| read_by(c)).collect();
+        let dead: Vec<&str> = SWITCHES.iter().copied().filter(|s| !read.contains(*s) && !PASSED.contains(s)).collect();
+        assert!(dead.is_empty(), "in SWITCHES and read by no command: {dead:?}");
+    }
+
     /// A switch that one command reads for a value takes it there: `ceiling MODEL --fp8 80` read no percent (`--fp8` is `glmrandom`'s switch), and
     /// `quality --card REF CAND --bar wren` no level (`--bar` is `bench`'s).
     #[test]
