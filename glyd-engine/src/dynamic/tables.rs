@@ -76,6 +76,25 @@ pub fn host_names(c: &crate::runtime::config::ModelConfig) -> Vec<String> {
     out
 }
 
+/// The n-gram blocks' tables of the description of the config.json `c` (parsed once), wherever they are held (with the block scales of one stored in FP8): a
+/// token reads a few rows of each, not the table (the planner's count of the parameters a token reads, `plan::Shape::tables`). Empty for a config no
+/// description reads.
+pub fn ngram_names(c: &crate::runtime::config::ModelConfig) -> Vec<String> {
+    let Ok(d) = crate::runtime::describe::describe_config(c) else {
+        return Vec::new();
+    };
+    let names: Vec<String> = d
+        .desc
+        .blocks
+        .iter()
+        .zip(&d.blocks)
+        .filter(|(b, _)| matches!(b.body, Body::Ngram(_)))
+        .flat_map(|(_, roles)| roles.iter().filter(|(r, _)| r == "ngram").flat_map(|(_, s)| s.names()))
+        .collect();
+    let scales: Vec<String> = names.iter().filter_map(|t| d.scales.get(t).cloned()).collect();
+    names.into_iter().chain(scales).collect()
+}
+
 /// The tensors of `table` the GPUs hold (the planner's table less the tables the description of `c` holds on the host, `host_names`, in either stored
 /// form: a table at 4 bits stands for its bf16 name, `formats::stands_for`), and the bytes of those in the computer's memory as stored: the checkpoint's
 /// files mapped, the page cache's.

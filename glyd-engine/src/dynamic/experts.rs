@@ -1994,7 +1994,7 @@ mod tests {
             }
             // saved as a glyd-v7 directory, read back: the same bytes
             let out = dir.join(level.name());
-            let plan = crate::pack::level_plan(&src, level, crate::runtime::config::ModelConfig::load(&src).ok().as_ref()).unwrap().unwrap();
+            let plan = crate::pack::level_plan(&src, level, crate::runtime::config::ModelConfig::load(&src).ok().as_ref(), None).unwrap().unwrap();
             save::save_planned(&Src::find(src.to_str().unwrap()).unwrap(), &out, 2, 5 << 30, level, &plan).unwrap();
             let saved = Checkpoint::open(&out).unwrap();
             assert!(saved.get(&format!("{p}.experts.7.down_proj.glyd_data")).is_some() && saved.get(&format!("{p}.experts.7.down_proj.weight")).is_none());

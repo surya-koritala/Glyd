@@ -14,6 +14,7 @@
 //! taken the other way would move a row by more than arithmetic does. Each query's record (`Picked`) has the indexer's own picks and the pools'
 //! scores, by which two choices' distance is measured (`Picked::margin_between`).
 
+use super::Libm;
 use super::{act, dot, norm::norm, rope, softmax, Params};
 use crate::ffi::{err, Result};
 use crate::runtime::kinds::{IndexForm, Indexer, Mla, NormKind, Rope};
@@ -172,8 +173,8 @@ pub fn choose(ix: &Indexer, q: &[f32], w: &[f32], keys: &[Vec<f32>], seen: &[usi
 pub fn choose_among(ix: &Indexer, q: &[f32], w: &[f32], keys: &[Vec<f32>], seen: &[usize], inside: Option<&[usize]>) -> Picked {
     let Some(inside) = inside else { return choose_pools(ix, q, w, keys, seen) };
     let dim = ix.head_dim;
-    let w: Vec<f32> = w.iter().map(|x| x * (ix.heads as f32).powf(-0.5)).collect();
-    let sc = (dim as f32).powf(-0.5);
+    let w: Vec<f32> = w.iter().map(|x| x * (ix.heads as f32).lpowf(-0.5)).collect();
+    let sc = (dim as f32).lpowf(-0.5);
     let score: Vec<f32> = keys
         .iter()
         .enumerate()
@@ -198,8 +199,8 @@ fn choose_pools(ix: &Indexer, q: &[f32], w: &[f32], keys: &[Vec<f32>], seen: &[u
     if pools <= keep {
         return Picked { picks: seen.to_vec(), own: seen.to_vec(), gap: f32::INFINITY, score: Vec::new(), block: b };
     }
-    let w: Vec<f32> = w.iter().map(|x| x * (ix.heads as f32).powf(-0.5)).collect();
-    let sc = (dim as f32).powf(-0.5);
+    let w: Vec<f32> = w.iter().map(|x| x * (ix.heads as f32).lpowf(-0.5)).collect();
+    let sc = (dim as f32).lpowf(-0.5);
     let score: Vec<f32> = keys.iter().map(|key| (0..ix.heads).map(|hh| w[hh] * (dot(&q[hh * dim..][..dim], key) * sc).max(0.0)).sum()).collect();
     let mut ord: Vec<usize> = (0..pools).collect();
     ord.sort_by(|&x, &y| score[y].total_cmp(&score[x]).then(x.cmp(&y)));
@@ -434,8 +435,8 @@ mod tests {
                 let key: Vec<f64> = (0..16)
                     .map(|ch| {
                         let g: Vec<f64> = (0..4).map(|i| (c2.igate[4 * j + i][ch] + ape[i * 16 + ch]) as f64).collect();
-                        let z: f64 = g.iter().map(|x| x.exp()).sum();
-                        (0..4).map(|i| g[i].exp() / z * c2.ikey[4 * j + i][ch] as f64).sum()
+                        let z: f64 = g.iter().map(|x| x.lexp()).sum();
+                        (0..4).map(|i| g[i].lexp() / z * c2.ikey[4 * j + i][ch] as f64).sum()
                     })
                     .collect();
                 (0..2).map(|hh| w[hh] as f64 / 2f64.sqrt() * ((0..16).map(|d| q[hh * 16 + d] as f64 * key[d]).sum::<f64>() * sc).max(0.0)).sum()
@@ -520,7 +521,7 @@ mod tests {
         p.put("q_b", &[48, 24], fill("mla.q_b.turned", 48 * 24, -0.3, 0.3));
         p.put("kv_a", &[24, D], fill("mla.kv_a.turned", 24 * D, -0.3, 0.3));
         let ix = Indexer { rope: 8, ..m0.indexer.clone().unwrap() };
-        let m = Mla { rope_dim: 8, rope: Some(r.clone()), scale: 24f32.powf(-0.5), indexer: Some(ix.clone()), ..m0.clone() };
+        let m = Mla { rope_dim: 8, rope: Some(r.clone()), scale: 24f32.lpowf(-0.5), indexer: Some(ix.clone()), ..m0.clone() };
         let unturned = Mla { indexer: Some(Indexer { rope: 0, ..ix.clone() }), ..m.clone() };
         let hs = inputs(12);
         let (mut a, mut b) = (LatentCache::default(), LatentCache::default());

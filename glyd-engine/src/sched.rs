@@ -20,8 +20,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-/// Rows a step on pages takes at most, and the steps counted by their rows (`Stats::by_rows`: 0 to 7, and 8 or more in the last).
-pub const MAX_ROWS: usize = 8;
+/// The decode steps counted by their rows (`Stats::by_rows`: 0 to 7, and 8 or more in the last): a figure's buckets, not a bound on the rows a step takes
+/// (the users a scheduler runs at once are its caller's, the plan's: at most `MAX_USERS`).
+pub const ROWS_COUNTED: usize = 8;
 
 /// The most rows of a product the library's own route takes whatever the GPU (`decoded_way`: past it a product may take the decoded matrix's way): a prompt chunk of at most this many
 /// tokens is run with others in one pass (a longer one is its own: it is compute-bound, and the weights are read once for it).
@@ -405,7 +406,7 @@ pub struct Stats {
     pub ended_tries: u64,
     /// Steps by the number of rows they had (index 0 unused: 1 to 8), and the rounds that ran a prompt chunk.
     /// Decode steps by their rows: 0 to 7, and 8 or more in the last.
-    pub by_rows: [u64; MAX_ROWS + 1],
+    pub by_rows: [u64; ROWS_COUNTED + 1],
     pub prefill_rounds: u64,
     /// Steps that held both rows that decode and a prompt's chunk (a round that is one step, `ModelStep::one_step`).
     pub both: u64,
@@ -832,7 +833,7 @@ pub fn check_row(be: &mut dyn Rows, row: usize, s: &mut Sampler, draft: u32) -> 
     Ok((t, kept, true))
 }
 
-/// The most sequences a slot step runs at once (the rows of a pass's head).
+/// The most sequences a step runs at once (the rows of a pass's head), on slots or on pages.
 pub const MAX_USERS: usize = 64;
 
 /// Times a sequence's step may be taken back for a lost block before it ends with an error (the extra memory is shared: one that is still lost after this many waits does not fit it).
@@ -951,19 +952,22 @@ pub struct Sched<B: ModelStep> {
     /// A check's record of the whole row of logits each token was chosen from, by sequence, with the routers' choices of that row where the step keeps them
     /// (`recording_rows`): two runs held to a bound row for row where their last bits may part (experts computed on the host).
     pub rows: Option<Vec<(u64, Vec<f32>, Option<Vec<Vec<crate::dynamic::RowRoute>>>)>>,
+    /// A check's tokens given for the sequences submitted after `forcing`, each sequence's in order, in the place of its step's samples (the first id before
+    /// them, and each one's tokens left).
+    forced: Option<(u64, Vec<VecDeque<u32>>)>,
     overlap: bool,
     relanded: bool,
 }
 
 impl<B: ModelStep> Sched<B> {
-    /// A scheduler for up to `users` sequences at a step: 1 to MAX_ROWS on pages, at most a slot step's slots and MAX_USERS on slots (their rooms are what the
-    /// memory holds).
+    /// A scheduler for up to `users` sequences at a step (the caller's: a plan's users), 1 to MAX_USERS, at most a slot step's slots (their rooms are what the
+    /// memory holds); on pages the pages hold what they hold, a sequence that does not fit waiting its turn.
     pub fn new(be: B, users: usize) -> Sched<B> {
         let slots = be.slots();
         let pager = Pager::new(if slots.is_some() { 0 } else { be.pages() });
         let users = match slots {
             Some(k) => users.min(k).clamp(1, MAX_USERS),
-            None => users.clamp(1, MAX_ROWS),
+            None => users.clamp(1, MAX_USERS),
         };
         let eos = be.eos();
         let keep = slots.is_some() && be.keeps();
@@ -1005,6 +1009,7 @@ impl<B: ModelStep> Sched<B> {
             flight: None,
             chosen: None,
             rows: None,
+            forced: None,
             overlap,
             relanded: false,
         }
@@ -1029,6 +1034,13 @@ impl<B: ModelStep> Sched<B> {
     /// traced pass runs eager).
     pub fn tracing_choices(mut self, on: bool) -> Sched<B> {
         self.be.trace_choices(on);
+        self
+    }
+
+    /// A check's: the k-th sequence submitted from now on takes `tokens[k]` in order in the place of its step's samples (its rows are then the step's logits at
+    /// tokens given beforehand: `usercheck --ref-from` holds them to a reference's rows recorded at those tokens); one whose tokens run out takes its samples.
+    pub fn forcing(mut self, tokens: Vec<Vec<u32>>) -> Sched<B> {
+        self.forced = Some((self.next_id, tokens.into_iter().map(VecDeque::from).collect()));
         self
     }
 
@@ -2029,6 +2041,11 @@ impl<B: ModelStep> Sched<B> {
                 r.push((s.id, l, choices));
             }
         }
+        // (a token given for the sequence stands for the sample: `forcing`)
+        let id = self.active[i].id;
+        if let Some(t) = self.forced.as_mut().and_then(|(base, f)| f.get_mut(id.checked_sub(*base + 1)? as usize)).and_then(VecDeque::pop_front) {
+            return Ok((t, None));
+        }
         let want = self.active[i].reply.logprobs;
         if self.active[i].greedy && want.is_none() {
             return Ok((sample.token, None));
@@ -2366,7 +2383,7 @@ impl<B: ModelStep> Sched<B> {
             self.stats.decode_ns += took;
             self.stats.steps += 1;
             self.stats.rows += n_rows as u64;
-            self.stats.by_rows[n_rows.min(MAX_ROWS)] += 1;
+            self.stats.by_rows[n_rows.min(ROWS_COUNTED)] += 1;
         } else {
             self.stats.prefill_ns += took;
         }
@@ -2452,7 +2469,7 @@ impl<B: ModelStep> Sched<B> {
         self.stats.decode_ns += t.elapsed().as_nanos() as u64;
         self.stats.steps += 1;
         self.stats.rows += rows.len() as u64;
-        self.stats.by_rows[rows.len().min(MAX_ROWS)] += 1;
+        self.stats.by_rows[rows.len().min(ROWS_COUNTED)] += 1;
         // (a row whose token could not be stored exactly has the step's output taken back below: its token is not used)
         let hit = self.after_step()?;
         let tc = std::time::Instant::now();
@@ -3334,6 +3351,21 @@ pub(crate) mod tests {
         }
         // every page is back (the full ones cached, the rest cleared)
         assert_eq!(s.available(), 64);
+    }
+
+    /// A scheduler on pages runs the users its caller gives (a plan's), past eight: twelve sequences decode in the same steps, each its tokens alone.
+    #[test]
+    fn a_page_scheduler_runs_the_users_it_is_given() {
+        let mut s = Sched::new(Fake::new(256, 32), 12);
+        assert_eq!(s.users, 12);
+        let prompts: Vec<Vec<u32>> = (0..12).map(|k| prompt(k, 5 + 3 * k as usize)).collect();
+        let rxs: Vec<_> = prompts.iter().map(|p| add(&mut s, p.clone(), 40).0).collect();
+        run(&mut s);
+        for (p, rx) in prompts.iter().zip(&rxs) {
+            assert_eq!(collect(rx), (reference(p, 40), Finish::Length));
+        }
+        assert!(s.stats.rows > 8 * s.stats.steps, "{} rows in {} steps", s.stats.rows, s.stats.steps);
+        assert_eq!(Sched::new(Fake::new(64, 32), 1000).users, MAX_USERS);
     }
 
     #[test]

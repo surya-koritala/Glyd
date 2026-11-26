@@ -240,7 +240,8 @@ fn cannot(e: impl std::fmt::Display) -> Refusal {
 }
 
 /// `source` packed for this GPU into the cache (once; a run that stops leaves nothing half made), with a bar by the bytes written. `expect`: about what it comes to.
-pub fn pack(source: &Source, model: &str, layout: Layout, expect: u64, ui: &RefCell<Ui>) -> Done<PathBuf> {
+/// `config`: its config.json, parsed once (the run's).
+pub fn pack(source: &Source, model: &str, config: &crate::runtime::config::ModelConfig, layout: Layout, expect: u64, ui: &RefCell<Ui>) -> Done<PathBuf> {
     let root = packed_root();
     let io = |r: std::io::Result<()>| {
         r.map_err(|e| Refusal::unsupported(format!("{}: {e}", root.display()), "Check that the folder can be written, or set GLYD_CACHE to another"))
@@ -284,7 +285,7 @@ pub fn pack(source: &Source, model: &str, layout: Layout, expect: u64, ui: &RefC
     let t0 = std::time::Instant::now();
     let mut bar = Bar::new(&format!("Packing {name}"), expect);
     let result = std::thread::scope(|s| {
-        let work = s.spawn(|| crate::pack::run_with(model, &tmp, 16, layout, true));
+        let work = s.spawn(|| crate::pack::run_of(source, Some(config), None, &tmp, 16, layout, true));
         while !work.is_finished() {
             bar.update(&mut ui.borrow_mut(), dir_bytes(&tmp), false);
             std::thread::sleep(std::time::Duration::from_millis(250));

@@ -3,6 +3,7 @@
 //! h / (heads / kv_heads). One token at a time against the sequence's cache; a prompt is its tokens in order. With Condor's indexer
 //! (`IndexForm::Mean`) a query attends only to the tokens it picks (`mean_picks`).
 
+use super::Libm;
 use super::{act, bf16, dot, norm::norm, rope, softmax, Params};
 use crate::ffi::{err, Result};
 use crate::runtime::kinds::{Attn, AttnRounding, GateFrom, IndexForm, Indexer, Norm, Rope};
@@ -205,7 +206,7 @@ pub fn step_with(a: &Attn, p: &Params, c: &mut KvCache, store: Option<&KvCache>,
             .map(|&j| {
                 let x = r_score(r_score(dot(qh, &src.k[j][kv * hd..][..hd])) * scale);
                 match a.softcap {
-                    Some(cap) => r_score(cap * (x / cap).tanh()),
+                    Some(cap) => r_score(cap * (x / cap).ltanh()),
                     None => x,
                 }
             })
@@ -258,7 +259,7 @@ mod tests {
             gate: None,
             softcap: None,
             bias: false,
-            scale: (hd as f32).powf(-0.5),
+            scale: (hd as f32).lpowf(-0.5),
             k_eq_v: false,
             indexer: None,
             rounding: AttnRounding::F32,

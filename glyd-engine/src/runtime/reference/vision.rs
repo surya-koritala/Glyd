@@ -8,6 +8,7 @@
 //! The image's patches are in its 2 x 2 blocks' order (`vision::Image`), each patch's pixels as the patch product reads them (channel, frame, row, column);
 //! the output is a row of `out` for each block of `merge` x `merge` patches, in the same order.
 
+use super::Libm;
 use super::{act, bf16, dot, softmax};
 use crate::ffi::{err, Error, Result};
 use crate::runtime::describe::VisionRoles;
@@ -110,12 +111,12 @@ impl RefTower {
         // the rotary's cos and sin of each patch: a quarter of a head's channels by its row, a quarter by its column, twice over
         let hd = v.head_dim();
         let q4 = hd / 4;
-        let inv: Vec<f32> = (0..q4).map(|j| 1.0f32 / (v.theta as f32).powf((2 * j) as f32 / (hd / 2) as f32)).collect();
+        let inv: Vec<f32> = (0..q4).map(|j| 1.0f32 / (v.theta as f32).lpowf((2 * j) as f32 / (hd / 2) as f32)).collect();
         let rot: Vec<(Vec<f32>, Vec<f32>)> = rc
             .iter()
             .map(|&(row, col)| {
                 let a: Vec<f32> = (0..hd / 2).map(|j| if j < q4 { row as f32 * inv[j] } else { col as f32 * inv[j - q4] }).collect();
-                (a.iter().map(|a| a.cos()).collect(), a.iter().map(|a| a.sin()).collect())
+                (a.iter().map(|a| a.lcos()).collect(), a.iter().map(|a| a.lsin()).collect())
             })
             .collect();
         let mut after = Vec::with_capacity(v.blocks);
@@ -153,12 +154,12 @@ impl RefTower {
         let (rc, _) = grid(gh, gw, v.merge, v.table);
         let hd = v.head_dim();
         let q4 = hd / 4;
-        let inv: Vec<f32> = (0..q4).map(|j| 1.0f32 / (v.theta as f32).powf((2 * j) as f32 / (hd / 2) as f32)).collect();
+        let inv: Vec<f32> = (0..q4).map(|j| 1.0f32 / (v.theta as f32).lpowf((2 * j) as f32 / (hd / 2) as f32)).collect();
         let rot: Vec<(Vec<f32>, Vec<f32>)> = rc
             .iter()
             .map(|&(row, col)| {
                 let a: Vec<f32> = (0..hd / 2).map(|j| if j < q4 { row as f32 * inv[j] } else { col as f32 * inv[j - q4] }).collect();
-                (a.iter().map(|a| a.cos()).collect(), a.iter().map(|a| a.sin()).collect())
+                (a.iter().map(|a| a.lcos()).collect(), a.iter().map(|a| a.lsin()).collect())
             })
             .collect();
         let rows_in: Vec<Vec<f32>> = x.chunks(h).map(<[f32]>::to_vec).collect();
@@ -187,7 +188,7 @@ impl RefTower {
         };
         let q: Vec<Vec<f32>> = (0..n).map(|t| turn(t, 0)).collect();
         let k: Vec<Vec<f32>> = (0..n).map(|t| turn(t, h)).collect();
-        let scale = (hd as f32).powf(-0.5);
+        let scale = (hd as f32).lpowf(-0.5);
         let att = rows(n, |t| {
             let mut o = vec![0f32; h];
             for hh in 0..heads {
@@ -203,7 +204,7 @@ impl RefTower {
                 } else {
                     // (FlashAttention's: exp of each score less the row's largest, the bf16 of each for the values, their f32 sum dividing at the end)
                     let mx = s.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-                    let p: Vec<f32> = s.iter().map(|&x| (x - mx).exp()).collect();
+                    let p: Vec<f32> = s.iter().map(|&x| (x - mx).lexp()).collect();
                     let l: f32 = p.iter().sum();
                     let mut acc = vec![0f64; hd];
                     for (u, &p) in p.iter().enumerate() {

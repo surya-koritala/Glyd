@@ -166,13 +166,21 @@ fn typed<T: DeserializeOwned>(m: &Map<String, Value>, what: &str) -> Result<T> {
 impl ModelConfig {
     /// `dir`'s config.json.
     pub fn load(dir: &Path) -> Result<ModelConfig> {
+        ModelConfig::load_or_name(dir).map_err(|e| e.0)
+    }
+
+    /// `load`, where a config whose keys do not parse is an error with the family its names tell (None where it has no text, or none of them), for a caller that
+    /// says what a release of one family is missing: the file is read once.
+    pub fn load_or_name(dir: &Path) -> std::result::Result<ModelConfig, (Error, Option<Family>)> {
         let p = dir.join("config.json");
-        let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-        ModelConfig::parse(&text).map_err(|e| e.context(p.display()))
+        let text = std::fs::read_to_string(&p).map_err(|e| (Error(format!("{}: {e}", p.display())), None))?;
+        ModelConfig::parse(&text).map_err(|e| (e.context(p.display()), family_of(&text)))
     }
 
     /// A config.json's text.
     pub fn parse(text: &str) -> Result<ModelConfig> {
+        #[cfg(test)]
+        PARSES.with(|n| n.set(n.get() + 1));
         let v: Value = serde_json::from_str(text).map_err(|e| Error(format!("config.json: {e}")))?;
         ModelConfig::from_value(&v)
     }
@@ -228,8 +236,25 @@ impl ModelConfig {
     /// A family's reader of the model in `dir`, from this one parse of its config.json: `of` takes the parse, the file's path for the words of an error and the
     /// generation_config.json beside it.
     pub fn read<T>(dir: &Path, of: impl FnOnce(&ModelConfig, &str, Option<&str>) -> Result<T>) -> Result<T> {
-        of(&ModelConfig::load(dir)?, &dir.join("config.json").display().to_string(), ModelConfig::generation(dir).as_deref())
+        ModelConfig::load(dir)?.read_with(dir, of)
     }
+
+    /// `read` from a config.json parsed already (`dir`'s): the file is not read again.
+    pub fn read_with<T>(&self, dir: &Path, of: impl FnOnce(&ModelConfig, &str, Option<&str>) -> Result<T>) -> Result<T> {
+        of(self, &dir.join("config.json").display().to_string(), ModelConfig::generation(dir).as_deref())
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The config.json texts this thread has parsed (`parses`): a product path's test counts them.
+    static PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The texts this thread has parsed as a `ModelConfig` so far.
+#[cfg(all(test, feature = "dev"))]
+pub(crate) fn parses() -> usize {
+    PARSES.with(std::cell::Cell::get)
 }
 
 /// A family by the names a release's config gives its architecture and model type (and its text model's, `nested`), in the order the engine has always asked

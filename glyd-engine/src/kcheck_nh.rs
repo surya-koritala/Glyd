@@ -949,7 +949,7 @@ mod tests {
         crate::nemotron::tests::checkpoint(&src, text, &c);
         for level in [Layout::Int5, Layout::Int4] {
             let (packed, mini) = (dir.join(format!("packed-{}", level.name())), dir.join(format!("mini-{}", level.name())));
-            let plan = crate::pack::level_plan(&src, level, crate::runtime::config::ModelConfig::load(&src).ok().as_ref()).unwrap().unwrap();
+            let plan = crate::pack::level_plan(&src, level, crate::runtime::config::ModelConfig::load(&src).ok().as_ref(), None).unwrap().unwrap();
             glyd_gpu::save::save_planned(&glyd_gpu::save::Source::find(src.to_str().unwrap()).unwrap(), &packed, 2, 5 << 30, level, &plan).unwrap();
             decode(&packed, &mini, &[0, 1, 2], 40).unwrap();
             // the sha256 glyd.json holds of each tensor: a pack's tensors (decoded) and those saved as they are

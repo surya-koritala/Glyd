@@ -5,11 +5,10 @@
 
 use crate::dynamic::ModelDesc;
 use crate::ffi::{err, Error, Result};
-use crate::glm::ConfigGlm;
 use crate::qwen35::{Pack35, Tensor35};
 use crate::runtime::config::ModelConfig;
 use crate::runtime::describe::{Described, Source as Of};
-use crate::support::Saves;
+use crate::support::{Family, Saves};
 use glyd_gpu::pack::{pack_smallest_checked, pack_twelve_checked, Packed};
 use glyd_gpu::safetensors::Checkpoint;
 use glyd_gpu::save::{self, Layout, Source};
@@ -320,13 +319,10 @@ fn planned(
 
 /// The save plan of the level `level` for the model in `dir` (`plan`, from its description), where the support table's row of its family says how the packer
 /// saves it (`support::Saves`); else none (the GPU library's own plan, which knows no such model: its refusal says so). A config the description builder
-/// refuses, or a kind the plan does not save, is an error that says why. `config`: the directory's config.json parsed once. Where there is none, or its keys do not
-/// parse, there is no plan, but for a GLM-5.3-Flash release's (its names tell it): its error names the key.
-pub(crate) fn level_plan(dir: &Path, level: Layout, config: Option<&ModelConfig>) -> Result<Option<String>> {
-    let Some(c) = config else {
-        let glm = std::fs::read_to_string(dir.join("config.json")).is_ok_and(|t| crate::glm::is_glm(&t));
-        return if glm { ConfigGlm::load(dir).map(|_| None) } else { Ok(None) };
-    };
+/// refuses, or a kind the plan does not save, is an error that says why. `config`: the directory's config.json parsed once. Where there is none, or its keys do
+/// not parse, there is no plan, but for a GLM-5.3-Flash release's (its names tell it): `glm`, its error, which names the key.
+pub(crate) fn level_plan(dir: &Path, level: Layout, config: Option<&ModelConfig>, glm: Option<Error>) -> Result<Option<String>> {
+    let Some(c) = config else { return glm.map_or(Ok(None), Err) };
     let Some(form) = saves_of(c) else { return Ok(None) };
     let label = dir.join("config.json").display().to_string();
     // (the checkpoint's own form of its experts, by its index: a tensor an expert's matrix, or each layer's experts stacked)
@@ -349,9 +345,17 @@ pub fn run(model: &str, out: &Path, threads: usize, layout: Layout) -> Result<()
 /// `run`, saying nothing where `quiet` (a caller with a bar of its own).
 pub fn run_with(model: &str, out: &Path, threads: usize, layout: Layout, quiet: bool) -> Result<()> {
     let source = io(Source::find(model))?;
+    let (config, glm) = match ModelConfig::load_or_name(&source.dir) {
+        Ok(c) => (Some(c), None),
+        Err((e, family)) => (None, (family == Some(Family::Glm)).then_some(e)),
+    };
+    run_of(&source, config.as_ref(), glm, out, threads, layout, quiet)
+}
+
+/// `run_with` of the model `source`, its config.json parsed once (`config`; `glm`: where its keys do not parse, a GLM-5.3-Flash release's error: `level_plan`).
+pub fn run_of(source: &Source, config: Option<&ModelConfig>, glm: Option<Error>, out: &Path, threads: usize, layout: Layout, quiet: bool) -> Result<()> {
     // (penguin of a family whose row says so, a Gemma 4 model's and a plain dense one's, is a glyd-v7 save too: the executor reads its packs as saved)
-    let config = ModelConfig::load(&source.dir).ok();
-    let saved_penguin = config.as_ref().and_then(saves_of).is_some_and(|s| s.penguin);
+    let saved_penguin = config.and_then(saves_of).is_some_and(|s| s.penguin);
     let t0 = Instant::now();
     let mut have = out.join("glyd.json").exists();
     if have && crate::weights::earlier_format(out).is_some() {
@@ -381,14 +385,14 @@ pub fn run_with(model: &str, out: &Path, threads: usize, layout: Layout, quiet: 
         // (and penguin of a Gemma 4 model or a plain dense one: the executor reads the packs as saved, a glyd-v7 directory of level penguin)
         let planned =
             if matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3) || (layout == Layout::Tiered && saved_penguin) {
-                level_plan(&source.dir, layout, config.as_ref())?
+                level_plan(&source.dir, layout, config, glm)?
             } else {
                 None
             };
         let s = match planned {
-            Some(plan) if layout == Layout::Tiered => io(save::save_penguin(&source, out, threads, 5 << 30, &plan))?,
-            Some(plan) => io(save::save_planned(&source, out, threads, 5 << 30, layout, &plan))?,
-            None => io(save::save(&source, out, threads, 5 << 30, true, layout))?,
+            Some(plan) if layout == Layout::Tiered => io(save::save_penguin(source, out, threads, 5 << 30, &plan))?,
+            Some(plan) => io(save::save_planned(source, out, threads, 5 << 30, layout, &plan))?,
+            None => io(save::save(source, out, threads, 5 << 30, true, layout))?,
         };
         if !quiet {
             eprintln!(
@@ -482,9 +486,9 @@ pub fn run_with(model: &str, out: &Path, threads: usize, layout: Layout, quiet: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::glm::ConfigGlm;
     use crate::nemotron::{pack_layout, ConfigNemotronH};
     use crate::qwen35::Config35;
-    use crate::support::Family;
     use glyd_gpu::safetensors::File;
 
     /// The family's row's form of its saves.
@@ -1244,7 +1248,7 @@ mod tests {
                         let planned = matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3)
                             || crate::weights::v7_manifest(&out).ok().flatten().is_some();
                         if planned {
-                            let text = level_plan(&model, layout, config.as_ref()).unwrap().expect("a planned save's plan");
+                            let text = level_plan(&model, layout, config.as_ref(), None).unwrap().expect("a planned save's plan");
                             e["plan"] = Value::String(plan_digest(&format!("{case}-{word}"), &text));
                         }
                         e

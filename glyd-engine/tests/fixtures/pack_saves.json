@@ -70,24 +70,24 @@
     "qwen35 i6": {
       "files": {
         "config.json": "ac1696dc11ba966ef99b776afd53f4f95ad86a8dc9a1e7e0efff92a7220b63b0",
-        "glyd.json": "fc97133306ae038c34f15ace1ba9a3108dd52af5b994b68ac9d83e99b522e178",
-        "model.safetensors": "f484d6fd9b82c1c3897e19b440b6c981de376038e7fa1ffed00d1e1a481ac3b8"
+        "glyd.json": "274950f4376b39eca1d47441159c687fbc3877f0fe3e6f1220c428d0648c2872",
+        "model.safetensors": "a08062f60b5b1135ab21a677747a802421b108990c6a3a68590ea5761df03e9a"
       },
       "plan": "bd902dc8c0c133ce647c68ae15d87668ee233333f7b3454a472fe1c95a8c45ab"
     },
     "qwen35 i5": {
       "files": {
         "config.json": "ac1696dc11ba966ef99b776afd53f4f95ad86a8dc9a1e7e0efff92a7220b63b0",
-        "glyd.json": "98fdb12413089ee50a6a031afacc43eca884666d400485ea3a4af8e12ea26c28",
-        "model.safetensors": "05b498cf1791044e358ec7bcd514071066138c678564d78153de2624448f91e2"
+        "glyd.json": "17ad9d6f9172dc76bc038f80e56ad9426ebdb4939e229fbe774e78cdcac785f1",
+        "model.safetensors": "c00efdb199caa23ef0cf9777ef3906166fe3ac6eb0cbac6e366f3674b38eacd6"
       },
       "plan": "bd902dc8c0c133ce647c68ae15d87668ee233333f7b3454a472fe1c95a8c45ab"
     },
     "qwen35 i4": {
       "files": {
         "config.json": "ac1696dc11ba966ef99b776afd53f4f95ad86a8dc9a1e7e0efff92a7220b63b0",
-        "glyd.json": "fdd0b321a7d0009d9777d93c527afca42bc87991c556741e1da074e6001839cb",
-        "model.safetensors": "3a047dc326d87cfc4c3bb0a0f6881e300af46eadc916b36adc9de057ca07ab8b"
+        "glyd.json": "aa922dcc4e6a35189f7656164c8cb6ad2ae6616fdfe9fc26fbf6a2d4fbdf35b5",
+        "model.safetensors": "54931bb937a4d2acd82538f2af126111196c4ff6c0f518a25d8add4e07bef1ea"
       },
       "plan": "bd902dc8c0c133ce647c68ae15d87668ee233333f7b3454a472fe1c95a8c45ab"
     },
@@ -97,8 +97,8 @@
     "qwen35 i3": {
       "files": {
         "config.json": "ac1696dc11ba966ef99b776afd53f4f95ad86a8dc9a1e7e0efff92a7220b63b0",
-        "glyd.json": "b273710b5bb348147aa34ce853e318a1fba762bd7eea74333a94c79c0026f2a4",
-        "model.safetensors": "789e24340c950daefd4ac274a9fb39bd6cbf0b9324cb63949afdf6261b75b7ba"
+        "glyd.json": "f6154b66a720545ef44145800ba266eb8de635dd68f7406db7f3bddc8e65b76e",
+        "model.safetensors": "8b52d092d441f77fff4e83bb031fea3567d43f5870b5fec40ee0daf5c0cee960"
       },
       "plan": "bd902dc8c0c133ce647c68ae15d87668ee233333f7b3454a472fe1c95a8c45ab"
     },
@@ -219,32 +219,32 @@
     "gemma4 mma": {
       "files": {
         "config.json": "fd8213c42c022bcea5d60219f9e978b91a9ab7e948a2ee7a683c02bd98576a4f",
-        "glyd.json": "45435220e9c3f8edb1ad09bedcea1cd5c42f58e8fa227655270597c2457875fa",
-        "model.safetensors": "a581822c5d52f49a7f239447ad6c00d17a2f6177d1714d6ab6e0e8e53b0f93e0"
+        "glyd.json": "68d4628772d75d784698018e83ae7586ab6aafd6acdfadc784aded054f1378d9",
+        "model.safetensors": "d6fe555a3899e5dcc2a6d90bb5468c700f2c176984d975dcf65b564379135e93"
       },
       "plan": "353b27eb9beeadcd3ba6c523a55cc3dae7dd17010031a8e1c96299d33e9b83a8"
     },
     "gemma4 i6": {
       "files": {
         "config.json": "fd8213c42c022bcea5d60219f9e978b91a9ab7e948a2ee7a683c02bd98576a4f",
-        "glyd.json": "bbe2ef73e46961ad4faa06ee9030a50e9873c283e6fd050c3521499ae2305e8c",
-        "model.safetensors": "638f7615ee100666808b9920233146db69af4996b0a4d488b3501c49f2c117d0"
+        "glyd.json": "577532c39c0ef4990b16c888cdc7fef328baf930c68a13a95dd13706e08938bb",
+        "model.safetensors": "999b0e439dbf0e2fd28facce77288482f847cac4e6fed66cbcbdde555b112f42"
       },
       "plan": "353b27eb9beeadcd3ba6c523a55cc3dae7dd17010031a8e1c96299d33e9b83a8"
     },
     "gemma4 i5": {
       "files": {
         "config.json": "fd8213c42c022bcea5d60219f9e978b91a9ab7e948a2ee7a683c02bd98576a4f",
-        "glyd.json": "758abfc845c9426711eb8dcc8e5e506a5814d5b076e792078e00847b2627154c",
-        "model.safetensors": "78faf91c2c5304f65d8b0f28caed597f9f8571fea6bc0ade0d3ff724e0b9a787"
+        "glyd.json": "5ecbe8e0b9f29910687a8cc1052c099bbaf2b423e3aa8fbf4e0d963096d4ddcb",
+        "model.safetensors": "f4e204ef312b3a51bbb82a2ebe3a4aa7a0658518587a61be1c858f88cc7d8a9b"
       },
       "plan": "353b27eb9beeadcd3ba6c523a55cc3dae7dd17010031a8e1c96299d33e9b83a8"
     },
     "gemma4 i4": {
       "files": {
         "config.json": "fd8213c42c022bcea5d60219f9e978b91a9ab7e948a2ee7a683c02bd98576a4f",
-        "glyd.json": "d446a82e5a5b7aa8f650a79daa41c0f2f07cb3070a48fb1a1eab0e12257194fe",
-        "model.safetensors": "02e4c309cca9b5a11550b594b766e995ad7c884cb60ae677169b737c233bd5d3"
+        "glyd.json": "b18001c66d0855fc8c549f031fae768c671ea164ce7024697c51de95201a6f40",
+        "model.safetensors": "ae01217e7abd7ad56c19dab39b17bcf75a8d3e3fa810fbc993cd0cb6ff3bfd78"
       },
       "plan": "353b27eb9beeadcd3ba6c523a55cc3dae7dd17010031a8e1c96299d33e9b83a8"
     },
@@ -254,8 +254,8 @@
     "gemma4 i3": {
       "files": {
         "config.json": "fd8213c42c022bcea5d60219f9e978b91a9ab7e948a2ee7a683c02bd98576a4f",
-        "glyd.json": "877d8383c4e3fa4563726ccfe9062fc688744f9300b727037a88e73430b702db",
-        "model.safetensors": "af8a2e6a09edc7b45d99c40815a02e2027fae9e7c3ec27910e21621c0ae3737c"
+        "glyd.json": "8a4abe1663b53e610c33dada36b89ad446770092e90be2b867aec618896f6241",
+        "model.safetensors": "cde6629303e09f1c994f7042673e4adb9b98654f78af298587da3839db4242a7"
       },
       "plan": "353b27eb9beeadcd3ba6c523a55cc3dae7dd17010031a8e1c96299d33e9b83a8"
     },

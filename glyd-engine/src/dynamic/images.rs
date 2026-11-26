@@ -51,16 +51,22 @@ struct SeqImages {
 pub static MAX_PIXELS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 
 impl Images {
-    /// The images of the model in `dir` whose executor's description is `d` (its rotary tables and operations), for passes of up to `rows` rows, its tower on
-    /// `dev` where `tower` (the stage that stages the image rows): None where its description has no vision tower. A tower this engine cannot run, or a model
-    /// whose rows the M-RoPE map does not reach, is refused in words.
-    pub fn open(dir: &std::path::Path, d: &ModelDesc, rows: usize, dev: &crate::dev::Dev, tower: bool) -> Result<Option<Images>> {
-        // (a directory whose config.json names no tower: nothing more read)
-        let has = std::fs::read_to_string(dir.join("config.json")).is_ok_and(|t| t.contains("\"vision_config\""));
-        if !has {
+    /// The images of the model in `dir` (`m`: its config.json, parsed once) whose executor's description is `d` (its rotary tables and operations), for passes of up
+    /// to `rows` rows, its tower on `dev` where `tower` (the stage that stages the image rows): None where its description has no vision tower. A tower this engine
+    /// cannot run, or a model whose rows the M-RoPE map does not reach, is refused in words.
+    pub fn open(
+        dir: &std::path::Path,
+        m: &crate::runtime::config::ModelConfig,
+        d: &ModelDesc,
+        rows: usize,
+        dev: &crate::dev::Dev,
+        tower: bool,
+    ) -> Result<Option<Images>> {
+        // (a config.json that names no tower: nothing more read)
+        if !m.has_vision() {
             return Ok(None);
         }
-        let (k, label) = crate::runtime::describe::describe_dir(dir)?;
+        let (k, label) = crate::runtime::describe::describe_dir_of(dir, m)?;
         let (Some(v), Some(roles)) = (k.desc.vision.as_ref(), k.vision.as_ref()) else { return Ok(None) };
         // (the text's rotary: every attention's the same M-RoPE, whose angles the kernels' map holds)
         let ropes: Vec<&crate::runtime::kinds::Rope> = k

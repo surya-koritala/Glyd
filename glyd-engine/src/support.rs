@@ -16,8 +16,9 @@ pub enum Family {
     Qwen3,
     /// The Qwen3.5 layout (3.5, 3.6 and 3.8), dense (Qwen3_5ForCausalLM, Qwen3_5ForConditionalGeneration) or with experts (Qwen3_5MoeForCausalLM,
     /// Qwen3_5MoeForConditionalGeneration): penguin on the dynamic route (one GPU, or its layers cut over several; the experts in the expert cache where the
-    /// GPUs do not hold them), the lossy levels on one GPU, both layouts packed and sized by their description (src/pack.rs `described`), every expert on the
-    /// GPU at the lossy levels.
+    /// GPUs do not hold them), the lossy levels on one GPU or, where one does not hold it, its layers cut into stages over the machine's GPUs by the same rule
+    /// (src/plan.rs `sizing::lossy_stages`, each stage its layers' packs on its GPU: src/dynamic/qwen35.rs `stage`), both layouts packed and sized by their
+    /// description (src/pack.rs `described`), the experts on the GPUs or, where they do not hold them, in the computer's memory with places of them a stage.
     Qwen35,
     NemotronH,
     /// Gemma 4 dense (12B, 31B); the 26B-A4B mixture of experts and the E models are refused.
@@ -186,7 +187,8 @@ pub static TABLE: [Support; 11] = [
         hummingbird_packed_only: false,
         default_ctx: None,
         max_ctx: None,
-        split_levels: PENGUIN,
+        // (its loader loads a stage of its layers at every level: src/dynamic/qwen35.rs `stage`)
+        split_levels: PENGUIN_LOSSY,
         // (the layout with experts: at penguin, where its GPUs do not hold them)
         experts_in_ram_levels: PENGUIN,
         drafts: false,
@@ -533,7 +535,11 @@ mod tests {
             assert!(check(&q38, "Qwen/Qwen3.8-27B", "Qwen3.8-27B", l).is_ok(), "{l}");
         }
         assert!(check(&q38, "Qwen/Qwen3.8-27B", "Qwen3.8-27B", "hummingbird").is_err());
-        assert_eq!(row(Family::Qwen35).split_levels, ["penguin"], "its layers cut over the GPUs at penguin, as the dynamic route cuts them");
+        assert_eq!(
+            row(Family::Qwen35).split_levels,
+            ["penguin", "kestrel", "swift", "wren"],
+            "its layers cut over the GPUs at penguin and at every lossy level, as the dynamic route cuts them"
+        );
         // (Qwen3.8-Flash-Next: penguin on the dynamic route, its layers cut over the GPUs as the route cuts them; hummingbird from the codes pack beside its weights,
         // on one GPU)
         let x = fixture("qwen4x_config.json");
