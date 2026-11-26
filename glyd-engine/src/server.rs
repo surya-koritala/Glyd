@@ -11,7 +11,7 @@ use crate::conv::{Gen, Outcome, Request, Talk};
 use crate::ffi::{err, Error, Result};
 use crate::sampler::{fresh_seed, Lp, Params};
 use crate::sched::{Ev, ModelStep, Sched, Submit};
-use crate::sched::{Finish, Reply, MAX_ROWS};
+use crate::sched::{Finish, Reply};
 use crate::tok::Tok;
 use crate::tools::{self, Format, ToolChoice, ToolEv, Tools};
 use crate::wire;
@@ -1057,10 +1057,10 @@ fn api_of(v: &Value, chat: bool, vocab: usize) -> std::result::Result<Api, Strin
     if n < 1 {
         return Err(format!("n must be at least 1, got {n}."));
     }
-    if n > MAX_ROWS as i64 {
-        return Err(format!(
-            "n must be at most {MAX_ROWS}, got {n}. (This engine runs up to {MAX_ROWS} sequences at once; GLYD_ENGINE=0 runs vLLM, which takes more.)"
-        ));
+    // (a request's choices are sequences of its own, each a user's turn: past the users the server runs at once they wait theirs. What bounds them is the
+    // request's own limit, `MAX_CHOICES` sequences in all, the one /v1/glyd/info names)
+    if n > MAX_CHOICES as i64 {
+        return Err(format!("n must be at most {MAX_CHOICES}, got {n}. (This engine takes up to {MAX_CHOICES} sequences in a request.)"));
     }
     check_values(v, vocab)?;
     if chat && v.get("echo").and_then(Value::as_bool) == Some(true) {
@@ -3265,11 +3265,12 @@ pub(crate) mod tests {
             .map(|c| at(c, &["message", "content"]).as_str().unwrap().to_string())
             .collect();
         assert_eq!(built, whole, "streamed and whole choices are the same texts");
-        // the limits: 8 at the most (and 8 are served by 4 users, 4 waiting), none or fewer than one is wrong, and greedy draws are all one text
-        let (st, body) = call(addr, "/v1/completions", &q(",\"n\":8"));
-        assert_eq!((st, texts(&body).len()), (200, 8), "{body}");
+        // the limits: the request's own, 64 sequences (12 are served by 4 users, 8 waiting: no 8-row bound), none or fewer than one is wrong, and greedy
+        // draws are all one text
+        let (st, body) = call(addr, "/v1/completions", &q(",\"n\":12"));
+        assert_eq!((st, texts(&body).len()), (200, 12), "{body}");
         for (extra, want) in [
-            (",\"n\":9", "n must be at most 8, got 9"),
+            (",\"n\":65", "n must be at most 64, got 65"),
             (",\"n\":0", "n must be at least 1, got 0"),
             (",\"n\":2.5", "`n` must be an integer"),
             (",\"n\":2,\"temperature\":0", "n must be 1 when using greedy sampling, got 2"),

@@ -110,7 +110,7 @@ If you try one, tell me how it went in an issue. This list is tracked in
 
 ## Things that will trip up agent frameworks
 
-- Up to 4 requests at once (`GLYD_USERS=N tools/serve.sh`, 1 to 8), each streaming from the start; total speed stays about one
+- Up to 4 requests at once (`GLYD_USERS=N tools/serve.sh`, 1 to 64, as many as the card's memory holds; the server says the most it holds where it holds fewer), each streaming from the start; total speed stays about one
   user's, so four agents each see a quarter of it. Past N, requests wait their turn in the order they came: a streamed request
   that is waiting gets its headers within a second and then a `: waiting` comment line every second (Anthropic API: a `ping`
   event), so client read timeouts don't fire; the official SDKs skip these. A client that gives up while waiting is dropped
