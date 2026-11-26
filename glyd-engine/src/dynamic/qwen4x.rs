@@ -715,6 +715,28 @@ pub fn get(repo: &str, dir: &Path, a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
+/// Waits for the server a check started to be `ready`, `limit` at most, looking every `step`: a server that has ended before it is ready (`ended`: what it said) is
+/// an error at once with that, not a wait of the whole `limit` (a cut the planner refuses ends the server at its start). The seconds it took.
+#[cfg(feature = "dev")]
+fn wait_ready(
+    ready: &mut dyn FnMut() -> bool,
+    ended: &mut dyn FnMut() -> Option<String>,
+    limit: std::time::Duration,
+    step: std::time::Duration,
+) -> Result<f64> {
+    let t0 = std::time::Instant::now();
+    while !ready() {
+        if let Some(said) = ended() {
+            return err(format!("servecheck: the server ended before it was ready: {said}"));
+        }
+        if t0.elapsed() > limit {
+            return err(format!("servecheck: the server did not say it was ready in {} s", limit.as_secs_f64()));
+        }
+        std::thread::sleep(step);
+    }
+    Ok(t0.elapsed().as_secs_f64())
+}
+
 /// `glyd-engine servecheck CASE [--tokens N] [--gpus G,.. --split CUT,..] [--serve-mode precise | best | fast] [--sidecar]`: the family's HTTP server (`http`) on the
 /// expert cache's random case (`logits::qwen4x_cb_random`, CASE `qwen4x-cb`: its pack, a tokenizer and chat template made for it; or `qwen4x-rel`, the release's
 /// form: a slim checkpoint, its n-gram table at 4 bits, `logits::qwen4x_release_random`; `--sidecar`: a sidecar `hot/` over its pack, `logits::codes_sidecar`)
@@ -766,10 +788,15 @@ pub fn serve_check(a: &crate::args::Args) -> Result<()> {
     let form = form_of(&served, &pack)?;
     println!("servecheck {case}: the server's form {form:?}");
     let (d2, p2) = (dir.clone(), pack.clone());
+    // (what the server said as it ended, which a server that refuses at its start does at once: the wait below stops there; a thread that panicked says nothing)
+    let (ended_tx, ended) = std::sync::mpsc::channel::<String>();
     std::thread::spawn(move || {
-        if let Err(e) = http(&d2, &p2, &served) {
-            eprintln!("the server: {}", e.msg);
-        }
+        let said = match http(&d2, &p2, &served) {
+            Ok(()) => "it returned with nothing wrong".to_string(),
+            Err(e) => e.msg,
+        };
+        eprintln!("the server: {said}");
+        ended_tx.send(said).ok();
     });
     // (a request on its own connection, the whole reply read: its status and body; the host this computer's own address, which the server's checks take)
     let ask = |method: &str, path: &str, body: &str| -> Option<(u16, String)> {
@@ -785,14 +812,17 @@ pub fn serve_check(a: &crate::args::Args) -> Result<()> {
         let (h, rest) = raw.split_once("\r\n\r\n")?;
         Some((h.split_whitespace().nth(1)?.parse().ok()?, rest.to_string()))
     };
-    let t0 = std::time::Instant::now();
-    while ask("GET", "/health", "").is_none_or(|r| r.0 != 200) {
-        if t0.elapsed().as_secs() > 600 {
-            return err("servecheck: the server did not say it was ready in 600 s");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    println!("the server is ready at port {port} after {:.1} s", t0.elapsed().as_secs_f64());
+    let took = wait_ready(
+        &mut || ask("GET", "/health", "").is_some_and(|r| r.0 == 200),
+        &mut || match ended.try_recv() {
+            Ok(said) => Some(said),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Some("its thread ended with no word (a panic, said above)".to_string()),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+        },
+        std::time::Duration::from_secs(600),
+        std::time::Duration::from_millis(500),
+    )?;
+    println!("the server is ready at port {port} after {took:.1} s");
     // (the prompts as ids: a short one, and one past the chunk of 64)
     let prompts: Vec<Vec<u32>> = vec![(0..9).map(|i| 40 + 3 * i).collect(), (0..150).map(|i| (37 * i + 11) % 2000).collect()];
     let mut got = Vec::new();
@@ -937,6 +967,49 @@ fn held_as_saved(d: &ModelDesc, st: &Stage) -> Vec<usize> {
 mod tests {
     use super::super::{HeadMix, IdxKeys, Op, Slot, StreamsMix};
     use crate::runtime::describe::describe;
+
+    /// `servecheck` waits for its server to answer, and stops at once where the server has ended before it did (a cut the planner refuses ends it at its start:
+    /// the check slept its whole 600 s then), with what the server said; a server that is ready is waited for, and one that never is is given up at the limit.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn servecheck_stops_waiting_where_its_server_has_ended() {
+        use std::time::{Duration, Instant};
+        let (step, long) = (Duration::from_millis(1), Duration::from_secs(600));
+        let (mut calls, mut said) = (0, Some("a split of 4 cuts is more than the model's 2 layers".to_string()));
+        let t0 = Instant::now();
+        let e = super::wait_ready(
+            &mut || false,
+            &mut || {
+                if calls > 3 {
+                    said.take()
+                } else {
+                    calls += 1;
+                    None
+                }
+            },
+            long,
+            step,
+        )
+        .unwrap_err();
+        assert!(t0.elapsed() < Duration::from_secs(10), "waited {:?} for a server that had ended", t0.elapsed());
+        assert!(e.msg.contains("ended before it was ready") && e.msg.contains("more than the model's 2 layers"), "{}", e.msg);
+        let mut asked = 0;
+        let took = super::wait_ready(
+            &mut || {
+                asked += 1;
+                asked > 3
+            },
+            &mut || None,
+            long,
+            step,
+        )
+        .unwrap();
+        assert!(asked == 4 && took < 10.0, "{asked} asks, {took} s");
+        let e = super::wait_ready(&mut || false, &mut || None, Duration::from_millis(20), step).unwrap_err();
+        assert!(e.msg.contains("did not say it was ready in 0.02 s"), "{}", e.msg);
+        // a server that answered and then ended is ready: its end is not looked at
+        assert!(super::wait_ready(&mut || true, &mut || Some("gone".into()), long, step).is_ok());
+    }
 
     fn tiny() -> serde_json::Value {
         let m: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/qwen4x_tiny_manifest.json")).unwrap();
