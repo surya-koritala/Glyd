@@ -103,8 +103,11 @@ pub enum Slot {
     Mid,
     /// Kimi-K3's completed blocks of layers (the depth mix's sources but the partial sum, X): a row's blocks side by side
     Blk,
+    /// Lagged mHC's (`StreamsP::lagged`) input weights of the last lagged block of each row, which the next one collapses the streams by (fp32 [rows, 4]: 8 bf16
+    /// words a row); handed over between stages with the streams
+    Lag,
 }
-const SLOTS: usize = 25;
+const SLOTS: usize = 26;
 
 /// Where an operation reads part of a fused product's rows: its slot, or for one token (`at` given) Mix's row at that column, the product's own output read
 /// in place (a prompt's rows copied into the slot first: `Op::Parts`).
@@ -686,12 +689,14 @@ pub struct ModelDesc {
 impl std::fmt::Debug for ModelDesc {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("ModelDesc");
+        // (the slots before lagged mHC's where it has none: the other descriptions' widths as they read before it)
+        let widths: &[usize] = if self.widths[Slot::Lag as usize] == 0 { &self.widths[..Slot::Lag as usize] } else { &self.widths };
         s.field("family", &self.family)
             .field("hidden", &self.hidden)
             .field("vocab", &self.vocab)
             .field("eps", &self.eps)
             .field("max_pos", &self.max_pos)
-            .field("widths", &self.widths)
+            .field("widths", &widths)
             .field("mats", &self.mats)
             .field("small", &self.small)
             .field("forms", &self.forms)
@@ -1523,8 +1528,6 @@ pub struct Dyn {
     /// The residual rules' kernels, a block's mixing weights of the streams (fp32 [chunk, 24]) and the split mixing projection's partial sums (`residual::part_words`).
     kres: residual::KernRes,
     hcp: Buf,
-    /// Lagged mHC's input weights of each row, from block to block of a pass ([rows, 4] fp32).
-    hc_lag: Buf,
     hc_part: Buf,
     /// Muse Spark's kernels.
     kmuse: muse::KernMuse,
@@ -1698,14 +1701,15 @@ fn state_type(d: &ModelDesc) -> &'static str {
 /// The slots a cut between two layers hands the next layer: the ones its first operation reads before any operation writes them, with their widths. A layer
 /// that begins with the depth mix (`Op::DepthMix`) reads the residual X and the completed blocks Blk; one whose residual add waits for the next layer (the
 /// description's `final_norm` adds that slot on the last rows; each layer's first operation is `Op::NormAdd` of it) reads X and that slot; another hands X, H,
-/// D, O and S where the model has them (what a layer may read first: its own first operation reads one of them).
+/// D, O, S and lagged mHC's weights (Lag) where the model has them (what a layer may read first: its own first operation reads one of them; a lagged block
+/// collapses the streams by the weights of the block before it, on the stage before).
 fn handed_over(d: &ModelDesc) -> Vec<(Slot, usize)> {
     let slots: Vec<Slot> = if d.layers.iter().flatten().any(|op| matches!(op, Op::DepthMix(_))) {
         vec![Slot::X, Slot::Blk]
     } else if let Some((_, y, _)) = d.final_norm {
         vec![Slot::X, y]
     } else {
-        vec![Slot::X, Slot::H, Slot::D, Slot::O, Slot::S]
+        vec![Slot::X, Slot::H, Slot::D, Slot::O, Slot::S, Slot::Lag]
     };
     slots.into_iter().map(|s| (s, d.widths[s as usize])).filter(|&(_, w)| w > 0).collect()
 }
@@ -2346,7 +2350,6 @@ impl Dyn {
         let done = Buf::zeroed(4 << 18)?;
         let host = Pinned::new(4096)?;
         let (kglm, kmoe, hcp) = (crate::kern::KernGlm::load(&dev)?, crate::moe::MoeKern::load(&dev)?, Buf::zeroed(ch * 24 * 4)?);
-        let hc_lag = Buf::zeroed(ch * 4 * 4)?;
         // (the split mixing projection's sums: as the model's streams round, one buffer for every block's)
         let round = d.layers.iter().flatten().find_map(|op| if let Op::StreamsPre { round, .. } = *op { Some(round) } else { None });
         let hc_part = Buf::zeroed(round.map_or(Ok(1), |r| residual::part_words(r, ch, d.hidden))? * 4)?;
@@ -2480,7 +2483,6 @@ impl Dyn {
             kmoe,
             kres,
             hcp,
-            hc_lag,
             hc_part,
             kmuse,
             moe_inv,
@@ -3068,12 +3070,12 @@ impl Dyn {
                 let (fp, bp, sp) = (p.small[f].ptr, p.small[base].ptr, p.small[scale].ptr);
                 let (h, nw, (hc_eps, iters)) = (p.slot(Slot::H), p.small[norm].ptr, p.d.hc);
                 self.kres.pre(s, p.slot(Slot::S), (fp, bp, sp), nw, h, self.hcp.ptr, self.hc_part.ptr, nu, hid, (eps, hc_eps, iters), round)?;
-                // (H again, from the previous lagged block's weights; this block's kept in hc_lag for the next)
-                self.kres.lag(s, p.slot(Slot::S), self.hc_lag.ptr, self.hcp.ptr, nw, h, nu, hid, eps, (first, true), round)?;
+                // (H again, from the previous lagged block's weights; this block's kept in Lag for the next)
+                self.kres.lag(s, p.slot(Slot::S), p.slot(Slot::Lag), self.hcp.ptr, nw, h, nu, hid, eps, (first, true), round)?;
                 self.mark("hyper-connections")
             }
             Op::StreamsHead { mix: HeadMix::LastPre, norm, round } => {
-                self.kres.lag(s, p.slot(Slot::S), self.hc_lag.ptr, self.hcp.ptr, p.small[norm].ptr, p.slot(Slot::H), nu, hid, eps, (false, false), round)?;
+                self.kres.lag(s, p.slot(Slot::S), p.slot(Slot::Lag), self.hcp.ptr, p.small[norm].ptr, p.slot(Slot::H), nu, hid, eps, (false, false), round)?;
                 self.mark("hyper-connections")
             }
             Op::StreamsPre { mix: StreamsMix::Gated { down, up, inject }, norm, .. } => {

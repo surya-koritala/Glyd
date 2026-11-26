@@ -3409,18 +3409,33 @@ pub mod sizing {
     }
 
     /// The layers a stage of the model whose config.json is `text` may begin at, of its `nl`: every one but a layer whose latent attention takes the picks of
-    /// the one before it (its indexer `shared`: `lower::latent_moe` keeps the two in one stage); empty (every one) where the config describes no such layer.
+    /// the one before it (its indexer `shared`: `lower::latent_moe` keeps the two in one stage), and but a layer at or after which a compressed attention reads
+    /// a part of a layer before it (`CompShare`: its entries, picks or candidate blocks; `lower_comp::lower` keeps a source and its readers in one stage); empty
+    /// (every one) where the config describes no such layer.
     pub fn stage_starts(text: &str, nl: usize) -> Vec<bool> {
         use crate::runtime::kinds::{Body, Mixer};
         let Some(d) = serde_json::from_str(text).ok().and_then(|v| crate::runtime::describe::describe(&v).ok()) else { return Vec::new() };
-        let nb = d.desc.blocks.len();
+        let blocks = &d.desc.blocks;
+        let nb = blocks.len();
         let lent = |b: &crate::runtime::kinds::Block| matches!(&b.body, Body::Mixer(Mixer::Mla(m)) if m.indexer.as_ref().is_some_and(|i| i.shared));
-        if nl == 0 || nb < nl || !d.desc.blocks.iter().any(lent) {
+        // (a compressed attention's shared parts: the layer of each block it reads, its own layer (a layer's mixer is its first, the blocks before it an n-gram's))
+        let layer = |b: usize| blocks[..b].iter().filter(|x| matches!(x.body, Body::Mixer(_))).count();
+        let shared: Vec<(usize, usize)> = (0..nb)
+            .filter_map(|b| match &blocks[b].body {
+                Body::Mixer(Mixer::Compressed(c)) => c.share.map(|sh| (b, sh)),
+                _ => None,
+            })
+            .flat_map(|(b, sh)| [sh.entries, sh.picks, sh.candidates].into_iter().flatten().map(move |s| (layer(s), layer(b))))
+            .collect();
+        if nl == 0 || nb < nl || (!blocks.iter().any(lent) && shared.is_empty()) {
             return Vec::new();
         }
         let mut starts = vec![true; nl];
-        for b in (0..nb).filter(|&b| lent(&d.desc.blocks[b])) {
+        for b in (0..nb).filter(|&b| lent(&blocks[b])) {
             starts[b * nl / nb] = false;
+        }
+        for (src, reader) in shared {
+            starts[(src + 1).min(nl)..(reader + 1).min(nl)].iter_mut().for_each(|s| *s = false);
         }
         starts
     }
@@ -5064,15 +5079,21 @@ pub mod sizing {
                     "Leave out --split; --devices 1 picks the GPU",
                 ));
             }
-            // (a stage begins only at a layer whose indexer is its own: the loader refuses the layer that takes the picks of another stage's, after the plan is printed)
+            // (a stage begins only where `stage_starts` says: the loader refuses a layer that takes the picks of another stage's, or reads a compressed part of
+            // another stage's layer, after the plan is printed)
             if let Some(l) = cuts.iter().copied().filter(|&l| !starts.get(l).copied().unwrap_or(true)).min() {
-                return Err(Refusal::unsupported(
-                    crate::dynamic::lower::split_apart_picks(l),
-                    format!(
-                        "A stage may begin at a layer whose indexer is its own: {}",
-                        (1..nl).filter(|&l| starts.get(l).copied().unwrap_or(true)).take(6).map(|l| l.to_string()).collect::<Vec<_>>().join(", ")
-                    ),
-                ));
+                let firsts = (1..nl).filter(|&l| starts.get(l).copied().unwrap_or(true)).take(6).map(|l| l.to_string()).collect::<Vec<_>>().join(", ");
+                return Err(if crate::dynamic::lower_comp::shares_parts(text) {
+                    Refusal::unsupported(
+                        crate::dynamic::lower_comp::split_apart_parts(l),
+                        format!("A stage may begin at a layer no layer after it reads a compressed part before: {firsts}"),
+                    )
+                } else {
+                    Refusal::unsupported(
+                        crate::dynamic::lower::split_apart_picks(l),
+                        format!("A stage may begin at a layer whose indexer is its own: {firsts}"),
+                    )
+                });
             }
             (cuts, devices)
         } else if one_gpu {
@@ -8056,6 +8077,59 @@ mod tests {
         };
         assert_eq!(cut(7).as_deref(), Some("a latent attention model: layer 7 takes the picks of a layer of another stage: a split must keep them together"));
         assert!(!cut(6).is_some_and(|w| w.contains("takes the picks")), "{:?}", cut(6));
+    }
+
+    /// DeepSeek-V4.1's release (tests/fixtures/headers/DeepSeek-V4.1-Flash-1017.json, its files' headers) on its reference machine, eight H100s: its Engram tables
+    /// (two of 384M rows of 256 in FP8 with their scales, 189 GiB) read by rows on the host, none of the GPUs' bytes; its 40 layers cut over the GPUs only where
+    /// no layer after a cut reads a compressed part of a layer before it (its kv sources 2, 8, 14, 20 and the candidate source 20: stages begin at 0, 1, 2, 8,
+    /// 14 or 20), and its experts, which the GPUs do not hold so cut (layers 20-39 are one stage), in the expert cache as released, every one in the computer's
+    /// memory. A computer of too little memory for its experts refuses it with the numbers.
+    #[test]
+    fn deepseek_v41_flash_plans_on_eight_h100s() {
+        let h: Value = json::parse(&fixture("headers/DeepSeek-V4.1-Flash-1017.json")).unwrap();
+        let text = h.get("config").and_then(Value::as_str).unwrap().to_string();
+        let groups: Vec<crate::sizes::Group> = h
+            .get("groups")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .map(|g| crate::sizes::Group {
+                mask: g.get("mask").and_then(Value::as_str).unwrap().to_string(),
+                dtype: g.get("dtype").and_then(Value::as_str).unwrap().to_string(),
+                shape: g.get("shape").unwrap().as_u64s().unwrap(),
+                bytes: g.get("bytes").and_then(Value::as_u64).unwrap(),
+                layers: g.get("layers").unwrap().as_u64s().unwrap().into_iter().map(|l| l as usize).collect(),
+                experts: g.get("experts").and_then(Value::as_u64).unwrap() as usize,
+            })
+            .collect();
+        let table = crate::sizes::Table::expand(&groups);
+        let starts = sizing::stage_starts(&text, 40);
+        let firsts: Vec<usize> = (0..40).filter(|&l| starts[l]).collect();
+        assert_eq!(firsts, [0, 1, 2, 8, 14, 20]);
+        // (the tables on the host: both layers' rows and their scales, as stored)
+        let host: u64 = table.rows.iter().filter(|r| r.name.contains(".engram.embed.")).map(|r| r.bytes).sum();
+        assert_eq!(host, 98_305_579_008 + 3_072_049_344 + 98_308_270_592 + 3_072_133_456);
+        assert_eq!(crate::dynamic::tables::off_gpu(&table, &text).1, host);
+        let m = Machine::preset("8xh100").unwrap();
+        let devs: Vec<Target> = m.devices.iter().enumerate().map(|(i, d)| Target::of(d, i as i32, Some(m.ram_free))).collect();
+        let name = "DeepSeek-V4.1-Flash-1017";
+        let plan = |host: u64| sizing::size_dynamic(&args(&["run", name]), name, &table, None, &text, "DeepSeek-V4.1", &devs, Some(host), &|_| false);
+        let p = plan(m.ram_free).unwrap_or_else(|r| panic!("{r:?}"));
+        let (sp, c) = (p.spread.as_ref().unwrap(), p.experts.expect("its experts in the computer's memory"));
+        assert!(!sp.cuts.is_empty() && sp.cuts.iter().all(|&l| starts[l]), "{:?}", sp.cuts);
+        assert!(sp.tables == host && sp.devices.len() == sp.cuts.len() + 1 && sp.places.iter().all(|&x| (6..=384).contains(&x)), "{sp:?}");
+        assert!((c.experts, c.layers) == (384, 40) && sp.host_bytes > 260 << 30, "{c:?}");
+        assert!(p.gpu_total() <= p.free, "{p:?}");
+        // (its experts, 40 layers of 384, 268.9 GiB: the computer's memory must hold them)
+        let r = plan(200 << 30).unwrap_err();
+        assert!(r.what.starts_with("DeepSeek-V4.1-Flash-1017 keeps the experts its GPUs do not hold in the computer's memory: they take "), "{r:?}");
+        // (a split asked for inside the layers that read layer 20's parts is refused in the loader's words; one at 20 is not refused for that)
+        let cut = |l: usize| {
+            let a = args(&["run", name, "--split", &l.to_string(), "--devices", "0,1"]);
+            sizing::size_dynamic(&a, name, &table, None, &text, "DeepSeek-V4.1", &devs, Some(m.ram_free), &|_| false).err().map(|r| r.what)
+        };
+        assert_eq!(cut(25), Some(crate::dynamic::lower_comp::split_apart_parts(25)));
+        assert!(!cut(20).is_some_and(|w| w.contains("compressed part")), "{:?}", cut(20));
     }
 
     /// The plan refuses a split by the rule the loader keeps: a stage begins at a layer whose indexer is its own. On GLM-5.3's random case (a layer of its own and one more, then
