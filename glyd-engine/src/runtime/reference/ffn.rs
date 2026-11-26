@@ -1,7 +1,7 @@
 //! Feed-forward kinds: the dense MLP (`kinds::Mlp`) and the mixture of experts (`kinds::Moe`) with its router variants, shared experts
 //! and latent projection. The routed sum is over the chosen experts in the router's order; equal scores pick the smaller expert.
 
-use super::{gated, matvec, norm::norm, sigmoid, softmax, softplus, Params};
+use super::{gated, matvec_w, norm::norm, sigmoid, softmax, softplus, Params};
 use crate::ffi::{err, Result};
 use crate::runtime::kinds::{Mlp, Moe, Router, RouterScore};
 
@@ -198,7 +198,7 @@ pub fn moe_taking(m: &Moe, p: &Params, x: &[f32], token: u32, take: Option<&[usi
         }
         None => x.to_vec(),
     };
-    let (gu, down) = (p.vec(if m.expert.gated { "experts_gate_up" } else { "experts_up" })?, p.vec("experts_down")?);
+    let (gu, down) = (p.w(if m.expert.gated { "experts_gate_up" } else { "experts_up" })?, p.w("experts_down")?);
     let rows = gu.len() / (m.experts * z.len());
     let out = down.len() / (m.experts * if m.expert.gated { rows / 2 } else { rows });
     let inter = if m.expert.gated { rows / 2 } else { rows };
@@ -207,8 +207,8 @@ pub fn moe_taking(m: &Moe, p: &Params, x: &[f32], token: u32, take: Option<&[usi
     }
     let mut acc = vec![0f64; out];
     for (&e, &we) in c.ids.iter().zip(&c.w) {
-        let first = matvec(&gu[e * rows * z.len()..][..rows * z.len()], z.len(), &z);
-        let mut y = finish(&m.expert, &first, |h| Ok(matvec(&down[e * out * inter..][..out * inter], inter, h)))?;
+        let first = matvec_w(gu.part(e * rows * z.len(), rows * z.len()), z.len(), &z);
+        let mut y = finish(&m.expert, &first, |h| Ok(matvec_w(down.part(e * out * inter, out * inter), inter, h)))?;
         if let Some(n) = m.latent.as_ref().and_then(|l| l.expert_norm) {
             y = norm(&n, &y, p.opt("expert_norm"), None);
         }
@@ -236,6 +236,7 @@ pub fn moe_taking(m: &Moe, p: &Params, x: &[f32], token: u32, take: Option<&[usi
 mod tests {
     use super::*;
     use crate::runtime::kinds::Act;
+    use crate::runtime::reference::Libm;
 
     fn r(score: RouterScore, top_k: usize) -> Router {
         Router { score, logit_scale: 1.0, bias: false, groups: None, top_k, renorm: true, scale: 1.0, hash: false }
@@ -253,7 +254,7 @@ mod tests {
         assert_eq!((ids, w), (vec![1], vec![0.5]));
         // groups: [0.9 0.8 | 0.95 0.1]: group 0 sums 1.7 against 1.05, so with one group kept expert 2 is not chosen
         let rg = Router { groups: Some((2, 1)), ..r(RouterScore::Sigmoid, 2) };
-        let lg = |p: f32| (p / (1.0 - p)).ln();
+        let lg = |p: f32| (p / (1.0 - p)).lln();
         let (ids, _) = route(&rg, &[lg(0.9), lg(0.8), lg(0.95), lg(0.1)], None, None).unwrap();
         assert_eq!(ids, [0, 1]);
         // hash: the table's experts, weighed by their scores
@@ -311,7 +312,7 @@ mod tests {
         assert_eq!(activate(&m, Some(3.0), -5.0), -super::super::silu(1.0));
         let k = Mlp { act: Act::Situ { beta: 4.0, linear: 25.0 }, ..m };
         // the kimi_ref formula
-        let want = 4.0 * (0.5f32 / 4.0).tanh() * sigmoid(0.5) * 25.0 * (2.0f32 / 25.0).tanh();
+        let want = 4.0 * (0.5f32 / 4.0).ltanh() * sigmoid(0.5) * 25.0 * (2.0f32 / 25.0).ltanh();
         assert!((activate(&Mlp { clamp: None, ..k }, Some(0.5), 2.0) - want).abs() < 1e-6);
         let r2 = Mlp { act: Act::Relu2, gated: false, ..m };
         assert_eq!((activate(&r2, None, -1.0), activate(&r2, None, 3.0)), (0.0, 9.0));

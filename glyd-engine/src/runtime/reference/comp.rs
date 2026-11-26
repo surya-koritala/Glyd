@@ -2,6 +2,7 @@
 //! the compressed entries of closed windows (HCA, or CSA with overlapping windows and an indexer's choice), learned sinks, the output
 //! rotated back at the query's position and projected through grouped low-rank products.
 
+use super::Libm;
 use super::{dot, norm::norm, rope, softmax, Params};
 use crate::ffi::{err, Result};
 use crate::runtime::kinds::{Comp, CompShare, IndexForm, Indexer, Norm, Rope};
@@ -133,8 +134,8 @@ fn shared_picks(c: &Comp, ix: &Indexer, sh: &CompShare, p: &Params, st: &mut Com
     for h in qi.chunks_mut(ix.head_dim) {
         turn(&c.rope, h, pos, false);
     }
-    let wts: Vec<f32> = p.prod("idx_weights", x)?.iter().map(|w| w * (ix.heads as f32).powf(-0.5)).collect();
-    let sc = (ix.head_dim as f32).powf(-0.5);
+    let wts: Vec<f32> = p.prod("idx_weights", x)?.iter().map(|w| w * (ix.heads as f32).lpowf(-0.5)).collect();
+    let sc = (ix.head_dim as f32).lpowf(-0.5);
     let score: Vec<f32> =
         st.ikeys[..n].iter().map(|k| (0..ix.heads).map(|h| dot(&qi[h * ix.head_dim..][..ix.head_dim], k).max(0.0) * sc * wts[h]).sum()).collect();
     // (the candidate source: each block's best score, the newest visible entry's block first, then the best others; published with the block's size)
@@ -201,7 +202,7 @@ pub fn attend(c: &Comp, p: &Params, q: &[f32], keys: &[&[f32]], pos: u32) -> Res
     let mut out = Vec::with_capacity(nh * hd);
     for h in 0..nh {
         let qh = &q[h * hd..][..hd];
-        let mut s: Vec<f32> = keys.iter().map(|k| dot(qh, k) * (hd as f32).powf(-0.5)).collect();
+        let mut s: Vec<f32> = keys.iter().map(|k| dot(qh, k) * (hd as f32).lpowf(-0.5)).collect();
         s.push(sinks[h]);
         softmax(&mut s);
         let mut o = vec![0f32; hd];
@@ -258,8 +259,8 @@ pub fn step(c: &Comp, p: &Params, st: &mut CompState, x: &[f32], pos: u32) -> Re
                 for h in qi.chunks_mut(ix.head_dim) {
                     turn(&c.rope, h, pos, false);
                 }
-                let wts: Vec<f32> = p.prod("idx_weights", x)?.iter().map(|w| w * (ix.heads as f32).powf(-0.5)).collect();
-                let sc = (ix.head_dim as f32).powf(-0.5);
+                let wts: Vec<f32> = p.prod("idx_weights", x)?.iter().map(|w| w * (ix.heads as f32).lpowf(-0.5)).collect();
+                let sc = (ix.head_dim as f32).lpowf(-0.5);
                 let score: Vec<f32> =
                     st.idx.entries.iter().map(|k| (0..ix.heads).map(|h| dot(&qi[h * ix.head_dim..][..ix.head_dim], k).max(0.0) * sc * wts[h]).sum()).collect();
                 let mut ord: Vec<usize> = (0..score.len()).collect();
@@ -427,9 +428,9 @@ mod tests {
         };
         let mut m = RefModel {
             desc,
-            embed: fill("csa2.embed", 32 * D, -1.0, 1.0),
+            embed: crate::runtime::reference::Held::new(vec![32, D], fill("csa2.embed", 32 * D, -1.0, 1.0)),
             final_norm: fill("csa2.fn", D, 0.5, 1.5),
-            head: fill("csa2.head", 32 * D, -0.5, 0.5),
+            head: Some(crate::runtime::reference::Held::new(vec![32, D], fill("csa2.head", 32 * D, -0.5, 0.5))),
             layers,
             p: Params::new(),
             record: None,

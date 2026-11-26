@@ -940,26 +940,40 @@ pub fn rows_check(a: &crate::args::Args) -> Result<()> {
     }
 }
 
-/// `glyd-engine floortrace MODEL [--tokens 16] [--ops L]` (development, #327): where a draw amplifies a reordering of its experts' sums. The model with every expert on
-/// GPU 0 runs a prompt twice, as made and with every experts' product's sums split over K (GLYD_GPU_MOE_SLOTS, as `storecheck --floor`), each layer's residual traced;
-/// for each layer, the two runs' residuals' difference over the first run's (each position's, the first position's and the most), and the rows whose router chose
-/// other experts there; `--ops L`: each operation of layer L the same way, slot by slot.
+/// `glyd-engine floortrace MODEL [--tokens 16 | --sequence T,T,...] [--ops L] [--chunk N]` (development, #327): where a draw amplifies a reordering of its sums.
+/// The model with every expert on GPU 0 runs a prompt twice, as made and with every experts' product's sums split over K (GLYD_GPU_MOE_SLOTS, as `storecheck
+/// --floor`), each layer's residual traced; for each layer, the two runs' residuals' difference over the first run's (each position's, the first position's and the
+/// most), and the rows whose router chose other experts there; `--ops L`: each operation of layer L the same way, slot by slot. `--chunk N`: the second run the
+/// same prompt in passes of N rows instead (every product, attention and recurrence at other row counts: another order of a model with no experts' sums to
+/// split). `--sequence`: the prompt is those tokens (a sequence `usercheck --ref` served).
 #[cfg(feature = "dev")]
 pub fn floor_trace(a: &crate::args::Args) -> Result<()> {
     let dir = std::path::Path::new(a.need(1, "MODEL")?);
-    let n = a.num("tokens", 16usize)?.max(1);
     let ops = a.flag("ops").map(|x| x.parse::<usize>().map_err(|_| crate::ffi::Error(format!("--ops {x}: a layer")))).transpose()?;
     let vocab = crate::runtime::config::ModelConfig::load(dir)?.num("vocab_size").unwrap_or(1000).max(16);
-    let tokens: Vec<u32> = (0..n).map(|i| ((i * 7919 + 13) % (vocab - 4) + 2) as u32).collect();
+    let tokens: Vec<u32> = match a.flag("sequence") {
+        Some(t) => t.split(',').map(|x| x.trim().parse::<u32>().map_err(|_| crate::ffi::Error(format!("--sequence {x}: a token")))).collect::<Result<_>>()?,
+        None => (0..a.num("tokens", 16usize)?.max(1)).map(|i| ((i * 7919 + 13) % (vocab - 4) + 2) as u32).collect(),
+    };
+    let n = tokens.len().max(1);
+    let chunk =
+        a.flag("chunk").map(|x| x.parse::<usize>().ok().filter(|&c| c > 0).ok_or_else(|| crate::ffi::Error(format!("--chunk {x}: rows")))).transpose()?;
     let o = crate::dynamic::Opts { ctx: n + 64, chunk: n.max(64), graph: false, device: 0, layout: a.layout()? };
     type Traced = (Vec<Vec<u16>>, Vec<crate::dynamic::Routes>, Vec<(String, Vec<Vec<u16>>)>);
     let run = |split: bool| -> Result<Traced> {
-        if split {
+        if split && chunk.is_none() {
             std::env::set_var("GLYD_GPU_MOE_SLOTS", "1073741824");
         }
+        let o = crate::dynamic::Opts { chunk: chunk.filter(|_| split).unwrap_or(o.chunk), ..o };
         let r = (|| -> Result<Traced> {
-            let crate::dynamic::split::Run::One(mut e) = crate::dynamic::split::open(dir, &o, &[], &[0])? else {
-                return err("the model on one GPU was asked for");
+            // (loaded as `usercheck --ref` loads it: by its description's loader on the dynamic route, else by its family's at penguin)
+            let text = std::fs::read_to_string(dir.join("config.json")).map_err(|x| crate::ffi::Error(format!("{}: {x}", dir.display())))?;
+            let mut e = match crate::dynamic::split::family(&text) {
+                None => crate::logits::load_dyn(crate::logits::case_of_dir(dir)?, dir, &o, "penguin")?,
+                Some(_) => match crate::dynamic::split::open(dir, &o, &[], &[0])? {
+                    crate::dynamic::split::Run::One(e) => e,
+                    _ => return err("the model on one GPU was asked for"),
+                },
             };
             e.trace_layers(true);
             e.trace_routes(true);
@@ -971,6 +985,23 @@ pub fn floor_trace(a: &crate::args::Args) -> Result<()> {
         r
     };
     let ((la, ra, oa), (lb, rb, ob)) = (run(false)?, run(true)?);
+    // (a prompt in passes: each layer's trace a pass at a time, its passes' rows joined in order; and each layer's operations alike)
+    let join =
+        |v: Vec<Vec<u16>>, per: usize| -> Vec<Vec<u16>> { (0..per).map(|l| v.iter().skip(l).step_by(per.max(1)).flatten().copied().collect()).collect() };
+    let lb = if lb.len() > la.len() { join(lb, la.len()) } else { lb };
+    let ob: Vec<(String, Vec<Vec<u16>>)> = if ob.len() > oa.len() && !oa.is_empty() {
+        (0..oa.len())
+            .map(|i| {
+                let parts: Vec<&(String, Vec<Vec<u16>>)> = ob.iter().skip(i).step_by(oa.len()).collect();
+                (parts[0].0.clone(), (0..parts[0].1.len()).map(|sl| parts.iter().flat_map(|p| p.1[sl].iter().copied()).collect()).collect())
+            })
+            .collect()
+    } else {
+        ob
+    };
+    if chunk.is_some() && ra.len() != rb.len() {
+        println!("  (the routers' choices are compared where both runs took the prompt in one pass: not here)");
+    }
     let f = |h: u16| f32::from_bits((h as u32) << 16) as f64;
     // (each position's |a - b| / |a| over a row of `w` values, the first position's and the most)
     let rel = |x: &[u16], y: &[u16], w: usize| -> (f64, f64) {
@@ -985,8 +1016,9 @@ pub fn floor_trace(a: &crate::args::Args) -> Result<()> {
         (per.first().copied().unwrap_or(0.0), per.iter().copied().fold(0.0, f64::max))
     };
     println!(
-        "{}: a prompt of {n} tokens, as made against its experts' sums split over K: each layer's residual's difference (of the first run's)",
-        dir.display()
+        "{}: a prompt of {n} tokens, as made against {}: each layer's residual's difference (of the first run's)",
+        dir.display(),
+        chunk.map_or("its experts' sums split over K".to_string(), |c| format!("the same prompt in passes of {c} rows"))
     );
     for (l, (x, y)) in la.iter().zip(&lb).enumerate() {
         let w = x.len() / n;
@@ -994,6 +1026,7 @@ pub fn floor_trace(a: &crate::args::Args) -> Result<()> {
         let flips: usize = ra
             .iter()
             .zip(&rb)
+            .filter(|_| ra.len() == rb.len())
             .filter(|(p, _)| p.0 == l)
             .map(|(p, q)| {
                 let k = p.1;

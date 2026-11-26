@@ -3,6 +3,7 @@
 //! 1e-6 inside the root), q times 1/sqrt(k_dim); the state decays by exp(g), takes k (beta (v - S^T k))^T, and the output S^T q is normed
 //! per value head (RMS, the shared weight) and gated.
 
+use super::Libm;
 use super::{act, l2norm, sigmoid, softplus, Params};
 use crate::ffi::{err, Result};
 use crate::runtime::kinds::{Decay, Linear, LinearKind};
@@ -82,8 +83,8 @@ pub fn core(l: &Linear, p: &Params, st: &mut LinearState, qkv: &[f32], beta: &[f
         let g = |i: usize| -> f32 {
             let (a, dt) = if per_channel { (decay[h * dk + i], dt_bias[h * dk + i]) } else { (decay[h], dt_bias[h]) };
             match l.decay {
-                Decay::Softplus => -a_log[h].exp() * softplus(a + dt),
-                Decay::Bounded(bound) => bound * sigmoid(a_log[h].exp() * (a + dt)),
+                Decay::Softplus => -a_log[h].lexp() * softplus(a + dt),
+                Decay::Bounded(bound) => bound * sigmoid(a_log[h].lexp() * (a + dt)),
             }
         };
         // (the per-head norm and the gate of the rule's output)
@@ -104,7 +105,7 @@ pub fn core(l: &Linear, p: &Params, st: &mut LinearState, qkv: &[f32], beta: &[f
             continue;
         }
         for i in 0..dk {
-            let f = g(i).exp();
+            let f = g(i).lexp();
             s[i * dv..][..dv].iter_mut().for_each(|e| *e *= f);
         }
         let u: Vec<f32> = (0..dv).map(|j| b * (v[j] - (0..dk).map(|i| s[i * dv + j] * k[i]).sum::<f32>())).collect();
@@ -141,7 +142,7 @@ pub fn step(l: &Linear, p: &Params, st: &mut LinearState, h: &[f32]) -> Result<V
 /// before it), so a pass is `core` a token at a time with `FORM` set, and `end` at its end.
 #[cfg(test)]
 pub mod chunked {
-    use super::super::bf16;
+    use super::super::{bf16, Libm};
     use super::{Linear, LinearState};
     use std::cell::Cell;
 
@@ -195,7 +196,7 @@ pub mod chunked {
             let i = self.tokens();
             let gi = self.g.last().copied().unwrap_or(0.0) + g;
             // row i of A below the diagonal: -L's, then the rows before it folded in (forward substitution)
-            let l: Vec<f32> = (0..i).map(|j| -(beta * dot(k, &self.k[j]) * (gi - self.g[j]).exp())).collect();
+            let l: Vec<f32> = (0..i).map(|j| -(beta * dot(k, &self.k[j]) * (gi - self.g[j]).lexp())).collect();
             let mut row = l.clone();
             for j in 0..i {
                 for m in j + 1..i {
@@ -204,7 +205,7 @@ pub mod chunked {
             }
             let a: Vec<f32> = row.iter().map(|&x| r(x, four)).collect();
             let vb: Vec<f32> = v.iter().map(|&x| r(beta * x, stored)).collect();
-            let kb: Vec<f32> = k.iter().map(|&x| r(beta * gi.exp() * x, stored)).collect();
+            let kb: Vec<f32> = k.iter().map(|&x| r(beta * gi.lexp() * x, stored)).collect();
             let (mut u, mut w) = (vb.clone(), kb.clone());
             for j in 0..i {
                 u.iter_mut().zip(&self.vb[j]).for_each(|(x, y)| *x += a[j] * y);
@@ -213,10 +214,10 @@ pub mod chunked {
             u.iter_mut().chain(w.iter_mut()).for_each(|x| *x = r(*x, four));
             let h0 = |a: usize, b: usize| r(s0[a * dv + b], four);
             let vnew: Vec<f32> = (0..dv).map(|b| r(u[b] - (0..dk).map(|a| w[a] * h0(a, b)).sum::<f32>(), stored)).collect();
-            let mut o: Vec<f32> = (0..dv).map(|b| (0..dk).map(|a| q[a] * gi.exp() * h0(a, b)).sum()).collect();
+            let mut o: Vec<f32> = (0..dv).map(|b| (0..dk).map(|a| q[a] * gi.lexp() * h0(a, b)).sum()).collect();
             for j in 0..=i {
                 let (kj, vj, gj) = if j == i { (k, &vnew, gi) } else { (&self.k[j][..], &self.vnew[j], self.g[j]) };
-                let f = dot(q, kj) * (gi - gj).exp();
+                let f = dot(q, kj) * (gi - gj).lexp();
                 o.iter_mut().zip(vj).for_each(|(x, y)| *x += f * y);
             }
             self.g.push(gi);
@@ -231,9 +232,9 @@ pub mod chunked {
         /// The chunk closed: `s` (the state it started from) becomes the state after its tokens, and the chunk is empty.
         pub fn close(&mut self, s: &mut [f32], dk: usize, dv: usize) {
             let Some(&gn) = self.g.last() else { return };
-            s.iter_mut().for_each(|e| *e *= gn.exp());
+            s.iter_mut().for_each(|e| *e *= gn.lexp());
             for ((k, v), g) in self.k.iter().zip(&self.vnew).zip(&self.g) {
-                let f = (gn - g).exp();
+                let f = (gn - g).lexp();
                 for a in 0..dk {
                     for b in 0..dv {
                         s[a * dv + b] += k[a] * f * v[b];

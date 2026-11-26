@@ -71,6 +71,7 @@ const SWITCHES: &[&str] = &[
     "peaked",
     "random-tokens",
     "record",
+    "floor",
     "rgb",
     "servable",
     "chain",
@@ -129,6 +130,8 @@ const BY_COMMAND: &[(&str, &str, bool)] = &[
     ("quality", "bar", true),
     ("dsv4gen", "score", true),
     ("stackcheck", "load", true),
+    ("usercheck", "record", true),
+    ("floortrace", "sequence", true),
 ];
 
 #[derive(Clone)]
