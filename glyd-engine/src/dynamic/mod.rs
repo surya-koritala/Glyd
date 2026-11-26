@@ -24,9 +24,10 @@ pub(crate) use kvpages::room_of as kv12_room;
 #[cfg(all(test, feature = "dev"))]
 pub(crate) use rows::pool_blocks;
 pub(crate) use rows::seq_blocks;
+pub use rows::size_by_free_memory;
 #[cfg(all(test, feature = "dev"))]
 pub(crate) use rows::Hold;
-pub(crate) use rows::{layer_rooms, marks_kept, stage_holds, twelve_bit_rings, SeqRoom};
+pub(crate) use rows::{free_sized, layer_rooms, marks_kept, stage_holds, twelve_bit_rings, unplanned, SeqRoom};
 pub mod lower;
 pub mod lower_comp;
 pub mod mla;

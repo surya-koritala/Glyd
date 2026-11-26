@@ -2590,7 +2590,7 @@ pub(crate) fn sizing_inputs(machine: &Machine, probed: bool) -> Option<(usize, T
 pub(crate) fn exact_options(
     a: &crate::args::Args,
     model: &str,
-    config: &str,
+    config: &ModelConfig,
     level: Option<&'static str>,
     fam: &'static crate::support::Support,
     sh: &Shape,
@@ -2626,10 +2626,10 @@ pub(crate) fn exact_options(
     sized.then_some((options, refusals))
 }
 
-/// A model's shape: its config's, with its own tensors where its headers can be had (before any download, by ranges), else config.json's estimate scaled to the
-/// index's total. `fit` and `run`'s degrade gate both price the ladder's steps on it.
-pub fn shape_of(model: &str, config: &str) -> Result<Shape, String> {
-    let sh = Shape::from_config(config)?;
+/// A model's shape: its config's (parsed once), with its own tensors where its headers can be had (before any download, by ranges), else config.json's estimate
+/// scaled to the index's total. `fit` and `run`'s degrade gate both price the ladder's steps on it.
+pub fn shape_of(model: &str, config: &ModelConfig) -> Result<Shape, String> {
+    let sh = Shape::from_model(config)?;
     Ok(match crate::sizes::Table::find(model) {
         Some(t) => sh.with_table(&t),
         None => match index_total(model) {
@@ -2688,14 +2688,15 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
         },
     };
     let name = crate::cli::short_name(model);
-    let config = crate::cli::config_text(model)?;
+    // (config.json parsed once, every plan below sized from that one parse)
+    let config = crate::support::parsed(&crate::cli::config_text(model)?, &name)?;
     // the family as run treats it: a level it does not run at is refused in run's words
     let fam = match level {
-        Some(l) => crate::support::check(&config, model, &name, l)?,
-        None => crate::support::row(crate::support::family(&config, &name)?),
+        Some(l) => crate::support::check_in(&config, model, &name, l)?,
+        None => crate::support::row(crate::support::family_in(&config, &name)?),
     };
     if fam.levels_now(model).is_empty() {
-        crate::support::check(&config, model, &name, "penguin")?;
+        crate::support::check_in(&config, model, &name, "penguin")?;
     }
     let sh = shape_of(model, &config).map_err(|e| Refusal::unsupported(format!("{name}: {e}"), ""))?;
     let sh = if takes_twelve(a, &sh) { sh.in_twelve() } else { sh };
@@ -3408,11 +3409,11 @@ pub mod sizing {
         Some((cuts.into_iter().map(|c| firsts[c]).collect(), devices))
     }
 
-    /// The layers a stage of the model whose config.json is `text` may begin at, of its `nl`: every one but a layer whose latent attention takes the picks of
-    /// the one before it (its indexer `shared`: `lower::latent_moe` keeps the two in one stage); empty (every one) where the config describes no such layer.
-    pub fn stage_starts(text: &str, nl: usize) -> Vec<bool> {
+    /// The layers a stage of the model whose config.json is `c` (parsed once) may begin at, of its `nl`: every one but a layer whose latent attention takes the
+    /// picks of the one before it (its indexer `shared`: `lower::latent_moe` keeps the two in one stage); empty (every one) where the config describes no such layer.
+    pub fn stage_starts(c: &ModelConfig, nl: usize) -> Vec<bool> {
         use crate::runtime::kinds::{Body, Mixer};
-        let Some(d) = serde_json::from_str(text).ok().and_then(|v| crate::runtime::describe::describe(&v).ok()) else { return Vec::new() };
+        let Ok(d) = crate::runtime::describe::describe_config(c) else { return Vec::new() };
         let nb = d.desc.blocks.len();
         let lent = |b: &crate::runtime::kinds::Block| matches!(&b.body, Body::Mixer(Mixer::Mla(m)) if m.indexer.as_ref().is_some_and(|i| i.shared));
         if nl == 0 || nb < nl || !d.desc.blocks.iter().any(lent) {
@@ -3493,27 +3494,6 @@ pub mod sizing {
     /// Whether a GPU of `free` bytes free holds `bytes` of experts held whole (and their tables of n-grams): else the experts go to an expert cache.
     pub fn resident_fits(bytes: u64, free: u64) -> bool {
         bytes <= free
-    }
-
-    /// The places a layer gets out of `budget` bytes of the GPU's memory for the cache: as many as fit, at most all of its experts; None where fewer than `least` fit.
-    pub fn places_for(budget: u64, layers: usize, expert_bytes: u64, experts: usize, least: usize) -> Option<usize> {
-        let each = (layers as u64).checked_mul(expert_bytes)?;
-        let n = (budget.checked_div(each)? as usize).min(experts);
-        (n >= least.min(experts)).then_some(n)
-    }
-
-    /// The expert cache that `budget` bytes of the GPU's memory buy for the model `c` at `level`: places a layer for each of its mixture-of-experts layers, as many as fit (all of a layer's experts at most); None where
-    /// fewer than `least` fit.
-    pub fn cache_plan(c: &ConfigNemotronH, level: Layout, budget: u64, least: usize) -> crate::ffi::Result<Option<CachePlan>> {
-        let (layers, experts, expert_bytes) = (c.layers_of(NhKind::Moe), c.moe.experts, c.expert_bytes(level)?);
-        Ok(places_for(budget, layers, expert_bytes, experts, least).map(|slots| CachePlan {
-            layers,
-            experts,
-            slots,
-            expert_bytes,
-            in_place: level == Layout::Hummingbird,
-            ram: (layers * experts) as u64 * expert_bytes,
-        }))
     }
 
     /// What a model takes of one GPU at a level, read from its description: every path that holds a model on one GPU is sized from this by `one_gpu`, one rule for all
@@ -3876,14 +3856,15 @@ pub mod sizing {
         p.reserve += extra;
     }
 
-    /// The plan `run` loads MODEL (its config.json `text`) at `level` on the GPU `t`, with the flags of `a`, or the refusal `run` gives: what `fit` prints
-    /// and `run`, `serve` and `preflight` size with. `users`: the sequences a server holds at once (the Qwen3 path's; the lossy paths hold one). Ok(None): no
-    /// path of `run` loads this family yet (`Sizing::Estimate`), or the dynamic route has no headers of the model's files, and for `fit` the planner's
+    /// The plan `run` loads MODEL (its config.json, parsed once: `c`) at `level` on the GPU `t`, with the flags of `a`, or the refusal `run` gives: what `fit`
+    /// prints and `run`, `serve` and `preflight` size with. `users`: the sequences a server holds at once (the Qwen3 path's; the lossy paths hold one). Ok(None):
+    /// no path of `run` loads this family yet (`Sizing::Estimate`), or the dynamic route has no headers of the model's files, and for `fit` the planner's
     /// estimate stands (src/plan.rs).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn size(
         a: &Args,
         model: &str,
-        text: &str,
+        c: &ModelConfig,
         level: &'static str,
         devs: &[Target],
         t: &Target,
@@ -3891,13 +3872,11 @@ pub mod sizing {
         users: usize,
     ) -> Done<Option<LoadPlan>> {
         let name = short_name(model);
-        // (config.json parsed once)
-        let c = crate::support::parsed(text, &name)?;
-        let row = crate::support::row(crate::support::family_in(&c, &name)?);
+        let row = crate::support::row(crate::support::family_in(c, &name)?);
         match row.route.sizing {
             Sizing::Dense => {
-                supported_in(&name, &c)?;
-                let cfg = Config::of(&c, "config.json", None).map_err(cannot)?;
+                supported_in(&name, c)?;
+                let cfg = Config::of(c, "config.json", None).map_err(cannot)?;
                 // (penguin at the layout the GPU is fastest in, a lossy level at its own)
                 let (_, _, p) = dense_plan(a, &cfg, row, &name, t, levels::layout_of(level).filter(|l| *l != Layout::Tiered), users)?;
                 shape_checks(&name, &cfg, &p)?;
@@ -3907,21 +3886,21 @@ pub mod sizing {
                 let Some(layout) = levels::layout_of(level) else { return Ok(None) };
                 // (penguin of a family with lossy levels on the dynamic route: its layers cut over the GPUs as their room holds them; its row's name is the route's)
                 if layout == Layout::Tiered && row.split_levels.contains(&"penguin") {
-                    return size_local_dynamic(a, model, text, row.name, devs, reach);
+                    return size_local_dynamic(a, model, c, row.name, devs, reach);
                 }
-                lossy_plan_with(a, model, layout_for(model, layout), text, None, t.free, &t.name, None, t.host).map(Some)
+                lossy_plan_with(a, model, layout_for(model, layout), c, None, t.free, &t.name, None, t.host).map(Some)
             }
             // (the hummingbird level of a row whose experts come from a codes pack: the pack's plan, where its headers and a pack can be had)
             // (a model here with no codes pack beside its weights is refused as `run` refuses it)
             Sizing::Dynamic if level == "hummingbird" && row.route.expert_cache == ExpertCache::Codes => match codes_pack(a, model) {
                 Some(pack) => {
                     let Some(table) = crate::sizes::Table::find(model) else { return Ok(None) };
-                    codes_plan(a, &name, &table, text, row, &pack, devs, devs.first().and_then(|t| t.host)).map(Some)
+                    codes_plan(a, &name, &table, c, row, &pack, devs, devs.first().and_then(|t| t.host)).map(Some)
                 }
                 None if local_dir(model).is_some() => Err(no_codes_pack(&name, row.name, model)),
                 None => Ok(None),
             },
-            Sizing::Dynamic => size_local_dynamic(a, model, text, row.name, devs, reach),
+            Sizing::Dynamic => size_local_dynamic(a, model, c, row.name, devs, reach),
             Sizing::Estimate => Ok(None),
         }
     }
@@ -3931,7 +3910,7 @@ pub mod sizing {
     pub(crate) fn size_local_dynamic(
         a: &Args,
         model: &str,
-        text: &str,
+        c: &ModelConfig,
         family: &'static str,
         devs: &[Target],
         reach: &dyn Fn(&[i32]) -> bool,
@@ -3940,7 +3919,7 @@ pub mod sizing {
         // (the files where they are here: a hummingbird directory's experts are not in the table)
         let dir = if Path::new(model).join("config.json").exists() { Some(PathBuf::from(model)) } else { Source::find(model).ok().map(|s| s.dir) };
         let host = devs.first().and_then(|t| t.host);
-        size_dynamic(a, &short_name(model), &table, dir.as_deref(), text, family, devs, host, reach).map(Some)
+        size_dynamic(a, &short_name(model), &table, dir.as_deref(), c, family, devs, host, reach).map(Some)
     }
 
     /// `--expert-cache GIB`: the GPU memory to give the places of the expert cache, in GiB.
@@ -3977,101 +3956,43 @@ pub mod sizing {
         }
     }
 
-    /// The expert cache a Nemotron model in the glyd-v7 directory `dir` (at `layout`) gets on a GPU of `free` bytes free, in a computer with `host` bytes of memory to give: what `run` gives it (`lossy_plan_with` on the
-    /// directory's own config and packs); None where the GPU holds the model whole. For `glyd-engine generate --expert-cache auto`.
+    /// The expert cache a model of the Nemotron-H layout in the glyd-v7 directory `dir` (at `layout`) gets on a GPU of `free` bytes free, in a computer with `host`
+    /// bytes of memory to give: what `run` gives it (`lossy_plan_with` on the directory's own config, parsed once, and packs); None where the GPU holds the model
+    /// whole. For `glyd-engine generate --expert-cache auto`.
     pub fn expert_cache_for(dir: &Path, layout: Layout, free: u64, gpu: &str, host: Option<u64>) -> Done<Option<CachePlan>> {
-        let file = |f: &str| std::fs::read_to_string(dir.join(f));
-        let text = file("config.json").map_err(|e| Refusal::new(format!("{}: {e}", dir.join("config.json").display()), ""))?;
-        let (generation, name) = (file("generation_config.json").ok(), dir.to_string_lossy().into_owned());
+        let c = ModelConfig::load(dir).map_err(|e| Refusal::new(e.msg, ""))?;
+        let (generation, name) = (ModelConfig::generation(dir), dir.to_string_lossy().into_owned());
         let packed = dir.join("glyd.json").exists().then_some(dir);
-        Ok(lossy_plan_with(&Args::from(["run".to_string(), name.clone()]), &name, layout, &text, generation.as_deref(), free, gpu, packed, host)?.experts)
-    }
-
-    /// A model of the Nemotron-H layout with its experts in the computer's memory (pinned) and a cache of them on the GPU: the context, and the cache, which takes what the GPU has left besides the rest of the model, the
-    /// workspaces and the plan's sequences' states, keys and values at the context (`kv`: `Needs::kv` of its users; or `asked` bytes of it); why not, in words, where the GPU cannot hold even that rest and the least cache (a
-    /// step's choices and as many again; the choices alone for an asked cache), or the computer cannot hold the experts. At the Hummingbird level a computer that cannot hold them all (or `--host-memory`, `asked_host`, that
-    /// gives it less) keeps the rest in the packed directory: `CachePlan::ram` is what it holds, refused where that is less than a step's choices in each width of each layer.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn offloaded(
-        cfg: &ConfigNemotronH,
-        layout: Layout,
-        weights: u64,
-        kv: &dyn Fn(usize) -> u64,
-        free: u64,
-        host: Option<u64>,
-        ctx: Option<usize>,
-        asked: Option<u64>,
-        asked_host: Option<u64>,
-        gpu: &str,
-    ) -> Result<(usize, CachePlan), String> {
-        let (layers, experts, k) = (cfg.layers_of(NhKind::Moe), cfg.moe.experts, cfg.moe.top_k);
-        let each = cfg.expert_bytes(layout).map_err(|e| e.msg)?;
-        let experts_bytes = (layers * experts) as u64 * each;
-        let ctx = ctx.unwrap_or(LOSSY_CTX).min(cfg.max_pos.max(LOSSY_MIN_CTX));
-        // (the plan's weights are at `bits` a weight, a little over the experts' exact bytes: the rest of the model is taken as what is left)
-        let rest = weights.saturating_sub(experts_bytes) + LOSSY_WORK + reserve_of(free) + kv(ctx);
-        let least = if asked.is_some() { k } else { 2 * k };
-        let need = rest + (layers * least) as u64 * each;
-        let budget = asked.unwrap_or_else(|| free.saturating_sub(rest));
-        if asked.is_some_and(|b| rest.saturating_add(b) > free) {
-            return Err(format!(
-                "a cache of {} for the experts and the {} the rest of the model takes are more than the {gpu}'s {} free",
-                gib(budget),
-                gib(rest),
-                gib(free)
-            ));
-        }
-        let host_need = experts_bytes + HOST_MARGIN;
-        // (the Hummingbird level's experts can stay in the packed directory: it needs only the memory for what it holds, and a step's choices in each of a layer's two widths)
-        let disk = layout == Layout::Hummingbird;
-        let ram = held_in_memory(experts_bytes, asked_host, host);
-        let least_ram = if disk { (layers * 2 * k) as u64 * each } else { experts_bytes };
-        let Some(plan) = cache_plan(cfg, layout, budget, least).map_err(|e| e.msg)?.filter(|p| p.gpu_bytes() + rest <= free) else {
-            return Err(format!(
-                "with its experts in the computer's memory it needs at least {} of GPU memory (and {} of the computer's)",
-                gib(need),
-                gib(if disk { least_ram + HOST_MARGIN } else { host_need })
-            ));
-        };
-        if !disk {
-            if let Some(h) = host.filter(|&h| h < host_need) {
-                return Err(format!("with its experts in the computer's memory it needs {} of the computer's memory besides at least {} of GPU memory, and this computer has {} free", gib(host_need), gib(need), gib(h)));
-            }
-            return Ok((ctx, plan));
-        }
-        if let Some(h) = host.filter(|&h| asked_host.is_some() && ram.saturating_add(HOST_MARGIN) > h) {
-            return Err(format!("--host-memory {}: the computer has {} free and keeps {} of them for the system", gib(ram), gib(h), gib(HOST_MARGIN)));
-        }
-        if ram < least_ram {
-            return Err(format!("with its experts read from the disk it needs at least {} of the computer's memory for them ({} for a step's choices in each width of each layer), and {} are to be given", gib(least_ram + HOST_MARGIN), gib(least_ram), gib(ram)));
-        }
-        Ok((ctx, CachePlan { ram, ..plan }))
+        Ok(lossy_plan_with(&Args::from(["run".to_string(), name.clone()]), &name, layout, &c, generation.as_deref(), free, gpu, packed, host)?.experts)
     }
 
     /// The model's config as a lossy level reads it (the Qwen3.5 layout, dense or with experts, by its description: Qwen3.5, Qwen3.6 and Qwen3.8, their config says `qwen3_5`; the Nemotron-H layout: `nemotron_h`, at the
-    /// kestrel, swift and wren levels), and what it takes in `layout` of `free` bytes of GPU memory at the context asked for (else up to LOSSY_CTX, as much as fits): refused where it does not fit at LOSSY_MIN_CTX. A pack
-    /// is sized in its own layout (`pack_layout`: Nemotron's experts alone are four-bit at wren). `packed`: the glyd-v7 directory the model is, where its packs' bytes are the ones it holds.
+    /// kestrel, swift and wren levels; Gemma 4 at penguin and its lossy levels), and what it takes in `layout` of `free` bytes of GPU memory at the context asked for (else up to LOSSY_CTX, as much as fits): refused where
+    /// it does not fit at LOSSY_MIN_CTX. A pack is sized in its own layout (`pack_layout`: Nemotron's experts alone are four-bit at wren). `c`: its config.json, parsed once; `packed`: the glyd-v7 directory the model is,
+    /// where its packs' bytes are the ones it holds.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn lossy_plan(
         a: &Args,
         model: &str,
         layout: Layout,
-        text: &str,
+        c: &ModelConfig,
         gen: Option<&str>,
         free: u64,
         gpu: &str,
         packed: Option<&Path>,
     ) -> Done<LoadPlan> {
-        lossy_plan_with(a, model, layout, text, gen, free, gpu, packed, crate::offload::host_memory())
+        lossy_plan_with(a, model, layout, c, gen, free, gpu, packed, crate::offload::host_memory())
     }
 
-    /// `lossy_plan` for a computer that has `host` bytes of memory to give (None: it does not say). A Nemotron model that does not fit the GPU whole, or that `--expert-cache GIB` asks for, keeps its experts in the
-    /// computer's memory and a cache of them on the GPU (`offloaded`); it is refused, with the memory it needs of each, where the GPU or the computer has too little for that.
+    /// `lossy_plan` for a computer that has `host` bytes of memory to give (None: it does not say). A model whose description has experts the computer's memory can hold
+    /// (`LevelOf::experts`) that does not fit the GPU whole, or that `--expert-cache GIB` asks for, keeps its experts in the computer's memory and a cache of them on the
+    /// GPU (`expert_cache_with`); it is refused, with the memory it needs of each, where the GPU or the computer has too little for that.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn lossy_plan_with(
         a: &Args,
         model: &str,
         layout: Layout,
-        text: &str,
+        c: &ModelConfig,
         gen: Option<&str>,
         free: u64,
         gpu: &str,
@@ -4080,95 +4001,87 @@ pub mod sizing {
     ) -> Done<LoadPlan> {
         // (what the last load of this model here took beyond its plan is planned as already taken: `calibrated`)
         let extra = calibration(&short_name(model), level_name(layout), gpu);
-        let mut p = lossy_plan_inner(a, model, layout, text, gen, free.saturating_sub(extra), gpu, packed, host)?;
+        let mut p = lossy_plan_inner(a, model, layout, c, gen, free.saturating_sub(extra), gpu, packed, host)?;
         calibrated(&mut p, free, extra);
         Ok(p)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn lossy_plan_inner(
-        a: &Args,
-        model: &str,
-        layout: Layout,
-        text: &str,
-        gen: Option<&str>,
-        free: u64,
-        gpu: &str,
-        packed: Option<&Path>,
-        host: Option<u64>,
-    ) -> Done<LoadPlan> {
-        let name = short_name(model);
-        let tag = level_name(layout);
-        if crate::gemma4::is_gemma4(text) {
-            return gemma_plan(a, &name, tag, layout, text, gen, free, gpu, packed);
+    /// A smaller download of the same model a refusal names where it fits (Gemma 4's wren repo of the QAT checkpoint): its repo, its level, what it is, and its
+    /// weights' and draft model's bytes.
+    pub(crate) struct Smaller {
+        pub repo: String,
+        pub level: &'static str,
+        pub what: &'static str,
+        pub weights: u64,
+        pub draft: u64,
+    }
+
+    /// What a model's description says its plan at a lossy route's level takes (`lossy_plan_inner`'s one rule reads nothing else of it): its weights at the level
+    /// and in bf16; a sequence's recurrent states (copied at its mark where the engine keeps them: `pools_of`) and its sliding layers' rings at the context; a token's
+    /// keys and values in the other layers; each in bf16 and in the executor's 12-bit pages where they take its rings (`[bf16, 12-bit]`), with the rings they take
+    /// and its pools' groups' bytes a token in bf16 (each group's block 0); its longest context, the prompt chunk its engine runs, and the page its contexts are cut
+    /// to; the bytes of a draft model where one is found or comes with the download (the rule drafts only for one user: `serve_rows` holds one sequence then);
+    /// a smaller download that a refusal names; and, where it has experts (every description with the Moe kind's blocks), their description as the one
+    /// expert-cache rule takes it (`CacheOf`; the reason in words where it cannot be read): the computer's memory holds them and a cache of them is on the GPU.
+    pub(crate) struct LevelOf {
+        pub kind: Kind,
+        pub row: &'static Support,
+        pub weights: u64,
+        pub bf16: u64,
+        pub state: u64,
+        pub rings: [u64; 2],
+        pub per: [u64; 2],
+        pub groups: Vec<u64>,
+        pub rings12: Vec<crate::dynamic::kv12::KvShape>,
+        pub max_pos: usize,
+        pub chunk: usize,
+        pub page: usize,
+        pub draft: Option<u64>,
+        pub smaller: Option<Smaller>,
+        pub experts: Option<Result<CacheOf, String>>,
+    }
+
+    impl LevelOf {
+        /// The one-GPU rule's needs (`one_gpu`) of this level for `users` sequences, served (`served`: the scheduler's pools) or not, its keys and values in 12-bit
+        /// pages (`twelve`) or bf16, with a draft model of `draft` bytes (0: none).
+        pub(crate) fn needs(&self, layout: Layout, users: usize, twelve: bool, served: bool, draft: u64) -> Needs {
+            let (state, fixed) = pools_of(self.state, &self.groups, served);
+            let t = twelve as usize;
+            Needs {
+                kind: self.kind,
+                family: self.row.name,
+                layout,
+                weights: self.weights,
+                bf16: self.bf16,
+                per_seq: state + self.rings[t],
+                per_token: self.per[t].max(1),
+                once: Once { rings: if twelve { self.rings12.clone() } else { Vec::new() }, chunk: self.chunk, fixed },
+                users,
+                fewer: true,
+                draft,
+                chunks: vec![(self.chunk, LOSSY_WORK)],
+                want: LOSSY_CTX,
+                least: LOSSY_MIN_CTX,
+                cap: self.max_pos.max(LOSSY_MIN_CTX),
+                grain: 1,
+                page: self.page,
+            }
         }
-        // the matrices and the tensors kept as they are, what a sequence holds (its states, a token's KV) and the longest context (config.json parsed once)
-        let m = ModelConfig::parse(text).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
-        let nemotron = m.family() == Some(crate::support::Family::NemotronH);
-        let (packs, kept, state, per, max_pos, low) = if nemotron {
-            if !matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Hummingbird) {
-                return Err(Refusal::unsupported(format!("{name}: the {tag} level is not built for the Nemotron-H layout, whose experts are held at the kestrel, swift and wren levels, or at the hummingbird level"), format!("Run it at the wren, swift or kestrel level: glyd run {model}:wren")));
-            }
-            let cfg = ConfigNemotronH::of(&m, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
-            // (the hummingbird kernels take experts on a latent that is a power of two from 128 to 1,024: src/moe_hb.rs; the experts of a model
-            // with no latent read its width)
-            let l = cfg.moe.latent;
-            if layout == Layout::Hummingbird && !(l.is_power_of_two() && (128..=1024).contains(&l)) {
-                return Err(Refusal::unsupported(
-                    format!(
-                        "{name}: the hummingbird level takes Nemotron-H experts on a latent of 128 to 1,024; this model's experts read its width of {}",
-                        cfg.hidden
-                    ),
-                    format!("Run it at the swift or kestrel level: glyd run {model}:swift"),
-                ));
-            }
-            // (its description, for the rings the 12-bit pages take where a server asks for them)
-            let low = twelve_pages(a).then(|| crate::dynamic::split::lowered_of(&m, cfg.max_pos).ok()).flatten();
-            (cfg.packs(), cfg.kept(), cfg.state_bytes(), cfg.kv_bytes_per_token(), cfg.max_pos, low)
-        } else {
-            if layout == Layout::Hummingbird {
-                return Err(Refusal::unsupported(
-                    format!("{name}: the hummingbird level on this path is built for the Nemotron-H layout alone"),
-                    "Run it at the kestrel, swift or wren level: glyd run MODEL:swift",
-                ));
-            }
-            let refuse = |e: crate::ffi::Error| {
-                Refusal::unsupported(
-                    format!("{name}: the {tag} level on this path takes the Qwen3.5 and Nemotron-H layouts ({})", e.msg),
-                    format!("Run it lossless: glyd run {model}"),
-                )
-            };
-            // (a model of another family: the dense layout's reader says what it is not)
-            if m.family() != Some(crate::support::Family::Qwen35) {
-                Config35::of(&m, "config.json", gen).map_err(refuse)?;
-            }
-            // (the Qwen3.5 layout, dense or with experts, by its description: what a level's save holds of it, as `pack::qwen35_plan` packs it, a sequence's
-            // states and a token's keys and values as its lowered description holds them, and its longest context)
-            let (low, packs, kept) = crate::dynamic::qwen35::saved(&m).map_err(refuse)?;
-            if m.shared.experts() > 0 && !matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4) {
-                return Err(Refusal::unsupported(
-                    format!(
-                        "{name}: the experts of the Qwen3.5 layout are held at the kestrel, swift and wren levels on this path, not in the {} layout",
-                        layout.name()
-                    ),
-                    format!("Run it at kestrel: glyd run {model}:kestrel"),
-                ));
-            }
-            let (state, per) = (low.states.iter().sum::<usize>() as u64, low.rings.iter().map(|r| r.token_bytes()).sum::<usize>() as u64);
-            (packs, kept, state, per, low.max_pos, Some(low))
-        };
+    }
+
+    /// The weights of packs `packs` (each at the layout `own` gives its key) and tensors `kept` as they are, as a lossy level holds them, and in bf16: a glyd-v7
+    /// directory's own bytes where `packed` is one (a matrix it holds as bf16 is packed as it loads: sized as without one).
+    fn packed_weights(packs: Vec<Pack35>, kept: Vec<crate::qwen35::Tensor35>, packed: Option<&Path>, own: &dyn Fn(&str) -> Layout) -> Done<(u64, u64)> {
         let ck = packed.map(|d| glyd_gpu::safetensors::Checkpoint::open(d).map_err(cannot)).transpose()?;
         let (mut weights, mut bf16) = (0u64, 0u64);
         for p in packs {
             let b = (p.rows() * p.cols * 2) as u64;
             bf16 += b;
-            // (a matrix the directory holds as bf16 is packed as it loads: sized as without one, in the layout it is packed in)
             let saved = ck.as_ref().map_or(0, |ck| p.parts.iter().filter_map(|x| packed_bytes(ck, Pack35::saved(&x.0))).sum::<u64>());
-            let own = if nemotron { pack_layout(layout, &p.key) } else { layout };
             weights += if saved > 0 {
                 saved
             } else if p.packable() {
-                (b as f64 * bits(own) / 16.0) as u64
+                (b as f64 * bits(own(&p.key)) / 16.0) as u64
             } else {
                 b
             };
@@ -4178,72 +4091,240 @@ pub mod sizing {
             bf16 += b;
             weights += b;
         }
-        let asked = if a.has("context") || a.has("ctx") { Some(a.either("context", "ctx", 0usize)?) } else { None };
-        let fam = if nemotron { crate::support::Family::NemotronH } else { crate::support::Family::Qwen35 };
-        crate::support::context_check(&name, crate::support::row(fam), max_pos, asked)?;
-        // (served, the executor gives each of --users a sequence of its own in pools of blocks that hold up to the context of each (src/dynamic/rows.rs `page`): the
-        // plan counts them, as Gemma 4's does; neither path drafts. Measured on an A100: Qwen3.5-0.8B served to 8 took 5,054 MiB, planned for one at 3,037)
-        let users = users_asked(a)?;
-        // (a server's: each sequence's states and their copies at its mark, the pool of copies at block boundaries and the pool's block 0: `rows::SeqRoom`)
-        let (seq_state, once) = pools_of(state, &[per], served(a));
-        // (a server's keys and values in the executor's 12-bit pages where GLYD_KV=lossless asks for them and its description has rings they take, by its attention
-        // kinds (`twelve_bit_rings`): those rings at the pages' bytes a token, the others bf16, and what their pools spend once; taken by `one_gpu_pages`' rule)
-        let taken: Vec<crate::dynamic::kv12::KvShape> =
-            low.as_ref().filter(|_| twelve_pages(a)).map_or(Vec::new(), |l| crate::dynamic::twelve_bit_rings(l).into_iter().flatten().collect());
-        let per12 = |l: &crate::dynamic::ModelDesc| -> u64 {
-            let rings = crate::dynamic::twelve_bit_rings(l);
-            l.rings.iter().zip(&rings).map(|(r, t)| t.map_or(r.token_bytes() as u64, |k| kv12_token_bytes(k.heads, k.channels, k.one))).sum()
-        };
-        let needs = |twelve: bool| Needs {
-            kind: if nemotron { Kind::NemotronH } else { Kind::Qwen35 },
-            family: crate::support::row(fam).name,
-            layout,
+        Ok((weights, bf16))
+    }
+
+    /// A token's keys and values in the rings of the lowered description `l`, each at the 12-bit pages' bytes where they take it (`twelve_bit_rings`), else bf16.
+    fn per12(l: &crate::dynamic::ModelDesc) -> u64 {
+        let rings = crate::dynamic::twelve_bit_rings(l);
+        l.rings.iter().zip(&rings).map(|(r, t)| t.map_or(r.token_bytes() as u64, |k| kv12_token_bytes(k.heads, k.channels, k.one))).sum()
+    }
+
+    /// The rings of the lowered description `low` a server's 12-bit pages take where GLYD_KV=lossless asks for them (`twelve_pages`), by its attention kinds.
+    fn taken12(a: &Args, low: Option<&crate::dynamic::ModelDesc>) -> Vec<crate::dynamic::kv12::KvShape> {
+        low.filter(|_| twelve_pages(a)).map_or(Vec::new(), |l| crate::dynamic::twelve_bit_rings(l).into_iter().flatten().collect())
+    }
+
+    /// The level description (`LevelOf`) of a model of the Nemotron-H layout, by its description: its packs at the level (its experts' own layout at wren:
+    /// `pack_layout`), its Mamba-2 layers' states, its attention layers' keys and values, and its mixture-of-experts layers' experts, which the computer's memory
+    /// can hold (`nemotron_experts`). Its levels are kestrel, swift, wren and hummingbird (on a latent the hummingbird kernels take).
+    fn nemotron_level(a: &Args, model: &str, name: &str, layout: Layout, m: &ModelConfig, gen: Option<&str>, packed: Option<&Path>) -> Done<LevelOf> {
+        let tag = level_name(layout);
+        if !matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Hummingbird) {
+            return Err(Refusal::unsupported(format!("{name}: the {tag} level is not built for the Nemotron-H layout, whose experts are held at the kestrel, swift and wren levels, or at the hummingbird level"), format!("Run it at the wren, swift or kestrel level: glyd run {model}:wren")));
+        }
+        let cfg = ConfigNemotronH::of(m, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
+        // (the hummingbird kernels take experts on a latent that is a power of two from 128 to 1,024: src/moe_hb.rs; the experts of a model
+        // with no latent read its width)
+        let l = cfg.moe.latent;
+        if layout == Layout::Hummingbird && !(l.is_power_of_two() && (128..=1024).contains(&l)) {
+            return Err(Refusal::unsupported(
+                format!(
+                    "{name}: the hummingbird level takes Nemotron-H experts on a latent of 128 to 1,024; this model's experts read its width of {}",
+                    cfg.hidden
+                ),
+                format!("Run it at the swift or kestrel level: glyd run {model}:swift"),
+            ));
+        }
+        // (its description, for the rings the 12-bit pages take where a server asks for them)
+        let low = twelve_pages(a).then(|| crate::dynamic::split::lowered_of(m, cfg.max_pos).ok()).flatten();
+        let (weights, bf16) = packed_weights(cfg.packs(), cfg.kept(), packed, &|key| pack_layout(layout, key))?;
+        let per = cfg.kv_bytes_per_token();
+        Ok(LevelOf {
+            kind: Kind::NemotronH,
+            row: crate::support::row(crate::support::Family::NemotronH),
             weights,
             bf16,
-            per_seq: seq_state,
-            per_token: if twelve { low.as_ref().map_or(per, per12) } else { per }.max(1),
-            once: Once { rings: if twelve { taken.clone() } else { Vec::new() }, chunk: LOSSY_CHUNK, fixed: once },
-            users,
-            fewer: true,
-            draft: 0,
-            chunks: vec![(LOSSY_CHUNK, LOSSY_WORK)],
-            want: LOSSY_CTX,
-            least: LOSSY_MIN_CTX,
-            cap: max_pos.max(LOSSY_MIN_CTX),
-            grain: 1,
+            state: cfg.state_bytes(),
+            rings: [0, 0],
+            per: [per, low.as_ref().map_or(per, per12)],
+            groups: vec![per],
+            rings12: taken12(a, low.as_ref()),
+            max_pos: cfg.max_pos,
+            chunk: LOSSY_CHUNK,
             page: 1,
+            draft: None,
+            smaller: None,
+            experts: Some(nemotron_experts(&cfg, layout, weights).map_err(|e| e.msg)),
+        })
+    }
+
+    /// The level description (`LevelOf`) of a model of the Qwen3.5 layout, dense or with experts, by its description: what a level's save holds of it, as
+    /// `pack::qwen35_plan` packs it, a sequence's states and a token's keys and values as its lowered description holds them, and its longest context. Its
+    /// experts stay on the GPU at these levels (kestrel, swift and wren alone take them); none of its levels here is hummingbird.
+    fn qwen35_level(a: &Args, model: &str, name: &str, layout: Layout, m: &ModelConfig, gen: Option<&str>, packed: Option<&Path>) -> Done<LevelOf> {
+        let tag = level_name(layout);
+        if layout == Layout::Hummingbird {
+            return Err(Refusal::unsupported(
+                format!("{name}: the hummingbird level on this path is built for the Nemotron-H layout alone"),
+                "Run it at the kestrel, swift or wren level: glyd run MODEL:swift",
+            ));
+        }
+        let refuse = |e: crate::ffi::Error| {
+            Refusal::unsupported(
+                format!("{name}: the {tag} level on this path takes the Qwen3.5 and Nemotron-H layouts ({})", e.msg),
+                format!("Run it lossless: glyd run {model}"),
+            )
         };
-        let (n, pages) = (needs(false), (!taken.is_empty()).then(|| needs(true)));
+        // (a model of another family: the dense layout's reader says what it is not)
+        if m.family() != Some(crate::support::Family::Qwen35) {
+            Config35::of(m, "config.json", gen).map_err(refuse)?;
+        }
+        let (low, packs, kept) = crate::dynamic::qwen35::saved(m).map_err(refuse)?;
+        if m.shared.experts() > 0 && !matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4) {
+            return Err(Refusal::unsupported(
+                format!(
+                    "{name}: the experts of the Qwen3.5 layout are held at the kestrel, swift and wren levels on this path, not in the {} layout",
+                    layout.name()
+                ),
+                format!("Run it at kestrel: glyd run {model}:kestrel"),
+            ));
+        }
+        let (weights, bf16) = packed_weights(packs, kept, packed, &|_| layout)?;
+        let (state, per) = (low.states.iter().sum::<usize>() as u64, low.rings.iter().map(|r| r.token_bytes()).sum::<usize>() as u64);
+        // (its experts in the computer's memory and a cache of them on the GPU where the GPU does not hold the model whole, the rule's last step before it refuses,
+        // as for every description with experts: the rest of the model its weights less the experts' as the cache holds them, as the plan counts them)
+        let experts = (m.shared.experts() > 0).then(|| qwen35_experts(m, layout, weights).map_err(|e| e.msg));
+        Ok(LevelOf {
+            kind: Kind::Qwen35,
+            row: crate::support::row(crate::support::Family::Qwen35),
+            weights,
+            bf16,
+            state,
+            rings: [0, 0],
+            per: [per, per12(&low)],
+            groups: vec![per],
+            rings12: taken12(a, Some(&low)),
+            max_pos: low.max_pos,
+            chunk: LOSSY_CHUNK,
+            page: 1,
+            draft: None,
+            smaller: None,
+            experts,
+        })
+    }
+
+    /// The level description (`LevelOf`) of a Gemma 4 dense model, by its description: its packed weights (as a glyd-v7 directory holds them, else at `layout`),
+    /// its sliding layers' rings (fixed: a window and a chunk each, or the context where it is shorter) at the context asked (else LOSSY_CTX, not below
+    /// LOSSY_MIN_CTX), its global layers' keys and values a token, its draft model where one is found or comes with the download, and the wren repo of the
+    /// QAT checkpoint where it has one (a smaller download its penguin's refusal names).
+    #[allow(clippy::too_many_arguments)]
+    fn gemma_level(a: &Args, name: &str, layout: Layout, m: &ModelConfig, gen: Option<&str>, packed: Option<&Path>, asked: Option<usize>) -> Done<LevelOf> {
+        let tag = level_name(layout);
+        if !matches!(layout, Layout::Tiered | Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H) {
+            return Err(Refusal::unsupported(
+                format!("{name}: the {tag} level is not built for Gemma 4"),
+                format!("Run it lossless (penguin) or at the kestrel or swift level: glyd run {name}:kestrel"),
+            ));
+        }
+        let cfg = crate::gemma4::ConfigG4::of(m, gen, false).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), ""))?;
+        let ck = packed.map(|d| glyd_gpu::safetensors::Checkpoint::open(d).map_err(cannot)).transpose()?;
+        let (weights, bf16) = cfg.weight_bytes(layout, ck.as_ref());
+        // (a model not on this computer yet comes as its pre-packed repo, which holds its draft model: planned with it, the larger of the two plans)
+        let typed = a.pos.get(1).map_or(name, |m| level(m, false).map_or(m.as_str(), |(m, _)| m));
+        let draft_to_come = packed.is_none() && !a.has("no-draft") && levels::draft_repo(typed).is_some(); // (the one rule that says which downloads bring a draft model: src/levels.rs)
+        let ctx = asked.unwrap_or(LOSSY_CTX).max(LOSSY_MIN_CTX);
+        let ((r0, p0), (r1, p1)) = (cfg.kv_bytes(GEMMA_CHUNK, ctx, false), cfg.kv_bytes(GEMMA_CHUNK, ctx, true));
+        Ok(LevelOf {
+            kind: Kind::Gemma4,
+            row: crate::support::row(crate::support::Family::Gemma4),
+            weights,
+            bf16,
+            state: 0,
+            rings: [r0, r1],
+            per: [p0, p1],
+            groups: cfg.group_token_bytes().to_vec(),
+            rings12: cfg.rings12(),
+            max_pos: cfg.max_pos,
+            chunk: GEMMA_CHUNK,
+            page: 16,
+            draft: (gemma_draft(a, packed).is_some() || draft_to_come).then_some(GEMMA_DRAFT_BYTES),
+            smaller: gemma_wren(typed).filter(|_| layout == Layout::Tiered).map(|repo| Smaller {
+                repo,
+                level: "wren",
+                what: "Google's QAT checkpoint, bit for bit",
+                weights: cfg.weight_bytes(Layout::Int4H, None).0,
+                draft: GEMMA_DRAFT_BYTES,
+            }),
+            experts: None,
+        })
+    }
+
+    /// The level description of the model `c` at `layout`, by the description reader of its config (`LevelOf`): Gemma 4's, the Nemotron-H layout's, else the
+    /// Qwen3.5 layout's (whose reader refuses, in words, a model of any other).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn level_of(
+        a: &Args,
+        model: &str,
+        name: &str,
+        layout: Layout,
+        c: &ModelConfig,
+        gen: Option<&str>,
+        packed: Option<&Path>,
+        asked: Option<usize>,
+    ) -> Done<LevelOf> {
+        match c.family() {
+            Some(crate::support::Family::Gemma4) => gemma_level(a, name, layout, c, gen, packed, asked),
+            Some(crate::support::Family::NemotronH) => nemotron_level(a, model, name, layout, c, gen, packed),
+            _ => qwen35_level(a, model, name, layout, c, gen, packed),
+        }
+    }
+
+    /// The plan of the lossy route's levels, one rule for every model it takes, by what its description says (`level_of`: its weights, its sequences' bytes, its
+    /// draft model, its experts): the context asked (refused where its family takes less), the users a server holds (each a sequence of its own in pools of blocks
+    /// that hold up to the context of each: src/dynamic/rows.rs `page`), a draft model only for one user (a drafted engine runs one sequence at a time:
+    /// `serve_rows`), the keys and values in the executor's 12-bit pages where a server with no draft model asks for them and they reserve no more than bf16
+    /// (`one_gpu_pages`), the one-GPU rule (`one_gpu`); where the GPU does not hold the model whole (or `--expert-cache` asks for a cache), its experts in the
+    /// computer's memory and their places on the GPU by the one expert-cache rule (`expert_cache_with`: every user's context first, the engine's work next, the
+    /// places what is left), at least a step's choices and as many again a layer (a step's choices where the cache's GPU memory is asked). Refused in one form
+    /// (`too_big`), naming a smaller download where one fits, and why the experts in the computer's memory do not help.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn lossy_plan_inner(
+        a: &Args,
+        model: &str,
+        layout: Layout,
+        c: &ModelConfig,
+        gen: Option<&str>,
+        free: u64,
+        gpu: &str,
+        packed: Option<&Path>,
+        host: Option<u64>,
+    ) -> Done<LoadPlan> {
+        let name = short_name(model);
+        let tag = level_name(layout);
+        let asked = if a.has("context") || a.has("ctx") { Some(a.either("context", "ctx", 0usize)?) } else { None };
+        let lv = level_of(a, model, &name, layout, c, gen, packed, asked)?;
+        crate::support::context_check(&name, lv.row, lv.max_pos, asked)?;
+        // (served, the executor gives each of --users a sequence of its own in pools of blocks that hold up to the context of each (src/dynamic/rows.rs `page`): the
+        // plan counts them. Measured on an A100: Qwen3.5-0.8B served to 8 took 5,054 MiB, planned for one at 3,037)
+        let users = users_asked(a)?;
+        // (a drafted engine runs one sequence at a time (src/dynamic/rows.rs `serve_rows`): a plan of more users than one holds them with no draft model, and the
+        // loader loads none (src/cli.rs `open_lossy` drafts where the plan has a draft model))
+        let draft = lv.draft.filter(|_| users == 1).unwrap_or(0);
+        // (a server's keys and values in the executor's 12-bit pages where GLYD_KV=lossless asks for them, it has no draft model and its description has rings they
+        // take, by its attention kinds: those rings at the pages' bytes a token, the others bf16, and what their pools spend once; taken by `one_gpu_pages`' rule)
+        let twelve = twelve_pages(a) && draft == 0 && !lv.rings12.is_empty();
+        let (n, pages) = (lv.needs(layout, users, false, served(a), draft), twelve.then(|| lv.needs(layout, users, true, served(a), draft)));
         let fitted = one_gpu_pages(&n, pages.as_ref(), free, asked, gpu);
-        // (the flags of the experts in the computer's memory: Nemotron-H's at these levels; the Qwen3.5 layout with experts keeps every expert on the GPU here,
-        // and in the computer's memory at penguin, where its GPUs do not hold them)
+        // (the flags of the experts in the computer's memory: refused for a description with none)
         let not_here = |flag: &str| {
-            if m.shared.experts() > 0 {
-                Refusal::new(
-                    format!("{flag}: {name} keeps every expert on the GPU at the {tag} level"),
-                    format!("At penguin its plan keeps its experts in the computer's memory where its GPUs do not hold them: glyd run {model}:penguin"),
-                )
-            } else {
-                Refusal::new(
-                    format!("{flag}: {name} has no experts to keep in the computer's memory"),
-                    "It is for a model of the Nemotron-H layout, whose experts it keeps there",
-                )
-            }
+            Refusal::new(format!("{flag}: {name} has no experts to keep in the computer's memory"), "It is for a model with experts, which it keeps there")
         };
         let cache = cache_flag(a)?;
-        if cache.is_some() && !nemotron {
+        if cache.is_some() && lv.experts.is_none() {
             return Err(not_here("--expert-cache"));
         }
         let host_asked = host_flag(a)?;
-        if host_asked.is_some() && !nemotron {
+        if host_asked.is_some() && lv.experts.is_none() {
             return Err(not_here("--host-memory"));
         }
         let mut also = String::new();
-        if nemotron && (fitted.is_err() || cache.is_some()) {
-            let cfg = ConfigNemotronH::of(&m, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
-            match offloaded(&cfg, layout, weights, &|ctx| n.kv(n.users as u64, ctx), free, host, asked, cache, host_asked, gpu) {
-                // (its context `offloaded`'s, every one of its users holding it)
-                Ok((ctx, plan)) => return Ok(LoadPlan { experts: Some(plan), ..n.plan_at(ctx, n.chunks[0], free, gpu) }),
+        if let Some(src) = lv.experts.as_ref().filter(|_| fitted.is_err() || cache.is_some()) {
+            // (its context the one asked, else LOSSY_CTX, every one of its users holding it)
+            let ctx = asked.unwrap_or(LOSSY_CTX).min(lv.max_pos.max(LOSSY_MIN_CTX));
+            match src.as_ref().map_err(String::clone).and_then(|src| experts_in_ram(src, n.kv(n.users as u64, ctx), layout, free, host, cache, host_asked, gpu))
+            {
+                Ok(plan) => return Ok(LoadPlan { experts: Some(plan), ..n.plan_at(ctx, n.chunks[0], free, gpu) }),
                 Err(why) if cache.is_some() => {
                     return Err(Refusal::unsupported(
                         format!("{name} at the {tag} level with --expert-cache: {why}"),
@@ -4254,7 +4335,14 @@ pub mod sizing {
             }
         }
         fitted.map_err(|s| {
-            let mut r = too_big(&name, tag, gpu, free, 1, &s, asked, false, None);
+            // (a level that does not fit, of a model with a smaller download that does: that one first, with its draft model, at the shortest context a plan takes)
+            let alt = lv.smaller.as_ref().and_then(|d| {
+                let need = d.weights + n.per_seq + d.draft + LOSSY_WORK + reserve_of(free) + LOSSY_MIN_CTX as u64 * n.per_token;
+                (need <= free)
+                    .then(|| format!("glyd run {} fits: the {} level, about {} at {LOSSY_MIN_CTX} tokens of context ({})", d.repo, d.level, gib(need), d.what))
+            });
+            // (the need is one sequence's: the scheduler takes fewer users where the room holds fewer, `Needs::fewer`)
+            let mut r = too_big(&name, tag, gpu, free, 1, &s, asked, draft > 0, alt);
             if !also.is_empty() {
                 r.what += &also;
                 r.fix = "Close programs that use the GPU (nvidia-smi lists them) or the computer's memory, or use a GPU or a computer with more memory".into();
@@ -4263,99 +4351,157 @@ pub mod sizing {
         })
     }
 
-    /// Gemma 4's needs on one GPU for `users` sequences: its weights, draft model and their bf16 bytes as given, its sliding layers' rings for a context of `ctx`
-    /// (fixed: a window and a chunk) and its global layers' keys and values a token, in the 12-bit pages where `twelve` (with what their pools spend once).
-    pub(crate) fn gemma_needs(
-        cfg: &crate::gemma4::ConfigG4,
-        layout: Layout,
-        (weights, bf16, draft): (u64, u64, u64),
-        users: usize,
-        ctx: usize,
-        twelve: bool,
-        served: bool,
-    ) -> Needs {
-        let (rings, per) = cfg.kv_bytes(GEMMA_CHUNK, ctx, twelve);
-        Needs {
-            kind: Kind::Gemma4,
-            family: "Gemma 4",
-            layout,
-            weights,
-            bf16,
-            per_seq: rings,
-            per_token: per.max(1),
-            once: Once { rings: if twelve { cfg.rings12() } else { Vec::new() }, chunk: GEMMA_CHUNK, fixed: pools_of(0, &cfg.group_token_bytes(), served).1 },
-            users,
-            fewer: true,
-            draft,
-            chunks: vec![(GEMMA_CHUNK, LOSSY_WORK)],
-            want: LOSSY_CTX,
-            least: LOSSY_MIN_CTX,
-            cap: cfg.max_pos.max(LOSSY_MIN_CTX),
-            grain: 1,
-            page: 16,
-        }
-    }
-
-    /// `lossy_plan` for a Gemma 4 dense model: its packed weights (as a glyd-v7 directory holds them, else at `layout`), the sliding layers' rings, a draft model where one is found, and the
-    /// context the rest of the GPU holds in the global layers' keys and values.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn gemma_plan(
-        a: &Args,
-        name: &str,
-        tag: &str,
-        layout: Layout,
-        text: &str,
-        gen: Option<&str>,
-        free: u64,
-        gpu: &str,
-        packed: Option<&Path>,
-    ) -> Done<LoadPlan> {
-        if !matches!(layout, Layout::Tiered | Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H) {
-            return Err(Refusal::unsupported(
-                format!("{name}: the {tag} level is not built for Gemma 4"),
-                format!("Run it lossless (penguin) or at the kestrel or swift level: glyd run {name}:kestrel"),
-            ));
-        }
-        let cfg = crate::gemma4::ConfigG4::parse(text, gen, false).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), ""))?;
-        let ck = packed.map(|d| glyd_gpu::safetensors::Checkpoint::open(d).map_err(cannot)).transpose()?;
-        let (weights, bf16) = cfg.weight_bytes(layout, ck.as_ref());
-        // (a model not on this computer yet comes as its pre-packed repo, which holds its draft model: planned with it, the larger of the two plans)
-        let typed = a.pos.get(1).map_or(name, |m| level(m, false).map_or(m.as_str(), |(m, _)| m));
-        // (a drafted engine runs one sequence at a time (src/dynamic/rows.rs `serve_rows`): a plan of more users than one holds them with no draft model, and the
-        // loader loads none (src/cli.rs `open_lossy` drafts where the plan has a draft model))
-        let users = users_asked(a)?;
-        let draft_to_come = packed.is_none() && !a.has("no-draft") && levels::draft_repo(typed).is_some(); // (the one rule that says which downloads bring a draft model: src/levels.rs)
-        let draft = if users == 1 && (gemma_draft(a, packed).is_some() || draft_to_come) { GEMMA_DRAFT_BYTES } else { 0 };
-        let asked = if a.has("context") || a.has("ctx") { Some(a.either("context", "ctx", 0usize)?) } else { None };
-        crate::support::context_check(name, crate::support::row(crate::support::Family::Gemma4), cfg.max_pos, asked)?;
-        // (12-bit lossless pages where a server asks for them (`twelve_pages`) and has no draft model, whose executor then pages its cache (src/dynamic/kvpages.rs),
-        // and they reserve no more than bf16 for the plan: `one_gpu_pages`)
-        let twelve = twelve_pages(a) && draft == 0;
-        // (with no draft model, the scheduler gives each of the users a room of its own, its sliding layers' rings and its context (src/dynamic/rows.rs): the context not asked for is what the room gives
-        // each of them, at least LOSSY_MIN_CTX (where that leaves room for fewer, the server takes fewer))
-        let needs = |twelve: bool| gemma_needs(&cfg, layout, (weights, bf16, draft), users, asked.unwrap_or(LOSSY_CTX).max(LOSSY_MIN_CTX), twelve, served(a));
-        let (n, pages) = (needs(false), twelve.then(|| needs(true)));
-        let rings = n.per_seq;
-        one_gpu_pages(&n, pages.as_ref(), free, asked, gpu).map_err(|s| {
-            // (penguin that does not fit, of a model with a wren repo that does: that repo first, with its draft model, at the shortest context a plan takes)
-            let wren = gemma_wren(typed).filter(|_| layout == Layout::Tiered).and_then(|repo| {
-                let need =
-                    cfg.weight_bytes(Layout::Int4H, None).0 + rings + GEMMA_DRAFT_BYTES + LOSSY_WORK + reserve_of(free) + LOSSY_MIN_CTX as u64 * n.per_token;
-                (need <= free).then(|| {
-                    format!(
-                        "glyd run {repo} fits: the wren level, about {} at {LOSSY_MIN_CTX} tokens of context (Google's QAT checkpoint, bit for bit)",
-                        gib(need)
-                    )
-                })
-            });
-            too_big(name, tag, gpu, free, users, &s, asked, draft > 0, wren)
+    /// The experts of a model of the Nemotron-H layout at `layout` as the one expert-cache rule takes them (`expert_cache_with`), by its description: its
+    /// mixture-of-experts layers, each of its experts' bytes at the level (the hummingbird level's mean, whose experts the disk can hold), a step's choices, and
+    /// the rest of the model (its `weights` at the level less the experts') held whole.
+    pub(crate) fn nemotron_experts(cfg: &ConfigNemotronH, layout: Layout, weights: u64) -> crate::ffi::Result<CacheOf> {
+        let moe: Vec<bool> = cfg.kinds.iter().map(|&k| k == NhKind::Moe).collect();
+        let place = cfg.expert_bytes(layout)?;
+        let all = (cfg.layers_of(NhKind::Moe) * cfg.moe.experts) as u64 * place;
+        Ok(CacheOf {
+            dense: vec![0; moe.len()],
+            base: weights.saturating_sub(all),
+            ram: Vec::new(),
+            moe,
+            place,
+            experts: cfg.moe.experts,
+            top_k: cfg.moe.top_k,
+            all,
+            disk: layout == Layout::Hummingbird,
+            across: 1,
+            starts: Vec::new(),
         })
     }
 
-    /// What an expert cache on the dynamic route is planned from, read by one rule whatever the source of its experts (`release_experts`, `kimi_experts`,
-    /// `hb_dir_experts`): each layer's weights besides its experts (`dense`, the rest `base`) and the bytes of them its loader can keep in the computer's memory
-    /// (`ram`, src/dense_ram.rs), which layers have experts, a place's bytes (an expert's, their mean where they differ), a layer's experts and a token's, every
-    /// expert's bytes, and whether those the computer's memory does not hold are read from the disk (`disk`: a hummingbird directory's) or all must be in it.
+    /// The experts of the Qwen3.5 layout with experts at a lossy level as the one expert-cache rule takes them (`expert_cache_with`), by its description: its
+    /// layers whose feed-forward is the Moe kind's, a layer's experts and a token's, an expert's bytes as the level's block layout packs its two matrices for
+    /// the cache's places (its gate and up rows joined, then its down: `moe::expert_strides`, src/dynamic/experts.rs `block_packs`), and the rest of the model
+    /// (its `weights` at the level less the experts', as the plan counts them: `LoadPlan::weights_on_gpu`) held whole.
+    pub(crate) fn qwen35_experts(m: &ModelConfig, layout: Layout, weights: u64) -> crate::ffi::Result<CacheOf> {
+        use crate::runtime::kinds::{Body, Ffn};
+        let d = crate::runtime::describe::describe_config(m)?;
+        let (nl, nb) = (m.num("num_hidden_layers").unwrap_or(0), d.desc.blocks.len().max(1));
+        let (hidden, inter) = (m.num("hidden_size").unwrap_or(0), m.num("moe_intermediate_size").unwrap_or(0));
+        let (mut moe, mut experts, mut top_k) = (vec![false; nl], 0usize, 0usize);
+        for (b, blk) in d.desc.blocks.iter().enumerate() {
+            if let Body::Ffn(Ffn::Moe(x)) = &blk.body {
+                if let Some(f) = moe.get_mut(b * nl / nb) {
+                    *f = true;
+                }
+                (experts, top_k) = (experts.max(x.experts), top_k.max(x.router.top_k));
+            }
+        }
+        let tag = match layout {
+            Layout::Int6 => glyd_gpu::pack::INT6_TAG,
+            Layout::Int5 => glyd_gpu::pack::INT5_TAG,
+            Layout::Int4 => glyd_gpu::pack::INT4_TAG,
+            other => return crate::ffi::err(format!("the experts are held in the block layouts in the cache: {} is asked", other.name())),
+        };
+        let ((ud, us), (dd, ds)) = (crate::moe::expert_strides(tag, 2 * inter, hidden)?, crate::moe::expert_strides(tag, hidden, inter)?);
+        let place = ud + us + dd + ds;
+        let all = (moe.iter().filter(|&&f| f).count() * experts) as u64 * place;
+        Ok(CacheOf {
+            dense: vec![0; nl],
+            base: weights.saturating_sub(all),
+            ram: Vec::new(),
+            moe,
+            place,
+            experts,
+            top_k,
+            all,
+            disk: false,
+            across: 1,
+            starts: Vec::new(),
+        })
+    }
+
+    /// A lossy level's experts in the computer's memory (`src`) and their places on its one GPU of `free` bytes free, by the one expert-cache rule
+    /// (`expert_cache_with`): its users' keys, values and states `kv` first, the engine's work and the reserve next, the places what is left (or `cache` bytes of
+    /// the GPU's, `--expert-cache`), at least a step's choices and as many again a layer (a step's choices for an asked cache); every expert in the computer's
+    /// memory (`host` free; None: it does not say, and is taken to have enough), or at the hummingbird level what it holds (`asked_host`: `--host-memory`), the
+    /// packed directory the rest, at least a step's choices in each width of each layer. The cache's plan, or why not in words.
+    #[allow(clippy::too_many_arguments)]
+    fn experts_in_ram(
+        src: &CacheOf,
+        kv: u64,
+        layout: Layout,
+        free: u64,
+        host: Option<u64>,
+        cache: Option<u64>,
+        asked_host: Option<u64>,
+        gpu: &str,
+    ) -> Result<CachePlan, String> {
+        let (layers, k) = (src.layers(), src.top_k);
+        let rest = src.base + LOSSY_WORK + reserve_of(free) + kv;
+        let least = if cache.is_some() { k } else { 2 * k };
+        let need = rest + (layers * least) as u64 * src.place;
+        if let Some(b) = cache.filter(|&b| rest.saturating_add(b) > free) {
+            return Err(format!(
+                "a cache of {} for the experts and the {} the rest of the model takes are more than the {gpu}'s {} free",
+                gib(b),
+                gib(rest),
+                gib(free)
+            ));
+        }
+        let room = cache.map_or(free.saturating_sub(LOSSY_WORK + reserve_of(free)), |b| src.base + kv + b);
+        let (host_need, least_ram) = (src.all + HOST_MARGIN, (layers * 2 * k) as u64 * src.place);
+        let ask = CacheAsk { least: Some(least), ram_least: Some(2 * k), host_memory: asked_host };
+        let mut kvs = vec![0; src.dense.len().max(1)];
+        kvs[0] = kv;
+        match expert_cache_with(src, ask, &[(0, room)], &kvs, host) {
+            Ok(c) => Ok(CachePlan {
+                layers,
+                experts: src.experts,
+                slots: c.places.first().copied().unwrap_or(0),
+                expert_bytes: src.place,
+                in_place: layout == Layout::Hummingbird,
+                ram: c.ram,
+            }),
+            Err(CacheShort::Gpu) => Err(format!(
+                "with its experts in the computer's memory it needs at least {} of GPU memory (and {} of the computer's)",
+                gib(need),
+                gib(if src.disk { least_ram + HOST_MARGIN } else { host_need })
+            )),
+            Err(CacheShort::Memory { free: h }) => Err(format!(
+                "with its experts in the computer's memory it needs {} of the computer's memory besides at least {} of GPU memory, and this computer has {} free",
+                gib(host_need),
+                gib(need),
+                gib(h)
+            )),
+            Err(CacheShort::Asked { ram, free: h }) => {
+                Err(format!("--host-memory {}: the computer has {} free and keeps {} of them for the system", gib(ram), gib(h), gib(HOST_MARGIN)))
+            }
+            Err(CacheShort::Held { ram, least }) => Err(format!(
+                "with its experts read from the disk it needs at least {} of the computer's memory for them ({} for a step's choices in each width of each layer), and {} are to be given",
+                gib(least + HOST_MARGIN),
+                gib(least),
+                gib(ram)
+            )),
+        }
+    }
+
+    /// A Nemotron-H expert cache of `budget` bytes of a GPU's memory and nothing else on it (a development check's `--expert-cache GIB`): the places a layer the
+    /// one expert-cache rule gives (`expert_cache_with`), at least `least`, every expert in the computer's memory; None where fewer than `least` fit.
+    pub fn nemotron_cache(cfg: &ConfigNemotronH, layout: Layout, budget: u64, least: usize) -> crate::ffi::Result<Option<CachePlan>> {
+        let src = CacheOf { base: 0, ..nemotron_experts(cfg, layout, 0)? };
+        let ask = CacheAsk { least: Some(least), ram_least: None, host_memory: None };
+        Ok(expert_cache_with(&src, ask, &[(0, budget)], &[], None).ok().map(|c| CachePlan {
+            layers: src.layers(),
+            experts: src.experts,
+            slots: c.places.first().copied().unwrap_or(0),
+            expert_bytes: src.place,
+            in_place: layout == Layout::Hummingbird,
+            ram: src.all,
+        }))
+    }
+
+    /// What an expert cache is planned from, read by one rule whatever the source of its experts and whatever the route (`expert_cache_with`: a release's,
+    /// `release_experts`; a loader's own packs, `packed_experts`; a hummingbird directory's, `hb_dir_experts`; a lossy level's, `nemotron_experts`): each
+    /// layer's weights besides its experts (`dense`, the rest `base`) and the bytes of them its loader can keep in the computer's memory (`ram`, src/dense_ram.rs),
+    /// which layers have experts, a place's bytes (an expert's, their mean where they differ), a layer's experts and a token's, every expert's bytes, whether
+    /// those the computer's memory does not hold are read from the disk (`disk`: a hummingbird directory's, the hummingbird level's) or all must be in it, the
+    /// GPUs every layer is across (src/dynamic/tp.rs: each holds `dense` and `base`, its share of them already, and a slice of each place, `place` a slice's
+    /// bytes; 1 where the layers are cut over the GPUs, each its own), and the layers a stage may begin at (`stage_starts`; every one where empty).
     #[derive(Clone, Debug)]
     pub(crate) struct CacheOf {
         pub dense: Vec<u64>,
@@ -4367,18 +4513,25 @@ pub mod sizing {
         pub top_k: usize,
         pub all: u64,
         pub disk: bool,
+        pub across: usize,
+        pub starts: Vec<bool>,
     }
 
     impl CacheOf {
         /// A token's experts in every layer of experts: the least the places of a layer hold.
         pub(crate) fn token_bytes(&self) -> u64 {
-            self.moe.iter().filter(|&&m| m).count() as u64 * self.top_k.max(1) as u64 * self.place
+            self.layers() as u64 * self.top_k.max(1) as u64 * self.place
+        }
+
+        /// The layers of experts.
+        pub(crate) fn layers(&self) -> usize {
+            self.moe.iter().filter(|&&m| m).count()
         }
     }
 
-    /// An expert cache's plan on the dynamic route (`expert_cache`): the cuts, their GPUs, each stage's places a layer, the GPUs' bytes (the weights besides the
-    /// experts, the places and the sequences' bytes the layers were given), every expert's bytes, a layer's experts, the experts' bytes the computer's memory
-    /// holds (the rest read from the disk), and the last layers whose dense matrices are in the computer's memory, with their bytes.
+    /// An expert cache's plan (`expert_cache_with`): the cuts, their GPUs, each stage's places a layer, the GPUs' bytes (the weights besides the experts, the
+    /// places and the sequences' bytes the layers were given), every expert's bytes, a layer's experts, the experts' bytes the computer's memory holds (the rest
+    /// read from the disk), and the last layers whose dense matrices are in the computer's memory, with their bytes.
     #[derive(Clone, Debug)]
     pub(crate) struct Cached {
         pub cuts: Vec<usize>,
@@ -4391,38 +4544,115 @@ pub mod sizing {
         pub dense: (usize, u64),
     }
 
-    /// The expert cache of `c` over the GPUs of `room`, one rule for every source: each layer's weights and its sequences' bytes `kv` first (`size_dynamic_at`
-    /// gives them: each layer's share of one sequence's, and a server's users' beside on the first layer where one GPU holds them), the places what the room left
-    /// gives, at least a token's a layer (`split::places_plan_dense`: the last layers' dense matrices in the computer's memory where a token's experts do not fit
-    /// beside them on one GPU; a stage begins only where one may, `stage_starts`). Every expert in the computer's memory (`host` free, less `HOST_MARGIN`), or of a
-    /// hummingbird directory's (`disk`) what that memory holds and the rest on the disk. Refused in words where the computer's memory or the GPUs hold too little.
-    pub(crate) fn expert_cache(c: &CacheOf, text: &str, room: &[(i32, u64)], name: &str, kv: &[u64], host: Option<u64>) -> Done<Cached> {
+    /// What a route asks of the expert-cache rule beside its room: the least places a layer on the GPUs (None: a token's experts), the least of a layer's
+    /// experts in the computer's memory where the disk holds the rest (None: a token's), and the computer's memory `--host-memory` gives the experts.
+    #[derive(Clone, Copy, Debug, Default)]
+    pub(crate) struct CacheAsk {
+        pub least: Option<usize>,
+        pub ram_least: Option<usize>,
+        pub host_memory: Option<u64>,
+    }
+
+    /// Why the expert-cache rule plans no cache, with its figures (each route says it in its own words): the computer's memory does not hold every expert
+    /// (`free` of it free); `--host-memory` asks for more than the computer has free less `HOST_MARGIN`; what the computer's memory holds of them where the disk
+    /// holds the rest is less than the least (`least` bytes); the GPUs leave too little room for the least places beside the layers' weights and sequences.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum CacheShort {
+        Memory { free: u64 },
+        Asked { ram: u64, free: u64 },
+        Held { ram: u64, least: u64 },
+        Gpu,
+    }
+
+    /// The one rule of an expert cache, every route's (the dynamic route's penguin and hummingbird, a lossy level's experts in the computer's memory): the experts
+    /// of `c` in the computer's memory (`host` free; None: it does not say, and is taken to have enough), less `HOST_MARGIN`; where the disk holds those it does
+    /// not (`c.disk`), what it holds (`ask.host_memory`, else what is free), at least `ask.ram_least` of a layer's experts in every layer. On the GPUs of `room`:
+    /// each layer's weights and its sequences' bytes `kv` first (a route gives them: each layer's share of one sequence's, and a server's users' beside on the
+    /// first layer where one GPU holds them), the places what the room left gives, at least `ask.least` a layer (`split::places_plan_dense`: the last layers'
+    /// dense matrices in the computer's memory where a token's experts do not fit beside them on one GPU; a stage begins only where one may, `CacheOf::starts`).
+    /// Every layer across the GPUs (`c.across`): each GPU holds its share and the sequences' bytes whole, the least room of them sets the places, every GPU
+    /// the same. Why not, with the figures, where the computer's memory or the GPUs hold too little.
+    pub(crate) fn expert_cache_with(c: &CacheOf, ask: CacheAsk, room: &[(i32, u64)], kv: &[u64], host: Option<u64>) -> Result<Cached, CacheShort> {
+        if let Some(h) = host.filter(|&h| !c.disk && c.all + HOST_MARGIN > h) {
+            return Err(CacheShort::Memory { free: h });
+        }
+        // (the computer's memory for the experts: all of them, else (the disk holding the rest) what it gives, at least the least of each layer's)
+        let ram = if c.disk { held_in_memory(c.all, ask.host_memory, host) } else { c.all };
+        if let Some(h) = host.filter(|&h| c.disk && ask.host_memory.is_some() && ram.saturating_add(HOST_MARGIN) > h) {
+            return Err(CacheShort::Asked { ram, free: h });
+        }
+        let least_ram = c.layers() as u64 * ask.ram_least.unwrap_or(c.top_k).max(1) as u64 * c.place;
+        if c.disk && ram < least_ram {
+            return Err(CacheShort::Held { ram, least: least_ram });
+        }
+        // (no places of no bytes: a source with experts of none is no cache)
+        if c.place == 0 {
+            return Err(CacheShort::Gpu);
+        }
+        let mut dense = c.dense.clone();
+        dense.iter_mut().zip(kv).for_each(|(d, k)| *d += k);
+        let nl = dense.len();
+        let least = ask.least.unwrap_or(c.top_k).max(1).min(c.experts.max(1));
+        // (every layer across the GPUs: one GPU's share planned on the least room of them, every GPU the same)
+        let n = c.across.max(1);
+        let one: Vec<(i32, u64)> = room.iter().copied().min_by_key(|r| r.1).into_iter().collect();
+        let (at, ram_of) = if n > 1 { (&one[..], &[][..]) } else { (room, &c.ram[..]) };
+        let (cuts, devices, places, held, freed) =
+            crate::dynamic::split::places_plan_dense(&dense, c.base, &c.moe, at, c.place, c.experts, least, ram_of, &c.starts).ok_or(CacheShort::Gpu)?;
+        let bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(nl)).collect();
+        let on_gpus = dense.iter().sum::<u64>() - freed
+            + c.base
+            + bounds.windows(2).zip(&places).map(|(w, &p)| c.moe[w[0]..w[1]].iter().filter(|&&m| m).count() as u64 * p as u64 * c.place).sum::<u64>();
+        if n > 1 {
+            let p = places.first().copied().unwrap_or(0);
+            return Ok(Cached {
+                cuts: Vec::new(),
+                devices: room.iter().map(|r| r.0).collect(),
+                places: vec![p; room.len()],
+                on_gpus: n as u64 * on_gpus,
+                all: c.all,
+                experts: c.experts,
+                ram,
+                dense: (0, 0),
+            });
+        }
+        Ok(Cached { cuts, devices, places, on_gpus, all: c.all, experts: c.experts, ram, dense: (held, ram_held(&c.ram, &dense, held)) })
+    }
+
+    /// `expert_cache_with` on the dynamic route (a token's experts a layer at least; `host` None: none free), or the refusal `run` gives, in its words.
+    pub(crate) fn expert_cache(c: &CacheOf, room: &[(i32, u64)], name: &str, kv: &[u64], host: Option<u64>) -> Done<Cached> {
         let host = host.unwrap_or(0);
-        if !c.disk && c.all + HOST_MARGIN > host {
-            return Err(Refusal::unsupported(
+        expert_cache_with(c, CacheAsk::default(), room, kv, Some(host)).map_err(|why| match why {
+            CacheShort::Memory { .. } if c.across > 1 => Refusal::unsupported(
+                format!(
+                    "{name} keeps the {} experts the GPUs do not hold in the computer's memory: they take {}, and {} is free",
+                    c.layers() * c.experts,
+                    gib(c.all),
+                    gib(host)
+                ),
+                "A machine with that much memory runs it",
+            ),
+            CacheShort::Memory { .. } => Refusal::unsupported(
                 format!("{name} keeps the experts its GPUs do not hold in the computer's memory: they take {}, and {} is free", gib(c.all), gib(host)),
                 "A machine with that much memory runs it, or its hummingbird level, whose experts the disk holds too",
-            ));
-        }
-        // (the computer's memory for the experts: all of them, else (the disk holding the rest) what it has less the margin, at least a token's experts in every layer)
-        let ram = if c.disk { c.all.min(host.saturating_sub(HOST_MARGIN)) } else { c.all };
-        if ram < c.token_bytes() {
-            return Err(Refusal::unsupported(
+            ),
+            CacheShort::Asked { .. } | CacheShort::Held { .. } => Refusal::unsupported(
                 format!(
                     "{name} at the hummingbird level keeps its experts in the computer's memory and on the disk: they take {}, and {} of memory is free",
                     gib(c.all),
                     gib(host)
                 ),
                 "A machine with more memory runs it",
-            ));
-        }
-        let mut dense = c.dense.clone();
-        dense.iter_mut().zip(kv).for_each(|(d, k)| *d += k);
-        let nl = dense.len();
-        let Some((cuts, devices, places, held, freed)) =
-            crate::dynamic::split::places_plan_dense(&dense, c.base, &c.moe, room, c.place, c.experts, c.top_k.max(1), &c.ram, &stage_starts(text, nl))
-        else {
-            return Err(Refusal::unsupported(
+            ),
+            CacheShort::Gpu if c.across > 1 => Refusal::unsupported(
+                format!(
+                    "{name}: its weights besides the experts take {} a GPU across {} GPUs, and they leave too little room for its experts",
+                    gib(c.dense.iter().sum::<u64>() + c.base + kv.iter().sum::<u64>()),
+                    c.across
+                ),
+                "A machine whose GPUs have more memory free runs it",
+            ),
+            CacheShort::Gpu => Refusal::unsupported(
                 format!(
                     "{name}: its weights besides the experts take {}, its sequences' keys, values and states {}, and the GPUs here leave too little room for its experts ({} for a token's in every layer)",
                     gib(c.dense.iter().sum::<u64>() + c.base),
@@ -4430,28 +4660,55 @@ pub mod sizing {
                     gib(c.token_bytes())
                 ),
                 "A machine whose GPUs have more memory free runs it",
-            ));
-        };
-        let bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(nl)).collect();
-        let on_gpus = dense.iter().sum::<u64>() - freed
-            + c.base
-            + bounds.windows(2).zip(&places).map(|(w, &p)| c.moe[w[0]..w[1]].iter().filter(|&&m| m).count() as u64 * p as u64 * c.place).sum::<u64>();
-        Ok(Cached { cuts, devices, places, on_gpus, all: c.all, experts: c.experts, ram, dense: (held, ram_held(&c.ram, &dense, held)) })
+            ),
+        })
     }
 
-    /// Kimi-K3's experts as its loader packs them (`ExpertCache::Packed`): each expert `kimi::expert_bytes`, every one in the computer's memory. `twelve`: its bf16
-    /// matrices in the 12-bit layout (an HBM GPU's faster product, a few hundred places fewer).
-    pub(crate) fn kimi_experts(table: &crate::sizes::Table, text: &str, nl: usize, twelve: bool) -> Done<CacheOf> {
-        let c = crate::kimi::ConfigKimi::parse(text, "config.json", None).map_err(cannot)?;
+    /// The experts of a family whose loader packs them itself (`ExpertCache::Packed`, Kimi-K3's: each expert `kimi::expert_bytes`, every one in the computer's
+    /// memory), of `c` (its config, parsed once) with the tensors of `table`, its `nl` layers, its bf16 matrices in the 12-bit layout where `twelve` (an HBM GPU's
+    /// faster product, a few hundred places fewer). `across` GPUs every layer is across (src/dynamic/tp.rs; 1: its layers cut): each GPU holds its slice of the
+    /// rows of each big matrix (the embedding whole, and every matrix too small or of rows that do not divide), its release's matrices besides the experts as
+    /// released but bf16's, and a slice of each place.
+    pub(crate) fn packed_experts(table: &crate::sizes::Table, m: &ModelConfig, nl: usize, twelve: bool, across: usize) -> Done<CacheOf> {
+        let c = crate::kimi::ConfigKimi::of(m, "config.json", None).map_err(cannot)?;
         let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
+        let expert = crate::dynamic::kimi::expert_bytes(&c).map_err(cannot)?;
+        let e = &c.experts;
+        let all = (c.moe.iter().filter(|&&m| m).count() * e.experts) as u64 * expert;
+        let of = |dense, base, ram, place| CacheOf {
+            dense,
+            base,
+            ram,
+            moe: c.moe.clone(),
+            place,
+            experts: e.experts,
+            top_k: e.top_k,
+            all,
+            disk: false,
+            across: across.max(1),
+            starts: if across > 1 { Vec::new() } else { stage_starts(m, nl) },
+        };
+        if across > 1 {
+            let n = across as u64;
+            let mut held = 0u64;
+            for t in &table.rows {
+                if t.name.contains(".block_sparse_moe.experts.")
+                    || matches!(crate::sizes::classify(&t.name, c.layers), crate::sizes::Part::Vision | crate::sizes::Part::Mtp)
+                {
+                    continue;
+                }
+                let matrix = t.shape.len() == 2 && t.shape.iter().all(|&d| d >= 256);
+                let b = if t.dtype == "BF16" && matrix { t.bytes * bf16 / 100 } else { t.bytes };
+                let sliced = matrix && !t.name.contains("embed_tokens") && t.shape[0] % (64 * n) == 0 && t.bytes >= 16 << 20;
+                held += if sliced { b / n } else { b };
+            }
+            return Ok(of(vec![0; c.moe.len()], held, Vec::new(), expert / n));
+        }
         let (dense, base) =
             crate::dynamic::split::layer_bytes_table(table, nl, crate::dynamic::split::CODED_PCT, bf16, &|n| !n.contains(".block_sparse_moe.experts."));
-        let place = crate::dynamic::kimi::expert_bytes(&c).map_err(cannot)?;
-        let e = &c.experts;
-        let all = (c.moe.iter().filter(|&&m| m).count() * e.experts) as u64 * place;
-        let family = crate::dynamic::split::family(text).unwrap_or("");
+        let family = crate::dynamic::split::family_in(m).unwrap_or("");
         let ram = crate::dynamic::split::ram_bytes_table(table, nl, family, crate::dynamic::split::CODED_PCT, bf16);
-        Ok(CacheOf { dense, base, ram, moe: c.moe.clone(), place, experts: e.experts, top_k: e.top_k, all, disk: false })
+        Ok(of(dense, base, ram, expert))
     }
 
     /// The bytes the last `held` layers' dense matrices take in the computer's memory (`split::places_plan_dense`'s layers).
@@ -4460,13 +4717,13 @@ pub mod sizing {
         (n - held.min(n)..n).map(|l| ram[l].min(dense[l])).sum()
     }
 
-    /// A hummingbird directory's experts (src/hbg_store.rs), for any family: places at the mean of the experts' bytes, those the computer's memory does not hold
-    /// read from the expert files as the router asks for them (the disk).
-    pub(crate) fn hb_dir_experts(dir: &Path, text: &str, nl: usize, twelve: bool) -> Done<CacheOf> {
+    /// A hummingbird directory's experts (src/hbg_store.rs), for any family (`m`: its config, parsed once): places at the mean of the experts' bytes, those the
+    /// computer's memory does not hold read from the expert files as the router asks for them (the disk).
+    pub(crate) fn hb_dir_experts(dir: &Path, m: &ModelConfig, nl: usize, twelve: bool) -> Done<CacheOf> {
         let hb = crate::hb_pack::HbDir::open(dir).map_err(cannot)?.ok_or_else(|| cannot(format!("{}: not a hummingbird directory", dir.display())))?;
         let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
         let (dense, base) = crate::dynamic::split::layer_bytes_with(dir, nl, crate::dynamic::split::CODED_PCT, bf16, &|_| true, false).map_err(cannot)?;
-        let sh = crate::plan::Shape::from_config(text).map_err(cannot)?;
+        let sh = crate::plan::Shape::from_model(m).map_err(cannot)?;
         let mut moe = vec![false; nl];
         let (mut all, mut experts, mut count) = (0u64, 0usize, 0usize);
         for r in &hb.layers {
@@ -4477,26 +4734,35 @@ pub mod sizing {
             experts = experts.max(r.bits.len());
             count += r.bits.len();
         }
-        let family = crate::dynamic::split::family(text).unwrap_or("");
+        let family = crate::dynamic::split::family_in(m).unwrap_or("");
         let ram = crate::dynamic::split::ram_bytes(dir, nl, family, crate::dynamic::split::CODED_PCT, bf16).map_err(cannot)?;
-        Ok(CacheOf { dense, base, ram, moe, place: all / count.max(1) as u64, experts, top_k: sh.topk, all, disk: true })
+        let place = all / count.max(1) as u64;
+        Ok(CacheOf { dense, base, ram, moe, place, experts, top_k: sh.topk, all, disk: true, across: 1, starts: stage_starts(m, nl) })
     }
 
     /// A release's experts as the cache takes them, each the same bytes (src/tiering.rs, R12: DeepSeek-V4's FP4 experts; GLM-5.3-Flash's FP8 ones, each packed on
-    /// its own in places of the largest's bytes: about 7 bits a value where the release's bytes, which size the places here, are 8; Muse Spark's bf16 ones in the
-    /// lossless tiered layout, about 11 bits of 16): a place the mean of the release's experts' bytes, every one in the computer's memory (the disk holds
-    /// hummingbird directories' experts alone).
-    pub(crate) fn release_experts(table: &crate::sizes::Table, text: &str, nl: usize, twelve: bool) -> Done<CacheOf> {
+    /// its own in places of the largest's bytes: about 7 bits a value where the release's bytes, which size the places here, are 8; bf16 ones (Muse Spark's, the
+    /// Qwen3.5 layout's) in the lossless tiered layout, about 11 bits of 16, sized at a bf16 matrix's share as held): a place the mean of the experts' bytes as
+    /// held, every one in the computer's memory (the disk holds hummingbird directories' experts alone). `m`: its config, parsed once.
+    pub(crate) fn release_experts(table: &crate::sizes::Table, m: &ModelConfig, nl: usize, twelve: bool) -> Done<CacheOf> {
         let expert = |n: &str| n.contains(".experts.");
         let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
         let (dense, base) = crate::dynamic::split::layer_bytes_table(table, nl, crate::dynamic::split::CODED_PCT, bf16, &|n| !expert(n));
-        let (per, _) = crate::dynamic::split::layer_bytes_table(table, nl, 100, 100, &expert);
-        let sh = crate::plan::Shape::from_config(text).map_err(cannot)?;
+        // (each expert as the cache holds it, in a place and in the computer's memory: a bf16 one in the lossless tiered layout, at the share of its bytes the
+        // planner gives a bf16 matrix (`bf16`, an upper bound); an FP8 or FP4 one as released)
+        // (an expert's matrix, or a stack of every expert's: its last two dimensions a matrix's)
+        let bf16_matrix = |r: &crate::sizes::Row| r.dtype == "BF16" && r.shape.len() >= 2 && r.shape.iter().rev().take(2).all(|&d| d >= 256);
+        let (tiered, _) = table.per_layer(nl, &|r| expert(&r.name) && bf16_matrix(r), &|r| r.bytes * bf16 / 100);
+        let others = crate::sizes::Table { rows: table.rows.iter().filter(|r| expert(&r.name) && !bf16_matrix(r)).cloned().collect() };
+        let (released, _) = crate::dynamic::split::layer_bytes_table(&others, nl, 100, 100, &|_| true);
+        let per: Vec<u64> = tiered.iter().zip(&released).map(|(a, b)| a + b).collect();
+        let sh = crate::plan::Shape::from_model(m).map_err(cannot)?;
         let moe: Vec<bool> = per.iter().map(|&b| b > 0).collect();
         let (all, layers, experts) = (per.iter().sum::<u64>(), moe.iter().filter(|&&m| m).count(), sh.experts.max(1));
-        let family = crate::dynamic::split::family(text).unwrap_or("");
+        let family = crate::dynamic::split::family_in(m).unwrap_or("");
         let ram = crate::dynamic::split::ram_bytes_table(table, nl, family, crate::dynamic::split::CODED_PCT, bf16);
-        Ok(CacheOf { dense, base, ram, moe, place: all / (layers * experts).max(1) as u64, experts, top_k: sh.topk, all, disk: false })
+        let place = all / (layers * experts).max(1) as u64;
+        Ok(CacheOf { dense, base, ram, moe, place, experts, top_k: sh.topk, all, disk: false, across: 1, starts: stage_starts(m, nl) })
     }
 
     /// The plan `run` loads a model of a row whose experts come from a codes pack at the hummingbird level (`ExpertCache::Codes`: src/moe_cb.rs; the pack in
@@ -4512,13 +4778,12 @@ pub mod sizing {
         a: &Args,
         name: &str,
         table: &crate::sizes::Table,
-        text: &str,
+        c: &ModelConfig,
         row: &'static Support,
         pack: &Path,
         devs: &[Target],
         host: Option<u64>,
     ) -> Done<LoadPlan> {
-        let c = ModelConfig::parse(text).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
         let model_max = c.num("max_position_embeddings").unwrap_or(usize::MAX);
         let asked = a.has("context") || a.has("ctx");
         let ctx = a.either("context", "ctx", crate::support::default_context(row, model_max)).map_err(|e| Refusal::new(e.msg, "--context 8192"))?;
@@ -4536,13 +4801,13 @@ pub mod sizing {
         let kept = (0..nl).filter_map(|l| cb.kept(l).map(<[usize]>::len)).min().unwrap_or(1);
         let held = (0..nl).map(|l| cb.layer_bytes(l) as u64).sum::<u64>();
         // (the always-on matrices as the loader holds them, lossless; the tables its description reads on the host and the routed experts none of the GPU's)
-        let (on_gpu, tables) = crate::dynamic::tables::off_gpu(table, text);
+        let (on_gpu, tables) = crate::dynamic::tables::off_gpu(table, c);
         let (per, base) = crate::dynamic::split::layer_bytes_table(&on_gpu, nl, 100, crate::dynamic::split::TIERED_PCT, &|n| !n.contains(".experts."));
         let vision: u64 = on_gpu.rows.iter().filter(|r| matches!(crate::sizes::classify(&r.name, nl), crate::sizes::Part::Vision)).map(|r| r.bytes).sum();
         let always = per.iter().sum::<u64>() + base + vision;
         // (the sequences' keys, values and states first, the description's as the loader lowers it, by the executor's rule (`rows::SeqRoom`): a server's users each
         // their whole context as its pools hold them, a run's one sequence its rings and states (`rows::layer_rooms`); then the executor's scratch; the places last)
-        let low = crate::dynamic::split::lowered_of(&c, ctx + DYN_CHUNK + 16).map_err(cannot)?;
+        let low = crate::dynamic::split::lowered_of(c, ctx + DYN_CHUNK + 16).map_err(cannot)?;
         let work = CACHE_SCRATCH;
         let (users, kv) = if served(a) {
             crate::dynamic::SeqRoom::of(&low, ctx, DYN_CHUNK).plan(users, u64::MAX).unwrap_or((users, 0))
@@ -4687,72 +4952,6 @@ pub mod sizing {
         PACK.get().and_then(|p| codes_at(p)).or_else(|| codes_beside(dir))
     }
 
-    /// Kimi-K3's expert cache (`kimi_experts`) with every layer across all the GPUs of `room` (src/dynamic/tp.rs): each GPU holds its slice of the rows of each big matrix (the embedding
-    /// whole, and every matrix too small or of rows that do not divide), its sequence's bytes `kv` whole, and the same places a layer, each a slice of an
-    /// expert's; the least room of the GPUs sets the places.
-    pub(crate) fn kimi_cache_tp(
-        table: &crate::sizes::Table,
-        text: &str,
-        room: &[(i32, u64)],
-        name: &str,
-        kv: u64,
-        twelve: bool,
-        host: Option<u64>,
-    ) -> Done<Cached> {
-        let c = crate::kimi::ConfigKimi::parse(text, "config.json", None).map_err(cannot)?;
-        let n = room.len().max(1) as u64;
-        let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
-        let mut held = 0u64;
-        for t in &table.rows {
-            if t.name.contains(".block_sparse_moe.experts.")
-                || matches!(crate::sizes::classify(&t.name, c.layers), crate::sizes::Part::Vision | crate::sizes::Part::Mtp)
-            {
-                continue;
-            }
-            let matrix = t.shape.len() == 2 && t.shape.iter().all(|&d| d >= 256);
-            let b = if t.dtype == "BF16" && matrix { t.bytes * bf16 / 100 } else { t.bytes };
-            let sliced = matrix && !t.name.contains("embed_tokens") && t.shape[0] % (64 * n) == 0 && t.bytes >= 16 << 20;
-            held += if sliced { b / n } else { b };
-        }
-        // (its sequence's latents and states whole on every GPU, as the executor holds them: `kv`)
-        held += kv;
-        let e = &c.experts;
-        let layers = c.moe.iter().filter(|&&m| m).count() as u64;
-        let expert = crate::dynamic::kimi::expert_bytes(&c).map_err(cannot)?;
-        let all = layers * e.experts as u64 * expert;
-        let host = host.unwrap_or(0);
-        if all + HOST_MARGIN > host {
-            return Err(Refusal::unsupported(
-                format!(
-                    "{name} keeps the {} experts the GPUs do not hold in the computer's memory: they take {}, and {} is free",
-                    layers as usize * e.experts,
-                    gib(all),
-                    gib(host)
-                ),
-                "A machine with that much memory runs it",
-            ));
-        }
-        let least = room.iter().map(|r| r.1).min().unwrap_or(0);
-        let places = ((least.saturating_sub(held)) / (layers.max(1) * (expert / n)).max(1)).min(e.experts as u64) as usize;
-        if places < e.top_k {
-            return Err(Refusal::unsupported(
-                format!("{name}: its weights besides the experts take {} a GPU across {n} GPUs, and they leave too little room for its experts", gib(held)),
-                "A machine whose GPUs have more memory free runs it",
-            ));
-        }
-        let on_gpus = n * (held + layers * places as u64 * (expert / n));
-        Ok(Cached {
-            cuts: Vec::new(),
-            devices: room.iter().map(|r| r.0).collect(),
-            places: vec![places; room.len()],
-            on_gpus,
-            all,
-            experts: e.experts,
-            ram: all,
-            dense: (0, 0),
-        })
-    }
-
     /// Each GPU's room for weights on the dynamic route: its free memory less the reserve and the route's work (the KV, the scratch and the graphs together;
     // ponytail: that work is a fixed margin, 3 GiB and 5% with the reserve; the description's own numbers where it proves too little or too much)
     pub(crate) fn rooms(gpus: &[Gpu]) -> Vec<(i32, u64)> {
@@ -4780,7 +4979,7 @@ pub mod sizing {
         name: &str,
         table: &crate::sizes::Table,
         dir: Option<&Path>,
-        text: &str,
+        c: &ModelConfig,
         family: &'static str,
         devs: &[Target],
         host: Option<u64>,
@@ -4790,28 +4989,28 @@ pub mod sizing {
         let row = crate::support::row_named(family).ok_or_else(|| {
             Refusal::unsupported(format!("{name}: the engine has no family named {family:?} to size it as"), "Run a model of a family this engine runs")
         })?;
-        size_dynamic_row(a, name, table, dir, text, row, devs, host, reach)
+        size_dynamic_row(a, name, table, dir, c, row, devs, host, reach)
     }
 
     /// The prompt chunk the dynamic route's engines take (`LoadPlan::chunk`).
     pub const DYN_CHUNK: usize = 256;
 
-    /// `size_dynamic` for the family whose row is `row`: every choice that differs between families is one of the row's fields (`Support::route`). The context is
-    /// the one asked, else the row's (`Support::default_ctx`), else the most that fits of LOSSY_CTX and its halves down to LOSSY_MIN_CTX; the sequences the
-    /// plan holds are `users_asked`'s.
+    /// `size_dynamic` for the family whose row is `row` (`c`: its config, parsed once): every choice that differs between families is one of the row's fields
+    /// (`Support::route`). The context is the one asked, else the row's (`Support::default_ctx`), else the most that fits of LOSSY_CTX and its halves down to
+    /// LOSSY_MIN_CTX; the sequences the plan holds are `users_asked`'s.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn size_dynamic_row(
         a: &Args,
         name: &str,
         table: &crate::sizes::Table,
         dir: Option<&Path>,
-        text: &str,
+        c: &ModelConfig,
         row: &'static Support,
         devs: &[Target],
         host: Option<u64>,
         reach: &dyn Fn(&[i32]) -> bool,
     ) -> Done<LoadPlan> {
-        let model_max = crate::dynamic::split::config_num(text, "max_position_embeddings").unwrap_or(usize::MAX);
+        let model_max = c.num("max_position_embeddings").unwrap_or(usize::MAX);
         // (--ctx as the one-GPU paths take it, too: the Qwen3.5 layout's lossy levels and its penguin read the same flags)
         let asked = a.has("context") || a.has("ctx");
         let ctx = a.either("context", "ctx", crate::support::default_context(row, model_max)).map_err(|e| Refusal::new(e.msg, "--context 8192"))?;
@@ -4822,10 +5021,9 @@ pub mod sizing {
             std::iter::successors(Some(ctx), |&c| (c / 2 >= LOSSY_MIN_CTX).then_some(c / 2)).collect()
         };
         let users = users_asked(a)?;
-        let c = ModelConfig::parse(text).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
         let mut first = None;
         for ctx in tries {
-            match size_dynamic_at(a, name, table, dir, text, &c, row, devs, host, reach, ctx, users) {
+            match size_dynamic_at(a, name, table, dir, c, row, devs, host, reach, ctx, users) {
                 Ok(p) => return Ok(p),
                 Err(r) => {
                     first.get_or_insert(r);
@@ -4853,7 +5051,6 @@ pub mod sizing {
         name: &str,
         table: &crate::sizes::Table,
         dir: Option<&Path>,
-        text: &str,
         c: &ModelConfig,
         row: &'static Support,
         devs: &[Target],
@@ -4867,7 +5064,7 @@ pub mod sizing {
         let low = crate::dynamic::split::lowered_of(c, ctx + DYN_CHUNK + 16).ok();
         let bf16 = low.as_ref().map(|l| crate::dynamic::SeqRoom::of(l, ctx, DYN_CHUNK));
         let held = |seq: Option<crate::dynamic::SeqRoom>, pages: bool| {
-            size_dynamic_held(a, name, table, dir, text, c, row, devs, host, reach, ctx, users, low.as_ref(), seq, pages)
+            size_dynamic_held(a, name, table, dir, c, row, devs, host, reach, ctx, users, low.as_ref(), seq, pages)
         };
         let Some(t) = low.as_ref().filter(|_| twelve_pages(a)).and_then(|l| crate::dynamic::SeqRoom::pages(l, ctx, DYN_CHUNK)) else {
             return held(bf16, false);
@@ -4888,7 +5085,6 @@ pub mod sizing {
         name: &str,
         table: &crate::sizes::Table,
         dir: Option<&Path>,
-        text: &str,
         c: &ModelConfig,
         row: &'static Support,
         devs: &[Target],
@@ -4902,9 +5098,9 @@ pub mod sizing {
     ) -> Done<LoadPlan> {
         let (family, route) = (row.name, row.route);
         // (the tables its description reads on the host take none of the GPUs' memory: their bytes are the computer's, the checkpoint's files mapped)
-        let (table, tables) = crate::dynamic::tables::off_gpu(table, text);
+        let (table, tables) = crate::dynamic::tables::off_gpu(table, c);
         let table = &table;
-        let nl = crate::dynamic::split::config_num(text, "num_hidden_layers").unwrap_or(0);
+        let nl = c.num("num_hidden_layers").unwrap_or(0);
         let room: Vec<(i32, u64)> = devs.iter().map(|t| (t.ordinal, crate::plan::dynamic_room_of(t.free))).collect();
         let hbm = hbm_of(devs);
         // (a hummingbird directory, src/hb_pack.rs: its routed experts are files of their own, which no table of tensors lists)
@@ -4934,7 +5130,7 @@ pub mod sizing {
         let no_f8 = !table.rows.iter().any(|r| r.dtype == "F8_E4M3");
         let twelve_faster = hbm || (no_f8 && !devs.is_empty() && devs.iter().all(|t| !crate::weights::smallest_is_fastest(t.cc)));
         // (a stage begins at a layer that takes nothing from the one before it: `stage_starts`)
-        let starts = stage_starts(text, nl);
+        let starts = stage_starts(c, nl);
         // (each layer's bytes with its share of the sequences': one sequence's, each layer its own (`layer_rooms`), and `more` beside them with the first layer)
         let with = |more: u64| -> Vec<u64> {
             let mut kv: Vec<u64> = if rooms.len() == nl {
@@ -4982,17 +5178,17 @@ pub mod sizing {
         // the expert cache where the GPUs do not hold the model whole, its experts read by one rule whatever their source (`expert_cache`): a hummingbird directory's
         // for any family, its layers cut over the GPUs, never every layer across them; a release's as released (src/tiering.rs, `ExpertCache::Release`: FP4 experts,
         // FP8 ones, lossless bf16 ones; a release of such a row with no experts, the Qwen3.5 layout's dense one, has none to keep there); a family's whose loader packs
-        // its experts itself (`ExpertCache::Packed`), every layer across the GPUs where they take it so (`kimi_cache_tp`)
+        // its experts itself (`ExpertCache::Packed`), every layer across the GPUs where they take it so (`packed_experts` of each GPU's share, `CacheOf::across`)
         let has_experts = table.rows.iter().any(|r| r.name.contains(".experts."));
         let release_cached = route.expert_cache == ExpertCache::Release && has_experts && !hb && cut.is_none() && !chosen;
         let packed = route.expert_cache == ExpertCache::Packed && !hb && cut.is_none() && !chosen;
         let across = across && !hb && !release_cached;
         let source = if let Some(dir) = hb_dir.filter(|_| cut.is_none() && !chosen) {
-            Some(hb_dir_experts(dir, text, nl, hbm)?)
+            Some(hb_dir_experts(dir, c, nl, hbm)?)
         } else if release_cached {
-            Some(release_experts(table, text, nl, hbm)?)
+            Some(release_experts(table, c, nl, hbm)?)
         } else if packed && !across {
-            Some(kimi_experts(table, text, nl, hbm)?)
+            Some(packed_experts(table, c, nl, hbm, 1)?)
         } else {
             None
         };
@@ -5002,12 +5198,12 @@ pub mod sizing {
         let mut cache = None;
         if let (Some(src), Some(s)) = (&source, seq.as_ref().filter(|_| serving)) {
             let users_kv = |k: usize| with(s.plan(k, u64::MAX).map_or(0, |p| p.1).saturating_sub(one_seq));
-            match expert_cache(src, text, &room, name, &users_kv(users), host) {
+            match expert_cache(src, &room, name, &users_kv(users), host) {
                 Ok(c) if c.cuts.is_empty() && c.devices.len() == 1 => (served, kv_layers, cache) = (true, users_kv(users), Some(c)),
                 Err(_) if room.len() == 1 => {
                     // (one sequence's refusal first, where even one does not fit: the computer's memory, or the GPU's room beside the weights)
-                    expert_cache(src, text, &room, name, &kv_layers, host)?;
-                    let most = (1..users).rev().find(|&k| expert_cache(src, text, &room, name, &users_kv(k), host).is_ok());
+                    expert_cache(src, &room, name, &kv_layers, host)?;
+                    let most = (1..users).rev().find(|&k| expert_cache(src, &room, name, &users_kv(k), host).is_ok());
                     let gpu = devs.iter().find(|t| t.ordinal == room[0].0);
                     let free = gpu.map_or(0, |t| t.free);
                     let (weights, all) = (src.dense.iter().sum::<u64>() + src.base, s.plan(users, u64::MAX).map_or(0, |p| p.1));
@@ -5033,8 +5229,9 @@ pub mod sizing {
         }
         let cache = match (cache, &source) {
             (Some(c), _) => Some(c),
-            (None, Some(src)) => Some(expert_cache(src, text, &room, name, &kv_layers, host)?),
-            (None, None) if packed && across => Some(kimi_cache_tp(table, text, &tp_room, name, one_seq, hbm, host)?),
+            (None, Some(src)) => Some(expert_cache(src, &room, name, &kv_layers, host)?),
+            // (every layer across the GPUs: each its slice of the big matrices, its sequence's bytes whole, and a slice of each place)
+            (None, None) if packed && across => Some(expert_cache(&packed_experts(table, c, nl, hbm, tp_room.len())?, &tp_room, name, &with(0), host)?),
             (None, None) => None,
         };
         let held = kv_layers.iter().sum::<u64>();
@@ -5195,6 +5392,7 @@ pub mod sizing {
     #[cfg(test)]
     mod fit_tests {
         use super::*;
+        use crate::runtime::config::mc;
 
         fn dense_36l() -> Config {
             Config {
@@ -5289,10 +5487,10 @@ pub mod sizing {
             let text = serde_json::Value::Object(q35.top["Qwen/Qwen3.8-27B"].as_object().unwrap().clone()).to_string();
             let a = |ctx: &str| crate::args::Args::from(["run", "Qwen/Qwen3.8-27B", "--context", ctx].iter().map(|s| s.to_string()));
             let free = 23u64 << 30;
-            let r = lossy_plan_with(&a("131072"), "Qwen/Qwen3.8-27B", Layout::Int4, &text, None, free, "NVIDIA GeForce RTX 4090", None, None).unwrap_err();
+            let r = lossy_plan_with(&a("131072"), "Qwen/Qwen3.8-27B", Layout::Int4, &mc(&text), None, free, "NVIDIA GeForce RTX 4090", None, None).unwrap_err();
             let most = r.fix.strip_prefix("Ask for less: --context ").unwrap_or_else(|| panic!("{r}")).to_string();
             assert!(r.what.contains("at 131072 tokens of context"), "{r}");
-            let p = lossy_plan_with(&a(&most), "Qwen/Qwen3.8-27B", Layout::Int4, &text, None, free, "NVIDIA GeForce RTX 4090", None, None).unwrap();
+            let p = lossy_plan_with(&a(&most), "Qwen/Qwen3.8-27B", Layout::Int4, &mc(&text), None, free, "NVIDIA GeForce RTX 4090", None, None).unwrap();
             assert!(p.context.to_string() == most && p.gpu_total() <= free, "{p:?}");
             // the rule itself: grain and page, and one sequence's room where `fewer`
             let n = |users: usize, fewer: bool, grain: usize, page: usize| Needs {
@@ -5329,6 +5527,7 @@ pub mod sizing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::config::mc;
 
     /// The planner's keys and values a token (`Shape::kv_full`, `kv_sliding`) against what the executor's pools take a token (each ring's `token_bytes`, bf16), for a random case of each
     /// attention kind: plain and sliding attention (Gemma 4's), the gated attention beside recurrent layers (Qwen3.5's layout), latent attention with its indexer's sparse keys
@@ -5512,7 +5711,8 @@ mod tests {
             let cfg = crate::gemma4::ConfigG4::parse(&text, None, false).unwrap();
             for (twelve, users) in [(false, 1), (true, 1), (false, 8), (true, 8)] {
                 for room in [2u64 << 20, 8 << 20, 32 << 20, 64 << 20, 256 << 20, gib, 6 * gib, 16 * gib] {
-                    let n = sizing::gemma_needs(&cfg, crate::weights::Layout::Tiered, (0, 0, 0), users, LOSSY_CTX, twelve, true);
+                    let lv = sizing::level_of(&args(&["run", "g"]), "g", "g", crate::weights::Layout::Tiered, &mc(&text), None, None, Some(LOSSY_CTX)).unwrap();
+                    let n = sizing::LevelOf { weights: 0, bf16: 0, ..lv }.needs(crate::weights::Layout::Tiered, users, twelve, true, 0);
                     let free = reserve_of(0) + LOSSY_WORK + room;
                     let Ok(p) = sizing::one_gpu(&n, free, None, "g") else { continue };
                     let bytes = |k: crate::gemma4::KindG4| {
@@ -5571,7 +5771,9 @@ mod tests {
         let cfg = crate::gemma4::ConfigG4::parse(&text, None, false).unwrap();
         let (w, bf16) = cfg.weight_bytes(crate::weights::Layout::Tiered, None);
         let kv = |twelve: bool, users: usize, ctx: usize| {
-            sizing::gemma_needs(&cfg, crate::weights::Layout::Tiered, (w, bf16, 0), users, ctx, twelve, true).kv(users as u64, ctx)
+            let lv = sizing::level_of(&args(&["run", "g"]), "g", "g", crate::weights::Layout::Tiered, &mc(&text), None, None, Some(ctx)).unwrap();
+            assert_eq!((lv.weights, lv.bf16), (w, bf16));
+            lv.needs(crate::weights::Layout::Tiered, users, twelve, true, 0).kv(users as u64, ctx)
         };
         assert!(kv(true, 1, 262_144) > kv(false, 1, 262_144) && kv(true, 8, 19_680) < kv(false, 8, 19_680));
         let dir = model_dir("kvformat", "gemma-4-12B", &text);
@@ -5590,6 +5792,81 @@ mod tests {
         let (b, t) = (plan(false, &words), plan(true, &words));
         assert!(t.kv12 && !b.kv12 && t.level == b.level && t.context > b.context, "bf16 {b:?}, 12-bit {t:?}");
         assert!(t.json(m).contains(r#""kv_format":"12-bit""#) && t.text().contains("keys and values in 12-bit pages"), "{}", t.text());
+    }
+
+    /// The lossy route's levels are planned by one rule (`sizing::lossy_plan_inner`, what the description says: `sizing::level_of`), Gemma 4's too: a refusal
+    /// gives one user's figure and says it as one user's (the server holds fewer users where the GPU holds fewer: `Needs::fewer`), whatever the users asked; and a
+    /// model with no experts to keep in the computer's memory is refused `--expert-cache` and `--host-memory` in words. Gemma 4's own planner, before, said
+    /// "for each of 4 users" of one user's figure, and ignored both flags.
+    #[test]
+    fn a_lossy_levels_refusal_is_one_users_figure_and_its_flags_are_held_to_its_experts() {
+        let c = mc(&fixture("gemma4_12b_config.json"));
+        let plan = |w: &[&str]| {
+            sizing::lossy_plan_with(&args(w), "g", crate::weights::Layout::Tiered, &c, None, 15 << 30, "NVIDIA GeForce RTX 4080 SUPER", None, Some(64 << 30))
+        };
+        let (one, four) = (plan(&["serve", "g", "--users", "1", "--no-draft"]).unwrap_err(), plan(&["serve", "g", "--users", "4"]).unwrap_err());
+        assert!(one.what.starts_with("g at the penguin level takes about ") && four.what == one.what, "{one} / {four}");
+        for flag in ["--expert-cache", "--host-memory"] {
+            let r = plan(&["serve", "g", flag, "8"]).unwrap_err();
+            assert!(r.code == 1 && r.what == format!("{flag}: g has no experts to keep in the computer's memory"), "{flag}: {r}");
+        }
+        // (the Qwen3.5 layout's, as before: the same words of one user's figure, and the flags refused)
+        let q = mc(&json::to_compact(json::parse(&fixture("qwen35_configs.json")).unwrap().get("Qwen/Qwen3.8-27B").unwrap()));
+        let qp = |w: &[&str]| sizing::lossy_plan_with(&args(w), "q", crate::weights::Layout::Int4, &q, None, 8 << 30, "NVIDIA L4", None, Some(64 << 30));
+        assert_eq!(qp(&["serve", "q", "--users", "4"]).unwrap_err().what, qp(&["serve", "q", "--users", "1"]).unwrap_err().what);
+        assert_eq!(qp(&["serve", "q", "--expert-cache", "8"]).unwrap_err().code, 1);
+    }
+
+    /// The one rule's last step before it refuses is every description's with experts (#232): the Qwen3.5 layout with experts at a lossy level its GPU does not
+    /// hold whole keeps its experts in the computer's memory at the level's block layout and a cache of them on the GPU, as the Nemotron-H layout does. Every
+    /// user's keys, values and states first, the engine's work next, the places what is left; refused, with the memory it needs, where the computer's memory
+    /// does not hold the experts; `--expert-cache GIB` asks for a cache of that much. (Before, these levels planned no cache: refused, and the flags too.)
+    #[test]
+    fn the_qwen35_layout_with_experts_keeps_its_experts_in_memory_at_a_lossy_level() {
+        let q = json::parse(&fixture("qwen35_configs.json")).unwrap();
+        let c = mc(&json::to_compact(q.get("Qwen/Qwen3.5-35B-A3B").unwrap()));
+        let plan = |w: &[&str], free: u64, host: u64| {
+            sizing::lossy_plan_with(&args(w), "q", crate::weights::Layout::Int4, &c, None, free << 30, "NVIDIA GeForce RTX 4080 SUPER", None, Some(host << 30))
+        };
+        assert!(plan(&["run", "q"], 40, 56).unwrap().experts.is_none(), "a GPU that holds it whole keeps every expert on it");
+        let p = plan(&["run", "q"], 15, 56).unwrap();
+        let e = p.experts.expect("its experts in the computer's memory, a cache of them on the GPU");
+        let src = sizing::qwen35_experts(&c, crate::weights::Layout::Int4, 0).unwrap();
+        assert_eq!((e.layers, e.experts, e.expert_bytes, e.host_bytes()), (40, 256, src.place, src.all), "{e:?}");
+        assert!(e.slots >= 2 * 8 && e.slots < 256 && !e.in_place && p.gpu_total() <= 15 << 30, "{e:?} {}", p.text());
+        // (the block layout's expert: its gate and up rows joined, then its down, codes and scales)
+        let ((ud, us), (dd, ds)) = (
+            crate::moe::expert_strides(glyd_gpu::pack::INT4_TAG, 1024, 2048).unwrap(),
+            crate::moe::expert_strides(glyd_gpu::pack::INT4_TAG, 2048, 512).unwrap(),
+        );
+        assert_eq!(src.place, ud + us + dd + ds);
+        // (served to 8 at 4,096 tokens: their keys, values and states first, the places fewer)
+        let s8 = plan(&["serve", "q", "--users", "8", "--context", "4096"], 15, 56).unwrap();
+        assert!(s8.users == 8 && s8.experts.unwrap().slots <= e.slots && s8.gpu_total() <= 15 << 30, "{}", s8.text());
+        let r = plan(&["run", "q"], 15, 8).unwrap_err();
+        assert!(r.what.contains("of the computer's memory besides at least") && r.what.contains("this computer has 8.0 GiB free"), "{r}");
+        let asked = plan(&["run", "q", "--expert-cache", "2"], 40, 56).unwrap().experts.unwrap();
+        assert_eq!(asked.slots, ((2u64 << 30) / (40 * src.place)) as usize);
+    }
+
+    /// A release's bf16 experts in the expert cache are held in the lossless tiered layout (src/dynamic/experts.rs): their places and the computer's memory
+    /// they take are counted at a bf16 matrix's share as held (`split::TIERED_PCT`, an upper bound), not at the release's bytes. Qwen3.8-2.4T-A95B's
+    /// 4,416 GiB of bf16 experts are about 3,180 GiB held. (Before: 4,416 GiB, more than is held.)
+    #[test]
+    fn a_releases_bf16_experts_are_counted_as_the_cache_holds_them() {
+        let (config, table) = recorded_release("Qwen3.8-2.4T-A95B");
+        let c = mc(&config);
+        let nl = c.num("num_hidden_layers").unwrap();
+        let src = sizing::release_experts(&table, &c, nl, false).unwrap();
+        let (released, _) = crate::dynamic::split::layer_bytes_table(&table, nl, 100, 100, &|n| n.contains(".experts."));
+        let released: u64 = released.iter().sum();
+        assert_eq!(released, 4416 << 30);
+        assert!(
+            src.all <= released * crate::dynamic::split::TIERED_PCT / 100 && src.all + (1 << 30) > released * crate::dynamic::split::TIERED_PCT / 100,
+            "{}",
+            src.all
+        );
+        assert_eq!(src.place, src.all / (src.layers() * src.experts) as u64);
     }
 
     /// A check that runs the 12-bit pages where a server's plan is bf16's asks for the plan made for them (`sizing::twelve_always`): one user at 32,768 tokens of
@@ -6503,7 +6780,7 @@ mod tests {
                             if layout == crate::weights::Layout::Tiered && row.split_levels.contains(&"penguin") {
                                 continue; // (the dynamic route's, sized from the files' headers: a directory of a config.json alone has none)
                             }
-                            sizing::lossy_plan_with(&args(&["run", model]), model, layout, text, None, d.free, &d.name, None, Some(m.ram_free))
+                            sizing::lossy_plan_with(&args(&["run", model]), model, layout, &mc(text), None, d.free, &d.name, None, Some(m.ram_free))
                         }
                     };
                     match (run, f.plan.options.iter().find(|o| o.level == level)) {
@@ -6634,7 +6911,7 @@ mod tests {
             crate::pack::run_with(q35.to_str().unwrap(), &out, 2, layout, true).unwrap();
             let written = shard_bytes(&out);
             let ask = |packed: Option<&std::path::Path>| {
-                sizing::lossy_plan_with(&a, q35.to_str().unwrap(), layout, &text, None, 24 << 30, "NVIDIA RTX 4090", packed, None).unwrap()
+                sizing::lossy_plan_with(&a, q35.to_str().unwrap(), layout, &mc(&text), None, 24 << 30, "NVIDIA RTX 4090", packed, None).unwrap()
             };
             near(ask(None).weights, written, &format!("Qwen3.5-family {}", layout.name()));
             let packed = ask(Some(&out));
@@ -6676,6 +6953,26 @@ mod tests {
     }
 
     /// The released tensors of a fixture model of the dynamic route's families whose penguin is planned from its files' headers (GLM-5.3-Flash's, Qwen3.8-Flash-Next's).
+    /// A release's config.json and its tensors as its recorded headers give them (tests/fixtures/headers: the Hub's safetensors headers, read by ranges, no weights).
+    fn recorded_release(name: &str) -> (String, crate::sizes::Table) {
+        let v: serde_json::Value = serde_json::from_str(&fixture(&format!("headers/{name}.json"))).unwrap();
+        let u64s = |x: &serde_json::Value| x.as_array().unwrap().iter().map(|n| n.as_u64().unwrap()).collect::<Vec<u64>>();
+        let groups: Vec<crate::sizes::Group> = v["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| crate::sizes::Group {
+                mask: g["mask"].as_str().unwrap().to_string(),
+                dtype: g["dtype"].as_str().unwrap().to_string(),
+                shape: u64s(&g["shape"]),
+                bytes: g["bytes"].as_u64().unwrap(),
+                layers: u64s(&g["layers"]).into_iter().map(|l| l as usize).collect(),
+                experts: g["experts"].as_u64().unwrap() as usize,
+            })
+            .collect();
+        (v["config"].as_str().unwrap().to_string(), crate::sizes::Table::expand(&groups))
+    }
+
     fn released_tensors(name: &str) -> Option<String> {
         match name {
             "GLM-5.3-Flash" => Some(fixture("glm5_next_tensors.json")),
@@ -6730,7 +7027,7 @@ mod tests {
                 &crate::cli::short_name(dir.to_str().unwrap()),
                 &table,
                 Some(&dir),
-                &fixture("glm5_next_config.json"),
+                &mc(&fixture("glm5_next_config.json")),
                 "GLM-5.3-Flash",
                 &devs,
                 Some(m.ram_free),
@@ -6787,7 +7084,7 @@ mod tests {
         let text = fixture("qwen4x_config.json");
         let nl = crate::dynamic::split::config_num(&text, "num_hidden_layers").unwrap();
         let released = json::parse(&fixture("qwen4x_tensors.json")).unwrap();
-        let host: std::collections::HashSet<String> = crate::dynamic::tables::host_names(&text).into_iter().collect();
+        let host: std::collections::HashSet<String> = crate::dynamic::tables::host_names(&mc(&text)).into_iter().collect();
         let size = |v: &Value, keep: &dyn Fn(&str) -> bool| -> u64 {
             let t = v.get("tensors").and_then(Value::as_object).unwrap();
             t.iter()
@@ -6956,7 +7253,7 @@ mod tests {
         let a = args(&["run", dir.to_str().unwrap()]);
         let size = |r: &'static Support, m: &Machine| {
             let devs: Vec<Target> = m.devices.iter().enumerate().map(|(i, d)| Target::of(d, i as i32, Some(m.ram_free))).collect();
-            sizing::size_dynamic_row(&a, "m", &table, Some(&dir), &text, r, &devs, Some(m.ram_free), &|_| false)
+            sizing::size_dynamic_row(&a, "m", &table, Some(&dir), &mc(&text), r, &devs, Some(m.ram_free), &|_| false)
         };
         for preset in ["rtx4080s", "rtx4090", "2x3090", "a100-80g", "8xh100"] {
             let m = Machine::preset(preset).unwrap();
@@ -6998,14 +7295,16 @@ mod tests {
         let (renamed, bare) = (row("Renamed", v4.route), row("Bare", Route { expert_cache: ExpertCache::None, ..v4.route }));
         let cache = |r: &'static Support| {
             let a = args(&["run", "tiny", "--context", "16"]);
-            sizing::size_dynamic_row(&a, "tiny", &ttable, Some(&tiny), &ttext, r, std::slice::from_ref(&gpu), Some(all + HOST_MARGIN + (1 << 30)), &|_| false)
+            sizing::size_dynamic_row(&a, "tiny", &ttable, Some(&tiny), &mc(&ttext), r, std::slice::from_ref(&gpu), Some(all + HOST_MARGIN + (1 << 30)), &|_| {
+                false
+            })
         };
         let (own, other) = (cache(v4).unwrap(), cache(renamed).unwrap());
         assert!(own.experts.is_some_and(|c| c.host_bytes() == all) && own.spread.as_ref().unwrap().places.iter().all(|&p| p > 0), "{own:?}");
         assert_eq!(LoadPlan { family: "", ..own }, LoadPlan { family: "", ..other });
         assert!(cache(bare).unwrap_err().what.contains("of GPU memory at penguin"));
         std::fs::remove_dir_all(&tiny).unwrap();
-        let r = sizing::size_dynamic(&a, "m", &table, Some(&dir), &text, sizing::static_family("No such family"), &[], None, &|_| false).unwrap_err();
+        let r = sizing::size_dynamic(&a, "m", &table, Some(&dir), &mc(&text), sizing::static_family("No such family"), &[], None, &|_| false).unwrap_err();
         assert!(r.what.contains("no family named"), "{r}");
         for f in ["Kimi-K3", "GLM-5.3-Flash", "DeepSeek-V4", "Muse Spark", "Nemotron-H", "Qwen3.5", "Gemma 4"] {
             assert_eq!(sizing::static_family(f), f);
@@ -7151,7 +7450,7 @@ mod tests {
                         let lp = o.load.as_ref().unwrap_or_else(|| panic!("{preset} {level}: {:?}", o.why));
                         let layout = crate::levels::layout_of(level).unwrap();
                         assert!(o.why.is_none() && lp.kind == Kind::Qwen35 && lp.layout == layout && lp.experts.is_none(), "{preset} {level}: {lp:?}");
-                        let r = sizing::lossy_plan_with(&args(&["run", &model]), &model, layout, &text, None, d.free, &d.name, None, None).unwrap();
+                        let r = sizing::lossy_plan_with(&args(&["run", &model]), &model, layout, &mc(&text), None, d.free, &d.name, None, None).unwrap();
                         assert_eq!((r.weights, r.bf16, r.context), (lp.weights, lp.bf16, lp.context), "{preset} {level}: fit's plan is run's");
                     }
                 }
@@ -7599,7 +7898,7 @@ mod tests {
         let devs: Vec<Target> = m.devices.iter().enumerate().filter(|(_, d)| d.cc.0 >= 8).map(|(i, d)| Target::of(d, i as i32, Some(m.ram_free))).collect();
         let linked = m.devices.iter().all(|d| d.cc.1 == 0 && (8..=10).contains(&d.cc.0));
         let a = args(&["run", model]);
-        sizing::size(&a, model, text, crate::levels::LEVELS.iter().map(|l| l.name).find(|n| *n == level).unwrap(), &devs, &target, &|_| linked, 1)
+        sizing::size(&a, model, &mc(text), crate::levels::LEVELS.iter().map(|l| l.name).find(|n| *n == level).unwrap(), &devs, &target, &|_| linked, 1)
     }
 
     /// P16: no preset by fixture model by level where `fit` and `run` disagree: for every one, `fit` refuses exactly where `run` does, in `run`'s words and with its
@@ -7795,7 +8094,7 @@ mod tests {
     fn a_cached_models_users_come_before_its_places() {
         let (config, table) = (fixture("glm_moe_dsa_config.json"), glm53_table());
         let nl = crate::dynamic::split::config_num(&config, "num_hidden_layers").unwrap();
-        let src = sizing::release_experts(&crate::dynamic::tables::off_gpu(&table, &config).0, &config, nl, false).unwrap();
+        let src = sizing::release_experts(&crate::dynamic::tables::off_gpu(&table, &mc(&config)).0, &mc(&config), nl, false).unwrap();
         let (layers, ctx) = (src.moe.iter().filter(|&&m| m).count() as u64, 4096usize);
         // (eight users' whole contexts as the pools hold them: the executor's rule)
         let c = crate::runtime::config::ModelConfig::parse(&config).unwrap();
@@ -7818,8 +8117,9 @@ mod tests {
         };
         let host = Some(src.all + HOST_MARGIN + (1 << 30));
         let at = ctx.to_string();
-        let plan_on =
-            |gpu: &Target, w: &[&str]| sizing::size_dynamic(&args(w), "GLM-5.3", &table, None, &config, "GLM-5.3", std::slice::from_ref(gpu), host, &|_| false);
+        let plan_on = |gpu: &Target, w: &[&str]| {
+            sizing::size_dynamic(&args(w), "GLM-5.3", &table, None, &mc(&config), "GLM-5.3", std::slice::from_ref(gpu), host, &|_| false)
+        };
         // a GPU whose room holds the weights besides the experts, the eight users and a third of the experts
         let gpu = gpu_for(weights + eight.1 + src.all / 3);
         let room = crate::plan::dynamic_room_of(gpu.free);
@@ -7880,7 +8180,17 @@ mod tests {
             let m = Machine::preset(preset).unwrap();
             let devs: Vec<Target> = m.devices.iter().enumerate().map(|(i, d)| Target::of(d, i as i32, Some(m.ram_free))).collect();
             let plan = |t: &crate::sizes::Table| {
-                sizing::size_dynamic(&args(&["run", "GLM-5.3-Flash"]), "GLM-5.3-Flash", t, None, &config, "GLM-5.3-Flash", &devs, Some(m.ram_free), &|_| false)
+                sizing::size_dynamic(
+                    &args(&["run", "GLM-5.3-Flash"]),
+                    "GLM-5.3-Flash",
+                    t,
+                    None,
+                    &mc(&config),
+                    "GLM-5.3-Flash",
+                    &devs,
+                    Some(m.ram_free),
+                    &|_| false,
+                )
             };
             match (plan(&remote_table), plan(&local_table)) {
                 (Ok(a), Ok(b)) => {
@@ -8026,7 +8336,7 @@ mod tests {
         let raw = |l: usize| table.rows.iter().filter(|r| crate::sizes::layer_of(&r.name) == Some(l)).map(|r| r.bytes).sum::<u64>();
         assert_eq!((per[2] - raw(2), per[3] - raw(3)), (28672 * 512 + 4096 * 2048 + 128 * 6144, 28672 * 512));
         let text = fixture("glm_moe_dsa_config.json");
-        let starts = sizing::stage_starts(&text, 78);
+        let starts = sizing::stage_starts(&mc(&text), 78);
         let firsts: Vec<usize> = (0..78).filter(|&l| starts[l]).collect();
         assert_eq!(firsts, [0, 1, 2].into_iter().chain((6..78).step_by(4)).collect::<Vec<usize>>());
         let room: Vec<(i32, u64)> = (0..8).map(|g| (g, 136_000_000_000)).collect();
@@ -8039,7 +8349,7 @@ mod tests {
         // not hold the experts)
         let m = Machine::preset("8xh100").unwrap();
         let devs: Vec<Target> = m.devices.iter().enumerate().map(|(i, d)| Target::of(d, i as i32, Some(m.ram_free))).collect();
-        let plan = |host: u64| sizing::size_dynamic(&args(&["run", "GLM-5.3"]), "GLM-5.3", &table, None, &text, "GLM-5.3", &devs, Some(host), &|_| false);
+        let plan = |host: u64| sizing::size_dynamic(&args(&["run", "GLM-5.3"]), "GLM-5.3", &table, None, &mc(&text), "GLM-5.3", &devs, Some(host), &|_| false);
         let p = plan(m.ram_free).unwrap();
         let (sp, c) = (p.spread.as_ref().unwrap(), p.experts.expect("its experts in the computer's memory"));
         assert!(!sp.cuts.is_empty() && sp.cuts.iter().all(|&l| starts[l]), "{:?}", sp.cuts);
@@ -8052,7 +8362,7 @@ mod tests {
         // layer with its own is not refused for that)
         let cut = |l: usize| {
             let a = args(&["run", "GLM-5.3", "--split", &l.to_string(), "--devices", "0,1"]);
-            sizing::size_dynamic(&a, "GLM-5.3", &table, None, &text, "GLM-5.3", &devs, Some(m.ram_free), &|_| false).err().map(|r| r.what)
+            sizing::size_dynamic(&a, "GLM-5.3", &table, None, &mc(&text), "GLM-5.3", &devs, Some(m.ram_free), &|_| false).err().map(|r| r.what)
         };
         assert_eq!(cut(7).as_deref(), Some("a latent attention model: layer 7 takes the picks of a layer of another stage: a split must keep them together"));
         assert!(!cut(6).is_some_and(|w| w.contains("takes the picks")), "{:?}", cut(6));
@@ -8068,7 +8378,7 @@ mod tests {
         };
         let text = fixture("glm_moe_dsa_toy_config.json");
         let kinds = crate::runtime::describe::describe(&serde_json::from_str(&text).unwrap()).unwrap();
-        let starts = sizing::stage_starts(&text, 4);
+        let starts = sizing::stage_starts(&mc(&text), 4);
         assert_eq!(starts, [true, true, false, false]);
         for c in 1..4 {
             let loaded = latent_moe(&kinds, vec![1], 4096, &Stage { layers: (c, 4), first: false, last: true });
@@ -8116,14 +8426,14 @@ mod tests {
         for preset in ["a100-80g", "8xh100", "dgx-spark"] {
             let m = Machine::preset(preset).unwrap();
             let devs: Vec<Target> = m.devices.iter().enumerate().map(|(i, d)| Target::of(d, i as i32, Some(m.ram_free))).collect();
-            let r = sizing::size_dynamic(&args(&["run", "q"]), "Qwen3.8-2.4T-A95B", &table, None, &text, "Qwen3.5", &devs, Some(m.ram_free), &|_| false)
+            let r = sizing::size_dynamic(&args(&["run", "q"]), "Qwen3.8-2.4T-A95B", &table, None, &mc(&text), "Qwen3.5", &devs, Some(m.ram_free), &|_| false)
                 .unwrap_err();
             assert!(r.what.contains("keeps the experts its GPUs do not hold in the computer's memory: they take"), "{preset}: {}", r.what);
             for level in ["kestrel", "swift", "wren"] {
                 let layout = crate::levels::layout_of(level).unwrap();
                 let model = dir.to_str().unwrap();
-                let r =
-                    sizing::lossy_plan_with(&args(&["run", model]), model, layout, &text, None, devs[0].free, &devs[0].name, None, devs[0].host).unwrap_err();
+                let r = sizing::lossy_plan_with(&args(&["run", model]), model, layout, &mc(&text), None, devs[0].free, &devs[0].name, None, devs[0].host)
+                    .unwrap_err();
                 assert!(r.what.contains(&format!("at the {level} level takes about")) && r.what.contains("GiB of GPU memory"), "{preset} {level}: {}", r.what);
             }
         }
@@ -8133,7 +8443,8 @@ mod tests {
     /// with --users 4, --context 8192 and 131072; the plan `run` loads, or its refusal in its words. It holds the planner to what it made when the file was last
     /// written, so a change in a plan is seen; it does not compare the planner with any other (the file began as the plans of the per-path planners this one
     /// replaced, and has been written anew since where a plan was meant to change). The recent set (2026-11-25): the plain dense kind at two shapes (36 and 64
-    /// layers) and one dense architecture the engine does not run, Qwen3.5 at 0.8B and 9B, Qwen3.8-27B, gemma-4-12B, GLM-5.3-Flash and Qwen3.8-Flash-Next.
+    /// layers) and one dense architecture the engine does not run, Qwen3.5 at 0.8B and 9B, Qwen3.8-27B, gemma-4-12B, GLM-5.3-Flash and Qwen3.8-Flash-Next;
+    /// and (2026-11-26) the releases larger than one machine, from their recorded headers: GLM-5.3, Qwen3.8-2.4T-A95B, Kimi-K3.1-Pro and DeepSeek-V4.1-Flash.
     /// `GLYD_WRITE_P2A=1` writes the file anew (only where a change in a plan is meant, and the diff of the file is then read).
     #[test]
     fn the_plans_are_the_recorded_ones() {
@@ -8149,6 +8460,10 @@ mod tests {
             ("GLM-5.3-Flash", fixture("glm5_next_config.json")),
             ("Qwen3.8-Flash-Next", fixture("qwen4x_config.json")),
             ("dense-unknown", unknown.to_string()),
+            ("GLM-5.3", fixture("glm_moe_dsa_config.json")),
+            ("Qwen3.8-2.4T-A95B", recorded_release("Qwen3.8-2.4T-A95B").0),
+            ("Kimi-K3.1-Pro", recorded_release("Kimi-K3.1-Pro").0),
+            ("DeepSeek-V4.1-Flash-1017", recorded_release("DeepSeek-V4.1-Flash-1017").0),
         ];
         let mut got = serde_json::Map::new();
         for (name, text) in &configs {
@@ -8164,10 +8479,21 @@ mod tests {
             if let Some(t) = qwen35_tensors(name) {
                 header_only_checkpoint(&dir, &t);
             }
+            // (the releases larger than any one machine's disk, GLM-5.3, Qwen3.8-2.4T-A95B, Kimi-K3.1-Pro and DeepSeek-V4.1-Flash: their tensors from their
+            // headers in a planning directory's table of its own (`sizes::GGUF_TENSORS`), no file of their bytes)
+            match *name {
+                "GLM-5.3" => glm53_table().write(&dir.join(crate::sizes::GGUF_TENSORS)),
+                "Qwen3.8-2.4T-A95B" | "Kimi-K3.1-Pro" | "DeepSeek-V4.1-Flash-1017" => recorded_release(name).1.write(&dir.join(crate::sizes::GGUF_TENSORS)),
+                _ => {}
+            }
             let model = dir.to_str().unwrap();
             let base = dir.parent().unwrap().to_str().unwrap().to_string();
             let variants: Vec<Vec<&str>> = vec![vec![], vec!["--users", "4"], vec!["--context", "8192"], vec!["--context", "131072"]];
-            for preset in Machine::PRESETS {
+            // (a release larger than one machine on the machines that bound it, alone and served to 4: its table of hundreds of thousands of tensors is read at
+            // every plan)
+            let big = matches!(*name, "GLM-5.3" | "Qwen3.8-2.4T-A95B" | "Kimi-K3.1-Pro" | "DeepSeek-V4.1-Flash-1017");
+            let variants: Vec<Vec<&str>> = if big { variants.into_iter().take(2).collect() } else { variants };
+            for preset in Machine::PRESETS.into_iter().filter(|p| !big || ["rtx4080s", "l4", "h100", "8xh100"].contains(p)) {
                 let nvidia = Machine::preset(preset).unwrap().devices.iter().all(|d| d.vendor == Vendor::Nvidia);
                 for level in crate::levels::names_now() {
                     for v in variants.iter().filter(|v| v.is_empty() || nvidia) {

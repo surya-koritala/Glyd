@@ -750,9 +750,6 @@ impl CachePlan {
     }
 }
 
-/// The places a layer gets out of a budget: the planner's (src/plan.rs `sizing`).
-pub use crate::plan::sizing::places_for;
-
 /// `MemAvailable` of a /proc/meminfo's text, in bytes.
 pub fn parse_meminfo(text: &str) -> Option<u64> {
     let line = text.lines().find(|l| l.starts_with("MemAvailable:"))?;
@@ -4227,11 +4224,29 @@ mod tests {
     }
 
     /// The places and memory a cache is sized to: Nemotron 3 Super's experts at the swift level are 3,784,704 bytes (two matrices of 2,688 steps of 640 bytes and 172,032 of scales apiece) in 40 layers of 512.
+    /// The places a layer of a budget are the one expert-cache rule's (src/plan.rs `sizing::expert_cache_with`), as every route plans them.
     #[test]
     fn the_budget_is_places_a_layer() {
+        use crate::plan::sizing::{expert_cache_with, CacheAsk, CacheOf};
         let one = 3_784_704u64;
         assert_eq!(2 * (2688 * 640 + 2688 / 2 * 128), one);
         let gib = 1u64 << 30;
+        let places_for = |budget: u64, layers: usize, place: u64, experts: usize, least: usize| {
+            let c = CacheOf {
+                dense: vec![0; layers],
+                base: 0,
+                ram: Vec::new(),
+                moe: vec![true; layers],
+                place,
+                experts,
+                top_k: 22,
+                all: (layers * experts) as u64 * place,
+                disk: false,
+                across: 1,
+                starts: Vec::new(),
+            };
+            expert_cache_with(&c, CacheAsk { least: Some(least), ..CacheAsk::default() }, &[(0, budget)], &[], None).ok().map(|k| k.places[0])
+        };
         assert_eq!(places_for(15 * gib, 40, one, 512, 44), Some(106));
         assert_eq!(places_for(23 * gib, 40, one, 512, 44), Some(163));
         assert_eq!(places_for(500 * gib, 40, one, 512, 44), Some(512), "no more than all of them");

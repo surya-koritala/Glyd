@@ -954,7 +954,7 @@ pub(crate) mod tests {
     /// of 512 by them: at swift 14.95, 22.99 and 34 GiB are 106, 163 and 241; fewer than the choices of a step (22) are none.
     #[test]
     fn an_expert_is_a_few_megabytes_and_a_budget_buys_places() {
-        use crate::plan::sizing::cache_plan;
+        use crate::plan::sizing::nemotron_cache as cache_plan;
         let c = parse();
         assert_eq!(
             (c.expert_bytes(Layout::Int5).unwrap(), c.expert_bytes(Layout::Int6).unwrap(), c.expert_bytes(Layout::Int4).unwrap()),

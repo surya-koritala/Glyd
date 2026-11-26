@@ -368,7 +368,12 @@ pub fn family_in(c: &ModelConfig, name: &str) -> Result<Family, Refusal> {
 /// The row `run` uses for `cfg_text` at `level`, or its refusal. `model`: the name asked, without its level (`base` in
 /// the fix); `name`: its short name.
 pub fn check(cfg_text: &str, model: &str, name: &str, level: &str) -> Result<&'static Support, Refusal> {
-    let s = row(family(cfg_text, name)?);
+    check_in(&parsed(cfg_text, name)?, model, name, level)
+}
+
+/// `check` of a config.json parsed once.
+pub fn check_in(c: &ModelConfig, model: &str, name: &str, level: &str) -> Result<&'static Support, Refusal> {
+    let s = row(family_in(c, name)?);
     if s.runs_at(level, model) {
         return Ok(s);
     }
