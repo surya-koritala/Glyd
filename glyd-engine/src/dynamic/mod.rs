@@ -1527,10 +1527,10 @@ pub struct Dyn {
     draws: Vec<Option<f32>>,
     /// The 12-bit pages' status as the lane of the step landed last copied it (src/dynamic/kvpages.rs `kv12_lost` reads it once); None: the GPU's own.
     status_from: Option<*const u32>,
-    /// The grammar masks of the next step's sampled rows (`ModelStep::masks`), put on the rows before their candidates' top-k (`masker`), and the room for a row's sum of
-    /// exponentials (`ModelStep::mass`).
-    row_masks: Vec<Option<crate::constrain::MaskHandle>>,
-    masker: Option<crate::kern::MaskGpu>,
+    /// What the next step's sampled rows' draws put on their rows (`ModelStep::procs`): the rows the draws see, made on the GPU before their candidates (`procg`); and the room for
+    /// a row's sum of exponentials (`ModelStep::mass`).
+    row_procs: Vec<Option<crate::sampler::Proc>>,
+    procg: Option<crate::kern::ProcGpu>,
     sums: Option<Buf>,
     /// Launched steps landed with a later one queued, whose expert cache's end of a step is owed (src/dynamic/rows.rs `quiet`).
     owed: usize,
@@ -2330,8 +2330,8 @@ impl Dyn {
             gaps: None,
             draws: Vec::new(),
             status_from: None,
-            row_masks: Vec::new(),
-            masker: None,
+            row_procs: Vec::new(),
+            procg: None,
             sums: None,
             owed: 0,
             vis: None,
@@ -2389,7 +2389,7 @@ impl Dyn {
         self.n = 0;
         self.pending = None;
         self.head_reset();
-        self.top.ask = None;
+        (self.top.ask, self.top.proc) = (None, None);
         for b in &self.states {
             b.fill_async(0, self.dev.stream)?;
         }
@@ -4016,8 +4016,7 @@ impl crate::conv::Gen for Dyn {
         }
         let greedy = o.params.greedy();
         let mut sampler = crate::sampler::Sampler::new(o.params.clone(), prompt);
-        self.top.ask = sampler.top_need();
-        self.top.mask = sampler.mask_handle();
+        (self.top.ask, self.top.proc) = sampler.gpu_ask();
         let mut s = self.prefill(prompt)?;
         let mut out = Vec::new();
         let eos = self.big.d.eos.clone();
@@ -4053,8 +4052,7 @@ impl crate::conv::Gen for Dyn {
             if out.len() >= o.max_new || self.n + 1 > self.ctx {
                 return Ok((out, Finish::Length));
             }
-            self.top.ask = sampler.top_need();
-            self.top.mask = sampler.mask_handle();
+            (self.top.ask, self.top.proc) = sampler.gpu_ask();
             s = self.step(tok)?;
         }
     }
