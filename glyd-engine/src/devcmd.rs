@@ -77,7 +77,6 @@
 //!                                                             tokens), and each layer's residual against the reference's own run of them
 //!   glyd-engine kv12check [--dir DIR] [--case gemma4] [--level L] [--positions N] [--prompts K] [--prompt-tokens P] [--new T]   a model the executor runs (the case's random one, or DIR's) in bf16 pages and in the lossless 12-bit ones: the same bits (src/dynamic/kvpages.rs)
 //!   glyd-engine tpcheck DIR [--tp 0,0] [--split CUT] [--tokens 24] [--chunk 64] [--ctx 1024]   the model of DIR on one GPU, then with every layer across the GPUs of --tp (src/dynamic/tp.rs)
-//!   glyd-engine seamcheck [--gpu N]                           the backend seam on a GPU: the dense MLP block through it against the reference, and what `supports` refuses (src/runtime/cuda.rs)
 //!   glyd-engine plancheck [--models M,M,...] [--loads 1k:1,4k:1,8k:1,1k:8] [--users 8] [--ctx N] [--runs 3] [--out DIR] [--records FILE] [--predict-only]   the planner against what this machine measures (src/plancheck.rs)
 //!   glyd-engine ship MODEL LEVEL DIR [--steps fetch,pack,draft,verify,measure,quality,card,upload] [--usage FILE] [--repo glyd/NAME]   a Hugging Face model to its Glyd repo; a lossy pack is uploaded only with a quality card that says publish (src/ship.rs)
 //!
@@ -188,7 +187,6 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "splitcheck" => glyd_engine::logits::split_check(a),
         "bufcheck" => glyd_engine::dev::buf_check(),
         "foldcheck" => glyd_engine::fold::check(a.flag("only")),
-        "seamcheck" => glyd_engine::runtime::cuda::check(&a),
         "kindcheck" => glyd_engine::dynamic::kindcheck::run(&a),
         "draftcheck" => glyd_engine::dynamic::head::check(&a),
         "servecheck" => glyd_engine::dynamic::qwen4x::serve_check(&a),
