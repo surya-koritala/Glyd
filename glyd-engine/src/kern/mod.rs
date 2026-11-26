@@ -14,7 +14,7 @@ pub use qwen35::Kern35;
 use crate::dev::{copy_d2h_async, copy_h2d_async, ArgsOf, Buf, ByArgs, Dev, Pinned, Typed};
 use crate::ffi::{Result, Stream};
 use crate::launch;
-use crate::sampler::{Need, Top};
+use crate::sampler::{Need, Proc, Resolved, Top};
 
 /// Candidates the sampling kernel returns for a row of logits (kernels/engine.cu).
 pub const TOPK: usize = 64;
@@ -98,9 +98,13 @@ pub struct Kern {
     silu_mul: crate::kt::silu_mul,
     argmax: crate::kt::argmax_bf16,
     topk: crate::kt::topk64_bf16,
-    /// `topk` with a mask per row (a grammar's): None where the kernels have none.
-    topk_masked: Option<crate::kt::topk64_bf16_masked>,
     gather: crate::kt::gather_bf16,
+    /// The row a draw sees (`ProcGpu`), and its candidates, sums and buckets made of it.
+    proc_fill: crate::kt::proc_fill,
+    proc_entries: crate::kt::proc_entries,
+    topk_f32: crate::kt::topk64_f32,
+    expsum_f32: crate::kt::expsum_f32,
+    hist_f32: (crate::kt::exp_hist_f32, crate::kt::hist_bucket_f32),
     kv12_rows: crate::kt::kv12_rows,
     row_tables: crate::kt::row_tables,
     swap_copy: crate::kt::swap_copy,
@@ -132,8 +136,12 @@ impl Kern {
             silu_mul: dev.typed()?,
             argmax: dev.typed()?,
             topk: dev.typed()?,
-            topk_masked: dev.typed::<crate::kt::topk64_bf16_masked>().ok(),
             gather: dev.typed()?,
+            proc_fill: dev.typed()?,
+            proc_entries: dev.typed()?,
+            topk_f32: dev.typed()?,
+            expsum_f32: dev.typed()?,
+            hist_f32: (dev.typed()?, dev.typed()?),
             kv12_rows: dev.typed()?,
             row_tables: dev.typed()?,
             swap_copy: dev.typed()?,
@@ -483,24 +491,101 @@ impl Kern {
         launch!(self.gather, [(n as u32).div_ceil(256), 1, 1], [256, 1, 1], s; logits + (row * v * 2) as u64, idx, n as i32, out)
     }
 
-    /// Whether the kernels have `topk_rows_masked`.
-    pub fn has_masked_topk(&self) -> bool {
-        self.topk_masked.is_some()
-    }
-
-    /// `topk_rows` with a mask per row: row r's flags and bits at `mask`[r * `words` ..] (uint32; `words` = 1 + ceil(v / 32): the first word nonzero where the row is held to its bits, a token's bit in word 1 + token / 32,
-    /// bit token % 32), a token whose bit is clear ranking below every other (the row as if its logit were -inf). Where fewer than TOPK tokens are allowed the rest of the candidates are tokens that are not (the host
-    /// drops them by its own mask). Err where the kernels have no such kernel.
+    /// Rows of W (`rows` rows of `v` floats at `w`) from the step's bf16 `logits`: row r from logits row `src`[r] (int32 on the device), each token's logit where row r's mask (`words`
+    /// u32 a row at `mask`: the first nonzero where the row has one, then token t's bit in word 1 + t / 32) allows it, else -inf (`proc_fill`).
     ///
     /// # Safety
-    /// As `topk_rows`; `mask` holds `rows * words` words.
+    /// As `copy_row`; `src` and `mask` hold `rows` rows, `w` room for them, every row `src` names one of `logits`.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn topk_rows_masked(&self, s: Stream, logits: u64, v: i32, rows: u32, tok: u64, val: u64, mask: u64, words: i32) -> Result<()> {
-        let Some(k) = &self.topk_masked else { return crate::ffi::err("these kernels have no masked top-k") };
-        if v % 8 != 0 || v < TOPK as i32 {
+    pub unsafe fn proc_fill(&self, s: Stream, logits: u64, v: usize, src: u64, mask: u64, words: usize, w: u64, rows: usize) -> Result<()> {
+        if !v.is_multiple_of(8) || rows == 0 {
+            return crate::ffi::err(format!("the rows a draw sees: a vocabulary of {v}, {rows} rows: not supported"));
+        }
+        launch!(self.proc_fill, [(v as u32 / 8).div_ceil(256), rows as u32, 1], [256, 1, 1], s; logits, v as i32, src, mask, words as i32, w)
+    }
+
+    /// The `n` changed tokens' logits into W after `proc_fill` (`proc_entries`): entry i (token, W's row, flags, said: int32 x4) at `ent`, its bias at `bias`, each W row's (repetition,
+    /// presence, frequency, -) at `scal`.
+    ///
+    /// # Safety
+    /// As `proc_fill`; `ent` and `bias` hold n entries, each token below v and each row one of W's, a token once a row.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn proc_entries(
+        &self,
+        s: Stream,
+        logits: u64,
+        v: usize,
+        src: u64,
+        mask: u64,
+        words: usize,
+        ent: u64,
+        bias: u64,
+        n: usize,
+        scal: u64,
+        w: u64,
+    ) -> Result<()> {
+        if n == 0 {
+            return Ok(());
+        }
+        launch!(self.proc_entries, [(n as u32).div_ceil(256), 1, 1], [256, 1, 1], s; logits, v as i32, src, mask, words as i32, ent, bias, n as i32, scal, w)
+    }
+
+    /// `topk_rows` of rows of floats (W, `rows` of `v`): row r's TOPK into `tok` and `val` at row `dst`[r] (int32 on the device; 0: r).
+    ///
+    /// # Safety
+    /// As `copy_row`; `dst` holds `rows` rows and `tok` and `val` TOPK for every row it names.
+    pub unsafe fn topk_f32(&self, s: Stream, w: u64, v: usize, rows: usize, dst: u64, tok: u64, val: u64) -> Result<()> {
+        if !v.is_multiple_of(8) || v < TOPK || rows == 0 {
+            return crate::ffi::err(format!("the candidates of {rows} rows of {v} floats: not supported"));
+        }
+        launch!(self.topk_f32, [rows as u32, 1, 1], [1024, 1, 1], s; w, v as i32, dst, tok, val)
+    }
+
+    /// `exp_sum_rows` of rows of floats (W): row r's sum of exp((x - max) / temperature) into `out`[r] (f64), `maxv`[r] (f32) its largest.
+    ///
+    /// # Safety
+    /// As `copy_row`.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn exp_sum_f32(&self, s: Stream, w: u64, v: usize, rows: u32, maxv: u64, temperature: f32, out: u64) -> Result<()> {
+        if !v.is_multiple_of(8) {
             return crate::ffi::err(format!("vocabulary {v}: not supported"));
         }
-        launch!(k, [rows, 1, 1], [1024, 1, 1], s; logits, v, tok, val, mask, words)
+        launch!(self.expsum_f32, [rows, 1, 1], [1024, 1, 1], s; w, v as i32, maxv, temperature, out)
+    }
+
+    /// `exp_hist` of a row of floats (W): the tokens taken out (-inf) in no bucket.
+    ///
+    /// # Safety
+    /// Live device buffers of those sizes on the stream.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn exp_hist_f32(&self, s: Stream, w: u64, v: usize, maxv: u64, temp: f32, b: i32, per: f32, sums: u64, counts: u64) -> Result<()> {
+        crate::dev::memset_async(sums, 0, 8 * b as usize, s)?;
+        crate::dev::memset_async(counts, 0, 4 * b as usize, s)?;
+        launch!(self.hist_f32.0, [1, 1, 1], [1024, 1, 1], s; w, v as i32, maxv, temp, b, per, sums, counts)
+    }
+
+    /// `hist_bucket` of a row of floats (W): the tokens taken out (-inf) in no bucket.
+    ///
+    /// # Safety
+    /// Live device buffers of those sizes on the stream.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn hist_bucket_f32(
+        &self,
+        s: Stream,
+        w: u64,
+        v: usize,
+        maxv: u64,
+        temp: f32,
+        b: i32,
+        per: f32,
+        want: u64,
+        cap: i32,
+        n: u64,
+        tok: u64,
+        val: u64,
+    ) -> Result<()> {
+        crate::dev::memset_async(n, 0, 4, s)?;
+        launch!(self.hist_f32.1, [1, 1, 1], [1024, 1, 1], s; w, v as i32, maxv, temp, b, per, want, cap, n, tok, val)
     }
 
     /// The sum over each of `rows` rows of v logits of exp((x - max) / temperature), the normalizer of a top-p cut over the row's largest logits: row r's into `out`[r] (f64). `maxv`[r] (f32): the row's largest, as `argmax_rows` leaves it.
@@ -541,60 +626,118 @@ pub(crate) unsafe fn read_candidates(p: *const u8, tok: usize, val: usize, row: 
     (0..TOPK).map(|j| (*(p.add(tok + 4 * (row * TOPK + j)) as *const i32) as u32, *(p.add(val + 4 * (row * TOPK + j)) as *const f32))).collect()
 }
 
-/// The grammar masks of a step's rows on the GPU: `apply` waits for each row's mask (the workers make them beside the step), copies them to the device and, behind the step's work on the stream, makes the step's candidates again with
-/// the masked top-k kernel, over the unmasked ones the step made (a graph's, whose kernel is fixed); the host then draws from candidates that hold the allowed tokens (`Sampler::sample_grammar`). No mask for a row: the row is as the step made it.
-pub struct MaskGpu {
-    dev: Buf,
-    stage: Pinned,
+/// The rows a step's draws see, made on the GPU (`Sampler::proc`, `Resolved`): for each sampled row whose request changes it (penalties, a bias, tokens taken out), the model's row with
+/// the changes put on it, in floats (W, a row of the vocabulary each: `proc_fill`, `proc_entries`), and its candidates made of it (`topk64_f32`) at the row's place among the step's,
+/// over the model's own; its sums and buckets are made of W by the caller (`row_of`). The rows' masks, changed tokens and penalties go up in one copy from pinned memory; nothing of
+/// the row comes back but its candidates.
+pub struct ProcGpu {
     vocab: usize,
-    /// A row's words: its flag and its V / 32 words of bits.
+    /// A row's mask words: its flag and its V / 32 words of bits.
     words: usize,
+    /// W, `rows` rows of the vocabulary's floats.
+    w: Buf,
     rows: usize,
+    /// The rows' inputs on the device and in pinned memory (u32 words): the head rows, the penalties, the masks, the entries and their biases.
+    input: Buf,
+    stage: Option<Pinned>,
+    /// The head rows the last `queue` made W's rows for, in W's order.
+    made: Vec<usize>,
 }
 
-impl MaskGpu {
-    pub fn new(vocab: usize, rows: usize) -> Result<MaskGpu> {
-        let words = 1 + vocab.div_ceil(32);
-        Ok(MaskGpu { dev: Buf::zeroed(4 * words * rows)?, stage: Pinned::new(4 * words * rows)?, vocab, words, rows })
+/// Where `ProcGpu`'s inputs are, in u32 words, for `n` rows of `words` mask words and `ents` entries: the penalties, the masks, the entries (four words each, 16-byte aligned) and
+/// the biases; and the words in all. The head rows are first.
+fn proc_layout(n: usize, words: usize, ents: usize) -> (usize, usize, usize, usize, usize) {
+    let scal = n.next_multiple_of(4);
+    let mask = scal + 4 * n;
+    let ent = (mask + words * n).next_multiple_of(4);
+    let bias = ent + 4 * ents;
+    (scal, mask, ent, bias, bias + ents.max(1))
+}
+
+impl ProcGpu {
+    pub fn new(vocab: usize) -> ProcGpu {
+        ProcGpu { vocab, words: 1 + vocab.div_ceil(32), w: Buf::none(), rows: 0, input: Buf::none(), stage: None, made: Vec::new() }
     }
 
-    /// Whether the masks of rows can be put on the GPU (the kernels have the masked top-k, and take the vocabulary).
-    pub fn can(&self, kern: &Kern) -> bool {
-        kern.has_masked_topk() && self.vocab.is_multiple_of(8) && self.vocab >= TOPK
+    /// Whether the kernels take the vocabulary (a multiple of 8, at least TOPK).
+    pub fn can(&self) -> bool {
+        self.vocab.is_multiple_of(8) && self.vocab >= TOPK
     }
 
-    /// For the rows `masks` names (None: no mask): the masked candidates of every row into `tok` and `val` (as many rows as there are masks), after the work queued on the stream. Nothing is done where no row has a mask
-    /// or a row's worker died (that row keeps its unmasked candidates, which the host's draw checks against the mask as it always did). Returns whether it made any.
+    /// For `rows` (a head row of the step and its `Resolved`): W made of the step's `logits` and the rows' candidates made of W into `tok` and `val` at each head row's place (TOPK a row),
+    /// queued on the stream. The room is made first (none is queued where it cannot be had: the caller's candidates are then the model's rows' own).
     ///
     /// # Safety
-    /// `logits` holds a row of the vocabulary for each of `masks`, `tok` and `val` TOPK of each, all live and on the engine's stream; the stream was synchronized since the last call (the staging bytes are free).
-    pub unsafe fn apply(&self, kern: &Kern, dev: &Dev, masks: &[Option<crate::constrain::MaskHandle>], logits: u64, tok: u64, val: u64) -> Result<bool> {
-        if masks.is_empty() || masks.len() > self.rows || !self.can(kern) {
-            return Ok(false);
+    /// `logits` holds the head rows named (the vocabulary's bf16 each), `tok` and `val` TOPK for each, all live and on the engine's stream; the stream has run every copy the last call
+    /// queued (its pinned bytes are free), and no work it queued that reads W is still to run.
+    pub unsafe fn queue(&mut self, kern: &Kern, dev: &Dev, rows: &[(usize, &Resolved)], logits: u64, tok: u64, val: u64) -> Result<()> {
+        let (v, n) = (self.vocab, rows.len());
+        self.made.clear();
+        if n == 0 {
+            return Ok(());
         }
-        let stage = std::slice::from_raw_parts_mut(self.stage.ptr as *mut u32, self.words * masks.len());
-        let mut any = false;
-        for (r, m) in masks.iter().enumerate() {
-            let row = &mut stage[r * self.words..(r + 1) * self.words];
-            row.fill(0);
-            if let Some(vob) = m.as_ref().and_then(|m| m.words()).filter(|v| v.len() == self.vocab) {
-                row[1..1 + vob.as_slice().len().min(self.words - 1)].copy_from_slice(&vob.as_slice()[..vob.as_slice().len().min(self.words - 1)]);
-                row[0] = 1;
-                any = true;
+        if !self.can() {
+            return crate::ffi::err(format!("the rows a draw sees: a vocabulary of {v}: not supported"));
+        }
+        let ents: usize = rows.iter().map(|r| r.1.entries.len()).sum();
+        let (o_scal, o_mask, o_ent, o_bias, total) = proc_layout(n, self.words, ents);
+        if self.rows < n {
+            self.w = Buf::none();
+            self.w = Buf::new(4 * v * n)?;
+            self.rows = n;
+        }
+        if self.input.bytes < 4 * total || self.stage.is_none() {
+            (self.input, self.stage) = (Buf::none(), None);
+            self.input = Buf::new(4 * total)?;
+            self.stage = Some(Pinned::new(4 * total)?);
+        }
+        let stage = self.stage.as_mut().expect("made above");
+        let host = stage.ptr;
+        let st = &mut stage.as_slice_mut::<u32>()[..total];
+        let mut k = 0;
+        for (i, &(head, r)) in rows.iter().enumerate() {
+            st[i] = head as u32;
+            st[o_scal + 4 * i..o_scal + 4 * i + 4].copy_from_slice(&[r.repetition.to_bits(), r.presence.to_bits(), r.frequency.to_bits(), 0]);
+            let m = &mut st[o_mask + i * self.words..o_mask + (i + 1) * self.words];
+            match &r.words {
+                Some(w) if w.len() == self.words - 1 => {
+                    m[0] = 1;
+                    m[1..].copy_from_slice(w);
+                }
+                Some(_) => return crate::ffi::err("a row's mask not of the vocabulary"),
+                None => m[0] = 0,
+            }
+            for e in &r.entries {
+                let flags = e.bias.is_some() as u32 | (e.seen as u32) << 1 | (e.rescue as u32) << 2;
+                st[o_ent + 4 * k..o_ent + 4 * k + 4].copy_from_slice(&[e.token, i as u32, flags, e.said]);
+                st[o_bias + k] = e.bias.unwrap_or(0.0).to_bits();
+                k += 1;
             }
         }
-        if !any {
-            return Ok(false);
-        }
-        copy_h2d_async(self.dev.ptr, self.stage.ptr as *const _, 4 * self.words * masks.len(), dev.stream)?;
-        kern.topk_rows_masked(dev.stream, logits, self.vocab as i32, masks.len() as u32, tok, val, self.dev.ptr, self.words as i32)?;
-        Ok(true)
+        let (s, inp) = (dev.stream, self.input.ptr);
+        copy_h2d_async(inp, host as *const _, 4 * total, s)?;
+        let at = |o: usize| inp + 4 * o as u64;
+        kern.proc_fill(s, logits, v, inp, at(o_mask), self.words, self.w.ptr, n)?;
+        kern.proc_entries(s, logits, v, inp, at(o_mask), self.words, at(o_ent), at(o_bias), ents, at(o_scal), self.w.ptr)?;
+        kern.topk_f32(s, self.w.ptr, v, n, inp, tok, val)?;
+        self.made = rows.iter().map(|r| r.0).collect();
+        Ok(())
+    }
+
+    /// W's row (its device address) for head row `head`, where the last `queue` made one.
+    pub fn row_of(&self, head: usize) -> Option<u64> {
+        self.made.iter().position(|&h| h == head).map(|i| self.w.ptr + (4 * self.vocab * i) as u64)
+    }
+
+    /// The head rows the last `queue` made W's rows for.
+    pub fn made(&self) -> &[usize] {
+        &self.made
     }
 }
 
-/// The GPU's side of the sampler's candidates for an engine with one row of logits (the Qwen3.5 layout's and the Nemotron-H layout's, whose `Gen::reply` draws on the host): behind a step that `ask` names (`Sampler::top_need`), `queue` makes the row's
-/// 64 largest logits and, for a top-p with no top-k, the sum of its exponentials, and copies them to the host in the step's one synchronize; `read` gives them. A draw then reads 520 bytes in place of the row (131,072 to
-/// 248,000 logits to copy, sort and exponentiate on the host). `off` (GLYD_ENGINE_HOST_SAMPLING=1, to compare): none are made and the row is read.
+/// The GPU's side of the sampler's candidates for an engine with one row of logits (the Qwen3.5 layout's and the Nemotron-H layout's, whose `Gen::reply` draws on the host): behind a step that `ask` names (`Sampler::gpu_ask`), `queue` makes the row's
+/// 64 largest logits and, for a top-p or a min-p with no top-k, the sum of its exponentials, and copies them to the host in the step's one synchronize; `read` gives them. Where the request changes the row (`proc`), they are of
+/// the row its draw sees (`ProcGpu`). A draw then reads 520 bytes in place of the row (131,072 to 248,000 logits to copy, sort and exponentiate on the host). `off` (GLYD_ENGINE_HOST_SAMPLING=1, to compare): none are made and the row is read.
 pub struct TopGpu {
     tok: Buf,
     val: Buf,
@@ -606,9 +749,10 @@ pub struct TopGpu {
     /// What the last `queue` made.
     got: Option<Need>,
     pub off: bool,
-    /// The mask of the next step's grammar (`Sampler::mask_handle`), and where it is put on the GPU.
-    pub mask: Option<crate::constrain::MaskHandle>,
-    masker: Option<MaskGpu>,
+    /// What the next step's draw puts on the row (`Sampler::gpu_ask`), and the room the GPU makes that row in; whether the last `queue` made its candidates of it.
+    pub proc: Option<Proc>,
+    procg: ProcGpu,
+    processed: bool,
 }
 
 impl TopGpu {
@@ -622,28 +766,36 @@ impl TopGpu {
             ask: None,
             got: None,
             off: crate::tune!("GLYD_ENGINE_HOST_SAMPLING").is_some(),
-            mask: None,
-            masker: MaskGpu::new(vocab, 1).ok(),
+            proc: None,
+            procg: ProcGpu::new(vocab),
+            processed: false,
         })
     }
 
     /// Behind the step's work on the stream: the candidates of the row `ask` names, with the copies to the host (the caller synchronizes). The kernels take a vocabulary of a multiple of 8 and at least TOPK; a smaller one has none.
     ///
     /// # Safety
-    /// `logits` is a row of the vocabulary's size and `maxv` its largest (f32), both live and made on the engine's stream.
+    /// `logits` is a row of the vocabulary's size and `maxv` its largest (f32), both live and made on the engine's stream; the stream was synchronized since the last call.
     pub unsafe fn queue(&mut self, kern: &Kern, dev: &Dev, logits: u64, maxv: u64) -> Result<()> {
         self.got = self.ask.filter(|_| !self.off && self.vocab.is_multiple_of(8) && self.vocab >= TOPK);
+        let proc = self.proc.take();
+        self.processed = false;
         let Some(need) = self.got else { return Ok(()) };
         let (s, host) = (dev.stream, self.stage.ptr as *mut u8);
         kern.topk_rows(s, logits, self.vocab as i32, 1, self.tok.ptr, self.val.ptr)?;
-        // (a grammar's mask: the candidates made again with it, the mask put on the row before the top-k)
-        if let (Some(m), Some(g)) = (self.mask.take(), &self.masker) {
-            g.apply(kern, dev, &[Some(m)], logits, self.tok.ptr, self.val.ptr)?;
+        // (a request that changes the row: the candidates of the row its draw sees, made over the model's; where the room cannot be had, the model's, which the draw then does not take)
+        if let Some(p) = proc {
+            let r = p.resolve(self.vocab);
+            self.processed = self.procg.queue(kern, dev, &[(0, &r)], logits, self.tok.ptr, self.val.ptr).is_ok();
         }
         copy_d2h_async(host as *mut _, self.tok.ptr, 4 * TOPK, s)?;
         copy_d2h_async(host.add(4 * TOPK) as *mut _, self.val.ptr, 4 * TOPK, s)?;
         if need.mass {
-            kern.exp_sum_rows(s, logits, self.vocab as i32, 1, maxv, need.temperature, self.sum.ptr)?;
+            match self.procg.row_of(0).filter(|_| self.processed) {
+                // (about the row's largest, its first candidate)
+                Some(w) => kern.exp_sum_f32(s, w, self.vocab, 1, self.val.ptr, need.temperature, self.sum.ptr)?,
+                None => kern.exp_sum_rows(s, logits, self.vocab as i32, 1, maxv, need.temperature, self.sum.ptr)?,
+            }
             copy_d2h_async(host.add(8 * TOPK) as *mut _, self.sum.ptr, 8, s)?;
         }
         Ok(())
@@ -654,7 +806,7 @@ impl TopGpu {
         let need = self.got?;
         let p = self.stage.ptr as *const u8;
         // SAFETY: the pinned bytes were copied behind the step (the stream synchronized since): TOPK tokens (int32), TOPK logits (f32), then the sum (f64) where asked.
-        unsafe { Some(Top { cands: read_candidates(p, 0, 4 * TOPK, 0), mass: need.mass.then(|| *(p.add(8 * TOPK) as *const f64)) }) }
+        unsafe { Some(Top { cands: read_candidates(p, 0, 4 * TOPK, 0), mass: need.mass.then(|| *(p.add(8 * TOPK) as *const f64)), processed: self.processed }) }
     }
 }
 

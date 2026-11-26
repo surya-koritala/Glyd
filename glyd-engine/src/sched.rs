@@ -270,8 +270,8 @@ pub trait ModelStep {
         Ok(Launched { done: Some(done), tag: 0 })
     }
     /// What the sampled rows of the next step `launch` queues ask of it, one for each in the order of their samples: None where the row takes its largest logit; Some(t)
-    /// where it draws from its candidates or reads its log-probabilities, and asks for its row's sum of exponentials at temperature t (`mass`; 0: none). A step that makes
-    /// them on the GPU queues them with its work and copies them with its samples, so `top` and `mass` wait for nothing.
+    /// where it draws from its candidates or reads its log-probabilities, and asks for its row's sum of exponentials at temperature t (`mass`; 0: none): of the row its draw
+    /// sees where `procs` changes it. A step that makes them on the GPU queues them with its work and copies them with its samples, so `top` and `mass` wait for nothing.
     fn draws(&mut self, _asks: &[Option<f32>]) {}
     /// The samples of a step `launch` queued, once its work has run (the wait is for that step, not for the GPU's whole queue).
     fn finish(&mut self, l: Launched) -> Result<Samples> {
@@ -302,8 +302,13 @@ pub trait ModelStep {
     fn draft(&mut self, _row: &Row, _sampler: Option<&mut Sampler>) -> Result<Option<Vec<u32>>> {
         Ok(None)
     }
-    /// The grammar masks of the rows the next `decode`, `prefill_many` or `round` draws samples from (one for each, in order; None: no grammar), for a backend that makes the sampler's candidates on the GPU to put on the row before its top-k.
-    fn masks(&mut self, _masks: Vec<Option<crate::constrain::MaskHandle>>) {}
+    /// What the draws of the rows the next `decode`, `prefill_many` or `round` samples put on their rows (one for each, in order; None: nothing, `Sampler::proc`), for a backend
+    /// that makes the sampler's candidates on the GPU: of the row each draw sees, the changes put on it there first (`processed`), so that no row is read for them.
+    fn procs(&mut self, _procs: Vec<Option<crate::sampler::Proc>>) {}
+    /// Whether row `row`'s candidates, sums and buckets (`top`, `mass`, `hist`, `hist_bucket`) are of the row its draw sees (its `procs` put on it); the model's own otherwise.
+    fn processed(&mut self, _row: usize) -> bool {
+        false
+    }
     /// One step of the rows: the sample after each.
     fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>>;
     /// What the last step's mixture-of-experts layers did with the expert cache, layer by layer (src/offload.rs `LayerStats`: hits, copies, the host's pairs, bytes, waits); none where no layer's experts
@@ -323,7 +328,8 @@ pub trait ModelStep {
     fn lost(&mut self) -> Lost {
         Lost::default()
     }
-    /// The sampler's candidates for row `row` of the last step: the largest logits of its row, largest first (None: the backend has none, the logits are read).
+    /// The sampler's candidates for row `row` of the last step: the largest logits of its row (of the row its draw sees where `processed`), largest first (None: the backend has
+    /// none, the logits are read).
     fn top(&mut self, _row: usize) -> Option<Vec<(u32, f32)>> {
         None
     }
@@ -336,18 +342,20 @@ pub trait ModelStep {
     fn hist_bucket(&mut self, _row: usize, _temperature: f32, _bucket: usize, _cap: usize) -> Option<Vec<(u32, f32)>> {
         None
     }
-    /// The row's own largest logits, as `top` gives them where no grammar's mask was put on the row before them (a step that made them with a mask: before it); the
-    /// log-probabilities' top. By default `top`'s.
+    /// The model's row's own largest logits, as `top` gives them where the row is not `processed` (the log-probabilities' top). By default `top`'s.
     fn top_raw(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
         self.top(row)
     }
-    /// The sum over row `row`'s logits of exp((logit - largest) / temperature), made where the logits are (a top-p over the whole row with no top-k; at temperature 1,
-    /// the row's log-sum-exp for log-probabilities). None: the backend has none, the logits are read.
+    /// The model's row's sum at temperature 1 about its largest logit (the log-probabilities' log-sum-exp), as `mass` gives it where the row is not `processed`. By default `mass`'s.
+    fn raw_mass(&mut self, row: usize) -> Option<f64> {
+        self.mass(row, 1.0)
+    }
+    /// The sum over row `row`'s logits of exp((logit - largest) / temperature), made where the logits are (a top-p or a min-p over the whole row with no top-k; of the row its
+    /// draw sees where `processed`, `raw_mass` the model's). None: the backend has none, the logits are read.
     fn mass(&mut self, _row: usize, _temperature: f32) -> Option<f64> {
         None
     }
-    /// Row `row`'s logits at `tokens` (those in the vocabulary, with them): what a draw from the candidates needs where penalties, a bias or suppressed tokens
-    /// change those tokens' logits (`Sampler::sample_adjusted`). By default from the whole row; a GPU backend reads those tokens alone.
+    /// The model's row `row`'s logits at `tokens` (those in the vocabulary, with them): a log-probability's logit. By default from the whole row; a GPU backend reads those tokens alone.
     fn gather(&mut self, row: usize, tokens: &[u32]) -> Result<Vec<(u32, f32)>> {
         let l = self.logits(row)?;
         Ok(tokens.iter().filter_map(|&t| l.get(t as usize).map(|&x| (t, x))).collect())
@@ -391,6 +399,8 @@ pub struct Stats {
     /// The prompt tokens the passes that ran prompts ran, and their time (ns): the rate a recompute is priced at (`Sched::swap_pays`).
     pub pass_tokens: u64,
     pub pass_ns: u64,
+    /// Draws that read their whole row of logits (what the GPU made of it did not show the draw, or it made none).
+    pub row_reads: u64,
 }
 
 /// How a sequence sent back for room gives its cache up (docs/design/runtime.md section 5, "Preemption").
@@ -557,8 +567,14 @@ impl ModelStep for &mut dyn ModelStep {
     fn draft(&mut self, row: &Row, sampler: Option<&mut Sampler>) -> Result<Option<Vec<u32>>> {
         (**self).draft(row, sampler)
     }
-    fn masks(&mut self, masks: Vec<Option<crate::constrain::MaskHandle>>) {
-        (**self).masks(masks)
+    fn procs(&mut self, procs: Vec<Option<crate::sampler::Proc>>) {
+        (**self).procs(procs)
+    }
+    fn processed(&mut self, row: usize) -> bool {
+        (**self).processed(row)
+    }
+    fn raw_mass(&mut self, row: usize) -> Option<f64> {
+        (**self).raw_mass(row)
     }
     fn decode(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
         (**self).decode(rows)
@@ -1848,8 +1864,9 @@ impl<B: ModelStep> Sched<B> {
     }
 
     /// The token the sample after row `row` of the step stands for: the largest logit, or a draw from the logits as the request's sampling says; with it, its log-probabilities where the request asks for them.
-    /// Both from what the step makes on the GPU where that holds them: the row's largest logits (a top-k within them; penalties, a bias or suppressed tokens put on them and on those tokens' own logits;
-    /// a grammar's mask put on the row before them), the sum of its exponentials (a top-p with no top-k; at temperature 1 the log-sum-exp the log-probabilities take); the whole row is read only where they do not.
+    /// Both from what the step makes on the GPU where that holds them: the row's largest logits (a top-k within them; of the row the draw sees where the request changes it: its penalties,
+    /// bias, allowed tokens, grammar's mask and tokens held back put on the row there first, `ModelStep::processed`), the sum of its exponentials (a top-p or a min-p with no top-k; at
+    /// temperature 1 the model's row's log-sum-exp the log-probabilities take), its buckets (a draw over all of it); the whole row is read only where they do not.
     fn pick(&mut self, i: usize, sample: Sample, row: usize) -> Result<(u32, Option<Lp>)> {
         if let Some(c) = self.chosen.as_mut() {
             c.push((self.active[i].id, sample.token, sample.logit));
@@ -1875,44 +1892,37 @@ impl<B: ModelStep> Sched<B> {
             return Ok((sample.token, None));
         }
         let top = self.be.top(row);
+        // (candidates, sums and buckets of the row the draw sees, where the request changes it and the step made them so)
+        let procd = top.is_some() && self.be.processed(row);
         let mut tok = self.active[i].greedy.then_some(sample.token);
         if let (None, Some(c)) = (tok, top.as_deref()) {
-            let mass = match self.active[i].sampler.top_need() {
+            let s = &self.active[i].sampler;
+            let mass = match if procd { s.proc_need() } else { s.top_need() } {
                 Some(n) if n.mass => self.be.mass(row, n.temperature),
                 _ => None,
             };
-            tok = self.active[i].sampler.sample_top(c, mass);
-            // (penalties, a bias or suppressed tokens: the candidates and those tokens' own logits, changed as the whole row's would be, where that shows the draw)
-            if let (None, Some(ts)) = (tok, self.active[i].sampler.adjusts()) {
-                let raw = self.be.gather(row, &ts)?;
-                tok = self.active[i].sampler.sample_adjusted(c, &raw);
-            }
-        }
-        // (an allowed list: the draw over those tokens' own logits, gathered where the logits are)
-        if let (None, Some(ts), Some(_)) = (tok, self.active[i].sampler.listed(), top.as_deref()) {
-            let raw = self.be.gather(row, &ts)?;
-            tok = self.active[i].sampler.sample_listed(&raw);
+            let s = &mut self.active[i].sampler;
+            tok = if procd { s.sample_proc(c, mass) } else { s.sample_top(c, mass) };
         }
         // (a draw over all of the row (no top-k, or one past the candidates): from the row's buckets and the tokens of the ones it lands in)
-        if let (None, Some(t)) = (tok, self.active[i].sampler.hist_need()) {
+        let hist = if procd { self.active[i].sampler.proc_hist_need() } else { self.active[i].sampler.hist_need() };
+        if let (None, Some(t)) = (tok, hist) {
             if let Some(h) = self.be.hist(row, t) {
                 let (be, sampler) = (&mut self.be, &mut self.active[i].sampler);
-                tok = sampler.sample_hist(&h, &mut |b| be.hist_bucket(row, t, b, HIST_CAP));
+                let mut bucket = |b| be.hist_bucket(row, t, b, HIST_CAP);
+                tok = if procd { sampler.sample_hist_proc(&h, &mut bucket) } else { sampler.sample_hist(&h, &mut bucket) };
             }
         }
-        // (log-probabilities: the token's logit and the k likeliest from the row's own candidates (where a grammar's mask made the draw's, those from before it), the log-sum-exp
-        // from the row's sum at temperature 1 about its largest logit, the first's)
-        let own = match (want, self.active[i].sampler.mask_handle()) {
-            (Some(_), Some(_)) => self.be.top_raw(row),
-            _ => top.clone(),
-        };
+        // (log-probabilities, of the model's row: the token's logit and the k likeliest from the row's own candidates (where the draw's were of the row it sees, those from
+        // before), the log-sum-exp from the model's row's sum at temperature 1 about its largest logit, the first's)
+        let own = if procd { self.be.top_raw(row) } else { top.clone() };
         let lp = match (want, tok, own.as_deref()) {
             (Some(k), Some(t), Some(c)) if k <= c.len() => {
                 let x = match c.iter().find(|x| x.0 == t) {
                     Some(x) => Some(x.1),
                     None => self.be.gather(row, &[t])?.first().map(|x| x.1),
                 };
-                match (x, self.be.mass(row, 1.0)) {
+                match (x, self.be.raw_mass(row)) {
                     (Some(x), Some(m)) if m > 0.0 => {
                         let lse = c[0].1 as f64 + m.ln();
                         Some(Lp { token: t, logprob: x as f64 - lse, top: c[..k].iter().map(|&(u, y)| (u, y as f64 - lse)).collect() })
@@ -1926,6 +1936,7 @@ impl<B: ModelStep> Sched<B> {
             return Ok((t, lp));
         }
         let logits = self.be.logits(row)?;
+        self.stats.row_reads += 1;
         let tok = match tok {
             Some(t) => t,
             None => self.active[i].sampler.sample(&logits),
@@ -1991,6 +2002,10 @@ impl<B: ModelStep> Sched<B> {
         if picks.is_empty() {
             return Ok(());
         }
+        // (what the draws of the sequences whose prompt ends in this pass put on their rows, in the order of their samples)
+        let ending: Vec<usize> =
+            picks.iter().filter_map(|&(id, n)| at(&self.active, id).filter(|&i| self.active[i].done + n == self.active[i].tokens.len())).collect();
+        let procs: Vec<_> = ending.iter().map(|&i| self.active[i].sampler.proc()).collect();
         let jobs: Vec<PrefillJob> = picks
             .iter()
             .map(|&(id, n)| {
@@ -2000,13 +2015,7 @@ impl<B: ModelStep> Sched<B> {
             .collect();
         let t = std::time::Instant::now();
         let t0 = crate::monitor::clock();
-        // (the grammar masks of the sequences whose prompt ends in this pass, in the order of their samples)
-        let masks: Vec<_> = picks
-            .iter()
-            .filter_map(|&(id, n)| at(&self.active, id).filter(|&i| self.active[i].done + n == self.active[i].tokens.len()))
-            .map(|i| self.active[i].sampler.mask_handle())
-            .collect();
-        self.be.masks(masks);
+        self.be.procs(procs);
         let samples = self.be.launch(&[], &jobs).and_then(|l| self.be.finish(l))?.1;
         if self.trace {
             eprintln!(
@@ -2174,6 +2183,22 @@ impl<B: ModelStep> Sched<B> {
                 (id, n, s.done + ahead(&self.flight, id) + n == s.tokens.len())
             })
             .collect();
+        let sampled: Vec<usize> =
+            plan.rows.iter().map(|r| r.0).chain(picks.iter().filter(|p| p.2).map(|p| p.0)).filter_map(|id| at(&self.active, id)).collect();
+        let on_device = sampled.iter().all(|&i| self.active[i].greedy && self.active[i].reply.logprobs.is_none());
+        // (what each sampled row asks of the step beside its token: its candidates (of the row its draw sees where the request changes it: what is put on it, `procs`), and the sum of
+        // that row's exponentials a top-p or a min-p with no top-k takes, or the model's for log-probabilities)
+        let (mut procs, mut asks) = (Vec::with_capacity(sampled.len()), Vec::with_capacity(sampled.len()));
+        for &i in &sampled {
+            let s = &mut self.active[i];
+            let (need, proc) = s.sampler.gpu_ask();
+            asks.push((!(s.greedy && s.reply.logprobs.is_none())).then(|| match need {
+                Some(n) if n.mass => n.temperature,
+                _ if s.reply.logprobs.is_some() && proc.is_none() => 1.0,
+                _ => 0.0,
+            }));
+            procs.push(proc);
+        }
         let rows: Vec<Row> = plan
             .rows
             .iter()
@@ -2191,24 +2216,8 @@ impl<B: ModelStep> Sched<B> {
                 PrefillJob { pages: &s.pages, start, tokens: &s.tokens[start..start + n], last }
             })
             .collect();
-        let sampled: Vec<usize> =
-            plan.rows.iter().map(|r| r.0).chain(picks.iter().filter(|p| p.2).map(|p| p.0)).filter_map(|id| at(&self.active, id)).collect();
-        let masks: Vec<_> = sampled.iter().map(|&i| self.active[i].sampler.mask_handle()).collect();
-        let on_device = sampled.iter().all(|&i| self.active[i].greedy && self.active[i].reply.logprobs.is_none());
-        // (what each sampled row asks of the step beside its token: its candidates, and the sum of its row's exponentials a top-p with no top-k takes, or log-probabilities)
-        let asks: Vec<Option<f32>> = sampled
-            .iter()
-            .map(|&i| {
-                let s = &self.active[i];
-                (!(s.greedy && s.reply.logprobs.is_none())).then(|| match s.sampler.top_need() {
-                    Some(n) if n.mass => n.temperature,
-                    _ if s.reply.logprobs.is_some() => 1.0,
-                    _ => 0.0,
-                })
-            })
-            .collect();
         let (t, t0) = (std::time::Instant::now(), crate::monitor::clock());
-        self.be.masks(masks);
+        self.be.procs(procs);
         self.be.draws(&asks);
         let l = self.be.launch(&rows, &jobs)?;
         drop((rows, jobs));
@@ -2317,11 +2326,11 @@ impl<B: ModelStep> Sched<B> {
                 return Ok(());
             }
         }
+        let procs: Vec<_> = idx.iter().map(|&i| self.active[i].sampler.proc()).collect();
         let rows: Vec<Row> = idx.iter().map(|&i| Row::new(self.active[i].tokens[self.active[i].done], self.active[i].done, &self.active[i].pages)).collect();
         self.stats.before_ns += tb.elapsed().as_nanos() as u64;
         let t = std::time::Instant::now();
-        let masks: Vec<_> = idx.iter().map(|&i| self.active[i].sampler.mask_handle()).collect();
-        self.be.masks(masks);
+        self.be.procs(procs);
         let samples = self.be.launch(&rows, &[]).and_then(|l| self.be.finish(l))?.0;
         self.stats.decode_ns += t.elapsed().as_nanos() as u64;
         self.stats.steps += 1;
@@ -2411,6 +2420,8 @@ pub(crate) mod tests {
         pub rows: Vec<Vec<f32>>,
         pub gpu_top: bool,
         pub logit_reads: usize,
+        /// What the draws of the step's rows put on them (`ModelStep::procs`): where `gpu_top`, the candidates, sums and buckets are of the rows the draws see, as a GPU's are.
+        pub procs: Vec<Option<crate::sampler::Proc>>,
         /// The prompt tokens the model has run (a prompt that finds its blocks in the cache runs fewer).
         pub prefilled: Arc<std::sync::atomic::AtomicUsize>,
         /// A model that says these tokens after any prompt (then the end token 0), for the tests of what is made of a reply's text; `script_from` is the length of the prompt it was begun after.
@@ -2445,6 +2456,15 @@ pub(crate) mod tests {
     }
 
     impl Fake {
+        /// Row `row` of the last step as its draw sees it (`procs` put on it, as a GPU makes it) where the fake has a GPU's candidates, and whether anything was put on it.
+        fn drawn(&self, row: usize) -> Option<(Vec<f32>, bool)> {
+            let r = self.rows.get(row).filter(|_| self.gpu_top)?;
+            Some(match self.procs.get(row) {
+                Some(Some(p)) => (p.resolve(r.len()).apply(r), true),
+                _ => (r.clone(), false),
+            })
+        }
+
         pub fn new(pages: usize, chunk: usize) -> Fake {
             Fake {
                 store: vec![[0; PAGE]; pages],
@@ -2465,6 +2485,7 @@ pub(crate) mod tests {
                 rows: Vec::new(),
                 gpu_top: false,
                 logit_reads: 0,
+                procs: Vec::new(),
                 prefilled: Default::default(),
                 script: None,
                 script_from: 0,
@@ -2619,51 +2640,45 @@ pub(crate) mod tests {
             self.logit_reads += 1;
             self.rows.get(row).cloned().ok_or_else(|| crate::ffi::Error("no logits".into()))
         }
+        fn procs(&mut self, procs: Vec<Option<crate::sampler::Proc>>) {
+            self.procs = procs;
+        }
+        fn processed(&mut self, row: usize) -> bool {
+            self.gpu_top && matches!(self.procs.get(row), Some(Some(_)))
+        }
         fn top(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
-            if !self.gpu_top {
-                return None;
-            }
-            let r = self.rows.get(row)?;
+            let (r, _) = self.drawn(row)?;
             let mut by: Vec<u32> = (0..r.len() as u32).collect();
-            by.sort_by(|&a, &b| r[b as usize].partial_cmp(&r[a as usize]).unwrap().then(a.cmp(&b)));
+            by.sort_by(|&a, &b| crate::sampler::emu::key(r[b as usize]).cmp(&crate::sampler::emu::key(r[a as usize])).then(a.cmp(&b)));
             Some(by[..64].iter().map(|&t| (t, r[t as usize])).collect())
+        }
+        fn top_raw(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
+            let r = self.rows.get(row).filter(|_| self.gpu_top)?.clone();
+            Some(crate::sampler::emu::top(&r))
         }
         // (as a GPU's: those tokens alone, not a read of the row)
         fn gather(&mut self, row: usize, tokens: &[u32]) -> Result<Vec<(u32, f32)>> {
             let r = self.rows.get(row).ok_or_else(|| crate::ffi::Error("no logits".into()))?;
             Ok(tokens.iter().filter_map(|&t| r.get(t as usize).map(|&x| (t, x))).collect())
         }
-        // (as a GPU's buckets of the row, where it has candidates)
+        // (as a GPU's buckets of the row the draw sees, where it has candidates: a token taken out in none)
         fn hist(&mut self, row: usize, temperature: f32) -> Option<crate::sampler::Hist> {
-            let r = self.rows.get(row).filter(|_| self.gpu_top)?;
-            let max = r.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-            let (n, per) = (crate::sampler::HIST_BUCKETS, crate::sampler::HIST_PER);
-            let (mut sums, mut counts) = (vec![0f64; n], vec![0u32; n]);
-            for &x in r {
-                let q = (x - max) / temperature;
-                let b = ((-q * per).floor().min((n - 1) as f32) as usize).min(n - 1);
-                sums[b] += (q as f64).exp();
-                counts[b] += 1;
-            }
-            Some(crate::sampler::Hist { max, per, sums, counts })
+            let (r, _) = self.drawn(row)?;
+            Some(crate::sampler::emu::hist(&r, temperature).0)
         }
         fn hist_bucket(&mut self, row: usize, temperature: f32, bucket: usize, cap: usize) -> Option<Vec<(u32, f32)>> {
-            let r = self.rows.get(row).filter(|_| self.gpu_top)?;
-            let max = r.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-            let (n, per) = (crate::sampler::HIST_BUCKETS, crate::sampler::HIST_PER);
-            let v: Vec<(u32, f32)> = r
-                .iter()
-                .enumerate()
-                .filter(|(_, &x)| (((-(x - max) / temperature) * per).floor().min((n - 1) as f32) as usize).min(n - 1) == bucket)
-                .map(|(t, &x)| (t as u32, x))
-                .collect();
+            let (r, _) = self.drawn(row)?;
+            let v = crate::sampler::emu::hist(&r, temperature).1.swap_remove(bucket);
             (v.len() <= cap).then_some(v)
         }
-        // (as a GPU's sum of the row, where it has candidates)
+        // (as a GPU's sum of the row the draw sees, where it has candidates)
         fn mass(&mut self, row: usize, temperature: f32) -> Option<f64> {
-            let r = self.rows.get(row).filter(|_| self.gpu_top)?;
-            let max = r.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
-            Some(r.iter().map(|&x| ((x as f64 - max) / temperature as f64).exp()).sum())
+            let (r, _) = self.drawn(row)?;
+            Some(crate::sampler::emu::mass(&r, temperature, 0.0))
+        }
+        fn raw_mass(&mut self, row: usize) -> Option<f64> {
+            let r = self.rows.get(row).filter(|_| self.gpu_top)?.clone();
+            Some(crate::sampler::emu::mass(&r, 1.0, 0.0))
         }
         fn release(&mut self, pages: &[i32]) -> Result<()> {
             self.released += pages.len();
@@ -3713,6 +3728,49 @@ pub(crate) mod tests {
         assert_eq!(by_cands.len(), 8);
         assert_eq!(by_cands, by_row, "the candidates' draw is the row's");
         assert_eq!(reads, 0, "penalties drawn from the candidates read no row");
+    }
+
+    /// Requests that change their rows (penalties, a bias, an allowed list, a least length) and requests that do not, in the same steps, on a fake whose candidates, sums and buckets are
+    /// a GPU's of the rows the draws see (`ModelStep::procs`): every request's tokens are the ones it has alone, and the ones the host's draws from the whole rows give, and no row is
+    /// read: greedy, a top-k, a top-p, a min-p, a draw over the whole row (its buckets) and a top-k past the candidates (its buckets too).
+    #[test]
+    fn requests_that_change_their_rows_draw_on_the_gpu_as_on_the_host() {
+        let kinds = [
+            Params { temperature: 0.0, ..Params::default() },
+            Params { temperature: 0.9, top_k: 20, seed: 5, ..Params::default() },
+            Params { temperature: 0.0, repetition_penalty: 1.4, ..Params::default() },
+            Params { temperature: 1.0, top_p: 0.9, presence_penalty: 0.8, frequency_penalty: 0.3, seed: 7, ..Params::default() },
+            Params { temperature: 0.8, min_p: 0.05, logit_bias: vec![(3, 6.0), (900, -100.0)], seed: 9, ..Params::default() },
+            Params { temperature: 1.2, allowed: (1..1001).step_by(3).collect(), seed: 11, ..Params::default() },
+            Params { temperature: 0.7, top_k: 100, repetition_penalty: 1.2, seed: 13, ..Params::default() },
+            Params { temperature: 0.0, min_tokens: 6, frequency_penalty: 0.5, ..Params::default() },
+        ];
+        let go = |gpu_top: bool, which: &[usize]| {
+            let mut f = Fake::new(64, 32);
+            f.gpu_top = gpu_top;
+            f.batch = 8;
+            let mut s = Sched::new(f, 8);
+            s.eos = vec![0];
+            let rxs: Vec<_> = which
+                .iter()
+                .map(|&k| {
+                    let reply = Reply { params: kinds[k].clone(), max_new: 12, ignore_eos: false, logprobs: None, stop_ids: Vec::new() };
+                    add_reply(&mut s, prompt(k as u32 + 3, 9 + 4 * k), reply)
+                })
+                .collect();
+            run(&mut s);
+            assert_eq!(s.stats.row_reads as usize, s.be.logit_reads);
+            (rxs.iter().map(|r| collect(r).0).collect::<Vec<_>>(), s.be.logit_reads)
+        };
+        let all: Vec<usize> = (0..kinds.len()).collect();
+        let (together, reads) = go(true, &all);
+        let (host, host_reads) = go(false, &all);
+        assert_eq!(together, host, "the GPU's draws against the host's");
+        assert_eq!(reads, 0, "no row read");
+        assert!(host_reads > 0);
+        for k in all {
+            assert_eq!(go(true, &[k]).0[0], together[k], "{:?} alone", kinds[k]);
+        }
     }
 
     /// vLLM's stop_token_ids and min_tokens in the scheduler: a stop token ends the reply as the end token does (counted, not in the reply), and no end or stop token may be chosen before min_tokens tokens: the reply is

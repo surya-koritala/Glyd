@@ -1,5 +1,9 @@
-//! Sampling a next token from a step's logits, on the host (a step's logits are 300 KB, a copy of some 30 us beside a step of 46 ms): repetition, presence and frequency penalties over the
-//! tokens so far, temperature, top-k, top-p and min-p, then a draw from the generator the seed starts. Temperature 0 is the largest logit (the first of equals, as torch.argmax chooses).
+//! Sampling a next token from a step's logits: repetition, presence and frequency penalties over the tokens so far, a bias, allowed tokens, a grammar's mask, temperature, top-k, top-p and
+//! min-p, then a draw from the generator the seed starts. Temperature 0 is the largest logit (the first of equals, as torch.argmax chooses).
+//!
+//! Where the logits are made on a GPU, the row is not read: the GPU makes the row's largest logits (and the sums a top-p or a draw over the whole row needs), and where the request changes
+//! the row (penalties, a bias, tokens taken out), it makes them of the row the draw sees, the changes put on it first as `processed` puts them (`Proc`, `Resolved`); the host then draws
+//! from those, the same token as from the whole row.
 
 /// What a request asks of the sampler.
 #[derive(Clone, Debug)]
@@ -68,11 +72,151 @@ pub struct Need {
     pub mass: bool,
 }
 
-/// What the GPU gives for a `Need`: the largest logits of a step's row (token and logit, largest first, equal logits by the smaller token) and the sum asked for.
+/// What the GPU gives for a `Need`: the largest logits of a step's row (token and logit, largest first, equal logits by the smaller token) and the sum asked for; `processed`: of the row
+/// the draw sees (the request's `Proc` put on it), not the model's.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Top {
     pub cands: Vec<(u32, f32)>,
     pub mass: Option<f64>,
+    pub processed: bool,
+}
+
+/// A token whose logit a request's draw changes (`Proc`): a bias added; the repetition penalty (the token is in the prompt or the answer so far); the presence and frequency penalties
+/// (the times the answer has said it, 0: none); and `rescue`, an end token set to 0 first where a grammar and the least length leave no token (`Sampler::processed`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Entry {
+    pub token: u32,
+    pub bias: Option<f32>,
+    pub seen: bool,
+    pub said: u32,
+    pub rescue: bool,
+}
+
+/// What a GPU puts on a row of logits for a request's draw before it makes the row's largest logits (`Sampler::proc`, made before the step): the tokens taken out (an allowed list, the
+/// grammar's mask of the step, the tokens a least length holds back) and the tokens whose logits change (`Entry`). `resolve` makes it the row's, the grammar's mask waited for.
+#[derive(Clone)]
+pub struct Proc {
+    /// The grammar's mask of the step (a worker makes it beside the step), its end tokens and its width.
+    gram: Option<(crate::constrain::MaskHandle, Vec<u32>, usize)>,
+    /// The allowed list, where the request has one.
+    allowed: Option<std::sync::Arc<Vec<u32>>>,
+    /// The tokens held back until the least length (none where it is reached).
+    suppress: Vec<u32>,
+    entries: Vec<Entry>,
+    repetition: f32,
+    presence: f32,
+    frequency: f32,
+}
+
+/// A `Proc` for a row of a vocabulary: the tokens that may be chosen as 32 tokens' bits a word (token t's in word t / 32, bit t % 32; None: every token), and the tokens whose logits
+/// change, each once (those in the vocabulary, the grammar's end tokens put back at 0 where nothing else is left), with the penalties.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Resolved {
+    pub words: Option<Vec<u32>>,
+    pub entries: Vec<Entry>,
+    pub repetition: f32,
+    pub presence: f32,
+    pub frequency: f32,
+}
+
+impl Proc {
+    /// The request's changes for a row of `v` logits, as `Sampler::processed` makes them: the allowed list, the grammar's mask (waited for; where its worker died, the end tokens alone,
+    /// as the grammar then gives) and the tokens held back taken out together; where that leaves no token under a grammar, its end tokens put back.
+    pub fn resolve(&self, v: usize) -> Resolved {
+        let n = v.div_ceil(32);
+        let mut words: Option<Vec<u32>> = None;
+        let mut and = |w: Vec<u32>| match words.as_mut() {
+            Some(x) => x.iter_mut().zip(&w).for_each(|(a, b)| *a &= b),
+            None => words = Some(w),
+        };
+        if let Some(a) = &self.allowed {
+            let mut w = vec![0u32; n];
+            for &t in a.iter().filter(|&&t| (t as usize) < v) {
+                w[t as usize / 32] |= 1 << (t % 32);
+            }
+            and(w);
+        }
+        if let Some((h, ends, width)) = &self.gram {
+            // (the bits `Gram::apply` keeps: a word all set as it is; past the mask's length, none)
+            let (bits, len) = match h.words() {
+                Some(m) => (m.as_slice().to_vec(), m.len()),
+                None => {
+                    let mut b = vec![0u32; width.div_ceil(32)];
+                    for &e in ends.iter().filter(|&&e| (e as usize) < *width) {
+                        b[e as usize / 32] |= 1 << (e % 32);
+                    }
+                    (b, *width)
+                }
+            };
+            let w = (0..n)
+                .map(|i| match bits.get(i).copied().unwrap_or(0) {
+                    u32::MAX => u32::MAX,
+                    x if x == 0 || i * 32 >= len => 0,
+                    x if len - i * 32 < 32 => x & ((1u32 << (len - i * 32)) - 1),
+                    x => x,
+                })
+                .collect();
+            and(w);
+        }
+        if !self.suppress.is_empty() {
+            let mut w = vec![u32::MAX; n];
+            for &t in self.suppress.iter().filter(|&&t| (t as usize) < v) {
+                w[t as usize / 32] &= !(1 << (t % 32));
+            }
+            and(w);
+        }
+        let mut entries: Vec<Entry> = self.entries.iter().filter(|e| (e.token as usize) < v).copied().collect();
+        // (a grammar and a least length that leave no token: the grammar's end tokens at 0, the reply ends as it cannot go on)
+        if let (Some((_, ends, _)), Some(w), false) = (&self.gram, &words, self.suppress.is_empty()) {
+            if !(0..v).any(|t| (w[t / 32] >> (t % 32)) & 1 == 1) {
+                for &e in ends.iter().filter(|&&e| (e as usize) < v) {
+                    match entries.iter_mut().find(|x| x.token == e) {
+                        Some(x) => x.rescue = true,
+                        None => entries.push(Entry { token: e, bias: None, seen: false, said: 0, rescue: true }),
+                    }
+                }
+            }
+        }
+        Resolved { words, entries, repetition: self.repetition, presence: self.presence, frequency: self.frequency }
+    }
+}
+
+impl Resolved {
+    /// Whether token `t` may be chosen.
+    pub fn allows(&self, t: usize) -> bool {
+        self.words.as_ref().is_none_or(|w| (w[t / 32] >> (t % 32)) & 1 == 1)
+    }
+
+    /// A changed token's logit from the model's `x`, in `Sampler::processed`'s order, each operation rounded alone: the bias, -inf where the token is taken out, 0 where it is put
+    /// back, the repetition penalty, then the presence and frequency penalties.
+    pub fn changed(&self, e: &Entry, mut x: f32) -> f32 {
+        if let Some(b) = e.bias {
+            x += b;
+        }
+        if !self.allows(e.token as usize) {
+            x = f32::NEG_INFINITY;
+        }
+        if e.rescue {
+            x = 0.0;
+        }
+        if e.seen {
+            x = if x > 0.0 { x / self.repetition } else { x * self.repetition };
+        }
+        if e.said > 0 {
+            x -= self.presence + self.frequency * e.said as f32;
+        }
+        x
+    }
+
+    /// The row the draw sees, from the model's row `raw` as the GPU makes it (kernels/engine.cu `proc_fill`, `proc_entries`): each token's logit where it may be chosen, else -inf;
+    /// then each changed token's (`changed`). `Sampler::processed`'s row, bit for bit.
+    pub fn apply(&self, raw: &[f32]) -> Vec<f32> {
+        let mut l: Vec<f32> = raw.iter().enumerate().map(|(t, &x)| if self.allows(t) { x } else { f32::NEG_INFINITY }).collect();
+        for e in &self.entries {
+            l[e.token as usize] = self.changed(e, raw[e.token as usize]);
+        }
+        l
+    }
 }
 
 /// A row's whole distribution in buckets, as a GPU makes it for a draw over all of the row (`Sampler::sample_hist`): each token's e = exp((x - max) / temperature), the quotient
@@ -185,6 +329,13 @@ pub struct Sampler {
     mask: Vec<bool>,
     /// Where the answer is in the request's grammar, if it has one.
     gram: Option<crate::constrain::Gram>,
+    /// The allowed list for a GPU (`Proc`), ascending, each once.
+    allowed: Option<std::sync::Arc<Vec<u32>>>,
+    /// The tokens whose logits the penalties and the bias change, kept as the answer grows (`note`), and where each is.
+    entries: Vec<Entry>,
+    entry_at: std::collections::HashMap<u32, usize>,
+    /// A bias that names a token twice (the server's never does: a later key wins there): added twice in turn, which no `Entry` says; the row is then read.
+    twice: bool,
 }
 
 impl Sampler {
@@ -198,7 +349,44 @@ impl Sampler {
         }
         let rng = Rng::new(p.seed);
         let gram = p.constraint.as_ref().map(|c| c.start());
-        Sampler { p, rng, seen, said: std::collections::HashMap::new(), n_said: 0, suppress: Vec::new(), mask: Vec::new(), gram }
+        let allowed = (!p.allowed.is_empty()).then(|| {
+            let mut a = p.allowed.clone();
+            a.sort_unstable();
+            a.dedup();
+            std::sync::Arc::new(a)
+        });
+        let mut s = Sampler {
+            p,
+            rng,
+            seen,
+            said: std::collections::HashMap::new(),
+            n_said: 0,
+            suppress: Vec::new(),
+            mask: Vec::new(),
+            gram,
+            allowed,
+            entries: Vec::new(),
+            entry_at: std::collections::HashMap::new(),
+            twice: false,
+        };
+        for &(t, b) in &s.p.logit_bias.clone() {
+            let e = s.entry(t);
+            let had = e.bias.replace(b).is_some();
+            s.twice |= had;
+        }
+        for t in s.seen.keys().copied().collect::<Vec<_>>() {
+            s.entry(t).seen = true;
+        }
+        s
+    }
+
+    /// Token `t`'s entry, made where it has none.
+    fn entry(&mut self, t: u32) -> &mut Entry {
+        let at = *self.entry_at.entry(t).or_insert_with(|| {
+            self.entries.push(Entry { token: t, bias: None, seen: false, said: 0, rescue: false });
+            self.entries.len() - 1
+        });
+        &mut self.entries[at]
     }
 
     pub fn params(&self) -> &Params {
@@ -263,14 +451,24 @@ impl Sampler {
             g.consume(tok);
         }
         self.n_said += 1;
-        *self.said.entry(tok).or_insert(0) += 1;
-        if self.p.repetition_penalty != 1.0 {
+        let n = self.said.entry(tok).or_insert(0);
+        *n += 1;
+        let n = *n;
+        let (rep, said) = (self.p.repetition_penalty != 1.0, self.p.presence_penalty != 0.0 || self.p.frequency_penalty != 0.0);
+        if rep {
             *self.seen.entry(tok).or_insert(0) += 1;
+        }
+        if rep || said {
+            let e = self.entry(tok);
+            e.seen |= rep;
+            if said {
+                e.said = n;
+            }
         }
     }
 
-    /// `logits` after the bias, the allowed tokens, the suppressed ones and the penalties: what the temperature and the cuts then see.
-    fn processed(&mut self, logits: &[f32]) -> Vec<f32> {
+    /// `logits` after the bias, the allowed tokens, the suppressed ones and the penalties: what the temperature and the cuts then see (what a GPU makes of the row, `Proc`).
+    pub fn processed(&mut self, logits: &[f32]) -> Vec<f32> {
         let mut l: Vec<f32> = logits.to_vec();
         for &(t, b) in &self.p.logit_bias {
             if let Some(x) = l.get_mut(t as usize) {
@@ -327,30 +525,28 @@ impl Sampler {
         l
     }
 
-    /// What a draw from the row's `n` largest logits asks of the GPU, or None where it needs the whole row. It looks at them alone with a temperature above 0, no penalties, no bias, no allowed tokens and none taken out, and
-    /// either a top-k of at most `n` or, with no top-k, a top-p below 1 and no min-p (the cut is then of the row's probabilities: their sum is asked for).
-    fn need(&self, n: usize) -> Option<Need> {
+    /// Whether the request changes the row before its draw: penalties, a bias, allowed tokens, a grammar, or tokens held back until the least length.
+    fn changes(&self) -> bool {
         let p = &self.p;
-        if n == 0
-            || p.repetition_penalty != 1.0
+        p.repetition_penalty != 1.0
             || p.presence_penalty != 0.0
             || p.frequency_penalty != 0.0
             || !p.logit_bias.is_empty()
             || !p.allowed.is_empty()
+            || self.gram.is_some()
             || self.suppressing()
-        {
+    }
+
+    /// What a draw from the model's row's `n` largest logits asks of the GPU, or None where it needs more: a request that changes nothing on the row (`changes`; one that does is drawn
+    /// from the row it sees, `proc_need`), and the largest alone at temperature 0 (a least length reached), or a top-k of at most `n` or, with no top-k, a top-p below 1 and no min-p
+    /// (the cut is then of the row's probabilities: their sum is asked for).
+    fn need(&self, n: usize) -> Option<Need> {
+        let p = &self.p;
+        if n == 0 || self.changes() {
             return None;
-        }
-        if self.gram.is_some() {
-            // (a grammar: the largest allowed candidate, or a top-k of the allowed ones, where the candidates hold enough of them: `sample_grammar`)
-            return match p.temperature {
-                t if t <= 0.0 => Some(Need { temperature: 0.0, mass: false }),
-                t if (1..=n).contains(&p.top_k) => Some(Need { temperature: t, mass: false }),
-                _ => None,
-            };
         }
         if p.temperature <= 0.0 {
-            return None;
+            return Some(Need { temperature: 0.0, mass: false });
         }
         match p.top_k {
             k if (1..=n).contains(&k) => Some(Need { temperature: p.temperature, mass: false }),
@@ -359,108 +555,96 @@ impl Sampler {
         }
     }
 
-    /// The mask of the next draw's grammar, for a GPU that makes `kern::TOPK` candidates to put on the row before its top-k, where the draw looks at the candidates (`top_need`): the candidates then hold the draw's tokens
-    /// wherever the grammar allows that many (`sample_grammar`). None: no grammar, or a draw of the whole row.
-    pub fn mask_handle(&self) -> Option<crate::constrain::MaskHandle> {
-        self.top_need().and(self.gram.as_ref()?.handle())
-    }
-
-    /// What the next draw asks of a GPU that makes `kern::TOPK` candidates (None: it reads the whole row).
+    /// What the next draw asks of a GPU that makes `kern::TOPK` candidates of the model's row (None: it reads the whole row).
     pub fn top_need(&self) -> Option<Need> {
         self.need(crate::kern::TOPK)
     }
 
-    /// The next token from the largest logits of the step's row alone (`cands`: token and logit, largest first, equal logits by the smaller token: what the GPU returns, with `mass`, the sum over the whole row of
+    /// The next token from the largest logits of the model's row alone (`cands`: token and logit, largest first, equal logits by the smaller token: what the GPU returns, with `mass`, the sum over the whole row of
     /// exp((logit - largest) / temperature), where a top-p with no top-k is asked), where that is all the draw looks at (`need`). The same token `sample` gives from the whole row. None where it is not (the row's logits are
     /// then to be had and `sample` used), the generator untouched.
     pub fn sample_top(&mut self, cands: &[(u32, f32)], mass: Option<f64>) -> Option<u32> {
         let need = self.need(cands.len())?;
-        if self.gram.is_some() {
-            return self.sample_grammar(cands);
-        }
-        let tok = if need.mass {
+        let tok = if self.p.temperature <= 0.0 {
+            cands[0].0
+        } else if need.mass {
             self.draw_mass(cands, mass?)?
         } else {
             let k = self.p.top_k;
             self.finish_draw(cands[..k].iter().map(|c| c.0).collect(), cands[..k].iter().map(|c| c.1).collect())
         };
-        self.n_said += 1;
-        *self.said.entry(tok).or_insert(0) += 1;
+        self.note(tok);
         Some(tok)
     }
 
-    /// The tokens whose logits the next draw changes (the repetition penalty's, the presence and frequency penalties', the bias's, the suppressed ones), each once,
-    /// in order, for a draw from the row's largest logits with those changes put on them (`sample_adjusted`). None where the draw changes none (`sample_top` then),
-    /// or looks at more than the candidates can show: a grammar, allowed tokens, a top-k past the candidates or none (a top-p over the whole row).
-    pub fn adjusts(&self) -> Option<Vec<u32>> {
+    /// What a GPU puts on the row before the next draw's candidates (`Proc`): None where the request changes nothing on it (`changes`), or where a bias names a token twice. A grammar's
+    /// mask is the one its worker makes beside the step (made here where no worker has it).
+    pub fn proc(&mut self) -> Option<Proc> {
+        if !self.changes() || self.twice {
+            return None;
+        }
+        let gram = self.gram.as_mut().map(|g| {
+            let h = g.handle().unwrap_or_else(|| crate::constrain::MaskHandle::Ready(std::sync::Arc::new(g.mask())));
+            (h, g.ends().to_vec(), g.width())
+        });
         let p = &self.p;
-        let k = if p.temperature <= 0.0 { 1 } else { p.top_k };
-        if self.gram.is_some() || !p.allowed.is_empty() || !(1..=crate::kern::TOPK).contains(&k) {
-            return None;
-        }
-        let mut t: Vec<u32> = Vec::new();
-        if p.repetition_penalty != 1.0 {
-            t.extend(self.seen.keys());
-        }
-        if p.presence_penalty != 0.0 || p.frequency_penalty != 0.0 {
-            t.extend(self.said.keys());
-        }
-        t.extend(p.logit_bias.iter().map(|b| b.0));
-        if self.suppressing() {
-            t.extend(&self.suppress);
-        }
-        if t.is_empty() {
-            return None;
-        }
-        t.sort_unstable();
-        t.dedup();
-        Some(t)
+        Some(Proc {
+            gram,
+            allowed: self.allowed.clone(),
+            suppress: if self.suppressing() { self.suppress.clone() } else { Vec::new() },
+            entries: self.entries.clone(),
+            repetition: p.repetition_penalty,
+            presence: p.presence_penalty,
+            frequency: p.frequency_penalty,
+        })
     }
 
-    /// Token `t`'s logit `x` as `processed` changes it, in its order: the bias, the suppression, the repetition penalty, the presence and frequency penalties.
-    fn changed(&self, t: u32, mut x: f32) -> f32 {
-        for &(b, v) in &self.p.logit_bias {
-            if b == t {
-                x += v;
-            }
+    /// What the next draw asks of a GPU that puts the request's `Proc` on the row before its `kern::TOPK` candidates (the candidates and the sums are then of the row the draw sees):
+    /// the largest at temperature 0, a top-k within the candidates, or with no top-k a top-p or a min-p (the row's sum asked for). None: a draw over the whole row (`proc_hist_need`),
+    /// or a top-k past the candidates with a top-p or a min-p (the row is read).
+    pub fn proc_need(&self) -> Option<Need> {
+        let p = &self.p;
+        if p.temperature <= 0.0 {
+            return Some(Need { temperature: 0.0, mass: false });
         }
-        if self.suppressing() && self.suppress.contains(&t) {
-            x = f32::NEG_INFINITY;
+        match p.top_k {
+            k if (1..=crate::kern::TOPK).contains(&k) => Some(Need { temperature: p.temperature, mass: false }),
+            0 if p.top_p < 1.0 || p.min_p > 0.0 => Some(Need { temperature: p.temperature, mass: true }),
+            _ => None,
         }
-        if self.p.repetition_penalty != 1.0 && self.seen.contains_key(&t) {
-            x = if x > 0.0 { x / self.p.repetition_penalty } else { x * self.p.repetition_penalty };
-        }
-        if self.p.presence_penalty != 0.0 || self.p.frequency_penalty != 0.0 {
-            if let Some(&n) = self.said.get(&t) {
-                x -= self.p.presence_penalty + self.p.frequency_penalty * n as f32;
-            }
-        }
-        x
     }
 
-    /// The next token from the row's largest logits `cands` (largest first, equal logits by the smaller token: the GPU's `kern::TOPK`) and the row's own logits
-    /// `raw` at the tokens `adjusts` named (those in the vocabulary): each changed as `processed` changes the whole row, and the draw's top-k taken from the
-    /// candidates and those tokens together. Every other token's logit is unchanged and no larger than the last candidate's, so where the k-th of them is larger
-    /// than that the top-k is the whole row's, and the token is the one `sample` gives. None where it is not (the whole row is then read), the generator untouched.
-    pub fn sample_adjusted(&mut self, cands: &[(u32, f32)], raw: &[(u32, f32)]) -> Option<u32> {
-        self.adjusts()?;
-        let k = if self.p.temperature <= 0.0 { 1 } else { self.p.top_k };
-        let floor = if cands.len() >= crate::kern::TOPK { cands[crate::kern::TOPK - 1].1 } else { f32::NEG_INFINITY };
-        let mut pool: Vec<(u32, f32)> = cands.iter().map(|&(t, x)| (t, self.changed(t, x))).collect();
-        for &(t, x) in raw {
-            if !cands.iter().any(|c| c.0 == t) {
-                pool.push((t, self.changed(t, x)));
-            }
+    /// What the next draw asks of a GPU before the step: the candidates (`Need`) of the model's row, or of the row the draw sees with the `Proc` the GPU is to put on it first.
+    pub fn gpu_ask(&mut self) -> (Option<Need>, Option<Proc>) {
+        match self.proc() {
+            Some(p) => (self.proc_need(), Some(p)),
+            None => (self.top_need(), None),
         }
-        // (the whole row's order: the larger logit first, equal ones (0 and -0 too) by the smaller token)
-        pool.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
-        if pool.len() < k || !(pool[k - 1].1 > floor) {
+    }
+
+    /// The next token from the largest logits of the row the draw sees (`cands`: the GPU's `kern::TOPK` of the row with the request's `Proc` put on it, largest first, equal logits by
+    /// the smaller token) and that row's sum at `proc_need`'s temperature where it asks for one: the token `sample` gives from the model's row, as `dist` takes it (under a grammar a
+    /// top-k of the tokens left, -inf ones not among them). None where they do not show it (the generator untouched).
+    pub fn sample_proc(&mut self, cands: &[(u32, f32)], mass: Option<f64>) -> Option<u32> {
+        let need = self.proc_need()?;
+        let tok = if cands.is_empty() {
             return None;
-        }
-        let tok = if self.p.temperature <= 0.0 {
-            pool[0].0
+        } else if self.p.temperature <= 0.0 {
+            cands[0].0
+        } else if need.mass {
+            self.draw_mass(cands, mass?)?
         } else {
-            self.finish_draw(pool[..k].iter().map(|c| c.0).collect(), pool[..k].iter().map(|c| c.1).collect())
+            let k = self.p.top_k;
+            if k > cands.len() {
+                return None;
+            }
+            let gram = self.gram.is_some();
+            let (mut toks, mut vals): (Vec<u32>, Vec<f32>) = cands[..k].iter().filter(|c| !gram || c.1 > f32::NEG_INFINITY).map(|c| (c.0, c.1)).unzip();
+            if toks.is_empty() {
+                // (no token left under a grammar: the first of the row, as `dist` takes it)
+                (toks, vals) = (vec![0], vec![f32::NEG_INFINITY]);
+            }
+            self.finish_draw(toks, vals)
         };
         self.note(tok);
         Some(tok)
@@ -469,15 +653,13 @@ impl Sampler {
     /// The temperature of a draw over all of the row the candidates cannot hold, which a row's buckets can (`sample_hist`): a temperature above 0, no top-k or one past the
     /// candidates, no top-p and no min-p, nothing that changes the row (no penalties, bias, allowed tokens, grammar or tokens taken out). None otherwise.
     pub fn hist_need(&self) -> Option<f32> {
+        (!self.changes()).then(|| self.proc_hist_need()).flatten()
+    }
+
+    /// `hist_need` for the row the draw sees (the request's `Proc` put on it): whatever it changes.
+    pub fn proc_hist_need(&self) -> Option<f32> {
         let p = &self.p;
-        let plain = p.repetition_penalty == 1.0
-            && p.presence_penalty == 0.0
-            && p.frequency_penalty == 0.0
-            && p.logit_bias.is_empty()
-            && p.allowed.is_empty()
-            && self.gram.is_none()
-            && !self.suppressing();
-        (plain && p.temperature > 0.0 && p.top_p >= 1.0 && p.min_p == 0.0 && (p.top_k == 0 || p.top_k > crate::kern::TOPK)).then_some(p.temperature)
+        (p.temperature > 0.0 && p.top_p >= 1.0 && p.min_p == 0.0 && (p.top_k == 0 || p.top_k > crate::kern::TOPK)).then_some(p.temperature)
     }
 
     /// The next token from a row's buckets (`Hist`, at `hist_need`'s temperature) and the tokens of the buckets the draw lands in (`bucket`: a bucket's tokens and logits, all
@@ -486,6 +668,17 @@ impl Sampler {
     /// is not within HIST_EDGE of a token's edge (the buckets' sums are added in another order); None there, or where a bucket cannot be had, the generator untouched.
     pub fn sample_hist(&mut self, h: &Hist, bucket: &mut dyn FnMut(usize) -> Option<Vec<(u32, f32)>>) -> Option<u32> {
         let t = self.hist_need()?;
+        self.draw_hist(t, h, bucket)
+    }
+
+    /// `sample_hist` from the buckets of the row the draw sees (the request's `Proc` put on it; the GPU leaves the tokens taken out, -inf, out of the buckets: none of them is drawn
+    /// or counted in a top-k, as under a grammar `dist` leaves them out, and as their weight of 0 leaves them otherwise).
+    pub fn sample_hist_proc(&mut self, h: &Hist, bucket: &mut dyn FnMut(usize) -> Option<Vec<(u32, f32)>>) -> Option<u32> {
+        let t = self.proc_hist_need()?;
+        self.draw_hist(t, h, bucket)
+    }
+
+    fn draw_hist(&mut self, t: f32, h: &Hist, bucket: &mut dyn FnMut(usize) -> Option<Vec<(u32, f32)>>) -> Option<u32> {
         let n = h.sums.len();
         if n == 0 || h.counts.len() != n || h.sums.iter().any(|x| !x.is_finite()) {
             return None;
@@ -553,47 +746,12 @@ impl Sampler {
         Some(tok)
     }
 
-    /// The tokens a draw from an allowed list (`Params::allowed`, no grammar) looks at, ascending, for a draw from those tokens' own logits alone (`sample_listed`); None where
-    /// the request has no such list or a grammar.
-    pub fn listed(&self) -> Option<Vec<u32>> {
-        if self.p.allowed.is_empty() || self.gram.is_some() {
-            return None;
-        }
-        let mut t = self.p.allowed.clone();
-        t.sort_unstable();
-        t.dedup();
-        Some(t)
-    }
-
-    /// The next token from the logits `raw` of the allowed tokens alone (`listed`, those in the vocabulary): each changed as `processed` changes the row (every other token is
-    /// taken out there), then the draw `sample` makes over them: the largest at temperature 0 (the smaller token of equal ones), else the top-k, temperature, min-p and top-p
-    /// of those, largest first. The token `sample` gives from the whole row. None where the list is not the draw's.
-    pub fn sample_listed(&mut self, raw: &[(u32, f32)]) -> Option<u32> {
-        self.listed()?;
-        let mut c: Vec<(u32, f32)> = raw.iter().map(|&(t, x)| (t, self.changed(t, x))).collect();
-        if c.is_empty() {
-            return None;
-        }
-        c.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
-        let tok = if self.p.temperature <= 0.0 {
-            c[0].0
-        } else {
-            if self.p.top_k > 0 {
-                c.truncate(self.p.top_k);
-            }
-            let (idx, vals): (Vec<u32>, Vec<f32>) = c.into_iter().unzip();
-            let (idx, probs) = self.cut(idx, vals);
-            self.walk(&idx, &probs)
-        };
-        self.note(tok);
-        Some(tok)
-    }
-
-    /// The next token for an engine that makes the row's largest logits on the GPU (`top`, as `top_need` asked): drawn from them where that is all the draw looks at (`sample_top`), else from the whole row, which `row`
-    /// reads then and not before. The same token either way.
+    /// The next token for an engine that makes the row's largest logits on the GPU (`top`, as `gpu_ask` asked: of the row the draw sees where `processed`): drawn from them where that
+    /// is all the draw looks at (`sample_top`, `sample_proc`), else from the whole row, which `row` reads then and not before. The same token either way.
     pub fn sample_with(&mut self, top: Option<&Top>, row: impl FnOnce() -> crate::ffi::Result<Vec<f32>>) -> crate::ffi::Result<u32> {
         use std::sync::atomic::Ordering::Relaxed;
-        if let Some(tok) = top.and_then(|t| self.sample_top(&t.cands, t.mass)) {
+        let drawn = top.and_then(|t| if t.processed { self.sample_proc(&t.cands, t.mass) } else { self.sample_top(&t.cands, t.mass) });
+        if let Some(tok) = drawn {
             DRAWS[1].fetch_add(1, Relaxed);
             return Ok(tok);
         }
@@ -601,55 +759,37 @@ impl Sampler {
         Ok(self.sample(&row()?))
     }
 
-    /// The next token under a grammar from the row's largest logits `cands` (largest first, equal logits by the smaller token), the grammar's mask put on them before the top-k cut: the same token `sample` gives from the
-    /// whole row, where the candidates hold the draw's: the first allowed one of them at temperature 0, else the top-k of the allowed ones (k allowed candidates, or every allowed token among them, or the one the grammar allows: an
-    /// allowed token past the candidates is smaller than all of them). None where they do not (the whole row is then read), the generator untouched.
-    fn sample_grammar(&mut self, cands: &[(u32, f32)]) -> Option<u32> {
-        let mask = self.gram.as_mut()?.mask();
-        let total = mask.num_set();
-        let greedy = self.p.temperature <= 0.0;
-        let k = if greedy { 1 } else { self.p.top_k };
-        let (mut toks, mut vals) = (Vec::new(), Vec::new());
-        for &(t, v) in cands {
-            if mask.is_allowed(t) {
-                toks.push(t);
-                vals.push(v);
-                if toks.len() == k {
-                    break;
-                }
-            }
-        }
-        let tok = if total == 1 && !greedy {
-            // (one token may follow: no logit is looked at)
-            self.finish_draw(vec![mask.first_bit_set()? as u32], vec![0.0])
-        } else if toks.is_empty() || (toks.len() < k && toks.len() < total) {
-            return None;
-        } else if greedy {
-            toks[0]
-        } else {
-            self.finish_draw(toks, vals)
-        };
-        self.note(tok);
-        Some(tok)
-    }
-
-    /// A draw with a top-p and no top-k from the largest logits `cands` and `mass`, the sum over the row of their exponentials: the token the whole row gives, or None where the cut is not the same for every sum within
-    /// MASS_ERROR of `mass`, that is where it lies past the candidates or too near a cumulative probability to tell (and where `mass` is no sum that holds the candidates').
+    /// A draw with no top-k, a top-p or a min-p, from the largest logits `cands` and `mass`, the sum over the row of their exponentials: the token the whole row gives (`cut`'s min-p, then
+    /// its top-p), or None where the cut is not the same for every sum within MASS_ERROR of `mass`, that is where it lies past the candidates or too near a cumulative probability to tell
+    /// (and where `mass` is no sum that holds the candidates').
     fn draw_mass(&mut self, cands: &[(u32, f32)], mass: f64) -> Option<u32> {
         let max = cands[0].1;
+        if !(max > f32::NEG_INFINITY) {
+            return None;
+        }
         let e: Vec<f64> = cands.iter().map(|c| (((c.1 - max) / self.p.temperature) as f64).exp()).collect();
         if !mass.is_finite() || mass < e.iter().sum::<f64>() * (1.0 - MASS_ERROR) {
             return None;
         }
-        // the tokens kept, as `finish_draw` keeps them: up to the first whose cumulative probability reaches top-p
-        let cut = |z: f64| {
-            let mut acc = 0.0;
-            e.iter().position(|&x| {
-                acc += x / z;
-                acc >= self.p.top_p as f64
-            })
+        let (min_p, top_p) = (self.p.min_p as f64, self.p.top_p as f64);
+        // the tokens kept, as `cut` keeps them: those of at least min-p of the largest's probability (None where every candidate is: the cut is past them), then up to the first whose
+        // cumulative probability reaches top-p (where none of those kept does, all of them; where the min-p cut is past the candidates, None)
+        let cut = |z: f64| -> Option<usize> {
+            let probs: Vec<f64> = e.iter().map(|x| x / z).collect();
+            let floor = min_p * probs[0];
+            let keep = if min_p > 0.0 { probs.iter().position(|&p| !(p >= floor)).map(|i| i.max(1)) } else { None };
+            if top_p < 1.0 {
+                let mut acc = 0.0;
+                if let Some(i) = probs[..keep.unwrap_or(probs.len())].iter().position(|&p| {
+                    acc += p;
+                    acc >= top_p
+                }) {
+                    return Some(i + 1);
+                }
+            }
+            keep
         };
-        let keep = cut(mass * (1.0 - MASS_ERROR)).filter(|&i| Some(i) == cut(mass * (1.0 + MASS_ERROR)))? + 1;
+        let keep = cut(mass * (1.0 - MASS_ERROR)).filter(|&i| Some(i) == cut(mass * (1.0 + MASS_ERROR)))?;
         let probs: Vec<f64> = e[..keep].iter().map(|x| x / mass).collect();
         Some(self.walk(&cands[..keep].iter().map(|c| c.0).collect::<Vec<_>>(), &probs))
     }
@@ -801,14 +941,99 @@ pub fn argmax(l: &[f32]) -> u32 {
     at as u32
 }
 
+/// The GPU's side of a draw on the host, for the tests: the row the draw sees as the kernels make it (`Resolved::apply`), its candidates, sums and buckets as the kernels order and
+/// count them, and the draw an engine makes from them (`Sampler::gpu_ask`, `sample_top` / `sample_proc`, `sample_hist` / `sample_hist_proc`), the row read only where they cannot show it.
+#[cfg(test)]
+pub(crate) mod emu {
+    use super::*;
+
+    /// A float's bits as the number that grows with the value (-0 and +0 the same), as kernels/engine.cu's `f32_key` orders them.
+    pub fn key(x: f32) -> u32 {
+        let b = x.to_bits();
+        let b = if b == 0x8000_0000 { 0 } else { b };
+        if b & 0x8000_0000 != 0 {
+            !b
+        } else {
+            b | 0x8000_0000
+        }
+    }
+
+    /// The `kern::TOPK` largest of a row, largest first, equal ones by the smaller token (`topk64_f32`, `topk64_bf16`).
+    pub fn top(w: &[f32]) -> Vec<(u32, f32)> {
+        let mut i: Vec<u32> = (0..w.len() as u32).collect();
+        i.sort_by(|&a, &b| key(w[b as usize]).cmp(&key(w[a as usize])).then(a.cmp(&b)));
+        i[..crate::kern::TOPK.min(w.len())].iter().map(|&t| (t, w[t as usize])).collect()
+    }
+
+    /// The sum over a row of exp((x - max) / t), the host's way, `off` out (the GPU's is within 2e-6 of it).
+    pub fn mass(w: &[f32], t: f32, off: f64) -> f64 {
+        let max = top(w)[0].1;
+        w.iter().map(|&x| (((x - max) / t) as f64).exp()).sum::<f64>() * (1.0 + off)
+    }
+
+    /// A row's buckets at temperature t (`exp_hist_f32`: the tokens taken out, -inf, in none), and bucket b's tokens.
+    pub fn hist(w: &[f32], t: f32) -> (Hist, Vec<Vec<(u32, f32)>>) {
+        let max = top(w)[0].1;
+        let (mut sums, mut counts, mut tokens) = (vec![0f64; HIST_BUCKETS], vec![0u32; HIST_BUCKETS], vec![Vec::new(); HIST_BUCKETS]);
+        for (i, &x) in w.iter().enumerate().filter(|(_, &x)| x > f32::NEG_INFINITY) {
+            let q = (x - max) / t;
+            let b = (-q * HIST_PER).floor().min((HIST_BUCKETS - 1) as f32).max(0.0) as usize;
+            sums[b] += (q as f64).exp();
+            counts[b] += 1;
+            tokens[b].push((i as u32, x));
+        }
+        (Hist { max, per: HIST_PER, sums, counts }, tokens)
+    }
+
+    /// The token an engine draws for `s` from `row` (the model's logits) by the GPU's candidates of the row it sees, and whether it read the row; the sums `off` out. Where the request
+    /// changes the row, that row as the GPU makes it is held to `processed`'s bit for bit first.
+    pub fn draw(s: &mut Sampler, row: &[f32], off: f64) -> (u32, bool) {
+        let (need, proc) = s.gpu_ask();
+        let w = match &proc {
+            Some(p) => {
+                let w = p.resolve(row.len()).apply(row);
+                let host = s.processed(row);
+                assert!(w.iter().zip(&host).all(|(a, b)| a.to_bits() == b.to_bits()), "the row the GPU makes is not the host's");
+                w
+            }
+            None => row.to_vec(),
+        };
+        let cands = top(&w);
+        let tok = need.and_then(|n| {
+            let m = n.mass.then(|| mass(&w, n.temperature, off));
+            if proc.is_some() {
+                s.sample_proc(&cands, m)
+            } else {
+                s.sample_top(&cands, m)
+            }
+        });
+        let tok = tok.or_else(|| {
+            let t = if proc.is_some() { s.proc_hist_need() } else { s.hist_need() }?;
+            let (h, tokens) = hist(&w, t);
+            let mut bucket = |b: usize| Some(tokens[b].clone());
+            if proc.is_some() {
+                s.sample_hist_proc(&h, &mut bucket)
+            } else {
+                s.sample_hist(&h, &mut bucket)
+            }
+        });
+        match tok {
+            Some(t) => (t, false),
+            None => (s.sample(row), true),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A draw from the row's 64 largest logits and the changed tokens' own (`sample_adjusted`) is the whole row's (`sample`), step by step, for penalties, a bias,
-    /// suppressed tokens and greedy: two samplers of the same request, one given each, choose the same tokens; and most steps need no row.
+    /// The draw an engine makes from the GPU's candidates of the row the draw sees (the penalties, a bias, allowed tokens and the tokens held back put on the row first, `Proc`) is the
+    /// draw from the model's whole row (`sample`), seed for seed and step by step as the penalties' counts grow, whatever the sampling: greedy, a top-k, a top-p, a min-p, both, a draw
+    /// over the whole row; and the row the GPU makes is `processed`'s bit for bit at every step. The row is read only where the candidates cannot show the draw (a top-k past them with a
+    /// top-p).
     #[test]
-    fn a_draw_from_the_candidates_and_the_changed_tokens_is_the_whole_rows() {
+    fn a_draw_from_the_row_the_gpu_makes_is_the_rows() {
         let v = 3000usize;
         let mut seed = 0x51ed_270b_27c3_b1a5u64;
         let mut unit = || {
@@ -817,58 +1042,97 @@ mod tests {
             seed ^= seed << 17;
             (seed >> 11) as f32 / (1u64 << 53) as f32
         };
-        let cases = [
-            Params { temperature: 0.8, top_k: 20, top_p: 0.9, repetition_penalty: 1.3, seed: 7, ..Params::default() },
-            Params {
-                temperature: 1.0,
-                top_k: 40,
-                presence_penalty: 0.6,
-                frequency_penalty: 0.4,
-                logit_bias: vec![(5, 3.0), (2999, -2.0), (17, 9.0)],
-                seed: 9,
-                ..Params::default()
-            },
-            Params { temperature: 0.0, repetition_penalty: 1.2, frequency_penalty: 0.5, seed: 1, ..Params::default() },
-            // (a top-k of 32: at 64, every candidate is in it, so one changed below the last makes the draw the row's)
-            Params { temperature: 0.7, top_k: 32, min_p: 0.05, repetition_penalty: 1.1, min_tokens: 8, seed: 3, ..Params::default() },
+        let draws = [
+            Params { temperature: 0.0, ..Params::default() },
+            Params { temperature: 0.8, top_k: 20, top_p: 0.9, ..Params::default() },
+            Params { temperature: 1.0, top_k: 64, min_p: 0.05, ..Params::default() },
+            Params { temperature: 0.7, top_k: 1, ..Params::default() },
+            Params { temperature: 1.0, top_p: 0.95, ..Params::default() },
+            Params { temperature: 0.9, min_p: 0.1, ..Params::default() },
+            Params { temperature: 1.1, top_p: 0.8, min_p: 0.02, ..Params::default() },
+            Params { temperature: 1.0, ..Params::default() },
+            Params { temperature: 0.6, top_k: 100, ..Params::default() },
+            Params { temperature: 1.0, top_k: 100, top_p: 0.9, ..Params::default() },
         ];
-        for (n, p) in cases.into_iter().enumerate() {
-            let prompt: Vec<u32> = (0..40).map(|i| (i * 37 % v) as u32).collect();
-            let (mut whole, mut part) = (Sampler::new(p.clone(), &prompt), Sampler::new(p.clone(), &prompt));
-            for s in [&mut whole, &mut part] {
-                s.set_suppress(vec![0, 1]);
-            }
-            let mut used = 0;
-            for step in 0..120 {
-                // a row of bf16 values (as the GPU's logits are), a few tokens tied, the ones the answer holds among the largest
-                let mut row: Vec<f32> = (0..v).map(|_| f32::from_bits(((unit() * 16.0 - 8.0).to_bits()) & 0xffff_0000)).collect();
-                for t in (0..v).step_by(97) {
-                    row[t] = row[(t + 1) % v];
+        let changes = [
+            Params { repetition_penalty: 1.3, ..Params::default() },
+            Params { repetition_penalty: 0.8, ..Params::default() },
+            Params { presence_penalty: 0.6, frequency_penalty: 0.4, ..Params::default() },
+            Params { logit_bias: vec![(5, 3.0), (2999, -2.0), (17, 9.0), (1234, 100.0)], ..Params::default() },
+            Params { logit_bias: vec![(7, -100.0)], repetition_penalty: 1.2, frequency_penalty: -0.5, presence_penalty: 0.25, ..Params::default() },
+            Params { allowed: (0..v as u32).step_by(7).chain([4, 4, 9999]).collect(), presence_penalty: 1.0, ..Params::default() },
+            Params { min_tokens: 30, repetition_penalty: 1.1, ..Params::default() },
+        ];
+        let (mut total, mut reads) = (0, 0);
+        for (i, d) in draws.iter().enumerate() {
+            for (j, c) in changes.iter().enumerate() {
+                let p = Params { temperature: d.temperature, top_k: d.top_k, top_p: d.top_p, min_p: d.min_p, seed: (i * 31 + j) as u64, ..c.clone() };
+                let prompt: Vec<u32> = (0..40).map(|i| (i * 37 % v) as u32).collect();
+                let (mut whole, mut gpu) = (Sampler::new(p.clone(), &prompt), Sampler::new(p.clone(), &prompt));
+                for s in [&mut whole, &mut gpu] {
+                    s.set_suppress(vec![0, 1, 7]);
                 }
-                for (&t, _) in whole.said.iter().take(6) {
-                    row[t as usize] = 7.5;
-                }
-                let mut cands: Vec<(u32, f32)> = row.iter().enumerate().map(|(i, &x)| (i as u32, x)).collect();
-                cands.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then(a.0.cmp(&b.0)));
-                cands.truncate(crate::kern::TOPK);
-                let want = whole.sample(&row);
-                let got = match part.adjusts() {
-                    Some(ts) => {
-                        let raw: Vec<(u32, f32)> = ts.iter().filter(|&&t| (t as usize) < v).map(|&t| (t, row[t as usize])).collect();
-                        match part.sample_adjusted(&cands, &raw) {
-                            Some(t) => {
-                                used += 1;
-                                t
-                            }
-                            None => part.sample(&row),
-                        }
+                // (a top-p or a min-p over the whole row, or a top-p past a top-k beyond the candidates: read where the candidates do not hold the cut)
+                let may_read = (d.top_k == 0 && (d.top_p < 1.0 || d.min_p > 0.0)) || (d.top_k > crate::kern::TOPK && d.top_p < 1.0);
+                for step in 0..60 {
+                    // a row of bf16 values (as the GPU's logits are): a low floor, a few tied, both zeros, a few tokens far above it and the tokens said so far among them
+                    let bf = |x: f32| f32::from_bits(x.to_bits() & 0xffff_0000);
+                    let mut row: Vec<f32> = (0..v).map(|_| bf(unit() * 8.0 - 12.0)).collect();
+                    for t in (0..v).step_by(97) {
+                        row[t] = row[(t + 1) % v];
                     }
-                    None => part.sample(&row),
-                };
-                assert_eq!(got, want, "case {n}, step {step}");
+                    row[11] = -0.0;
+                    row[12] = 0.0;
+                    for _ in 0..5 {
+                        row[(unit() * v as f32) as usize % v] = bf(unit() * 5.0 + 3.0);
+                    }
+                    for (&t, _) in whole.said.iter().take(6) {
+                        row[t as usize] = 7.5;
+                    }
+                    let (got, read) = emu::draw(&mut gpu, &row, [0.0, 7e-7, -7e-7][step % 3]);
+                    let want = whole.sample(&row);
+                    assert_eq!(got, want, "{p:?}, step {step}");
+                    total += 1;
+                    reads += read as usize;
+                    assert!(!read || may_read, "{p:?}, step {step}: the row was read");
+                }
             }
-            assert!(used > 60, "case {n}: {used} of 120 draws from the candidates");
         }
+        assert!(reads < total / 5, "{reads} of {total} draws read the row");
+    }
+
+    /// What a GPU is asked to put on the row: nothing where the request changes nothing; the bias, the penalties' tokens as the answer grows (the prompt's for the repetition penalty), the allowed
+    /// list and the tokens held back until the least length (and not after); a bias that names a token twice is no `Proc` (the row is read).
+    #[test]
+    fn the_changes_a_gpu_puts_on_the_row() {
+        assert!(Sampler::new(Params { temperature: 0.7, top_k: 5, ..Params::default() }, &[3]).proc().is_none());
+        let mut s = Sampler::new(Params { repetition_penalty: 1.5, presence_penalty: 0.5, logit_bias: vec![(9, 2.0)], ..Params::default() }, &[3, 4, 3]);
+        let r = s.proc().unwrap().resolve(16);
+        assert_eq!(r.words, None);
+        let mut e = r.entries.clone();
+        e.sort_by_key(|e| e.token);
+        assert_eq!(
+            e,
+            vec![
+                Entry { token: 3, bias: None, seen: true, said: 0, rescue: false },
+                Entry { token: 4, bias: None, seen: true, said: 0, rescue: false },
+                Entry { token: 9, bias: Some(2.0), seen: false, said: 0, rescue: false },
+            ]
+        );
+        let row = vec![1.0f32; 16];
+        s.sample(&row);
+        s.sample(&row);
+        // (greedy: token 0 twice, said twice; token 9 is the bias's)
+        let r = s.proc().unwrap().resolve(16);
+        assert!(r.entries.contains(&Entry { token: 9, bias: Some(2.0), seen: true, said: 2, rescue: false }), "{:?}", r.entries);
+        // the allowed list and the tokens held back (past the vocabulary: none)
+        let mut s = Sampler::new(Params { allowed: vec![2, 40, 5, 2, 100], min_tokens: 1, ..Params::default() }, &[]);
+        s.set_suppress(vec![5, 70]);
+        let r = s.proc().unwrap().resolve(64);
+        assert_eq!(r.words, Some(vec![1 << 2, 1 << 8]));
+        s.sample(&[0.0; 64]);
+        assert_eq!(s.proc().unwrap().resolve(64).words, Some(vec![(1 << 2) | (1 << 5), 1 << 8]), "the least length reached: nothing held back");
+        assert!(Sampler::new(Params { logit_bias: vec![(1, 1.0), (1, 2.0)], ..Params::default() }, &[]).proc().is_none());
     }
 
     fn logits() -> Vec<f32> {
@@ -958,10 +1222,12 @@ mod tests {
             Params { temperature: 1.0, top_k: 65, ..Params::default() },
             Params { temperature: 1.0, top_k: 20, repetition_penalty: 1.1, ..Params::default() },
             Params { temperature: 1.0, top_k: 20, presence_penalty: 0.5, ..Params::default() },
-            Params { temperature: 0.0, top_k: 20, ..Params::default() },
+            Params { temperature: 0.0, top_k: 20, logit_bias: vec![(4, 1.0)], ..Params::default() },
         ] {
             assert_eq!(Sampler::new(p, &[]).sample_top(&cands, None), None);
         }
+        // greedy, changing nothing: the first candidate, the row's largest (the first of equals)
+        assert_eq!(Sampler::new(Params { temperature: 0.0, ..Params::default() }, &[]).sample_top(&cands, None), Some(argmax(&row)));
     }
 
     /// The GPU's answer for `row` as the kernels make it: the 64 largest (equal values by the smaller token) and the sum of the exponentials at temperature `t` as expsum_bf16 forms it (each exponential in fp32, eight of them added
@@ -971,7 +1237,7 @@ mod tests {
         by.sort_by(|&a, &b| row[b as usize].partial_cmp(&row[a as usize]).unwrap().then(a.cmp(&b)));
         let max = row[by[0] as usize];
         let mass: f64 = row.chunks(8).map(|c| c.iter().map(|&v| ((v - max) / t).exp()).sum::<f32>() as f64).sum();
-        Top { cands: by[..64].iter().map(|&i| (i, row[i as usize])).collect(), mass: Some(mass * (1.0 + off)) }
+        Top { cands: by[..64].iter().map(|&i| (i, row[i as usize])).collect(), mass: Some(mass * (1.0 + off)), processed: false }
     }
 
     /// Rows of 5,000 bf16 logits: a few large values on a low floor (a sure next token), thirty alike, a hundred alike (a doubtful one), and a floor alone (nearly flat).
@@ -1090,30 +1356,6 @@ mod tests {
         }
     }
 
-    /// A draw from an allowed list made from those tokens' own logits (`sample_listed`, what a GPU gathers) is `sample`'s from the whole row, token for token, with a bias, the
-    /// penalties, a top-k past the candidates, top-p, min-p and temperature 0; a request with no list has none.
-    #[test]
-    fn an_allowed_lists_draw_from_its_tokens_alone_is_the_rows() {
-        let row: Vec<f32> = (0..5000).map(|i| ((i * 7919 % 1000) as f32 / 100.0) - 5.0).collect();
-        let allowed: Vec<u32> = (0..5000).step_by(37).chain([4999, 3, 3]).collect();
-        let base = Params { temperature: 0.8, allowed: allowed.clone(), seed: 11, ..Params::default() };
-        for p in [
-            base.clone(),
-            Params { temperature: 0.0, ..base.clone() },
-            Params { top_k: 100, top_p: 0.9, ..base.clone() },
-            Params { min_p: 0.05, ..base.clone() },
-            Params { logit_bias: vec![(37, 4.0), (1, 50.0)], repetition_penalty: 1.3, presence_penalty: 0.4, ..base.clone() },
-        ] {
-            let (mut a, mut b) = (Sampler::new(p.clone(), &[37, 74]), Sampler::new(p.clone(), &[37, 74]));
-            let toks = b.listed().expect("a list");
-            for _ in 0..40 {
-                let raw: Vec<(u32, f32)> = toks.iter().map(|&t| (t, row[t as usize])).collect();
-                assert_eq!(b.sample_listed(&raw), Some(a.sample(&row)), "{p:?}");
-            }
-        }
-        assert!(Sampler::new(Params::default(), &[]).listed().is_none());
-    }
-
     #[test]
     fn what_a_draw_asks_of_the_gpu() {
         let ask = |p: Params| Sampler::new(Params { temperature: 0.7, ..p }, &[]).top_need();
@@ -1128,8 +1370,10 @@ mod tests {
         ] {
             assert_eq!(ask(none.clone()), None, "{none:?}");
         }
-        assert_eq!(Sampler::new(Params { temperature: 0.0, top_k: 20, ..Params::default() }, &[]).top_need(), None);
-        assert_eq!(Sampler::new(Params { temperature: 0.0, ..Params::default() }, &[]).top_need(), None, "greedy asks for nothing");
+        // (greedy: the largest alone, which the step's own largest is where the request changes nothing: a least length reached)
+        let largest = Some(Need { temperature: 0.0, mass: false });
+        assert_eq!(Sampler::new(Params { temperature: 0.0, top_k: 20, ..Params::default() }, &[]).top_need(), largest);
+        assert_eq!(Sampler::new(Params { temperature: 0.0, ..Params::default() }, &[]).top_need(), largest);
         // a least length with tokens to take out: the row until it is reached
         let mut s = Sampler::new(Params { temperature: 1.0, top_k: 20, min_tokens: 1, ..Params::default() }, &[]);
         s.set_suppress(vec![3]);
