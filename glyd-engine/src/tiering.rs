@@ -653,7 +653,7 @@ fn rows_run(e: &mut crate::dynamic::Dyn, n: usize, most: usize, (plen, steps, vo
     Ok(run)
 }
 
-/// `glyd-engine storecheck MODEL [--places N] [--rows 1,8,32] [--steps 6] [--prompt 16] [--modes copy,auto:device] [--against resident|copy] [--layout L]` (development;
+/// `glyd-engine storecheck MODEL [--places N] [--rows 1,8,32] [--steps 6] [--prompt 16] [--modes copy,auto:device] [--against resident|copy] [--layout L] [--floor] [--pairs]` (development;
 /// R12b, #327): batched decode of a model whose experts are in the expert cache on GPU 0 (`--places` of each layer's experts on the GPU, every one in the computer's
 /// memory), against the same calls on a reference: the model with every expert on the GPU (`resident`, the default: a smaller cut of a model that does not fit), or the
 /// cache in copy mode planned on the host (`copy`: the resident layer's bits, for a model larger than the GPU). For each mode (`MODE`, or `MODE:device`: the decode
@@ -668,11 +668,16 @@ fn rows_run(e: &mut crate::dynamic::Dyn, n: usize, most: usize, (plen, steps, vo
 ///   - graphs: where the step of one row is a graph (every layer of the cache planned on the GPU), every decode step replays one (one row: its sequence's; n rows
 ///     up to the ladder's top: the graph of n rows), none runs eager and none is captured in a step; where the host plans a layer's calls the steps run eager,
 ///     and the line says why.
+/// `--floor`: before the modes, the draw's own floor, PASS or FAIL for each count of rows: the reference again with every experts' product's sums split over K on the
+/// GPU (GLYD_GPU_MOE_SLOTS: the library's step products add a sum's parts in order; the same arithmetic, its fp32 sums in another order, as the host's are), judged
+/// against the reference as a host mode's rows are. A draw past the kind's bound against itself so reordered judges no path that is not the GPU's bit for bit.
+/// `--pairs`: in each mode with a host half, a further run of the same calls with each pair the host computes against the GPU's from the same inputs (the same rows
+/// of z, expert and weight: `moe::PAIRS`, the calls the host plans), each layer's and the worst pair's difference printed.
 /// At the end, the process's statistics as the server's /stats reports them (`offload::stats_field`).
 #[cfg(feature = "dev")]
 pub fn rows_check(a: &crate::args::Args) -> Result<()> {
     use crate::ffi::Error;
-    use crate::logits::{Judge, Judged, Routers};
+    use crate::logits::Routers;
     use crate::offload::{LayerStats, Mode, Offload};
     let dir = std::path::Path::new(a.need(1, "MODEL")?);
     let places = a.num("places", 16usize)?;
@@ -701,6 +706,7 @@ pub fn rows_check(a: &crate::args::Args) -> Result<()> {
         Some("copy") => true,
         Some(x) => return err(format!("--against {x}: resident or copy")),
     };
+    let (floor, pairs) = (a.has("floor"), a.has("pairs"));
     let vocab = crate::runtime::config::ModelConfig::load(dir)?.num("vocab_size").unwrap_or(1000).max(16);
     let most = rows_l.iter().copied().max().unwrap_or(1);
     let o = crate::dynamic::Opts { ctx: (plen + steps + 64).next_multiple_of(256), chunk: plen.max(64), graph: true, device: 0, layout: a.layout()? };
@@ -737,10 +743,38 @@ pub fn rows_check(a: &crate::args::Args) -> Result<()> {
                 None
             }
         };
+        if let Some(sim) = e.simulates() {
+            println!("  the release's simulated quantizations {}", if sim { "on (GLYD_V4_SIM=0 turns them off)" } else { "off" });
+        }
         let runs = rows_l.iter().map(|&n| rows_run(&mut e, n, most, shape, true)).collect::<Result<Vec<_>>>()?;
         (runs, routers)
     };
     let mut fails = Vec::new();
+    if floor {
+        // (the reference's products with each sum's K split over blocks: the library's parts, added in order, read this at each call; the engine's workspace sized for them)
+        std::env::set_var("GLYD_GPU_MOE_SLOTS", "1073741824");
+        let made = open(against_copy.then(|| caching(Mode::Copy, false)))
+            .and_then(|mut e| rows_l.iter().map(|&n| rows_run(&mut e, n, most, shape, true)).collect::<Result<Vec<_>>>());
+        std::env::remove_var("GLYD_GPU_MOE_SLOTS");
+        let made = made.map_err(|x| x.context("--floor: the reference with its experts' sums split over K"))?;
+        for ((&n, r), f) in rows_l.iter().zip(&reference).zip(&made) {
+            let tag = format!("{n} rows, the draw's floor (the reference again, every experts' product's sums split over K on the GPU: the same arithmetic in another fp32 order)");
+            let moved = r.logits.iter().flatten().zip(f.logits.iter().flatten()).any(|(x, y)| x.iter().zip(y).any(|(p, q)| p.to_bits() != q.to_bits()));
+            if !moved {
+                println!("PASS {tag}: no bit moved (no sum this model's products make is split: its K is under 512), not measured");
+                continue;
+            }
+            let (jd, parted) = judge_rows(r, f, steps, routers.as_ref())?;
+            jd.print(&format!("{tag}: the rows against the reference's on the run's own choices ({} rows)", jd.held + jd.reported + jd.failed), jd.ok());
+            for (q, j) in parted {
+                println!("  sequence {q} parts from the reference at its row {j} (the rows after it run on other tokens: not compared)");
+            }
+            if !jd.ok() {
+                println!("  (a draw past the kind's bound against its own sums in another order judges no path that is not the GPU's bit for bit)");
+                fails.push(format!("{n} rows: the draw's floor"));
+            }
+        }
+    }
     for &(mode, device) in &modes {
         let what = format!("{}{}", mode.name(), if device { ", the decode calls planned on the GPU" } else { "" });
         let mut e = open(Some(caching(mode, device)))?;
@@ -807,20 +841,13 @@ pub fn rows_check(a: &crate::args::Args) -> Result<()> {
                     println!("FAIL {tag}: the run with its choices traced (eager) gave other rows than the run of the same calls");
                     fails.push(format!("{tag}: traced run"));
                 }
-                let (mut judged, mut parted) = (Vec::new(), Vec::new());
-                for s in 0..n {
-                    for j in 0..=steps {
-                        judged.push(Judged { alone: &r.logits[s][j], beside: &tr.logits[s][j], choices: (r.hist[s][j].clone(), tr.hist[s][j].clone()) });
-                        if r.tokens[s][j] != tr.tokens[s][j] {
-                            parted.push((s, j));
-                            break;
-                        }
-                    }
-                }
-                let jd = Judge::of(&judged, routers.as_ref())?;
+                let (jd, parted) = judge_rows(r, &tr, steps, routers.as_ref())?;
                 let ok = jd.ok();
                 jd.print(
-                    &format!("{tag}: {hosted} pairs computed by the host; the rows against the reference's on the run's own choices ({} rows)", judged.len()),
+                    &format!(
+                        "{tag}: {hosted} pairs computed by the host; the rows against the reference's on the run's own choices ({} rows)",
+                        jd.held + jd.reported + jd.failed
+                    ),
                     ok,
                 );
                 for (s, j) in parted {
@@ -886,6 +913,9 @@ pub fn rows_check(a: &crate::args::Args) -> Result<()> {
             if !ok {
                 fails.push(format!("{tag}: graphs"));
             }
+            if pairs && mode != Mode::Copy {
+                pair_lines(&mut e, n, most, shape, &tag)?;
+            }
         }
     }
     // (the process's figures of the cache's layers since it started: the server's /stats field)
@@ -902,6 +932,69 @@ pub fn rows_check(a: &crate::args::Args) -> Result<()> {
     } else {
         err(format!("{}: {} failed: {}", dir.display(), fails.len(), fails.join("; ")))
     }
+}
+
+/// `rows_check`'s judgment of a run's rows (`got`, its choices traced) against the reference's (`r`) on the run's own choices (`logits::Judge`): each sequence's rows
+/// while its tokens are the reference's, and the row where they first differ; with each sequence that parts and the row where.
+#[cfg(feature = "dev")]
+fn judge_rows(r: &RowsRun, got: &RowsRun, steps: usize, routers: Option<&crate::logits::Routers>) -> Result<(crate::logits::Judge, Vec<(usize, usize)>)> {
+    use crate::logits::{Judge, Judged};
+    let (mut judged, mut parted) = (Vec::new(), Vec::new());
+    for s in 0..r.logits.len() {
+        for j in 0..=steps {
+            judged.push(Judged { alone: &r.logits[s][j], beside: &got.logits[s][j], choices: (r.hist[s][j].clone(), got.hist[s][j].clone()) });
+            if r.tokens[s][j] != got.tokens[s][j] {
+                parted.push((s, j));
+                break;
+            }
+        }
+    }
+    Ok((Judge::of(&judged, routers)?, parted))
+}
+
+/// `rows_check --pairs`: the calls of `n` rows again on `e` (`rows_run`) with each pair the host computes compared with the GPU's from the same inputs (`moe::PAIRS`:
+/// every call the host plans, each of its k choices alone in copy mode and in cpu mode with the layer's places emptied), each layer's figures and the worst pair's
+/// printed (information: the rows' verdict is the judged run's). The run's own rows are not judged (the comparison's calls move the cache's places).
+#[cfg(feature = "dev")]
+fn pair_lines(e: &mut crate::dynamic::Dyn, n: usize, most: usize, shape: (usize, usize, usize), tag: &str) -> Result<()> {
+    let lock = || crate::moe::PAIRS.lock().map_err(|_| crate::ffi::Error("the pairs' lock".into()));
+    *lock()? = Some(Default::default());
+    let r = rows_run(e, n, most, shape, false);
+    let all = lock()?.take().unwrap_or_default();
+    r?;
+    if all.is_empty() {
+        println!("  {tag}: pairs: none compared (no call of a layer with a host half planned on the host)");
+        return Ok(());
+    }
+    let (mut pairs, mut values, mut most_u, mut over, mut far, mut worst) = (0usize, 0usize, 0u32, [0usize; 3], 0usize, (0f64, 0usize));
+    for (&l, d) in &all {
+        pairs += d.pairs;
+        values += d.values;
+        most_u = most_u.max(d.most);
+        (0..3).for_each(|i| over[i] += d.over[i]);
+        far += d.far;
+        if d.worst > worst.0 {
+            worst = (d.worst, l);
+        }
+        println!(
+            "  {tag}: pairs of layer {l}, the host's against the GPU's from the same inputs: {} pairs of {} calls, {} values; the most {} last places apart (bf16, the pair's row); {} more than 1, {} more than 4, {} more than 16; the largest difference {:.2e} of the pair's largest value; {} pairs more than 16 apart somewhere{}",
+            d.pairs,
+            d.calls,
+            d.values,
+            d.most,
+            d.over[0],
+            d.over[1],
+            d.over[2],
+            d.worst,
+            d.far,
+            d.first.map_or(String::new(), |(c, t, j, x, u)| format!(", the first: call {c}, token {t}, choice {j}, expert {x}, {u} last places"))
+        );
+    }
+    println!(
+        "  {tag}: pairs, every layer: {pairs} pairs the host computed against the GPU's from the same inputs, {values} values; the most {most_u} last places apart; {} more than 1, {} more than 4, {} more than 16; the worst pair's largest difference {:.2e} of its largest value (layer {}); {far} pairs more than 16 apart somewhere",
+        over[0], over[1], over[2], worst.0, worst.1
+    );
+    Ok(())
 }
 
 /// The planner's decode step for `rows` rows of the model at `dir` on this machine, `places` of each layer's experts on the GPU and every expert in the computer's memory (src/plan.rs `speed_routed`, the
