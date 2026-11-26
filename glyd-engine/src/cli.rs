@@ -484,7 +484,8 @@ pub(crate) fn users_of(a: &Args) -> Done<usize> {
 /// What the load took of the GPU against the plan: the weights the engine counts and the memory the GPU lost since the plan was made. A development build
 /// writes it as JSON to `GLYD_PLAN_REPORT` (the GPU check reads it) and says it with `GLYD_ENGINE_VERBOSE`: the numbers the planner is calibrated on.
 fn loaded_report(model: &str, c: &ModelConfig, plan: &LoadPlan, gpus: &[&Gpu], weights: u64) {
-    let used = gpus.iter().map(|gpu| Dev::probe(gpu.ordinal).map_or(0, |g| gpu.free.saturating_sub(g.free))).sum::<u64>();
+    // (each GPU looked at made current in turn: the engine's own current again after, `keeping_context`)
+    let used = crate::dev::keeping_context(|| gpus.iter().map(|gpu| Dev::probe(gpu.ordinal).map_or(0, |g| gpu.free.saturating_sub(g.free))).sum::<u64>());
     crate::plan::remember_in(&store::cache_root(), model, plan, weights, used);
     // (the replies that follow are measured against the plan's prediction and kept with it: src/plan.rs `observe`)
     if let Ok(sh) = crate::plan::shape_of(model, c) {

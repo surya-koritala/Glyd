@@ -347,8 +347,13 @@ impl Machine {
     }
 
     /// This computer: its GPUs as the driver reports them, its free memory, the rates a GPU's first use here measured (`rates_in`, kept in the cache; not where
-    /// `GLYD_NO_PROBE` is set), and what the runs here reached against their predictions (`observed_on`).
+    /// `GLYD_NO_PROBE` is set), and what the runs here reached against their predictions (`observed_on`). The thread's current context is as it was after
+    /// (`dev::keeping_context`): a model loaded on one GPU of several runs on after a look at all of them.
     pub fn probe() -> Machine {
+        crate::dev::keeping_context(Machine::probe_now)
+    }
+
+    fn probe_now() -> Machine {
         let vendor = if cfg!(glyd_hip) { Vendor::Amd } else { Vendor::Nvidia };
         let root = crate::store::cache_root();
         let mut ram_bandwidth = None;
