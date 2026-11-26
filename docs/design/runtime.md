@@ -856,7 +856,8 @@ What is built (R12b, #327):
   hold (the rows with no choice apart KL mean 4.3e-6 to 4.5e-6 on Kimi-K3 3 x 256 and DeepSeek-V4 2 x 128, 1.5e-6 to 2.1e-6 on the
   Qwen3.5 layout 2 x 256, 67 to 100% of the rows judged so; GLM-5.3 in FP8 not measured: the library never splits its products),
   and every host mode, the plan on the GPU too, holds the kind's bound on the run's own choices at 1, 8 and 32 rows (Kimi-K3: the
-  held rows' KL mean 2.4e-7 to 4.4e-6; the Qwen3.5 layout and GLM-5.3 in FP8 have no host half: their rows are the GPU's bits).
+  held rows' KL mean 2.4e-7 to 4.4e-6; DeepSeek-V4 without its simulation 5.3e-7 to 4.8e-6, none failed; the Qwen3.5 layout and
+  GLM-5.3 in FP8 have no host half: their rows are the GPU's bits).
   DeepSeek-V4 with the release's simulated quantizations is held in three parts, as its logits case (`logits::dsv4_also`): the
   judged lines without them, the quantizing operations bit for bit, the whole model with them printed as INFO. A row whose history
   first parts at a router prints the routers' inputs there, layer by layer: on the small Kimi-K3 (8 layers) at 32 rows in cpu mode
