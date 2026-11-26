@@ -11,8 +11,9 @@ use crate::gpu_ops::GpuOps;
 use crate::launch;
 
 impl Dyn {
-    /// One of the compressed attention's operations on n rows at positions `pos`.
-    pub(super) unsafe fn op_comp(&self, p: &Part, op: &Op, n: usize, pos: u64) -> Result<()> {
+    /// One of the compressed attention's operations of layer `l` on n rows at positions `pos` (its indexer's picks kept where a check traces each row's choices,
+    /// `trace_row_picked`).
+    pub(super) unsafe fn op_comp(&self, p: &Part, l: usize, op: &Op, n: usize, pos: u64) -> Result<()> {
         let v = self.v4.as_ref().ok_or_else(|| Error("a compressed attention's operation in a model loaded without its buffers".into()))?;
         let (s, nu, eps, hid) = (self.dev.stream, n as u32, p.d.eps, p.d.hidden as i32);
         // (in a pass over several sequences: the first row of the sequence an operation runs on now, and the pass's rows, which the attention's output is laid out by)
@@ -88,6 +89,8 @@ impl Dyn {
                         },
                     };
                     self.idx_pick(x, &at)?;
+                    // (the scores' room holds this run of rows alone: each run's picks kept before the next)
+                    self.trace_row_picked(p, l, &at, (n, r0), x.ratio, false)?;
                 }
                 self.mark("indexer: picks")
             }
@@ -156,7 +159,7 @@ impl Dyn {
     /// a decode row of its own sequence (`Dyn::lead`): one launch of each kernel for all of them, each row through its own block tables and states (`rows::RowTabs`), at
     /// positions `pos`; each row's kernels and sums are those of its own sequence's pass on its one token (a graph's padding rows, at position -1, read and write no ring or
     /// state). The compressors' product of one row is `v4_lin32_1`, of several `v4_lin32`: the same sums in the same order.
-    pub(super) unsafe fn comp_lead(&self, p: &Part, op: &Op, (rows, n): (usize, usize), pos: u64) -> Result<()> {
+    pub(super) unsafe fn comp_lead(&self, p: &Part, l: usize, op: &Op, (rows, n): (usize, usize), pos: u64) -> Result<()> {
         let v = self.v4.as_ref().ok_or_else(|| Error("a compressed attention's operation in a model loaded without its buffers".into()))?;
         let (s, ru, eps, hid) = (self.dev.stream, rows as u32, p.d.eps, p.d.hidden as i32);
         let k = &v.k;
@@ -219,6 +222,7 @@ impl Dyn {
                         },
                     };
                     self.idx_pick(x, &at)?;
+                    self.trace_row_picked(p, l, &at, (rows, r0), x.ratio, false)?;
                 }
                 self.mark("indexer: picks")
             }

@@ -89,7 +89,7 @@ impl Dyn {
     }
 
     /// `Op::IdxPick` of pooled keys (`IdxKeys::Pools`) of layer `l` on n rows of one sequence at positions `pos`: into the picks' room at the sequence's rows
-    /// (and each row's pick kept where a check traces them, `trace_row_picks`).
+    /// (and each row's pick kept where a check traces them, `trace_row_picked`).
     pub(super) unsafe fn idx_pick_pools(&self, p: &Part, l: usize, x: &IdxPick, n: usize, pos: u64) -> Result<()> {
         let r = self.picks.as_ref().ok_or_else(|| Error("an indexer's pick in a model loaded without its room".into()))?;
         let IdxKeys::Pools(pools) = x.keys else { return err("not an indexer of pooled keys") };
@@ -111,13 +111,14 @@ impl Dyn {
             cand: super::mla::CandAt::default(),
         };
         self.idx_pick(x, &at)?;
-        self.trace_row_picks(p, l, x.ratio, n, row0)?;
+        self.trace_row_picked(p, l, &at, (n, 0), x.ratio, true)?;
         self.mark("indexer: picks")
     }
 
-    /// `Op::IdxPick` of pooled keys on the pass's first `rows` rows, each a decode row of its own sequence (`Dyn::lead`), at positions `pos`: one pick for all of them, each
-    /// row's pools through its own block table (`rows::RowTabs`), into the picks' room at the rows' places.
-    pub(super) unsafe fn pick_pools_lead(&self, p: &Part, x: &IdxPick, rows: usize, pos: u64) -> Result<()> {
+    /// `Op::IdxPick` of pooled keys of layer `l` on the pass's first `rows` rows, each a decode row of its own sequence (`Dyn::lead`), at positions `pos`: one pick for all
+    /// of them, each row's pools through its own block table (`rows::RowTabs`), into the picks' room at the rows' places (and each row's pick kept where a check traces
+    /// them, `trace_row_picked`).
+    pub(super) unsafe fn pick_pools_lead(&self, p: &Part, l: usize, x: &IdxPick, rows: usize, pos: u64) -> Result<()> {
         let r = self.picks.as_ref().ok_or_else(|| Error("an indexer's pick in a model loaded without its room".into()))?;
         let IdxKeys::Pools(pools) = x.keys else { return err("not an indexer of pooled keys") };
         let (keys, tab, ts) = self.lead_ring(pools);
@@ -138,6 +139,7 @@ impl Dyn {
             cand: super::mla::CandAt::default(),
         };
         self.idx_pick(x, &at)?;
+        self.trace_row_picked(p, l, &at, (rows, 0), x.ratio, true)?;
         self.mark("indexer: picks")
     }
 
