@@ -100,7 +100,7 @@ pub fn load_stage(dir: &Path, o: &Opts, level: Layout, st: impl Into<Option<Stag
     let experts = ((st.layers.1 - st.layers.0) * c.experts * 3 * c.inter * c.hidden) as u64 * per / 8;
     let table: u64 = held_as_saved(&d, &st).iter().filter(|k| !d.host.contains(k)).map(|&k| (d.mats[k].rows * d.mats[k].cols * 2) as u64).sum();
     let free = Dev::new(o.device)?.mem_info()?.0 as u64;
-    if experts + table > free {
+    if !crate::plan::sizing::resident_fits(experts + table, free) {
         return err(format!(
             "{FAMILY}: the experts of layers {}..{} ({:.1} GB at {per} bits) and their table of n-grams ({:.1} GB) do not fit this GPU's {:.1} GB free: a pack of its experts serves it (`load_cached`)",
             st.layers.0,
@@ -146,7 +146,7 @@ pub struct Caching {
     /// places a layer (None: what the GPU has free after the always-on matrices, less the reserve, over the layers)
     pub places: Option<usize>,
     pub offload: Offload,
-    /// the sequences the GPU keeps room for beside the places: their keys, values and states, and the executor's scratch (`reserve_for`)
+    /// the sequences the GPU keeps room for beside the places: their keys, values and states, and the executor's scratch (`reserve_for`, the planner's)
     pub users: usize,
 }
 
@@ -159,20 +159,9 @@ impl Caching {
     }
 }
 
-/// The GPU memory the places of stage `st` of a model leave: each of `users` sequences' keys, values and states the stage's layers hold for the description's
-/// context, and the executor's slots and scratch (1.5 GiB, not measured for this model: the final pass measures it).
+/// The GPU memory the places of stage `st` of a model leave for its sequences and the executor's scratch (`plan::sizing::cache_reserve`, the planner's: #239).
 pub fn reserve_for(d: &ModelDesc, users: usize, st: &Stage) -> u64 {
-    let ops = || d.layers[st.layers.0..st.layers.1].iter().flatten();
-    let rings: std::collections::BTreeSet<usize> = ops().flat_map(super::Op::rings).collect();
-    let states: std::collections::BTreeSet<usize> = ops().flat_map(super::Op::states).collect();
-    let ring: u64 = rings.iter().map(|&i| &d.rings[i]).map(|r| (d.max_pos * r.nk * r.d * 2 * (1 + r.values as usize)) as u64).sum();
-    let states: u64 = states.iter().map(|&i| d.states[i] as u64).sum();
-    users.max(1) as u64 * (ring + states) + (3 << 29)
-}
-
-/// Places a layer: the GPU's `free` bytes less `reserve`, over `layers` layers of places of `place` bytes; at least one, at most `kept` (all of a layer's).
-pub fn places_for(free: u64, reserve: u64, layers: usize, place: usize, kept: usize) -> usize {
-    ((free.saturating_sub(reserve) / (layers.max(1) * place.max(1)) as u64) as usize).clamp(1, kept.max(1))
+    crate::plan::sizing::cache_reserve(d, users, st)
 }
 
 /// The model in `dir` on the executor's loader with its routed experts in the expert cache (`Caching`): the always-on matrices as `load` loads them, each layer's
@@ -208,7 +197,7 @@ pub fn load_cached_stage(dir: &Path, o: &Opts, k: &Caching, st: impl Into<Option
         // (read after the always-on matrices are on the GPU: what is free now, less the reserve, is the places')
         let slots = match k.places {
             Some(p) => p,
-            None => places_for(Dev::new(dev)?.mem_info()?.0 as u64, reserve, layers.len(), place, kept),
+            None => crate::plan::sizing::cache_places(Dev::new(dev)?.mem_info()?.0 as u64, reserve, layers.len(), place, kept),
         };
         layers
             .clone()
@@ -289,14 +278,8 @@ fn parts(snap: &Path, k: &Caching, o: &Opts, gpus: &[i32], a: &crate::args::Args
     let bytes = |pct: u64, keep: &dyn Fn(&str) -> bool| super::split::layer_bytes_where(snap, c.layers, 100, pct, keep);
     let (packed, base) = bytes(bf16_pct(o.layout), &|n| !n.contains(".mlp.experts.") && !saved.contains(n) && !host.contains(n))?;
     let dense: Vec<u64> = packed.iter().zip(bytes(100, &|n| saved.contains(n))?.0).map(|(a, b)| a + b).collect();
-    let (scratch, all) = (3u64 << 29, reserve_for(&d, k.users, &whole));
-    let room = gpus
-        .iter()
-        .map(|&g| {
-            let on = gpus.iter().filter(|&&h| h == g).count() as u64;
-            Ok((g, (Dev::probe(g)?.free / on).saturating_sub((all - scratch) / gpus.len() as u64 + scratch)))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let free = gpus.iter().map(|&g| Ok((g, Dev::probe(g)?.free))).collect::<Result<Vec<_>>>()?;
+    let room = crate::plan::sizing::part_rooms(&free, reserve_for(&d, k.users, &whole));
     let (cuts, devices, _) = super::split::places_plan(&dense, base, &vec![true; c.layers], &room, place, kept, 1)
         .ok_or_else(|| Error(format!("--gpus {}: no cut of the {} layers leaves every GPU a place a layer", a.flag("gpus").unwrap_or_default(), c.layers)))?;
     Ok((cuts, devices))
@@ -783,9 +766,10 @@ mod tests {
     /// sequence's keys, values and states beside the scratch, and grows with the users by them.
     #[test]
     fn the_places_take_the_room_past_the_reserve() {
-        assert_eq!(super::places_for(10 << 30, 2 << 30, 48, 1 << 20, 512), 170);
-        assert_eq!(super::places_for(1 << 30, 2 << 30, 48, 1 << 20, 512), 1);
-        assert_eq!(super::places_for(1 << 40, 0, 48, 1 << 20, 512), 512);
+        use crate::plan::sizing::{cache_places, part_rooms};
+        assert_eq!(cache_places(10 << 30, 2 << 30, 48, 1 << 20, 512), 170);
+        assert_eq!(cache_places(1 << 30, 2 << 30, 48, 1 << 20, 512), 1);
+        assert_eq!(cache_places(1 << 40, 0, 48, 1 << 20, 512), 512);
         let m = super::super::lower::qwen4x(&describe(&tiny()).unwrap(), vec![2000], 1100).unwrap();
         let whole = super::super::Stage::whole(m.layers.len());
         let (one, four) = (super::reserve_for(&m, 1, &whole), super::reserve_for(&m, 4, &whole));
@@ -795,6 +779,10 @@ mod tests {
         // (a stage's reserve is its own layers' rings and states: the two halves of the model hold the whole one's between them)
         let half = |layers| super::reserve_for(&m, 4, &super::super::Stage { layers, first: false, last: false }) - (3 << 29);
         assert!(half((0, 4)) > 0 && half((4, 8)) > 0 && half((0, 4)) + half((4, 8)) == four - (3 << 29));
+        // (the parts' rooms over two GPUs, and over one GPU named twice, which its two parts share: each a part's share of the sequences' room and the scratch less)
+        let (gib, part) = (1u64 << 30, (four - (3 << 29)) / 2 + (3 << 29));
+        assert_eq!(part_rooms(&[(0, 20 * gib), (1, 16 * gib)], four), vec![(0, 20 * gib - part), (1, 16 * gib - part)]);
+        assert_eq!(part_rooms(&[(0, 20 * gib), (0, 20 * gib)], four), vec![(0, 10 * gib - part), (0, 10 * gib - part)]);
     }
 
     /// A stage of the model numbers its experts' blocks as its loader reads them (the stage's k-th layer of experts, block k), the whole model's the layers'.

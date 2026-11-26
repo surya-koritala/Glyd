@@ -345,6 +345,9 @@ pub trait Gen {
     }
     /// The part (0 to 1) of the GPU's free memory `as_step` makes its keys and values and its sequences' states of (1: all of it; `serve --with` gives the first model half).
     fn share_memory(&mut self, _part: f64) {}
+    /// The plan the loader took: `as_step` holds at most its `users` sequences, their keys, values and states in its `kv` bytes (src/plan.rs `LoadPlan`); an engine no
+    /// plan sized takes what the GPU's free memory leaves.
+    fn take_plan(&mut self, _users: usize, _kv: u64) {}
     /// The images of the next `reply`'s prompt, in order (each one's place in the prompt as many image tokens as its rows): an engine whose model has a vision
     /// tower reads them; any other refuses them.
     fn see(&mut self, images: Vec<std::sync::Arc<crate::vision::Image>>) -> Result<()> {

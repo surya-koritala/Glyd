@@ -23,6 +23,9 @@ pub(crate) use kvpages::room_of as kv12_room;
 #[cfg(all(test, feature = "dev"))]
 pub(crate) use rows::pool_blocks;
 pub(crate) use rows::seq_blocks;
+#[cfg(all(test, feature = "dev"))]
+pub(crate) use rows::Hold;
+pub(crate) use rows::{layer_rooms, marks_kept, stage_holds, SeqRoom};
 pub mod lower;
 pub mod lower_comp;
 pub mod mla;
@@ -1458,6 +1461,8 @@ pub struct Dyn {
     ctx: usize,
     /// The part of the GPU's free memory `serve_rows` takes for the sequences (`Gen::share_memory`).
     share: f64,
+    /// The plan the loader took (`take_plan`): the sequences `serve_rows` holds at most and the bytes of their keys, values and states.
+    planned: Option<(usize, u64)>,
     /// Passes of up to this many rows take the decode step's split attention (1, or a drafted round's k + 1: the same kernel, so drafted = plain).
     split_rows: usize,
     pf_kib: [usize; 3],
@@ -2306,6 +2311,7 @@ impl Dyn {
             n: 0,
             chunk: ch,
             share: 1.0,
+            planned: None,
             ctx,
             split_rows: rows_out,
             pf_kib: pf_kib(crate::tune!("GLYD_G4_PF").as_deref())?,
@@ -4036,6 +4042,10 @@ impl crate::conv::Gen for Dyn {
 
     fn share_memory(&mut self, part: f64) {
         self.share = part.clamp(0.0, 1.0);
+    }
+
+    fn take_plan(&mut self, users: usize, kv: u64) {
+        Dyn::take_plan(self, users, kv);
     }
 
     fn see(&mut self, images: Vec<std::sync::Arc<crate::vision::Image>>) -> Result<()> {
