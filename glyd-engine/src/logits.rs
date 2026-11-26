@@ -5141,6 +5141,23 @@ mod tests {
         parted.iter_mut().for_each(|x| x.tokens[0] = 9);
         let (ok, kl) = draw_floor(&base, &parted, &KIND_BOUND).unwrap();
         assert!(!ok && kl.iter().all(|r| r[0].is_some() && r[1].is_none()), "{kl:?}");
+        // (traced choices: the same experts from router inputs a last bit apart are the same choices, and judged; other experts are a choice apart, not judged)
+        use crate::dynamic::{Choice, ChoiceFrom, ChoiceKind};
+        let hist = |chosen: Vec<i64>, x: u16| -> Option<Hist> {
+            Some(vec![vec![std::rc::Rc::new(Choice { layer: 3, kind: ChoiceKind::Route, chosen, from: ChoiceFrom::Router(vec![x; 4]) })]])
+        };
+        let traced = |s: &[Served], chosen: &dyn Fn(usize) -> Vec<i64>, x: u16| -> Vec<Served> {
+            let mut v = copy(s);
+            v.iter_mut().enumerate().for_each(|(i, q)| q.rows.iter_mut().for_each(|r| r.1 = hist(chosen(i), x)));
+            v
+        };
+        let a = traced(&base, &|_| vec![1, 5], 0x3f80);
+        let (ok, kl) = draw_floor(&a, &traced(&nudged(1e-3, &base), &|_| vec![5, 1], 0x3f81), &KIND_BOUND).unwrap();
+        assert!(ok && kl.iter().flatten().all(Option::is_some), "{kl:?}");
+        let (ok, kl) = draw_floor(&a, &traced(&nudged(1e-3, &base), &|i| if i == 0 { vec![1, 6] } else { vec![1, 5] }, 0x3f80), &KIND_BOUND).unwrap();
+        assert!(ok && kl[0].iter().all(Option::is_none) && kl[1..].iter().flatten().all(Option::is_some), "{kl:?}");
+        let (ok, _) = draw_floor(&a, &traced(&nudged(1e-3, &base), &|_| vec![2, 5], 0x3f80), &KIND_BOUND).unwrap();
+        assert!(!ok, "no row judged: every choice apart");
     }
 
     #[test]
@@ -9217,6 +9234,27 @@ fn judge_ref_rows(served: &[Served], want: &[Row], at: &[(usize, usize)], bound:
     RefHeld { v, worst, passes: 0, fails }
 }
 
+/// Whether two histories of a row hold the same choices: each position's, each layer's and kind's experts or picks as a set (what they were chosen from, the
+/// router's input row or the pools' scores, may differ in its last bits between two runs that choose alike).
+fn same_choices(a: &Option<Hist>, b: &Option<Hist>) -> bool {
+    let key = |h: &[crate::dynamic::RowRoute]| -> Vec<(usize, bool, Vec<i64>)> {
+        let mut v: Vec<(usize, bool, Vec<i64>)> = h
+            .iter()
+            .map(|c| {
+                let mut x = c.chosen.clone();
+                x.sort_unstable();
+                (c.layer, c.kind == crate::dynamic::ChoiceKind::Pick, x)
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    match (a, b) {
+        (Some(x), Some(y)) => x.len() == y.len() && x.iter().zip(y).all(|(p, q)| key(p) == key(q)),
+        (x, y) => x.is_none() && y.is_none(),
+    }
+}
+
 /// The draw's own floor (`usercheck --ref --floor`): each sequence served at once (`at_once`) against the same prompt served again alone (`alone`: a row a
 /// step, every product and attention at other row counts, so its sums in another order, the same arithmetic): the GPU against itself. A sequence's rows are
 /// compared while the two runs' inputs are the same (its rows up to the one where their tokens first differ, that one too: `replies_beside`) and, where the
@@ -9231,7 +9269,7 @@ pub(crate) fn draw_floor(alone: &[Served], at_once: &[Served], bound: &Bound) ->
     let (mut want, mut got, mut at, mut moved, mut parted, mut apart) = (Vec::new(), Vec::new(), Vec::new(), 0usize, 0usize, 0usize);
     for (i, (a, b)) in alone.iter().zip(at_once).enumerate() {
         for (j, (ra, rb)) in a.rows.iter().zip(&b.rows).enumerate() {
-            if ra.1 != rb.1 {
+            if !same_choices(&ra.1, &rb.1) {
                 apart += a.rows.len().min(b.rows.len()) - j;
                 break;
             }
@@ -9246,6 +9284,13 @@ pub(crate) fn draw_floor(alone: &[Served], at_once: &[Served], bound: &Bound) ->
         }
     }
     let rows: usize = at_once.iter().map(|s| s.rows.len()).sum();
+    if want.len() * 2 < rows {
+        println!(
+            "FAIL the draw's floor (each prompt served again alone, a row a step: the GPU against itself, its sums in another order): {} of {rows} rows judged ({parted} sequences part at a token apart, {apart} rows after a choice apart not judged): a draw whose rows mostly part at a choice judges nothing",
+            want.len()
+        );
+        return Ok((false, kl));
+    }
     let tag = format!(
         "the draw's floor (each prompt served again alone, a row a step: the GPU against itself, its sums in another order): {} of {rows} rows judged ({parted} sequences part at a token apart, {apart} rows after a choice apart not judged)",
         want.len()
